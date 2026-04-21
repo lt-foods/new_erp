@@ -209,18 +209,192 @@ tags: [PRD, ERP, 採購, Purchase]
 ## 13. Open Questions
 
 ### 流程 / 策略
-- [ ] **Q1 LINE 文字解析**：第一版就上 LLM，還是先純規則？預算 / 延遲容忍度？
-- [ ] **Q2 小幫手幾人**：同時 key 單的人數 → 影響併發與鎖設計
-- [ ] **Q3 請購單來源標註**：要不要保留「原始 LINE 截圖 / 原文」永久備查？法規或稽核需求？
-- [ ] **Q4 PO 通道**：怎麼發給供應商？Email、LINE、列印、傳真、供應商 Portal？
-- [ ] **Q5 多供應商同品**：同一 SKU 有多家供應商時，PO 怎麼選預設？
-- [ ] **Q6 緊急叫貨**：門市臨時缺貨能否跳過 PR 直接開 PO？誰有權限？
-- [ ] **Q7 付款條件**：月結 30/60/90？影響對帳與應付的資料設計
-- [ ] **Q8 議價 / 促銷價**：是否支援同一 PO 特殊價？
+- [x] **Q1 LINE 文字解析**：→ **不在採購模組**。（2026-04-21）
+
+  **釐清**：原 PRD 誤假設「店員透過 LINE 叫貨、小幫手解析文字成 PR」。實際流程是「**顧客在 LINE 頻道 +N 下單** → 結單統計 → 產生採購需求」。
+
+  **重新歸屬**：
+  - **訂單 / 取貨模組**（新建）：解析**顧客 LINE 留言**（多品 + 改單語法），建議用 **LLM**（複雜語法純規則難覆蓋）
+  - **採購模組**：PR 來源改為「訂單模組結單統計」+「門市緊急叫貨」兩條路徑，不解析 LINE 文字
+- [x] **Q2 小幫手併發**：→ **5 人同時處理、結單日塞車；必要系統級併發控制**。（2026-04-21）
+
+  **Level 1（必要）**：
+  - PR / PO 單號 **DB sequence 自動產生**（格式 `PR` / `PO` + yyMMdd + 流水），不給手 key
+  - Schema v0.2 新增 `version BIGINT`（樂觀鎖）到 `purchase_requests` / `purchase_orders`
+  - UPDATE 必帶 version、不符拒絕
+
+  **Level 2（強烈建議）**：
+  - 「本單正在編輯中」鎖顯示（`locked_by / locked_at` 欄位，10 分鐘超時自動釋放）
+  - 批次操作：「從訂單模組結單 → 一鍵生成多張 PO（依供應商分組）」
+  - 草稿自動存檔（30 秒 / 次）
+
+  **Level 3（P1）**：
+  - Supabase Realtime 即時協作
+  - 背景佇列（寄 PO email、生 PDF）
+  - 結單日效能壓測（目標 50 張 PO / 分鐘）
+
+  **v0.2 schema 變動**：
+  ```sql
+  ALTER TABLE purchase_requests
+    ADD COLUMN version BIGINT NOT NULL DEFAULT 0,
+    ADD COLUMN locked_by UUID,
+    ADD COLUMN locked_at TIMESTAMPTZ;
+  -- 同 purchase_orders
+  CREATE SEQUENCE pr_no_seq; CREATE SEQUENCE po_no_seq;
+  ```
+- [x] **Q3 請購單 / 訂單來源保留**：→ **分階段導入，v1 純人工登打 + 預留自動化 schema**。（2026-04-21）
+
+  **釐清**：這題原始情境（「LINE 原文備查」）其實屬**訂單模組**範疇。採購 PR 不需要保留 LINE 原文。
+
+  **訂單模組分階段計劃**：
+
+  | 階段 | 做法 | 月成本 | 優缺點 |
+  |---|---|---|---|
+  | **v1（優先）** | **小幫手人工登打**（看 LINE 手動輸入每筆顧客訂單）| NT$ 0 | UI 要做很順、快速鍵、顧客 autocomplete、draft 自動存 |
+  | **P1（升級）** | 上傳 LINE 截圖 → **Claude Haiku vision** 多模態解析 → 草稿審核 | ~NT$ 40~135 | 省 80% 人工時間 |
+  | **P2（備援）** | 純 OCR（Tesseract / Google Vision）+ 文字規則解析 | NT$ 50 | 本機運作，對個資敏感情境可用 |
+
+  **v1 schema 預留欄位（訂單模組 PRD 待建）**：
+  - `customer_orders.source_screenshots TEXT[]`（v1 NULL、P1 填入截圖 URL）
+  - `customer_orders.source_parsed_json JSONB`（v1 NULL、P1 填入 LLM 輸出）
+  - `customer_orders.source_raw_text TEXT`（v1 NULL、P2 填入 OCR 文字）
+  - 保留 2 年（客訴防線）
+
+  **v1 UX 設計優先項**（因為純手工、5 人同時、結單日塞車）：
+  - 顧客 autocomplete（打 LINE ID 前幾字自動帶）
+  - 商品從團購清單下拉選（Q5/Q3 共識：商品不用打）
+  - 快速鍵（Tab 跳欄、Enter 新增列、上下鍵切換）
+  - 每 30 秒自動存 draft
+  - 結單日看板：各頻道完成度進度條
+- [x] **Q4 PO 通道**：→ **混合（LINE / Email / 電話），依供應商偏好，現況以 LINE 為主**。（2026-04-21）
+
+  **v0.2 schema 變動**：
+  ```sql
+  ALTER TABLE suppliers
+    ADD COLUMN preferred_po_channel TEXT CHECK (preferred_po_channel IN
+      ('line','email','phone','fax','manual')) DEFAULT 'line',
+    ADD COLUMN line_contact TEXT;
+  -- purchase_orders.sent_channel 已存在
+  ```
+
+  **UI 流程**：按「發送」→ 依 `preferred_po_channel` 顯示對應操作：
+  - **LINE**：格式化 PO 文字 + 「複製」按鈕 + 供應商 LINE ID（小幫手自行切到 LINE 貼上）
+  - **Email**：下載 PDF / Excel + `mailto:` 草稿（人工寄送）
+  - **電話**：顯示號碼 + 通話紀錄填寫欄
+  - 發送後自動記 `sent_at / sent_by / sent_channel`，PO 狀態 `draft → sent`
+
+  **v1 不自動化**：不串 LINE API、不自動發 email；人工操作 + 系統輔助格式化即可。
+
+  **P1 擴充**：Edge Function 串 Resend / SendGrid 自動發 email；LINE Notify / 官方帳號 API（視供應商合作度）。
+- [x] **Q5 多供應商同品**：→ **沿用商品模組 Q12 決定：預設帶 `sku_suppliers.is_preferred` 供應商、UI 列出全部可切換**。（2026-04-21）
+
+  採購模組無特殊考量，共用同一機制：`sku_suppliers` 有 `is_preferred` 唯一索引（每 SKU 僅一個偏好）。
+- [x] **Q6 緊急叫貨**：→ **店長可直接建 PO、跳過 PR；必填原因 + 金額上限 + 事後稽核**。（2026-04-21）
+
+  **實作**：
+  - 店長角色開放「建立 PO」權限（平常僅小幫手 / 採購員有）
+  - 緊急 PO 必填 `emergency_reason TEXT`（v0.2 新增欄位）
+  - 單次金額閾值（可設定，預設 NT$ 10,000）：
+    - ≤ 閾值：自動通過、立即發出
+    - > 閾值：進入「待總部批」佇列、總部 15 分鐘內處理
+  - 事後稽核：每月報表列出所有 `emergency_reason` 非空的 PO、總部檢視
+  - 與 Q8 商品模組「店長自由改售價」權限一致：**寬鬆 + 事後稽核**哲學
+
+  **v0.2 schema 變動**：
+  ```sql
+  ALTER TABLE purchase_orders
+    ADD COLUMN emergency_reason TEXT,
+    ADD COLUMN requires_hq_approval BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN hq_approved_at TIMESTAMPTZ,
+    ADD COLUMN hq_approved_by UUID;
+  ```
+- [x] **Q7 付款條件**：→ **支援所有常見類型（現金現貨 / T+N / 月結 N / COD / 預付款 / 混合）**；供應商層級預設 + PO 級可覆寫。（2026-04-21）
+
+  **v0.2 schema 變動**：
+  ```sql
+  -- suppliers：結構化付款條件
+  ALTER TABLE suppliers
+    ADD COLUMN payment_type TEXT CHECK (payment_type IN
+      ('cash_on_delivery','t_plus_days','monthly_close','cod','prepaid','mixed'))
+      DEFAULT 'monthly_close',
+    ADD COLUMN payment_days INTEGER,         -- T+7=7, 月結 30=30
+    ADD COLUMN monthly_close_day SMALLINT,   -- 月結幾號結（預設月底 = 31）
+    ADD COLUMN prepaid_percent NUMERIC(5,4); -- 預付款比例（0.30 = 30%）
+  -- purchase_orders：PO 級可覆寫（應付日期計算）
+  ALTER TABLE purchase_orders
+    ADD COLUMN payment_type_override TEXT,
+    ADD COLUMN payment_days_override INTEGER,
+    ADD COLUMN due_date DATE;  -- 系統依條款自動算出的應付日
+  ```
+
+  **due_date 自動計算規則**（RPC）：
+  - `cash_on_delivery` / `cod` → due_date = 收貨日
+  - `t_plus_days` → due_date = 收貨日 + payment_days
+  - `monthly_close` → due_date = 次月 `monthly_close_day`（例月結 30 → 次月 30 日）
+  - `prepaid` → PO 確認時先產生應付 `prepaid_percent × total`，到貨後產生剩餘
+  - `mixed` → 建 PO 時手動指定 override
+
+  **應付帳款**：
+  - 採購模組**不**處理付款本身（Non-Goals 明確排除）
+  - PO / GR 確認後產生「應付憑據」給財務 / 應付模組（**尚未建立 PRD**，未來另開）
+  - v1 可先簡化：`accounts_payable` 表記錄未付單、手動勾選「已付」
+- [x] **Q8 議價 / 促銷價**：→ **A + B 組合（不做 C 季節活動表）**。（2026-04-21）
+
+  **實作**：
+  - **A（永久降價）**：採購員可改 `sku_suppliers.default_unit_cost`；影響之後所有新 PO，不動歷史
+  - **B（PO 臨時價）**：建 PO 時 `purchase_order_items.unit_cost` 可自由覆寫，只影響這筆
+  - **不做 C**：季節性活動 / 量大議價用 B 臨時覆寫處理；若未來需求增強再加 `supplier_price_events` 表（P2）
+
+  **schema 無變動**（現有欄位已支援）。UI 要做：
+  - 供應商主檔編輯頁 → 顯示 `sku_suppliers` 列表 + 「改預設成本」按鈕
+  - 建 PO 頁 → 每一 line item 的 unit_cost 可直接編輯、顯示「原預設 $25 → 本次 $20」差異提示
 
 ### 與現況銜接
-- [ ] **Q9 現行 LINE 群組**：有幾個？多少店在用？格式統一嗎？
-- [ ] **Q10 舊系統採購資料遷移**：要不要帶未結 PO？
+- [x] **Q9 現行 LINE 通路現況**：→ **20 個 LINE 社群（OpenChat）頻道，各 300~2000 顧客，格式統一；系統半自動輔助、不自動發文**。（2026-04-21）
+
+  **重大架構限制發現**：LINE 社群（OpenChat）**官方無開放 API** → 不能自動發文、不能自動讀留言、顧客只有社群暱稱（非真實 user_id）。
+
+  **v1 實作方式**：
+  - 系統提供 **post 範本管理**（可編輯、變數代入商品資訊）
+  - 小幫手按「生成 post」→ 複製 → 手動貼到 LINE 社群（20 次）
+  - 顧客身份綁定走 **A + B 混合**（訂單模組實作）：
+    - A. 小幫手登打時手動綁定 `社群暱稱 ↔ member_id`，系統記下來下次自動帶
+    - B. LIFF / OA 讓顧客自己綁（訂單模組 / 會員模組細節）
+  - 顧客身份對應表 `customer_line_aliases (channel_id, nickname, member_id)` 由訂單模組管理
+
+  **v1 架構**：
+  ```
+  LINE 社群（顧客下單，手動 post + 截圖）
+     ↓ 小幫手截圖 → 登打
+  系統 ERP
+     ↓ 推播
+  LINE 官方帳號 OA（取貨通知）→ LIFF（會員查詢）
+  ```
+
+  **顧客需「雙加」**（社群看團購 + OA 收通知）— 承擔此體驗損失。
+
+  **v0.2 schema 新增**：
+  ```sql
+  CREATE TABLE post_templates (
+    id, tenant_id, name, template TEXT, variables JSONB, ...
+  );
+  CREATE TABLE customer_line_aliases (
+    tenant_id, channel_id, nickname, member_id, created_by, created_at,
+    UNIQUE (tenant_id, channel_id, nickname)
+  );
+  ```
+- [x] **Q10 舊系統採購資料遷移**：→ **直接切換、不搬舊 PO**。（2026-04-21）
+
+  **策略**：
+  - Cut-over 當日起，新 PO 全走新系統
+  - 舊系統**唯讀保留**，舊 PO 繼續在舊系統追到結案（估 1-2 個月自然清空）
+  - 供應商通知：Cut-over 後到貨走新系統 GR
+  - 與庫存模組 Q8 搬遷策略一致（舊系統唯讀、新系統從 cut-over 開始）
+
+  **免掉的工作**：
+  - 不用雙系統對帳
+  - 不用資料清洗
+  - 不用擔心漏單 / 重複
 
 ---
 
