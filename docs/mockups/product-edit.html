@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>新增商品 | new_erp</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Noto Sans TC", sans-serif; }
+  label { font-size: 12px; color: #6b7280; margin-bottom: 4px; display: block; }
+  input[type=text], input[type=number], select, textarea {
+    border: 1px solid #d1d5db; border-radius: 6px; padding: 8px 12px;
+    font-size: 14px; width: 100%; background: white;
+  }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: #2563eb; }
+  .section { background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; }
+  .section-title { font-size: 14px; font-weight: 500; margin-bottom: 12px; color: #111827; }
+  .helper { font-size: 11px; color: #9ca3af; margin-top: 4px; }
+</style>
+</head>
+<body class="bg-gray-50">
+
+<!-- Header -->
+<header class="bg-white border-b border-gray-200 sticky top-0 z-10">
+  <div class="flex items-center justify-between px-6 py-3">
+    <div class="flex items-center gap-6">
+      <div class="text-lg font-bold">🛒 new_erp</div>
+      <nav class="flex gap-4 text-sm">
+        <a href="product-list.html" class="text-blue-600 font-medium border-b-2 border-blue-600 pb-1">商品</a>
+        <a href="#" class="text-gray-600">會員</a><a href="#" class="text-gray-600">訂單</a>
+        <a href="#" class="text-gray-600">庫存</a><a href="#" class="text-gray-600">採購</a>
+        <a href="#" class="text-gray-600">銷售</a><a href="#" class="text-gray-600">通知</a>
+      </nav>
+    </div>
+    <div class="flex items-center gap-3 text-sm">
+      <select class="border border-gray-300 rounded px-3 py-1 bg-white">
+        <option>🏪 總部視角</option>
+      </select>
+      <div class="text-gray-700">alex.chen</div>
+    </div>
+  </div>
+  <div class="flex gap-2 px-6 pb-2 text-sm text-gray-500">
+    <a href="#" class="hover:underline">首頁</a> › <a href="product-list.html" class="hover:underline">商品列表</a> › <span class="font-medium text-gray-700">新增商品</span>
+  </div>
+</header>
+
+<main class="px-6 py-4 max-w-[1100px] mx-auto">
+
+  <!-- Sticky action bar -->
+  <div class="flex items-center justify-between mb-4">
+    <div>
+      <h1 class="text-xl font-bold">新增商品</h1>
+      <p class="text-xs text-gray-500 mt-1">填完後可選「存為草稿」或「上架」</p>
+    </div>
+    <div class="flex gap-2">
+      <a href="product-list.html" class="px-3 py-1.5 text-sm bg-white border border-gray-300 rounded hover:bg-gray-50">取消</a>
+      <button class="px-3 py-1.5 text-sm bg-white border border-gray-300 rounded hover:bg-gray-50">💾 存為草稿</button>
+      <button class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700">✓ 上架</button>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-3 gap-4">
+
+    <!-- Main form (2/3 wide) -->
+    <div class="col-span-2 space-y-4">
+
+      <!-- 基本資訊 (Product level) -->
+      <div class="section">
+        <h2 class="section-title">商品基本資訊（Product 層）</h2>
+        <div class="grid grid-cols-2 gap-3">
+          <div class="col-span-2">
+            <label>商品名稱 <span class="text-red-500">*</span></label>
+            <input type="text" placeholder="例：小熊保鮮袋" value="小熊保鮮袋">
+          </div>
+          <div>
+            <label>商品編號（product_code）</label>
+            <input type="text" placeholder="自動產生" value="P-BEAR-BAG" class="font-mono text-sm">
+            <div class="helper">留空系統自動產生</div>
+          </div>
+          <div>
+            <label>分類 <span class="text-red-500">*</span></label>
+            <select>
+              <option>日用品 › 餐具 › 保鮮袋</option>
+              <option>食品 › 零食</option>
+            </select>
+          </div>
+          <div>
+            <label>品牌</label>
+            <select>
+              <option>LINE Friends</option>
+              <option>統一</option>
+              <option>未指定</option>
+            </select>
+          </div>
+          <div>
+            <label>儲存類型 <span class="text-red-500">*</span></label>
+            <select>
+              <option value="room_temp" selected>常溫（預設 7 天取貨期）</option>
+              <option value="refrigerated">冷藏（2 天）</option>
+              <option value="frozen">冷凍（7 天）</option>
+              <option value="meal_train">🍱 美食列車（當天取）</option>
+            </select>
+            <div class="helper">影響取貨期限、逾期處理（報廢 vs 放回庫存）</div>
+          </div>
+          <div class="col-span-2">
+            <label>商品描述</label>
+            <textarea rows="3" placeholder="顧客在 LIFF 看到的說明文字">超實用小熊保鮮袋、100 入／組</textarea>
+          </div>
+          <div class="col-span-2">
+            <label>商品圖</label>
+            <div class="flex gap-2">
+              <div class="aspect-square w-24 bg-gray-100 rounded flex items-center justify-center text-3xl">🛍️</div>
+              <div class="aspect-square w-24 bg-gray-100 rounded flex items-center justify-center text-3xl">📦</div>
+              <button class="aspect-square w-24 border-2 border-dashed border-gray-300 rounded text-gray-400 hover:border-gray-400 hover:text-gray-500 text-sm">+ 上傳</button>
+            </div>
+            <div class="helper">主圖會顯示在 LIFF；第一張為封面</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SKU variants -->
+      <div class="section">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="section-title mb-0">SKU 變體（可多個）</h2>
+          <button class="text-xs text-blue-600 hover:underline">+ 新增 SKU</button>
+        </div>
+        <div class="text-xs text-gray-500 mb-3">同一商品的不同規格 / 容量 / 尺寸 → 各自為一個 SKU</div>
+
+        <!-- SKU 1 -->
+        <div class="border border-gray-200 rounded p-4 mb-3">
+          <div class="flex items-center justify-between mb-3">
+            <div class="text-sm font-medium">SKU #1</div>
+            <button class="text-xs text-red-500 hover:underline">移除</button>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div><label>SKU 編號</label><input type="text" value="BEAR-BAG-100" class="font-mono text-sm"></div>
+            <div><label>變體名稱</label><input type="text" value="100 入"></div>
+            <div><label>基本單位</label><input type="text" value="包"></div>
+            <div><label>重量 (g)</label><input type="number" value="350"></div>
+            <div><label>總部成本價</label>
+              <input type="number" value="22">
+              <div class="helper">加盟主進貨價 / 影響庫存 avg_cost</div>
+            </div>
+            <div><label>建議售價</label>
+              <input type="number" value="39">
+              <div class="helper">`prices.scope=retail`；加盟主可覆寫本店價</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- SKU 2 -->
+        <div class="border border-gray-200 rounded p-4">
+          <div class="flex items-center justify-between mb-3">
+            <div class="text-sm font-medium">SKU #2</div>
+            <button class="text-xs text-red-500 hover:underline">移除</button>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div><label>SKU 編號</label><input type="text" value="BEAR-BAG-50" class="font-mono text-sm"></div>
+            <div><label>變體名稱</label><input type="text" value="50 入"></div>
+            <div><label>基本單位</label><input type="text" value="包"></div>
+            <div><label>重量 (g)</label><input type="number" value="180"></div>
+            <div><label>總部成本價</label><input type="number" value="12"></div>
+            <div><label>建議售價</label><input type="number" value="25"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 多單位換算 -->
+      <div class="section">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="section-title mb-0">多單位換算（sku_packs）</h2>
+          <button class="text-xs text-blue-600 hover:underline">+ 新增單位</button>
+        </div>
+        <div class="text-xs text-gray-500 mb-3">1 箱 = 12 盒 = 144 包；掃到箱條碼時系統自動換算</div>
+        <table class="w-full text-sm">
+          <thead class="text-xs text-gray-500 border-b border-gray-200">
+            <tr>
+              <th class="py-2 text-left">SKU</th>
+              <th class="text-left">單位</th>
+              <th class="text-right">= N 個基本單位</th>
+              <th class="text-center">可銷售</th>
+              <th class="text-center">可採購</th>
+              <th class="text-center">可調撥</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <tr>
+              <td class="py-2 font-mono text-xs">BEAR-BAG-100</td>
+              <td>包</td><td class="text-right">1</td>
+              <td class="text-center">✓</td><td class="text-center">✓</td><td class="text-center">✓</td>
+              <td class="text-right text-xs text-gray-400">base</td>
+            </tr>
+            <tr>
+              <td class="py-2 font-mono text-xs">BEAR-BAG-100</td>
+              <td>盒</td><td class="text-right">12</td>
+              <td class="text-center"><input type="checkbox" class="m-0"></td>
+              <td class="text-center"><input type="checkbox" checked class="m-0"></td>
+              <td class="text-center"><input type="checkbox" checked class="m-0"></td>
+              <td class="text-right text-xs"><button class="text-red-500 hover:underline">移除</button></td>
+            </tr>
+            <tr>
+              <td class="py-2 font-mono text-xs">BEAR-BAG-100</td>
+              <td>箱</td><td class="text-right">24</td>
+              <td class="text-center"><input type="checkbox" class="m-0"></td>
+              <td class="text-center"><input type="checkbox" checked class="m-0"></td>
+              <td class="text-center"><input type="checkbox" checked class="m-0"></td>
+              <td class="text-right text-xs"><button class="text-red-500 hover:underline">移除</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 條碼 -->
+      <div class="section">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="section-title mb-0">條碼（barcodes）</h2>
+          <div class="flex gap-2">
+            <button class="text-xs text-blue-600 hover:underline">🎲 產生內部碼</button>
+            <button class="text-xs text-blue-600 hover:underline">+ 手動新增</button>
+          </div>
+        </div>
+        <table class="w-full text-sm">
+          <thead class="text-xs text-gray-500 border-b border-gray-200">
+            <tr>
+              <th class="py-2 text-left">條碼值</th>
+              <th class="text-left">類型</th>
+              <th class="text-left">單位</th>
+              <th class="text-right">換算 (個)</th>
+              <th class="text-center">主要</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <tr>
+              <td class="py-2 font-mono text-xs">4710088421234</td><td class="text-xs">EAN-13</td>
+              <td>包</td><td class="text-right">1</td>
+              <td class="text-center"><input type="radio" name="primary" checked></td>
+              <td class="text-right text-xs"><button class="text-red-500 hover:underline">移除</button></td>
+            </tr>
+            <tr>
+              <td class="py-2 font-mono text-xs">LT260420000015</td><td class="text-xs">內部碼</td>
+              <td>包</td><td class="text-right">1</td>
+              <td class="text-center"><input type="radio" name="primary"></td>
+              <td class="text-right text-xs"><button class="text-red-500 hover:underline">移除</button></td>
+            </tr>
+            <tr>
+              <td class="py-2 font-mono text-xs">BOX-BEAR-24</td><td class="text-xs">CODE-128</td>
+              <td>箱</td><td class="text-right">24</td>
+              <td class="text-center"><input type="radio" name="primary"></td>
+              <td class="text-right text-xs"><button class="text-red-500 hover:underline">移除</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="helper mt-2">可多條碼、同 SKU 支援多單位（箱 / 盒 / 包 各自條碼）</div>
+      </div>
+
+      <!-- 供應商關聯 -->
+      <div class="section">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="section-title mb-0">供應商關聯（sku_suppliers）</h2>
+          <button class="text-xs text-blue-600 hover:underline">+ 新增供應商</button>
+        </div>
+        <table class="w-full text-sm">
+          <thead class="text-xs text-gray-500 border-b border-gray-200">
+            <tr>
+              <th class="py-2 text-left">供應商</th><th class="text-left">供應商 SKU</th>
+              <th class="text-right">成本</th><th class="text-right">交期</th><th class="text-right">MOQ</th><th class="text-center">偏好</th><th></th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            <tr>
+              <td class="py-2">熊熊貿易</td>
+              <td class="font-mono text-xs">BEAR-BAG-M100</td>
+              <td class="text-right">$22</td><td class="text-right">3 天</td><td class="text-right">10 包</td>
+              <td class="text-center"><input type="radio" name="preferred" checked></td>
+              <td class="text-right text-xs"><button class="text-red-500 hover:underline">移除</button></td>
+            </tr>
+            <tr>
+              <td class="py-2">第一批發</td>
+              <td class="font-mono text-xs">FB-1234</td>
+              <td class="text-right">$23.5</td><td class="text-right">5 天</td><td class="text-right">24 包</td>
+              <td class="text-center"><input type="radio" name="preferred"></td>
+              <td class="text-right text-xs"><button class="text-red-500 hover:underline">移除</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+
+    <!-- Sidebar: 設定 + 預覽 -->
+    <aside class="col-span-1 space-y-4">
+
+      <div class="section">
+        <h2 class="section-title">狀態與發布</h2>
+        <div class="space-y-3">
+          <div>
+            <label>狀態</label>
+            <select>
+              <option>草稿（draft）</option>
+              <option selected>上架中（active）</option>
+              <option>暫時下架（inactive）</option>
+            </select>
+          </div>
+          <div>
+            <label>稅率</label>
+            <select disabled class="bg-gray-50">
+              <option>5% 含稅（固定）</option>
+            </select>
+            <div class="helper">已在租戶設定鎖定</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h2 class="section-title">發布範圍</h2>
+        <div class="text-sm space-y-2">
+          <label class="flex items-center gap-2">
+            <input type="checkbox" checked> 所有加盟店
+          </label>
+          <div class="pl-6 text-xs text-gray-500">加盟主可自行覆寫本店售價</div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h2 class="section-title">進階</h2>
+        <div class="space-y-2 text-sm">
+          <label class="flex items-center gap-2">
+            <input type="checkbox"> 標為「團購熱銷」
+          </label>
+          <label class="flex items-center gap-2">
+            <input type="checkbox" checked> 可做促銷活動
+          </label>
+        </div>
+      </div>
+
+      <div class="section bg-blue-50 border-blue-200">
+        <h2 class="section-title text-blue-900">📋 發布前檢查</h2>
+        <ul class="text-xs space-y-1 text-blue-900">
+          <li>✓ 商品名、分類、儲存已填</li>
+          <li>✓ 至少 1 個 SKU</li>
+          <li>✓ 每 SKU 有基本單位 + 建議售價</li>
+          <li>⚠ 條碼尚未指定主要（可稍後補）</li>
+          <li>⚠ 商品圖建議至少 1 張</li>
+        </ul>
+      </div>
+
+    </aside>
+
+  </div>
+
+  <div class="mt-6 text-xs text-gray-400 text-center">📝 mockup / 假資料 — 所有數字為示範用途</div>
+</main>
+</body>
+</html>

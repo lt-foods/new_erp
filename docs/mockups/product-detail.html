@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>商品詳情 - 小熊保鮮袋 | new_erp</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Noto Sans TC", sans-serif; }
+  .tab-active { border-bottom-color: #2563eb; color: #2563eb; font-weight: 500; }
+</style>
+</head>
+<body class="bg-gray-50">
+
+<!-- Header (同 list 頁) -->
+<header class="bg-white border-b border-gray-200 sticky top-0 z-10">
+  <div class="flex items-center justify-between px-6 py-3">
+    <div class="flex items-center gap-6">
+      <div class="text-lg font-bold">🛒 new_erp</div>
+      <nav class="flex gap-4 text-sm">
+        <a href="product-list.html" class="text-blue-600 font-medium border-b-2 border-blue-600 pb-1">商品</a>
+        <a href="#" class="text-gray-600">會員</a><a href="#" class="text-gray-600">訂單</a>
+        <a href="#" class="text-gray-600">庫存</a><a href="#" class="text-gray-600">採購</a>
+        <a href="#" class="text-gray-600">銷售</a><a href="#" class="text-gray-600">通知</a>
+      </nav>
+    </div>
+    <div class="flex items-center gap-3 text-sm">
+      <select class="border border-gray-300 rounded px-3 py-1 bg-white">
+        <option>🏪 總部視角</option><option>A 店（信義店）</option>
+      </select>
+      <div class="text-gray-700">alex.chen <span class="text-xs text-gray-500">(小幫手)</span></div>
+    </div>
+  </div>
+  <div class="flex gap-2 px-6 pb-2 text-sm text-gray-500">
+    <a href="#" class="hover:underline">首頁</a> › <a href="product-list.html" class="hover:underline">商品列表</a> ›
+    <span class="font-medium text-gray-700">小熊保鮮袋</span>
+  </div>
+</header>
+
+<main class="px-6 py-4 max-w-[1400px] mx-auto">
+
+  <!-- Title + actions -->
+  <div class="flex items-center justify-between mb-4">
+    <div>
+      <div class="flex items-center gap-3">
+        <h1 class="text-xl font-bold">小熊保鮮袋</h1>
+        <span class="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded">上架中</span>
+        <span class="text-xs px-2 py-0.5 bg-amber-100 text-amber-700 rounded">🔥 團購活動中</span>
+      </div>
+      <div class="text-xs text-gray-500 mt-1">Product ID: P-BEAR-BAG  |  建立：2026-04-15  |  最後修改：2026-04-20 by alex.chen</div>
+    </div>
+    <div class="flex gap-2">
+      <button class="px-3 py-1.5 text-sm bg-white border border-gray-300 rounded hover:bg-gray-50">📋 複製</button>
+      <button class="px-3 py-1.5 text-sm bg-white border border-gray-300 rounded hover:bg-gray-50">🖨️ 列印條碼</button>
+      <button class="px-3 py-1.5 text-sm bg-white border border-red-300 text-red-600 rounded hover:bg-red-50">下架</button>
+      <a href="product-edit.html" class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700">✏️ 編輯</a>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-12 gap-4">
+
+    <!-- Left: Product info + SKU variants -->
+    <aside class="col-span-4 space-y-4">
+
+      <!-- Product (business level) info -->
+      <div class="bg-white border border-gray-200 rounded-lg p-4">
+        <div class="text-xs uppercase text-gray-500 mb-2">商品資訊</div>
+        <div class="grid grid-cols-3 gap-2 mb-3">
+          <div class="aspect-square bg-gray-100 rounded flex items-center justify-center text-4xl">🛍️</div>
+          <div class="aspect-square bg-gray-100 rounded flex items-center justify-center text-2xl">📦</div>
+          <div class="aspect-square bg-gray-100 rounded flex items-center justify-center text-gray-400 text-xs">+</div>
+        </div>
+        <dl class="text-sm space-y-1.5">
+          <div class="flex"><dt class="w-20 text-gray-500">品牌</dt><dd>LINE Friends</dd></div>
+          <div class="flex"><dt class="w-20 text-gray-500">分類</dt><dd>日用品 › 餐具 › 保鮮袋</dd></div>
+          <div class="flex"><dt class="w-20 text-gray-500">儲存</dt><dd><span class="text-xs px-2 py-0.5 bg-gray-100 rounded">常溫</span></dd></div>
+          <div class="flex"><dt class="w-20 text-gray-500">稅率</dt><dd>5%（含稅）</dd></div>
+        </dl>
+      </div>
+
+      <!-- SKU variants list -->
+      <div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
+        <div class="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+          <div>
+            <div class="text-xs uppercase text-gray-500">SKU 變體</div>
+            <div class="text-xs text-gray-600 mt-0.5">共 2 個 SKU</div>
+          </div>
+          <button class="text-xs text-blue-600 hover:underline">+ 新增變體</button>
+        </div>
+        <div class="divide-y divide-gray-100">
+          <div class="px-4 py-3 bg-blue-50 border-l-4 border-blue-500">
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="font-medium text-sm">100 入</div>
+                <div class="text-xs text-gray-500 font-mono">BEAR-BAG-100</div>
+              </div>
+              <span class="text-sm font-medium">$39</span>
+            </div>
+          </div>
+          <div class="px-4 py-3 hover:bg-gray-50 cursor-pointer">
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="font-medium text-sm">50 入</div>
+                <div class="text-xs text-gray-500 font-mono">BEAR-BAG-50</div>
+              </div>
+              <span class="text-sm text-gray-600">$25</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick stats -->
+      <div class="bg-white border border-gray-200 rounded-lg p-4">
+        <div class="text-xs uppercase text-gray-500 mb-3">本 SKU 即時狀態（100 入）</div>
+        <div class="grid grid-cols-2 gap-3 text-sm">
+          <div>
+            <div class="text-xs text-gray-500">現況庫存</div>
+            <div class="text-lg font-medium">248 包</div>
+            <div class="text-[10px] text-gray-400">5 個倉點</div>
+          </div>
+          <div>
+            <div class="text-xs text-gray-500">本月銷量</div>
+            <div class="text-lg font-medium text-green-600">1,052</div>
+          </div>
+          <div>
+            <div class="text-xs text-gray-500">平均成本</div>
+            <div class="text-lg font-medium">$22.3</div>
+          </div>
+          <div>
+            <div class="text-xs text-gray-500">毛利率</div>
+            <div class="text-lg font-medium text-green-600">42.8%</div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Right: Tabs -->
+    <section class="col-span-8">
+
+      <!-- Tabs nav -->
+      <div class="bg-white border border-gray-200 rounded-t-lg">
+        <nav class="flex border-b border-gray-200 text-sm overflow-x-auto">
+          <button class="px-4 py-3 border-b-2 border-transparent tab-active">基本資訊</button>
+          <button class="px-4 py-3 border-b-2 border-transparent text-gray-600 hover:text-gray-900">條碼（3）</button>
+          <button class="px-4 py-3 border-b-2 border-transparent text-gray-600 hover:text-gray-900">多單位（3）</button>
+          <button class="px-4 py-3 border-b-2 border-transparent text-gray-600 hover:text-gray-900">價格</button>
+          <button class="px-4 py-3 border-b-2 border-transparent text-gray-600 hover:text-gray-900">供應商（2）</button>
+          <button class="px-4 py-3 border-b-2 border-transparent text-gray-600 hover:text-gray-900">促銷</button>
+          <button class="px-4 py-3 border-b-2 border-transparent text-gray-600 hover:text-gray-900">稽核記錄</button>
+        </nav>
+
+        <!-- Tab content: 基本資訊 -->
+        <div class="p-6 space-y-6">
+
+          <!-- 基本資訊 section -->
+          <div>
+            <h3 class="text-sm font-medium text-gray-900 mb-3">基本資訊</h3>
+            <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+              <div><dt class="text-gray-500 text-xs">SKU 編號</dt><dd class="font-mono">BEAR-BAG-100</dd></div>
+              <div><dt class="text-gray-500 text-xs">Product ID</dt><dd class="font-mono">P-BEAR-BAG</dd></div>
+              <div><dt class="text-gray-500 text-xs">變體名稱</dt><dd>100 入</dd></div>
+              <div><dt class="text-gray-500 text-xs">基本單位</dt><dd>包</dd></div>
+              <div><dt class="text-gray-500 text-xs">重量</dt><dd>約 350 g</dd></div>
+              <div><dt class="text-gray-500 text-xs">規格</dt><dd>尺寸：S / M / L（混合）</dd></div>
+            </dl>
+          </div>
+
+          <hr class="border-gray-200">
+
+          <!-- 條碼 preview -->
+          <div>
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-sm font-medium text-gray-900">條碼（3）</h3>
+              <button class="text-xs text-blue-600 hover:underline">+ 新增條碼</button>
+            </div>
+            <table class="w-full text-sm">
+              <thead class="text-xs text-gray-500 border-b border-gray-200">
+                <tr><th class="py-2 text-left">條碼</th><th class="text-left">類型</th><th class="text-left">單位</th><th class="text-right">換算</th><th class="text-center">主要</th><th></th></tr>
+              </thead>
+              <tbody class="divide-y divide-gray-100">
+                <tr>
+                  <td class="py-2 font-mono text-xs">4710088421234</td><td class="text-xs">EAN-13</td>
+                  <td>包</td><td class="text-right">1</td>
+                  <td class="text-center"><span class="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">主要</span></td>
+                  <td class="text-right text-xs"><a href="#" class="text-gray-500 hover:text-gray-900">退役</a></td>
+                </tr>
+                <tr>
+                  <td class="py-2 font-mono text-xs">LT260420000015</td><td class="text-xs">內部碼</td>
+                  <td>包</td><td class="text-right">1</td>
+                  <td class="text-center text-xs text-gray-400">—</td>
+                  <td class="text-right text-xs"><a href="#" class="text-gray-500 hover:text-gray-900">退役</a></td>
+                </tr>
+                <tr>
+                  <td class="py-2 font-mono text-xs">BOX-BEAR-24</td><td class="text-xs">CODE-128</td>
+                  <td>箱</td><td class="text-right">24</td>
+                  <td class="text-center text-xs text-gray-400">—</td>
+                  <td class="text-right text-xs"><a href="#" class="text-gray-500 hover:text-gray-900">退役</a></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <hr class="border-gray-200">
+
+          <!-- 多單位 preview -->
+          <div>
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-sm font-medium text-gray-900">多單位換算</h3>
+              <button class="text-xs text-blue-600 hover:underline">+ 新增單位</button>
+            </div>
+            <div class="grid grid-cols-3 gap-3 text-sm">
+              <div class="border border-gray-200 rounded p-3">
+                <div class="text-xs text-gray-500">包（base）</div>
+                <div class="font-medium">1 包 = 1 包</div>
+                <div class="text-[10px] text-gray-400 mt-1">可銷售 / 可採購 / 可調撥</div>
+              </div>
+              <div class="border border-gray-200 rounded p-3">
+                <div class="text-xs text-gray-500">盒</div>
+                <div class="font-medium">1 盒 = 12 包</div>
+                <div class="text-[10px] text-gray-400 mt-1">可採購 / 可調撥</div>
+              </div>
+              <div class="border border-gray-200 rounded p-3">
+                <div class="text-xs text-gray-500">箱</div>
+                <div class="font-medium">1 箱 = 24 包</div>
+                <div class="text-[10px] text-gray-400 mt-1">可採購 / 可調撥</div>
+              </div>
+            </div>
+          </div>
+
+          <hr class="border-gray-200">
+
+          <!-- 價格 preview -->
+          <div>
+            <div class="flex items-center justify-between mb-3">
+              <div>
+                <h3 class="text-sm font-medium text-gray-900">價格</h3>
+                <div class="text-xs text-gray-500 mt-0.5">加盟店模式：總部成本 vs 門市銷售兩層</div>
+              </div>
+              <button class="text-xs text-blue-600 hover:underline">+ 新增價格規則</button>
+            </div>
+            <div class="space-y-2">
+              <div class="flex items-center justify-between p-3 bg-gray-50 rounded text-sm">
+                <div>
+                  <span class="text-xs text-gray-500 mr-2">總部成本</span>
+                  <span class="font-medium">$22</span>
+                  <span class="text-[10px] text-gray-400 ml-2">加盟主進貨價（移動平均）</span>
+                </div>
+              </div>
+              <div class="flex items-center justify-between p-3 border border-gray-200 rounded text-sm">
+                <div>
+                  <span class="text-xs text-gray-500 mr-2">建議售價 (retail)</span>
+                  <span class="font-medium">$39</span>
+                  <span class="text-[10px] text-gray-400 ml-2">自 2026/04/15 起</span>
+                </div>
+                <div class="flex gap-2 text-xs">
+                  <a href="#" class="text-blue-600 hover:underline">歷史</a>
+                  <a href="#" class="text-blue-600 hover:underline">排程變價</a>
+                </div>
+              </div>
+              <div class="flex items-center justify-between p-3 border border-gray-200 rounded text-sm">
+                <div>
+                  <span class="text-xs text-gray-500 mr-2">A 店售價（覆寫）</span>
+                  <span class="font-medium">$35</span>
+                  <span class="text-[10px] text-amber-600 ml-2">🏪 加盟主自訂</span>
+                </div>
+                <a href="#" class="text-xs text-gray-500 hover:underline">檢視</a>
+              </div>
+              <div class="flex items-center justify-between p-3 border border-gray-200 rounded text-sm">
+                <div>
+                  <span class="text-xs text-gray-500 mr-2">促銷價（本次團購）</span>
+                  <span class="font-medium text-red-600">$29</span>
+                  <span class="text-[10px] text-gray-400 ml-2">4/22 ~ 4/30</span>
+                </div>
+                <a href="#" class="text-xs text-blue-600 hover:underline">檢視促銷</a>
+              </div>
+              <div class="flex items-center justify-between p-3 border border-gray-200 rounded text-sm opacity-60">
+                <div>
+                  <span class="text-xs text-gray-500 mr-2">金卡會員（tier 折扣 0.95）</span>
+                  <span class="font-medium">$37</span>
+                  <span class="text-[10px] text-gray-400 ml-2">retail × 0.95</span>
+                </div>
+              </div>
+            </div>
+            <div class="mt-3 p-3 bg-blue-50 text-xs text-blue-800 rounded">
+              💡 取最低價：目前本店售給金卡會員 = min($35 店價 / $29 促銷 / $37 會員) = <strong>$29</strong>
+            </div>
+          </div>
+
+          <hr class="border-gray-200">
+
+          <!-- 供應商 preview -->
+          <div>
+            <div class="flex items-center justify-between mb-3">
+              <h3 class="text-sm font-medium text-gray-900">供應商（2）</h3>
+              <button class="text-xs text-blue-600 hover:underline">+ 新增供應商</button>
+            </div>
+            <table class="w-full text-sm">
+              <thead class="text-xs text-gray-500 border-b border-gray-200">
+                <tr><th class="py-2 text-left">供應商</th><th class="text-left">供應商 SKU</th><th class="text-right">成本</th><th class="text-right">交期</th><th class="text-right">MOQ</th><th class="text-center">偏好</th></tr>
+              </thead>
+              <tbody class="divide-y divide-gray-100">
+                <tr>
+                  <td class="py-2">熊熊貿易有限公司</td><td class="font-mono text-xs text-gray-500">BEAR-BAG-M100</td>
+                  <td class="text-right">$22</td><td class="text-right">3 天</td><td class="text-right">10 包</td>
+                  <td class="text-center">⭐</td>
+                </tr>
+                <tr>
+                  <td class="py-2">第一批發</td><td class="font-mono text-xs text-gray-500">FB-1234</td>
+                  <td class="text-right">$23.5</td><td class="text-right">5 天</td><td class="text-right">24 包</td>
+                  <td class="text-center">—</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="mt-6 text-xs text-gray-400">📝 mockup / 假資料 — 所有數字為示範用途</div>
+</main>
+</body>
+</html>
