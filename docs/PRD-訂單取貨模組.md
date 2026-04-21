@@ -372,33 +372,328 @@ tags: [PRD, ERP, 訂單, 取貨, Order, Pickup, LINE社群, LIFF]
 ## 13. Open Questions（待確認）
 
 ### 活動設計
-- [ ] **Q1 收單上限層級**：商品層 / 頻道層 / 整團層 三層都要，還是簡化為單層？
-- [ ] **Q2 超過 cap 處理**：候補 / 拒絕 / 自動關團三種，預設哪種？
-- [ ] **Q3 一團可多頻道**：一個活動發到多頻道時，顧客在 A / B 頻道都能下同一團、還是各頻道獨立計數？
-- [ ] **Q4 活動編輯限制**：open 後改售價 / SKU 應該全鎖、還是允許加新品？
+- [x] **Q1 收單上限層級**：→ **三層都要（A）**，但全部 nullable。（2026-04-21）
+
+  **業態事實**：有單一門市爆單情況 → 頻道層 cap 必要。
+
+  **實作**：
+  | 層級 | 欄位 | 用途 | 必填 |
+  |---|---|---|---|
+  | 商品 | `campaign_items.cap_qty` | 某 SKU 整團上限（供應商可給的總量）| 選填 |
+  | 頻道 | `campaign_channels.cap_qty` | 某頻道可訂總量（防單店爆單）| 選填 |
+  | 整團 | `group_buy_campaigns.total_cap_qty` | 整團訂單總量（活動規模限制）| 選填 |
+
+  NULL = 無上限。下單時**三層都檢查**、任一超過即觸發 Q2 處理。
+
+  UI：
+  - 建活動時預設 cap 都 blank（無上限）
+  - 有經驗的小幫手才設限
+  - 登打介面即時顯示三層各自剩餘名額
+- [x] **Q2 超過 cap 處理**：→ **混合（D）：預設候補、小幫手可切拒絕 / 關團**。（2026-04-21）
+
+  **邏輯**：
+  - 登打時系統偵測超 cap → 彈窗
+  - 預設動作：**候補（waitlist）**
+  - 小幫手可改選：
+    - **候補**：進 `order_waitlist`，不 reserve 庫存
+    - **拒絕此單**：不建訂單、小幫手自己回覆顧客抱歉
+    - **自動關團**：把活動狀態改 `closed`、之後都拒收
+  - **候補轉正**：別人取消 / 到貨超預期時、依 waitlist 順序補上
+  - 候補顧客要另外推播通知（「您在保鮮袋團購候補、順位 3」/「已補到您、請確認」）
+
+  **schema**：
+  ```sql
+  CREATE TABLE order_waitlist (
+    id BIGSERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    campaign_id BIGINT NOT NULL REFERENCES group_buy_campaigns(id),
+    sku_id BIGINT NOT NULL,
+    member_id BIGINT REFERENCES members(id),
+    nickname TEXT,
+    qty NUMERIC(18,3) NOT NULL,
+    position INTEGER,                    -- 候補順位
+    status TEXT DEFAULT 'waiting' CHECK (status IN ('waiting','promoted','cancelled','expired')),
+    promoted_order_id BIGINT REFERENCES customer_orders(id),
+    created_by UUID, updated_by UUID,
+    created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW()
+  );
+  ```
+- [x] **Q3 一團多頻道**：→ **各頻道獨立、不合併（A）**。（2026-04-21）
+
+  **原則**：頻道對應門市、取貨地點由頻道決定。
+  - 同會員在 X 頻道 +3 → 訂單 A（X 店取貨）
+  - 同會員在 Y 頻道 +2 → 訂單 B（Y 店取貨）
+  - 兩筆獨立、各自 reserve、各自結帳、各自取貨
+  - `customer_orders.channel_id` 決定 `pickup_location_id`（不由顧客選）
+
+  **schema 影響**：`customer_orders` 要有 `channel_id` NOT NULL，且 `pickup_location_id` 從 `line_channels.home_location_id` 取。
+
+  **偶發跨頻道情境**：視為正常 — 顧客就是在兩家店都要取貨、分兩筆沒問題。
+- [x] **Q4 活動編輯限制**：→ **全部可改、留稽核（C）**。（2026-04-21）
+
+  **延續寬鬆哲學**（同 Q8 店長改售價、Q1 B2B 額度、Q4 POS 折扣）：信任操作者、事後稽核。
+
+  **實作**：
+  - 活動 `open` 狀態後任何欄位都可改（售價、SKU、cap、結單日…）
+  - **每次變更必填 `edit_reason`**（一句話原因）
+  - 所有變更寫 `campaign_audit_log`：
+    - `campaign_id, field, before_value, after_value, edit_reason, operator_id, created_at`
+  - **已下單顧客的保護**：
+    - 售價改了 → 既有訂單保留**下單當時的 unit_price**（不追溯）
+    - SKU 移除 → 既有訂單該 item 不受影響，新訂單無法再加
+    - Cap 改小 → 若已超現況、系統跳警告（不強制處理）
+  - 影響較大的變更（售價 / SKU 移除 / 結單日提前）→ 推播通知小幫手團隊
+
+  **schema 新增**：
+  ```sql
+  CREATE TABLE campaign_audit_log (
+    id BIGSERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    campaign_id BIGINT NOT NULL REFERENCES group_buy_campaigns(id),
+    entity_type TEXT NOT NULL,      -- 'campaign' / 'item' / 'channel'
+    entity_id BIGINT,
+    field TEXT NOT NULL,
+    before_value JSONB,
+    after_value JSONB,
+    edit_reason TEXT NOT NULL,
+    operator_id UUID NOT NULL,
+    operator_ip INET,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+  ```
+
+  **顧客訂單保護欄位**：
+  - `customer_order_items.unit_price` 已記錄下單時價（不追溯後續修改）
 
 ### 訂單與登打
-- [ ] **Q5 改單 / 取消的時間限制**：結單前隨時可改？結單前 24 小時凍結？
-- [ ] **Q6 一顧客一團可多筆訂單嗎**：顧客下午又想加訂 → 新訂單 還是 合併現有？
-- [ ] **Q7 最低訂購量 MOQ**：某 SKU 要 10 份起訂才開、否則退單？
-- [ ] **Q8 匿名 / 訪客下單**：拒綁會員能下單嗎？（建議不行，但給 buffer 期間綁定）
+- [x] **Q5 改單 / 取消時限**：→ **結單前隨時可改（A）**。（2026-04-21）
+
+  **原則**：活動狀態 `open` 期間，顧客 / 小幫手可自由改單、取消。
+  - 結單（`open → closed`）瞬間凍結、之後不可改
+  - 小幫手處理改單 / 取消時同樣更新庫存 reserve（加 / 減）
+  - 沒有「結單前 X 小時凍結」的緩衝期 — 延續寬鬆哲學
+
+  **trade-off 已接受**：
+  - 結單前一分鐘取消 → 採購數字可能浮動
+  - 但小幫手本來就要在結單**後**才彙總跑 PR，不影響採購流程
+  - 實務上結單瞬間 snapshot 即為採購依據
+- [x] **Q6 一顧客一團多筆訂單**：→ **合併現有訂單（A）**。（2026-04-21）
+
+  **UNIQUE constraint**：`(tenant_id, campaign_id, channel_id, member_id)` — 同團同頻道同會員只有一筆 order。
+
+  **邏輯**：
+  - 登打時 lookup 是否已有 → 有則 UPDATE / 新增 items；無則 CREATE
+  - 數量變動 → 對應 `rpc_reserve` / `rpc_release`（加或減）
+  - 取貨時一次結算所有 items（取貨地點相同）
+  - `customer_order_items` 可一筆 order 內多個 SKU（本來就支援）
+
+  **追溯來源**：
+  - `customer_order_items.source_line_raw TEXT[]` 可存多次留言原文（每次加訂留一條）
+  - LLM 解析時若偵測為加訂 → append 到既有 items 的 source_raw
+  - 保留「早上 +3 / 下午 +2」時序紀錄以利客訴
+- [x] **Q7 最低訂購量 MOQ**：→ **不做（A）**。（2026-04-21）
+
+  系統不追蹤 / 不警告 MOQ；結單照實收到的數量 → 採購模組 / 小幫手自己決定要不要補單或跟供應商商量。
+
+  **不影響 schema** — 無需額外欄位。未來若真需要、再加 `campaign_items.moq` 欄位（P2）。
+- [x] **Q8 匿名 / 訪客下單**：→ **自動建 guest 會員（C）**。（2026-04-21）
+
+  **流程**：
+  - 小幫手登打遇到無法綁定的 nickname → 系統自動建「訪客會員」（`member_type = 'guest'`）
+  - 訂單正常建立、關聯到 guest member
+  - 顧客日後加 OA / 填手機 → 觸發合併流程（會員模組 `member_merges` 表已規劃）
+  - 合併後：訂單 / 點數 / 儲值金 / alias 全部搬到 real member
+
+  **v0.2 schema 變動（會員模組）**：
+  ```sql
+  ALTER TABLE members
+    ADD COLUMN member_type TEXT NOT NULL DEFAULT 'full'
+      CHECK (member_type IN ('full','guest'));
+
+  -- Guest 的 phone_hash 用 placeholder 滿足 UNIQUE：'GUEST_' || id
+  -- phone_enc NULL 允許（已允許）
+  -- 新增部分 UNIQUE index，避免 GUEST_* 互相衝突：
+  -- UNIQUE (tenant_id, phone_hash) 現已存在，placeholder 'GUEST_<id>' 天然 unique
+  ```
+
+  **guest 會員特性**：
+  - 無手機、無 PII、無法識別個別身份
+  - 取貨時識別：看 nickname + 訂單號碼（或 guest 升級成 full 後憑手機）
+  - 點數 / 儲值金仍可累（合併時搬移）
+  - GDPR 刪除：同 full member 邏輯
+
+  **RPC 新增**：
+  - `rpc_create_guest_member(tenant_id, channel_id, nickname)` → 回 member_id
+  - `rpc_merge_member(guest_id, real_id)` → 搬移所有關聯資料到 real、guest 標 `status='merged'`
+
+  **取貨識別**（更新自 §7.7）：
+  - Guest 取貨：靠 nickname + 訂單號
+  - Full member 取貨：手機 / LIFF QR
+  - 小幫手可在取貨當下升級 guest → full（填手機）
 
 ### 取貨
-- [ ] **Q9 取貨期限預設**：到貨後 X 天？3 天 / 7 天 / 14 天？
-- [ ] **Q10 逾期未取處理**：
-  - 報廢（直接扣掉）？
-  - 放回門市銷售（轉一般庫存）？
-  - 退款？（v1 沒付款所以不需退、但點數 / 儲值金呢？）
-- [ ] **Q11 部分取貨後剩餘**：顧客只取一半、剩的要續延期？還是原期限繼續？
+- [x] **Q9 取貨期限**：→ **依 SKU 儲存類型預設，可覆寫**。（2026-04-21）
+
+  **設計**：
+  - 商品新增 `storage_type` 屬性：`frozen`（冷凍）/ `refrigerated`（冷藏）/ `room_temp`（常溫）
+  - 全 tenant 共用預設值（可調）：
+    | storage_type | 預設取貨天數 |
+    |---|---|
+    | 冷凍 frozen | 7 天 |
+    | 冷藏 refrigerated | **2 天** |
+    | 常溫 room_temp | 7 天 |
+    | **美食列車 meal_train** | **0 天（當天取）** |
+  - 建活動時，系統自動依 SKU 的 storage_type 計算**最嚴格的取貨期限**（取 MIN）
+    - 例：活動含冷凍 + 冷藏商品 → 2 天（取最短）
+    - 例：活動含美食列車 → 當天 0 天（最嚴）
+  - **美食列車特殊規則**：
+    - 若活動含 `meal_train` 商品 → 到貨即當日結案
+    - 未取貨顧客在當日營業結束後自動 `expired`
+    - 推播通知時機需提早（例：到貨前 2 小時就先推播）
+  - 小幫手可在活動層級**手動覆寫**（`group_buy_campaigns.pickup_days` 欄位）
+
+  **v0.2 schema 變動（商品模組）**：
+  ```sql
+  ALTER TABLE products
+    ADD COLUMN storage_type TEXT
+      CHECK (storage_type IN ('frozen','refrigerated','room_temp','meal_train'))
+      DEFAULT 'room_temp';
+  ```
+
+  **v0.2 schema 變動（tenant_settings）**：
+  ```sql
+  -- tenant_settings.pickup_days_by_storage JSONB
+  -- DEFAULT '{"frozen": 7, "refrigerated": 2, "room_temp": 7, "meal_train": 0}'
+  ```
+
+  **v0.2 schema 變動（本模組）**：
+  ```sql
+  ALTER TABLE group_buy_campaigns
+    ADD COLUMN pickup_days INTEGER,  -- NULL = 自動依 SKU storage_type 計算最小值
+    ADD COLUMN pickup_deadline_at TIMESTAMPTZ;  -- 到貨日 + pickup_days 計算
+  ```
+
+  **與庫存 Q2 呼應**：`categories.expiry_grace_days`（效期寬限）是關於**商品本身過期**；本題 `storage_type + pickup_days` 是關於**顧客取貨時限**。兩者獨立但邏輯類似（依商品特性分層設定）。
+- [x] **Q10 逾期未取處理**：→ **依 storage_type 複合規則**。（2026-04-21）
+
+  | storage_type | 處理方式 | 說明 |
+  |---|---|---|
+  | `meal_train`（美食列車）| **報廢** | 當天取貨、過期必須扔掉（食安）|
+  | `refrigerated`（冷藏）| **報廢** | 短效、風險大 |
+  | `frozen`（冷凍）| **放回一般庫存** | 仍可冷凍保存銷售 |
+  | `room_temp`（常溫）| **放回一般庫存** | 保存期長 |
+
+  **流程**（排程 job 每日凌晨跑）：
+  - 掃 `customer_orders` where `pickup_deadline_at < NOW()` AND `status IN ('ready','partially_ready')`
+  - 逐筆處理：
+    1. 訂單 status → `expired`
+    2. 釋放 reserved：`rpc_release`
+    3. 依每個 item 的 SKU storage_type 決定：
+       - 報廢 → `rpc_outbound(movement_type='damage', reason='pickup_expired')`
+       - 放回庫存 → 什麼都不做（reserved 已釋放、on_hand 就回一般庫存了）
+    4. 產生 `order_expiry_events` 紀錄（含處理方式）
+    5. 通知店長 / 小幫手
+  - 顧客：透過通知模組發「您的訂單已逾期」告知（若有賺過點則照 points_ledger 反向扣回、v1 尚未付款故無退款）
+
+  **schema 新增**：
+  ```sql
+  CREATE TABLE order_expiry_events (
+    id BIGSERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    order_id BIGINT NOT NULL REFERENCES customer_orders(id),
+    order_item_id BIGINT,
+    action TEXT NOT NULL CHECK (action IN ('damaged','returned_to_stock','refunded')),
+    storage_type TEXT,
+    qty NUMERIC(18,3) NOT NULL,
+    movement_id BIGINT REFERENCES stock_movements(id),
+    operator_id UUID,    -- NULL = 系統自動
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+  ```
+- [x] **Q11 部分取貨後剩餘**：→ **原期限繼續（A）**。（2026-04-21）
+
+  **邏輯**：
+  - 訂單原本 pickup_deadline_at = X
+  - 顧客部分取貨後，剩餘 items 仍使用同一個 deadline X
+  - 不延長期限、顧客需在原期限內回來取完
+  - 到期未取 → 套 Q10 處理（依 storage_type）
+
+  **schema**：
+  - `customer_orders.status` 增加 `partially_picked_up` 狀態（部分已取、仍 open）
+  - `customer_order_items.picked_qty / remaining_qty` 追蹤
+  - 取貨時逐 item 記 `order_pickup_events`（已有規劃）
 
 ### 技術 / 整合
-- [ ] **Q12 LLM 解析 v1 還是 P1**：截圖 + Claude vision 要 v1 做還是 P1 做？（使用者之前答 v1 純人工 + P1 升級）
-- [ ] **Q13 campaign_cap 計算時機**：real-time 扣 cap（登打時立即減）還是結單時統計？
-- [ ] **Q14 訂單號碼格式**：`ORD-yyMMdd-流水` 還是其他？
+- [x] **Q12 LLM 解析階段策略**：→ **沿用採購 Q3：v1 純人工 / P1 Claude vision / P2 OCR**。（2026-04-21）
+
+  v1 實作重點：`customer_orders.source_raw_text`, `source_screenshots[]`, `source_parsed_json` 三欄位 NULL 即可（留給 P1 / P2 填）。
+  UI：登打介面設計成「順手人工登打」為主、不依賴截圖功能。
+
+- [x] **Q13 campaign_cap 計算時機**：→ **Real-time 即時扣**。（2026-04-21）
+
+  **實作**：
+  - 登打送出訂單 → Transaction 內：
+    1. `SELECT ... FOR UPDATE` 鎖 `campaign_items` / `campaign_channels` / `group_buy_campaigns` 相關列
+    2. 檢查三層 cap 剩餘（`qty_cap - qty_ordered >= requested_qty`）
+    3. 通過 → 建 `customer_order_items` + 更新 `qty_ordered` 計數 + `rpc_reserve`
+    4. 超過 → 依 Q2 流程（彈窗、候補 / 拒絕 / 關團）
+  - `version` 樂觀鎖配合
+  - 登打 UI 實時顯示「剩餘 XX 份」（每次送出後 refresh，或用 Supabase Realtime 推播）
+
+- [x] **Q14 訂單號碼格式**：→ **`ORD-yyMMdd-NNNN`**（例：`ORD-260421-0001`）。（2026-04-21）
+
+  - DB sequence `order_no_seq` 每日 reset（cron 或 trigger 處理）
+  - `customer_orders.order_no TEXT UNIQUE`
+  - RPC `rpc_next_order_no(tenant_id)` 產號
 
 ### 報表 / 分析
-- [ ] **Q15 逾期閾值**：多少 % 逾期要警示？
-- [ ] **Q16 庫存短缺處理**：到貨比訂單少 → 按下單先後、會員等級、隨機 分配？
+- [x] **Q15 逾期閾值警示**：→ **絕對數 ≥ 10 筆、通知門市店長**（非老闆）。（2026-04-21）
+
+  **邏輯**：
+  - 逾期處理 job（Q10）跑完後、每活動 × 每門市彙總
+  - 若某門市在該活動的逾期數 **≥ 10 筆** → 透過通知模組推播該店店長
+  - 推播訊息：「活動 #X 在您的門市有 Y 筆逾期未取（已依規則報廢 / 放回庫存）、請 review 原因」
+  - 老闆可在 dashboard 看全集團彙總、不另外推播
+
+  **why 店長而非老闆**：
+  - 店長最能直接處理該店問題（配送延誤、通知沒發到、顧客反應差）
+  - 老闆只看 dashboard 彙總即可
+  - 閾值絕對數（非比例）避免小團誤報（例：只 8 筆訂單全部逾期 = 100% 但實際不嚴重）
+- [x] **Q16 庫存短缺分配**：→ **FIFO 先下單先得（A）**。（2026-04-21）
+
+  **情境**：到貨 < 訂單總量時的分配機制。
+
+  **邏輯**（排程 job / 手動觸發）：
+  - 依 `customer_orders.created_at ASC` 排序所有該 campaign 的訂單
+  - 依序分配：每筆訂單若 requested_qty ≤ remaining_stock → 全額滿足
+  - 最後一筆可能部分滿足（剩餘不夠）→ `partially_fulfilled`
+  - 之後的訂單全部 `shortage_unfulfilled`
+  - 分配完成：
+    - 滿足的訂單 → status 照正常流程（ready → 推播取貨）
+    - 部分滿足 → 只滿足可給的份數、剩餘轉 `waitlist` 等補貨或退單
+    - 未滿足 → 推播通知顧客「抱歉、本次缺貨、下次優先」+ 記 `shortage_events`（供下次優先處理）
+
+  **schema 新增**：
+  ```sql
+  CREATE TABLE order_shortage_events (
+    id BIGSERIAL PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    campaign_id BIGINT NOT NULL,
+    order_id BIGINT NOT NULL REFERENCES customer_orders(id),
+    sku_id BIGINT NOT NULL,
+    requested_qty NUMERIC(18,3),
+    fulfilled_qty NUMERIC(18,3),
+    shortage_qty NUMERIC(18,3) GENERATED ALWAYS AS (requested_qty - fulfilled_qty) STORED,
+    reason TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+  ```
+
+  **考量**：
+  - 透明公平、顧客能理解「先到先得」
+  - 系統實作簡單（只需 ORDER BY created_at）
+  - 不會產生等級 / 隨機類的客訴
+  - 未來若要改（例如 VIP 優先）可擴充成 score-based（`score = f(tier, time)`），但 v1 純 FIFO
 
 ---
 
