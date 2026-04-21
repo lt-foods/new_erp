@@ -54,6 +54,7 @@ tags: [PRD, ERP, 通知, Notification, LINE, OA]
 - [x] ❌ 即時 dashboard（v1 只做每月報表，P1 再升級）
 - [x] ❌ EDM / 行銷推播 / A/B test
 - [x] ❌ P2P 客服對話（非通知範圍）
+- [x] ⏸ App Push（原生 APP）— **v1 不做、P2+ 規劃**（很後面才做；使用者 2026-04-21 補充：APP 推出時同時支援下單通道與推播通道，架構預留 `app_push` channel）
 
 ---
 

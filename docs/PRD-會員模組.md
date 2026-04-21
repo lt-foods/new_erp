@@ -46,7 +46,7 @@ tags: [PRD, ERP, 會員, Member, Points, Wallet, QRCode]
 ---
 
 ## 4. Non-Goals（v1 不做）
-- [ ] ❌ **原生 APP 開發（iOS / Android）** — 改採 LINE OA + LIFF 方案；LIFF 前端網頁另案開發，本模組提供 API
+- [ ] ⏸ **原生 APP 開發（iOS / Android）** — **v1 不做、P2+ 規劃**（2026-04-21 更新）。v1 採 LINE OA + LIFF；未來 APP 同時支援推播 + 顧客下單功能（與 LINE 社群下單並存）
 - [ ] ❌ **外部點數平台整合**（悠遊付、LINE Points）— P1
 - [ ] ❌ **多層級推薦 / 直銷** — 非 ERP 範疇
 - [ ] ❌ **複雜行銷自動化（EDM / 排程引擎）** — 僅提供名單 API，外部工具處理；**但取貨通知 / 基本交易推播由「通知模組」負責**（新增模組，見整合點）
