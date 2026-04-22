@@ -11,6 +11,9 @@ tags: [PRD, ERP, 採購, Purchase]
 
 > 零售連鎖 ERP，總倉 1 + 門市 100 + SKU 15,000。
 > 本文件為 **v0.1 checklist 版**。
+>
+> **v0.2 增補**：見 [[PRD-採購模組-v0.2-addendum]]（PR 內部審核 / 陸貨到貨追蹤 / 漂漂館 sub-brand / 1688 拼多多 import hook）。
+> **相關新模組**：[[PRD-供應商整合-v0.2]]（xiaolan Google Sheets sync + marketplace Apps Script）、[[PRD-應付帳款零用金-v0.2]]（GR → vendor_bill 流程）。
 
 ---
 

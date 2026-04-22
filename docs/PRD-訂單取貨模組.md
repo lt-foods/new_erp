@@ -14,6 +14,8 @@ tags: [PRD, ERP, 訂單, 取貨, Order, Pickup, LINE社群, LIFF, 加盟店]
 >
 > 零售連鎖 ERP，總倉 1 + 門市 100 + SKU 15,000、20 個 LINE 社群頻道。
 > 本文件為 **v0.1 checklist 版**。
+>
+> **v0.2 增補**：見 [[PRD-訂單取貨模組-v0.2-addendum]]（開團總表 matrix / 揀貨波次 / cutoff_date / 未到貨積壓 / 樂樂 CSV）。
 
 ---
 

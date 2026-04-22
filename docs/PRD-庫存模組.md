@@ -11,6 +11,8 @@ tags: [PRD, ERP, 庫存, Inventory]
 
 > 零售連鎖 ERP，總倉 1 + 門市 100 + SKU 15,000。
 > 本文件為 **v0.1 checklist 版**，勾選用於追蹤完成度；細節待後續 v0.2 展開。
+>
+> **v0.2 增補**：見 [[PRD-庫存模組-v0.2-addendum]]（transfer_type enum / 需求表 / 欠品 roll-over / 互助交流 / 88 折出清 / 店轉店月結算）。
 
 ---
 
