@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 
@@ -69,12 +70,12 @@ export default function ProductListPage() {
             {rows === null ? "載入中…" : `共 ${rows.length} 筆（最新 200）`}
           </p>
         </div>
-        <span
-          title="需先建立 rpc_upsert_product RPC（schema 規定寫入走 RPC）"
-          className="cursor-not-allowed rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-400 dark:border-zinc-700 dark:text-zinc-600"
+        <Link
+          href="/products/new"
+          className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
         >
-          新增商品（待 RPC）
-        </span>
+          新增商品
+        </Link>
       </header>
 
       <div>
@@ -119,7 +120,11 @@ export default function ProductListPage() {
             ) : (
               filtered.map((r) => (
                 <tr key={r.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
-                  <Td className="font-mono">{r.product_code}</Td>
+                  <Td className="font-mono">
+                    <Link href={`/products/edit?id=${r.id}`} className="hover:underline">
+                      {r.product_code}
+                    </Link>
+                  </Td>
                   <Td>
                     <div>{r.name}</div>
                     {r.short_name && <div className="text-xs text-zinc-500">{r.short_name}</div>}
