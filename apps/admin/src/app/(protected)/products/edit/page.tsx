@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { ProductForm, type ProductFormValues } from "@/components/ProductForm";
+import { ProductSkuSection } from "@/components/ProductSkuSection";
 
 type ProductRow = {
   id: number;
@@ -95,6 +96,7 @@ function EditProductBody() {
         </div>
       )}
       <ProductForm initial={initial} />
+      {initial.id !== null && <ProductSkuSection productId={initial.id} />}
     </div>
   );
 }
