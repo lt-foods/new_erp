@@ -1,0 +1,15 @@
+{
+  "name": "new-erp",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace apps/admin",
+    "build": "npm run build --workspace apps/admin",
+    "lint": "npm run lint --workspace apps/admin"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
