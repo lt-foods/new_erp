@@ -3,6 +3,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import { ProductImagesField } from "@/components/ProductImagesField";
 
 type Status = "draft" | "active" | "inactive" | "discontinued";
 
@@ -15,6 +16,7 @@ export type ProductFormValues = {
   category_id: number | null;
   description: string;
   status: Status;
+  images: string[];
 };
 
 const EMPTY: ProductFormValues = {
@@ -26,6 +28,7 @@ const EMPTY: ProductFormValues = {
   category_id: null,
   description: "",
   status: "draft",
+  images: [],
 };
 
 type LookupRow = { id: number; name: string; code: string };
@@ -67,7 +70,7 @@ export function ProductForm({ initial }: { initial?: ProductFormValues }) {
       p_category_id: values.category_id,
       p_description: values.description || null,
       p_status: values.status,
-      p_images: [],
+      p_images: values.images,
       p_reason: null,
     });
     setSaving(false);
@@ -157,6 +160,13 @@ export function ProductForm({ initial }: { initial?: ProductFormValues }) {
           value={values.description}
           onChange={(e) => set("description", e.target.value)}
           className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800"
+        />
+      </Field>
+
+      <Field label="圖片">
+        <ProductImagesField
+          value={values.images}
+          onChange={(next) => set("images", next)}
         />
       </Field>
 

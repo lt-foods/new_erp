@@ -14,6 +14,7 @@ type ProductRow = {
   category_id: number | null;
   description: string | null;
   status: ProductFormValues["status"];
+  images: string[] | null;
 };
 
 export default function EditProductPage() {
@@ -43,7 +44,7 @@ function EditProductBody() {
     (async () => {
       const { data, error: err } = await getSupabase()
         .from("products")
-        .select("id, product_code, name, short_name, brand_id, category_id, description, status")
+        .select("id, product_code, name, short_name, brand_id, category_id, description, status, images")
         .eq("id", Number(id))
         .maybeSingle<ProductRow>();
       if (err) {
@@ -63,6 +64,7 @@ function EditProductBody() {
         category_id: data.category_id,
         description: data.description ?? "",
         status: data.status,
+        images: Array.isArray(data.images) ? data.images : [],
       });
     })();
   }, [id]);
