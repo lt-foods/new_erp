@@ -6,6 +6,14 @@ import { useEffect, type ReactNode } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
+const NAV_ITEMS: { href: string; label: string; match: RegExp }[] = [
+  { href: "/products",  label: "商品",   match: /^\/products/  },
+  { href: "/members",   label: "會員",   match: /^\/members/   },
+  { href: "/campaigns", label: "開團",   match: /^\/campaigns/ },
+  { href: "/orders",    label: "訂單",   match: /^\/orders/    },
+  { href: "/suppliers", label: "供應商", match: /^\/suppliers/ },
+];
+
 export default function ProtectedLayout({ children }: { children: ReactNode }) {
   const { session, loading, user, signOut } = useAuth();
   const router = useRouter();
@@ -39,9 +47,22 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
           <Link href="/" className="font-semibold">
             new_erp
           </Link>
-          <Link href="/products" className="text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100">
-            商品
-          </Link>
+          {NAV_ITEMS.map((it) => {
+            const active = it.match.test(pathname || "");
+            return (
+              <Link
+                key={it.href}
+                href={it.href}
+                className={
+                  active
+                    ? "rounded-md bg-zinc-100 px-2 py-1 font-medium text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100"
+                    : "rounded-md px-2 py-1 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                }
+              >
+                {it.label}
+              </Link>
+            );
+          })}
         </nav>
         <div className="flex items-center gap-3 text-sm">
           <ThemeToggle />
