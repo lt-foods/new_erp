@@ -16,6 +16,19 @@ type ProductRow = {
   description: string | null;
   status: ProductFormValues["status"];
   images: string[] | null;
+  storage_type: ProductFormValues["storage_type"];
+  sale_mode: ProductFormValues["sale_mode"];
+  default_supplier_id: number | null;
+  count_for_start_sale: number | null;
+  limit_time: string | null;
+  stop_shipping: boolean | null;
+  is_for_shop: boolean | null;
+  customized_id: string | null;
+  customized_text: string | null;
+  storage_location: string | null;
+  user_note: string | null;
+  user_note_public: string | null;
+  vip_level_min: number | null;
 };
 
 export default function EditProductPage() {
@@ -28,6 +41,13 @@ export default function EditProductPage() {
 
 function Loading() {
   return <div className="p-6 text-sm text-zinc-500">載入中…</div>;
+}
+
+function toDatetimeLocal(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function EditProductBody() {
@@ -45,7 +65,12 @@ function EditProductBody() {
     (async () => {
       const { data, error: err } = await getSupabase()
         .from("products")
-        .select("id, product_code, name, short_name, brand_id, category_id, description, status, images")
+        .select(
+          "id, product_code, name, short_name, brand_id, category_id, description, status, images, " +
+            "storage_type, sale_mode, default_supplier_id, count_for_start_sale, limit_time, " +
+            "stop_shipping, is_for_shop, customized_id, customized_text, storage_location, " +
+            "user_note, user_note_public, vip_level_min"
+        )
         .eq("id", Number(id))
         .maybeSingle<ProductRow>();
       if (err) {
@@ -66,6 +91,19 @@ function EditProductBody() {
         description: data.description ?? "",
         status: data.status,
         images: Array.isArray(data.images) ? data.images : [],
+        storage_type: data.storage_type ?? null,
+        sale_mode: data.sale_mode ?? "preorder",
+        default_supplier_id: data.default_supplier_id,
+        count_for_start_sale: data.count_for_start_sale,
+        limit_time: data.limit_time ? toDatetimeLocal(data.limit_time) : "",
+        stop_shipping: data.stop_shipping ?? false,
+        is_for_shop: data.is_for_shop ?? true,
+        customized_id: data.customized_id ?? "",
+        customized_text: data.customized_text ?? "",
+        storage_location: data.storage_location ?? "",
+        user_note: data.user_note ?? "",
+        user_note_public: data.user_note_public ?? "",
+        vip_level_min: data.vip_level_min ?? 0,
       });
     })();
   }, [id]);
