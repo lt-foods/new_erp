@@ -4,7 +4,8 @@ module: Product
 status: draft-v0.1
 owner: www161616
 created: 2026-04-20
-tags: [PRD, ERP, 商品, Product, Pricing, Barcode]
+updated: 2026-04-23
+tags: [PRD, ERP, 商品, Product, Pricing, Barcode, 樂樂通路]
 ---
 
 # PRD — 商品模組（Product Module）
@@ -322,6 +323,32 @@ tags: [PRD, ERP, 商品, Product, Pricing, Barcode]
     1. Crawler 輸出 → `products / skus / barcodes` 的正規化 loader
     2. CSV 驗證 + upsert（已有 §6.10）
     3. POS / 收貨「快速建檔」UI（最小欄位、權限給主檔管理員或授權店員）
+
+### 外部通路上架（樂樂 / 未來其他通路）
+- [ ] **Q14 樂樂建品項 XLS 格式支援**（2026-04-23 開題）：樂樂通路批量上架商品的範本為 **24 欄 XLS**（實檔 `batch_file_20240412.xls`，Big5 編碼、xlrd 讀），結構如下：
+
+  | 樂樂欄位 | new_erp schema 對應 | 備註 |
+  |---|---|---|
+  | 自訂編號 | `products.code` | 必填、unique |
+  | 商品名稱 | `products.name` | 必填 |
+  | 主要款式 / 款式一 / 款式二 | SKU variants | 樂樂三層款式 → new_erp SKU 變體（對應規則待釐清）|
+  | 售價 / VIP價 | `current_price`（retail / member_tier） | 走 `rpc_current_price` 計算 |
+  | 成本 | `sku_suppliers.is_preferred` 的 cost | |
+  | 庫存 | `skus.on_hand_qty` | snapshot 時點 |
+  | 允許VIP購 / 增加個人份 / 僅供現貨 / 訊息類 / 可用人次 | **無對應 schema** | 樂樂平台專屬旗標，建議新增 `products.lele_meta JSONB` 避免污染主檔 |
+  | 商品分類 | `products.category_id` | 需做 ID → 樂樂分類名稱 lookup 表 |
+  | 收單時間 | `campaigns.close_at` | 若該商品在樂樂綁某 campaign 上架 |
+  | 自訂訂類 / 攤位位置 | **無對應** | 樂樂 UI 欄位，放 `lele_meta` |
+  | 預設供貨商 | `sku_suppliers.is_preferred` 的 name | |
+  | 商品描述 / 商品備註 / 退款備註 | 需新增 `products.description` / `notes` / `refund_notes` | 或統一放 `lele_meta` |
+
+  **待決議 sub-questions**：
+  1. **new_erp 要不要生出這個 XLS？**（一鍵匯出 v.s. 使用者自己維護兩邊）
+  2. **誰經營樂樂通路？**（總部統一 / 各加盟店自有樂樂帳號 / 混合）— 依 [[decisions/2026-04-23-系統立場-混合型]] 可能是「加盟店自主」
+  3. **樂樂三層款式 vs new_erp SKU**：是否需要正式 mapping 表，還是 ad-hoc 規則
+  4. **`lele_meta JSONB`**：是否該加進 v0.2 schema（預留通路旗標欄位）
+
+  **artifact 位置**：使用者 Downloads 內 `batch_file_20240412.xls`（24 欄範本 + 1 筆範例）；對照 [[PRD-訂單取貨模組-v0.2-addendum]] §8 Q1（樂樂訂單 CSV 23 欄）為 import 方向、本 Q14 為 export 方向。
 
 ---
 
