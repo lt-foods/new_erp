@@ -4,7 +4,8 @@ module: Member
 status: draft-v0.1
 owner: www161616
 created: 2026-04-20
-tags: [PRD, ERP, 會員, Member, Points, Wallet, QRCode]
+updated: 2026-04-23
+tags: [PRD, ERP, 會員, Member, Points, Wallet, QRCode, c混合型]
 ---
 
 # PRD — 會員模組（Member Module）
@@ -12,6 +13,7 @@ tags: [PRD, ERP, 會員, Member, Points, Wallet, QRCode]
 > 零售連鎖 ERP，總倉 1 + 門市 100 + SKU 15,000。
 > 本模組負責「會員是誰、有什麼等級、累積多少點 / 儲值金、怎麼被識別」。
 > v0.1 checklist 版。
+> **決策基準**：[[decisions/2026-04-23-系統立場-混合型]] C 混合型 — 本模組 §0 加盟店模式 review（per-store 會員池 / `member_line_bindings` 多對多）即此立場。
 
 ---
 
