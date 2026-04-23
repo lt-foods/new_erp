@@ -64,17 +64,39 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
             );
           })}
         </nav>
-        <div className="flex items-center gap-3 text-sm">
-          <ThemeToggle />
-          <span className="text-zinc-500">{user?.email}</span>
-          <button
-            onClick={onLogout}
-            className="rounded-md border border-zinc-300 px-3 py-1 text-zinc-700 transition hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-          >
-            登出
-          </button>
+
+        <div className="border-t border-zinc-200 p-3 text-xs dark:border-zinc-800">
+          <div className="mb-2 truncate text-zinc-500" title={user?.email ?? ""}>
+            {user?.email}
+          </div>
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <button
+              onClick={onLogout}
+              className="flex-1 rounded-md border border-zinc-300 px-2 py-1 text-zinc-700 transition hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+            >
+              登出
+            </button>
+          </div>
         </div>
-      </header>
+      </aside>
+
+      {/* Mobile bar */}
+      <div className="md:hidden">
+        <header className="flex items-center justify-between border-b border-zinc-200 bg-white px-4 py-2 dark:border-zinc-800 dark:bg-zinc-900">
+          <Link href="/" className="font-semibold">new_erp</Link>
+          <div className="flex items-center gap-2 text-sm">
+            <ThemeToggle />
+            <button
+              onClick={onLogout}
+              className="rounded-md border border-zinc-300 px-2 py-1 text-zinc-700 dark:border-zinc-700 dark:text-zinc-300"
+            >
+              登出
+            </button>
+          </div>
+        </header>
+      </div>
+
       <main className="flex flex-1 flex-col">{children}</main>
     </div>
   );
