@@ -99,10 +99,15 @@ ALTER TABLE expense_categories
 COMMENT ON COLUMN expense_categories.store_id             IS '(AP Q2 2026-04-23) NULL = 總部/共用；有值 = 該店專屬預算';
 COMMENT ON COLUMN expense_categories.monthly_budget_cents IS '(AP Q2 2026-04-23) NULL = 不啟用預算；有值 = 警示但不擋';
 
--- 原本 UNIQUE(tenant_id, code) 在 per-store 下需放寬為 (tenant_id, store_id, code)
+-- 原本 UNIQUE(tenant_id, code) 在 per-store 下需放寬：
+--  (a) 總部/共用（store_id IS NULL）：同 tenant + code 唯一
+--  (b) 店專屬（store_id IS NOT NULL）：同 tenant + store + code 唯一
+-- 用兩個 partial unique index 比 COALESCE(store_id, 0) workaround 乾淨（無特殊值 0 假設）
 ALTER TABLE expense_categories DROP CONSTRAINT IF EXISTS expense_categories_tenant_id_code_key;
-CREATE UNIQUE INDEX IF NOT EXISTS expense_categories_scope_code_uq
-  ON expense_categories (tenant_id, COALESCE(store_id, 0), code);
+CREATE UNIQUE INDEX IF NOT EXISTS expense_categories_tenant_code_hq_uq
+  ON expense_categories (tenant_id, code) WHERE store_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS expense_categories_tenant_store_code_uq
+  ON expense_categories (tenant_id, store_id, code) WHERE store_id IS NOT NULL;
 
 -- ------------------------------------------------------------
 -- 6. AP Q5: supplier 從 trigger auto-create 改為 on-demand helper
@@ -178,15 +183,17 @@ COMMENT ON COLUMN products.lele_meta IS
 -- ------------------------------------------------------------
 ALTER TABLE lele_order_imports ENABLE ROW LEVEL SECURITY;
 
+-- 對齊既有 convention（auth.jwt claim + custom_access_token_hook 注入）
+-- 不用 current_setting('app.tenant_id')、那需要 SET LOCAL、PostgREST 不會自動設
 CREATE POLICY p_lele_imports_tenant_read
   ON lele_order_imports
   FOR SELECT
-  USING (tenant_id = current_setting('app.tenant_id', TRUE)::UUID);
+  USING (tenant_id = (auth.jwt() ->> 'tenant_id')::UUID);
 
 CREATE POLICY p_lele_imports_tenant_write
   ON lele_order_imports
   FOR INSERT
-  WITH CHECK (tenant_id = current_setting('app.tenant_id', TRUE)::UUID);
+  WITH CHECK (tenant_id = (auth.jwt() ->> 'tenant_id')::UUID);
 
 -- ============================================================
 -- 變更歷史
