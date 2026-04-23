@@ -42,11 +42,13 @@ export default function MembersListPage() {
   const [query, setQuery] = useState("");
   const [tierId, setTierId] = useState<string>("");
   const [status, setStatus] = useState<string>("");
+  const [storeId, setStoreId] = useState<string>("");
   const [sortBy, setSortBy] = useState<SortKey>("updated_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [page, setPage] = useState(1);
 
   const [tiers, setTiers] = useState<Tier[]>([]);
+  const [stores, setStores] = useState<Store[]>([]);
   const [balances, setBalances] = useState<Map<number, { points: number; wallet: number }>>(new Map());
   const [reloadTick, setReloadTick] = useState(0);
   const [modal, setModal] = useState<{ mode: "new" } | { mode: "edit"; values: MemberFormValues } | null>(null);
@@ -61,15 +63,16 @@ export default function MembersListPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [tierId, status, sortBy, sortDir]);
+  }, [tierId, status, storeId, sortBy, sortDir]);
 
   useEffect(() => {
     (async () => {
-      const { data } = await getSupabase()
-        .from("member_tiers")
-        .select("id, code, name")
-        .order("sort_order");
-      if (data) setTiers(data as Tier[]);
+      const [t, s] = await Promise.all([
+        getSupabase().from("member_tiers").select("id, code, name").order("sort_order"),
+        getSupabase().from("stores").select("id, code, name").eq("is_active", true).order("name"),
+      ]);
+      if (t.data) setTiers(t.data as Tier[]);
+      if (s.data) setStores(s.data as Store[]);
     })();
   }, []);
 
@@ -90,6 +93,7 @@ export default function MembersListPage() {
         }
         if (tierId) q = q.eq("tier_id", Number(tierId));
         if (status) q = q.eq("status", status);
+        if (storeId) q = q.eq("home_store_id", Number(storeId));
 
         const { data, count, error } = await q;
         if (cancelled) return;
@@ -130,7 +134,7 @@ export default function MembersListPage() {
     return () => {
       cancelled = true;
     };
-  }, [query, tierId, status, sortBy, sortDir, page, reloadTick]);
+  }, [query, tierId, status, storeId, sortBy, sortDir, page, reloadTick]);
 
   const tierMap = useMemo(() => new Map(tiers.map((t) => [t.id, t])), [tiers]);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -162,7 +166,7 @@ export default function MembersListPage() {
         </button>
       </header>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <input
           type="search"
           placeholder="搜尋 會員編號 / 姓名 / 手機"
@@ -191,6 +195,18 @@ export default function MembersListPage() {
           <option value="active">活躍</option>
           <option value="inactive">停用</option>
           <option value="blocked">封鎖</option>
+        </select>
+        <select
+          value={storeId}
+          onChange={(e) => setStoreId(e.target.value)}
+          className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+        >
+          <option value="">全部門市</option>
+          {stores.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name} ({s.code})
+            </option>
+          ))}
         </select>
       </div>
 
