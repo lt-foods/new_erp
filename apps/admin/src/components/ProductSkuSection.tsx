@@ -91,8 +91,9 @@ export function ProductSkuSection({ productId }: { productId: number }) {
     refresh();
   }, [refresh]);
 
-  function startNew() {
-    setDraft({ ...EMPTY_DRAFT });
+  async function startNew() {
+    const { data } = await getSupabase().rpc("rpc_next_sku_code", { p_product_id: productId });
+    setDraft({ ...EMPTY_DRAFT, sku_code: typeof data === "string" ? data : "" });
   }
 
   function startEdit(sku: Sku) {
@@ -156,9 +157,9 @@ export function ProductSkuSection({ productId }: { productId: number }) {
     <section className="space-y-3 rounded-lg border border-zinc-200 p-5 dark:border-zinc-800">
       <header className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">SKU 變體</h2>
+          <h2 className="text-lg font-semibold">規格 / 品項</h2>
           <p className="text-xs text-zinc-500">
-            每個 SKU 是獨立可賣 / 計庫存單位。零售價版本化、成本從採購入庫後自動算（avg_cost）。
+            一個商品可以有多個規格（口味 / 容量 / 入數），各自獨立計庫存。零售價版本化、成本從採購入庫後自動算。
           </p>
         </div>
         {!draft && (
@@ -167,7 +168,7 @@ export function ProductSkuSection({ productId }: { productId: number }) {
             onClick={startNew}
             className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
-            + 新增 SKU
+            + 新增規格
           </button>
         )}
       </header>
@@ -182,11 +183,9 @@ export function ProductSkuSection({ productId }: { productId: number }) {
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
-              <Th>SKU 編號</Th>
-              <Th>變體名</Th>
+              <Th>規格編號</Th>
+              <Th>規格說明</Th>
               <Th>單位</Th>
-              <Th className="text-right">重量 (g)</Th>
-              <Th className="text-right">稅率</Th>
               <Th>狀態</Th>
               <Th className="text-right">零售價</Th>
               <Th className="text-right">動作</Th>
@@ -195,7 +194,7 @@ export function ProductSkuSection({ productId }: { productId: number }) {
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {skus === null ? (
               <tr>
-                <td colSpan={8} className="p-3">
+                <td colSpan={6} className="p-3">
                   <div className="h-4 animate-pulse rounded bg-zinc-100 dark:bg-zinc-800" />
                 </td>
               </tr>
@@ -216,8 +215,6 @@ export function ProductSkuSection({ productId }: { productId: number }) {
                       <Td className="font-mono">{s.sku_code}</Td>
                       <Td>{s.variant_name ?? "—"}</Td>
                       <Td>{s.base_unit}</Td>
-                      <Td className="text-right">{s.weight_g ?? "—"}</Td>
-                      <Td className="text-right">{s.tax_rate}</Td>
                       <Td>
                         <StatusBadge status={s.status} />
                       </Td>
@@ -247,8 +244,8 @@ export function ProductSkuSection({ productId }: { productId: number }) {
                 )}
                 {skus.length === 0 && !draft && (
                   <tr>
-                    <td colSpan={8} className="p-4 text-center text-sm text-zinc-500">
-                      還沒有 SKU。按「新增 SKU」開始。
+                    <td colSpan={6} className="p-4 text-center text-sm text-zinc-500">
+                      還沒有規格。按「新增規格」開始。
                     </td>
                   </tr>
                 )}
@@ -284,7 +281,7 @@ function DraftRow({
         <input
           value={draft.sku_code}
           onChange={(e) => set("sku_code", e.target.value)}
-          placeholder="SKU 編號"
+          placeholder="自動產生（可改）"
           className={inputClass}
         />
       </Td>
@@ -292,7 +289,7 @@ function DraftRow({
         <input
           value={draft.variant_name}
           onChange={(e) => set("variant_name", e.target.value)}
-          placeholder="例：100 入"
+          placeholder="例：100 入 / 鮮肉口味"
           className={inputClass}
         />
       </Td>
@@ -301,23 +298,6 @@ function DraftRow({
           value={draft.base_unit}
           onChange={(e) => set("base_unit", e.target.value)}
           className={`${inputClass} w-14`}
-        />
-      </Td>
-      <Td>
-        <input
-          type="number"
-          value={draft.weight_g}
-          onChange={(e) => set("weight_g", e.target.value)}
-          className={`${inputClass} w-20 text-right`}
-        />
-      </Td>
-      <Td>
-        <input
-          type="number"
-          step="0.0001"
-          value={draft.tax_rate}
-          onChange={(e) => set("tax_rate", e.target.value)}
-          className={`${inputClass} w-20 text-right`}
         />
       </Td>
       <Td>
