@@ -185,12 +185,22 @@ export default function CampaignsListPage() {
                 <Td className="text-right font-mono">{itemCounts.get(r.id) ?? 0}</Td>
                 <Td className="text-right text-xs text-zinc-500">{new Date(r.updated_at).toLocaleString("zh-TW")}</Td>
                 <Td>
-                  <button
-                    onClick={() => openEdit(r.id)}
-                    className="text-xs text-blue-600 hover:underline dark:text-blue-400"
-                  >
-                    編輯
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => openEdit(r.id)}
+                      className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                    >
+                      編輯
+                    </button>
+                    {r.status === "open" && (
+                      <a
+                        href={`/campaigns/order-entry?id=${r.id}`}
+                        className="text-xs text-green-600 hover:underline dark:text-green-400"
+                      >
+                        key 單
+                      </a>
+                    )}
+                  </div>
                 </Td>
               </tr>
             ))}
