@@ -5,7 +5,7 @@
 -- ============================================================================
 
 -- ── 1. member_line_bindings：會員 ↔ LINE 綁定 ──────────────────────────────
-CREATE TABLE member_line_bindings (
+CREATE TABLE IF NOT EXISTS member_line_bindings (
   id              BIGSERIAL PRIMARY KEY,
   tenant_id       UUID    NOT NULL,
   store_id        BIGINT  NOT NULL REFERENCES stores(id),
@@ -22,8 +22,8 @@ CREATE TABLE member_line_bindings (
   UNIQUE (tenant_id, store_id, member_id)
 );
 
-CREATE INDEX idx_mlb_line_user ON member_line_bindings (tenant_id, line_user_id);
-CREATE INDEX idx_mlb_member    ON member_line_bindings (tenant_id, member_id);
+CREATE INDEX IF NOT EXISTS idx_mlb_line_user ON member_line_bindings (tenant_id, line_user_id);
+CREATE INDEX IF NOT EXISTS idx_mlb_member    ON member_line_bindings (tenant_id, member_id);
 
 COMMENT ON TABLE  member_line_bindings IS 'LINE Login 顧客與會員綁定（per-store）';
 COMMENT ON COLUMN member_line_bindings.line_user_id IS 'LINE id_token 的 sub 欄位';
@@ -200,6 +200,7 @@ GRANT EXECUTE ON FUNCTION rpc_liff_unbind() TO authenticated;
 ALTER TABLE member_line_bindings ENABLE ROW LEVEL SECURITY;
 
 -- 顧客只能讀自己的 binding
+DROP POLICY IF EXISTS mlb_self_read ON member_line_bindings;
 CREATE POLICY mlb_self_read ON member_line_bindings
   FOR SELECT USING (
     tenant_id = (auth.jwt() ->> 'tenant_id')::UUID
@@ -207,6 +208,7 @@ CREATE POLICY mlb_self_read ON member_line_bindings
   );
 
 -- HQ 全權
+DROP POLICY IF EXISTS mlb_hq_all ON member_line_bindings;
 CREATE POLICY mlb_hq_all ON member_line_bindings
   FOR ALL USING (
     tenant_id = (auth.jwt() ->> 'tenant_id')::UUID
@@ -214,6 +216,7 @@ CREATE POLICY mlb_hq_all ON member_line_bindings
   );
 
 -- 店員讀該店
+DROP POLICY IF EXISTS mlb_store_read ON member_line_bindings;
 CREATE POLICY mlb_store_read ON member_line_bindings
   FOR SELECT USING (
     tenant_id = (auth.jwt() ->> 'tenant_id')::UUID
