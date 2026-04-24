@@ -41,10 +41,11 @@ export default function RegisterPage() {
   }, []);
 
   async function onCheckPhone() {
+    // 空白時靜默 skip（不顯錯）—— 使用者可能只是 tab 過去
+    if (!phone.trim()) return;
     setError(null);
     const s = getSession();
     if (!s) return setError("session 失效");
-    if (!phone.trim()) return setError("請輸入手機");
 
     const sb = getSupabase(s.token);
     const { data, error: e } = await sb.rpc("rpc_liff_lookup_by_phone", { p_phone: phone.trim() });
