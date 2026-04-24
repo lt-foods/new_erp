@@ -109,10 +109,10 @@ function Body() {
           </h1>
         </div>
         <Link
-          href={`/members/edit?id=${member.id}`}
+          href="/members"
           className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
         >
-          編輯
+          回列表編輯
         </Link>
       </div>
 
@@ -123,7 +123,7 @@ function Body() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <Card label="手機"><span className="font-mono">{member.phone ?? "—"}</span></Card>
+        <Card label="手機"><span className="font-mono">{member.phone && !member.phone.startsWith("line:") ? member.phone : "—"}</span></Card>
         <Card label="Email">{member.email ?? "—"}</Card>
         <Card label="性別">{member.gender === "M" ? "男" : member.gender === "F" ? "女" : member.gender === "O" ? "其他" : "—"}</Card>
         <Card label="生日">{member.birthday ?? "—"}</Card>

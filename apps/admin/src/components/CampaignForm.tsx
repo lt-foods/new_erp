@@ -89,7 +89,7 @@ export function CampaignForm({
       if (err) throw err;
       const newId = Number(data);
       if (onSaved) onSaved(newId);
-      else router.replace(`/campaigns/edit?id=${newId}&saved=1`);
+      else router.replace(`/campaigns`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

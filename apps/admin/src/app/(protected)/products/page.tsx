@@ -1,8 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { Modal } from "@/components/Modal";
+import { ProductForm, type ProductFormValues } from "@/components/ProductForm";
+import { ProductSkuSection } from "@/components/ProductSkuSection";
 
 type Status = "draft" | "active" | "inactive" | "discontinued";
 type SortKey = "updated_at" | "product_code" | "name" | "status";
@@ -51,6 +53,75 @@ export default function ProductListPage() {
   // lookups
   const [brands, setBrands] = useState<LookupRow[]>([]);
   const [categories, setCategories] = useState<LookupRow[]>([]);
+
+  // modal
+  const [modal, setModal] = useState<
+    | { mode: "new" }
+    | { mode: "edit"; values: ProductFormValues }
+    | null
+  >(null);
+  const [reloadTick, setReloadTick] = useState(0);
+
+  async function openEdit(id: number) {
+    const { data, error: err } = await getSupabase()
+      .from("products")
+      .select(
+        "id, product_code, name, short_name, brand_id, category_id, description, status, images, " +
+          "storage_type, sale_mode, default_supplier_id, count_for_start_sale, limit_time, " +
+          "stop_shipping, is_for_shop, customized_id, customized_text, storage_location, " +
+          "user_note, user_note_public, vip_level_min"
+      )
+      .eq("id", id)
+      .maybeSingle();
+    if (err || !data) {
+      setError(err?.message ?? "找不到此商品");
+      return;
+    }
+    const d = data as {
+      id: number; product_code: string; name: string; short_name: string | null;
+      brand_id: number | null; category_id: number | null; description: string | null;
+      status: ProductFormValues["status"]; images: string[] | null;
+      storage_type: ProductFormValues["storage_type"]; sale_mode: ProductFormValues["sale_mode"];
+      default_supplier_id: number | null; count_for_start_sale: number | null;
+      limit_time: string | null; stop_shipping: boolean | null; is_for_shop: boolean | null;
+      customized_id: string | null; customized_text: string | null;
+      storage_location: string | null; user_note: string | null;
+      user_note_public: string | null; vip_level_min: number | null;
+    };
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const toDtLocal = (iso: string) => {
+      const dt = new Date(iso);
+      if (Number.isNaN(dt.getTime())) return "";
+      return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+    };
+    setModal({
+      mode: "edit",
+      values: {
+        id: d.id,
+        product_code: d.product_code,
+        name: d.name,
+        short_name: d.short_name ?? "",
+        brand_id: d.brand_id,
+        category_id: d.category_id,
+        description: d.description ?? "",
+        status: d.status,
+        images: Array.isArray(d.images) ? d.images : [],
+        storage_type: d.storage_type ?? null,
+        sale_mode: d.sale_mode ?? "preorder",
+        default_supplier_id: d.default_supplier_id,
+        count_for_start_sale: d.count_for_start_sale,
+        limit_time: d.limit_time ? toDtLocal(d.limit_time) : "",
+        stop_shipping: d.stop_shipping ?? false,
+        is_for_shop: d.is_for_shop ?? true,
+        customized_id: d.customized_id ?? "",
+        customized_text: d.customized_text ?? "",
+        storage_location: d.storage_location ?? "",
+        user_note: d.user_note ?? "",
+        user_note_public: d.user_note_public ?? "",
+        vip_level_min: d.vip_level_min ?? 0,
+      },
+    });
+  }
 
   // debounce search
   useEffect(() => {
@@ -121,7 +192,7 @@ export default function ProductListPage() {
     return () => {
       cancelled = true;
     };
-  }, [query, categoryId, brandId, status, sortBy, sortDir, page]);
+  }, [query, categoryId, brandId, status, sortBy, sortDir, page, reloadTick]);
 
   const brandMap = useMemo(() => new Map(brands.map((b) => [b.id, b])), [brands]);
   const categoryMap = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
@@ -152,12 +223,12 @@ export default function ProductListPage() {
                 : `共 ${total} 筆（顯示 ${fromIdx}-${toIdx}）`}
           </p>
         </div>
-        <Link
-          href="/products/new"
+        <button
+          onClick={() => setModal({ mode: "new" })}
           className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
         >
           新增商品
-        </Link>
+        </button>
       </header>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -228,6 +299,7 @@ export default function ProductListPage() {
                 onToggle={toggleSort}
                 align="right"
               />
+              <Th>{""}</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
@@ -235,7 +307,7 @@ export default function ProductListPage() {
               <SkeletonRows />
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={5} className="p-6 text-center text-sm text-zinc-500">
+                <td colSpan={6} className="p-6 text-center text-sm text-zinc-500">
                   {total === 0 && !query && !categoryId && !brandId && !status
                     ? "還沒有商品，按「新增商品」開始建立。"
                     : "沒有符合條件的商品。"}
@@ -245,9 +317,9 @@ export default function ProductListPage() {
               rows.map((r) => (
                 <tr key={r.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
                   <Td className="font-mono">
-                    <Link href={`/products/edit?id=${r.id}`} className="hover:underline">
+                    <button onClick={() => openEdit(r.id)} className="hover:underline">
                       {r.product_code}
-                    </Link>
+                    </button>
                   </Td>
                   <Td>
                     <div>{r.name}</div>
@@ -263,6 +335,14 @@ export default function ProductListPage() {
                   <Td className="text-right text-zinc-500">
                     {new Date(r.updated_at).toLocaleString("zh-TW")}
                   </Td>
+                  <Td>
+                    <button
+                      onClick={() => openEdit(r.id)}
+                      className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                    >
+                      編輯
+                    </button>
+                  </Td>
                 </tr>
               ))
             )}
@@ -272,40 +352,59 @@ export default function ProductListPage() {
 
       {totalPages > 1 && (
         <div className="flex items-center justify-end gap-2 text-sm">
-          <button
-            onClick={() => setPage(1)}
-            disabled={page === 1}
-            className="rounded-md border border-zinc-300 px-2 py-1 disabled:opacity-40 dark:border-zinc-700"
-          >
-            « 第一頁
-          </button>
-          <button
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={page === 1}
-            className="rounded-md border border-zinc-300 px-2 py-1 disabled:opacity-40 dark:border-zinc-700"
-          >
-            ‹ 上頁
-          </button>
+          <PagerBtn onClick={() => setPage(1)} disabled={page === 1}>« 第一頁</PagerBtn>
+          <PagerBtn onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}>‹ 上頁</PagerBtn>
           <span className="px-2 text-zinc-500">
             {page} / {totalPages}
           </span>
-          <button
-            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            disabled={page === totalPages}
-            className="rounded-md border border-zinc-300 px-2 py-1 disabled:opacity-40 dark:border-zinc-700"
-          >
-            下頁 ›
-          </button>
-          <button
-            onClick={() => setPage(totalPages)}
-            disabled={page === totalPages}
-            className="rounded-md border border-zinc-300 px-2 py-1 disabled:opacity-40 dark:border-zinc-700"
-          >
-            最末頁 »
-          </button>
+          <PagerBtn onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}>下頁 ›</PagerBtn>
+          <PagerBtn onClick={() => setPage(totalPages)} disabled={page === totalPages}>最末頁 »</PagerBtn>
         </div>
       )}
+
+      <Modal
+        open={!!modal}
+        onClose={() => setModal(null)}
+        title={modal?.mode === "edit" ? `編輯商品 ${modal.values.product_code}` : "新增商品"}
+        maxWidth="max-w-4xl"
+      >
+        {modal?.mode === "new" && (
+          <ProductForm
+            onSaved={async (id) => {
+              setReloadTick((t) => t + 1);
+              await openEdit(id);
+            }}
+            onCancel={() => setModal(null)}
+          />
+        )}
+        {modal?.mode === "edit" && (
+          <div className="space-y-6">
+            <ProductForm
+              initial={modal.values}
+              onSaved={() => { setModal(null); setReloadTick((t) => t + 1); }}
+              onCancel={() => setModal(null)}
+            />
+            {modal.values.id !== null && (
+              <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">
+                <ProductSkuSection productId={modal.values.id} />
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
+  );
+}
+
+function PagerBtn({ onClick, disabled, children }: { onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="rounded-md border border-zinc-300 px-2 py-1 hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800 dark:disabled:hover:bg-transparent"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -367,7 +466,7 @@ function SkeletonRows() {
     <>
       {Array.from({ length: 5 }).map((_, i) => (
         <tr key={i}>
-          <td colSpan={5} className="p-3">
+          <td colSpan={6} className="p-3">
             <div className="h-4 animate-pulse rounded bg-zinc-100 dark:bg-zinc-800" />
           </td>
         </tr>

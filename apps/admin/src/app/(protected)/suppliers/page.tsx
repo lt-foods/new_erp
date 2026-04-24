@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { Modal } from "@/components/Modal";
 
 type Supplier = {
   id: number;
@@ -209,8 +210,8 @@ function SupplierForm({
         <F label="備註" className="sm:col-span-4"><textarea value={v.notes ?? ""} onChange={(e) => up("notes", e.target.value || null)} className={`${inputCls} min-h-16`} /></F>
       </div>
       <div className="flex items-center gap-2">
-        <button type="submit" className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm text-white dark:bg-zinc-50 dark:text-zinc-900">儲存</button>
-        <button type="button" onClick={onCancel} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">取消</button>
+        <button type="submit" className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm text-white transition-colors hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200">儲存</button>
+        <button type="button" onClick={onCancel} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800">取消</button>
       </div>
     </form>
   );

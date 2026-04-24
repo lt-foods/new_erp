@@ -304,7 +304,9 @@ export default function MembersListPage() {
                             .select("id, member_no, phone, name, gender, birthday, email, tier_id, home_store_id, status, notes")
                             .eq("id", r.id).maybeSingle();
                           if (data) setModal({ mode: "edit", values: {
-                            id: data.id, member_no: data.member_no, phone: data.phone ?? "",
+                            id: data.id, member_no: data.member_no,
+                            // LIFF auto-register 的 placeholder「line:<uid>」不要灌進編輯表單
+                            phone: data.phone && !data.phone.startsWith("line:") ? data.phone : "",
                             name: data.name ?? "", gender: data.gender, birthday: data.birthday,
                             email: data.email, tier_id: data.tier_id, home_store_id: data.home_store_id,
                             status: data.status, notes: data.notes,
@@ -406,7 +408,7 @@ function PagerBtn({ onClick, disabled, children }: { onClick: () => void; disabl
     <button
       onClick={onClick}
       disabled={disabled}
-      className="rounded-md border border-zinc-300 px-2 py-1 disabled:opacity-40 dark:border-zinc-700"
+      className="rounded-md border border-zinc-300 px-2 py-1 transition-colors hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800"
     >
       {children}
     </button>

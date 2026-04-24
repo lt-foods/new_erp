@@ -203,8 +203,8 @@ export function CampaignItemsTable({ campaignId }: { campaignId: number }) {
               <input type="number" step="0.001" value={adding.cap} onChange={(e) => setAdding({ ...adding, cap: e.target.value })}
                 className="w-28 rounded-md border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800" />
             </label>
-            <button type="button" onClick={addItem} className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white dark:bg-zinc-50 dark:text-zinc-900">加入</button>
-            <button type="button" onClick={() => setAdding(null)} className="rounded-md border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700">取消</button>
+            <button type="button" onClick={addItem} className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200">加入</button>
+            <button type="button" onClick={() => setAdding(null)} className="rounded-md border border-zinc-300 px-3 py-2 text-sm transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800">取消</button>
           </div>
         )}
       </div>

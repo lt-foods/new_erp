@@ -212,7 +212,7 @@ function Td({ children, className = "" }: { children: React.ReactNode; className
   return <td className={`px-4 py-3 ${className}`}>{children}</td>;
 }
 function PagerBtn({ onClick, disabled, children }: { onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
-  return <button onClick={onClick} disabled={disabled} className="rounded-md border border-zinc-300 px-2 py-1 disabled:opacity-40 dark:border-zinc-700">{children}</button>;
+  return <button onClick={onClick} disabled={disabled} className="rounded-md border border-zinc-300 px-2 py-1 transition-colors hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800">{children}</button>;
 }
 function StatusBadge({ s }: { s: OrderStatus }) {
   const st: Record<OrderStatus, string> = {

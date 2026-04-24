@@ -74,7 +74,15 @@ const SALE_MODE_LABEL: Record<SaleMode, string> = {
 
 type LookupRow = { id: number; name: string; code: string };
 
-export function ProductForm({ initial }: { initial?: ProductFormValues }) {
+export function ProductForm({
+  initial,
+  onSaved,
+  onCancel,
+}: {
+  initial?: ProductFormValues;
+  onSaved?: (id: number) => void;
+  onCancel?: () => void;
+}) {
   const router = useRouter();
   const [values, setValues] = useState<ProductFormValues>(initial ?? EMPTY);
   const [brands, setBrands] = useState<LookupRow[]>([]);
@@ -142,7 +150,9 @@ export function ProductForm({ initial }: { initial?: ProductFormValues }) {
       setError(err.message);
       return;
     }
-    router.replace(`/products/edit?id=${data}&saved=1`);
+    const newId = Number(data);
+    if (onSaved) onSaved(newId);
+    else router.replace(`/products`);
   }
 
   const inputClass =
@@ -414,7 +424,7 @@ export function ProductForm({ initial }: { initial?: ProductFormValues }) {
         </button>
         <button
           type="button"
-          onClick={() => router.push("/products")}
+          onClick={() => (onCancel ? onCancel() : router.push("/products"))}
           className="rounded-md border border-zinc-300 px-4 py-2 text-sm text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
         >
           取消

@@ -1,10 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { CampaignForm, type CampaignFormValues } from "@/components/CampaignForm";
+import { CampaignItemsTable } from "@/components/CampaignItemsTable";
 
 type Status =
   | "draft" | "open" | "closed" | "ordered" | "receiving" | "ready" | "completed" | "cancelled";
@@ -39,8 +39,37 @@ export default function CampaignsListPage() {
   const [page, setPage] = useState(1);
 
   const [itemCounts, setItemCounts] = useState<Map<number, number>>(new Map());
-  const [modalOpen, setModalOpen] = useState(false);
+  const [modal, setModal] = useState<
+    | { mode: "new" }
+    | { mode: "edit"; values: CampaignFormValues }
+    | null
+  >(null);
   const [reloadTick, setReloadTick] = useState(0);
+
+  async function openEdit(id: number) {
+    const { data, error: err } = await getSupabase()
+      .from("group_buy_campaigns")
+      .select("id, campaign_no, name, description, status, close_type, start_at, end_at, pickup_deadline, pickup_days, total_cap_qty, notes")
+      .eq("id", id).maybeSingle();
+    if (err || !data) { setError(err?.message ?? "找不到開團"); return; }
+    setModal({
+      mode: "edit",
+      values: {
+        id: data.id,
+        campaign_no: data.campaign_no,
+        name: data.name,
+        description: data.description,
+        status: data.status as CampaignFormValues["status"],
+        close_type: data.close_type as CampaignFormValues["close_type"],
+        start_at: data.start_at,
+        end_at: data.end_at,
+        pickup_deadline: data.pickup_deadline,
+        pickup_days: data.pickup_days,
+        total_cap_qty: data.total_cap_qty != null ? Number(data.total_cap_qty) : null,
+        notes: data.notes,
+      },
+    });
+  }
 
   useEffect(() => {
     const t = setTimeout(() => { setQuery(queryDraft); setPage(1); }, 250);
@@ -104,7 +133,7 @@ export default function CampaignsListPage() {
             {loading ? "載入中…" : total === 0 ? "共 0 筆" : `共 ${total} 筆（${fromIdx}-${toIdx}）`}
           </p>
         </div>
-        <button onClick={() => setModalOpen(true)} className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200">
+        <button onClick={() => setModal({ mode: "new" })} className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200">
           新增開團
         </button>
       </header>
@@ -132,18 +161,18 @@ export default function CampaignsListPage() {
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
-              <Th>團號</Th><Th>名稱</Th><Th>狀態</Th><Th>開團/收單</Th><Th>取貨截止</Th><Th className="text-right">商品數</Th><Th className="text-right">更新</Th>
+              <Th>團號</Th><Th>名稱</Th><Th>狀態</Th><Th>開團/收單</Th><Th>取貨截止</Th><Th className="text-right">商品數</Th><Th className="text-right">更新</Th><Th>{""}</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={7} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={8} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={7} className="p-6 text-center text-zinc-500">{total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}</td></tr>
+              <tr><td colSpan={8} className="p-6 text-center text-zinc-500">{total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}</td></tr>
             ) : rows.map((r) => (
               <tr key={r.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
                 <Td className="font-mono">
-                  <Link href={`/campaigns/edit?id=${r.id}`} className="hover:underline">{r.campaign_no}</Link>
+                  <button onClick={() => openEdit(r.id)} className="hover:underline">{r.campaign_no}</button>
                 </Td>
                 <Td>{r.name}</Td>
                 <Td><StatusBadge s={r.status} /></Td>
@@ -155,18 +184,46 @@ export default function CampaignsListPage() {
                 <Td className="text-xs">{r.pickup_deadline ?? "—"}</Td>
                 <Td className="text-right font-mono">{itemCounts.get(r.id) ?? 0}</Td>
                 <Td className="text-right text-xs text-zinc-500">{new Date(r.updated_at).toLocaleString("zh-TW")}</Td>
+                <Td>
+                  <button
+                    onClick={() => openEdit(r.id)}
+                    className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                  >
+                    編輯
+                  </button>
+                </Td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
 
-      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="新增開團">
-        {modalOpen && (
+      <Modal
+        open={!!modal}
+        onClose={() => setModal(null)}
+        title={modal?.mode === "edit" ? `編輯開團 #${modal.values.campaign_no}` : "新增開團"}
+        maxWidth="max-w-4xl"
+      >
+        {modal?.mode === "new" && (
           <CampaignForm
-            onSaved={(id) => { setModalOpen(false); setReloadTick((t) => t + 1); window.location.href = `/campaigns/edit?id=${id}&saved=1`; }}
-            onCancel={() => setModalOpen(false)}
+            onSaved={async (id) => {
+              setReloadTick((t) => t + 1);
+              await openEdit(id);
+            }}
+            onCancel={() => setModal(null)}
           />
+        )}
+        {modal?.mode === "edit" && (
+          <div className="space-y-6">
+            <CampaignForm
+              initial={modal.values}
+              onSaved={() => { setModal(null); setReloadTick((t) => t + 1); }}
+              onCancel={() => setModal(null)}
+            />
+            <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">
+              <CampaignItemsTable campaignId={modal.values.id!} />
+            </div>
+          </div>
         )}
       </Modal>
 
@@ -190,7 +247,7 @@ function Td({ children, className = "" }: { children: React.ReactNode; className
   return <td className={`px-4 py-3 ${className}`}>{children}</td>;
 }
 function PagerBtn({ onClick, disabled, children }: { onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
-  return <button onClick={onClick} disabled={disabled} className="rounded-md border border-zinc-300 px-2 py-1 disabled:opacity-40 dark:border-zinc-700">{children}</button>;
+  return <button onClick={onClick} disabled={disabled} className="rounded-md border border-zinc-300 px-2 py-1 hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800 dark:disabled:hover:bg-transparent">{children}</button>;
 }
 function StatusBadge({ s }: { s: Status }) {
   const st: Record<Status, string> = {
