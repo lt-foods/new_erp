@@ -1,13 +1,10 @@
 import type { NextConfig } from "next";
 
-const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
-
+// apps/member 部署到 Vercel，走原生 Next.js（非 static export）
+// 需要走 static export（例如移到 GitHub Pages）時再加回：
+//   output: "export", trailingSlash: true, basePath, assetPrefix
 const nextConfig: NextConfig = {
-  output: "export",
-  trailingSlash: true,
   images: { unoptimized: true },
-  basePath,
-  assetPrefix: basePath || undefined,
 };
 
 export default nextConfig;
