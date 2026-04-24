@@ -197,7 +197,7 @@ export default function CampaignsListPage() {
                         href={`/campaigns/order-entry?id=${r.id}`}
                         className="text-xs text-green-600 hover:underline dark:text-green-400"
                       >
-                        key 單
+                        加單
                       </a>
                     )}
                   </div>
@@ -225,13 +225,13 @@ export default function CampaignsListPage() {
         )}
         {modal?.mode === "edit" && (
           <div className="space-y-6">
-            <CampaignForm
-              initial={modal.values}
-              onSaved={() => { setModal(null); setReloadTick((t) => t + 1); }}
-              onCancel={() => setModal(null)}
-            />
+            <CampaignItemsTable campaignId={modal.values.id!} />
             <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">
-              <CampaignItemsTable campaignId={modal.values.id!} />
+              <CampaignForm
+                initial={modal.values}
+                onSaved={() => { setModal(null); setReloadTick((t) => t + 1); }}
+                onCancel={() => setModal(null)}
+              />
             </div>
           </div>
         )}

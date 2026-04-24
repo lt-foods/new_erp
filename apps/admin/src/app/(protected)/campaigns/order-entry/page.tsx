@@ -14,14 +14,14 @@ type Campaign = {
 
 type Channel = { id: number; name: string; home_store_id: number };
 
-type Store = { id: number; name: string };
-
 type MemberRow = {
   id: number;
   member_no: string;
   name: string;
   phone: string | null;
   avatar_url: string | null;
+  home_store_id: number | null;
+  home_store_name: string | null;
 };
 
 type AliasRow = {
@@ -32,6 +32,8 @@ type AliasRow = {
   member_name: string;
   phone: string | null;
   avatar_url: string | null;
+  home_store_id: number | null;
+  home_store_name: string | null;
 };
 
 type SkuOption = {
@@ -58,6 +60,7 @@ type CustomerEntry = {
   display_name: string;
   nickname: string;
   pickup_store_id: number | null;
+  pickup_store_name: string | null;
   items: ItemRow[];
 };
 
@@ -72,6 +75,7 @@ function newEntry(): CustomerEntry {
     display_name: "",
     nickname: "",
     pickup_store_id: null,
+    pickup_store_name: null,
     items: [emptyItem()],
   };
 }
@@ -86,9 +90,8 @@ export default function OrderEntryPage() {
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [channels, setChannels] = useState<Channel[]>([]);
-  const [stores, setStores] = useState<Store[]>([]);
   const [channelId, setChannelId] = useState<number | null>(null);
-  const [defaultStoreId, setDefaultStoreId] = useState<number | null>(null);
+  const [campaignSkus, setCampaignSkus] = useState<SkuOption[]>([]);
   const [entries, setEntries] = useState<CustomerEntry[]>([newEntry()]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -97,30 +100,31 @@ export default function OrderEntryPage() {
 
   const draftKey = useMemo(() => `${DRAFT_PREFIX}${campaignId}`, [campaignId]);
 
-  // 載入活動 / channels / stores
+  // 載入活動 / channels
   useEffect(() => {
     if (!Number.isFinite(campaignId)) return;
     let cancelled = false;
     (async () => {
       const sb = getSupabase();
-      const [cRes, chRes, sRes] = await Promise.all([
+      const [cRes, chRes] = await Promise.all([
         sb.from("group_buy_campaigns")
           .select("id, campaign_no, name, status, pickup_deadline")
           .eq("id", campaignId).maybeSingle(),
         sb.from("line_channels")
           .select("id, name, home_store_id").eq("is_active", true).order("name"),
-        sb.from("stores").select("id, name").eq("is_active", true).order("name"),
       ]);
       if (cancelled) return;
       if (cRes.error) { setError(cRes.error.message); return; }
       setCampaign(cRes.data as Campaign);
       setChannels((chRes.data ?? []) as Channel[]);
-      setStores((sRes.data ?? []) as Store[]);
       if (chRes.data && chRes.data.length > 0) {
-        const first = chRes.data[0] as Channel;
-        setChannelId(first.id);
-        setDefaultStoreId(first.home_store_id);
+        setChannelId((chRes.data[0] as Channel).id);
       }
+      // 一次抓活動內全部 SKU 給 dropdown 用
+      const { data: skuData } = await getSupabase().rpc("rpc_search_skus_for_campaign", {
+        p_campaign_id: campaignId, p_term: "", p_limit: 50,
+      });
+      if (!cancelled) setCampaignSkus((skuData as SkuOption[]) ?? []);
     })();
     return () => { cancelled = true; };
   }, [campaignId]);
@@ -157,15 +161,6 @@ export default function OrderEntryPage() {
     return () => clearInterval(t);
   }, [entries, channelId, draftKey, draftLoaded]);
 
-  // 套用 channel 的 home_store_id 為新 entry 預設 + 補上既有空白
-  useEffect(() => {
-    const ch = channels.find((c) => c.id === channelId);
-    if (!ch) return;
-    setDefaultStoreId(ch.home_store_id);
-    setEntries((es) =>
-      es.map((e) => (e.pickup_store_id == null ? { ...e, pickup_store_id: ch.home_store_id } : e))
-    );
-  }, [channelId, channels]);
 
   function updateEntry(key: string, patch: Partial<CustomerEntry>) {
     setEntries((es) => es.map((e) => (e.key === key ? { ...e, ...patch } : e)));
@@ -197,12 +192,29 @@ export default function OrderEntryPage() {
     );
   }
 
+  function addSku(key: string, opt: SkuOption) {
+    setEntries((es) =>
+      es.map((e) => {
+        if (e.key !== key) return e;
+        if (e.items.some((it) => it.campaign_item_id === opt.campaign_item_id)) return e;
+        const newRow: ItemRow = {
+          campaign_item_id: opt.campaign_item_id,
+          sku_label: `${opt.product_name}${opt.variant_name ? ` / ${opt.variant_name}` : ""} (${opt.sku_code})`,
+          qty: "1",
+          unit_price: Number(opt.unit_price),
+        };
+        const cleaned = e.items.filter((it) => it.campaign_item_id || it.qty);
+        return { ...e, items: [...cleaned, newRow] };
+      })
+    );
+  }
+
   // 全域快速鍵：Ctrl+N 加新顧客、Ctrl+S 送出
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
         e.preventDefault();
-        setEntries((es) => [...es, { ...newEntry(), pickup_store_id: defaultStoreId }]);
+        setEntries((es) => [...es, newEntry()]);
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
@@ -212,12 +224,14 @@ export default function OrderEntryPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries, channelId, defaultStoreId]);
+  }, [entries, channelId]);
 
   async function handleSubmit() {
     if (submitting) return;
     setError(null);
     if (!channelId) { setError("請選 LINE 頻道"); return; }
+    const noStore = entries.filter((e) => e.member_id && !e.pickup_store_id).map((e) => e.display_name);
+    if (noStore.length > 0) { setError(`下列顧客未設預設取貨店：${noStore.join("、")}（請先在會員資料設 home_store_id）`); return; }
     const rows = entries
       .filter((e) => e.member_id && e.pickup_store_id)
       .map((e) => ({
@@ -242,7 +256,7 @@ export default function OrderEntryPage() {
       if (err) { setError(err.message); return; }
       const created = (data as { out_order_id: number; out_order_no: string; out_item_count: number }[]) ?? [];
       setToast(`已建立/更新 ${created.length} 筆訂單`);
-      setEntries([{ ...newEntry(), pickup_store_id: defaultStoreId }]);
+      setEntries([newEntry()]);
       localStorage.removeItem(draftKey);
       setTimeout(() => setToast(null), 3000);
     } catch (e) {
@@ -260,7 +274,7 @@ export default function OrderEntryPage() {
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">小幫手 key 單</h1>
+          <h1 className="text-xl font-semibold">小幫手加單</h1>
           {campaign ? (
             <p className="text-sm text-zinc-500">
               <span className="font-mono">{campaign.campaign_no}</span> · {campaign.name} ·
@@ -277,19 +291,12 @@ export default function OrderEntryPage() {
         </div>
       </header>
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        <label className="flex items-center gap-2 text-sm">
-          <span className="w-20 text-zinc-500">LINE 頻道</span>
-          <select
-            value={channelId ?? ""}
-            onChange={(e) => setChannelId(Number(e.target.value) || null)}
-            className="flex-1 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
-          >
-            <option value="">— 選頻道 —</option>
-            {channels.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-        </label>
-      </div>
+      <p className="text-xs text-zinc-500">
+        LINE 頻道：<span className="font-medium text-zinc-700 dark:text-zinc-300">
+          {channels.find((c) => c.id === channelId)?.name ?? "—"}
+        </span>
+        　·　取貨店：依顧客的「預設取貨店」自動帶出（會員資料設定）
+      </p>
 
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
@@ -310,11 +317,19 @@ export default function OrderEntryPage() {
               entry={e}
               campaignId={campaignId}
               channelId={channelId}
-              stores={stores}
+              campaignSkus={campaignSkus}
+              pickedMemberIds={
+                new Set(
+                  entries
+                    .filter((x) => x.key !== e.key && x.member_id != null)
+                    .map((x) => x.member_id as number)
+                )
+              }
               onChange={(patch) => updateEntry(e.key, patch)}
               onItemChange={(idx, patch) => updateItem(e.key, idx, patch)}
               onAddItem={() => addItem(e.key)}
               onRemoveItem={(idx) => removeItem(e.key, idx)}
+              onAddSku={(opt) => addSku(e.key, opt)}
               onRemove={() =>
                 setEntries((es) => (es.length > 1 ? es.filter((x) => x.key !== e.key) : es))
               }
@@ -322,7 +337,7 @@ export default function OrderEntryPage() {
           ))}
           <button
             type="button"
-            onClick={() => setEntries((es) => [...es, { ...newEntry(), pickup_store_id: defaultStoreId }])}
+            onClick={() => setEntries((es) => [...es, newEntry()])}
             className="rounded-md border border-dashed border-zinc-300 px-3 py-2 text-sm text-zinc-500 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
           >
             + 新增顧客（Ctrl+N）
@@ -349,27 +364,46 @@ export default function OrderEntryPage() {
 // Customer Card
 // ============================================================
 function CustomerCard({
-  entry, campaignId, channelId, stores,
-  onChange, onItemChange, onAddItem, onRemoveItem, onRemove,
+  entry, campaignId, channelId, campaignSkus, pickedMemberIds,
+  onChange, onItemChange, onAddItem, onRemoveItem, onAddSku, onRemove,
 }: {
   entry: CustomerEntry;
   campaignId: number;
   channelId: number | null;
-  stores: Store[];
+  campaignSkus: SkuOption[];
+  pickedMemberIds: Set<number>;
   onChange: (patch: Partial<CustomerEntry>) => void;
   onItemChange: (idx: number, patch: Partial<ItemRow>) => void;
   onAddItem: () => void;
   onRemoveItem: (idx: number) => void;
+  onAddSku: (opt: SkuOption) => void;
   onRemove: () => void;
 }) {
+  const pickedIds = new Set(entry.items.map((it) => it.campaign_item_id).filter((x): x is number => x != null));
+  const availableSkus = campaignSkus.filter((s) => !pickedIds.has(s.campaign_item_id));
   return (
     <div className="rounded-md border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="mb-2 flex items-start justify-between gap-2">
-        <CustomerSearch
-          channelId={channelId}
-          value={entry}
-          onPick={(picked) => onChange(picked)}
-        />
+      <div className="mb-2 flex items-start gap-2">
+        <div className="flex-1">
+          <CustomerSearch
+            channelId={channelId}
+            value={entry}
+            pickedMemberIds={pickedMemberIds}
+            onPick={(picked) => onChange(picked)}
+          />
+        </div>
+        <div className="w-40 shrink-0 pt-1.5 text-xs">
+          <span className="text-zinc-500">取貨店：</span>
+          {entry.member_id ? (
+            entry.pickup_store_name ? (
+              <span className="font-medium">{entry.pickup_store_name}</span>
+            ) : (
+              <span className="text-red-500">⚠ 未設</span>
+            )
+          ) : (
+            <span className="text-zinc-400">—</span>
+          )}
+        </div>
         <button
           type="button"
           onClick={onRemove}
@@ -378,29 +412,6 @@ function CustomerCard({
         >
           ✕
         </button>
-      </div>
-
-      <div className="mb-2 grid gap-2 sm:grid-cols-2">
-        <label className="flex items-center gap-2 text-xs">
-          <span className="w-16 text-zinc-500">取貨店</span>
-          <select
-            value={entry.pickup_store_id ?? ""}
-            onChange={(e) => onChange({ pickup_store_id: Number(e.target.value) || null })}
-            className="flex-1 rounded border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800"
-          >
-            <option value="">— 選店 —</option>
-            {stores.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-        </label>
-        <label className="flex items-center gap-2 text-xs">
-          <span className="w-16 text-zinc-500">暱稱</span>
-          <input
-            value={entry.nickname}
-            onChange={(e) => onChange({ nickname: e.target.value })}
-            placeholder="LINE 顯示名稱"
-            className="flex-1 rounded border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800"
-          />
-        </label>
       </div>
 
       <table className="w-full text-xs">
@@ -427,18 +438,41 @@ function CustomerCard({
           ))}
         </tbody>
       </table>
+
+      <div className="mt-2 flex justify-end">
+        <select
+          value=""
+          onChange={(e) => {
+            const id = Number(e.target.value);
+            const opt = availableSkus.find((s) => s.campaign_item_id === id);
+            if (opt) onAddSku(opt);
+            e.target.value = "";
+          }}
+          disabled={availableSkus.length === 0}
+          className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800"
+        >
+          <option value="">+ 加商品{availableSkus.length === 0 ? "（已全選）" : ""}</option>
+          {availableSkus.map((s) => (
+            <option key={s.campaign_item_id} value={s.campaign_item_id}>
+              {s.product_name}{s.variant_name ? ` / ${s.variant_name}` : ""} (${Number(s.unit_price)})
+            </option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }
+
 
 // ============================================================
 // Customer Search (combo: alias + member)
 // ============================================================
 function CustomerSearch({
-  channelId, value, onPick,
+  channelId, value, pickedMemberIds, onPick,
 }: {
   channelId: number | null;
   value: CustomerEntry;
+  pickedMemberIds: Set<number>;
   onPick: (patch: Partial<CustomerEntry>) => void;
 }) {
   const [term, setTerm] = useState("");
@@ -499,25 +533,35 @@ function CustomerSearch({
           {aliases.length > 0 && (
             <div>
               <div className="px-2 py-1 text-xs font-medium text-zinc-400">綁過的暱稱</div>
-              {aliases.map((a) => (
-                <button
-                  key={`a-${a.alias_id}`}
-                  type="button"
-                  onClick={() => {
-                    onPick({
-                      member_id: a.member_id,
-                      member_no: a.member_no,
-                      display_name: a.member_name,
-                      nickname: a.nickname,
-                    });
-                    setOpen(false);
-                  }}
-                  className="block w-full px-2 py-1.5 text-left text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700"
-                >
-                  <span className="font-medium">{a.nickname}</span>
-                  <span className="ml-2 text-zinc-500">→ {a.member_name} ({a.member_no})</span>
-                </button>
-              ))}
+              {aliases.map((a) => {
+                const dup = pickedMemberIds.has(a.member_id);
+                const noStore = a.home_store_id == null;
+                const blocked = dup || noStore;
+                return (
+                  <button
+                    key={`a-${a.alias_id}`}
+                    type="button"
+                    disabled={blocked}
+                    onClick={() => {
+                      onPick({
+                        member_id: a.member_id,
+                        member_no: a.member_no,
+                        display_name: a.member_name,
+                        nickname: a.nickname,
+                        pickup_store_id: a.home_store_id,
+                        pickup_store_name: a.home_store_name,
+                      });
+                      setOpen(false);
+                    }}
+                    className="block w-full px-2 py-1.5 text-left text-xs hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent dark:hover:bg-zinc-700"
+                  >
+                    <span className="font-medium">{a.nickname}</span>
+                    <span className="ml-2 text-zinc-500">→ {a.member_name} ({a.member_no})</span>
+                    {dup && <span className="ml-2 text-amber-600">已選</span>}
+                    {!dup && noStore && <span className="ml-2 text-red-500">未設取貨店</span>}
+                  </button>
+                );
+              })}
             </div>
           )}
           {members.length > 0 && (
@@ -525,6 +569,9 @@ function CustomerSearch({
               <div className="px-2 py-1 text-xs font-medium text-zinc-400">會員</div>
               {members.map((m) => {
                 const aliased = aliases.some((a) => a.member_id === m.id);
+                const dup = pickedMemberIds.has(m.id);
+                const noStore = m.home_store_id == null;
+                const blocked = dup || noStore;
                 return (
                   <div
                     key={`m-${m.id}`}
@@ -532,16 +579,25 @@ function CustomerSearch({
                   >
                     <button
                       type="button"
+                      disabled={blocked}
                       onClick={() => {
-                        onPick({ member_id: m.id, member_no: m.member_no, display_name: m.name });
+                        onPick({
+                          member_id: m.id,
+                          member_no: m.member_no,
+                          display_name: m.name,
+                          pickup_store_id: m.home_store_id,
+                          pickup_store_name: m.home_store_name,
+                        });
                         setOpen(false);
                       }}
-                      className="flex-1 text-left"
+                      className="flex-1 text-left disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <span className="font-medium">{m.name}</span>
                       <span className="ml-2 text-zinc-500">{m.member_no} · {m.phone ?? "—"}</span>
+                      {dup && <span className="ml-2 text-amber-600">已選</span>}
+                      {!dup && noStore && <span className="ml-2 text-red-500">未設取貨店</span>}
                     </button>
-                    {!aliased && channelId && (
+                    {!aliased && channelId && !blocked && (
                       <button
                         type="button"
                         onClick={() => handleBindAlias(m.id, m.name)}
