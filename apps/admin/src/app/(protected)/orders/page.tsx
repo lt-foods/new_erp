@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { Modal } from "@/components/Modal";
+import { OrderDetail } from "@/components/OrderDetail";
 
 type OrderStatus =
   | "pending" | "confirmed" | "reserved" | "ready" | "partially_ready"
@@ -46,7 +48,11 @@ export default function OrdersListPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [members, setMembers] = useState<Map<number, Member>>(new Map());
-  const [itemCounts, setItemCounts] = useState<Map<number, number>>(new Map());
+  const [itemSummary, setItemSummary] = useState<
+    Map<number, { lineCount: number; totalQty: number; totalAmount: number }>
+  >(new Map());
+  const [detailId, setDetailId] = useState<number | null>(null);
+  const [detailNo, setDetailNo] = useState<string>("");
 
   useEffect(() => { setPage(1); }, [campaignId, status, storeId]);
 
@@ -88,18 +94,24 @@ export default function OrdersListPage() {
         const memIds = Array.from(new Set((data ?? []).map((r) => r.member_id).filter((x): x is number => x != null)));
         const [ic, ms] = await Promise.all([
           ids.length
-            ? getSupabase().from("customer_order_items").select("order_id").in("order_id", ids)
-            : Promise.resolve({ data: [] as { order_id: number }[] }),
+            ? getSupabase().from("customer_order_items").select("order_id, qty, unit_price").in("order_id", ids)
+            : Promise.resolve({ data: [] as { order_id: number; qty: number; unit_price: number }[] }),
           memIds.length
             ? getSupabase().from("members").select("id, name, phone, member_no").in("id", memIds)
             : Promise.resolve({ data: [] as Member[] }),
         ]);
-        const im = new Map<number, number>();
-        for (const id of ids) im.set(id, 0);
-        for (const it of (ic.data as { order_id: number }[]) ?? []) im.set(it.order_id, (im.get(it.order_id) ?? 0) + 1);
+        const im = new Map<number, { lineCount: number; totalQty: number; totalAmount: number }>();
+        for (const id of ids) im.set(id, { lineCount: 0, totalQty: 0, totalAmount: 0 });
+        for (const it of (ic.data as { order_id: number; qty: number; unit_price: number }[]) ?? []) {
+          const cur = im.get(it.order_id) ?? { lineCount: 0, totalQty: 0, totalAmount: 0 };
+          cur.lineCount += 1;
+          cur.totalQty += Number(it.qty);
+          cur.totalAmount += Number(it.qty) * Number(it.unit_price);
+          im.set(it.order_id, cur);
+        }
         const mm = new Map<number, Member>();
         for (const m of (ms.data as Member[]) ?? []) mm.set(m.id, m);
-        if (!cancelled) { setItemCounts(im); setMembers(mm); }
+        if (!cancelled) { setItemSummary(im); setMembers(mm); }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -154,21 +166,28 @@ export default function OrdersListPage() {
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
-              <Th>訂單號</Th><Th>開團</Th><Th>會員 / 暱稱</Th><Th>取貨店</Th><Th>取貨截止</Th><Th>狀態</Th><Th className="text-right">項數</Th><Th className="text-right">更新</Th>
+              <Th>訂單號</Th><Th>開團</Th><Th>會員 / 暱稱</Th><Th>取貨店</Th><Th>取貨截止</Th><Th>狀態</Th><Th className="text-right">項數</Th><Th className="text-right">總數量</Th><Th className="text-right">總金額</Th><Th className="text-right">更新</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={8} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={10} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={8} className="p-6 text-center text-zinc-500">{total === 0 && !campaignId && !status && !storeId ? "尚無訂單。" : "沒有符合條件的訂單。"}</td></tr>
+              <tr><td colSpan={10} className="p-6 text-center text-zinc-500">{total === 0 && !campaignId && !status && !storeId ? "尚無訂單。" : "沒有符合條件的訂單。"}</td></tr>
             ) : rows.map((r) => {
               const m = r.member_id ? members.get(r.member_id) : null;
               const c = campaignMap.get(r.campaign_id);
               const s = storeMap.get(r.pickup_store_id);
               return (
                 <tr key={r.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
-                  <Td className="font-mono">{r.order_no}</Td>
+                  <Td className="font-mono">
+                    <button
+                      onClick={() => { setDetailId(r.id); setDetailNo(r.order_no); }}
+                      className="hover:underline"
+                    >
+                      {r.order_no}
+                    </button>
+                  </Td>
                   <Td>{c ? <span className="text-xs text-zinc-600 dark:text-zinc-400"><span className="font-mono">{c.campaign_no}</span> {c.name}</span> : "—"}</Td>
                   <Td>
                     {m ? (
@@ -183,7 +202,9 @@ export default function OrdersListPage() {
                   <Td className="text-xs">{s?.name ?? "—"}</Td>
                   <Td className="text-xs">{r.pickup_deadline ?? "—"}</Td>
                   <Td><StatusBadge s={r.status} /></Td>
-                  <Td className="text-right font-mono">{itemCounts.get(r.id) ?? 0}</Td>
+                  <Td className="text-right font-mono">{itemSummary.get(r.id)?.lineCount ?? 0}</Td>
+                  <Td className="text-right font-mono">{itemSummary.get(r.id)?.totalQty ?? 0}</Td>
+                  <Td className="text-right font-mono">${itemSummary.get(r.id)?.totalAmount ?? 0}</Td>
                   <Td className="text-right text-xs text-zinc-500">{new Date(r.updated_at).toLocaleString("zh-TW")}</Td>
                 </tr>
               );
@@ -191,6 +212,15 @@ export default function OrdersListPage() {
           </tbody>
         </table>
       </div>
+
+      <Modal
+        open={detailId !== null}
+        onClose={() => setDetailId(null)}
+        title={`訂單明細 ${detailNo}`}
+        maxWidth="max-w-4xl"
+      >
+        {detailId !== null && <OrderDetail orderId={detailId} />}
+      </Modal>
 
       {totalPages > 1 && (
         <div className="flex items-center justify-end gap-2 text-sm">
