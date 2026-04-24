@@ -415,3 +415,7 @@ verify_jwt = false
 # liff-api 收我們自己簽的 HS256 token、在函式內自行驗，Supabase 預設驗會擋
 [functions.liff-api]
 verify_jwt = false
+
+# liff-session 不需要 Supabase 預設 JWT 驗（我們自己驗 LINE id_token）
+[functions.liff-session]
+verify_jwt = false
