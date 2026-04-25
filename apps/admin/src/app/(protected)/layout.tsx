@@ -30,6 +30,8 @@ const NAV: NavGroup[] = [
       { href: "/suppliers", label: "供應商", match: /^\/suppliers/ },
       { href: "/purchase/requests", label: "採購單", match: /^\/purchase\/requests/ },
       { href: "/purchase/orders", label: "採購訂單", match: /^\/purchase\/orders/ },
+      { href: "/picking/workstation", label: "撿貨工作站", match: /^\/picking\/workstation/ },
+      { href: "/picking/history", label: "撿貨歷史", match: /^\/picking\/history/ },
     ],
   },
 ];
