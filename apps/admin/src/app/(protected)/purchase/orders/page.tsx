@@ -301,6 +301,7 @@ export default function PurchaseOrdersListPage() {
                         <Th>預計到貨</Th>
                         <Th>發送</Th>
                         <Th className="text-right">更新</Th>
+                        <Th></Th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
@@ -334,6 +335,16 @@ export default function PurchaseOrdersListPage() {
                           </Td>
                           <Td className="text-right text-xs text-zinc-500">
                             {new Date(p.updated_at).toLocaleString("zh-TW")}
+                          </Td>
+                          <Td className="text-right">
+                            {(p.status === "sent" || p.status === "partially_received") && (
+                              <a
+                                href={`/purchase/orders/receive?po=${p.id}`}
+                                className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-700"
+                              >
+                                進貨
+                              </a>
+                            )}
                           </Td>
                         </tr>
                       ))}
