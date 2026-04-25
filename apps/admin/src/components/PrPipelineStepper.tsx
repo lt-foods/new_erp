@@ -17,6 +17,8 @@ export type PrStepEvents = {
   split?: StepEvent;
   send?: StepEvent;
   receive?: StepEvent;
+  ship?: StepEvent;
+  delivered?: StepEvent;
   finalize?: StepEvent;
 };
 
@@ -26,11 +28,18 @@ export type POSummary = {
   receivedFully: number; // status IN fully_received / closed
 };
 
+export type TransferSummary = {
+  total: number; // 該 PR 撿出多少張 transfer (hq_to_store)
+  shipped: number; // transfer.status >= shipped
+  delivered: number; // transfer.status = received
+};
+
 export function PrPipelineStepper({
   status,
   reviewStatus,
   events,
   poSummary,
+  transferSummary,
   campaignFinalized,
   compact = false,
 }: {
@@ -38,6 +47,7 @@ export function PrPipelineStepper({
   reviewStatus: string;
   events?: PrStepEvents;
   poSummary?: POSummary;
+  transferSummary?: TransferSummary;
   campaignFinalized?: boolean;
   compact?: boolean;
 }) {
@@ -86,7 +96,7 @@ export function PrPipelineStepper({
     steps.push({ key: "send", label: "部分發送", state: "current" });
   else steps.push({ key: "send", label: "已發送供應商", state: "done" });
 
-  // S7 收貨
+  // S7 收貨（總倉收供應商貨）
   if (isRejected || isCancelled)
     steps.push({ key: "receive", label: "收貨", state: "skipped" });
   else if (!poSummary || poSummary.total === 0 || poSummary.receivedFully === 0)
@@ -95,7 +105,27 @@ export function PrPipelineStepper({
     steps.push({ key: "receive", label: "部分到貨", state: "current" });
   else steps.push({ key: "receive", label: "全部到貨", state: "done" });
 
-  // S8 結算
+  // S8 正在派貨（撿完出庫到分店、transfer.shipped）
+  if (isRejected || isCancelled)
+    steps.push({ key: "ship", label: "派貨", state: "skipped" });
+  else if (!transferSummary || transferSummary.total === 0 || transferSummary.shipped === 0)
+    steps.push({ key: "ship", label: "派貨", state: "pending" });
+  else if (transferSummary.shipped < transferSummary.total)
+    steps.push({ key: "ship", label: "部分派貨", state: "current" });
+  else if (transferSummary.delivered < transferSummary.total)
+    steps.push({ key: "ship", label: "派貨中", state: "current" });
+  else steps.push({ key: "ship", label: "已派貨", state: "done" });
+
+  // S9 分店收到確認（transfer.received）
+  if (isRejected || isCancelled)
+    steps.push({ key: "delivered", label: "分店確認", state: "skipped" });
+  else if (!transferSummary || transferSummary.total === 0 || transferSummary.delivered === 0)
+    steps.push({ key: "delivered", label: "分店確認", state: "pending" });
+  else if (transferSummary.delivered < transferSummary.total)
+    steps.push({ key: "delivered", label: "部分簽收", state: "current" });
+  else steps.push({ key: "delivered", label: "全部簽收", state: "done" });
+
+  // S10 結算
   if (isCancelled)
     steps.push({ key: "finalize", label: "結算", state: "skipped" });
   else if (campaignFinalized)

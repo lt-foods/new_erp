@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { PrPipelineStepper } from "@/components/PrPipelineStepper";
 
 type POStatus =
   | "draft"
@@ -28,8 +29,19 @@ type PRGroup = {
   pr_id: number | null; // null = 手動建立 / 找不到來源 PR
   pr_no: string | null;
   pr_status: string | null;
+  pr_review_status: string | null;
   pr_source_close_date: string | null;
   pos: PO[];
+};
+
+type PRProgress = {
+  po_total: number;
+  po_sent: number;
+  po_received_fully: number;
+  transfer_total: number;
+  transfer_shipped: number;
+  transfer_delivered: number;
+  all_campaigns_finalized: boolean;
 };
 
 const STATUS_LABEL: Record<POStatus, string> = {
@@ -54,6 +66,7 @@ export default function PurchaseOrdersListPage() {
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState("");
   const [openPRs, setOpenPRs] = useState<Set<string>>(new Set()); // 'null' or pr_id 字串
+  const [progressById, setProgressById] = useState<Map<number, PRProgress>>(new Map());
 
   useEffect(() => {
     let cancelled = false;
@@ -130,20 +143,49 @@ export default function PurchaseOrdersListPage() {
         const prIds = Array.from(new Set(Array.from(poToPR.values())));
         const prMap = new Map<
           number,
-          { pr_no: string; status: string; source_close_date: string | null }
+          { pr_no: string; status: string; review_status: string; source_close_date: string | null }
         >();
         if (prIds.length) {
           const { data: prRows } = await supabase
             .from("purchase_requests")
-            .select("id, pr_no, status, source_close_date")
+            .select("id, pr_no, status, review_status, source_close_date")
             .in("id", prIds);
           for (const r of prRows ?? []) {
             prMap.set(r.id, {
               pr_no: r.pr_no,
               status: r.status,
+              review_status: r.review_status,
               source_close_date: r.source_close_date,
             });
           }
+
+          const { data: prog } = await supabase
+            .from("v_pr_progress")
+            .select("pr_id, po_total, po_sent, po_received_fully, transfer_total, transfer_shipped, transfer_delivered, all_campaigns_finalized")
+            .in("pr_id", prIds);
+          const m = new Map<number, PRProgress>();
+          type ProgRow = {
+            pr_id: number;
+            po_total: number;
+            po_sent: number;
+            po_received_fully: number;
+            transfer_total: number;
+            transfer_shipped: number;
+            transfer_delivered: number;
+            all_campaigns_finalized: boolean;
+          };
+          for (const p of (prog as ProgRow[] | null) ?? []) {
+            m.set(p.pr_id, {
+              po_total: Number(p.po_total),
+              po_sent: Number(p.po_sent),
+              po_received_fully: Number(p.po_received_fully),
+              transfer_total: Number(p.transfer_total),
+              transfer_shipped: Number(p.transfer_shipped),
+              transfer_delivered: Number(p.transfer_delivered),
+              all_campaigns_finalized: !!p.all_campaigns_finalized,
+            });
+          }
+          if (!cancelled) setProgressById(m);
         }
 
         // 4. 按 PR 分組
@@ -157,6 +199,7 @@ export default function PurchaseOrdersListPage() {
               pr_id: prId,
               pr_no: prInfo?.pr_no ?? null,
               pr_status: prInfo?.status ?? null,
+              pr_review_status: prInfo?.review_status ?? null,
               pr_source_close_date: prInfo?.source_close_date ?? null,
               pos: [],
             });
@@ -247,9 +290,10 @@ export default function PurchaseOrdersListPage() {
               key={key}
               className="overflow-hidden rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
             >
+              <div className="flex flex-col gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900">
               <button
                 onClick={() => togglePR(key)}
-                className="flex w-full items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-left hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-800"
+                className="-mx-4 -my-3 flex w-[calc(100%+2rem)] items-center justify-between gap-3 px-4 py-3 text-left hover:bg-zinc-100 dark:hover:bg-zinc-800"
               >
                 <div className="flex items-center gap-3">
                   <span className="text-zinc-400">{open ? "▼" : "▶"}</span>
@@ -288,6 +332,35 @@ export default function PurchaseOrdersListPage() {
                   </a>
                 )}
               </button>
+              {g.pr_id !== null && g.pr_status && (
+                <div className="px-1">
+                  <PrPipelineStepper
+                    status={g.pr_status}
+                    reviewStatus={g.pr_review_status ?? "approved"}
+                    compact
+                    poSummary={(() => {
+                      const p = progressById.get(g.pr_id);
+                      return p
+                        ? { total: p.po_total, sent: p.po_sent, receivedFully: p.po_received_fully }
+                        : { total: g.pos.length, sent: 0, receivedFully: 0 };
+                    })()}
+                    transferSummary={(() => {
+                      const p = progressById.get(g.pr_id);
+                      return p
+                        ? { total: p.transfer_total, shipped: p.transfer_shipped, delivered: p.transfer_delivered }
+                        : undefined;
+                    })()}
+                    campaignFinalized={progressById.get(g.pr_id)?.all_campaigns_finalized}
+                    events={{
+                      create: { href: `/purchase/requests/edit?id=${g.pr_id}` },
+                      draft: { href: `/purchase/requests/edit?id=${g.pr_id}` },
+                      submit: { href: `/purchase/requests/edit?id=${g.pr_id}` },
+                      review: { href: `/purchase/requests/edit?id=${g.pr_id}` },
+                    }}
+                  />
+                </div>
+              )}
+              </div>
 
               {open && (
                 <div className="overflow-x-auto">
@@ -301,6 +374,7 @@ export default function PurchaseOrdersListPage() {
                         <Th>預計到貨</Th>
                         <Th>發送</Th>
                         <Th className="text-right">更新</Th>
+                        <Th></Th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
@@ -334,6 +408,16 @@ export default function PurchaseOrdersListPage() {
                           </Td>
                           <Td className="text-right text-xs text-zinc-500">
                             {new Date(p.updated_at).toLocaleString("zh-TW")}
+                          </Td>
+                          <Td className="text-right">
+                            {(p.status === "sent" || p.status === "partially_received") && (
+                              <a
+                                href={`/purchase/orders/receive?po=${p.id}`}
+                                className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-700"
+                              >
+                                進貨
+                              </a>
+                            )}
                           </Td>
                         </tr>
                       ))}
