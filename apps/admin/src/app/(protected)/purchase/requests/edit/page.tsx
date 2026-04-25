@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import { PrPipelineStepper, type PrStepEvents } from "@/components/PrPipelineStepper";
 
 type PRHeader = {
   id: number;
@@ -13,6 +14,25 @@ type PRHeader = {
   review_status: string;
   total_amount: number;
   notes: string | null;
+  created_by: string | null;
+  created_at: string | null;
+  updated_by: string | null;
+  updated_at: string | null;
+  submitted_at: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_note: string | null;
+};
+
+type DerivedPO = {
+  id: number;
+  po_no: string;
+  status: string;
+  created_at: string | null;
+  created_by: string | null;
+  sent_at: string | null;
+  sent_by: string | null;
+  sent_channel: string | null;
 };
 
 type Supplier = { id: number; name: string };
@@ -56,6 +76,7 @@ export default function EditPurchaseRequestPage() {
 
   const [header, setHeader] = useState<PRHeader | null>(null);
   const [items, setItems] = useState<ItemRow[]>([]);
+  const [derivedPOs, setDerivedPOs] = useState<DerivedPO[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -81,14 +102,14 @@ export default function EditPurchaseRequestPage() {
           supabase
             .from("purchase_requests")
             .select(
-              "id, pr_no, source_type, source_close_date, status, review_status, total_amount, notes, source_location_id",
+              "id, pr_no, source_type, source_close_date, status, review_status, total_amount, notes, source_location_id, created_by, created_at, updated_by, updated_at, submitted_at, reviewed_by, reviewed_at, review_note",
             )
             .eq("id", id)
             .maybeSingle(),
           supabase
             .from("purchase_request_items")
             .select(
-              "id, sku_id, qty_requested, unit_cost, line_subtotal, suggested_supplier_id, source_campaign_id, retail_price, franchise_price",
+              "id, sku_id, qty_requested, unit_cost, line_subtotal, suggested_supplier_id, source_campaign_id, retail_price, franchise_price, po_item_id",
             )
             .eq("pr_id", id)
             .order("id"),
@@ -103,6 +124,28 @@ export default function EditPurchaseRequestPage() {
         setHeader(prData as PRHeader);
         setSuppliers((supRows ?? []) as Supplier[]);
         setDestLocationId(prData.source_location_id ?? locRow?.id ?? null);
+
+        // 抓拆出的 PO（透過 PR items 反查）
+        const itemIds = (itemRows ?? [])
+          .map((r) => r.po_item_id)
+          .filter((x): x is number => x !== null && x !== undefined);
+        if (itemIds.length) {
+          const { data: poiRows } = await supabase
+            .from("purchase_order_items")
+            .select("po_id")
+            .in("id", itemIds);
+          const poIds = Array.from(
+            new Set((poiRows ?? []).map((r) => r.po_id).filter((x): x is number => !!x)),
+          );
+          if (poIds.length) {
+            const { data: pos } = await supabase
+              .from("purchase_orders")
+              .select("id, po_no, status, created_at, created_by, sent_at, sent_by, sent_channel")
+              .in("id", poIds)
+              .order("id");
+            setDerivedPOs((pos ?? []) as DerivedPO[]);
+          }
+        }
 
         const skuIds = (itemRows ?? []).map((r) => r.sku_id);
         if (skuIds.length === 0) {
@@ -267,7 +310,7 @@ export default function EditPurchaseRequestPage() {
       setError(`有 ${unassignedCount} 行未指派供應商，無法拆 PO`);
       return;
     }
-    if (!confirm("確定拆成採購訂單（PO）發給供應商？")) return;
+    if (!confirm("確定建立採購訂單？建立後可逐一發給各供應商。")) return;
     setBusy("split");
     setError(null);
     try {
@@ -335,8 +378,14 @@ export default function EditPurchaseRequestPage() {
         </div>
       )}
 
-      {/* Timeline stepper */}
-      <Stepper status={header.status} reviewStatus={header.review_status} />
+      {/* Timeline stepper（hover 顯示誰+何時）*/}
+      <div className="rounded-md border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+        <PrPipelineStepper
+          status={header.status}
+          reviewStatus={header.review_status}
+          events={buildEvents(header, derivedPOs)}
+        />
+      </div>
 
       {/* 左右兩欄：左 280px 工具/摘要/動作/備註，右側為採購清單表 */}
       <div className="grid gap-4 md:grid-cols-[280px_1fr]">
@@ -403,7 +452,7 @@ export default function EditPurchaseRequestPage() {
                   className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
                   title={unassignedCount > 0 ? "有未指派供應商" : ""}
                 >
-                  {busy === "split" ? "拆 PO 中…" : "📦 拆成採購訂單"}
+                  {busy === "split" ? "建立中…" : "📦 建立採購訂單"}
                 </button>
               )}
               {!editable && !canSplit && (
@@ -590,114 +639,52 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-type StepState = "done" | "current" | "pending" | "rejected" | "skipped";
-
-function Stepper({
-  status,
-  reviewStatus,
-}: {
-  status: string;
-  reviewStatus: string;
-}) {
-  const isCancelled = status === "cancelled";
-  const isRejected = reviewStatus === "rejected";
-
-  // 5 個 step：建立 → 編輯草稿 → 送審 → 審核完成 → 拆 PO
-  // 依目前 status / review_status 推算每個 step 的狀態
-  const steps: { key: string; label: string; state: StepState }[] = [];
-
-  // S1 建立 — 一定 done
-  steps.push({ key: "create", label: "建立", state: "done" });
-
-  // S2 編輯草稿
-  if (status === "draft") steps.push({ key: "draft", label: "編輯草稿", state: "current" });
-  else if (isCancelled) steps.push({ key: "draft", label: "編輯草稿", state: "skipped" });
-  else steps.push({ key: "draft", label: "編輯草稿", state: "done" });
-
-  // S3 送審
-  if (status === "draft") steps.push({ key: "submit", label: "送出審核", state: "pending" });
-  else if (status === "submitted" && reviewStatus === "pending_review")
-    steps.push({ key: "submit", label: "送審中", state: "current" });
-  else if (isCancelled) steps.push({ key: "submit", label: "送出審核", state: "skipped" });
-  else steps.push({ key: "submit", label: "送出審核", state: "done" });
-
-  // S4 審核完成
-  if (status === "draft" || (status === "submitted" && reviewStatus === "pending_review"))
-    steps.push({ key: "review", label: "審核完成", state: "pending" });
-  else if (isRejected) steps.push({ key: "review", label: "已退回", state: "rejected" });
-  else if (isCancelled) steps.push({ key: "review", label: "審核完成", state: "skipped" });
-  else steps.push({ key: "review", label: "審核通過", state: "done" });
-
-  // S5 拆 PO
-  if (status === "fully_ordered") steps.push({ key: "split", label: "已拆 PO", state: "done" });
-  else if (status === "partially_ordered")
-    steps.push({ key: "split", label: "部分拆 PO", state: "current" });
-  else if (isRejected || isCancelled)
-    steps.push({ key: "split", label: "拆 PO", state: "skipped" });
-  else steps.push({ key: "split", label: "拆成 PO", state: "pending" });
-
-  return (
-    <div className="rounded-md border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-      <ol className="flex items-center gap-1 sm:gap-2">
-        {steps.map((s, i) => (
-          <li key={s.key} className="flex flex-1 items-center">
-            <div className="flex flex-col items-center">
-              <StepCircle state={s.state} index={i + 1} />
-              <span
-                className={`mt-1.5 text-[11px] sm:text-xs ${
-                  s.state === "current"
-                    ? "font-semibold text-blue-600 dark:text-blue-400"
-                    : s.state === "rejected"
-                      ? "font-semibold text-red-600 dark:text-red-400"
-                      : s.state === "done"
-                        ? "text-zinc-700 dark:text-zinc-300"
-                        : "text-zinc-400 dark:text-zinc-500"
-                }`}
-              >
-                {s.label}
-              </span>
-            </div>
-            {i < steps.length - 1 && (
-              <div
-                className={`mx-1 h-0.5 flex-1 sm:mx-2 ${
-                  s.state === "done"
-                    ? "bg-emerald-500"
-                    : s.state === "rejected"
-                      ? "bg-red-400"
-                      : "bg-zinc-200 dark:bg-zinc-700"
-                }`}
-              />
-            )}
-          </li>
-        ))}
-      </ol>
-    </div>
-  );
+function fmtTime(iso: string | null): string | null {
+  if (!iso) return null;
+  return new Date(iso).toLocaleString("zh-TW", { hour12: false });
+}
+function shortUid(uid: string | null): string | null {
+  if (!uid) return null;
+  return uid.slice(0, 8);
 }
 
-function StepCircle({ state, index }: { state: StepState; index: number }) {
-  const base =
-    "flex h-7 w-7 items-center justify-center rounded-full border-2 text-xs font-semibold sm:h-8 sm:w-8";
-  if (state === "done")
-    return <div className={`${base} border-emerald-500 bg-emerald-500 text-white`}>✓</div>;
-  if (state === "current")
-    return (
-      <div
-        className={`${base} border-blue-500 bg-blue-50 text-blue-600 ring-2 ring-blue-200 dark:bg-blue-950 dark:text-blue-300 dark:ring-blue-900`}
-      >
-        {index}
-      </div>
-    );
-  if (state === "rejected")
-    return <div className={`${base} border-red-500 bg-red-500 text-white`}>✕</div>;
-  // pending / skipped
-  return (
-    <div
-      className={`${base} border-zinc-300 bg-white text-zinc-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-500`}
-    >
-      {index}
-    </div>
-  );
+function buildEvents(header: PRHeader, pos: DerivedPO[]): PrStepEvents {
+  const evt: PrStepEvents = {};
+  evt.create = {
+    actor: shortUid(header.created_by),
+    time: fmtTime(header.created_at),
+    detail: header.pr_no,
+  };
+  // 編輯草稿：以最後 update 時間 + updated_by 為依據
+  evt.draft = {
+    actor: shortUid(header.updated_by),
+    time: fmtTime(header.updated_at),
+  };
+  // 送審
+  if (header.submitted_at) {
+    evt.submit = {
+      actor: shortUid(header.updated_by),
+      time: fmtTime(header.submitted_at),
+    };
+  }
+  // 審核
+  if (header.reviewed_at) {
+    evt.review = {
+      actor: shortUid(header.reviewed_by),
+      time: fmtTime(header.reviewed_at),
+      detail: header.review_note ?? null,
+    };
+  }
+  // 建立採購訂單：取第一張 PO 的時間
+  if (pos.length > 0) {
+    const first = pos[0];
+    evt.split = {
+      actor: shortUid(first.created_by),
+      time: fmtTime(first.created_at),
+      detail: `${pos.length} 張 PO：${pos.map((p) => p.po_no).join(", ")}`,
+    };
+  }
+  return evt;
 }
 
 function Th({ children, className = "" }: { children?: React.ReactNode; className?: string }) {

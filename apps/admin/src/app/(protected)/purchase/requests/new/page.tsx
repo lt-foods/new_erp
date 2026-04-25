@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import { PrPipelineStepper } from "@/components/PrPipelineStepper";
 
 type CloseDateGroup = {
   close_date: string;
@@ -12,6 +13,7 @@ type CloseDateGroup = {
   existing_pr_id: number | null;
   existing_pr_no: string | null;
   existing_pr_status: string | null;
+  existing_review_status: string | null;
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -48,14 +50,22 @@ export default function NewPurchaseRequestPage() {
         // 撈既有 close_date PRs（避免重複開）
         const { data: existingPrs } = await supabase
           .from("purchase_requests")
-          .select("id, pr_no, source_close_date, status")
+          .select("id, pr_no, source_close_date, status, review_status")
           .eq("source_type", "close_date")
           .neq("status", "cancelled");
 
-        const prByDate = new Map<string, { id: number; pr_no: string; status: string }>();
+        const prByDate = new Map<
+          string,
+          { id: number; pr_no: string; status: string; review_status: string }
+        >();
         for (const p of existingPrs ?? []) {
           if (!p.source_close_date) continue;
-          prByDate.set(p.source_close_date, { id: p.id, pr_no: p.pr_no, status: p.status });
+          prByDate.set(p.source_close_date, {
+            id: p.id,
+            pr_no: p.pr_no,
+            status: p.status,
+            review_status: p.review_status,
+          });
         }
 
         // 依 close_date 分組 campaigns
@@ -111,6 +121,7 @@ export default function NewPurchaseRequestPage() {
               existing_pr_id: ex?.id ?? null,
               existing_pr_no: ex?.pr_no ?? null,
               existing_pr_status: ex?.status ?? null,
+              existing_review_status: ex?.review_status ?? null,
             };
           })
           .sort((a, b) => b.close_date.localeCompare(a.close_date));
@@ -199,7 +210,7 @@ export default function NewPurchaseRequestPage() {
                   {g.campaigns.length} 個團 · {g.total_skus} 個 SKU · 總量 {g.total_qty}
                 </div>
 
-                <ul className="mb-3 max-h-24 space-y-0.5 overflow-y-auto text-xs">
+                <ul className="mb-3 max-h-20 space-y-0.5 overflow-y-auto text-xs">
                   {g.campaigns.slice(0, 4).map((c) => (
                     <li key={c.id} className="truncate text-zinc-600 dark:text-zinc-400">
                       · {c.name}
@@ -209,6 +220,17 @@ export default function NewPurchaseRequestPage() {
                     <li className="text-zinc-400">…還有 {g.campaigns.length - 4} 個</li>
                   )}
                 </ul>
+
+                {/* Pipeline mini-stepper（已開單才顯示）*/}
+                {opened && (
+                  <div className="mb-3 rounded-md border border-zinc-200 bg-white p-2 dark:border-zinc-700 dark:bg-zinc-950">
+                    <PrPipelineStepper
+                      status={g.existing_pr_status ?? ""}
+                      reviewStatus={g.existing_review_status ?? ""}
+                      compact
+                    />
+                  </div>
+                )}
 
                 {opened ? (
                   <div className="flex flex-col gap-1">
