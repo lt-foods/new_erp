@@ -60,7 +60,7 @@ export default function PrintPurchaseRequestPage() {
             .maybeSingle(),
           supabase
             .from("purchase_request_items")
-            .select("id, sku_id, qty_requested, unit_cost, suggested_supplier_id")
+            .select("id, sku_id, qty_requested, unit_cost, suggested_supplier_id, retail_price, franchise_price")
             .eq("pr_id", id)
             .order("suggested_supplier_id", { nullsFirst: false })
             .order("id"),
@@ -86,7 +86,7 @@ export default function PrintPurchaseRequestPage() {
           new Set((itemRows ?? []).map((r) => r.suggested_supplier_id).filter((x): x is number => !!x)),
         );
 
-        const [{ data: skuRows }, { data: supRows }, { data: priceRows }] = await Promise.all([
+        const [{ data: skuRows }, { data: supRows }] = await Promise.all([
           skuIds.length
             ? supabase
                 .from("skus")
@@ -95,14 +95,6 @@ export default function PrintPurchaseRequestPage() {
             : Promise.resolve({ data: [] as unknown[] }),
           supIds.length
             ? supabase.from("suppliers").select("id, name").in("id", supIds)
-            : Promise.resolve({ data: [] as unknown[] }),
-          skuIds.length
-            ? supabase
-                .from("prices")
-                .select("sku_id, scope, price")
-                .in("sku_id", skuIds)
-                .in("scope", ["retail", "franchise"])
-                .eq("is_active", true)
             : Promise.resolve({ data: [] as unknown[] }),
         ]);
 
@@ -114,7 +106,6 @@ export default function PrintPurchaseRequestPage() {
           products: { name: string } | { name: string }[];
         };
         type SupLite = { id: number; name: string };
-        type PriceLite = { sku_id: number; scope: string; price: number };
 
         const skuMap = new Map<number, { sku_code: string; variant_name: string | null; product_name: string; unit_uom: string | null }>();
         for (const s of (skuRows as SkuLite[] | null) ?? []) {
@@ -129,18 +120,8 @@ export default function PrintPurchaseRequestPage() {
 
         const supMap = new Map((supRows as SupLite[] | null)?.map((s) => [s.id, s.name]) ?? []);
 
-        const priceMap = new Map<number, { retail: number | null; franchise: number | null }>();
-        for (const id of skuIds) priceMap.set(id, { retail: null, franchise: null });
-        for (const p of (priceRows as PriceLite[] | null) ?? []) {
-          const e = priceMap.get(p.sku_id);
-          if (!e) continue;
-          if (p.scope === "retail") e.retail = Number(p.price);
-          if (p.scope === "franchise") e.franchise = Number(p.price);
-        }
-
         const merged: ItemRow[] = (itemRows ?? []).map((r) => {
           const m = skuMap.get(r.sku_id);
-          const p = priceMap.get(r.sku_id);
           return {
             id: r.id,
             sku_id: r.sku_id,
@@ -154,8 +135,8 @@ export default function PrintPurchaseRequestPage() {
             supplier_name: r.suggested_supplier_id
               ? supMap.get(r.suggested_supplier_id) ?? "—"
               : null,
-            retail_price: p?.retail ?? null,
-            franchise_price: p?.franchise ?? null,
+            retail_price: r.retail_price !== null && r.retail_price !== undefined ? Number(r.retail_price) : null,
+            franchise_price: r.franchise_price !== null && r.franchise_price !== undefined ? Number(r.franchise_price) : null,
           };
         });
 

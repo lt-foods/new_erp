@@ -17,8 +17,6 @@ type PRHeader = {
 
 type Supplier = { id: number; name: string };
 
-type PriceLookup = { sku_id: number; retail: number | null; franchise: number | null };
-
 type ItemRow = {
   id: number;
   sku_id: number;
@@ -31,8 +29,8 @@ type ItemRow = {
   line_subtotal: number;
   suggested_supplier_id: number | null;
   source_campaign_id: number | null;
-  retail_price: number | null;
-  franchise_price: number | null;
+  retail_price: number | null;     // PR snapshot，可手動覆寫
+  franchise_price: number | null;  // PR snapshot，可手動覆寫
   dirty: boolean;
 };
 
@@ -90,7 +88,7 @@ export default function EditPurchaseRequestPage() {
           supabase
             .from("purchase_request_items")
             .select(
-              "id, sku_id, qty_requested, unit_cost, line_subtotal, suggested_supplier_id, source_campaign_id",
+              "id, sku_id, qty_requested, unit_cost, line_subtotal, suggested_supplier_id, source_campaign_id, retail_price, franchise_price",
             )
             .eq("pr_id", id)
             .order("id"),
@@ -120,23 +118,6 @@ export default function EditPurchaseRequestPage() {
           )
           .in("id", skuIds);
 
-        // 一次撈價格（retail + franchise）
-        const { data: priceRows } = await supabase
-          .from("prices")
-          .select("sku_id, scope, price")
-          .in("sku_id", skuIds)
-          .in("scope", ["retail", "franchise"])
-          .eq("is_active", true);
-
-        const priceMap = new Map<number, PriceLookup>();
-        for (const id of skuIds) priceMap.set(id, { sku_id: id, retail: null, franchise: null });
-        for (const p of priceRows ?? []) {
-          const e = priceMap.get(p.sku_id);
-          if (!e) continue;
-          if (p.scope === "retail") e.retail = Number(p.price);
-          if (p.scope === "franchise") e.franchise = Number(p.price);
-        }
-
         const skuMap = new Map(
           (skuRows ?? []).map((s) => {
             const prod = Array.isArray(s.products) ? s.products[0] : s.products;
@@ -154,7 +135,6 @@ export default function EditPurchaseRequestPage() {
 
         const merged: ItemRow[] = (itemRows ?? []).map((r) => {
           const m = skuMap.get(r.sku_id);
-          const p = priceMap.get(r.sku_id);
           return {
             id: r.id,
             sku_id: r.sku_id,
@@ -167,8 +147,8 @@ export default function EditPurchaseRequestPage() {
             line_subtotal: Number(r.line_subtotal ?? 0),
             suggested_supplier_id: r.suggested_supplier_id,
             source_campaign_id: r.source_campaign_id,
-            retail_price: p?.retail ?? null,
-            franchise_price: p?.franchise ?? null,
+            retail_price: r.retail_price !== null && r.retail_price !== undefined ? Number(r.retail_price) : null,
+            franchise_price: r.franchise_price !== null && r.franchise_price !== undefined ? Number(r.franchise_price) : null,
             dirty: false,
           };
         });
@@ -225,6 +205,8 @@ export default function EditPurchaseRequestPage() {
             qty_requested: r.qty_requested,
             unit_cost: r.unit_cost,
             suggested_supplier_id: r.suggested_supplier_id,
+            retail_price: r.retail_price,
+            franchise_price: r.franchise_price,
           })
           .eq("id", r.id);
         if (err) throw new Error(err.message);
@@ -352,6 +334,9 @@ export default function EditPurchaseRequestPage() {
           {error}
         </div>
       )}
+
+      {/* Timeline stepper */}
+      <Stepper status={header.status} reviewStatus={header.review_status} />
 
       {/* 左右兩欄：左 280px 工具/摘要/動作/備註，右側為採購清單表 */}
       <div className="grid gap-4 md:grid-cols-[280px_1fr]">
@@ -533,11 +518,43 @@ export default function EditPurchaseRequestPage() {
                       r.unit_cost.toFixed(4)
                     )}
                   </Td>
-                  <Td className="text-right text-zinc-500">
-                    {r.retail_price !== null ? `$${r.retail_price.toFixed(0)}` : "—"}
+                  <Td className="text-right">
+                    {editable ? (
+                      <input
+                        type="number"
+                        step="0.0001"
+                        value={r.retail_price ?? ""}
+                        onChange={(e) =>
+                          patchItem(idx, {
+                            retail_price: e.target.value === "" ? null : Number(e.target.value),
+                          })
+                        }
+                        className="w-20 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                      />
+                    ) : r.retail_price !== null ? (
+                      `$${r.retail_price.toFixed(0)}`
+                    ) : (
+                      "—"
+                    )}
                   </Td>
-                  <Td className="text-right text-zinc-500">
-                    {r.franchise_price !== null ? `$${r.franchise_price.toFixed(0)}` : "—"}
+                  <Td className="text-right">
+                    {editable ? (
+                      <input
+                        type="number"
+                        step="0.0001"
+                        value={r.franchise_price ?? ""}
+                        onChange={(e) =>
+                          patchItem(idx, {
+                            franchise_price: e.target.value === "" ? null : Number(e.target.value),
+                          })
+                        }
+                        className="w-20 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                      />
+                    ) : r.franchise_price !== null ? (
+                      `$${r.franchise_price.toFixed(0)}`
+                    ) : (
+                      "—"
+                    )}
                   </Td>
                   <Td className="text-right font-mono">
                     ${(r.qty_requested * r.unit_cost).toFixed(0)}
@@ -569,6 +586,116 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
     <div className="flex items-center justify-between">
       <dt className="text-zinc-500">{label}</dt>
       <dd className="font-mono">{children}</dd>
+    </div>
+  );
+}
+
+type StepState = "done" | "current" | "pending" | "rejected" | "skipped";
+
+function Stepper({
+  status,
+  reviewStatus,
+}: {
+  status: string;
+  reviewStatus: string;
+}) {
+  const isCancelled = status === "cancelled";
+  const isRejected = reviewStatus === "rejected";
+
+  // 5 個 step：建立 → 編輯草稿 → 送審 → 審核完成 → 拆 PO
+  // 依目前 status / review_status 推算每個 step 的狀態
+  const steps: { key: string; label: string; state: StepState }[] = [];
+
+  // S1 建立 — 一定 done
+  steps.push({ key: "create", label: "建立", state: "done" });
+
+  // S2 編輯草稿
+  if (status === "draft") steps.push({ key: "draft", label: "編輯草稿", state: "current" });
+  else if (isCancelled) steps.push({ key: "draft", label: "編輯草稿", state: "skipped" });
+  else steps.push({ key: "draft", label: "編輯草稿", state: "done" });
+
+  // S3 送審
+  if (status === "draft") steps.push({ key: "submit", label: "送出審核", state: "pending" });
+  else if (status === "submitted" && reviewStatus === "pending_review")
+    steps.push({ key: "submit", label: "送審中", state: "current" });
+  else if (isCancelled) steps.push({ key: "submit", label: "送出審核", state: "skipped" });
+  else steps.push({ key: "submit", label: "送出審核", state: "done" });
+
+  // S4 審核完成
+  if (status === "draft" || (status === "submitted" && reviewStatus === "pending_review"))
+    steps.push({ key: "review", label: "審核完成", state: "pending" });
+  else if (isRejected) steps.push({ key: "review", label: "已退回", state: "rejected" });
+  else if (isCancelled) steps.push({ key: "review", label: "審核完成", state: "skipped" });
+  else steps.push({ key: "review", label: "審核通過", state: "done" });
+
+  // S5 拆 PO
+  if (status === "fully_ordered") steps.push({ key: "split", label: "已拆 PO", state: "done" });
+  else if (status === "partially_ordered")
+    steps.push({ key: "split", label: "部分拆 PO", state: "current" });
+  else if (isRejected || isCancelled)
+    steps.push({ key: "split", label: "拆 PO", state: "skipped" });
+  else steps.push({ key: "split", label: "拆成 PO", state: "pending" });
+
+  return (
+    <div className="rounded-md border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+      <ol className="flex items-center gap-1 sm:gap-2">
+        {steps.map((s, i) => (
+          <li key={s.key} className="flex flex-1 items-center">
+            <div className="flex flex-col items-center">
+              <StepCircle state={s.state} index={i + 1} />
+              <span
+                className={`mt-1.5 text-[11px] sm:text-xs ${
+                  s.state === "current"
+                    ? "font-semibold text-blue-600 dark:text-blue-400"
+                    : s.state === "rejected"
+                      ? "font-semibold text-red-600 dark:text-red-400"
+                      : s.state === "done"
+                        ? "text-zinc-700 dark:text-zinc-300"
+                        : "text-zinc-400 dark:text-zinc-500"
+                }`}
+              >
+                {s.label}
+              </span>
+            </div>
+            {i < steps.length - 1 && (
+              <div
+                className={`mx-1 h-0.5 flex-1 sm:mx-2 ${
+                  s.state === "done"
+                    ? "bg-emerald-500"
+                    : s.state === "rejected"
+                      ? "bg-red-400"
+                      : "bg-zinc-200 dark:bg-zinc-700"
+                }`}
+              />
+            )}
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function StepCircle({ state, index }: { state: StepState; index: number }) {
+  const base =
+    "flex h-7 w-7 items-center justify-center rounded-full border-2 text-xs font-semibold sm:h-8 sm:w-8";
+  if (state === "done")
+    return <div className={`${base} border-emerald-500 bg-emerald-500 text-white`}>✓</div>;
+  if (state === "current")
+    return (
+      <div
+        className={`${base} border-blue-500 bg-blue-50 text-blue-600 ring-2 ring-blue-200 dark:bg-blue-950 dark:text-blue-300 dark:ring-blue-900`}
+      >
+        {index}
+      </div>
+    );
+  if (state === "rejected")
+    return <div className={`${base} border-red-500 bg-red-500 text-white`}>✕</div>;
+  // pending / skipped
+  return (
+    <div
+      className={`${base} border-zinc-300 bg-white text-zinc-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-500`}
+    >
+      {index}
     </div>
   );
 }

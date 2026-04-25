@@ -219,6 +219,10 @@ export default function NewPurchaseRequestPage() {
                       查看 {g.existing_pr_no}（{STATUS_LABEL[g.existing_pr_status ?? ""] ?? g.existing_pr_status}）
                     </a>
                   </div>
+                ) : g.total_qty === 0 ? (
+                  <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-center text-xs text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800">
+                    無顧客訂單，無法開單
+                  </div>
                 ) : (
                   <button
                     onClick={() => handleImport(g.close_date)}
