@@ -52,6 +52,7 @@ export default function PickingWorkstationPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [showOnlyNonZero, setShowOnlyNonZero] = useState(false);
   const [expandedSkuIds, setExpandedSkuIds] = useState<Set<number>>(new Set());
+  const [pickedSkuIds, setPickedSkuIds] = useState<Set<number>>(new Set());
 
   // 載入可用結單日
   useEffect(() => {
@@ -109,6 +110,25 @@ export default function PickingWorkstationPage() {
         setDemand(rows);
         // 保存到歷史記錄
         setDemandHistory((prev) => new Map(prev).set(closeDate, rows));
+
+        // 過濾已撿過的 SKU：該結單日已有非 cancelled 的 wave 涉及的 sku 不再顯示
+        const { data: priorWaves } = await sb
+          .from("picking_waves")
+          .select("id")
+          .eq("wave_date", closeDate)
+          .neq("status", "cancelled");
+        const priorWaveIds = (priorWaves as { id: number }[] | null)?.map((w) => w.id) ?? [];
+        if (priorWaveIds.length > 0) {
+          const { data: pickedItems } = await sb
+            .from("picking_wave_items")
+            .select("sku_id")
+            .in("wave_id", priorWaveIds);
+          if (!cancelled) {
+            setPickedSkuIds(new Set((pickedItems as { sku_id: number }[] | null)?.map((i) => i.sku_id) ?? []));
+          }
+        } else if (!cancelled) {
+          setPickedSkuIds(new Set());
+        }
 
         const storeIds = Array.from(new Set(rows.map((r) => r.store_id)));
         if (storeIds.length) {
@@ -185,10 +205,10 @@ export default function PickingWorkstationPage() {
       card.po_numbers = Array.from(poSet.get(card.sku_id) ?? new Set<string>()).sort();
       card.order_numbers = Array.from(orderSet.get(card.sku_id) ?? new Set<string>()).sort();
     }
-    return Array.from(m.values()).sort((a, b) =>
-      (a.sku_code ?? "").localeCompare(b.sku_code ?? ""),
-    );
-  }, [demand, stores, closeDate]);
+    return Array.from(m.values())
+      .filter((c) => !pickedSkuIds.has(c.sku_id))
+      .sort((a, b) => (a.sku_code ?? "").localeCompare(b.sku_code ?? ""));
+  }, [demand, stores, closeDate, pickedSkuIds]);
 
   const filteredCards = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
