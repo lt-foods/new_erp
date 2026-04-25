@@ -45,6 +45,24 @@ export default function CampaignsListPage() {
     | null
   >(null);
   const [reloadTick, setReloadTick] = useState(0);
+  const [closingId, setClosingId] = useState<number | null>(null);
+
+  async function closeCampaign(id: number, name: string) {
+    if (!confirm(`確定結單「${name}」？結單後可從採購單頁面「帶入該日商品」產生 PR。`)) return;
+    setClosingId(id);
+    try {
+      const { error: rpcErr } = await getSupabase().rpc("rpc_close_campaign", {
+        p_campaign_id: id,
+        p_operator: (await getSupabase().auth.getUser()).data.user?.id,
+      });
+      if (rpcErr) throw new Error(rpcErr.message);
+      setReloadTick((t) => t + 1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setClosingId(null);
+    }
+  }
 
   async function openEdit(id: number) {
     const { data, error: err } = await getSupabase()
@@ -199,6 +217,15 @@ export default function CampaignsListPage() {
                       >
                         加單
                       </a>
+                    )}
+                    {r.status === "open" && (
+                      <button
+                        onClick={() => closeCampaign(r.id, r.name)}
+                        disabled={closingId === r.id}
+                        className="text-xs text-amber-600 hover:underline disabled:opacity-50 dark:text-amber-400"
+                      >
+                        {closingId === r.id ? "結單中…" : "結單"}
+                      </button>
                     )}
                   </div>
                 </Td>
