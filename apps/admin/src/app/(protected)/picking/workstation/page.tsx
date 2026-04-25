@@ -182,8 +182,8 @@ export default function PickingWorkstationPage() {
       // 檢查缺貨：進庫量 < 訂單需求
       card.is_short = card.received_qty < card.total_demand;
       // 設置 PO 和訂單號
-      card.po_numbers = Array.from(poSet.get(card.sku_id) || new Set()).sort();
-      card.order_numbers = Array.from(orderSet.get(card.sku_id) || new Set()).sort();
+      card.po_numbers = Array.from(poSet.get(card.sku_id) ?? new Set<string>()).sort();
+      card.order_numbers = Array.from(orderSet.get(card.sku_id) ?? new Set<string>()).sort();
     }
     return Array.from(m.values()).sort((a, b) =>
       (a.sku_code ?? "").localeCompare(b.sku_code ?? ""),
@@ -259,8 +259,8 @@ export default function PickingWorkstationPage() {
       }
       card.short_stores = arr.sort((a, b) => b.qty - a.qty);
       card.is_short = card.received_qty < card.total_demand;
-      card.po_numbers = Array.from(poSet.get(card.sku_id) || new Set()).sort();
-      card.order_numbers = Array.from(orderSet.get(card.sku_id) || new Set()).sort();
+      card.po_numbers = Array.from(poSet.get(card.sku_id) ?? new Set<string>()).sort();
+      card.order_numbers = Array.from(orderSet.get(card.sku_id) ?? new Set<string>()).sort();
     }
     return Array.from(m.values()).sort((a, b) =>
       (a.sku_code ?? "").localeCompare(b.sku_code ?? ""),
