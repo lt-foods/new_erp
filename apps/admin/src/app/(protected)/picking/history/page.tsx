@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 
 type Wave = {
@@ -13,6 +13,8 @@ type Wave = {
   total_qty: number;
   note: string | null;
   created_at: string;
+  expected_total: number;
+  actual_total: number;
 };
 
 type WaveItem = {
@@ -60,8 +62,35 @@ export default function PickingHistoryPage() {
           .order("created_at", { ascending: false })
           .limit(50);
         if (e) throw new Error(e.message);
+        const waveRows = (data as Omit<Wave, "expected_total" | "actual_total">[] | null) ?? [];
+        const ids = waveRows.map((w) => w.id);
+        const totals = new Map<number, { expected: number; actual: number; itemCount: number }>();
+        if (ids.length > 0) {
+          const { data: itemRows } = await sb
+            .from("picking_wave_items")
+            .select("wave_id, qty, picked_qty")
+            .in("wave_id", ids);
+          for (const r of (itemRows as { wave_id: number; qty: number; picked_qty: number | null }[] | null) ?? []) {
+            const cur = totals.get(r.wave_id) ?? { expected: 0, actual: 0, itemCount: 0 };
+            cur.expected += Number(r.qty);
+            cur.actual += Number(r.picked_qty ?? r.qty);
+            cur.itemCount += 1;
+            totals.set(r.wave_id, cur);
+          }
+        }
         if (!cancelled) {
-          setWaves(((data as Wave[] | null) ?? []).map((r) => ({ ...r, total_qty: Number(r.total_qty) })));
+          setWaves(
+            waveRows.map((r) => {
+              const t = totals.get(r.id);
+              return {
+                ...r,
+                total_qty: Number(r.total_qty),
+                expected_total: t?.expected ?? 0,
+                actual_total: t?.actual ?? 0,
+                item_count: t?.itemCount ?? r.item_count,
+              };
+            }),
+          );
           setError(null);
         }
       } catch (e) {
@@ -100,42 +129,52 @@ export default function PickingHistoryPage() {
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
+              <Th>作業時間</Th>
               <Th>撿貨單號</Th>
-              <Th>配送日</Th>
-              <Th>狀態</Th>
-              <Th className="text-right">分店</Th>
-              <Th className="text-right">SKU</Th>
-              <Th className="text-right">總量</Th>
-              <Th>備註</Th>
-              <Th>建立</Th>
+              <Th>摘要</Th>
               <Th></Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {waves !== null && waves.length === 0 && (
               <tr>
-                <td colSpan={9} className="p-6 text-center text-sm text-zinc-500">
+                <td colSpan={4} className="p-6 text-center text-sm text-zinc-500">
                   尚無撿貨單，請至「撿貨工作站」建立。
                 </td>
               </tr>
             )}
-            {waves?.map((w) => (
+            {waves?.map((w) => {
+              const diff = w.actual_total - w.expected_total;
+              const diffEl =
+                diff === 0 ? (
+                  <span className="ml-2 font-medium text-emerald-600 dark:text-emerald-400">✓ 正確</span>
+                ) : diff > 0 ? (
+                  <span className="ml-2 font-medium text-purple-600 dark:text-purple-400">(+{diff})</span>
+                ) : (
+                  <span className="ml-2 font-medium text-red-600 dark:text-red-400">({diff})</span>
+                );
+              return (
               <tr key={w.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
-                <td className="px-3 py-2 font-mono">{w.wave_code}</td>
-                <td className="px-3 py-2">{w.wave_date}</td>
+                <td className="px-3 py-2 text-xs text-zinc-600 dark:text-zinc-300">
+                  <div>{new Date(w.created_at).toLocaleString("zh-TW")}</div>
+                  <div className="text-zinc-500">📅 配送：{w.wave_date}</div>
+                </td>
                 <td className="px-3 py-2">
+                  <div className="font-mono text-sm">{w.wave_code}</div>
                   <span
-                    className={`inline-block rounded px-2 py-0.5 text-xs ${STATUS_COLOR[w.status] ?? ""}`}
+                    className={`mt-1 inline-block rounded px-2 py-0.5 text-xs ${STATUS_COLOR[w.status] ?? ""}`}
                   >
                     {STATUS_LABEL[w.status] ?? w.status}
                   </span>
+                  {w.note && <div className="mt-1 text-[11px] text-zinc-500">{w.note}</div>}
                 </td>
-                <td className="px-3 py-2 text-right font-mono">{w.store_count}</td>
-                <td className="px-3 py-2 text-right font-mono">{w.item_count}</td>
-                <td className="px-3 py-2 text-right font-mono">{w.total_qty}</td>
-                <td className="px-3 py-2 text-xs text-zinc-500">{w.note ?? "—"}</td>
-                <td className="px-3 py-2 text-xs text-zinc-500">
-                  {new Date(w.created_at).toLocaleString("zh-TW")}
+                <td className="px-3 py-2 text-sm">
+                  <span className="text-zinc-600 dark:text-zinc-300">{w.item_count} 品項</span>
+                  <span className="mx-2 text-zinc-300">|</span>
+                  <span className="text-zinc-600 dark:text-zinc-300">應發 <span className="font-mono font-semibold">{w.expected_total}</span></span>
+                  <span className="mx-2 text-zinc-300">|</span>
+                  <span className="text-zinc-600 dark:text-zinc-300">實分 <span className="font-mono font-semibold">{w.actual_total}</span></span>
+                  {diffEl}
                 </td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex items-center justify-end gap-2">
@@ -183,7 +222,8 @@ export default function PickingHistoryPage() {
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -220,6 +260,17 @@ function PickModal({
   const [shipping, setShipping] = useState(false);
   const [hqLocId, setHqLocId] = useState<number | null>(null);
   const [effectiveStatus, setEffectiveStatus] = useState<string>(wave.status);
+
+  const shortageCount = useMemo(() => {
+    if (!items) return 0;
+    let n = 0;
+    for (const it of items) {
+      const e = edits.get(it.id);
+      const v = e !== undefined ? Number(e) : Number(it.picked_qty ?? it.qty);
+      if (!Number.isNaN(v) && v < Number(it.qty)) n += 1;
+    }
+    return n;
+  }, [items, edits]);
 
   useEffect(() => {
     let cancelled = false;
@@ -338,7 +389,10 @@ function PickModal({
       setError(`撿貨單狀態為 ${effectiveStatus}，需是 picked 才能派貨。請先確認修正完成。`);
       return;
     }
-    if (!confirm(`確認派貨？將為 ${wave.store_count} 間分店產生 transfer 並從總倉出庫。`)) return;
+    const shortMsg = shortageCount > 0
+      ? `\n\n⚠ 有 ${shortageCount} 行短缺（撿到的數量少於應撿量），派貨後該店家會拿不到應有量。是否仍要繼續？`
+      : "";
+    if (!confirm(`確認派貨？將為 ${wave.store_count} 間分店產生 transfer 並從總倉出庫。${shortMsg}`)) return;
     setShipping(true);
     setError(null);
     try {
@@ -394,6 +448,11 @@ function PickModal({
               <span className="text-xs text-zinc-500">
                 · 配送日 {wave.wave_date} · 狀態 {STATUS_LABEL[effectiveStatus] ?? effectiveStatus}
               </span>
+              {shortageCount > 0 && (
+                <span className="ml-2 inline-block rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                  ⚠ {shortageCount} 行短缺（可派貨，部分店家拿不到應有量）
+                </span>
+              )}
             </h2>
           </div>
           <div className="flex gap-2">
@@ -449,6 +508,7 @@ function PickModal({
                   <th className="sticky left-0 z-10 bg-zinc-50 px-3 py-2 text-left text-xs uppercase text-zinc-500 dark:bg-zinc-900">
                     品名
                   </th>
+                  <th className="px-2 py-2 text-left text-xs uppercase text-zinc-500">項目</th>
                   {stores.map((s) => (
                     <th
                       key={s.id}
@@ -460,50 +520,111 @@ function PickModal({
                   <th className="px-3 py-2 text-right text-xs uppercase text-zinc-500">合計</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
+              <tbody className="divide-y-2 divide-zinc-300 dark:divide-zinc-700">
                 {skuList.map((sku) => {
                   const row = matrix.get(sku.id);
-                  const total = stores.reduce((s, st) => {
+                  const expectedTotal = stores.reduce((s, st) => {
+                    const it = row?.get(st.id);
+                    return it ? s + Number(it.qty) : s;
+                  }, 0);
+                  const actualTotal = stores.reduce((s, st) => {
                     const it = row?.get(st.id);
                     if (!it) return s;
                     const edit = edits.get(it.id);
-                    const v = edit !== undefined ? Number(edit) : (it.picked_qty ?? it.qty);
+                    const v = edit !== undefined ? Number(edit) : Number(it.picked_qty ?? it.qty);
                     return s + (Number.isNaN(v) ? 0 : v);
                   }, 0);
+                  const totalDiff = actualTotal - expectedTotal;
                   return (
-                    <tr key={sku.id}>
-                      <td className="sticky left-0 bg-white px-3 py-2 dark:bg-zinc-900">
-                        <div className="font-medium">{sku.product_name ?? "—"}</div>
-                        <div className="text-xs text-zinc-500">
-                          {sku.sku_code}{sku.variant_name ? ` / ${sku.variant_name}` : ""}
-                        </div>
-                      </td>
-                      {stores.map((st) => {
-                        const it = row?.get(st.id);
-                        if (!it) return <td key={st.id} className="px-2 py-2 text-right text-zinc-300">·</td>;
-                        const edit = edits.get(it.id);
-                        const cur = edit !== undefined ? edit : String(it.picked_qty ?? it.qty);
-                        const isEdited = edit !== undefined;
-                        const isShippedItem = it.generated_transfer_id !== null;
-                        return (
-                          <td key={st.id} className="px-1 py-1 text-right">
-                            <div className="flex flex-col">
+                    <Fragment key={sku.id}>
+                      {/* 應發 */}
+                      <tr className="bg-zinc-50/50 dark:bg-zinc-900/50">
+                        <td
+                          rowSpan={3}
+                          className="sticky left-0 bg-white px-3 py-2 align-top dark:bg-zinc-900"
+                        >
+                          <div className="font-medium">{sku.product_name ?? "—"}</div>
+                          <div className="text-xs text-zinc-500">
+                            {sku.sku_code}{sku.variant_name ? ` / ${sku.variant_name}` : ""}
+                          </div>
+                        </td>
+                        <td className="px-2 py-1 text-xs text-zinc-500">應發</td>
+                        {stores.map((st) => {
+                          const it = row?.get(st.id);
+                          return (
+                            <td key={st.id} className="px-2 py-1 text-right font-mono text-zinc-500">
+                              {it ? Number(it.qty) : <span className="text-zinc-300">·</span>}
+                            </td>
+                          );
+                        })}
+                        <td className="px-3 py-1 text-right font-mono text-zinc-600">{expectedTotal}</td>
+                      </tr>
+
+                      {/* 實分 */}
+                      <tr>
+                        <td className="px-2 py-1 text-xs font-semibold">實分</td>
+                        {stores.map((st) => {
+                          const it = row?.get(st.id);
+                          if (!it) return <td key={st.id} className="px-2 py-1 text-right text-zinc-300">·</td>;
+                          const edit = edits.get(it.id);
+                          const cur = edit !== undefined ? edit : String(it.picked_qty ?? it.qty);
+                          const isEdited = edit !== undefined;
+                          const isShippedItem = it.generated_transfer_id !== null;
+                          return (
+                            <td key={st.id} className="px-1 py-1 text-right">
                               <input
                                 inputMode="decimal"
                                 disabled={isShippedItem || effectiveStatus === "shipped"}
                                 value={cur}
                                 onChange={(e) => setEdit(it.id, e.target.value)}
-                                className={`w-14 rounded-md border px-1 py-0.5 text-right font-mono text-sm ${isEdited ? "border-amber-400 bg-amber-50 dark:bg-amber-950" : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-800"} disabled:bg-zinc-100 disabled:opacity-60 dark:disabled:bg-zinc-800`}
+                                className={`w-14 rounded-md border px-1 py-0.5 text-right font-mono text-sm font-semibold ${
+                                  isEdited
+                                    ? "border-amber-400 bg-amber-50 dark:bg-amber-950"
+                                    : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-800"
+                                } disabled:bg-zinc-100 disabled:opacity-60 dark:disabled:bg-zinc-800`}
                               />
-                              <div className="text-[10px] text-zinc-400">
-                                應 {it.qty}
-                              </div>
-                            </div>
-                          </td>
-                        );
-                      })}
-                      <td className="px-3 py-2 text-right font-mono font-semibold">{total}</td>
-                    </tr>
+                            </td>
+                          );
+                        })}
+                        <td className="px-3 py-1 text-right font-mono font-semibold">{actualTotal}</td>
+                      </tr>
+
+                      {/* 狀態 */}
+                      <tr className="bg-zinc-50/50 dark:bg-zinc-900/50">
+                        <td className="px-2 py-1 text-xs text-zinc-500">狀態</td>
+                        {stores.map((st) => {
+                          const it = row?.get(st.id);
+                          if (!it) return <td key={st.id} className="px-2 py-1 text-right text-zinc-300">—</td>;
+                          const edit = edits.get(it.id);
+                          const cur = Number(edit !== undefined ? edit : (it.picked_qty ?? it.qty));
+                          const diff = !Number.isNaN(cur) ? cur - Number(it.qty) : 0;
+                          if (diff === 0) {
+                            return <td key={st.id} className="px-2 py-1 text-right text-xs text-zinc-400">—</td>;
+                          }
+                          if (diff > 0) {
+                            return (
+                              <td key={st.id} className="px-2 py-1 text-right text-xs font-medium text-purple-600 dark:text-purple-400">
+                                +{diff} 超賣
+                              </td>
+                            );
+                          }
+                          return (
+                            <td key={st.id} className="px-2 py-1 text-right text-xs font-medium text-red-600 dark:text-red-400">
+                              {diff} 短缺
+                            </td>
+                          );
+                        })}
+                        <td className={`px-3 py-1 text-right font-mono text-xs font-semibold ${
+                          totalDiff === 0
+                            ? "text-emerald-600 dark:text-emerald-400"
+                            : totalDiff > 0
+                            ? "text-purple-600 dark:text-purple-400"
+                            : "text-red-600 dark:text-red-400"
+                        }`}>
+                          {totalDiff === 0 ? "✓" : (totalDiff > 0 ? `+${totalDiff}` : `${totalDiff}`)}
+                        </td>
+                      </tr>
+                    </Fragment>
                   );
                 })}
               </tbody>
