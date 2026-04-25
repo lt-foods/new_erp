@@ -48,6 +48,13 @@ export default function PurchaseRequestsListPage() {
   const [reloadTick, setReloadTick] = useState(0);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [busyDate, setBusyDate] = useState<string | null>(null);
+  const [progressById, setProgressById] = useState<
+    Map<number, {
+      po_total: number; po_sent: number; po_received_fully: number;
+      transfer_total: number; transfer_shipped: number; transfer_delivered: number;
+      all_campaigns_finalized: boolean;
+    }>
+  >(new Map());
 
   // ============== 載入既有 PRs ==============
   useEffect(() => {
@@ -70,7 +77,50 @@ export default function PurchaseRequestsListPage() {
           return;
         }
         setError(null);
-        setRows((data ?? []) as Row[]);
+        const prRows = (data ?? []) as Row[];
+        setRows(prRows);
+
+        const ids = prRows.map((r) => r.id);
+        if (ids.length) {
+          const { data: prog } = await getSupabase()
+            .from("v_pr_progress")
+            .select("pr_id, po_total, po_sent, po_received_fully, transfer_total, transfer_shipped, transfer_delivered, all_campaigns_finalized")
+            .in("pr_id", ids);
+          if (!cancelled) {
+            const m = new Map<
+              number,
+              {
+                po_total: number; po_sent: number; po_received_fully: number;
+                transfer_total: number; transfer_shipped: number; transfer_delivered: number;
+                all_campaigns_finalized: boolean;
+              }
+            >();
+            type ProgRow = {
+              pr_id: number;
+              po_total: number;
+              po_sent: number;
+              po_received_fully: number;
+              transfer_total: number;
+              transfer_shipped: number;
+              transfer_delivered: number;
+              all_campaigns_finalized: boolean;
+            };
+            for (const p of (prog as ProgRow[] | null) ?? []) {
+              m.set(p.pr_id, {
+                po_total: Number(p.po_total),
+                po_sent: Number(p.po_sent),
+                po_received_fully: Number(p.po_received_fully),
+                transfer_total: Number(p.transfer_total),
+                transfer_shipped: Number(p.transfer_shipped),
+                transfer_delivered: Number(p.transfer_delivered),
+                all_campaigns_finalized: !!p.all_campaigns_finalized,
+              });
+            }
+            setProgressById(m);
+          }
+        } else {
+          setProgressById(new Map());
+        }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       }
@@ -392,12 +442,27 @@ export default function PurchaseRequestsListPage() {
                       status={r.status}
                       reviewStatus={r.review_status}
                       compact
+                      poSummary={(() => {
+                        const p = progressById.get(r.id);
+                        return p
+                          ? { total: p.po_total, sent: p.po_sent, receivedFully: p.po_received_fully }
+                          : undefined;
+                      })()}
+                      transferSummary={(() => {
+                        const p = progressById.get(r.id);
+                        return p
+                          ? { total: p.transfer_total, shipped: p.transfer_shipped, delivered: p.transfer_delivered }
+                          : undefined;
+                      })()}
+                      campaignFinalized={progressById.get(r.id)?.all_campaigns_finalized}
                       events={{
                         create: { href: `/purchase/requests/edit?id=${r.id}` },
                         draft: { href: `/purchase/requests/edit?id=${r.id}` },
                         submit: { href: `/purchase/requests/edit?id=${r.id}` },
                         review: { href: `/purchase/requests/edit?id=${r.id}` },
                         split: { href: `/purchase/orders` },
+                        send: { href: `/purchase/orders` },
+                        receive: { href: `/purchase/orders` },
                       }}
                     />
                   </Td>
