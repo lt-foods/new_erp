@@ -322,7 +322,6 @@ async function buildTimeline(
         detailHref: onNavigate ? undefined : srcHref,
         detailOnClick: srcClick,
       },
-      { label: "運送中", ts: null, done: false, detail: "（暫無系統紀錄、由店家自行協調）" },
       { label: "分店收貨", ts: null, done: false, detail: "（暫無系統紀錄）" },
       { label: "顧客取貨", ts: null, done: pickedUp, detail: head.status },
     ];
