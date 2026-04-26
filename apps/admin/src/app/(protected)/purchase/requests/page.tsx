@@ -38,6 +38,20 @@ const REVIEW_LABEL: Record<string, string> = {
   rejected: "已退回",
 };
 
+const SOURCE_LABEL: Record<string, string> = {
+  close_date: "結單日帶入",
+  campaign: "單一團購",
+  manual: "手動",
+};
+
+type ClosedCampaignRow = {
+  id: number;
+  name: string;
+  close_date: string;
+  existing_pr_id: number | null;
+  same_close_date_has_pr: boolean;
+};
+
 export default function PurchaseRequestsListPage() {
   const router = useRouter();
   const [rows, setRows] = useState<Row[] | null>(null);
@@ -48,6 +62,10 @@ export default function PurchaseRequestsListPage() {
   const [reloadTick, setReloadTick] = useState(0);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [busyDate, setBusyDate] = useState<string | null>(null);
+  const [creatingBlank, setCreatingBlank] = useState(false);
+  const [showCampaignModal, setShowCampaignModal] = useState(false);
+  const [closedCampaigns, setClosedCampaigns] = useState<ClosedCampaignRow[] | null>(null);
+  const [creatingFromCampaignId, setCreatingFromCampaignId] = useState<number | null>(null);
   const [progressById, setProgressById] = useState<
     Map<number, {
       po_total: number; po_sent: number; po_received_fully: number;
@@ -240,6 +258,98 @@ export default function PurchaseRequestsListPage() {
     }
   }
 
+  async function handleCreateBlank() {
+    setCreatingBlank(true);
+    setError(null);
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { data: prId, error: rpcErr } = await supabase.rpc("rpc_create_pr_blank", {
+        p_operator: userData.user?.id,
+      });
+      if (rpcErr) throw new Error(rpcErr.message);
+      router.push(`/purchase/requests/edit?id=${prId}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setCreatingBlank(false);
+    }
+  }
+
+  async function openCampaignModal() {
+    setShowCampaignModal(true);
+    setError(null);
+    if (closedCampaigns !== null) return;
+    try {
+      const supabase = getSupabase();
+      const since = new Date();
+      since.setDate(since.getDate() - 60);
+      const { data: camps } = await supabase
+        .from("group_buy_campaigns")
+        .select("id, name, end_at")
+        .eq("status", "closed")
+        .gte("end_at", since.toISOString())
+        .order("end_at", { ascending: false });
+
+      const { data: existingCampaignPRs } = await supabase
+        .from("purchase_requests")
+        .select("id, source_campaign_id")
+        .eq("source_type", "campaign")
+        .neq("status", "cancelled");
+      const prByCamp = new Map<number, number>(
+        ((existingCampaignPRs as { id: number; source_campaign_id: number | null }[] | null) ?? [])
+          .filter((p) => p.source_campaign_id !== null)
+          .map((p) => [p.source_campaign_id as number, p.id]),
+      );
+
+      const { data: existingCloseDatePRs } = await supabase
+        .from("purchase_requests")
+        .select("source_close_date")
+        .eq("source_type", "close_date")
+        .neq("status", "cancelled");
+      const closeDateSet = new Set(
+        ((existingCloseDatePRs as { source_close_date: string | null }[] | null) ?? [])
+          .map((p) => p.source_close_date)
+          .filter((d): d is string => !!d),
+      );
+
+      const result: ClosedCampaignRow[] = ((camps as { id: number; name: string; end_at: string | null }[] | null) ?? [])
+        .filter((c) => !!c.end_at)
+        .map((c) => {
+          const closeDate = new Date(c.end_at as string).toLocaleDateString("sv-SE");
+          return {
+            id: c.id,
+            name: c.name,
+            close_date: closeDate,
+            existing_pr_id: prByCamp.get(c.id) ?? null,
+            same_close_date_has_pr: closeDateSet.has(closeDate),
+          };
+        });
+
+      setClosedCampaigns(result);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setClosedCampaigns([]);
+    }
+  }
+
+  async function handleCreateFromCampaign(campaignId: number) {
+    setCreatingFromCampaignId(campaignId);
+    setError(null);
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { data: prId, error: rpcErr } = await supabase.rpc("rpc_create_pr_from_campaign", {
+        p_campaign_id: campaignId,
+        p_operator: userData.user?.id,
+      });
+      if (rpcErr) throw new Error(rpcErr.message);
+      router.push(`/purchase/requests/edit?id=${prId}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setCreatingFromCampaignId(null);
+    }
+  }
+
   async function approve(id: number) {
     if (!confirm("確定通過審核？")) return;
     setBusyId(id);
@@ -283,11 +393,29 @@ export default function PurchaseRequestsListPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
-      <header>
-        <h1 className="text-xl font-semibold">採購單（PR）</h1>
-        <p className="text-sm text-zinc-500">
-          {rows === null ? "載入中…" : `共 ${rows.length} 筆`}
-        </p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">採購單（PR）</h1>
+          <p className="text-sm text-zinc-500">
+            {rows === null ? "載入中…" : `共 ${rows.length} 筆`}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={openCampaignModal}
+            disabled={creatingBlank}
+            className="rounded-md border border-blue-600 bg-white px-3 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50 disabled:opacity-50 dark:bg-zinc-900 dark:hover:bg-zinc-800"
+          >
+            + 針對團購建單
+          </button>
+          <button
+            onClick={handleCreateBlank}
+            disabled={creatingBlank}
+            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          >
+            {creatingBlank ? "建立中…" : "+ 空白採購單"}
+          </button>
+        </div>
       </header>
 
       {error && (
@@ -405,7 +533,7 @@ export default function PurchaseRequestsListPage() {
                     </a>
                   </Td>
                   <Td className="text-xs text-zinc-500">
-                    {r.source_type === "close_date" ? "結單日帶入" : "手動"}
+                    {SOURCE_LABEL[r.source_type] ?? r.source_type}
                   </Td>
                   <Td className="text-xs">{r.source_close_date ?? "—"}</Td>
                   <Td>
@@ -500,6 +628,69 @@ export default function PurchaseRequestsListPage() {
           </tbody>
         </table>
       </div>
+
+      {showCampaignModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setShowCampaignModal(false)}
+        >
+          <div
+            className="max-h-[80vh] w-full max-w-2xl overflow-hidden rounded-lg bg-white shadow-xl dark:bg-zinc-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+              <h3 className="text-base font-semibold">針對單一團購建單</h3>
+              <button
+                onClick={() => setShowCampaignModal(false)}
+                className="text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="max-h-[60vh] overflow-y-auto p-4">
+              {closedCampaigns === null ? (
+                <div className="text-center text-sm text-zinc-500">載入中…</div>
+              ) : closedCampaigns.length === 0 ? (
+                <div className="text-center text-sm text-zinc-500">過去 60 天無已結單團購</div>
+              ) : (
+                <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                  {closedCampaigns.map((c) => {
+                    const disabled = c.existing_pr_id !== null || creatingFromCampaignId !== null;
+                    return (
+                      <li key={c.id} className="flex items-center justify-between gap-3 py-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-medium">{c.name}</div>
+                          <div className="mt-0.5 text-xs text-zinc-500">
+                            結單日 {c.close_date}
+                            {c.existing_pr_id !== null && (
+                              <a
+                                href={`/purchase/requests/edit?id=${c.existing_pr_id}`}
+                                className="ml-2 text-amber-600 hover:underline dark:text-amber-400"
+                              >
+                                · 已有採購單 #{c.existing_pr_id}
+                              </a>
+                            )}
+                            {c.existing_pr_id === null && c.same_close_date_has_pr && (
+                              <span className="ml-2 text-zinc-400">· 同日已有結單日 PR（共存）</span>
+                            )}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleCreateFromCampaign(c.id)}
+                          disabled={disabled}
+                          className="shrink-0 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-40"
+                        >
+                          {creatingFromCampaignId === c.id ? "建立中…" : "建單"}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

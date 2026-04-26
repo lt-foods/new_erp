@@ -686,7 +686,16 @@ export default function EditPurchaseRequestPage() {
             {items.length === 0 ? (
               <tr>
                 <td colSpan={10} className="p-6 text-center text-zinc-500">
-                  無品項
+                  {header?.source_type === "manual" ? (
+                    <div className="space-y-1">
+                      <div>無品項</div>
+                      <div className="text-xs text-amber-600 dark:text-amber-400">
+                        ⚠️ 手動加列 UI 尚未實作；目前空白 PR 僅可觀察 / 取消，加列功能跟隨 PR 將補上
+                      </div>
+                    </div>
+                  ) : (
+                    "無品項"
+                  )}
                 </td>
               </tr>
             ) : (
