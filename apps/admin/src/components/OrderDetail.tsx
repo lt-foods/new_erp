@@ -31,11 +31,17 @@ type ItemRow = {
   sku: { id: number; sku_code: string; product_name: string | null; variant_name: string | null } | null;
 };
 
-type TimelineStep = { label: string; ts: string | null; done: boolean; detail?: string };
+type TimelineStep = {
+  label: string;
+  ts: string | null;
+  done: boolean;
+  detail?: string;
+  detailHref?: string;
+};
 
-function uidShort(uid: string | null): string {
+function staffLabel(uid: string | null, names: Map<string, string>): string {
   if (!uid) return "—";
-  return uid.slice(0, 8);
+  return names.get(uid) ?? uid.slice(0, 8);
 }
 
 function fmtDt(iso: string): string {
@@ -46,6 +52,7 @@ export function OrderDetail({ orderId }: { orderId: number }) {
   const [head, setHead] = useState<OrderHead | null>(null);
   const [items, setItems] = useState<ItemRow[] | null>(null);
   const [timeline, setTimeline] = useState<TimelineStep[] | null>(null);
+  const [staffNames, setStaffNames] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -68,6 +75,23 @@ export function OrderDetail({ orderId }: { orderId: number }) {
       if (iRes.error) { setError(iRes.error.message); return; }
       const itemsData = (iRes.data ?? []) as unknown as ItemRow[];
       setItems(itemsData);
+
+      // ========== 載入加單者 user names ==========
+      const uids = new Set<string>();
+      for (const it of itemsData) {
+        if (it.created_by) uids.add(it.created_by);
+        if (it.updated_by) uids.add(it.updated_by);
+      }
+      if (uids.size > 0) {
+        const { data: names } = await sb.rpc("rpc_get_staff_names", {
+          p_uids: Array.from(uids),
+        });
+        const m = new Map<string, string>();
+        for (const n of (names as { id: string; display_name: string }[] | null) ?? []) {
+          m.set(n.id, n.display_name);
+        }
+        if (!cancelled) setStaffNames(m);
+      }
 
       // ========== 載入 timeline ==========
       const skuIds = itemsData.map((it) => it.sku?.id).filter((x): x is number => !!x);
@@ -156,11 +180,11 @@ export function OrderDetail({ orderId }: { orderId: number }) {
                     <td className="px-3 py-2 text-right font-mono">${sub}</td>
                     <td className="px-3 py-2 text-zinc-500">
                       {fmtDt(it.created_at)}<br />
-                      <span className="font-mono text-[10px]">by {uidShort(it.created_by)}</span>
+                      <span className="text-[10px]">by {staffLabel(it.created_by, staffNames)}</span>
                     </td>
                     <td className="px-3 py-2 text-zinc-500">
                       {fmtDt(it.updated_at)}<br />
-                      <span className="font-mono text-[10px]">by {uidShort(it.updated_by)}</span>
+                      <span className="text-[10px]">by {staffLabel(it.updated_by, staffNames)}</span>
                     </td>
                   </tr>
                 );
@@ -189,11 +213,13 @@ async function buildTimeline(
   let poDone = false;
   let poTs: string | null = null;
   let poDetail = "";
-  if (campaignId) {
+  // 只看這張訂單裡實際 SKU 對應的 PO（過濾掉同 campaign 但其它 SKU 用到的 PO）
+  if (campaignId && skuIds.length > 0) {
     const { data: pris } = await sb
       .from("purchase_request_items")
       .select("po_item_id")
       .eq("source_campaign_id", campaignId)
+      .in("sku_id", skuIds)
       .not("po_item_id", "is", null);
     const poItemIds = ((pris as { po_item_id: number | null }[] | null) ?? [])
       .map((r) => r.po_item_id)
@@ -228,6 +254,8 @@ async function buildTimeline(
   // Step 2/3/4: wave → transfer
   let wavePicked = false;
   let waveTs: string | null = null;
+  let waveDetail = "";
+  let waveHref: string | undefined;
   let xferShipped = false;
   let shippedTs: string | null = null;
   let xferReceived = false;
@@ -250,9 +278,9 @@ async function buildTimeline(
       // wave 狀態
       const { data: ws } = await sb
         .from("picking_waves")
-        .select("id, status, updated_at")
+        .select("id, wave_code, status, updated_at")
         .in("id", waveIds);
-      const waves = ((ws as { id: number; status: string; updated_at: string }[] | null) ?? []);
+      const waves = ((ws as { id: number; wave_code: string; status: string; updated_at: string }[] | null) ?? []);
       const allPicked = waves.length > 0 && waves.every((w) => ["picked", "shipped", "cancelled"].includes(w.status));
       if (allPicked) {
         wavePicked = true;
@@ -260,6 +288,13 @@ async function buildTimeline(
           .map((w) => w.updated_at)
           .sort()
           .reverse()[0] ?? null;
+      }
+      if (waves.length === 1) {
+        waveDetail = waves[0].wave_code;
+        waveHref = `/picking/history?wave=${waves[0].id}`;
+      } else if (waves.length > 1) {
+        waveDetail = `${waves.length} 張撿貨單`;
+        waveHref = `/picking/history`;
       }
 
       // transfer for each wave to this store
@@ -298,8 +333,8 @@ async function buildTimeline(
 
   return [
     { label: "採購到貨", ts: poTs, done: poDone, detail: poDetail || undefined },
-    { label: "撿貨完成", ts: waveTs, done: wavePicked, detail: xferDetail || undefined },
-    { label: "派貨出倉", ts: shippedTs, done: xferShipped },
+    { label: "撿貨完成", ts: waveTs, done: wavePicked, detail: waveDetail || undefined, detailHref: waveHref },
+    { label: "派貨出倉", ts: shippedTs, done: xferShipped, detail: xferDetail || undefined },
     { label: "分店收貨", ts: receivedTs, done: xferReceived },
     { label: "顧客取貨", ts: null, done: pickedUp, detail: status },
   ];
@@ -333,7 +368,16 @@ function Timeline({ steps }: { steps: TimelineStep[] | null }) {
                 {s.label}
               </div>
               {s.detail && (
-                <div className="text-[10px] text-zinc-500">{s.detail}</div>
+                s.detailHref ? (
+                  <a
+                    href={s.detailHref}
+                    className="text-[10px] font-mono text-blue-600 hover:underline dark:text-blue-400"
+                  >
+                    {s.detail}
+                  </a>
+                ) : (
+                  <div className="text-[10px] text-zinc-500">{s.detail}</div>
+                )
               )}
               {s.ts && (
                 <div className="text-[10px] text-zinc-400">
