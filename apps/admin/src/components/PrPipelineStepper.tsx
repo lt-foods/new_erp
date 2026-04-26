@@ -163,6 +163,11 @@ export function PrPipelineStepper({
                   {evt.time.replace(/\s.*/, "")}
                 </span>
               )}
+              {!compact && evt?.detail && (s.state === "current" || s.state === "done") && (
+                <span className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                  {evt.detail}
+                </span>
+              )}
             </StepInner>
             {i < steps.length - 1 && (
               <div

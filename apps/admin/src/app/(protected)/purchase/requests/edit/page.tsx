@@ -84,7 +84,7 @@ export default function EditPurchaseRequestPage() {
   const [appending, setAppending] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"save" | "submit" | "split" | null>(null);
+  const [busy, setBusy] = useState<"save" | "submit" | "split" | "reopen" | null>(null);
   const [destLocationId, setDestLocationId] = useState<number | null>(null);
 
   useEffect(() => {
@@ -289,6 +289,7 @@ export default function EditPurchaseRequestPage() {
   const editable = header?.status === "draft";
   const canSplit =
     header?.status === "submitted" && header?.review_status === "approved";
+  const canReopen = header?.status === "submitted";
 
   const totals = useMemo(() => {
     const subtotal = items.reduce((s, r) => s + r.qty_requested * r.unit_cost, 0);
@@ -378,6 +379,26 @@ export default function EditPurchaseRequestPage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
+      setBusy(null);
+    }
+  }
+
+  async function reopenToDraft() {
+    if (!id) return;
+    if (!confirm("確定退回草稿？退回後可重新編輯品項與供應商，需再次送審。")) return;
+    setBusy("reopen");
+    setError(null);
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { error: rpcErr } = await supabase.rpc("rpc_pr_reopen", {
+        p_pr_id: id,
+        p_operator: userData.user?.id,
+      });
+      if (rpcErr) throw new Error(rpcErr.message);
+      window.location.reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
       setBusy(null);
     }
   }
@@ -589,7 +610,17 @@ export default function EditPurchaseRequestPage() {
                   {busy === "split" ? "建立中…" : "📦 建立採購訂單"}
                 </button>
               )}
-              {!editable && !canSplit && (
+              {canReopen && (
+                <button
+                  onClick={reopenToDraft}
+                  disabled={busy !== null}
+                  className="rounded-md border border-amber-400 px-3 py-2 text-sm font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-950"
+                  title="退回草稿以重新編輯"
+                >
+                  {busy === "reopen" ? "退回中…" : "↩ 退回草稿"}
+                </button>
+              )}
+              {!editable && !canSplit && !canReopen && (
                 <p className="text-xs text-zinc-500">此採購單已 {STATUS_LABEL[header.status]}，無可用動作。</p>
               )}
             </div>
@@ -850,6 +881,14 @@ function buildEvents(
       detail: `${receivedFully.length}/${pos.length} 張全部到貨`,
       href: pos.length === 1 ? `/purchase/orders/edit?id=${pos[0].id}` : `/purchase/orders`,
     };
+  }
+  // S8 派貨 / S9 分店確認 — 顯示配送日
+  if (header.source_close_date) {
+    evt.ship = {
+      detail: `配送 ${header.source_close_date}`,
+      href: `/picking/history`,
+    };
+    evt.delivered = { detail: `配送 ${header.source_close_date}` };
   }
   return evt;
 }

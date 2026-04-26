@@ -463,6 +463,8 @@ export default function PurchaseRequestsListPage() {
                         split: { href: `/purchase/orders` },
                         send: { href: `/purchase/orders` },
                         receive: { href: `/purchase/orders` },
+                        ship: r.source_close_date ? { detail: `配送 ${r.source_close_date}`, href: `/picking/history` } : undefined,
+                        delivered: r.source_close_date ? { detail: `配送 ${r.source_close_date}` } : undefined,
                       }}
                     />
                   </Td>

@@ -7,7 +7,7 @@ import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
 
 type OrderStatus =
-  | "pending" | "confirmed" | "reserved" | "ready" | "partially_ready"
+  | "pending" | "confirmed" | "reserved" | "shipping" | "ready" | "partially_ready"
   | "partially_completed" | "completed" | "expired" | "cancelled";
 
 type Row = {
@@ -27,9 +27,9 @@ type Store = { id: number; code: string; name: string };
 type Member = { id: number; name: string | null; phone: string | null; member_no: string };
 
 const STATUS_LABEL: Record<OrderStatus, string> = {
-  pending: "待確認", confirmed: "已確認", reserved: "已保留", ready: "可取貨",
-  partially_ready: "部分可取", partially_completed: "部分取貨", completed: "已完成",
-  expired: "逾期", cancelled: "已取消",
+  pending: "待確認", confirmed: "已確認", reserved: "已保留", shipping: "派貨中",
+  ready: "可取貨", partially_ready: "部分可取", partially_completed: "部分取貨",
+  completed: "已完成", expired: "逾期", cancelled: "已取消",
 };
 
 const PAGE_SIZE = 50;
@@ -249,6 +249,7 @@ function StatusBadge({ s }: { s: OrderStatus }) {
     pending: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
     confirmed: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
     reserved: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300",
+    shipping: "bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300",
     ready: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300",
     partially_ready: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
     partially_completed: "bg-teal-100 text-teal-800 dark:bg-teal-950 dark:text-teal-300",

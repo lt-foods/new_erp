@@ -30,6 +30,7 @@ type SkuCard = {
   is_short: boolean; // 是否缺貨（進庫量 < 訂單需求）
   po_numbers: string[]; // PO 單號集合
   order_numbers: string[]; // 訂單號集合
+  is_picked: boolean; // 該結單日已建過 wave
 };
 
 type SelectedItem = {
@@ -52,6 +53,7 @@ export default function PickingWorkstationPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [showOnlyNonZero, setShowOnlyNonZero] = useState(false);
   const [expandedSkuIds, setExpandedSkuIds] = useState<Set<number>>(new Set());
+  const [pickedSkuIds, setPickedSkuIds] = useState<Set<number>>(new Set());
 
   // 載入可用結單日
   useEffect(() => {
@@ -110,6 +112,25 @@ export default function PickingWorkstationPage() {
         // 保存到歷史記錄
         setDemandHistory((prev) => new Map(prev).set(closeDate, rows));
 
+        // 過濾已撿過的 SKU：該結單日已有非 cancelled 的 wave 涉及的 sku 不再顯示
+        const { data: priorWaves } = await sb
+          .from("picking_waves")
+          .select("id")
+          .eq("wave_date", closeDate)
+          .neq("status", "cancelled");
+        const priorWaveIds = (priorWaves as { id: number }[] | null)?.map((w) => w.id) ?? [];
+        if (priorWaveIds.length > 0) {
+          const { data: pickedItems } = await sb
+            .from("picking_wave_items")
+            .select("sku_id")
+            .in("wave_id", priorWaveIds);
+          if (!cancelled) {
+            setPickedSkuIds(new Set((pickedItems as { sku_id: number }[] | null)?.map((i) => i.sku_id) ?? []));
+          }
+        } else if (!cancelled) {
+          setPickedSkuIds(new Set());
+        }
+
         const storeIds = Array.from(new Set(rows.map((r) => r.store_id)));
         if (storeIds.length) {
           const { data: ss } = await sb
@@ -150,6 +171,7 @@ export default function PickingWorkstationPage() {
           is_short: false,
           po_numbers: [],
           order_numbers: [],
+          is_picked: false,
         });
         poSet.set(r.sku_id, new Set());
         orderSet.set(r.sku_id, new Set());
@@ -185,10 +207,15 @@ export default function PickingWorkstationPage() {
       card.po_numbers = Array.from(poSet.get(card.sku_id) ?? new Set<string>()).sort();
       card.order_numbers = Array.from(orderSet.get(card.sku_id) ?? new Set<string>()).sort();
     }
-    return Array.from(m.values()).sort((a, b) =>
-      (a.sku_code ?? "").localeCompare(b.sku_code ?? ""),
-    );
-  }, [demand, stores, closeDate]);
+    for (const card of m.values()) {
+      card.is_picked = pickedSkuIds.has(card.sku_id);
+    }
+    return Array.from(m.values()).sort((a, b) => {
+      // 已撿的排在後面
+      if (a.is_picked !== b.is_picked) return a.is_picked ? 1 : -1;
+      return (a.sku_code ?? "").localeCompare(b.sku_code ?? "");
+    });
+  }, [demand, stores, closeDate, pickedSkuIds]);
 
   const filteredCards = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
@@ -226,6 +253,7 @@ export default function PickingWorkstationPage() {
           is_short: false,
           po_numbers: [],
           order_numbers: [],
+          is_picked: false,
         });
         poSet.set(skuId, new Set());
         orderSet.set(skuId, new Set());
@@ -456,11 +484,14 @@ export default function PickingWorkstationPage() {
                   const key = `${closeDate}|${c.sku_id}`;
                   const selected = selectedItems.has(key);
                   const isExpanded = expandedSkuIds.has(c.sku_id);
+                  const isPicked = c.is_picked;
                   return (
                     <li
                       key={c.sku_id}
                       className={`rounded-md border p-2 text-xs ${
-                        selected
+                        isPicked
+                          ? "border-zinc-200 bg-zinc-50 opacity-60 dark:border-zinc-800 dark:bg-zinc-900/50"
+                          : selected
                           ? "border-blue-300 bg-blue-50 dark:border-blue-800 dark:bg-blue-950/30"
                           : "border-zinc-200 dark:border-zinc-800"
                       }`}
@@ -468,18 +499,26 @@ export default function PickingWorkstationPage() {
                       <div className="mb-1 flex items-start justify-between gap-2">
                         <div>
                           <div className="font-mono text-zinc-500">{c.sku_code ?? "—"}</div>
-                          <div className="font-semibold">{c.sku_label}</div>
+                          <div className={`font-semibold ${isPicked ? "text-zinc-500 dark:text-zinc-500" : ""}`}>
+                            {c.sku_label}
+                          </div>
                         </div>
-                        <button
-                          onClick={() => toggleSku(c.sku_id)}
-                          className={`shrink-0 rounded-md px-2 py-1 text-xs font-semibold ${
-                            selected
-                              ? "bg-zinc-200 text-zinc-700 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200"
-                              : "bg-blue-600 text-white hover:bg-blue-700"
-                          }`}
-                        >
-                          {selected ? "✓ 已加入" : "+ 加入"}
-                        </button>
+                        {isPicked ? (
+                          <span className="shrink-0 rounded-md bg-zinc-200 px-2 py-1 text-xs font-semibold text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300">
+                            ✓ 已撿過
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => toggleSku(c.sku_id)}
+                            className={`shrink-0 rounded-md px-2 py-1 text-xs font-semibold ${
+                              selected
+                                ? "bg-zinc-200 text-zinc-700 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200"
+                                : "bg-blue-600 text-white hover:bg-blue-700"
+                            }`}
+                          >
+                            {selected ? "✓ 已加入" : "+ 加入"}
+                          </button>
+                        )}
                       </div>
                       <div className="text-[11px] text-zinc-600 dark:text-zinc-400">
                         叫貨：<span className="font-mono">{c.total_demand}</span>
