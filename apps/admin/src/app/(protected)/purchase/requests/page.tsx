@@ -52,6 +52,7 @@ export default function PurchaseRequestsListPage() {
     Map<number, {
       po_total: number; po_sent: number; po_received_fully: number;
       transfer_total: number; transfer_shipped: number; transfer_delivered: number;
+      item_count: number; unassigned_supplier_count: number;
       all_campaigns_finalized: boolean;
     }>
   >(new Map());
@@ -84,7 +85,7 @@ export default function PurchaseRequestsListPage() {
         if (ids.length) {
           const { data: prog } = await getSupabase()
             .from("v_pr_progress")
-            .select("pr_id, po_total, po_sent, po_received_fully, transfer_total, transfer_shipped, transfer_delivered, all_campaigns_finalized")
+            .select("pr_id, po_total, po_sent, po_received_fully, transfer_total, transfer_shipped, transfer_delivered, item_count, unassigned_supplier_count, all_campaigns_finalized")
             .in("pr_id", ids);
           if (!cancelled) {
             const m = new Map<
@@ -92,6 +93,7 @@ export default function PurchaseRequestsListPage() {
               {
                 po_total: number; po_sent: number; po_received_fully: number;
                 transfer_total: number; transfer_shipped: number; transfer_delivered: number;
+                item_count: number; unassigned_supplier_count: number;
                 all_campaigns_finalized: boolean;
               }
             >();
@@ -103,6 +105,8 @@ export default function PurchaseRequestsListPage() {
               transfer_total: number;
               transfer_shipped: number;
               transfer_delivered: number;
+              item_count: number;
+              unassigned_supplier_count: number;
               all_campaigns_finalized: boolean;
             };
             for (const p of (prog as ProgRow[] | null) ?? []) {
@@ -113,6 +117,8 @@ export default function PurchaseRequestsListPage() {
                 transfer_total: Number(p.transfer_total),
                 transfer_shipped: Number(p.transfer_shipped),
                 transfer_delivered: Number(p.transfer_delivered),
+                item_count: Number(p.item_count),
+                unassigned_supplier_count: Number(p.unassigned_supplier_count),
                 all_campaigns_finalized: !!p.all_campaigns_finalized,
               });
             }
@@ -367,6 +373,7 @@ export default function PurchaseRequestsListPage() {
               <Th>結單日</Th>
               <Th>狀態</Th>
               <Th>審核</Th>
+              <Th className="text-right">品項</Th>
               <Th className="text-right">總金額</Th>
               <Th className="text-right">更新</Th>
               <Th></Th>
@@ -376,13 +383,13 @@ export default function PurchaseRequestsListPage() {
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
               <tr>
-                <td colSpan={9} className="p-3 text-center text-zinc-500">
+                <td colSpan={10} className="p-3 text-center text-zinc-500">
                   載入中…
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={9} className="p-6 text-center text-zinc-500">
+                <td colSpan={10} className="p-6 text-center text-zinc-500">
                   尚無採購單
                 </td>
               </tr>
@@ -410,6 +417,25 @@ export default function PurchaseRequestsListPage() {
                       kind="review"
                       status={r.review_status}
                     />
+                  </Td>
+                  <Td className="text-right text-xs">
+                    {(() => {
+                      const p = progressById.get(r.id);
+                      if (!p) return <span className="text-zinc-400">—</span>;
+                      return (
+                        <span className="font-mono">
+                          {p.item_count}
+                          {p.unassigned_supplier_count > 0 && (
+                            <span
+                              className="ml-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                              title="未指派供應商"
+                            >
+                              {p.unassigned_supplier_count} 待指派
+                            </span>
+                          )}
+                        </span>
+                      );
+                    })()}
                   </Td>
                   <Td className="text-right font-mono">${Number(r.total_amount).toFixed(0)}</Td>
                   <Td className="text-right text-xs text-zinc-500">

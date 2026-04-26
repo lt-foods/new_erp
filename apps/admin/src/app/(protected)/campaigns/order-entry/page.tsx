@@ -209,10 +209,10 @@ export default function OrderEntryPage() {
     );
   }
 
-  // 全域快速鍵：Ctrl+N 加新顧客、Ctrl+S 送出
+  // 全域快速鍵：Alt+N 加新顧客（避開 Ctrl+N 被瀏覽器搶走）、Ctrl+S 送出
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "n") {
         e.preventDefault();
         setEntries((es) => [...es, newEntry()]);
       }
@@ -286,7 +286,7 @@ export default function OrderEntryPage() {
           )}
         </div>
         <div className="flex items-center gap-2 text-xs text-zinc-500">
-          <kbd className="rounded border px-1">Ctrl+N</kbd> 新顧客
+          <kbd className="rounded border px-1">Alt+N</kbd> 新顧客
           <kbd className="rounded border px-1">Ctrl+S</kbd> 送出
         </div>
       </header>
@@ -340,7 +340,7 @@ export default function OrderEntryPage() {
             onClick={() => setEntries((es) => [...es, newEntry()])}
             className="rounded-md border border-dashed border-zinc-300 px-3 py-2 text-sm text-zinc-500 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
           >
-            + 新增顧客（Ctrl+N）
+            + 新增顧客（Alt+N）
           </button>
           <div className="flex justify-end">
             <button
@@ -682,6 +682,7 @@ function ItemEditorRow({
                     campaign_item_id: o.campaign_item_id,
                     sku_label: `${o.product_name}${o.variant_name ? ` / ${o.variant_name}` : ""} (${o.sku_code})`,
                     unit_price: Number(o.unit_price),
+                    qty: item.qty === "" ? "1" : item.qty,
                   });
                   setOpen(false);
                   setTerm("");

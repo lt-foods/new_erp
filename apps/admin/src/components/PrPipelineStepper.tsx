@@ -105,15 +105,13 @@ export function PrPipelineStepper({
     steps.push({ key: "receive", label: "部分到貨", state: "current" });
   else steps.push({ key: "receive", label: "全部到貨", state: "done" });
 
-  // S8 正在派貨（撿完出庫到分店、transfer.shipped）
+  // S8 派貨（撿完出庫到分店、transfer.shipped）— 只看 shipped 進度
   if (isRejected || isCancelled)
     steps.push({ key: "ship", label: "派貨", state: "skipped" });
   else if (!transferSummary || transferSummary.total === 0 || transferSummary.shipped === 0)
     steps.push({ key: "ship", label: "派貨", state: "pending" });
   else if (transferSummary.shipped < transferSummary.total)
     steps.push({ key: "ship", label: "部分派貨", state: "current" });
-  else if (transferSummary.delivered < transferSummary.total)
-    steps.push({ key: "ship", label: "派貨中", state: "current" });
   else steps.push({ key: "ship", label: "已派貨", state: "done" });
 
   // S9 分店收到確認（transfer.received）

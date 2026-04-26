@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
-import { PrPipelineStepper, type PrStepEvents, type POSummary } from "@/components/PrPipelineStepper";
+import { PrPipelineStepper, type PrStepEvents, type POSummary, type TransferSummary } from "@/components/PrPipelineStepper";
 
 type PRHeader = {
   id: number;
@@ -78,6 +78,7 @@ export default function EditPurchaseRequestPage() {
   const [items, setItems] = useState<ItemRow[]>([]);
   const [derivedPOs, setDerivedPOs] = useState<DerivedPO[]>([]);
   const [campaignFinalized, setCampaignFinalized] = useState<boolean>(false);
+  const [transferSummary, setTransferSummary] = useState<TransferSummary | undefined>(undefined);
   const [staffNames, setStaffNames] = useState<Map<string, string>>(new Map());
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [missingCampaigns, setMissingCampaigns] = useState<{ id: number; name: string; campaign_no: string }[]>([]);
@@ -148,6 +149,22 @@ export default function EditPurchaseRequestPage() {
               .in("id", poIds)
               .order("id");
             setDerivedPOs((pos ?? []) as DerivedPO[]);
+          }
+        }
+
+        // 從 v_pr_progress 讀 transfer 進度（與 PR / PO list 共用同一個 source of truth）
+        {
+          const { data: prog } = await supabase
+            .from("v_pr_progress")
+            .select("transfer_total, transfer_shipped, transfer_delivered")
+            .eq("pr_id", id)
+            .maybeSingle();
+          if (!cancelled && prog) {
+            setTransferSummary({
+              total: Number(prog.transfer_total),
+              shipped: Number(prog.transfer_shipped),
+              delivered: Number(prog.transfer_delivered),
+            });
           }
         }
 
@@ -538,6 +555,7 @@ export default function EditPurchaseRequestPage() {
           reviewStatus={header.review_status}
           events={buildEvents(header, derivedPOs, staffNames)}
           poSummary={computePOSummary(derivedPOs)}
+          transferSummary={transferSummary}
           campaignFinalized={campaignFinalized}
         />
       </div>
