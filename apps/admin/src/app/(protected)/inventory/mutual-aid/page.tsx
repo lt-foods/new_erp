@@ -226,7 +226,13 @@ export default function MutualAidPage() {
                   <span className="ml-auto text-xs text-zinc-500">💬 {p.replies_count} 留言</span>
                 </div>
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
-                  <span>數量 <span className="font-mono text-zinc-700 dark:text-zinc-300">{p.qty_available}</span></span>
+                  <span>
+                    {p.post_type === "request" ? "需要" : "釋出"}{" "}
+                    <span className="font-mono text-zinc-700 dark:text-zinc-300">{p.qty_remaining}</span>
+                    {p.qty_remaining !== p.qty_available && (
+                      <span className="ml-1 text-[10px] text-zinc-400">/ 原 {p.qty_available}</span>
+                    )}
+                  </span>
                   <span>到期 <span className="text-zinc-700 dark:text-zinc-300">{fmtDt(p.expires_at)}</span></span>
                   {p.source_order_no && (
                     <span>源訂單 <span className="font-mono text-zinc-700 dark:text-zinc-300">{p.source_order_no}</span></span>
@@ -823,7 +829,13 @@ function ThreadModal({
             <span>{post.sku_label}</span>
           </div>
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-zinc-500">
-            <span>數量 <span className="font-mono text-zinc-700 dark:text-zinc-300">{post.qty_available}</span></span>
+            <span>
+              {post.post_type === "request" ? "尚需" : "可釋"}{" "}
+              <span className="font-mono text-zinc-700 dark:text-zinc-300">{post.qty_remaining}</span>
+              {post.qty_remaining !== post.qty_available && (
+                <span className="ml-1 text-[10px] text-zinc-400">/ 原 {post.qty_available}</span>
+              )}
+            </span>
             <span>到期 <span className="text-zinc-700 dark:text-zinc-300">{fmtDt(post.expires_at)}</span></span>
             <span>發佈 {fmtDt(post.created_at)}</span>
             {post.note && <div className="basis-full pt-1 text-zinc-700 dark:text-zinc-300">「{post.note}」</div>}
@@ -962,7 +974,7 @@ function ClaimOfferDialog({
   onDone: () => void;
 }) {
   const [toStore, setToStore] = useState<number | "">("");
-  const [qty, setQty] = useState(String(post.qty_available));
+  const [qty, setQty] = useState(String(post.qty_remaining));
   const [reason, setReason] = useState(`互助板認領 #${post.id}`);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -974,7 +986,7 @@ function ClaimOfferDialog({
     if (!post.source_customer_order_id) { setErr("此 offer 缺 source_customer_order_id（資料異常）"); return; }
     const qtyN = Number(qty);
     if (!Number.isFinite(qtyN) || qtyN <= 0) { setErr("認領數量需 > 0"); return; }
-    if (qtyN > post.qty_available) { setErr(`認領數量超過釋出量 ${post.qty_available}`); return; }
+    if (qtyN > post.qty_remaining) { setErr(`認領數量超過剩餘量 ${post.qty_remaining}`); return; }
     setBusy(true);
     try {
       const sb = getSupabase();
@@ -1037,7 +1049,7 @@ function ClaimOfferDialog({
               inputMode="decimal"
               className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-right dark:border-zinc-700 dark:bg-zinc-800"
             />
-            <div className="mt-1 text-[10px] text-zinc-500">釋出總量 {post.qty_available}</div>
+            <div className="mt-1 text-[10px] text-zinc-500">剩餘可認 {post.qty_remaining}{post.qty_remaining !== post.qty_available && `（原 ${post.qty_available}）`}</div>
           </label>
         </div>
         <label className="mb-3 block text-sm">
@@ -1078,7 +1090,7 @@ function FulfillRequestDialog({
   const [myStore, setMyStore] = useState<number | "">("");
   const [orders, setOrders] = useState<PendingOrder[] | null>(null);
   const [pickedOrderId, setPickedOrderId] = useState<number | null>(null);
-  const [qty, setQty] = useState(String(post.qty_available));
+  const [qty, setQty] = useState(String(post.qty_remaining));
   const [reason, setReason] = useState(`互助板提供 #${post.id}`);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -1136,7 +1148,7 @@ function FulfillRequestDialog({
     if (!pickedOrderId) { setErr("請選要轉移的訂單"); return; }
     const qtyN = Number(qty);
     if (!Number.isFinite(qtyN) || qtyN <= 0) { setErr("提供數量需 > 0"); return; }
-    if (qtyN > post.qty_available) { setErr(`提供數量超過需求量 ${post.qty_available}`); return; }
+    if (qtyN > post.qty_remaining) { setErr(`提供數量超過剩餘需求 ${post.qty_remaining}`); return; }
     setBusy(true);
     try {
       const sb = getSupabase();
@@ -1174,7 +1186,7 @@ function FulfillRequestDialog({
           <div className="mb-2 rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">{err}</div>
         )}
         <div className="mb-3 rounded bg-zinc-50 p-2 text-xs dark:bg-zinc-950">
-          求助店「{post.store_name}」需要 {post.sku_label}（數量 {post.qty_available}）。
+          求助店「{post.store_name}」尚需 {post.sku_label}（剩餘 {post.qty_remaining}{post.qty_remaining !== post.qty_available && `／原 ${post.qty_available}`}）。
           選一張你店的 pending 訂單轉給他（走 5b-1 棄單轉出）。
         </div>
         <label className="mb-3 block text-sm">
@@ -1223,7 +1235,7 @@ function FulfillRequestDialog({
             inputMode="decimal"
             className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-right dark:border-zinc-700 dark:bg-zinc-800"
           />
-          <div className="mt-1 text-[10px] text-zinc-500">求助總量 {post.qty_available}（≤ 此值；不足部分維持需求中）</div>
+          <div className="mt-1 text-[10px] text-zinc-500">剩餘需求 {post.qty_remaining}（≤ 此值；不足部分維持需求中）</div>
         </label>
         <label className="mb-3 block text-sm">
           <span className="mb-1 block text-xs text-zinc-500">原因（選填）</span>
