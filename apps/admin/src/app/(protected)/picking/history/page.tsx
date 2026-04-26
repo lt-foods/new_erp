@@ -50,6 +50,20 @@ export default function PickingHistoryPage() {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Wave | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
+  const [autoOpenWaveId, setAutoOpenWaveId] = useState<number | null>(() => {
+    if (typeof window === "undefined") return null;
+    const id = new URLSearchParams(window.location.search).get("wave");
+    return id ? Number(id) : null;
+  });
+
+  useEffect(() => {
+    if (autoOpenWaveId === null || waves === null) return;
+    const target = waves.find((w) => w.id === autoOpenWaveId);
+    if (target) {
+      setEditing(target);
+      setAutoOpenWaveId(null);
+    }
+  }, [waves, autoOpenWaveId]);
 
   useEffect(() => {
     let cancelled = false;

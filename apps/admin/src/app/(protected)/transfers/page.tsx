@@ -272,7 +272,7 @@ export default function TransfersListPage() {
               <Th>單號</Th>
               <Th>類型</Th>
               <Th>來源 → 目的地</Th>
-              <Th>來源 WV</Th>
+              <Th>撿貨單號</Th>
               <Th>派出時間</Th>
               <Th className="text-right">品項</Th>
               <Th className="text-right">出貨 / 實收</Th>
@@ -311,7 +311,7 @@ export default function TransfersListPage() {
                   <td className="whitespace-nowrap px-3 py-2 text-xs">
                     {wave ? (
                       <a
-                        href={`/picking/history`}
+                        href={`/picking/history?wave=${wave.id}`}
                         className="font-mono text-blue-600 hover:underline dark:text-blue-400"
                         title={`配送日 ${wave.wave_date}`}
                       >
