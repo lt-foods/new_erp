@@ -245,6 +245,41 @@ async function buildTimeline(
   skuIds: number[],
 ): Promise<TimelineStep[]> {
   const sb = getSupabase();
+
+  // transferred_out: 訂單已關閉、流程不再進行；只顯示一個結束 step
+  if (head.status === "transferred_out") {
+    // 找新訂單號做 detail link（從 customer_orders 用 transferred_to_order_id）
+    let newOrderInfo = "已轉出（流程關閉、不入金額統計）";
+    let newOrderHref: string | undefined;
+    const { data: self } = await sb
+      .from("customer_orders")
+      .select("transferred_to_order_id")
+      .eq("id", head.id)
+      .maybeSingle();
+    const newId = (self as { transferred_to_order_id: number | null } | null)?.transferred_to_order_id;
+    if (newId) {
+      const { data: newOrd } = await sb
+        .from("customer_orders")
+        .select("order_no")
+        .eq("id", newId)
+        .maybeSingle();
+      const newNo = (newOrd as { order_no: string } | null)?.order_no;
+      if (newNo) {
+        newOrderInfo = `已轉出 → 新訂單 ${newNo}`;
+        newOrderHref = `/orders?id=${newId}`;
+      }
+    }
+    return [
+      {
+        label: "訂單關閉（已轉出）",
+        ts: head.updated_at,
+        done: true,
+        detail: newOrderInfo,
+        detailHref: newOrderHref,
+      },
+    ];
+  }
+
   const campaignId = head.campaign_id;
   const storeId = head.pickup_store_id;
   const status = head.status;

@@ -8,7 +8,7 @@ import { OrderDetail } from "@/components/OrderDetail";
 
 type OrderStatus =
   | "pending" | "confirmed" | "reserved" | "shipping" | "ready" | "partially_ready"
-  | "partially_completed" | "completed" | "expired" | "cancelled";
+  | "partially_completed" | "completed" | "expired" | "cancelled" | "transferred_out";
 
 type Row = {
   id: number;
@@ -30,6 +30,7 @@ const STATUS_LABEL: Record<OrderStatus, string> = {
   pending: "待確認", confirmed: "已確認", reserved: "已保留", shipping: "派貨中",
   ready: "可取貨", partially_ready: "部分可取", partially_completed: "部分取貨",
   completed: "已完成", expired: "逾期", cancelled: "已取消",
+  transferred_out: "已轉出",
 };
 
 const PAGE_SIZE = 50;
@@ -81,6 +82,7 @@ export default function OrdersListPage() {
 
         if (campaignId) q = q.eq("campaign_id", Number(campaignId));
         if (status) q = q.eq("status", status);
+        else q = q.neq("status", "transferred_out"); // 預設隱藏已轉出（5a-1：視同關閉、金額/數量不入統計）
         if (storeId) q = q.eq("pickup_store_id", Number(storeId));
 
         const { data, count, error } = await q;
@@ -256,6 +258,7 @@ function StatusBadge({ s }: { s: OrderStatus }) {
     completed: "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300",
     expired: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
     cancelled: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
+    transferred_out: "bg-zinc-300 text-zinc-700 line-through dark:bg-zinc-700 dark:text-zinc-400",
   };
   return <span className={`inline-block rounded px-2 py-0.5 text-xs ${st[s]}`}>{STATUS_LABEL[s]}</span>;
 }
