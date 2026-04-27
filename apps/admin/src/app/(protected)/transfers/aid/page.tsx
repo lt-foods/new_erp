@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
@@ -84,6 +84,8 @@ export default function TransfersAidListPage() {
 
   const [modeFilter, setModeFilter] = useState<"all" | "air" | "via_warehouse">("all");
   const [statusFilter, setStatusFilter] = useState<string>("");
+  const [dateFrom, setDateFrom] = useState<string>("");
+  const [dateTo, setDateTo] = useState<string>("");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
 
@@ -91,7 +93,7 @@ export default function TransfersAidListPage() {
   const [detailNo, setDetailNo] = useState<string>("");
   const [reloadTick, setReloadTick] = useState(0);
 
-  useEffect(() => { setPage(1); }, [modeFilter, statusFilter]);
+  useEffect(() => { setPage(1); }, [modeFilter, statusFilter, dateFrom, dateTo]);
 
   useEffect(() => {
     let cancelled = false;
@@ -118,6 +120,8 @@ export default function TransfersAidListPage() {
         if (modeFilter === "air") q = q.eq("is_air_transfer", true);
         else if (modeFilter === "via_warehouse") q = q.eq("is_air_transfer", false);
         if (statusFilter) q = q.eq("status", statusFilter);
+        if (dateFrom) q = q.gte("updated_at", `${dateFrom}T00:00:00`);
+        if (dateTo) q = q.lte("updated_at", `${dateTo}T23:59:59.999`);
 
         const { data, count, error: e } = await q;
         if (cancelled) return;
@@ -162,7 +166,7 @@ export default function TransfersAidListPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [modeFilter, statusFilter, page, reloadTick]);
+  }, [modeFilter, statusFilter, dateFrom, dateTo, page, reloadTick]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const fromIdx = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
@@ -180,18 +184,25 @@ export default function TransfersAidListPage() {
         </div>
       </header>
 
-      <div className="grid gap-3 sm:grid-cols-3">
-        <select value={modeFilter} onChange={(e) => setModeFilter(e.target.value as typeof modeFilter)}
-          className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800">
-          <option value="all">全部模式</option>
-          <option value="air">空中轉（店對店直送）</option>
-          <option value="via_warehouse">經總倉中轉</option>
-        </select>
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
-          className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800">
-          <option value="">全部狀態</option>
-          {Object.entries(STATUS_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-        </select>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="text-xs">
+          <span className="mb-1 block text-zinc-500">模式</span>
+          <select value={modeFilter} onChange={(e) => setModeFilter(e.target.value as typeof modeFilter)}
+            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800">
+            <option value="all">全部模式</option>
+            <option value="air">空中轉（店對店直送）</option>
+            <option value="via_warehouse">經總倉中轉</option>
+          </select>
+        </label>
+        <label className="text-xs">
+          <span className="mb-1 block text-zinc-500">狀態</span>
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
+            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800">
+            <option value="">全部狀態</option>
+            {Object.entries(STATUS_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        <DateRangePicker from={dateFrom} to={dateTo} onChange={(f, t) => { setDateFrom(f); setDateTo(t); }} />
       </div>
 
       {error && (
@@ -338,6 +349,211 @@ function Td({ children, className = "" }: { children: React.ReactNode; className
 }
 function PagerBtn({ onClick, disabled, children }: { onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
   return <button onClick={onClick} disabled={disabled} className="rounded-md border border-zinc-300 px-2 py-1 transition-colors hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800">{children}</button>;
+}
+
+function dateStr(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function parseDate(s: string): Date | null {
+  if (!s) return null;
+  const [y, m, d] = s.split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+}
+function monthGrid(year: number, month: number): { date: Date; inMonth: boolean }[] {
+  // Mon-Sun (週一起), 6 weeks fixed
+  const first = new Date(year, month, 1);
+  const start = new Date(first);
+  const dow = (first.getDay() + 6) % 7; // Mon=0
+  start.setDate(1 - dow);
+  const cells: { date: Date; inMonth: boolean }[] = [];
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    cells.push({ date: d, inMonth: d.getMonth() === month });
+  }
+  return cells;
+}
+
+function DateRangePicker({
+  from, to, onChange,
+}: {
+  from: string;
+  to: string;
+  onChange: (from: string, to: string) => void;
+}) {
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [hover, setHover] = useState<string>("");
+  const [phase, setPhase] = useState<"from" | "to">("from");
+  const today = new Date();
+  const initView = useMemo(() => {
+    const d = parseDate(from) || parseDate(to) || today;
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  }, [from, to]);
+  const [viewMonth, setViewMonth] = useState<Date>(initView);
+
+  // 點外面關
+  useEffect(() => {
+    if (!open) return;
+    function onClick(e: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  const summary =
+    !from && !to ? "更新日期：全部"
+    : from && to && from === to ? `更新日期：${from}`
+    : from && to ? `${from} ~ ${to}`
+    : from ? `${from} 起`
+    : `~ ${to}`;
+
+  function pickDay(s: string) {
+    if (phase === "from") {
+      onChange(s, "");
+      setPhase("to");
+    } else {
+      // to-phase
+      const f = from;
+      if (!f) { onChange("", s); setPhase("from"); setOpen(false); return; }
+      if (s < f) {
+        onChange(s, f); // swap
+      } else {
+        onChange(f, s);
+      }
+      setPhase("from");
+      setOpen(false);
+    }
+  }
+
+  function applyPreset(f: string, t: string) {
+    onChange(f, t);
+    setPhase("from");
+    setOpen(false);
+  }
+
+  function shiftMonth(delta: number) {
+    setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + delta, 1));
+  }
+
+  const months = [viewMonth, new Date(viewMonth.getFullYear(), viewMonth.getMonth() + 1, 1)];
+  const todayStr = dateStr(today);
+
+  return (
+    <div ref={wrapperRef} className="relative inline-block text-xs">
+      <span className="mb-1 block text-zinc-500">更新日期</span>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="cursor-pointer rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+      >
+        📅 {summary} <span className="ml-1 text-zinc-400">▾</span>
+      </button>
+      {open && (
+        <div className="absolute left-0 z-20 mt-1 w-[600px] max-w-[calc(100vw-2rem)] rounded-md border border-zinc-200 bg-white p-3 shadow-lg dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="mb-3 flex flex-wrap gap-1">
+            <Chip onClick={() => applyPreset(todayStr, todayStr)}>今日</Chip>
+            <Chip onClick={() => { const t = new Date(); const w = new Date(t); w.setDate(t.getDate() - 6); applyPreset(dateStr(w), todayStr); }}>近 7 天</Chip>
+            <Chip onClick={() => { const t = new Date(); const w = new Date(t); w.setDate(t.getDate() - 29); applyPreset(dateStr(w), todayStr); }}>近 30 天</Chip>
+            <Chip onClick={() => { const t = new Date(); const m = new Date(t.getFullYear(), t.getMonth(), 1); applyPreset(dateStr(m), todayStr); }}>本月</Chip>
+            <Chip onClick={() => { const t = new Date(); const m = new Date(t.getFullYear(), t.getMonth() - 1, 1); const e = new Date(t.getFullYear(), t.getMonth(), 0); applyPreset(dateStr(m), dateStr(e)); }}>上月</Chip>
+            <Chip onClick={() => applyPreset("", "")}>全部</Chip>
+          </div>
+          <div className="mb-2 flex items-center justify-between">
+            <button onClick={() => shiftMonth(-1)} className="rounded px-2 py-1 hover:bg-zinc-100 dark:hover:bg-zinc-800">‹</button>
+            <div className="text-[10px] text-zinc-500">
+              點選 <b>{phase === "from" ? "起始日期" : "結束日期"}</b>（再點一次切換）
+            </div>
+            <button onClick={() => shiftMonth(1)} className="rounded px-2 py-1 hover:bg-zinc-100 dark:hover:bg-zinc-800">›</button>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            {months.map((m, i) => (
+              <CalendarMonth
+                key={i}
+                year={m.getFullYear()}
+                month={m.getMonth()}
+                from={from}
+                to={to}
+                hover={phase === "to" && from ? hover : ""}
+                todayStr={todayStr}
+                onPick={pickDay}
+                onHover={setHover}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CalendarMonth({
+  year, month, from, to, hover, todayStr, onPick, onHover,
+}: {
+  year: number;
+  month: number;
+  from: string;
+  to: string;
+  hover: string;
+  todayStr: string;
+  onPick: (s: string) => void;
+  onHover: (s: string) => void;
+}) {
+  const cells = monthGrid(year, month);
+  const monthLabel = `${year} 年 ${month + 1} 月`;
+  const effectiveTo = to || hover;
+  return (
+    <div>
+      <div className="mb-1 text-center text-sm font-medium">{monthLabel}</div>
+      <div className="grid grid-cols-7 gap-0.5 text-center text-[10px] text-zinc-500">
+        {["一", "二", "三", "四", "五", "六", "日"].map((d) => <div key={d}>{d}</div>)}
+      </div>
+      <div className="grid grid-cols-7 gap-0.5">
+        {cells.map((c, i) => {
+          const s = dateStr(c.date);
+          const isFrom = s === from;
+          const isTo = s === to;
+          const inRange = from && effectiveTo && s >= from && s <= effectiveTo;
+          const isToday = s === todayStr;
+          return (
+            <button
+              key={i}
+              onClick={() => onPick(s)}
+              onMouseEnter={() => onHover(s)}
+              disabled={!c.inMonth}
+              className={[
+                "h-7 rounded text-xs",
+                !c.inMonth ? "invisible" : "",
+                isFrom || isTo
+                  ? "bg-blue-600 font-semibold text-white"
+                  : inRange
+                  ? "bg-blue-100 text-blue-900 dark:bg-blue-950 dark:text-blue-200"
+                  : "text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800",
+                isToday && !isFrom && !isTo ? "ring-1 ring-blue-400" : "",
+              ].join(" ")}
+            >
+              {c.date.getDate()}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function Chip({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button onClick={onClick}
+      className="rounded-full border border-zinc-300 px-2 py-0.5 text-[11px] hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800">
+      {children}
+    </button>
+  );
 }
 
 // 經總倉的下一步狀態映射
