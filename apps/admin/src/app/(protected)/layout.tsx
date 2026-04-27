@@ -35,6 +35,7 @@ const NAV: NavGroup[] = [
       { href: "/transfers/inbox", label: "收貨待辦", match: /^\/transfers\/inbox/ },
       { href: "/transfers", label: "調撥單列表", match: /^\/transfers$|^\/transfers\/?$/ },
       { href: "/inventory/mutual-aid", label: "互助交流板", match: /^\/inventory\/mutual-aid/ },
+      { href: "/transfers/aid", label: "互助轉移單", match: /^\/transfers\/aid/ },
     ],
   },
 ];
