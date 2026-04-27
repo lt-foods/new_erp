@@ -250,22 +250,22 @@ export default function TransfersAidListPage() {
                         {aidItems.map((it) => {
                           const specText = formatSpec(it.sku?.spec);
                           return (
-                            <li key={it.id} className="flex items-baseline gap-2">
+                            <li key={it.id}>
                               <span className="font-medium text-zinc-900 dark:text-zinc-100">
                                 {it.sku?.variant_name ?? it.sku?.product_name ?? "—"}
                               </span>
+                              <span className="ml-1 font-mono font-semibold text-zinc-900 dark:text-zinc-100">×{Number(it.qty)}</span>
                               {specText && (
-                                <span className="text-xs text-zinc-500">[{specText}]</span>
+                                <span className="ml-2 text-xs text-zinc-500">[{specText}]</span>
                               )}
                               {it.sku?.sku_code && (
-                                <span className="font-mono text-[10px] text-zinc-400">{it.sku.sku_code}</span>
+                                <span className="ml-2 font-mono text-[10px] text-zinc-400">{it.sku.sku_code}</span>
                               )}
-                              <span className="ml-auto font-mono font-semibold text-zinc-900 dark:text-zinc-100">×{Number(it.qty)}</span>
                             </li>
                           );
                         })}
                         {aidItems.length > 1 && (
-                          <li className="text-right text-xs font-semibold text-zinc-700 dark:text-zinc-300">合計 ×{totalQty}</li>
+                          <li className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">合計 ×{totalQty}</li>
                         )}
                       </ul>
                     )}
