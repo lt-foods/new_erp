@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { OrderTransferModal } from "@/components/OrderTransferModal";
+import { PickupDialog } from "@/components/PickupDialog";
 
 type OrderHead = {
   id: number;
@@ -66,6 +67,7 @@ export function OrderDetail({
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const [transferOpen, setTransferOpen] = useState(false);
+  const [pickupOpen, setPickupOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -127,14 +129,25 @@ export function OrderDetail({
 
   const canTransfer = ["pending", "confirmed", "reserved"].includes(head.status);
   const isTransferredOut = head.status === "transferred_out";
+  const pickableItems = items.filter((it) => ["pending", "reserved", "ready"].includes(it.status));
+  const canPickup = pickableItems.length > 0 && !["completed","expired","cancelled","transferred_out"].includes(head.status);
   const memberLabel = head.member
     ? `${head.member.name ?? "—"} (${head.member.member_no})`
     : `(${head.nickname_snapshot ?? "—"})`;
 
   return (
     <div className="space-y-4 text-sm">
-      {(canTransfer || isTransferredOut) && (
+      {(canTransfer || canPickup || isTransferredOut) && (
         <div className="flex items-center justify-end gap-2">
+          {canPickup && (
+            <button
+              onClick={() => setPickupOpen(true)}
+              className="rounded-md border border-emerald-300 px-3 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950"
+              title="顧客取貨 — 可選哪些 item"
+            >
+              ✅ 確認取貨
+            </button>
+          )}
           {canTransfer && (
             <button
               onClick={() => setTransferOpen(true)}
@@ -242,6 +255,17 @@ export function OrderDetail({
         onSubmitted={(newId) => {
           setTransferOpen(false);
           alert(`訂單已轉出 → 新訂單 #${newId}`);
+          setReloadTick((n) => n + 1);
+        }}
+      />
+      <PickupDialog
+        open={pickupOpen}
+        onClose={() => setPickupOpen(false)}
+        orderId={head.id}
+        orderNo={head.order_no}
+        onPickedUp={(r) => {
+          setPickupOpen(false);
+          alert(`取貨完成 (${r.picked_count} 項)\n訂單狀態：${r.new_order_status}`);
           setReloadTick((n) => n + 1);
         }}
       />

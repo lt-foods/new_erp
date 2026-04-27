@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
+import { PickupDialog } from "@/components/PickupDialog";
 
 type OrderStatus =
   | "pending" | "confirmed" | "reserved" | "shipping" | "ready" | "partially_ready"
@@ -54,6 +55,8 @@ export default function OrdersListPage() {
   >(new Map());
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detailNo, setDetailNo] = useState<string>("");
+  const [pickup, setPickup] = useState<{ id: number; no: string } | null>(null);
+  const [reloadOrders, setReloadOrders] = useState(0);
 
   useEffect(() => { setPage(1); }, [campaignId, status, storeId]);
 
@@ -121,7 +124,7 @@ export default function OrdersListPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [campaignId, status, storeId, page]);
+  }, [campaignId, status, storeId, page, reloadOrders]);
 
   const campaignMap = useMemo(() => new Map(campaigns.map((c) => [c.id, c])), [campaigns]);
   const storeMap = useMemo(() => new Map(stores.map((s) => [s.id, s])), [stores]);
@@ -168,14 +171,14 @@ export default function OrdersListPage() {
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
-              <Th>訂單號</Th><Th>開團</Th><Th>會員 / 暱稱</Th><Th>取貨店</Th><Th>取貨截止</Th><Th>狀態</Th><Th className="text-right">項數</Th><Th className="text-right">總數量</Th><Th className="text-right">總金額</Th><Th className="text-right">更新</Th>
+              <Th>訂單號</Th><Th>開團</Th><Th>會員 / 暱稱</Th><Th>取貨店</Th><Th>取貨截止</Th><Th>狀態</Th><Th className="text-right">項數</Th><Th className="text-right">總數量</Th><Th className="text-right">總金額</Th><Th className="text-right">更新</Th><Th className="text-right">操作</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={10} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={11} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={10} className="p-6 text-center text-zinc-500">{total === 0 && !campaignId && !status && !storeId ? "尚無訂單。" : "沒有符合條件的訂單。"}</td></tr>
+              <tr><td colSpan={11} className="p-6 text-center text-zinc-500">{total === 0 && !campaignId && !status && !storeId ? "尚無訂單。" : "沒有符合條件的訂單。"}</td></tr>
             ) : rows.map((r) => {
               const m = r.member_id ? members.get(r.member_id) : null;
               const c = campaignMap.get(r.campaign_id);
@@ -208,12 +211,36 @@ export default function OrdersListPage() {
                   <Td className="text-right font-mono">{itemSummary.get(r.id)?.totalQty ?? 0}</Td>
                   <Td className="text-right font-mono">${itemSummary.get(r.id)?.totalAmount ?? 0}</Td>
                   <Td className="text-right text-xs text-zinc-500">{new Date(r.updated_at).toLocaleString("zh-TW")}</Td>
+                  <Td className="text-right">
+                    {["pending","confirmed","reserved","ready","partially_ready","partially_completed","shipping"].includes(r.status) && (
+                      <button
+                        onClick={() => setPickup({ id: r.id, no: r.order_no })}
+                        className="rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-700"
+                      >
+                        ✅ 取貨
+                      </button>
+                    )}
+                  </Td>
                 </tr>
               );
             })}
           </tbody>
         </table>
       </div>
+
+      {pickup && (
+        <PickupDialog
+          open={true}
+          onClose={() => setPickup(null)}
+          orderId={pickup.id}
+          orderNo={pickup.no}
+          onPickedUp={(r) => {
+            setPickup(null);
+            alert(`取貨完成 (${r.picked_count} 項)\n訂單狀態：${r.new_order_status}`);
+            setReloadOrders((n) => n + 1);
+          }}
+        />
+      )}
 
       <Modal
         open={detailId !== null}
