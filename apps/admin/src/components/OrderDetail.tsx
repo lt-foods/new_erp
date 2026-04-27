@@ -313,7 +313,15 @@ async function buildTimeline(
     const srcHref = s ? `/orders?id=${s.id}` : undefined;
     const srcClick = (s && onNavigate) ? () => onNavigate(s.id, s.order_no) : undefined;
 
-    const pickedUp = head.status === "completed" || head.status === "picked_up";
+    // Status → step done 的 rank：每步驟有「需 status >= X 才 done」的閾值
+    const TRANSFER_RANK: Record<string, number> = {
+      pending: 0, confirmed: 1, reserved: 2, shipping: 3,
+      ready: 4, partially_ready: 4,
+      partially_completed: 5, completed: 5,
+      expired: -1, cancelled: -1, transferred_out: -1,
+    };
+    const rank = TRANSFER_RANK[head.status] ?? 0;
+
     const sourceStep: TimelineStep = {
       label: "轉出店",
       ts: head.created_at,
@@ -322,22 +330,47 @@ async function buildTimeline(
       detailHref: onNavigate ? undefined : srcHref,
       detailOnClick: srcClick,
     };
-    const customerStep: TimelineStep = { label: "顧客取貨", ts: null, done: pickedUp, detail: head.status };
+    const customerStep: TimelineStep = {
+      label: "顧客取貨",
+      ts: null,
+      done: rank >= 5,
+      detail: rank >= 5 ? "已完成" : `當前：${head.status}`,
+    };
 
     if (head.is_air_transfer) {
       // 空中轉：店對店直送
       return [
         sourceStep,
-        { label: "分店收貨", ts: null, done: false, detail: "（空中轉、暫無系統紀錄）" },
+        {
+          label: "分店收貨",
+          ts: null,
+          done: rank >= 4,
+          detail: rank >= 4 ? "（分店已可取貨）" : "（空中轉、暫無系統紀錄）",
+        },
         customerStep,
       ];
     }
     // 非空中轉：經總倉
     return [
       sourceStep,
-      { label: "總倉收到", ts: null, done: false, detail: "（暫無系統紀錄）" },
-      { label: "運送中", ts: null, done: false, detail: "（總倉出貨）" },
-      { label: "分店收貨", ts: null, done: false, detail: "（暫無系統紀錄）" },
+      {
+        label: "總倉收到",
+        ts: null,
+        done: rank >= 1,
+        detail: rank >= 1 ? "（訂單已確認）" : "（待確認→已確認後標記）",
+      },
+      {
+        label: "運送中",
+        ts: null,
+        done: rank >= 3,
+        detail: rank >= 3 ? "（總倉已出貨）" : "（總倉出貨）",
+      },
+      {
+        label: "分店收貨",
+        ts: null,
+        done: rank >= 4,
+        detail: rank >= 4 ? "（分店已可取貨）" : "（暫無系統紀錄）",
+      },
       customerStep,
     ];
   }

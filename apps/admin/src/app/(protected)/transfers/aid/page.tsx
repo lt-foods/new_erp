@@ -13,8 +13,21 @@ type AidItem = {
   id: number;
   qty: number;
   source: string;
-  sku: { id: number; sku_code: string; product_name: string; variant_name: string | null } | null;
+  sku: {
+    id: number;
+    sku_code: string;
+    product_name: string;
+    variant_name: string | null;
+    spec: Record<string, unknown> | null;
+  } | null;
 };
+
+function formatSpec(spec: Record<string, unknown> | null | undefined): string {
+  if (!spec || typeof spec !== "object") return "";
+  const entries = Object.entries(spec).filter(([, v]) => v !== null && v !== undefined && v !== "");
+  if (entries.length === 0) return "";
+  return entries.map(([k, v]) => `${k}: ${String(v)}`).join(" / ");
+}
 
 type AidOrder = {
   id: number;
@@ -74,6 +87,7 @@ export default function TransfersAidListPage() {
 
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detailNo, setDetailNo] = useState<string>("");
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => { setPage(1); }, [modeFilter, statusFilter]);
 
@@ -92,7 +106,7 @@ export default function TransfersAidListPage() {
              campaign:group_buy_campaigns(id, campaign_no, name),
              store:stores!customer_orders_pickup_store_id_fkey(id, name),
              items:customer_order_items!inner(id, qty, source,
-               sku:skus(id, sku_code, product_name, variant_name))`,
+               sku:skus(id, sku_code, product_name, variant_name, spec))`,
             { count: "exact" },
           )
           .eq("items.source", "aid_transfer")
@@ -133,7 +147,7 @@ export default function TransfersAidListPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [modeFilter, statusFilter, page]);
+  }, [modeFilter, statusFilter, page, reloadTick]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const fromIdx = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
@@ -177,19 +191,18 @@ export default function TransfersAidListPage() {
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
               <Th>訂單號</Th>
-              <Th>開團</Th>
               <Th>模式</Th>
               <Th>來源店 → 目的店</Th>
-              <Th>SKU / 數量</Th>
+              <Th>開團 / 商品</Th>
               <Th>狀態</Th>
               <Th className="text-right">更新</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={7} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={6} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={7} className="p-6 text-center text-zinc-500">尚無互助轉移單。</td></tr>
+              <tr><td colSpan={6} className="p-6 text-center text-zinc-500">尚無互助轉移單。</td></tr>
             ) : rows.map((r) => {
               const src = r.transferred_from_order_id ? sources.get(r.transferred_from_order_id) : null;
               const aidItems = r.items.filter((it) => it.source === "aid_transfer");
@@ -203,14 +216,6 @@ export default function TransfersAidListPage() {
                     >
                       {r.order_no}
                     </button>
-                  </Td>
-                  <Td className="text-xs">
-                    {r.campaign ? (
-                      <>
-                        <span className="font-mono">{r.campaign.campaign_no}</span>
-                        <span className="ml-1 text-zinc-500">{r.campaign.name}</span>
-                      </>
-                    ) : "—"}
                   </Td>
                   <Td>
                     {r.is_air_transfer ? (
@@ -234,17 +239,31 @@ export default function TransfersAidListPage() {
                     <span className="text-zinc-600 dark:text-zinc-300">{r.store?.name ?? "—"}</span>
                   </Td>
                   <Td className="text-xs">
+                    {r.campaign && (
+                      <div className="mb-1">
+                        <span className="font-mono text-zinc-700 dark:text-zinc-200">{r.campaign.campaign_no}</span>
+                        <span className="ml-1 text-zinc-500">{r.campaign.name}</span>
+                      </div>
+                    )}
                     {aidItems.length === 0 ? "—" : (
                       <ul className="space-y-0.5">
-                        {aidItems.map((it) => (
-                          <li key={it.id}>
-                            <span className="text-zinc-700 dark:text-zinc-200">
-                              {it.sku?.product_name ?? "—"}
-                              {it.sku?.variant_name && <span className="text-zinc-500"> · {it.sku.variant_name}</span>}
-                            </span>
-                            <span className="ml-2 font-mono text-zinc-500">×{Number(it.qty)}</span>
-                          </li>
-                        ))}
+                        {aidItems.map((it) => {
+                          const specText = formatSpec(it.sku?.spec);
+                          return (
+                            <li key={it.id}>
+                              <span className="text-zinc-700 dark:text-zinc-200">
+                                {it.sku?.variant_name ?? it.sku?.product_name ?? "—"}
+                              </span>
+                              {specText && (
+                                <span className="ml-1 text-xs text-zinc-500">[{specText}]</span>
+                              )}
+                              {it.sku?.sku_code && (
+                                <span className="ml-1 font-mono text-[10px] text-zinc-400">{it.sku.sku_code}</span>
+                              )}
+                              <span className="ml-2 font-mono text-zinc-500">×{Number(it.qty)}</span>
+                            </li>
+                          );
+                        })}
                         {aidItems.length > 1 && (
                           <li className="text-zinc-400">合計 {totalQty}</li>
                         )}
@@ -252,9 +271,7 @@ export default function TransfersAidListPage() {
                     )}
                   </Td>
                   <Td>
-                    <span className={`inline-block rounded px-2 py-0.5 text-xs ${STATUS_COLOR[r.status]}`}>
-                      {STATUS_LABEL[r.status]}
-                    </span>
+                    <StatusButton order={r} onChanged={() => setReloadTick((t) => t + 1)} />
                   </Td>
                   <Td className="text-right text-xs text-zinc-500">
                     {new Date(r.updated_at).toLocaleString("zh-TW")}
@@ -301,4 +318,60 @@ function Td({ children, className = "" }: { children: React.ReactNode; className
 }
 function PagerBtn({ onClick, disabled, children }: { onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
   return <button onClick={onClick} disabled={disabled} className="rounded-md border border-zinc-300 px-2 py-1 transition-colors hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800">{children}</button>;
+}
+
+// 經總倉的下一步狀態映射
+const NEXT_STATUS: Partial<Record<OrderStatus, OrderStatus>> = {
+  pending: "confirmed",
+  confirmed: "shipping",
+  shipping: "ready",
+  ready: "completed",
+};
+
+function StatusButton({
+  order,
+  onChanged,
+}: {
+  order: { id: number; status: OrderStatus };
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const next = NEXT_STATUS[order.status];
+  const badge = (
+    <span className={`inline-block rounded px-2 py-0.5 text-xs ${STATUS_COLOR[order.status]}`}>
+      {STATUS_LABEL[order.status]}
+    </span>
+  );
+  if (!next) return badge;
+
+  async function advance() {
+    if (!next) return;
+    if (!confirm(`將狀態 ${STATUS_LABEL[order.status]} → ${STATUS_LABEL[next]}？`)) return;
+    setBusy(true);
+    try {
+      const sb = getSupabase();
+      const { data: sess } = await sb.auth.getSession();
+      const operator = sess.session?.user?.id;
+      const { error } = await sb
+        .from("customer_orders")
+        .update({ status: next, updated_by: operator ?? null, updated_at: new Date().toISOString() })
+        .eq("id", order.id);
+      if (error) { alert(`狀態更新失敗：${error.message}`); return; }
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      onClick={advance}
+      disabled={busy}
+      title={`點擊 → ${STATUS_LABEL[next]}`}
+      className="group inline-flex items-center gap-1 disabled:opacity-50"
+    >
+      {badge}
+      <span className="text-[10px] text-zinc-400 group-hover:text-zinc-700 dark:group-hover:text-zinc-200">→ {STATUS_LABEL[next]}</span>
+    </button>
+  );
 }
