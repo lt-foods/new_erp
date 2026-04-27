@@ -15,6 +15,7 @@ type OrderHead = {
   pickup_store_id: number | null;
   campaign_id: number | null;
   transferred_from_order_id: number | null;
+  is_air_transfer: boolean | null;
   member: { id: number; name: string | null; phone: string | null; member_no: string } | null;
   campaign: { id: number; campaign_no: string; name: string } | null;
   store: { id: number; name: string } | null;
@@ -72,7 +73,7 @@ export function OrderDetail({
       const sb = getSupabase();
       const [hRes, iRes] = await Promise.all([
         sb.from("customer_orders")
-          .select("id, order_no, status, pickup_deadline, nickname_snapshot, created_at, updated_at, pickup_store_id, campaign_id, transferred_from_order_id, member:members(id, name, phone, member_no), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
+          .select("id, order_no, status, pickup_deadline, nickname_snapshot, created_at, updated_at, pickup_store_id, campaign_id, transferred_from_order_id, is_air_transfer, member:members(id, name, phone, member_no), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
           .eq("id", orderId).maybeSingle(),
         sb.from("customer_order_items")
           .select("id, qty, unit_price, status, source, created_at, updated_at, created_by, updated_by, sku:skus(id, sku_code, product_name, variant_name)")
@@ -313,17 +314,31 @@ async function buildTimeline(
     const srcClick = (s && onNavigate) ? () => onNavigate(s.id, s.order_no) : undefined;
 
     const pickedUp = head.status === "completed" || head.status === "picked_up";
+    const sourceStep: TimelineStep = {
+      label: "轉出店",
+      ts: head.created_at,
+      done: true,
+      detail: srcDetail,
+      detailHref: onNavigate ? undefined : srcHref,
+      detailOnClick: srcClick,
+    };
+    const customerStep: TimelineStep = { label: "顧客取貨", ts: null, done: pickedUp, detail: head.status };
+
+    if (head.is_air_transfer) {
+      // 空中轉：店對店直送
+      return [
+        sourceStep,
+        { label: "分店收貨", ts: null, done: false, detail: "（空中轉、暫無系統紀錄）" },
+        customerStep,
+      ];
+    }
+    // 非空中轉：經總倉
     return [
-      {
-        label: "轉出店",
-        ts: head.created_at,
-        done: true,
-        detail: srcDetail,
-        detailHref: onNavigate ? undefined : srcHref,
-        detailOnClick: srcClick,
-      },
+      sourceStep,
+      { label: "總倉收到", ts: null, done: false, detail: "（暫無系統紀錄）" },
+      { label: "運送中", ts: null, done: false, detail: "（總倉出貨）" },
       { label: "分店收貨", ts: null, done: false, detail: "（暫無系統紀錄）" },
-      { label: "顧客取貨", ts: null, done: pickedUp, detail: head.status },
+      customerStep,
     ];
   }
 

@@ -975,6 +975,7 @@ function ClaimOfferDialog({
 }) {
   const [toStore, setToStore] = useState<number | "">("");
   const [qty, setQty] = useState(String(post.qty_remaining));
+  const [isAir, setIsAir] = useState(false);
   const [reason, setReason] = useState(`互助板認領 #${post.id}`);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -1000,6 +1001,7 @@ function ClaimOfferDialog({
         p_operator: user.id,
         p_reason: reason || null,
         p_items: [{ sku_id: post.sku_id, qty: qtyN }],
+        p_is_air_transfer: isAir,
       });
       if (e1) { setErr(e1.message); return; }
       // 統一走 consume RPC：reach 0 自動 exhausted、>0 保持 active 可分批
@@ -1052,6 +1054,10 @@ function ClaimOfferDialog({
             <div className="mt-1 text-[10px] text-zinc-500">剩餘可認 {post.qty_remaining}{post.qty_remaining !== post.qty_available && `（原 ${post.qty_available}）`}</div>
           </label>
         </div>
+        <label className="mb-3 flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={isAir} onChange={(e) => setIsAir(e.target.checked)} className="h-4 w-4" />
+          <span>空中轉（店對店直送、不經總倉）</span>
+        </label>
         <label className="mb-3 block text-sm">
           <span className="mb-1 block text-xs text-zinc-500">原因（選填）</span>
           <input
@@ -1091,6 +1097,7 @@ function FulfillRequestDialog({
   const [orders, setOrders] = useState<PendingOrder[] | null>(null);
   const [pickedOrderId, setPickedOrderId] = useState<number | null>(null);
   const [qty, setQty] = useState(String(post.qty_remaining));
+  const [isAir, setIsAir] = useState(false);
   const [reason, setReason] = useState(`互助板提供 #${post.id}`);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -1162,6 +1169,7 @@ function FulfillRequestDialog({
         p_operator: user.id,
         p_reason: reason || null,
         p_items: [{ sku_id: post.sku_id, qty: qtyN }],
+        p_is_air_transfer: isAir,
       });
       if (e1) { setErr(e1.message); return; }
       const { error: e2 } = await sb.rpc("rpc_consume_aid_board", {
@@ -1236,6 +1244,10 @@ function FulfillRequestDialog({
             className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-right dark:border-zinc-700 dark:bg-zinc-800"
           />
           <div className="mt-1 text-[10px] text-zinc-500">剩餘需求 {post.qty_remaining}（≤ 此值；不足部分維持需求中）</div>
+        </label>
+        <label className="mb-3 flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={isAir} onChange={(e) => setIsAir(e.target.checked)} className="h-4 w-4" />
+          <span>空中轉（店對店直送、不經總倉）</span>
         </label>
         <label className="mb-3 block text-sm">
           <span className="mb-1 block text-xs text-zinc-500">原因（選填）</span>
