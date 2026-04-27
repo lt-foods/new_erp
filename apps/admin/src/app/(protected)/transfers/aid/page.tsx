@@ -458,12 +458,27 @@ function DateRangePicker({
       {open && (
         <div className="absolute left-0 z-20 mt-1 w-[600px] max-w-[calc(100vw-2rem)] rounded-md border border-zinc-200 bg-white p-3 shadow-lg dark:border-zinc-800 dark:bg-zinc-900">
           <div className="mb-3 flex flex-wrap gap-1">
-            <Chip onClick={() => applyPreset(todayStr, todayStr)}>今日</Chip>
-            <Chip onClick={() => { const t = new Date(); const w = new Date(t); w.setDate(t.getDate() - 6); applyPreset(dateStr(w), todayStr); }}>近 7 天</Chip>
-            <Chip onClick={() => { const t = new Date(); const w = new Date(t); w.setDate(t.getDate() - 29); applyPreset(dateStr(w), todayStr); }}>近 30 天</Chip>
-            <Chip onClick={() => { const t = new Date(); const m = new Date(t.getFullYear(), t.getMonth(), 1); applyPreset(dateStr(m), todayStr); }}>本月</Chip>
-            <Chip onClick={() => { const t = new Date(); const m = new Date(t.getFullYear(), t.getMonth() - 1, 1); const e = new Date(t.getFullYear(), t.getMonth(), 0); applyPreset(dateStr(m), dateStr(e)); }}>上月</Chip>
-            <Chip onClick={() => applyPreset("", "")}>全部</Chip>
+            {(() => {
+              const t = new Date();
+              const w7 = new Date(t); w7.setDate(t.getDate() - 6);
+              const w30 = new Date(t); w30.setDate(t.getDate() - 29);
+              const monthStart = new Date(t.getFullYear(), t.getMonth(), 1);
+              const lastMonthStart = new Date(t.getFullYear(), t.getMonth() - 1, 1);
+              const lastMonthEnd = new Date(t.getFullYear(), t.getMonth(), 0);
+              const presets: { label: string; f: string; tt: string }[] = [
+                { label: "今日", f: todayStr, tt: todayStr },
+                { label: "近 7 天", f: dateStr(w7), tt: todayStr },
+                { label: "近 30 天", f: dateStr(w30), tt: todayStr },
+                { label: "本月", f: dateStr(monthStart), tt: todayStr },
+                { label: "上月", f: dateStr(lastMonthStart), tt: dateStr(lastMonthEnd) },
+                { label: "全部", f: "", tt: "" },
+              ];
+              return presets.map((p) => (
+                <Chip key={p.label} active={from === p.f && to === p.tt} onClick={() => applyPreset(p.f, p.tt)}>
+                  {p.label}
+                </Chip>
+              ));
+            })()}
           </div>
           <div className="mb-2 flex items-center justify-between">
             <button onClick={() => shiftMonth(-1)} className="rounded px-2 py-1 hover:bg-zinc-100 dark:hover:bg-zinc-800">‹</button>
@@ -547,10 +562,14 @@ function CalendarMonth({
   );
 }
 
-function Chip({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
+function Chip({ onClick, children, active }: { onClick: () => void; children: React.ReactNode; active?: boolean }) {
   return (
     <button onClick={onClick}
-      className="rounded-full border border-zinc-300 px-2 py-0.5 text-[11px] hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800">
+      className={
+        active
+          ? "rounded-full border border-blue-600 bg-blue-600 px-2 py-0.5 text-[11px] font-semibold text-white"
+          : "rounded-full border border-zinc-300 px-2 py-0.5 text-[11px] hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+      }>
       {children}
     </button>
   );
