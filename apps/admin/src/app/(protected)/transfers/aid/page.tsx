@@ -38,6 +38,7 @@ type AidOrder = {
   campaign_id: number | null;
   transferred_from_order_id: number | null;
   updated_at: string;
+  updated_by: string | null;
   created_at: string;
   campaign: { id: number; campaign_no: string; name: string } | null;
   store: { id: number; name: string } | null;
@@ -77,6 +78,7 @@ const PAGE_SIZE = 50;
 export default function TransfersAidListPage() {
   const [rows, setRows] = useState<AidOrder[] | null>(null);
   const [sources, setSources] = useState<Map<number, SourceOrder>>(new Map());
+  const [staffNames, setStaffNames] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -102,7 +104,7 @@ export default function TransfersAidListPage() {
           .from("customer_orders")
           .select(
             `id, order_no, status, is_air_transfer, pickup_store_id, campaign_id,
-             transferred_from_order_id, updated_at, created_at,
+             transferred_from_order_id, updated_at, updated_by, created_at,
              campaign:group_buy_campaigns(id, campaign_no, name),
              store:stores!customer_orders_pickup_store_id_fkey(id, name),
              items:customer_order_items!inner(id, qty, source,
@@ -139,6 +141,19 @@ export default function TransfersAidListPage() {
           if (!cancelled) setSources(m);
         } else {
           if (!cancelled) setSources(new Map());
+        }
+
+        // 撈 updated_by → display_name
+        const uids = Array.from(new Set(list.map((r) => r.updated_by).filter((x): x is string => !!x)));
+        if (uids.length > 0) {
+          const { data: names } = await sb.rpc("rpc_get_staff_names", { p_uids: uids });
+          const sm = new Map<string, string>();
+          for (const n of (names as { id: string; display_name: string }[] | null) ?? []) {
+            sm.set(n.id, n.display_name);
+          }
+          if (!cancelled) setStaffNames(sm);
+        } else {
+          if (!cancelled) setStaffNames(new Map());
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -274,7 +289,12 @@ export default function TransfersAidListPage() {
                     <StatusButton order={r} onChanged={() => setReloadTick((t) => t + 1)} />
                   </Td>
                   <Td className="text-right text-xs text-zinc-500">
-                    {new Date(r.updated_at).toLocaleString("zh-TW")}
+                    <div>{new Date(r.updated_at).toLocaleString("zh-TW")}</div>
+                    {r.updated_by && (
+                      <div className="text-[10px] text-zinc-400">
+                        by {staffNames.get(r.updated_by) ?? r.updated_by.slice(0, 8)}
+                      </div>
+                    )}
                   </Td>
                 </tr>
               );
