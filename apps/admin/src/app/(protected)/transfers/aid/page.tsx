@@ -240,9 +240,9 @@ export default function TransfersAidListPage() {
                   </Td>
                   <Td className="text-xs">
                     {r.campaign && (
-                      <div className="mb-1">
-                        <span className="font-mono text-zinc-700 dark:text-zinc-200">{r.campaign.campaign_no}</span>
-                        <span className="ml-1 text-zinc-500">{r.campaign.name}</span>
+                      <div className="mb-1 text-[10px] text-zinc-400 dark:text-zinc-500">
+                        <span className="font-mono">{r.campaign.campaign_no}</span>
+                        <span className="ml-1">{r.campaign.name}</span>
                       </div>
                     )}
                     {aidItems.length === 0 ? "—" : (
@@ -250,22 +250,22 @@ export default function TransfersAidListPage() {
                         {aidItems.map((it) => {
                           const specText = formatSpec(it.sku?.spec);
                           return (
-                            <li key={it.id}>
-                              <span className="text-zinc-700 dark:text-zinc-200">
+                            <li key={it.id} className="flex items-baseline gap-2">
+                              <span className="font-medium text-zinc-900 dark:text-zinc-100">
                                 {it.sku?.variant_name ?? it.sku?.product_name ?? "—"}
                               </span>
                               {specText && (
-                                <span className="ml-1 text-xs text-zinc-500">[{specText}]</span>
+                                <span className="text-xs text-zinc-500">[{specText}]</span>
                               )}
                               {it.sku?.sku_code && (
-                                <span className="ml-1 font-mono text-[10px] text-zinc-400">{it.sku.sku_code}</span>
+                                <span className="font-mono text-[10px] text-zinc-400">{it.sku.sku_code}</span>
                               )}
-                              <span className="ml-2 font-mono text-zinc-500">×{Number(it.qty)}</span>
+                              <span className="ml-auto font-mono font-semibold text-zinc-900 dark:text-zinc-100">×{Number(it.qty)}</span>
                             </li>
                           );
                         })}
                         {aidItems.length > 1 && (
-                          <li className="text-zinc-400">合計 {totalQty}</li>
+                          <li className="text-right text-xs font-semibold text-zinc-700 dark:text-zinc-300">合計 ×{totalQty}</li>
                         )}
                       </ul>
                     )}
