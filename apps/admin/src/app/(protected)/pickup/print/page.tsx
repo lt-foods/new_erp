@@ -101,11 +101,10 @@ function Body() {
     <>
       <style jsx global>{`
         @media print {
-          @page { margin: 12mm; }
+          @page { margin: 10mm; }
           body { background: white !important; }
           .no-print { display: none !important; }
-          .receipt { page-break-after: always; }
-          .receipt:last-child { page-break-after: auto; }
+          .receipt { page-break-inside: avoid; }
         }
       `}</style>
       <div className="mx-auto max-w-2xl p-6">
@@ -113,17 +112,24 @@ function Body() {
           <button onClick={() => window.print()} className="rounded-md bg-zinc-900 px-4 py-2 text-sm text-white hover:bg-zinc-700">🖨️ 列印</button>
           <button onClick={() => window.close()} className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-100">關閉</button>
         </div>
-        {receipts.map((r) => (
-          <div key={r.event.id} className="receipt mb-8 rounded-md border border-zinc-300 bg-white p-6 text-zinc-900">
-            <div className="mb-4 text-center">
-              <h1 className="text-xl font-bold">取貨單</h1>
-              <div className="text-xs text-zinc-500">
-                {r.event.event_type === "picked_up" ? "全部取貨" : "部分取貨"}
+        {receipts.length > 1 && (
+          <div className="mb-3 text-center">
+            <h1 className="text-xl font-bold">取貨單（共 {receipts.length} 張）</h1>
+          </div>
+        )}
+        {receipts.map((r, i) => (
+          <div key={r.event.id} className={`receipt bg-white p-4 text-zinc-900 ${i < receipts.length - 1 ? "border-b-2 border-dashed border-zinc-400" : ""}`}>
+            {receipts.length === 1 && (
+              <div className="mb-3 text-center">
+                <h1 className="text-xl font-bold">取貨單</h1>
+                <div className="text-xs text-zinc-500">
+                  {r.event.event_type === "picked_up" ? "全部取貨" : "部分取貨"}
+                </div>
               </div>
-            </div>
+            )}
 
-            <div className="mb-4 grid grid-cols-2 gap-2 text-sm">
-              <Field label="訂單號" value={<span className="font-mono">{r.order?.order_no ?? "—"}</span>} />
+            <div className="mb-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+              <Field label="訂單號" value={<span className="font-mono font-semibold">{r.order?.order_no ?? "—"}</span>} />
               <Field label="取貨時間" value={new Date(r.event.created_at).toLocaleString("zh-TW")} />
               <Field label="會員" value={r.order?.member ? `${r.order.member.name ?? "—"} (${r.order.member.member_no})` : "—"} />
               <Field label="電話" value={r.order?.member?.phone ?? "—"} />
@@ -131,7 +137,7 @@ function Body() {
               <Field label="開團" value={r.order?.campaign ? `${r.order.campaign.campaign_no} ${r.order.campaign.name}` : "—"} />
             </div>
 
-            <table className="mb-4 w-full border-collapse text-sm">
+            <table className="mb-2 w-full border-collapse text-xs">
               <thead>
                 <tr className="border-b-2 border-zinc-400">
                   <th className="px-2 py-1 text-left">商品</th>
@@ -167,15 +173,15 @@ function Body() {
             </table>
 
             {r.event.notes && (
-              <div className="mb-3 text-xs text-zinc-600">備註：{r.event.notes}</div>
+              <div className="mb-2 text-xs text-zinc-600">備註：{r.event.notes}</div>
             )}
-
-            <div className="mt-6 grid grid-cols-2 gap-8 text-xs">
-              <div className="border-t border-zinc-400 pt-2 text-center">顧客簽名</div>
-              <div className="border-t border-zinc-400 pt-2 text-center">店員簽名</div>
-            </div>
           </div>
         ))}
+
+        <div className="mt-4 grid grid-cols-2 gap-8 text-xs">
+          <div className="border-t border-zinc-400 pt-2 text-center">顧客簽名</div>
+          <div className="border-t border-zinc-400 pt-2 text-center">店員簽名</div>
+        </div>
       </div>
     </>
   );
