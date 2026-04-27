@@ -352,10 +352,12 @@ function StatusButton({
       const sb = getSupabase();
       const { data: sess } = await sb.auth.getSession();
       const operator = sess.session?.user?.id;
-      const { error } = await sb
-        .from("customer_orders")
-        .update({ status: next, updated_by: operator ?? null, updated_at: new Date().toISOString() })
-        .eq("id", order.id);
+      if (!operator) { alert("尚未登入"); return; }
+      const { error } = await sb.rpc("rpc_advance_order_status", {
+        p_order_id: order.id,
+        p_new_status: next,
+        p_operator: operator,
+      });
       if (error) { alert(`狀態更新失敗：${error.message}`); return; }
       onChanged();
     } finally {
