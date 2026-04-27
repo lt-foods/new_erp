@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { Modal } from "@/components/Modal";
 import { PickupDialog } from "@/components/PickupDialog";
 
 type Member = {
@@ -19,7 +20,7 @@ type OpenOrder = {
   pickup_store_id: number | null;
   campaign: { id: number; campaign_no: string; name: string } | null;
   store: { id: number; name: string } | null;
-  items: { id: number; qty: number; status: string }[];
+  items: { id: number; qty: number; status: string; sku: { variant_name: string | null; product_name: string | null } | null }[];
 };
 
 const ACTIVE_STATUSES = ["pending", "confirmed", "reserved", "ready", "partially_ready", "partially_completed", "shipping"];
@@ -34,6 +35,7 @@ export default function PickupPage() {
 
   const [pickup, setPickup] = useState<{ orderId: number; orderNo: string } | null>(null);
   const [bulking, setBulking] = useState<number | null>(null);
+  const [bulkConfirm, setBulkConfirm] = useState<Member | null>(null);
 
   async function search(e?: React.FormEvent) {
     e?.preventDefault();
@@ -65,7 +67,7 @@ export default function PickupPage() {
           `id, order_no, status, pickup_deadline, pickup_store_id, member_id,
            campaign:group_buy_campaigns(id, campaign_no, name),
            store:stores!customer_orders_pickup_store_id_fkey(id, name),
-           items:customer_order_items(id, qty, status)`,
+           items:customer_order_items(id, qty, status, sku:skus(variant_name, product_name))`,
         )
         .in("member_id", list.map((m) => m.id))
         .in("status", ACTIVE_STATUSES)
@@ -83,12 +85,13 @@ export default function PickupPage() {
     }
   }
 
-  async function bulkPickAll(memberId: number) {
+  async function bulkPickAllConfirmed(member: Member) {
+    const memberId = member.id;
     const memberOrders = (orders.get(memberId) ?? []).filter((o) =>
       o.items.some((it) => ["pending", "reserved", "ready"].includes(it.status)),
     );
     if (memberOrders.length === 0) return;
-    if (!confirm(`一次取走此會員 ${memberOrders.length} 張未取訂單的全部商品？`)) return;
+    setBulkConfirm(null);
     setBulking(memberId);
     setError(null);
     try {
@@ -198,7 +201,7 @@ export default function PickupPage() {
                     <span className="font-mono text-sm text-zinc-700 dark:text-zinc-300">{m.phone ?? "—"}</span>
                     {memberOrders.length > 0 && (
                       <button
-                        onClick={() => bulkPickAll(m.id)}
+                        onClick={() => setBulkConfirm(m)}
                         disabled={bulking === m.id}
                         className="ml-auto rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-50"
                       >
@@ -264,6 +267,70 @@ export default function PickupPage() {
           }}
         />
       )}
+
+      <Modal
+        open={bulkConfirm !== null}
+        onClose={() => setBulkConfirm(null)}
+        title={bulkConfirm ? `📦 一次全取 — ${bulkConfirm.name ?? "—"} (${bulkConfirm.member_no})` : ""}
+        maxWidth="max-w-2xl"
+      >
+        {bulkConfirm && (() => {
+          const memberOrders = (orders.get(bulkConfirm.id) ?? []).filter((o) =>
+            o.items.some((it) => ["pending", "reserved", "ready"].includes(it.status)),
+          );
+          const totalItems = memberOrders.reduce(
+            (s, o) => s + o.items.filter((it) => ["pending","reserved","ready"].includes(it.status)).length,
+            0,
+          );
+          return (
+            <div className="space-y-3">
+              <p className="text-sm text-zinc-600 dark:text-zinc-300">
+                即將取走 <b>{memberOrders.length}</b> 張訂單、共 <b>{totalItems}</b> 項商品：
+              </p>
+              <div className="max-h-80 space-y-3 overflow-y-auto rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
+                {memberOrders.map((o) => {
+                  const pickItems = o.items.filter((it) => ["pending","reserved","ready"].includes(it.status));
+                  return (
+                    <div key={o.id} className="text-sm">
+                      <div className="mb-1">
+                        <span className="font-mono font-semibold">{o.order_no}</span>
+                        {o.campaign && (
+                          <span className="ml-2 text-[10px] text-zinc-400">
+                            {o.campaign.campaign_no} {o.campaign.name}
+                          </span>
+                        )}
+                        <span className="ml-2 text-[10px] text-zinc-500">取貨店：{o.store?.name ?? "—"}</span>
+                      </div>
+                      <ul className="ml-4 space-y-0.5 text-xs">
+                        {pickItems.map((it) => (
+                          <li key={it.id} className="flex items-baseline gap-2">
+                            <span>{it.sku?.variant_name ?? it.sku?.product_name ?? "—"}</span>
+                            <span className="font-mono">×{Number(it.qty)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setBulkConfirm(null)}
+                  className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={() => bulkPickAllConfirmed(bulkConfirm)}
+                  className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700"
+                >
+                  ✅ 確認全取（{memberOrders.length} 張、{totalItems} 項）
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+      </Modal>
     </div>
   );
 }
