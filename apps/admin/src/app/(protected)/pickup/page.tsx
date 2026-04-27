@@ -33,6 +33,7 @@ export default function PickupPage() {
   const [reloadTick, setReloadTick] = useState(0);
 
   const [pickup, setPickup] = useState<{ orderId: number; orderNo: string } | null>(null);
+  const [bulking, setBulking] = useState<number | null>(null);
 
   async function search(e?: React.FormEvent) {
     e?.preventDefault();
@@ -79,6 +80,51 @@ export default function PickupPage() {
       setOrders(m);
     } finally {
       setSearching(false);
+    }
+  }
+
+  async function bulkPickAll(memberId: number) {
+    const memberOrders = (orders.get(memberId) ?? []).filter((o) =>
+      o.items.some((it) => ["pending", "reserved", "ready"].includes(it.status)),
+    );
+    if (memberOrders.length === 0) return;
+    if (!confirm(`一次取走此會員 ${memberOrders.length} 張未取訂單的全部商品？`)) return;
+    setBulking(memberId);
+    setError(null);
+    try {
+      const sb = getSupabase();
+      const { data: sess } = await sb.auth.getSession();
+      const operator = sess.session?.user?.id;
+      if (!operator) { setError("尚未登入"); return; }
+      let okCount = 0;
+      const errors: string[] = [];
+      const eventIds: number[] = [];
+      for (const o of memberOrders) {
+        const itemIds = o.items
+          .filter((it) => ["pending", "reserved", "ready"].includes(it.status))
+          .map((it) => it.id);
+        const { data, error: e } = await sb.rpc("rpc_record_pickup", {
+          p_order_id: o.id,
+          p_item_ids: itemIds,
+          p_operator: operator,
+          p_notes: "一次全取",
+        });
+        if (e) errors.push(`${o.order_no}: ${e.message}`);
+        else {
+          okCount++;
+          const ev = data as { event_id: number };
+          if (ev?.event_id) eventIds.push(ev.event_id);
+        }
+      }
+      if (errors.length > 0) setError(errors.join("\n"));
+      if (eventIds.length > 0) {
+        // 自動開列印（一張頁面、多張收據連續分頁）
+        window.open(`/pickup/print?event_ids=${eventIds.join(",")}`, "_blank");
+      }
+      alert(`完成 ${okCount}/${memberOrders.length} 張取貨${errors.length > 0 ? `\n失敗 ${errors.length} 張：\n${errors.join("\n")}` : ""}`);
+      setReloadTick((t) => t + 1);
+    } finally {
+      setBulking(null);
     }
   }
 
@@ -150,6 +196,15 @@ export default function PickupPage() {
                     <h2 className="text-base font-semibold">{m.name ?? "—"}</h2>
                     <span className="font-mono text-xs text-zinc-500">{m.member_no}</span>
                     <span className="font-mono text-sm text-zinc-700 dark:text-zinc-300">{m.phone ?? "—"}</span>
+                    {memberOrders.length > 0 && (
+                      <button
+                        onClick={() => bulkPickAll(m.id)}
+                        disabled={bulking === m.id}
+                        className="ml-auto rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-50"
+                      >
+                        {bulking === m.id ? "處理中…" : `📦 一次全取（${memberOrders.length} 張）`}
+                      </button>
+                    )}
                   </div>
                   {memberOrders.length === 0 ? (
                     <p className="text-xs text-zinc-500">無未取訂單。</p>

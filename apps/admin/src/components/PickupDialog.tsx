@@ -76,7 +76,10 @@ export function PickupDialog({
         p_notes: notes || null,
       });
       if (error) { setErr(error.message); return; }
-      onPickedUp(data as { event_id: number; new_order_status: string; picked_count: number; active_remaining: number });
+      const result = data as { event_id: number; new_order_status: string; picked_count: number; active_remaining: number };
+      // 自動開新分頁列印
+      window.open(`/pickup/print?event_ids=${result.event_id}`, "_blank");
+      onPickedUp(result);
     } finally {
       setBusy(false);
     }
