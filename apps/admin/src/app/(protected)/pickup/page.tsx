@@ -20,7 +20,17 @@ type OpenOrder = {
   pickup_store_id: number | null;
   campaign: { id: number; campaign_no: string; name: string } | null;
   store: { id: number; name: string } | null;
-  items: { id: number; qty: number; status: string; sku: { variant_name: string | null; product_name: string | null } | null }[];
+  items: {
+    id: number;
+    qty: number;
+    unit_price: number;
+    status: string;
+    sku: {
+      variant_name: string | null;
+      product_name: string | null;
+      product: { images: string[] | null } | null;
+    } | null;
+  }[];
 };
 
 const ACTIVE_STATUSES = ["pending", "confirmed", "reserved", "ready", "partially_ready", "partially_completed", "shipping"];
@@ -36,6 +46,7 @@ export default function PickupPage() {
   const [pickup, setPickup] = useState<{ orderId: number; orderNo: string } | null>(null);
   const [bulking, setBulking] = useState<number | null>(null);
   const [bulkConfirm, setBulkConfirm] = useState<Member | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
 
   async function search(e?: React.FormEvent) {
     e?.preventDefault();
@@ -67,7 +78,7 @@ export default function PickupPage() {
           `id, order_no, status, pickup_deadline, pickup_store_id, member_id,
            campaign:group_buy_campaigns(id, campaign_no, name),
            store:stores!customer_orders_pickup_store_id_fkey(id, name),
-           items:customer_order_items(id, qty, status, sku:skus(variant_name, product_name))`,
+           items:customer_order_items(id, qty, unit_price, status, sku:skus(variant_name, product_name, product:products(images)))`,
         )
         .in("member_id", list.map((m) => m.id))
         .in("status", ACTIVE_STATUSES)
@@ -85,11 +96,22 @@ export default function PickupPage() {
     }
   }
 
+  function toggleSelect(orderId: number) {
+    setSelected((s) => {
+      const next = new Set(s);
+      if (next.has(orderId)) next.delete(orderId); else next.add(orderId);
+      return next;
+    });
+  }
+
   async function bulkPickAllConfirmed(member: Member) {
     const memberId = member.id;
-    const memberOrders = (orders.get(memberId) ?? []).filter((o) =>
+    const allMemberOrders = (orders.get(memberId) ?? []).filter((o) =>
       o.items.some((it) => ["pending", "reserved", "ready"].includes(it.status)),
     );
+    // 若有勾選 → 只取勾選的；無勾選 → 全取
+    const memberSelected = allMemberOrders.filter((o) => selected.has(o.id));
+    const memberOrders = memberSelected.length > 0 ? memberSelected : allMemberOrders;
     if (memberOrders.length === 0) return;
     setBulkConfirm(null);
     setBulking(memberId);
@@ -199,15 +221,20 @@ export default function PickupPage() {
                     <h2 className="text-base font-semibold">{m.name ?? "—"}</h2>
                     <span className="font-mono text-xs text-zinc-500">{m.member_no}</span>
                     <span className="font-mono text-sm text-zinc-700 dark:text-zinc-300">{m.phone ?? "—"}</span>
-                    {memberOrders.length > 0 && (
-                      <button
-                        onClick={() => setBulkConfirm(m)}
-                        disabled={bulking === m.id}
-                        className="ml-auto rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-50"
-                      >
-                        {bulking === m.id ? "處理中…" : `📦 一次全取（${memberOrders.length} 張）`}
-                      </button>
-                    )}
+                    {memberOrders.length > 0 && (() => {
+                      const selectedHere = memberOrders.filter((o) => selected.has(o.id));
+                      const useSel = selectedHere.length > 0;
+                      const count = useSel ? selectedHere.length : memberOrders.length;
+                      return (
+                        <button
+                          onClick={() => setBulkConfirm(m)}
+                          disabled={bulking === m.id}
+                          className="ml-auto rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-50"
+                        >
+                          {bulking === m.id ? "處理中…" : useSel ? `📦 取選定的 ${count} 張` : `📦 一次全取（${count} 張）`}
+                        </button>
+                      );
+                    })()}
                   </div>
                   {memberOrders.length === 0 ? (
                     <p className="text-xs text-zinc-500">無未取訂單。</p>
@@ -216,7 +243,15 @@ export default function PickupPage() {
                       {memberOrders.map((o) => {
                         const pickableCount = o.items.filter((it) => ["pending","reserved","ready"].includes(it.status)).length;
                         return (
-                          <li key={o.id} className="flex items-center gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-950">
+                          <li key={o.id} className={`flex items-center gap-3 rounded-md border p-3 ${selected.has(o.id) ? "border-emerald-400 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950" : "border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"}`}>
+                            <input
+                              type="checkbox"
+                              checked={selected.has(o.id)}
+                              onChange={() => toggleSelect(o.id)}
+                              disabled={pickableCount === 0}
+                              className="h-4 w-4"
+                            />
+                            <OrderThumb order={o} />
                             <div className="flex-1 text-sm">
                               <div className="flex items-baseline gap-2">
                                 <span className="font-mono font-medium">{o.order_no}</span>
@@ -233,6 +268,9 @@ export default function PickupPage() {
                                 取貨店：{o.store?.name ?? "—"}
                                 {o.pickup_deadline && <span className="ml-2">截止：{o.pickup_deadline}</span>}
                                 <span className="ml-2">{pickableCount} 項可取</span>
+                                <span className="ml-2 font-mono text-zinc-700 dark:text-zinc-200">
+                                  ${o.items.filter((it) => ["pending","reserved","ready"].includes(it.status)).reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0)}
+                                </span>
                               </div>
                             </div>
                             <button
@@ -275,17 +313,23 @@ export default function PickupPage() {
         maxWidth="max-w-2xl"
       >
         {bulkConfirm && (() => {
-          const memberOrders = (orders.get(bulkConfirm.id) ?? []).filter((o) =>
+          const allMemberOrders = (orders.get(bulkConfirm.id) ?? []).filter((o) =>
             o.items.some((it) => ["pending", "reserved", "ready"].includes(it.status)),
           );
+          const selectedHere = allMemberOrders.filter((o) => selected.has(o.id));
+          const memberOrders = selectedHere.length > 0 ? selectedHere : allMemberOrders;
           const totalItems = memberOrders.reduce(
             (s, o) => s + o.items.filter((it) => ["pending","reserved","ready"].includes(it.status)).length,
+            0,
+          );
+          const totalAmount = memberOrders.reduce(
+            (s, o) => s + o.items.filter((it) => ["pending","reserved","ready"].includes(it.status)).reduce((ss, it) => ss + Number(it.qty) * Number(it.unit_price), 0),
             0,
           );
           return (
             <div className="space-y-3">
               <p className="text-sm text-zinc-600 dark:text-zinc-300">
-                即將取走 <b>{memberOrders.length}</b> 張訂單、共 <b>{totalItems}</b> 項商品：
+                即將取走 <b>{memberOrders.length}</b> 張訂單、共 <b>{totalItems}</b> 項商品、合計 <b className="font-mono text-base text-zinc-900 dark:text-zinc-100">${totalAmount}</b>：
               </p>
               <div className="max-h-80 space-y-3 overflow-y-auto rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
                 {memberOrders.map((o) => {
@@ -324,7 +368,7 @@ export default function PickupPage() {
                   onClick={() => bulkPickAllConfirmed(bulkConfirm)}
                   className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700"
                 >
-                  ✅ 確認全取（{memberOrders.length} 張、{totalItems} 項）
+                  ✅ 確認取貨（{memberOrders.length} 張、{totalItems} 項、${totalAmount}）
                 </button>
               </div>
             </div>
@@ -332,5 +376,23 @@ export default function PickupPage() {
         })()}
       </Modal>
     </div>
+  );
+}
+
+function OrderThumb({ order }: { order: OpenOrder }) {
+  // 取第一個 active item 的 product 第一張 image
+  const firstImg = order.items
+    .map((it) => it.sku?.product?.images?.[0])
+    .find((u): u is string => typeof u === "string" && !!u);
+  if (!firstImg) {
+    return (
+      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-zinc-200 text-xs text-zinc-500 dark:bg-zinc-800">
+        —
+      </div>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img src={firstImg} alt="" className="h-12 w-12 shrink-0 rounded-md object-cover" />
   );
 }
