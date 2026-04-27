@@ -19,6 +19,7 @@ const NAV: NavGroup[] = [
     title: "核心業務",
     items: [
       { href: "/orders", label: "訂單", match: /^\/orders/ },
+      { href: "/pickup", label: "取貨", match: /^\/pickup/ },
       { href: "/campaigns", label: "開團", match: /^\/campaigns/ },
       { href: "/products", label: "商品", match: /^\/products/ },
       { href: "/members", label: "會員", match: /^\/members/ },
