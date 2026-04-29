@@ -50,10 +50,10 @@ export default function OverviewPage() {
       <MemberTabBar />
 
       <div className="space-y-4 p-4">
-        {loading && <p className="text-sm text-zinc-400">載入中…</p>}
+        {loading && <p className="text-base text-zinc-400">載入中…</p>}
 
         {err && (
-          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-base text-red-800">
             {err}
           </div>
         )}
@@ -69,16 +69,16 @@ export default function OverviewPage() {
               />
             ) : (
               <div className="flex h-32 items-center justify-center rounded-md bg-pink-100 text-pink-700">
-                <span className="text-lg font-medium">{data.store.name}</span>
+                <span className="text-xl font-medium">{data.store.name}</span>
               </div>
             )}
 
-            <h1 className="text-xl font-semibold text-pink-600">{data.store.name}</h1>
+            <h1 className="text-2xl font-semibold text-pink-600">{data.store.name}</h1>
 
             {data.store.description && (
               <section>
-                <h2 className="text-sm font-medium text-pink-600">📢 賣場介紹</h2>
-                <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-600">
+                <h2 className="text-base font-medium text-pink-600">📢 賣場介紹</h2>
+                <p className="mt-1 whitespace-pre-wrap text-base text-zinc-600">
                   {data.store.description}
                 </p>
               </section>
@@ -86,14 +86,14 @@ export default function OverviewPage() {
 
             {(data.store.payment_methods_text || data.store.shipping_methods_text) && (
               <section>
-                <h2 className="text-sm font-medium text-pink-600">🛒 付款、出貨方式</h2>
+                <h2 className="text-base font-medium text-pink-600">🛒 付款、出貨方式</h2>
                 {data.store.payment_methods_text && (
-                  <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-600">
+                  <p className="mt-1 whitespace-pre-wrap text-base text-zinc-600">
                     {data.store.payment_methods_text}
                   </p>
                 )}
                 {data.store.shipping_methods_text && (
-                  <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-600">
+                  <p className="mt-1 whitespace-pre-wrap text-base text-zinc-600">
                     {data.store.shipping_methods_text}
                   </p>
                 )}
@@ -101,9 +101,9 @@ export default function OverviewPage() {
             )}
 
             <section>
-              <h2 className="text-sm text-pink-600">未結單金額</h2>
+              <h2 className="text-base text-pink-600">未結單金額</h2>
               <div className="mt-2 rounded-md border border-pink-100 bg-white p-6 text-center">
-                <span className="text-2xl font-semibold text-pink-600">
+                <span className="text-3xl font-semibold text-pink-600">
                   {Number(data.receivable_amount).toLocaleString()}元
                 </span>
               </div>
@@ -112,7 +112,7 @@ export default function OverviewPage() {
             {data.active_orders_count > 0 && (
               <button
                 onClick={() => router.push("/orders")}
-                className="w-full rounded-md border border-pink-200 bg-pink-50 p-3 text-sm text-pink-700 hover:bg-pink-100"
+                className="w-full rounded-md border border-pink-200 bg-pink-50 p-3 text-base text-pink-700 hover:bg-pink-100"
               >
                 你有 {data.active_orders_count} 筆進行中訂單 →
               </button>

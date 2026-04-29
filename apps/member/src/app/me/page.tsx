@@ -92,7 +92,7 @@ export default function MePage() {
       <main className="mx-auto w-full max-w-md">
         <MemberTabBar />
         <div className="p-6 pt-16 text-center">
-          <p className="text-sm text-zinc-500">載入中…</p>
+          <p className="text-base text-zinc-500">載入中…</p>
         </div>
       </main>
     );
@@ -103,8 +103,8 @@ export default function MePage() {
       <main className="mx-auto w-full max-w-md">
         <MemberTabBar />
         <div className="p-6 pt-16 text-center">
-          <p className="text-sm text-zinc-500">{error ?? "尚未登入，請回首頁。"}</p>
-          <a href="/" className="mt-4 inline-block text-sm text-blue-600 hover:underline">回首頁</a>
+          <p className="text-base text-zinc-500">{error ?? "尚未登入，請回首頁。"}</p>
+          <a href="/" className="mt-4 inline-block text-base text-blue-600 hover:underline">回首頁</a>
         </div>
       </main>
     );
@@ -118,11 +118,11 @@ export default function MePage() {
       <MemberTabBar />
       <div className="flex flex-col gap-5 p-6 pt-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">會員中心</h1>
+        <h1 className="text-2xl font-semibold">會員中心</h1>
         {!editing && (
           <button
             onClick={() => setEditing(true)}
-            className="text-sm text-blue-600 hover:underline"
+            className="text-base text-blue-600 hover:underline"
           >
             編輯
           </button>
@@ -130,7 +130,7 @@ export default function MePage() {
       </div>
 
       {error && (
-        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-base text-red-800">
           {error}
         </div>
       )}
@@ -141,21 +141,21 @@ export default function MePage() {
             // eslint-disable-next-line @next/next/no-img-element
             <img src={avatarSrc} alt="" className="h-14 w-14 rounded-full object-cover" />
           ) : (
-            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-zinc-200 text-xl text-zinc-500">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-zinc-200 text-2xl text-zinc-500">
               {displayName[0]}
             </div>
           )}
           <div className="flex-1">
-            <div className="text-xs text-zinc-500">✓ 已綁定 LINE</div>
-            <div className="text-lg font-semibold">{displayName}</div>
-            <div className="font-mono text-xs text-zinc-400">{me.member_no}</div>
+            <div className="text-sm text-zinc-500">✓ 已綁定 LINE</div>
+            <div className="text-xl font-semibold">{displayName}</div>
+            <div className="font-mono text-sm text-zinc-400">{me.member_no}</div>
           </div>
         </div>
       </div>
 
       {!editing ? (
         // 檢視模式
-        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
+        <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-base">
           <dt className="text-zinc-500">手機</dt>
           <dd className="font-mono">{me.phone ?? <span className="text-zinc-400">未填</span>}</dd>
 
@@ -171,7 +171,7 @@ export default function MePage() {
           {lineUserId && (
             <>
               <dt className="text-zinc-500">LINE ID</dt>
-              <dd className="break-all font-mono text-xs">{lineUserId}</dd>
+              <dd className="break-all font-mono text-sm">{lineUserId}</dd>
             </>
           )}
         </dl>
@@ -182,19 +182,19 @@ export default function MePage() {
           className="flex flex-col gap-4"
         >
           <label className="flex flex-col gap-1">
-            <span className="text-sm font-medium">姓名</span>
+            <span className="text-base font-medium">姓名</span>
             <input
               type="text"
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
-              className="rounded-md border border-zinc-300 px-3 py-2 text-sm"
+              className="rounded-md border border-zinc-300 px-3 py-2 text-base"
               required
             />
           </label>
 
           <label className="flex flex-col gap-1">
-            <span className="text-sm font-medium">
-              手機號碼 <span className="text-xs text-zinc-400">（台灣手機 09xxxxxxxx）</span>
+            <span className="text-base font-medium">
+              手機號碼 <span className="text-sm text-zinc-400">（台灣手機 09xxxxxxxx）</span>
             </span>
             <input
               type="tel"
@@ -202,28 +202,28 @@ export default function MePage() {
               value={form.phone}
               onChange={(e) => setForm({ ...form, phone: e.target.value })}
               placeholder="0912345678"
-              className="rounded-md border border-zinc-300 px-3 py-2 text-sm"
+              className="rounded-md border border-zinc-300 px-3 py-2 text-base"
             />
           </label>
 
           <label className="flex flex-col gap-1">
-            <span className="text-sm font-medium">生日</span>
+            <span className="text-base font-medium">生日</span>
             <input
               type="date"
               value={form.birthday}
               onChange={(e) => setForm({ ...form, birthday: e.target.value })}
-              className="rounded-md border border-zinc-300 px-3 py-2 text-sm"
+              className="rounded-md border border-zinc-300 px-3 py-2 text-base"
             />
           </label>
 
           <label className="flex flex-col gap-1">
-            <span className="text-sm font-medium">Email</span>
+            <span className="text-base font-medium">Email</span>
             <input
               type="email"
               value={form.email}
               onChange={(e) => setForm({ ...form, email: e.target.value })}
               placeholder="you@example.com"
-              className="rounded-md border border-zinc-300 px-3 py-2 text-sm"
+              className="rounded-md border border-zinc-300 px-3 py-2 text-base"
             />
           </label>
 
@@ -241,14 +241,14 @@ export default function MePage() {
                 });
               }}
               disabled={saving}
-              className="flex-1 rounded-md border border-zinc-300 px-4 py-2.5 text-sm disabled:opacity-50"
+              className="flex-1 rounded-md border border-zinc-300 px-4 py-2.5 text-base disabled:opacity-50"
             >
               取消
             </button>
             <button
               type="submit"
               disabled={saving}
-              className="flex-1 rounded-md bg-[#06C755] px-4 py-2.5 text-sm font-medium text-white shadow disabled:opacity-50"
+              className="flex-1 rounded-md bg-[#06C755] px-4 py-2.5 text-base font-medium text-white shadow disabled:opacity-50"
             >
               {saving ? "儲存中…" : "儲存"}
             </button>
@@ -256,7 +256,7 @@ export default function MePage() {
         </form>
       )}
 
-      <p className="text-xs text-zinc-400">
+      <p className="text-sm text-zinc-400">
         會員卡 QR、點數、訂單等功能尚未上線（MVP-1 開發中）。
       </p>
       </div>

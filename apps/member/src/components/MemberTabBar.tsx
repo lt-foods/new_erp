@@ -20,7 +20,7 @@ export default function MemberTabBar() {
           <Link
             key={t.href}
             href={t.href}
-            className={`relative flex-1 px-2 py-3 text-center text-sm transition-colors ${
+            className={`relative flex-1 px-2 py-3 text-center text-base transition-colors ${
               active
                 ? "font-medium text-pink-600"
                 : "text-zinc-500 hover:text-zinc-700"

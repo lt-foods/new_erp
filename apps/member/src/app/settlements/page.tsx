@@ -54,16 +54,16 @@ export default function SettlementsPage() {
       />
 
       <div className="space-y-3 p-4">
-        {loading && <p className="text-sm text-zinc-400">載入中…</p>}
+        {loading && <p className="text-base text-zinc-400">載入中…</p>}
 
         {err && (
-          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-base text-red-800">
             {err}
           </div>
         )}
 
         {!loading && !err && list.length === 0 && (
-          <p className="py-12 text-center text-sm text-zinc-400">
+          <p className="py-12 text-center text-base text-zinc-400">
             目前沒有{tab === "unpaid" ? "待付款" : "已寄出"}結單
           </p>
         )}
