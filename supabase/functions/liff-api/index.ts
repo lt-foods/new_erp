@@ -78,6 +78,15 @@ Deno.serve(async (req) => {
           birthday: body.birthday as string | undefined,
           email:    body.email    as string | undefined,
         });
+      case "get_overview":
+        if (!memberId) return json({ error: "no member_id in token" }, 401);
+        return await getOverview(sb, tenantId, storeId, memberId);
+      case "list_my_orders":
+        if (!memberId) return json({ error: "no member_id in token" }, 401);
+        return await listMyOrders(sb, tenantId, storeId, memberId, String(body.tab ?? ""));
+      case "list_my_settlements":
+        if (!memberId) return json({ error: "no member_id in token" }, 401);
+        return await listMySettlements(sb, tenantId, storeId, memberId, String(body.tab ?? ""));
       default:
         return json({ error: `unknown action: ${action}` }, 400);
     }
@@ -363,6 +372,131 @@ async function updateMe(
 
   if (error) return json({ error: error.message }, 500);
   return json({ ok: true });
+}
+
+// ─── overview / orders / settlements ────────────────────────────────────────
+
+async function getOverview(
+  sb: ReturnType<typeof createClient>,
+  tenantId: string,
+  storeId: number,
+  memberId: number,
+) {
+  // store info
+  const { data: storeRow, error: sErr } = await sb
+    .from("stores")
+    .select("id, code, name, banner_url, description, payment_methods_text, shipping_methods_text")
+    .eq("tenant_id", tenantId)
+    .eq("id", storeId)
+    .single();
+  if (sErr || !storeRow) {
+    return json({ error: "store not found", detail: sErr?.message }, 404);
+  }
+
+  // 未結金額（payment_status='unpaid' AND status NOT IN cancelled/expired）
+  const { data: unpaidRows, error: uErr } = await sb
+    .from("v_customer_order_summary")
+    .select("payable_amount")
+    .eq("tenant_id", tenantId)
+    .eq("member_id", memberId)
+    .eq("store_id", storeId)
+    .eq("payment_status", "unpaid")
+    .not("status", "in", "(cancelled,expired)");
+  if (uErr) return json({ error: "receivable query failed", detail: uErr.message }, 500);
+
+  const receivable = (unpaidRows ?? []).reduce(
+    (s, r) => s + Number((r as { payable_amount: number }).payable_amount ?? 0),
+    0,
+  );
+
+  // 進行中訂單數（status NOT IN completed/cancelled/expired）
+  const { count: activeCount, error: aErr } = await sb
+    .from("v_customer_order_summary")
+    .select("*", { count: "exact", head: true })
+    .eq("tenant_id", tenantId)
+    .eq("member_id", memberId)
+    .eq("store_id", storeId)
+    .not("status", "in", "(completed,cancelled,expired)");
+  if (aErr) return json({ error: "active count failed", detail: aErr.message }, 500);
+
+  return json({
+    store: storeRow,
+    receivable_amount:   receivable,
+    active_orders_count: activeCount ?? 0,
+  });
+}
+
+async function listMyOrders(
+  sb: ReturnType<typeof createClient>,
+  tenantId: string,
+  storeId: number,
+  memberId: number,
+  tab: string,
+) {
+  if (tab !== "active" && tab !== "history") {
+    return json({ error: "tab must be 'active' or 'history'" }, 400);
+  }
+
+  // 6 個月內（PRD-LIFF前端 Q8）
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 6);
+
+  let q = sb
+    .from("v_customer_order_summary")
+    .select("*")
+    .eq("tenant_id", tenantId)
+    .eq("member_id", memberId)
+    .eq("store_id", storeId)
+    .gte("created_at", cutoff.toISOString())
+    .order("created_at", { ascending: false })
+    .limit(100);
+
+  if (tab === "active") {
+    q = q.not("status", "in", "(completed,cancelled,expired)");
+  } else {
+    q = q.eq("status", "completed");
+  }
+
+  const { data, error } = await q;
+  if (error) return json({ error: error.message }, 500);
+
+  return json({ orders: data ?? [] });
+}
+
+async function listMySettlements(
+  sb: ReturnType<typeof createClient>,
+  tenantId: string,
+  storeId: number,
+  memberId: number,
+  tab: string,
+) {
+  if (tab !== "unpaid" && tab !== "shipped") {
+    return json({ error: "tab must be 'unpaid' or 'shipped'" }, 400);
+  }
+
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 6);
+
+  let q = sb
+    .from("v_customer_order_summary")
+    .select("*")
+    .eq("tenant_id", tenantId)
+    .eq("member_id", memberId)
+    .eq("store_id", storeId)
+    .gte("created_at", cutoff.toISOString())
+    .order("created_at", { ascending: false })
+    .limit(100);
+
+  if (tab === "unpaid") {
+    q = q.eq("payment_status", "unpaid").not("status", "in", "(cancelled,expired)");
+  } else {
+    q = q.in("status", ["shipping", "completed"]);
+  }
+
+  const { data, error } = await q;
+  if (error) return json({ error: error.message }, 500);
+
+  return json({ settlements: data ?? [] });
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

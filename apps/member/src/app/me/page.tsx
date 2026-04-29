@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { consumeFragmentToSession, getSession } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
+import MemberTabBar from "@/components/MemberTabBar";
 
 type MemberData = {
   member_id: number;
@@ -88,17 +89,23 @@ export default function MePage() {
 
   if (loading) {
     return (
-      <main className="mx-auto max-w-md p-6 pt-16 text-center">
-        <p className="text-sm text-zinc-500">載入中…</p>
+      <main className="mx-auto w-full max-w-md">
+        <MemberTabBar />
+        <div className="p-6 pt-16 text-center">
+          <p className="text-sm text-zinc-500">載入中…</p>
+        </div>
       </main>
     );
   }
 
   if (!me) {
     return (
-      <main className="mx-auto max-w-md p-6 pt-16 text-center">
-        <p className="text-sm text-zinc-500">{error ?? "尚未登入，請回首頁。"}</p>
-        <a href="/" className="mt-4 inline-block text-sm text-blue-600 hover:underline">回首頁</a>
+      <main className="mx-auto w-full max-w-md">
+        <MemberTabBar />
+        <div className="p-6 pt-16 text-center">
+          <p className="text-sm text-zinc-500">{error ?? "尚未登入，請回首頁。"}</p>
+          <a href="/" className="mt-4 inline-block text-sm text-blue-600 hover:underline">回首頁</a>
+        </div>
       </main>
     );
   }
@@ -107,7 +114,9 @@ export default function MePage() {
   const displayName = me.name ?? lineName ?? "(未提供)";
 
   return (
-    <main className="mx-auto flex w-full max-w-md flex-col gap-5 p-6 pt-10">
+    <main className="mx-auto w-full max-w-md">
+      <MemberTabBar />
+      <div className="flex flex-col gap-5 p-6 pt-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">會員中心</h1>
         {!editing && (
@@ -250,6 +259,7 @@ export default function MePage() {
       <p className="text-xs text-zinc-400">
         會員卡 QR、點數、訂單等功能尚未上線（MVP-1 開發中）。
       </p>
+      </div>
     </main>
   );
 }
