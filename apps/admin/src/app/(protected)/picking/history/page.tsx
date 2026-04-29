@@ -52,6 +52,7 @@ export default function PickingHistoryPage() {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Wave | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
+  const [filterDate, setFilterDate] = useState<string>("");
   const [autoOpenWaveId, setAutoOpenWaveId] = useState<number | null>(() => {
     if (typeof window === "undefined") return null;
     const id = new URLSearchParams(window.location.search).get("wave");
@@ -120,19 +121,60 @@ export default function PickingHistoryPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
-      <header className="flex items-start justify-between gap-3">
+      <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">撿貨歷史</h1>
           <p className="text-sm text-zinc-500">
-            {waves === null ? "載入中…" : `共 ${waves.length} 張撿貨單`}
+            {waves === null
+              ? "載入中…"
+              : filterDate
+                ? `共 ${waves.filter((w) => w.wave_date === filterDate).length} 張（配送日 ${filterDate}）／ ${waves.length} 張`
+                : `共 ${waves.length} 張撿貨單`}
           </p>
         </div>
-        <Link
-          href="/picking/workstation"
-          className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-        >
-          + 至撿貨工作站
-        </Link>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-1 text-xs text-zinc-600 dark:text-zinc-300">
+            <span>配送日</span>
+            <input
+              type="date"
+              value={filterDate}
+              onChange={(e) => setFilterDate(e.target.value)}
+              className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+            />
+            {filterDate && (
+              <button
+                onClick={() => setFilterDate("")}
+                className="ml-1 text-xs text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+                title="清除"
+              >
+                ✕
+              </button>
+            )}
+          </label>
+          <Link
+            href={filterDate ? `/picking/print-sign?date=${filterDate}` : "#"}
+            target="_blank"
+            onClick={(e) => {
+              if (!filterDate) {
+                e.preventDefault();
+                alert("請先選配送日");
+              }
+            }}
+            className={`rounded-md border px-3 py-1.5 text-sm ${
+              filterDate
+                ? "border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300 dark:hover:bg-blue-900"
+                : "cursor-not-allowed border-zinc-200 bg-zinc-100 text-zinc-400 dark:border-zinc-800 dark:bg-zinc-800 dark:text-zinc-600"
+            }`}
+          >
+            📄 列印分店簽收單
+          </Link>
+          <Link
+            href="/picking/workstation"
+            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            + 至撿貨工作站
+          </Link>
+        </div>
       </header>
 
       {error && (
@@ -159,7 +201,14 @@ export default function PickingHistoryPage() {
                 </td>
               </tr>
             )}
-            {waves?.map((w) => {
+            {waves !== null && waves.length > 0 && filterDate && waves.filter((w) => w.wave_date === filterDate).length === 0 && (
+              <tr>
+                <td colSpan={4} className="p-6 text-center text-sm text-zinc-500">
+                  此配送日無撿貨單。
+                </td>
+              </tr>
+            )}
+            {waves?.filter((w) => !filterDate || w.wave_date === filterDate).map((w) => {
               const diff = w.actual_total - w.expected_total;
               const diffEl =
                 diff === 0 ? (

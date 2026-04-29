@@ -212,14 +212,19 @@ export default function OrdersListPage() {
                   <Td className="text-right font-mono">${itemSummary.get(r.id)?.totalAmount ?? 0}</Td>
                   <Td className="text-right text-xs text-zinc-500">{new Date(r.updated_at).toLocaleString("zh-TW")}</Td>
                   <Td className="text-right">
-                    {["pending","confirmed","reserved","ready","partially_ready","partially_completed","shipping"].includes(r.status) && (
-                      <button
-                        onClick={() => setPickup({ id: r.id, no: r.order_no })}
-                        className="rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-700"
-                      >
-                        ✅ 取貨
-                      </button>
-                    )}
+                    {["pending","confirmed","reserved","ready","partially_ready","partially_completed","shipping"].includes(r.status) && (() => {
+                      const canPickup = r.status === "ready" || r.status === "partially_completed";
+                      return (
+                        <button
+                          onClick={() => setPickup({ id: r.id, no: r.order_no })}
+                          disabled={!canPickup}
+                          title={canPickup ? undefined : "分店尚未收貨，無法取貨"}
+                          className="rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-400 disabled:hover:bg-zinc-200 dark:disabled:bg-zinc-800 dark:disabled:text-zinc-600 dark:disabled:hover:bg-zinc-800"
+                        >
+                          ✅ 取貨
+                        </button>
+                      );
+                    })()}
                   </Td>
                 </tr>
               );

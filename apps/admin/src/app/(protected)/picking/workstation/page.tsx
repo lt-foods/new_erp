@@ -15,6 +15,7 @@ type DemandRow = {
   demand_qty: number;
   campaign_ids: number[];
   received_qty: number; // 已進庫量
+  picked_qty: number; // 已建在非 cancelled wave 的 qty（同 close_date 的 campaigns 範圍）
   po_numbers: string[] | null;
   order_numbers: string[] | null;
 };
@@ -24,6 +25,7 @@ type SkuCard = {
   sku_code: string | null;
   sku_label: string;
   total_demand: number;
+  total_picked: number; // 已撿過總量（跨分店加總）
   by_store: Map<number, number>;
   short_stores: { id: number; name: string; qty: number }[]; // 欠品店家
   close_date: string; // 結單日
@@ -31,7 +33,7 @@ type SkuCard = {
   is_short: boolean; // 是否缺貨（進庫量 < 訂單需求）
   po_numbers: string[]; // PO 單號集合
   order_numbers: string[]; // 訂單號集合
-  is_picked: boolean; // 該結單日已建過 wave
+  is_picked: boolean; // total_picked >= total_demand → 已全部撿過、不可再加入
 };
 
 type SelectedItem = {
@@ -54,7 +56,6 @@ export default function PickingWorkstationPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [showOnlyNonZero, setShowOnlyNonZero] = useState(false);
   const [expandedSkuIds, setExpandedSkuIds] = useState<Set<number>>(new Set());
-  const [pickedSkuIds, setPickedSkuIds] = useState<Set<number>>(new Set());
 
   // 載入可用結單日
   useEffect(() => {
@@ -101,36 +102,18 @@ export default function PickingWorkstationPage() {
         const sb = getSupabase();
         const { data, error: e } = await sb
           .from("v_picking_demand_by_close_date")
-          .select("close_date, sku_id, sku_label, sku_code, store_id, store_name, demand_qty, campaign_ids, received_qty, po_numbers, order_numbers")
+          .select("close_date, sku_id, sku_label, sku_code, store_id, store_name, demand_qty, campaign_ids, received_qty, picked_qty, po_numbers, order_numbers")
           .eq("close_date", closeDate);
         if (e) throw new Error(e.message);
         if (cancelled) return;
         const rows = ((data as DemandRow[] | null) ?? []).map((r) => ({
           ...r,
           demand_qty: Number(r.demand_qty),
+          picked_qty: Number(r.picked_qty),
         }));
         setDemand(rows);
         // 保存到歷史記錄
         setDemandHistory((prev) => new Map(prev).set(closeDate, rows));
-
-        // 過濾已撿過的 SKU：該結單日已有非 cancelled 的 wave 涉及的 sku 不再顯示
-        const { data: priorWaves } = await sb
-          .from("picking_waves")
-          .select("id")
-          .eq("wave_date", closeDate)
-          .neq("status", "cancelled");
-        const priorWaveIds = (priorWaves as { id: number }[] | null)?.map((w) => w.id) ?? [];
-        if (priorWaveIds.length > 0) {
-          const { data: pickedItems } = await sb
-            .from("picking_wave_items")
-            .select("sku_id")
-            .in("wave_id", priorWaveIds);
-          if (!cancelled) {
-            setPickedSkuIds(new Set((pickedItems as { sku_id: number }[] | null)?.map((i) => i.sku_id) ?? []));
-          }
-        } else if (!cancelled) {
-          setPickedSkuIds(new Set());
-        }
 
         const storeIds = Array.from(new Set(rows.map((r) => r.store_id)));
         if (storeIds.length) {
@@ -165,6 +148,7 @@ export default function PickingWorkstationPage() {
           sku_code: r.sku_code,
           sku_label: r.sku_label,
           total_demand: 0,
+          total_picked: 0,
           by_store: new Map(),
           short_stores: [],
           close_date: closeDate,
@@ -179,6 +163,7 @@ export default function PickingWorkstationPage() {
       }
       const e = m.get(r.sku_id)!;
       e.total_demand += r.demand_qty;
+      e.total_picked += Number(r.picked_qty) || 0;
       e.by_store.set(r.store_id, (e.by_store.get(r.store_id) ?? 0) + r.demand_qty);
       // 聚合 PO 和訂單號
       if (r.po_numbers) {
@@ -209,14 +194,14 @@ export default function PickingWorkstationPage() {
       card.order_numbers = Array.from(orderSet.get(card.sku_id) ?? new Set<string>()).sort();
     }
     for (const card of m.values()) {
-      card.is_picked = pickedSkuIds.has(card.sku_id);
+      card.is_picked = card.total_demand > 0 && card.total_picked >= card.total_demand;
     }
     return Array.from(m.values()).sort((a, b) => {
       // 已撿的排在後面
       if (a.is_picked !== b.is_picked) return a.is_picked ? 1 : -1;
       return (a.sku_code ?? "").localeCompare(b.sku_code ?? "");
     });
-  }, [demand, stores, closeDate, pickedSkuIds]);
+  }, [demand, stores, closeDate]);
 
   const filteredCards = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
@@ -247,6 +232,7 @@ export default function PickingWorkstationPage() {
           sku_code: first.sku_code,
           sku_label: first.sku_label,
           total_demand: 0,
+          total_picked: 0,
           by_store: new Map(),
           short_stores: [],
           close_date: cd,
@@ -262,6 +248,7 @@ export default function PickingWorkstationPage() {
       const card = m.get(skuId)!;
       for (const r of itemRows) {
         card.total_demand += r.demand_qty;
+        card.total_picked += Number(r.picked_qty) || 0;
         card.received_qty += Number(r.received_qty) || 0;
         card.by_store.set(r.store_id, (card.by_store.get(r.store_id) ?? 0) + r.demand_qty);
         // 聚合 PO 和訂單號
