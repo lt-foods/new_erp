@@ -127,6 +127,20 @@ export default function RestockInboxPage() {
     }
   }
 
+  async function shipPrReceived(id: number) {
+    if (!confirm("確定 PR 已到貨、現在從 HQ 派貨到分店？")) return;
+    setBusy(id);
+    try {
+      const { error: err } = await getSupabase().rpc("rpc_ship_restock_pr_received", { p_request_id: id });
+      if (err) throw err;
+      setReload((t) => t + 1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function reject() {
     if (!rejectModal || !rejectModal.reason.trim()) return;
     setBusy(rejectModal.id);
@@ -222,15 +236,24 @@ export default function RestockInboxPage() {
                     </div>
                   ) : (
                     <div className="flex flex-col gap-1 text-xs">
+                      {r.linked_pr_id && (
+                        <Link href={`/purchase/requests/edit?id=${r.linked_pr_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
+                          → {r.linked_pr_no ?? `採購單 #${r.linked_pr_id}`}
+                        </Link>
+                      )}
                       {r.linked_transfer_id && (
                         <Link href={`/transfers?id=${r.linked_transfer_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
                           → {r.linked_transfer_no ?? `轉貨單 #${r.linked_transfer_id}`}
                         </Link>
                       )}
-                      {r.linked_pr_id && (
-                        <Link href={`/purchase/requests/edit?id=${r.linked_pr_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
-                          → {r.linked_pr_no ?? `採購單 #${r.linked_pr_id}`}
-                        </Link>
+                      {r.status === "approved_pr" && (
+                        <button
+                          onClick={() => shipPrReceived(r.id)}
+                          disabled={busy === r.id}
+                          className="mt-1 self-start rounded border border-emerald-400 bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                        >
+                          📦 PO 到貨、建轉貨單
+                        </button>
                       )}
                       {r.status === "rejected" && r.rejected_reason && <span className="text-red-600">拒絕：{r.rejected_reason}</span>}
                     </div>
