@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
+import { withBasePath } from "@/lib/basePath";
 
 type SettlementStatus = "draft" | "confirmed" | "settled" | "disputed";
 type SettlementStatusExt = SettlementStatus | "cancelled";
@@ -431,7 +432,7 @@ function HqToStoreDetail({
           )}
         </div>
         <a
-          href={`/finance/receivables/print?settlement_id=${settlement.id}`}
+          href={withBasePath(`/finance/receivables/print?settlement_id=${settlement.id}`)}
           target="_blank"
           rel="noopener noreferrer"
           className="rounded-md border border-blue-300 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300"

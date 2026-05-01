@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
+import { withBasePath } from "@/lib/basePath";
 
 type ReceivableStatus = "pending" | "partially_paid" | "paid" | "cancelled" | "disputed";
 type SourceType = "store_monthly_settlement" | "manual";
@@ -327,7 +328,7 @@ function ReceivableDetail({
       {receivable.source_type === "store_monthly_settlement" && receivable.source_id && (
         <div className="flex justify-end">
           <a
-            href={`/finance/receivables/print?settlement_id=${receivable.source_id}`}
+            href={withBasePath(`/finance/receivables/print?settlement_id=${receivable.source_id}`)}
             target="_blank"
             rel="noopener noreferrer"
             className="rounded-md border border-blue-300 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300"

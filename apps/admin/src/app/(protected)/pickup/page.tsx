@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { PickupDialog } from "@/components/PickupDialog";
+import { withBasePath } from "@/lib/basePath";
 
 type Member = {
   id: number;
@@ -166,7 +167,7 @@ export default function PickupPage() {
       if (errors.length > 0) setError(errors.join("\n"));
       if (eventIds.length > 0) {
         // 自動開列印（一張頁面、多張收據連續分頁）
-        window.open(`/pickup/print?event_ids=${eventIds.join(",")}`, "_blank");
+        window.open(withBasePath(`/pickup/print?event_ids=${eventIds.join(",")}`), "_blank");
       }
       alert(`完成 ${okCount}/${memberOrders.length} 張取貨${errors.length > 0 ? `\n失敗 ${errors.length} 張：\n${errors.join("\n")}` : ""}`);
       setReloadTick((t) => t + 1);

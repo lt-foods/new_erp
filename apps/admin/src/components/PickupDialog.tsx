@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
+import { withBasePath } from "@/lib/basePath";
 
 type PickableItem = {
   id: number;
@@ -78,7 +79,7 @@ export function PickupDialog({
       if (error) { setErr(error.message); return; }
       const result = data as { event_id: number; new_order_status: string; picked_count: number; active_remaining: number };
       // 自動開新分頁列印
-      window.open(`/pickup/print?event_ids=${result.event_id}`, "_blank");
+      window.open(withBasePath(`/pickup/print?event_ids=${result.event_id}`), "_blank");
       onPickedUp(result);
     } finally {
       setBusy(false);

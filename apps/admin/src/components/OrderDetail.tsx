@@ -5,6 +5,7 @@ import { getSupabase } from "@/lib/supabase";
 import { OrderTransferModal } from "@/components/OrderTransferModal";
 import { PickupDialog } from "@/components/PickupDialog";
 import { AidOrderTimeline } from "@/components/AidOrderTimeline";
+import { withBasePath } from "@/lib/basePath";
 
 type OrderHead = {
   id: number;
@@ -600,7 +601,7 @@ function Timeline({ steps }: { steps: TimelineStep[] | null }) {
                   </button>
                 ) : s.detailHref ? (
                   <a
-                    href={s.detailHref}
+                    href={withBasePath(s.detailHref)}
                     className="text-[10px] font-mono text-blue-600 hover:underline dark:text-blue-400"
                   >
                     {s.detail}
