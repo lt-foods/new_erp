@@ -7,6 +7,7 @@ import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { ProductForm, type ProductFormValues } from "@/components/ProductForm";
 import { ProductSkuSection, type ProductSkuSectionHandle } from "@/components/ProductSkuSection";
+import { DatePicker } from "@/components/DatePicker";
 
 type Status = "draft" | "active" | "inactive" | "discontinued";
 type SortKey = "updated_at" | "product_code" | "name" | "status";
@@ -186,10 +187,9 @@ function CreateCampaignModal({
             取貨截止日
             <span className="ml-1 text-xs text-zinc-400">（依溫層自動計算，可調整）</span>
           </span>
-          <input
-            type="date"
+          <DatePicker
             value={pickupDeadline}
-            onChange={(e) => setPickupDeadline(e.target.value)}
+            onChange={setPickupDeadline}
             className={inputCls}
           />
         </label>

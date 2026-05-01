@@ -70,6 +70,7 @@ export default function CommunityCandidatesCalendarPage() {
   const [rows, setRows] = useState<CalendarCandidate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [selectedDayIdx, setSelectedDayIdx] = useState(0);
 
   const days = useMemo(() => {
     const today = new Date();
@@ -120,6 +121,39 @@ export default function CommunityCandidatesCalendarPage() {
     }
     setLocalByDate(map);
   }, [rows, days]);
+
+  const handleReschedule = async (r: CalendarCandidate, newDateStr: string) => {
+    if (!newDateStr) return;
+    if (r.scheduled_open_at?.slice(0, 10) === newDateStr) return;
+    setBusy(true);
+    try {
+      const sb = getSupabase();
+      // 取目標日的下一個 sort order（end of day）
+      const { data: existing } = await sb
+        .from("community_product_candidates")
+        .select("scheduled_sort_order")
+        .eq("scheduled_open_at", newDateStr)
+        .order("scheduled_sort_order", { ascending: false, nullsFirst: false })
+        .limit(1);
+      const nextOrder =
+        ((existing as { scheduled_sort_order: number | null }[] | null)?.[0]
+          ?.scheduled_sort_order ?? -1) + 1;
+      const { error: err } = await sb
+        .from("community_product_candidates")
+        .update({
+          scheduled_open_at: newDateStr,
+          scheduled_sort_order: nextOrder,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", r.id);
+      if (err) throw err;
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const handleRemove = async (r: CalendarCandidate) => {
     const label = r.product_name_hint ?? "（無商品名）";
@@ -258,6 +292,108 @@ export default function CommunityCandidatesCalendarPage() {
   }
 
   const todayStr = formatDate(days[0]);
+  const selectedDay = days[selectedDayIdx];
+  const selectedDayKey = formatDate(selectedDay);
+  const selectedDayCards = byDate.get(selectedDayKey) ?? [];
+
+  function renderCard(r: CalendarCandidate, idx: number, total: number) {
+    const any = r.adopted_supplier_name || r.adopted_cost !== null || r.adopted_sale_price !== null;
+    const complete = !!(r.adopted_supplier_name && r.adopted_cost !== null && r.adopted_sale_price !== null);
+    const isFirst = idx === 0;
+    const isLast = idx === total - 1;
+    const curDay = r.scheduled_open_at?.slice(0, 10) ?? "";
+    return (
+      <div
+        key={r.id}
+        className="flex flex-col gap-1.5 rounded-md border border-zinc-200 bg-white p-2 text-xs dark:border-zinc-800 dark:bg-zinc-900"
+      >
+        <div className="flex items-baseline gap-1.5">
+          <span className="font-mono text-[10px] font-semibold text-zinc-500 dark:text-zinc-400">
+            {suggestedTime(idx)}
+          </span>
+          <Link
+            href={`/community-candidates?highlight=${r.id}`}
+            className="font-medium leading-snug hover:underline"
+          >
+            {r.product_name_hint ?? "（無商品名）"}
+          </Link>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          <span
+            className={`inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+              ACTION_COLOR[r.owner_action] ?? ACTION_COLOR.none
+            }`}
+          >
+            {ACTION_LABEL[r.owner_action] ?? r.owner_action}
+          </span>
+          {complete && (
+            <span className="inline-flex rounded-full bg-teal-100 px-1.5 py-0.5 text-[10px] font-medium text-teal-700 dark:bg-teal-900/30 dark:text-teal-300">
+              已補資料
+            </span>
+          )}
+          {any && !complete && (
+            <span className="inline-flex rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+              資料未完整
+            </span>
+          )}
+        </div>
+        {any && (
+          <div className="space-y-0.5 text-[10px] text-zinc-500 dark:text-zinc-400">
+            {r.adopted_supplier_name && <div>廠商：{r.adopted_supplier_name}</div>}
+            {r.adopted_cost !== null && <div>成本：{r.adopted_cost}</div>}
+            {r.adopted_sale_price !== null && <div>售價：{r.adopted_sale_price}</div>}
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-1 pt-0.5">
+          {!isFirst && (
+            <button
+              onClick={() => handleMoveUp(r)}
+              disabled={busy}
+              className="rounded border border-zinc-300 px-1.5 py-0.5 text-[10px] text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
+              title="上移"
+            >
+              上移
+            </button>
+          )}
+          {!isLast && (
+            <button
+              onClick={() => handleMoveDown(r)}
+              disabled={busy}
+              className="rounded border border-zinc-300 px-1.5 py-0.5 text-[10px] text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
+              title="下移"
+            >
+              下移
+            </button>
+          )}
+          <select
+            value={curDay}
+            disabled={busy}
+            onChange={(e) => handleReschedule(r, e.target.value)}
+            title="改排程日"
+            className="rounded border border-zinc-300 bg-white px-1 py-0.5 text-[10px] text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
+          >
+            {days.map((d) => {
+              const ds = formatDate(d);
+              const label = `${d.getMonth() + 1}/${d.getDate()} (${WEEKDAYS[d.getDay()]})`;
+              return (
+                <option key={ds} value={ds}>
+                  {ds === curDay ? `📌 ${label}` : label}
+                </option>
+              );
+            })}
+          </select>
+          <button
+            onClick={() => handleRemove(r)}
+            disabled={busy}
+            className="ml-auto rounded border border-red-300 px-1.5 py-0.5 text-[10px] text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/30 disabled:opacity-50"
+            title="移出排程"
+          >
+            移出
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">

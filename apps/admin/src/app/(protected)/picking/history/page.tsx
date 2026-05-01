@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
+import { DatePicker } from "@/components/DatePicker";
 
 type Wave = {
   id: number;
@@ -169,11 +170,11 @@ export default function PickingHistoryPage() {
         <div className="flex flex-wrap items-center gap-2">
           <label className="flex items-center gap-1 text-xs text-zinc-600 dark:text-zinc-300">
             <span>配送日</span>
-            <input
-              type="date"
+            <DatePicker
               value={filterDate}
-              onChange={(e) => setFilterDate(e.target.value)}
-              className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+              onChange={setFilterDate}
+              placeholder="所有日期"
+              className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
             />
             {filterDate && (
               <button
@@ -290,11 +291,9 @@ export default function PickingHistoryPage() {
                     {w.status === "shipped" || w.status === "cancelled" ? (
                       <span>{w.wave_date}</span>
                     ) : (
-                      <input
-                        type="date"
+                      <DatePicker
                         value={w.wave_date}
-                        onChange={async (e) => {
-                          const newDate = e.target.value;
+                        onChange={async (newDate) => {
                           if (!newDate || newDate === w.wave_date) return;
                           try {
                             const sb = getSupabase();
@@ -312,7 +311,7 @@ export default function PickingHistoryPage() {
                             alert(`配送日更新失敗：${translateRpcError(err)}`);
                           }
                         }}
-                        className="rounded border border-zinc-300 bg-white px-1 py-0.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+                        className="rounded border border-zinc-300 bg-white px-1 py-0.5 text-xs text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
                       />
                     )}
                   </div>

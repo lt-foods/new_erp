@@ -318,7 +318,7 @@ export function AidOrderTimeline({ orderId }: { orderId: number }) {
         {events.map((ev, i) => (
           <li key={`${ev.kind}-${i}`} className="relative">
             <span
-              className={`absolute -left-[1.4rem] top-1 inline-block h-3 w-3 rounded-full border-2 ${dotClass(ev.status)}`}
+              className={`absolute -left-[1.625rem] top-1 inline-block h-3 w-3 rounded-full border-2 ${dotClass(ev.status)}`}
             />
             <div className="flex flex-wrap items-baseline gap-2">
               <span className={`text-sm font-medium ${textClass(ev.status)}`}>

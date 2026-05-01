@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { withBasePath } from "@/lib/basePath";
+import { DatePicker } from "@/components/DatePicker";
 
 type ReceivableStatus = "pending" | "partially_paid" | "paid" | "cancelled" | "disputed";
 type SourceType = "store_monthly_settlement" | "manual";
@@ -470,11 +471,10 @@ function PaymentForm({
         </label>
         <label className="text-sm">
           <span className="mb-1 block text-xs text-zinc-500">收款日</span>
-          <input
-            type="date"
+          <DatePicker
             value={paidAt}
-            onChange={(e) => setPaidAt(e.target.value)}
-            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+            onChange={setPaidAt}
+            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-left text-sm text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
           />
         </label>
         <label className="text-sm">

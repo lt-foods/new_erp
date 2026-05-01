@@ -8,6 +8,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import { DatePicker } from "@/components/DatePicker";
 
 type DemandRow = {
   po_id: number;
@@ -268,11 +269,10 @@ export default function PickingWorkstationPage() {
       <div className="flex flex-wrap items-end gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900">
         <label className="text-sm">
           <span className="mb-1 block text-xs text-zinc-500">配送日</span>
-          <input
-            type="date"
+          <DatePicker
             value={waveDate}
-            onChange={(e) => setWaveDate(e.target.value)}
-            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+            onChange={setWaveDate}
+            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
           />
         </label>
         <span className="text-xs text-zinc-500">

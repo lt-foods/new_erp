@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { DatePicker } from "@/components/DatePicker";
 
 type WaveItem = {
   id: number;
@@ -199,11 +200,10 @@ export default function PrintSignPage() {
           <h1 className="text-base font-semibold">分店簽收單列印</h1>
           <label className="flex items-center gap-2 text-sm">
             <span>配送日</span>
-            <input
-              type="date"
+            <DatePicker
               value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm"
+              onChange={setDate}
+              className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
             />
           </label>
           <span className="text-sm text-zinc-500">

@@ -6,6 +6,7 @@ import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { CampaignForm, type CampaignFormValues } from "@/components/CampaignForm";
 import { CampaignItemsTable } from "@/components/CampaignItemsTable";
+import { DatePicker } from "@/components/DatePicker";
 
 type Status =
   | "draft" | "open" | "closed" | "ordered" | "receiving" | "ready" | "completed" | "cancelled";
@@ -872,7 +873,7 @@ function RecurringCampaignsForm({
 
         <label className="block space-y-1 text-sm">
           <span className="text-zinc-600 dark:text-zinc-400">第一場日期</span>
-          <input type="date" value={anchorDate} onChange={(e) => setAnchorDate(e.target.value)} className={inputCls} />
+          <DatePicker value={anchorDate} onChange={setAnchorDate} className={inputCls} />
         </label>
 
         <label className="block space-y-1 text-sm">

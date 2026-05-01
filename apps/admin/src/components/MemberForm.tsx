@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import { DatePicker } from "@/components/DatePicker";
 
 export type MemberStatus = "active" | "inactive" | "blocked" | "merged" | "deleted";
 export type MemberGender = "M" | "F" | "O" | null;
@@ -152,10 +153,9 @@ export function MemberForm({
           </select>
         </Field>
         <Field label="生日">
-          <input
-            type="date"
+          <DatePicker
             value={v.birthday ?? ""}
-            onChange={(e) => update("birthday", e.target.value || null)}
+            onChange={(s) => update("birthday", s || null)}
             className={inputCls}
           />
         </Field>
