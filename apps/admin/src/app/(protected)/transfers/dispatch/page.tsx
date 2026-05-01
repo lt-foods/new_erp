@@ -29,6 +29,7 @@ type TransferItem = {
   qty_shipped: number;
   qty_received: number;
   damage_qty: number;
+  description: string | null;
 };
 
 type Sku = {
@@ -116,7 +117,7 @@ export default function HqDispatchPage() {
         if (tIds.length > 0) {
           const { data: itRows } = await sb
             .from("transfer_items")
-            .select("id, transfer_id, sku_id, qty_requested, qty_shipped, qty_received, damage_qty")
+            .select("id, transfer_id, sku_id, qty_requested, qty_shipped, qty_received, damage_qty, description")
             .in("transfer_id", tIds);
           const its = (itRows as TransferItem[] | null) ?? [];
           for (const it of its) {
@@ -495,9 +496,13 @@ export default function HqDispatchPage() {
                       <div className="space-y-0.5">
                         {its.slice(0, 3).map((it) => {
                           const s = skus.get(it.sku_id);
+                          // 虛擬轉貨：line description 優先；真實 SKU 走 product_name
+                          const label = it.description?.trim()
+                            ? it.description
+                            : (s?.product_name ?? "?") + (s?.variant_name ? "-" + s.variant_name : "");
                           return (
                             <div key={it.id}>
-                              {(s?.product_name ?? "?") + (s?.variant_name ? "-" + s.variant_name : "")}
+                              {label}
                               <span className="ml-1 text-zinc-400">×{it.qty_requested}</span>
                               {it.damage_qty > 0 && (
                                 <span className="ml-1 text-red-600">
