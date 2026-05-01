@@ -251,7 +251,7 @@ export default function OrdersListPage() {
           orderNo={pickup.no}
           onPickedUp={(r) => {
             setPickup(null);
-            alert(`取貨完成 (${r.picked_count} 項)\n訂單狀態：${r.new_order_status}`);
+            alert(`取貨完成 (${r.picked_count} 項)\n訂單狀態：${STATUS_LABEL[r.new_order_status as OrderStatus] ?? r.new_order_status}`);
             setReloadOrders((n) => n + 1);
           }}
         />

@@ -46,6 +46,14 @@ type TimelineStep = {
   detailOnClick?: () => void;
 };
 
+const STATUS_LABEL: Record<string, string> = {
+  pending: "待確認", confirmed: "已確認", reserved: "已保留", shipping: "派貨中",
+  ready: "可取貨", partially_ready: "部分可取", partially_completed: "部分取貨",
+  completed: "已完成", expired: "逾期", cancelled: "已取消",
+  transferred_out: "已轉出", picked_up: "已取貨",
+};
+const statusLabel = (s: string) => STATUS_LABEL[s] ?? s;
+
 function staffLabel(uid: string | null, names: Map<string, string>): string {
   if (!uid) return "—";
   return names.get(uid) ?? uid.slice(0, 8);
@@ -182,7 +190,7 @@ export function OrderDetail({
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <Field label="訂單號" value={<span className="font-mono">{head.order_no}</span>} />
-        <Field label="狀態" value={head.status} />
+        <Field label="狀態" value={statusLabel(head.status)} />
         <Field label="取貨截止" value={head.pickup_deadline ?? "—"} />
         <Field
           label="會員"
@@ -287,7 +295,7 @@ export function OrderDetail({
         orderNo={head.order_no}
         onPickedUp={(r) => {
           setPickupOpen(false);
-          alert(`取貨完成 (${r.picked_count} 項)\n訂單狀態：${r.new_order_status}`);
+          alert(`取貨完成 (${r.picked_count} 項)\n訂單狀態：${statusLabel(r.new_order_status)}`);
           setReloadTick((n) => n + 1);
         }}
       />
@@ -380,7 +388,7 @@ async function buildTimeline(
       label: "顧客取貨",
       ts: null,
       done: rank >= 5,
-      detail: rank >= 5 ? "已完成" : `當前：${head.status}`,
+      detail: rank >= 5 ? "已完成" : `當前：${statusLabel(head.status)}`,
     };
 
     if (head.is_air_transfer) {
@@ -559,7 +567,7 @@ async function buildTimeline(
     { label: "撿貨完成", ts: waveTs, done: wavePicked, detail: waveDetail || undefined, detailHref: waveHref },
     { label: "派貨出倉", ts: shippedTs, done: xferShipped, detail: xferDetail || undefined, detailHref: xferHref },
     { label: "分店收貨", ts: receivedTs, done: xferReceived, detail: xferDetail || undefined, detailHref: xferHref },
-    { label: "顧客取貨", ts: null, done: pickedUp, detail: status },
+    { label: "顧客取貨", ts: null, done: pickedUp, detail: statusLabel(status) },
   ];
 }
 

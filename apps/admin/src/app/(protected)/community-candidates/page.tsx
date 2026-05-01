@@ -63,7 +63,7 @@ export default function CommunityCandidatesPage() {
   const [adoptSalePrice, setAdoptSalePrice] = useState("");
   const [highlightId, setHighlightId] = useState<number | null>(null);
 
-  const highlightRowRef = useRef<HTMLTableRowElement | null>(null);
+  const highlightRowRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const id = Number(new URLSearchParams(window.location.search).get("highlight"));
@@ -314,6 +314,174 @@ export default function CommunityCandidatesPage() {
       minute: "2-digit",
     });
 
+  function renderActions(r: Candidate) {
+    if (editingInfo === r.id) {
+      return (
+        <div className="flex flex-col gap-2">
+          <input
+            autoFocus
+            placeholder="廠商（選填）"
+            value={adoptSupplier}
+            onChange={(e) => setAdoptSupplier(e.target.value)}
+            className="rounded border border-zinc-300 px-2 py-1 text-xs focus:outline-none dark:border-zinc-700 dark:bg-zinc-900"
+          />
+          <input
+            type="number"
+            min={0}
+            step="1"
+            placeholder="成本（選填）"
+            value={adoptCost}
+            onChange={(e) => setAdoptCost(e.target.value)}
+            className="rounded border border-zinc-300 px-2 py-1 text-xs focus:outline-none dark:border-zinc-700 dark:bg-zinc-900"
+          />
+          <input
+            type="number"
+            min={0}
+            step="1"
+            placeholder="售價（選填）"
+            value={adoptSalePrice}
+            onChange={(e) => setAdoptSalePrice(e.target.value)}
+            className="rounded border border-zinc-300 px-2 py-1 text-xs focus:outline-none dark:border-zinc-700 dark:bg-zinc-900"
+          />
+          <div className="flex gap-1">
+            <button
+              onClick={() => handleFillSubmit(r.id)}
+              disabled={busy}
+              className="rounded bg-blue-600 px-2 py-0.5 text-xs text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {busy ? "儲存中…" : "儲存"}
+            </button>
+            <button
+              onClick={() => { setEditingInfo(null); setAdoptSupplier(""); setAdoptCost(""); setAdoptSalePrice(""); }}
+              disabled={busy}
+              className="rounded border border-zinc-300 px-2 py-0.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 disabled:opacity-50"
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      );
+    }
+    if (scheduling === r.id) {
+      return (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex flex-wrap gap-1">
+            {[
+              { label: "明天", date: localDateStr(1) },
+              { label: "後天", date: localDateStr(2) },
+              { label: "下週一", date: nextWeekMonday() },
+            ].map(({ label, date }) => (
+              <button
+                key={label}
+                onClick={() => handleQuickSchedule(r.id, date)}
+                disabled={busy}
+                className="rounded bg-amber-500 px-2 py-0.5 text-xs text-white hover:bg-amber-600 disabled:opacity-50"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-1">
+            <input
+              type="date"
+              value={scheduleDate}
+              onChange={(e) => setScheduleDate(e.target.value)}
+              className="rounded border border-zinc-300 px-1.5 py-0.5 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+            />
+            <button
+              onClick={() => handleSchedule(r.id)}
+              disabled={!scheduleDate || busy}
+              className="rounded bg-amber-500 px-2 py-0.5 text-xs text-white hover:bg-amber-600 disabled:opacity-50"
+            >
+              確定
+            </button>
+            <button
+              onClick={() => {
+                setScheduling(null);
+                setScheduleDate("");
+              }}
+              disabled={busy}
+              className="rounded border border-zinc-300 px-2 py-0.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 disabled:opacity-50"
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="flex flex-wrap items-center gap-1">
+        <button
+          onClick={() => {
+            setEditingInfo(r.id);
+            setAdoptSupplier(r.adopted_supplier_name ?? "");
+            setAdoptCost(r.adopted_cost !== null ? String(r.adopted_cost) : "");
+            setAdoptSalePrice(r.adopted_sale_price !== null ? String(r.adopted_sale_price) : extractPrice(r.raw_text));
+            setScheduling(null);
+          }}
+          disabled={busy}
+          className="rounded border border-zinc-300 px-2 py-0.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 disabled:opacity-50"
+        >
+          {r.adopted_supplier_name || r.adopted_cost !== null || r.adopted_sale_price !== null ? "修改資料" : "補資料"}
+        </button>
+        {r.owner_action !== "adopted" && (
+          <button
+            onClick={() => {
+              const complete = !!(r.adopted_supplier_name && r.adopted_cost !== null && r.adopted_sale_price !== null);
+              if (!complete && !window.confirm("廠商、成本、售價尚未完整，確定要採用嗎？")) return;
+              handleAdopt(r.id);
+            }}
+            disabled={busy}
+            className="rounded border border-green-400 px-2 py-0.5 text-xs text-green-700 hover:bg-green-50 dark:border-green-700 dark:text-green-400 dark:hover:bg-green-950/30 disabled:opacity-50"
+          >
+            採用
+          </button>
+        )}
+        {r.owner_action !== "collected" && r.owner_action !== "adopted" && (
+          <button
+            onClick={() => handleCollect(r.id)}
+            disabled={busy}
+            className="rounded border border-blue-300 px-2 py-0.5 text-xs text-blue-600 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 disabled:opacity-50"
+          >
+            收藏
+          </button>
+        )}
+        {r.owner_action !== "scheduled" && r.owner_action !== "adopted" && (
+          <button
+            onClick={() => {
+              setScheduling(r.id);
+              setScheduleDate("");
+            }}
+            disabled={busy}
+            className="rounded border border-amber-300 px-2 py-0.5 text-xs text-amber-600 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-400 disabled:opacity-50"
+          >
+            排日期
+          </button>
+        )}
+        {r.owner_action !== "ignored" && r.owner_action !== "adopted" && (
+          <button
+            onClick={() => handleIgnore(r.id)}
+            disabled={busy}
+            className="rounded border border-zinc-300 px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-50 dark:border-zinc-700 disabled:opacity-50"
+          >
+            忽略
+          </button>
+        )}
+        {(r.owner_action === "collected" ||
+          r.owner_action === "scheduled" ||
+          r.owner_action === "ignored") && (
+          <button
+            onClick={() => handleRestore(r.id)}
+            disabled={busy}
+            className="rounded border border-zinc-200 px-2 py-0.5 text-xs text-zinc-400 hover:bg-zinc-50 dark:border-zinc-800 disabled:opacity-50"
+          >
+            還原
+          </button>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header className="flex items-center justify-between">
@@ -377,7 +545,8 @@ export default function CommunityCandidatesPage() {
           沒有符合的資料
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+        <>
+        <div className="hidden overflow-x-auto rounded-lg border border-zinc-200 md:block dark:border-zinc-800">
           <table className="w-full text-sm">
             <thead className="bg-zinc-50 text-xs text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
               <tr>
@@ -394,7 +563,9 @@ export default function CommunityCandidatesPage() {
               {rows.map((r) => (
                 <tr
                   key={r.id}
-                  ref={r.id === highlightId ? highlightRowRef : null}
+                  ref={(el) => {
+                    if (r.id === highlightId) highlightRowRef.current = el;
+                  }}
                   className={`hover:bg-zinc-50 dark:hover:bg-zinc-900/50 ${
                     r.id === highlightId
                       ? "bg-amber-50 ring-2 ring-amber-300 dark:bg-amber-950/30 dark:ring-amber-700"
@@ -441,6 +612,7 @@ export default function CommunityCandidatesPage() {
                   <td className="whitespace-nowrap px-3 py-3 text-zinc-500">
                     {r.scheduled_open_at ?? "—"}
                   </td>
+<<<<<<< claude/datepicker
                   <td className="px-3 py-3">
                     {editingInfo === r.id ? (
                       <div className="flex flex-col gap-2">
@@ -601,11 +773,84 @@ export default function CommunityCandidatesPage() {
                       </div>
                     )}
                   </td>
+=======
+                  <td className="px-3 py-3">{renderActions(r)}</td>
+>>>>>>> main
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+
+        {/* Mobile card list */}
+        <div className="space-y-2 md:hidden">
+          {rows.map((r) => {
+            const any = r.adopted_supplier_name || r.adopted_cost !== null || r.adopted_sale_price !== null;
+            const complete = !!(r.adopted_supplier_name && r.adopted_cost !== null && r.adopted_sale_price !== null);
+            return (
+              <div
+                key={r.id}
+                ref={(el) => {
+                  if (r.id === highlightId) highlightRowRef.current = el;
+                }}
+                className={`rounded-lg border bg-white p-3 dark:bg-zinc-900 ${
+                  r.id === highlightId
+                    ? "border-amber-300 ring-2 ring-amber-300 dark:border-amber-700 dark:ring-amber-700"
+                    : "border-zinc-200 dark:border-zinc-800"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${ACTION_COLOR[r.owner_action] ?? ACTION_COLOR.none}`}
+                  >
+                    {ACTION_LABEL[r.owner_action] ?? r.owner_action}
+                  </span>
+                  <span className="text-[11px] text-zinc-400">{fmt(r.created_at)}</span>
+                </div>
+
+                <div className="mt-2 flex items-baseline gap-1.5">
+                  <span className="text-sm font-medium leading-snug">
+                    {r.product_name_hint ?? "—"}
+                  </span>
+                  {complete && (
+                    <span className="inline-flex shrink-0 rounded-full bg-teal-100 px-1.5 py-0.5 text-[10px] font-medium text-teal-700 dark:bg-teal-900/30 dark:text-teal-300">
+                      已補資料
+                    </span>
+                  )}
+                  {any && !complete && (
+                    <span className="inline-flex shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                      資料未完整
+                    </span>
+                  )}
+                </div>
+
+                <p className="mt-1 whitespace-pre-line text-xs text-zinc-600 dark:text-zinc-300">
+                  {r.raw_text.slice(0, 140)}
+                  {r.raw_text.length > 140 ? "…" : ""}
+                </p>
+
+                {any && (
+                  <div className="mt-1.5 space-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                    {r.adopted_supplier_name && <div>廠商：{r.adopted_supplier_name}</div>}
+                    {r.adopted_cost !== null && <div>成本：{r.adopted_cost}</div>}
+                    {r.adopted_sale_price !== null && <div>售價：{r.adopted_sale_price}</div>}
+                  </div>
+                )}
+
+                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-zinc-500">
+                  <span>來源：{r.source_user_name ?? r.source_user_id ?? "—"}</span>
+                  {r.source_channel && <span className="text-zinc-400">{r.source_channel}</span>}
+                  {r.scheduled_open_at && <span>排程日：{r.scheduled_open_at}</span>}
+                </div>
+
+                <div className="mt-2 border-t border-zinc-100 pt-2 dark:border-zinc-800">
+                  {renderActions(r)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        </>
       )}
 
       <div className="text-xs text-zinc-400">共 {rows?.length ?? 0} 筆（最多 200）</div>
