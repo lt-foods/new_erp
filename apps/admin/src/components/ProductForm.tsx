@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { ProductImagesField } from "@/components/ProductImagesField";
 import { CategoryCombobox, type CategoryOption } from "@/components/CategoryCombobox";
+import { RichTextEditor } from "@/components/RichTextEditor";
 
 type Status = "draft" | "active" | "inactive" | "discontinued";
 type StorageType = "room_temp" | "refrigerated" | "frozen" | "meal_train";
@@ -121,6 +122,40 @@ export function ProductForm({
     if (values.customized_text && values.customized_text.length > 7) {
       setError("客製文字最多 7 字");
       return;
+    }
+
+    // 上架驗證：至少一個規格要有 cost / retail / branch 三種價格
+    if (values.status === "active") {
+      if (values.id == null) {
+        setError("新商品請先儲存為「草稿」、補完一個規格的成本/零售/分店三種價格後再切到「上架」");
+        return;
+      }
+      const sb = getSupabase();
+      const { data: skus } = await sb.from("skus").select("id").eq("product_id", values.id);
+      if (!skus?.length) {
+        setError("上架前需先新增至少一個規格");
+        return;
+      }
+      const skuIds = skus.map((s) => s.id);
+      const { data: prices } = await sb
+        .from("prices")
+        .select("sku_id, scope")
+        .in("sku_id", skuIds)
+        .in("scope", ["retail", "cost", "branch"])
+        .is("effective_to", null);
+      const m = new Map<number, Set<string>>();
+      for (const p of (prices ?? []) as { sku_id: number; scope: string }[]) {
+        const set = m.get(p.sku_id) ?? new Set<string>();
+        set.add(p.scope);
+        m.set(p.sku_id, set);
+      }
+      const ok = [...m.values()].some(
+        (s) => s.has("retail") && s.has("cost") && s.has("branch")
+      );
+      if (!ok) {
+        setError("上架需至少一個規格已設定成本 / 零售 / 分店三種價格");
+        return;
+      }
     }
 
     let code = values.product_code;
@@ -293,11 +328,10 @@ export function ProductForm({
       </div>
 
       <Field label="描述">
-        <textarea
-          rows={4}
+        <RichTextEditor
           value={values.description}
-          onChange={(e) => set("description", e.target.value)}
-          className={inputClass}
+          onChange={(html) => set("description", html)}
+          placeholder="輸入商品描述、可加粗體、列表、連結…"
         />
       </Field>
 

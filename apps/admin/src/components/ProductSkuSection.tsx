@@ -8,6 +8,7 @@ import {
   type Ref,
 } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { useRole, canSeeCost, canSeeBranch, type Role } from "@/lib/role";
 
 type Sku = {
   id: number;
@@ -16,7 +17,9 @@ type Sku = {
   base_unit: string;
 };
 
-type PriceRow = { sku_id: number; price: number; effective_from: string };
+type PriceScope = "retail" | "cost" | "branch";
+type PriceRow = { sku_id: number; price: number; scope: PriceScope; effective_from: string };
+type PriceMap = { retail?: number; cost?: number; branch?: number };
 
 type Draft = {
   id: number | null;
@@ -24,6 +27,8 @@ type Draft = {
   variant_name: string;
   base_unit: string;
   retail_price: string;
+  cost_price: string;
+  branch_price: string;
 };
 
 type PendingSku = Draft & { tempId: number };
@@ -34,7 +39,45 @@ const EMPTY_DRAFT: Draft = {
   variant_name: "",
   base_unit: "個",
   retail_price: "",
+  cost_price: "",
+  branch_price: "",
 };
+
+// 寫 retail / cost / branch 三種價格。空字串跳過、與 existing 同值跳過、
+// 角色不允許的 scope 也跳過（若角色看不到，DraftCard 該欄位本來就不渲染、永遠空字串）。
+async function writePrices(
+  skuId: number,
+  draft: { retail_price: string; cost_price: string; branch_price: string },
+  role: Role | null,
+  existing?: PriceMap
+) {
+  const sb = getSupabase();
+  const now = new Date().toISOString();
+  type PriceJob = { rpc: string; field: keyof PriceMap; value: string };
+  const jobs: PriceJob[] = [
+    { rpc: "rpc_set_retail_price", field: "retail", value: draft.retail_price },
+    { rpc: "rpc_set_cost_price", field: "cost", value: draft.cost_price },
+    { rpc: "rpc_set_branch_price", field: "branch", value: draft.branch_price },
+  ];
+  for (const job of jobs) {
+    const trimmed = job.value.trim();
+    if (trimmed === "") continue;
+    if (job.field === "cost" && !canSeeCost(role)) continue;
+    if (job.field === "branch" && !canSeeBranch(role)) continue;
+    const num = Number(trimmed);
+    if (!Number.isFinite(num) || num < 0) {
+      throw new Error(`${job.field} 價格必須為 ≥ 0 的數字`);
+    }
+    if (existing && existing[job.field] === num) continue;
+    const { error } = await sb.rpc(job.rpc, {
+      p_sku_id: skuId,
+      p_price: num,
+      p_effective_from: now,
+      p_reason: null,
+    });
+    if (error) throw error;
+  }
+}
 
 export type ProductSkuSectionHandle = {
   flush: (productId: number) => Promise<void>;
@@ -49,9 +92,12 @@ export function ProductSkuSection({
   ref?: Ref<ProductSkuSectionHandle>;
 }) {
   const isPending = productId === null;
+  const role = useRole();
+  const showCost = canSeeCost(role);
+  const showBranch = canSeeBranch(role);
 
   const [skus, setSkus] = useState<Sku[] | null>(isPending ? [] : null);
-  const [prices, setPrices] = useState<Record<number, number>>({});
+  const [prices, setPrices] = useState<Record<number, PriceMap>>({});
   const [pending, setPending] = useState<PendingSku[]>([]);
   const [editingTempId, setEditingTempId] = useState<number | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -76,16 +122,18 @@ export function ProductSkuSection({
 
     if (list.length > 0) {
       const ids = list.map((s) => s.id);
+      // RLS 自動依 role × scope 過濾 — store_staff 拿不到 cost/branch、store_manager 拿不到 cost
       const { data: priceRows } = await sb
         .from("prices")
-        .select("sku_id, price, effective_from")
-        .eq("scope", "retail")
+        .select("sku_id, price, scope, effective_from")
+        .in("scope", ["retail", "cost", "branch"])
         .is("effective_to", null)
         .in("sku_id", ids)
         .order("effective_from", { ascending: false });
-      const map: Record<number, number> = {};
+      const map: Record<number, PriceMap> = {};
       for (const row of (priceRows ?? []) as PriceRow[]) {
-        if (!(row.sku_id in map)) map[row.sku_id] = Number(row.price);
+        const slot = (map[row.sku_id] ??= {});
+        if (slot[row.scope] === undefined) slot[row.scope] = Number(row.price);
       }
       setPrices(map);
     } else {
@@ -118,21 +166,12 @@ export function ProductSkuSection({
             p_reason: null,
           });
           if (rpcErr) throw rpcErr;
-          const priceStr = p.retail_price.trim();
-          if (priceStr !== "") {
-            const { error: priceErr } = await sb.rpc("rpc_set_retail_price", {
-              p_sku_id: skuId,
-              p_price: Number(priceStr),
-              p_effective_from: new Date().toISOString(),
-              p_reason: null,
-            });
-            if (priceErr) throw priceErr;
-          }
+          await writePrices(skuId as number, p, role);
         }
         setPending([]);
       },
     }),
-    [pending]
+    [pending, role]
   );
 
   async function startNew() {
@@ -143,17 +182,46 @@ export function ProductSkuSection({
       });
       if (typeof data === "string") code = data;
     }
-    setDraft({ ...EMPTY_DRAFT, sku_code: code });
+    // 帶入第一筆規格的價格 / base_unit（已存的優先、否則用 pending 第一筆）
+    const firstSaved = skus && skus.length > 0 ? skus[0] : null;
+    const firstPending = pending.length > 0 ? pending[0] : null;
+    let prefilledRetail = "";
+    let prefilledCost = "";
+    let prefilledBranch = "";
+    let prefilledUnit = EMPTY_DRAFT.base_unit;
+    if (firstSaved) {
+      const p = prices[firstSaved.id] ?? {};
+      prefilledRetail = p.retail !== undefined ? String(p.retail) : "";
+      prefilledCost = p.cost !== undefined ? String(p.cost) : "";
+      prefilledBranch = p.branch !== undefined ? String(p.branch) : "";
+      prefilledUnit = firstSaved.base_unit || prefilledUnit;
+    } else if (firstPending) {
+      prefilledRetail = firstPending.retail_price;
+      prefilledCost = firstPending.cost_price;
+      prefilledBranch = firstPending.branch_price;
+      prefilledUnit = firstPending.base_unit || prefilledUnit;
+    }
+    setDraft({
+      ...EMPTY_DRAFT,
+      sku_code: code,
+      base_unit: prefilledUnit,
+      retail_price: prefilledRetail,
+      cost_price: prefilledCost,
+      branch_price: prefilledBranch,
+    });
     setEditingTempId(null);
   }
 
   function startEditExisting(sku: Sku) {
+    const p = prices[sku.id] ?? {};
     setDraft({
       id: sku.id,
       sku_code: sku.sku_code,
       variant_name: sku.variant_name ?? "",
       base_unit: sku.base_unit,
-      retail_price: sku.id in prices ? String(prices[sku.id]) : "",
+      retail_price: p.retail !== undefined ? String(p.retail) : "",
+      cost_price: p.cost !== undefined ? String(p.cost) : "",
+      branch_price: p.branch !== undefined ? String(p.branch) : "",
     });
     setEditingTempId(null);
   }
@@ -165,6 +233,8 @@ export function ProductSkuSection({
       variant_name: p.variant_name,
       base_unit: p.base_unit,
       retail_price: p.retail_price,
+      cost_price: p.cost_price,
+      branch_price: p.branch_price,
     });
     setEditingTempId(p.tempId);
   }
@@ -222,20 +292,8 @@ export function ProductSkuSection({
       });
       if (rpcErr) throw rpcErr;
 
-      const priceStr = draft.retail_price.trim();
-      if (priceStr !== "") {
-        const priceNum = Number(priceStr);
-        const existing = skuId in prices ? prices[skuId as number] : null;
-        if (existing !== priceNum) {
-          const { error: priceErr } = await sb.rpc("rpc_set_retail_price", {
-            p_sku_id: skuId,
-            p_price: priceNum,
-            p_effective_from: new Date().toISOString(),
-            p_reason: null,
-          });
-          if (priceErr) throw priceErr;
-        }
-      }
+      const existing = (skuId as number) in prices ? prices[skuId as number] : {};
+      await writePrices(skuId as number, draft, role, existing);
 
       cancelEdit();
       await refresh();
@@ -308,12 +366,16 @@ export function ProductSkuSection({
               onSave={save}
               onCancel={cancelEdit}
               saving={saving}
+              showCost={showCost}
+              showBranch={showBranch}
             />
           ) : (
             <SkuCard
               key={s.id}
               sku={s}
-              price={prices[s.id]}
+              priceMap={prices[s.id] ?? {}}
+              showCost={showCost}
+              showBranch={showBranch}
               onEdit={() => startEditExisting(s)}
               onDelete={() => deleteSku(s)}
             />
@@ -329,11 +391,15 @@ export function ProductSkuSection({
               onSave={save}
               onCancel={cancelEdit}
               saving={saving}
+              showCost={showCost}
+              showBranch={showBranch}
             />
           ) : (
             <PendingCard
               key={p.tempId}
               p={p}
+              showCost={showCost}
+              showBranch={showBranch}
               onEdit={() => startEditPending(p)}
               onDelete={() => deletePending(p.tempId)}
             />
@@ -347,6 +413,8 @@ export function ProductSkuSection({
             onSave={save}
             onCancel={cancelEdit}
             saving={saving}
+            showCost={showCost}
+            showBranch={showBranch}
           />
         )}
 
@@ -368,12 +436,16 @@ export function ProductSkuSection({
 
 function SkuCard({
   sku,
-  price,
+  priceMap,
+  showCost,
+  showBranch,
   onEdit,
   onDelete,
 }: {
   sku: Sku;
-  price: number | undefined;
+  priceMap: PriceMap;
+  showCost: boolean;
+  showBranch: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -388,9 +460,23 @@ function SkuCard({
             </span>
           )}
         </div>
-        <div className="mt-0.5 text-xs text-zinc-500">
-          {sku.base_unit}
-          {price != null ? ` · $${price}` : ""}
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
+          <span>{sku.base_unit}</span>
+          {priceMap.retail !== undefined && (
+            <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-bold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+              零售 ${priceMap.retail}
+            </span>
+          )}
+          {showBranch && priceMap.branch !== undefined && (
+            <span className="rounded bg-amber-100 px-1.5 py-0.5 font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              分店 ${priceMap.branch}
+            </span>
+          )}
+          {showCost && priceMap.cost !== undefined && (
+            <span className="rounded bg-rose-100 px-1.5 py-0.5 font-bold text-rose-800 dark:bg-rose-950 dark:text-rose-300">
+              成本 ${priceMap.cost}
+            </span>
+          )}
         </div>
       </div>
       <button
@@ -413,10 +499,14 @@ function SkuCard({
 
 function PendingCard({
   p,
+  showCost,
+  showBranch,
   onEdit,
   onDelete,
 }: {
   p: PendingSku;
+  showCost: boolean;
+  showBranch: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -434,9 +524,23 @@ function PendingCard({
             待寫入
           </span>
         </div>
-        <div className="mt-0.5 text-xs text-zinc-500">
-          {p.base_unit}
-          {p.retail_price ? ` · $${p.retail_price}` : ""}
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
+          <span>{p.base_unit}</span>
+          {p.retail_price && (
+            <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-bold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+              零售 ${p.retail_price}
+            </span>
+          )}
+          {showBranch && p.branch_price && (
+            <span className="rounded bg-amber-100 px-1.5 py-0.5 font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              分店 ${p.branch_price}
+            </span>
+          )}
+          {showCost && p.cost_price && (
+            <span className="rounded bg-rose-100 px-1.5 py-0.5 font-bold text-rose-800 dark:bg-rose-950 dark:text-rose-300">
+              成本 ${p.cost_price}
+            </span>
+          )}
         </div>
       </div>
       <button
@@ -463,12 +567,16 @@ function DraftCard({
   onSave,
   onCancel,
   saving,
+  showCost,
+  showBranch,
 }: {
   draft: Draft;
   setDraft: (d: Draft) => void;
   onSave: () => void;
   onCancel: () => void;
   saving: boolean;
+  showCost: boolean;
+  showBranch: boolean;
 }) {
   function set<K extends keyof Draft>(key: K, value: Draft[K]) {
     setDraft({ ...draft, [key]: value });
@@ -510,6 +618,30 @@ function DraftCard({
             className={inputClass}
           />
         </Field>
+        {showBranch && (
+          <Field label="分店價">
+            <input
+              type="number"
+              step="0.01"
+              value={draft.branch_price}
+              onChange={(e) => set("branch_price", e.target.value)}
+              placeholder="$（全分店共用）"
+              className={inputClass}
+            />
+          </Field>
+        )}
+        {showCost && (
+          <Field label="成本價">
+            <input
+              type="number"
+              step="0.01"
+              value={draft.cost_price}
+              onChange={(e) => set("cost_price", e.target.value)}
+              placeholder="$（進貨成本）"
+              className={inputClass}
+            />
+          </Field>
+        )}
       </div>
       <div className="flex items-center gap-2">
         <button

@@ -131,11 +131,15 @@ function CreateCampaignModal({
     if (!endAt) { setError("請設定收單時間"); return; }
     setSaving(true); setError(null);
     try {
-      const { data, error: err } = await getSupabase().rpc("rpc_create_campaign_from_products", {
+      // 1 campaign : 1 product invariant — UI 端已限制 products.length=1
+      if (products.length !== 1) {
+        throw new Error("一個開團只能對應一個商品");
+      }
+      const { data, error: err } = await getSupabase().rpc("rpc_create_campaign_from_product", {
         p_name: name.trim(),
         p_end_at: new Date(endAt).toISOString(),
         p_pickup_deadline: pickupDeadline || null,
-        p_product_ids: products.map((p) => p.id),
+        p_product_id: products[0].id,
       });
       if (err) throw err;
       onCreated(Number(data));
@@ -242,6 +246,7 @@ function PageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const campaignMode = searchParams.get("mode") === "campaign";
+  const urlEditId = searchParams.get("id");
 
   const [rows, setRows] = useState<ProductRow[] | null>(null);
   const [total, setTotal] = useState(0);
@@ -276,6 +281,7 @@ function PageContent() {
   >(null);
   const [reloadTick, setReloadTick] = useState(0);
   const newSkuRef = useRef<ProductSkuSectionHandle | null>(null);
+  const lastUrlEditId = useRef<string | null>(null);
 
   async function openEdit(id: number) {
     const { data, error: err } = await getSupabase()
@@ -346,6 +352,17 @@ function PageContent() {
       }))
     );
   }
+
+  // 從 URL ?id=X 自動開啟商品編輯 modal（給 CampaignItemsTable 跳轉用）
+  useEffect(() => {
+    if (!urlEditId) return;
+    if (lastUrlEditId.current === urlEditId) return;
+    const idNum = Number(urlEditId);
+    if (!Number.isFinite(idNum) || idNum <= 0) return;
+    lastUrlEditId.current = urlEditId;
+    openEdit(idNum);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlEditId]);
 
   // debounce search
   useEffect(() => {
@@ -424,6 +441,10 @@ function PageContent() {
 
   function toggleSelect(id: number) {
     setSelectedIds((prev) => {
+      // 1 campaign : 1 product invariant — campaign mode 改成單選
+      if (campaignMode) {
+        return prev.has(id) ? new Set() : new Set([id]);
+      }
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;

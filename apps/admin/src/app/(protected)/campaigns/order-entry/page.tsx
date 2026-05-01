@@ -957,11 +957,29 @@ function ItemEditorRow({
           >
             {opts.map((o) => (
               <button
-                key={o.campaign_item_id}
+                key={o.campaign_item_id ?? `s-${o.sku_id}`}
                 type="button"
-                onClick={() => {
+                onClick={async () => {
+                  // 兄弟 SKU（campaign_item_id=NULL）→ lazy 建 campaign_item
+                  let ciId = o.campaign_item_id;
+                  if (ciId == null) {
+                    const { data: newId, error } = await getSupabase().rpc("rpc_upsert_campaign_item", {
+                      p_id: null,
+                      p_campaign_id: campaignId,
+                      p_sku_id: o.sku_id,
+                      p_unit_price: Number(o.unit_price) || 0,
+                      p_cap_qty: null,
+                      p_sort_order: 0,
+                      p_notes: null,
+                    });
+                    if (error) {
+                      alert("加入此規格失敗：" + error.message);
+                      return;
+                    }
+                    ciId = Number(newId);
+                  }
                   onChange({
-                    campaign_item_id: o.campaign_item_id,
+                    campaign_item_id: ciId,
                     sku_label: `${o.product_name}${o.variant_name ? ` / ${o.variant_name}` : ""} (${o.sku_code})`,
                     unit_price: Number(o.unit_price),
                     qty: item.qty === "" ? "1" : item.qty,
@@ -975,6 +993,11 @@ function ItemEditorRow({
                 {o.variant_name && <span className="ml-1 text-zinc-500">/ {o.variant_name}</span>}
                 <span className="ml-2 font-mono text-zinc-400">{o.sku_code}</span>
                 <span className="ml-2 text-zinc-600 dark:text-zinc-300">${Number(o.unit_price)}</span>
+                {o.campaign_item_id == null && (
+                  <span className="ml-2 rounded bg-blue-100 px-1 py-0.5 text-[10px] text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                    + 加入此團
+                  </span>
+                )}
               </button>
             ))}
           </div>

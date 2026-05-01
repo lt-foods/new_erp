@@ -38,16 +38,21 @@ export const emptyCampaignValues: CampaignFormValues = {
   notes: null,
 };
 
+// 使用者可手動切換的狀態僅 3 個；ordered / receiving / ready / completed / cancelled
+// 由下游 RPC（建 PR / 收貨 / finalize / cancel）自動推進，不在 UI 下拉中
 const STATUS_OPT: { v: CampaignStatus; label: string }[] = [
   { v: "draft", label: "草稿" },
   { v: "open", label: "開團中" },
   { v: "closed", label: "已收單" },
-  { v: "ordered", label: "已下訂" },
-  { v: "receiving", label: "到貨中" },
-  { v: "ready", label: "可取貨" },
-  { v: "completed", label: "已完成" },
-  { v: "cancelled", label: "已取消" },
 ];
+
+const DOWNSTREAM_LABEL: Record<string, string> = {
+  ordered: "已下訂",
+  receiving: "到貨中",
+  ready: "可取貨",
+  completed: "已完成",
+  cancelled: "已取消",
+};
 
 export function CampaignForm({
   initial,
@@ -71,13 +76,38 @@ export function CampaignForm({
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!v.name) { setError("名稱必填"); return; }
     setSaving(true); setError(null);
     try {
+      // 開團驗證：status='open' 時、所有關聯商品需為 'active'（不可有 draft 商品）
+      if (v.status === "open" && v.id != null) {
+        const sb = getSupabase();
+        const { data: items } = await sb
+          .from("campaign_items")
+          .select("sku_id")
+          .eq("campaign_id", v.id);
+        const skuIds = (items ?? []).map((it) => it.sku_id);
+        if (skuIds.length === 0) {
+          throw new Error("開團前需至少有一個商品（規格）");
+        }
+        const { data: skus } = await sb.from("skus").select("product_id").in("id", skuIds);
+        const productIds = [...new Set((skus ?? []).map((s) => s.product_id))];
+        const { data: products } = await sb
+          .from("products")
+          .select("id, product_code, name, status")
+          .in("id", productIds);
+        const drafts = (products ?? []).filter((p) => p.status !== "active");
+        if (drafts.length > 0) {
+          const list = drafts.map((p) => `${p.product_code} ${p.name}（${p.status}）`).join("、");
+          throw new Error(`下列商品尚未上架，無法開團：${list}`);
+        }
+      }
+
+      // 名稱 / 描述 / 收單時間 / 取貨截止 / 取貨天數 / 總量上限 / 備註
+      // 都從商品 / RPC 自動帶入；UI 不可編輯，保留原值送回。
       const { data, error: err } = await getSupabase().rpc("rpc_upsert_campaign", {
         p_id: v.id,
         p_campaign_no: v.campaign_no.trim(),
-        p_name: v.name.trim(),
+        p_name: (v.name || "(open campaign)").trim(),
         p_description: v.description,
         p_status: v.status,
         p_close_type: v.close_type,
@@ -108,13 +138,18 @@ export function CampaignForm({
         <Field label="狀態">
           <select value={v.status} onChange={(e) => update("status", e.target.value as CampaignStatus)} className={inputCls}>
             {STATUS_OPT.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
+            {/* 若 campaign 已被下游推進到 ordered/... 也保留現值在選單中（disabled），避免顯示空白 */}
+            {!STATUS_OPT.some((o) => o.v === v.status) && (
+              <option value={v.status} disabled>
+                {DOWNSTREAM_LABEL[v.status] ?? v.status}（系統推進中）
+              </option>
+            )}
           </select>
         </Field>
 
-        <Field label="名稱 *" className="sm:col-span-2">
-          <input value={v.name} onChange={(e) => update("name", e.target.value)} className={inputCls} required />
+        <Field label="開團時間">
+          <input type="datetime-local" value={toDtLocal(v.start_at)} onChange={(e) => update("start_at", e.target.value ? new Date(e.target.value).toISOString() : null)} className={inputCls} />
         </Field>
-
         <Field label="收單類型">
           <select value={v.close_type} onChange={(e) => update("close_type", e.target.value as CloseType)} className={inputCls}>
             <option value="regular">常規</option>
@@ -122,31 +157,24 @@ export function CampaignForm({
             <option value="limited">限量</option>
           </select>
         </Field>
-        <Field label="總量上限">
-          <input type="number" step="0.001" value={v.total_cap_qty ?? ""} onChange={(e) => update("total_cap_qty", e.target.value ? Number(e.target.value) : null)} className={inputCls} />
-        </Field>
-
-        <Field label="開團時間">
-          <input type="datetime-local" value={toDtLocal(v.start_at)} onChange={(e) => update("start_at", e.target.value ? new Date(e.target.value).toISOString() : null)} className={inputCls} />
-        </Field>
-        <Field label="收單時間">
-          <input type="datetime-local" value={toDtLocal(v.end_at)} onChange={(e) => update("end_at", e.target.value ? new Date(e.target.value).toISOString() : null)} className={inputCls} />
-        </Field>
-
-        <Field label="取貨截止">
-          <input type="date" value={v.pickup_deadline ?? ""} onChange={(e) => update("pickup_deadline", e.target.value || null)} className={inputCls} />
-        </Field>
-        <Field label="取貨天數">
-          <input type="number" min="0" value={v.pickup_days ?? ""} onChange={(e) => update("pickup_days", e.target.value ? Number(e.target.value) : null)} className={inputCls} />
-        </Field>
+        {v.close_type === "limited" && (
+          <Field label="總量上限（限量團）" className="sm:col-span-2">
+            <input
+              type="number"
+              min="0"
+              step="1"
+              placeholder="整團總量上限數字"
+              value={v.total_cap_qty ?? ""}
+              onChange={(e) => update("total_cap_qty", e.target.value ? Number(e.target.value) : null)}
+              className={inputCls}
+            />
+          </Field>
+        )}
       </div>
 
-      <Field label="描述">
-        <textarea value={v.description ?? ""} onChange={(e) => update("description", e.target.value || null)} className={`${inputCls} min-h-16`} />
-      </Field>
-      <Field label="備註">
-        <textarea value={v.notes ?? ""} onChange={(e) => update("notes", e.target.value || null)} className={`${inputCls} min-h-16`} />
-      </Field>
+      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+        其他資訊（名稱、描述、收單時間、取貨截止 / 天數、總量上限）依商品自動帶入；如需調整請至商品編輯頁。
+      </p>
 
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">{error}</div>

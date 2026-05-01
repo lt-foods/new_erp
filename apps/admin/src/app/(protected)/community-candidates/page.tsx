@@ -151,20 +151,40 @@ export default function CommunityCandidatesPage() {
     return max + 1;
   };
 
+  const deriveProductName = (row: Candidate): string => {
+    const hint = (row.product_name_hint ?? "").trim();
+    if (hint) return hint.slice(0, 60);
+    const raw = (row.raw_text ?? "").trim().replace(/\s+/g, " ");
+    if (raw) return raw.slice(0, 30);
+    return `候選 #${row.id}`;
+  };
+
   const scheduleAt = async (id: number, dateStr: string) => {
+    const row = rows?.find((r) => r.id === id);
+    if (!row) {
+      setError("找不到該候選資料，請重新整理後再試");
+      return;
+    }
+    const productName = deriveProductName(row);
+
     setBusy(true);
     try {
+      const sb = getSupabase();
+      // 呼叫 rpc_schedule_candidate：建 draft product + sku + campaign + items + 標 candidate scheduled
+      const { error: rpcErr } = await sb.rpc("rpc_schedule_candidate", {
+        p_candidate_id: id,
+        p_scheduled_date: dateStr,
+        p_product_name: productName,
+      });
+      if (rpcErr) throw rpcErr;
+
+      // RPC 不負責 scheduled_sort_order（行事曆排序遺留欄位），補一下
       const nextOrder = await nextSortOrderForDay(dateStr);
-      const { error: err } = await getSupabase()
+      await sb
         .from("community_product_candidates")
-        .update({
-          owner_action: "scheduled",
-          scheduled_open_at: dateStr,
-          scheduled_sort_order: nextOrder,
-          updated_at: new Date().toISOString(),
-        })
+        .update({ scheduled_sort_order: nextOrder })
         .eq("id", id);
-      if (err) throw err;
+
       await reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
