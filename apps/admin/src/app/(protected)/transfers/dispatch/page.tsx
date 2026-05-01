@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
+import { TransferReceiveModal, parseWaveId, type Wave } from "@/components/TransferReceiveModal";
 import { Modal } from "@/components/Modal";
 
 type Transfer = {
@@ -83,6 +83,8 @@ export default function HqDispatchPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [damageOpen, setDamageOpen] = useState<Transfer | null>(null);
+  const [detailOpen, setDetailOpen] = useState<Transfer | null>(null);
+  const [waves, setWaves] = useState<Map<number, Wave>>(new Map());
   const [editingNotes, setEditingNotes] = useState<Map<number, string>>(new Map());
 
   // Load
@@ -146,11 +148,24 @@ export default function HqDispatchPage() {
           for (const l of (lRows as Loc[] | null) ?? []) locMap.set(l.id, l.name);
         }
 
+        const waveIds = Array.from(
+          new Set(trs.map((t) => parseWaveId(t.transfer_no)).filter((x): x is number => x !== null)),
+        );
+        const waveMap = new Map<number, Wave>();
+        if (waveIds.length > 0) {
+          const { data: ws } = await sb
+            .from("picking_waves")
+            .select("id, wave_code, wave_date, created_at")
+            .in("id", waveIds);
+          for (const w of (ws as Wave[] | null) ?? []) waveMap.set(w.id, w);
+        }
+
         if (!cancelled) {
           setTransfers(trs);
           setItems(itMap);
           setSkus(skuMap);
           setLocs(locMap);
+          setWaves(waveMap);
           setHqLoc(hqId);
           setError(null);
         }
@@ -538,12 +553,12 @@ export default function HqDispatchPage() {
                         登記損壞
                       </button>
                     )}
-                    <Link
-                      href={`/transfers?id=${t.id}`}
+                    <button
+                      onClick={() => setDetailOpen(t)}
                       className="ml-2 text-xs text-blue-600 hover:underline dark:text-blue-400"
                     >
                       看明細
-                    </Link>
+                    </button>
                   </td>
                 </tr>
               );
@@ -560,6 +575,23 @@ export default function HqDispatchPage() {
           onClose={() => setDamageOpen(null)}
           onSubmitted={() => {
             setDamageOpen(null);
+            setReloadTick((n) => n + 1);
+          }}
+        />
+      )}
+
+      {detailOpen && (
+        <TransferReceiveModal
+          transfer={detailOpen}
+          srcName={locs.get(detailOpen.source_location) ?? `#${detailOpen.source_location}`}
+          dstName={locs.get(detailOpen.dest_location) ?? `#${detailOpen.dest_location}`}
+          wave={(() => {
+            const wid = parseWaveId(detailOpen.transfer_no);
+            return wid !== null ? waves.get(wid) ?? null : null;
+          })()}
+          onClose={() => setDetailOpen(null)}
+          onSubmitted={() => {
+            setDetailOpen(null);
             setReloadTick((n) => n + 1);
           }}
         />
