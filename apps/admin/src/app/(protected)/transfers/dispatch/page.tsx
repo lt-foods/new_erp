@@ -41,7 +41,7 @@ type Sku = {
 
 type Loc = { id: number; name: string };
 
-type TabKey = "pending" | "arrived" | "distributed" | "received" | "air";
+type TabKey = "pending" | "arrived" | "distributed" | "received" | "air" | "all";
 
 const TAB_LABEL: Record<TabKey, string> = {
   pending: "待審核",
@@ -49,6 +49,7 @@ const TAB_LABEL: Record<TabKey, string> = {
   distributed: "已配送",
   received: "已收到",
   air: "空中轉",
+  all: "全部",
 };
 
 const TEMP_LABEL: Record<string, string> = {
@@ -86,7 +87,7 @@ export default function HqDispatchPage() {
   const [damageOpen, setDamageOpen] = useState<Transfer | null>(null);
   const [editingNotes, setEditingNotes] = useState<Map<number, string>>(new Map());
 
-  // Load
+  // Phase 1: 輕量載入 headers + locations + HQ id（給 counts / 篩選器用）
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -111,30 +112,6 @@ export default function HqDispatchPage() {
         if (e) throw new Error(e.message);
         const trs = (tRows as Transfer[] | null) ?? [];
 
-        const tIds = trs.map((t) => t.id);
-        let itMap = new Map<number, TransferItem[]>();
-        let skuMap = new Map<number, Sku>();
-        if (tIds.length > 0) {
-          const { data: itRows } = await sb
-            .from("transfer_items")
-            .select("id, transfer_id, sku_id, qty_requested, qty_shipped, qty_received, damage_qty, description")
-            .in("transfer_id", tIds);
-          const its = (itRows as TransferItem[] | null) ?? [];
-          for (const it of its) {
-            const arr = itMap.get(it.transfer_id) ?? [];
-            arr.push(it);
-            itMap.set(it.transfer_id, arr);
-          }
-          const skuIds = Array.from(new Set(its.map((i) => i.sku_id)));
-          if (skuIds.length > 0) {
-            const { data: skuRows } = await sb
-              .from("skus")
-              .select("id, sku_code, product_name, variant_name")
-              .in("id", skuIds);
-            for (const s of (skuRows as Sku[] | null) ?? []) skuMap.set(s.id, s);
-          }
-        }
-
         const locIds = Array.from(
           new Set(trs.flatMap((t) => [t.source_location, t.dest_location])),
         );
@@ -149,8 +126,6 @@ export default function HqDispatchPage() {
 
         if (!cancelled) {
           setTransfers(trs);
-          setItems(itMap);
-          setSkus(skuMap);
           setLocs(locMap);
           setHqLoc(hqId);
           setError(null);
@@ -164,6 +139,51 @@ export default function HqDispatchPage() {
     };
   }, [reloadTick]);
 
+  // Phase 2: 切到 tab 時、抓當前 tab 的 transfers items + skus（lazy）
+  useEffect(() => {
+    if (!transfers || transfers.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const sb = getSupabase();
+      // 重算當前 tab 要顯示的 transfer ids
+      const tIds = transfers
+        .filter((t) => tab === "all" || classifyTab(t, hqLoc) === tab)
+        .map((t) => t.id);
+      if (tIds.length === 0) {
+        if (!cancelled) {
+          setItems(new Map());
+          setSkus(new Map());
+        }
+        return;
+      }
+      const { data: itRows } = await sb
+        .from("transfer_items")
+        .select("id, transfer_id, sku_id, qty_requested, qty_shipped, qty_received, damage_qty, description")
+        .in("transfer_id", tIds);
+      const its = (itRows as TransferItem[] | null) ?? [];
+      const itMap = new Map<number, TransferItem[]>();
+      for (const it of its) {
+        const arr = itMap.get(it.transfer_id) ?? [];
+        arr.push(it);
+        itMap.set(it.transfer_id, arr);
+      }
+      const skuIds = Array.from(new Set(its.map((i) => i.sku_id)));
+      const skuMap = new Map<number, Sku>();
+      if (skuIds.length > 0) {
+        const { data: skuRows } = await sb
+          .from("skus")
+          .select("id, sku_code, product_name, variant_name")
+          .in("id", skuIds);
+        for (const s of (skuRows as Sku[] | null) ?? []) skuMap.set(s.id, s);
+      }
+      if (!cancelled) {
+        setItems(itMap);
+        setSkus(skuMap);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [tab, transfers, hqLoc]);
+
   // Tab counts
   const tabCounts = useMemo(() => {
     const c: Record<TabKey, number> = {
@@ -172,8 +192,10 @@ export default function HqDispatchPage() {
       distributed: 0,
       received: 0,
       air: 0,
+      all: 0,
     };
     for (const t of transfers ?? []) {
+      c.all += 1;
       const k = classifyTab(t, hqLoc);
       if (k) c[k] += 1;
     }
@@ -184,7 +206,7 @@ export default function HqDispatchPage() {
   const filtered = useMemo(() => {
     const search = searchSku.trim().toLowerCase();
     return (transfers ?? []).filter((t) => {
-      if (classifyTab(t, hqLoc) !== tab) return false;
+      if (tab !== "all" && classifyTab(t, hqLoc) !== tab) return false;
       if (srcFilter !== "all" && t.source_location !== srcFilter) return false;
       if (dstFilter !== "all" && t.dest_location !== dstFilter) return false;
       if (search) {
