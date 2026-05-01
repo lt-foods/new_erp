@@ -15,6 +15,8 @@ type Row = {
   rejected_reason: string | null;
   linked_transfer_id: number | null;
   linked_pr_id: number | null;
+  linked_transfer_no: string | null;
+  linked_pr_no: string | null;
   created_at: string;
   requested_at: string;
   approved_at: string | null;
@@ -72,11 +74,27 @@ export default function RestockInboxPage() {
           lineMap.set(l.request_id, slot);
         }
       }
+      // 取 transfer_no / pr_no
+      const transferIds = reqRows.map((r) => r.linked_transfer_id).filter((x): x is number => !!x);
+      const prIds = reqRows.map((r) => r.linked_pr_id).filter((x): x is number => !!x);
+      const xferMap = new Map<number, string>();
+      const prMap = new Map<number, string>();
+      if (transferIds.length > 0) {
+        const { data: xfer } = await sb.from("transfers").select("id, transfer_no").in("id", transferIds);
+        for (const t of (xfer ?? []) as { id: number; transfer_no: string }[]) xferMap.set(t.id, t.transfer_no);
+      }
+      if (prIds.length > 0) {
+        const { data: pr } = await sb.from("purchase_requests").select("id, pr_no").in("id", prIds);
+        for (const p of (pr ?? []) as { id: number; pr_no: string }[]) prMap.set(p.id, p.pr_no);
+      }
+
       setRows(reqRows.map((r) => ({
         ...r,
         store_name: r.stores?.name ?? null,
         line_count: lineMap.get(r.id)?.count ?? 0,
         total_amount: lineMap.get(r.id)?.total ?? 0,
+        linked_transfer_no: r.linked_transfer_id ? xferMap.get(r.linked_transfer_id) ?? null : null,
+        linked_pr_no: r.linked_pr_id ? prMap.get(r.linked_pr_id) ?? null : null,
       })));
     })();
   }, [reload]);
@@ -204,8 +222,16 @@ export default function RestockInboxPage() {
                     </div>
                   ) : (
                     <div className="flex flex-col gap-1 text-xs">
-                      {r.linked_transfer_id && <Link href={`/transfers?id=${r.linked_transfer_id}`} className="text-blue-600 hover:underline dark:text-blue-400">→ 轉貨單 #{r.linked_transfer_id}</Link>}
-                      {r.linked_pr_id && <Link href={`/purchase/requests/edit?id=${r.linked_pr_id}`} className="text-blue-600 hover:underline dark:text-blue-400">→ 採購單 #{r.linked_pr_id}</Link>}
+                      {r.linked_transfer_id && (
+                        <Link href={`/transfers?id=${r.linked_transfer_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
+                          → {r.linked_transfer_no ?? `轉貨單 #${r.linked_transfer_id}`}
+                        </Link>
+                      )}
+                      {r.linked_pr_id && (
+                        <Link href={`/purchase/requests/edit?id=${r.linked_pr_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
+                          → {r.linked_pr_no ?? `採購單 #${r.linked_pr_id}`}
+                        </Link>
+                      )}
                       {r.status === "rejected" && r.rejected_reason && <span className="text-red-600">拒絕：{r.rejected_reason}</span>}
                     </div>
                   )}

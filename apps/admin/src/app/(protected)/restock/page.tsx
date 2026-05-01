@@ -165,13 +165,13 @@ export default function RestockListPage() {
                 </td>
                 <td className="px-3 py-2 text-xs">
                   {r.linked_transfer_no && (
-                    <Link href={`/transfers?id=${r.linked_transfer_id}`} className="text-blue-600 hover:underline dark:text-blue-400">
-                      → 轉貨單 {r.linked_transfer_no}
+                    <Link href={`/transfers?id=${r.linked_transfer_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
+                      → {r.linked_transfer_no}
                     </Link>
                   )}
                   {r.linked_pr_no && (
-                    <Link href={`/purchase/requests/edit?id=${r.linked_pr_id}`} className="text-blue-600 hover:underline dark:text-blue-400">
-                      → 採購單 {r.linked_pr_no}
+                    <Link href={`/purchase/requests/edit?id=${r.linked_pr_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
+                      → {r.linked_pr_no}
                     </Link>
                   )}
                   {r.status === "rejected" && r.rejected_reason && <span className="text-red-600">拒絕：{r.rejected_reason}</span>}

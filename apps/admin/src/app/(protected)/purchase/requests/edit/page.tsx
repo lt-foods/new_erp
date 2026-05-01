@@ -281,6 +281,22 @@ function PageContent() {
           }),
         );
 
+        // 一次撈 SKU 目前的 cost / retail / branch 三種價格（用於補空欄）
+        const { data: priceRows } = await supabase
+          .from("prices")
+          .select("sku_id, scope, price")
+          .in("sku_id", skuIds)
+          .in("scope", ["cost", "retail", "branch"])
+          .is("effective_to", null);
+        const priceMap = new Map<number, { cost?: number; retail?: number; branch?: number }>();
+        for (const p of (priceRows ?? []) as { sku_id: number; scope: string; price: number }[]) {
+          const slot = priceMap.get(p.sku_id) ?? {};
+          if (p.scope === "cost" && slot.cost === undefined) slot.cost = Number(p.price);
+          if (p.scope === "retail" && slot.retail === undefined) slot.retail = Number(p.price);
+          if (p.scope === "branch" && slot.branch === undefined) slot.branch = Number(p.price);
+          priceMap.set(p.sku_id, slot);
+        }
+
         // 拉「該 PR 各 (campaign, sku) 在其他已通過 PR 已採購過多少」
         const { data: purchasedRows } = await supabase
           .from("v_pr_purchased_history")
@@ -294,6 +310,22 @@ function PageContent() {
 
         const merged: ItemRow[] = (itemRows ?? []).map((r) => {
           const m = skuMap.get(r.sku_id);
+          const sp = priceMap.get(r.sku_id) ?? {};
+          // PR 既有值優先；空 / 0 fallback 到 SKU 現行價（unit_cost 是 NOT NULL，0 視為未填）
+          const prCost = Number(r.unit_cost);
+          const cost = prCost > 0 ? prCost : (sp.cost ?? 0);
+          const retail = r.retail_price !== null && r.retail_price !== undefined
+            ? Number(r.retail_price)
+            : (sp.retail ?? null);
+          const branch = r.franchise_price !== null && r.franchise_price !== undefined
+            ? Number(r.franchise_price)
+            : (sp.branch ?? null);
+          // 若 fallback 改了任一價、line_subtotal 重算
+          const qty = Number(r.qty_requested);
+          const subtotal = cost > 0 ? qty * cost : Number(r.line_subtotal ?? 0);
+          const usedFallback = prCost === 0 && (sp.cost ?? 0) > 0
+            || (r.retail_price === null && sp.retail !== undefined)
+            || (r.franchise_price === null && sp.branch !== undefined);
           return {
             id: r.id,
             sku_id: r.sku_id,
@@ -301,15 +333,16 @@ function PageContent() {
             product_name: m?.product_name ?? "?",
             variant_name: m?.variant_name ?? null,
             unit_uom: m?.unit_uom ?? null,
-            qty_requested: Number(r.qty_requested),
-            unit_cost: Number(r.unit_cost),
-            line_subtotal: Number(r.line_subtotal ?? 0),
+            qty_requested: qty,
+            unit_cost: cost,
+            line_subtotal: subtotal,
             suggested_supplier_id: r.suggested_supplier_id,
             source_campaign_id: r.source_campaign_id,
-            retail_price: r.retail_price !== null && r.retail_price !== undefined ? Number(r.retail_price) : null,
-            franchise_price: r.franchise_price !== null && r.franchise_price !== undefined ? Number(r.franchise_price) : null,
+            retail_price: retail,
+            franchise_price: branch,
             purchased_so_far: purchasedMap.get(r.sku_id) ?? 0,
-            dirty: false,
+            // 若用了 fallback、標 dirty 讓 UI 提示「儲存後 PR 留紀錄」
+            dirty: usedFallback,
           };
         });
 
@@ -390,9 +423,24 @@ function PageContent() {
 
   async function submitForReview() {
     if (!id) return;
-    if (unassignedCount > 0) {
-      if (!confirm(`仍有 ${unassignedCount} 行未指派供應商，送審後可審核但拆 PO 時會被擋。確定送審？`)) return;
-    } else if (!confirm("確定送出審核？")) {
+    // 送審前驗：每行必須填妥成本 / 分店價 / 售價 + 數量 + 供應商
+    const incomplete: string[] = [];
+    for (const r of items) {
+      const issues: string[] = [];
+      if (!r.qty_requested || r.qty_requested <= 0) issues.push("數量");
+      if (!r.unit_cost || r.unit_cost <= 0) issues.push("成本");
+      if (r.franchise_price === null || r.franchise_price === undefined) issues.push("分店價");
+      if (r.retail_price === null || r.retail_price === undefined) issues.push("售價");
+      if (!r.suggested_supplier_id) issues.push("供應商");
+      if (issues.length > 0) {
+        incomplete.push(`${r.sku_code}：${issues.join("、")}`);
+      }
+    }
+    if (incomplete.length > 0) {
+      setError(`送審前需補完所有欄位：\n${incomplete.join("\n")}`);
+      return;
+    }
+    if (!confirm("確定送出審核？")) {
       return;
     }
     await saveDraft();
@@ -699,8 +747,8 @@ function PageContent() {
               <Th className="text-right">已採購</Th>
               <Th className="text-right">數量</Th>
               <Th className="text-right">成本</Th>
-              <Th className="text-right">售價</Th>
               <Th className="text-right">分店價</Th>
+              <Th className="text-right">售價</Th>
               <Th className="text-right">小計</Th>
               <Th></Th>
             </tr>
@@ -796,25 +844,6 @@ function PageContent() {
                       <input
                         type="number"
                         step="0.0001"
-                        value={r.retail_price ?? ""}
-                        onChange={(e) =>
-                          patchItem(idx, {
-                            retail_price: e.target.value === "" ? null : Number(e.target.value),
-                          })
-                        }
-                        className="w-20 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800"
-                      />
-                    ) : r.retail_price !== null ? (
-                      `$${r.retail_price.toFixed(0)}`
-                    ) : (
-                      "—"
-                    )}
-                  </Td>
-                  <Td className="text-right">
-                    {editable ? (
-                      <input
-                        type="number"
-                        step="0.0001"
                         value={r.franchise_price ?? ""}
                         onChange={(e) =>
                           patchItem(idx, {
@@ -825,6 +854,25 @@ function PageContent() {
                       />
                     ) : r.franchise_price !== null ? (
                       `$${r.franchise_price.toFixed(0)}`
+                    ) : (
+                      "—"
+                    )}
+                  </Td>
+                  <Td className="text-right">
+                    {editable ? (
+                      <input
+                        type="number"
+                        step="0.0001"
+                        value={r.retail_price ?? ""}
+                        onChange={(e) =>
+                          patchItem(idx, {
+                            retail_price: e.target.value === "" ? null : Number(e.target.value),
+                          })
+                        }
+                        className="w-20 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                      />
+                    ) : r.retail_price !== null ? (
+                      `$${r.retail_price.toFixed(0)}`
                     ) : (
                       "—"
                     )}
