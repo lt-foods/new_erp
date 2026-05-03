@@ -6,6 +6,7 @@ import { consumeFragmentToSession, getSession } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import { PushNotificationManager } from "@/components/PushNotificationManager";
+import { usePushNotification } from "@/lib/usePushNotification";
 
 type Overview = {
   store: {
@@ -26,6 +27,7 @@ export default function OverviewPage() {
   const [data, setData] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const pushState = usePushNotification(getSession()?.token ?? null);
 
   useEffect(() => {
     consumeFragmentToSession();
@@ -135,7 +137,7 @@ export default function OverviewPage() {
               </Section>
             )}
 
-            <PushNotificationManager jwt={getSession()?.token ?? null} />
+            <PushNotificationManager state={pushState} />
           </>
         )}
       </div>
