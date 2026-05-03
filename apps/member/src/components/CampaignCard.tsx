@@ -9,12 +9,24 @@ export type CampaignSummary = {
   name: string;
   description: string | null;
   cover_image_url: string | null;
+  close_type: "regular" | "fast" | "limited" | string;
+  total_cap_qty: number | null;
   end_at: string | null;
   pickup_deadline: string | null;
   item_count: number;
   min_price: number;
   max_price: number;
 };
+
+/** 依 close_type + end_at + total_cap_qty 算出短標籤 */
+export function campaignBadgeLabel(c: CampaignSummary): string | null {
+  const hasCap = (c.total_cap_qty ?? 0) > 0;
+  const hasEnd = !!c.end_at;
+  if (c.close_type === "fast" && hasCap) return "限量限時";
+  if (c.close_type === "fast" || hasEnd) return "限時";
+  if (c.close_type === "limited" || hasCap) return "限量";
+  return null;
+}
 
 /**
  * 蝦皮風卡片 + Uber Eats 大字級。
@@ -49,11 +61,24 @@ export default function CampaignCard({
           ) : (
             <div className="absolute inset-0 flex items-center justify-center text-5xl">📦</div>
           )}
-          {campaign.end_at && (
-            <div className="absolute left-3 top-3 rounded-full bg-black/65 px-3 py-1 text-[14px] font-medium text-white backdrop-blur">
-              限時 <Countdown target={campaign.end_at} compact />
-            </div>
-          )}
+          {(() => {
+            const label = campaignBadgeLabel(campaign);
+            if (!label && !campaign.end_at) return null;
+            const isLimited = label?.includes("限量");
+            return (
+              <div
+                className={`absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[14px] font-medium text-white backdrop-blur ${
+                  isLimited ? "bg-[#ff3b30]/80" : "bg-black/65"
+                }`}
+              >
+                {label && <span>{label}</span>}
+                {campaign.end_at && <Countdown target={campaign.end_at} compact />}
+                {isLimited && campaign.total_cap_qty && (
+                  <span className="text-[12px] opacity-90">· {campaign.total_cap_qty} 份</span>
+                )}
+              </div>
+            );
+          })()}
         </div>
         <div className="space-y-1.5 px-4 py-3">
           <h3 className="text-[22px] font-bold leading-tight text-[var(--foreground)]">
@@ -90,9 +115,25 @@ export default function CampaignCard({
         )}
       </div>
       <div className="space-y-1 px-3 py-2.5">
-        <h3 className="line-clamp-2 text-[17px] font-semibold leading-tight text-[var(--foreground)]">
-          {campaign.name}
-        </h3>
+        <div className="flex items-center gap-1.5">
+          {(() => {
+            const label = campaignBadgeLabel(campaign);
+            if (!label) return null;
+            const isLimited = label.includes("限量");
+            return (
+              <span
+                className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                  isLimited ? "bg-[#ff3b30]/15 text-[#c4271d]" : "bg-[#ff9500]/15 text-[#9a5800]"
+                }`}
+              >
+                {label}
+              </span>
+            );
+          })()}
+          <h3 className="line-clamp-2 min-w-0 flex-1 text-[17px] font-semibold leading-tight text-[var(--foreground)]">
+            {campaign.name}
+          </h3>
+        </div>
         <div className="text-[24px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
           {priceText}
         </div>

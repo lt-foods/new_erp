@@ -251,7 +251,7 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
   // end_at IS NULL 表示「無到期日」(管理員未設),也算進行中,要保留
   let q = sb
     .from("group_buy_campaigns")
-    .select("id, campaign_no, name, description, cover_image_url, end_at, pickup_deadline, campaign_items(unit_price, sort_order, sku:skus(product:products(images)))")
+    .select("id, campaign_no, name, description, cover_image_url, close_type, total_cap_qty, end_at, pickup_deadline, campaign_items(unit_price, sort_order, sku:skus(product:products(images)))")
     .eq("tenant_id", tenantId)
     .eq("status", "open")
     .or(`end_at.is.null,end_at.gt.${new Date().toISOString()}`);

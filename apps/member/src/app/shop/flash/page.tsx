@@ -5,7 +5,10 @@ import { useRouter } from "next/navigation";
 import { consumeFragmentToSession, getSession } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
-import CampaignCard, { type CampaignSummary } from "@/components/CampaignCard";
+import CampaignCard, {
+  campaignBadgeLabel,
+  type CampaignSummary,
+} from "@/components/CampaignCard";
 import Countdown from "@/components/Countdown";
 
 export default function FlashPage() {
@@ -97,6 +100,8 @@ function FlashRow({ campaign }: { campaign: CampaignSummary }) {
   const priceText = campaign.min_price > 0
     ? `$${campaign.min_price.toLocaleString()}${campaign.max_price > campaign.min_price ? " 起" : ""}`
     : "—";
+  const label = campaignBadgeLabel(campaign);
+  const isLimited = label?.includes("限量");
 
   return (
     <a
@@ -114,6 +119,15 @@ function FlashRow({ campaign }: { campaign: CampaignSummary }) {
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-3xl">📦</div>
         )}
+        {label && (
+          <span
+            className={`absolute left-1 top-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-white shadow ${
+              isLimited ? "bg-[#ff3b30]" : "bg-[#ff9500]"
+            }`}
+          >
+            {label}
+          </span>
+        )}
       </div>
       <div className="min-w-0 flex-1 space-y-1">
         <h3 className="line-clamp-2 text-[17px] font-semibold leading-tight text-[var(--foreground)]">
@@ -123,7 +137,12 @@ function FlashRow({ campaign }: { campaign: CampaignSummary }) {
           {priceText}
         </div>
         <div className="flex items-center justify-between gap-2 text-[13px] text-[var(--secondary-label)]">
-          <span>共 {campaign.item_count} 項</span>
+          <span>
+            共 {campaign.item_count} 項
+            {isLimited && campaign.total_cap_qty != null && (
+              <span className="ml-2 text-[#c4271d]">· 限 {campaign.total_cap_qty} 份</span>
+            )}
+          </span>
           {campaign.end_at && <Countdown target={campaign.end_at} />}
         </div>
       </div>
