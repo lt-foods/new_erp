@@ -70,6 +70,7 @@ export default function CampaignsListPage() {
   const [page, setPage] = useState(1);
 
   const [itemCounts, setItemCounts] = useState<Map<number, number>>(new Map());
+  const [listOrderCounts, setListOrderCounts] = useState<Map<number, { normalQty: number; offsetQty: number }>>(new Map());
   const [modal, setModal] = useState<{ mode: "edit"; values: CampaignFormValues } | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const [closingId, setClosingId] = useState<number | null>(null);
@@ -91,6 +92,7 @@ export default function CampaignsListPage() {
   const [calRows, setCalRows] = useState<CalRow[] | null>(null);
   const [calItemCounts, setCalItemCounts] = useState<Map<number, number>>(new Map());
   const [calOrderCounts, setCalOrderCounts] = useState<Map<number, number>>(new Map());
+  const [calOffsetCounts, setCalOffsetCounts] = useState<Map<number, number>>(new Map());
   const [monthAnchor, setMonthAnchor] = useState<Date>(() => startOfDay(new Date()));
 
   async function closeCampaign(id: number, name: string) {
@@ -182,15 +184,37 @@ export default function CampaignsListPage() {
         setRows((data ?? []) as Row[]);
         setTotal(count ?? 0);
 
-        // 補商品數
+        // 補商品數 + 下單總數量（normal / offset 分開、SUM(qty)）
         const ids = (data ?? []).map((r) => r.id);
         if (ids.length) {
-          const { data: items } = await getSupabase()
-            .from("campaign_items").select("campaign_id").in("campaign_id", ids);
+          const sb = getSupabase();
+          const [itemRes, orderRes] = await Promise.all([
+            sb.from("campaign_items").select("campaign_id").in("campaign_id", ids),
+            sb.from("customer_orders").select("id, campaign_id, order_kind").in("campaign_id", ids),
+          ]);
           const m = new Map<number, number>();
           for (const id of ids) m.set(id, 0);
-          for (const it of items ?? []) m.set(it.campaign_id, (m.get(it.campaign_id) ?? 0) + 1);
+          for (const it of itemRes.data ?? []) m.set(it.campaign_id, (m.get(it.campaign_id) ?? 0) + 1);
           if (!cancelled) setItemCounts(m);
+
+          // 抓 items qty 並依 order_kind 聚合到 campaign
+          const ordersList = (orderRes.data ?? []) as { id: number; campaign_id: number; order_kind: string }[];
+          const orderIds = ordersList.map((o) => o.id);
+          const oqRes = orderIds.length
+            ? await sb.from("customer_order_items").select("order_id, qty").in("order_id", orderIds)
+            : { data: [] as { order_id: number; qty: number }[] };
+          const orderMeta = new Map(ordersList.map((o) => [o.id, o]));
+          const om = new Map<number, { normalQty: number; offsetQty: number }>();
+          for (const id of ids) om.set(id, { normalQty: 0, offsetQty: 0 });
+          for (const it of (oqRes.data ?? []) as { order_id: number; qty: number }[]) {
+            const meta = orderMeta.get(it.order_id);
+            if (!meta) continue;
+            const cur = om.get(meta.campaign_id) ?? { normalQty: 0, offsetQty: 0 };
+            if (meta.order_kind === "offset") cur.offsetQty += Number(it.qty);
+            else cur.normalQty += Number(it.qty);
+            om.set(meta.campaign_id, cur);
+          }
+          if (!cancelled) setListOrderCounts(om);
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -218,35 +242,55 @@ export default function CampaignsListPage() {
       }
       const { data, error } = await getSupabase()
         .from("group_buy_campaigns")
-        .select("id, campaign_no, name, status, start_at")
+        .select("id, campaign_no, name, status, start_at, display_order")
         .gte("start_at", from.toISOString())
         .lt("start_at", to.toISOString())
-        .order("start_at", { ascending: true });
+        .order("start_at", { ascending: true })
+        .order("display_order", { ascending: true });
       if (cancelled) return;
       if (error) { setError(error.message); return; }
       setError(null);
       const list = (data ?? []) as CalRow[];
       setCalRows(list);
 
-      // 補商品數 + 訂單數
+      // 補商品數 + 下單總數量（normal / offset 分開計、SUM(qty)）
       const ids = list.map((r) => r.id);
       if (ids.length > 0) {
         const sb = getSupabase();
         const [itemRes, orderRes] = await Promise.all([
           sb.from("campaign_items").select("campaign_id").in("campaign_id", ids),
-          sb.from("customer_orders").select("campaign_id").in("campaign_id", ids),
+          sb.from("customer_orders").select("id, campaign_id, order_kind").in("campaign_id", ids),
         ]);
         if (cancelled) return;
         const im = new Map<number, number>();
         const om = new Map<number, number>();
-        for (const id of ids) { im.set(id, 0); om.set(id, 0); }
+        const offm = new Map<number, number>();
+        for (const id of ids) { im.set(id, 0); om.set(id, 0); offm.set(id, 0); }
         for (const it of itemRes.data ?? []) im.set(it.campaign_id, (im.get(it.campaign_id) ?? 0) + 1);
-        for (const o of orderRes.data ?? []) om.set(o.campaign_id, (om.get(o.campaign_id) ?? 0) + 1);
+
+        const ordersList = (orderRes.data ?? []) as { id: number; campaign_id: number; order_kind: string }[];
+        const orderIds = ordersList.map((o) => o.id);
+        const oqRes = orderIds.length
+          ? await sb.from("customer_order_items").select("order_id, qty").in("order_id", orderIds)
+          : { data: [] as { order_id: number; qty: number }[] };
+        if (cancelled) return;
+        const orderMeta = new Map(ordersList.map((o) => [o.id, o]));
+        for (const it of (oqRes.data ?? []) as { order_id: number; qty: number }[]) {
+          const meta = orderMeta.get(it.order_id);
+          if (!meta) continue;
+          if (meta.order_kind === "offset") {
+            offm.set(meta.campaign_id, (offm.get(meta.campaign_id) ?? 0) + Number(it.qty));
+          } else {
+            om.set(meta.campaign_id, (om.get(meta.campaign_id) ?? 0) + Number(it.qty));
+          }
+        }
         setCalItemCounts(im);
         setCalOrderCounts(om);
+        setCalOffsetCounts(offm);
       } else {
         setCalItemCounts(new Map());
         setCalOrderCounts(new Map());
+        setCalOffsetCounts(new Map());
       }
     })();
     return () => { cancelled = true; };
@@ -347,6 +391,7 @@ export default function CampaignsListPage() {
           monthAnchor={monthAnchor}
           itemCounts={calItemCounts}
           orderCounts={calOrderCounts}
+          offsetCounts={calOffsetCounts}
           onPick={(id) => openEdit(id)}
         />
       )}
@@ -356,14 +401,14 @@ export default function CampaignsListPage() {
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
-              <Th>團號</Th><Th>名稱</Th><Th>狀態</Th><Th>開團/收單</Th><Th>取貨截止</Th><Th className="text-right">商品數</Th><Th className="text-right">更新</Th><Th>{""}</Th>
+              <Th>團號</Th><Th>名稱</Th><Th>狀態</Th><Th>開團/收單</Th><Th>取貨截止</Th><Th className="text-right">商品數</Th><Th className="text-right">下單總數</Th><Th className="text-right">更新</Th><Th>{""}</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={8} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={9} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={8} className="p-6 text-center text-zinc-500">{total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}</td></tr>
+              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">{total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}</td></tr>
             ) : rows.map((r) => (
               <tr key={r.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
                 <Td className="font-mono">
@@ -378,6 +423,31 @@ export default function CampaignsListPage() {
                 </Td>
                 <Td className="text-xs">{r.pickup_deadline ?? "—"}</Td>
                 <Td className="text-right font-mono">{itemCounts.get(r.id) ?? 0}</Td>
+                <Td className="text-right">
+                  {(() => {
+                    const oc = listOrderCounts.get(r.id) ?? { normalQty: 0, offsetQty: 0 };
+                    const totalQty = oc.normalQty + oc.offsetQty;
+                    if (oc.normalQty === 0 && oc.offsetQty === 0) {
+                      return <span className="font-mono text-zinc-400">0</span>;
+                    }
+                    return (
+                      <Link
+                        href={`/orders?campaignId=${r.id}`}
+                        className="inline-flex items-center gap-1 rounded font-mono hover:bg-zinc-100 px-1 dark:hover:bg-zinc-800"
+                        title={`點擊查看此開團的訂單\n正常下單總量：${oc.normalQty} 件${oc.offsetQty !== 0 ? `\n抵減量：${oc.offsetQty} 件\n淨需求：${totalQty} 件` : ""}`}
+                      >
+                        <span className="text-blue-700 hover:underline dark:text-blue-400">
+                          {oc.normalQty}
+                        </span>
+                        {oc.offsetQty !== 0 && (
+                          <span className="rounded bg-red-100 px-1 text-[11px] text-red-800 dark:bg-red-950 dark:text-red-300">
+                            {oc.offsetQty}
+                          </span>
+                        )}
+                      </Link>
+                    );
+                  })()}
+                </Td>
                 <Td className="text-right text-xs text-zinc-500">{new Date(r.updated_at).toLocaleString("zh-TW")}</Td>
                 <Td>
                   <div className="flex gap-2">
@@ -501,6 +571,7 @@ function CalendarView({
   monthAnchor,
   itemCounts,
   orderCounts,
+  offsetCounts,
   onPick,
 }: {
   view: View;
@@ -508,6 +579,7 @@ function CalendarView({
   monthAnchor: Date;
   itemCounts: Map<number, number>;
   orderCounts: Map<number, number>;
+  offsetCounts: Map<number, number>;
   onPick: (id: number) => void;
 }) {
   if (rows === null) {
@@ -576,6 +648,7 @@ function CalendarView({
                     r={r}
                     itemCount={itemCounts.get(r.id) ?? 0}
                     orderCount={orderCounts.get(r.id) ?? 0}
+                    offsetCount={offsetCounts.get(r.id) ?? 0}
                     onPick={onPick}
                   />
                 ))}
@@ -639,6 +712,7 @@ function CalendarView({
                     compact
                     itemCount={itemCounts.get(r.id) ?? 0}
                     orderCount={orderCounts.get(r.id) ?? 0}
+                    offsetCount={offsetCounts.get(r.id) ?? 0}
                     onPick={onPick}
                   />
                 ))}
@@ -946,12 +1020,14 @@ function CampaignCard({
   compact,
   itemCount,
   orderCount,
+  offsetCount,
   onPick,
 }: {
   r: CalRow;
   compact?: boolean;
   itemCount: number;
   orderCount: number;
+  offsetCount: number;
   onPick: (id: number) => void;
 }) {
   const statusBadgeColor: Record<Status, string> = {
@@ -980,7 +1056,7 @@ function CampaignCard({
       <button
         onClick={() => onPick(r.id)}
         className={`block w-full truncate rounded px-1.5 py-0.5 text-left text-[10px] ${compactBg[r.status]} hover:opacity-80`}
-        title={`${r.campaign_no}｜${r.name}｜${STATUS_LABEL[r.status]}｜${itemCount} 商品｜${orderCount} 單`}
+        title={`${r.campaign_no}｜${r.name}｜${STATUS_LABEL[r.status]}｜${itemCount} 商品｜下單 ${orderCount} 件${offsetCount !== 0 ? `｜抵減 ${offsetCount} 件` : ""}`}
       >
         <span className="font-medium">{r.name || r.campaign_no}</span>
       </button>
@@ -1011,14 +1087,33 @@ function CampaignCard({
         {r.campaign_no}
       </button>
 
-      {/* 數據：商品數 / 訂單數 */}
-      <div className="mb-2 flex gap-2 text-[11px]">
+      {/* 數據：商品數 / 下單總量 / 抵減總量 */}
+      <div className="mb-2 flex flex-wrap gap-2 text-[11px]">
         <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
           📦 {itemCount} 商品
         </span>
-        <span className={`rounded px-1.5 py-0.5 ${orderCount > 0 ? "bg-blue-100 font-medium text-blue-800 dark:bg-blue-950 dark:text-blue-300" : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"}`}>
-          🛒 {orderCount} 單
-        </span>
+        {orderCount !== 0 || offsetCount !== 0 ? (
+          <Link
+            href={`/orders?campaignId=${r.id}`}
+            className={`rounded px-1.5 py-0.5 transition ${orderCount > 0 ? "bg-blue-100 font-medium text-blue-800 hover:bg-blue-200 dark:bg-blue-950 dark:text-blue-300 dark:hover:bg-blue-900" : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400"}`}
+            title={`點擊查看訂單｜下單總量：${orderCount} 件${offsetCount !== 0 ? `｜抵減量：${offsetCount} 件｜淨需求：${orderCount + offsetCount} 件` : ""}`}
+          >
+            🛒 {orderCount} 件
+          </Link>
+        ) : (
+          <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+            🛒 0 件
+          </span>
+        )}
+        {offsetCount !== 0 && (
+          <Link
+            href={`/orders?campaignId=${r.id}`}
+            className="rounded bg-red-100 px-1.5 py-0.5 font-medium text-red-800 hover:bg-red-200 dark:bg-red-950 dark:text-red-300 dark:hover:bg-red-900"
+            title={`庫存抵減 ${offsetCount} 件（採購聚合會扣掉這部分）`}
+          >
+            {offsetCount} 抵
+          </Link>
+        )}
       </div>
 
       {/* 動作 */}

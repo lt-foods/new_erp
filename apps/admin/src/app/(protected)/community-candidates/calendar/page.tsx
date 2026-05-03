@@ -5,11 +5,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import {
   DndContext,
+  pointerWithin,
+  rectIntersection,
   closestCorners,
   PointerSensor,
   useSensor,
   useSensors,
   useDroppable,
+  type CollisionDetection,
   type DragEndEvent,
   type DragOverEvent,
   type DragStartEvent,
@@ -161,6 +164,16 @@ export default function CommunityCandidatesCalendarPage() {
     return null;
   }
 
+  // 自訂 collision detection：優先 pointerWithin（指標真的進入 column 才命中），
+  // 沒命中再退回 rectIntersection / closestCorners。這樣空 column 也能被命中。
+  const collisionDetection: CollisionDetection = useCallback((args) => {
+    const pointerCollisions = pointerWithin(args);
+    if (pointerCollisions.length > 0) return pointerCollisions;
+    const rectCollisions = rectIntersection(args);
+    if (rectCollisions.length > 0) return rectCollisions;
+    return closestCorners(args);
+  }, []);
+
   const onDragStart = (e: DragStartEvent) => {
     const id = Number(e.active.id);
     for (const cards of Object.values(localByDate)) {
@@ -244,16 +257,30 @@ export default function CommunityCandidatesCalendarPage() {
   async function persistDay(dayKey: string, items: CalendarCandidate[]) {
     const sb = getSupabase();
     const now = new Date().toISOString();
+    const { data: userRes } = await sb.auth.getUser();
+    const operator = userRes?.user?.id ?? null;
     for (let i = 0; i < items.length; i++) {
+      const order = i + 1;
       const { error: err } = await sb
         .from("community_product_candidates")
         .update({
           scheduled_open_at: dayKey,
-          scheduled_sort_order: i + 1,
+          scheduled_sort_order: order,
           updated_at: now,
         })
         .eq("id", items[i].id);
       if (err) throw new Error(err.message);
+
+      // 同步更新對應 campaign（透過 RPC 繞過 RLS — admin 客戶端 JWT role claim 可能為 null）
+      if (operator) {
+        const { error: rpcErr } = await sb.rpc("rpc_reorder_candidate_campaign", {
+          p_candidate_id: items[i].id,
+          p_day_key: dayKey,
+          p_order: order,
+          p_operator: operator,
+        });
+        if (rpcErr) console.warn("campaign reorder failed:", rpcErr.message);
+      }
     }
   }
 
@@ -285,7 +312,7 @@ export default function CommunityCandidatesCalendarPage() {
       ) : (
         <DndContext
           sensors={sensors}
-          collisionDetection={closestCorners}
+          collisionDetection={collisionDetection}
           onDragStart={onDragStart}
           onDragOver={onDragOver}
           onDragEnd={onDragEnd}
@@ -348,8 +375,8 @@ function DayColumn({
   return (
     <div
       ref={setNodeRef}
-      className={`flex min-w-[120px] flex-col gap-2 rounded-md p-1 transition ${
-        isOver && cards.length === 0
+      className={`flex min-h-[200px] min-w-[120px] flex-col gap-2 rounded-md p-1 transition ${
+        isOver
           ? "bg-amber-50 ring-2 ring-amber-300 dark:bg-amber-950/30 dark:ring-amber-700"
           : ""
       }`}
