@@ -55,36 +55,22 @@ export default function OrderCard({ order }: { order: OrderRow }) {
 
   return (
     <article className="overflow-hidden rounded-2xl bg-[var(--card-bg)] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
-      <header className="flex items-start gap-3 px-4 pt-4 pb-3">
-        {order.campaign_cover_url ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={order.campaign_cover_url}
-            alt=""
-            className="h-14 w-14 flex-shrink-0 rounded-xl object-cover"
-          />
-        ) : (
-          <div className="flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-xl bg-[#7676801a] text-2xl">
-            📦
-          </div>
-        )}
-        <div className="min-w-0 flex-1">
-          <h3 className="truncate text-[18px] font-semibold text-[var(--foreground)]">{title}</h3>
-          <p className="mt-0.5 text-[14px] text-[var(--secondary-label)]">
-            {fmtDate(order.created_at)}
-            {order.store_name && (
-              <>
-                <span className="mx-1.5 text-[var(--tertiary-label)]">·</span>
-                取貨：{order.store_name}
-              </>
-            )}
-          </p>
-          {order.campaign_cutoff_date && (
-            <p className="text-[14px] text-[var(--secondary-label)]">
-              結單日 {order.campaign_cutoff_date}
-            </p>
+      <header className="px-4 pt-4 pb-3">
+        <h3 className="truncate text-[18px] font-semibold text-[var(--foreground)]">{title}</h3>
+        <p className="mt-0.5 text-[14px] text-[var(--secondary-label)]">
+          {fmtDate(order.created_at)}
+          {order.store_name && (
+            <>
+              <span className="mx-1.5 text-[var(--tertiary-label)]">·</span>
+              取貨：{order.store_name}
+            </>
           )}
-        </div>
+        </p>
+        {order.campaign_cutoff_date && (
+          <p className="text-[14px] text-[var(--secondary-label)]">
+            結單日 {order.campaign_cutoff_date}
+          </p>
+        )}
       </header>
 
       <ul className="border-t border-[var(--separator)] px-4">
@@ -95,25 +81,10 @@ export default function OrderCard({ order }: { order: OrderRow }) {
               idx > 0 ? "border-t border-[var(--separator)]" : ""
             }`}
           >
-            {it.image_url ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={it.image_url}
-                alt=""
-                className="h-12 w-12 flex-shrink-0 rounded-lg object-cover bg-[#7676801a]"
-              />
-            ) : (
-              <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-lg bg-[#7676801a] text-xl">
-                📦
-              </div>
-            )}
             <div className="min-w-0 flex-1">
-              <div className="text-[16px] text-[var(--foreground)]">
-                {it.product_name ?? "商品"}
-                {it.variant_name && (
-                  <span className="ml-1 text-[var(--secondary-label)]">/ {it.variant_name}</span>
-                )}
-              </div>
+              {it.variant_name && (
+                <div className="text-[16px] text-[var(--foreground)]">{it.variant_name}</div>
+              )}
               <div className="text-[14px] text-[var(--secondary-label)]">
                 {fmtAmount(it.unit_price)} × {it.qty}
               </div>
