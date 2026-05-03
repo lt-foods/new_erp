@@ -6,6 +6,7 @@ import { consumeFragmentToSession, getSession } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import { PushNotificationManager } from "@/components/PushNotificationManager";
+import { usePushNotification } from "@/lib/usePushNotification";
 
 type MemberData = {
   member_id: number;
@@ -49,6 +50,9 @@ export default function MePage() {
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ name: "", phone: "", birthday: "", email: "" });
+
+  // 推播訂閱狀態 lift 到頁面層,頭像區跟底部 PushNotificationManager 共用
+  const pushState = usePushNotification(getSession()?.token ?? null);
 
   // PWA share code
   const [pwaCode, setPwaCode] = useState<string | null>(null);
@@ -191,25 +195,39 @@ export default function MePage() {
 
         {/* LINE 綁定卡片 */}
         <section className="overflow-hidden rounded-2xl bg-[var(--card-bg)] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
-          <div className="flex items-center gap-3 px-4 py-4">
+          <div className="flex items-start gap-3 px-4 py-4">
             {avatarSrc ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={avatarSrc} alt="" className="h-16 w-16 rounded-full object-cover" />
+              <img src={avatarSrc} alt="" className="h-16 w-16 flex-shrink-0 rounded-full object-cover" />
             ) : (
-              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-[#7676801a] text-2xl text-[var(--secondary-label)]">
+              <div className="flex h-16 w-16 flex-shrink-0 items-center justify-center rounded-full bg-[#7676801a] text-2xl text-[var(--secondary-label)]">
                 {displayName[0]}
               </div>
             )}
             <div className="min-w-0 flex-1">
               <div className="text-[20px] font-semibold text-[var(--foreground)]">{displayName}</div>
               <div className="font-mono text-[13px] text-[var(--secondary-label)]">{me.member_no}</div>
-              <div className="mt-1.5 inline-flex items-center gap-1 rounded-full bg-[#06C755]/15 px-2.5 py-[3px] text-[12px] font-medium text-[#067a37]">
-                ✓ 已綁定 LINE
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                <span className="inline-flex items-center gap-1 rounded-full bg-[#06C755]/15 px-2.5 py-[3px] text-[12px] font-medium text-[#067a37]">
+                  ✓ 已綁定 LINE
+                </span>
+                {pushState.subscription && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-[var(--ios-blue)]/15 px-2.5 py-[3px] text-[12px] font-medium text-[var(--ios-blue)]">
+                    🔔 已啟用通知
+                  </span>
+                )}
+                {overview?.store.name && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-[#7676801f] px-2.5 py-[3px] text-[12px] font-medium text-[var(--secondary-label)]">
+                    📍 {overview.store.name}
+                  </span>
+                )}
               </div>
             </div>
-            {/* 「PWA 碼」只在 LINE / 一般瀏覽器才出現,
-                 用來把當前 session 帶到尚未登入的 PWA。在 PWA 內已登入,沒意義 */}
-            {!isPWA && (
+            {/* 右上角動作:
+                 - 非 PWA → 「PWA 碼」(把 session 帶到 PWA)
+                 - PWA + 還沒訂閱 → 「開啟通知」
+                 - 其他狀態不顯示 */}
+            {!isPWA ? (
               <button
                 onClick={generatePwaCode}
                 disabled={generating}
@@ -217,7 +235,14 @@ export default function MePage() {
               >
                 {generating ? "..." : "PWA 碼"}
               </button>
-            )}
+            ) : pushState.isSupported && !pushState.subscription ? (
+              <button
+                onClick={pushState.subscribe}
+                className="flex-shrink-0 rounded-full bg-[var(--ios-blue)] px-3 py-1.5 text-[13px] font-medium text-white active:opacity-80"
+              >
+                開啟通知
+              </button>
+            ) : null}
           </div>
 
           {pwaCode && (
@@ -235,8 +260,8 @@ export default function MePage() {
           )}
         </section>
 
-        {/* 在 LINE 內 → 引導去裝 PWA;在 PWA 內 → 引導去逛商品 */}
-        {!isPWA ? (
+        {/* 在 LINE 內 → 引導去裝 PWA。在 PWA 內已有 bar tab「商品」可進,不再重複 CTA */}
+        {!isPWA && (
           <a
             href="/install"
             className="block overflow-hidden rounded-2xl bg-gradient-to-r from-[var(--brand-strong)] to-[#ff9500] p-5 text-left text-white shadow-[0_2px_8px_rgba(0,0,0,0.08)] active:opacity-90"
@@ -250,20 +275,6 @@ export default function MePage() {
               <div className="text-5xl">📱</div>
             </div>
           </a>
-        ) : (
-          <button
-            onClick={() => router.push("/shop")}
-            className="block w-full overflow-hidden rounded-2xl bg-gradient-to-r from-[var(--brand-strong)] to-[#ff9500] p-5 text-left text-white shadow-[0_2px_8px_rgba(0,0,0,0.08)] active:opacity-90"
-          >
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-[14px] font-medium opacity-90">立即下單</div>
-                <div className="mt-0.5 text-[22px] font-bold leading-tight">逛商品 →</div>
-                <div className="mt-1 text-[13px] opacity-85">看本店進行中的團購活動</div>
-              </div>
-              <div className="text-5xl">🛒</div>
-            </div>
-          </button>
         )}
 
         {/* 未結金額 + 進行中訂單 */}
@@ -287,11 +298,11 @@ export default function MePage() {
           </section>
         )}
 
-        {/* 店家資訊 */}
-        {overview && (
+        {/* 店家資訊 — 店名已在頭像 chip 顯示,這裡只展開 banner / 賣場介紹 / 付款 / 出貨 */}
+        {overview && (overview.store.banner_url || overview.store.description || overview.store.payment_methods_text || overview.store.shipping_methods_text) && (
           <section>
             <div className="px-4 pb-1 pt-2 text-[12px] uppercase tracking-wide text-[var(--tertiary-label)]">
-              {overview.store.name}
+              店家資訊
             </div>
             <div className="overflow-hidden rounded-2xl bg-[var(--card-bg)] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
               {overview.store.banner_url && (
@@ -426,8 +437,8 @@ export default function MePage() {
           </form>
         )}
 
-        {/* 推播設定 — 永遠顯示;在 LINE webview 內使用者會看到「需加入主畫面」提示 */}
-        <PushNotificationManager jwt={getSession()?.token ?? null} />
+        {/* 推播設定 — 通知狀態已在頭像 chip 顯示,這裡留 重新連動 LINE + debug */}
+        <PushNotificationManager state={pushState} />
 
         <p className="px-4 pt-2 text-[12px] text-[var(--tertiary-label)]">
           會員卡 QR、點數等更多功能持續開發中。
