@@ -8,12 +8,13 @@ import PageShell from "@/components/PageShell";
 import SubTabs from "@/components/SubTabs";
 import OrderCard, { type OrderRow } from "@/components/OrderCard";
 
-type Tab = "active" | "history";
+type Tab = "pending" | "arrived" | "history";
 
 export default function OrdersPage() {
   const router = useRouter();
-  const [tab, setTab] = useState<Tab>("active");
-  const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [tab, setTab] = useState<Tab>("pending");
+  const [activeOrders, setActiveOrders] = useState<OrderRow[]>([]);
+  const [historyOrders, setHistoryOrders] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
@@ -28,18 +29,24 @@ export default function OrdersPage() {
       setLoading(true);
       setErr(null);
       try {
-        const d = await callLiffApi<{ orders: OrderRow[] }>(s.token, {
-          action: "list_my_orders",
-          tab,
-        });
-        setOrders(d.orders);
+        const [active, history] = await Promise.all([
+          callLiffApi<{ orders: OrderRow[] }>(s.token, { action: "list_my_orders", tab: "active" }),
+          callLiffApi<{ orders: OrderRow[] }>(s.token, { action: "list_my_orders", tab: "history" }),
+        ]);
+        setActiveOrders(active.orders);
+        setHistoryOrders(history.orders);
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
       } finally {
         setLoading(false);
       }
     })();
-  }, [tab, router]);
+  }, [router]);
+
+  const pending = activeOrders.filter((o) => !o.arrived);
+  const arrived = activeOrders.filter((o) => o.arrived);
+  const display = tab === "pending" ? pending : tab === "arrived" ? arrived : historyOrders;
+  const emptyLabel = tab === "pending" ? "未到貨" : tab === "arrived" ? "已到貨" : "已完成";
 
   return (
     <PageShell title="我的訂單">
@@ -47,8 +54,9 @@ export default function OrdersPage() {
         value={tab}
         onChange={(v) => setTab(v as Tab)}
         options={[
-          { value: "active", label: "未完成" },
-          { value: "history", label: "訂單紀錄" },
+          { value: "pending", label: "未到貨", count: pending.length },
+          { value: "arrived", label: "已到貨", count: arrived.length },
+          { value: "history", label: "訂單紀錄", count: historyOrders.length },
         ]}
       />
 
@@ -63,16 +71,16 @@ export default function OrdersPage() {
           </div>
         )}
 
-        {!loading && !err && orders.length === 0 && (
+        {!loading && !err && display.length === 0 && (
           <div className="py-16 text-center">
             <div className="text-3xl">📦</div>
             <p className="mt-2 text-[15px] text-[var(--tertiary-label)]">
-              目前沒有{tab === "active" ? "未完成" : "已完成"}訂單
+              目前沒有{emptyLabel}訂單
             </p>
           </div>
         )}
 
-        {orders.map((o) => (
+        {display.map((o) => (
           <OrderCard key={o.id} order={o} />
         ))}
       </div>

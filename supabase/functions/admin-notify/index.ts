@@ -45,9 +45,20 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json();
-    const { member_id, title, message, url } = body;
+    const { member_id, title, message, url, category } = body;
 
     if (!member_id) return json({ error: "member_id is required" }, 400);
+
+    // 寫一筆 in-app notification(就算沒 push subscription 也要寫,顧客還是看得到)
+    const { error: notifErr } = await sb.from("notifications").insert({
+      tenant_id: tenantId,
+      member_id,
+      category: typeof category === "string" && category ? category : "general",
+      title: title || "通知",
+      body: message ?? null,
+      url: url ?? null,
+    });
+    if (notifErr) console.error("notifications insert failed:", notifErr.message);
 
     // Get subscriptions for this member
     const { data: subs, error: subErr } = await sb
@@ -58,7 +69,7 @@ Deno.serve(async (req) => {
 
     if (subErr) return json({ error: subErr.message }, 500);
     if (!subs || subs.length === 0) {
-      return json({ ok: false, message: "No active PWA subscriptions found for this member" });
+      return json({ ok: true, sent: 0, message: "Notification recorded; no active PWA subscriptions to push" });
     }
 
     webpush.setVapidDetails(

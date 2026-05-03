@@ -1,5 +1,3 @@
-import StatusChip from "./StatusChip";
-
 export type OrderItem = {
   id: number;
   sku_id: number;
@@ -53,7 +51,7 @@ function fmtDate(iso: string | null | undefined): string {
 
 export default function OrderCard({ order }: { order: OrderRow }) {
   const totalQty = order.items.reduce((s, i) => s + Number(i.qty ?? 0), 0);
-  const title = order.campaign_name ?? `訂單 ${order.order_no}`;
+  const title = order.campaign_name ?? "訂單";
 
   return (
     <article className="overflow-hidden rounded-2xl bg-[var(--card-bg)] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
@@ -73,9 +71,13 @@ export default function OrderCard({ order }: { order: OrderRow }) {
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-[18px] font-semibold text-[var(--foreground)]">{title}</h3>
           <p className="mt-0.5 text-[14px] text-[var(--secondary-label)]">
-            <span className="font-mono">{order.order_no}</span>
-            <span className="mx-1.5 text-[var(--tertiary-label)]">·</span>
             {fmtDate(order.created_at)}
+            {order.store_name && (
+              <>
+                <span className="mx-1.5 text-[var(--tertiary-label)]">·</span>
+                取貨：{order.store_name}
+              </>
+            )}
           </p>
           {order.campaign_cutoff_date && (
             <p className="text-[14px] text-[var(--secondary-label)]">
@@ -84,10 +86,6 @@ export default function OrderCard({ order }: { order: OrderRow }) {
           )}
         </div>
       </header>
-
-      <div className="flex flex-wrap gap-1.5 px-4 pb-3">
-        <StatusChip tone={order.arrived ? "ok" : "muted"} label={order.arrived ? "已到貨" : "未到貨"} />
-      </div>
 
       <ul className="border-t border-[var(--separator)] px-4">
         {order.items.map((it, idx) => (
@@ -111,14 +109,11 @@ export default function OrderCard({ order }: { order: OrderRow }) {
             )}
             <div className="min-w-0 flex-1">
               <div className="text-[16px] text-[var(--foreground)]">
-                {it.product_name ?? `SKU#${it.sku_id}`}
+                {it.product_name ?? "商品"}
                 {it.variant_name && (
                   <span className="ml-1 text-[var(--secondary-label)]">/ {it.variant_name}</span>
                 )}
               </div>
-              {it.sku_code && (
-                <div className="font-mono text-[12px] text-[var(--tertiary-label)]">{it.sku_code}</div>
-              )}
               <div className="text-[14px] text-[var(--secondary-label)]">
                 {fmtAmount(it.unit_price)} × {it.qty}
               </div>
@@ -162,11 +157,6 @@ export default function OrderCard({ order }: { order: OrderRow }) {
             ${fmtAmount(order.payable_amount)}
           </span>
         </div>
-      </div>
-
-      <div className="border-t border-[var(--separator)] px-4 py-2.5 text-[12px] text-[var(--tertiary-label)]">
-        結單編號 <span className="font-mono">{order.settlement_no}</span>
-        {order.store_name && <span className="ml-2">· 取貨 {order.store_name}</span>}
       </div>
     </article>
   );

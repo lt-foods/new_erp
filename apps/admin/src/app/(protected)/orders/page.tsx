@@ -471,8 +471,8 @@ function OrdersListContent() {
 function Th({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <th className={`px-4 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 ${className}`}>{children}</th>;
 }
-function Td({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <td className={`px-4 py-3 ${className}`}>{children}</td>;
+function Td({ children, className = "", title }: { children: React.ReactNode; className?: string; title?: string }) {
+  return <td className={`px-4 py-3 ${className}`} title={title}>{children}</td>;
 }
 function PagerBtn({ onClick, disabled, children }: { onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
   return <button onClick={onClick} disabled={disabled} className="rounded-md border border-zinc-300 px-2 py-1 transition-colors hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800">{children}</button>;

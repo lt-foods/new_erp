@@ -521,6 +521,47 @@ async function generatePwaAuthCode(
   return json({ code: code6, expires_in_sec: 300 });
 }
 
+async function listMyNotifications(sb: any, tenantId: string, memberId: number) {
+  const { data, error } = await sb
+    .from("notifications")
+    .select("id, category, title, body, url, read_at, created_at")
+    .eq("tenant_id", tenantId)
+    .eq("member_id", memberId)
+    .order("created_at", { ascending: false })
+    .limit(100);
+  if (error) return json({ error: error.message }, 500);
+  return json({ notifications: data ?? [] });
+}
+
+async function getMyUnreadNotificationCount(sb: any, tenantId: string, memberId: number) {
+  const { count, error } = await sb
+    .from("notifications")
+    .select("*", { count: "exact", head: true })
+    .eq("tenant_id", tenantId)
+    .eq("member_id", memberId)
+    .is("read_at", null);
+  if (error) return json({ error: error.message }, 500);
+  return json({ count: count ?? 0 });
+}
+
+async function markNotificationRead(sb: any, tenantId: string, memberId: number, p: any) {
+  const now = new Date().toISOString();
+  let q = sb
+    .from("notifications")
+    .update({ read_at: now })
+    .eq("tenant_id", tenantId)
+    .eq("member_id", memberId)
+    .is("read_at", null);
+  if (!p.mark_all) {
+    const id = Number(p.id);
+    if (!id) return json({ error: "id required when mark_all is not set" }, 400);
+    q = q.eq("id", id);
+  }
+  const { error } = await q;
+  if (error) return json({ error: error.message }, 500);
+  return json({ ok: true });
+}
+
 async function upsertPushSubscription(sb: any, tenantId: string, memberId: number, p: any) {
   if (!p.endpoint) return json({ error: "endpoint required" }, 400);
   
@@ -580,6 +621,9 @@ Deno.serve(async (req) => {
       case "list_my_orders": if (!memberId) return json({ error: "no member_id" }, 401); return await listMyOrders(sb, tenantId, storeId, memberId, String(body.tab ?? ""));
       case "list_my_settlements": if (!memberId) return json({ error: "no member_id" }, 401); return await listMySettlements(sb, tenantId, storeId, memberId, String(body.tab ?? ""));
       case "upsert_push_subscription": if (!memberId) return json({ error: "no member_id" }, 401); return await upsertPushSubscription(sb, tenantId, memberId, body);
+      case "list_my_notifications": if (!memberId) return json({ error: "no member_id" }, 401); return await listMyNotifications(sb, tenantId, memberId);
+      case "get_my_unread_notification_count": if (!memberId) return json({ error: "no member_id" }, 401); return await getMyUnreadNotificationCount(sb, tenantId, memberId);
+      case "mark_notification_read": if (!memberId) return json({ error: "no member_id" }, 401); return await markNotificationRead(sb, tenantId, memberId, body);
       case "generate_pwa_auth_code": if (!memberId) return json({ error: "no member_id" }, 401); return await generatePwaAuthCode(sb, tenantId, memberId, claims, token, body);
       case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId);
       case "get_campaign_detail": return await getCampaignDetail(sb, tenantId, Number(body.campaign_id ?? 0));

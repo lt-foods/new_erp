@@ -3,10 +3,12 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useUnreadNotifications } from "@/lib/useUnreadNotifications";
 
 type Tab = {
   href: string;
   label: string;
+  showBadge?: boolean;
   icon: (active: boolean) => React.ReactNode;
 };
 
@@ -35,11 +37,13 @@ const tabs: Tab[] = [
     ),
   },
   {
-    href: "/settlements",
-    label: "結單",
+    href: "/notifications",
+    label: "通知",
+    showBadge: true,
     icon: (active) => (
       <svg viewBox="0 0 24 24" fill={active ? "currentColor" : "none"} stroke={stroke(active)} strokeWidth={active ? 0 : 1.8} className="h-7 w-7">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M6 3h9l3 3v15l-2-1.5L14 21l-2-1.5L10 21l-2-1.5L6 21V3Zm3 5h6m-6 4h6m-6 4h4" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2H4.5L6 16Z" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M10 20a2 2 0 0 0 4 0" />
       </svg>
     ),
   },
@@ -57,6 +61,7 @@ const tabs: Tab[] = [
 export default function MemberTabBar() {
   const pathname = usePathname() ?? "";
   const [hide, setHide] = useState(false);
+  const { count: unreadCount } = useUnreadNotifications();
 
   // 從 LINE app 的 LIFF webview 進來,不顯示 tab bar(整個 PWA 導航體驗只屬於
   // 加入主畫面後的 standalone 模式)
@@ -82,6 +87,8 @@ export default function MemberTabBar() {
       <ul className="mx-auto flex max-w-md items-stretch">
         {tabs.map((t) => {
           const active = pathname.startsWith(t.href);
+          const showBadge = t.showBadge && unreadCount > 0;
+          const badgeText = unreadCount > 99 ? "99+" : String(unreadCount);
           return (
             <li key={t.href} className="flex-1">
               <Link
@@ -90,7 +97,17 @@ export default function MemberTabBar() {
                   active ? "text-[var(--brand-strong)]" : "text-[var(--ios-gray)]"
                 }`}
               >
-                {t.icon(active)}
+                <span className="relative">
+                  {t.icon(active)}
+                  {showBadge && (
+                    <span
+                      className="absolute -right-1.5 -top-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[#ff3b30] px-1 text-[11px] font-semibold leading-none text-white"
+                      aria-label={`${unreadCount} 則未讀`}
+                    >
+                      {badgeText}
+                    </span>
+                  )}
+                </span>
                 <span>{t.label}</span>
               </Link>
             </li>
