@@ -78,6 +78,11 @@ export function CampaignForm({
     e.preventDefault();
     setSaving(true); setError(null);
     try {
+      // 快團一定要有 end_at,否則 PWA /shop/flash 顯示不出來
+      if (v.close_type === "fast" && !v.end_at) {
+        throw new Error("快團必須設定「收單時間」(在下方欄位輸入)");
+      }
+
       // 開團驗證：status='open' 時、所有關聯商品需為 'active'（不可有 draft 商品）
       if (v.status === "open" && v.id != null) {
         const sb = getSupabase();
@@ -157,6 +162,20 @@ export function CampaignForm({
             <option value="limited">限量</option>
           </select>
         </Field>
+        {v.close_type === "fast" && (
+          <Field label="收單時間（快團必填）" className="sm:col-span-2">
+            <input
+              type="datetime-local"
+              required
+              value={toDtLocal(v.end_at)}
+              onChange={(e) => update("end_at", e.target.value ? new Date(e.target.value).toISOString() : null)}
+              className={inputCls}
+            />
+            <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+              快團需有明確收單時間，PWA 限時專區會顯示倒數計時。
+            </p>
+          </Field>
+        )}
         {(v.close_type === "limited" || v.close_type === "fast") && (
           <Field
             label={v.close_type === "fast" ? "總量上限（快團，可選）" : "總量上限（限量團）"}
