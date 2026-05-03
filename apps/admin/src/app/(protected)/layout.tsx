@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { getTenantName } from "@/lib/tenant";
 
 type NavItem = { href: string; label: string; match: RegExp };
 type NavGroup = { title?: string; items: NavItem[] };
@@ -18,35 +19,45 @@ const NAV: NavGroup[] = [
   {
     title: "核心業務",
     items: [
-      { href: "/orders", label: "訂單", match: /^\/orders/ },
-      { href: "/pickup", label: "取貨", match: /^\/pickup/ },
       { href: "/campaigns", label: "開團", match: /^\/campaigns/ },
       { href: "/products", label: "商品", match: /^\/products/ },
+      { href: "/suppliers", label: "供應商", match: /^\/suppliers/ },
+    ],
+  },
+  {
+    title: "分店業務",
+    items: [
+      { href: "/orders", label: "訂單", match: /^\/orders/ },
+      { href: "/pickup", label: "取貨", match: /^\/pickup/ },
       { href: "/members", label: "會員", match: /^\/members/ },
+      { href: "/inventory/mutual-aid", label: "互助交流板", match: /^\/inventory\/mutual-aid/ },
+      { href: "/transfers/aid", label: "互助轉移單（總倉檢視）", match: /^\/transfers\/aid/ },
+      { href: "/transfers/free", label: "自由轉貨", match: /^\/transfers\/free/ },
     ],
   },
   {
     title: "進銷存",
     items: [
-      { href: "/suppliers", label: "供應商", match: /^\/suppliers/ },
       { href: "/purchase/requests", label: "採購單", match: /^\/purchase\/requests/ },
       { href: "/purchase/orders", label: "採購訂單", match: /^\/purchase\/orders/ },
       { href: "/restock", label: "補貨申請", match: /^\/restock(?!\/inbox)/ },
       { href: "/restock/inbox", label: "補貨申請 (HQ)", match: /^\/restock\/inbox/ },
+    ],
+  },
+  {
+    title: "倉儲",
+    items: [
       { href: "/picking/workstation", label: "撿貨工作站", match: /^\/picking\/workstation/ },
       { href: "/picking/history", label: "撿貨歷史", match: /^\/picking\/history/ },
       { href: "/transfers/dispatch", label: "總倉派貨", match: /^\/transfers\/dispatch|^\/transfers$|^\/transfers\/?$/ },
       { href: "/transfers/inbox", label: "收貨待辦", match: /^\/transfers\/inbox/ },
-      { href: "/transfers/free", label: "自由轉貨", match: /^\/transfers\/free/ },
-      { href: "/inventory/mutual-aid", label: "互助交流板", match: /^\/inventory\/mutual-aid/ },
-      { href: "/transfers/aid", label: "互助轉移單", match: /^\/transfers\/aid/ },
-      { href: "/transfers/settlement", label: "月結算", match: /^\/transfers\/settlement/ },
     ],
   },
   {
     title: "財務",
     items: [
       { href: "/finance/receivables", label: "HQ 應收", match: /^\/finance\/receivables(?!\/print)/ },
+      { href: "/transfers/settlement", label: "月結算", match: /^\/transfers\/settlement/ },
     ],
   },
   {
@@ -58,11 +69,35 @@ const NAV: NavGroup[] = [
   },
 ];
 
+const NAV_COLLAPSE_KEY = "new_erp-nav-collapsed";
+
 export default function ProtectedLayout({ children }: { children: ReactNode }) {
   const { session, loading, user, signOut } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const tenantName = getTenantName();
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+
+  // 載入 collapsed groups (localStorage)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(NAV_COLLAPSE_KEY);
+      if (raw) setCollapsed(new Set(JSON.parse(raw) as string[]));
+    } catch { /* noop */ }
+  }, []);
+
+  function toggleGroup(title: string) {
+    setCollapsed((cur) => {
+      const next = new Set(cur);
+      if (next.has(title)) next.delete(title);
+      else next.add(title);
+      try {
+        localStorage.setItem(NAV_COLLAPSE_KEY, JSON.stringify(Array.from(next)));
+      } catch { /* noop */ }
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (loading) return;
@@ -110,8 +145,8 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
       <aside className="hidden w-52 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 md:flex print:hidden dark:border-zinc-800 dark:bg-zinc-950">
         <div className="border-b border-zinc-200 px-4 py-4 dark:border-zinc-800">
           <Link href="/" className="block">
-            <div className="text-lg font-semibold tracking-tight">new_erp</div>
-            <div className="text-xs text-zinc-500">團購店管理</div>
+            <div className="text-lg font-semibold tracking-tight">{tenantName}</div>
+            <div className="text-xs text-zinc-500">管理頁面</div>
           </Link>
           <div className="mt-2 inline-flex items-center gap-1 rounded-full border border-zinc-300 bg-white px-2 py-0.5 text-[10px] text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400">
             <span className="h-1.5 w-1.5 rounded-full bg-amber-400" /> 開發版
@@ -119,35 +154,46 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
         </div>
 
         <nav className="flex-1 overflow-y-auto px-2 py-3 text-sm">
-          {NAV.map((g, gi) => (
-            <div key={gi} className="mb-4">
-              {g.title && (
-                <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
-                  {g.title}
-                </div>
-              )}
-              <ul className="space-y-0.5">
-                {g.items.map((it) => {
-                  const active = it.match.test(pathname || "");
-                  return (
-                    <li key={it.href}>
-                      <Link
-                        href={it.href}
-                        className={
-                          active
-                            ? "flex items-center justify-between rounded-md bg-zinc-900 px-3 py-2 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                            : "flex items-center justify-between rounded-md px-3 py-2 text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900"
-                        }
-                      >
-                        <span>{it.label}</span>
-                        {active && <span className="text-xs opacity-60">›</span>}
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          ))}
+          {NAV.map((g, gi) => {
+            const groupHasActive = g.items.some((it) => it.match.test(pathname || ""));
+            const isCollapsed = g.title ? collapsed.has(g.title) && !groupHasActive : false;
+            return (
+              <div key={gi} className="mb-4">
+                {g.title && (
+                  <button
+                    type="button"
+                    onClick={() => toggleGroup(g.title!)}
+                    className="flex w-full items-center justify-between rounded px-2 pb-1.5 pt-0.5 text-xs font-semibold tracking-wider text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+                  >
+                    <span>{g.title}</span>
+                    <span className="text-xs opacity-60">{isCollapsed ? "▸" : "▾"}</span>
+                  </button>
+                )}
+                {!isCollapsed && (
+                  <ul className="space-y-0.5">
+                    {g.items.map((it) => {
+                      const active = it.match.test(pathname || "");
+                      return (
+                        <li key={it.href}>
+                          <Link
+                            href={it.href}
+                            className={
+                              active
+                                ? "flex items-center justify-between rounded-md bg-zinc-900 px-3 py-2 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                                : "flex items-center justify-between rounded-md px-3 py-2 text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                            }
+                          >
+                            <span>{it.label}</span>
+                            {active && <span className="text-xs opacity-60">›</span>}
+                          </Link>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            );
+          })}
         </nav>
 
         <div className="border-t border-zinc-200 p-3 text-xs dark:border-zinc-800">
@@ -181,7 +227,7 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
                 <line x1="3" y1="18" x2="21" y2="18" />
               </svg>
             </button>
-            <Link href="/" className="font-semibold">new_erp</Link>
+            <Link href="/" className="font-semibold">{tenantName}</Link>
           </div>
           <div className="flex items-center gap-2 text-sm">
             <ThemeToggle />
@@ -200,8 +246,8 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
           <aside className="absolute left-0 top-0 flex h-full w-72 max-w-[85vw] flex-col border-r border-zinc-200 bg-zinc-50 shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
             <div className="flex items-start justify-between border-b border-zinc-200 px-4 py-4 dark:border-zinc-800">
               <Link href="/" onClick={() => setDrawerOpen(false)} className="block">
-                <div className="text-lg font-semibold tracking-tight">new_erp</div>
-                <div className="text-xs text-zinc-500">團購店管理</div>
+                <div className="text-lg font-semibold tracking-tight">{tenantName}</div>
+                <div className="text-xs text-zinc-500">管理頁面</div>
               </Link>
               <button
                 onClick={() => setDrawerOpen(false)}
@@ -213,36 +259,47 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
             </div>
 
             <nav className="flex-1 overflow-y-auto px-2 py-3 text-sm">
-              {NAV.map((g, gi) => (
-                <div key={gi} className="mb-4">
-                  {g.title && (
-                    <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
-                      {g.title}
-                    </div>
-                  )}
-                  <ul className="space-y-0.5">
-                    {g.items.map((it) => {
-                      const active = it.match.test(pathname || "");
-                      return (
-                        <li key={it.href}>
-                          <Link
-                            href={it.href}
-                            onClick={() => setDrawerOpen(false)}
-                            className={
-                              active
-                                ? "flex items-center justify-between rounded-md bg-zinc-900 px-3 py-2 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                                : "flex items-center justify-between rounded-md px-3 py-2 text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900"
-                            }
-                          >
-                            <span>{it.label}</span>
-                            {active && <span className="text-xs opacity-60">›</span>}
-                          </Link>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              ))}
+              {NAV.map((g, gi) => {
+                const groupHasActive = g.items.some((it) => it.match.test(pathname || ""));
+                const isCollapsed = g.title ? collapsed.has(g.title) && !groupHasActive : false;
+                return (
+                  <div key={gi} className="mb-4">
+                    {g.title && (
+                      <button
+                        type="button"
+                        onClick={() => toggleGroup(g.title!)}
+                        className="flex w-full items-center justify-between rounded px-2 pb-1.5 pt-0.5 text-xs font-semibold tracking-wider text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+                      >
+                        <span>{g.title}</span>
+                        <span className="text-xs opacity-60">{isCollapsed ? "▸" : "▾"}</span>
+                      </button>
+                    )}
+                    {!isCollapsed && (
+                      <ul className="space-y-0.5">
+                        {g.items.map((it) => {
+                          const active = it.match.test(pathname || "");
+                          return (
+                            <li key={it.href}>
+                              <Link
+                                href={it.href}
+                                onClick={() => setDrawerOpen(false)}
+                                className={
+                                  active
+                                    ? "flex items-center justify-between rounded-md bg-zinc-900 px-3 py-2 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                                    : "flex items-center justify-between rounded-md px-3 py-2 text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                                }
+                              >
+                                <span>{it.label}</span>
+                                {active && <span className="text-xs opacity-60">›</span>}
+                              </Link>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
             </nav>
 
             <div className="border-t border-zinc-200 p-3 text-xs dark:border-zinc-800">

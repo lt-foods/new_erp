@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { AuthProvider } from "@/components/AuthProvider";
 import { themeInitScript } from "@/lib/theme";
+import { getAdminTitle, getTenantName } from "@/lib/tenant";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -15,8 +16,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "new_erp admin",
-  description: "團購店 ERP admin console",
+  title: getAdminTitle(),
+  description: `${getTenantName()} 管理後台`,
 };
 
 export default function RootLayout({
