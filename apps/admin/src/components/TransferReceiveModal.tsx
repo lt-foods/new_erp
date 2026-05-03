@@ -4,6 +4,53 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 
+async function fanoutPushNotifications(transferId: number): Promise<number> {
+  const sb = getSupabase();
+  const { data: rows, error } = await sb.rpc("rpc_get_members_to_notify_for_transfer", {
+    p_transfer_id: transferId,
+  });
+  if (error) {
+    console.warn("get members for push failed:", error.message);
+    return 0;
+  }
+  const list = (rows as { member_id: number; order_id: number; order_no: string }[] | null) ?? [];
+  if (list.length === 0) return 0;
+
+  // 去重：同一會員多張訂單只推一次
+  const memberIds = Array.from(new Set(list.map((r) => r.member_id)));
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!supabaseUrl) return 0;
+  const { data: sess } = await sb.auth.getSession();
+  const token = sess.session?.access_token;
+  if (!token) return 0;
+
+  let success = 0;
+  await Promise.allSettled(
+    memberIds.map(async (memberId) => {
+      try {
+        const resp = await fetch(`${supabaseUrl}/functions/v1/admin-notify`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            member_id: memberId,
+            title: "您的商品到貨",
+            message: "點此開啟訂單頁查看",
+            url: "/orders",
+          }),
+        });
+        if (resp.ok) success += 1;
+      } catch (e) {
+        console.warn(`push to member ${memberId} failed:`, e);
+      }
+    }),
+  );
+  return success;
+}
+
 export type Transfer = {
   id: number;
   transfer_no: string;
@@ -180,8 +227,16 @@ export function TransferReceiveModal({
         r && Number(r.total_variance) < 0
           ? `\n⚠ 短收 ${Math.abs(Number(r.total_variance))}`
           : "";
+
+      // Fire-and-forget：通知該店所有受影響的顧客「貨已到店」
+      // 失敗不影響收貨流程（push 失敗只是該會員拿不到推播）
+      const pushed = await fanoutPushNotifications(transfer.id).catch((err) => {
+        console.warn("push fanout error:", err);
+        return 0;
+      });
+      const pushNote = pushed > 0 ? `\n📩 已推播 ${pushed} 位顧客` : "";
       alert(
-        `收貨完成：${r?.items_received ?? 0} 行，實收合計 ${r?.total_qty_received ?? 0}${varNote}`,
+        `收貨完成：${r?.items_received ?? 0} 行，實收合計 ${r?.total_qty_received ?? 0}${varNote}${pushNote}`,
       );
       onSubmitted();
     } catch (e) {

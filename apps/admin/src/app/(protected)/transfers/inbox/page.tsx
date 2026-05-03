@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import {
@@ -11,11 +12,16 @@ import {
 } from "@/components/TransferReceiveModal";
 
 type Location = { id: number; name: string };
+type StoreLite = { id: number; location_id: number | null };
+type ItemSummary = { lines: number; totalQty: number; names: string[] };
 
 export default function TransfersInboxPage() {
   const [transfers, setTransfers] = useState<Transfer[] | null>(null);
   const [locations, setLocations] = useState<Map<number, string>>(new Map());
   const [waves, setWaves] = useState<Map<number, Wave>>(new Map());
+  const [itemSummary, setItemSummary] = useState<Map<number, ItemSummary>>(new Map());
+  const [locationToStore, setLocationToStore] = useState<Map<number, number>>(new Map());
+  const [transferCampaigns, setTransferCampaigns] = useState<Map<number, number[]>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const [opening, setOpening] = useState<Transfer | null>(null);
@@ -64,10 +70,70 @@ export default function TransfersInboxPage() {
           for (const w of (ws as Wave[] | null) ?? []) waveMap.set(w.id, w);
         }
 
+        // 抓 transfer_items + skus 用於顯示「商品/數量」
+        const summary = new Map<number, ItemSummary>();
+        if (rows.length > 0) {
+          const transferIds = rows.map((r) => r.id);
+          const { data: tiRows } = await sb
+            .from("transfer_items")
+            .select("transfer_id, sku_id, qty_shipped")
+            .in("transfer_id", transferIds);
+          const items = (tiRows ?? []) as { transfer_id: number; sku_id: number; qty_shipped: number }[];
+          const skuIds = Array.from(new Set(items.map((it) => it.sku_id)));
+          const skuNameMap = new Map<number, string>();
+          if (skuIds.length > 0) {
+            const { data: skuRows } = await sb
+              .from("skus")
+              .select("id, product_name, variant_name")
+              .in("id", skuIds);
+            for (const s of (skuRows ?? []) as { id: number; product_name: string | null; variant_name: string | null }[]) {
+              const label = `${s.product_name ?? ""}${s.variant_name ? ` / ${s.variant_name}` : ""}`.trim() || `#${s.id}`;
+              skuNameMap.set(s.id, label);
+            }
+          }
+          for (const tid of transferIds) summary.set(tid, { lines: 0, totalQty: 0, names: [] });
+          for (const it of items) {
+            const cur = summary.get(it.transfer_id) ?? { lines: 0, totalQty: 0, names: [] };
+            cur.lines += 1;
+            cur.totalQty += Number(it.qty_shipped);
+            cur.names.push(`${skuNameMap.get(it.sku_id) ?? `#${it.sku_id}`} × ${Number(it.qty_shipped)}`);
+            summary.set(it.transfer_id, cur);
+          }
+        }
+
+        // location → store mapping (for /orders link filter)
+        const locStoreMap = new Map<number, number>();
+        if (locIds.length > 0) {
+          const { data: storeRows } = await sb
+            .from("stores")
+            .select("id, location_id")
+            .in("location_id", locIds);
+          for (const s of (storeRows ?? []) as StoreLite[]) {
+            if (s.location_id) locStoreMap.set(s.location_id, s.id);
+          }
+        }
+
+        // 抓每張 transfer 涵蓋的 campaign_ids（用於 /orders link 多選 filter）
+        const tcMap = new Map<number, number[]>();
+        await Promise.allSettled(
+          rows.map(async (r) => {
+            const { data: cs } = await sb.rpc("rpc_get_campaigns_for_transfer", {
+              p_transfer_id: r.id,
+            });
+            const ids = ((cs as { campaign_id: number }[] | null) ?? [])
+              .map((x) => Number(x.campaign_id))
+              .filter((x) => Number.isFinite(x));
+            tcMap.set(r.id, ids);
+          }),
+        );
+
         if (!cancelled) {
           setTransfers(rows);
           setLocations(locMap);
           setWaves(waveMap);
+          setItemSummary(summary);
+          setLocationToStore(locStoreMap);
+          setTransferCampaigns(tcMap);
           setError(null);
           const auto = new Set<string>();
           for (const r of rows) {
@@ -228,6 +294,7 @@ export default function TransfersInboxPage() {
                         <Th>分店</Th>
                         <Th>單號</Th>
                         <Th>類型</Th>
+                        <Th>商品 / 數量</Th>
                         <Th>派出時間</Th>
                         <Th>狀態</Th>
                         <Th></Th>
@@ -236,6 +303,8 @@ export default function TransfersInboxPage() {
                     <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
                       {g.transfers.map((t) => {
                         const isShipped = t.status === "shipped";
+                        const summary = itemSummary.get(t.id);
+                        const storeId = locationToStore.get(t.dest_location);
                         return (
                           <tr key={t.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-950">
                             <td className="px-3 py-2 text-sm font-medium">
@@ -244,6 +313,38 @@ export default function TransfersInboxPage() {
                             <td className="px-3 py-2 font-mono text-xs">{t.transfer_no}</td>
                             <td className="px-3 py-2 text-xs text-zinc-600 dark:text-zinc-300">
                               {TRANSFER_TYPE_LABEL[t.transfer_type] ?? t.transfer_type}
+                            </td>
+                            <td className="px-3 py-2 text-xs">
+                              {summary && summary.lines > 0 ? (
+                                <div className="space-y-0.5" title={summary.names.join("\n")}>
+                                  <div className="flex gap-2 text-[11px] text-zinc-500">
+                                    <span>{summary.lines} 項</span>
+                                    <span>共 {summary.totalQty} 件</span>
+                                  </div>
+                                  <div className="text-zinc-700 dark:text-zinc-300 font-medium">
+                                    {summary.names.slice(0, 2).join("、")}
+                                    {summary.names.length > 2 && (
+                                      <span className="text-zinc-400">… +{summary.names.length - 2}</span>
+                                    )}
+                                  </div>
+                                  {storeId && (() => {
+                                    const cids = transferCampaigns.get(t.id) ?? [];
+                                    const qs = new URLSearchParams({ storeId: String(storeId) });
+                                    if (cids.length > 0) qs.set("campaignIds", cids.join(","));
+                                    return (
+                                      <Link
+                                        href={`/orders?${qs.toString()}`}
+                                        className="inline-block text-[11px] text-blue-600 hover:underline dark:text-blue-400"
+                                        title={cids.length > 0 ? `關聯 ${cids.length} 個開團` : undefined}
+                                      >
+                                        → 查看此店訂單{cids.length > 0 ? `（${cids.length} 團）` : ""}
+                                      </Link>
+                                    );
+                                  })()}
+                                </div>
+                              ) : (
+                                <span className="text-zinc-400">—</span>
+                              )}
                             </td>
                             <td className="px-3 py-2 text-xs text-zinc-600 dark:text-zinc-300">
                               {t.shipped_at
