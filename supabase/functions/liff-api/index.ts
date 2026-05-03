@@ -248,15 +248,16 @@ async function listMySettlements(sb: any, tenantId: string, storeId: number, mem
 }
 
 async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string | null) {
+  // end_at IS NULL 表示「無到期日」(管理員未設),也算進行中,要保留
   let q = sb
     .from("group_buy_campaigns")
     .select("id, campaign_no, name, description, cover_image_url, end_at, pickup_deadline, campaign_items(unit_price, sort_order, sku:skus(product:products(images)))")
     .eq("tenant_id", tenantId)
     .eq("status", "open")
-    .gt("end_at", new Date().toISOString());
+    .or(`end_at.is.null,end_at.gt.${new Date().toISOString()}`);
   if (closeType) q = q.eq("close_type", closeType);
   const { data, error } = await q
-    .order("end_at", { ascending: true })
+    .order("end_at", { ascending: true, nullsFirst: false })
     .limit(50);
   if (error) return json({ error: error.message }, 500);
 
