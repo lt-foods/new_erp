@@ -16,7 +16,7 @@ type Channel = { id: number; name: string; home_store_id: number };
 
 type Store = { id: number; code: string; name: string };
 
-type Mode = "customer" | "internal";
+type Mode = "customer" | "internal" | "offset";
 
 type MemberRow = {
   id: number;
@@ -110,6 +110,9 @@ function PageContent() {
   const [internalStoreId, setInternalStoreId] = useState<number | null>(null);
   const [internalNotes, setInternalNotes] = useState("");
   const [internalItems, setInternalItems] = useState<ItemRow[]>([emptyItem()]);
+  const [offsetStoreId, setOffsetStoreId] = useState<number | null>(null);
+  const [offsetReason, setOffsetReason] = useState("");
+  const [offsetItems, setOffsetItems] = useState<ItemRow[]>([emptyItem()]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -256,6 +259,33 @@ function PageContent() {
     });
   }
 
+  // ---- offset mode helpers ----
+  function updateOffsetItem(idx: number, patch: Partial<ItemRow>) {
+    setOffsetItems((items) => items.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
+  }
+  function addOffsetItemRow() {
+    setOffsetItems((items) => [...items, emptyItem()]);
+  }
+  function removeOffsetItem(idx: number) {
+    setOffsetItems((items) => {
+      const next = items.filter((_, i) => i !== idx);
+      return next.length ? next : [emptyItem()];
+    });
+  }
+  function addOffsetSku(opt: SkuOption) {
+    setOffsetItems((items) => {
+      if (items.some((it) => it.campaign_item_id === opt.campaign_item_id)) return items;
+      const newRow: ItemRow = {
+        campaign_item_id: opt.campaign_item_id,
+        sku_label: `${opt.product_name}${opt.variant_name ? ` / ${opt.variant_name}` : ""} (${opt.sku_code})`,
+        qty: "1",
+        unit_price: Number(opt.unit_price),
+      };
+      const cleaned = items.filter((it) => it.campaign_item_id || it.qty);
+      return [...cleaned, newRow];
+    });
+  }
+
   // 全域快速鍵：Alt+N 加新顧客 / 加新項目、Ctrl+S 送出
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -263,6 +293,8 @@ function PageContent() {
         e.preventDefault();
         if (mode === "internal") {
           setInternalItems((items) => [...items, emptyItem()]);
+        } else if (mode === "offset") {
+          setOffsetItems((items) => [...items, emptyItem()]);
         } else {
           setEntries((es) => [...es, newEntry()]);
         }
@@ -275,13 +307,17 @@ function PageContent() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries, channelId, mode, internalStoreId, internalItems, internalNotes]);
+  }, [entries, channelId, mode, internalStoreId, internalItems, internalNotes, offsetStoreId, offsetItems, offsetReason]);
 
   async function handleSubmit() {
     if (submitting) return;
     setError(null);
     if (mode === "internal") {
       await submitInternal();
+      return;
+    }
+    if (mode === "offset") {
+      await submitOffset();
       return;
     }
     if (!channelId) { setError("請選 LINE 頻道"); return; }
@@ -313,6 +349,42 @@ function PageContent() {
       setToast(`已建立/更新 ${created.length} 筆訂單`);
       setEntries([newEntry()]);
       localStorage.removeItem(draftKey);
+      setTimeout(() => setToast(null), 3000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function submitOffset() {
+    if (!offsetStoreId) { setError("請選取貨店"); return; }
+    if (!offsetReason.trim()) { setError("抵減原因必填"); return; }
+    const items = offsetItems
+      .filter((i) => i.campaign_item_id && Number(i.qty) > 0)
+      .map((i) => ({
+        campaign_item_id: i.campaign_item_id,
+        qty: -Math.abs(Number(i.qty)), // 自動轉為負
+      }));
+    if (items.length === 0) { setError("請至少加一項商品"); return; }
+
+    setSubmitting(true);
+    try {
+      const sb = getSupabase();
+      const { data: userRes } = await sb.auth.getUser();
+      const operator = userRes.user?.id;
+      if (!operator) { setError("未登入或 session 過期"); return; }
+      const { data, error: err } = await sb.rpc("rpc_create_offset_order", {
+        p_campaign_id: campaignId,
+        p_store_id: offsetStoreId,
+        p_items: items,
+        p_reason: offsetReason.trim(),
+        p_operator: operator,
+      });
+      if (err) { setError(err.message); return; }
+      setToast(`已建立抵減單 #${data}`);
+      setOffsetItems([emptyItem()]);
+      setOffsetReason("");
       setTimeout(() => setToast(null), 3000);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -407,6 +479,18 @@ function PageContent() {
         >
           為分店叫貨
         </button>
+        <button
+          type="button"
+          onClick={() => setMode("offset")}
+          className={`px-3 py-1.5 border-l border-zinc-300 dark:border-zinc-700 ${
+            mode === "offset"
+              ? "bg-red-700 text-white"
+              : "bg-white text-red-700 hover:bg-red-50 dark:bg-zinc-900 dark:text-red-400 dark:hover:bg-red-950"
+          }`}
+          title="店內已有庫存、不想多訂 → 採購聚合會自動扣掉這筆數量"
+        >
+          庫存抵減單
+        </button>
       </div>
 
       {mode === "customer" ? (
@@ -416,9 +500,13 @@ function PageContent() {
           </span>
           　·　取貨店：依顧客的「預設取貨店」自動帶出（會員資料設定）
         </p>
-      ) : (
+      ) : mode === "internal" ? (
         <p className="text-xs text-zinc-500">
           內部叫貨：客戶自動掛 <span className="font-medium text-zinc-700 dark:text-zinc-300">store_internal</span> 內部會員、訂單編號 <span className="font-mono">XXX-INT0001</span>。可改 unit_price（88 折出清）。
+        </p>
+      ) : (
+        <p className="text-xs text-red-700 dark:text-red-400">
+          庫存抵減單：店內已有庫存不想多訂時建立。qty 會自動轉為負，採購聚合自動扣掉這筆。訂單編號 <span className="font-mono">XXX-OFF0001</span>，不影響顧客視角。
         </p>
       )}
 
@@ -481,7 +569,7 @@ function PageContent() {
 
           <SummaryPanel entries={entries} />
         </div>
-      ) : (
+      ) : mode === "internal" ? (
         <InternalOrderPanel
           campaignId={campaignId}
           campaignSkus={campaignSkus}
@@ -498,6 +586,24 @@ function PageContent() {
           onSubmit={handleSubmit}
           submitting={submitting}
         />
+      ) : (
+        <InternalOrderPanel
+          campaignId={campaignId}
+          campaignSkus={campaignSkus}
+          stores={stores}
+          storeId={offsetStoreId}
+          onStoreChange={setOffsetStoreId}
+          notes={offsetReason}
+          onNotesChange={setOffsetReason}
+          items={offsetItems}
+          onItemChange={updateOffsetItem}
+          onAddItem={addOffsetItemRow}
+          onRemoveItem={removeOffsetItem}
+          onAddSku={addOffsetSku}
+          onSubmit={handleSubmit}
+          submitting={submitting}
+          offsetMode
+        />
       )}
     </div>
   );
@@ -509,7 +615,7 @@ function PageContent() {
 function InternalOrderPanel({
   campaignId, campaignSkus, stores, storeId, onStoreChange,
   notes, onNotesChange, items, onItemChange, onAddItem, onRemoveItem, onAddSku,
-  onSubmit, submitting,
+  onSubmit, submitting, offsetMode = false,
 }: {
   campaignId: number;
   campaignSkus: SkuOption[];
@@ -525,6 +631,7 @@ function InternalOrderPanel({
   onAddSku: (opt: SkuOption) => void;
   onSubmit: () => void;
   submitting: boolean;
+  offsetMode?: boolean;
 }) {
   const pickedIds = new Set(items.map((it) => it.campaign_item_id).filter((x): x is number => x != null));
   const availableSkus = campaignSkus.filter((s) => !pickedIds.has(s.campaign_item_id));
@@ -552,11 +659,13 @@ function InternalOrderPanel({
               </select>
             </label>
             <label className="text-xs">
-              <span className="mb-1 block text-zinc-500">備註（選填）</span>
+              <span className="mb-1 block text-zinc-500">
+                {offsetMode ? <>抵減原因 <span className="text-red-500">*</span></> : "備註（選填）"}
+              </span>
               <input
                 value={notes}
                 onChange={(e) => onNotesChange(e.target.value)}
-                placeholder="預設【店長內部叫貨】"
+                placeholder={offsetMode ? "例：店內已有 3 個現貨" : "預設【店長內部叫貨】"}
                 className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-800"
               />
             </label>
@@ -623,19 +732,28 @@ function InternalOrderPanel({
             type="button"
             onClick={onSubmit}
             disabled={submitting}
-            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+            className={`rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${
+              offsetMode
+                ? "bg-red-700 hover:bg-red-800"
+                : "bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+            }`}
           >
-            {submitting ? "送出中…" : "送出內部訂單（Ctrl+S）"}
+            {submitting ? "送出中…" : offsetMode ? "送出抵減單（Ctrl+S）" : "送出內部訂單（Ctrl+S）"}
           </button>
         </div>
       </div>
 
       <aside className="sticky top-4 h-fit rounded-md border border-zinc-200 bg-white p-3 text-sm dark:border-zinc-800 dark:bg-zinc-900">
-        <h2 className="mb-2 text-sm font-semibold">本次統計（內部）</h2>
+        <h2 className="mb-2 text-sm font-semibold">{offsetMode ? "本次抵減（負數）" : "本次統計（內部）"}</h2>
         <div className="grid grid-cols-2 gap-2 text-xs">
           <Stat label="件數" value={totalQty} />
-          <Stat label="總金額" value={`$${totalAmount}`} />
+          <Stat label="總金額" value={offsetMode ? `-$${totalAmount}` : `$${totalAmount}`} />
         </div>
+        {offsetMode && (
+          <p className="mt-2 text-[11px] text-red-700 dark:text-red-400">
+            ⚠ 送出時 qty 自動轉為負，採購聚合會扣掉這部分。
+          </p>
+        )}
       </aside>
     </div>
   );

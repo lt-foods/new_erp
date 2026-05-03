@@ -6,6 +6,7 @@ import { OrderTransferModal } from "@/components/OrderTransferModal";
 import { PickupDialog } from "@/components/PickupDialog";
 import { AidOrderTimeline } from "@/components/AidOrderTimeline";
 import { withBasePath } from "@/lib/basePath";
+import { translateRpcError } from "@/lib/rpcError";
 
 type OrderHead = {
   id: number;
@@ -149,7 +150,30 @@ export function OrderDetail({
   const totalAmount = items.reduce((s, i) => s + Number(i.qty) * Number(i.unit_price), 0);
 
   const canTransfer = ["pending", "confirmed", "reserved"].includes(head.status);
+  const canCancel = ["pending", "confirmed", "shipping"].includes(head.status);
   const isTransferredOut = head.status === "transferred_out";
+
+  async function cancelOrder() {
+    if (!head) return;
+    const reason = prompt(
+      head.status === "shipping"
+        ? `撤回派貨：${head.order_no}\n會反向回收已出庫存，請輸入原因：`
+        : `取消訂單：${head.order_no}\n請輸入取消原因：`
+    );
+    if (reason === null) return;
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id ?? null;
+    if (!operator) { alert("尚未登入"); return; }
+    const { error: rpcErr } = await sb.rpc("rpc_cancel_aid_order", {
+      p_order_id: head.id,
+      p_reason: reason,
+      p_operator: operator,
+    });
+    if (rpcErr) { alert(`取消失敗：${translateRpcError(rpcErr)}`); return; }
+    alert("已取消");
+    setReloadTick((n) => n + 1);
+  }
   const pickableItems = items.filter((it) => ["pending", "reserved", "ready"].includes(it.status));
   // 取貨判斷改用 v_order_pickup_ready (基於分店收貨 transfer 實際狀態)
   // 不再依賴 customer_orders.status === 'ready'（status 同步可能漏推）
@@ -162,7 +186,7 @@ export function OrderDetail({
 
   return (
     <div className="space-y-4 text-sm">
-      {(canTransfer || canPickup || isTransferredOut) && (
+      {(canTransfer || canPickup || canCancel || isTransferredOut) && (
         <div className="flex items-center justify-end gap-2">
           {canPickup && (
             <button
@@ -182,6 +206,15 @@ export function OrderDetail({
               ↗ 轉出此訂單
             </button>
           )}
+          {canCancel && (
+            <button
+              onClick={cancelOrder}
+              className="rounded-md border border-red-300 px-3 py-1 text-xs font-medium text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950"
+              title={head.status === "shipping" ? "撤回派貨並反向回收已出庫存" : "取消訂單"}
+            >
+              ✕ 取消訂單
+            </button>
+          )}
           {isTransferredOut && (
             <span className="text-xs text-zinc-500">⚠️ 此訂單已轉出</span>
           )}
@@ -190,7 +223,26 @@ export function OrderDetail({
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <Field label="訂單號" value={<span className="font-mono">{head.order_no}</span>} />
-        <Field label="狀態" value={statusLabel(head.status)} />
+        <Field
+          label="狀態"
+          value={
+            <span
+              className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${
+                head.status === "cancelled"
+                  ? "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300"
+                  : head.status === "expired"
+                  ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                  : head.status === "transferred_out"
+                  ? "bg-zinc-300 text-zinc-700 line-through dark:bg-zinc-700 dark:text-zinc-300"
+                  : head.status === "completed"
+                  ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                  : "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300"
+              }`}
+            >
+              {statusLabel(head.status)}
+            </span>
+          }
+        />
         <Field label="取貨截止" value={head.pickup_deadline ?? "—"} />
         <Field
           label="會員"

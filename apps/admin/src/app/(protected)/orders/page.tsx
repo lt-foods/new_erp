@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
 import { PickupDialog } from "@/components/PickupDialog";
+import { translateRpcError } from "@/lib/rpcError";
 
 type OrderStatus =
   | "pending" | "confirmed" | "reserved" | "shipping" | "ready" | "partially_ready"
@@ -20,12 +22,13 @@ type Row = {
   pickup_store_id: number;
   pickup_deadline: string | null;
   status: OrderStatus;
+  created_at: string;
   updated_at: string;
 };
 
-type Campaign = { id: number; campaign_no: string; name: string };
+type Campaign = { id: number; campaign_no: string; name: string; cover_image_url: string | null };
 type Store = { id: number; code: string; name: string };
-type Member = { id: number; name: string | null; phone: string | null; member_no: string };
+type Member = { id: number; name: string | null; phone: string | null; member_no: string; avatar_url: string | null };
 
 const STATUS_LABEL: Record<OrderStatus, string> = {
   pending: "待確認", confirmed: "已確認", reserved: "已保留", shipping: "派貨中",
@@ -37,21 +40,41 @@ const STATUS_LABEL: Record<OrderStatus, string> = {
 const PAGE_SIZE = 50;
 
 export default function OrdersListPage() {
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-zinc-500">載入中…</div>}>
+      <OrdersListContent />
+    </Suspense>
+  );
+}
+
+function OrdersListContent() {
+  const searchParams = useSearchParams();
+  // 支援單個 campaignId（舊）+ campaignIds 多個逗號分隔（新）
+  const initialCampaignIds = ((): string[] => {
+    const multi = searchParams.get("campaignIds");
+    if (multi) return multi.split(",").map((s) => s.trim()).filter(Boolean);
+    const single = searchParams.get("campaignId");
+    return single ? [single] : [];
+  })();
+  const initialStatus = searchParams.get("status") ?? "";
+  const initialStoreId = searchParams.get("storeId") ?? "";
+
   const [rows, setRows] = useState<Row[] | null>(null);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [campaignId, setCampaignId] = useState("");
-  const [status, setStatus] = useState("");
-  const [storeId, setStoreId] = useState("");
+  const [campaignIds, setCampaignIds] = useState<string[]>(initialCampaignIds);
+  const [status, setStatus] = useState(initialStatus);
+  const [storeId, setStoreId] = useState(initialStoreId);
   const [page, setPage] = useState(1);
+  const [campaignPickerOpen, setCampaignPickerOpen] = useState(false);
 
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [members, setMembers] = useState<Map<number, Member>>(new Map());
   const [itemSummary, setItemSummary] = useState<
-    Map<number, { lineCount: number; totalQty: number; totalAmount: number }>
+    Map<number, { lineCount: number; totalQty: number; totalAmount: number; items: { name: string; qty: number }[] }>
   >(new Map());
   const [pickupReady, setPickupReady] = useState<Map<number, boolean>>(new Map());
   const [detailId, setDetailId] = useState<number | null>(null);
@@ -59,13 +82,13 @@ export default function OrdersListPage() {
   const [pickup, setPickup] = useState<{ id: number; no: string } | null>(null);
   const [reloadOrders, setReloadOrders] = useState(0);
 
-  useEffect(() => { setPage(1); }, [campaignId, status, storeId]);
+  useEffect(() => { setPage(1); }, [campaignIds, status, storeId]);
 
   useEffect(() => {
     (async () => {
       const sb = getSupabase();
       const [c, s] = await Promise.all([
-        sb.from("group_buy_campaigns").select("id, campaign_no, name").order("updated_at", { ascending: false }).limit(200),
+        sb.from("group_buy_campaigns").select("id, campaign_no, name, cover_image_url").order("updated_at", { ascending: false }).limit(200),
         sb.from("stores").select("id, code, name").order("name"),
       ]);
       setCampaigns((c.data as Campaign[]) ?? []);
@@ -80,11 +103,12 @@ export default function OrdersListPage() {
       try {
         let q = getSupabase()
           .from("customer_orders")
-          .select("id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, updated_at", { count: "exact" })
+          .select("id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, created_at, updated_at", { count: "exact" })
           .order("updated_at", { ascending: false })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
-        if (campaignId) q = q.eq("campaign_id", Number(campaignId));
+        if (campaignIds.length === 1) q = q.eq("campaign_id", Number(campaignIds[0]));
+        else if (campaignIds.length > 1) q = q.in("campaign_id", campaignIds.map((x) => Number(x)));
         if (status) q = q.eq("status", status);
         else q = q.neq("status", "transferred_out"); // 預設隱藏已轉出（5a-1：視同關閉、金額/數量不入統計）
         if (storeId) q = q.eq("pickup_store_id", Number(storeId));
@@ -100,22 +124,26 @@ export default function OrdersListPage() {
         const memIds = Array.from(new Set((data ?? []).map((r) => r.member_id).filter((x): x is number => x != null)));
         const [ic, ms, pr] = await Promise.all([
           ids.length
-            ? getSupabase().from("customer_order_items").select("order_id, qty, unit_price").in("order_id", ids)
-            : Promise.resolve({ data: [] as { order_id: number; qty: number; unit_price: number }[] }),
+            ? getSupabase().from("customer_order_items").select("order_id, qty, unit_price, sku:skus(product_name, variant_name)").in("order_id", ids)
+            : Promise.resolve({ data: [] as { order_id: number; qty: number; unit_price: number; sku: { product_name: string | null; variant_name: string | null } | null }[] }),
           memIds.length
-            ? getSupabase().from("members").select("id, name, phone, member_no").in("id", memIds)
+            ? getSupabase().from("members").select("id, name, phone, member_no, avatar_url").in("id", memIds)
             : Promise.resolve({ data: [] as Member[] }),
           ids.length
             ? getSupabase().from("v_order_pickup_ready").select("order_id, pickup_ready").in("order_id", ids)
             : Promise.resolve({ data: [] as { order_id: number; pickup_ready: boolean }[] }),
         ]);
-        const im = new Map<number, { lineCount: number; totalQty: number; totalAmount: number }>();
-        for (const id of ids) im.set(id, { lineCount: 0, totalQty: 0, totalAmount: 0 });
-        for (const it of (ic.data as { order_id: number; qty: number; unit_price: number }[]) ?? []) {
-          const cur = im.get(it.order_id) ?? { lineCount: 0, totalQty: 0, totalAmount: 0 };
+        const im = new Map<number, { lineCount: number; totalQty: number; totalAmount: number; items: { name: string; qty: number }[] }>();
+        for (const id of ids) im.set(id, { lineCount: 0, totalQty: 0, totalAmount: 0, items: [] });
+        for (const it of (ic.data as { order_id: number; qty: number; unit_price: number; sku: { product_name: string | null; variant_name: string | null } | null }[]) ?? []) {
+          const cur = im.get(it.order_id) ?? { lineCount: 0, totalQty: 0, totalAmount: 0, items: [] };
           cur.lineCount += 1;
           cur.totalQty += Number(it.qty);
           cur.totalAmount += Number(it.qty) * Number(it.unit_price);
+          const skuName = it.sku
+            ? `${it.sku.product_name ?? ""}${it.sku.variant_name ? ` / ${it.sku.variant_name}` : ""}`.trim() || "—"
+            : "—";
+          cur.items.push({ name: skuName, qty: Number(it.qty) });
           im.set(it.order_id, cur);
         }
         const mm = new Map<number, Member>();
@@ -132,10 +160,31 @@ export default function OrdersListPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [campaignId, status, storeId, page, reloadOrders]);
+  }, [campaignIds, status, storeId, page, reloadOrders]);
 
   const campaignMap = useMemo(() => new Map(campaigns.map((c) => [c.id, c])), [campaigns]);
   const storeMap = useMemo(() => new Map(stores.map((s) => [s.id, s])), [stores]);
+
+  async function cancelOrder(orderId: number, orderNo: string, status: string) {
+    const reason = prompt(
+      status === "shipping"
+        ? `撤回派貨：${orderNo}\n會反向回收已出庫存，請輸入原因：`
+        : `取消訂單：${orderNo}\n請輸入取消原因：`
+    );
+    if (reason === null) return;
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id ?? null;
+    if (!operator) { alert("尚未登入"); return; }
+    const { error: rpcErr } = await sb.rpc("rpc_cancel_aid_order", {
+      p_order_id: orderId,
+      p_reason: reason,
+      p_operator: operator,
+    });
+    if (rpcErr) { alert(`取消失敗：${translateRpcError(rpcErr)}`); return; }
+    alert("已取消");
+    setReloadOrders((n) => n + 1);
+  }
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const fromIdx = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const toIdx = Math.min(page * PAGE_SIZE, total);
@@ -152,11 +201,62 @@ export default function OrdersListPage() {
       </header>
 
       <div className="grid gap-3 sm:grid-cols-3">
-        <select value={campaignId} onChange={(e) => setCampaignId(e.target.value)}
-          className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800">
-          <option value="">全部開團</option>
-          {campaigns.map((c) => <option key={c.id} value={c.id}>{c.campaign_no} {c.name}</option>)}
-        </select>
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setCampaignPickerOpen((v) => !v)}
+            className="flex w-full items-center justify-between rounded-md border border-zinc-300 bg-white px-3 py-2 text-left text-sm dark:border-zinc-700 dark:bg-zinc-800"
+          >
+            <span className="truncate">
+              {campaignIds.length === 0
+                ? "全部開團"
+                : campaignIds.length === 1
+                ? campaigns.find((c) => String(c.id) === campaignIds[0])?.name ?? `團 ${campaignIds[0]}`
+                : `已選 ${campaignIds.length} 個開團`}
+            </span>
+            <span className="ml-2 text-zinc-400">▾</span>
+          </button>
+          {campaignPickerOpen && (
+            <div className="absolute z-20 mt-1 max-h-80 w-full overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+              <div className="sticky top-0 flex justify-between border-b border-zinc-200 bg-white px-3 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-900">
+                <button
+                  onClick={() => setCampaignIds([])}
+                  className="text-blue-600 hover:underline dark:text-blue-400"
+                >
+                  全部清除
+                </button>
+                <button
+                  onClick={() => setCampaignPickerOpen(false)}
+                  className="text-zinc-500 hover:text-zinc-700 dark:text-zinc-400"
+                >
+                  關閉
+                </button>
+              </div>
+              {campaigns.map((c) => {
+                const checked = campaignIds.includes(String(c.id));
+                return (
+                  <label
+                    key={c.id}
+                    className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-950"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        const id = String(c.id);
+                        setCampaignIds((cur) =>
+                          e.target.checked ? [...cur, id] : cur.filter((x) => x !== id),
+                        );
+                      }}
+                    />
+                    <span className="font-mono text-xs text-zinc-500">{c.campaign_no}</span>
+                    <span className="truncate">{c.name}</span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
         <select value={status} onChange={(e) => setStatus(e.target.value)}
           className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800">
           <option value="">全部狀態</option>
@@ -179,62 +279,143 @@ export default function OrdersListPage() {
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
-              <Th>訂單號</Th><Th>開團</Th><Th>會員 / 暱稱</Th><Th>取貨店</Th><Th>取貨截止</Th><Th>狀態</Th><Th className="text-right">項數</Th><Th className="text-right">總數量</Th><Th className="text-right">總金額</Th><Th className="text-right">更新</Th><Th className="text-right">操作</Th>
+              <Th>開團</Th><Th>會員 / 暱稱</Th><Th>取貨店</Th><Th className="text-right">項數</Th><Th className="text-right">總數量</Th><Th className="text-right">總金額</Th><Th className="text-right">日期</Th><Th className="text-right">操作</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={11} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={8} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={11} className="p-6 text-center text-zinc-500">{total === 0 && !campaignId && !status && !storeId ? "尚無訂單。" : "沒有符合條件的訂單。"}</td></tr>
+              <tr><td colSpan={8} className="p-6 text-center text-zinc-500">{total === 0 && campaignIds.length === 0 && !status && !storeId ? "尚無訂單。" : "沒有符合條件的訂單。"}</td></tr>
             ) : rows.map((r) => {
               const m = r.member_id ? members.get(r.member_id) : null;
               const c = campaignMap.get(r.campaign_id);
               const s = storeMap.get(r.pickup_store_id);
               return (
-                <tr key={r.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
-                  <Td className="font-mono">
+                <tr
+                  key={r.id}
+                  className={
+                    r.status === "cancelled"
+                      ? "bg-red-50 hover:bg-red-100 dark:bg-red-950/30 dark:hover:bg-red-950/50"
+                      : r.status === "expired"
+                      ? "bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/30 dark:hover:bg-amber-950/50"
+                      : r.status === "transferred_out"
+                      ? "bg-zinc-100 text-zinc-500 hover:bg-zinc-200 dark:bg-zinc-900 dark:text-zinc-500 dark:hover:bg-zinc-800"
+                      : "odd:bg-white even:bg-zinc-50 hover:bg-zinc-100 dark:odd:bg-zinc-950 dark:even:bg-zinc-900 dark:hover:bg-zinc-800"
+                  }
+                >
+                  <Td>
                     <button
                       onClick={() => { setDetailId(r.id); setDetailNo(r.order_no); }}
-                      className="hover:underline"
+                      className="block w-full text-left hover:underline"
+                      title={r.order_no}
                     >
-                      {r.order_no}
+                      {c ? (
+                        <div className="flex items-start gap-2">
+                          <CoverThumb src={c.cover_image_url} alt={c.name} />
+                          <div className="min-w-0 flex-1 space-y-0.5">
+                            <div className="text-xs text-zinc-500 break-words">{c.name}</div>
+                            {(itemSummary.get(r.id)?.items ?? []).map((it, idx) => (
+                              <div key={idx} className="text-sm font-semibold text-zinc-900 dark:text-zinc-100 break-words">
+                                {it.name}
+                                <span className="ml-1 text-xs font-normal text-zinc-500">× {it.qty}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : "—"}
                     </button>
                   </Td>
-                  <Td>{c ? <span className="text-xs text-zinc-600 dark:text-zinc-400"><span className="font-mono">{c.campaign_no}</span> {c.name}</span> : "—"}</Td>
                   <Td>
                     {m ? (
-                      <span>
-                        <Link href={`/members/detail?id=${m.id}`} className="hover:underline">{m.name ?? "—"}</Link>
-                        <span className="ml-1 font-mono text-xs text-zinc-500">{m.phone}</span>
+                      <span className="flex items-center gap-2">
+                        <Avatar src={m.avatar_url} name={m.name ?? r.nickname_snapshot ?? "?"} />
+                        <span className="min-w-0">
+                          <Link href={`/members/detail?id=${m.id}`} className="hover:underline">{m.name ?? "—"}</Link>
+                          <span className="ml-1 font-mono text-xs text-zinc-500">{m.phone}</span>
+                        </span>
                       </span>
                     ) : r.nickname_snapshot ? (
-                      <span className="text-zinc-500">({r.nickname_snapshot})</span>
+                      <span className="flex items-center gap-2">
+                        <Avatar src={null} name={r.nickname_snapshot} />
+                        <span className="text-zinc-500">({r.nickname_snapshot})</span>
+                      </span>
                     ) : "—"}
                   </Td>
                   <Td className="text-xs">{s?.name ?? "—"}</Td>
-                  <Td className="text-xs">{r.pickup_deadline ?? "—"}</Td>
-                  <Td><StatusBadge s={r.status} /></Td>
                   <Td className="text-right font-mono">{itemSummary.get(r.id)?.lineCount ?? 0}</Td>
                   <Td className="text-right font-mono">{itemSummary.get(r.id)?.totalQty ?? 0}</Td>
                   <Td className="text-right font-mono">${itemSummary.get(r.id)?.totalAmount ?? 0}</Td>
-                  <Td className="text-right text-xs text-zinc-500">{new Date(r.updated_at).toLocaleString("zh-TW")}</Td>
+                  <Td
+                    className="text-right text-xs text-zinc-500"
+                    title={`訂單日：${new Date(r.created_at).toLocaleString("zh-TW", { hour12: false })}\n更新日：${new Date(r.updated_at).toLocaleString("zh-TW", { hour12: false })}`}
+                  >
+                    <div>訂 {new Date(r.created_at).toLocaleDateString("zh-TW", { month: "numeric", day: "numeric" })}</div>
+                    <div>更 {new Date(r.updated_at).toLocaleDateString("zh-TW", { month: "numeric", day: "numeric" })}</div>
+                  </Td>
                   <Td className="text-right">
-                    {!["completed","expired","cancelled","transferred_out"].includes(r.status) && (() => {
-                      // 取貨判斷改用 v_order_pickup_ready (基於分店收貨 transfer 實際狀態)
-                      // 不再依賴 customer_orders.status === 'ready'（status 同步可能漏推）
-                      const canPickup = pickupReady.get(r.id) === true;
-                      return (
+                    <div className="flex items-center justify-end gap-1">
+                      {!["completed","expired","cancelled","transferred_out"].includes(r.status) && (() => {
+                        // 取貨判斷改用 v_order_pickup_ready (基於分店收貨 transfer 實際狀態)
+                        // 不再依賴 customer_orders.status === 'ready'（status 同步可能漏推）
+                        const canPickup = pickupReady.get(r.id) === true;
+                        return (
+                          <button
+                            onClick={() => setPickup({ id: r.id, no: r.order_no })}
+                            disabled={!canPickup}
+                            title={canPickup ? undefined : "分店尚未收貨，無法取貨"}
+                            className="rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-200 disabled:text-emerald-700 disabled:hover:bg-emerald-200 dark:disabled:bg-emerald-950 dark:disabled:text-emerald-400 dark:disabled:hover:bg-emerald-950"
+                          >
+                            ✅ 取貨
+                          </button>
+                        );
+                      })()}
+                      {["pending", "confirmed", "shipping"].includes(r.status) && (
                         <button
-                          onClick={() => setPickup({ id: r.id, no: r.order_no })}
-                          disabled={!canPickup}
-                          title={canPickup ? undefined : "分店尚未收貨，無法取貨"}
-                          className="rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-400 disabled:hover:bg-zinc-200 dark:disabled:bg-zinc-800 dark:disabled:text-zinc-600 dark:disabled:hover:bg-zinc-800"
+                          onClick={() => cancelOrder(r.id, r.order_no, r.status)}
+                          title={r.status === "shipping" ? "撤回派貨並反向回收已出庫存" : "取消訂單"}
+                          className="rounded-md bg-red-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-red-700"
                         >
-                          ✅ 取貨
+                          取消
                         </button>
-                      );
-                    })()}
+                      )}
+                      {r.status === "cancelled" && (
+                        <button
+                          disabled
+                          title="此訂單已取消"
+                          className="rounded-md bg-red-200 px-2 py-1 text-[11px] font-medium text-red-700 cursor-not-allowed dark:bg-red-950 dark:text-red-300"
+                        >
+                          已取消
+                        </button>
+                      )}
+                      {r.status === "expired" && (
+                        <button
+                          disabled
+                          title="此訂單已逾期"
+                          className="rounded-md bg-amber-200 px-2 py-1 text-[11px] font-medium text-amber-800 cursor-not-allowed dark:bg-amber-950 dark:text-amber-300"
+                        >
+                          已逾期
+                        </button>
+                      )}
+                      {r.status === "completed" && (
+                        <button
+                          disabled
+                          title="此訂單已完成"
+                          className="rounded-md bg-emerald-200 px-2 py-1 text-[11px] font-medium text-emerald-800 cursor-not-allowed dark:bg-emerald-950 dark:text-emerald-300"
+                        >
+                          已完成
+                        </button>
+                      )}
+                      {r.status === "transferred_out" && (
+                        <button
+                          disabled
+                          title="此訂單已轉出"
+                          className="rounded-md bg-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-700 cursor-not-allowed dark:bg-zinc-700 dark:text-zinc-300"
+                        >
+                          已轉出
+                        </button>
+                      )}
+                    </div>
                   </Td>
                 </tr>
               );
@@ -295,6 +476,55 @@ function Td({ children, className = "" }: { children: React.ReactNode; className
 }
 function PagerBtn({ onClick, disabled, children }: { onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
   return <button onClick={onClick} disabled={disabled} className="rounded-md border border-zinc-300 px-2 py-1 transition-colors hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800">{children}</button>;
+}
+function CoverThumb({ src, alt }: { src: string | null; alt: string }) {
+  if (!src) {
+    return (
+      <span
+        aria-hidden
+        className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded bg-zinc-100 text-xs text-zinc-400 dark:bg-zinc-800 dark:text-zinc-500"
+      >
+        ▦
+      </span>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt={alt}
+      className="h-10 w-10 flex-shrink-0 rounded object-cover"
+      onError={(e) => {
+        (e.currentTarget as HTMLImageElement).style.display = "none";
+      }}
+    />
+  );
+}
+function Avatar({ src, name }: { src: string | null; name: string }) {
+  const initial = name.trim().charAt(0) || "?";
+  if (!src) {
+    return (
+      <span
+        aria-hidden
+        className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-zinc-200 text-xs font-medium text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300"
+      >
+        {initial}
+      </span>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt=""
+      referrerPolicy="no-referrer"
+      className="h-8 w-8 flex-shrink-0 rounded-full object-cover"
+      onError={(e) => {
+        const el = e.currentTarget as HTMLImageElement;
+        el.style.display = "none";
+      }}
+    />
+  );
 }
 function StatusBadge({ s }: { s: OrderStatus }) {
   const st: Record<OrderStatus, string> = {
