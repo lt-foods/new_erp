@@ -157,13 +157,20 @@ export function CampaignForm({
             <option value="limited">限量</option>
           </select>
         </Field>
-        {v.close_type === "limited" && (
-          <Field label="總量上限（限量團）" className="sm:col-span-2">
+        {(v.close_type === "limited" || v.close_type === "fast") && (
+          <Field
+            label={v.close_type === "fast" ? "總量上限（快團，可選）" : "總量上限（限量團）"}
+            className="sm:col-span-2"
+          >
             <input
               type="number"
               min="0"
               step="1"
-              placeholder="整團總量上限數字"
+              placeholder={
+                v.close_type === "fast"
+                  ? "留空則不限數量；填數字則達標自動關團"
+                  : "整團總量上限數字"
+              }
               value={v.total_cap_qty ?? ""}
               onChange={(e) => update("total_cap_qty", e.target.value ? Number(e.target.value) : null)}
               className={inputCls}

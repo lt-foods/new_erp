@@ -247,13 +247,15 @@ async function listMySettlements(sb: any, tenantId: string, storeId: number, mem
   return json({ settlements: data ?? [] });
 }
 
-async function listActiveCampaigns(sb: any, tenantId: string) {
-  const { data, error } = await sb
+async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string | null) {
+  let q = sb
     .from("group_buy_campaigns")
     .select("id, campaign_no, name, description, cover_image_url, end_at, pickup_deadline, campaign_items(unit_price, sort_order, sku:skus(product:products(images)))")
     .eq("tenant_id", tenantId)
     .eq("status", "open")
-    .gt("end_at", new Date().toISOString())
+    .gt("end_at", new Date().toISOString());
+  if (closeType) q = q.eq("close_type", closeType);
+  const { data, error } = await q
     .order("end_at", { ascending: true })
     .limit(50);
   if (error) return json({ error: error.message }, 500);
@@ -625,7 +627,7 @@ Deno.serve(async (req) => {
       case "get_my_unread_notification_count": if (!memberId) return json({ error: "no member_id" }, 401); return await getMyUnreadNotificationCount(sb, tenantId, memberId);
       case "mark_notification_read": if (!memberId) return json({ error: "no member_id" }, 401); return await markNotificationRead(sb, tenantId, memberId, body);
       case "generate_pwa_auth_code": if (!memberId) return json({ error: "no member_id" }, 401); return await generatePwaAuthCode(sb, tenantId, memberId, claims, token, body);
-      case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId);
+      case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId, typeof body.close_type === "string" ? body.close_type : null);
       case "get_campaign_detail": return await getCampaignDetail(sb, tenantId, Number(body.campaign_id ?? 0));
       case "place_member_order": if (!memberId) return json({ error: "no member_id" }, 401); return await placeMemberOrder(sb, tenantId, memberId, body);
       default: return json({ error: `unknown action: ${action}` }, 400);

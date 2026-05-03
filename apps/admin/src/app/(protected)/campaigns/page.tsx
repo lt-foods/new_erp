@@ -11,11 +11,14 @@ import { DatePicker } from "@/components/DatePicker";
 type Status =
   | "draft" | "open" | "closed" | "ordered" | "receiving" | "ready" | "completed" | "cancelled";
 
+type CloseType = "regular" | "fast" | "limited";
+
 type Row = {
   id: number;
   campaign_no: string;
   name: string;
   status: Status;
+  close_type: CloseType;
   start_at: string | null;
   end_at: string | null;
   pickup_deadline: string | null;
@@ -27,6 +30,18 @@ const STATUS_LABEL: Record<Status, string> = {
   receiving: "到貨中", ready: "可取貨", completed: "已完成", cancelled: "已取消",
 };
 
+const CLOSE_TYPE_LABEL: Record<CloseType, string> = {
+  regular: "常規",
+  fast: "快團",
+  limited: "限量",
+};
+
+const CLOSE_TYPE_BADGE: Record<CloseType, string> = {
+  regular: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+  fast: "bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300",
+  limited: "bg-pink-100 text-pink-800 dark:bg-pink-950 dark:text-pink-300",
+};
+
 const PAGE_SIZE = 50;
 
 type View = "list" | "week" | "month";
@@ -36,6 +51,7 @@ type CalRow = {
   campaign_no: string;
   name: string;
   status: Status;
+  close_type: CloseType;
   start_at: string | null;
 };
 
@@ -168,7 +184,7 @@ export default function CampaignsListPage() {
       try {
         let q = getSupabase()
           .from("group_buy_campaigns")
-          .select("id, campaign_no, name, status, start_at, end_at, pickup_deadline, updated_at", { count: "exact" })
+          .select("id, campaign_no, name, status, close_type, start_at, end_at, pickup_deadline, updated_at", { count: "exact" })
           .order("updated_at", { ascending: false })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
         if (query.trim()) {
@@ -242,7 +258,7 @@ export default function CampaignsListPage() {
       }
       const { data, error } = await getSupabase()
         .from("group_buy_campaigns")
-        .select("id, campaign_no, name, status, start_at, display_order")
+        .select("id, campaign_no, name, status, close_type, start_at, display_order")
         .gte("start_at", from.toISOString())
         .lt("start_at", to.toISOString())
         .order("start_at", { ascending: true })
@@ -401,14 +417,14 @@ export default function CampaignsListPage() {
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
-              <Th>團號</Th><Th>名稱</Th><Th>狀態</Th><Th>開團/收單</Th><Th>取貨截止</Th><Th className="text-right">商品數</Th><Th className="text-right">下單總數</Th><Th className="text-right">更新</Th><Th>{""}</Th>
+              <Th>團號</Th><Th>名稱</Th><Th>狀態</Th><Th>收單</Th><Th>開團/收單</Th><Th>取貨截止</Th><Th className="text-right">商品數</Th><Th className="text-right">下單總數</Th><Th className="text-right">更新</Th><Th>{""}</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={9} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={10} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">{total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}</td></tr>
+              <tr><td colSpan={10} className="p-6 text-center text-zinc-500">{total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}</td></tr>
             ) : rows.map((r) => (
               <tr key={r.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
                 <Td className="font-mono">
@@ -416,6 +432,11 @@ export default function CampaignsListPage() {
                 </Td>
                 <Td>{r.name}</Td>
                 <Td><StatusBadge s={r.status} /></Td>
+                <Td>
+                  <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${CLOSE_TYPE_BADGE[r.close_type]}`}>
+                    {CLOSE_TYPE_LABEL[r.close_type]}
+                  </span>
+                </Td>
                 <Td className="text-xs text-zinc-500">
                   {r.start_at ? new Date(r.start_at).toLocaleDateString("zh-TW") : "—"}
                   {" → "}
@@ -608,7 +629,7 @@ function CalendarView({
           return (
             <div
               key={key}
-              className={`flex min-h-[200px] flex-col rounded-md border ${
+              className={`flex min-h-[280px] flex-col rounded-md border ${
                 isToday
                   ? "border-zinc-900 dark:border-zinc-100"
                   : "border-zinc-200 dark:border-zinc-800"
@@ -1064,31 +1085,36 @@ function CampaignCard({
   }
 
   return (
-    <div className="rounded-md border border-zinc-200 bg-white p-2.5 shadow-sm transition hover:border-zinc-400 hover:shadow dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-500">
+    <div className="rounded-md border border-zinc-200 bg-white p-3.5 shadow-sm transition hover:border-zinc-400 hover:shadow dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-500">
       {/* 標題：商品名稱 + 狀態 */}
-      <div className="mb-1.5 flex items-start justify-between gap-1.5">
+      <div className="mb-2 flex items-start justify-between gap-1.5">
         <button
           onClick={() => onPick(r.id)}
-          className="flex-1 truncate text-left text-sm font-semibold text-zinc-900 hover:underline dark:text-zinc-100"
+          className="flex-1 truncate text-left text-[15px] font-semibold leading-tight text-zinc-900 hover:underline dark:text-zinc-100"
           title={`${r.campaign_no}｜${r.name}`}
         >
           {r.name || r.campaign_no}
         </button>
-        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${statusBadgeColor[r.status]}`}>
+        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${statusBadgeColor[r.status]}`}>
           {STATUS_LABEL[r.status]}
         </span>
       </div>
 
-      {/* 團號 */}
-      <button
-        onClick={() => onPick(r.id)}
-        className="mb-2 block w-full truncate text-left font-mono text-[10px] text-zinc-500 hover:underline"
-      >
-        {r.campaign_no}
-      </button>
+      {/* 收單類型 + 團號 */}
+      <div className="mb-2 flex items-center gap-1.5">
+        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${CLOSE_TYPE_BADGE[r.close_type]}`}>
+          {CLOSE_TYPE_LABEL[r.close_type]}
+        </span>
+        <button
+          onClick={() => onPick(r.id)}
+          className="min-w-0 flex-1 truncate text-left font-mono text-[11px] text-zinc-500 hover:underline"
+        >
+          {r.campaign_no}
+        </button>
+      </div>
 
       {/* 數據：商品數 / 下單總量 / 抵減總量 */}
-      <div className="mb-2 flex flex-wrap gap-2 text-[11px]">
+      <div className="mb-2 flex flex-wrap gap-2 text-[12px]">
         <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
           📦 {itemCount} 商品
         </span>

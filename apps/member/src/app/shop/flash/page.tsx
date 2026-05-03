@@ -25,6 +25,7 @@ export default function FlashPage() {
       try {
         const d = await callLiffApi<{ campaigns: CampaignSummary[] }>(s.token, {
           action: "list_active_campaigns",
+          close_type: "fast",
         });
         // 已 sort by end_at asc 從 backend, 就直接用
         setCampaigns(d.campaigns);
@@ -62,11 +63,20 @@ export default function FlashPage() {
         )}
 
         {!loading && !err && campaigns.length === 0 && (
-          <div className="py-16 text-center">
-            <div className="text-4xl">⚡</div>
-            <p className="mt-2 text-[16px] text-[var(--tertiary-label)]">
-              目前沒有限時活動
+          <div className="overflow-hidden rounded-2xl bg-gradient-to-br from-[#ff3b30]/8 to-[#ff9500]/8 p-6 text-center">
+            <div className="text-5xl">📣</div>
+            <h2 className="mt-3 text-[18px] font-semibold text-[var(--foreground)]">
+              目前沒有快團
+            </h2>
+            <p className="mt-2 whitespace-pre-line text-[15px] leading-relaxed text-[var(--secondary-label)]">
+              店長正在挑下一波熱門商品中{"\n"}快團一上架會即時通知你
             </p>
+            <a
+              href="/shop"
+              className="mt-5 inline-block rounded-full bg-[var(--brand-strong)] px-5 py-2 text-[15px] font-medium text-white active:opacity-80"
+            >
+              先看看其他商品 →
+            </a>
           </div>
         )}
 
