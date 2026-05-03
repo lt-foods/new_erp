@@ -344,7 +344,7 @@ export default function LandingPage() {
             <div className="space-y-8">
               <div className="space-y-4">
                 <p className="text-base text-zinc-500">
-                  您目前位於 <span className="font-bold text-zinc-900 dark:text-zinc-100">{storeId}</span> 門市
+                  您目前位於 <span className="font-bold text-zinc-900 dark:text-zinc-100">{stores.find((s) => s.code === storeId)?.name ?? storeId}</span> 門市
                 </p>
                 <button
                   onClick={start}
@@ -359,37 +359,41 @@ export default function LandingPage() {
                 )}
               </div>
 
-              <div className="relative py-4">
-                <div className="absolute inset-0 flex items-center">
-                  <span className="w-full border-t border-zinc-200"></span>
-                </div>
-                <div className="relative flex justify-center text-xs uppercase">
-                  <span className="bg-white px-2 text-zinc-400 dark:bg-zinc-950">或者</span>
-                </div>
-              </div>
+              {standalone && (
+                <>
+                  <div className="relative py-4">
+                    <div className="absolute inset-0 flex items-center">
+                      <span className="w-full border-t border-zinc-200"></span>
+                    </div>
+                    <div className="relative flex justify-center text-xs uppercase">
+                      <span className="bg-white px-2 text-zinc-400 dark:bg-zinc-950">或者</span>
+                    </div>
+                  </div>
 
-              <div className="space-y-4 rounded-xl border border-zinc-200 p-4 bg-zinc-50/50">
-                <p className="text-sm text-zinc-500">如果您已在瀏覽器登入，請輸入驗證碼：</p>
-                <form onSubmit={handleSyncSubmit} className="flex gap-2">
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    maxLength={6}
-                    placeholder="6 位數驗證碼"
-                    value={syncCode}
-                    onChange={(e) => setSyncCode(e.target.value)}
-                    className="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-center font-mono text-xl tracking-widest focus:border-indigo-500 focus:outline-none"
-                  />
-                  <button
-                    type="submit"
-                    disabled={syncCode.length !== 6 || syncing}
-                    className="rounded-md bg-indigo-600 px-4 py-2 text-base font-medium text-white shadow disabled:opacity-50"
-                  >
-                    {syncing ? "..." : "驗證"}
-                  </button>
-                </form>
-              </div>
+                  <div className="space-y-4 rounded-xl border border-zinc-200 p-4 bg-zinc-50/50">
+                    <p className="text-sm text-zinc-500">如果您已在瀏覽器登入，請輸入驗證碼：</p>
+                    <form onSubmit={handleSyncSubmit} className="flex gap-2">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        maxLength={6}
+                        placeholder="6 位數驗證碼"
+                        value={syncCode}
+                        onChange={(e) => setSyncCode(e.target.value)}
+                        className="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-center font-mono text-xl tracking-widest focus:border-indigo-500 focus:outline-none"
+                      />
+                      <button
+                        type="submit"
+                        disabled={syncCode.length !== 6 || syncing}
+                        className="rounded-md bg-indigo-600 px-4 py-2 text-base font-medium text-white shadow disabled:opacity-50"
+                      >
+                        {syncing ? "..." : "驗證"}
+                      </button>
+                    </form>
+                  </div>
+                </>
+              )}
 
               <button
                 onClick={() => { setStoreId(null); setInputStoreId(""); }}

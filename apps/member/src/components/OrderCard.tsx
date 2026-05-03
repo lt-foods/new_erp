@@ -12,6 +12,7 @@ export type OrderItem = {
   subtotal: number;
   status: string;
   notes: string | null;
+  image_url: string | null;
 };
 
 export type OrderRow = {
@@ -85,20 +86,29 @@ export default function OrderCard({ order }: { order: OrderRow }) {
       </header>
 
       <div className="flex flex-wrap gap-1.5 px-4 pb-3">
-        <StatusChip tone={order.arrived ? "ok" : "muted"} label={order.arrived ? "全到" : "未到"} />
-        <StatusChip tone={order.settled ? "ok" : "muted"} label={order.settled ? "全結" : "未結"} />
-        <StatusChip tone={order.paid ? "ok" : "muted"} label={order.paid ? "已付" : "未付"} />
-        <StatusChip tone={order.shipped ? "ok" : "muted"} label={order.shipped ? "已寄" : "未寄"} />
+        <StatusChip tone={order.arrived ? "ok" : "muted"} label={order.arrived ? "已到貨" : "未到貨"} />
       </div>
 
       <ul className="border-t border-[var(--separator)] px-4">
         {order.items.map((it, idx) => (
           <li
             key={it.id}
-            className={`flex items-start justify-between gap-2 py-3 ${
+            className={`flex items-start gap-3 py-3 ${
               idx > 0 ? "border-t border-[var(--separator)]" : ""
             }`}
           >
+            {it.image_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={it.image_url}
+                alt=""
+                className="h-12 w-12 flex-shrink-0 rounded-lg object-cover bg-[#7676801a]"
+              />
+            ) : (
+              <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-lg bg-[#7676801a] text-xl">
+                📦
+              </div>
+            )}
             <div className="min-w-0 flex-1">
               <div className="text-[16px] text-[var(--foreground)]">
                 {it.product_name ?? `SKU#${it.sku_id}`}

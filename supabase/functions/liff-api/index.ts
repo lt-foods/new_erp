@@ -223,7 +223,18 @@ async function listMyOrders(sb: any, tenantId: string, storeId: number, memberId
   else q = q.eq("status", "completed");
   const { data, error } = await q;
   if (error) return json({ error: error.message }, 500);
-  return json({ orders: data ?? [] });
+
+  // 把 items.image_url + campaign_cover_url 轉成 storage public URL
+  const supabaseUrl = requireEnv("SUPABASE_URL");
+  const orders = (data ?? []).map((o: any) => ({
+    ...o,
+    campaign_cover_url: toPublicUrl(supabaseUrl, "products", o.campaign_cover_url),
+    items: (o.items ?? []).map((it: any) => ({
+      ...it,
+      image_url: toPublicUrl(supabaseUrl, "products", it.image_url),
+    })),
+  }));
+  return json({ orders });
 }
 
 async function listMySettlements(sb: any, tenantId: string, storeId: number, memberId: number, tab: string) {
