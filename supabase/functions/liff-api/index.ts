@@ -487,9 +487,11 @@ async function generatePwaAuthCode(
   p: any,
 ) {
   const code6 = Math.floor(100000 + Math.random() * 900000).toString();
+  // session_data.store 是給前端顯示用,要回 code (e.g. "S001") 而非數字 ID
+  // claims.store_code 由 line-oauth-callback / liff-session 寫入
   const sessionData = {
     token: jwt,
-    store: String(claims.store_id ?? ""),
+    store: String(claims.store_code ?? claims.store_id ?? ""),
     member_id: memberId,
     line_user_id: String(claims.line_user_id ?? ""),
     line_name: typeof p.line_name === "string" ? p.line_name : null,

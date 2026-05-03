@@ -17,6 +17,7 @@ import { corsHeaders } from "../_shared/cors.ts";
 import { signJwtHs256, verifyStateToken } from "../_shared/jwt.ts";
 import { exchangeCode, verifyIdToken } from "../_shared/line.ts";
 import { autoRegister } from "../_shared/auto-register.ts";
+import { resolveStore } from "../_shared/store-resolve.ts";
 
 const SESSION_TTL_SEC = 60 * 60 * 24 * 30; // 30 天
 
@@ -72,7 +73,16 @@ Deno.serve(async (req) => {
     const tenantId      = requireEnv("DEFAULT_TENANT_ID"); // v1 單 tenant
 
     // 1) state
-    const { store_id: storeId, pair_code: pairCode } = await verifyStateToken(state, stateSecret);
+    const { store_id: storeKey, pair_code: pairCode } = await verifyStateToken(state, stateSecret);
+
+    // 1b) 解析 store key (code "S001" 或 numeric "1") → canonical { id, code }
+    //     下游 binding lookup / autoRegister / JWT 全部用數字 ID,前端 redirect 用 code
+    const resolved = await resolveStore(supabaseUrl, serviceKey, tenantId, storeKey);
+    if (!resolved) {
+      return redirectFront("/", { error: "oauth_failed", detail: "store_not_found" });
+    }
+    const storeNumericId = resolved.id;
+    const storeCode = resolved.code;
 
     // 2) code → token
     const tokens = await exchangeCode({
@@ -93,7 +103,7 @@ Deno.serve(async (req) => {
     const bindingUrl =
       `${supabaseUrl}/rest/v1/member_line_bindings` +
       `?select=member_id&tenant_id=eq.${tenantId}` +
-      `&store_id=eq.${storeId}&line_user_id=eq.${lineUserId}` +
+      `&store_id=eq.${storeNumericId}&line_user_id=eq.${lineUserId}` +
       `&unbound_at=is.null&limit=1`;
 
     const resp = await fetch(bindingUrl, {
@@ -117,7 +127,7 @@ Deno.serve(async (req) => {
         supabaseUrl,
         serviceKey,
         tenantId,
-        storeId,
+        storeId: String(storeNumericId),
         lineUserId,
         lineName: payload.name ?? null,
         linePicture: payload.picture ?? null,
@@ -133,7 +143,8 @@ Deno.serve(async (req) => {
         aud: "authenticated",
         exp: now + SESSION_TTL_SEC,
         tenant_id: tenantId,
-        store_id: storeId,
+        store_id: storeNumericId,
+        store_code: storeCode,
         line_user_id: lineUserId,
         sub: String(memberId),
         member_id: memberId,
@@ -145,7 +156,7 @@ Deno.serve(async (req) => {
     const code6 = Math.floor(100000 + Math.random() * 900000).toString();
     const sessionData = {
       token: jwt,
-      store: storeId,
+      store: storeCode,
       member_id: memberId,
       line_user_id: lineUserId,
       line_name: payload.name ?? null,
@@ -188,7 +199,7 @@ Deno.serve(async (req) => {
     const params = new URLSearchParams({
       code: code6,
       bound: "1",
-      store: storeId,
+      store: storeCode,
     });
     if (pairCode) params.set("paired", "1");
     return redirectFrontWithFragment(

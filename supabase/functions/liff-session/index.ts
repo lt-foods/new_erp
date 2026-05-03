@@ -18,6 +18,7 @@ import { corsHeaders } from "../_shared/cors.ts";
 import { signJwtHs256 } from "../_shared/jwt.ts";
 import { verifyIdToken } from "../_shared/line.ts";
 import { autoRegister } from "../_shared/auto-register.ts";
+import { resolveStore } from "../_shared/store-resolve.ts";
 
 const SESSION_TTL_SEC = 60 * 60 * 24 * 30; // 30 天
 
@@ -43,13 +44,19 @@ Deno.serve(async (req) => {
       channelId,
     });
     const lineUserId = payload.sub;
-    const storeId    = String(body.store);
+    const storeKey   = String(body.store);
+
+    // 1b) 解析 store key (code "S001" 或 numeric "1") → canonical { id, code }
+    const resolved = await resolveStore(supabaseUrl, serviceKey, tenantId, storeKey);
+    if (!resolved) return json({ error: "store_not_found", detail: storeKey }, 400);
+    const storeNumericId = resolved.id;
+    const storeCode = resolved.code;
 
     // 2) lookup binding
     const bindingUrl =
       `${supabaseUrl}/rest/v1/member_line_bindings` +
       `?select=member_id&tenant_id=eq.${tenantId}` +
-      `&store_id=eq.${storeId}&line_user_id=eq.${lineUserId}` +
+      `&store_id=eq.${storeNumericId}&line_user_id=eq.${lineUserId}` +
       `&unbound_at=is.null&limit=1`;
 
     const resp = await fetch(bindingUrl, {
@@ -65,7 +72,7 @@ Deno.serve(async (req) => {
         supabaseUrl,
         serviceKey,
         tenantId,
-        storeId,
+        storeId: String(storeNumericId),
         lineUserId,
         lineName:    payload.name    ?? null,
         linePicture: payload.picture ?? null,
@@ -80,7 +87,8 @@ Deno.serve(async (req) => {
       aud: "authenticated",
       exp: now + SESSION_TTL_SEC,
       tenant_id: tenantId,
-      store_id: storeId,
+      store_id: storeNumericId,
+      store_code: storeCode,
       line_user_id: lineUserId,
       sub: String(memberId),
       member_id: memberId,
@@ -89,7 +97,7 @@ Deno.serve(async (req) => {
     const sessionPayload = {
       token: jwt,
       member_id: memberId,
-      store: storeId,
+      store: storeCode,
       line_user_id: lineUserId,
       line_name:    payload.name    ?? null,
       line_picture: payload.picture ?? null,
