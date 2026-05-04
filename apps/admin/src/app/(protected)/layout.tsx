@@ -76,6 +76,7 @@ const BRANCH_HIDDEN_HREFS = new Set([
   "/suppliers",           // 供應商 (HQ 管理)
   "/purchase/requests",   // 採購單
   "/purchase/orders",     // 採購訂單
+  "/restock/inbox",       // 補貨申請 (HQ)
   "/picking/workstation", // 撿貨工作站
   "/picking/history",     // 撿貨歷史
   "/transfers/dispatch",  // 總倉派貨
