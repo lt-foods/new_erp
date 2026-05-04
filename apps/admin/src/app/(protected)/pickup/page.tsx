@@ -254,7 +254,7 @@ function PickupPageContent() {
       {members !== null && (
         members.length === 0 ? (
           <p className="rounded-md border border-zinc-200 bg-zinc-50 p-6 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
-            找不到電話含「{suffix}」的會員。
+            找不到「{query}」的會員。
           </p>
         ) : (
           <div className="space-y-3">
