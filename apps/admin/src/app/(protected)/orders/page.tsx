@@ -38,6 +38,18 @@ const STATUS_LABEL: Record<OrderStatus, string> = {
   transferred_out: "已轉出",
 };
 
+type Tab = "pending" | "completed" | "cancelled";
+const TABS: { value: Tab; label: string }[] = [
+  { value: "pending", label: "未取貨" },
+  { value: "completed", label: "已完成" },
+  { value: "cancelled", label: "取消" },
+];
+const PENDING_STATUSES: OrderStatus[] = [
+  "pending", "confirmed", "reserved", "shipping",
+  "ready", "partially_ready", "partially_completed",
+];
+const CANCELLED_STATUSES: OrderStatus[] = ["cancelled", "expired"];
+
 const PAGE_SIZE = 50;
 
 export default function OrdersListPage() {
@@ -57,7 +69,11 @@ function OrdersListContent() {
     const single = searchParams.get("campaignId");
     return single ? [single] : [];
   })();
-  const initialStatus = searchParams.get("status") ?? "";
+  const initialTab: Tab = (() => {
+    const t = searchParams.get("tab");
+    if (t === "pending" || t === "completed" || t === "cancelled") return t;
+    return "pending";
+  })();
   const initialStoreId = searchParams.get("storeId") ?? "";
 
   const [rows, setRows] = useState<Row[] | null>(null);
@@ -66,8 +82,9 @@ function OrdersListContent() {
   const [error, setError] = useState<string | null>(null);
 
   const [campaignIds, setCampaignIds] = useState<string[]>(initialCampaignIds);
-  const [status, setStatus] = useState(initialStatus);
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [storeId, setStoreId] = useState(initialStoreId);
+  const [tabCounts, setTabCounts] = useState<Record<Tab, number> | null>(null);
   const [page, setPage] = useState(1);
   const [campaignPickerOpen, setCampaignPickerOpen] = useState(false);
 
@@ -93,7 +110,7 @@ function OrdersListContent() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
 
-  useEffect(() => { setPage(1); }, [campaignIds, status, storeId]);
+  useEffect(() => { setPage(1); setSelected(new Set()); }, [campaignIds, tab, storeId]);
 
   useEffect(() => {
     (async () => {
@@ -120,8 +137,10 @@ function OrdersListContent() {
 
         if (campaignIds.length === 1) q = q.eq("campaign_id", Number(campaignIds[0]));
         else if (campaignIds.length > 1) q = q.in("campaign_id", campaignIds.map((x) => Number(x)));
-        if (status) q = q.eq("status", status);
-        else q = q.neq("status", "transferred_out"); // 預設隱藏已轉出（5a-1：視同關閉、金額/數量不入統計）
+        // 依 tab 套狀態過濾;一律隱藏 transferred_out (視同關閉、金額/數量不入統計)
+        if (tab === "completed") q = q.eq("status", "completed");
+        else if (tab === "cancelled") q = q.in("status", CANCELLED_STATUSES);
+        else q = q.in("status", PENDING_STATUSES);
         if (storeId) q = q.eq("pickup_store_id", Number(storeId));
 
         const { data, count, error } = await q;
@@ -172,7 +191,34 @@ function OrdersListContent() {
       }
     })();
     return () => { cancelled = true; };
-  }, [campaignIds, status, storeId, page, reloadOrders]);
+  }, [campaignIds, tab, storeId, page, reloadOrders]);
+
+  // 各 tab 數量 — 切 tab 不重抓,只在其他 filter / reload 時更新
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const sb = getSupabase();
+      const buildBase = () => {
+        let q = sb.from("customer_orders").select("id", { count: "exact", head: true });
+        if (campaignIds.length === 1) q = q.eq("campaign_id", Number(campaignIds[0]));
+        else if (campaignIds.length > 1) q = q.in("campaign_id", campaignIds.map((x) => Number(x)));
+        if (storeId) q = q.eq("pickup_store_id", Number(storeId));
+        return q;
+      };
+      const [p, c, x] = await Promise.all([
+        buildBase().in("status", PENDING_STATUSES),
+        buildBase().eq("status", "completed"),
+        buildBase().in("status", CANCELLED_STATUSES),
+      ]);
+      if (cancelled) return;
+      setTabCounts({
+        pending: p.count ?? 0,
+        completed: c.count ?? 0,
+        cancelled: x.count ?? 0,
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [campaignIds, storeId, reloadOrders]);
 
   const campaignMap = useMemo(() => new Map(campaigns.map((c) => [c.id, c])), [campaigns]);
   const storeMap = useMemo(() => new Map(stores.map((s) => [s.id, s])), [stores]);
@@ -306,6 +352,35 @@ function OrdersListContent() {
         </div>
       </header>
 
+      {/* Tab bar — 未取貨 / 已完成 / 取消;含各 tab 數量 */}
+      <div className="flex items-center gap-1 border-b border-zinc-200 dark:border-zinc-800">
+        {TABS.map((t) => {
+          const active = tab === t.value;
+          const count = tabCounts?.[t.value];
+          return (
+            <button
+              key={t.value}
+              onClick={() => setTab(t.value)}
+              className={`relative px-4 py-2 text-sm font-medium transition-colors ${
+                active
+                  ? "text-zinc-900 dark:text-zinc-100"
+                  : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+              }`}
+            >
+              {t.label}
+              {count !== undefined && (
+                <span className={`ml-1.5 ${active ? "" : "text-zinc-400 dark:text-zinc-500"}`}>
+                  ({count})
+                </span>
+              )}
+              {active && (
+                <span className="absolute -bottom-px left-0 right-0 h-0.5 bg-zinc-900 dark:bg-zinc-100" />
+              )}
+            </button>
+          );
+        })}
+      </div>
+
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="relative">
           <button
@@ -363,11 +438,6 @@ function OrdersListContent() {
             </div>
           )}
         </div>
-        <select value={status} onChange={(e) => setStatus(e.target.value)}
-          className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800">
-          <option value="">全部狀態</option>
-          {Object.entries(STATUS_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-        </select>
         <select value={storeId} onChange={(e) => setStoreId(e.target.value)}
           className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800">
           <option value="">全部取貨店</option>
@@ -439,7 +509,7 @@ function OrdersListContent() {
             {rows === null ? (
               <tr><td colSpan={9} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">{total === 0 && campaignIds.length === 0 && !status && !storeId ? "尚無訂單。" : "沒有符合條件的訂單。"}</td></tr>
+              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">{total === 0 && campaignIds.length === 0 && !storeId ? `此 tab 下尚無訂單。` : "沒有符合條件的訂單。"}</td></tr>
             ) : rows.map((r) => {
               const m = r.member_id ? members.get(r.member_id) : null;
               const c = campaignMap.get(r.campaign_id);
