@@ -259,6 +259,28 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
   const { data, error } = await q
     .order("end_at", { ascending: true, nullsFirst: false })
     .limit(50);
+
+  // 算出有 cap 的 campaign 已下單總量 (排除取消/逾期 + 排除負數抵減單),
+  // 給前端算「剩 N 份」或「搶購一空」
+  const orderedMap = new Map<number, number>();
+  const idsWithCap = (data ?? [])
+    .filter((c: any) => Number(c.total_cap_qty ?? 0) > 0)
+    .map((c: any) => c.id);
+  if (idsWithCap.length > 0) {
+    const { data: orderRows } = await sb
+      .from("customer_orders")
+      .select("campaign_id, customer_order_items(qty)")
+      .in("campaign_id", idsWithCap)
+      .not("status", "in", "(cancelled,expired)")
+      .or("order_kind.is.null,order_kind.eq.normal");
+    for (const o of orderRows ?? []) {
+      const sum = (o.customer_order_items ?? []).reduce(
+        (a: number, x: any) => a + Number(x.qty ?? 0),
+        0,
+      );
+      orderedMap.set(Number(o.campaign_id), (orderedMap.get(Number(o.campaign_id)) ?? 0) + sum);
+    }
+  }
   if (error) return json({ error: error.message }, 500);
 
   const supabaseUrl = requireEnv("SUPABASE_URL");
@@ -285,6 +307,9 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
       name: c.name,
       description: c.description,
       cover_image_url: cover,
+      close_type: c.close_type,
+      total_cap_qty: c.total_cap_qty,
+      ordered_qty: orderedMap.get(Number(c.id)) ?? 0,
       end_at: c.end_at,
       pickup_deadline: c.pickup_deadline,
       item_count: prices.length,

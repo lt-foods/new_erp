@@ -7,6 +7,8 @@ import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import CampaignCard, {
   campaignBadgeLabel,
+  campaignRemaining,
+  campaignSoldOut,
   type CampaignSummary,
 } from "@/components/CampaignCard";
 import Countdown from "@/components/Countdown";
@@ -102,11 +104,15 @@ function FlashRow({ campaign }: { campaign: CampaignSummary }) {
     : "—";
   const label = campaignBadgeLabel(campaign);
   const isLimited = label?.includes("限量");
+  const remaining = campaignRemaining(campaign);
+  const soldOut = campaignSoldOut(campaign);
 
   return (
     <a
       href={`/shop/c/${campaign.id}`}
-      className="flex gap-3 overflow-hidden rounded-2xl bg-[var(--card-bg)] p-3 shadow-[0_1px_2px_rgba(0,0,0,0.04)] active:opacity-90"
+      className={`flex gap-3 overflow-hidden rounded-2xl bg-[var(--card-bg)] p-3 shadow-[0_1px_2px_rgba(0,0,0,0.04)] active:opacity-90 ${
+        soldOut ? "opacity-60" : ""
+      }`}
     >
       <div className="relative h-24 w-24 flex-shrink-0 overflow-hidden rounded-xl bg-[#7676801a]">
         {campaign.cover_image_url ? (
@@ -119,7 +125,11 @@ function FlashRow({ campaign }: { campaign: CampaignSummary }) {
         ) : (
           <div className="absolute inset-0 flex items-center justify-center text-3xl">📦</div>
         )}
-        {label && (
+        {soldOut ? (
+          <span className="absolute left-1 top-1 rounded bg-zinc-700 px-1.5 py-0.5 text-[11px] font-medium text-white shadow">
+            已搶購一空
+          </span>
+        ) : label ? (
           <span
             className={`absolute left-1 top-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-white shadow ${
               isLimited ? "bg-[#ff3b30]" : "bg-[#ff9500]"
@@ -127,7 +137,7 @@ function FlashRow({ campaign }: { campaign: CampaignSummary }) {
           >
             {label}
           </span>
-        )}
+        ) : null}
       </div>
       <div className="min-w-0 flex-1 space-y-1">
         <h3 className="line-clamp-2 text-[17px] font-semibold leading-tight text-[var(--foreground)]">
@@ -139,11 +149,11 @@ function FlashRow({ campaign }: { campaign: CampaignSummary }) {
         <div className="flex items-center justify-between gap-2 text-[13px] text-[var(--secondary-label)]">
           <span>
             共 {campaign.item_count} 項
-            {isLimited && campaign.total_cap_qty != null && (
-              <span className="ml-2 text-[#c4271d]">· 限 {campaign.total_cap_qty} 份</span>
+            {isLimited && remaining !== null && !soldOut && (
+              <span className="ml-2 font-medium text-[#c4271d]">· 剩 {remaining} 份</span>
             )}
           </span>
-          {campaign.end_at && <Countdown target={campaign.end_at} />}
+          {campaign.end_at && !soldOut && <Countdown target={campaign.end_at} />}
         </div>
       </div>
       <div className="flex items-center text-[var(--ios-gray)] text-[24px]">›</div>

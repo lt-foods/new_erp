@@ -11,6 +11,7 @@ export type CampaignSummary = {
   cover_image_url: string | null;
   close_type: "regular" | "fast" | "limited" | string;
   total_cap_qty: number | null;
+  ordered_qty: number;
   end_at: string | null;
   pickup_deadline: string | null;
   item_count: number;
@@ -26,6 +27,19 @@ export function campaignBadgeLabel(c: CampaignSummary): string | null {
   if (c.close_type === "fast" || hasEnd) return "限時";
   if (c.close_type === "limited" || hasCap) return "限量";
   return null;
+}
+
+/** 限量類活動還剩幾份;沒設 cap 回 null */
+export function campaignRemaining(c: CampaignSummary): number | null {
+  const cap = Number(c.total_cap_qty ?? 0);
+  if (cap <= 0) return null;
+  return Math.max(0, cap - Number(c.ordered_qty ?? 0));
+}
+
+export function campaignSoldOut(c: CampaignSummary): boolean {
+  const cap = Number(c.total_cap_qty ?? 0);
+  if (cap <= 0) return false;
+  return Number(c.ordered_qty ?? 0) >= cap;
 }
 
 /**
@@ -63,18 +77,26 @@ export default function CampaignCard({
           )}
           {(() => {
             const label = campaignBadgeLabel(campaign);
+            const remaining = campaignRemaining(campaign);
+            const soldOut = campaignSoldOut(campaign);
             if (!label && !campaign.end_at) return null;
             const isLimited = label?.includes("限量");
             return (
               <div
                 className={`absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[14px] font-medium text-white backdrop-blur ${
-                  isLimited ? "bg-[#ff3b30]/80" : "bg-black/65"
+                  soldOut ? "bg-zinc-700/85" : isLimited ? "bg-[#ff3b30]/85" : "bg-black/65"
                 }`}
               >
-                {label && <span>{label}</span>}
-                {campaign.end_at && <Countdown target={campaign.end_at} compact />}
-                {isLimited && campaign.total_cap_qty && (
-                  <span className="text-[12px] opacity-90">· {campaign.total_cap_qty} 份</span>
+                {soldOut ? (
+                  <span>已搶購一空</span>
+                ) : (
+                  <>
+                    {label && <span>{label}</span>}
+                    {campaign.end_at && <Countdown target={campaign.end_at} compact />}
+                    {isLimited && remaining !== null && (
+                      <span className="text-[12px] opacity-90">· 剩 {remaining} 份</span>
+                    )}
+                  </>
                 )}
               </div>
             );
@@ -118,6 +140,14 @@ export default function CampaignCard({
         <div className="flex items-center gap-1.5">
           {(() => {
             const label = campaignBadgeLabel(campaign);
+            const soldOut = campaignSoldOut(campaign);
+            if (soldOut) {
+              return (
+                <span className="shrink-0 rounded bg-zinc-200 px-1.5 py-0.5 text-[11px] font-medium text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200">
+                  已搶購一空
+                </span>
+              );
+            }
             if (!label) return null;
             const isLimited = label.includes("限量");
             return (
@@ -134,6 +164,13 @@ export default function CampaignCard({
             {campaign.name}
           </h3>
         </div>
+        {(() => {
+          const remaining = campaignRemaining(campaign);
+          if (remaining === null || campaignSoldOut(campaign)) return null;
+          return (
+            <div className="text-[12px] text-[#c4271d]">剩 {remaining} 份</div>
+          );
+        })()}
         <div className="text-[24px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
           {priceText}
         </div>
