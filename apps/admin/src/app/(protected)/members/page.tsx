@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { MemberForm, type MemberFormValues } from "@/components/MemberForm";
@@ -28,16 +29,7 @@ function displayPhone(p: string | null): string {
   return p;
 }
 
-type Tier = { id: number; code: string; name: string };
 type Store = { id: number; code: string; name: string };
-
-const STATUS_LABEL: Record<Status, string> = {
-  active: "活躍",
-  inactive: "停用",
-  blocked: "封鎖",
-  merged: "已合併",
-  deleted: "已刪除",
-};
 
 const PAGE_SIZE = 50;
 
@@ -49,14 +41,11 @@ export default function MembersListPage() {
 
   const [queryDraft, setQueryDraft] = useState("");
   const [query, setQuery] = useState("");
-  const [tierId, setTierId] = useState<string>("");
-  const [status, setStatus] = useState<string>("");
   const [storeId, setStoreId] = useState<string>("");
   const [sortBy, setSortBy] = useState<SortKey>("updated_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [page, setPage] = useState(1);
 
-  const [tiers, setTiers] = useState<Tier[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [balances, setBalances] = useState<Map<number, { points: number; wallet: number }>>(new Map());
   const [reloadTick, setReloadTick] = useState(0);
@@ -77,21 +66,21 @@ export default function MembersListPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [tierId, status, storeId, sortBy, sortDir]);
+  }, [storeId, sortBy, sortDir]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [t, s] = await Promise.all([
-        getSupabase().from("member_tiers").select("id, code, name").order("sort_order"),
-        getSupabase().from("stores").select("id, code, name").eq("is_active", true).order("name"),
-      ]);
+      const s = await getSupabase()
+        .from("stores")
+        .select("id, code, name")
+        .eq("is_active", true)
+        .order("name");
       if (cancelled) return;
-      if (t.error || s.error) {
-        setError(t.error?.message ?? s.error?.message ?? "載入篩選選項失敗");
+      if (s.error) {
+        setError(s.error.message);
         return;
       }
-      setTiers((t.data ?? []) as Tier[]);
       setStores((s.data ?? []) as Store[]);
     })();
     return () => {
@@ -114,8 +103,6 @@ export default function MembersListPage() {
           const safe = query.replace(/[%,()]/g, " ").trim();
           q = q.or(`name.ilike.%${safe}%,phone.ilike.%${safe}%,member_no.ilike.%${safe}%`);
         }
-        if (tierId) q = q.eq("tier_id", Number(tierId));
-        if (status) q = q.eq("status", status);
         if (storeId) q = q.eq("home_store_id", Number(storeId));
 
         const { data, count, error } = await q;
@@ -157,9 +144,8 @@ export default function MembersListPage() {
     return () => {
       cancelled = true;
     };
-  }, [query, tierId, status, storeId, sortBy, sortDir, page, reloadTick]);
+  }, [query, storeId, sortBy, sortDir, page, reloadTick]);
 
-  const tierMap = useMemo(() => new Map(tiers.map((t) => [t.id, t])), [tiers]);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const fromIdx = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const toIdx = Math.min(page * PAGE_SIZE, total);
@@ -181,15 +167,23 @@ export default function MembersListPage() {
             {loading ? "載入中…" : total === 0 ? "共 0 筆" : `共 ${total} 筆（顯示 ${fromIdx}-${toIdx}）`}
           </p>
         </div>
-        <button
-          onClick={() => setModal({ mode: "new" })}
-          className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
-        >
-          新增會員
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/pickup"
+            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+          >
+            🔎 查詢會員訂單
+          </Link>
+          <button
+            onClick={() => setModal({ mode: "new" })}
+            className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+          >
+            新增會員
+          </button>
+        </div>
       </header>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2">
         <input
           type="search"
           placeholder="搜尋 會員編號 / 姓名 / 手機"
@@ -197,28 +191,6 @@ export default function MembersListPage() {
           onChange={(e) => setQueryDraft(e.target.value)}
           className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800"
         />
-        <select
-          value={tierId}
-          onChange={(e) => setTierId(e.target.value)}
-          className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
-        >
-          <option value="">全部等級</option>
-          {tiers.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}
-            </option>
-          ))}
-        </select>
-        <select
-          value={status}
-          onChange={(e) => setStatus(e.target.value)}
-          className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
-        >
-          <option value="">全部狀態</option>
-          <option value="active">活躍</option>
-          <option value="inactive">停用</option>
-          <option value="blocked">封鎖</option>
-        </select>
         <select
           value={storeId}
           onChange={(e) => setStoreId(e.target.value)}
@@ -247,21 +219,19 @@ export default function MembersListPage() {
               <ThSort label="編號" col="member_no" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
               <ThSort label="姓名" col="name" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
               <Th>手機</Th>
-              <Th>等級</Th>
               <Th className="text-right">積分</Th>
               <Th className="text-right">儲值</Th>
-              <Th>狀態</Th>
               <ThSort label="更新" col="updated_at" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} align="right" />
               <Th>{""}</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <SkeletonRows cols={9} />
+              <SkeletonRows cols={7} />
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={9} className="p-6 text-center text-sm text-zinc-500">
-                  {total === 0 && !query && !tierId && !status
+                <td colSpan={7} className="p-6 text-center text-sm text-zinc-500">
+                  {total === 0 && !query
                     ? "還沒有會員，按「新增會員」開始建立。"
                     : "沒有符合條件的會員。"}
                 </td>
@@ -293,14 +263,8 @@ export default function MembersListPage() {
                       </div>
                     </Td>
                     <Td className="font-mono text-xs">{displayPhone(r.phone)}</Td>
-                    <Td className="text-xs text-zinc-600 dark:text-zinc-400">
-                      {r.tier_id ? tierMap.get(r.tier_id)?.name ?? "—" : "—"}
-                    </Td>
                     <Td className="text-right font-mono">{bal?.points?.toLocaleString() ?? "—"}</Td>
                     <Td className="text-right font-mono">{bal?.wallet?.toLocaleString() ?? "—"}</Td>
-                    <Td>
-                      <StatusBadge status={r.status} />
-                    </Td>
                     <Td className="text-right text-zinc-500">
                       {new Date(r.updated_at).toLocaleString("zh-TW")}
                     </Td>
@@ -391,17 +355,6 @@ function ThSort({
 
 function Td({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <td className={`px-4 py-3 ${className}`}>{children}</td>;
-}
-
-function StatusBadge({ status }: { status: Status }) {
-  const styles: Record<Status, string> = {
-    active: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300",
-    inactive: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
-    blocked: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
-    merged: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
-    deleted: "bg-zinc-100 text-zinc-500 line-through dark:bg-zinc-800",
-  };
-  return <span className={`inline-block rounded px-2 py-0.5 text-xs ${styles[status]}`}>{STATUS_LABEL[status]}</span>;
 }
 
 function SkeletonRows({ cols }: { cols: number }) {

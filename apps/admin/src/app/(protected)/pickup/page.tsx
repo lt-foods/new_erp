@@ -48,7 +48,7 @@ function activeItems(order: OpenOrder) {
 }
 
 export default function PickupPage() {
-  const [suffix, setSuffix] = useState("");
+  const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [members, setMembers] = useState<Member[] | null>(null);
   const [orders, setOrders] = useState<Map<number, OpenOrder[]>>(new Map());
@@ -62,8 +62,9 @@ export default function PickupPage() {
 
   async function search(e?: React.FormEvent) {
     e?.preventDefault();
-    if (suffix.length < 3) {
-      setError("請至少輸入 3 碼（建議後 6 碼）");
+    const q = query.trim();
+    if (q.length < 2) {
+      setError("請至少輸入 2 字 (姓名 / 電話末 N 碼 / 會員編號)");
       return;
     }
     setSearching(true);
@@ -72,10 +73,12 @@ export default function PickupPage() {
     setOrders(new Map());
     try {
       const sb = getSupabase();
+      // 一個關鍵字同時對 name / phone / member_no 做 ilike,任一命中皆列出
+      const safe = q.replace(/[%,()]/g, " ");
       const { data: ms, error: e1 } = await sb
         .from("members")
         .select("id, member_no, name, phone")
-        .like("phone", `%${suffix}`)
+        .or(`name.ilike.%${safe}%,phone.ilike.%${safe}%,member_no.ilike.%${safe}%`)
         .neq("status", "deleted")
         .order("last_visit_at", { ascending: false, nullsFirst: false })
         .limit(20);
@@ -188,26 +191,24 @@ export default function PickupPage() {
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header>
         <h1 className="text-xl font-semibold">取貨</h1>
-        <p className="text-sm text-zinc-500">輸入顧客電話後幾碼（建議 6 碼）→ 找出本人未取訂單 → 確認取貨。</p>
+        <p className="text-sm text-zinc-500">輸入 姓名 / 電話末 N 碼 / 會員編號 → 找出本人未取訂單 → 確認取貨。</p>
       </header>
 
       <form onSubmit={search} className="flex items-end gap-2">
-        <label className="text-sm">
-          <span className="mb-1 block text-xs text-zinc-500">電話後 N 碼（≥3）</span>
+        <label className="text-sm flex-1 max-w-md">
+          <span className="mb-1 block text-xs text-zinc-500">姓名 / 電話 / 會員編號</span>
           <input
-            type="tel"
-            inputMode="numeric"
-            pattern="\d*"
-            value={suffix}
-            onChange={(e) => setSuffix(e.target.value.replace(/\D/g, "").slice(0, 10))}
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
             autoFocus
-            placeholder="123456"
-            className="w-40 rounded-md border border-zinc-300 bg-white px-3 py-2 text-lg font-mono dark:border-zinc-700 dark:bg-zinc-800"
+            placeholder="例: 王小明 / 123456 / M20260501..."
+            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base dark:border-zinc-700 dark:bg-zinc-800"
           />
         </label>
         <button
           type="submit"
-          disabled={searching || suffix.length < 3}
+          disabled={searching || query.trim().length < 2}
           className="rounded-md bg-zinc-900 px-4 py-2 text-sm text-white transition hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
         >
           {searching ? "搜尋中…" : "🔍 搜尋"}
@@ -215,7 +216,7 @@ export default function PickupPage() {
         {(members || error) && (
           <button
             type="button"
-            onClick={() => { setSuffix(""); setMembers(null); setOrders(new Map()); setError(null); }}
+            onClick={() => { setQuery(""); setMembers(null); setOrders(new Map()); setError(null); }}
             className="rounded-md border border-zinc-300 px-3 py-2 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
             清空
