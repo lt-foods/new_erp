@@ -84,7 +84,7 @@ const BRANCH_HIDDEN_GROUPS = new Set([
   "社群選品", // 整個 group 隱藏
 ]);
 
-function isBranchUser(user: { app_metadata?: { stores?: unknown } } | null | undefined): boolean {
+function isBranchUser(user: { app_metadata?: Record<string, unknown> } | null | undefined): boolean {
   const stores = user?.app_metadata?.stores;
   if (!Array.isArray(stores) || stores.length === 0) return false;
   return !stores.includes("總倉");
