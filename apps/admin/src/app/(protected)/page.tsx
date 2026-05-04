@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
-import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
+import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 
 type Counts = {
   products: number;
@@ -46,6 +46,12 @@ const STATUS_LABEL_ORDER: Record<string, string> = {
 export default function Dashboard() {
   const [storeId, setStoreId] = useState<string>("");
   const [stores, setStores] = useState<Store[]>([]);
+  const branchStoreId = useUserBranchStoreId(stores);
+  useEffect(() => {
+    if (branchStoreId != null && storeId !== String(branchStoreId)) {
+      setStoreId(String(branchStoreId));
+    }
+  }, [branchStoreId, storeId]);
   useDefaultStoreFromUser(stores, storeId, setStoreId);
   const [counts, setCounts] = useState<Counts | null>(null);
   const [recentOrders, setRecentOrders] = useState<RecentOrder[]>([]);
@@ -141,19 +147,29 @@ export default function Dashboard() {
               {today} · {selectedStore ? `門市：${selectedStore.name}` : "全部門市"}
             </p>
           </div>
-          <label className="flex items-center gap-2 text-sm">
-            <span className="text-zinc-600 dark:text-zinc-400">門市</span>
-            <select
-              value={storeId}
-              onChange={(e) => setStoreId(e.target.value)}
-              className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-800"
-            >
-              <option value="">全部門市</option>
-              {stores.map((s) => (
-                <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
-              ))}
-            </select>
-          </label>
+          {branchStoreId != null ? (
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-zinc-600 dark:text-zinc-400">門市</span>
+              <div className="rounded-md border border-zinc-300 bg-zinc-50 px-3 py-1.5 text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+                🏬 {stores.find((s) => Number(s.id) === branchStoreId)?.name ?? "—"}
+                <span className="ml-2 text-xs text-zinc-500">(僅本店)</span>
+              </div>
+            </div>
+          ) : (
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-zinc-600 dark:text-zinc-400">門市</span>
+              <select
+                value={storeId}
+                onChange={(e) => setStoreId(e.target.value)}
+                className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+              >
+                <option value="">全部門市</option>
+                {stores.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
       </header>
 
