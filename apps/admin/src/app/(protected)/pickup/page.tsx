@@ -414,12 +414,24 @@ function PickupPageContent() {
                   );
                 })}
               </div>
-              <div className="flex justify-end gap-2">
+              <div className="flex flex-wrap justify-end gap-2">
                 <button
                   onClick={() => setBulkConfirm(null)}
                   className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
                 >
                   取消
+                </button>
+                <button
+                  onClick={() => {
+                    const ids = memberOrders.map((o) => o.id).join(",");
+                    window.open(
+                      withBasePath(`/pickup/print-list?order_ids=${ids}`),
+                      "_blank",
+                    );
+                  }}
+                  className="rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:border-zinc-300 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+                >
+                  🖨️ 列印小白單
                 </button>
                 <button
                   onClick={() => bulkPickAllConfirmed(bulkConfirm)}
