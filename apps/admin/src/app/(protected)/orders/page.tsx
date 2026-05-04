@@ -6,7 +6,6 @@ import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
-import { PickupDialog } from "@/components/PickupDialog";
 import { translateRpcError } from "@/lib/rpcError";
 import { withBasePath } from "@/lib/basePath";
 import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
@@ -106,7 +105,6 @@ function OrdersListContent() {
   const [pickupReady, setPickupReady] = useState<Map<number, boolean>>(new Map());
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detailNo, setDetailNo] = useState<string>("");
-  const [pickup, setPickup] = useState<{ id: number; no: string } | null>(null);
   const [reloadOrders, setReloadOrders] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -616,17 +614,27 @@ function OrdersListContent() {
                   <Td className="text-right">
                     <div className="flex items-center justify-end gap-1">
                       {!["completed","expired","cancelled","transferred_out"].includes(r.status) && (() => {
-                        // 取貨判斷改用 v_order_pickup_ready (基於分店收貨 transfer 實際狀態)
-                        // 不再依賴 customer_orders.status === 'ready'（status 同步可能漏推）
+                        // 取貨判斷改用 v_order_pickup_ready
                         const canPickup = pickupReady.get(r.id) === true;
+                        // 訂單頁本身不執行取貨,只導向 /pickup (帶會員編號自動搜尋)
+                        if (canPickup && m?.member_no) {
+                          return (
+                            <Link
+                              href={`/pickup?q=${encodeURIComponent(m.member_no)}`}
+                              className="rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-700"
+                            >
+                              ✅ 去取貨
+                            </Link>
+                          );
+                        }
                         return (
                           <button
-                            onClick={() => setPickup({ id: r.id, no: r.order_no })}
-                            disabled={!canPickup}
-                            title={canPickup ? undefined : "分店尚未收貨，無法取貨"}
-                            className="rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-200 disabled:text-emerald-700 disabled:hover:bg-emerald-200 dark:disabled:bg-emerald-950 dark:disabled:text-emerald-400 dark:disabled:hover:bg-emerald-950"
+                            type="button"
+                            disabled
+                            title={canPickup ? "找不到會員資料,無法導向" : "分店尚未收貨,無法取貨"}
+                            className="cursor-not-allowed rounded-md bg-emerald-200 px-2 py-1 text-[11px] font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
                           >
-                            ✅ 取貨
+                            ✅ 去取貨
                           </button>
                         );
                       })()}
@@ -683,20 +691,6 @@ function OrdersListContent() {
           </tbody>
         </table>
       </div>
-
-      {pickup && (
-        <PickupDialog
-          open={true}
-          onClose={() => setPickup(null)}
-          orderId={pickup.id}
-          orderNo={pickup.no}
-          onPickedUp={(r) => {
-            setPickup(null);
-            alert(`取貨完成 (${r.picked_count} 項)\n訂單狀態：${STATUS_LABEL[r.new_order_status as OrderStatus] ?? r.new_order_status}`);
-            setReloadOrders((n) => n + 1);
-          }}
-        />
-      )}
 
       <Modal
         open={detailId !== null}
