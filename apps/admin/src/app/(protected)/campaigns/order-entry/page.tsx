@@ -222,7 +222,7 @@ function PageContent() {
         if (e.items.some((it) => it.campaign_item_id === opt.campaign_item_id)) return e;
         const newRow: ItemRow = {
           campaign_item_id: opt.campaign_item_id,
-          sku_label: `${opt.product_name}${opt.variant_name ? ` / ${opt.variant_name}` : ""} (${opt.sku_code})`,
+          sku_label: `${opt.variant_name || opt.product_name} (${opt.sku_code})`,
           qty: "1",
           unit_price: Number(opt.unit_price),
         };
@@ -712,7 +712,7 @@ function InternalOrderPanel({
               <option value="">+ 加商品{availableSkus.length === 0 ? "（已全選）" : ""}</option>
               {availableSkus.map((s) => (
                 <option key={s.campaign_item_id} value={s.campaign_item_id}>
-                  {s.product_name}{s.variant_name ? ` / ${s.variant_name}` : ""} (${Number(s.unit_price)})
+                  {s.variant_name || s.product_name} (${Number(s.unit_price)})
                 </option>
               ))}
             </select>
@@ -853,7 +853,7 @@ function CustomerCard({
           <option value="">+ 加商品{availableSkus.length === 0 ? "（已全選）" : ""}</option>
           {availableSkus.map((s) => (
             <option key={s.campaign_item_id} value={s.campaign_item_id}>
-              {s.product_name}{s.variant_name ? ` / ${s.variant_name}` : ""} (${Number(s.unit_price)})
+              {s.variant_name || s.product_name} (${Number(s.unit_price)})
             </option>
           ))}
         </select>
@@ -1098,7 +1098,7 @@ function ItemEditorRow({
                   }
                   onChange({
                     campaign_item_id: ciId,
-                    sku_label: `${o.product_name}${o.variant_name ? ` / ${o.variant_name}` : ""} (${o.sku_code})`,
+                    sku_label: `${o.variant_name || o.product_name} (${o.sku_code})`,
                     unit_price: Number(o.unit_price),
                     qty: item.qty === "" ? "1" : item.qty,
                   });
@@ -1107,8 +1107,7 @@ function ItemEditorRow({
                 }}
                 className="block w-full px-2 py-1 text-left text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700"
               >
-                <span className="font-medium">{o.product_name}</span>
-                {o.variant_name && <span className="ml-1 text-zinc-500">/ {o.variant_name}</span>}
+                <span className="font-medium">{o.variant_name || o.product_name}</span>
                 <span className="ml-2 font-mono text-zinc-400">{o.sku_code}</span>
                 <span className="ml-2 text-zinc-600 dark:text-zinc-300">${Number(o.unit_price)}</span>
                 {o.campaign_item_id == null && (
@@ -1122,22 +1121,54 @@ function ItemEditorRow({
         )}
       </td>
       <td className="text-right">
-        <input
-          value={item.qty}
-          onChange={(e) => onChange({ qty: e.target.value })}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              if (isLast) onAddNext();
-            }
-          }}
-          inputMode="decimal"
-          className={`w-16 rounded border px-2 py-1 text-right text-xs ${
+        <div
+          className={`inline-flex items-stretch overflow-hidden rounded border ${
             qtyInvalid
-              ? "border-red-400 bg-red-50 dark:bg-red-950"
-              : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-800"
+              ? "border-red-400"
+              : "border-zinc-300 dark:border-zinc-700"
           }`}
-        />
+        >
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={() => {
+              const n = Number(item.qty);
+              const cur = Number.isFinite(n) ? n : 1;
+              onChange({ qty: String(Math.max(1, cur - 1)) });
+            }}
+            className="w-7 bg-zinc-50 text-sm leading-none hover:bg-zinc-100 active:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700"
+          >
+            −
+          </button>
+          <input
+            value={item.qty}
+            onChange={(e) => onChange({ qty: e.target.value.replace(/[^0-9]/g, "") })}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                if (isLast) onAddNext();
+              }
+            }}
+            inputMode="numeric"
+            className={`w-10 border-x px-1 py-1 text-center text-xs outline-none ${
+              qtyInvalid
+                ? "border-red-400 bg-red-50 dark:bg-red-950"
+                : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-800"
+            }`}
+          />
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={() => {
+              const n = Number(item.qty);
+              const cur = Number.isFinite(n) ? n : 0;
+              onChange({ qty: String(cur + 1) });
+            }}
+            className="w-7 bg-zinc-50 text-sm leading-none hover:bg-zinc-100 active:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700"
+          >
+            ＋
+          </button>
+        </div>
       </td>
       <td className="text-right">
         {editablePrice ? (
