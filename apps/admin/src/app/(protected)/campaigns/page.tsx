@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { CampaignForm, type CampaignFormValues } from "@/components/CampaignForm";
+import { CampaignOrdersPanel } from "@/components/CampaignOrdersPanel";
 import { CampaignItemsTable } from "@/components/CampaignItemsTable";
 import { DatePicker } from "@/components/DatePicker";
 
@@ -542,6 +543,9 @@ export default function CampaignsListPage() {
                 onSaved={() => { setModal(null); setReloadTick((t) => t + 1); }}
                 onCancel={() => setModal(null)}
               />
+            </div>
+            <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">
+              <CampaignOrdersPanel campaignId={modal.values.id!} />
             </div>
           </div>
         )}
