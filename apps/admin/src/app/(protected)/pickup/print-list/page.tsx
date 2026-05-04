@@ -164,17 +164,6 @@ function Body() {
           合計 {totalQty} 項　$ {grandTotal.toLocaleString()}
         </div>
 
-        <div className="mt-3 text-center text-[10px] text-zinc-500">
-          ─ 取貨確認 ─
-        </div>
-        <div className="mt-3">
-          <div>顧客簽名：</div>
-          <div className="mt-3 border-b border-black"></div>
-        </div>
-        <div className="mt-3">
-          <div>店員簽名：</div>
-          <div className="mt-3 border-b border-black"></div>
-        </div>
       </div>
     </>
   );

@@ -189,10 +189,6 @@ function Body() {
             <div className="mt-3 border-t-2 border-zinc-700 pt-2 text-right text-sm font-bold">
               合計 ${grandTotal.toLocaleString()}
             </div>
-            <div className="mt-6 grid grid-cols-2 gap-8 text-xs">
-              <div className="border-t border-zinc-400 pt-2 text-center">顧客簽名</div>
-              <div className="border-t border-zinc-400 pt-2 text-center">店員簽名</div>
-            </div>
           </div>
         ) : (
           /* 單筆模式 — 維持原本格式 */
@@ -252,11 +248,6 @@ function Body() {
               {r.event.notes && (
                 <div className="mb-2 text-xs text-zinc-600">備註：{r.event.notes}</div>
               )}
-
-              <div className="mt-4 grid grid-cols-2 gap-8 text-xs">
-                <div className="border-t border-zinc-400 pt-2 text-center">顧客簽名</div>
-                <div className="border-t border-zinc-400 pt-2 text-center">店員簽名</div>
-              </div>
             </div>
           ))
         )}
