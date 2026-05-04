@@ -9,7 +9,7 @@ import { OrderDetail } from "@/components/OrderDetail";
 import { PickupDialog } from "@/components/PickupDialog";
 import { translateRpcError } from "@/lib/rpcError";
 import { withBasePath } from "@/lib/basePath";
-import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
+import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 
 type OrderStatus =
   | "pending" | "confirmed" | "reserved" | "shipping" | "ready" | "partially_ready"
@@ -113,7 +113,14 @@ function OrdersListContent() {
 
   useEffect(() => { setPage(1); setSelected(new Set()); }, [campaignIds, tab, storeId]);
 
-  // 分店帳號預設選中該分店
+  // 分店帳號鎖死到自家店 (不只是預設,連選都不能選別店)
+  const branchStoreId = useUserBranchStoreId(stores);
+  useEffect(() => {
+    if (branchStoreId != null && storeId !== String(branchStoreId)) {
+      setStoreId(String(branchStoreId));
+    }
+  }, [branchStoreId, storeId]);
+  // HQ 帳號維持原本預設(空 = 全部)
   useDefaultStoreFromUser(stores, storeId, setStoreId);
 
   useEffect(() => {
@@ -442,11 +449,18 @@ function OrdersListContent() {
             </div>
           )}
         </div>
-        <select value={storeId} onChange={(e) => setStoreId(e.target.value)}
-          className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800">
-          <option value="">全部取貨店</option>
-          {stores.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
-        </select>
+        {branchStoreId != null ? (
+          <div className="flex items-center rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+            🏬 {stores.find((s) => Number(s.id) === branchStoreId)?.name ?? "—"}
+            <span className="ml-2 text-xs text-zinc-500">(僅本店)</span>
+          </div>
+        ) : (
+          <select value={storeId} onChange={(e) => setStoreId(e.target.value)}
+            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800">
+            <option value="">全部取貨店</option>
+            {stores.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
+          </select>
+        )}
       </div>
 
       {error && (

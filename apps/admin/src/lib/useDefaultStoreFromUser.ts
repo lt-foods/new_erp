@@ -1,7 +1,24 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useAuth } from "@/components/AuthProvider";
+
+/**
+ * 回傳當前使用者「分店帳號」鎖到的 store id;HQ / 沒設 stores 回 null。
+ * 拿來判斷是否要強制鎖門市篩選 / 隱藏下拉。
+ */
+export function useUserBranchStoreId(
+  stores: ReadonlyArray<{ id: number | string; name: string }>,
+): number | null {
+  const { user } = useAuth();
+  return useMemo(() => {
+    const userStores = user?.app_metadata?.stores as unknown;
+    if (!Array.isArray(userStores) || userStores.length === 0) return null;
+    if (userStores.includes("總倉")) return null;
+    const match = stores.find((s) => userStores.includes(s.name));
+    return match ? Number(match.id) : null;
+  }, [stores, user]);
+}
 
 /**
  * 分店帳號登入時,把任何「分店篩選下拉」預設選中該分店。
