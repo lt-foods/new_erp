@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
+import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 
 type OrderRow = {
   id: number;
@@ -50,6 +51,7 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
   const [rows, setRows] = useState<OrderRow[] | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
   const [storeFilter, setStoreFilter] = useState<string>("");
+  useDefaultStoreFromUser(stores, storeFilter, setStoreFilter);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {

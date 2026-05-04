@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 import { Modal } from "@/components/Modal";
 import { withBasePath } from "@/lib/basePath";
 import { DatePicker } from "@/components/DatePicker";
@@ -61,6 +62,7 @@ export default function ReceivablesPage() {
   const [page, setPage] = useState(1);
 
   const [stores, setStores] = useState<Map<number, Store>>(new Map());
+  useDefaultStoreFromUser(Array.from(stores.values()), storeFilter, setStoreFilter);
   const [detail, setDetail] = useState<Receivable | null>(null);
 
   useEffect(() => { setPage(1); }, [statusFilter, storeFilter]);

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 import { Modal } from "@/components/Modal";
 import { MemberForm, type MemberFormValues } from "@/components/MemberForm";
 import { MemberDetail } from "@/components/MemberDetail";
@@ -47,6 +48,7 @@ export default function MembersListPage() {
   const [page, setPage] = useState(1);
 
   const [stores, setStores] = useState<Store[]>([]);
+  useDefaultStoreFromUser(stores, storeId, setStoreId);
   const [balances, setBalances] = useState<Map<number, { points: number; wallet: number }>>(new Map());
   const [reloadTick, setReloadTick] = useState(0);
   const [modal, setModal] = useState<

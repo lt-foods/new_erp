@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 
 type Counts = {
   products: number;
@@ -45,6 +46,7 @@ const STATUS_LABEL_ORDER: Record<string, string> = {
 export default function Dashboard() {
   const [storeId, setStoreId] = useState<string>("");
   const [stores, setStores] = useState<Store[]>([]);
+  useDefaultStoreFromUser(stores, storeId, setStoreId);
   const [counts, setCounts] = useState<Counts | null>(null);
   const [recentOrders, setRecentOrders] = useState<RecentOrder[]>([]);
   const [recentMembers, setRecentMembers] = useState<RecentMember[]>([]);

@@ -9,6 +9,7 @@ import { OrderDetail } from "@/components/OrderDetail";
 import { PickupDialog } from "@/components/PickupDialog";
 import { translateRpcError } from "@/lib/rpcError";
 import { withBasePath } from "@/lib/basePath";
+import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 
 type OrderStatus =
   | "pending" | "confirmed" | "reserved" | "shipping" | "ready" | "partially_ready"
@@ -111,6 +112,9 @@ function OrdersListContent() {
   const [bulkBusy, setBulkBusy] = useState(false);
 
   useEffect(() => { setPage(1); setSelected(new Set()); }, [campaignIds, tab, storeId]);
+
+  // 分店帳號預設選中該分店
+  useDefaultStoreFromUser(stores, storeId, setStoreId);
 
   useEffect(() => {
     (async () => {
