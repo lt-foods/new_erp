@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
-import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
+import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 import { Modal } from "@/components/Modal";
 import { MemberForm, type MemberFormValues } from "@/components/MemberForm";
 import { MemberDetail } from "@/components/MemberDetail";
@@ -48,6 +48,12 @@ export default function MembersListPage() {
   const [page, setPage] = useState(1);
 
   const [stores, setStores] = useState<Store[]>([]);
+  const branchStoreId = useUserBranchStoreId(stores);
+  useEffect(() => {
+    if (branchStoreId != null && storeId !== String(branchStoreId)) {
+      setStoreId(String(branchStoreId));
+    }
+  }, [branchStoreId, storeId]);
   useDefaultStoreFromUser(stores, storeId, setStoreId);
   const [balances, setBalances] = useState<Map<number, { points: number; wallet: number }>>(new Map());
   const [reloadTick, setReloadTick] = useState(0);
@@ -185,6 +191,12 @@ export default function MembersListPage() {
           onChange={(e) => setQueryDraft(e.target.value)}
           className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800"
         />
+        {branchStoreId != null ? (
+          <div className="flex items-center rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+            🏬 {stores.find((s) => Number(s.id) === branchStoreId)?.name ?? "—"}
+            <span className="ml-2 text-xs text-zinc-500">(僅本店)</span>
+          </div>
+        ) : (
         <select
           value={storeId}
           onChange={(e) => setStoreId(e.target.value)}
@@ -197,6 +209,7 @@ export default function MembersListPage() {
             </option>
           ))}
         </select>
+        )}
       </div>
 
       {error && (
