@@ -167,20 +167,12 @@ export default function MembersListPage() {
             {loading ? "載入中…" : total === 0 ? "共 0 筆" : `共 ${total} 筆（顯示 ${fromIdx}-${toIdx}）`}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Link
-            href="/pickup"
-            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-          >
-            🔎 查詢會員訂單
-          </Link>
-          <button
-            onClick={() => setModal({ mode: "new" })}
-            className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
-          >
-            新增會員
-          </button>
-        </div>
+        <button
+          onClick={() => setModal({ mode: "new" })}
+          className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+        >
+          新增會員
+        </button>
       </header>
 
       <div className="grid gap-3 sm:grid-cols-2">
@@ -269,25 +261,33 @@ export default function MembersListPage() {
                       {new Date(r.updated_at).toLocaleString("zh-TW")}
                     </Td>
                     <Td>
-                      <button
-                        onClick={async () => {
-                          const { data } = await getSupabase()
-                            .from("members")
-                            .select("id, member_no, phone, name, gender, birthday, email, tier_id, home_store_id, status, notes")
-                            .eq("id", r.id).maybeSingle();
-                          if (data) setModal({ mode: "edit", values: {
-                            id: data.id, member_no: data.member_no,
-                            // LIFF auto-register 的 placeholder「line:<uid>」不要灌進編輯表單
-                            phone: data.phone && !data.phone.startsWith("line:") ? data.phone : "",
-                            name: data.name ?? "", gender: data.gender, birthday: data.birthday,
-                            email: data.email, tier_id: data.tier_id, home_store_id: data.home_store_id,
-                            status: data.status, notes: data.notes,
-                          }});
-                        }}
-                        className="text-xs text-blue-600 hover:underline dark:text-blue-400"
-                      >
-                        編輯
-                      </button>
+                      <div className="flex items-center justify-end gap-3">
+                        <Link
+                          href={`/pickup?q=${encodeURIComponent(r.member_no)}`}
+                          className="text-xs text-emerald-600 hover:underline dark:text-emerald-400"
+                        >
+                          🔎 查訂單
+                        </Link>
+                        <button
+                          onClick={async () => {
+                            const { data } = await getSupabase()
+                              .from("members")
+                              .select("id, member_no, phone, name, gender, birthday, email, tier_id, home_store_id, status, notes")
+                              .eq("id", r.id).maybeSingle();
+                            if (data) setModal({ mode: "edit", values: {
+                              id: data.id, member_no: data.member_no,
+                              // LIFF auto-register 的 placeholder「line:<uid>」不要灌進編輯表單
+                              phone: data.phone && !data.phone.startsWith("line:") ? data.phone : "",
+                              name: data.name ?? "", gender: data.gender, birthday: data.birthday,
+                              email: data.email, tier_id: data.tier_id, home_store_id: data.home_store_id,
+                              status: data.status, notes: data.notes,
+                            }});
+                          }}
+                          className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                        >
+                          編輯
+                        </button>
+                      </div>
                     </Td>
                   </tr>
                 );

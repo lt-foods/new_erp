@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { PickupDialog } from "@/components/PickupDialog";
@@ -48,12 +49,23 @@ function activeItems(order: OpenOrder) {
 }
 
 export default function PickupPage() {
-  const [query, setQuery] = useState("");
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-zinc-500">載入中…</div>}>
+      <PickupPageContent />
+    </Suspense>
+  );
+}
+
+function PickupPageContent() {
+  const searchParams = useSearchParams();
+  const initialQuery = searchParams.get("q") ?? "";
+  const [query, setQuery] = useState(initialQuery);
   const [searching, setSearching] = useState(false);
   const [members, setMembers] = useState<Member[] | null>(null);
   const [orders, setOrders] = useState<Map<number, OpenOrder[]>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
+  const autoSearchedRef = useRef(false);
 
   const [pickup, setPickup] = useState<{ orderId: number; orderNo: string } | null>(null);
   const [bulking, setBulking] = useState<number | null>(null);
@@ -186,6 +198,15 @@ export default function PickupPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadTick]);
+
+  // 從 /members 點「查訂單」帶 ?q= 進來,首次自動觸發搜尋
+  useEffect(() => {
+    if (!autoSearchedRef.current && initialQuery.trim().length >= 2) {
+      autoSearchedRef.current = true;
+      search();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
