@@ -124,10 +124,10 @@ export function ProductForm({
       return;
     }
 
-    // 上架驗證：至少一個規格要有 cost / retail / branch 三種價格
+    // 上架驗證：至少一個規格要有零售價 (cost / branch 改成可選,留待採購/分店流程補)
     if (values.status === "active") {
       if (values.id == null) {
-        setError("新商品請先儲存為「草稿」、補完一個規格的成本/零售/分店三種價格後再切到「上架」");
+        setError("新商品請先儲存為「草稿」、補完一個規格的零售價後再切到「上架」");
         return;
       }
       const sb = getSupabase();
@@ -141,19 +141,11 @@ export function ProductForm({
         .from("prices")
         .select("sku_id, scope")
         .in("sku_id", skuIds)
-        .in("scope", ["retail", "cost", "branch"])
+        .eq("scope", "retail")
         .is("effective_to", null);
-      const m = new Map<number, Set<string>>();
-      for (const p of (prices ?? []) as { sku_id: number; scope: string }[]) {
-        const set = m.get(p.sku_id) ?? new Set<string>();
-        set.add(p.scope);
-        m.set(p.sku_id, set);
-      }
-      const ok = [...m.values()].some(
-        (s) => s.has("retail") && s.has("cost") && s.has("branch")
-      );
-      if (!ok) {
-        setError("上架需至少一個規格已設定成本 / 零售 / 分店三種價格");
+      const skusWithRetail = new Set(((prices ?? []) as { sku_id: number }[]).map((p) => p.sku_id));
+      if (skusWithRetail.size === 0) {
+        setError("上架需至少一個規格已設定零售價");
         return;
       }
     }
