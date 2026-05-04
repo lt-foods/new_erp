@@ -304,7 +304,7 @@ function PickupPageContent() {
                             <OrderThumb order={o} />
                             <div className="flex-1 text-sm">
                               <div className="flex items-baseline gap-2">
-                                <span className="font-medium">{o.campaign?.name ?? "(未知活動)"}</span>
+                                <span>{o.campaign?.name ?? "(未知活動)"}</span>
                                 <span className={`rounded px-2 py-0.5 text-[10px] font-medium ${
                                   o.status === "ready" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" :
                                   o.status === "partially_completed" ? "bg-teal-100 text-teal-800 dark:bg-teal-950 dark:text-teal-300" :
@@ -320,7 +320,7 @@ function PickupPageContent() {
                               <ul className="mt-0.5 space-y-0.5 text-xs text-zinc-700 dark:text-zinc-300">
                                 {activeItems(o).map((it) => (
                                   <li key={it.id} className="flex items-baseline gap-1.5">
-                                    <span className="font-medium">{it.sku?.variant_name ?? it.sku?.product_name ?? "—"}</span>
+                                    <span className="font-bold">{it.sku?.variant_name ?? ""}</span>
                                     <span className="font-mono text-zinc-500">× {Number(it.qty)}</span>
                                   </li>
                                 ))}
@@ -399,13 +399,13 @@ function PickupPageContent() {
                   return (
                     <div key={o.id} className="text-sm">
                       <div className="mb-1">
-                        <span className="font-semibold">{o.campaign?.name ?? "(未知活動)"}</span>
+                        <span>{o.campaign?.name ?? "(未知活動)"}</span>
                         <span className="ml-2 text-[10px] text-zinc-500">取貨店：{o.store?.name ?? "—"}</span>
                       </div>
                       <ul className="ml-4 space-y-0.5 text-xs">
                         {pickItems.map((it) => (
                           <li key={it.id} className="flex items-baseline gap-2">
-                            <span>{it.sku?.variant_name ?? it.sku?.product_name ?? "—"}</span>
+                            <span className="font-bold">{it.sku?.variant_name ?? ""}</span>
                             <span className="font-mono">×{Number(it.qty)}</span>
                           </li>
                         ))}

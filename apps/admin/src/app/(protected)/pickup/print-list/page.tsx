@@ -140,13 +140,13 @@ function Body() {
             const sub = active.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0);
             return (
               <div key={o.id} className="border-b border-dashed border-zinc-400 pb-1">
-                <div className="font-bold">{o.campaign?.name ?? "(未知活動)"}</div>
+                <div>{o.campaign?.name ?? "(未知活動)"}</div>
                 {active.map((it) => {
                   const subtotal = Number(it.qty) * Number(it.unit_price);
                   return (
                     <div key={it.id} className="flex items-baseline justify-between">
-                      <span className="flex-1 truncate pr-2">
-                        {it.sku?.variant_name ?? it.sku?.product_name ?? "—"}
+                      <span className="flex-1 truncate pr-2 font-bold">
+                        {it.sku?.variant_name ?? ""}
                       </span>
                       <span className="whitespace-nowrap">
                         × {Number(it.qty)}
