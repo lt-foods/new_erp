@@ -688,7 +688,6 @@ function InternalOrderPanel({
                   campaignId={campaignId}
                   item={it}
                   isLast={idx === items.length - 1}
-                  editablePrice
                   onChange={(patch) => onItemChange(idx, patch)}
                   onAddNext={onAddItem}
                   onRemove={() => onRemoveItem(idx)}
