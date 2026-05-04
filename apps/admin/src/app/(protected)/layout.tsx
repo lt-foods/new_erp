@@ -71,6 +71,35 @@ const NAV: NavGroup[] = [
 
 const NAV_COLLAPSE_KEY = "new_erp-nav-collapsed";
 
+// 分店帳號 (app_metadata.stores 有值且不含「總倉」) 隱藏的項目
+const BRANCH_HIDDEN_HREFS = new Set([
+  "/purchase/requests",   // 採購單
+  "/purchase/orders",     // 採購訂單
+  "/picking/workstation", // 撿貨工作站
+  "/picking/history",     // 撿貨歷史
+  "/transfers/dispatch",  // 總倉派貨
+  "/finance/receivables", // HQ 應收
+]);
+const BRANCH_HIDDEN_GROUPS = new Set([
+  "社群選品", // 整個 group 隱藏
+]);
+
+function isBranchUser(user: { app_metadata?: { stores?: unknown } } | null | undefined): boolean {
+  const stores = user?.app_metadata?.stores;
+  if (!Array.isArray(stores) || stores.length === 0) return false;
+  return !stores.includes("總倉");
+}
+
+function filterNavForBranch(nav: NavGroup[]): NavGroup[] {
+  return nav
+    .filter((g) => !g.title || !BRANCH_HIDDEN_GROUPS.has(g.title))
+    .map((g) => ({
+      ...g,
+      items: g.items.filter((it) => !BRANCH_HIDDEN_HREFS.has(it.href)),
+    }))
+    .filter((g) => g.items.length > 0);
+}
+
 export default function ProtectedLayout({ children }: { children: ReactNode }) {
   const { session, loading, user, signOut } = useAuth();
   const router = useRouter();
@@ -140,6 +169,9 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
     router.replace("/login");
   }
 
+  const branchUser = isBranchUser(user);
+  const visibleNav = branchUser ? filterNavForBranch(NAV) : NAV;
+
   return (
     <div className="flex min-h-full flex-1 flex-col md:flex-row">
       <aside className="hidden w-52 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 md:flex print:hidden dark:border-zinc-800 dark:bg-zinc-950">
@@ -154,7 +186,7 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
         </div>
 
         <nav className="flex-1 overflow-y-auto px-2 py-3 text-sm">
-          {NAV.map((g, gi) => {
+          {visibleNav.map((g, gi) => {
             const groupHasActive = g.items.some((it) => it.match.test(pathname || ""));
             const isCollapsed = g.title ? collapsed.has(g.title) && !groupHasActive : false;
             return (
@@ -259,7 +291,7 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
             </div>
 
             <nav className="flex-1 overflow-y-auto px-2 py-3 text-sm">
-              {NAV.map((g, gi) => {
+              {visibleNav.map((g, gi) => {
                 const groupHasActive = g.items.some((it) => it.match.test(pathname || ""));
                 const isCollapsed = g.title ? collapsed.has(g.title) && !groupHasActive : false;
                 return (
