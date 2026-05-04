@@ -146,7 +146,7 @@ function Body() {
                   return (
                     <div key={it.id} className="flex items-baseline justify-between">
                       <span className="flex-1 truncate pr-2 font-bold">
-                        {it.sku?.variant_name ?? ""}
+                        {it.sku?.variant_name || it.sku?.product_name || "—"}
                       </span>
                       <span className="whitespace-nowrap">
                         × {Number(it.qty)}

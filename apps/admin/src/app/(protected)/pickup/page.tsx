@@ -320,7 +320,7 @@ function PickupPageContent() {
                               <ul className="mt-0.5 space-y-0.5 text-xs text-zinc-700 dark:text-zinc-300">
                                 {activeItems(o).map((it) => (
                                   <li key={it.id} className="flex items-baseline gap-1.5">
-                                    <span className="font-bold">{it.sku?.variant_name ?? ""}</span>
+                                    <span className="font-bold">{it.sku?.variant_name || it.sku?.product_name || "—"}</span>
                                     <span className="font-mono text-zinc-500">× {Number(it.qty)}</span>
                                   </li>
                                 ))}
@@ -405,7 +405,7 @@ function PickupPageContent() {
                       <ul className="ml-4 space-y-0.5 text-xs">
                         {pickItems.map((it) => (
                           <li key={it.id} className="flex items-baseline gap-2">
-                            <span className="font-bold">{it.sku?.variant_name ?? ""}</span>
+                            <span className="font-bold">{it.sku?.variant_name || it.sku?.product_name || "—"}</span>
                             <span className="font-mono">×{Number(it.qty)}</span>
                           </li>
                         ))}
