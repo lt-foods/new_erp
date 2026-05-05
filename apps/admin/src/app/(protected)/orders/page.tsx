@@ -106,10 +106,8 @@ function OrdersListContent() {
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detailNo, setDetailNo] = useState<string>("");
   const [reloadOrders, setReloadOrders] = useState(0);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [bulkBusy, setBulkBusy] = useState(false);
 
-  useEffect(() => { setPage(1); setSelected(new Set()); }, [campaignIds, tab, storeId]);
+  useEffect(() => { setPage(1); }, [campaignIds, tab, storeId]);
 
   // 分店帳號鎖死到自家店 (不只是預設,連選都不能選別店)
   const branchStoreId = useUserBranchStoreId(stores);
@@ -233,99 +231,6 @@ function OrdersListContent() {
   const storeMap = useMemo(() => new Map(stores.map((s) => [s.id, s])), [stores]);
 
   // 批次取貨 — 抓所有勾選訂單的 pickable items, 連續呼 rpc_record_pickup,
-  // 收集 event_ids,最後開一個合併的列印頁(/pickup/print?event_ids=a,b,c)
-  const pickableRows = useMemo(
-    () =>
-      (rows ?? []).filter(
-        (r) =>
-          pickupReady.get(r.id) === true &&
-          !["completed", "expired", "cancelled", "transferred_out"].includes(r.status),
-      ),
-    [rows, pickupReady],
-  );
-  const allPickableSelected =
-    pickableRows.length > 0 && pickableRows.every((r) => selected.has(r.id));
-
-  function toggleAllPickable() {
-    if (allPickableSelected) setSelected(new Set());
-    else setSelected(new Set(pickableRows.map((r) => r.id)));
-  }
-  function toggleSelected(id: number) {
-    setSelected((s) => {
-      const next = new Set(s);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  async function bulkPickup() {
-    if (selected.size === 0) return;
-    if (!confirm(`對 ${selected.size} 筆訂單執行取貨並列印整合單?`)) return;
-    setBulkBusy(true);
-    try {
-      const sb = getSupabase();
-      const { data: sess } = await sb.auth.getSession();
-      const operator = sess.session?.user?.id;
-      if (!operator) {
-        alert("尚未登入");
-        return;
-      }
-      const orderIds = Array.from(selected);
-      const { data: itemsData, error: ie } = await sb
-        .from("customer_order_items")
-        .select("id, order_id, status")
-        .in("order_id", orderIds)
-        .in("status", ["pending", "reserved", "ready"]);
-      if (ie) {
-        alert(`抓 items 失敗：${ie.message}`);
-        return;
-      }
-      const itemsByOrder = new Map<number, number[]>();
-      for (const it of (itemsData ?? []) as { id: number; order_id: number }[]) {
-        const list = itemsByOrder.get(it.order_id) ?? [];
-        list.push(it.id);
-        itemsByOrder.set(it.order_id, list);
-      }
-      const eventIds: number[] = [];
-      const failed: { id: number; msg: string }[] = [];
-      for (const oid of orderIds) {
-        const itemIds = itemsByOrder.get(oid) ?? [];
-        if (itemIds.length === 0) continue;
-        const { data, error } = await sb.rpc("rpc_record_pickup", {
-          p_order_id: oid,
-          p_item_ids: itemIds,
-          p_operator: operator,
-          p_notes: null,
-        });
-        if (error) {
-          failed.push({ id: oid, msg: translateRpcError(error) });
-          continue;
-        }
-        const result = data as { event_id: number };
-        eventIds.push(result.event_id);
-      }
-      if (eventIds.length > 0) {
-        window.open(
-          withBasePath(`/pickup/print?event_ids=${eventIds.join(",")}`),
-          "_blank",
-        );
-      }
-      if (failed.length > 0) {
-        alert(
-          `已完成 ${eventIds.length} 筆\n失敗 ${failed.length} 筆:\n` +
-            failed.map((f) => `#${f.id}: ${f.msg}`).join("\n"),
-        );
-      } else if (eventIds.length === 0) {
-        alert("沒有可取的項目");
-      }
-      setSelected(new Set());
-      setReloadOrders((n) => n + 1);
-    } finally {
-      setBulkBusy(false);
-    }
-  }
-
   async function cancelOrder(orderId: number, orderNo: string, status: string) {
     const reason = prompt(
       status === "shipping"
@@ -467,65 +372,18 @@ function OrdersListContent() {
         </div>
       )}
 
-      {/* 批次取貨工具列 — 至少有一張可取的訂單時才出現 */}
-      {pickableRows.length > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 dark:border-emerald-900 dark:bg-emerald-950">
-          <div className="flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
-              checked={allPickableSelected}
-              onChange={toggleAllPickable}
-              className="h-4 w-4"
-            />
-            <span className="text-zinc-700 dark:text-zinc-200">
-              全選可取訂單
-              <span className="ml-1 text-zinc-500">
-                (本頁可取 {pickableRows.length} 筆 · 已選 {selected.size})
-              </span>
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            {selected.size > 0 && (
-              <button
-                onClick={() => setSelected(new Set())}
-                className="text-xs text-zinc-600 hover:underline dark:text-zinc-300"
-              >
-                取消選取
-              </button>
-            )}
-            <button
-              onClick={bulkPickup}
-              disabled={selected.size === 0 || bulkBusy}
-              className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-300 disabled:text-emerald-700 dark:disabled:bg-emerald-950 dark:disabled:text-emerald-400"
-            >
-              {bulkBusy ? "處理中…" : `✅ 取貨並列印整合單${selected.size > 0 ? ` (${selected.size})` : ""}`}
-            </button>
-          </div>
-        </div>
-      )}
-
       <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
-              <Th className="w-10">
-                <input
-                  type="checkbox"
-                  checked={allPickableSelected}
-                  onChange={toggleAllPickable}
-                  disabled={pickableRows.length === 0}
-                  className="h-4 w-4"
-                  aria-label="全選可取訂單"
-                />
-              </Th>
               <Th>開團</Th><Th>會員 / 暱稱</Th><Th>取貨店</Th><Th className="text-right">項數</Th><Th className="text-right">總數量</Th><Th className="text-right">總金額</Th><Th className="text-right">日期</Th><Th className="text-right">操作</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={9} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={8} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">{total === 0 && campaignIds.length === 0 && !storeId ? `此 tab 下尚無訂單。` : "沒有符合條件的訂單。"}</td></tr>
+              <tr><td colSpan={8} className="p-6 text-center text-zinc-500">{total === 0 && campaignIds.length === 0 && !storeId ? `此 tab 下尚無訂單。` : "沒有符合條件的訂單。"}</td></tr>
             ) : rows.map((r) => {
               const m = r.member_id ? members.get(r.member_id) : null;
               const c = campaignMap.get(r.campaign_id);
@@ -543,20 +401,6 @@ function OrdersListContent() {
                       : "odd:bg-white even:bg-zinc-50 hover:bg-zinc-100 dark:odd:bg-zinc-950 dark:even:bg-zinc-900 dark:hover:bg-zinc-800"
                   }
                 >
-                  <Td className="w-10">
-                    {pickupReady.get(r.id) === true &&
-                      !["completed", "expired", "cancelled", "transferred_out"].includes(
-                        r.status,
-                      ) && (
-                        <input
-                          type="checkbox"
-                          checked={selected.has(r.id)}
-                          onChange={() => toggleSelected(r.id)}
-                          className="h-4 w-4"
-                          aria-label={`選取訂單 ${r.order_no}`}
-                        />
-                      )}
-                  </Td>
                   <Td>
                     <button
                       onClick={() => { setDetailId(r.id); setDetailNo(r.order_no); }}
