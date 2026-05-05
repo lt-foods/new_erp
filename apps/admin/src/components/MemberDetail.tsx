@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { MemberMergeModal } from "@/components/MemberMergeModal";
+import { translateRpcError } from "@/lib/rpcError";
 
 type Member = {
   id: number;
@@ -13,11 +15,16 @@ type Member = {
   email: string | null;
   tier_id: number | null;
   status: string;
+  member_type: string | null;
   notes: string | null;
+  admin_note: string | null;
+  no_notify_pickup: boolean;
+  no_new_order: boolean;
   avatar_url: string | null;
   line_user_id: string | null;
   joined_at: string;
   last_visit_at: string | null;
+  merged_into_member_id: number | null;
 };
 type Tier = { id: number; name: string };
 
@@ -50,6 +57,33 @@ export function MemberDetail({ memberId }: { memberId: number }) {
   const [tab, setTab] = useState<"points" | "wallet" | "test">("points");
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [savingFlags, setSavingFlags] = useState(false);
+  const [draftAdminNote, setDraftAdminNote] = useState("");
+  const [draftNoNotify, setDraftNoNotify] = useState(false);
+  const [draftNoNewOrder, setDraftNoNewOrder] = useState(false);
+
+  async function saveFlags() {
+    if (!member) return;
+    setSavingFlags(true);
+    try {
+      const sb = getSupabase();
+      const { data: sess } = await sb.auth.getSession();
+      const operator = sess.session?.user?.id;
+      const { error: e } = await sb.rpc("rpc_set_member_flags", {
+        p_member_id: member.id,
+        p_no_notify_pickup: draftNoNotify,
+        p_no_new_order: draftNoNewOrder,
+        p_admin_note: draftAdminNote,
+        p_operator: operator,
+      });
+      if (e) { alert(`儲存失敗：${translateRpcError(e)}`); return; }
+      setReloadTick((n) => n + 1);
+    } finally {
+      setSavingFlags(false);
+    }
+  }
 
   async function sendTestNotification() {
     if (!member) return;
@@ -94,12 +128,15 @@ export function MemberDetail({ memberId }: { memberId: number }) {
       const sb = getSupabase();
       const { data: m, error: err } = await sb
         .from("members")
-        .select("id, member_no, phone, name, gender, birthday, email, tier_id, status, notes, avatar_url, line_user_id, joined_at, last_visit_at")
+        .select("id, member_no, phone, name, gender, birthday, email, tier_id, status, member_type, notes, admin_note, no_notify_pickup, no_new_order, avatar_url, line_user_id, joined_at, last_visit_at, merged_into_member_id")
         .eq("id", memberId).maybeSingle<Member>();
       if (cancelled) return;
       if (err) { setError(err.message); return; }
       if (!m) { setError("找不到會員"); return; }
       setMember(m);
+      setDraftAdminNote(m.admin_note ?? "");
+      setDraftNoNotify(!!m.no_notify_pickup);
+      setDraftNoNewOrder(!!m.no_new_order);
 
       const [tierQ, pb, wb, pl, wl] = await Promise.all([
         m.tier_id ? sb.from("member_tiers").select("id, name").eq("id", m.tier_id).maybeSingle<Tier>() : Promise.resolve({ data: null }),
@@ -116,7 +153,13 @@ export function MemberDetail({ memberId }: { memberId: number }) {
       setWLedger((wl.data as WalletEntry[]) ?? []);
     })();
     return () => { cancelled = true; };
-  }, [memberId]);
+  }, [memberId, reloadTick]);
+
+  const flagsDirty = !!member && (
+    draftAdminNote !== (member.admin_note ?? "")
+    || draftNoNotify !== !!member.no_notify_pickup
+    || draftNoNewOrder !== !!member.no_new_order
+  );
 
   if (error) {
     return (
@@ -138,11 +181,102 @@ export function MemberDetail({ memberId }: { memberId: number }) {
             {member.name?.[0] ?? "?"}
           </div>
         )}
-        <div>
-          <div className="text-lg font-semibold">{member.name ?? "—"}</div>
+        <div className="flex-1">
+          <div className="flex flex-wrap items-baseline gap-2 text-lg font-semibold">
+            {member.name ?? "—"}
+            {member.admin_note && (
+              <span className="rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300" title="管理員備註（不對外顯示）">
+                🔒 {member.admin_note}
+              </span>
+            )}
+            {member.no_notify_pickup && (
+              <span className="rounded bg-zinc-200 px-2 py-0.5 text-xs font-medium text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200">🔕 不通知</span>
+            )}
+            {member.no_new_order && (
+              <span className="rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-950 dark:text-red-300">🚫 禁止加單</span>
+            )}
+            {member.status === "merged" && (
+              <span className="rounded bg-zinc-300 px-2 py-0.5 text-xs font-medium text-zinc-700 line-through dark:bg-zinc-700 dark:text-zinc-300">已合併 → #{member.merged_into_member_id}</span>
+            )}
+            {member.member_type === "guest" && (
+              <span className="rounded bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-950 dark:text-blue-300">虛擬會員</span>
+            )}
+          </div>
           <div className="font-mono text-xs text-zinc-500">#{member.member_no}</div>
         </div>
+        {member.member_type === "guest" && member.status !== "merged" && (
+          <button
+            onClick={() => setMergeOpen(true)}
+            className="rounded-md border border-rose-300 px-3 py-1 text-xs font-medium text-rose-700 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-950"
+            title="把虛擬會員合併到 LINE 實體會員（搬走訂單 / 點數 / 儲值）"
+          >
+            🔗 合併到實體會員
+          </button>
+        )}
       </div>
+
+      {/* 黑名單 / 管理員備註 */}
+      <div className="rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
+        <div className="mb-2 text-xs font-medium text-zinc-500">管理員設定（不對外顯示）</div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={draftNoNotify}
+              onChange={(e) => setDraftNoNotify(e.target.checked)}
+              className="h-4 w-4"
+            />
+            <span>🔕 黑名單：不發送取貨/到貨通知</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={draftNoNewOrder}
+              onChange={(e) => setDraftNoNewOrder(e.target.checked)}
+              className="h-4 w-4"
+            />
+            <span>🚫 黑名單：禁止此會員加新訂單</span>
+          </label>
+          <label className="block text-sm sm:col-span-2">
+            <span className="mb-1 block text-xs text-zinc-500">暱稱備註（管理員專用，不會出現在小白單 / LIFF / 我的介面）</span>
+            <input
+              value={draftAdminNote}
+              onChange={(e) => setDraftAdminNote(e.target.value)}
+              placeholder="如：奧客 / 老闆親戚 / 常退貨"
+              className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900"
+            />
+          </label>
+        </div>
+        {flagsDirty && (
+          <div className="mt-2 flex justify-end gap-2">
+            <button
+              onClick={() => {
+                setDraftAdminNote(member.admin_note ?? "");
+                setDraftNoNotify(!!member.no_notify_pickup);
+                setDraftNoNewOrder(!!member.no_new_order);
+              }}
+              disabled={savingFlags}
+              className="rounded-md border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            >
+              還原
+            </button>
+            <button
+              onClick={saveFlags}
+              disabled={savingFlags}
+              className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+            >
+              {savingFlags ? "儲存中…" : "💾 儲存設定"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      <MemberMergeModal
+        open={mergeOpen}
+        onClose={() => setMergeOpen(false)}
+        guestMember={{ id: member.id, name: member.name, phone: member.phone, member_no: member.member_no }}
+        onMerged={() => { setMergeOpen(false); setReloadTick((n) => n + 1); }}
+      />
 
       <div className="grid gap-3 sm:grid-cols-3">
         <Card label="等級">{tier?.name ?? "—"}</Card>
