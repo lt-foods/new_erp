@@ -356,10 +356,14 @@ function PickupPageContent() {
                                 取貨店：{o.store?.name ?? "—"}
                                 {o.ready_at ? (
                                   <span className="ml-2 font-semibold text-emerald-700 dark:text-emerald-400">
-                                    到貨：{new Date(o.ready_at).toLocaleDateString("zh-TW")}
+                                    到貨：{new Date(o.ready_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}
+                                  </span>
+                                ) : canPickup ? (
+                                  <span className="ml-2 font-semibold text-emerald-700 dark:text-emerald-400">
+                                    ✅ 已到貨
                                   </span>
                                 ) : (
-                                  <span className="ml-2 text-zinc-400">未到貨</span>
+                                  <span className="ml-2 text-zinc-400">⏳ 未到貨</span>
                                 )}
                                 {o.pickup_deadline && <span className="ml-2">截止：{o.pickup_deadline}</span>}
                                 {canPickup ? (
