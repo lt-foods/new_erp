@@ -137,6 +137,17 @@ function PickupPageContent() {
         arr.push(r);
         m.set(r.member_id, arr);
       }
+      // 依「可取貨」優先 + 到貨時間久的優先（催客人取貨）
+      // pickup_ready=true 在前；group 內 ready_at ASC NULLS LAST；末層 updated_at DESC
+      for (const arr of m.values()) {
+        arr.sort((a, b) => {
+          if (a.pickup_ready !== b.pickup_ready) return a.pickup_ready ? -1 : 1;
+          const aT = a.ready_at ? Date.parse(a.ready_at) : Number.POSITIVE_INFINITY;
+          const bT = b.ready_at ? Date.parse(b.ready_at) : Number.POSITIVE_INFINITY;
+          if (aT !== bT) return aT - bT;
+          return 0;
+        });
+      }
       setOrders(m);
     } finally {
       setSearching(false);
