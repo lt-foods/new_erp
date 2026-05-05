@@ -13,21 +13,27 @@ async function fanoutPushNotifications(transferId: number): Promise<number> {
     console.warn("get members for push failed:", error.message);
     return 0;
   }
-  const list = (rows as { member_id: number; order_id: number; order_no: string }[] | null) ?? [];
-  if (list.length === 0) return 0;
+  const list = (rows as { member_id: number; order_id: number; order_no: string; last_notify_pickup_at: string | null }[] | null) ?? [];
+  if (list.length === 0) return 0;  // RPC 已過濾黑名單會員
 
-  // 去重：同一會員多張訂單只推一次
-  const memberIds = Array.from(new Set(list.map((r) => r.member_id)));
+  // 去重：同一會員多張訂單只推一次（取第一張當代表）
+  const seenMembers = new Set<number>();
+  const uniqueByMember = list.filter((r) => {
+    if (seenMembers.has(r.member_id)) return false;
+    seenMembers.add(r.member_id);
+    return true;
+  });
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   if (!supabaseUrl) return 0;
   const { data: sess } = await sb.auth.getSession();
   const token = sess.session?.access_token;
+  const operator = sess.session?.user?.id;
   if (!token) return 0;
 
   let success = 0;
   await Promise.allSettled(
-    memberIds.map(async (memberId) => {
+    uniqueByMember.map(async (r) => {
       try {
         const resp = await fetch(`${supabaseUrl}/functions/v1/admin-notify`, {
           method: "POST",
@@ -36,18 +42,31 @@ async function fanoutPushNotifications(transferId: number): Promise<number> {
             Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({
-            member_id: memberId,
+            member_id: r.member_id,
             title: "您的商品到貨",
             message: "點此開啟訂單頁查看",
             url: "/orders",
+            category: "order_arrived",
           }),
         });
         if (resp.ok) success += 1;
       } catch (e) {
-        console.warn(`push to member ${memberId} failed:`, e);
+        console.warn(`push to member ${r.member_id} failed:`, e);
       }
     }),
   );
+
+  // 不論推播成功與否，都把所有受影響訂單 (含同會員多張) 標 last_notify_pickup_at
+  // 讓 /pickup 顯示「📨 上次通知 X」避免再手動重複推
+  await Promise.allSettled(
+    list.map((r) =>
+      sb.rpc("rpc_mark_pickup_notified", {
+        p_order_id: r.order_id,
+        p_operator: operator ?? null,
+      }),
+    ),
+  );
+
   return success;
 }
 
