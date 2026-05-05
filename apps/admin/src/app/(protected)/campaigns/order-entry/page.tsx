@@ -26,6 +26,9 @@ type MemberRow = {
   avatar_url: string | null;
   home_store_id: number | null;
   home_store_name: string | null;
+  no_new_order: boolean;
+  no_notify_pickup: boolean;
+  admin_note: string | null;
 };
 
 type AliasRow = {
@@ -38,6 +41,9 @@ type AliasRow = {
   avatar_url: string | null;
   home_store_id: number | null;
   home_store_name: string | null;
+  no_new_order: boolean;
+  no_notify_pickup: boolean;
+  admin_note: string | null;
 };
 
 type SkuOption = {
@@ -66,6 +72,8 @@ type CustomerEntry = {
   pickup_store_id: number | null;
   pickup_store_name: string | null;
   items: ItemRow[];
+  no_new_order?: boolean;
+  admin_note?: string | null;
 };
 
 const DRAFT_PREFIX = "draft:order-entry:";
@@ -555,12 +563,17 @@ function PageContent() {
             >
               + 新增顧客（Alt+N）
             </button>
+            {entries.some((e) => e.no_new_order) && (
+              <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+                ⚠️ 有顧客屬黑名單禁加單：{entries.filter((e) => e.no_new_order).map((e) => e.display_name || e.member_no).join("、")}。請移除後再送出。
+              </div>
+            )}
             <div className="flex justify-end">
               <button
                 type="button"
                 onClick={handleSubmit}
-                disabled={submitting}
-                className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                disabled={submitting || entries.some((e) => e.no_new_order)}
+                className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
               >
                 {submitting ? "送出中…" : "送出訂單（Ctrl+S）"}
               </button>
@@ -934,7 +947,8 @@ function CustomerSearch({
               {aliases.map((a) => {
                 const dup = pickedMemberIds.has(a.member_id);
                 const noStore = a.home_store_id == null;
-                const blocked = dup || noStore;
+                const blacklisted = !!a.no_new_order;
+                const blocked = dup || noStore || blacklisted;
                 return (
                   <button
                     key={`a-${a.alias_id}`}
@@ -948,15 +962,19 @@ function CustomerSearch({
                         nickname: a.nickname,
                         pickup_store_id: a.home_store_id,
                         pickup_store_name: a.home_store_name,
+                        no_new_order: a.no_new_order,
+                        admin_note: a.admin_note,
                       });
                       setOpen(false);
                     }}
                     className="block w-full px-2 py-1.5 text-left text-xs hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent dark:hover:bg-zinc-700"
                   >
                     <span className="font-medium">{a.nickname}</span>
+                    {a.admin_note && <span className="ml-1 rounded bg-amber-100 px-1 text-[9px] text-amber-800">🔒 {a.admin_note}</span>}
                     <span className="ml-2 text-zinc-500">→ {a.member_name} ({a.member_no})</span>
-                    {dup && <span className="ml-2 text-amber-600">已選</span>}
-                    {!dup && noStore && <span className="ml-2 text-red-500">未設取貨店</span>}
+                    {blacklisted && <span className="ml-2 font-medium text-red-600">🚫 黑名單禁加單</span>}
+                    {!blacklisted && dup && <span className="ml-2 text-amber-600">已選</span>}
+                    {!blacklisted && !dup && noStore && <span className="ml-2 text-red-500">未設取貨店</span>}
                   </button>
                 );
               })}
@@ -969,7 +987,8 @@ function CustomerSearch({
                 const aliased = aliases.some((a) => a.member_id === m.id);
                 const dup = pickedMemberIds.has(m.id);
                 const noStore = m.home_store_id == null;
-                const blocked = dup || noStore;
+                const blacklisted = !!m.no_new_order;
+                const blocked = dup || noStore || blacklisted;
                 return (
                   <div
                     key={`m-${m.id}`}
@@ -985,15 +1004,19 @@ function CustomerSearch({
                           display_name: m.name,
                           pickup_store_id: m.home_store_id,
                           pickup_store_name: m.home_store_name,
+                          no_new_order: m.no_new_order,
+                          admin_note: m.admin_note,
                         });
                         setOpen(false);
                       }}
                       className="flex-1 text-left disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <span className="font-medium">{m.name}</span>
+                      {m.admin_note && <span className="ml-1 rounded bg-amber-100 px-1 text-[9px] text-amber-800">🔒 {m.admin_note}</span>}
                       <span className="ml-2 text-zinc-500">{m.member_no} · {m.phone ?? "—"}</span>
-                      {dup && <span className="ml-2 text-amber-600">已選</span>}
-                      {!dup && noStore && <span className="ml-2 text-red-500">未設取貨店</span>}
+                      {blacklisted && <span className="ml-2 font-medium text-red-600">🚫 黑名單禁加單</span>}
+                      {!blacklisted && dup && <span className="ml-2 text-amber-600">已選</span>}
+                      {!blacklisted && !dup && noStore && <span className="ml-2 text-red-500">未設取貨店</span>}
                     </button>
                     {!aliased && channelId && !blocked && (
                       <button
