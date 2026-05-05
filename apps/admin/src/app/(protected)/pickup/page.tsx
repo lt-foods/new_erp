@@ -25,6 +25,8 @@ type OpenOrder = {
   pickup_store_id: number | null;
   discount_amount: number;
   ready_at: string | null;       // 到貨時間 (shipping → ready 自動寫入)
+  last_notify_pickup_at: string | null;
+  notify_pickup_count: number;
   pickup_ready?: boolean; // 從 v_order_pickup_ready merge 進來
   campaign: { id: number; campaign_no: string; name: string } | null;
   store: { id: number; name: string } | null;
@@ -107,7 +109,7 @@ function PickupPageContent() {
       const { data: ords, error: e2 } = await sb
         .from("customer_orders")
         .select(
-          `id, order_no, status, pickup_deadline, pickup_store_id, discount_amount, ready_at, member_id,
+          `id, order_no, status, pickup_deadline, pickup_store_id, discount_amount, ready_at, last_notify_pickup_at, notify_pickup_count, member_id,
            campaign:group_buy_campaigns(id, campaign_no, name),
            store:stores!customer_orders_pickup_store_id_fkey(id, name),
            items:customer_order_items(id, qty, unit_price, status, sku:skus(variant_name, product_name, product:products(images)))`,
@@ -218,6 +220,58 @@ function PickupPageContent() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadTick]);
+
+  // 通知個別客人來取貨：寫 in-app + push（admin-notify edge fn）+ 更新 last_notify_pickup_at
+  const [notifyingId, setNotifyingId] = useState<number | null>(null);
+  async function notifyPickup(member: Member, order: OpenOrder) {
+    if (member.no_notify_pickup) {
+      alert(`${member.name ?? member.member_no} 已設「不通知」，無法發送取貨通知。`);
+      return;
+    }
+    if (!order.pickup_ready) {
+      alert("此訂單尚未到貨，無法通知");
+      return;
+    }
+    if (notifyingId != null) return;
+    const since = order.last_notify_pickup_at
+      ? `（已通知 ${order.notify_pickup_count} 次，上次 ${new Date(order.last_notify_pickup_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}）`
+      : "";
+    if (!confirm(`要通知 ${member.name ?? member.member_no} 來取「${order.campaign?.name ?? "—"}」嗎？${since}`)) return;
+    setNotifyingId(order.id);
+    setError(null);
+    try {
+      const sb = getSupabase();
+      const { data: sess } = await sb.auth.getSession();
+      const token = sess.session?.access_token;
+      const operator = sess.session?.user?.id;
+      if (!token || !operator) { setError("尚未登入"); return; }
+
+      const resp = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/admin-notify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          member_id: member.id,
+          title: "您的訂單已到貨可取",
+          message: `「${order.campaign?.name ?? ""}」已在 ${order.store?.name ?? ""} 等候您取貨，請儘速前來。`,
+          url: "/orders",
+          category: "order_arrived",
+        }),
+      });
+      const result = await resp.json();
+      if (!resp.ok) { alert(`推播失敗：${result.error || resp.status}`); return; }
+
+      const { error: rpcErr } = await sb.rpc("rpc_mark_pickup_notified", {
+        p_order_id: order.id,
+        p_operator: operator,
+      });
+      if (rpcErr) { alert(`記錄失敗：${rpcErr.message}`); return; }
+
+      alert(`已通知（推播 ${result.sent ?? 0} 個裝置）`);
+      setReloadTick((n) => n + 1);
+    } finally {
+      setNotifyingId(null);
+    }
+  }
 
   // 從 /members 點「查訂單」帶 ?q= 進來,首次自動觸發搜尋
   useEffect(() => {
@@ -379,8 +433,21 @@ function PickupPageContent() {
                                 ) : (
                                   <span className="ml-2 text-amber-600 dark:text-amber-400">⏳ 分店尚未收貨，無法取貨</span>
                                 )}
+                                {o.last_notify_pickup_at && (
+                                  <span className="ml-2 text-[11px] text-blue-700 dark:text-blue-300" title={`已通知 ${o.notify_pickup_count} 次`}>
+                                    📨 上次通知 {new Date(o.last_notify_pickup_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}
+                                  </span>
+                                )}
                               </div>
                             </div>
+                            <button
+                              onClick={() => notifyPickup(m, o)}
+                              disabled={!canPickup || notifyingId === o.id || m.no_notify_pickup}
+                              title={m.no_notify_pickup ? "此會員已設「不通知」" : !canPickup ? "尚未到貨無法通知" : "通知顧客來取貨（推播 + 站內訊息）"}
+                              className="rounded-md border border-blue-300 px-2 py-2 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950"
+                            >
+                              {notifyingId === o.id ? "⌛" : "🔔 通知"}
+                            </button>
                             <button
                               onClick={() => setPickup({ orderId: o.id, orderNo: o.order_no })}
                               disabled={!canPickup || pickableCount === 0}
