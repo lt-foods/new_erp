@@ -12,6 +12,9 @@ type Member = {
   member_no: string;
   name: string | null;
   phone: string | null;
+  admin_note: string | null;
+  no_notify_pickup: boolean;
+  no_new_order: boolean;
 };
 
 type OpenOrder = {
@@ -21,6 +24,7 @@ type OpenOrder = {
   pickup_deadline: string | null;
   pickup_store_id: number | null;
   discount_amount: number;
+  ready_at: string | null;       // 到貨時間 (shipping → ready 自動寫入)
   pickup_ready?: boolean; // 從 v_order_pickup_ready merge 進來
   campaign: { id: number; campaign_no: string; name: string } | null;
   store: { id: number; name: string } | null;
@@ -90,7 +94,7 @@ function PickupPageContent() {
       const safe = q.replace(/[%,()]/g, " ");
       const { data: ms, error: e1 } = await sb
         .from("members")
-        .select("id, member_no, name, phone")
+        .select("id, member_no, name, phone, admin_note, no_notify_pickup, no_new_order")
         .or(`name.ilike.%${safe}%,phone.ilike.%${safe}%,member_no.ilike.%${safe}%`)
         .neq("status", "deleted")
         .order("last_visit_at", { ascending: false, nullsFirst: false })
@@ -103,13 +107,15 @@ function PickupPageContent() {
       const { data: ords, error: e2 } = await sb
         .from("customer_orders")
         .select(
-          `id, order_no, status, pickup_deadline, pickup_store_id, discount_amount, member_id,
+          `id, order_no, status, pickup_deadline, pickup_store_id, discount_amount, ready_at, member_id,
            campaign:group_buy_campaigns(id, campaign_no, name),
            store:stores!customer_orders_pickup_store_id_fkey(id, name),
            items:customer_order_items(id, qty, unit_price, status, sku:skus(variant_name, product_name, product:products(images)))`,
         )
         .in("member_id", list.map((m) => m.id))
         .in("status", ACTIVE_STATUSES)
+        // 到貨時間早 (久) 的排前面（催客人取貨優先）；尚未到貨的擺後面
+        .order("ready_at", { ascending: true, nullsFirst: false })
         .order("updated_at", { ascending: false });
       if (e2) { setError(e2.message); return; }
 
@@ -265,8 +271,19 @@ function PickupPageContent() {
               const memberOrders = orders.get(m.id) ?? [];
               return (
                 <div key={m.id} className="rounded-md border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                  <div className="mb-2 flex items-baseline gap-3">
+                  <div className="mb-2 flex flex-wrap items-baseline gap-2">
                     <h2 className="text-base font-semibold">{m.name ?? "—"}</h2>
+                    {m.admin_note && (
+                      <span className="rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300" title="管理員備註（不對外顯示）">
+                        🔒 {m.admin_note}
+                      </span>
+                    )}
+                    {m.no_notify_pickup && (
+                      <span className="rounded bg-zinc-200 px-2 py-0.5 text-[10px] font-medium text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200">🔕 不通知</span>
+                    )}
+                    {m.no_new_order && (
+                      <span className="rounded bg-red-100 px-2 py-0.5 text-[10px] font-medium text-red-800 dark:bg-red-950 dark:text-red-300">🚫 禁加單</span>
+                    )}
                     <span className="font-mono text-xs text-zinc-500">{m.member_no}</span>
                     <span className="font-mono text-sm text-zinc-700 dark:text-zinc-300">{m.phone ?? "—"}</span>
                     {memberOrders.length > 0 && (() => {
@@ -310,17 +327,11 @@ function PickupPageContent() {
                             <div className="flex-1 text-sm">
                               <div className="flex items-baseline gap-2">
                                 <span>{o.campaign?.name ?? "(未知活動)"}</span>
-                                <span className={`rounded px-2 py-0.5 text-[10px] font-medium ${
-                                  o.status === "ready" ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" :
-                                  o.status === "partially_completed" ? "bg-teal-100 text-teal-800 dark:bg-teal-950 dark:text-teal-300" :
-                                  o.status === "shipping" ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300" :
-                                  "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
-                                }`}>
-                                  {o.status === "shipping" ? "運送中" :
-                                   o.status === "ready" ? "可取貨" :
-                                   o.status === "partially_completed" ? "部分已取" :
-                                   o.status}
-                                </span>
+                                {o.status === "partially_completed" && (
+                                  <span className="rounded bg-teal-100 px-2 py-0.5 text-[10px] font-medium text-teal-800 dark:bg-teal-950 dark:text-teal-300">
+                                    部分已取
+                                  </span>
+                                )}
                               </div>
                               <ul className="mt-0.5 space-y-0.5 text-xs text-zinc-700 dark:text-zinc-300">
                                 {activeItems(o).map((it) => (
@@ -332,6 +343,13 @@ function PickupPageContent() {
                               </ul>
                               <div className="mt-1 text-xs text-zinc-500">
                                 取貨店：{o.store?.name ?? "—"}
+                                {o.ready_at ? (
+                                  <span className="ml-2 font-semibold text-emerald-700 dark:text-emerald-400">
+                                    到貨：{new Date(o.ready_at).toLocaleDateString("zh-TW")}
+                                  </span>
+                                ) : (
+                                  <span className="ml-2 text-zinc-400">未到貨</span>
+                                )}
                                 {o.pickup_deadline && <span className="ml-2">截止：{o.pickup_deadline}</span>}
                                 {canPickup ? (
                                   <>
