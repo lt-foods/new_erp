@@ -1,10 +1,15 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { OrderTransferModal } from "@/components/OrderTransferModal";
 import { PickupDialog } from "@/components/PickupDialog";
 import { AidOrderTimeline } from "@/components/AidOrderTimeline";
+import { OrderAuditDrawer } from "@/components/OrderAuditDrawer";
+import { EditableNumber, EditableText } from "@/components/EditableCell";
+import { EditableDiscount, deriveDiscount, type DiscountValue } from "@/components/EditableDiscount";
+import { useAuth } from "@/components/AuthProvider";
+import { useRole } from "@/lib/role";
 import { withBasePath } from "@/lib/basePath";
 import { translateRpcError } from "@/lib/rpcError";
 
@@ -20,6 +25,9 @@ type OrderHead = {
   campaign_id: number | null;
   transferred_from_order_id: number | null;
   is_air_transfer: boolean | null;
+  discount_amount: number;
+  discount_percent: number;
+  notes: string | null;
   member: { id: number; name: string | null; phone: string | null; member_no: string } | null;
   campaign: { id: number; campaign_no: string; name: string } | null;
   store: { id: number; name: string } | null;
@@ -31,12 +39,47 @@ type ItemRow = {
   unit_price: number;
   status: string;
   source: string;
+  notes: string | null;
+  discount_amount: number;
+  discount_percent: number;
   created_at: string;
   updated_at: string;
   created_by: string | null;
   updated_by: string | null;
   sku: { id: number; sku_code: string; product_name: string | null; variant_name: string | null } | null;
 };
+
+function computeLineSubtotal(qty: number, unitPrice: number, d: DiscountValue): number {
+  const gross = Number(qty) * Number(unitPrice);
+  const pct = d.kind === "percent" ? Number(d.value) : 0;
+  const amt = d.kind === "amount" ? Number(d.value) : 0;
+  const afterPct = gross * (1 - pct / 100);
+  return Math.max(0, Math.round(afterPct * 10000) / 10000 - amt);
+}
+
+function applyOrderDiscount(subtotal: number, d: DiscountValue): { deduction: number; payable: number } {
+  const pct = d.kind === "percent" ? Number(d.value) : 0;
+  const amt = d.kind === "amount" ? Number(d.value) : 0;
+  const pctDed = Math.round(subtotal * pct) / 100;
+  return {
+    deduction: pctDed + amt,
+    payable: Math.max(0, subtotal - pctDed - amt),
+  };
+}
+
+type ItemDraft = {
+  unit_price?: number;
+  notes?: string | null;
+  discount?: DiscountValue;
+};
+type OrderDraft = {
+  notes?: string | null;
+  discount?: DiscountValue;
+  items: Map<number, ItemDraft>;
+};
+const EMPTY_DRAFT: OrderDraft = { items: new Map() };
+
+const HQ_ROLES = new Set(["owner", "admin", "hq_manager", "hq_accountant", ""]);
 
 type TimelineStep = {
   label: string;
@@ -80,6 +123,33 @@ export function OrderDetail({
   const [reloadTick, setReloadTick] = useState(0);
   const [transferOpen, setTransferOpen] = useState(false);
   const [pickupOpen, setPickupOpen] = useState(false);
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [draft, setDraft] = useState<OrderDraft>(EMPTY_DRAFT);
+  const [saving, setSaving] = useState(false);
+  const [editReason, setEditReason] = useState("");
+
+  function clearDraft() { setDraft({ items: new Map() }); setEditReason(""); }
+  function setOrderDraft(patch: Partial<{ notes: string | null; discount: DiscountValue }>) {
+    setDraft((d) => ({ ...d, ...patch }));
+  }
+  function setItemDraft(itemId: number, patch: ItemDraft) {
+    setDraft((d) => {
+      const next = new Map(d.items);
+      next.set(itemId, { ...next.get(itemId), ...patch });
+      return { ...d, items: next };
+    });
+  }
+
+  const { user } = useAuth();
+  const role = useRole();
+  const userStores = (user?.app_metadata?.stores as unknown[] | undefined) ?? [];
+  const canEdit = useMemo(() => {
+    if (role === null) return false;
+    if (HQ_ROLES.has(role)) return true;
+    if (Array.isArray(userStores) && userStores.includes("總倉")) return true;
+    if (head?.store?.name && Array.isArray(userStores) && userStores.includes(head.store.name)) return true;
+    return false;
+  }, [role, userStores, head?.store?.name]);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,10 +157,10 @@ export function OrderDetail({
       const sb = getSupabase();
       const [hRes, iRes] = await Promise.all([
         sb.from("customer_orders")
-          .select("id, order_no, status, pickup_deadline, nickname_snapshot, created_at, updated_at, pickup_store_id, campaign_id, transferred_from_order_id, is_air_transfer, member:members(id, name, phone, member_no), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
+          .select("id, order_no, status, pickup_deadline, nickname_snapshot, created_at, updated_at, pickup_store_id, campaign_id, transferred_from_order_id, is_air_transfer, discount_amount, discount_percent, notes, member:members(id, name, phone, member_no), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
           .eq("id", orderId).maybeSingle(),
         sb.from("customer_order_items")
-          .select("id, qty, unit_price, status, source, created_at, updated_at, created_by, updated_by, sku:skus(id, sku_code, product_name, variant_name)")
+          .select("id, qty, unit_price, status, source, notes, discount_amount, discount_percent, created_at, updated_at, created_by, updated_by, sku:skus(id, sku_code, product_name, variant_name)")
           .eq("order_id", orderId)
           .order("created_at", { ascending: true }),
       ]);
@@ -146,8 +216,119 @@ export function OrderDetail({
   }
   if (!head || !items) return <div className="text-sm text-zinc-500">載入中…</div>;
 
+  // ----- 從 head + draft 取「目前生效的值」 -----
+  const itemEffective = (it: ItemRow) => {
+    const d = draft.items.get(it.id);
+    const unit_price = d?.unit_price ?? Number(it.unit_price);
+    const notes = d && Object.prototype.hasOwnProperty.call(d, "notes") ? d.notes! : it.notes;
+    const discount: DiscountValue = d?.discount ?? deriveDiscount(it.discount_percent, it.discount_amount);
+    return { unit_price, notes, discount };
+  };
+  const orderDiscountValue: DiscountValue = draft.discount ?? deriveDiscount(head.discount_percent, head.discount_amount);
+  const orderNotesValue: string | null = Object.prototype.hasOwnProperty.call(draft, "notes") ? draft.notes! : head.notes;
+
   const totalQty = items.reduce((s, i) => s + Number(i.qty), 0);
-  const totalAmount = items.reduce((s, i) => s + Number(i.qty) * Number(i.unit_price), 0);
+  const grossTotal = items.reduce((s, i) => s + Number(i.qty) * Number(itemEffective(i).unit_price), 0);
+  const subtotal = items.reduce((s, i) => {
+    const eff = itemEffective(i);
+    return s + computeLineSubtotal(Number(i.qty), eff.unit_price, eff.discount);
+  }, 0);
+  const lineDiscountTotal = Math.round((grossTotal - subtotal) * 10000) / 10000;
+  const { deduction: orderDeduction, payable: payableAmount } = applyOrderDiscount(subtotal, orderDiscountValue);
+
+  // ----- draft 修改數計算 -----
+  const itemDraftCount = Array.from(draft.items.values()).reduce(
+    (n, d) => n + Object.keys(d).length, 0,
+  );
+  const orderDraftCount = (draft.discount ? 1 : 0) + (Object.prototype.hasOwnProperty.call(draft, "notes") ? 1 : 0);
+  const draftCount = itemDraftCount + orderDraftCount;
+
+  async function saveAllDraft() {
+    if (!head || !items) return;
+    if (draftCount === 0) return;
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id ?? null;
+    if (!operator) { alert("尚未登入"); return; }
+    setSaving(true);
+    const errors: string[] = [];
+    const reason = editReason.trim() === "" ? null : editReason.trim();
+    try {
+      // 訂單頭部備註
+      if (Object.prototype.hasOwnProperty.call(draft, "notes")) {
+        const { error } = await sb.rpc("rpc_update_order_notes", {
+          p_order_id: head.id,
+          p_new_notes: draft.notes ?? null,
+          p_operator: operator,
+          p_reason: reason,
+        });
+        if (error) errors.push(`整單備註：${translateRpcError(error)}`);
+      }
+      // 訂單頭部折扣（型別二擇一，把對方歸零）
+      if (draft.discount) {
+        const d = draft.discount;
+        const newPct = d.kind === "percent" ? Number(d.value) : 0;
+        const newAmt = d.kind === "amount" ? Number(d.value) : 0;
+        if (Number(head.discount_percent ?? 0) !== newPct) {
+          const { error } = await sb.rpc("rpc_update_order_discount_percent", {
+            p_order_id: head.id, p_new_percent: newPct, p_operator: operator, p_reason: reason,
+          });
+          if (error) errors.push(`整單折扣%：${translateRpcError(error)}`);
+        }
+        if (Number(head.discount_amount ?? 0) !== newAmt) {
+          const { error } = await sb.rpc("rpc_update_order_discount", {
+            p_order_id: head.id, p_new_discount: newAmt, p_operator: operator, p_reason: reason,
+          });
+          if (error) errors.push(`整單折扣$：${translateRpcError(error)}`);
+        }
+      }
+      // 商品 (unit_price / notes / discount)
+      for (const [itemId, d] of draft.items) {
+        const it = items.find((x) => x.id === itemId);
+        if (!it) continue;
+        if (d.unit_price !== undefined && Number(d.unit_price) !== Number(it.unit_price)) {
+          const { error } = await sb.rpc("rpc_update_order_item_price", {
+            p_order_id: head.id, p_item_id: itemId,
+            p_new_unit_price: Number(d.unit_price), p_operator: operator, p_reason: reason,
+          });
+          if (error) errors.push(`#${itemId} 單價：${translateRpcError(error)}`);
+        }
+        if (Object.prototype.hasOwnProperty.call(d, "notes") && d.notes !== it.notes) {
+          const { error } = await sb.rpc("rpc_update_order_item_notes", {
+            p_order_id: head.id, p_item_id: itemId,
+            p_new_notes: d.notes ?? null, p_operator: operator, p_reason: reason,
+          });
+          if (error) errors.push(`#${itemId} 備註：${translateRpcError(error)}`);
+        }
+        if (d.discount) {
+          const newPct = d.discount.kind === "percent" ? Number(d.discount.value) : 0;
+          const newAmt = d.discount.kind === "amount" ? Number(d.discount.value) : 0;
+          if (Number(it.discount_percent ?? 0) !== newPct) {
+            const { error } = await sb.rpc("rpc_update_order_item_discount_percent", {
+              p_order_id: head.id, p_item_id: itemId,
+              p_new_percent: newPct, p_operator: operator, p_reason: reason,
+            });
+            if (error) errors.push(`#${itemId} 折扣%：${translateRpcError(error)}`);
+          }
+          if (Number(it.discount_amount ?? 0) !== newAmt) {
+            const { error } = await sb.rpc("rpc_update_order_item_discount_amount", {
+              p_order_id: head.id, p_item_id: itemId,
+              p_new_amount: newAmt, p_operator: operator, p_reason: reason,
+            });
+            if (error) errors.push(`#${itemId} 折扣$：${translateRpcError(error)}`);
+          }
+        }
+      }
+    } finally {
+      setSaving(false);
+    }
+    if (errors.length > 0) {
+      alert(`儲存部分失敗：\n${errors.join("\n")}`);
+    } else {
+      clearDraft();
+    }
+    setReloadTick((n) => n + 1);
+  }
 
   const canTransfer = ["pending", "confirmed", "reserved"].includes(head.status);
   const canCancel = ["pending", "confirmed", "shipping"].includes(head.status);
@@ -186,6 +367,44 @@ export function OrderDetail({
 
   return (
     <div className="space-y-4 text-sm">
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <button
+          onClick={() => setAuditOpen(true)}
+          className="rounded-md border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          title="售價 / 備註變更歷史"
+        >
+          📜 查看編輯歷史
+        </button>
+      </div>
+
+      {draftCount > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-yellow-300 bg-yellow-50 p-3 dark:border-yellow-800 dark:bg-yellow-950/40">
+          <span className="text-xs font-medium text-yellow-800 dark:text-yellow-300">
+            ⚠️ 您有 {draftCount} 項未儲存的修改
+          </span>
+          <input
+            type="text"
+            value={editReason}
+            onChange={(e) => setEditReason(e.target.value)}
+            placeholder="修改原因（選填，會記錄到編輯歷史）"
+            className="ml-auto w-72 rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+          />
+          <button
+            onClick={clearDraft}
+            disabled={saving}
+            className="rounded-md border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          >
+            取消修改
+          </button>
+          <button
+            onClick={saveAllDraft}
+            disabled={saving}
+            className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+          >
+            {saving ? "儲存中…" : `💾 儲存（${draftCount}）`}
+          </button>
+        </div>
+      )}
       {(canTransfer || canPickup || canCancel || isTransferredOut) && (
         <div className="flex items-center justify-end gap-2">
           {canPickup && (
@@ -263,6 +482,29 @@ export function OrderDetail({
         <Field label="取貨店" value={head.store?.name ?? "—"} />
         <Field label="建立" value={fmtDt(head.created_at)} />
         <Field label="最後更新" value={fmtDt(head.updated_at)} />
+        <Field
+          label="整單折扣"
+          value={
+            <EditableDiscount
+              value={orderDiscountValue}
+              disabled={!canEdit}
+              onChange={(v) => setOrderDraft({ discount: v })}
+              referenceAmount={subtotal}
+            />
+          }
+        />
+        <Field
+          label="單頭備註"
+          value={
+            <EditableText
+              value={orderNotesValue}
+              disabled={!canEdit}
+              placeholder="（點此加備註）"
+              onSave={async (v) => setOrderDraft({ notes: v })}
+              multiline
+            />
+          }
+        />
       </div>
 
       {/* 進度 timeline（採購到貨 → 撿貨 → 派貨 → 分店收貨） */}
@@ -274,8 +516,24 @@ export function OrderDetail({
       )}
 
       <div className="rounded-md border border-zinc-200 dark:border-zinc-800">
-        <div className="flex items-center justify-between border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-medium dark:border-zinc-800 dark:bg-zinc-900">
-          <span>明細（{items.length} 項 · {totalQty} 件 · ${totalAmount}）</span>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-medium dark:border-zinc-800 dark:bg-zinc-900">
+          <span>明細（{items.length} 項 · {totalQty} 件）</span>
+          <div className="flex flex-wrap items-center gap-3 font-mono">
+            <span className="text-zinc-500">原價 ${grossTotal}</span>
+            {lineDiscountTotal > 0 && (
+              <span className="text-zinc-500">− 單品折扣 ${lineDiscountTotal}</span>
+            )}
+            <span className="text-zinc-500">小計 ${subtotal}</span>
+            {orderDeduction > 0 && (
+              <span className="text-zinc-500">
+                − 整單折扣
+                {orderDiscountValue.kind === "percent" && orderDiscountValue.value > 0
+                  ? ` ${orderDiscountValue.value}% (= $${orderDeduction})`
+                  : ` $${orderDeduction}`}
+              </span>
+            )}
+            <span className="text-base">= 應收 <span className="font-semibold">${payableAmount}</span></span>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-zinc-200 text-xs dark:divide-zinc-800">
@@ -284,18 +542,22 @@ export function OrderDetail({
                 <th className="px-3 py-2 text-left font-medium text-zinc-500">商品</th>
                 <th className="px-3 py-2 text-right font-medium text-zinc-500">數量</th>
                 <th className="px-3 py-2 text-right font-medium text-zinc-500">單價</th>
+                <th className="px-3 py-2 text-right font-medium text-zinc-500">折扣</th>
                 <th className="px-3 py-2 text-right font-medium text-zinc-500">小計</th>
+                <th className="px-3 py-2 text-left font-medium text-zinc-500">備註</th>
                 <th className="px-3 py-2 text-left font-medium text-zinc-500">第一次加</th>
                 <th className="px-3 py-2 text-left font-medium text-zinc-500">最後更新</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
               {items.length === 0 ? (
-                <tr><td colSpan={6} className="p-4 text-center text-zinc-500">尚無明細</td></tr>
+                <tr><td colSpan={8} className="p-4 text-center text-zinc-500">尚無明細</td></tr>
               ) : items.map((it) => {
-                const sub = Number(it.qty) * Number(it.unit_price);
+                const eff = itemEffective(it);
+                const sub = computeLineSubtotal(Number(it.qty), eff.unit_price, eff.discount);
+                const isDirty = draft.items.has(it.id);
                 return (
-                  <tr key={it.id}>
+                  <tr key={it.id} className={isDirty ? "bg-yellow-50 dark:bg-yellow-950/30" : ""}>
                     <td className="px-3 py-2">
                       {it.sku ? (
                         <span>
@@ -306,8 +568,33 @@ export function OrderDetail({
                       ) : "—"}
                     </td>
                     <td className="px-3 py-2 text-right font-mono">{Number(it.qty)}</td>
-                    <td className="px-3 py-2 text-right font-mono text-zinc-500">${Number(it.unit_price)}</td>
+                    <td className="px-3 py-2 text-right font-mono">
+                      <EditableNumber
+                        value={Number(eff.unit_price)}
+                        min={0}
+                        prefix="$"
+                        disabled={!canEdit}
+                        onSave={async (v) => setItemDraft(it.id, { unit_price: v })}
+                      />
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono">
+                      <EditableDiscount
+                        value={eff.discount}
+                        disabled={!canEdit}
+                        onChange={(v) => setItemDraft(it.id, { discount: v })}
+                        compact
+                        referenceAmount={Number(it.qty) * Number(eff.unit_price)}
+                      />
+                    </td>
                     <td className="px-3 py-2 text-right font-mono">${sub}</td>
+                    <td className="px-3 py-2">
+                      <EditableText
+                        value={eff.notes}
+                        disabled={!canEdit}
+                        placeholder="（點此加備註）"
+                        onSave={async (v) => setItemDraft(it.id, { notes: v })}
+                      />
+                    </td>
                     <td className="px-3 py-2 text-zinc-500">
                       {fmtDt(it.created_at)}<br />
                       <span className="text-[10px]">by {staffLabel(it.created_by, staffNames)}</span>
@@ -322,9 +609,6 @@ export function OrderDetail({
             </tbody>
           </table>
         </div>
-        <p className="border-t border-zinc-200 bg-zinc-50 px-3 py-1.5 text-[11px] text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
-          ※ 同顧客在同活動連 key 多次會合併到同一筆，舊 qty 被新值覆寫。如需「每次 +N 紀錄」請告知改完整版（加 append-only audit table）。
-        </p>
       </div>
 
       <OrderTransferModal
@@ -350,6 +634,11 @@ export function OrderDetail({
           alert(`取貨完成 (${r.picked_count} 項)\n訂單狀態：${statusLabel(r.new_order_status)}`);
           setReloadTick((n) => n + 1);
         }}
+      />
+      <OrderAuditDrawer
+        open={auditOpen}
+        onClose={() => setAuditOpen(false)}
+        orderId={head.id}
       />
     </div>
   );

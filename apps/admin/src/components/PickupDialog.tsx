@@ -9,9 +9,17 @@ type PickableItem = {
   id: number;
   qty: number;
   unit_price: number;
+  discount_amount: number;
+  discount_percent: number;
   status: string;
   sku: { id: number; sku_code: string; product_name: string | null; variant_name: string | null } | null;
 };
+
+function lineSub(it: PickableItem): number {
+  const gross = Number(it.qty) * Number(it.unit_price);
+  const afterPct = gross * (1 - Number(it.discount_percent ?? 0) / 100);
+  return Math.max(0, Math.round(afterPct * 10000) / 10000 - Number(it.discount_amount ?? 0));
+}
 
 export function PickupDialog({
   open,
@@ -27,6 +35,8 @@ export function PickupDialog({
   onPickedUp: (result: { event_id: number; new_order_status: string; picked_count: number; active_remaining: number }) => void;
 }) {
   const [items, setItems] = useState<PickableItem[] | null>(null);
+  const [discount, setDiscount] = useState(0);
+  const [discountPercent, setDiscountPercent] = useState(0);
   const [picked, setPicked] = useState<Set<number>>(new Set());
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
@@ -37,18 +47,26 @@ export function PickupDialog({
     let cancelled = false;
     (async () => {
       const sb = getSupabase();
-      const { data, error } = await sb
-        .from("customer_order_items")
-        .select("id, qty, unit_price, status, sku:skus(id, sku_code, product_name, variant_name)")
-        .eq("order_id", orderId)
-        .in("status", ["pending", "reserved", "ready"])
-        .order("id");
+      const [iRes, hRes] = await Promise.all([
+        sb.from("customer_order_items")
+          .select("id, qty, unit_price, discount_amount, discount_percent, status, sku:skus(id, sku_code, product_name, variant_name)")
+          .eq("order_id", orderId)
+          .in("status", ["pending", "reserved", "ready"])
+          .order("id"),
+        sb.from("customer_orders")
+          .select("discount_amount, discount_percent")
+          .eq("id", orderId)
+          .maybeSingle(),
+      ]);
       if (cancelled) return;
-      if (error) { setErr(error.message); return; }
-      const list = (data ?? []) as unknown as PickableItem[];
+      if (iRes.error) { setErr(iRes.error.message); return; }
+      const list = (iRes.data ?? []) as unknown as PickableItem[];
       setItems(list);
       // 預設全選
       setPicked(new Set(list.map((it) => it.id)));
+      const head = hRes.data as { discount_amount: number; discount_percent: number } | null;
+      setDiscount(Number(head?.discount_amount ?? 0));
+      setDiscountPercent(Number(head?.discount_percent ?? 0));
     })();
     return () => { cancelled = true; };
   }, [open, orderId]);
@@ -78,17 +96,20 @@ export function PickupDialog({
       });
       if (error) { setErr(error.message); return; }
       const result = data as { event_id: number; new_order_status: string; picked_count: number; active_remaining: number };
-      // 自動開新分頁列印
+      // 自動開新分頁列印 — 大張取貨單 + 熱感應小白單
       window.open(withBasePath(`/pickup/print?event_ids=${result.event_id}`), "_blank");
+      window.open(withBasePath(`/pickup/print-list?order_ids=${orderId}`), "_blank");
       onPickedUp(result);
     } finally {
       setBusy(false);
     }
   }
 
-  const totalAmount = items
-    ? items.filter((it) => picked.has(it.id)).reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0)
+  const subtotal = items
+    ? items.filter((it) => picked.has(it.id)).reduce((s, it) => s + lineSub(it), 0)
     : 0;
+  const percentDeduction = Math.round(subtotal * discountPercent) / 100;
+  const payableAmount = Math.max(0, subtotal - percentDeduction - discount);
 
   return (
     <Modal open={open} onClose={onClose} title={`✅ 確認取貨 — 訂單 ${orderNo}`} maxWidth="max-w-2xl">
@@ -112,7 +133,8 @@ export function PickupDialog({
               </thead>
               <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
                 {items.map((it) => {
-                  const sub = Number(it.qty) * Number(it.unit_price);
+                  const sub = lineSub(it);
+                  const hasLineDisc = Number(it.discount_amount ?? 0) > 0 || Number(it.discount_percent ?? 0) > 0;
                   return (
                     <tr key={it.id} className={picked.has(it.id) ? "bg-emerald-50 dark:bg-emerald-950" : ""}>
                       <td className="px-3 py-2">
@@ -128,6 +150,11 @@ export function PickupDialog({
                         {it.sku?.sku_code && (
                           <span className="ml-2 font-mono text-[10px] text-zinc-400">{it.sku.sku_code}</span>
                         )}
+                        {hasLineDisc && (
+                          <span className="ml-2 text-[10px] text-red-600 dark:text-red-400">
+                            (折{Number(it.discount_percent ?? 0) > 0 ? `${it.discount_percent}%` : ""}{Number(it.discount_amount ?? 0) > 0 ? ` -$${it.discount_amount}` : ""})
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-right font-mono">{Number(it.qty)}</td>
                       <td className="px-3 py-2 text-right font-mono text-zinc-500">${Number(it.unit_price)}</td>
@@ -139,9 +166,28 @@ export function PickupDialog({
               </tbody>
               <tfoot className="bg-zinc-50 dark:bg-zinc-900">
                 <tr>
-                  <td colSpan={4} className="px-3 py-2 text-right text-xs text-zinc-500">取貨小計</td>
-                  <td className="px-3 py-2 text-right font-mono font-semibold">${totalAmount}</td>
-                  <td className="px-3 py-2 text-xs text-zinc-500">{picked.size}/{items.length} 項</td>
+                  <td colSpan={4} className="px-3 py-1 text-right text-xs text-zinc-500">取貨小計</td>
+                  <td className="px-3 py-1 text-right font-mono">${subtotal}</td>
+                  <td className="px-3 py-1 text-xs text-zinc-500">{picked.size}/{items.length} 項</td>
+                </tr>
+                {discountPercent > 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-3 py-1 text-right text-xs text-zinc-500">− 全單折扣 {discountPercent}%</td>
+                    <td className="px-3 py-1 text-right font-mono text-red-600 dark:text-red-400">−${percentDeduction}</td>
+                    <td />
+                  </tr>
+                )}
+                {discount > 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-3 py-1 text-right text-xs text-zinc-500">− 全單折扣金額</td>
+                    <td className="px-3 py-1 text-right font-mono text-red-600 dark:text-red-400">−${discount}</td>
+                    <td />
+                  </tr>
+                )}
+                <tr>
+                  <td colSpan={4} className="px-3 py-2 text-right text-xs text-zinc-500">應收</td>
+                  <td className="px-3 py-2 text-right font-mono text-base font-semibold">${payableAmount}</td>
+                  <td />
                 </tr>
               </tfoot>
             </table>
@@ -176,7 +222,7 @@ export function PickupDialog({
               disabled={busy || picked.size === 0}
               className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:opacity-50"
             >
-              {busy ? "處理中…" : `✅ 確認取貨 (${picked.size} 項)`}
+              {busy ? "處理中…" : `✅ 確認取貨 (${picked.size} 項 · $${payableAmount})`}
             </button>
           </div>
         </div>

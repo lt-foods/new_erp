@@ -8,6 +8,9 @@ type Order = {
   id: number;
   order_no: string;
   status: string;
+  discount_amount: number;
+  discount_percent: number;
+  notes: string | null;
   member: { id: number; member_no: string; name: string | null; phone: string | null } | null;
   campaign: { id: number; name: string } | null;
   store: { id: number; name: string } | null;
@@ -15,10 +18,25 @@ type Order = {
     id: number;
     qty: number;
     unit_price: number;
+    discount_amount: number;
+    discount_percent: number;
+    notes: string | null;
     status: string;
     sku: { variant_name: string | null; product_name: string | null } | null;
   }[];
 };
+
+function lineGross(it: { qty: number; unit_price: number }): number {
+  return Number(it.qty) * Number(it.unit_price);
+}
+function lineSub(it: { qty: number; unit_price: number; discount_amount: number; discount_percent: number }): number {
+  const gross = Number(it.qty) * Number(it.unit_price);
+  const afterPct = gross * (1 - Number(it.discount_percent ?? 0) / 100);
+  return Math.max(0, Math.round(afterPct * 10000) / 10000 - Number(it.discount_amount ?? 0));
+}
+function hasLineDisc(it: { discount_amount: number; discount_percent: number }): boolean {
+  return Number(it.discount_amount ?? 0) > 0 || Number(it.discount_percent ?? 0) > 0;
+}
 
 const ACTIVE_ITEM_STATUSES = new Set(["pending", "reserved", "ready"]);
 
@@ -47,11 +65,11 @@ function Body() {
       const { data, error: e } = await sb
         .from("customer_orders")
         .select(
-          `id, order_no, status,
+          `id, order_no, status, discount_amount, discount_percent, notes,
            member:members(id, member_no, name, phone),
            campaign:group_buy_campaigns(id, name),
            store:stores!customer_orders_pickup_store_id_fkey(id, name),
-           items:customer_order_items(id, qty, unit_price, status, sku:skus(variant_name, product_name))`,
+           items:customer_order_items(id, qty, unit_price, discount_amount, discount_percent, notes, status, sku:skus(variant_name, product_name))`,
         )
         .in("id", ids);
       if (cancelled) return;
@@ -82,10 +100,23 @@ function Body() {
   // 假設 bulkConfirm 進來都是同一個會員
   const member = orders[0]?.member;
   const store = orders[0]?.store;
-  const grandTotal = orders.reduce((s, o) => {
+  const orderSub = (o: Order) => {
     const active = o.items.filter((it) => ACTIVE_ITEM_STATUSES.has(it.status));
-    return s + active.reduce((a, it) => a + Number(it.qty) * Number(it.unit_price), 0);
+    return active.reduce((a, it) => a + lineSub(it), 0);
+  };
+  const orderPay = (o: Order) => {
+    const sub = orderSub(o);
+    const pct = Number(o.discount_percent ?? 0);
+    const pctDed = Math.round(sub * pct) / 100;
+    return Math.max(0, sub - pctDed - Number(o.discount_amount ?? 0));
+  };
+  const totalOrderDisc = orders.reduce((s, o) => {
+    const sub = orderSub(o);
+    const pct = Number(o.discount_percent ?? 0);
+    return s + Math.round(sub * pct) / 100 + Number(o.discount_amount ?? 0);
   }, 0);
+  const grandSubtotal = orders.reduce((s, o) => s + orderSub(o), 0);
+  const grandTotal = orders.reduce((s, o) => s + orderPay(o), 0);
   const totalQty = orders.reduce((s, o) => {
     const active = o.items.filter((it) => ACTIVE_ITEM_STATUSES.has(it.status));
     return s + active.reduce((a, it) => a + Number(it.qty), 0);
@@ -137,31 +168,72 @@ function Body() {
         <div className="mt-2 space-y-2">
           {orders.map((o) => {
             const active = o.items.filter((it) => ACTIVE_ITEM_STATUSES.has(it.status));
-            const sub = active.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0);
+            const disc = Number(o.discount_amount ?? 0);
+            const pct = Number(o.discount_percent ?? 0);
+            const sub = orderSub(o);
+            const pctDed = Math.round(sub * pct) / 100;
             return (
               <div key={o.id} className="border-b border-dashed border-zinc-400 pb-1">
                 <div>{o.campaign?.name ?? "(未知活動)"}</div>
+                {o.notes && (
+                  <div className="text-[10px] italic">📝 {o.notes}</div>
+                )}
                 {active.map((it) => {
-                  const subtotal = Number(it.qty) * Number(it.unit_price);
+                  const subtotal = lineSub(it);
+                  const gross = lineGross(it);
+                  const discounted = hasLineDisc(it);
                   return (
-                    <div key={it.id} className="flex items-baseline justify-between">
-                      <span className="flex-1 truncate pr-2 font-bold">
-                        {it.sku?.variant_name || it.sku?.product_name || "—"}
-                      </span>
-                      <span className="whitespace-nowrap">
-                        × {Number(it.qty)}
-                        <span className="ml-1.5 text-[11px]">${subtotal}</span>
-                      </span>
+                    <div key={it.id}>
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="min-w-0 flex-1 break-words font-bold">
+                          {it.sku?.variant_name || it.sku?.product_name || "—"}
+                        </span>
+                        <span className="whitespace-nowrap">
+                          × {Number(it.qty)}
+                          {discounted ? (
+                            <>
+                              <span className="ml-1.5 text-[10px] line-through">${gross}</span>
+                              <span className="ml-1 text-[11px] font-bold">${subtotal}</span>
+                            </>
+                          ) : (
+                            <span className="ml-1.5 text-[11px]">${subtotal}</span>
+                          )}
+                        </span>
+                      </div>
+                      {discounted && (
+                        <div className="pl-2 text-[10px] font-bold text-red-700">
+                          ↳ 折扣 {Number(it.discount_percent ?? 0) > 0
+                            ? `${it.discount_percent}% (= -$${Math.round(gross * Number(it.discount_percent)) / 100})`
+                            : `-$${it.discount_amount}`}
+                        </div>
+                      )}
+                      {it.notes && (
+                        <div className="pl-2 text-[10px] italic">↳ 備註：{it.notes}</div>
+                      )}
                     </div>
                   );
                 })}
+                {pct > 0 && (
+                  <div className="text-right text-[11px]">
+                    <span className="text-zinc-600">本單{pct}%折扣 </span>
+                    <span>−${pctDed}</span>
+                  </div>
+                )}
+                {disc > 0 && (
+                  <div className="text-right text-[11px]">
+                    <span className="text-zinc-600">本單折扣金額 </span>
+                    <span>−${disc}</span>
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
 
-        <div className="mt-2 border-t-2 border-black pt-1.5 text-right text-[14px] font-bold">
-          合計 {totalQty} 項　$ {grandTotal.toLocaleString()}
+        <div className="mt-2 border-t-2 border-black pt-1.5 text-right text-[12px]">
+          <div>小計 $ {grandSubtotal.toLocaleString()}</div>
+          {totalOrderDisc > 0 && <div>− 整單折扣 $ {totalOrderDisc.toLocaleString()}</div>}
+          <div className="text-[14px] font-bold">合計 {totalQty} 項　$ {grandTotal.toLocaleString()}</div>
         </div>
 
       </div>

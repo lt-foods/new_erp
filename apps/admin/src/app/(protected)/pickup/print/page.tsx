@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Fragment, Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 
@@ -19,6 +19,9 @@ type Order = {
   order_no: string;
   status: string;
   pickup_store_id: number | null;
+  discount_amount: number;
+  discount_percent: number;
+  notes: string | null;
   member: { id: number; member_no: string; name: string | null; phone: string | null } | null;
   campaign: { id: number; campaign_no: string; name: string } | null;
   store: { id: number; name: string } | null;
@@ -28,9 +31,24 @@ type Item = {
   id: number;
   qty: number;
   unit_price: number;
+  discount_amount: number;
+  discount_percent: number;
+  notes: string | null;
   status: string;
   sku: { sku_code: string; product_name: string | null; variant_name: string | null } | null;
 };
+
+function lineGross(it: Item): number {
+  return Number(it.qty) * Number(it.unit_price);
+}
+function lineSub(it: Item): number {
+  const gross = lineGross(it);
+  const afterPct = gross * (1 - Number(it.discount_percent ?? 0) / 100);
+  return Math.max(0, Math.round(afterPct * 10000) / 10000 - Number(it.discount_amount ?? 0));
+}
+function hasLineDisc(it: Item): boolean {
+  return Number(it.discount_amount ?? 0) > 0 || Number(it.discount_percent ?? 0) > 0;
+}
 
 export default function PickupPrintPage() {
   return (
@@ -64,10 +82,10 @@ function Body() {
       const allItemIds = events.flatMap((e) => e.item_ids ?? []);
       const [{ data: ords }, { data: itms }] = await Promise.all([
         sb.from("customer_orders")
-          .select("id, order_no, status, pickup_store_id, member:members(id, member_no, name, phone), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
+          .select("id, order_no, status, pickup_store_id, discount_amount, discount_percent, notes, member:members(id, member_no, name, phone), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
           .in("id", orderIds),
         allItemIds.length > 0
-          ? sb.from("customer_order_items").select("id, qty, unit_price, status, sku:skus(sku_code, product_name, variant_name)").in("id", allItemIds)
+          ? sb.from("customer_order_items").select("id, qty, unit_price, discount_amount, discount_percent, notes, status, sku:skus(sku_code, product_name, variant_name)").in("id", allItemIds)
           : Promise.resolve({ data: [] }),
       ]);
       const ordMap = new Map<number, Order>();
@@ -98,10 +116,13 @@ function Body() {
   if (!receipts) return <div className="p-6 text-sm text-zinc-500">載入中…</div>;
 
   const combined = receipts.length > 1;
-  const grandTotal = receipts.reduce(
-    (s, r) => s + r.items.reduce((a, it) => a + Number(it.qty) * Number(it.unit_price), 0),
-    0,
-  );
+  const orderPayable = (r: { order: Order; items: Item[] }) => {
+    const sub = r.items.reduce((a, it) => a + lineSub(it), 0);
+    const pct = Number(r.order?.discount_percent ?? 0);
+    const pctDed = Math.round(sub * pct) / 100;
+    return Math.max(0, sub - pctDed - Number(r.order?.discount_amount ?? 0));
+  };
+  const grandTotal = receipts.reduce((s, r) => s + orderPayable(r), 0);
 
   return (
     <>
@@ -132,7 +153,11 @@ function Body() {
             </div>
 
             {receipts.map((r, idx) => {
-              const sub = r.items.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0);
+              const sub = r.items.reduce((s, it) => s + lineSub(it), 0);
+              const disc = Number(r.order?.discount_amount ?? 0);
+              const pct = Number(r.order?.discount_percent ?? 0);
+              const pctDed = Math.round(sub * pct) / 100;
+              const pay = Math.max(0, sub - pctDed - disc);
               return (
                 <div
                   key={r.event.id}
@@ -152,35 +177,79 @@ function Body() {
                   <table className="w-full border-collapse text-xs">
                     <tbody>
                       {r.items.map((it) => {
-                        const itSub = Number(it.qty) * Number(it.unit_price);
+                        const itSub = lineSub(it);
+                        const itGross = lineGross(it);
+                        const discounted = hasLineDisc(it);
                         return (
-                          <tr key={it.id} className="border-b border-zinc-200">
-                            <td className="px-1 py-0.5">
-                              <span className="font-medium">
-                                {it.sku?.variant_name ?? it.sku?.product_name ?? "—"}
-                              </span>
-                              {it.sku?.sku_code && (
-                                <span className="ml-1 font-mono text-[9px] text-zinc-500">
-                                  {it.sku.sku_code}
+                          <Fragment key={it.id}>
+                            <tr className={it.notes ? "" : "border-b border-zinc-200"}>
+                              <td className="px-1 py-0.5">
+                                <span className="font-medium">
+                                  {it.sku?.variant_name ?? it.sku?.product_name ?? "—"}
                                 </span>
-                              )}
-                            </td>
-                            <td className="px-1 py-0.5 text-right font-mono">× {Number(it.qty)}</td>
-                            <td className="px-1 py-0.5 text-right font-mono text-zinc-500">
-                              ${Number(it.unit_price)}
-                            </td>
-                            <td className="px-1 py-0.5 text-right font-mono">${itSub}</td>
-                          </tr>
+                                {it.sku?.sku_code && (
+                                  <span className="ml-1 font-mono text-[9px] text-zinc-500">
+                                    {it.sku.sku_code}
+                                  </span>
+                                )}
+                                {discounted && (
+                                  <span className="ml-1 rounded bg-red-100 px-1 text-[9px] font-bold text-red-700">
+                                    {Number(it.discount_percent ?? 0) > 0 ? `${it.discount_percent}%` : `減$${it.discount_amount}`}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-1 py-0.5 text-right font-mono">× {Number(it.qty)}</td>
+                              <td className="px-1 py-0.5 text-right font-mono text-zinc-500">
+                                ${Number(it.unit_price)}
+                              </td>
+                              <td className="px-1 py-0.5 text-right font-mono">
+                                {discounted ? (
+                                  <>
+                                    <span className="mr-1 text-zinc-400 line-through">${itGross}</span>
+                                    <span className="font-bold text-red-700">${itSub}</span>
+                                  </>
+                                ) : (
+                                  <>${itSub}</>
+                                )}
+                              </td>
+                            </tr>
+                            {it.notes && (
+                              <tr className="border-b border-zinc-200">
+                                <td colSpan={4} className="px-1 pb-1 text-[10px] italic text-zinc-600">
+                                  ↳ 備註：{it.notes}
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
                         );
                       })}
-                      <tr className="font-bold">
-                        <td colSpan={3} className="px-1 py-0.5 text-right">本單小計</td>
+                      <tr>
+                        <td colSpan={3} className="px-1 py-0.5 text-right text-zinc-600">本單小計</td>
                         <td className="px-1 py-0.5 text-right font-mono">${sub}</td>
+                      </tr>
+                      {pct > 0 && (
+                        <tr>
+                          <td colSpan={3} className="px-1 py-0.5 text-right text-zinc-600">− 折扣 {pct}%</td>
+                          <td className="px-1 py-0.5 text-right font-mono">−${pctDed}</td>
+                        </tr>
+                      )}
+                      {disc > 0 && (
+                        <tr>
+                          <td colSpan={3} className="px-1 py-0.5 text-right text-zinc-600">− 折扣金額</td>
+                          <td className="px-1 py-0.5 text-right font-mono">−${disc}</td>
+                        </tr>
+                      )}
+                      <tr className="font-bold">
+                        <td colSpan={3} className="px-1 py-0.5 text-right">本單應收</td>
+                        <td className="px-1 py-0.5 text-right font-mono">${pay}</td>
                       </tr>
                     </tbody>
                   </table>
+                  {r.order?.notes && (
+                    <div className="mt-1 text-[10px] text-zinc-700">📝 訂單備註：{r.order.notes}</div>
+                  )}
                   {r.event.notes && (
-                    <div className="mt-1 text-[10px] text-zinc-600">備註：{r.event.notes}</div>
+                    <div className="mt-1 text-[10px] text-zinc-600">取貨備註：{r.event.notes}</div>
                   )}
                 </div>
               );
@@ -221,32 +290,85 @@ function Body() {
                 </thead>
                 <tbody>
                   {r.items.map((it) => {
-                    const sub = Number(it.qty) * Number(it.unit_price);
+                    const sub = lineSub(it);
+                    const gross = lineGross(it);
+                    const discounted = hasLineDisc(it);
                     return (
-                      <tr key={it.id} className="border-b border-zinc-200">
-                        <td className="px-2 py-1">
-                          {it.sku?.variant_name ?? it.sku?.product_name ?? "—"}
-                          {it.sku?.sku_code && <span className="ml-1 font-mono text-[10px] text-zinc-500">{it.sku.sku_code}</span>}
-                        </td>
-                        <td className="px-2 py-1 text-right font-mono">{Number(it.qty)}</td>
-                        <td className="px-2 py-1 text-right font-mono">${Number(it.unit_price)}</td>
-                        <td className="px-2 py-1 text-right font-mono">${sub}</td>
-                      </tr>
+                      <Fragment key={it.id}>
+                        <tr className={it.notes ? "" : "border-b border-zinc-200"}>
+                          <td className="px-2 py-1">
+                            {it.sku?.variant_name ?? it.sku?.product_name ?? "—"}
+                            {it.sku?.sku_code && <span className="ml-1 font-mono text-[10px] text-zinc-500">{it.sku.sku_code}</span>}
+                            {discounted && (
+                              <span className="ml-1 rounded bg-red-100 px-1 text-[9px] font-bold text-red-700">
+                                {Number(it.discount_percent ?? 0) > 0 ? `${it.discount_percent}%` : `減$${it.discount_amount}`}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-2 py-1 text-right font-mono">{Number(it.qty)}</td>
+                          <td className="px-2 py-1 text-right font-mono">${Number(it.unit_price)}</td>
+                          <td className="px-2 py-1 text-right font-mono">
+                            {discounted ? (
+                              <>
+                                <span className="mr-1 text-zinc-400 line-through">${gross}</span>
+                                <span className="font-bold text-red-700">${sub}</span>
+                              </>
+                            ) : (
+                              <>${sub}</>
+                            )}
+                          </td>
+                        </tr>
+                        {it.notes && (
+                          <tr className="border-b border-zinc-200">
+                            <td colSpan={4} className="px-2 pb-1 text-[10px] italic text-zinc-600">
+                              ↳ 備註：{it.notes}
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
                     );
                   })}
                 </tbody>
                 <tfoot>
-                  <tr className="border-t-2 border-zinc-400 font-bold">
-                    <td colSpan={3} className="px-2 py-2 text-right">合計</td>
-                    <td className="px-2 py-2 text-right font-mono">
-                      ${r.items.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0)}
-                    </td>
-                  </tr>
+                  {(() => {
+                    const sub = r.items.reduce((s, it) => s + lineSub(it), 0);
+                    const disc = Number(r.order?.discount_amount ?? 0);
+                    const pct = Number(r.order?.discount_percent ?? 0);
+                    const pctDed = Math.round(sub * pct) / 100;
+                    const pay = Math.max(0, sub - pctDed - disc);
+                    return (
+                      <>
+                        <tr className="border-t border-zinc-300">
+                          <td colSpan={3} className="px-2 py-1 text-right text-xs text-zinc-600">小計</td>
+                          <td className="px-2 py-1 text-right font-mono">${sub}</td>
+                        </tr>
+                        {pct > 0 && (
+                          <tr>
+                            <td colSpan={3} className="px-2 py-1 text-right text-xs text-zinc-600">− 折扣 {pct}%</td>
+                            <td className="px-2 py-1 text-right font-mono">−${pctDed}</td>
+                          </tr>
+                        )}
+                        {disc > 0 && (
+                          <tr>
+                            <td colSpan={3} className="px-2 py-1 text-right text-xs text-zinc-600">− 折扣金額</td>
+                            <td className="px-2 py-1 text-right font-mono">−${disc}</td>
+                          </tr>
+                        )}
+                        <tr className="border-t-2 border-zinc-400 font-bold">
+                          <td colSpan={3} className="px-2 py-2 text-right">應收</td>
+                          <td className="px-2 py-2 text-right font-mono">${pay}</td>
+                        </tr>
+                      </>
+                    );
+                  })()}
                 </tfoot>
               </table>
 
+              {r.order?.notes && (
+                <div className="mb-1 text-xs text-zinc-700">📝 訂單備註：{r.order.notes}</div>
+              )}
               {r.event.notes && (
-                <div className="mb-2 text-xs text-zinc-600">備註：{r.event.notes}</div>
+                <div className="mb-2 text-xs text-zinc-600">取貨備註：{r.event.notes}</div>
               )}
             </div>
           ))

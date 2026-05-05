@@ -20,6 +20,7 @@ type OpenOrder = {
   status: string;
   pickup_deadline: string | null;
   pickup_store_id: number | null;
+  discount_amount: number;
   pickup_ready?: boolean; // 從 v_order_pickup_ready merge 進來
   campaign: { id: number; campaign_no: string; name: string } | null;
   store: { id: number; name: string } | null;
@@ -102,7 +103,7 @@ function PickupPageContent() {
       const { data: ords, error: e2 } = await sb
         .from("customer_orders")
         .select(
-          `id, order_no, status, pickup_deadline, pickup_store_id, member_id,
+          `id, order_no, status, pickup_deadline, pickup_store_id, discount_amount, member_id,
            campaign:group_buy_campaigns(id, campaign_no, name),
            store:stores!customer_orders_pickup_store_id_fkey(id, name),
            items:customer_order_items(id, qty, unit_price, status, sku:skus(variant_name, product_name, product:products(images)))`,
@@ -181,8 +182,10 @@ function PickupPageContent() {
       }
       if (errors.length > 0) setError(errors.join("\n"));
       if (eventIds.length > 0) {
-        // 自動開列印（一張頁面、多張收據連續分頁）
+        // 自動開列印 — 大張取貨單 + 熱感應小白單
         window.open(withBasePath(`/pickup/print?event_ids=${eventIds.join(",")}`), "_blank");
+        const okOrderIds = memberOrders.map((o) => o.id).join(",");
+        window.open(withBasePath(`/pickup/print-list?order_ids=${okOrderIds}`), "_blank");
       }
       alert(`完成 ${okCount}/${memberOrders.length} 張取貨${errors.length > 0 ? `\n失敗 ${errors.length} 張：\n${errors.join("\n")}` : ""}`);
       setReloadTick((t) => t + 1);
@@ -291,7 +294,9 @@ function PickupPageContent() {
                         const canPickup = isPickable(o);
                         const active = activeItems(o);
                         const pickableCount = canPickup ? active.length : 0;
-                        const totalAmt = active.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0);
+                        const subAmt = active.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0);
+                        const discAmt = Number(o.discount_amount ?? 0);
+                        const totalAmt = Math.max(0, subAmt - discAmt);
                         return (
                           <li key={o.id} className={`flex items-center gap-3 rounded-md border p-3 ${selected.has(o.id) ? "border-emerald-400 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950" : "border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"}`}>
                             <input
@@ -332,6 +337,11 @@ function PickupPageContent() {
                                   <>
                                     <span className="ml-2">{pickableCount} 項可取</span>
                                     <span className="ml-2 font-mono text-zinc-700 dark:text-zinc-200">${totalAmt}</span>
+                                    {discAmt > 0 && (
+                                      <span className="ml-1 text-[10px] text-red-600 dark:text-red-400" title={`小計 $${subAmt} − 折扣 $${discAmt}`}>
+                                        (含 ${discAmt} 折扣)
+                                      </span>
+                                    )}
                                   </>
                                 ) : (
                                   <span className="ml-2 text-amber-600 dark:text-amber-400">⏳ 分店尚未收貨，無法取貨</span>
@@ -384,14 +394,24 @@ function PickupPageContent() {
           const selectedHere = allMemberOrders.filter((o) => selected.has(o.id));
           const memberOrders = selectedHere.length > 0 ? selectedHere : allMemberOrders;
           const totalItems = memberOrders.reduce((s, o) => s + activeItems(o).length, 0);
-          const totalAmount = memberOrders.reduce(
+          const totalSubtotal = memberOrders.reduce(
             (s, o) => s + activeItems(o).reduce((ss, it) => ss + Number(it.qty) * Number(it.unit_price), 0),
             0,
           );
+          const totalDiscount = memberOrders.reduce((s, o) => s + Number(o.discount_amount ?? 0), 0);
+          const totalAmount = Math.max(0, totalSubtotal - totalDiscount);
           return (
             <div className="space-y-3">
               <p className="text-sm text-zinc-600 dark:text-zinc-300">
-                即將取走 <b>{memberOrders.length}</b> 張訂單、共 <b>{totalItems}</b> 項商品、合計 <b className="font-mono text-base text-zinc-900 dark:text-zinc-100">${totalAmount}</b>：
+                即將取走 <b>{memberOrders.length}</b> 張訂單、共 <b>{totalItems}</b> 項商品。
+                {totalDiscount > 0 ? (
+                  <>
+                    <br />
+                    小計 <span className="font-mono">${totalSubtotal}</span> − 折扣 <span className="font-mono text-red-600 dark:text-red-400">${totalDiscount}</span> = 應收 <b className="font-mono text-base text-zinc-900 dark:text-zinc-100">${totalAmount}</b>
+                  </>
+                ) : (
+                  <>合計 <b className="font-mono text-base text-zinc-900 dark:text-zinc-100">${totalAmount}</b></>
+                )}
               </p>
               <div className="max-h-80 space-y-3 overflow-y-auto rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
                 {memberOrders.map((o) => {

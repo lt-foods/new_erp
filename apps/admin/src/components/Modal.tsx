@@ -13,27 +13,24 @@ export function Modal({
 }) {
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", onKey);
     document.body.style.overflow = "hidden";
     return () => {
-      document.removeEventListener("keydown", onKey);
       document.body.style.overflow = "";
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
+  // 不再支援 Esc / 背景點擊關閉，避免操作中 popup 不小心被關。
+  // 只能按右上 ✕ 關（或 dialog 內部的明確按鈕）
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-zinc-900/50 px-4 py-8 backdrop-blur-sm"
-      onClick={onClose}
       aria-modal="true"
       role="dialog"
     >
       <div
         className={`w-full ${maxWidth} rounded-lg border border-zinc-200 bg-white shadow-2xl dark:border-zinc-800 dark:bg-zinc-900`}
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
           <h2 className="text-base font-semibold">{title}</h2>
