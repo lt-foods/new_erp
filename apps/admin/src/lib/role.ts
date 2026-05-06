@@ -28,6 +28,12 @@ export function canSeeBranch(role: Role | null): boolean {
   return BRANCH_ROLES.includes(role);
 }
 
+// 對齊 supabase/migrations/20260606000000_wallet_write_rpcs.sql 內 rpc_wallet_adjust 的 role gate
+export function canAdjustWallet(role: Role | null): boolean {
+  if (role === null) return false;
+  return BRANCH_ROLES.includes(role);
+}
+
 export function useRole(): Role | null {
   const [role, setRole] = useState<Role | null>(null);
 

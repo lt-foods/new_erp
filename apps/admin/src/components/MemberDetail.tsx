@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { MemberMergeModal } from "@/components/MemberMergeModal";
+import { WalletActionModal, type WalletActionMode } from "@/components/WalletActionModal";
 import { translateRpcError } from "@/lib/rpcError";
+import { canAdjustWallet, useRole } from "@/lib/role";
 
 type Member = {
   id: number;
@@ -46,6 +48,7 @@ type WalletEntry = {
   type: string;
   payment_method: string | null;
   reason: string | null;
+  reverses: number | null;
   created_at: string;
 };
 
@@ -68,6 +71,10 @@ export function MemberDetail({ memberId }: { memberId: number }) {
   const [draftNoNewOrder, setDraftNoNewOrder] = useState(false);
   const [draftHomeStoreId, setDraftHomeStoreId] = useState<string>("");
   const [savingStore, setSavingStore] = useState(false);
+  const [tenantId, setTenantId] = useState<string | null>(null);
+  const [walletAction, setWalletAction] = useState<{ mode: WalletActionMode; reverseTarget?: WalletEntry } | null>(null);
+  const role = useRole();
+  const canAdjust = canAdjustWallet(role);
 
   async function saveFlags() {
     if (!member) return;
@@ -148,6 +155,12 @@ export function MemberDetail({ memberId }: { memberId: number }) {
     let cancelled = false;
     (async () => {
       const sb = getSupabase();
+      // operator tenant_id from JWT app_metadata（沿用 ProductImagesField pattern）
+      const { data: sessData } = await sb.auth.getSession();
+      const tid = (sessData.session?.user?.app_metadata as Record<string, unknown> | undefined)
+        ?.tenant_id as string | undefined;
+      if (!cancelled && tid) setTenantId(tid);
+
       const { data: m, error: err } = await sb
         .from("members")
         .select("id, member_no, phone, name, gender, birthday, email, tier_id, home_store_id, status, member_type, notes, admin_note, no_notify_pickup, no_new_order, avatar_url, line_user_id, joined_at, last_visit_at, merged_into_member_id")
@@ -167,7 +180,7 @@ export function MemberDetail({ memberId }: { memberId: number }) {
         sb.from("member_points_balance").select("balance").eq("member_id", memberId).maybeSingle<{ balance: number }>(),
         sb.from("wallet_balances").select("balance").eq("member_id", memberId).maybeSingle<{ balance: number }>(),
         sb.from("points_ledger").select("id, change, balance_after, source_type, reason, created_at").eq("member_id", memberId).order("created_at", { ascending: false }).limit(50),
-        sb.from("wallet_ledger").select("id, change, balance_after, type, payment_method, reason, created_at").eq("member_id", memberId).order("created_at", { ascending: false }).limit(50),
+        sb.from("wallet_ledger").select("id, change, balance_after, type, payment_method, reason, reverses, created_at").eq("member_id", memberId).order("created_at", { ascending: false }).limit(50),
       ]);
       if (cancelled) return;
       setTier(tierQ.data as Tier | null);
@@ -350,6 +363,18 @@ export function MemberDetail({ memberId }: { memberId: number }) {
         onMerged={() => { setMergeOpen(false); setReloadTick((n) => n + 1); }}
       />
 
+      {walletAction && tenantId && (
+        <WalletActionModal
+          open={true}
+          onClose={() => setWalletAction(null)}
+          onSuccess={() => setReloadTick((n) => n + 1)}
+          tenantId={tenantId}
+          memberId={member.id}
+          mode={walletAction.mode}
+          reverseTarget={walletAction.reverseTarget}
+        />
+      )}
+
       <div className="grid gap-3 sm:grid-cols-3">
         <Card label="等級">{tier?.name ?? "—"}</Card>
         <Card label="積分餘額"><span className="text-lg font-mono">{points.toLocaleString()}</span></Card>
@@ -381,6 +406,34 @@ export function MemberDetail({ memberId }: { memberId: number }) {
           <TabBtn active={tab === "wallet"}  onClick={() => setTab("wallet")}>儲值流水 ({wLedger.length})</TabBtn>
           <TabBtn active={tab === "test"}    onClick={() => setTab("test")}>測試操作</TabBtn>
         </div>
+
+        {tab === "wallet" && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              onClick={() => tenantId && setWalletAction({ mode: "topup" })}
+              disabled={!tenantId}
+              className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+            >+ 加值</button>
+            <button
+              onClick={() => tenantId && setWalletAction({ mode: "spend" })}
+              disabled={!tenantId}
+              className="rounded-md bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+            >− 扣款</button>
+            <button
+              onClick={() => tenantId && setWalletAction({ mode: "refund" })}
+              disabled={!tenantId}
+              className="rounded-md bg-sky-600 px-3 py-1 text-xs font-medium text-white hover:bg-sky-700 disabled:opacity-50"
+            >↺ 退款</button>
+            {canAdjust && (
+              <button
+                onClick={() => tenantId && setWalletAction({ mode: "adjust" })}
+                disabled={!tenantId}
+                className="rounded-md border border-zinc-400 bg-white px-3 py-1 text-xs font-medium text-zinc-800 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+              >⚙ 調整</button>
+            )}
+          </div>
+        )}
+
         <div className="mt-3 overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
           {tab === "points" ? (
             <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
@@ -406,29 +459,52 @@ export function MemberDetail({ memberId }: { memberId: number }) {
               </tbody>
             </table>
           ) : tab === "wallet" ? (
-            <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
-              <thead className="bg-zinc-50 dark:bg-zinc-900">
-                <tr>
-                  <Th>時間</Th><Th>類型</Th><Th>支付</Th><Th className="text-right">變動</Th><Th className="text-right">餘額</Th><Th>備註</Th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-                {wLedger.length === 0 ? (
-                  <tr><td colSpan={6} className="p-6 text-center text-zinc-500">尚無紀錄</td></tr>
-                ) : wLedger.map((e) => (
-                  <tr key={e.id}>
-                    <Td className="text-xs text-zinc-500">{new Date(e.created_at).toLocaleString("zh-TW")}</Td>
-                    <Td>{e.type}</Td>
-                    <Td className="text-xs">{e.payment_method ?? "—"}</Td>
-                    <Td className={`text-right font-mono ${Number(e.change) >= 0 ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400"}`}>
-                      {Number(e.change) >= 0 ? "+" : ""}{Number(e.change)}
-                    </Td>
-                    <Td className="text-right font-mono">{Number(e.balance_after)}</Td>
-                    <Td className="text-xs text-zinc-500">{e.reason ?? "—"}</Td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            (() => {
+              const reversedIds = new Set(wLedger.map((x) => x.reverses).filter((v): v is number => typeof v === "number"));
+              return (
+                <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+                  <thead className="bg-zinc-50 dark:bg-zinc-900">
+                    <tr>
+                      <Th>時間</Th><Th>類型</Th><Th>支付</Th><Th className="text-right">變動</Th><Th className="text-right">餘額</Th><Th>備註</Th><Th>動作</Th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                    {wLedger.length === 0 ? (
+                      <tr><td colSpan={7} className="p-6 text-center text-zinc-500">尚無紀錄</td></tr>
+                    ) : wLedger.map((e) => {
+                      const reversible =
+                        ["topup","spend","refund","adjust"].includes(e.type) &&
+                        !reversedIds.has(e.id);
+                      return (
+                        <tr key={e.id}>
+                          <Td className="text-xs text-zinc-500">{new Date(e.created_at).toLocaleString("zh-TW")}</Td>
+                          <Td>{e.type}{e.reverses ? <span className="ml-1 text-[10px] text-zinc-400">→#{e.reverses}</span> : null}</Td>
+                          <Td className="text-xs">{e.payment_method ?? "—"}</Td>
+                          <Td className={`text-right font-mono ${Number(e.change) >= 0 ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400"}`}>
+                            {Number(e.change) >= 0 ? "+" : ""}{Number(e.change)}
+                          </Td>
+                          <Td className="text-right font-mono">{Number(e.balance_after)}</Td>
+                          <Td className="text-xs text-zinc-500">{e.reason ?? "—"}</Td>
+                          <Td className="text-xs">
+                            {reversible && tenantId ? (
+                              <button
+                                onClick={() => setWalletAction({ mode: "reverse", reverseTarget: e })}
+                                title={`反向 ledger #${e.id}`}
+                                className="rounded-md border border-zinc-300 px-2 py-0.5 text-[11px] hover:bg-zinc-100 dark:border-zinc-600 dark:hover:bg-zinc-800"
+                              >↩ 反向</button>
+                            ) : reversedIds.has(e.id) ? (
+                              <span className="text-[10px] text-zinc-400">已反向</span>
+                            ) : (
+                              <span className="text-[10px] text-zinc-400">—</span>
+                            )}
+                          </Td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              );
+            })()
           ) : (
             <div className="p-6">
               <h4 className="text-sm font-medium text-zinc-900 dark:text-zinc-100 mb-4">PWA 通知測試</h4>
