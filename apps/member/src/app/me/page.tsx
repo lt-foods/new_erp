@@ -22,8 +22,6 @@ type MemberData = {
   status: string;
 };
 
-type StoreOption = { id: number; code: string; name: string };
-
 type Overview = {
   store: {
     id: number;
@@ -52,8 +50,7 @@ export default function MePage() {
 
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ name: "", phone: "", birthday: "", email: "", home_store_id: "" });
-  const [stores, setStores] = useState<StoreOption[]>([]);
+  const [form, setForm] = useState({ name: "", phone: "", birthday: "", email: "" });
 
   // 推播訂閱狀態 lift 到頁面層,頭像區跟底部 PushNotificationManager 共用
   const pushState = usePushNotification(getSession()?.token ?? null);
@@ -114,20 +111,17 @@ export default function MePage() {
 
     (async () => {
       try {
-        const [meData, ovData, storesData] = await Promise.all([
+        const [meData, ovData] = await Promise.all([
           callLiffApi<MemberData>(s.token, { action: "get_me" }),
           callLiffApi<Overview>(s.token, { action: "get_overview" }).catch(() => null),
-          callLiffApi<{ stores: StoreOption[] }>("", { action: "list_stores" }).catch(() => ({ stores: [] })),
         ]);
         setMe(meData);
         if (ovData) setOverview(ovData);
-        setStores(storesData.stores ?? []);
         setForm({
           name: meData.name ?? "",
           phone: meData.phone ?? "",
           birthday: meData.birthday ?? "",
           email: meData.email ?? "",
-          home_store_id: meData.home_store_id ? String(meData.home_store_id) : "",
         });
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -149,7 +143,6 @@ export default function MePage() {
         phone: form.phone,
         birthday: form.birthday,
         email: form.email,
-        home_store_id: form.home_store_id || null,
       });
       const data = await callLiffApi<MemberData>(s.token, { action: "get_me" });
       setMe(data);
@@ -413,19 +406,10 @@ export default function MePage() {
                     className="w-full bg-transparent text-right text-[17px] text-[var(--foreground)] outline-none placeholder:text-[var(--tertiary-label)]"
                   />
                 </FormField>
-                <FormField label="取貨店" hint="預設取貨地點">
-                  <select
-                    value={form.home_store_id}
-                    onChange={(e) => setForm({ ...form, home_store_id: e.target.value })}
-                    className="w-full bg-transparent text-right text-[17px] text-[var(--foreground)] outline-none"
-                  >
-                    <option value="">未選擇</option>
-                    {stores.map((s) => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </select>
-                </FormField>
               </div>
+              <p className="px-4 pt-2 text-[12px] text-[var(--tertiary-label)]">
+                取貨店請聯絡店家調整。
+              </p>
             </section>
 
             <div className="flex gap-2 px-1 pt-1">
@@ -439,7 +423,6 @@ export default function MePage() {
                     phone: me.phone ?? "",
                     birthday: me.birthday ?? "",
                     email: me.email ?? "",
-                    home_store_id: me.home_store_id ? String(me.home_store_id) : "",
                   });
                 }}
                 disabled={saving}

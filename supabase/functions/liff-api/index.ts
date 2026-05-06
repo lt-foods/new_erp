@@ -205,13 +205,7 @@ async function updateMe(sb: any, tenantId: string, memberId: number, p: any) {
       patch.email_hash = null;
     }
   }
-  if (p.home_store_id !== undefined && p.home_store_id !== null && p.home_store_id !== "") {
-    const sid = Number(p.home_store_id);
-    if (!Number.isFinite(sid) || sid <= 0) return json({ error: "home_store_id invalid" }, 400);
-    const { data: s } = await sb.from("stores").select("id").eq("tenant_id", tenantId).eq("id", sid).eq("is_active", true).maybeSingle();
-    if (!s) return json({ error: "store not found or inactive" }, 400);
-    patch.home_store_id = sid;
-  }
+  // home_store_id 只允許 admin 從會員明細頁改 (rpc_set_member_home_store)；LIFF 不可改。
   if (Object.keys(patch).length === 0) return json({ error: "nothing to update" }, 400);
   patch.updated_at = new Date().toISOString();
   const { error } = await sb.from("members").update(patch).eq("tenant_id", tenantId).eq("id", memberId);
