@@ -112,6 +112,7 @@ export function ProductSkuSection({
       .from("skus")
       .select("id, sku_code, variant_name, base_unit")
       .eq("product_id", productId)
+      .neq("status", "discontinued")
       .order("id");
     if (skuErr) {
       setError(skuErr.message);
