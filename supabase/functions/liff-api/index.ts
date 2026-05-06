@@ -155,8 +155,14 @@ async function registerAndBind(sb: any, p: any) {
 async function getMe(sb: any, tenantId: string, memberId: number) {
   const { data, error } = await sb.from("members").select("id, member_no, name, phone, email, birthday, gender, home_store_id, avatar_url, status").eq("tenant_id", tenantId).eq("id", memberId).single();
   if (error) return json({ error: error.message }, 500);
+  let home_store_name: string | null = null;
+  if (data.home_store_id) {
+    const { data: s } = await sb.from("stores").select("name").eq("tenant_id", tenantId).eq("id", data.home_store_id).maybeSingle();
+    home_store_name = s?.name ?? null;
+  }
   return json({
     ...data,
+    home_store_name,
     member_id: data.id,
     phone: data.phone?.startsWith("line:") ? null : data.phone,
   });
@@ -199,6 +205,13 @@ async function updateMe(sb: any, tenantId: string, memberId: number, p: any) {
       patch.email_hash = null;
     }
   }
+  if (p.home_store_id !== undefined && p.home_store_id !== null && p.home_store_id !== "") {
+    const sid = Number(p.home_store_id);
+    if (!Number.isFinite(sid) || sid <= 0) return json({ error: "home_store_id invalid" }, 400);
+    const { data: s } = await sb.from("stores").select("id").eq("tenant_id", tenantId).eq("id", sid).eq("is_active", true).maybeSingle();
+    if (!s) return json({ error: "store not found or inactive" }, 400);
+    patch.home_store_id = sid;
+  }
   if (Object.keys(patch).length === 0) return json({ error: "nothing to update" }, 400);
   patch.updated_at = new Date().toISOString();
   const { error } = await sb.from("members").update(patch).eq("tenant_id", tenantId).eq("id", memberId);
@@ -216,9 +229,11 @@ async function getOverview(sb: any, tenantId: string, storeId: number, memberId:
   return json({ store: storeRow, receivable_amount: receivable, active_orders_count: activeCount ?? 0 });
 }
 
-async function listMyOrders(sb: any, tenantId: string, storeId: number, memberId: number, tab: string) {
+async function listMyOrders(sb: any, tenantId: string, _storeId: number, memberId: number, tab: string) {
   const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
-  let q = sb.from("v_customer_order_summary").select("*").eq("tenant_id", tenantId).eq("member_id", memberId).eq("store_id", storeId).gte("created_at", cutoff.toISOString()).order("created_at", { ascending: false }).limit(100);
+  // 不依 store_id 過濾：同一 line_user 可能綁多店 OA，但 member_id 是 tenant 級；
+  // 「我的訂單」呈現該 member 在所有店的訂單，OrderCard 會顯示 store_name 區別。
+  let q = sb.from("v_customer_order_summary").select("*").eq("tenant_id", tenantId).eq("member_id", memberId).gte("created_at", cutoff.toISOString()).order("created_at", { ascending: false }).limit(100);
   if (tab === "active") q = q.not("status", "in", "(completed,cancelled,expired)");
   else q = q.eq("status", "completed");
   const { data, error } = await q;
@@ -237,9 +252,10 @@ async function listMyOrders(sb: any, tenantId: string, storeId: number, memberId
   return json({ orders });
 }
 
-async function listMySettlements(sb: any, tenantId: string, storeId: number, memberId: number, tab: string) {
+async function listMySettlements(sb: any, tenantId: string, _storeId: number, memberId: number, tab: string) {
   const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
-  let q = sb.from("v_customer_order_summary").select("*").eq("tenant_id", tenantId).eq("member_id", memberId).eq("store_id", storeId).gte("created_at", cutoff.toISOString()).order("created_at", { ascending: false }).limit(100);
+  // 同 listMyOrders：跨店訂單都納入（OrderCard 顯示 store_name）。
+  let q = sb.from("v_customer_order_summary").select("*").eq("tenant_id", tenantId).eq("member_id", memberId).gte("created_at", cutoff.toISOString()).order("created_at", { ascending: false }).limit(100);
   if (tab === "unpaid") q = q.eq("payment_status", "unpaid").not("status", "in", "(cancelled,expired)");
   else q = q.in("status", ["shipping", "completed"]);
   const { data, error } = await q;
