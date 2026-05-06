@@ -14,6 +14,7 @@ type Member = {
   birthday: string | null;
   email: string | null;
   tier_id: number | null;
+  home_store_id: number | null;
   status: string;
   member_type: string | null;
   notes: string | null;
@@ -27,6 +28,7 @@ type Member = {
   merged_into_member_id: number | null;
 };
 type Tier = { id: number; name: string };
+type Store = { id: number; code: string; name: string };
 
 type PointsEntry = {
   id: number;
@@ -50,6 +52,7 @@ type WalletEntry = {
 export function MemberDetail({ memberId }: { memberId: number }) {
   const [member, setMember] = useState<Member | null>(null);
   const [tier, setTier] = useState<Tier | null>(null);
+  const [stores, setStores] = useState<Store[]>([]);
   const [points, setPoints] = useState(0);
   const [wallet, setWallet] = useState(0);
   const [pLedger, setPLedger] = useState<PointsEntry[]>([]);
@@ -63,6 +66,8 @@ export function MemberDetail({ memberId }: { memberId: number }) {
   const [draftAdminNote, setDraftAdminNote] = useState("");
   const [draftNoNotify, setDraftNoNotify] = useState(false);
   const [draftNoNewOrder, setDraftNoNewOrder] = useState(false);
+  const [draftHomeStoreId, setDraftHomeStoreId] = useState<string>("");
+  const [savingStore, setSavingStore] = useState(false);
 
   async function saveFlags() {
     if (!member) return;
@@ -82,6 +87,23 @@ export function MemberDetail({ memberId }: { memberId: number }) {
       setReloadTick((n) => n + 1);
     } finally {
       setSavingFlags(false);
+    }
+  }
+
+  async function saveHomeStore() {
+    if (!member) return;
+    setSavingStore(true);
+    try {
+      const sb = getSupabase();
+      const newId = draftHomeStoreId === "" ? null : Number(draftHomeStoreId);
+      const { error: e } = await sb.rpc("rpc_set_member_home_store", {
+        p_member_id: member.id,
+        p_home_store_id: newId,
+      });
+      if (e) { alert(`儲存失敗：${translateRpcError(e)}`); return; }
+      setReloadTick((n) => n + 1);
+    } finally {
+      setSavingStore(false);
     }
   }
 
@@ -128,7 +150,7 @@ export function MemberDetail({ memberId }: { memberId: number }) {
       const sb = getSupabase();
       const { data: m, error: err } = await sb
         .from("members")
-        .select("id, member_no, phone, name, gender, birthday, email, tier_id, status, member_type, notes, admin_note, no_notify_pickup, no_new_order, avatar_url, line_user_id, joined_at, last_visit_at, merged_into_member_id")
+        .select("id, member_no, phone, name, gender, birthday, email, tier_id, home_store_id, status, member_type, notes, admin_note, no_notify_pickup, no_new_order, avatar_url, line_user_id, joined_at, last_visit_at, merged_into_member_id")
         .eq("id", memberId).maybeSingle<Member>();
       if (cancelled) return;
       if (err) { setError(err.message); return; }
@@ -137,9 +159,11 @@ export function MemberDetail({ memberId }: { memberId: number }) {
       setDraftAdminNote(m.admin_note ?? "");
       setDraftNoNotify(!!m.no_notify_pickup);
       setDraftNoNewOrder(!!m.no_new_order);
+      setDraftHomeStoreId(m.home_store_id ? String(m.home_store_id) : "");
 
-      const [tierQ, pb, wb, pl, wl] = await Promise.all([
+      const [tierQ, storesQ, pb, wb, pl, wl] = await Promise.all([
         m.tier_id ? sb.from("member_tiers").select("id, name").eq("id", m.tier_id).maybeSingle<Tier>() : Promise.resolve({ data: null }),
+        sb.from("stores").select("id, code, name").eq("is_active", true).order("name"),
         sb.from("member_points_balance").select("balance").eq("member_id", memberId).maybeSingle<{ balance: number }>(),
         sb.from("wallet_balances").select("balance").eq("member_id", memberId).maybeSingle<{ balance: number }>(),
         sb.from("points_ledger").select("id, change, balance_after, source_type, reason, created_at").eq("member_id", memberId).order("created_at", { ascending: false }).limit(50),
@@ -147,6 +171,7 @@ export function MemberDetail({ memberId }: { memberId: number }) {
       ]);
       if (cancelled) return;
       setTier(tierQ.data as Tier | null);
+      setStores((storesQ.data as Store[]) ?? []);
       setPoints(Number(pb.data?.balance ?? 0));
       setWallet(Number(wb.data?.balance ?? 0));
       setPLedger((pl.data as PointsEntry[]) ?? []);
@@ -269,6 +294,53 @@ export function MemberDetail({ memberId }: { memberId: number }) {
             </button>
           </div>
         )}
+      </div>
+
+      {/* 取貨店 — admin 可改；改店守衛在 RPC 內檢查未取貨訂單 */}
+      <div className="rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
+        <div className="mb-2 flex items-center justify-between">
+          <div className="text-xs font-medium text-zinc-500">取貨店（會員預設取貨店）</div>
+          {member.home_store_id && (
+            <span className="text-xs text-zinc-500">
+              現：{stores.find((s) => s.id === member.home_store_id)?.name ?? `#${member.home_store_id}`}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={draftHomeStoreId}
+            onChange={(e) => setDraftHomeStoreId(e.target.value)}
+            className="flex-1 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+          >
+            <option value="">— 未指定 —</option>
+            {stores.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name} ({s.code})
+              </option>
+            ))}
+          </select>
+          {draftHomeStoreId !== (member.home_store_id ? String(member.home_store_id) : "") && (
+            <>
+              <button
+                onClick={() => setDraftHomeStoreId(member.home_store_id ? String(member.home_store_id) : "")}
+                disabled={savingStore}
+                className="rounded-md border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                還原
+              </button>
+              <button
+                onClick={saveHomeStore}
+                disabled={savingStore}
+                className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {savingStore ? "儲存中…" : "💾 儲存"}
+              </button>
+            </>
+          )}
+        </div>
+        <p className="mt-1 text-xs text-zinc-500">
+          會員仍有未取貨訂單時，後端會擋下改店動作（保護既有訂單的取貨地點）。
+        </p>
       </div>
 
       <MemberMergeModal
