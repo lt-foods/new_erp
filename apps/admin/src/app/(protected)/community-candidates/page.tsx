@@ -62,8 +62,23 @@ export default function CommunityCandidatesPage() {
   const [adoptCost, setAdoptCost] = useState("");
   const [adoptSalePrice, setAdoptSalePrice] = useState("");
   const [highlightId, setHighlightId] = useState<number | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkDate, setBulkDate] = useState("");
 
   const highlightRowRef = useRef<HTMLElement | null>(null);
+
+  const isSelectable = (r: Candidate) =>
+    r.owner_action !== "scheduled" && r.owner_action !== "adopted";
+
+  const toggleOne = (id: number) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const clearSelected = () => setSelected(new Set());
 
   useEffect(() => {
     const id = Number(new URLSearchParams(window.location.search).get("highlight"));
@@ -114,6 +129,7 @@ export default function CommunityCandidatesPage() {
 
   useEffect(() => {
     reload();
+    clearSelected();
   }, [query, tab]);
 
   const patch = async (id: number, updates: Record<string, unknown>) => {
@@ -226,6 +242,47 @@ export default function CommunityCandidatesPage() {
     await scheduleAt(id, dateStr);
     setScheduling(null);
     setScheduleDate("");
+  };
+
+  const handleBulkSchedule = async (dateStr: string) => {
+    if (!dateStr || selected.size === 0) return;
+    const ids = [...selected].filter((id) => {
+      const r = rows?.find((x) => x.id === id);
+      return r && isSelectable(r);
+    });
+    if (ids.length === 0) {
+      setError("沒有可排程的候選（已排程或已採用的會略過）");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const sb = getSupabase();
+      // 順序執行：每一筆建 product/sku/campaign 再補 sort_order，避免 sort 撞號
+      for (const id of ids) {
+        const row = rows?.find((r) => r.id === id);
+        if (!row) continue;
+        const productName = deriveProductName(row);
+        const { error: rpcErr } = await sb.rpc("rpc_schedule_candidate", {
+          p_candidate_id: id,
+          p_scheduled_date: dateStr,
+          p_product_name: productName,
+        });
+        if (rpcErr) throw rpcErr;
+        const nextOrder = await nextSortOrderForDay(dateStr);
+        await sb
+          .from("community_product_candidates")
+          .update({ scheduled_sort_order: nextOrder })
+          .eq("id", id);
+      }
+      clearSelected();
+      setBulkDate("");
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const extractPrice = (text: string): string => {
@@ -537,6 +594,50 @@ export default function CommunityCandidatesPage() {
         </div>
       )}
 
+      {/* 批次排日期工具列 */}
+      {selected.size > 0 && (
+        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50 p-2.5 text-sm dark:border-amber-700 dark:bg-amber-950/40">
+          <span className="font-medium text-amber-800 dark:text-amber-200">
+            已選 {selected.size} 筆
+          </span>
+          <div className="flex flex-wrap items-center gap-1">
+            {[
+              { label: "明天", date: localDateStr(1) },
+              { label: "後天", date: localDateStr(2) },
+              { label: "下週一", date: nextWeekMonday() },
+            ].map(({ label, date }) => (
+              <button
+                key={label}
+                onClick={() => handleBulkSchedule(date)}
+                disabled={busy}
+                className="rounded bg-amber-500 px-2.5 py-1 text-xs text-white hover:bg-amber-600 disabled:opacity-50"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <DatePicker
+            value={bulkDate}
+            onChange={setBulkDate}
+            className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+          />
+          <button
+            onClick={() => handleBulkSchedule(bulkDate)}
+            disabled={!bulkDate || busy}
+            className="rounded bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
+          >
+            {busy ? "排程中…" : "📅 批次排日期"}
+          </button>
+          <button
+            onClick={clearSelected}
+            disabled={busy}
+            className="ml-auto rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
+          >
+            清除選取
+          </button>
+        </div>
+      )}
+
       {rows === null ? (
         <div className="text-sm text-zinc-400">載入中…</div>
       ) : rows.length === 0 ? (
@@ -549,6 +650,28 @@ export default function CommunityCandidatesPage() {
           <table className="w-full text-sm">
             <thead className="bg-zinc-50 text-xs text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
               <tr>
+                <th className="w-8 px-2 py-2 text-left">
+                  {(() => {
+                    const selectables = (rows ?? []).filter(isSelectable);
+                    const allSelected = selectables.length > 0 && selectables.every((r) => selected.has(r.id));
+                    return (
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        disabled={selectables.length === 0}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelected(new Set(selectables.map((r) => r.id)));
+                          } else {
+                            clearSelected();
+                          }
+                        }}
+                        title="全選可排程的候選"
+                        className="h-4 w-4 cursor-pointer"
+                      />
+                    );
+                  })()}
+                </th>
                 <th className="px-3 py-2 text-left font-medium">時間</th>
                 <th className="px-3 py-2 text-left font-medium">商品名稱</th>
                 <th className="px-3 py-2 text-left font-medium">文案</th>
@@ -571,6 +694,16 @@ export default function CommunityCandidatesPage() {
                       : ""
                   }`}
                 >
+                  <td className="px-2 py-3">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(r.id)}
+                      disabled={!isSelectable(r)}
+                      onChange={() => toggleOne(r.id)}
+                      className="h-4 w-4 cursor-pointer disabled:cursor-not-allowed disabled:opacity-30"
+                      title={isSelectable(r) ? "選取" : "已排程或已採用,不可批次排程"}
+                    />
+                  </td>
                   <td className="whitespace-nowrap px-3 py-3 text-zinc-500">{fmt(r.created_at)}</td>
                   <td className="px-3 py-3 font-medium">
                     {r.product_name_hint ?? "—"}
@@ -636,11 +769,20 @@ export default function CommunityCandidatesPage() {
                 }`}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span
-                    className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${ACTION_COLOR[r.owner_action] ?? ACTION_COLOR.none}`}
-                  >
-                    {ACTION_LABEL[r.owner_action] ?? r.owner_action}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(r.id)}
+                      disabled={!isSelectable(r)}
+                      onChange={() => toggleOne(r.id)}
+                      className="h-4 w-4 cursor-pointer disabled:cursor-not-allowed disabled:opacity-30"
+                    />
+                    <span
+                      className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${ACTION_COLOR[r.owner_action] ?? ACTION_COLOR.none}`}
+                    >
+                      {ACTION_LABEL[r.owner_action] ?? r.owner_action}
+                    </span>
+                  </div>
                   <span className="text-[11px] text-zinc-400">{fmt(r.created_at)}</span>
                 </div>
 
