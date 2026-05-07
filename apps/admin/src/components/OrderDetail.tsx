@@ -331,7 +331,7 @@ export function OrderDetail({
     setReloadTick((n) => n + 1);
   }
 
-  const canTransfer = ["pending", "confirmed", "reserved"].includes(head.status);
+  const canTransfer = ["pending", "confirmed", "reserved", "ready"].includes(head.status);
   const canCancel = ["pending", "confirmed", "shipping"].includes(head.status);
   const isTransferredOut = head.status === "transferred_out";
 
@@ -530,17 +530,17 @@ export function OrderDetail({
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-medium dark:border-zinc-800 dark:bg-zinc-900">
           <span>明細（{items.length} 項 · {totalQty} 件）</span>
           <div className="flex flex-wrap items-center gap-3 font-mono">
-            <span className="text-zinc-500">原價 ${grossTotal}</span>
+            <span className="text-zinc-500">原價 ${Math.round(grossTotal)}</span>
             {lineDiscountTotal > 0 && (
-              <span className="text-zinc-500">− 單品折扣 ${lineDiscountTotal}</span>
+              <span className="text-zinc-500">− 單品折扣 ${Math.round(lineDiscountTotal)}</span>
             )}
-            <span className="text-zinc-500">小計 ${subtotal}</span>
+            <span className="text-zinc-500">小計 ${Math.round(subtotal)}</span>
             {orderDeduction > 0 && (
               <span className="text-zinc-500">
                 − 整單折扣
                 {orderDiscountValue.kind === "percent" && orderDiscountValue.value > 0
-                  ? ` ${orderDiscountValue.value}% (= $${orderDeduction})`
-                  : ` $${orderDeduction}`}
+                  ? ` ${orderDiscountValue.value}% (= $${Math.round(orderDeduction)})`
+                  : ` $${Math.round(orderDeduction)}`}
               </span>
             )}
             <span className="text-base">= 應收 <span className="font-semibold">${payableAmount}</span></span>
@@ -621,7 +621,7 @@ export function OrderDetail({
                         referenceAmount={Number(it.qty) * Number(eff.unit_price)}
                       />
                     </td>
-                    <td className="px-3 py-2 text-right font-mono">${sub}</td>
+                    <td className="px-3 py-2 text-right font-mono">${Math.round(sub)}</td>
                     <td className="px-3 py-2">
                       <EditableText
                         value={eff.notes}
