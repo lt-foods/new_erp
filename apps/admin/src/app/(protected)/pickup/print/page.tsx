@@ -21,6 +21,8 @@ type Order = {
   pickup_store_id: number | null;
   discount_amount: number;
   discount_percent: number;
+  wallet_paid_amount: number;
+  payment_status: string | null;
   notes: string | null;
   member: { id: number; member_no: string; name: string | null; phone: string | null } | null;
   campaign: { id: number; campaign_no: string; name: string } | null;
@@ -82,7 +84,7 @@ function Body() {
       const allItemIds = events.flatMap((e) => e.item_ids ?? []);
       const [{ data: ords }, { data: itms }] = await Promise.all([
         sb.from("customer_orders")
-          .select("id, order_no, status, pickup_store_id, discount_amount, discount_percent, notes, member:members(id, member_no, name, phone), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
+          .select("id, order_no, status, pickup_store_id, discount_amount, discount_percent, wallet_paid_amount, payment_status, notes, member:members(id, member_no, name, phone), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
           .in("id", orderIds),
         allItemIds.length > 0
           ? sb.from("customer_order_items").select("id, qty, unit_price, discount_amount, discount_percent, notes, status, sku:skus(sku_code, product_name, variant_name)").in("id", allItemIds)
@@ -116,13 +118,15 @@ function Body() {
   if (!receipts) return <div className="p-6 text-sm text-zinc-500">載入中…</div>;
 
   const combined = receipts.length > 1;
+  // payable 四捨五入到整數 NTD
   const orderPayable = (r: { order: Order; items: Item[] }) => {
     const sub = r.items.reduce((a, it) => a + lineSub(it), 0);
     const pct = Number(r.order?.discount_percent ?? 0);
-    const pctDed = Math.round(sub * pct) / 100;
-    return Math.max(0, sub - pctDed - Number(r.order?.discount_amount ?? 0));
+    return Math.max(0, Math.round(sub * (1 - pct / 100) - Number(r.order?.discount_amount ?? 0)));
   };
   const grandTotal = receipts.reduce((s, r) => s + orderPayable(r), 0);
+  const grandWalletPaid = receipts.reduce((s, r) => s + Number(r.order?.wallet_paid_amount ?? 0), 0);
+  const grandBalanceDue = Math.max(0, grandTotal - grandWalletPaid);
 
   return (
     <>
@@ -156,8 +160,10 @@ function Body() {
               const sub = r.items.reduce((s, it) => s + lineSub(it), 0);
               const disc = Number(r.order?.discount_amount ?? 0);
               const pct = Number(r.order?.discount_percent ?? 0);
-              const pctDed = Math.round(sub * pct) / 100;
-              const pay = Math.max(0, sub - pctDed - disc);
+              const pay = Math.max(0, Math.round(sub * (1 - pct / 100) - disc));
+              const pctDed = Math.max(0, sub - pay - disc);
+              const walletPaid = Number(r.order?.wallet_paid_amount ?? 0);
+              const balanceDue = Math.max(0, pay - walletPaid);
               return (
                 <div
                   key={r.event.id}
@@ -243,6 +249,20 @@ function Body() {
                         <td colSpan={3} className="px-1 py-0.5 text-right">本單應收</td>
                         <td className="px-1 py-0.5 text-right font-mono">${pay}</td>
                       </tr>
+                      {walletPaid > 0 && (
+                        <>
+                          <tr>
+                            <td colSpan={3} className="px-1 py-0.5 text-right text-zinc-600">− 已用儲值金</td>
+                            <td className="px-1 py-0.5 text-right font-mono">−${walletPaid}</td>
+                          </tr>
+                          <tr className="font-bold">
+                            <td colSpan={3} className="px-1 py-0.5 text-right">
+                              {balanceDue === 0 ? "✅ 已付清" : "應付剩餘"}
+                            </td>
+                            <td className="px-1 py-0.5 text-right font-mono">${balanceDue}</td>
+                          </tr>
+                        </>
+                      )}
                     </tbody>
                   </table>
                   {r.order?.notes && (
@@ -255,8 +275,18 @@ function Body() {
               );
             })}
 
-            <div className="mt-3 border-t-2 border-zinc-700 pt-2 text-right text-sm font-bold">
-              合計 ${grandTotal.toLocaleString()}
+            <div className="mt-3 border-t-2 border-zinc-700 pt-2 text-right text-sm">
+              <div className="font-bold">合計 ${grandTotal.toLocaleString()}</div>
+              {grandWalletPaid > 0 && (
+                <>
+                  <div className="text-zinc-600">− 已用儲值金 ${grandWalletPaid.toLocaleString()}</div>
+                  <div className="font-bold">
+                    {grandBalanceDue === 0
+                      ? "✅ 已付清"
+                      : <>應付剩餘 ${grandBalanceDue.toLocaleString()}</>}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         ) : (
@@ -334,8 +364,10 @@ function Body() {
                     const sub = r.items.reduce((s, it) => s + lineSub(it), 0);
                     const disc = Number(r.order?.discount_amount ?? 0);
                     const pct = Number(r.order?.discount_percent ?? 0);
-                    const pctDed = Math.round(sub * pct) / 100;
-                    const pay = Math.max(0, sub - pctDed - disc);
+                    const pay = Math.max(0, Math.round(sub * (1 - pct / 100) - disc));
+                    const pctDed = Math.max(0, sub - pay - disc);
+                    const walletPaid = Number(r.order?.wallet_paid_amount ?? 0);
+                    const balanceDue = Math.max(0, pay - walletPaid);
                     return (
                       <>
                         <tr className="border-t border-zinc-300">
@@ -358,6 +390,20 @@ function Body() {
                           <td colSpan={3} className="px-2 py-2 text-right">應收</td>
                           <td className="px-2 py-2 text-right font-mono">${pay}</td>
                         </tr>
+                        {walletPaid > 0 && (
+                          <>
+                            <tr>
+                              <td colSpan={3} className="px-2 py-1 text-right text-xs text-zinc-600">− 已用儲值金</td>
+                              <td className="px-2 py-1 text-right font-mono">−${walletPaid}</td>
+                            </tr>
+                            <tr className="border-t border-zinc-300 font-bold">
+                              <td colSpan={3} className="px-2 py-1 text-right">
+                                {balanceDue === 0 ? "✅ 已付清" : "應付剩餘"}
+                              </td>
+                              <td className="px-2 py-1 text-right font-mono">${balanceDue}</td>
+                            </tr>
+                          </>
+                        )}
                       </>
                     );
                   })()}
