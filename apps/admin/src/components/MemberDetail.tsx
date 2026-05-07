@@ -402,7 +402,7 @@ export function MemberDetail({ memberId }: { memberId: number }) {
       )}
 
       <div>
-        <div className="mt-2 inline-flex gap-0.5 rounded-lg border border-zinc-200 bg-zinc-50 p-0.5 dark:border-zinc-700 dark:bg-zinc-900/60">
+        <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
           <TabBtn active={tab === "wallet"}  onClick={() => setTab("wallet")}>儲值金明細 ({wLedger.length})</TabBtn>
           <TabBtn active={tab === "points"}  onClick={() => setTab("points")}>積分明細 ({pLedger.length})</TabBtn>
           <TabBtn active={tab === "test"}    onClick={() => setTab("test")}>測試操作</TabBtn>
@@ -553,8 +553,8 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
       onClick={onClick}
       className={
         active
-          ? "rounded-md bg-white px-3 py-1.5 text-sm font-semibold text-zinc-900 shadow-sm transition-all dark:bg-zinc-700 dark:text-zinc-100"
-          : "rounded-md px-3 py-1.5 text-sm font-medium text-zinc-500 transition-all hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+          ? "-mb-px border-b-2 border-emerald-600 px-3 py-2 text-sm font-semibold text-emerald-700 dark:border-emerald-400 dark:text-emerald-300"
+          : "-mb-px border-b-2 border-transparent px-3 py-2 text-sm font-medium text-zinc-500 transition-colors hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
       }
     >
       {children}
