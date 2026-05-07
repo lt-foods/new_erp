@@ -518,14 +518,6 @@ export function OrderDetail({
         />
       </div>
 
-      {/* 進度 timeline（採購到貨 → 撿貨 → 派貨 → 分店收貨） */}
-      <Timeline steps={timeline} />
-
-      {/* Aid order 專屬：互助轉移進度 */}
-      {head.transferred_from_order_id != null && (
-        <AidOrderTimeline orderId={head.id} />
-      )}
-
       <div className="rounded-md border border-zinc-200 dark:border-zinc-800">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-medium dark:border-zinc-800 dark:bg-zinc-900">
           <span>明細（{items.length} 項 · {totalQty} 件）</span>
@@ -645,6 +637,14 @@ export function OrderDetail({
           </table>
         </div>
       </div>
+
+      {/* 進度 timeline（採購到貨 → 撿貨 → 派貨 → 分店收貨） */}
+      <Timeline steps={timeline} />
+
+      {/* Aid order 專屬：互助轉移進度 */}
+      {head.transferred_from_order_id != null && (
+        <AidOrderTimeline orderId={head.id} />
+      )}
 
       <OrderTransferModal
         open={transferOpen}
