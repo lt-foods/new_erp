@@ -407,6 +407,12 @@ export function MemberDetail({ memberId }: { memberId: number }) {
         </p>
       </div>
 
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Card label="等級">{tier?.name ?? "—"}</Card>
+        <Card label="積分餘額"><span className="text-lg font-mono">{points.toLocaleString()}</span></Card>
+        <Card label="儲值餘額"><span className="text-lg font-mono">{wallet.toLocaleString()}</span></Card>
+      </div>
+
       {mergedFrom.length > 0 && (
         <div className="rounded-md border border-emerald-200 bg-emerald-50/40 p-3 dark:border-emerald-900 dark:bg-emerald-950/30">
           <div className="mb-2 flex items-center gap-2 text-xs font-medium text-emerald-800 dark:text-emerald-300">
@@ -469,12 +475,6 @@ export function MemberDetail({ memberId }: { memberId: number }) {
           reverseTarget={walletAction.reverseTarget}
         />
       )}
-
-      <div className="grid gap-3 sm:grid-cols-3">
-        <Card label="等級">{tier?.name ?? "—"}</Card>
-        <Card label="積分餘額"><span className="text-lg font-mono">{points.toLocaleString()}</span></Card>
-        <Card label="儲值餘額"><span className="text-lg font-mono">{wallet.toLocaleString()}</span></Card>
-      </div>
 
       <div>
         <div className="flex gap-2 border-b border-zinc-200 dark:border-zinc-800">
