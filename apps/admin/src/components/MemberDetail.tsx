@@ -278,7 +278,7 @@ export function MemberDetail({ memberId }: { memberId: number }) {
               <span className="rounded bg-zinc-300 px-2 py-0.5 text-xs font-medium text-zinc-700 line-through dark:bg-zinc-700 dark:text-zinc-300">已合併 → #{member.merged_into_member_id}</span>
             )}
             {member.member_type === "guest" && (
-              <span className="rounded bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-950 dark:text-blue-300">虛擬會員</span>
+              <span className="rounded bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-950 dark:text-blue-300" title="LLM 從 LINE 留言解析的訪客會員">訪客</span>
             )}
           </div>
           <div className="font-mono text-xs text-zinc-500">#{member.member_no}</div>
@@ -409,9 +409,9 @@ export function MemberDetail({ memberId }: { memberId: number }) {
       {mergedFrom.length > 0 && (
         <div className="rounded-md border border-emerald-200 bg-emerald-50/40 p-3 dark:border-emerald-900 dark:bg-emerald-950/30">
           <div className="mb-2 flex items-center gap-2 text-xs font-medium text-emerald-800 dark:text-emerald-300">
-            <span>📥 已合併虛擬會員（{mergedFrom.length}）</span>
+            <span>📥 已合併進來的舊會員（{mergedFrom.length}）</span>
             <span className="text-[10px] font-normal text-emerald-700/70 dark:text-emerald-400/70">
-              （這些虛擬會員的訂單 / 點數 / 儲值都已搬到本會員名下）
+              （這些舊會員的訂單 / 點數 / 儲值都已搬到本會員名下）
             </span>
           </div>
           <ul className="divide-y divide-emerald-200 dark:divide-emerald-900">

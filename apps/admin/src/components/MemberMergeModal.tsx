@@ -20,6 +20,12 @@ type Candidate = {
   member_type: string | null;
 };
 
+function memberTypeLabel(t: string | null): string {
+  if (t === "guest") return "訪客";
+  if (t === "full") return "正式";
+  return t ?? "—";
+}
+
 type Direction = "guest-to-real" | "real-from-guest";
 
 type AnchorMember = { id: number; name: string | null; phone: string | null; member_no: string };
@@ -148,7 +154,7 @@ export function MemberMergeModal({
               </>
             )}
             <br />
-            合併後來源會被標 <code>merged</code>，所有訂單 / 儲值 / 點數 / 卡片 / 標籤都會搬到目標。
+            合併後來源會被標為「已合併」，所有訂單 / 儲值 / 點數 / 卡片 / 標籤都會搬到目標，不可還原。
           </div>
         </div>
 
@@ -191,8 +197,8 @@ export function MemberMergeModal({
                       </div>
                       <div className="text-xs text-zinc-500">
                         {c.phone && !c.phone.startsWith("line:") ? c.phone : "—"}
-                        {c.line_user_id ? <span className="ml-2 text-emerald-600 dark:text-emerald-400">LINE 已綁</span> : <span className="ml-2 text-zinc-400">未綁 LINE</span>}
-                        　<span className="text-[10px] text-zinc-400">{c.member_type ?? "—"}</span>
+                        {c.line_user_id ? <span className="ml-2 text-emerald-600 dark:text-emerald-400">已綁 LINE</span> : <span className="ml-2 text-zinc-400">未綁 LINE</span>}
+                        　<span className="text-[10px] text-zinc-400">{memberTypeLabel(c.member_type)}</span>
                       </div>
                     </div>
                     {target?.id === c.id && (
@@ -206,7 +212,7 @@ export function MemberMergeModal({
         )}
 
         <label className="block">
-          <span className="mb-1 block text-xs text-zinc-500">合併原因（選填，會記錄到 member_merges）</span>
+          <span className="mb-1 block text-xs text-zinc-500">合併原因（選填，會記入合併紀錄）</span>
           <input
             value={reason}
             onChange={(e) => setReason(e.target.value)}
