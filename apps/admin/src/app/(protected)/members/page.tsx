@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 import { Modal } from "@/components/Modal";
@@ -35,6 +36,17 @@ type Store = { id: number; code: string; name: string };
 const PAGE_SIZE = 50;
 
 export default function MembersListPage() {
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-zinc-500">載入中…</div>}>
+      <MembersListBody />
+    </Suspense>
+  );
+}
+
+function MembersListBody() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const idFromUrl = searchParams.get("id");
   const [rows, setRows] = useState<MemberRow[] | null>(null);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +70,18 @@ export default function MembersListPage() {
     | { mode: "detail"; memberId: number; memberNo: string }
     | null
   >(null);
+
+  // URL ?id=N → 自動開 detail modal（讓外部 link 進來能直接看 detail）
+  useEffect(() => {
+    if (!idFromUrl) return;
+    const idNum = Number(idFromUrl);
+    if (!Number.isFinite(idNum) || idNum <= 0) return;
+    setModal((cur) =>
+      cur && cur.mode === "detail" && cur.memberId === idNum
+        ? cur
+        : { mode: "detail", memberId: idNum, memberNo: "" }
+    );
+  }, [idFromUrl]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -319,10 +343,16 @@ export default function MembersListPage() {
 
       <Modal
         open={!!modal}
-        onClose={() => setModal(null)}
+        onClose={() => {
+          setModal(null);
+          // 從 URL ?id= 進來開的 detail modal，關閉同步清 URL，避免 back 又自動打開
+          if (modal?.mode === "detail" && idFromUrl) {
+            router.replace("/members");
+          }
+        }}
         title={
           modal?.mode === "edit"   ? `編輯會員 #${modal.values.member_no}` :
-          modal?.mode === "detail" ? `會員明細 #${modal.memberNo}` :
+          modal?.mode === "detail" ? `會員明細${modal.memberNo ? ` #${modal.memberNo}` : ""}` :
           "新增會員"
         }
         maxWidth={modal?.mode === "detail" ? "max-w-4xl" : "max-w-3xl"}

@@ -420,7 +420,7 @@ function OrdersListContent() {
                       <span className="flex items-center gap-2">
                         <Avatar src={m.avatar_url} name={m.name ?? r.nickname_snapshot ?? "?"} />
                         <span className="min-w-0">
-                          <Link href={`/members/detail?id=${m.id}`} className="hover:underline">{m.name ?? "—"}</Link>
+                          <Link href={`/members?id=${m.id}`} className="hover:underline">{m.name ?? "—"}</Link>
                           <span className="ml-1 font-mono text-xs text-zinc-500">{m.phone}</span>
                         </span>
                       </span>

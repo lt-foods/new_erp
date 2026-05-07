@@ -100,7 +100,7 @@ export function MemberForm({
       if (err) throw err;
       const newId = Number(data);
       if (onSaved) onSaved(newId);
-      else router.replace(`/members/detail?id=${newId}`);
+      else router.replace(`/members?id=${newId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

@@ -246,7 +246,7 @@ export default function Dashboard() {
                   ) : recentMembers.map((r) => (
                     <tr key={r.id}>
                       <Td className="font-mono text-xs">
-                        <Link href={`/members/detail?id=${r.id}`} className="hover:underline">{r.member_no}</Link>
+                        <Link href={`/members?id=${r.id}`} className="hover:underline">{r.member_no}</Link>
                       </Td>
                       <Td className="text-xs">{r.name ?? "—"}</Td>
                       <Td className="font-mono text-xs">{r.phone ?? "—"}</Td>
