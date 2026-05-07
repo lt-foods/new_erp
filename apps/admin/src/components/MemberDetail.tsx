@@ -444,8 +444,8 @@ export function MemberDetail({ memberId }: { memberId: number }) {
           {mergedFrom.length > 0 && (
             <TabBtn active={tab === "merges"} onClick={() => setTab("merges")}>合併紀錄 ({mergedFrom.length})</TabBtn>
           )}
-          <TabBtn active={tab === "test"}    onClick={() => setTab("test")}>測試操作</TabBtn>
           <TabBtn active={tab === "info"}    onClick={() => setTab("info")}>會員資料</TabBtn>
+          <TabBtn active={tab === "test"}    onClick={() => setTab("test")}>測試操作</TabBtn>
         </div>
 
         {tab === "wallet" && (
