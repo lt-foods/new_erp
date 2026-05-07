@@ -337,23 +337,30 @@ export function OrderDetail({
 
   async function cancelOrder() {
     if (!head) return;
+    const walletPaid = Number(head.wallet_paid_amount ?? 0);
+    const walletNote = walletPaid > 0
+      ? `\n\n⚠️ 此訂單已用儲值金 $${walletPaid}，取消後會自動退回會員餘額。`
+      : "";
     const reason = prompt(
-      head.status === "shipping"
+      (head.status === "shipping"
         ? `撤回派貨：${head.order_no}\n會反向回收已出庫存，請輸入原因：`
-        : `取消訂單：${head.order_no}\n請輸入取消原因：`
+        : `取消訂單：${head.order_no}\n請輸入取消原因：`) + walletNote
     );
     if (reason === null) return;
     const sb = getSupabase();
     const { data: sess } = await sb.auth.getSession();
     const operator = sess.session?.user?.id ?? null;
     if (!operator) { alert("尚未登入"); return; }
-    const { error: rpcErr } = await sb.rpc("rpc_cancel_aid_order", {
+    const { data, error: rpcErr } = await sb.rpc("rpc_cancel_aid_order", {
       p_order_id: head.id,
       p_reason: reason,
       p_operator: operator,
     });
     if (rpcErr) { alert(`取消失敗：${translateRpcError(rpcErr)}`); return; }
-    alert("已取消");
+    const refunded = Number((data as { wallet_refunded?: number } | null)?.wallet_refunded ?? 0);
+    alert(refunded > 0
+      ? `已取消，已退回 $${refunded} 儲值金到會員餘額`
+      : "已取消");
     setReloadTick((n) => n + 1);
   }
   const pickableItems = items.filter((it) => ["pending", "reserved", "ready"].includes(it.status));
@@ -433,6 +440,9 @@ export function OrderDetail({
               title={head.status === "shipping" ? "撤回派貨並反向回收已出庫存" : "取消訂單"}
             >
               ✕ 取消訂單
+              {Number(head.wallet_paid_amount ?? 0) > 0 && (
+                <span className="ml-1 text-[10px] font-normal text-zinc-500">(將退 ${Number(head.wallet_paid_amount)})</span>
+              )}
             </button>
           )}
           {isTransferredOut && (
