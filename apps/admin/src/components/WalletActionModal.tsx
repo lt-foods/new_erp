@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
+import { WALLET_PAYMENT_METHODS, WALLET_PAYMENT_METHOD_LABEL } from "@/lib/walletLedger";
 
 export type WalletActionMode = "topup" | "spend" | "refund" | "adjust" | "reverse";
 
@@ -39,11 +40,10 @@ const TITLES: Record<WalletActionMode, string> = {
   reverse: "反向（reversal）",
 };
 
-const PAYMENT_METHODS = [
-  { value: "cash",        label: "現金 cash" },
-  { value: "credit_card", label: "信用卡 credit_card" },
-  { value: "transfer",    label: "轉帳 transfer" },
-];
+const PAYMENT_METHODS = WALLET_PAYMENT_METHODS.map((v) => ({
+  value: v,
+  label: WALLET_PAYMENT_METHOD_LABEL[v],
+}));
 
 export function WalletActionModal({
   open, onClose, onSuccess,

@@ -274,7 +274,7 @@ export function PickupDialog({
                   />
                 </label>
                 <div className="block">
-                  <span className="mb-1 block text-xs text-zinc-500">找現金</span>
+                  <span className="mb-1 block text-xs text-zinc-500">需收現金</span>
                   <div className="rounded-md border border-zinc-200 bg-white px-3 py-2 font-mono dark:border-zinc-800 dark:bg-zinc-950">${cashAmount}</div>
                 </div>
                 {walletMax > 0 && (
@@ -333,7 +333,7 @@ export function PickupDialog({
               {busy
                 ? "處理中…"
                 : walletNum > 0
-                  ? `✅ 確認取貨 (儲值 $${walletNum} + 現金 $${cashAmount})`
+                  ? `✅ 確認取貨 (儲值 $${walletNum} + 收現 $${cashAmount})`
                   : `✅ 確認取貨 (${picked.size} 項 · $${payableAmount})`}
             </button>
           </div>
