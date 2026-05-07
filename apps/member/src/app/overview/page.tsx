@@ -22,9 +22,15 @@ type Overview = {
   active_orders_count: number;
 };
 
+type WalletInfo = {
+  balance: number;
+  last_movement_at: string | null;
+};
+
 export default function OverviewPage() {
   const router = useRouter();
   const [data, setData] = useState<Overview | null>(null);
+  const [wallet, setWallet] = useState<WalletInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const pushState = usePushNotification(getSession()?.token ?? null);
@@ -38,8 +44,12 @@ export default function OverviewPage() {
     }
     (async () => {
       try {
-        const d = await callLiffApi<Overview>(s.token, { action: "get_overview" });
+        const [d, w] = await Promise.all([
+          callLiffApi<Overview>(s.token, { action: "get_overview" }),
+          callLiffApi<WalletInfo>(s.token, { action: "get_wallet" }).catch(() => null),
+        ]);
         setData(d);
+        if (w) setWallet(w);
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
       } finally {
@@ -105,6 +115,30 @@ export default function OverviewPage() {
                 </button>
               )}
             </section>
+
+            {/* 儲值金卡 — 永遠顯示（即便為 0，讓客人知道有此功能 + 可在門市加值） */}
+            {wallet && (
+              <section className="rounded-2xl bg-[var(--card-bg)] px-5 py-4 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+                <div className="flex items-baseline justify-between">
+                  <div className="text-[14px] text-[var(--secondary-label)]">💰 儲值金餘額</div>
+                </div>
+                <div className="mt-1 flex items-baseline gap-1">
+                  <span className="text-[40px] font-semibold tabular-nums leading-none text-[var(--foreground)]">
+                    ${Number(wallet.balance).toLocaleString()}
+                  </span>
+                </div>
+                <button
+                  onClick={() => router.push("/wallet")}
+                  className="mt-3 flex w-full items-center justify-between rounded-xl bg-[#7676801a] px-3 py-3 text-[16px] text-[var(--foreground)] active:bg-[#76768033]"
+                >
+                  <span>查看儲值流水</span>
+                  <span className="text-[var(--ios-gray)]">›</span>
+                </button>
+                <div className="mt-2 text-[12px] text-[var(--tertiary-label)]">
+                  儲值金不可退現；可在門市加值或結帳時抵扣
+                </div>
+              </section>
+            )}
 
             {/* 賣場介紹 */}
             {data.store.description && (
