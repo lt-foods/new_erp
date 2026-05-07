@@ -517,7 +517,7 @@ export function MemberDetail({ memberId }: { memberId: number }) {
 
       {member.line_user_id && (
         <Card label="LINE User ID">
-          <span className="break-all font-mono text-xs">{member.line_user_id}</span>
+          <MaskedLineId value={member.line_user_id} />
         </Card>
       )}
 
@@ -533,6 +533,40 @@ function Card({ label, children }: { label: string; children: React.ReactNode })
     <div className="rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
       <div className="text-xs text-zinc-500">{label}</div>
       <div className="mt-1">{children}</div>
+    </div>
+  );
+}
+
+function MaskedLineId({ value }: { value: string }) {
+  const [shown, setShown] = useState(false);
+  const masked =
+    value.length > 9
+      ? `${value.slice(0, 5)}${"*".repeat(value.length - 9)}${value.slice(-4)}`
+      : "*".repeat(value.length);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      /* clipboard 不可用就跳過 */
+    }
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="break-all font-mono text-xs">{shown ? value : masked}</span>
+      <button
+        type="button"
+        onClick={() => setShown((s) => !s)}
+        className="rounded border border-zinc-300 px-2 py-0.5 text-[11px] hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+      >
+        {shown ? "🙈 隱藏" : "👁 顯示"}
+      </button>
+      <button
+        type="button"
+        onClick={copy}
+        className="rounded border border-zinc-300 px-2 py-0.5 text-[11px] hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+      >
+        📋 複製
+      </button>
     </div>
   );
 }
