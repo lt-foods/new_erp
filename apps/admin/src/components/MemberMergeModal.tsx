@@ -1,7 +1,9 @@
 "use client";
 
-// 把虛擬會員（guest，從 LLM 解析或人工建檔）合併到 LINE 實體會員
-// 走既有 rpc_merge_member（自動把 orders / cards / 點數 / 儲值 全搬過去）
+// 會員合併（虛擬 ↔ 實體）— 兩個方向共用同一支 rpc_merge_member
+// - mode="guest-to-real": 從虛擬會員端搜實體會員（既有行為）
+// - mode="real-from-guest": 從實體會員端搜虛擬會員（反向）
+// rpc_merge_member 會搬：訂單 / 卡片 / 點數 / 儲值 / 標籤 / 暱稱對應 / 流水
 
 import { useEffect, useState } from "react";
 import { Modal } from "@/components/Modal";
@@ -17,17 +19,27 @@ type Candidate = {
   member_type: string | null;
 };
 
+type Direction = "guest-to-real" | "real-from-guest";
+
+type AnchorMember = { id: number; name: string | null; phone: string | null; member_no: string };
+
 export function MemberMergeModal({
   open,
   onClose,
   guestMember,
+  realMember,
   onMerged,
 }: {
   open: boolean;
   onClose: () => void;
-  guestMember: { id: number; name: string | null; phone: string | null; member_no: string };
+  /** mode = guest-to-real：傳 guestMember；mode = real-from-guest：傳 realMember */
+  guestMember?: AnchorMember;
+  realMember?: AnchorMember;
   onMerged: () => void;
 }) {
+  const direction: Direction = guestMember ? "guest-to-real" : "real-from-guest";
+  const anchor: AnchorMember | null = guestMember ?? realMember ?? null;
+
   const [query, setQuery] = useState("");
   const [candidates, setCandidates] = useState<Candidate[] | null>(null);
   const [target, setTarget] = useState<Candidate | null>(null);
@@ -35,38 +47,55 @@ export function MemberMergeModal({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // 預填查詢字（用 guest 的姓名 or 電話）
   useEffect(() => {
-    if (!open) return;
-    setQuery(guestMember.phone?.replace(/^line:/, "") || guestMember.name || "");
+    if (!open || !anchor) return;
+    // guest-to-real：用 guest 的姓名/手機去搜實體會員
+    // real-from-guest：搜尋框留空（實體會員的姓名通常跟 guest 不同，guest 多半是 LLM 從留言抓 nickname）
+    setQuery(direction === "guest-to-real"
+      ? (anchor.phone?.replace(/^line:/, "") || anchor.name || "")
+      : "");
     setCandidates(null);
     setTarget(null);
     setReason("");
     setErr(null);
-  }, [open, guestMember]);
+  }, [open, anchor, direction]);
 
   async function search() {
+    if (!anchor) return;
     const q = query.trim();
     if (q.length < 2) { setErr("請至少輸入 2 字"); return; }
     setErr(null);
     setCandidates(null);
     const sb = getSupabase();
     const safe = q.replace(/[%,()]/g, " ");
-    const { data, error } = await sb
+    let req = sb
       .from("members")
       .select("id, member_no, name, phone, line_user_id, member_type")
-      .neq("id", guestMember.id)                  // 不合併自己
-      .neq("status", "merged")                     // 已合併的不能再被合
-      .neq("status", "deleted")
+      .neq("id", anchor.id)
       .or(`name.ilike.%${safe}%,phone.ilike.%${safe}%,member_no.ilike.%${safe}%`)
       .order("last_visit_at", { ascending: false, nullsFirst: false })
       .limit(20);
+
+    if (direction === "guest-to-real") {
+      // 找實體會員：排除 merged/deleted、以及其他 guest（避免 guest→guest）
+      req = req
+        .neq("status", "merged")
+        .neq("status", "deleted")
+        .neq("member_type", "guest");
+    } else {
+      // 找虛擬會員：member_type='guest' + status='active'（不能合 merged 進來）
+      req = req
+        .eq("member_type", "guest")
+        .eq("status", "active");
+    }
+
+    const { data, error } = await req;
     if (error) { setErr(error.message); return; }
     setCandidates((data ?? []) as Candidate[]);
   }
 
   async function submit() {
-    if (!target) { setErr("請選擇要合併到的目標會員"); return; }
+    if (!anchor || !target) { setErr("請選擇合併對象"); return; }
     setBusy(true);
     setErr(null);
     try {
@@ -74,30 +103,52 @@ export function MemberMergeModal({
       const { data: sess } = await sb.auth.getSession();
       const operator = sess.session?.user?.id;
       if (!operator) { setErr("尚未登入"); return; }
+
+      const guestId = direction === "guest-to-real" ? anchor.id : target.id;
+      const realId  = direction === "guest-to-real" ? target.id : anchor.id;
+
       const { error } = await sb.rpc("rpc_merge_member", {
-        p_guest_id: guestMember.id,
-        p_real_id:  target.id,
+        p_guest_id: guestId,
+        p_real_id:  realId,
         p_operator: operator,
         p_reason:   reason || null,
       });
       if (error) { setErr(translateRpcError(error)); return; }
-      alert(`合併完成：#${guestMember.member_no} → ${target.name ?? target.member_no}`);
+      const guestLabel = direction === "guest-to-real" ? anchor.member_no : target.member_no;
+      const realLabel  = direction === "guest-to-real" ? (target.name ?? target.member_no) : (anchor.name ?? anchor.member_no);
+      alert(`合併完成：#${guestLabel} → ${realLabel}`);
       onMerged();
     } finally {
       setBusy(false);
     }
   }
 
+  if (!anchor) return null;
+
+  const title = direction === "guest-to-real"
+    ? "合併虛擬會員 → 實體會員"
+    : "把虛擬會員合併進來（→ 此實體會員）";
+
   return (
-    <Modal open={open} onClose={onClose} title={`合併虛擬會員 → 真實會員`} maxWidth="max-w-2xl">
+    <Modal open={open} onClose={onClose} title={title} maxWidth="max-w-2xl">
       <div className="space-y-4 text-sm">
         <div className="rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/40">
           <div className="text-xs text-amber-800 dark:text-amber-300">
-            <b>來源（虛擬會員）：</b>{guestMember.name ?? "—"}
-            <span className="font-mono">{guestMember.member_no}</span>
-            {guestMember.phone && <span className="font-mono">{guestMember.phone}</span>}
+            {direction === "guest-to-real" ? (
+              <>
+                <b>來源（虛擬會員）：</b>{anchor.name ?? "—"}
+                <span className="ml-1 font-mono">{anchor.member_no}</span>
+                {anchor.phone && <span className="ml-1 font-mono">{anchor.phone}</span>}
+              </>
+            ) : (
+              <>
+                <b>目標（此實體會員）：</b>{anchor.name ?? "—"}
+                <span className="ml-1 font-mono">{anchor.member_no}</span>
+                {anchor.phone && <span className="ml-1 font-mono">{anchor.phone}</span>}
+              </>
+            )}
             <br />
-            合併後此會員會被標 <code>merged</code>，所有訂單 / 儲值 / 點數 / 卡片 / 標籤都會搬到目標會員。
+            合併後虛擬會員會被標 <code>merged</code>，所有訂單 / 儲值 / 點數 / 卡片 / 標籤都會搬到實體會員。
           </div>
         </div>
 
@@ -106,7 +157,9 @@ export function MemberMergeModal({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); search(); }}}
-            placeholder="搜尋目標會員（姓名 / 電話 / 會員編號）"
+            placeholder={direction === "guest-to-real"
+              ? "搜尋目標實體會員（姓名 / 電話 / 會員編號）"
+              : "搜尋要合併進來的虛擬會員（姓名 / 電話 / 會員編號）"}
             className="flex-1 rounded-md border border-zinc-300 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900"
           />
           <button
@@ -137,8 +190,8 @@ export function MemberMergeModal({
                         <span className="ml-1 font-mono text-xs text-zinc-500">{c.member_no}</span>
                       </div>
                       <div className="text-xs text-zinc-500">
-                        {c.phone ?? "—"}
-                        {c.line_user_id ? <span className="text-emerald-600 dark:text-emerald-400">LINE 已綁</span> : <span className="text-zinc-400">未綁 LINE</span>}
+                        {c.phone && !c.phone.startsWith("line:") ? c.phone : "—"}
+                        {c.line_user_id ? <span className="ml-2 text-emerald-600 dark:text-emerald-400">LINE 已綁</span> : <span className="ml-2 text-zinc-400">未綁 LINE</span>}
                         　<span className="text-[10px] text-zinc-400">{c.member_type ?? "—"}</span>
                       </div>
                     </div>

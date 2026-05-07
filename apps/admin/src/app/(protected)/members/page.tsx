@@ -46,6 +46,7 @@ export default function MembersListPage() {
   const [sortBy, setSortBy] = useState<SortKey>("updated_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [page, setPage] = useState(1);
+  const [showMerged, setShowMerged] = useState(false);
 
   const [stores, setStores] = useState<Store[]>([]);
   useDefaultStoreFromUser(stores, storeId, setStoreId);
@@ -68,7 +69,7 @@ export default function MembersListPage() {
 
   useEffect(() => {
     setPage(1);
-  }, [storeId, sortBy, sortDir]);
+  }, [storeId, sortBy, sortDir, showMerged]);
 
   useEffect(() => {
     let cancelled = false;
@@ -106,6 +107,7 @@ export default function MembersListPage() {
           q = q.or(`name.ilike.%${safe}%,phone.ilike.%${safe}%,member_no.ilike.%${safe}%`);
         }
         if (storeId) q = q.eq("home_store_id", Number(storeId));
+        if (!showMerged) q = q.not("status", "in", "(merged,deleted)");
 
         const { data, count, error } = await q;
         if (cancelled) return;
@@ -146,7 +148,7 @@ export default function MembersListPage() {
     return () => {
       cancelled = true;
     };
-  }, [query, storeId, sortBy, sortDir, page, reloadTick]);
+  }, [query, storeId, sortBy, sortDir, page, reloadTick, showMerged]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const fromIdx = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
@@ -199,6 +201,16 @@ export default function MembersListPage() {
         </select>
       </div>
 
+      <label className="flex items-center gap-2 text-xs text-zinc-500">
+        <input
+          type="checkbox"
+          checked={showMerged}
+          onChange={(e) => setShowMerged(e.target.checked)}
+          className="h-3.5 w-3.5"
+        />
+        <span>顯示已合併 / 已刪除（預設只看活躍會員）</span>
+      </label>
+
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
           <p className="font-medium">讀取失敗</p>
@@ -238,10 +250,16 @@ export default function MembersListPage() {
                     <Td className="font-mono">
                       <button
                         onClick={() => setModal({ mode: "detail", memberId: r.id, memberNo: r.member_no })}
-                        className="hover:underline"
+                        className={r.status === "merged" || r.status === "deleted" ? "text-zinc-400 hover:underline" : "hover:underline"}
                       >
                         {r.member_no}
                       </button>
+                      {r.status === "merged" && (
+                        <span className="ml-2 rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] font-normal text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300">已合併</span>
+                      )}
+                      {r.status === "deleted" && (
+                        <span className="ml-2 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-normal text-red-700 dark:bg-red-950 dark:text-red-300">已刪除</span>
+                      )}
                     </Td>
                     <Td>
                       <div className="flex items-center gap-2">
