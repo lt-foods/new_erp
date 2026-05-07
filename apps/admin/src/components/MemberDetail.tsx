@@ -61,7 +61,7 @@ export function MemberDetail({ memberId }: { memberId: number }) {
   const [wallet, setWallet] = useState(0);
   const [pLedger, setPLedger] = useState<PointsEntry[]>([]);
   const [wLedger, setWLedger] = useState<WalletEntry[]>([]);
-  const [tab, setTab] = useState<"points" | "wallet" | "test">("points");
+  const [tab, setTab] = useState<"points" | "wallet" | "test">("wallet");
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
@@ -402,9 +402,9 @@ export function MemberDetail({ memberId }: { memberId: number }) {
       )}
 
       <div>
-        <div className="mt-2 flex gap-1 rounded-xl border border-zinc-200 bg-zinc-50 p-1 shadow-sm dark:border-zinc-700 dark:bg-zinc-900/60">
-          <TabBtn active={tab === "points"}  onClick={() => setTab("points")}>積分明細 ({pLedger.length})</TabBtn>
+        <div className="mt-2 inline-flex gap-0.5 rounded-lg border border-zinc-200 bg-zinc-50 p-0.5 dark:border-zinc-700 dark:bg-zinc-900/60">
           <TabBtn active={tab === "wallet"}  onClick={() => setTab("wallet")}>儲值金明細 ({wLedger.length})</TabBtn>
+          <TabBtn active={tab === "points"}  onClick={() => setTab("points")}>積分明細 ({pLedger.length})</TabBtn>
           <TabBtn active={tab === "test"}    onClick={() => setTab("test")}>測試操作</TabBtn>
         </div>
 
@@ -553,8 +553,8 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
       onClick={onClick}
       className={
         active
-          ? "flex-1 rounded-lg bg-emerald-600 px-4 py-2.5 text-base font-semibold text-white shadow-md transition-all"
-          : "flex-1 rounded-lg px-4 py-2.5 text-base font-medium text-zinc-600 transition-all hover:bg-white hover:text-zinc-900 hover:shadow-sm dark:text-zinc-300 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+          ? "rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition-all"
+          : "rounded-md px-3 py-1.5 text-sm font-medium text-zinc-600 transition-all hover:bg-white hover:text-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
       }
     >
       {children}
