@@ -28,10 +28,11 @@ type Campaign = { id: number; campaign_no: string; name: string; cover_image_url
 type Store = { id: number; code: string; name: string };
 type Member = { id: number; name: string | null; phone: string | null; member_no: string; avatar_url: string | null };
 
-type Tab = "pending" | "completed" | "cancelled";
+type Tab = "pending" | "completed" | "cancelled" | "transferred";
 const TABS: { value: Tab; label: string }[] = [
   { value: "pending", label: "未取貨" },
   { value: "completed", label: "已完成" },
+  { value: "transferred", label: "轉出" },
   { value: "cancelled", label: "取消" },
 ];
 const PENDING_STATUSES: OrderStatus[] = ["pending", "confirmed", "shipping", "ready"];
@@ -134,6 +135,7 @@ function OrdersListContent() {
         // 依 tab 套狀態過濾;一律隱藏 transferred_out (視同關閉、金額/數量不入統計)
         if (tab === "completed") q = q.eq("status", "completed");
         else if (tab === "cancelled") q = q.in("status", CANCELLED_STATUSES);
+        else if (tab === "transferred") q = q.eq("status", "transferred_out");
         else q = q.in("status", PENDING_STATUSES);
         if (storeId) q = q.eq("pickup_store_id", Number(storeId));
 
@@ -199,16 +201,18 @@ function OrdersListContent() {
         if (storeId) q = q.eq("pickup_store_id", Number(storeId));
         return q;
       };
-      const [p, c, x] = await Promise.all([
+      const [p, c, x, tr] = await Promise.all([
         buildBase().in("status", PENDING_STATUSES),
         buildBase().eq("status", "completed"),
         buildBase().in("status", CANCELLED_STATUSES),
+        buildBase().eq("status", "transferred_out"),
       ]);
       if (cancelled) return;
       setTabCounts({
         pending: p.count ?? 0,
         completed: c.count ?? 0,
         cancelled: x.count ?? 0,
+        transferred: tr.count ?? 0,
       });
     })();
     return () => { cancelled = true; };
