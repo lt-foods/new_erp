@@ -213,6 +213,39 @@ async function updateMe(sb: any, tenantId: string, memberId: number, p: any) {
   return json({ ok: true });
 }
 
+async function getWallet(sb: any, tenantId: string, memberId: number) {
+  const { data, error } = await sb
+    .from("wallet_balances")
+    .select("balance, version, last_movement_at, updated_at")
+    .eq("tenant_id", tenantId)
+    .eq("member_id", memberId)
+    .maybeSingle();
+  if (error) return json({ error: error.message }, 500);
+  // 沒 row 表示從未動過 → 餘額 0
+  return json({
+    balance: Number(data?.balance ?? 0),
+    version: Number(data?.version ?? 0),
+    last_movement_at: data?.last_movement_at ?? null,
+    updated_at: data?.updated_at ?? null,
+  });
+}
+
+async function listWalletLedger(sb: any, tenantId: string, memberId: number, body: any) {
+  const limit = Math.min(Math.max(Number(body.limit ?? 30), 1), 100);
+  const beforeId = body.before_id ? Number(body.before_id) : null;
+  let q = sb
+    .from("wallet_ledger")
+    .select("id, change, balance_after, type, source_type, source_id, payment_method, reverses, reason, created_at")
+    .eq("tenant_id", tenantId)
+    .eq("member_id", memberId)
+    .order("id", { ascending: false })
+    .limit(limit);
+  if (beforeId) q = q.lt("id", beforeId);
+  const { data, error } = await q;
+  if (error) return json({ error: error.message }, 500);
+  return json({ ledger: data ?? [], has_more: (data?.length ?? 0) === limit });
+}
+
 async function getOverview(sb: any, tenantId: string, storeId: number, memberId: number) {
   const { data: storeRow, error: sErr } = await sb.from("stores").select("id, code, name, banner_url, description, payment_methods_text, shipping_methods_text").eq("tenant_id", tenantId).eq("id", storeId).single();
   if (sErr || !storeRow) return json({ error: "store not found" }, 404);
@@ -656,6 +689,8 @@ Deno.serve(async (req) => {
       case "get_me": if (!memberId) return json({ error: "no member_id" }, 401); return await getMe(sb, tenantId, memberId);
       case "update_me": if (!memberId) return json({ error: "no member_id" }, 401); return await updateMe(sb, tenantId, memberId, body);
       case "get_overview": if (!memberId) return json({ error: "no member_id" }, 401); return await getOverview(sb, tenantId, storeId, memberId);
+      case "get_wallet": if (!memberId) return json({ error: "no member_id" }, 401); return await getWallet(sb, tenantId, memberId);
+      case "list_wallet_ledger": if (!memberId) return json({ error: "no member_id" }, 401); return await listWalletLedger(sb, tenantId, memberId, body);
       case "list_my_orders": if (!memberId) return json({ error: "no member_id" }, 401); return await listMyOrders(sb, tenantId, storeId, memberId, String(body.tab ?? ""));
       case "list_my_settlements": if (!memberId) return json({ error: "no member_id" }, 401); return await listMySettlements(sb, tenantId, storeId, memberId, String(body.tab ?? ""));
       case "upsert_push_subscription": if (!memberId) return json({ error: "no member_id" }, 401); return await upsertPushSubscription(sb, tenantId, memberId, body);
