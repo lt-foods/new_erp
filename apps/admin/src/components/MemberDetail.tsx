@@ -6,6 +6,7 @@ import { MemberMergeModal } from "@/components/MemberMergeModal";
 import { WalletActionModal, type WalletActionMode } from "@/components/WalletActionModal";
 import { translateRpcError } from "@/lib/rpcError";
 import { canAdjustWallet, useRole } from "@/lib/role";
+import { walletLedgerTypeLabel, walletPaymentMethodLabel } from "@/lib/walletLedger";
 
 type Member = {
   id: number;
@@ -478,8 +479,8 @@ export function MemberDetail({ memberId }: { memberId: number }) {
                       return (
                         <tr key={e.id}>
                           <Td className="text-xs text-zinc-500">{new Date(e.created_at).toLocaleString("zh-TW")}</Td>
-                          <Td>{e.type}{e.reverses ? <span className="ml-1 text-[10px] text-zinc-400">→#{e.reverses}</span> : null}</Td>
-                          <Td className="text-xs">{e.payment_method ?? "—"}</Td>
+                          <Td>{walletLedgerTypeLabel(e.type)}{e.reverses ? <span className="ml-1 text-[10px] text-zinc-400">→#{e.reverses}</span> : null}</Td>
+                          <Td className="text-xs">{walletPaymentMethodLabel(e.payment_method)}</Td>
                           <Td className={`text-right font-mono ${Number(e.change) >= 0 ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400"}`}>
                             {Number(e.change) >= 0 ? "+" : ""}{Number(e.change)}
                           </Td>
