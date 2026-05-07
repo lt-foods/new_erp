@@ -202,7 +202,13 @@ export function MemberMergeModal({
                       </div>
                     </div>
                     {target?.id === c.id && (
-                      <span className="rounded-md bg-emerald-600 px-2 py-1 text-xs text-white">已選</span>
+                      <span
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-sm font-bold text-white shadow"
+                        title="已選"
+                        aria-label="已選"
+                      >
+                        ✓
+                      </span>
                     )}
                   </li>
                 ))}
