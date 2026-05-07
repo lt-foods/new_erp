@@ -544,7 +544,8 @@ export function OrderDetail({
             {(() => {
               const balDue = Math.max(0, payableAmount - Number(head.wallet_paid_amount ?? 0));
               const isPaid = head.payment_status === "paid";
-              const canPay = head.member && balDue > 0 && (head.status === "pending" || head.status === "confirmed");
+              const TERMINAL_STATUSES = ["completed","picked_up","cancelled","expired","transferred_out"];
+              const canPay = !!head.member && balDue > 0 && !isPaid && !TERMINAL_STATUSES.includes(head.status);
               return (
                 <>
                   {Number(head.wallet_paid_amount) > 0 && (
