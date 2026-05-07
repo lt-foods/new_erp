@@ -48,6 +48,7 @@ export function PickupDialog({
   const [discountPercent, setDiscountPercent] = useState(0);
   const [memberId, setMemberId] = useState<number | null>(null);
   const [walletPaidSoFar, setWalletPaidSoFar] = useState(0);
+  const [paymentStatus, setPaymentStatus] = useState<string | null>(null);
   const [walletBalance, setWalletBalance] = useState<number | null>(null);
   const [walletAmount, setWalletAmount] = useState("");
   const [picked, setPicked] = useState<Set<number>>(new Set());
@@ -80,21 +81,29 @@ export function PickupDialog({
       setDiscount(Number(head?.discount_amount ?? 0));
       setDiscountPercent(Number(head?.discount_percent ?? 0));
       setMemberId(head?.member_id ?? null);
-      setWalletPaidSoFar(Number(head?.wallet_paid_amount ?? 0));
-      // 抓會員儲值餘額 + 預填本次抵扣（min(餘額, 應收)）
+      const alreadyPaid = Number(head?.wallet_paid_amount ?? 0);
+      const isPaid = head?.payment_status === "paid";
+      setWalletPaidSoFar(alreadyPaid);
+      setPaymentStatus(head?.payment_status ?? null);
+      // 抓會員儲值餘額 + 預填本次抵扣（扣掉已付的）
       if (head?.member_id) {
         const { data: wb } = await sb.from("wallet_balances")
           .select("balance").eq("member_id", head.member_id).maybeSingle<{ balance: number }>();
         if (!cancelled) {
           const bal = Number(wb?.balance ?? 0);
           setWalletBalance(bal);
-          // 預填：min(餘額, 本次應收) — 已選全 item 預設算（payable 四捨五入到 1 元）
-          const itemSubtotal = list.reduce((s, it) => s + lineSub(it), 0);
-          const dpct = Number(head?.discount_percent ?? 0);
-          const damt = Number(head?.discount_amount ?? 0);
-          const initialPayable = Math.max(0, Math.round(itemSubtotal * (1 - dpct / 100) - damt));
-          const preFill = Math.min(bal, initialPayable);
-          setWalletAmount(preFill > 0 ? String(preFill) : "");
+          // 已付清 → 不再扣；否則：min(餘額, 本次應收 - 已付)
+          if (isPaid) {
+            setWalletAmount("");
+          } else {
+            const itemSubtotal = list.reduce((s, it) => s + lineSub(it), 0);
+            const dpct = Number(head?.discount_percent ?? 0);
+            const damt = Number(head?.discount_amount ?? 0);
+            const initialPayable = Math.max(0, Math.round(itemSubtotal * (1 - dpct / 100) - damt));
+            const remainingPayable = Math.max(0, initialPayable - alreadyPaid);
+            const preFill = Math.min(bal, remainingPayable);
+            setWalletAmount(preFill > 0 ? String(preFill) : "");
+          }
         }
       } else {
         setWalletBalance(null);
@@ -162,10 +171,12 @@ export function PickupDialog({
   const totalDeduction = subtotal - payableAmount;
   const percentDeduction = Math.max(0, totalDeduction - discount);
 
-  // 儲值金抵扣計算：本次最多扣 = min(會員餘額, 本次應收)
+  // 儲值金抵扣計算：本次最多扣 = min(會員餘額, 本次應收 - 已付)
+  const isPaid = paymentStatus === "paid";
+  const remainingPayable = Math.max(0, payableAmount - walletPaidSoFar);
   const walletNum = Number(walletAmount) || 0;
-  const walletMax = Math.min(walletBalance ?? 0, payableAmount);
-  const cashAmount = Math.max(0, payableAmount - walletNum);
+  const walletMax = isPaid ? 0 : Math.min(walletBalance ?? 0, remainingPayable);
+  const cashAmount = Math.max(0, remainingPayable - walletNum);
   const walletInvalid =
     walletNum < 0 ||
     walletNum > walletMax ||
@@ -246,9 +257,23 @@ export function PickupDialog({
                 )}
                 <tr>
                   <td colSpan={4} className="px-3 py-2 text-right text-xs text-zinc-500">應收</td>
-                  <td className="px-3 py-2 text-right font-mono text-base font-semibold">${payableAmount}</td>
+                  <td className="px-3 py-2 text-right font-mono text-base font-semibold">${Math.round(payableAmount)}</td>
                   <td />
                 </tr>
+                {walletPaidSoFar > 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-3 py-1 text-right text-xs text-zinc-500">− 已用儲值金</td>
+                    <td className="px-3 py-1 text-right font-mono text-zinc-500">−${Math.round(walletPaidSoFar)}</td>
+                    <td />
+                  </tr>
+                )}
+                {walletPaidSoFar > 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-3 py-2 text-right text-xs text-zinc-500">應付剩餘</td>
+                    <td className={`px-3 py-2 text-right font-mono text-base font-semibold ${remainingPayable === 0 ? "text-emerald-700 dark:text-emerald-400" : ""}`}>${Math.round(remainingPayable)}</td>
+                    <td>{isPaid && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">已付清</span>}</td>
+                  </tr>
+                )}
               </tfoot>
             </table>
           </div>
@@ -259,10 +284,13 @@ export function PickupDialog({
                 <span>會員儲值餘額：
                   {walletBalance == null
                     ? <span className="text-zinc-500">載入中…</span>
-                    : <span className={`font-mono font-semibold ${walletBalance <= 0 ? "text-zinc-400" : ""}`}>${walletBalance}</span>}
+                    : <span className={`font-mono font-semibold ${walletBalance <= 0 ? "text-zinc-400" : ""}`}>${Math.round(walletBalance)}</span>}
                 </span>
                 {walletPaidSoFar > 0 && (
-                  <span>本訂單已扣：<span className="font-mono">${walletPaidSoFar}</span></span>
+                  <span>本訂單已扣：<span className="font-mono">${Math.round(walletPaidSoFar)}</span></span>
+                )}
+                {isPaid && (
+                  <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">✅ 已付清，本次無需再扣</span>
                 )}
               </div>
               <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
