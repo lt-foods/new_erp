@@ -587,11 +587,11 @@ export function MemberDetail({ memberId }: { memberId: number }) {
                             {reversible && tenantId ? (
                               <button
                                 onClick={() => setWalletAction({ mode: "reverse", reverseTarget: e })}
-                                title={`反向 ledger #${e.id}`}
+                                title={`沖銷 #${e.id}`}
                                 className="rounded-md border border-zinc-300 px-2 py-0.5 text-[11px] hover:bg-zinc-100 dark:border-zinc-600 dark:hover:bg-zinc-800"
-                              >↩ 反向</button>
+                              >↩ 沖銷</button>
                             ) : reversedIds.has(e.id) ? (
-                              <span className="text-[10px] text-zinc-400">已反向</span>
+                              <span className="text-[10px] text-zinc-400">已沖銷</span>
                             ) : (
                               <span className="text-[10px] text-zinc-400">—</span>
                             )}

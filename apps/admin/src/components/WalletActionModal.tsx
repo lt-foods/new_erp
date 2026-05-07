@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
 import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
-import { WALLET_PAYMENT_METHODS, WALLET_PAYMENT_METHOD_LABEL } from "@/lib/walletLedger";
+import { WALLET_PAYMENT_METHODS, WALLET_PAYMENT_METHOD_LABEL, walletLedgerTypeLabel, walletPaymentMethodLabel } from "@/lib/walletLedger";
 
 export type WalletActionMode = "topup" | "spend" | "refund" | "adjust" | "reverse";
 
@@ -33,11 +33,11 @@ type Props = {
 };
 
 const TITLES: Record<WalletActionMode, string> = {
-  topup:   "加值（topup）",
-  spend:   "扣款（spend）",
-  refund:  "退款（refund）",
-  adjust:  "調整（adjust）",
-  reverse: "反向（reversal）",
+  topup:   "加值",
+  spend:   "扣款",
+  refund:  "退款",
+  adjust:  "調整",
+  reverse: "沖銷",
 };
 
 const PAYMENT_METHODS = WALLET_PAYMENT_METHODS.map((v) => ({
@@ -167,16 +167,16 @@ export function WalletActionModal({
         {mode === "reverse" && reverseTarget && (
           <div className="rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/40">
             <div className="text-xs text-amber-800 dark:text-amber-300">
-              <b>反向目標 ledger #{reverseTarget.id}</b>
+              <b>沖銷目標 #{reverseTarget.id}</b>
               <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1">
-                <div>類型：<span className="font-mono">{reverseTarget.type}</span></div>
+                <div>類型：<span>{walletLedgerTypeLabel(reverseTarget.type)}</span></div>
                 <div>變動：<span className={`font-mono ${reverseTarget.change >= 0 ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400"}`}>{reverseTarget.change >= 0 ? "+" : ""}{reverseTarget.change}</span></div>
                 <div>餘額：<span className="font-mono">{reverseTarget.balance_after}</span></div>
-                <div>付款：<span className="font-mono">{reverseTarget.payment_method ?? "—"}</span></div>
+                <div>付款：<span>{walletPaymentMethodLabel(reverseTarget.payment_method)}</span></div>
                 <div className="col-span-2">時間：{new Date(reverseTarget.created_at).toLocaleString("zh-TW")}</div>
                 {reverseTarget.reason && <div className="col-span-2">原因：{reverseTarget.reason}</div>}
               </div>
-              <div className="mt-2">送出後將新增一筆 <code>type=reversal</code> 紀錄，金額為 <span className="font-mono">{-reverseTarget.change >= 0 ? "+" : ""}{-reverseTarget.change}</span>。原 ledger 不會被修改。</div>
+              <div className="mt-2">送出後將新增一筆「沖銷」紀錄，金額為 <span className="font-mono">{-reverseTarget.change >= 0 ? "+" : ""}{-reverseTarget.change}</span>。原紀錄不會被修改。</div>
             </div>
           </div>
         )}
@@ -218,11 +218,11 @@ export function WalletActionModal({
         {/* refund: source_type */}
         {mode === "refund" && (
           <label className="block">
-            <span className="mb-1 block text-xs text-zinc-500">來源類型 (selectable: manual / customer_order)</span>
+            <span className="mb-1 block text-xs text-zinc-500">來源類型（手動 manual / 訂單 customer_order）</span>
             <input
               value={sourceType}
               onChange={(e) => setSourceType(e.target.value)}
-              placeholder="manual"
+              placeholder="manual（手動）"
               className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono dark:border-zinc-700 dark:bg-zinc-900"
             />
           </label>
@@ -236,7 +236,7 @@ export function WalletActionModal({
           <textarea
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder={reasonRequired ? "請說明原因（會寫入 ledger.reason）" : "選填"}
+            placeholder={reasonRequired ? "請說明原因（會寫入流水備註）" : "選填"}
             rows={2}
             required={reasonRequired}
             minLength={reasonRequired ? 4 : undefined}

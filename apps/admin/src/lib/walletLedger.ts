@@ -21,7 +21,7 @@ export const WALLET_LEDGER_TYPE_LABEL: Record<WalletLedgerType, string> = {
   spend:    "扣款",
   refund:   "退款",
   adjust:   "調整",
-  reversal: "反向",
+  reversal: "沖銷",
 };
 
 export function walletLedgerTypeLabel(t: string | null | undefined): string {
