@@ -532,10 +532,10 @@ export function MemberDetail({ memberId }: { memberId: number }) {
           </div>
         )}
 
-        <div className={tab === "info" || tab === "merges" ? "hidden" : "mt-3 overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800"}>
+        <div className={tab === "info" || tab === "merges" ? "hidden" : "mt-3 max-h-[420px] overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800"}>
           {tab === "points" ? (
             <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
-              <thead className="bg-zinc-50 dark:bg-zinc-900">
+              <thead className="sticky top-0 z-10 bg-zinc-50 dark:bg-zinc-900">
                 <tr>
                   <Th>時間</Th><Th>來源</Th><Th className="text-right">變動</Th><Th className="text-right">餘額</Th><Th>備註</Th>
                 </tr>
@@ -561,7 +561,7 @@ export function MemberDetail({ memberId }: { memberId: number }) {
               const reversedIds = new Set(wLedger.map((x) => x.reverses).filter((v): v is number => typeof v === "number"));
               return (
                 <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
-                  <thead className="bg-zinc-50 dark:bg-zinc-900">
+                  <thead className="sticky top-0 z-10 bg-zinc-50 dark:bg-zinc-900">
                     <tr>
                       <Th>時間</Th><Th>類型</Th><Th>支付</Th><Th className="text-right">變動</Th><Th className="text-right">餘額</Th><Th>備註</Th><Th>動作</Th>
                     </tr>
