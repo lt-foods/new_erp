@@ -76,7 +76,7 @@ export function MemberDetail({ memberId }: { memberId: number }) {
   const [wallet, setWallet] = useState(0);
   const [pLedger, setPLedger] = useState<PointsEntry[]>([]);
   const [wLedger, setWLedger] = useState<WalletEntry[]>([]);
-  const [tab, setTab] = useState<"info" | "points" | "wallet" | "test">("info");
+  const [tab, setTab] = useState<"info" | "points" | "wallet" | "test">("wallet");
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
@@ -478,10 +478,10 @@ export function MemberDetail({ memberId }: { memberId: number }) {
 
       <div>
         <div className="flex gap-2 border-b border-zinc-200 dark:border-zinc-800">
-          <TabBtn active={tab === "info"}    onClick={() => setTab("info")}>會員資料</TabBtn>
-          <TabBtn active={tab === "points"}  onClick={() => setTab("points")}>積分明細 ({pLedger.length})</TabBtn>
           <TabBtn active={tab === "wallet"}  onClick={() => setTab("wallet")}>儲值金明細 ({wLedger.length})</TabBtn>
+          <TabBtn active={tab === "points"}  onClick={() => setTab("points")}>積分明細 ({pLedger.length})</TabBtn>
           <TabBtn active={tab === "test"}    onClick={() => setTab("test")}>測試操作</TabBtn>
+          <TabBtn active={tab === "info"}    onClick={() => setTab("info")}>會員資料</TabBtn>
         </div>
 
         {tab === "wallet" && (
