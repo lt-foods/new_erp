@@ -7,6 +7,7 @@ import { WalletActionModal, type WalletActionMode } from "@/components/WalletAct
 import { translateRpcError } from "@/lib/rpcError";
 import { canAdjustWallet, useRole } from "@/lib/role";
 import { walletLedgerTypeLabel, walletPaymentMethodLabel } from "@/lib/walletLedger";
+import { maskLineUserId } from "@/lib/maskLineUserId";
 
 type Member = {
   id: number;
@@ -75,7 +76,7 @@ export function MemberDetail({ memberId }: { memberId: number }) {
   const [wallet, setWallet] = useState(0);
   const [pLedger, setPLedger] = useState<PointsEntry[]>([]);
   const [wLedger, setWLedger] = useState<WalletEntry[]>([]);
-  const [tab, setTab] = useState<"points" | "wallet" | "test">("points");
+  const [tab, setTab] = useState<"info" | "points" | "wallet" | "test">("info");
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
@@ -475,27 +476,9 @@ export function MemberDetail({ memberId }: { memberId: number }) {
         <Card label="儲值餘額"><span className="text-lg font-mono">{wallet.toLocaleString()}</span></Card>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Card label="手機"><span className="font-mono">{member.phone && !member.phone.startsWith("line:") ? member.phone : "—"}</span></Card>
-        <Card label="Email">{member.email ?? "—"}</Card>
-        <Card label="性別">{member.gender === "M" ? "男" : member.gender === "F" ? "女" : member.gender === "O" ? "其他" : "—"}</Card>
-        <Card label="生日">{member.birthday ?? "—"}</Card>
-        <Card label="加入時間">{new Date(member.joined_at).toLocaleString("zh-TW")}</Card>
-        <Card label="最後消費">{member.last_visit_at ? new Date(member.last_visit_at).toLocaleString("zh-TW") : "—"}</Card>
-      </div>
-
-      {member.line_user_id && (
-        <Card label="LINE User ID">
-          <span className="break-all font-mono text-xs">{member.line_user_id}</span>
-        </Card>
-      )}
-
-      {member.notes && (
-        <Card label="備註"><div className="whitespace-pre-wrap text-sm">{member.notes}</div></Card>
-      )}
-
       <div>
         <div className="flex gap-2 border-b border-zinc-200 dark:border-zinc-800">
+          <TabBtn active={tab === "info"}    onClick={() => setTab("info")}>會員資料</TabBtn>
           <TabBtn active={tab === "points"}  onClick={() => setTab("points")}>積分流水 ({pLedger.length})</TabBtn>
           <TabBtn active={tab === "wallet"}  onClick={() => setTab("wallet")}>儲值流水 ({wLedger.length})</TabBtn>
           <TabBtn active={tab === "test"}    onClick={() => setTab("test")}>測試操作</TabBtn>
@@ -528,7 +511,28 @@ export function MemberDetail({ memberId }: { memberId: number }) {
           </div>
         )}
 
-        <div className="mt-3 overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+        {tab === "info" && (
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <Card label="手機"><span className="font-mono">{member.phone && !member.phone.startsWith("line:") ? member.phone : "—"}</span></Card>
+            <Card label="Email">{member.email ?? "—"}</Card>
+            <Card label="性別">{member.gender === "M" ? "男" : member.gender === "F" ? "女" : member.gender === "O" ? "其他" : "—"}</Card>
+            <Card label="生日">{member.birthday ?? "—"}</Card>
+            <Card label="加入時間">{new Date(member.joined_at).toLocaleString("zh-TW")}</Card>
+            <Card label="最後消費">{member.last_visit_at ? new Date(member.last_visit_at).toLocaleString("zh-TW") : "—"}</Card>
+            {member.line_user_id && (
+              <Card label="LINE User ID">
+                <span className="font-mono text-xs" title="完整 ID 已隱藏">{maskLineUserId(member.line_user_id)}</span>
+              </Card>
+            )}
+            {member.notes && (
+              <div className="sm:col-span-2">
+                <Card label="備註"><div className="whitespace-pre-wrap text-sm">{member.notes}</div></Card>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className={tab === "info" ? "hidden" : "mt-3 overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800"}>
           {tab === "points" ? (
             <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
               <thead className="bg-zinc-50 dark:bg-zinc-900">
