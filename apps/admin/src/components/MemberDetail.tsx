@@ -76,7 +76,7 @@ export function MemberDetail({ memberId }: { memberId: number }) {
   const [wallet, setWallet] = useState(0);
   const [pLedger, setPLedger] = useState<PointsEntry[]>([]);
   const [wLedger, setWLedger] = useState<WalletEntry[]>([]);
-  const [tab, setTab] = useState<"info" | "points" | "wallet" | "test">("wallet");
+  const [tab, setTab] = useState<"info" | "points" | "wallet" | "merges" | "test">("wallet");
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
@@ -413,45 +413,6 @@ export function MemberDetail({ memberId }: { memberId: number }) {
         <Card label="儲值餘額"><span className="text-lg font-mono">{wallet.toLocaleString()}</span></Card>
       </div>
 
-      {mergedFrom.length > 0 && (
-        <div className="rounded-md border border-emerald-200 bg-emerald-50/40 p-3 dark:border-emerald-900 dark:bg-emerald-950/30">
-          <div className="mb-2 flex items-center gap-2 text-xs font-medium text-emerald-800 dark:text-emerald-300">
-            <span>📥 已合併進來的舊會員（{mergedFrom.length}）</span>
-            <span className="text-[10px] font-normal text-emerald-700/70 dark:text-emerald-400/70">
-              （這些舊會員的訂單 / 點數 / 儲值都已搬到本會員名下）
-            </span>
-          </div>
-          <ul className="divide-y divide-emerald-200 dark:divide-emerald-900">
-            {mergedFrom.map((mf) => (
-              <li key={mf.merge_id} className="flex flex-wrap items-center gap-3 py-2 text-sm">
-                {mf.guest.avatar_url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={mf.guest.avatar_url} alt="" className="h-8 w-8 rounded-full object-cover ring-2 ring-emerald-300 dark:ring-emerald-700" />
-                ) : (
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-zinc-200 text-xs text-zinc-500 ring-2 ring-emerald-300 dark:bg-zinc-700 dark:ring-emerald-700">
-                    {mf.guest.name?.[0] ?? "?"}
-                  </div>
-                )}
-                <div className="flex-1 min-w-[200px]">
-                  <div className="font-medium">
-                    {mf.guest.name ?? "—"}
-                    <span className="ml-2 font-mono text-xs text-zinc-500">#{mf.guest.member_no}</span>
-                  </div>
-                  <div className="text-xs text-zinc-500">
-                    {mf.guest.phone && !mf.guest.phone.startsWith("line:") ? mf.guest.phone : "—"}
-                    　建檔：{new Date(mf.guest.joined_at).toLocaleDateString("zh-TW")}
-                    　合併：{new Date(mf.merged_at).toLocaleDateString("zh-TW")}
-                  </div>
-                  {mf.reason && (
-                    <div className="text-xs text-zinc-500">原因：{mf.reason}</div>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
       <MemberMergeModal
         open={!!mergeOpen}
         onClose={() => setMergeOpen(false)}
@@ -480,6 +441,9 @@ export function MemberDetail({ memberId }: { memberId: number }) {
         <div className="flex gap-2 border-b border-zinc-200 dark:border-zinc-800">
           <TabBtn active={tab === "wallet"}  onClick={() => setTab("wallet")}>儲值金明細 ({wLedger.length})</TabBtn>
           <TabBtn active={tab === "points"}  onClick={() => setTab("points")}>積分明細 ({pLedger.length})</TabBtn>
+          {mergedFrom.length > 0 && (
+            <TabBtn active={tab === "merges"} onClick={() => setTab("merges")}>合併紀錄 ({mergedFrom.length})</TabBtn>
+          )}
           <TabBtn active={tab === "test"}    onClick={() => setTab("test")}>測試操作</TabBtn>
           <TabBtn active={tab === "info"}    onClick={() => setTab("info")}>會員資料</TabBtn>
         </div>
@@ -532,7 +496,43 @@ export function MemberDetail({ memberId }: { memberId: number }) {
           </div>
         )}
 
-        <div className={tab === "info" ? "hidden" : "mt-3 overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800"}>
+        {tab === "merges" && mergedFrom.length > 0 && (
+          <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50/40 p-3 dark:border-emerald-900 dark:bg-emerald-950/30">
+            <div className="mb-2 text-[10px] font-normal text-emerald-700/70 dark:text-emerald-400/70">
+              這些舊會員的訂單 / 點數 / 儲值都已搬到本會員名下
+            </div>
+            <ul className="divide-y divide-emerald-200 dark:divide-emerald-900">
+              {mergedFrom.map((mf) => (
+                <li key={mf.merge_id} className="flex flex-wrap items-center gap-3 py-2 text-sm">
+                  {mf.guest.avatar_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={mf.guest.avatar_url} alt="" className="h-8 w-8 rounded-full object-cover ring-2 ring-emerald-300 dark:ring-emerald-700" />
+                  ) : (
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-zinc-200 text-xs text-zinc-500 ring-2 ring-emerald-300 dark:bg-zinc-700 dark:ring-emerald-700">
+                      {mf.guest.name?.[0] ?? "?"}
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-[200px]">
+                    <div className="font-medium">
+                      {mf.guest.name ?? "—"}
+                      <span className="ml-2 font-mono text-xs text-zinc-500">#{mf.guest.member_no}</span>
+                    </div>
+                    <div className="text-xs text-zinc-500">
+                      {mf.guest.phone && !mf.guest.phone.startsWith("line:") ? mf.guest.phone : "—"}
+                      　建檔：{new Date(mf.guest.joined_at).toLocaleDateString("zh-TW")}
+                      　合併：{new Date(mf.merged_at).toLocaleDateString("zh-TW")}
+                    </div>
+                    {mf.reason && (
+                      <div className="text-xs text-zinc-500">原因：{mf.reason}</div>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <div className={tab === "info" || tab === "merges" ? "hidden" : "mt-3 overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800"}>
           {tab === "points" ? (
             <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
               <thead className="bg-zinc-50 dark:bg-zinc-900">
