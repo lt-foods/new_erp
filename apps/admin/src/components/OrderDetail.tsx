@@ -65,10 +65,11 @@ function computeLineSubtotal(qty: number, unitPrice: number, d: DiscountValue): 
 function applyOrderDiscount(subtotal: number, d: DiscountValue): { deduction: number; payable: number } {
   const pct = d.kind === "percent" ? Number(d.value) : 0;
   const amt = d.kind === "amount" ? Number(d.value) : 0;
-  const pctDed = Math.round(subtotal * pct) / 100;
+  // 應收四捨五入到整數 NTD（對齊 v_customer_order_summary + rpc_wallet_pay_order）
+  const payable = Math.max(0, Math.round(subtotal * (1 - pct / 100) - amt));
   return {
-    deduction: pctDed + amt,
-    payable: Math.max(0, subtotal - pctDed - amt),
+    deduction: subtotal - payable,
+    payable,
   };
 }
 
