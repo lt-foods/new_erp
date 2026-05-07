@@ -142,8 +142,12 @@ export function PickupDialog({
       });
       if (error) { setErr(error.message); return; }
       const result = data as { event_id: number; new_order_status: string; picked_count: number; active_remaining: number };
+      // 取貨單一定印（收據）
       window.open(withBasePath(`/pickup/print?event_ids=${result.event_id}`), "_blank");
-      window.open(withBasePath(`/pickup/print-list?order_ids=${orderId}`), "_blank");
+      // 取貨清單只在「部分取貨」時印（提醒客人剩下未取的 items）；全取完省略
+      if (result.active_remaining > 0) {
+        window.open(withBasePath(`/pickup/print-list?order_ids=${orderId}`), "_blank");
+      }
       onPickedUp(result);
     } finally {
       setBusy(false);
