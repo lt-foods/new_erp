@@ -479,8 +479,8 @@ export function MemberDetail({ memberId }: { memberId: number }) {
       <div>
         <div className="flex gap-2 border-b border-zinc-200 dark:border-zinc-800">
           <TabBtn active={tab === "info"}    onClick={() => setTab("info")}>會員資料</TabBtn>
-          <TabBtn active={tab === "points"}  onClick={() => setTab("points")}>積分流水 ({pLedger.length})</TabBtn>
-          <TabBtn active={tab === "wallet"}  onClick={() => setTab("wallet")}>儲值流水 ({wLedger.length})</TabBtn>
+          <TabBtn active={tab === "points"}  onClick={() => setTab("points")}>積分明細 ({pLedger.length})</TabBtn>
+          <TabBtn active={tab === "wallet"}  onClick={() => setTab("wallet")}>儲值金明細 ({wLedger.length})</TabBtn>
           <TabBtn active={tab === "test"}    onClick={() => setTab("test")}>測試操作</TabBtn>
         </div>
 

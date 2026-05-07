@@ -323,7 +323,7 @@ export default function MePage() {
               href="/wallet"
               className="mt-3 flex w-full items-center justify-between rounded-xl bg-[#7676801a] px-3 py-3 text-[16px] text-[var(--foreground)] active:bg-[#76768033]"
             >
-              <span>查看儲值流水</span>
+              <span>查看儲值金明細</span>
               <span className="text-[var(--ios-gray)]">›</span>
             </a>
             <div className="mt-2 text-[12px] text-[var(--tertiary-label)]">
