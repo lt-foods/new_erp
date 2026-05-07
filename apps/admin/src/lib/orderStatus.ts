@@ -9,10 +9,9 @@
 //   4. 視語意調整 isTerminalStatus / canPayWithWallet
 //
 // 已砍掉但保留歷史翻譯（檔案最下方）：
-//   - reserved (已備貨)         — 未啟用，DB 0 筆
-//   - partially_ready (部分可取) — 未啟用
-//   - partially_completed (部分取貨) — 未啟用
-//   - picked_up (已取貨)        — 未啟用，跟 completed 重複語意
+//   - reserved (已備貨)         — 未啟用，DB 0 筆，無 RPC SET
+//   - partially_ready (部分可取) — 未啟用，無 RPC SET
+//   - picked_up (已取貨)        — 是 customer_order_items.status，不是 orders.status
 // ============================================================
 
 export const ORDER_STATUSES = [
@@ -20,6 +19,7 @@ export const ORDER_STATUSES = [
   "confirmed",
   "ready",
   "shipping",
+  "partially_completed",
   "completed",
   "cancelled",
   "transferred_out",
@@ -29,14 +29,15 @@ export const ORDER_STATUSES = [
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 
 export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {
-  pending:         "待確認",
-  confirmed:       "已確認",
-  ready:           "可取貨",
-  shipping:        "派貨中",
-  completed:       "已完成",
-  cancelled:       "已取消",
-  transferred_out: "已轉出",
-  expired:         "已過期",
+  pending:             "待確認",
+  confirmed:           "已確認",
+  ready:               "可取貨",
+  shipping:            "派貨中",
+  partially_completed: "部分取貨",
+  completed:           "已完成",
+  cancelled:           "已取消",
+  transferred_out:     "已轉出",
+  expired:             "已過期",
 };
 
 /** 取中文 label；未知 status 直接 fallback 原字串。 */
@@ -75,6 +76,5 @@ export function canPayWithWallet(
 // 歷史翻譯（已砍、僅留紀錄；未來重啟用時引用此處避免重新討論）
 //   reserved              → 已備貨   （之前部分檔案誤翻「已保留」）
 //   partially_ready       → 部分可取
-//   partially_completed   → 部分取貨
-//   picked_up             → 已取貨
+//   picked_up             → 已取貨   （只用於 customer_order_items.status）
 // ============================================================
