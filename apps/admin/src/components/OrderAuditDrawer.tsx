@@ -8,7 +8,7 @@ type AuditRow = {
   id: number;
   entity_type: "order" | "item";
   entity_id: number | null;
-  field: "unit_price" | "item_notes" | "item_discount_amount" | "item_discount_percent" | "discount_amount" | "discount_percent" | "order_notes";
+  field: "unit_price" | "item_notes" | "item_discount_amount" | "item_discount_percent" | "discount_amount" | "discount_percent" | "order_notes" | "status";
   before_value: unknown;
   after_value: unknown;
   edit_reason: string | null;
@@ -24,11 +24,29 @@ const FIELD_LABEL: Record<string, string> = {
   discount_amount: "整單折扣 $",
   discount_percent: "整單折扣 %",
   order_notes: "單頭備註",
+  status: "狀態",
 };
 
-function valLabel(v: unknown): string {
+const STATUS_LABEL: Record<string, string> = {
+  pending:         "下單",
+  confirmed:       "已確認",
+  reserved:        "已派貨",
+  shipping:        "運送中",
+  ready:           "分店收貨",
+  picked:          "已取貨",
+  completed:       "完成",
+  cancelled:       "取消",
+  expired:         "過期",
+  transferred_out: "已轉出",
+};
+
+function valLabel(v: unknown, field?: string): string {
   if (v === null || v === undefined) return "—";
-  if (typeof v === "string") return v === "" ? '""' : v;
+  if (typeof v === "string") {
+    if (v === "") return '""';
+    if (field === "status") return STATUS_LABEL[v] ?? v;
+    return v;
+  }
   return String(v);
 }
 
@@ -109,9 +127,9 @@ export function OrderAuditDrawer({
                     )}
                   </td>
                   <td className="px-3 py-2 font-mono">
-                    <span className="text-zinc-500 line-through">{valLabel(r.before_value)}</span>
+                    <span className="text-zinc-500 line-through">{valLabel(r.before_value, r.field)}</span>
                     <span className="mx-1">→</span>
-                    <span>{valLabel(r.after_value)}</span>
+                    <span>{valLabel(r.after_value, r.field)}</span>
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 text-zinc-500">
                     {staffNames.get(r.operator_id) ?? r.operator_id.slice(0, 8)}
