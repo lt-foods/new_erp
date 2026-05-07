@@ -891,6 +891,17 @@ function CustomerSearch({
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [aliases, setAliases] = useState<AliasRow[]>([]);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+  // 點 dropdown 外面才關（取代 onMouseLeave）
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!wrapperRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -922,7 +933,7 @@ function CustomerSearch({
   }
 
   return (
-    <div className="relative flex-1">
+    <div className="relative flex-1" ref={wrapperRef}>
       <input
         value={value.member_id ? `${value.display_name} (${value.member_no})` : term}
         onFocus={() => setOpen(true)}
@@ -938,8 +949,7 @@ function CustomerSearch({
       />
       {open && (members.length > 0 || aliases.length > 0) && (
         <div
-          className="absolute left-0 right-0 top-full z-20 mt-1 max-h-72 overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
-          onMouseLeave={() => setOpen(false)}
+          className="absolute left-0 right-0 top-full z-20 mt-1 max-h-96 overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
         >
           {aliases.length > 0 && (
             <div>
@@ -967,7 +977,7 @@ function CustomerSearch({
                       });
                       setOpen(false);
                     }}
-                    className="block w-full px-2 py-1.5 text-left text-xs hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent dark:hover:bg-zinc-700"
+                    className="block w-full px-3 py-2 text-left text-sm hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent dark:hover:bg-zinc-700"
                   >
                     <span className="font-medium">{a.nickname}</span>
                     {a.admin_note && <span className="ml-1 rounded bg-amber-100 px-1 text-[9px] text-amber-800">🔒 {a.admin_note}</span>}
@@ -992,7 +1002,7 @@ function CustomerSearch({
                 return (
                   <div
                     key={`m-${m.id}`}
-                    className="flex items-center justify-between px-2 py-1.5 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700"
+                    className="flex items-center justify-between px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-700"
                   >
                     <button
                       type="button"
@@ -1057,6 +1067,17 @@ function ItemEditorRow({
   const [open, setOpen] = useState(false);
   const [opts, setOpts] = useState<SkuOption[]>([]);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  const wrapperRef = useRef<HTMLTableCellElement | null>(null);
+
+  // 點 dropdown 外面才關（取代 onMouseLeave，避免滑鼠不小心移開就關）
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!wrapperRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -1076,7 +1097,7 @@ function ItemEditorRow({
 
   return (
     <tr className="border-t border-zinc-100 dark:border-zinc-800">
-      <td className="relative py-1">
+      <td className="relative py-1" ref={wrapperRef}>
         <input
           value={item.campaign_item_id ? item.sku_label : term}
           onFocus={() => setOpen(true)}
@@ -1092,8 +1113,7 @@ function ItemEditorRow({
         />
         {open && opts.length > 0 && (
           <div
-            className="absolute left-0 top-full z-10 mt-1 max-h-60 w-80 overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
-            onMouseLeave={() => setOpen(false)}
+            className="absolute left-0 top-full z-10 mt-1 max-h-80 w-[420px] overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
           >
             {opts.map((o) => (
               <button
@@ -1127,10 +1147,10 @@ function ItemEditorRow({
                   setOpen(false);
                   setTerm("");
                 }}
-                className="block w-full px-2 py-1 text-left text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700"
+                className="block w-full px-3 py-2 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-700"
               >
                 <span className="font-medium">{o.variant_name || o.product_name}</span>
-                <span className="ml-2 font-mono text-zinc-400">{o.sku_code}</span>
+                <span className="ml-2 font-mono text-xs text-zinc-400">{o.sku_code}</span>
                 <span className="ml-2 text-zinc-600 dark:text-zinc-300">${Number(o.unit_price)}</span>
                 {o.campaign_item_id == null && (
                   <span className="ml-2 rounded bg-blue-100 px-1 py-0.5 text-[10px] text-blue-700 dark:bg-blue-950 dark:text-blue-300">
