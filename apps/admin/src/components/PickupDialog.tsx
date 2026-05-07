@@ -88,10 +88,11 @@ export function PickupDialog({
         if (!cancelled) {
           const bal = Number(wb?.balance ?? 0);
           setWalletBalance(bal);
-          // 預填：min(餘額, 本次應收) — 已選全 item 預設算
+          // 預填：min(餘額, 本次應收) — 已選全 item 預設算（payable 四捨五入到 1 元）
           const itemSubtotal = list.reduce((s, it) => s + lineSub(it), 0);
-          const pct = Math.round(itemSubtotal * Number(head?.discount_percent ?? 0)) / 100;
-          const initialPayable = Math.max(0, itemSubtotal - pct - Number(head?.discount_amount ?? 0));
+          const dpct = Number(head?.discount_percent ?? 0);
+          const damt = Number(head?.discount_amount ?? 0);
+          const initialPayable = Math.max(0, Math.round(itemSubtotal * (1 - dpct / 100) - damt));
           const preFill = Math.min(bal, initialPayable);
           setWalletAmount(preFill > 0 ? String(preFill) : "");
         }
@@ -152,8 +153,9 @@ export function PickupDialog({
   const subtotal = items
     ? items.filter((it) => picked.has(it.id)).reduce((s, it) => s + lineSub(it), 0)
     : 0;
+  // 顯示用 deduction（含小數）+ 最終 payable 四捨五入到整數 NTD
   const percentDeduction = Math.round(subtotal * discountPercent) / 100;
-  const payableAmount = Math.max(0, subtotal - percentDeduction - discount);
+  const payableAmount = Math.max(0, Math.round(subtotal * (1 - discountPercent / 100) - discount));
 
   // 儲值金抵扣計算：本次最多扣 = min(會員餘額, 本次應收)
   const walletNum = Number(walletAmount) || 0;
