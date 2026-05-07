@@ -553,8 +553,8 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
       onClick={onClick}
       className={
         active
-          ? "rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition-all"
-          : "rounded-md px-3 py-1.5 text-sm font-medium text-zinc-600 transition-all hover:bg-white hover:text-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+          ? "rounded-md bg-white px-3 py-1.5 text-sm font-semibold text-zinc-900 shadow-sm transition-all dark:bg-zinc-700 dark:text-zinc-100"
+          : "rounded-md px-3 py-1.5 text-sm font-medium text-zinc-500 transition-all hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
       }
     >
       {children}
