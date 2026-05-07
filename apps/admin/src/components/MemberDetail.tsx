@@ -382,25 +382,6 @@ export function MemberDetail({ memberId }: { memberId: number }) {
         <Card label="儲值餘額"><span className="text-lg font-mono">{wallet.toLocaleString()}</span></Card>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Card label="手機"><span className="font-mono">{member.phone && !member.phone.startsWith("line:") ? member.phone : "—"}</span></Card>
-        <Card label="Email">{member.email ?? "—"}</Card>
-        <Card label="性別">{member.gender === "M" ? "男" : member.gender === "F" ? "女" : member.gender === "O" ? "其他" : "—"}</Card>
-        <Card label="生日">{member.birthday ?? "—"}</Card>
-        <Card label="加入時間">{new Date(member.joined_at).toLocaleString("zh-TW")}</Card>
-        <Card label="最後消費">{member.last_visit_at ? new Date(member.last_visit_at).toLocaleString("zh-TW") : "—"}</Card>
-      </div>
-
-      {member.line_user_id && (
-        <Card label="LINE User ID">
-          <span className="break-all font-mono text-xs">{member.line_user_id}</span>
-        </Card>
-      )}
-
-      {member.notes && (
-        <Card label="備註"><div className="whitespace-pre-wrap text-sm">{member.notes}</div></Card>
-      )}
-
       <div>
         <div className="flex gap-2 border-b border-zinc-200 dark:border-zinc-800">
           <TabBtn active={tab === "points"}  onClick={() => setTab("points")}>積分明細 ({pLedger.length})</TabBtn>
@@ -524,6 +505,25 @@ export function MemberDetail({ memberId }: { memberId: number }) {
           )}
         </div>
       </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Card label="手機"><span className="font-mono">{member.phone && !member.phone.startsWith("line:") ? member.phone : "—"}</span></Card>
+        <Card label="Email">{member.email ?? "—"}</Card>
+        <Card label="性別">{member.gender === "M" ? "男" : member.gender === "F" ? "女" : member.gender === "O" ? "其他" : "—"}</Card>
+        <Card label="生日">{member.birthday ?? "—"}</Card>
+        <Card label="加入時間">{new Date(member.joined_at).toLocaleString("zh-TW")}</Card>
+        <Card label="最後消費">{member.last_visit_at ? new Date(member.last_visit_at).toLocaleString("zh-TW") : "—"}</Card>
+      </div>
+
+      {member.line_user_id && (
+        <Card label="LINE User ID">
+          <span className="break-all font-mono text-xs">{member.line_user_id}</span>
+        </Card>
+      )}
+
+      {member.notes && (
+        <Card label="備註"><div className="whitespace-pre-wrap text-sm">{member.notes}</div></Card>
+      )}
     </div>
   );
 }
