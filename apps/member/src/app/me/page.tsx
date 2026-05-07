@@ -36,11 +36,17 @@ type Overview = {
   active_orders_count: number;
 };
 
+type WalletInfo = {
+  balance: number;
+  last_movement_at: string | null;
+};
+
 export default function MePage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [me, setMe] = useState<MemberData | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
+  const [wallet, setWallet] = useState<WalletInfo | null>(null);
   const [isPWA, setIsPWA] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lineName, setLineName] = useState<string | null>(null);
@@ -111,12 +117,17 @@ export default function MePage() {
 
     (async () => {
       try {
-        const [meData, ovData] = await Promise.all([
+        const [meData, ovData, wData] = await Promise.all([
           callLiffApi<MemberData>(s.token, { action: "get_me" }),
           callLiffApi<Overview>(s.token, { action: "get_overview" }).catch(() => null),
+          callLiffApi<WalletInfo>(s.token, { action: "get_wallet" }).catch((e) => {
+            console.warn("[liff] get_wallet failed; wallet card hidden:", e);
+            return null;
+          }),
         ]);
         setMe(meData);
         if (ovData) setOverview(ovData);
+        if (wData) setWallet(wData);
         setForm({
           name: meData.name ?? "",
           phone: meData.phone ?? "",
@@ -296,6 +307,28 @@ export default function MePage() {
                 <span className="text-[var(--ios-gray)]">›</span>
               </a>
             )}
+          </section>
+        )}
+
+        {/* 儲值金餘額卡 — 永遠顯示（即便為 0，讓客人知道有此功能 + 可在門市加值） */}
+        {wallet && (
+          <section className="rounded-2xl bg-[var(--card-bg)] px-5 py-4 shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+            <div className="text-[14px] text-[var(--secondary-label)]">💰 儲值金餘額</div>
+            <div className="mt-1 flex items-baseline gap-1">
+              <span className="text-[34px] font-semibold tabular-nums leading-none text-[var(--foreground)]">
+                ${Number(wallet.balance).toLocaleString()}
+              </span>
+            </div>
+            <a
+              href="/wallet"
+              className="mt-3 flex w-full items-center justify-between rounded-xl bg-[#7676801a] px-3 py-3 text-[16px] text-[var(--foreground)] active:bg-[#76768033]"
+            >
+              <span>查看儲值流水</span>
+              <span className="text-[var(--ios-gray)]">›</span>
+            </a>
+            <div className="mt-2 text-[12px] text-[var(--tertiary-label)]">
+              儲值金不可退現；可在門市加值或結帳時抵扣
+            </div>
           </section>
         )}
 
