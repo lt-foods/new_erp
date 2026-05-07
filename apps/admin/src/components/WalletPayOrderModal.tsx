@@ -102,7 +102,7 @@ export function WalletPayOrderModal({
           </span>
           <input
             type="number"
-            step="0.01"
+            step="1"
             min={0}
             value={amount}
             onChange={(e) => setAmount(e.target.value)}

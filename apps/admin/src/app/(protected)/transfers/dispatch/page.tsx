@@ -744,8 +744,8 @@ function DamageModal({
           <span className="text-zinc-500">損壞數量</span>
           <input
             type="number"
-            min="0.001"
-            step="0.001"
+            min="1"
+            step="1"
             value={qty}
             onChange={(e) => setQty(e.target.value)}
             className="rounded-md border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-800"

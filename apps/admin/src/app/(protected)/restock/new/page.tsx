@@ -264,8 +264,8 @@ function LineRow({
           </div>
         )}
       </td>
-      <td className="px-3 py-2"><input type="number" min="0" step="0.001" value={line.qty} onChange={(e) => onChange({ qty: e.target.value })} className="w-24 rounded border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800" /></td>
-      <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={line.unit_price} onChange={(e) => onChange({ unit_price: e.target.value })} className="w-24 rounded border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800" /></td>
+      <td className="px-3 py-2"><input type="number" min="0" step="1" value={line.qty} onChange={(e) => onChange({ qty: e.target.value })} className="w-24 rounded border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800" /></td>
+      <td className="px-3 py-2"><input type="number" min="0" step="1" value={line.unit_price} onChange={(e) => onChange({ unit_price: e.target.value })} className="w-24 rounded border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800" /></td>
       <td className="px-3 py-2"><input value={line.notes} onChange={(e) => onChange({ notes: e.target.value })} placeholder="（選填）" className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800" /></td>
       <td className="px-3 py-2">
         {onRemove && (

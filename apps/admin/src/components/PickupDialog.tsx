@@ -300,7 +300,7 @@ export function PickupDialog({
                     type="number"
                     min={0}
                     max={walletMax}
-                    step="0.01"
+                    step="1"
                     value={walletAmount}
                     onChange={(e) => setWalletAmount(e.target.value)}
                     placeholder={walletMax > 0 ? `最多 $${walletMax}` : "餘額不足"}

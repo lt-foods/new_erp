@@ -817,7 +817,7 @@ function PageContent() {
                     {editable ? (
                       <input
                         type="number"
-                        step="0.001"
+                        step="1"
                         value={r.qty_requested}
                         onChange={(e) => patchItem(idx, { qty_requested: Number(e.target.value) })}
                         className="w-24 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800"
@@ -830,7 +830,7 @@ function PageContent() {
                     {editable ? (
                       <input
                         type="number"
-                        step="0.0001"
+                        step="1"
                         value={r.unit_cost}
                         onChange={(e) => patchItem(idx, { unit_cost: Number(e.target.value) })}
                         className="w-24 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800"
@@ -843,7 +843,7 @@ function PageContent() {
                     {editable ? (
                       <input
                         type="number"
-                        step="0.0001"
+                        step="1"
                         value={r.franchise_price ?? ""}
                         onChange={(e) =>
                           patchItem(idx, {
@@ -862,7 +862,7 @@ function PageContent() {
                     {editable ? (
                       <input
                         type="number"
-                        step="0.0001"
+                        step="1"
                         value={r.retail_price ?? ""}
                         onChange={(e) =>
                           patchItem(idx, {

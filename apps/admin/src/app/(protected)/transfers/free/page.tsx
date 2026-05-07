@@ -148,7 +148,7 @@ export default function FreeTransferPage() {
                   <input
                     type="number"
                     min="0"
-                    step="0.001"
+                    step="1"
                     value={l.qty}
                     onChange={(e) => setLine(i, "qty", e.target.value)}
                     className={`w-24 text-right ${inputCls}`}
@@ -158,7 +158,7 @@ export default function FreeTransferPage() {
                   <input
                     type="number"
                     min="0"
-                    step="0.01"
+                    step="1"
                     value={l.estimated_amount}
                     onChange={(e) => setLine(i, "estimated_amount", e.target.value)}
                     className={`w-28 text-right ${inputCls}`}

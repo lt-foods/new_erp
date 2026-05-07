@@ -455,7 +455,7 @@ function PaymentForm({
             onChange={(e) => setAmount(Number(e.target.value))}
             min={0}
             max={unpaid}
-            step={0.01}
+            step={1}
             className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
           />
         </label>

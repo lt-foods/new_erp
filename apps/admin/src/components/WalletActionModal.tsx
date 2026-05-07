@@ -189,7 +189,7 @@ export function WalletActionModal({
             </span>
             <input
               type="number"
-              step="0.01"
+              step="1"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               placeholder={amountAllowsNegative ? "如 100 或 -50" : "如 1000"}

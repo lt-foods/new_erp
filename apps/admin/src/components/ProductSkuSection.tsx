@@ -612,7 +612,7 @@ function DraftCard({
         <Field label="零售價">
           <input
             type="number"
-            step="0.01"
+            step="1"
             value={draft.retail_price}
             onChange={(e) => set("retail_price", e.target.value)}
             placeholder="$"
@@ -623,7 +623,7 @@ function DraftCard({
           <Field label="分店價">
             <input
               type="number"
-              step="0.01"
+              step="1"
               value={draft.branch_price}
               onChange={(e) => set("branch_price", e.target.value)}
               placeholder="$（全分店共用）"
@@ -635,7 +635,7 @@ function DraftCard({
           <Field label="成本價">
             <input
               type="number"
-              step="0.01"
+              step="1"
               value={draft.cost_price}
               onChange={(e) => set("cost_price", e.target.value)}
               placeholder="$（進貨成本）"
