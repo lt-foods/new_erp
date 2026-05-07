@@ -46,7 +46,11 @@ export default function OverviewPage() {
       try {
         const [d, w] = await Promise.all([
           callLiffApi<Overview>(s.token, { action: "get_overview" }),
-          callLiffApi<WalletInfo>(s.token, { action: "get_wallet" }).catch(() => null),
+          callLiffApi<WalletInfo>(s.token, { action: "get_wallet" }).catch((e) => {
+            // get_wallet 失敗不擋整頁，但要 warn（例：edge fn 版本不對、token 過期、env 缺）
+            console.warn("[liff] get_wallet failed; wallet card hidden:", e);
+            return null;
+          }),
         ]);
         setData(d);
         if (w) setWallet(w);

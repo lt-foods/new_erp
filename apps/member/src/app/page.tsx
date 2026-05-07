@@ -114,7 +114,10 @@ export default function LandingPage() {
     // 抓門市清單給下拉選用(免 token,公開資訊)
     callLiffApi<{ stores: StoreOption[] }>("", { action: "list_stores" })
       .then((r) => setStores(r.stores ?? []))
-      .catch(() => { /* 抓不到就退回手動輸入 */ });
+      .catch((e) => {
+        // 抓不到就退回手動輸入；但要 warn 以免靜默失敗（例：.env.local 缺 NEXT_PUBLIC_SUPABASE_URL → callLiffApi throw）
+        console.warn("[liff] list_stores failed, falling back to text input:", e);
+      });
 
     // 3. 從 LIFF 配對流程切回 PWA 時，自動 claim
     void tryClaimPairToken();
