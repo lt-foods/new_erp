@@ -81,14 +81,23 @@ export function PickupDialog({
       setDiscountPercent(Number(head?.discount_percent ?? 0));
       setMemberId(head?.member_id ?? null);
       setWalletPaidSoFar(Number(head?.wallet_paid_amount ?? 0));
-      setWalletAmount("");
-      // 抓會員儲值餘額
+      // 抓會員儲值餘額 + 預填本次抵扣（min(餘額, 應收)）
       if (head?.member_id) {
         const { data: wb } = await sb.from("wallet_balances")
           .select("balance").eq("member_id", head.member_id).maybeSingle<{ balance: number }>();
-        if (!cancelled) setWalletBalance(Number(wb?.balance ?? 0));
+        if (!cancelled) {
+          const bal = Number(wb?.balance ?? 0);
+          setWalletBalance(bal);
+          // 預填：min(餘額, 本次應收) — 已選全 item 預設算
+          const itemSubtotal = list.reduce((s, it) => s + lineSub(it), 0);
+          const pct = Math.round(itemSubtotal * Number(head?.discount_percent ?? 0)) / 100;
+          const initialPayable = Math.max(0, itemSubtotal - pct - Number(head?.discount_amount ?? 0));
+          const preFill = Math.min(bal, initialPayable);
+          setWalletAmount(preFill > 0 ? String(preFill) : "");
+        }
       } else {
         setWalletBalance(null);
+        setWalletAmount("");
       }
     })();
     return () => { cancelled = true; };
