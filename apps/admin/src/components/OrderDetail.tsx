@@ -11,6 +11,7 @@ import { EditableNumber, EditableText } from "@/components/EditableCell";
 import { EditableDiscount, deriveDiscount, type DiscountValue } from "@/components/EditableDiscount";
 import { useAuth } from "@/components/AuthProvider";
 import { useRole } from "@/lib/role";
+import { orderStatusLabel as statusLabel, canPayWithWallet } from "@/lib/orderStatus";
 import { withBasePath } from "@/lib/basePath";
 import { translateRpcError } from "@/lib/rpcError";
 
@@ -94,13 +95,7 @@ type TimelineStep = {
   detailOnClick?: () => void;
 };
 
-const STATUS_LABEL: Record<string, string> = {
-  pending: "待確認", confirmed: "已確認", reserved: "已保留", shipping: "派貨中",
-  ready: "可取貨", partially_ready: "部分可取", partially_completed: "部分取貨",
-  completed: "已完成", expired: "逾期", cancelled: "已取消",
-  transferred_out: "已轉出", picked_up: "已取貨",
-};
-const statusLabel = (s: string) => STATUS_LABEL[s] ?? s;
+// STATUS_LABEL / statusLabel imported from @/lib/orderStatus
 
 function staffLabel(uid: string | null, names: Map<string, string>): string {
   if (!uid) return "—";
@@ -544,8 +539,7 @@ export function OrderDetail({
             {(() => {
               const balDue = Math.max(0, payableAmount - Number(head.wallet_paid_amount ?? 0));
               const isPaid = head.payment_status === "paid";
-              const TERMINAL_STATUSES = ["completed","picked_up","cancelled","expired","transferred_out"];
-              const canPay = !!head.member && balDue > 0 && !isPaid && !TERMINAL_STATUSES.includes(head.status);
+              const canPay = !!head.member && balDue > 0 && canPayWithWallet(head.status, head.payment_status);
               return (
                 <>
                   {Number(head.wallet_paid_amount) > 0 && (

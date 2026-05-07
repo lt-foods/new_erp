@@ -5,10 +5,7 @@ import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
-
-type OrderStatus =
-  | "pending" | "confirmed" | "reserved" | "shipping" | "ready" | "partially_ready"
-  | "partially_completed" | "completed" | "expired" | "cancelled" | "transferred_out";
+import { ORDER_STATUS_LABEL as STATUS_LABEL, type OrderStatus } from "@/lib/orderStatus";
 
 type AidItem = {
   id: number;
@@ -53,21 +50,11 @@ type SourceOrder = {
   store: { id: number; name: string } | null;
 };
 
-const STATUS_LABEL: Record<OrderStatus, string> = {
-  pending: "待確認", confirmed: "已確認", reserved: "已保留", shipping: "派貨中",
-  ready: "可取貨", partially_ready: "部分可取", partially_completed: "部分取貨",
-  completed: "已完成", expired: "逾期", cancelled: "已取消",
-  transferred_out: "已轉出",
-};
-
 const STATUS_COLOR: Record<OrderStatus, string> = {
   pending: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
   confirmed: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
-  reserved: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300",
   shipping: "bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300",
   ready: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300",
-  partially_ready: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
-  partially_completed: "bg-teal-100 text-teal-800 dark:bg-teal-950 dark:text-teal-300",
   completed: "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300",
   expired: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
   cancelled: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",

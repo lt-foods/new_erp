@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { orderStatusLabel } from "@/lib/orderStatus";
 
 type Order = {
   id: number;
@@ -48,17 +49,7 @@ type TimelineEvent = {
   status: "done" | "current" | "future" | "error";
 };
 
-const ORDER_STATUS_LABEL: Record<string, string> = {
-  pending: "待確認",
-  confirmed: "已確認",
-  shipping: "派貨中",
-  ready: "可取貨",
-  completed: "已完成",
-  cancelled: "已取消",
-  expired: "逾期",
-  reserved: "已保留",
-  transferred_out: "已轉出",
-};
+// ORDER_STATUS_LABEL imported from @/lib/orderStatus
 
 export function AidOrderTimeline({ orderId }: { orderId: number }) {
   const [order, setOrder] = useState<Order | null>(null);
@@ -310,7 +301,7 @@ export function AidOrderTimeline({ orderId }: { orderId: number }) {
           </span>
         )}
         <span className="ml-2 text-xs font-normal text-zinc-500">
-          目前狀態：{ORDER_STATUS_LABEL[order.status] ?? order.status}
+          目前狀態：{orderStatusLabel(order.status)}
         </span>
       </h3>
 

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
+import { orderStatusLabel } from "@/lib/orderStatus";
 
 type OrderRow = {
   id: number;
@@ -19,26 +20,11 @@ type OrderRow = {
 
 type Store = { id: number; code: string; name: string };
 
-const STATUS_LABEL: Record<string, string> = {
-  pending: "待確認",
-  confirmed: "已確認",
-  reserved: "已備貨",
-  partially_ready: "部分備貨",
-  partially_completed: "部分完成",
-  shipping: "出貨中",
-  ready: "可取貨",
-  completed: "已完成",
-  cancelled: "已取消",
-  expired: "已逾期",
-  transferred_out: "已轉出",
-};
+// STATUS_LABEL imported from @/lib/orderStatus（單一中央定義）
 
 const STATUS_BADGE: Record<string, string> = {
   pending: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
   confirmed: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
-  reserved: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300",
-  partially_ready: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300",
-  partially_completed: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   shipping: "bg-cyan-100 text-cyan-800 dark:bg-cyan-950 dark:text-cyan-300",
   ready: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   completed: "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300",
@@ -205,7 +191,7 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
                       <td className="px-3 py-1.5 text-zinc-600 dark:text-zinc-400">{store?.name ?? "—"}</td>
                       <td className="px-3 py-1.5">
                         <span className={`inline-block rounded px-1.5 py-0.5 ${STATUS_BADGE[r.status] ?? STATUS_BADGE.pending}`}>
-                          {STATUS_LABEL[r.status] ?? r.status}
+                          {orderStatusLabel(r.status)}
                         </span>
                       </td>
                       <td className={`px-3 py-1.5 text-right font-mono tabular-nums ${isOffset ? "text-red-700 dark:text-red-300" : ""}`}>
