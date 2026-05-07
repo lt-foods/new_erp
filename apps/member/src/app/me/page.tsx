@@ -385,7 +385,7 @@ export default function MePage() {
               <InfoRow label="手機" value={me.phone ?? null} mono />
               <InfoRow label="生日" value={me.birthday ?? null} />
               <InfoRow label="Email" value={me.email ?? null} breakAll />
-              <InfoRow label="取貨店" value={me.home_store_name ?? null} />
+              {/* 取貨店已在頭像旁 chip 顯示，這裡不重複 */}
               {lineUserId && (
                 <InfoRow label="LINE ID" value={lineUserId} mono breakAll small />
               )}
