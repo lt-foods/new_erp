@@ -10,6 +10,8 @@ type Order = {
   status: string;
   discount_amount: number;
   discount_percent: number;
+  wallet_paid_amount: number;
+  payment_status: string | null;
   notes: string | null;
   member: { id: number; member_no: string; name: string | null; phone: string | null } | null;
   campaign: { id: number; name: string } | null;
@@ -65,7 +67,7 @@ function Body() {
       const { data, error: e } = await sb
         .from("customer_orders")
         .select(
-          `id, order_no, status, discount_amount, discount_percent, notes,
+          `id, order_no, status, discount_amount, discount_percent, wallet_paid_amount, payment_status, notes,
            member:members(id, member_no, name, phone),
            campaign:group_buy_campaigns(id, name),
            store:stores!customer_orders_pickup_store_id_fkey(id, name),
@@ -104,19 +106,17 @@ function Body() {
     const active = o.items.filter((it) => ACTIVE_ITEM_STATUSES.has(it.status));
     return active.reduce((a, it) => a + lineSub(it), 0);
   };
+  // payable 四捨五入到整數 NTD（對齊 v_customer_order_summary）
   const orderPay = (o: Order) => {
     const sub = orderSub(o);
     const pct = Number(o.discount_percent ?? 0);
-    const pctDed = Math.round(sub * pct) / 100;
-    return Math.max(0, sub - pctDed - Number(o.discount_amount ?? 0));
+    return Math.max(0, Math.round(sub * (1 - pct / 100) - Number(o.discount_amount ?? 0)));
   };
-  const totalOrderDisc = orders.reduce((s, o) => {
-    const sub = orderSub(o);
-    const pct = Number(o.discount_percent ?? 0);
-    return s + Math.round(sub * pct) / 100 + Number(o.discount_amount ?? 0);
-  }, 0);
   const grandSubtotal = orders.reduce((s, o) => s + orderSub(o), 0);
   const grandTotal = orders.reduce((s, o) => s + orderPay(o), 0);
+  const totalOrderDisc = grandSubtotal - grandTotal; // 倒推、含取整誤差
+  const grandWalletPaid = orders.reduce((s, o) => s + Number(o.wallet_paid_amount ?? 0), 0);
+  const grandBalanceDue = Math.max(0, grandTotal - grandWalletPaid);
   const totalQty = orders.reduce((s, o) => {
     const active = o.items.filter((it) => ACTIVE_ITEM_STATUSES.has(it.status));
     return s + active.reduce((a, it) => a + Number(it.qty), 0);
@@ -171,7 +171,9 @@ function Body() {
             const disc = Number(o.discount_amount ?? 0);
             const pct = Number(o.discount_percent ?? 0);
             const sub = orderSub(o);
-            const pctDed = Math.round(sub * pct) / 100;
+            const pay = orderPay(o);
+            // pctDed 倒推（subtotal − pct − amt = payable，所以 pctDed = subtotal − payable − amt）
+            const pctDed = Math.max(0, sub - pay - disc);
             return (
               <div key={o.id} className="border-b border-dashed border-zinc-400 pb-1">
                 <div>{o.campaign?.name ?? "(未知活動)"}</div>
@@ -234,6 +236,16 @@ function Body() {
           <div>小計 $ {grandSubtotal.toLocaleString()}</div>
           {totalOrderDisc > 0 && <div>− 整單折扣 $ {totalOrderDisc.toLocaleString()}</div>}
           <div className="text-[14px] font-bold">合計 {totalQty} 項　$ {grandTotal.toLocaleString()}</div>
+          {grandWalletPaid > 0 && (
+            <>
+              <div className="mt-1">− 已用儲值金 $ {grandWalletPaid.toLocaleString()}</div>
+              <div className="text-[13px] font-bold">
+                {grandBalanceDue === 0
+                  ? "✅ 已付清"
+                  : <>應付剩餘 $ {grandBalanceDue.toLocaleString()}</>}
+              </div>
+            </>
+          )}
         </div>
 
       </div>
