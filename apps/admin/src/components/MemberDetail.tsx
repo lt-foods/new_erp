@@ -250,11 +250,11 @@ export function MemberDetail({ memberId }: { memberId: number }) {
   if (!member) return <div className="text-sm text-zinc-500">載入中…</div>;
 
   const isMerged = member.status === "merged";
-  const isGuest = member.member_type === "guest";
-  // 反向合併按鈕：只在「實體會員 (非 guest) + status≠merged」上出現
-  const canAbsorbGuest = !isGuest && !isMerged;
-  // 正向合併按鈕：guest + 還沒被合
-  const canMergeOut = isGuest && !isMerged;
+  const hasLine = !!member.line_user_id;
+  // 「合併到已綁 LINE 會員」：自己未綁 LINE + status≠merged 才出現
+  const canMergeOut = !hasLine && !isMerged;
+  // 「合併未綁 LINE 會員進來」：自己已綁 LINE + status≠merged 才出現
+  const canAbsorbGuest = hasLine && !isMerged;
 
   return (
     <div className="space-y-5">
@@ -287,18 +287,18 @@ export function MemberDetail({ memberId }: { memberId: number }) {
           <button
             onClick={() => setMergeOpen("guest-to-real")}
             className="rounded-md border border-rose-300 px-3 py-1 text-xs font-medium text-rose-700 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-950"
-            title="把虛擬會員合併到 LINE 實體會員（搬走訂單 / 點數 / 儲值）"
+            title="把這個未綁 LINE 的會員合併到已綁 LINE 的會員（訂單 / 點數 / 儲值會搬過去）"
           >
-            🔗 合併到實體會員
+            🔗 合併到已綁 LINE 會員
           </button>
         )}
         {canAbsorbGuest && (
           <button
             onClick={() => setMergeOpen("real-from-guest")}
             className="rounded-md border border-emerald-300 px-3 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950"
-            title="搜尋虛擬會員並把他合併進來（訂單 / 點數 / 儲值會搬到此會員）"
+            title="搜尋未綁 LINE 的舊會員並合併進來（訂單 / 點數 / 儲值會搬到此會員）"
           >
-            📥 合併虛擬會員進來
+            📥 合併舊會員進來
           </button>
         )}
       </div>

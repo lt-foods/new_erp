@@ -1,8 +1,9 @@
 "use client";
 
-// 會員合併（虛擬 ↔ 實體）— 兩個方向共用同一支 rpc_merge_member
-// - mode="guest-to-real": 從虛擬會員端搜實體會員（既有行為）
-// - mode="real-from-guest": 從實體會員端搜虛擬會員（反向）
+// 會員合併（重複建檔合併 — 把「未綁 LINE 的會員」併進「已綁 LINE 的會員」）
+// 兩個方向共用同一支 rpc_merge_member（RPC 守衛：source.line_user_id IS NULL）
+// - direction="guest-to-real":   從未綁 LINE 端開（既有「合併到實體會員」按鈕）
+// - direction="real-from-guest": 從已綁 LINE 端開（新「合併進來」按鈕）
 // rpc_merge_member 會搬：訂單 / 卡片 / 點數 / 儲值 / 標籤 / 暱稱對應 / 流水
 
 import { useEffect, useState } from "react";
@@ -77,15 +78,14 @@ export function MemberMergeModal({
       .limit(20);
 
     if (direction === "guest-to-real") {
-      // 找實體會員：排除 merged/deleted、以及其他 guest（避免 guest→guest）
+      // 找合併目標：必須已綁 LINE、status active
       req = req
-        .neq("status", "merged")
-        .neq("status", "deleted")
-        .neq("member_type", "guest");
+        .not("line_user_id", "is", null)
+        .eq("status", "active");
     } else {
-      // 找虛擬會員：member_type='guest' + status='active'（不能合 merged 進來）
+      // 找被合併進來的會員：必須未綁 LINE、status active（不能合 merged 進來）
       req = req
-        .eq("member_type", "guest")
+        .is("line_user_id", null)
         .eq("status", "active");
     }
 
@@ -126,8 +126,8 @@ export function MemberMergeModal({
   if (!anchor) return null;
 
   const title = direction === "guest-to-real"
-    ? "合併虛擬會員 → 實體會員"
-    : "把虛擬會員合併進來（→ 此實體會員）";
+    ? "合併到已綁 LINE 的會員"
+    : "把『未綁 LINE 的會員』合併進來";
 
   return (
     <Modal open={open} onClose={onClose} title={title} maxWidth="max-w-2xl">
@@ -136,19 +136,19 @@ export function MemberMergeModal({
           <div className="text-xs text-amber-800 dark:text-amber-300">
             {direction === "guest-to-real" ? (
               <>
-                <b>來源（虛擬會員）：</b>{anchor.name ?? "—"}
+                <b>來源（未綁 LINE 的這筆，會被標 merged）：</b>{anchor.name ?? "—"}
                 <span className="ml-1 font-mono">{anchor.member_no}</span>
                 {anchor.phone && <span className="ml-1 font-mono">{anchor.phone}</span>}
               </>
             ) : (
               <>
-                <b>目標（此實體會員）：</b>{anchor.name ?? "—"}
+                <b>目標（此筆已綁 LINE 的會員，訂單會搬來這）：</b>{anchor.name ?? "—"}
                 <span className="ml-1 font-mono">{anchor.member_no}</span>
                 {anchor.phone && <span className="ml-1 font-mono">{anchor.phone}</span>}
               </>
             )}
             <br />
-            合併後虛擬會員會被標 <code>merged</code>，所有訂單 / 儲值 / 點數 / 卡片 / 標籤都會搬到實體會員。
+            合併後來源會被標 <code>merged</code>，所有訂單 / 儲值 / 點數 / 卡片 / 標籤都會搬到目標。
           </div>
         </div>
 
@@ -158,8 +158,8 @@ export function MemberMergeModal({
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); search(); }}}
             placeholder={direction === "guest-to-real"
-              ? "搜尋目標實體會員（姓名 / 電話 / 會員編號）"
-              : "搜尋要合併進來的虛擬會員（姓名 / 電話 / 會員編號）"}
+              ? "搜尋目標：已綁 LINE 的會員（姓名 / 電話 / 會員編號）"
+              : "搜尋要合併進來的：未綁 LINE 的會員（姓名 / 電話 / 會員編號）"}
             className="flex-1 rounded-md border border-zinc-300 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900"
           />
           <button
