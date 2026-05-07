@@ -382,8 +382,27 @@ export function MemberDetail({ memberId }: { memberId: number }) {
         <Card label="儲值餘額"><span className="text-lg font-mono">{wallet.toLocaleString()}</span></Card>
       </div>
 
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Card label="手機"><span className="font-mono">{member.phone && !member.phone.startsWith("line:") ? member.phone : "—"}</span></Card>
+        <Card label="Email">{member.email ?? "—"}</Card>
+        <Card label="性別">{member.gender === "M" ? "男" : member.gender === "F" ? "女" : member.gender === "O" ? "其他" : "—"}</Card>
+        <Card label="生日">{member.birthday ?? "—"}</Card>
+        <Card label="加入時間">{new Date(member.joined_at).toLocaleString("zh-TW")}</Card>
+        <Card label="最後消費">{member.last_visit_at ? new Date(member.last_visit_at).toLocaleString("zh-TW") : "—"}</Card>
+      </div>
+
+      {member.line_user_id && (
+        <Card label="LINE User ID">
+          <MaskedLineId value={member.line_user_id} />
+        </Card>
+      )}
+
+      {member.notes && (
+        <Card label="備註"><div className="whitespace-pre-wrap text-sm">{member.notes}</div></Card>
+      )}
+
       <div>
-        <div className="flex gap-2 border-b border-zinc-200 dark:border-zinc-800">
+        <div className="mt-2 flex gap-1 rounded-xl border border-zinc-200 bg-zinc-50 p-1 shadow-sm dark:border-zinc-700 dark:bg-zinc-900/60">
           <TabBtn active={tab === "points"}  onClick={() => setTab("points")}>積分明細 ({pLedger.length})</TabBtn>
           <TabBtn active={tab === "wallet"}  onClick={() => setTab("wallet")}>儲值金明細 ({wLedger.length})</TabBtn>
           <TabBtn active={tab === "test"}    onClick={() => setTab("test")}>測試操作</TabBtn>
@@ -506,24 +525,6 @@ export function MemberDetail({ memberId }: { memberId: number }) {
         </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Card label="手機"><span className="font-mono">{member.phone && !member.phone.startsWith("line:") ? member.phone : "—"}</span></Card>
-        <Card label="Email">{member.email ?? "—"}</Card>
-        <Card label="性別">{member.gender === "M" ? "男" : member.gender === "F" ? "女" : member.gender === "O" ? "其他" : "—"}</Card>
-        <Card label="生日">{member.birthday ?? "—"}</Card>
-        <Card label="加入時間">{new Date(member.joined_at).toLocaleString("zh-TW")}</Card>
-        <Card label="最後消費">{member.last_visit_at ? new Date(member.last_visit_at).toLocaleString("zh-TW") : "—"}</Card>
-      </div>
-
-      {member.line_user_id && (
-        <Card label="LINE User ID">
-          <MaskedLineId value={member.line_user_id} />
-        </Card>
-      )}
-
-      {member.notes && (
-        <Card label="備註"><div className="whitespace-pre-wrap text-sm">{member.notes}</div></Card>
-      )}
     </div>
   );
 }
@@ -552,8 +553,8 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
       onClick={onClick}
       className={
         active
-          ? "border-b-2 border-zinc-900 px-3 py-2 text-sm font-medium dark:border-zinc-100"
-          : "border-b-2 border-transparent px-3 py-2 text-sm text-zinc-500 transition-colors hover:text-zinc-800 dark:hover:text-zinc-200"
+          ? "flex-1 rounded-lg bg-emerald-600 px-4 py-2.5 text-base font-semibold text-white shadow-md transition-all"
+          : "flex-1 rounded-lg px-4 py-2.5 text-base font-medium text-zinc-600 transition-all hover:bg-white hover:text-zinc-900 hover:shadow-sm dark:text-zinc-300 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
       }
     >
       {children}
