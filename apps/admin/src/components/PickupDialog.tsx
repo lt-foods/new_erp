@@ -153,9 +153,10 @@ export function PickupDialog({
   const subtotal = items
     ? items.filter((it) => picked.has(it.id)).reduce((s, it) => s + lineSub(it), 0)
     : 0;
-  // 顯示用 deduction（含小數）+ 最終 payable 四捨五入到整數 NTD
-  const percentDeduction = Math.round(subtotal * discountPercent) / 100;
+  // payable 四捨五入到整數 NTD；deduction 倒推、確保 subtotal − pct − amt = payable 完全對齊
   const payableAmount = Math.max(0, Math.round(subtotal * (1 - discountPercent / 100) - discount));
+  const totalDeduction = subtotal - payableAmount;
+  const percentDeduction = Math.max(0, totalDeduction - discount);
 
   // 儲值金抵扣計算：本次最多扣 = min(會員餘額, 本次應收)
   const walletNum = Number(walletAmount) || 0;
