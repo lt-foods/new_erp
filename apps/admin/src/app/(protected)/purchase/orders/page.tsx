@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
-import { PrPipelineStepper } from "@/components/PrPipelineStepper";
 import { SendPOModal } from "@/components/SendPOModal";
 import SpinButton from "@/components/SpinButton";
+import { RowAction } from "@/components/RowAction";
 
 type Supplier = {
   id: number;
@@ -49,27 +49,13 @@ type PO = {
   expected_date: string | null;
   sent_at: string | null;
   sent_channel: string | null;
+  created_at: string;
   updated_at: string;
-};
-
-type PRGroup = {
-  pr_id: number | null; // null = 手動建立 / 找不到來源 PR
+  pr_id: number | null;
   pr_no: string | null;
-  pr_status: string | null;
-  pr_review_status: string | null;
-  pr_source_close_date: string | null;
-  pos: PO[];
 };
 
-type PRProgress = {
-  po_total: number;
-  po_sent: number;
-  po_received_fully: number;
-  transfer_total: number;
-  transfer_shipped: number;
-  transfer_delivered: number;
-  all_campaigns_finalized: boolean;
-};
+type StatusTab = "all" | POStatus;
 
 const STATUS_LABEL: Record<POStatus, string> = {
   draft: "草稿",
@@ -80,20 +66,43 @@ const STATUS_LABEL: Record<POStatus, string> = {
   cancelled: "已取消",
 };
 
-const PR_STATUS_LABEL: Record<string, string> = {
-  draft: "草稿",
-  submitted: "已送審",
-  partially_ordered: "部分轉單",
-  fully_ordered: "全部轉單",
-  cancelled: "已取消",
+const STATUS_BADGE: Record<POStatus, string> = {
+  draft: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+  sent: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
+  partially_received:
+    "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  fully_received:
+    "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
+  closed: "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300",
+  cancelled: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
 };
 
+const STATUS_TAB_ORDER: StatusTab[] = [
+  "all",
+  "draft",
+  "sent",
+  "partially_received",
+  "fully_received",
+  "closed",
+  "cancelled",
+];
+
+const PAGE_SIZE = 30;
+
+type SortCol = "updated_at" | "expected_date" | "total" | "po_no" | "supplier";
+
 export default function PurchaseOrdersListPage() {
-  const [groups, setGroups] = useState<PRGroup[] | null>(null);
+  const [pos, setPos] = useState<PO[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState("");
-  const [openPRs, setOpenPRs] = useState<Set<string>>(new Set()); // 'null' or pr_id 字串
-  const [progressById, setProgressById] = useState<Map<number, PRProgress>>(new Map());
+  const [tab, setTab] = useState<StatusTab>("all");
+  const [search, setSearch] = useState("");
+  const [supplierFilter, setSupplierFilter] = useState<number | "all">("all");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [groupBy, setGroupBy] = useState<"none" | "pr" | "supplier">("none");
+  const [sortBy, setSortBy] = useState<SortCol>("updated_at");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [page, setPage] = useState(1);
   const [reloadKey, setReloadKey] = useState(0);
   const [sendBusyId, setSendBusyId] = useState<number | null>(null);
   const [sendCtx, setSendCtx] = useState<SendCtx | null>(null);
@@ -104,16 +113,14 @@ export default function PurchaseOrdersListPage() {
       try {
         const supabase = getSupabase();
 
-        // 1. 撈 POs
-        let q = supabase
+        // 1. 撈 POs(拉多一點以利 KPI 計算與分頁)
+        const { data: poData, error: poErr } = await supabase
           .from("purchase_orders")
           .select(
-            "id, po_no, supplier_id, status, total, expected_date, sent_at, sent_channel, updated_at, suppliers(name)",
+            "id, po_no, supplier_id, status, total, expected_date, sent_at, sent_channel, created_at, updated_at, suppliers(name)",
           )
           .order("updated_at", { ascending: false })
-          .limit(200);
-        if (statusFilter) q = q.eq("status", statusFilter);
-        const { data: poData, error: poErr } = await q;
+          .limit(500);
         if (poErr) throw new Error(poErr.message);
         if (cancelled) return;
 
@@ -126,10 +133,11 @@ export default function PurchaseOrdersListPage() {
           expected_date: string | null;
           sent_at: string | null;
           sent_channel: string | null;
+          created_at: string;
           updated_at: string;
           suppliers: { name: string } | { name: string }[] | null;
         };
-        const pos: PO[] = ((poData as RawPO[] | null) ?? []).map((r) => {
+        const baseList: PO[] = ((poData as RawPO[] | null) ?? []).map((r) => {
           const sup = Array.isArray(r.suppliers) ? r.suppliers[0] : r.suppliers;
           return {
             id: r.id,
@@ -141,22 +149,24 @@ export default function PurchaseOrdersListPage() {
             expected_date: r.expected_date,
             sent_at: r.sent_at,
             sent_channel: r.sent_channel,
+            created_at: r.created_at,
             updated_at: r.updated_at,
+            pr_id: null,
+            pr_no: null,
           };
         });
-        const poIds = pos.map((p) => p.id);
 
         // 2. 透過 purchase_order_items + purchase_request_items 找來源 PR
+        const poIds = baseList.map((p) => p.id);
         const poToPR = new Map<number, number>();
         if (poIds.length) {
           const { data: poiRows } = await supabase
             .from("purchase_order_items")
             .select("id, po_id")
             .in("po_id", poIds);
-          const poiIds = (poiRows ?? []).map((r) => r.id);
           const poiToPo = new Map<number, number>();
           for (const r of poiRows ?? []) poiToPo.set(r.id, r.po_id);
-
+          const poiIds = (poiRows ?? []).map((r) => r.id);
           if (poiIds.length) {
             const { data: priRows } = await supabase
               .from("purchase_request_items")
@@ -168,91 +178,26 @@ export default function PurchaseOrdersListPage() {
             }
           }
         }
-
-        // 3. 撈 PR 細節
         const prIds = Array.from(new Set(Array.from(poToPR.values())));
-        const prMap = new Map<
-          number,
-          { pr_no: string; status: string; review_status: string; source_close_date: string | null }
-        >();
+        const prMap = new Map<number, string>();
         if (prIds.length) {
           const { data: prRows } = await supabase
             .from("purchase_requests")
-            .select("id, pr_no, status, review_status, source_close_date")
+            .select("id, pr_no")
             .in("id", prIds);
-          for (const r of prRows ?? []) {
-            prMap.set(r.id, {
-              pr_no: r.pr_no,
-              status: r.status,
-              review_status: r.review_status,
-              source_close_date: r.source_close_date,
-            });
-          }
-
-          const { data: prog } = await supabase
-            .from("v_pr_progress")
-            .select("pr_id, po_total, po_sent, po_received_fully, transfer_total, transfer_shipped, transfer_delivered, all_campaigns_finalized")
-            .in("pr_id", prIds);
-          const m = new Map<number, PRProgress>();
-          type ProgRow = {
-            pr_id: number;
-            po_total: number;
-            po_sent: number;
-            po_received_fully: number;
-            transfer_total: number;
-            transfer_shipped: number;
-            transfer_delivered: number;
-            all_campaigns_finalized: boolean;
-          };
-          for (const p of (prog as ProgRow[] | null) ?? []) {
-            m.set(p.pr_id, {
-              po_total: Number(p.po_total),
-              po_sent: Number(p.po_sent),
-              po_received_fully: Number(p.po_received_fully),
-              transfer_total: Number(p.transfer_total),
-              transfer_shipped: Number(p.transfer_shipped),
-              transfer_delivered: Number(p.transfer_delivered),
-              all_campaigns_finalized: !!p.all_campaigns_finalized,
-            });
-          }
-          if (!cancelled) setProgressById(m);
+          for (const r of prRows ?? []) prMap.set(r.id, r.pr_no);
         }
-
-        // 4. 按 PR 分組
-        const groupMap = new Map<string, PRGroup>();
-        for (const po of pos) {
-          const prId = poToPR.get(po.id) ?? null;
-          const key = prId === null ? "null" : String(prId);
-          if (!groupMap.has(key)) {
-            const prInfo = prId !== null ? prMap.get(prId) : null;
-            groupMap.set(key, {
-              pr_id: prId,
-              pr_no: prInfo?.pr_no ?? null,
-              pr_status: prInfo?.status ?? null,
-              pr_review_status: prInfo?.review_status ?? null,
-              pr_source_close_date: prInfo?.source_close_date ?? null,
-              pos: [],
-            });
+        for (const p of baseList) {
+          const prId = poToPR.get(p.id);
+          if (prId) {
+            p.pr_id = prId;
+            p.pr_no = prMap.get(prId) ?? null;
           }
-          groupMap.get(key)!.pos.push(po);
         }
-
-        const result = Array.from(groupMap.values()).sort((a, b) => {
-          // null 群放最後
-          if (a.pr_id === null && b.pr_id !== null) return 1;
-          if (b.pr_id === null && a.pr_id !== null) return -1;
-          // 依結單日 desc
-          const ad = a.pr_source_close_date ?? "";
-          const bd = b.pr_source_close_date ?? "";
-          if (ad !== bd) return bd.localeCompare(ad);
-          return (b.pr_id ?? 0) - (a.pr_id ?? 0);
-        });
 
         if (!cancelled) {
-          setGroups(result);
+          setPos(baseList);
           setError(null);
-          // 預設展開全部
-          setOpenPRs(new Set(result.map((g) => (g.pr_id === null ? "null" : String(g.pr_id)))));
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -261,7 +206,148 @@ export default function PurchaseOrdersListPage() {
     return () => {
       cancelled = true;
     };
-  }, [statusFilter, reloadKey]);
+  }, [reloadKey]);
+
+  // === KPI 統計 ===
+  const today = new Date().toISOString().slice(0, 10);
+
+  const stats = useMemo(() => {
+    const acc = {
+      draft: 0,
+      sent: 0,
+      partially_received: 0,
+      fully_received: 0,
+      closed: 0,
+      cancelled: 0,
+      overdue: 0,
+      pendingAmount: 0,
+    };
+    for (const p of pos ?? []) {
+      acc[p.status] += 1;
+      const inFlight =
+        p.status === "sent" || p.status === "partially_received";
+      if (inFlight) acc.pendingAmount += p.total;
+      if (inFlight && p.expected_date && p.expected_date < today) {
+        acc.overdue += 1;
+      }
+    }
+    return acc;
+  }, [pos, today]);
+
+  // 供應商下拉選項
+  const supplierOptions = useMemo(() => {
+    const set = new Map<number, string>();
+    for (const p of pos ?? []) {
+      if (p.supplier_id && p.supplier_name) {
+        set.set(p.supplier_id, p.supplier_name);
+      }
+    }
+    return Array.from(set.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  }, [pos]);
+
+  // tab counts
+  const tabCounts = useMemo(
+    () => ({
+      all: pos?.length ?? 0,
+      draft: stats.draft,
+      sent: stats.sent,
+      partially_received: stats.partially_received,
+      fully_received: stats.fully_received,
+      closed: stats.closed,
+      cancelled: stats.cancelled,
+    }),
+    [pos, stats],
+  );
+
+  // filter
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return (pos ?? []).filter((p) => {
+      if (tab !== "all" && p.status !== tab) return false;
+      if (supplierFilter !== "all" && p.supplier_id !== supplierFilter)
+        return false;
+      if (dateFrom && (p.created_at ?? "") < `${dateFrom}T00:00:00`)
+        return false;
+      if (dateTo && (p.created_at ?? "") > `${dateTo}T23:59:59.999`)
+        return false;
+      if (q) {
+        const hits = [p.po_no, p.supplier_name, p.pr_no]
+          .filter((x): x is string => !!x)
+          .some((x) => x.toLowerCase().includes(q));
+        if (!hits) return false;
+      }
+      return true;
+    });
+  }, [pos, tab, supplierFilter, dateFrom, dateTo, search]);
+
+  // sort
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      let av: string | number;
+      let bv: string | number;
+      if (sortBy === "total") {
+        av = a.total;
+        bv = b.total;
+      } else if (sortBy === "po_no") {
+        av = a.po_no;
+        bv = b.po_no;
+      } else if (sortBy === "expected_date") {
+        av = a.expected_date ?? "";
+        bv = b.expected_date ?? "";
+      } else if (sortBy === "supplier") {
+        av = a.supplier_name ?? "";
+        bv = b.supplier_name ?? "";
+      } else {
+        av = a.updated_at;
+        bv = b.updated_at;
+      }
+      if (av < bv) return sortDir === "asc" ? -1 : 1;
+      if (av > bv) return sortDir === "asc" ? 1 : -1;
+      return 0;
+    });
+    return arr;
+  }, [filtered, sortBy, sortDir]);
+
+  // 篩選變動 → 重置到第 1 頁
+  useEffect(() => {
+    setPage(1);
+  }, [tab, search, supplierFilter, dateFrom, dateTo, sortBy, sortDir, groupBy]);
+
+  const total = sorted.length;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const pageRows = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // group
+  const grouped = useMemo(() => {
+    if (groupBy === "none") return null;
+    const map = new Map<string, { label: string; rows: PO[] }>();
+    for (const p of pageRows) {
+      let key = "—";
+      let label = "—";
+      if (groupBy === "pr") {
+        if (p.pr_id) {
+          key = `pr-${p.pr_id}`;
+          label = `採購單 ${p.pr_no ?? `#${p.pr_id}`}`;
+        } else {
+          key = "manual";
+          label = "手動建立 / 無來源 PR";
+        }
+      } else {
+        key = p.supplier_id ? `sup-${p.supplier_id}` : "no-sup";
+        label = p.supplier_name ?? "(未指定供應商)";
+      }
+      let slot = map.get(key);
+      if (!slot) {
+        slot = { label, rows: [] };
+        map.set(key, slot);
+      }
+      slot.rows.push(p);
+    }
+    return Array.from(map.entries())
+      .sort((a, b) => a[1].label.localeCompare(b[1].label))
+      .map(([k, v]) => ({ key: k, ...v }));
+  }, [pageRows, groupBy]);
 
   async function openSendModal(po: PO) {
     setSendBusyId(po.id);
@@ -270,7 +356,9 @@ export default function PurchaseOrdersListPage() {
       const [{ data: supRow }, { data: itemRows }] = await Promise.all([
         supabase
           .from("suppliers")
-          .select("id, name, code, preferred_po_channel, line_contact, email, phone")
+          .select(
+            "id, name, code, preferred_po_channel, line_contact, email, phone",
+          )
           .eq("id", po.supplier_id)
           .maybeSingle(),
         supabase
@@ -293,12 +381,17 @@ export default function PurchaseOrdersListPage() {
         base_unit: string | null;
         products: { name: string } | { name: string }[];
       };
-      const skuMap = new Map<number, { sku_code: string; product_name: string; unit_uom: string | null }>();
+      const skuMap = new Map<
+        number,
+        { sku_code: string; product_name: string; unit_uom: string | null }
+      >();
       for (const s of (skuRows as SkuLite[] | null) ?? []) {
         const prod = Array.isArray(s.products) ? s.products[0] : s.products;
         skuMap.set(s.id, {
           sku_code: s.sku_code,
-          product_name: (prod?.name ?? "?") + (s.variant_name ? `-${s.variant_name}` : ""),
+          product_name:
+            (prod?.name ?? "?") +
+            (s.variant_name ? `-${s.variant_name}` : ""),
           unit_uom: s.base_unit ?? null,
         });
       }
@@ -312,7 +405,10 @@ export default function PurchaseOrdersListPage() {
           unit_uom: m?.unit_uom ?? null,
         };
       });
-      const subtotal = items.reduce((s, it) => s + it.qty_ordered * it.unit_cost, 0);
+      const subtotal = items.reduce(
+        (s, it) => s + it.qty_ordered * it.unit_cost,
+        0,
+      );
       setSendCtx({
         poId: po.id,
         poNo: po.po_no,
@@ -327,40 +423,46 @@ export default function PurchaseOrdersListPage() {
     }
   }
 
-  function togglePR(key: string) {
-    setOpenPRs((cur) => {
-      const next = new Set(cur);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+  function setSort(col: SortCol) {
+    if (sortBy === col) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(col);
+      setSortDir("desc");
+    }
+  }
+
+  const filtersActive =
+    tab !== "all" ||
+    !!search ||
+    supplierFilter !== "all" ||
+    !!dateFrom ||
+    !!dateTo;
+
+  function clearFilters() {
+    setTab("all");
+    setSearch("");
+    setSupplierFilter("all");
+    setDateFrom("");
+    setDateTo("");
   }
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
-      <header>
-        <h1 className="text-xl font-semibold">採購訂單（PO）</h1>
-        <p className="text-sm text-zinc-500">
-          {groups === null
-            ? "載入中…"
-            : `共 ${groups.reduce((s, g) => s + g.pos.length, 0)} 張 PO，依採購單分組`}
-        </p>
-      </header>
-
-      <div>
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">採購訂單（PO）</h1>
+          <p className="text-sm text-zinc-500">
+            {pos === null ? "載入中…" : `共 ${pos.length} 張 PO`}
+          </p>
+        </div>
+        <Link
+          href="/purchase/requests"
+          className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800"
         >
-          <option value="">全部狀態</option>
-          {Object.entries(STATUS_LABEL).map(([v, l]) => (
-            <option key={v} value={v}>
-              {l}
-            </option>
-          ))}
-        </select>
-      </div>
+          ← 採購單
+        </Link>
+      </header>
 
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
@@ -368,171 +470,269 @@ export default function PurchaseOrdersListPage() {
         </div>
       )}
 
-      {groups !== null && groups.length === 0 && (
-        <div className="rounded-md border border-zinc-200 bg-zinc-50 p-6 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
-          尚無採購訂單。請至「採購單」頁面建立後產生。
-        </div>
-      )}
+      {/* === 總覽 KPI cards === */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <KpiCard
+          label="待發送"
+          hint="草稿 PO,等發給供應商"
+          value={stats.draft}
+          accent="text-zinc-700 dark:text-zinc-200"
+          active={tab === "draft"}
+          onClick={() => setTab(tab === "draft" ? "all" : "draft")}
+        />
+        <KpiCard
+          label="待到貨"
+          hint="已發送 + 部分到貨"
+          value={stats.sent + stats.partially_received}
+          accent="text-blue-700 dark:text-blue-400"
+          active={tab === "sent" || tab === "partially_received"}
+          onClick={() =>
+            setTab(tab === "sent" ? "partially_received" : "sent")
+          }
+        />
+        <KpiCard
+          label="⚠ 已逾期"
+          hint="預計到貨日已過、尚未全收"
+          value={stats.overdue}
+          accent="text-red-700 dark:text-red-400"
+        />
+        <KpiCard
+          label="待到貨金額"
+          hint="已發送 + 部分到貨 的金額合計"
+          value={`$${stats.pendingAmount.toLocaleString()}`}
+          accent="text-emerald-700 dark:text-emerald-400"
+        />
+      </div>
 
-      <div className="flex flex-col gap-3">
-        {groups?.map((g) => {
-          const key = g.pr_id === null ? "null" : String(g.pr_id);
-          const open = openPRs.has(key);
-          const totalAmount = g.pos.reduce((s, p) => s + p.total, 0);
+      {/* === 狀態 tabs === */}
+      <div className="flex flex-wrap gap-1 border-b border-zinc-200 dark:border-zinc-800">
+        {STATUS_TAB_ORDER.map((s) => {
+          const label = s === "all" ? "全部" : STATUS_LABEL[s];
+          const count = tabCounts[s];
+          const active = tab === s;
           return (
-            <div
-              key={key}
-              className="overflow-hidden rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
+            <SpinButton
+              key={s}
+              onClick={() => setTab(s)}
+              className={`-mb-px border-b-2 px-3 py-2 text-sm ${
+                active
+                  ? "border-blue-600 font-semibold text-blue-700 dark:text-blue-300"
+                  : "border-transparent text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+              }`}
             >
-              <div className="flex flex-col gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900">
-              <SpinButton
-                onClick={() => togglePR(key)}
-                className="-mx-4 -my-3 flex w-[calc(100%+2rem)] items-center justify-between gap-3 px-4 py-3 text-left hover:bg-zinc-100 dark:hover:bg-zinc-800"
-              >
-                <div className="flex items-center gap-3">
-                  <span className="text-zinc-400">{open ? "▼" : "▶"}</span>
-                  <div>
-                    <div className="font-semibold">
-                      {g.pr_id !== null ? (
-                        <>
-                          採購單 <span className="font-mono">{g.pr_no}</span>
-                          {g.pr_source_close_date && (
-                            <span className="ml-2 text-xs text-zinc-500">
-                              結單日 {g.pr_source_close_date}
-                            </span>
-                          )}
-                          {g.pr_status && (
-                            <span className="ml-2 inline-block rounded bg-zinc-100 px-2 py-0.5 text-xs font-normal dark:bg-zinc-800">
-                              {PR_STATUS_LABEL[g.pr_status] ?? g.pr_status}
-                            </span>
-                          )}
-                        </>
-                      ) : (
-                        <span className="text-zinc-500">手動建立 / 無來源採購單</span>
-                      )}
-                    </div>
-                    <div className="text-xs text-zinc-500">
-                      {g.pos.length} 張採購訂單 · 總金額 ${totalAmount.toFixed(0)}
-                    </div>
-                  </div>
-                </div>
-                {g.pr_id !== null && (
-                  <Link
-                    href={`/purchase/requests/edit?id=${g.pr_id}`}
-                    onClick={(e) => e.stopPropagation()}
-                    className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-white dark:border-zinc-700 dark:hover:bg-zinc-700"
-                  >
-                    查看採購單 →
-                  </Link>
-                )}
-              </SpinButton>
-              {g.pr_id !== null && g.pr_status && (
-                <div className="px-1">
-                  <PrPipelineStepper
-                    status={g.pr_status}
-                    reviewStatus={g.pr_review_status ?? "approved"}
-                    compact
-                    poSummary={(() => {
-                      const p = progressById.get(g.pr_id);
-                      return p
-                        ? { total: p.po_total, sent: p.po_sent, receivedFully: p.po_received_fully }
-                        : { total: g.pos.length, sent: 0, receivedFully: 0 };
-                    })()}
-                    transferSummary={(() => {
-                      const p = progressById.get(g.pr_id);
-                      return p
-                        ? { total: p.transfer_total, shipped: p.transfer_shipped, delivered: p.transfer_delivered }
-                        : undefined;
-                    })()}
-                    campaignFinalized={progressById.get(g.pr_id)?.all_campaigns_finalized}
-                    events={{
-                      create: { href: `/purchase/requests/edit?id=${g.pr_id}` },
-                      draft: { href: `/purchase/requests/edit?id=${g.pr_id}` },
-                      submit: { href: `/purchase/requests/edit?id=${g.pr_id}` },
-                      review: { href: `/purchase/requests/edit?id=${g.pr_id}` },
-                    }}
-                  />
-                </div>
-              )}
-              </div>
-
-              {open && (
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
-                    <thead className="bg-white dark:bg-zinc-900">
-                      <tr>
-                        <Th>單號</Th>
-                        <Th>供應商</Th>
-                        <Th>狀態</Th>
-                        <Th className="text-right">金額</Th>
-                        <Th>預計到貨</Th>
-                        <Th>發送</Th>
-                        <Th className="text-right">更新</Th>
-                        <Th></Th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-                      {g.pos.map((p) => (
-                        <tr key={p.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
-                          <Td className="font-mono">
-                            <Link
-                              href={`/purchase/orders/edit?id=${p.id}`}
-                              className="hover:underline"
-                            >
-                              {p.po_no}
-                            </Link>
-                          </Td>
-                          <Td>{p.supplier_name ?? "—"}</Td>
-                          <Td>
-                            <POStatusBadge status={p.status} />
-                          </Td>
-                          <Td className="text-right font-mono">${p.total.toFixed(0)}</Td>
-                          <Td className="text-xs">{p.expected_date ?? "—"}</Td>
-                          <Td className="text-xs text-zinc-500">
-                            {p.sent_at ? (
-                              <>
-                                <div>{new Date(p.sent_at).toLocaleString("zh-TW")}</div>
-                                {p.sent_channel && (
-                                  <div className="text-zinc-400">via {p.sent_channel}</div>
-                                )}
-                              </>
-                            ) : (
-                              "—"
-                            )}
-                          </Td>
-                          <Td className="text-right text-xs text-zinc-500">
-                            {new Date(p.updated_at).toLocaleString("zh-TW")}
-                          </Td>
-                          <Td className="text-right">
-                            {p.status === "draft" && (
-                              <SpinButton
-                                type="button"
-                                disabled={sendBusyId === p.id}
-                                onClick={() => openSendModal(p)}
-                                className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
-                              >
-                                {sendBusyId === p.id ? "載入中…" : "📤 發送"}
-                              </SpinButton>
-                            )}
-                            {(p.status === "sent" || p.status === "partially_received") && (
-                              <Link
-                                href={`/purchase/orders/receive?po=${p.id}`}
-                                className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-700"
-                              >
-                                進貨
-                              </Link>
-                            )}
-                          </Td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
+              {label}
+              <span className="ml-1 text-xs text-zinc-400">{count}</span>
+            </SpinButton>
           );
         })}
       </div>
+
+      {/* === 篩選 / 搜尋工具列 === */}
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="🔍 搜尋 單號 / 供應商 / PR"
+          className="flex-1 min-w-[180px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+        />
+        <select
+          value={String(supplierFilter)}
+          onChange={(e) =>
+            setSupplierFilter(
+              e.target.value === "all" ? "all" : Number(e.target.value),
+            )
+          }
+          className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+        >
+          <option value="all">全部供應商</option>
+          {supplierOptions.map(([id, name]) => (
+            <option key={id} value={id}>
+              {name}
+            </option>
+          ))}
+        </select>
+        <input
+          type="date"
+          value={dateFrom}
+          onChange={(e) => setDateFrom(e.target.value)}
+          className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+          title="建立起日"
+        />
+        <span className="text-xs text-zinc-400">~</span>
+        <input
+          type="date"
+          value={dateTo}
+          onChange={(e) => setDateTo(e.target.value)}
+          className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+          title="建立迄日"
+        />
+        <label className="flex items-center gap-1 text-xs text-zinc-500">
+          <span>分組</span>
+          <select
+            value={groupBy}
+            onChange={(e) => setGroupBy(e.target.value as typeof groupBy)}
+            className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+          >
+            <option value="none">不分組</option>
+            <option value="pr">依採購單</option>
+            <option value="supplier">依供應商</option>
+          </select>
+        </label>
+        {filtersActive && (
+          <SpinButton
+            onClick={clearFilters}
+            className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            清除篩選
+          </SpinButton>
+        )}
+        <span className="ml-auto text-xs text-zinc-500">
+          {pos === null
+            ? "載入中…"
+            : `符合 ${total} 筆${total > PAGE_SIZE ? ` · 第 ${page}/${totalPages} 頁` : ""}`}
+        </span>
+      </div>
+
+      {/* === 主表格 === */}
+      <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+        <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+          <thead className="bg-zinc-50 dark:bg-zinc-900">
+            <tr>
+              <SortTh
+                col="po_no"
+                label="單號"
+                sortBy={sortBy}
+                sortDir={sortDir}
+                onClick={setSort}
+              />
+              <SortTh
+                col="supplier"
+                label="供應商"
+                sortBy={sortBy}
+                sortDir={sortDir}
+                onClick={setSort}
+              />
+              <Th>來源 PR</Th>
+              <Th>狀態</Th>
+              <SortTh
+                col="total"
+                label="金額"
+                sortBy={sortBy}
+                sortDir={sortDir}
+                onClick={setSort}
+                align="right"
+              />
+              <SortTh
+                col="expected_date"
+                label="預計到貨"
+                sortBy={sortBy}
+                sortDir={sortDir}
+                onClick={setSort}
+              />
+              <Th>發送</Th>
+              <SortTh
+                col="updated_at"
+                label="更新"
+                sortBy={sortBy}
+                sortDir={sortDir}
+                onClick={setSort}
+                align="right"
+              />
+              <Th align="right">動作</Th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
+            {pos === null ? (
+              <tr>
+                <td colSpan={9} className="p-6 text-center text-zinc-500">
+                  載入中…
+                </td>
+              </tr>
+            ) : pageRows.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="p-6 text-center text-zinc-500">
+                  {filtersActive ? "沒有符合條件的 PO" : "尚無採購訂單"}
+                </td>
+              </tr>
+            ) : grouped ? (
+              grouped.flatMap((g) => [
+                <tr
+                  key={`g-${g.key}`}
+                  className="bg-zinc-50 dark:bg-zinc-950"
+                >
+                  <td
+                    colSpan={9}
+                    className="px-4 py-2 text-xs font-semibold text-zinc-700 dark:text-zinc-200"
+                  >
+                    📂 {g.label}
+                    <span className="ml-2 font-normal text-zinc-500">
+                      ({g.rows.length})
+                    </span>
+                  </td>
+                </tr>,
+                ...g.rows.map((p) => (
+                  <PORow
+                    key={p.id}
+                    po={p}
+                    onSend={openSendModal}
+                    sendBusyId={sendBusyId}
+                  />
+                )),
+              ])
+            ) : (
+              pageRows.map((p) => (
+                <PORow
+                  key={p.id}
+                  po={p}
+                  onSend={openSendModal}
+                  sendBusyId={sendBusyId}
+                />
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* === 分頁 === */}
+      {total > PAGE_SIZE && (
+        <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
+          <span className="text-xs text-zinc-500">
+            共 {total} 筆 · 顯示 {(page - 1) * PAGE_SIZE + 1} -{" "}
+            {Math.min(page * PAGE_SIZE, total)}
+          </span>
+          <SpinButton
+            onClick={() => setPage(1)}
+            disabled={page === 1}
+            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            « 第一頁
+          </SpinButton>
+          <SpinButton
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page === 1}
+            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            ‹ 上頁
+          </SpinButton>
+          <span className="text-xs text-zinc-500">
+            {page} / {totalPages}
+          </span>
+          <SpinButton
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page === totalPages}
+            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            下頁 ›
+          </SpinButton>
+          <SpinButton
+            onClick={() => setPage(totalPages)}
+            disabled={page === totalPages}
+            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            最末頁 »
+          </SpinButton>
+        </div>
+      )}
 
       {sendCtx && (
         <SendPOModal
@@ -553,30 +753,212 @@ export default function PurchaseOrdersListPage() {
   );
 }
 
-function Th({ children, className = "" }: { children?: React.ReactNode; className?: string }) {
+function KpiCard({
+  label,
+  hint,
+  value,
+  accent,
+  active,
+  onClick,
+}: {
+  label: string;
+  hint?: string;
+  value: number | string;
+  accent: string;
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  const Wrapper = onClick ? "button" : "div";
+  return (
+    <Wrapper
+      type={onClick ? "button" : undefined}
+      onClick={onClick}
+      title={hint}
+      className={`rounded-md border p-3 text-left transition ${
+        active
+          ? "border-blue-500 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/40"
+          : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
+      } ${onClick ? "hover:border-blue-400 hover:bg-zinc-50 dark:hover:bg-zinc-800/60" : ""}`}
+    >
+      <div className="text-xs text-zinc-500">{label}</div>
+      <div className={`mt-0.5 text-2xl font-semibold ${accent}`}>{value}</div>
+      {hint && (
+        <div className="mt-0.5 text-[10px] text-zinc-400">{hint}</div>
+      )}
+    </Wrapper>
+  );
+}
+
+function PORow({
+  po,
+  onSend,
+  sendBusyId,
+}: {
+  po: PO;
+  onSend: (p: PO) => void;
+  sendBusyId: number | null;
+}) {
+  const overdue =
+    (po.status === "sent" || po.status === "partially_received") &&
+    !!po.expected_date &&
+    po.expected_date < new Date().toISOString().slice(0, 10);
+  return (
+    <tr className="hover:bg-zinc-50 dark:hover:bg-zinc-900/60">
+      <Td className="font-mono">
+        <Link
+          href={`/purchase/orders/edit?id=${po.id}`}
+          className="text-blue-600 hover:underline dark:text-blue-400"
+        >
+          {po.po_no}
+        </Link>
+      </Td>
+      <Td>{po.supplier_name ?? "—"}</Td>
+      <Td>
+        {po.pr_id ? (
+          <Link
+            href={`/purchase/requests/edit?id=${po.pr_id}`}
+            className="font-mono text-xs text-blue-600 hover:underline dark:text-blue-400"
+          >
+            {po.pr_no ?? `PR#${po.pr_id}`}
+          </Link>
+        ) : (
+          <span className="text-xs text-zinc-400">手動</span>
+        )}
+      </Td>
+      <Td>
+        <span
+          className={`inline-flex rounded px-2 py-0.5 text-xs ${STATUS_BADGE[po.status]}`}
+        >
+          {STATUS_LABEL[po.status]}
+        </span>
+      </Td>
+      <Td className="text-right font-mono">${po.total.toLocaleString()}</Td>
+      <Td className="text-xs">
+        {po.expected_date ? (
+          <span
+            className={
+              overdue ? "font-semibold text-red-600 dark:text-red-400" : ""
+            }
+          >
+            {po.expected_date}
+            {overdue && <span className="ml-1">⚠</span>}
+          </span>
+        ) : (
+          "—"
+        )}
+      </Td>
+      <Td className="text-xs text-zinc-500">
+        {po.sent_at ? (
+          <>
+            <div>
+              {new Date(po.sent_at).toLocaleDateString("zh-TW", {
+                month: "numeric",
+                day: "numeric",
+              })}
+            </div>
+            {po.sent_channel && (
+              <div className="text-zinc-400">via {po.sent_channel}</div>
+            )}
+          </>
+        ) : (
+          "—"
+        )}
+      </Td>
+      <Td className="text-right text-xs text-zinc-500">
+        {new Date(po.updated_at).toLocaleDateString("zh-TW", {
+          month: "numeric",
+          day: "numeric",
+        })}
+      </Td>
+      <Td className="text-right">
+        <div className="flex justify-end gap-1">
+          {po.status === "draft" && (
+            <RowAction
+              variant="success"
+              disabled={sendBusyId === po.id}
+              onClick={() => onSend(po)}
+            >
+              {sendBusyId === po.id ? "載入…" : "📤 發送"}
+            </RowAction>
+          )}
+          {(po.status === "sent" || po.status === "partially_received") && (
+            <Link
+              href={`/purchase/orders/receive?po=${po.id}`}
+              className="rounded border border-emerald-400 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 dark:hover:bg-emerald-900"
+            >
+              進貨
+            </Link>
+          )}
+        </div>
+      </Td>
+    </tr>
+  );
+}
+
+function Th({
+  children,
+  align = "left",
+}: {
+  children?: React.ReactNode;
+  align?: "left" | "right" | "center";
+}) {
+  const cls =
+    align === "right"
+      ? "text-right"
+      : align === "center"
+        ? "text-center"
+        : "text-left";
   return (
     <th
-      className={`px-4 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 ${className}`}
+      className={`px-4 py-2 text-xs font-medium uppercase tracking-wide text-zinc-500 ${cls}`}
     >
       {children}
     </th>
   );
 }
-function Td({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <td className={`px-4 py-3 ${className}`}>{children}</td>;
-}
-function POStatusBadge({ status }: { status: POStatus }) {
-  const cls: Record<POStatus, string> = {
-    draft: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
-    sent: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
-    partially_received: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
-    fully_received: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
-    closed: "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300",
-    cancelled: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
-  };
+
+function SortTh({
+  col,
+  label,
+  sortBy,
+  sortDir,
+  onClick,
+  align = "left",
+}: {
+  col: SortCol;
+  label: string;
+  sortBy: SortCol;
+  sortDir: "asc" | "desc";
+  onClick: (col: SortCol) => void;
+  align?: "left" | "right";
+}) {
+  const active = sortBy === col;
+  const arrow = active ? (sortDir === "asc" ? "▲" : "▼") : "";
+  const cls = align === "right" ? "text-right" : "text-left";
   return (
-    <span className={`inline-block rounded px-2 py-0.5 text-xs ${cls[status]}`}>
-      {STATUS_LABEL[status]}
-    </span>
+    <th
+      className={`px-4 py-2 text-xs font-medium uppercase tracking-wide text-zinc-500 ${cls}`}
+    >
+      <button
+        type="button"
+        onClick={() => onClick(col)}
+        className={`inline-flex items-center gap-1 hover:text-zinc-900 dark:hover:text-zinc-100 ${
+          active ? "text-zinc-900 dark:text-zinc-100" : ""
+        }`}
+      >
+        {label}
+        {arrow && <span className="text-[10px]">{arrow}</span>}
+      </button>
+    </th>
   );
+}
+
+function Td({
+  children,
+  className = "",
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return <td className={`px-4 py-3 ${className}`}>{children}</td>;
 }

@@ -3,6 +3,16 @@
 
 type Rule = { pattern: RegExp; render: (m: RegExpMatchArray) => string };
 
+const TRANSFER_STATUS_ZH: Record<string, string> = {
+  draft: "草稿",
+  confirmed: "已確認",
+  shipped: "已出貨",
+  received: "已收到",
+  closed: "已結案",
+  cancelled: "已取消",
+};
+const tStatus = (s: string) => TRANSFER_STATUS_ZH[s] ?? s;
+
 const RULES: Rule[] = [
   {
     // 新版（含 SKU）：'Insufficient stock for SKU <code> (<name>): available=X, required=Y'
@@ -91,6 +101,77 @@ const RULES: Rule[] = [
   {
     pattern: /transfer \d+ is in status (\w+), expected shipped/i,
     render: (m) => `transfer 目前是「${m[1]}」狀態，預期應為「shipped」。`,
+  },
+  // ===== Transfer 批次 RPC 錯誤(distribute / arrive_at_hq / batch_delete) =====
+  {
+    pattern: /^p_transfer_ids is empty$/i,
+    render: () => "請先選擇至少一筆要處理的單據。",
+  },
+  {
+    pattern: /^not found$/i,
+    render: () => "找不到此調撥單。",
+  },
+  {
+    pattern: /^status=(\w+),\s*expected draft\/confirmed$/i,
+    render: (m) => `狀態為「${tStatus(m[1])}」,只有 待審核(草稿 / 已確認) 可以配送。`,
+  },
+  {
+    pattern: /^status=(\w+),\s*only draft can be deleted$/i,
+    render: (m) => `狀態為「${tStatus(m[1])}」,只有 草稿 可以刪除。`,
+  },
+  // FK 違反 — 刪除 transfer 時被其他 table 引用
+  {
+    pattern: /update or delete on table "transfers" violates foreign key constraint "[^"]+" on table "([^"]+)"/i,
+    render: (m) => {
+      const tableMap: Record<string, string> = {
+        picking_wave_items: "撿貨單明細",
+        customer_order_items: "客戶訂單",
+        member_aid_settlement: "會員互助結算",
+        restock_requests: "補貨申請",
+        store_monthly_settlement: "分店月結算",
+        stock_movements: "庫存異動",
+        transfer_items: "調撥明細",
+        transfer_relationships: "調撥串接",
+      };
+      const zh = tableMap[m[1]] ?? m[1];
+      return `無法刪除:此調撥單已被「${zh}」引用,請先撤回或解除關聯後再刪。`;
+    },
+  },
+  {
+    pattern: /^status=(\w+),\s*expected shipped$/i,
+    render: (m) => `狀態為「${tStatus(m[1])}」,只有 已出貨 可以到倉。`,
+  },
+  {
+    pattern: /^source_location\s+(\d+)\s+is not HQ\s+(\d+)$/i,
+    render: (m) => `來源庫位 #${m[1]} 不是總倉(#${m[2]}),不可批次配送。`,
+  },
+  // ===== rpc_register_damage =====
+  {
+    pattern: /damage_qty must be > 0/i,
+    render: () => "損壞數量必須大於 0。",
+  },
+  {
+    pattern: /transfer_item\s+(\d+)\s+not found/i,
+    render: (m) => `找不到調撥明細 #${m[1]}。`,
+  },
+  {
+    pattern: /transfer\s+(\d+)\s+status=(\w+),\s*only received\/closed allows damage register/i,
+    render: (m) => `調撥單 #${m[1]} 狀態為「${tStatus(m[2])}」,只有 已收到 / 已結案 可登記損壞。`,
+  },
+  {
+    pattern: /damage_qty\s+([\d.]+)\s+exceeds remaining\s+\(qty_received\s+([\d.]+)\s+-\s+already_damaged\s+([\d.]+)\)/i,
+    render: (m) =>
+      `損壞數量 ${fmt(m[1])} 超過可登記量 ${fmt(Number(m[2]) - Number(m[3]) + "")}(已收 ${fmt(m[2])}、已登記損壞 ${fmt(m[3])})。`,
+  },
+  // ===== 撿貨單號碼衝突(同秒多筆提交時的 race) =====
+  {
+    pattern: /duplicate key value violates unique constraint "picking_waves_tenant_id_wave_code_key"/i,
+    render: () => "撿貨單號碼衝突（同時有多筆提交）。請稍候 1-2 秒後重試一次即可。",
+  },
+  // 通用 unique 衝突 fallback,把 raw error 中文化
+  {
+    pattern: /duplicate key value violates unique constraint "([^"]+)"/i,
+    render: (m) => `資料重複衝突(${m[1]})，請重試或聯繫工程師。`,
   },
 ];
 

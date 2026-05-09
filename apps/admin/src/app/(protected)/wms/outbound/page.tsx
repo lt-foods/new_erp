@@ -1,10 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import { translateRpcError } from "@/lib/rpcError";
 import { TransferReceiveModal, parseWaveId, type Wave } from "@/components/TransferReceiveModal";
 import { Modal } from "@/components/Modal";
+import { PickModal, WAVE_STATUS_LABEL, WAVE_STATUS_COLOR, type PickWave } from "@/components/PickModal";
 import SpinButton from "@/components/SpinButton";
 
 type Transfer = {
@@ -43,9 +46,10 @@ type Sku = {
 
 type Loc = { id: number; name: string };
 
-type TabKey = "pending" | "arrived" | "distributed" | "received" | "air" | "all";
+type TabKey = "picking" | "pending" | "arrived" | "distributed" | "received" | "air" | "all";
 
 const TAB_LABEL: Record<TabKey, string> = {
+  picking: "撿貨",
   pending: "待審核",
   arrived: "已到總倉",
   distributed: "已配送",
@@ -83,13 +87,15 @@ export default function HqDispatchPage() {
 function HqDispatchContent() {
   const searchParams = useSearchParams();
   const deepLinkId = searchParams.get("id");
+  const initialTab = (searchParams.get("tab") as TabKey | null) ?? "picking";
+  const deepLinkWave = searchParams.get("wave");
 
   const [transfers, setTransfers] = useState<Transfer[] | null>(null);
   const [items, setItems] = useState<Map<number, TransferItem[]>>(new Map());
   const [skus, setSkus] = useState<Map<number, Sku>>(new Map());
   const [locs, setLocs] = useState<Map<number, string>>(new Map());
   const [hqLoc, setHqLoc] = useState<number | null>(null);
-  const [tab, setTab] = useState<TabKey>("pending");
+  const [tab, setTab] = useState<TabKey>(initialTab);
   const [srcFilter, setSrcFilter] = useState<number | "all">("all");
   const [dstFilter, setDstFilter] = useState<number | "all">("all");
   const [searchSku, setSearchSku] = useState("");
@@ -101,6 +107,173 @@ function HqDispatchContent() {
   const [detailOpen, setDetailOpen] = useState<Transfer | null>(null);
   const [waves, setWaves] = useState<Map<number, Wave>>(new Map());
   const [editingNotes, setEditingNotes] = useState<Map<number, string>>(new Map());
+
+  // === 撿貨 tab 用:wave list + 編輯 modal + 直接派貨 ===
+  const [pickWaves, setPickWaves] = useState<PickWave[] | null>(null);
+  const [editingWave, setEditingWave] = useState<PickWave | null>(null);
+  const [dispatchingWaveId, setDispatchingWaveId] = useState<number | null>(null);
+
+  // 載入「未派貨」的 waves(draft / picking / picked) — 撿貨 tab 顯示用
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const sb = getSupabase();
+        const { data, error: e } = await sb
+          .from("picking_waves")
+          .select("id, wave_code, wave_date, status, store_count, item_count, total_qty, note, created_at, source_po_id")
+          .in("status", ["draft", "picking", "picked"])
+          .order("created_at", { ascending: false })
+          .limit(100);
+        if (e) throw new Error(e.message);
+        const waveRows = (data as Omit<PickWave, "expected_total" | "actual_total" | "source_po_no">[] | null) ?? [];
+
+        const poIds = Array.from(new Set(waveRows.map((w) => w.source_po_id).filter((x): x is number => x !== null)));
+        const poNoMap = new Map<number, string>();
+        if (poIds.length) {
+          const { data: poRows } = await sb
+            .from("purchase_orders")
+            .select("id, po_no")
+            .in("id", poIds);
+          for (const p of (poRows as { id: number; po_no: string }[] | null) ?? []) {
+            poNoMap.set(p.id, p.po_no);
+          }
+        }
+
+        const waveIds = waveRows.map((w) => w.id);
+        // item_count 用 distinct sku_id;wave_items 是 (store × sku) row
+        const totals = new Map<number, { expected: number; actual: number; skus: Set<number> }>();
+        if (waveIds.length > 0) {
+          const { data: itemRows } = await sb
+            .from("picking_wave_items")
+            .select("wave_id, sku_id, qty, picked_qty")
+            .in("wave_id", waveIds);
+          for (const r of (itemRows as { wave_id: number; sku_id: number; qty: number; picked_qty: number | null }[] | null) ?? []) {
+            const cur = totals.get(r.wave_id) ?? { expected: 0, actual: 0, skus: new Set<number>() };
+            cur.expected += Number(r.qty);
+            cur.actual += Number(r.picked_qty ?? r.qty);
+            cur.skus.add(r.sku_id);
+            totals.set(r.wave_id, cur);
+          }
+        }
+
+        if (cancelled) return;
+        const enriched: PickWave[] = waveRows.map((r) => {
+          const t = totals.get(r.id);
+          return {
+            ...r,
+            total_qty: Number(r.total_qty),
+            expected_total: t?.expected ?? 0,
+            actual_total: t?.actual ?? 0,
+            item_count: t?.skus.size ?? r.item_count,
+            source_po_no: r.source_po_id ? (poNoMap.get(r.source_po_id) ?? null) : null,
+          };
+        });
+        setPickWaves(enriched);
+      } catch (e) {
+        if (!cancelled) setError(translateRpcError(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadTick]);
+
+  // Deep link ?wave=N — 自動開 PickModal
+  useEffect(() => {
+    if (!deepLinkWave || !pickWaves || editingWave) return;
+    const id = Number(deepLinkWave);
+    const target = pickWaves.find((w) => w.id === id);
+    if (target) {
+      setTab("picking");
+      setEditingWave(target);
+    }
+  }, [deepLinkWave, pickWaves]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 直接派貨 — 不開 modal,自動 confirm_picked + generate_transfer
+  async function directDispatchWave(w: PickWave) {
+    if (!hqLoc) {
+      setError("找不到總倉 location,請確認倉庫設定");
+      return;
+    }
+    const needsConfirm = w.status !== "picked";
+    const diff = w.actual_total - w.expected_total;
+    const diffMsg = diff === 0
+      ? ""
+      : diff > 0
+        ? `\n⚠ 實分 多 ${diff}(超撿)`
+        : `\n⚠ 實分 少 ${-diff}(短缺,部分店家拿不到應有量)`;
+    const msg =
+      `確認派貨出倉 ${w.wave_code}?\n` +
+      `${w.store_count} 間分店 · 應發 ${w.expected_total} / 實分 ${w.actual_total}${diffMsg}\n\n` +
+      (needsConfirm
+        ? "目前狀態為「" + (WAVE_STATUS_LABEL[w.status] ?? w.status) + "」,將自動 確認撿貨完成 + 派貨出倉。"
+        : "將從總倉建立 transfer 並出庫。");
+    if (!confirm(msg)) return;
+    setDispatchingWaveId(w.id);
+    setError(null);
+    try {
+      const sb = getSupabase();
+      const { data: userRes } = await sb.auth.getUser();
+      const operator = userRes?.user?.id;
+      if (!operator) throw new Error("未登入");
+
+      if (needsConfirm) {
+        const { error: e1 } = await sb.rpc("rpc_confirm_picked", {
+          p_wave_id: w.id,
+          p_operator: operator,
+        });
+        if (e1) throw new Error(e1.message);
+      }
+      const { error: e2 } = await sb.rpc("generate_transfer_from_wave", {
+        p_wave_id: w.id,
+        p_hq_location_id: hqLoc,
+        p_operator: operator,
+      });
+      if (e2) throw new Error(e2.message);
+      setReloadTick((t) => t + 1);
+    } catch (e) {
+      setError(translateRpcError(e));
+    } finally {
+      setDispatchingWaveId(null);
+    }
+  }
+
+  async function cancelWave(w: PickWave) {
+    const reason = prompt(`取消撿貨單 ${w.wave_code} — 取消原因(選填,會留 audit log):`);
+    if (reason === null) return;
+    try {
+      const sb = getSupabase();
+      const { data: userRes } = await sb.auth.getUser();
+      const operator = userRes?.user?.id;
+      if (!operator) throw new Error("未登入");
+      const { error: e } = await sb.rpc("rpc_cancel_picking_wave", {
+        p_wave_id: w.id,
+        p_operator: operator,
+        p_reason: reason.trim() || null,
+      });
+      if (e) throw new Error(translateRpcError(e));
+      setReloadTick((t) => t + 1);
+    } catch (e) {
+      setError(translateRpcError(e));
+    }
+  }
+
+  // 撿貨 wave 依日期分組(顯示用)
+  const groupedWaves = useMemo(() => {
+    const map = new Map<string, PickWave[]>();
+    for (const w of pickWaves ?? []) {
+      const arr = map.get(w.wave_date) ?? [];
+      arr.push(w);
+      map.set(w.wave_date, arr);
+    }
+    return Array.from(map.entries())
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([date, ws]) => ({
+        date,
+        waves: ws.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
+      }));
+  }, [pickWaves]);
 
   // Deep link:?id=X → 載入完自動開 detail modal
   useEffect(() => {
@@ -226,6 +399,7 @@ function HqDispatchContent() {
   // Tab counts
   const tabCounts = useMemo(() => {
     const c: Record<TabKey, number> = {
+      picking: pickWaves?.length ?? 0,
       pending: 0,
       arrived: 0,
       distributed: 0,
@@ -239,7 +413,7 @@ function HqDispatchContent() {
       if (k) c[k] += 1;
     }
     return c;
-  }, [transfers, hqLoc]);
+  }, [transfers, hqLoc, pickWaves]);
 
   // Filtered
   const filtered = useMemo(() => {
@@ -303,16 +477,16 @@ function HqDispatchContent() {
         p_hq_location_id: hqLoc,
         p_operator: (await sb.auth.getUser()).data.user?.id,
       });
-      if (e) throw new Error(e.message);
+      if (e) throw new Error(translateRpcError(e));
       const res = data as { processed: number; succeeded: number[]; failed: { id: number; reason: string }[] };
       alert(
         `批次到倉：${res.succeeded.length} 成功 / ${res.failed.length} 失敗\n` +
-          (res.failed.length ? res.failed.map((f) => `  #${f.id}: ${f.reason}`).join("\n") : ""),
+          (res.failed.length ? res.failed.map((f) => `  #${f.id}: ${translateRpcError(f.reason)}`).join("\n") : ""),
       );
       setSelected(new Set());
       setReloadTick((n) => n + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(translateRpcError(e));
     } finally {
       setBusy(false);
     }
@@ -329,16 +503,16 @@ function HqDispatchContent() {
         p_hq_location_id: hqLoc,
         p_operator: (await sb.auth.getUser()).data.user?.id,
       });
-      if (e) throw new Error(e.message);
+      if (e) throw new Error(translateRpcError(e));
       const res = data as { processed: number; succeeded: number[]; failed: { id: number; reason: string }[] };
       alert(
         `批次配送：${res.succeeded.length} 成功 / ${res.failed.length} 失敗\n` +
-          (res.failed.length ? res.failed.map((f) => `  #${f.id}: ${f.reason}`).join("\n") : ""),
+          (res.failed.length ? res.failed.map((f) => `  #${f.id}: ${translateRpcError(f.reason)}`).join("\n") : ""),
       );
       setSelected(new Set());
       setReloadTick((n) => n + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(translateRpcError(e));
     } finally {
       setBusy(false);
     }
@@ -358,12 +532,12 @@ function HqDispatchContent() {
       const res = data as { processed: number; deleted: number[]; failed: { id: number; reason: string }[] };
       alert(
         `批次刪除：${res.deleted.length} 成功 / ${res.failed.length} 失敗\n` +
-          (res.failed.length ? res.failed.map((f) => `  #${f.id}: ${f.reason}`).join("\n") : ""),
+          (res.failed.length ? res.failed.map((f) => `  #${f.id}: ${translateRpcError(f.reason)}`).join("\n") : ""),
       );
       setSelected(new Set());
       setReloadTick((n) => n + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(translateRpcError(e));
     } finally {
       setBusy(false);
     }
@@ -426,6 +600,147 @@ function HqDispatchContent() {
         </div>
       )}
 
+      {/* === 撿貨 tab — 派貨工作台拆出來、未派貨的 wave === */}
+      {tab === "picking" && (
+        <div className="flex flex-col gap-3">
+          {pickWaves === null ? (
+            <div className="rounded-md border border-zinc-200 bg-white p-6 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
+              載入中…
+            </div>
+          ) : pickWaves.length === 0 ? (
+            <div className="rounded-md border border-zinc-200 bg-white p-6 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
+              目前沒有待派貨的撿貨單。請至{" "}
+              <Link href="/wms/picking" className="text-blue-600 hover:underline dark:text-blue-400">
+                派貨工作台
+              </Link>{" "}
+              拆單。
+            </div>
+          ) : (
+            groupedWaves.map((g) => (
+              <section
+                key={g.date}
+                className="rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
+              >
+                <div className="flex items-baseline justify-between border-b border-zinc-200 bg-zinc-50 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-base">📅</span>
+                    <span className="font-semibold">配送日 {g.date}</span>
+                    <span className="text-xs text-zinc-500">
+                      {g.waves.length} 張撿貨單
+                    </span>
+                  </div>
+                  <Link
+                    href={`/picking/print-sign?date=${g.date}`}
+                    target="_blank"
+                    className="rounded-md border border-blue-300 bg-blue-50 px-2 py-1 text-xs text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300 dark:hover:bg-blue-900"
+                  >
+                    📄 列印分店簽收單
+                  </Link>
+                </div>
+                <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                  {g.waves.map((w) => {
+                    const diff = w.actual_total - w.expected_total;
+                    const completionPct = w.expected_total > 0
+                      ? Math.round((w.actual_total / w.expected_total) * 100)
+                      : 0;
+                    return (
+                      <li
+                        key={w.id}
+                        className="flex flex-wrap items-start justify-between gap-3 px-3 py-3 hover:bg-zinc-50 dark:hover:bg-zinc-950"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-wrap items-baseline gap-2">
+                            <span className="font-mono text-sm font-semibold">
+                              {w.wave_code}
+                            </span>
+                            <span
+                              className={`inline-flex rounded px-2 py-0.5 text-[11px] font-medium ${WAVE_STATUS_COLOR[w.status] ?? ""}`}
+                            >
+                              {WAVE_STATUS_LABEL[w.status] ?? w.status}
+                            </span>
+                            {w.source_po_no && (
+                              <span className="font-mono text-[11px] text-zinc-500">
+                                ← {w.source_po_no}
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-600 dark:text-zinc-300">
+                            <span>
+                              {w.item_count} 品項 / {w.store_count} 店
+                            </span>
+                            <span>
+                              應發 <span className="font-mono font-semibold">{w.expected_total}</span>
+                            </span>
+                            <span>
+                              實分 <span className="font-mono font-semibold">{w.actual_total}</span>
+                            </span>
+                            <span
+                              className={`font-medium ${
+                                diff === 0
+                                  ? "text-emerald-600 dark:text-emerald-400"
+                                  : diff > 0
+                                    ? "text-purple-600 dark:text-purple-400"
+                                    : "text-rose-600 dark:text-rose-400"
+                              }`}
+                            >
+                              {diff === 0 ? "✓ 數量正確" : diff > 0 ? `+${diff}` : `${diff}`}
+                            </span>
+                            {w.expected_total > 0 && (
+                              <span className="text-zinc-500">完成 {completionPct}%</span>
+                            )}
+                            <span className="text-zinc-400">
+                              建單{" "}
+                              {new Date(w.created_at).toLocaleString("zh-TW", {
+                                dateStyle: "short",
+                                timeStyle: "short",
+                              })}
+                            </span>
+                          </div>
+                          {w.note && (
+                            <div className="mt-1 text-[11px] text-zinc-500">📝 {w.note}</div>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <SpinButton
+                            onClick={() => directDispatchWave(w)}
+                            disabled={dispatchingWaveId === w.id || hqLoc === null}
+                            className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                            title={
+                              w.status === "picked"
+                                ? "建立 transfer 並從總倉出庫"
+                                : "自動 確認撿貨完成 + 派貨出倉"
+                            }
+                          >
+                            {dispatchingWaveId === w.id ? "派貨中…" : "🚚 派貨出倉"}
+                          </SpinButton>
+                          <SpinButton
+                            onClick={() => setEditingWave(w)}
+                            className="rounded-md border border-zinc-300 px-3 py-1 text-xs text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                            title="開啟明細修正撿貨數量"
+                          >
+                            ✎ 修正數量
+                          </SpinButton>
+                          <SpinButton
+                            onClick={() => cancelWave(w)}
+                            title="軟取消(留 audit log)"
+                            className="rounded-md border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-950"
+                          >
+                            取消
+                          </SpinButton>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* === Transfer tabs (其他 tab) === */}
+      {tab !== "picking" && (
+      <>
       {/* Filters + batch buttons */}
       <div className="flex flex-wrap items-end gap-3 rounded-md border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
         <FilterSelect
@@ -617,6 +932,8 @@ function HqDispatchContent() {
           </tbody>
         </table>
       </div>
+      </>
+      )}
 
       {damageOpen && (
         <DamageModal
@@ -644,6 +961,20 @@ function HqDispatchContent() {
           onSubmitted={() => {
             setDetailOpen(null);
             setReloadTick((n) => n + 1);
+          }}
+        />
+      )}
+
+      {editingWave && (
+        <PickModal
+          wave={editingWave}
+          onClose={() => {
+            setEditingWave(null);
+            setReloadTick((t) => t + 1);
+          }}
+          onSubmitted={() => {
+            setEditingWave(null);
+            setReloadTick((t) => t + 1);
           }}
         />
       )}
@@ -723,10 +1054,10 @@ function DamageModal({
         p_notes: notes || null,
         p_operator: (await sb.auth.getUser()).data.user?.id,
       });
-      if (e) throw new Error(e.message);
+      if (e) throw new Error(translateRpcError(e));
       onSubmitted();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(translateRpcError(e));
     } finally {
       setBusy(false);
     }

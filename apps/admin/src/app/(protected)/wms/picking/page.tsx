@@ -244,6 +244,24 @@ export default function PickingWorkstationPage() {
       return next;
     });
   }
+  // 受限版本:同 SKU 已分配總和不可超過 totalAvailable(即「可分配」上限)
+  function setAllocCapped(skuId: number, storeId: number, requested: number, totalAvailable: number) {
+    setAllocs((prev) => {
+      const k: AllocKey = `${skuId}:${storeId}`;
+      const cur = prev.get(k) ?? 0;
+      let sum = 0;
+      const prefix = `${skuId}:`;
+      for (const [key, val] of prev) {
+        if (key.startsWith(prefix)) sum += val;
+      }
+      const headroom = Math.max(0, totalAvailable - sum); // 還能再加多少
+      const maxAllowed = cur + headroom;                  // 此格的最大允許值
+      const capped = Math.max(0, Math.min(requested, maxAllowed));
+      const next = new Map(prev);
+      next.set(k, capped);
+      return next;
+    });
+  }
   function getAlloc(skuId: number, storeId: number): number {
     return allocs.get(`${skuId}:${storeId}`) ?? 0;
   }
@@ -251,6 +269,56 @@ export default function PickingWorkstationPage() {
     let sum = 0;
     for (const st of allStores) sum += getAlloc(skuRow.sku_id, st.store_id);
     return sum;
+  }
+  // 「⚖ 平均」自動分配:把 totalAvailable 平均分到「需求 > 0」的店,cap 在各店 demand。
+  // 若有店 demand 不足分到的份額,剩餘量會在下一輪重新平均。
+  function autoDistribute(sku: SkuRow) {
+    const stores = allStores;
+    let pool = sku.totalAvailable;
+    const give = new Map<number, number>();
+    for (const s of stores) give.set(s.store_id, 0);
+    for (let iter = 0; iter < 10 && pool > 0; iter += 1) {
+      const eligible = stores.filter((s) => {
+        const d = sku.storeDemand.get(s.store_id) ?? 0;
+        const cur = give.get(s.store_id) ?? 0;
+        return cur < d;
+      });
+      if (eligible.length === 0) break;
+      const base = Math.floor(pool / eligible.length);
+      if (base === 0) {
+        // pool < eligible 數量,依 demand 大小排序給 +1
+        const sorted = [...eligible].sort(
+          (a, b) =>
+            (sku.storeDemand.get(b.store_id) ?? 0) -
+            (sku.storeDemand.get(a.store_id) ?? 0),
+        );
+        for (let i = 0; i < pool && i < sorted.length; i += 1) {
+          const s = sorted[i];
+          const d = sku.storeDemand.get(s.store_id) ?? 0;
+          const cur = give.get(s.store_id) ?? 0;
+          if (cur < d) give.set(s.store_id, cur + 1);
+        }
+        pool = 0;
+        break;
+      }
+      let givenThisRound = 0;
+      for (const s of eligible) {
+        const d = sku.storeDemand.get(s.store_id) ?? 0;
+        const cur = give.get(s.store_id) ?? 0;
+        const add = Math.min(base, d - cur);
+        give.set(s.store_id, cur + add);
+        givenThisRound += add;
+      }
+      pool -= givenThisRound;
+      if (givenThisRound === 0) break;
+    }
+    setAllocs((prev) => {
+      const next = new Map(prev);
+      for (const s of stores) {
+        next.set(`${sku.sku_id}:${s.store_id}`, give.get(s.store_id) ?? 0);
+      }
+      return next;
+    });
   }
 
   // FIFO 提交：把每個 (sku, store) 的擬分量切分到含此 sku 的多張 PO，再對每張 PO 各別發 RPC
@@ -336,14 +404,13 @@ export default function PickingWorkstationPage() {
       if (failures.length === 0) {
         if (results.length === 1) {
           alert(`✅ 已建立撿貨單 ${results[0].wave_code}`);
-          router.push(`/wms/picking/history?wave=${results[0].wave_id}`);
         } else {
           alert(
             `✅ 已建立 ${results.length} 張撿貨單：\n` +
               results.map((r) => `  ${r.po_no} → ${r.wave_code}`).join("\n"),
           );
-          router.push(`/wms/picking/history`);
         }
+        router.push("/hq/inbox?source=picking");
       } else {
         const okPart =
           results.length > 0
@@ -412,10 +479,10 @@ export default function PickingWorkstationPage() {
           </p>
         </div>
         <Link
-          href="/wms/picking/history"
+          href="/hq/inbox?source=picking"
           className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
         >
-          撿貨歷史 →
+          撿貨單列表 →
         </Link>
       </header>
 
@@ -528,15 +595,29 @@ export default function PickingWorkstationPage() {
                 {skuRows.map((sk) => {
                   const allocSum = getSkuAllocTotal(sk);
                   const overAlloc = allocSum > sk.totalAvailable;
+                  const remaining = sk.totalAvailable - allocSum; // 可分配剩餘
                   return (
                     <tr key={sk.sku_id} className={overAlloc ? "bg-red-50 dark:bg-red-950/30" : ""}>
                       <Td className="sticky left-0 bg-white px-3 py-2 text-xs dark:bg-zinc-900">
-                        <div className="font-mono text-[11px] text-zinc-500">{sk.sku_code ?? "—"}</div>
-                        <div className="truncate" title={sk.sku_label}>{sk.sku_label}</div>
-                        <div className="mt-1 text-[10px] text-zinc-400">
-                          {sk.poList.length === 1
-                            ? <span className="font-mono" title={`${sk.poList[0].po_status ?? ""} · 訂 ${sk.poList[0].qty_ordered}/已到 ${sk.poList[0].gr_qty}/在途 ${sk.poList[0].qty_in_transit}/短少 ${sk.poList[0].qty_shortage}`}>{sk.poList[0].po_no}</span>
-                            : <span title={sk.poList.map((p) => `${p.po_no} (${p.po_status ?? ""}): 訂 ${p.qty_ordered}/到 ${p.gr_qty}/在途 ${p.qty_in_transit}/短少 ${p.qty_shortage}/撿 ${p.already_wave_for_sku}`).join("\n")}>跨 {sk.poList.length} 張 PO</span>}
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="font-mono text-[11px] text-zinc-500">{sk.sku_code ?? "—"}</div>
+                            <div className="truncate" title={sk.sku_label}>{sk.sku_label}</div>
+                            <div className="mt-1 text-[10px] text-zinc-400">
+                              {sk.poList.length === 1
+                                ? <span className="font-mono" title={`${sk.poList[0].po_status ?? ""} · 訂 ${sk.poList[0].qty_ordered}/已到 ${sk.poList[0].gr_qty}/在途 ${sk.poList[0].qty_in_transit}/短少 ${sk.poList[0].qty_shortage}`}>{sk.poList[0].po_no}</span>
+                                : <span title={sk.poList.map((p) => `${p.po_no} (${p.po_status ?? ""}): 訂 ${p.qty_ordered}/到 ${p.gr_qty}/在途 ${p.qty_in_transit}/短少 ${p.qty_shortage}/撿 ${p.already_wave_for_sku}`).join("\n")}>跨 {sk.poList.length} 張 PO</span>}
+                            </div>
+                          </div>
+                          <SpinButton
+                            type="button"
+                            onClick={() => autoDistribute(sk)}
+                            disabled={sk.totalAvailable === 0}
+                            title={`依可分配 ${sk.totalAvailable} 平均分到各店(cap 在各店需求量)`}
+                            className="shrink-0 self-center rounded border border-blue-300 bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-40 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300 dark:hover:bg-blue-900"
+                          >
+                            ⚖ 平均
+                          </SpinButton>
                         </div>
                       </Td>
                       <NumCell value={sk.totalOrdered} muted />
@@ -544,20 +625,37 @@ export default function PickingWorkstationPage() {
                       <NumCell value={sk.totalInTransit} accent={sk.totalInTransit > 0 ? "transit" : undefined} />
                       <NumCell value={sk.totalShortage} accent={sk.totalShortage > 0 ? "danger" : undefined} />
                       <NumCell value={sk.totalAlreadyWave} muted />
-                      <NumCell value={sk.totalAvailable} bold />
+                      {/* 可分配 = 剩餘 (totalAvailable - allocSum) */}
+                      <td className="px-2 py-2 text-center align-middle">
+                        <span
+                          title={`可分配上限 ${sk.totalAvailable} / 已分配 ${allocSum}${overAlloc ? ` / 超出 ${allocSum - sk.totalAvailable}` : ""}`}
+                          className={`font-mono text-lg font-bold tabular-nums ${
+                            overAlloc
+                              ? "text-red-700 dark:text-red-400"
+                              : remaining === 0
+                                ? "text-zinc-300 dark:text-zinc-600"
+                                : "text-rose-700 dark:text-rose-300"
+                          }`}
+                        >
+                          {remaining}
+                        </span>
+                      </td>
                       <NumCell value={allocSum} accent={overAlloc ? "danger" : "primary"} />
                       {allStores.map((st) => {
                         const value = getAlloc(sk.sku_id, st.store_id);
                         const demandQty = sk.storeDemand.get(st.store_id) ?? 0;
+                        const maxForCell = value + Math.max(0, sk.totalAvailable - allocSum);
                         return (
                           <td key={st.store_id} className="px-2 py-1.5 text-center align-top">
                             <input
                               type="number"
                               value={value}
-                              onChange={(e) => setAlloc(sk.sku_id, st.store_id, Number(e.target.value))}
+                              onChange={(e) => setAllocCapped(sk.sku_id, st.store_id, Number(e.target.value), sk.totalAvailable)}
                               min={0}
+                              max={maxForCell}
                               step={1}
-                              className={`w-full max-w-[68px] rounded border px-1 py-1 text-center font-mono text-base font-semibold tabular-nums dark:bg-zinc-800 ${
+                              title={`需 ${demandQty} · 此格最多可填 ${maxForCell}`}
+                              className={`w-full max-w-[68px] rounded border px-1 py-0.5 text-center font-mono text-sm font-medium tabular-nums dark:bg-zinc-800 ${
                                 value === 0
                                   ? "border-zinc-200 text-zinc-300 dark:border-zinc-700"
                                   : "border-blue-300 text-blue-700 dark:border-blue-700 dark:text-blue-300"
@@ -699,18 +797,18 @@ function NumCell({
 }) {
   const isZero = value === 0;
   const cls = accent === "danger"
-    ? "text-rose-600 font-bold"
+    ? "text-rose-600 font-medium"
     : accent === "transit"
-      ? "text-amber-600 font-semibold dark:text-amber-400"
+      ? "text-amber-600 font-medium dark:text-amber-400"
       : accent === "primary"
-        ? (isZero ? "text-zinc-300" : "text-blue-600 font-bold")
+        ? (isZero ? "text-zinc-300" : "text-blue-600 font-medium")
         : muted
           ? (isZero ? "text-zinc-300" : "text-zinc-500")
           : bold
-            ? (isZero ? "text-zinc-300" : "text-zinc-900 font-semibold dark:text-zinc-100")
-            : "text-zinc-700 dark:text-zinc-300";
+            ? (isZero ? "text-zinc-300" : "text-zinc-700 dark:text-zinc-200")
+            : "text-zinc-600 dark:text-zinc-400";
   return (
-    <td className={`px-2 py-2 text-center font-mono text-base tabular-nums ${cls}`}>
+    <td className={`px-2 py-2 text-center font-mono text-sm tabular-nums ${cls}`}>
       {value}
     </td>
   );
