@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import SpinButton from "@/components/SpinButton";
 
 type Location = { id: number; code: string; name: string; type: string };
 
@@ -71,7 +72,7 @@ export default function FreeTransferPage() {
         p_notes: notes.trim() || null,
       });
       if (err) throw err;
-      router.push(`/transfers?id=${Number(data)}`);
+      router.push(`/wms/outbound?id=${Number(data)}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -174,12 +175,12 @@ export default function FreeTransferPage() {
                 </td>
                 <td className="px-3 py-2">
                   {lines.length > 1 && (
-                    <button
+                    <SpinButton
                       onClick={() => removeLine(i)}
                       className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-400"
                     >
                       移除
-                    </button>
+                    </SpinButton>
                   )}
                 </td>
               </tr>
@@ -187,12 +188,12 @@ export default function FreeTransferPage() {
           </tbody>
         </table>
         <div className="border-t border-zinc-200 p-2 dark:border-zinc-800">
-          <button
+          <SpinButton
             onClick={addLine}
             className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
             + 新增一行
-          </button>
+          </SpinButton>
         </div>
       </div>
 
@@ -208,20 +209,20 @@ export default function FreeTransferPage() {
       </label>
 
       <div className="flex gap-2">
-        <button
+        <SpinButton
           onClick={handleSubmit}
           disabled={busy || !valid}
           className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900"
         >
           {busy ? "建立中…" : "建立轉貨單"}
-        </button>
-        <button
+        </SpinButton>
+        <SpinButton
           onClick={() => router.back()}
           disabled={busy}
           className="rounded-md border border-zinc-300 px-4 py-2 text-sm dark:border-zinc-700"
         >
           取消
-        </button>
+        </SpinButton>
       </div>
     </div>
   );

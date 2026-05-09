@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import SpinButton from "@/components/SpinButton";
 
 type PRHeader = {
   id: number;
@@ -231,12 +232,12 @@ function PageContent() {
       `}</style>
 
       <div className="no-print mb-4 flex justify-end gap-2">
-        <button
+        <SpinButton
           onClick={() => window.print()}
           className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
         >
           列印
-        </button>
+        </SpinButton>
       </div>
 
       <header className="mb-4 text-center">

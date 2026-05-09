@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
+import SpinButton from "@/components/SpinButton";
 
 type Store = { id: number; name: string; code: string };
 type Member = {
@@ -178,20 +179,20 @@ export function OrderTransferModal({
         </label>
 
         <div className="flex justify-end gap-2 pt-1">
-          <button
+          <SpinButton
             onClick={onClose}
             disabled={busy}
             className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700"
           >
             取消
-          </button>
-          <button
+          </SpinButton>
+          <SpinButton
             onClick={submit}
             disabled={busy || !toStore}
             className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white disabled:bg-zinc-300"
           >
             {busy ? "轉出中…" : "確認轉出"}
-          </button>
+          </SpinButton>
         </div>
       </div>
     </Modal>

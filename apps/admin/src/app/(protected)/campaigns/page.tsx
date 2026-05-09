@@ -8,6 +8,7 @@ import { CampaignForm, type CampaignFormValues } from "@/components/CampaignForm
 import { CampaignOrdersPanel } from "@/components/CampaignOrdersPanel";
 import { CampaignItemsTable } from "@/components/CampaignItemsTable";
 import { DatePicker } from "@/components/DatePicker";
+import SpinButton from "@/components/SpinButton";
 
 type Status =
   | "draft" | "open" | "closed" | "ordered" | "receiving" | "ready" | "completed" | "cancelled";
@@ -327,12 +328,12 @@ export default function CampaignsListPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <button
+          <SpinButton
             onClick={() => setShowRecurring(true)}
             className="rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
             🔁 批次建立
-          </button>
+          </SpinButton>
           <Link href="/products?mode=campaign" className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200">
             + 從商品開團
           </Link>
@@ -341,7 +342,7 @@ export default function CampaignsListPage() {
 
       <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
         {(["list", "week", "month"] as View[]).map((v) => (
-          <button
+          <SpinButton
             key={v}
             onClick={() => setView(v)}
             className={
@@ -351,7 +352,7 @@ export default function CampaignsListPage() {
             }
           >
             {v === "list" ? "列表" : v === "week" ? "未來 7 天" : "月曆"}
-          </button>
+          </SpinButton>
         ))}
       </div>
 
@@ -372,21 +373,21 @@ export default function CampaignsListPage() {
       {view === "month" && (
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <button
+            <SpinButton
               onClick={() => setMonthAnchor(new Date(monthAnchor.getFullYear(), monthAnchor.getMonth() - 1, 1))}
               className="rounded-md border border-zinc-300 px-2 py-1 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-            >‹ 上月</button>
+            >‹ 上月</SpinButton>
             <span className="font-medium">
               {monthAnchor.getFullYear()} 年 {monthAnchor.getMonth() + 1} 月
             </span>
-            <button
+            <SpinButton
               onClick={() => setMonthAnchor(new Date(monthAnchor.getFullYear(), monthAnchor.getMonth() + 1, 1))}
               className="rounded-md border border-zinc-300 px-2 py-1 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-            >下月 ›</button>
-            <button
+            >下月 ›</SpinButton>
+            <SpinButton
               onClick={() => setMonthAnchor(startOfDay(new Date()))}
               className="rounded-md border border-zinc-300 px-2 py-1 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-            >今天</button>
+            >今天</SpinButton>
           </div>
           <span className="text-sm text-zinc-500">
             {calRows === null ? "載入中…" : `${calRows.length} 場`}
@@ -429,7 +430,7 @@ export default function CampaignsListPage() {
             ) : rows.map((r) => (
               <tr key={r.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
                 <Td className="font-mono">
-                  <button onClick={() => openEdit(r.id)} className="hover:underline">{r.campaign_no}</button>
+                  <SpinButton onClick={() => openEdit(r.id)} className="hover:underline">{r.campaign_no}</SpinButton>
                 </Td>
                 <Td>{r.name}</Td>
                 <Td><StatusBadge s={r.status} /></Td>
@@ -473,12 +474,12 @@ export default function CampaignsListPage() {
                 <Td className="text-right text-xs text-zinc-500">{new Date(r.updated_at).toLocaleString("zh-TW")}</Td>
                 <Td>
                   <div className="flex gap-2">
-                    <button
+                    <SpinButton
                       onClick={() => openEdit(r.id)}
                       className="text-xs text-blue-600 hover:underline dark:text-blue-400"
                     >
                       編輯
-                    </button>
+                    </SpinButton>
                     {r.status === "open" && (
                       <Link
                         href={`/campaigns/order-entry?id=${r.id}`}
@@ -488,22 +489,22 @@ export default function CampaignsListPage() {
                       </Link>
                     )}
                     {r.status === "open" && (
-                      <button
+                      <SpinButton
                         onClick={() => closeCampaign(r.id, r.name)}
                         disabled={closingId === r.id}
                         className="text-xs text-amber-600 hover:underline disabled:opacity-50 dark:text-amber-400"
                       >
                         {closingId === r.id ? "結單中…" : "結單"}
-                      </button>
+                      </SpinButton>
                     )}
                     {(["closed", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
-                      <button
+                      <SpinButton
                         onClick={() => finalizeCampaign(r.id, r.name)}
                         disabled={finalizingId === r.id}
                         className="text-xs text-purple-600 hover:underline disabled:opacity-50 dark:text-purple-400"
                       >
                         {finalizingId === r.id ? "結算中…" : "結算"}
-                      </button>
+                      </SpinButton>
                     )}
                   </div>
                 </Td>
@@ -571,7 +572,7 @@ function Td({ children, className = "" }: { children: React.ReactNode; className
   return <td className={`px-4 py-3 ${className}`}>{children}</td>;
 }
 function PagerBtn({ onClick, disabled, children }: { onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
-  return <button onClick={onClick} disabled={disabled} className="rounded-md border border-zinc-300 px-2 py-1 hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800 dark:disabled:hover:bg-transparent">{children}</button>;
+  return <SpinButton onClick={onClick} disabled={disabled} className="rounded-md border border-zinc-300 px-2 py-1 hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800 dark:disabled:hover:bg-transparent">{children}</SpinButton>;
 }
 function StatusBadge({ s }: { s: Status }) {
   const st: Record<Status, string> = {
@@ -927,7 +928,7 @@ function RecurringCampaignsForm({
     return (
       <div className="space-y-3">
         <p className="text-sm text-zinc-700 dark:text-zinc-300">目前沒有上架商品。請先到商品頁把商品設為「上架」（需有規格 + 三種價格）。</p>
-        <button onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">關閉</button>
+        <SpinButton onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">關閉</SpinButton>
       </div>
     );
   }
@@ -1027,14 +1028,14 @@ function RecurringCampaignsForm({
       )}
 
       <div className="flex items-center gap-2">
-        <button
+        <SpinButton
           onClick={handleSubmit}
           disabled={busy || !productId || !skuId}
           className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900"
         >
           {busy ? `建立中… ${progress?.done ?? 0}/${progress?.total ?? 0}` : `建立 ${previewDates.length} 場`}
-        </button>
-        <button onClick={onClose} disabled={busy} className="rounded-md border border-zinc-300 px-4 py-2 text-sm dark:border-zinc-700">取消</button>
+        </SpinButton>
+        <SpinButton onClick={onClose} disabled={busy} className="rounded-md border border-zinc-300 px-4 py-2 text-sm dark:border-zinc-700">取消</SpinButton>
       </div>
     </div>
   );
@@ -1078,13 +1079,13 @@ function CampaignCard({
 
   if (compact) {
     return (
-      <button
+      <SpinButton
         onClick={() => onPick(r.id)}
         className={`block w-full truncate rounded px-1.5 py-0.5 text-left text-[10px] ${compactBg[r.status]} hover:opacity-80`}
         title={`${r.campaign_no}｜${r.name}｜${STATUS_LABEL[r.status]}｜${itemCount} 商品｜下單 ${orderCount} 件${offsetCount !== 0 ? `｜抵減 ${offsetCount} 件` : ""}`}
       >
         <span className="font-medium">{r.name || r.campaign_no}</span>
-      </button>
+      </SpinButton>
     );
   }
 
@@ -1092,13 +1093,13 @@ function CampaignCard({
     <div className="rounded-md border border-zinc-200 bg-white p-3.5 shadow-sm transition hover:border-zinc-400 hover:shadow dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-500">
       {/* 標題：商品名稱 + 狀態 */}
       <div className="mb-2 flex items-start justify-between gap-1.5">
-        <button
+        <SpinButton
           onClick={() => onPick(r.id)}
           className="flex-1 truncate text-left text-[15px] font-semibold leading-tight text-zinc-900 hover:underline dark:text-zinc-100"
           title={`${r.campaign_no}｜${r.name}`}
         >
           {r.name || r.campaign_no}
-        </button>
+        </SpinButton>
         <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${statusBadgeColor[r.status]}`}>
           {STATUS_LABEL[r.status]}
         </span>
@@ -1109,12 +1110,12 @@ function CampaignCard({
         <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${CLOSE_TYPE_BADGE[r.close_type]}`}>
           {CLOSE_TYPE_LABEL[r.close_type]}
         </span>
-        <button
+        <SpinButton
           onClick={() => onPick(r.id)}
           className="min-w-0 flex-1 truncate text-left font-mono text-[11px] text-zinc-500 hover:underline"
         >
           {r.campaign_no}
-        </button>
+        </SpinButton>
       </div>
 
       {/* 數據：商品數 / 下單總量 / 抵減總量 */}
@@ -1156,12 +1157,12 @@ function CampaignCard({
             + 加單
           </Link>
         )}
-        <button
+        <SpinButton
           onClick={() => onPick(r.id)}
           className="rounded border border-zinc-300 px-2 py-0.5 text-[11px] text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
         >
           編輯
-        </button>
+        </SpinButton>
       </div>
     </div>
   );

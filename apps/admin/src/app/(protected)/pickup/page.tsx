@@ -6,6 +6,7 @@ import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { PickupDialog } from "@/components/PickupDialog";
 import { withBasePath } from "@/lib/basePath";
+import SpinButton from "@/components/SpinButton";
 
 type Member = {
   id: number;
@@ -301,21 +302,21 @@ function PickupPageContent() {
             className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base dark:border-zinc-700 dark:bg-zinc-800"
           />
         </label>
-        <button
+        <SpinButton
           type="submit"
           disabled={searching || query.trim().length < 2}
           className="rounded-md bg-zinc-900 px-4 py-2 text-sm text-white transition hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
         >
           {searching ? "搜尋中…" : "🔍 搜尋"}
-        </button>
+        </SpinButton>
         {(members || error) && (
-          <button
+          <SpinButton
             type="button"
             onClick={() => { setQuery(""); setMembers(null); setOrders(new Map()); setError(null); }}
             className="rounded-md border border-zinc-300 px-3 py-2 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
             清空
-          </button>
+          </SpinButton>
         )}
       </form>
 
@@ -358,13 +359,13 @@ function PickupPageContent() {
                       const count = useSel ? selectedHere.length : pickableOrders.length;
                       if (pickableOrders.length === 0) return null;
                       return (
-                        <button
+                        <SpinButton
                           onClick={() => setBulkConfirm(m)}
                           disabled={bulking === m.id}
                           className="ml-auto rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-50"
                         >
                           {bulking === m.id ? "處理中…" : useSel ? `📦 取選定的 ${count} 張` : `📦 一次全取（${count} 張）`}
-                        </button>
+                        </SpinButton>
                       );
                     })()}
                   </div>
@@ -440,21 +441,21 @@ function PickupPageContent() {
                                 )}
                               </div>
                             </div>
-                            <button
+                            <SpinButton
                               onClick={() => notifyPickup(m, o)}
                               disabled={!canPickup || notifyingId === o.id || m.no_notify_pickup}
                               title={m.no_notify_pickup ? "此會員已設「不通知」" : !canPickup ? "尚未到貨無法通知" : "通知顧客來取貨（推播 + 站內訊息）"}
                               className="rounded-md border border-blue-300 px-2 py-2 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950"
                             >
                               {notifyingId === o.id ? "⌛" : "🔔 通知"}
-                            </button>
-                            <button
+                            </SpinButton>
+                            <SpinButton
                               onClick={() => setPickup({ orderId: o.id, orderNo: o.order_no })}
                               disabled={!canPickup || pickableCount === 0}
                               className="rounded-md bg-emerald-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-emerald-700 disabled:opacity-50"
                             >
                               ✅ 取貨
-                            </button>
+                            </SpinButton>
                           </li>
                         );
                       })}
@@ -535,13 +536,13 @@ function PickupPageContent() {
                 })}
               </div>
               <div className="flex flex-wrap justify-end gap-2">
-                <button
+                <SpinButton
                   onClick={() => setBulkConfirm(null)}
                   className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
                 >
                   取消
-                </button>
-                <button
+                </SpinButton>
+                <SpinButton
                   onClick={() => {
                     const ids = memberOrders.map((o) => o.id).join(",");
                     window.open(
@@ -552,13 +553,13 @@ function PickupPageContent() {
                   className="rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:border-zinc-300 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
                 >
                   🖨️ 列印小白單
-                </button>
-                <button
+                </SpinButton>
+                <SpinButton
                   onClick={() => bulkPickAllConfirmed(bulkConfirm)}
                   className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700"
                 >
                   ✅ 確認取貨（{memberOrders.length} 張、{totalItems} 項、${totalAmount}）
-                </button>
+                </SpinButton>
               </div>
             </div>
           );

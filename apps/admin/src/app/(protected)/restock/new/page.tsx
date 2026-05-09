@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { useRole, canSeeBranch } from "@/lib/role";
+import SpinButton from "@/components/SpinButton";
 
 type Store = { id: number; code: string; name: string };
 
@@ -142,9 +143,9 @@ export default function RestockNewPage() {
           </tbody>
         </table>
         <div className="border-t border-zinc-200 p-2 dark:border-zinc-800">
-          <button onClick={addLine} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+          <SpinButton onClick={addLine} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
             + 新增一行
-          </button>
+          </SpinButton>
         </div>
       </div>
 
@@ -154,10 +155,10 @@ export default function RestockNewPage() {
       </label>
 
       <div className="flex gap-2">
-        <button onClick={handleSubmit} disabled={busy || !valid} className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900">
+        <SpinButton onClick={handleSubmit} disabled={busy || !valid} className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900">
           {busy ? "送出中…" : "送出申請"}
-        </button>
-        <button onClick={() => router.back()} disabled={busy} className="rounded-md border border-zinc-300 px-4 py-2 text-sm dark:border-zinc-700">取消</button>
+        </SpinButton>
+        <SpinButton onClick={() => router.back()} disabled={busy} className="rounded-md border border-zinc-300 px-4 py-2 text-sm dark:border-zinc-700">取消</SpinButton>
       </div>
     </div>
   );
@@ -233,7 +234,7 @@ function LineRow({
             setTerm(e.target.value);
             setOpen(true);
           }}
-          placeholder="搜尋商品 / SKU"
+          placeholder="搜尋商品 / 品項"
           className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
         />
         {open && opts.length > 0 && (
@@ -241,7 +242,7 @@ function LineRow({
             {opts.map((o) => {
               const price = showBranch && o.branch_price !== null ? o.branch_price : o.retail_price ?? 0;
               return (
-                <button
+                <SpinButton
                   key={o.id}
                   type="button"
                   onClick={() => {
@@ -258,7 +259,7 @@ function LineRow({
                   {o.variant_name && <span className="ml-1 text-zinc-500">/ {o.variant_name}</span>}
                   <span className="ml-2 font-mono text-zinc-400">{o.sku_code}</span>
                   <span className="ml-2 text-zinc-600 dark:text-zinc-300">${price}</span>
-                </button>
+                </SpinButton>
               );
             })}
           </div>
@@ -269,7 +270,7 @@ function LineRow({
       <td className="px-3 py-2"><input value={line.notes} onChange={(e) => onChange({ notes: e.target.value })} placeholder="（選填）" className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800" /></td>
       <td className="px-3 py-2">
         {onRemove && (
-          <button onClick={onRemove} className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-400">移除</button>
+          <SpinButton onClick={onRemove} className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-400">移除</SpinButton>
         )}
       </td>
     </tr>

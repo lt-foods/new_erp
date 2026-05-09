@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { PrPipelineStepper } from "@/components/PrPipelineStepper";
+import SpinButton from "@/components/SpinButton";
 
 type Row = {
   id: number;
@@ -432,20 +433,20 @@ export default function PurchaseRequestsListPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <button
+          <SpinButton
             onClick={openCampaignModal}
             disabled={creatingBlank}
             className="rounded-md border border-blue-600 bg-white px-3 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50 disabled:opacity-50 dark:bg-zinc-900 dark:hover:bg-zinc-800"
           >
             + 針對團購建單
-          </button>
-          <button
+          </SpinButton>
+          <SpinButton
             onClick={handleCreateBlank}
             disabled={creatingBlank}
             className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
           >
             {creatingBlank ? "建立中…" : "+ 空白採購單"}
-          </button>
+          </SpinButton>
         </div>
       </header>
 
@@ -469,7 +470,7 @@ export default function PurchaseRequestsListPage() {
               >
                 <div className="mb-1 text-base font-semibold">{g.close_date}</div>
                 <div className="mb-2 text-xs text-zinc-500">
-                  {g.campaigns.length} 個團 · {g.total_skus} 個 SKU · 總量 {g.total_qty}
+                  {g.campaigns.length} 個團 · {g.total_skus} 個品項 · 總量 {g.total_qty}
                 </div>
                 <ul className="mb-2 max-h-16 space-y-0.5 overflow-y-auto text-xs">
                   {g.campaigns.slice(0, 3).map((c) => (
@@ -481,13 +482,13 @@ export default function PurchaseRequestsListPage() {
                     <li className="text-zinc-400">…還有 {g.campaigns.length - 3} 個</li>
                   )}
                 </ul>
-                <button
+                <SpinButton
                   onClick={() => handleImport(g.close_date)}
                   disabled={busyDate !== null}
                   className="w-full rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
                 >
                   {busyDate === g.close_date ? "建立中…" : "📋 開始建立"}
-                </button>
+                </SpinButton>
               </div>
             ))}
           </div>
@@ -604,20 +605,20 @@ export default function PurchaseRequestsListPage() {
                     <div className="flex gap-2">
                       {r.review_status === "pending_review" && (
                         <>
-                          <button
+                          <SpinButton
                             disabled={busyId === r.id}
                             onClick={() => approve(r.id)}
                             className="text-xs text-emerald-600 hover:underline disabled:opacity-50 dark:text-emerald-400"
                           >
                             通過
-                          </button>
-                          <button
+                          </SpinButton>
+                          <SpinButton
                             disabled={busyId === r.id}
                             onClick={() => reject(r.id)}
                             className="text-xs text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
                           >
                             退回
-                          </button>
+                          </SpinButton>
                         </>
                       )}
                     </div>
@@ -648,7 +649,7 @@ export default function PurchaseRequestsListPage() {
                         split: { href: `/purchase/orders` },
                         send: { href: `/purchase/orders` },
                         receive: { href: `/purchase/orders` },
-                        ship: r.source_close_date ? { detail: `配送 ${r.source_close_date}`, href: `/picking/history` } : undefined,
+                        ship: r.source_close_date ? { detail: `配送 ${r.source_close_date}`, href: `/wms/picking/history` } : undefined,
                         delivered: r.source_close_date ? { detail: `配送 ${r.source_close_date}` } : undefined,
                       }}
                     />
@@ -676,12 +677,12 @@ export default function PurchaseRequestsListPage() {
                   可多選、同團購可重複開單（補單）
                 </p>
               </div>
-              <button
+              <SpinButton
                 onClick={() => { setShowCampaignModal(false); setSelectedCampaignIds(new Set()); }}
                 className="text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
               >
                 ✕
-              </button>
+              </SpinButton>
             </div>
             <div className="max-h-[60vh] overflow-y-auto p-4">
               {closedCampaigns === null ? (
@@ -732,19 +733,19 @@ export default function PurchaseRequestsListPage() {
                   已選 {selectedCampaignIds.size} 個
                 </span>
                 <div className="flex gap-2">
-                  <button
+                  <SpinButton
                     onClick={() => { setShowCampaignModal(false); setSelectedCampaignIds(new Set()); }}
                     className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
                   >
                     取消
-                  </button>
-                  <button
+                  </SpinButton>
+                  <SpinButton
                     onClick={handleCreateFromMultipleCampaigns}
                     disabled={selectedCampaignIds.size === 0 || creatingMulti}
                     className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-40"
                   >
                     {creatingMulti ? "建立中…" : `📋 建立採購單（${selectedCampaignIds.size}）`}
-                  </button>
+                  </SpinButton>
                 </div>
               </div>
             )}

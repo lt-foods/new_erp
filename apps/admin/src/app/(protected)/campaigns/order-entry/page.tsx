@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import SpinButton from "@/components/SpinButton";
 
 type Campaign = {
   id: number;
@@ -464,7 +465,7 @@ function PageContent() {
       </header>
 
       <div className="inline-flex w-fit overflow-hidden rounded-md border border-zinc-300 text-xs dark:border-zinc-700">
-        <button
+        <SpinButton
           type="button"
           onClick={() => setMode("customer")}
           className={`px-3 py-1.5 ${
@@ -474,8 +475,8 @@ function PageContent() {
           }`}
         >
           客戶下單
-        </button>
-        <button
+        </SpinButton>
+        <SpinButton
           type="button"
           onClick={() => setMode("internal")}
           className={`px-3 py-1.5 ${
@@ -486,8 +487,8 @@ function PageContent() {
           title="店長為自己店內部叫貨（會自動掛內部會員、可改價）"
         >
           為分店叫貨
-        </button>
-        <button
+        </SpinButton>
+        <SpinButton
           type="button"
           onClick={() => setMode("offset")}
           className={`px-3 py-1.5 border-l border-zinc-300 dark:border-zinc-700 ${
@@ -498,7 +499,7 @@ function PageContent() {
           title="店內已有庫存、不想多訂 → 採購聚合會自動扣掉這筆數量"
         >
           庫存抵減單
-        </button>
+        </SpinButton>
       </div>
 
       {mode === "customer" ? (
@@ -556,27 +557,27 @@ function PageContent() {
                 }
               />
             ))}
-            <button
+            <SpinButton
               type="button"
               onClick={() => setEntries((es) => [...es, newEntry()])}
               className="rounded-md border border-dashed border-zinc-300 px-3 py-2 text-sm text-zinc-500 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
             >
               + 新增顧客（Alt+N）
-            </button>
+            </SpinButton>
             {entries.some((e) => e.no_new_order) && (
               <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
                 ⚠️ 有顧客屬黑名單禁加單：{entries.filter((e) => e.no_new_order).map((e) => e.display_name || e.member_no).join("、")}。請移除後再送出。
               </div>
             )}
             <div className="flex justify-end">
-              <button
+              <SpinButton
                 type="button"
                 onClick={handleSubmit}
                 disabled={submitting || entries.some((e) => e.no_new_order)}
                 className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
               >
                 {submitting ? "送出中…" : "送出訂單（Ctrl+S）"}
-              </button>
+              </SpinButton>
             </div>
           </div>
 
@@ -731,16 +732,16 @@ function InternalOrderPanel({
           </div>
         </div>
 
-        <button
+        <SpinButton
           type="button"
           onClick={onAddItem}
           className="rounded-md border border-dashed border-zinc-300 px-3 py-2 text-sm text-zinc-500 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
         >
           + 新增空白項目（Alt+N）
-        </button>
+        </SpinButton>
 
         <div className="flex justify-end">
-          <button
+          <SpinButton
             type="button"
             onClick={onSubmit}
             disabled={submitting}
@@ -751,7 +752,7 @@ function InternalOrderPanel({
             }`}
           >
             {submitting ? "送出中…" : offsetMode ? "送出抵減單（Ctrl+S）" : "送出內部訂單（Ctrl+S）"}
-          </button>
+          </SpinButton>
         </div>
       </div>
 
@@ -815,14 +816,14 @@ function CustomerCard({
             <span className="text-zinc-400">—</span>
           )}
         </div>
-        <button
+        <SpinButton
           type="button"
           onClick={onRemove}
           className="text-xs text-zinc-400 hover:text-red-500"
           title="移除此顧客"
         >
           ✕
-        </button>
+        </SpinButton>
       </div>
 
       <table className="w-full text-xs">
@@ -960,7 +961,7 @@ function CustomerSearch({
                 const blacklisted = !!a.no_new_order;
                 const blocked = dup || noStore || blacklisted;
                 return (
-                  <button
+                  <SpinButton
                     key={`a-${a.alias_id}`}
                     type="button"
                     disabled={blocked}
@@ -985,7 +986,7 @@ function CustomerSearch({
                     {blacklisted && <span className="ml-2 font-medium text-red-600">🚫 黑名單禁加單</span>}
                     {!blacklisted && dup && <span className="ml-2 text-amber-600">已選</span>}
                     {!blacklisted && !dup && noStore && <span className="ml-2 text-red-500">未設取貨店</span>}
-                  </button>
+                  </SpinButton>
                 );
               })}
             </div>
@@ -1004,7 +1005,7 @@ function CustomerSearch({
                     key={`m-${m.id}`}
                     className="flex items-center justify-between px-3 py-2 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-700"
                   >
-                    <button
+                    <SpinButton
                       type="button"
                       disabled={blocked}
                       onClick={() => {
@@ -1027,16 +1028,16 @@ function CustomerSearch({
                       {blacklisted && <span className="ml-2 font-medium text-red-600">🚫 黑名單禁加單</span>}
                       {!blacklisted && dup && <span className="ml-2 text-amber-600">已選</span>}
                       {!blacklisted && !dup && noStore && <span className="ml-2 text-red-500">未設取貨店</span>}
-                    </button>
+                    </SpinButton>
                     {!aliased && channelId && !blocked && (
-                      <button
+                      <SpinButton
                         type="button"
                         onClick={() => handleBindAlias(m.id, m.name)}
                         className="ml-2 rounded border border-zinc-300 px-1.5 text-[10px] text-zinc-600 hover:bg-zinc-50 dark:border-zinc-600 dark:text-zinc-300"
                         title="綁定此頻道暱稱"
                       >
                         + 綁
-                      </button>
+                      </SpinButton>
                     )}
                   </div>
                 );
@@ -1108,7 +1109,7 @@ function ItemEditorRow({
             setTerm(e.target.value);
             setOpen(true);
           }}
-          placeholder="搜尋商品 / SKU"
+          placeholder="搜尋商品 / 品項"
           className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800"
         />
         {open && opts.length > 0 && (
@@ -1116,7 +1117,7 @@ function ItemEditorRow({
             className="absolute left-0 top-full z-10 mt-1 max-h-80 w-[420px] overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
           >
             {opts.map((o) => (
-              <button
+              <SpinButton
                 key={o.campaign_item_id ?? `s-${o.sku_id}`}
                 type="button"
                 onClick={async () => {
@@ -1157,7 +1158,7 @@ function ItemEditorRow({
                     + 加入此團
                   </span>
                 )}
-              </button>
+              </SpinButton>
             ))}
           </div>
         )}
@@ -1170,7 +1171,7 @@ function ItemEditorRow({
               : "border-zinc-300 dark:border-zinc-700"
           }`}
         >
-          <button
+          <SpinButton
             type="button"
             tabIndex={-1}
             onClick={() => {
@@ -1181,7 +1182,7 @@ function ItemEditorRow({
             className="w-7 bg-zinc-50 text-sm leading-none hover:bg-zinc-100 active:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700"
           >
             −
-          </button>
+          </SpinButton>
           <input
             value={item.qty}
             onChange={(e) => onChange({ qty: e.target.value.replace(/[^0-9]/g, "") })}
@@ -1198,7 +1199,7 @@ function ItemEditorRow({
                 : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-800"
             }`}
           />
-          <button
+          <SpinButton
             type="button"
             tabIndex={-1}
             onClick={() => {
@@ -1209,7 +1210,7 @@ function ItemEditorRow({
             className="w-7 bg-zinc-50 text-sm leading-none hover:bg-zinc-100 active:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700"
           >
             ＋
-          </button>
+          </SpinButton>
         </div>
       </td>
       <td className="text-right">
@@ -1234,7 +1235,7 @@ function ItemEditorRow({
       </td>
       <td className="text-right font-mono text-xs">${subtotal}</td>
       <td className="text-right">
-        <button type="button" onClick={onRemove} className="text-zinc-400 hover:text-red-500">×</button>
+        <SpinButton type="button" onClick={onRemove} className="text-zinc-400 hover:text-red-500">×</SpinButton>
       </td>
     </tr>
   );
@@ -1273,7 +1274,7 @@ function SummaryPanel({ entries }: { entries: CustomerEntry[] }) {
         <Stat label="總金額" value={`$${stats.totalAmount}`} />
       </div>
       <div className="text-xs">
-        <div className="mb-1 font-medium text-zinc-500">SKU 累計</div>
+        <div className="mb-1 font-medium text-zinc-500">品項累計</div>
         {stats.skuTotals.length === 0 ? (
           <div className="text-zinc-400">尚無資料</div>
         ) : (

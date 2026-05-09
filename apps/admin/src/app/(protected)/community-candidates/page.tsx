@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { DatePicker } from "@/components/DatePicker";
+import SpinButton from "@/components/SpinButton";
 
 type Candidate = {
   id: number;
@@ -401,20 +402,20 @@ export default function CommunityCandidatesPage() {
             className="rounded border border-zinc-300 px-2 py-1 text-xs focus:outline-none dark:border-zinc-700 dark:bg-zinc-900"
           />
           <div className="flex gap-1">
-            <button
+            <SpinButton
               onClick={() => handleFillSubmit(r.id)}
               disabled={busy}
               className="rounded bg-blue-600 px-2 py-0.5 text-xs text-white hover:bg-blue-700 disabled:opacity-50"
             >
               {busy ? "儲存中…" : "儲存"}
-            </button>
-            <button
+            </SpinButton>
+            <SpinButton
               onClick={() => { setEditingInfo(null); setAdoptSupplier(""); setAdoptCost(""); setAdoptSalePrice(""); }}
               disabled={busy}
               className="rounded border border-zinc-300 px-2 py-0.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 disabled:opacity-50"
             >
               取消
-            </button>
+            </SpinButton>
           </div>
         </div>
       );
@@ -428,14 +429,14 @@ export default function CommunityCandidatesPage() {
               { label: "後天", date: localDateStr(2) },
               { label: "下週一", date: nextWeekMonday() },
             ].map(({ label, date }) => (
-              <button
+              <SpinButton
                 key={label}
                 onClick={() => handleQuickSchedule(r.id, date)}
                 disabled={busy}
                 className="rounded bg-amber-500 px-2 py-0.5 text-xs text-white hover:bg-amber-600 disabled:opacity-50"
               >
                 {label}
-              </button>
+              </SpinButton>
             ))}
           </div>
           <div className="flex flex-wrap items-center gap-1">
@@ -444,14 +445,14 @@ export default function CommunityCandidatesPage() {
               onChange={setScheduleDate}
               className="rounded border border-zinc-300 bg-white px-1.5 py-0.5 text-xs dark:border-zinc-700 dark:bg-zinc-900"
             />
-            <button
+            <SpinButton
               onClick={() => handleSchedule(r.id)}
               disabled={!scheduleDate || busy}
               className="rounded bg-amber-500 px-2 py-0.5 text-xs text-white hover:bg-amber-600 disabled:opacity-50"
             >
               確定
-            </button>
-            <button
+            </SpinButton>
+            <SpinButton
               onClick={() => {
                 setScheduling(null);
                 setScheduleDate("");
@@ -460,14 +461,14 @@ export default function CommunityCandidatesPage() {
               className="rounded border border-zinc-300 px-2 py-0.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 disabled:opacity-50"
             >
               取消
-            </button>
+            </SpinButton>
           </div>
         </div>
       );
     }
     return (
       <div className="flex flex-wrap items-center gap-1">
-        <button
+        <SpinButton
           onClick={() => {
             setEditingInfo(r.id);
             setAdoptSupplier(r.adopted_supplier_name ?? "");
@@ -479,9 +480,9 @@ export default function CommunityCandidatesPage() {
           className="rounded border border-zinc-300 px-2 py-0.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 disabled:opacity-50"
         >
           {r.adopted_supplier_name || r.adopted_cost !== null || r.adopted_sale_price !== null ? "修改資料" : "補資料"}
-        </button>
+        </SpinButton>
         {r.owner_action !== "adopted" && (
-          <button
+          <SpinButton
             onClick={() => {
               const complete = !!(r.adopted_supplier_name && r.adopted_cost !== null && r.adopted_sale_price !== null);
               if (!complete && !window.confirm("廠商、成本、售價尚未完整，確定要採用嗎？")) return;
@@ -491,19 +492,19 @@ export default function CommunityCandidatesPage() {
             className="rounded border border-green-400 px-2 py-0.5 text-xs text-green-700 hover:bg-green-50 dark:border-green-700 dark:text-green-400 dark:hover:bg-green-950/30 disabled:opacity-50"
           >
             採用
-          </button>
+          </SpinButton>
         )}
         {r.owner_action !== "collected" && r.owner_action !== "adopted" && (
-          <button
+          <SpinButton
             onClick={() => handleCollect(r.id)}
             disabled={busy}
             className="rounded border border-blue-300 px-2 py-0.5 text-xs text-blue-600 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 disabled:opacity-50"
           >
             收藏
-          </button>
+          </SpinButton>
         )}
         {r.owner_action !== "scheduled" && r.owner_action !== "adopted" && (
-          <button
+          <SpinButton
             onClick={() => {
               setScheduling(r.id);
               setScheduleDate("");
@@ -512,27 +513,27 @@ export default function CommunityCandidatesPage() {
             className="rounded border border-amber-300 px-2 py-0.5 text-xs text-amber-600 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-400 disabled:opacity-50"
           >
             排日期
-          </button>
+          </SpinButton>
         )}
         {r.owner_action !== "ignored" && r.owner_action !== "adopted" && (
-          <button
+          <SpinButton
             onClick={() => handleIgnore(r.id)}
             disabled={busy}
             className="rounded border border-zinc-300 px-2 py-0.5 text-xs text-zinc-500 hover:bg-zinc-50 dark:border-zinc-700 disabled:opacity-50"
           >
             忽略
-          </button>
+          </SpinButton>
         )}
         {(r.owner_action === "collected" ||
           r.owner_action === "scheduled" ||
           r.owner_action === "ignored") && (
-          <button
+          <SpinButton
             onClick={() => handleRestore(r.id)}
             disabled={busy}
             className="rounded border border-zinc-200 px-2 py-0.5 text-xs text-zinc-400 hover:bg-zinc-50 dark:border-zinc-800 disabled:opacity-50"
           >
             還原
-          </button>
+          </SpinButton>
         )}
       </div>
     );
@@ -545,18 +546,18 @@ export default function CommunityCandidatesPage() {
           <h1 className="text-xl font-semibold">選品候選池</h1>
           <p className="mt-0.5 text-sm text-zinc-500">LINE #選品 進來的商品候選</p>
         </div>
-        <button
+        <SpinButton
           onClick={() => reload()}
           className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
         >
           重新整理
-        </button>
+        </SpinButton>
       </header>
 
       {/* Tabs */}
       <div className="flex gap-0 border-b border-zinc-200 dark:border-zinc-800">
         {TABS.map(({ key, label }) => (
-          <button
+          <SpinButton
             key={key}
             onClick={() => setTab(key)}
             className={
@@ -566,7 +567,7 @@ export default function CommunityCandidatesPage() {
             }
           >
             {label}
-          </button>
+          </SpinButton>
         ))}
       </div>
 
@@ -579,12 +580,12 @@ export default function CommunityCandidatesPage() {
           onChange={(e) => setQueryDraft(e.target.value)}
         />
         {queryDraft && (
-          <button
+          <SpinButton
             onClick={() => setQueryDraft("")}
             className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm text-zinc-500 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
           >
             清除
-          </button>
+          </SpinButton>
         )}
       </div>
 
@@ -606,14 +607,14 @@ export default function CommunityCandidatesPage() {
               { label: "後天", date: localDateStr(2) },
               { label: "下週一", date: nextWeekMonday() },
             ].map(({ label, date }) => (
-              <button
+              <SpinButton
                 key={label}
                 onClick={() => handleBulkSchedule(date)}
                 disabled={busy}
                 className="rounded bg-amber-500 px-2.5 py-1 text-xs text-white hover:bg-amber-600 disabled:opacity-50"
               >
                 {label}
-              </button>
+              </SpinButton>
             ))}
           </div>
           <DatePicker
@@ -621,20 +622,20 @@ export default function CommunityCandidatesPage() {
             onChange={setBulkDate}
             className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
           />
-          <button
+          <SpinButton
             onClick={() => handleBulkSchedule(bulkDate)}
             disabled={!bulkDate || busy}
             className="rounded bg-amber-600 px-3 py-1 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
           >
             {busy ? "排程中…" : "📅 批次排日期"}
-          </button>
-          <button
+          </SpinButton>
+          <SpinButton
             onClick={clearSelected}
             disabled={busy}
             className="ml-auto rounded border border-zinc-300 px-2.5 py-1 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
           >
             清除選取
-          </button>
+          </SpinButton>
         </div>
       )}
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import SpinButton from "@/components/SpinButton";
 
 export type CategoryOption = { id: number; name: string; code: string };
 
@@ -83,7 +84,7 @@ export function CategoryCombobox({
   return (
     <div ref={containerRef} className="relative">
       {!open ? (
-        <button
+        <SpinButton
           type="button"
           onClick={() => setOpen(true)}
           className="flex w-full items-center justify-between rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
@@ -99,7 +100,7 @@ export function CategoryCombobox({
             <span className="text-zinc-500">—（不設定）</span>
           )}
           <span className="text-zinc-400">▾</span>
-        </button>
+        </SpinButton>
       ) : (
         <input
           ref={inputRef}
@@ -129,7 +130,7 @@ export function CategoryCombobox({
       {open && (
         <div className="absolute left-0 right-0 z-20 mt-1 max-h-72 overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
           {value != null && (
-            <button
+            <SpinButton
               type="button"
               onClick={() => {
                 onChange(null);
@@ -139,13 +140,13 @@ export function CategoryCombobox({
               className="block w-full border-b border-zinc-200 px-3 py-2 text-left text-xs text-zinc-500 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800"
             >
               清除選擇
-            </button>
+            </SpinButton>
           )}
           {filtered.length === 0 && q === "" ? (
             <p className="px-3 py-2 text-xs text-zinc-500">尚無分類</p>
           ) : (
             filtered.map((c) => (
-              <button
+              <SpinButton
                 key={c.id}
                 type="button"
                 onClick={() => {
@@ -159,18 +160,18 @@ export function CategoryCombobox({
               >
                 <span className="truncate">{c.name}</span>
                 <span className="ml-2 shrink-0 text-xs text-zinc-500">{c.code}</span>
-              </button>
+              </SpinButton>
             ))
           )}
           {q && !exactMatch && (
-            <button
+            <SpinButton
               type="button"
               onClick={handleCreate}
               disabled={creating}
               className="block w-full border-t border-zinc-200 px-3 py-2 text-left text-sm text-blue-700 hover:bg-blue-50 disabled:opacity-50 dark:border-zinc-700 dark:text-blue-300 dark:hover:bg-blue-950"
             >
               {creating ? "建立中…" : `+ 建立分類「${query.trim()}」`}
-            </button>
+            </SpinButton>
           )}
           {error && (
             <p className="border-t border-zinc-200 px-3 py-2 text-xs text-red-600 dark:border-zinc-700 dark:text-red-400">

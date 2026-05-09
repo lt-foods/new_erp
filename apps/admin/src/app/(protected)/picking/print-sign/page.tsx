@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { DatePicker } from "@/components/DatePicker";
+import SpinButton from "@/components/SpinButton";
 
 type WaveItem = {
   id: number;
@@ -213,13 +214,13 @@ export default function PrintSignPage() {
               ? "（無資料）"
               : `${sheets.length} 間分店、${waves.length} 張撿貨單`}
           </span>
-          <button
+          <SpinButton
             onClick={() => window.print()}
             disabled={sheets.length === 0}
             className="ml-auto rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
           >
             🖨️ 列印
-          </button>
+          </SpinButton>
         </div>
 
         {error && (

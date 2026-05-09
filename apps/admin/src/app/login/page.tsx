@@ -4,6 +4,7 @@ import { Suspense, useState, useEffect, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/AuthProvider";
 import { getTenantName } from "@/lib/tenant";
+import SpinButton from "@/components/SpinButton";
 
 export default function LoginPage() {
   return (
@@ -85,13 +86,13 @@ function LoginForm() {
             </p>
           )}
 
-          <button
+          <SpinButton
             type="submit"
             disabled={submitting}
             className="w-full rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
           >
             {submitting ? "登入中…" : "登入"}
-          </button>
+          </SpinButton>
         </form>
 
         <p className="text-xs text-zinc-500">

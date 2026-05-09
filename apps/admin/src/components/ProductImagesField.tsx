@@ -2,6 +2,7 @@
 
 import { useMemo, useState, type ChangeEvent } from "react";
 import { getSupabase } from "@/lib/supabase";
+import SpinButton from "@/components/SpinButton";
 
 type Props = {
   value: string[];
@@ -86,7 +87,7 @@ export function ProductImagesField({ value, onChange }: Props) {
               </span>
             )}
             <div className="absolute inset-x-0 bottom-0 flex justify-between bg-black/50 opacity-0 transition group-hover:opacity-100">
-              <button
+              <SpinButton
                 type="button"
                 onClick={() => move(i, -1)}
                 disabled={i === 0}
@@ -94,16 +95,16 @@ export function ProductImagesField({ value, onChange }: Props) {
                 aria-label="前移"
               >
                 ←
-              </button>
-              <button
+              </SpinButton>
+              <SpinButton
                 type="button"
                 onClick={() => remove(i)}
                 className="flex-1 text-white text-xs hover:bg-red-700"
                 aria-label="刪除"
               >
                 ✕
-              </button>
-              <button
+              </SpinButton>
+              <SpinButton
                 type="button"
                 onClick={() => move(i, 1)}
                 disabled={i === value.length - 1}
@@ -111,7 +112,7 @@ export function ProductImagesField({ value, onChange }: Props) {
                 aria-label="後移"
               >
                 →
-              </button>
+              </SpinButton>
             </div>
           </div>
         ))}

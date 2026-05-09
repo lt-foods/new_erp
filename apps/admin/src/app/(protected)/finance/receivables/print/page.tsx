@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import SpinButton from "@/components/SpinButton";
 
 type Settlement = {
   id: number;
@@ -155,12 +156,12 @@ export default function PrintSettlementPage() {
           <span className="text-sm text-zinc-500">
             {store.name} / {monthLabel} / 應付總倉 ${Number(settlement.payable_amount).toLocaleString()}
           </span>
-          <button
+          <SpinButton
             onClick={() => window.print()}
             className="ml-auto rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700"
           >
             🖨️ 列印
-          </button>
+          </SpinButton>
         </div>
 
         {/* 對帳單內容 */}

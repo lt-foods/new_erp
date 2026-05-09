@@ -24,6 +24,7 @@ import {
   arrayMove,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import SpinButton from "@/components/SpinButton";
 
 type CalendarCandidate = {
   id: number;
@@ -471,14 +472,14 @@ function SortableCard({
         </div>
       )}
       <div className="flex gap-1 pt-0.5">
-        <button
+        <SpinButton
           onClick={() => onRemove(r)}
           disabled={busy}
           className="ml-auto rounded border border-red-300 px-1.5 py-0.5 text-[10px] text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/30 disabled:opacity-50"
           title="移出排程"
         >
           移出
-        </button>
+        </SpinButton>
       </div>
     </div>
   );

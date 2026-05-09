@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import SpinButton from "@/components/SpinButton";
 
 type Order = {
   id: number;
@@ -134,18 +135,18 @@ function Body() {
       `}</style>
       <div className="mx-auto my-4 max-w-[80mm] bg-white p-3 font-mono text-[12px] leading-tight text-black shadow print:my-0 print:shadow-none">
         <div className="no-print mb-3 flex justify-end gap-2">
-          <button
+          <SpinButton
             onClick={() => window.print()}
             className="rounded bg-zinc-900 px-3 py-1 text-xs text-white"
           >
             🖨️ 列印
-          </button>
-          <button
+          </SpinButton>
+          <SpinButton
             onClick={() => window.close()}
             className="rounded border border-zinc-300 px-3 py-1 text-xs"
           >
             關閉
-          </button>
+          </SpinButton>
         </div>
 
         <div className="text-center">

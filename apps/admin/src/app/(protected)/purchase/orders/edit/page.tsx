@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { SendPOModal } from "@/components/SendPOModal";
+import SpinButton from "@/components/SpinButton";
 
 type Supplier = {
   id: number;
@@ -240,12 +241,12 @@ function PageContent() {
             <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">動作</h3>
             <div className="flex flex-col gap-2">
               {canSend && (
-                <button
+                <SpinButton
                   onClick={() => setShowSend(true)}
                   className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500"
                 >
                   📤 發送供應商
-                </button>
+                </SpinButton>
               )}
               {header.status === "sent" && (
                 <div className="rounded-md border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300">

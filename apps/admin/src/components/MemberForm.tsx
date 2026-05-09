@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { DatePicker } from "@/components/DatePicker";
+import SpinButton from "@/components/SpinButton";
 
 export type MemberStatus = "active" | "inactive" | "blocked" | "merged" | "deleted";
 export type MemberGender = "M" | "F" | "O" | null;
@@ -214,20 +215,20 @@ export function MemberForm({
       )}
 
       <div className="flex items-center gap-3">
-        <button
+        <SpinButton
           type="submit"
           disabled={saving}
           className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
         >
           {saving ? "儲存中…" : v.id ? "儲存" : "建立會員"}
-        </button>
-        <button
+        </SpinButton>
+        <SpinButton
           type="button"
           onClick={() => onCancel ? onCancel() : router.push("/members")}
           className="rounded-md border border-zinc-300 px-4 py-2 text-sm text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
         >
           取消
-        </button>
+        </SpinButton>
       </div>
     </form>
   );

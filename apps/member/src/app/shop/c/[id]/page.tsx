@@ -383,7 +383,7 @@ function SkuRow({
     >
       <div className="min-w-0 flex-1">
         <div className="line-clamp-2 text-[16px] font-medium leading-tight text-[var(--foreground)]">
-          {item.product_name ?? `SKU#${item.sku_id}`}
+          {item.product_name ?? `品項#${item.sku_id}`}
         </div>
         {item.variant_name && (
           <div className="text-[13px] text-[var(--secondary-label)]">{item.variant_name}</div>
@@ -492,7 +492,7 @@ function ConfirmSheet({
               >
                 <div className="min-w-0 flex-1">
                   <div className="line-clamp-1 text-[16px] text-[var(--foreground)]">
-                    {it.product_name ?? `SKU#${it.sku_id}`}
+                    {it.product_name ?? `品項#${it.sku_id}`}
                     {it.variant_name && (
                       <span className="ml-1 text-[var(--secondary-label)]">/ {it.variant_name}</span>
                     )}

@@ -10,6 +10,7 @@ import { translateRpcError } from "@/lib/rpcError";
 import { withBasePath } from "@/lib/basePath";
 import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 import { ORDER_STATUS_LABEL as STATUS_LABEL, type OrderStatus } from "@/lib/orderStatus";
+import SpinButton from "@/components/SpinButton";
 
 type Row = {
   id: number;
@@ -263,7 +264,7 @@ function OrdersListContent() {
           const active = tab === t.value;
           const count = tabCounts?.[t.value];
           return (
-            <button
+            <SpinButton
               key={t.value}
               onClick={() => setTab(t.value)}
               className={`relative px-4 py-2 text-sm font-medium transition-colors ${
@@ -281,14 +282,14 @@ function OrdersListContent() {
               {active && (
                 <span className="absolute -bottom-px left-0 right-0 h-0.5 bg-zinc-900 dark:bg-zinc-100" />
               )}
-            </button>
+            </SpinButton>
           );
         })}
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="relative">
-          <button
+          <SpinButton
             type="button"
             onClick={() => setCampaignPickerOpen((v) => !v)}
             className="flex w-full items-center justify-between rounded-md border border-zinc-300 bg-white px-3 py-2 text-left text-sm dark:border-zinc-700 dark:bg-zinc-800"
@@ -301,22 +302,22 @@ function OrdersListContent() {
                 : `已選 ${campaignIds.length} 個開團`}
             </span>
             <span className="ml-2 text-zinc-400">▾</span>
-          </button>
+          </SpinButton>
           {campaignPickerOpen && (
             <div className="absolute z-20 mt-1 max-h-80 w-full overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
               <div className="sticky top-0 flex justify-between border-b border-zinc-200 bg-white px-3 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-900">
-                <button
+                <SpinButton
                   onClick={() => setCampaignIds([])}
                   className="text-blue-600 hover:underline dark:text-blue-400"
                 >
                   全部清除
-                </button>
-                <button
+                </SpinButton>
+                <SpinButton
                   onClick={() => setCampaignPickerOpen(false)}
                   className="text-zinc-500 hover:text-zinc-700 dark:text-zinc-400"
                 >
                   關閉
-                </button>
+                </SpinButton>
               </div>
               {campaigns.map((c) => {
                 const checked = campaignIds.includes(String(c.id));
@@ -393,7 +394,7 @@ function OrdersListContent() {
                   }
                 >
                   <Td>
-                    <button
+                    <SpinButton
                       onClick={() => { setDetailId(r.id); setDetailNo(r.order_no); }}
                       className="block w-full text-left hover:underline"
                       title={r.order_no}
@@ -417,7 +418,7 @@ function OrdersListContent() {
                           </div>
                         </div>
                       ) : "—"}
-                    </button>
+                    </SpinButton>
                   </Td>
                   <Td>
                     {m ? (
@@ -463,60 +464,60 @@ function OrdersListContent() {
                           );
                         }
                         return (
-                          <button
+                          <SpinButton
                             type="button"
                             disabled
                             title={canPickup ? "找不到會員資料,無法導向" : "分店尚未收貨,無法取貨"}
                             className="cursor-not-allowed rounded-md bg-emerald-200 px-2 py-1 text-[11px] font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
                           >
                             ✅ 去取貨
-                          </button>
+                          </SpinButton>
                         );
                       })()}
                       {["pending", "confirmed", "shipping"].includes(r.status) && (
-                        <button
+                        <SpinButton
                           onClick={() => cancelOrder(r.id, r.order_no, r.status)}
                           title={r.status === "shipping" ? "撤回派貨並反向回收已出庫存" : "取消訂單"}
                           className="rounded-md bg-red-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-red-700"
                         >
                           取消
-                        </button>
+                        </SpinButton>
                       )}
                       {r.status === "cancelled" && (
-                        <button
+                        <SpinButton
                           disabled
                           title="此訂單已取消"
                           className="rounded-md bg-red-200 px-2 py-1 text-[11px] font-medium text-red-700 cursor-not-allowed dark:bg-red-950 dark:text-red-300"
                         >
                           已取消
-                        </button>
+                        </SpinButton>
                       )}
                       {r.status === "expired" && (
-                        <button
+                        <SpinButton
                           disabled
                           title="此訂單已逾期"
                           className="rounded-md bg-amber-200 px-2 py-1 text-[11px] font-medium text-amber-800 cursor-not-allowed dark:bg-amber-950 dark:text-amber-300"
                         >
                           已逾期
-                        </button>
+                        </SpinButton>
                       )}
                       {r.status === "completed" && (
-                        <button
+                        <SpinButton
                           disabled
                           title="此訂單已完成"
                           className="rounded-md bg-emerald-200 px-2 py-1 text-[11px] font-medium text-emerald-800 cursor-not-allowed dark:bg-emerald-950 dark:text-emerald-300"
                         >
                           已完成
-                        </button>
+                        </SpinButton>
                       )}
                       {r.status === "transferred_out" && (
-                        <button
+                        <SpinButton
                           disabled
                           title="此訂單已轉出"
                           className="rounded-md bg-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-700 cursor-not-allowed dark:bg-zinc-700 dark:text-zinc-300"
                         >
                           已轉出
-                        </button>
+                        </SpinButton>
                       )}
                     </div>
                   </Td>
@@ -564,7 +565,7 @@ function Td({ children, className = "", title }: { children: React.ReactNode; cl
   return <td className={`px-4 py-3 ${className}`} title={title}>{children}</td>;
 }
 function PagerBtn({ onClick, disabled, children }: { onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
-  return <button onClick={onClick} disabled={disabled} className="rounded-md border border-zinc-300 px-2 py-1 transition-colors hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800">{children}</button>;
+  return <SpinButton onClick={onClick} disabled={disabled} className="rounded-md border border-zinc-300 px-2 py-1 transition-colors hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800">{children}</SpinButton>;
 }
 function CoverThumb({ src, alt }: { src: string | null; alt: string }) {
   if (!src) {

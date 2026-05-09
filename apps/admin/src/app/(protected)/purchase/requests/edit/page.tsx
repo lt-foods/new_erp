@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { PrPipelineStepper, type PrStepEvents, type POSummary, type TransferSummary } from "@/components/PrPipelineStepper";
+import SpinButton from "@/components/SpinButton";
 
 type PRHeader = {
   id: number;
@@ -608,13 +609,13 @@ function PageContent() {
               ))}
             </ul>
           </div>
-          <button
+          <SpinButton
             onClick={appendMissing}
             disabled={appending}
             className="shrink-0 rounded-md bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-50"
           >
             {appending ? "併入中…" : "📥 全部併入"}
-          </button>
+          </SpinButton>
         </div>
       )}
 
@@ -672,41 +673,41 @@ function PageContent() {
               </Link>
               {editable && (
                 <>
-                  <button
+                  <SpinButton
                     onClick={saveDraft}
                     disabled={busy !== null}
                     className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
                   >
                     {busy === "save" ? "存檔中…" : "💾 存為草稿"}
-                  </button>
-                  <button
+                  </SpinButton>
+                  <SpinButton
                     onClick={submitForReview}
                     disabled={busy !== null}
                     className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
                   >
                     {busy === "submit" ? "送審中…" : "📤 送出審核"}
-                  </button>
+                  </SpinButton>
                 </>
               )}
               {canSplit && (
-                <button
+                <SpinButton
                   onClick={splitToPos}
                   disabled={busy !== null || unassignedCount > 0}
                   className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
                   title={unassignedCount > 0 ? "有未指派供應商" : ""}
                 >
                   {busy === "split" ? "建立中…" : "📦 建立採購訂單"}
-                </button>
+                </SpinButton>
               )}
               {canReopen && (
-                <button
+                <SpinButton
                   onClick={reopenToDraft}
                   disabled={busy !== null}
                   className="rounded-md border border-amber-400 px-3 py-2 text-sm font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-950"
                   title="退回草稿以重新編輯"
                 >
                   {busy === "reopen" ? "退回中…" : "↩ 退回草稿"}
-                </button>
+                </SpinButton>
               )}
               {!editable && !canSplit && !canReopen && (
                 <p className="text-xs text-zinc-500">此採購單已 {STATUS_LABEL[header.status]}，無可用動作。</p>
@@ -806,7 +807,7 @@ function PageContent() {
                   <Td className="text-zinc-500">{r.unit_uom ?? "—"}</Td>
                   <Td className="text-right">
                     {r.purchased_so_far > 0 ? (
-                      <span className="font-mono text-amber-600 dark:text-amber-400" title="此 SKU 在同團購的其他已通過 PR 已採購過">
+                      <span className="font-mono text-amber-600 dark:text-amber-400" title="此品項在同團購的其他已通過 PR 已採購過">
                         {r.purchased_so_far}
                       </span>
                     ) : (
@@ -882,12 +883,12 @@ function PageContent() {
                   </Td>
                   <Td>
                     {editable && (
-                      <button
+                      <SpinButton
                         onClick={() => removeItem(idx)}
                         className="text-xs text-red-600 hover:underline dark:text-red-400"
                       >
                         ✕
-                      </button>
+                      </SpinButton>
                     )}
                   </Td>
                 </tr>
@@ -993,7 +994,7 @@ function buildEvents(
   if (header.source_close_date) {
     evt.ship = {
       detail: `配送 ${header.source_close_date}`,
-      href: `/picking/history`,
+      href: `/wms/picking/history`,
     };
     evt.delivered = { detail: `配送 ${header.source_close_date}` };
   }

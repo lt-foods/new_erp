@@ -6,6 +6,7 @@ import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 import { Modal } from "@/components/Modal";
 import { withBasePath } from "@/lib/basePath";
 import { DatePicker } from "@/components/DatePicker";
+import SpinButton from "@/components/SpinButton";
 
 type ReceivableStatus = "pending" | "partially_paid" | "paid" | "cancelled" | "disputed";
 type SourceType = "store_monthly_settlement" | "manual";
@@ -210,12 +211,12 @@ export default function ReceivablesPage() {
                   <Td className={`text-right font-mono ${unpaid > 0 ? "text-rose-600" : "text-zinc-400"}`}>${unpaid.toLocaleString()}</Td>
                   <Td><span className={`inline-block rounded px-2 py-0.5 text-xs ${STATUS_COLOR[b.status]}`}>{STATUS_LABEL[b.status]}</span></Td>
                   <Td className="text-right">
-                    <button
+                    <SpinButton
                       onClick={() => setDetail(b)}
                       className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
                     >
                       詳情
-                    </button>
+                    </SpinButton>
                   </Td>
                 </tr>
               );
@@ -226,15 +227,15 @@ export default function ReceivablesPage() {
 
       {totalPages > 1 && (
         <div className="flex items-center justify-end gap-2 text-sm">
-          <button disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}
+          <SpinButton disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}
             className="rounded-md border border-zinc-300 px-3 py-1 disabled:opacity-50 dark:border-zinc-700">
             上一頁
-          </button>
+          </SpinButton>
           <span className="text-zinc-500">{page} / {totalPages}</span>
-          <button disabled={page >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+          <SpinButton disabled={page >= totalPages} onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
             className="rounded-md border border-zinc-300 px-3 py-1 disabled:opacity-50 dark:border-zinc-700">
             下一頁
-          </button>
+          </SpinButton>
         </div>
       )}
 
@@ -345,12 +346,12 @@ function ReceivableDetail({
         <div className="mb-2 flex items-center justify-between">
           <span className="text-sm font-medium">收款記錄（{payments?.length ?? 0} 筆）</span>
           {unpaid > 0 && receivable.status !== "cancelled" && (
-            <button
+            <SpinButton
               onClick={() => setShowPayForm(!showPayForm)}
               className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700"
             >
               {showPayForm ? "取消" : "💰 標記收款"}
-            </button>
+            </SpinButton>
           )}
         </div>
         <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
@@ -491,13 +492,13 @@ function PaymentForm({
       </div>
       {err && <p className="mt-2 text-xs text-rose-600">{err}</p>}
       <div className="mt-3 flex justify-end">
-        <button
+        <SpinButton
           onClick={submit}
           disabled={busy || amount <= 0 || amount > unpaid}
           className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:opacity-50"
         >
           {busy ? "處理中…" : `💰 確認收款 $${Number(amount).toLocaleString()}`}
-        </button>
+        </SpinButton>
       </div>
     </div>
   );

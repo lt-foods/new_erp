@@ -8,6 +8,7 @@ import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 import { Modal } from "@/components/Modal";
 import { MemberForm, type MemberFormValues } from "@/components/MemberForm";
 import { MemberDetail } from "@/components/MemberDetail";
+import SpinButton from "@/components/SpinButton";
 
 type Status = "active" | "inactive" | "blocked" | "merged" | "deleted";
 type SortKey = "updated_at" | "member_no" | "name";
@@ -195,12 +196,12 @@ function MembersListBody() {
             {loading ? "載入中…" : total === 0 ? "共 0 筆" : `共 ${total} 筆（顯示 ${fromIdx}-${toIdx}）`}
           </p>
         </div>
-        <button
+        <SpinButton
           onClick={() => setModal({ mode: "new" })}
           className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
         >
           新增會員
-        </button>
+        </SpinButton>
       </header>
 
       <div className="grid gap-3 sm:grid-cols-2">
@@ -272,12 +273,12 @@ function MembersListBody() {
                 return (
                   <tr key={r.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
                     <Td className="font-mono">
-                      <button
+                      <SpinButton
                         onClick={() => setModal({ mode: "detail", memberId: r.id, memberNo: r.member_no })}
                         className={r.status === "merged" || r.status === "deleted" ? "text-zinc-400 hover:underline" : "hover:underline"}
                       >
                         {r.member_no}
-                      </button>
+                      </SpinButton>
                       {r.status === "merged" && (
                         <span className="ml-2 rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] font-normal text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300">已合併</span>
                       )}
@@ -312,7 +313,7 @@ function MembersListBody() {
                         >
                           🔎 查訂單
                         </Link>
-                        <button
+                        <SpinButton
                           onClick={async () => {
                             const { data } = await getSupabase()
                               .from("members")
@@ -330,7 +331,7 @@ function MembersListBody() {
                           className="text-xs text-blue-600 hover:underline dark:text-blue-400"
                         >
                           編輯
-                        </button>
+                        </SpinButton>
                       </div>
                     </Td>
                   </tr>
@@ -423,12 +424,12 @@ function SkeletonRows({ cols }: { cols: number }) {
 
 function PagerBtn({ onClick, disabled, children }: { onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
   return (
-    <button
+    <SpinButton
       onClick={onClick}
       disabled={disabled}
       className="rounded-md border border-zinc-300 px-2 py-1 transition-colors hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800"
     >
       {children}
-    </button>
+    </SpinButton>
   );
 }

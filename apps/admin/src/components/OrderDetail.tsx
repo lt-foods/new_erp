@@ -14,6 +14,7 @@ import { useRole } from "@/lib/role";
 import { orderStatusLabel as statusLabel, canPayWithWallet } from "@/lib/orderStatus";
 import { withBasePath } from "@/lib/basePath";
 import { translateRpcError } from "@/lib/rpcError";
+import SpinButton from "@/components/SpinButton";
 
 type OrderHead = {
   id: number;
@@ -376,13 +377,13 @@ export function OrderDetail({
   return (
     <div className="space-y-4 text-sm">
       <div className="flex flex-wrap items-center justify-end gap-2">
-        <button
+        <SpinButton
           onClick={() => setAuditOpen(true)}
           className="rounded-md border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
           title="售價 / 備註變更歷史"
         >
           📜 查看編輯歷史
-        </button>
+        </SpinButton>
       </div>
 
       {draftCount > 0 && (
@@ -397,44 +398,44 @@ export function OrderDetail({
             placeholder="修改原因（選填，會記錄到編輯歷史）"
             className="ml-auto w-72 rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
           />
-          <button
+          <SpinButton
             onClick={clearDraft}
             disabled={saving}
             className="rounded-md border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
           >
             取消修改
-          </button>
-          <button
+          </SpinButton>
+          <SpinButton
             onClick={saveAllDraft}
             disabled={saving}
             className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
           >
             {saving ? "儲存中…" : `💾 儲存（${draftCount}）`}
-          </button>
+          </SpinButton>
         </div>
       )}
       {(canTransfer || canPickup || canCancel || isTransferredOut) && (
         <div className="flex items-center justify-end gap-2">
           {canPickup && (
-            <button
+            <SpinButton
               onClick={() => setPickupOpen(true)}
               className="rounded-md border border-emerald-300 px-3 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950"
               title="顧客取貨 — 可選哪些 item"
             >
               ✅ 確認取貨
-            </button>
+            </SpinButton>
           )}
           {canTransfer && (
-            <button
+            <SpinButton
               onClick={() => setTransferOpen(true)}
               className="rounded-md border border-blue-300 px-3 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950"
               title="客人棄單 / 轉到其他店店長 / 互助接手"
             >
               ↗ 轉出此訂單
-            </button>
+            </SpinButton>
           )}
           {canCancel && (
-            <button
+            <SpinButton
               onClick={cancelOrder}
               className="rounded-md border border-red-300 px-3 py-1 text-xs font-medium text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950"
               title={head.status === "shipping" ? "撤回派貨並反向回收已出庫存" : "取消訂單"}
@@ -443,7 +444,7 @@ export function OrderDetail({
               {Number(head.wallet_paid_amount ?? 0) > 0 && (
                 <span className="ml-1 text-[10px] font-normal text-zinc-500">(將退 ${Number(head.wallet_paid_amount)})</span>
               )}
-            </button>
+            </SpinButton>
           )}
           {isTransferredOut && (
             <span className="text-xs text-zinc-500">⚠️ 此訂單已轉出</span>
@@ -552,10 +553,10 @@ export function OrderDetail({
                     <span className="rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">✅ 已付清</span>
                   )}
                   {canPay && (
-                    <button
+                    <SpinButton
                       onClick={() => setWalletPayOpen(true)}
                       className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-700"
-                    >💳 用儲值金結帳</button>
+                    >💳 用儲值金結帳</SpinButton>
                   )}
                 </>
               );
@@ -904,10 +905,10 @@ async function buildTimeline(
       }
       if (waves.length === 1) {
         waveDetail = waves[0].wave_code;
-        waveHref = `/picking/history?wave=${waves[0].id}`;
+        waveHref = `/wms/picking/history?wave=${waves[0].id}`;
       } else if (waves.length > 1) {
         waveDetail = `${waves.length} 張撿貨單`;
-        waveHref = `/picking/history`;
+        waveHref = `/wms/picking/history`;
       }
 
       // transfer for each wave to this store
@@ -919,10 +920,10 @@ async function buildTimeline(
       const xfers = ((ts as { transfer_no: string; status: string; shipped_at: string | null; received_at: string | null }[] | null) ?? []);
       if (xfers.length === 1) {
         xferDetail = xfers[0].transfer_no;
-        xferHref = `/transfers/`;
+        xferHref = `/wms/outbound`;
       } else if (xfers.length > 1) {
         xferDetail = `${xfers.length} 張 TR`;
-        xferHref = `/transfers/`;
+        xferHref = `/wms/outbound`;
       }
       if (xfers.length > 0) {
         const allShipped = xfers.every((t) => ["shipped", "received", "closed"].includes(t.status));
@@ -988,13 +989,13 @@ function Timeline({ steps }: { steps: TimelineStep[] | null }) {
               </div>
               {s.detail && (
                 s.detailOnClick ? (
-                  <button
+                  <SpinButton
                     type="button"
                     onClick={s.detailOnClick}
                     className="text-[10px] font-mono text-blue-600 hover:underline dark:text-blue-400"
                   >
                     {s.detail}
-                  </button>
+                  </SpinButton>
                 ) : s.detailHref ? (
                   <a
                     href={withBasePath(s.detailHref)}

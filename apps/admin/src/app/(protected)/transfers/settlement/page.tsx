@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { withBasePath } from "@/lib/basePath";
+import SpinButton from "@/components/SpinButton";
 
 type SettlementStatus = "draft" | "confirmed" | "settled" | "disputed";
 type SettlementStatusExt = SettlementStatus | "cancelled";
@@ -220,13 +221,13 @@ function HqToStoreTab() {
               className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
             />
           </label>
-          <button
+          <SpinButton
             onClick={onGenerate}
             disabled={!genMonth || generating}
             className="rounded-md bg-zinc-900 px-4 py-2 text-sm text-white transition hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
           >
             {generating ? "產生中…" : "產生 / 重算 draft"}
-          </button>
+          </SpinButton>
           <p className="text-xs text-zinc-500">
             ⚠️ 該月已 confirmed/settled 的不會重算；draft 會重建。
           </p>
@@ -299,12 +300,12 @@ function HqToStoreTab() {
                   <Td className="text-right font-mono">{r.item_count}</Td>
                   <Td><span className={`inline-block rounded px-2 py-0.5 text-xs ${STATUS_COLOR[r.status]}`}>{STATUS_LABEL[r.status]}</span></Td>
                   <Td className="text-right">
-                    <button
+                    <SpinButton
                       onClick={() => setDetail(r)}
                       className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
                     >
                       明細
-                    </button>
+                    </SpinButton>
                   </Td>
                 </tr>
               );
@@ -513,13 +514,13 @@ function HqToStoreDetail({
 
       {settlement.status === "draft" && (
         <div className="flex justify-end">
-          <button
+          <SpinButton
             onClick={onConfirm}
             disabled={confirming}
             className="rounded-md bg-zinc-900 px-4 py-2 text-sm text-white transition hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
           >
             {confirming ? "確認中…" : "確認此結算（產生應付帳款單）"}
-          </button>
+          </SpinButton>
         </div>
       )}
     </div>
@@ -624,13 +625,13 @@ function StoreToStoreTab() {
               className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
             />
           </label>
-          <button
+          <SpinButton
             onClick={onGenerate}
             disabled={!genMonth || generating}
             className="rounded-md bg-zinc-900 px-4 py-2 text-sm text-white transition hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
           >
             {generating ? "產生中…" : "產生 / 重算 draft"}
-          </button>
+          </SpinButton>
           <p className="text-xs text-zinc-500">
             ⚠️ 該月已有 confirmed / settled 不會重算；draft 會砍掉重建。
           </p>
@@ -717,12 +718,12 @@ function StoreToStoreTab() {
                       : <span className="text-zinc-400">兩平</span>}
                   </Td>
                   <Td className="text-right">
-                    <button
+                    <SpinButton
                       onClick={() => setDetail(r)}
                       className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
                     >
                       明細
-                    </button>
+                    </SpinButton>
                   </Td>
                 </tr>
               );
@@ -877,13 +878,13 @@ function StoreToStoreDetail({
 
       {settlement.status === "draft" && (
         <div className="flex justify-end">
-          <button
+          <SpinButton
             onClick={onConfirm}
             disabled={confirming}
             className="rounded-md bg-zinc-900 px-4 py-2 text-sm text-white transition hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
           >
             {confirming ? "確認中…" : "確認此結算"}
-          </button>
+          </SpinButton>
         </div>
       )}
     </div>
@@ -895,7 +896,7 @@ function StoreToStoreDetail({
 // ============================================================
 function TabBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button
+    <SpinButton
       onClick={onClick}
       className={`whitespace-nowrap border-b-2 px-1 py-3 text-sm font-medium transition ${
         active
@@ -904,7 +905,7 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
       }`}
     >
       {children}
-    </button>
+    </SpinButton>
   );
 }
 

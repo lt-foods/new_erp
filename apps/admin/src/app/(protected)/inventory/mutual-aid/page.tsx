@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
+import SpinButton from "@/components/SpinButton";
 
 type Store = { id: number; code: string; name: string };
 type SkuOption = { id: number; sku_code: string; product_name: string; variant_name: string | null };
@@ -136,7 +137,7 @@ export default function MutualAidPage() {
           return {
             ...r,
             store_name: storeMap.get(r.offering_store_id) ?? `#${r.offering_store_id}`,
-            sku_label: sku ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} (${sku.sku_code})` : `SKU#${r.sku_id}`,
+            sku_label: sku ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} (${sku.sku_code})` : `品項#${r.sku_id}`,
             source_order_no: r.source_customer_order_id ? orderMap.get(r.source_customer_order_id) ?? null : null,
             replies_count: replyCount.get(r.id) ?? 0,
           };
@@ -159,26 +160,26 @@ export default function MutualAidPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <button
+          <SpinButton
             type="button"
             onClick={() => setRequestModalOpen(true)}
             className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
           >
             📢 我要求助
-          </button>
-          <button
+          </SpinButton>
+          <SpinButton
             type="button"
             onClick={() => setOfferModalOpen(true)}
             className="rounded-md bg-pink-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-pink-700"
           >
             📦 我有庫存可提供
-          </button>
+          </SpinButton>
         </div>
       </header>
 
       <div className="inline-flex w-fit overflow-hidden rounded-md border border-zinc-300 text-xs dark:border-zinc-700">
         {(["all", "request", "offer"] as const).map((opt) => (
-          <button
+          <SpinButton
             key={opt}
             type="button"
             onClick={() => setFilter(opt)}
@@ -189,7 +190,7 @@ export default function MutualAidPage() {
             }`}
           >
             {opt === "all" ? "全部" : opt === "request" ? "需求中" : "釋出中"}
-          </button>
+          </SpinButton>
         ))}
       </div>
 
@@ -209,7 +210,7 @@ export default function MutualAidPage() {
         <ul className="space-y-2">
           {posts.map((p) => (
             <li key={p.id}>
-              <button
+              <SpinButton
                 type="button"
                 onClick={() => setThreadPost(p)}
                 className="block w-full rounded-md border border-zinc-200 bg-white p-3 text-left transition hover:border-zinc-400 hover:shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-600"
@@ -239,7 +240,7 @@ export default function MutualAidPage() {
                   )}
                   {p.note && <span className="text-zinc-700 dark:text-zinc-300">「{p.note}」</span>}
                 </div>
-              </button>
+              </SpinButton>
             </li>
           ))}
         </ul>
@@ -321,7 +322,7 @@ function SkuSearchInput({
           setQuery(e.target.value);
           setOpen(true);
         }}
-        placeholder="搜尋商品 / SKU"
+        placeholder="搜尋商品 / 品項"
         className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
       />
       {open && results.length > 0 && !value && (
@@ -330,7 +331,7 @@ function SkuSearchInput({
           onMouseLeave={() => setOpen(false)}
         >
           {results.map((s) => (
-            <button
+            <SpinButton
               key={s.id}
               type="button"
               onClick={() => { onChange(s); setOpen(false); }}
@@ -339,7 +340,7 @@ function SkuSearchInput({
               <span className="font-medium">{s.product_name}</span>
               {s.variant_name && <span className="ml-1 text-zinc-500">/ {s.variant_name}</span>}
               <span className="ml-2 font-mono text-zinc-400">{s.sku_code}</span>
-            </button>
+            </SpinButton>
           ))}
         </div>
       )}
@@ -383,7 +384,7 @@ function RequestModal({
     if (submitting) return;
     setErr(null);
     if (!storeId) { setErr("請選求助店"); return; }
-    if (!picked) { setErr("請選 SKU"); return; }
+    if (!picked) { setErr("請選品項"); return; }
     const qtyN = Number(qty);
     if (!Number.isFinite(qtyN) || qtyN <= 0) { setErr("數量需 > 0"); return; }
     const expDate = new Date(expiresAt);
@@ -434,7 +435,7 @@ function RequestModal({
           </select>
         </label>
         <div>
-          <span className="mb-1 block text-xs text-zinc-500">需要的 SKU <span className="text-red-500">*</span></span>
+          <span className="mb-1 block text-xs text-zinc-500">需要的品項 <span className="text-red-500">*</span></span>
           <SkuSearchInput value={picked} onChange={setPicked} />
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -467,15 +468,15 @@ function RequestModal({
           />
         </label>
         <div className="mt-2 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">取消</button>
-          <button
+          <SpinButton type="button" onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">取消</SpinButton>
+          <SpinButton
             type="button"
             onClick={submit}
             disabled={submitting}
             className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             {submitting ? "送出中…" : "發佈求助"}
-          </button>
+          </SpinButton>
         </div>
       </div>
     </Modal>
@@ -556,7 +557,7 @@ function OfferModal({
                 qty: Number(it.qty),
                 sku_label: sku
                   ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} (${sku.sku_code})`
-                  : `SKU#${it.sku_id}`,
+                  : `品項#${it.sku_id}`,
               };
             }),
         };
@@ -643,7 +644,7 @@ function OfferModal({
             ) : (
               <div className="max-h-60 overflow-y-auto rounded-md border border-zinc-200 dark:border-zinc-800">
                 {orders.map((o) => (
-                  <button
+                  <SpinButton
                     key={o.id}
                     type="button"
                     onClick={() => { setPickedOrder(o); setPickedItemIdx(0); }}
@@ -658,7 +659,7 @@ function OfferModal({
                     {pickedOrder?.id === o.id && o.items.length > 1 && (
                       <div className="mt-1 flex flex-wrap gap-1">
                         {o.items.map((it, idx) => (
-                          <button
+                          <SpinButton
                             key={idx}
                             type="button"
                             onClick={(e) => { e.stopPropagation(); setPickedItemIdx(idx); }}
@@ -669,14 +670,14 @@ function OfferModal({
                             }`}
                           >
                             {it.sku_label} × {it.qty}
-                          </button>
+                          </SpinButton>
                         ))}
                       </div>
                     )}
                     {pickedOrder?.id === o.id && o.items.length === 1 && (
                       <div className="mt-1 text-[10px] text-zinc-500">{o.items[0].sku_label} × {o.items[0].qty}</div>
                     )}
-                  </button>
+                  </SpinButton>
                 ))}
               </div>
             )}
@@ -713,15 +714,15 @@ function OfferModal({
           />
         </label>
         <div className="mt-2 flex justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">取消</button>
-          <button
+          <SpinButton type="button" onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">取消</SpinButton>
+          <SpinButton
             type="button"
             onClick={submit}
             disabled={submitting}
             className="rounded-md bg-pink-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-pink-700 disabled:opacity-50"
           >
             {submitting ? "送出中…" : "發佈釋出"}
-          </button>
+          </SpinButton>
         </div>
       </div>
     </Modal>
@@ -892,44 +893,44 @@ function ThreadModal({
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap gap-2">
                 {post.post_type === "offer" && (
-                  <button
+                  <SpinButton
                     type="button"
                     onClick={() => setClaimOpen(true)}
                     className="rounded-md border border-pink-400 bg-pink-50 px-3 py-1.5 text-xs font-medium text-pink-700 hover:bg-pink-100 dark:border-pink-700 dark:bg-pink-950 dark:text-pink-300 dark:hover:bg-pink-900"
                     title="把釋出店的訂單轉成接收店的（走 5b-1 棄單轉出）"
                   >
                     ✋ 我要認領
-                  </button>
+                  </SpinButton>
                 )}
                 {post.post_type === "request" && (
-                  <button
+                  <SpinButton
                     type="button"
                     onClick={() => setFulfillOpen(true)}
                     className="rounded-md border border-blue-400 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300 dark:hover:bg-blue-900"
                     title="從我的 pending 訂單挑一張轉給求助店"
                   >
                     🤝 我可以提供
-                  </button>
+                  </SpinButton>
                 )}
                 {canClose && (
-                  <button
+                  <SpinButton
                     type="button"
                     onClick={closePost}
                     disabled={closing}
                     className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                   >
                     {closing ? "處理中…" : "結束此貼"}
-                  </button>
+                  </SpinButton>
                 )}
               </div>
-              <button
+              <SpinButton
                 type="button"
                 onClick={postReply}
                 disabled={submitting || !body.trim()}
                 className="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
               >
                 {submitting ? "送出中…" : "送出留言"}
-              </button>
+              </SpinButton>
             </div>
           </div>
         ) : (
@@ -1070,15 +1071,15 @@ function ClaimOfferDialog({
           />
         </label>
         <div className="flex justify-end gap-2">
-          <button type="button" onClick={onCancel} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">取消</button>
-          <button
+          <SpinButton type="button" onClick={onCancel} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">取消</SpinButton>
+          <SpinButton
             type="button"
             onClick={submit}
             disabled={busy}
             className="rounded-md bg-pink-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-pink-700 disabled:opacity-50"
           >
             {busy ? "處理中…" : "確認認領"}
-          </button>
+          </SpinButton>
         </div>
       </div>
     </div>
@@ -1144,7 +1145,7 @@ function FulfillRequestDialog({
             const sku = Array.isArray(it.sku) ? it.sku[0] : it.sku;
             return {
               campaign_item_id: null, sku_id: it.sku_id, qty: Number(it.qty),
-              sku_label: sku ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} (${sku.sku_code})` : `SKU#${it.sku_id}`,
+              sku_label: sku ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} (${sku.sku_code})` : `品項#${it.sku_id}`,
             };
           }),
         };
@@ -1218,15 +1219,15 @@ function FulfillRequestDialog({
         </label>
         {myStore !== "" && (
           <div className="mb-3">
-            <span className="mb-1 block text-xs text-zinc-500">挑一張含此 SKU 的 pending 訂單 <span className="text-red-500">*</span></span>
+            <span className="mb-1 block text-xs text-zinc-500">挑一張含此品項的 pending 訂單 <span className="text-red-500">*</span></span>
             {orders === null ? (
               <div className="text-xs text-zinc-500">載入訂單中…</div>
             ) : orders.length === 0 ? (
-              <div className="rounded-md border border-dashed border-zinc-300 p-3 text-xs text-zinc-500 dark:border-zinc-700">該店沒有含此 SKU 的可轉移訂單</div>
+              <div className="rounded-md border border-dashed border-zinc-300 p-3 text-xs text-zinc-500 dark:border-zinc-700">該店沒有含此品項的可轉移訂單</div>
             ) : (
               <div className="max-h-48 overflow-y-auto rounded-md border border-zinc-200 dark:border-zinc-800">
                 {orders.map((o) => (
-                  <button
+                  <SpinButton
                     key={o.id}
                     type="button"
                     onClick={() => setPickedOrderId(o.id)}
@@ -1235,7 +1236,7 @@ function FulfillRequestDialog({
                     }`}
                   >
                     <span className="font-mono">{o.order_no}</span> · {o.member_name ?? "—"} · 數量 {o.items.find((it) => it.sku_id === post.sku_id)?.qty ?? "—"} · <span className="text-zinc-500">{o.status}</span>
-                  </button>
+                  </SpinButton>
                 ))}
               </div>
             )}
@@ -1264,15 +1265,15 @@ function FulfillRequestDialog({
           />
         </label>
         <div className="flex justify-end gap-2">
-          <button type="button" onClick={onCancel} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">取消</button>
-          <button
+          <SpinButton type="button" onClick={onCancel} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">取消</SpinButton>
+          <SpinButton
             type="button"
             onClick={submit}
             disabled={busy}
             className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             {busy ? "處理中…" : "確認提供"}
-          </button>
+          </SpinButton>
         </div>
       </div>
     </div>

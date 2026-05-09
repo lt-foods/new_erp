@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
+import SpinButton from "@/components/SpinButton";
 
 type Status = "pending" | "approved_transfer" | "approved_pr" | "shipped" | "received" | "rejected" | "cancelled";
 
@@ -28,7 +29,7 @@ type Row = {
 const STATUS_LABEL: Record<Status, string> = {
   pending: "待處理",
   approved_transfer: "已派貨",
-  approved_pr: "已轉採購",
+  approved_pr: "已下單",
   shipped: "已出貨",
   received: "已收貨",
   rejected: "已拒絕",
@@ -114,7 +115,7 @@ export default function RestockInboxPage() {
   }
 
   async function approveToPr(id: number) {
-    if (!confirm("確定轉為採購？此動作會把申請項目掛到 PR。")) return;
+    if (!confirm("確定下訂單？此動作會獨立建立一張新的採購單。")) return;
     setBusy(id);
     try {
       const { error: err } = await getSupabase().rpc("rpc_approve_restock_to_pr", { p_request_id: id });
@@ -176,7 +177,7 @@ export default function RestockInboxPage() {
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header>
         <h1 className="text-xl font-semibold">補貨申請 - HQ Inbox</h1>
-        <p className="text-sm text-zinc-500">處理分店補貨申請：派庫存出貨 / 轉採購 / 拒絕</p>
+        <p className="text-sm text-zinc-500">處理分店補貨申請：派庫存出貨 / 下訂單 / 拒絕</p>
       </header>
 
       {error && <div className="rounded-md bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">{error}</div>}
@@ -184,13 +185,13 @@ export default function RestockInboxPage() {
       <div className="grid gap-3 sm:grid-cols-4">
         <Stat label="待處理" value={stats.pending} accent="text-amber-700 dark:text-amber-400" />
         <Stat label="已派貨 / 出貨中" value={stats.shipped} accent="text-blue-700 dark:text-blue-400" />
-        <Stat label="已轉採購" value={stats.toPr} accent="text-indigo-700 dark:text-indigo-400" />
+        <Stat label="已下單" value={stats.toPr} accent="text-indigo-700 dark:text-indigo-400" />
         <Stat label="已拒絕" value={stats.rejected} accent="text-red-700 dark:text-red-400" />
       </div>
 
       <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
         {(["pending", "history"] as const).map((v) => (
-          <button
+          <SpinButton
             key={v}
             onClick={() => setTab(v)}
             className={tab === v
@@ -199,7 +200,7 @@ export default function RestockInboxPage() {
             }
           >
             {v === "pending" ? `待處理 (${stats.pending})` : "歷史"}
-          </button>
+          </SpinButton>
         ))}
       </div>
 
@@ -230,9 +231,9 @@ export default function RestockInboxPage() {
                 <td className="px-3 py-3">
                   {r.status === "pending" ? (
                     <div className="flex flex-wrap gap-1">
-                      <button onClick={() => approveToTransfer(r.id)} disabled={busy === r.id} className="rounded border border-blue-400 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300">派貨</button>
-                      <button onClick={() => approveToPr(r.id)} disabled={busy === r.id} className="rounded border border-indigo-400 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50 dark:border-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">進貨</button>
-                      <button onClick={() => setRejectModal({ id: r.id, reason: "" })} disabled={busy === r.id} className="rounded border border-red-400 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50 dark:border-red-700 dark:bg-red-950 dark:text-red-300">拒絕</button>
+                      <SpinButton onClick={() => approveToTransfer(r.id)} disabled={busy === r.id} className="rounded border border-blue-400 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300">派貨</SpinButton>
+                      <SpinButton onClick={() => approveToPr(r.id)} disabled={busy === r.id} className="rounded border border-indigo-400 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50 dark:border-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">下訂單</SpinButton>
+                      <SpinButton onClick={() => setRejectModal({ id: r.id, reason: "" })} disabled={busy === r.id} className="rounded border border-red-400 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50 dark:border-red-700 dark:bg-red-950 dark:text-red-300">拒絕</SpinButton>
                     </div>
                   ) : (
                     <div className="flex flex-col gap-1 text-xs">
@@ -242,18 +243,18 @@ export default function RestockInboxPage() {
                         </Link>
                       )}
                       {r.linked_transfer_id && (
-                        <Link href={`/transfers?id=${r.linked_transfer_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
+                        <Link href={`/wms/outbound?id=${r.linked_transfer_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
                           → {r.linked_transfer_no ?? `轉貨單 #${r.linked_transfer_id}`}
                         </Link>
                       )}
                       {r.status === "approved_pr" && (
-                        <button
+                        <SpinButton
                           onClick={() => shipPrReceived(r.id)}
                           disabled={busy === r.id}
                           className="mt-1 self-start rounded border border-emerald-400 bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
                         >
                           📦 PO 到貨、建轉貨單
-                        </button>
+                        </SpinButton>
                       )}
                       {r.status === "rejected" && r.rejected_reason && <span className="text-red-600">拒絕：{r.rejected_reason}</span>}
                     </div>
@@ -280,10 +281,10 @@ export default function RestockInboxPage() {
               />
             </label>
             <div className="mt-3 flex gap-2">
-              <button onClick={reject} disabled={!rejectModal.reason.trim() || busy === rejectModal.id} className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50">
+              <SpinButton onClick={reject} disabled={!rejectModal.reason.trim() || busy === rejectModal.id} className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50">
                 {busy === rejectModal.id ? "拒絕中…" : "確認拒絕"}
-              </button>
-              <button onClick={() => setRejectModal(null)} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">取消</button>
+              </SpinButton>
+              <SpinButton onClick={() => setRejectModal(null)} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">取消</SpinButton>
             </div>
           </div>
         </div>

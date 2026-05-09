@@ -9,6 +9,7 @@ import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import { WALLET_PAYMENT_METHODS, WALLET_PAYMENT_METHOD_LABEL, walletLedgerTypeLabel, walletPaymentMethodLabel } from "@/lib/walletLedger";
+import SpinButton from "@/components/SpinButton";
 
 export type WalletActionMode = "topup" | "spend" | "refund" | "adjust" | "reverse";
 
@@ -251,20 +252,20 @@ export function WalletActionModal({
         )}
 
         <div className="flex justify-end gap-2">
-          <button
+          <SpinButton
             onClick={onClose}
             disabled={busy}
             className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
             取消
-          </button>
-          <button
+          </SpinButton>
+          <SpinButton
             onClick={submit}
             disabled={busy}
             className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
           >
             {busy ? "送出中…" : "✅ 確認"}
-          </button>
+          </SpinButton>
         </div>
       </div>
     </Modal>

@@ -3,6 +3,7 @@
 import { Fragment, Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import SpinButton from "@/components/SpinButton";
 
 type PickupEvent = {
   id: number;
@@ -141,8 +142,8 @@ function Body() {
       `}</style>
       <div className="mx-auto max-w-2xl p-6">
         <div className="no-print mb-4 flex justify-end gap-2">
-          <button onClick={() => window.print()} className="rounded-md bg-zinc-900 px-4 py-2 text-sm text-white hover:bg-zinc-700">🖨️ 列印</button>
-          <button onClick={() => window.close()} className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-100">關閉</button>
+          <SpinButton onClick={() => window.print()} className="rounded-md bg-zinc-900 px-4 py-2 text-sm text-white hover:bg-zinc-700">🖨️ 列印</SpinButton>
+          <SpinButton onClick={() => window.close()} className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-100">關閉</SpinButton>
         </div>
 
         {combined ? (

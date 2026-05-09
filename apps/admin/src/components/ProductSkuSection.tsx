@@ -9,6 +9,7 @@ import {
 } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { useRole, canSeeCost, canSeeBranch, type Role } from "@/lib/role";
+import SpinButton from "@/components/SpinButton";
 
 type Sku = {
   id: number;
@@ -337,13 +338,13 @@ export function ProductSkuSection({
           </p>
         </div>
         {!draft && (
-          <button
+          <SpinButton
             type="button"
             onClick={startNew}
             className="shrink-0 rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
             + 新增規格
-          </button>
+          </SpinButton>
         )}
       </header>
 
@@ -480,20 +481,20 @@ function SkuCard({
           )}
         </div>
       </div>
-      <button
+      <SpinButton
         type="button"
         onClick={onEdit}
         className="shrink-0 rounded border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
       >
         編輯
-      </button>
-      <button
+      </SpinButton>
+      <SpinButton
         type="button"
         onClick={onDelete}
         className="shrink-0 rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
       >
         刪除
-      </button>
+      </SpinButton>
     </div>
   );
 }
@@ -544,20 +545,20 @@ function PendingCard({
           )}
         </div>
       </div>
-      <button
+      <SpinButton
         type="button"
         onClick={onEdit}
         className="shrink-0 rounded border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
       >
         編輯
-      </button>
-      <button
+      </SpinButton>
+      <SpinButton
         type="button"
         onClick={onDelete}
         className="shrink-0 rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
       >
         移除
-      </button>
+      </SpinButton>
     </div>
   );
 }
@@ -645,22 +646,22 @@ function DraftCard({
         )}
       </div>
       <div className="flex items-center gap-2">
-        <button
+        <SpinButton
           type="button"
           onClick={onSave}
           disabled={saving}
           className="rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900"
         >
           {saving ? "儲存中…" : "儲存"}
-        </button>
-        <button
+        </SpinButton>
+        <SpinButton
           type="button"
           onClick={onCancel}
           disabled={saving}
           className="rounded border border-zinc-300 px-3 py-1.5 text-xs dark:border-zinc-700"
         >
           取消
-        </button>
+        </SpinButton>
       </div>
     </div>
   );

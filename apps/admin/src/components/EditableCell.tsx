@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import SpinButton from "@/components/SpinButton";
 
 export function EditableNumber({
   value,
@@ -57,14 +58,14 @@ export function EditableNumber({
 
   if (!editing) {
     return (
-      <button
+      <SpinButton
         type="button"
         onClick={() => setEditing(true)}
         className={`${className ?? ""} cursor-pointer rounded px-1 hover:bg-yellow-50 dark:hover:bg-yellow-950`}
         title="點擊編輯"
       >
         {prefix ?? ""}{Number(value)}
-      </button>
+      </SpinButton>
     );
   }
 
@@ -141,14 +142,14 @@ export function EditableText({
 
   if (!editing) {
     return (
-      <button
+      <SpinButton
         type="button"
         onClick={() => setEditing(true)}
         className={`${className ?? ""} cursor-pointer rounded px-1 text-left hover:bg-yellow-50 dark:hover:bg-yellow-950 ${value ? "" : "italic text-zinc-400"}`}
         title="點擊編輯"
       >
         {value || placeholder || "（點此加備註）"}
-      </button>
+      </SpinButton>
     );
   }
 

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
+import SpinButton from "@/components/SpinButton";
 
 type Supplier = {
   id: number;
@@ -81,12 +82,12 @@ export default function SuppliersPage() {
           <p className="text-sm text-zinc-500">共 {rows?.length ?? 0} 筆</p>
         </div>
         {!creating && !editing && (
-          <button
+          <SpinButton
             onClick={() => setCreating(true)}
             className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
           >
             新增供應商
-          </button>
+          </SpinButton>
         )}
       </header>
 
@@ -156,7 +157,7 @@ export default function SuppliersPage() {
                   </span>
                 </Td>
                 <Td>
-                  <button onClick={() => setEditing(r)} className="text-xs text-blue-600 hover:underline dark:text-blue-400">編輯</button>
+                  <SpinButton onClick={() => setEditing(r)} className="text-xs text-blue-600 hover:underline dark:text-blue-400">編輯</SpinButton>
                 </Td>
               </tr>
             ))}
@@ -210,8 +211,8 @@ function SupplierForm({
         <F label="備註" className="sm:col-span-4"><textarea value={v.notes ?? ""} onChange={(e) => up("notes", e.target.value || null)} className={`${inputCls} min-h-16`} /></F>
       </div>
       <div className="flex items-center gap-2">
-        <button type="submit" className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm text-white transition-colors hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200">儲存</button>
-        <button type="button" onClick={onCancel} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800">取消</button>
+        <SpinButton type="submit" className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm text-white transition-colors hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200">儲存</SpinButton>
+        <SpinButton type="button" onClick={onCancel} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800">取消</SpinButton>
       </div>
     </form>
   );

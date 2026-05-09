@@ -6,6 +6,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { getTenantName } from "@/lib/tenant";
+import SpinButton from "@/components/SpinButton";
 
 type NavItem = { href: string; label: string; match: RegExp };
 type NavGroup = { title?: string; items: NavItem[] };
@@ -14,6 +15,7 @@ const NAV: NavGroup[] = [
   {
     items: [
       { href: "/", label: "儀表板", match: /^\/$/ },
+      { href: "/hq/inbox", label: "總倉收件匣", match: /^\/hq\/inbox/ },
     ],
   },
   {
@@ -29,10 +31,11 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/orders", label: "訂單", match: /^\/orders/ },
       { href: "/pickup", label: "取貨", match: /^\/pickup/ },
+      { href: "/wms/inbound", label: "收貨", match: /^\/wms\/inbound|^\/transfers\/inbox/ },
+      { href: "/wms/transfers", label: "內部調撥", match: /^\/wms\/transfers|^\/transfers\/free/ },
+      { href: "/restock", label: "補貨申請", match: /^\/restock(?!\/inbox)/ },
       { href: "/members", label: "會員", match: /^\/members/ },
       { href: "/inventory/mutual-aid", label: "互助交流板", match: /^\/inventory\/mutual-aid/ },
-      { href: "/transfers/aid", label: "互助轉移單（總倉檢視）", match: /^\/transfers\/aid/ },
-      { href: "/transfers/free", label: "自由轉貨", match: /^\/transfers\/free/ },
     ],
   },
   {
@@ -40,17 +43,16 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/purchase/requests", label: "採購單", match: /^\/purchase\/requests/ },
       { href: "/purchase/orders", label: "採購訂單", match: /^\/purchase\/orders/ },
-      { href: "/restock", label: "補貨申請", match: /^\/restock(?!\/inbox)/ },
-      { href: "/restock/inbox", label: "補貨申請 (HQ)", match: /^\/restock\/inbox/ },
     ],
   },
   {
-    title: "倉儲",
+    title: "倉儲 (WMS)",
     items: [
-      { href: "/picking/workstation", label: "撿貨工作站", match: /^\/picking\/workstation/ },
-      { href: "/picking/history", label: "撿貨歷史", match: /^\/picking\/history/ },
-      { href: "/transfers/dispatch", label: "總倉派貨", match: /^\/transfers\/dispatch|^\/transfers$|^\/transfers\/?$/ },
-      { href: "/transfers/inbox", label: "收貨待辦", match: /^\/transfers\/inbox/ },
+      { href: "/wms/receiving", label: "進貨待辦", match: /^\/wms\/receiving/ },
+      { href: "/wms/picking", label: "派貨工作台", match: /^\/wms\/picking(?!\/history)|^\/picking\/workstation/ },
+      { href: "/wms/picking/history", label: "撿貨歷史", match: /^\/wms\/picking\/history|^\/picking\/history/ },
+      { href: "/wms/outbound", label: "出貨集貨", match: /^\/wms\/outbound|^\/transfers\/dispatch|^\/transfers$|^\/transfers\/?$/ },
+      { href: "/wms/exceptions", label: "異常處理", match: /^\/wms\/exceptions/ },
     ],
   },
   {
@@ -73,14 +75,16 @@ const NAV_COLLAPSE_KEY = "new_erp-nav-collapsed";
 
 // 分店帳號 (app_metadata.stores 有值且不含「總倉」) 隱藏的項目
 const BRANCH_HIDDEN_HREFS = new Set([
+  "/hq/inbox",            // 總倉收件匣
   "/suppliers",           // 供應商 (HQ 管理)
   "/purchase/requests",   // 採購單
   "/purchase/orders",     // 採購訂單
-  "/restock/inbox",       // 補貨申請 (HQ)
-  "/picking/workstation", // 撿貨工作站
-  "/picking/history",     // 撿貨歷史
-  "/transfers/dispatch",  // 總倉派貨
-  "/transfers/aid",       // 互助轉移單(總倉檢視)
+  "/wms/receiving",       // 進貨待辦 (HQ)
+  "/wms/picking",         // 派貨工作台
+  "/wms/picking/history", // 撿貨歷史
+  "/wms/outbound",        // 出貨集貨
+  "/wms/exceptions",      // 異常處理 (HQ)
+  // /wms/inbound 不在這裡 — 分店要用,屬於分店業務
   "/finance/receivables", // HQ 應收
 ]);
 const BRANCH_HIDDEN_GROUPS = new Set([
@@ -195,14 +199,14 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
             return (
               <div key={gi} className="mb-4">
                 {g.title && (
-                  <button
+                  <SpinButton
                     type="button"
                     onClick={() => toggleGroup(g.title!)}
                     className="flex w-full items-center justify-between rounded px-2 pb-1.5 pt-0.5 text-xs font-semibold tracking-wider text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
                   >
                     <span>{g.title}</span>
                     <span className="text-xs opacity-60">{isCollapsed ? "▸" : "▾"}</span>
-                  </button>
+                  </SpinButton>
                 )}
                 {!isCollapsed && (
                   <ul className="space-y-0.5">
@@ -237,12 +241,12 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
           </div>
           <div className="flex items-center gap-2">
             <ThemeToggle />
-            <button
+            <SpinButton
               onClick={onLogout}
               className="flex-1 rounded-md border border-zinc-300 px-2 py-1 text-zinc-700 transition hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
             >
               登出
-            </button>
+            </SpinButton>
           </div>
         </div>
       </aside>
@@ -251,7 +255,7 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
       <div className="md:hidden print:hidden">
         <header className="flex items-center justify-between border-b border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900">
           <div className="flex items-center gap-2">
-            <button
+            <SpinButton
               onClick={() => setDrawerOpen(true)}
               aria-label="開啟選單"
               className="-ml-1 inline-flex h-9 w-9 items-center justify-center rounded-md text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
@@ -261,7 +265,7 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
                 <line x1="3" y1="12" x2="21" y2="12" />
                 <line x1="3" y1="18" x2="21" y2="18" />
               </svg>
-            </button>
+            </SpinButton>
             <Link href="/" className="font-semibold">{tenantName}</Link>
           </div>
           <div className="flex items-center gap-2 text-sm">
@@ -284,13 +288,13 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
                 <div className="text-lg font-semibold tracking-tight">{tenantName}</div>
                 <div className="text-xs text-zinc-500">管理頁面</div>
               </Link>
-              <button
+              <SpinButton
                 onClick={() => setDrawerOpen(false)}
                 aria-label="關閉選單"
                 className="-mr-1 inline-flex h-8 w-8 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
               >
                 ✕
-              </button>
+              </SpinButton>
             </div>
 
             <nav className="flex-1 overflow-y-auto px-2 py-3 text-sm">
@@ -300,14 +304,14 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
                 return (
                   <div key={gi} className="mb-4">
                     {g.title && (
-                      <button
+                      <SpinButton
                         type="button"
                         onClick={() => toggleGroup(g.title!)}
                         className="flex w-full items-center justify-between rounded px-2 pb-1.5 pt-0.5 text-xs font-semibold tracking-wider text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
                       >
                         <span>{g.title}</span>
                         <span className="text-xs opacity-60">{isCollapsed ? "▸" : "▾"}</span>
-                      </button>
+                      </SpinButton>
                     )}
                     {!isCollapsed && (
                       <ul className="space-y-0.5">
@@ -341,12 +345,12 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
               <div className="mb-2 truncate text-zinc-500" title={user?.email ?? ""}>
                 {user?.email}
               </div>
-              <button
+              <SpinButton
                 onClick={onLogout}
                 className="w-full rounded-md border border-zinc-300 px-2 py-1.5 text-zinc-700 transition hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
               >
                 登出
-              </button>
+              </SpinButton>
             </div>
           </aside>
         </div>

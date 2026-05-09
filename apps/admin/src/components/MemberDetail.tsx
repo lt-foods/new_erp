@@ -8,6 +8,7 @@ import { translateRpcError } from "@/lib/rpcError";
 import { canAdjustWallet, useRole } from "@/lib/role";
 import { walletLedgerTypeLabel, walletPaymentMethodLabel } from "@/lib/walletLedger";
 import { maskLineUserId } from "@/lib/maskLineUserId";
+import SpinButton from "@/components/SpinButton";
 
 type Member = {
   id: number;
@@ -285,22 +286,22 @@ export function MemberDetail({ memberId }: { memberId: number }) {
           <div className="font-mono text-xs text-zinc-500">#{member.member_no}</div>
         </div>
         {canMergeOut && (
-          <button
+          <SpinButton
             onClick={() => setMergeOpen("guest-to-real")}
             className="rounded-md border border-rose-300 px-3 py-1 text-xs font-medium text-rose-700 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-950"
             title="把這個未綁 LINE 的會員合併到已綁 LINE 的會員（訂單 / 點數 / 儲值會搬過去）"
           >
             🔗 合併到已綁 LINE 會員
-          </button>
+          </SpinButton>
         )}
         {canAbsorbGuest && (
-          <button
+          <SpinButton
             onClick={() => setMergeOpen("real-from-guest")}
             className="rounded-md border border-emerald-300 px-3 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950"
             title="搜尋未綁 LINE 的舊會員並合併進來（訂單 / 點數 / 儲值會搬到此會員）"
           >
             📥 合併舊會員進來
-          </button>
+          </SpinButton>
         )}
       </div>
 
@@ -338,7 +339,7 @@ export function MemberDetail({ memberId }: { memberId: number }) {
         </div>
         {flagsDirty && (
           <div className="mt-2 flex justify-end gap-2">
-            <button
+            <SpinButton
               onClick={() => {
                 setDraftAdminNote(member.admin_note ?? "");
                 setDraftNoNotify(!!member.no_notify_pickup);
@@ -348,14 +349,14 @@ export function MemberDetail({ memberId }: { memberId: number }) {
               className="rounded-md border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
             >
               還原
-            </button>
-            <button
+            </SpinButton>
+            <SpinButton
               onClick={saveFlags}
               disabled={savingFlags}
               className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
             >
               {savingFlags ? "儲存中…" : "💾 儲存設定"}
-            </button>
+            </SpinButton>
           </div>
         )}
       </div>
@@ -385,20 +386,20 @@ export function MemberDetail({ memberId }: { memberId: number }) {
           </select>
           {draftHomeStoreId !== (member.home_store_id ? String(member.home_store_id) : "") && (
             <>
-              <button
+              <SpinButton
                 onClick={() => setDraftHomeStoreId(member.home_store_id ? String(member.home_store_id) : "")}
                 disabled={savingStore}
                 className="rounded-md border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
               >
                 還原
-              </button>
-              <button
+              </SpinButton>
+              <SpinButton
                 onClick={saveHomeStore}
                 disabled={savingStore}
                 className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
               >
                 {savingStore ? "儲存中…" : "💾 儲存"}
-              </button>
+              </SpinButton>
             </>
           )}
         </div>
@@ -450,27 +451,27 @@ export function MemberDetail({ memberId }: { memberId: number }) {
 
         {tab === "wallet" && (
           <div className="mt-3 flex flex-wrap gap-2">
-            <button
+            <SpinButton
               onClick={() => tenantId && setWalletAction({ mode: "topup" })}
               disabled={!tenantId}
               className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-            >+ 加值</button>
-            <button
+            >+ 加值</SpinButton>
+            <SpinButton
               onClick={() => tenantId && setWalletAction({ mode: "spend" })}
               disabled={!tenantId}
               className="rounded-md bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
-            >− 扣款</button>
-            <button
+            >− 扣款</SpinButton>
+            <SpinButton
               onClick={() => tenantId && setWalletAction({ mode: "refund" })}
               disabled={!tenantId}
               className="rounded-md bg-sky-600 px-3 py-1 text-xs font-medium text-white hover:bg-sky-700 disabled:opacity-50"
-            >↺ 退款</button>
+            >↺ 退款</SpinButton>
             {canAdjust && (
-              <button
+              <SpinButton
                 onClick={() => tenantId && setWalletAction({ mode: "adjust" })}
                 disabled={!tenantId}
                 className="rounded-md border border-zinc-400 bg-white px-3 py-1 text-xs font-medium text-zinc-800 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-              >⚙ 調整</button>
+              >⚙ 調整</SpinButton>
             )}
           </div>
         )}
@@ -585,11 +586,11 @@ export function MemberDetail({ memberId }: { memberId: number }) {
                           <Td className="text-xs text-zinc-500">{e.reason ?? "—"}</Td>
                           <Td className="text-xs">
                             {reversible && tenantId ? (
-                              <button
+                              <SpinButton
                                 onClick={() => setWalletAction({ mode: "reverse", reverseTarget: e })}
                                 title={`沖銷 #${e.id}`}
                                 className="rounded-md border border-zinc-300 px-2 py-0.5 text-[11px] hover:bg-zinc-100 dark:border-zinc-600 dark:hover:bg-zinc-800"
-                              >↩ 沖銷</button>
+                              >↩ 沖銷</SpinButton>
                             ) : reversedIds.has(e.id) ? (
                               <span className="text-[10px] text-zinc-400">已沖銷</span>
                             ) : (
@@ -610,13 +611,13 @@ export function MemberDetail({ memberId }: { memberId: number }) {
                 此功能會向該會員所有已訂閱的 PWA 裝置發送一則測試通知。
                 請確保會員已在手機/電腦上開啟通知權限。
               </p>
-              <button
+              <SpinButton
                 onClick={sendTestNotification}
                 disabled={sending}
                 className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50"
               >
                 {sending ? "發送中..." : "發送測試通知"}
-              </button>
+              </SpinButton>
             </div>
           )}
         </div>
@@ -686,7 +687,7 @@ function Card({ label, children }: { label: string; children: React.ReactNode })
 
 function TabBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button
+    <SpinButton
       onClick={onClick}
       className={
         active
@@ -695,7 +696,7 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
       }
     >
       {children}
-    </button>
+    </SpinButton>
   );
 }
 

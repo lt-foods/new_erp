@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { THEME_KEY, type Theme } from "@/lib/theme";
+import SpinButton from "@/components/SpinButton";
 
 export function ThemeToggle() {
   const [theme, setThemeState] = useState<Theme>("system");
@@ -37,7 +38,7 @@ export function ThemeToggle() {
   const icon = theme === "light" ? "☀️" : theme === "dark" ? "🌙" : "🖥️";
 
   return (
-    <button
+    <SpinButton
       type="button"
       onClick={cycle}
       aria-label={`切換色系（目前：${label}）`}
@@ -46,6 +47,6 @@ export function ThemeToggle() {
     >
       <span aria-hidden>{mounted ? icon : "·"}</span>
       <span>{mounted ? label : "…"}</span>
-    </button>
+    </SpinButton>
   );
 }

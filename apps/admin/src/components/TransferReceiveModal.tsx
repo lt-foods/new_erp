@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
+import SpinButton from "@/components/SpinButton";
 
 async function fanoutPushNotifications(transferId: number): Promise<number> {
   const sb = getSupabase();
@@ -322,28 +323,28 @@ export function TransferReceiveModal({
               </span>
             ) : (
               <>
-                <button
+                <SpinButton
                   onClick={submit}
                   disabled={submitting || !items}
                   className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
                 >
                   {submitting ? "送出中…" : "確認收貨"}
-                </button>
-                <button
+                </SpinButton>
+                <SpinButton
                   onClick={reject}
                   disabled={submitting || !items}
                   className="rounded-md border border-red-500 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-950"
                 >
                   ✗ 拒收
-                </button>
+                </SpinButton>
               </>
             )}
-            <button
+            <SpinButton
               onClick={onClose}
               className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
             >
               關閉
-            </button>
+            </SpinButton>
           </div>
         </div>
 

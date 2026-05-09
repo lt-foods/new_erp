@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
+import SpinButton from "@/components/SpinButton";
 
 type Status = "pending" | "approved_transfer" | "approved_pr" | "shipped" | "received" | "rejected" | "cancelled";
 
@@ -121,7 +122,7 @@ export default function RestockListPage() {
 
       <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
         {(["pending", "approved", "received", "rejected", "all"] as Tab[]).map((v) => (
-          <button
+          <SpinButton
             key={v}
             onClick={() => setTab(v)}
             className={tab === v
@@ -130,7 +131,7 @@ export default function RestockListPage() {
             }
           >
             {v === "pending" ? "待處理" : v === "approved" ? "處理中" : v === "received" ? "已收貨" : v === "rejected" ? "已拒絕 / 取消" : "全部"}
-          </button>
+          </SpinButton>
         ))}
       </div>
 
@@ -165,7 +166,7 @@ export default function RestockListPage() {
                 </td>
                 <td className="px-3 py-2 text-xs">
                   {r.linked_transfer_no && (
-                    <Link href={`/transfers?id=${r.linked_transfer_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
+                    <Link href={`/wms/outbound?id=${r.linked_transfer_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
                       → {r.linked_transfer_no}
                     </Link>
                   )}

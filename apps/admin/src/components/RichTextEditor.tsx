@@ -4,6 +4,7 @@ import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Link from "@tiptap/extension-link";
 import { useEffect } from "react";
+import SpinButton from "@/components/SpinButton";
 
 type Props = {
   value: string;
@@ -92,49 +93,49 @@ function Toolbar({ editor, disabled }: { editor: Editor; disabled?: boolean }) {
 
   return (
     <div className="flex flex-wrap items-center gap-1 border-b border-zinc-200 bg-zinc-50 px-2 py-1.5 dark:border-zinc-800 dark:bg-zinc-950/50">
-      <button type="button" className={btn(editor.isActive("bold"))} onClick={() => editor.chain().focus().toggleBold().run()} aria-label="粗體">
+      <SpinButton type="button" className={btn(editor.isActive("bold"))} onClick={() => editor.chain().focus().toggleBold().run()} aria-label="粗體">
         <strong>B</strong>
-      </button>
-      <button type="button" className={btn(editor.isActive("italic"))} onClick={() => editor.chain().focus().toggleItalic().run()} aria-label="斜體">
+      </SpinButton>
+      <SpinButton type="button" className={btn(editor.isActive("italic"))} onClick={() => editor.chain().focus().toggleItalic().run()} aria-label="斜體">
         <em>I</em>
-      </button>
-      <button type="button" className={btn(editor.isActive("strike"))} onClick={() => editor.chain().focus().toggleStrike().run()} aria-label="刪除線">
+      </SpinButton>
+      <SpinButton type="button" className={btn(editor.isActive("strike"))} onClick={() => editor.chain().focus().toggleStrike().run()} aria-label="刪除線">
         <s>S</s>
-      </button>
+      </SpinButton>
       <span className="mx-1 h-4 w-px bg-zinc-300 dark:bg-zinc-700" />
-      <button type="button" className={btn(editor.isActive("heading", { level: 1 }))} onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}>
+      <SpinButton type="button" className={btn(editor.isActive("heading", { level: 1 }))} onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}>
         H1
-      </button>
-      <button type="button" className={btn(editor.isActive("heading", { level: 2 }))} onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}>
+      </SpinButton>
+      <SpinButton type="button" className={btn(editor.isActive("heading", { level: 2 }))} onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}>
         H2
-      </button>
-      <button type="button" className={btn(editor.isActive("heading", { level: 3 }))} onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}>
+      </SpinButton>
+      <SpinButton type="button" className={btn(editor.isActive("heading", { level: 3 }))} onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}>
         H3
-      </button>
+      </SpinButton>
       <span className="mx-1 h-4 w-px bg-zinc-300 dark:bg-zinc-700" />
-      <button type="button" className={btn(editor.isActive("bulletList"))} onClick={() => editor.chain().focus().toggleBulletList().run()}>
+      <SpinButton type="button" className={btn(editor.isActive("bulletList"))} onClick={() => editor.chain().focus().toggleBulletList().run()}>
         • 列
-      </button>
-      <button type="button" className={btn(editor.isActive("orderedList"))} onClick={() => editor.chain().focus().toggleOrderedList().run()}>
+      </SpinButton>
+      <SpinButton type="button" className={btn(editor.isActive("orderedList"))} onClick={() => editor.chain().focus().toggleOrderedList().run()}>
         1. 列
-      </button>
-      <button type="button" className={btn(editor.isActive("blockquote"))} onClick={() => editor.chain().focus().toggleBlockquote().run()}>
+      </SpinButton>
+      <SpinButton type="button" className={btn(editor.isActive("blockquote"))} onClick={() => editor.chain().focus().toggleBlockquote().run()}>
         ❝
-      </button>
+      </SpinButton>
       <span className="mx-1 h-4 w-px bg-zinc-300 dark:bg-zinc-700" />
-      <button type="button" className={btn(editor.isActive("link"))} onClick={setLink}>
+      <SpinButton type="button" className={btn(editor.isActive("link"))} onClick={setLink}>
         🔗
-      </button>
-      <button type="button" className={btn(false)} onClick={() => editor.chain().focus().setHorizontalRule().run()}>
+      </SpinButton>
+      <SpinButton type="button" className={btn(false)} onClick={() => editor.chain().focus().setHorizontalRule().run()}>
         ─
-      </button>
+      </SpinButton>
       <span className="mx-1 h-4 w-px bg-zinc-300 dark:bg-zinc-700" />
-      <button type="button" className={btn(false)} onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()}>
+      <SpinButton type="button" className={btn(false)} onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()}>
         ↶
-      </button>
-      <button type="button" className={btn(false)} onClick={() => editor.chain().focus().redo().run()} disabled={!editor.can().redo()}>
+      </SpinButton>
+      <SpinButton type="button" className={btn(false)} onClick={() => editor.chain().focus().redo().run()} disabled={!editor.can().redo()}>
         ↷
-      </button>
+      </SpinButton>
     </div>
   );
 }

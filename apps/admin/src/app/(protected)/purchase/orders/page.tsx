@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { PrPipelineStepper } from "@/components/PrPipelineStepper";
 import { SendPOModal } from "@/components/SendPOModal";
+import SpinButton from "@/components/SpinButton";
 
 type Supplier = {
   id: number;
@@ -384,7 +385,7 @@ export default function PurchaseOrdersListPage() {
               className="overflow-hidden rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
             >
               <div className="flex flex-col gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900">
-              <button
+              <SpinButton
                 onClick={() => togglePR(key)}
                 className="-mx-4 -my-3 flex w-[calc(100%+2rem)] items-center justify-between gap-3 px-4 py-3 text-left hover:bg-zinc-100 dark:hover:bg-zinc-800"
               >
@@ -424,7 +425,7 @@ export default function PurchaseOrdersListPage() {
                     查看採購單 →
                   </Link>
                 )}
-              </button>
+              </SpinButton>
               {g.pr_id !== null && g.pr_status && (
                 <div className="px-1">
                   <PrPipelineStepper
@@ -504,14 +505,14 @@ export default function PurchaseOrdersListPage() {
                           </Td>
                           <Td className="text-right">
                             {p.status === "draft" && (
-                              <button
+                              <SpinButton
                                 type="button"
                                 disabled={sendBusyId === p.id}
                                 onClick={() => openSendModal(p)}
                                 className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
                               >
                                 {sendBusyId === p.id ? "載入中…" : "📤 發送"}
-                              </button>
+                              </SpinButton>
                             )}
                             {(p.status === "sent" || p.status === "partially_received") && (
                               <Link

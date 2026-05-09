@@ -8,6 +8,7 @@ import { Modal } from "@/components/Modal";
 import { ProductForm, type ProductFormValues } from "@/components/ProductForm";
 import { ProductSkuSection, type ProductSkuSectionHandle } from "@/components/ProductSkuSection";
 import { DatePicker } from "@/components/DatePicker";
+import SpinButton from "@/components/SpinButton";
 
 type Status = "draft" | "active" | "inactive" | "discontinued";
 type SortKey = "updated_at" | "product_code" | "name" | "status";
@@ -211,21 +212,21 @@ function CreateCampaignModal({
       )}
 
       <div className="flex items-center gap-3">
-        <button
+        <SpinButton
           type="button"
           onClick={handleSave}
           disabled={saving}
           className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
         >
           {saving ? "建立中…" : "建立開團"}
-        </button>
-        <button
+        </SpinButton>
+        <SpinButton
           type="button"
           onClick={onClose}
           className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
         >
           取消
-        </button>
+        </SpinButton>
       </div>
     </div>
   );
@@ -479,12 +480,12 @@ function PageContent() {
                 : `共 ${total} 筆（顯示 ${fromIdx}-${toIdx}）`}
           </p>
         </div>
-        <button
+        <SpinButton
           onClick={() => setModal({ mode: "new" })}
           className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
         >
           新增商品
-        </button>
+        </SpinButton>
       </header>
 
       {/* 開團模式提示 */}
@@ -498,18 +499,18 @@ function PageContent() {
       {selectedIds.size > 0 && (
         <div className="flex items-center gap-3 rounded-md border border-zinc-300 bg-white px-4 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
           <span className="text-zinc-600 dark:text-zinc-400">已選 <span className="font-semibold">{selectedIds.size}</span> 項商品</span>
-          <button
+          <SpinButton
             onClick={openCampaignModal}
             className="rounded-md bg-green-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-600"
           >
             開團
-          </button>
-          <button
+          </SpinButton>
+          <SpinButton
             onClick={() => setSelectedIds(new Set())}
             className="ml-auto text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
           >
             清除選取
-          </button>
+          </SpinButton>
         </div>
       )}
 
@@ -608,9 +609,9 @@ function PageContent() {
                     />
                   </td>
                   <Td className="font-mono">
-                    <button onClick={() => openEdit(r.id)} className="hover:underline">
+                    <SpinButton onClick={() => openEdit(r.id)} className="hover:underline">
                       {r.product_code}
-                    </button>
+                    </SpinButton>
                   </Td>
                   <Td>
                     <div>{r.name}</div>
@@ -627,12 +628,12 @@ function PageContent() {
                     {new Date(r.updated_at).toLocaleString("zh-TW")}
                   </Td>
                   <Td>
-                    <button
+                    <SpinButton
                       onClick={() => openEdit(r.id)}
                       className="text-xs text-blue-600 hover:underline dark:text-blue-400"
                     >
                       編輯
-                    </button>
+                    </SpinButton>
                   </Td>
                 </tr>
               ))
@@ -712,13 +713,13 @@ function PageContent() {
 
 function PagerBtn({ onClick, disabled, children }: { onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
   return (
-    <button
+    <SpinButton
       onClick={onClick}
       disabled={disabled}
       className="rounded-md border border-zinc-300 px-2 py-1 hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800 dark:disabled:hover:bg-transparent"
     >
       {children}
-    </button>
+    </SpinButton>
   );
 }
 

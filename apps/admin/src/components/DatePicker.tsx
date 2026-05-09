@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { DayPicker } from "react-day-picker";
 import "react-day-picker/style.css";
+import SpinButton from "@/components/SpinButton";
 
 type DatePickerProps = {
   value: string;
@@ -52,7 +53,7 @@ export function DatePicker({
 
   return (
     <div ref={ref} className="relative inline-block">
-      <button
+      <SpinButton
         type="button"
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
@@ -62,7 +63,7 @@ export function DatePicker({
         }
       >
         {value || <span className="text-zinc-400">{placeholder}</span>}
-      </button>
+      </SpinButton>
       {open && (
         <div className="absolute left-0 top-full z-50 mt-1 rounded-md border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-800 dark:bg-zinc-900">
           <DayPicker

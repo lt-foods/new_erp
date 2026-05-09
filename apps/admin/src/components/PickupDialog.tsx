@@ -5,6 +5,7 @@ import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { withBasePath } from "@/lib/basePath";
 import { translateRpcError } from "@/lib/rpcError";
+import SpinButton from "@/components/SpinButton";
 
 type PickableItem = {
   id: number;
@@ -313,11 +314,11 @@ export function PickupDialog({
                   <div className="rounded-md border border-zinc-200 bg-white px-3 py-2 font-mono dark:border-zinc-800 dark:bg-zinc-950">${cashAmount}</div>
                 </div>
                 {walletMax > 0 && (
-                  <button
+                  <SpinButton
                     type="button"
                     onClick={() => setWalletAmount(String(walletMax))}
                     className="self-end rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 dark:hover:bg-emerald-900/40"
-                  >全用儲值金 ${walletMax}</button>
+                  >全用儲值金 ${walletMax}</SpinButton>
                 )}
               </div>
               {walletInvalid && (
@@ -343,14 +344,14 @@ export function PickupDialog({
           )}
 
           <div className="flex flex-wrap justify-end gap-2">
-            <button
+            <SpinButton
               onClick={onClose}
               disabled={busy}
               className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
             >
               取消
-            </button>
-            <button
+            </SpinButton>
+            <SpinButton
               onClick={() => {
                 window.open(withBasePath(`/pickup/print-list?order_ids=${orderId}`), "_blank");
               }}
@@ -359,8 +360,8 @@ export function PickupDialog({
               title="先印小白單給客人看，未確認取貨"
             >
               🖨️ 列印小白單
-            </button>
-            <button
+            </SpinButton>
+            <SpinButton
               onClick={submit}
               disabled={busy || picked.size === 0 || walletInvalid}
               className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:opacity-50"
@@ -370,7 +371,7 @@ export function PickupDialog({
                 : walletNum > 0
                   ? `✅ 確認取貨 (儲值 $${walletNum} + 收現 $${cashAmount})`
                   : `✅ 確認取貨 (${picked.size} 項 · $${payableAmount})`}
-            </button>
+            </SpinButton>
           </div>
         </div>
       )}
