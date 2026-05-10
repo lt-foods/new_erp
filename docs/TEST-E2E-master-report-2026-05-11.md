@@ -6,7 +6,7 @@ verified_by: claude opus 4.7 (cloud session, 1M context)
 db: anfyoeviuhmzzrhilwtm.supabase.co (remote dev, project_name=erp-dev, postgres 17.6)
 schema_source: live (no dump/restore — direct query)
 fixture: full-demo (re-applied via Management API runner)
-checks: 55 PASS / 0 FAIL / 0 ERR
+checks: 70 PASS / 0 FAIL / 0 ERR  (55 ripple + 15 RPC negative)
 ---
 
 # Master 黃金路徑 Run Report — 2026-05-11
@@ -243,10 +243,40 @@ checks: 55 PASS / 0 FAIL / 0 ERR
 
 ---
 
+## RPC contract negative tests ✅ pass
+
+**目的：** 驗 SECURITY DEFINER RPC 的 RAISE 守衛真的擋得住違規呼叫。
+
+| # | RPC | 觸發 | 期望 RAISE 字串 | 結果 |
+|---|---|---|---|---|
+| 1 | `rpc_wallet_reverse` | reason='' | `reason required` | ✅ |
+| 2 | `rpc_wallet_reverse` | bogus ledger_id | `ledger \d+ not found` | ✅ |
+| 3 | `rpc_wallet_reverse` | M-003 reversal row (L3) | `cannot reverse a reversal` | ✅ |
+| 4 | `rpc_wallet_reverse` | M-003 already-reversed (L2) | `already reversed` | ✅ |
+| 5 | `rpc_wallet_refund` | amount=-1 | `Refund amount must be positive` | ✅ |
+| 6 | `rpc_wallet_refund` | reason='' | `reason required` | ✅ |
+| 7 | `rpc_wallet_adjust` | change=0 | `adjust change must be non-zero` | ✅ |
+| 8 | `rpc_cancel_aid_order` | bogus order_id | `order \d+ not found` | ✅ |
+| 9 | `rpc_cancel_aid_order` | ORD-0006 (completed) | `only pending/confirmed/shipping can be cancelled` | ✅ |
+| 10 | `rpc_cancel_aid_order` | ORD-0005 (cancelled) | 同上 | ✅ |
+| 11 | `rpc_pr_reopen` | bogus pr_id | `not found` | ✅ |
+| 12 | `rpc_pr_reopen` | PR-0003 (cancelled) | `is cancelled` | ✅ |
+| 13 | `rpc_wallet_pay_order` | amount=0 | `amount must be positive` | ✅ |
+| 14 | `rpc_wallet_pay_order` | bogus order_id | `order \d+ not found` | ✅ |
+| 15 | `rpc_create_pr_from_campaigns` | 空陣列（注入 JWT）| `is empty` | ✅ |
+
+**附帶發現：** `_current_tenant_id()` 沒帶 JWT 時 RAISE
+> `JWT missing tenant_id claim; ensure custom_access_token_hook is enabled and user has app_metadata.tenant_id set`
+
+— security guard 早於 function-level 參數驗證 trigger，符合預期。第 15 條測 inject `request.jwt.claims` GUC 把 tenant_id 補回去後、才走到 function 真正的參數守衛。
+
+---
+
 ## 附錄：runner / verify 腳本
 
-兩個 cloud-only fallback 腳本（這次 session 寫的）：
+三個 cloud-only fallback 腳本（這次 session 寫的）：
 - `/tmp/run_reset.py` — `reset.sh` 的 Management API 版（走 443、不需要 PG protocol）
-- `/tmp/verify.py` — 55 條 SQL 檢查、對 anfyoeviuhmzzrhilwtm 跑
+- `/tmp/verify.py` — 55 條 SQL 檢查（baseline + R1-R12 ripple）
+- `/tmp/verify_rpc_neg.py` — 15 條 RPC contract negative tests
 
 需要的話可以收進 `scripts/e2e/cloud-fallback/`。
