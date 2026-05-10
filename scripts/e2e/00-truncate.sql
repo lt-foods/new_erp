@@ -20,6 +20,7 @@ TRUNCATE TABLE
   -- inventory
   reorder_rules,
   stocktake_items, stocktakes,
+  store_monthly_settlement_items, store_monthly_settlements,
   transfer_items, transfers,
   transfer_settlement_items, transfer_settlements,
   stock_movements, stock_balances,

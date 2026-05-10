@@ -28,11 +28,40 @@ INSERT INTO brands (tenant_id, code, name) VALUES
   (:'tenant_id'::uuid, 'BR-IMP', '進口品牌'),
   (:'tenant_id'::uuid, 'BR-OTH', '其他');
 
--- ── categories（level=1 的三大類）─────────────────────────
+-- ── categories（3 層分類樹：level1 大類 → level2 中類 → level3 小類）──
+-- level 1（3 大類）
 INSERT INTO categories (tenant_id, code, name, level, sort_order) VALUES
   (:'tenant_id'::uuid, 'C-FRESH', '生鮮', 1, 1),
   (:'tenant_id'::uuid, 'C-DRY',   '乾貨', 1, 2),
   (:'tenant_id'::uuid, 'C-COND',  '調味', 1, 3);
+
+-- level 2（9 中類）— 用 parent_id 串到 level 1
+INSERT INTO categories (tenant_id, parent_id, code, name, level, sort_order)
+SELECT :'tenant_id'::uuid, p.id, x.code, x.name, 2, x.sort
+FROM (VALUES
+  ('C-FRESH', 'C-FRESH-VEG',   '蔬菜',     1),
+  ('C-FRESH', 'C-FRESH-FRUIT', '水果',     2),
+  ('C-FRESH', 'C-FRESH-MEAT',  '肉品海鮮', 3),
+  ('C-DRY',   'C-DRY-SNACK',   '餅乾零食', 1),
+  ('C-DRY',   'C-DRY-RICE',    '米麵雜糧', 2),
+  ('C-DRY',   'C-DRY-CAN',     '罐頭',     3),
+  ('C-COND',  'C-COND-SAUCE',  '醬料',     1),
+  ('C-COND',  'C-COND-VINEGAR','醋類',     2),
+  ('C-COND',  'C-COND-SUGAR',  '糖蜜',     3)
+) AS x(parent_code, code, name, sort)
+JOIN categories p ON p.tenant_id = :'tenant_id'::uuid AND p.code = x.parent_code;
+
+-- level 3（5 小類示範）— 用 parent_id 串到 level 2
+INSERT INTO categories (tenant_id, parent_id, code, name, level, sort_order)
+SELECT :'tenant_id'::uuid, p.id, x.code, x.name, 3, x.sort
+FROM (VALUES
+  ('C-DRY-SNACK', 'C-SNACK-CRACKER', '餅乾類',   1),
+  ('C-DRY-SNACK', 'C-SNACK-CHIP',    '洋芋片',   2),
+  ('C-DRY-RICE',  'C-RICE-BROWN',    '糙米',     1),
+  ('C-DRY-RICE',  'C-RICE-WHITE',    '白米',     2),
+  ('C-COND-SAUCE','C-SAUCE-SOY',     '醬油',     1)
+) AS x(parent_code, code, name, sort)
+JOIN categories p ON p.tenant_id = :'tenant_id'::uuid AND p.code = x.parent_code;
 
 -- ── member_tiers ──────────────────────────────────────────
 INSERT INTO member_tiers (tenant_id, code, name, sort_order, benefits) VALUES
@@ -104,11 +133,27 @@ SELECT p.tenant_id,
 FROM products p
 WHERE p.tenant_id = :'tenant_id'::uuid;
 
--- ── sku_packs（每 SKU 一個預設 pack：unit=base_unit、qty=1、is_default_sale=true）
+-- ── sku_packs（每 SKU 至少一個 default pack；部分 SKU 加 multi-unit）──
+-- 1. base unit pack（每 SKU 必有，is_default_sale=TRUE）
 INSERT INTO sku_packs (sku_id, unit, qty_in_base, for_sale, for_purchase, for_transfer, is_default_sale)
 SELECT id, '個', 1, TRUE, TRUE, TRUE, TRUE
 FROM skus
 WHERE tenant_id = :'tenant_id'::uuid;
+
+-- 2. P004 香米：個 + 箱(qty=10)（採購用箱、銷售用個）
+INSERT INTO sku_packs (sku_id, unit, qty_in_base, for_sale, for_purchase, for_transfer, is_default_sale)
+SELECT s.id, '箱', 10, FALSE, TRUE, TRUE, FALSE
+FROM skus s WHERE s.tenant_id = :'tenant_id'::uuid AND s.sku_code = 'SKU-004';
+
+-- 3. P008 雞蛋：個 + 盒(qty=10)（銷售用盒）
+INSERT INTO sku_packs (sku_id, unit, qty_in_base, for_sale, for_purchase, for_transfer, is_default_sale)
+SELECT s.id, '盒', 10, TRUE, TRUE, TRUE, FALSE
+FROM skus s WHERE s.tenant_id = :'tenant_id'::uuid AND s.sku_code = 'SKU-008';
+
+-- 4. P010 餅乾：個 + 箱(qty=6)
+INSERT INTO sku_packs (sku_id, unit, qty_in_base, for_sale, for_purchase, for_transfer, is_default_sale)
+SELECT s.id, '箱', 6, FALSE, TRUE, TRUE, FALSE
+FROM skus s WHERE s.tenant_id = :'tenant_id'::uuid AND s.sku_code = 'SKU-010';
 
 -- ── barcodes（每 SKU 一個 internal 條碼）──────────────────
 INSERT INTO barcodes (tenant_id, barcode_value, sku_id, unit, pack_qty, type, is_primary)
@@ -190,28 +235,50 @@ SELECT :'tenant_id'::uuid, s.id, '主零用金', 5000, 20000
 FROM stores s
 WHERE s.tenant_id = :'tenant_id'::uuid;
 
--- ── line_channels（一個測試社群，主店 = 平鎮）─────────────
+-- ── line_channels（3 個 channel：主社群 + VIP + 日常）────────
 INSERT INTO line_channels (tenant_id, code, name, channel_type, home_store_id, additional_pickup_store_ids)
-SELECT :'tenant_id'::uuid, 'LC-MAIN', '主社群（測試）', 'open_chat',
-       (SELECT id FROM stores WHERE tenant_id = :'tenant_id'::uuid AND code = 'S001'),
-       (
-         SELECT COALESCE(jsonb_agg(id), '[]'::jsonb)
-         FROM stores
-         WHERE tenant_id = :'tenant_id'::uuid AND code IN ('S002','S003','S004','S005')
-       );
+SELECT :'tenant_id'::uuid, x.code, x.name, x.ctype,
+       (SELECT id FROM stores WHERE tenant_id = :'tenant_id'::uuid AND code = x.home),
+       x.additional::jsonb
+FROM (VALUES
+  ('LC-MAIN',  '主社群（測試）',   'open_chat', 'S001',
+   '[' || (SELECT string_agg(id::text, ',') FROM stores
+            WHERE tenant_id = :'tenant_id'::uuid AND code IN ('S002','S003','S004','S005')) || ']'),
+  ('LC-VIP',   '金卡 VIP 群',      'open_chat', 'S002',
+   '[' || (SELECT string_agg(id::text, ',') FROM stores
+            WHERE tenant_id = :'tenant_id'::uuid AND code IN ('S001','S003')) || ']'),
+  ('LC-DAILY', '日常用品群',       'open_chat', 'S003',
+   '[]')
+) AS x(code, name, ctype, home, additional);
 
--- ── post_templates ─────────────────────────────────────────
+-- ── post_templates（3 個：預設 / 促銷 / 結團）────────────
 INSERT INTO post_templates (tenant_id, code, name, body) VALUES
   (:'tenant_id'::uuid, 'PT-DEFAULT', '預設模板',
-   '【開團】{{name}}\n截止：{{end_at}}\n商品：{{items}}');
+   '【開團】{{name}}\n截止：{{end_at}}\n商品：{{items}}'),
+  (:'tenant_id'::uuid, 'PT-PROMO',   '促銷模板',
+   '🔥 限時促銷 🔥\n{{name}}\n優惠價：{{price}}\n截止：{{end_at}}'),
+  (:'tenant_id'::uuid, 'PT-CLOSING', '結團模板',
+   '【結團通知】{{name}}\n感謝大家的訂購！\n預計到貨：{{arrival_date}}');
 
--- ── purchase_approval_thresholds
--- 索引 idx_pat_scope unique on (tenant_id, scope, COALESCE(scope_id, 0)) WHERE active = TRUE
--- → 一個 scope+scope_id 只能有 1 筆 active；先放 1 筆 global，多級門檻 UI 再建
+-- ── purchase_approval_thresholds（3 級：全域 / 店 / 供應商）──
+-- 一個 scope+scope_id 只能有 1 筆 active
 INSERT INTO purchase_approval_thresholds (tenant_id, scope, scope_id, threshold_amount, approver_role) VALUES
   (:'tenant_id'::uuid, 'global', NULL, 5000, 'admin');
 
--- ── supplier_skus（每 SKU 預設由 SUP-LOCAL 提供）──────────
+-- store 層門檻（每店 3000，HQ 角色為 hq_manager 才能 approve）
+INSERT INTO purchase_approval_thresholds (tenant_id, scope, scope_id, threshold_amount, approver_role)
+SELECT :'tenant_id'::uuid, 'store', s.id, 3000, 'hq_manager'
+FROM stores s
+WHERE s.tenant_id = :'tenant_id'::uuid AND s.code IN ('S001','S002');
+
+-- supplier 層門檻：JP / XL 因金額大、走 owner 核准
+INSERT INTO purchase_approval_thresholds (tenant_id, scope, scope_id, threshold_amount, approver_role)
+SELECT :'tenant_id'::uuid, 'supplier', sup.id, 10000, 'owner'
+FROM suppliers sup
+WHERE sup.tenant_id = :'tenant_id'::uuid AND sup.code IN ('SUP-JP','SUP-XL');
+
+-- ── supplier_skus（多供應商：JP 進口品由 SUP-JP / 雞蛋由 SUP-XL / 其餘 SUP-LOCAL）──
+-- 預設由 SUP-LOCAL 提供（10 SKU 全覆蓋，作為 fallback）
 INSERT INTO supplier_skus (tenant_id, supplier_id, sku_id, default_unit_cost, pack_qty, is_preferred)
 SELECT :'tenant_id'::uuid,
        (SELECT id FROM suppliers WHERE tenant_id = :'tenant_id'::uuid AND code = 'SUP-LOCAL'),
@@ -224,9 +291,40 @@ SELECT :'tenant_id'::uuid,
           WHEN 'SKU-009' THEN 60  WHEN 'SKU-010' THEN 320
         END)::numeric,
        1,
-       TRUE
+       (s.sku_code NOT IN ('SKU-001','SKU-003','SKU-006','SKU-008','SKU-010'))  -- JP/XL 主供應的設 FALSE
 FROM skus s
 WHERE s.tenant_id = :'tenant_id'::uuid;
+
+-- SUP-JP 進口品（蝦餅 / 醬油 / 蜂蜜 / 餅乾）
+INSERT INTO supplier_skus (tenant_id, supplier_id, sku_id, supplier_sku_code,
+                           default_unit_cost, pack_qty, is_preferred)
+SELECT :'tenant_id'::uuid,
+       (SELECT id FROM suppliers WHERE tenant_id = :'tenant_id'::uuid AND code = 'SUP-JP'),
+       s.id,
+       'JP-' || s.sku_code,
+       (CASE s.sku_code
+          WHEN 'SKU-001' THEN 85   -- 比 LOCAL 便宜 5
+          WHEN 'SKU-003' THEN 140
+          WHEN 'SKU-006' THEN 230
+          WHEN 'SKU-010' THEN 300
+        END)::numeric,
+       1,
+       TRUE
+FROM skus s
+WHERE s.tenant_id = :'tenant_id'::uuid AND s.sku_code IN ('SKU-001','SKU-003','SKU-006','SKU-010');
+
+-- SUP-XL 小蘭（雞蛋）
+INSERT INTO supplier_skus (tenant_id, supplier_id, sku_id, supplier_sku_code,
+                           default_unit_cost, pack_qty, is_preferred)
+SELECT :'tenant_id'::uuid,
+       (SELECT id FROM suppliers WHERE tenant_id = :'tenant_id'::uuid AND code = 'SUP-XL'),
+       s.id,
+       'XL-' || s.sku_code,
+       70::numeric,  -- 比 LOCAL 便宜 5
+       1,
+       TRUE
+FROM skus s
+WHERE s.tenant_id = :'tenant_id'::uuid AND s.sku_code = 'SKU-008';
 
 COMMIT;
 
