@@ -12,7 +12,7 @@ function alignCls(align: Align | undefined) {
 
 export function Table({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
-    <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+    <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
       <table className={`min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800 ${className}`}>
         {children}
       </table>
