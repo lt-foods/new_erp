@@ -134,6 +134,11 @@ Deno.serve(async (req) => {
       });
     }
 
+    // bump members.last_visit_at（fire-and-forget，不阻塞登入；trigger 透過 GUC 跳過 updated_at）
+    if (memberId != null) {
+      void touchMemberVisit(supabaseUrl, serviceKey, memberId);
+    }
+
     // 6) sign session JWT（memberId 保證有值）
     const now = Math.floor(Date.now() / 1000);
     const jwt = await signJwtHs256(
@@ -212,3 +217,22 @@ Deno.serve(async (req) => {
     return redirectFront("/", { error: "oauth_failed", detail: msg });
   }
 });
+
+async function touchMemberVisit(supabaseUrl: string, serviceKey: string, memberId: number) {
+  try {
+    const resp = await fetch(`${supabaseUrl}/rest/v1/rpc/rpc_member_touch_visit`, {
+      method: "POST",
+      headers: {
+        apikey: serviceKey,
+        Authorization: `Bearer ${serviceKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ p_member_id: memberId }),
+    });
+    if (!resp.ok) {
+      console.warn("touch_visit failed", resp.status, await resp.text());
+    }
+  } catch (e) {
+    console.warn("touch_visit error", e);
+  }
+}

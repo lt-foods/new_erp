@@ -27,6 +27,8 @@ type MemberRow = {
   tier_id: number | null;
   status: Status;
   updated_at: string;
+  joined_at: string;
+  last_visit_at: string | null;
 };
 
 /** 顯示手機，若是 LIFF auto-register 的 placeholder (line:Uxxxx) 則視為未填 */
@@ -67,7 +69,7 @@ function MembersListBody() {
 
   const [stores, setStores] = useState<Store[]>([]);
   useDefaultStoreFromUser(stores, storeId, setStoreId);
-  const [balances, setBalances] = useState<Map<number, { unpicked: number; wallet: number }>>(new Map());
+  const [balances, setBalances] = useState<Map<number, { unpicked: number; wallet: number; orderCount: number }>>(new Map());
   const [reloadTick, setReloadTick] = useState(0);
   const [modal, setModal] = useState<
     | { mode: "new" }
@@ -127,7 +129,7 @@ function MembersListBody() {
       try {
         let q = getSupabase()
           .from("members")
-          .select("id, member_no, name, phone, avatar_url, tier_id, status, updated_at", { count: "exact" })
+          .select("id, member_no, name, phone, avatar_url, tier_id, status, updated_at, joined_at, last_visit_at", { count: "exact" })
           .order(sortBy, { ascending: sortDir === "asc" })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
@@ -153,18 +155,25 @@ function MembersListBody() {
           const [ord, wal] = await Promise.all([
             getSupabase()
               .from("customer_orders")
-              .select("id, member_id")
-              .in("member_id", ids)
-              .in("status", PENDING_STATUSES),
+              .select("id, member_id, status")
+              .in("member_id", ids),
             getSupabase().from("wallet_balances").select("member_id, balance").in("member_id", ids),
           ]);
+          // 訂單數量 不計取消/過期/轉出（視為 void）
+          const VOID_STATUSES = new Set<string>(["cancelled", "expired", "transferred_out"]);
           const orderToMember = new Map<number, number>();
-          for (const o of (ord.data ?? []) as { id: number; member_id: number }[]) {
-            orderToMember.set(o.id, o.member_id);
+          const countByMember = new Map<number, number>();
+          for (const o of (ord.data ?? []) as { id: number; member_id: number; status: string }[]) {
+            if (!VOID_STATUSES.has(o.status)) {
+              countByMember.set(o.member_id, (countByMember.get(o.member_id) ?? 0) + 1);
+            }
+            if ((PENDING_STATUSES as string[]).includes(o.status)) {
+              orderToMember.set(o.id, o.member_id);
+            }
           }
           const orderIds = Array.from(orderToMember.keys());
-          const m = new Map<number, { unpicked: number; wallet: number }>();
-          for (const id of ids) m.set(id, { unpicked: 0, wallet: 0 });
+          const m = new Map<number, { unpicked: number; wallet: number; orderCount: number }>();
+          for (const id of ids) m.set(id, { unpicked: 0, wallet: 0, orderCount: countByMember.get(id) ?? 0 });
           if (orderIds.length) {
             const items = await getSupabase()
               .from("customer_order_items")
@@ -270,16 +279,19 @@ function MembersListBody() {
           <ThSort label="編號" col="member_no" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
           <ThSort label="姓名" col="name" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
           <Th>手機</Th>
+          <Th align="right">訂單數</Th>
           <Th align="right">未取貨金額</Th>
           <Th align="right">儲值</Th>
+          <Th align="right">加入時間</Th>
+          <Th align="right">最後登入</Th>
           <ThSort label="更新" col="updated_at" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} align="right" />
           <Th>{""}</Th>
         </THead>
         <TBody>
           {rows === null ? (
-            <SkeletonRows cols={7} />
+            <SkeletonRows cols={10} />
           ) : rows.length === 0 ? (
-            <EmptyRow colSpan={7}>
+            <EmptyRow colSpan={10}>
               {total === 0 && !query ? "還沒有會員，按「新增會員」開始建立。" : "沒有符合條件的會員。"}
             </EmptyRow>
           ) : (
@@ -287,72 +299,81 @@ function MembersListBody() {
               const bal = balances.get(r.id);
               return (
                 <Tr key={r.id}>
-                    <Td className="font-mono">
-                      <SpinButton
-                        onClick={() => setModal({ mode: "detail", memberId: r.id, memberNo: r.member_no })}
-                        className={r.status === "merged" || r.status === "deleted" ? "text-zinc-400 hover:underline" : "hover:underline"}
+                  <Td className="font-mono">
+                    <SpinButton
+                      onClick={() => setModal({ mode: "detail", memberId: r.id, memberNo: r.member_no })}
+                      className={r.status === "merged" || r.status === "deleted" ? "text-zinc-400 hover:underline" : "hover:underline"}
+                    >
+                      {r.member_no}
+                    </SpinButton>
+                    {r.status === "merged" && (
+                      <span className="ml-2 rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] font-normal text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300">已合併</span>
+                    )}
+                    {r.status === "deleted" && (
+                      <span className="ml-2 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-normal text-red-700 dark:bg-red-950 dark:text-red-300">已刪除</span>
+                    )}
+                  </Td>
+                  <Td>
+                    <div className="flex items-center gap-2">
+                      {r.avatar_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={r.avatar_url} alt="" className="h-7 w-7 rounded-full object-cover" />
+                      ) : (
+                        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-200 text-[10px] text-zinc-500 dark:bg-zinc-800">
+                          {r.name?.[0] ?? "?"}
+                        </div>
+                      )}
+                      <span>{r.name ?? "—"}</span>
+                    </div>
+                  </Td>
+                  <Td className="font-mono text-xs">{displayPhone(r.phone)}</Td>
+                  <Td align="right" className="font-mono">{bal?.orderCount ?? 0}</Td>
+                  <Td align="right" className="font-mono">{bal?.unpicked ? `$${bal.unpicked.toLocaleString()}` : "—"}</Td>
+                  <Td align="right" className="font-mono">{bal?.wallet?.toLocaleString() ?? "—"}</Td>
+                  <Td align="right" className="whitespace-nowrap text-xs text-zinc-500">
+                    {new Date(r.joined_at).toLocaleDateString("zh-TW")}
+                  </Td>
+                  <Td align="right" className="whitespace-nowrap text-xs text-zinc-500">
+                    {r.last_visit_at
+                      ? new Date(r.last_visit_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })
+                      : "—"}
+                  </Td>
+                  <Td align="right" className="whitespace-nowrap text-xs text-zinc-500">
+                    {new Date(r.updated_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}
+                  </Td>
+                  <Td>
+                    <div className="flex items-center justify-end gap-3">
+                      <Link
+                        href={`/pickup?q=${encodeURIComponent(r.member_no)}`}
+                        className="text-xs text-emerald-600 hover:underline dark:text-emerald-400"
                       >
-                        {r.member_no}
+                        🔎 查訂單
+                      </Link>
+                      <SpinButton
+                        onClick={async () => {
+                          const { data } = await getSupabase()
+                            .from("members")
+                            .select("id, member_no, phone, name, gender, birthday, email, tier_id, home_store_id, status, notes")
+                            .eq("id", r.id).maybeSingle();
+                          if (data) setModal({ mode: "edit", values: {
+                            id: data.id, member_no: data.member_no,
+                            // LIFF auto-register 的 placeholder「line:<uid>」不要灌進編輯表單
+                            phone: data.phone && !data.phone.startsWith("line:") ? data.phone : "",
+                            name: data.name ?? "", gender: data.gender, birthday: data.birthday,
+                            email: data.email, tier_id: data.tier_id, home_store_id: data.home_store_id,
+                            status: data.status, notes: data.notes,
+                          }});
+                        }}
+                        className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                      >
+                        編輯
                       </SpinButton>
-                      {r.status === "merged" && (
-                        <span className="ml-2 rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] font-normal text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300">已合併</span>
-                      )}
-                      {r.status === "deleted" && (
-                        <span className="ml-2 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-normal text-red-700 dark:bg-red-950 dark:text-red-300">已刪除</span>
-                      )}
-                    </Td>
-                    <Td>
-                      <div className="flex items-center gap-2">
-                        {r.avatar_url ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={r.avatar_url} alt="" className="h-7 w-7 rounded-full object-cover" />
-                        ) : (
-                          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-200 text-[10px] text-zinc-500 dark:bg-zinc-800">
-                            {r.name?.[0] ?? "?"}
-                          </div>
-                        )}
-                        <span>{r.name ?? "—"}</span>
-                      </div>
-                    </Td>
-                    <Td className="font-mono text-xs">{displayPhone(r.phone)}</Td>
-                    <Td className="text-right font-mono">{bal?.unpicked ? `$${bal.unpicked.toLocaleString()}` : "—"}</Td>
-                    <Td className="text-right font-mono">{bal?.wallet?.toLocaleString() ?? "—"}</Td>
-                    <Td className="text-right text-zinc-500">
-                      {new Date(r.updated_at).toLocaleString("zh-TW")}
-                    </Td>
-                    <Td>
-                      <div className="flex items-center justify-end gap-3">
-                        <Link
-                          href={`/pickup?q=${encodeURIComponent(r.member_no)}`}
-                          className="text-xs text-emerald-600 hover:underline dark:text-emerald-400"
-                        >
-                          🔎 查訂單
-                        </Link>
-                        <SpinButton
-                          onClick={async () => {
-                            const { data } = await getSupabase()
-                              .from("members")
-                              .select("id, member_no, phone, name, gender, birthday, email, tier_id, home_store_id, status, notes")
-                              .eq("id", r.id).maybeSingle();
-                            if (data) setModal({ mode: "edit", values: {
-                              id: data.id, member_no: data.member_no,
-                              // LIFF auto-register 的 placeholder「line:<uid>」不要灌進編輯表單
-                              phone: data.phone && !data.phone.startsWith("line:") ? data.phone : "",
-                              name: data.name ?? "", gender: data.gender, birthday: data.birthday,
-                              email: data.email, tier_id: data.tier_id, home_store_id: data.home_store_id,
-                              status: data.status, notes: data.notes,
-                            }});
-                          }}
-                          className="text-xs text-blue-600 hover:underline dark:text-blue-400"
-                        >
-                          編輯
-                        </SpinButton>
-                      </div>
-                    </Td>
-                  </Tr>
-                );
-              })
-            )}
+                    </div>
+                  </Td>
+                </Tr>
+              );
+            })
+          )}
         </TBody>
       </Table>
 
