@@ -10,6 +10,9 @@ import { MemberForm, type MemberFormValues } from "@/components/MemberForm";
 import { MemberDetail } from "@/components/MemberDetail";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow } from "@/components/DataTable";
+import type { OrderStatus } from "@/lib/orderStatus";
+
+const PENDING_STATUSES: OrderStatus[] = ["pending", "confirmed", "shipping", "ready"];
 
 type Status = "active" | "inactive" | "blocked" | "merged" | "deleted";
 type SortKey = "updated_at" | "member_no" | "name";
@@ -64,7 +67,7 @@ function MembersListBody() {
 
   const [stores, setStores] = useState<Store[]>([]);
   useDefaultStoreFromUser(stores, storeId, setStoreId);
-  const [balances, setBalances] = useState<Map<number, { points: number; wallet: number }>>(new Map());
+  const [balances, setBalances] = useState<Map<number, { unpicked: number; wallet: number }>>(new Map());
   const [reloadTick, setReloadTick] = useState(0);
   const [modal, setModal] = useState<
     | { mode: "new" }
@@ -147,15 +150,33 @@ function MembersListBody() {
 
         const ids = (data ?? []).map((r) => r.id);
         if (ids.length) {
-          const [pts, wal] = await Promise.all([
-            getSupabase().from("member_points_balance").select("member_id, balance").in("member_id", ids),
+          const [ord, wal] = await Promise.all([
+            getSupabase()
+              .from("customer_orders")
+              .select("id, member_id")
+              .in("member_id", ids)
+              .in("status", PENDING_STATUSES),
             getSupabase().from("wallet_balances").select("member_id, balance").in("member_id", ids),
           ]);
-          const m = new Map<number, { points: number; wallet: number }>();
-          for (const id of ids) m.set(id, { points: 0, wallet: 0 });
-          for (const p of pts.data ?? []) {
-            const cur = m.get(p.member_id)!;
-            cur.points = Number(p.balance) || 0;
+          const orderToMember = new Map<number, number>();
+          for (const o of (ord.data ?? []) as { id: number; member_id: number }[]) {
+            orderToMember.set(o.id, o.member_id);
+          }
+          const orderIds = Array.from(orderToMember.keys());
+          const m = new Map<number, { unpicked: number; wallet: number }>();
+          for (const id of ids) m.set(id, { unpicked: 0, wallet: 0 });
+          if (orderIds.length) {
+            const items = await getSupabase()
+              .from("customer_order_items")
+              .select("order_id, qty, unit_price")
+              .in("order_id", orderIds);
+            for (const it of (items.data ?? []) as { order_id: number; qty: number; unit_price: number }[]) {
+              const mid = orderToMember.get(it.order_id);
+              if (mid == null) continue;
+              const cur = m.get(mid);
+              if (!cur) continue;
+              cur.unpicked += Number(it.qty) * Number(it.unit_price);
+            }
           }
           for (const w of wal.data ?? []) {
             const cur = m.get(w.member_id)!;
@@ -249,7 +270,7 @@ function MembersListBody() {
           <ThSort label="編號" col="member_no" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
           <ThSort label="姓名" col="name" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
           <Th>手機</Th>
-          <Th align="right">積分</Th>
+          <Th align="right">未取貨金額</Th>
           <Th align="right">儲值</Th>
           <ThSort label="更新" col="updated_at" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} align="right" />
           <Th>{""}</Th>
@@ -294,7 +315,7 @@ function MembersListBody() {
                       </div>
                     </Td>
                     <Td className="font-mono text-xs">{displayPhone(r.phone)}</Td>
-                    <Td className="text-right font-mono">{bal?.points?.toLocaleString() ?? "—"}</Td>
+                    <Td className="text-right font-mono">{bal?.unpicked ? `$${bal.unpicked.toLocaleString()}` : "—"}</Td>
                     <Td className="text-right font-mono">{bal?.wallet?.toLocaleString() ?? "—"}</Td>
                     <Td className="text-right text-zinc-500">
                       {new Date(r.updated_at).toLocaleString("zh-TW")}
