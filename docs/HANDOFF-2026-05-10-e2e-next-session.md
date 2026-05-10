@@ -11,6 +11,8 @@
 Day 1 完成：seed 系統 + 12 反向情境 + 黃金路徑 SQL 層驗證全綠。
 Day 2 任務：**UI 互動測試 + 22 份既有 YELLOW TEST docs 個別跑 + 各軌寫 -report.md**。
 
+DB 環境：**anfyoeviuhmzzrhilwtm 是 dev、可以直接 reset**。Day 2 要嫌 local Docker 麻煩、`.env.e2e` 直接指 remote dev pooler 也行（見 Phase A Option B）。
+
 ---
 
 ## ✅ 已完成（不要重做）
@@ -22,12 +24,12 @@ Day 2 任務：**UI 互動測試 + 22 份既有 YELLOW TEST docs 個別跑 + 各
 ### Local 狀態（如果同台機器）
 - Local Supabase Docker 起著（127.0.0.1:54322）
 - container name `supabase_db_laughing-newton-5f9fd3`
-- prod schema 已載入 local（127 tables / 162 RPCs / 14 views）
+- remote dev schema 已載入 local（127 tables / 162 RPCs / 14 views）
 - `bash scripts/e2e/reset.sh full-demo --yes` 已跑、12 反向情境全種好
 - 4 wallet 一致 (M-001=830/M-002=4500/M-003=200/M-INT-001=0)、stock 0 mismatch
 
 ### 備份檔（gitignore，本地）
-- `scripts/e2e/backups/prod-schema-20260510-2225.sql` — 880 KB
+- `scripts/e2e/backups/prod-schema-20260510-2225.sql` — 880 KB（從 anfyoeviuhmzzrhilwtm dev dump、檔名沿用「prod-」前綴）
 - `scripts/e2e/backups/prod-data-20260510-2248.sql` — 7.69 MB（含 PII，留 local 別 commit）
 
 ### 已驗證（SQL 層）
@@ -70,13 +72,13 @@ git checkout claude/mystifying-turing-2bae66  # PR #206 branch
 # 2. 起 local supabase
 supabase start  # 第一次 ~5 min pull image
 
-# 3. 移開 migrations + 灌 prod schema
+# 3. 移開 migrations + 灌 dev schema（從 remote dev 拉）
 mv supabase/migrations supabase/migrations.bak
 supabase start  # empty DB
 # (如果有 backup) docker cp scripts/e2e/backups/prod-schema-*.sql <container>:/tmp/schema.sql
-# 或重新 dump prod schema：
-supabase db dump --db-url "postgresql://postgres.anfyoeviuhmzzrhilwtm:%40Ss0929283575@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres" --schema public -f scripts/e2e/backups/prod-schema.sql
-docker cp scripts/e2e/backups/prod-schema*.sql <container>:/tmp/schema.sql
+# 或重新 dump remote dev schema：
+supabase db dump --db-url "postgresql://postgres.anfyoeviuhmzzrhilwtm:%40Ss0929283575@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres" --schema public -f scripts/e2e/backups/dev-schema.sql
+docker cp scripts/e2e/backups/dev-schema*.sql <container>:/tmp/schema.sql
 docker exec <container> psql -U postgres -d postgres -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO postgres; GRANT ALL ON SCHEMA public TO public;"
 docker exec <container> psql -U postgres -d postgres -f /tmp/schema.sql
 mv supabase/migrations.bak supabase/migrations
@@ -86,7 +88,8 @@ TENANT_ID=$(uuidgen)
 docker exec <container> psql -U postgres -d postgres -c \
   "INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, raw_app_meta_data, created_at, updated_at) VALUES (gen_random_uuid(), '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'cktalex@gmail.com', crypt('s0929283575', gen_salt('bf')), NOW(), jsonb_build_object('tenant_id', '$TENANT_ID', 'role', 'owner'), NOW(), NOW());"
 
-# 5. 建 .env.e2e（local）
+# 5. 建 .env.e2e
+# Option A — local Supabase（推薦給 UI debug 跟 fresh fixture 跑）
 cat > scripts/e2e/.env.e2e <<EOF
 E2E_DB_HOST=127.0.0.1
 E2E_DB_PORT=54322
@@ -94,6 +97,16 @@ E2E_DB_USER=postgres
 E2E_DB_NAME=postgres
 E2E_DB_PASSWORD=postgres
 E2E_EXPECTED_HOST=127.0.0.1
+EOF
+
+# Option B — 直接打 remote dev（不需要 Docker、reset 直接清 dev DB）
+cat > scripts/e2e/.env.e2e <<EOF
+E2E_DB_HOST=aws-1-ap-southeast-1.pooler.supabase.com
+E2E_DB_PORT=5432
+E2E_DB_USER=postgres.anfyoeviuhmzzrhilwtm
+E2E_DB_NAME=postgres
+E2E_DB_PASSWORD=@Ss0929283575
+E2E_EXPECTED_HOST=anfyoeviuhmzzrhilwtm
 EOF
 
 # 6. 灌 fixture
@@ -241,11 +254,15 @@ gh issue create --title "Fix products fixture: populate created_by from auth.use
 | Local Supabase API | http://127.0.0.1:54321 |
 | Local Supabase Studio | http://127.0.0.1:54323 |
 | Local DB | postgresql://postgres:postgres@127.0.0.1:54322/postgres |
-| Prod (DON'T touch with reset) | https://anfyoeviuhmzzrhilwtm.supabase.co |
+| Remote dev Supabase | https://anfyoeviuhmzzrhilwtm.supabase.co （**dev 環境、可直接 reset**）|
+| Remote dev pooler | aws-1-ap-southeast-1.pooler.supabase.com:5432 (user `postgres.anfyoeviuhmzzrhilwtm`) |
 
-### 已知 prod 問題（別踩）
-- Free plan 無備份 → **絕對不要對 prod 跑 reset.sh**
-- `.env.e2e` 必須指 local（127.0.0.1）— `E2E_EXPECTED_HOST=127.0.0.1` 防呆
+### Remote dev DB 注意事項
+- 這是 **dev 環境**、可以對它跑 `reset.sh`（沒有真實客戶資料）
+- `.env.e2e` 可指 local（127.0.0.1）或 remote dev（anfyoeviuhmzzrhilwtm pooler）
+  - local：`E2E_EXPECTED_HOST=127.0.0.1`
+  - remote dev：`E2E_EXPECTED_HOST=anfyoeviuhmzzrhilwtm`
+- 若日後接上 customer-facing prod、再把 `.env.e2e.example` 加 host whitelist 防呆
 
 ### Migrations 已 patch（PR #206 內）
 - `20260429155500_customer_orders_status_timestamps_early.sql`（新）— idempotent ADD COLUMN IF NOT EXISTS
@@ -313,10 +330,9 @@ SELECT COUNT(*) FROM stock_balances sb WHERE sb.on_hand <> COALESCE((SELECT SUM(
 
 ## ⚠ 別踩
 
-1. **`reset.sh` 不要對 prod 跑** — Free plan 無備份、清掉客戶資料就 GG
-2. **`.env.e2e` 永遠 `E2E_EXPECTED_HOST=127.0.0.1`**（別改 anfyoeviuhmzzrhilwtm 否則允許指 prod）
-3. **Backup 檔案在 `scripts/e2e/backups/`** — 含 PII、gitignore 不會 push、別轉貼
-4. **修 migration 別動 prod 已 applied 的**（會造成 prod 那邊 push 失敗）
+1. **anfyoeviuhmzzrhilwtm 是 dev、可以亂跑** — 但日後若多接一個 customer-facing prod，記得再寫 host whitelist 防呆（目前只靠 `E2E_EXPECTED_HOST` substring）
+2. **Backup 檔案在 `scripts/e2e/backups/`** — 含 PII、gitignore 不會 push、別轉貼
+3. **修 migration 別動 dev/prod 已 applied 的**（會造成 push 失敗、要新增一支 idempotent migration）
 
 ---
 
@@ -336,6 +352,8 @@ SELECT COUNT(*) FROM stock_balances sb WHERE sb.on_hand <> COALESCE((SELECT SUM(
 
 我（Day 1 的 Claude）已經把 seed + spec 都鋪好。**你（Day 2 的 Claude / cloud session）只需要照著上面 Phase A-G 走、不用再規劃**。
 
-如果環境有問題（admin 啟動失敗、preview 連不到、psql 沒裝）— **stop 並 ask user**、別自己亂改 prod 連線。
+如果環境有問題（admin 啟動失敗、preview 連不到、psql 沒裝）— **stop 並 ask user**、別自己亂改連線設定。
+
+remote dev DB（anfyoeviuhmzzrhilwtm）可以亂跑、reset 隨意；但若日後加 customer-facing prod，要先在 `.env.e2e` 防呆 + 警語都補回來。
 
 加油 💪
