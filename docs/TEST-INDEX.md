@@ -30,21 +30,25 @@
 
 ## 軌道（8 in scope）
 
+> **2026-05-10 首輪 SQL-layer pass**：local Supabase + prod schema dump + reset.sh full-demo。資料層全綠、UI 層未跑（admin app 沒切到 local）。詳見 [TEST-E2E-master-report.md](TEST-E2E-master-report.md)。
+
 | Track | 主文件 | 範圍 | 狀態 | 最近驗證 | Report |
 |---|---|---|---|---|---|
-| T1 主檔 | [TEST-E2E-T1-master-data.md](TEST-E2E-T1-master-data.md) | 商品/SKU/規格/加盟店/會員/員工/audit cols | 🟡 | — | — |
-| T2 候選→開團 | [TEST-E2E-T2-campaign.md](TEST-E2E-T2-campaign.md) | 候選週曆/campaign/finalize/auto-PR | 🟡 | — | — |
-| T3 訂單+wallet | [TEST-E2E-T3-orders-wallet.md](TEST-E2E-T3-orders-wallet.md) | admin 加單/轉手/88折/soft-cancel/負數/wallet a-d/R4 R8 R10 | 🟡 | — | — |
-| T4 採購 | [TEST-E2E-T4-purchase.md](TEST-E2E-T4-purchase.md) | PR/PO/GR + R1 R2a R2b R3 + vendor_bills + purchase_returns | 🟡 | — | — |
-| T5 WMS 出貨 | [TEST-E2E-T5-wms-shipping.md](TEST-E2E-T5-wms-shipping.md) | Wave/Pick/Ship/Receive/逆轉 + R5 R9 + 異常處理 | 🟡 | — | — |
-| T6 退貨/轉貨 | [TEST-E2E-T6-returns-transfers.md](TEST-E2E-T6-returns-transfers.md) | free transfer/store→HQ/aid + R6a R6b R7 R11a-d R12 | 🟡 | — | — |
-| T7 收件匣 | [TEST-E2E-T7-inbox.md](TEST-E2E-T7-inbox.md) | HQ inbox + restock + counts RPC | 🟡 | — | — |
-| T10 安全 RLS | [TEST-E2E-T10-security-rls.md](TEST-E2E-T10-security-rls.md) | RLS 矩陣/SECURITY DEFINER/LINE 馬賽克/audit 4 欄位 | 🆕 | — | — |
+| T1 主檔 | [TEST-E2E-T1-master-data.md](TEST-E2E-T1-master-data.md) | 商品/SKU/規格/加盟店/會員/員工/audit cols | 🟢 (SQL) | 2026-05-10 | master § 1 |
+| T2 候選→開團 | [TEST-E2E-T2-campaign.md](TEST-E2E-T2-campaign.md) | 候選週曆/campaign/finalize/auto-PR | 🟡 (SQL data) | 2026-05-10 | master § 2（UI 未跑） |
+| T3 訂單+wallet | [TEST-E2E-T3-orders-wallet.md](TEST-E2E-T3-orders-wallet.md) | admin 加單/轉手/88折/soft-cancel/負數/wallet a-d/R4 R8 R10 | 🟢 (SQL) | 2026-05-10 | master § 3 |
+| T4 採購 | [TEST-E2E-T4-purchase.md](TEST-E2E-T4-purchase.md) | PR/PO/GR + R1 R2a R2b R3 + vendor_bills + purchase_returns | 🟢 (SQL) | 2026-05-10 | master § 4 |
+| T5 WMS 出貨 | [TEST-E2E-T5-wms-shipping.md](TEST-E2E-T5-wms-shipping.md) | Wave/Pick/Ship/Receive/逆轉 + R5 R9 + 異常處理 | 🟢 (SQL) | 2026-05-10 | master § 5 |
+| T6 退貨/轉貨 | [TEST-E2E-T6-returns-transfers.md](TEST-E2E-T6-returns-transfers.md) | free transfer/store→HQ/aid + R6a R6b R7 R11a-d R12 | 🟢 (SQL) | 2026-05-10 | master § 6（R12 是 RPC gap）|
+| T7 收件匣 | [TEST-E2E-T7-inbox.md](TEST-E2E-T7-inbox.md) | HQ inbox + restock + counts RPC | 🟡 (SQL data) | 2026-05-10 | master § 8（UI 未跑）|
+| T10 安全 RLS | [TEST-E2E-T10-security-rls.md](TEST-E2E-T10-security-rls.md) | RLS 矩陣/SECURITY DEFINER/LINE 馬賽克/audit 4 欄位 | 🟡 (SQL data) | 2026-05-10 | master § 9（branch user negative tests + LINE mask UI 未跑）|
 
 ### 主黃金路徑
 | 文件 | 說明 | 狀態 | Report |
 |---|---|---|---|
-| [TEST-E2E-master.md](TEST-E2E-master.md) | 13 步串全鏈黃金路徑（候選→開團→訂單→採購→撿貨→派貨→收貨→退貨→月結）| 🟡 | — |
+| [TEST-E2E-master.md](TEST-E2E-master.md) | 13 步串全鏈黃金路徑（候選→開團→訂單→採購→撿貨→派貨→收貨→退貨→月結）| 🟢 (data-layer) | [report](TEST-E2E-master-report.md) |
+
+**Legend：** 🟢 (SQL) 資料層全驗 / 🟡 (SQL data) 資料齊但 UI 未跑 / 🆕 全新未跑 / 🔴 失敗
 
 ---
 
