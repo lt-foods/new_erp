@@ -27,9 +27,9 @@ INSERT INTO mutual_aid_board (
   qty_available, qty_remaining, expires_at, note, status,
   post_type, source_customer_order_id, created_by
 )
-SELECT :'tenant_id'::uuid,
-       (SELECT id FROM stores WHERE tenant_id = :'tenant_id'::uuid AND code = x.store_code),
-       (SELECT id FROM skus   WHERE tenant_id = :'tenant_id'::uuid AND sku_code = x.sku_code),
+SELECT (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1),
+       (SELECT id FROM stores WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1) AND code = x.store_code),
+       (SELECT id FROM skus   WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1) AND sku_code = x.sku_code),
        x.qty, x.qty_remain,
        NOW() + (x.expires_in_days || ' days')::interval,
        x.note, 'active', 'request', NULL,
@@ -43,16 +43,16 @@ FROM (VALUES
 -- ── 2. offer 類型（依賴 customer_orders）─────────────────
 WITH any_user AS (SELECT id FROM auth.users LIMIT 1),
      orders AS (
-       SELECT * FROM customer_orders WHERE tenant_id = :'tenant_id'::uuid
+       SELECT * FROM customer_orders WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1)
      )
 INSERT INTO mutual_aid_board (
   tenant_id, offering_store_id, sku_id,
   qty_available, qty_remaining, expires_at, note, status,
   post_type, source_customer_order_id, created_by, updated_by
 )
-SELECT :'tenant_id'::uuid,
-       (SELECT id FROM stores WHERE tenant_id = :'tenant_id'::uuid AND code = x.store_code),
-       (SELECT id FROM skus   WHERE tenant_id = :'tenant_id'::uuid AND sku_code = x.sku_code),
+SELECT (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1),
+       (SELECT id FROM stores WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1) AND code = x.store_code),
+       (SELECT id FROM skus   WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1) AND sku_code = x.sku_code),
        x.qty, x.qty_remain,
        NOW() + (x.expires_days || ' days')::interval,
        x.note, x.status, 'offer',
@@ -68,7 +68,7 @@ FROM (VALUES
 
 -- ── 3. mutual_aid_replies（active offer 上 3 則對話）──────
 INSERT INTO mutual_aid_replies (tenant_id, board_id, author_id, author_label, body)
-SELECT :'tenant_id'::uuid, b.id,
+SELECT (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1), b.id,
        (SELECT id FROM auth.users LIMIT 1),
        x.author,
        x.body
@@ -78,24 +78,24 @@ JOIN (VALUES
   ('S002', 'S002 店長', '請補一下品項細節 + 預期到貨'),
   ('S002', '小芳',     '我也想要 1 件')
 ) AS x(store_code, author, body) ON x.store_code = 'S002'
-WHERE b.tenant_id = :'tenant_id'::uuid
+WHERE b.tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1)
   AND b.note LIKE 'AID-OFR-001%';
 
 -- ── 4. mutual_aid_claims ────────────────────────────────
 -- AID-OFR-001 active：S001 認領 1 件（resulting transfer = TF-AID-001 shipped）
 WITH any_user AS (SELECT id FROM auth.users LIMIT 1),
      b AS (SELECT id, offering_store_id, sku_id FROM mutual_aid_board
-           WHERE tenant_id = :'tenant_id'::uuid AND note LIKE 'AID-OFR-001%'),
+           WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1) AND note LIKE 'AID-OFR-001%'),
      s_target AS (SELECT id, location_id FROM stores
-                  WHERE tenant_id = :'tenant_id'::uuid AND code = 'S001'),
+                  WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1) AND code = 'S001'),
      s_source AS (SELECT location_id FROM stores
-                  WHERE tenant_id = :'tenant_id'::uuid AND code = 'S002'),
+                  WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1) AND code = 'S002'),
      new_transfer AS (
        INSERT INTO transfers (
          tenant_id, transfer_no, source_location, dest_location,
          status, transfer_type, requested_by, shipped_at, shipped_by, created_by, notes
        ) VALUES (
-         :'tenant_id'::uuid, 'TF-AID-001',
+         (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1), 'TF-AID-001',
          (SELECT location_id FROM s_source),
          (SELECT location_id FROM s_target),
          'shipped', 'store_to_store',
@@ -115,7 +115,7 @@ WITH any_user AS (SELECT id FROM auth.users LIMIT 1),
        INSERT INTO stock_movements (tenant_id, location_id, sku_id, quantity, unit_cost,
                                     movement_type, source_doc_type, source_doc_id,
                                     reason, operator_id)
-       SELECT :'tenant_id'::uuid,
+       SELECT (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1),
               (SELECT location_id FROM s_source),
               (SELECT sku_id FROM b),
               -1, 150,  -- SKU-003 cost
@@ -126,7 +126,7 @@ WITH any_user AS (SELECT id FROM auth.users LIMIT 1),
      )
 INSERT INTO mutual_aid_claims (tenant_id, board_id, claiming_store_id, qty,
                                 resulting_transfer_id, created_by)
-SELECT :'tenant_id'::uuid, (SELECT id FROM b),
+SELECT (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1), (SELECT id FROM b),
        (SELECT id FROM s_target),
        1,
        (SELECT id FROM new_transfer),
@@ -135,17 +135,17 @@ SELECT :'tenant_id'::uuid, (SELECT id FROM b),
 -- AID-OFR-001 qty_remaining 從 2 扣到 1
 UPDATE mutual_aid_board
    SET qty_remaining = 1
- WHERE tenant_id = :'tenant_id'::uuid
+ WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1)
    AND note LIKE 'AID-OFR-001%';
 
 -- ── 5. R11b: 已取消的 offer + 已取消的 claim ───────────────
 WITH any_user AS (SELECT id FROM auth.users LIMIT 1),
      b AS (SELECT id, offering_store_id, sku_id FROM mutual_aid_board
-           WHERE tenant_id = :'tenant_id'::uuid AND note LIKE 'R11b:%')
+           WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1) AND note LIKE 'R11b:%')
 INSERT INTO mutual_aid_claims (tenant_id, board_id, claiming_store_id, qty,
                                 resulting_transfer_id, created_by)
-SELECT :'tenant_id'::uuid, (SELECT id FROM b),
-       (SELECT id FROM stores WHERE tenant_id = :'tenant_id'::uuid AND code = 'S004'),
+SELECT (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1), (SELECT id FROM b),
+       (SELECT id FROM stores WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1) AND code = 'S004'),
        1, NULL,  -- 沒有 transfer 因為 claim 在 cancel 前就被取消了
        (SELECT id FROM any_user);
 -- 註：claim 表是 append-only、無 status 欄位。實務上「取消 claim」靠
@@ -156,7 +156,7 @@ SELECT :'tenant_id'::uuid, (SELECT id FROM b),
 -- 已 shipped + 對應 stock_movements.transfer_out + 取消後 transfer_reject 反流
 DO $$
 DECLARE
-  v_tenant     UUID := :'tenant_id'::uuid;
+  v_tenant     UUID := (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1);
   v_operator   UUID;
   v_sku        BIGINT;
   v_src_loc    BIGINT;

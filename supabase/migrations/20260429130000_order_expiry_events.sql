@@ -45,6 +45,6 @@ CREATE POLICY oee_store_read ON order_expiry_events
     tenant_id = (auth.jwt() -> 'app_metadata' ->> 'tenant_id')::uuid
     AND order_id IN (
       SELECT id FROM customer_orders
-       WHERE store_id = (auth.jwt() -> 'app_metadata' ->> 'store_id')::bigint
+       WHERE pickup_store_id = (auth.jwt() -> 'app_metadata' ->> 'store_id')::bigint
     )
   );

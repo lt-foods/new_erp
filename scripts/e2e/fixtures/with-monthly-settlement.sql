@@ -16,7 +16,7 @@ BEGIN;
 -- ── S001 月結算 ──────────────────────────────────────────
 DO $$
 DECLARE
-  v_tenant     UUID := :'tenant_id'::uuid;
+  v_tenant     UUID := (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1);
   v_month      DATE := DATE_TRUNC('month', NOW())::date;
   v_store      BIGINT;
   v_settlement BIGINT;
@@ -57,7 +57,7 @@ END $$;
 -- ── S002 月結算 ──────────────────────────────────────────
 DO $$
 DECLARE
-  v_tenant     UUID := :'tenant_id'::uuid;
+  v_tenant     UUID := (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1);
   v_month      DATE := DATE_TRUNC('month', NOW())::date;
   v_store      BIGINT;
   v_settlement BIGINT;

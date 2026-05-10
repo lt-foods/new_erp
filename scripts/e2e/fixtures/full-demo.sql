@@ -16,8 +16,8 @@
 \set ON_ERROR_STOP on
 
 \ir with-stock.sql
-\ir with-orders.sql
 \ir with-wallet-history.sql
+\ir with-orders.sql
 \ir with-pr-po.sql
 \ir with-picking-wave.sql
 \ir with-transfers.sql

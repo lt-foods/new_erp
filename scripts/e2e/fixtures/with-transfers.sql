@@ -18,10 +18,10 @@ INSERT INTO transfers (
   status, transfer_type, requested_by, shipped_at, shipped_by,
   received_at, received_by, created_by, notes
 )
-SELECT :'tenant_id'::uuid,
+SELECT (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1),
        x.no,
-       (SELECT id FROM locations WHERE tenant_id = :'tenant_id'::uuid AND code = x.src),
-       (SELECT id FROM locations WHERE tenant_id = :'tenant_id'::uuid AND code = x.dst),
+       (SELECT id FROM locations WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1) AND code = x.src),
+       (SELECT id FROM locations WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1) AND code = x.dst),
        x.status,
        x.tf_type,
        (SELECT id FROM any_user),
@@ -43,7 +43,7 @@ FROM (VALUES
 -- transfer_items
 INSERT INTO transfer_items (transfer_id, sku_id, qty_requested, qty_shipped, qty_received)
 SELECT t.id,
-       (SELECT id FROM skus WHERE tenant_id = :'tenant_id'::uuid AND sku_code = x.sku_code),
+       (SELECT id FROM skus WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1) AND sku_code = x.sku_code),
        x.qty_req, x.qty_ship, x.qty_recv
 FROM transfers t
 JOIN (VALUES
@@ -56,18 +56,18 @@ JOIN (VALUES
   ('TF-0005', 'SKU-006', 10, 10, 8),    -- R6b: shipped 10 received 8 (-2 damaged)
   ('TF-0006', 'SKU-008', 6,  6, 6)      -- 月結算用
 ) AS x(no, sku_code, qty_req, qty_ship, qty_recv) ON t.transfer_no = x.no
-WHERE t.tenant_id = :'tenant_id'::uuid;
+WHERE t.tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1);
 
 -- ── stock_movements 鏈 ──────────────────────────────────
 -- TF-0002 shipped (hq_to_store): 只有 transfer_out（dest 還沒 transfer_in）
 WITH any_user AS (SELECT id FROM auth.users LIMIT 1),
-     t AS (SELECT * FROM transfers WHERE tenant_id = :'tenant_id'::uuid AND transfer_no = 'TF-0002'),
+     t AS (SELECT * FROM transfers WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1) AND transfer_no = 'TF-0002'),
      ti AS (SELECT ti.* FROM transfer_items ti JOIN t ON ti.transfer_id = t.id),
      mv AS (
        INSERT INTO stock_movements (tenant_id, location_id, sku_id, quantity, unit_cost,
                                     movement_type, source_doc_type, source_doc_id, source_doc_line_id,
                                     reason, operator_id)
-       SELECT :'tenant_id'::uuid,
+       SELECT (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1),
               (SELECT source_location FROM t),
               ti.sku_id,
               -ti.qty_shipped, 90,  -- SKU-001 cost
@@ -82,12 +82,12 @@ FROM mv WHERE ti.id = mv.source_doc_line_id;
 
 -- TF-0003 received (store_to_store): transfer_out + transfer_in
 WITH any_user AS (SELECT id FROM auth.users LIMIT 1),
-     t AS (SELECT * FROM transfers WHERE tenant_id = :'tenant_id'::uuid AND transfer_no = 'TF-0003'),
+     t AS (SELECT * FROM transfers WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1) AND transfer_no = 'TF-0003'),
      ti AS (SELECT ti.* FROM transfer_items ti JOIN t ON ti.transfer_id = t.id)
 INSERT INTO stock_movements (tenant_id, location_id, sku_id, quantity, unit_cost,
                              movement_type, source_doc_type, source_doc_id, source_doc_line_id,
                              reason, operator_id)
-SELECT :'tenant_id'::uuid, loc, ti.sku_id, qty, 60,  -- SKU-005 cost
+SELECT (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1), loc, ti.sku_id, qty, 60,  -- SKU-005 cost
        mtype, 'transfer', (SELECT id FROM t), ti.id, lbl, (SELECT id FROM any_user)
 FROM ti
 CROSS JOIN (VALUES
@@ -98,13 +98,13 @@ CROSS JOIN LATERAL (SELECT (CASE WHEN x.sign = -1 THEN -ti.qty_received ELSE ti.
 
 -- TF-0004 cancelled (R6a): transfer_out shipped + transfer_reject 反流
 WITH any_user AS (SELECT id FROM auth.users LIMIT 1),
-     t AS (SELECT * FROM transfers WHERE tenant_id = :'tenant_id'::uuid AND transfer_no = 'TF-0004'),
+     t AS (SELECT * FROM transfers WHERE tenant_id = (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1) AND transfer_no = 'TF-0004'),
      ti AS (SELECT ti.* FROM transfer_items ti JOIN t ON ti.transfer_id = t.id),
      out_mv AS (
        INSERT INTO stock_movements (tenant_id, location_id, sku_id, quantity, unit_cost,
                                     movement_type, source_doc_type, source_doc_id, source_doc_line_id,
                                     reason, operator_id)
-       SELECT :'tenant_id'::uuid,
+       SELECT (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1),
               (SELECT source_location FROM t),
               ti.sku_id, -ti.qty_shipped, 40,  -- SKU-007 cost
               'transfer_out', 'transfer', (SELECT id FROM t), ti.id,
@@ -116,7 +116,7 @@ WITH any_user AS (SELECT id FROM auth.users LIMIT 1),
 INSERT INTO stock_movements (tenant_id, location_id, sku_id, quantity, unit_cost,
                              movement_type, source_doc_type, source_doc_id, source_doc_line_id,
                              reverses, reason, operator_id)
-SELECT :'tenant_id'::uuid,
+SELECT (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1),
        (SELECT source_location FROM t),
        ti.sku_id, ti.qty_shipped, 40,
        'transfer_reject', 'transfer', (SELECT id FROM t), ti.id,
@@ -128,7 +128,7 @@ FROM ti, out_mv om WHERE om.source_doc_line_id = ti.id;
 -- TF-0005 received with damage (R6b): transfer_out 10 / transfer_in 8 / damage 2
 DO $$
 DECLARE
-  v_tenant   UUID := :'tenant_id'::uuid;
+  v_tenant   UUID := (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1);
   v_operator UUID;
   v_t        BIGINT;
   v_ti       BIGINT;
@@ -166,7 +166,7 @@ END $$;
 -- TF-0006 normal hq_to_store received（月結算用）
 DO $$
 DECLARE
-  v_tenant   UUID := :'tenant_id'::uuid;
+  v_tenant   UUID := (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1);
   v_operator UUID;
   v_t        BIGINT;
   v_ti       BIGINT;
@@ -196,7 +196,7 @@ END $$;
 -- store_a < store_b：TF-0003 src=S002 dst=S004，store_a=S002, store_b=S004
 DO $$
 DECLARE
-  v_tenant     UUID := :'tenant_id'::uuid;
+  v_tenant     UUID := (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1);
   v_month      DATE := DATE_TRUNC('month', NOW())::date;
   v_s2         BIGINT;
   v_s4         BIGINT;

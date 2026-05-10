@@ -2,6 +2,10 @@
 -- v_picking_demand_by_close_date
 -- 給「撿貨工作站」用：以結單日（close_date）為單位，列出 SKU × 分店的需求矩陣
 -- ============================================================================
+-- 先 DROP（前一版有 received_qty / po_numbers / order_numbers 額外欄位、
+-- CREATE OR REPLACE 不能 drop 欄位）
+DROP VIEW IF EXISTS public.v_picking_demand_by_close_date CASCADE;
+
 CREATE OR REPLACE VIEW public.v_picking_demand_by_close_date AS
 SELECT
   gbc.tenant_id,

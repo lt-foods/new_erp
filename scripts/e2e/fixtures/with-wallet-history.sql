@@ -16,7 +16,7 @@ BEGIN;
 -- M-TEST-001：topup 1000 → spend 300 → refund 50（balance 1000 → 700 → 750）
 DO $$
 DECLARE
-  v_tenant   UUID := :'tenant_id'::uuid;
+  v_tenant   UUID := (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1);
   v_member   BIGINT;
   v_operator UUID;
   v_topup_id BIGINT;
@@ -55,7 +55,7 @@ END $$;
 -- M-TEST-002：base 已給 5000；加 spend 500（balance 5000 → 4500）
 DO $$
 DECLARE
-  v_tenant   UUID := :'tenant_id'::uuid;
+  v_tenant   UUID := (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1);
   v_member   BIGINT;
   v_operator UUID;
 BEGIN
@@ -78,7 +78,7 @@ END $$;
 -- balance: 0 → 200 → 300 → 200
 DO $$
 DECLARE
-  v_tenant      UUID := :'tenant_id'::uuid;
+  v_tenant      UUID := (SELECT (raw_app_meta_data->>'tenant_id')::uuid FROM auth.users WHERE raw_app_meta_data ? 'tenant_id' LIMIT 1);
   v_member      BIGINT;
   v_operator    UUID;
   v_topup1_id   BIGINT;
