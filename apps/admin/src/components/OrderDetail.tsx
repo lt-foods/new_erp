@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { OrderTransferModal } from "@/components/OrderTransferModal";
+import OrderReturnCreateModal from "@/components/OrderReturnCreateModal";
 import { PickupDialog } from "@/components/PickupDialog";
 import { AidOrderTimeline } from "@/components/AidOrderTimeline";
 import { OrderAuditDrawer } from "@/components/OrderAuditDrawer";
@@ -123,6 +124,7 @@ export function OrderDetail({
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const [transferOpen, setTransferOpen] = useState(false);
+  const [returnOpen, setReturnOpen] = useState(false);
   const [pickupOpen, setPickupOpen] = useState(false);
   const [walletPayOpen, setWalletPayOpen] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
@@ -334,6 +336,7 @@ export function OrderDetail({
 
   const canTransfer = ["pending", "confirmed", "reserved", "ready"].includes(head.status);
   const canCancel = ["pending", "confirmed", "shipping"].includes(head.status);
+  const canReturn = ["shipping", "ready", "partially_completed", "completed"].includes(head.status);
   const isTransferredOut = head.status === "transferred_out";
 
   async function cancelOrder() {
@@ -414,7 +417,7 @@ export function OrderDetail({
           </SpinButton>
         </div>
       )}
-      {(canTransfer || canPickup || canCancel || isTransferredOut) && (
+      {(canTransfer || canPickup || canCancel || canReturn || isTransferredOut) && (
         <div className="flex items-center justify-end gap-2">
           {canPickup && (
             <SpinButton
@@ -434,6 +437,15 @@ export function OrderDetail({
               ↗ 轉出此訂單
             </SpinButton>
           )}
+          {canReturn && (
+            <SpinButton
+              onClick={() => setReturnOpen(true)}
+              className="rounded-md border border-orange-300 px-3 py-1 text-xs font-medium text-orange-700 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-950"
+              title="把此訂單已派到該店的 SKU 退回總倉"
+            >
+              ↩ 退訂單
+            </SpinButton>
+          )}
           {canCancel && (
             <SpinButton
               onClick={cancelOrder}
@@ -451,6 +463,17 @@ export function OrderDetail({
           )}
         </div>
       )}
+
+      <OrderReturnCreateModal
+        open={returnOpen}
+        onClose={() => setReturnOpen(false)}
+        onCreated={() => {
+          setReturnOpen(false);
+          setReloadTick((n) => n + 1);
+        }}
+        prefillOrderId={head.id}
+        prefillStoreId={head.pickup_store_id}
+      />
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <Field label="訂單號" value={<span className="font-mono">{head.order_no}</span>} />

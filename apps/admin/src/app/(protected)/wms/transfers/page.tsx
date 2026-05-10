@@ -9,10 +9,11 @@
 //   B. 補貨派貨 — 在 /hq/inbox 或 /wms/outbound
 //   D. 互助訂單 — 走 customer_orders,在 /transfers/aid
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import FreeTransferCreateModal from "@/components/FreeTransferCreateModal";
+import OrderReturnCreateModal from "@/components/OrderReturnCreateModal";
 
 type Loc = { id: number; name: string; type: string };
 
@@ -51,6 +52,9 @@ export default function InternalTransfersPage() {
   const [locs, setLocs] = useState<Map<number, Loc>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<"store_to_store" | "store_to_hq" | "all">("store_to_store");
+  const [showCreate, setShowCreate] = useState(false);
+  const [showReturn, setShowReturn] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,7 +64,7 @@ export default function InternalTransfersPage() {
         const { data, error: e } = await sb
           .from("transfers")
           .select("id, transfer_no, source_location, dest_location, status, transfer_type, notes, created_at, shipped_at, received_at")
-          .in("transfer_type", ["store_to_store"])
+          .in("transfer_type", ["store_to_store", "return_to_hq"])
           .order("id", { ascending: false })
           .limit(200);
         if (e) throw new Error(e.message);
@@ -83,9 +87,10 @@ export default function InternalTransfersPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [reloadKey]);
 
   function isStoreToHq(t: TransferRow): boolean {
+    if (t.transfer_type === "return_to_hq") return true;
     const dest = locs.get(t.dest_location);
     return dest?.type === "central_warehouse";
   }
@@ -121,13 +126,38 @@ export default function InternalTransfersPage() {
             店與店互轉、退貨回總倉。不含客戶訂單派貨(在派貨工作台)、互助訂單(在互助轉移單)。
           </p>
         </div>
-        <Link
-          href="/transfers/free"
-          className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700"
-        >
-          + 建自由轉貨
-        </Link>
+        <div className="flex flex-wrap gap-2">
+          <SpinButton
+            onClick={() => setShowReturn(true)}
+            className="rounded-md bg-orange-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-700"
+          >
+            ↩ 退訂單
+          </SpinButton>
+          <SpinButton
+            onClick={() => setShowCreate(true)}
+            className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700"
+          >
+            + 建自由轉貨
+          </SpinButton>
+        </div>
       </header>
+
+      <FreeTransferCreateModal
+        open={showCreate}
+        onClose={() => setShowCreate(false)}
+        onCreated={() => {
+          setShowCreate(false);
+          setReloadKey((k) => k + 1);
+        }}
+      />
+      <OrderReturnCreateModal
+        open={showReturn}
+        onClose={() => setShowReturn(false)}
+        onCreated={() => {
+          setShowReturn(false);
+          setReloadKey((k) => k + 1);
+        }}
+      />
 
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
