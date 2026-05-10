@@ -336,7 +336,7 @@ export function OrderDetail({
 
   const canTransfer = ["pending", "confirmed", "reserved", "ready"].includes(head.status);
   const canCancel = ["pending", "confirmed", "shipping"].includes(head.status);
-  const canReturn = ["shipping", "ready", "partially_completed", "completed"].includes(head.status);
+  const canReturn = ["shipping", "ready", "partially_completed", "completed", "expired"].includes(head.status);
   const isTransferredOut = head.status === "transferred_out";
 
   async function cancelOrder() {

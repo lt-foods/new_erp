@@ -5,13 +5,14 @@ import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { getSupabase } from "@/lib/supabase";
 
-const RETURNABLE_STATUSES = ["shipping", "ready", "partially_completed", "completed"] as const;
+const RETURNABLE_STATUSES = ["shipping", "ready", "partially_completed", "completed", "expired"] as const;
 
 const STATUS_LABEL: Record<string, string> = {
   shipping: "派貨中",
   ready: "可取貨",
   partially_completed: "部分取貨",
   completed: "已完成",
+  expired: "已過期",
 };
 
 type Store = { id: number; name: string; location_id: number | null };
@@ -122,18 +123,31 @@ export default function OrderReturnCreateModal({
         .not("status", "in", "(cancelled,expired)");
 
       const deliveredMap = new Map<number, { qty: number; sku_code: string; sku_name: string }>();
-      for (const row of (itemRows ?? []) as Array<{
+      // Supabase 自動 typegen 對 FK relation 一律當 array，雖然這裡實際是 1:1。
+      // 用 unknown 中轉 cast，再對 array 取 [0]。
+      type ItemRow = {
         sku_id: number;
         qty: number | null;
-        skus: { sku_code: string; products: { name?: string } | null } | null;
-      }>) {
+        skus: { sku_code: string; products: { name?: string } | { name?: string }[] | null } | Array<{
+          sku_code: string;
+          products: { name?: string } | { name?: string }[] | null;
+        }> | null;
+      };
+      const rows = (itemRows ?? []) as unknown as ItemRow[];
+      for (const row of rows) {
         if (row.sku_id == null) continue;
+        const skuObj = Array.isArray(row.skus) ? row.skus[0] : row.skus;
+        const prodObj = skuObj
+          ? Array.isArray(skuObj.products)
+            ? skuObj.products[0]
+            : skuObj.products
+          : null;
         const prev = deliveredMap.get(row.sku_id);
         const qty = Number(row.qty ?? 0);
         deliveredMap.set(row.sku_id, {
           qty: (prev?.qty ?? 0) + qty,
-          sku_code: row.skus?.sku_code ?? prev?.sku_code ?? "",
-          sku_name: row.skus?.products?.name ?? prev?.sku_name ?? "",
+          sku_code: skuObj?.sku_code ?? prev?.sku_code ?? "",
+          sku_name: prodObj?.name ?? prev?.sku_name ?? "",
         });
       }
 
