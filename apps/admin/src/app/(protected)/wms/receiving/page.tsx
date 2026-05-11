@@ -34,7 +34,6 @@ type PORow = {
   po_no: string;
   status: POStatus;
   sent_at: string | null;
-  expected_date: string | null;
   supplier_id: number;
   supplier_name: string;
   supplier_code: string | null;
@@ -61,12 +60,12 @@ export default function ReceivingWorkbenchPage() {
         const sb = getSupabase();
         const { data: poData, error: e } = await sb
           .from("purchase_orders")
-          .select("id, po_no, status, sent_at, expected_date, supplier_id")
+          .select("id, po_no, status, sent_at, supplier_id")
           .in("status", ["sent", "partially_received", "fully_received"])
           .order("sent_at", { ascending: false, nullsFirst: false })
           .limit(200);
         if (e) throw new Error(e.message);
-        const pos = (poData ?? []) as Array<Pick<PORow, "id" | "po_no" | "status" | "sent_at" | "expected_date" | "supplier_id">>;
+        const pos = (poData ?? []) as Array<Pick<PORow, "id" | "po_no" | "status" | "sent_at" | "supplier_id">>;
 
         if (pos.length === 0) {
           if (!cancelled) { setRows([]); setError(null); }
@@ -126,7 +125,6 @@ export default function ReceivingWorkbenchPage() {
             po_no: po.po_no,
             status: po.status as POStatus,
             sent_at: po.sent_at,
-            expected_date: po.expected_date,
             supplier_id: po.supplier_id,
             supplier_name: sup?.name ?? `#${po.supplier_id}`,
             supplier_code: sup?.code ?? null,
@@ -184,25 +182,6 @@ export default function ReceivingWorkbenchPage() {
     );
   }, [rows]);
 
-  // 「明天到貨」:還沒全收(sent/partial)且預計到貨日 = 明天
-  const tomorrowSummary = useMemo(() => {
-    if (!rows) return { poCount: 0, itemCount: 0, remainingQty: 0 };
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowStr = tomorrow.toLocaleDateString("sv-SE");
-    return rows.reduce(
-      (acc, r) => {
-        if (r.status === "fully_received") return acc;
-        if (r.expected_date !== tomorrowStr) return acc;
-        acc.poCount += 1;
-        acc.itemCount += r.line_count;
-        acc.remainingQty += Math.max(0, r.total_qty_ordered - r.total_qty_received);
-        return acc;
-      },
-      { poCount: 0, itemCount: 0, remainingQty: 0 },
-    );
-  }, [rows]);
-
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
@@ -229,26 +208,6 @@ export default function ReceivingWorkbenchPage() {
         <Stat label="⏳ 部分收" value={counts.partial} accent="text-amber-700 dark:text-amber-400" />
         <Stat label="✓ 全收" value={counts.full} accent="text-emerald-700 dark:text-emerald-400" />
         <Stat label="🔁 補貨來源" value={counts.restock} accent="text-indigo-700 dark:text-indigo-400" />
-      </div>
-
-      {/* 明天到貨摘要 */}
-      <div className="flex flex-wrap items-center gap-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm dark:border-blue-900 dark:bg-blue-950/40">
-        <span className="font-medium text-blue-900 dark:text-blue-200">🚚 明天到貨</span>
-        {tomorrowSummary.poCount === 0 ? (
-          <span className="text-zinc-500 dark:text-zinc-400">無</span>
-        ) : (
-          <>
-            <span className="text-blue-900 dark:text-blue-200">
-              <span className="font-mono font-semibold">{tomorrowSummary.poCount}</span> 張 PO
-            </span>
-            <span className="text-blue-900 dark:text-blue-200">
-              <span className="font-mono font-semibold">{tomorrowSummary.itemCount}</span> 樣品項
-            </span>
-            <span className="text-blue-900 dark:text-blue-200">
-              待收 <span className="font-mono font-semibold">{tomorrowSummary.remainingQty}</span> 件
-            </span>
-          </>
-        )}
       </div>
 
       {/* Filter */}

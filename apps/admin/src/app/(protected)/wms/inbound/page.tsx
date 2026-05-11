@@ -239,6 +239,31 @@ export default function TransfersInboxPage() {
     [transfers, locationFilter],
   );
 
+  // 「明天到貨」:status=shipped 且對應 wave.wave_date = 明天
+  const tomorrowSummary = useMemo(() => {
+    if (!transfers) return { count: 0, lines: 0, qty: 0 };
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = tomorrow.toLocaleDateString("sv-SE");
+    let count = 0;
+    let lines = 0;
+    let qty = 0;
+    for (const t of transfers) {
+      if (t.status !== "shipped") continue;
+      if (locationFilter !== "all" && t.dest_location !== locationFilter) continue;
+      const wid = parseWaveId(t.transfer_no);
+      const w = wid !== null ? waves.get(wid) : undefined;
+      if (!w || w.wave_date !== tomorrowStr) continue;
+      count += 1;
+      const s = itemSummary.get(t.id);
+      if (s) {
+        lines += s.lines;
+        qty += s.totalQty;
+      }
+    }
+    return { count, lines, qty };
+  }, [transfers, waves, itemSummary, locationFilter]);
+
   function selectAllPending() {
     setSelected(new Set(pendingIds));
   }
@@ -364,6 +389,26 @@ export default function TransfersInboxPage() {
           {error}
         </div>
       )}
+
+      {/* 明天到貨摘要 — 從 status=shipped 且 wave.wave_date=明天 推算 */}
+      <div className="flex flex-wrap items-center gap-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm dark:border-blue-900 dark:bg-blue-950/40">
+        <span className="font-medium text-blue-900 dark:text-blue-200">🚚 明天到貨</span>
+        {tomorrowSummary.count === 0 ? (
+          <span className="text-zinc-500 dark:text-zinc-400">無</span>
+        ) : (
+          <>
+            <span className="text-blue-900 dark:text-blue-200">
+              <span className="font-mono font-semibold">{tomorrowSummary.count}</span> 張轉貨單
+            </span>
+            <span className="text-blue-900 dark:text-blue-200">
+              <span className="font-mono font-semibold">{tomorrowSummary.lines}</span> 樣品項
+            </span>
+            <span className="text-blue-900 dark:text-blue-200">
+              <span className="font-mono font-semibold">{tomorrowSummary.qty}</span> 件
+            </span>
+          </>
+        )}
+      </div>
 
       {/* 批次工具列 */}
       {pendingIds.length > 0 && (
