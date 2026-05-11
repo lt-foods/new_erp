@@ -30,6 +30,7 @@ type DemandRow = {
   demand_qty: number;
   wave_qty: number;
   shipped_qty: number;
+  is_restock_sourced?: boolean;
 };
 
 type Supplier = { id: number; code: string; name: string };
@@ -95,6 +96,7 @@ export default function PickingWorkstationPage() {
       qty_in_transit: number;
       qty_shortage: number;
       already_wave_for_sku: number;
+      is_restock_sourced: boolean;
     }[];                                  // 跨 PO 來源(去重)
     storeDemand: Map<number, number>;
     storeWave: Map<number, number>;
@@ -147,6 +149,7 @@ export default function PickingWorkstationPage() {
           qty_in_transit: inTransit,
           qty_shortage: shortage,
           already_wave_for_sku: 0,
+          is_restock_sourced: !!r.is_restock_sourced,
         });
         s.totalOrdered += Number(r.qty_ordered);
         s.totalGr += Number(r.gr_qty);
@@ -475,7 +478,7 @@ export default function PickingWorkstationPage() {
         <div>
           <h1 className="text-xl font-semibold">🚦 派貨工作台</h1>
           <p className="text-sm text-zinc-500">
-            合併所有未派完 PO 為一張矩陣 — 直接針對 品項 × 分店分配,提交時依 PO 自動切分。
+            合併所有未派完 PO 為一張矩陣 — 直接針對 品項 × 分店分配,提交時依 PO 自動切分。包含客戶訂單派貨與補貨申請(📦)。
           </p>
         </div>
         <Link
@@ -603,10 +606,18 @@ export default function PickingWorkstationPage() {
                           <div className="min-w-0 flex-1">
                             <div className="font-mono text-[11px] text-zinc-500">{sk.sku_code ?? "—"}</div>
                             <div className="truncate" title={sk.sku_label}>{sk.sku_label}</div>
-                            <div className="mt-1 text-[10px] text-zinc-400">
+                            <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-zinc-400">
                               {sk.poList.length === 1
                                 ? <span className="font-mono" title={`${sk.poList[0].po_status ?? ""} · 訂 ${sk.poList[0].qty_ordered}/已到 ${sk.poList[0].gr_qty}/在途 ${sk.poList[0].qty_in_transit}/短少 ${sk.poList[0].qty_shortage}`}>{sk.poList[0].po_no}</span>
                                 : <span title={sk.poList.map((p) => `${p.po_no} (${p.po_status ?? ""}): 訂 ${p.qty_ordered}/到 ${p.gr_qty}/在途 ${p.qty_in_transit}/短少 ${p.qty_shortage}/撿 ${p.already_wave_for_sku}`).join("\n")}>跨 {sk.poList.length} 張 PO</span>}
+                              {sk.poList.some((p) => p.is_restock_sourced) && (
+                                <span
+                                  className="rounded bg-amber-100 px-1 py-0.5 text-[9px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                                  title="此 PO 來源為補貨申請(restock)"
+                                >
+                                  📦 補貨
+                                </span>
+                              )}
                             </div>
                           </div>
                           <SpinButton
