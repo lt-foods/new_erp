@@ -37,6 +37,20 @@ type Supplier = { id: number; code: string; name: string };
 type AllocKey = string; // `${sku_id}:${store_id}`
 type ViewMode = "matrix" | "by_store";
 
+type RestockRow = {
+  restock_request_id: number;
+  restock_status: string;
+  store_id: number;
+  store_code: string | null;
+  store_name: string | null;
+  sku_id: number;
+  sku_code: string | null;
+  sku_label: string;
+  demand_qty: number;
+  gr_qty: number;        // HQ on_hand
+  wave_qty: number;      // 已撿
+};
+
 function defaultWaveDate() {
   const d = new Date();
   d.setDate(d.getDate() + 2);
@@ -46,6 +60,7 @@ function defaultWaveDate() {
 export default function PickingWorkstationPage() {
   const router = useRouter();
   const [demand, setDemand] = useState<DemandRow[] | null>(null);
+  const [restockDemand, setRestockDemand] = useState<RestockRow[] | null>(null);
   const [suppliers, setSuppliers] = useState<Map<number, Supplier>>(new Map());
   const [waveDate, setWaveDate] = useState(defaultWaveDate());
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +68,11 @@ export default function PickingWorkstationPage() {
   const [viewMode, setViewMode] = useState<ViewMode>("matrix");
 
   const [allocs, setAllocs] = useState<Map<AllocKey, number>>(new Map());
+  // restock alloc key: `${restock_request_id}:${sku_id}` -> qty
+  const [restockAllocs, setRestockAllocs] = useState<Map<string, number>>(new Map());
   const [submitting, setSubmitting] = useState(false);
+  const [submittingRrId, setSubmittingRrId] = useState<number | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -61,14 +80,17 @@ export default function PickingWorkstationPage() {
     (async () => {
       try {
         const sb = getSupabase();
-        const [{ data: dRows, error: e1 }, { data: supRows }] = await Promise.all([
+        const [{ data: dRows, error: e1 }, { data: supRows }, { data: rrRows, error: e3 }] = await Promise.all([
           sb.from("v_picking_demand_by_po").select("*"),
           sb.from("suppliers").select("id, code, name"),
+          sb.from("v_picking_demand_no_po").select("*"),
         ]);
         if (cancelled) return;
         if (e1) { setError(e1.message); return; }
+        if (e3) { setError(e3.message); return; }
         setError(null);
         setDemand((dRows ?? []) as DemandRow[]);
+        setRestockDemand((rrRows ?? []) as RestockRow[]);
         const sm = new Map<number, Supplier>();
         for (const s of (supRows ?? []) as Supplier[]) sm.set(s.id, s);
         setSuppliers(sm);
@@ -79,7 +101,7 @@ export default function PickingWorkstationPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [reloadKey]);
 
   // ===== 合併視角資料：每個 (sku, store) 一格，跨 PO 加總 =====
   type StoreInfo = { store_id: number; store_code: string | null; store_name: string };
@@ -459,6 +481,83 @@ export default function PickingWorkstationPage() {
     return set.size;
   }, [skuRows, allocs]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ===== 補貨申請(無 PO 來源)分組 =====
+  type RestockGroup = {
+    rrId: number;
+    rrStatus: string;
+    storeId: number;
+    storeCode: string | null;
+    storeName: string;
+    lines: RestockRow[];
+  };
+  const restockGroups: RestockGroup[] = useMemo(() => {
+    if (!restockDemand) return [];
+    const map = new Map<number, RestockGroup>();
+    for (const r of restockDemand) {
+      let g = map.get(r.restock_request_id);
+      if (!g) {
+        g = {
+          rrId: r.restock_request_id,
+          rrStatus: r.restock_status,
+          storeId: r.store_id,
+          storeCode: r.store_code,
+          storeName: r.store_name ?? `#${r.store_id}`,
+          lines: [],
+        };
+        map.set(r.restock_request_id, g);
+      }
+      g.lines.push(r);
+    }
+    return Array.from(map.values()).sort((a, b) => a.rrId - b.rrId);
+  }, [restockDemand]);
+
+  function getRestockAlloc(rrId: number, skuId: number): number {
+    return restockAllocs.get(`${rrId}:${skuId}`) ?? 0;
+  }
+  function setRestockAlloc(rrId: number, skuId: number, qty: number, max: number) {
+    setRestockAllocs((prev) => {
+      const next = new Map(prev);
+      next.set(`${rrId}:${skuId}`, Math.max(0, Math.min(qty, max)));
+      return next;
+    });
+  }
+
+  async function submitRestockWave(group: RestockGroup) {
+    setError(null);
+    setSubmittingRrId(group.rrId);
+    try {
+      const sb = getSupabase();
+      const { data: sess } = await sb.auth.getSession();
+      const operator = sess.session?.user?.id;
+      if (!operator) throw new Error("尚未登入");
+
+      const allocations: { sku_id: number; store_id: number; qty: number }[] = [];
+      for (const ln of group.lines) {
+        const qty = getRestockAlloc(group.rrId, ln.sku_id);
+        if (qty > 0) {
+          allocations.push({ sku_id: ln.sku_id, store_id: group.storeId, qty });
+        }
+      }
+      if (allocations.length === 0) {
+        throw new Error("沒有任何分配 — 請先填數量");
+      }
+      const { data, error: e } = await sb.rpc("rpc_create_wave_from_restock", {
+        p_restock_request_id: group.rrId,
+        p_wave_date: waveDate,
+        p_allocations: allocations,
+        p_operator: operator,
+      });
+      if (e) throw new Error(e.message);
+      const r = data as { wave_id: number; wave_code: string };
+      alert(`✅ 已建立撿貨單 ${r.wave_code}`);
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmittingRrId(null);
+    }
+  }
+
   // KPI 總覽
   const kpis = useMemo(() => {
     let totalAvailable = 0, totalInTransit = 0, totalShortage = 0;
@@ -754,6 +853,130 @@ export default function PickingWorkstationPage() {
             </section>
           );
         })
+      )}
+
+      {/* === 補貨申請(無 PO 來源) section === */}
+      {restockDemand !== null && restockGroups.length > 0 && (
+        <section className="mt-2 rounded-md border border-amber-200 bg-amber-50/40 dark:border-amber-900 dark:bg-amber-950/20">
+          <header className="border-b border-amber-200 px-4 py-2 dark:border-amber-900">
+            <h2 className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+              📦 補貨申請(無 PO 來源)
+              <span className="ml-2 text-xs font-normal text-amber-700/80 dark:text-amber-300/70">
+                {restockGroups.length} 張申請 · 供給來自 HQ 即時庫存
+              </span>
+            </h2>
+          </header>
+          <div className="flex flex-col gap-3 p-3">
+            {restockGroups.map((g) => {
+              const allocSum = g.lines.reduce(
+                (s, ln) => s + getRestockAlloc(g.rrId, ln.sku_id),
+                0,
+              );
+              const canSubmit = allocSum > 0 && submittingRrId !== g.rrId;
+              return (
+                <div
+                  key={g.rrId}
+                  className="rounded-md border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900"
+                >
+                  <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <span className="font-mono text-sm font-semibold">
+                        RR-{g.rrId}
+                      </span>
+                      <span className="inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                        {g.rrStatus === "pending" ? "待處理" : "已批准"}
+                      </span>
+                      <span className="text-sm">{g.storeName}</span>
+                      {g.storeCode && (
+                        <span className="font-mono text-[11px] text-zinc-500">
+                          {g.storeCode}
+                        </span>
+                      )}
+                    </div>
+                    <SpinButton
+                      onClick={() => submitRestockWave(g)}
+                      disabled={!canSubmit}
+                      className="rounded-md bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
+                    >
+                      {submittingRrId === g.rrId
+                        ? "建立中…"
+                        : `🧾 建立撿貨單 (擬分 ${allocSum})`}
+                    </SpinButton>
+                  </div>
+                  <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+                    <thead className="bg-zinc-50 dark:bg-zinc-950">
+                      <tr>
+                        <Th>品項</Th>
+                        <Th className="text-center">申請量</Th>
+                        <Th className="text-center" title="HQ 即時庫存 (on_hand)">HQ 庫存</Th>
+                        <Th className="text-center">已撿</Th>
+                        <Th className="text-center">本次撿</Th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                      {g.lines.map((ln) => {
+                        const maxForLine = Math.max(
+                          0,
+                          Math.min(
+                            Number(ln.demand_qty) - Number(ln.wave_qty),
+                            Number(ln.gr_qty),
+                          ),
+                        );
+                        const value = getRestockAlloc(g.rrId, ln.sku_id);
+                        return (
+                          <tr key={ln.sku_id}>
+                            <Td className="text-xs">
+                              <div className="font-mono text-[11px] text-zinc-500">
+                                {ln.sku_code ?? "—"}
+                              </div>
+                              <div title={ln.sku_label}>{ln.sku_label}</div>
+                            </Td>
+                            <NumCell value={Number(ln.demand_qty)} bold />
+                            <NumCell
+                              value={Number(ln.gr_qty)}
+                              accent={
+                                Number(ln.gr_qty) < Number(ln.demand_qty)
+                                  ? "danger"
+                                  : undefined
+                              }
+                            />
+                            <NumCell value={Number(ln.wave_qty)} muted />
+                            <td className="px-2 py-1.5 text-center">
+                              <input
+                                type="number"
+                                value={value}
+                                min={0}
+                                max={maxForLine}
+                                step={1}
+                                onChange={(e) =>
+                                  setRestockAlloc(
+                                    g.rrId,
+                                    ln.sku_id,
+                                    Number(e.target.value),
+                                    maxForLine,
+                                  )
+                                }
+                                title={`最多可撿 ${maxForLine}(申請 ${ln.demand_qty}、庫存 ${ln.gr_qty}、已撿 ${ln.wave_qty})`}
+                                className={`w-full max-w-[80px] rounded border px-1 py-0.5 text-center font-mono text-sm font-medium tabular-nums dark:bg-zinc-800 ${
+                                  value === 0
+                                    ? "border-zinc-200 text-zinc-300 dark:border-zinc-700"
+                                    : "border-amber-300 text-amber-700 dark:border-amber-700 dark:text-amber-300"
+                                }`}
+                              />
+                              <div className="mt-0.5 text-[10px] text-zinc-400">
+                                ≤ {maxForLine}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })}
+          </div>
+        </section>
       )}
     </div>
   );
