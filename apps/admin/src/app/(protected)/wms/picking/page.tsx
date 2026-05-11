@@ -192,7 +192,8 @@ export default function PickingWorkstationPage() {
       s.poList.sort((a, b) => a.po_id - b.po_id);
     }
     return Array.from(grouped.values())
-      .filter((s) => s.totalAvailable > 0) // 隱藏已撿完(可分配=0)的 SKU
+      // 隱藏「已到貨且全部撿完」的 SKU;到貨 0 (sent 在路上)的繼續顯示讓使用者看得到
+      .filter((s) => !(s.totalGr > 0 && s.totalAvailable === 0))
       .sort((a, b) => (a.sku_code ?? "").localeCompare(b.sku_code ?? ""));
   }, [demand]);
 
