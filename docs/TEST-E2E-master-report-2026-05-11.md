@@ -6,7 +6,7 @@ verified_by: claude opus 4.7 (cloud session, 1M context)
 db: anfyoeviuhmzzrhilwtm.supabase.co (remote dev, project_name=erp-dev, postgres 17.6)
 schema_source: live (no dump/restore — direct query)
 fixture: full-demo (re-applied via Management API runner)
-checks: 70 PASS / 0 FAIL / 0 ERR  (55 ripple + 15 RPC negative)
+checks: 90 PASS / 0 FAIL / 0 ERR  (55 ripple + 15 RPC negative + 20 T10 security) + 1 informational finding
 ---
 
 # Master 黃金路徑 Run Report — 2026-05-11
@@ -272,11 +272,82 @@ checks: 70 PASS / 0 FAIL / 0 ERR  (55 ripple + 15 RPC negative)
 
 ---
 
+## T10 Security SQL checks ✅ pass + ⚠ 1 finding
+
+### S1-S5 Inventory ✅
+
+| # | 檢查 | 預期 | 實際 | 結果 |
+|---|---|---|---|---|
+| S1 | SECDEF function count | > 150 | 171 | ✅ |
+| S2 | RLS-enabled tables | 113 | 113 | ✅ |
+| S3 | RLS = 100% of public tables (total == with_rls) | 113/113 | 113/113 | ✅ |
+| S4 | RLS policies | >= 100 | 149 | ✅ |
+| S5 | append-only triggers | >= 15 | 17 | ✅ |
+
+> handoff Day 1 寫 23 個 append-only triggers，實際 17（10 個用 `forbid_append_only_mutation`、7 個用 `forbid_ledger_mutation`/conditional `*_immutable_when_locked`）。可能 Day 1 數法不同 or 之後重構掉幾個、不算 regression。
+
+### S6-S12 Append-only invariant trigger fire ✅
+
+對 7 個 append-only table 真實 UPDATE / DELETE、確認 trigger RAISE：
+
+| 表 | 動作 | RAISE pattern matched | 結果 |
+|---|---|---|---|
+| wallet_ledger | UPDATE reason | `is append-only` | ✅ |
+| wallet_ledger | DELETE | `is append-only` | ✅ |
+| stock_movements | UPDATE reason | `is append-only` | ✅ |
+| stock_movements | DELETE | `is append-only` | ✅ |
+| order_pickup_events | UPDATE | `is append-only` | ✅ |
+| picking_wave_audit_log | UPDATE | `is append-only` | ✅ |
+| mutual_aid_claims | UPDATE | `is append-only` | ✅ |
+
+> 附帶確認：`forbid_ledger_mutation` 設計上允許「只改 member_id」的 UPDATE（member merge 用），其他欄位改動都 RAISE。沒「全 column 鎖死」、是「會員合併留 audit」的取捨。
+
+### S13 LINE User ID 儲存格式 ✅
+
+| # | 檢查 | 預期 | 實際 | 結果 |
+|---|---|---|---|---|
+| S13 | line_user_id 非空 | 3 rows non-empty | 3 rows, len=32 | ✅ |
+| S13b | format `U...` (LINE 規格) | >= 3 | 3 | ✅ |
+
+> seed 灌的 line_user_id 是 placeholder（`U00000...`）、不是真 hash。UI session 應再驗 admin 列表頁是否 mask 成 `U***xxx`。
+
+### S14-S18 Audit 4 cols 覆蓋 ✅
+
+| 表 | created_at/by + updated_at/by | 結果 |
+|---|---|---|
+| products | 4/4 | ✅ |
+| customer_orders | 4/4 | ✅ |
+| purchase_orders | 4/4 | ✅ |
+| transfers | 4/4 | ✅ |
+| wallet_ledger (append-only) | created_at + operator_id 全 NOT NULL | ✅ |
+
+### S20-S21 SECDEF spot-check ✅ + ⚠ finding
+
+**S20 8 支 RPC 都是 SECURITY DEFINER：** ✅
+
+**S21 tenant_id 衍生策略分類（informational）：**
+
+| RPC | tenant_id 來源 | 風險 |
+|---|---|---|
+| `rpc_create_pr_from_campaigns` | `_current_tenant_id()` from JWT | 🟢 best practice |
+| `rpc_wallet_adjust` | `auth.jwt()` 取 role + p_tenant_id param | 🟡 param-trusted、配 role gate |
+| `rpc_wallet_refund` | `p_tenant_id` param（`WHERE id AND tenant_id=p_tenant_id` filter）| 🟡 client 傳對才安全 |
+| `rpc_wallet_reverse` | 同上 | 🟡 |
+| `rpc_cancel_aid_order` | **無 tenant filter** — `WHERE id=p_order_id` | 🔴 **potential cross-tenant** |
+| `rpc_finalize_campaign` | 同上 | 🔴 待確認 |
+| `rpc_pr_reopen` | 同上 | 🔴 待確認 |
+| `rpc_wallet_pay_order` | 同上 | 🔴 待確認 |
+
+> **⚠ 安全 follow-up：** `rpc_cancel_aid_order` / `rpc_finalize_campaign` / `rpc_pr_reopen` / `rpc_wallet_pay_order` 是 SECDEF 但 row lookup 沒 tenant filter — SECDEF bypass RLS、若 attacker 知道別 tenant 的 order_id/pr_id 就能呼叫成功。實務上 attacker 取不到別 tenant 的 id（RLS 擋 SELECT），但 defense-in-depth 應加 `AND tenant_id = _current_tenant_id()` filter。建議開 issue 補。
+
+---
+
 ## 附錄：runner / verify 腳本
 
-三個 cloud-only fallback 腳本（這次 session 寫的）：
+四個 cloud-only fallback 腳本（這次 session 寫的）：
 - `/tmp/run_reset.py` — `reset.sh` 的 Management API 版（走 443、不需要 PG protocol）
 - `/tmp/verify.py` — 55 條 SQL 檢查（baseline + R1-R12 ripple）
 - `/tmp/verify_rpc_neg.py` — 15 條 RPC contract negative tests
+- `/tmp/verify_t10.py` — 20 條 T10 security checks + 1 informational finding
 
 需要的話可以收進 `scripts/e2e/cloud-fallback/`。
