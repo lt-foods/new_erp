@@ -236,6 +236,24 @@ export default function PickingWorkstationPage() {
     return Array.from(grouped.values()).sort((a, b) => (a.storeCode ?? "").localeCompare(b.storeCode ?? ""));
   }, [demand]);
 
+  // 補貨申請預設分配 = min(申請量 - 已撿, HQ 庫存) per (rr, sku)
+  useEffect(() => {
+    if (!restockDemand) return;
+    setRestockAllocs((prev) => {
+      const next = new Map(prev);
+      for (const r of restockDemand) {
+        const k = `${r.restock_request_id}:${r.sku_id}`;
+        if (next.has(k)) continue;
+        const cap = Math.max(
+          0,
+          Math.min(Number(r.demand_qty) - Number(r.wave_qty), Number(r.gr_qty)),
+        );
+        next.set(k, cap);
+      }
+      return next;
+    });
+  }, [restockDemand]);
+
   // 預設分配 = max(0, demand - wave - shipped) per (sku, store)
   useEffect(() => {
     if (!demand) return;
