@@ -11,10 +11,11 @@ import { OrderDetail } from "@/components/OrderDetail";
 import { Modal } from "@/components/Modal";
 import { AidOrderStatusActions } from "@/components/AidOrderStatusActions";
 import { PickModal, type PickWave } from "@/components/PickModal";
+import ExceptionsContent from "@/components/ExceptionsContent";
 import { ORDER_STATUS_LABEL as AID_STATUS_LABEL, type OrderStatus as AidStatus } from "@/lib/orderStatus";
 
 type Stage = "pending" | "in_transit" | "done" | "rejected";
-type SourceTag = "restock" | "transfer" | "aid" | "shortage" | "picking";
+type SourceTag = "restock" | "transfer" | "aid" | "shortage" | "picking" | "exception";
 
 const STAGE_LABEL: Record<Stage, string> = {
   pending: "待處理",
@@ -36,6 +37,7 @@ const SOURCE_LABEL: Record<SourceTag, string> = {
   aid: "互助訂單",
   shortage: "⚠️ 短少訂單",
   picking: "撿貨單",
+  exception: "⚠️ 異常",
 };
 
 const SOURCE_COLOR: Record<SourceTag, string> = {
@@ -44,6 +46,7 @@ const SOURCE_COLOR: Record<SourceTag, string> = {
   aid: "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-950 dark:text-fuchsia-300",
   shortage: "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
   picking: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
+  exception: "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
 };
 
 const RESOLUTION_LABEL: Record<string, string> = {
@@ -792,11 +795,11 @@ function HqInboxContent() {
   const [sourceFilter, setSourceFilter] = useState<SourceTag | "all">(() => {
     if (typeof window === "undefined") return "picking";
     const fromUrl = new URLSearchParams(window.location.search).get("source");
-    if (fromUrl === "restock" || fromUrl === "transfer" || fromUrl === "aid" || fromUrl === "shortage" || fromUrl === "picking" || fromUrl === "all") {
+    if (fromUrl === "restock" || fromUrl === "transfer" || fromUrl === "aid" || fromUrl === "shortage" || fromUrl === "picking" || fromUrl === "exception" || fromUrl === "all") {
       return fromUrl;
     }
     const saved = window.localStorage.getItem("hq-inbox-source");
-    if (saved === "restock" || saved === "transfer" || saved === "aid" || saved === "shortage" || saved === "picking") {
+    if (saved === "restock" || saved === "transfer" || saved === "aid" || saved === "shortage" || saved === "picking" || saved === "exception") {
       return saved;
     }
     // 舊 localStorage 是 "all" → 改成 picking(因為 UI 沒入口了)
@@ -814,7 +817,7 @@ function HqInboxContent() {
   // 跟 ?source= URL param 同步(支援從 /transfers/aid redirect 過來)
   useEffect(() => {
     const src = searchParams.get("source");
-    if (src === "restock" || src === "transfer" || src === "aid" || src === "shortage" || src === "picking") {
+    if (src === "restock" || src === "transfer" || src === "aid" || src === "shortage" || src === "picking" || src === "exception") {
       setSourceFilter(src);
     }
   }, [searchParams]);
@@ -830,6 +833,8 @@ function HqInboxContent() {
 
   // server-side counts: per source × per stage(badge / tab 用)
   const [counts, setCounts] = useState<Record<SourceTag, Record<Stage, number>> | null>(null);
+  // 異常 chip count(由 <ExceptionsContent /> 透過 onCountChange 自報,不走 rpc_inbox_counts)
+  const [exceptionCount, setExceptionCount] = useState<number>(0);
   // server-side total: 當前 (source, stage) 篩選的總數
   const [total, setTotal] = useState(0);
   // 載入狀態
@@ -894,6 +899,7 @@ function HqInboxContent() {
           aid: { ...fallback, ...(raw.aid ?? {}) },
           shortage: { ...fallback, ...(raw.shortage ?? {}) },
           picking: pickingCounts,
+          exception: { ...fallback }, // 由 <ExceptionsContent /> 透過 onCountChange callback 自報、不走 rpc
         };
         setCounts(newCounts);
       } catch {
@@ -929,7 +935,7 @@ function HqInboxContent() {
           });
           if (keysErr) throw keysErr;
           const keysObj = (keysData ?? { rows: [], total: 0 }) as { rows: Array<{ row_key: string; source: SourceTag; stage: Stage; ts: string; source_id: number }>; total: number };
-          const idsBy: Record<SourceTag, number[]> = { restock: [], transfer: [], aid: [], shortage: [], picking: [] };
+          const idsBy: Record<SourceTag, number[]> = { restock: [], transfer: [], aid: [], shortage: [], picking: [], exception: [] };
           // v_hq_inbox 還沒含 picking;若未來 server-side 加進去,picking 鍵也已就位
           for (const k of keysObj.rows) {
             if (idsBy[k.source]) idsBy[k.source].push(Number(k.source_id));
@@ -997,12 +1003,12 @@ function HqInboxContent() {
 
   // source chip counts:依當前 stage,從 cached counts 算出
   const sourceCounts = useMemo(() => {
-    const c: Record<SourceTag, number> = { restock: 0, transfer: 0, aid: 0, shortage: 0, picking: 0 };
+    const c: Record<SourceTag, number> = { restock: 0, transfer: 0, aid: 0, shortage: 0, picking: 0, exception: 0 };
     if (!counts) return c;
     const stages: Stage[] = stage === "all"
       ? ["pending", "in_transit", "done", "rejected"]
       : [stage];
-    for (const s of ["restock", "transfer", "aid", "shortage", "picking"] as SourceTag[]) {
+    for (const s of ["restock", "transfer", "aid", "shortage", "picking", "exception"] as SourceTag[]) {
       for (const stg of stages) c[s] += counts[s][stg];
     }
     return c;
@@ -1485,7 +1491,7 @@ function HqInboxContent() {
 
       {/* === 來源資料夾 chip bar === */}
       <div className="flex flex-wrap items-center gap-2">
-        {(["picking", "restock", "transfer", "aid", "shortage"] as const).map((s) => {
+        {(["picking", "restock", "transfer", "aid", "shortage", "exception"] as const).map((s) => {
           const active = sourceFilter === s;
           const label = ({
             picking: "📋 撿貨單",
@@ -1493,9 +1499,11 @@ function HqInboxContent() {
             transfer: "🚚 轉貨單",
             aid: "🤝 互助訂單",
             shortage: "⚠️ 短少訂單",
+            exception: "⚠️ 異常",
           } as const)[s];
           // chip 顯示「該來源」的待處理數(從 cached counts 算,固定值,跟 stage 切換無關)
-          const count = !counts ? 0 : counts[s].pending;
+          // exception 是 client-side 計算、直接使用 exceptionCount
+          const count = s === "exception" ? exceptionCount : (!counts ? 0 : counts[s].pending);
           return (
             <SpinButton
               key={s}
@@ -1558,6 +1566,10 @@ function HqInboxContent() {
 
       {/* === 主區 === */}
       <div className="flex flex-1 flex-col gap-3 min-w-0">
+        {sourceFilter === "exception" ? (
+          <ExceptionsContent showHeader={false} onCountChange={setExceptionCount} />
+        ) : (
+          <>
 
           {/* Toolbar: 搜尋 + 起迄日 + 閱讀模式 */}
           <div className="flex flex-wrap items-center gap-2">
@@ -1778,6 +1790,8 @@ function HqInboxContent() {
               </SpinButton>
             </div>
           )}
+          </>
+        )}
       </div>
 
       {rejectModal && (
