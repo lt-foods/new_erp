@@ -53,6 +53,8 @@ type PO = {
   updated_at: string;
   pr_id: number | null;
   pr_no: string | null;
+  product_names: string[];
+  item_count: number;
 };
 
 type StatusTab = "all" | POStatus;
@@ -153,19 +155,26 @@ export default function PurchaseOrdersListPage() {
             updated_at: r.updated_at,
             pr_id: null,
             pr_no: null,
+            product_names: [],
+            item_count: 0,
           };
         });
 
-        // 2. 透過 purchase_order_items + purchase_request_items 找來源 PR
+        // 2. 透過 purchase_order_items + purchase_request_items 找來源 PR + 商品/品項
         const poIds = baseList.map((p) => p.id);
         const poToPR = new Map<number, number>();
+        const poItemMap = new Map<number, number[]>(); // po_id -> sku_ids[]
         if (poIds.length) {
           const { data: poiRows } = await supabase
             .from("purchase_order_items")
-            .select("id, po_id")
+            .select("id, po_id, sku_id")
             .in("po_id", poIds);
           const poiToPo = new Map<number, number>();
-          for (const r of poiRows ?? []) poiToPo.set(r.id, r.po_id);
+          for (const r of poiRows ?? []) {
+            poiToPo.set(r.id, r.po_id);
+            if (!poItemMap.has(r.po_id)) poItemMap.set(r.po_id, []);
+            poItemMap.get(r.po_id)!.push(r.sku_id);
+          }
           const poiIds = (poiRows ?? []).map((r) => r.id);
           if (poiIds.length) {
             const { data: priRows } = await supabase
@@ -177,6 +186,36 @@ export default function PurchaseOrdersListPage() {
               if (po && r.pr_id) poToPR.set(po, r.pr_id);
             }
           }
+        }
+
+        // 3. 撈 SKU -> product name(批次)
+        const allSkuIds = Array.from(
+          new Set(Array.from(poItemMap.values()).flat()),
+        );
+        const skuToProduct = new Map<number, string>();
+        if (allSkuIds.length) {
+          const { data: skuRows } = await supabase
+            .from("skus")
+            .select("id, products!inner(name)")
+            .in("id", allSkuIds);
+          type SkuLite = {
+            id: number;
+            products: { name: string } | { name: string }[] | null;
+          };
+          for (const s of (skuRows as SkuLite[] | null) ?? []) {
+            const prod = Array.isArray(s.products) ? s.products[0] : s.products;
+            if (prod?.name) skuToProduct.set(s.id, prod.name);
+          }
+        }
+        for (const p of baseList) {
+          const skuIds = poItemMap.get(p.id) ?? [];
+          p.item_count = skuIds.length;
+          const nameSet = new Set<string>();
+          for (const sid of skuIds) {
+            const name = skuToProduct.get(sid);
+            if (name) nameSet.add(name);
+          }
+          p.product_names = Array.from(nameSet);
         }
         const prIds = Array.from(new Set(Array.from(poToPR.values())));
         const prMap = new Map<number, string>();
@@ -614,6 +653,8 @@ export default function PurchaseOrdersListPage() {
               />
               <Th>來源 PR</Th>
               <Th>狀態</Th>
+              <Th>商品</Th>
+              <Th align="right">品項</Th>
               <SortTh
                 col="total"
                 label="金額"
@@ -644,13 +685,13 @@ export default function PurchaseOrdersListPage() {
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {pos === null ? (
               <tr>
-                <td colSpan={9} className="p-6 text-center text-zinc-500">
+                <td colSpan={11} className="p-6 text-center text-zinc-500">
                   載入中…
                 </td>
               </tr>
             ) : pageRows.length === 0 ? (
               <tr>
-                <td colSpan={9} className="p-6 text-center text-zinc-500">
+                <td colSpan={11} className="p-6 text-center text-zinc-500">
                   {filtersActive ? "沒有符合條件的 PO" : "尚無採購訂單"}
                 </td>
               </tr>
@@ -661,7 +702,7 @@ export default function PurchaseOrdersListPage() {
                   className="bg-zinc-50 dark:bg-zinc-950"
                 >
                   <td
-                    colSpan={9}
+                    colSpan={11}
                     className="px-4 py-2 text-xs font-semibold text-zinc-700 dark:text-zinc-200"
                   >
                     📂 {g.label}
@@ -831,6 +872,30 @@ function PORow({
         >
           {STATUS_LABEL[po.status]}
         </span>
+      </Td>
+      <Td className="max-w-[220px]">
+        {po.product_names.length === 0 ? (
+          <span className="text-xs text-zinc-400">—</span>
+        ) : (
+          <div
+            className="truncate text-xs"
+            title={po.product_names.join("、")}
+          >
+            {po.product_names.slice(0, 2).join("、")}
+            {po.product_names.length > 2 && (
+              <span className="ml-1 rounded bg-zinc-100 px-1 text-[10px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+                +{po.product_names.length - 2}
+              </span>
+            )}
+          </div>
+        )}
+      </Td>
+      <Td className="text-right text-xs">
+        {po.item_count > 0 ? (
+          <span className="font-mono">{po.item_count}</span>
+        ) : (
+          <span className="text-zinc-400">—</span>
+        )}
       </Td>
       <Td className="text-right font-mono">${po.total.toLocaleString()}</Td>
       <Td className="text-xs">
