@@ -32,7 +32,7 @@ const NAV: NavGroup[] = [
       { href: "/pickup", label: "取貨", match: /^\/pickup/ },
       { href: "/wms/inbound", label: "收貨", match: /^\/wms\/inbound|^\/transfers\/inbox/ },
       { href: "/members", label: "會員", match: /^\/members/ },
-      { href: "/wms/transfers", label: "內部調撥", match: /^\/wms\/transfers|^\/transfers\/free/ },
+      { href: "/wms/transfers", label: "內部調撥", match: /^\/wms\/transfers|^\/transfers\/free|^\/transfers\/dispatch|^\/transfers$|^\/transfers\/?$/ },
       { href: "/restock", label: "補貨申請", match: /^\/restock(?!\/inbox)/ },
       { href: "/inventory/mutual-aid", label: "互助交流板", match: /^\/inventory\/mutual-aid/ },
     ],
@@ -50,7 +50,6 @@ const NAV: NavGroup[] = [
       { href: "/hq/inbox", label: "總倉收件匣", match: /^\/hq\/inbox/ },
       { href: "/wms/receiving", label: "進貨待辦", match: /^\/wms\/receiving/ },
       { href: "/wms/picking", label: "派貨工作台", match: /^\/wms\/picking(?!\/history)|^\/picking\/workstation/ },
-      { href: "/wms/transfers", label: "內部調撥", match: /^\/wms\/transfers|^\/transfers\/dispatch|^\/transfers$|^\/transfers\/?$/ },
     ],
   },
   {
@@ -79,8 +78,7 @@ const BRANCH_HIDDEN_HREFS = new Set([
   "/purchase/orders",     // 採購訂單
   "/wms/receiving",       // 進貨待辦 (HQ)
   "/wms/picking",         // 派貨工作台
-  "/wms/transfers",       // 內部調撥 (HQ-side)
-  // /wms/inbound 不在這裡 — 分店要用,屬於分店業務
+  // /wms/inbound 跟 /wms/transfers 不在這裡 — 分店要用,屬於分店業務
   "/finance/receivables", // HQ 應收
 ]);
 const BRANCH_HIDDEN_GROUPS = new Set([
