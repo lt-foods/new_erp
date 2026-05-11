@@ -84,6 +84,7 @@ type TransferRaw = {
   source_name: string;
   dest_name: string;
   line_count: number;
+  notes: string | null;
 };
 
 type AidRaw = {
@@ -149,6 +150,11 @@ function classifyTransfer(t: TransferRaw): Stage {
   if (t.status === "shipped") return "in_transit";
   if (t.status === "received") return "done";
   return "rejected";
+}
+
+// 退訂單(rpc_create_order_return 產生的 transfer,notes 以「[order return」開頭)
+function isOrderReturnTransfer(notes: string | null | undefined): boolean {
+  return !!notes && notes.startsWith("[order return");
 }
 
 function classifyAid(s: AidStatus): Stage {
@@ -292,7 +298,7 @@ async function fetchTransferRows(
   let q = sb
     .from("transfers")
     .select(
-      "id, transfer_no, source_location, dest_location, status, transfer_type, shipping_temp, is_air_transfer, hq_notes, shipped_at, received_at, created_at",
+      "id, transfer_no, source_location, dest_location, status, transfer_type, shipping_temp, is_air_transfer, hq_notes, notes, shipped_at, received_at, created_at",
       { count: "exact" },
     )
     .order("id", { ascending: false });
@@ -628,7 +634,7 @@ async function fetchTransferRowsByIds(sb: SBClient, ids: number[]): Promise<Row[
   const { data, error } = await sb
     .from("transfers")
     .select(
-      "id, transfer_no, source_location, dest_location, status, transfer_type, shipping_temp, is_air_transfer, hq_notes, shipped_at, received_at, created_at",
+      "id, transfer_no, source_location, dest_location, status, transfer_type, shipping_temp, is_air_transfer, hq_notes, notes, shipped_at, received_at, created_at",
     )
     .in("id", ids);
   if (error) throw new Error("transfers: " + error.message);
@@ -1298,13 +1304,20 @@ function HqInboxContent() {
     }
   }
 
-  async function handleTransferAction(transferId: number, action: "ship" | "arrive_at_hq" | "delete") {
+  async function handleTransferAction(transferId: number, action: "ship" | "arrive_at_hq" | "delete" | "reject") {
     const labels: Record<typeof action, string> = {
       ship: "從 HQ 出貨(扣庫存、推到「已出貨」)",
       arrive_at_hq: "確認到倉(全收、入 HQ 庫存)",
       delete: "刪除草稿",
+      reject: "取消(拒收、將貨退回 source location)",
     };
-    if (!confirm(`確定:${labels[action]}?`)) return;
+    let reason: string | null = null;
+    if (action === "reject") {
+      reason = prompt(`取消原因(必填,會留 audit log):`);
+      if (!reason || !reason.trim()) return;
+    } else {
+      if (!confirm(`確定:${labels[action]}?`)) return;
+    }
     setBusy(`transfer-${transferId}-${action}`);
     try {
       const sb = getSupabase();
@@ -1322,6 +1335,9 @@ function HqInboxContent() {
       } else if (action === "arrive_at_hq") {
         rpcName = "rpc_transfer_arrive_at_hq_batch";
         params = { p_transfer_ids: [transferId], p_hq_location_id: hqLocId, p_operator: operator };
+      } else if (action === "reject") {
+        rpcName = "rpc_reject_transfer";
+        params = { p_transfer_id: transferId, p_reason: reason, p_operator: operator };
       } else {
         rpcName = "rpc_transfer_batch_delete";
         params = { p_transfer_ids: [transferId], p_operator: operator };
@@ -1843,7 +1859,7 @@ function MailRow({
   onOpenAidDetail: (id: number) => void;
   onAidChanged: () => void;
   onShortageAction: (orderId: number, action: "notified" | "cancelled" | "waiting_next_po" | "reallocated") => Promise<void>;
-  onTransferAction: (transferId: number, action: "ship" | "arrive_at_hq" | "delete") => Promise<void>;
+  onTransferAction: (transferId: number, action: "ship" | "arrive_at_hq" | "delete" | "reject") => Promise<void>;
   onPickingDispatch: (w: PickingRaw) => Promise<void>;
   onPickingEdit: (w: PickingRaw) => void;
   onPickingCancel: (w: PickingRaw) => Promise<void>;
@@ -1913,8 +1929,21 @@ function MailRow({
     }
   } else if (row.source === "transfer") {
     const t = row.raw;
+    const isOrderReturn = isOrderReturnTransfer(t.notes);
     idText = t.transfer_no;
-    title = <>{t.source_name} <span className="text-zinc-400 mx-1">→</span> {t.dest_name}</>;
+    title = (
+      <>
+        {t.source_name} <span className="text-zinc-400 mx-1">→</span> {t.dest_name}
+        {isOrderReturn && (
+          <span
+            className="ml-2 inline-block rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-medium text-rose-700 dark:bg-rose-950 dark:text-rose-300"
+            title="由客戶退訂單建立"
+          >
+            🔁 退訂單
+          </span>
+        )}
+      </>
+    );
     subtitle = (
       <>
         {t.line_count} 項
@@ -2132,10 +2161,11 @@ function TransferActions({
   transfer: TransferRaw;
   hqLocId: number | null;
   busy: string | null;
-  onAction: (transferId: number, action: "ship" | "arrive_at_hq" | "delete") => Promise<void>;
+  onAction: (transferId: number, action: "ship" | "arrive_at_hq" | "delete" | "reject") => Promise<void>;
 }) {
   const isBusy = busy?.startsWith(`transfer-${transfer.id}`) ?? false;
   const isHqDest = hqLocId !== null && transfer.dest_location === hqLocId;
+  const isOrderReturn = isOrderReturnTransfer(transfer.notes);
   const buttons: React.ReactNode[] = [];
 
   // draft: 可刪除
@@ -2166,8 +2196,21 @@ function TransferActions({
     );
   }
 
-  // shipped + dest=HQ → 到倉
+  // shipped + dest=HQ → 到倉(退訂單多加一個「取消」、label 改成「確認入倉」)
   if (transfer.status === "shipped" && isHqDest) {
+    if (isOrderReturn) {
+      buttons.push(
+        <RowAction
+          key="reject"
+          variant="danger"
+          onClick={() => onAction(transfer.id, "reject")}
+          disabled={isBusy}
+          title="拒收、將貨退回原寄出 location"
+        >
+          取消
+        </RowAction>,
+      );
+    }
     buttons.push(
       <RowAction
         key="arrive"
@@ -2175,7 +2218,7 @@ function TransferActions({
         onClick={() => onAction(transfer.id, "arrive_at_hq")}
         disabled={isBusy}
       >
-        到倉
+        {isOrderReturn ? "確認入倉" : "到倉"}
       </RowAction>,
     );
   }
