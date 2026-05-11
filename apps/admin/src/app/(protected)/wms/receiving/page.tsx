@@ -75,19 +75,15 @@ export default function ReceivingWorkbenchPage() {
         const poIds = pos.map((p) => p.id);
         const supplierIds = Array.from(new Set(pos.map((p) => p.supplier_id)));
 
-        const [{ data: supRows }, { data: poiRows }, { data: griRows }, { data: prItems }] = await Promise.all([
+        const [{ data: supRows }, { data: poiRows }, { data: griRows }] = await Promise.all([
           sb.from("suppliers").select("id, code, name").in("id", supplierIds),
           sb.from("purchase_order_items").select("id, po_id, qty_ordered").in("po_id", poIds),
           sb.from("goods_receipt_items")
             .select("po_item_id, qty_received, gr:goods_receipts!inner(po_id, status)")
             .in("gr.po_id", poIds)
             .eq("gr.status", "confirmed"),
-          // 偵測 restock-sourced
-          sb.from("purchase_request_items")
-            .select("po_item_id, pr_id, pr:purchase_requests!inner(id), restock:restock_requests!purchase_request_items_pr_id_fkey(linked_pr_id)")
-            .in("po_item_id", []), // 故意傳空,改下面手動 query
         ]);
-        // 偵測 restock-sourced(用更簡單的查法)
+        // 偵測 restock-sourced
         const { data: restockPos } = await sb
           .from("restock_requests")
           .select("linked_pr_id")
