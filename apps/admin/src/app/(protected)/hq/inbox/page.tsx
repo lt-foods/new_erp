@@ -1491,14 +1491,13 @@ function HqInboxContent() {
 
       {/* === 來源資料夾 chip bar === */}
       <div className="flex flex-wrap items-center gap-2">
-        {(["picking", "restock", "transfer", "aid", "shortage", "exception"] as const).map((s) => {
+        {(["picking", "restock", "transfer", "aid", "exception"] as const).map((s) => {
           const active = sourceFilter === s;
           const label = ({
             picking: "📋 撿貨單",
             restock: "📦 補貨申請",
             transfer: "🚚 轉貨單",
             aid: "🤝 互助訂單",
-            shortage: "⚠️ 短少訂單",
             exception: "⚠️ 異常",
           } as const)[s];
           // chip 顯示「該來源」的待處理數(從 cached counts 算,固定值,跟 stage 切換無關)
