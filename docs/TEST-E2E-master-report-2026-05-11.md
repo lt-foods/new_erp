@@ -6,7 +6,7 @@ verified_by: claude opus 4.7 (cloud session, 1M context)
 db: anfyoeviuhmzzrhilwtm.supabase.co (remote dev, project_name=erp-dev, postgres 17.6)
 schema_source: live (no dump/restore — direct query)
 fixture: full-demo (re-applied via Management API runner)
-checks: 90 PASS / 0 FAIL / 0 ERR  (55 ripple + 15 RPC negative + 20 T10 security) + 1 informational finding
+checks: 118 PASS / 0 FAIL / 0 ERR  (55 ripple + 15 RPC negative + 20 T10 security + 26 schema integrity + 2 build) + 1 informational finding
 ---
 
 # Master 黃金路徑 Run Report — 2026-05-11
@@ -342,12 +342,89 @@ checks: 90 PASS / 0 FAIL / 0 ERR  (55 ripple + 15 RPC negative + 20 T10 security
 
 ---
 
+## Schema integrity sweep ✅ pass
+
+### B1-B3 tenant_id coverage ✅
+
+| # | 檢查 | 預期 | 實際 | 結果 |
+|---|---|---|---|---|
+| B1 | public tables with `tenant_id` 欄位 | > 50 | 113 | ✅ |
+| B2 | tables 不帶 `tenant_id`（child `*_items`/lookup）| informational | `goods_receipt_items, pos_sale_items, purchase_order_items, purchase_return_items, sales_*, sku_packs, stocktake_items, transfer_items, ...` 12+ 張 | ℹ️ |
+| B3 | tenant_id NULL rows 跨所有 113 表（DO block 動態跑）| 0 | 0 / 0 bad tables | ✅ |
+
+> B2 finding：多張 `*_items` child table 自己不帶 `tenant_id`、依靠 FK 連 parent 來繼承。RLS policy 必須 JOIN parent 才能算 tenant — 性能/維護面有點重，但不是 bug。
+
+### B4 Cross-tenant alignment ✅
+
+| 關係 | 結果 |
+|---|---|
+| `customer_order_items.order_id` → `customer_orders.id` 同 tenant | ✅ 0 mismatch |
+| `wallet_ledger.member_id` → `members.id` 同 tenant | ✅ 0 mismatch |
+| `stock_movements.sku_id` → `skus.id` 同 tenant | ✅ 0 mismatch |
+| `purchase_order_items`, `goods_receipt_items`, `transfer_items`（無自帶 tenant_id）| ℹ️ 走 parent inheritance |
+
+### B6 Orphan FK rows ✅
+
+8 對 FK 都 0 orphan：customer_order_items / purchase_order_items / goods_receipt_items / transfer_items / wallet_ledger / stock_movements / mutual_aid_claims / mutual_aid_replies。
+
+### B7-B9 CHECK constraints ✅
+
+| # | 檢查 | 結果 |
+|---|---|---|
+| B7 | public schema 總 CHECK constraints | 1147 |
+| B8 | stock_movements 有 quantity CHECK | ✅ 1 |
+| B9 | wallet_ledger 有 CHECK | ✅ 2 |
+
+### B10 UNIQUE 完整性 ✅
+
+| 表 | 唯一性 | 結果 |
+|---|---|---|
+| `members(tenant_id, member_no)` | 0 duplicates | ✅ |
+| `customer_orders(tenant_id, order_no)` | 0 duplicates | ✅ |
+| `skus(tenant_id, sku_code)` | 0 duplicates | ✅ |
+
+### B11-B12 NOT NULL invariants ✅
+
+| 表 | NULL counts | 結果 |
+|---|---|---|
+| customer_orders (tenant_id, status) | 0 / 0 | ✅ |
+| stock_movements (location_id, sku_id, quantity) | 0 / 0 / 0 | ✅ |
+
+### B13 Soft-delete inventory ✅ (informational)
+
+| 檢查 | 結果 |
+|---|---|
+| tables with `deleted_at` 欄位 | 0（全系統用 hard-delete + audit log + reverse entry 模型）|
+
+---
+
+## apps/admin build + typecheck ✅
+
+| 階段 | 命令 | 結果 |
+|---|---|---|
+| install | `npm install --workspaces`（無 lockfile）| exit 0 |
+| typecheck | `npx tsc --noEmit` | ✅ exit 0、無錯 |
+| build | `npx next build` | ✅ exit 0、~40 靜態 routes prerendered（包含 admin / liff / pickup / purchase / restock / suppliers / transfers / wms 各區）|
+
+> 沒 lockfile (`package-lock.json`/`pnpm-lock.yaml`) — npm 跑時自己 resolve。建議 commit 一份 lockfile 確保 reproducible build。
+
+---
+
+## Findings 發出 issue
+
+| 編號 | Issue | 嚴重度 |
+|---|---|---|
+| #210 | SECDEF RPCs do row lookup without tenant_id filter — cross-tenant risk | P1 |
+
+---
+
 ## 附錄：runner / verify 腳本
 
-四個 cloud-only fallback 腳本（這次 session 寫的）：
+五個 cloud-only fallback 腳本（這次 session 寫的）：
 - `/tmp/run_reset.py` — `reset.sh` 的 Management API 版（走 443、不需要 PG protocol）
 - `/tmp/verify.py` — 55 條 SQL 檢查（baseline + R1-R12 ripple）
 - `/tmp/verify_rpc_neg.py` — 15 條 RPC contract negative tests
 - `/tmp/verify_t10.py` — 20 條 T10 security checks + 1 informational finding
+- `/tmp/verify_schema.py` — 26 條 schema integrity (tenant coverage / orphan FK / CHECK / UNIQUE / NOT NULL)
 
 需要的話可以收進 `scripts/e2e/cloud-fallback/`。
