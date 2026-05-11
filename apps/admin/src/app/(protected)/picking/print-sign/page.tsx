@@ -160,7 +160,9 @@ export default function PrintSignPage() {
           waveCodes: Array.from(v.waveCodes).sort(),
         }))
         .sort((a, b) => (a.sku.sku_code ?? "").localeCompare(b.sku.sku_code ?? ""))
-        .filter((r) => r.pickedQty > 0); // 0 數量不列（短缺到 0 那店家就沒貨）
+        // 派貨計畫中(qty>0)的品項都要列上,即使尚未撿貨/短缺到 0
+        // ─ 司機 / 收貨店家才知道「應該」收到什麼,short-pick 也看得出來
+        .filter((r) => r.qty > 0 || r.pickedQty > 0);
       if (rows.length === 0) continue;
       const totalPicked = rows.reduce((s, r) => s + r.pickedQty, 0);
       result.push({ store, rows, totalPicked });
@@ -306,6 +308,11 @@ export default function PrintSignPage() {
                     </td>
                     <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono">
                       {r.pickedQty}
+                      {r.pickedQty < r.qty && (
+                        <span className="ml-1 text-[10px] text-rose-600" title={`原派 ${r.qty}、實撿 ${r.pickedQty}`}>
+                          (派 {r.qty})
+                        </span>
+                      )}
                     </td>
                     <td className="border border-zinc-400 px-2 py-1.5 text-center">
                       <span className="text-zinc-300">□</span>

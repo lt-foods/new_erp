@@ -654,6 +654,12 @@ function HqDispatchContent() {
                               {w.wave_code}
                             </span>
                             <span
+                              className="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-[11px] font-medium text-blue-800 dark:bg-blue-950 dark:text-blue-300"
+                              title="配送日"
+                            >
+                              📅 {w.wave_date}
+                            </span>
+                            <span
                               className={`inline-flex rounded px-2 py-0.5 text-[11px] font-medium ${WAVE_STATUS_COLOR[w.status] ?? ""}`}
                             >
                               {WAVE_STATUS_LABEL[w.status] ?? w.status}
