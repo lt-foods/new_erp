@@ -268,6 +268,68 @@ export default function PrintSignPage() {
             此日無已派貨資料 — 請選擇有撿貨單的配送日。
           </div>
         )}
+
+        {/* 出車總覽 — 列在最前面、依店分 group、底下列商品 */}
+        {sheets.length > 0 && (
+          <div className="sheet mx-auto my-6 max-w-[210mm] border border-zinc-300 bg-white p-8 print:my-0 print:border-0 print:p-0">
+            <div className="mb-4 flex items-start justify-between border-b-2 border-zinc-900 pb-2">
+              <div>
+                <div className="text-xl font-bold">出車總覽</div>
+                {tenantName && (
+                  <div className="mt-0.5 text-xs text-zinc-500">{tenantName}</div>
+                )}
+              </div>
+              <div className="text-right text-sm">
+                <div>
+                  配送日:
+                  <span className="ml-1 font-mono font-semibold">
+                    {Array.from(new Set(sheets.flatMap((s) => s.waveDates))).sort().join("、") || date}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-xs text-zinc-600">
+                  {sheets.length} 間分店 · {sheets.reduce((s, sh) => s + sh.totalPicked, 0)} 件
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col divide-y divide-zinc-300">
+              {sheets.map((sheet) => (
+                <div key={`overview-${sheet.store.id}`} className="py-2">
+                  <div className="mb-1 flex items-baseline justify-between">
+                    <div className="text-base font-semibold">
+                      {sheet.store.name}
+                      {sheet.store.code && (
+                        <span className="ml-2 font-mono text-xs text-zinc-500">
+                          ({sheet.store.code})
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-zinc-600">
+                      {sheet.rows.length} 樣 · {sheet.totalPicked} 件
+                    </div>
+                  </div>
+                  <ul className="ml-2 grid grid-cols-2 gap-x-6 gap-y-0.5 text-sm">
+                    {sheet.rows.map((r) => (
+                      <li key={`overview-${sheet.store.id}-${r.sku.id}`} className="flex justify-between">
+                        <span className="truncate">
+                          <span className="font-mono text-[11px] text-zinc-500 mr-1">
+                            {r.sku.sku_code ?? "—"}
+                          </span>
+                          {r.sku.product_name ?? "—"}
+                          {r.sku.variant_name && (
+                            <span className="ml-1 text-xs text-zinc-500">/ {r.sku.variant_name}</span>
+                          )}
+                        </span>
+                        <span className="font-mono">× {r.pickedQty}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {sheets.map((sheet) => (
           <div
             key={sheet.store.id}
