@@ -144,6 +144,8 @@ function classifyRestock(s: RestockRaw["status"]): Stage {
 
 function classifyTransfer(t: TransferRaw): Stage {
   if (t.status === "draft" || t.status === "confirmed") return "pending";
+  // return_to_hq:status=shipped 表示「店家已寄出、HQ 待收」,從 HQ 角度是待處理
+  if (t.status === "shipped" && t.transfer_type === "return_to_hq") return "pending";
   if (t.status === "shipped") return "in_transit";
   if (t.status === "received") return "done";
   return "rejected";
@@ -294,7 +296,17 @@ async function fetchTransferRows(
       { count: "exact" },
     )
     .order("id", { ascending: false });
-  if (stage) q = q.in("status", TRANSFER_STATUS_BY_STAGE[stage]);
+  // stage filter:
+  //   pending     → status in (draft, confirmed) OR (status=shipped AND type=return_to_hq)
+  //   in_transit  → status=shipped AND type<>return_to_hq
+  //   done/rejected → status in (...) 既有邏輯
+  if (stage === "pending") {
+    q = q.or("status.in.(draft,confirmed),and(status.eq.shipped,transfer_type.eq.return_to_hq)");
+  } else if (stage === "in_transit") {
+    q = q.eq("status", "shipped").neq("transfer_type", "return_to_hq");
+  } else if (stage) {
+    q = q.in("status", TRANSFER_STATUS_BY_STAGE[stage]);
+  }
   if (dateFrom) q = q.gte("created_at", `${dateFrom}T00:00:00`);
   if (dateTo) q = q.lte("created_at", `${dateTo}T23:59:59.999`);
   const start = (page - 1) * PAGE_SIZE;
