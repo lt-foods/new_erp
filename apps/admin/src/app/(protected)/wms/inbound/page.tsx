@@ -497,6 +497,8 @@ export default function TransfersInboxPage() {
                     const storeId = locationToStore.get(t.dest_location);
                     const cids = transferCampaigns.get(t.id) ?? [];
                     const isSelected = selected.has(t.id);
+                    const wid = parseWaveId(t.transfer_no);
+                    const wave = wid !== null ? waves.get(wid) : undefined;
                     return (
                       <li
                         key={t.id}
@@ -518,6 +520,14 @@ export default function TransfersInboxPage() {
                             <span className="font-medium">{locations.get(t.dest_location) ?? `#${t.dest_location}`}</span>
                             <span className="font-mono text-[11px] text-zinc-500">{t.transfer_no}</span>
                             <span className="text-[10px] text-zinc-400">{TRANSFER_TYPE_LABEL[t.transfer_type] ?? t.transfer_type}</span>
+                            {wave?.wave_date && (
+                              <span
+                                className="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-800 dark:bg-blue-950 dark:text-blue-300"
+                                title="配送日"
+                              >
+                                📅 {wave.wave_date}
+                              </span>
+                            )}
                             {isShipped ? (
                               <span className="inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">待收</span>
                             ) : (
