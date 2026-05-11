@@ -95,6 +95,25 @@ export default function InternalTransfersPage() {
     return dest?.type === "central_warehouse";
   }
 
+  // 退訂單(由 rpc_create_order_return 產生,note 以「[order return」開頭)
+  function isOrderReturn(notes: string | null): boolean {
+    return !!notes && notes.startsWith("[order return");
+  }
+
+  // 翻譯系統產生的 note tag,例如:
+  //   [order return]        → 退訂單
+  //   [order return: 客退]  → 退訂單:客退
+  //   [rejected: aaaa]      → 已退單:aaaa
+  function formatNote(notes: string | null): string {
+    if (!notes) return "—";
+    let s = notes;
+    s = s.replace(/^\[order return: ([^\]]+)\]/, "退訂單:$1");
+    s = s.replace(/^\[order return\]/, "退訂單");
+    s = s.replace(/^\[rejected: ([^\]]+)\]/, "已退單:$1");
+    s = s.replace(/^\[rejected\]/, "已退單");
+    return s;
+  }
+
   const filtered = useMemo(() => {
     if (!transfers) return [];
     return transfers.filter((t) => {
@@ -208,12 +227,16 @@ export default function InternalTransfersPage() {
                 <tr key={t.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-950">
                   <td className="px-3 py-2 font-mono text-xs">
                     {t.transfer_no}
-                    {isReturn && <span className="ml-2 inline-block rounded bg-orange-100 px-1 py-0.5 text-[10px] text-orange-700 dark:bg-orange-950 dark:text-orange-300">↩ 退貨</span>}
+                    {isOrderReturn(t.notes) ? (
+                      <span className="ml-2 inline-block rounded bg-rose-100 px-1 py-0.5 text-[10px] font-medium text-rose-700 dark:bg-rose-950 dark:text-rose-300" title="由客戶退訂單建立">🔁 退訂單</span>
+                    ) : isReturn ? (
+                      <span className="ml-2 inline-block rounded bg-orange-100 px-1 py-0.5 text-[10px] text-orange-700 dark:bg-orange-950 dark:text-orange-300">↩ 退貨</span>
+                    ) : null}
                   </td>
                   <td className="px-3 py-2 text-xs text-zinc-500">{new Date(t.created_at).toLocaleString("zh-TW")}</td>
                   <td className="px-3 py-2 text-xs">{src} → {dst}</td>
                   <td className="px-3 py-2"><span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[t.status] ?? STATUS_COLOR.draft}`}>{STATUS_LABEL[t.status] ?? t.status}</span></td>
-                  <td className="px-3 py-2 text-xs text-zinc-500">{t.notes ?? "—"}</td>
+                  <td className="px-3 py-2 text-xs text-zinc-500" title={t.notes ?? undefined}>{formatNote(t.notes)}</td>
                 </tr>
               );
             })}
