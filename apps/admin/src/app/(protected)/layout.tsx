@@ -50,7 +50,7 @@ const NAV: NavGroup[] = [
       { href: "/hq/inbox", label: "總倉收件匣", match: /^\/hq\/inbox/ },
       { href: "/wms/receiving", label: "進貨待辦", match: /^\/wms\/receiving/ },
       { href: "/wms/picking", label: "派貨工作台", match: /^\/wms\/picking(?!\/history)|^\/picking\/workstation/ },
-      { href: "/wms/outbound", label: "出貨集貨", match: /^\/wms\/outbound|^\/wms\/picking\/history|^\/picking\/history|^\/transfers\/dispatch|^\/transfers$|^\/transfers\/?$/ },
+      { href: "/wms/transfers", label: "內部調撥", match: /^\/wms\/transfers|^\/transfers\/dispatch|^\/transfers$|^\/transfers\/?$/ },
       { href: "/wms/exceptions", label: "異常處理", match: /^\/wms\/exceptions/ },
     ],
   },
@@ -80,7 +80,7 @@ const BRANCH_HIDDEN_HREFS = new Set([
   "/purchase/orders",     // 採購訂單
   "/wms/receiving",       // 進貨待辦 (HQ)
   "/wms/picking",         // 派貨工作台
-  "/wms/outbound",        // 出貨集貨 (含撿貨 tab)
+  "/wms/transfers",       // 內部調撥 (HQ-side)
   "/wms/exceptions",      // 異常處理 (HQ)
   // /wms/inbound 不在這裡 — 分店要用,屬於分店業務
   "/finance/receivables", // HQ 應收

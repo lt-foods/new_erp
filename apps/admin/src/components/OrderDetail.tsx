@@ -943,10 +943,10 @@ async function buildTimeline(
       const xfers = ((ts as { transfer_no: string; status: string; shipped_at: string | null; received_at: string | null }[] | null) ?? []);
       if (xfers.length === 1) {
         xferDetail = xfers[0].transfer_no;
-        xferHref = `/wms/outbound`;
+        xferHref = `/hq/inbox?source=transfer`;
       } else if (xfers.length > 1) {
         xferDetail = `${xfers.length} 張 TR`;
-        xferHref = `/wms/outbound`;
+        xferHref = `/hq/inbox?source=transfer`;
       }
       if (xfers.length > 0) {
         const allShipped = xfers.every((t) => ["shipped", "received", "closed"].includes(t.status));

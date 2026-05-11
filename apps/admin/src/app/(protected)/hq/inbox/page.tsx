@@ -1912,7 +1912,7 @@ function MailRow({
           </Link>
         )}
         {s.linked_transfer_id && (
-          <Link href={`/wms/outbound?id=${s.linked_transfer_id}`} className="ml-2 font-mono text-blue-600 hover:underline dark:text-blue-400">
+          <Link href={`/hq/inbox?source=transfer&id=${s.linked_transfer_id}`} className="ml-2 font-mono text-blue-600 hover:underline dark:text-blue-400">
             · {s.linked_transfer_no ?? `轉貨單 #${s.linked_transfer_id}`}
           </Link>
         )}

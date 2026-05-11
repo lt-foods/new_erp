@@ -179,7 +179,7 @@ export function PickModal({
           p_wave_item_id: itemId,
           p_new_qty: newQty,
           p_operator: operator,
-          p_note: "manual fix in /wms/outbound (picking tab)",
+          p_note: "manual fix in /hq/inbox (picking tab)",
         });
         if (e) throw new Error(`item ${itemId}: ${e.message}`);
       }

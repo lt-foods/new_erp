@@ -243,7 +243,7 @@ export default function RestockInboxPage() {
                         </Link>
                       )}
                       {r.linked_transfer_id && (
-                        <Link href={`/wms/outbound?id=${r.linked_transfer_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
+                        <Link href={`/hq/inbox?source=transfer&id=${r.linked_transfer_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
                           → {r.linked_transfer_no ?? `轉貨單 #${r.linked_transfer_id}`}
                         </Link>
                       )}

@@ -5,8 +5,8 @@
 //   C. 自由轉貨 (store ↔ store)
 //   E. 退貨回總倉 (store → HQ)
 // 不含:
-//   A. 客戶訂單派貨 (走 wave) — 在 /wms/picking + /wms/outbound
-//   B. 補貨派貨 — 在 /hq/inbox 或 /wms/outbound
+//   A. 客戶訂單派貨 (走 wave) — 在 /wms/picking + /hq/inbox 撿貨單 tab
+//   B. 補貨派貨 — 在 /hq/inbox(補貨申請 → 派貨 → 派貨工作台)
 //   D. 互助訂單 — 走 customer_orders,在 /transfers/aid
 
 import { useEffect, useMemo, useState } from "react";
