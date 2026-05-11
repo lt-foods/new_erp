@@ -33,6 +33,8 @@ export default function TransfersInboxPage() {
   const [doneTotal, setDoneTotal] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [batchBusy, setBatchBusy] = useState(false);
+  type DateFilter = "tomorrow" | "today_or_earlier" | "all_pending" | "done" | null;
+  const [dateFilter, setDateFilter] = useState<DateFilter>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -179,13 +181,26 @@ export default function TransfersInboxPage() {
     return Array.from(set.entries()).sort((a, b) => a[1].localeCompare(b[1]));
   }, [transfers, locations]);
 
-  const filtered = useMemo(
-    () =>
-      (transfers ?? []).filter(
-        (t) => locationFilter === "all" || t.dest_location === locationFilter,
-      ),
-    [transfers, locationFilter],
-  );
+  const filtered = useMemo(() => {
+    const today = new Date();
+    const tomorrow = new Date();
+    tomorrow.setDate(today.getDate() + 1);
+    const todayStr = today.toLocaleDateString("sv-SE");
+    const tomorrowStr = tomorrow.toLocaleDateString("sv-SE");
+    return (transfers ?? []).filter((t) => {
+      if (locationFilter !== "all" && t.dest_location !== locationFilter) return false;
+      if (dateFilter === null) return true;
+      if (dateFilter === "done") return t.status === "received";
+      if (t.status !== "shipped") return false;
+      if (dateFilter === "all_pending") return true;
+      const wid = parseWaveId(t.transfer_no);
+      const w = wid !== null ? waves.get(wid) : undefined;
+      const wd = w?.wave_date ?? null;
+      if (dateFilter === "tomorrow") return wd === tomorrowStr;
+      if (dateFilter === "today_or_earlier") return !!wd && wd <= todayStr;
+      return true;
+    });
+  }, [transfers, locationFilter, dateFilter, waves]);
 
   const groups = useMemo(() => {
     const map = new Map<
@@ -239,30 +254,29 @@ export default function TransfersInboxPage() {
     [transfers, locationFilter],
   );
 
-  // 「明天到貨」:status=shipped 且對應 wave.wave_date = 明天
-  const tomorrowSummary = useMemo(() => {
-    if (!transfers) return { count: 0, lines: 0, qty: 0 };
+  // KPI summaries: 4 個分類,點 KPI card 就 filter list
+  const summaries = useMemo(() => {
+    const empty = { tomorrow: 0, todayOrEarlier: 0, allPending: 0, done: 0 };
+    if (!transfers) return empty;
+    const today = new Date();
     const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setDate(today.getDate() + 1);
+    const todayStr = today.toLocaleDateString("sv-SE");
     const tomorrowStr = tomorrow.toLocaleDateString("sv-SE");
-    let count = 0;
-    let lines = 0;
-    let qty = 0;
+    const acc = { ...empty };
     for (const t of transfers) {
-      if (t.status !== "shipped") continue;
       if (locationFilter !== "all" && t.dest_location !== locationFilter) continue;
+      if (t.status === "received") { acc.done += 1; continue; }
+      if (t.status !== "shipped") continue;
+      acc.allPending += 1;
       const wid = parseWaveId(t.transfer_no);
       const w = wid !== null ? waves.get(wid) : undefined;
-      if (!w || w.wave_date !== tomorrowStr) continue;
-      count += 1;
-      const s = itemSummary.get(t.id);
-      if (s) {
-        lines += s.lines;
-        qty += s.totalQty;
-      }
+      if (!w?.wave_date) continue;
+      if (w.wave_date === tomorrowStr) acc.tomorrow += 1;
+      else if (w.wave_date <= todayStr) acc.todayOrEarlier += 1;
     }
-    return { count, lines, qty };
-  }, [transfers, waves, itemSummary, locationFilter]);
+    return acc;
+  }, [transfers, waves, locationFilter]);
 
   function selectAllPending() {
     setSelected(new Set(pendingIds));
@@ -390,24 +404,40 @@ export default function TransfersInboxPage() {
         </div>
       )}
 
-      {/* 明天到貨摘要 — 從 status=shipped 且 wave.wave_date=明天 推算 */}
-      <div className="flex flex-wrap items-center gap-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm dark:border-blue-900 dark:bg-blue-950/40">
-        <span className="font-medium text-blue-900 dark:text-blue-200">🚚 明天到貨</span>
-        {tomorrowSummary.count === 0 ? (
-          <span className="text-zinc-500 dark:text-zinc-400">無</span>
-        ) : (
-          <>
-            <span className="text-blue-900 dark:text-blue-200">
-              <span className="font-mono font-semibold">{tomorrowSummary.count}</span> 張轉貨單
-            </span>
-            <span className="text-blue-900 dark:text-blue-200">
-              <span className="font-mono font-semibold">{tomorrowSummary.lines}</span> 樣品項
-            </span>
-            <span className="text-blue-900 dark:text-blue-200">
-              <span className="font-mono font-semibold">{tomorrowSummary.qty}</span> 件
-            </span>
-          </>
-        )}
+      {/* KPI cards — 點任一張就 filter list,再點一次取消 */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <KpiCard
+          label="🚚 明天到貨"
+          hint="wave_date = 明天 的待收"
+          value={summaries.tomorrow}
+          accent="text-blue-700 dark:text-blue-400"
+          active={dateFilter === "tomorrow"}
+          onClick={() => setDateFilter(dateFilter === "tomorrow" ? null : "tomorrow")}
+        />
+        <KpiCard
+          label="⏳ 今日及更早"
+          hint="wave_date ≤ 今天、還沒收"
+          value={summaries.todayOrEarlier}
+          accent="text-amber-700 dark:text-amber-400"
+          active={dateFilter === "today_or_earlier"}
+          onClick={() => setDateFilter(dateFilter === "today_or_earlier" ? null : "today_or_earlier")}
+        />
+        <KpiCard
+          label="📋 全部待收"
+          hint="status = shipped"
+          value={summaries.allPending}
+          accent="text-rose-700 dark:text-rose-400"
+          active={dateFilter === "all_pending"}
+          onClick={() => setDateFilter(dateFilter === "all_pending" ? null : "all_pending")}
+        />
+        <KpiCard
+          label="✓ 已收"
+          hint="status = received"
+          value={summaries.done}
+          accent="text-emerald-700 dark:text-emerald-400"
+          active={dateFilter === "done"}
+          onClick={() => setDateFilter(dateFilter === "done" ? null : "done")}
+        />
       </div>
 
       {/* 批次工具列 */}
@@ -645,5 +675,39 @@ function Th({ children }: { children?: React.ReactNode }) {
     <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">
       {children}
     </th>
+  );
+}
+
+function KpiCard({
+  label,
+  hint,
+  value,
+  accent,
+  active,
+  onClick,
+}: {
+  label: string;
+  hint?: string;
+  value: number | string;
+  accent: string;
+  active?: boolean;
+  onClick?: () => void;
+}) {
+  const Wrapper = onClick ? "button" : "div";
+  return (
+    <Wrapper
+      type={onClick ? "button" : undefined}
+      onClick={onClick}
+      title={hint}
+      className={`rounded-md border p-3 text-left transition ${
+        active
+          ? "border-blue-500 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/40"
+          : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
+      } ${onClick ? "hover:border-blue-400 hover:bg-zinc-50 dark:hover:bg-zinc-800/60" : ""}`}
+    >
+      <div className="text-xs text-zinc-500">{label}</div>
+      <div className={`mt-0.5 text-2xl font-semibold ${accent}`}>{value}</div>
+      {hint && <div className="mt-0.5 text-[10px] text-zinc-400">{hint}</div>}
+    </Wrapper>
   );
 }
