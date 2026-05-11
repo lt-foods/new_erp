@@ -38,10 +38,12 @@ type StoreSheet = {
     waveCodes: string[];
   }[];
   totalPicked: number;
+  waveDates: string[]; // 涵蓋的配送日(可能多日)
 };
 
 export default function PrintSignPage() {
   const [date, setDate] = useState("");
+  const [waveIds, setWaveIds] = useState<number[] | null>(null); // 非 null 表示用 ID list,優先於 date
   const [waves, setWaves] = useState<WaveRow[] | null>(null);
   const [items, setItems] = useState<WaveItem[]>([]);
   const [stores, setStores] = useState<StoreRow[]>([]);
@@ -49,26 +51,38 @@ export default function PrintSignPage() {
   const [error, setError] = useState<string | null>(null);
   const [tenantName, setTenantName] = useState("");
 
-  // 從 query 抓 date
+  // 從 query 抓 waveIds 或 date
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const d = new URLSearchParams(window.location.search).get("date");
+    const params = new URLSearchParams(window.location.search);
+    const idsStr = params.get("waveIds");
+    if (idsStr) {
+      const ids = idsStr.split(",").map((s) => Number(s)).filter((n) => Number.isFinite(n) && n > 0);
+      if (ids.length > 0) {
+        setWaveIds(ids);
+        return;
+      }
+    }
+    const d = params.get("date");
     if (d) setDate(d);
     else setDate(new Date().toLocaleDateString("sv-SE"));
   }, []);
 
   useEffect(() => {
-    if (!date) return;
+    if (!date && !waveIds) return;
     let cancelled = false;
     (async () => {
       try {
         const sb = getSupabase();
-        const { data: waveRows, error: e1 } = await sb
+        const q = sb
           .from("picking_waves")
           .select("id, wave_code, wave_date, status")
-          .eq("wave_date", date)
           .neq("status", "cancelled")
+          .order("wave_date", { ascending: true })
           .order("created_at", { ascending: true });
+        const { data: waveRows, error: e1 } = await (waveIds
+          ? q.in("id", waveIds)
+          : q.eq("wave_date", date));
         if (e1) throw new Error(e1.message);
         const list = (waveRows as WaveRow[] | null) ?? [];
         if (cancelled) return;
@@ -121,22 +135,26 @@ export default function PrintSignPage() {
     return () => {
       cancelled = true;
     };
-  }, [date]);
+  }, [date, waveIds]);
 
   const sheets: StoreSheet[] = useMemo(() => {
     if (!waves || items.length === 0) return [];
     const skuMap = new Map(skus.map((s) => [s.id, s]));
     const waveCodeMap = new Map(waves.map((w) => [w.id, w.wave_code]));
+    const waveDateMap = new Map(waves.map((w) => [w.id, w.wave_date]));
 
-    // (store_id) -> (sku_id) -> { qty, picked_qty, waveCodes Set }
+    // (store_id) -> (sku_id) -> { qty, picked_qty, waveCodes Set, waveDates Set }
     const byStore = new Map<
       number,
-      Map<number, { qty: number; pickedQty: number; waveCodes: Set<string> }>
+      {
+        skus: Map<number, { qty: number; pickedQty: number; waveCodes: Set<string> }>;
+        waveDates: Set<string>;
+      }
     >();
     for (const it of items) {
-      if (!byStore.has(it.store_id)) byStore.set(it.store_id, new Map());
-      const skuMap2 = byStore.get(it.store_id)!;
-      const cur = skuMap2.get(it.sku_id) ?? {
+      if (!byStore.has(it.store_id)) byStore.set(it.store_id, { skus: new Map(), waveDates: new Set() });
+      const slot = byStore.get(it.store_id)!;
+      const cur = slot.skus.get(it.sku_id) ?? {
         qty: 0,
         pickedQty: 0,
         waveCodes: new Set<string>(),
@@ -145,14 +163,16 @@ export default function PrintSignPage() {
       cur.pickedQty += Number(it.picked_qty ?? 0);
       const wc = waveCodeMap.get(it.wave_id);
       if (wc) cur.waveCodes.add(wc);
-      skuMap2.set(it.sku_id, cur);
+      const wd = waveDateMap.get(it.wave_id);
+      if (wd) slot.waveDates.add(wd);
+      slot.skus.set(it.sku_id, cur);
     }
 
     const result: StoreSheet[] = [];
     for (const store of stores) {
-      const skuRows = byStore.get(store.id);
-      if (!skuRows || skuRows.size === 0) continue;
-      const rows = Array.from(skuRows.entries())
+      const slot = byStore.get(store.id);
+      if (!slot || slot.skus.size === 0) continue;
+      const rows = Array.from(slot.skus.entries())
         .map(([skuId, v]) => ({
           sku: skuMap.get(skuId) ?? { id: skuId, sku_code: null, product_name: null, variant_name: null },
           qty: v.qty,
@@ -165,12 +185,12 @@ export default function PrintSignPage() {
         .filter((r) => r.qty > 0 || r.pickedQty > 0);
       if (rows.length === 0) continue;
       const totalPicked = rows.reduce((s, r) => s + r.pickedQty, 0);
-      result.push({ store, rows, totalPicked });
+      result.push({ store, rows, totalPicked, waveDates: Array.from(slot.waveDates).sort() });
     }
     return result;
   }, [waves, items, stores, skus]);
 
-  if (!date) {
+  if (!date && !waveIds) {
     return <div className="p-6 text-sm text-zinc-500">載入中…</div>;
   }
 
@@ -201,14 +221,25 @@ export default function PrintSignPage() {
         {/* 控制列（列印時隱藏）*/}
         <div className="no-print sticky top-0 z-20 flex flex-wrap items-center gap-3 border-b border-zinc-200 bg-zinc-50 p-3 print:hidden">
           <h1 className="text-base font-semibold">分店簽收單列印</h1>
-          <label className="flex items-center gap-2 text-sm">
-            <span>配送日</span>
-            <DatePicker
-              value={date}
-              onChange={setDate}
-              className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-            />
-          </label>
+          {waveIds ? (
+            <span className="text-sm text-zinc-600">
+              指定 {waveIds.length} 張撿貨單
+              {waves && waves.length > 0 && (
+                <span className="ml-2 font-mono text-xs text-zinc-500">
+                  ({waves.map((w) => w.wave_code).join("、")})
+                </span>
+              )}
+            </span>
+          ) : (
+            <label className="flex items-center gap-2 text-sm">
+              <span>配送日</span>
+              <DatePicker
+                value={date}
+                onChange={setDate}
+                className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+              />
+            </label>
+          )}
           <span className="text-sm text-zinc-500">
             {waves === null
               ? "載入中…"
@@ -252,7 +283,7 @@ export default function PrintSignPage() {
               </div>
               <div className="text-right text-sm">
                 <div>
-                  配送日：<span className="font-mono font-semibold">{date}</span>
+                  配送日：<span className="font-mono font-semibold">{sheet.waveDates.join("、") || date}</span>
                 </div>
                 <div className="mt-0.5 text-xs text-zinc-600">
                   撿貨單號：

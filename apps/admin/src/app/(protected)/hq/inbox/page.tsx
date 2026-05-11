@@ -1672,6 +1672,16 @@ function HqInboxContent() {
                   )}
                   {sourceFilter === "picking" && (
                     <>
+                      <Link
+                        href={`/picking/print-sign?waveIds=${paginatedRows
+                          .filter((r) => selected.has(r.key) && r.source === "picking")
+                          .map((r) => (r.raw as PickWave).id)
+                          .join(",")}`}
+                        target="_blank"
+                        className="inline-flex items-center rounded border border-blue-300 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300 dark:hover:bg-blue-900"
+                      >
+                        📄 列印簽收單 ({selected.size})
+                      </Link>
                       <RowAction variant="success" onClick={() => batchAction("派貨出倉")} disabled={batchBusy}>派貨出倉 ({selected.size})</RowAction>
                       <RowAction variant="danger" onClick={() => batchAction("取消")} disabled={batchBusy}>取消 ({selected.size})</RowAction>
                     </>
