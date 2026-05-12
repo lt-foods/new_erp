@@ -29,6 +29,8 @@ type MemberRow = {
   updated_at: string;
   joined_at: string;
   last_visit_at: string | null;
+  external_source: string | null;
+  external_id: string | null;
 };
 
 /** 顯示手機，若是 LIFF auto-register 的 placeholder (line:Uxxxx) 則視為未填 */
@@ -129,7 +131,7 @@ function MembersListBody() {
       try {
         let q = getSupabase()
           .from("members")
-          .select("id, member_no, name, phone, avatar_url, tier_id, status, updated_at, joined_at, last_visit_at", { count: "exact" })
+          .select("id, member_no, name, phone, avatar_url, tier_id, status, updated_at, joined_at, last_visit_at, external_source, external_id", { count: "exact" })
           .order(sortBy, { ascending: sortDir === "asc" })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
@@ -332,6 +334,14 @@ function MembersListBody() {
                         </div>
                       )}
                       <span>{r.name ?? "—"}</span>
+                      {r.external_source === "lele" && (
+                        <span
+                          title={r.external_id ? `樂樂顧客代號 ${r.external_id}` : "樂樂匯入"}
+                          className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-normal text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                        >
+                          樂樂
+                        </span>
+                      )}
                     </div>
                   </Td>
                   <Td className="font-mono text-xs">{displayPhone(r.phone)}</Td>
