@@ -227,12 +227,20 @@ function MembersListBody() {
             {loading ? "載入中…" : total === 0 ? "共 0 筆" : `共 ${total} 筆（顯示 ${fromIdx}-${toIdx}）`}
           </p>
         </div>
-        <SpinButton
-          onClick={() => setModal({ mode: "new" })}
-          className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
-        >
-          新增會員
-        </SpinButton>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/members/import"
+            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800"
+          >
+            批次匯入
+          </Link>
+          <SpinButton
+            onClick={() => setModal({ mode: "new" })}
+            className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+          >
+            新增會員
+          </SpinButton>
+        </div>
       </header>
 
       <div className="grid gap-3 sm:grid-cols-2">
