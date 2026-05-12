@@ -27,6 +27,7 @@ type StagedRow = {
   parsed_home_store_id: number | null;
   parsed_joined_at: string | null;
   parsed_last_visit_at: string | null;
+  parsed_wallet_balance: number | string | null;
   validation_status: ValidationStatus;
   validation_errors: { field: string; code: string; value?: string }[];
   resolved_member_id: number | null;
@@ -40,9 +41,11 @@ type StageStats = {
   errors: number;
 };
 
-type Phase = "pristine" | "parsed" | "staged" | "committed";
+type Phase = "pristine" | "parsed" | "staging" | "staged" | "committing" | "committed";
 
 const PREVIEW_LIMIT = 50;
+const STAGE_CHUNK = 500;
+const COMMIT_CHUNK = 500;
 
 function statusChip(s: ValidationStatus) {
   const map: Record<ValidationStatus, { label: string; cls: string }> = {
@@ -71,6 +74,7 @@ export default function MemberImportPage() {
   const [error, setError] = useState<string | null>(null);
   const [commitResult, setCommitResult] = useState<{ committed: number; skipped: number } | null>(null);
   const [confirmCommit, setConfirmCommit] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number; label: string } | null>(null);
 
   const onPickFile = useCallback(async (f: File | null) => {
     setError(null);
@@ -95,29 +99,52 @@ export default function MemberImportPage() {
   const handleStage = useCallback(async () => {
     if (!parsedRows.length) return;
     setError(null);
+    setPhase("staging");
     const bid = (typeof crypto !== "undefined" && "randomUUID" in crypto)
       ? crypto.randomUUID()
       : `b_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
-    const payload = parsedRows.map((r) => ({
-      external_id: r.external_id,
-      name_raw: r.name_raw,
-      label: r.label,
-      joined_at: r.joined_at,
-      last_visit_at: r.last_visit_at,
-    }));
+    const sb = getSupabase();
+    const agg: StageStats = {
+      total: 0, ok: 0,
+      duplicate_in_batch: 0, duplicate_existing: 0, errors: 0,
+    };
+    setProgress({ done: 0, total: parsedRows.length, label: "上傳中" });
 
-    const { data, error: err } = await getSupabase().rpc("rpc_stage_member_import", {
-      p_batch_id: bid,
-      p_source: "lele",
-      p_rows: payload,
-    });
-    if (err) {
-      setError(err.message);
-      return;
+    for (let i = 0; i < parsedRows.length; i += STAGE_CHUNK) {
+      const chunk = parsedRows.slice(i, i + STAGE_CHUNK);
+      const payload = chunk.map((r) => ({
+        external_id: r.external_id,
+        name_raw: r.name_raw,
+        label: r.label,
+        joined_at: r.joined_at,
+        last_visit_at: r.last_visit_at,
+        wallet_balance: r.wallet_balance,
+      }));
+      const { data, error: err } = await sb.rpc("rpc_stage_member_import", {
+        p_batch_id: bid,
+        p_source: "lele",
+        p_rows: payload,
+        p_row_offset: i,
+      });
+      if (err) {
+        setError(`第 ${i + 1}~${i + chunk.length} 筆上傳失敗：${err.message}`);
+        setProgress(null);
+        setPhase("parsed");
+        return;
+      }
+      const r = data as Record<string, number>;
+      agg.total              += r.chunk_total              ?? 0;
+      agg.ok                 += r.chunk_ok                 ?? 0;
+      agg.duplicate_in_batch += r.chunk_duplicate_in_batch ?? 0;
+      agg.duplicate_existing += r.chunk_duplicate_existing ?? 0;
+      agg.errors             += r.chunk_errors             ?? 0;
+      setProgress({ done: Math.min(i + chunk.length, parsedRows.length), total: parsedRows.length, label: "上傳中" });
     }
+
     setBatchId(bid);
-    setStats(data as StageStats);
+    setStats(agg);
+    setProgress(null);
     await reloadStaged(bid);
     setPhase("staged");
   }, [parsedRows]);
@@ -126,7 +153,7 @@ export default function MemberImportPage() {
     const { data, error: err, count } = await getSupabase()
       .from("member_imports")
       .select(
-        "id, row_index, parsed_external_id, parsed_name, parsed_name_suffix, parsed_takeout_store_name_hint, parsed_home_store_id, parsed_joined_at, parsed_last_visit_at, validation_status, validation_errors, resolved_member_id",
+        "id, row_index, parsed_external_id, parsed_name, parsed_name_suffix, parsed_takeout_store_name_hint, parsed_home_store_id, parsed_joined_at, parsed_last_visit_at, parsed_wallet_balance, validation_status, validation_errors, resolved_member_id",
         { count: "exact" },
       )
       .eq("batch_id", bid)
@@ -141,20 +168,45 @@ export default function MemberImportPage() {
   }, []);
 
   const handleCommit = useCallback(async () => {
-    if (!batchId) return;
+    if (!batchId || !stats) return;
     setError(null);
-    const { data, error: err } = await getSupabase().rpc("rpc_commit_member_import", {
-      p_batch_id: batchId,
-    });
-    if (err) {
-      setError(err.message);
-      return;
-    }
-    setCommitResult(data as { committed: number; skipped: number });
     setConfirmCommit(false);
+    setPhase("committing");
+    const sb = getSupabase();
+    let committed = 0;
+    let skipped = 0;
+    const target = stats.ok;
+    setProgress({ done: 0, total: target, label: "匯入中" });
+
+    let safety = 0;
+    while (true) {
+      const { data, error: err } = await sb.rpc("rpc_commit_member_import", {
+        p_batch_id: batchId,
+        p_limit: COMMIT_CHUNK,
+      });
+      if (err) {
+        setError(`匯入失敗（已寫 ${committed} 筆）：${err.message}`);
+        setProgress(null);
+        setPhase("staged");
+        return;
+      }
+      const r = data as { committed: number; skipped: number };
+      committed += r.committed;
+      skipped   += r.skipped;
+      setProgress({ done: committed, total: target, label: "匯入中" });
+      if (r.committed === 0) break;
+      safety++;
+      if (safety > 200) {
+        setError("safety break: 超過 200 個 chunk 仍未完成");
+        break;
+      }
+    }
+
+    setCommitResult({ committed, skipped });
+    setProgress(null);
     await reloadStaged(batchId);
     setPhase("committed");
-  }, [batchId, reloadStaged]);
+  }, [batchId, stats, reloadStaged]);
 
   const handleCancel = useCallback(async () => {
     if (!batchId) return;
@@ -221,6 +273,24 @@ export default function MemberImportPage() {
         )}
       </section>
 
+      {/* 進度條 */}
+      {progress && (
+        <section className="rounded-md border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="flex items-center justify-between text-sm">
+            <span>{progress.label}：{progress.done.toLocaleString()} / {progress.total.toLocaleString()}</span>
+            <span className="font-mono text-xs text-zinc-500">
+              {progress.total > 0 ? Math.floor((progress.done / progress.total) * 100) : 0}%
+            </span>
+          </div>
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
+            <div
+              className="h-full bg-emerald-500 transition-all"
+              style={{ width: `${progress.total > 0 ? (progress.done / progress.total) * 100 : 0}%` }}
+            />
+          </div>
+        </section>
+      )}
+
       {/* 步驟 2：stage */}
       {phase === "parsed" && (
         <section className="rounded-md border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
@@ -272,34 +342,41 @@ export default function MemberImportPage() {
               <Th>取貨店 hint</Th>
               <Th>取貨店對應</Th>
               <Th>加入日期</Th>
+              <Th align="right">儲值金</Th>
               <Th>狀態</Th>
               <Th>錯誤</Th>
             </THead>
             <TBody>
               {stagedRows.length === 0 ? (
-                <EmptyRow colSpan={8}>還沒有 staging 資料</EmptyRow>
+                <EmptyRow colSpan={9}>還沒有 staging 資料</EmptyRow>
               ) : (
-                stagedRows.map((r) => (
-                  <Tr key={r.id}>
-                    <Td className="font-mono text-xs text-zinc-400">{r.row_index}</Td>
-                    <Td className="font-mono text-xs">{r.parsed_external_id ?? "—"}</Td>
-                    <Td>
-                      {r.parsed_name ?? "—"}
-                      {r.parsed_name_suffix && (
-                        <span className="ml-1 text-xs text-zinc-400">／{r.parsed_name_suffix}</span>
-                      )}
-                    </Td>
-                    <Td className="text-xs">{r.parsed_takeout_store_name_hint ?? "—"}</Td>
-                    <Td className="text-xs">{r.parsed_home_store_id ? `store#${r.parsed_home_store_id}` : "—"}</Td>
-                    <Td className="text-xs">{r.parsed_joined_at?.slice(0, 10) ?? "—"}</Td>
-                    <Td>{statusChip(r.validation_status)}</Td>
-                    <Td className="text-xs text-rose-600">
-                      {r.validation_errors?.length
-                        ? r.validation_errors.map((e) => `${e.field}:${e.code}`).join("、")
-                        : "—"}
-                    </Td>
-                  </Tr>
-                ))
+                stagedRows.map((r) => {
+                  const w = r.parsed_wallet_balance == null ? null : Number(r.parsed_wallet_balance);
+                  return (
+                    <Tr key={r.id}>
+                      <Td className="font-mono text-xs text-zinc-400">{r.row_index}</Td>
+                      <Td className="font-mono text-xs">{r.parsed_external_id ?? "—"}</Td>
+                      <Td>
+                        {r.parsed_name ?? "—"}
+                        {r.parsed_name_suffix && (
+                          <span className="ml-1 text-xs text-zinc-400">／{r.parsed_name_suffix}</span>
+                        )}
+                      </Td>
+                      <Td className="text-xs">{r.parsed_takeout_store_name_hint ?? "—"}</Td>
+                      <Td className="text-xs">{r.parsed_home_store_id ? `store#${r.parsed_home_store_id}` : "—"}</Td>
+                      <Td className="text-xs">{r.parsed_joined_at?.slice(0, 10) ?? "—"}</Td>
+                      <Td align="right" className={`font-mono text-xs ${w && w > 0 ? "text-emerald-700 dark:text-emerald-300" : "text-zinc-400"}`}>
+                        {w == null ? "—" : w > 0 ? `$${w.toLocaleString()}` : "0"}
+                      </Td>
+                      <Td>{statusChip(r.validation_status)}</Td>
+                      <Td className="text-xs text-rose-600">
+                        {r.validation_errors?.length
+                          ? r.validation_errors.map((e) => `${e.field}:${e.code}`).join("、")
+                          : "—"}
+                      </Td>
+                    </Tr>
+                  );
+                })
               )}
             </TBody>
           </Table>

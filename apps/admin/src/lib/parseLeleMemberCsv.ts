@@ -8,6 +8,7 @@ export type LeleMemberRow = {
   label: string;
   joined_at: string;
   last_visit_at: string;
+  wallet_balance: string;
 };
 
 export type ParseResult =
@@ -20,6 +21,7 @@ const HEADERS = {
   label: "標籤",
   joined_at: "加入日期",
   last_visit_at: "最後登入",
+  wallet_balance: "錢包餘額",
 } as const;
 
 export async function parseLeleMemberCsv(file: File): Promise<ParseResult> {
@@ -62,6 +64,7 @@ export async function parseLeleMemberCsv(file: File): Promise<ParseResult> {
             label: r[idx.label!] ?? "",
             joined_at: r[idx.joined_at!] ?? "",
             last_visit_at: r[idx.last_visit_at!] ?? "",
+            wallet_balance: r[idx.wallet_balance!] ?? "",
           });
         }
         resolve({ ok: true, rows: out, totalLines: rows.length - 1 });
