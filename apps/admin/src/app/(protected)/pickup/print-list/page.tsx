@@ -52,8 +52,11 @@ export default function PickupPrintListPage() {
 }
 
 function Body() {
-  const idsParam = useSearchParams().get("order_ids");
+  const sp = useSearchParams();
+  const idsParam = sp.get("order_ids");
   const ids = idsParam ? idsParam.split(",").map(Number).filter(Boolean) : [];
+  // 由 PickupDialog 「列印小白單」帶入：本次「即將」扣的儲值金（尚未寫 DB,只在這張單上顯示）
+  const walletPreview = Math.max(0, Number(sp.get("wallet_preview") ?? 0)) || 0;
   const [orders, setOrders] = useState<Order[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -116,7 +119,12 @@ function Body() {
   const grandSubtotal = orders.reduce((s, o) => s + orderSub(o), 0);
   const grandTotal = orders.reduce((s, o) => s + orderPay(o), 0);
   const totalOrderDisc = grandSubtotal - grandTotal; // 倒推、含取整誤差
-  const grandWalletPaid = orders.reduce((s, o) => s + Number(o.wallet_paid_amount ?? 0), 0);
+  const grandWalletPaidDb = orders.reduce((s, o) => s + Number(o.wallet_paid_amount ?? 0), 0);
+  // preview 僅在單張訂單時套用（避免多單時不確定分到哪張）；多單時忽略
+  const previewable = orders.length === 1 ? walletPreview : 0;
+  // 「將扣」金額 cap 在剩餘應付，避免 preview 過大導致負數
+  const previewCapped = Math.min(previewable, Math.max(0, grandTotal - grandWalletPaidDb));
+  const grandWalletPaid = grandWalletPaidDb + previewCapped;
   const grandBalanceDue = Math.max(0, grandTotal - grandWalletPaid);
   const totalQty = orders.reduce((s, o) => {
     const active = o.items.filter((it) => ACTIVE_ITEM_STATUSES.has(it.status));
@@ -237,15 +245,18 @@ function Body() {
           <div>小計 $ {grandSubtotal.toLocaleString()}</div>
           {totalOrderDisc > 0 && <div>− 整單折扣 $ {totalOrderDisc.toLocaleString()}</div>}
           <div className="text-[14px] font-bold">合計 {totalQty} 項　$ {grandTotal.toLocaleString()}</div>
+          {grandWalletPaidDb > 0 && (
+            <div className="mt-1">− 已用儲值金 $ {grandWalletPaidDb.toLocaleString()}</div>
+          )}
+          {previewCapped > 0 && (
+            <div>− 本次抵扣儲值金 $ {previewCapped.toLocaleString()}</div>
+          )}
           {grandWalletPaid > 0 && (
-            <>
-              <div className="mt-1">− 已用儲值金 $ {grandWalletPaid.toLocaleString()}</div>
-              <div className="text-[13px] font-bold">
-                {grandBalanceDue === 0
-                  ? "✅ 已付清"
-                  : <>應付剩餘 $ {grandBalanceDue.toLocaleString()}</>}
-              </div>
-            </>
+            <div className="text-[13px] font-bold">
+              {grandBalanceDue === 0
+                ? "✅ 已付清"
+                : <>應收現金 $ {grandBalanceDue.toLocaleString()}</>}
+            </div>
           )}
         </div>
 

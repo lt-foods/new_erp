@@ -51,14 +51,30 @@ export function EditableDiscount({
   }
   return (
     <span className="inline-flex items-center gap-1">
-      <select
-        value={value.kind}
-        onChange={(e) => onChange({ kind: e.target.value as DiscountKind, value: value.value })}
-        className="rounded border border-zinc-300 bg-white px-1 py-0.5 text-xs dark:border-zinc-700 dark:bg-zinc-900"
-      >
-        <option value="amount">$</option>
-        <option value="percent">%</option>
-      </select>
+      <span className="inline-flex overflow-hidden rounded border border-zinc-300 dark:border-zinc-700" role="radiogroup" aria-label="折扣類型">
+        <button
+          type="button"
+          role="radio"
+          aria-checked={value.kind === "amount"}
+          onClick={() => onChange({ kind: "amount", value: value.value })}
+          className={`px-2 py-0.5 text-xs font-medium ${
+            value.kind === "amount"
+              ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+              : "bg-white text-zinc-700 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          }`}
+        >$</button>
+        <button
+          type="button"
+          role="radio"
+          aria-checked={value.kind === "percent"}
+          onClick={() => onChange({ kind: "percent", value: value.value })}
+          className={`border-l border-zinc-300 px-2 py-0.5 text-xs font-medium dark:border-zinc-700 ${
+            value.kind === "percent"
+              ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+              : "bg-white text-zinc-700 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          }`}
+        >%</button>
+      </span>
       <input
         type="number"
         value={value.value === 0 ? "" : String(value.value)}

@@ -6,6 +6,7 @@ import { Modal } from "@/components/Modal";
 import { withBasePath } from "@/lib/basePath";
 import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
+import { EditableDiscount, deriveDiscount, type DiscountValue } from "@/components/EditableDiscount";
 
 type PickableItem = {
   id: number;
@@ -45,8 +46,8 @@ export function PickupDialog({
   onPickedUp: (result: { event_id: number; new_order_status: string; picked_count: number; active_remaining: number }) => void;
 }) {
   const [items, setItems] = useState<PickableItem[] | null>(null);
-  const [discount, setDiscount] = useState(0);
-  const [discountPercent, setDiscountPercent] = useState(0);
+  const [discountValue, setDiscountValue] = useState<DiscountValue>({ kind: "amount", value: 0 });
+  const [originalDiscount, setOriginalDiscount] = useState<{ amount: number; percent: number }>({ amount: 0, percent: 0 });
   const [memberId, setMemberId] = useState<number | null>(null);
   const [walletPaidSoFar, setWalletPaidSoFar] = useState(0);
   const [paymentStatus, setPaymentStatus] = useState<string | null>(null);
@@ -79,8 +80,10 @@ export function PickupDialog({
       setItems(list);
       setPicked(new Set(list.map((it) => it.id)));
       const head = hRes.data;
-      setDiscount(Number(head?.discount_amount ?? 0));
-      setDiscountPercent(Number(head?.discount_percent ?? 0));
+      const headAmt = Number(head?.discount_amount ?? 0);
+      const headPct = Number(head?.discount_percent ?? 0);
+      setOriginalDiscount({ amount: headAmt, percent: headPct });
+      setDiscountValue(deriveDiscount(headPct, headAmt));
       setMemberId(head?.member_id ?? null);
       const alreadyPaid = Number(head?.wallet_paid_amount ?? 0);
       const isPaid = head?.payment_status === "paid";
@@ -122,6 +125,48 @@ export function PickupDialog({
     });
   }
 
+  // 把 discount draft 寫進 customer_orders（沒變動就 no-op）。成功 → true，更新 originalDiscount。
+  async function persistDiscountDraft(): Promise<boolean> {
+    const newPct = discountValue.kind === "percent" ? Number(discountValue.value) : 0;
+    const newAmt = discountValue.kind === "amount" ? Number(discountValue.value) : 0;
+    if (newPct === originalDiscount.percent && newAmt === originalDiscount.amount) return true;
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id;
+    if (!operator) { setErr("尚未登入"); return false; }
+    if (newPct !== originalDiscount.percent) {
+      const { error: dpErr } = await sb.rpc("rpc_update_order_discount_percent", {
+        p_order_id: orderId, p_new_percent: newPct, p_operator: operator, p_reason: null,
+      });
+      if (dpErr) { setErr(`折扣%儲存失敗:${translateRpcError(dpErr)}`); return false; }
+    }
+    if (newAmt !== originalDiscount.amount) {
+      const { error: daErr } = await sb.rpc("rpc_update_order_discount", {
+        p_order_id: orderId, p_new_discount: newAmt, p_operator: operator, p_reason: null,
+      });
+      if (daErr) { setErr(`折扣$儲存失敗:${translateRpcError(daErr)}`); return false; }
+    }
+    setOriginalDiscount({ amount: newAmt, percent: newPct });
+    return true;
+  }
+
+  async function printSlip() {
+    setBusy(true);
+    setErr(null);
+    try {
+      // 先把折扣存 DB,小白單才會印出最新折扣
+      const ok = await persistDiscountDraft();
+      if (!ok) return;
+      // 儲值金尚未實扣,用 ?wallet_preview= 帶到小白單上預覽（不寫 DB）
+      const params = new URLSearchParams({ order_ids: String(orderId) });
+      const wPrev = Number(walletAmount) || 0;
+      if (wPrev > 0) params.set("wallet_preview", String(wPrev));
+      window.open(withBasePath(`/pickup/print-list?${params.toString()}`), "_blank");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function submit() {
     if (picked.size === 0) { setErr("至少選一個 item"); return; }
     setBusy(true);
@@ -131,6 +176,10 @@ export function PickupDialog({
       const { data: sess } = await sb.auth.getSession();
       const operator = sess.session?.user?.id;
       if (!operator) { setErr("尚未登入"); return; }
+
+      // Step 0：先存「整單折扣」（若有變動）— 失敗中止，wallet/pickup 都不寫
+      const ok = await persistDiscountDraft();
+      if (!ok) return;
 
       // Step 1：先扣儲值金（若有）— 失敗就中止，pickup 不寫
       const wAmt = Number(walletAmount);
@@ -167,16 +216,29 @@ export function PickupDialog({
   const subtotal = items
     ? items.filter((it) => picked.has(it.id)).reduce((s, it) => s + lineSub(it), 0)
     : 0;
+  const discountPercent = discountValue.kind === "percent" ? Number(discountValue.value) : 0;
+  const discount = discountValue.kind === "amount" ? Number(discountValue.value) : 0;
   // payable 四捨五入到整數 NTD；deduction 倒推、確保 subtotal − pct − amt = payable 完全對齊
   const payableAmount = Math.max(0, Math.round(subtotal * (1 - discountPercent / 100) - discount));
   const totalDeduction = subtotal - payableAmount;
   const percentDeduction = Math.max(0, totalDeduction - discount);
+  const discountDirty =
+    Number(originalDiscount.percent) !== discountPercent ||
+    Number(originalDiscount.amount) !== discount;
 
-  // 儲值金抵扣計算：本次最多扣 = min(會員餘額, 本次應收 - 已付)
+  // 折扣 / picked 變動後，若 walletAmount 超過新上限就 clamp（避免按鈕被卡 disabled）
   const isPaid = paymentStatus === "paid";
   const remainingPayable = Math.max(0, payableAmount - walletPaidSoFar);
-  const walletNum = Number(walletAmount) || 0;
   const walletMax = isPaid ? 0 : Math.min(walletBalance ?? 0, remainingPayable);
+  useEffect(() => {
+    if (walletAmount === "") return;
+    const n = Number(walletAmount);
+    if (n > walletMax) setWalletAmount(walletMax > 0 ? String(walletMax) : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [walletMax]);
+
+  // 儲值金抵扣計算：本次最多扣 = min(會員餘額, 本次應收 - 已付)
+  const walletNum = Number(walletAmount) || 0;
   const cashAmount = Math.max(0, remainingPayable - walletNum);
   const walletInvalid =
     walletNum < 0 ||
@@ -242,20 +304,36 @@ export function PickupDialog({
                   <td className="px-3 py-1 text-right font-mono">${subtotal}</td>
                   <td className="px-3 py-1 text-xs text-zinc-500">{picked.size}/{items.length} 項</td>
                 </tr>
-                {discountPercent > 0 && (
-                  <tr>
-                    <td colSpan={4} className="px-3 py-1 text-right text-xs text-zinc-500">− 全單折扣 {discountPercent}%</td>
-                    <td className="px-3 py-1 text-right font-mono text-red-600 dark:text-red-400">−${percentDeduction}</td>
-                    <td />
-                  </tr>
-                )}
-                {discount > 0 && (
-                  <tr>
-                    <td colSpan={4} className="px-3 py-1 text-right text-xs text-zinc-500">− 全單折扣金額</td>
-                    <td className="px-3 py-1 text-right font-mono text-red-600 dark:text-red-400">−${discount}</td>
-                    <td />
-                  </tr>
-                )}
+                <tr>
+                  <td colSpan={2} className="px-3 py-1 text-right text-xs text-zinc-500">
+                    整單折扣
+                    {discountDirty && (
+                      <span className="ml-1 rounded bg-yellow-100 px-1 text-[10px] text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300">
+                        待存
+                      </span>
+                    )}
+                  </td>
+                  <td colSpan={2} className="px-3 py-1 text-left">
+                    <EditableDiscount
+                      value={discountValue}
+                      onChange={setDiscountValue}
+                      referenceAmount={subtotal}
+                      compact
+                    />
+                  </td>
+                  <td className="px-3 py-1 text-right font-mono text-red-600 dark:text-red-400">
+                    {totalDeduction > 0
+                      ? `−$${Math.round(totalDeduction)}`
+                      : <span className="text-zinc-400">—</span>}
+                  </td>
+                  <td className="px-3 py-1 text-[10px] text-zinc-500">
+                    {discountPercent > 0 && discount > 0
+                      ? `${discountPercent}% + $${discount}`
+                      : discountPercent > 0
+                        ? `(其中% −$${Math.round(percentDeduction)})`
+                        : null}
+                  </td>
+                </tr>
                 <tr>
                   <td colSpan={4} className="px-3 py-2 text-right text-xs text-zinc-500">應收</td>
                   <td className="px-3 py-2 text-right font-mono text-base font-semibold">${Math.round(payableAmount)}</td>
@@ -352,14 +430,12 @@ export function PickupDialog({
               取消
             </SpinButton>
             <SpinButton
-              onClick={() => {
-                window.open(withBasePath(`/pickup/print-list?order_ids=${orderId}`), "_blank");
-              }}
+              onClick={printSlip}
               disabled={busy}
               className="rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:border-zinc-300 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-              title="先印小白單給客人看，未確認取貨"
+              title={discountDirty ? "會先存折扣再印（沒按確認取貨也保留折扣）" : "先印小白單給客人看，未確認取貨"}
             >
-              🖨️ 列印小白單
+              🖨️ 列印小白單{discountDirty && "（含折扣）"}
             </SpinButton>
             <SpinButton
               onClick={submit}
