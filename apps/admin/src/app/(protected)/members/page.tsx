@@ -15,7 +15,7 @@ import type { OrderStatus } from "@/lib/orderStatus";
 const PENDING_STATUSES: OrderStatus[] = ["pending", "confirmed", "shipping", "ready"];
 
 type Status = "active" | "inactive" | "blocked" | "merged" | "deleted";
-type SortKey = "updated_at" | "member_no" | "name";
+type SortKey = "updated_at" | "member_no" | "name" | "home_store_id" | "joined_at" | "last_visit_at" | "external_source";
 type SortDir = "asc" | "desc";
 
 type MemberRow = {
@@ -290,13 +290,13 @@ function MembersListBody() {
         <THead>
           <ThSort label="編號" col="member_no" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
           <ThSort label="姓名" col="name" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
-          <Th>取貨店</Th>
+          <ThSort label="取貨店" col="home_store_id" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
           <Th>手機</Th>
           <Th align="right">訂單數</Th>
           <Th align="right">未取貨金額</Th>
           <Th align="right">儲值</Th>
-          <Th align="right">加入時間</Th>
-          <Th align="right">最後登入</Th>
+          <ThSort label="加入時間" col="joined_at" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} align="right" />
+          <ThSort label="最後登入" col="last_visit_at" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} align="right" />
           <ThSort label="更新" col="updated_at" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} align="right" />
           <Th>{""}</Th>
         </THead>
@@ -312,7 +312,11 @@ function MembersListBody() {
               const bal = balances.get(r.id);
               const store = r.home_store_id ? stores.find((s) => s.id === r.home_store_id) : null;
               return (
-                <Tr key={r.id}>
+                <Tr
+                  key={r.id}
+                  onClick={() => setModal({ mode: "detail", memberId: r.id, memberNo: r.member_no })}
+                  className="cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
+                >
                   <Td className="font-mono">
                     <SpinButton
                       onClick={() => setModal({ mode: "detail", memberId: r.id, memberNo: r.member_no })}
@@ -379,12 +383,14 @@ function MembersListBody() {
                     <div className="flex items-center justify-end gap-3">
                       <Link
                         href={`/pickup?q=${encodeURIComponent(r.member_no)}`}
+                        onClick={(e) => e.stopPropagation()}
                         className="text-xs text-emerald-600 hover:underline dark:text-emerald-400"
                       >
                         🔎 查訂單
                       </Link>
                       <SpinButton
-                        onClick={async () => {
+                        onClick={async (e) => {
+                          e.stopPropagation();
                           const { data } = await getSupabase()
                             .from("members")
                             .select("id, member_no, phone, name, gender, birthday, email, tier_id, home_store_id, status, notes")
