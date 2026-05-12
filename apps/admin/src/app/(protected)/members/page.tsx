@@ -31,6 +31,8 @@ type MemberRow = {
   last_visit_at: string | null;
   external_source: string | null;
   external_id: string | null;
+  home_store_id: number | null;
+  takeout_store_name_hint: string | null;
 };
 
 /** 顯示手機，若是 LIFF auto-register 的 placeholder (line:Uxxxx) 則視為未填 */
@@ -131,7 +133,7 @@ function MembersListBody() {
       try {
         let q = getSupabase()
           .from("members")
-          .select("id, member_no, name, phone, avatar_url, tier_id, status, updated_at, joined_at, last_visit_at, external_source, external_id", { count: "exact" })
+          .select("id, member_no, name, phone, avatar_url, tier_id, status, updated_at, joined_at, last_visit_at, external_source, external_id, home_store_id, takeout_store_name_hint", { count: "exact" })
           .order(sortBy, { ascending: sortDir === "asc" })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
@@ -288,6 +290,7 @@ function MembersListBody() {
         <THead>
           <ThSort label="編號" col="member_no" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
           <ThSort label="姓名" col="name" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+          <Th>取貨店</Th>
           <Th>手機</Th>
           <Th align="right">訂單數</Th>
           <Th align="right">未取貨金額</Th>
@@ -299,14 +302,15 @@ function MembersListBody() {
         </THead>
         <TBody>
           {rows === null ? (
-            <SkeletonRows cols={10} />
+            <SkeletonRows cols={11} />
           ) : rows.length === 0 ? (
-            <EmptyRow colSpan={10}>
+            <EmptyRow colSpan={11}>
               {total === 0 && !query ? "還沒有會員，按「新增會員」開始建立。" : "沒有符合條件的會員。"}
             </EmptyRow>
           ) : (
             rows.map((r) => {
               const bal = balances.get(r.id);
+              const store = r.home_store_id ? stores.find((s) => s.id === r.home_store_id) : null;
               return (
                 <Tr key={r.id}>
                   <Td className="font-mono">
@@ -343,6 +347,18 @@ function MembersListBody() {
                         </span>
                       )}
                     </div>
+                  </Td>
+                  <Td className="text-xs">
+                    {store ? (
+                      <span>{store.name}</span>
+                    ) : r.takeout_store_name_hint ? (
+                      <span className="text-zinc-500" title="樂樂標籤、尚未對應到 store">
+                        {r.takeout_store_name_hint}
+                        <span className="ml-1 rounded bg-zinc-100 px-1 py-0.5 text-[10px] text-zinc-500 dark:bg-zinc-800">hint</span>
+                      </span>
+                    ) : (
+                      <span className="text-zinc-400">—</span>
+                    )}
                   </Td>
                   <Td className="font-mono text-xs">{displayPhone(r.phone)}</Td>
                   <Td align="right" className="font-mono">{bal?.orderCount ?? 0}</Td>
