@@ -59,7 +59,7 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
         if (cancelled) return;
         if (ordersRes.error) throw ordersRes.error;
         if (storesRes.error) throw storesRes.error;
-        setRows((ordersRes.data ?? []) as OrderRow[]);
+        setRows((ordersRes.data ?? []) as unknown as OrderRow[]);
         setStores((storesRes.data ?? []) as Store[]);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
