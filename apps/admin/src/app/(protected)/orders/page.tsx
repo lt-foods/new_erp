@@ -29,6 +29,27 @@ type Campaign = { id: number; campaign_no: string; name: string; cover_image_url
 type Store = { id: number; code: string; name: string };
 type Member = { id: number; name: string | null; phone: string | null; member_no: string; avatar_url: string | null };
 
+type DayTrend = {
+  ymd: string; // "YYYY-MM-DD"
+  orders: number;
+  amount: number;
+  members: number;
+  aov: number; // amount / orders
+};
+
+// 本月累計 (member 是跨日 distinct, 不是日 sum)
+type MonthAgg = {
+  orders: number;
+  amount: number;
+  members: number;
+  aov: number;
+};
+
+type TrendData = {
+  days: DayTrend[];
+  total: MonthAgg;
+};
+
 type Tab = "pending" | "completed" | "cancelled" | "transferred";
 const TABS: { value: Tab; label: string }[] = [
   { value: "pending", label: "未取貨" },
@@ -95,6 +116,10 @@ function OrdersListContent() {
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detailNo, setDetailNo] = useState<string>("");
   const [reloadOrders, setReloadOrders] = useState(0);
+
+  // KPI trend (當月 1 號 ~ 今天 每日 + 本月累計、套 filter 開團+店家、排除 transferred_out)
+  const [trend, setTrend] = useState<TrendData | null>(null);
+  const [trendTruncated, setTrendTruncated] = useState(false);
 
   useEffect(() => { setPage(1); }, [campaignIds, tab, storeId]);
 
@@ -219,6 +244,116 @@ function OrdersListContent() {
     return () => { cancelled = true; };
   }, [campaignIds, storeId, reloadOrders]);
 
+  // KPI Trend — 當月 1 號到今天每日 (套 filter 開團+店家, 排除 transferred_out)
+  useEffect(() => {
+    let cancelled = false;
+    setTrend(null);
+    setTrendTruncated(false);
+    (async () => {
+      const sb = getSupabase();
+      const today = new Date();
+      const startDate = new Date(today.getFullYear(), today.getMonth(), 1);
+
+      let q = sb
+        .from("customer_orders")
+        .select("id, member_id, created_at")
+        .neq("status", "transferred_out")
+        .gte("created_at", startDate.toISOString());
+      if (campaignIds.length === 1) q = q.eq("campaign_id", Number(campaignIds[0]));
+      else if (campaignIds.length > 1)
+        q = q.in("campaign_id", campaignIds.map((x) => Number(x)));
+      if (storeId) q = q.eq("pickup_store_id", Number(storeId));
+      q = q.limit(20000);
+
+      const { data: oData, error: oErr } = await q;
+      if (cancelled) return;
+      if (oErr || !oData) {
+        setTrend({ days: buildEmptyTrend(today), total: { orders: 0, amount: 0, members: 0, aov: 0 } });
+        return;
+      }
+      const orders = oData as { id: number; member_id: number | null; created_at: string }[];
+      const truncated = orders.length >= 20000;
+      setTrendTruncated(truncated);
+
+      // 本月累計 — orders 每筆 id 唯一、members 跨日 distinct
+      const monthMemberIds = new Set<number>();
+      for (const o of orders) {
+        if (o.member_id != null) monthMemberIds.add(o.member_id);
+      }
+
+      // 每日 buckets (key = YYYY-MM-DD, 用 local timezone 推, 跟 created_at 直接 slice 一致)
+      const buckets = new Map<
+        string,
+        { orderIds: Set<number>; memberIds: Set<number>; amount: number }
+      >();
+      const orderDay = new Map<number, string>();
+      for (const o of orders) {
+        const ymd = o.created_at.slice(0, 10);
+        orderDay.set(o.id, ymd);
+        let b = buckets.get(ymd);
+        if (!b) {
+          b = { orderIds: new Set(), memberIds: new Set(), amount: 0 };
+          buckets.set(ymd, b);
+        }
+        b.orderIds.add(o.id);
+        if (o.member_id != null) b.memberIds.add(o.member_id);
+      }
+
+      const orderIds = orders.map((o) => o.id);
+      if (orderIds.length > 0) {
+        for (let i = 0; i < orderIds.length; i += 1000) {
+          const chunk = orderIds.slice(i, i + 1000);
+          const { data: iData } = await sb
+            .from("customer_order_items")
+            .select("order_id, qty, unit_price")
+            .in("order_id", chunk);
+          if (cancelled) return;
+          for (const it of (iData as
+            | { order_id: number; qty: number; unit_price: number }[]
+            | null) ?? []) {
+            const ymd = orderDay.get(it.order_id);
+            if (!ymd) continue;
+            const b = buckets.get(ymd);
+            if (b) b.amount += Number(it.qty) * Number(it.unit_price);
+          }
+        }
+      }
+      if (cancelled) return;
+
+      // 補齊當月 1 號 ~ 今天每一日 (沒資料補 0)
+      let monthOrders = 0;
+      let monthAmount = 0;
+      const days: DayTrend[] = [];
+      const cur = new Date(startDate);
+      while (cur <= today) {
+        const ymd = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}-${String(cur.getDate()).padStart(2, "0")}`;
+        const b = buckets.get(ymd);
+        const orderCnt = b?.orderIds.size ?? 0;
+        const amt = b?.amount ?? 0;
+        days.push({
+          ymd,
+          orders: orderCnt,
+          amount: amt,
+          members: b?.memberIds.size ?? 0,
+          aov: orderCnt > 0 ? amt / orderCnt : 0,
+        });
+        monthOrders += orderCnt;
+        monthAmount += amt;
+        cur.setDate(cur.getDate() + 1);
+      }
+      const total: MonthAgg = {
+        orders: monthOrders,
+        amount: monthAmount,
+        members: monthMemberIds.size,
+        aov: monthOrders > 0 ? monthAmount / monthOrders : 0,
+      };
+      setTrend({ days, total });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [campaignIds, storeId, reloadOrders]);
+
   const campaignMap = useMemo(() => new Map(campaigns.map((c) => [c.id, c])), [campaigns]);
   const storeMap = useMemo(() => new Map(stores.map((s) => [s.id, s])), [stores]);
 
@@ -256,7 +391,53 @@ function OrdersListContent() {
             {loading ? "載入中…" : total === 0 ? "共 0 筆" : `共 ${total} 筆（${fromIdx}-${toIdx}）`}
           </p>
         </div>
+        <Link
+          href="/orders/pivot"
+          className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          title="日期 × 商品 × 店家 樞紐表"
+        >
+          樞紐表 ↗
+        </Link>
       </header>
+
+      {/* KPI Trend — 大字 = 本月累計 / sparkline = 每日 / 副字 = 日均 (套 filter, 排除 transferred_out) */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <TrendCard
+          label="本月營業額"
+          trend={trend}
+          getTotal={(t) => t.amount}
+          getDaily={(d) => d.amount}
+          fmt={(v) => `$${Math.round(v).toLocaleString("zh-TW")}`}
+          subLabel="日均"
+          hint={trendTruncated ? "已截斷 20000 筆" : undefined}
+        />
+        <TrendCard
+          label="本月訂單數"
+          trend={trend}
+          getTotal={(t) => t.orders}
+          getDaily={(d) => d.orders}
+          fmt={(v) => v.toLocaleString("zh-TW")}
+          subLabel="日均"
+        />
+        <TrendCard
+          label="客單價"
+          trend={trend}
+          getTotal={(t) => t.aov}
+          getDaily={(d) => d.aov}
+          fmt={(v) => `$${Math.round(v).toLocaleString("zh-TW")}`}
+          subLabel="今日"
+          subMode="last_day"
+        />
+        <TrendCard
+          label="本月會員數"
+          trend={trend}
+          getTotal={(t) => t.members}
+          getDaily={(d) => d.members}
+          fmt={(v) => v.toLocaleString("zh-TW")}
+          subLabel="今日"
+          subMode="last_day"
+        />
+      </div>
 
       {/* Tab bar — 未取貨 / 已完成 / 取消;含各 tab 數量 */}
       <div className="flex items-center gap-1 border-b border-zinc-200 dark:border-zinc-800">
@@ -554,6 +735,181 @@ function OrdersListContent() {
           <PagerBtn disabled={page === totalPages} onClick={() => setPage(totalPages)}>最末頁 »</PagerBtn>
         </div>
       )}
+    </div>
+  );
+}
+
+function buildEmptyTrend(today: Date): DayTrend[] {
+  const days: DayTrend[] = [];
+  const cur = new Date(today.getFullYear(), today.getMonth(), 1);
+  while (cur <= today) {
+    const ymd = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}-${String(cur.getDate()).padStart(2, "0")}`;
+    days.push({ ymd, orders: 0, amount: 0, members: 0, aov: 0 });
+    cur.setDate(cur.getDate() + 1);
+  }
+  return days;
+}
+
+function Sparkline({
+  values,
+  labels,
+  fmt,
+  color = "currentColor",
+}: {
+  values: number[];
+  labels?: string[];
+  fmt?: (v: number) => string;
+  color?: string;
+}) {
+  const [hovered, setHovered] = useState<number | null>(null);
+  const w = 140;
+  const h = 32;
+  const pad = 2;
+  const n = values.length;
+  if (n === 0) return <svg width={w} height={h} />;
+  const max = Math.max(...values, 1);
+  const min = Math.min(...values, 0);
+  const range = max - min || 1;
+  const stepX = n > 1 ? (w - 2 * pad) / (n - 1) : 0;
+  const points = values.map((v, i) => {
+    const x = pad + i * stepX;
+    const y = h - pad - ((v - min) / range) * (h - 2 * pad);
+    return [x, y] as [number, number];
+  });
+  const path = points.map(([x, y], i) => `${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
+  const lastX = points[points.length - 1][0];
+  const lastY = points[points.length - 1][1];
+  const hoveredPt = hovered != null ? points[hovered] : null;
+
+  return (
+    <div className="relative inline-block" style={{ width: w, height: h }}>
+      <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="overflow-visible">
+        <path d={path} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+        <circle cx={lastX} cy={lastY} r={2.5} fill={color} />
+        {hoveredPt && (
+          <>
+            <line
+              x1={hoveredPt[0]}
+              y1={0}
+              x2={hoveredPt[0]}
+              y2={h}
+              stroke="rgb(161 161 170)"
+              strokeWidth="0.5"
+              strokeDasharray="2 2"
+            />
+            <circle cx={hoveredPt[0]} cy={hoveredPt[1]} r={3} fill={color} stroke="white" strokeWidth="1" />
+          </>
+        )}
+        {/* invisible hover bands */}
+        {n > 1 &&
+          values.map((_, i) => {
+            const bandX = Math.max(0, points[i][0] - stepX / 2);
+            const bandW = i === 0 || i === n - 1 ? stepX / 2 + pad : stepX;
+            return (
+              <rect
+                key={i}
+                x={bandX}
+                y={0}
+                width={bandW}
+                height={h}
+                fill="transparent"
+                onMouseEnter={() => setHovered(i)}
+                onMouseLeave={() => setHovered((cur) => (cur === i ? null : cur))}
+              />
+            );
+          })}
+      </svg>
+      {hoveredPt && labels && (
+        <div
+          className="pointer-events-none absolute z-20 -translate-x-1/2 whitespace-nowrap rounded bg-zinc-900 px-1.5 py-1 text-[10px] leading-tight text-white shadow dark:bg-zinc-100 dark:text-zinc-900"
+          style={{ left: hoveredPt[0], bottom: h + 4 }}
+        >
+          <div className="font-semibold">{labels[hovered!]}</div>
+          <div className="tabular-nums">{fmt ? fmt(values[hovered!]) : values[hovered!]}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TrendCard({
+  label,
+  trend,
+  getTotal,
+  getDaily,
+  fmt,
+  subLabel,
+  subMode = "avg",
+  hint,
+}: {
+  label: string;
+  trend: TrendData | null;
+  getTotal: (t: MonthAgg) => number;
+  getDaily: (d: DayTrend) => number;
+  fmt: (v: number) => string;
+  subLabel: string;
+  subMode?: "avg" | "last_day"; // 副字: 日均 or 最後一天
+  hint?: string;
+}) {
+  if (!trend) {
+    return (
+      <div className="rounded-md border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="text-xs text-zinc-500">{label}</div>
+        <div className="mt-1 text-xl font-semibold tabular-nums text-zinc-400">—</div>
+      </div>
+    );
+  }
+  const total = getTotal(trend.total);
+  const dailyValues = trend.days.map(getDaily);
+  // 副字算法
+  const daysPassed = trend.days.length;
+  const subValue =
+    subMode === "last_day"
+      ? dailyValues[dailyValues.length - 1] ?? 0
+      : daysPassed > 0
+      ? total / daysPassed
+      : 0;
+  // sparkline 顏色 — 用最後一天 vs 上一天的差判斷
+  const curr = dailyValues[dailyValues.length - 1] ?? 0;
+  const prev = dailyValues[dailyValues.length - 2] ?? 0;
+  const trendUp = curr > prev;
+  const trendFlat = curr === prev;
+  const sparkColor = trendFlat
+    ? "rgb(161 161 170)"
+    : trendUp
+    ? "rgb(5 150 105)"
+    : "rgb(220 38 38)";
+  const firstDay = trend.days[0]?.ymd ?? "";
+  const lastDay = trend.days[trend.days.length - 1]?.ymd ?? "";
+  const fmtMD = (ymd: string) => {
+    const [, m, d] = ymd.split("-");
+    return `${Number(m)}/${Number(d)}`;
+  };
+  return (
+    <div className="rounded-md border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-zinc-500">{label}</div>
+        <div className="text-[10px] text-zinc-400" title={`本月每日 (共 ${daysPassed} 天)`}>
+          {fmtMD(firstDay)} ~ {fmtMD(lastDay)}
+        </div>
+      </div>
+      <div className="mt-1 flex items-end justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-xl font-semibold tabular-nums" title={fmt(total)}>
+            {fmt(total)}
+          </div>
+          <div className="mt-0.5 text-[11px] text-zinc-500">
+            {subLabel} {fmt(subValue)}
+          </div>
+        </div>
+        <Sparkline
+          values={dailyValues}
+          labels={trend.days.map((d) => fmtMD(d.ymd))}
+          fmt={fmt}
+          color={sparkColor}
+        />
+      </div>
+      {hint && <div className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">{hint}</div>}
     </div>
   );
 }
