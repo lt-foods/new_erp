@@ -119,9 +119,24 @@
 
 ---
 
+## Schema invariant
+
+### PR ↔ Campaigns 雙寫一致性（防 PO 撿貨看不到）
+
+**背景：** `purchase_request_items.source_campaign_id` 必須 ↔ `purchase_request_campaigns` join 表同步、否則 `v_picking_demand_by_po` 對該 PO 算不出 demand、撿貨工作站看不到。
+
+詳見 [TEST-pr-campaigns-invariant.md](TEST-pr-campaigns-invariant.md)。E2E 必跑：
+
+- [ ] **SQL:** `SELECT COUNT(*) FROM fn_check_pr_campaigns_consistency();` expect 0
+- [ ] **SQL:** trigger `trg_pri_sync_campaigns` 存在且 enabled
+- [ ] **負向：** DELETE 一筆 `purchase_request_campaigns` row 後 UPDATE 對應 `pri.source_campaign_id` → trigger 應補回
+
+---
+
 ## 驗收門檻
 
 - [ ] G4.1 ~ G4.5 全勾
 - [ ] R1 / R2a / R2b / R3 + purchase_return 4 維 ripple 全驗
+- [ ] Schema invariant 3 項全勾
 - [ ] 既有 2 docs 各跑完
 - [ ] 結 `TEST-E2E-T4-purchase-report.md` status: passed
