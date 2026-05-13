@@ -93,6 +93,7 @@ const NAV_COLLAPSE_KEY = "new_erp-nav-collapsed";
 // 分店帳號 (app_metadata.stores 有值且不含「總倉」) 隱藏的項目
 const BRANCH_HIDDEN_HREFS = new Set([
   "/hq/inbox",            // 總倉收件匣
+  "/products",            // 商品主檔 (HQ 管理)
   "/suppliers",           // 供應商 (HQ 管理)
   "/purchase/requests",   // 採購單
   "/purchase/orders",     // 採購訂單
