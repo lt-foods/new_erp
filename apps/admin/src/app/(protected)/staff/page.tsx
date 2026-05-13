@@ -1,0 +1,363 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { getSupabase } from "@/lib/supabase";
+import { useRole } from "@/lib/role";
+import { useAuth } from "@/components/AuthProvider";
+import { Modal } from "@/components/Modal";
+import SpinButton from "@/components/SpinButton";
+import { Table, THead, TBody, Tr, Th, Td, EmptyRow } from "@/components/DataTable";
+import { RoleChip, ALL_ROLES, roleLabel, type StaffRole } from "@/components/RoleChip";
+
+type StaffRow = {
+  user_id: string;
+  email: string | null;
+  display_name: string | null;
+  role: string;
+  stores: string[];
+  disabled: boolean;
+  created_at: string;
+  last_sign_in_at: string | null;
+};
+
+type Store = { id: number; code: string; name: string };
+
+type Modal =
+  | { mode: "role"; row: StaffRow }
+  | { mode: "stores"; row: StaffRow }
+  | { mode: "disable"; row: StaffRow }
+  | null;
+
+export default function StaffPage() {
+  const router = useRouter();
+  const role = useRole();
+  const { user } = useAuth();
+  const [rows, setRows] = useState<StaffRow[] | null>(null);
+  const [stores, setStores] = useState<Store[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [modal, setModal] = useState<Modal>(null);
+  const [reloadTick, setReloadTick] = useState(0);
+
+  const canManage = role === "owner" || role === "admin";
+  const isOwner = role === "owner";
+
+  useEffect(() => {
+    if (role !== null && !canManage) {
+      router.replace("/");
+    }
+  }, [role, canManage, router]);
+
+  useEffect(() => {
+    if (!canManage) return;
+    let cancelled = false;
+    (async () => {
+      const sb = getSupabase();
+      const [s, l] = await Promise.all([
+        sb.from("stores").select("id, code, name").eq("is_active", true).order("name"),
+        sb.rpc("rpc_list_staff"),
+      ]);
+      if (cancelled) return;
+      if (s.error) { setError(s.error.message); return; }
+      if (l.error) { setError(l.error.message); return; }
+      setStores((s.data ?? []) as Store[]);
+      setRows((l.data ?? []) as StaffRow[]);
+    })();
+    return () => { cancelled = true; };
+  }, [canManage, reloadTick]);
+
+  const reload = useCallback(() => setReloadTick((t) => t + 1), []);
+
+  if (role === null) {
+    return <div className="p-6 text-sm text-zinc-500">載入中…</div>;
+  }
+  if (!canManage) {
+    return <div className="p-6 text-sm text-rose-600">無權限存取。</div>;
+  }
+
+  return (
+    <div className="space-y-4 p-6">
+      <header className="flex items-center justify-between gap-4">
+        <div>
+          <h1 className="text-lg font-semibold">員工管理</h1>
+          <p className="mt-1 text-xs text-zinc-500">
+            管理員工角色與綁定店家。員工帳號需先由 Supabase Dashboard 建立後才會在此列出。
+          </p>
+        </div>
+        <div className="text-xs text-zinc-500">
+          目前身份：<RoleChip role={role} />
+        </div>
+      </header>
+
+      {error && (
+        <div className="rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-300">
+          {error}
+        </div>
+      )}
+
+      <Table>
+        <THead>
+          <Th>Email</Th>
+          <Th>顯示名</Th>
+          <Th>角色</Th>
+          <Th>綁定店</Th>
+          <Th align="right">建立</Th>
+          <Th align="right">最後登入</Th>
+          <Th>{""}</Th>
+        </THead>
+        <TBody>
+          {rows === null ? (
+            <EmptyRow colSpan={7}>載入中…</EmptyRow>
+          ) : rows.length === 0 ? (
+            <EmptyRow colSpan={7}>沒有員工</EmptyRow>
+          ) : (
+            rows.map((r) => {
+              const isSelf = r.user_id === user?.id;
+              const disabled = r.role === "disabled";
+              return (
+                <Tr key={r.user_id} className={disabled ? "opacity-60" : ""}>
+                  <Td className="font-mono text-xs">
+                    {r.email ?? "—"}
+                    {isSelf && <span className="ml-2 text-[10px] text-zinc-400">（你）</span>}
+                  </Td>
+                  <Td className="text-xs">{r.display_name ?? "—"}</Td>
+                  <Td><RoleChip role={r.role} /></Td>
+                  <Td>
+                    {r.stores.length === 0 ? (
+                      <span className="text-xs text-zinc-400">—</span>
+                    ) : (
+                      <div className="flex flex-wrap gap-1">
+                        {r.stores.map((s) => (
+                          <span key={s} className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">{s}</span>
+                        ))}
+                      </div>
+                    )}
+                  </Td>
+                  <Td align="right" className="whitespace-nowrap text-xs text-zinc-500">
+                    {new Date(r.created_at).toLocaleDateString("zh-TW")}
+                  </Td>
+                  <Td align="right" className="whitespace-nowrap text-xs text-zinc-500">
+                    {r.last_sign_in_at
+                      ? new Date(r.last_sign_in_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })
+                      : "—"}
+                  </Td>
+                  <Td>
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setModal({ mode: "role", row: r })}
+                        disabled={isSelf}
+                        title={isSelf ? "不能改自己角色" : ""}
+                        className="text-xs text-blue-600 hover:underline disabled:cursor-not-allowed disabled:text-zinc-400 disabled:no-underline dark:text-blue-400"
+                      >
+                        改角色
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setModal({ mode: "stores", row: r })}
+                        className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                      >
+                        綁店
+                      </button>
+                      {disabled ? (
+                        <button
+                          type="button"
+                          onClick={() => setModal({ mode: "role", row: r })}
+                          className="text-xs text-emerald-600 hover:underline dark:text-emerald-400"
+                        >
+                          啟用
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setModal({ mode: "disable", row: r })}
+                          disabled={isSelf}
+                          title={isSelf ? "不能停用自己" : ""}
+                          className="text-xs text-rose-600 hover:underline disabled:cursor-not-allowed disabled:text-zinc-400 disabled:no-underline dark:text-rose-400"
+                        >
+                          停用
+                        </button>
+                      )}
+                    </div>
+                  </Td>
+                </Tr>
+              );
+            })
+          )}
+        </TBody>
+      </Table>
+
+      {modal?.mode === "role" && (
+        <RoleModal
+          row={modal.row}
+          isOwnerCaller={isOwner}
+          onClose={() => setModal(null)}
+          onSaved={() => { setModal(null); reload(); }}
+        />
+      )}
+      {modal?.mode === "stores" && (
+        <StoresModal
+          row={modal.row}
+          stores={stores}
+          onClose={() => setModal(null)}
+          onSaved={() => { setModal(null); reload(); }}
+        />
+      )}
+      {modal?.mode === "disable" && (
+        <DisableModal
+          row={modal.row}
+          onClose={() => setModal(null)}
+          onSaved={() => { setModal(null); reload(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function RoleModal({
+  row, isOwnerCaller, onClose, onSaved,
+}: {
+  row: StaffRow; isOwnerCaller: boolean;
+  onClose: () => void; onSaved: () => void;
+}) {
+  const [newRole, setNewRole] = useState<StaffRole>(row.role as StaffRole || "");
+  const [err, setErr] = useState<string | null>(null);
+
+  // admin 不能 grant owner、也不能改 owner
+  const grantable = ALL_ROLES.filter((r) => {
+    if (r === "disabled") return false;
+    if (!isOwnerCaller && r === "owner") return false;
+    return true;
+  });
+  const targetIsOwner = row.role === "owner";
+
+  async function save() {
+    if (targetIsOwner && !isOwnerCaller) {
+      setErr("admin 不能改 owner");
+      return;
+    }
+    const { error } = await getSupabase().rpc("rpc_update_staff_role", {
+      p_user_id: row.user_id, p_role: newRole,
+    });
+    if (error) { setErr(error.message); return; }
+    onSaved();
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`改角色 — ${row.email}`} maxWidth="max-w-md">
+      <div className="space-y-3 p-5">
+        <div className="text-xs text-zinc-500">目前角色：<RoleChip role={row.role} /></div>
+        <label className="block text-sm">
+          <span className="text-zinc-600 dark:text-zinc-400">新角色</span>
+          <select
+            value={newRole}
+            onChange={(e) => setNewRole(e.target.value as StaffRole)}
+            className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+          >
+            {grantable.map((r) => <option key={r} value={r}>{roleLabel(r)}</option>)}
+          </select>
+        </label>
+        <p className="text-[11px] text-zinc-500">改完員工需重新登入才會生效。</p>
+        {err && <p className="text-xs text-rose-600">{err}</p>}
+        <div className="flex justify-end gap-2 pt-2">
+          <SpinButton onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">取消</SpinButton>
+          <SpinButton onClick={save} className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900">儲存</SpinButton>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function StoresModal({
+  row, stores, onClose, onSaved,
+}: {
+  row: StaffRow; stores: Store[];
+  onClose: () => void; onSaved: () => void;
+}) {
+  const [sel, setSel] = useState<Set<string>>(new Set(row.stores));
+  const [err, setErr] = useState<string | null>(null);
+
+  function toggle(name: string) {
+    setSel((s) => {
+      const n = new Set(s);
+      if (n.has(name)) n.delete(name); else n.add(name);
+      return n;
+    });
+  }
+
+  async function save() {
+    const arr = Array.from(sel);
+    const { error } = await getSupabase().rpc("rpc_update_staff_stores", {
+      p_user_id: row.user_id, p_store_names: arr,
+    });
+    if (error) { setErr(error.message); return; }
+    onSaved();
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`綁店 — ${row.email}`} maxWidth="max-w-md">
+      <div className="space-y-3 p-5">
+        <label className="flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-700">
+          <input
+            type="checkbox"
+            checked={sel.has("總倉")}
+            onChange={() => toggle("總倉")}
+            className="h-4 w-4"
+          />
+          <span className="font-medium">總倉</span>
+          <span className="text-[11px] text-zinc-500">（HQ 帳號 — 可看全部）</span>
+        </label>
+        <div className="grid grid-cols-2 gap-2 max-h-72 overflow-y-auto">
+          {stores.map((s) => (
+            <label key={s.id} className="flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-700">
+              <input
+                type="checkbox"
+                checked={sel.has(s.name)}
+                onChange={() => toggle(s.name)}
+                className="h-4 w-4"
+              />
+              <span>{s.name}</span>
+              <span className="ml-auto text-[10px] text-zinc-400">{s.code}</span>
+            </label>
+          ))}
+        </div>
+        <p className="text-[11px] text-zinc-500">改完員工需重新登入才會生效。</p>
+        {err && <p className="text-xs text-rose-600">{err}</p>}
+        <div className="flex justify-end gap-2 pt-2">
+          <SpinButton onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">取消</SpinButton>
+          <SpinButton onClick={save} className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900">儲存</SpinButton>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function DisableModal({
+  row, onClose, onSaved,
+}: { row: StaffRow; onClose: () => void; onSaved: () => void }) {
+  const [err, setErr] = useState<string | null>(null);
+
+  async function confirm() {
+    const { error } = await getSupabase().rpc("rpc_update_staff_role", {
+      p_user_id: row.user_id, p_role: "disabled",
+    });
+    if (error) { setErr(error.message); return; }
+    onSaved();
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`停用員工 — ${row.email}`} maxWidth="max-w-md">
+      <div className="space-y-3 p-5">
+        <p className="text-sm text-zinc-700 dark:text-zinc-300">
+          確定要停用 <b>{row.email}</b>？停用後該員工登入後無法看到任何資料（RLS 自動擋）。原角色 <RoleChip role={row.role} /> 將被改成 <RoleChip role="disabled" />。
+        </p>
+        <p className="text-[11px] text-zinc-500">之後可以從「啟用」按鈕還原角色。</p>
+        {err && <p className="text-xs text-rose-600">{err}</p>}
+        <div className="flex justify-end gap-2 pt-2">
+          <SpinButton onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">取消</SpinButton>
+          <SpinButton onClick={confirm} className="rounded-md bg-rose-600 px-3 py-2 text-sm font-medium text-white hover:bg-rose-700">確認停用</SpinButton>
+        </div>
+      </div>
+    </Modal>
+  );
+}

@@ -66,7 +66,26 @@ const NAV: NavGroup[] = [
       { href: "/community-candidates/calendar", label: "週曆", match: /^\/community-candidates\/calendar/ },
     ],
   },
+  {
+    title: "設定",
+    items: [
+      { href: "/staff", label: "員工管理", match: /^\/staff/ },
+    ],
+  },
 ];
+
+// 只 owner / admin 看得到的 group title 清單
+const ADMIN_ONLY_GROUPS = new Set(["設定"]);
+
+function canManageStaff(user: { app_metadata?: Record<string, unknown> } | null | undefined): boolean {
+  const r = user?.app_metadata?.role;
+  return r === "owner" || r === "admin";
+}
+
+function filterNavForRole(nav: NavGroup[], user: { app_metadata?: Record<string, unknown> } | null | undefined): NavGroup[] {
+  if (canManageStaff(user)) return nav;
+  return nav.filter((g) => !g.title || !ADMIN_ONLY_GROUPS.has(g.title));
+}
 
 const NAV_COLLAPSE_KEY = "new_erp-nav-collapsed";
 
@@ -171,7 +190,7 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
   }
 
   const branchUser = isBranchUser(user);
-  const visibleNav = branchUser ? filterNavForBranch(NAV) : NAV;
+  const visibleNav = filterNavForRole(branchUser ? filterNavForBranch(NAV) : NAV, user);
 
   return (
     <div className="flex min-h-full flex-1 flex-col md:flex-row">
