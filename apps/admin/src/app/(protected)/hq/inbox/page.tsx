@@ -2094,9 +2094,7 @@ function MailRow({
   onToggleSelect: () => void;
 }) {
   const isPending = row.stage === "pending";
-  const sourceCls = SOURCE_COLOR[row.source];
   const stageCls = STAGE_COLOR[row.stage];
-  const sourceText = SOURCE_LABEL[row.source];
   const stageText = STAGE_LABEL[row.stage];
   const accent = ({
     restock: "border-l-indigo-500",
@@ -2105,6 +2103,43 @@ function MailRow({
     shortage: "border-l-rose-500",
     picking: "border-l-emerald-500",
   } as const)[row.source];
+
+  // source chip:transfer 依 transfer_type 細分,其他用 SOURCE_LABEL/COLOR
+  let sourceCls = SOURCE_COLOR[row.source];
+  let sourceText: string = SOURCE_LABEL[row.source];
+  let sourceTitle: string | undefined;
+  if (row.source === "transfer") {
+    const t = row.raw;
+    const isOrderReturn = isOrderReturnTransfer(t.notes);
+    if (isOrderReturn) {
+      sourceCls = "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300";
+      sourceText = "🔁 退訂單";
+      sourceTitle = "由客戶退訂單建立";
+    } else {
+      switch (t.transfer_type) {
+        case "store_to_store":
+          sourceCls = "bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300";
+          sourceText = "🔄 自由轉貨";
+          sourceTitle = "店與店之間自由轉貨（虛擬 SKU + 備註）";
+          break;
+        case "return_to_hq":
+          sourceCls = "bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300";
+          sourceText = "↩ 退貨回總倉";
+          sourceTitle = "店端發起退貨回總倉";
+          break;
+        case "hq_to_store":
+          sourceCls = "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300";
+          sourceText = "🚚 總倉派貨";
+          sourceTitle = "總倉派貨到分店（撿貨單 wave）";
+          break;
+        case "aid_handoff":
+          sourceCls = "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-950 dark:text-fuchsia-300";
+          sourceText = "🤝 互助轉移";
+          sourceTitle = "互助訂單轉移";
+          break;
+      }
+    }
+  }
 
   let idText: string;
   let title: React.ReactNode;
@@ -2154,55 +2189,9 @@ function MailRow({
     const t = row.raw;
     const isOrderReturn = isOrderReturnTransfer(t.notes);
     idText = t.transfer_no;
-    // 類別 chip：退訂單 / 自由轉貨 / 退貨回總倉 / 總倉派貨 / 互助
-    const kindChip = (() => {
-      if (isOrderReturn) {
-        return {
-          cls: "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300",
-          label: "🔁 退訂單",
-          title: "由客戶退訂單建立",
-        };
-      }
-      switch (t.transfer_type) {
-        case "store_to_store":
-          return {
-            cls: "bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300",
-            label: "🔄 自由轉貨",
-            title: "店與店之間自由轉貨（虛擬 SKU + 備註）",
-          };
-        case "return_to_hq":
-          return {
-            cls: "bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300",
-            label: "↩ 退貨回總倉",
-            title: "店端發起退貨回總倉",
-          };
-        case "hq_to_store":
-          return {
-            cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
-            label: "🚚 總倉派貨",
-            title: "總倉派貨到分店（撿貨單 wave）",
-          };
-        case "aid_handoff":
-          return {
-            cls: "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-950 dark:text-fuchsia-300",
-            label: "🤝 互助轉移",
-            title: "互助訂單轉移",
-          };
-        default:
-          return null;
-      }
-    })();
     title = (
       <>
         {t.source_name} <span className="text-zinc-400 mx-1">→</span> {t.dest_name}
-        {kindChip && (
-          <span
-            className={`ml-2 inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${kindChip.cls}`}
-            title={kindChip.title}
-          >
-            {kindChip.label}
-          </span>
-        )}
       </>
     );
     subtitle = (
@@ -2382,8 +2371,11 @@ function MailRow({
       </div>
 
       {/* source chip + 未讀 dot (sm+) */}
-      <div className="hidden sm:block w-24 shrink-0 pt-0.5">
-        <span className={`inline-flex w-fit items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium ${sourceCls}`}>
+      <div className="hidden sm:block w-28 shrink-0 pt-0.5">
+        <span
+          className={`inline-flex w-fit items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium ${sourceCls}`}
+          title={sourceTitle}
+        >
           {isPending && <span className="h-1.5 w-1.5 rounded-full bg-current opacity-80" aria-hidden />}
           {sourceText}
         </span>
