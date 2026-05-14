@@ -141,6 +141,7 @@ export default function PurchaseRequestsListPage() {
   const [selectedCampaignIds, setSelectedCampaignIds] = useState<Set<number>>(
     new Set(),
   );
+  const [campaignQuery, setCampaignQuery] = useState("");
   const [creatingMulti, setCreatingMulti] = useState(false);
   const [progressById, setProgressById] = useState<Map<number, Progress>>(
     new Map(),
@@ -1029,6 +1030,7 @@ export default function PurchaseRequestsListPage() {
           onClick={() => {
             setShowCampaignModal(false);
             setSelectedCampaignIds(new Set());
+            setCampaignQuery("");
           }}
         >
           <div
@@ -1046,11 +1048,22 @@ export default function PurchaseRequestsListPage() {
                 onClick={() => {
                   setShowCampaignModal(false);
                   setSelectedCampaignIds(new Set());
+                  setCampaignQuery("");
                 }}
                 className="text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
               >
                 ✕
               </SpinButton>
+            </div>
+            <div className="border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+              <input
+                type="search"
+                value={campaignQuery}
+                onChange={(e) => setCampaignQuery(e.target.value)}
+                placeholder="搜尋團名 / 結單日 (YYYY-MM-DD)"
+                autoFocus
+                className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800"
+              />
             </div>
             <div className="max-h-[60vh] overflow-y-auto p-4">
               {closedCampaigns === null ? (
@@ -1061,45 +1074,61 @@ export default function PurchaseRequestsListPage() {
                 <div className="text-center text-sm text-zinc-500">
                   過去 60 天無已結單團購
                 </div>
-              ) : (
-                <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
-                  {closedCampaigns.map((c) => {
-                    const checked = selectedCampaignIds.has(c.id);
-                    return (
-                      <li
-                        key={c.id}
-                        className="flex cursor-pointer items-center gap-3 py-2 hover:bg-zinc-50 dark:hover:bg-zinc-800"
-                        onClick={() => toggleCampaignSelect(c.id)}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleCampaignSelect(c.id)}
-                          onClick={(e) => e.stopPropagation()}
-                          className="h-4 w-4 rounded border-zinc-300 text-blue-600 focus:ring-blue-500"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-sm font-medium">
-                            {c.name}
+              ) : (() => {
+                const q = campaignQuery.trim().toLowerCase();
+                const filtered = q
+                  ? closedCampaigns.filter((c) =>
+                      c.name.toLowerCase().includes(q) ||
+                      c.close_date.toLowerCase().includes(q)
+                    )
+                  : closedCampaigns;
+                if (filtered.length === 0) {
+                  return (
+                    <div className="text-center text-sm text-zinc-500">
+                      沒有符合「{campaignQuery}」的團
+                    </div>
+                  );
+                }
+                return (
+                  <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                    {filtered.map((c) => {
+                      const checked = selectedCampaignIds.has(c.id);
+                      return (
+                        <li
+                          key={c.id}
+                          className="flex cursor-pointer items-center gap-3 py-2 hover:bg-zinc-50 dark:hover:bg-zinc-800"
+                          onClick={() => toggleCampaignSelect(c.id)}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleCampaignSelect(c.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="h-4 w-4 rounded border-zinc-300 text-blue-600 focus:ring-blue-500"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm font-medium">
+                              {c.name}
+                            </div>
+                            <div className="mt-0.5 text-xs text-zinc-500">
+                              結單日 {c.close_date}
+                              {c.existing_pr_id !== null && (
+                                <Link
+                                  href={`/purchase/requests/edit?id=${c.existing_pr_id}`}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="ml-2 text-amber-600 hover:underline dark:text-amber-400"
+                                >
+                                  · 已有採購單 #{c.existing_pr_id}（補單會新建）
+                                </Link>
+                              )}
+                            </div>
                           </div>
-                          <div className="mt-0.5 text-xs text-zinc-500">
-                            結單日 {c.close_date}
-                            {c.existing_pr_id !== null && (
-                              <Link
-                                href={`/purchase/requests/edit?id=${c.existing_pr_id}`}
-                                onClick={(e) => e.stopPropagation()}
-                                className="ml-2 text-amber-600 hover:underline dark:text-amber-400"
-                              >
-                                · 已有採購單 #{c.existing_pr_id}（補單會新建）
-                              </Link>
-                            )}
-                          </div>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                );
+              })()}
             </div>
             {closedCampaigns && closedCampaigns.length > 0 && (
               <div className="flex items-center justify-between gap-3 border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
@@ -1111,6 +1140,7 @@ export default function PurchaseRequestsListPage() {
                     onClick={() => {
                       setShowCampaignModal(false);
                       setSelectedCampaignIds(new Set());
+                      setCampaignQuery("");
                     }}
                     className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
                   >

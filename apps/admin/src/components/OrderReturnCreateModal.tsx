@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { getSupabase } from "@/lib/supabase";
@@ -24,6 +24,7 @@ type OrderRow = {
   pickup_store_id: number;
   nickname_snapshot: string | null;
   created_at: string;
+  items_summary: string;
 };
 
 type DeliveredSku = {
@@ -60,6 +61,22 @@ export default function OrderReturnCreateModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 訂單搜尋 combobox
+  const [orderQuery, setOrderQuery] = useState("");
+  const [orderOpen, setOrderOpen] = useState(false);
+  const orderBoxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!orderOpen) return;
+    function onAway(e: MouseEvent) {
+      if (orderBoxRef.current && !orderBoxRef.current.contains(e.target as Node)) {
+        setOrderOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onAway);
+    return () => document.removeEventListener("mousedown", onAway);
+  }, [orderOpen]);
+
   useEffect(() => {
     if (!open) return;
     (async () => {
@@ -84,6 +101,8 @@ export default function OrderReturnCreateModal({
       setQtys({});
       setReason("");
       setError(null);
+      setOrderQuery("");
+      setOrderOpen(false);
     }
   }, [open, prefillStoreId, prefillOrderId]);
 
@@ -95,14 +114,61 @@ export default function OrderReturnCreateModal({
     setQtys({});
     if (storeId === null) return;
     (async () => {
+      // 一併撈每張訂單的 items（含 sku_code + 商品名）以便下拉直接顯示品項
       const { data } = await getSupabase()
         .from("customer_orders")
-        .select("id, order_no, status, pickup_store_id, nickname_snapshot, created_at")
+        .select(
+          "id, order_no, status, pickup_store_id, nickname_snapshot, created_at, " +
+            "customer_order_items(sku_id, qty, status, skus(sku_code, products(name)))"
+        )
         .eq("pickup_store_id", storeId)
         .in("status", RETURNABLE_STATUSES as unknown as string[])
         .order("id", { ascending: false })
         .limit(100);
-      setOrders((data ?? []) as OrderRow[]);
+
+      type ApiItem = {
+        sku_id: number | null;
+        qty: number | null;
+        status: string | null;
+        skus:
+          | { sku_code: string; products: { name?: string } | { name?: string }[] | null }
+          | Array<{ sku_code: string; products: { name?: string } | { name?: string }[] | null }>
+          | null;
+      };
+      type ApiOrder = {
+        id: number;
+        order_no: string;
+        status: string;
+        pickup_store_id: number;
+        nickname_snapshot: string | null;
+        created_at: string;
+        customer_order_items: ApiItem[] | null;
+      };
+
+      const rows = ((data ?? []) as unknown as ApiOrder[]).map((o) => {
+        const parts: string[] = [];
+        for (const it of o.customer_order_items ?? []) {
+          if (it.status === "cancelled" || it.status === "expired") continue;
+          const skuObj = Array.isArray(it.skus) ? it.skus[0] : it.skus;
+          if (!skuObj) continue;
+          const prodObj = Array.isArray(skuObj.products) ? skuObj.products[0] : skuObj.products;
+          const code = skuObj.sku_code ?? `#${it.sku_id}`;
+          const name = prodObj?.name ?? "";
+          const qty = Number(it.qty ?? 0);
+          parts.push(name ? `${code}×${qty}（${name}）` : `${code}×${qty}`);
+        }
+        return {
+          id: o.id,
+          order_no: o.order_no,
+          status: o.status,
+          pickup_store_id: o.pickup_store_id,
+          nickname_snapshot: o.nickname_snapshot,
+          created_at: o.created_at,
+          items_summary: parts.join("、"),
+        } as OrderRow;
+      });
+
+      setOrders(rows);
     })();
   }, [storeId, isPrefilled]);
 
@@ -266,31 +332,93 @@ export default function OrderReturnCreateModal({
               ))}
             </select>
           </label>
-          <label className="flex flex-col gap-1 text-sm">
+          <div className="flex flex-col gap-1 text-sm">
             <span className="text-zinc-600 dark:text-zinc-400">訂單 *</span>
-            <select
-              value={orderId ?? ""}
-              onChange={(e) => setOrderId(Number(e.target.value) || null)}
-              className={inputCls}
-              disabled={orders === null}
-            >
-              <option value="">
-                {orders === null
-                  ? storeId === null
-                    ? "請先選分店"
-                    : "載入中…"
-                  : orders.length === 0
-                    ? "此店無可退訂單"
-                    : "— 請選 —"}
-              </option>
-              {(orders ?? []).map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.order_no} · {STATUS_LABEL[o.status] ?? o.status}
-                  {o.nickname_snapshot ? ` · ${o.nickname_snapshot}` : ""}
-                </option>
-              ))}
-            </select>
-          </label>
+            <div className="relative" ref={orderBoxRef}>
+              <input
+                type="text"
+                value={orderOpen ? orderQuery : (() => {
+                  if (orderId === null) return "";
+                  const o = orders?.find((x) => x.id === orderId);
+                  if (!o) return "";
+                  return `${o.order_no} · ${STATUS_LABEL[o.status] ?? o.status}${o.nickname_snapshot ? ` · ${o.nickname_snapshot}` : ""}`;
+                })()}
+                onFocus={() => { setOrderOpen(true); setOrderQuery(""); }}
+                onChange={(e) => { setOrderOpen(true); setOrderQuery(e.target.value); }}
+                placeholder={
+                  orders === null
+                    ? storeId === null
+                      ? "請先選分店"
+                      : "載入中…"
+                    : orders.length === 0
+                      ? "此店無可退訂單"
+                      : "搜尋訂單號 / 人名 / 商品名稱…"
+                }
+                disabled={orders === null || (orders ?? []).length === 0}
+                className={`${inputCls} w-full pr-8`}
+                aria-label="訂單搜尋"
+              />
+              {orderId !== null && !orderOpen && (
+                <button
+                  type="button"
+                  onClick={() => { setOrderId(null); setOrderQuery(""); setOrderOpen(true); }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+                  aria-label="清除選擇"
+                >
+                  ×
+                </button>
+              )}
+
+              {orderOpen && (orders?.length ?? 0) > 0 && (() => {
+                const q = orderQuery.trim().toLowerCase();
+                const filtered = q
+                  ? (orders ?? []).filter((o) =>
+                      o.order_no.toLowerCase().includes(q) ||
+                      (o.nickname_snapshot ?? "").toLowerCase().includes(q) ||
+                      (o.items_summary ?? "").toLowerCase().includes(q)
+                    )
+                  : (orders ?? []);
+                return (
+                  <ul
+                    role="listbox"
+                    className="absolute z-10 mt-1 max-h-72 w-full overflow-y-auto rounded-md border border-zinc-300 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+                  >
+                    {filtered.length === 0 ? (
+                      <li className="px-3 py-2 text-xs text-zinc-500">沒有符合的訂單</li>
+                    ) : (
+                      filtered.map((o) => (
+                        <li
+                          key={o.id}
+                          role="option"
+                          aria-selected={orderId === o.id}
+                          onMouseDown={(e) => {
+                            // mousedown 而非 click：避免 input blur 衝突
+                            e.preventDefault();
+                            setOrderId(o.id);
+                            setOrderOpen(false);
+                            setOrderQuery("");
+                          }}
+                          className={`cursor-pointer px-3 py-2 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-800 ${
+                            orderId === o.id ? "bg-blue-50 dark:bg-blue-950/40" : ""
+                          }`}
+                        >
+                          <div className="font-mono text-zinc-900 dark:text-zinc-100">
+                            {o.order_no} · <span className="text-zinc-500">{STATUS_LABEL[o.status] ?? o.status}</span>
+                          </div>
+                          {o.nickname_snapshot && (
+                            <div className="text-zinc-600 dark:text-zinc-400">{o.nickname_snapshot}</div>
+                          )}
+                          {o.items_summary && (
+                            <div className="text-zinc-500">{o.items_summary}</div>
+                          )}
+                        </li>
+                      ))
+                    )}
+                  </ul>
+                );
+              })()}
+            </div>
+          </div>
         </div>
         )}
 

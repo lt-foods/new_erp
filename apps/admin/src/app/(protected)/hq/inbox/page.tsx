@@ -12,6 +12,8 @@ import { Modal } from "@/components/Modal";
 import { AidOrderStatusActions } from "@/components/AidOrderStatusActions";
 import { PickModal, type PickWave } from "@/components/PickModal";
 import ExceptionsContent from "@/components/ExceptionsContent";
+import TransferDetailModal from "@/components/TransferDetailModal";
+import RestockDetailModal from "@/components/RestockDetailModal";
 import { ORDER_STATUS_LABEL as AID_STATUS_LABEL, type OrderStatus as AidStatus } from "@/lib/orderStatus";
 
 type Stage = "pending" | "in_transit" | "done" | "rejected";
@@ -69,6 +71,7 @@ type RestockRaw = {
   requested_at: string;
   line_count: number;
   total_amount: number;
+  items_summary: string;
 };
 
 type TransferRaw = {
@@ -88,6 +91,7 @@ type TransferRaw = {
   dest_name: string;
   line_count: number;
   notes: string | null;
+  items_summary: string;
 };
 
 type AidRaw = {
@@ -100,6 +104,7 @@ type AidRaw = {
   campaign_no: string | null;
   updated_at: string;
   line_count: number;
+  items_summary: string;
 };
 
 type ShortageRaw = {
@@ -130,6 +135,7 @@ type PickingRaw = {
   source_po_no: string | null;
   note: string | null;
   created_at: string;
+  items_summary: string;
 };
 
 type Row =
@@ -218,6 +224,63 @@ const PAGE_SIZE = 20;
 // === 各來源的 server-side fetcher(回 { rows, total })===
 type SBClient = ReturnType<typeof getSupabase>;
 
+// 撈某張表（restock_request_lines / transfer_items / customer_order_items / picking_wave_items）
+// 對應每張單的 items 摘要：「品名×qty、品名×qty…」（最多前 4 個 SKU，其餘 +N）
+async function fetchItemsSummaryMap(
+  sb: SBClient,
+  table: string,
+  idCol: string,
+  ids: number[],
+  qtyCol: string,
+): Promise<Map<number, string>> {
+  if (ids.length === 0) return new Map();
+  const { data } = await sb.from(table).select(`${idCol}, sku_id, ${qtyCol}`).in(idCol, ids);
+  const lines = (data ?? []) as unknown as Record<string, number | null>[];
+  const skuIds = Array.from(
+    new Set(lines.map((l) => Number(l.sku_id)).filter((x) => Number.isFinite(x)))
+  );
+  let skuLabelMap = new Map<number, string>();
+  if (skuIds.length > 0) {
+    const { data: skus } = await sb
+      .from("skus")
+      .select("id, sku_code, variant_name, product_id")
+      .in("id", skuIds);
+    const arr = (skus ?? []) as {
+      id: number; sku_code: string; variant_name: string | null; product_id: number | null;
+    }[];
+    const prodIds = Array.from(new Set(arr.map((s) => s.product_id).filter((x): x is number => x != null)));
+    let prodMap = new Map<number, string>();
+    if (prodIds.length > 0) {
+      const { data: ps } = await sb.from("products").select("id, name").in("id", prodIds);
+      prodMap = new Map(((ps ?? []) as { id: number; name: string }[]).map((p) => [p.id, p.name]));
+    }
+    skuLabelMap = new Map(
+      arr.map((s) => [
+        s.id,
+        s.product_id != null ? (prodMap.get(s.product_id) ?? s.sku_code) : s.sku_code,
+      ])
+    );
+  }
+  const partsMap = new Map<number, string[]>();
+  for (const l of lines) {
+    const id = Number(l[idCol]);
+    const skuId = Number(l.sku_id);
+    const qty = Number(l[qtyCol] ?? 0);
+    if (!Number.isFinite(id) || !Number.isFinite(skuId)) continue;
+    const label = skuLabelMap.get(skuId) ?? `#${skuId}`;
+    const arr = partsMap.get(id) ?? [];
+    arr.push(`${label}×${qty}`);
+    partsMap.set(id, arr);
+  }
+  const result = new Map<number, string>();
+  const MAX = 4;
+  for (const [id, parts] of partsMap) {
+    if (parts.length <= MAX) result.set(id, parts.join("、"));
+    else result.set(id, parts.slice(0, MAX).join("、") + ` +${parts.length - MAX}`);
+  }
+  return result;
+}
+
 async function fetchRestockRows(
   sb: SBClient,
   stage: Stage | null,
@@ -268,6 +331,8 @@ async function fetchRestockRows(
     for (const p of (ps ?? []) as { id: number; pr_no: string }[]) prNoMap.set(p.id, p.pr_no);
   }
 
+  const itemsMap = await fetchItemsSummaryMap(sb, "restock_request_lines", "request_id", reqIds, "qty");
+
   const rows: Row[] = rsRows.map((r) => ({
     key: `restock-${r.id}`,
     source: "restock" as const,
@@ -286,6 +351,7 @@ async function fetchRestockRows(
       requested_at: r.requested_at,
       line_count: lineMap.get(r.id)?.count ?? 0,
       total_amount: lineMap.get(r.id)?.total ?? 0,
+      items_summary: itemsMap.get(r.id) ?? "",
     },
   }));
   return { rows, total: count ?? 0 };
@@ -339,6 +405,8 @@ async function fetchTransferRows(
     }
   }
 
+  const itemsMap = await fetchItemsSummaryMap(sb, "transfer_items", "transfer_id", tIds, "qty_shipped");
+
   const rows: Row[] = trs.map((t) => ({
     key: `transfer-${t.id}`,
     source: "transfer" as const,
@@ -349,6 +417,7 @@ async function fetchTransferRows(
       source_name: locNameMap.get(t.source_location) ?? `#${t.source_location}`,
       dest_name: locNameMap.get(t.dest_location) ?? `#${t.dest_location}`,
       line_count: tLineMap.get(t.id) ?? 0,
+      items_summary: itemsMap.get(t.id) ?? "",
     },
   }));
   return { rows, total: count ?? 0 };
@@ -397,6 +466,9 @@ async function fetchAidRows(
     items?: { id: number }[];
   }>;
 
+  const aidIds = aidRows.map((a) => a.id);
+  const itemsMap = await fetchItemsSummaryMap(sb, "customer_order_items", "order_id", aidIds, "qty");
+
   const rows: Row[] = aidRows.map((a) => ({
     key: `aid-${a.id}`,
     source: "aid" as const,
@@ -412,6 +484,7 @@ async function fetchAidRows(
       campaign_no: a.campaign?.campaign_no ?? null,
       updated_at: a.updated_at,
       line_count: a.items?.length ?? 0,
+      items_summary: itemsMap.get(a.id) ?? "",
     },
   }));
   return { rows, total: count ?? 0 };
@@ -556,6 +629,8 @@ async function fetchPickingRows(
       .in("id", poIds);
     for (const p of (poRows as { id: number; po_no: string }[] | null) ?? []) poNoMap.set(p.id, p.po_no);
   }
+  const itemsMap = await fetchItemsSummaryMap(sb, "picking_wave_items", "wave_id", ids, "qty");
+
   const rows: Row[] = waveRows.map((w) => ({
     key: `picking-${w.id}`,
     source: "picking" as const,
@@ -568,6 +643,7 @@ async function fetchPickingRows(
       actual_total: totals.get(w.id)?.actual ?? 0,
       item_count: totals.get(w.id)?.skus.size ?? w.item_count,
       source_po_no: w.source_po_id ? (poNoMap.get(w.source_po_id) ?? null) : null,
+      items_summary: itemsMap.get(w.id) ?? "",
     },
   }));
   return { rows, total: count ?? 0 };
@@ -610,6 +686,7 @@ async function fetchRestockRowsByIds(sb: SBClient, ids: number[]): Promise<Row[]
     const { data: ps } = await sb.from("purchase_requests").select("id, pr_no").in("id", prIds);
     for (const p of (ps ?? []) as { id: number; pr_no: string }[]) prNoMap.set(p.id, p.pr_no);
   }
+  const itemsMap = await fetchItemsSummaryMap(sb, "restock_request_lines", "request_id", rsRows.map((r) => r.id), "qty");
   return rsRows.map((r) => ({
     key: `restock-${r.id}`,
     source: "restock" as const,
@@ -628,6 +705,7 @@ async function fetchRestockRowsByIds(sb: SBClient, ids: number[]): Promise<Row[]
       requested_at: r.requested_at,
       line_count: lineMap.get(r.id)?.count ?? 0,
       total_amount: lineMap.get(r.id)?.total ?? 0,
+      items_summary: itemsMap.get(r.id) ?? "",
     },
   }));
 }
@@ -655,6 +733,7 @@ async function fetchTransferRowsByIds(sb: SBClient, ids: number[]): Promise<Row[
       tLineMap.set(it.transfer_id, (tLineMap.get(it.transfer_id) ?? 0) + 1);
     }
   }
+  const itemsMap = await fetchItemsSummaryMap(sb, "transfer_items", "transfer_id", trs.map((t) => t.id), "qty_shipped");
   return trs.map((t) => ({
     key: `transfer-${t.id}`,
     source: "transfer" as const,
@@ -665,6 +744,7 @@ async function fetchTransferRowsByIds(sb: SBClient, ids: number[]): Promise<Row[
       source_name: locNameMap.get(t.source_location) ?? `#${t.source_location}`,
       dest_name: locNameMap.get(t.dest_location) ?? `#${t.dest_location}`,
       line_count: tLineMap.get(t.id) ?? 0,
+      items_summary: itemsMap.get(t.id) ?? "",
     },
   }));
 }
@@ -693,6 +773,7 @@ async function fetchAidRowsByIds(sb: SBClient, ids: number[]): Promise<Row[]> {
     store?: { id: number; name: string } | null;
     items?: { id: number }[];
   }>;
+  const itemsMap = await fetchItemsSummaryMap(sb, "customer_order_items", "order_id", aidRows.map((a) => a.id), "qty");
   return aidRows.map((a) => ({
     key: `aid-${a.id}`,
     source: "aid" as const,
@@ -708,6 +789,7 @@ async function fetchAidRowsByIds(sb: SBClient, ids: number[]): Promise<Row[]> {
       campaign_no: a.campaign?.campaign_no ?? null,
       updated_at: a.updated_at,
       line_count: a.items?.length ?? 0,
+      items_summary: itemsMap.get(a.id) ?? "",
     },
   }));
 }
@@ -843,6 +925,8 @@ function HqInboxContent() {
   const [busy, setBusy] = useState<string | null>(null);
   const [rejectModal, setRejectModal] = useState<{ id: number; reason: string } | null>(null);
   const [aidDetailId, setAidDetailId] = useState<number | null>(null);
+  const [transferDetailId, setTransferDetailId] = useState<number | null>(null);
+  const [restockDetailId, setRestockDetailId] = useState<number | null>(null);
   const [editingWave, setEditingWave] = useState<PickWave | null>(null);
   const [dispatchingWaveId, setDispatchingWaveId] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -1190,18 +1274,37 @@ function HqInboxContent() {
   // 批次動作 — 依 sourceFilter 跑對應 RPC
   async function batchAction(action: string) {
     // transfer source 可以批次的 row 含 pending 與 in_transit;其他 source 只 pending
+    // 「確認入倉 / 退訂單取消」是退訂單 (shipped + return_to_hq) 專屬、stage='pending'
     const validStages: Record<string, Stage[]> =
       sourceFilter === "transfer"
-        ? { "配送": ["pending"], "刪除": ["pending"], "到倉": ["in_transit"] }
+        ? {
+            "配送": ["pending"], "刪除": ["pending"], "到倉": ["in_transit"],
+            "確認入倉": ["pending"], "退訂單取消": ["pending"],
+          }
         : sourceFilter === "picking"
           ? { "派貨出倉": ["pending"], "取消": ["pending"] }
           : {};
     const allowedStages = validStages[action] ?? (["pending"] as Stage[]);
-    const items = paginatedRows.filter(
+    let items = paginatedRows.filter(
       (r) => selected.has(r.key) && allowedStages.includes(r.stage),
     );
+    // 退訂單專屬動作要再過濾 transfer_type
+    if (sourceFilter === "transfer" && (action === "確認入倉" || action === "退訂單取消")) {
+      items = items.filter((r) => r.source === "transfer" && isOrderReturnTransfer((r.raw as TransferRaw).notes));
+    } else if (sourceFilter === "transfer" && (action === "配送" || action === "刪除")) {
+      // 一般 pending 動作排除退訂單（退訂單不該被「配送/刪除」）
+      items = items.filter((r) => r.source === "transfer" && !isOrderReturnTransfer((r.raw as TransferRaw).notes));
+    }
     if (items.length === 0) return;
-    if (!confirm(`確認對選中的 ${items.length} 筆執行「${action}」?`)) return;
+
+    // 「退訂單取消」要先輸入原因（與單筆 reject 對齊、走 audit log）
+    let reason: string | null = null;
+    if (action === "退訂單取消") {
+      reason = prompt(`取消原因(必填、會留 audit log，將套用到全部 ${items.length} 筆)：`);
+      if (!reason || !reason.trim()) return;
+    } else {
+      if (!confirm(`確認對選中的 ${items.length} 筆執行「${action}」?`)) return;
+    }
     setBatchBusy(true);
     try {
       const sb = getSupabase();
@@ -1214,13 +1317,50 @@ function HqInboxContent() {
         const ids = items
           .filter((r) => r.source === "transfer")
           .map((r) => (r.raw as TransferRaw).id);
+
+        // 退訂單取消沒有 batch RPC，逐筆呼叫 rpc_reject_transfer
+        if (action === "退訂單取消") {
+          const settles = await Promise.allSettled(
+            ids.map((id) =>
+              sb.rpc("rpc_reject_transfer", {
+                p_transfer_id: id,
+                p_reason: reason,
+                p_operator: operator,
+              }),
+            ),
+          );
+          let ok = 0;
+          const fails: { id: number; reason: string }[] = [];
+          settles.forEach((s, i) => {
+            if (s.status === "fulfilled" && !s.value.error) ok += 1;
+            else {
+              const msg = s.status === "rejected"
+                ? String(s.reason)
+                : translateRpcError(s.value.error);
+              fails.push({ id: ids[i], reason: msg });
+            }
+          });
+          if (fails.length === 0) {
+            alert(`✅ 取消 ${ok} 筆退訂單`);
+          } else {
+            const lines = fails.slice(0, 5).map((f) => `  #${f.id}: ${f.reason}`);
+            alert(
+              `成功 ${ok} / 失敗 ${fails.length}\n\n${lines.join("\n")}` +
+                (fails.length > 5 ? `\n…(還有 ${fails.length - 5} 筆)` : ""),
+            );
+          }
+          setSelected(new Set());
+          setReloadTick((t) => t + 1);
+          return;
+        }
+
         let rpcName: string;
         let params: Record<string, unknown>;
         if (action === "配送") {
           if (hqLocId === null) throw new Error("找不到 HQ location");
           rpcName = "rpc_transfer_distribute_batch";
           params = { p_transfer_ids: ids, p_hq_location_id: hqLocId, p_operator: operator };
-        } else if (action === "到倉") {
+        } else if (action === "到倉" || action === "確認入倉") {
           if (hqLocId === null) throw new Error("找不到 HQ location");
           rpcName = "rpc_transfer_arrive_at_hq_batch";
           params = { p_transfer_ids: ids, p_hq_location_id: hqLocId, p_operator: operator };
@@ -1699,17 +1839,32 @@ function HqInboxContent() {
                   )}
                   {sourceFilter === "transfer" && (() => {
                     // 只有當所選 row 全部同 stage 才顯示對應動作(避免混 batch)
+                    // pending 還要再細分「退訂單」vs「一般 draft」— 兩者動作完全不同
                     const sel = paginatedRows.filter((r) => selected.has(r.key) && r.source === "transfer");
                     const stages = new Set(sel.map((r) => r.stage));
                     const allPending = stages.size === 1 && stages.has("pending");
                     const allInTransit = stages.size === 1 && stages.has("in_transit");
+                    const pendingTypes = new Set(
+                      sel.map((r) => (isOrderReturnTransfer((r.raw as TransferRaw).notes) ? "return" : "normal"))
+                    );
+                    const allPendingReturn = allPending && pendingTypes.size === 1 && pendingTypes.has("return");
+                    const allPendingNormal = allPending && pendingTypes.size === 1 && pendingTypes.has("normal");
                     return (
                       <>
-                        {allPending && (
+                        {allPendingNormal && (
                           <>
                             <RowAction variant="success" onClick={() => batchAction("配送")} disabled={batchBusy}>配送 ({selected.size})</RowAction>
                             <RowAction variant="danger" onClick={() => batchAction("刪除")} disabled={batchBusy}>刪除 ({selected.size})</RowAction>
                           </>
+                        )}
+                        {allPendingReturn && (
+                          <>
+                            <RowAction variant="primary" onClick={() => batchAction("確認入倉")} disabled={batchBusy}>確認入倉 ({selected.size})</RowAction>
+                            <RowAction variant="danger" onClick={() => batchAction("退訂單取消")} disabled={batchBusy}>取消 ({selected.size})</RowAction>
+                          </>
+                        )}
+                        {allPending && !allPendingReturn && !allPendingNormal && (
+                          <span className="self-center text-xs text-zinc-500">已混合退訂單與一般轉貨、無法批次</span>
                         )}
                         {allInTransit && (
                           <RowAction variant="primary" onClick={() => batchAction("到倉")} disabled={batchBusy}>到倉 ({selected.size})</RowAction>
@@ -1741,6 +1896,7 @@ function HqInboxContent() {
                       onApproveTransfer={approveToTransfer} onApprovePr={approveToPr} onShipPrReceived={shipPrReceived}
                       onOpenReject={(id) => setRejectModal({ id, reason: "" })}
                       onOpenAidDetail={setAidDetailId} onAidChanged={() => setReloadTick((t) => t + 1)}
+                      onOpenTransferDetail={setTransferDetailId} onOpenRestockDetail={setRestockDetailId}
                       onShortageAction={handleShortageAction} onTransferAction={handleTransferAction}
                       onPickingDispatch={dispatchWave} onPickingEdit={openWaveEdit} onPickingCancel={cancelWave}
                       dispatchingWaveId={dispatchingWaveId}
@@ -1835,6 +1991,17 @@ function HqInboxContent() {
         {aidDetailId !== null && <OrderDetail orderId={aidDetailId} />}
       </Modal>
 
+      <TransferDetailModal
+        open={transferDetailId !== null}
+        transferId={transferDetailId}
+        onClose={() => setTransferDetailId(null)}
+      />
+      <RestockDetailModal
+        open={restockDetailId !== null}
+        restockId={restockDetailId}
+        onClose={() => setRestockDetailId(null)}
+      />
+
       {editingWave && (
         <PickModal
           wave={editingWave}
@@ -1861,6 +2028,8 @@ function MailRow({
   onOpenReject,
   onOpenAidDetail,
   onAidChanged,
+  onOpenTransferDetail,
+  onOpenRestockDetail,
   onShortageAction,
   onTransferAction,
   onPickingDispatch,
@@ -1881,6 +2050,8 @@ function MailRow({
   onOpenReject: (id: number) => void;
   onOpenAidDetail: (id: number) => void;
   onAidChanged: () => void;
+  onOpenTransferDetail: (id: number) => void;
+  onOpenRestockDetail: (id: number) => void;
   onShortageAction: (orderId: number, action: "notified" | "cancelled" | "waiting_next_po" | "reallocated") => Promise<void>;
   onTransferAction: (transferId: number, action: "ship" | "arrive_at_hq" | "delete" | "reject") => Promise<void>;
   onPickingDispatch: (w: PickingRaw) => Promise<void>;
@@ -2117,14 +2288,18 @@ function MailRow({
 
   const time = new Date(timeIso).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" });
 
-  // 點 row 任意空白處開明細(僅 picking / aid 兩種 row 有完整 modal 體驗)
-  const rowClickable = row.source === "picking" || row.source === "aid";
+  // 點 row 任意空白處開明細
+  const rowClickable =
+    row.source === "picking" || row.source === "aid" ||
+    row.source === "transfer" || row.source === "restock";
   const handleRowClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!rowClickable) return;
     const target = e.target as HTMLElement;
     if (target.closest("button, a, input, select, textarea, label")) return;
     if (row.source === "picking") onPickingEdit(row.raw);
     else if (row.source === "aid") onOpenAidDetail(row.raw.id);
+    else if (row.source === "transfer") onOpenTransferDetail(row.raw.id);
+    else if (row.source === "restock") onOpenRestockDetail(row.raw.id);
   };
 
   return (
@@ -2157,6 +2332,18 @@ function MailRow({
           </span>
         </div>
         <div className="mt-0.5 truncate text-xs text-zinc-500">{subtitle}</div>
+        {row.source !== "shortage" && (() => {
+          const summary = (row.raw as { items_summary?: string }).items_summary;
+          if (!summary) return null;
+          return (
+            <div
+              className="mt-0.5 truncate text-[11px] text-zinc-600 dark:text-zinc-400"
+              title={summary}
+            >
+              📦 {summary}
+            </div>
+          );
+        })()}
       </div>
 
       {/* 階段 chip 直接放在動作區左邊(時間移到動作下方右下) */}

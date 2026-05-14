@@ -95,6 +95,10 @@ export default function CampaignsListPage() {
   const [closingId, setClosingId] = useState<number | null>(null);
   const [finalizingId, setFinalizingId] = useState<number | null>(null);
 
+  // 多選 + 批次操作
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState<"open" | "closed" | "cancelled" | null>(null);
+
   const [view, setView] = useState<View>(() => {
     if (typeof window === "undefined") return "list";
     const saved = window.localStorage.getItem("campaigns:view");
@@ -113,6 +117,52 @@ export default function CampaignsListPage() {
   const [calOrderCounts, setCalOrderCounts] = useState<Map<number, number>>(new Map());
   const [calOffsetCounts, setCalOffsetCounts] = useState<Map<number, number>>(new Map());
   const [monthAnchor, setMonthAnchor] = useState<Date>(() => startOfDay(new Date()));
+
+  async function bulkSetStatus(target: "open" | "closed" | "cancelled", label: string) {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    if (!confirm(`確定將已選的 ${ids.length} 個開團設為「${label}」？\n（系統會自動跳過狀態不合法、無商品或已是此狀態的）`)) return;
+    setBulkBusy(target);
+    setError(null);
+    try {
+      const { data, error: err } = await getSupabase().rpc("rpc_bulk_set_campaign_status", {
+        p_ids: ids,
+        p_status: target,
+      });
+      if (err) throw err;
+      const changed = typeof data === "number" ? data : 0;
+      const skipped = ids.length - changed;
+      setSelectedIds(new Set());
+      setReloadTick((t) => t + 1);
+      if (skipped > 0) {
+        console.info(`bulk_set_campaign_status: ${changed} updated, ${skipped} skipped`);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBulkBusy(null);
+    }
+  }
+
+  function toggleSelect(id: number) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAllOnPage() {
+    if (!rows) return;
+    const idsOnPage = rows.map((r) => r.id);
+    const allSelected = idsOnPage.every((id) => selectedIds.has(id));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allSelected) idsOnPage.forEach((id) => next.delete(id));
+      else idsOnPage.forEach((id) => next.add(id));
+      return next;
+    });
+  }
 
   async function closeCampaign(id: number, name: string) {
     if (!confirm(`確定結單「${name}」？結單後可從採購單頁面「帶入該日商品」產生 PR。`)) return;
@@ -415,18 +465,74 @@ export default function CampaignsListPage() {
         />
       )}
 
+      {view === "list" && selectedIds.size > 0 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-zinc-300 bg-white px-4 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+          <span className="text-zinc-600 dark:text-zinc-400">已選 <span className="font-semibold">{selectedIds.size}</span> 個開團</span>
+          <SpinButton
+            onClick={() => bulkSetStatus("open", "開團中")}
+            disabled={bulkBusy !== null}
+            className="rounded-md bg-green-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-600 disabled:opacity-50"
+          >
+            {bulkBusy === "open" ? "啟動中…" : "批次開團"}
+          </SpinButton>
+          <SpinButton
+            onClick={() => bulkSetStatus("closed", "已收單")}
+            disabled={bulkBusy !== null}
+            className="rounded-md bg-amber-100 px-3 py-1.5 text-sm font-medium text-amber-800 hover:bg-amber-200 disabled:opacity-50 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-900"
+          >
+            {bulkBusy === "closed" ? "結單中…" : "批次結單"}
+          </SpinButton>
+          <SpinButton
+            onClick={() => bulkSetStatus("cancelled", "已取消")}
+            disabled={bulkBusy !== null}
+            className="rounded-md bg-red-100 px-3 py-1.5 text-sm font-medium text-red-800 hover:bg-red-200 disabled:opacity-50 dark:bg-red-950 dark:text-red-300 dark:hover:bg-red-900"
+          >
+            {bulkBusy === "cancelled" ? "取消中…" : "批次取消"}
+          </SpinButton>
+          <SpinButton
+            onClick={() => setSelectedIds(new Set())}
+            className="ml-auto text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+          >
+            清除選取
+          </SpinButton>
+        </div>
+      )}
+
       {view === "list" && (
       <Table>
         <THead>
+          <Th className="w-10">
+            <input
+              type="checkbox"
+              checked={!!rows && rows.length > 0 && rows.every((r) => selectedIds.has(r.id))}
+              ref={(el) => {
+                if (el && rows) {
+                  const allSel = rows.length > 0 && rows.every((r) => selectedIds.has(r.id));
+                  const someSel = rows.some((r) => selectedIds.has(r.id));
+                  el.indeterminate = !allSel && someSel;
+                }
+              }}
+              onChange={toggleAllOnPage}
+              className="cursor-pointer"
+            />
+          </Th>
           <Th>團號</Th><Th>名稱</Th><Th>狀態</Th><Th>收單</Th><Th>開團/收單</Th><Th>取貨截止</Th><Th align="right">商品數</Th><Th align="right">下單總數</Th><Th align="right">更新</Th><Th>{""}</Th>
         </THead>
         <TBody>
           {rows === null ? (
-            <LoadingRow colSpan={10} />
+            <LoadingRow colSpan={11} />
           ) : rows.length === 0 ? (
-            <EmptyRow colSpan={10}>{total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}</EmptyRow>
+            <EmptyRow colSpan={11}>{total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}</EmptyRow>
           ) : rows.map((r) => (
-            <Tr key={r.id}>
+            <Tr key={r.id} className={selectedIds.has(r.id) ? "bg-blue-50 dark:bg-blue-950/30" : ""}>
+                <Td className="w-10">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(r.id)}
+                    onChange={() => toggleSelect(r.id)}
+                    className="cursor-pointer"
+                  />
+                </Td>
                 <Td className="font-mono">
                   <SpinButton onClick={() => openEdit(r.id)} className="hover:underline">{r.campaign_no}</SpinButton>
                 </Td>

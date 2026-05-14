@@ -8,6 +8,7 @@ type Row = {
   id: number;
   sku_id: number;
   sku_code: string;
+  sku_status: string;
   product_id: number;
   product_name: string | null;
   variant_name: string | null;
@@ -24,9 +25,11 @@ export function CampaignItemsTable({ campaignId }: { campaignId: number }) {
 
   const reload = async () => {
     // products.name 是 source of truth；skus.product_name 是 denorm 可能過期、不用它
+    // 過濾 sku.status='discontinued'：已下架的規格不該在開團裡（draft 由 trigger 清掉，
+    // open / closed 留 row 不破壞訂單，但 UI 不顯示）
     const { data, error: err } = await getSupabase()
       .from("campaign_items")
-      .select("id, sku_id, unit_price, cap_qty, sort_order, notes, locked_at, skus!inner(id, sku_code, product_id, variant_name, products!inner(id, name))")
+      .select("id, sku_id, unit_price, cap_qty, sort_order, notes, locked_at, skus!inner(id, sku_code, status, product_id, variant_name, products!inner(id, name))")
       .eq("campaign_id", campaignId)
       .order("sort_order");
     if (err) { setError(err.message); return; }
@@ -34,17 +37,22 @@ export function CampaignItemsTable({ campaignId }: { campaignId: number }) {
       (data as unknown as Array<{
         id: number; sku_id: number; unit_price: number; cap_qty: number | null;
         sort_order: number; notes: string | null; locked_at: string | null;
-        skus: { id: number; sku_code: string; product_id: number; variant_name: string | null;
+        skus: { id: number; sku_code: string; status: string; product_id: number; variant_name: string | null;
           products: { id: number; name: string };
         };
-      }>).map((r) => ({
-        id: r.id, sku_id: r.sku_id, sku_code: r.skus.sku_code,
-        product_id: r.skus.product_id,
-        product_name: r.skus.products?.name ?? null,
-        variant_name: r.skus.variant_name,
-        unit_price: Number(r.unit_price), cap_qty: r.cap_qty != null ? Number(r.cap_qty) : null,
-        sort_order: r.sort_order, notes: r.notes, locked_at: r.locked_at,
-      }))
+      }>)
+        // 已下架（discontinued）規格不該顯示在開團裡。draft 開團由 trigger 清掉、
+        // open/closed 仍保留 row（避免破壞既有訂單），但 UI 不顯示。
+        .filter((r) => r.skus.status !== "discontinued")
+        .map((r) => ({
+          id: r.id, sku_id: r.sku_id, sku_code: r.skus.sku_code,
+          sku_status: r.skus.status,
+          product_id: r.skus.product_id,
+          product_name: r.skus.products?.name ?? null,
+          variant_name: r.skus.variant_name,
+          unit_price: Number(r.unit_price), cap_qty: r.cap_qty != null ? Number(r.cap_qty) : null,
+          sort_order: r.sort_order, notes: r.notes, locked_at: r.locked_at,
+        }))
     );
   };
 

@@ -14,6 +14,7 @@ import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import FreeTransferCreateModal from "@/components/FreeTransferCreateModal";
 import OrderReturnCreateModal from "@/components/OrderReturnCreateModal";
+import TransferDetailModal from "@/components/TransferDetailModal";
 
 type Loc = { id: number; name: string; type: string };
 
@@ -54,6 +55,7 @@ export default function InternalTransfersPage() {
   const [tab, setTab] = useState<"store_to_store" | "store_to_hq" | "all">("store_to_store");
   const [showCreate, setShowCreate] = useState(false);
   const [showReturn, setShowReturn] = useState(false);
+  const [detailId, setDetailId] = useState<number | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
@@ -177,6 +179,11 @@ export default function InternalTransfersPage() {
           setReloadKey((k) => k + 1);
         }}
       />
+      <TransferDetailModal
+        open={detailId !== null}
+        transferId={detailId}
+        onClose={() => setDetailId(null)}
+      />
 
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
@@ -224,7 +231,11 @@ export default function InternalTransfersPage() {
               const dst = locs.get(t.dest_location)?.name ?? `#${t.dest_location}`;
               const isReturn = isStoreToHq(t);
               return (
-                <tr key={t.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-950">
+                <tr
+                  key={t.id}
+                  onClick={() => setDetailId(t.id)}
+                  className="cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-950"
+                >
                   <td className="px-3 py-2 font-mono text-xs">
                     {t.transfer_no}
                     {isOrderReturn(t.notes) ? (

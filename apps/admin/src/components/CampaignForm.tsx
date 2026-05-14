@@ -153,9 +153,6 @@ export function CampaignForm({
           </select>
         </Field>
 
-        <Field label="開團時間">
-          <input type="datetime-local" value={toDtLocal(v.start_at)} onChange={(e) => update("start_at", e.target.value ? new Date(e.target.value).toISOString() : null)} className={inputCls} />
-        </Field>
         <Field label="收單類型">
           <select value={v.close_type} onChange={(e) => update("close_type", e.target.value as CloseType)} className={inputCls}>
             <option value="regular">常規</option>
@@ -164,16 +161,55 @@ export function CampaignForm({
           </select>
         </Field>
         <Field
-          label={v.close_type === "fast" ? "收單時間（快團必填）" : "收單時間"}
+          label={v.close_type === "fast" ? "開團期間（開團 → 收單，快團必填收單）" : "開團期間（開團 → 收單）"}
           className="sm:col-span-2"
         >
-          <input
-            type="datetime-local"
-            required={v.close_type === "fast"}
-            value={toDtLocal(v.end_at)}
-            onChange={(e) => update("end_at", e.target.value ? new Date(e.target.value).toISOString() : null)}
-            className={inputCls}
-          />
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <input
+              type="datetime-local"
+              value={toDtLocal(v.start_at)}
+              onChange={(e) => {
+                const startIso = e.target.value ? new Date(e.target.value).toISOString() : null;
+                setV((prev) => {
+                  const next: CampaignFormValues = { ...prev, start_at: startIso };
+                  if (startIso && prev.end_at && new Date(prev.end_at) <= new Date(startIso)) {
+                    next.end_at = null;
+                  }
+                  return next;
+                });
+              }}
+              className={`${inputCls} flex-1`}
+              aria-label="開團時間"
+            />
+            <span className="text-center text-xs text-zinc-400 sm:px-1">→</span>
+            <input
+              type="datetime-local"
+              required={v.close_type === "fast"}
+              value={toDtLocal(v.end_at)}
+              min={toDtLocal(v.start_at) || undefined}
+              onChange={(e) => update("end_at", e.target.value ? new Date(e.target.value).toISOString() : null)}
+              className={`${inputCls} flex-1`}
+              aria-label="收單時間"
+            />
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
+            <span>快速：</span>
+            {QUICK_RANGES.map((q) => (
+              <SpinButton
+                key={q.label}
+                type="button"
+                onClick={() => applyQuickRange(setV, q.startOffsetH, q.durationH)}
+                className="rounded-md border border-zinc-200 px-2 py-0.5 text-[11px] hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                {q.label}
+              </SpinButton>
+            ))}
+            {v.start_at && v.end_at && (
+              <span className="ml-2 text-zinc-400">
+                時長 {formatDuration(v.start_at, v.end_at)}
+              </span>
+            )}
+          </div>
           {v.close_type === "fast" && (
             <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
               快團需有明確收單時間，PWA 限時專區會顯示倒數計時。
@@ -226,6 +262,47 @@ function toDtLocal(iso: string | null): string {
   if (Number.isNaN(d.getTime())) return "";
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// 快速設定開團期間
+// startOffsetH = 從現在偏移幾小時起算（0 = 立刻、24 = 明天）
+// durationH    = 收單時間 = 開團時間 + N 小時
+type QuickRange = { label: string; startOffsetH: number; durationH: number };
+const QUICK_RANGES: QuickRange[] = [
+  { label: "立即→3 天", startOffsetH: 0, durationH: 72 },
+  { label: "立即→7 天", startOffsetH: 0, durationH: 168 },
+  { label: "明早 8 點→3 天", startOffsetH: -1, durationH: 72 },
+  { label: "明早 8 點→7 天", startOffsetH: -1, durationH: 168 },
+];
+
+function applyQuickRange(
+  setV: React.Dispatch<React.SetStateAction<CampaignFormValues>>,
+  startOffsetH: number,
+  durationH: number,
+) {
+  let start: Date;
+  if (startOffsetH === -1) {
+    // 明早 8 點
+    start = new Date();
+    start.setDate(start.getDate() + 1);
+    start.setHours(8, 0, 0, 0);
+  } else {
+    start = new Date();
+    start.setMinutes(0, 0, 0);
+    start.setHours(start.getHours() + startOffsetH);
+  }
+  const end = new Date(start.getTime() + durationH * 3600 * 1000);
+  setV((prev) => ({ ...prev, start_at: start.toISOString(), end_at: end.toISOString() }));
+}
+
+function formatDuration(startIso: string, endIso: string): string {
+  const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
+  if (ms <= 0) return "—";
+  const hours = Math.round(ms / 3600 / 1000);
+  if (hours < 24) return `${hours} 小時`;
+  const days = Math.round(hours / 24);
+  if (days <= 14) return `${days} 天`;
+  return `${days} 天（約 ${Math.round(days / 7)} 週）`;
 }
 
 function Field({ label, children, className = "" }: { label: string; children: React.ReactNode; className?: string }) {

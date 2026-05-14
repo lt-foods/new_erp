@@ -425,7 +425,9 @@ function PageContent() {
   async function submitForReview() {
     if (!id) return;
     // 送審前驗：每行必須填妥成本 / 分店價 / 售價 + 數量 + 供應商
+    // 並且要符合 成本 < 分店價 < 售價 三段遞增關係
     const incomplete: string[] = [];
+    const priceIssues: string[] = [];
     for (const r of items) {
       const issues: string[] = [];
       if (!r.qty_requested || r.qty_requested <= 0) issues.push("數量");
@@ -435,10 +437,21 @@ function PageContent() {
       if (!r.suggested_supplier_id) issues.push("供應商");
       if (issues.length > 0) {
         incomplete.push(`${r.sku_code}：${issues.join("、")}`);
+        continue;
+      }
+      const cost = Number(r.unit_cost);
+      const branch = Number(r.franchise_price);
+      const retail = Number(r.retail_price);
+      if (!(cost < branch && branch < retail)) {
+        priceIssues.push(`${r.sku_code}：成本 $${cost} / 分店價 $${branch} / 售價 $${retail}`);
       }
     }
     if (incomplete.length > 0) {
       setError(`送審前需補完所有欄位：\n${incomplete.join("\n")}`);
+      return;
+    }
+    if (priceIssues.length > 0) {
+      setError(`價格必須符合 成本 < 分店價 < 售價：\n${priceIssues.join("\n")}`);
       return;
     }
     if (!confirm("確定送出審核？")) {
@@ -597,28 +610,6 @@ function PageContent() {
         </div>
       )}
 
-      {missingCampaigns.length > 0 && (
-        <div className="flex items-start justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
-          <div>
-            <div className="font-semibold">⚠ 偵測到 {missingCampaigns.length} 個同日結單但未納入本採購單的團：</div>
-            <ul className="mt-1 list-disc pl-5 text-xs">
-              {missingCampaigns.map((c) => (
-                <li key={c.id}>
-                  <span className="font-mono">{c.campaign_no}</span>　{c.name}
-                </li>
-              ))}
-            </ul>
-          </div>
-          <SpinButton
-            onClick={appendMissing}
-            disabled={appending}
-            className="shrink-0 rounded-md bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-50"
-          >
-            {appending ? "併入中…" : "📥 全部併入"}
-          </SpinButton>
-        </div>
-      )}
-
       {/* Timeline stepper（hover 顯示誰+何時）*/}
       <div className="rounded-md border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
         <PrPipelineStepper
@@ -771,12 +762,27 @@ function PageContent() {
                 </td>
               </tr>
             ) : (
-              items.map((r, idx) => (
+              items.map((r, idx) => {
+                // 成本 < 分店價 < 售價 必須遞增，三值有任一缺則不檢查（送審前才擋）
+                const cost = Number(r.unit_cost);
+                const branch = r.franchise_price != null ? Number(r.franchise_price) : null;
+                const retail = r.retail_price != null ? Number(r.retail_price) : null;
+                const priceBad =
+                  cost > 0 && branch != null && retail != null && !(cost < branch && branch < retail);
+                const cellWarn = priceBad
+                  ? "border-rose-400 bg-rose-50 dark:border-rose-700 dark:bg-rose-950"
+                  : "border-zinc-300 dark:border-zinc-700";
+                return (
                 <tr key={r.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
                   <Td className="text-zinc-500">{idx + 1}</Td>
                   <Td>
                     <div>{r.product_name}{r.variant_name ? `-${r.variant_name}` : ""}</div>
                     <div className="font-mono text-xs text-zinc-500">{r.sku_code}</div>
+                    {priceBad && (
+                      <div className="mt-0.5 text-[11px] font-medium text-rose-600 dark:text-rose-400">
+                        ⚠ 成本 &lt; 分店價 &lt; 售價 順序錯
+                      </div>
+                    )}
                   </Td>
                   <Td>
                     {editable ? (
@@ -834,7 +840,7 @@ function PageContent() {
                         step="1"
                         value={r.unit_cost}
                         onChange={(e) => patchItem(idx, { unit_cost: Number(e.target.value) })}
-                        className="w-24 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                        className={`w-24 rounded-md border bg-white px-2 py-1 text-right text-sm dark:bg-zinc-800 ${cellWarn}`}
                       />
                     ) : (
                       r.unit_cost.toFixed(4)
@@ -851,7 +857,7 @@ function PageContent() {
                             franchise_price: e.target.value === "" ? null : Number(e.target.value),
                           })
                         }
-                        className="w-20 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                        className={`w-20 rounded-md border bg-white px-2 py-1 text-right text-sm dark:bg-zinc-800 ${cellWarn}`}
                       />
                     ) : r.franchise_price !== null ? (
                       `$${r.franchise_price.toFixed(0)}`
@@ -870,7 +876,7 @@ function PageContent() {
                             retail_price: e.target.value === "" ? null : Number(e.target.value),
                           })
                         }
-                        className="w-20 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                        className={`w-20 rounded-md border bg-white px-2 py-1 text-right text-sm dark:bg-zinc-800 ${cellWarn}`}
                       />
                     ) : r.retail_price !== null ? (
                       `$${r.retail_price.toFixed(0)}`
@@ -892,7 +898,8 @@ function PageContent() {
                     )}
                   </Td>
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>
