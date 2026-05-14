@@ -392,6 +392,7 @@ async function fetchTransferRows(
   page: number,
   dateFrom: string,
   dateTo: string,
+  transferKind: "all" | "store_to_store" | "return_to_hq" | "hq_to_store" | "aid_handoff" = "all",
 ): Promise<{ rows: Row[]; total: number }> {
   let q = sb
     .from("transfers")
@@ -411,6 +412,7 @@ async function fetchTransferRows(
   } else if (stage) {
     q = q.in("status", TRANSFER_STATUS_BY_STAGE[stage]);
   }
+  if (transferKind !== "all") q = q.eq("transfer_type", transferKind);
   if (dateFrom) q = q.gte("created_at", `${dateFrom}T00:00:00`);
   if (dateTo) q = q.lte("created_at", `${dateTo}T23:59:59.999`);
   const start = (page - 1) * PAGE_SIZE;
@@ -940,6 +942,9 @@ function HqInboxContent() {
   // Aid 專屬篩選 (source=aid 時才顯示)
   const [aidModeFilter, setAidModeFilter] = useState<"all" | "air" | "via_warehouse">("all");
   const [aidStatusFilter, setAidStatusFilter] = useState<string>("");
+  // Transfer 專屬篩選 (source=transfer 時才顯示)
+  type TransferKind = "all" | "store_to_store" | "return_to_hq" | "hq_to_store" | "aid_handoff";
+  const [transferKindFilter, setTransferKindFilter] = useState<TransferKind>("all");
   const [page, setPage] = useState(1);
 
   // server-side counts: per source × per stage(badge / tab 用)
@@ -1072,7 +1077,7 @@ function HqInboxContent() {
           if (sourceFilter === "restock") {
             res = await fetchRestockRows(sb, stageArg, page, dateFrom, dateTo);
           } else if (sourceFilter === "transfer") {
-            res = await fetchTransferRows(sb, stageArg, page, dateFrom, dateTo);
+            res = await fetchTransferRows(sb, stageArg, page, dateFrom, dateTo, transferKindFilter);
           } else if (sourceFilter === "aid") {
             res = await fetchAidRows(sb, stageArg, page, dateFrom, dateTo, aidModeFilter, aidStatusFilter);
           } else if (sourceFilter === "picking") {
@@ -1097,7 +1102,7 @@ function HqInboxContent() {
     return () => {
       cancelled = true;
     };
-  }, [sourceFilter, stage, page, dateFrom, dateTo, aidModeFilter, aidStatusFilter, reloadTick]);
+  }, [sourceFilter, stage, page, dateFrom, dateTo, aidModeFilter, aidStatusFilter, transferKindFilter, reloadTick]);
 
   // stage tab counts:依當前 sourceFilter,從 cached counts 算出
   const stageCounts = useMemo(() => {
@@ -1164,7 +1169,7 @@ function HqInboxContent() {
   // 任何 server 端篩選變動 → 回到第 1 頁(避免 page 超出範圍)
   useEffect(() => {
     setPage(1);
-  }, [stage, sourceFilter, aidModeFilter, aidStatusFilter, dateFrom, dateTo]);
+  }, [stage, sourceFilter, aidModeFilter, aidStatusFilter, transferKindFilter, dateFrom, dateTo]);
 
   // 計算 group key for each row
   function getGroupKey(r: Row): { key: string; label: string } {
@@ -1729,6 +1734,37 @@ function HqInboxContent() {
               清除
             </SpinButton>
           )}
+        </div>
+      )}
+
+      {/* Transfer 專屬篩選 — 選 轉貨單 才出現 */}
+      {sourceFilter === "transfer" && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs dark:border-blue-900 dark:bg-blue-950/30">
+          <span className="font-semibold text-blue-700 dark:text-blue-300">類型:</span>
+          {(
+            [
+              { v: "all", label: "全部" },
+              { v: "hq_to_store", label: "🚚 總倉派貨" },
+              { v: "store_to_store", label: "🔄 自由轉貨" },
+              { v: "return_to_hq", label: "↩ 退貨回總倉" },
+              { v: "aid_handoff", label: "🤝 互助轉移" },
+            ] as { v: typeof transferKindFilter; label: string }[]
+          ).map((opt) => {
+            const active = transferKindFilter === opt.v;
+            return (
+              <SpinButton
+                key={opt.v}
+                onClick={() => setTransferKindFilter(opt.v)}
+                className={`rounded-full border px-2.5 py-1 text-xs font-medium ${
+                  active
+                    ? "border-blue-700 bg-blue-700 text-white"
+                    : "border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                }`}
+              >
+                {opt.label}
+              </SpinButton>
+            );
+          })}
         </div>
       )}
 
