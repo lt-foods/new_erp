@@ -2140,16 +2140,23 @@ function MailRow({
   } as const)[row.source];
 
   // source chip:transfer 依 transfer_type 細分,其他用 SOURCE_LABEL/COLOR
+  // 註：互助訂單派貨實際走 hq_to_store + store_to_store（transfer_no 前綴 AT-），
+  // 不是 aid_handoff。aid_handoff transfer_type 目前沒任何 RPC 產生，故不放 mapping。
   let sourceCls = SOURCE_COLOR[row.source];
   let sourceText: string = SOURCE_LABEL[row.source];
   let sourceTitle: string | undefined;
   if (row.source === "transfer") {
     const t = row.raw;
     const isOrderReturn = isOrderReturnTransfer(t.notes);
+    const isAidTransfer = t.transfer_no.startsWith("AT-");
     if (isOrderReturn) {
       sourceCls = "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300";
       sourceText = "🔁 退訂單";
       sourceTitle = "由客戶退訂單建立";
+    } else if (isAidTransfer) {
+      sourceCls = "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-950 dark:text-fuchsia-300";
+      sourceText = "🤝 互助派貨";
+      sourceTitle = "互助訂單派貨（rpc_ship_aid_order 產生）";
     } else {
       switch (t.transfer_type) {
         case "store_to_store":
@@ -2166,11 +2173,6 @@ function MailRow({
           sourceCls = "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300";
           sourceText = "🚚 總倉派貨";
           sourceTitle = "總倉派貨到分店（撿貨單 wave）";
-          break;
-        case "aid_handoff":
-          sourceCls = "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-950 dark:text-fuchsia-300";
-          sourceText = "🤝 互助轉移";
-          sourceTitle = "互助訂單轉移";
           break;
       }
     }
