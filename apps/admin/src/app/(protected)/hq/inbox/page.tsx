@@ -1747,7 +1747,6 @@ function HqInboxContent() {
               { v: "hq_to_store", label: "🚚 總倉派貨" },
               { v: "store_to_store", label: "🔄 自由轉貨" },
               { v: "return_to_hq", label: "↩ 退貨回總倉" },
-              { v: "aid_handoff", label: "🤝 互助轉移" },
             ] as { v: typeof transferKindFilter; label: string }[]
           ).map((opt) => {
             const active = transferKindFilter === opt.v;
