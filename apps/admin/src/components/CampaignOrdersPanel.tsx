@@ -15,6 +15,7 @@ type OrderRow = {
   notes: string | null;
   order_kind: string | null;
   created_at: string;
+  member: { id: number; name: string | null } | null;
   customer_order_items: { qty: number; unit_price: number }[];
 };
 
@@ -49,7 +50,7 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
           sb
             .from("customer_orders")
             .select(
-              "id, order_no, status, pickup_store_id, nickname_snapshot, notes, order_kind, created_at, customer_order_items(qty, unit_price)",
+              "id, order_no, status, pickup_store_id, nickname_snapshot, notes, order_kind, created_at, member:members(id, name), customer_order_items(qty, unit_price)",
             )
             .eq("campaign_id", campaignId)
             .order("created_at", { ascending: false }),
@@ -58,7 +59,7 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
         if (cancelled) return;
         if (ordersRes.error) throw ordersRes.error;
         if (storesRes.error) throw storesRes.error;
-        setRows((ordersRes.data ?? []) as OrderRow[]);
+        setRows((ordersRes.data ?? []) as unknown as OrderRow[]);
         setStores((storesRes.data ?? []) as Store[]);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -187,7 +188,20 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
                           </span>
                         )}
                       </td>
-                      <td className="px-3 py-1.5">{r.nickname_snapshot ?? "—"}</td>
+                      <td className="px-3 py-1.5">
+                        {r.member?.name ? (
+                          <Link
+                            href={`/members?id=${r.member.id}`}
+                            className="hover:underline"
+                          >
+                            {r.member.name}
+                          </Link>
+                        ) : r.nickname_snapshot ? (
+                          <span className="text-zinc-500">({r.nickname_snapshot})</span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
                       <td className="px-3 py-1.5 text-zinc-600 dark:text-zinc-400">{store?.name ?? "—"}</td>
                       <td className="px-3 py-1.5">
                         <span className={`inline-block rounded px-1.5 py-0.5 ${STATUS_BADGE[r.status] ?? STATUS_BADGE.pending}`}>
