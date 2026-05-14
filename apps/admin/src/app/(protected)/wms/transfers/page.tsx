@@ -29,6 +29,8 @@ type TransferRow = {
   created_at: string;
   shipped_at: string | null;
   received_at: string | null;
+  items_summary: string;       // 「描述×qty、…」或「SKU×qty、…」
+  total_estimated: number;     // 自由轉貨 estimated_amount 加總（0 表非自由轉貨或都未估）
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -70,14 +72,72 @@ export default function InternalTransfersPage() {
           .order("id", { ascending: false })
           .limit(200);
         if (e) throw new Error(e.message);
-        const rows = (data ?? []) as TransferRow[];
+        const baseRows = (data ?? []) as Omit<TransferRow, "items_summary" | "total_estimated">[];
 
-        const locIds = Array.from(new Set(rows.flatMap((r) => [r.source_location, r.dest_location])));
+        const locIds = Array.from(new Set(baseRows.flatMap((r) => [r.source_location, r.dest_location])));
         const locMap = new Map<number, Loc>();
         if (locIds.length > 0) {
           const { data: lr } = await sb.from("locations").select("id, name, type").in("id", locIds);
           for (const l of (lr ?? []) as Loc[]) locMap.set(l.id, l);
         }
+
+        // 撈每張 transfer 的 items：自由轉貨用 description，退訂單用 sku
+        const tIds = baseRows.map((r) => r.id);
+        const itemsAgg = new Map<number, { parts: string[]; total: number }>();
+        if (tIds.length > 0) {
+          const { data: tis } = await sb
+            .from("transfer_items")
+            .select("transfer_id, sku_id, qty_shipped, description, estimated_amount")
+            .in("transfer_id", tIds);
+          const allTis = (tis ?? []) as {
+            transfer_id: number; sku_id: number; qty_shipped: number;
+            description: string | null; estimated_amount: number | null;
+          }[];
+
+          // 對沒 description 的 SKU 行（退訂單）需另外撈 sku_code + product name
+          const realSkuIds = Array.from(new Set(
+            allTis.filter((it) => !it.description).map((it) => it.sku_id).filter((x) => x != null)
+          ));
+          let skuLabelMap = new Map<number, string>();
+          if (realSkuIds.length > 0) {
+            const { data: skus } = await sb
+              .from("skus")
+              .select("id, sku_code, product_id")
+              .in("id", realSkuIds);
+            const arr = (skus ?? []) as { id: number; sku_code: string; product_id: number | null }[];
+            const prodIds = Array.from(new Set(arr.map((s) => s.product_id).filter((x): x is number => x != null)));
+            let prodMap = new Map<number, string>();
+            if (prodIds.length > 0) {
+              const { data: ps } = await sb.from("products").select("id, name").in("id", prodIds);
+              prodMap = new Map(((ps ?? []) as { id: number; name: string }[]).map((p) => [p.id, p.name]));
+            }
+            skuLabelMap = new Map(
+              arr.map((s) => [s.id, s.product_id != null ? (prodMap.get(s.product_id) ?? s.sku_code) : s.sku_code])
+            );
+          }
+
+          for (const it of allTis) {
+            const slot = itemsAgg.get(it.transfer_id) ?? { parts: [] as string[], total: 0 };
+            const qty = Number(it.qty_shipped ?? 0);
+            if (it.description) {
+              slot.parts.push(`${it.description}×${qty}`);
+              slot.total += Number(it.estimated_amount ?? 0);
+            } else {
+              const label = skuLabelMap.get(it.sku_id) ?? `#${it.sku_id}`;
+              slot.parts.push(`${label}×${qty}`);
+            }
+            itemsAgg.set(it.transfer_id, slot);
+          }
+        }
+
+        const MAX = 4;
+        const rows: TransferRow[] = baseRows.map((r) => {
+          const agg = itemsAgg.get(r.id) ?? { parts: [] as string[], total: 0 };
+          const summary = agg.parts.length <= MAX
+            ? agg.parts.join("、")
+            : agg.parts.slice(0, MAX).join("、") + ` +${agg.parts.length - MAX}`;
+          return { ...r, items_summary: summary, total_estimated: agg.total };
+        });
 
         if (!cancelled) {
           setTransfers(rows);
@@ -217,15 +277,17 @@ export default function InternalTransfersPage() {
               <th className="px-3 py-2">轉貨單號</th>
               <th className="px-3 py-2">時間</th>
               <th className="px-3 py-2">來源 → 目的</th>
+              <th className="px-3 py-2">品項 / 描述</th>
+              <th className="px-3 py-2 text-right">估價</th>
               <th className="px-3 py-2">狀態</th>
               <th className="px-3 py-2">備註</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {transfers === null ? (
-              <tr><td colSpan={5} className="p-6 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={7} className="p-6 text-center text-zinc-500">載入中…</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={5} className="p-6 text-center text-zinc-500">目前沒有資料</td></tr>
+              <tr><td colSpan={7} className="p-6 text-center text-zinc-500">目前沒有資料</td></tr>
             ) : filtered.map((t) => {
               const src = locs.get(t.source_location)?.name ?? `#${t.source_location}`;
               const dst = locs.get(t.dest_location)?.name ?? `#${t.dest_location}`;
@@ -246,6 +308,12 @@ export default function InternalTransfersPage() {
                   </td>
                   <td className="px-3 py-2 text-xs text-zinc-500">{new Date(t.created_at).toLocaleString("zh-TW")}</td>
                   <td className="px-3 py-2 text-xs">{src} → {dst}</td>
+                  <td className="px-3 py-2 text-xs text-zinc-600 dark:text-zinc-300 max-w-md">
+                    <span title={t.items_summary} className="line-clamp-2">{t.items_summary || "—"}</span>
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-xs">
+                    {t.total_estimated > 0 ? `$${t.total_estimated.toFixed(0)}` : <span className="text-zinc-300">—</span>}
+                  </td>
                   <td className="px-3 py-2"><span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[t.status] ?? STATUS_COLOR.draft}`}>{STATUS_LABEL[t.status] ?? t.status}</span></td>
                   <td className="px-3 py-2 text-xs text-zinc-500" title={t.notes ?? undefined}>{formatNote(t.notes)}</td>
                 </tr>

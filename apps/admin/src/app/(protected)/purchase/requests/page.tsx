@@ -219,6 +219,7 @@ export default function PurchaseRequestsListPage() {
           .from("group_buy_campaigns")
           .select("id, name, end_at")
           .eq("status", "closed")
+          .neq("campaign_no", "__INTERNAL_RESTOCK__")
           .gte("end_at", since.toISOString())
           .order("end_at", { ascending: false });
 
@@ -362,6 +363,7 @@ export default function PurchaseRequestsListPage() {
         .from("group_buy_campaigns")
         .select("id, name, end_at")
         .eq("status", "closed")
+        .neq("campaign_no", "__INTERNAL_RESTOCK__")
         .gte("end_at", since.toISOString())
         .order("end_at", { ascending: false });
 

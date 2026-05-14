@@ -429,6 +429,7 @@ function PageContent() {
           .select("id, product_code, name, short_name, status, brand_id, category_id, updated_at", {
             count: "exact",
           })
+          .eq("is_virtual", false)
           .order(sortBy, { ascending: sortDir === "asc" })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 

@@ -252,7 +252,9 @@ export default function CampaignsListPage() {
         let q = getSupabase()
           .from("group_buy_campaigns")
           .select("id, campaign_no, name, status, close_type, start_at, end_at, pickup_deadline, updated_at", { count: "exact" })
-          .order("updated_at", { ascending: false })
+          .neq("campaign_no", "__INTERNAL_RESTOCK__")
+          .order("start_at", { ascending: false, nullsFirst: false })
+          .order("id", { ascending: false })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
         if (query.trim()) {
           const safe = query.replace(/[%,()]/g, " ").trim();
@@ -332,6 +334,7 @@ export default function CampaignsListPage() {
       const { data, error } = await getSupabase()
         .from("group_buy_campaigns")
         .select("id, campaign_no, name, status, close_type, start_at, display_order")
+        .neq("campaign_no", "__INTERNAL_RESTOCK__")
         .gte("start_at", from.toISOString())
         .lt("start_at", to.toISOString())
         .order("start_at", { ascending: true })

@@ -291,14 +291,21 @@ function OrdersListContent() {
         if (o.member_id != null) monthMemberIds.add(o.member_id);
       }
 
-      // 每日 buckets (key = YYYY-MM-DD, 用 local timezone 推, 跟 created_at 直接 slice 一致)
+      // 每日 buckets — key = 台北日 YYYY-MM-DD（不能用 created_at.slice(0,10)，
+      // 那是 UTC 日，會把台北凌晨的訂單錯誤歸到前一天）
+      const tpeFmt = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Taipei",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
       const buckets = new Map<
         string,
         { orderIds: Set<number>; memberIds: Set<number>; amount: number }
       >();
       const orderDay = new Map<number, string>();
       for (const o of orders) {
-        const ymd = o.created_at.slice(0, 10);
+        const ymd = tpeFmt.format(new Date(o.created_at));
         orderDay.set(o.id, ymd);
         let b = buckets.get(ymd);
         if (!b) {

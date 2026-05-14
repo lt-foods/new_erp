@@ -31,6 +31,8 @@ type Item = {
   sku_code: string;
   sku_name: string;
   variant_name: string | null;
+  description: string | null;       // 自由轉貨用
+  estimated_amount: number | null;  // 自由轉貨估價
 };
 
 const TYPE_LABEL: Record<string, string> = {
@@ -88,7 +90,7 @@ export default function TransferDetailModal({
         sb.from("locations").select("id, name").in("id", [tData.source_location, tData.dest_location]),
         sb
           .from("transfer_items")
-          .select("id, sku_id, qty_requested, qty_shipped, qty_received")
+          .select("id, sku_id, qty_requested, qty_shipped, qty_received, description, estimated_amount")
           .eq("transfer_id", transferId)
           .order("id"),
       ]);
@@ -107,6 +109,8 @@ export default function TransferDetailModal({
         qty_requested: number | null;
         qty_shipped: number | null;
         qty_received: number | null;
+        description: string | null;
+        estimated_amount: number | null;
       };
       const tiRows = (tis ?? []) as ApiItem[];
 
@@ -150,6 +154,8 @@ export default function TransferDetailModal({
           sku_code: sku?.code ?? `#${r.sku_id}`,
           sku_name: sku?.name ?? "",
           variant_name: sku?.variant ?? null,
+          description: r.description,
+          estimated_amount: r.estimated_amount == null ? null : Number(r.estimated_amount),
         };
       });
       setItems(rows);
@@ -196,31 +202,50 @@ export default function TransferDetailModal({
             <table className="w-full text-sm">
               <thead className="bg-zinc-50 dark:bg-zinc-900">
                 <tr className="text-left text-xs uppercase tracking-wide text-zinc-500">
-                  <th className="px-3 py-2">SKU</th>
+                  <th className="px-3 py-2">SKU / 描述</th>
                   <th className="px-3 py-2">品名 / 規格</th>
                   <th className="px-3 py-2 text-right">應出</th>
                   <th className="px-3 py-2 text-right">已出</th>
                   <th className="px-3 py-2 text-right">已收</th>
+                  <th className="px-3 py-2 text-right">估價</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
                 {items === null ? (
-                  <tr><td colSpan={5} className="p-4 text-center text-zinc-500">載入中…</td></tr>
+                  <tr><td colSpan={6} className="p-4 text-center text-zinc-500">載入中…</td></tr>
                 ) : items.length === 0 ? (
-                  <tr><td colSpan={5} className="p-4 text-center text-zinc-500">無明細</td></tr>
+                  <tr><td colSpan={6} className="p-4 text-center text-zinc-500">無明細</td></tr>
                 ) : (
-                  items.map((it) => (
-                    <tr key={it.id}>
-                      <td className="px-3 py-2 font-mono text-xs">{it.sku_code}</td>
-                      <td className="px-3 py-2 text-xs">
-                        {it.sku_name || "—"}
-                        {it.variant_name && <span className="ml-1 text-zinc-500">/ {it.variant_name}</span>}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono">{it.qty_requested}</td>
-                      <td className="px-3 py-2 text-right font-mono">{it.qty_shipped}</td>
-                      <td className="px-3 py-2 text-right font-mono">{it.qty_received ?? "—"}</td>
-                    </tr>
-                  ))
+                  items.map((it) => {
+                    const isFree = !!it.description;
+                    return (
+                      <tr key={it.id}>
+                        <td className="px-3 py-2 font-mono text-xs">
+                          {isFree ? (
+                            <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-950 dark:text-blue-300">自由轉貨</span>
+                          ) : (
+                            it.sku_code
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-xs">
+                          {isFree ? (
+                            <span className="text-zinc-900 dark:text-zinc-100">{it.description}</span>
+                          ) : (
+                            <>
+                              {it.sku_name || "—"}
+                              {it.variant_name && <span className="ml-1 text-zinc-500">/ {it.variant_name}</span>}
+                            </>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono">{it.qty_requested}</td>
+                        <td className="px-3 py-2 text-right font-mono">{it.qty_shipped}</td>
+                        <td className="px-3 py-2 text-right font-mono">{it.qty_received ?? "—"}</td>
+                        <td className="px-3 py-2 text-right font-mono">
+                          {it.estimated_amount != null ? `$${it.estimated_amount.toFixed(0)}` : <span className="text-zinc-300">—</span>}
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>

@@ -200,6 +200,14 @@ const TRANSFER_STATUS_BY_STAGE: Record<Stage, string[]> = {
   done: ["received"],
   rejected: ["cancelled"],
 };
+const TRANSFER_STATUS_LABEL: Record<string, string> = {
+  draft: "草稿",
+  confirmed: "已確認",
+  shipped: "已出貨",
+  received: "已收貨",
+  cancelled: "已取消",
+  closed: "已結案",
+};
 const AID_STATUS_BY_STAGE: Record<Stage, AidStatus[]> = {
   pending: ["pending", "confirmed"],
   in_transit: ["shipping"],
@@ -226,18 +234,30 @@ type SBClient = ReturnType<typeof getSupabase>;
 
 // 撈某張表（restock_request_lines / transfer_items / customer_order_items / picking_wave_items）
 // 對應每張單的 items 摘要：「品名×qty、品名×qty…」（最多前 4 個 SKU，其餘 +N）
+// 對 transfer_items 傳 includeFreeFormCols=true：自由轉貨行用 description 取代 sku label，並把估價附在後面
 async function fetchItemsSummaryMap(
   sb: SBClient,
   table: string,
   idCol: string,
   ids: number[],
   qtyCol: string,
+  includeFreeFormCols = false,
 ): Promise<Map<number, string>> {
   if (ids.length === 0) return new Map();
-  const { data } = await sb.from(table).select(`${idCol}, sku_id, ${qtyCol}`).in(idCol, ids);
-  const lines = (data ?? []) as unknown as Record<string, number | null>[];
+  const cols = includeFreeFormCols
+    ? `${idCol}, sku_id, ${qtyCol}, description, estimated_amount`
+    : `${idCol}, sku_id, ${qtyCol}`;
+  const { data } = await sb.from(table).select(cols).in(idCol, ids);
+  type Line = Record<string, number | string | null>;
+  const lines = (data ?? []) as unknown as Line[];
   const skuIds = Array.from(
-    new Set(lines.map((l) => Number(l.sku_id)).filter((x) => Number.isFinite(x)))
+    new Set(
+      lines
+        // 自由轉貨行有 description 就不靠 sku label
+        .filter((l) => !includeFreeFormCols || !l.description)
+        .map((l) => Number(l.sku_id))
+        .filter((x) => Number.isFinite(x))
+    )
   );
   let skuLabelMap = new Map<number, string>();
   if (skuIds.length > 0) {
@@ -264,12 +284,21 @@ async function fetchItemsSummaryMap(
   const partsMap = new Map<number, string[]>();
   for (const l of lines) {
     const id = Number(l[idCol]);
-    const skuId = Number(l.sku_id);
     const qty = Number(l[qtyCol] ?? 0);
-    if (!Number.isFinite(id) || !Number.isFinite(skuId)) continue;
-    const label = skuLabelMap.get(skuId) ?? `#${skuId}`;
+    if (!Number.isFinite(id)) continue;
+    let label: string;
+    let suffix = "";
+    if (includeFreeFormCols && typeof l.description === "string" && l.description) {
+      label = l.description;
+      const est = Number(l.estimated_amount ?? 0);
+      if (est > 0) suffix = `（估 $${est.toFixed(0)}）`;
+    } else {
+      const skuId = Number(l.sku_id);
+      if (!Number.isFinite(skuId)) continue;
+      label = skuLabelMap.get(skuId) ?? `#${skuId}`;
+    }
     const arr = partsMap.get(id) ?? [];
-    arr.push(`${label}×${qty}`);
+    arr.push(`${label}×${qty}${suffix}`);
     partsMap.set(id, arr);
   }
   const result = new Map<number, string>();
@@ -405,7 +434,7 @@ async function fetchTransferRows(
     }
   }
 
-  const itemsMap = await fetchItemsSummaryMap(sb, "transfer_items", "transfer_id", tIds, "qty_shipped");
+  const itemsMap = await fetchItemsSummaryMap(sb, "transfer_items", "transfer_id", tIds, "qty_shipped", true);
 
   const rows: Row[] = trs.map((t) => ({
     key: `transfer-${t.id}`,
@@ -733,7 +762,7 @@ async function fetchTransferRowsByIds(sb: SBClient, ids: number[]): Promise<Row[
       tLineMap.set(it.transfer_id, (tLineMap.get(it.transfer_id) ?? 0) + 1);
     }
   }
-  const itemsMap = await fetchItemsSummaryMap(sb, "transfer_items", "transfer_id", trs.map((t) => t.id), "qty_shipped");
+  const itemsMap = await fetchItemsSummaryMap(sb, "transfer_items", "transfer_id", trs.map((t) => t.id), "qty_shipped", true);
   return trs.map((t) => ({
     key: `transfer-${t.id}`,
     source: "transfer" as const,
@@ -2125,15 +2154,53 @@ function MailRow({
     const t = row.raw;
     const isOrderReturn = isOrderReturnTransfer(t.notes);
     idText = t.transfer_no;
+    // 類別 chip：退訂單 / 自由轉貨 / 退貨回總倉 / 總倉派貨 / 互助
+    const kindChip = (() => {
+      if (isOrderReturn) {
+        return {
+          cls: "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300",
+          label: "🔁 退訂單",
+          title: "由客戶退訂單建立",
+        };
+      }
+      switch (t.transfer_type) {
+        case "store_to_store":
+          return {
+            cls: "bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300",
+            label: "🔄 自由轉貨",
+            title: "店與店之間自由轉貨（虛擬 SKU + 備註）",
+          };
+        case "return_to_hq":
+          return {
+            cls: "bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300",
+            label: "↩ 退貨回總倉",
+            title: "店端發起退貨回總倉",
+          };
+        case "hq_to_store":
+          return {
+            cls: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
+            label: "🚚 總倉派貨",
+            title: "總倉派貨到分店（撿貨單 wave）",
+          };
+        case "aid_handoff":
+          return {
+            cls: "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-950 dark:text-fuchsia-300",
+            label: "🤝 互助轉移",
+            title: "互助訂單轉移",
+          };
+        default:
+          return null;
+      }
+    })();
     title = (
       <>
         {t.source_name} <span className="text-zinc-400 mx-1">→</span> {t.dest_name}
-        {isOrderReturn && (
+        {kindChip && (
           <span
-            className="ml-2 inline-block rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-medium text-rose-700 dark:bg-rose-950 dark:text-rose-300"
-            title="由客戶退訂單建立"
+            className={`ml-2 inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${kindChip.cls}`}
+            title={kindChip.title}
           >
-            🔁 退訂單
+            {kindChip.label}
           </span>
         )}
       </>
@@ -2143,7 +2210,7 @@ function MailRow({
         {t.line_count} 項
         {t.is_air_transfer && <span className="ml-1">· ✈ 空運</span>}
         {t.shipping_temp && <span className="ml-1">· {t.shipping_temp}</span>}
-        <span className="ml-1 text-[10px] text-zinc-400">· {t.status}</span>
+        <span className="ml-1 text-[10px] text-zinc-400">· {TRANSFER_STATUS_LABEL[t.status] ?? t.status}</span>
       </>
     );
     timeIso = t.created_at;
