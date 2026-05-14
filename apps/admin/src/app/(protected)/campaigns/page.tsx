@@ -11,6 +11,20 @@ import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 
+// 共用: chunked fetch — bypass PostgREST max-rows 1000 cap
+// builder: 回 fresh query builder 的 factory (因為 .range() 後不能 reuse)
+async function fetchAll<T>(builder: () => any, pageSize = 1000, maxPages = 50): Promise<T[]> {
+  const all: T[] = [];
+  for (let p = 0; p < maxPages; p++) {
+    const { data, error } = await builder().range(p * pageSize, (p + 1) * pageSize - 1);
+    if (error) throw error;
+    const rows = (data ?? []) as T[];
+    all.push(...rows);
+    if (rows.length < pageSize) break;
+  }
+  return all;
+}
+
 type Status =
   | "draft" | "open" | "closed" | "ordered" | "receiving" | "ready" | "completed" | "cancelled";
 
@@ -204,28 +218,34 @@ export default function CampaignsListPage() {
         setTotal(count ?? 0);
 
         // 補商品數 + 下單總數量（normal / offset 分開、SUM(qty)）
+        // chunked fetch: 跨萬筆訂單仍 work (bypass PostgREST 1000 row cap)
         const ids = (data ?? []).map((r) => r.id);
         if (ids.length) {
           const sb = getSupabase();
-          const [itemRes, orderRes] = await Promise.all([
-            sb.from("campaign_items").select("campaign_id").in("campaign_id", ids),
-            sb.from("customer_orders").select("id, campaign_id, order_kind").in("campaign_id", ids),
+          const [itemRows, ordersList] = await Promise.all([
+            fetchAll<{ campaign_id: number }>(() =>
+              sb.from("campaign_items").select("campaign_id").in("campaign_id", ids).order("id", { ascending: true })),
+            fetchAll<{ id: number; campaign_id: number; order_kind: string }>(() =>
+              sb.from("customer_orders").select("id, campaign_id, order_kind").in("campaign_id", ids).order("id", { ascending: true })),
           ]);
           const m = new Map<number, number>();
           for (const id of ids) m.set(id, 0);
-          for (const it of itemRes.data ?? []) m.set(it.campaign_id, (m.get(it.campaign_id) ?? 0) + 1);
+          for (const it of itemRows) m.set(it.campaign_id, (m.get(it.campaign_id) ?? 0) + 1);
           if (!cancelled) setItemCounts(m);
 
-          // 抓 items qty 並依 order_kind 聚合到 campaign
-          const ordersList = (orderRes.data ?? []) as { id: number; campaign_id: number; order_kind: string }[];
+          // 抓 items qty 並依 order_kind 聚合到 campaign — chunked by orderId in batches + range
           const orderIds = ordersList.map((o) => o.id);
-          const oqRes = orderIds.length
-            ? await sb.from("customer_order_items").select("order_id, qty").in("order_id", orderIds)
-            : { data: [] as { order_id: number; qty: number }[] };
+          const oqRows: { order_id: number; qty: number }[] = [];
+          for (let i = 0; i < orderIds.length; i += 500) {
+            const chunk = orderIds.slice(i, i + 500);
+            const rows = await fetchAll<{ order_id: number; qty: number }>(() =>
+              sb.from("customer_order_items").select("order_id, qty").in("order_id", chunk).order("id", { ascending: true }));
+            oqRows.push(...rows);
+          }
           const orderMeta = new Map(ordersList.map((o) => [o.id, o]));
           const om = new Map<number, { normalQty: number; offsetQty: number }>();
           for (const id of ids) om.set(id, { normalQty: 0, offsetQty: 0 });
-          for (const it of (oqRes.data ?? []) as { order_id: number; qty: number }[]) {
+          for (const it of oqRows) {
             const meta = orderMeta.get(it.order_id);
             if (!meta) continue;
             const cur = om.get(meta.campaign_id) ?? { normalQty: 0, offsetQty: 0 };
@@ -272,29 +292,34 @@ export default function CampaignsListPage() {
       const list = (data ?? []) as CalRow[];
       setCalRows(list);
 
-      // 補商品數 + 下單總數量（normal / offset 分開計、SUM(qty)）
+      // 補商品數 + 下單總數量 — chunked fetch (bypass PostgREST 1000 cap)
       const ids = list.map((r) => r.id);
       if (ids.length > 0) {
         const sb = getSupabase();
-        const [itemRes, orderRes] = await Promise.all([
-          sb.from("campaign_items").select("campaign_id").in("campaign_id", ids),
-          sb.from("customer_orders").select("id, campaign_id, order_kind").in("campaign_id", ids),
+        const [itemRows, ordersList] = await Promise.all([
+          fetchAll<{ campaign_id: number }>(() =>
+            sb.from("campaign_items").select("campaign_id").in("campaign_id", ids).order("id", { ascending: true })),
+          fetchAll<{ id: number; campaign_id: number; order_kind: string }>(() =>
+            sb.from("customer_orders").select("id, campaign_id, order_kind").in("campaign_id", ids).order("id", { ascending: true })),
         ]);
         if (cancelled) return;
         const im = new Map<number, number>();
         const om = new Map<number, number>();
         const offm = new Map<number, number>();
         for (const id of ids) { im.set(id, 0); om.set(id, 0); offm.set(id, 0); }
-        for (const it of itemRes.data ?? []) im.set(it.campaign_id, (im.get(it.campaign_id) ?? 0) + 1);
+        for (const it of itemRows) im.set(it.campaign_id, (im.get(it.campaign_id) ?? 0) + 1);
 
-        const ordersList = (orderRes.data ?? []) as { id: number; campaign_id: number; order_kind: string }[];
         const orderIds = ordersList.map((o) => o.id);
-        const oqRes = orderIds.length
-          ? await sb.from("customer_order_items").select("order_id, qty").in("order_id", orderIds)
-          : { data: [] as { order_id: number; qty: number }[] };
+        const oqRows: { order_id: number; qty: number }[] = [];
+        for (let i = 0; i < orderIds.length; i += 500) {
+          const chunk = orderIds.slice(i, i + 500);
+          const rows = await fetchAll<{ order_id: number; qty: number }>(() =>
+            sb.from("customer_order_items").select("order_id, qty").in("order_id", chunk).order("id", { ascending: true }));
+          oqRows.push(...rows);
+        }
         if (cancelled) return;
         const orderMeta = new Map(ordersList.map((o) => [o.id, o]));
-        for (const it of (oqRes.data ?? []) as { order_id: number; qty: number }[]) {
+        for (const it of oqRows) {
           const meta = orderMeta.get(it.order_id);
           if (!meta) continue;
           if (meta.order_kind === "offset") {
