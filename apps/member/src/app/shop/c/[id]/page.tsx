@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useParams, useRouter } from "next/navigation";
 import { consumeFragmentToSession, getSession } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
@@ -17,6 +18,12 @@ function cleanDescription(raw: string): string {
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+/** 把 children 渲染到 document.body（保證 fixed 相對 viewport）。 */
+function Portal({ enabled, children }: { enabled: boolean; children: React.ReactNode }) {
+  if (!enabled || typeof document === "undefined") return null;
+  return createPortal(children, document.body);
 }
 
 type CampaignDetail = {
@@ -58,6 +65,10 @@ export default function CampaignDetailPage() {
   const [notes, setNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [doneOrderNo, setDoneOrderNo] = useState<string | null>(null);
+  // 把常駐下單列 / sheet portal 到 body，確保一定釘在 viewport（不受任何祖先
+  // transform / filter 形成的 containing block 影響、不用滑到底才看得到）
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   useEffect(() => {
     consumeFragmentToSession();
@@ -197,21 +208,39 @@ export default function CampaignDetailPage() {
               <h2 className="pb-2 pt-1 text-[20px] font-bold text-[var(--foreground)]">
                 商品項目
               </h2>
-              <div className="overflow-hidden rounded-2xl bg-[var(--card-bg)] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+              <div className="card overflow-hidden">
                 {items.length === 0 ? (
                   <div className="px-4 py-8 text-center text-[15px] text-[var(--tertiary-label)]">
                     尚無商品
                   </div>
                 ) : (
-                  items.map((it, idx) => (
-                    <SkuRow
-                      key={it.campaign_item_id}
-                      item={it}
-                      qty={qtyMap[it.campaign_item_id] ?? 0}
-                      onChange={(q) => setQty(it.campaign_item_id, q, it.cap_qty)}
-                      isLast={idx === items.length - 1}
-                    />
-                  ))
+                  items.map((it, idx) => {
+                    const q = qtyMap[it.campaign_item_id] ?? 0;
+                    return (
+                      <div
+                        key={it.campaign_item_id}
+                        className={`flex items-center gap-3 px-4 py-3.5 ${idx === items.length - 1 ? "" : "border-b border-[var(--separator)]"}`}
+                      >
+                        <SkuThumb url={it.image_url} />
+                        <div className="min-w-0 flex-1">
+                          <div className="line-clamp-2 text-[16px] font-medium leading-tight text-[var(--foreground)]">
+                            {it.product_name ?? `品項#${it.sku_id}`}
+                          </div>
+                          {it.variant_name && (
+                            <div className="text-[13px] text-[var(--secondary-label)]">{it.variant_name}</div>
+                          )}
+                          <div className="mt-0.5 text-[18px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
+                            ${Number(it.unit_price).toLocaleString()}
+                          </div>
+                        </div>
+                        {q > 0 && (
+                          <span className="shrink-0 rounded-full bg-[var(--brand-soft)] px-2.5 py-1 text-[13px] font-semibold text-[var(--brand-strong)]">
+                            已選 ×{q}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })
                 )}
               </div>
             </section>
@@ -219,38 +248,39 @@ export default function CampaignDetailPage() {
         )}
       </div>
 
-      {/* sticky 底部下單列 */}
-      {campaign && items.length > 0 && (
+      {/* 常駐底部購買列 — portal 到 body，永遠釘在 viewport（蝦皮式，免滑到底）*/}
+      <Portal enabled={mounted && !!campaign && items.length > 0}>
         <div
           className="fixed inset-x-0 bottom-0 z-40 border-t border-[var(--separator)] bg-white/95 backdrop-blur-xl"
-          style={{ paddingBottom: "max(env(safe-area-inset-bottom), 12px)" }}
+          style={{ paddingBottom: "max(env(safe-area-inset-bottom), 10px)" }}
         >
-          <div className="mx-auto flex max-w-md items-center justify-between gap-3 px-4 pt-3">
-            <div>
-              <div className="text-[12px] text-[var(--secondary-label)]">總計 {totalQty} 件</div>
-              <div className="text-[28px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
-                ${totalAmount.toLocaleString()}
+          <div className="mx-auto flex max-w-md items-center gap-3 px-4 pt-3">
+            {totalQty > 0 && (
+              <div className="shrink-0">
+                <div className="text-[12px] text-[var(--secondary-label)]">總計 {totalQty} 件</div>
+                <div className="text-[24px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
+                  ${totalAmount.toLocaleString()}
+                </div>
               </div>
-            </div>
+            )}
             <button
-              disabled={totalQty === 0}
               onClick={() => setSheetOpen(true)}
-              className="rounded-full bg-[var(--ios-blue)] px-6 py-3 text-[17px] font-semibold text-white active:opacity-80 disabled:opacity-40"
+              className="flex-1 rounded-full brand-gradient py-3.5 text-[17px] font-bold text-white shadow-[0_8px_20px_-8px_rgba(158,47,80,0.6)] transition-transform active:scale-[0.99]"
             >
-              立即下單
+              {totalQty > 0 ? "送出訂單" : "選擇規格・立即下單"}
             </button>
           </div>
         </div>
-      )}
+      </Portal>
 
-      {/* Confirm sheet */}
-      {sheetOpen && (
-        <ConfirmSheet
+      {/* Shopee 式選購 sheet — 規格 + 數量 + 大鈕送出，全在這個彈窗 */}
+      <Portal enabled={mounted && sheetOpen && !!campaign}>
+        <BuySheet
           campaignName={campaign?.name ?? ""}
-          items={items.filter((it) => (qtyMap[it.campaign_item_id] ?? 0) > 0).map((it) => ({
-            ...it,
-            qty: qtyMap[it.campaign_item_id]!,
-          }))}
+          items={items}
+          qtyMap={qtyMap}
+          onQty={setQty}
+          totalQty={totalQty}
           totalAmount={totalAmount}
           notes={notes}
           onNotes={setNotes}
@@ -258,10 +288,10 @@ export default function CampaignDetailPage() {
           onSubmit={submit}
           submitting={submitting}
         />
-      )}
+      </Portal>
 
       {/* Done sheet */}
-      {doneOrderNo && (
+      <Portal enabled={mounted && !!doneOrderNo}>
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-6">
           <div className="w-full max-w-sm rounded-2xl bg-white p-6 text-center">
             <div className="text-5xl">✅</div>
@@ -285,7 +315,7 @@ export default function CampaignDetailPage() {
             </div>
           </div>
         </div>
-      )}
+      </Portal>
     </PageShell>
   );
 }
@@ -384,33 +414,17 @@ function HeroCarousel({ images }: { images: string[] }) {
   );
 }
 
-function SkuRow({
-  item,
-  qty,
-  onChange,
-  isLast,
-}: {
-  item: Item;
-  qty: number;
-  onChange: (q: number) => void;
-  isLast: boolean;
-}) {
+function SkuThumb({ url }: { url: string | null }) {
+  if (url) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={url} alt="" className="h-14 w-14 shrink-0 rounded-xl object-cover" />;
+  }
   return (
-    <div
-      className={`flex items-center gap-3 px-4 py-3.5 ${isLast ? "" : "border-b border-[var(--separator)]"}`}
-    >
-      <div className="min-w-0 flex-1">
-        <div className="line-clamp-2 text-[16px] font-medium leading-tight text-[var(--foreground)]">
-          {item.product_name ?? `品項#${item.sku_id}`}
-        </div>
-        {item.variant_name && (
-          <div className="text-[13px] text-[var(--secondary-label)]">{item.variant_name}</div>
-        )}
-        <div className="mt-0.5 text-[20px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
-          ${Number(item.unit_price).toLocaleString()}
-        </div>
-      </div>
-      <Stepper qty={qty} onChange={onChange} max={item.cap_qty ?? 999} />
+    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-[var(--brand-soft)] text-[var(--brand)]">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.4} className="h-6 w-6">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M5 8h14l-1 11a2 2 0 0 1-2 1.8H8A2 2 0 0 1 6 19L5 8Z" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 8V6.5a3 3 0 0 1 6 0V8" />
+      </svg>
     </div>
   );
 }
@@ -456,9 +470,13 @@ function Stepper({
   );
 }
 
-function ConfirmSheet({
+/** 蝦皮式選購 sheet：規格(SKU)逐項選數量 + 備註 + 底部大鈕送出，全在這個彈窗。 */
+function BuySheet({
   campaignName,
   items,
+  qtyMap,
+  onQty,
+  totalQty,
   totalAmount,
   notes,
   onNotes,
@@ -467,7 +485,10 @@ function ConfirmSheet({
   submitting,
 }: {
   campaignName: string;
-  items: (Item & { qty: number })[];
+  items: Item[];
+  qtyMap: Record<number, number>;
+  onQty: (ciId: number, q: number, cap: number | null) => void;
+  totalQty: number;
   totalAmount: number;
   notes: string;
   onNotes: (v: string) => void;
@@ -476,67 +497,88 @@ function ConfirmSheet({
   submitting: boolean;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/40">
+    <div
+      className="fixed inset-0 z-50 flex flex-col justify-end bg-black/40"
+      onClick={() => !submitting && onClose()}
+    >
       <div
-        className="rounded-t-3xl bg-[var(--background)] shadow-2xl"
-        style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+        className="flex max-h-[88vh] flex-col rounded-t-3xl bg-[var(--background)] shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
       >
-        {/* Drag handle */}
-        <div className="flex justify-center pt-2.5">
-          <div className="h-1 w-10 rounded-full bg-[#7676804d]" />
-        </div>
-
-        <div className="px-5 pt-3 pb-4">
-          <div className="flex items-start justify-between gap-3">
-            <h2 className="text-[24px] font-bold text-[var(--foreground)]">確認訂單</h2>
+        {/* Drag handle + header */}
+        <div className="shrink-0">
+          <div className="flex justify-center pt-2.5">
+            <div className="h-1 w-10 rounded-full bg-[#7676804d]" />
+          </div>
+          <div className="flex items-start justify-between gap-3 px-5 pb-3 pt-3">
+            <div className="min-w-0">
+              <h2 className="text-[22px] font-bold text-[var(--foreground)]">選擇商品</h2>
+              <p className="mt-0.5 line-clamp-1 text-[14px] text-[var(--secondary-label)]">
+                {campaignName}
+              </p>
+            </div>
             <button
               onClick={onClose}
-              className="text-[15px] text-[var(--ios-blue)]"
               disabled={submitting}
+              aria-label="關閉"
+              className="-mr-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#7676801f] text-[18px] text-[var(--ios-gray)] active:bg-[#76768033]"
             >
-              取消
+              ✕
             </button>
           </div>
-          <p className="mt-1 text-[14px] text-[var(--secondary-label)]">{campaignName}</p>
         </div>
 
-        <div className="space-y-3 px-4 pb-4">
-          {/* 項目 recap */}
-          <section className="overflow-hidden rounded-2xl bg-[var(--card-bg)]">
-            {items.map((it, idx) => (
-              <div
-                key={it.campaign_item_id}
-                className={`flex items-center justify-between gap-3 px-4 py-3 ${idx > 0 ? "border-t border-[var(--separator)]" : ""}`}
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="line-clamp-1 text-[16px] text-[var(--foreground)]">
-                    {it.product_name ?? `品項#${it.sku_id}`}
-                    {it.variant_name && (
-                      <span className="ml-1 text-[var(--secondary-label)]">/ {it.variant_name}</span>
-                    )}
-                  </div>
-                  <div className="text-[13px] text-[var(--secondary-label)]">
-                    ${Number(it.unit_price).toLocaleString()} × {it.qty}
-                  </div>
-                </div>
-                <div className="text-[17px] font-medium tabular-nums text-[var(--foreground)]">
-                  ${(Number(it.unit_price) * it.qty).toLocaleString()}
-                </div>
+        {/* 可捲動：規格逐項選數量 + 備註 */}
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 pb-4">
+          <section className="card overflow-hidden">
+            {items.length === 0 ? (
+              <div className="px-4 py-8 text-center text-[15px] text-[var(--tertiary-label)]">
+                尚無商品
               </div>
-            ))}
+            ) : (
+              items.map((it, idx) => {
+                const q = qtyMap[it.campaign_item_id] ?? 0;
+                return (
+                  <div
+                    key={it.campaign_item_id}
+                    className={`flex items-center gap-3 px-4 py-3.5 ${
+                      idx === items.length - 1 ? "" : "border-b border-[var(--separator)]"
+                    } ${q > 0 ? "bg-[var(--brand-soft)]/40" : ""}`}
+                  >
+                    <SkuThumb url={it.image_url} />
+                    <div className="min-w-0 flex-1">
+                      <div className="line-clamp-2 text-[15px] font-medium leading-tight text-[var(--foreground)]">
+                        {it.product_name ?? `品項#${it.sku_id}`}
+                      </div>
+                      {it.variant_name && (
+                        <div className="text-[13px] text-[var(--secondary-label)]">
+                          {it.variant_name}
+                        </div>
+                      )}
+                      <div className="mt-0.5 text-[18px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
+                        ${Number(it.unit_price).toLocaleString()}
+                      </div>
+                    </div>
+                    <Stepper
+                      qty={q}
+                      onChange={(nq) => onQty(it.campaign_item_id, nq, it.cap_qty)}
+                      max={it.cap_qty ?? 999}
+                    />
+                  </div>
+                );
+              })
+            )}
           </section>
 
-          {/* 取貨 */}
-          <section className="overflow-hidden rounded-2xl bg-[var(--card-bg)] px-4 py-3">
+          <section className="card px-4 py-3">
             <div className="text-[12px] uppercase tracking-wide text-[var(--tertiary-label)]">取貨</div>
             <div className="mt-1 text-[16px] text-[var(--foreground)]">您的主要門市（自動配貨）</div>
-            <div className="text-[12px] text-[var(--tertiary-label)] mt-0.5">
+            <div className="mt-0.5 text-[12px] text-[var(--tertiary-label)]">
               如需更改取貨點請與店家聯繫
             </div>
           </section>
 
-          {/* 備註 */}
-          <section className="overflow-hidden rounded-2xl bg-[var(--card-bg)] px-4 py-3">
+          <section className="card px-4 py-3">
             <div className="text-[12px] uppercase tracking-wide text-[var(--tertiary-label)]">備註</div>
             <textarea
               value={notes}
@@ -547,21 +589,28 @@ function ConfirmSheet({
               className="mt-1 w-full resize-none bg-transparent text-[16px] text-[var(--foreground)] outline-none placeholder:text-[var(--tertiary-label)]"
             />
           </section>
+        </div>
 
-          {/* Total + submit */}
-          <div className="flex items-center justify-between gap-3 pt-1">
-            <div>
-              <div className="text-[13px] text-[var(--secondary-label)]">應付金額</div>
-              <div className="text-[30px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
+        {/* 釘在 sheet 底的送出列（蝦皮式大鈕）*/}
+        <div
+          className="shrink-0 border-t border-[var(--separator)] bg-[var(--card-bg)] px-4 pt-3"
+          style={{ paddingBottom: "max(env(safe-area-inset-bottom), 12px)" }}
+        >
+          <div className="flex items-center gap-3">
+            <div className="shrink-0">
+              <div className="text-[12px] text-[var(--secondary-label)]">
+                合計 {totalQty} 件
+              </div>
+              <div className="text-[24px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
                 ${totalAmount.toLocaleString()}
               </div>
             </div>
             <button
               onClick={onSubmit}
-              disabled={submitting}
-              className="rounded-full bg-[var(--ios-blue)] px-7 py-3.5 text-[18px] font-semibold text-white active:opacity-80 disabled:opacity-50"
+              disabled={submitting || totalQty === 0}
+              className="flex-1 rounded-full brand-gradient py-3.5 text-[18px] font-bold text-white shadow-[0_8px_20px_-8px_rgba(158,47,80,0.6)] transition-transform active:scale-[0.99] disabled:opacity-40 disabled:shadow-none"
             >
-              {submitting ? "送出中…" : "確認下單"}
+              {submitting ? "送出中…" : totalQty === 0 ? "請先選擇商品" : "送出訂單"}
             </button>
           </div>
         </div>
