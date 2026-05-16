@@ -35,7 +35,6 @@ type CampaignDetail = {
   status: string;
   end_at: string | null;
   pickup_deadline: string | null;
-  order_count: number;
 };
 
 type Item = {
@@ -188,11 +187,18 @@ export default function CampaignDetailPage() {
                 <h1 className="flex-1 text-[26px] font-bold leading-tight text-[var(--foreground)]">
                   {campaign.name}
                 </h1>
-                {campaign.order_count > 0 && (
-                  <div className="mt-1.5 shrink-0 rounded-lg bg-[var(--tertiary-label)]/10 px-2 py-1 text-[13px] font-semibold text-[var(--secondary-label)]">
-                    {campaign.order_count} 筆訂單
-                  </div>
-                )}
+                {(() => {
+                  const orderedQty = items.reduce(
+                    (s, it) => s + Number(it.ordered_qty ?? 0),
+                    0,
+                  );
+                  if (orderedQty <= 0) return null;
+                  return (
+                    <div className="mt-1.5 shrink-0 rounded-lg bg-[var(--tertiary-label)]/10 px-2 py-1 text-[13px] font-semibold text-[var(--secondary-label)]">
+                      已訂購 {orderedQty.toLocaleString()} 件
+                    </div>
+                  );
+                })()}
               </div>
               {campaign.description && (() => {
                 const desc = cleanDescription(campaign.description);
