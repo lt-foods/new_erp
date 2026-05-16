@@ -131,6 +131,9 @@ export default function CampaignCard({
                   <>
                     {label && <span>{label}</span>}
                     {campaign.end_at && <Countdown target={campaign.end_at} compact />}
+                    {campaign.order_count > 0 && (
+                      <span className="text-[12px] opacity-90">· {campaign.order_count} 筆訂單</span>
+                    )}
                     {isLimited && remaining !== null && (
                       <span className="text-[12px] opacity-90">· 剩 {remaining} 份</span>
                     )}
@@ -190,15 +193,16 @@ export default function CampaignCard({
               </span>
             );
           }
-          if (!label) return null;
-          const isLimited = label.includes("限量");
+          if (!label && campaign.order_count <= 0) return null;
+          const isLimited = label?.includes("限量");
           return (
             <span
               className={`absolute left-2 top-2 rounded-full px-2 py-0.5 text-[11px] font-semibold text-white shadow-sm backdrop-blur ${
                 isLimited ? "bg-[var(--ios-red)]/90" : "bg-[var(--ios-orange)]/90"
               }`}
             >
-              {label}
+              {label || "進行中"}
+              {campaign.order_count > 0 && ` · ${campaign.order_count} 筆訂單`}
             </span>
           );
         })()}
