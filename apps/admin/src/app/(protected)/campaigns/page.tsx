@@ -11,6 +11,20 @@ import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 
+// 共用: chunked fetch — bypass PostgREST max-rows 1000 cap
+// builder: 回 fresh query builder 的 factory (因為 .range() 後不能 reuse)
+async function fetchAll<T>(builder: () => any, pageSize = 1000, maxPages = 50): Promise<T[]> {
+  const all: T[] = [];
+  for (let p = 0; p < maxPages; p++) {
+    const { data, error } = await builder().range(p * pageSize, (p + 1) * pageSize - 1);
+    if (error) throw error;
+    const rows = (data ?? []) as T[];
+    all.push(...rows);
+    if (rows.length < pageSize) break;
+  }
+  return all;
+}
+
 type Status =
   | "draft" | "open" | "closed" | "ordered" | "receiving" | "ready" | "completed" | "cancelled";
 
@@ -95,6 +109,10 @@ export default function CampaignsListPage() {
   const [closingId, setClosingId] = useState<number | null>(null);
   const [finalizingId, setFinalizingId] = useState<number | null>(null);
 
+  // 多選 + 批次操作
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState<"open" | "closed" | "cancelled" | null>(null);
+
   const [view, setView] = useState<View>(() => {
     if (typeof window === "undefined") return "list";
     const saved = window.localStorage.getItem("campaigns:view");
@@ -113,6 +131,52 @@ export default function CampaignsListPage() {
   const [calOrderCounts, setCalOrderCounts] = useState<Map<number, number>>(new Map());
   const [calOffsetCounts, setCalOffsetCounts] = useState<Map<number, number>>(new Map());
   const [monthAnchor, setMonthAnchor] = useState<Date>(() => startOfDay(new Date()));
+
+  async function bulkSetStatus(target: "open" | "closed" | "cancelled", label: string) {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    if (!confirm(`確定將已選的 ${ids.length} 個開團設為「${label}」？\n（系統會自動跳過狀態不合法、無商品或已是此狀態的）`)) return;
+    setBulkBusy(target);
+    setError(null);
+    try {
+      const { data, error: err } = await getSupabase().rpc("rpc_bulk_set_campaign_status", {
+        p_ids: ids,
+        p_status: target,
+      });
+      if (err) throw err;
+      const changed = typeof data === "number" ? data : 0;
+      const skipped = ids.length - changed;
+      setSelectedIds(new Set());
+      setReloadTick((t) => t + 1);
+      if (skipped > 0) {
+        console.info(`bulk_set_campaign_status: ${changed} updated, ${skipped} skipped`);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBulkBusy(null);
+    }
+  }
+
+  function toggleSelect(id: number) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAllOnPage() {
+    if (!rows) return;
+    const idsOnPage = rows.map((r) => r.id);
+    const allSelected = idsOnPage.every((id) => selectedIds.has(id));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allSelected) idsOnPage.forEach((id) => next.delete(id));
+      else idsOnPage.forEach((id) => next.add(id));
+      return next;
+    });
+  }
 
   async function closeCampaign(id: number, name: string) {
     if (!confirm(`確定結單「${name}」？結單後可從採購單頁面「帶入該日商品」產生 PR。`)) return;
@@ -188,7 +252,9 @@ export default function CampaignsListPage() {
         let q = getSupabase()
           .from("group_buy_campaigns")
           .select("id, campaign_no, name, status, close_type, start_at, end_at, pickup_deadline, updated_at", { count: "exact" })
-          .order("updated_at", { ascending: false })
+          .neq("campaign_no", "__INTERNAL_RESTOCK__")
+          .order("start_at", { ascending: false, nullsFirst: false })
+          .order("id", { ascending: false })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
         if (query.trim()) {
           const safe = query.replace(/[%,()]/g, " ").trim();
@@ -204,28 +270,34 @@ export default function CampaignsListPage() {
         setTotal(count ?? 0);
 
         // 補商品數 + 下單總數量（normal / offset 分開、SUM(qty)）
+        // chunked fetch: 跨萬筆訂單仍 work (bypass PostgREST 1000 row cap)
         const ids = (data ?? []).map((r) => r.id);
         if (ids.length) {
           const sb = getSupabase();
-          const [itemRes, orderRes] = await Promise.all([
-            sb.from("campaign_items").select("campaign_id").in("campaign_id", ids),
-            sb.from("customer_orders").select("id, campaign_id, order_kind").in("campaign_id", ids),
+          const [itemRows, ordersList] = await Promise.all([
+            fetchAll<{ campaign_id: number }>(() =>
+              sb.from("campaign_items").select("campaign_id").in("campaign_id", ids).order("id", { ascending: true })),
+            fetchAll<{ id: number; campaign_id: number; order_kind: string }>(() =>
+              sb.from("customer_orders").select("id, campaign_id, order_kind").in("campaign_id", ids).order("id", { ascending: true })),
           ]);
           const m = new Map<number, number>();
           for (const id of ids) m.set(id, 0);
-          for (const it of itemRes.data ?? []) m.set(it.campaign_id, (m.get(it.campaign_id) ?? 0) + 1);
+          for (const it of itemRows) m.set(it.campaign_id, (m.get(it.campaign_id) ?? 0) + 1);
           if (!cancelled) setItemCounts(m);
 
-          // 抓 items qty 並依 order_kind 聚合到 campaign
-          const ordersList = (orderRes.data ?? []) as { id: number; campaign_id: number; order_kind: string }[];
+          // 抓 items qty 並依 order_kind 聚合到 campaign — chunked by orderId in batches + range
           const orderIds = ordersList.map((o) => o.id);
-          const oqRes = orderIds.length
-            ? await sb.from("customer_order_items").select("order_id, qty").in("order_id", orderIds)
-            : { data: [] as { order_id: number; qty: number }[] };
+          const oqRows: { order_id: number; qty: number }[] = [];
+          for (let i = 0; i < orderIds.length; i += 500) {
+            const chunk = orderIds.slice(i, i + 500);
+            const rows = await fetchAll<{ order_id: number; qty: number }>(() =>
+              sb.from("customer_order_items").select("order_id, qty").in("order_id", chunk).order("id", { ascending: true }));
+            oqRows.push(...rows);
+          }
           const orderMeta = new Map(ordersList.map((o) => [o.id, o]));
           const om = new Map<number, { normalQty: number; offsetQty: number }>();
           for (const id of ids) om.set(id, { normalQty: 0, offsetQty: 0 });
-          for (const it of (oqRes.data ?? []) as { order_id: number; qty: number }[]) {
+          for (const it of oqRows) {
             const meta = orderMeta.get(it.order_id);
             if (!meta) continue;
             const cur = om.get(meta.campaign_id) ?? { normalQty: 0, offsetQty: 0 };
@@ -262,6 +334,7 @@ export default function CampaignsListPage() {
       const { data, error } = await getSupabase()
         .from("group_buy_campaigns")
         .select("id, campaign_no, name, status, close_type, start_at, display_order")
+        .neq("campaign_no", "__INTERNAL_RESTOCK__")
         .gte("start_at", from.toISOString())
         .lt("start_at", to.toISOString())
         .order("start_at", { ascending: true })
@@ -272,29 +345,34 @@ export default function CampaignsListPage() {
       const list = (data ?? []) as CalRow[];
       setCalRows(list);
 
-      // 補商品數 + 下單總數量（normal / offset 分開計、SUM(qty)）
+      // 補商品數 + 下單總數量 — chunked fetch (bypass PostgREST 1000 cap)
       const ids = list.map((r) => r.id);
       if (ids.length > 0) {
         const sb = getSupabase();
-        const [itemRes, orderRes] = await Promise.all([
-          sb.from("campaign_items").select("campaign_id").in("campaign_id", ids),
-          sb.from("customer_orders").select("id, campaign_id, order_kind").in("campaign_id", ids),
+        const [itemRows, ordersList] = await Promise.all([
+          fetchAll<{ campaign_id: number }>(() =>
+            sb.from("campaign_items").select("campaign_id").in("campaign_id", ids).order("id", { ascending: true })),
+          fetchAll<{ id: number; campaign_id: number; order_kind: string }>(() =>
+            sb.from("customer_orders").select("id, campaign_id, order_kind").in("campaign_id", ids).order("id", { ascending: true })),
         ]);
         if (cancelled) return;
         const im = new Map<number, number>();
         const om = new Map<number, number>();
         const offm = new Map<number, number>();
         for (const id of ids) { im.set(id, 0); om.set(id, 0); offm.set(id, 0); }
-        for (const it of itemRes.data ?? []) im.set(it.campaign_id, (im.get(it.campaign_id) ?? 0) + 1);
+        for (const it of itemRows) im.set(it.campaign_id, (im.get(it.campaign_id) ?? 0) + 1);
 
-        const ordersList = (orderRes.data ?? []) as { id: number; campaign_id: number; order_kind: string }[];
         const orderIds = ordersList.map((o) => o.id);
-        const oqRes = orderIds.length
-          ? await sb.from("customer_order_items").select("order_id, qty").in("order_id", orderIds)
-          : { data: [] as { order_id: number; qty: number }[] };
+        const oqRows: { order_id: number; qty: number }[] = [];
+        for (let i = 0; i < orderIds.length; i += 500) {
+          const chunk = orderIds.slice(i, i + 500);
+          const rows = await fetchAll<{ order_id: number; qty: number }>(() =>
+            sb.from("customer_order_items").select("order_id, qty").in("order_id", chunk).order("id", { ascending: true }));
+          oqRows.push(...rows);
+        }
         if (cancelled) return;
         const orderMeta = new Map(ordersList.map((o) => [o.id, o]));
-        for (const it of (oqRes.data ?? []) as { order_id: number; qty: number }[]) {
+        for (const it of oqRows) {
           const meta = orderMeta.get(it.order_id);
           if (!meta) continue;
           if (meta.order_kind === "offset") {
@@ -415,18 +493,74 @@ export default function CampaignsListPage() {
         />
       )}
 
+      {view === "list" && selectedIds.size > 0 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-zinc-300 bg-white px-4 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+          <span className="text-zinc-600 dark:text-zinc-400">已選 <span className="font-semibold">{selectedIds.size}</span> 個開團</span>
+          <SpinButton
+            onClick={() => bulkSetStatus("open", "開團中")}
+            disabled={bulkBusy !== null}
+            className="rounded-md bg-green-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-600 disabled:opacity-50"
+          >
+            {bulkBusy === "open" ? "啟動中…" : "批次開團"}
+          </SpinButton>
+          <SpinButton
+            onClick={() => bulkSetStatus("closed", "已收單")}
+            disabled={bulkBusy !== null}
+            className="rounded-md bg-amber-100 px-3 py-1.5 text-sm font-medium text-amber-800 hover:bg-amber-200 disabled:opacity-50 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-900"
+          >
+            {bulkBusy === "closed" ? "結單中…" : "批次結單"}
+          </SpinButton>
+          <SpinButton
+            onClick={() => bulkSetStatus("cancelled", "已取消")}
+            disabled={bulkBusy !== null}
+            className="rounded-md bg-red-100 px-3 py-1.5 text-sm font-medium text-red-800 hover:bg-red-200 disabled:opacity-50 dark:bg-red-950 dark:text-red-300 dark:hover:bg-red-900"
+          >
+            {bulkBusy === "cancelled" ? "取消中…" : "批次取消"}
+          </SpinButton>
+          <SpinButton
+            onClick={() => setSelectedIds(new Set())}
+            className="ml-auto text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
+          >
+            清除選取
+          </SpinButton>
+        </div>
+      )}
+
       {view === "list" && (
       <Table>
         <THead>
+          <Th className="w-10">
+            <input
+              type="checkbox"
+              checked={!!rows && rows.length > 0 && rows.every((r) => selectedIds.has(r.id))}
+              ref={(el) => {
+                if (el && rows) {
+                  const allSel = rows.length > 0 && rows.every((r) => selectedIds.has(r.id));
+                  const someSel = rows.some((r) => selectedIds.has(r.id));
+                  el.indeterminate = !allSel && someSel;
+                }
+              }}
+              onChange={toggleAllOnPage}
+              className="cursor-pointer"
+            />
+          </Th>
           <Th>團號</Th><Th>名稱</Th><Th>狀態</Th><Th>收單</Th><Th>開團/收單</Th><Th>取貨截止</Th><Th align="right">商品數</Th><Th align="right">下單總數</Th><Th align="right">更新</Th><Th>{""}</Th>
         </THead>
         <TBody>
           {rows === null ? (
-            <LoadingRow colSpan={10} />
+            <LoadingRow colSpan={11} />
           ) : rows.length === 0 ? (
-            <EmptyRow colSpan={10}>{total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}</EmptyRow>
+            <EmptyRow colSpan={11}>{total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}</EmptyRow>
           ) : rows.map((r) => (
-            <Tr key={r.id}>
+            <Tr key={r.id} className={selectedIds.has(r.id) ? "bg-blue-50 dark:bg-blue-950/30" : ""}>
+                <Td className="w-10">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(r.id)}
+                    onChange={() => toggleSelect(r.id)}
+                    className="cursor-pointer"
+                  />
+                </Td>
                 <Td className="font-mono">
                   <SpinButton onClick={() => openEdit(r.id)} className="hover:underline">{r.campaign_no}</SpinButton>
                 </Td>

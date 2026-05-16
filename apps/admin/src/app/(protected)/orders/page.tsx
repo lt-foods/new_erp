@@ -254,25 +254,35 @@ function OrdersListContent() {
       const today = new Date();
       const startDate = new Date(today.getFullYear(), today.getMonth(), 1);
 
-      let q = sb
-        .from("customer_orders")
-        .select("id, member_id, created_at")
-        .neq("status", "transferred_out")
-        .gte("created_at", startDate.toISOString());
-      if (campaignIds.length === 1) q = q.eq("campaign_id", Number(campaignIds[0]));
-      else if (campaignIds.length > 1)
-        q = q.in("campaign_id", campaignIds.map((x) => Number(x)));
-      if (storeId) q = q.eq("pickup_store_id", Number(storeId));
-      q = q.limit(20000);
-
-      const { data: oData, error: oErr } = await q;
-      if (cancelled) return;
-      if (oErr || !oData) {
-        setTrend({ days: buildEmptyTrend(today), total: { orders: 0, amount: 0, members: 0, aov: 0 } });
-        return;
+      // Chunked fetch — bypass PostgREST max-rows cap (預設 1000)
+      // 用 id range pagination、可疊到 50K rows
+      const orders: { id: number; member_id: number | null; created_at: string }[] = [];
+      const PAGE = 1000;
+      const MAX_PAGES = 50;
+      let truncated = false;
+      for (let p = 0; p < MAX_PAGES; p++) {
+        let pq = sb
+          .from("customer_orders")
+          .select("id, member_id, created_at")
+          .neq("status", "transferred_out")
+          .gte("created_at", startDate.toISOString())
+          .order("id", { ascending: true });
+        if (campaignIds.length === 1) pq = pq.eq("campaign_id", Number(campaignIds[0]));
+        else if (campaignIds.length > 1)
+          pq = pq.in("campaign_id", campaignIds.map((x) => Number(x)));
+        if (storeId) pq = pq.eq("pickup_store_id", Number(storeId));
+        pq = pq.range(p * PAGE, (p + 1) * PAGE - 1);
+        const { data: pData, error: pErr } = await pq;
+        if (cancelled) return;
+        if (pErr) {
+          setTrend({ days: buildEmptyTrend(today), total: { orders: 0, amount: 0, members: 0, aov: 0 } });
+          return;
+        }
+        const rows = (pData ?? []) as typeof orders;
+        orders.push(...rows);
+        if (rows.length < PAGE) break;
+        if (p === MAX_PAGES - 1) truncated = true;
       }
-      const orders = oData as { id: number; member_id: number | null; created_at: string }[];
-      const truncated = orders.length >= 20000;
       setTrendTruncated(truncated);
 
       // 本月累計 — orders 每筆 id 唯一、members 跨日 distinct
@@ -281,14 +291,21 @@ function OrdersListContent() {
         if (o.member_id != null) monthMemberIds.add(o.member_id);
       }
 
-      // 每日 buckets (key = YYYY-MM-DD, 用 local timezone 推, 跟 created_at 直接 slice 一致)
+      // 每日 buckets — key = 台北日 YYYY-MM-DD（不能用 created_at.slice(0,10)，
+      // 那是 UTC 日，會把台北凌晨的訂單錯誤歸到前一天）
+      const tpeFmt = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Taipei",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
       const buckets = new Map<
         string,
         { orderIds: Set<number>; memberIds: Set<number>; amount: number }
       >();
       const orderDay = new Map<number, string>();
       for (const o of orders) {
-        const ymd = o.created_at.slice(0, 10);
+        const ymd = tpeFmt.format(new Date(o.created_at));
         orderDay.set(o.id, ymd);
         let b = buckets.get(ymd);
         if (!b) {

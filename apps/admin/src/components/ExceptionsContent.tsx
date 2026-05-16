@@ -429,8 +429,8 @@ export default function ExceptionsContent({
               <tr><td colSpan={8} className="p-6 text-center text-zinc-500">沒有異常,系統運作正常 ✓</td></tr>
             ) : filtered.map((r) => (
               <tr key={r.key} className="hover:bg-zinc-50 dark:hover:bg-zinc-950">
-                <td className="px-3 py-2">
-                  <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${
+                <td className="px-3 py-2 whitespace-nowrap">
+                  <span className={`inline-flex whitespace-nowrap rounded px-2 py-0.5 text-xs font-medium ${
                     r.type === "po_shortage" ? "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300" :
                     r.type === "po_damage" ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300" :
                     r.type === "po_over" ? "bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300" :
@@ -438,19 +438,19 @@ export default function ExceptionsContent({
                     "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-950 dark:text-fuchsia-300"
                   }`}>{TAB_LABEL[r.type]}</span>
                 </td>
-                <td className="px-3 py-2 font-mono text-xs">{r.doc_no}</td>
-                <td className="px-3 py-2 text-xs">
+                <td className="px-3 py-2 font-mono text-xs whitespace-nowrap">{r.doc_no}</td>
+                <td className="px-3 py-2 text-xs min-w-[220px]">
                   {r.sku_code && <div className="font-mono text-[10px] text-zinc-500">{r.sku_code}</div>}
                   <div>{r.sku_label}</div>
                 </td>
-                <td className="px-3 py-2 text-right font-mono text-xs">{r.expected}</td>
-                <td className="px-3 py-2 text-right font-mono text-xs">{r.actual}</td>
-                <td className="px-3 py-2 text-right font-mono text-xs font-bold text-rose-600">{r.diff > 0 ? `-${r.diff}` : `+${Math.abs(r.diff)}`}</td>
+                <td className="px-3 py-2 text-right font-mono text-xs whitespace-nowrap">{r.expected}</td>
+                <td className="px-3 py-2 text-right font-mono text-xs whitespace-nowrap">{r.actual}</td>
+                <td className="px-3 py-2 text-right font-mono text-xs font-bold text-rose-600 whitespace-nowrap">{r.diff > 0 ? `-${r.diff}` : `+${Math.abs(r.diff)}`}</td>
                 <td className="px-3 py-2 text-xs text-zinc-500">
-                  {r.reason && <div className="text-amber-700 dark:text-amber-400">⚠ {r.reason}</div>}
-                  <div>{r.extra}</div>
+                  {r.reason && <div className="text-amber-700 dark:text-amber-400 whitespace-nowrap">⚠ {r.reason}</div>}
+                  <div className="whitespace-nowrap">{r.extra}</div>
                 </td>
-                <td className="px-3 py-2 text-xs">
+                <td className="px-3 py-2 text-xs whitespace-nowrap">
                   {r.type === "transfer_short" && r.shortage_ctx ? (
                     <SpinButton
                       onClick={() => setResolveCtx(r.shortage_ctx ?? null)}
@@ -462,7 +462,7 @@ export default function ExceptionsContent({
                     r.shortage_resolution ? (
                       <Link href={r.doc_link} className="text-blue-600 hover:underline dark:text-blue-400">看訂單 →</Link>
                     ) : (
-                      <div className="flex flex-wrap justify-end gap-1">
+                      <div className="flex flex-nowrap justify-end gap-1">
                         <SpinButton
                           onClick={() => handleCustomerShortageAction(r.customer_order_id!, "notified")}
                           disabled={busy === r.customer_order_id}

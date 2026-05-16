@@ -54,9 +54,9 @@ export default function OrderCard({ order }: { order: OrderRow }) {
   const title = order.campaign_name ?? "訂單";
 
   return (
-    <article className="overflow-hidden rounded-2xl bg-[var(--card-bg)] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
-      <header className="px-4 pt-4 pb-3">
-        <h3 className="truncate text-[18px] font-semibold text-[var(--foreground)]">{title}</h3>
+    <article className="card overflow-hidden">
+      <header className="bg-[var(--brand-soft)]/35 px-4 pt-4 pb-3">
+        <h3 className="truncate text-[18px] font-bold text-[var(--foreground)]">{title}</h3>
         <p className="mt-0.5 text-[14px] text-[var(--secondary-label)]">
           {fmtDate(order.created_at)}
           {order.store_name && (

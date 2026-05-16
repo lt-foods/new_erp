@@ -655,7 +655,14 @@ export default function PickingWorkstationPage() {
         </span>
 
         {viewMode === "matrix" && skuRows.length > 0 && (
-          <div className="ml-auto">
+          <div className="ml-auto flex flex-wrap gap-2">
+            <Link
+              href="/picking/print-pick-list"
+              target="_blank"
+              className="rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300 dark:hover:bg-blue-900"
+            >
+              📄 列印撿貨清單
+            </Link>
             <SpinButton
               onClick={submitAll}
               disabled={submitting || totalAllocSum === 0}

@@ -44,11 +44,11 @@ export default function SettlementCard({ settlement: s }: { settlement: Settleme
   const shipped = ["shipping", "completed"].includes(s.status);
 
   return (
-    <article className="overflow-hidden rounded-2xl bg-[var(--card-bg)] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
-      <header className="flex items-center justify-between gap-2 px-4 pt-3.5 pb-3">
+    <article className="card overflow-hidden">
+      <header className="flex items-center justify-between gap-2 bg-[var(--brand-soft)]/35 px-4 pt-3.5 pb-3">
         <div>
           <div className="text-[12px] uppercase tracking-wide text-[var(--tertiary-label)]">結單編號</div>
-          <div className="font-mono text-[17px] font-medium text-[var(--foreground)]">{s.settlement_no}</div>
+          <div className="font-mono text-[17px] font-bold text-[var(--foreground)]">{s.settlement_no}</div>
         </div>
         <div className="flex gap-1.5">
           <StatusChip tone={paid ? "ok" : "warn"} label={paid ? "已付款" : "未付款"} />

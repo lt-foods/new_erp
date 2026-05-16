@@ -270,8 +270,6 @@ export function ProductForm({
         </Field>
       </Grid>
 
-      {midSlot}
-
       <Grid>
         <Field label="儲存溫層">
           <select
@@ -306,6 +304,8 @@ export function ProductForm({
           </select>
         </Field>
       </Grid>
+
+      {midSlot}
 
       <div className="flex flex-wrap gap-4">
         <Checkbox

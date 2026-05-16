@@ -81,8 +81,11 @@ export default function MemberTabBar() {
 
   return (
     <nav
-      className="fixed inset-x-0 bottom-0 z-30 border-t border-[var(--separator)] bg-white/85 backdrop-blur-xl"
-      style={{ paddingBottom: "max(env(safe-area-inset-bottom), 20px)" }}
+      className="fixed inset-x-0 bottom-0 z-30 border-t border-[var(--separator)] bg-white/80 backdrop-blur-xl"
+      style={{
+        paddingBottom: "max(env(safe-area-inset-bottom), 20px)",
+        boxShadow: "0 -8px 24px -16px rgba(158,47,80,0.25)",
+      }}
     >
       <ul className="mx-auto flex max-w-md items-stretch">
         {tabs.map((t) => {
@@ -93,15 +96,19 @@ export default function MemberTabBar() {
             <li key={t.href} className="flex-1">
               <Link
                 href={t.href}
-                className={`flex flex-col items-center justify-center gap-1.5 px-1 pb-2.5 pt-3.5 text-[13px] font-medium transition-colors ${
+                className={`flex flex-col items-center justify-center gap-1 px-1 pb-2.5 pt-2.5 text-[12px] font-semibold transition-colors duration-200 ${
                   active ? "text-[var(--brand-strong)]" : "text-[var(--ios-gray)]"
                 }`}
               >
-                <span className="relative">
+                <span
+                  className={`relative flex h-9 w-[52px] items-center justify-center rounded-full transition-all duration-300 ${
+                    active ? "bg-[var(--brand-soft)] scale-100" : "bg-transparent scale-90"
+                  }`}
+                >
                   {t.icon(active)}
                   {showBadge && (
                     <span
-                      className="absolute -right-1.5 -top-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[#ff3b30] px-1 text-[11px] font-semibold leading-none text-white"
+                      className="absolute right-1 -top-0.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[var(--ios-red)] px-1 text-[11px] font-semibold leading-none text-white ring-2 ring-white"
                       aria-label={`${unreadCount} 則未讀`}
                     >
                       {badgeText}

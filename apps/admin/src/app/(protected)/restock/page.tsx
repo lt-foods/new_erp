@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
+import RestockDetailModal from "@/components/RestockDetailModal";
 
 const PAGE_SIZE = 20;
 
@@ -24,6 +25,7 @@ type Row = {
   created_at: string;
   line_count: number;
   total_amount: number;
+  items_summary: string;
 };
 
 const STATUS_LABEL: Record<Status, string> = {
@@ -53,6 +55,7 @@ export default function RestockListPage() {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("pending");
   const [page, setPage] = useState(1);
+  const [detailId, setDetailId] = useState<number | null>(null);
 
   useEffect(() => { setPage(1); }, [tab]);
 
@@ -67,15 +70,52 @@ export default function RestockListPage() {
       if (err) { setError(err.message); return; }
       const reqRows = (data ?? []) as unknown as Array<Row & { stores?: { name: string } }>;
       const ids = reqRows.map((r) => r.id);
-      // 取 line count + total
-      const lineMap = new Map<number, { count: number; total: number }>();
+      // 取 line count + total + items summary（含 sku_code + 商品名）
+      const lineMap = new Map<number, { count: number; total: number; summary: string }>();
       if (ids.length > 0) {
-        const { data: lineData } = await sb.from("restock_request_lines").select("request_id, qty, unit_price").in("request_id", ids);
-        for (const l of (lineData ?? []) as { request_id: number; qty: number; unit_price: number }[]) {
-          const slot = lineMap.get(l.request_id) ?? { count: 0, total: 0 };
+        const { data: lineData } = await sb
+          .from("restock_request_lines")
+          .select("request_id, sku_id, qty, unit_price")
+          .in("request_id", ids);
+        const lines = (lineData ?? []) as { request_id: number; sku_id: number; qty: number; unit_price: number }[];
+
+        // 撈 SKU + 商品名（restock_request_lines.sku_id 有 FK 但兩階段 fetch 較穩）
+        const skuIds = Array.from(new Set(lines.map((l) => l.sku_id))).filter((x) => x != null);
+        let skuLabelMap = new Map<number, string>();
+        if (skuIds.length > 0) {
+          const { data: skus } = await sb
+            .from("skus")
+            .select("id, sku_code, variant_name, product_id")
+            .in("id", skuIds);
+          const skuArr = (skus ?? []) as { id: number; sku_code: string; variant_name: string | null; product_id: number | null }[];
+          const prodIds = Array.from(new Set(skuArr.map((s) => s.product_id).filter((x): x is number => x != null)));
+          let prodNameMap = new Map<number, string>();
+          if (prodIds.length > 0) {
+            const { data: prods } = await sb.from("products").select("id, name").in("id", prodIds);
+            prodNameMap = new Map(((prods ?? []) as { id: number; name: string }[]).map((p) => [p.id, p.name]));
+          }
+          skuLabelMap = new Map(
+            skuArr.map((s) => [
+              s.id,
+              s.product_id != null ? prodNameMap.get(s.product_id) ?? s.sku_code : s.sku_code,
+            ])
+          );
+        }
+
+        const partsMap = new Map<number, string[]>();
+        for (const l of lines) {
+          const slot = lineMap.get(l.request_id) ?? { count: 0, total: 0, summary: "" };
           slot.count += 1;
           slot.total += Number(l.qty) * Number(l.unit_price);
           lineMap.set(l.request_id, slot);
+          const label = skuLabelMap.get(l.sku_id) ?? `#${l.sku_id}`;
+          const parts = partsMap.get(l.request_id) ?? [];
+          parts.push(`${label}×${Number(l.qty)}`);
+          partsMap.set(l.request_id, parts);
+        }
+        for (const [rid, parts] of partsMap) {
+          const slot = lineMap.get(rid);
+          if (slot) slot.summary = parts.join("、");
         }
       }
       // 取 transfer / pr 編號
@@ -97,6 +137,7 @@ export default function RestockListPage() {
         store_name: r.stores?.name ?? null,
         line_count: lineMap.get(r.id)?.count ?? 0,
         total_amount: lineMap.get(r.id)?.total ?? 0,
+        items_summary: lineMap.get(r.id)?.summary ?? "",
         linked_transfer_no: r.linked_transfer_id ? xferMap.get(r.linked_transfer_id) ?? null : null,
         linked_pr_no: r.linked_pr_id ? prMap.get(r.linked_pr_id) ?? null : null,
       })));
@@ -152,6 +193,7 @@ export default function RestockListPage() {
           <Th>日期</Th>
           <Th>店</Th>
           <Th align="right">商品數</Th>
+          <Th>品項</Th>
           <Th align="right">總金額</Th>
           <Th>狀態</Th>
           <Th>連結 / 拒絕原因</Th>
@@ -159,14 +201,21 @@ export default function RestockListPage() {
         </THead>
         <TBody>
           {rows === null ? (
-            <LoadingRow colSpan={7} />
+            <LoadingRow colSpan={8} />
           ) : filtered.length === 0 ? (
-            <EmptyRow colSpan={7}>沒有符合條件的申請</EmptyRow>
+            <EmptyRow colSpan={8}>沒有符合條件的申請</EmptyRow>
           ) : paginated.map((r) => (
-            <Tr key={r.id}>
+            <Tr
+              key={r.id}
+              onClick={() => setDetailId(r.id)}
+              className="cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-950"
+            >
               <Td className="whitespace-nowrap text-xs text-zinc-500">{new Date(r.created_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}</Td>
               <Td>{r.store_name ?? "—"}</Td>
               <Td align="right" className="font-mono">{r.line_count}</Td>
+              <Td className="max-w-md text-xs text-zinc-600 dark:text-zinc-300">
+                <span title={r.items_summary} className="line-clamp-2">{r.items_summary || "—"}</span>
+              </Td>
               <Td align="right" className="font-mono">${r.total_amount.toFixed(0)}</Td>
               <Td>
                 <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[r.status]}`}>
@@ -175,12 +224,20 @@ export default function RestockListPage() {
               </Td>
               <Td className="text-xs">
                 {r.linked_transfer_no && (
-                  <Link href={`/hq/inbox?source=transfer&id=${r.linked_transfer_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
+                  <Link
+                    href={`/hq/inbox?source=transfer&id=${r.linked_transfer_id}`}
+                    onClick={(e) => e.stopPropagation()}
+                    className="font-mono text-blue-600 hover:underline dark:text-blue-400"
+                  >
                     → {r.linked_transfer_no}
                   </Link>
                 )}
                 {r.linked_pr_no && (
-                  <Link href={`/purchase/requests/edit?id=${r.linked_pr_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
+                  <Link
+                    href={`/purchase/requests/edit?id=${r.linked_pr_id}`}
+                    onClick={(e) => e.stopPropagation()}
+                    className="font-mono text-blue-600 hover:underline dark:text-blue-400"
+                  >
                     → {r.linked_pr_no}
                   </Link>
                 )}
@@ -193,6 +250,12 @@ export default function RestockListPage() {
           ))}
         </TBody>
       </Table>
+
+      <RestockDetailModal
+        open={detailId !== null}
+        restockId={detailId}
+        onClose={() => setDetailId(null)}
+      />
 
       {filtered.length > PAGE_SIZE && (
         <div className="flex flex-wrap items-center justify-end gap-2 text-sm">

@@ -274,6 +274,7 @@ function PageContent() {
   // multi-select for 開團
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [campaignModal, setCampaignModal] = useState<SelectedProduct[] | null>(null);
+  const [bulkUpdating, setBulkUpdating] = useState<Status | null>(null);
 
   // product edit modal
   const [modal, setModal] = useState<
@@ -335,6 +336,35 @@ function PageContent() {
         vip_level_min: d.vip_level_min ?? 0,
       },
     });
+  }
+
+  // 批次切換商品狀態
+  async function bulkUpdateStatus(target: Status, label: string) {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    if (!window.confirm(`確定要將已選的 ${ids.length} 項商品設為「${label}」？`)) return;
+    setBulkUpdating(target);
+    setError(null);
+    try {
+      const { data, error: err } = await getSupabase().rpc("rpc_bulk_update_product_status", {
+        p_ids: ids,
+        p_status: target,
+        p_reason: null,
+      });
+      if (err) throw err;
+      setSelectedIds(new Set());
+      setReloadTick((t) => t + 1);
+      const changed = typeof data === "number" ? data : 0;
+      const skipped = ids.length - changed;
+      if (skipped > 0) {
+        // 不擋流程：用 console + 一行訊息提示，避免 UX 中斷
+        console.info(`bulk_update_product_status: ${changed} updated, ${skipped} skipped (already ${target} or cross-tenant)`);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBulkUpdating(null);
+    }
   }
 
   // open 開團 modal: fetch storage_type for selected product ids
@@ -399,6 +429,7 @@ function PageContent() {
           .select("id, product_code, name, short_name, status, brand_id, category_id, updated_at", {
             count: "exact",
           })
+          .eq("is_virtual", false)
           .order(sortBy, { ascending: sortDir === "asc" })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
@@ -498,7 +529,7 @@ function PageContent() {
 
       {/* 多選工具列 */}
       {selectedIds.size > 0 && (
-        <div className="flex items-center gap-3 rounded-md border border-zinc-300 bg-white px-4 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-zinc-300 bg-white px-4 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
           <span className="text-zinc-600 dark:text-zinc-400">已選 <span className="font-semibold">{selectedIds.size}</span> 項商品</span>
           <SpinButton
             onClick={openCampaignModal}
@@ -506,6 +537,25 @@ function PageContent() {
           >
             開團
           </SpinButton>
+          {!campaignMode && (
+            <>
+              <span className="mx-1 h-5 w-px bg-zinc-300 dark:bg-zinc-700" />
+              <SpinButton
+                onClick={() => bulkUpdateStatus("active", "上架")}
+                disabled={bulkUpdating !== null}
+                className="rounded-md bg-green-100 px-3 py-1.5 text-sm font-medium text-green-800 hover:bg-green-200 disabled:opacity-50 dark:bg-green-950 dark:text-green-300 dark:hover:bg-green-900"
+              >
+                {bulkUpdating === "active" ? "上架中…" : "批次上架"}
+              </SpinButton>
+              <SpinButton
+                onClick={() => bulkUpdateStatus("inactive", "下架")}
+                disabled={bulkUpdating !== null}
+                className="rounded-md bg-amber-100 px-3 py-1.5 text-sm font-medium text-amber-800 hover:bg-amber-200 disabled:opacity-50 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-900"
+              >
+                {bulkUpdating === "inactive" ? "下架中…" : "批次下架"}
+              </SpinButton>
+            </>
+          )}
           <SpinButton
             onClick={() => setSelectedIds(new Set())}
             className="ml-auto text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"

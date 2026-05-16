@@ -19,6 +19,7 @@ const { newClient, TENANT } = require('./_db.cjs');
 // 要清的 marker 集 (未來加新 chain 在這裡 push)
 const MARKERS = [
   'E2E-CHAIN-260514',
+  'E2E-WEEK-260514',
 ];
 
 const YES = process.argv.includes('--yes');

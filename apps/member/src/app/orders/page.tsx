@@ -66,22 +66,33 @@ export default function OrdersPage() {
         )}
 
         {err && (
-          <div className="rounded-2xl bg-[#ff3b30]/10 p-3 text-[14px] text-[#c4271d]">
+          <div className="rounded-2xl bg-[var(--ios-red)]/10 p-3 text-[14px] text-[#c4271d]">
             {err}
           </div>
         )}
 
         {!loading && !err && display.length === 0 && (
-          <div className="py-16 text-center">
-            <div className="text-3xl">📦</div>
-            <p className="mt-2 text-[15px] text-[var(--tertiary-label)]">
+          <div className="flex flex-col items-center py-20 text-center">
+            <div
+              className="flex h-24 w-24 items-center justify-center rounded-full text-5xl"
+              style={{ background: "linear-gradient(135deg, var(--brand-soft) 0%, #fff4f6 100%)" }}
+            >
+              📦
+            </div>
+            <p className="mt-4 text-[16px] font-semibold text-[var(--foreground)]">
               目前沒有{emptyLabel}訂單
             </p>
           </div>
         )}
 
-        {display.map((o) => (
-          <OrderCard key={o.id} order={o} />
+        {display.map((o, i) => (
+          <div
+            key={o.id}
+            className="animate-in"
+            style={{ animationDelay: `${Math.min(i, 8) * 50}ms` }}
+          >
+            <OrderCard order={o} />
+          </div>
         ))}
       </div>
     </PageShell>
