@@ -7,6 +7,18 @@ import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import Countdown from "@/components/Countdown";
 
+/** 清掉 legacy LINE 匯入殘留的佔位字 (emoji)/(heart)，並收斂多餘空白。
+ *  刻意只動這兩個明確雜訊 token —— (A)/(B)/($)/（暗色）等是有意義內容，不碰。 */
+function cleanDescription(raw: string): string {
+  return raw
+    .replace(/\(heart\)/gi, "♥")
+    .replace(/\(emoji\)/gi, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 type CampaignDetail = {
   id: number;
   campaign_no: string;
@@ -162,11 +174,17 @@ export default function CampaignDetailPage() {
               <h1 className="text-[26px] font-bold leading-tight text-[var(--foreground)]">
                 {campaign.name}
               </h1>
-              {campaign.description && (
-                <p className="whitespace-pre-wrap text-[16px] leading-relaxed text-[var(--secondary-label)]">
-                  {campaign.description}
-                </p>
-              )}
+              {campaign.description && (() => {
+                const desc = cleanDescription(campaign.description);
+                if (!desc) return null;
+                return (
+                  <div className="rounded-2xl bg-[var(--card-bg)] p-4 shadow-[var(--shadow-card)]">
+                    <p className="whitespace-pre-wrap text-[15px] leading-7 text-[var(--foreground)]">
+                      {desc}
+                    </p>
+                  </div>
+                );
+              })()}
               {campaign.pickup_deadline && (
                 <p className="text-[14px] text-[var(--tertiary-label)]">
                   取貨期限：{campaign.pickup_deadline}
