@@ -15,6 +15,7 @@ export default function ShopPage() {
   const [campaigns, setCampaigns] = useState<CampaignSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<"new" | "hot" | "recent">("new");
 
   const fetchCampaigns = useCallback(async () => {
     const s = getSession();
@@ -41,8 +42,24 @@ export default function ShopPage() {
     })();
   }, [fetchCampaigns]);
 
-  // 結單最近的那張當 hero(限時專區封面)
-  const hero = campaigns[0];
+  // 前端防線：擋掉內部 sentinel 活動（campaign_no 以 __ 開頭，如
+  // __INTERNAL_RESTOCK__「【內部】補貨申請」）。後端 liff-api 也有濾，
+  // 這層確保即使 edge function 還沒部署也不會外漏給顧客。
+  const visible = campaigns.filter((c) => !c.campaign_no.startsWith("__"));
+
+  // 「限時專區」banner 只在真的有快閃團(close_type='fast')時才出現。
+  // /shop/flash 那頁只撈 close_type='fast'，若這裡用 visible[0](任何團)
+  // 當 hero，會出現 banner 但點進去是空的。清單已 by end_at asc 排序，
+  // find 取到的就是最快結單的快閃團。
+  const hero = visible.find((c) => c.close_type === "fast");
+
+  // 排序：最新(id 大→小，無 created_at 用 id 近似) / 最熱銷(全分店訂單數)
+  // / 近期售出(近 7 天訂單數)。tie-break 回退 id desc 保持穩定。
+  const sorted = [...visible].sort((a, b) => {
+    if (sortBy === "hot") return (b.order_count - a.order_count) || (b.id - a.id);
+    if (sortBy === "recent") return (b.recent_order_count - a.recent_order_count) || (b.id - a.id);
+    return b.id - a.id;
+  });
 
   return (
     <PageShell title="商品">
@@ -71,7 +88,7 @@ export default function ShopPage() {
           </div>
         )}
 
-        {!loading && !err && campaigns.length === 0 && (
+        {!loading && !err && visible.length === 0 && (
           <div className="flex flex-col items-center py-20 text-center">
             <div
               className="flex h-24 w-24 items-center justify-center rounded-full text-5xl"
@@ -95,10 +112,10 @@ export default function ShopPage() {
         {hero && (
           <Link
             href="/shop/flash"
-            className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(255,59,48,0.55)] transition-transform duration-200 active:scale-[0.985]"
+            className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(158,47,80,0.5)] transition-transform duration-200 active:scale-[0.985]"
           >
             <div className="relative">
-              <div className="relative aspect-[16/8] w-full bg-gradient-to-br from-[#ff5a4f] via-[#ff3b30] to-[#ff9500]">
+              <div className="relative aspect-[16/8] w-full brand-gradient">
                 {hero.cover_image_url && (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
@@ -129,20 +146,41 @@ export default function ShopPage() {
           </Link>
         )}
 
-        {/* 進行中商品 grid */}
-        {campaigns.length > 0 && (
+        {/* 團購商品 + 排序 */}
+        {visible.length > 0 && (
           <section>
-            <div className="flex items-baseline justify-between px-1 pb-3">
-              <h2 className="flex items-center gap-2 text-[20px] font-bold text-[var(--foreground)]">
-                <span className="h-5 w-1 rounded-full brand-gradient" aria-hidden />
-                進行中商品
+            <div className="flex items-baseline justify-between px-1 pb-2.5">
+              <h2 className="text-[22px] font-bold tracking-tight text-[var(--foreground)]">
+                團購商品 💕
               </h2>
               <span className="text-[13px] font-medium text-[var(--secondary-label)]">
-                {campaigns.length} 團
+                {visible.length} 團
               </span>
             </div>
+            <div className="flex gap-2 px-1 pb-3">
+              {([
+                ["new", "最新"],
+                ["hot", "最熱銷"],
+                ["recent", "近期售出"],
+              ] as const).map(([v, label]) => {
+                const active = sortBy === v;
+                return (
+                  <button
+                    key={v}
+                    onClick={() => setSortBy(v)}
+                    className={`rounded-full px-4 py-1.5 text-[14px] transition-colors ${
+                      active
+                        ? "brand-gradient font-bold text-white shadow-[0_6px_14px_-6px_rgba(158,47,80,0.6)]"
+                        : "border border-[var(--separator)] bg-[var(--card-bg)] font-medium text-[var(--secondary-label)] active:bg-[var(--brand-soft)]/40"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
             <div className="grid grid-cols-2 gap-3">
-              {campaigns.map((c, i) => (
+              {sorted.map((c, i) => (
                 <div
                   key={c.id}
                   className="animate-in"

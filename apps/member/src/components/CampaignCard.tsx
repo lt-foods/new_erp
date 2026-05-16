@@ -12,6 +12,10 @@ export type CampaignSummary = {
   close_type: "regular" | "fast" | "limited" | string;
   total_cap_qty: number | null;
   ordered_qty: number;
+  /** 全分店訂單數（最熱銷排序用）。後端未部署前可能為 0。 */
+  order_count: number;
+  /** 近 7 天訂單數（近期售出排序用）。 */
+  recent_order_count: number;
   end_at: string | null;
   pickup_deadline: string | null;
   item_count: number;
@@ -19,12 +23,14 @@ export type CampaignSummary = {
   max_price: number;
 };
 
-/** 依 close_type + end_at + total_cap_qty 算出短標籤 */
+/** 依 close_type + total_cap_qty 算出短標籤。
+ *  「限時」只給真正的快閃團（close_type='fast'，即限時專區那種）。
+ *  一般團幾乎都有結單日(end_at)，有結單日 ≠ 限時，否則每張卡都被貼標、
+ *  標籤就失去意義（卡片本來就會單獨顯示倒數）。 */
 export function campaignBadgeLabel(c: CampaignSummary): string | null {
   const hasCap = (c.total_cap_qty ?? 0) > 0;
-  const hasEnd = !!c.end_at;
   if (c.close_type === "fast" && hasCap) return "限量限時";
-  if (c.close_type === "fast" || hasEnd) return "限時";
+  if (c.close_type === "fast") return "限時";
   if (c.close_type === "limited" || hasCap) return "限量";
   return null;
 }
@@ -207,8 +213,12 @@ export default function CampaignCard({
           {priceText}
         </div>
         {campaign.end_at && (
-          <div className="text-[13px] text-[var(--secondary-label)]">
-            <Countdown target={campaign.end_at} />
+          <div className="inline-flex items-center gap-1 rounded-md bg-[var(--brand-soft)] px-2 py-1 text-[14px] font-bold tabular-nums text-[var(--brand-strong)]">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} className="h-3.5 w-3.5 shrink-0">
+              <circle cx="12" cy="12" r="9" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 7.5V12l3 2" />
+            </svg>
+            <Countdown target={campaign.end_at} compact />
           </div>
         )}
       </div>

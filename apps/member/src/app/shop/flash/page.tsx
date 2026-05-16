@@ -42,13 +42,16 @@ export default function FlashPage() {
     })();
   }, [router]);
 
-  const hero = campaigns[0];
+  // 前端防線：擋掉內部 sentinel 活動（__INTERNAL_RESTOCK__ 等），
+  // 與 /shop 一致；後端 liff-api 也有濾。
+  const visible = campaigns.filter((c) => !c.campaign_no.startsWith("__"));
+  const hero = visible[0];
 
   return (
     <PageShell title="限時專區">
       {/* 結束於 sticky banner */}
       {hero && hero.end_at && (
-        <div className="sticky top-[78px] z-10 -mt-1 flex items-center justify-between gap-3 bg-gradient-to-r from-[#ff3b30] to-[#ff9500] px-4 py-2.5 text-white shadow">
+        <div className="sticky top-[78px] z-10 -mt-1 flex items-center justify-between gap-3 brand-gradient px-4 py-2.5 text-white shadow">
           <div className="text-[15px] font-medium">最快結束於</div>
           <div className="text-[20px] font-bold">
             <Countdown target={hero.end_at} compact className="text-white" />
@@ -67,7 +70,7 @@ export default function FlashPage() {
           </div>
         )}
 
-        {!loading && !err && campaigns.length === 0 && (
+        {!loading && !err && visible.length === 0 && (
           <div className="overflow-hidden rounded-2xl bg-gradient-to-br from-[#ff3b30]/8 to-[#ff9500]/8 p-6 text-center">
             <div className="text-5xl">📣</div>
             <h2 className="mt-3 text-[18px] font-semibold text-[var(--foreground)]">
@@ -89,7 +92,7 @@ export default function FlashPage() {
           <CampaignCard campaign={hero} variant="hero" />
         )}
 
-        {campaigns.slice(1).map((c) => (
+        {visible.slice(1).map((c) => (
           <FlashRow key={c.id} campaign={c} />
         ))}
       </div>

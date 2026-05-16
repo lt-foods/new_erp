@@ -326,6 +326,20 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
       orderedMap.set(Number(o.campaign_id), (orderedMap.get(Number(o.campaign_id)) ?? 0) + sum);
     }
   }
+
+  // 全分店訂單數 + 近 7 天訂單數（顧客端排序用：最熱銷 / 近期售出）。
+  // 走 SQL 聚合 RPC，避免訂單列數超過 PostgREST 1000 上限被截斷而計數失準。
+  const countMap = new Map<number, number>();
+  const recentMap = new Map<number, number>();
+  const { data: cntRows } = await sb.rpc("rpc_member_campaign_order_counts", {
+    p_tenant: tenantId,
+    p_recent_days: 7,
+  });
+  for (const r of cntRows ?? []) {
+    countMap.set(Number(r.campaign_id), Number(r.order_count ?? 0));
+    recentMap.set(Number(r.campaign_id), Number(r.recent_order_count ?? 0));
+  }
+
   if (error) return json({ error: error.message }, 500);
 
   const supabaseUrl = requireEnv("SUPABASE_URL");
@@ -355,6 +369,8 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
       close_type: c.close_type,
       total_cap_qty: c.total_cap_qty,
       ordered_qty: orderedMap.get(Number(c.id)) ?? 0,
+      order_count: countMap.get(Number(c.id)) ?? 0,
+      recent_order_count: recentMap.get(Number(c.id)) ?? 0,
       end_at: c.end_at,
       pickup_deadline: c.pickup_deadline,
       item_count: prices.length,
