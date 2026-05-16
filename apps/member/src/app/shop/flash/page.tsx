@@ -157,6 +157,11 @@ function FlashRow({ campaign }: { campaign: CampaignSummary }) {
             </div>
           )}
         </div>
+        {campaign.ordered_qty > 0 && (
+          <div className="text-[12px] font-medium text-[var(--tertiary-label)]">
+            已訂購 {campaign.ordered_qty.toLocaleString()} 件
+          </div>
+        )}
         <div className="flex items-center justify-between gap-2 text-[13px] text-[var(--secondary-label)]">
           <span>
             共 {campaign.item_count} 項

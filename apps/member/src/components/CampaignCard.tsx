@@ -162,6 +162,11 @@ export default function CampaignCard({
               共 {campaign.item_count} 項
             </span>
           </div>
+          {campaign.ordered_qty > 0 && (
+            <div className="text-[14px] font-medium text-[var(--tertiary-label)]">
+              已訂購 {campaign.ordered_qty.toLocaleString()} 件
+            </div>
+          )}
         </div>
       </Link>
     );
@@ -230,6 +235,11 @@ export default function CampaignCard({
             </div>
           )}
         </div>
+        {campaign.ordered_qty > 0 && (
+          <div className="text-[12px] font-medium text-[var(--tertiary-label)]">
+            已訂購 {campaign.ordered_qty.toLocaleString()} 件
+          </div>
+        )}
         {campaign.end_at && (
           <div className="inline-flex items-center gap-1 rounded-md bg-[var(--brand-soft)] px-1.5 py-0.5 text-[12px] font-semibold tabular-nums text-[var(--brand-strong)]">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} className="h-3 w-3 shrink-0">
