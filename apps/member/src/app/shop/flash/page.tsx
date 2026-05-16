@@ -132,13 +132,14 @@ function FlashRow({ campaign }: { campaign: CampaignSummary }) {
           <span className="absolute left-1 top-1 rounded bg-zinc-700 px-1.5 py-0.5 text-[11px] font-medium text-white shadow">
             已搶購一空
           </span>
-        ) : label ? (
+        ) : (label || campaign.order_count > 0) ? (
           <span
             className={`absolute left-1 top-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-white shadow ${
               isLimited ? "bg-[#ff3b30]" : "bg-[#ff9500]"
             }`}
           >
-            {label}
+            {label || "進行中"}
+            {campaign.order_count > 0 && ` · ${campaign.order_count} 筆`}
           </span>
         ) : null}
       </div>
