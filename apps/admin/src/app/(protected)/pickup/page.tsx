@@ -7,6 +7,7 @@ import { Modal } from "@/components/Modal";
 import { PickupDialog } from "@/components/PickupDialog";
 import { withBasePath } from "@/lib/basePath";
 import SpinButton from "@/components/SpinButton";
+import { getPickupRecents, recordPickupRecent, type RecentCustomer } from "@/lib/pickupRecents";
 
 type Member = {
   id: number;
@@ -76,13 +77,16 @@ function PickupPageContent() {
   const autoSearchedRef = useRef(false);
 
   const [pickup, setPickup] = useState<{ orderId: number; orderNo: string } | null>(null);
+  const [recents, setRecents] = useState<RecentCustomer[]>([]);
   const [bulking, setBulking] = useState<number | null>(null);
   const [bulkConfirm, setBulkConfirm] = useState<Member | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
 
-  async function search(e?: React.FormEvent) {
+  // overrideQuery：常用顧客快選按鈕用 — 直接帶該顧客查單，
+  // 刻意「不」寫進搜尋框（保持輸入框乾淨，按鈕本身就是捷徑）
+  async function search(e?: React.FormEvent, overrideQuery?: string) {
     e?.preventDefault();
-    const q = query.trim();
+    const q = (overrideQuery ?? query).trim();
     if (q.length < 2) {
       setError("請至少輸入 2 字 (姓名 / 電話末 N 碼 / 會員編號)");
       return;
@@ -106,6 +110,15 @@ function PickupPageContent() {
       const list = (ms ?? []) as Member[];
       setMembers(list);
       if (list.length === 0) return;
+
+      // 搜尋有結果即記入「常用顧客」（不必等取貨）。
+      // ≤5 筆視為「找到特定顧客」才記；>5 視為廣搜（如只打姓氏），不記以免洗版。
+      if (list.length <= 5) {
+        for (const mem of list) {
+          recordPickupRecent({ id: mem.id, name: mem.name, member_no: mem.member_no, phone: mem.phone });
+        }
+        setRecents(getPickupRecents());
+      }
 
       const { data: ords, error: e2 } = await sb
         .from("customer_orders")
@@ -274,6 +287,11 @@ function PickupPageContent() {
     }
   }
 
+  // 常用顧客快選列：mount 後才讀 localStorage（避免 SSR/prerender hydration mismatch）
+  useEffect(() => {
+    setRecents(getPickupRecents());
+  }, []);
+
   // 從 /members 點「查訂單」帶 ?q= 進來,首次自動觸發搜尋
   useEffect(() => {
     if (!autoSearchedRef.current && initialQuery.trim().length >= 2) {
@@ -319,6 +337,35 @@ function PickupPageContent() {
           </SpinButton>
         )}
       </form>
+
+      <section className="rounded-md border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="mb-2 text-xs font-medium text-zinc-500">
+          ⚡ 常用顧客快選
+          <span className="ml-1 font-normal text-zinc-400">· 取貨後自動累積，點按鈕直接查單（最多 10 位）</span>
+        </div>
+        {recents.length === 0 ? (
+          <p className="text-xs text-zinc-400">
+            完成取貨後，最近常取貨的顧客會自動列在這裡，方便下次一鍵查單。
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {recents.map((rc) => (
+              <SpinButton
+                key={rc.id}
+                type="button"
+                onClick={() => search(undefined, rc.member_no)}
+                title={`${rc.name ?? rc.member_no}（${rc.member_no}）· 點擊快速查單`}
+                className="flex items-center gap-1.5 rounded-full border border-zinc-300 bg-white px-3 py-1.5 text-xs transition hover:border-emerald-400 hover:bg-emerald-50 dark:border-zinc-700 dark:bg-zinc-800 dark:hover:border-emerald-700 dark:hover:bg-emerald-950"
+              >
+                <span className="font-medium">{rc.name ?? rc.member_no}</span>
+                {rc.phone && (
+                  <span className="font-mono text-[10px] text-zinc-400">···{rc.phone.slice(-3)}</span>
+                )}
+              </SpinButton>
+            ))}
+          </div>
+        )}
+      </section>
 
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
