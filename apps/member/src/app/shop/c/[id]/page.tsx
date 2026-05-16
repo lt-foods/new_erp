@@ -339,6 +339,7 @@ export default function CampaignDetailPage() {
 function HeroCarousel({ images }: { images: string[] }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [idx, setIdx] = useState(0);
+  const [zoomSrc, setZoomSrc] = useState<string | null>(null);
 
   useEffect(() => {
     const el = ref.current;
@@ -408,7 +409,8 @@ function HeroCarousel({ images }: { images: string[] }) {
             <img
               src={url}
               alt=""
-              className="absolute inset-0 h-full w-full object-cover"
+              onClick={() => setZoomSrc(url)}
+              className="absolute inset-0 h-full w-full cursor-zoom-in object-cover"
             />
           </div>
         ))}
@@ -426,6 +428,31 @@ function HeroCarousel({ images }: { images: string[] }) {
           ))}
         </div>
       )}
+      <Portal enabled={!!zoomSrc}>
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90"
+          onClick={() => setZoomSrc(null)}
+        >
+          <button
+            type="button"
+            aria-label="關閉"
+            onClick={() => setZoomSrc(null)}
+            className="absolute right-4 flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-[20px] text-white backdrop-blur"
+            style={{ top: "calc(env(safe-area-inset-top) + 12px)" }}
+          >
+            ✕
+          </button>
+          {zoomSrc && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={zoomSrc}
+              alt=""
+              onClick={(e) => e.stopPropagation()}
+              className="max-h-[90vh] max-w-[94vw] object-contain"
+            />
+          )}
+        </div>
+      </Portal>
     </>
   );
 }
