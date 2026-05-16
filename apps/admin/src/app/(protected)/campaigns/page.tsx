@@ -552,17 +552,18 @@ export default function CampaignsListPage() {
           ) : rows.length === 0 ? (
             <EmptyRow colSpan={11}>{total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}</EmptyRow>
           ) : rows.map((r) => (
-            <Tr key={r.id} className={selectedIds.has(r.id) ? "bg-blue-50 dark:bg-blue-950/30" : ""}>
+            <Tr key={r.id} onClick={() => openEdit(r.id)} className={selectedIds.has(r.id) ? "bg-blue-50 dark:bg-blue-950/30" : ""}>
                 <Td className="w-10">
                   <input
                     type="checkbox"
                     checked={selectedIds.has(r.id)}
                     onChange={() => toggleSelect(r.id)}
+                    onClick={(e) => e.stopPropagation()}
                     className="cursor-pointer"
                   />
                 </Td>
                 <Td className="font-mono">
-                  <SpinButton onClick={() => openEdit(r.id)} className="hover:underline">{r.campaign_no}</SpinButton>
+                  <SpinButton onClick={(e) => { e.stopPropagation(); openEdit(r.id); }} className="hover:underline">{r.campaign_no}</SpinButton>
                 </Td>
                 <Td>{r.name}</Td>
                 <Td><StatusBadge s={r.status} /></Td>
@@ -588,6 +589,7 @@ export default function CampaignsListPage() {
                     return (
                       <Link
                         href={`/orders?campaignId=${r.id}`}
+                        onClick={(e) => e.stopPropagation()}
                         className="inline-flex items-center gap-1 rounded font-mono hover:bg-zinc-100 px-1 dark:hover:bg-zinc-800"
                         title={`點擊查看此開團的訂單\n正常下單總量：${oc.normalQty} 件${oc.offsetQty !== 0 ? `\n抵減量：${oc.offsetQty} 件\n淨需求：${totalQty} 件` : ""}`}
                       >
@@ -605,7 +607,7 @@ export default function CampaignsListPage() {
                 </Td>
                 <Td align="right" className="text-xs text-zinc-500">{new Date(r.updated_at).toLocaleString("zh-TW")}</Td>
                 <Td>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                     <SpinButton
                       onClick={() => openEdit(r.id)}
                       className="text-xs text-blue-600 hover:underline dark:text-blue-400"
