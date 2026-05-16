@@ -213,8 +213,8 @@ export default function CampaignCard({
           {priceText}
         </div>
         {campaign.end_at && (
-          <div className="inline-flex items-center gap-1 rounded-md bg-[var(--brand-soft)] px-2 py-1 text-[14px] font-bold tabular-nums text-[var(--brand-strong)]">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} className="h-3.5 w-3.5 shrink-0">
+          <div className="inline-flex items-center gap-1 rounded-md bg-[var(--brand-soft)] px-1.5 py-0.5 text-[12px] font-semibold tabular-nums text-[var(--brand-strong)]">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} className="h-3 w-3 shrink-0">
               <circle cx="12" cy="12" r="9" />
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 7.5V12l3 2" />
             </svg>
