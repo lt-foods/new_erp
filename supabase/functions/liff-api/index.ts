@@ -303,17 +303,15 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
     .order("end_at", { ascending: true, nullsFirst: false })
     .limit(50);
 
-  // 算出有 cap 的 campaign 已下單總量 (排除取消/逾期 + 排除負數抵減單),
-  // 給前端算「剩 N 份」或「搶購一空」
+  // 算出 campaign 已下單總量 (排除取消/逾期 + 排除負數抵減單),
+  // 給前端算「剩 N 份」、「搶購一空」或顯示「已售出 N 份」
   const orderedMap = new Map<number, number>();
-  const idsWithCap = (data ?? [])
-    .filter((c: any) => Number(c.total_cap_qty ?? 0) > 0)
-    .map((c: any) => c.id);
-  if (idsWithCap.length > 0) {
+  const allIds = (data ?? []).map((c: any) => c.id);
+  if (allIds.length > 0) {
     const { data: orderRows } = await sb
       .from("customer_orders")
       .select("campaign_id, customer_order_items(qty)")
-      .in("campaign_id", idsWithCap)
+      .in("campaign_id", allIds)
       .not("status", "in", "(cancelled,expired)")
       .or("order_kind.is.null,order_kind.eq.normal");
     for (const o of orderRows ?? []) {
@@ -380,6 +378,22 @@ async function getCampaignDetail(sb: any, tenantId: string, campaignId: number) 
     .order("sort_order", { ascending: true });
   if (iErr) return json({ error: iErr.message }, 500);
 
+  // 算出各品項已下單總量
+  const itemOrderedMap = new Map<number, number>();
+  const { data: itemOrderRows } = await sb
+    .from("customer_order_items")
+    .select("campaign_item_id, qty, customer_orders!inner(status, order_kind)")
+    .eq("tenant_id", tenantId)
+    .eq("customer_orders.campaign_id", campaignId)
+    .not("customer_orders.status", "in", "(cancelled,expired)")
+    .or("customer_orders.order_kind.is.null,customer_orders.order_kind.eq.normal");
+
+  for (const row of itemOrderRows ?? []) {
+    const ciId = Number(row.campaign_item_id);
+    const q = Number(row.qty ?? 0);
+    itemOrderedMap.set(ciId, (itemOrderedMap.get(ciId) ?? 0) + q);
+  }
+
   const supabaseUrl = requireEnv("SUPABASE_URL");
   c.cover_image_url = toPublicUrl(supabaseUrl, "products", c.cover_image_url);
 
@@ -412,6 +426,7 @@ async function getCampaignDetail(sb: any, tenantId: string, campaignId: number) 
       image_url: firstImg,
       unit_price: Number(it.unit_price),
       cap_qty: it.cap_qty != null ? Number(it.cap_qty) : null,
+      ordered_qty: itemOrderedMap.get(Number(it.id)) ?? 0,
     };
   });
   return json({ campaign: c, items: flat, hero_images: heroPaths });

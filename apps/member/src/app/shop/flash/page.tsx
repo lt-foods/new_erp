@@ -147,12 +147,19 @@ function FlashRow({ campaign }: { campaign: CampaignSummary }) {
           {priceText}
         </div>
         <div className="flex items-center justify-between gap-2 text-[13px] text-[var(--secondary-label)]">
-          <span>
-            共 {campaign.item_count} 項
-            {isLimited && remaining !== null && !soldOut && (
-              <span className="ml-2 font-medium text-[#c4271d]">· 剩 {remaining} 份</span>
+          <div className="flex flex-col">
+            <span>
+              共 {campaign.item_count} 項
+              {isLimited && remaining !== null && !soldOut && (
+                <span className="ml-2 font-medium text-[#c4271d]">· 剩 {remaining} 份</span>
+              )}
+            </span>
+            {campaign.ordered_qty > 0 && (
+              <span className="mt-0.5 text-[12px] text-[var(--tertiary-label)]">
+                已售出 {campaign.ordered_qty}
+              </span>
             )}
-          </span>
+          </div>
           {campaign.end_at && !soldOut && <Countdown target={campaign.end_at} />}
         </div>
       </div>

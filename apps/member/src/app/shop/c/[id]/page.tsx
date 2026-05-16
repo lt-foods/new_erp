@@ -27,6 +27,7 @@ type Item = {
   image_url: string | null;
   unit_price: number;
   cap_qty: number | null;
+  ordered_qty: number;
 };
 
 export default function CampaignDetailPage() {
@@ -388,8 +389,15 @@ function SkuRow({
         {item.variant_name && (
           <div className="text-[13px] text-[var(--secondary-label)]">{item.variant_name}</div>
         )}
-        <div className="mt-0.5 text-[20px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
-          ${Number(item.unit_price).toLocaleString()}
+        <div className="mt-1 flex items-baseline gap-2">
+          <div className="text-[20px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
+            ${Number(item.unit_price).toLocaleString()}
+          </div>
+          {item.ordered_qty > 0 && (
+            <div className="text-[12px] text-[var(--tertiary-label)]">
+              已售出 {item.ordered_qty}
+            </div>
+          )}
         </div>
       </div>
       <Stepper qty={qty} onChange={onChange} max={item.cap_qty ?? 999} />

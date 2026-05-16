@@ -107,9 +107,16 @@ export default function CampaignCard({
             {campaign.name}
           </h3>
           <div className="flex items-baseline justify-between gap-2">
-            <span className="text-[28px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
-              {priceText}
-            </span>
+            <div className="flex flex-col">
+              <span className="text-[28px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
+                {priceText}
+              </span>
+              {campaign.ordered_qty > 0 && (
+                <span className="mt-1.5 text-[13px] text-[var(--tertiary-label)]">
+                  已售出 {campaign.ordered_qty} 件
+                </span>
+              )}
+            </div>
             <span className="text-[13px] text-[var(--secondary-label)]">
               共 {campaign.item_count} 項
             </span>
@@ -171,11 +178,18 @@ export default function CampaignCard({
             <div className="text-[12px] text-[#c4271d]">剩 {remaining} 份</div>
           );
         })()}
-        <div className="text-[24px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
-          {priceText}
+        <div className="flex items-baseline justify-between gap-2">
+          <div className="text-[24px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
+            {priceText}
+          </div>
+          {campaign.ordered_qty > 0 && (
+            <div className="text-[12px] text-[var(--tertiary-label)]">
+              已售出 {campaign.ordered_qty}
+            </div>
+          )}
         </div>
         {campaign.end_at && (
-          <div className="text-[13px] text-[var(--secondary-label)]">
+          <div className="text-[13px] text-[var(--secondary-label)] pt-0.5">
             <Countdown target={campaign.end_at} />
           </div>
         )}
