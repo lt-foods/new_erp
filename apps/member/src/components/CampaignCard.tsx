@@ -152,11 +152,9 @@ export default function CampaignCard({
               <span className="brand-gradient-text text-[28px] font-extrabold tabular-nums leading-none">
                 {priceText}
               </span>
-              {campaign.order_count > 0 && (
-                <span className="text-[14px] font-medium text-[var(--tertiary-label)]">
-                  {campaign.order_count} 筆訂單
-                </span>
-              )}
+              <span className="text-[14px] font-medium text-[var(--tertiary-label)]">
+                {campaign.order_count} 筆訂單
+              </span>
             </div>
             <span className="text-[13px] text-[var(--secondary-label)]">
               共 {campaign.item_count} 項
@@ -224,11 +222,9 @@ export default function CampaignCard({
           <div className="brand-gradient-text text-[24px] font-extrabold tabular-nums leading-none">
             {priceText}
           </div>
-          {campaign.order_count > 0 && (
-            <div className="text-[12px] font-medium text-[var(--tertiary-label)]">
-              {campaign.order_count} 筆訂單
-            </div>
-          )}
+          <div className="text-[12px] font-medium text-[var(--tertiary-label)]">
+            {campaign.order_count} 筆訂單
+          </div>
         </div>
         {campaign.end_at && (
           <div className="inline-flex items-center gap-1 rounded-md bg-[var(--brand-soft)] px-1.5 py-0.5 text-[12px] font-semibold tabular-nums text-[var(--brand-strong)]">
