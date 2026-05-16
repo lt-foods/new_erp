@@ -10,11 +10,15 @@ const { Client } = require('pg');
 const TENANT = '00000000-0000-0000-0000-000000000001';
 const ADMIN = '39fd694d-3af6-4978-beab-6e826dff7246';
 
+if (!process.env.SUPABASE_DB_PASSWORD) {
+  console.error('Set SUPABASE_DB_PASSWORD env var');
+  process.exit(2);
+}
 const c = new Client({
   host: 'aws-1-ap-southeast-1.pooler.supabase.com',
   port: 5432,
   user: 'postgres.anfyoeviuhmzzrhilwtm',
-  password: '@Ss0929283575',
+  password: process.env.SUPABASE_DB_PASSWORD,
   database: 'postgres',
   ssl: { rejectUnauthorized: false },
 });

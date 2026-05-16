@@ -77,7 +77,8 @@ mv supabase/migrations supabase/migrations.bak
 supabase start  # empty DB
 # (如果有 backup) docker cp scripts/e2e/backups/prod-schema-*.sql <container>:/tmp/schema.sql
 # 或重新 dump remote dev schema：
-supabase db dump --db-url "postgresql://postgres.anfyoeviuhmzzrhilwtm:%40Ss0929283575@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres" --schema public -f scripts/e2e/backups/dev-schema.sql
+# set SUPABASE_DB_PASSWORD first (URL-encode if it has special chars)
+supabase db dump --db-url "postgresql://postgres.anfyoeviuhmzzrhilwtm:${SUPABASE_DB_PASSWORD}@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres" --schema public -f scripts/e2e/backups/dev-schema.sql
 docker cp scripts/e2e/backups/dev-schema*.sql <container>:/tmp/schema.sql
 docker exec <container> psql -U postgres -d postgres -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO postgres; GRANT ALL ON SCHEMA public TO public;"
 docker exec <container> psql -U postgres -d postgres -f /tmp/schema.sql
@@ -86,7 +87,7 @@ mv supabase/migrations.bak supabase/migrations
 # 4. 建 test auth user
 TENANT_ID=$(uuidgen)
 docker exec <container> psql -U postgres -d postgres -c \
-  "INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, raw_app_meta_data, created_at, updated_at) VALUES (gen_random_uuid(), '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'cktalex@gmail.com', crypt('s0929283575', gen_salt('bf')), NOW(), jsonb_build_object('tenant_id', '$TENANT_ID', 'role', 'owner'), NOW(), NOW());"
+  "INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, raw_app_meta_data, created_at, updated_at) VALUES (gen_random_uuid(), '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'cktalex@gmail.com', crypt('<TEST_USER_PASSWORD>', gen_salt('bf')), NOW(), jsonb_build_object('tenant_id', '$TENANT_ID', 'role', 'owner'), NOW(), NOW());"
 
 # 5. 建 .env.e2e
 # Option A — local Supabase（推薦給 UI debug 跟 fresh fixture 跑）
@@ -105,7 +106,7 @@ E2E_DB_HOST=aws-1-ap-southeast-1.pooler.supabase.com
 E2E_DB_PORT=5432
 E2E_DB_USER=postgres.anfyoeviuhmzzrhilwtm
 E2E_DB_NAME=postgres
-E2E_DB_PASSWORD=@Ss0929283575
+E2E_DB_PASSWORD=<set-your-db-password>
 E2E_EXPECTED_HOST=anfyoeviuhmzzrhilwtm
 EOF
 
@@ -129,7 +130,7 @@ NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
 NEXT_PUBLIC_SUPABASE_ANON_KEY=<paste from supabase status Publishable key>
 NEXT_PUBLIC_BASE_PATH=
 ADMIN_EMAIL=cktalex@gmail.com
-ADMIN_PASSWORD=s0929283575
+ADMIN_PASSWORD=<set-your-db-password>
 EOF
 
 # 開發
