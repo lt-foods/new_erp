@@ -42,7 +42,8 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/purchase/requests", label: "採購單", match: /^\/purchase\/requests/ },
       { href: "/purchase/orders", label: "採購訂單", match: /^\/purchase\/orders/ },
-      { href: "/inventory", label: "庫存總覽", match: /^\/inventory(?!\/mutual-aid)/ },
+      { href: "/inventory", label: "庫存總覽", match: /^\/inventory(?!\/mutual-aid|\/reorder-rules)/ },
+      { href: "/inventory/reorder-rules", label: "補貨規則", match: /^\/inventory\/reorder-rules/ },
     ],
   },
   {

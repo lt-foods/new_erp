@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
@@ -291,12 +292,20 @@ export default function InventoryOverviewPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
-      <header>
+      <header className="flex items-start justify-between">
+        <div>
         <h1 className="text-xl font-semibold">庫存總覽</h1>
         <p className="text-sm text-zinc-500">
           {loading ? "載入中…" : total === 0 ? "共 0 筆" : `共 ${total} 筆（${fromIdx}-${toIdx}）`}
           {truncated && <span className="ml-2 text-amber-600 dark:text-amber-400">（低庫存掃描已達 {LOW_STOCK_SCAN_CAP} 上限）</span>}
         </p>
+        </div>
+        <Link
+          href="/inventory/reorder-rules"
+          className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+        >
+          補貨規則 →
+        </Link>
       </header>
 
       <div className="grid gap-3 sm:grid-cols-3">
