@@ -131,9 +131,6 @@ export default function CampaignCard({
                   <>
                     {label && <span>{label}</span>}
                     {campaign.end_at && <Countdown target={campaign.end_at} compact />}
-                    {campaign.order_count > 0 && (
-                      <span className="text-[12px] opacity-90">· {campaign.order_count} 筆訂單</span>
-                    )}
                     {isLimited && remaining !== null && (
                       <span className="text-[12px] opacity-90">· 剩 {remaining} 份</span>
                     )}
@@ -148,20 +145,15 @@ export default function CampaignCard({
             {campaign.name}
           </h3>
           <div className="flex items-baseline justify-between gap-2">
-            <div className="flex items-baseline gap-2">
-              <span className="brand-gradient-text text-[28px] font-extrabold tabular-nums leading-none">
-                {priceText}
-              </span>
-              <span className="text-[14px] font-medium text-[var(--tertiary-label)]">
-                {campaign.order_count} 筆訂單
-              </span>
-            </div>
+            <span className="brand-gradient-text text-[28px] font-extrabold tabular-nums leading-none">
+              {priceText}
+            </span>
             <span className="text-[13px] text-[var(--secondary-label)]">
               共 {campaign.item_count} 項
             </span>
           </div>
           {campaign.ordered_qty > 0 && (
-            <div className="text-[14px] font-medium text-[var(--tertiary-label)]">
+            <div className="text-right text-[14px] font-medium text-[var(--tertiary-label)]">
               已訂購 {campaign.ordered_qty.toLocaleString()} 件
             </div>
           )}
@@ -196,7 +188,7 @@ export default function CampaignCard({
               </span>
             );
           }
-          if (!label && campaign.order_count <= 0) return null;
+          if (!label) return null;
           const isLimited = label?.includes("限量");
           return (
             <span
@@ -204,8 +196,7 @@ export default function CampaignCard({
                 isLimited ? "bg-[var(--ios-red)]/90" : "bg-[var(--ios-orange)]/90"
               }`}
             >
-              {label || "進行中"}
-              {campaign.order_count > 0 && ` · ${campaign.order_count} 筆訂單`}
+              {label}
             </span>
           );
         })()}
@@ -223,19 +214,16 @@ export default function CampaignCard({
             </div>
           );
         })()}
-        <div className="flex items-baseline gap-2">
+        <div className="flex items-baseline justify-between gap-2">
           <div className="brand-gradient-text text-[24px] font-extrabold tabular-nums leading-none">
             {priceText}
           </div>
-          <div className="text-[12px] font-medium text-[var(--tertiary-label)]">
-            {campaign.order_count} 筆訂單
-          </div>
+          {campaign.ordered_qty > 0 && (
+            <div className="text-[12px] font-medium text-[var(--tertiary-label)]">
+              已訂購 {campaign.ordered_qty.toLocaleString()} 件
+            </div>
+          )}
         </div>
-        {campaign.ordered_qty > 0 && (
-          <div className="text-[12px] font-medium text-[var(--tertiary-label)]">
-            已訂購 {campaign.ordered_qty.toLocaleString()} 件
-          </div>
-        )}
         {campaign.end_at && (
           <div className="inline-flex items-center gap-1 rounded-md bg-[var(--brand-soft)] px-1.5 py-0.5 text-[12px] font-semibold tabular-nums text-[var(--brand-strong)]">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} className="h-3 w-3 shrink-0">
