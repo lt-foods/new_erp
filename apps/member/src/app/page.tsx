@@ -289,140 +289,169 @@ export default function LandingPage() {
   };
 
   return (
-    <main className="mx-auto flex w-full max-w-md flex-col items-center gap-6 p-6 pt-16">
-      <h1 className="text-3xl font-semibold">包子媽生鮮小舖</h1>
+    <main className="mx-auto flex min-h-[100dvh] w-full max-w-md flex-col items-center px-6 pb-10 pt-12">
+      {/* 品牌主視覺：店家實際 banner（含 logo + 店名 + 服務項目） */}
+      <div className="w-full overflow-hidden rounded-[20px] shadow-[0_18px_40px_-14px_rgba(158,47,80,0.42)]">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/brand/banner.jpg"
+          alt="包子媽生鮮小舖 — 新鮮直送・社區團購"
+          className="block w-full"
+        />
+      </div>
 
-      {status === "loading" && <p className="text-base text-zinc-400">載入中…</p>}
+      <div className="mt-9 w-full">
+        {status === "loading" && (
+          <p className="text-center text-[15px] text-[var(--tertiary-label)]">載入中…</p>
+        )}
 
-      {status === "liff_auth" && (
-        <p className="text-base text-zinc-500">LINE 驗證中…請稍候</p>
-      )}
-
-      {status === "pair_done" && (
-        <div className="w-full rounded-2xl bg-[#06C755]/10 p-5 text-center">
-          <div className="text-3xl">✓</div>
-          <p className="mt-2 text-base font-medium text-[#067a37]">登入完成</p>
-          <p className="mt-1 text-sm text-zinc-600">
-            請關閉 LINE 視窗，回到桌面點擊 PWA 圖示。
+        {status === "liff_auth" && (
+          <p className="text-center text-[15px] text-[var(--secondary-label)]">
+            LINE 驗證中…請稍候
           </p>
-        </div>
-      )}
+        )}
 
-      {status === "idle" && (
-        <div className="w-full space-y-6 text-center">
-          {error && (
-            <div className="w-full rounded-md border border-red-200 bg-red-50 p-3 text-base text-red-800 text-left">
-              發生錯誤：{error}
+        {status === "pair_done" && (
+          <div className="card p-6 text-center">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-[#06C755]/12 text-[28px] text-[#06C755]">
+              ✓
             </div>
-          )}
+            <p className="mt-3 text-[17px] font-bold text-[var(--foreground)]">登入完成</p>
+            <p className="mt-1 text-[14px] text-[var(--secondary-label)]">
+              請關閉 LINE 視窗，回到桌面點擊 PWA 圖示。
+            </p>
+          </div>
+        )}
 
-          {!storeId ? (
-            <div className="space-y-4">
-              <p className="text-base text-zinc-500">歡迎！請選擇您的門市以開始：</p>
-              <form onSubmit={handleManualStoreSubmit} className="flex flex-col gap-3">
-                {stores.length > 0 ? (
-                  <select
-                    value={inputStoreId}
-                    onChange={(e) => setInputStoreId(e.target.value)}
-                    className="w-full appearance-none rounded-md border border-zinc-300 bg-white px-4 py-3 text-lg text-zinc-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    required
-                    autoFocus
-                  >
-                    <option value="" disabled>請選擇門市…</option>
-                    {stores.map((s) => (
-                      <option key={s.id} value={s.code}>
-                        {s.name}（{s.code}）
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    placeholder="例如: S001"
-                    value={inputStoreId}
-                    onChange={(e) => setInputStoreId(e.target.value)}
-                    className="w-full rounded-md border border-zinc-300 px-4 py-3 text-lg focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-zinc-700 dark:bg-zinc-800"
-                    autoFocus
-                  />
-                )}
-                <button
-                  type="submit"
-                  disabled={!inputStoreId}
-                  className="w-full rounded-md bg-indigo-600 px-4 py-3 text-base font-medium text-white shadow transition hover:bg-indigo-700 disabled:opacity-50"
-                >
-                  進入門市
-                </button>
-              </form>
-            </div>
-          ) : (
-            <div className="space-y-8">
-              <div className="space-y-4">
-                <p className="text-base text-zinc-500">
-                  您目前位於 <span className="font-bold text-zinc-900 dark:text-zinc-100">{stores.find((s) => s.code === storeId)?.name ?? storeId}</span> 門市
-                </p>
-                <button
-                  onClick={start}
-                  className="w-full rounded-md bg-[#06C755] px-4 py-3 text-base font-medium text-white shadow hover:bg-[#05b04c] transition"
-                >
-                  {standalone ? "用 LINE 登入" : "用 LINE 註冊 / 登入"}
-                </button>
-                {standalone && (
-                  <p className="text-xs text-zinc-400">
-                    將在 LINE app 中完成登入，再回到此 PWA App。
-                  </p>
-                )}
+        {status === "idle" && (
+          <div className="w-full space-y-5">
+            {error && (
+              <div className="w-full rounded-2xl bg-[var(--ios-red)]/10 p-3 text-left text-[14px] text-[#c4271d]">
+                發生錯誤：{error}
               </div>
+            )}
 
-              {standalone && (
-                <>
-                  <div className="relative py-4">
-                    <div className="absolute inset-0 flex items-center">
-                      <span className="w-full border-t border-zinc-200"></span>
+            {!storeId ? (
+              <div className="card space-y-4 p-5">
+                <p className="text-[15px] font-medium text-[var(--foreground)]">
+                  歡迎！請選擇您的門市以開始
+                </p>
+                <form onSubmit={handleManualStoreSubmit} className="flex flex-col gap-3">
+                  {stores.length > 0 ? (
+                    <select
+                      value={inputStoreId}
+                      onChange={(e) => setInputStoreId(e.target.value)}
+                      className="w-full appearance-none rounded-xl border border-[var(--separator)] bg-[var(--background)] px-4 py-3 text-[16px] text-[var(--foreground)] focus:border-[var(--brand)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-soft)]"
+                      required
+                      autoFocus
+                    >
+                      <option value="" disabled>請選擇門市…</option>
+                      {stores.map((s) => (
+                        <option key={s.id} value={s.code}>
+                          {s.name}（{s.code}）
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      placeholder="例如: S001"
+                      value={inputStoreId}
+                      onChange={(e) => setInputStoreId(e.target.value)}
+                      className="w-full rounded-xl border border-[var(--separator)] bg-[var(--background)] px-4 py-3 text-[16px] focus:border-[var(--brand)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-soft)]"
+                      autoFocus
+                    />
+                  )}
+                  <button
+                    type="submit"
+                    disabled={!inputStoreId}
+                    className="w-full rounded-xl brand-gradient px-4 py-3 text-[16px] font-semibold text-white shadow-[0_10px_24px_-10px_rgba(158,47,80,0.6)] transition active:scale-[0.98] disabled:opacity-40"
+                  >
+                    進入門市
+                  </button>
+                </form>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="card space-y-4 p-5 text-center">
+                  <p className="text-[15px] text-[var(--secondary-label)]">
+                    您目前位於{" "}
+                    <span className="font-bold text-[var(--brand-strong)]">
+                      {stores.find((s) => s.code === storeId)?.name ?? storeId}
+                    </span>{" "}
+                    門市
+                  </p>
+                  <button
+                    onClick={start}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#06C755] px-4 py-3.5 text-[16px] font-semibold text-white shadow-[0_10px_24px_-10px_rgba(6,199,85,0.7)] transition active:scale-[0.98]"
+                  >
+                    <svg viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                      <path d="M12 3C6.5 3 2 6.6 2 11c0 3.9 3.5 7.2 8.3 7.9.3.06.7.2.8.45.08.23.05.58.03.81l-.13.8c-.04.24-.19.93.81.51 1-.42 5.4-3.2 7.36-5.47C20.5 14.5 22 12.9 22 11c0-4.4-4.5-8-10-8Z" />
+                    </svg>
+                    {standalone ? "用 LINE 登入" : "用 LINE 註冊 / 登入"}
+                  </button>
+                  {standalone && (
+                    <p className="text-[12px] text-[var(--tertiary-label)]">
+                      將在 LINE app 中完成登入，再回到此 PWA App。
+                    </p>
+                  )}
+                </div>
+
+                {standalone && (
+                  <>
+                    <div className="relative">
+                      <div className="absolute inset-0 flex items-center">
+                        <span className="w-full border-t border-[var(--separator)]" />
+                      </div>
+                      <div className="relative flex justify-center">
+                        <span className="bg-[var(--background)] px-3 text-[12px] font-medium text-[var(--tertiary-label)]">
+                          或者
+                        </span>
+                      </div>
                     </div>
-                    <div className="relative flex justify-center text-xs uppercase">
-                      <span className="bg-white px-2 text-zinc-400 dark:bg-zinc-950">或者</span>
+
+                    <div className="card space-y-3 p-5">
+                      <p className="text-[14px] text-[var(--secondary-label)]">
+                        如果您已在瀏覽器登入，請輸入驗證碼：
+                      </p>
+                      <form onSubmit={handleSyncSubmit} className="flex gap-2">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          maxLength={6}
+                          placeholder="6 位數驗證碼"
+                          value={syncCode}
+                          onChange={(e) => setSyncCode(e.target.value)}
+                          className="flex-1 rounded-xl border border-[var(--separator)] bg-[var(--background)] px-3 py-2.5 text-center font-mono text-xl tracking-widest focus:border-[var(--brand)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-soft)]"
+                        />
+                        <button
+                          type="submit"
+                          disabled={syncCode.length !== 6 || syncing}
+                          className="rounded-xl brand-gradient px-5 py-2.5 text-[15px] font-semibold text-white transition active:scale-[0.97] disabled:opacity-40"
+                        >
+                          {syncing ? "..." : "驗證"}
+                        </button>
+                      </form>
                     </div>
-                  </div>
+                  </>
+                )}
 
-                  <div className="space-y-4 rounded-xl border border-zinc-200 p-4 bg-zinc-50/50">
-                    <p className="text-sm text-zinc-500">如果您已在瀏覽器登入，請輸入驗證碼：</p>
-                    <form onSubmit={handleSyncSubmit} className="flex gap-2">
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        pattern="[0-9]*"
-                        maxLength={6}
-                        placeholder="6 位數驗證碼"
-                        value={syncCode}
-                        onChange={(e) => setSyncCode(e.target.value)}
-                        className="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-center font-mono text-xl tracking-widest focus:border-indigo-500 focus:outline-none"
-                      />
-                      <button
-                        type="submit"
-                        disabled={syncCode.length !== 6 || syncing}
-                        className="rounded-md bg-indigo-600 px-4 py-2 text-base font-medium text-white shadow disabled:opacity-50"
-                      >
-                        {syncing ? "..." : "驗證"}
-                      </button>
-                    </form>
-                  </div>
-                </>
-              )}
+                <button
+                  onClick={() => { setStoreId(null); setInputStoreId(""); }}
+                  className="mx-auto block text-[14px] font-medium text-[var(--secondary-label)] underline underline-offset-4"
+                >
+                  更換其他門市
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
-              <button
-                onClick={() => { setStoreId(null); setInputStoreId(""); }}
-                className="text-sm text-zinc-400 hover:text-zinc-600 underline"
-              >
-                更換其他門市
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className="mt-8 text-center text-xs text-zinc-400 space-y-1">
-        <p>包子媽生鮮小舖</p>
-        <p>Baozi Ma Group Buying</p>
+      <div className="mt-auto pt-10 text-center text-[12px] text-[var(--tertiary-label)]">
+        <p className="font-medium">包子媽生鮮小舖</p>
+        <p className="mt-0.5 tracking-wide">Baozi Ma Group Buying</p>
       </div>
     </main>
   );

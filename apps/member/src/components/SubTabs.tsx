@@ -24,10 +24,10 @@ export default function SubTabs({
             <button
               key={o.value}
               onClick={() => onChange(o.value)}
-              className={`flex-1 rounded-[8px] px-3 py-2 text-[15px] font-medium transition-colors ${
+              className={`flex-1 rounded-[8px] px-3 py-2 text-[15px] transition-all duration-200 ${
                 active
-                  ? "bg-white text-[var(--foreground)] shadow-[0_3px_8px_rgba(0,0,0,0.08),0_1px_2px_rgba(0,0,0,0.04)]"
-                  : "bg-transparent text-[var(--ios-gray)]"
+                  ? "bg-white font-bold text-[var(--brand-strong)] shadow-[0_3px_10px_-2px_rgba(158,47,80,0.18),0_1px_2px_rgba(0,0,0,0.04)]"
+                  : "bg-transparent font-medium text-[var(--ios-gray)]"
               }`}
             >
               {o.label}

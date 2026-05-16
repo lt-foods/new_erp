@@ -42,6 +42,38 @@ export function campaignSoldOut(c: CampaignSummary): boolean {
   return Number(c.ordered_qty ?? 0) >= cap;
 }
 
+/** 沒有封面圖時的暖色品牌底（取代灰底 📦） */
+function CoverFallback({ size }: { size: "sm" | "lg" }) {
+  return (
+    <div
+      className="absolute inset-0 flex items-center justify-center"
+      style={{
+        background:
+          "linear-gradient(135deg, var(--brand-soft) 0%, #fff4f6 55%, #ffffff 100%)",
+      }}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="var(--brand)"
+        strokeWidth={1.4}
+        className={size === "lg" ? "h-14 w-14 opacity-70" : "h-10 w-10 opacity-70"}
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M5 8h14l-1 11a2 2 0 0 1-2 1.8H8A2 2 0 0 1 6 19L5 8Z"
+        />
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M9 8V6.5a3 3 0 0 1 6 0V8"
+        />
+      </svg>
+    </div>
+  );
+}
+
 /**
  * 蝦皮風卡片 + Uber Eats 大字級。
  * variant=hero 用在限時專區頭一張(更大)、grid 用在列表。
@@ -62,9 +94,9 @@ export default function CampaignCard({
     return (
       <Link
         href={href}
-        className="block overflow-hidden rounded-2xl bg-[var(--card-bg)] shadow-[0_2px_8px_rgba(0,0,0,0.08)] active:opacity-90"
+        className="card block overflow-hidden transition-transform duration-200 active:scale-[0.985]"
       >
-        <div className="relative aspect-[16/9] w-full bg-[#7676801a]">
+        <div className="relative aspect-[16/9] w-full">
           {campaign.cover_image_url ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
@@ -73,7 +105,7 @@ export default function CampaignCard({
               className="absolute inset-0 h-full w-full object-cover"
             />
           ) : (
-            <div className="absolute inset-0 flex items-center justify-center text-5xl">📦</div>
+            <CoverFallback size="lg" />
           )}
           {(() => {
             const label = campaignBadgeLabel(campaign);
@@ -83,8 +115,8 @@ export default function CampaignCard({
             const isLimited = label?.includes("限量");
             return (
               <div
-                className={`absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[14px] font-medium text-white backdrop-blur ${
-                  soldOut ? "bg-zinc-700/85" : isLimited ? "bg-[#ff3b30]/85" : "bg-black/65"
+                className={`absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[14px] font-semibold text-white shadow-sm backdrop-blur ${
+                  soldOut ? "bg-zinc-700/85" : isLimited ? "bg-[var(--ios-red)]/90" : "bg-black/55"
                 }`}
               >
                 {soldOut ? (
@@ -102,12 +134,12 @@ export default function CampaignCard({
             );
           })()}
         </div>
-        <div className="space-y-1.5 px-4 py-3">
+        <div className="space-y-1.5 px-4 py-3.5">
           <h3 className="text-[22px] font-bold leading-tight text-[var(--foreground)]">
             {campaign.name}
           </h3>
           <div className="flex items-baseline justify-between gap-2">
-            <span className="text-[28px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
+            <span className="brand-gradient-text text-[28px] font-extrabold tabular-nums leading-none">
               {priceText}
             </span>
             <span className="text-[13px] text-[var(--secondary-label)]">
@@ -122,9 +154,9 @@ export default function CampaignCard({
   return (
     <Link
       href={href}
-      className="block overflow-hidden rounded-2xl bg-[var(--card-bg)] shadow-[0_1px_2px_rgba(0,0,0,0.04)] active:opacity-90"
+      className="card block overflow-hidden transition-transform duration-200 active:scale-[0.97]"
     >
-      <div className="relative aspect-square w-full bg-[#7676801a]">
+      <div className="relative aspect-square w-full">
         {campaign.cover_image_url ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
@@ -133,45 +165,45 @@ export default function CampaignCard({
             className="absolute inset-0 h-full w-full object-cover"
           />
         ) : (
-          <div className="absolute inset-0 flex items-center justify-center text-4xl">📦</div>
+          <CoverFallback size="sm" />
         )}
-      </div>
-      <div className="space-y-1 px-3 py-2.5">
-        <div className="flex items-center gap-1.5">
-          {(() => {
-            const label = campaignBadgeLabel(campaign);
-            const soldOut = campaignSoldOut(campaign);
-            if (soldOut) {
-              return (
-                <span className="shrink-0 rounded bg-zinc-200 px-1.5 py-0.5 text-[11px] font-medium text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200">
-                  已搶購一空
-                </span>
-              );
-            }
-            if (!label) return null;
-            const isLimited = label.includes("限量");
+        {(() => {
+          const label = campaignBadgeLabel(campaign);
+          const soldOut = campaignSoldOut(campaign);
+          if (soldOut) {
             return (
-              <span
-                className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${
-                  isLimited ? "bg-[#ff3b30]/15 text-[#c4271d]" : "bg-[#ff9500]/15 text-[#9a5800]"
-                }`}
-              >
-                {label}
+              <span className="absolute left-2 top-2 rounded-full bg-zinc-700/80 px-2 py-0.5 text-[11px] font-semibold text-white backdrop-blur">
+                已搶購一空
               </span>
             );
-          })()}
-          <h3 className="line-clamp-2 min-w-0 flex-1 text-[17px] font-semibold leading-tight text-[var(--foreground)]">
-            {campaign.name}
-          </h3>
-        </div>
+          }
+          if (!label) return null;
+          const isLimited = label.includes("限量");
+          return (
+            <span
+              className={`absolute left-2 top-2 rounded-full px-2 py-0.5 text-[11px] font-semibold text-white shadow-sm backdrop-blur ${
+                isLimited ? "bg-[var(--ios-red)]/90" : "bg-[var(--ios-orange)]/90"
+              }`}
+            >
+              {label}
+            </span>
+          );
+        })()}
+      </div>
+      <div className="space-y-1 px-3 py-2.5">
+        <h3 className="line-clamp-2 min-h-[2.6em] text-[16px] font-semibold leading-tight text-[var(--foreground)]">
+          {campaign.name}
+        </h3>
         {(() => {
           const remaining = campaignRemaining(campaign);
           if (remaining === null || campaignSoldOut(campaign)) return null;
           return (
-            <div className="text-[12px] text-[#c4271d]">剩 {remaining} 份</div>
+            <div className="inline-flex items-center rounded-full bg-[var(--ios-red)]/10 px-2 py-0.5 text-[12px] font-medium text-[#c4271d]">
+              僅剩 {remaining} 份
+            </div>
           );
         })()}
-        <div className="text-[24px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
+        <div className="brand-gradient-text text-[24px] font-extrabold tabular-nums leading-none">
           {priceText}
         </div>
         {campaign.end_at && (

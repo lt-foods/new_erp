@@ -1,13 +1,13 @@
 @import "tailwindcss";
 
 :root {
-  /* iOS-like system grouped 配色 */
-  --background: #f2f2f7;          /* systemGroupedBackground */
+  /* iOS-like system grouped 配色（保留乾淨骨架，整體染一層暖色） */
+  --background: #f6f3f4;          /* 暖灰白底（取代純 systemGray #f2f2f7） */
   --foreground: #1c1c1e;          /* label */
   --card-bg: #ffffff;
-  --separator: rgba(60, 60, 67, 0.12);
+  --separator: rgba(60, 60, 67, 0.1);
   --secondary-label: rgba(60, 60, 67, 0.6);
-  --tertiary-label: rgba(60, 60, 67, 0.3);
+  --tertiary-label: rgba(60, 60, 67, 0.32);
 
   /* iOS system colors */
   --ios-blue: #007aff;
@@ -19,6 +19,16 @@
   /* 品牌粉(暖粉色,呼應「包子媽」logo 中央愛心 + 水彩花圈) */
   --brand: #ec6b8c;               /* 暖玫瑰粉 — 一般 accent / 副標 */
   --brand-strong: #c44464;        /* 較深玫瑰 — CTA、金額強調 */
+  --brand-deep: #9e2f50;          /* 漸層深端 */
+  --brand-soft: #fde7ed;          /* 極淺玫瑰 — 選中 pill / chip 底 */
+  --brand-tint: #fbf0f2;          /* 頁面暖染（背景漸層上端） */
+  --brand-gradient: linear-gradient(135deg, #ef7a98 0%, #c44464 55%, #9e2f50 100%);
+
+  /* 暖色調陰影：用玫瑰色而非純黑，讓白卡浮起來更柔 */
+  --shadow-card: 0 1px 2px rgba(158, 47, 80, 0.05),
+    0 6px 18px -8px rgba(158, 47, 80, 0.12);
+  --shadow-card-lg: 0 2px 6px rgba(158, 47, 80, 0.06),
+    0 16px 36px -12px rgba(158, 47, 80, 0.18);
 }
 
 @theme inline {
@@ -32,6 +42,8 @@
 
 html {
   color-scheme: light;
+  /* 暖灰白底色 fallback；漸層在 body::before fixed 層 */
+  background: var(--background);
   /* 避免 iOS 雙擊縮放干擾互動 */
   touch-action: manipulation;
   /* 文字微調 */
@@ -40,11 +52,30 @@ html {
 }
 
 body {
-  background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
+  /* 透明，讓 body::before 的固定漸層透出來 */
+  background: transparent;
   /* 避免拉到底反白 */
   overscroll-behavior-y: none;
+}
+
+/* 暖色頁面漸層：上端淡玫瑰染 → 中下段回暖灰白。
+   用 fixed 偽元素而非 background-attachment:fixed —— 後者在 iOS Safari
+   (本 PWA 主要對象) 會卡頓 / 不渲染。 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      120% 50% at 50% 0%,
+      var(--brand-tint) 0%,
+      rgba(251, 240, 242, 0) 60%
+    ),
+    linear-gradient(180deg, var(--brand-tint) 0%, var(--background) 38%);
 }
 
 /* iOS-style 點擊高亮（取代瀏覽器藍框） */
@@ -59,4 +90,48 @@ button, a {
 .hide-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+/* ── 共用視覺元件 ─────────────────────────────────────────── */
+
+/* 標準白卡：暖陰影 + 髮絲邊，全站一致 */
+.card {
+  background: var(--card-bg);
+  border-radius: 1rem;
+  box-shadow: var(--shadow-card);
+  border: 0.5px solid rgba(158, 47, 80, 0.05);
+}
+
+/* 品牌漸層底（hero / CTA / emblem） */
+.brand-gradient {
+  background-image: var(--brand-gradient);
+}
+
+/* 品牌漸層字（金額 / 強調數字） */
+.brand-gradient-text {
+  background-image: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* 列表逐項淡入上浮，讓畫面「活」起來 */
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-in {
+  animation: fadeUp 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-in {
+    animation: none;
+  }
 }

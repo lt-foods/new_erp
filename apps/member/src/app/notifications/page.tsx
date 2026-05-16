@@ -48,18 +48,31 @@ export default function NotificationsPage() {
           <p className="px-1 text-[15px] text-[var(--tertiary-label)]">載入中…</p>
         )}
         {err && (
-          <div className="rounded-2xl bg-[#ff3b30]/10 p-3 text-[14px] text-[#c4271d]">
+          <div className="rounded-2xl bg-[var(--ios-red)]/10 p-3 text-[14px] text-[#c4271d]">
             {err}
           </div>
         )}
         {!loading && !err && items.length === 0 && (
-          <div className="py-16 text-center">
-            <div className="text-3xl">📬</div>
-            <p className="mt-2 text-[15px] text-[var(--tertiary-label)]">還沒有任何通知</p>
+          <div className="flex flex-col items-center py-20 text-center">
+            <div
+              className="flex h-24 w-24 items-center justify-center rounded-full text-5xl"
+              style={{ background: "linear-gradient(135deg, var(--brand-soft) 0%, #fff4f6 100%)" }}
+            >
+              📬
+            </div>
+            <p className="mt-4 text-[16px] font-semibold text-[var(--foreground)]">
+              還沒有任何通知
+            </p>
           </div>
         )}
-        {items.map((n) => (
-          <NotificationCard key={n.id} n={n} />
+        {items.map((n, i) => (
+          <div
+            key={n.id}
+            className="animate-in"
+            style={{ animationDelay: `${Math.min(i, 8) * 50}ms` }}
+          >
+            <NotificationCard n={n} />
+          </div>
         ))}
       </div>
     </PageShell>
