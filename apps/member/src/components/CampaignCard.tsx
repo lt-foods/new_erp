@@ -153,7 +153,7 @@ export default function CampaignCard({
             </span>
           </div>
           {campaign.ordered_qty > 0 && (
-            <div className="text-right text-[14px] font-medium text-[var(--tertiary-label)]">
+            <div className="text-right text-[14px] font-medium text-[var(--secondary-label)]">
               已訂購 {campaign.ordered_qty.toLocaleString()} 件
             </div>
           )}
@@ -219,7 +219,7 @@ export default function CampaignCard({
             {priceText}
           </div>
           {campaign.ordered_qty > 0 && (
-            <div className="text-[12px] font-medium text-[var(--tertiary-label)]">
+            <div className="text-[12px] font-medium text-[var(--secondary-label)]">
               已訂購 {campaign.ordered_qty.toLocaleString()} 件
             </div>
           )}
