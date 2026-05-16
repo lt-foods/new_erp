@@ -132,14 +132,13 @@ function FlashRow({ campaign }: { campaign: CampaignSummary }) {
           <span className="absolute left-1 top-1 rounded bg-zinc-700 px-1.5 py-0.5 text-[11px] font-medium text-white shadow">
             已搶購一空
           </span>
-        ) : (label || campaign.order_count > 0) ? (
+        ) : label ? (
           <span
             className={`absolute left-1 top-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-white shadow ${
               isLimited ? "bg-[#ff3b30]" : "bg-[#ff9500]"
             }`}
           >
-            {label || "進行中"}
-            {campaign.order_count > 0 && ` · ${campaign.order_count} 筆`}
+            {label}
           </span>
         ) : null}
       </div>
@@ -147,23 +146,23 @@ function FlashRow({ campaign }: { campaign: CampaignSummary }) {
         <h3 className="line-clamp-2 text-[17px] font-semibold leading-tight text-[var(--foreground)]">
           {campaign.name}
         </h3>
-        <div className="text-[24px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
-          {priceText}
+        <div className="flex items-baseline gap-2">
+          <div className="text-[24px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
+            {priceText}
+          </div>
+          {campaign.order_count > 0 && (
+            <div className="text-[12px] font-medium text-[var(--tertiary-label)]">
+              {campaign.order_count} 筆訂單
+            </div>
+          )}
         </div>
         <div className="flex items-center justify-between gap-2 text-[13px] text-[var(--secondary-label)]">
-          <div className="flex flex-col">
-            <span>
-              共 {campaign.item_count} 項
-              {isLimited && remaining !== null && !soldOut && (
-                <span className="ml-2 font-medium text-[#c4271d]">· 剩 {remaining} 份</span>
-              )}
-            </span>
-            {campaign.ordered_qty > 0 && (
-              <span className="mt-0.5 text-[12px] text-[var(--tertiary-label)]">
-                已售出 {campaign.ordered_qty}
-              </span>
+          <span>
+            共 {campaign.item_count} 項
+            {isLimited && remaining !== null && !soldOut && (
+              <span className="ml-2 font-medium text-[#c4271d]">· 剩 {remaining} 份</span>
             )}
-          </div>
+          </span>
           {campaign.end_at && !soldOut && <Countdown target={campaign.end_at} />}
         </div>
       </div>

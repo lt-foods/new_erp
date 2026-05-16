@@ -35,6 +35,7 @@ type CampaignDetail = {
   status: string;
   end_at: string | null;
   pickup_deadline: string | null;
+  order_count: number;
 };
 
 type Item = {
@@ -183,9 +184,16 @@ export default function CampaignDetailPage() {
 
             {/* 標題 + 描述 */}
             <div className="space-y-2 px-4">
-              <h1 className="text-[26px] font-bold leading-tight text-[var(--foreground)]">
-                {campaign.name}
-              </h1>
+              <div className="flex items-start justify-between gap-3">
+                <h1 className="flex-1 text-[26px] font-bold leading-tight text-[var(--foreground)]">
+                  {campaign.name}
+                </h1>
+                {campaign.order_count > 0 && (
+                  <div className="mt-1.5 shrink-0 rounded-lg bg-[var(--tertiary-label)]/10 px-2 py-1 text-[13px] font-semibold text-[var(--secondary-label)]">
+                    {campaign.order_count} 筆訂單
+                  </div>
+                )}
+              </div>
               {campaign.description && (() => {
                 const desc = cleanDescription(campaign.description);
                 if (!desc) return null;
@@ -235,7 +243,7 @@ export default function CampaignDetailPage() {
                               ${Number(it.unit_price).toLocaleString()}
                             </div>
                             {it.ordered_qty > 0 && (
-                              <div className="text-[12px] text-[var(--tertiary-label)]">
+                              <div className="text-[13px] font-medium text-[var(--tertiary-label)]">
                                 已售出 {it.ordered_qty}
                               </div>
                             )}

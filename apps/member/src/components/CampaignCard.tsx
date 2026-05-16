@@ -148,13 +148,13 @@ export default function CampaignCard({
             {campaign.name}
           </h3>
           <div className="flex items-baseline justify-between gap-2">
-            <div className="flex flex-col">
+            <div className="flex items-baseline gap-2">
               <span className="brand-gradient-text text-[28px] font-extrabold tabular-nums leading-none">
                 {priceText}
               </span>
-              {campaign.ordered_qty > 0 && (
-                <span className="mt-1 text-[13px] text-[var(--tertiary-label)] font-medium">
-                  已售出 {campaign.ordered_qty} 件
+              {campaign.order_count > 0 && (
+                <span className="text-[14px] font-medium text-[var(--tertiary-label)]">
+                  {campaign.order_count} 筆訂單
                 </span>
               )}
             </div>
@@ -193,16 +193,15 @@ export default function CampaignCard({
               </span>
             );
           }
-          if (!label && campaign.order_count <= 0) return null;
-          const isLimited = label?.includes("限量");
+          if (!label) return null;
+          const isLimited = label.includes("限量");
           return (
             <span
               className={`absolute left-2 top-2 rounded-full px-2 py-0.5 text-[11px] font-semibold text-white shadow-sm backdrop-blur ${
                 isLimited ? "bg-[var(--ios-red)]/90" : "bg-[var(--ios-orange)]/90"
               }`}
             >
-              {label || "進行中"}
-              {campaign.order_count > 0 && ` · ${campaign.order_count} 筆訂單`}
+              {label}
             </span>
           );
         })()}
@@ -220,13 +219,13 @@ export default function CampaignCard({
             </div>
           );
         })()}
-        <div className="flex items-baseline justify-between gap-2">
+        <div className="flex items-baseline gap-2">
           <div className="brand-gradient-text text-[24px] font-extrabold tabular-nums leading-none">
             {priceText}
           </div>
-          {campaign.ordered_qty > 0 && (
-            <div className="text-[12px] text-[var(--tertiary-label)] font-medium">
-              已售出 {campaign.ordered_qty}
+          {campaign.order_count > 0 && (
+            <div className="text-[12px] font-medium text-[var(--tertiary-label)]">
+              {campaign.order_count} 筆訂單
             </div>
           )}
         </div>

@@ -396,6 +396,16 @@ async function getCampaignDetail(sb: any, tenantId: string, campaignId: number) 
     .order("sort_order", { ascending: true });
   if (iErr) return json({ error: iErr.message }, 500);
 
+  // 算出活動總訂單數
+  const { count: orderCount } = await sb
+    .from("customer_orders")
+    .select("*", { count: "exact", head: true })
+    .eq("tenant_id", tenantId)
+    .eq("campaign_id", campaignId)
+    .not("status", "in", "(cancelled,expired)")
+    .or("order_kind.is.null,order_kind.eq.normal");
+  c.order_count = orderCount ?? 0;
+
   // 算出各品項已下單總量
   const itemOrderedMap = new Map<number, number>();
   const { data: itemOrderRows } = await sb
