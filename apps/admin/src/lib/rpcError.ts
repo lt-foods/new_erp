@@ -145,6 +145,27 @@ const RULES: Rule[] = [
     pattern: /^source_location\s+(\d+)\s+is not HQ\s+(\d+)$/i,
     render: (m) => `來源庫位 #${m[1]} 不是總倉(#${m[2]}),不可批次配送。`,
   },
+  // ===== rpc_return_aid_order (#234) =====
+  {
+    pattern: /order \d+ is not an aid order/i,
+    render: () => "這不是互助單，不能用「退單（已收貨）」。一般訂單請用「退訂單」退回總倉。",
+  },
+  {
+    pattern: /aid order \d+ is \w+ \(not yet received\)/i,
+    render: () => "此互助單尚未收貨，請用「取消」（收貨前撤回），不是退單。",
+  },
+  {
+    pattern: /aid order \d+ already completed \(picked up\)/i,
+    render: () => "此互助單已取貨、貨已不在店，需先處理顧客退貨；本退單僅適用「已收貨未取貨」。",
+  },
+  {
+    pattern: /aid order \d+ status=\w+ cannot be returned \(expected ready\)/i,
+    render: () => "此互助單目前狀態無法退單（僅「已收貨未取貨」可退）。",
+  },
+  {
+    pattern: /no received transfer found for aid order \d+/i,
+    render: () => "找不到此互助單已收貨的調撥單，無法退單（資料不一致，請聯繫工程師）。",
+  },
   // ===== rpc_create_order_return =====
   {
     pattern: /invalid p_movement_type\s+(\S+)\s*\(must be customer_return or damage\)/i,

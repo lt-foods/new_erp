@@ -334,9 +334,14 @@ export function OrderDetail({
     setReloadTick((n) => n + 1);
   }
 
+  // 互助單：有來源單 + 至少一個 aid_transfer 品項（對齊 rpc_return_aid_order 的判定）
+  const isAidOrder = head.transferred_from_order_id != null && items.some((it) => it.source === "aid_transfer");
   const canTransfer = ["pending", "confirmed", "reserved", "ready"].includes(head.status);
   const canCancel = ["pending", "confirmed", "shipping"].includes(head.status);
-  const canReturn = ["shipping", "ready", "partially_completed", "completed", "expired"].includes(head.status);
+  // 一般顧客訂單退回總倉（rpc_create_order_return）— 互助單不走這條（貨應退回原 source 店）
+  const canReturn = !isAidOrder && ["shipping", "ready", "partially_completed", "completed", "expired"].includes(head.status);
+  // 互助單已收貨未取貨（status=ready）退單：退回原 source 店（rpc_return_aid_order，#234）
+  const canAidReturn = isAidOrder && head.status === "ready";
   const isTransferredOut = head.status === "transferred_out";
 
   async function cancelOrder() {
@@ -365,6 +370,33 @@ export function OrderDetail({
     alert(refunded > 0
       ? `已取消，已退回 $${refunded} 儲值金到會員餘額`
       : "已取消");
+    setReloadTick((n) => n + 1);
+  }
+
+  async function aidReturn() {
+    if (!head) return;
+    const walletPaid = Number(head.wallet_paid_amount ?? 0);
+    const walletNote = walletPaid > 0
+      ? `\n\n⚠️ 此單已用儲值金 $${walletPaid}，退單後會自動退回會員餘額。`
+      : "";
+    const reason = prompt(
+      `退單（已收貨）：${head.order_no}\n會把已收貨品反向退回原調出店，並把來源單還原。請輸入原因：${walletNote}`
+    );
+    if (reason === null) return;
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id ?? null;
+    if (!operator) { alert("尚未登入"); return; }
+    const { data, error: rpcErr } = await sb.rpc("rpc_return_aid_order", {
+      p_order_id: head.id,
+      p_reason: reason,
+      p_operator: operator,
+    });
+    if (rpcErr) { alert(`退單失敗：${translateRpcError(rpcErr)}`); return; }
+    const refunded = Number((data as { wallet_refunded?: number } | null)?.wallet_refunded ?? 0);
+    alert(refunded > 0
+      ? `已退單，已退回 $${refunded} 儲值金到會員餘額`
+      : "已退單，貨已退回原調出店");
     setReloadTick((n) => n + 1);
   }
   const pickableItems = items.filter((it) => ["pending", "reserved", "ready"].includes(it.status));
@@ -417,7 +449,7 @@ export function OrderDetail({
           </SpinButton>
         </div>
       )}
-      {(canTransfer || canPickup || canCancel || canReturn || isTransferredOut) && (
+      {(canTransfer || canPickup || canCancel || canReturn || canAidReturn || isTransferredOut) && (
         <div className="flex items-center justify-end gap-2">
           {canPickup && (
             <SpinButton
@@ -444,6 +476,15 @@ export function OrderDetail({
               title="把此訂單已派到該店的 SKU 退回總倉"
             >
               ↩ 退訂單
+            </SpinButton>
+          )}
+          {canAidReturn && (
+            <SpinButton
+              onClick={aidReturn}
+              className="rounded-md border border-orange-300 px-3 py-1 text-xs font-medium text-orange-700 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-950"
+              title="互助單已收貨：把貨反向退回原調出店，並還原來源單"
+            >
+              ↩ 退單（已收貨）
             </SpinButton>
           )}
           {canCancel && (
