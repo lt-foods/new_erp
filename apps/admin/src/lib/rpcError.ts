@@ -145,6 +145,11 @@ const RULES: Rule[] = [
     pattern: /^source_location\s+(\d+)\s+is not HQ\s+(\d+)$/i,
     render: (m) => `來源庫位 #${m[1]} 不是總倉(#${m[2]}),不可批次配送。`,
   },
+  // ===== rpc_create_order_return =====
+  {
+    pattern: /invalid p_movement_type\s+(\S+)\s*\(must be customer_return or damage\)/i,
+    render: (m) => `退貨類型「${m[1]}」不合法，只能是「一般退貨」或「破損」。`,
+  },
   // ===== rpc_register_damage =====
   {
     pattern: /damage_qty must be > 0/i,

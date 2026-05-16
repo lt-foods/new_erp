@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { getSupabase } from "@/lib/supabase";
+import { translateRpcError } from "@/lib/rpcError";
 
 const RETURNABLE_STATUSES = ["shipping", "ready", "partially_completed", "completed", "expired"] as const;
 
@@ -33,9 +34,17 @@ type DeliveredSku = {
   sku_name: string;
   delivered: number;
   already_returned: number;
+  store_stock: number;
 };
 
 type LineInput = Record<number, string>;
+type ReturnType = "normal" | "damage" | "expired";
+
+const RETURN_TYPE_OPTIONS: { value: ReturnType; label: string }[] = [
+  { value: "normal", label: "一般退貨" },
+  { value: "damage", label: "破損" },
+  { value: "expired", label: "過期" },
+];
 
 export default function OrderReturnCreateModal({
   open,
@@ -60,6 +69,11 @@ export default function OrderReturnCreateModal({
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [returnType, setReturnType] = useState<ReturnType>("normal");
+  const [orderStatus, setOrderStatus] = useState<string | null>(null);
+  const [restockFirst, setRestockFirst] = useState(false);
+  const restockTouched = useRef(false);
 
   // 訂單搜尋 combobox
   const [orderQuery, setOrderQuery] = useState("");
@@ -103,6 +117,10 @@ export default function OrderReturnCreateModal({
       setError(null);
       setOrderQuery("");
       setOrderOpen(false);
+      setReturnType("normal");
+      setOrderStatus(null);
+      setRestockFirst(false);
+      restockTouched.current = false;
     }
   }, [open, prefillStoreId, prefillOrderId]);
 
@@ -175,11 +193,21 @@ export default function OrderReturnCreateModal({
   useEffect(() => {
     setSkus(null);
     setQtys({});
+    setOrderStatus(null);
+    restockTouched.current = false;
     if (orderId === null || storeId === null) return;
     (async () => {
       const sb = getSupabase();
       const store = stores?.find((s) => s.id === storeId);
       if (!store?.location_id) return;
+
+      // 訂單 status（決定 restock_first 預設 + 顯示）
+      const { data: ordRow } = await sb
+        .from("customer_orders")
+        .select("status")
+        .eq("id", orderId)
+        .maybeSingle();
+      setOrderStatus((ordRow as { status?: string } | null)?.status ?? null);
 
       // 訂單行（customer_order_items 是已派該店的 single source of truth）
       const { data: itemRows } = await sb
@@ -236,17 +264,45 @@ export default function OrderReturnCreateModal({
         }
       }
 
+      // 店端實際庫存（P2-C：可退量上限 = min(訂單量-已退, 店端庫存)）
+      const skuIds = Array.from(deliveredMap.keys());
+      const stockMap = new Map<number, number>();
+      if (skuIds.length > 0) {
+        const { data: balRows } = await sb
+          .from("stock_balances")
+          .select("sku_id, on_hand")
+          .eq("location_id", store.location_id)
+          .in("sku_id", skuIds);
+        for (const b of (balRows ?? []) as Array<{ sku_id: number; on_hand: number | null }>) {
+          stockMap.set(b.sku_id, Number(b.on_hand ?? 0));
+        }
+      }
+
       const list: DeliveredSku[] = Array.from(deliveredMap.entries()).map(([sku_id, info]) => ({
         sku_id,
         sku_code: info.sku_code,
         sku_name: info.sku_name,
         delivered: info.qty,
         already_returned: returnedMap.get(sku_id) ?? 0,
+        store_stock: stockMap.get(sku_id) ?? 0,
       }));
       list.sort((a, b) => a.sku_code.localeCompare(b.sku_code));
       setSkus(list);
     })();
   }, [orderId, storeId, stores]);
+
+  // 訂單 status='completed'（客戶已全取）預設勾「取貨後反悔先入庫」；
+  // 其他 status（店端還有貨）預設不勾。使用者手動改過就不再覆蓋。
+  useEffect(() => {
+    if (restockTouched.current) return;
+    setRestockFirst(orderStatus === "completed");
+  }, [orderStatus]);
+
+  // 有效可退量：未勾 restock 時受店端實際庫存上限；勾了會先入庫故不卡庫存
+  const effRemaining = (s: DeliveredSku): number => {
+    const byOrder = s.delivered - s.already_returned;
+    return restockFirst ? byOrder : Math.min(byOrder, s.store_stock);
+  };
 
   const totalToReturn = useMemo(() => {
     if (!skus) return 0;
@@ -261,7 +317,7 @@ export default function OrderReturnCreateModal({
     totalToReturn > 0 &&
     skus.every((s) => {
       const q = Number(qtys[s.sku_id] ?? 0) || 0;
-      return q >= 0 && q <= s.delivered - s.already_returned;
+      return q >= 0 && q <= effRemaining(s);
     });
 
   async function handleSubmit() {
@@ -283,18 +339,14 @@ export default function OrderReturnCreateModal({
         p_order_id: orderId,
         p_lines: lines,
         p_reason: reason.trim() || null,
+        p_movement_type: returnType === "damage" ? "damage" : "customer_return",
+        p_restock_first: restockFirst,
       });
       if (err) throw err;
       const transferId = (data as { return_transfer_id?: number })?.return_transfer_id;
       onCreated(Number(transferId ?? 0));
     } catch (e) {
-      const msg =
-        e instanceof Error
-          ? e.message
-          : typeof e === "object" && e !== null && "message" in e
-            ? String((e as { message: unknown }).message)
-            : String(e);
-      setError(msg);
+      setError(translateRpcError(e));
     } finally {
       setBusy(false);
     }
@@ -431,34 +483,42 @@ export default function OrderReturnCreateModal({
                   <th className="px-3 py-2">品名</th>
                   <th className="px-3 py-2 text-right">訂單量</th>
                   <th className="px-3 py-2 text-right">已退</th>
+                  <th className="px-3 py-2 text-right">店端庫存</th>
                   <th className="px-3 py-2 text-right">可退</th>
                   <th className="px-3 py-2 text-right">退多少 *</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
                 {skus === null ? (
-                  <tr><td colSpan={6} className="p-4 text-center text-zinc-500">載入中…</td></tr>
+                  <tr><td colSpan={7} className="p-4 text-center text-zinc-500">載入中…</td></tr>
                 ) : skus.length === 0 ? (
-                  <tr><td colSpan={6} className="p-4 text-center text-zinc-500">此訂單目前沒有可退的 SKU（全部已取消 / 過期）</td></tr>
+                  <tr><td colSpan={7} className="p-4 text-center text-zinc-500">此訂單目前沒有可退的 SKU（全部已取消 / 過期）</td></tr>
                 ) : skus.map((s) => {
-                  const remaining = s.delivered - s.already_returned;
+                  const byOrder = s.delivered - s.already_returned;
+                  const cap = effRemaining(s);
+                  const cappedByStock = !restockFirst && s.store_stock < byOrder;
                   return (
                     <tr key={s.sku_id}>
                       <td className="px-3 py-2 font-mono text-xs">{s.sku_code}</td>
                       <td className="px-3 py-2">{s.sku_name || "—"}</td>
                       <td className="px-3 py-2 text-right">{s.delivered}</td>
                       <td className="px-3 py-2 text-right text-zinc-500">{s.already_returned}</td>
-                      <td className="px-3 py-2 text-right font-medium">{remaining}</td>
+                      <td className={`px-3 py-2 text-right ${cappedByStock ? "text-amber-600 dark:text-amber-400" : "text-zinc-500"}`}>
+                        {s.store_stock}
+                      </td>
+                      <td className="px-3 py-2 text-right font-medium" title={cappedByStock ? `受店端庫存限制（訂單可退 ${byOrder}）` : undefined}>
+                        {cap}
+                      </td>
                       <td className="px-3 py-2 text-right">
                         <input
                           type="number"
                           min="0"
-                          max={remaining}
+                          max={cap}
                           step="1"
                           value={qtys[s.sku_id] ?? ""}
                           onChange={(e) => setQtys((m) => ({ ...m, [s.sku_id]: e.target.value }))}
                           className={`w-24 text-right ${inputCls}`}
-                          disabled={remaining <= 0}
+                          disabled={cap <= 0}
                         />
                       </td>
                     </tr>
@@ -466,6 +526,50 @@ export default function OrderReturnCreateModal({
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {orderId !== null && (
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5 text-sm">
+              <span className="text-zinc-600 dark:text-zinc-400">退貨類型 *</span>
+              <div className="flex flex-wrap gap-3">
+                {RETURN_TYPE_OPTIONS.map((o) => (
+                  <label key={o.value} className="flex cursor-pointer items-center gap-1.5">
+                    <input
+                      type="radio"
+                      name="returnType"
+                      checked={returnType === o.value}
+                      onChange={() => setReturnType(o.value)}
+                    />
+                    {o.label}
+                  </label>
+                ))}
+              </div>
+              {returnType === "damage" && (
+                <span className="text-xs text-amber-600 dark:text-amber-400">
+                  破損 → 庫存異動記為 damage，會計可與一般退貨分流
+                </span>
+              )}
+            </div>
+            <div className="flex flex-col gap-1.5 text-sm">
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={restockFirst}
+                  onChange={(e) => {
+                    restockTouched.current = true;
+                    setRestockFirst(e.target.checked);
+                  }}
+                />
+                <span>客戶已取貨後退回（先把退回商品入庫店端再退回總倉）</span>
+              </label>
+              <span className="text-xs text-zinc-500">
+                {orderStatus === "completed"
+                  ? "此訂單已完成（客戶已取貨），店端庫存通常為 0；勾選後系統自動先入庫再退回，免店員手動兩步。"
+                  : "店端尚有未取貨庫存時不需勾選；僅「客戶取貨後又拿回來」才勾。"}
+              </span>
+            </div>
           </div>
         )}
 
