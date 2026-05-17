@@ -29,19 +29,23 @@
 - [ ] `/shop/flash` 同上
 - [ ] `/shop/c/[id]` 同上
 - [ ] `/me` 首次載入整頁 spinner（仍包在 PageShell；`!me` 錯誤態文案不變）
-- [ ] `/`（landing）`status==="loading"` → spinner；`status==="liff_auth"` → spinner + 「LINE 驗證中…請稍候」
+- [ ] `/`（landing）`status==="loading"` → 純 spinner；`status==="liff_auth"` → 純 spinner（無文字）
 - [ ] `/register` `!ready` 載入 → spinner（`error` 分支文案不變）
 - [ ] `/install` `env==="loading"` → spinner
 - [ ] `/shop` 維持既有 skeleton（內容網格的原生佔位模式，刻意不換 spinner）
 
-## 3. Async 按鈕 inline spinner
+## 3. Async 按鈕 busy 態 = 純 spinner（無文字）
 
-- [ ] `/shop/c/[id]` BuySheet 送出鈕：`submitting` 時白 spinner + 「送出中…」
-- [ ] `/me` 儲存鈕：`saving` 時白 spinner + 「儲存中…」
-- [ ] `/me` PWA 碼鈕：`generating` 時白 spinner +「處理中」（原本只有「...」）
-- [ ] `/`（landing）驗證鈕：`syncing` 時白 spinner +「驗證中」（原本只有「...」）
-- [ ] `/wallet` 載入更多：`loadingMore` 時 spinner + 「載入中…」
-- [ ] `/register` 送出鈕：`submitting` 時白 spinner + 「處理中…」
+> 使用者回饋「不要用載入中那個方式」：busy 時**只轉圈、不顯示任何「…中」文字**；
+> idle 標籤維持原樣。
+
+- [ ] `/shop/c/[id]` BuySheet 送出鈕：`submitting` → 只白 spinner（無「送出中…」）；idle = 請先選擇商品 / 送出訂單
+- [ ] `/me` 儲存鈕：`saving` → 只白 spinner；idle =「儲存」
+- [ ] `/me` PWA 碼鈕：`generating` → 只白 spinner；idle =「PWA 碼」
+- [ ] `/`（landing）驗證鈕：`syncing` → 只白 spinner；idle =「驗證」
+- [ ] `/wallet` 載入更多：`loadingMore` → 只 spinner；idle =「載入更多」
+- [ ] `/register` 送出鈕：`submitting` → 只白 spinner；idle = 確認綁定 / 建立會員
+- [ ] 全站無可見「載入中 / 驗證中 / 送出中 / 儲存中 / 處理中」文字（`Spinner` 的 `aria-label="載入中"` 為螢幕報讀、不可見，保留）
 
 ## 4. 回歸 / 品質
 
