@@ -207,8 +207,34 @@ function fmt(s: string): string {
   return Number.isInteger(n) ? String(n) : String(n);
 }
 
+// supabase-js's PostgrestError shape varies across SDK versions: <=2.104 returns
+// a plain object { message, details, hint, code }; >=2.105 returns an Error
+// subclass. Plus auth/fetch wrappers throw { error: ... }. Extract a usable
+// string from any of these instead of letting String(obj) produce "[object Object]".
+function extractErrorMessage(raw: unknown): string {
+  if (raw == null) return String(raw);
+  if (typeof raw === "string") return raw;
+  if (raw instanceof Error) return raw.message;
+  if (typeof raw === "object") {
+    const o = raw as Record<string, unknown>;
+    if (typeof o.message === "string" && o.message) return o.message;
+    if (typeof o.error === "string" && o.error) return o.error;
+    if (o.error && typeof o.error === "object") {
+      const inner = o.error as Record<string, unknown>;
+      if (typeof inner.message === "string" && inner.message) return inner.message;
+    }
+    try {
+      const j = JSON.stringify(o);
+      if (j && j !== "{}") return j;
+    } catch {
+      /* circular — fall through */
+    }
+  }
+  return String(raw);
+}
+
 export function translateRpcError(raw: unknown): string {
-  const msg = raw instanceof Error ? raw.message : String(raw);
+  const msg = extractErrorMessage(raw);
   for (const r of RULES) {
     const m = msg.match(r.pattern);
     if (m) return r.render(m);
