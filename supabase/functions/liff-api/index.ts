@@ -250,9 +250,12 @@ async function getOverview(sb: any, tenantId: string, storeId: number, memberId:
   const { data: storeRow, error: sErr } = await sb.from("stores").select("id, code, name, banner_url, description, payment_methods_text, shipping_methods_text").eq("tenant_id", tenantId).eq("id", storeId).single();
   if (sErr || !storeRow) return json({ error: "store not found" }, 404);
   storeRow.banner_url = toPublicUrl(requireEnv("SUPABASE_URL"), "products", storeRow.banner_url);
-  const { data: unpaidRows } = await sb.from("v_customer_order_summary").select("payable_amount").eq("tenant_id", tenantId).eq("member_id", memberId).eq("store_id", storeId).eq("payment_status", "unpaid").not("status", "in", "(cancelled,expired)");
+  // 未結金額 / 進行中筆數依 member_id 會員級加總，不依 store_id 過濾：
+  // member_id 是 tenant 級、訂單 pickup 店可不同於登入店，需與 listMyOrders（跨店）一致，
+  // 否則訂單列表看得到、overview 金額卻 0。
+  const { data: unpaidRows } = await sb.from("v_customer_order_summary").select("payable_amount").eq("tenant_id", tenantId).eq("member_id", memberId).eq("payment_status", "unpaid").not("status", "in", "(cancelled,expired)");
   const receivable = (unpaidRows ?? []).reduce((s: number, r: any) => s + Number(r.payable_amount ?? 0), 0);
-  const { count: activeCount } = await sb.from("v_customer_order_summary").select("*", { count: "exact", head: true }).eq("tenant_id", tenantId).eq("member_id", memberId).eq("store_id", storeId).not("status", "in", "(completed,cancelled,expired)");
+  const { count: activeCount } = await sb.from("v_customer_order_summary").select("*", { count: "exact", head: true }).eq("tenant_id", tenantId).eq("member_id", memberId).not("status", "in", "(completed,cancelled,expired)");
   return json({ store: storeRow, receivable_amount: receivable, active_orders_count: activeCount ?? 0 });
 }
 
