@@ -6,6 +6,7 @@ import { useParams, useRouter } from "next/navigation";
 import { consumeFragmentToSession, getSession } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
+import Spinner, { LoadingScreen } from "@/components/Spinner";
 import Countdown from "@/components/Countdown";
 
 /** 清掉 legacy LINE 匯入殘留的佔位字 (emoji)/(heart)，並收斂多餘空白。
@@ -149,9 +150,7 @@ export default function CampaignDetailPage() {
   return (
     <PageShell title={campaign?.name ?? "商品"}>
       <div className="space-y-4 px-0 pb-[160px]">
-        {loading && (
-          <p className="px-5 pt-2 text-[16px] text-[var(--tertiary-label)]">載入中…</p>
-        )}
+        {loading && <LoadingScreen />}
 
         {err && (
           <div className="mx-4 rounded-2xl bg-[#ff3b30]/10 p-3 text-[15px] text-[#c4271d]">
@@ -664,8 +663,9 @@ function BuySheet({
             <button
               onClick={onSubmit}
               disabled={submitting || totalQty === 0}
-              className="flex-1 rounded-full brand-gradient py-3.5 text-[18px] font-bold text-white shadow-[0_8px_20px_-8px_rgba(158,47,80,0.6)] transition-transform active:scale-[0.99] disabled:opacity-40 disabled:shadow-none"
+              className="flex flex-1 items-center justify-center gap-2 rounded-full brand-gradient py-3.5 text-[18px] font-bold text-white shadow-[0_8px_20px_-8px_rgba(158,47,80,0.6)] transition-transform active:scale-[0.99] disabled:opacity-40 disabled:shadow-none"
             >
+              {submitting && <Spinner size={18} onColor />}
               {submitting ? "送出中…" : totalQty === 0 ? "請先選擇商品" : "送出訂單"}
             </button>
           </div>

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { consumeFragmentToSession, getSession } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
+import { LoadingScreen } from "@/components/Spinner";
 import SubTabs from "@/components/SubTabs";
 import OrderCard, { type OrderRow } from "@/components/OrderCard";
 
@@ -61,9 +62,7 @@ export default function OrdersPage() {
       />
 
       <div className="space-y-3 px-4 pt-3 pb-6">
-        {loading && (
-          <p className="px-1 text-[15px] text-[var(--tertiary-label)]">載入中…</p>
-        )}
+        {loading && <LoadingScreen />}
 
         {err && (
           <div className="rounded-2xl bg-[var(--ios-red)]/10 p-3 text-[14px] text-[#c4271d]">

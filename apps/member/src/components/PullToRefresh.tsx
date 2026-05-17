@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import RingSpinner from "./Spinner";
 
 const THRESHOLD = 64;
 const MAX_PULL = 110;
@@ -126,17 +127,7 @@ function Spinner({
   ready: boolean;
 }) {
   if (spinning) {
-    return (
-      <svg className="h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none">
-        <circle cx="12" cy="12" r="9" stroke="#7676801f" strokeWidth="2.5" />
-        <path
-          d="M12 3a9 9 0 0 1 9 9"
-          stroke="var(--brand-strong)"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-        />
-      </svg>
-    );
+    return <RingSpinner size={20} />;
   }
   // 拉動時:箭頭在到達閾值時翻轉
   return (

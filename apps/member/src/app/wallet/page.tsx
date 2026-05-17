@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { consumeFragmentToSession, getSession } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
+import Spinner, { LoadingScreen } from "@/components/Spinner";
 
 type WalletInfo = {
   balance: number;
@@ -98,9 +99,7 @@ export default function WalletPage() {
   return (
     <PageShell title="儲值金">
       <div className="space-y-4 px-4 pt-3 pb-6">
-        {loading && (
-          <p className="px-1 text-[15px] text-[var(--tertiary-label)]">載入中…</p>
-        )}
+        {loading && <LoadingScreen />}
 
         {err && (
           <div className="rounded-2xl bg-[#ff3b30]/10 p-3 text-[14px] text-[#c4271d]">{err}</div>
@@ -178,8 +177,9 @@ export default function WalletPage() {
               <button
                 onClick={loadMore}
                 disabled={loadingMore}
-                className="block w-full border-t border-[var(--separator)] px-4 py-3 text-center text-[15px] text-[var(--brand-strong)] active:bg-[#76768033] disabled:opacity-50"
+                className="flex w-full items-center justify-center gap-2 border-t border-[var(--separator)] px-4 py-3 text-center text-[15px] text-[var(--brand-strong)] active:bg-[#76768033] disabled:opacity-50"
               >
+                {loadingMore && <Spinner size={16} />}
                 {loadingMore ? "載入中…" : "載入更多"}
               </button>
             )}

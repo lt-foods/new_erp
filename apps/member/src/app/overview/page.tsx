@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { consumeFragmentToSession, getSession } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
+import { LoadingScreen } from "@/components/Spinner";
 import { PushNotificationManager } from "@/components/PushNotificationManager";
 import { usePushNotification } from "@/lib/usePushNotification";
 
@@ -65,9 +66,7 @@ export default function OverviewPage() {
   return (
     <PageShell title={data?.store.name ?? "總覽"}>
       <div className="space-y-4 px-4 pt-2 pb-6">
-        {loading && (
-          <p className="px-1 text-[15px] text-[var(--tertiary-label)]">載入中…</p>
-        )}
+        {loading && <LoadingScreen />}
 
         {err && (
           <div className="rounded-2xl bg-[#ff3b30]/10 p-3 text-[14px] text-[#c4271d]">

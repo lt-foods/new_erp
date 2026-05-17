@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { consumeFragmentToSession, getSession } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
+import Spinner, { LoadingScreen } from "@/components/Spinner";
 
 type LookupRow = {
   member_id: number;
@@ -99,7 +100,11 @@ export default function RegisterPage() {
   if (!ready) {
     return (
       <main className="mx-auto max-w-md p-6">
-        {error ? <p className="text-base text-red-700">{error}</p> : <p className="text-base text-zinc-500">載入中…</p>}
+        {error ? (
+          <p className="text-base text-red-700">{error}</p>
+        ) : (
+          <LoadingScreen className="py-24" />
+        )}
       </main>
     );
   }
@@ -202,8 +207,9 @@ export default function RegisterPage() {
         <button
           type="submit"
           disabled={submitting}
-          className="mt-2 rounded-md bg-[#06C755] px-4 py-3 text-base font-medium text-white shadow hover:bg-[#05b04c] disabled:opacity-50"
+          className="mt-2 flex items-center justify-center gap-2 rounded-md bg-[#06C755] px-4 py-3 text-base font-medium text-white shadow hover:bg-[#05b04c] disabled:opacity-50"
         >
+          {submitting && <Spinner size={16} onColor />}
           {submitting ? "處理中…" : lookup ? "確認綁定此 LINE" : "建立會員並綁定 LINE"}
         </button>
 

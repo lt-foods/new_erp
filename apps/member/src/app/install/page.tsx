@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { LoadingScreen } from "@/components/Spinner";
 
 type Env =
   | "loading"
@@ -99,9 +100,7 @@ export default function InstallPage() {
         <p className="text-[14px] text-zinc-500">把 App 加入你的手機,讓下單更方便</p>
       </div>
 
-      {env === "loading" && (
-        <p className="text-zinc-400">載入中…</p>
-      )}
+      {env === "loading" && <LoadingScreen className="py-16" />}
 
       {env === "standalone" && (
         <Card>

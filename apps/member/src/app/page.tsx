@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { lineOauthStartUrl, callLiffApi } from "@/lib/supabase";
 import { loadLiff } from "@/lib/liff";
 import { clearSession, getSession, listenForSession } from "@/lib/session";
+import Spinner, { LoadingScreen } from "@/components/Spinner";
 
 type Status = "loading" | "idle" | "liff_auth" | "pair_done" | "error";
 
@@ -301,14 +302,10 @@ export default function LandingPage() {
       </div>
 
       <div className="mt-9 w-full">
-        {status === "loading" && (
-          <p className="text-center text-[15px] text-[var(--tertiary-label)]">載入中…</p>
-        )}
+        {status === "loading" && <LoadingScreen className="py-14" />}
 
         {status === "liff_auth" && (
-          <p className="text-center text-[15px] text-[var(--secondary-label)]">
-            LINE 驗證中…請稍候
-          </p>
+          <LoadingScreen className="py-14" label="LINE 驗證中…請稍候" />
         )}
 
         {status === "pair_done" && (
@@ -428,9 +425,10 @@ export default function LandingPage() {
                         <button
                           type="submit"
                           disabled={syncCode.length !== 6 || syncing}
-                          className="rounded-xl brand-gradient px-5 py-2.5 text-[15px] font-semibold text-white transition active:scale-[0.97] disabled:opacity-40"
+                          className="flex items-center justify-center gap-2 rounded-xl brand-gradient px-5 py-2.5 text-[15px] font-semibold text-white transition active:scale-[0.97] disabled:opacity-40"
                         >
-                          {syncing ? "..." : "驗證"}
+                          {syncing && <Spinner size={15} onColor />}
+                          {syncing ? "驗證中" : "驗證"}
                         </button>
                       </form>
                     </div>
