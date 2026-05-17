@@ -304,9 +304,7 @@ export default function LandingPage() {
       <div className="mt-9 w-full">
         {status === "loading" && <LoadingScreen className="py-14" />}
 
-        {status === "liff_auth" && (
-          <LoadingScreen className="py-14" label="LINE 驗證中…請稍候" />
-        )}
+        {status === "liff_auth" && <LoadingScreen className="py-14" />}
 
         {status === "pair_done" && (
           <div className="card p-6 text-center">
@@ -427,8 +425,7 @@ export default function LandingPage() {
                           disabled={syncCode.length !== 6 || syncing}
                           className="flex items-center justify-center gap-2 rounded-xl brand-gradient px-5 py-2.5 text-[15px] font-semibold text-white transition active:scale-[0.97] disabled:opacity-40"
                         >
-                          {syncing && <Spinner size={15} onColor />}
-                          {syncing ? "驗證中" : "驗證"}
+                          {syncing ? <Spinner size={16} onColor /> : "驗證"}
                         </button>
                       </form>
                     </div>

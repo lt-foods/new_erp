@@ -665,8 +665,13 @@ function BuySheet({
               disabled={submitting || totalQty === 0}
               className="flex flex-1 items-center justify-center gap-2 rounded-full brand-gradient py-3.5 text-[18px] font-bold text-white shadow-[0_8px_20px_-8px_rgba(158,47,80,0.6)] transition-transform active:scale-[0.99] disabled:opacity-40 disabled:shadow-none"
             >
-              {submitting && <Spinner size={18} onColor />}
-              {submitting ? "送出中…" : totalQty === 0 ? "請先選擇商品" : "送出訂單"}
+              {submitting ? (
+                <Spinner size={20} onColor />
+              ) : totalQty === 0 ? (
+                "請先選擇商品"
+              ) : (
+                "送出訂單"
+              )}
             </button>
           </div>
         </div>

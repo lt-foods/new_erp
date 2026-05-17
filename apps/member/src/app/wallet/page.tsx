@@ -179,8 +179,7 @@ export default function WalletPage() {
                 disabled={loadingMore}
                 className="flex w-full items-center justify-center gap-2 border-t border-[var(--separator)] px-4 py-3 text-center text-[15px] text-[var(--brand-strong)] active:bg-[#76768033] disabled:opacity-50"
               >
-                {loadingMore && <Spinner size={16} />}
-                {loadingMore ? "載入中…" : "載入更多"}
+                {loadingMore ? <Spinner size={18} /> : "載入更多"}
               </button>
             )}
           </div>

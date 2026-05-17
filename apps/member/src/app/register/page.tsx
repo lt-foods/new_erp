@@ -209,8 +209,13 @@ export default function RegisterPage() {
           disabled={submitting}
           className="mt-2 flex items-center justify-center gap-2 rounded-md bg-[#06C755] px-4 py-3 text-base font-medium text-white shadow hover:bg-[#05b04c] disabled:opacity-50"
         >
-          {submitting && <Spinner size={16} onColor />}
-          {submitting ? "處理中…" : lookup ? "確認綁定此 LINE" : "建立會員並綁定 LINE"}
+          {submitting ? (
+            <Spinner size={18} onColor />
+          ) : lookup ? (
+            "確認綁定此 LINE"
+          ) : (
+            "建立會員並綁定 LINE"
+          )}
         </button>
 
         <p className="text-center text-sm text-zinc-400">

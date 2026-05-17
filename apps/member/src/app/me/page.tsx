@@ -246,8 +246,7 @@ export default function MePage() {
                 disabled={generating}
                 className="flex flex-shrink-0 items-center gap-1.5 rounded-full bg-[var(--ios-blue)] px-3 py-1.5 text-[13px] font-medium text-white active:opacity-80 disabled:opacity-50"
               >
-                {generating && <Spinner size={13} onColor />}
-                {generating ? "處理中" : "PWA 碼"}
+                {generating ? <Spinner size={15} onColor /> : "PWA 碼"}
               </button>
             ) : pushState.isSupported && !pushState.subscription ? (
               <button
@@ -472,8 +471,7 @@ export default function MePage() {
                 disabled={saving}
                 className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-[var(--ios-blue)] py-3 text-[16px] font-semibold text-white active:opacity-80 disabled:opacity-50"
               >
-                {saving && <Spinner size={16} onColor />}
-                {saving ? "儲存中…" : "儲存"}
+                {saving ? <Spinner size={18} onColor /> : "儲存"}
               </button>
             </div>
           </form>
