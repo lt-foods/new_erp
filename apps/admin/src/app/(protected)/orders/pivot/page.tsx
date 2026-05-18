@@ -780,7 +780,7 @@ function PivotContent() {
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="max-h-[70vh] overflow-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
         {loading && pivot.groups.length === 0 ? (
           <p className="p-6 text-center text-sm text-zinc-500">載入中…</p>
         ) : pivot.groups.length === 0 ? (
@@ -789,22 +789,22 @@ function PivotContent() {
           <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
             <thead className="bg-zinc-50 dark:bg-zinc-900">
               <tr>
-                <th className="sticky left-0 z-20 w-44 bg-zinc-50 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-900">
+                <th className="sticky left-0 top-0 z-30 w-44 bg-zinc-50 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-900">
                   {viewBy === "campaign" ? "開團" : "日期"}
                 </th>
-                <th className="sticky left-44 z-20 min-w-[180px] bg-zinc-50 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-900">
+                <th className="sticky left-44 top-0 z-30 min-w-[180px] bg-zinc-50 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-900">
                   商品品項
                 </th>
                 {pivot.storeIds.map((sid) => (
                   <th
                     key={sid}
-                    className="min-w-[80px] px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500"
+                    className="sticky top-0 z-20 min-w-[80px] bg-zinc-50 px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-900"
                     title={storeMap.get(sid)?.code ?? ""}
                   >
                     {storeMap.get(sid)?.name ?? `店#${sid}`}
                   </th>
                 ))}
-                <th className="px-3 py-2 text-right text-xs font-bold uppercase tracking-wide text-zinc-700 dark:text-zinc-300">
+                <th className="sticky top-0 z-20 bg-zinc-50 px-3 py-2 text-right text-xs font-bold uppercase tracking-wide text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
                   合計
                 </th>
               </tr>
