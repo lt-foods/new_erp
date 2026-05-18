@@ -30,6 +30,11 @@ type Status =
 
 type CloseType = "regular" | "fast" | "limited";
 
+type CoverItem = {
+  sort_order: number | null;
+  sku: { product: { images: unknown } | null } | null;
+};
+
 type Row = {
   id: number;
   campaign_no: string;
@@ -40,7 +45,58 @@ type Row = {
   end_at: string | null;
   pickup_deadline: string | null;
   updated_at: string;
+  cover_image_url: string | null;
+  campaign_items: CoverItem[] | null;
 };
+
+// 封面回退鏈與 liff-api listActiveCampaigns 一致：
+// campaign.cover_image_url > sort_order 最小的 campaign_item 的 sku.product.images[0]
+// images[0] 可能是字串或 { url }；已是絕對 URL 則不再加 storage 前綴。
+function publicProductUrl(path: string | null | undefined): string | null {
+  if (!path) return null;
+  if (/^https?:\/\//i.test(path)) return path;
+  return getSupabase().storage.from("products").getPublicUrl(path).data.publicUrl;
+}
+
+function campaignCoverUrl(r: Row): string | null {
+  let path: string | null = r.cover_image_url ?? null;
+  if (!path) {
+    const items = [...(r.campaign_items ?? [])].sort(
+      (a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)
+    );
+    const imgs = items[0]?.sku?.product?.images;
+    if (Array.isArray(imgs) && imgs.length > 0) {
+      const first = imgs[0] as unknown;
+      path =
+        typeof first === "string"
+          ? first
+          : (first as { url?: string | null })?.url ?? null;
+    }
+  }
+  return publicProductUrl(path);
+}
+
+function CampaignThumb({ url, name }: { url: string | null; name: string }) {
+  if (!url) {
+    return (
+      <div className="flex h-11 w-11 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-300 dark:border-zinc-800 dark:bg-zinc-900">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="h-5 w-5">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 8h14l-1 11a2 2 0 0 1-2 1.8H8A2 2 0 0 1 6 19L5 8Z" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 8V6.5a3 3 0 0 1 6 0V8" />
+        </svg>
+      </div>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={url}
+      alt={name}
+      loading="lazy"
+      className="h-11 w-11 rounded-md border border-zinc-200 object-cover dark:border-zinc-800"
+    />
+  );
+}
 
 const STATUS_LABEL: Record<Status, string> = {
   draft: "草稿", open: "開團中", closed: "已收單", ordered: "已下訂",
@@ -251,7 +307,7 @@ export default function CampaignsListPage() {
       try {
         let q = getSupabase()
           .from("group_buy_campaigns")
-          .select("id, campaign_no, name, status, close_type, start_at, end_at, pickup_deadline, updated_at", { count: "exact" })
+          .select("id, campaign_no, name, status, close_type, start_at, end_at, pickup_deadline, updated_at, cover_image_url, campaign_items(sort_order, sku:skus(product:products(images)))", { count: "exact" })
           .neq("campaign_no", "__INTERNAL_RESTOCK__")
           .order("start_at", { ascending: false, nullsFirst: false })
           .order("id", { ascending: false })
@@ -266,7 +322,9 @@ export default function CampaignsListPage() {
         if (cancelled) return;
         if (error) { setError(error.message); return; }
         setError(null);
-        setRows((data ?? []) as Row[]);
+        // supabase-js select 字串解析器把 to-one 嵌入(sku/product)推成陣列；
+        // PostgREST 實際回傳單一物件，故經 unknown 斷言成執行期真實型別 Row。
+        setRows((data ?? []) as unknown as Row[]);
         setTotal(count ?? 0);
 
         // 補商品數 + 下單總數量（normal / offset 分開、SUM(qty)）
@@ -544,7 +602,7 @@ export default function CampaignsListPage() {
               className="cursor-pointer"
             />
           </Th>
-          <Th>團號</Th><Th>名稱</Th><Th>狀態</Th><Th>收單</Th><Th>開團/收單</Th><Th>取貨截止</Th><Th align="right">商品數</Th><Th align="right">下單總數</Th><Th align="right">更新</Th><Th>{""}</Th>
+          <Th className="w-14">{""}</Th><Th>名稱</Th><Th>狀態</Th><Th>收單</Th><Th>開團/收單</Th><Th>取貨截止</Th><Th align="right">商品數</Th><Th align="right">下單總數</Th><Th align="right">更新</Th><Th>{""}</Th>
         </THead>
         <TBody>
           {rows === null ? (
@@ -562,8 +620,8 @@ export default function CampaignsListPage() {
                     className="cursor-pointer"
                   />
                 </Td>
-                <Td className="font-mono">
-                  <SpinButton onClick={(e) => { e.stopPropagation(); openEdit(r.id); }} className="hover:underline">{r.campaign_no}</SpinButton>
+                <Td className="w-14">
+                  <CampaignThumb url={campaignCoverUrl(r)} name={r.name} />
                 </Td>
                 <Td>{r.name}</Td>
                 <Td><StatusBadge s={r.status} /></Td>
