@@ -76,6 +76,10 @@ export function MemberForm({
       setError("手機格式錯誤");
       return;
     }
+    if (!v.id && !v.home_store_id) {
+      setError("主要店家 必填");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -155,11 +159,12 @@ export function MemberForm({
           />
         </Field>
 
-        <Field label="主要店家">
+        <Field label={`主要店家${v.id ? "" : " *"}`}>
           <select
             value={v.home_store_id ?? ""}
             onChange={(e) => update("home_store_id", e.target.value ? Number(e.target.value) : null)}
             className={inputCls}
+            required={!v.id}
           >
             <option value="">—</option>
             {stores.map((s) => (

@@ -100,7 +100,10 @@ function fmtMD(iso: string | null): string {
 }
 
 function fmtAmount(n: number): string {
-  return `$${Math.round(n).toLocaleString("zh-TW")}`;
+  const r = Math.round(n);
+  return r < 0
+    ? `-$${Math.abs(r).toLocaleString("zh-TW")}`
+    : `$${r.toLocaleString("zh-TW")}`;
 }
 
 export default function OrdersPivotPage() {
@@ -353,7 +356,12 @@ function PivotContent() {
 
   // 樞紐 aggregate (generic groupKey based on viewBy)
   // cell: orderIds (distinct order count), qtySum (品項數量加總), amount (qty × unit_price 加總)
-  type CellAgg = { orderIds: Set<number>; qtySum: number; amount: number };
+  type CellAgg = {
+    posOrders: Set<number>; // 有效訂單
+    negOrders: Set<number>; // 取消/逾期/轉出（扣抵）
+    qtySum: number;
+    amount: number;
+  };
   type SkuEntry = { name: string; perStore: Map<number, CellAgg> };
   type Group = {
     key: string;
@@ -422,13 +430,19 @@ function PivotContent() {
       storeIdsUsed.add(sid);
       let cell = entry.perStore.get(sid);
       if (!cell) {
-        cell = { orderIds: new Set(), qtySum: 0, amount: 0 };
+        cell = { posOrders: new Set(), negOrders: new Set(), qtySum: 0, amount: 0 };
         entry.perStore.set(sid, cell);
       }
+      // 取消/逾期/轉出 視為扣抵 → 數量/金額/訂單數皆以負數計入
+      const dead =
+        o.status === "cancelled" ||
+        o.status === "expired" ||
+        o.status === "transferred_out";
+      const sign = dead ? -1 : 1;
       const qty = Number(it.qty);
-      cell.orderIds.add(o.id);
-      cell.qtySum += qty;
-      cell.amount += qty * Number(it.unit_price);
+      (dead ? cell.negOrders : cell.posOrders).add(o.id);
+      cell.qtySum += sign * qty;
+      cell.amount += sign * qty * Number(it.unit_price);
     }
 
     const groupArr = Array.from(groups.values()).sort((a, b) =>
@@ -444,10 +458,14 @@ function PivotContent() {
   }, [items, orderMap, campaignMap, storeMap, viewBy, dateFrom, dateTo]);
 
   // metric 取值 helper
+  // 訂單數淨值＝有效訂單數 − 取消/逾期/轉出 訂單數
+  const cellOrderCount = (c: CellAgg): number => c.posOrders.size - c.negOrders.size;
+  const cellTouched = (c: CellAgg): number => c.posOrders.size + c.negOrders.size;
+  const cellAllOrderIds = (c: CellAgg): number[] => [...c.posOrders, ...c.negOrders];
   const cellValue = (cell: CellAgg | undefined): number => {
     if (!cell) return 0;
     if (metric === "item_qty") return cell.qtySum;
-    if (metric === "order_count") return cell.orderIds.size;
+    if (metric === "order_count") return cellOrderCount(cell);
     return cell.amount;
   };
   const fmtCellValue = (v: number): string => {
@@ -471,7 +489,7 @@ function PivotContent() {
             metric === "item_qty"
               ? cell.qtySum
               : metric === "order_count"
-              ? cell.orderIds.size
+              ? cell.posOrders.size - cell.negOrders.size
               : cell.amount;
           perStore.set(sid, (perStore.get(sid) ?? 0) + v);
           grand += v;
@@ -487,7 +505,8 @@ function PivotContent() {
     for (const g of pivot.groups) {
       for (const [, entry] of g.skus) {
         for (const [, cell] of entry.perStore) {
-          for (const id of cell.orderIds) ids.add(id);
+          for (const id of cell.posOrders) ids.add(id);
+          for (const id of cell.negOrders) ids.add(id);
         }
       }
     }
@@ -495,12 +514,12 @@ function PivotContent() {
   }, [pivot]);
 
   function onCellClick(group: Group, skuId: number, sid: number, cell: CellAgg) {
-    if (cell.orderIds.size === 0) return;
+    if (cellTouched(cell) === 0) return;
     const sku = group.skus.get(skuId);
     const skuName = sku?.name ?? `SKU#${skuId}`;
     const storeName = storeMap.get(sid)?.name ?? `店#${sid}`;
     const title = `${group.label}${group.subLabel ? "（" + group.subLabel + "）" : ""} / ${skuName} / ${storeName}`;
-    setCellModal({ title, orderIds: Array.from(cell.orderIds), skuId });
+    setCellModal({ title, orderIds: cellAllOrderIds(cell), skuId });
   }
 
   return (
@@ -836,7 +855,7 @@ function PivotContent() {
                             const cell = entry.perStore.get(sid);
                             const v = cellValue(cell);
                             rowTotal += v;
-                            if (!cell || cell.orderIds.size === 0) {
+                            if (!cell || cellTouched(cell) === 0) {
                               return (
                                 <td
                                   key={sid}
@@ -852,7 +871,7 @@ function PivotContent() {
                                   type="button"
                                   onClick={() => onCellClick(group, skuId, sid, cell)}
                                   className="rounded px-1.5 py-0.5 font-mono font-semibold text-blue-700 hover:bg-blue-50 hover:underline dark:text-blue-300 dark:hover:bg-blue-950"
-                                  title={`點看 ${cell.orderIds.size} 筆訂單`}
+                                  title={`點看 ${cellTouched(cell)} 筆訂單`}
                                 >
                                   {fmtCellValue(v)}
                                 </SpinButton>

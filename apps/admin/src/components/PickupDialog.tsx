@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { withBasePath } from "@/lib/basePath";
+import { printViaIframe } from "@/lib/printIframe";
 import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
 import { EditableDiscount, deriveDiscount, type DiscountValue } from "@/components/EditableDiscount";
@@ -161,7 +162,7 @@ export function PickupDialog({
       const params = new URLSearchParams({ order_ids: String(orderId) });
       const wPrev = Number(walletAmount) || 0;
       if (wPrev > 0) params.set("wallet_preview", String(wPrev));
-      window.open(withBasePath(`/pickup/print-list?${params.toString()}`), "_blank");
+      printViaIframe(withBasePath(`/pickup/print-list?${params.toString()}`));
     } finally {
       setBusy(false);
     }
@@ -201,11 +202,11 @@ export function PickupDialog({
       });
       if (error) { setErr(error.message); return; }
       const result = data as { event_id: number; new_order_status: string; picked_count: number; active_remaining: number };
-      // 取貨單一定印（收據）
-      window.open(withBasePath(`/pickup/print?event_ids=${result.event_id}`), "_blank");
+      // 取貨單一定印（收據）— 隱藏 iframe,不跳新分頁
+      printViaIframe(withBasePath(`/pickup/print?event_ids=${result.event_id}`));
       // 取貨清單只在「部分取貨」時印（提醒客人剩下未取的 items）；全取完省略
       if (result.active_remaining > 0) {
-        window.open(withBasePath(`/pickup/print-list?order_ids=${orderId}`), "_blank");
+        printViaIframe(withBasePath(`/pickup/print-list?order_ids=${orderId}`));
       }
       onPickedUp(result);
     } finally {

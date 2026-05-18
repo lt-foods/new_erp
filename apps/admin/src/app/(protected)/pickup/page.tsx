@@ -7,6 +7,7 @@ import { Modal } from "@/components/Modal";
 import { PickupDialog } from "@/components/PickupDialog";
 import OrderReturnCreateModal from "@/components/OrderReturnCreateModal";
 import { withBasePath } from "@/lib/basePath";
+import { printViaIframe } from "@/lib/printIframe";
 import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
 import { getPickupRecents, recordPickupRecent, type RecentCustomer } from "@/lib/pickupRecents";
@@ -218,10 +219,10 @@ function PickupPageContent() {
       }
       if (errors.length > 0) setError(errors.join("\n"));
       if (eventIds.length > 0) {
-        // 自動開列印 — 大張取貨單 + 熱感應小白單
-        window.open(withBasePath(`/pickup/print?event_ids=${eventIds.join(",")}`), "_blank");
+        // 自動列印 — 大張取貨單 + 熱感應小白單（隱藏 iframe,不跳新分頁;依序印）
+        printViaIframe(withBasePath(`/pickup/print?event_ids=${eventIds.join(",")}`));
         const okOrderIds = memberOrders.map((o) => o.id).join(",");
-        window.open(withBasePath(`/pickup/print-list?order_ids=${okOrderIds}`), "_blank");
+        printViaIframe(withBasePath(`/pickup/print-list?order_ids=${okOrderIds}`));
       }
       alert(`完成 ${okCount}/${memberOrders.length} 張取貨${errors.length > 0 ? `\n失敗 ${errors.length} 張：\n${errors.join("\n")}` : ""}`);
       setReloadTick((t) => t + 1);
@@ -645,10 +646,7 @@ function PickupPageContent() {
                 <SpinButton
                   onClick={() => {
                     const ids = memberOrders.map((o) => o.id).join(",");
-                    window.open(
-                      withBasePath(`/pickup/print-list?order_ids=${ids}`),
-                      "_blank",
-                    );
+                    printViaIframe(withBasePath(`/pickup/print-list?order_ids=${ids}`));
                   }}
                   className="rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:border-zinc-300 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
                 >
