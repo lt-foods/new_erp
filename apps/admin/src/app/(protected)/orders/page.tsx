@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
+import OrderReturnCreateModal from "@/components/OrderReturnCreateModal";
 import { translateRpcError } from "@/lib/rpcError";
 import { withBasePath } from "@/lib/basePath";
 import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
@@ -137,6 +138,7 @@ function OrdersListContent() {
   const [pickupReady, setPickupReady] = useState<Map<number, boolean>>(new Map());
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detailNo, setDetailNo] = useState<string>("");
+  const [returnTarget, setReturnTarget] = useState<{ orderId: number; storeId: number } | null>(null);
   const [reloadOrders, setReloadOrders] = useState(0);
 
   // KPI trend (當月 1 號 ~ 今天 每日 + 本月累計、套 filter 開團+店家、排除 transferred_out)
@@ -773,6 +775,15 @@ function OrdersListContent() {
                           已轉出
                         </SpinButton>
                       )}
+                      {["ready", "partially_completed", "completed", "expired"].includes(r.status) && (
+                        <SpinButton
+                          onClick={() => setReturnTarget({ orderId: r.id, storeId: r.pickup_store_id })}
+                          title="已收貨/已取貨，無法取消；點此退貨回總倉（反向回收已派庫存）"
+                          className="rounded-md border border-orange-300 px-2 py-1 text-[11px] font-medium text-orange-700 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-950"
+                        >
+                          ↩ 退貨
+                        </SpinButton>
+                      )}
                     </div>
                   </Td>
                 </tr>
@@ -798,6 +809,14 @@ function OrdersListContent() {
           />
         )}
       </Modal>
+
+      <OrderReturnCreateModal
+        open={returnTarget !== null}
+        onClose={() => setReturnTarget(null)}
+        onCreated={() => { setReturnTarget(null); setReloadOrders((n) => n + 1); }}
+        prefillOrderId={returnTarget?.orderId ?? null}
+        prefillStoreId={returnTarget?.storeId ?? null}
+      />
 
       {totalPages > 1 && (
         <div className="flex items-center justify-end gap-2 text-sm">

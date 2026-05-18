@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { PickupDialog } from "@/components/PickupDialog";
+import OrderReturnCreateModal from "@/components/OrderReturnCreateModal";
 import { withBasePath } from "@/lib/basePath";
 import SpinButton from "@/components/SpinButton";
 import { getPickupRecents, recordPickupRecent, type RecentCustomer } from "@/lib/pickupRecents";
@@ -77,6 +78,7 @@ function PickupPageContent() {
   const autoSearchedRef = useRef(false);
 
   const [pickup, setPickup] = useState<{ orderId: number; orderNo: string } | null>(null);
+  const [returnTarget, setReturnTarget] = useState<{ orderId: number; storeId: number | null } | null>(null);
   const [recents, setRecents] = useState<RecentCustomer[]>([]);
   const [bulking, setBulking] = useState<number | null>(null);
   const [bulkConfirm, setBulkConfirm] = useState<Member | null>(null);
@@ -503,6 +505,15 @@ function PickupPageContent() {
                             >
                               ✅ 取貨
                             </SpinButton>
+                            {["ready", "partially_completed"].includes(o.status) && (
+                              <SpinButton
+                                onClick={() => setReturnTarget({ orderId: o.id, storeId: o.pickup_store_id ?? o.store?.id ?? null })}
+                                title="已收貨，無法取消；點此退貨回總倉（反向回收已派庫存）"
+                                className="rounded-md border border-orange-300 px-2 py-2 text-xs font-medium text-orange-700 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-950"
+                              >
+                                ↩ 退貨
+                              </SpinButton>
+                            )}
                           </li>
                         );
                       })}
@@ -528,6 +539,14 @@ function PickupPageContent() {
           }}
         />
       )}
+
+      <OrderReturnCreateModal
+        open={returnTarget !== null}
+        onClose={() => setReturnTarget(null)}
+        onCreated={() => { setReturnTarget(null); setReloadTick((n) => n + 1); }}
+        prefillOrderId={returnTarget?.orderId ?? null}
+        prefillStoreId={returnTarget?.storeId ?? null}
+      />
 
       <Modal
         open={bulkConfirm !== null}
