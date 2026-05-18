@@ -841,10 +841,10 @@ function PivotContent() {
           <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
             <thead className="bg-zinc-50 dark:bg-zinc-900">
               <tr>
-                <th className="sticky left-0 z-20 w-64 bg-zinc-50 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-900">
+                <th className="w-64 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">
                   {viewBy === "campaign" ? "開團" : "日期"}
                 </th>
-                <th className="sticky left-64 z-20 min-w-[180px] bg-zinc-50 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-900">
+                <th className="min-w-[180px] px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">
                   商品品項
                 </th>
                 {pivot.storeIds.map((sid) => (
@@ -888,7 +888,7 @@ function PivotContent() {
                               : ""
                           }
                         >
-                          <td className="sticky left-0 z-10 w-64 bg-white px-3 py-1.5 align-top text-xs text-zinc-700 dark:bg-zinc-950 dark:text-zinc-300">
+                          <td className="w-64 px-3 py-1.5 align-top text-xs text-zinc-700 dark:text-zinc-300">
                             {i === 0 ? (
                               <div>
                                 <div className="font-medium">{group.label}</div>
@@ -902,7 +902,7 @@ function PivotContent() {
                               ""
                             )}
                           </td>
-                          <td className="sticky left-64 z-10 min-w-[180px] bg-white px-3 py-1.5 dark:bg-zinc-950">{entry.name}</td>
+                          <td className="min-w-[180px] px-3 py-1.5">{entry.name}</td>
                           {pivot.storeIds.map((sid) => {
                             const cell = entry.perStore.get(sid);
                             const v = cellValue(cell);
@@ -938,8 +938,8 @@ function PivotContent() {
                     })}
                     {viewBy !== "campaign" && (
                       <tr className="bg-zinc-50 font-semibold dark:bg-zinc-900">
-                        <td className="sticky left-0 z-10 w-64 bg-zinc-50 px-3 py-1.5 text-xs text-zinc-500 dark:bg-zinc-900">小計</td>
-                        <td className="sticky left-64 z-10 bg-zinc-50 px-3 py-1.5 text-xs text-zinc-500 dark:bg-zinc-900">{group.label}</td>
+                        <td className="w-64 px-3 py-1.5 text-xs text-zinc-500">小計</td>
+                        <td className="px-3 py-1.5 text-xs text-zinc-500">{group.label}</td>
                         {pivot.storeIds.map((sid) => {
                           const v = groupTotalsPerStore.get(sid) ?? 0;
                           return (
@@ -958,7 +958,7 @@ function PivotContent() {
                 );
               })}
               <tr className="border-t-4 border-zinc-900 bg-zinc-100 font-bold dark:border-zinc-100 dark:bg-zinc-800">
-                <td className="sticky left-0 z-10 bg-zinc-100 px-3 py-2 dark:bg-zinc-800" colSpan={2}>
+                <td className="px-3 py-2" colSpan={2}>
                   總計
                 </td>
                 {pivot.storeIds.map((sid) => (
