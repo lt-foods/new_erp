@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import { translateRpcError } from "@/lib/rpcError";
 import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
 
@@ -101,7 +102,7 @@ export function MemberForm({
       if (onSaved) onSaved(newId);
       else router.replace(`/members?id=${newId}`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(translateRpcError(e));
     } finally {
       setSaving(false);
     }
