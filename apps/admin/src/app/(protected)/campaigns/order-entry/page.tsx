@@ -4,6 +4,8 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import { CampaignThumb } from "@/components/CampaignThumb";
+import { campaignCoverUrl, type CampaignCoverItem } from "@/lib/campaignCover";
 
 type Campaign = {
   id: number;
@@ -11,6 +13,8 @@ type Campaign = {
   name: string;
   status: string;
   pickup_deadline: string | null;
+  cover_image_url: string | null;
+  campaign_items: CampaignCoverItem[] | null;
 };
 
 type Channel = { id: number; name: string; home_store_id: number };
@@ -137,7 +141,7 @@ function PageContent() {
       const sb = getSupabase();
       const [cRes, chRes, stRes] = await Promise.all([
         sb.from("group_buy_campaigns")
-          .select("id, campaign_no, name, status, pickup_deadline")
+          .select("id, campaign_no, name, status, pickup_deadline, cover_image_url, campaign_items(sort_order, sku:skus(product:products(images)))")
           .eq("id", campaignId).maybeSingle(),
         sb.from("line_channels")
           .select("id, name, home_store_id").eq("is_active", true).order("name"),
@@ -146,7 +150,8 @@ function PageContent() {
       ]);
       if (cancelled) return;
       if (cRes.error) { setError(cRes.error.message); return; }
-      setCampaign(cRes.data as Campaign);
+      // supabase-js 把 to-one 嵌入(sku/product)推成陣列；PostgREST 實際回單一物件
+      setCampaign(cRes.data as unknown as Campaign);
       setChannels((chRes.data ?? []) as Channel[]);
       if (chRes.data && chRes.data.length > 0) {
         setChannelId((chRes.data[0] as Channel).id);
@@ -446,17 +451,25 @@ function PageContent() {
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold">小幫手加單</h1>
-          {campaign ? (
-            <p className="text-sm text-zinc-500">
-              <span className="font-mono">{campaign.campaign_no}</span> · {campaign.name} ·
-              <StatusBadge s={campaign.status} />
-              {campaign.pickup_deadline && <> · 取貨截止 {campaign.pickup_deadline}</>}
-            </p>
-          ) : (
-            <p className="text-sm text-zinc-500">載入中…</p>
+        <div className="flex items-center gap-3">
+          {campaign && (
+            <CampaignThumb
+              url={campaignCoverUrl(campaign.cover_image_url, campaign.campaign_items)}
+              name={campaign.name}
+            />
           )}
+          <div>
+            <h1 className="text-xl font-semibold">小幫手加單</h1>
+            {campaign ? (
+              <p className="text-sm text-zinc-500">
+                {campaign.name} ·
+                <StatusBadge s={campaign.status} />
+                {campaign.pickup_deadline && <> · 取貨截止 {campaign.pickup_deadline}</>}
+              </p>
+            ) : (
+              <p className="text-sm text-zinc-500">載入中…</p>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-2 text-xs text-zinc-500">
           <kbd className="rounded border px-1">Alt+N</kbd> {mode === "internal" ? "新項目" : "新顧客"}
