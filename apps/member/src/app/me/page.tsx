@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { consumeFragmentToSession, getSession } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
@@ -8,6 +9,7 @@ import PageShell from "@/components/PageShell";
 import Spinner, { LoadingScreen } from "@/components/Spinner";
 import { PushNotificationManager } from "@/components/PushNotificationManager";
 import { usePushNotification } from "@/lib/usePushNotification";
+import { useUnreadNotifications } from "@/lib/useUnreadNotifications";
 
 type MemberData = {
   member_id: number;
@@ -61,6 +63,9 @@ export default function MePage() {
 
   // 推播訂閱狀態 lift 到頁面層,頭像區跟底部 PushNotificationManager 共用
   const pushState = usePushNotification(getSession()?.token ?? null);
+
+  // 已安裝 App 才在頭像上掛通知鈴鐺,沿用 tab bar 同一份未讀數
+  const { count: unreadCount } = useUnreadNotifications();
 
   // PWA share code
   const [pwaCode, setPwaCode] = useState<string | null>(null);
@@ -209,14 +214,32 @@ export default function MePage() {
         {/* LINE 綁定卡片 */}
         <section className="overflow-hidden rounded-2xl bg-[var(--card-bg)] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
           <div className="flex items-start gap-3 px-4 py-4">
-            {avatarSrc ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={avatarSrc} alt="" className="h-16 w-16 flex-shrink-0 rounded-full object-cover" />
-            ) : (
-              <div className="flex h-16 w-16 flex-shrink-0 items-center justify-center rounded-full bg-[#7676801a] text-2xl text-[var(--secondary-label)]">
-                {displayName[0]}
-              </div>
-            )}
+            <div className="relative flex-shrink-0">
+              {avatarSrc ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={avatarSrc} alt="" className="h-16 w-16 rounded-full object-cover" />
+              ) : (
+                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-[#7676801a] text-2xl text-[var(--secondary-label)]">
+                  {displayName[0]}
+                </div>
+              )}
+              {/* 已安裝 App(standalone)的使用者才在頭像旁顯示通知鈴鐺,點擊進通知頁 */}
+              {isPWA && (
+                <Link
+                  href="/notifications"
+                  aria-label={unreadCount > 0 ? `通知,${unreadCount} 則未讀` : "通知"}
+                  className="absolute -bottom-1 -right-1 flex h-7 w-7 items-center justify-center rounded-full bg-[var(--card-bg)] text-[var(--ios-blue)] shadow-[0_1px_4px_rgba(0,0,0,0.18)] active:opacity-70"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className="h-4 w-4">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2H4.5L6 16Z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M10 20a2 2 0 0 0 4 0" />
+                  </svg>
+                  {unreadCount > 0 && (
+                    <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-[var(--ios-red)] ring-2 ring-[var(--card-bg)]" />
+                  )}
+                </Link>
+              )}
+            </div>
             <div className="min-w-0 flex-1">
               <div className="text-[20px] font-semibold text-[var(--foreground)]">{displayName}</div>
               <div className="font-mono text-[13px] text-[var(--secondary-label)]">{me.member_no}</div>
