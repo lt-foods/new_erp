@@ -375,7 +375,8 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
         </div>
       )}
 
-      <main className="flex flex-1 flex-col">{children}</main>
+      {/* min-w-0：允許 main 在 flex row 內收縮，寬表才會在自己的 overflow-x-auto 容器內出現水平捲軸，而非把整頁撐爆 */}
+      <main className="flex min-w-0 flex-1 flex-col">{children}</main>
     </div>
   );
 }
