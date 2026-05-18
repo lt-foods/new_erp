@@ -79,8 +79,8 @@ function campaignCoverUrl(r: Row): string | null {
 function CampaignThumb({ url, name }: { url: string | null; name: string }) {
   if (!url) {
     return (
-      <div className="flex h-11 w-11 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-300 dark:border-zinc-800 dark:bg-zinc-900">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="h-5 w-5">
+      <div className="flex h-16 w-16 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-300 dark:border-zinc-800 dark:bg-zinc-900">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="h-7 w-7">
           <path strokeLinecap="round" strokeLinejoin="round" d="M5 8h14l-1 11a2 2 0 0 1-2 1.8H8A2 2 0 0 1 6 19L5 8Z" />
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 8V6.5a3 3 0 0 1 6 0V8" />
         </svg>
@@ -93,7 +93,7 @@ function CampaignThumb({ url, name }: { url: string | null; name: string }) {
       src={url}
       alt={name}
       loading="lazy"
-      className="h-11 w-11 rounded-md border border-zinc-200 object-cover dark:border-zinc-800"
+      className="h-16 w-16 rounded-md border border-zinc-200 object-cover dark:border-zinc-800"
     />
   );
 }
@@ -602,7 +602,7 @@ export default function CampaignsListPage() {
               className="cursor-pointer"
             />
           </Th>
-          <Th className="w-14">{""}</Th><Th>名稱</Th><Th>狀態</Th><Th>收單</Th><Th>開團/收單</Th><Th>取貨截止</Th><Th align="right">商品數</Th><Th align="right">下單總數</Th><Th align="right">更新</Th><Th>{""}</Th>
+          <Th className="w-20">{""}</Th><Th>名稱</Th><Th>狀態</Th><Th>收單</Th><Th>開團/收單</Th><Th>取貨截止</Th><Th align="right">商品數</Th><Th align="right">下單總數</Th><Th align="right">更新</Th><Th>{""}</Th>
         </THead>
         <TBody>
           {rows === null ? (
@@ -620,7 +620,7 @@ export default function CampaignsListPage() {
                     className="cursor-pointer"
                   />
                 </Td>
-                <Td className="w-14">
+                <Td className="w-20">
                   <CampaignThumb url={campaignCoverUrl(r)} name={r.name} />
                 </Td>
                 <Td>{r.name}</Td>
