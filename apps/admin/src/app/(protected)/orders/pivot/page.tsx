@@ -188,7 +188,11 @@ function PivotContent() {
           if (m) setDateTo(m);
         }
         if (Array.isArray(saved.status) && saved.status.length > 0) {
-          setStatusSet(new Set(saved.status));
+          // 清洗舊 LS：取消/逾期/轉出不計入統計，丟掉這些舊選取
+          const allowed = (saved.status as OrderStatus[]).filter((s) =>
+            DEFAULT_INCLUDED.includes(s),
+          );
+          setStatusSet(new Set(allowed.length > 0 ? allowed : DEFAULT_INCLUDED));
         }
         if (!searchParams.get("storeId") && typeof saved.storeId === "string") {
           setStoreId(saved.storeId);
@@ -275,7 +279,9 @@ function PivotContent() {
           .select(
             "id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, created_at",
           )
-          .in("status", statusArr);
+          .in("status", statusArr)
+          // 取消/逾期/轉出永不計入統計（與訂單 KPI 一致；防 LS/狀態殘留）
+          .not("status", "in", "(cancelled,expired,transferred_out)");
 
         // 日期過濾 (月為單位): from = month start, to = next month start (exclusive)
         // viewBy="campaign" 時不對訂單日期過濾, 但仍套日期範圍到 campaign.end_at (見下方 client filter)
@@ -634,11 +640,11 @@ function PivotContent() {
             className="flex w-full items-center justify-between rounded-md border border-zinc-300 bg-white px-3 py-2 text-left text-sm dark:border-zinc-700 dark:bg-zinc-800"
           >
             <span className="truncate">
-              {statusSet.size === ORDER_STATUSES.length
+              {statusSet.size === DEFAULT_INCLUDED.length
                 ? "全部狀態"
                 : statusSet.size === 0
                 ? "未選狀態"
-                : `已選 ${statusSet.size} / ${ORDER_STATUSES.length} 狀態`}
+                : `已選 ${statusSet.size} / ${DEFAULT_INCLUDED.length} 狀態`}
             </span>
             <span className="ml-2 text-zinc-400">▾</span>
           </SpinButton>
@@ -652,7 +658,7 @@ function PivotContent() {
                   預設
                 </SpinButton>
                 <SpinButton
-                  onClick={() => setStatusSet(new Set(ORDER_STATUSES))}
+                  onClick={() => setStatusSet(new Set(DEFAULT_INCLUDED))}
                   className="text-blue-600 hover:underline dark:text-blue-400"
                 >
                   全選
@@ -664,7 +670,7 @@ function PivotContent() {
                   關閉
                 </SpinButton>
               </div>
-              {ORDER_STATUSES.map((s) => {
+              {DEFAULT_INCLUDED.map((s) => {
                 const checked = statusSet.has(s);
                 return (
                   <label
