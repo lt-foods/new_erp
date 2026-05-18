@@ -624,7 +624,7 @@ function OrdersListContent() {
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
-              <Th>開團</Th><Th>會員 / 暱稱</Th><Th>取貨店</Th><Th className="text-right">項數</Th><Th className="text-right">總數量</Th><Th className="text-right">總金額</Th><Th className="text-right">日期</Th><Th className="text-right">操作</Th>
+              <Th className="min-w-[14rem]">開團</Th><Th className="whitespace-nowrap">會員 / 暱稱</Th><Th className="whitespace-nowrap">取貨店</Th><Th className="whitespace-nowrap text-right">項數</Th><Th className="whitespace-nowrap text-right">總數量</Th><Th className="whitespace-nowrap text-right">總金額</Th><Th className="whitespace-nowrap text-right">日期</Th><Th className="whitespace-nowrap text-right">操作</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
@@ -649,7 +649,7 @@ function OrdersListContent() {
                       : "odd:bg-white even:bg-zinc-50 hover:bg-zinc-100 dark:odd:bg-zinc-950 dark:even:bg-zinc-900 dark:hover:bg-zinc-800"
                   }
                 >
-                  <Td>
+                  <Td className="min-w-[14rem]">
                     <SpinButton
                       onClick={() => { setDetailId(r.id); setDetailNo(r.order_no); }}
                       className="block w-full text-left hover:underline"
@@ -676,7 +676,7 @@ function OrdersListContent() {
                       ) : "—"}
                     </SpinButton>
                   </Td>
-                  <Td>
+                  <Td className="whitespace-nowrap">
                     {m ? (
                       <span className="flex items-center gap-2">
                         <Avatar src={m.avatar_url} name={m.name ?? r.nickname_snapshot ?? "?"} />
@@ -692,18 +692,18 @@ function OrdersListContent() {
                       </span>
                     ) : "—"}
                   </Td>
-                  <Td className="text-xs">{s?.name ?? "—"}</Td>
-                  <Td className="text-right font-mono">{itemSummary.get(r.id)?.lineCount ?? 0}</Td>
-                  <Td className="text-right font-mono">{itemSummary.get(r.id)?.totalQty ?? 0}</Td>
-                  <Td className="text-right font-mono">${itemSummary.get(r.id)?.totalAmount ?? 0}</Td>
+                  <Td className="whitespace-nowrap text-xs">{s?.name ?? "—"}</Td>
+                  <Td className="whitespace-nowrap text-right font-mono">{itemSummary.get(r.id)?.lineCount ?? 0}</Td>
+                  <Td className="whitespace-nowrap text-right font-mono">{itemSummary.get(r.id)?.totalQty ?? 0}</Td>
+                  <Td className="whitespace-nowrap text-right font-mono">${itemSummary.get(r.id)?.totalAmount ?? 0}</Td>
                   <Td
-                    className="text-right text-xs text-zinc-500"
+                    className="whitespace-nowrap text-right text-xs text-zinc-500"
                     title={`訂單日：${new Date(r.created_at).toLocaleString("zh-TW", { hour12: false })}\n更新日：${new Date(r.updated_at).toLocaleString("zh-TW", { hour12: false })}`}
                   >
                     <div>訂 {new Date(r.created_at).toLocaleDateString("zh-TW", { month: "numeric", day: "numeric" })}</div>
                     <div>更 {new Date(r.updated_at).toLocaleDateString("zh-TW", { month: "numeric", day: "numeric" })}</div>
                   </Td>
-                  <Td className="text-right">
+                  <Td className="whitespace-nowrap text-right">
                     <div className="flex items-center justify-end gap-1">
                       {!["completed","expired","cancelled","transferred_out"].includes(r.status) && (() => {
                         // 取貨判斷改用 v_order_pickup_ready
@@ -994,12 +994,14 @@ function TrendCard({
             {subLabel} {fmt(subValue)}
           </div>
         </div>
-        <Sparkline
-          values={dailyValues}
-          labels={trend.days.map((d) => fmtMD(d.ymd))}
-          fmt={fmt}
-          color={sparkColor}
-        />
+        <div className="hidden sm:block">
+          <Sparkline
+            values={dailyValues}
+            labels={trend.days.map((d) => fmtMD(d.ymd))}
+            fmt={fmt}
+            color={sparkColor}
+          />
+        </div>
       </div>
       {hint && <div className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">{hint}</div>}
     </div>
