@@ -189,6 +189,19 @@ const RULES: Rule[] = [
     render: (m) =>
       `損壞數量 ${fmt(m[1])} 超過可登記量 ${fmt(Number(m[2]) - Number(m[3]) + "")}(已收 ${fmt(m[2])}、已登記損壞 ${fmt(m[3])})。`,
   },
+  // ===== rpc_delete_product（商品刪除守門） =====
+  {
+    pattern: /product \d+ is active, cannot delete/i,
+    render: () => "商品「上架中」無法刪除，請先將商品下架後再刪除。",
+  },
+  {
+    pattern: /product \d+ has orders, cannot delete/i,
+    render: () => "此商品已有顧客訂單，無法刪除。",
+  },
+  {
+    pattern: /product \d+ not found/i,
+    render: () => "找不到此商品（可能已被刪除）。",
+  },
   // ===== 撿貨單號碼衝突(同秒多筆提交時的 race) =====
   {
     pattern: /duplicate key value violates unique constraint "picking_waves_tenant_id_wave_code_key"/i,

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { translateRpcError } from "@/lib/rpcError";
 import { Modal } from "@/components/Modal";
 import { ProductForm, type ProductFormValues } from "@/components/ProductForm";
 import { ProductSkuSection, type ProductSkuSectionHandle } from "@/components/ProductSkuSection";
@@ -368,6 +369,32 @@ function PageContent() {
     }
   }
 
+  // 刪除商品（軟刪除：product + 規格 → 停產，連動清掉草稿開團）
+  // 守門：上架中不可刪（鈕已隱藏）、有訂單不可刪（RPC 擋下並回中文）
+  async function deleteProduct(id: number, name: string) {
+    if (
+      !window.confirm(
+        `確定刪除商品「${name}」？\n\n` +
+          `此操作會將商品與其所有規格設為「停產」，並自動從草稿開團中移除。\n` +
+          `（上架中或已有顧客訂單的商品無法刪除；已開團／已下訂的歷史不受影響）`
+      )
+    )
+      return;
+    setError(null);
+    try {
+      const { error: err } = await getSupabase().rpc("rpc_delete_product", { p_id: id });
+      if (err) throw err;
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      setReloadTick((t) => t + 1);
+    } catch (e) {
+      setError(translateRpcError(e));
+    }
+  }
+
   // open 開團 modal: fetch storage_type for selected product ids
   async function openCampaignModal() {
     const ids = Array.from(selectedIds);
@@ -675,12 +702,22 @@ function PageContent() {
                     {new Date(r.updated_at).toLocaleString("zh-TW")}
                   </Td>
                   <Td>
-                    <SpinButton
-                      onClick={() => openEdit(r.id)}
-                      className="text-xs text-blue-600 hover:underline dark:text-blue-400"
-                    >
-                      編輯
-                    </SpinButton>
+                    <div className="flex items-center gap-3">
+                      <SpinButton
+                        onClick={() => openEdit(r.id)}
+                        className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                      >
+                        編輯
+                      </SpinButton>
+                      {r.status !== "active" && (
+                        <SpinButton
+                          onClick={() => deleteProduct(r.id, r.name)}
+                          className="text-xs text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
+                        >
+                          刪除
+                        </SpinButton>
+                      )}
+                    </div>
                   </Td>
                 </Tr>
               ))
