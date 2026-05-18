@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
+import { translateRpcError } from "@/lib/rpcError";
 import { Modal } from "@/components/Modal";
 import { CampaignForm, type CampaignFormValues } from "@/components/CampaignForm";
 import { CampaignOrdersPanel } from "@/components/CampaignOrdersPanel";
@@ -213,6 +214,34 @@ export default function CampaignsListPage() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setFinalizingId(null);
+    }
+  }
+
+  // 刪除開團（僅草稿；實體刪除，連帶 campaign_items/channels/audit）
+  async function deleteCampaign(id: number, name: string) {
+    if (
+      !confirm(
+        `確定刪除草稿開團「${name}」？\n\n` +
+          `將一併刪除其商品明細與頻道設定，此操作無法復原。\n` +
+          `（只有「草稿」可刪除；已開團 / 已收單請改用「批次取消」）`
+      )
+    )
+      return;
+    setError(null);
+    try {
+      const { error: rpcErr } = await getSupabase().rpc("rpc_delete_campaign", {
+        p_campaign_id: id,
+        p_operator: (await getSupabase().auth.getUser()).data.user?.id,
+      });
+      if (rpcErr) throw rpcErr;
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      setReloadTick((t) => t + 1);
+    } catch (e) {
+      setError(translateRpcError(e));
     }
   }
 
@@ -436,6 +465,14 @@ export default function CampaignsListPage() {
           className="text-xs text-purple-600 hover:underline disabled:opacity-50 dark:text-purple-400"
         >
           {finalizingId === r.id ? "結算中…" : "結算"}
+        </SpinButton>
+      )}
+      {r.status === "draft" && (
+        <SpinButton
+          onClick={() => deleteCampaign(r.id, r.name)}
+          className="text-xs text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
+        >
+          刪除
         </SpinButton>
       )}
     </>

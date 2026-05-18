@@ -13,6 +13,18 @@ const TRANSFER_STATUS_ZH: Record<string, string> = {
 };
 const tStatus = (s: string) => TRANSFER_STATUS_ZH[s] ?? s;
 
+const CAMPAIGN_STATUS_ZH: Record<string, string> = {
+  draft: "草稿",
+  open: "開團中",
+  closed: "已收單",
+  ordered: "已下訂",
+  receiving: "到貨中",
+  ready: "可取貨",
+  completed: "已完成",
+  cancelled: "已取消",
+};
+const cStatus = (s: string) => CAMPAIGN_STATUS_ZH[s] ?? s;
+
 const RULES: Rule[] = [
   {
     // 新版（含 SKU）：'Insufficient stock for SKU <code> (<name>): available=X, required=Y'
@@ -170,6 +182,20 @@ const RULES: Rule[] = [
   {
     pattern: /invalid p_movement_type\s+(\S+)\s*\(must be customer_return or damage\)/i,
     render: (m) => `退貨類型「${m[1]}」不合法，只能是「一般退貨」或「破損」。`,
+  },
+  // ===== rpc_delete_campaign（開團刪除守門） =====
+  {
+    pattern: /campaign \d+ is (\w+), only draft can be deleted/i,
+    render: (m) =>
+      `此開團目前為「${cStatus(m[1])}」，只有「草稿」可以刪除。已開團 / 已收單請改用「批次取消」。`,
+  },
+  {
+    pattern: /campaign \d+ has \d+ orders?, cannot delete/i,
+    render: () => "此開團已有顧客訂單，無法刪除。請先取消相關訂單，或改用「批次取消」。",
+  },
+  {
+    pattern: /campaign \d+ not found/i,
+    render: () => "找不到此開團（可能已被刪除）。",
   },
   // ===== rpc_register_damage =====
   {
