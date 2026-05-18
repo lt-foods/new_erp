@@ -62,6 +62,25 @@ const CANCELLED_STATUSES: OrderStatus[] = ["cancelled", "expired"];
 
 const PAGE_SIZE = 50;
 
+// 關鍵字 → PostgREST or-filter：先用 members 解出符合的會員 id，
+// 再讓 customer_orders 以 (order_no ∨ nickname_snapshot ∨ member_id ∈ ids) 過濾。
+// 回傳的字串再與既有 campaign/store/tab 條件 AND 起來。
+async function buildKeywordOr(keyword: string): Promise<string | null> {
+  const t = keyword.trim();
+  if (!t) return null;
+  const safe = t.replace(/[%,()]/g, " ");
+  const { data } = await getSupabase()
+    .from("members")
+    .select("id")
+    .or(`name.ilike.%${safe}%,phone.ilike.%${safe}%,member_no.ilike.%${safe}%`)
+    .neq("status", "deleted")
+    .limit(300);
+  const ids = ((data ?? []) as { id: number }[]).map((m) => m.id);
+  const ors = [`order_no.ilike.%${safe}%`, `nickname_snapshot.ilike.%${safe}%`];
+  if (ids.length > 0) ors.push(`member_id.in.(${ids.join(",")})`);
+  return ors.join(",");
+}
+
 export default function OrdersListPage() {
   return (
     <Suspense fallback={<div className="p-6 text-sm text-zinc-500">載入中…</div>}>
@@ -85,6 +104,7 @@ function OrdersListContent() {
     return "pending";
   })();
   const initialStoreId = searchParams.get("storeId") ?? "";
+  const initialKeyword = searchParams.get("q") ?? "";
 
   const [rows, setRows] = useState<Row[] | null>(null);
   const [total, setTotal] = useState(0);
@@ -96,6 +116,8 @@ function OrdersListContent() {
   const [storeId, setStoreId] = useState(initialStoreId);
   const [tabCounts, setTabCounts] = useState<Record<Tab, number> | null>(null);
   const [page, setPage] = useState(1);
+  const [kwInput, setKwInput] = useState(initialKeyword);
+  const [keyword, setKeyword] = useState(initialKeyword);
   const [campaignPickerOpen, setCampaignPickerOpen] = useState(false);
 
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -121,7 +143,7 @@ function OrdersListContent() {
   const [trend, setTrend] = useState<TrendData | null>(null);
   const [trendTruncated, setTrendTruncated] = useState(false);
 
-  useEffect(() => { setPage(1); }, [campaignIds, tab, storeId]);
+  useEffect(() => { setPage(1); }, [campaignIds, tab, storeId, keyword]);
 
   // 分店帳號鎖死到自家店 (不只是預設,連選都不能選別店)
   const branchStoreId = useUserBranchStoreId(stores);
@@ -164,6 +186,9 @@ function OrdersListContent() {
         else if (tab === "transferred") q = q.eq("status", "transferred_out");
         else q = q.in("status", PENDING_STATUSES);
         if (storeId) q = q.eq("pickup_store_id", Number(storeId));
+        const kwOr = await buildKeywordOr(keyword);
+        if (cancelled) return;
+        if (kwOr) q = q.or(kwOr);
 
         const { data, count, error } = await q;
         if (cancelled) return;
@@ -213,18 +238,21 @@ function OrdersListContent() {
       }
     })();
     return () => { cancelled = true; };
-  }, [campaignIds, tab, storeId, page, reloadOrders]);
+  }, [campaignIds, tab, storeId, page, reloadOrders, keyword]);
 
   // 各 tab 數量 — 切 tab 不重抓,只在其他 filter / reload 時更新
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const sb = getSupabase();
+      const kwOr = await buildKeywordOr(keyword);
+      if (cancelled) return;
       const buildBase = () => {
         let q = sb.from("customer_orders").select("id", { count: "exact", head: true });
         if (campaignIds.length === 1) q = q.eq("campaign_id", Number(campaignIds[0]));
         else if (campaignIds.length > 1) q = q.in("campaign_id", campaignIds.map((x) => Number(x)));
         if (storeId) q = q.eq("pickup_store_id", Number(storeId));
+        if (kwOr) q = q.or(kwOr);
         return q;
       };
       const [p, c, x, tr] = await Promise.all([
@@ -242,7 +270,7 @@ function OrdersListContent() {
       });
     })();
     return () => { cancelled = true; };
-  }, [campaignIds, storeId, reloadOrders]);
+  }, [campaignIds, storeId, reloadOrders, keyword]);
 
   // KPI Trend — 當月 1 號到今天每日 (套 filter 開團+店家, 排除 transferred_out)
   useEffect(() => {
@@ -554,6 +582,34 @@ function OrdersListContent() {
             {stores.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
           </select>
         )}
+        <form
+          onSubmit={(e) => { e.preventDefault(); setKeyword(kwInput.trim()); }}
+          className="flex gap-2"
+        >
+          <input
+            type="search"
+            value={kwInput}
+            onChange={(e) => setKwInput(e.target.value)}
+            placeholder="搜尋 訂單編號 / 姓名 / 電話 / 會員編號"
+            className="min-w-0 flex-1 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+          />
+          <SpinButton
+            type="submit"
+            className="shrink-0 rounded-md bg-zinc-900 px-3 py-2 text-sm text-white transition hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+          >
+            🔍
+          </SpinButton>
+          {keyword && (
+            <SpinButton
+              type="button"
+              onClick={() => { setKwInput(""); setKeyword(""); }}
+              title="清空搜尋"
+              className="shrink-0 rounded-md border border-zinc-300 px-2 py-2 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            >
+              ✕
+            </SpinButton>
+          )}
+        </form>
       </div>
 
       {error && (
@@ -573,7 +629,7 @@ function OrdersListContent() {
             {rows === null ? (
               <tr><td colSpan={8} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={8} className="p-6 text-center text-zinc-500">{total === 0 && campaignIds.length === 0 && !storeId ? `此 tab 下尚無訂單。` : "沒有符合條件的訂單。"}</td></tr>
+              <tr><td colSpan={8} className="p-6 text-center text-zinc-500">{total === 0 && campaignIds.length === 0 && !storeId && !keyword ? `此 tab 下尚無訂單。` : "沒有符合條件的訂單。"}</td></tr>
             ) : rows.map((r) => {
               const m = r.member_id ? members.get(r.member_id) : null;
               const c = campaignMap.get(r.campaign_id);
