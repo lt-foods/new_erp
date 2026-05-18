@@ -23,7 +23,6 @@ export type MemberFormValues = {
   notes: string | null;
 };
 
-type Tier = { id: number; code: string; name: string };
 type Store = { id: number; code: string; name: string };
 
 export const emptyMemberValues: MemberFormValues = {
@@ -51,20 +50,15 @@ export function MemberForm({
 }) {
   const router = useRouter();
   const [v, setV] = useState<MemberFormValues>(initial ?? emptyMemberValues);
-  const [tiers, setTiers] = useState<Tier[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
-      const sb = getSupabase();
-      const [t, s] = await Promise.all([
-        sb.from("member_tiers").select("id, code, name").order("sort_order"),
-        sb.from("stores").select("id, code, name").eq("is_active", true).order("name"),
-      ]);
-      if (t.data) setTiers(t.data as Tier[]);
-      if (s.data) setStores(s.data as Store[]);
+      const { data } = await getSupabase()
+        .from("stores").select("id, code, name").eq("is_active", true).order("name");
+      if (data) setStores(data as Store[]);
     })();
   }, []);
 
@@ -74,11 +68,11 @@ export function MemberForm({
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!v.member_no || !v.phone || !v.name) {
-      setError("會員編號、手機、姓名 必填");
+    if (!v.name) {
+      setError("姓名 必填");
       return;
     }
-    if (!/^[0-9+\-\s]{6,}$/.test(v.phone)) {
+    if (v.phone && !/^[0-9+\-\s]{6,}$/.test(v.phone)) {
       setError("手機格式錯誤");
       return;
     }
@@ -87,8 +81,8 @@ export function MemberForm({
     try {
       const { data, error: err } = await getSupabase().rpc("rpc_upsert_member", {
         p_id: v.id,
-        p_member_no: v.member_no.trim(),
-        p_phone: v.phone.trim(),
+        p_member_no: v.member_no ? v.member_no.trim() : null,
+        p_phone: v.phone ? v.phone.trim() : null,
         p_name: v.name.trim(),
         p_gender: v.gender,
         p_birthday: v.birthday,
@@ -112,13 +106,14 @@ export function MemberForm({
   return (
     <form onSubmit={onSubmit} className="space-y-4" noValidate>
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="會員編號 *">
-          <input
-            value={v.member_no}
-            onChange={(e) => update("member_no", e.target.value)}
-            className={inputCls}
-            required
-          />
+        <Field label="會員編號">
+          {v.id ? (
+            <input value={v.member_no} className={inputCls} readOnly disabled />
+          ) : (
+            <div className={`${inputCls} text-zinc-400 dark:text-zinc-500`}>
+              系統自動產生
+            </div>
+          )}
         </Field>
         <Field label="狀態">
           <select value={v.status} onChange={(e) => update("status", e.target.value as MemberStatus)} className={inputCls}>
@@ -131,12 +126,11 @@ export function MemberForm({
         <Field label="姓名 *">
           <input value={v.name} onChange={(e) => update("name", e.target.value)} className={inputCls} required />
         </Field>
-        <Field label="手機 *">
+        <Field label="手機">
           <input
             value={v.phone}
             onChange={(e) => update("phone", e.target.value)}
             className={inputCls}
-            required
             inputMode="tel"
           />
         </Field>
@@ -159,29 +153,6 @@ export function MemberForm({
             onChange={(s) => update("birthday", s || null)}
             className={inputCls}
           />
-        </Field>
-
-        <Field label="Email">
-          <input
-            type="email"
-            value={v.email ?? ""}
-            onChange={(e) => update("email", e.target.value || null)}
-            className={inputCls}
-          />
-        </Field>
-        <Field label="等級">
-          <select
-            value={v.tier_id ?? ""}
-            onChange={(e) => update("tier_id", e.target.value ? Number(e.target.value) : null)}
-            className={inputCls}
-          >
-            <option value="">—</option>
-            {tiers.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name} ({t.code})
-              </option>
-            ))}
-          </select>
         </Field>
 
         <Field label="主要店家">
