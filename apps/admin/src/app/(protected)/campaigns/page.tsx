@@ -403,6 +403,44 @@ export default function CampaignsListPage() {
   const fromIdx = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const toIdx = Math.min(page * PAGE_SIZE, total);
 
+  // 操作鈕（編輯 / 加單 / 結單 / 結算）— 桌機表格與手機卡片共用，單一維護點
+  const campaignActions = (r: Row) => (
+    <>
+      <SpinButton
+        onClick={() => openEdit(r.id)}
+        className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+      >
+        編輯
+      </SpinButton>
+      {r.status === "open" && (
+        <Link
+          href={`/campaigns/order-entry?id=${r.id}`}
+          className="text-xs text-green-600 hover:underline dark:text-green-400"
+        >
+          加單
+        </Link>
+      )}
+      {r.status === "open" && (
+        <SpinButton
+          onClick={() => closeCampaign(r.id, r.name)}
+          disabled={closingId === r.id}
+          className="text-xs text-amber-600 hover:underline disabled:opacity-50 dark:text-amber-400"
+        >
+          {closingId === r.id ? "結單中…" : "結單"}
+        </SpinButton>
+      )}
+      {(["closed", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
+        <SpinButton
+          onClick={() => finalizeCampaign(r.id, r.name)}
+          disabled={finalizingId === r.id}
+          className="text-xs text-purple-600 hover:underline disabled:opacity-50 dark:text-purple-400"
+        >
+          {finalizingId === r.id ? "結算中…" : "結算"}
+        </SpinButton>
+      )}
+    </>
+  );
+
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header className="flex items-center justify-between">
@@ -533,6 +571,79 @@ export default function CampaignsListPage() {
       )}
 
       {view === "list" && (
+      <>
+      {/* 手機：每筆開團一張卡片（桌機改用下方表格） */}
+      <div className="space-y-2 sm:hidden">
+        {rows === null ? (
+          <div className="rounded-md border border-zinc-200 p-6 text-center text-sm text-zinc-500 dark:border-zinc-800">載入中…</div>
+        ) : rows.length === 0 ? (
+          <div className="rounded-md border border-zinc-200 p-6 text-center text-sm text-zinc-500 dark:border-zinc-800">
+            {total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}
+          </div>
+        ) : rows.map((r) => (
+          <div
+            key={r.id}
+            onClick={() => openEdit(r.id)}
+            className={`cursor-pointer rounded-lg border p-3 ${selectedIds.has(r.id) ? "border-blue-300 bg-blue-50 dark:border-blue-800 dark:bg-blue-950/30" : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"}`}
+          >
+            <div className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                checked={selectedIds.has(r.id)}
+                onChange={() => toggleSelect(r.id)}
+                onClick={(e) => e.stopPropagation()}
+                className="mt-1 cursor-pointer"
+              />
+              <CampaignThumb url={campaignCoverUrl(r.cover_image_url, r.campaign_items)} name={r.name} />
+              <div className="min-w-0 flex-1">
+                <div className="break-words text-base font-bold text-zinc-900 dark:text-zinc-100">{r.name}</div>
+                <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                  <StatusBadge s={r.status} />
+                  <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${CLOSE_TYPE_BADGE[r.close_type]}`}>
+                    {CLOSE_TYPE_LABEL[r.close_type]}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
+              <span>
+                {r.start_at ? new Date(r.start_at).toLocaleDateString("zh-TW") : "—"}
+                {" → "}
+                {r.end_at ? new Date(r.end_at).toLocaleDateString("zh-TW") : "—"}
+              </span>
+              <span>取貨截止 {r.pickup_deadline ?? "—"}</span>
+              <span>商品 {itemCounts.get(r.id) ?? 0}</span>
+              {(() => {
+                const oc = listOrderCounts.get(r.id) ?? { normalQty: 0, offsetQty: 0 };
+                if (oc.normalQty === 0 && oc.offsetQty === 0) return <span>下單 0</span>;
+                return (
+                  <Link
+                    href={`/orders?campaignId=${r.id}`}
+                    onClick={(e) => e.stopPropagation()}
+                    className="inline-flex items-center gap-1 font-mono text-blue-700 hover:underline dark:text-blue-400"
+                  >
+                    下單 {oc.normalQty}
+                    {oc.offsetQty !== 0 && (
+                      <span className="rounded bg-red-100 px-1 text-[11px] text-red-800 dark:bg-red-950 dark:text-red-300">
+                        {oc.offsetQty}
+                      </span>
+                    )}
+                  </Link>
+                );
+              })()}
+              <span className="ml-auto">更新 {new Date(r.updated_at).toLocaleDateString("zh-TW")}</span>
+            </div>
+            <div
+              className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-200/70 pt-2 dark:border-zinc-800"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {campaignActions(r)}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="hidden sm:block">
       <Table>
         <THead>
           <Th className="w-10">
@@ -614,44 +725,15 @@ export default function CampaignsListPage() {
                 <Td align="right" className="whitespace-nowrap text-xs text-zinc-500">{new Date(r.updated_at).toLocaleString("zh-TW")}</Td>
                 <Td className="whitespace-nowrap">
                   <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
-                    <SpinButton
-                      onClick={() => openEdit(r.id)}
-                      className="text-xs text-blue-600 hover:underline dark:text-blue-400"
-                    >
-                      編輯
-                    </SpinButton>
-                    {r.status === "open" && (
-                      <Link
-                        href={`/campaigns/order-entry?id=${r.id}`}
-                        className="text-xs text-green-600 hover:underline dark:text-green-400"
-                      >
-                        加單
-                      </Link>
-                    )}
-                    {r.status === "open" && (
-                      <SpinButton
-                        onClick={() => closeCampaign(r.id, r.name)}
-                        disabled={closingId === r.id}
-                        className="text-xs text-amber-600 hover:underline disabled:opacity-50 dark:text-amber-400"
-                      >
-                        {closingId === r.id ? "結單中…" : "結單"}
-                      </SpinButton>
-                    )}
-                    {(["closed", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
-                      <SpinButton
-                        onClick={() => finalizeCampaign(r.id, r.name)}
-                        disabled={finalizingId === r.id}
-                        className="text-xs text-purple-600 hover:underline disabled:opacity-50 dark:text-purple-400"
-                      >
-                        {finalizingId === r.id ? "結算中…" : "結算"}
-                      </SpinButton>
-                    )}
+                    {campaignActions(r)}
                   </div>
                 </Td>
             </Tr>
           ))}
         </TBody>
       </Table>
+      </div>
+      </>
       )}
 
       <Modal
