@@ -302,7 +302,8 @@ function OrdersListContent() {
         let pq = sb
           .from("customer_orders")
           .select("id, member_id, created_at")
-          .neq("status", "transferred_out")
+          // 營收 KPI 不計：取消 / 逾期 / 轉出（皆非有效成交）
+          .not("status", "in", "(cancelled,expired,transferred_out)")
           .gte("created_at", startDate.toISOString())
           .order("id", { ascending: true });
         if (campaignIds.length === 1) pq = pq.eq("campaign_id", Number(campaignIds[0]));
