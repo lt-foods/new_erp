@@ -780,7 +780,7 @@ function PivotContent() {
         </div>
       </div>
 
-      <div className="max-h-[70vh] overflow-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
         {loading && pivot.groups.length === 0 ? (
           <p className="p-6 text-center text-sm text-zinc-500">載入中…</p>
         ) : pivot.groups.length === 0 ? (
@@ -789,22 +789,22 @@ function PivotContent() {
           <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
             <thead className="bg-zinc-50 dark:bg-zinc-900">
               <tr>
-                <th className="sticky left-0 top-0 z-30 w-44 bg-zinc-50 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-900">
+                <th className="sticky left-0 z-20 w-64 bg-zinc-50 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-900">
                   {viewBy === "campaign" ? "開團" : "日期"}
                 </th>
-                <th className="sticky left-44 top-0 z-30 min-w-[180px] bg-zinc-50 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-900">
+                <th className="sticky left-64 z-20 min-w-[180px] bg-zinc-50 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-900">
                   商品品項
                 </th>
                 {pivot.storeIds.map((sid) => (
                   <th
                     key={sid}
-                    className="sticky top-0 z-20 min-w-[80px] bg-zinc-50 px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-900"
+                    className="min-w-[80px] px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500"
                     title={storeMap.get(sid)?.code ?? ""}
                   >
                     {storeMap.get(sid)?.name ?? `店#${sid}`}
                   </th>
                 ))}
-                <th className="sticky top-0 z-20 bg-zinc-50 px-3 py-2 text-right text-xs font-bold uppercase tracking-wide text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+                <th className="px-3 py-2 text-right text-xs font-bold uppercase tracking-wide text-zinc-700 dark:text-zinc-300">
                   合計
                 </th>
               </tr>
@@ -836,7 +836,7 @@ function PivotContent() {
                               : ""
                           }
                         >
-                          <td className="sticky left-0 z-10 w-44 bg-white px-3 py-1.5 align-top text-xs text-zinc-700 dark:bg-zinc-950 dark:text-zinc-300">
+                          <td className="sticky left-0 z-10 w-64 bg-white px-3 py-1.5 align-top text-xs text-zinc-700 dark:bg-zinc-950 dark:text-zinc-300">
                             {i === 0 ? (
                               <div>
                                 <div className="font-medium">{group.label}</div>
@@ -850,7 +850,7 @@ function PivotContent() {
                               ""
                             )}
                           </td>
-                          <td className="sticky left-44 z-10 min-w-[180px] bg-white px-3 py-1.5 dark:bg-zinc-950">{entry.name}</td>
+                          <td className="sticky left-64 z-10 min-w-[180px] bg-white px-3 py-1.5 dark:bg-zinc-950">{entry.name}</td>
                           {pivot.storeIds.map((sid) => {
                             const cell = entry.perStore.get(sid);
                             const v = cellValue(cell);
@@ -886,8 +886,8 @@ function PivotContent() {
                     })}
                     {viewBy !== "campaign" && (
                       <tr className="bg-zinc-50 font-semibold dark:bg-zinc-900">
-                        <td className="sticky left-0 z-10 w-44 bg-zinc-50 px-3 py-1.5 text-xs text-zinc-500 dark:bg-zinc-900">小計</td>
-                        <td className="sticky left-44 z-10 bg-zinc-50 px-3 py-1.5 text-xs text-zinc-500 dark:bg-zinc-900">{group.label}</td>
+                        <td className="sticky left-0 z-10 w-64 bg-zinc-50 px-3 py-1.5 text-xs text-zinc-500 dark:bg-zinc-900">小計</td>
+                        <td className="sticky left-64 z-10 bg-zinc-50 px-3 py-1.5 text-xs text-zinc-500 dark:bg-zinc-900">{group.label}</td>
                         {pivot.storeIds.map((sid) => {
                           const v = groupTotalsPerStore.get(sid) ?? 0;
                           return (
