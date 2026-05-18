@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, Suspense, useEffect, useMemo, useState } from "react";
+import { Fragment, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
@@ -161,6 +161,16 @@ function PivotContent() {
   } | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detailNo, setDetailNo] = useState<string>("");
+
+  // 水平導覽：用 header 旁的箭頭鈕捲動（捲軸已隱藏）
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollL, setCanScrollL] = useState(false);
+  const [canScrollR, setCanScrollR] = useState(false);
+  function scrollX(dir: 1 | -1) {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollBy({ left: dir * Math.max(240, el.clientWidth * 0.8), behavior: "smooth" });
+  }
 
   // 從 localStorage 載入 filter (URL params 優先級高於 LS)
   useEffect(() => {
@@ -456,6 +466,23 @@ function PivotContent() {
     });
     return { groups: groupArr, storeIds };
   }, [items, orderMap, campaignMap, storeMap, viewBy, dateFrom, dateTo]);
+
+  // 追蹤可否再往左/右捲（決定箭頭鈕 disabled）
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const update = () => {
+      setCanScrollL(el.scrollLeft > 1);
+      setCanScrollR(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+    };
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      el.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [pivot]);
 
   // metric 取值 helper
   // 訂單數淨值＝有效訂單數 − 取消/逾期/轉出 訂單數
@@ -778,9 +805,34 @@ function PivotContent() {
             訂單金額
           </SpinButton>
         </div>
+
+        <div className="ml-auto flex items-center gap-1">
+          <span className="hidden text-xs text-zinc-400 sm:inline">店別欄</span>
+          <SpinButton
+            onClick={() => scrollX(-1)}
+            disabled={!canScrollL}
+            aria-label="往左捲動店別欄"
+            title="往左"
+            className="rounded-md border border-zinc-300 px-2.5 py-1 text-sm hover:bg-zinc-100 disabled:opacity-30 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            ◀
+          </SpinButton>
+          <SpinButton
+            onClick={() => scrollX(1)}
+            disabled={!canScrollR}
+            aria-label="往右捲動店別欄"
+            title="往右"
+            className="rounded-md border border-zinc-300 px-2.5 py-1 text-sm hover:bg-zinc-100 disabled:opacity-30 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            ▶
+          </SpinButton>
+        </div>
       </div>
 
-      <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+      <div
+        ref={scrollRef}
+        className="no-scrollbar overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
+      >
         {loading && pivot.groups.length === 0 ? (
           <p className="p-6 text-center text-sm text-zinc-500">載入中…</p>
         ) : pivot.groups.length === 0 ? (

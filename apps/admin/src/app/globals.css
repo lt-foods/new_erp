@@ -24,3 +24,12 @@ body {
   background: var(--background);
   color: var(--foreground);
 }
+
+/* 隱藏水平捲軸（仍可程式 / 觸控捲動）— 用於以箭頭鈕導覽的寬表 */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
