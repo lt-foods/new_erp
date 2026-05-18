@@ -550,7 +550,7 @@ export default function CampaignsListPage() {
               className="cursor-pointer"
             />
           </Th>
-          <Th className="w-20">{""}</Th><Th>名稱</Th><Th>狀態</Th><Th>收單</Th><Th>開團/收單</Th><Th>取貨截止</Th><Th align="right">商品數</Th><Th align="right">下單總數</Th><Th align="right">更新</Th><Th>{""}</Th>
+          <Th className="w-20">{""}</Th><Th className="min-w-[14rem]">名稱</Th><Th className="whitespace-nowrap">狀態</Th><Th className="whitespace-nowrap">收單</Th><Th className="whitespace-nowrap">開團/收單</Th><Th className="whitespace-nowrap">取貨截止</Th><Th align="right" className="whitespace-nowrap">商品數</Th><Th align="right" className="whitespace-nowrap">下單總數</Th><Th align="right" className="whitespace-nowrap">更新</Th><Th>{""}</Th>
         </THead>
         <TBody>
           {rows === null ? (
@@ -571,19 +571,19 @@ export default function CampaignsListPage() {
                 <Td className="w-20">
                   <CampaignThumb url={campaignCoverUrl(r.cover_image_url, r.campaign_items)} name={r.name} />
                 </Td>
-                <Td>{r.name}</Td>
-                <Td><StatusBadge s={r.status} /></Td>
+                <Td className="min-w-[14rem]">{r.name}</Td>
+                <Td className="whitespace-nowrap"><StatusBadge s={r.status} /></Td>
                 <Td>
                   <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${CLOSE_TYPE_BADGE[r.close_type]}`}>
                     {CLOSE_TYPE_LABEL[r.close_type]}
                   </span>
                 </Td>
-                <Td className="text-xs text-zinc-500">
+                <Td className="whitespace-nowrap text-xs text-zinc-500">
                   {r.start_at ? new Date(r.start_at).toLocaleDateString("zh-TW") : "—"}
                   {" → "}
                   {r.end_at ? new Date(r.end_at).toLocaleDateString("zh-TW") : "—"}
                 </Td>
-                <Td className="text-xs">{r.pickup_deadline ?? "—"}</Td>
+                <Td className="whitespace-nowrap text-xs">{r.pickup_deadline ?? "—"}</Td>
                 <Td align="right" className="font-mono">{itemCounts.get(r.id) ?? 0}</Td>
                 <Td align="right">
                   {(() => {
@@ -611,8 +611,8 @@ export default function CampaignsListPage() {
                     );
                   })()}
                 </Td>
-                <Td align="right" className="text-xs text-zinc-500">{new Date(r.updated_at).toLocaleString("zh-TW")}</Td>
-                <Td>
+                <Td align="right" className="whitespace-nowrap text-xs text-zinc-500">{new Date(r.updated_at).toLocaleString("zh-TW")}</Td>
+                <Td className="whitespace-nowrap">
                   <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                     <SpinButton
                       onClick={() => openEdit(r.id)}
