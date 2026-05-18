@@ -82,6 +82,14 @@ async function buildKeywordOr(keyword: string): Promise<string | null> {
   return ors.join(",");
 }
 
+// 手機卡片底色（依訂單狀態）— 對應桌機表格列底色
+function cardTint(status: OrderStatus): string {
+  if (status === "cancelled") return "border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/30";
+  if (status === "expired") return "border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30";
+  if (status === "transferred_out") return "border-zinc-200 bg-zinc-100 text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900";
+  return "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950";
+}
+
 export default function OrdersListPage() {
   return (
     <Suspense fallback={<div className="p-6 text-sm text-zinc-500">載入中…</div>}>
@@ -425,6 +433,91 @@ function OrdersListContent() {
     alert("已取消");
     setReloadOrders((n) => n + 1);
   }
+
+  // 操作按鈕（去取貨 / 取消 / ↩退貨 / 狀態鈕）— 桌機表格與手機卡片共用，單一維護點
+  const orderActions = (r: Row, m: Member | null | undefined) => (
+    <>
+      {!["completed","expired","cancelled","transferred_out"].includes(r.status) && (() => {
+        // 取貨判斷改用 v_order_pickup_ready
+        const canPickup = pickupReady.get(r.id) === true;
+        // 訂單頁本身不執行取貨,只導向 /pickup (帶會員編號自動搜尋)
+        if (canPickup && m?.member_no) {
+          return (
+            <Link
+              href={`/pickup?q=${encodeURIComponent(m.member_no)}`}
+              className="rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-700"
+            >
+              ✅ 去取貨
+            </Link>
+          );
+        }
+        return (
+          <SpinButton
+            type="button"
+            disabled
+            title={canPickup ? "找不到會員資料,無法導向" : "分店尚未收貨,無法取貨"}
+            className="cursor-not-allowed rounded-md bg-emerald-200 px-2 py-1 text-[11px] font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
+          >
+            ✅ 去取貨
+          </SpinButton>
+        );
+      })()}
+      {["pending", "confirmed", "shipping"].includes(r.status) && (
+        <SpinButton
+          onClick={() => cancelOrder(r.id, r.order_no, r.status)}
+          title={r.status === "shipping" ? "撤回派貨並反向回收已出庫存" : "取消訂單"}
+          className="rounded-md bg-red-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-red-700"
+        >
+          取消
+        </SpinButton>
+      )}
+      {r.status === "cancelled" && (
+        <SpinButton
+          disabled
+          title="此訂單已取消"
+          className="rounded-md bg-red-200 px-2 py-1 text-[11px] font-medium text-red-700 cursor-not-allowed dark:bg-red-950 dark:text-red-300"
+        >
+          已取消
+        </SpinButton>
+      )}
+      {r.status === "expired" && (
+        <SpinButton
+          disabled
+          title="此訂單已逾期"
+          className="rounded-md bg-amber-200 px-2 py-1 text-[11px] font-medium text-amber-800 cursor-not-allowed dark:bg-amber-950 dark:text-amber-300"
+        >
+          已逾期
+        </SpinButton>
+      )}
+      {r.status === "completed" && (
+        <SpinButton
+          disabled
+          title="此訂單已完成"
+          className="rounded-md bg-emerald-200 px-2 py-1 text-[11px] font-medium text-emerald-800 cursor-not-allowed dark:bg-emerald-950 dark:text-emerald-300"
+        >
+          已完成
+        </SpinButton>
+      )}
+      {r.status === "transferred_out" && (
+        <SpinButton
+          disabled
+          title="此訂單已轉出"
+          className="rounded-md bg-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-700 cursor-not-allowed dark:bg-zinc-700 dark:text-zinc-300"
+        >
+          已轉出
+        </SpinButton>
+      )}
+      {["ready", "partially_completed", "completed", "expired"].includes(r.status) && (
+        <SpinButton
+          onClick={() => setReturnTarget({ orderId: r.id, storeId: r.pickup_store_id })}
+          title="已收貨/已取貨，無法取消；點此退貨回總倉（反向回收已派庫存）"
+          className="rounded-md border border-orange-300 px-2 py-1 text-[11px] font-medium text-orange-700 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-950"
+        >
+          ↩ 退貨
+        </SpinButton>
+      )}
+    </>
+  );
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const fromIdx = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const toIdx = Math.min(page * PAGE_SIZE, total);
@@ -620,7 +713,84 @@ function OrdersListContent() {
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+      {/* 手機：每筆訂單一張卡片（桌機改用下方表格） */}
+      <div className="space-y-2 sm:hidden">
+        {rows === null ? (
+          <div className="rounded-md border border-zinc-200 p-6 text-center text-sm text-zinc-500 dark:border-zinc-800">載入中…</div>
+        ) : rows.length === 0 ? (
+          <div className="rounded-md border border-zinc-200 p-6 text-center text-sm text-zinc-500 dark:border-zinc-800">
+            {total === 0 && campaignIds.length === 0 && !storeId && !keyword ? "此 tab 下尚無訂單。" : "沒有符合條件的訂單。"}
+          </div>
+        ) : rows.map((r) => {
+          const m = r.member_id ? members.get(r.member_id) : null;
+          const c = campaignMap.get(r.campaign_id);
+          const s = storeMap.get(r.pickup_store_id);
+          const sum = itemSummary.get(r.id);
+          return (
+            <div key={r.id} className={`rounded-lg border p-3 ${cardTint(r.status)}`}>
+              <button
+                type="button"
+                onClick={() => { setDetailId(r.id); setDetailNo(r.order_no); }}
+                className="block w-full text-left"
+                title={r.order_no}
+              >
+                {c ? (
+                  <div className="flex items-start gap-2">
+                    <CoverThumb src={c.cover_image_url} alt={c.name} />
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <div className="break-words text-xs text-zinc-500">{c.name}</div>
+                      {(sum?.items ?? []).map((it, idx) => (
+                        <div key={idx} className="break-words text-base font-bold text-zinc-900 dark:text-zinc-100">
+                          {it.variant_name || it.product_name || "—"}
+                          <span className="ml-1.5 text-xs font-normal text-zinc-500">× {it.qty}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : "—"}
+              </button>
+
+              <div className="mt-2 flex items-center gap-2 text-sm">
+                {m ? (
+                  <>
+                    <Avatar src={m.avatar_url} name={m.name ?? r.nickname_snapshot ?? "?"} />
+                    <span className="min-w-0 truncate">
+                      <Link href={`/members?id=${m.id}`} className="hover:underline">{m.name ?? "—"}</Link>
+                      <span className="ml-1 font-mono text-xs text-zinc-500">{m.phone}</span>
+                    </span>
+                  </>
+                ) : r.nickname_snapshot ? (
+                  <>
+                    <Avatar src={null} name={r.nickname_snapshot} />
+                    <span className="text-zinc-500">({r.nickname_snapshot})</span>
+                  </>
+                ) : (
+                  <span className="text-zinc-400">—</span>
+                )}
+              </div>
+
+              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
+                <span>🏬 {s?.name ?? "—"}</span>
+                <span>{sum?.lineCount ?? 0} 項</span>
+                <span>共 {sum?.totalQty ?? 0} 件</span>
+                <span className="font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100">${sum?.totalAmount ?? 0}</span>
+                <span
+                  className="ml-auto"
+                  title={`訂單日：${new Date(r.created_at).toLocaleString("zh-TW", { hour12: false })}\n更新日：${new Date(r.updated_at).toLocaleString("zh-TW", { hour12: false })}`}
+                >
+                  訂 {new Date(r.created_at).toLocaleDateString("zh-TW", { month: "numeric", day: "numeric" })} · 更 {new Date(r.updated_at).toLocaleDateString("zh-TW", { month: "numeric", day: "numeric" })}
+                </span>
+              </div>
+
+              <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-zinc-200/70 pt-2 dark:border-zinc-800">
+                {orderActions(r, m)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="hidden overflow-x-auto rounded-md border border-zinc-200 sm:block dark:border-zinc-800">
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
@@ -705,85 +875,7 @@ function OrdersListContent() {
                   </Td>
                   <Td className="whitespace-nowrap text-right">
                     <div className="flex items-center justify-end gap-1">
-                      {!["completed","expired","cancelled","transferred_out"].includes(r.status) && (() => {
-                        // 取貨判斷改用 v_order_pickup_ready
-                        const canPickup = pickupReady.get(r.id) === true;
-                        // 訂單頁本身不執行取貨,只導向 /pickup (帶會員編號自動搜尋)
-                        if (canPickup && m?.member_no) {
-                          return (
-                            <Link
-                              href={`/pickup?q=${encodeURIComponent(m.member_no)}`}
-                              className="rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-700"
-                            >
-                              ✅ 去取貨
-                            </Link>
-                          );
-                        }
-                        return (
-                          <SpinButton
-                            type="button"
-                            disabled
-                            title={canPickup ? "找不到會員資料,無法導向" : "分店尚未收貨,無法取貨"}
-                            className="cursor-not-allowed rounded-md bg-emerald-200 px-2 py-1 text-[11px] font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
-                          >
-                            ✅ 去取貨
-                          </SpinButton>
-                        );
-                      })()}
-                      {["pending", "confirmed", "shipping"].includes(r.status) && (
-                        <SpinButton
-                          onClick={() => cancelOrder(r.id, r.order_no, r.status)}
-                          title={r.status === "shipping" ? "撤回派貨並反向回收已出庫存" : "取消訂單"}
-                          className="rounded-md bg-red-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-red-700"
-                        >
-                          取消
-                        </SpinButton>
-                      )}
-                      {r.status === "cancelled" && (
-                        <SpinButton
-                          disabled
-                          title="此訂單已取消"
-                          className="rounded-md bg-red-200 px-2 py-1 text-[11px] font-medium text-red-700 cursor-not-allowed dark:bg-red-950 dark:text-red-300"
-                        >
-                          已取消
-                        </SpinButton>
-                      )}
-                      {r.status === "expired" && (
-                        <SpinButton
-                          disabled
-                          title="此訂單已逾期"
-                          className="rounded-md bg-amber-200 px-2 py-1 text-[11px] font-medium text-amber-800 cursor-not-allowed dark:bg-amber-950 dark:text-amber-300"
-                        >
-                          已逾期
-                        </SpinButton>
-                      )}
-                      {r.status === "completed" && (
-                        <SpinButton
-                          disabled
-                          title="此訂單已完成"
-                          className="rounded-md bg-emerald-200 px-2 py-1 text-[11px] font-medium text-emerald-800 cursor-not-allowed dark:bg-emerald-950 dark:text-emerald-300"
-                        >
-                          已完成
-                        </SpinButton>
-                      )}
-                      {r.status === "transferred_out" && (
-                        <SpinButton
-                          disabled
-                          title="此訂單已轉出"
-                          className="rounded-md bg-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-700 cursor-not-allowed dark:bg-zinc-700 dark:text-zinc-300"
-                        >
-                          已轉出
-                        </SpinButton>
-                      )}
-                      {["ready", "partially_completed", "completed", "expired"].includes(r.status) && (
-                        <SpinButton
-                          onClick={() => setReturnTarget({ orderId: r.id, storeId: r.pickup_store_id })}
-                          title="已收貨/已取貨，無法取消；點此退貨回總倉（反向回收已派庫存）"
-                          className="rounded-md border border-orange-300 px-2 py-1 text-[11px] font-medium text-orange-700 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-950"
-                        >
-                          ↩ 退貨
-                        </SpinButton>
-                      )}
+                      {orderActions(r, m)}
                     </div>
                   </Td>
                 </tr>
