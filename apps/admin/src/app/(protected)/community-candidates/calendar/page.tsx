@@ -318,7 +318,7 @@ export default function CommunityCandidatesCalendarPage() {
           onDragOver={onDragOver}
           onDragEnd={onDragEnd}
         >
-          <div className="grid grid-cols-7 gap-2 overflow-x-auto">
+          <div className="flex gap-2 overflow-x-auto pb-2 lg:grid lg:grid-cols-7 lg:overflow-x-visible lg:pb-0">
             {days.map((d) => {
               const key = formatDate(d);
               const isToday = key === todayStr;
@@ -376,7 +376,7 @@ function DayColumn({
   return (
     <div
       ref={setNodeRef}
-      className={`flex min-h-[200px] min-w-[120px] flex-col gap-2 rounded-md p-1 transition ${
+      className={`flex min-h-[200px] w-[200px] shrink-0 flex-col gap-2 rounded-md p-1 transition lg:w-auto lg:min-w-0 ${
         isOver
           ? "bg-amber-50 ring-2 ring-amber-300 dark:bg-amber-950/30 dark:ring-amber-700"
           : ""
