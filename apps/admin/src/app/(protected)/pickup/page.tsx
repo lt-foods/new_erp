@@ -6,6 +6,7 @@ import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { PickupDialog } from "@/components/PickupDialog";
 import { withBasePath } from "@/lib/basePath";
+import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
 import { getPickupRecents, recordPickupRecent, type RecentCustomer } from "@/lib/pickupRecents";
 
@@ -225,6 +226,30 @@ function PickupPageContent() {
     } finally {
       setBulking(null);
     }
+  }
+
+  // 取消訂單 — 沿用訂單頁完全相同的 rpc_cancel_aid_order 流程：
+  // pending/confirmed 直接取消；shipping 撤回派貨並反向回收已出庫存。
+  // 取消後 reloadTick++ 重跑搜尋，該單因不在 ACTIVE_STATUSES 而從列表消失。
+  async function cancelOrder(order: OpenOrder) {
+    const reason = prompt(
+      order.status === "shipping"
+        ? `撤回派貨：${order.order_no}\n會反向回收已出庫存，請輸入原因：`
+        : `取消訂單：${order.order_no}\n請輸入取消原因：`,
+    );
+    if (reason === null) return;
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id ?? null;
+    if (!operator) { alert("尚未登入"); return; }
+    const { error: rpcErr } = await sb.rpc("rpc_cancel_aid_order", {
+      p_order_id: order.id,
+      p_reason: reason,
+      p_operator: operator,
+    });
+    if (rpcErr) { alert(`取消失敗：${translateRpcError(rpcErr)}`); return; }
+    alert("已取消");
+    setReloadTick((n) => n + 1);
   }
 
   // 重新跑搜尋（取貨後 reload）
@@ -503,6 +528,15 @@ function PickupPageContent() {
                             >
                               ✅ 取貨
                             </SpinButton>
+                            {["pending", "confirmed", "shipping"].includes(o.status) && (
+                              <SpinButton
+                                onClick={() => cancelOrder(o)}
+                                title={o.status === "shipping" ? "撤回派貨並反向回收已出庫存" : "取消此訂單（尚未收貨也可取消）"}
+                                className="rounded-md border border-red-300 px-2 py-2 text-xs font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950"
+                              >
+                                取消訂單
+                              </SpinButton>
+                            )}
                           </li>
                         );
                       })}
