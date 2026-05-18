@@ -197,6 +197,20 @@ const RULES: Rule[] = [
     pattern: /campaign \d+ not found/i,
     render: () => "找不到此開團（可能已被刪除）。",
   },
+  // ===== rpc_merge_member（會員合併守門） =====
+  {
+    pattern: /source member \d+ has orders, cannot merge/i,
+    render: () =>
+      "來源會員仍有訂單，無法合併。訂單個別獨立、不會搬移；請先處理（取消／轉移）來源會員的訂單後再合併。",
+  },
+  {
+    pattern: /source member \d+ is already bound to LINE/i,
+    render: () => "來源會員已綁定 LINE，請改以「未綁 LINE 的那筆」為來源。",
+  },
+  {
+    pattern: /source member \d+ is already merged/i,
+    render: () => "來源會員已經合併過了。",
+  },
   // ===== rpc_register_damage =====
   {
     pattern: /damage_qty must be > 0/i,
