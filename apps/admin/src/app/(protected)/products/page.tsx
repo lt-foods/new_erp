@@ -7,6 +7,7 @@ import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { ProductForm, type ProductFormValues } from "@/components/ProductForm";
 import { ProductSkuSection, type ProductSkuSectionHandle } from "@/components/ProductSkuSection";
+import { ProductCampaignsPanel } from "@/components/ProductCampaignsPanel";
 import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow } from "@/components/DataTable";
@@ -720,16 +721,23 @@ function PageContent() {
           />
         )}
         {modal?.mode === "edit" && (
-          <ProductForm
-            initial={modal.values}
-            onSaved={() => { setModal(null); setReloadTick((t) => t + 1); }}
-            onCancel={() => setModal(null)}
-            midSlot={
-              modal.values.id !== null ? (
-                <ProductSkuSection productId={modal.values.id} />
-              ) : null
-            }
-          />
+          <div className="space-y-6">
+            <ProductForm
+              initial={modal.values}
+              onSaved={() => { setModal(null); setReloadTick((t) => t + 1); }}
+              onCancel={() => setModal(null)}
+              midSlot={
+                modal.values.id !== null ? (
+                  <ProductSkuSection productId={modal.values.id} />
+                ) : null
+              }
+            />
+            {modal.values.id !== null && (
+              <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">
+                <ProductCampaignsPanel productId={modal.values.id} />
+              </div>
+            )}
+          </div>
         )}
       </Modal>
 
