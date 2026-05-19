@@ -61,6 +61,16 @@
 **情境：** body 夾帶 `tenant_id` 試圖指定其他 tenant
 **預期：** 一律以 caller 的 `app_metadata.tenant_id` 為準（body 的 tenant 被忽略）
 
+### 2.11 自訂密碼（password 選填）
+**情境一：** body 帶 `password='MyPass123'`（≥6 碼）
+**預期：** 成功；回應 `password_source='admin'` 且 **不含** `temp_password`；該帳號可用此密碼登入
+**情境二：** body 不帶 `password` 或 `password=''`
+**預期：** 成功；回應 `password_source='generated'` + `temp_password`（沿用舊行為）
+**情境三：** body 帶 `password='abc'`（<6 碼）
+**預期：** 422「密碼至少 6 碼」，不建立帳號
+**情境四：** `password` 含前後空白（如 `' a b 12 '`）
+**預期：** 不被 trim，原樣作為密碼（長度以原字串計）
+
 ## 3. UI 行為（preview 互動）
 
 ### 3.1 入口與權限
@@ -83,6 +93,13 @@
 - [ ] Email 空 / 顯示名空 → 前端擋或函式回錯，錯誤訊息顯示於 modal
 - [ ] 重複 Email → modal 顯示「此 Email 已有帳號」類訊息，不關閉、不 reload
 - [ ] 送出中 SpinButton 轉圈、無「送出中…」文字（沿用 `feedback_loading_spinner_no_text`）
+
+### 3.5 密碼欄（選填）
+- [ ] modal 有「密碼」欄，placeholder 提示「留空＝系統自動產生」
+- [ ] 留空送出 → 成功面板顯示一次性臨時密碼（可複製、標「只顯示這一次」）
+- [ ] 自訂 ≥6 碼送出 → 成功面板**不顯示密碼**，改顯示「請用你剛剛設定的密碼通知對方」
+- [ ] 自訂 <6 碼 → modal 內顯示「密碼至少 6 碼」，不送出
+- [ ] 自訂密碼建立後，用該 Email + 自訂密碼可登入 admin
 
 ## 4. Regression
 

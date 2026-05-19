@@ -395,9 +395,10 @@ function CreateStaffModal({
   const [newRole, setNewRole] = useState<StaffRole>(
     (grantable.find((r) => r === "store_staff") ?? grantable[0]) as StaffRole,
   );
+  const [password, setPassword] = useState("");
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [err, setErr] = useState<string | null>(null);
-  const [result, setResult] = useState<{ email: string; temp_password: string } | null>(null);
+  const [result, setResult] = useState<{ email: string; tempPassword: string | null } | null>(null);
   const [copied, setCopied] = useState(false);
 
   function toggle(name: string) {
@@ -413,10 +414,18 @@ function CreateStaffModal({
     const e = email.trim().toLowerCase();
     if (!e || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) { setErr("請輸入有效 Email"); return; }
     if (!displayName.trim()) { setErr("請輸入顯示名"); return; }
+    if (password.length > 0 && password.length < 6) { setErr("密碼至少 6 碼（留空則系統自動產生）"); return; }
     const { data, error } = await getSupabase().functions.invoke<{
       ok?: boolean; error?: string; email?: string; temp_password?: string;
+      password_source?: "admin" | "generated";
     }>("staff-create", {
-      body: { email: e, display_name: displayName.trim(), role: newRole, stores: Array.from(sel) },
+      body: {
+        email: e,
+        display_name: displayName.trim(),
+        role: newRole,
+        stores: Array.from(sel),
+        password,
+      },
     });
     if (error) {
       let msg = error.message ?? "建立失敗";
@@ -430,14 +439,16 @@ function CreateStaffModal({
       setErr(msg);
       return;
     }
-    if (!data?.ok || !data.temp_password) { setErr(data?.error ?? "建立失敗"); return; }
-    setResult({ email: data.email ?? e, temp_password: data.temp_password });
+    if (!data?.ok) { setErr(data?.error ?? "建立失敗"); return; }
+    const adminSet = data.password_source === "admin";
+    if (!adminSet && !data.temp_password) { setErr("建立成功但未取得臨時密碼，請改用重設密碼或重試"); return; }
+    setResult({ email: data.email ?? e, tempPassword: adminSet ? null : (data.temp_password ?? null) });
   }
 
   async function copyPw() {
-    if (!result) return;
+    if (!result?.tempPassword) return;
     try {
-      await navigator.clipboard.writeText(result.temp_password);
+      await navigator.clipboard.writeText(result.tempPassword);
       setCopied(true);
     } catch { /* 使用者可手動選取複製 */ }
   }
@@ -446,22 +457,30 @@ function CreateStaffModal({
     return (
       <Modal open onClose={onSaved} title="員工已建立" maxWidth="max-w-md">
         <div className="space-y-3 p-5">
-          <p className="text-sm text-zinc-700 dark:text-zinc-300">
-            <b>{result.email}</b> 帳號已建立。請把以下一次性臨時密碼交付給對方，
-            <b className="text-rose-600">只顯示這一次</b>，關閉後無法再查看。
-          </p>
-          <div className="flex items-center gap-2 rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2 dark:border-zinc-700 dark:bg-zinc-800">
-            <code className="flex-1 select-all break-all font-mono text-sm">{result.temp_password}</code>
-            <button
-              type="button"
-              onClick={copyPw}
-              className="shrink-0 rounded border border-zinc-300 px-2 py-1 text-xs hover:bg-white dark:border-zinc-600 dark:hover:bg-zinc-700"
-            >
-              {copied ? "已複製" : "複製"}
-            </button>
-          </div>
+          {result.tempPassword ? (
+            <>
+              <p className="text-sm text-zinc-700 dark:text-zinc-300">
+                <b>{result.email}</b> 帳號已建立。請把以下一次性臨時密碼交付給對方，
+                <b className="text-rose-600">只顯示這一次</b>，關閉後無法再查看。
+              </p>
+              <div className="flex items-center gap-2 rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2 dark:border-zinc-700 dark:bg-zinc-800">
+                <code className="flex-1 select-all break-all font-mono text-sm">{result.tempPassword}</code>
+                <button
+                  type="button"
+                  onClick={copyPw}
+                  className="shrink-0 rounded border border-zinc-300 px-2 py-1 text-xs hover:bg-white dark:border-zinc-600 dark:hover:bg-zinc-700"
+                >
+                  {copied ? "已複製" : "複製"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-zinc-700 dark:text-zinc-300">
+              <b>{result.email}</b> 帳號已建立。請用<b>你剛剛設定的密碼</b>通知對方登入。
+            </p>
+          )}
           <p className="text-[11px] text-zinc-500">
-            員工用此 Email + 臨時密碼登入後台；建議首次登入後盡快重設密碼。改完角色/綁店員工需重新登入才會生效。
+            員工用此 Email + 密碼登入後台；建議首次登入後盡快重設密碼。改完角色/綁店員工需重新登入才會生效。
           </p>
           <div className="flex justify-end pt-2">
             <SpinButton onClick={onSaved} className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900">完成</SpinButton>
@@ -495,6 +514,18 @@ function CreateStaffModal({
           />
         </label>
         <label className="block text-sm">
+          <span className="text-zinc-600 dark:text-zinc-400">密碼</span>
+          <input
+            type="text"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="留空＝系統自動產生一次性密碼"
+            autoComplete="new-password"
+            className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+          />
+          <span className="mt-1 block text-[11px] text-zinc-500">自訂則至少 6 碼；留空則建立後顯示一次性臨時密碼</span>
+        </label>
+        <label className="block text-sm">
           <span className="text-zinc-600 dark:text-zinc-400">角色</span>
           <select
             value={newRole}
@@ -521,7 +552,7 @@ function CreateStaffModal({
             ))}
           </div>
         </div>
-        <p className="text-[11px] text-zinc-500">建立後系統會產生一次性臨時密碼（下一步顯示）。</p>
+        <p className="text-[11px] text-zinc-500">未填密碼則建立後顯示一次性臨時密碼；有填則用你設定的密碼。</p>
         {err && <p className="text-xs text-rose-600">{err}</p>}
         <div className="flex justify-end gap-2 pt-2">
           <SpinButton onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">取消</SpinButton>

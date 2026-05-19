@@ -9,6 +9,8 @@
 //   - 新帳號 tenant_id 強制 = caller tenant（忽略 body 夾帶的 tenant）
 //   - stores 名稱必須屬於該 tenant 或 '總倉' magic value
 //   - 'disabled' 不可作為建立角色（停用走既有「停用」流程）
+//   - password 選填：有給就用（≥6 碼，對齊 auth.minimum_password_length），
+//     留空則系統產生一次性臨時密碼。自訂密碼不回傳（對方已知）。
 //
 // 只需內建 secret SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY，未新增其他 secret。
 
@@ -78,7 +80,7 @@ Deno.serve(async (req) => {
     }
 
     const body = (await req.json().catch(() => null)) as
-      | { email?: unknown; display_name?: unknown; role?: unknown; stores?: unknown }
+      | { email?: unknown; display_name?: unknown; role?: unknown; stores?: unknown; password?: unknown }
       | null;
     if (!body) return json({ error: "invalid json body" }, 400);
 
@@ -91,12 +93,17 @@ Deno.serve(async (req) => {
           .map((x) => x.trim())
           .filter(Boolean)
       : [];
+    // 不 trim 密碼（前後空白可能是刻意的）；空字串視為「未提供」→ 自動產生
+    const customPw = typeof body.password === "string" ? body.password : "";
 
     if (!email || !isEmail(email)) return json({ error: "invalid email" }, 400);
     if (!displayName) return json({ error: "display_name required" }, 400);
     if (!VALID_ROLES.includes(role)) return json({ error: `invalid role: ${role}` }, 422);
     if (role === "owner" && callerRole !== "owner") {
       return json({ error: "admin cannot create owner" }, 403);
+    }
+    if (customPw.length > 0 && customPw.length < 6) {
+      return json({ error: "密碼至少 6 碼" }, 422);
     }
 
     // store 名稱驗證：每個非「總倉」名稱必須存在於 caller tenant 的 stores
@@ -115,10 +122,11 @@ Deno.serve(async (req) => {
       }
     }
 
-    const tempPassword = genTempPassword();
+    const pwSource = customPw.length > 0 ? "admin" : "generated";
+    const password = customPw.length > 0 ? customPw : genTempPassword();
     const { data: created, error: createErr } = await sb.auth.admin.createUser({
       email,
-      password: tempPassword,
+      password,
       email_confirm: true,
       user_metadata: { display_name: displayName },
       app_metadata: { tenant_id: tenantId, role, stores },
@@ -137,7 +145,9 @@ Deno.serve(async (req) => {
       ok: true,
       user_id: created.user?.id,
       email: created.user?.email,
-      temp_password: tempPassword,
+      password_source: pwSource,
+      // 自動產生才回傳密碼；admin 自訂的不回傳（對方已知、不必反射 secret）
+      ...(pwSource === "generated" ? { temp_password: password } : {}),
     });
   } catch (e) {
     // 不要 log body / 密碼
