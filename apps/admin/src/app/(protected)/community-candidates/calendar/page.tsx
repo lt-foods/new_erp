@@ -429,21 +429,40 @@ function SortableCard({
       style={style}
       className="flex flex-col gap-1.5 rounded-md border border-zinc-200 bg-white p-2 text-xs shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
     >
-      <div className="flex items-baseline gap-1.5">
+      <div className="flex items-stretch gap-2">
         <span
           {...attributes}
           {...listeners}
-          className="cursor-grab select-none touch-none font-mono text-[10px] font-semibold text-zinc-400 hover:text-zinc-700 active:cursor-grabbing dark:text-zinc-500 dark:hover:text-zinc-200"
+          role="button"
+          aria-label="拖拉排序或換日"
           title="拖拉排序 / 換日"
+          className="flex w-9 shrink-0 cursor-grab touch-none select-none items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-400 transition hover:border-zinc-300 hover:bg-zinc-100 hover:text-zinc-600 active:cursor-grabbing active:bg-zinc-200 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-500 dark:hover:bg-zinc-700 dark:hover:text-zinc-300 lg:w-5 lg:rounded"
         >
-          ⋮⋮ {suggestedTime(idx)}
+          <svg
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            aria-hidden="true"
+            className="h-5 w-5 lg:h-3.5 lg:w-3.5"
+          >
+            <circle cx="9" cy="6" r="1.6" />
+            <circle cx="15" cy="6" r="1.6" />
+            <circle cx="9" cy="12" r="1.6" />
+            <circle cx="15" cy="12" r="1.6" />
+            <circle cx="9" cy="18" r="1.6" />
+            <circle cx="15" cy="18" r="1.6" />
+          </svg>
         </span>
-        <Link
-          href={`/community-candidates?highlight=${r.id}`}
-          className="font-medium leading-snug hover:underline"
-        >
-          {r.product_name_hint ?? "（無商品名）"}
-        </Link>
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="font-mono text-[10px] font-semibold text-zinc-400 dark:text-zinc-500">
+            {suggestedTime(idx)}
+          </span>
+          <Link
+            href={`/community-candidates?highlight=${r.id}`}
+            className="font-medium leading-snug hover:underline"
+          >
+            {r.product_name_hint ?? "（無商品名）"}
+          </Link>
+        </div>
       </div>
       <div className="flex flex-wrap gap-1">
         <span
