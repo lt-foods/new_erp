@@ -17,6 +17,14 @@ export type Role =
 
 const HQ_ROLES: Role[] = ["owner", "admin", "hq_manager", "hq_accountant", ""];
 const BRANCH_ROLES: Role[] = ["owner", "admin", "hq_manager", "hq_accountant", "store_manager", ""];
+// 管理員層級：負責人(owner) + 管理員(admin) + 無顯式 role 的 legacy/dev admin("")
+// 對齊 rpc_resync_campaign_from_product 的 server-side gate
+const ADMIN_ROLES: Role[] = ["owner", "admin", ""];
+
+export function isAdmin(role: Role | null): boolean {
+  if (role === null) return false;
+  return ADMIN_ROLES.includes(role);
+}
 
 export function canSeeCost(role: Role | null): boolean {
   if (role === null) return false;

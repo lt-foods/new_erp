@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import { useRole, isAdmin } from "@/lib/role";
 
 export type CampaignStatus =
   | "draft" | "open" | "closed" | "ordered" | "receiving" | "ready" | "completed" | "cancelled";
@@ -67,6 +68,8 @@ export function CampaignForm({
   submitLabel?: string;
 }) {
   const router = useRouter();
+  const role = useRole();
+  const admin = isAdmin(role);
   const [v, setV] = useState<CampaignFormValues>(initial ?? emptyCampaignValues);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -247,9 +250,14 @@ export function CampaignForm({
       )}
 
       <div className="flex items-center gap-3">
-        <SpinButton type="submit" disabled={saving} className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200">
-          {saving ? "儲存中…" : submitLabel ?? (v.id ? "儲存" : "建立開團")}
-        </SpinButton>
+        {admin && (
+          <SpinButton type="submit" disabled={saving} className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200">
+            {saving ? "儲存中…" : submitLabel ?? (v.id ? "儲存" : "建立開團")}
+          </SpinButton>
+        )}
+        {role !== null && !admin && (
+          <span className="text-xs text-zinc-500">僅管理員可儲存開團</span>
+        )}
         <SpinButton type="button" onClick={() => onCancel ? onCancel() : router.push("/campaigns")} className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">取消</SpinButton>
       </div>
     </form>

@@ -13,7 +13,8 @@
 --        每筆寫一列 customer_order_audit_log
 --
 --   守門：
---     - 權限 HQ（owner/admin/hq_manager/hq_accountant，role NULL 視同 admin）
+--     - 權限：僅管理員 owner/admin（role NULL/'' 視同 dev/legacy admin）；
+--       hq_manager/hq_accountant/店家一律拒絕
 --     - 開團狀態僅 draft / open（已收單後 PR/PO 已快照、不給按）
 --     - 任一「已在 campaign_items 的 active SKU」解析零售價 <= 0
 --       → RAISE EXCEPTION 拒跑（絕不回填成 0）
@@ -57,8 +58,9 @@ BEGIN
   IF v_tenant IS NULL THEN
     RAISE EXCEPTION 'tenant_id missing in JWT';
   END IF;
-  IF v_role NOT IN ('owner','admin','hq_manager','hq_accountant','') THEN
-    RAISE EXCEPTION 'permission denied: role % 無權重新同步開團', v_role;
+  -- 僅管理員（owner/admin；'' = legacy/dev admin，對齊 reference_admin_jwt_role_null）
+  IF v_role NOT IN ('owner','admin','') THEN
+    RAISE EXCEPTION '權限不足：僅管理員可重新同步開團（role=%）', v_role;
   END IF;
 
   -- ---------- 開團 + 狀態守門 ----------
@@ -293,4 +295,4 @@ GRANT EXECUTE ON FUNCTION
 COMMENT ON FUNCTION public.rpc_resync_campaign_from_product(BIGINT, BOOLEAN, UUID) IS
   '開團重新同步：名稱←product、campaign_items 單價←現行零售價、補 active SKU、'
   '回填 status=pending 訂單明細並寫 customer_order_audit_log。'
-  'draft/open 限定、HQ 限定、active SKU 缺有效零售價則拒跑、p_dry_run 預設只預覽。';
+  'draft/open 限定、僅管理員(owner/admin) 限定、active SKU 缺有效零售價則拒跑、p_dry_run 預設只預覽。';

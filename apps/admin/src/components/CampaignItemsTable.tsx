@@ -6,6 +6,7 @@ import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { translateRpcError } from "@/lib/rpcError";
+import { useRole, isAdmin } from "@/lib/role";
 
 type Row = {
   id: number;
@@ -49,7 +50,9 @@ export function CampaignItemsTable({
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<ResyncPreview | null>(null);
   const [resyncErr, setResyncErr] = useState<string | null>(null);
-  const canResync = status === "draft" || status === "open";
+  const role = useRole();
+  // 僅管理員（owner/admin）可重新同步：對齊 RPC server-side gate
+  const canResync = (status === "draft" || status === "open") && isAdmin(role);
 
   const reload = async () => {
     // products.name 是 source of truth；skus.product_name 是 denorm 可能過期、不用它
