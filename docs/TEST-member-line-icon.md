@@ -18,12 +18,14 @@
 - [ ] 表頭欄位為：姓名 / 取貨店 / 手機 / 訂單數 / 未取貨金額 / 儲值 / 加入時間 / 最後登入 / 更新 /（操作）—— **無「編號」欄**
 - [ ] 每列 `<Td>` 數 = 表頭欄數 = 10；骨架列 / 空狀態 colSpan = 10（不錯位）
 
-### 3.2 狀態以文字 tag 呈現（非 icon / emoji）
-- [ ] 已綁 LINE：姓名旁顯示綠色「LINE」tag；未綁不顯示
-- [ ] 已開啟通知：顯示藍色「通知」tag（hover title「已安裝 App 並開啟通知」）；無訂閱不顯示
-- [ ] 既有「樂樂」amber tag 不受影響
-- [ ] 不再出現 LINE SVG icon、不再出現 🔔 emoji
-- [ ] tag 不換行（whitespace-nowrap），多 tag 並排不擠壓姓名
+### 3.2 狀態以文字 tag 呈現（非 icon / emoji），位置在 avatar 前
+- [ ] LINE / 通知 tag 位於 **avatar 左側**（固定寬度 gutter，w-12 右對齊垂直堆疊）
+- [ ] 跨列 avatar 對齊：有/無/單一 tag 的列，avatar 起始 x 一致（不參差）
+- [ ] 已綁 LINE：顯示綠色「LINE」tag；未綁不顯示
+- [ ] 已開啟通知：藍色「通知」tag（hover title「已安裝 App 並開啟通知」）；無訂閱不顯示
+- [ ] 既有「樂樂」amber tag 維持在姓名後、不受影響
+- [ ] 不再出現 LINE SVG icon、不再出現 🔔 emoji；**未新增 checkbox 欄**
+- [ ] tag 不換行（whitespace-nowrap）
 
 ### 3.3 編號欄移除後的連帶
 - [ ] `已合併` / `已刪除` 標籤改顯示在姓名列（原在編號欄），顏色不變、語意不變

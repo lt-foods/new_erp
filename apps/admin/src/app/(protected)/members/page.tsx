@@ -331,6 +331,24 @@ function MembersListBody() {
                 >
                   <Td>
                     <div className="flex items-center gap-2">
+                      <span className="flex w-12 shrink-0 flex-col items-end gap-0.5">
+                        {r.line_user_id && (
+                          <span
+                            title="已綁定 LINE"
+                            className="whitespace-nowrap rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-normal text-green-700 dark:bg-green-950 dark:text-green-300"
+                          >
+                            LINE
+                          </span>
+                        )}
+                        {pushSet.has(r.id) && (
+                          <span
+                            title="已安裝 App 並開啟通知"
+                            className="whitespace-nowrap rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-normal text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                          >
+                            通知
+                          </span>
+                        )}
+                      </span>
                       {r.avatar_url ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img src={r.avatar_url} alt="" className="h-7 w-7 rounded-full object-cover" />
@@ -348,22 +366,6 @@ function MembersListBody() {
                           className="whitespace-nowrap rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-normal text-amber-700 dark:bg-amber-950 dark:text-amber-300"
                         >
                           樂樂
-                        </span>
-                      )}
-                      {r.line_user_id && (
-                        <span
-                          title="已綁定 LINE"
-                          className="whitespace-nowrap rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-normal text-green-700 dark:bg-green-950 dark:text-green-300"
-                        >
-                          LINE
-                        </span>
-                      )}
-                      {pushSet.has(r.id) && (
-                        <span
-                          title="已安裝 App 並開啟通知"
-                          className="whitespace-nowrap rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-normal text-blue-700 dark:bg-blue-950 dark:text-blue-300"
-                        >
-                          通知
                         </span>
                       )}
                       {r.status === "merged" && (
