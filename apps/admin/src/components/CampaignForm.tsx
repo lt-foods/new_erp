@@ -108,8 +108,8 @@ export function CampaignForm({
         }
       }
 
-      // 名稱 / 描述 / 收單時間 / 取貨截止 / 取貨天數 / 總量上限 / 備註
-      // 都從商品 / RPC 自動帶入；UI 不可編輯，保留原值送回。
+      // 團名由此表單直接編輯；描述 / 取貨截止 / 取貨天數 / 備註
+      // 仍從商品 / RPC 自動帶入，UI 不編輯、保留原值送回。
       const { data, error: err } = await getSupabase().rpc("rpc_upsert_campaign", {
         p_id: v.id,
         p_campaign_no: v.campaign_no.trim(),
@@ -138,6 +138,15 @@ export function CampaignForm({
   return (
     <form onSubmit={onSubmit} className="space-y-4" noValidate>
       <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="團名" className="sm:col-span-2">
+          <input
+            type="text"
+            value={v.name}
+            onChange={(e) => update("name", e.target.value)}
+            placeholder="顧客在 LIFF /shop 看到的開團標題"
+            className={inputCls}
+          />
+        </Field>
         <Field label="團號">
           <div className={`${inputCls} bg-zinc-50 text-zinc-500 dark:bg-zinc-900 select-all`}>{v.campaign_no || "（自動產生）"}</div>
         </Field>
@@ -239,7 +248,8 @@ export function CampaignForm({
       </div>
 
       <p className="text-xs text-zinc-500 dark:text-zinc-400">
-        名稱、描述、取貨截止 / 天數 在商品多選開團時設定；如需調整請至商品編輯頁。
+        描述、取貨截止 / 天數 在商品多選開團時設定；如需調整請至商品編輯頁。
+        單一商品開團的團名會跟著商品名稱自動更新；多商品開團則以此處填的為準。
       </p>
 
       {error && (
