@@ -1,8 +1,8 @@
 # campaign-resync 測試項目 — 開團「重新同步商品/價格」按鈕 + RPC
 
-**對應 migration:** `supabase/migrations/20260620000010_rpc_resync_campaign_from_product.sql`
-**對應 UI 變更:** `apps/admin/src/components/CampaignItemsTable.tsx`、`apps/admin/src/app/(protected)/campaigns/page.tsx`
-**背景:** 開團後 `campaign_items` 價格被 `locked_at` 鎖定、零售價變動不再 sync；忘記輸入售價時訂單會以 $0 快照成立。本功能提供 HQ 手動重新同步開團名稱/價格、並回填「待確認」訂單。
+**對應 migration:** `20260620000010_rpc_resync_campaign_from_product.sql`（#299，原 HQ gate）＋ `20260620000020_rpc_resync_campaign_admin_only.sql`（權限收緊為僅管理員，CREATE OR REPLACE）— 兩支都要套用，prod 以 20 為準
+**對應 UI 變更:** `apps/admin/src/components/CampaignItemsTable.tsx`、`apps/admin/src/components/CampaignForm.tsx`、`apps/admin/src/lib/role.ts`（新增 `isAdmin`）
+**背景:** 開團後 `campaign_items` 價格被 `locked_at` 鎖定、零售價變動不再 sync；忘記輸入售價時訂單會以 $0 快照成立。本功能提供**管理員**手動重新同步開團名稱/價格、並回填「待確認」訂單。
 
 ---
 
@@ -64,9 +64,9 @@
 **情境：** campaign.status ∈ {closed, ordered, receiving, ready, completed, cancelled}。
 **預期：** `RAISE EXCEPTION`「只有草稿/開團中…（目前為 X）」；無任何變動。draft / open 才放行。
 
-### 2.9 權限：非 HQ 拒絕
-**情境：** JWT role = 店家（非 owner/admin/hq_manager/hq_accountant、非 NULL）。
-**預期：** `RAISE EXCEPTION` 權限不足；role 為 NULL（admin user）視同 HQ → 放行。
+### 2.9 權限：僅管理員（owner/admin）放行，其餘拒絕
+**情境：** 分別以 role = `store_manager`／`hq_manager`／`hq_accountant`／`assistant` 呼叫；再以 `owner`／`admin`／`''`(NULL) 呼叫。
+**預期：** 前四者皆 `RAISE EXCEPTION`「權限不足：僅管理員可重新同步開團」（**hq_manager/hq_accountant 也要被擋**，與舊 HQ gate 不同）；owner/admin/NULL（dev admin）放行。
 
 ### 2.10 租戶隔離
 **情境：** `p_campaign_id` 屬於別 tenant。
@@ -88,8 +88,15 @@
 
 ### 3.1 按鈕顯示條件
 - [ ] 編輯開團 Modal 內 `CampaignItemsTable` 出現「重新同步商品/價格」按鈕
-- [ ] 僅 `status ∈ {draft, open}` 顯示；closed/ordered/.../cancelled 不顯示
+- [ ] 僅 `status ∈ {draft, open}` **且 `isAdmin(role)`（owner/admin/'' ）** 才顯示
+- [ ] 非管理員（hq_manager / hq_accountant / store_*）登入：按鈕**不顯示**
+- [ ] role 尚未載入（`useRole()` 回 null）時按鈕**不顯示**（fail-closed、不閃現）
 - [ ] `🔒 已鎖定` 標記同時存在時，按鈕仍可按（locked_at 不阻擋）
+
+### 3.1b CampaignForm 儲存按鈕（同 admin gate）
+- [ ] 管理員：編輯開團 Modal 內「儲存」/「建立開團」按鈕正常顯示可存
+- [ ] 非管理員：submit 按鈕**不顯示**、改顯示「僅管理員可儲存開團」、取消鈕仍在
+- [ ] role 載入中（null）：submit 與提示**皆不顯示**（不閃現）
 
 ### 3.2 預覽 → 確認流程
 - [ ] 按按鈕先呼叫 RPC `p_dry_run=true`，跳出 Modal 顯示：名稱 old→new、各 SKU old→new 表、待確認訂單金額 before→after、影響筆數
@@ -105,7 +112,8 @@
 
 ## 4. Regression
 - [ ] `/campaigns` 列表（含行內 開團/結單/整單結算/刪除）行為不變
-- [ ] 編輯開團 Modal 既有 `CampaignForm` 存檔、`CampaignItemsTable` 顯示、`CampaignOrdersPanel` 統計不受影響
+- [ ] `CampaignItemsTable` 明細顯示、`CampaignOrdersPanel` 統計不受影響
+- [ ] `CampaignForm` 改動為**全域**（編輯 Modal + 獨立新增開團路由皆套同 admin gate）：管理員行為與既往一致；非管理員失去 submit 鈕（刻意行為變更，非 regression）— 確認非管理員仍能開 Modal/檢視、`取消` 正常
 - [ ] `_lock_campaign_prices_on_open` / `_sync_retail_price_to_campaigns` / `_sync_product_name_to_campaigns` / 1-campaign-1-product invariant trigger 行為不變（resync 不繞過 invariant：補 SKU 必同 product）
 - [ ] `rpc_create_customer_orders` 加單仍快照 campaign_items.unit_price（未被本功能改壞）
 - [ ] `customer_order_audit_log` append-only trigger 仍擋 UPDATE/DELETE；本 RPC 僅 INSERT
