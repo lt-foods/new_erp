@@ -74,6 +74,9 @@ function MembersListBody() {
   const [stores, setStores] = useState<Store[]>([]);
   useDefaultStoreFromUser(stores, storeId, setStoreId);
   const [balances, setBalances] = useState<Map<number, { unpicked: number; wallet: number; orderCount: number }>>(new Map());
+  // 有 web push 訂閱（=已安裝 PWA + 開啟通知）的 member id；走 SECURITY DEFINER RPC，
+  // 因 push_subscriptions RLS 對 admin（role 非 hq）會靜默回 0 列。
+  const [pushSet, setPushSet] = useState<Set<number>>(new Set());
   const [reloadTick, setReloadTick] = useState(0);
   const [modal, setModal] = useState<
     | { mode: "new" }
@@ -156,12 +159,13 @@ function MembersListBody() {
 
         const ids = (data ?? []).map((r) => r.id);
         if (ids.length) {
-          const [ord, wal] = await Promise.all([
+          const [ord, wal, push] = await Promise.all([
             getSupabase()
               .from("customer_orders")
               .select("id, member_id, status")
               .in("member_id", ids),
             getSupabase().from("wallet_balances").select("member_id, balance").in("member_id", ids),
+            getSupabase().rpc("rpc_members_with_push", { p_member_ids: ids }),
           ]);
           // 訂單數量 不計取消/過期/轉出（視為 void）
           const VOID_STATUSES = new Set<string>(["cancelled", "expired", "transferred_out"]);
@@ -195,9 +199,17 @@ function MembersListBody() {
             const cur = m.get(w.member_id)!;
             cur.wallet = Number(w.balance) || 0;
           }
-          if (!cancelled) setBalances(m);
+          const ps = new Set<number>();
+          for (const row of (push.data ?? []) as { member_id: number }[]) {
+            if (row?.member_id != null) ps.add(Number(row.member_id));
+          }
+          if (!cancelled) {
+            setBalances(m);
+            setPushSet(ps);
+          }
         } else {
           setBalances(new Map());
+          setPushSet(new Set());
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -348,6 +360,15 @@ function MembersListBody() {
                           className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-normal text-amber-700 dark:bg-amber-950 dark:text-amber-300"
                         >
                           樂樂
+                        </span>
+                      )}
+                      {pushSet.has(r.id) && (
+                        <span
+                          title="已安裝 App 並開啟通知"
+                          aria-label="已安裝 App 並開啟通知"
+                          className="text-[12px] leading-none"
+                        >
+                          🔔
                         </span>
                       )}
                     </div>
