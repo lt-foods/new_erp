@@ -763,28 +763,41 @@ export default function CommunityCandidatesPage() {
                 ref={(el) => {
                   if (r.id === highlightId) highlightRowRef.current = el;
                 }}
-                className={`rounded-lg border bg-white p-3 dark:bg-zinc-900 ${
+                className={`rounded-lg border p-3 transition ${
                   r.id === highlightId
-                    ? "border-amber-300 ring-2 ring-amber-300 dark:border-amber-700 dark:ring-amber-700"
-                    : "border-zinc-200 dark:border-zinc-800"
+                    ? "border-amber-300 bg-white ring-2 ring-amber-300 dark:border-amber-700 dark:bg-zinc-900 dark:ring-amber-700"
+                    : selected.has(r.id)
+                    ? "border-amber-400 bg-amber-50/60 ring-1 ring-amber-300 dark:border-amber-700 dark:bg-amber-950/20 dark:ring-amber-800"
+                    : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
                 }`}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(r.id)}
-                      disabled={!isSelectable(r)}
-                      onChange={() => toggleOne(r.id)}
-                      className="h-4 w-4 cursor-pointer disabled:cursor-not-allowed disabled:opacity-30"
-                    />
+                  {isSelectable(r) ? (
+                    <label className="-m-1.5 flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md p-1.5 active:bg-amber-50 dark:active:bg-amber-950/30">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(r.id)}
+                        onChange={() => toggleOne(r.id)}
+                        className="h-5 w-5 shrink-0 cursor-pointer accent-amber-600"
+                      />
+                      <span className="shrink-0 text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                        {selected.has(r.id) ? "已選取" : "選取"}
+                      </span>
+                      <span
+                        className={`inline-flex shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${ACTION_COLOR[r.owner_action] ?? ACTION_COLOR.none}`}
+                      >
+                        {ACTION_LABEL[r.owner_action] ?? r.owner_action}
+                      </span>
+                    </label>
+                  ) : (
                     <span
                       className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${ACTION_COLOR[r.owner_action] ?? ACTION_COLOR.none}`}
+                      title="已排程或已採用，不可批次排程"
                     >
                       {ACTION_LABEL[r.owner_action] ?? r.owner_action}
                     </span>
-                  </div>
-                  <span className="text-[11px] text-zinc-400">{fmt(r.created_at)}</span>
+                  )}
+                  <span className="shrink-0 text-[11px] text-zinc-400">{fmt(r.created_at)}</span>
                 </div>
 
                 <div className="mt-2 flex items-baseline gap-1.5">
