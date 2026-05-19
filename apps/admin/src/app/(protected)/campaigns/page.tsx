@@ -117,6 +117,9 @@ export default function CampaignsListPage() {
   // 多選 + 批次操作
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkBusy, setBulkBusy] = useState<"open" | "closed" | "cancelled" | null>(null);
+  const [endAtOpen, setEndAtOpen] = useState(false);
+  const [bulkEndAt, setBulkEndAt] = useState("");
+  const [endAtErr, setEndAtErr] = useState<string | null>(null);
 
   const [view, setView] = useState<View>(() => {
     if (typeof window === "undefined") return "list";
@@ -160,6 +163,32 @@ export default function CampaignsListPage() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBulkBusy(null);
+    }
+  }
+
+  async function bulkSetEndAt() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setEndAtErr(null);
+    if (!bulkEndAt) { setEndAtErr("請選擇收單時間"); return; }
+    const iso = new Date(bulkEndAt).toISOString();
+    try {
+      const { data, error: err } = await getSupabase().rpc("rpc_bulk_set_campaign_end_at", {
+        p_ids: ids,
+        p_end_at: iso,
+      });
+      if (err) throw err;
+      const changed = typeof data === "number" ? data : 0;
+      const skipped = ids.length - changed;
+      setSelectedIds(new Set());
+      setEndAtOpen(false);
+      setBulkEndAt("");
+      setReloadTick((t) => t + 1);
+      if (skipped > 0) {
+        console.info(`bulk_set_campaign_end_at: ${changed} updated, ${skipped} skipped`);
+      }
+    } catch (e) {
+      setEndAtErr(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -599,6 +628,13 @@ export default function CampaignsListPage() {
             {bulkBusy === "cancelled" ? "取消中…" : "批次取消"}
           </SpinButton>
           <SpinButton
+            onClick={() => { setEndAtErr(null); setBulkEndAt(""); setEndAtOpen(true); }}
+            disabled={bulkBusy !== null}
+            className="rounded-md bg-blue-100 px-3 py-1.5 text-sm font-medium text-blue-800 hover:bg-blue-200 disabled:opacity-50 dark:bg-blue-950 dark:text-blue-300 dark:hover:bg-blue-900"
+          >
+            批次設定收單時間
+          </SpinButton>
+          <SpinButton
             onClick={() => setSelectedIds(new Set())}
             className="ml-auto text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
           >
@@ -784,6 +820,47 @@ export default function CampaignsListPage() {
             onClose={() => setShowRecurring(false)}
             onCreated={() => { setShowRecurring(false); setReloadTick((t) => t + 1); }}
           />
+        )}
+      </Modal>
+
+      <Modal
+        open={endAtOpen}
+        onClose={() => setEndAtOpen(false)}
+        title="批次設定收單時間"
+        maxWidth="max-w-md"
+      >
+        {endAtOpen && (
+          <div className="space-y-4">
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">
+              將套用到已選的 <span className="font-semibold">{selectedIds.size}</span> 個開團。
+              僅「草稿 / 開團中」會被更新；已收單（含之後）會自動略過。
+            </p>
+            <label className="block text-sm">
+              <span className="text-zinc-600 dark:text-zinc-400">新收單時間</span>
+              <input
+                type="datetime-local"
+                value={bulkEndAt}
+                onChange={(e) => setBulkEndAt(e.target.value)}
+                className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                aria-label="新收單時間"
+              />
+            </label>
+            {endAtErr && <p className="text-xs text-rose-600">{endAtErr}</p>}
+            <div className="flex justify-end gap-2 pt-2">
+              <SpinButton
+                onClick={() => setEndAtOpen(false)}
+                className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                取消
+              </SpinButton>
+              <SpinButton
+                onClick={bulkSetEndAt}
+                className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900"
+              >
+                確定套用
+              </SpinButton>
+            </div>
+          </div>
         )}
       </Modal>
 
