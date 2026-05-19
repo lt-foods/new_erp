@@ -3,6 +3,9 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
+import { Modal } from "@/components/Modal";
+import SpinButton from "@/components/SpinButton";
+import { translateRpcError } from "@/lib/rpcError";
 
 type Row = {
   id: number;
@@ -19,9 +22,34 @@ type Row = {
   locked_at: string | null;
 };
 
-export function CampaignItemsTable({ campaignId }: { campaignId: number }) {
+type ResyncPreview = {
+  campaign_no: string;
+  name_before: string;
+  name_after: string;
+  name_changed: boolean;
+  items: { sku_id: number; sku_code: string; old_price: number; new_price: number }[];
+  items_repriced: number;
+  skus_added: number;
+  pending_orders: number;
+  pending_order_lines: number;
+  amount_before: number;
+  amount_after: number;
+};
+
+export function CampaignItemsTable({
+  campaignId,
+  status,
+  onResynced,
+}: {
+  campaignId: number;
+  status?: string;
+  onResynced?: () => void;
+}) {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [preview, setPreview] = useState<ResyncPreview | null>(null);
+  const [resyncErr, setResyncErr] = useState<string | null>(null);
+  const canResync = status === "draft" || status === "open";
 
   const reload = async () => {
     // products.name 是 source of truth；skus.product_name 是 denorm 可能過期、不用它
@@ -58,6 +86,35 @@ export function CampaignItemsTable({ campaignId }: { campaignId: number }) {
 
   useEffect(() => { reload(); }, [campaignId]);
 
+  const runPreview = async () => {
+    setResyncErr(null);
+    const { data, error: err } = await getSupabase().rpc(
+      "rpc_resync_campaign_from_product",
+      { p_campaign_id: campaignId, p_dry_run: true },
+    );
+    if (err) { setResyncErr(translateRpcError(err)); return; }
+    setPreview(data as ResyncPreview);
+  };
+
+  const runApply = async () => {
+    setResyncErr(null);
+    const { error: err } = await getSupabase().rpc(
+      "rpc_resync_campaign_from_product",
+      { p_campaign_id: campaignId, p_dry_run: false },
+    );
+    if (err) { setResyncErr(translateRpcError(err)); return; }
+    setPreview(null);
+    await reload();
+    onResynced?.();
+  };
+
+  const hasChanges = !!preview && (
+    preview.name_changed ||
+    preview.items_repriced > 0 ||
+    preview.skus_added > 0 ||
+    preview.pending_order_lines > 0
+  );
+
   const anyLocked = (rows ?? []).some((r) => !!r.locked_at);
   const earliestLock = (rows ?? [])
     .map((r) => r.locked_at)
@@ -78,8 +135,23 @@ export function CampaignItemsTable({ campaignId }: { campaignId: number }) {
             </span>
           )}
         </div>
-        <span className="text-xs text-zinc-500">{rows?.length ?? 0} 項</span>
+        <div className="flex items-center gap-3">
+          {canResync && (
+            <SpinButton
+              onClick={runPreview}
+              title="從商品現行零售價重新同步開團名稱、單價，並回填本團『待確認』訂單金額"
+              className="rounded-md border border-blue-300 px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950"
+            >
+              重新同步商品/價格
+            </SpinButton>
+          )}
+          <span className="text-xs text-zinc-500">{rows?.length ?? 0} 項</span>
+        </div>
       </div>
+
+      {resyncErr && (
+        <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">{resyncErr}</div>
+      )}
 
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">{error}</div>
@@ -126,6 +198,101 @@ export function CampaignItemsTable({ campaignId }: { campaignId: number }) {
           </tbody>
         </table>
       </div>
+
+      <Modal
+        open={!!preview}
+        onClose={() => setPreview(null)}
+        title="重新同步商品/價格 — 預覽"
+        maxWidth="max-w-2xl"
+      >
+        {preview && (
+          <div className="space-y-4 text-sm">
+            {resyncErr && (
+              <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">{resyncErr}</div>
+            )}
+            <p className="text-xs text-zinc-500">
+              從商品現行零售價同步開團 #{preview.campaign_no}。確認前不會寫入任何資料。
+            </p>
+
+            {preview.name_changed && (
+              <div className="rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
+                <div className="mb-1 text-xs font-medium text-zinc-500">開團名稱</div>
+                <div className="line-through text-zinc-400">{preview.name_before}</div>
+                <div className="font-semibold">{preview.name_after}</div>
+              </div>
+            )}
+
+            {preview.items.length > 0 && (
+              <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+                <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+                  <thead className="bg-zinc-50 dark:bg-zinc-900">
+                    <tr>
+                      <Th>規格</Th>
+                      <Th className="text-right">原單價</Th>
+                      <Th className="text-right">新單價</Th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                    {preview.items.map((it) => (
+                      <tr key={it.sku_id}>
+                        <Td className="font-mono">{it.sku_code}</Td>
+                        <Td className="text-right font-mono text-zinc-400 line-through">
+                          ${Number(it.old_price)}
+                        </Td>
+                        <Td className="text-right font-mono font-semibold">
+                          ${Number(it.new_price)}
+                        </Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <ul className="space-y-1 text-xs text-zinc-600 dark:text-zinc-300">
+              <li>商品明細重新定價：<b>{preview.items_repriced}</b> 項</li>
+              <li>補上缺漏的 active 規格：<b>{preview.skus_added}</b> 項</li>
+              <li>
+                回填「待確認」訂單：<b>{preview.pending_orders}</b> 筆訂單／
+                <b>{preview.pending_order_lines}</b> 項明細
+              </li>
+              <li>
+                待確認訂單金額：
+                <span className="font-mono text-zinc-400 line-through">
+                  ${Number(preview.amount_before).toLocaleString()}
+                </span>
+                {" → "}
+                <span className="font-mono font-semibold">
+                  ${Number(preview.amount_after).toLocaleString()}
+                </span>
+              </li>
+            </ul>
+
+            {!hasChanges && (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300">
+                已是最新，無需變更。
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+              <SpinButton
+                onClick={() => setPreview(null)}
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                取消
+              </SpinButton>
+              {hasChanges && (
+                <SpinButton
+                  onClick={runApply}
+                  className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
+                >
+                  確認同步
+                </SpinButton>
+              )}
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

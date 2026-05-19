@@ -111,6 +111,7 @@ export default function CampaignsListPage() {
   const [listOrderCounts, setListOrderCounts] = useState<Map<number, { normalQty: number; offsetQty: number }>>(new Map());
   const [modal, setModal] = useState<{ mode: "edit"; values: CampaignFormValues } | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
+  const [resyncTick, setResyncTick] = useState(0);
   const [closingId, setClosingId] = useState<number | null>(null);
   const [finalizingId, setFinalizingId] = useState<number | null>(null);
 
@@ -872,7 +873,11 @@ export default function CampaignsListPage() {
       >
         {modal && (
           <div className="space-y-6">
-            <CampaignItemsTable campaignId={modal.values.id!} />
+            <CampaignItemsTable
+              campaignId={modal.values.id!}
+              status={modal.values.status}
+              onResynced={() => { setResyncTick((t) => t + 1); setReloadTick((t) => t + 1); }}
+            />
             <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">
               <CampaignForm
                 initial={modal.values}
@@ -881,7 +886,7 @@ export default function CampaignsListPage() {
               />
             </div>
             <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">
-              <CampaignOrdersPanel campaignId={modal.values.id!} />
+              <CampaignOrdersPanel key={resyncTick} campaignId={modal.values.id!} />
             </div>
           </div>
         )}
