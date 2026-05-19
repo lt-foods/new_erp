@@ -24,6 +24,7 @@ type StaffRow = {
 type Store = { id: number; code: string; name: string };
 
 type Modal =
+  | { mode: "create" }
   | { mode: "role"; row: StaffRow }
   | { mode: "stores"; row: StaffRow }
   | { mode: "disable"; row: StaffRow }
@@ -81,11 +82,19 @@ export default function StaffPage() {
         <div>
           <h1 className="text-lg font-semibold">員工管理</h1>
           <p className="mt-1 text-xs text-zinc-500">
-            管理員工角色與綁定店家。員工帳號需先由 Supabase Dashboard 建立後才會在此列出。
+            管理員工角色與綁定店家。可直接「新增員工」建立帳號，系統會產生一次性臨時密碼交付給對方。
           </p>
         </div>
-        <div className="text-xs text-zinc-500">
-          目前身份：<RoleChip role={role} />
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-zinc-500">
+            目前身份：<RoleChip role={role} />
+          </span>
+          <SpinButton
+            onClick={() => setModal({ mode: "create" })}
+            className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900"
+          >
+            新增員工
+          </SpinButton>
         </div>
       </header>
 
@@ -187,6 +196,14 @@ export default function StaffPage() {
         </TBody>
       </Table>
 
+      {modal?.mode === "create" && (
+        <CreateStaffModal
+          stores={stores}
+          isOwnerCaller={isOwner}
+          onClose={() => setModal(null)}
+          onSaved={() => { setModal(null); reload(); }}
+        />
+      )}
       {modal?.mode === "role" && (
         <RoleModal
           row={modal.row}
@@ -356,6 +373,159 @@ function DisableModal({
         <div className="flex justify-end gap-2 pt-2">
           <SpinButton onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">取消</SpinButton>
           <SpinButton onClick={confirm} className="rounded-md bg-rose-600 px-3 py-2 text-sm font-medium text-white hover:bg-rose-700">確認停用</SpinButton>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function CreateStaffModal({
+  stores, isOwnerCaller, onClose, onSaved,
+}: {
+  stores: Store[]; isOwnerCaller: boolean;
+  onClose: () => void; onSaved: () => void;
+}) {
+  const grantable = ALL_ROLES.filter((r) => {
+    if (r === "disabled") return false;
+    if (!isOwnerCaller && r === "owner") return false;
+    return true;
+  });
+  const [email, setEmail] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [newRole, setNewRole] = useState<StaffRole>(
+    (grantable.find((r) => r === "store_staff") ?? grantable[0]) as StaffRole,
+  );
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [err, setErr] = useState<string | null>(null);
+  const [result, setResult] = useState<{ email: string; temp_password: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  function toggle(name: string) {
+    setSel((s) => {
+      const n = new Set(s);
+      if (n.has(name)) n.delete(name); else n.add(name);
+      return n;
+    });
+  }
+
+  async function save() {
+    setErr(null);
+    const e = email.trim().toLowerCase();
+    if (!e || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) { setErr("請輸入有效 Email"); return; }
+    if (!displayName.trim()) { setErr("請輸入顯示名"); return; }
+    const { data, error } = await getSupabase().functions.invoke<{
+      ok?: boolean; error?: string; email?: string; temp_password?: string;
+    }>("staff-create", {
+      body: { email: e, display_name: displayName.trim(), role: newRole, stores: Array.from(sel) },
+    });
+    if (error) {
+      let msg = error.message ?? "建立失敗";
+      try {
+        const ctx = (error as { context?: Response }).context;
+        if (ctx && typeof ctx.json === "function") {
+          const j = await ctx.json();
+          if (j?.error) msg = j.error as string;
+        }
+      } catch { /* 保留原訊息 */ }
+      setErr(msg);
+      return;
+    }
+    if (!data?.ok || !data.temp_password) { setErr(data?.error ?? "建立失敗"); return; }
+    setResult({ email: data.email ?? e, temp_password: data.temp_password });
+  }
+
+  async function copyPw() {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(result.temp_password);
+      setCopied(true);
+    } catch { /* 使用者可手動選取複製 */ }
+  }
+
+  if (result) {
+    return (
+      <Modal open onClose={onSaved} title="員工已建立" maxWidth="max-w-md">
+        <div className="space-y-3 p-5">
+          <p className="text-sm text-zinc-700 dark:text-zinc-300">
+            <b>{result.email}</b> 帳號已建立。請把以下一次性臨時密碼交付給對方，
+            <b className="text-rose-600">只顯示這一次</b>，關閉後無法再查看。
+          </p>
+          <div className="flex items-center gap-2 rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2 dark:border-zinc-700 dark:bg-zinc-800">
+            <code className="flex-1 select-all break-all font-mono text-sm">{result.temp_password}</code>
+            <button
+              type="button"
+              onClick={copyPw}
+              className="shrink-0 rounded border border-zinc-300 px-2 py-1 text-xs hover:bg-white dark:border-zinc-600 dark:hover:bg-zinc-700"
+            >
+              {copied ? "已複製" : "複製"}
+            </button>
+          </div>
+          <p className="text-[11px] text-zinc-500">
+            員工用此 Email + 臨時密碼登入後台；建議首次登入後盡快重設密碼。改完角色/綁店員工需重新登入才會生效。
+          </p>
+          <div className="flex justify-end pt-2">
+            <SpinButton onClick={onSaved} className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900">完成</SpinButton>
+          </div>
+        </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal open onClose={onClose} title="新增員工" maxWidth="max-w-md">
+      <div className="space-y-3 p-5">
+        <label className="block text-sm">
+          <span className="text-zinc-600 dark:text-zinc-400">Email</span>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="staff@example.com"
+            className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="text-zinc-600 dark:text-zinc-400">顯示名</span>
+          <input
+            type="text"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="王小明"
+            className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+          />
+        </label>
+        <label className="block text-sm">
+          <span className="text-zinc-600 dark:text-zinc-400">角色</span>
+          <select
+            value={newRole}
+            onChange={(e) => setNewRole(e.target.value as StaffRole)}
+            className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+          >
+            {grantable.map((r) => <option key={r} value={r}>{roleLabel(r)}</option>)}
+          </select>
+        </label>
+        <div className="text-sm">
+          <span className="text-zinc-600 dark:text-zinc-400">綁定店</span>
+          <label className="mt-1 flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-700">
+            <input type="checkbox" checked={sel.has("總倉")} onChange={() => toggle("總倉")} className="h-4 w-4" />
+            <span className="font-medium">總倉</span>
+            <span className="text-[11px] text-zinc-500">（HQ 帳號 — 可看全部）</span>
+          </label>
+          <div className="mt-2 grid max-h-56 grid-cols-2 gap-2 overflow-y-auto">
+            {stores.map((s) => (
+              <label key={s.id} className="flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-700">
+                <input type="checkbox" checked={sel.has(s.name)} onChange={() => toggle(s.name)} className="h-4 w-4" />
+                <span>{s.name}</span>
+                <span className="ml-auto text-[10px] text-zinc-400">{s.code}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <p className="text-[11px] text-zinc-500">建立後系統會產生一次性臨時密碼（下一步顯示）。</p>
+        {err && <p className="text-xs text-rose-600">{err}</p>}
+        <div className="flex justify-end gap-2 pt-2">
+          <SpinButton onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">取消</SpinButton>
+          <SpinButton onClick={save} className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900">建立</SpinButton>
         </div>
       </div>
     </Modal>
