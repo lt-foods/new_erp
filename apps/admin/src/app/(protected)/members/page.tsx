@@ -31,6 +31,7 @@ type MemberRow = {
   last_visit_at: string | null;
   external_source: string | null;
   external_id: string | null;
+  line_user_id: string | null;
   home_store_id: number | null;
   takeout_store_name_hint: string | null;
 };
@@ -136,7 +137,7 @@ function MembersListBody() {
       try {
         let q = getSupabase()
           .from("members")
-          .select("id, member_no, name, phone, avatar_url, tier_id, status, updated_at, joined_at, last_visit_at, external_source, external_id, home_store_id, takeout_store_name_hint", { count: "exact" })
+          .select("id, member_no, name, phone, avatar_url, tier_id, status, updated_at, joined_at, last_visit_at, external_source, external_id, line_user_id, home_store_id, takeout_store_name_hint", { count: "exact" })
           .order(sortBy, { ascending: sortDir === "asc" })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
@@ -369,6 +370,22 @@ function MembersListBody() {
                           className="text-[12px] leading-none"
                         >
                           🔔
+                        </span>
+                      )}
+                      {r.line_user_id && (
+                        <span
+                          title="已綁定 LINE"
+                          aria-label="已綁定 LINE"
+                          className="inline-flex shrink-0 leading-none"
+                        >
+                          <svg
+                            viewBox="0 0 24 24"
+                            className="h-4 w-4"
+                            fill="#06C755"
+                            aria-hidden
+                          >
+                            <path d="M12 2C6.486 2 2 5.65 2 10.137c0 4.022 3.558 7.39 8.363 8.026.326.07.769.215.881.494.101.252.066.646.032.901 0 0-.117.705-.142.853-.043.252-.2.986.864.538 1.064-.449 5.74-3.38 7.831-5.787C21.276 13.49 22 11.91 22 10.137 22 5.65 17.514 2 12 2z" />
+                          </svg>
                         </span>
                       )}
                     </div>
