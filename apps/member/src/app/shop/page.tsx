@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { consumeFragmentToSession, getSession } from "@/lib/session";
@@ -10,37 +10,102 @@ import PullToRefresh from "@/components/PullToRefresh";
 import CampaignCard, { type CampaignSummary } from "@/components/CampaignCard";
 import Countdown from "@/components/Countdown";
 
+type SortKey = "new" | "hot" | "recent";
+
+/**
+ * 模組層快取：client 端 SPA 導航（/shop ↔ /shop/c/[id]）期間都存活，
+ * 「進詳情再返回」時列表瞬間還原（資料 + 排序 + 捲動位置）——不 remount
+ * 重抓、不閃 skeleton、不歸零。整頁 hard reload 才清空（屆時本就該抓新）。
+ *
+ * 為何不是 next.config 的 staleTimes：那只快取 server payload，不保留
+ * client 端 useState；返回仍會 remount→useEffect 重抓，治不了這個症狀。
+ */
+type ShopCache = {
+  campaigns: CampaignSummary[];
+  sortBy: SortKey;
+  scrollY: number;
+  ts: number;
+};
+let shopCache: ShopCache | null = null;
+// 返回時若資料已超過這個毫秒數，背景靜默重抓（不擋畫面、不動捲動）。
+const SHOP_REVALIDATE_MS = 60_000;
+
+// useLayoutEffect 在 SSR/prerender 會噪 warning；只有 client 端用它，
+// 才能在 paint 前還原捲動（避免先閃到頂端再跳）。
+const useIsoLayoutEffect =
+  typeof window !== "undefined" ? useLayoutEffect : useEffect;
+
 export default function ShopPage() {
   const router = useRouter();
-  const [campaigns, setCampaigns] = useState<CampaignSummary[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [campaigns, setCampaigns] = useState<CampaignSummary[]>(
+    () => shopCache?.campaigns ?? [],
+  );
+  const [loading, setLoading] = useState(() => shopCache == null);
   const [err, setErr] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<"new" | "hot" | "recent">("new");
+  const [sortBy, setSortBy] = useState<SortKey>(
+    () => shopCache?.sortBy ?? "new",
+  );
 
-  const fetchCampaigns = useCallback(async () => {
-    const s = getSession();
-    if (!s || !s.memberId) {
-      router.replace("/");
-      return;
-    }
-    setErr(null);
-    try {
-      const d = await callLiffApi<{ campaigns: CampaignSummary[] }>(s.token, {
-        action: "list_active_campaigns",
-      });
-      setCampaigns(d.campaigns);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    }
-  }, [router]);
+  const fetchCampaigns = useCallback(
+    async (silent = false) => {
+      const s = getSession();
+      if (!s || !s.memberId) {
+        router.replace("/");
+        return;
+      }
+      if (!silent) setErr(null);
+      try {
+        const d = await callLiffApi<{ campaigns: CampaignSummary[] }>(s.token, {
+          action: "list_active_campaigns",
+        });
+        setCampaigns(d.campaigns);
+        shopCache = {
+          campaigns: d.campaigns,
+          sortBy: shopCache?.sortBy ?? "new",
+          scrollY: shopCache?.scrollY ?? 0,
+          ts: Date.now(),
+        };
+      } catch (e) {
+        // 背景重抓失敗時不蓋掉已顯示的快取內容
+        if (!silent) setErr(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [router],
+  );
 
+  // 首次進站才抓 + 顯示 skeleton；從詳情返回時用快取瞬間還原，
+  // 只有資料偏舊才背景靜默更新。
   useEffect(() => {
     consumeFragmentToSession();
-    (async () => {
-      await fetchCampaigns();
-      setLoading(false);
-    })();
+    if (shopCache == null) {
+      (async () => {
+        await fetchCampaigns();
+        setLoading(false);
+      })();
+    } else if (Date.now() - shopCache.ts > SHOP_REVALIDATE_MS) {
+      void fetchCampaigns(true);
+    }
   }, [fetchCampaigns]);
+
+  // 返回時把捲動位置還原到離開前（paint 前做，無閃動）。
+  useIsoLayoutEffect(() => {
+    if (shopCache && shopCache.campaigns.length > 0) {
+      window.scrollTo(0, shopCache.scrollY);
+    }
+  }, []);
+
+  // 持續記錄捲動位置與排序，供下次返回還原。
+  useEffect(() => {
+    const onScroll = () => {
+      if (shopCache) shopCache.scrollY = window.scrollY;
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => {
+    if (shopCache) shopCache.sortBy = sortBy;
+  }, [sortBy]);
 
   // 前端防線：擋掉內部 sentinel 活動（campaign_no 以 __ 開頭，如
   // __INTERNAL_RESTOCK__「【內部】補貨申請」）。後端 liff-api 也有濾，
