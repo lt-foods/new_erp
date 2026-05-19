@@ -5,9 +5,13 @@
 --   使用者要求（2026-05-20）：重新同步只給管理員，hq_manager / hq_accountant
 --   / 店家一律拒絕（UI 藏鈕同時 server-side 也要 enforce）。
 --
---   本 migration 以 CREATE OR REPLACE 重貼整個函式，唯一實質差異是權限那行：
---     舊：v_role NOT IN ('owner','admin','hq_manager','hq_accountant','')
---     新：v_role NOT IN ('owner','admin','')          ← '' = legacy/dev admin
+--   本 migration 以 CREATE OR REPLACE 重貼整個函式，兩處差異：
+--     1. 權限收緊：v_role NOT IN ('owner','admin','')  ← '' = legacy/dev admin
+--        （10 是 HQ：含 hq_manager/hq_accountant）
+--     2. 修 role 讀取路徑 BUG：10（及 8f56463）誤用 auth.jwt() ->> 'role'，
+--        該頂層 claim 對登入者一律是 'authenticated' → 連管理員都被擋。
+--        改讀 auth.jwt() -> 'app_metadata' ->> 'role'（canonical，
+--        對齊 20260502010000 / 20260513000007 / 20260605000004）。
 --   其餘行為（draft/open 限定、active SKU 缺零售價拒跑不寫 0、待確認訂單
 --   回填、dry_run 預覽、稽核）與 10 完全相同。
 --
@@ -26,7 +30,9 @@ SET search_path = public
 AS $$
 DECLARE
   v_tenant    UUID := (auth.jwt() ->> 'tenant_id')::uuid;
-  v_role      TEXT := COALESCE(auth.jwt() ->> 'role','');
+  -- ⚠ 業務 role 在 app_metadata.role；JWT 頂層 role 對 admin 是 'authenticated'
+  -- （沿用 20260502010000 / 20260513000007 等的 canonical path，別用 auth.jwt()->>'role'）
+  v_role      TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
   v_op        UUID := COALESCE(p_operator, auth.uid());
   v_camp      group_buy_campaigns%ROWTYPE;
   v_prod_name TEXT;
