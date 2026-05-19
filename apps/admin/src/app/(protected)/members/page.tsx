@@ -15,7 +15,7 @@ import type { OrderStatus } from "@/lib/orderStatus";
 const PENDING_STATUSES: OrderStatus[] = ["pending", "confirmed", "shipping", "ready"];
 
 type Status = "active" | "inactive" | "blocked" | "merged" | "deleted";
-type SortKey = "updated_at" | "member_no" | "name" | "home_store_id" | "joined_at" | "last_visit_at" | "external_source";
+type SortKey = "updated_at" | "name" | "home_store_id" | "joined_at" | "last_visit_at" | "external_source";
 type SortDir = "asc" | "desc";
 
 type MemberRow = {
@@ -301,7 +301,6 @@ function MembersListBody() {
 
       <Table>
         <THead>
-          <ThSort label="編號" col="member_no" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
           <ThSort label="姓名" col="name" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
           <ThSort label="取貨店" col="home_store_id" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
           <Th>手機</Th>
@@ -315,9 +314,9 @@ function MembersListBody() {
         </THead>
         <TBody>
           {rows === null ? (
-            <SkeletonRows cols={11} />
+            <SkeletonRows cols={10} />
           ) : rows.length === 0 ? (
-            <EmptyRow colSpan={11}>
+            <EmptyRow colSpan={10}>
               {total === 0 && !query ? "還沒有會員，按「新增會員」開始建立。" : "沒有符合條件的會員。"}
             </EmptyRow>
           ) : (
@@ -330,20 +329,6 @@ function MembersListBody() {
                   onClick={() => setModal({ mode: "detail", memberId: r.id, memberNo: r.member_no })}
                   className="cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
                 >
-                  <Td className="font-mono">
-                    <SpinButton
-                      onClick={() => setModal({ mode: "detail", memberId: r.id, memberNo: r.member_no })}
-                      className={r.status === "merged" || r.status === "deleted" ? "text-zinc-400 hover:underline" : "hover:underline"}
-                    >
-                      {r.member_no}
-                    </SpinButton>
-                    {r.status === "merged" && (
-                      <span className="ml-2 rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] font-normal text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300">已合併</span>
-                    )}
-                    {r.status === "deleted" && (
-                      <span className="ml-2 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-normal text-red-700 dark:bg-red-950 dark:text-red-300">已刪除</span>
-                    )}
-                  </Td>
                   <Td>
                     <div className="flex items-center gap-2">
                       {r.avatar_url ? (
@@ -354,39 +339,38 @@ function MembersListBody() {
                           {r.name?.[0] ?? "?"}
                         </div>
                       )}
-                      <span>{r.name ?? "—"}</span>
+                      <span className={r.status === "merged" || r.status === "deleted" ? "text-zinc-400" : ""}>
+                        {r.name ?? "—"}
+                      </span>
                       {r.external_source === "lele" && (
                         <span
                           title={r.external_id ? `樂樂顧客代號 ${r.external_id}` : "樂樂匯入"}
-                          className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-normal text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                          className="whitespace-nowrap rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-normal text-amber-700 dark:bg-amber-950 dark:text-amber-300"
                         >
                           樂樂
-                        </span>
-                      )}
-                      {pushSet.has(r.id) && (
-                        <span
-                          title="已安裝 App 並開啟通知"
-                          aria-label="已安裝 App 並開啟通知"
-                          className="text-[12px] leading-none"
-                        >
-                          🔔
                         </span>
                       )}
                       {r.line_user_id && (
                         <span
                           title="已綁定 LINE"
-                          aria-label="已綁定 LINE"
-                          className="inline-flex shrink-0 leading-none"
+                          className="whitespace-nowrap rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-normal text-green-700 dark:bg-green-950 dark:text-green-300"
                         >
-                          <svg
-                            viewBox="0 0 24 24"
-                            className="h-4 w-4"
-                            fill="#06C755"
-                            aria-hidden
-                          >
-                            <path d="M12 2C6.486 2 2 5.65 2 10.137c0 4.022 3.558 7.39 8.363 8.026.326.07.769.215.881.494.101.252.066.646.032.901 0 0-.117.705-.142.853-.043.252-.2.986.864.538 1.064-.449 5.74-3.38 7.831-5.787C21.276 13.49 22 11.91 22 10.137 22 5.65 17.514 2 12 2z" />
-                          </svg>
+                          LINE
                         </span>
+                      )}
+                      {pushSet.has(r.id) && (
+                        <span
+                          title="已安裝 App 並開啟通知"
+                          className="whitespace-nowrap rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-normal text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                        >
+                          通知
+                        </span>
+                      )}
+                      {r.status === "merged" && (
+                        <span className="whitespace-nowrap rounded bg-zinc-200 px-1.5 py-0.5 text-[10px] font-normal text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300">已合併</span>
+                      )}
+                      {r.status === "deleted" && (
+                        <span className="whitespace-nowrap rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-normal text-red-700 dark:bg-red-950 dark:text-red-300">已刪除</span>
                       )}
                     </div>
                   </Td>
