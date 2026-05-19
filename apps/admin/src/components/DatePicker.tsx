@@ -65,20 +65,27 @@ export function DatePicker({
         {value || <span className="text-zinc-400">{placeholder}</span>}
       </SpinButton>
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-1 rounded-md border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-800 dark:bg-zinc-900">
-          <DayPicker
-            mode="single"
-            selected={selected}
-            onSelect={(d) => {
-              if (d) {
-                onChange(formatLocal(d));
-                setOpen(false);
-              }
-            }}
-            disabled={disabledMatchers.length > 0 ? disabledMatchers : undefined}
-            weekStartsOn={0}
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-black/20 sm:hidden"
+            aria-hidden="true"
+            onClick={() => setOpen(false)}
           />
-        </div>
+          <div className="fixed left-1/2 top-1/2 z-50 max-h-[85vh] max-w-[calc(100vw-1.5rem)] -translate-x-1/2 -translate-y-1/2 overflow-auto rounded-md border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-800 dark:bg-zinc-900 sm:absolute sm:left-0 sm:right-auto sm:top-full sm:mt-1 sm:max-h-none sm:max-w-none sm:translate-x-0 sm:translate-y-0 sm:overflow-visible">
+            <DayPicker
+              mode="single"
+              selected={selected}
+              onSelect={(d) => {
+                if (d) {
+                  onChange(formatLocal(d));
+                  setOpen(false);
+                }
+              }}
+              disabled={disabledMatchers.length > 0 ? disabledMatchers : undefined}
+              weekStartsOn={0}
+            />
+          </div>
+        </>
       )}
     </div>
   );
