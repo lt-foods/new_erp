@@ -252,11 +252,13 @@ export default function MePage() {
                     🔔 已啟用通知
                   </span>
                 )}
-                {/* 顯示目前所在門市（JWT store）；home_store_name 是註冊店、LIFF 不更新，
-                    用它會永遠顯示舊店。overview 失敗時才回退 home_store_name。 */}
-                {(overview?.store.name ?? me.home_store_name) && (
+                {/* 取貨店 = members.home_store_id（admin 設、place_member_order 實際取貨依據）。
+                    刻意不用 overview/JWT store：那是「這次從哪個 OA 進來」，跟實際取貨店常不一致，
+                    且 admin 改店後永遠不同步、反而誤導會員。改抓 home_store_name 後，admin 改店、
+                    會員重開 /me（get_me 即時讀）就同步。 */}
+                {me.home_store_name && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-[#7676801f] px-2.5 py-[3px] text-[12px] font-medium text-[var(--secondary-label)]">
-                    📍 {overview?.store.name ?? me.home_store_name}
+                    📍 取貨 {me.home_store_name}
                   </span>
                 )}
               </div>
