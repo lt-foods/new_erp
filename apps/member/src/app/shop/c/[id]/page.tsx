@@ -8,18 +8,7 @@ import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import Spinner, { LoadingScreen } from "@/components/Spinner";
 import Countdown from "@/components/Countdown";
-
-/** 清掉 legacy LINE 匯入殘留的佔位字 (emoji)/(heart)，並收斂多餘空白。
- *  刻意只動這兩個明確雜訊 token —— (A)/(B)/($)/（暗色）等是有意義內容，不碰。 */
-function cleanDescription(raw: string): string {
-  return raw
-    .replace(/\(heart\)/gi, "♥")
-    .replace(/\(emoji\)/gi, "")
-    .replace(/[ \t]{2,}/g, " ")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
+import { cleanCampaignText } from "@/lib/text";
 
 /** 把 children 渲染到 document.body（保證 fixed 相對 viewport）。 */
 function Portal({ enabled, children }: { enabled: boolean; children: React.ReactNode }) {
@@ -148,7 +137,7 @@ export default function CampaignDetailPage() {
   };
 
   return (
-    <PageShell title={campaign?.name ?? "商品"}>
+    <PageShell title={cleanCampaignText(campaign?.name) || "商品"}>
       <div className="space-y-4 px-0 pb-[160px]">
         {loading && <LoadingScreen />}
 
@@ -184,7 +173,7 @@ export default function CampaignDetailPage() {
             <div className="space-y-2 px-4">
               <div className="flex items-start justify-between gap-3">
                 <h1 className="flex-1 text-[26px] font-bold leading-tight text-[var(--foreground)]">
-                  {campaign.name}
+                  {cleanCampaignText(campaign.name)}
                 </h1>
                 {(() => {
                   const orderedQty = items.reduce(
@@ -200,7 +189,7 @@ export default function CampaignDetailPage() {
                 })()}
               </div>
               {campaign.description && (() => {
-                const desc = cleanDescription(campaign.description);
+                const desc = cleanCampaignText(campaign.description);
                 if (!desc) return null;
                 return (
                   <div className="rounded-2xl bg-[var(--card-bg)] p-4 shadow-[var(--shadow-card)]">
@@ -297,7 +286,7 @@ export default function CampaignDetailPage() {
       {/* Shopee 式選購 sheet — 規格 + 數量 + 大鈕送出，全在這個彈窗 */}
       <Portal enabled={mounted && sheetOpen && !!campaign}>
         <BuySheet
-          campaignName={campaign?.name ?? ""}
+          campaignName={cleanCampaignText(campaign?.name)}
           items={items}
           qtyMap={qtyMap}
           onQty={setQty}

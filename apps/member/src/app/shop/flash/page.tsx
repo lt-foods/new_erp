@@ -13,6 +13,7 @@ import CampaignCard, {
   type CampaignSummary,
 } from "@/components/CampaignCard";
 import Countdown from "@/components/Countdown";
+import { cleanCampaignText } from "@/lib/text";
 
 export default function FlashPage() {
   const router = useRouter();
@@ -144,7 +145,7 @@ function FlashRow({ campaign }: { campaign: CampaignSummary }) {
       </div>
       <div className="min-w-0 flex-1 space-y-1">
         <h3 className="line-clamp-2 text-[17px] font-semibold leading-tight text-[var(--foreground)]">
-          {campaign.name}
+          {cleanCampaignText(campaign.name)}
         </h3>
         <div className="flex items-baseline gap-2">
           <div className="text-[24px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">

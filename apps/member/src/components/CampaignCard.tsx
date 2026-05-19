@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import Countdown from "./Countdown";
+import { cleanCampaignText } from "@/lib/text";
 
 export type CampaignSummary = {
   id: number;
@@ -142,7 +143,7 @@ export default function CampaignCard({
         </div>
         <div className="space-y-1.5 px-4 py-3.5">
           <h3 className="text-[22px] font-bold leading-tight text-[var(--foreground)]">
-            {campaign.name}
+            {cleanCampaignText(campaign.name)}
           </h3>
           <div className="flex items-baseline justify-between gap-2">
             <span className="brand-gradient-text text-[28px] font-extrabold tabular-nums leading-none">
@@ -203,7 +204,7 @@ export default function CampaignCard({
       </div>
       <div className="space-y-1 px-3 py-2.5">
         <h3 className="line-clamp-2 min-h-[2.6em] text-[16px] font-semibold leading-tight text-[var(--foreground)]">
-          {campaign.name}
+          {cleanCampaignText(campaign.name)}
         </h3>
         {(() => {
           const remaining = campaignRemaining(campaign);

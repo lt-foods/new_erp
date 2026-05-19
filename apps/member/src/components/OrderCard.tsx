@@ -1,3 +1,5 @@
+import { cleanCampaignText } from "@/lib/text";
+
 export type OrderItem = {
   id: number;
   sku_id: number;
@@ -51,7 +53,7 @@ function fmtDate(iso: string | null | undefined): string {
 
 export default function OrderCard({ order }: { order: OrderRow }) {
   const totalQty = order.items.reduce((s, i) => s + Number(i.qty ?? 0), 0);
-  const title = order.campaign_name ?? "訂單";
+  const title = cleanCampaignText(order.campaign_name) || "訂單";
 
   return (
     <article className="card overflow-hidden">
