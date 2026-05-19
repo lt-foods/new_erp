@@ -419,3 +419,10 @@ verify_jwt = false
 # liff-session 不需要 Supabase 預設 JWT 驗（我們自己驗 LINE id_token）
 [functions.liff-session]
 verify_jwt = false
+
+# staff-create 由 admin 瀏覽器 functions.invoke 呼叫；函式內自行驗 caller JWT
+# (sb.auth.getUser) + owner/admin + tenant 檢查。Supabase 預設 verify_jwt=true
+# 會在 gateway 擋掉不帶 Authorization 的 CORS preflight(OPTIONS)，導致前端
+# 收到 "Failed to send a request to the Edge Function"。
+[functions.staff-create]
+verify_jwt = false
