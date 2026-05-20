@@ -14,6 +14,7 @@ import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/compone
 import { CampaignThumb } from "@/components/CampaignThumb";
 import { campaignCoverUrl, type CampaignCoverItem } from "@/lib/campaignCover";
 import FbPublishModal from "@/components/FbPublishModal";
+import { useRole, isAdmin } from "@/lib/role";
 
 // 共用: chunked fetch — bypass PostgREST max-rows 1000 cap
 // builder: 回 fresh query builder 的 factory (因為 .range() 後不能 reuse)
@@ -97,7 +98,20 @@ function addDays(d: Date, n: number): Date {
   return x;
 }
 
+function fmtDateTime(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  return `${yyyy}/${mm}/${dd} ${hh}:${mi}`;
+}
+
 export default function CampaignsListPage() {
+  const role = useRole();
+  const showAdminActions = isAdmin(role);
   const [rows, setRows] = useState<Row[] | null>(null);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -467,12 +481,14 @@ export default function CampaignsListPage() {
   // 操作鈕（編輯 / 加單 / 結單 / 結算）— 桌機表格與手機卡片共用，單一維護點
   const campaignActions = (r: Row) => (
     <>
-      <SpinButton
-        onClick={() => openEdit(r.id)}
-        className="text-xs text-blue-600 hover:underline dark:text-blue-400"
-      >
-        編輯
-      </SpinButton>
+      {showAdminActions && (
+        <SpinButton
+          onClick={() => openEdit(r.id)}
+          className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+        >
+          編輯
+        </SpinButton>
+      )}
       {r.status === "open" && (
         <Link
           href={`/campaigns/order-entry?id=${r.id}`}
@@ -481,7 +497,7 @@ export default function CampaignsListPage() {
           加單
         </Link>
       )}
-      {r.status === "open" && (
+      {showAdminActions && r.status === "open" && (
         <SpinButton
           onClick={() => closeCampaign(r.id, r.name)}
           disabled={closingId === r.id}
@@ -490,7 +506,7 @@ export default function CampaignsListPage() {
           {closingId === r.id ? "結單中…" : "結單"}
         </SpinButton>
       )}
-      {(["open", "closed", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
+      {showAdminActions && (["open", "closed", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
         <SpinButton
           onClick={() => setFbPublishId(r.id)}
           className="text-xs text-sky-600 hover:underline dark:text-sky-400"
@@ -611,6 +627,7 @@ export default function CampaignsListPage() {
           orderCounts={calOrderCounts}
           offsetCounts={calOffsetCounts}
           onPick={(id) => openEdit(id)}
+          showEdit={showAdminActions}
         />
       )}
 
@@ -691,9 +708,9 @@ export default function CampaignsListPage() {
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
               <span>
-                {r.start_at ? new Date(r.start_at).toLocaleDateString("zh-TW") : "—"}
+                {fmtDateTime(r.start_at)}
                 {" → "}
-                {r.end_at ? new Date(r.end_at).toLocaleDateString("zh-TW") : "—"}
+                {fmtDateTime(r.end_at)}
               </span>
               <span>取貨截止 {r.pickup_deadline ?? "—"}</span>
               <span>商品 {itemCounts.get(r.id) ?? 0}</span>
@@ -774,9 +791,9 @@ export default function CampaignsListPage() {
                   </span>
                 </Td>
                 <Td className="whitespace-nowrap text-xs text-zinc-500">
-                  {r.start_at ? new Date(r.start_at).toLocaleDateString("zh-TW") : "—"}
+                  {fmtDateTime(r.start_at)}
                   {" → "}
-                  {r.end_at ? new Date(r.end_at).toLocaleDateString("zh-TW") : "—"}
+                  {fmtDateTime(r.end_at)}
                 </Td>
                 <Td className="whitespace-nowrap text-xs">{r.pickup_deadline ?? "—"}</Td>
                 <Td align="right" className="font-mono">{itemCounts.get(r.id) ?? 0}</Td>
@@ -949,6 +966,7 @@ function CalendarView({
   orderCounts,
   offsetCounts,
   onPick,
+  showEdit,
 }: {
   view: View;
   rows: CalRow[] | null;
@@ -957,6 +975,7 @@ function CalendarView({
   orderCounts: Map<number, number>;
   offsetCounts: Map<number, number>;
   onPick: (id: number) => void;
+  showEdit: boolean;
 }) {
   if (rows === null) {
     return <div className="p-6 text-center text-sm text-zinc-500">載入中…</div>;
@@ -1026,6 +1045,7 @@ function CalendarView({
                     orderCount={orderCounts.get(r.id) ?? 0}
                     offsetCount={offsetCounts.get(r.id) ?? 0}
                     onPick={onPick}
+                    showEdit={showEdit}
                   />
                 ))}
               </div>
@@ -1090,6 +1110,7 @@ function CalendarView({
                     orderCount={orderCounts.get(r.id) ?? 0}
                     offsetCount={offsetCounts.get(r.id) ?? 0}
                     onPick={onPick}
+                    showEdit={showEdit}
                   />
                 ))}
                 {list.length > 3 && (
@@ -1398,6 +1419,7 @@ function CampaignCard({
   orderCount,
   offsetCount,
   onPick,
+  showEdit,
 }: {
   r: CalRow;
   compact?: boolean;
@@ -1405,6 +1427,7 @@ function CampaignCard({
   orderCount: number;
   offsetCount: number;
   onPick: (id: number) => void;
+  showEdit: boolean;
 }) {
   const statusBadgeColor: Record<Status, string> = {
     draft: "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200",
@@ -1507,12 +1530,14 @@ function CampaignCard({
             + 加單
           </Link>
         )}
-        <SpinButton
-          onClick={() => onPick(r.id)}
-          className="rounded border border-zinc-300 px-2 py-0.5 text-[11px] text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
-        >
-          編輯
-        </SpinButton>
+        {showEdit && (
+          <SpinButton
+            onClick={() => onPick(r.id)}
+            className="rounded border border-zinc-300 px-2 py-0.5 text-[11px] text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+          >
+            編輯
+          </SpinButton>
+        )}
       </div>
     </div>
   );
