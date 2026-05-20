@@ -10,13 +10,22 @@ import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultS
 import { ORDER_STATUSES, ORDER_STATUS_LABEL, type OrderStatus } from "@/lib/orderStatus";
 import SpinButton from "@/components/SpinButton";
 
+type CampaignStatus =
+  | "draft" | "open" | "closed" | "ordered" | "receiving" | "ready" | "completed" | "cancelled";
+
 type Campaign = {
   id: number;
   campaign_no: string;
   name: string;
+  status: CampaignStatus;
   start_at: string | null;
   end_at: string | null;
 };
+
+// 已過收單階段的狀態（在 pivot 視覺上標「已結單」tag + 底色）
+const CLOSED_STATUSES: ReadonlySet<CampaignStatus> = new Set([
+  "closed", "ordered", "receiving", "ready", "completed",
+]);
 type Store = { id: number; code: string; name: string };
 
 type OrderRow = {
@@ -255,7 +264,7 @@ function PivotContent() {
       const [c, s] = await Promise.all([
         sb
           .from("group_buy_campaigns")
-          .select("id, campaign_no, name, start_at, end_at")
+          .select("id, campaign_no, name, status, start_at, end_at")
           .order("updated_at", { ascending: false })
           .limit(500),
         sb.from("stores").select("id, code, name").order("name"),
@@ -378,6 +387,7 @@ function PivotContent() {
     label: string;
     subLabel: string | null;
     sortKey: number; // bigger = newer for campaign desc, date as YYYYMMDD num
+    closed: boolean; // campaign 視角時為 true 代表已過收單階段
     skus: Map<number, SkuEntry>;
   };
 
@@ -397,6 +407,7 @@ function PivotContent() {
       let label: string;
       let subLabel: string | null = null;
       let sortKey: number;
+      let closed = false;
 
       if (viewBy === "campaign") {
         const c = campaignMap.get(o.campaign_id);
@@ -414,6 +425,7 @@ function PivotContent() {
           subLabel = "未設收單時間";
         }
         sortKey = c?.end_at ? new Date(c.end_at).getTime() : 0;
+        closed = c ? CLOSED_STATUSES.has(c.status) : false;
       } else {
         const baseDate =
           viewBy === "pickup_date" ? o.pickup_deadline ?? o.created_at : o.created_at;
@@ -425,7 +437,7 @@ function PivotContent() {
 
       let group = groups.get(groupKey);
       if (!group) {
-        group = { key: groupKey, label, subLabel, sortKey, skus: new Map() };
+        group = { key: groupKey, label, subLabel, sortKey, closed, skus: new Map() };
         groups.set(groupKey, group);
       }
 
@@ -879,19 +891,28 @@ function PivotContent() {
                   <Fragment key={group.key}>
                     {skuArr.map(([skuId, entry], i) => {
                       let rowTotal = 0;
+                      const rowCls = [
+                        i === 0 ? "border-t-2 border-zinc-300 dark:border-zinc-700" : "",
+                        group.closed ? "bg-amber-50/60 dark:bg-amber-950/30" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ");
                       return (
                         <tr
                           key={`${group.key}-${skuId}`}
-                          className={
-                            i === 0
-                              ? "border-t-2 border-zinc-300 dark:border-zinc-700"
-                              : ""
-                          }
+                          className={rowCls}
                         >
                           <td className="w-64 px-3 py-1.5 align-top text-xs text-zinc-700 dark:text-zinc-300">
                             {i === 0 ? (
                               <div>
-                                <div className="font-medium">{group.label}</div>
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  {group.closed && (
+                                    <span className="inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                                      已結單
+                                    </span>
+                                  )}
+                                  <span className="font-medium">{group.label}</span>
+                                </div>
                                 {group.subLabel && (
                                   <div className="mt-0.5 text-[10px] text-zinc-500">
                                     {group.subLabel}
