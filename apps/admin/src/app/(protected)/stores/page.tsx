@@ -27,13 +27,14 @@ type Store = {
   is_active: boolean;
   notes: string | null;
   updated_at: string;
+  deleted_at: string | null;
 };
 
 type Location = { id: number; code: string; name: string };
 
-type StoreFormValues = Omit<Store, "id" | "updated_at"> & { id: number | null };
+type StoreFormValues = Omit<Store, "id" | "updated_at" | "deleted_at"> & { id: number | null };
 
-const EMPTY: Omit<Store, "id" | "updated_at"> = {
+const EMPTY: Omit<Store, "id" | "updated_at" | "deleted_at"> = {
   code: "",
   name: "",
   location_id: null,
@@ -43,7 +44,7 @@ const EMPTY: Omit<Store, "id" | "updated_at"> = {
   notes: null,
 };
 
-type ActiveFilter = "active" | "all";
+type ActiveFilter = "active" | "all" | "deleted";
 type LeleFilter = "all" | "lele_only" | "exclude_lele";
 
 export default function StoresPage() {
@@ -82,14 +83,16 @@ export default function StoresPage() {
   async function reload() {
     let q = getSupabase()
       .from("stores")
-      .select("id, code, name, location_id, pickup_window_days, allowed_payment_methods, is_active, notes, updated_at")
+      .select("id, code, name, location_id, pickup_window_days, allowed_payment_methods, is_active, notes, updated_at, deleted_at")
       .order("updated_at", { ascending: false })
       .limit(500);
     if (query.trim()) {
       const safe = query.replace(/[%,()]/g, " ").trim();
       q = q.or(`code.ilike.%${safe}%,name.ilike.%${safe}%`);
     }
-    if (activeFilter === "active") q = q.eq("is_active", true);
+    if (activeFilter === "active") q = q.eq("is_active", true).is("deleted_at", null);
+    else if (activeFilter === "all") q = q.is("deleted_at", null);
+    else if (activeFilter === "deleted") q = q.not("deleted_at", "is", null);
     if (leleFilter === "lele_only") q = q.like("code", "LELE-%");
     else if (leleFilter === "exclude_lele") q = q.not("code", "like", "LELE-%");
     const { data, error: err } = await q;
@@ -104,6 +107,38 @@ export default function StoresPage() {
     () => (rows ?? []).slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
     [rows, page],
   );
+
+  async function handleDelete(r: Store) {
+    const ok = window.confirm(
+      `確定刪除門市「${r.name}」(${r.code})？\n\n` +
+      `刪除後從預設列表消失（可在「僅已刪除」找到並還原）。\n` +
+      `若有進行中訂單或補貨申請、或還在啟用中，後端會拒絕。`,
+    );
+    if (!ok) return;
+    try {
+      const { error: err } = await getSupabase().rpc("rpc_delete_store", { p_id: r.id });
+      if (err) throw err;
+      setError(null);
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function handleRestore(r: Store) {
+    if (!window.confirm(`還原門市「${r.name}」(${r.code})？\n還原後仍為停用狀態、需手動啟用。`)) return;
+    try {
+      const { error: err } = await getSupabase()
+        .from("stores")
+        .update({ deleted_at: null })
+        .eq("id", r.id);
+      if (err) throw err;
+      setError(null);
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   async function save(v: StoreFormValues) {
     try {
@@ -176,6 +211,7 @@ export default function StoresPage() {
         >
           <option value="active">僅啟用中</option>
           <option value="all">全部（含停用）</option>
+          <option value="deleted">僅已刪除</option>
         </select>
         <select
           value={leleFilter}
@@ -246,26 +282,52 @@ export default function StoresPage() {
                       : "—"}
                   </Td>
                   <Td>
-                    <span
-                      className={`inline-block rounded px-2 py-0.5 text-xs ${
-                        r.is_active
-                          ? "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300"
-                          : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
-                      }`}
-                    >
-                      {r.is_active ? "啟用" : "停用"}
-                    </span>
+                    {r.deleted_at ? (
+                      <span className="inline-block rounded bg-red-100 px-2 py-0.5 text-xs text-red-800 dark:bg-red-950 dark:text-red-300">
+                        已刪除
+                      </span>
+                    ) : (
+                      <span
+                        className={`inline-block rounded px-2 py-0.5 text-xs ${
+                          r.is_active
+                            ? "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300"
+                            : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                        }`}
+                      >
+                        {r.is_active ? "啟用" : "停用"}
+                      </span>
+                    )}
                   </Td>
                   <Td className="whitespace-nowrap text-xs text-zinc-500">
                     {new Date(r.updated_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}
                   </Td>
                   <Td>
-                    <SpinButton
-                      onClick={() => setEditing(r)}
-                      className="text-xs text-blue-600 hover:underline dark:text-blue-400"
-                    >
-                      編輯
-                    </SpinButton>
+                    <div className="flex items-center gap-3">
+                      {!r.deleted_at && (
+                        <SpinButton
+                          onClick={() => setEditing(r)}
+                          className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                        >
+                          編輯
+                        </SpinButton>
+                      )}
+                      {!r.deleted_at && !r.is_active && (
+                        <SpinButton
+                          onClick={() => handleDelete(r)}
+                          className="text-xs text-red-600 hover:underline dark:text-red-400"
+                        >
+                          刪除
+                        </SpinButton>
+                      )}
+                      {r.deleted_at && (
+                        <SpinButton
+                          onClick={() => handleRestore(r)}
+                          className="text-xs text-amber-600 hover:underline dark:text-amber-400"
+                        >
+                          還原
+                        </SpinButton>
+                      )}
+                    </div>
                   </Td>
                 </Tr>
               ),
