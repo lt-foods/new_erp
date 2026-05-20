@@ -176,33 +176,39 @@ export function CampaignForm({
           label={v.close_type === "fast" ? "開團期間（開團 → 收單，快團必填收單）" : "開團期間（開團 → 收單）"}
           className="sm:col-span-2"
         >
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <input
-              type="datetime-local"
-              value={toDtLocal(v.start_at)}
-              onChange={(e) => {
-                const startIso = e.target.value ? new Date(e.target.value).toISOString() : null;
-                setV((prev) => {
-                  const next: CampaignFormValues = { ...prev, start_at: startIso };
-                  if (startIso && prev.end_at && new Date(prev.end_at) <= new Date(startIso)) {
-                    next.end_at = null;
-                  }
-                  return next;
-                });
-              }}
-              className={`${inputCls} flex-1`}
-              aria-label="開團時間"
-            />
-            <span className="text-center text-xs text-zinc-400 sm:px-1">→</span>
-            <input
-              type="datetime-local"
-              required={v.close_type === "fast"}
-              value={toDtLocal(v.end_at)}
-              min={toDtLocal(v.start_at) || undefined}
-              onChange={(e) => update("end_at", e.target.value ? new Date(e.target.value).toISOString() : null)}
-              className={`${inputCls} flex-1`}
-              aria-label="收單時間"
-            />
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
+            <div className="flex flex-1 flex-col gap-1">
+              <input
+                type="datetime-local"
+                value={toDtLocal(v.start_at)}
+                onChange={(e) => {
+                  const startIso = e.target.value ? new Date(e.target.value).toISOString() : null;
+                  setV((prev) => {
+                    const next: CampaignFormValues = { ...prev, start_at: startIso };
+                    if (startIso && prev.end_at && new Date(prev.end_at) <= new Date(startIso)) {
+                      next.end_at = null;
+                    }
+                    return next;
+                  });
+                }}
+                className={inputCls}
+                aria-label="開團時間"
+              />
+              <TimeSnapRow field="start_at" setV={setV} />
+            </div>
+            <span className="text-center text-xs text-zinc-400 sm:px-1 sm:pt-2">→</span>
+            <div className="flex flex-1 flex-col gap-1">
+              <input
+                type="datetime-local"
+                required={v.close_type === "fast"}
+                value={toDtLocal(v.end_at)}
+                min={toDtLocal(v.start_at) || undefined}
+                onChange={(e) => update("end_at", e.target.value ? new Date(e.target.value).toISOString() : null)}
+                className={inputCls}
+                aria-label="收單時間"
+              />
+              <TimeSnapRow field="end_at" setV={setV} />
+            </div>
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
             <span>快速：</span>
@@ -271,6 +277,55 @@ export function CampaignForm({
         <SpinButton type="button" onClick={() => onCancel ? onCancel() : router.push("/campaigns")} className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">取消</SpinButton>
       </div>
     </form>
+  );
+}
+
+const TIME_PRESETS: { label: string; hh: number; mm: number }[] = [
+  { label: "00:00", hh: 0, mm: 0 },
+  { label: "08:00", hh: 8, mm: 0 },
+  { label: "12:00", hh: 12, mm: 0 },
+  { label: "20:00", hh: 20, mm: 0 },
+  { label: "23:59", hh: 23, mm: 59 },
+];
+
+function snapTime(
+  setV: React.Dispatch<React.SetStateAction<CampaignFormValues>>,
+  field: "start_at" | "end_at",
+  hh: number,
+  mm: number,
+) {
+  setV((prev) => {
+    const base = prev[field] ? new Date(prev[field]!) : new Date();
+    base.setHours(hh, mm, 0, 0);
+    const iso = base.toISOString();
+    const next: CampaignFormValues = { ...prev, [field]: iso };
+    if (field === "start_at" && prev.end_at && new Date(prev.end_at) <= new Date(iso)) {
+      next.end_at = null;
+    }
+    return next;
+  });
+}
+
+function TimeSnapRow({
+  field,
+  setV,
+}: {
+  field: "start_at" | "end_at";
+  setV: React.Dispatch<React.SetStateAction<CampaignFormValues>>;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {TIME_PRESETS.map((t) => (
+        <SpinButton
+          key={t.label}
+          type="button"
+          onClick={() => snapTime(setV, field, t.hh, t.mm)}
+          className="rounded border border-zinc-200 px-1.5 py-0.5 font-mono text-[11px] text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+        >
+          {t.label}
+        </SpinButton>
+      ))}
+    </div>
   );
 }
 
