@@ -208,12 +208,18 @@ export default function InstallPage() {
         <Card>
           <h2 className="text-[18px] font-bold text-zinc-900">手動安裝</h2>
           <p className="mt-2 text-[15px] text-zinc-600 leading-relaxed">
-            在你的瀏覽器選單裡找「加入主畫面」或「安裝應用程式」。
+            在你的瀏覽器選單裡找「加入主畫面」或「安裝應用程式」,操作大致如下方步驟。
           </p>
           <p className="mt-3 text-[13px] text-zinc-500">
             建議改用 <b>Chrome</b> 取得一鍵安裝。
           </p>
         </Card>
+      )}
+
+      {/* Android 三步圖示 — 任何 Android 路徑都顯示,讓 LINE / 其他瀏覽器內的 user
+          看完「請用 Chrome 打開」之後也知道接下來要做什麼 */}
+      {(env === "android-chrome" || env === "android-line" || env === "android-other") && (
+        <AndroidChromeSteps />
       )}
 
       {env === "desktop" && (
@@ -240,8 +246,9 @@ export default function InstallPage() {
         </Card>
       )}
 
-      {/* 桌機也讓你看一眼 iPhone 安裝步驟 — 方便預覽 / 截圖貼海報 */}
+      {/* 桌機也讓你看一眼安裝步驟 — 方便預覽 / 截圖貼海報 */}
       {env === "desktop" && <IosSafariSteps />}
+      {env === "desktop" && <AndroidChromeSteps />}
     </main>
   );
 }
@@ -474,5 +481,210 @@ function PhoneStep3() {
         <rect x="72" y="172" width="14" height="14" rx="3.5" fill="#fff" />
       </g>
     </PhoneShell>
+  );
+}
+
+/** Android Chrome 加入主畫面圖示教學 */
+function AndroidChromeSteps() {
+  return (
+    <Card>
+      <h2 className="text-[18px] font-bold text-zinc-900">用 Chrome 加到主畫面</h2>
+      <p className="mt-1 text-[14px] text-zinc-500">三步驟、約 10 秒鐘。</p>
+
+      <div className="mt-5 space-y-6">
+        <StepIllustration
+          n={1}
+          title="點右上角 ⋮ 選單"
+          hint="Chrome 網址列右邊的三點按鈕"
+        >
+          <AndroidStep1 />
+        </StepIllustration>
+
+        <StepIllustration
+          n={2}
+          title="點「安裝應用程式」"
+          hint="選單往下找,再按一次「安裝」確認"
+        >
+          <AndroidStep2 />
+        </StepIllustration>
+
+        <StepIllustration
+          n={3}
+          title="完成！從桌面圖示開"
+          hint="從現在起點包子媽圖示就能下單"
+        >
+          <AndroidStep3 />
+        </StepIllustration>
+      </div>
+    </Card>
+  );
+}
+
+/** Android Phone 外殼 — 共用框 */
+function AndroidShell({ children }: { children: React.ReactNode }) {
+  return (
+    <svg viewBox="0 0 110 200" className="h-[140px] w-[78px]">
+      {/* bezel */}
+      <rect x="0.5" y="0.5" width="109" height="199" rx="14" fill="#1c1c1e" />
+      <rect x="3" y="3" width="104" height="194" rx="11" fill="#ffffff" />
+      {/* punch-hole camera */}
+      <circle cx="55" cy="8" r="1.6" fill="#1c1c1e" />
+      {children}
+    </svg>
+  );
+}
+
+/** Step 1: Chrome 畫面 + 高亮 ⋮ 選單 */
+function AndroidStep1() {
+  return (
+    <AndroidShell>
+      {/* status bar */}
+      <text x="9" y="9.5" fontSize="3" fill="#1c1c1e" fontWeight="600">9:41</text>
+      {/* Chrome top bar */}
+      <rect x="3" y="12" width="104" height="14" fill="#f1f3f4" />
+      {/* address pill */}
+      <rect x="7" y="15.5" width="66" height="8" rx="4" fill="#ffffff" />
+      <rect x="14" y="18.5" width="48" height="2.6" rx="1" fill="#c6c6c8" />
+      {/* tab counter */}
+      <rect x="78" y="16" width="6.5" height="6.5" rx="1.2" fill="none" stroke="#5f6368" strokeWidth="0.6" />
+      {/* ⋮ menu — HIGHLIGHTED */}
+      <g>
+        <rect x="91" y="13" width="12" height="12" rx="6" fill="#c44464" fillOpacity="0.16" />
+        <circle cx="97" cy="15.7" r="0.9" fill="#c44464" />
+        <circle cx="97" cy="19" r="0.9" fill="#c44464" />
+        <circle cx="97" cy="22.3" r="0.9" fill="#c44464" />
+      </g>
+      {/* arrow pointing up at ⋮ */}
+      <g stroke="#c44464" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M97 36 L97 28" />
+        <path d="M94 31 L97 28 L100 31" />
+      </g>
+      {/* page content */}
+      <rect x="10" y="44" width="90" height="48" rx="6" fill="#ec6b8c" opacity="0.18" />
+      <circle cx="55" cy="68" r="13" fill="#c44464" opacity="0.85" />
+      <rect x="20" y="98" width="70" height="4" rx="1" fill="#c6c6c8" />
+      <rect x="28" y="106" width="54" height="3" rx="1" fill="#d8d8da" />
+      <rect x="10" y="120" width="44" height="3" rx="1" fill="#d8d8da" />
+      <rect x="10" y="128" width="60" height="3" rx="1" fill="#d8d8da" />
+      <rect x="10" y="136" width="50" height="3" rx="1" fill="#d8d8da" />
+      {/* gesture pill */}
+      <rect x="40" y="191" width="30" height="2" rx="1" fill="#1c1c1e" opacity="0.5" />
+    </AndroidShell>
+  );
+}
+
+/** Step 2: 下拉選單 + 安裝應用程式 highlight */
+function AndroidStep2() {
+  return (
+    <AndroidShell>
+      {/* status bar */}
+      <text x="9" y="9.5" fontSize="3" fill="#1c1c1e" fontWeight="600">9:41</text>
+      {/* Chrome top bar (peeking under menu) */}
+      <rect x="3" y="12" width="104" height="14" fill="#f1f3f4" />
+      <rect x="7" y="15.5" width="66" height="8" rx="4" fill="#ffffff" />
+      {/* dimmed backdrop */}
+      <rect x="3" y="12" width="104" height="185" fill="#000" opacity="0.22" />
+      {/* dropdown menu */}
+      <rect x="48" y="26" width="56" height="116" rx="3" fill="#ffffff" />
+      <rect x="48" y="26" width="56" height="116" rx="3" fill="none" stroke="#0001" strokeWidth="0.3" />
+      {/* list items - top group */}
+      <g fill="#1c1c1e">
+        <rect x="54" y="33" width="30" height="2.6" rx="0.8" />
+        <rect x="54" y="43" width="38" height="2.6" rx="0.8" />
+        <rect x="54" y="53" width="26" height="2.6" rx="0.8" />
+        <rect x="54" y="63" width="34" height="2.6" rx="0.8" />
+        <rect x="54" y="73" width="32" height="2.6" rx="0.8" />
+      </g>
+      <line x1="50" y1="82" x2="102" y2="82" stroke="#e5e5ea" strokeWidth="0.4" />
+      {/* 安裝應用程式 — HIGHLIGHTED */}
+      <rect x="48" y="86" width="56" height="14" fill="#c44464" fillOpacity="0.15" />
+      <g stroke="#c44464" strokeWidth="0.9" fill="none" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M54 89 L54 95" />
+        <path d="M52 93 L54 95 L56 93" />
+        <line x1="51.5" y1="97" x2="56.5" y2="97" />
+      </g>
+      <rect x="60" y="91" width="34" height="3" rx="0.8" fill="#1c1c1e" />
+      <rect x="60" y="96" width="22" height="2" rx="0.5" fill="#1c1c1e" opacity="0.5" />
+      {/* arrow pointing at the highlighted row */}
+      <g stroke="#c44464" strokeWidth="1.6" fill="none" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M38 93 L46 93" />
+        <path d="M43 90 L46 93 L43 96" />
+      </g>
+      <line x1="50" y1="104" x2="102" y2="104" stroke="#e5e5ea" strokeWidth="0.4" />
+      <g fill="#1c1c1e">
+        <rect x="54" y="110" width="30" height="2.6" rx="0.8" />
+        <rect x="54" y="120" width="28" height="2.6" rx="0.8" />
+        <rect x="54" y="130" width="36" height="2.6" rx="0.8" />
+      </g>
+      {/* gesture pill */}
+      <rect x="40" y="191" width="30" height="2" rx="1" fill="#1c1c1e" opacity="0.5" />
+    </AndroidShell>
+  );
+}
+
+/** Step 3: Android 桌面 + 包子媽 icon 高亮 */
+function AndroidStep3() {
+  return (
+    <AndroidShell>
+      <defs>
+        <linearGradient id="androidSky" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#fde2e9" />
+          <stop offset="100%" stopColor="#fce8d6" />
+        </linearGradient>
+      </defs>
+      <rect x="3" y="3" width="104" height="194" rx="11" fill="url(#androidSky)" />
+      {/* status bar */}
+      <text x="9" y="9.5" fontSize="3" fill="#1c1c1e" fontWeight="600">9:41</text>
+      <g fill="#1c1c1e">
+        <rect x="92" y="7" width="3" height="3" rx="0.4" />
+        <rect x="97" y="6.5" width="5" height="3.5" rx="0.4" />
+      </g>
+      {/* clock widget */}
+      <text x="55" y="32" textAnchor="middle" fontSize="13" fontWeight="700" fill="#1c1c1e">9:41</text>
+      <text x="55" y="40" textAnchor="middle" fontSize="3.2" fill="#1c1c1e">星期三 5月20日</text>
+      {/* row 1 */}
+      <g>
+        <rect x="14" y="50" width="16" height="16" rx="4" fill="#fff" stroke="#0001" strokeWidth="0.5" />
+        <rect x="36" y="50" width="16" height="16" rx="4" fill="#fff" stroke="#0001" strokeWidth="0.5" />
+        <rect x="58" y="50" width="16" height="16" rx="4" fill="#fff" stroke="#0001" strokeWidth="0.5" />
+        <rect x="80" y="50" width="16" height="16" rx="4" fill="#fff" stroke="#0001" strokeWidth="0.5" />
+      </g>
+      {/* row 2 — 包子媽 highlighted */}
+      <g>
+        <rect x="14" y="78" width="16" height="16" rx="4" fill="#fff" stroke="#0001" strokeWidth="0.5" />
+        <image
+          href="/icons/ios/180.png"
+          x="35"
+          y="75"
+          width="22"
+          height="22"
+          clipPath="inset(0 round 5)"
+        />
+        <rect x="33" y="73" width="26" height="26" rx="6" fill="none" stroke="#c44464" strokeWidth="1.4" strokeDasharray="3 2" />
+        <rect x="62" y="78" width="16" height="16" rx="4" fill="#fff" stroke="#0001" strokeWidth="0.5" />
+        <rect x="84" y="78" width="16" height="16" rx="4" fill="#fff" stroke="#0001" strokeWidth="0.5" />
+      </g>
+      <text x="46" y="106" textAnchor="middle" fontSize="5" fill="#1c1c1e" fontWeight="600">包子媽</text>
+      {/* row 3 */}
+      <g opacity="0.7">
+        <rect x="14" y="113" width="16" height="16" rx="4" fill="#fff" />
+        <rect x="36" y="113" width="16" height="16" rx="4" fill="#fff" />
+        <rect x="58" y="113" width="16" height="16" rx="4" fill="#fff" />
+        <rect x="80" y="113" width="16" height="16" rx="4" fill="#fff" />
+      </g>
+      {/* Google-style search bar */}
+      <rect x="14" y="142" width="82" height="11" rx="5.5" fill="#ffffff" opacity="0.85" />
+      <circle cx="22" cy="147.5" r="2.4" fill="none" stroke="#5f6368" strokeWidth="0.6" />
+      <line x1="23.5" y1="149" x2="25" y2="150.5" stroke="#5f6368" strokeWidth="0.6" strokeLinecap="round" />
+      {/* dock */}
+      <g>
+        <rect x="18" y="163" width="14" height="14" rx="3.5" fill="#fff" />
+        <rect x="36" y="163" width="14" height="14" rx="3.5" fill="#fff" />
+        <rect x="54" y="163" width="14" height="14" rx="3.5" fill="#fff" />
+        <rect x="72" y="163" width="14" height="14" rx="3.5" fill="#fff" />
+      </g>
+      {/* gesture pill */}
+      <rect x="40" y="191" width="30" height="2" rx="1" fill="#1c1c1e" opacity="0.6" />
+    </AndroidShell>
   );
 }
