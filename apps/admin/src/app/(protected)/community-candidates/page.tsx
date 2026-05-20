@@ -68,8 +68,7 @@ export default function CommunityCandidatesPage() {
 
   const highlightRowRef = useRef<HTMLElement | null>(null);
 
-  const isSelectable = (r: Candidate) =>
-    r.owner_action !== "scheduled" && r.owner_action !== "adopted";
+  const isSelectable = (r: Candidate) => r.owner_action !== "scheduled";
 
   const toggleOne = (id: number) =>
     setSelected((prev) => {
@@ -252,7 +251,7 @@ export default function CommunityCandidatesPage() {
       return r && isSelectable(r);
     });
     if (ids.length === 0) {
-      setError("沒有可排程的候選（已排程或已採用的會略過）");
+      setError("沒有可排程的候選（已排程的會略過）");
       return;
     }
     setBusy(true);
@@ -503,7 +502,7 @@ export default function CommunityCandidatesPage() {
             收藏
           </SpinButton>
         )}
-        {r.owner_action !== "scheduled" && r.owner_action !== "adopted" && (
+        {r.owner_action !== "scheduled" && (
           <SpinButton
             onClick={() => {
               setScheduling(r.id);
@@ -702,7 +701,7 @@ export default function CommunityCandidatesPage() {
                       disabled={!isSelectable(r)}
                       onChange={() => toggleOne(r.id)}
                       className="h-4 w-4 cursor-pointer disabled:cursor-not-allowed disabled:opacity-30"
-                      title={isSelectable(r) ? "選取" : "已排程或已採用,不可批次排程"}
+                      title={isSelectable(r) ? "選取" : "已排程,不可重複排程"}
                     />
                   </td>
                   <td className="whitespace-nowrap px-3 py-3 text-zinc-500">{fmt(r.created_at)}</td>
@@ -792,7 +791,7 @@ export default function CommunityCandidatesPage() {
                   ) : (
                     <span
                       className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${ACTION_COLOR[r.owner_action] ?? ACTION_COLOR.none}`}
-                      title="已排程或已採用，不可批次排程"
+                      title="已排程，不可重複排程"
                     >
                       {ACTION_LABEL[r.owner_action] ?? r.owner_action}
                     </span>
