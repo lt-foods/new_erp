@@ -30,6 +30,7 @@ type CalendarCandidate = {
   id: number;
   product_name_hint: string | null;
   scheduled_open_at: string | null;
+  scheduled_slot_index: number | null;
   scheduled_sort_order: number | null;
   owner_action: string;
   created_at: string;
@@ -56,6 +57,21 @@ const ACTION_COLOR: Record<string, string> = {
 
 const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
 
+// 09:00 → 21:00 共 13 個整點時段
+const SLOT_COUNT = 13;
+const SLOT_START_HOUR = 9;
+
+function slotTime(idx: number): string {
+  return `${String(SLOT_START_HOUR + idx).padStart(2, "0")}:00`;
+}
+
+function clampSlot(idx: number | null | undefined): number {
+  if (idx === null || idx === undefined) return 0;
+  if (idx < 0) return 0;
+  if (idx > SLOT_COUNT - 1) return SLOT_COUNT - 1;
+  return idx;
+}
+
 function formatDate(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -63,11 +79,15 @@ function formatDate(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-function suggestedTime(idx: number): string {
-  const total = 9 * 60 + idx * 30;
-  const h = Math.floor(total / 60);
-  const m = total % 60;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+// droppable id 格式：YYYY-MM-DD#slotIdx
+function cellId(dayKey: string, slotIdx: number): string {
+  return `${dayKey}#${slotIdx}`;
+}
+
+function parseCellId(id: string): { day: string; slot: number } | null {
+  const m = id.match(/^(\d{4}-\d{2}-\d{2})#(\d+)$/);
+  if (!m) return null;
+  return { day: m[1], slot: parseInt(m[2], 10) };
 }
 
 export default function CommunityCandidatesCalendarPage() {
@@ -91,12 +111,13 @@ export default function CommunityCandidatesCalendarPage() {
     const { data, error: err } = await getSupabase()
       .from("community_product_candidates")
       .select(
-        "id, product_name_hint, scheduled_open_at, scheduled_sort_order, owner_action, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price"
+        "id, product_name_hint, scheduled_open_at, scheduled_slot_index, scheduled_sort_order, owner_action, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price"
       )
       .not("scheduled_open_at", "is", null)
       .gte("scheduled_open_at", startStr)
       .lte("scheduled_open_at", endStr)
       .order("scheduled_open_at", { ascending: true })
+      .order("scheduled_slot_index", { ascending: true, nullsFirst: true })
       .order("scheduled_sort_order", { ascending: true, nullsFirst: false })
       .order("created_at", { ascending: true });
     if (err) setError(err.message);
@@ -110,19 +131,25 @@ export default function CommunityCandidatesCalendarPage() {
     reload();
   }, [reload]);
 
-  // Local mirror of byDate so drag can produce optimistic updates
-  const [localByDate, setLocalByDate] = useState<Record<string, CalendarCandidate[]>>({});
+  // Local mirror keyed by `${dayKey}#${slotIdx}` so drag can produce optimistic updates
+  const [localByCell, setLocalByCell] = useState<Record<string, CalendarCandidate[]>>({});
 
   useEffect(() => {
     const map: Record<string, CalendarCandidate[]> = {};
-    for (const d of days) map[formatDate(d)] = [];
-    for (const r of rows ?? []) {
-      if (r.scheduled_open_at) {
-        const key = r.scheduled_open_at.slice(0, 10);
-        if (map[key]) map[key].push(r);
+    for (const d of days) {
+      const dayKey = formatDate(d);
+      for (let s = 0; s < SLOT_COUNT; s++) {
+        map[cellId(dayKey, s)] = [];
       }
     }
-    setLocalByDate(map);
+    for (const r of rows ?? []) {
+      if (!r.scheduled_open_at) continue;
+      const dayKey = r.scheduled_open_at.slice(0, 10);
+      const slot = clampSlot(r.scheduled_slot_index);
+      const k = cellId(dayKey, slot);
+      if (map[k]) map[k].push(r);
+    }
+    setLocalByCell(map);
   }, [rows, days]);
 
   const handleRemove = async (r: CalendarCandidate) => {
@@ -135,6 +162,7 @@ export default function CommunityCandidatesCalendarPage() {
         .update({
           owner_action: "none",
           scheduled_open_at: null,
+          scheduled_slot_index: null,
           scheduled_sort_order: null,
           updated_at: new Date().toISOString(),
         })
@@ -157,16 +185,14 @@ export default function CommunityCandidatesCalendarPage() {
   );
 
   function findContainer(id: number | string): string | null {
-    if (typeof id === "string" && days.some((d) => formatDate(d) === id)) return id;
+    if (typeof id === "string" && parseCellId(id)) return id;
     const numId = Number(id);
-    for (const [day, cards] of Object.entries(localByDate)) {
-      if (cards.some((c) => c.id === numId)) return day;
+    for (const [cell, cards] of Object.entries(localByCell)) {
+      if (cards.some((c) => c.id === numId)) return cell;
     }
     return null;
   }
 
-  // 自訂 collision detection：優先 pointerWithin（指標真的進入 column 才命中），
-  // 沒命中再退回 rectIntersection / closestCorners。這樣空 column 也能被命中。
   const collisionDetection: CollisionDetection = useCallback((args) => {
     const pointerCollisions = pointerWithin(args);
     if (pointerCollisions.length > 0) return pointerCollisions;
@@ -177,7 +203,7 @@ export default function CommunityCandidatesCalendarPage() {
 
   const onDragStart = (e: DragStartEvent) => {
     const id = Number(e.active.id);
-    for (const cards of Object.values(localByDate)) {
+    for (const cards of Object.values(localByCell)) {
       const c = cards.find((c) => c.id === id);
       if (c) {
         setActiveCard(c);
@@ -195,13 +221,12 @@ export default function CommunityCandidatesCalendarPage() {
     if (!activeContainer || !overContainer) return;
     if (activeContainer === overContainer) return;
 
-    setLocalByDate((prev) => {
+    setLocalByCell((prev) => {
       const src = [...(prev[activeContainer] ?? [])];
       const dst = [...(prev[overContainer] ?? [])];
       const idx = src.findIndex((c) => c.id === activeId);
       if (idx < 0) return prev;
       const [card] = src.splice(idx, 1);
-      // figure out target index: drop above the over card, or end of list
       const overIdx =
         typeof over.id === "number"
           ? dst.findIndex((c) => c.id === Number(over.id))
@@ -218,16 +243,17 @@ export default function CommunityCandidatesCalendarPage() {
     if (!over || !card) return;
     const activeId = Number(active.id);
     const overContainer = findContainer(over.id as number | string);
-    const originalContainer = card.scheduled_open_at?.slice(0, 10) ?? null;
+    const originalDay = card.scheduled_open_at?.slice(0, 10) ?? null;
+    const originalSlot = clampSlot(card.scheduled_slot_index);
+    const originalContainer = originalDay ? cellId(originalDay, originalSlot) : null;
     if (!overContainer) return;
 
-    // Determine current container after onDragOver moves
     const currentContainer = findContainer(activeId);
     if (!currentContainer) return;
 
     if (currentContainer === originalContainer) {
-      // Same-day reorder: arrayMove + persist
-      const items = localByDate[currentContainer] ?? [];
+      // Same-cell reorder
+      const items = localByCell[currentContainer] ?? [];
       const oldIdx = items.findIndex((c) => c.id === activeId);
       const newIdx =
         typeof over.id === "number"
@@ -235,17 +261,17 @@ export default function CommunityCandidatesCalendarPage() {
           : items.length - 1;
       if (oldIdx < 0 || newIdx < 0 || oldIdx === newIdx) return;
       const newItems = arrayMove(items, oldIdx, newIdx);
-      setLocalByDate((p) => ({ ...p, [currentContainer]: newItems }));
-      await persistDay(currentContainer, newItems);
+      setLocalByCell((p) => ({ ...p, [currentContainer]: newItems }));
+      await persistCell(currentContainer, newItems);
       await reload();
     } else {
-      // Cross-day move: source already updated in onDragOver
-      const srcItems = localByDate[originalContainer ?? ""] ?? [];
-      const dstItems = localByDate[currentContainer] ?? [];
+      // Cross-cell move: source already updated in onDragOver
+      const srcItems = originalContainer ? localByCell[originalContainer] ?? [] : [];
+      const dstItems = localByCell[currentContainer] ?? [];
       setBusy(true);
       try {
-        await persistDay(currentContainer, dstItems);
-        if (originalContainer) await persistDay(originalContainer, srcItems);
+        await persistCell(currentContainer, dstItems);
+        if (originalContainer) await persistCell(originalContainer, srcItems);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -255,7 +281,10 @@ export default function CommunityCandidatesCalendarPage() {
     }
   };
 
-  async function persistDay(dayKey: string, items: CalendarCandidate[]) {
+  async function persistCell(cellKey: string, items: CalendarCandidate[]) {
+    const parsed = parseCellId(cellKey);
+    if (!parsed) return;
+    const { day, slot } = parsed;
     const sb = getSupabase();
     const now = new Date().toISOString();
     const { data: userRes } = await sb.auth.getUser();
@@ -265,18 +294,19 @@ export default function CommunityCandidatesCalendarPage() {
       const { error: err } = await sb
         .from("community_product_candidates")
         .update({
-          scheduled_open_at: dayKey,
+          scheduled_open_at: day,
+          scheduled_slot_index: slot,
           scheduled_sort_order: order,
           updated_at: now,
         })
         .eq("id", items[i].id);
       if (err) throw new Error(err.message);
 
-      // 同步更新對應 campaign（透過 RPC 繞過 RLS — admin 客戶端 JWT role claim 可能為 null）
       if (operator) {
         const { error: rpcErr } = await sb.rpc("rpc_reorder_candidate_campaign", {
           p_candidate_id: items[i].id,
-          p_day_key: dayKey,
+          p_day_key: day,
+          p_slot_index: slot,
           p_order: order,
           p_operator: operator,
         });
@@ -292,7 +322,7 @@ export default function CommunityCandidatesCalendarPage() {
       <header className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold">選品週曆</h1>
-          <p className="mt-0.5 text-sm text-zinc-500">未來 7 天 · 拖拉卡片排序或換日</p>
+          <p className="mt-0.5 text-sm text-zinc-500">未來 7 天 · 每整點時段（09:00–21:00）可放多商品 · 拖拉換時段或換日</p>
         </div>
         <Link
           href="/community-candidates"
@@ -320,32 +350,37 @@ export default function CommunityCandidatesCalendarPage() {
         >
           <div className="flex gap-2 overflow-x-auto pb-2 lg:grid lg:grid-cols-7 lg:overflow-x-visible lg:pb-0">
             {days.map((d) => {
-              const key = formatDate(d);
-              const isToday = key === todayStr;
-              const cards = localByDate[key] ?? [];
+              const dayKey = formatDate(d);
+              const isToday = dayKey === todayStr;
               return (
-                <DayColumn key={key} dayKey={key} day={d} isToday={isToday} cards={cards}>
-                  <SortableContext
-                    id={key}
-                    items={cards.map((c) => c.id)}
-                    strategy={verticalListSortingStrategy}
-                  >
-                    {cards.length === 0 ? (
-                      <div className="rounded border border-dashed border-zinc-200 px-2 py-4 text-center text-[10px] text-zinc-400 dark:border-zinc-800">
-                        無排程
-                      </div>
-                    ) : (
-                      cards.map((r, idx) => (
-                        <SortableCard
-                          key={r.id}
-                          card={r}
-                          idx={idx}
-                          busy={busy}
-                          onRemove={handleRemove}
-                        />
-                      ))
-                    )}
-                  </SortableContext>
+                <DayColumn key={dayKey} day={d} isToday={isToday}>
+                  {Array.from({ length: SLOT_COUNT }, (_, slotIdx) => {
+                    const k = cellId(dayKey, slotIdx);
+                    const cards = localByCell[k] ?? [];
+                    return (
+                      <SlotCell
+                        key={k}
+                        cellKey={k}
+                        time={slotTime(slotIdx)}
+                        empty={cards.length === 0}
+                      >
+                        <SortableContext
+                          id={k}
+                          items={cards.map((c) => c.id)}
+                          strategy={verticalListSortingStrategy}
+                        >
+                          {cards.map((r) => (
+                            <SortableCard
+                              key={r.id}
+                              card={r}
+                              busy={busy}
+                              onRemove={handleRemove}
+                            />
+                          ))}
+                        </SortableContext>
+                      </SlotCell>
+                    );
+                  })}
                 </DayColumn>
               );
             })}
@@ -359,29 +394,16 @@ export default function CommunityCandidatesCalendarPage() {
 }
 
 function DayColumn({
-  dayKey,
   day,
   isToday,
-  cards,
   children,
 }: {
-  dayKey: string;
   day: Date;
   isToday: boolean;
-  cards: CalendarCandidate[];
   children: React.ReactNode;
 }) {
-  // useDroppable so empty columns can accept drops
-  const { setNodeRef, isOver } = useDroppable({ id: dayKey });
   return (
-    <div
-      ref={setNodeRef}
-      className={`flex min-h-[200px] w-[200px] shrink-0 flex-col gap-2 rounded-md p-1 transition lg:w-auto lg:min-w-0 ${
-        isOver
-          ? "bg-amber-50 ring-2 ring-amber-300 dark:bg-amber-950/30 dark:ring-amber-700"
-          : ""
-      }`}
-    >
+    <div className="flex w-[220px] shrink-0 flex-col gap-1 lg:w-auto lg:min-w-0">
       <div
         className={`rounded-md px-2 py-1.5 text-center text-xs font-semibold ${
           isToday
@@ -394,19 +416,54 @@ function DayColumn({
         </div>
         <div className="text-[10px] font-normal opacity-70">週{WEEKDAYS[day.getDay()]}</div>
       </div>
-      {children}
+      <div className="flex flex-col gap-0.5">{children}</div>
+    </div>
+  );
+}
+
+function SlotCell({
+  cellKey,
+  time,
+  empty,
+  children,
+}: {
+  cellKey: string;
+  time: string;
+  empty: boolean;
+  children: React.ReactNode;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: cellKey });
+  return (
+    <div
+      ref={setNodeRef}
+      className={`flex gap-1.5 rounded-md p-1 transition ${
+        isOver
+          ? "bg-amber-50 ring-1 ring-amber-300 dark:bg-amber-950/30 dark:ring-amber-700"
+          : ""
+      }`}
+    >
+      <div className="w-9 shrink-0 pt-1 text-right font-mono text-[10px] font-medium text-zinc-400 dark:text-zinc-500">
+        {time}
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        {empty ? (
+          <div className="rounded border border-dashed border-zinc-200 px-2 py-2 text-center text-[10px] text-zinc-300 dark:border-zinc-800 dark:text-zinc-600">
+            —
+          </div>
+        ) : (
+          children
+        )}
+      </div>
     </div>
   );
 }
 
 function SortableCard({
   card: r,
-  idx,
   busy,
   onRemove,
 }: {
   card: CalendarCandidate;
-  idx: number;
   busy: boolean;
   onRemove: (r: CalendarCandidate) => void;
 }) {
@@ -434,8 +491,8 @@ function SortableCard({
           {...attributes}
           {...listeners}
           role="button"
-          aria-label="拖拉排序或換日"
-          title="拖拉排序 / 換日"
+          aria-label="拖拉排序或換時段"
+          title="拖拉排序 / 換時段"
           className="flex w-9 shrink-0 cursor-grab touch-none select-none items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-400 transition hover:border-zinc-300 hover:bg-zinc-100 hover:text-zinc-600 active:cursor-grabbing active:bg-zinc-200 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-500 dark:hover:bg-zinc-700 dark:hover:text-zinc-300 lg:w-5 lg:rounded"
         >
           <svg
@@ -453,9 +510,6 @@ function SortableCard({
           </svg>
         </span>
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="font-mono text-[10px] font-semibold text-zinc-400 dark:text-zinc-500">
-            {suggestedTime(idx)}
-          </span>
           <Link
             href={`/community-candidates?highlight=${r.id}`}
             className="font-medium leading-snug hover:underline"
