@@ -483,7 +483,12 @@ async function placeMemberOrder(
     .eq("tenant_id", tenantId)
     .eq("id", memberId)
     .single();
-  if (mErr || !member) return json({ error: "member not found" }, 404);
+  if (mErr || !member) {
+    return json({
+      error: "member not found",
+      detail: `memberId=${memberId} tenantId=${tenantId} dbErr=${mErr?.message ?? "no rows"}`,
+    }, 404);
+  }
 
   const pickupStoreId = Number(p.pickup_store_id ?? member.home_store_id ?? 0);
   if (!pickupStoreId) return json({ error: "pickup_store_id required" }, 400);
@@ -501,8 +506,12 @@ async function placeMemberOrder(
     return json({ error: "campaign already ended" }, 400);
   }
 
-  // 找 pickup store 對應的 channel(取第一個 active 的)
-  const { data: channel } = await sb
+  // 找下單用 line_channel：
+  //   1) 優先：pickup store 自己的 active channel
+  //   2) 退回：tenant 任一 active channel（系統常見 setup 是「全店共用一個 LINE bot 下單入口」，
+  //      只有少數店建了自己專屬 channel；中和店等只有「補貨申請」channel 的店會走這條 fallback）
+  let channel: { id: number } | null = null;
+  const { data: storeChannel } = await sb
     .from("line_channels")
     .select("id")
     .eq("tenant_id", tenantId)
@@ -511,7 +520,19 @@ async function placeMemberOrder(
     .order("id", { ascending: true })
     .limit(1)
     .maybeSingle();
-  if (!channel) return json({ error: "no active channel for pickup store" }, 400);
+  if (storeChannel) channel = storeChannel;
+  if (!channel) {
+    const { data: anyChannel } = await sb
+      .from("line_channels")
+      .select("id")
+      .eq("tenant_id", tenantId)
+      .eq("is_active", true)
+      .order("id", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (anyChannel) channel = anyChannel;
+  }
+  if (!channel) return json({ error: "no active channel for tenant" }, 400);
 
   // 找既有訂單 or 新建(unique: tenant+campaign+channel+member)
   const { data: existing } = await sb
