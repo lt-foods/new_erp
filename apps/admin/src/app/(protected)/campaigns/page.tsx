@@ -13,6 +13,7 @@ import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import { CampaignThumb } from "@/components/CampaignThumb";
 import { campaignCoverUrl, type CampaignCoverItem } from "@/lib/campaignCover";
+import FbPublishModal from "@/components/FbPublishModal";
 
 // 共用: chunked fetch — bypass PostgREST max-rows 1000 cap
 // builder: 回 fresh query builder 的 factory (因為 .range() 後不能 reuse)
@@ -112,6 +113,7 @@ export default function CampaignsListPage() {
   const [modal, setModal] = useState<{ mode: "edit"; values: CampaignFormValues } | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const [resyncTick, setResyncTick] = useState(0);
+  const [fbPublishId, setFbPublishId] = useState<number | null>(null);
   const [closingId, setClosingId] = useState<number | null>(null);
   const [finalizingId, setFinalizingId] = useState<number | null>(null);
 
@@ -486,6 +488,14 @@ export default function CampaignsListPage() {
           className="text-xs text-amber-600 hover:underline disabled:opacity-50 dark:text-amber-400"
         >
           {closingId === r.id ? "結單中…" : "結單"}
+        </SpinButton>
+      )}
+      {(["open", "closed", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
+        <SpinButton
+          onClick={() => setFbPublishId(r.id)}
+          className="text-xs text-sky-600 hover:underline dark:text-sky-400"
+        >
+          發 FB
         </SpinButton>
       )}
       {(["closed", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
@@ -901,6 +911,12 @@ export default function CampaignsListPage() {
           <PagerBtn disabled={page === totalPages} onClick={() => setPage(totalPages)}>最末頁 »</PagerBtn>
         </div>
       )}
+
+      <FbPublishModal
+        open={fbPublishId !== null}
+        campaignId={fbPublishId}
+        onClose={() => setFbPublishId(null)}
+      />
     </div>
   );
 }
