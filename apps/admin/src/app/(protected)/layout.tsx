@@ -74,6 +74,7 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/staff", label: "員工管理", match: /^\/staff/ },
       { href: "/stores", label: "門市", match: /^\/stores/ },
+      { href: "/fb-pages", label: "FB 粉絲團", match: /^\/fb-pages/ },
     ],
   },
 ];
@@ -105,6 +106,7 @@ const BRANCH_HIDDEN_HREFS = new Set([
   // /wms/inbound 跟 /wms/transfers 不在這裡 — 分店要用,屬於分店業務
   "/finance/receivables", // HQ 應收
   "/stores",              // 門市設定 (HQ 管理)
+  "/fb-pages",            // 粉絲團設定 (HQ 管理)
 ]);
 const BRANCH_HIDDEN_GROUPS = new Set([
   "社群選品", // 整個 group 隱藏
