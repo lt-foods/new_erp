@@ -56,13 +56,20 @@ type PivotRow = {
   neg_order_ids: number[];
 };
 
-type ViewBy = "pickup_date" | "order_date" | "campaign";
+type ViewBy = "order_date" | "campaign";
 type Metric = "item_qty" | "order_count" | "amount";
 
 // 把舊 LS 的 "count" 視為 "item_qty" (用戶真正想要的、之前命名誤導)
 function normalizeMetric(v: string | undefined | null): Metric | null {
   if (v === "item_qty" || v === "order_count" || v === "amount") return v;
   if (v === "count") return "item_qty"; // legacy migration
+  return null;
+}
+
+// 「取貨日」分組已下架（2026-05-21）— 舊 LS / URL 殘留 fallback 到 campaign
+function normalizeViewBy(v: string | undefined | null): ViewBy | null {
+  if (v === "order_date" || v === "campaign") return v;
+  if (v === "pickup_date") return "campaign";
   return null;
 }
 
@@ -140,7 +147,7 @@ function PivotContent() {
 
   const [campaignIds, setCampaignIds] = useState<string[]>(initialCampaignIds);
   const [viewBy, setViewBy] = useState<ViewBy>(
-    (searchParams.get("viewBy") as ViewBy) || "campaign",
+    normalizeViewBy(searchParams.get("viewBy")) ?? "campaign",
   );
   const [dateFrom, setDateFrom] = useState(
     normalizeMonth(searchParams.get("from")) ?? def.from,
@@ -200,8 +207,9 @@ function PivotContent() {
         if (!searchParams.get("campaignIds") && Array.isArray(saved.campaignIds)) {
           setCampaignIds(saved.campaignIds);
         }
-        if (!searchParams.get("viewBy") && saved.viewBy) {
-          setViewBy(saved.viewBy);
+        if (!searchParams.get("viewBy")) {
+          const v = normalizeViewBy(saved.viewBy);
+          if (v) setViewBy(v);
         }
         if (!searchParams.get("from")) {
           const m = normalizeMonth(saved.dateFrom);
@@ -564,14 +572,13 @@ function PivotContent() {
           )}
         </div>
 
-        {/* viewBy: 取貨日 / 訂單日 / 開團 */}
+        {/* viewBy: 訂單日 / 開團 */}
         <select
           value={viewBy}
           onChange={(e) => setViewBy(e.target.value as ViewBy)}
           className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
           title="樞紐表 row 的分組維度"
         >
-          <option value="pickup_date">分組：取貨日</option>
           <option value="order_date">分組：訂單日</option>
           <option value="campaign">分組：開團（收單期間）</option>
         </select>
@@ -582,8 +589,6 @@ function PivotContent() {
           title={
             viewBy === "campaign"
               ? "依開團模式：套用至 campaign 收單月份 (end_at)"
-              : viewBy === "pickup_date"
-              ? "依取貨日：套用至訂單 pickup_deadline 月份"
               : "依訂單日：套用至訂單 created_at 月份"
           }
         >
