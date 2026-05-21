@@ -295,7 +295,12 @@ function PivotContent() {
   // 透過 server-side RPC 拉 aggregate（rpc_orders_pivot）
   // 取代之前 client 撈 raw orders+items 再 group by 的做法 — 那做法 items
   // 一次 .in('order_id', ...) 沒分頁，會被 PostgREST max_rows=1000 截斷，
-  // 導致跨多店時數字偏低（甚至出現「單店 > 全部」的反直覺結果）
+  // 導致跨多店時數字偏低（甚至出現「單店 > 全部」的反直覺結果）。
+  //
+  // RPC 本身在 v3 (20260621000030) 改回 jsonb 而非 setof — setof 一樣
+  // 被 max_rows=1000 cap、cell 數 = group × sku × store、全部店模式
+  // 容易爆 1000，導致某些開團整筆從表內消失（GRP-20260521-001 是案例）。
+  // jsonb 是單一 row、不受 row cap 限制；data 解出來仍是 PivotRow[]。
   useEffect(() => {
     if (!hydrated) return;
     let cancelled = false;
