@@ -53,6 +53,8 @@ export function CampaignItemsTable({
   const role = useRole();
   // 僅管理員（owner/admin）可重新同步：對齊 RPC server-side gate
   const canResync = (status === "draft" || status === "open") && isAdmin(role);
+  // 店長/店員不能跳轉到商品編輯頁
+  const isStoreLevel = role === "store_manager" || role === "store_staff";
 
   const reload = async () => {
     // products.name 是 source of truth；skus.product_name 是 denorm 可能過期、不用它
@@ -175,13 +177,17 @@ export function CampaignItemsTable({
             ) : rows.map((r) => (
               <tr key={r.id}>
                 <Td className="font-mono">
-                  <Link
-                    href={`/products?id=${r.product_id}`}
-                    className="text-blue-600 hover:underline dark:text-blue-400"
-                    title="點此跳轉到商品編輯頁"
-                  >
-                    {r.sku_code}
-                  </Link>
+                  {isStoreLevel ? (
+                    <span>{r.sku_code}</span>
+                  ) : (
+                    <Link
+                      href={`/products?id=${r.product_id}`}
+                      className="text-blue-600 hover:underline dark:text-blue-400"
+                      title="點此跳轉到商品編輯頁"
+                    >
+                      {r.sku_code}
+                    </Link>
+                  )}
                 </Td>
                 <Td>
                   <div className="text-xs text-zinc-500">{r.product_name ?? "—"}</div>
