@@ -543,17 +543,19 @@ export default function CampaignsListPage() {
             {loading ? "載入中…" : total === 0 ? "共 0 筆" : `共 ${total} 筆（${fromIdx}-${toIdx}）`}
           </p>
         </div>
-        <div className="flex gap-2">
-          <SpinButton
-            onClick={() => setShowRecurring(true)}
-            className="rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-          >
-            🔁 批次建立
-          </SpinButton>
-          <Link href="/products?mode=campaign" className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200">
-            + 從商品開團
-          </Link>
-        </div>
+        {showAdminActions && (
+          <div className="flex gap-2">
+            <SpinButton
+              onClick={() => setShowRecurring(true)}
+              className="rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            >
+              🔁 批次建立
+            </SpinButton>
+            <Link href="/products?mode=campaign" className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200">
+              + 從商品開團
+            </Link>
+          </div>
+        )}
       </header>
 
       <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
