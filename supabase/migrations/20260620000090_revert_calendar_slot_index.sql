@@ -11,6 +11,8 @@
 --    （回到 20260516000004 的簽名與 body，start_at = day 0 點）
 -- ============================================================
 
+BEGIN;
+
 -- 1) 重新編號 sort_order 為「同 day 內順序」
 WITH r AS (
   SELECT id,
@@ -79,3 +81,5 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION rpc_reorder_candidate_campaign(BIGINT, DATE, INTEGER, UUID) TO authenticated;
+
+COMMIT;
