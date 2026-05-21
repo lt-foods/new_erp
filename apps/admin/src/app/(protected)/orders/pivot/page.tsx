@@ -158,6 +158,9 @@ function PivotContent() {
   const [metric, setMetric] = useState<Metric>(
     normalizeMetric(searchParams.get("metric")) ?? "item_qty",
   );
+  const [closedOnly, setClosedOnly] = useState<boolean>(
+    searchParams.get("closedOnly") === "1",
+  );
 
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
@@ -203,6 +206,7 @@ function PivotContent() {
           status: OrderStatus[];
           storeId: string;
           metric: Metric;
+          closedOnly: boolean;
         }>;
         if (!searchParams.get("campaignIds") && Array.isArray(saved.campaignIds)) {
           setCampaignIds(saved.campaignIds);
@@ -229,6 +233,9 @@ function PivotContent() {
           const m = normalizeMetric(saved.metric);
           if (m) setMetric(m);
         }
+        if (!searchParams.get("closedOnly") && typeof saved.closedOnly === "boolean") {
+          setClosedOnly(saved.closedOnly);
+        }
       }
     } catch {
       /* noop */
@@ -251,12 +258,13 @@ function PivotContent() {
           status: Array.from(statusSet),
           storeId,
           metric,
+          closedOnly,
         }),
       );
     } catch {
       /* noop */
     }
-  }, [hydrated, campaignIds, viewBy, dateFrom, dateTo, statusSet, storeId, metric]);
+  }, [hydrated, campaignIds, viewBy, dateFrom, dateTo, statusSet, storeId, metric, closedOnly]);
 
   // 分店帳號鎖
   const branchStoreId = useUserBranchStoreId(stores);
@@ -311,6 +319,7 @@ function PivotContent() {
           p_campaign_ids: campaignIds.length ? campaignIds.map((x) => Number(x)) : null,
           p_store_id: storeId ? Number(storeId) : null,
           p_statuses: statusArr,
+          p_closed_only: closedOnly ? true : null,
         });
         if (cancelled) return;
         if (rpcErr) {
@@ -330,7 +339,7 @@ function PivotContent() {
     return () => {
       cancelled = true;
     };
-  }, [hydrated, campaignIds, viewBy, dateFrom, dateTo, statusSet, storeId]);
+  }, [hydrated, campaignIds, viewBy, dateFrom, dateTo, statusSet, storeId, closedOnly]);
 
   const storeMap = useMemo(() => new Map(stores.map((s) => [s.id, s])), [stores]);
   const campaignMap = useMemo(() => new Map(campaigns.map((c) => [c.id, c])), [campaigns]);
@@ -743,6 +752,19 @@ function PivotContent() {
           </SpinButton>
         </div>
 
+        {/* 只看已收單 toggle — campaign.status ∈ closed/ordered/receiving/ready/completed */}
+        <SpinButton
+          onClick={() => setClosedOnly((v) => !v)}
+          className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
+            closedOnly
+              ? "border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300"
+              : "border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-900"
+          }`}
+          title="只看已過收單階段（closed / ordered / receiving / ready / completed）的開團"
+        >
+          只看已收單
+        </SpinButton>
+
         <div className="ml-auto flex items-center gap-1">
           <span className="hidden text-xs text-zinc-400 sm:inline">店別欄</span>
           <SpinButton
@@ -768,7 +790,7 @@ function PivotContent() {
 
       <div
         ref={scrollRef}
-        className="no-scrollbar overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
+        className="no-scrollbar max-h-[calc(100vh-280px)] overflow-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950"
       >
         {loading && pivot.groups.length === 0 ? (
           <p className="p-6 text-center text-sm text-zinc-500">載入中…</p>
@@ -776,24 +798,24 @@ function PivotContent() {
           <p className="p-6 text-center text-sm text-zinc-500">沒有符合條件的訂單。</p>
         ) : (
           <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
-            <thead className="bg-zinc-50 dark:bg-zinc-900">
+            <thead className="sticky top-0 z-10 bg-zinc-50 shadow-[0_1px_0_0_rgb(228_228_231)] dark:bg-zinc-900 dark:shadow-[0_1px_0_0_rgb(39_39_42)]">
               <tr>
-                <th className="w-64 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">
+                <th className="w-64 bg-zinc-50 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-900">
                   {viewBy === "campaign" ? "開團" : "日期"}
                 </th>
-                <th className="min-w-[180px] px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">
+                <th className="min-w-[180px] bg-zinc-50 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-900">
                   商品品項
                 </th>
                 {pivot.storeIds.map((sid) => (
                   <th
                     key={sid}
-                    className="min-w-[80px] px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500"
+                    className="min-w-[80px] bg-zinc-50 px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-900"
                     title={storeMap.get(sid)?.code ?? ""}
                   >
                     {storeMap.get(sid)?.name ?? `店#${sid}`}
                   </th>
                 ))}
-                <th className="px-3 py-2 text-right text-xs font-bold uppercase tracking-wide text-zinc-700 dark:text-zinc-300">
+                <th className="bg-zinc-50 px-3 py-2 text-right text-xs font-bold uppercase tracking-wide text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
                   合計
                 </th>
               </tr>
