@@ -40,15 +40,21 @@ type OrderRow = {
   created_at: string;
 };
 
-type ItemRow = {
-  order_id: number;
-  sku_id: number;
-  qty: number;
-  unit_price: number;
-  sku: { product_name: string | null; variant_name: string | null } | null;
-};
-
 type Member = { id: number; name: string | null; phone: string | null };
+
+// server-side aggregate row (rpc_orders_pivot)
+type PivotRow = {
+  group_key: string;
+  group_id: number | null;        // campaign mode = campaign_id；date mode = null
+  sku_id: number;
+  sku_product_name: string | null;
+  sku_variant_name: string | null;
+  pickup_store_id: number;
+  qty_sum: number | string;       // numeric → string via postgrest
+  amount: number | string;
+  pos_order_ids: number[];
+  neg_order_ids: number[];
+};
 
 type ViewBy = "pickup_date" | "order_date" | "campaign";
 type Metric = "item_qty" | "order_count" | "amount";
@@ -64,7 +70,6 @@ const DEFAULT_EXCLUDED: OrderStatus[] = ["cancelled", "expired", "transferred_ou
 const DEFAULT_INCLUDED: OrderStatus[] = ORDER_STATUSES.filter(
   (s) => !DEFAULT_EXCLUDED.includes(s as OrderStatus),
 );
-const MAX_ORDERS = 5000;
 const LS_KEY = "new_erp-orders-pivot-filters";
 
 function fmtMonthInput(d: Date): string {
@@ -149,12 +154,9 @@ function PivotContent() {
 
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
-  const [orders, setOrders] = useState<OrderRow[]>([]);
-  const [items, setItems] = useState<ItemRow[]>([]);
-  const [memberMap, setMemberMap] = useState<Map<number, Member>>(new Map());
+  const [pivotRows, setPivotRows] = useState<PivotRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [truncated, setTruncated] = useState(false);
 
   const [campaignPickerOpen, setCampaignPickerOpen] = useState(false);
   const [statusPickerOpen, setStatusPickerOpen] = useState(false);
@@ -274,89 +276,42 @@ function PivotContent() {
     })();
   }, []);
 
-  // Load orders + items by filter
+  // 透過 server-side RPC 拉 aggregate（rpc_orders_pivot）
+  // 取代之前 client 撈 raw orders+items 再 group by 的做法 — 那做法 items
+  // 一次 .in('order_id', ...) 沒分頁，會被 PostgREST max_rows=1000 截斷，
+  // 導致跨多店時數字偏低（甚至出現「單店 > 全部」的反直覺結果）
   useEffect(() => {
     if (!hydrated) return;
     let cancelled = false;
     setLoading(true);
-    setTruncated(false);
     (async () => {
       try {
         const sb = getSupabase();
         const statusArr = Array.from(statusSet);
         if (statusArr.length === 0) {
-          setOrders([]);
-          setItems([]);
+          setPivotRows([]);
           setError(null);
           setLoading(false);
           return;
         }
-
-        let q = sb
-          .from("customer_orders")
-          .select(
-            "id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, created_at",
-          )
-          .in("status", statusArr);
-
-        // 日期過濾 (月為單位): from = month start, to = next month start (exclusive)
-        // viewBy="campaign" 時不對訂單日期過濾, 但仍套日期範圍到 campaign.end_at (見下方 client filter)
         const fromBoundary = dateFrom ? monthStartDate(dateFrom) : null;
         const toBoundary = dateTo ? nextMonthStartDate(dateTo) : null;
-        if (viewBy === "pickup_date") {
-          if (fromBoundary) q = q.gte("pickup_deadline", fromBoundary);
-          if (toBoundary) q = q.lt("pickup_deadline", toBoundary);
-        } else if (viewBy === "order_date") {
-          if (fromBoundary) q = q.gte("created_at", `${fromBoundary}T00:00:00`);
-          if (toBoundary) q = q.lt("created_at", `${toBoundary}T00:00:00`);
-        }
-
-        if (campaignIds.length === 1) q = q.eq("campaign_id", Number(campaignIds[0]));
-        else if (campaignIds.length > 1)
-          q = q.in("campaign_id", campaignIds.map((x) => Number(x)));
-
-        if (storeId) q = q.eq("pickup_store_id", Number(storeId));
-
-        q = q.limit(MAX_ORDERS);
-
-        const { data: oData, error: oErr } = await q;
+        const { data, error: rpcErr } = await sb.rpc("rpc_orders_pivot", {
+          p_view_by: viewBy,
+          p_date_from: fromBoundary,
+          p_date_to: toBoundary,
+          p_campaign_ids: campaignIds.length ? campaignIds.map((x) => Number(x)) : null,
+          p_store_id: storeId ? Number(storeId) : null,
+          p_statuses: statusArr,
+        });
         if (cancelled) return;
-        if (oErr) {
-          setError(oErr.message);
+        if (rpcErr) {
+          setError(rpcErr.message);
+          setPivotRows([]);
           setLoading(false);
           return;
         }
-
-        const oRows = (oData ?? []) as OrderRow[];
-        setOrders(oRows);
-        setTruncated(oRows.length >= MAX_ORDERS);
-
-        const oIds = oRows.map((o) => o.id);
-        const memIds = Array.from(
-          new Set(oRows.map((o) => o.member_id).filter((x): x is number => x != null)),
-        );
-
-        const [iRes, mRes] = await Promise.all([
-          oIds.length
-            ? sb
-                .from("customer_order_items")
-                .select("order_id, sku_id, qty, unit_price, sku:skus(product_name, variant_name)")
-                .in("order_id", oIds)
-            : Promise.resolve({ data: [] as ItemRow[], error: null }),
-          memIds.length
-            ? sb.from("members").select("id, name, phone").in("id", memIds)
-            : Promise.resolve({ data: [] as Member[], error: null }),
-        ]);
-        if (cancelled) return;
-        if (iRes.error) {
-          setError(iRes.error.message);
-          setLoading(false);
-          return;
-        }
-        setItems((iRes.data ?? []) as unknown as ItemRow[]);
-        const mm = new Map<number, Member>();
-        for (const m of (mRes.data as Member[]) ?? []) mm.set(m.id, m);
-        setMemberMap(mm);
+        setPivotRows((data ?? []) as PivotRow[]);
         setError(null);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -370,11 +325,10 @@ function PivotContent() {
   }, [hydrated, campaignIds, viewBy, dateFrom, dateTo, statusSet, storeId]);
 
   const storeMap = useMemo(() => new Map(stores.map((s) => [s.id, s])), [stores]);
-  const orderMap = useMemo(() => new Map(orders.map((o) => [o.id, o])), [orders]);
   const campaignMap = useMemo(() => new Map(campaigns.map((c) => [c.id, c])), [campaigns]);
 
-  // 樞紐 aggregate (generic groupKey based on viewBy)
-  // cell: orderIds (distinct order count), qtySum (品項數量加總), amount (qty × unit_price 加總)
+  // 樞紐 aggregate — 從 server-side RPC 結果（pivotRows）構造
+  // 每一列 = 一個 (group × sku × store) cell
   type CellAgg = {
     posOrders: Set<number>; // 有效訂單
     negOrders: Set<number>; // 取消/逾期/轉出（扣抵）
@@ -395,76 +349,52 @@ function PivotContent() {
     const groups = new Map<string, Group>();
     const storeIdsUsed = new Set<number>();
 
-    // campaign mode 用 dateFrom/dateTo (月) 過濾 campaign.end_at
-    const filterStart = dateFrom ? new Date(`${monthStartDate(dateFrom)}T00:00:00`).getTime() : -Infinity;
-    const filterEnd = dateTo ? new Date(`${nextMonthStartDate(dateTo)}T00:00:00`).getTime() : Infinity;
-
-    for (const it of items) {
-      const o = orderMap.get(it.order_id);
-      if (!o) continue;
-
-      let groupKey: string;
-      let label: string;
+    for (const r of pivotRows) {
+      let label = "";
       let subLabel: string | null = null;
-      let sortKey: number;
+      let sortKey = 0;
       let closed = false;
 
       if (viewBy === "campaign") {
-        const c = campaignMap.get(o.campaign_id);
-        // 用 campaign.end_at 套月份 range filter (server 沒過、client 補)
-        if (c?.end_at) {
-          const t = new Date(c.end_at).getTime();
-          if (t < filterStart || t >= filterEnd) continue;
-        }
-        // 沒 end_at 的 campaign 一律不受 range 影響、放在「未設收單時間」桶
-        groupKey = `c${o.campaign_id}`;
-        label = c?.name ?? `團 ${o.campaign_id}`;
+        const cid = r.group_id;
+        const c = cid != null ? campaignMap.get(cid) : undefined;
+        label = c?.name ?? `團 ${cid ?? "?"}`;
         if (c?.start_at || c?.end_at) {
-          subLabel = `${fmtMD(c.start_at)} ~ ${fmtMD(c.end_at)} 收單`;
+          subLabel = `${fmtMD(c?.start_at ?? null)} ~ ${fmtMD(c?.end_at ?? null)} 收單`;
         } else {
           subLabel = "未設收單時間";
         }
         sortKey = c?.end_at ? new Date(c.end_at).getTime() : 0;
         closed = c ? CLOSED_STATUSES.has(c.status) : false;
       } else {
-        const baseDate =
-          viewBy === "pickup_date" ? o.pickup_deadline ?? o.created_at : o.created_at;
-        const dk = baseDate.slice(0, 10);
-        groupKey = `d${dk}`;
+        // date mode: group_key = "d2026-05-01"
+        const dk = r.group_key.startsWith("d") ? r.group_key.slice(1) : r.group_key;
         label = dk;
         sortKey = Number(dk.replace(/-/g, ""));
       }
 
-      let group = groups.get(groupKey);
+      let group = groups.get(r.group_key);
       if (!group) {
-        group = { key: groupKey, label, subLabel, sortKey, closed, skus: new Map() };
-        groups.set(groupKey, group);
+        group = { key: r.group_key, label, subLabel, sortKey, closed, skus: new Map() };
+        groups.set(r.group_key, group);
       }
 
       const skuName =
-        it.sku?.variant_name?.trim() || it.sku?.product_name?.trim() || `SKU#${it.sku_id}`;
-      let entry = group.skus.get(it.sku_id);
+        r.sku_variant_name?.trim() || r.sku_product_name?.trim() || `SKU#${r.sku_id}`;
+      let entry = group.skus.get(r.sku_id);
       if (!entry) {
         entry = { name: skuName, perStore: new Map() };
-        group.skus.set(it.sku_id, entry);
+        group.skus.set(r.sku_id, entry);
       }
-      const sid = o.pickup_store_id;
+      const sid = r.pickup_store_id;
       storeIdsUsed.add(sid);
-      let cell = entry.perStore.get(sid);
-      if (!cell) {
-        cell = { posOrders: new Set(), negOrders: new Set(), qtySum: 0, amount: 0 };
-        entry.perStore.set(sid, cell);
-      }
-      // 取消/逾期/轉出 視為扣抵 → 數量/金額/訂單數皆以負數計入
-      const dead =
-        o.status === "cancelled" ||
-        o.status === "expired" ||
-        o.status === "transferred_out";
-      const sign = dead ? -1 : 1;
-      const qty = Number(it.qty);
-      (dead ? cell.negOrders : cell.posOrders).add(o.id);
-      cell.qtySum += sign * qty;
-      cell.amount += sign * qty * Number(it.unit_price);
+      // 同一 cell 在 RPC 結果應只出現一次（GROUP BY 後唯一），直接覆寫
+      entry.perStore.set(sid, {
+        posOrders: new Set(r.pos_order_ids ?? []),
+        negOrders: new Set(r.neg_order_ids ?? []),
+        qtySum: Number(r.qty_sum),
+        amount: Number(r.amount),
+      });
     }
 
     const groupArr = Array.from(groups.values()).sort((a, b) =>
@@ -477,7 +407,7 @@ function PivotContent() {
       return an.localeCompare(bn, "zh-TW");
     });
     return { groups: groupArr, storeIds };
-  }, [items, orderMap, campaignMap, storeMap, viewBy, dateFrom, dateTo]);
+  }, [pivotRows, campaignMap, storeMap, viewBy]);
 
   // 追蹤可否再往左/右捲（決定箭頭鈕 disabled）
   useEffect(() => {
@@ -539,18 +469,13 @@ function PivotContent() {
   }, [pivot, metric]);
 
   const visibleOrders = useMemo(() => {
-    // 訂單數應反映 pivot 內實際被分到 group 的訂單 (campaign mode 可能被 client 過濾)
     const ids = new Set<number>();
-    for (const g of pivot.groups) {
-      for (const [, entry] of g.skus) {
-        for (const [, cell] of entry.perStore) {
-          for (const id of cell.posOrders) ids.add(id);
-          for (const id of cell.negOrders) ids.add(id);
-        }
-      }
+    for (const r of pivotRows) {
+      for (const id of r.pos_order_ids ?? []) ids.add(id);
+      for (const id of r.neg_order_ids ?? []) ids.add(id);
     }
     return ids.size;
-  }, [pivot]);
+  }, [pivotRows]);
 
   function onCellClick(group: Group, skuId: number, sid: number, cell: CellAgg) {
     if (cellTouched(cell) === 0) return;
@@ -570,11 +495,6 @@ function PivotContent() {
             {loading
               ? "載入中…"
               : `共 ${visibleOrders} 筆訂單 / ${pivot.groups.length} ${viewBy === "campaign" ? "個開團" : "個日期"} / ${pivot.storeIds.length} 家店`}
-            {truncated && (
-              <span className="ml-2 text-amber-600 dark:text-amber-400">
-                （已截斷至 {MAX_ORDERS} 筆，請縮小日期範圍）
-              </span>
-            )}
           </p>
         </div>
         <Link
@@ -1015,9 +935,6 @@ function PivotContent() {
           <CellOrdersList
             orderIds={cellModal.orderIds}
             skuId={cellModal.skuId}
-            orderMap={orderMap}
-            memberMap={memberMap}
-            items={items}
             campaignMap={campaignMap}
             onOpenOrder={(id, no) => {
               setDetailId(id);
@@ -1051,43 +968,97 @@ function PivotContent() {
 function CellOrdersList({
   orderIds,
   skuId,
-  orderMap,
-  memberMap,
-  items,
   campaignMap,
   onOpenOrder,
 }: {
   orderIds: number[];
   skuId: number;
-  orderMap: Map<number, OrderRow>;
-  memberMap: Map<number, Member>;
-  items: ItemRow[];
   campaignMap: Map<number, Campaign>;
   onOpenOrder: (id: number, no: string) => void;
 }) {
-  // 取每訂單在該 sku 的 qty (同 sku 同訂單合併、雖然極少)
-  const qtyBySku = useMemo(() => {
-    const m = new Map<number, number>();
-    for (const it of items) {
-      if (it.sku_id !== skuId) continue;
-      if (!orderIds.includes(it.order_id)) continue;
-      m.set(it.order_id, (m.get(it.order_id) ?? 0) + Number(it.qty));
+  // 點 cell 開 modal 後才拉那 cell 對應的訂單／會員／對該 sku 的 qty。
+  // 單一 cell 的 orderIds 數量通常 < 200，不會撞 PostgREST max_rows=1000。
+  const [rows, setRows] = useState<OrderRow[] | null>(null);
+  const [memberMap, setMemberMap] = useState<Map<number, Member>>(new Map());
+  const [qtyBySku, setQtyBySku] = useState<Map<number, number>>(new Map());
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setRows(null);
+    setErr(null);
+    setMemberMap(new Map());
+    setQtyBySku(new Map());
+    if (orderIds.length === 0) {
+      setRows([]);
+      return;
     }
-    return m;
-  }, [items, skuId, orderIds]);
+    (async () => {
+      try {
+        const sb = getSupabase();
+        const [oRes, iRes] = await Promise.all([
+          sb
+            .from("customer_orders")
+            .select(
+              "id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, created_at",
+            )
+            .in("id", orderIds),
+          sb
+            .from("customer_order_items")
+            .select("order_id, qty")
+            .in("order_id", orderIds)
+            .eq("sku_id", skuId),
+        ]);
+        if (cancelled) return;
+        if (oRes.error) {
+          setErr(oRes.error.message);
+          return;
+        }
+        if (iRes.error) {
+          setErr(iRes.error.message);
+          return;
+        }
+        const oRows = (oRes.data ?? []) as OrderRow[];
+        setRows(oRows);
+        const memIds = Array.from(
+          new Set(oRows.map((o) => o.member_id).filter((x): x is number => x != null)),
+        );
+        if (memIds.length) {
+          const mRes = await sb.from("members").select("id, name, phone").in("id", memIds);
+          if (cancelled) return;
+          const mm = new Map<number, Member>();
+          for (const m of ((mRes.data ?? []) as Member[])) mm.set(m.id, m);
+          setMemberMap(mm);
+        }
+        const qm = new Map<number, number>();
+        for (const it of ((iRes.data ?? []) as { order_id: number; qty: number }[])) {
+          qm.set(it.order_id, (qm.get(it.order_id) ?? 0) + Number(it.qty));
+        }
+        setQtyBySku(qm);
+      } catch (e) {
+        if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [orderIds, skuId]);
 
-  const rows = orderIds
-    .map((id) => orderMap.get(id))
-    .filter((o): o is OrderRow => !!o)
-    .sort((a, b) => a.order_no.localeCompare(b.order_no));
-
+  if (err) {
+    return <p className="p-4 text-sm text-red-600 dark:text-red-400">讀取失敗：{err}</p>;
+  }
+  if (rows === null) {
+    return <p className="p-4 text-sm text-zinc-500">載入中…</p>;
+  }
   if (rows.length === 0) {
     return <p className="p-4 text-sm text-zinc-500">沒有訂單。</p>;
   }
 
+  const sorted = [...rows].sort((a, b) => a.order_no.localeCompare(b.order_no));
+
   return (
     <div className="max-h-[60vh] overflow-y-auto">
-      <p className="mb-2 text-xs text-zinc-500">{rows.length} 筆訂單</p>
+      <p className="mb-2 text-xs text-zinc-500">{sorted.length} 筆訂單</p>
       <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
         <thead className="bg-zinc-50 dark:bg-zinc-900">
           <tr>
@@ -1112,7 +1083,7 @@ function CellOrdersList({
           </tr>
         </thead>
         <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-          {rows.map((o) => {
+          {sorted.map((o) => {
             const m = o.member_id ? memberMap.get(o.member_id) : null;
             const c = campaignMap.get(o.campaign_id);
             const qty = qtyBySku.get(o.id) ?? 0;
