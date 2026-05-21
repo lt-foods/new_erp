@@ -57,12 +57,12 @@ type PivotRow = {
 };
 
 type ViewBy = "order_date" | "campaign";
-type Metric = "item_qty" | "order_count" | "amount";
+type Metric = "item_qty" | "amount";
 
-// 把舊 LS 的 "count" 視為 "item_qty" (用戶真正想要的、之前命名誤導)
+// 把舊 LS / URL 殘留的 "count" / "order_count" 視為 "item_qty"
 function normalizeMetric(v: string | undefined | null): Metric | null {
-  if (v === "item_qty" || v === "order_count" || v === "amount") return v;
-  if (v === "count") return "item_qty"; // legacy migration
+  if (v === "item_qty" || v === "amount") return v;
+  if (v === "count" || v === "order_count") return "item_qty"; // legacy
   return null;
 }
 
@@ -444,24 +444,17 @@ function PivotContent() {
   }, [pivot]);
 
   // metric 取值 helper
-  // 訂單數淨值＝有效訂單數 − 取消/逾期/轉出 訂單數
-  const cellOrderCount = (c: CellAgg): number => c.posOrders.size - c.negOrders.size;
   const cellTouched = (c: CellAgg): number => c.posOrders.size + c.negOrders.size;
   const cellAllOrderIds = (c: CellAgg): number[] => [...c.posOrders, ...c.negOrders];
   const cellValue = (cell: CellAgg | undefined): number => {
     if (!cell) return 0;
-    if (metric === "item_qty") return cell.qtySum;
-    if (metric === "order_count") return cellOrderCount(cell);
-    return cell.amount;
+    return metric === "item_qty" ? cell.qtySum : cell.amount;
   };
   const fmtCellValue = (v: number): string => {
     if (metric === "amount") return fmtAmount(v);
-    // item_qty / order_count 都顯示數字 (qty 可能小數、round 2 位後去 trailing 0)
-    if (metric === "item_qty") {
-      const r = Math.round(v * 100) / 100;
-      return String(r);
-    }
-    return String(v);
+    // item_qty 可能小數、round 2 位後去 trailing 0
+    const r = Math.round(v * 100) / 100;
+    return String(r);
   };
 
   // Grand totals — 依 metric 取值
@@ -471,12 +464,7 @@ function PivotContent() {
     for (const g of pivot.groups) {
       for (const [, entry] of g.skus) {
         for (const [sid, cell] of entry.perStore) {
-          const v =
-            metric === "item_qty"
-              ? cell.qtySum
-              : metric === "order_count"
-              ? cell.posOrders.size - cell.negOrders.size
-              : cell.amount;
+          const v = metric === "item_qty" ? cell.qtySum : cell.amount;
           perStore.set(sid, (perStore.get(sid) ?? 0) + v);
           grand += v;
         }
@@ -713,7 +701,7 @@ function PivotContent() {
         </div>
       )}
 
-      {/* Metric toggle: 品項數 / 訂單數 / 訂單金額 */}
+      {/* Metric toggle: 品項數 / 訂單金額 */}
       <div className="flex items-center gap-2 text-sm">
         <span className="text-zinc-500">數值：</span>
         <div className="inline-flex rounded-md border border-zinc-300 dark:border-zinc-700">
@@ -727,17 +715,6 @@ function PivotContent() {
             title="該品項數量加總 (Σ qty)"
           >
             品項數
-          </SpinButton>
-          <SpinButton
-            onClick={() => setMetric("order_count")}
-            className={`border-l border-zinc-300 px-3 py-1.5 text-sm transition-colors dark:border-zinc-700 ${
-              metric === "order_count"
-                ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                : "bg-white text-zinc-700 hover:bg-zinc-50 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-900"
-            }`}
-            title="不重複訂單數 (COUNT DISTINCT order_id)"
-          >
-            訂單數
           </SpinButton>
           <SpinButton
             onClick={() => setMetric("amount")}
@@ -945,8 +922,6 @@ function PivotContent() {
         說明：Cell 為「該 group × 該品項 × 該店」的
         {metric === "item_qty"
           ? "品項數量加總（Σ qty）"
-          : metric === "order_count"
-          ? "不重複訂單數（COUNT DISTINCT order_id）"
           : "金額合計（Σ qty × unit_price）"}
         ，點數字看訂單清單。
       </p>
