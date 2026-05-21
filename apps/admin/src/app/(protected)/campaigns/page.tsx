@@ -14,6 +14,7 @@ import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/compone
 import { CampaignThumb } from "@/components/CampaignThumb";
 import { campaignCoverUrl, type CampaignCoverItem } from "@/lib/campaignCover";
 import FbPublishModal from "@/components/FbPublishModal";
+import FbBulkPublishModal from "@/components/FbBulkPublishModal";
 import { useRole, isAdmin } from "@/lib/role";
 
 // 共用: chunked fetch — bypass PostgREST max-rows 1000 cap
@@ -128,6 +129,7 @@ export default function CampaignsListPage() {
   const [reloadTick, setReloadTick] = useState(0);
   const [resyncTick, setResyncTick] = useState(0);
   const [fbPublishId, setFbPublishId] = useState<number | null>(null);
+  const [bulkFbOpen, setBulkFbOpen] = useState(false);
   const [closingId, setClosingId] = useState<number | null>(null);
   const [finalizingId, setFinalizingId] = useState<number | null>(null);
 
@@ -664,6 +666,15 @@ export default function CampaignsListPage() {
           >
             批次設定收單時間
           </SpinButton>
+          {showAdminActions && (
+            <SpinButton
+              onClick={() => setBulkFbOpen(true)}
+              disabled={bulkBusy !== null}
+              className="rounded-md bg-sky-100 px-3 py-1.5 text-sm font-medium text-sky-800 hover:bg-sky-200 disabled:opacity-50 dark:bg-sky-950 dark:text-sky-300 dark:hover:bg-sky-900"
+            >
+              批次發 FB
+            </SpinButton>
+          )}
           <SpinButton
             onClick={() => setSelectedIds(new Set())}
             className="ml-auto text-xs text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200"
@@ -935,6 +946,13 @@ export default function CampaignsListPage() {
         open={fbPublishId !== null}
         campaignId={fbPublishId}
         onClose={() => setFbPublishId(null)}
+      />
+
+      <FbBulkPublishModal
+        open={bulkFbOpen}
+        campaignIds={Array.from(selectedIds)}
+        onClose={() => setBulkFbOpen(false)}
+        onCompleted={() => setReloadTick((t) => t + 1)}
       />
     </div>
   );
