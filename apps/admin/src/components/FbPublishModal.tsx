@@ -6,7 +6,7 @@ import SpinButton from "@/components/SpinButton";
 import { getSupabase } from "@/lib/supabase";
 
 const PRODUCTS_BUCKET = "products";
-const MEMBER_APP_URL = (process.env.NEXT_PUBLIC_MEMBER_APP_URL ?? "https://shop.lt-foods.tw").replace(/\/$/, "");
+const MEMBER_APP_URL = (process.env.NEXT_PUBLIC_MEMBER_APP_URL ?? "https://new-erp-admin.vercel.app").replace(/\/$/, "");
 
 type FbPage = {
   id: number;
