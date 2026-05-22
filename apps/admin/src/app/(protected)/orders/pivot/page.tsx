@@ -43,6 +43,8 @@ type OrderRow = {
 type Member = { id: number; name: string | null; phone: string | null };
 
 // server-side aggregate row (rpc_orders_pivot)
+// v4 起：qty_sum / amount 只計「非取消」品項；neg_qty_sum / neg_amount
+// 為取消/逾期/轉出之絕對值，UI 在 cell 後面標 "取消 N 個"。
 type PivotRow = {
   group_key: string;
   group_id: number | null;        // campaign mode = campaign_id；date mode = null
@@ -52,6 +54,8 @@ type PivotRow = {
   pickup_store_id: number;
   qty_sum: number | string;       // numeric → string via postgrest
   amount: number | string;
+  neg_qty_sum: number | string;
+  neg_amount: number | string;
   pos_order_ids: number[];
   neg_order_ids: number[];
 };
@@ -353,9 +357,11 @@ function PivotContent() {
   // 每一列 = 一個 (group × sku × store) cell
   type CellAgg = {
     posOrders: Set<number>; // 有效訂單
-    negOrders: Set<number>; // 取消/逾期/轉出（扣抵）
-    qtySum: number;
-    amount: number;
+    negOrders: Set<number>; // 取消/逾期/轉出（單獨標示，不扣抵）
+    qtySum: number;         // 正單 qty
+    amount: number;         // 正單 amount
+    negQtySum: number;      // 取消單 qty（絕對值）
+    negAmount: number;      // 取消單 amount（絕對值）
   };
   type SkuEntry = { name: string; perStore: Map<number, CellAgg> };
   type Group = {
@@ -416,6 +422,8 @@ function PivotContent() {
         negOrders: new Set(r.neg_order_ids ?? []),
         qtySum: Number(r.qty_sum),
         amount: Number(r.amount),
+        negQtySum: Number(r.neg_qty_sum ?? 0),
+        negAmount: Number(r.neg_amount ?? 0),
       });
     }
 
@@ -455,27 +463,43 @@ function PivotContent() {
     if (!cell) return 0;
     return metric === "item_qty" ? cell.qtySum : cell.amount;
   };
+  const cellNegValue = (cell: CellAgg | undefined): number => {
+    if (!cell) return 0;
+    return metric === "item_qty" ? cell.negQtySum : cell.negAmount;
+  };
   const fmtCellValue = (v: number): string => {
     if (metric === "amount") return fmtAmount(v);
     // item_qty 可能小數、round 2 位後去 trailing 0
     const r = Math.round(v * 100) / 100;
     return String(r);
   };
+  const fmtNegSuffix = (neg: number): string => {
+    if (!neg) return "";
+    if (metric === "amount") return `取消 ${fmtAmount(neg)}`;
+    const r = Math.round(neg * 100) / 100;
+    return `取消 ${r} 個`;
+  };
 
   // Grand totals — 依 metric 取值
+  // 正單 / 取消單 各自加總；UI 顯示正單值、取消數另外標
   const grandTotals = useMemo(() => {
     const perStore = new Map<number, number>();
+    const negPerStore = new Map<number, number>();
     let grand = 0;
+    let negGrand = 0;
     for (const g of pivot.groups) {
       for (const [, entry] of g.skus) {
         for (const [sid, cell] of entry.perStore) {
           const v = metric === "item_qty" ? cell.qtySum : cell.amount;
+          const nv = metric === "item_qty" ? cell.negQtySum : cell.negAmount;
           perStore.set(sid, (perStore.get(sid) ?? 0) + v);
+          negPerStore.set(sid, (negPerStore.get(sid) ?? 0) + nv);
           grand += v;
+          negGrand += nv;
         }
       }
     }
-    return { perStore, grand };
+    return { perStore, grand, negPerStore, negGrand };
   }, [pivot, metric]);
 
   const visibleOrders = useMemo(() => {
@@ -808,18 +832,24 @@ function PivotContent() {
                   a[1].name.localeCompare(b[1].name, "zh-TW"),
                 );
                 const groupTotalsPerStore = new Map<number, number>();
+                const groupNegPerStore = new Map<number, number>();
                 let groupGrand = 0;
+                let groupNegGrand = 0;
                 for (const [, entry] of skuArr) {
                   for (const sid of pivot.storeIds) {
                     const v = cellValue(entry.perStore.get(sid));
+                    const nv = cellNegValue(entry.perStore.get(sid));
                     groupTotalsPerStore.set(sid, (groupTotalsPerStore.get(sid) ?? 0) + v);
+                    groupNegPerStore.set(sid, (groupNegPerStore.get(sid) ?? 0) + nv);
                     groupGrand += v;
+                    groupNegGrand += nv;
                   }
                 }
                 return (
                   <Fragment key={group.key}>
                     {skuArr.map(([skuId, entry], i) => {
                       let rowTotal = 0;
+                      let rowNegTotal = 0;
                       const rowCls = [
                         i === 0 ? "border-t-2 border-zinc-300 dark:border-zinc-700" : "",
                         group.closed ? "bg-amber-50/60 dark:bg-amber-950/30" : "",
@@ -856,7 +886,9 @@ function PivotContent() {
                           {pivot.storeIds.map((sid) => {
                             const cell = entry.perStore.get(sid);
                             const v = cellValue(cell);
+                            const negV = cellNegValue(cell);
                             rowTotal += v;
+                            rowNegTotal += negV;
                             if (!cell || cellTouched(cell) === 0) {
                               return (
                                 <td
@@ -867,6 +899,7 @@ function PivotContent() {
                                 </td>
                               );
                             }
+                            const negSuffix = fmtNegSuffix(negV);
                             return (
                               <td key={sid} className="px-3 py-1.5 text-right">
                                 <SpinButton
@@ -877,11 +910,21 @@ function PivotContent() {
                                 >
                                   {fmtCellValue(v)}
                                 </SpinButton>
+                                {negSuffix && (
+                                  <div className="mt-0.5 text-[10px] font-normal text-zinc-400 dark:text-zinc-500">
+                                    {negSuffix}
+                                  </div>
+                                )}
                               </td>
                             );
                           })}
                           <td className="px-3 py-1.5 text-right font-mono font-semibold">
                             {rowTotal ? fmtCellValue(rowTotal) : ""}
+                            {rowNegTotal > 0 && (
+                              <div className="mt-0.5 text-[10px] font-normal text-zinc-400 dark:text-zinc-500">
+                                {fmtNegSuffix(rowNegTotal)}
+                              </div>
+                            )}
                           </td>
                         </tr>
                       );
@@ -892,16 +935,29 @@ function PivotContent() {
                         <td className="px-3 py-1.5 text-xs text-zinc-500">{group.label}</td>
                         {pivot.storeIds.map((sid) => {
                           const v = groupTotalsPerStore.get(sid) ?? 0;
+                          const nv = groupNegPerStore.get(sid) ?? 0;
                           return (
                             <td
                               key={sid}
                               className="px-3 py-1.5 text-right font-mono text-zinc-700 dark:text-zinc-300"
                             >
                               {v ? fmtCellValue(v) : ""}
+                              {nv > 0 && (
+                                <div className="text-[10px] font-normal text-zinc-400 dark:text-zinc-500">
+                                  {fmtNegSuffix(nv)}
+                                </div>
+                              )}
                             </td>
                           );
                         })}
-                        <td className="px-3 py-1.5 text-right font-mono">{fmtCellValue(groupGrand)}</td>
+                        <td className="px-3 py-1.5 text-right font-mono">
+                          {fmtCellValue(groupGrand)}
+                          {groupNegGrand > 0 && (
+                            <div className="text-[10px] font-normal text-zinc-400 dark:text-zinc-500">
+                              {fmtNegSuffix(groupNegGrand)}
+                            </div>
+                          )}
+                        </td>
                       </tr>
                     )}
                   </Fragment>
@@ -911,12 +967,27 @@ function PivotContent() {
                 <td className="px-3 py-2" colSpan={2}>
                   總計
                 </td>
-                {pivot.storeIds.map((sid) => (
-                  <td key={sid} className="px-3 py-2 text-right font-mono">
-                    {fmtCellValue(grandTotals.perStore.get(sid) ?? 0)}
-                  </td>
-                ))}
-                <td className="px-3 py-2 text-right font-mono">{fmtCellValue(grandTotals.grand)}</td>
+                {pivot.storeIds.map((sid) => {
+                  const nv = grandTotals.negPerStore.get(sid) ?? 0;
+                  return (
+                    <td key={sid} className="px-3 py-2 text-right font-mono">
+                      {fmtCellValue(grandTotals.perStore.get(sid) ?? 0)}
+                      {nv > 0 && (
+                        <div className="text-[10px] font-normal text-zinc-400 dark:text-zinc-500">
+                          {fmtNegSuffix(nv)}
+                        </div>
+                      )}
+                    </td>
+                  );
+                })}
+                <td className="px-3 py-2 text-right font-mono">
+                  {fmtCellValue(grandTotals.grand)}
+                  {grandTotals.negGrand > 0 && (
+                    <div className="text-[10px] font-normal text-zinc-400 dark:text-zinc-500">
+                      {fmtNegSuffix(grandTotals.negGrand)}
+                    </div>
+                  )}
+                </td>
               </tr>
             </tbody>
           </table>
