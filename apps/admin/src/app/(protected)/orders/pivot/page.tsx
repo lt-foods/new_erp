@@ -174,6 +174,9 @@ function PivotContent() {
 
   const [campaignPickerOpen, setCampaignPickerOpen] = useState(false);
   const [statusPickerOpen, setStatusPickerOpen] = useState(false);
+  const [campaignSearch, setCampaignSearch] = useState("");
+  // dropdownIds: 下拉清單顯示的 id 序（最新 20 / 搜尋結果）；campaigns 為已知 cache（dedupe）
+  const [dropdownIds, setDropdownIds] = useState<number[]>([]);
 
   // hydrate flag — 等 LS 載入完才跑 filter 抓資料
   const [hydrated, setHydrated] = useState(false);
@@ -279,22 +282,68 @@ function PivotContent() {
   }, [branchStoreId, storeId]);
   useDefaultStoreFromUser(stores, storeId, setStoreId);
 
-  // Load campaigns + stores
+  // Load stores 一次
   useEffect(() => {
     (async () => {
       const sb = getSupabase();
-      const [c, s] = await Promise.all([
-        sb
-          .from("group_buy_campaigns")
-          .select("id, campaign_no, name, status, start_at, end_at")
-          .order("updated_at", { ascending: false })
-          .limit(500),
-        sb.from("stores").select("id, code, name").order("name"),
-      ]);
-      setCampaigns((c.data as Campaign[]) ?? []);
-      setStores((s.data as Store[]) ?? []);
+      const { data } = await sb.from("stores").select("id, code, name").order("name");
+      setStores((data as Store[]) ?? []);
     })();
   }, []);
+
+  // 累加開團到 cache（dedupe by id）
+  const mergeCampaigns = (list: Campaign[]) => {
+    if (list.length === 0) return;
+    setCampaigns((cur) => {
+      const map = new Map(cur.map((c) => [c.id, c]));
+      for (const c of list) map.set(c.id, c);
+      return Array.from(map.values());
+    });
+  };
+
+  // 下拉清單：預設 start_at desc 前 20 筆；有搜尋字串時 ilike + 50 筆（debounce 250ms）
+  useEffect(() => {
+    const t = setTimeout(async () => {
+      const sb = getSupabase();
+      const kw = campaignSearch.trim();
+      let q = sb
+        .from("group_buy_campaigns")
+        .select("id, campaign_no, name, status, start_at, end_at")
+        .order("start_at", { ascending: false, nullsFirst: false });
+      if (kw) {
+        const safe = kw.replace(/[%,()]/g, " ");
+        q = q.or(`name.ilike.%${safe}%,campaign_no.ilike.%${safe}%`).limit(50);
+      } else {
+        q = q.limit(20);
+      }
+      const { data } = await q;
+      const list = (data as Campaign[]) ?? [];
+      setDropdownIds(list.map((c) => c.id));
+      mergeCampaigns(list);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [campaignSearch]);
+
+  // 補齊 cache：已勾選 ids + 樞紐結果引用的 group_id（campaign 模式才需要）
+  // 否則勾舊團或表內出現舊團時，按鈕/列名稱會掉回「團 N」
+  useEffect(() => {
+    const ids = new Set<number>();
+    for (const x of campaignIds) ids.add(Number(x));
+    if (viewBy === "campaign") {
+      for (const r of pivotRows) {
+        if (r.group_id != null) ids.add(r.group_id);
+      }
+    }
+    if (ids.size === 0) return;
+    (async () => {
+      const sb = getSupabase();
+      const { data } = await sb
+        .from("group_buy_campaigns")
+        .select("id, campaign_no, name, status, start_at, end_at")
+        .in("id", Array.from(ids));
+      mergeCampaigns((data as Campaign[]) ?? []);
+    })();
+  }, [campaignIds, pivotRows, viewBy]);
 
   // 透過 server-side RPC 拉 aggregate（rpc_orders_pivot）
   // 取代之前 client 撈 raw orders+items 再 group by 的做法 — 那做法 items
@@ -551,49 +600,84 @@ function PivotContent() {
               {campaignIds.length === 0
                 ? "全部開團"
                 : campaignIds.length === 1
-                ? campaigns.find((c) => String(c.id) === campaignIds[0])?.name ?? `團 ${campaignIds[0]}`
+                ? campaignMap.get(Number(campaignIds[0]))?.name ?? `團 ${campaignIds[0]}`
                 : `已選 ${campaignIds.length} 個開團`}
             </span>
             <span className="ml-2 text-zinc-400">▾</span>
           </SpinButton>
           {campaignPickerOpen && (
-            <div className="absolute z-20 mt-1 max-h-80 w-full overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
-              <div className="sticky top-0 flex justify-between border-b border-zinc-200 bg-white px-3 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-900">
-                <SpinButton
-                  onClick={() => setCampaignIds([])}
-                  className="text-blue-600 hover:underline dark:text-blue-400"
-                >
-                  全部清除
-                </SpinButton>
-                <SpinButton
-                  onClick={() => setCampaignPickerOpen(false)}
-                  className="text-zinc-500 hover:text-zinc-700 dark:text-zinc-400"
-                >
-                  關閉
-                </SpinButton>
-              </div>
-              {campaigns.map((c) => {
-                const checked = campaignIds.includes(String(c.id));
-                return (
-                  <label
-                    key={c.id}
-                    className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-950"
+            <div className="absolute z-20 mt-1 max-h-96 w-full overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+              <div className="sticky top-0 z-10 border-b border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900">
+                <div className="flex justify-between text-xs">
+                  <SpinButton
+                    onClick={() => setCampaignIds([])}
+                    className="text-blue-600 hover:underline dark:text-blue-400"
                   >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(e) => {
-                        const id = String(c.id);
-                        setCampaignIds((cur) =>
-                          e.target.checked ? [...cur, id] : cur.filter((x) => x !== id),
-                        );
-                      }}
-                    />
-                    <span className="font-mono text-xs text-zinc-500">{c.campaign_no}</span>
-                    <span className="truncate">{c.name}</span>
-                  </label>
-                );
-              })}
+                    全部清除
+                  </SpinButton>
+                  <SpinButton
+                    onClick={() => setCampaignPickerOpen(false)}
+                    className="text-zinc-500 hover:text-zinc-700 dark:text-zinc-400"
+                  >
+                    關閉
+                  </SpinButton>
+                </div>
+                <input
+                  type="search"
+                  value={campaignSearch}
+                  onChange={(e) => setCampaignSearch(e.target.value)}
+                  placeholder="搜尋開團編號 / 名稱"
+                  className="mt-2 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                />
+              </div>
+              {(() => {
+                // 已勾選的開團釘在最上面（避免搜尋字串改變後不見），再放下拉結果
+                const seen = new Set<number>();
+                const ordered: Campaign[] = [];
+                for (const id of campaignIds) {
+                  const c = campaignMap.get(Number(id));
+                  if (c && !seen.has(c.id)) {
+                    ordered.push(c);
+                    seen.add(c.id);
+                  }
+                }
+                for (const id of dropdownIds) {
+                  const c = campaignMap.get(id);
+                  if (c && !seen.has(c.id)) {
+                    ordered.push(c);
+                    seen.add(c.id);
+                  }
+                }
+                if (ordered.length === 0) {
+                  return (
+                    <div className="px-3 py-6 text-center text-xs text-zinc-500">
+                      {campaignSearch ? "找不到符合的開團" : "無開團"}
+                    </div>
+                  );
+                }
+                return ordered.map((c) => {
+                  const checked = campaignIds.includes(String(c.id));
+                  return (
+                    <label
+                      key={c.id}
+                      className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-950"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => {
+                          const id = String(c.id);
+                          setCampaignIds((cur) =>
+                            e.target.checked ? [...cur, id] : cur.filter((x) => x !== id),
+                          );
+                        }}
+                      />
+                      <span className="font-mono text-xs text-zinc-500">{c.campaign_no}</span>
+                      <span className="truncate">{c.name}</span>
+                    </label>
+                  );
+                });
+              })()}
             </div>
           )}
         </div>
