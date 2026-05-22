@@ -347,6 +347,12 @@ function PageContent() {
           };
         });
 
+        // 依 sku_code 排序，讓同商品（同 G00022-* prefix）的不同規格相鄰；
+        // numeric:true 確保 G00018-10 排在 G00018-2 之後而不是字典序排前面
+        merged.sort((a, b) =>
+          a.sku_code.localeCompare(b.sku_code, undefined, { numeric: true, sensitivity: "base" }),
+        );
+
         setItems(merged);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));

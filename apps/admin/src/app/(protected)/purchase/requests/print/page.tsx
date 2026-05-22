@@ -204,6 +204,12 @@ function PageContent() {
       g.rows.push(r);
       g.subtotal += r.qty_requested * r.unit_cost;
     }
+    // 群組內：依 sku_code 排序，讓同商品的不同規格相鄰
+    for (const g of m.values()) {
+      g.rows.sort((a, b) =>
+        a.sku_code.localeCompare(b.sku_code, undefined, { numeric: true, sensitivity: "base" }),
+      );
+    }
     // 未指派排最後
     return Array.from(m.values()).sort((a, b) => {
       if (a.supplier_id === null) return 1;
