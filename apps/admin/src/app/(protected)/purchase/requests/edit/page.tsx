@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
@@ -92,6 +92,8 @@ function PageContent() {
   const [transferSummary, setTransferSummary] = useState<TransferSummary | undefined>(undefined);
   const [staffNames, setStaffNames] = useState<Map<string, string>>(new Map());
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  // 廠商被指派的次數（v_supplier_usage_count），用來把常用排在下拉前面
+  const [supplierUsage, setSupplierUsage] = useState<Map<number, number>>(new Map());
   const [missingCampaigns, setMissingCampaigns] = useState<{ id: number; name: string; campaign_no: string }[]>([]);
   const [appending, setAppending] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -113,6 +115,7 @@ function PageContent() {
           { data: prData, error: prErr },
           { data: itemRows, error: itemErr },
           { data: supRows },
+          { data: usageRows },
           { data: locRow },
         ] = await Promise.all([
           supabase
@@ -130,6 +133,7 @@ function PageContent() {
             .eq("pr_id", id)
             .order("id"),
           supabase.from("suppliers").select("id, name").eq("is_active", true).order("name"),
+          supabase.from("v_supplier_usage_count").select("supplier_id, usage_count"),
           supabase.from("locations").select("id").order("id").limit(1).maybeSingle(),
         ]);
 
@@ -139,6 +143,13 @@ function PageContent() {
 
         setHeader(prData as PRHeader);
         setSuppliers((supRows ?? []) as Supplier[]);
+        {
+          const m = new Map<number, number>();
+          for (const u of ((usageRows ?? []) as { supplier_id: number; usage_count: number }[])) {
+            m.set(u.supplier_id, Number(u.usage_count));
+          }
+          setSupplierUsage(m);
+        }
         setDestLocationId(prData.source_location_id ?? locRow?.id ?? null);
 
         // 抓拆出的 PO（透過 PR items 反查）
@@ -786,26 +797,14 @@ function PageContent() {
                   </Td>
                   <Td>
                     {editable ? (
-                      <select
-                        value={r.suggested_supplier_id ?? ""}
-                        onChange={(e) =>
-                          patchItem(idx, {
-                            suggested_supplier_id: e.target.value ? Number(e.target.value) : null,
-                          })
+                      <SupplierPicker
+                        value={r.suggested_supplier_id}
+                        suppliers={suppliers}
+                        usage={supplierUsage}
+                        onChange={(id) =>
+                          patchItem(idx, { suggested_supplier_id: id })
                         }
-                        className={`rounded-md border px-2 py-1 text-sm ${
-                          !r.suggested_supplier_id
-                            ? "border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950"
-                            : "border-zinc-300 dark:border-zinc-700"
-                        } bg-white dark:bg-zinc-800`}
-                      >
-                        <option value="">— 未指派 —</option>
-                        {suppliers.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.name}
-                          </option>
-                        ))}
-                      </select>
+                      />
                     ) : (
                       suppliers.find((s) => s.id === r.suggested_supplier_id)?.name ?? "—"
                     )}
@@ -1029,4 +1028,180 @@ function Th({ children, className = "" }: { children?: React.ReactNode; classNam
 }
 function Td({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <td className={`px-3 py-2 ${className}`}>{children}</td>;
+}
+
+// 廠商選擇 combobox：拼音排序 + 常用 (usage >0) 釘在前面 + 即時搜尋
+// 用顯式 -u-co-pinyin Unicode extension 強制拼音 collation，避免 zh-TW
+// 在不同瀏覽器 fallback 到筆畫
+const pinyinCollator = new Intl.Collator("zh-Hans-CN-u-co-pinyin");
+
+function SupplierPicker({
+  value,
+  suppliers,
+  usage,
+  onChange,
+}: {
+  value: number | null;
+  suppliers: Supplier[];
+  usage: Map<number, number>;
+  onChange: (id: number | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const rootRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // 點外面關閉
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  // 開啟時自動聚焦搜尋框
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+
+  const selected = suppliers.find((s) => s.id === value) ?? null;
+
+  // 排序：usage desc → 拼音 asc
+  const sorted = useMemo(() => {
+    return [...suppliers].sort((a, b) => {
+      const ua = usage.get(a.id) ?? 0;
+      const ub = usage.get(b.id) ?? 0;
+      if (ub !== ua) return ub - ua;
+      return pinyinCollator.compare(a.name, b.name);
+    });
+  }, [suppliers, usage]);
+
+  // 搜尋：name 包含關鍵字（忽略大小寫，中文 includes 直接比就行）
+  const filtered = useMemo(() => {
+    const kw = search.trim().toLowerCase();
+    if (!kw) return sorted;
+    return sorted.filter((s) => s.name.toLowerCase().includes(kw));
+  }, [sorted, search]);
+
+  // 分區：常用 (usage>0) vs 其餘；搜尋時不分區
+  const { topUsed, rest } = useMemo(() => {
+    if (search.trim()) return { topUsed: [] as Supplier[], rest: filtered };
+    const top: Supplier[] = [];
+    const others: Supplier[] = [];
+    for (const s of filtered) {
+      if ((usage.get(s.id) ?? 0) > 0) top.push(s);
+      else others.push(s);
+    }
+    return { topUsed: top, rest: others };
+  }, [filtered, usage, search]);
+
+  function pick(id: number | null) {
+    onChange(id);
+    setOpen(false);
+    setSearch("");
+  }
+
+  return (
+    <div className="relative" ref={rootRef}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`flex w-full min-w-[8rem] items-center justify-between rounded-md border px-2 py-1 text-left text-sm ${
+          !value
+            ? "border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950"
+            : "border-zinc-300 dark:border-zinc-700"
+        } bg-white dark:bg-zinc-800`}
+      >
+        <span className="truncate">{selected?.name ?? "— 未指派 —"}</span>
+        <span className="ml-2 text-zinc-400">▾</span>
+      </button>
+      {open && (
+        <div className="absolute z-30 mt-1 max-h-80 w-56 overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+          <div className="sticky top-0 z-10 border-b border-zinc-200 bg-white p-2 dark:border-zinc-800 dark:bg-zinc-900">
+            <input
+              ref={inputRef}
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="搜尋廠商"
+              className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => pick(null)}
+            className="block w-full px-3 py-1.5 text-left text-sm text-zinc-500 hover:bg-zinc-50 dark:hover:bg-zinc-950"
+          >
+            — 未指派 —
+          </button>
+          {topUsed.length > 0 && (
+            <>
+              <div className="px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
+                常用
+              </div>
+              {topUsed.map((s) => (
+                <SupplierOption
+                  key={s.id}
+                  s={s}
+                  usage={usage.get(s.id) ?? 0}
+                  selected={s.id === value}
+                  onPick={pick}
+                />
+              ))}
+              {rest.length > 0 && (
+                <div className="mt-1 border-t border-zinc-100 px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-zinc-400 dark:border-zinc-800">
+                  全部
+                </div>
+              )}
+            </>
+          )}
+          {rest.map((s) => (
+            <SupplierOption
+              key={s.id}
+              s={s}
+              usage={usage.get(s.id) ?? 0}
+              selected={s.id === value}
+              onPick={pick}
+            />
+          ))}
+          {filtered.length === 0 && (
+            <div className="px-3 py-4 text-center text-xs text-zinc-500">
+              找不到符合的廠商
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SupplierOption({
+  s,
+  usage,
+  selected,
+  onPick,
+}: {
+  s: Supplier;
+  usage: number;
+  selected: boolean;
+  onPick: (id: number) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onPick(s.id)}
+      className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-sm hover:bg-zinc-50 dark:hover:bg-zinc-950 ${
+        selected ? "bg-blue-50 font-medium dark:bg-blue-950" : ""
+      }`}
+    >
+      <span className="truncate">{s.name}</span>
+      {usage > 0 && (
+        <span className="ml-2 shrink-0 text-[10px] text-zinc-400">×{usage}</span>
+      )}
+    </button>
+  );
 }
