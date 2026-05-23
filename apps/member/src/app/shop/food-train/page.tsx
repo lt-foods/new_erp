@@ -25,7 +25,7 @@ export default function FoodTrainPage() {
       try {
         const d = await callLiffApi<{ campaigns: CampaignSummary[] }>(s.token, {
           action: "list_active_campaigns",
-          category: "food_train",
+          close_type: "food_train",
         });
         setCampaigns(d.campaigns);
       } catch (e) {

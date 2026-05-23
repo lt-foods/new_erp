@@ -1,7 +1,12 @@
 # food-train 測試項目 — 開團「美食列車」類別 + /shop 置頂專區 + 上架推播廣播
 
-**對應 migration:** `supabase/migrations/<new>_food_train_category.sql`
-**對應 RPC 變更:** `rpc_upsert_campaign` 加 `p_category`
+> **設計變更（2026-05-23）：** 美食列車最終定案為 **`close_type` 第 4 個值**
+> (`regular`/`fast`/`limited`/`food_train`)，不再使用獨立的 `category` 欄位。
+> 以下檢查項目若提到「category 欄位」或「p_category 參數」，請改讀為
+> 「`close_type='food_train'` 篩選」。下方測試會在下個版本重整。
+
+**對應 migration:** `supabase/migrations/20260626000000_food_train_category.sql`
+**對應 RPC 變更:** `rpc_upsert_campaign` 不變（沿用 `p_close_type` 傳 `'food_train'`）
 **對應 Edge Function 變更:** `supabase/functions/admin-notify/index.ts` 加 broadcast mode
 **對應 liff-api 變更:** `list_active_campaigns` 加 category 回傳 + filter
 **對應 UI 變更:**

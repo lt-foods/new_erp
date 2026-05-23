@@ -1,42 +1,58 @@
 -- ============================================================================
--- 開團「美食列車」類別
---   group_buy_campaigns 新增 category 欄位 (主題分類, 與 close_type 正交)
---   rpc_upsert_campaign 加 p_category 參數 (COALESCE 維持向後相容)
+-- 開團「美食列車」併入 close_type 第 4 值
+--   group_buy_campaigns.close_type CHECK 加 'food_train'
+--   rpc_upsert_campaign 不變 (沿用 p_close_type 傳入新值即可)
 --
--- 為何不用 DB trigger 觸發推播:
---   1. broadcast 放大效應大 (整 tenant 會員), 在 DB 觸發失敗排查困難
---   2. 避免 pg_net 依賴; admin 端 client-side 觸發更可控
---   3. 失敗時 admin UI 可顯示 toast, 不阻擋儲存
+-- 注意: 此 migration 也負責清掉早期版本(2026-05-23)曾短暫存在的 category
+--   欄位 + 14 參數 rpc_upsert_campaign overload。對任何先前狀態皆 idempotent:
+--     - prod 已有 category 欄位 → DROP + 資料搬到 close_type
+--     - prod 已有 14 參數 rpc      → 全 DROP 重建為 13 參數
+--     - 全新環境                   → 只生效 close_type CHECK 放寬
 -- ============================================================================
 
--- ── 1. group_buy_campaigns.category 欄位 ────────────────────────────────────
+-- ── 1. close_type CHECK 放寬, 含 'food_train' ──────────────────────────────
 ALTER TABLE group_buy_campaigns
-  ADD COLUMN IF NOT EXISTS category TEXT NULL;
+  DROP CONSTRAINT IF EXISTS group_buy_campaigns_close_type_check;
 
--- CHECK constraint: NULL 或 'food_train' (未來擴充再加新值)
+ALTER TABLE group_buy_campaigns
+  ADD CONSTRAINT group_buy_campaigns_close_type_check
+  CHECK (close_type IN ('regular','fast','limited','food_train'));
+
+COMMENT ON COLUMN group_buy_campaigns.close_type IS
+  '開團類型: regular=常規, fast=快團(強制 end_at), limited=限量, food_train=美食列車(專區)';
+
+-- ── 2. 把早期短暫存在的 category='food_train' 搬到 close_type ───────────────
 DO $$
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'group_buy_campaigns'::regclass
-       AND conname = 'group_buy_campaigns_category_chk'
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_name = 'group_buy_campaigns' AND column_name = 'category'
   ) THEN
-    ALTER TABLE group_buy_campaigns
-      ADD CONSTRAINT group_buy_campaigns_category_chk
-      CHECK (category IS NULL OR category IN ('food_train'));
+    UPDATE group_buy_campaigns
+       SET close_type = 'food_train'
+     WHERE category = 'food_train' AND close_type != 'food_train';
   END IF;
 END $$;
 
-COMMENT ON COLUMN group_buy_campaigns.category IS
-  '開團主題分類 (與 close_type 正交); NULL=一般, food_train=美食列車';
+-- ── 3. DROP 早期版本的 category 欄位 + CHECK constraint ────────────────────
+ALTER TABLE group_buy_campaigns
+  DROP CONSTRAINT IF EXISTS group_buy_campaigns_category_chk;
 
--- ── 2. rpc_upsert_campaign 加 p_category 參數 ──────────────────────────────
--- PostgreSQL 加 DEFAULT 參數會形成 overload, 先 DROP 舊 signature 再重建
--- prod signature: 13 參數 (bigint, 7×text, 2×timestamptz, date, integer, numeric)
-DROP FUNCTION IF EXISTS public.rpc_upsert_campaign(
-  BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ,
-  DATE, INTEGER, NUMERIC, TEXT
-);
+ALTER TABLE group_buy_campaigns
+  DROP COLUMN IF EXISTS category;
+
+-- ── 4. 把 rpc_upsert_campaign 收斂回 13 參數 (拿掉早期短暫加的 p_category) ──
+-- 用動態 DROP 處理所有可能 overload (13 / 14 參數版本都清掉)
+DO $$
+DECLARE r RECORD;
+BEGIN
+  FOR r IN
+    SELECT oid::regprocedure::text AS sig
+      FROM pg_proc WHERE proname = 'rpc_upsert_campaign'
+  LOOP
+    EXECUTE 'DROP FUNCTION ' || r.sig;
+  END LOOP;
+END $$;
 
 CREATE OR REPLACE FUNCTION public.rpc_upsert_campaign(
   p_id               BIGINT,
@@ -51,8 +67,7 @@ CREATE OR REPLACE FUNCTION public.rpc_upsert_campaign(
   p_pickup_deadline  DATE        DEFAULT NULL,
   p_pickup_days      INTEGER     DEFAULT NULL,
   p_total_cap_qty    NUMERIC     DEFAULT NULL,
-  p_notes            TEXT        DEFAULT NULL,
-  p_category         TEXT        DEFAULT NULL
+  p_notes            TEXT        DEFAULT NULL
 ) RETURNS BIGINT
 LANGUAGE plpgsql SECURITY DEFINER
 AS $$
@@ -64,12 +79,12 @@ BEGIN
     INSERT INTO group_buy_campaigns (
       tenant_id, campaign_no, name, description, cover_image_url,
       status, close_type, start_at, end_at, pickup_deadline, pickup_days,
-      total_cap_qty, notes, category, created_by, updated_by
+      total_cap_qty, notes, created_by, updated_by
     ) VALUES (
       v_tenant, p_campaign_no, p_name, p_description, p_cover_image_url,
       COALESCE(p_status,'draft'), COALESCE(p_close_type,'regular'),
       p_start_at, p_end_at, p_pickup_deadline, p_pickup_days,
-      p_total_cap_qty, p_notes, p_category, auth.uid(), auth.uid()
+      p_total_cap_qty, p_notes, auth.uid(), auth.uid()
     ) RETURNING id INTO v_id;
   ELSE
     UPDATE group_buy_campaigns SET
@@ -85,7 +100,6 @@ BEGIN
       pickup_days = p_pickup_days,
       total_cap_qty = p_total_cap_qty,
       notes = p_notes,
-      category = COALESCE(p_category, category),  -- 不傳則維持原值, 顯式清回 NULL 不支援
       updated_by = auth.uid()
     WHERE id = p_id AND tenant_id = v_tenant
     RETURNING id INTO v_id;
