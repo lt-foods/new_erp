@@ -70,13 +70,15 @@ async function buildKeywordOr(keyword: string): Promise<string | null> {
   const t = keyword.trim();
   if (!t) return null;
   const safe = t.replace(/[%,()]/g, " ");
-  const { data } = await getSupabase()
-    .from("members")
-    .select("id")
-    .or(`name.ilike.%${safe}%,phone.ilike.%${safe}%,member_no.ilike.%${safe}%`)
-    .neq("status", "deleted")
-    .limit(300);
+  // Google 式：以空白 / + 拆 token，每個 token 都要在 name / phone / member_no 至少一欄命中
+  const tokens = safe.split(/[\s+]+/).filter(Boolean);
+  let memberQ = getSupabase().from("members").select("id").neq("status", "deleted").limit(300);
+  for (const tok of tokens) {
+    memberQ = memberQ.or(`name.ilike.%${tok}%,phone.ilike.%${tok}%,member_no.ilike.%${tok}%`);
+  }
+  const { data } = await memberQ;
   const ids = ((data ?? []) as { id: number }[]).map((m) => m.id);
+  // 整串 keyword 也允許出現在 order_no / nickname_snapshot（不拆 token，避免誤判）
   const ors = [`order_no.ilike.%${safe}%`, `nickname_snapshot.ilike.%${safe}%`];
   if (ids.length > 0) ors.push(`member_id.in.(${ids.join(",")})`);
   return ors.join(",");

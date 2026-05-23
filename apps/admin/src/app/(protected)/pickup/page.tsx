@@ -101,15 +101,19 @@ function PickupPageContent() {
     setOrders(new Map());
     try {
       const sb = getSupabase();
-      // 一個關鍵字同時對 name / phone / member_no 做 ilike,任一命中皆列出
+      // Google 式：以空白 / + 拆 token，每個 token 都要在 name / phone / member_no 至少一欄命中
       const safe = q.replace(/[%,()]/g, " ");
-      const { data: ms, error: e1 } = await sb
+      const tokens = safe.split(/[\s+]+/).filter(Boolean);
+      let memberQ = sb
         .from("members")
         .select("id, member_no, name, phone, admin_note, no_notify_pickup, no_new_order")
-        .or(`name.ilike.%${safe}%,phone.ilike.%${safe}%,member_no.ilike.%${safe}%`)
         .neq("status", "deleted")
         .order("last_visit_at", { ascending: false, nullsFirst: false })
         .limit(20);
+      for (const tok of tokens) {
+        memberQ = memberQ.or(`name.ilike.%${tok}%,phone.ilike.%${tok}%,member_no.ilike.%${tok}%`);
+      }
+      const { data: ms, error: e1 } = await memberQ;
       if (e1) { setError(e1.message); return; }
       const list = (ms ?? []) as Member[];
       setMembers(list);
