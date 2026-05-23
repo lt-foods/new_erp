@@ -10,9 +10,7 @@ export type CampaignSummary = {
   name: string;
   description: string | null;
   cover_image_url: string | null;
-  close_type: "regular" | "fast" | "limited" | string;
-  /** 主題分類; NULL=一般, food_train=美食列車 */
-  category?: "food_train" | null;
+  close_type: "regular" | "fast" | "limited" | "food_train" | string;
   total_cap_qty: number | null;
   ordered_qty: number;
   /** 全分店訂單數（最熱銷排序用）。後端未部署前可能為 0。 */
@@ -26,25 +24,13 @@ export type CampaignSummary = {
   max_price: number;
 };
 
-/** 美食列車專屬 badge (與「限時/限量」分開,可同時出現) */
-function FoodTrainBadge({ size = "sm" }: { size?: "sm" | "lg" }) {
-  return (
-    <span
-      className={`inline-flex items-center gap-1 rounded-full bg-emerald-600/95 font-semibold text-white shadow-sm backdrop-blur ${
-        size === "lg" ? "px-3 py-1 text-[14px]" : "px-2 py-0.5 text-[11px]"
-      }`}
-    >
-      美食列車
-    </span>
-  );
-}
-
 /** 依 close_type + total_cap_qty 算出短標籤。
  *  「限時」只給真正的快閃團（close_type='fast'，即限時專區那種）。
  *  一般團幾乎都有結單日(end_at)，有結單日 ≠ 限時，否則每張卡都被貼標、
  *  標籤就失去意義（卡片本來就會單獨顯示倒數）。 */
 export function campaignBadgeLabel(c: CampaignSummary): string | null {
   const hasCap = (c.total_cap_qty ?? 0) > 0;
+  if (c.close_type === "food_train") return "美食列車";
   if (c.close_type === "fast" && hasCap) return "限量限時";
   if (c.close_type === "fast") return "限時";
   if (c.close_type === "limited" || hasCap) return "限量";
@@ -135,10 +121,14 @@ export default function CampaignCard({
             const soldOut = campaignSoldOut(campaign);
             if (!label && !campaign.end_at) return null;
             const isLimited = label?.includes("限量");
+            const isFoodTrain = campaign.close_type === "food_train";
             return (
               <div
                 className={`absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[14px] font-semibold text-white shadow-sm backdrop-blur ${
-                  soldOut ? "bg-zinc-700/85" : isLimited ? "bg-[var(--ios-red)]/90" : "bg-black/55"
+                  soldOut ? "bg-zinc-700/85"
+                  : isFoodTrain ? "bg-emerald-600/95"
+                  : isLimited ? "bg-[var(--ios-red)]/90"
+                  : "bg-black/55"
                 }`}
               >
                 {soldOut ? (
@@ -146,7 +136,7 @@ export default function CampaignCard({
                 ) : (
                   <>
                     {label && <span>{label}</span>}
-                    {campaign.end_at && <Countdown target={campaign.end_at} compact />}
+                    {campaign.end_at && !isFoodTrain && <Countdown target={campaign.end_at} compact />}
                     {isLimited && remaining !== null && (
                       <span className="text-[12px] opacity-90">· 剩 {remaining} 份</span>
                     )}
@@ -155,11 +145,6 @@ export default function CampaignCard({
               </div>
             );
           })()}
-          {campaign.category === "food_train" && (
-            <div className="absolute right-3 top-3">
-              <FoodTrainBadge size="lg" />
-            </div>
-          )}
         </div>
         <div className="space-y-1.5 px-4 py-3.5">
           <h3 className="text-[22px] font-bold leading-tight text-[var(--foreground)]">
@@ -211,21 +196,19 @@ export default function CampaignCard({
           }
           if (!label) return null;
           const isLimited = label?.includes("限量");
+          const isFoodTrain = campaign.close_type === "food_train";
           return (
             <span
               className={`absolute left-2 top-2 rounded-full px-2 py-0.5 text-[11px] font-semibold text-white shadow-sm backdrop-blur ${
-                isLimited ? "bg-[var(--ios-red)]/90" : "bg-[var(--ios-orange)]/90"
+                isFoodTrain ? "bg-emerald-600/95"
+                : isLimited ? "bg-[var(--ios-red)]/90"
+                : "bg-[var(--ios-orange)]/90"
               }`}
             >
               {label}
             </span>
           );
         })()}
-        {campaign.category === "food_train" && (
-          <span className="absolute right-2 top-2">
-            <FoodTrainBadge size="sm" />
-          </span>
-        )}
       </div>
       <div className="space-y-1 px-3 py-2.5">
         <h3 className="line-clamp-2 min-h-[2.6em] text-[16px] font-semibold leading-tight text-[var(--foreground)]">

@@ -293,18 +293,17 @@ async function listMySettlements(sb: any, tenantId: string, _storeId: number, me
   return json({ settlements: data ?? [] });
 }
 
-async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string | null, category?: string | null, memberId?: number | null) {
+async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string | null, memberId?: number | null) {
   // end_at IS NULL 表示「無到期日」(管理員未設),也算進行中,要保留
   let q = sb
     .from("group_buy_campaigns")
-    .select("id, campaign_no, name, description, cover_image_url, close_type, category, total_cap_qty, end_at, pickup_deadline, campaign_items(unit_price, sort_order, sku:skus(product:products(images)))")
+    .select("id, campaign_no, name, description, cover_image_url, close_type, total_cap_qty, end_at, pickup_deadline, campaign_items(unit_price, sort_order, sku:skus(product:products(images)))")
     .eq("tenant_id", tenantId)
     .eq("status", "open")
     // 排除內部 sentinel 活動(補貨申請),不應出現在顧客商店
     .neq("campaign_no", "__INTERNAL_RESTOCK__")
     .or(`end_at.is.null,end_at.gt.${new Date().toISOString()}`);
   if (closeType) q = q.eq("close_type", closeType);
-  if (category) q = q.eq("category", category);
   // 不加 limit：曾經 .limit(50) 在 open 團數超過 50 時把最晚結單的整批截掉
   // （end_at ASC NULLS LAST + 截 50），顧客端整個團就消失。PostgREST 仍有
   // db-max-rows=1000 兜底，55 個團也才一頁。
@@ -371,7 +370,6 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
       description: c.description,
       cover_image_url: cover,
       close_type: c.close_type,
-      category: c.category ?? null,
       total_cap_qty: c.total_cap_qty,
       ordered_qty: orderedMap.get(Number(c.id)) ?? 0,
       order_count: countMap.get(Number(c.id)) ?? 0,
@@ -782,7 +780,7 @@ Deno.serve(async (req) => {
       case "get_my_unread_notification_count": if (!memberId) return json({ error: "no member_id" }, 401); return await getMyUnreadNotificationCount(sb, tenantId, memberId);
       case "mark_notification_read": if (!memberId) return json({ error: "no member_id" }, 401); return await markNotificationRead(sb, tenantId, memberId, body);
       case "generate_pwa_auth_code": if (!memberId) return json({ error: "no member_id" }, 401); return await generatePwaAuthCode(sb, tenantId, memberId, claims, token, body);
-      case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId, typeof body.close_type === "string" ? body.close_type : null, typeof body.category === "string" ? body.category : null, memberId);
+      case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId, typeof body.close_type === "string" ? body.close_type : null, memberId);
       case "get_campaign_detail": return await getCampaignDetail(sb, tenantId, Number(body.campaign_id ?? 0));
       case "place_member_order": if (!memberId) return json({ error: "no member_id" }, 401); return await placeMemberOrder(sb, tenantId, memberId, body);
       default: return json({ error: `unknown action: ${action}` }, 400);

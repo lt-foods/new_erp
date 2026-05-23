@@ -126,9 +126,9 @@ export default function ShopPage() {
   // find 取到的就是最快結單的快閃團。
   const hero = visible.find((c) => c.close_type === "fast");
 
-  // 美食列車專區：有任何 category='food_train' 的開團時顯示綠色 banner
-  const foodTrainHero = visible.find((c) => c.category === "food_train");
-  const foodTrainCount = visible.filter((c) => c.category === "food_train").length;
+  // 美食列車專區：close_type='food_train' 的開團時顯示綠色 banner
+  const foodTrainHero = visible.find((c) => c.close_type === "food_train");
+  const foodTrainCount = visible.filter((c) => c.close_type === "food_train").length;
 
   // 排序：最新(id 大→小，無 created_at 用 id 近似) / 最熱銷(全分店訂單數)
   // / 近期售出(近 7 天訂單數)。tie-break 回退 id desc 保持穩定。

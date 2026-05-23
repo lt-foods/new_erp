@@ -8,12 +8,7 @@ import { useRole, isAdmin } from "@/lib/role";
 import { CAMPAIGN_STATUS_LABEL, type CampaignStatus } from "@/lib/campaignStatus";
 
 export type { CampaignStatus };
-export type CloseType = "regular" | "fast" | "limited";
-export type CampaignCategory = "food_train" | null;
-
-export const CATEGORY_LABEL: Record<"food_train", string> = {
-  food_train: "美食列車",
-};
+export type CloseType = "regular" | "fast" | "limited" | "food_train";
 
 export type CampaignFormValues = {
   id: number | null;
@@ -22,7 +17,6 @@ export type CampaignFormValues = {
   description: string | null;
   status: CampaignStatus;
   close_type: CloseType;
-  category: CampaignCategory;
   start_at: string | null;
   end_at: string | null;
   pickup_deadline: string | null;
@@ -38,7 +32,6 @@ export const emptyCampaignValues: CampaignFormValues = {
   description: null,
   status: "draft",
   close_type: "regular",
-  category: null,
   start_at: null,
   end_at: null,
   pickup_deadline: null,
@@ -129,14 +122,13 @@ export function CampaignForm({
         p_pickup_days: v.pickup_days,
         p_total_cap_qty: v.total_cap_qty,
         p_notes: v.notes,
-        p_category: v.category,
       });
       if (err) throw err;
       const newId = Number(data);
 
       // 美食列車且 status 從非 open → open 時, 廣播推播給全 tenant 顧客
       // (失敗不阻擋儲存; 顯示警告但仍視為成功)
-      if (v.category === "food_train" && v.status === "open" && !wasOpen) {
+      if (v.close_type === "food_train" && v.status === "open" && !wasOpen) {
         try {
           await broadcastFoodTrainOpen({
             campaignId: newId,
@@ -191,18 +183,9 @@ export function CampaignForm({
             <option value="regular">常規</option>
             <option value="fast">快團</option>
             <option value="limited">限量</option>
-          </select>
-        </Field>
-        <Field label="類別">
-          <select
-            value={v.category ?? ""}
-            onChange={(e) => update("category", (e.target.value || null) as CampaignCategory)}
-            className={inputCls}
-          >
-            <option value="">無</option>
             <option value="food_train">美食列車</option>
           </select>
-          {v.category === "food_train" && v.status === "open" && (initial?.status ?? null) !== "open" && (
+          {v.close_type === "food_train" && v.status === "open" && (initial?.status ?? null) !== "open" && (
             <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
               儲存後將推播給所有未取消通知的顧客。
             </p>
