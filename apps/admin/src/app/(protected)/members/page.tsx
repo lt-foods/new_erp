@@ -34,7 +34,11 @@ type MemberRow = {
   line_user_id: string | null;
   home_store_id: number | null;
   takeout_store_name_hint: string | null;
+  merged_into_member_id: number | null;
 };
+
+const MEMBER_SELECT_COLS =
+  "id, member_no, name, phone, avatar_url, tier_id, status, updated_at, joined_at, last_visit_at, external_source, external_id, line_user_id, home_store_id, takeout_store_name_hint, merged_into_member_id";
 
 /** 顯示手機，若是 LIFF auto-register 的 placeholder (line:Uxxxx) 則視為未填 */
 function displayPhone(p: string | null): string {
@@ -136,7 +140,7 @@ function MembersListBody() {
       try {
         let q = getSupabase()
           .from("members")
-          .select("id, member_no, name, phone, avatar_url, tier_id, status, updated_at, joined_at, last_visit_at, external_source, external_id, line_user_id, home_store_id, takeout_store_name_hint", { count: "exact" })
+          .select(MEMBER_SELECT_COLS, { count: "exact" })
           .order(sortBy, { ascending: sortDir === "asc" })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
@@ -146,9 +150,11 @@ function MembersListBody() {
           q = q.or(`name.ilike.%${tok}%,phone.ilike.%${tok}%,member_no.ilike.%${tok}%`);
         }
         if (storeId) q = q.eq("home_store_id", Number(storeId));
-        // 沒輸入搜尋字串時，預設只看活躍會員；有搜尋字串時連 merged/deleted 一起撈，
-        // 避免找不到已合併的會員（UI 會用灰色 + 「已合併」標籤標示）
+        // 沒輸入搜尋字串時：只看活躍會員。
+        // 有搜尋字串時：把 merged 也撈出來（之後會把命中的「已合併舊檔」翻譯成它被併進去的新會員）；
+        // deleted 永遠不顯示
         if (tokens.length === 0) q = q.not("status", "in", "(merged,deleted)");
+        else q = q.neq("status", "deleted");
 
         const { data, count, error } = await q;
         if (cancelled) return;
@@ -156,11 +162,59 @@ function MembersListBody() {
           setError(error.message);
           return;
         }
+
+        // 把命中的 merged 舊檔翻譯成 merged_into 的新會員（追隨 chain 直到 active；最多 5 跳）
+        let resolved = (data ?? []) as MemberRow[];
+        const targetsToFetch = new Set<number>();
+        for (const r of resolved) {
+          if (r.status === "merged" && r.merged_into_member_id != null) {
+            targetsToFetch.add(r.merged_into_member_id);
+          }
+        }
+        const fetched = new Map<number, MemberRow>();
+        let hop = 0;
+        while (targetsToFetch.size > 0 && hop < 5) {
+          const ids = [...targetsToFetch].filter((id) => !fetched.has(id));
+          targetsToFetch.clear();
+          if (ids.length === 0) break;
+          const { data: ts } = await getSupabase()
+            .from("members")
+            .select(MEMBER_SELECT_COLS)
+            .in("id", ids);
+          for (const t of (ts ?? []) as MemberRow[]) {
+            fetched.set(t.id, t);
+            if (t.status === "merged" && t.merged_into_member_id != null && !fetched.has(t.merged_into_member_id)) {
+              targetsToFetch.add(t.merged_into_member_id);
+            }
+          }
+          hop += 1;
+        }
+        const resolveChain = (m: MemberRow): MemberRow | null => {
+          let cur: MemberRow | undefined = m;
+          let i = 0;
+          while (cur && cur.status === "merged" && cur.merged_into_member_id != null && i < 5) {
+            cur = fetched.get(cur.merged_into_member_id);
+            i += 1;
+          }
+          if (!cur || cur.status === "merged" || cur.status === "deleted") return null;
+          return cur;
+        };
+        if (tokens.length > 0) {
+          const seen = new Set<number>();
+          const out: MemberRow[] = [];
+          for (const r of resolved) {
+            const target = r.status === "merged" ? resolveChain(r) : r;
+            if (!target || seen.has(target.id)) continue;
+            seen.add(target.id);
+            out.push(target);
+          }
+          resolved = out;
+        }
         setError(null);
-        setRows((data ?? []) as MemberRow[]);
+        setRows(resolved);
         setTotal(count ?? 0);
 
-        const ids = (data ?? []).map((r) => r.id);
+        const ids = resolved.map((r) => r.id);
         if (ids.length) {
           const [ord, wal, push] = await Promise.all([
             getSupabase()
