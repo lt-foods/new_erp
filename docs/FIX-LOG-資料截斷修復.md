@@ -30,6 +30,20 @@
 
 <!-- 新修復項目附加在這裡。最新的放最上面。 -->
 
+### #13 + #14 (orderRows) — 商店首頁聚合改 JSONB RPC（消除商店首頁超賣風險）
+- 日期：2026-05-23
+- 修復者：claude
+- 修法策略：模式 B（JSONB 單列回傳）
+- Commits：待 commit
+- 變動檔案：
+  - `supabase/migrations/20260628100020_rpc_member_campaign_aggregates.sql`（新 RPC，標 `@money-critical`）
+  - `supabase/functions/liff-api/index.ts:listActiveCampaigns` — 刪掉原 318-330 orderRows reduce 與 337-344 舊 RPC 呼叫，改用單一新 RPC；主查詢加截斷哨兵
+- 驗證腳本：`scripts/audit-pagination/test-13-14-campaign-aggregates.sh`
+- 驗證結果：✅ **PASS** —  灌 1100 筆訂單，新 RPC 回 `ordered_qty=1100, order_count=1100, recent_order_count=1100`
+- 備註：
+  - #14 的「主查詢」（campaign 本身列表）尚未轉 JSONB，仍倚賴 PostgREST 1000 兜底。已加 console.error 哨兵，標為 PARTIAL
+  - 舊 RPC `rpc_member_campaign_order_counts` 暫保留 SQL（無人再呼叫），未來確認無外部依賴可移除
+
 ### #11 + #12 — 會員端 campaign detail 改用 JSONB RPC（消除超賣風險）
 - 日期：2026-05-23
 - 修復者：claude
@@ -62,11 +76,11 @@
 
 ## 統計
 
-| 風險等級 | 總數 | DONE | IN-PROGRESS | PENDING | EXEMPTED |
+| 風險等級 | 總數 | DONE | PARTIAL | PENDING | EXEMPTED |
 |---|---|---|---|---|---|
-| HIGH | 16 | 2 | 0 | 14 | 0 |
+| HIGH | 16 | 3 | 1 | 12 | 0 |
 | MEDIUM | 8 | 0 | 0 | 8 | 0 |
 | LOW | 2 | 0 | 0 | 0 | 2 |
-| **合計** | **26** | **2** | **0** | **22** | **2** |
+| **合計** | **26** | **3** | **1** | **20** | **2** |
 
 > 統計每次修復後同步更新。

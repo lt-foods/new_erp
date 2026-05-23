@@ -310,40 +310,31 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
   const { data, error } = await q
     .order("end_at", { ascending: true, nullsFirst: false });
 
-  // 算出 campaign 已下單總量 (排除取消/逾期 + 排除負數抵減單),
-  // 給前端算「剩 N 份」、「搶購一空」或顯示「已售出 N 份」
-  const orderedMap = new Map<number, number>();
-  const allIds = (data ?? []).map((c: any) => c.id);
-  if (allIds.length > 0) {
-    const { data: orderRows } = await sb
-      .from("customer_orders")
-      .select("campaign_id, customer_order_items(qty)")
-      .in("campaign_id", allIds)
-      .not("status", "in", "(cancelled,expired)")
-      .or("order_kind.is.null,order_kind.eq.normal");
-    for (const o of orderRows ?? []) {
-      const sum = (o.customer_order_items ?? []).reduce(
-        (a: number, x: any) => a + Number(x.qty ?? 0),
-        0,
-      );
-      orderedMap.set(Number(o.campaign_id), (orderedMap.get(Number(o.campaign_id)) ?? 0) + sum);
-    }
+  if (error) return json({ error: error.message }, 500);
+
+  // 截斷哨兵: 主查詢倚賴 PostgREST max_rows=1000 兜底。一旦撞到上限就
+  // log error 提醒 (AUDIT #14 base query 尚未轉成 JSONB RPC)。
+  if ((data?.length ?? 0) >= 1000) {
+    console.error("[PAGINATION-RISK] listActiveCampaigns 主查詢回傳 >= 1000 列,可能被截斷。應改用 JSONB RPC。");
   }
 
-  // 全分店訂單數 + 近 7 天訂單數（顧客端排序用：最熱銷 / 近期售出）。
-  // 走 SQL 聚合 RPC，避免訂單列數超過 PostgREST 1000 上限被截斷而計數失準。
+  // @money-critical: 走 rpc_member_campaign_aggregates 一次拿齊
+  // ordered_qty / order_count / recent_order_count,避免 PostgREST max_rows
+  // 截斷導致 ordered_qty 偏低 (超賣風險)。詳見 docs/STANDARD §4 與 AUDIT #13 #14。
+  const orderedMap = new Map<number, number>();
   const countMap = new Map<number, number>();
   const recentMap = new Map<number, number>();
-  const { data: cntRows } = await sb.rpc("rpc_member_campaign_order_counts", {
+  const { data: aggRows, error: aggErr } = await sb.rpc("rpc_member_campaign_aggregates", {
     p_tenant: tenantId,
     p_recent_days: 7,
   });
-  for (const r of cntRows ?? []) {
-    countMap.set(Number(r.campaign_id), Number(r.order_count ?? 0));
-    recentMap.set(Number(r.campaign_id), Number(r.recent_order_count ?? 0));
+  if (aggErr) return json({ error: aggErr.message }, 500);
+  for (const r of (aggRows ?? []) as any[]) {
+    const cid = Number(r.campaign_id);
+    orderedMap.set(cid, Number(r.ordered_qty ?? 0));
+    countMap.set(cid, Number(r.order_count ?? 0));
+    recentMap.set(cid, Number(r.recent_order_count ?? 0));
   }
-
-  if (error) return json({ error: error.message }, 500);
 
   const supabaseUrl = requireEnv("SUPABASE_URL");
   const campaigns = (data ?? []).map((c: any) => {
