@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import MemberTabBar from "./MemberTabBar";
+
+// 底部 tab 的根頁面不顯示回上一頁 (它們是 app 的入口)
+const TOP_LEVEL_PATHS = new Set(["/shop", "/orders", "/notifications", "/me"]);
 
 /**
  * iOS 大標題樣式的頁面外殼。
@@ -19,6 +23,10 @@ export default function PageShell({
   rightAction?: React.ReactNode;
   children: React.ReactNode;
 }) {
+  const router = useRouter();
+  const pathname = usePathname() ?? "";
+  const showBack = !TOP_LEVEL_PATHS.has(pathname);
+
   const [tabBarHidden, setTabBarHidden] = useState(false);
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -28,6 +36,15 @@ export default function PageShell({
       window.matchMedia("(display-mode: standalone)").matches;
     setTabBarHidden(isLine && !isStandalone);
   }, []);
+
+  // 點回上一頁: 有 history 就 back, 沒有 (深連結 / LINE 開新分頁) fallback 到 /shop
+  const handleBack = () => {
+    if (typeof window !== "undefined" && window.history.length > 1) {
+      router.back();
+    } else {
+      router.push("/shop");
+    }
+  };
 
   return (
     <div
@@ -60,13 +77,26 @@ export default function PageShell({
             />
             <div className="relative flex items-end justify-between gap-3">
               <div className="flex items-center gap-2.5">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src="/brand/logo.jpg"
-                  alt=""
-                  className="h-9 w-9 shrink-0 rounded-full object-cover shadow-[0_2px_8px_-2px_rgba(158,47,80,0.45)] ring-1 ring-white/70"
-                  aria-hidden
-                />
+                {showBack ? (
+                  <button
+                    type="button"
+                    onClick={handleBack}
+                    aria-label="回上一頁"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/85 text-[var(--brand-strong)] shadow-[0_2px_8px_-2px_rgba(158,47,80,0.45)] ring-1 ring-white/70 transition-transform active:scale-90"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
+                      <path d="M15 6l-6 6 6 6" />
+                    </svg>
+                  </button>
+                ) : (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src="/brand/logo.jpg"
+                    alt=""
+                    className="h-9 w-9 shrink-0 rounded-full object-cover shadow-[0_2px_8px_-2px_rgba(158,47,80,0.45)] ring-1 ring-white/70"
+                    aria-hidden
+                  />
+                )}
                 <h1 className="text-[32px] font-bold tracking-tight text-[var(--foreground)] leading-tight">
                   {title}
                 </h1>
