@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { getSupabase } from "@/lib/supabase";
+import { cleanCampaignText } from "@/lib/text";
 
 const PRODUCTS_BUCKET = "products";
 const MEMBER_APP_URL = (process.env.NEXT_PUBLIC_MEMBER_APP_URL ?? "https://new-erp-admin.vercel.app").replace(/\/$/, "");
@@ -439,13 +440,14 @@ export default function FbPublishModal({ open, campaignId, onClose }: Props) {
 function buildDefaultMessage(name: string, description: string | null, campaignId: number): string {
   const link = `${MEMBER_APP_URL}/shop/c/${campaignId}`;
   const parts: string[] = [];
-  parts.push(`【開團】${name}`);
+  parts.push(`【開團】${cleanCampaignText(name)}`);
   if (description) {
-    const plain = description
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<\/p>/gi, "\n")
-      .replace(/<[^>]+>/g, "")
-      .trim();
+    const plain = cleanCampaignText(
+      description
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<\/p>/gi, "\n")
+        .replace(/<[^>]+>/g, ""),
+    );
     if (plain) parts.push(plain);
   }
   parts.push(`\n👉 立即下單：${link}`);
