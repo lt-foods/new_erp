@@ -305,9 +305,11 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
     .or(`end_at.is.null,end_at.gt.${new Date().toISOString()}`);
   if (closeType) q = q.eq("close_type", closeType);
   if (category) q = q.eq("category", category);
+  // 不加 limit：曾經 .limit(50) 在 open 團數超過 50 時把最晚結單的整批截掉
+  // （end_at ASC NULLS LAST + 截 50），顧客端整個團就消失。PostgREST 仍有
+  // db-max-rows=1000 兜底，55 個團也才一頁。
   const { data, error } = await q
-    .order("end_at", { ascending: true, nullsFirst: false })
-    .limit(50);
+    .order("end_at", { ascending: true, nullsFirst: false });
 
   // 算出 campaign 已下單總量 (排除取消/逾期 + 排除負數抵減單),
   // 給前端算「剩 N 份」、「搶購一空」或顯示「已售出 N 份」
