@@ -36,7 +36,13 @@ echo "prefix=$TAG, N=$N"
 
 cleanup() {
   echo "--- cleanup ---"
-  run_sql "
+  # skus 有 trigger forbid_sku_delete() 禁止 DELETE,Management API 把多段 SQL
+  # 包成單一 transaction,任一失敗全部 rollback。用 session_replication_role=replica
+  # 在 transaction 內禁用 trigger,確保測試 fixture 真的被刪掉。
+  local resp
+  resp=$(run_sql "
+    BEGIN;
+    SET LOCAL session_replication_role = 'replica';
     DELETE FROM customer_order_items WHERE tenant_id = '${TENANT_ID}';
     DELETE FROM customer_orders WHERE tenant_id = '${TENANT_ID}';
     DELETE FROM campaign_items WHERE tenant_id = '${TENANT_ID}';
@@ -45,8 +51,26 @@ cleanup() {
     DELETE FROM products WHERE tenant_id = '${TENANT_ID}';
     DELETE FROM line_channels WHERE tenant_id = '${TENANT_ID}';
     DELETE FROM stores WHERE tenant_id = '${TENANT_ID}';
-  " > /dev/null
-  echo "cleanup done"
+    COMMIT;
+  ")
+  if echo "$resp" | grep -q '"message"'; then
+    echo "⚠️  cleanup SQL 回報錯誤:"
+    echo "$resp"
+  fi
+  local remain
+  remain=$(run_sql "SELECT
+    (SELECT COUNT(*) FROM customer_orders WHERE tenant_id = '${TENANT_ID}') +
+    (SELECT COUNT(*) FROM group_buy_campaigns WHERE tenant_id = '${TENANT_ID}') +
+    (SELECT COUNT(*) FROM skus WHERE tenant_id = '${TENANT_ID}') +
+    (SELECT COUNT(*) FROM products WHERE tenant_id = '${TENANT_ID}') +
+    (SELECT COUNT(*) FROM line_channels WHERE tenant_id = '${TENANT_ID}') +
+    (SELECT COUNT(*) FROM stores WHERE tenant_id = '${TENANT_ID}')
+    AS n;" | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["n"])')
+  if [ "$remain" != "0" ]; then
+    echo "❌ cleanup 沒清乾淨,剩 ${remain} 筆 fixture 未刪 — 請手動處理 tenant=${TENANT_ID}"
+  else
+    echo "cleanup done (verified empty)"
+  fi
 }
 trap cleanup EXIT
 

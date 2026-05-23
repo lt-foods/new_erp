@@ -36,7 +36,14 @@ run_sql() {
 
 cleanup() {
   echo "--- cleanup ---"
-  run_sql "
+  # 注意:skus 有 trigger forbid_sku_delete() 禁止 DELETE (業務規則)。
+  # Management API 把多段 SQL 包成一個 transaction,任一語句失敗就全部 rollback,
+  # 會造成「看起來清完了但其實啥都沒清」。用 session_replication_role=replica
+  # 在 transaction 內禁用 trigger,確保測試 fixture 真的被刪掉。
+  local resp
+  resp=$(run_sql "
+    BEGIN;
+    SET LOCAL session_replication_role = 'replica';
     DELETE FROM customer_order_items
     WHERE order_id IN (SELECT id FROM customer_orders WHERE order_no LIKE '${TAG}\\_%' ESCAPE '\\');
     DELETE FROM customer_orders WHERE order_no LIKE '${TAG}\\_%' ESCAPE '\\';
@@ -45,8 +52,27 @@ cleanup() {
     DELETE FROM skus WHERE sku_code = '${TAG}_S';
     DELETE FROM products WHERE product_code = '${TAG}_P';
     DELETE FROM line_channels WHERE code = '${TAG}_ch';
-  " > /dev/null
-  echo "cleanup done"
+    COMMIT;
+  ")
+  # 任一語句報錯都會在 resp 出現 "Failed to run sql query" 或 "message"
+  if echo "$resp" | grep -q '"message"'; then
+    echo "⚠️  cleanup SQL 回報錯誤:"
+    echo "$resp"
+  fi
+  # 驗證真的清乾淨,否則 silent rollback 會留下假象
+  local remain
+  remain=$(run_sql "SELECT
+    (SELECT COUNT(*) FROM customer_orders WHERE order_no LIKE '${TAG}\\_%' ESCAPE '\\') +
+    (SELECT COUNT(*) FROM group_buy_campaigns WHERE campaign_no = '${TAG}_C') +
+    (SELECT COUNT(*) FROM skus WHERE sku_code = '${TAG}_S') +
+    (SELECT COUNT(*) FROM products WHERE product_code = '${TAG}_P') +
+    (SELECT COUNT(*) FROM line_channels WHERE code = '${TAG}_ch')
+    AS n;" | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["n"])')
+  if [ "$remain" != "0" ]; then
+    echo "❌ cleanup 沒清乾淨,剩 ${remain} 筆 fixture 未刪 — 請手動處理 prefix=${TAG}"
+  else
+    echo "cleanup done (verified empty)"
+  fi
 }
 trap cleanup EXIT
 

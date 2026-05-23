@@ -321,12 +321,39 @@ export function assertNotTruncated<T>(
 
 ### 8.2 種子腳本目錄
 
-所有大量資料驗證腳本放在 `scripts/audit-pagination/`，命名為 `test-<風險編號>-<簡述>.mjs`。每個腳本須：
+所有大量資料驗證腳本放在 `scripts/audit-pagination/`，命名為 `test-<風險編號>-<簡述>.{mjs,sh}`。每個腳本須：
 
 1. 在測試 tenant 塞入 ≥1100 筆對應資料。
 2. 呼叫實際 API / RPC。
 3. assert 結果筆數正確、金額正確。
-4. 結束前清理測試資料。
+4. 結束前清理測試資料 **並 verify 真的清乾淨**（見下方陷阱）。
+
+#### ⚠️ Cleanup 陷阱（已踩過）
+
+部分 table 有禁止 DELETE 的 trigger（如 `skus` 的 `forbid_sku_delete()`，業務規則：只能設 `status=discontinued`）。當你用 Management API 一次送多段 DELETE，**任一段失敗就整個 transaction rollback**，看起來像清完了，其實 fixture 全部留下。
+
+**正確寫法**（適用 Management API / postgres role）：
+
+```sql
+BEGIN;
+SET LOCAL session_replication_role = 'replica';  -- 在此 transaction 內禁用 trigger
+DELETE FROM customer_order_items WHERE ...;
+DELETE FROM customer_orders WHERE ...;
+DELETE FROM skus WHERE ...;                       -- 不會觸發 forbid_sku_delete
+DELETE FROM products WHERE ...;
+COMMIT;
+```
+
+**且 cleanup 後必須 verify**：
+
+```bash
+remain=$(run_sql "SELECT (SELECT COUNT(*) FROM customer_orders WHERE ...) + (...) AS n;")
+if [ "$remain" != "0" ]; then
+  echo "❌ cleanup 沒清乾淨,剩 ${remain} 筆"  # silent rollback 偵測
+fi
+```
+
+範例：`scripts/audit-pagination/test-11-12-via-mgmt-api.sh` 的 cleanup() 函式。
 
 ---
 
