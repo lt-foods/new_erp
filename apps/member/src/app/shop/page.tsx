@@ -198,7 +198,7 @@ export default function ShopPage() {
           </Link>
         )}
 
-        {/* 主題 banner 跑馬燈 — 兩類同時有就群組總覽, 只有一類就攤平每團一張, auto-play 4s */}
+        {/* 主題 banner 跑馬燈 — 美食列車一律 stack banner (點進清單), 快團攤平每團一張 */}
         <ShopBannerCarousel
           banners={
             groupMode
@@ -213,10 +213,12 @@ export default function ShopPage() {
                   },
                 ]
               : foodTrains.length > 0
-                ? foodTrains.map((c) => ({
-                    key: `food_train_${c.id}`,
-                    node: <FoodTrainItemBanner campaign={c} />,
-                  }))
+                ? [
+                    {
+                      key: "food_train_stack",
+                      node: <FoodTrainStackBanner campaigns={foodTrains} />,
+                    },
+                  ]
                 : flashes.map((c) => ({
                     key: `flash_${c.id}`,
                     node: <FlashItemBanner campaign={c} />,
@@ -409,50 +411,6 @@ function FlashGroupBanner({ hero }: { hero: CampaignSummary }) {
           </div>
         </div>
         <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[28px] text-white/85">›</div>
-      </div>
-    </Link>
-  );
-}
-
-function FoodTrainItemBanner({ campaign }: { campaign: CampaignSummary }) {
-  return (
-    <Link
-      href={`/shop/c/${campaign.id}`}
-      className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(5,150,105,0.5)] transition-transform duration-200 active:scale-[0.985]"
-    >
-      <div className="relative aspect-[16/8] w-full bg-gradient-to-br from-emerald-500 via-emerald-600 to-teal-600">
-        {campaign.cover_image_url && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={campaign.cover_image_url}
-            alt=""
-            className="absolute inset-0 h-full w-full object-cover opacity-55"
-          />
-        )}
-        <div className="absolute inset-0 bg-gradient-to-t from-emerald-950/75 via-emerald-900/15 to-transparent" />
-        <div className="absolute inset-0 flex flex-col justify-between p-4">
-          <div className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-600/85 px-3 py-1 shadow-sm backdrop-blur">
-              <span className="text-[15px]">🚂</span>
-              <span className="text-[14px] font-bold text-white">美食列車</span>
-            </span>
-          </div>
-          <div className="flex items-end justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <div className="line-clamp-1 text-[17px] font-bold text-white drop-shadow">
-                {cleanCampaignText(campaign.name)}
-              </div>
-              <div className="text-[24px] font-extrabold tabular-nums text-white drop-shadow">
-                {priceText(campaign)}
-              </div>
-            </div>
-            {campaign.end_at && (
-              <div className="shrink-0 rounded-full bg-black/35 px-2.5 py-1 text-[13px] font-semibold tabular-nums text-white backdrop-blur">
-                <Countdown target={campaign.end_at} compact />
-              </div>
-            )}
-          </div>
-        </div>
       </div>
     </Link>
   );
