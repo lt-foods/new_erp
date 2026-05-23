@@ -259,15 +259,49 @@ async function getOverview(sb: any, tenantId: string, storeId: number, memberId:
   return json({ store: storeRow, receivable_amount: receivable, active_orders_count: activeCount ?? 0 });
 }
 
-async function listMyOrders(sb: any, tenantId: string, _storeId: number, memberId: number, tab: string) {
-  const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
-  // 不依 store_id 過濾：同一 line_user 可能綁多店 OA，但 member_id 是 tenant 級；
-  // 「我的訂單」呈現該 member 在所有店的訂單，OrderCard 會顯示 store_name 區別。
-  let q = sb.from("v_customer_order_summary").select("*").eq("tenant_id", tenantId).eq("member_id", memberId).gte("created_at", cutoff.toISOString()).order("created_at", { ascending: false }).limit(100);
-  if (tab === "active") q = q.not("status", "in", "(completed,cancelled,expired)");
-  else q = q.eq("status", "completed");
+async function listMyOrders(
+  sb: any,
+  tenantId: string,
+  _storeId: number,
+  memberId: number,
+  tab: string,
+  opts: { limit?: number; before_id?: number | null } = {},
+) {
+  // tab=active: 進行中的訂單 (數量通常 << 100,單次拿完即可),保留 6 月 cutoff 與安全上限
+  // tab=history: 已完成的訂單,會隨時間累積,改 cursor 分頁 (AUDIT #8)
+  const isHistory = tab !== "active";
+  const limit = isHistory
+    ? Math.min(Math.max(Number(opts.limit ?? 30), 1), 100)
+    : 200; // active 不分頁,但加安全上限
+  const beforeId = opts.before_id ? Number(opts.before_id) : null;
+
+  let q = sb
+    .from("v_customer_order_summary")
+    .select("*")
+    .eq("tenant_id", tenantId)
+    .eq("member_id", memberId)
+    .order("id", { ascending: false })
+    .limit(limit);
+
+  if (!isHistory) {
+    // active: 仍保留 6 月 cutoff (避免異常情況拉太多),已截掉 status not in ...
+    const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
+    q = q.gte("created_at", cutoff.toISOString())
+         .not("status", "in", "(completed,cancelled,expired)");
+  } else {
+    // history: 已完成。改用 id 作為 cursor (BIGSERIAL,等同 created_at desc 順序),
+    // 移除 6 月 cutoff — 使用者明確翻頁時應能看到所有歷史。
+    q = q.eq("status", "completed");
+    if (beforeId) q = q.lt("id", beforeId);
+  }
+
   const { data, error } = await q;
   if (error) return json({ error: error.message }, 500);
+
+  // 截斷哨兵: active 撞到 200 時 log warning
+  if (!isHistory && (data?.length ?? 0) >= 200) {
+    console.error("[PAGINATION-RISK] listMyOrders(active) 撞到 200 上限,可能有未顯示訂單;考慮為 active 也加 cursor 分頁");
+  }
 
   // 把 items.image_url + campaign_cover_url 轉成 storage public URL
   const supabaseUrl = requireEnv("SUPABASE_URL");
@@ -279,18 +313,57 @@ async function listMyOrders(sb: any, tenantId: string, _storeId: number, memberI
       image_url: toPublicUrl(supabaseUrl, "products", it.image_url),
     })),
   }));
-  return json({ orders });
+
+  const hasMore = isHistory && orders.length === limit;
+  const nextCursor = hasMore ? orders[orders.length - 1].id : null;
+  return json({ orders, has_more: hasMore, next_cursor: nextCursor });
 }
 
-async function listMySettlements(sb: any, tenantId: string, _storeId: number, memberId: number, tab: string) {
-  const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
-  // 同 listMyOrders：跨店訂單都納入（OrderCard 顯示 store_name）。
-  let q = sb.from("v_customer_order_summary").select("*").eq("tenant_id", tenantId).eq("member_id", memberId).gte("created_at", cutoff.toISOString()).order("created_at", { ascending: false }).limit(100);
-  if (tab === "unpaid") q = q.eq("payment_status", "unpaid").not("status", "in", "(cancelled,expired)");
-  else q = q.in("status", ["shipping", "completed"]);
+async function listMySettlements(
+  sb: any,
+  tenantId: string,
+  _storeId: number,
+  memberId: number,
+  tab: string,
+  opts: { limit?: number; before_id?: number | null } = {},
+) {
+  // tab=unpaid: 待付款,通常 << 100,單次拿完
+  // tab=shipped: 已寄出 / 已完成,會累積,cursor 分頁 (AUDIT #9)
+  const isShipped = tab === "shipped";
+  const limit = isShipped
+    ? Math.min(Math.max(Number(opts.limit ?? 30), 1), 100)
+    : 200;
+  const beforeId = opts.before_id ? Number(opts.before_id) : null;
+
+  let q = sb
+    .from("v_customer_order_summary")
+    .select("*")
+    .eq("tenant_id", tenantId)
+    .eq("member_id", memberId)
+    .order("id", { ascending: false })
+    .limit(limit);
+
+  if (isShipped) {
+    q = q.in("status", ["shipping", "completed"]);
+    if (beforeId) q = q.lt("id", beforeId);
+  } else {
+    const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
+    q = q.gte("created_at", cutoff.toISOString())
+         .eq("payment_status", "unpaid")
+         .not("status", "in", "(cancelled,expired)");
+  }
+
   const { data, error } = await q;
   if (error) return json({ error: error.message }, 500);
-  return json({ settlements: data ?? [] });
+
+  if (!isShipped && (data?.length ?? 0) >= 200) {
+    console.error("[PAGINATION-RISK] listMySettlements(unpaid) 撞到 200 上限");
+  }
+
+  const settlements = data ?? [];
+  const hasMore = isShipped && settlements.length === limit;
+  const nextCursor = hasMore ? settlements[settlements.length - 1].id : null;
+  return json({ settlements, has_more: hasMore, next_cursor: nextCursor });
 }
 
 async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string | null, memberId?: number | null) {
@@ -734,8 +807,8 @@ Deno.serve(async (req) => {
       case "get_overview": if (!memberId) return json({ error: "no member_id" }, 401); return await getOverview(sb, tenantId, storeId, memberId);
       case "get_wallet": if (!memberId) return json({ error: "no member_id" }, 401); return await getWallet(sb, tenantId, memberId);
       case "list_wallet_ledger": if (!memberId) return json({ error: "no member_id" }, 401); return await listWalletLedger(sb, tenantId, memberId, body);
-      case "list_my_orders": if (!memberId) return json({ error: "no member_id" }, 401); return await listMyOrders(sb, tenantId, storeId, memberId, String(body.tab ?? ""));
-      case "list_my_settlements": if (!memberId) return json({ error: "no member_id" }, 401); return await listMySettlements(sb, tenantId, storeId, memberId, String(body.tab ?? ""));
+      case "list_my_orders": if (!memberId) return json({ error: "no member_id" }, 401); return await listMyOrders(sb, tenantId, storeId, memberId, String(body.tab ?? ""), { limit: body.limit, before_id: body.before_id });
+      case "list_my_settlements": if (!memberId) return json({ error: "no member_id" }, 401); return await listMySettlements(sb, tenantId, storeId, memberId, String(body.tab ?? ""), { limit: body.limit, before_id: body.before_id });
       case "upsert_push_subscription": if (!memberId) return json({ error: "no member_id" }, 401); return await upsertPushSubscription(sb, tenantId, memberId, body);
       case "list_my_notifications": if (!memberId) return json({ error: "no member_id" }, 401); return await listMyNotifications(sb, tenantId, memberId);
       case "get_my_unread_notification_count": if (!memberId) return json({ error: "no member_id" }, 401); return await getMyUnreadNotificationCount(sb, tenantId, memberId);

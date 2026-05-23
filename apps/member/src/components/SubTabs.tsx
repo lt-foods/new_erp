@@ -1,6 +1,6 @@
 "use client";
 
-type Option = { value: string; label: string; count?: number };
+type Option = { value: string; label: string; count?: number | string };
 
 /**
  * iOS-style segmented control。

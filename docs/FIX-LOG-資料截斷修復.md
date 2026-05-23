@@ -30,6 +30,22 @@
 
 <!-- 新修復項目附加在這裡。最新的放最上面。 -->
 
+### #8 + #9 — 會員端訂單/結算歷史改 cursor 分頁
+- 日期：2026-05-23
+- 修復者：claude
+- 修法策略：模式 A（cursor 分頁 + load more）
+- 變動檔案：
+  - `supabase/functions/liff-api/index.ts:listMyOrders / listMySettlements` — 接 `limit` / `before_id`,回 `has_more` + `next_cursor`,active/unpaid tab 加截斷哨兵
+  - `apps/member/src/app/orders/page.tsx` — history tab 加「載入更多」,計數顯示 `N+`
+  - `apps/member/src/app/settlements/page.tsx` — 同上
+  - `apps/member/src/components/SubTabs.tsx` — `count` 型別放寬為 `number | string`
+- 驗證腳本：`scripts/audit-pagination/test-08-09-orders-settlements-pagination.sh`
+- 驗證結果：✅ **PASS** — 灌 1100 筆 completed 訂單,翻 37 頁完整撈出 1100 筆;對照組 .limit(100) 只能拿 100
+- 備註：
+  - 取消原本 6 月 cutoff(cursor 翻頁時使用者已明確要更舊資料)
+  - active tab 保留單次 fetch 但上限 200,理論上不會撞到
+  - tsc 0 錯誤
+
 ### #13 + #14 (orderRows) — 商店首頁聚合改 JSONB RPC（消除商店首頁超賣風險）
 - 日期：2026-05-23
 - 修復者：claude
@@ -78,9 +94,9 @@
 
 | 風險等級 | 總數 | DONE | PARTIAL | PENDING | EXEMPTED |
 |---|---|---|---|---|---|
-| HIGH | 16 | 3 | 1 | 12 | 0 |
+| HIGH | 16 | 5 | 1 | 10 | 0 |
 | MEDIUM | 8 | 0 | 0 | 8 | 0 |
 | LOW | 2 | 0 | 0 | 0 | 2 |
-| **合計** | **26** | **3** | **1** | **20** | **2** |
+| **合計** | **26** | **5** | **1** | **18** | **2** |
 
 > 統計每次修復後同步更新。

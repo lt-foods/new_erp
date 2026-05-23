@@ -5,17 +5,20 @@ import { useRouter } from "next/navigation";
 import { consumeFragmentToSession, getSession } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
-import { LoadingScreen } from "@/components/Spinner";
+import Spinner, { LoadingScreen } from "@/components/Spinner";
 import SubTabs from "@/components/SubTabs";
 import SettlementCard, { type SettlementRow } from "@/components/SettlementCard";
 
 type Tab = "unpaid" | "shipped";
+type ListResp = { settlements: SettlementRow[]; has_more: boolean; next_cursor: number | null };
 
 export default function SettlementsPage() {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("unpaid");
   const [list, setList] = useState<SettlementRow[]>([]);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -29,11 +32,13 @@ export default function SettlementsPage() {
       setLoading(true);
       setErr(null);
       try {
-        const d = await callLiffApi<{ settlements: SettlementRow[] }>(s.token, {
+        const d = await callLiffApi<ListResp>(s.token, {
           action: "list_my_settlements",
           tab,
+          limit: 30,
         });
         setList(d.settlements);
+        setHasMore(Boolean(d.has_more));
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
       } finally {
@@ -41,6 +46,28 @@ export default function SettlementsPage() {
       }
     })();
   }, [tab, router]);
+
+  async function loadMore() {
+    if (loadingMore || list.length === 0) return;
+    const s = getSession();
+    if (!s) return;
+    setLoadingMore(true);
+    try {
+      const beforeId = list[list.length - 1].id;
+      const r = await callLiffApi<ListResp>(s.token, {
+        action: "list_my_settlements",
+        tab,
+        limit: 30,
+        before_id: beforeId,
+      });
+      setList((prev) => [...prev, ...r.settlements]);
+      setHasMore(Boolean(r.has_more));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   return (
     <PageShell title="我的結單">
@@ -85,6 +112,16 @@ export default function SettlementsPage() {
             <SettlementCard settlement={s} />
           </div>
         ))}
+
+        {hasMore && !loading && (
+          <button
+            onClick={loadMore}
+            disabled={loadingMore}
+            className="flex w-full items-center justify-center gap-2 rounded-2xl border border-[var(--separator)] bg-[var(--card-bg)] px-4 py-3 text-[15px] text-[var(--brand-strong)] active:bg-[#76768033] disabled:opacity-50"
+          >
+            {loadingMore ? <Spinner size={18} /> : "載入更多"}
+          </button>
+        )}
       </div>
     </PageShell>
   );
