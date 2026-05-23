@@ -284,7 +284,8 @@ function priceText(c: CampaignSummary): string {
 /**
  * 美食列車群組 banner — 把多團美食列車輪詢顯示在同一張 banner 內。
  * 每 3.5s 切下一團, 封面用淡入淡出, 底部 dots 指示目前是第幾團。
- * 點整張卡 → 進「當下顯示」那團的詳情頁 (像蝦皮商城內部 banner)。
+ * 點整張卡 → 進 /shop/food-train 清單頁 (跟限時專區 banner 行為一致,
+ * 讓顧客看到全部美食列車再挑)。
  *
  * 只有 1 團時不開輪詢, 也不畫 dots, 退化成靜態 banner。
  */
@@ -304,9 +305,10 @@ function FoodTrainStackBanner({ campaigns }: { campaigns: CampaignSummary[] }) {
   const current = campaigns[safeIdx];
   if (!current) return null;
 
+  // 點整張卡 → 進美食列車清單頁 (跟限時專區 banner 一致, 給顧客先看全部再挑)
   return (
     <Link
-      href={`/shop/c/${current.id}`}
+      href="/shop/food-train"
       className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(5,150,105,0.5)] transition-transform duration-200 active:scale-[0.985]"
     >
       <div className="relative aspect-[16/8] w-full bg-gradient-to-br from-emerald-500 via-emerald-600 to-teal-700">
