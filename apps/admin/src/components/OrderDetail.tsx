@@ -227,19 +227,23 @@ export function OrderDetail({
   // ----- 從 head + draft 取「目前生效的值」 -----
   const itemEffective = (it: ItemRow) => {
     const d = draft.items.get(it.id);
+    const qty = d?.qty ?? Number(it.qty);
     const unit_price = d?.unit_price ?? Number(it.unit_price);
     const notes = d && Object.prototype.hasOwnProperty.call(d, "notes") ? d.notes! : it.notes;
     const discount: DiscountValue = d?.discount ?? deriveDiscount(it.discount_percent, it.discount_amount);
-    return { unit_price, notes, discount };
+    return { qty, unit_price, notes, discount };
   };
   const orderDiscountValue: DiscountValue = draft.discount ?? deriveDiscount(head.discount_percent, head.discount_amount);
   const orderNotesValue: string | null = Object.prototype.hasOwnProperty.call(draft, "notes") ? draft.notes! : head.notes;
 
-  const totalQty = items.reduce((s, i) => s + Number(i.qty), 0);
-  const grossTotal = items.reduce((s, i) => s + Number(i.qty) * Number(itemEffective(i).unit_price), 0);
+  const totalQty = items.reduce((s, i) => s + Number(itemEffective(i).qty), 0);
+  const grossTotal = items.reduce((s, i) => {
+    const eff = itemEffective(i);
+    return s + Number(eff.qty) * Number(eff.unit_price);
+  }, 0);
   const subtotal = items.reduce((s, i) => {
     const eff = itemEffective(i);
-    return s + computeLineSubtotal(Number(i.qty), eff.unit_price, eff.discount);
+    return s + computeLineSubtotal(Number(eff.qty), eff.unit_price, eff.discount);
   }, 0);
   const lineDiscountTotal = Math.round((grossTotal - subtotal) * 10000) / 10000;
   const { deduction: orderDeduction, payable: payableAmount } = applyOrderDiscount(subtotal, orderDiscountValue);
@@ -657,7 +661,7 @@ export function OrderDetail({
                 <tr><td colSpan={8} className="p-4 text-center text-zinc-500">尚無明細</td></tr>
               ) : items.map((it) => {
                 const eff = itemEffective(it);
-                const sub = computeLineSubtotal(Number(it.qty), eff.unit_price, eff.discount);
+                const sub = computeLineSubtotal(Number(eff.qty), eff.unit_price, eff.discount);
                 const isDirty = draft.items.has(it.id);
                 return (
                   <tr key={it.id} className={isDirty ? "bg-yellow-50 dark:bg-yellow-950/30" : ""}>
@@ -672,10 +676,18 @@ export function OrderDetail({
                     </td>
                     <td className="px-3 py-2 text-right font-mono">
                       {canEditQty ? (
-                        <EditableNumber
-                          value={Number(it.qty)}
+                        <input
+                          type="number"
                           min={1}
-                          onSave={async (v) => setItemDraft(it.id, { qty: v })}
+                          step={1}
+                          value={Number(eff.qty)}
+                          onChange={(e) => {
+                            const v = Number(e.target.value);
+                            if (Number.isFinite(v) && v >= 1) {
+                              setItemDraft(it.id, { qty: v });
+                            }
+                          }}
+                          className="w-20 rounded border border-zinc-300 bg-white px-2 py-1 text-right font-mono dark:border-zinc-600 dark:bg-zinc-800"
                         />
                       ) : canEdit && head?.status === "confirmed" ? (
                         <span title="已被請購單鎖定,如需調整請聯絡總部" className="cursor-help text-zinc-500">
@@ -700,7 +712,7 @@ export function OrderDetail({
                         disabled={!canEdit}
                         onChange={(v) => setItemDraft(it.id, { discount: v })}
                         compact
-                        referenceAmount={Number(it.qty) * Number(eff.unit_price)}
+                        referenceAmount={Number(eff.qty) * Number(eff.unit_price)}
                       />
                     </td>
                     <td className="px-3 py-2 text-right font-mono">${Math.round(sub)}</td>
