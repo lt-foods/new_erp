@@ -204,8 +204,8 @@ export default function ShopPage() {
             groupMode
               ? [
                   {
-                    key: "food_train_group",
-                    node: <FoodTrainGroupBanner hero={foodTrains[0]} count={foodTrains.length} />,
+                    key: "food_train_stack",
+                    node: <FoodTrainStackBanner campaigns={foodTrains} />,
                   },
                   {
                     key: "flash_group",
@@ -281,37 +281,96 @@ function priceText(c: CampaignSummary): string {
   return `$${c.min_price.toLocaleString()}${c.max_price > c.min_price ? " 起" : ""}`;
 }
 
-function FoodTrainGroupBanner({ hero, count }: { hero: CampaignSummary; count: number }) {
+/**
+ * 美食列車群組 banner — 把多團美食列車輪詢顯示在同一張 banner 內。
+ * 每 3.5s 切下一團, 封面用淡入淡出, 底部 dots 指示目前是第幾團。
+ * 點整張卡 → 進「當下顯示」那團的詳情頁 (像蝦皮商城內部 banner)。
+ *
+ * 只有 1 團時不開輪詢, 也不畫 dots, 退化成靜態 banner。
+ */
+function FoodTrainStackBanner({ campaigns }: { campaigns: CampaignSummary[] }) {
+  const [idx, setIdx] = useState(0);
+
+  useEffect(() => {
+    if (campaigns.length <= 1) return;
+    const id = setInterval(() => {
+      setIdx((i) => (i + 1) % campaigns.length);
+    }, 3500);
+    return () => clearInterval(id);
+  }, [campaigns.length]);
+
+  // campaigns 長度變動時 (背景 revalidate) 把 idx 拉回合法範圍
+  const safeIdx = Math.min(idx, campaigns.length - 1);
+  const current = campaigns[safeIdx];
+  if (!current) return null;
+
   return (
     <Link
-      href="/shop/food-train"
+      href={`/shop/c/${current.id}`}
       className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(5,150,105,0.5)] transition-transform duration-200 active:scale-[0.985]"
     >
-      <div className="relative aspect-[16/8] w-full bg-gradient-to-br from-emerald-500 via-emerald-600 to-teal-600">
-        {hero.cover_image_url && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={hero.cover_image_url}
-            alt=""
-            className="absolute inset-0 h-full w-full object-cover opacity-30 mix-blend-overlay"
-          />
+      <div className="relative aspect-[16/8] w-full bg-gradient-to-br from-emerald-500 via-emerald-600 to-teal-700">
+        {/* 各團封面疊在一起 crossfade, 當前那張顯示, 其他全透明 */}
+        {campaigns.map((c, i) =>
+          c.cover_image_url ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              key={c.id}
+              src={c.cover_image_url}
+              alt=""
+              className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-700 ${
+                i === safeIdx ? "opacity-55" : "opacity-0"
+              }`}
+            />
+          ) : null,
         )}
-        <div className="absolute inset-0 bg-[radial-gradient(120%_80%_at_100%_0%,rgba(255,255,255,0.35)_0%,transparent_55%)]" />
+
+        {/* 暗化 + 光暈 — 讓白字在任何封面上都讀得清 */}
+        <div className="absolute inset-0 bg-gradient-to-t from-emerald-950/70 via-emerald-900/15 to-transparent" />
+        <div className="absolute inset-0 bg-[radial-gradient(120%_80%_at_100%_0%,rgba(255,255,255,0.3)_0%,transparent_55%)]" />
+
         <div className="absolute inset-0 flex flex-col justify-between p-4">
-          <div className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-white/22 px-3 py-1 backdrop-blur">
-              <span className="text-[16px]">🚂</span>
-              <span className="text-[16px] font-bold text-white">美食列車</span>
+          <div className="flex items-start justify-between gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-700/55 px-3 py-1 shadow-sm backdrop-blur">
+              <span className="text-[15px]">🚂</span>
+              <span className="text-[14px] font-bold text-white">美食列車</span>
             </span>
+            {current.end_at && (
+              <span className="rounded-full bg-black/45 px-2.5 py-1 text-[12px] font-semibold tabular-nums text-white backdrop-blur">
+                <Countdown target={current.end_at} compact />
+              </span>
+            )}
           </div>
-          <div className="space-y-0.5">
-            <div className="text-[13px] font-medium text-white/90">嚴選美食 · 限時開團</div>
-            <div className="text-[22px] font-bold text-white drop-shadow">
-              {count} 團熱賣中
+
+          <div className="space-y-1">
+            <div className="text-[12px] font-medium text-white/85">
+              {campaigns.length > 1
+                ? `嚴選美食 · ${campaigns.length} 團熱賣中`
+                : "嚴選美食 · 限時開團"}
+            </div>
+            <div className="line-clamp-1 text-[18px] font-bold text-white drop-shadow">
+              {cleanCampaignText(current.name)}
+            </div>
+            <div className="flex items-end justify-between gap-2">
+              <div className="text-[24px] font-extrabold tabular-nums text-white drop-shadow leading-none">
+                {priceText(current)}
+              </div>
+              {campaigns.length > 1 && (
+                <div className="flex items-center gap-1.5 pb-1">
+                  {campaigns.map((c, i) => (
+                    <span
+                      key={c.id}
+                      aria-hidden
+                      className={`h-1.5 rounded-full transition-all duration-300 ${
+                        i === safeIdx ? "w-5 bg-white" : "w-1.5 bg-white/55"
+                      }`}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
-        <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[28px] text-white/85">›</div>
       </div>
     </Link>
   );
