@@ -5,9 +5,9 @@ import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { useRole, isAdmin } from "@/lib/role";
+import { CAMPAIGN_STATUS_LABEL, type CampaignStatus } from "@/lib/campaignStatus";
 
-export type CampaignStatus =
-  | "draft" | "open" | "closed" | "ordered" | "receiving" | "ready" | "completed" | "cancelled";
+export type { CampaignStatus };
 export type CloseType = "regular" | "fast" | "limited";
 
 export type CampaignFormValues = {
@@ -48,13 +48,8 @@ const STATUS_OPT: { v: CampaignStatus; label: string }[] = [
   { v: "closed", label: "已收單" },
 ];
 
-const DOWNSTREAM_LABEL: Record<string, string> = {
-  ordered: "已下訂",
-  receiving: "到貨中",
-  ready: "可取貨",
-  completed: "已完成",
-  cancelled: "已取消",
-};
+// 下游(系統推進)狀態的中文 label — 復用共用字典
+const DOWNSTREAM_LABEL = CAMPAIGN_STATUS_LABEL;
 
 export function CampaignForm({
   initial,

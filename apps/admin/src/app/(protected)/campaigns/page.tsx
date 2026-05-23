@@ -5,6 +5,11 @@ import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import { PR_TERM_ZH } from "@/lib/prStatus";
+import {
+  CAMPAIGN_STATUS_LABEL,
+  CAMPAIGN_STATUS_BADGE,
+  type CampaignStatus,
+} from "@/lib/campaignStatus";
 import { Modal } from "@/components/Modal";
 import { CampaignForm, type CampaignFormValues } from "@/components/CampaignForm";
 import { CampaignOrdersPanel } from "@/components/CampaignOrdersPanel";
@@ -32,8 +37,7 @@ async function fetchAll<T>(builder: () => any, pageSize = 1000, maxPages = 50): 
   return all;
 }
 
-type Status =
-  | "draft" | "open" | "closed" | "ordered" | "receiving" | "ready" | "completed" | "cancelled";
+type Status = CampaignStatus;
 
 type CloseType = "regular" | "fast" | "limited";
 
@@ -51,10 +55,7 @@ type Row = {
   campaign_items: CampaignCoverItem[] | null;
 };
 
-const STATUS_LABEL: Record<Status, string> = {
-  draft: "草稿", open: "開團中", closed: "已收單", ordered: "已下訂",
-  receiving: "到貨中", ready: "可取貨", completed: "已完成", cancelled: "已取消",
-};
+const STATUS_LABEL = CAMPAIGN_STATUS_LABEL;
 
 const CLOSE_TYPE_LABEL: Record<CloseType, string> = {
   regular: "常規",
@@ -509,7 +510,7 @@ export default function CampaignsListPage() {
           {closingId === r.id ? "結單中…" : "結單"}
         </SpinButton>
       )}
-      {showAdminActions && (["open", "closed", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
+      {showAdminActions && (["open", "closed", "locked", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
         <SpinButton
           onClick={() => setFbPublishId(r.id)}
           className="text-xs text-sky-600 hover:underline dark:text-sky-400"
@@ -517,7 +518,7 @@ export default function CampaignsListPage() {
           發 FB
         </SpinButton>
       )}
-      {(["closed", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
+      {(["closed", "locked", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
         <SpinButton
           onClick={() => finalizeCampaign(r.id, r.name)}
           disabled={finalizingId === r.id}
@@ -963,17 +964,7 @@ function PagerBtn({ onClick, disabled, children }: { onClick: () => void; disabl
   return <SpinButton onClick={onClick} disabled={disabled} className="rounded-md border border-zinc-300 px-2 py-1 hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800 dark:disabled:hover:bg-transparent">{children}</SpinButton>;
 }
 function StatusBadge({ s }: { s: Status }) {
-  const st: Record<Status, string> = {
-    draft: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
-    open: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300",
-    closed: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
-    ordered: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
-    receiving: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300",
-    ready: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
-    completed: "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300",
-    cancelled: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
-  };
-  return <span className={`inline-block rounded px-2 py-0.5 text-xs ${st[s]}`}>{STATUS_LABEL[s]}</span>;
+  return <span className={`inline-block rounded px-2 py-0.5 text-xs ${CAMPAIGN_STATUS_BADGE[s]}`}>{STATUS_LABEL[s]}</span>;
 }
 
 // ============================================================
@@ -1454,22 +1445,14 @@ function CampaignCard({
     draft: "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200",
     open: "bg-green-200 text-green-800 dark:bg-green-900 dark:text-green-200",
     closed: "bg-amber-200 text-amber-800 dark:bg-amber-900 dark:text-amber-200",
+    locked: "bg-rose-200 text-rose-800 dark:bg-rose-900 dark:text-rose-200",
     ordered: "bg-blue-200 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
     receiving: "bg-indigo-200 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200",
     ready: "bg-emerald-200 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200",
     completed: "bg-zinc-300 text-zinc-700 dark:bg-zinc-600 dark:text-zinc-200",
     cancelled: "bg-red-200 text-red-800 dark:bg-red-900 dark:text-red-200",
   };
-  const compactBg: Record<Status, string> = {
-    draft: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
-    open: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300",
-    closed: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
-    ordered: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
-    receiving: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300",
-    ready: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
-    completed: "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300",
-    cancelled: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
-  };
+  const compactBg = CAMPAIGN_STATUS_BADGE;
 
   if (compact) {
     return (

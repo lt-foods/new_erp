@@ -8,10 +8,8 @@ import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
 import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 import { ORDER_STATUSES, ORDER_STATUS_LABEL, type OrderStatus } from "@/lib/orderStatus";
+import { type CampaignStatus } from "@/lib/campaignStatus";
 import SpinButton from "@/components/SpinButton";
-
-type CampaignStatus =
-  | "draft" | "open" | "closed" | "ordered" | "receiving" | "ready" | "completed" | "cancelled";
 
 type Campaign = {
   id: number;
@@ -22,9 +20,9 @@ type Campaign = {
   end_at: string | null;
 };
 
-// 已過收單階段的狀態（在 pivot 視覺上標「已結單」tag + 底色）
+// 已過收單階段的狀態（pivot 視覺上標「已結單」tag + 底色）
 const CLOSED_STATUSES: ReadonlySet<CampaignStatus> = new Set([
-  "closed", "ordered", "receiving", "ready", "completed",
+  "closed", "locked", "ordered", "receiving", "ready", "completed",
 ]);
 type Store = { id: number; code: string; name: string };
 
@@ -842,7 +840,7 @@ function PivotContent() {
           </SpinButton>
         </div>
 
-        {/* 只看已收單 toggle — campaign.status ∈ closed/ordered/receiving/ready/completed */}
+        {/* 只看已收單 toggle — campaign.status ∈ closed/locked/ordered/receiving/ready/completed */}
         <SpinButton
           onClick={() => setClosedOnly((v) => !v)}
           className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
@@ -850,7 +848,7 @@ function PivotContent() {
               ? "border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300"
               : "border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-900"
           }`}
-          title="只看已過收單階段（closed / ordered / receiving / ready / completed）的開團"
+          title="只看已過收單階段(closed / locked / ordered / receiving / ready / completed)的開團"
         >
           只看已收單
         </SpinButton>

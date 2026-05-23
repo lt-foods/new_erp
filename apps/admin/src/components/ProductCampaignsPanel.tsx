@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
-
-type CampaignStatus =
-  | "draft" | "open" | "closed" | "ordered"
-  | "receiving" | "ready" | "completed" | "cancelled";
+import {
+  CAMPAIGN_STATUS_LABEL,
+  CAMPAIGN_STATUS_BADGE,
+  type CampaignStatus,
+} from "@/lib/campaignStatus";
 
 type CampaignRow = {
   id: number;
@@ -17,21 +18,8 @@ type CampaignRow = {
   end_at: string | null;
 };
 
-const STATUS_LABEL: Record<CampaignStatus, string> = {
-  draft: "草稿", open: "開團中", closed: "已收單", ordered: "已下訂",
-  receiving: "到貨中", ready: "可取貨", completed: "已完成", cancelled: "已取消",
-};
-
-const STATUS_BADGE: Record<CampaignStatus, string> = {
-  draft: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
-  open: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300",
-  closed: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
-  ordered: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
-  receiving: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300",
-  ready: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
-  completed: "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300",
-  cancelled: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
-};
+const STATUS_LABEL = CAMPAIGN_STATUS_LABEL;
+const STATUS_BADGE = CAMPAIGN_STATUS_BADGE;
 
 function fmtDate(s: string | null) {
   return s ? new Date(s).toLocaleDateString("zh-TW") : "—";

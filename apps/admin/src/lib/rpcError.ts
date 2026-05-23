@@ -1,6 +1,8 @@
 // Map known Postgres RAISE EXCEPTION messages → Chinese.
 // Add patterns as more surface in production.
 
+import { campaignStatusLabel } from "@/lib/campaignStatus";
+
 type Rule = { pattern: RegExp; render: (m: RegExpMatchArray) => string };
 
 const TRANSFER_STATUS_ZH: Record<string, string> = {
@@ -13,17 +15,7 @@ const TRANSFER_STATUS_ZH: Record<string, string> = {
 };
 const tStatus = (s: string) => TRANSFER_STATUS_ZH[s] ?? s;
 
-const CAMPAIGN_STATUS_ZH: Record<string, string> = {
-  draft: "草稿",
-  open: "開團中",
-  closed: "已收單",
-  ordered: "已下訂",
-  receiving: "到貨中",
-  ready: "可取貨",
-  completed: "已完成",
-  cancelled: "已取消",
-};
-const cStatus = (s: string) => CAMPAIGN_STATUS_ZH[s] ?? s;
+const cStatus = campaignStatusLabel;
 
 const RULES: Rule[] = [
   {
