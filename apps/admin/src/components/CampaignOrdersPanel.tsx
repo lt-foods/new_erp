@@ -5,6 +5,8 @@ import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 import { orderStatusLabel } from "@/lib/orderStatus";
+import { Modal } from "@/components/Modal";
+import { OrderDetail } from "@/components/OrderDetail";
 
 type OrderRow = {
   id: number;
@@ -40,6 +42,9 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
   const [storeFilter, setStoreFilter] = useState<string>("");
   useDefaultStoreFromUser(stores, storeFilter, setStoreFilter);
   const [error, setError] = useState<string | null>(null);
+  const [detailId, setDetailId] = useState<number | null>(null);
+  const [detailNo, setDetailNo] = useState<string>("");
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,7 +73,7 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
     return () => {
       cancelled = true;
     };
-  }, [campaignId]);
+  }, [campaignId, reloadTick]);
 
   const storeCount = useMemo(() => {
     const m = new Map<number, number>();
@@ -178,7 +183,12 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
                   return (
                     <tr
                       key={r.id}
-                      className={`${isOffset ? "bg-red-50/40 dark:bg-red-950/20" : ""} ${isCancelled ? "opacity-50" : ""} hover:bg-zinc-50 dark:hover:bg-zinc-900`}
+                      onClick={() => {
+                        setDetailId(r.id);
+                        setDetailNo(r.order_no);
+                      }}
+                      className={`cursor-pointer ${isOffset ? "bg-red-50/40 dark:bg-red-950/20" : ""} ${isCancelled ? "opacity-50" : ""} hover:bg-zinc-50 dark:hover:bg-zinc-900`}
+                      title="點此查看訂單明細"
                     >
                       <td className="px-3 py-1.5 font-mono">
                         {r.order_no}
@@ -192,6 +202,7 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
                         {r.member?.name ? (
                           <Link
                             href={`/members?id=${r.member.id}`}
+                            onClick={(e) => e.stopPropagation()}
                             className="hover:underline"
                           >
                             {r.member.name}
@@ -238,6 +249,26 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
           </div>
         </>
       )}
+
+      <Modal
+        open={detailId !== null}
+        onClose={() => {
+          setDetailId(null);
+          setReloadTick((n) => n + 1);
+        }}
+        title={`訂單明細 ${detailNo}`}
+        maxWidth="max-w-4xl"
+      >
+        {detailId !== null && (
+          <OrderDetail
+            orderId={detailId}
+            onNavigate={(id, no) => {
+              setDetailId(id);
+              setDetailNo(no);
+            }}
+          />
+        )}
+      </Modal>
     </div>
   );
 }
