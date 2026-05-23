@@ -76,6 +76,7 @@ function applyOrderDiscount(subtotal: number, d: DiscountValue): { deduction: nu
 }
 
 type ItemDraft = {
+  qty?: number;
   unit_price?: number;
   notes?: string | null;
   discount?: DiscountValue;
@@ -154,6 +155,9 @@ export function OrderDetail({
     if (head?.store?.name && Array.isArray(userStores) && userStores.includes(head.store.name)) return true;
     return false;
   }, [role, userStores, head?.store?.name]);
+
+  // qty 只有 pending 訂單可改;一旦被 PR 鎖定變 confirmed 就唯讀
+  const canEditQty = canEdit && head?.status === "pending";
 
   useEffect(() => {
     let cancelled = false;
@@ -286,10 +290,17 @@ export function OrderDetail({
           if (error) errors.push(`整單折扣$：${translateRpcError(error)}`);
         }
       }
-      // 商品 (unit_price / notes / discount)
+      // 商品 (qty / unit_price / notes / discount)
       for (const [itemId, d] of draft.items) {
         const it = items.find((x) => x.id === itemId);
         if (!it) continue;
+        if (d.qty !== undefined && Number(d.qty) !== Number(it.qty)) {
+          const { error } = await sb.rpc("rpc_update_order_item_qty", {
+            p_order_id: head.id, p_item_id: itemId,
+            p_new_qty: Number(d.qty), p_operator: operator, p_reason: reason,
+          });
+          if (error) errors.push(`#${itemId} 數量：${translateRpcError(error)}`);
+        }
         if (d.unit_price !== undefined && Number(d.unit_price) !== Number(it.unit_price)) {
           const { error } = await sb.rpc("rpc_update_order_item_price", {
             p_order_id: head.id, p_item_id: itemId,
@@ -659,7 +670,17 @@ export function OrderDetail({
                         </span>
                       ) : "—"}
                     </td>
-                    <td className="px-3 py-2 text-right font-mono">{Number(it.qty)}</td>
+                    <td className="px-3 py-2 text-right font-mono">
+                      {canEditQty ? (
+                        <EditableNumber
+                          value={Number(it.qty)}
+                          min={1}
+                          onSave={async (v) => setItemDraft(it.id, { qty: v })}
+                        />
+                      ) : (
+                        Number(it.qty)
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-right font-mono">
                       <EditableNumber
                         value={Number(eff.unit_price)}

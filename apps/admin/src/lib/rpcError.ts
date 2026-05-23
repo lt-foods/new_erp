@@ -2,6 +2,7 @@
 // Add patterns as more surface in production.
 
 import { campaignStatusLabel } from "@/lib/campaignStatus";
+import { orderStatusLabel } from "@/lib/orderStatus";
 
 type Rule = { pattern: RegExp; render: (m: RegExpMatchArray) => string };
 
@@ -16,6 +17,7 @@ const TRANSFER_STATUS_ZH: Record<string, string> = {
 const tStatus = (s: string) => TRANSFER_STATUS_ZH[s] ?? s;
 
 const cStatus = campaignStatusLabel;
+const oStatus = orderStatusLabel;
 
 const RULES: Rule[] = [
   {
@@ -43,6 +45,20 @@ const RULES: Rule[] = [
   },
   { pattern: /Outbound quantity must be positive/i, render: () => "出庫數量必須大於 0" },
   { pattern: /Inbound quantity must be positive/i, render: () => "入庫數量必須大於 0" },
+  {
+    pattern: /^qty must be > 0$/i,
+    render: () => "數量必須大於 0（如需刪除品項請聯絡總部）",
+  },
+  {
+    pattern: /campaign \d+ is (\w+); only open\/closed campaigns accept manual entry/i,
+    render: (m) =>
+      `此團狀態為「${cStatus(m[1])}」，僅「開團中」或「已收單」可以加單。`,
+  },
+  {
+    pattern: /訂單狀態為\s+(\w+)[,，]?\s*僅\s*待確認\s*訂單可改數量/,
+    render: (m) =>
+      `訂單狀態為「${oStatus(m[1])}」，僅「待確認」訂單可改數量。`,
+  },
   {
     pattern: /store\s+(\d+)\s+has no location_id(?:\s+mapped)?/i,
     render: (m) =>
