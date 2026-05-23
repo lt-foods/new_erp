@@ -10,6 +10,7 @@ import PullToRefresh from "@/components/PullToRefresh";
 import CampaignCard, { type CampaignSummary } from "@/components/CampaignCard";
 import Countdown from "@/components/Countdown";
 import ShopBannerCarousel from "@/components/ShopBannerCarousel";
+import { cleanCampaignText } from "@/lib/text";
 
 type SortKey = "new" | "hot" | "recent";
 
@@ -120,15 +121,13 @@ export default function ShopPage() {
   // 這層確保即使 edge function 還沒部署也不會外漏給顧客。
   const visible = campaigns.filter((c) => !c.campaign_no.startsWith("__"));
 
-  // 「限時專區」banner 只在真的有快閃團(close_type='fast')時才出現。
-  // /shop/flash 那頁只撈 close_type='fast'，若這裡用 visible[0](任何團)
-  // 當 hero，會出現 banner 但點進去是空的。清單已 by end_at asc 排序，
-  // find 取到的就是最快結單的快閃團。
-  const hero = visible.find((c) => c.close_type === "fast");
-
-  // 美食列車專區：close_type='food_train' 的開團時顯示綠色 banner
-  const foodTrainHero = visible.find((c) => c.close_type === "food_train");
-  const foodTrainCount = visible.filter((c) => c.close_type === "food_train").length;
+  // 置頂 banner 分組規則：
+  // - 兩個類別同時有 → 群組顯示（每類一張總覽 banner，連到該專區）
+  // - 只有一個類別有  → 攤平該類別（每團一張 banner，連到該團）
+  // ShopBannerCarousel 已內建 4s 輪詢。
+  const foodTrains = visible.filter((c) => c.close_type === "food_train");
+  const flashes = visible.filter((c) => c.close_type === "fast");
+  const groupMode = foodTrains.length > 0 && flashes.length > 0;
 
   // 排序：最新(id 大→小，無 created_at 用 id 近似) / 最熱銷(全分店訂單數)
   // / 近期售出(近 7 天訂單數)。tie-break 回退 id desc 保持穩定。
@@ -199,89 +198,30 @@ export default function ShopPage() {
           </Link>
         )}
 
-        {/* 主題 banner 跑馬燈 — 美食列車 / 限時專區 並排可滑, auto-play 4s */}
+        {/* 主題 banner 跑馬燈 — 兩類同時有就群組總覽, 只有一類就攤平每團一張, auto-play 4s */}
         <ShopBannerCarousel
-          banners={[
-            ...(foodTrainHero
-              ? [{
-                  key: "food_train",
-                  node: (
-                    <Link
-                      href="/shop/food-train"
-                      className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(5,150,105,0.5)] transition-transform duration-200 active:scale-[0.985]"
-                    >
-                      <div className="relative aspect-[16/8] w-full bg-gradient-to-br from-emerald-500 via-emerald-600 to-teal-600">
-                        {foodTrainHero.cover_image_url && (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={foodTrainHero.cover_image_url}
-                            alt=""
-                            className="absolute inset-0 h-full w-full object-cover opacity-30 mix-blend-overlay"
-                          />
-                        )}
-                        <div className="absolute inset-0 bg-[radial-gradient(120%_80%_at_100%_0%,rgba(255,255,255,0.35)_0%,transparent_55%)]" />
-                        <div className="absolute inset-0 flex flex-col justify-between p-4">
-                          <div className="flex items-center gap-2">
-                            <span className="inline-flex items-center gap-1.5 rounded-full bg-white/22 px-3 py-1 backdrop-blur">
-                              <span className="text-[16px]">🚂</span>
-                              <span className="text-[16px] font-bold text-white">美食列車</span>
-                            </span>
-                          </div>
-                          <div className="space-y-0.5">
-                            <div className="text-[13px] font-medium text-white/90">嚴選美食 · 限時開團</div>
-                            <div className="text-[22px] font-bold text-white drop-shadow">
-                              {foodTrainCount} 團熱賣中
-                            </div>
-                          </div>
-                        </div>
-                        <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[28px] text-white/85">›</div>
-                      </div>
-                    </Link>
-                  ),
-                }]
-              : []),
-            ...(hero
-              ? [{
-                  key: "flash",
-                  node: (
-                    <Link
-                      href="/shop/flash"
-                      className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(158,47,80,0.5)] transition-transform duration-200 active:scale-[0.985]"
-                    >
-                      <div className="relative">
-                        <div className="relative aspect-[16/8] w-full brand-gradient">
-                          {hero.cover_image_url && (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              src={hero.cover_image_url}
-                              alt=""
-                              className="absolute inset-0 h-full w-full object-cover opacity-35 mix-blend-overlay"
-                            />
-                          )}
-                          {/* 光澤 */}
-                          <div className="absolute inset-0 bg-[radial-gradient(120%_80%_at_100%_0%,rgba(255,255,255,0.35)_0%,transparent_55%)]" />
-                          <div className="absolute inset-0 flex flex-col justify-between p-4">
-                            <div className="flex items-center gap-2">
-                              <span className="inline-flex items-center gap-1.5 rounded-full bg-white/22 px-3 py-1 backdrop-blur">
-                                <span className="text-[16px]">⚡</span>
-                                <span className="text-[16px] font-bold text-white">限時專區</span>
-                              </span>
-                            </div>
-                            <div className="space-y-0.5">
-                              <div className="text-[13px] font-medium text-white/90">最快結單 · 手刀搶</div>
-                              <div className="text-[26px] font-bold tabular-nums text-white drop-shadow">
-                                {hero.end_at ? <Countdown target={hero.end_at} compact /> : "—"}
-                              </div>
-                            </div>
-                          </div>
-                          <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[28px] text-white/85">›</div>
-                        </div>
-                      </div>
-                    </Link>
-                  ),
-                }]
-              : []),
-          ]}
+          banners={
+            groupMode
+              ? [
+                  {
+                    key: "food_train_group",
+                    node: <FoodTrainGroupBanner hero={foodTrains[0]} count={foodTrains.length} />,
+                  },
+                  {
+                    key: "flash_group",
+                    node: <FlashGroupBanner hero={flashes[0]} />,
+                  },
+                ]
+              : foodTrains.length > 0
+                ? foodTrains.map((c) => ({
+                    key: `food_train_${c.id}`,
+                    node: <FoodTrainItemBanner campaign={c} />,
+                  }))
+                : flashes.map((c) => ({
+                    key: `flash_${c.id}`,
+                    node: <FlashItemBanner campaign={c} />,
+                  }))
+          }
         />
 
         {/* 團購商品 + 排序 */}
@@ -333,5 +273,170 @@ export default function ShopPage() {
       </div>
       </PullToRefresh>
     </PageShell>
+  );
+}
+
+function priceText(c: CampaignSummary): string {
+  if (c.min_price <= 0) return "—";
+  return `$${c.min_price.toLocaleString()}${c.max_price > c.min_price ? " 起" : ""}`;
+}
+
+function FoodTrainGroupBanner({ hero, count }: { hero: CampaignSummary; count: number }) {
+  return (
+    <Link
+      href="/shop/food-train"
+      className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(5,150,105,0.5)] transition-transform duration-200 active:scale-[0.985]"
+    >
+      <div className="relative aspect-[16/8] w-full bg-gradient-to-br from-emerald-500 via-emerald-600 to-teal-600">
+        {hero.cover_image_url && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={hero.cover_image_url}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover opacity-30 mix-blend-overlay"
+          />
+        )}
+        <div className="absolute inset-0 bg-[radial-gradient(120%_80%_at_100%_0%,rgba(255,255,255,0.35)_0%,transparent_55%)]" />
+        <div className="absolute inset-0 flex flex-col justify-between p-4">
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-white/22 px-3 py-1 backdrop-blur">
+              <span className="text-[16px]">🚂</span>
+              <span className="text-[16px] font-bold text-white">美食列車</span>
+            </span>
+          </div>
+          <div className="space-y-0.5">
+            <div className="text-[13px] font-medium text-white/90">嚴選美食 · 限時開團</div>
+            <div className="text-[22px] font-bold text-white drop-shadow">
+              {count} 團熱賣中
+            </div>
+          </div>
+        </div>
+        <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[28px] text-white/85">›</div>
+      </div>
+    </Link>
+  );
+}
+
+function FlashGroupBanner({ hero }: { hero: CampaignSummary }) {
+  return (
+    <Link
+      href="/shop/flash"
+      className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(158,47,80,0.5)] transition-transform duration-200 active:scale-[0.985]"
+    >
+      <div className="relative aspect-[16/8] w-full brand-gradient">
+        {hero.cover_image_url && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={hero.cover_image_url}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover opacity-35 mix-blend-overlay"
+          />
+        )}
+        <div className="absolute inset-0 bg-[radial-gradient(120%_80%_at_100%_0%,rgba(255,255,255,0.35)_0%,transparent_55%)]" />
+        <div className="absolute inset-0 flex flex-col justify-between p-4">
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-white/22 px-3 py-1 backdrop-blur">
+              <span className="text-[16px]">⚡</span>
+              <span className="text-[16px] font-bold text-white">限時專區</span>
+            </span>
+          </div>
+          <div className="space-y-0.5">
+            <div className="text-[13px] font-medium text-white/90">最快結單 · 手刀搶</div>
+            <div className="text-[26px] font-bold tabular-nums text-white drop-shadow">
+              {hero.end_at ? <Countdown target={hero.end_at} compact /> : "—"}
+            </div>
+          </div>
+        </div>
+        <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[28px] text-white/85">›</div>
+      </div>
+    </Link>
+  );
+}
+
+function FoodTrainItemBanner({ campaign }: { campaign: CampaignSummary }) {
+  return (
+    <Link
+      href={`/shop/c/${campaign.id}`}
+      className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(5,150,105,0.5)] transition-transform duration-200 active:scale-[0.985]"
+    >
+      <div className="relative aspect-[16/8] w-full bg-gradient-to-br from-emerald-500 via-emerald-600 to-teal-600">
+        {campaign.cover_image_url && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={campaign.cover_image_url}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover opacity-55"
+          />
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-emerald-950/75 via-emerald-900/15 to-transparent" />
+        <div className="absolute inset-0 flex flex-col justify-between p-4">
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-600/85 px-3 py-1 shadow-sm backdrop-blur">
+              <span className="text-[15px]">🚂</span>
+              <span className="text-[14px] font-bold text-white">美食列車</span>
+            </span>
+          </div>
+          <div className="flex items-end justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="line-clamp-1 text-[17px] font-bold text-white drop-shadow">
+                {cleanCampaignText(campaign.name)}
+              </div>
+              <div className="text-[24px] font-extrabold tabular-nums text-white drop-shadow">
+                {priceText(campaign)}
+              </div>
+            </div>
+            {campaign.end_at && (
+              <div className="shrink-0 rounded-full bg-black/35 px-2.5 py-1 text-[13px] font-semibold tabular-nums text-white backdrop-blur">
+                <Countdown target={campaign.end_at} compact />
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </Link>
+  );
+}
+
+function FlashItemBanner({ campaign }: { campaign: CampaignSummary }) {
+  return (
+    <Link
+      href={`/shop/c/${campaign.id}`}
+      className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(158,47,80,0.5)] transition-transform duration-200 active:scale-[0.985]"
+    >
+      <div className="relative aspect-[16/8] w-full brand-gradient">
+        {campaign.cover_image_url && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={campaign.cover_image_url}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover opacity-55"
+          />
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/55 via-transparent to-transparent" />
+        <div className="absolute inset-0 flex flex-col justify-between p-4">
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-white/22 px-3 py-1 shadow-sm backdrop-blur">
+              <span className="text-[15px]">⚡</span>
+              <span className="text-[14px] font-bold text-white">限時</span>
+            </span>
+          </div>
+          <div className="flex items-end justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="line-clamp-1 text-[17px] font-bold text-white drop-shadow">
+                {cleanCampaignText(campaign.name)}
+              </div>
+              <div className="text-[24px] font-extrabold tabular-nums text-white drop-shadow">
+                {priceText(campaign)}
+              </div>
+            </div>
+            {campaign.end_at && (
+              <div className="shrink-0 rounded-full bg-black/35 px-2.5 py-1 text-[13px] font-semibold tabular-nums text-white backdrop-blur">
+                <Countdown target={campaign.end_at} compact />
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </Link>
   );
 }
