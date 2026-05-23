@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import { fetchAllPaginated } from "@/lib/fetchAllPaginated";
 import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
 import OrderReturnCreateModal from "@/components/OrderReturnCreateModal";
@@ -71,13 +72,17 @@ async function buildKeywordOr(keyword: string): Promise<string | null> {
   if (!t) return null;
   const safe = t.replace(/[%,()]/g, " ");
   // Google 式：以空白 / + 拆 token，每個 token 都要在 name / phone / member_no 至少一欄命中
+  // AUDIT #23: 原本 .limit(300),關鍵字命中 >300 會員時訂單漏顯示。
+  // 改用 fetchAllPaginated (safetyCap 5000),避免漏單;若搜尋過於模糊真撞到 5000 才會 throw。
   const tokens = safe.split(/[\s+]+/).filter(Boolean);
-  let memberQ = getSupabase().from("members").select("id").neq("status", "deleted").limit(300);
-  for (const tok of tokens) {
-    memberQ = memberQ.or(`name.ilike.%${tok}%,phone.ilike.%${tok}%,member_no.ilike.%${tok}%`);
-  }
-  const { data } = await memberQ;
-  const ids = ((data ?? []) as { id: number }[]).map((m) => m.id);
+  const data = await fetchAllPaginated<{ id: number }>(({ from, to }) => {
+    let memberQ = getSupabase().from("members").select("id").neq("status", "deleted").order("id", { ascending: true }).range(from, to);
+    for (const tok of tokens) {
+      memberQ = memberQ.or(`name.ilike.%${tok}%,phone.ilike.%${tok}%,member_no.ilike.%${tok}%`);
+    }
+    return memberQ;
+  }, { label: "orders search member match", safetyCap: 5000 });
+  const ids = data.map((m) => m.id);
   // 整串 keyword 也允許出現在 order_no / nickname_snapshot（不拆 token，避免誤判）
   const ors = [`order_no.ilike.%${safe}%`, `nickname_snapshot.ilike.%${safe}%`];
   if (ids.length > 0) ors.push(`member_id.in.(${ids.join(",")})`);

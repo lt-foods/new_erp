@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { fetchAllPaginated } from "@/lib/fetchAllPaginated";
 import { MemberMergeModal } from "@/components/MemberMergeModal";
 import { WalletActionModal, type WalletActionMode } from "@/components/WalletActionModal";
 import { translateRpcError } from "@/lib/rpcError";
@@ -197,8 +198,25 @@ export function MemberDetail({ memberId }: { memberId: number }) {
         sb.from("stores").select("id, code, name").eq("is_active", true).order("name"),
         sb.from("member_points_balance").select("balance").eq("member_id", memberId).maybeSingle<{ balance: number }>(),
         sb.from("wallet_balances").select("balance").eq("member_id", memberId).maybeSingle<{ balance: number }>(),
-        sb.from("points_ledger").select("id, change, balance_after, source_type, reason, created_at").eq("member_id", memberId).order("created_at", { ascending: false }).limit(50),
-        sb.from("wallet_ledger").select("id, change, balance_after, type, payment_method, reason, reverses, created_at").eq("member_id", memberId).order("created_at", { ascending: false }).limit(50),
+        // @money-critical AUDIT #18 #19: 原本 .limit(50) 沒分頁,member 流水 >50 筆就被截斷,
+        // 後台看不到完整紀錄。改用 fetchAllPaginated (safetyCap 5000) 取完所有 ledger;
+        // 餘額顯示來自 *_balance table (denorm),不受影響。
+        fetchAllPaginated<PointsEntry>(({ from, to }) =>
+          sb.from("points_ledger")
+            .select("id, change, balance_after, source_type, reason, created_at")
+            .eq("member_id", memberId)
+            .order("id", { ascending: false })
+            .range(from, to),
+          { label: "MemberDetail points_ledger", safetyCap: 5000 },
+        ).then((data) => ({ data })),
+        fetchAllPaginated<WalletEntry>(({ from, to }) =>
+          sb.from("wallet_ledger")
+            .select("id, change, balance_after, type, payment_method, reason, reverses, created_at")
+            .eq("member_id", memberId)
+            .order("id", { ascending: false })
+            .range(from, to),
+          { label: "MemberDetail wallet_ledger", safetyCap: 5000 },
+        ).then((data) => ({ data })),
         sb.from("member_merges")
           .select("id, created_at, reason, merged_member_id, members:merged_member_id (id, member_no, name, phone, avatar_url, joined_at)")
           .eq("primary_member_id", memberId)

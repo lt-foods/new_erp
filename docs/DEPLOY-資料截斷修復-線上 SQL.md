@@ -224,33 +224,156 @@ SELECT rpc_member_campaign_aggregates('<tenant_uuid>'::uuid, 7);
 
 ---
 
-## 3. 不需要動 SQL 的 #8 / #9
+## 3. RPC: `rpc_list_staff`（修 #15）
 
-#8 / #9（訂單/結算歷史 cursor 分頁）**只動 Edge Function 與前端**，沒有 SQL 變更。等 LIFF deploy 完就會生效。
+**檔案**：`supabase/migrations/20260628100030_rpc_list_staff_jsonb.sql`
+
+**修了什麼**：原 `rpc_list_staff` 是 `RETURNS TABLE`，受 PostgREST 1000 列上限，員工數 >1000 時管理頁顯示不完整。改成 `RETURNS jsonb` 單列回 `jsonb_agg array`。
+前端 `apps/admin/src/app/(protected)/staff/page.tsx` 已更新讀 array。
+
+**SQL**：
+
+```sql
+DROP FUNCTION IF EXISTS public.rpc_list_staff();
+
+CREATE OR REPLACE FUNCTION public.rpc_list_staff()
+RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_tenant UUID := public._current_tenant_id();
+  v_result jsonb;
+BEGIN
+  IF NOT public._caller_can_manage_staff() THEN
+    RAISE EXCEPTION 'permission denied: requires owner/admin role';
+  END IF;
+
+  SELECT COALESCE(jsonb_agg(
+    jsonb_build_object(
+      'user_id',         u.id,
+      'email',           u.email::text,
+      'display_name',    COALESCE(u.raw_user_meta_data ->> 'display_name', u.raw_user_meta_data ->> 'name'),
+      'role',            COALESCE(u.raw_app_meta_data ->> 'role', ''),
+      'stores',          COALESCE(u.raw_app_meta_data -> 'stores', '[]'::jsonb),
+      'disabled',        (COALESCE(u.raw_app_meta_data ->> 'role', '') = 'disabled'),
+      'created_at',      u.created_at,
+      'last_sign_in_at', u.last_sign_in_at
+    )
+    ORDER BY
+      CASE COALESCE(u.raw_app_meta_data ->> 'role', '')
+        WHEN 'owner' THEN 1
+        WHEN 'admin' THEN 2
+        WHEN 'hq_manager' THEN 3
+        WHEN 'hq_accountant' THEN 4
+        WHEN 'purchaser' THEN 5
+        WHEN 'assistant' THEN 6
+        WHEN 'store_manager' THEN 7
+        WHEN 'store_staff' THEN 8
+        WHEN 'disabled' THEN 99
+        ELSE 50
+      END,
+      u.email
+  ), '[]'::jsonb)
+  INTO v_result
+  FROM auth.users u
+  WHERE (u.raw_app_meta_data ->> 'tenant_id')::uuid = v_tenant;
+
+  RETURN v_result;
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.rpc_list_staff() TO authenticated;
+
+COMMENT ON FUNCTION public.rpc_list_staff() IS
+  'RETURNS jsonb 單列,避免 PostgREST max_rows=1000 截斷。詳見 docs/STANDARD-資料分頁與筆數限制.md';
+```
+
+**驗證**：
+
+```sql
+SELECT proname, pg_get_function_result(oid)
+FROM pg_proc
+WHERE proname = 'rpc_list_staff';
+-- 預期: rpc_list_staff | jsonb
+```
 
 ---
 
-## 4. 部署 checklist
+## 4. VIEW COMMENT: `v_hq_inbox`（修 #16）
 
-線上跑 SQL：
+**檔案**：`supabase/migrations/20260628100040_comment_v_hq_inbox.sql`
+
+**修了什麼**：給 view 加上警示 COMMENT，避免未來開發者直接從前端 `sb.from("v_hq_inbox")` 查詢被 1000 列截斷。目前已 grep 確認無 caller 直接從此 view 查詢；正確路徑是 `rpc_hq_inbox_keys`（內建分頁）。
+
+**SQL**：
+
+```sql
+COMMENT ON VIEW public.v_hq_inbox IS
+  '⚠️ 請勿直接透過 PostgREST 查詢此 view (會被 max_rows=1000 截斷)。改用 rpc_hq_inbox_keys() (內建分頁)。詳見 docs/STANDARD-資料分頁與筆數限制.md';
+```
+
+**驗證**：
+
+```sql
+SELECT obj_description('public.v_hq_inbox'::regclass);
+-- 預期: 顯示上述 COMMENT
+```
+
+---
+
+## 5. 不需要動 SQL 的修復項目
+
+下列風險的修復完全在 Edge Function / 前端側（用 `fetchAllPaginated` helper 或 cursor 分頁），**不需要任何 SQL 變更**：
+
+| AUDIT # | 內容 |
+|---|---|
+| #1 | OrderAuditDrawer cursor 翻頁 |
+| #2 #3 | HQ Inbox / Exception 缺貨彙整 fetchAllPaginated |
+| #4 | picking_waves 計數 fetchAllPaginated |
+| #5 #6 #24 | WMS 揀貨 / 列印 / picking demand views fetchAllPaginated |
+| #7 | reorder_rules 補貨規則 fetchAllPaginated |
+| #8 #9 #10 | 會員端訂單 / 結算 / 通知 cursor 分頁 |
+| #14 主查詢 | listActiveCampaigns server-side range loop |
+| #17 | 庫存移動史 fetchAllPaginated |
+| #18 #19 | 會員 points / wallet ledger fetchAllPaginated |
+| #20 #21 #22 #23 | 各種無 limit `.in()` 查詢 fetchAllPaginated |
+
+等 LIFF / admin app deploy 完就會生效。
+
+---
+
+## 6. 部署 checklist
+
+線上跑 SQL（依序執行）：
 - [ ] §1 `rpc_member_campaign_detail` 已跑、驗證查詢回 `jsonb`
 - [ ] §2 `rpc_member_campaign_aggregates` 已跑、驗證查詢回 `jsonb`
+- [ ] §3 `rpc_list_staff` 已跑、驗證查詢回 `jsonb`
+- [ ] §4 `v_hq_inbox` COMMENT 已加
 
-部署 Edge Function（任一機器有 supabase CLI + 對應 access token）：
+部署 Edge Function：
 - [ ] `supabase functions deploy liff-api --project-ref <production_ref>`
 
-部署前端（會員端 LIFF）：
+部署前端（admin + 會員端 LIFF）：
 - [ ] vercel / 你們的部署流程觸發
 
-最後在 LIFF 實機驗證：
-- [ ] 開團列表（商店首頁）：「已售出 N 份」徽章正常顯示
-- [ ] 點進某團：商品列表完整、`ordered_qty` 顯示與後台一致
-- [ ] 我的訂單 → 訂單紀錄：超過 30 筆會出現「載入更多」按鈕，按下去能載入舊單
-- [ ] 我的結單 → 已寄出：同上「載入更多」生效
+LIFF 實機驗證：
+- [ ] 商店首頁：「已售出 N 份」徽章正常
+- [ ] 團詳情：商品列表完整、`ordered_qty` 與後台一致
+- [ ] 我的訂單 → 訂單紀錄：超過 30 筆出現「載入更多」並能載入舊單
+- [ ] 我的結單 → 已寄出：同上
+- [ ] 通知：超過 30 則出現「載入更多」
+
+Admin 實機驗證：
+- [ ] 員工管理頁：員工列表完整顯示（即使 >1000 名）
+- [ ] HQ inbox：缺貨/補貨/調撥計數正確
+- [ ] WMS 揀貨頁：派工內容完整（不漏 SKU）
+- [ ] 揀貨單列印：完整列出所有 PO/SKU
+- [ ] 庫存頁面：低庫存掃描不限於 2000 SKU
+- [ ] 會員 detail：點數/儲值流水完整顯示
+- [ ] 訂單頁搜尋：搜尋會員名稱命中 >300 也能查到訂單
 
 ---
 
-## 5. 舊的 RPC 處理
+## 7. 舊的 RPC 處理
 
 `rpc_member_campaign_order_counts`（migration `20260616000010_*.sql`）**還留在 DB**，但 Edge Function 已經不再呼叫。
 
@@ -260,7 +383,7 @@ SELECT rpc_member_campaign_aggregates('<tenant_uuid>'::uuid, 7);
 
 ---
 
-## 6. 回滾
+## 8. 回滾
 
 如果 LIFF 部署後發現問題：
 
@@ -271,10 +394,15 @@ SELECT rpc_member_campaign_aggregates('<tenant_uuid>'::uuid, 7);
    DROP FUNCTION IF EXISTS public.rpc_member_campaign_detail(UUID, BIGINT);
    DROP FUNCTION IF EXISTS public.rpc_member_campaign_aggregates(UUID, INT);
    ```
+4. 若需回滾 `rpc_list_staff`，重新跑舊版 SQL（檔案 `supabase/migrations/20260613000150_staff_permissions.sql` §2）即可。
+5. `v_hq_inbox` 的 COMMENT 純註解，無回滾必要；要清空可：
+   ```sql
+   COMMENT ON VIEW public.v_hq_inbox IS NULL;
+   ```
 
 ---
 
-## 7. 未來新增「線上要跑的 SQL」時的規矩
+## 9. 未來新增「線上要跑的 SQL」時的規矩
 
 每次再有需要手動跑的 trigger / function / RPC / view，請在本檔末尾新增一節（依編號或日期），格式：
 

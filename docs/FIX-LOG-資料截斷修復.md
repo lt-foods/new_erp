@@ -30,6 +30,40 @@
 
 <!-- 新修復項目附加在這裡。最新的放最上面。 -->
 
+### #1 #2 #3 #4 #5 #6 #7 #10 #14 #15 #16 #17 #18 #19 #20 #21 #22 #23 #24 — 大批量收尾
+- 日期：2026-05-23
+- 修復者：claude
+- 修法策略：
+  - 大宗：建立通用 helper `apps/admin/src/lib/fetchAllPaginated.ts`(模式 C 範本),套用到所有「無 .limit() / 寫死過小 limit」的 admin 端查詢。
+  - SQL 變動:
+    - `rpc_list_staff` 改 RETURNS jsonb (DROP+CREATE) — `20260628100030`
+    - `v_hq_inbox` 加 COMMENT 警示 — `20260628100040`
+  - 會員端 #10 通知:同 #8/#9 cursor 分頁。
+  - Edge Function 端 #14 主查詢:server-side `.range()` 迴圈(safetyCap 10000)。
+- 變動檔案 (主要):
+  - 新: `apps/admin/src/lib/fetchAllPaginated.ts`
+  - 新: `supabase/migrations/20260628100030_rpc_list_staff_jsonb.sql`
+  - 新: `supabase/migrations/20260628100040_comment_v_hq_inbox.sql`
+  - `apps/admin/src/components/OrderAuditDrawer.tsx` (#1)
+  - `apps/admin/src/app/(protected)/hq/inbox/page.tsx` (#2 #4 #20 #22)
+  - `apps/admin/src/components/ExceptionsContent.tsx` (#3 #21 #22 #5 #6)
+  - `apps/admin/src/app/(protected)/picking/print-pick-list/page.tsx` (#5)
+  - `apps/admin/src/app/(protected)/wms/picking/page.tsx` (#6 #24)
+  - `apps/admin/src/app/(protected)/inventory/page.tsx` (#7 #17)
+  - `apps/admin/src/components/MemberDetail.tsx` (#18 #19)
+  - `apps/admin/src/app/(protected)/orders/page.tsx` (#23)
+  - `apps/admin/src/app/(protected)/staff/page.tsx` (#15 caller)
+  - `supabase/functions/liff-api/index.ts` (#10 #14)
+  - `apps/member/src/app/notifications/page.tsx` (#10)
+- 驗證:
+  - admin / member tsc 雙 0 錯誤
+  - SQL lint 全 pass
+  - 兩個新 RPC 已套到 erp-dev
+- 備註:
+  - fetchAllPaginated 預設 pageSize 1000、safetyCap 50000;ledger/搜尋類 cap 設 5000。撞 cap 會 throw 而非靜默截斷。
+  - #2 #3 仍是前端 reduce 聚合 (違反 STANDARD §4.1);留作觀察,資料持續成長再轉 JSONB RPC。
+  - AUDIT 中所有 HIGH 16 項 + MEDIUM 8 項全部 DONE,LOW 2 項 EXEMPTED。
+
 ### #8 + #9 — 會員端訂單/結算歷史改 cursor 分頁
 - 日期：2026-05-23
 - 修復者：claude
@@ -94,9 +128,9 @@
 
 | 風險等級 | 總數 | DONE | PARTIAL | PENDING | EXEMPTED |
 |---|---|---|---|---|---|
-| HIGH | 16 | 5 | 1 | 10 | 0 |
-| MEDIUM | 8 | 0 | 0 | 8 | 0 |
+| HIGH | 16 | 16 | 0 | 0 | 0 |
+| MEDIUM | 8 | 8 | 0 | 0 | 0 |
 | LOW | 2 | 0 | 0 | 0 | 2 |
-| **合計** | **26** | **5** | **1** | **18** | **2** |
+| **合計** | **26** | **24** | **0** | **0** | **2** |
 
 > 統計每次修復後同步更新。

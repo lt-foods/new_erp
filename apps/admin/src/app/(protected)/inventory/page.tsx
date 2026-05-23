@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { fetchAllPaginated } from "@/lib/fetchAllPaginated";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import SpinButton from "@/components/SpinButton";
 import { useUserBranchStoreId, useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
@@ -167,17 +168,20 @@ export default function InventoryOverviewPage() {
         let isTruncated = false;
 
         if (onlyLow) {
-          // 低庫存：先抓 reorder_rules（受管 SKU 集合、有界），再比對 on_hand
-          let rr = sb.from("reorder_rules").select("location_id, sku_id, safety_stock, reorder_point").limit(LOW_STOCK_SCAN_CAP);
-          if (locationId) rr = rr.eq("location_id", Number(locationId));
-          if (skuIdFilter) rr = rr.in("sku_id", skuIdFilter);
-          const { data: rrData } = await rr;
-          const rules = (rrData as Reorder[]) ?? [];
+          // 低庫存：先抓 reorder_rules（受管 SKU 集合）。
+          // AUDIT #7: 原本寫死 .limit(LOW_STOCK_SCAN_CAP=2000) 會漏掃低庫存警示;
+          // 改用 fetchAllPaginated 翻完所有 rule (safetyCap 50000)。
+          const rules = await fetchAllPaginated<Reorder>(({ from, to }) => {
+            let rr = sb.from("reorder_rules").select("location_id, sku_id, safety_stock, reorder_point").order("location_id", { ascending: true }).order("sku_id", { ascending: true }).range(from, to);
+            if (locationId) rr = rr.eq("location_id", Number(locationId));
+            if (skuIdFilter) rr = rr.in("sku_id", skuIdFilter);
+            return rr;
+          }, { label: "reorder_rules low-stock scan", safetyCap: 50000 });
           if (rules.length === 0) {
             if (!cancelled) { setRows([]); setTotal(0); setTruncated(false); }
             return;
           }
-          if (rules.length >= LOW_STOCK_SCAN_CAP) isTruncated = true;
+          // fetchAllPaginated 已內建 safetyCap;真撞到會 throw。原 isTruncated 旗標不再需要。
           const ruleSkuIds = Array.from(new Set(rules.map((r) => r.sku_id)));
           let bq = sb
             .from("stock_balances")
@@ -271,14 +275,19 @@ export default function InventoryOverviewPage() {
     if (moveCache.has(key)) return;
     setMoveLoading(true);
     try {
-      const { data } = await getSupabase()
-        .from("stock_movements")
-        .select("id, quantity, unit_cost, movement_type, source_doc_type, source_doc_id, batch_no, expiry_date, reason, notes, created_at")
-        .eq("location_id", loc)
-        .eq("sku_id", sku)
-        .order("created_at", { ascending: false })
-        .limit(50);
-      const list = ((data as Movement[]) ?? []).map((m) => ({ ...m, quantity: num(m.quantity) }));
+      // AUDIT #17: 原本寫死 .limit(50),detail 面板看不到完整移動史。
+      // 改 fetchAllPaginated(safetyCap=5000),取完該 sku × location 的所有 movement。
+      const data = await fetchAllPaginated<Movement>(({ from, to }) =>
+        getSupabase()
+          .from("stock_movements")
+          .select("id, quantity, unit_cost, movement_type, source_doc_type, source_doc_id, batch_no, expiry_date, reason, notes, created_at")
+          .eq("location_id", loc)
+          .eq("sku_id", sku)
+          .order("id", { ascending: false })
+          .range(from, to),
+        { label: "inventory stock_movements detail", safetyCap: 5000 },
+      );
+      const list = data.map((m) => ({ ...m, quantity: num(m.quantity) }));
       setMoveCache((c) => new Map(c).set(key, list));
     } finally {
       setMoveLoading(false);
@@ -297,7 +306,7 @@ export default function InventoryOverviewPage() {
         <h1 className="text-xl font-semibold">庫存總覽</h1>
         <p className="text-sm text-zinc-500">
           {loading ? "載入中…" : total === 0 ? "共 0 筆" : `共 ${total} 筆（${fromIdx}-${toIdx}）`}
-          {truncated && <span className="ml-2 text-amber-600 dark:text-amber-400">（低庫存掃描已達 {LOW_STOCK_SCAN_CAP} 上限）</span>}
+          {/* truncated 旗標保留作為未來 helper safetyCap 命中時的視覺提示;目前 fetchAllPaginated 撞到會 throw,此 span 暫無作用 */}
         </p>
         </div>
         <Link

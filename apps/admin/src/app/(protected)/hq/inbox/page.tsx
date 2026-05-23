@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import { fetchAllPaginated } from "@/lib/fetchAllPaginated";
 import { translateRpcError } from "@/lib/rpcError";
 import { PR_TERM_ZH } from "@/lib/prStatus";
 import SpinButton from "@/components/SpinButton";
@@ -245,12 +246,16 @@ async function fetchItemsSummaryMap(
   includeFreeFormCols = false,
 ): Promise<Map<number, string>> {
   if (ids.length === 0) return new Map();
+  // AUDIT #20 #22: 原本 .from(table).select(...).in(...) 無 limit,單筆 parent
+  // (request/transfer/wave) >1000 行就漏算 items summary。fetchAllPaginated 修復。
   const cols = includeFreeFormCols
-    ? `${idCol}, sku_id, ${qtyCol}, description, estimated_amount`
-    : `${idCol}, sku_id, ${qtyCol}`;
-  const { data } = await sb.from(table).select(cols).in(idCol, ids);
+    ? `id, ${idCol}, sku_id, ${qtyCol}, description, estimated_amount`
+    : `id, ${idCol}, sku_id, ${qtyCol}`;
   type Line = Record<string, number | string | null>;
-  const lines = (data ?? []) as unknown as Line[];
+  const lines = await fetchAllPaginated<Line>(({ from, to }) =>
+    sb.from(table).select(cols).in(idCol, ids).order("id", { ascending: true }).range(from, to),
+    { label: `fetchItemsSummaryMap:${table}`, safetyCap: 50000 },
+  );
   const skuIds = Array.from(
     new Set(
       lines
@@ -337,11 +342,17 @@ async function fetchRestockRows(
   const reqIds = rsRows.map((r) => r.id);
   const lineMap = new Map<number, { count: number; total: number }>();
   if (reqIds.length > 0) {
-    const { data: lineData } = await sb
-      .from("restock_request_lines")
-      .select("request_id, qty, unit_price")
-      .in("request_id", reqIds);
-    for (const l of (lineData ?? []) as { request_id: number; qty: number; unit_price: number }[]) {
+    // @money-critical AUDIT #20: 補貨單行項金額/數量加總,原本無 limit,
+    // 單筆請求 >1000 行就漏算。改用 fetchAllPaginated 確保完整。
+    const lineData = await fetchAllPaginated<{ request_id: number; qty: number; unit_price: number }>(({ from, to }) =>
+      sb.from("restock_request_lines")
+        .select("id, request_id, qty, unit_price")
+        .in("request_id", reqIds)
+        .order("id", { ascending: true })
+        .range(from, to),
+      { label: "restock_request_lines hq inbox", safetyCap: 50000 },
+    );
+    for (const l of lineData) {
       const slot = lineMap.get(l.request_id) ?? { count: 0, total: 0 };
       slot.count += 1;
       slot.total += Number(l.qty) * Number(l.unit_price);
@@ -431,8 +442,13 @@ async function fetchTransferRows(
   const tIds = trs.map((t) => t.id);
   const tLineMap = new Map<number, number>();
   if (tIds.length > 0) {
-    const { data: tl } = await sb.from("transfer_items").select("transfer_id").in("transfer_id", tIds);
-    for (const it of (tl ?? []) as { transfer_id: number }[]) {
+    // AUDIT #22: 原本 .from("transfer_items").select(...).in(...) 無 limit,
+    // 多筆調撥單合計 >1000 行就漏算。fetchAllPaginated 修復。
+    const tl = await fetchAllPaginated<{ id: number; transfer_id: number }>(({ from, to }) =>
+      sb.from("transfer_items").select("id, transfer_id").in("transfer_id", tIds).order("id", { ascending: true }).range(from, to),
+      { label: "transfer_items count map", safetyCap: 50000 },
+    );
+    for (const it of tl) {
       tLineMap.set(it.transfer_id, (tLineMap.get(it.transfer_id) ?? 0) + 1);
     }
   }
@@ -529,27 +545,14 @@ async function fetchShortageRows(
   dateFrom: string,
   dateTo: string,
 ): Promise<{ rows: Row[]; total: number }> {
-  // v_order_shortage 是 (order × sku) 維度,需多撈再聚合。
-  // 先做簡化版:抓所有相關 row,client-side 聚合 + 切頁。
-  let q = sb
-    .from("v_order_shortage")
-    .select(
-      "order_id, order_no, member_id, store_name, order_status, shortage_resolution, shortage_notified_at, sku_id, product_name, variant_name, sku_code, order_qty, demand_unfulfillable, order_updated_at",
-    )
-    .order("order_updated_at", { ascending: false });
-  if (stage) {
-    const resolutions = SHORTAGE_RESOLUTION_BY_STAGE[stage];
-    if (resolutions === null) q = q.is("shortage_resolution", null);
-    else if (resolutions.length === 0) return { rows: [], total: 0 };
-    else q = q.in("shortage_resolution", resolutions);
+  // v_order_shortage 是 (order × sku) 維度,需多撈再聚合。AUDIT #2: 原本寫死 .limit(20000),
+  // 超過 20K 就漏統計;改用 fetchAllPaginated (range loop) 確保不截斷。
+  // 註: 此處仍是前端聚合 (違反 STANDARD §4.1),理想做法是 SQL 端 JSONB RPC;
+  //     先以 helper 消除截斷風險,後續若資料量明顯增長再轉 RPC。
+  const resolutions = stage ? SHORTAGE_RESOLUTION_BY_STAGE[stage] : undefined;
+  if (resolutions && resolutions !== null && resolutions.length === 0) {
+    return { rows: [], total: 0 };
   }
-  if (dateFrom) q = q.gte("order_updated_at", `${dateFrom}T00:00:00`);
-  if (dateTo) q = q.lte("order_updated_at", `${dateTo}T23:59:59.999`);
-  // v_order_shortage 是 (order × sku) 維度,撈夠多 row 才能聚合出正確 distinct 訂單數
-  q = q.limit(20000);
-  const { data, error } = await q;
-  if (error) throw new Error("shortage: " + error.message);
-
   type ShortageRowRaw = {
     order_id: number;
     order_no: string;
@@ -566,7 +569,22 @@ async function fetchShortageRows(
     demand_unfulfillable: number;
     order_updated_at: string;
   };
-  const shortageRaw = (data ?? []) as ShortageRowRaw[];
+  const shortageRaw = await fetchAllPaginated<ShortageRowRaw>(({ from, to }) => {
+    let q = sb
+      .from("v_order_shortage")
+      .select(
+        "order_id, order_no, member_id, store_name, order_status, shortage_resolution, shortage_notified_at, sku_id, product_name, variant_name, sku_code, order_qty, demand_unfulfillable, order_updated_at",
+      )
+      .order("order_updated_at", { ascending: false })
+      .order("order_id", { ascending: false })
+      .order("sku_id", { ascending: false })
+      .range(from, to);
+    if (resolutions === null) q = q.is("shortage_resolution", null);
+    else if (resolutions !== undefined) q = q.in("shortage_resolution", resolutions);
+    if (dateFrom) q = q.gte("order_updated_at", `${dateFrom}T00:00:00`);
+    if (dateTo) q = q.lte("order_updated_at", `${dateTo}T23:59:59.999`);
+    return q;
+  }, { label: "fetchShortageRows", safetyCap: 50000 });
   const shortageByOrder = new Map<number, ShortageRaw>();
   for (const r of shortageRaw) {
     let s = shortageByOrder.get(r.order_id);
@@ -695,11 +713,16 @@ async function fetchRestockRowsByIds(sb: SBClient, ids: number[]): Promise<Row[]
   const rsRows = (data ?? []) as unknown as Array<RestockRaw & { stores?: { name: string } }>;
   const lineMap = new Map<number, { count: number; total: number }>();
   if (rsRows.length > 0) {
-    const { data: lineData } = await sb
-      .from("restock_request_lines")
-      .select("request_id, qty, unit_price")
-      .in("request_id", rsRows.map((r) => r.id));
-    for (const l of (lineData ?? []) as { request_id: number; qty: number; unit_price: number }[]) {
+    // @money-critical AUDIT #20: 同 hq inbox §341 修法,fetchAllPaginated 確保金額完整。
+    const lineData = await fetchAllPaginated<{ request_id: number; qty: number; unit_price: number }>(({ from, to }) =>
+      sb.from("restock_request_lines")
+        .select("id, request_id, qty, unit_price")
+        .in("request_id", rsRows.map((r) => r.id))
+        .order("id", { ascending: true })
+        .range(from, to),
+      { label: "restock_request_lines kept page", safetyCap: 50000 },
+    );
+    for (const l of lineData) {
       const slot = lineMap.get(l.request_id) ?? { count: 0, total: 0 };
       slot.count += 1;
       slot.total += Number(l.qty) * Number(l.unit_price);
@@ -760,8 +783,12 @@ async function fetchTransferRowsByIds(sb: SBClient, ids: number[]): Promise<Row[
   }
   const tLineMap = new Map<number, number>();
   if (trs.length > 0) {
-    const { data: tl } = await sb.from("transfer_items").select("transfer_id").in("transfer_id", trs.map((t) => t.id));
-    for (const it of (tl ?? []) as { transfer_id: number }[]) {
+    // AUDIT #22: 同前述 transfer_items count map 修法。
+    const tl = await fetchAllPaginated<{ id: number; transfer_id: number }>(({ from, to }) =>
+      sb.from("transfer_items").select("id, transfer_id").in("transfer_id", trs.map((t) => t.id)).order("id", { ascending: true }).range(from, to),
+      { label: "transfer_items kept count map", safetyCap: 50000 },
+    );
+    for (const it of tl) {
       tLineMap.set(it.transfer_id, (tLineMap.get(it.transfer_id) ?? 0) + 1);
     }
   }
@@ -999,10 +1026,15 @@ function HqInboxContent() {
         const [{ data, error }, pickingCounts] = await Promise.all([
           sb.rpc("rpc_inbox_counts"),
           // picking 還沒進 rpc_inbox_counts(server-side migration 待 deploy),先 client-side 算
+          // AUDIT #4: 原本 .from("picking_waves").select("status") 無 limit,>1000 筆會被截。
+          // 改用 fetchAllPaginated 翻完所有頁。
           (async () => {
             const result: Record<Stage, number> = { ...fallback };
-            const { data: rows } = await sb.from("picking_waves").select("status");
-            for (const r of (rows as { status: string }[] | null) ?? []) {
+            const rows = await fetchAllPaginated<{ id: number; status: string }>(({ from, to }) =>
+              sb.from("picking_waves").select("id, status").order("id", { ascending: true }).range(from, to),
+              { label: "picking_waves count", safetyCap: 50000 },
+            );
+            for (const r of rows) {
               const stg = classifyPicking(r.status as PickingRaw["status"]);
               result[stg] += 1;
             }

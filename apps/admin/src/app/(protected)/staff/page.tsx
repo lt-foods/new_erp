@@ -62,7 +62,8 @@ export default function StaffPage() {
       if (s.error) { setError(s.error.message); return; }
       if (l.error) { setError(l.error.message); return; }
       setStores((s.data ?? []) as Store[]);
-      setRows((l.data ?? []) as StaffRow[]);
+      // rpc_list_staff 改 RETURNS jsonb 後,l.data 是 JSONB array (不是多列)。
+      setRows((Array.isArray(l.data) ? (l.data as StaffRow[]) : []));
     })();
     return () => { cancelled = true; };
   }, [canManage, reloadTick]);

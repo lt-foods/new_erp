@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
+import { fetchAllPaginated } from "@/lib/fetchAllPaginated";
 
 type AuditRow = {
   id: number;
@@ -67,28 +68,32 @@ export function OrderAuditDrawer({
     let cancelled = false;
     (async () => {
       const sb = getSupabase();
-      const { data, error } = await sb
-        .from("customer_order_audit_log")
-        .select(
-          "id, entity_type, entity_id, field, before_value, after_value, edit_reason, operator_id, created_at",
-        )
-        .eq("order_id", orderId)
-        .order("created_at", { ascending: false });
-      if (cancelled) return;
-      if (error) {
-        setRows([]);
-        return;
-      }
-      const rs = (data ?? []) as AuditRow[];
-      setRows(rs);
-      const uids = Array.from(new Set(rs.map((r) => r.operator_id))).filter(Boolean);
-      if (uids.length > 0) {
-        const { data: ns } = await sb.rpc("rpc_get_staff_names", { p_uids: uids });
-        const m = new Map<string, string>();
-        for (const n of (ns as { id: string; display_name: string }[] | null) ?? []) {
-          m.set(n.id, n.display_name);
+      // AUDIT #1: 訂單稽核日誌,原本無 limit 會被 PostgREST 截 1000 列 → 合規問題。
+      // 改用 fetchAllPaginated 翻完所有 audit row。單筆訂單編輯次數即使極大也仍可完整載入。
+      try {
+        const data = await fetchAllPaginated<AuditRow>(({ from, to }) =>
+          sb.from("customer_order_audit_log")
+            .select("id, entity_type, entity_id, field, before_value, after_value, edit_reason, operator_id, created_at")
+            .eq("order_id", orderId)
+            .order("created_at", { ascending: false })
+            .order("id", { ascending: false })
+            .range(from, to),
+          { label: "OrderAuditDrawer", safetyCap: 50000 },
+        );
+        if (cancelled) return;
+        const rs = data;
+        setRows(rs);
+        const uids = Array.from(new Set(rs.map((r) => r.operator_id))).filter(Boolean);
+        if (uids.length > 0) {
+          const { data: ns } = await sb.rpc("rpc_get_staff_names", { p_uids: uids });
+          const m = new Map<string, string>();
+          for (const n of (ns as { id: string; display_name: string }[] | null) ?? []) {
+            m.set(n.id, n.display_name);
+          }
+          if (!cancelled) setStaffNames(m);
         }
-        if (!cancelled) setStaffNames(m);
+      } catch {
+        if (!cancelled) setRows([]);
       }
     })();
     return () => {

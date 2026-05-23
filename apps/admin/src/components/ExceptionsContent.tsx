@@ -10,6 +10,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { fetchAllPaginated } from "@/lib/fetchAllPaginated";
 import SpinButton from "./SpinButton";
 import { TransferShortageResolveModal, type ShortageContext } from "./TransferShortageResolveModal";
 
@@ -101,39 +102,57 @@ export default function ExceptionsContent({
       try {
         const sb = getSupabase();
 
-        const { data: pickingDemand, error: e1 } = await sb
-          .from("v_picking_demand_by_po")
-          .select("po_id, po_no, po_status, sku_id, sku_code, sku_label, qty_ordered, gr_qty, qty_shortage")
-          .gt("qty_shortage", 0);
-        if (e1) throw new Error("po_shortage: " + e1.message);
+        // AUDIT #5 #6 #21 #22 #3: 全部改用 fetchAllPaginated 翻完所有 row,
+        // 取代原本無 .limit() 或寫死 .limit(20000) 的截斷風險寫法。
+        // 註: 例外面板對「金額/數量」極敏感(qty_damaged, qty_shortage 等),需確保完整。
+        const pickingDemand = await fetchAllPaginated<{ po_id: number; po_no: string; po_status: string; sku_id: number; sku_code: string | null; sku_label: string | null; qty_ordered: number; gr_qty: number; qty_shortage: number }>(({ from, to }) =>
+          sb.from("v_picking_demand_by_po")
+            .select("po_id, po_no, po_status, sku_id, sku_code, sku_label, qty_ordered, gr_qty, qty_shortage")
+            .gt("qty_shortage", 0)
+            .order("po_id", { ascending: true })
+            .order("sku_id", { ascending: true })
+            .range(from, to),
+          { label: "exceptions po_shortage", safetyCap: 50000 },
+        );
 
-        const { data: damageRows, error: e2 } = await sb
-          .from("goods_receipt_items")
-          .select("id, gr_id, sku_id, qty_received, qty_damaged, variance_reason, gr:goods_receipts!inner(id, gr_no, po_id, status, created_at)")
-          .gt("qty_damaged", 0)
-          .eq("gr.status", "confirmed");
-        if (e2) throw new Error("po_damage: " + e2.message);
+        const damageRows = await fetchAllPaginated<{ id: number; gr_id: number; sku_id: number; qty_received: number; qty_damaged: number; variance_reason: string | null; gr: { id: number; gr_no: string; po_id: number; status: string; created_at: string } | { id: number; gr_no: string; po_id: number; status: string; created_at: string }[] }>(({ from, to }) =>
+          sb.from("goods_receipt_items")
+            .select("id, gr_id, sku_id, qty_received, qty_damaged, variance_reason, gr:goods_receipts!inner(id, gr_no, po_id, status, created_at)")
+            .gt("qty_damaged", 0)
+            .eq("gr.status", "confirmed")
+            .order("id", { ascending: true })
+            .range(from, to),
+          { label: "exceptions po_damage", safetyCap: 50000 },
+        );
 
-        const { data: overRows, error: e3 } = await sb
-          .from("v_picking_demand_by_po")
-          .select("po_id, po_no, po_status, sku_id, sku_code, sku_label, qty_ordered, gr_qty");
-        if (e3) throw new Error("po_over: " + e3.message);
+        const overRows = await fetchAllPaginated<{ po_id: number; po_no: string; po_status: string; sku_id: number; sku_code: string | null; sku_label: string | null; qty_ordered: number; gr_qty: number }>(({ from, to }) =>
+          sb.from("v_picking_demand_by_po")
+            .select("po_id, po_no, po_status, sku_id, sku_code, sku_label, qty_ordered, gr_qty")
+            .order("po_id", { ascending: true })
+            .order("sku_id", { ascending: true })
+            .range(from, to),
+          { label: "exceptions po_over", safetyCap: 50000 },
+        );
 
-        const { data: tShortRows, error: e4 } = await sb
-          .from("transfer_items")
-          .select("id, transfer_id, sku_id, qty_shipped, qty_received, damage_qty, shortage_resolution, transfer:transfers!inner(id, transfer_no, status, dest_location)")
-          .eq("transfer.status", "received")
-          .is("shortage_resolution", null);
-        if (e4) throw new Error("transfer_short: " + e4.message);
+        const tShortRows = await fetchAllPaginated<{ id: number; transfer_id: number; sku_id: number; qty_shipped: number; qty_received: number; damage_qty: number; shortage_resolution: string | null; transfer: { id: number; transfer_no: string; status: string; dest_location: number } | { id: number; transfer_no: string; status: string; dest_location: number }[] }>(({ from, to }) =>
+          sb.from("transfer_items")
+            .select("id, transfer_id, sku_id, qty_shipped, qty_received, damage_qty, shortage_resolution, transfer:transfers!inner(id, transfer_no, status, dest_location)")
+            .eq("transfer.status", "received")
+            .is("shortage_resolution", null)
+            .order("id", { ascending: true })
+            .range(from, to),
+          { label: "exceptions transfer_short", safetyCap: 50000 },
+        );
 
         // 5. 客戶訂單短少 — v_order_shortage,以 order_id 聚合
-        const { data: custShortRows, error: e5 } = await sb
-          .from("v_order_shortage")
-          .select(
-            "order_id, order_no, member_id, store_name, order_status, shortage_resolution, shortage_notified_at, sku_id, product_name, variant_name, sku_code, order_qty, demand_unfulfillable, order_updated_at",
-          )
-          .limit(20000);
-        if (e5) throw new Error("customer_shortage: " + e5.message);
+        const custShortRows = await fetchAllPaginated<{ order_id: number; order_no: string; member_id: number | null; store_name: string | null; order_status: string; shortage_resolution: string | null; shortage_notified_at: string | null; sku_id: number; product_name: string | null; variant_name: string | null; sku_code: string | null; order_qty: number; demand_unfulfillable: number; order_updated_at: string }>(({ from, to }) =>
+          sb.from("v_order_shortage")
+            .select("order_id, order_no, member_id, store_name, order_status, shortage_resolution, shortage_notified_at, sku_id, product_name, variant_name, sku_code, order_qty, demand_unfulfillable, order_updated_at")
+            .order("order_id", { ascending: true })
+            .order("sku_id", { ascending: true })
+            .range(from, to),
+          { label: "exceptions customer_shortage", safetyCap: 50000 },
+        );
 
         const destLocs = Array.from(new Set(((tShortRows ?? []) as Array<{ transfer: { dest_location: number } | { dest_location: number }[] }>)
           .map((r) => Array.isArray(r.transfer) ? r.transfer[0]?.dest_location : r.transfer?.dest_location)

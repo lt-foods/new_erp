@@ -367,29 +367,37 @@ async function listMySettlements(
 }
 
 async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string | null, memberId?: number | null) {
+  // AUDIT #14 (主查詢 DONE): 不再倚賴 PostgREST 1000 兜底,改 server-side
+  // .range() 迴圈翻完所有 open campaigns;safetyCap=10000 撞到會 throw。
   // end_at IS NULL 表示「無到期日」(管理員未設),也算進行中,要保留
-  let q = sb
-    .from("group_buy_campaigns")
-    .select("id, campaign_no, name, description, cover_image_url, close_type, total_cap_qty, end_at, pickup_deadline, campaign_items(unit_price, sort_order, sku:skus(product:products(images)))")
-    .eq("tenant_id", tenantId)
-    .eq("status", "open")
-    // 排除內部 sentinel 活動(補貨申請),不應出現在顧客商店
-    .neq("campaign_no", "__INTERNAL_RESTOCK__")
-    .or(`end_at.is.null,end_at.gt.${new Date().toISOString()}`);
-  if (closeType) q = q.eq("close_type", closeType);
-  // 不加 limit：曾經 .limit(50) 在 open 團數超過 50 時把最晚結單的整批截掉
-  // （end_at ASC NULLS LAST + 截 50），顧客端整個團就消失。PostgREST 仍有
-  // db-max-rows=1000 兜底，55 個團也才一頁。
-  const { data, error } = await q
-    .order("end_at", { ascending: true, nullsFirst: false });
-
-  if (error) return json({ error: error.message }, 500);
-
-  // 截斷哨兵: 主查詢倚賴 PostgREST max_rows=1000 兜底。一旦撞到上限就
-  // log error 提醒 (AUDIT #14 base query 尚未轉成 JSONB RPC)。
-  if ((data?.length ?? 0) >= 1000) {
-    console.error("[PAGINATION-RISK] listActiveCampaigns 主查詢回傳 >= 1000 列,可能被截斷。應改用 JSONB RPC。");
+  const PAGE = 1000;
+  const SAFETY_CAP = 10000;
+  const allData: any[] = [];
+  let from = 0;
+  while (true) {
+    let q = sb
+      .from("group_buy_campaigns")
+      .select("id, campaign_no, name, description, cover_image_url, close_type, total_cap_qty, end_at, pickup_deadline, campaign_items(unit_price, sort_order, sku:skus(product:products(images)))")
+      .eq("tenant_id", tenantId)
+      .eq("status", "open")
+      .neq("campaign_no", "__INTERNAL_RESTOCK__")
+      .or(`end_at.is.null,end_at.gt.${new Date().toISOString()}`)
+      .order("end_at", { ascending: true, nullsFirst: false })
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (closeType) q = q.eq("close_type", closeType);
+    const { data, error } = await q;
+    if (error) return json({ error: error.message }, 500);
+    const rows = data ?? [];
+    allData.push(...rows);
+    if (rows.length < PAGE) break;
+    from += PAGE;
+    if (allData.length >= SAFETY_CAP) {
+      console.error(`[PAGINATION-RISK] listActiveCampaigns 撞到 safetyCap=${SAFETY_CAP},某 tenant 同時開團超過此值,應評估業務合理性`);
+      break;
+    }
   }
+  const data = allData;
 
   // @money-critical: 走 rpc_member_campaign_aggregates 一次拿齊
   // ordered_qty / order_count / recent_order_count,避免 PostgREST max_rows
@@ -708,16 +716,29 @@ async function generatePwaAuthCode(
   return json({ code: code6, expires_in_sec: 300 });
 }
 
-async function listMyNotifications(sb: any, tenantId: string, memberId: number) {
-  const { data, error } = await sb
+async function listMyNotifications(
+  sb: any,
+  tenantId: string,
+  memberId: number,
+  opts: { limit?: number; before_id?: number | null } = {},
+) {
+  // AUDIT #10: cursor 分頁,避免寫死 .limit(100) 導致通知歷史只剩最近 100 則。
+  const limit = Math.min(Math.max(Number(opts.limit ?? 30), 1), 100);
+  const beforeId = opts.before_id ? Number(opts.before_id) : null;
+  let q = sb
     .from("notifications")
     .select("id, category, title, body, url, read_at, created_at")
     .eq("tenant_id", tenantId)
     .eq("member_id", memberId)
-    .order("created_at", { ascending: false })
-    .limit(100);
+    .order("id", { ascending: false })
+    .limit(limit);
+  if (beforeId) q = q.lt("id", beforeId);
+  const { data, error } = await q;
   if (error) return json({ error: error.message }, 500);
-  return json({ notifications: data ?? [] });
+  const notifications = data ?? [];
+  const hasMore = notifications.length === limit;
+  const nextCursor = hasMore ? notifications[notifications.length - 1].id : null;
+  return json({ notifications, has_more: hasMore, next_cursor: nextCursor });
 }
 
 async function getMyUnreadNotificationCount(sb: any, tenantId: string, memberId: number) {
@@ -810,7 +831,7 @@ Deno.serve(async (req) => {
       case "list_my_orders": if (!memberId) return json({ error: "no member_id" }, 401); return await listMyOrders(sb, tenantId, storeId, memberId, String(body.tab ?? ""), { limit: body.limit, before_id: body.before_id });
       case "list_my_settlements": if (!memberId) return json({ error: "no member_id" }, 401); return await listMySettlements(sb, tenantId, storeId, memberId, String(body.tab ?? ""), { limit: body.limit, before_id: body.before_id });
       case "upsert_push_subscription": if (!memberId) return json({ error: "no member_id" }, 401); return await upsertPushSubscription(sb, tenantId, memberId, body);
-      case "list_my_notifications": if (!memberId) return json({ error: "no member_id" }, 401); return await listMyNotifications(sb, tenantId, memberId);
+      case "list_my_notifications": if (!memberId) return json({ error: "no member_id" }, 401); return await listMyNotifications(sb, tenantId, memberId, { limit: body.limit, before_id: body.before_id });
       case "get_my_unread_notification_count": if (!memberId) return json({ error: "no member_id" }, 401); return await getMyUnreadNotificationCount(sb, tenantId, memberId);
       case "mark_notification_read": if (!memberId) return json({ error: "no member_id" }, 401); return await markNotificationRead(sb, tenantId, memberId, body);
       case "generate_pwa_auth_code": if (!memberId) return json({ error: "no member_id" }, 401); return await generatePwaAuthCode(sb, tenantId, memberId, claims, token, body);

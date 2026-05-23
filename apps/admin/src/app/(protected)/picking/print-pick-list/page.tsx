@@ -7,6 +7,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { fetchAllPaginated } from "@/lib/fetchAllPaginated";
 import SpinButton from "@/components/SpinButton";
 import { getTenantName } from "@/lib/tenant";
 
@@ -54,10 +55,14 @@ export default function PrintPickListPage() {
     (async () => {
       try {
         const sb = getSupabase();
-        const { data, error: e } = await sb.from("v_picking_demand_by_po").select("*");
+        // @money-critical AUDIT #5: 揀貨單列印,原本無 limit 會被 PostgREST 截到 1000 列 →
+        // 倉儲漏揀貨。fetchAllPaginated 翻完所有頁。
+        const data = await fetchAllPaginated<DemandRow>(({ from, to }) =>
+          sb.from("v_picking_demand_by_po").select("*").order("po_id", { ascending: true }).order("sku_id", { ascending: true }).range(from, to),
+          { label: "print-pick-list", safetyCap: 50000 },
+        );
         if (cancelled) return;
-        if (e) { setError(e.message); return; }
-        setDemand((data ?? []) as DemandRow[]);
+        setDemand(data);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
       }

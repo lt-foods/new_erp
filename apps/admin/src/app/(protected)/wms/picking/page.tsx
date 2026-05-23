@@ -8,6 +8,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import { fetchAllPaginated } from "@/lib/fetchAllPaginated";
 import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
 
@@ -80,17 +81,23 @@ export default function PickingWorkstationPage() {
     (async () => {
       try {
         const sb = getSupabase();
-        const [{ data: dRows, error: e1 }, { data: supRows }, { data: rrRows, error: e3 }] = await Promise.all([
-          sb.from("v_picking_demand_by_po").select("*"),
+        // @money-critical AUDIT #6: WMS 揀貨頁,v_picking_demand_* 無 limit 會被截 → 派工漏項。
+        // fetchAllPaginated 翻完所有頁。
+        const [dRows, { data: supRows }, rrRows] = await Promise.all([
+          fetchAllPaginated<DemandRow>(({ from, to }) =>
+            sb.from("v_picking_demand_by_po").select("*").order("po_id", { ascending: true }).order("sku_id", { ascending: true }).range(from, to),
+            { label: "wms picking demand_by_po", safetyCap: 50000 },
+          ),
           sb.from("suppliers").select("id, code, name"),
-          sb.from("v_picking_demand_no_po").select("*"),
+          fetchAllPaginated<RestockRow>(({ from, to }) =>
+            sb.from("v_picking_demand_no_po").select("*").order("sku_id", { ascending: true }).range(from, to),
+            { label: "wms picking demand_no_po", safetyCap: 50000 },
+          ),
         ]);
         if (cancelled) return;
-        if (e1) { setError(e1.message); return; }
-        if (e3) { setError(e3.message); return; }
         setError(null);
-        setDemand((dRows ?? []) as DemandRow[]);
-        setRestockDemand((rrRows ?? []) as RestockRow[]);
+        setDemand(dRows);
+        setRestockDemand(rrRows);
         const sm = new Map<number, Supplier>();
         for (const s of (supRows ?? []) as Supplier[]) sm.set(s.id, s);
         setSuppliers(sm);
