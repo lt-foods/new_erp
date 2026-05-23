@@ -11,6 +11,8 @@ export type CampaignSummary = {
   description: string | null;
   cover_image_url: string | null;
   close_type: "regular" | "fast" | "limited" | string;
+  /** 主題分類; NULL=一般, food_train=美食列車 */
+  category?: "food_train" | null;
   total_cap_qty: number | null;
   ordered_qty: number;
   /** 全分店訂單數（最熱銷排序用）。後端未部署前可能為 0。 */
@@ -23,6 +25,19 @@ export type CampaignSummary = {
   min_price: number;
   max_price: number;
 };
+
+/** 美食列車專屬 badge (與「限時/限量」分開,可同時出現) */
+function FoodTrainBadge({ size = "sm" }: { size?: "sm" | "lg" }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full bg-emerald-600/95 font-semibold text-white shadow-sm backdrop-blur ${
+        size === "lg" ? "px-3 py-1 text-[14px]" : "px-2 py-0.5 text-[11px]"
+      }`}
+    >
+      美食列車
+    </span>
+  );
+}
 
 /** 依 close_type + total_cap_qty 算出短標籤。
  *  「限時」只給真正的快閃團（close_type='fast'，即限時專區那種）。
@@ -140,6 +155,11 @@ export default function CampaignCard({
               </div>
             );
           })()}
+          {campaign.category === "food_train" && (
+            <div className="absolute right-3 top-3">
+              <FoodTrainBadge size="lg" />
+            </div>
+          )}
         </div>
         <div className="space-y-1.5 px-4 py-3.5">
           <h3 className="text-[22px] font-bold leading-tight text-[var(--foreground)]">
@@ -201,6 +221,11 @@ export default function CampaignCard({
             </span>
           );
         })()}
+        {campaign.category === "food_train" && (
+          <span className="absolute right-2 top-2">
+            <FoodTrainBadge size="sm" />
+          </span>
+        )}
       </div>
       <div className="space-y-1 px-3 py-2.5">
         <h3 className="line-clamp-2 min-h-[2.6em] text-[16px] font-semibold leading-tight text-[var(--foreground)]">

@@ -40,6 +40,7 @@ async function fetchAll<T>(builder: () => any, pageSize = 1000, maxPages = 50): 
 type Status = CampaignStatus;
 
 type CloseType = "regular" | "fast" | "limited";
+type Category = "food_train" | null;
 
 type Row = {
   id: number;
@@ -47,6 +48,7 @@ type Row = {
   name: string;
   status: Status;
   close_type: CloseType;
+  category: Category;
   start_at: string | null;
   end_at: string | null;
   pickup_deadline: string | null;
@@ -67,6 +69,14 @@ const CLOSE_TYPE_BADGE: Record<CloseType, string> = {
   regular: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
   fast: "bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300",
   limited: "bg-pink-100 text-pink-800 dark:bg-pink-950 dark:text-pink-300",
+};
+
+const CATEGORY_LABEL: Record<"food_train", string> = {
+  food_train: "美食列車",
+};
+
+const CATEGORY_BADGE: Record<"food_train", string> = {
+  food_train: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
 };
 
 const PAGE_SIZE = 20;
@@ -123,6 +133,7 @@ export default function CampaignsListPage() {
   const [queryDraft, setQueryDraft] = useState("");
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<string>("");
+  const [categoryFilter, setCategoryFilter] = useState<string>(""); // ""=全部 / "food_train" / "none"
   const [page, setPage] = useState(1);
 
   const [itemCounts, setItemCounts] = useState<Map<number, number>>(new Map());
@@ -298,7 +309,7 @@ export default function CampaignsListPage() {
   async function openEdit(id: number) {
     const { data, error: err } = await getSupabase()
       .from("group_buy_campaigns")
-      .select("id, campaign_no, name, description, status, close_type, start_at, end_at, pickup_deadline, pickup_days, total_cap_qty, notes")
+      .select("id, campaign_no, name, description, status, close_type, category, start_at, end_at, pickup_deadline, pickup_days, total_cap_qty, notes")
       .eq("id", id).maybeSingle();
     if (err || !data) { setError(err?.message ?? "找不到開團"); return; }
     setModal({
@@ -310,6 +321,7 @@ export default function CampaignsListPage() {
         description: data.description,
         status: data.status as CampaignFormValues["status"],
         close_type: data.close_type as CampaignFormValues["close_type"],
+        category: (data.category ?? null) as CampaignFormValues["category"],
         start_at: data.start_at,
         end_at: data.end_at,
         pickup_deadline: data.pickup_deadline,
@@ -326,6 +338,7 @@ export default function CampaignsListPage() {
   }, [queryDraft]);
 
   useEffect(() => { setPage(1); }, [status]);
+  useEffect(() => { setPage(1); }, [categoryFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -334,7 +347,7 @@ export default function CampaignsListPage() {
       try {
         let q = getSupabase()
           .from("group_buy_campaigns")
-          .select("id, campaign_no, name, status, close_type, start_at, end_at, pickup_deadline, updated_at, cover_image_url, campaign_items(sort_order, sku:skus(product:products(images)))", { count: "exact" })
+          .select("id, campaign_no, name, status, close_type, category, start_at, end_at, pickup_deadline, updated_at, cover_image_url, campaign_items(sort_order, sku:skus(product:products(images)))", { count: "exact" })
           .neq("campaign_no", "__INTERNAL_RESTOCK__")
           .order("start_at", { ascending: false, nullsFirst: false })
           .order("id", { ascending: false })
@@ -344,6 +357,8 @@ export default function CampaignsListPage() {
           q = q.or(`name.ilike.%${safe}%,campaign_no.ilike.%${safe}%`);
         }
         if (status) q = q.eq("status", status);
+        if (categoryFilter === "food_train") q = q.eq("category", "food_train");
+        else if (categoryFilter === "none") q = q.is("category", null);
 
         const { data, count, error } = await q;
         if (cancelled) return;
@@ -399,7 +414,7 @@ export default function CampaignsListPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [query, status, page, reloadTick]);
+  }, [query, status, categoryFilter, page, reloadTick]);
 
   // Calendar (week / month) 取資料：依視圖決定範圍
   useEffect(() => {
@@ -579,7 +594,7 @@ export default function CampaignsListPage() {
       </div>
 
       {view === "list" && (
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3 sm:grid-cols-3">
           <input
             type="search" placeholder="搜尋 團號 / 名稱" value={queryDraft} onChange={(e) => setQueryDraft(e.target.value)}
             className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800"
@@ -588,6 +603,13 @@ export default function CampaignsListPage() {
             className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800">
             <option value="">全部狀態</option>
             {Object.entries(STATUS_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+          <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}
+            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+            aria-label="類別篩選">
+            <option value="">全部類別</option>
+            <option value="food_train">美食列車</option>
+            <option value="none">一般（無類別）</option>
           </select>
         </div>
       )}
@@ -718,6 +740,11 @@ export default function CampaignsListPage() {
                   <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${CLOSE_TYPE_BADGE[r.close_type]}`}>
                     {CLOSE_TYPE_LABEL[r.close_type]}
                   </span>
+                  {r.category && (
+                    <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${CATEGORY_BADGE[r.category]}`}>
+                      {CATEGORY_LABEL[r.category]}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -801,9 +828,16 @@ export default function CampaignsListPage() {
                 <Td className="min-w-[14rem]">{r.name}</Td>
                 <Td className="whitespace-nowrap"><StatusBadge s={r.status} /></Td>
                 <Td>
-                  <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${CLOSE_TYPE_BADGE[r.close_type]}`}>
-                    {CLOSE_TYPE_LABEL[r.close_type]}
-                  </span>
+                  <div className="flex flex-wrap items-center gap-1">
+                    <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${CLOSE_TYPE_BADGE[r.close_type]}`}>
+                      {CLOSE_TYPE_LABEL[r.close_type]}
+                    </span>
+                    {r.category && (
+                      <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${CATEGORY_BADGE[r.category]}`}>
+                        {CATEGORY_LABEL[r.category]}
+                      </span>
+                    )}
+                  </div>
                 </Td>
                 <Td className="whitespace-nowrap text-xs text-zinc-500">
                   {fmtDateTime(r.start_at)}

@@ -9,6 +9,11 @@ import { CAMPAIGN_STATUS_LABEL, type CampaignStatus } from "@/lib/campaignStatus
 
 export type { CampaignStatus };
 export type CloseType = "regular" | "fast" | "limited";
+export type CampaignCategory = "food_train" | null;
+
+export const CATEGORY_LABEL: Record<"food_train", string> = {
+  food_train: "美食列車",
+};
 
 export type CampaignFormValues = {
   id: number | null;
@@ -17,6 +22,7 @@ export type CampaignFormValues = {
   description: string | null;
   status: CampaignStatus;
   close_type: CloseType;
+  category: CampaignCategory;
   start_at: string | null;
   end_at: string | null;
   pickup_deadline: string | null;
@@ -32,6 +38,7 @@ export const emptyCampaignValues: CampaignFormValues = {
   description: null,
   status: "draft",
   close_type: "regular",
+  category: null,
   start_at: null,
   end_at: null,
   pickup_deadline: null,
@@ -108,6 +115,7 @@ export function CampaignForm({
 
       // 團名由此表單直接編輯；描述 / 取貨截止 / 取貨天數 / 備註
       // 仍從商品 / RPC 自動帶入，UI 不編輯、保留原值送回。
+      const wasOpen = (initial?.status ?? null) === "open";
       const { data, error: err } = await getSupabase().rpc("rpc_upsert_campaign", {
         p_id: v.id,
         p_campaign_no: v.campaign_no.trim(),
@@ -121,9 +129,27 @@ export function CampaignForm({
         p_pickup_days: v.pickup_days,
         p_total_cap_qty: v.total_cap_qty,
         p_notes: v.notes,
+        p_category: v.category,
       });
       if (err) throw err;
       const newId = Number(data);
+
+      // 美食列車且 status 從非 open → open 時, 廣播推播給全 tenant 顧客
+      // (失敗不阻擋儲存; 顯示警告但仍視為成功)
+      if (v.category === "food_train" && v.status === "open" && !wasOpen) {
+        try {
+          await broadcastFoodTrainOpen({
+            campaignId: newId,
+            campaignName: (v.name || "美食列車").trim(),
+          });
+        } catch (broadcastErr) {
+          console.error("food_train broadcast failed:", broadcastErr);
+          setError(
+            `儲存成功；但推播廣播失敗：${broadcastErr instanceof Error ? broadcastErr.message : String(broadcastErr)}`,
+          );
+        }
+      }
+
       if (onSaved) onSaved(newId);
       else router.replace(`/campaigns`);
     } catch (e) {
@@ -166,6 +192,21 @@ export function CampaignForm({
             <option value="fast">快團</option>
             <option value="limited">限量</option>
           </select>
+        </Field>
+        <Field label="類別">
+          <select
+            value={v.category ?? ""}
+            onChange={(e) => update("category", (e.target.value || null) as CampaignCategory)}
+            className={inputCls}
+          >
+            <option value="">無</option>
+            <option value="food_train">美食列車</option>
+          </select>
+          {v.category === "food_train" && v.status === "open" && (initial?.status ?? null) !== "open" && (
+            <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+              儲存後將推播給所有未取消通知的顧客。
+            </p>
+          )}
         </Field>
         <Field
           label={v.close_type === "fast" ? "開團期間（開團 → 收單，快團必填收單）" : "開團期間（開團 → 收單）"}
@@ -384,3 +425,36 @@ function Field({ label, children, className = "" }: { label: string; children: R
 
 const inputCls =
   "rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800";
+
+// 美食列車開團上架時, 廣播給全 tenant 顧客
+async function broadcastFoodTrainOpen({
+  campaignId,
+  campaignName,
+}: {
+  campaignId: number;
+  campaignName: string;
+}): Promise<void> {
+  const sb = getSupabase();
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) throw new Error("尚未登入");
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!supabaseUrl) throw new Error("NEXT_PUBLIC_SUPABASE_URL 未設定");
+  const resp = await fetch(`${supabaseUrl}/functions/v1/admin-notify`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify({
+      broadcast: true,
+      category: "food_train",
+      title: "美食列車新團上架",
+      message: campaignName,
+      url: `/shop/c/${campaignId}`,
+    }),
+  });
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    throw new Error(`HTTP ${resp.status} ${detail}`.trim());
+  }
+}

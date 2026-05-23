@@ -45,17 +45,103 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json();
-    const { member_id, title, message, url, category } = body;
+    const { member_id, title, message, url, category, broadcast } = body;
 
+    const payloadTitle = title || "通知";
+    const payloadBody = message ?? null;
+    const notifCategory = typeof category === "string" && category ? category : "general";
+
+    webpush.setVapidDetails(
+      "mailto:admin@new-erp.com",
+      requireEnv("VAPID_PUBLIC_KEY"),
+      requireEnv("VAPID_PRIVATE_KEY")
+    );
+
+    // ── Broadcast mode: 對整 tenant 的 active 會員發 ─────────────────────────
+    if (broadcast === true) {
+      const role = user.app_metadata?.role;
+      if (role !== "owner" && role !== "admin" && role !== "hq") {
+        return json({ error: "broadcast requires owner/admin/hq role" }, 403);
+      }
+
+      const { data: members, error: memErr } = await sb
+        .from("members")
+        .select("id")
+        .eq("tenant_id", tenantId)
+        .eq("status", "active")
+        .or("no_new_order.is.null,no_new_order.eq.false")
+        .is("merged_into_member_id", null);
+
+      if (memErr) return json({ error: memErr.message }, 500);
+      const memberIds = (members ?? []).map((m: { id: number }) => m.id);
+      if (memberIds.length === 0) {
+        return json({ ok: true, sent: 0, recipients: 0, message: "no eligible members" });
+      }
+
+      // Bulk insert notifications
+      const notifRows = memberIds.map((mid) => ({
+        tenant_id: tenantId,
+        member_id: mid,
+        category: notifCategory,
+        title: payloadTitle,
+        body: payloadBody,
+        url: url ?? null,
+      }));
+      const { error: notifErr } = await sb.from("notifications").insert(notifRows);
+      if (notifErr) console.error("broadcast notifications insert failed:", notifErr.message);
+
+      // Fetch subscriptions for these members
+      const { data: subs, error: subErr } = await sb
+        .from("push_subscriptions")
+        .select("endpoint, p256dh, auth, member_id")
+        .eq("tenant_id", tenantId)
+        .in("member_id", memberIds);
+      if (subErr) return json({ error: subErr.message }, 500);
+
+      const subList = subs ?? [];
+      if (subList.length === 0) {
+        return json({
+          ok: true,
+          sent: 0,
+          recipients: memberIds.length,
+          message: "notifications recorded; no active push subscriptions",
+        });
+      }
+
+      const pushPayload = JSON.stringify({
+        title: payloadTitle,
+        body: payloadBody ?? "",
+        url: url || "/",
+      });
+      const results = await Promise.allSettled(
+        subList.map((s: any) =>
+          webpush.sendNotification(
+            { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } },
+            pushPayload
+          )
+        )
+      );
+      const successCount = results.filter((r) => r.status === "fulfilled").length;
+      const failCount = results.filter((r) => r.status === "rejected").length;
+      return json({
+        ok: true,
+        sent: successCount,
+        failed: failCount,
+        recipients: memberIds.length,
+        subscriptions: subList.length,
+      });
+    }
+
+    // ── Single-member mode (既有行為, 不變) ─────────────────────────────────
     if (!member_id) return json({ error: "member_id is required" }, 400);
 
     // 寫一筆 in-app notification(就算沒 push subscription 也要寫,顧客還是看得到)
     const { error: notifErr } = await sb.from("notifications").insert({
       tenant_id: tenantId,
       member_id,
-      category: typeof category === "string" && category ? category : "general",
-      title: title || "通知",
-      body: message ?? null,
+      category: notifCategory,
+      title: payloadTitle,
+      body: payloadBody,
       url: url ?? null,
     });
     if (notifErr) console.error("notifications insert failed:", notifErr.message);
@@ -72,12 +158,6 @@ Deno.serve(async (req) => {
       return json({ ok: true, sent: 0, message: "Notification recorded; no active PWA subscriptions to push" });
     }
 
-    webpush.setVapidDetails(
-      "mailto:admin@new-erp.com",
-      requireEnv("VAPID_PUBLIC_KEY"),
-      requireEnv("VAPID_PRIVATE_KEY")
-    );
-
     const results = await Promise.allSettled(
       subs.map((s: any) =>
         webpush.sendNotification(
@@ -86,8 +166,8 @@ Deno.serve(async (req) => {
             keys: { p256dh: s.p256dh, auth: s.auth },
           },
           JSON.stringify({
-            title: title || "測試通知",
-            body: message || "這是一則來自管理員的測試通知。",
+            title: payloadTitle,
+            body: payloadBody ?? "",
             url: url || "/",
           })
         )
@@ -96,9 +176,6 @@ Deno.serve(async (req) => {
 
     const successCount = results.filter((r) => r.status === "fulfilled").length;
     const failCount = results.filter((r) => r.status === "rejected").length;
-
-    // Optional: Cleanup failed subscriptions (e.g. 410 Gone)
-    // For a test button, we might just report back.
 
     return json({
       ok: true,

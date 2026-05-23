@@ -118,6 +118,10 @@ export default function ShopPage() {
   // find 取到的就是最快結單的快閃團。
   const hero = visible.find((c) => c.close_type === "fast");
 
+  // 美食列車專區：有任何 category='food_train' 的開團時顯示綠色 banner
+  const foodTrainHero = visible.find((c) => c.category === "food_train");
+  const foodTrainCount = visible.filter((c) => c.category === "food_train").length;
+
   // 排序：最新(id 大→小，無 created_at 用 id 近似) / 最熱銷(全分店訂單數)
   // / 近期售出(近 7 天訂單數)。tie-break 回退 id desc 保持穩定。
   const sorted = [...visible].sort((a, b) => {
@@ -171,6 +175,41 @@ export default function ShopPage() {
               下拉重新整理，新團開跑會在這裡出現
             </p>
           </div>
+        )}
+
+        {/* 美食列車 banner — 永遠在最上方,點進 /shop/food-train 全列表 */}
+        {foodTrainHero && (
+          <Link
+            href="/shop/food-train"
+            className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(5,150,105,0.5)] transition-transform duration-200 active:scale-[0.985]"
+          >
+            <div className="relative aspect-[16/8] w-full bg-gradient-to-br from-emerald-500 via-emerald-600 to-teal-600">
+              {foodTrainHero.cover_image_url && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={foodTrainHero.cover_image_url}
+                  alt=""
+                  className="absolute inset-0 h-full w-full object-cover opacity-30 mix-blend-overlay"
+                />
+              )}
+              <div className="absolute inset-0 bg-[radial-gradient(120%_80%_at_100%_0%,rgba(255,255,255,0.35)_0%,transparent_55%)]" />
+              <div className="absolute inset-0 flex flex-col justify-between p-4">
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-white/22 px-3 py-1 backdrop-blur">
+                    <span className="text-[16px]">🚂</span>
+                    <span className="text-[16px] font-bold text-white">美食列車</span>
+                  </span>
+                </div>
+                <div className="space-y-0.5">
+                  <div className="text-[13px] font-medium text-white/90">嚴選美食 · 限時開團</div>
+                  <div className="text-[22px] font-bold text-white drop-shadow">
+                    {foodTrainCount} 團熱賣中
+                  </div>
+                </div>
+              </div>
+              <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[28px] text-white/85">›</div>
+            </div>
+          </Link>
         )}
 
         {/* 限時專區 banner */}
