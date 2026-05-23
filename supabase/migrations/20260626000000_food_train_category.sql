@@ -32,8 +32,9 @@ COMMENT ON COLUMN group_buy_campaigns.category IS
 
 -- ── 2. rpc_upsert_campaign 加 p_category 參數 ──────────────────────────────
 -- PostgreSQL 加 DEFAULT 參數會形成 overload, 先 DROP 舊 signature 再重建
+-- prod signature: 13 參數 (bigint, 7×text, 2×timestamptz, date, integer, numeric)
 DROP FUNCTION IF EXISTS public.rpc_upsert_campaign(
-  BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ,
+  BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ,
   DATE, INTEGER, NUMERIC, TEXT
 );
 
