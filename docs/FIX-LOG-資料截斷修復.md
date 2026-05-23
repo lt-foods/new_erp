@@ -34,13 +34,19 @@
 - 日期：2026-05-23
 - 修復者：claude
 - 修法策略：模式 B（JSONB 單列回傳）
-- Commits：待 commit
+- Commits：`4521081`（程式變動）、`<test-fix-pending>`（驗證腳本與結果）
 - 變動檔案：
   - `supabase/migrations/20260628100010_rpc_member_campaign_detail.sql`（新增 RPC，標註 `@money-critical`）
   - `supabase/functions/liff-api/index.ts:400` — `getCampaignDetail` 改為單一 RPC 呼叫
   - `docs/AUDIT-資料截斷風險清單-2026-05-23.md` — #11 #12 狀態 → DONE；#14 補上漏掉的 orderRows 額外風險
-- 驗證腳本：`scripts/audit-pagination/test-11-12-campaign-detail-ordered-qty.mjs`
-- 驗證結果：⏳ 待跑（需要 service role 環境變數）
+- 驗證腳本：
+  - `scripts/audit-pagination/test-11-12-campaign-detail-ordered-qty.mjs`（service role 版，需 admin/.env.local）
+  - `scripts/audit-pagination/test-11-12-via-mgmt-api.sh`（Management API 版，dev 環境用）
+- 驗證結果：✅ **PASS**（2026-05-23 在 erp-dev 環境執行）
+  - Migration 已套用（透過 Management API），`rpc_member_campaign_detail` RETURNS jsonb 確認
+  - 灌 1100 筆訂單行 → 透過 PostgREST anon role 呼叫 RPC → `ordered_qty=1100`、`order_count=1100`，與 SQL 直查真值一致
+  - 對照組：anon 直接查 `customer_order_items` 因 RLS 拿到 0 列（符合預期，會員端原本就不能讀別人的單）
+  - 測試資料已清理
 - 備註：
   - SQL lint pass（`node .claude-scripts/lint_sql.js`）
   - 原本前端從 `.from("customer_order_items").select(...)` 取回 row 再加總的寫法被消除（違反 STANDARD §4.1）
