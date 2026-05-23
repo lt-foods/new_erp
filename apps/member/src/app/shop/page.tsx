@@ -9,6 +9,7 @@ import PageShell from "@/components/PageShell";
 import PullToRefresh from "@/components/PullToRefresh";
 import CampaignCard, { type CampaignSummary } from "@/components/CampaignCard";
 import Countdown from "@/components/Countdown";
+import ShopBannerCarousel from "@/components/ShopBannerCarousel";
 
 type SortKey = "new" | "hot" | "recent";
 
@@ -24,6 +25,7 @@ type ShopCache = {
   campaigns: CampaignSummary[];
   sortBy: SortKey;
   scrollY: number;
+  pendingPickupCount: number;
   ts: number;
 };
 let shopCache: ShopCache | null = null;
@@ -40,6 +42,9 @@ export default function ShopPage() {
   const [campaigns, setCampaigns] = useState<CampaignSummary[]>(
     () => shopCache?.campaigns ?? [],
   );
+  const [pendingPickupCount, setPendingPickupCount] = useState<number>(
+    () => shopCache?.pendingPickupCount ?? 0,
+  );
   const [loading, setLoading] = useState(() => shopCache == null);
   const [err, setErr] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortKey>(
@@ -55,14 +60,17 @@ export default function ShopPage() {
       }
       if (!silent) setErr(null);
       try {
-        const d = await callLiffApi<{ campaigns: CampaignSummary[] }>(s.token, {
+        const d = await callLiffApi<{ campaigns: CampaignSummary[]; pending_pickup_count?: number }>(s.token, {
           action: "list_active_campaigns",
         });
         setCampaigns(d.campaigns);
+        const pickupCount = d.pending_pickup_count ?? 0;
+        setPendingPickupCount(pickupCount);
         shopCache = {
           campaigns: d.campaigns,
           sortBy: shopCache?.sortBy ?? "new",
           scrollY: shopCache?.scrollY ?? 0,
+          pendingPickupCount: pickupCount,
           ts: Date.now(),
         };
       } catch (e) {
@@ -177,78 +185,104 @@ export default function ShopPage() {
           </div>
         )}
 
-        {/* 美食列車 banner — 永遠在最上方,點進 /shop/food-train 全列表 */}
-        {foodTrainHero && (
+        {/* 取貨提醒條 — 該會員有 status='ready' 的訂單時才出現 */}
+        {pendingPickupCount > 0 && (
           <Link
-            href="/shop/food-train"
-            className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(5,150,105,0.5)] transition-transform duration-200 active:scale-[0.985]"
+            href="/orders"
+            className="flex items-center gap-3 rounded-2xl bg-amber-50 px-4 py-3 text-amber-900 shadow-[0_2px_8px_-4px_rgba(245,158,11,0.4)] active:opacity-80 dark:bg-amber-950 dark:text-amber-100"
           >
-            <div className="relative aspect-[16/8] w-full bg-gradient-to-br from-emerald-500 via-emerald-600 to-teal-600">
-              {foodTrainHero.cover_image_url && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={foodTrainHero.cover_image_url}
-                  alt=""
-                  className="absolute inset-0 h-full w-full object-cover opacity-30 mix-blend-overlay"
-                />
-              )}
-              <div className="absolute inset-0 bg-[radial-gradient(120%_80%_at_100%_0%,rgba(255,255,255,0.35)_0%,transparent_55%)]" />
-              <div className="absolute inset-0 flex flex-col justify-between p-4">
-                <div className="flex items-center gap-2">
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-white/22 px-3 py-1 backdrop-blur">
-                    <span className="text-[16px]">🚂</span>
-                    <span className="text-[16px] font-bold text-white">美食列車</span>
-                  </span>
-                </div>
-                <div className="space-y-0.5">
-                  <div className="text-[13px] font-medium text-white/90">嚴選美食 · 限時開團</div>
-                  <div className="text-[22px] font-bold text-white drop-shadow">
-                    {foodTrainCount} 團熱賣中
-                  </div>
-                </div>
-              </div>
-              <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[28px] text-white/85">›</div>
-            </div>
+            <span className="text-[20px]">🎁</span>
+            <span className="flex-1 text-[15px] font-semibold">
+              你有 {pendingPickupCount} 筆訂單可取貨
+            </span>
+            <span className="text-[20px] text-amber-700/70 dark:text-amber-300/70">›</span>
           </Link>
         )}
 
-        {/* 限時專區 banner */}
-        {hero && (
-          <Link
-            href="/shop/flash"
-            className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(158,47,80,0.5)] transition-transform duration-200 active:scale-[0.985]"
-          >
-            <div className="relative">
-              <div className="relative aspect-[16/8] w-full brand-gradient">
-                {hero.cover_image_url && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={hero.cover_image_url}
-                    alt=""
-                    className="absolute inset-0 h-full w-full object-cover opacity-35 mix-blend-overlay"
-                  />
-                )}
-                {/* 光澤 */}
-                <div className="absolute inset-0 bg-[radial-gradient(120%_80%_at_100%_0%,rgba(255,255,255,0.35)_0%,transparent_55%)]" />
-                <div className="absolute inset-0 flex flex-col justify-between p-4">
-                  <div className="flex items-center gap-2">
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-white/22 px-3 py-1 backdrop-blur">
-                      <span className="text-[16px]">⚡</span>
-                      <span className="text-[16px] font-bold text-white">限時專區</span>
-                    </span>
-                  </div>
-                  <div className="space-y-0.5">
-                    <div className="text-[13px] font-medium text-white/90">最快結單 · 手刀搶</div>
-                    <div className="text-[26px] font-bold tabular-nums text-white drop-shadow">
-                      {hero.end_at ? <Countdown target={hero.end_at} compact /> : "—"}
-                    </div>
-                  </div>
-                </div>
-                <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[28px] text-white/85">›</div>
-              </div>
-            </div>
-          </Link>
-        )}
+        {/* 主題 banner 跑馬燈 — 美食列車 / 限時專區 並排可滑, auto-play 4s */}
+        <ShopBannerCarousel
+          banners={[
+            ...(foodTrainHero
+              ? [{
+                  key: "food_train",
+                  node: (
+                    <Link
+                      href="/shop/food-train"
+                      className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(5,150,105,0.5)] transition-transform duration-200 active:scale-[0.985]"
+                    >
+                      <div className="relative aspect-[16/8] w-full bg-gradient-to-br from-emerald-500 via-emerald-600 to-teal-600">
+                        {foodTrainHero.cover_image_url && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={foodTrainHero.cover_image_url}
+                            alt=""
+                            className="absolute inset-0 h-full w-full object-cover opacity-30 mix-blend-overlay"
+                          />
+                        )}
+                        <div className="absolute inset-0 bg-[radial-gradient(120%_80%_at_100%_0%,rgba(255,255,255,0.35)_0%,transparent_55%)]" />
+                        <div className="absolute inset-0 flex flex-col justify-between p-4">
+                          <div className="flex items-center gap-2">
+                            <span className="inline-flex items-center gap-1.5 rounded-full bg-white/22 px-3 py-1 backdrop-blur">
+                              <span className="text-[16px]">🚂</span>
+                              <span className="text-[16px] font-bold text-white">美食列車</span>
+                            </span>
+                          </div>
+                          <div className="space-y-0.5">
+                            <div className="text-[13px] font-medium text-white/90">嚴選美食 · 限時開團</div>
+                            <div className="text-[22px] font-bold text-white drop-shadow">
+                              {foodTrainCount} 團熱賣中
+                            </div>
+                          </div>
+                        </div>
+                        <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[28px] text-white/85">›</div>
+                      </div>
+                    </Link>
+                  ),
+                }]
+              : []),
+            ...(hero
+              ? [{
+                  key: "flash",
+                  node: (
+                    <Link
+                      href="/shop/flash"
+                      className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(158,47,80,0.5)] transition-transform duration-200 active:scale-[0.985]"
+                    >
+                      <div className="relative">
+                        <div className="relative aspect-[16/8] w-full brand-gradient">
+                          {hero.cover_image_url && (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={hero.cover_image_url}
+                              alt=""
+                              className="absolute inset-0 h-full w-full object-cover opacity-35 mix-blend-overlay"
+                            />
+                          )}
+                          {/* 光澤 */}
+                          <div className="absolute inset-0 bg-[radial-gradient(120%_80%_at_100%_0%,rgba(255,255,255,0.35)_0%,transparent_55%)]" />
+                          <div className="absolute inset-0 flex flex-col justify-between p-4">
+                            <div className="flex items-center gap-2">
+                              <span className="inline-flex items-center gap-1.5 rounded-full bg-white/22 px-3 py-1 backdrop-blur">
+                                <span className="text-[16px]">⚡</span>
+                                <span className="text-[16px] font-bold text-white">限時專區</span>
+                              </span>
+                            </div>
+                            <div className="space-y-0.5">
+                              <div className="text-[13px] font-medium text-white/90">最快結單 · 手刀搶</div>
+                              <div className="text-[26px] font-bold tabular-nums text-white drop-shadow">
+                                {hero.end_at ? <Countdown target={hero.end_at} compact /> : "—"}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[28px] text-white/85">›</div>
+                        </div>
+                      </div>
+                    </Link>
+                  ),
+                }]
+              : []),
+          ]}
+        />
 
         {/* 團購商品 + 排序 */}
         {visible.length > 0 && (

@@ -293,7 +293,7 @@ async function listMySettlements(sb: any, tenantId: string, _storeId: number, me
   return json({ settlements: data ?? [] });
 }
 
-async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string | null, category?: string | null) {
+async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string | null, category?: string | null, memberId?: number | null) {
   // end_at IS NULL 表示「無到期日」(管理員未設),也算進行中,要保留
   let q = sb
     .from("group_buy_campaigns")
@@ -381,7 +381,20 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
       max_price: prices.length > 0 ? Math.max(...prices) : 0,
     };
   });
-  return json({ campaigns });
+
+  // 取貨提醒: 該會員「已備貨可取」(status='ready') 的訂單數
+  let pendingPickupCount = 0;
+  if (memberId) {
+    const { count } = await sb
+      .from("customer_orders")
+      .select("id", { count: "exact", head: true })
+      .eq("tenant_id", tenantId)
+      .eq("member_id", memberId)
+      .eq("status", "ready");
+    pendingPickupCount = count ?? 0;
+  }
+
+  return json({ campaigns, pending_pickup_count: pendingPickupCount });
 }
 
 async function getCampaignDetail(sb: any, tenantId: string, campaignId: number) {
@@ -767,7 +780,7 @@ Deno.serve(async (req) => {
       case "get_my_unread_notification_count": if (!memberId) return json({ error: "no member_id" }, 401); return await getMyUnreadNotificationCount(sb, tenantId, memberId);
       case "mark_notification_read": if (!memberId) return json({ error: "no member_id" }, 401); return await markNotificationRead(sb, tenantId, memberId, body);
       case "generate_pwa_auth_code": if (!memberId) return json({ error: "no member_id" }, 401); return await generatePwaAuthCode(sb, tenantId, memberId, claims, token, body);
-      case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId, typeof body.close_type === "string" ? body.close_type : null, typeof body.category === "string" ? body.category : null);
+      case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId, typeof body.close_type === "string" ? body.close_type : null, typeof body.category === "string" ? body.category : null, memberId);
       case "get_campaign_detail": return await getCampaignDetail(sb, tenantId, Number(body.campaign_id ?? 0));
       case "place_member_order": if (!memberId) return json({ error: "no member_id" }, 401); return await placeMemberOrder(sb, tenantId, memberId, body);
       default: return json({ error: `unknown action: ${action}` }, 400);
