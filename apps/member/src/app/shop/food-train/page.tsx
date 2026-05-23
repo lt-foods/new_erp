@@ -7,6 +7,7 @@ import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import { LoadingScreen } from "@/components/Spinner";
 import CampaignCard, { type CampaignSummary } from "@/components/CampaignCard";
+import { setCampaignHints } from "@/lib/campaignHints";
 
 export default function FoodTrainPage() {
   const router = useRouter();
@@ -28,6 +29,7 @@ export default function FoodTrainPage() {
           close_type: "food_train",
         });
         setCampaigns(d.campaigns);
+        setCampaignHints(d.campaigns);
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
       } finally {

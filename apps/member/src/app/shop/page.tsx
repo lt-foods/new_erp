@@ -11,6 +11,7 @@ import CampaignCard, { type CampaignSummary } from "@/components/CampaignCard";
 import Countdown from "@/components/Countdown";
 import ShopBannerCarousel from "@/components/ShopBannerCarousel";
 import { cleanCampaignText } from "@/lib/text";
+import { setCampaignHints } from "@/lib/campaignHints";
 
 type SortKey = "new" | "hot" | "recent";
 
@@ -40,9 +41,12 @@ const useIsoLayoutEffect =
 
 export default function ShopPage() {
   const router = useRouter();
-  const [campaigns, setCampaigns] = useState<CampaignSummary[]>(
-    () => shopCache?.campaigns ?? [],
-  );
+  const [campaigns, setCampaigns] = useState<CampaignSummary[]>(() => {
+    const cached = shopCache?.campaigns ?? [];
+    // 同步 hint 給詳情頁預填 (從快取還原時也要塞回 hint Map)
+    if (cached.length > 0) setCampaignHints(cached);
+    return cached;
+  });
   const [pendingPickupCount, setPendingPickupCount] = useState<number>(
     () => shopCache?.pendingPickupCount ?? 0,
   );
@@ -65,6 +69,7 @@ export default function ShopPage() {
           action: "list_active_campaigns",
         });
         setCampaigns(d.campaigns);
+        setCampaignHints(d.campaigns);
         const pickupCount = d.pending_pickup_count ?? 0;
         setPendingPickupCount(pickupCount);
         shopCache = {

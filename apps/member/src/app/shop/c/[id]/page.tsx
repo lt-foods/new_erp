@@ -6,9 +6,10 @@ import { useParams, useRouter } from "next/navigation";
 import { consumeFragmentToSession, getSession } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
-import Spinner, { LoadingScreen } from "@/components/Spinner";
+import Spinner from "@/components/Spinner";
 import Countdown from "@/components/Countdown";
 import { cleanCampaignText } from "@/lib/text";
+import { getCampaignHint } from "@/lib/campaignHints";
 
 /** 把 children 渲染到 document.body（保證 fixed 相對 viewport）。 */
 function Portal({ enabled, children }: { enabled: boolean; children: React.ReactNode }) {
@@ -43,6 +44,11 @@ export default function CampaignDetailPage() {
   const router = useRouter();
   const params = useParams();
   const id = Number(params?.id);
+
+  // 從列表帶過來的摘要 (名稱 / 封面 / 倒數 / 起跳價), mount 時就可以畫出
+  // 標題 + hero, 不用等完整 detail API 回來。沒有 hint 就 fallback 到
+  // 原本的 loading screen。
+  const hint = useMemo(() => (id ? getCampaignHint(id) : undefined), [id]);
 
   const [campaign, setCampaign] = useState<CampaignDetail | null>(null);
   const [items, setItems] = useState<Item[]>([]);
@@ -136,35 +142,51 @@ export default function CampaignDetailPage() {
     }
   };
 
-  return (
-    <PageShell title={cleanCampaignText(campaign?.name) || "商品"}>
-      <div className="space-y-4 px-0 pb-[160px]">
-        {loading && <LoadingScreen />}
+  // 顯示用的合成資料: 有完整 detail 就用 detail, 還沒回來就 fallback 到 hint。
+  // 這樣 mount 時就能畫標題 / 封面 / 倒數, 不會空白等 API。
+  const displayName = campaign?.name ?? hint?.name ?? "";
+  const displayCover = campaign?.cover_image_url ?? hint?.cover_image_url ?? null;
+  const displayEndAt = campaign?.end_at ?? hint?.end_at ?? null;
+  const displayDescription = campaign?.description ?? hint?.description ?? null;
+  const hintPriceText = hint && hint.min_price > 0
+    ? `$${hint.min_price.toLocaleString()}${hint.max_price > hint.min_price ? " 起" : ""}`
+    : null;
 
+  const heroImageList: string[] =
+    heroImages.length > 0
+      ? heroImages
+      : items[0]?.image_url
+        ? [items[0].image_url]
+        : displayCover
+          ? [displayCover]
+          : [];
+
+  const showShell = !!campaign || !!hint;
+  const orderedQtyTotal = items.reduce((s, it) => s + Number(it.ordered_qty ?? 0), 0);
+
+  return (
+    <PageShell title={cleanCampaignText(displayName) || "商品"}>
+      <div className="space-y-4 px-0 pb-[160px]">
         {err && (
           <div className="mx-4 rounded-2xl bg-[#ff3b30]/10 p-3 text-[15px] text-[#c4271d]">
             {err}
           </div>
         )}
 
-        {campaign && (
+        {!showShell && !err && (
+          <div className="flex justify-center py-20">
+            <Spinner size={28} />
+          </div>
+        )}
+
+        {showShell && (
           <>
-            {/* 封面 carousel — 顯示 campaign cover + 所有 SKU 商品圖 */}
+            {/* 封面 carousel — 有 hint 時先顯示列表封面, detail 回來再換成完整圖集 */}
             <div className="relative">
-              <HeroCarousel
-                images={
-                  heroImages.length > 0
-                    ? heroImages
-                    : items[0]?.image_url
-                      ? [items[0].image_url]
-                      : campaign.cover_image_url
-                        ? [campaign.cover_image_url]
-                        : []
-                }
-              />
-              {campaign.end_at && (
+              <HeroCarousel images={heroImageList} />
+              {displayEndAt && (
                 <div className="absolute right-3 top-3 rounded-full bg-black/70 px-3 py-1 text-[14px] font-medium text-white backdrop-blur">
-                  剩 <Countdown target={campaign.end_at} compact className="text-white" />
+                  剩 <Countdown target={displayEndAt} compact className="text-white" />
                 </div>
               )}
             </div>
@@ -173,23 +195,16 @@ export default function CampaignDetailPage() {
             <div className="space-y-2 px-4">
               <div className="flex items-start justify-between gap-3">
                 <h1 className="flex-1 text-[26px] font-bold leading-tight text-[var(--foreground)]">
-                  {cleanCampaignText(campaign.name)}
+                  {cleanCampaignText(displayName)}
                 </h1>
-                {(() => {
-                  const orderedQty = items.reduce(
-                    (s, it) => s + Number(it.ordered_qty ?? 0),
-                    0,
-                  );
-                  if (orderedQty <= 0) return null;
-                  return (
-                    <div className="mt-1.5 shrink-0 rounded-lg bg-[var(--tertiary-label)]/10 px-2 py-1 text-[13px] font-semibold text-[var(--secondary-label)]">
-                      已訂購 {orderedQty.toLocaleString()} 件
-                    </div>
-                  );
-                })()}
+                {orderedQtyTotal > 0 && (
+                  <div className="mt-1.5 shrink-0 rounded-lg bg-[var(--tertiary-label)]/10 px-2 py-1 text-[13px] font-semibold text-[var(--secondary-label)]">
+                    已訂購 {orderedQtyTotal.toLocaleString()} 件
+                  </div>
+                )}
               </div>
-              {campaign.description && (() => {
-                const desc = cleanCampaignText(campaign.description);
+              {displayDescription && (() => {
+                const desc = cleanCampaignText(displayDescription);
                 if (!desc) return null;
                 return (
                   <div className="rounded-2xl bg-[var(--card-bg)] p-4 shadow-[var(--shadow-card)]">
@@ -199,7 +214,7 @@ export default function CampaignDetailPage() {
                   </div>
                 );
               })()}
-              {campaign.pickup_deadline && (
+              {campaign?.pickup_deadline && (
                 <p className="text-[14px] text-[var(--tertiary-label)]">
                   取貨期限：{campaign.pickup_deadline}
                 </p>
@@ -212,7 +227,10 @@ export default function CampaignDetailPage() {
                 商品項目
               </h2>
               <div className="card overflow-hidden">
-                {items.length === 0 ? (
+                {!campaign ? (
+                  // detail 還沒回來: 顯示 skeleton (用 hint 的價格區間先佔位)
+                  <ItemSkeleton priceText={hintPriceText} />
+                ) : items.length === 0 ? (
                   <div className="px-4 py-8 text-center text-[15px] text-[var(--tertiary-label)]">
                     尚無商品
                   </div>
@@ -447,6 +465,31 @@ function HeroCarousel({ images }: { images: string[] }) {
           )}
         </div>
       </Portal>
+    </>
+  );
+}
+
+/** 詳情 API 還沒回來時的 SKU 列 skeleton, 給 hint 預填用 */
+function ItemSkeleton({ priceText }: { priceText: string | null }) {
+  return (
+    <>
+      {[0, 1, 2].map((i) => (
+        <div
+          key={i}
+          className={`flex items-center gap-3 px-4 py-3.5 ${i === 2 ? "" : "border-b border-[var(--separator)]"}`}
+        >
+          <div className="h-14 w-14 shrink-0 animate-pulse rounded-xl bg-[var(--brand-soft)]/60" />
+          <div className="min-w-0 flex-1 space-y-2">
+            <div className="h-4 w-4/5 animate-pulse rounded bg-black/5" />
+            <div className="h-3 w-1/2 animate-pulse rounded bg-black/5" />
+            {i === 0 && priceText && (
+              <div className="text-[16px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
+                {priceText}
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
     </>
   );
 }

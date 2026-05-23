@@ -14,6 +14,7 @@ import CampaignCard, {
 } from "@/components/CampaignCard";
 import Countdown from "@/components/Countdown";
 import { cleanCampaignText } from "@/lib/text";
+import { setCampaignHints } from "@/lib/campaignHints";
 
 export default function FlashPage() {
   const router = useRouter();
@@ -36,6 +37,7 @@ export default function FlashPage() {
         });
         // 已 sort by end_at asc 從 backend, 就直接用
         setCampaigns(d.campaigns);
+        setCampaignHints(d.campaigns);
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
       } finally {
