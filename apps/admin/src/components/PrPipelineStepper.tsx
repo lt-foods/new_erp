@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { PO_TERM_ZH } from "@/lib/poStatus";
 
 type StepState = "done" | "current" | "pending" | "rejected" | "skipped";
 
@@ -80,14 +81,14 @@ export function PrPipelineStepper({
   else if (isCancelled) steps.push({ key: "review", label: "審核完成", state: "skipped" });
   else steps.push({ key: "review", label: "審核通過", state: "done" });
 
-  // S5 建立採購訂單
+  // S5 建立採購單
   if (status === "fully_ordered")
-    steps.push({ key: "split", label: "建立採購訂單", state: "done" });
+    steps.push({ key: "split", label: `建立${PO_TERM_ZH}`, state: "done" });
   else if (status === "partially_ordered")
     steps.push({ key: "split", label: "部分建立", state: "current" });
   else if (isRejected || isCancelled)
-    steps.push({ key: "split", label: "建立採購訂單", state: "skipped" });
-  else steps.push({ key: "split", label: "建立採購訂單", state: "pending" });
+    steps.push({ key: "split", label: `建立${PO_TERM_ZH}`, state: "skipped" });
+  else steps.push({ key: "split", label: `建立${PO_TERM_ZH}`, state: "pending" });
 
   // S6 發送供應商
   if (isRejected || isCancelled)

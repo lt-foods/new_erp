@@ -40,8 +40,8 @@ const NAV: NavGroup[] = [
   {
     title: "進銷存",
     items: [
-      { href: "/purchase/requests", label: "採購單", match: /^\/purchase\/requests/ },
-      { href: "/purchase/orders", label: "採購訂單", match: /^\/purchase\/orders/ },
+      { href: "/purchase/requests", label: "請購單", match: /^\/purchase\/requests/ },
+      { href: "/purchase/orders", label: "採購單", match: /^\/purchase\/orders/ },
       { href: "/inventory", label: "庫存總覽", match: /^\/inventory(?!\/mutual-aid|\/reorder-rules|\/stocktake)/ },
       { href: "/inventory/reorder-rules", label: "補貨規則", match: /^\/inventory\/reorder-rules/ },
       { href: "/inventory/stocktake", label: "盤點", match: /^\/inventory\/stocktake/ },
@@ -99,8 +99,8 @@ const BRANCH_HIDDEN_HREFS = new Set([
   "/hq/inbox",            // 總倉收件匣
   "/products",            // 商品主檔 (HQ 管理)
   "/suppliers",           // 供應商 (HQ 管理)
-  "/purchase/requests",   // 採購單
-  "/purchase/orders",     // 採購訂單
+  "/purchase/requests",   // 請購單 (PR)
+  "/purchase/orders",     // 採購單 (PO)
   "/wms/receiving",       // 進貨待辦 (HQ)
   "/wms/picking",         // 派貨工作台
   // /wms/inbound 跟 /wms/transfers 不在這裡 — 分店要用,屬於分店業務

@@ -6,16 +6,17 @@ import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { RowAction } from "@/components/RowAction";
+import {
+  PR_STATUS_LABEL,
+  PR_REVIEW_LABEL,
+  PR_TERM_ZH,
+  type PRStatus,
+  type PRReviewStatus,
+} from "@/lib/prStatus";
 
 const PAGE_SIZE = 20;
 
-type PRStatus =
-  | "draft"
-  | "submitted"
-  | "partially_ordered"
-  | "fully_ordered"
-  | "cancelled";
-type ReviewStatus = "pending_review" | "approved" | "rejected";
+type ReviewStatus = PRReviewStatus;
 type SourceType = "close_date" | "campaign" | "manual";
 
 type Row = {
@@ -59,19 +60,8 @@ type ClosedCampaignRow = {
 
 type StatusTab = "all" | PRStatus;
 
-const STATUS_LABEL: Record<PRStatus, string> = {
-  draft: "草稿",
-  submitted: "已送審",
-  partially_ordered: "部分轉單",
-  fully_ordered: "全部轉單",
-  cancelled: "已取消",
-};
-
-const REVIEW_LABEL: Record<ReviewStatus, string> = {
-  approved: "已通過",
-  pending_review: "待審核",
-  rejected: "已退回",
-};
+const STATUS_LABEL = PR_STATUS_LABEL;
+const REVIEW_LABEL = PR_REVIEW_LABEL;
 
 const SOURCE_LABEL: Record<SourceType, string> = {
   close_date: "結單日帶入",
@@ -672,7 +662,7 @@ export default function PurchaseRequestsListPage() {
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">採購單（PR）</h1>
+          <h1 className="text-xl font-semibold">{PR_TERM_ZH}（PR）</h1>
           <p className="text-sm text-zinc-500">
             {rows === null ? "載入中…" : `共 ${rows.length} 筆`}
           </p>
@@ -690,7 +680,7 @@ export default function PurchaseRequestsListPage() {
             disabled={creatingBlank}
             className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
           >
-            {creatingBlank ? "建立中…" : "+ 空白採購單"}
+            {creatingBlank ? "建立中…" : `+ 空白${PR_TERM_ZH}`}
           </SpinButton>
         </div>
       </header>
@@ -939,7 +929,7 @@ export default function PurchaseRequestsListPage() {
             ) : pageRows.length === 0 ? (
               <tr>
                 <td colSpan={10} className="p-6 text-center text-zinc-500">
-                  {filtersActive ? "沒有符合條件的採購單" : "尚無採購單"}
+                  {filtersActive ? `沒有符合條件的${PR_TERM_ZH}` : `尚無${PR_TERM_ZH}`}
                 </td>
               </tr>
             ) : grouped ? (
@@ -1041,7 +1031,7 @@ export default function PurchaseRequestsListPage() {
           >
             <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
               <div>
-                <h3 className="text-base font-semibold">針對團購建採購單</h3>
+                <h3 className="text-base font-semibold">針對團購建{PR_TERM_ZH}</h3>
                 <p className="mt-0.5 text-xs text-zinc-500">
                   可多選、同團購可重複開單（補單）
                 </p>
@@ -1120,7 +1110,7 @@ export default function PurchaseRequestsListPage() {
                                   onClick={(e) => e.stopPropagation()}
                                   className="ml-2 text-amber-600 hover:underline dark:text-amber-400"
                                 >
-                                  · 已有採購單 #{c.existing_pr_id}（補單會新建）
+                                  · 已有{PR_TERM_ZH} #{c.existing_pr_id}（補單會新建）
                                 </Link>
                               )}
                             </div>
@@ -1155,7 +1145,7 @@ export default function PurchaseRequestsListPage() {
                   >
                     {creatingMulti
                       ? "建立中…"
-                      : `📋 建立採購單（${selectedCampaignIds.size}）`}
+                      : `📋 建立${PR_TERM_ZH}（${selectedCampaignIds.size}）`}
                   </SpinButton>
                 </div>
               </div>

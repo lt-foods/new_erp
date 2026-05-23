@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { SendPOModal } from "@/components/SendPOModal";
 import SpinButton from "@/components/SpinButton";
+import { poStatusLabel, PO_TERM_ZH } from "@/lib/poStatus";
 
 type Supplier = {
   id: number;
@@ -52,14 +53,7 @@ type Item = {
   notes: string | null;
 };
 
-const STATUS_LABEL: Record<string, string> = {
-  draft: "草稿",
-  sent: "已發送",
-  partially_received: "部分到貨",
-  fully_received: "全部到貨",
-  closed: "已結案",
-  cancelled: "已取消",
-};
+const STATUS_LABEL = poStatusLabel;
 
 export default function EditPurchaseOrderPage() {
   return (
@@ -100,7 +94,7 @@ function PageContent() {
           .eq("po_id", id)
           .order("id"),
       ]);
-      if (poErr || !poData) throw new Error(poErr?.message ?? "找不到採購訂單");
+      if (poErr || !poData) throw new Error(poErr?.message ?? `找不到${PO_TERM_ZH}`);
       if (itemErr) throw new Error(itemErr.message);
       setHeader(poData as POHeader);
 
@@ -185,21 +179,21 @@ function PageContent() {
   if (!id) {
     return (
       <div className="p-6 text-sm text-zinc-500">
-        缺少 id 參數。請從 <Link href="/purchase/orders" className="text-blue-600 underline">採購訂單列表</Link> 進入。
+        缺少 id 參數。請從 <Link href="/purchase/orders" className="text-blue-600 underline">{PO_TERM_ZH}列表</Link> 進入。
       </div>
     );
   }
   if (loading) return <div className="p-6 text-sm text-zinc-500">載入中…</div>;
-  if (!header) return <div className="p-6 text-sm text-red-600">{error ?? "找不到採購訂單"}</div>;
+  if (!header) return <div className="p-6 text-sm text-red-600">{error ?? `找不到${PO_TERM_ZH}`}</div>;
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">
-            採購訂單 {header.po_no}
+            {PO_TERM_ZH} {header.po_no}
             <span className="ml-3 inline-block rounded bg-zinc-100 px-2 py-0.5 text-xs font-normal dark:bg-zinc-800">
-              {STATUS_LABEL[header.status] ?? header.status}
+              {STATUS_LABEL(header.status)}
             </span>
           </h1>
           <p className="text-sm text-zinc-500">
@@ -256,7 +250,7 @@ function PageContent() {
                 </div>
               )}
               {!editable && !canSend && (
-                <p className="text-xs text-zinc-500">此採購訂單已 {STATUS_LABEL[header.status]}。</p>
+                <p className="text-xs text-zinc-500">此{PO_TERM_ZH}已 {STATUS_LABEL(header.status)}。</p>
               )}
             </div>
           </section>

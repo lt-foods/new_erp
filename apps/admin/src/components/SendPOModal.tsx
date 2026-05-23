@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import { PO_TERM_ZH } from "@/lib/poStatus";
 
 type Supplier = {
   id: number;
@@ -55,7 +56,7 @@ export function SendPOModal({
   const lineText = useMemo(() => {
     if (!supplier) return "";
     const lines: string[] = [];
-    lines.push(`【採購單 ${poNo}】`);
+    lines.push(`【${PO_TERM_ZH} ${poNo}】`);
     lines.push(`供應商：${supplier.name}`);
     lines.push(`下單日：${new Date().toLocaleDateString("zh-TW")}`);
     lines.push("");
@@ -71,7 +72,7 @@ export function SendPOModal({
 
   const mailtoHref = useMemo(() => {
     if (!supplier?.email) return null;
-    const subject = encodeURIComponent(`採購單 ${poNo} - ${supplier.name}`);
+    const subject = encodeURIComponent(`${PO_TERM_ZH} ${poNo} - ${supplier.name}`);
     const body = encodeURIComponent(lineText);
     return `mailto:${supplier.email}?subject=${subject}&body=${body}`;
   }, [supplier, poNo, lineText]);
@@ -109,7 +110,7 @@ export function SendPOModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={`發送採購訂單 ${poNo}`} maxWidth="max-w-3xl">
+    <Modal open={open} onClose={onClose} title={`發送${PO_TERM_ZH} ${poNo}`} maxWidth="max-w-3xl">
       {!supplier ? (
         <div className="text-sm text-zinc-500">載入中…</div>
       ) : (

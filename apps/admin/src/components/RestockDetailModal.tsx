@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
+import { PR_TERM_ZH } from "@/lib/prStatus";
 
 type RestockRow = {
   id: number;
@@ -180,7 +181,7 @@ export default function RestockDetailModal({
             )}
             {hd.linked_pr_id != null && (
               <div className="col-span-2">
-                <dt className="text-xs text-zinc-500">採購單</dt>
+                <dt className="text-xs text-zinc-500">{PR_TERM_ZH}</dt>
                 <dd className="text-sm">
                   <Link
                     href={`/purchase/requests/edit?id=${hd.linked_pr_id}`}

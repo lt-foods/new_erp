@@ -80,13 +80,13 @@
 ## 4. 列表頁 UI（`/purchase/requests`）
 
 ### 4.1 兩顆建單按鈕
-- [ ] 右上角顯示「+ 空白採購單」「+ 針對團購建單」兩顆按鈕
-- [ ] 「+ 空白採購單」點擊 → 直接呼叫 `rpc_create_pr_blank` → 跳 `/purchase/requests/edit?id=N`
+- [ ] 右上角顯示「+ 空白請購單」「+ 針對團購建單」兩顆按鈕
+- [ ] 「+ 空白請購單」點擊 → 直接呼叫 `rpc_create_pr_blank` → 跳 `/purchase/requests/edit?id=N`
 - [ ] 「+ 針對團購建單」點擊 → 開 modal 選 closed campaign
 
 ### 4.2 Campaign 選擇 modal
 - [ ] modal 顯示：過去 60 天 closed campaign 列表
-- [ ] 已有未取消 campaign PR 的 campaign → 禁用 + 顯示「已有採購單」
+- [ ] 已有未取消 campaign PR 的 campaign → 禁用 + 顯示「已有請購單」
 - [ ] 已有同日 close_date PR 的 campaign → 不禁用（共存允許）+ 顯示「同日已有結單日 PR」提示
 - [ ] 選一個 → 呼叫 `rpc_create_pr_from_campaign` → 跳 edit page
 

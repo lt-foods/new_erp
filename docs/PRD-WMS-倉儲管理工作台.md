@@ -241,7 +241,7 @@ WHERE shortage_qty > 0
    訂單 / 取貨 / 會員 / 互助交流板
 
 📦 進銷存
-   採購單 / 採購訂單 / 補貨申請 / 補貨申請(HQ)
+   請購單 / 採購單 / 補貨申請 / 補貨申請(HQ)
 
 🏬 倉儲(WMS)
    📥 進貨待辦       /wms/receiving       (新)
@@ -384,7 +384,7 @@ E. 退貨回總倉     Store → HQ    return      (待設計:可能透過 free 
 ## 12. Out of scope (本文件不負責)
 
 - 庫存準確性、移動平均成本、盤點 — 見 [[PRD-庫存模組]]
-- 採購單(PR/PO)的撰寫流程 — 見 [[PRD-採購模組]]
+- 請購單 / 採購單(PR/PO)的撰寫流程 — 見 [[PRD-採購模組]]
 - 客戶取貨流程(LIFF / 分店端取貨)— 見 [[PRD-訂單取貨模組]]
 - 補貨申請(restock_requests)流程 — 見 [[PRD-訂單取貨模組-v0.2-addendum]]
 - 互助訂單(aid_transfer)— 見 [[PRD-訂單取貨模組-v0.2-addendum]]

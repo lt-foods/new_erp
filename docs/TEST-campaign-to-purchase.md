@@ -1,9 +1,9 @@
-# campaign-to-purchase 測試項目 — 結單日 → 內部採購單 → 拆 PO 全流程
+# campaign-to-purchase 測試項目 — 結單日 → 內部請購單 → 拆 PO 全流程
 
 **對應 migration:** `supabase/migrations/20260428120000_campaign_to_purchase.sql`（待建）
 **對應 UI 變更:**
 - `apps/admin/src/app/(protected)/campaigns/page.tsx`（結單按鈕）
-- `apps/admin/src/app/(protected)/purchase/requests/new/page.tsx`（新建：採購單工作底稿、含「帶入該日商品」按鈕）
+- `apps/admin/src/app/(protected)/purchase/requests/new/page.tsx`（新建：請購單工作底稿、含「帶入該日商品」按鈕）
 - `apps/admin/src/app/(protected)/purchase/requests/page.tsx`（新建：PR 列表）
 - `apps/admin/src/app/(protected)/purchase/orders/page.tsx`（新建：PO 列表）
 - `apps/admin/src/components/PurchaseOrderEdit.tsx`（新建）

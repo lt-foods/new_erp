@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import { PR_TERM_ZH } from "@/lib/prStatus";
 
 type Status = "pending" | "approved_transfer" | "approved_pr" | "shipped" | "received" | "rejected" | "cancelled";
 
@@ -115,7 +116,7 @@ export default function RestockInboxPage() {
   }
 
   async function approveToPr(id: number) {
-    if (!confirm("確定下訂單？此動作會獨立建立一張新的採購單。")) return;
+    if (!confirm(`確定下訂單？此動作會獨立建立一張新的${PR_TERM_ZH}。`)) return;
     setBusy(id);
     try {
       const { error: err } = await getSupabase().rpc("rpc_approve_restock_to_pr", { p_request_id: id });
@@ -239,7 +240,7 @@ export default function RestockInboxPage() {
                     <div className="flex flex-col gap-1 text-xs">
                       {r.linked_pr_id && (
                         <Link href={`/purchase/requests/edit?id=${r.linked_pr_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
-                          → {r.linked_pr_no ?? `採購單 #${r.linked_pr_id}`}
+                          → {r.linked_pr_no ?? `${PR_TERM_ZH} #${r.linked_pr_id}`}
                         </Link>
                       )}
                       {r.linked_transfer_id && (

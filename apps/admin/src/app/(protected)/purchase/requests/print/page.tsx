@@ -4,6 +4,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import { PR_TERM_ZH } from "@/lib/prStatus";
 
 type PRHeader = {
   id: number;
@@ -93,7 +94,7 @@ function PageContent() {
         ]);
 
         if (cancelled) return;
-        if (prErr || !prData) throw new Error(prErr?.message ?? "找不到採購單");
+        if (prErr || !prData) throw new Error(prErr?.message ?? `找不到${PR_TERM_ZH}`);
         if (itemErr) throw new Error(itemErr.message);
 
         setHeader(prData as PRHeader);
@@ -248,7 +249,7 @@ function PageContent() {
 
       <header className="mb-4 text-center">
         <h1 className="text-2xl font-bold">
-          {warehouseName || "總倉"} - 內部採購單
+          {warehouseName || "總倉"} - 內部{PR_TERM_ZH}
         </h1>
         <div className="mt-1 text-sm text-zinc-600">
           單號 {header.pr_no}　·　結單日 {header.source_close_date ?? "—"}

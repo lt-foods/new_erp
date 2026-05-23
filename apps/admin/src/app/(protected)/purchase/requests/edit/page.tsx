@@ -6,6 +6,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { PrPipelineStepper, type PrStepEvents, type POSummary, type TransferSummary } from "@/components/PrPipelineStepper";
 import SpinButton from "@/components/SpinButton";
+import { prStatusLabel, prReviewLabel, PR_TERM_ZH } from "@/lib/prStatus";
+import { PO_TERM_ZH } from "@/lib/poStatus";
 
 type PRHeader = {
   id: number;
@@ -57,19 +59,8 @@ type ItemRow = {
   dirty: boolean;
 };
 
-const REVIEW_LABEL: Record<string, string> = {
-  approved: "已通過",
-  pending_review: "待審核",
-  rejected: "已退回",
-};
-
-const STATUS_LABEL: Record<string, string> = {
-  draft: "草稿",
-  submitted: "已送審",
-  partially_ordered: "部分轉單",
-  fully_ordered: "全部轉單",
-  cancelled: "已取消",
-};
+const STATUS_LABEL = prStatusLabel;
+const REVIEW_LABEL = prReviewLabel;
 
 export default function EditPurchaseRequestPage() {
   return (
@@ -138,7 +129,7 @@ function PageContent() {
         ]);
 
         if (cancelled) return;
-        if (prErr || !prData) throw new Error(prErr?.message ?? "找不到採購單");
+        if (prErr || !prData) throw new Error(prErr?.message ?? `找不到${PR_TERM_ZH}`);
         if (itemErr) throw new Error(itemErr.message);
 
         setHeader(prData as PRHeader);
@@ -527,7 +518,7 @@ function PageContent() {
       !confirm(
         `要把 ${missingCampaigns.length} 個同日結單但未納入的團（${missingCampaigns
           .map((c) => c.campaign_no)
-          .join(", ")}）併入本採購單嗎？`,
+          .join(", ")}）併入本${PR_TERM_ZH}嗎？`,
       )
     )
       return;
@@ -559,7 +550,7 @@ function PageContent() {
       setError(`有 ${unassignedCount} 行未指派供應商，無法拆 PO`);
       return;
     }
-    if (!confirm("確定建立採購訂單？建立後可逐一發給各供應商。")) return;
+    if (!confirm(`確定建立${PO_TERM_ZH}？建立後可逐一發給各供應商。`)) return;
     setBusy("split");
     setError(null);
     try {
@@ -571,7 +562,7 @@ function PageContent() {
         p_operator: userData.user?.id,
       });
       if (rpcErr) throw new Error(rpcErr.message);
-      alert(`已產生 ${(poIds as number[]).length} 張採購訂單`);
+      alert(`已產生 ${(poIds as number[]).length} 張${PO_TERM_ZH}`);
       router.push("/purchase/orders");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -583,22 +574,22 @@ function PageContent() {
   if (!id) {
     return (
       <div className="p-6 text-sm text-zinc-500">
-        缺少 id 參數。請從 <Link href="/purchase/requests" className="text-blue-600 underline">採購單列表</Link> 進入。
+        缺少 id 參數。請從 <Link href="/purchase/requests" className="text-blue-600 underline">{PR_TERM_ZH}列表</Link> 進入。
       </div>
     );
   }
 
   if (loading) return <div className="p-6 text-sm text-zinc-500">載入中…</div>;
-  if (!header) return <div className="p-6 text-sm text-red-600">{error ?? "找不到採購單"}</div>;
+  if (!header) return <div className="p-6 text-sm text-red-600">{error ?? `找不到${PR_TERM_ZH}`}</div>;
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">
-            採購單 {header.pr_no}
+            {PR_TERM_ZH} {header.pr_no}
             <span className="ml-3 inline-block rounded bg-zinc-100 px-2 py-0.5 text-xs font-normal dark:bg-zinc-800">
-              {STATUS_LABEL[header.status] ?? header.status}
+              {STATUS_LABEL(header.status)}
             </span>
             <span
               className={`ml-2 inline-block rounded px-2 py-0.5 text-xs font-normal ${
@@ -609,7 +600,7 @@ function PageContent() {
                     : "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
               }`}
             >
-              {REVIEW_LABEL[header.review_status] ?? header.review_status}
+              {REVIEW_LABEL(header.review_status)}
             </span>
           </h1>
           <p className="text-sm text-zinc-500">
@@ -704,7 +695,7 @@ function PageContent() {
                   className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
                   title={unassignedCount > 0 ? "有未指派供應商" : ""}
                 >
-                  {busy === "split" ? "建立中…" : "📦 建立採購訂單"}
+                  {busy === "split" ? "建立中…" : `📦 建立${PO_TERM_ZH}`}
                 </SpinButton>
               )}
               {canReopen && (
@@ -718,7 +709,7 @@ function PageContent() {
                 </SpinButton>
               )}
               {!editable && !canSplit && !canReopen && (
-                <p className="text-xs text-zinc-500">此採購單已 {STATUS_LABEL[header.status]}，無可用動作。</p>
+                <p className="text-xs text-zinc-500">此{PR_TERM_ZH}已 {STATUS_LABEL(header.status)}，無可用動作。</p>
               )}
             </div>
           </section>

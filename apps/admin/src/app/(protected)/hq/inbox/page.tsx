@@ -5,6 +5,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
+import { PR_TERM_ZH } from "@/lib/prStatus";
 import SpinButton from "@/components/SpinButton";
 import { RowAction } from "@/components/RowAction";
 import { OrderDetail } from "@/components/OrderDetail";
@@ -1226,7 +1227,7 @@ function HqInboxContent() {
   }
 
   async function approveToPr(id: number) {
-    if (!confirm("確定下訂單？此動作會獨立建立一張新的採購單。")) return;
+    if (!confirm(`確定下訂單？此動作會獨立建立一張新的${PR_TERM_ZH}。`)) return;
     setBusy(`restock-${id}-pr`);
     try {
       const { error: err } = await getSupabase().rpc("rpc_approve_restock_to_pr", { p_request_id: id });
@@ -2193,7 +2194,7 @@ function MailRow({
         急補 {s.line_count} 項 · NT${s.total_amount.toFixed(0)}
         {s.linked_pr_id && (
           <Link href={`/purchase/requests/edit?id=${s.linked_pr_id}`} className="ml-2 font-mono text-blue-600 hover:underline dark:text-blue-400">
-            · {s.linked_pr_no ?? `採購單 #${s.linked_pr_id}`}
+            · {s.linked_pr_no ?? `${PR_TERM_ZH} #${s.linked_pr_id}`}
           </Link>
         )}
         {s.linked_transfer_id && (

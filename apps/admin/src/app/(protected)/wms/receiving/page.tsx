@@ -10,6 +10,7 @@ import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { Modal } from "@/components/Modal";
 import { POReceiptTimeline } from "@/components/POReceiptTimeline";
+import { PO_TERM_ZH } from "@/lib/poStatus";
 
 type POStatus = "draft" | "sent" | "partially_received" | "fully_received" | "cancelled";
 
@@ -198,7 +199,7 @@ export default function ReceivingWorkbenchPage() {
           href="/purchase/orders"
           className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
         >
-          採購訂單列表 →
+          {PO_TERM_ZH}列表 →
         </Link>
       </header>
 
@@ -336,7 +337,7 @@ export default function ReceivingWorkbenchPage() {
       <Modal
         open={detailPoId !== null}
         onClose={() => setDetailPoId(null)}
-        title={`採購單到貨進度 ${detailPoNo}`}
+        title={`${PO_TERM_ZH}到貨進度 ${detailPoNo}`}
         maxWidth="max-w-4xl"
       >
         {detailPoId !== null && <POReceiptTimeline poId={detailPoId} />}

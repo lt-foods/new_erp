@@ -6,6 +6,8 @@ import { getSupabase } from "@/lib/supabase";
 import { SendPOModal } from "@/components/SendPOModal";
 import SpinButton from "@/components/SpinButton";
 import { RowAction } from "@/components/RowAction";
+import { PO_STATUS_LABEL, PO_TERM_ZH, type POStatus } from "@/lib/poStatus";
+import { PR_TERM_ZH } from "@/lib/prStatus";
 
 type Supplier = {
   id: number;
@@ -31,14 +33,6 @@ type SendCtx = {
   total: number;
 };
 
-type POStatus =
-  | "draft"
-  | "sent"
-  | "partially_received"
-  | "fully_received"
-  | "closed"
-  | "cancelled";
-
 type PO = {
   id: number;
   po_no: string;
@@ -59,14 +53,7 @@ type PO = {
 
 type StatusTab = "all" | POStatus;
 
-const STATUS_LABEL: Record<POStatus, string> = {
-  draft: "草稿",
-  sent: "已發送",
-  partially_received: "部分到貨",
-  fully_received: "全部到貨",
-  closed: "已結案",
-  cancelled: "已取消",
-};
+const STATUS_LABEL = PO_STATUS_LABEL;
 
 const STATUS_BADGE: Record<POStatus, string> = {
   draft: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
@@ -367,7 +354,7 @@ export default function PurchaseOrdersListPage() {
       if (groupBy === "pr") {
         if (p.pr_id) {
           key = `pr-${p.pr_id}`;
-          label = `採購單 ${p.pr_no ?? `#${p.pr_id}`}`;
+          label = `${PR_TERM_ZH} ${p.pr_no ?? `#${p.pr_id}`}`;
         } else {
           key = "manual";
           label = "手動建立 / 無來源 PR";
@@ -490,7 +477,7 @@ export default function PurchaseOrdersListPage() {
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">採購訂單（PO）</h1>
+          <h1 className="text-xl font-semibold">{PO_TERM_ZH}（PO）</h1>
           <p className="text-sm text-zinc-500">
             {pos === null ? "載入中…" : `共 ${pos.length} 張 PO`}
           </p>
@@ -499,7 +486,7 @@ export default function PurchaseOrdersListPage() {
           href="/purchase/requests"
           className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800"
         >
-          ← 採購單
+          ← {PR_TERM_ZH}
         </Link>
       </header>
 
@@ -613,7 +600,7 @@ export default function PurchaseOrdersListPage() {
             className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-900"
           >
             <option value="none">不分組</option>
-            <option value="pr">依採購單</option>
+            <option value="pr">依{PR_TERM_ZH}</option>
             <option value="supplier">依供應商</option>
           </select>
         </label>
@@ -692,7 +679,7 @@ export default function PurchaseOrdersListPage() {
             ) : pageRows.length === 0 ? (
               <tr>
                 <td colSpan={11} className="p-6 text-center text-zinc-500">
-                  {filtersActive ? "沒有符合條件的 PO" : "尚無採購訂單"}
+                  {filtersActive ? "沒有符合條件的 PO" : `尚無${PO_TERM_ZH}`}
                 </td>
               </tr>
             ) : grouped ? (

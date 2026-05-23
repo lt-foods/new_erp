@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
+import { PR_TERM_ZH } from "@/lib/prStatus";
 import { Modal } from "@/components/Modal";
 import { CampaignForm, type CampaignFormValues } from "@/components/CampaignForm";
 import { CampaignOrdersPanel } from "@/components/CampaignOrdersPanel";
@@ -232,7 +233,7 @@ export default function CampaignsListPage() {
   }
 
   async function closeCampaign(id: number, name: string) {
-    if (!confirm(`確定結單「${name}」？結單後可從採購單頁面「帶入該日商品」產生 PR。`)) return;
+    if (!confirm(`確定結單「${name}」？結單後可從${PR_TERM_ZH}頁面「帶入該日商品」產生 PR。`)) return;
     setClosingId(id);
     try {
       const { error: rpcErr } = await getSupabase().rpc("rpc_close_campaign", {

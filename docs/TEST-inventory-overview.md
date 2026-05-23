@@ -63,7 +63,7 @@
 
 ### 3.1 頁面載入
 - [ ] `/inventory` 路由可開、無 console error
-- [ ] 側欄「進銷存」群組出現「庫存總覽」入口（採購單 / 採購訂單之後）、點擊導到 `/inventory`、active 高亮正確
+- [ ] 側欄「進銷存」群組出現「庫存總覽」入口（請購單 / 採購單之後）、點擊導到 `/inventory`、active 高亮正確
 - [ ] 表格渲染欄位：商品/SKU、倉別、在庫(on_hand)、保留(reserved)、在途(in_transit_in)、可用、均成本、最後異動
 - [ ] 載入中顯示 LoadingRow；無資料顯示 EmptyRow（非空白破版）
 
