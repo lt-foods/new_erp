@@ -677,6 +677,10 @@ export function OrderDetail({
                           min={1}
                           onSave={async (v) => setItemDraft(it.id, { qty: v })}
                         />
+                      ) : canEdit && head?.status === "confirmed" ? (
+                        <span title="已被請購單鎖定,如需調整請聯絡總部" className="cursor-help text-zinc-500">
+                          {Number(it.qty)} 🔒
+                        </span>
                       ) : (
                         Number(it.qty)
                       )}
