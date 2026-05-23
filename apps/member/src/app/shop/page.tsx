@@ -311,7 +311,7 @@ function FoodTrainStackBanner({ campaigns }: { campaigns: CampaignSummary[] }) {
 
   return (
     <Link
-      href={`/shop/c/${current.id}`}
+      href="/shop/food-train"
       className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(5,150,105,0.5)] transition-transform duration-200 active:scale-[0.985]"
     >
       <div className="relative aspect-[16/8] w-full bg-gradient-to-br from-emerald-500 via-emerald-600 to-teal-700">
