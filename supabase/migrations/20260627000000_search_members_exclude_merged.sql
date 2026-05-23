@@ -1,6 +1,8 @@
 -- ============================================================
--- rpc_search_members / rpc_search_aliases：排除 已合併 / 已刪除 的會員
---   下單 / 取貨 / LINE 暱稱對應等流程不應該再選到 merged 會員
+-- rpc_search_members / rpc_search_aliases：
+--   1. 排除 已合併 / 已刪除 的會員
+--   2. Google 式多 token 搜尋：以空白 / + 拆字串，每個 token 都需在
+--      name / member_no / phone（aliases 用 nickname）任一欄命中
 -- ============================================================
 
 DROP FUNCTION IF EXISTS public.rpc_search_members(TEXT, INT);
@@ -24,9 +26,13 @@ CREATE OR REPLACE FUNCTION public.rpc_search_members(
 LANGUAGE plpgsql SECURITY DEFINER
 AS $$
 DECLARE
-  v_tenant UUID := public._current_tenant_id();
-  v_term   TEXT := COALESCE(NULLIF(TRIM(p_term), ''), NULL);
-  v_lim    INT  := LEAST(GREATEST(COALESCE(p_limit, 20), 1), 50);
+  v_tenant UUID   := public._current_tenant_id();
+  v_tokens TEXT[] := ARRAY(
+    SELECT t
+      FROM regexp_split_to_table(COALESCE(p_term, ''), '[\s+]+') AS t
+     WHERE t <> ''
+  );
+  v_lim    INT    := LEAST(GREATEST(COALESCE(p_limit, 20), 1), 50);
 BEGIN
   RETURN QUERY
   SELECT m.id, m.member_no, m.name, m.phone, m.avatar_url,
@@ -37,10 +43,16 @@ BEGIN
    WHERE m.tenant_id = v_tenant
      AND m.status NOT IN ('merged', 'deleted')
      AND (
-       v_term IS NULL
-       OR m.name      ILIKE '%' || v_term || '%'
-       OR m.member_no ILIKE '%' || v_term || '%'
-       OR m.phone     ILIKE '%' || v_term || '%'
+       COALESCE(array_length(v_tokens, 1), 0) = 0
+       OR NOT EXISTS (
+         SELECT 1
+           FROM unnest(v_tokens) AS tok
+          WHERE NOT (
+            m.name      ILIKE '%' || tok || '%'
+            OR m.member_no ILIKE '%' || tok || '%'
+            OR m.phone     ILIKE '%' || tok || '%'
+          )
+       )
      )
    ORDER BY m.created_at DESC
    LIMIT v_lim;
@@ -69,9 +81,13 @@ CREATE OR REPLACE FUNCTION public.rpc_search_aliases(
 LANGUAGE plpgsql SECURITY DEFINER
 AS $$
 DECLARE
-  v_tenant UUID := public._current_tenant_id();
-  v_term   TEXT := COALESCE(NULLIF(TRIM(p_term), ''), NULL);
-  v_lim    INT  := LEAST(GREATEST(COALESCE(p_limit, 20), 1), 50);
+  v_tenant UUID   := public._current_tenant_id();
+  v_tokens TEXT[] := ARRAY(
+    SELECT t
+      FROM regexp_split_to_table(COALESCE(p_term, ''), '[\s+]+') AS t
+     WHERE t <> ''
+  );
+  v_lim    INT    := LEAST(GREATEST(COALESCE(p_limit, 20), 1), 50);
 BEGIN
   RETURN QUERY
   SELECT a.id, a.nickname, m.id, m.member_no, m.name, m.phone, m.avatar_url,
@@ -83,7 +99,14 @@ BEGIN
    WHERE a.tenant_id  = v_tenant
      AND a.channel_id = p_channel_id
      AND m.status NOT IN ('merged', 'deleted')
-     AND (v_term IS NULL OR a.nickname ILIKE '%' || v_term || '%')
+     AND (
+       COALESCE(array_length(v_tokens, 1), 0) = 0
+       OR NOT EXISTS (
+         SELECT 1
+           FROM unnest(v_tokens) AS tok
+          WHERE NOT (a.nickname ILIKE '%' || tok || '%')
+       )
+     )
    ORDER BY a.updated_at DESC
    LIMIT v_lim;
 END;

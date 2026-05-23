@@ -70,7 +70,6 @@ function MembersListBody() {
   const [sortBy, setSortBy] = useState<SortKey>("updated_at");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [page, setPage] = useState(1);
-  const [showMerged, setShowMerged] = useState(false);
 
   const [stores, setStores] = useState<Store[]>([]);
   useDefaultStoreFromUser(stores, storeId, setStoreId);
@@ -108,7 +107,7 @@ function MembersListBody() {
 
   useEffect(() => {
     setPage(1);
-  }, [storeId, sortBy, sortDir, showMerged]);
+  }, [storeId, sortBy, sortDir]);
 
   useEffect(() => {
     let cancelled = false;
@@ -141,12 +140,15 @@ function MembersListBody() {
           .order(sortBy, { ascending: sortDir === "asc" })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
-        if (query.trim()) {
-          const safe = query.replace(/[%,()]/g, " ").trim();
-          q = q.or(`name.ilike.%${safe}%,phone.ilike.%${safe}%,member_no.ilike.%${safe}%`);
+        // Google 式：空白 / + 拆 token，每個 token 都要在 name / phone / member_no 至少一個欄位命中
+        const tokens = query.replace(/[%,()]/g, " ").split(/[\s+]+/).filter(Boolean);
+        for (const tok of tokens) {
+          q = q.or(`name.ilike.%${tok}%,phone.ilike.%${tok}%,member_no.ilike.%${tok}%`);
         }
         if (storeId) q = q.eq("home_store_id", Number(storeId));
-        if (!showMerged) q = q.not("status", "in", "(merged,deleted)");
+        // 沒輸入搜尋字串時，預設只看活躍會員；有搜尋字串時連 merged/deleted 一起撈，
+        // 避免找不到已合併的會員（UI 會用灰色 + 「已合併」標籤標示）
+        if (tokens.length === 0) q = q.not("status", "in", "(merged,deleted)");
 
         const { data, count, error } = await q;
         if (cancelled) return;
@@ -221,7 +223,7 @@ function MembersListBody() {
     return () => {
       cancelled = true;
     };
-  }, [query, storeId, sortBy, sortDir, page, reloadTick, showMerged]);
+  }, [query, storeId, sortBy, sortDir, page, reloadTick]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const fromIdx = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
@@ -281,16 +283,6 @@ function MembersListBody() {
           ))}
         </select>
       </div>
-
-      <label className="flex items-center gap-2 text-xs text-zinc-500">
-        <input
-          type="checkbox"
-          checked={showMerged}
-          onChange={(e) => setShowMerged(e.target.checked)}
-          className="h-3.5 w-3.5"
-        />
-        <span>顯示已合併 / 已刪除（預設只看活躍會員）</span>
-      </label>
 
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
