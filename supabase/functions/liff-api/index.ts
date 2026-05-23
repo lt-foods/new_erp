@@ -398,47 +398,17 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
 }
 
 async function getCampaignDetail(sb: any, tenantId: string, campaignId: number) {
-  const { data: c, error: cErr } = await sb
-    .from("group_buy_campaigns")
-    .select("id, campaign_no, name, description, cover_image_url, status, end_at, pickup_deadline")
-    .eq("tenant_id", tenantId)
-    .eq("id", campaignId)
-    .single();
-  if (cErr || !c) return json({ error: "campaign not found" }, 404);
-
-  const { data: items, error: iErr } = await sb
-    .from("campaign_items")
-    .select("id, unit_price, cap_qty, sort_order, sku:skus(id, sku_code, product_name, variant_name, product:products(name, images))")
-    .eq("tenant_id", tenantId)
-    .eq("campaign_id", campaignId)
-    .order("sort_order", { ascending: true });
-  if (iErr) return json({ error: iErr.message }, 500);
-
-  // 算出活動總訂單數
-  const { count: orderCount } = await sb
-    .from("customer_orders")
-    .select("*", { count: "exact", head: true })
-    .eq("tenant_id", tenantId)
-    .eq("campaign_id", campaignId)
-    .not("status", "in", "(cancelled,expired)")
-    .or("order_kind.is.null,order_kind.eq.normal");
-  c.order_count = orderCount ?? 0;
-
-  // 算出各品項已下單總量
-  const itemOrderedMap = new Map<number, number>();
-  const { data: itemOrderRows } = await sb
-    .from("customer_order_items")
-    .select("campaign_item_id, qty, customer_orders!inner(status, order_kind)")
-    .eq("tenant_id", tenantId)
-    .eq("customer_orders.campaign_id", campaignId)
-    .not("customer_orders.status", "in", "(cancelled,expired)")
-    .or("customer_orders.order_kind.is.null,customer_orders.order_kind.eq.normal");
-
-  for (const row of itemOrderRows ?? []) {
-    const ciId = Number(row.campaign_item_id);
-    const q = Number(row.qty ?? 0);
-    itemOrderedMap.set(ciId, (itemOrderedMap.get(ciId) ?? 0) + q);
-  }
+  // @money-critical:走 rpc_member_campaign_detail (JSONB 單列回傳),避免
+  // PostgREST max_rows=1000 截斷導致 ordered_qty 偏低、超賣風險。
+  // 詳見 docs/STANDARD-資料分頁與筆數限制.md §4 與 AUDIT 清單 #11/#12。
+  const { data: detail, error: dErr } = await sb.rpc("rpc_member_campaign_detail", {
+    p_tenant: tenantId,
+    p_campaign_id: campaignId,
+  });
+  if (dErr) return json({ error: dErr.message }, 500);
+  const c = detail?.campaign;
+  if (!c) return json({ error: "campaign not found" }, 404);
+  const items: any[] = Array.isArray(detail?.items) ? detail.items : [];
 
   const supabaseUrl = requireEnv("SUPABASE_URL");
   c.cover_image_url = toPublicUrl(supabaseUrl, "products", c.cover_image_url);
@@ -446,8 +416,8 @@ async function getCampaignDetail(sb: any, tenantId: string, campaignId: number) 
   // hero carousel:campaign cover + 所有 SKU 全部圖,去重
   const heroPaths: string[] = [];
   if (c.cover_image_url) heroPaths.push(c.cover_image_url);
-  for (const it of items ?? []) {
-    const imgs = it.sku?.product?.images;
+  for (const it of items) {
+    const imgs = it.product_images;
     if (!Array.isArray(imgs)) continue;
     for (const img of imgs) {
       const path = typeof img === "string" ? img : img?.url ?? null;
@@ -457,22 +427,22 @@ async function getCampaignDetail(sb: any, tenantId: string, campaignId: number) 
     }
   }
 
-  const flat = (items ?? []).map((it: any) => {
-    const imgs = it.sku?.product?.images;
+  const flat = items.map((it: any) => {
+    const imgs = it.product_images;
     const rawImg = Array.isArray(imgs) && imgs.length > 0
       ? (typeof imgs[0] === "string" ? imgs[0] : imgs[0]?.url ?? null)
       : null;
     const firstImg = toPublicUrl(supabaseUrl, "products", rawImg);
     return {
       campaign_item_id: it.id,
-      sku_id: it.sku?.id,
-      sku_code: it.sku?.sku_code,
-      product_name: it.sku?.product_name ?? it.sku?.product?.name ?? null,
-      variant_name: it.sku?.variant_name ?? null,
+      sku_id: it.sku_id,
+      sku_code: it.sku_code,
+      product_name: it.sku_product_name ?? it.product_name ?? null,
+      variant_name: it.sku_variant_name ?? null,
       image_url: firstImg,
       unit_price: Number(it.unit_price),
       cap_qty: it.cap_qty != null ? Number(it.cap_qty) : null,
-      ordered_qty: itemOrderedMap.get(Number(it.id)) ?? 0,
+      ordered_qty: Number(it.ordered_qty ?? 0),
     };
   });
   return json({ campaign: c, items: flat, hero_images: heroPaths });
