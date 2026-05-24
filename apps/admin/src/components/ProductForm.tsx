@@ -309,11 +309,6 @@ export function ProductForm({
 
       <div className="flex flex-wrap gap-4">
         <Checkbox
-          label="上架個人賣場"
-          checked={values.is_for_shop}
-          onChange={(v) => set("is_for_shop", v)}
-        />
-        <Checkbox
           label="暫停出貨"
           checked={values.stop_shipping}
           onChange={(v) => set("stop_shipping", v)}

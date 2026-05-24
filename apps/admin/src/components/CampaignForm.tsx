@@ -23,6 +23,7 @@ export type CampaignFormValues = {
   pickup_days: number | null;
   total_cap_qty: number | null;
   notes: string | null;
+  is_for_shop: boolean;
 };
 
 export const emptyCampaignValues: CampaignFormValues = {
@@ -38,6 +39,7 @@ export const emptyCampaignValues: CampaignFormValues = {
   pickup_days: null,
   total_cap_qty: null,
   notes: null,
+  is_for_shop: true,
 };
 
 // 使用者可手動切換的狀態僅 3 個；ordered / receiving / ready / completed / cancelled
@@ -122,6 +124,7 @@ export function CampaignForm({
         p_pickup_days: v.pickup_days,
         p_total_cap_qty: v.total_cap_qty,
         p_notes: v.notes,
+        p_is_for_shop: v.is_for_shop,
       });
       if (err) throw err;
       const newId = Number(data);
@@ -275,6 +278,20 @@ export function CampaignForm({
         )}
       </div>
 
+      <div className="flex items-start justify-between gap-3 rounded-md border border-zinc-200 px-3 py-2.5 dark:border-zinc-700">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">上架個人賣場</span>
+          <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+            開啟後本團才會出現在會員 App / LIFF 商店。關掉可用於私下測試或內部團。
+          </span>
+        </div>
+        <SwitchToggle
+          checked={v.is_for_shop}
+          onToggle={() => update("is_for_shop", !v.is_for_shop)}
+          ariaLabel="上架個人賣場"
+        />
+      </div>
+
       <p className="text-xs text-zinc-500 dark:text-zinc-400">
         描述、取貨截止 / 天數 在商品多選開團時設定；如需調整請至商品編輯頁。
         單一商品開團的團名會跟著商品名稱自動更新；多商品開團則以此處填的為準。
@@ -403,6 +420,33 @@ function Field({ label, children, className = "" }: { label: string; children: R
       <span className="text-zinc-600 dark:text-zinc-400">{label}</span>
       {children}
     </label>
+  );
+}
+
+function SwitchToggle({
+  checked, onToggle, ariaLabel,
+}: {
+  checked: boolean;
+  onToggle: () => void;
+  ariaLabel?: string;
+}) {
+  return (
+    <SpinButton
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      onClick={onToggle}
+      className={`inline-flex h-6 w-11 shrink-0 items-center rounded-full align-middle transition-colors ${
+        checked ? "bg-green-600" : "bg-zinc-300 dark:bg-zinc-700"
+      }`}
+    >
+      <span
+        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+          checked ? "translate-x-[22px]" : "translate-x-[2px]"
+        }`}
+      />
+    </SpinButton>
   );
 }
 
