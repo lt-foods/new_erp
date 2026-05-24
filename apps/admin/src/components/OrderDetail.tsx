@@ -148,16 +148,21 @@ export function OrderDetail({
   const { user } = useAuth();
   const role = useRole();
   const userStores = (user?.app_metadata?.stores as unknown[] | undefined) ?? [];
+  // 整單編輯（單價/折扣/備註）— 限 HQ tier 或總倉成員
   const canEdit = useMemo(() => {
     if (role === null) return false;
     if (HQ_ROLES.has(role)) return true;
     if (Array.isArray(userStores) && userStores.includes("總倉")) return true;
-    if (head?.store?.name && Array.isArray(userStores) && userStores.includes(head.store.name)) return true;
     return false;
-  }, [role, userStores, head?.store?.name]);
+  }, [role, userStores]);
+
+  // 店長 qty 編輯：自家 pickup_store 的 pending 訂單
+  const isStoreOfThisOrder = !!head?.store?.name
+    && Array.isArray(userStores)
+    && userStores.includes(head.store.name);
 
   // qty 只有 pending 訂單可改;一旦被 PR 鎖定變 confirmed 就唯讀
-  const canEditQty = canEdit && head?.status === "pending";
+  const canEditQty = (canEdit || isStoreOfThisOrder) && head?.status === "pending";
 
   useEffect(() => {
     let cancelled = false;
@@ -689,7 +694,7 @@ export function OrderDetail({
                           }}
                           className="w-20 rounded border border-zinc-300 bg-white px-2 py-1 text-right font-mono dark:border-zinc-600 dark:bg-zinc-800"
                         />
-                      ) : canEdit && head?.status === "confirmed" ? (
+                      ) : (canEdit || isStoreOfThisOrder) && head?.status === "confirmed" ? (
                         <span title="已被請購單鎖定,如需調整請聯絡總部" className="cursor-help text-zinc-500">
                           {Number(it.qty)} 🔒
                         </span>
