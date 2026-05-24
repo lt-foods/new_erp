@@ -1,17 +1,20 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 
 type Store = { id: number; name: string; code: string };
-type Member = {
+type MemberHit = {
   id: number;
   member_no: string;
   name: string | null;
-  member_type: string;
+  phone: string | null;
   home_store_id: number | null;
+  home_store_name: string | null;
+  no_new_order: boolean | null;
+  admin_note: string | null;
 };
 
 export function OrderTransferModal({
@@ -32,9 +35,14 @@ export function OrderTransferModal({
   onSubmitted: (newOrderId: number) => void;
 }) {
   const [stores, setStores] = useState<Store[]>([]);
-  const [members, setMembers] = useState<Member[]>([]);
   const [toStore, setToStore] = useState<number | "">("");
   const [toMember, setToMember] = useState<number | "internal">("internal");
+  const [pickedMember, setPickedMember] = useState<MemberHit | null>(null);
+  const [term, setTerm] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [results, setResults] = useState<MemberHit[]>([]);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchWrapRef = useRef<HTMLDivElement | null>(null);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -56,28 +64,32 @@ export function OrderTransferModal({
     };
   }, [open]);
 
-  // load home members of selected store (for picker)
+  // close member search dropdown when clicking outside
   useEffect(() => {
-    if (toStore === "" || toStore === 0) {
-      setMembers([]);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      const sb = getSupabase();
-      const { data: ms } = await sb
-        .from("members")
-        .select("id, member_no, name, member_type, home_store_id")
-        .eq("home_store_id", toStore)
-        .neq("member_type", "store_internal")
-        .order("name")
-        .limit(50);
-      if (!cancelled) setMembers((ms as Member[] | null) ?? []);
-    })();
-    return () => {
-      cancelled = true;
+    if (!searchOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!searchWrapRef.current?.contains(e.target as Node)) setSearchOpen(false);
     };
-  }, [toStore]);
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [searchOpen]);
+
+  // debounced rpc_search_members (same RPC used by member page / order entry)
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (term.length < 1 && !searchOpen) return;
+    debounceRef.current = setTimeout(async () => {
+      const sb = getSupabase();
+      const { data } = await sb.rpc("rpc_search_members", {
+        p_term: term,
+        p_limit: 10,
+      });
+      setResults((data as MemberHit[] | null) ?? []);
+    }, 200);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [term, searchOpen]);
 
   const submit = async () => {
     if (!toStore) {
@@ -132,6 +144,10 @@ export function OrderTransferModal({
               const v = e.target.value;
               setToStore(v === "" ? "" : Number(v));
               setToMember("internal");
+              setPickedMember(null);
+              setTerm("");
+              setResults([]);
+              setSearchOpen(false);
             }}
             className="rounded-md border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-800"
           >
@@ -145,26 +161,93 @@ export function OrderTransferModal({
         </label>
 
         {toStore !== "" && (
-          <label className="flex flex-col gap-1">
+          <div className="flex flex-col gap-1">
             <span className="text-zinc-500">接收人</span>
-            <select
-              value={toMember}
-              onChange={(e) =>
-                setToMember(e.target.value === "internal" ? "internal" : Number(e.target.value))
-              }
-              className="rounded-md border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-800"
-            >
-              <option value="internal">— 掛到接收店店長（內部 member）—</option>
-              {members.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name ?? "—"} ({m.member_no})
-                </option>
-              ))}
-            </select>
+            <div className="relative" ref={searchWrapRef}>
+              <input
+                value={
+                  toMember === "internal" && !term && !searchOpen
+                    ? "— 掛到接收店店長（內部 member）—"
+                    : pickedMember
+                      ? `${pickedMember.name ?? "—"} (${pickedMember.member_no})`
+                      : term
+                }
+                onFocus={() => setSearchOpen(true)}
+                onChange={(e) => {
+                  if (pickedMember || toMember !== "internal") {
+                    setPickedMember(null);
+                    setToMember("internal");
+                  }
+                  setTerm(e.target.value);
+                  setSearchOpen(true);
+                }}
+                placeholder="搜尋 會員編號 / 姓名 / 手機"
+                className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-800"
+              />
+              {searchOpen && (
+                <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-80 overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800">
+                  <SpinButton
+                    type="button"
+                    onClick={() => {
+                      setToMember("internal");
+                      setPickedMember(null);
+                      setTerm("");
+                      setSearchOpen(false);
+                    }}
+                    className={`block w-full px-3 py-2 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-700 ${
+                      toMember === "internal" ? "bg-zinc-50 dark:bg-zinc-900" : ""
+                    }`}
+                  >
+                    — 掛到接收店店長（內部 member）—
+                  </SpinButton>
+                  {results.length > 0 && (
+                    <div className="border-t border-zinc-100 dark:border-zinc-700">
+                      <div className="px-2 py-1 text-xs font-medium text-zinc-400">會員</div>
+                      {results.map((m) => (
+                        <SpinButton
+                          key={m.id}
+                          type="button"
+                          onClick={() => {
+                            setToMember(m.id);
+                            setPickedMember(m);
+                            setTerm("");
+                            setSearchOpen(false);
+                          }}
+                          className="block w-full px-3 py-2 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-700"
+                        >
+                          <span className="font-medium">{m.name ?? "—"}</span>
+                          {m.admin_note && (
+                            <span className="ml-1 rounded bg-amber-100 px-1 text-[9px] text-amber-800">
+                              🔒 {m.admin_note}
+                            </span>
+                          )}
+                          <span className="ml-2 text-zinc-500">
+                            {m.member_no} · {m.phone ?? "—"}
+                          </span>
+                          {m.no_new_order && (
+                            <span className="ml-2 font-medium text-red-600">🚫 黑名單禁加單</span>
+                          )}
+                          {m.home_store_name && (
+                            <span className="ml-2 text-[11px] text-zinc-400">
+                              主店：{m.home_store_name}
+                            </span>
+                          )}
+                        </SpinButton>
+                      ))}
+                    </div>
+                  )}
+                  {term.length > 0 && results.length === 0 && (
+                    <div className="border-t border-zinc-100 px-3 py-2 text-xs text-zinc-400 dark:border-zinc-700">
+                      無符合會員
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
             <span className="text-[11px] text-zinc-400">
               不選 = 自動建 / 用 store_internal member（適用：店長收下、內部處理）
             </span>
-          </label>
+          </div>
         )}
 
         <label className="flex flex-col gap-1">
