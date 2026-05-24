@@ -32,7 +32,6 @@ type OpenOrder = {
   ready_at: string | null;       // 到貨時間 (shipping → ready 自動寫入)
   last_notify_pickup_at: string | null;
   notify_pickup_count: number;
-  pickup_ready?: boolean; // 從 v_order_pickup_ready merge 進來
   campaign: { id: number; campaign_no: string; name: string } | null;
   store: { id: number; name: string } | null;
   items: {
@@ -51,10 +50,8 @@ type OpenOrder = {
 const ACTIVE_STATUSES = ["pending", "confirmed", "reserved", "ready", "partially_ready", "partially_completed", "shipping"];
 const INACTIVE_ITEM_STATUSES = new Set(["cancelled", "picked_up", "expired"]);
 
-// 取貨判斷改用 v_order_pickup_ready (基於分店收貨 transfer 實際狀態)
-// 不再依賴 customer_orders.status === 'ready'（status 同步可能漏推）
 function isPickable(order: OpenOrder): boolean {
-  return order.pickup_ready === true;
+  return order.status === "ready";
 }
 function activeItems(order: OpenOrder) {
   return order.items.filter((it) => !INACTIVE_ITEM_STATUSES.has(it.status));
@@ -143,29 +140,19 @@ function PickupPageContent() {
         .order("updated_at", { ascending: false });
       if (e2) { setError(e2.message); return; }
 
-      // 一次撈所有訂單的 pickup_ready
-      const orderIds = (ords ?? []).map((o) => o.id);
-      const { data: prData } = orderIds.length > 0
-        ? await sb.from("v_order_pickup_ready").select("order_id, pickup_ready").in("order_id", orderIds)
-        : { data: [] as { order_id: number; pickup_ready: boolean }[] };
-      const prMap = new Map<number, boolean>();
-      for (const row of (prData as { order_id: number; pickup_ready: boolean }[]) ?? []) {
-        prMap.set(row.order_id, row.pickup_ready);
-      }
-
       const m = new Map<number, OpenOrder[]>();
       for (const r of (ords ?? []) as unknown as (OpenOrder & { member_id: number })[]) {
-        // merge pickup_ready 進每筆 order
-        r.pickup_ready = prMap.get(r.id) ?? false;
         const arr = m.get(r.member_id) ?? [];
         arr.push(r);
         m.set(r.member_id, arr);
       }
       // 依「可取貨」優先 + 到貨時間久的優先（催客人取貨）
-      // pickup_ready=true 在前；group 內 ready_at ASC NULLS LAST；末層 updated_at DESC
+      // status='ready' 在前；group 內 ready_at ASC NULLS LAST；末層 updated_at DESC
       for (const arr of m.values()) {
         arr.sort((a, b) => {
-          if (a.pickup_ready !== b.pickup_ready) return a.pickup_ready ? -1 : 1;
+          const aReady = a.status === "ready";
+          const bReady = b.status === "ready";
+          if (aReady !== bReady) return aReady ? -1 : 1;
           const aT = a.ready_at ? Date.parse(a.ready_at) : Number.POSITIVE_INFINITY;
           const bT = b.ready_at ? Date.parse(b.ready_at) : Number.POSITIVE_INFINITY;
           if (aT !== bT) return aT - bT;
@@ -274,7 +261,7 @@ function PickupPageContent() {
       alert(`${member.name ?? member.member_no} 已設「不通知」，無法發送取貨通知。`);
       return;
     }
-    if (!order.pickup_ready) {
+    if (order.status !== "ready") {
       alert("此訂單尚未到貨，無法通知");
       return;
     }

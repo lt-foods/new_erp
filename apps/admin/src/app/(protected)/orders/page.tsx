@@ -149,7 +149,6 @@ function OrdersListContent() {
       }
     >
   >(new Map());
-  const [pickupReady, setPickupReady] = useState<Map<number, boolean>>(new Map());
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detailNo, setDetailNo] = useState<string>("");
   const [returnTarget, setReturnTarget] = useState<{ orderId: number; storeId: number } | null>(null);
@@ -258,16 +257,13 @@ function OrdersListContent() {
 
         const ids = (data ?? []).map((r) => r.id);
         const memIds = Array.from(new Set((data ?? []).map((r) => r.member_id).filter((x): x is number => x != null)));
-        const [ic, ms, pr] = await Promise.all([
+        const [ic, ms] = await Promise.all([
           ids.length
             ? getSupabase().from("customer_order_items").select("order_id, qty, unit_price, sku:skus(product_name, variant_name)").in("order_id", ids)
             : Promise.resolve({ data: [] as { order_id: number; qty: number; unit_price: number; sku: { product_name: string | null; variant_name: string | null } | null }[] }),
           memIds.length
             ? getSupabase().from("members").select("id, name, phone, member_no, avatar_url").in("id", memIds)
             : Promise.resolve({ data: [] as Member[] }),
-          ids.length
-            ? getSupabase().from("v_order_pickup_ready").select("order_id, pickup_ready").in("order_id", ids)
-            : Promise.resolve({ data: [] as { order_id: number; pickup_ready: boolean }[] }),
         ]);
         const im = new Map<number, { lineCount: number; totalQty: number; totalAmount: number; items: { product_name: string | null; variant_name: string | null; qty: number }[] }>();
         for (const id of ids) im.set(id, { lineCount: 0, totalQty: 0, totalAmount: 0, items: [] });
@@ -285,11 +281,7 @@ function OrdersListContent() {
         }
         const mm = new Map<number, Member>();
         for (const m of (ms.data as Member[]) ?? []) mm.set(m.id, m);
-        const prMap = new Map<number, boolean>();
-        for (const row of (pr.data as { order_id: number; pickup_ready: boolean }[]) ?? []) {
-          prMap.set(row.order_id, row.pickup_ready);
-        }
-        if (!cancelled) { setItemSummary(im); setMembers(mm); setPickupReady(prMap); }
+        if (!cancelled) { setItemSummary(im); setMembers(mm); }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -488,8 +480,7 @@ function OrdersListContent() {
   const orderActions = (r: Row, m: Member | null | undefined) => (
     <>
       {!["completed","expired","cancelled","transferred_out"].includes(r.status) && (() => {
-        // 取貨判斷改用 v_order_pickup_ready
-        const canPickup = pickupReady.get(r.id) === true;
+        const canPickup = r.status === "ready";
         // 訂單頁本身不執行取貨,只導向 /pickup (帶會員編號自動搜尋)
         if (canPickup && m?.member_no) {
           return (
