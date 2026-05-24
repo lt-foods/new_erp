@@ -526,7 +526,7 @@ function OfferModal({
           items:customer_order_items(campaign_item_id, sku_id, qty, status, sku:skus(sku_code, product_name, variant_name))
         `)
         .eq("pickup_store_id", storeId)
-        .in("status", ["pending", "confirmed", "reserved"])
+        .eq("status", "ready")
         .order("id", { ascending: false })
         .limit(50);
       if (cancelled) return;
@@ -1120,7 +1120,7 @@ function FulfillRequestDialog({
           items:customer_order_items!inner(sku_id, qty, status, sku:skus(sku_code, product_name, variant_name))
         `)
         .eq("pickup_store_id", myStore)
-        .in("status", ["pending", "confirmed", "reserved"])
+        .eq("status", "ready")
         .eq("items.sku_id", post.sku_id)
         .not("items.status", "in", "(cancelled,expired,picked_up)")
         .order("id", { ascending: false })

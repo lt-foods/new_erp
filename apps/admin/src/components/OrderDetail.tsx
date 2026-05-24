@@ -346,7 +346,8 @@ export function OrderDetail({
 
   // 互助單：有來源單 + 至少一個 aid_transfer 品項（對齊 rpc_return_aid_order 的判定）
   const isAidOrder = head.transferred_from_order_id != null && items.some((it) => it.source === "aid_transfer");
-  const canTransfer = ["pending", "confirmed", "reserved", "ready"].includes(head.status);
+  // 貨還沒到分店不能轉單：source 必須 status='ready' (跟 DB rpc_transfer_order_* 一致)
+  const canTransfer = head.status === "ready";
   const canCancel = ["pending", "confirmed", "shipping"].includes(head.status);
   // 一般顧客訂單退回總倉（rpc_create_order_return）— 互助單不走這條（貨應退回原 source 店）
   const canReturn = !isAidOrder && ["shipping", "ready", "partially_completed", "completed", "expired"].includes(head.status);
