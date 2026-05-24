@@ -307,11 +307,17 @@ export function ProductForm({
 
       {midSlot}
 
-      <div className="flex flex-wrap gap-4">
-        <Checkbox
-          label="暫停出貨"
+      <div className="flex items-start justify-between gap-3 rounded-md border border-zinc-200 px-3 py-2.5 dark:border-zinc-700">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">暫停出貨</span>
+          <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+            開啟後本商品仍會在後台顯示,但採購 / 出貨流程會跳過。
+          </span>
+        </div>
+        <SwitchToggle
           checked={values.stop_shipping}
-          onChange={(v) => set("stop_shipping", v)}
+          onToggle={() => set("stop_shipping", !values.stop_shipping)}
+          ariaLabel="暫停出貨"
         />
       </div>
 
@@ -450,24 +456,31 @@ function Field({
   );
 }
 
-function Checkbox({
-  label,
+function SwitchToggle({
   checked,
-  onChange,
+  onToggle,
+  ariaLabel,
 }: {
-  label: string;
   checked: boolean;
-  onChange: (v: boolean) => void;
+  onToggle: () => void;
+  ariaLabel?: string;
 }) {
   return (
-    <label className="inline-flex cursor-pointer select-none items-center gap-2 text-sm">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 rounded border-zinc-300 dark:border-zinc-700"
+    <SpinButton
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      onClick={onToggle}
+      className={`inline-flex h-6 w-11 shrink-0 items-center rounded-full align-middle transition-colors ${
+        checked ? "bg-green-600" : "bg-zinc-300 dark:bg-zinc-700"
+      }`}
+    >
+      <span
+        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
+          checked ? "translate-x-[22px]" : "translate-x-[2px]"
+        }`}
       />
-      <span>{label}</span>
-    </label>
+    </SpinButton>
   );
 }
