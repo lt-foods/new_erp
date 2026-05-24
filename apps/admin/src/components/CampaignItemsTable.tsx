@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
+import { fetchAllPaginated } from "@/lib/fetchAllPaginated";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { translateRpcError } from "@/lib/rpcError";
@@ -60,14 +61,27 @@ export function CampaignItemsTable({
     // products.name 是 source of truth；skus.product_name 是 denorm 可能過期、不用它
     // 過濾 sku.status='discontinued'：已下架的規格不該在開團裡（draft 由 trigger 清掉，
     // open / closed 留 row 不破壞訂單，但 UI 不顯示）
-    const { data, error: err } = await getSupabase()
-      .from("campaign_items")
-      .select("id, sku_id, unit_price, cap_qty, sort_order, notes, locked_at, skus!inner(id, sku_code, status, product_id, variant_name, products!inner(id, name))")
-      .eq("campaign_id", campaignId)
-      .order("sort_order");
-    if (err) { setError(err.message); return; }
-    setRows(
-      (data as unknown as Array<{
+    // AUDIT #26: 防禦性改 fetchAllPaginated。實務上單一團 SKU <100,
+    // 但若業務改變(批發、套組)突破 1000 也不會被截。safetyCap 2000 撞到 throw。
+    try {
+      const data = await fetchAllPaginated<{
+        id: number; sku_id: number; unit_price: number; cap_qty: number | null;
+        sort_order: number; notes: string | null; locked_at: string | null;
+        skus: { id: number; sku_code: string; status: string; product_id: number; variant_name: string | null;
+          products: { id: number; name: string };
+        };
+      }>(({ from, to }) =>
+        getSupabase()
+          .from("campaign_items")
+          .select("id, sku_id, unit_price, cap_qty, sort_order, notes, locked_at, skus!inner(id, sku_code, status, product_id, variant_name, products!inner(id, name))")
+          .eq("campaign_id", campaignId)
+          .order("sort_order", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, to),
+        { label: "CampaignItemsTable", safetyCap: 2000 },
+      );
+      setRows(
+        (data as unknown as Array<{
         id: number; sku_id: number; unit_price: number; cap_qty: number | null;
         sort_order: number; notes: string | null; locked_at: string | null;
         skus: { id: number; sku_code: string; status: string; product_id: number; variant_name: string | null;
@@ -86,7 +100,10 @@ export function CampaignItemsTable({
           unit_price: Number(r.unit_price), cap_qty: r.cap_qty != null ? Number(r.cap_qty) : null,
           sort_order: r.sort_order, notes: r.notes, locked_at: r.locked_at,
         }))
-    );
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   useEffect(() => { reload(); }, [campaignId]);

@@ -199,14 +199,20 @@ function OrdersListContent() {
         .from("group_buy_campaigns")
         .select("id, campaign_no, name, cover_image_url, start_at")
         .order("start_at", { ascending: false, nullsFirst: false });
+      // AUDIT #25 (EXEMPTED-LOW): 下拉搜尋固定 limit 是 UX 設計,>50 結果應該叫
+      // 使用者改關鍵字而不是 load 整個 tenant。但加截斷哨兵讓開發者知道何時撞到上限。
+      const cap = kw ? 50 : 20;
       if (kw) {
         const safe = kw.replace(/[%,()]/g, " ");
-        q = q.or(`name.ilike.%${safe}%,campaign_no.ilike.%${safe}%`).limit(50);
+        q = q.or(`name.ilike.%${safe}%,campaign_no.ilike.%${safe}%`).limit(cap);
       } else {
-        q = q.limit(20);
+        q = q.limit(cap);
       }
       const { data } = await q;
       const list = (data as Campaign[]) ?? [];
+      if (list.length >= cap) {
+        console.warn(`[PAGINATION-INFO] campaign dropdown 撞到上限 ${cap},結果可能還有更多;請使用者縮窄關鍵字`);
+      }
       setDropdownIds(list.map((c) => c.id));
       mergeCampaigns(list);
     }, 250);

@@ -30,6 +30,18 @@
 
 <!-- 新修復項目附加在這裡。最新的放最上面。 -->
 
+### #25 #26 — LOW 兩項補上
+- 日期：2026-05-24
+- 修復者：claude
+- 修法策略:
+  - #25 (orders campaign dropdown): 維持 .limit(20/50) — 改了會 load 整個 tenant 爛 UX。加 console.warn 截斷哨兵。
+  - #26 (CampaignItemsTable): 防禦性套 fetchAllPaginated (safetyCap 2000)。實務 <100 但業務改變(批發/套組)就不會被截。
+- 變動檔案:
+  - `apps/admin/src/app/(protected)/orders/page.tsx` (#25)
+  - `apps/admin/src/components/CampaignItemsTable.tsx` (#26)
+- 驗證: tsc 0 錯誤
+- 備註: AUDIT 兩項從 EXEMPTED 改為 DONE。整 audit 26 項全 DONE,無 EXEMPTED。
+
 ### #1 #2 #3 #4 #5 #6 #7 #10 #14 #15 #16 #17 #18 #19 #20 #21 #22 #23 #24 — 大批量收尾
 - 日期：2026-05-23
 - 修復者：claude
@@ -130,7 +142,7 @@
 |---|---|---|---|---|---|
 | HIGH | 16 | 16 | 0 | 0 | 0 |
 | MEDIUM | 8 | 8 | 0 | 0 | 0 |
-| LOW | 2 | 0 | 0 | 0 | 2 |
-| **合計** | **26** | **24** | **0** | **0** | **2** |
+| LOW | 2 | 2 | 0 | 0 | 0 |
+| **合計** | **26** | **26** | **0** | **0** | **0** |
 
 > 統計每次修復後同步更新。
