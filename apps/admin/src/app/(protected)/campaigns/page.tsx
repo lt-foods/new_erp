@@ -524,7 +524,7 @@ export default function CampaignsListPage() {
           發 FB
         </SpinButton>
       )}
-      {(["closed", "locked", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
+      {showAdminActions && (["closed", "locked", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
         <SpinButton
           onClick={() => finalizeCampaign(r.id, r.name)}
           disabled={finalizingId === r.id}
