@@ -380,6 +380,9 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
       .select("id, campaign_no, name, description, cover_image_url, close_type, total_cap_qty, end_at, pickup_deadline, campaign_items(unit_price, sort_order, sku:skus(product:products(images)))")
       .eq("tenant_id", tenantId)
       .eq("status", "open")
+      // 開團設定「上架個人賣場」=false 時不出現在 App / LIFF /shop (PR #355)
+      .eq("is_for_shop", true)
+      // 排除內部 sentinel 活動(補貨申請),不應出現在顧客商店
       .neq("campaign_no", "__INTERNAL_RESTOCK__")
       .or(`end_at.is.null,end_at.gt.${new Date().toISOString()}`)
       .order("end_at", { ascending: true, nullsFirst: false })

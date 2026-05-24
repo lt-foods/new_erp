@@ -672,21 +672,19 @@ function PageContent() {
             rows.map((r) => (
               <Tr
                 key={r.id}
+                onClick={() => openEdit(r.id)}
                 className={selectedIds.has(r.id) ? "bg-blue-50 dark:bg-blue-950/30" : ""}
               >
                   <Td className="w-10">
                     <input
                       type="checkbox"
                       checked={selectedIds.has(r.id)}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={() => toggleSelect(r.id)}
                       className="cursor-pointer"
                     />
                   </Td>
-                  <Td className="font-mono">
-                    <SpinButton onClick={() => openEdit(r.id)} className="hover:underline">
-                      {r.product_code}
-                    </SpinButton>
-                  </Td>
+                  <Td className="font-mono">{r.product_code}</Td>
                   <Td>
                     <div>{r.name}</div>
                     {r.short_name && <div className="text-xs text-zinc-500">{r.short_name}</div>}
@@ -702,7 +700,7 @@ function PageContent() {
                     {new Date(r.updated_at).toLocaleString("zh-TW")}
                   </Td>
                   <Td>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
                       <SpinButton
                         onClick={() => openEdit(r.id)}
                         className="text-xs text-blue-600 hover:underline dark:text-blue-400"
