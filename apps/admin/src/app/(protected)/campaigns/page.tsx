@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
@@ -84,6 +84,35 @@ type CalRow = {
   start_at: string | null;
 };
 
+// 模組層快取：client 端 SPA 導航期間都活著（加單 / 訂單 / 從商品開團 等子頁
+// 進去再返回時瞬間還原列表 — 資料 + 篩選 + 分頁 + 捲動位置），不 remount 重抓、
+// 不閃 skeleton、不歸零。整頁 hard reload 才會清空（屆時本就該抓新）。
+//
+// view 不放進來：它已經由 localStorage 持久化（包含 hard reload）。
+// selectedIds / modal / bulkBusy 也不放：屬於 ephemeral 互動狀態，
+// 導航走人就該清掉（UX 預期）。
+type CampaignsCache = {
+  rows: Row[];
+  total: number;
+  itemCounts: Map<number, number>;
+  listOrderCounts: Map<number, { normalQty: number; offsetQty: number }>;
+  queryDraft: string;
+  query: string;
+  status: string;
+  closeTypeFilter: string;
+  page: number;
+  scrollY: number;
+  ts: number;
+};
+let campaignsCache: CampaignsCache | null = null;
+// 返回時若資料已超過這個毫秒數，背景靜默重抓（不擋畫面、不動捲動）。
+const CAMPAIGNS_REVALIDATE_MS = 60_000;
+
+// SSR / prerender 不能用 useLayoutEffect；只有 client 才用它，
+// 才能在 paint 前還原捲動（避免先閃到頂端再跳）。
+const useIsoLayoutEffect =
+  typeof window !== "undefined" ? useLayoutEffect : useEffect;
+
 function localDateKey(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -117,19 +146,24 @@ function fmtDateTime(iso: string | null): string {
 export default function CampaignsListPage() {
   const role = useRole();
   const showAdminActions = isAdmin(role);
-  const [rows, setRows] = useState<Row[] | null>(null);
-  const [total, setTotal] = useState(0);
+  // 命中 cache 時用快取資料瞬間還原；沒命中（首次進站或 hard reload 後）才從 null 起跳。
+  const [rows, setRows] = useState<Row[] | null>(() => campaignsCache?.rows ?? null);
+  const [total, setTotal] = useState(() => campaignsCache?.total ?? 0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [queryDraft, setQueryDraft] = useState("");
-  const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<string>("");
-  const [closeTypeFilter, setCloseTypeFilter] = useState<string>(""); // ""=全部 / regular / fast / limited / food_train
-  const [page, setPage] = useState(1);
+  const [queryDraft, setQueryDraft] = useState(() => campaignsCache?.queryDraft ?? "");
+  const [query, setQuery] = useState(() => campaignsCache?.query ?? "");
+  const [status, setStatus] = useState<string>(() => campaignsCache?.status ?? "");
+  const [closeTypeFilter, setCloseTypeFilter] = useState<string>(() => campaignsCache?.closeTypeFilter ?? ""); // ""=全部 / regular / fast / limited / food_train
+  const [page, setPage] = useState(() => campaignsCache?.page ?? 1);
 
-  const [itemCounts, setItemCounts] = useState<Map<number, number>>(new Map());
-  const [listOrderCounts, setListOrderCounts] = useState<Map<number, { normalQty: number; offsetQty: number }>>(new Map());
+  const [itemCounts, setItemCounts] = useState<Map<number, number>>(() => campaignsCache?.itemCounts ?? new Map());
+  const [listOrderCounts, setListOrderCounts] = useState<Map<number, { normalQty: number; offsetQty: number }>>(() => campaignsCache?.listOrderCounts ?? new Map());
+
+  // 從 cache 還原時，第一輪 render 的 reset-page / 主 fetch 都要跳過，
+  // 否則會把 cache 的 page=3 重置回 1、或把畫面歸零重抓。
+  const isInitialRunRef = useRef(campaignsCache != null);
   const [modal, setModal] = useState<{ mode: "edit"; values: CampaignFormValues } | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const [resyncTick, setResyncTick] = useState(0);
@@ -325,16 +359,42 @@ export default function CampaignsListPage() {
   }
 
   useEffect(() => {
+    if (isInitialRunRef.current) return; // 從 cache 還原 → 別把 page reset 回 1
     const t = setTimeout(() => { setQuery(queryDraft); setPage(1); }, 250);
     return () => clearTimeout(t);
   }, [queryDraft]);
 
-  useEffect(() => { setPage(1); }, [status]);
-  useEffect(() => { setPage(1); }, [closeTypeFilter]);
+  useEffect(() => {
+    if (isInitialRunRef.current) return;
+    setPage(1);
+  }, [status]);
+  useEffect(() => {
+    if (isInitialRunRef.current) return;
+    setPage(1);
+  }, [closeTypeFilter]);
+
+  // 同步 queryDraft 變動到 cache（debounce 中也要記住使用者打到一半的字）
+  useEffect(() => {
+    if (campaignsCache) campaignsCache.queryDraft = queryDraft;
+  }, [queryDraft]);
 
   useEffect(() => {
+    // 從 cache 還原時的第一輪行為：
+    //   fresh (≤ revalidate window) → 完全跳過 fetch、列表瞬間還原
+    //   stale → 背景靜默重抓（不擋畫面、不歸零、不動捲動）
+    let silent = false;
+    if (isInitialRunRef.current) {
+      const cached = campaignsCache;
+      if (cached != null) {
+        if (Date.now() - cached.ts <= CAMPAIGNS_REVALIDATE_MS) {
+          return;
+        }
+        silent = true;
+      }
+    }
+
     let cancelled = false;
-    setLoading(true);
+    if (!silent) setLoading(true);
     (async () => {
       try {
         let q = getSupabase()
@@ -357,12 +417,17 @@ export default function CampaignsListPage() {
         setError(null);
         // supabase-js select 字串解析器把 to-one 嵌入(sku/product)推成陣列；
         // PostgREST 實際回傳單一物件，故經 unknown 斷言成執行期真實型別 Row。
-        setRows((data ?? []) as unknown as Row[]);
+        const newRows = (data ?? []) as unknown as Row[];
+        setRows(newRows);
         setTotal(count ?? 0);
+
+        // 為了寫回 cache，沿用 ids.length===0 時舊有狀態（與原本 setItemCounts 不動的行為一致）
+        let computedItemCounts: Map<number, number> = campaignsCache?.itemCounts ?? new Map();
+        let computedOrderCounts: Map<number, { normalQty: number; offsetQty: number }> = campaignsCache?.listOrderCounts ?? new Map();
 
         // 補商品數 + 下單總數量（normal / offset 分開、SUM(qty)）
         // chunked fetch: 跨萬筆訂單仍 work (bypass PostgREST 1000 row cap)
-        const ids = (data ?? []).map((r) => r.id);
+        const ids = newRows.map((r) => r.id);
         if (ids.length) {
           const sb = getSupabase();
           const [itemRows, ordersList] = await Promise.all([
@@ -375,6 +440,7 @@ export default function CampaignsListPage() {
           for (const id of ids) m.set(id, 0);
           for (const it of itemRows) m.set(it.campaign_id, (m.get(it.campaign_id) ?? 0) + 1);
           if (!cancelled) setItemCounts(m);
+          computedItemCounts = m;
 
           // 抓 items qty 並依 order_kind 聚合到 campaign — chunked by orderId in batches + range
           const orderIds = ordersList.map((o) => o.id);
@@ -397,15 +463,54 @@ export default function CampaignsListPage() {
             om.set(meta.campaign_id, cur);
           }
           if (!cancelled) setListOrderCounts(om);
+          computedOrderCounts = om;
+        }
+
+        // 寫回 cache 給下次返回用（保留 queryDraft / scrollY 不被洗掉）
+        if (!cancelled) {
+          campaignsCache = {
+            rows: newRows,
+            total: count ?? 0,
+            itemCounts: computedItemCounts,
+            listOrderCounts: computedOrderCounts,
+            queryDraft: campaignsCache?.queryDraft ?? query,
+            query,
+            status,
+            closeTypeFilter,
+            page,
+            scrollY: campaignsCache?.scrollY ?? 0,
+            ts: Date.now(),
+          };
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && !silent) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
   }, [query, status, closeTypeFilter, page, reloadTick]);
+
+  // 第一輪 render 結束後 flip → 之後使用者改 filter 才會 reset page、reload 才會洗畫面
+  useEffect(() => {
+    isInitialRunRef.current = false;
+  }, []);
+
+  // 返回時把捲動位置還原到離開前（paint 前做，無閃動）
+  useIsoLayoutEffect(() => {
+    if (campaignsCache && campaignsCache.rows.length > 0) {
+      window.scrollTo(0, campaignsCache.scrollY);
+    }
+  }, []);
+
+  // 持續記錄捲動位置，供下次返回還原
+  useEffect(() => {
+    const onScroll = () => {
+      if (campaignsCache) campaignsCache.scrollY = window.scrollY;
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   // Calendar (week / month) 取資料：依視圖決定範圍
   useEffect(() => {
