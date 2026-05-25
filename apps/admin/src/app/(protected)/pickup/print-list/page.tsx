@@ -141,7 +141,7 @@ function Body() {
         }
         body { background: #f0f0f0; }
       `}</style>
-      <div className="mx-auto my-4 max-w-[80mm] bg-white p-3 font-mono text-[12px] leading-tight text-black shadow print:my-0 print:shadow-none">
+      <div className="mx-auto my-4 max-w-[80mm] bg-white p-3 font-mono text-[14px] leading-tight text-black shadow print:my-0 print:shadow-none">
         <div className="no-print mb-3 flex justify-end gap-2">
           <SpinButton
             onClick={() => window.print()}
@@ -158,18 +158,18 @@ function Body() {
         </div>
 
         <div className="text-center">
-          <div className="text-[16px] font-bold">取貨清單</div>
-          <div className="text-[10px] text-zinc-500">picking list (待確認)</div>
+          <div className="text-[22px] font-bold">取貨清單</div>
+          <div className="text-[12px] text-zinc-500">picking list (待確認)</div>
         </div>
 
         <div className="mt-2 border-y border-dashed border-black py-1.5">
-          <div className="font-bold">{member?.name ?? "—"}</div>
-          <div className="text-[11px]">
+          <div className="text-[18px] font-bold">{member?.name ?? "—"}</div>
+          <div className="text-[13px]">
             {member?.member_no}
             {member?.phone && <span className="ml-2">{member.phone}</span>}
           </div>
-          {store && <div className="text-[11px]">取貨店：{store.name}</div>}
-          <div className="text-[10px] text-zinc-500">
+          {store && <div className="text-[13px]">取貨店：{store.name}</div>}
+          <div className="text-[12px] text-zinc-500">
             {new Date().toLocaleString("zh-TW", { hour12: false })}
           </div>
         </div>
@@ -185,9 +185,9 @@ function Body() {
             const pctDed = Math.max(0, sub - pay - disc);
             return (
               <div key={o.id} className="border-b border-dashed border-zinc-400 pb-1">
-                <div>{o.campaign?.name ?? "(未知活動)"}</div>
+                <div className="text-[13px]">{o.campaign?.name ?? "(未知活動)"}</div>
                 {o.notes && (
-                  <div className="text-[10px] italic">📝 {o.notes}</div>
+                  <div className="text-[13px] italic">📝 {o.notes}</div>
                 )}
                 {active.map((it) => {
                   const subtotal = lineSub(it);
@@ -196,42 +196,42 @@ function Body() {
                   return (
                     <div key={it.id}>
                       <div className="flex items-baseline justify-between gap-2">
-                        <span className="min-w-0 flex-1 break-words font-bold">
+                        <span className="min-w-0 flex-1 break-words text-[16px] font-bold">
                           {it.sku?.variant_name || it.sku?.product_name || "—"}
                         </span>
-                        <span className="whitespace-nowrap">
+                        <span className="whitespace-nowrap text-[15px]">
                           × {Number(it.qty)}
                           {discounted ? (
                             <>
-                              <span className="ml-1.5 text-[10px] line-through">${gross}</span>
-                              <span className="ml-1 text-[11px] font-bold">${subtotal}</span>
+                              <span className="ml-1.5 text-[13px] line-through">${gross}</span>
+                              <span className="ml-1 text-[15px] font-bold">${subtotal}</span>
                             </>
                           ) : (
-                            <span className="ml-1.5 text-[11px]">${subtotal}</span>
+                            <span className="ml-1.5 text-[15px]">${subtotal}</span>
                           )}
                         </span>
                       </div>
                       {discounted && (
-                        <div className="pl-2 text-[10px] font-bold text-red-700">
+                        <div className="pl-2 text-[13px] font-bold text-red-700">
                           ↳ 折扣 {Number(it.discount_percent ?? 0) > 0
                             ? `${it.discount_percent}% (= -$${Math.round(gross * Number(it.discount_percent)) / 100})`
                             : `-$${it.discount_amount}`}
                         </div>
                       )}
                       {it.notes && (
-                        <div className="pl-2 text-[10px] italic">↳ 備註：{it.notes}</div>
+                        <div className="pl-2 text-[13px] italic">↳ 備註：{it.notes}</div>
                       )}
                     </div>
                   );
                 })}
                 {pct > 0 && (
-                  <div className="text-right text-[11px]">
+                  <div className="text-right text-[13px]">
                     <span className="text-zinc-600">本單{pct}%折扣 </span>
                     <span>−${pctDed}</span>
                   </div>
                 )}
                 {disc > 0 && (
-                  <div className="text-right text-[11px]">
+                  <div className="text-right text-[13px]">
                     <span className="text-zinc-600">本單折扣金額 </span>
                     <span>−${disc}</span>
                   </div>
@@ -241,10 +241,10 @@ function Body() {
           })}
         </div>
 
-        <div className="mt-2 border-t-2 border-black pt-1.5 text-right text-[12px]">
+        <div className="mt-2 border-t-2 border-black pt-1.5 text-right text-[14px]">
           <div>小計 $ {grandSubtotal.toLocaleString()}</div>
           {totalOrderDisc > 0 && <div>− 整單折扣 $ {totalOrderDisc.toLocaleString()}</div>}
-          <div className="text-[14px] font-bold">合計 {totalQty} 項　$ {grandTotal.toLocaleString()}</div>
+          <div className="text-[20px] font-bold">合計 {totalQty} 項　$ {grandTotal.toLocaleString()}</div>
           {grandWalletPaidDb > 0 && (
             <div className="mt-1">− 已用儲值金 $ {grandWalletPaidDb.toLocaleString()}</div>
           )}
@@ -252,7 +252,7 @@ function Body() {
             <div>− 本次抵扣儲值金 $ {previewCapped.toLocaleString()}</div>
           )}
           {grandWalletPaid > 0 && (
-            <div className="text-[13px] font-bold">
+            <div className="text-[17px] font-bold">
               {grandBalanceDue === 0
                 ? "✅ 已付清"
                 : <>應收現金 $ {grandBalanceDue.toLocaleString()}</>}
