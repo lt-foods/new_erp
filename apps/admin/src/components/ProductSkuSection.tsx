@@ -155,10 +155,22 @@ export function ProductSkuSection({
         if (pending.length === 0) return;
         const sb = getSupabase();
         for (const p of pending) {
+          let code = p.sku_code;
+          if (!code.trim()) {
+            const { data: next, error: codeErr } = await sb.rpc(
+              "rpc_next_sku_code",
+              { p_product_id: newId }
+            );
+            if (codeErr) throw codeErr;
+            if (typeof next !== "string" || !next) {
+              throw new Error("無法產生規格編號");
+            }
+            code = next;
+          }
           const { data: skuId, error: rpcErr } = await sb.rpc("rpc_upsert_sku", {
             p_id: null,
             p_product_id: newId,
-            p_sku_code: p.sku_code,
+            p_sku_code: code,
             p_variant_name: p.variant_name || null,
             p_spec: {},
             p_base_unit: p.base_unit || "個",
@@ -258,7 +270,9 @@ export function ProductSkuSection({
     if (!draft) return;
     setError(null);
 
-    if (!draft.sku_code.trim()) {
+    // 規格編號為 readonly：對既有商品 startNew() 已預填、編輯既有 SKU 用原本 code；
+    // 只有 pending（新商品）允許空字串，flush() 會在商品建立後自動產生。
+    if (!isPending && !draft.sku_code.trim()) {
       setError("規格編號必填");
       return;
     }
@@ -370,6 +384,7 @@ export function ProductSkuSection({
               saving={saving}
               showCost={showCost}
               showBranch={showBranch}
+              isPending={isPending}
             />
           ) : (
             <SkuCard
@@ -395,6 +410,7 @@ export function ProductSkuSection({
               saving={saving}
               showCost={showCost}
               showBranch={showBranch}
+              isPending={isPending}
             />
           ) : (
             <PendingCard
@@ -417,6 +433,7 @@ export function ProductSkuSection({
             saving={saving}
             showCost={showCost}
             showBranch={showBranch}
+            isPending={isPending}
           />
         )}
 
@@ -571,6 +588,7 @@ function DraftCard({
   saving,
   showCost,
   showBranch,
+  isPending,
 }: {
   draft: Draft;
   setDraft: (d: Draft) => void;
@@ -579,6 +597,7 @@ function DraftCard({
   saving: boolean;
   showCost: boolean;
   showBranch: boolean;
+  isPending: boolean;
 }) {
   function set<K extends keyof Draft>(key: K, value: Draft[K]) {
     setDraft({ ...draft, [key]: value });
@@ -590,16 +609,17 @@ function DraftCard({
         <Field label="規格編號" required>
           <input
             value={draft.sku_code}
-            onChange={(e) => set("sku_code", e.target.value)}
-            placeholder="例：A001-100"
-            className={inputClass}
+            readOnly
+            tabIndex={-1}
+            placeholder={isPending ? "建立商品後自動產生" : ""}
+            className={`${inputClass} cursor-not-allowed bg-zinc-100 text-zinc-600 dark:bg-zinc-800/60 dark:text-zinc-400`}
           />
         </Field>
-        <Field label="變體名">
+        <Field label="規格 / 品項名稱">
           <input
             value={draft.variant_name}
             onChange={(e) => set("variant_name", e.target.value)}
-            placeholder="例：100 入"
+            placeholder="例：100 入 / (A)胡椒木"
             className={inputClass}
           />
         </Field>

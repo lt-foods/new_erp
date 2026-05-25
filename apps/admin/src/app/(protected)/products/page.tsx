@@ -254,6 +254,7 @@ function PageContent() {
 
   const [rows, setRows] = useState<ProductRow[] | null>(null);
   const [total, setTotal] = useState(0);
+  const [skuCounts, setSkuCounts] = useState<Map<number, number>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -473,8 +474,27 @@ function PageContent() {
         if (cancelled) return;
         if (error) { setError(error.message); return; }
         setError(null);
-        setRows((data ?? []) as ProductRow[]);
+        const productRows = (data ?? []) as ProductRow[];
+        setRows(productRows);
         setTotal(count ?? 0);
+
+        // 撈每個商品的非停產 SKU 數
+        if (productRows.length > 0) {
+          const ids = productRows.map((p) => p.id);
+          const { data: skuRows } = await getSupabase()
+            .from("skus")
+            .select("product_id")
+            .in("product_id", ids)
+            .neq("status", "discontinued");
+          if (cancelled) return;
+          const counts = new Map<number, number>();
+          for (const row of (skuRows ?? []) as { product_id: number }[]) {
+            counts.set(row.product_id, (counts.get(row.product_id) ?? 0) + 1);
+          }
+          setSkuCounts(counts);
+        } else {
+          setSkuCounts(new Map());
+        }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -686,7 +706,12 @@ function PageContent() {
                   </Td>
                   <Td className="font-mono">{r.product_code}</Td>
                   <Td>
-                    <div>{r.name}</div>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <span>{r.name}</span>
+                      <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+                        {skuCounts.get(r.id) ?? 0} 品項
+                      </span>
+                    </div>
                     {r.short_name && <div className="text-xs text-zinc-500">{r.short_name}</div>}
                   </Td>
                   <Td className="text-xs text-zinc-600 dark:text-zinc-400">
