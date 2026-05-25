@@ -9,6 +9,7 @@ import { OrderDetail } from "@/components/OrderDetail";
 import OrderReturnCreateModal from "@/components/OrderReturnCreateModal";
 import { translateRpcError } from "@/lib/rpcError";
 import { withBasePath } from "@/lib/basePath";
+import { printViaIframe } from "@/lib/printIframe";
 import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 import { ORDER_STATUS_LABEL as STATUS_LABEL, type OrderStatus } from "@/lib/orderStatus";
 import SpinButton from "@/components/SpinButton";
@@ -479,6 +480,17 @@ function OrdersListContent() {
   // 操作按鈕（去取貨 / 取消 / ↩退貨 / 狀態鈕）— 桌機表格與手機卡片共用，單一維護點
   const orderActions = (r: Row, m: Member | null | undefined) => (
     <>
+      {PENDING_STATUSES.includes(r.status) && (
+        <SpinButton
+          onClick={() =>
+            printViaIframe(withBasePath(`/pickup/print-list?order_ids=${r.id}`))
+          }
+          title="列印小白單（picking list / 取貨清單，貨還沒到也可印）"
+          className="rounded-md border border-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+        >
+          🖨️ 小白單
+        </SpinButton>
+      )}
       {!["completed","expired","cancelled","transferred_out"].includes(r.status) && (() => {
         const canPickup = r.status === "ready";
         // 訂單頁本身不執行取貨,只導向 /pickup (帶會員編號自動搜尋)
