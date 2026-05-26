@@ -226,17 +226,20 @@ export default function InternalTransfersPage() {
       <FreeTransferCreateModal
         open={showCreate}
         onClose={() => setShowCreate(false)}
-        onCreated={() => {
+        onCreated={(transferId) => {
           setShowCreate(false);
           setReloadKey((k) => k + 1);
+          // 建完直接開明細,方便按「列印出貨單」交給司機
+          setDetailId(transferId);
         }}
       />
       <OrderReturnCreateModal
         open={showReturn}
         onClose={() => setShowReturn(false)}
-        onCreated={() => {
+        onCreated={(transferId) => {
           setShowReturn(false);
           setReloadKey((k) => k + 1);
+          setDetailId(transferId);
         }}
       />
       <TransferDetailModal

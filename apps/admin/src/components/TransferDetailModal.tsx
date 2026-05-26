@@ -3,6 +3,9 @@
 import { useEffect, useState } from "react";
 import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
+import SpinButton from "@/components/SpinButton";
+import { printViaIframe } from "@/lib/printIframe";
+import { withBasePath } from "@/lib/basePath";
 
 type TransferRow = {
   id: number;
@@ -63,6 +66,13 @@ export default function TransferDetailModal({
   const [tx, setTx] = useState<TransferRow | null>(null);
   const [items, setItems] = useState<Item[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [printStub, setPrintStub] = useState(true);
+
+  function handlePrint() {
+    if (!tx) return;
+    const copies = printStub ? "driver,stub" : "driver";
+    printViaIframe(withBasePath(`/transfers/print?transfer_id=${tx.id}&copies=${copies}`));
+  }
 
   useEffect(() => {
     if (!open || transferId == null) { setTx(null); setItems(null); setErr(null); return; }
@@ -197,6 +207,24 @@ export default function TransferDetailModal({
             )}
             {tx.notes && <Field label="備註" value={tx.notes} full />}
           </dl>
+
+          <div className="flex flex-wrap items-center justify-end gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900">
+            <label className="flex items-center gap-1.5 text-xs text-zinc-700 dark:text-zinc-300">
+              <input
+                type="checkbox"
+                checked={printStub}
+                onChange={(e) => setPrintStub(e.target.checked)}
+                className="h-4 w-4"
+              />
+              同時列印店家存根聯
+            </label>
+            <SpinButton
+              onClick={handlePrint}
+              className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-700 dark:bg-zinc-50 dark:text-zinc-900"
+            >
+              🖨️ 列印出貨單
+            </SpinButton>
+          </div>
 
           <div className="rounded-md border border-zinc-200 dark:border-zinc-800">
             <table className="w-full text-sm">
