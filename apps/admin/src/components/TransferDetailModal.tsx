@@ -175,7 +175,7 @@ export default function TransferDetailModal({
     };
   }, [open, transferId]);
 
-  const title = tx ? `🚚 ${tx.transfer_no}` : "轉貨單";
+  const title = tx ? tx.transfer_no : "轉貨單";
 
   return (
     <Modal open={open} onClose={onClose} title={title} maxWidth="max-w-3xl">
@@ -201,7 +201,7 @@ export default function TransferDetailModal({
               label="收貨時間"
               value={tx.received_at ? new Date(tx.received_at).toLocaleString("zh-TW") : "—"}
             />
-            <Field label="溫層 / 空運" value={`${tx.shipping_temp ?? "—"}${tx.is_air_transfer ? " · ✈ 空運" : ""}`} />
+            <Field label="溫層 / 空運" value={`${tx.shipping_temp ?? "—"}${tx.is_air_transfer ? " · 空運" : ""}`} />
             {tx.customer_order_id != null && (
               <Field label="關聯訂單" value={`#${tx.customer_order_id}`} />
             )}
@@ -222,7 +222,7 @@ export default function TransferDetailModal({
               onClick={handlePrint}
               className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-700 dark:bg-zinc-50 dark:text-zinc-900"
             >
-              🖨️ 列印出貨單
+              列印出貨單
             </SpinButton>
           </div>
 
@@ -230,8 +230,8 @@ export default function TransferDetailModal({
             <table className="w-full text-sm">
               <thead className="bg-zinc-50 dark:bg-zinc-900">
                 <tr className="text-left text-xs uppercase tracking-wide text-zinc-500">
-                  <th className="px-3 py-2">SKU / 描述</th>
-                  <th className="px-3 py-2">品名 / 規格</th>
+                  <th className="px-3 py-2">描述</th>
+                  <th className="px-3 py-2">品名</th>
                   <th className="px-3 py-2 text-right">應出</th>
                   <th className="px-3 py-2 text-right">已出</th>
                   <th className="px-3 py-2 text-right">已收</th>
