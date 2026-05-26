@@ -39,6 +39,23 @@ function json(body: unknown, status = 200) {
   });
 }
 
+// FB token 相關錯誤碼：190 是「Invalid OAuth access token」，
+// 通常代表 token 過期、被撤銷、密碼變更等。102/10 也偶爾在權限丟失時出現。
+// 偵測到這幾個 code → 上層會把 fb_pages.token_invalid_at 標起來給 UI 顯示。
+const TOKEN_ERROR_CODES = new Set<number>([190, 102, 10]);
+
+class FbApiError extends Error {
+  code: number | null;
+  subcode: number | null;
+  isTokenError: boolean;
+  constructor(message: string, code: number | null, subcode: number | null) {
+    super(message);
+    this.code = code;
+    this.subcode = subcode;
+    this.isTokenError = code != null && TOKEN_ERROR_CODES.has(code);
+  }
+}
+
 async function fbCall(
   path: string,
   params: Record<string, string>,
@@ -53,8 +70,15 @@ async function fbCall(
     parsed = { raw: text };
   }
   if (!r.ok) {
-    const errObj = parsed?.error as { message?: string } | undefined;
-    throw new Error(errObj?.message || text || `HTTP ${r.status}`);
+    const errObj = parsed?.error as
+      | { message?: string; code?: number; error_subcode?: number }
+      | undefined;
+    const msg = errObj?.message || text || `HTTP ${r.status}`;
+    throw new FbApiError(
+      msg,
+      typeof errObj?.code === "number" ? errObj.code : null,
+      typeof errObj?.error_subcode === "number" ? errObj.error_subcode : null,
+    );
   }
   return parsed;
 }
@@ -194,6 +218,7 @@ Deno.serve(async (req) => {
       fb_post_id?: string;
       permalink?: string | null;
       error?: string;
+      token_invalid?: boolean;
     }> = [];
 
     for (const p of pages as FbPage[]) {
@@ -240,6 +265,20 @@ Deno.serve(async (req) => {
         });
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
+        const isTokenErr = e instanceof FbApiError && e.isTokenError;
+
+        // token 相關錯誤 → 標記 fb_pages，下次進 /fb-pages UI 會看到警告
+        if (isTokenErr) {
+          await sb
+            .from("fb_pages")
+            .update({
+              token_invalid_at: new Date().toISOString(),
+              token_last_error: errMsg.slice(0, 500),
+            })
+            .eq("id", p.id)
+            .eq("tenant_id", tenantId);
+        }
+
         await sb.from("campaign_fb_posts").insert({
           tenant_id: tenantId,
           campaign_id: campaignId,
@@ -247,7 +286,7 @@ Deno.serve(async (req) => {
           status: "failed",
           message,
           image_urls: imageUrls,
-          error_message: errMsg,
+          error_message: isTokenErr ? `[token 失效] ${errMsg}` : errMsg,
           posted_by: user.id,
         });
         results.push({
@@ -255,6 +294,7 @@ Deno.serve(async (req) => {
           page_name: p.name,
           status: "failed",
           error: errMsg,
+          token_invalid: isTokenErr || undefined,
         });
       }
     }
