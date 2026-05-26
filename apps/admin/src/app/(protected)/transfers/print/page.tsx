@@ -249,7 +249,7 @@ function Slip({ kind, tx, items }: { kind: CopyKind; tx: Transfer; items: Item[]
       <div className="mb-2 flex items-baseline justify-between border-b-2 border-zinc-700 pb-1">
         <div>
           <div className="text-base font-semibold">{getTenantName()}</div>
-          <div className="text-xl font-bold">🚚 {typeLabel}出貨單</div>
+          <div className="text-xl font-bold">{typeLabel}出貨單</div>
         </div>
         <div className="text-right">
           <div className="inline-block rounded border-2 border-zinc-700 px-2 py-0.5 text-sm font-bold">
@@ -271,7 +271,7 @@ function Slip({ kind, tx, items }: { kind: CopyKind; tx: Transfer; items: Item[]
             <td className="py-0.5 text-zinc-500">建立</td>
             <td className="py-0.5 font-mono">{new Date(tx.created_at).toLocaleString("zh-TW")}</td>
             <td className="py-0.5 text-zinc-500">溫層</td>
-            <td className="py-0.5">{tempLabel}{tx.is_air_transfer ? " · ✈ 空運" : ""}</td>
+            <td className="py-0.5">{tempLabel}{tx.is_air_transfer ? " · 空運" : ""}</td>
           </tr>
           {tx.shipped_at && (
             <tr>
@@ -353,30 +353,14 @@ function Slip({ kind, tx, items }: { kind: CopyKind; tx: Transfer; items: Item[]
 
       {tx.notes && (
         <div className="mb-2 rounded border border-zinc-300 p-1.5 text-[11px]">
-          <span className="font-semibold">📝 備註：</span>
+          <span className="font-semibold">備註：</span>
           {tx.notes}
         </div>
       )}
 
-      <div className="mt-3 grid grid-cols-3 gap-3 text-[11px]">
-        <SignBox label="出貨人簽名" />
-        <SignBox label="司機簽收" />
-        <SignBox label="收貨人簽名" />
-      </div>
-
       <div className="mt-1 text-right text-[9px] text-zinc-500">
         列印時間 {new Date().toLocaleString("zh-TW")}
       </div>
-    </div>
-  );
-}
-
-function SignBox({ label }: { label: string }) {
-  return (
-    <div className="flex flex-col">
-      <div className="text-zinc-600">{label}</div>
-      <div className="mt-0.5 h-10 border-b border-zinc-500"></div>
-      <div className="mt-0.5 text-[9px] text-zinc-500">日期 / 時間：</div>
     </div>
   );
 }
