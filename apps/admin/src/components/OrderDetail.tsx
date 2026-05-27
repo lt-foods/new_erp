@@ -466,10 +466,10 @@ export function OrderDetail({
               onClick={() =>
                 printViaIframe(withBasePath(`/pickup/print-list?order_ids=${head.id}`))
               }
-              title="列印小白單（picking list / 取貨清單，貨還沒到也可印）"
+              title="列印小白單（取貨清單，貨還沒到也可印）"
               className="rounded-md border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
             >
-              🖨️ 列印小白單
+              列印
             </SpinButton>
           )}
           {canPickup && (
@@ -514,7 +514,7 @@ export function OrderDetail({
               className="rounded-md border border-red-300 px-3 py-1 text-xs font-medium text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950"
               title={head.status === "shipping" ? "撤回派貨並反向回收已出庫存" : "取消訂單"}
             >
-              ✕ 取消訂單
+              取消
               {Number(head.wallet_paid_amount ?? 0) > 0 && (
                 <span className="ml-1 text-[10px] font-normal text-zinc-500">(將退 ${Number(head.wallet_paid_amount)})</span>
               )}
