@@ -159,7 +159,6 @@ function Body() {
 
         <div className="text-center">
           <div className="text-[22px] font-bold">取貨清單</div>
-          <div className="text-[12px] text-zinc-500">picking list (待確認)</div>
         </div>
 
         <div className="mt-2 border-y border-dashed border-black py-1.5">
