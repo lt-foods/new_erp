@@ -485,10 +485,10 @@ function OrdersListContent() {
           onClick={() =>
             printViaIframe(withBasePath(`/pickup/print-list?order_ids=${r.id}`))
           }
-          title="列印小白單（picking list / 取貨清單，貨還沒到也可印）"
+          title="列印小白單（取貨清單，貨還沒到也可印）"
           className="rounded-md border border-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
         >
-          🖨️ 小白單
+          列印
         </SpinButton>
       )}
       {!["completed","expired","cancelled","transferred_out"].includes(r.status) && (() => {

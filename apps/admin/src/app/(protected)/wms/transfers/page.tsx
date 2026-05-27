@@ -15,6 +15,8 @@ import SpinButton from "@/components/SpinButton";
 import FreeTransferCreateModal from "@/components/FreeTransferCreateModal";
 import OrderReturnCreateModal from "@/components/OrderReturnCreateModal";
 import TransferDetailModal from "@/components/TransferDetailModal";
+import { printViaIframe } from "@/lib/printIframe";
+import { withBasePath } from "@/lib/basePath";
 
 type Loc = { id: number; name: string; type: string };
 
@@ -284,13 +286,14 @@ export default function InternalTransfersPage() {
               <th className="px-3 py-2 text-right">估價</th>
               <th className="px-3 py-2">狀態</th>
               <th className="px-3 py-2">備註</th>
+              <th className="px-3 py-2"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {transfers === null ? (
-              <tr><td colSpan={7} className="p-6 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={8} className="p-6 text-center text-zinc-500">載入中…</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={7} className="p-6 text-center text-zinc-500">目前沒有資料</td></tr>
+              <tr><td colSpan={8} className="p-6 text-center text-zinc-500">目前沒有資料</td></tr>
             ) : filtered.map((t) => {
               const src = locs.get(t.source_location)?.name ?? `#${t.source_location}`;
               const dst = locs.get(t.dest_location)?.name ?? `#${t.dest_location}`;
@@ -319,6 +322,17 @@ export default function InternalTransfersPage() {
                   </td>
                   <td className="px-3 py-2"><span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[t.status] ?? STATUS_COLOR.draft}`}>{STATUS_LABEL[t.status] ?? t.status}</span></td>
                   <td className="px-3 py-2 text-xs text-zinc-500" title={t.notes ?? undefined}>{formatNote(t.notes)}</td>
+                  <td className="px-3 py-2 text-right" onClick={(e) => e.stopPropagation()}>
+                    <SpinButton
+                      onClick={() =>
+                        printViaIframe(withBasePath(`/transfers/print?transfer_id=${t.id}&copies=driver,stub`))
+                      }
+                      title="列印出貨單（司機聯 + 店家存根聯）"
+                      className="rounded-md border border-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                    >
+                      列印出貨單
+                    </SpinButton>
+                  </td>
                 </tr>
               );
             })}
