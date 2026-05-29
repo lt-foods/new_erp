@@ -320,6 +320,121 @@ SELECT obj_description('public.v_hq_inbox'::regclass);
 
 ---
 
+## 4b. RPC: `rpc_member_overview_totals`（修 #27，re-audit 新增）
+
+**檔案**：`supabase/migrations/20260629000010_rpc_member_overview_totals.sql`
+
+**修了什麼**：會員首頁「未結金額」原本後端裸查 `v_customer_order_summary` + `.reduce()` 加總,>1000 筆 unpaid 訂單會截斷偏低。改 JSONB 單列 SQL 聚合。`getOverview` 已改呼叫此 RPC。
+
+**SQL**：
+
+```sql
+CREATE OR REPLACE FUNCTION public.rpc_member_overview_totals(
+  p_tenant     UUID,
+  p_member_id  BIGINT
+)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT jsonb_build_object(
+    'receivable_amount', COALESCE((
+      SELECT SUM(s.payable_amount)
+      FROM v_customer_order_summary s
+      WHERE s.tenant_id = p_tenant
+        AND s.member_id = p_member_id
+        AND s.payment_status = 'unpaid'
+        AND s.status NOT IN ('cancelled', 'expired')
+    ), 0),
+    'active_orders_count', COALESCE((
+      SELECT COUNT(*)
+      FROM v_customer_order_summary s
+      WHERE s.tenant_id = p_tenant
+        AND s.member_id = p_member_id
+        AND s.status NOT IN ('completed', 'cancelled', 'expired')
+    ), 0)
+  );
+$$;
+
+COMMENT ON FUNCTION public.rpc_member_overview_totals(UUID, BIGINT) IS
+  '@money-critical 會員未結金額/進行中筆數聚合,JSONB 單列避免 max_rows 截斷。詳見 docs/STANDARD-資料分頁與筆數限制.md';
+
+GRANT EXECUTE ON FUNCTION public.rpc_member_overview_totals(UUID, BIGINT)
+  TO anon, authenticated, service_role;
+```
+
+**驗證**：
+
+```sql
+SELECT proname, pg_get_function_result(oid) FROM pg_proc WHERE proname = 'rpc_member_overview_totals';
+-- 預期: rpc_member_overview_totals | jsonb
+```
+
+---
+
+## 4c. RPC: `rpc_get_members_to_notify_for_transfer`（修 #28，re-audit 新增）
+
+**檔案**：`supabase/migrations/20260629000020_rpc_members_for_transfer_jsonb.sql`
+
+**修了什麼**：調撥收貨推播 fan-out 原 `RETURNS TABLE`,大調撥覆蓋 >1000 訂單列時截斷漏發通知。改 `RETURNS jsonb`（DROP+CREATE）。前端 TransferReceiveModal 零改動。
+
+**SQL**：
+
+```sql
+DROP FUNCTION IF EXISTS rpc_get_members_to_notify_for_transfer(BIGINT);
+
+CREATE OR REPLACE FUNCTION rpc_get_members_to_notify_for_transfer(
+  p_transfer_id BIGINT
+)
+RETURNS jsonb
+LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  WITH dest AS (
+    SELECT t.dest_location, t.tenant_id, s.id AS store_id
+      FROM transfers t
+      LEFT JOIN stores s ON s.location_id = t.dest_location AND s.tenant_id = t.tenant_id
+     WHERE t.id = p_transfer_id
+  ),
+  skus AS (
+    SELECT DISTINCT sku_id FROM transfer_items WHERE transfer_id = p_transfer_id
+  ),
+  rows AS (
+    SELECT DISTINCT co.member_id, co.id AS order_id, co.order_no
+      FROM customer_orders co
+      JOIN dest d
+        ON d.store_id = co.pickup_store_id
+       AND d.tenant_id = co.tenant_id
+      JOIN customer_order_items coi
+        ON coi.order_id = co.id
+     WHERE coi.sku_id IN (SELECT sku_id FROM skus)
+       AND co.member_id IS NOT NULL
+       AND co.status NOT IN ('cancelled', 'expired', 'transferred_out', 'completed')
+       AND COALESCE(co.order_kind, 'normal') = 'normal'
+  )
+  SELECT COALESCE(
+    jsonb_agg(jsonb_build_object(
+      'member_id', r.member_id,
+      'order_id',  r.order_id,
+      'order_no',  r.order_no
+    )),
+    '[]'::jsonb
+  )
+  FROM rows r;
+$$;
+
+GRANT EXECUTE ON FUNCTION rpc_get_members_to_notify_for_transfer(BIGINT) TO authenticated;
+```
+
+**驗證**：
+
+```sql
+SELECT proname, pg_get_function_result(oid) FROM pg_proc WHERE proname = 'rpc_get_members_to_notify_for_transfer';
+-- 預期: rpc_get_members_to_notify_for_transfer | jsonb
+```
+
+---
+
 ## 5. 不需要動 SQL 的修復項目
 
 下列風險的修復完全在 Edge Function / 前端側（用 `fetchAllPaginated` helper 或 cursor 分頁），**不需要任何 SQL 變更**：
@@ -348,6 +463,8 @@ SELECT obj_description('public.v_hq_inbox'::regclass);
 - [ ] §2 `rpc_member_campaign_aggregates` 已跑、驗證查詢回 `jsonb`
 - [ ] §3 `rpc_list_staff` 已跑、驗證查詢回 `jsonb`
 - [ ] §4 `v_hq_inbox` COMMENT 已加
+- [ ] §4b `rpc_member_overview_totals` 已跑、驗證查詢回 `jsonb`（re-audit #27）
+- [ ] §4c `rpc_get_members_to_notify_for_transfer` 已跑、驗證查詢回 `jsonb`（re-audit #28）
 
 部署 Edge Function：
 - [ ] `supabase functions deploy liff-api --project-ref <production_ref>`

@@ -30,6 +30,22 @@
 
 <!-- 新修復項目附加在這裡。最新的放最上面。 -->
 
+### #27 #28 — 全盤複查 (re-audit) 新發現兩個漏網缺口
+- 日期：2026-05-24
+- 修復者：claude
+- 背景：用戶要求「照規劃全盤再看,不只看修改」。派 3 個獨立 agent 重掃 admin/member+edge/SQL,找出首輪漏掉的。
+- 修法策略：模式 B（JSONB 聚合 / 單列 array）
+- 變動檔案：
+  - 新 `supabase/migrations/20260629000010_rpc_member_overview_totals.sql`（#27，@money-critical）
+  - 新 `supabase/migrations/20260629000020_rpc_members_for_transfer_jsonb.sql`（#28，DROP+CREATE 改 jsonb）
+  - `supabase/functions/liff-api/index.ts:getOverview` — 改呼叫 rpc_member_overview_totals
+  - TransferReceiveModal.tsx — 零改動（jsonb array 與原 TABLE 結果形狀相同）
+- 驗證（dev）：
+  - #27: RPC `{receivable:11955, active:67}` == SQL 直算,口徑一致 ✅
+  - #28: RPC 回 jsonb array（jsonb_typeof=array）✅
+  - SQL lint pass
+- 複查結論：admin app 127 個 `.in()` 初判警報經逐一核實**絕大多數 false positive**（ids 來自已分頁主查詢）。其他無分頁 view 目前無裸查 caller。除 #27 #28 外無其他真實裸露風險。詳見 AUDIT §5。
+
 ### #25 #26 — LOW 兩項補上
 - 日期：2026-05-24
 - 修復者：claude
@@ -140,9 +156,11 @@
 
 | 風險等級 | 總數 | DONE | PARTIAL | PENDING | EXEMPTED |
 |---|---|---|---|---|---|
-| HIGH | 16 | 16 | 0 | 0 | 0 |
-| MEDIUM | 8 | 8 | 0 | 0 | 0 |
+| HIGH | 17 | 17 | 0 | 0 | 0 |
+| MEDIUM | 9 | 9 | 0 | 0 | 0 |
 | LOW | 2 | 2 | 0 | 0 | 0 |
-| **合計** | **26** | **26** | **0** | **0** | **0** |
+| **合計** | **28** | **28** | **0** | **0** | **0** |
+
+> #27 (HIGH)、#28 (MEDIUM) 為 2026-05-24 全盤複查新增。
 
 > 統計每次修復後同步更新。
