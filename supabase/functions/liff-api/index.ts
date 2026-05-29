@@ -392,9 +392,10 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
     const { data, error } = await q;
     if (error) return json({ error: error.message }, 500);
     const rows = data ?? [];
+    if (rows.length === 0) break;
     allData.push(...rows);
-    if (rows.length < PAGE) break;
-    from += PAGE;
+    // 用實際回傳筆數推進 (而非寫死 PAGE),避免 max_rows 把單頁截短時誤判結束。
+    from += rows.length;
     if (allData.length >= SAFETY_CAP) {
       console.error(`[PAGINATION-RISK] listActiveCampaigns 撞到 safetyCap=${SAFETY_CAP},某 tenant 同時開團超過此值,應評估業務合理性`);
       break;

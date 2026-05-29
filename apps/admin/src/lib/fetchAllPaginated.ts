@@ -36,9 +36,13 @@ export async function fetchAllPaginated<T>(
     const { data, error } = await fetchPage({ from, to });
     if (error) throw new Error(`${label}: ${error.message}`);
     const rows = (Array.isArray(data) ? data : []) as T[];
+    if (rows.length === 0) break;
     all.push(...rows);
-    if (rows.length < pageSize) break;
-    from += pageSize;
+    // 用「實際回傳筆數」推進 offset,而非寫死 pageSize。
+    // 這樣即使 PostgREST max_rows 把單頁截到比 pageSize 短 (例如環境把
+    // max_rows 調成 500、pageSize 仍 1000),offset 也只前進實際拿到的筆數,
+    // 不會誤判「沒更多資料」而漏掉後續 row。只有真的回 0 筆才是結束。
+    from += rows.length;
     if (all.length >= safetyCap) {
       console.error(`[PAGINATION-RISK] ${label} 撞到 safetyCap=${safetyCap},可能有未載入資料`);
       throw new Error(`${label} 累計 ${all.length} 筆超過 safetyCap=${safetyCap},請改用 SQL RPC 聚合或縮小過濾條件`);
