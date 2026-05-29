@@ -253,8 +253,17 @@ const RULES: Rule[] = [
     render: () => "商品「上架中」無法刪除，請先將商品下架後再刪除。",
   },
   {
+    pattern: /product \d+ has campaigns, cannot delete/i,
+    render: () => "此商品仍有關聯開團，無法刪除。請先刪除或取消相關開團後再試。",
+  },
+  {
     pattern: /product \d+ has orders, cannot delete/i,
     render: () => "此商品已有顧客訂單，無法刪除。",
+  },
+  {
+    pattern: /product \d+ still referenced by other records, cannot delete/i,
+    render: () =>
+      "此商品仍被其他資料（如庫存／採購／調撥）參照，無法刪除。請先解除關聯後再試。",
   },
   {
     pattern: /product \d+ not found/i,
