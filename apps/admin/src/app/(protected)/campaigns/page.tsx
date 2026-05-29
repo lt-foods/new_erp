@@ -304,13 +304,13 @@ export default function CampaignsListPage() {
     }
   }
 
-  // 刪除開團（僅草稿；實體刪除，連帶 campaign_items/channels/audit）
+  // 刪除開團（非開團中且無訂單；實體硬刪除，連帶 campaign_items/channels/audit）
   async function deleteCampaign(id: number, name: string) {
     if (
       !confirm(
-        `確定刪除草稿開團「${name}」？\n\n` +
-          `將一併刪除其商品明細與頻道設定，此操作無法復原。\n` +
-          `（只有「草稿」可刪除；已開團 / 已收單請改用「批次取消」）`
+        `確定刪除開團「${name}」？\n\n` +
+          `將一併刪除其商品明細、頻道設定與相關上傳紀錄，此操作無法復原。\n` +
+          `（「開團中」或已有顧客訂單的開團無法刪除）`
       )
     )
       return;
@@ -638,7 +638,7 @@ export default function CampaignsListPage() {
           {finalizingId === r.id ? "結算中…" : "結算"}
         </SpinButton>
       )}
-      {r.status === "draft" && (
+      {(["draft", "closed", "cancelled"] as Status[]).includes(r.status) && (
         <SpinButton
           onClick={() => deleteCampaign(r.id, r.name)}
           className="text-xs text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"

@@ -193,13 +193,23 @@ const RULES: Rule[] = [
   },
   // ===== rpc_delete_campaign（開團刪除守門） =====
   {
+    // 舊訊息（僅 draft 可刪）向後相容保留
     pattern: /campaign \d+ is (\w+), only draft can be deleted/i,
     render: (m) =>
-      `此開團目前為「${cStatus(m[1])}」，只有「草稿」可以刪除。已開團 / 已收單請改用「批次取消」。`,
+      `此開團目前為「${cStatus(m[1])}」，只有「草稿」可以刪除。`,
+  },
+  {
+    pattern: /campaign \d+ is open, cannot delete/i,
+    render: () => "「開團中（上架）」的開團無法刪除，請先結單或取消後再刪除。",
   },
   {
     pattern: /campaign \d+ has \d+ orders?, cannot delete/i,
     render: () => "此開團已有顧客訂單，無法刪除。請先取消相關訂單，或改用「批次取消」。",
+  },
+  {
+    pattern: /campaign \d+ still referenced by other records, cannot delete/i,
+    render: () =>
+      "此開團仍被其他資料（如採購單／撿貨波）參照，無法刪除。請先解除關聯後再試。",
   },
   {
     pattern: /campaign \d+ not found/i,
