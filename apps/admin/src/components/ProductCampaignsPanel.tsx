@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import { Modal } from "@/components/Modal";
+import { CreateCampaignModal, type SelectedProduct } from "@/components/CreateCampaignModal";
 import {
   CAMPAIGN_STATUS_LABEL,
   CAMPAIGN_STATUS_BADGE,
@@ -45,6 +47,8 @@ export function ProductCampaignsPanel({ productId }: { productId: number }) {
   const [rows, setRows] = useState<CampaignRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [product, setProduct] = useState<SelectedProduct | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -76,6 +80,22 @@ export function ProductCampaignsPanel({ productId }: { productId: number }) {
 
   useEffect(() => { setRows(null); load(); }, [load]);
 
+  // 撈商品基本資料（團名稱預設值、依溫層算取貨天數）給建團 modal 用
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await getSupabase()
+        .from("products")
+        .select("id, name, storage_type")
+        .eq("id", productId)
+        .maybeSingle();
+      if (cancelled || !data) return;
+      const d = data as { id: number; name: string; storage_type: SelectedProduct["storage_type"] };
+      setProduct({ id: d.id, name: d.name, storage_type: d.storage_type });
+    })();
+    return () => { cancelled = true; };
+  }, [productId]);
+
   async function setStatus(row: CampaignRow, target: "open" | "closed") {
     setError(null);
     setNote(null);
@@ -102,7 +122,17 @@ export function ProductCampaignsPanel({ productId }: { productId: number }) {
 
   return (
     <section className="space-y-2">
-      <h3 className="text-sm font-semibold">關聯開團</h3>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold">關聯開團</h3>
+        <SpinButton
+          type="button"
+          onClick={() => setCreating(true)}
+          disabled={!product}
+          className="rounded-md bg-green-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50"
+        >
+          建立新開團
+        </SpinButton>
+      </div>
       <p className="text-xs text-zinc-500">
         含此商品任一規格的開團。開關：開＝開團中（顧客可下單），關＝收單（不可逆）。
       </p>
@@ -172,6 +202,25 @@ export function ProductCampaignsPanel({ productId }: { productId: number }) {
           </table>
         </div>
       )}
+
+      <Modal
+        open={creating && !!product}
+        onClose={() => setCreating(false)}
+        title="建立開團"
+        maxWidth="max-w-2xl"
+      >
+        {product && (
+          <CreateCampaignModal
+            products={[product]}
+            onClose={() => setCreating(false)}
+            onCreated={() => {
+              setCreating(false);
+              setNote(null);
+              load();
+            }}
+          />
+        )}
+      </Modal>
     </section>
   );
 }

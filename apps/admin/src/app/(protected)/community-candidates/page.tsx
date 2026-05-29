@@ -187,7 +187,8 @@ export default function CommunityCandidatesPage() {
     setBusy(true);
     try {
       const sb = getSupabase();
-      // 呼叫 rpc_schedule_candidate：建 draft product + sku + campaign + items + 標 candidate scheduled
+      // 呼叫 rpc_schedule_candidate：建 draft product + sku + 標 candidate scheduled
+      // （不再自動建開團；開團改由商品編輯頁「建立新開團」按鈕觸發）
       const { error: rpcErr } = await sb.rpc("rpc_schedule_candidate", {
         p_candidate_id: id,
         p_scheduled_date: dateStr,
@@ -258,7 +259,7 @@ export default function CommunityCandidatesPage() {
     setError(null);
     try {
       const sb = getSupabase();
-      // 順序執行：每一筆建 product/sku/campaign 再補 sort_order，避免 sort 撞號
+      // 順序執行：每一筆建 product/sku 再補 sort_order，避免 sort 撞號（不建開團）
       for (const id of ids) {
         const row = rows?.find((r) => r.id === id);
         if (!row) continue;
