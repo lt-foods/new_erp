@@ -57,9 +57,26 @@ type ItemRow = {
   sku: { id: number; sku_code: string; product_name: string | null; variant_name: string | null } | null;
 };
 
+// 品項狀態標籤（部分取貨會把一行拆成「已取」+「待取」兩行，標籤讓兩者一眼可分）
+function itemStatusBadge(status: string): { label: string; cls: string } | null {
+  switch (status) {
+    case "picked_up":
+      return { label: "已取", cls: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" };
+    case "pending":
+    case "reserved":
+    case "ready":
+      return { label: "待取", cls: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300" };
+    case "cancelled":
+      return { label: "已取消", cls: "bg-zinc-200 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300" };
+    case "expired":
+      return { label: "已逾期", cls: "bg-zinc-200 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300" };
+    default:
+      return null;
+  }
+}
+
 function computeLineSubtotal(qty: number, unitPrice: number, d: DiscountValue): number {
-  const gross = Number(qty) * Number(unitPrice);
-  const pct = d.kind === "percent" ? Number(d.value) : 0;
+  const gross = Number(qty) * Number(unitPrice);  const pct = d.kind === "percent" ? Number(d.value) : 0;
   const amt = d.kind === "amount" ? Number(d.value) : 0;
   const afterPct = gross * (1 - pct / 100);
   return Math.max(0, Math.round(afterPct * 10000) / 10000 - amt);
@@ -669,8 +686,10 @@ export function OrderDetail({
                 const eff = itemEffective(it);
                 const sub = computeLineSubtotal(Number(eff.qty), eff.unit_price, eff.discount);
                 const isDirty = draft.items.has(it.id);
+                const badge = itemStatusBadge(it.status);
+                const isPicked = it.status === "picked_up";
                 return (
-                  <tr key={it.id} className={isDirty ? "bg-yellow-50 dark:bg-yellow-950/30" : ""}>
+                  <tr key={it.id} className={isDirty ? "bg-yellow-50 dark:bg-yellow-950/30" : isPicked ? "bg-emerald-50/40 dark:bg-emerald-950/20" : ""}>
                     <td className="px-3 py-2">
                       {it.sku ? (
                         <span>
@@ -679,9 +698,16 @@ export function OrderDetail({
                           <span className="ml-1 font-mono text-zinc-400">{it.sku.sku_code}</span>
                         </span>
                       ) : "—"}
+                      {badge && (
+                        <span className={`ml-1.5 rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.cls}`}>
+                          {badge.label}
+                        </span>
+                      )}
                     </td>
                     <td className="px-3 py-2 text-right font-mono">
-                      {canEditQty ? (
+                      {isPicked ? (
+                        <span title="此行已取貨，數量不可改" className="text-zinc-500">{Number(it.qty)}</span>
+                      ) : canEditQty ? (
                         <input
                           type="number"
                           min={1}
