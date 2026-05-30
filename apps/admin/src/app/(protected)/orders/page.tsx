@@ -52,9 +52,10 @@ type TrendData = {
   total: MonthAgg;
 };
 
-type Tab = "pending" | "completed" | "cancelled" | "transferred";
+type Tab = "pending" | "partially" | "completed" | "cancelled" | "transferred";
 const TABS: { value: Tab; label: string }[] = [
   { value: "pending", label: "未取貨" },
+  { value: "partially", label: "部分取貨" },
   { value: "completed", label: "已完成" },
   { value: "transferred", label: "轉出" },
   { value: "cancelled", label: "取消" },
@@ -112,7 +113,7 @@ function OrdersListContent() {
   })();
   const initialTab: Tab = (() => {
     const t = searchParams.get("tab");
-    if (t === "pending" || t === "completed" || t === "cancelled") return t;
+    if (t === "pending" || t === "partially" || t === "completed" || t === "cancelled" || t === "transferred") return t;
     return "pending";
   })();
   const initialStoreId = searchParams.get("storeId") ?? "";
@@ -240,7 +241,8 @@ function OrdersListContent() {
         if (campaignIds.length === 1) q = q.eq("campaign_id", Number(campaignIds[0]));
         else if (campaignIds.length > 1) q = q.in("campaign_id", campaignIds.map((x) => Number(x)));
         // 依 tab 套狀態過濾;一律隱藏 transferred_out (視同關閉、金額/數量不入統計)
-        if (tab === "completed") q = q.eq("status", "completed");
+        if (tab === "partially") q = q.eq("status", "partially_completed");
+        else if (tab === "completed") q = q.eq("status", "completed");
         else if (tab === "cancelled") q = q.in("status", CANCELLED_STATUSES);
         else if (tab === "transferred") q = q.eq("status", "transferred_out");
         else q = q.in("status", PENDING_STATUSES);
@@ -307,8 +309,9 @@ function OrdersListContent() {
         if (kwOr) q = q.or(kwOr);
         return q;
       };
-      const [p, c, x, tr] = await Promise.all([
+      const [p, pc, c, x, tr] = await Promise.all([
         buildBase().in("status", PENDING_STATUSES),
+        buildBase().eq("status", "partially_completed"),
         buildBase().eq("status", "completed"),
         buildBase().in("status", CANCELLED_STATUSES),
         buildBase().eq("status", "transferred_out"),
@@ -316,6 +319,7 @@ function OrdersListContent() {
       if (cancelled) return;
       setTabCounts({
         pending: p.count ?? 0,
+        partially: pc.count ?? 0,
         completed: c.count ?? 0,
         cancelled: x.count ?? 0,
         transferred: tr.count ?? 0,
@@ -480,7 +484,7 @@ function OrdersListContent() {
   // 操作按鈕（去取貨 / 取消 / ↩退貨 / 狀態鈕）— 桌機表格與手機卡片共用，單一維護點
   const orderActions = (r: Row, m: Member | null | undefined) => (
     <>
-      {PENDING_STATUSES.includes(r.status) && (
+      {(PENDING_STATUSES.includes(r.status) || r.status === "partially_completed") && (
         <SpinButton
           onClick={() =>
             printViaIframe(withBasePath(`/pickup/print-list?order_ids=${r.id}`))
@@ -492,7 +496,7 @@ function OrdersListContent() {
         </SpinButton>
       )}
       {!["completed","expired","cancelled","transferred_out"].includes(r.status) && (() => {
-        const canPickup = r.status === "ready";
+        const canPickup = r.status === "ready" || r.status === "partially_completed";
         // 訂單頁本身不執行取貨,只導向 /pickup (帶會員編號自動搜尋)
         if (canPickup && m?.member_no) {
           return (
@@ -632,7 +636,7 @@ function OrdersListContent() {
         />
       </div>
 
-      {/* Tab bar — 未取貨 / 已完成 / 取消;含各 tab 數量 */}
+      {/* Tab bar — 未取貨 / 部分取貨 / 已完成 / 轉出 / 取消;含各 tab 數量 */}
       <div className="flex items-center gap-1 border-b border-zinc-200 dark:border-zinc-800">
         {TABS.map((t) => {
           const active = tab === t.value;
