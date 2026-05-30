@@ -27,10 +27,17 @@ type OrderHead = {
   payment_status: string | null;
 };
 
-function lineSub(it: PickableItem): number {
-  const gross = Number(it.qty) * Number(it.unit_price);
+// 以指定數量計算小計（line-level 折扣金額按比例分攤，對齊後端拆行邏輯）
+function lineSubQty(it: PickableItem, qty: number): number {
+  const fullQty = Number(it.qty) || 0;
+  const ratio = fullQty > 0 ? qty / fullQty : 0;
+  const gross = qty * Number(it.unit_price);
   const afterPct = gross * (1 - Number(it.discount_percent ?? 0) / 100);
-  return Math.max(0, Math.round(afterPct * 10000) / 10000 - Number(it.discount_amount ?? 0));
+  const discAmt = Number(it.discount_amount ?? 0) * ratio;
+  return Math.max(0, Math.round(afterPct * 10000) / 10000 - discAmt);
+}
+function lineSub(it: PickableItem): number {
+  return lineSubQty(it, Number(it.qty));
 }
 
 export function PickupDialog({
@@ -55,6 +62,8 @@ export function PickupDialog({
   const [walletBalance, setWalletBalance] = useState<number | null>(null);
   const [walletAmount, setWalletAmount] = useState("");
   const [picked, setPicked] = useState<Set<number>>(new Set());
+  // 每個 item 本次取貨數量（預設 = 全取）。key=item.id, value=數量字串（允許編輯中暫空）
+  const [pickQty, setPickQty] = useState<Map<number, string>>(new Map());
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -80,6 +89,8 @@ export function PickupDialog({
       const list = (iRes.data ?? []) as unknown as PickableItem[];
       setItems(list);
       setPicked(new Set(list.map((it) => it.id)));
+      // 預設每項全取
+      setPickQty(new Map(list.map((it) => [it.id, String(Number(it.qty))])));
       const head = hRes.data;
       const headAmt = Number(head?.discount_amount ?? 0);
       const headPct = Number(head?.discount_percent ?? 0);
@@ -122,6 +133,21 @@ export function PickupDialog({
     setPicked((s) => {
       const next = new Set(s);
       if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  // 取得某 item 本次有效取貨數量（clamp 到 1..qty；空字串/非法 → 全取）
+  function effQty(it: PickableItem): number {
+    const raw = pickQty.get(it.id);
+    const n = Number(raw);
+    if (raw === "" || raw == null || !Number.isFinite(n) || n <= 0) return Number(it.qty);
+    return Math.min(Number(it.qty), Math.max(1, n));
+  }
+  function setQty(id: number, value: string) {
+    setPickQty((m) => {
+      const next = new Map(m);
+      next.set(id, value);
       return next;
     });
   }
@@ -193,12 +219,22 @@ export function PickupDialog({
         if (wErr) { setErr(`儲值金扣款失敗：${translateRpcError(wErr)}`); return; }
       }
 
-      // Step 2：寫 pickup
+      // Step 2：寫 pickup。只帶「部分取」的數量；整取的省略 → 後端視為整行取
+      const itemQtys: Record<string, number> = {};
+      if (items) {
+        for (const it of items) {
+          if (!picked.has(it.id)) continue;
+          const take = effQty(it);
+          if (take < Number(it.qty)) itemQtys[String(it.id)] = take;
+        }
+      }
+      const hasPartial = Object.keys(itemQtys).length > 0;
       const { data, error } = await sb.rpc("rpc_record_pickup", {
         p_order_id: orderId,
         p_item_ids: Array.from(picked),
         p_operator: operator,
         p_notes: notes || null,
+        ...(hasPartial ? { p_item_qtys: itemQtys } : {}),
       });
       if (error) { setErr(error.message); return; }
       const result = data as { event_id: number; new_order_status: string; picked_count: number; active_remaining: number };
@@ -215,7 +251,7 @@ export function PickupDialog({
   }
 
   const subtotal = items
-    ? items.filter((it) => picked.has(it.id)).reduce((s, it) => s + lineSub(it), 0)
+    ? items.filter((it) => picked.has(it.id)).reduce((s, it) => s + lineSubQty(it, effQty(it)), 0)
     : 0;
   const discountPercent = discountValue.kind === "percent" ? Number(discountValue.value) : 0;
   const discount = discountValue.kind === "amount" ? Number(discountValue.value) : 0;
@@ -268,14 +304,17 @@ export function PickupDialog({
               </thead>
               <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
                 {items.map((it) => {
-                  const sub = lineSub(it);
+                  const take = effQty(it);
+                  const sub = lineSubQty(it, take);
+                  const partial = take < Number(it.qty);
+                  const isPicked = picked.has(it.id);
                   const hasLineDisc = Number(it.discount_amount ?? 0) > 0 || Number(it.discount_percent ?? 0) > 0;
                   return (
-                    <tr key={it.id} className={picked.has(it.id) ? "bg-emerald-50 dark:bg-emerald-950" : ""}>
+                    <tr key={it.id} className={isPicked ? "bg-emerald-50 dark:bg-emerald-950" : ""}>
                       <td className="px-3 py-2">
                         <input
                           type="checkbox"
-                          checked={picked.has(it.id)}
+                          checked={isPicked}
                           onChange={() => toggle(it.id)}
                           className="h-4 w-4"
                         />
@@ -291,7 +330,24 @@ export function PickupDialog({
                           </span>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-right font-mono">{Number(it.qty)}</td>
+                      <td className="px-3 py-2 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <input
+                            type="number"
+                            min={1}
+                            max={Number(it.qty)}
+                            step="1"
+                            value={pickQty.get(it.id) ?? String(Number(it.qty))}
+                            onChange={(e) => setQty(it.id, e.target.value)}
+                            disabled={!isPicked}
+                            className="w-14 rounded-md border border-zinc-300 px-2 py-1 text-right font-mono text-sm disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-800"
+                          />
+                          <span className="font-mono text-[10px] text-zinc-400">/{Number(it.qty)}</span>
+                        </div>
+                        {partial && isPicked && (
+                          <div className="mt-0.5 text-[10px] text-amber-600 dark:text-amber-400">剩 {Number(it.qty) - take} 留待下次</div>
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-right font-mono text-zinc-500">${Number(it.unit_price)}</td>
                       <td className="px-3 py-2 text-right font-mono">${sub}</td>
                       <td className="px-3 py-2 text-xs text-zinc-500">{it.status}</td>
