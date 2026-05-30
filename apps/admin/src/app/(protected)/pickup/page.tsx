@@ -52,7 +52,10 @@ const ACTIVE_STATUSES = ["pending", "confirmed", "reserved", "ready", "partially
 const INACTIVE_ITEM_STATUSES = new Set(["cancelled", "picked_up", "expired"]);
 
 function isPickable(order: OpenOrder): boolean {
-  return order.status === "ready";
+  // ready 可取；partially_completed（部分取貨後）只要還有 active 品項也可繼續取剩餘
+  if (order.status === "ready") return true;
+  if (order.status === "partially_completed") return activeItems(order).length > 0;
+  return false;
 }
 function activeItems(order: OpenOrder) {
   return order.items.filter((it) => !INACTIVE_ITEM_STATUSES.has(it.status));
