@@ -734,14 +734,14 @@ export function OrderDetail({
                         value={Number(eff.unit_price)}
                         min={0}
                         prefix="$"
-                        disabled={!canEdit}
+                        disabled={!canEdit || isPicked}
                         onSave={async (v) => setItemDraft(it.id, { unit_price: v })}
                       />
                     </td>
                     <td className="px-3 py-2 text-right font-mono">
                       <EditableDiscount
                         value={eff.discount}
-                        disabled={!canEdit}
+                        disabled={!canEdit || isPicked}
                         onChange={(v) => setItemDraft(it.id, { discount: v })}
                         compact
                         referenceAmount={Number(eff.qty) * Number(eff.unit_price)}
