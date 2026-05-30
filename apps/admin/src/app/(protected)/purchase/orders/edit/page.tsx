@@ -167,7 +167,7 @@ function PageContent() {
 
   const totals = useMemo(() => {
     const subtotal = items.reduce((s, r) => s + r.qty_ordered * r.unit_cost, 0);
-    return { subtotal, withTax: subtotal * 1.05 };
+    return { subtotal };
   }, [items]);
 
   const editable = header?.status === "draft";
@@ -221,10 +221,9 @@ function PageContent() {
               <Row label="已收貨量">{totalReceived}</Row>
               <Row label="到貨進度">{recvPct.toFixed(0)}%</Row>
               <div className="my-2 border-t border-zinc-200 dark:border-zinc-700" />
-              <Row label="未稅小計">${totals.subtotal.toFixed(0)}</Row>
-              <Row label="含稅總計">
+              <Row label="總計">
                 <span className="text-lg font-semibold text-blue-600 dark:text-blue-400">
-                  ${totals.withTax.toFixed(0)}
+                  ${totals.subtotal.toFixed(0)}
                 </span>
               </Row>
             </dl>
@@ -310,7 +309,7 @@ function PageContent() {
                       <Td className="text-right text-zinc-500">
                         {r.qty_returned > 0 ? r.qty_returned : "—"}
                       </Td>
-                      <Td className="text-right">${r.unit_cost.toFixed(0)}</Td>
+                      <Td className="text-right font-medium text-amber-600 dark:text-amber-400">${r.unit_cost.toFixed(0)}</Td>
                       <Td className="text-right font-mono">${(r.qty_ordered * r.unit_cost).toFixed(0)}</Td>
                     </tr>
                   ))
