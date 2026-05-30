@@ -31,7 +31,7 @@ export function Modal({
       role="dialog"
     >
       <div
-        className={`flex w-full ${maxWidth} max-h-[calc(100vh-2rem)] flex-col rounded-lg border border-zinc-200 bg-white shadow-2xl dark:border-zinc-800 dark:bg-zinc-900 sm:max-h-[calc(100vh-4rem)]`}
+        className={`flex w-full ${maxWidth} max-h-[calc(100dvh-2rem)] flex-col rounded-lg border border-zinc-200 bg-white shadow-2xl dark:border-zinc-800 dark:bg-zinc-900 sm:max-h-[calc(100dvh-4rem)]`}
       >
         <div className="flex shrink-0 items-center justify-between border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
           <h2 className="text-base font-semibold">{title}</h2>
