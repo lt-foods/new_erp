@@ -139,6 +139,8 @@ export function OrderDetail({
   const [items, setItems] = useState<ItemRow[] | null>(null);
   const [timeline, setTimeline] = useState<TimelineStep[] | null>(null);
   const [staffNames, setStaffNames] = useState<Map<string, string>>(new Map());
+  // sku_id → 現行分店價（prices scope=branch, effective_to IS NULL）
+  const [branchPrices, setBranchPrices] = useState<Map<number, number>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const [transferOpen, setTransferOpen] = useState(false);
@@ -201,6 +203,27 @@ export function OrderDetail({
       if (iRes.error) { setError(iRes.error.message); return; }
       const itemsData = (iRes.data ?? []) as unknown as ItemRow[];
       setItems(itemsData);
+
+      // ========== 載入各 SKU 現行分店價（prices scope=branch, 生效中）==========
+      const priceSkuIds = Array.from(
+        new Set(itemsData.map((it) => it.sku?.id).filter((x): x is number => !!x)),
+      );
+      if (priceSkuIds.length > 0) {
+        const { data: priceRows } = await sb
+          .from("prices")
+          .select("sku_id, price")
+          .eq("scope", "branch")
+          .is("scope_id", null)
+          .is("effective_to", null)
+          .in("sku_id", priceSkuIds);
+        if (!cancelled) {
+          const pm = new Map<number, number>();
+          for (const p of (priceRows ?? []) as { sku_id: number; price: number }[]) {
+            pm.set(Number(p.sku_id), Number(p.price));
+          }
+          setBranchPrices(pm);
+        }
+      }
 
       // ========== 載入加單者 user names ==========
       const uids = new Set<string>();
@@ -672,6 +695,7 @@ export function OrderDetail({
                 <th className="px-3 py-2 text-left font-medium text-zinc-500">商品</th>
                 <th className="px-3 py-2 text-right font-medium text-zinc-500">數量</th>
                 <th className="px-3 py-2 text-right font-medium text-zinc-500">單價</th>
+                <th className="px-3 py-2 text-right font-medium text-zinc-500">分店價</th>
                 <th className="px-3 py-2 text-right font-medium text-zinc-500">折扣</th>
                 <th className="px-3 py-2 text-right font-medium text-zinc-500">小計</th>
                 <th className="px-3 py-2 text-left font-medium text-zinc-500">備註</th>
@@ -681,7 +705,7 @@ export function OrderDetail({
             </thead>
             <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
               {items.length === 0 ? (
-                <tr><td colSpan={8} className="p-4 text-center text-zinc-500">尚無明細</td></tr>
+                <tr><td colSpan={9} className="p-4 text-center text-zinc-500">尚無明細</td></tr>
               ) : items.map((it) => {
                 const eff = itemEffective(it);
                 const sub = computeLineSubtotal(Number(eff.qty), eff.unit_price, eff.discount);
@@ -737,6 +761,11 @@ export function OrderDetail({
                         disabled={!canEdit || isPicked}
                         onSave={async (v) => setItemDraft(it.id, { unit_price: v })}
                       />
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-zinc-500">
+                      {it.sku && branchPrices.has(it.sku.id)
+                        ? `$${branchPrices.get(it.sku.id)!.toFixed(0)}`
+                        : "—"}
                     </td>
                     <td className="px-3 py-2 text-right font-mono">
                       <EditableDiscount
