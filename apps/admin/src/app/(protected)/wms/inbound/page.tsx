@@ -12,13 +12,16 @@ import {
 } from "@/components/TransferReceiveModal";
 import SpinButton from "@/components/SpinButton";
 import { translateRpcError } from "@/lib/rpcError";
+import { useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 
 type Location = { id: number; name: string };
 type StoreLite = { id: number; location_id: number | null };
+type StoreRow = { id: number; name: string; location_id: number | null };
 type ItemSummary = { lines: number; totalQty: number; names: string[] };
 
 export default function TransfersInboxPage() {
   const [transfers, setTransfers] = useState<Transfer[] | null>(null);
+  const [stores, setStores] = useState<StoreRow[]>([]);
   const [locations, setLocations] = useState<Map<number, string>>(new Map());
   const [waves, setWaves] = useState<Map<number, Wave>>(new Map());
   const [itemSummary, setItemSummary] = useState<Map<number, ItemSummary>>(new Map());
@@ -36,29 +39,62 @@ export default function TransfersInboxPage() {
   type DateFilter = "tomorrow" | "today_or_earlier" | "all_pending" | "done" | null;
   const [dateFilter, setDateFilter] = useState<DateFilter>(null);
 
+  // 分店帳號鎖定：把 store.name 比對 user.app_metadata.stores，回該分店的 location_id。
+  // 分店帳號只能看自己分店（dest_location = 該 location_id）；HQ/總倉回 null = 看全部。
+  const storeLocOptions = useMemo(
+    () =>
+      stores
+        .filter((s) => s.location_id != null)
+        .map((s) => ({ id: s.location_id as number, name: s.name })),
+    [stores],
+  );
+  const branchLocationId = useUserBranchStoreId(storeLocOptions);
+
+  // 先載入分店清單（含 name + location_id），供分店帳號鎖定用。獨立 effect 只跑一次。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const sb = getSupabase();
+      const { data } = await sb
+        .from("stores")
+        .select("id, name, location_id")
+        .eq("is_active", true)
+        .order("name");
+      if (!cancelled) setStores((data as StoreRow[]) ?? []);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const sb = getSupabase();
         // 拆兩個 query 防止 NULL shipped_at 的 received 把 limit 用滿、擠掉真正待收的 shipped
+        // 分店帳號：只撈自己分店 (dest_location = branchLocationId) 的 transfer
+        let pendingQ = sb
+          .from("transfers")
+          .select(
+            "id, transfer_no, source_location, dest_location, status, transfer_type, shipped_at, received_at, notes",
+          )
+          .eq("status", "shipped")
+          .order("shipped_at", { ascending: false, nullsFirst: false });
+        let doneQ = sb
+          .from("transfers")
+          .select(
+            "id, transfer_no, source_location, dest_location, status, transfer_type, shipped_at, received_at, notes",
+            { count: "exact" },
+          )
+          .eq("status", "received")
+          .order("received_at", { ascending: false, nullsFirst: false })
+          .limit(doneLimit);
+        if (branchLocationId != null) {
+          pendingQ = pendingQ.eq("dest_location", branchLocationId);
+          doneQ = doneQ.eq("dest_location", branchLocationId);
+        }
         const [{ data: pendingData, error: e1 }, { data: doneData, error: e2, count: doneCount }] = await Promise.all([
-          sb
-            .from("transfers")
-            .select(
-              "id, transfer_no, source_location, dest_location, status, transfer_type, shipped_at, received_at, notes",
-            )
-            .eq("status", "shipped")
-            .order("shipped_at", { ascending: false, nullsFirst: false }),
-          sb
-            .from("transfers")
-            .select(
-              "id, transfer_no, source_location, dest_location, status, transfer_type, shipped_at, received_at, notes",
-              { count: "exact" },
-            )
-            .eq("status", "received")
-            .order("received_at", { ascending: false, nullsFirst: false })
-            .limit(doneLimit),
+          pendingQ,
+          doneQ,
         ]);
         if (e1) throw new Error(e1.message);
         if (e2) throw new Error(e2.message);
@@ -171,7 +207,7 @@ export default function TransfersInboxPage() {
     return () => {
       cancelled = true;
     };
-  }, [reloadTick, doneLimit]);
+  }, [reloadTick, doneLimit, branchLocationId]);
 
   const destOptions = useMemo(() => {
     const set = new Map<number, string>();
@@ -379,23 +415,25 @@ export default function TransfersInboxPage() {
                 })()}
           </p>
         </div>
-        <label className="flex items-center gap-2 text-sm">
-          <span className="text-zinc-500">分店</span>
-          <select
-            value={String(locationFilter)}
-            onChange={(e) =>
-              setLocationFilter(e.target.value === "all" ? "all" : Number(e.target.value))
-            }
-            className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
-          >
-            <option value="all">全部</option>
-            {destOptions.map(([id, name]) => (
-              <option key={id} value={id}>
-                {name}
-              </option>
-            ))}
-          </select>
-        </label>
+        {branchLocationId == null && (
+          <label className="flex items-center gap-2 text-sm">
+            <span className="text-zinc-500">分店</span>
+            <select
+              value={String(locationFilter)}
+              onChange={(e) =>
+                setLocationFilter(e.target.value === "all" ? "all" : Number(e.target.value))
+              }
+              className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+            >
+              <option value="all">全部</option>
+              {destOptions.map(([id, name]) => (
+                <option key={id} value={id}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </header>
 
       {error && (
