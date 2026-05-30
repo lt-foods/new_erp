@@ -447,16 +447,17 @@ function PickupPageContent() {
                         const discAmt = Number(o.discount_amount ?? 0);
                         const totalAmt = Math.max(0, subAmt - discAmt);
                         return (
-                          <li key={o.id} className={`flex items-center gap-3 rounded-md border p-3 ${selected.has(o.id) ? "border-emerald-400 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950" : "border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"}`}>
+                          <li key={o.id} className={`flex flex-col gap-3 rounded-md border p-3 sm:flex-row sm:items-center ${selected.has(o.id) ? "border-emerald-400 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950" : "border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"}`}>
+                            <div className="flex min-w-0 flex-1 items-start gap-3">
                             <input
                               type="checkbox"
                               checked={selected.has(o.id)}
                               onChange={() => toggleSelect(o.id)}
                               disabled={!canPickup || pickableCount === 0}
-                              className="h-4 w-4"
+                              className="mt-1 h-4 w-4 shrink-0"
                             />
                             <OrderThumb order={o} />
-                            <div className="flex-1 text-sm">
+                            <div className="min-w-0 flex-1 text-sm">
                               <div className="flex items-baseline gap-2">
                                 <span>{o.campaign?.name ?? "(未知活動)"}</span>
                                 {o.status === "partially_completed" && (
@@ -487,16 +488,15 @@ function PickupPageContent() {
                                   <span className="ml-2 text-zinc-400">⏳ 未到貨</span>
                                 )}
                                 {o.pickup_deadline && <span className="ml-2">截止：{o.pickup_deadline}</span>}
+                                {/* 訂單金額一律顯示（含未到貨的單），方便核帳 */}
+                                <span className="ml-2 font-mono font-semibold text-zinc-700 dark:text-zinc-200">${totalAmt}</span>
+                                {discAmt > 0 && (
+                                  <span className="ml-1 text-[10px] text-red-600 dark:text-red-400" title={`小計 $${subAmt} − 折扣 $${discAmt}`}>
+                                    (含 ${discAmt} 折扣)
+                                  </span>
+                                )}
                                 {canPickup ? (
-                                  <>
-                                    <span className="ml-2">{pickableCount} 項可取</span>
-                                    <span className="ml-2 font-mono text-zinc-700 dark:text-zinc-200">${totalAmt}</span>
-                                    {discAmt > 0 && (
-                                      <span className="ml-1 text-[10px] text-red-600 dark:text-red-400" title={`小計 $${subAmt} − 折扣 $${discAmt}`}>
-                                        (含 ${discAmt} 折扣)
-                                      </span>
-                                    )}
-                                  </>
+                                  <span className="ml-2">{pickableCount} 項可取</span>
                                 ) : (
                                   <span className="ml-2 text-amber-600 dark:text-amber-400">⏳ 分店尚未收貨，無法取貨</span>
                                 )}
@@ -507,6 +507,8 @@ function PickupPageContent() {
                                 )}
                               </div>
                             </div>
+                            </div>
+                            <div className="flex flex-wrap gap-2 sm:shrink-0">
                             <SpinButton
                               onClick={() => notifyPickup(m, o)}
                               disabled={!canPickup || notifyingId === o.id || m.no_notify_pickup}
@@ -540,6 +542,7 @@ function PickupPageContent() {
                                 取消訂單
                               </SpinButton>
                             )}
+                            </div>
                           </li>
                         );
                       })}
@@ -659,10 +662,18 @@ function PickupPageContent() {
 }
 
 function OrderThumb({ order }: { order: OpenOrder }) {
-  // 取第一個 active item 的 product 第一張 image
-  const firstImg = order.items
+  // 取第一個 active item 的 product 第一張 image。
+  // DB 存的是 storage 相對路徑，必須經 productImageUrl 轉成 public URL，
+  // 否則 <img> 直接吃相對路徑會壞圖（顯示破圖 ?）。
+  const rawImg = order.items
     .map((it) => it.sku?.product?.images?.[0])
     .find((u): u is string => typeof u === "string" && !!u);
+  // DB 存的是 storage 物件 key，需轉 public URL（已是完整 URL 則原樣使用）
+  const firstImg = rawImg
+    ? /^https?:\/\//i.test(rawImg)
+      ? rawImg
+      : getSupabase().storage.from("products").getPublicUrl(rawImg).data.publicUrl
+    : null;
   if (!firstImg) {
     return (
       <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-zinc-200 text-xs text-zinc-500 dark:bg-zinc-800">
