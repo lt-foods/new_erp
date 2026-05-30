@@ -11,6 +11,7 @@ import { printViaIframe } from "@/lib/printIframe";
 import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
 import { getPickupRecents, recordPickupRecent, type RecentCustomer } from "@/lib/pickupRecents";
+import { publicProductUrl } from "@/lib/campaignCover";
 
 type Member = {
   id: number;
@@ -668,12 +669,9 @@ function OrderThumb({ order }: { order: OpenOrder }) {
   const rawImg = order.items
     .map((it) => it.sku?.product?.images?.[0])
     .find((u): u is string => typeof u === "string" && !!u);
-  // DB 存的是 storage 物件 key，需轉 public URL（已是完整 URL 則原樣使用）
-  const firstImg = rawImg
-    ? /^https?:\/\//i.test(rawImg)
-      ? rawImg
-      : getSupabase().storage.from("products").getPublicUrl(rawImg).data.publicUrl
-    : null;
+  // DB 存的是 storage 物件 key，需轉成 products bucket 的 public URL（已是完整 URL 則原樣使用）。
+  // 原本直接把相對路徑塞進 <img src> 導致破圖（顯示 ?）。
+  const firstImg = publicProductUrl(rawImg);
   if (!firstImg) {
     return (
       <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-zinc-200 text-xs text-zinc-500 dark:bg-zinc-800">
