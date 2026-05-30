@@ -374,7 +374,7 @@ function PageContent() {
 
   const totals = useMemo(() => {
     const subtotal = items.reduce((s, r) => s + r.qty_requested * r.unit_cost, 0);
-    return { subtotal, withTax: subtotal * 1.05 };
+    return { subtotal };
   }, [items]);
 
   const unassignedCount = items.filter((r) => !r.suggested_supplier_id).length;
@@ -649,10 +649,9 @@ function PageContent() {
                 )}
               </Row>
               <div className="my-2 border-t border-zinc-200 dark:border-zinc-700" />
-              <Row label="未稅小計">${totals.subtotal.toFixed(1)}</Row>
-              <Row label="含稅總計">
+              <Row label="總計">
                 <span className="text-lg font-semibold text-blue-600 dark:text-blue-400">
-                  ${totals.withTax.toFixed(1)}
+                  ${totals.subtotal.toFixed(1)}
                 </span>
               </Row>
             </dl>
@@ -839,7 +838,7 @@ function PageContent() {
                         className={`w-24 rounded-md border bg-white px-2 py-1 text-right text-sm dark:bg-zinc-800 ${cellWarn}`}
                       />
                     ) : (
-                      r.unit_cost.toFixed(4)
+                      <span className="font-medium text-amber-600 dark:text-amber-400">${r.unit_cost.toFixed(0)}</span>
                     )}
                   </Td>
                   <Td className="text-right">

@@ -220,7 +220,6 @@ function PageContent() {
   }, [items, supplierMap]);
 
   const grandTotal = groups.reduce((s, g) => s + g.subtotal, 0);
-  const grandWithTax = grandTotal * 1.05;
 
   if (!id) return <div className="p-6">缺少 id 參數</div>;
   if (error) return <div className="p-6 text-red-600">{error}</div>;
@@ -332,7 +331,7 @@ function PageContent() {
                       {r.qty_requested}
                       {r.unit_uom ?? ""}
                     </Td>
-                    <Td className="text-right">${r.unit_cost.toFixed(0)}</Td>
+                    <Td className="text-right font-medium text-amber-600">${r.unit_cost.toFixed(0)}</Td>
                     <Td className="text-right">
                       {r.retail_price !== null ? `$${r.retail_price.toFixed(0)}` : "—"}
                     </Td>
@@ -357,8 +356,7 @@ function PageContent() {
       ))}
 
       <div className="mt-6 border-t-2 border-zinc-700 pt-3 text-right">
-        <div className="text-sm text-zinc-600">未稅總計：${grandTotal.toFixed(1)}</div>
-        <div className="text-2xl font-bold">${grandWithTax.toFixed(1)}</div>
+        <div className="text-2xl font-bold">總計：${grandTotal.toFixed(1)}</div>
       </div>
 
       {header.notes && (
