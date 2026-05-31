@@ -15,7 +15,14 @@ import type { OrderStatus } from "@/lib/orderStatus";
 const PENDING_STATUSES: OrderStatus[] = ["pending", "confirmed", "shipping", "ready"];
 
 type Status = "active" | "inactive" | "blocked" | "merged" | "deleted";
-type SortKey = "updated_at" | "name" | "home_store_id" | "joined_at" | "last_visit_at" | "external_source";
+type SortKey =
+  | "updated_at"
+  | "name"
+  | "home_store_id"
+  | "joined_at"
+  | "last_visit_at"
+  | "external_source"
+  | "unpicked_order_count";
 type SortDir = "asc" | "desc";
 
 type MemberRow = {
@@ -35,10 +42,11 @@ type MemberRow = {
   home_store_id: number | null;
   takeout_store_name_hint: string | null;
   merged_into_member_id: number | null;
+  unpicked_order_count: number;
 };
 
 const MEMBER_SELECT_COLS =
-  "id, member_no, name, phone, avatar_url, tier_id, status, updated_at, joined_at, last_visit_at, external_source, external_id, line_user_id, home_store_id, takeout_store_name_hint, merged_into_member_id";
+  "id, member_no, name, phone, avatar_url, tier_id, status, updated_at, joined_at, last_visit_at, external_source, external_id, line_user_id, home_store_id, takeout_store_name_hint, merged_into_member_id, unpicked_order_count";
 
 /** 顯示手機，若是 LIFF auto-register 的 placeholder (line:Uxxxx) 則視為未填 */
 function displayPhone(p: string | null): string {
@@ -139,7 +147,7 @@ function MembersListBody() {
     (async () => {
       try {
         let q = getSupabase()
-          .from("members")
+          .from("v_admin_member_list")
           .select(MEMBER_SELECT_COLS, { count: "exact" })
           .order(sortBy, { ascending: sortDir === "asc" })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
@@ -178,7 +186,7 @@ function MembersListBody() {
           targetsToFetch.clear();
           if (ids.length === 0) break;
           const { data: ts } = await getSupabase()
-            .from("members")
+            .from("v_admin_member_list")
             .select(MEMBER_SELECT_COLS)
             .in("id", ids);
           for (const t of (ts ?? []) as MemberRow[]) {
@@ -351,6 +359,7 @@ function MembersListBody() {
           <ThSort label="取貨店" col="home_store_id" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
           <Th>手機</Th>
           <Th align="right">訂單數</Th>
+          <ThSort label="已到貨未取貨" col="unpicked_order_count" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} align="right" />
           <Th align="right">未取貨金額</Th>
           <Th align="right">儲值</Th>
           <ThSort label="加入時間" col="joined_at" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} align="right" />
@@ -360,9 +369,9 @@ function MembersListBody() {
         </THead>
         <TBody>
           {rows === null ? (
-            <SkeletonRows cols={10} />
+            <SkeletonRows cols={11} />
           ) : rows.length === 0 ? (
-            <EmptyRow colSpan={10}>
+            <EmptyRow colSpan={11}>
               {total === 0 && !query ? "還沒有會員，按「新增會員」開始建立。" : "沒有符合條件的會員。"}
             </EmptyRow>
           ) : (
@@ -436,6 +445,7 @@ function MembersListBody() {
                   </Td>
                   <Td className="font-mono text-xs">{displayPhone(r.phone)}</Td>
                   <Td align="right" className="font-mono">{bal?.orderCount ?? 0}</Td>
+                  <Td align="right" className="font-mono">{r.unpicked_order_count > 0 ? r.unpicked_order_count : "—"}</Td>
                   <Td align="right" className="font-mono">{bal?.unpicked ? `$${bal.unpicked.toLocaleString()}` : "—"}</Td>
                   <Td align="right" className="font-mono">{bal?.wallet?.toLocaleString() ?? "—"}</Td>
                   <Td align="right" className="whitespace-nowrap text-xs text-zinc-500">
