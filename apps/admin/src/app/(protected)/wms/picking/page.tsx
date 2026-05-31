@@ -31,6 +31,9 @@ type DemandRow = {
   wave_qty: number;
   shipped_qty: number;
   is_restock_sourced?: boolean;
+  // per (po_id, sku_id) 跨 store 已撿真值（與 RPC 守衛對齊）。
+  // 同 (po, sku) 各 row 共享同值；NULL fallback 給未套 migration 的本地環境（會偏低，但不會 crash）。
+  po_sku_already_wave?: number | null;
 };
 
 type Supplier = { id: number; code: string; name: string };
@@ -170,7 +173,9 @@ export default function PickingWorkstationPage() {
           qty_ordered: Number(r.qty_ordered),
           qty_in_transit: inTransit,
           qty_shortage: shortage,
-          already_wave_for_sku: 0,
+          // 用 view 新欄位 po_sku_already_wave：per (po, sku) 跨 store 真值，
+          // 與 RPC 守衛 SUM(pwi) 對齊。fallback 給未套 migration 的本地環境（會偏低）。
+          already_wave_for_sku: Number(r.po_sku_already_wave ?? 0),
           is_restock_sourced: !!r.is_restock_sourced,
         });
         s.totalOrdered += Number(r.qty_ordered);
@@ -181,9 +186,6 @@ export default function PickingWorkstationPage() {
       s.storeDemand.set(r.store_id, (s.storeDemand.get(r.store_id) ?? 0) + Number(r.demand_qty));
       s.storeWave.set(r.store_id, (s.storeWave.get(r.store_id) ?? 0) + Number(r.wave_qty));
       s.storeShipped.set(r.store_id, (s.storeShipped.get(r.store_id) ?? 0) + Number(r.shipped_qty));
-      // already_wave per (po, sku) 累加（跨 store）
-      const poEntry = s.poList.find((p) => p.po_id === r.po_id)!;
-      poEntry.already_wave_for_sku += Number(r.wave_qty);
     }
     // 計算 totals
     for (const s of grouped.values()) {

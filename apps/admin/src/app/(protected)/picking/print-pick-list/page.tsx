@@ -24,6 +24,9 @@ type DemandRow = {
   demand_qty: number;
   wave_qty: number;
   shipped_qty: number;
+  // per (po, sku) 跨 store 已撿真值（與 RPC 守衛對齊）。
+  // 同 (po, sku) 各 row 共享同值；NULL fallback 給未套 migration 環境。
+  po_sku_already_wave?: number | null;
 };
 
 type StoreInfo = { store_id: number; store_code: string | null; store_name: string };
@@ -100,10 +103,12 @@ export default function PrintPickListPage() {
         poSkuSeen.add(poSkuKey);
         s.totalOrdered += Number(r.qty_ordered);
         s.totalGr += Number(r.gr_qty);
+        // 用 view 新欄位 po_sku_already_wave：per (po, sku) 跨 store 真值，
+        // 與 RPC 守衛 SUM(pwi) 對齊。fallback 給未套 migration 的本地環境（會偏低）。
+        s.totalAlreadyWave += Number(r.po_sku_already_wave ?? 0);
       }
       s.storeDemand.set(r.store_id, (s.storeDemand.get(r.store_id) ?? 0) + Number(r.demand_qty));
       s.storeWave.set(r.store_id, (s.storeWave.get(r.store_id) ?? 0) + Number(r.wave_qty));
-      s.totalAlreadyWave += Number(r.wave_qty);
     }
     for (const s of skuMap.values()) {
       s.totalAvailable = Math.max(0, s.totalGr - s.totalAlreadyWave);
