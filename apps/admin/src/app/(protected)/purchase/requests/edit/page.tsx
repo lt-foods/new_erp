@@ -92,6 +92,12 @@ function PageContent() {
   const [busy, setBusy] = useState<"save" | "submit" | "split" | "reopen" | null>(null);
   const [destLocationId, setDestLocationId] = useState<number | null>(null);
 
+  // 頂部「一次套用到全部品項」工具列的暫存值（空字串＝不套用該欄）
+  const [bulkSupplier, setBulkSupplier] = useState<number | null>(null);
+  const [bulkCost, setBulkCost] = useState<string>("");
+  const [bulkBranch, setBulkBranch] = useState<string>("");
+  const [bulkRetail, setBulkRetail] = useState<string>("");
+
   useEffect(() => {
     if (!id) {
       setLoading(false);
@@ -392,6 +398,34 @@ function PageContent() {
 
   function removeItem(idx: number) {
     setItems((cur) => cur.filter((_, i) => i !== idx));
+  }
+
+  // 把頂部工具列的值一次套用到所有品項；留空的欄位不動，避免誤清既有值
+  function bulkApply() {
+    const costNum = bulkCost.trim() === "" ? null : Number(bulkCost);
+    const branchNum = bulkBranch.trim() === "" ? null : Number(bulkBranch);
+    const retailNum = bulkRetail.trim() === "" ? null : Number(bulkRetail);
+    const hasSupplier = bulkSupplier !== null;
+    if (
+      !hasSupplier &&
+      costNum === null &&
+      branchNum === null &&
+      retailNum === null
+    ) {
+      return;
+    }
+    setItems((cur) =>
+      cur.map((r) => {
+        const next = { ...r };
+        if (hasSupplier) next.suggested_supplier_id = bulkSupplier;
+        if (costNum !== null && !Number.isNaN(costNum)) next.unit_cost = costNum;
+        if (branchNum !== null && !Number.isNaN(branchNum)) next.franchise_price = branchNum;
+        if (retailNum !== null && !Number.isNaN(retailNum)) next.retail_price = retailNum;
+        next.line_subtotal = next.qty_requested * next.unit_cost;
+        next.dirty = true;
+        return next;
+      }),
+    );
   }
 
   async function saveDraft() {
@@ -736,6 +770,63 @@ function PageContent() {
               *成本=廠商給的價格，售價=ERP 商品價格
             </span>
           </div>
+          {editable && items.length > 0 && (
+            <div className="flex flex-wrap items-end gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-2 dark:border-zinc-800 dark:bg-zinc-900/50">
+              <span className="self-center text-xs font-medium text-zinc-500">一次套用全部：</span>
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[10px] uppercase tracking-wide text-zinc-400">供應商</span>
+                <div className="w-44">
+                  <SupplierPicker
+                    value={bulkSupplier}
+                    suppliers={suppliers}
+                    usage={supplierUsage}
+                    onChange={setBulkSupplier}
+                  />
+                </div>
+              </label>
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[10px] uppercase tracking-wide text-zinc-400">成本</span>
+                <input
+                  type="number"
+                  step="1"
+                  value={bulkCost}
+                  onChange={(e) => setBulkCost(e.target.value)}
+                  placeholder="—"
+                  className="w-20 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                />
+              </label>
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[10px] uppercase tracking-wide text-zinc-400">分店價</span>
+                <input
+                  type="number"
+                  step="1"
+                  value={bulkBranch}
+                  onChange={(e) => setBulkBranch(e.target.value)}
+                  placeholder="—"
+                  className="w-20 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                />
+              </label>
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[10px] uppercase tracking-wide text-zinc-400">售價</span>
+                <input
+                  type="number"
+                  step="1"
+                  value={bulkRetail}
+                  onChange={(e) => setBulkRetail(e.target.value)}
+                  placeholder="—"
+                  className="w-20 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={bulkApply}
+                className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500"
+              >
+                套用到 {items.length} 項
+              </button>
+              <span className="self-center text-[11px] text-zinc-400">留空的欄位不會被覆寫</span>
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
@@ -771,12 +862,12 @@ function PageContent() {
               </tr>
             ) : (
               items.map((r, idx) => {
-                // 成本 < 分店價 < 售價 必須遞增，三值有任一缺則不檢查（送審前才擋）
+                // 成本 ≤ 分店價 < 售價 必須遞增，三值有任一缺則不檢查（送審前才擋）
                 const cost = Number(r.unit_cost);
                 const branch = r.franchise_price != null ? Number(r.franchise_price) : null;
                 const retail = r.retail_price != null ? Number(r.retail_price) : null;
                 const priceBad =
-                  cost > 0 && branch != null && retail != null && !(cost < branch && branch < retail);
+                  branch != null && retail != null && !(cost <= branch && branch < retail);
                 const cellWarn = priceBad
                   ? "border-rose-400 bg-rose-50 dark:border-rose-700 dark:bg-rose-950"
                   : "border-zinc-300 dark:border-zinc-700";
@@ -788,7 +879,7 @@ function PageContent() {
                     <div className="font-mono text-xs text-zinc-500">{r.sku_code}</div>
                     {priceBad && (
                       <div className="mt-0.5 text-[11px] font-medium text-rose-600 dark:text-rose-400">
-                        ⚠ 成本 &lt; 分店價 &lt; 售價 順序錯
+                        ⚠ 成本 ≤ 分店價 &lt; 售價 順序錯
                       </div>
                     )}
                   </Td>
