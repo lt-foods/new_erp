@@ -433,13 +433,14 @@ function PageContent() {
   async function submitForReview() {
     if (!id) return;
     // 送審前驗：每行必須填妥成本 / 分店價 / 售價 + 數量 + 供應商
-    // 並且要符合 成本 < 分店價 < 售價 三段遞增關係
+    // 成本可為 0（如贈品 / 無償樣品進貨，整張請購單金額可為零），但不可為負
+    // 並且要符合 成本 ≤ 分店價 < 售價 的遞增關係
     const incomplete: string[] = [];
     const priceIssues: string[] = [];
     for (const r of items) {
       const issues: string[] = [];
       if (!r.qty_requested || r.qty_requested <= 0) issues.push("數量");
-      if (!r.unit_cost || r.unit_cost <= 0) issues.push("成本");
+      if (r.unit_cost === null || r.unit_cost === undefined || Number.isNaN(r.unit_cost) || r.unit_cost < 0) issues.push("成本");
       if (r.franchise_price === null || r.franchise_price === undefined) issues.push("分店價");
       if (r.retail_price === null || r.retail_price === undefined) issues.push("售價");
       if (!r.suggested_supplier_id) issues.push("供應商");
@@ -450,7 +451,7 @@ function PageContent() {
       const cost = Number(r.unit_cost);
       const branch = Number(r.franchise_price);
       const retail = Number(r.retail_price);
-      if (!(cost < branch && branch < retail)) {
+      if (!(cost <= branch && branch < retail)) {
         priceIssues.push(`${r.sku_code}：成本 $${cost} / 分店價 $${branch} / 售價 $${retail}`);
       }
     }
@@ -459,7 +460,7 @@ function PageContent() {
       return;
     }
     if (priceIssues.length > 0) {
-      setError(`價格必須符合 成本 < 分店價 < 售價：\n${priceIssues.join("\n")}`);
+      setError(`價格必須符合 成本 ≤ 分店價 < 售價：\n${priceIssues.join("\n")}`);
       return;
     }
     if (!confirm("確定送出審核？")) {
