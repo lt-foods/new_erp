@@ -593,17 +593,20 @@ export default function CampaignsListPage() {
   const fromIdx = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const toIdx = Math.min(page * PAGE_SIZE, total);
 
-  // 操作鈕（加單 / 編輯 / 結單 / 結算）— 桌機表格與手機卡片共用，單一維護點
+  // 「加單」獨立放在 checkbox 旁邊（status=open 才出現），不參與下方操作鈕群組
+  const addOrderLink = (r: Row) =>
+    r.status === "open" ? (
+      <Link
+        href={`/campaigns/order-entry?id=${r.id}`}
+        className="text-xs text-green-600 hover:underline dark:text-green-400"
+      >
+        加單
+      </Link>
+    ) : null;
+
+  // 操作鈕（編輯 / 結單 / 發 FB / 結算 / 刪除）— 桌機表格與手機卡片共用，單一維護點
   const campaignActions = (r: Row) => (
     <>
-      {r.status === "open" && (
-        <Link
-          href={`/campaigns/order-entry?id=${r.id}`}
-          className="text-xs text-green-600 hover:underline dark:text-green-400"
-        >
-          加單
-        </Link>
-      )}
       {showAdminActions && (
         <SpinButton
           onClick={() => openEdit(r.id)}
@@ -830,6 +833,11 @@ export default function CampaignsListPage() {
                 onClick={(e) => e.stopPropagation()}
                 className="mt-1 cursor-pointer"
               />
+              {r.status === "open" && (
+                <span className="mt-0.5" onClick={(e) => e.stopPropagation()}>
+                  {addOrderLink(r)}
+                </span>
+              )}
               <CampaignThumb url={campaignCoverUrl(r.cover_image_url, r.campaign_items)} name={r.name} />
               <div className="min-w-0 flex-1">
                 <div className="break-words text-base font-bold text-zinc-900 dark:text-zinc-100">{r.name}</div>
@@ -897,13 +905,13 @@ export default function CampaignsListPage() {
               className="cursor-pointer"
             />
           </Th>
-          <Th className="w-20">{""}</Th><Th className="min-w-[14rem]">名稱</Th><Th className="whitespace-nowrap">狀態</Th><Th className="whitespace-nowrap">收單</Th><Th className="whitespace-nowrap">開團/收單</Th><Th className="whitespace-nowrap">取貨截止</Th><Th align="right" className="whitespace-nowrap">商品數</Th><Th align="right" className="whitespace-nowrap">下單總數</Th><Th align="right" className="whitespace-nowrap">更新</Th><Th>{""}</Th>
+          <Th className="w-12">{""}</Th><Th className="w-20">{""}</Th><Th className="min-w-[14rem]">名稱</Th><Th className="whitespace-nowrap">狀態</Th><Th className="whitespace-nowrap">收單</Th><Th className="whitespace-nowrap">開團/收單</Th><Th className="whitespace-nowrap">取貨截止</Th><Th align="right" className="whitespace-nowrap">商品數</Th><Th align="right" className="whitespace-nowrap">下單總數</Th><Th align="right" className="whitespace-nowrap">更新</Th><Th>{""}</Th>
         </THead>
         <TBody>
           {rows === null ? (
-            <LoadingRow colSpan={11} />
+            <LoadingRow colSpan={12} />
           ) : rows.length === 0 ? (
-            <EmptyRow colSpan={11}>{total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}</EmptyRow>
+            <EmptyRow colSpan={12}>{total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}</EmptyRow>
           ) : rows.map((r) => (
             <Tr key={r.id} onClick={() => openEdit(r.id)} className={selectedIds.has(r.id) ? "bg-blue-50 dark:bg-blue-950/30" : ""}>
                 <Td className="w-10">
@@ -914,6 +922,9 @@ export default function CampaignsListPage() {
                     onClick={(e) => e.stopPropagation()}
                     className="cursor-pointer"
                   />
+                </Td>
+                <Td className="w-12 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                  {addOrderLink(r)}
                 </Td>
                 <Td className="w-20">
                   <CampaignThumb url={campaignCoverUrl(r.cover_image_url, r.campaign_items)} name={r.name} />
