@@ -42,6 +42,29 @@ export const RELEASE_NOTES_PAGE = "/release-notes";
 // 最新的放最前面
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    id: "2026-07-01-member-merge",
+    date: "2026-07-01",
+    title: "📥 教學：把「虛擬會員」合併進 LINE 會員（訂單會一起搬）",
+    items: [
+      {
+        tag: "tutorial",
+        text: "客人原本都用「虛擬會員」加單，之後來門市取貨時才註冊綁定 LINE — 這時到該虛擬會員的會員資料頁，點「🔗 合併到已綁 LINE 會員」，搜尋並選擇對應的 LINE 會員後確認，訂單 / 儲值金 / 點數 / 卡片 / 標籤都會一起併到 LINE 會員。",
+      },
+      {
+        tag: "tutorial",
+        text: "注意：目標（已綁 LINE）會員若本身已經有訂單，則無法合併，請改選一個尚無訂單的 LINE 會員作為目標。合併後來源會被標為「已合併」，且不可還原。完整操作見下方影片。",
+      },
+    ],
+    media: [
+      {
+        src: "/release-notes/member-merge.mp4",
+        poster: "/release-notes/member-merge.png",
+        alt: "會員合併教學：開虛擬會員、點合併到已綁 LINE 會員、搜尋並選擇、填原因、確認，訂單與資料併入 LINE 會員",
+        caption: "會員合併教學：① 開虛擬會員 → ② 點「合併到已綁 LINE 會員」→ ③ 搜尋並選 LINE 會員 → ④ 填原因確認 → ⑤ 訂單/儲值/點數都併入。",
+      },
+    ],
+  },
+  {
     id: "2026-06-01-onboarding",
     date: "2026-06-01",
     title: "📱 會員 App 新手教學：安裝 App ＋ LINE 登入",
