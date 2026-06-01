@@ -145,7 +145,7 @@ export function ReleaseNotesProvider({ children }: { children: ReactNode }) {
                     ))}
                   </ul>
                   <Link
-                    href={`${RELEASE_NOTES_PAGE}#${note.id}`}
+                    href={`${RELEASE_NOTES_PAGE}#${note.category === "tutorial" ? "tut" : "upd"}-${note.menu}`}
                     onClick={close}
                     className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-sky-600 hover:underline dark:text-sky-400"
                   >

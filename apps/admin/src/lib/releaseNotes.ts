@@ -5,7 +5,12 @@
 // 的判斷依據 —— 只要最新一筆的 id 跟使用者上次勾選「不再顯示」的 id 不同，
 // 公告就會再次自動跳出、鈴鐺也會亮紅點。
 
+import type { MenuKey } from "@/lib/menuSections";
+
 export type ReleaseTag = "feature" | "improvement" | "fix" | "tutorial";
+
+/** 公告大分類：教學影片 / 優化更新（公告詳細頁用此分兩大區） */
+export type ReleaseCategory = "tutorial" | "update";
 
 export type ReleaseMedia = {
   /**
@@ -34,6 +39,10 @@ export type ReleaseNote = {
   items: { tag: ReleaseTag; text: string }[];
   /** 操作教學圖（GIF / 截圖），顯示於完整公告頁 */
   media?: ReleaseMedia[];
+  /** 大分類：教學影片 or 優化更新（決定公告頁放哪一區） */
+  category: ReleaseCategory;
+  /** 屬於哪個左側 menu 功能（公告頁依此分組），對齊 menuSections.ts */
+  menu: MenuKey;
 };
 
 /** 完整公告頁的路徑 */
@@ -44,6 +53,8 @@ export const RELEASE_NOTES: ReleaseNote[] = [
   {
     id: "2026-07-01-member-merge",
     date: "2026-07-01",
+    category: "tutorial",
+    menu: "members",
     title: "📥 教學：把「虛擬會員」合併進 LINE 會員（訂單會一起搬）",
     items: [
       {
@@ -67,6 +78,8 @@ export const RELEASE_NOTES: ReleaseNote[] = [
   {
     id: "2026-06-01-onboarding",
     date: "2026-06-01",
+    category: "tutorial",
+    menu: "general",
     title: "📱 會員 App 新手教學：安裝 App ＋ LINE 登入",
     items: [
       {
@@ -90,6 +103,8 @@ export const RELEASE_NOTES: ReleaseNote[] = [
   {
     id: "2026-06-01",
     date: "2026-06-01",
+    category: "update",
+    menu: "general",
     title: "🔔 新增更新公告通知，系統有更新不再錯過",
     items: [
       {
@@ -118,6 +133,21 @@ export const RELEASE_NOTES: ReleaseNote[] = [
 
 /** 最新一則公告（陣列第一筆） */
 export const LATEST_RELEASE: ReleaseNote | undefined = RELEASE_NOTES[0];
+
+/** 取某分類、某 menu 功能的公告（保持原本由新到舊的順序） */
+export function notesBy(category: ReleaseCategory, menu: MenuKey): ReleaseNote[] {
+  return RELEASE_NOTES.filter((n) => n.category === category && n.menu === menu);
+}
+
+/** 某分類下，每個 menu 各有幾則（給索引顯示數量 / 判斷是否「尚無」） */
+export function countByMenu(category: ReleaseCategory): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const n of RELEASE_NOTES) {
+    if (n.category !== category) continue;
+    out[n.menu] = (out[n.menu] ?? 0) + 1;
+  }
+  return out;
+}
 
 /** localStorage key：儲存使用者按下「不再顯示」時最新公告的 id */
 export const RELEASE_NOTES_DISMISS_KEY = "new_erp-release-notes-dismissed";
