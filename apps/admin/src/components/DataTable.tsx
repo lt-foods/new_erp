@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import type { MouseEventHandler, ReactNode } from "react";
 
 type Align = "left" | "center" | "right";
 
@@ -84,14 +84,23 @@ export function Td({
   className = "",
   colSpan,
   align,
+  onClick,
+  title,
 }: {
   children?: ReactNode;
   className?: string;
   colSpan?: number;
   align?: Align;
+  onClick?: MouseEventHandler<HTMLTableCellElement>;
+  title?: string;
 }) {
   return (
-    <td colSpan={colSpan} className={`px-4 py-3 ${alignCls(align)} ${className}`}>
+    <td
+      colSpan={colSpan}
+      title={title}
+      onClick={onClick}
+      className={`px-4 py-3 ${alignCls(align)} ${className}`}
+    >
       {children}
     </td>
   );
