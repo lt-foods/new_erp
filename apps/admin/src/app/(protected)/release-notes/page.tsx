@@ -67,20 +67,12 @@ function NoteCard({ note }: { note: ReleaseNote }) {
   );
 }
 
-function Placeholder() {
-  return (
-    <div className="rounded-lg border border-dashed border-zinc-200 bg-zinc-50/60 p-3 text-xs text-zinc-400 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-500">
-      尚無教學影片（之後會陸續補上）
-    </div>
-  );
-}
-
 export default function ReleaseNotesPage() {
   const tutCounts = countByMenu("tutorial");
   const updCounts = countByMenu("update");
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:py-8">
+    <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:py-8">
       <div className="mb-5 flex items-center justify-between gap-3">
         <h1 className="text-xl font-semibold tracking-tight">教學與更新</h1>
         <Link
@@ -104,56 +96,49 @@ export default function ReleaseNotesPage() {
           <span className="text-xs font-normal text-zinc-400">依功能分類，方便依你用到的功能查看</span>
         </h2>
 
-        {/* 功能索引 */}
+        {/* 功能索引（只顯示有影片的） */}
         <div className="mt-3 flex flex-wrap gap-1.5">
-          {MENU_ITEMS.map((m) => {
+          {MENU_ITEMS.filter((m) => (tutCounts[m.key] ?? 0) > 0).map((m) => {
             const c = tutCounts[m.key] ?? 0;
             return (
               <a
                 key={m.key}
                 href={`#tut-${m.key}`}
-                className={
-                  c > 0
-                    ? "rounded-full bg-zinc-900 px-2.5 py-1 text-xs font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
-                    : "rounded-full border border-zinc-200 px-2.5 py-1 text-xs text-zinc-400 dark:border-zinc-800 dark:text-zinc-500"
-                }
+                className="rounded-full bg-zinc-900 px-2.5 py-1 text-xs font-medium text-white dark:bg-zinc-100 dark:text-zinc-900"
               >
-                {m.label}{c > 0 ? ` ${c}` : ""}
+                {m.label} {c}
               </a>
             );
           })}
         </div>
 
-        {/* 依 NAV 群組 → 個別功能 */}
+        {/* 依 NAV 群組 → 個別功能（只顯示有影片的） */}
         <div className="mt-6 space-y-8">
-          {MENU_GROUPS.map((g, gi) => (
-            <div key={gi}>
-              {g.group && (
-                <div className="mb-3 text-xs font-semibold tracking-wider text-zinc-400 dark:text-zinc-500">
-                  {g.group}
-                </div>
-              )}
-              <div className="space-y-5">
-                {g.items.map((item) => {
-                  const notes = notesBy("tutorial", item.key);
-                  return (
+          {MENU_GROUPS.map((g, gi) => {
+            const items = g.items.filter((it) => (tutCounts[it.key] ?? 0) > 0);
+            if (items.length === 0) return null;
+            return (
+              <div key={gi}>
+                {g.group && (
+                  <div className="mb-3 text-xs font-semibold tracking-wider text-zinc-400 dark:text-zinc-500">
+                    {g.group}
+                  </div>
+                )}
+                <div className="space-y-5">
+                  {items.map((item) => (
                     <div key={item.key} id={`tut-${item.key}`} className="scroll-mt-6">
                       <h3 className="mb-2 text-sm font-semibold text-zinc-800 dark:text-zinc-200">
                         {item.label}
                       </h3>
-                      {notes.length > 0 ? (
-                        <div className="space-y-3">
-                          {notes.map((n) => <NoteCard key={n.id} note={n} />)}
-                        </div>
-                      ) : (
-                        <Placeholder />
-                      )}
+                      <div className="space-y-3">
+                        {notesBy("tutorial", item.key).map((n) => <NoteCard key={n.id} note={n} />)}
+                      </div>
                     </div>
-                  );
-                })}
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
 
