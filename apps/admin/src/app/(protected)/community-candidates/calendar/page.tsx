@@ -458,7 +458,8 @@ function SortableCard({
           </span>
           <Link
             href={`/community-candidates?highlight=${r.id}`}
-            className="font-medium leading-snug hover:underline"
+            title={r.product_name_hint ?? "（無商品名）"}
+            className="line-clamp-2 font-medium leading-snug hover:underline"
           >
             {r.product_name_hint ?? "（無商品名）"}
           </Link>
