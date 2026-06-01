@@ -593,17 +593,9 @@ export default function CampaignsListPage() {
   const fromIdx = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const toIdx = Math.min(page * PAGE_SIZE, total);
 
-  // 操作鈕（編輯 / 加單 / 結單 / 結算）— 桌機表格與手機卡片共用，單一維護點
+  // 操作鈕（加單 / 編輯 / 結單 / 結算）— 桌機表格與手機卡片共用，單一維護點
   const campaignActions = (r: Row) => (
     <>
-      {showAdminActions && (
-        <SpinButton
-          onClick={() => openEdit(r.id)}
-          className="text-xs text-blue-600 hover:underline dark:text-blue-400"
-        >
-          編輯
-        </SpinButton>
-      )}
       {r.status === "open" && (
         <Link
           href={`/campaigns/order-entry?id=${r.id}`}
@@ -611,6 +603,14 @@ export default function CampaignsListPage() {
         >
           加單
         </Link>
+      )}
+      {showAdminActions && (
+        <SpinButton
+          onClick={() => openEdit(r.id)}
+          className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+        >
+          編輯
+        </SpinButton>
       )}
       {showAdminActions && r.status === "open" && (
         <SpinButton
