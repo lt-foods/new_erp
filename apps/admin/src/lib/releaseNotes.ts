@@ -8,11 +8,18 @@
 export type ReleaseTag = "feature" | "improvement" | "fix";
 
 export type ReleaseMedia = {
-  /** 圖片 / 動態 GIF 的網址（放在 public/ 下，例如 "/release-notes/2026-06-01.gif"） */
+  /**
+   * 主要顯示來源（放在 public/ 下）。
+   * - 影片（建議，手機相容性最佳）：".mp4"，例如 "/release-notes/2026-06-01.mp4"
+   * - 圖片 / 動態 GIF：".gif" / ".png"
+   * 註：大型動畫 GIF 在手機（iOS Safari）有解碼記憶體上限，可能整張無法顯示，故優先用 mp4。
+   */
   src: string;
+  /** 影片封面圖（第一幀），影片載入前 / 無法自動播放時顯示 */
+  poster?: string;
   /** 替代文字 */
   alt: string;
-  /** 圖說（顯示在圖片下方） */
+  /** 圖說（顯示在下方） */
   caption?: string;
 };
 
@@ -54,7 +61,8 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     ],
     media: [
       {
-        src: "/release-notes/2026-06-01.gif",
+        src: "/release-notes/2026-06-01.mp4",
+        poster: "/release-notes/2026-06-01.png",
         alt: "更新公告操作教學：點開鈴鐺、勾選不再顯示、週曆名稱滑過顯示完整內容",
         caption: "操作示範：點右上角鈴鐺看公告 →（看完可勾「不再顯示此公告」）→ 週曆過長的商品名稱滑鼠移上去會顯示完整內容。",
       },

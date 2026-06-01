@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { withBasePath } from "@/lib/basePath";
 import {
   RELEASE_NOTES,
   TAG_COLOR,
@@ -72,13 +73,30 @@ export default function ReleaseNotesPage() {
 
             {note.media?.map((m, k) => (
               <figure key={k} className="mt-5">
-                {/* GIF 教學：用原生 img 才能正常播放動畫 */}
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={m.src}
-                  alt={m.alt}
-                  className="w-full rounded-lg border border-zinc-200 shadow-sm dark:border-zinc-800"
-                />
+                {m.src.endsWith(".mp4") ? (
+                  // 影片教學：手機相容性優於大型 GIF。
+                  // autoPlay+muted+playsInline 才能在 iOS 自動播放；loop 循環；poster 為封面後備。
+                  // 靜態匯出有 basePath，raw <video> src 不會自動前綴，需手動 withBasePath。
+                  <video
+                    src={withBasePath(m.src)}
+                    poster={m.poster ? withBasePath(m.poster) : undefined}
+                    autoPlay
+                    loop
+                    muted
+                    playsInline
+                    controls
+                    aria-label={m.alt}
+                    className="w-full rounded-lg border border-zinc-200 shadow-sm dark:border-zinc-800"
+                  />
+                ) : (
+                  // 圖片 / GIF
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={withBasePath(m.src)}
+                    alt={m.alt}
+                    className="w-full rounded-lg border border-zinc-200 shadow-sm dark:border-zinc-800"
+                  />
+                )}
                 {m.caption && (
                   <figcaption className="mt-2 text-center text-xs text-zinc-500 dark:text-zinc-400">
                     {m.caption}
