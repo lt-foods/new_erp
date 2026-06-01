@@ -4,8 +4,9 @@
 // 兩個方向共用同一支 rpc_merge_member（RPC 守衛：source.line_user_id IS NULL）
 // - direction="guest-to-real":   從未綁 LINE 端開（既有「合併到實體會員」按鈕）
 // - direction="real-from-guest": 從已綁 LINE 端開（新「合併進來」按鈕）
-// rpc_merge_member 會搬：卡片 / 點數 / 儲值 / 標籤 / 暱稱對應 / 流水
-//   訂單「不搬」（個別是個別的、留在原會員）；來源有任何訂單則 RPC 擋下不准合併
+// rpc_merge_member 會搬：訂單 / 卡片 / 點數 / 儲值 / 標籤 / 暱稱對應 / 流水
+//   來源（未綁 LINE）的訂單會一起搬到目標；目標（已綁 LINE）若已有訂單則 RPC 擋下
+//   （情境：客人原本用虛擬會員加單，之後才註冊綁 LINE，把虛擬會員併進 LINE 會員）
 
 import { useEffect, useState } from "react";
 import { Modal } from "@/components/Modal";
@@ -156,9 +157,9 @@ export function MemberMergeModal({
               </>
             )}
             <br />
-            合併後來源會被標為「已合併」，儲值 / 點數 / 卡片 / 標籤 / 暱稱對應都會搬到目標，不可還原。
+            合併後來源會被標為「已合併」，訂單 / 儲值 / 點數 / 卡片 / 標籤 / 暱稱對應都會搬到目標，不可還原。
             <br />
-            <b>訂單不會搬移</b>（個別是個別的、仍掛在原會員）；若來源有任何訂單則無法合併，請先處理該會員的訂單。
+            <b>來源（未綁 LINE）的訂單會一起搬到目標</b>；但<b>目標（已綁 LINE）會員若已有訂單則無法合併</b>，請改選一個尚無訂單的 LINE 會員作為目標。
           </div>
         </div>
 

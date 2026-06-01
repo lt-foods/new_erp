@@ -217,9 +217,16 @@ const RULES: Rule[] = [
   },
   // ===== rpc_merge_member（會員合併守門） =====
   {
+    // 目標(已綁 LINE)會員已有訂單 → 擋下（只支援併入「尚無訂單」的 LINE 會員）
+    pattern: /target member \d+ already has orders, cannot merge/i,
+    render: () =>
+      "目標（已綁 LINE）會員已經有訂單，無法把另一筆併進來。此功能僅支援把（可含訂單的）未綁 LINE 會員，併入「尚無訂單」的 LINE 會員；請改選一個沒有訂單的會員作為合併目標。",
+  },
+  {
+    // 舊版守門（20260618000030 之前）：來源有訂單就擋。保留以相容舊部署的錯誤訊息。
     pattern: /source member \d+ has orders, cannot merge/i,
     render: () =>
-      "來源會員仍有訂單，無法合併。訂單個別獨立、不會搬移；請先處理（取消／轉移）來源會員的訂單後再合併。",
+      "來源會員仍有訂單，無法合併。請先處理（取消／轉移）來源會員的訂單後再合併。",
   },
   {
     pattern: /source member \d+ is already bound to LINE/i,
