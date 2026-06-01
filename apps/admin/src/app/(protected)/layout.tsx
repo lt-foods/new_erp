@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { ReleaseNotesProvider, ReleaseNotesBell } from "@/components/ReleaseNotes";
 import { getTenantName } from "@/lib/tenant";
 import SpinButton from "@/components/SpinButton";
 
@@ -201,6 +202,7 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
   const visibleNav = filterNavForRole(branchUser ? filterNavForBranch(NAV) : NAV, user);
 
   return (
+    <ReleaseNotesProvider>
     <div className="flex min-h-full flex-1 flex-col md:flex-row">
       <aside className="hidden w-52 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 md:flex print:hidden dark:border-zinc-800 dark:bg-zinc-950">
         <div className="border-b border-zinc-200 px-4 py-4 dark:border-zinc-800">
@@ -261,6 +263,7 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
             {user?.email}
           </div>
           <div className="flex items-center gap-2">
+            <ReleaseNotesBell />
             <ThemeToggle />
             <SpinButton
               onClick={onLogout}
@@ -290,6 +293,7 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
             <Link href="/" className="font-semibold">{tenantName}</Link>
           </div>
           <div className="flex items-center gap-2 text-sm">
+            <ReleaseNotesBell />
             <ThemeToggle />
           </div>
         </header>
@@ -380,5 +384,6 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
       {/* min-w-0：允許 main 在 flex row 內收縮，寬表才會在自己的 overflow-x-auto 容器內出現水平捲軸，而非把整頁撐爆 */}
       <main className="flex min-w-0 flex-1 flex-col">{children}</main>
     </div>
+    </ReleaseNotesProvider>
   );
 }
