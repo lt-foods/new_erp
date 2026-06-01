@@ -5,7 +5,7 @@
 // 的判斷依據 —— 只要最新一筆的 id 跟使用者上次勾選「不再顯示」的 id 不同，
 // 公告就會再次自動跳出、鈴鐺也會亮紅點。
 
-export type ReleaseTag = "feature" | "improvement" | "fix";
+export type ReleaseTag = "feature" | "improvement" | "fix" | "tutorial";
 
 export type ReleaseMedia = {
   /**
@@ -41,6 +41,29 @@ export const RELEASE_NOTES_PAGE = "/release-notes";
 
 // 最新的放最前面
 export const RELEASE_NOTES: ReleaseNote[] = [
+  {
+    id: "2026-06-01-onboarding",
+    date: "2026-06-01",
+    title: "📱 會員 App 新手教學：安裝 App ＋ LINE 登入",
+    items: [
+      {
+        tag: "tutorial",
+        text: "完整步驟一次看懂：用手機瀏覽器打開網頁 → 加入主畫面（安裝 App）→ 用 LINE 登入 → 取得 6 位數驗證碼 → 回到 App 輸入驗證碼 → 完成登入，開始選購。",
+      },
+      {
+        tag: "tutorial",
+        text: "把網頁「加入主畫面」後，就能像一般 App 一樣從桌面圖示開啟；登入只要用 LINE，不必記帳號密碼。完整影片教學請見下方。",
+      },
+    ],
+    media: [
+      {
+        src: "/release-notes/member-onboarding.mp4",
+        poster: "/release-notes/member-onboarding.png",
+        alt: "會員 App 新手教學：打開網頁、加入主畫面、用 LINE 登入、輸入 6 位數驗證碼、完成登入",
+        caption: "會員 App 新手教學：① 開網頁選門市 → ② 加入主畫面 → ③ 用 LINE 登入 → ④ 取得驗證碼 → ⑤ 回 App 輸入驗證碼 → ⑥ 完成，開始使用。",
+      },
+    ],
+  },
   {
     id: "2026-06-01",
     date: "2026-06-01",
@@ -80,6 +103,7 @@ export const TAG_LABEL: Record<ReleaseTag, string> = {
   feature: "新功能",
   improvement: "優化",
   fix: "修正",
+  tutorial: "教學",
 };
 
 export const TAG_COLOR: Record<ReleaseTag, string> = {
@@ -88,4 +112,6 @@ export const TAG_COLOR: Record<ReleaseTag, string> = {
   improvement:
     "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300",
   fix: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
+  tutorial:
+    "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
 };
