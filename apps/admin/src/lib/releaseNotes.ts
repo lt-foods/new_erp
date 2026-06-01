@@ -7,6 +7,15 @@
 
 export type ReleaseTag = "feature" | "improvement" | "fix";
 
+export type ReleaseMedia = {
+  /** 圖片 / 動態 GIF 的網址（放在 public/ 下，例如 "/release-notes/2026-06-01.gif"） */
+  src: string;
+  /** 替代文字 */
+  alt: string;
+  /** 圖說（顯示在圖片下方） */
+  caption?: string;
+};
+
 export type ReleaseNote = {
   /** 唯一識別碼，只增不減，例如 "2026-06-01"。同時作為已讀判斷依據。 */
   id: string;
@@ -16,7 +25,12 @@ export type ReleaseNote = {
   title: string;
   /** 條列內容 */
   items: { tag: ReleaseTag; text: string }[];
+  /** 操作教學圖（GIF / 截圖），顯示於完整公告頁 */
+  media?: ReleaseMedia[];
 };
+
+/** 完整公告頁的路徑 */
+export const RELEASE_NOTES_PAGE = "/release-notes";
 
 // 最新的放最前面
 export const RELEASE_NOTES: ReleaseNote[] = [
@@ -36,6 +50,13 @@ export const RELEASE_NOTES: ReleaseNote[] = [
       {
         tag: "improvement",
         text: "選品週曆裡的商品名稱如果太長，現在只會顯示前面兩行，讓版面更整齊；想看完整名稱時，把滑鼠移到名稱上停一下，就會顯示全部文字。",
+      },
+    ],
+    media: [
+      {
+        src: "/release-notes/2026-06-01.gif",
+        alt: "更新公告操作教學：點開鈴鐺、勾選不再顯示、週曆名稱滑過顯示完整內容",
+        caption: "操作示範：點右上角鈴鐺看公告 →（看完可勾「不再顯示此公告」）→ 週曆過長的商品名稱滑鼠移上去會顯示完整內容。",
       },
     ],
   },

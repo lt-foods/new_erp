@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   createContext,
   useCallback,
@@ -13,6 +14,7 @@ import {
   LATEST_RELEASE,
   RELEASE_NOTES,
   RELEASE_NOTES_DISMISS_KEY,
+  RELEASE_NOTES_PAGE,
   TAG_COLOR,
   TAG_LABEL,
 } from "@/lib/releaseNotes";
@@ -142,6 +144,14 @@ export function ReleaseNotesProvider({ children }: { children: ReactNode }) {
                       </li>
                     ))}
                   </ul>
+                  <Link
+                    href={`${RELEASE_NOTES_PAGE}#${note.id}`}
+                    onClick={close}
+                    className="mt-2 inline-flex items-center gap-1 text-sm font-medium text-sky-600 hover:underline dark:text-sky-400"
+                  >
+                    {note.media?.length ? "查看完整內容與操作教學" : "查看完整內容"}
+                    <span aria-hidden>→</span>
+                  </Link>
                   {i < RELEASE_NOTES.length - 1 && (
                     <hr className="mt-5 border-zinc-100 dark:border-zinc-800" />
                   )}
