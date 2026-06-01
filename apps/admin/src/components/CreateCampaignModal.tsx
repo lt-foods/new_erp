@@ -70,6 +70,8 @@ export function CreateCampaignModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [campaignNo, setCampaignNo] = useState<string>("（產生中…）");
+  // 文案：預設帶入「商品文案」(products.description)，可編輯
+  const [description, setDescription] = useState("");
 
   // fetch preview campaign_no
   useEffect(() => {
@@ -77,6 +79,22 @@ export function CreateCampaignModal({
       if (data) setCampaignNo(data as string);
     });
   }, []);
+
+  // 預設帶入商品文案（1 campaign : 1 product，取第一個商品的 description）
+  useEffect(() => {
+    const pid = products[0]?.id;
+    if (!pid) return;
+    let alive = true;
+    getSupabase()
+      .from("products")
+      .select("description")
+      .eq("id", pid)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (alive && data?.description) setDescription(data.description as string);
+      });
+    return () => { alive = false; };
+  }, [products]);
 
   // auto-update pickup_deadline when end_at changes
   function handleEndAtChange(val: string) {
@@ -102,6 +120,7 @@ export function CreateCampaignModal({
         p_end_at: new Date(endAt).toISOString(),
         p_pickup_deadline: pickupDeadline || null,
         p_product_id: products[0].id,
+        p_description: description.trim() || null,
       });
       if (err) throw err;
       onCreated(Number(data));
@@ -141,6 +160,20 @@ export function CreateCampaignModal({
         <label className="flex flex-col gap-1 text-sm sm:col-span-2">
           <span className="text-zinc-600 dark:text-zinc-400">團名稱 <span className="text-red-500">*</span></span>
           <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} />
+        </label>
+
+        <label className="flex flex-col gap-1 text-sm sm:col-span-2">
+          <span className="text-zinc-600 dark:text-zinc-400">
+            文案
+            <span className="ml-1 text-xs text-zinc-400">（會顯示在會員 App，預設帶入商品文案，可修改）</span>
+          </span>
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={4}
+            placeholder="輸入要顯示給顧客看的開團文案…"
+            className={`${inputCls} resize-y whitespace-pre-wrap`}
+          />
         </label>
 
         <label className="flex flex-col gap-1 text-sm">
