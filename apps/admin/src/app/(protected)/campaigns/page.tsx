@@ -598,7 +598,7 @@ export default function CampaignsListPage() {
     r.status === "open" ? (
       <Link
         href={`/campaigns/order-entry?id=${r.id}`}
-        className="text-xs text-green-600 hover:underline dark:text-green-400"
+        className="text-sm font-bold text-green-600 hover:underline dark:text-green-400"
       >
         加單
       </Link>
