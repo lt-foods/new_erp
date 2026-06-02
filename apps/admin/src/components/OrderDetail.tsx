@@ -12,7 +12,7 @@ import { EditableNumber, EditableText } from "@/components/EditableCell";
 import { EditableDiscount, deriveDiscount, type DiscountValue } from "@/components/EditableDiscount";
 import { useAuth } from "@/components/AuthProvider";
 import { useRole } from "@/lib/role";
-import { orderStatusLabel as statusLabel, canPayWithWallet } from "@/lib/orderStatus";
+import { orderStatusLabel as statusLabel, canPayWithWallet, canPrintPickupSlip } from "@/lib/orderStatus";
 import { summarizeOrderSource } from "@/lib/orderSource";
 import { ItemSourceBadge, OrderSourceBadge } from "@/components/OrderSourceBadge";
 import { withBasePath } from "@/lib/basePath";
@@ -392,8 +392,8 @@ export function OrderDetail({
   // 貨還沒到分店不能轉單：source 必須 status='ready' (跟 DB rpc_transfer_order_* 一致)
   const canTransfer = head.status === "ready";
   const canCancel = ["pending", "confirmed", "shipping"].includes(head.status);
-  // 還沒到貨（pending/confirmed/shipping）也可以列印小白單；ready 透過 PickupDialog 已有入口
-  const canPrintSlip = ["pending", "confirmed", "shipping", "ready"].includes(head.status);
+  // 列印小白單：未取貨單印待取清單、已完成單印已取貨紀錄；取消/逾期/轉出不印
+  const canPrintSlip = canPrintPickupSlip(head.status);
   // 一般顧客訂單退回總倉（rpc_create_order_return）— 互助單不走這條（貨應退回原 source 店）
   const canReturn = !isAidOrder && ["shipping", "ready", "partially_completed", "completed", "expired"].includes(head.status);
   // 互助單已收貨未取貨（status=ready）退單：退回原 source 店（rpc_return_aid_order，#234）
@@ -512,7 +512,9 @@ export function OrderDetail({
               onClick={() =>
                 printViaIframe(withBasePath(`/pickup/print-list?order_ids=${head.id}`))
               }
-              title="列印小白單（取貨清單，貨還沒到也可印）"
+              title={head.status === "completed"
+                ? "列印小白單（已完成單＝已取貨紀錄）"
+                : "列印小白單（取貨清單，貨還沒到也可印）"}
               className="rounded-md border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
             >
               列印

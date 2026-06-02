@@ -11,7 +11,7 @@ import { translateRpcError } from "@/lib/rpcError";
 import { withBasePath } from "@/lib/basePath";
 import { printViaIframe } from "@/lib/printIframe";
 import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
-import { ORDER_STATUS_LABEL as STATUS_LABEL, type OrderStatus } from "@/lib/orderStatus";
+import { ORDER_STATUS_LABEL as STATUS_LABEL, canPrintPickupSlip, type OrderStatus } from "@/lib/orderStatus";
 import { summarizeOrderSource } from "@/lib/orderSource";
 import { OrderSourceBadge } from "@/components/OrderSourceBadge";
 import SpinButton from "@/components/SpinButton";
@@ -488,12 +488,14 @@ function OrdersListContent() {
   // 操作按鈕（去取貨 / 取消 / ↩退貨 / 狀態鈕）— 桌機表格與手機卡片共用，單一維護點
   const orderActions = (r: Row, m: Member | null | undefined) => (
     <>
-      {(PENDING_STATUSES.includes(r.status) || r.status === "partially_completed") && (
+      {canPrintPickupSlip(r.status) && (
         <SpinButton
           onClick={() =>
             printViaIframe(withBasePath(`/pickup/print-list?order_ids=${r.id}`))
           }
-          title="列印小白單（取貨清單，貨還沒到也可印）"
+          title={r.status === "completed"
+            ? "列印小白單（已完成單＝已取貨紀錄）"
+            : "列印小白單（取貨清單，貨還沒到也可印）"}
           className="rounded-md border border-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
         >
           列印

@@ -42,6 +42,17 @@ function hasLineDisc(it: { discount_amount: number; discount_percent: number }):
 }
 
 const ACTIVE_ITEM_STATUSES = new Set(["pending", "reserved", "ready"]);
+const PICKED_ITEM_STATUSES = new Set(["picked_up", "partially_picked_up"]);
+
+// 小白單要列出哪些品項：
+//   已完成單 → 已取貨品項（當收據 / 取貨紀錄）
+//   其餘狀態 → 待取品項（pending / reserved / ready）＝原本的取貨清單
+function slipItems(o: Order): Order["items"] {
+  if (o.status === "completed") {
+    return o.items.filter((it) => PICKED_ITEM_STATUSES.has(it.status));
+  }
+  return o.items.filter((it) => ACTIVE_ITEM_STATUSES.has(it.status));
+}
 
 export default function PickupPrintListPage() {
   return (
@@ -107,7 +118,7 @@ function Body() {
   const member = orders[0]?.member;
   const store = orders[0]?.store;
   const orderSub = (o: Order) => {
-    const active = o.items.filter((it) => ACTIVE_ITEM_STATUSES.has(it.status));
+    const active = slipItems(o);
     return active.reduce((a, it) => a + lineSub(it), 0);
   };
   // payable 四捨五入到整數 NTD（對齊 v_customer_order_summary）
@@ -127,7 +138,7 @@ function Body() {
   const grandWalletPaid = grandWalletPaidDb + previewCapped;
   const grandBalanceDue = Math.max(0, grandTotal - grandWalletPaid);
   const totalQty = orders.reduce((s, o) => {
-    const active = o.items.filter((it) => ACTIVE_ITEM_STATUSES.has(it.status));
+    const active = slipItems(o);
     return s + active.reduce((a, it) => a + Number(it.qty), 0);
   }, 0);
 
@@ -175,7 +186,7 @@ function Body() {
 
         <div className="mt-2 space-y-2">
           {orders.map((o) => {
-            const active = o.items.filter((it) => ACTIVE_ITEM_STATUSES.has(it.status));
+            const active = slipItems(o);
             const disc = Number(o.discount_amount ?? 0);
             const pct = Number(o.discount_percent ?? 0);
             const sub = orderSub(o);

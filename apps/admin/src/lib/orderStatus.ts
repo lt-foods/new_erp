@@ -72,6 +72,17 @@ export function canPayWithWallet(
   return true;
 }
 
+/**
+ * 此 status 的訂單能不能列印取貨小白單。
+ * 取消 / 逾期 / 轉出 = 不會發生取貨，不印；其餘（含已完成）皆可印。
+ * 已完成單印的是「已取貨品項」(收據/紀錄)，待取單印「待取品項」，
+ * 由 /pickup/print-list 頁依訂單狀態決定要列出哪些品項。
+ */
+export function canPrintPickupSlip(status: string | null | undefined): boolean {
+  if (!status) return false;
+  return !["cancelled", "expired", "transferred_out"].includes(status);
+}
+
 // ============================================================
 // 歷史翻譯（已砍、僅留紀錄；未來重啟用時引用此處避免重新討論）
 //   reserved              → 已備貨   （之前部分檔案誤翻「已保留」）
