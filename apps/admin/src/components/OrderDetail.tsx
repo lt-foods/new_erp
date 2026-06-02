@@ -13,6 +13,8 @@ import { EditableDiscount, deriveDiscount, type DiscountValue } from "@/componen
 import { useAuth } from "@/components/AuthProvider";
 import { useRole } from "@/lib/role";
 import { orderStatusLabel as statusLabel, canPayWithWallet } from "@/lib/orderStatus";
+import { summarizeOrderSource } from "@/lib/orderSource";
+import { ItemSourceBadge, OrderSourceBadge } from "@/components/OrderSourceBadge";
 import { withBasePath } from "@/lib/basePath";
 import { printViaIframe } from "@/lib/printIframe";
 import { translateRpcError } from "@/lib/rpcError";
@@ -458,6 +460,10 @@ export function OrderDetail({
   const memberLabel = head.member
     ? `${head.member.name ?? "—"} (${head.member.member_no})`
     : `(${head.nickname_snapshot ?? "—"})`;
+  // 下單來源：由品項 source 推導（liff=App / manual=小幫手 …）
+  const orderSource = summarizeOrderSource(items.map((it) => it.source));
+  // 混合來源才逐品項標；單一來源整單已由「下單來源」欄表示，逐列重複反而吵
+  const showItemSource = orderSource.kind === "mixed";
 
   return (
     <div className="space-y-4 text-sm">
@@ -617,6 +623,16 @@ export function OrderDetail({
         />
         <Field label="開團" value={head.campaign ? `${head.campaign.campaign_no} ${head.campaign.name}` : "—"} />
         <Field label="取貨店" value={head.store?.name ?? "—"} />
+        <Field
+          label="下單來源"
+          value={
+            orderSource.kind === "none" ? (
+              <span className="text-zinc-400">—</span>
+            ) : (
+              <OrderSourceBadge summary={orderSource} />
+            )
+          }
+        />
         <Field label="建立" value={fmtDt(head.created_at)} />
         <Field label="最後更新" value={fmtDt(head.updated_at)} />
         <Field
@@ -727,6 +743,7 @@ export function OrderDetail({
                           {badge.label}
                         </span>
                       )}
+                      {showItemSource && <ItemSourceBadge source={it.source} className="ml-1.5" />}
                     </td>
                     <td className="px-3 py-2 text-right font-mono">
                       {isPicked ? (

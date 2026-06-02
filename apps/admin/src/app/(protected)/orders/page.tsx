@@ -12,6 +12,8 @@ import { withBasePath } from "@/lib/basePath";
 import { printViaIframe } from "@/lib/printIframe";
 import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 import { ORDER_STATUS_LABEL as STATUS_LABEL, type OrderStatus } from "@/lib/orderStatus";
+import { summarizeOrderSource } from "@/lib/orderSource";
+import { OrderSourceBadge } from "@/components/OrderSourceBadge";
 import SpinButton from "@/components/SpinButton";
 
 type Row = {
@@ -148,6 +150,7 @@ function OrdersListContent() {
         totalQty: number;
         totalAmount: number;
         items: { product_name: string | null; variant_name: string | null; qty: number }[];
+        sources: string[];
       }
     >
   >(new Map());
@@ -262,16 +265,16 @@ function OrdersListContent() {
         const memIds = Array.from(new Set((data ?? []).map((r) => r.member_id).filter((x): x is number => x != null)));
         const [ic, ms] = await Promise.all([
           ids.length
-            ? getSupabase().from("customer_order_items").select("order_id, qty, unit_price, sku:skus(product_name, variant_name)").in("order_id", ids)
-            : Promise.resolve({ data: [] as { order_id: number; qty: number; unit_price: number; sku: { product_name: string | null; variant_name: string | null } | null }[] }),
+            ? getSupabase().from("customer_order_items").select("order_id, qty, unit_price, source, sku:skus(product_name, variant_name)").in("order_id", ids)
+            : Promise.resolve({ data: [] as { order_id: number; qty: number; unit_price: number; source: string; sku: { product_name: string | null; variant_name: string | null } | null }[] }),
           memIds.length
             ? getSupabase().from("members").select("id, name, phone, member_no, avatar_url").in("id", memIds)
             : Promise.resolve({ data: [] as Member[] }),
         ]);
-        const im = new Map<number, { lineCount: number; totalQty: number; totalAmount: number; items: { product_name: string | null; variant_name: string | null; qty: number }[] }>();
-        for (const id of ids) im.set(id, { lineCount: 0, totalQty: 0, totalAmount: 0, items: [] });
-        for (const it of (ic.data as { order_id: number; qty: number; unit_price: number; sku: { product_name: string | null; variant_name: string | null } | null }[]) ?? []) {
-          const cur = im.get(it.order_id) ?? { lineCount: 0, totalQty: 0, totalAmount: 0, items: [] };
+        const im = new Map<number, { lineCount: number; totalQty: number; totalAmount: number; items: { product_name: string | null; variant_name: string | null; qty: number }[]; sources: string[] }>();
+        for (const id of ids) im.set(id, { lineCount: 0, totalQty: 0, totalAmount: 0, items: [], sources: [] });
+        for (const it of (ic.data as { order_id: number; qty: number; unit_price: number; source: string; sku: { product_name: string | null; variant_name: string | null } | null }[]) ?? []) {
+          const cur = im.get(it.order_id) ?? { lineCount: 0, totalQty: 0, totalAmount: 0, items: [], sources: [] };
           cur.lineCount += 1;
           cur.totalQty += Number(it.qty);
           cur.totalAmount += Number(it.qty) * Number(it.unit_price);
@@ -280,6 +283,7 @@ function OrdersListContent() {
             variant_name: it.sku?.variant_name ?? null,
             qty: Number(it.qty),
           });
+          if (it.source) cur.sources.push(it.source);
           im.set(it.order_id, cur);
         }
         const mm = new Map<number, Member>();
@@ -856,6 +860,9 @@ function OrdersListContent() {
 
               <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
                 <span>🏬 {s?.name ?? "—"}</span>
+                {sum && sum.sources.length > 0 && (
+                  <OrderSourceBadge summary={summarizeOrderSource(sum.sources)} />
+                )}
                 <span>{sum?.lineCount ?? 0} 項</span>
                 <span>共 {sum?.totalQty ?? 0} 件</span>
                 <span className="font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100">${sum?.totalAmount ?? 0}</span>
@@ -879,14 +886,14 @@ function OrdersListContent() {
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
-              <Th className="min-w-[14rem]">開團</Th><Th className="whitespace-nowrap">會員 / 暱稱</Th><Th className="whitespace-nowrap">取貨店</Th><Th className="whitespace-nowrap text-right">項數</Th><Th className="whitespace-nowrap text-right">總數量</Th><Th className="whitespace-nowrap text-right">總金額</Th><Th className="whitespace-nowrap text-right">日期</Th><Th className="whitespace-nowrap text-right">操作</Th>
+              <Th className="min-w-[14rem]">開團</Th><Th className="whitespace-nowrap">會員 / 暱稱</Th><Th className="whitespace-nowrap">來源</Th><Th className="whitespace-nowrap">取貨店</Th><Th className="whitespace-nowrap text-right">項數</Th><Th className="whitespace-nowrap text-right">總數量</Th><Th className="whitespace-nowrap text-right">總金額</Th><Th className="whitespace-nowrap text-right">日期</Th><Th className="whitespace-nowrap text-right">操作</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={8} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={9} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={8} className="p-6 text-center text-zinc-500">{total === 0 && campaignIds.length === 0 && !storeId && !keyword ? `此 tab 下尚無訂單。` : "沒有符合條件的訂單。"}</td></tr>
+              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">{total === 0 && campaignIds.length === 0 && !storeId && !keyword ? `此 tab 下尚無訂單。` : "沒有符合條件的訂單。"}</td></tr>
             ) : rows.map((r) => {
               const m = r.member_id ? members.get(r.member_id) : null;
               const c = campaignMap.get(r.campaign_id);
@@ -946,6 +953,16 @@ function OrdersListContent() {
                         <span className="text-zinc-500">({r.nickname_snapshot})</span>
                       </span>
                     ) : "—"}
+                  </Td>
+                  <Td className="whitespace-nowrap">
+                    {(() => {
+                      const sum = itemSummary.get(r.id);
+                      return sum && sum.sources.length > 0 ? (
+                        <OrderSourceBadge summary={summarizeOrderSource(sum.sources)} />
+                      ) : (
+                        <span className="text-zinc-400">—</span>
+                      );
+                    })()}
                   </Td>
                   <Td className="whitespace-nowrap text-xs">{s?.name ?? "—"}</Td>
                   <Td className="whitespace-nowrap text-right font-mono">{itemSummary.get(r.id)?.lineCount ?? 0}</Td>
