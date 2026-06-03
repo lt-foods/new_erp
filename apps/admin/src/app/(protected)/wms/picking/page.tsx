@@ -726,10 +726,10 @@ export default function PickingWorkstationPage() {
             目前沒有可分配的品項(已到貨的都派完了,在途的等收貨後再回來)。
           </div>
         ) : (
-          // max-h + overflow-auto:讓 2D 表格在自己的 viewport 內捲動,
-          // 橫向 scrollbar 就一直停在可見區底部,不會被多列推到頁尾外。
-          // sticky thead/左欄保持表頭與品項欄可見。
-          <div className="max-h-[calc(100vh-260px)] overflow-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+          // 只保留水平(左右)捲軸:拿掉高度上限,表格整高展開、跟著整頁一起垂直捲動,
+          // 容器只在「店別欄超出寬度」時出現左右 scrollbar(overflow-x-auto),不再有內框垂直捲軸。
+          // sticky 左欄在橫向捲動時固定品項欄。
+          <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
             <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
               <colgroup>
                 <col className="w-[220px]" />
