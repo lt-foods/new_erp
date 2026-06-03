@@ -203,8 +203,9 @@ export default function PickingWorkstationPage() {
       s.poList.sort((a, b) => a.po_id - b.po_id);
     }
     return Array.from(grouped.values())
-      // 隱藏「已到貨且全部撿完」的 SKU;到貨 0 (sent 在路上)的繼續顯示讓使用者看得到
-      .filter((s) => !(s.totalGr > 0 && s.totalAvailable === 0))
+      // 只看有數量可以分配的 SKU(totalAvailable > 0)。已派完 / 還在途的都先隱藏,
+      // 派貨工作台是「我現在可以分配什麼」,在途的等 PO 收貨後自然會回來。
+      .filter((s) => s.totalAvailable > 0)
       .sort((a, b) => (a.sku_code ?? "").localeCompare(b.sku_code ?? ""));
   }, [demand]);
 
@@ -722,10 +723,13 @@ export default function PickingWorkstationPage() {
       ) : viewMode === "matrix" ? (
         skuRows.length === 0 ? (
           <div className="rounded-md border border-zinc-200 p-12 text-center text-sm text-zinc-500 dark:border-zinc-800">
-            沒有待撿貨的品項(所有已進貨的都已派完)。
+            目前沒有可分配的品項(已到貨的都派完了,在途的等收貨後再回來)。
           </div>
         ) : (
-          <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+          // max-h + overflow-auto:讓 2D 表格在自己的 viewport 內捲動,
+          // 橫向 scrollbar 就一直停在可見區底部,不會被多列推到頁尾外。
+          // sticky thead/左欄保持表頭與品項欄可見。
+          <div className="max-h-[calc(100vh-260px)] overflow-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
             <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
               <colgroup>
                 <col className="w-[220px]" />
@@ -738,9 +742,9 @@ export default function PickingWorkstationPage() {
                 <col className="w-16" />
                 {allStores.map((st) => <col key={st.store_id} className="w-20" />)}
               </colgroup>
-              <thead className="bg-zinc-50 dark:bg-zinc-900">
+              <thead className="sticky top-0 z-10 bg-zinc-50 dark:bg-zinc-900">
                 <tr>
-                  <Th className="sticky left-0 bg-zinc-50 dark:bg-zinc-900">品項 / 來源 PO</Th>
+                  <Th className="sticky left-0 z-20 bg-zinc-50 dark:bg-zinc-900">品項 / 來源 PO</Th>
                   <Th className="text-center">訂購</Th>
                   <Th className="text-center">已到</Th>
                   <Th className="text-center" title="PO 還沒結、還會繼續到的數量">在途</Th>
