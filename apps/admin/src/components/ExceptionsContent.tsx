@@ -10,6 +10,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { fetchAllRows } from "@/lib/fetchAllRows";
 import SpinButton from "./SpinButton";
 import { TransferShortageResolveModal, type ShortageContext } from "./TransferShortageResolveModal";
 
@@ -114,10 +115,15 @@ export default function ExceptionsContent({
           .eq("gr.status", "confirmed");
         if (e2) throw new Error("po_damage: " + e2.message);
 
-        const { data: overRows, error: e3 } = await sb
-          .from("v_picking_demand_by_po")
-          .select("po_id, po_no, po_status, sku_id, sku_code, sku_label, qty_ordered, gr_qty");
-        if (e3) throw new Error("po_over: " + e3.message);
+        // 無 filter 撈整張 v_picking_demand_by_po（PO×SKU×store 矩陣，會破千列），
+        // 必須分頁，否則 PostgREST 1000 列上限會漏掉部分 PO 的過量進貨異常。
+        // 依 view grain (po_item_id, store_id) 排序給分頁穩定 total order。
+        const overRows = await fetchAllRows<{ po_id: number; po_no: string; po_status: string; sku_id: number; sku_code: string | null; sku_label: string; qty_ordered: number; gr_qty: number }>(() =>
+          sb.from("v_picking_demand_by_po")
+            .select("po_id, po_no, po_status, sku_id, sku_code, sku_label, qty_ordered, gr_qty")
+            .order("po_item_id", { ascending: true })
+            .order("store_id", { ascending: true, nullsFirst: false }),
+        );
 
         const { data: tShortRows, error: e4 } = await sb
           .from("transfer_items")

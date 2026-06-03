@@ -8,6 +8,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import { fetchAllRows } from "@/lib/fetchAllRows";
 import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
 
@@ -83,19 +84,27 @@ export default function PickingWorkstationPage() {
     (async () => {
       try {
         const sb = getSupabase();
-        const [{ data: dRows, error: e1 }, { data: supRows }, { data: rrRows, error: e3 }] = await Promise.all([
-          sb.from("v_picking_demand_by_po").select("*"),
-          sb.from("suppliers").select("id, code, name"),
-          sb.from("v_picking_demand_no_po").select("*"),
+        // 全部走 fetchAll 分頁，避免 PostgREST 1000 列上限把整張 PO 截掉。
+        // .order() 給分頁一個穩定的 total order（否則跨頁可能漏/重複列）。
+        const [dRows, supRows, rrRows] = await Promise.all([
+          fetchAllRows<DemandRow>(() =>
+            sb.from("v_picking_demand_by_po").select("*")
+              .order("po_item_id", { ascending: true })
+              .order("store_id", { ascending: true, nullsFirst: false }),
+          ),
+          fetchAllRows<Supplier>(() => sb.from("suppliers").select("id, code, name").order("id", { ascending: true })),
+          fetchAllRows<RestockRow>(() =>
+            sb.from("v_picking_demand_no_po").select("*")
+              .order("restock_request_id", { ascending: true })
+              .order("sku_id", { ascending: true }),
+          ),
         ]);
         if (cancelled) return;
-        if (e1) { setError(e1.message); return; }
-        if (e3) { setError(e3.message); return; }
         setError(null);
-        setDemand((dRows ?? []) as DemandRow[]);
-        setRestockDemand((rrRows ?? []) as RestockRow[]);
+        setDemand(dRows);
+        setRestockDemand(rrRows);
         const sm = new Map<number, Supplier>();
-        for (const s of (supRows ?? []) as Supplier[]) sm.set(s.id, s);
+        for (const s of supRows) sm.set(s.id, s);
         setSuppliers(sm);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));

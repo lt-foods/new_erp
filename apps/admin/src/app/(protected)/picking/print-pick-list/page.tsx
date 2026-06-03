@@ -7,6 +7,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { fetchAllRows } from "@/lib/fetchAllRows";
 import SpinButton from "@/components/SpinButton";
 import { getTenantName } from "@/lib/tenant";
 
@@ -57,10 +58,14 @@ export default function PrintPickListPage() {
     (async () => {
       try {
         const sb = getSupabase();
-        const { data, error: e } = await sb.from("v_picking_demand_by_po").select("*");
+        // 走分頁，避免 PostgREST 1000 列上限把最新到貨的 PO 截掉（與派貨工作台同源）。
+        const data = await fetchAllRows<DemandRow>(() =>
+          sb.from("v_picking_demand_by_po").select("*")
+            .order("po_item_id", { ascending: true })
+            .order("store_id", { ascending: true, nullsFirst: false }),
+        );
         if (cancelled) return;
-        if (e) { setError(e.message); return; }
-        setDemand((data ?? []) as DemandRow[]);
+        setDemand(data);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
       }
