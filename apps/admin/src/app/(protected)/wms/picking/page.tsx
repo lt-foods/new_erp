@@ -388,6 +388,15 @@ export default function PickingWorkstationPage() {
       }
       if (overSkus.length > 0) throw new Error("超過可分配量：\n" + overSkus.join("\n"));
 
+      // 該 (po, sku, store) 是否「確實有需求」— 來自 v_picking_demand_by_po 的列。
+      // view 只在某店對某 PO 對應的開團 / 補貨有需求時，才會產生該 (po,sku,store) 列，
+      // 所以「有列 = 有需求」。FIFO 只倒給有需求的 PO，避免把別團需求撿到別團的 PO
+      // （對齊後端 rpc_create_wave_from_po 的跨團守衛）。
+      const demandPoSkuStore = new Set<string>();
+      for (const r of demand) {
+        if (r.store_id !== null) demandPoSkuStore.add(`${r.po_id}:${r.sku_id}:${r.store_id}`);
+      }
+
       // 建可消耗的 PO 容量表 perPoSkuLeft.get(`${po}:${sku}`) = 該 PO 該 SKU 還可分配
       const perPoSkuLeft = new Map<string, number>();
       for (const sk of skuRows) {
@@ -407,6 +416,8 @@ export default function PickingWorkstationPage() {
           let remaining = qty;
           for (const po of sk.poList) {
             if (remaining <= 0) break;
+            // 只撿給「該店在此 PO 確實有需求」的 PO（尊重開團邊界，別把別團需求倒給最舊的 PO）
+            if (!demandPoSkuStore.has(`${po.po_id}:${sk.sku_id}:${st.store_id}`)) continue;
             const k = `${po.po_id}:${sk.sku_id}`;
             const av = perPoSkuLeft.get(k) ?? 0;
             if (av <= 0) continue;
@@ -484,23 +495,38 @@ export default function PickingWorkstationPage() {
   }, [allocs]);
 
   const involvedPos = useMemo(() => {
+    if (!demand) return 0;
+    // 與 submitAll 同邏輯：逐 (sku, store) FIFO，且只算「該店在此 PO 確實有需求」的 PO
+    const demandPoSkuStore = new Set<string>();
+    for (const r of demand) {
+      if (r.store_id !== null) demandPoSkuStore.add(`${r.po_id}:${r.sku_id}:${r.store_id}`);
+    }
+    const perPoSkuLeft = new Map<string, number>();
+    for (const sk of skuRows) {
+      for (const po of sk.poList) {
+        perPoSkuLeft.set(`${po.po_id}:${sk.sku_id}`, Math.max(0, po.gr_qty - po.already_wave_for_sku));
+      }
+    }
     const set = new Set<number>();
     for (const sk of skuRows) {
-      const skuAlloc = getSkuAllocTotal(sk);
-      if (skuAlloc <= 0) continue;
-      // 模擬 FIFO 估算會涉及哪幾張 PO
-      let remaining = skuAlloc;
-      for (const po of sk.poList) {
-        if (remaining <= 0) break;
-        const av = Math.max(0, po.gr_qty - po.already_wave_for_sku);
-        if (av <= 0) continue;
-        const take = Math.min(remaining, av);
-        if (take > 0) set.add(po.po_id);
-        remaining -= take;
+      for (const st of allStores) {
+        let remaining = getAlloc(sk.sku_id, st.store_id);
+        if (remaining <= 0) continue;
+        for (const po of sk.poList) {
+          if (remaining <= 0) break;
+          if (!demandPoSkuStore.has(`${po.po_id}:${sk.sku_id}:${st.store_id}`)) continue;
+          const k = `${po.po_id}:${sk.sku_id}`;
+          const av = perPoSkuLeft.get(k) ?? 0;
+          if (av <= 0) continue;
+          const take = Math.min(remaining, av);
+          if (take > 0) set.add(po.po_id);
+          perPoSkuLeft.set(k, av - take);
+          remaining -= take;
+        }
       }
     }
     return set.size;
-  }, [skuRows, allocs]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [skuRows, allStores, demand, allocs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ===== 補貨申請(無 PO 來源)分組 =====
   type RestockGroup = {
