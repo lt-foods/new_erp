@@ -77,6 +77,8 @@ export default function PickingWorkstationPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submittingRrId, setSubmittingRrId] = useState<number | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  // 勾選的品項（sku_id）。空集合 = 未篩選 → 建單時納入全部；非空 → 只建選取的品項。
+  const [selectedSkus, setSelectedSkus] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -377,8 +379,9 @@ export default function PickingWorkstationPage() {
     });
   }
 
-  // FIFO 提交：把每個 (sku, store) 的擬分量切分到含此 sku 的多張 PO，再對每張 PO 各別發 RPC
-  async function submitAll() {
+  // FIFO 提交：把每個 (sku, store) 的擬分量切分到含此 sku 的多張 PO，再對每張 PO 各別發 RPC。
+  // scopeRows = 本次要納入建單的品項；勾選了部分品項時只傳選取的，未勾選時傳全部。
+  async function submitAll(scopeRows: SkuRow[] = skuRows) {
     if (!demand) return;
     setError(null);
     setSubmitting(true);
@@ -388,9 +391,9 @@ export default function PickingWorkstationPage() {
       const operator = sess.session?.user?.id;
       if (!operator) throw new Error("尚未登入");
 
-      // 校驗：每個 SKU 的擬分總量 ≤ totalAvailable
+      // 校驗：每個 SKU 的擬分總量 ≤ totalAvailable（只校驗本次納入的品項）
       const overSkus: string[] = [];
-      for (const sk of skuRows) {
+      for (const sk of scopeRows) {
         const allocSum = getSkuAllocTotal(sk);
         if (allocSum > sk.totalAvailable) {
           overSkus.push(`「${sk.sku_code ?? ""} ${sk.sku_label}」分配 ${allocSum} 超過可分配 ${sk.totalAvailable}`);
@@ -409,7 +412,7 @@ export default function PickingWorkstationPage() {
 
       // 建可消耗的 PO 容量表 perPoSkuLeft.get(`${po}:${sku}`) = 該 PO 該 SKU 還可分配
       const perPoSkuLeft = new Map<string, number>();
-      for (const sk of skuRows) {
+      for (const sk of scopeRows) {
         for (const po of sk.poList) {
           const left = Math.max(0, po.gr_qty - po.already_wave_for_sku);
           perPoSkuLeft.set(`${po.po_id}:${sk.sku_id}`, left);
@@ -419,7 +422,7 @@ export default function PickingWorkstationPage() {
       // 對每個 (sku, store) 的擬分量做 FIFO 切到 PO
       const perPoAllocs = new Map<number, Array<{ sku_id: number; store_id: number; qty: number }>>();
       const insufficient: string[] = [];
-      for (const sk of skuRows) {
+      for (const sk of scopeRows) {
         for (const st of allStores) {
           const qty = getAlloc(sk.sku_id, st.store_id);
           if (qty <= 0) continue;
@@ -498,13 +501,43 @@ export default function PickingWorkstationPage() {
   // ============================================================
   // 渲染
   // ============================================================
+  // ===== 勾選品項 =====
+  // 一律以「與目前清單的交集」為準：selectedSkus 可能殘留已消失的 sku_id，
+  // 交集會自動忽略它們（免用 effect 清理、計數也不會超算）。
+  const selectedRows = useMemo(
+    () => skuRows.filter((s) => selectedSkus.has(s.sku_id)),
+    [skuRows, selectedSkus],
+  );
+  const hasSelection = selectedRows.length > 0;
+  const allVisibleSelected = skuRows.length > 0 && selectedRows.length === skuRows.length;
+  function toggleSku(skuId: number) {
+    setSelectedSkus((prev) => {
+      const next = new Set(prev);
+      if (next.has(skuId)) next.delete(skuId);
+      else next.add(skuId);
+      return next;
+    });
+  }
+  function toggleAllSkus() {
+    setSelectedSkus((prev) =>
+      skuRows.length > 0 && skuRows.every((s) => prev.has(s.sku_id))
+        ? new Set()
+        : new Set(skuRows.map((s) => s.sku_id)),
+    );
+  }
+
+  // 本次建單納入的品項：有勾選 → 只取選取的；未勾選 → 全部
+  const effectiveSkuRows = hasSelection ? selectedRows : skuRows;
+
+  // 本次擬分總量（限納入的品項）
   const totalAllocSum = useMemo(() => {
     let s = 0;
-    for (const v of allocs.values()) s += v;
+    for (const sk of effectiveSkuRows) for (const st of allStores) s += getAlloc(sk.sku_id, st.store_id);
     return s;
-  }, [allocs]);
+  }, [effectiveSkuRows, allStores, allocs]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const involvedPos = useMemo(() => {
+  // 預估會切出幾張 wave（與 submitAll 同 FIFO 邏輯），可限定品項範圍
+  function involvedPosFor(scopeRows: SkuRow[]): number {
     if (!demand) return 0;
     // 與 submitAll 同邏輯：逐 (sku, store) FIFO，且只算「該店在此 PO 確實有需求」的 PO
     const demandPoSkuStore = new Set<string>();
@@ -512,13 +545,13 @@ export default function PickingWorkstationPage() {
       if (r.store_id !== null) demandPoSkuStore.add(`${r.po_id}:${r.sku_id}:${r.store_id}`);
     }
     const perPoSkuLeft = new Map<string, number>();
-    for (const sk of skuRows) {
+    for (const sk of scopeRows) {
       for (const po of sk.poList) {
         perPoSkuLeft.set(`${po.po_id}:${sk.sku_id}`, Math.max(0, po.gr_qty - po.already_wave_for_sku));
       }
     }
     const set = new Set<number>();
-    for (const sk of skuRows) {
+    for (const sk of scopeRows) {
       for (const st of allStores) {
         let remaining = getAlloc(sk.sku_id, st.store_id);
         if (remaining <= 0) continue;
@@ -536,7 +569,11 @@ export default function PickingWorkstationPage() {
       }
     }
     return set.size;
-  }, [skuRows, allStores, demand, allocs]); // eslint-disable-line react-hooks/exhaustive-deps
+  }
+  const involvedPos = useMemo(
+    () => involvedPosFor(effectiveSkuRows),
+    [effectiveSkuRows, allStores, demand, allocs], // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
   // ===== 補貨申請(無 PO 來源)分組 =====
   type RestockGroup = {
@@ -686,14 +723,23 @@ export default function PickingWorkstationPage() {
           {loading
             ? "載入中…"
             : viewMode === "matrix"
-              ? `${skuRows.length} 個品項 · ${allStores.length} 間分店 · 擬分總量 ${totalAllocSum}${
-                  involvedPos > 0 ? ` · 預計切 ${involvedPos} 張撿貨單` : ""
-                }`
+              ? `${skuRows.length} 個品項 · ${allStores.length} 間分店${
+                  hasSelection ? ` · 已選 ${selectedRows.length} 品項` : ""
+                } · 擬分 ${totalAllocSum}${involvedPos > 0 ? ` · 預計切 ${involvedPos} 張撿貨單` : ""}`
               : `${storeSections.length} 間分店有待撿貨`}
         </span>
 
         {viewMode === "matrix" && skuRows.length > 0 && (
           <div className="ml-auto flex flex-wrap gap-2">
+            {hasSelection && (
+              <button
+                type="button"
+                onClick={() => setSelectedSkus(new Set())}
+                className="rounded-md border border-zinc-300 px-3 py-2 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              >
+                清除選取 ({selectedRows.length})
+              </button>
+            )}
             <Link
               href="/picking/print-pick-list"
               target="_blank"
@@ -702,11 +748,15 @@ export default function PickingWorkstationPage() {
               📄 列印撿貨清單
             </Link>
             <SpinButton
-              onClick={submitAll}
+              onClick={() => submitAll(effectiveSkuRows)}
               disabled={submitting || totalAllocSum === 0}
               className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
             >
-              {submitting ? "建立中…" : `🧾 建立撿貨單${involvedPos > 1 ? ` (${involvedPos} 張)` : ""}`}
+              {submitting
+                ? "建立中…"
+                : hasSelection
+                  ? `🧾 建立選取撿貨單 (${selectedRows.length} 品項${involvedPos > 1 ? ` · ${involvedPos} 張` : ""})`
+                  : `🧾 建立撿貨單${involvedPos > 1 ? ` (${involvedPos} 張)` : ""}`}
             </SpinButton>
           </div>
         )}
@@ -744,7 +794,19 @@ export default function PickingWorkstationPage() {
               </colgroup>
               <thead className="sticky top-0 z-10 bg-zinc-50 dark:bg-zinc-900">
                 <tr>
-                  <Th className="sticky left-0 z-20 bg-zinc-50 dark:bg-zinc-900">品項 / 來源 PO</Th>
+                  <Th className="sticky left-0 z-20 bg-zinc-50 dark:bg-zinc-900">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        aria-label="全選品項"
+                        checked={allVisibleSelected}
+                        ref={(el) => { if (el) el.indeterminate = hasSelection && !allVisibleSelected; }}
+                        onChange={toggleAllSkus}
+                        className="shrink-0 cursor-pointer"
+                      />
+                      品項 / 來源 PO
+                    </div>
+                  </Th>
                   <Th className="text-center">訂購</Th>
                   <Th className="text-center">已到</Th>
                   <Th className="text-center" title="PO 還沒結、還會繼續到的數量">在途</Th>
@@ -765,10 +827,19 @@ export default function PickingWorkstationPage() {
                   const allocSum = getSkuAllocTotal(sk);
                   const overAlloc = allocSum > sk.totalAvailable;
                   const remaining = sk.totalAvailable - allocSum; // 可分配剩餘
+                  const isSel = selectedSkus.has(sk.sku_id);
                   return (
-                    <tr key={sk.sku_id} className={overAlloc ? "bg-red-50 dark:bg-red-950/30" : ""}>
-                      <Td className="sticky left-0 bg-white px-3 py-2 text-xs dark:bg-zinc-900">
-                        <div className="flex items-start justify-between gap-2">
+                    <tr key={sk.sku_id} className={overAlloc ? "bg-red-50 dark:bg-red-950/30" : isSel ? "bg-blue-50/60 dark:bg-blue-950/20" : ""}>
+                      <Td className={`sticky left-0 px-3 py-2 text-xs ${isSel ? "bg-blue-50 dark:bg-blue-950/30" : "bg-white dark:bg-zinc-900"}`}>
+                        <div className="flex items-start gap-2">
+                          <input
+                            type="checkbox"
+                            aria-label={`選取 ${sk.sku_code ?? sk.sku_label}`}
+                            checked={isSel}
+                            onChange={() => toggleSku(sk.sku_id)}
+                            className="mt-0.5 shrink-0 cursor-pointer"
+                          />
+                          <div className="flex min-w-0 flex-1 items-start justify-between gap-2">
                           <div className="min-w-0 flex-1">
                             <div className="font-mono text-[11px] text-zinc-500">{sk.sku_code ?? "—"}</div>
                             <div className="truncate" title={sk.sku_label}>{sk.sku_label}</div>
@@ -795,6 +866,7 @@ export default function PickingWorkstationPage() {
                           >
                             ⚖ 平均
                           </SpinButton>
+                          </div>
                         </div>
                       </Td>
                       <NumCell value={sk.totalOrdered} muted />
