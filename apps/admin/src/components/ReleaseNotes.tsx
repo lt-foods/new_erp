@@ -53,7 +53,18 @@ export function ReleaseNotesProvider({ children }: { children: ReactNode }) {
     }
     setDismissedId(stored);
     setMounted(true);
-    if (latestId && stored !== latestId) {
+    // 取貨/調撥等列印頁以隱藏 iframe 載入（printViaIframe），會連帶把整個
+    // (protected) layout —— 含本公告 Provider —— 掛進 iframe。若在此自動跳公告，
+    // 會被 iframe 內的 window.print() 一起印出來（公告 popup 印在取貨單上，
+    // 使用者回報「列印出現這個不是商品」）。故 iframe 內一律不自動跳公告。
+    let inFrame = false;
+    try {
+      inFrame = window.self !== window.top;
+    } catch {
+      // 跨來源存取 window.top 會 throw；此情境視為在 frame 內，不自動跳。
+      inFrame = true;
+    }
+    if (!inFrame && latestId && stored !== latestId) {
       setIsOpen(true);
     }
   }, [latestId]);
@@ -97,7 +108,7 @@ export function ReleaseNotesProvider({ children }: { children: ReactNode }) {
       {children}
       {isOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-start justify-center bg-zinc-900/50 px-4 py-4 backdrop-blur-sm sm:py-8"
+          className="fixed inset-0 z-50 flex items-start justify-center bg-zinc-900/50 px-4 py-4 backdrop-blur-sm print:hidden sm:py-8"
           aria-modal="true"
           role="dialog"
         >
