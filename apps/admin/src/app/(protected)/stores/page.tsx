@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import SearchSpinner from "@/components/SearchSpinner";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 
 const PAGE_SIZE = 20;
@@ -52,6 +53,7 @@ export default function StoresPage() {
   const [locations, setLocations] = useState<Location[]>([]);
   const [queryDraft, setQueryDraft] = useState("");
   const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>("active");
   const [leleFilter, setLeleFilter] = useState<LeleFilter>("all");
   const [error, setError] = useState<string | null>(null);
@@ -60,9 +62,11 @@ export default function StoresPage() {
   const [page, setPage] = useState(1);
 
   useEffect(() => {
+    // 草稿與已套用的搜尋字串不同時，代表 debounce 後會觸發一次新查詢 → 開轉圈圈
+    setSearching((prev) => (queryDraft !== query ? true : prev));
     const t = setTimeout(() => setQuery(queryDraft), 250);
     return () => clearTimeout(t);
-  }, [queryDraft]);
+  }, [queryDraft, query]);
 
   useEffect(() => { setPage(1); }, [query, activeFilter, leleFilter]);
 
@@ -95,10 +99,14 @@ export default function StoresPage() {
     else if (activeFilter === "deleted") q = q.not("deleted_at", "is", null);
     if (leleFilter === "lele_only") q = q.like("code", "LELE-%");
     else if (leleFilter === "exclude_lele") q = q.not("code", "like", "LELE-%");
-    const { data, error: err } = await q;
-    if (err) { setError(err.message); return; }
-    setError(null);
-    setRows((data ?? []) as Store[]);
+    try {
+      const { data, error: err } = await q;
+      if (err) { setError(err.message); return; }
+      setError(null);
+      setRows((data ?? []) as Store[]);
+    } finally {
+      setSearching(false);
+    }
   }
   useEffect(() => { reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [query, activeFilter, leleFilter]);
 
@@ -197,13 +205,16 @@ export default function StoresPage() {
       )}
 
       <div className="grid gap-3 sm:grid-cols-3">
-        <input
-          type="search"
-          value={queryDraft}
-          onChange={(e) => setQueryDraft(e.target.value)}
-          placeholder="搜尋 代碼 / 名稱"
-          className={inputCls}
-        />
+        <div className="relative">
+          <input
+            type="search"
+            value={queryDraft}
+            onChange={(e) => setQueryDraft(e.target.value)}
+            placeholder="搜尋 代碼 / 名稱"
+            className={`${inputCls} w-full pr-8`}
+          />
+          <SearchSpinner active={searching} />
+        </div>
         <select
           value={activeFilter}
           onChange={(e) => setActiveFilter(e.target.value as ActiveFilter)}

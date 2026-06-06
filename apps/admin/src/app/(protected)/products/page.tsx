@@ -11,6 +11,7 @@ import { ProductSkuSection, type ProductSkuSectionHandle } from "@/components/Pr
 import { ProductCampaignsPanel } from "@/components/ProductCampaignsPanel";
 import { CreateCampaignModal, type SelectedProduct, type StorageType } from "@/components/CreateCampaignModal";
 import SpinButton from "@/components/SpinButton";
+import SearchSpinner from "@/components/SearchSpinner";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow } from "@/components/DataTable";
 
 type Status = "draft" | "active" | "inactive" | "discontinued";
@@ -65,6 +66,7 @@ function PageContent() {
   // filters
   const [queryDraft, setQueryDraft] = useState("");
   const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
   const [categoryId, setCategoryId] = useState<string>("");
   const [brandId, setBrandId] = useState<string>("");
   const [status, setStatus] = useState<string>("");
@@ -231,9 +233,11 @@ function PageContent() {
 
   // debounce search
   useEffect(() => {
+    // 草稿與已套用的搜尋字串不同時，代表 debounce 後會觸發一次新查詢 → 開轉圈圈
+    setSearching((prev) => (queryDraft !== query ? true : prev));
     const t = setTimeout(() => { setQuery(queryDraft); setPage(1); }, 250);
     return () => clearTimeout(t);
-  }, [queryDraft]);
+  }, [queryDraft, query]);
 
   // reset page when filter changes
   useEffect(() => { setPage(1); }, [categoryId, brandId, status, sortBy, sortDir]);
@@ -302,7 +306,10 @@ function PageContent() {
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setSearching(false);
+        }
       }
     })();
     return () => { cancelled = true; };
@@ -418,13 +425,16 @@ function PageContent() {
       )}
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <input
-          type="search"
-          placeholder="搜尋 編號 / 名稱 / 簡稱"
-          value={queryDraft}
-          onChange={(e) => setQueryDraft(e.target.value)}
-          className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800"
-        />
+        <div className="relative">
+          <input
+            type="search"
+            placeholder="搜尋 編號 / 名稱 / 簡稱"
+            value={queryDraft}
+            onChange={(e) => setQueryDraft(e.target.value)}
+            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 pr-8 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800"
+          />
+          <SearchSpinner active={searching} />
+        </div>
         <select
           value={categoryId}
           onChange={(e) => setCategoryId(e.target.value)}

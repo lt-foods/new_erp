@@ -15,6 +15,7 @@ import { ORDER_STATUS_LABEL as STATUS_LABEL, type OrderStatus } from "@/lib/orde
 import { summarizeOrderSource } from "@/lib/orderSource";
 import { OrderSourceBadge } from "@/components/OrderSourceBadge";
 import SpinButton from "@/components/SpinButton";
+import SearchSpinner from "@/components/SearchSpinner";
 
 type Row = {
   id: number;
@@ -135,6 +136,7 @@ function OrdersListContent() {
   const [keyword, setKeyword] = useState(initialKeyword);
   const [campaignPickerOpen, setCampaignPickerOpen] = useState(false);
   const [campaignSearch, setCampaignSearch] = useState("");
+  const [searchingCampaign, setSearchingCampaign] = useState(false);
 
   // dropdownIds: 目前下拉清單顯示的開團 id 序（最新 20 / 搜尋結果），由 effect 寫入
   const [dropdownIds, setDropdownIds] = useState<number[]>([]);
@@ -191,23 +193,28 @@ function OrdersListContent() {
   // 下拉清單：預設 start_at desc 前 20 筆；有搜尋字串時 ilike + 50 筆
   // 用 setTimeout 250ms debounce 避免每個字打進去都打一次 server
   useEffect(() => {
+    setSearchingCampaign(true);
     const t = setTimeout(async () => {
-      const sb = getSupabase();
-      const kw = campaignSearch.trim();
-      let q = sb
-        .from("group_buy_campaigns")
-        .select("id, campaign_no, name, cover_image_url, start_at")
-        .order("start_at", { ascending: false, nullsFirst: false });
-      if (kw) {
-        const safe = kw.replace(/[%,()]/g, " ");
-        q = q.or(`name.ilike.%${safe}%,campaign_no.ilike.%${safe}%`).limit(50);
-      } else {
-        q = q.limit(20);
+      try {
+        const sb = getSupabase();
+        const kw = campaignSearch.trim();
+        let q = sb
+          .from("group_buy_campaigns")
+          .select("id, campaign_no, name, cover_image_url, start_at")
+          .order("start_at", { ascending: false, nullsFirst: false });
+        if (kw) {
+          const safe = kw.replace(/[%,()]/g, " ");
+          q = q.or(`name.ilike.%${safe}%,campaign_no.ilike.%${safe}%`).limit(50);
+        } else {
+          q = q.limit(20);
+        }
+        const { data } = await q;
+        const list = (data as Campaign[]) ?? [];
+        setDropdownIds(list.map((c) => c.id));
+        mergeCampaigns(list);
+      } finally {
+        setSearchingCampaign(false);
       }
-      const { data } = await q;
-      const list = (data as Campaign[]) ?? [];
-      setDropdownIds(list.map((c) => c.id));
-      mergeCampaigns(list);
     }, 250);
     return () => clearTimeout(t);
   }, [campaignSearch]);
@@ -702,13 +709,16 @@ function OrdersListContent() {
                     關閉
                   </SpinButton>
                 </div>
-                <input
-                  type="search"
-                  value={campaignSearch}
-                  onChange={(e) => setCampaignSearch(e.target.value)}
-                  placeholder="搜尋開團編號 / 名稱"
-                  className="mt-2 w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
-                />
+                <div className="relative mt-2">
+                  <input
+                    type="search"
+                    value={campaignSearch}
+                    onChange={(e) => setCampaignSearch(e.target.value)}
+                    placeholder="搜尋開團編號 / 名稱"
+                    className="w-full rounded border border-zinc-300 bg-white px-2 py-1 pr-8 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                  />
+                  <SearchSpinner active={searchingCampaign} />
+                </div>
               </div>
               {(() => {
                 // 顯示順序：已勾選的開團釘在最上面（避免搜尋字串改變後不見），再放下拉結果

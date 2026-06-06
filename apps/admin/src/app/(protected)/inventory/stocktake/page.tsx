@@ -7,6 +7,7 @@ import { getSupabase } from "@/lib/supabase";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
+import SearchSpinner from "@/components/SearchSpinner";
 import { useUserBranchStoreId, useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 import { translateRpcError } from "@/lib/rpcError";
 
@@ -208,6 +209,7 @@ function CreateStocktakeModal({
   const [picked, setPicked] = useState<Sku[]>([]);
   const [skuQuery, setSkuQuery] = useState("");
   const [skuResults, setSkuResults] = useState<Sku[]>([]);
+  const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -217,13 +219,18 @@ function CreateStocktakeModal({
 
   useEffect(() => {
     const q = skuQuery.replace(/[,()%*]/g, " ").trim();
-    if (q.length < 1) { setSkuResults([]); return; }
+    if (q.length < 1) { setSkuResults([]); setSearching(false); return; }
     let cancelled = false;
+    setSearching(true);
     const t = setTimeout(async () => {
-      const { data } = await getSupabase().from("skus")
-        .select("id, sku_code, product_name, variant_name")
-        .or(`sku_code.ilike.%${q}%,product_name.ilike.%${q}%,variant_name.ilike.%${q}%`).limit(15);
-      if (!cancelled) setSkuResults((data as Sku[]) ?? []);
+      try {
+        const { data } = await getSupabase().from("skus")
+          .select("id, sku_code, product_name, variant_name")
+          .or(`sku_code.ilike.%${q}%,product_name.ilike.%${q}%,variant_name.ilike.%${q}%`).limit(15);
+        if (!cancelled) setSkuResults((data as Sku[]) ?? []);
+      } finally {
+        if (!cancelled) setSearching(false);
+      }
     }, 250);
     return () => { cancelled = true; clearTimeout(t); };
   }, [skuQuery]);
@@ -288,7 +295,10 @@ function CreateStocktakeModal({
                 ))}
               </div>
             )}
-            <input value={skuQuery} onChange={(e) => setSkuQuery(e.target.value)} placeholder="搜尋 SKU / 商品名稱…" className={inputCls} />
+            <div className="relative">
+              <input value={skuQuery} onChange={(e) => setSkuQuery(e.target.value)} placeholder="搜尋 SKU / 商品名稱…" className={`${inputCls} w-full pr-8`} />
+              <SearchSpinner active={searching} />
+            </div>
             {skuResults.length > 0 && (
               <ul className="max-h-48 overflow-y-auto rounded-md border border-zinc-300 dark:border-zinc-700">
                 {skuResults.filter((s) => !picked.some((p) => p.id === s.id)).map((s) => (

@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import SpinButton from "@/components/SpinButton";
+import SearchSpinner from "@/components/SearchSpinner";
 import { useUserBranchStoreId, useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 import { maskLineUserId } from "@/lib/maskLineUserId";
 
@@ -91,6 +92,7 @@ export default function InventoryOverviewPage() {
   const [rows, setRows] = useState<Balance[] | null>(null);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [skuMap, setSkuMap] = useState<Map<number, Sku>>(new Map());
@@ -138,6 +140,7 @@ export default function InventoryOverviewPage() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setSearching(true);
     (async () => {
       try {
         const sb = getSupabase();
@@ -243,7 +246,10 @@ export default function InventoryOverviewPage() {
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setSearching(false);
+        }
       }
     })();
     return () => {
@@ -309,16 +315,19 @@ export default function InventoryOverviewPage() {
       </header>
 
       <div className="grid gap-3 sm:grid-cols-3">
-        <input
-          value={searchInput}
-          onChange={(e) => setSearchInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") setSearch(searchInput);
-          }}
-          onBlur={() => setSearch(searchInput)}
-          placeholder="搜尋 商品 / SKU / 規格…"
-          className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
-        />
+        <div className="relative">
+          <input
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") setSearch(searchInput);
+            }}
+            onBlur={() => setSearch(searchInput)}
+            placeholder="搜尋 商品 / SKU / 規格…"
+            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 pr-8 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+          />
+          <SearchSpinner active={searching} />
+        </div>
         {branchLocked ? (
           <div className="flex items-center rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
             🏬 {locLabel(branchLocationId)}

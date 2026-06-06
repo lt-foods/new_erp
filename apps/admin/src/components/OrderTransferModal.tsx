@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import SearchSpinner from "@/components/SearchSpinner";
 
 type Store = { id: number; name: string; code: string };
 type MemberHit = {
@@ -41,6 +42,7 @@ export function OrderTransferModal({
   const [term, setTerm] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [results, setResults] = useState<MemberHit[]>([]);
+  const [searching, setSearching] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchWrapRef = useRef<HTMLDivElement | null>(null);
   const [reason, setReason] = useState("");
@@ -77,14 +79,22 @@ export function OrderTransferModal({
   // debounced rpc_search_members (same RPC used by member page / order entry)
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (term.length < 1 && !searchOpen) return;
+    if (term.length < 1 && !searchOpen) {
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
     debounceRef.current = setTimeout(async () => {
-      const sb = getSupabase();
-      const { data } = await sb.rpc("rpc_search_members", {
-        p_term: term,
-        p_limit: 10,
-      });
-      setResults((data as MemberHit[] | null) ?? []);
+      try {
+        const sb = getSupabase();
+        const { data } = await sb.rpc("rpc_search_members", {
+          p_term: term,
+          p_limit: 10,
+        });
+        setResults((data as MemberHit[] | null) ?? []);
+      } finally {
+        setSearching(false);
+      }
     }, 200);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -182,8 +192,9 @@ export function OrderTransferModal({
                   setSearchOpen(true);
                 }}
                 placeholder="搜尋 會員編號 / 姓名 / 手機"
-                className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-800"
+                className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1 pr-8 dark:border-zinc-700 dark:bg-zinc-800"
               />
+              <SearchSpinner active={searching} />
               {searchOpen && (
                 <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-80 overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800">
                   <SpinButton

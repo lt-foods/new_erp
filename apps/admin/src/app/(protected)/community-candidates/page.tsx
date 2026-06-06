@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
+import SearchSpinner from "@/components/SearchSpinner";
 
 type Candidate = {
   id: number;
@@ -53,6 +54,7 @@ export default function CommunityCandidatesPage() {
   const [rows, setRows] = useState<Candidate[] | null>(null);
   const [queryDraft, setQueryDraft] = useState("");
   const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
   const [tab, setTab] = useState<Tab>("pending");
   const [error, setError] = useState<string | null>(null);
   const [scheduling, setScheduling] = useState<number | null>(null);
@@ -89,9 +91,11 @@ export default function CommunityCandidatesPage() {
   }, []);
 
   useEffect(() => {
+    // 打字內容與已送出的 query 不同 → 有一筆 reload 待觸發，轉圈圈到 reload 結束才停
+    if (queryDraft !== query) setSearching(true);
     const t = setTimeout(() => setQuery(queryDraft), 300);
     return () => clearTimeout(t);
-  }, [queryDraft]);
+  }, [queryDraft, query]);
 
   useEffect(() => {
     if (highlightId && highlightRowRef.current) {
@@ -119,11 +123,15 @@ export default function CommunityCandidatesPage() {
       q = q.or(`product_name_hint.ilike.%${safe}%,raw_text.ilike.%${safe}%`);
     }
 
-    const { data, error: err } = await q;
-    if (err) setError(err.message);
-    else {
-      setError(null);
-      setRows((data as Candidate[]) ?? []);
+    try {
+      const { data, error: err } = await q;
+      if (err) setError(err.message);
+      else {
+        setError(null);
+        setRows((data as Candidate[]) ?? []);
+      }
+    } finally {
+      setSearching(false);
     }
   };
 
@@ -573,12 +581,15 @@ export default function CommunityCandidatesPage() {
 
       {/* Search */}
       <div className="flex gap-2">
-        <input
-          className="flex-1 rounded-md border border-zinc-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-          placeholder="搜尋商品名稱或文案…"
-          value={queryDraft}
-          onChange={(e) => setQueryDraft(e.target.value)}
-        />
+        <div className="relative flex-1">
+          <input
+            className="w-full rounded-md border border-zinc-300 px-3 py-1.5 pr-8 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+            placeholder="搜尋商品名稱或文案…"
+            value={queryDraft}
+            onChange={(e) => setQueryDraft(e.target.value)}
+          />
+          <SearchSpinner active={searching} />
+        </div>
         {queryDraft && (
           <SpinButton
             onClick={() => setQueryDraft("")}

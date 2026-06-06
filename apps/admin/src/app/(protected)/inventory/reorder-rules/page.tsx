@@ -6,6 +6,7 @@ import { getSupabase } from "@/lib/supabase";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
+import SearchSpinner from "@/components/SearchSpinner";
 import { useUserBranchStoreId, useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 import { translateRpcError } from "@/lib/rpcError";
 
@@ -40,6 +41,7 @@ export default function ReorderRulesPage() {
   const [rows, setRows] = useState<Rule[] | null>(null);
   const [skuMap, setSkuMap] = useState<Map<number, Sku>>(new Map());
   const [error, setError] = useState<string | null>(null);
+  const [searching, setSearching] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
 
   const [editOpen, setEditOpen] = useState(false);
@@ -71,6 +73,7 @@ export default function ReorderRulesPage() {
 
   useEffect(() => {
     let cancelled = false;
+    setSearching(true);
     (async () => {
       try {
         const sb = getSupabase();
@@ -120,6 +123,8 @@ export default function ReorderRulesPage() {
         } else setSkuMap(new Map());
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setSearching(false);
       }
     })();
     return () => { cancelled = true; };
@@ -162,14 +167,17 @@ export default function ReorderRulesPage() {
       </header>
 
       <div className="grid gap-3 sm:grid-cols-3">
-        <input
-          value={searchInput}
-          onChange={(e) => setSearchInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") setSearch(searchInput); }}
-          onBlur={() => setSearch(searchInput)}
-          placeholder="搜尋 商品 / SKU / 規格…"
-          className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
-        />
+        <div className="relative">
+          <input
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") setSearch(searchInput); }}
+            onBlur={() => setSearch(searchInput)}
+            placeholder="搜尋 商品 / SKU / 規格…"
+            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 pr-8 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+          />
+          <SearchSpinner active={searching} />
+        </div>
         {branchLocked ? (
           <div className="flex items-center rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
             🏬 {locLabel(branchLocationId)}<span className="ml-2 text-xs text-zinc-500">(僅本店)</span>
@@ -293,6 +301,7 @@ function RuleEditModal({
   const [skuResults, setSkuResults] = useState<Sku[]>([]);
   const [skuOpen, setSkuOpen] = useState(false);
   const [pickedSkuLabel, setPickedSkuLabel] = useState("");
+  const [searchingSku, setSearchingSku] = useState(false);
   const [ss, setSs] = useState("0");
   const [rp, setRp] = useState("0");
   const [ms, setMs] = useState("");
@@ -335,15 +344,20 @@ function RuleEditModal({
 
   useEffect(() => {
     const q = skuQuery.replace(/[,()%*]/g, " ").trim();
-    if (!skuOpen || q.length < 1) { setSkuResults([]); return; }
+    if (!skuOpen || q.length < 1) { setSkuResults([]); setSearchingSku(false); return; }
     let cancelled = false;
+    setSearchingSku(true);
     const t = setTimeout(async () => {
-      const { data } = await getSupabase()
-        .from("skus")
-        .select("id, sku_code, product_name, variant_name")
-        .or(`sku_code.ilike.%${q}%,product_name.ilike.%${q}%,variant_name.ilike.%${q}%`)
-        .limit(20);
-      if (!cancelled) setSkuResults((data as Sku[]) ?? []);
+      try {
+        const { data } = await getSupabase()
+          .from("skus")
+          .select("id, sku_code, product_name, variant_name")
+          .or(`sku_code.ilike.%${q}%,product_name.ilike.%${q}%,variant_name.ilike.%${q}%`)
+          .limit(20);
+        if (!cancelled) setSkuResults((data as Sku[]) ?? []);
+      } finally {
+        if (!cancelled) setSearchingSku(false);
+      }
     }, 250);
     return () => { cancelled = true; clearTimeout(t); };
   }, [skuQuery, skuOpen]);
@@ -418,8 +432,9 @@ function RuleEditModal({
                 onFocus={() => { setSkuOpen(true); setSkuQuery(""); }}
                 onChange={(e) => { setSkuOpen(true); setSkuQuery(e.target.value); }}
                 placeholder="搜尋 SKU / 商品名稱…"
-                className={`${inputCls} w-full`}
+                className={`${inputCls} w-full pr-8`}
               />
+              <SearchSpinner active={searchingSku} />
               {skuOpen && skuResults.length > 0 && (
                 <ul className="absolute z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-zinc-300 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
                   {skuResults.map((s) => (

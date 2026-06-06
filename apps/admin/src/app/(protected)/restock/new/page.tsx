@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { useRole, canSeeBranch } from "@/lib/role";
 import SpinButton from "@/components/SpinButton";
+import SearchSpinner from "@/components/SearchSpinner";
 
 type Store = { id: number; code: string; name: string };
 
@@ -178,47 +179,56 @@ function LineRow({
   const [open, setOpen] = useState(false);
   const [term, setTerm] = useState("");
   const [opts, setOpts] = useState<SkuOption[]>([]);
+  const [searching, setSearching] = useState(false);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
     const t = setTimeout(async () => {
-      const sb = getSupabase();
-      let q = sb
-        .from("skus")
-        .select("id, sku_code, variant_name, product_id, products!inner(id, name, is_virtual)")
-        .eq("status", "active")
-        .eq("products.is_virtual", false)
-        .limit(15);
-      const safe = term.replace(/[%,()]/g, " ").trim();
-      if (safe) q = q.or(`sku_code.ilike.%${safe}%,variant_name.ilike.%${safe}%`);
-      const { data } = await q;
-      const ids = (data ?? []).map((r) => r.id);
-      let priceMap = new Map<number, { retail?: number; branch?: number }>();
-      if (ids.length > 0) {
-        const { data: priceRows } = await sb
-          .from("prices")
-          .select("sku_id, scope, price")
-          .in("sku_id", ids)
-          .in("scope", ["retail", "branch"])
-          .is("effective_to", null);
-        for (const p of (priceRows ?? []) as { sku_id: number; scope: string; price: number }[]) {
-          const slot = priceMap.get(p.sku_id) ?? {};
-          if (p.scope === "retail" && slot.retail === undefined) slot.retail = Number(p.price);
-          if (p.scope === "branch" && slot.branch === undefined) slot.branch = Number(p.price);
-          priceMap.set(p.sku_id, slot);
+      try {
+        const sb = getSupabase();
+        let q = sb
+          .from("skus")
+          .select("id, sku_code, variant_name, product_id, products!inner(id, name, is_virtual)")
+          .eq("status", "active")
+          .eq("products.is_virtual", false)
+          .limit(15);
+        const safe = term.replace(/[%,()]/g, " ").trim();
+        if (safe) q = q.or(`sku_code.ilike.%${safe}%,variant_name.ilike.%${safe}%`);
+        const { data } = await q;
+        const ids = (data ?? []).map((r) => r.id);
+        let priceMap = new Map<number, { retail?: number; branch?: number }>();
+        if (ids.length > 0) {
+          const { data: priceRows } = await sb
+            .from("prices")
+            .select("sku_id, scope, price")
+            .in("sku_id", ids)
+            .in("scope", ["retail", "branch"])
+            .is("effective_to", null);
+          for (const p of (priceRows ?? []) as { sku_id: number; scope: string; price: number }[]) {
+            const slot = priceMap.get(p.sku_id) ?? {};
+            if (p.scope === "retail" && slot.retail === undefined) slot.retail = Number(p.price);
+            if (p.scope === "branch" && slot.branch === undefined) slot.branch = Number(p.price);
+            priceMap.set(p.sku_id, slot);
+          }
         }
+        setOpts(
+          ((data ?? []) as unknown as Array<{
+            id: number; sku_code: string; variant_name: string | null; product_id: number;
+            products: { id: number; name: string; is_virtual: boolean };
+          }>).map((s) => ({
+            id: s.id, sku_code: s.sku_code, variant_name: s.variant_name,
+            product_id: s.product_id, product_name: s.products.name,
+            retail_price: priceMap.get(s.id)?.retail ?? null,
+            branch_price: priceMap.get(s.id)?.branch ?? null,
+          }))
+        );
+      } finally {
+        setSearching(false);
       }
-      setOpts(
-        ((data ?? []) as unknown as Array<{
-          id: number; sku_code: string; variant_name: string | null; product_id: number;
-          products: { id: number; name: string; is_virtual: boolean };
-        }>).map((s) => ({
-          id: s.id, sku_code: s.sku_code, variant_name: s.variant_name,
-          product_id: s.product_id, product_name: s.products.name,
-          retail_price: priceMap.get(s.id)?.retail ?? null,
-          branch_price: priceMap.get(s.id)?.branch ?? null,
-        }))
-      );
     }, 200);
     return () => clearTimeout(t);
   }, [term, open]);
@@ -235,8 +245,9 @@ function LineRow({
             setOpen(true);
           }}
           placeholder="搜尋商品 / 品項"
-          className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+          className="w-full rounded border border-zinc-300 bg-white px-2 py-1 pr-8 text-sm dark:border-zinc-700 dark:bg-zinc-800"
         />
+        <SearchSpinner active={searching} />
         {open && opts.length > 0 && (
           <div className="absolute left-0 top-full z-10 mt-1 max-h-60 w-96 overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800" onMouseLeave={() => setOpen(false)}>
             {opts.map((o) => {

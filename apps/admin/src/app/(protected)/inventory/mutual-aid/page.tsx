@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import SearchSpinner from "@/components/SearchSpinner";
 
 type Store = { id: number; code: string; name: string };
 type SkuOption = { id: number; sku_code: string; product_name: string; variant_name: string | null };
@@ -293,21 +294,27 @@ function SkuSearchInput({
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SkuOption[]>([]);
   const [open, setOpen] = useState(false);
+  const [searching, setSearching] = useState(false);
 
   useEffect(() => {
+    setSearching(true);
     const t = setTimeout(async () => {
-      let q = getSupabase()
-        .from("skus").select("id, sku_code, product_name, variant_name")
-        .eq("status", "active")
-        .order("updated_at", { ascending: false })
-        .limit(20);
-      const s = query.trim();
-      if (s) {
-        const safe = s.replace(/[%,()]/g, " ").trim();
-        q = q.or(`sku_code.ilike.%${safe}%,product_name.ilike.%${safe}%,variant_name.ilike.%${safe}%`);
+      try {
+        let q = getSupabase()
+          .from("skus").select("id, sku_code, product_name, variant_name")
+          .eq("status", "active")
+          .order("updated_at", { ascending: false })
+          .limit(20);
+        const s = query.trim();
+        if (s) {
+          const safe = s.replace(/[%,()]/g, " ").trim();
+          q = q.or(`sku_code.ilike.%${safe}%,product_name.ilike.%${safe}%,variant_name.ilike.%${safe}%`);
+        }
+        const { data } = await q;
+        setResults((data as SkuOption[]) ?? []);
+      } finally {
+        setSearching(false);
       }
-      const { data } = await q;
-      setResults((data as SkuOption[]) ?? []);
     }, query ? 250 : 0);
     return () => clearTimeout(t);
   }, [query]);
@@ -323,8 +330,9 @@ function SkuSearchInput({
           setOpen(true);
         }}
         placeholder="搜尋商品 / 品項"
-        className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
+        className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 pr-7 dark:border-zinc-700 dark:bg-zinc-800"
       />
+      <SearchSpinner active={searching} className="right-1" />
       {open && results.length > 0 && !value && (
         <div
           className="absolute left-0 right-0 top-full z-20 mt-1 max-h-60 overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800"

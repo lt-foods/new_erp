@@ -11,6 +11,7 @@ import {
   type CampaignStatus,
 } from "@/lib/campaignStatus";
 import { Modal } from "@/components/Modal";
+import SearchSpinner from "@/components/SearchSpinner";
 import { CampaignForm, type CampaignFormValues } from "@/components/CampaignForm";
 import { CampaignOrdersPanel } from "@/components/CampaignOrdersPanel";
 import { CampaignItemsTable } from "@/components/CampaignItemsTable";
@@ -154,6 +155,7 @@ export default function CampaignsListPage() {
 
   const [queryDraft, setQueryDraft] = useState(() => campaignsCache?.queryDraft ?? "");
   const [query, setQuery] = useState(() => campaignsCache?.query ?? "");
+  const [searching, setSearching] = useState(false);
   const [status, setStatus] = useState<string>(() => campaignsCache?.status ?? "");
   const [closeTypeFilter, setCloseTypeFilter] = useState<string>(() => campaignsCache?.closeTypeFilter ?? ""); // ""=全部 / regular / fast / limited / food_train
   const [page, setPage] = useState(() => campaignsCache?.page ?? 1);
@@ -360,9 +362,11 @@ export default function CampaignsListPage() {
 
   useEffect(() => {
     if (isInitialRunRef.current) return; // 從 cache 還原 → 別把 page reset 回 1
+    // 打字內容與已送出的 query 不同 → 有一筆 fetch 待觸發，轉圈圈到主 fetch 結束才停
+    if (queryDraft !== query) setSearching(true);
     const t = setTimeout(() => { setQuery(queryDraft); setPage(1); }, 250);
     return () => clearTimeout(t);
-  }, [queryDraft]);
+  }, [queryDraft, query]);
 
   useEffect(() => {
     if (isInitialRunRef.current) return;
@@ -486,6 +490,7 @@ export default function CampaignsListPage() {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {
         if (!cancelled && !silent) setLoading(false);
+        setSearching(false);
       }
     })();
     return () => { cancelled = true; };
@@ -694,10 +699,13 @@ export default function CampaignsListPage() {
 
       {view === "list" && (
         <div className="grid gap-3 sm:grid-cols-3">
-          <input
-            type="search" placeholder="搜尋 團號 / 名稱" value={queryDraft} onChange={(e) => setQueryDraft(e.target.value)}
-            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800"
-          />
+          <div className="relative">
+            <input
+              type="search" placeholder="搜尋 團號 / 名稱" value={queryDraft} onChange={(e) => setQueryDraft(e.target.value)}
+              className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 pr-8 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800"
+            />
+            <SearchSpinner active={searching} />
+          </div>
           <select value={status} onChange={(e) => setStatus(e.target.value)}
             className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800">
             <option value="">全部狀態</option>

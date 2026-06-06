@@ -4,6 +4,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import SearchSpinner from "@/components/SearchSpinner";
 import { CampaignThumb } from "@/components/CampaignThumb";
 import { campaignCoverUrl, type CampaignCoverItem } from "@/lib/campaignCover";
 
@@ -904,6 +905,7 @@ function CustomerSearch({
   const [open, setOpen] = useState(false);
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [aliases, setAliases] = useState<AliasRow[]>([]);
+  const [searching, setSearching] = useState(false);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
 
@@ -920,16 +922,21 @@ function CustomerSearch({
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (term.length < 1 && !open) return;
+    setSearching(true);
     debounceRef.current = setTimeout(async () => {
       const sb = getSupabase();
-      const [mRes, aRes] = await Promise.all([
-        sb.rpc("rpc_search_members", { p_term: term, p_limit: 8 }),
-        channelId
-          ? sb.rpc("rpc_search_aliases", { p_channel_id: channelId, p_term: term, p_limit: 8 })
-          : Promise.resolve({ data: [], error: null }),
-      ]);
-      setMembers((mRes.data as MemberRow[]) ?? []);
-      setAliases((aRes.data as AliasRow[]) ?? []);
+      try {
+        const [mRes, aRes] = await Promise.all([
+          sb.rpc("rpc_search_members", { p_term: term, p_limit: 8 }),
+          channelId
+            ? sb.rpc("rpc_search_aliases", { p_channel_id: channelId, p_term: term, p_limit: 8 })
+            : Promise.resolve({ data: [], error: null }),
+        ]);
+        setMembers((mRes.data as MemberRow[]) ?? []);
+        setAliases((aRes.data as AliasRow[]) ?? []);
+      } finally {
+        setSearching(false);
+      }
     }, 200);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [term, channelId, open]);
@@ -959,8 +966,9 @@ function CustomerSearch({
           setOpen(true);
         }}
         placeholder="搜尋會員 / 暱稱 / 手機"
-        className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+        className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 pr-8 text-sm dark:border-zinc-700 dark:bg-zinc-800"
       />
+      <SearchSpinner active={searching} />
       {open && (members.length > 0 || aliases.length > 0) && (
         <div
           className="absolute left-0 right-0 top-full z-20 mt-1 max-h-96 overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
@@ -1080,6 +1088,7 @@ function ItemEditorRow({
   const [term, setTerm] = useState("");
   const [open, setOpen] = useState(false);
   const [opts, setOpts] = useState<SkuOption[]>([]);
+  const [searching, setSearching] = useState(false);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
   const wrapperRef = useRef<HTMLTableCellElement | null>(null);
 
@@ -1096,11 +1105,16 @@ function ItemEditorRow({
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (!open) return;
+    setSearching(true);
     debounceRef.current = setTimeout(async () => {
-      const { data } = await getSupabase().rpc("rpc_search_skus_for_campaign", {
-        p_campaign_id: campaignId, p_term: term, p_limit: 12,
-      });
-      setOpts((data as SkuOption[]) ?? []);
+      try {
+        const { data } = await getSupabase().rpc("rpc_search_skus_for_campaign", {
+          p_campaign_id: campaignId, p_term: term, p_limit: 12,
+        });
+        setOpts((data as SkuOption[]) ?? []);
+      } finally {
+        setSearching(false);
+      }
     }, 200);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [term, campaignId, open]);
@@ -1123,8 +1137,9 @@ function ItemEditorRow({
             setOpen(true);
           }}
           placeholder="搜尋商品 / 品項"
-          className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+          className="w-full rounded border border-zinc-300 bg-white px-2 py-1 pr-7 text-xs dark:border-zinc-700 dark:bg-zinc-800"
         />
+        <SearchSpinner active={searching} className="right-1" />
         {open && opts.length > 0 && (
           <div
             className="absolute left-0 top-full z-10 mt-1 max-h-80 w-[420px] overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800"

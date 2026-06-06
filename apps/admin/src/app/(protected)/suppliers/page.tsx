@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import SearchSpinner from "@/components/SearchSpinner";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 
 const PAGE_SIZE = 20;
@@ -32,6 +33,7 @@ export default function SuppliersPage() {
   const [rows, setRows] = useState<Supplier[] | null>(null);
   const [queryDraft, setQueryDraft] = useState("");
   const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
   const [showActive, setShowActive] = useState<"all" | "active">("active");
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Supplier | null>(null);
@@ -39,9 +41,11 @@ export default function SuppliersPage() {
   const [page, setPage] = useState(1);
 
   useEffect(() => {
+    // 草稿與已套用的搜尋字串不同時，代表 debounce 後會觸發一次新查詢 → 開轉圈圈
+    setSearching((prev) => (queryDraft !== query ? true : prev));
     const t = setTimeout(() => setQuery(queryDraft), 250);
     return () => clearTimeout(t);
-  }, [queryDraft]);
+  }, [queryDraft, query]);
 
   useEffect(() => { setPage(1); }, [query, showActive]);
 
@@ -62,9 +66,13 @@ export default function SuppliersPage() {
       q = q.or(`code.ilike.%${safe}%,name.ilike.%${safe}%`);
     }
     if (showActive === "active") q = q.eq("is_active", true);
-    const { data, error: err } = await q;
-    if (err) setError(err.message);
-    else { setError(null); setRows((data as Supplier[]) ?? []); }
+    try {
+      const { data, error: err } = await q;
+      if (err) setError(err.message);
+      else { setError(null); setRows((data as Supplier[]) ?? []); }
+    } finally {
+      setSearching(false);
+    }
   };
   useEffect(() => { reload(); }, [query, showActive]);
 
@@ -118,11 +126,14 @@ export default function SuppliersPage() {
       )}
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <input
-          type="search" value={queryDraft} onChange={(e) => setQueryDraft(e.target.value)}
-          placeholder="搜尋 code / 名稱"
-          className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800"
-        />
+        <div className="relative">
+          <input
+            type="search" value={queryDraft} onChange={(e) => setQueryDraft(e.target.value)}
+            placeholder="搜尋 code / 名稱"
+            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 pr-8 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800"
+          />
+          <SearchSpinner active={searching} />
+        </div>
         <select value={showActive} onChange={(e) => setShowActive(e.target.value as "all" | "active")}
           className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800">
           <option value="active">僅啟用中</option>
