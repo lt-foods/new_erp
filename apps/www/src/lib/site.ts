@@ -3,11 +3,11 @@
  * （行銷／定價策略全文見 docs/GTM-定價-SEO-行銷策略.md）
  */
 
-/** 品牌名（working name，待裁定。改這裡全站替換） */
-export const BRAND_NAME = "團購雲";
+/** 品牌名（改這裡全站替換：頁面、OG 圖、JSON-LD 一起換） */
+export const BRAND_NAME = "揪好團";
 
-/** 正式網域後改這裡（SEO 絕對網址、canonical、sitemap 都讀這個） */
-export const SITE_URL = "https://www.tuangocloud.com";
+/** 正式網域後改這裡（SEO 絕對網址、canonical、sitemap 都讀這個）。目前為 placeholder，待確認網域 */
+export const SITE_URL = "https://www.jiohaotuan.com";
 
 export const TAGLINE = "開團到對帳，一條龍搞定";
 export const SUB_TAGLINE = "團購店與加盟總部專用的營運系統";
@@ -15,7 +15,7 @@ export const SUB_TAGLINE = "團購店與加盟總部專用的營運系統";
 export const CONTACT = {
   demoUrl: "#demo",
   trialUrl: "#trial",
-  email: "hello@tuangocloud.com",
+  email: "hello@jiohaotuan.com",
   /** 在地 SEO（桃園總部） */
   region: "桃園",
   country: "TW",
