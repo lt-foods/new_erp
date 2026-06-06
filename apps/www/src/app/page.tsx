@@ -10,32 +10,11 @@ import {
   CONTACT,
   type Plan,
 } from "@/lib/site";
+import { Nav } from "@/components/Nav";
+import { Footer } from "@/components/Footer";
 
 function nf(n: number) {
   return n.toLocaleString("zh-TW");
-}
-
-function Nav() {
-  return (
-    <header className="sticky top-0 z-50 border-b bg-background/80 backdrop-blur">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-4">
-        <a href="#top" className="text-xl font-extrabold tracking-tight">
-          <span className="text-brand">{BRAND_NAME}</span>
-        </a>
-        <nav className="hidden gap-7 text-sm font-medium text-muted md:flex">
-          <a href="#features" className="hover:text-foreground">功能</a>
-          <a href="#pricing" className="hover:text-foreground">定價</a>
-          <a href="#faq" className="hover:text-foreground">常見問題</a>
-        </nav>
-        <a
-          href={CONTACT.trialUrl}
-          className="rounded-full bg-brand px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-brand-dark"
-        >
-          免費試用
-        </a>
-      </div>
-    </header>
-  );
 }
 
 function Hero() {
@@ -124,6 +103,14 @@ function Features() {
               <p className="mt-2 text-sm leading-relaxed text-muted">{f.desc}</p>
             </div>
           ))}
+        </div>
+        <div className="mt-10 text-center">
+          <a
+            href="/features/"
+            className="inline-block rounded-full border border-border px-6 py-3 text-sm font-bold transition hover:bg-surface"
+          >
+            深入了解每個功能 →
+          </a>
         </div>
       </div>
     </section>
@@ -266,20 +253,6 @@ function FinalCta() {
         </div>
       </div>
     </section>
-  );
-}
-
-function Footer() {
-  return (
-    <footer className="border-t py-10">
-      <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-5 text-sm text-muted sm:flex-row">
-        <div className="font-bold text-foreground">{BRAND_NAME}</div>
-        <div>© {new Date().getFullYear()} {BRAND_NAME}・{SUB_TAGLINE}</div>
-        <a href={`mailto:${CONTACT.email}`} className="hover:text-foreground">
-          {CONTACT.email}
-        </a>
-      </div>
-    </footer>
   );
 }
 

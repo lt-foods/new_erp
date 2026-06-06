@@ -40,13 +40,12 @@ export const metadata: Metadata = {
     siteName: BRAND_NAME,
     title,
     description,
-    images: [{ url: "/og.png", width: 1200, height: 630, alt: BRAND_NAME }],
+    // og:image 由 src/app/opengraph-image.tsx 動態產生並自動注入
   },
   twitter: {
     card: "summary_large_image",
     title,
     description,
-    images: ["/og.png"],
   },
   robots: {
     index: true,

@@ -41,8 +41,8 @@ export const PLANS: Plan[] = [
     id: "starter",
     name: "Starter 團購主",
     audience: "個人團購主 / 單店起步",
-    monthly: 990,
-    yearly: 9900,
+    monthly: 590,
+    yearly: 5900,
     limits: ["1 家門市", "月訂單 800 張", "2 個員工帳號", "2,000 位會員"],
     features: [
       "開團 / 商品 / 文案自動生成",
@@ -57,8 +57,8 @@ export const PLANS: Plan[] = [
     id: "pro",
     name: "Pro 成長店",
     audience: "穩定出單的單店",
-    monthly: 2680,
-    yearly: 26800,
+    monthly: 1680,
+    yearly: 16800,
     highlight: true,
     badge: "最受歡迎",
     limits: ["1 家門市", "月訂單 5,000 張", "8 個員工帳號", "20,000 位會員"],
@@ -76,8 +76,8 @@ export const PLANS: Plan[] = [
     id: "chain",
     name: "Chain 連鎖",
     audience: "3–10 店小型連鎖",
-    monthly: 7980,
-    yearly: 79800,
+    monthly: 4980,
+    yearly: 49800,
     limits: ["3–10 家門市", "月訂單 30,000 張", "30 個員工帳號", "會員不限"],
     features: [
       "Pro 全部功能",
@@ -159,7 +159,7 @@ export type Faq = { q: string; a: string };
 export const FAQS: Faq[] = [
   {
     q: "這套系統適合個人團購主嗎？",
-    a: "適合。Starter 方案就是為個人團購主與單店起步設計，月費 NT$990 起，含開團接龍、會員 App、訂單取貨，免綁卡試用 14 天。",
+    a: "適合。Starter 方案就是為個人團購主與單店起步設計，月費 NT$590 起，含開團接龍、會員 App、訂單取貨，免綁卡試用 14 天。",
   },
   {
     q: "和一般的接龍表單工具差在哪？",
@@ -171,7 +171,7 @@ export const FAQS: Faq[] = [
   },
   {
     q: "年繳和月繳怎麼算？",
-    a: "年繳等於只付 10 個月、用 12 個月（約 83 折，省 2 個月）。例如 Pro 月繳 NT$2,680，年繳 NT$26,800。",
+    a: "年繳等於只付 10 個月、用 12 個月（約 83 折，省 2 個月）。例如 Pro 月繳 NT$1,680，年繳 NT$16,800。",
   },
   {
     q: "我有很多加盟店，能統一管理嗎？",
