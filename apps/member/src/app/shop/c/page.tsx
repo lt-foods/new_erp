@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { consumeFragmentToSession, getSession } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
@@ -40,10 +40,19 @@ type Item = {
   ordered_qty: number;
 };
 
-export default function CampaignDetailPage() {
+// static export 下 useSearchParams() 必須包在 Suspense 內，否則 build 會報錯
+export default function CampaignDetailRoute() {
+  return (
+    <Suspense fallback={null}>
+      <CampaignDetailPage />
+    </Suspense>
+  );
+}
+
+function CampaignDetailPage() {
   const router = useRouter();
-  const params = useParams();
-  const id = Number(params?.id);
+  const sp = useSearchParams();
+  const id = Number(sp.get("id"));
 
   // 從列表帶過來的摘要 (名稱 / 封面 / 倒數 / 起跳價), mount 時就可以畫出
   // 標題 + hero, 不用等完整 detail API 回來。沒有 hint 就 fallback 到

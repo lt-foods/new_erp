@@ -5,10 +5,13 @@
   "scripts": {
     "dev": "next dev -p 3001",
     "build": "next build --webpack",
+    "build:export": "NEXT_OUTPUT_EXPORT=1 next build --webpack",
     "start": "next start -p 3001",
     "lint": "eslint"
   },
   "dependencies": {
+    "@capacitor/core": "^7.0.0",
+    "@capacitor/push-notifications": "^7.0.0",
     "@serwist/next": "^9.5.10",
     "@serwist/sw": "^9.5.10",
     "@serwist/window": "^9.5.10",

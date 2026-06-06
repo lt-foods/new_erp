@@ -16,7 +16,7 @@ import { setCampaignHints } from "@/lib/campaignHints";
 type SortKey = "new" | "hot" | "recent";
 
 /**
- * 模組層快取：client 端 SPA 導航（/shop ↔ /shop/c/[id]）期間都存活，
+ * 模組層快取：client 端 SPA 導航（/shop ↔ /shop/c?id=）期間都存活，
  * 「進詳情再返回」時列表瞬間還原（資料 + 排序 + 捲動位置）——不 remount
  * 重抓、不閃 skeleton、不歸零。整頁 hard reload 才清空（屆時本就該抓新）。
  *
@@ -420,7 +420,7 @@ function FlashGroupBanner({ hero }: { hero: CampaignSummary }) {
 function FoodTrainItemBanner({ campaign }: { campaign: CampaignSummary }) {
   return (
     <Link
-      href={`/shop/c/${campaign.id}`}
+      href={`/shop/c?id=${campaign.id}`}
       className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(5,150,105,0.5)] transition-transform duration-200 active:scale-[0.985]"
     >
       <div className="relative aspect-[16/8] w-full bg-gradient-to-br from-emerald-500 via-emerald-600 to-teal-600">
@@ -464,7 +464,7 @@ function FoodTrainItemBanner({ campaign }: { campaign: CampaignSummary }) {
 function FlashItemBanner({ campaign }: { campaign: CampaignSummary }) {
   return (
     <Link
-      href={`/shop/c/${campaign.id}`}
+      href={`/shop/c?id=${campaign.id}`}
       className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(158,47,80,0.5)] transition-transform duration-200 active:scale-[0.985]"
     >
       <div className="relative aspect-[16/8] w-full brand-gradient">

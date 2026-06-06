@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { callLiffApi } from "./supabase";
+import { isNativeApp, getPlatform } from "./platform";
+import { registerNativePush } from "./nativePush";
 
 const VAPID_PUBLIC_KEY =
   "BPu5IptVgyuZFTpZEMkP3CB9C-EDkd16kcGIY3cAMnM2VeqeixebwRm4r-giCPX9UeewLLHQgsVabx04Uxss-xE";
@@ -37,6 +39,8 @@ async function getActiveRegistration(timeoutMs: number): Promise<ServiceWorkerRe
 export type PushNotificationState = {
   isSupported: boolean;
   isPWA: boolean;
+  /** 是否已訂閱推播。web 為 !!subscription；原生為註冊成功旗標。 */
+  isSubscribed: boolean;
   subscription: PushSubscription | null;
   permission: NotificationPermission;
   debugStatus: string;
@@ -55,8 +59,17 @@ export function usePushNotification(jwt: string | null): PushNotificationState {
   const [subscription, setSubscription] = useState<PushSubscription | null>(null);
   const [debugStatus, setDebugStatus] = useState<string>("");
   const [isPWA, setIsPWA] = useState(false);
+  const [nativeSubscribed, setNativeSubscribed] = useState(false);
 
   useEffect(() => {
+    // 原生 App：推播走 APNs/FCM，不碰 Web Push / Service Worker。
+    if (isNativeApp()) {
+      setIsSupported(true);
+      setIsPWA(true); // 原生視同 standalone，UI 不顯示「請加入主畫面」
+      setDebugStatus(`原生 App（${getPlatform() === "ios" ? "APNs" : "FCM"}）`);
+      return;
+    }
+
     const standalone =
       (window.navigator as { standalone?: boolean }).standalone ||
       window.matchMedia("(display-mode: standalone)").matches;
@@ -131,7 +144,47 @@ export function usePushNotification(jwt: string | null): PushNotificationState {
     window.location.href = url;
   };
 
+  const subscribeNative = async () => {
+    if (!jwt) {
+      alert("請先登入");
+      return;
+    }
+    try {
+      setDebugStatus("請求通知權限...");
+      const res = await registerNativePush({
+        onToken: async (token, provider, platform) => {
+          await callLiffApi(jwt, {
+            action: "upsert_push_subscription",
+            provider,
+            device_token: token,
+            platform,
+            user_agent: navigator.userAgent,
+          });
+        },
+        onNotificationTap: (data) => {
+          const url = typeof data?.url === "string" ? data.url : null;
+          if (url) window.location.assign(url);
+        },
+      });
+      if (res.permission !== "granted") {
+        setPermission("denied");
+        setDebugStatus("權限被拒絕");
+        alert("未獲得通知權限。請到手機「設定 > 通知」開啟權限。");
+        return;
+      }
+      setPermission("granted");
+      setNativeSubscribed(true);
+      setDebugStatus("原生推播訂閱成功!");
+      alert("通知訂閱成功!");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setDebugStatus(`訂閱失敗: ${msg}`);
+      alert(`訂閱失敗:${msg}`);
+    }
+  };
+
   const subscribe = async () => {
+    if (isNativeApp()) return subscribeNative();
     if (!jwt) {
       alert("請先登入");
       return;
@@ -191,5 +244,6 @@ export function usePushNotification(jwt: string | null): PushNotificationState {
     }
   };
 
-  return { isSupported, isPWA, subscription, permission, debugStatus, subscribe, rebind };
+  const isSubscribed = isNativeApp() ? nativeSubscribed : !!subscription;
+  return { isSupported, isPWA, isSubscribed, subscription, permission, debugStatus, subscribe, rebind };
 }

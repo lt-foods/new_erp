@@ -6,8 +6,19 @@ const withSerwist = withSerwistInit({
   swDest: "public/sw.js",
 });
 
+// Capacitor 原生殼要把前端靜態打包進 app（webDir 指向 out/）。
+// 只有設了 NEXT_OUTPUT_EXPORT=1 才走 static export，避免影響現有 web PWA 部署。
+const isExport = process.env.NEXT_OUTPUT_EXPORT === "1";
+
 const nextConfig: NextConfig = {
   images: { unoptimized: true },
+  ...(isExport
+    ? {
+        output: "export" as const,
+        // Capacitor WebView 從檔案系統載入，目錄式路徑（/shop/c/ → index.html）較穩
+        trailingSlash: true,
+      }
+    : {}),
   // 解決 Next.js 16+ Turbopack 與 Serwist (Webpack) 的衝突
   // 透過設定空物件來告訴 Next.js 即使有自定義 webpack 配置也要繼續建置
   // 在某些版本中這會讓建置退回到 Webpack，這對 Serwist 是必要的
@@ -16,4 +27,3 @@ const nextConfig: NextConfig = {
 };
 
 export default withSerwist(nextConfig);
-

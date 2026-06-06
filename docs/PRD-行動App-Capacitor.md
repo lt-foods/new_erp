@@ -1,10 +1,33 @@
 # PRD — 會員行動 App（Android / iOS，Capacitor）
 
-> 狀態：**v0.1 規劃**（尚未實作）
+> 狀態：**v0.2 實作中**（M0 spike 通過、Capacitor 殼 + 原生推播前端 + DB migration 已落地）
 > 範圍：**會員 / 消費者端**（`apps/member`）
 > 技術路線：**Capacitor 包現有 Next.js PWA**
 > 三大目標：①上架 App Store + Google Play ②原生推播通知（APNs / FCM）③脫離 LINE 依賴
 > 撰寫：2026-06-06
+
+---
+
+## 實作進度（2026-06-06）
+
+| 項目 | 狀態 | 產物 |
+|------|------|------|
+| **M0 spike：`output: export` 相容性** | ✅ 完成 | 全 16 頁靜態輸出成功 |
+| 唯一阻礙：`/shop/c/[id]` 動態路由 | ✅ 改為 `/shop/c?id=`（query param + Suspense） | `apps/member/src/app/shop/c/page.tsx` |
+| `output: export`（環境變數切換，不影響 web 部署） | ✅ | `apps/member/next.config.ts`、`build:export` script |
+| **Capacitor 殼專案** | ✅ 骨架完成 | `apps/member-app/`（config + scripts + README） |
+| 平台偵測 + 原生推播抽象層 | ✅ | `apps/member/src/lib/platform.ts`、`nativePush.ts` |
+| 推播 hook 原生分流（web/native） | ✅ | `usePushNotification.ts`（新增 `isSubscribed`） |
+| `push_subscriptions` 原生欄位 + RPC | ✅ migration 已寫（**未部署**） | `supabase/migrations/20260606120000_push_subscriptions_native.sql` |
+| `liff-api: upsert_push_subscription` 收原生欄位 | ✅ | `supabase/functions/liff-api/index.ts` |
+| **`cap add ios/android` + 簽章 + 送審** | ⏳ 待 dev 機（需 macOS/Xcode、Android SDK） | 見 `apps/member-app/README.md` |
+| **發送端多通道（FCM/APNs）** | ⏳ 待做（需憑證） | §5.4 |
+| **脫離 LINE：手機 OTP 登入** | ⏳ 待做（需選簡訊商，§9） | §6 |
+| Session 改 Preferences/Keychain | ⏳ 後續（native WebView localStorage 暫可用） | §6.4 |
+
+> 已在本 Linux 環境驗證：`NEXT_OUTPUT_EXPORT=1 npm run build:export` 成功產出
+> `apps/member/out`（含 `sw.js`、`manifest.json`、`shop/c/index.html`），TypeScript 全綠。
+> **無法**在此環境驗證的：iOS/Android 原生 build（需 Mac/SDK）、實機推播。
 
 ---
 

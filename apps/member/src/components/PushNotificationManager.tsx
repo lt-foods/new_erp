@@ -24,7 +24,7 @@ export function PushNotificationManager({ state }: { state: PushNotificationStat
           <div className="min-w-0 flex-1">
             <div className="text-[17px] text-[var(--foreground)]">推播通知</div>
             <p className="mt-0.5 text-[14px] text-[var(--secondary-label)]">
-              {state.subscription
+              {state.isSubscribed
                 ? "已啟用,新訂單到貨會即時通知。"
                 : state.isPWA
                 ? "尚未啟用。請至上方頭像區開啟。"

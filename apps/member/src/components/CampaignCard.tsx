@@ -93,7 +93,7 @@ export default function CampaignCard({
   campaign: CampaignSummary;
   variant?: "grid" | "hero";
 }) {
-  const href = `/shop/c/${campaign.id}`;
+  const href = `/shop/c?id=${campaign.id}`;
   const priceText = campaign.min_price > 0
     ? `$${campaign.min_price.toLocaleString()}${campaign.max_price > campaign.min_price ? " 起" : ""}`
     : "—";

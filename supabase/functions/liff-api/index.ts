@@ -718,15 +718,25 @@ async function markNotificationRead(sb: any, tenantId: string, memberId: number,
 }
 
 async function upsertPushSubscription(sb: any, tenantId: string, memberId: number, p: any) {
-  if (!p.endpoint) return json({ error: "endpoint required" }, 400);
-  
+  const provider = String(p.provider || "webpush");
+  // webpush 需要 endpoint 三件組；原生（fcm/apns）需要 device_token
+  if (provider === "webpush") {
+    if (!p.endpoint) return json({ error: "endpoint required" }, 400);
+  } else if (!p.device_token) {
+    return json({ error: "device_token required for native provider" }, 400);
+  }
+
   const rpcParams = {
-    p_endpoint: p.endpoint,
-    p_p256dh: p.p256dh,
-    p_auth: p.auth,
-    p_user_agent: p.user_agent || p.userAgent, 
+    p_endpoint: p.endpoint ?? null,
+    p_p256dh: p.p256dh ?? null,
+    p_auth: p.auth ?? null,
+    p_user_agent: p.user_agent || p.userAgent || null,
     p_member_id: memberId,
     p_tenant_id: tenantId,
+    p_provider: provider,
+    p_device_token: p.device_token ?? null,
+    p_platform: p.platform ?? null,
+    p_app_version: p.app_version ?? null,
   };
 
   const { data: insertedId, error } = await sb.rpc("rpc_upsert_push_subscription", rpcParams);

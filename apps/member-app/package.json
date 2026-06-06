@@ -1,0 +1,31 @@
+{
+  "name": "member-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "包子媽生鮮小舖 — Capacitor 原生殼（iOS / Android），包 apps/member 的靜態輸出",
+  "scripts": {
+    "build:web": "npm run build:export --workspace member && echo '→ 前端靜態輸出已產生於 apps/member/out'",
+    "sync": "npm run build:web && cap sync",
+    "sync:ios": "npm run build:web && cap sync ios",
+    "sync:android": "npm run build:web && cap sync android",
+    "add:ios": "cap add ios",
+    "add:android": "cap add android",
+    "open:ios": "cap open ios",
+    "open:android": "cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/app": "^7.0.0",
+    "@capacitor/browser": "^7.0.0",
+    "@capacitor/core": "^7.0.0",
+    "@capacitor/haptics": "^7.0.0",
+    "@capacitor/ios": "^7.0.0",
+    "@capacitor/preferences": "^7.0.0",
+    "@capacitor/push-notifications": "^7.0.0",
+    "@capacitor/splash-screen": "^7.0.0",
+    "@capacitor/status-bar": "^7.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.0.0"
+  }
+}

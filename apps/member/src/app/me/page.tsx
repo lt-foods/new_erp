@@ -10,6 +10,7 @@ import Spinner, { LoadingScreen } from "@/components/Spinner";
 import { PushNotificationManager } from "@/components/PushNotificationManager";
 import { usePushNotification } from "@/lib/usePushNotification";
 import { useUnreadNotifications } from "@/lib/useUnreadNotifications";
+import { isNativeApp } from "@/lib/platform";
 
 type MemberData = {
   member_id: number;
@@ -104,6 +105,7 @@ export default function MePage() {
   useEffect(() => {
     if (typeof window !== "undefined") {
       setIsPWA(
+        isNativeApp() || // 原生 App 視同已安裝，不再顯示「PWA 碼」流程
         (window.navigator as { standalone?: boolean }).standalone === true ||
         window.matchMedia("(display-mode: standalone)").matches,
       );
@@ -247,7 +249,7 @@ export default function MePage() {
                 <span className="inline-flex items-center gap-1 rounded-full bg-[#06C755]/15 px-2.5 py-[3px] text-[12px] font-medium text-[#067a37]">
                   ✓ 已綁定 LINE
                 </span>
-                {pushState.subscription && (
+                {pushState.isSubscribed && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-[var(--ios-blue)]/15 px-2.5 py-[3px] text-[12px] font-medium text-[var(--ios-blue)]">
                     🔔 已啟用通知
                   </span>
@@ -275,7 +277,7 @@ export default function MePage() {
               >
                 {generating ? <Spinner size={15} onColor /> : "PWA 碼"}
               </button>
-            ) : pushState.isSupported && !pushState.subscription ? (
+            ) : pushState.isSupported && !pushState.isSubscribed ? (
               <button
                 onClick={pushState.subscribe}
                 className="flex-shrink-0 rounded-full bg-[var(--ios-blue)] px-3 py-1.5 text-[13px] font-medium text-white active:opacity-80"

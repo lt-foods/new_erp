@@ -114,7 +114,7 @@ function FlashRow({ campaign }: { campaign: CampaignSummary }) {
 
   return (
     <a
-      href={`/shop/c/${campaign.id}`}
+      href={`/shop/c?id=${campaign.id}`}
       className={`flex gap-3 overflow-hidden rounded-2xl bg-[var(--card-bg)] p-3 shadow-[0_1px_2px_rgba(0,0,0,0.04)] active:opacity-90 ${
         soldOut ? "opacity-60" : ""
       }`}

@@ -14,7 +14,16 @@ node_modules/
 dist/
 build/
 .next/
+out/
 tsconfig.tsbuildinfo
+
+# Capacitor 原生建置產物（前端靜態輸出會被 cap sync 複製進原生專案）
+apps/member-app/ios/App/App/public/
+apps/member-app/android/app/src/main/assets/public/
+apps/member-app/ios/App/Pods/
+apps/member-app/android/.gradle/
+apps/member-app/android/app/build/
+apps/member-app/android/build/
 
 # Python
 __pycache__/

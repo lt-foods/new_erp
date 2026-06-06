@@ -76,7 +76,7 @@ export default function MemberTabBar() {
   }, []);
 
   // 商品詳細頁有自己的 sticky 下單 bar、會跟 tab bar 打架,直接隱藏
-  if (pathname.startsWith("/shop/c/")) return null;
+  if (pathname.startsWith("/shop/c")) return null;
   if (hide) return null;
 
   return (
