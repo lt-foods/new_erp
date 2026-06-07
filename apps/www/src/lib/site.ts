@@ -38,6 +38,22 @@ export type Plan = {
 
 export const PLANS: Plan[] = [
   {
+    id: "free",
+    name: "Free 免費版",
+    audience: "先試水溫的新手團購主",
+    monthly: 0,
+    yearly: 0,
+    badge: "永久免費",
+    limits: ["1 家門市", "月訂單 50 張", "1 個員工帳號", "500 位會員"],
+    features: [
+      "開團 / 商品建檔",
+      "LINE 社群 +1 接龍下單",
+      "會員 App（訂單查詢 / 取貨確認）",
+      "基礎訂單管理",
+    ],
+    cta: "免費開始",
+  },
+  {
     id: "starter",
     name: "Starter 團購主",
     audience: "個人團購主 / 單店起步",
@@ -158,8 +174,12 @@ export type Faq = { q: string; a: string };
 
 export const FAQS: Faq[] = [
   {
+    q: "有免費版嗎？",
+    a: "有。Free 免費版永久免費、免綁卡，每月最多 50 張訂單，含開團接龍、會員 App 與基礎訂單管理，適合新手團購主先試水溫，量大了再升級。",
+  },
+  {
     q: "這套系統適合個人團購主嗎？",
-    a: "適合。Starter 方案就是為個人團購主與單店起步設計，月費 NT$590 起，含開團接龍、會員 App、訂單取貨，免綁卡試用 14 天。",
+    a: "適合。免費版可先試水溫；穩定出單後 Starter 月費 NT$590 起，含開團接龍、會員 App、訂單取貨，付費版另有 14 天全功能試用。",
   },
   {
     q: "和一般的接龍表單工具差在哪？",

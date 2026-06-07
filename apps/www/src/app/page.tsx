@@ -46,9 +46,24 @@ function Hero() {
             預約 15 分鐘 Demo
           </a>
         </div>
-        <p className="mt-4 text-sm text-muted">月租制・可年繳・{ANNUAL_NOTE}</p>
+        <TrustBadges />
       </div>
     </section>
+  );
+}
+
+const TRUST = ["免費開始", "免設定費", "免成交手續費", "免綁卡", "隨時取消"];
+
+function TrustBadges() {
+  return (
+    <div className="mt-6 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-sm text-muted">
+      {TRUST.map((t) => (
+        <span key={t} className="inline-flex items-center gap-1.5">
+          <span className="text-brand">✓</span>
+          {t}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -117,6 +132,53 @@ function Features() {
   );
 }
 
+const FRANCHISE_POINTS = [
+  { t: "多店總部統管", d: "一個後台俯瞰全體門市營運" },
+  { t: "跨店調撥", d: "A 店缺、B 店多，系統內直接調" },
+  { t: "加盟拆帳", d: "總部與門市帳目自動分清楚" },
+  { t: "進銷存後台", d: "採購、庫存 SSOT、應付帳款全打通" },
+];
+
+function Franchise() {
+  return (
+    <section className="py-20">
+      <div className="mx-auto max-w-6xl px-5">
+        <div className="overflow-hidden rounded-3xl bg-foreground text-background">
+          <div className="grid gap-10 p-10 md:grid-cols-2 md:p-14">
+            <div>
+              <span className="inline-block rounded-full bg-brand/20 px-4 py-1.5 text-sm font-semibold text-brand">
+                不只是整單工具
+              </span>
+              <h2 className="mt-5 text-3xl font-extrabold tracking-tight md:text-4xl">
+                開分店、做加盟？<br />一個後台管 100 家門市
+              </h2>
+              <p className="mt-5 leading-relaxed opacity-80">
+                只能整單的工具，生意一做大、想開第二家店或跑加盟就撞牆。揪好團原生支援
+                多店與加盟總部——後端多租戶、列級安全隔離，總部俯瞰全局、門市各看各的。
+                這是團做大之後，整單工具給不了的後台。
+              </p>
+              <a
+                href="/features/franchise/"
+                className="mt-7 inline-block rounded-full bg-brand px-6 py-3 text-sm font-bold text-white transition hover:bg-brand-dark"
+              >
+                看加盟總部方案 →
+              </a>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {FRANCHISE_POINTS.map((p) => (
+                <div key={p.t} className="rounded-2xl bg-white/5 p-5 ring-1 ring-white/10">
+                  <div className="font-bold">{p.t}</div>
+                  <div className="mt-1.5 text-sm opacity-75">{p.d}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function PriceTag({ plan }: { plan: Plan }) {
   if (plan.monthly == null) {
     return (
@@ -126,6 +188,16 @@ function PriceTag({ plan }: { plan: Plan }) {
       </div>
     );
   }
+  if (plan.monthly === 0) {
+    return (
+      <div className="mt-5">
+        <div className="text-4xl font-extrabold">免費</div>
+        <div className="mt-1 text-sm text-muted">NT$0／月・不限時間</div>
+      </div>
+    );
+  }
+  // 年繳 = 月費 × 10，故年省 = 月費 × 2
+  const saved = plan.yearly != null ? plan.monthly * 12 - plan.yearly : 0;
   return (
     <div className="mt-5">
       <div className="flex items-baseline gap-1">
@@ -135,7 +207,12 @@ function PriceTag({ plan }: { plan: Plan }) {
       </div>
       {plan.yearly != null && (
         <div className="mt-1 text-sm text-muted">
-          年繳 NT${nf(plan.yearly)}（{ANNUAL_NOTE}）
+          年繳 NT${nf(plan.yearly)}
+          {saved > 0 && (
+            <span className="ml-1 font-semibold text-brand-dark">
+              年省 NT${nf(saved)}
+            </span>
+          )}
         </div>
       )}
     </div>
@@ -145,18 +222,18 @@ function PriceTag({ plan }: { plan: Plan }) {
 function Pricing() {
   return (
     <section id="pricing" className="bg-surface py-20">
-      <div className="mx-auto max-w-6xl px-5">
+      <div className="mx-auto max-w-7xl px-5">
         <h2 className="text-center text-3xl font-extrabold tracking-tight md:text-4xl">
-          從個人團購主到加盟總部，都有方案
+          從免費版到加盟總部，都有方案
         </h2>
         <p className="mx-auto mt-4 max-w-2xl text-center text-muted">
-          月租制，可年繳・{ANNUAL_NOTE}。隨生意成長無痛升級。
+          免費開始，月租制可年繳・{ANNUAL_NOTE}。隨生意成長無痛升級。
         </p>
-        <div className="mt-12 grid gap-5 lg:grid-cols-4">
+        <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           {PLANS.map((plan) => (
             <div
               key={plan.id}
-              className={`relative flex flex-col rounded-3xl border bg-background p-6 ${
+              className={`relative flex flex-col rounded-3xl border bg-background p-5 ${
                 plan.highlight ? "border-brand shadow-lg ring-1 ring-brand/30" : ""
               }`}
             >
@@ -196,7 +273,8 @@ function Pricing() {
             </div>
           ))}
         </div>
-        <p className="mt-8 text-center text-sm text-muted">
+        <TrustBadges />
+        <p className="mt-6 text-center text-sm text-muted">
           所有方案均為新台幣未稅・另有導入輔導、資料搬遷、白標等加購服務。
         </p>
       </div>
@@ -264,6 +342,7 @@ export default function Home() {
         <Hero />
         <Pains />
         <Features />
+        <Franchise />
         <Pricing />
         <Faq />
         <FinalCta />
