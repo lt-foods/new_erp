@@ -8,6 +8,7 @@ import { printViaIframe } from "@/lib/printIframe";
 import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
 import { EditableDiscount, deriveDiscount, type DiscountValue } from "@/components/EditableDiscount";
+import { orderItemStatusLabel } from "@/lib/orderStatus";
 
 type PickableItem = {
   id: number;
@@ -403,7 +404,7 @@ export function PickupDialog({
                       <td className="px-3 py-2 text-xs text-zinc-500">
                         {fullyReturned
                           ? <span className="rounded bg-orange-100 px-1.5 py-0.5 font-medium text-orange-800 dark:bg-orange-950 dark:text-orange-300">已退貨・不能取貨</span>
-                          : it.status}
+                          : orderItemStatusLabel(it.status)}
                       </td>
                     </tr>
                   );

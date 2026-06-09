@@ -46,6 +46,23 @@ export function orderStatusLabel(s: string | null | undefined): string {
   return ORDER_STATUS_LABEL[s as OrderStatus] ?? s;
 }
 
+// customer_order_items.status 的中文 label（與 orders.status 是不同集合）。
+// pending/reserved/ready 都是「尚未取貨」的細分；picked_up=已取貨。
+export const ORDER_ITEM_STATUS_LABEL: Record<string, string> = {
+  pending:   "待取貨",
+  reserved:  "已備貨",
+  ready:     "可取貨",
+  picked_up: "已取貨",
+  cancelled: "已取消",
+  expired:   "已過期",
+};
+
+/** customer_order_items.status 取中文 label；未知直接 fallback 原字串。 */
+export function orderItemStatusLabel(s: string | null | undefined): string {
+  if (!s) return "—";
+  return ORDER_ITEM_STATUS_LABEL[s] ?? s;
+}
+
 const TERMINAL_STATUSES = new Set<string>([
   "completed",
   "cancelled",
