@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { OrderTransferModal } from "@/components/OrderTransferModal";
 import OrderReturnCreateModal from "@/components/OrderReturnCreateModal";
+import TransferDetailModal from "@/components/TransferDetailModal";
 import { PickupDialog } from "@/components/PickupDialog";
 import { AidOrderTimeline } from "@/components/AidOrderTimeline";
 import { OrderAuditDrawer } from "@/components/OrderAuditDrawer";
@@ -57,6 +58,23 @@ type ItemRow = {
   created_by: string | null;
   updated_by: string | null;
   sku: { id: number; sku_code: string; product_name: string | null; variant_name: string | null } | null;
+};
+
+// 退貨單（return_to_hq transfer）— customer_order_id 反向掛到此訂單
+type ReturnLine = {
+  sku_id: number;
+  qty_shipped: number;
+  notes: string | null;
+};
+type ReturnTransfer = {
+  id: number;
+  transfer_no: string;
+  status: string;          // shipped | received
+  notes: string | null;
+  shipped_at: string | null;
+  received_at: string | null;
+  shipped_by: string | null;
+  lines: ReturnLine[];
 };
 
 // 品項狀態標籤（部分取貨會把一行拆成「已取」+「待取」兩行，標籤讓兩者一眼可分）
@@ -139,6 +157,8 @@ export function OrderDetail({
 }) {
   const [head, setHead] = useState<OrderHead | null>(null);
   const [items, setItems] = useState<ItemRow[] | null>(null);
+  const [returns, setReturns] = useState<ReturnTransfer[] | null>(null);
+  const [returnDetailId, setReturnDetailId] = useState<number | null>(null);
   const [timeline, setTimeline] = useState<TimelineStep[] | null>(null);
   const [staffNames, setStaffNames] = useState<Map<string, string>>(new Map());
   // sku_id → 現行分店價（prices scope=branch, effective_to IS NULL）
@@ -189,7 +209,7 @@ export function OrderDetail({
     let cancelled = false;
     (async () => {
       const sb = getSupabase();
-      const [hRes, iRes] = await Promise.all([
+      const [hRes, iRes, rRes] = await Promise.all([
         sb.from("customer_orders")
           .select("id, order_no, status, pickup_deadline, nickname_snapshot, created_at, updated_at, pickup_store_id, campaign_id, transferred_from_order_id, is_air_transfer, discount_amount, discount_percent, wallet_paid_amount, payment_status, paid_at, notes, member:members(id, name, phone, member_no), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
           .eq("id", orderId).maybeSingle(),
@@ -197,6 +217,12 @@ export function OrderDetail({
           .select("id, qty, unit_price, status, source, notes, discount_amount, discount_percent, created_at, updated_at, created_by, updated_by, sku:skus(id, sku_code, product_name, variant_name)")
           .eq("order_id", orderId)
           .order("created_at", { ascending: true }),
+        sb.from("transfers")
+          .select("id, transfer_no, status, notes, shipped_at, received_at, shipped_by, transfer_items(sku_id, qty_shipped, notes)")
+          .eq("customer_order_id", orderId)
+          .eq("transfer_type", "return_to_hq")
+          .in("status", ["shipped", "received"])
+          .order("shipped_at", { ascending: false }),
       ]);
       if (cancelled) return;
       if (hRes.error) { setError(hRes.error.message); return; }
@@ -205,6 +231,21 @@ export function OrderDetail({
       if (iRes.error) { setError(iRes.error.message); return; }
       const itemsData = (iRes.data ?? []) as unknown as ItemRow[];
       setItems(itemsData);
+
+      // ========== 整理退貨單（return_to_hq transfer）==========
+      type RetRow = {
+        id: number; transfer_no: string; status: string; notes: string | null;
+        shipped_at: string | null; received_at: string | null; shipped_by: string | null;
+        transfer_items: ReturnLine[] | null;
+      };
+      const retRows = ((rRes.data ?? []) as unknown as RetRow[]).map((r): ReturnTransfer => ({
+        id: r.id, transfer_no: r.transfer_no, status: r.status, notes: r.notes,
+        shipped_at: r.shipped_at, received_at: r.received_at, shipped_by: r.shipped_by,
+        lines: (r.transfer_items ?? []).map((l) => ({
+          sku_id: Number(l.sku_id), qty_shipped: Number(l.qty_shipped), notes: l.notes,
+        })),
+      }));
+      setReturns(retRows);
 
       // ========== 載入各 SKU 現行分店價（prices scope=branch, 生效中）==========
       const priceSkuIds = Array.from(
@@ -227,11 +268,14 @@ export function OrderDetail({
         }
       }
 
-      // ========== 載入加單者 user names ==========
+      // ========== 載入加單者 / 退貨經手人 user names ==========
       const uids = new Set<string>();
       for (const it of itemsData) {
         if (it.created_by) uids.add(it.created_by);
         if (it.updated_by) uids.add(it.updated_by);
+      }
+      for (const r of retRows) {
+        if (r.shipped_by) uids.add(r.shipped_by);
       }
       if (uids.size > 0) {
         const { data: names } = await sb.rpc("rpc_get_staff_names", {
@@ -285,6 +329,20 @@ export function OrderDetail({
   }, 0);
   const lineDiscountTotal = Math.round((grossTotal - subtotal) * 10000) / 10000;
   const { deduction: orderDeduction, payable: payableAmount } = applyOrderDiscount(subtotal, orderDiscountValue);
+
+  // ----- 退貨彙整：總退貨件數 + SKU lookup（給 ReturnList 顯示品名）-----
+  const totalReturnedQty = (returns ?? []).reduce(
+    (s, r) => s + r.lines.reduce((s2, l) => s2 + Number(l.qty_shipped), 0),
+    0,
+  );
+  const skuLookup = new Map<number, { sku_code: string; product_name: string | null; variant_name: string | null }>();
+  for (const it of items) {
+    if (it.sku) skuLookup.set(it.sku.id, {
+      sku_code: it.sku.sku_code,
+      product_name: it.sku.product_name,
+      variant_name: it.sku.variant_name,
+    });
+  }
 
   // ----- draft 修改數計算 -----
   const itemDraftCount = Array.from(draft.items.values()).reduce(
@@ -662,7 +720,13 @@ export function OrderDetail({
 
       <div className="rounded-md border border-zinc-200 dark:border-zinc-800">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-medium dark:border-zinc-800 dark:bg-zinc-900">
-          <span>明細（{items.length} 項 · {totalQty} 件）</span>
+          <span>
+            明細（{items.length} 項 · {totalQty} 件
+            {totalReturnedQty > 0 && (
+              <span className="ml-1 text-orange-700 dark:text-orange-400">· ↩ 已退 {totalReturnedQty} 件</span>
+            )}
+            ）
+          </span>
           <div className="flex flex-wrap items-center gap-3 font-mono">
             <span className="text-zinc-500">原價 ${Math.round(grossTotal)}</span>
             {lineDiscountTotal > 0 && (
@@ -818,6 +882,72 @@ export function OrderDetail({
         </div>
       </div>
 
+      {/* 退貨記錄（return_to_hq transfer 反掛到此訂單） */}
+      {returns !== null && returns.length > 0 && (
+        <div className="rounded-md border border-orange-200 dark:border-orange-900">
+          <div className="border-b border-orange-200 bg-orange-50 px-3 py-2 text-xs font-medium text-orange-900 dark:border-orange-900 dark:bg-orange-950/40 dark:text-orange-200">
+            ↩ 退貨記錄（{returns.length} 張單 · 共退 {totalReturnedQty} 件）
+          </div>
+          <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
+            {returns.map((r) => {
+              const isReceived = r.status === "received";
+              return (
+                <li key={r.id} className="p-3 text-xs">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <button
+                      type="button"
+                      onClick={() => setReturnDetailId(r.id)}
+                      className="font-mono text-blue-600 hover:underline dark:text-blue-400"
+                      title="開啟退貨單明細"
+                    >
+                      {r.transfer_no}
+                    </button>
+                    <span
+                      className={`rounded px-2 py-0.5 text-[10px] font-medium ${
+                        isReceived
+                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                          : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                      }`}
+                    >
+                      {isReceived ? "已退回總倉" : "店端已出貨、待總倉收貨"}
+                    </span>
+                    {r.shipped_at && (
+                      <span className="text-zinc-500">出貨 {fmtDt(r.shipped_at)}</span>
+                    )}
+                    {r.received_at && (
+                      <span className="text-zinc-500">收貨 {fmtDt(r.received_at)}</span>
+                    )}
+                    {r.shipped_by && (
+                      <span className="text-zinc-500">by {staffLabel(r.shipped_by, staffNames)}</span>
+                    )}
+                  </div>
+                  {r.notes && (
+                    <div className="mt-1 text-zinc-600 dark:text-zinc-400">{r.notes}</div>
+                  )}
+                  <ul className="mt-2 grid gap-1 sm:grid-cols-2">
+                    {r.lines.map((l, i) => {
+                      const sku = skuLookup.get(l.sku_id);
+                      const skuLabel = sku
+                        ? `${sku.product_name ?? "—"}${sku.variant_name ? " / " + sku.variant_name : ""}`
+                        : `SKU #${l.sku_id}`;
+                      const skuCode = sku?.sku_code ?? "";
+                      return (
+                        <li key={i} className="flex flex-wrap items-baseline gap-1">
+                          <span>• {skuLabel}</span>
+                          {skuCode && <span className="font-mono text-zinc-400">{skuCode}</span>}
+                          <span className="font-mono">× {Number(l.qty_shipped)}</span>
+                          {l.notes && <span className="text-zinc-500">— {l.notes}</span>}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
       {/* 進度 timeline（採購到貨 → 撿貨 → 派貨 → 分店收貨） */}
       <Timeline steps={timeline} />
 
@@ -854,6 +984,11 @@ export function OrderDetail({
         open={auditOpen}
         onClose={() => setAuditOpen(false)}
         orderId={head.id}
+      />
+      <TransferDetailModal
+        open={returnDetailId !== null}
+        transferId={returnDetailId}
+        onClose={() => setReturnDetailId(null)}
       />
       {head.member && (
         <WalletPayOrderModal
