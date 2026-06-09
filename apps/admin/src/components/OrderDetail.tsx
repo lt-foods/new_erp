@@ -19,6 +19,7 @@ import { ItemSourceBadge, OrderSourceBadge } from "@/components/OrderSourceBadge
 import { withBasePath } from "@/lib/basePath";
 import { printViaIframe } from "@/lib/printIframe";
 import { translateRpcError } from "@/lib/rpcError";
+import { parseReturnNote } from "@/lib/returnNote";
 import SpinButton from "@/components/SpinButton";
 
 type OrderHead = {
@@ -146,26 +147,6 @@ function staffLabel(uid: string | null, names: Map<string, string>): string {
 
 function fmtDt(iso: string): string {
   return new Date(iso).toLocaleString("zh-TW", { hour12: false });
-}
-
-// 解析退貨 transfer 的 notes（rpc_create_order_return 寫的 [order return...] tag）成中文。
-// 格式：[order return{|破損}{|取貨後退回}{: 原因}]，HQ 收貨可能在後面 append 多行備註。
-function parseReturnNote(notes: string | null): {
-  isDamage: boolean;
-  isRestock: boolean;
-  reason: string | null;
-  extra: string | null;
-} {
-  if (!notes) return { isDamage: false, isRestock: false, reason: null, extra: null };
-  const m = notes.match(/^\[order return([^\]:]*)(?::\s*([^\]]*))?\]/);
-  if (!m) return { isDamage: false, isRestock: false, reason: null, extra: notes.trim() || null };
-  const tags = m[1] ?? "";
-  return {
-    isDamage: tags.includes("破損"),
-    isRestock: tags.includes("取貨後退回"),
-    reason: (m[2] ?? "").trim() || null,
-    extra: notes.slice(m[0].length).trim() || null,
-  };
 }
 
 export function OrderDetail({

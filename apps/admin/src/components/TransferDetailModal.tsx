@@ -6,6 +6,7 @@ import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { printViaIframe } from "@/lib/printIframe";
 import { withBasePath } from "@/lib/basePath";
+import { formatReturnNote } from "@/lib/returnNote";
 
 type TransferRow = {
   id: number;
@@ -205,7 +206,7 @@ export default function TransferDetailModal({
             {tx.customer_order_id != null && (
               <Field label="關聯訂單" value={`#${tx.customer_order_id}`} />
             )}
-            {tx.notes && <Field label="備註" value={tx.notes} full />}
+            {tx.notes && <Field label="備註" value={formatReturnNote(tx.notes)} full />}
           </dl>
 
           <div className="flex flex-wrap items-center justify-end gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900">
