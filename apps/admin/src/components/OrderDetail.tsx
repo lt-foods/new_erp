@@ -148,6 +148,26 @@ function fmtDt(iso: string): string {
   return new Date(iso).toLocaleString("zh-TW", { hour12: false });
 }
 
+// 解析退貨 transfer 的 notes（rpc_create_order_return 寫的 [order return...] tag）成中文。
+// 格式：[order return{|破損}{|取貨後退回}{: 原因}]，HQ 收貨可能在後面 append 多行備註。
+function parseReturnNote(notes: string | null): {
+  isDamage: boolean;
+  isRestock: boolean;
+  reason: string | null;
+  extra: string | null;
+} {
+  if (!notes) return { isDamage: false, isRestock: false, reason: null, extra: null };
+  const m = notes.match(/^\[order return([^\]:]*)(?::\s*([^\]]*))?\]/);
+  if (!m) return { isDamage: false, isRestock: false, reason: null, extra: notes.trim() || null };
+  const tags = m[1] ?? "";
+  return {
+    isDamage: tags.includes("破損"),
+    isRestock: tags.includes("取貨後退回"),
+    reason: (m[2] ?? "").trim() || null,
+    extra: notes.slice(m[0].length).trim() || null,
+  };
+}
+
 export function OrderDetail({
   orderId,
   onNavigate,
@@ -891,6 +911,7 @@ export function OrderDetail({
           <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {returns.map((r) => {
               const isReceived = r.status === "received";
+              const note = parseReturnNote(r.notes);
               return (
                 <li key={r.id} className="p-3 text-xs">
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -911,6 +932,16 @@ export function OrderDetail({
                     >
                       {isReceived ? "已退回總倉" : "店端已出貨、待總倉收貨"}
                     </span>
+                    {note.isRestock && (
+                      <span className="rounded bg-purple-100 px-2 py-0.5 text-[10px] font-medium text-purple-800 dark:bg-purple-950 dark:text-purple-300">
+                        客戶已取貨後退回
+                      </span>
+                    )}
+                    {note.isDamage && (
+                      <span className="rounded bg-red-100 px-2 py-0.5 text-[10px] font-medium text-red-800 dark:bg-red-950 dark:text-red-300">
+                        破損
+                      </span>
+                    )}
                     {r.shipped_at && (
                       <span className="text-zinc-500">出貨 {fmtDt(r.shipped_at)}</span>
                     )}
@@ -921,8 +952,12 @@ export function OrderDetail({
                       <span className="text-zinc-500">by {staffLabel(r.shipped_by, staffNames)}</span>
                     )}
                   </div>
-                  {r.notes && (
-                    <div className="mt-1 text-zinc-600 dark:text-zinc-400">{r.notes}</div>
+                  {(note.reason || note.extra) && (
+                    <div className="mt-1 text-zinc-600 dark:text-zinc-400">
+                      {note.reason && <span>原因：{note.reason}</span>}
+                      {note.reason && note.extra && <br />}
+                      {note.extra && <span>{note.extra}</span>}
+                    </div>
                   )}
                   <ul className="mt-2 grid gap-1 sm:grid-cols-2">
                     {r.lines.map((l, i) => {
