@@ -17,6 +17,7 @@ import OrderReturnCreateModal from "@/components/OrderReturnCreateModal";
 import TransferDetailModal from "@/components/TransferDetailModal";
 import { printViaIframe } from "@/lib/printIframe";
 import { withBasePath } from "@/lib/basePath";
+import { formatReturnNote } from "@/lib/returnNote";
 
 type Loc = { id: number; name: string; type: string };
 
@@ -165,14 +166,14 @@ export default function InternalTransfersPage() {
   }
 
   // 翻譯系統產生的 note tag,例如:
-  //   [order return]        → 退訂單
-  //   [order return: 客退]  → 退訂單:客退
-  //   [rejected: aaaa]      → 已退單:aaaa
+  //   [order return]              → 退貨
+  //   [order return|破損: 客退]   → 退貨・破損：客退
+  //   [order return|取貨後退回]   → 退貨・客戶已取貨後退回
+  //   [rejected: aaaa]            → 已退單:aaaa
   function formatNote(notes: string | null): string {
     if (!notes) return "—";
-    let s = notes;
-    s = s.replace(/^\[order return: ([^\]]+)\]/, "退訂單:$1");
-    s = s.replace(/^\[order return\]/, "退訂單");
+    // 退貨 note（含 |破損 / |取貨後退回 tag）交給共用 helper；非退貨 note 原樣回傳再處理其它 tag
+    let s = formatReturnNote(notes);
     s = s.replace(/^\[rejected: ([^\]]+)\]/, "已退單:$1");
     s = s.replace(/^\[rejected\]/, "已退單");
     return s;

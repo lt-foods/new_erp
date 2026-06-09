@@ -19,6 +19,7 @@ import { ItemSourceBadge, OrderSourceBadge } from "@/components/OrderSourceBadge
 import { withBasePath } from "@/lib/basePath";
 import { printViaIframe } from "@/lib/printIframe";
 import { translateRpcError } from "@/lib/rpcError";
+import { parseReturnNote } from "@/lib/returnNote";
 import SpinButton from "@/components/SpinButton";
 
 type OrderHead = {
@@ -891,6 +892,7 @@ export function OrderDetail({
           <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {returns.map((r) => {
               const isReceived = r.status === "received";
+              const note = parseReturnNote(r.notes);
               return (
                 <li key={r.id} className="p-3 text-xs">
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -911,6 +913,16 @@ export function OrderDetail({
                     >
                       {isReceived ? "已退回總倉" : "店端已出貨、待總倉收貨"}
                     </span>
+                    {note.isRestock && (
+                      <span className="rounded bg-purple-100 px-2 py-0.5 text-[10px] font-medium text-purple-800 dark:bg-purple-950 dark:text-purple-300">
+                        客戶已取貨後退回
+                      </span>
+                    )}
+                    {note.isDamage && (
+                      <span className="rounded bg-red-100 px-2 py-0.5 text-[10px] font-medium text-red-800 dark:bg-red-950 dark:text-red-300">
+                        破損
+                      </span>
+                    )}
                     {r.shipped_at && (
                       <span className="text-zinc-500">出貨 {fmtDt(r.shipped_at)}</span>
                     )}
@@ -921,8 +933,12 @@ export function OrderDetail({
                       <span className="text-zinc-500">by {staffLabel(r.shipped_by, staffNames)}</span>
                     )}
                   </div>
-                  {r.notes && (
-                    <div className="mt-1 text-zinc-600 dark:text-zinc-400">{r.notes}</div>
+                  {(note.reason || note.extra) && (
+                    <div className="mt-1 text-zinc-600 dark:text-zinc-400">
+                      {note.reason && <span>原因：{note.reason}</span>}
+                      {note.reason && note.extra && <br />}
+                      {note.extra && <span>{note.extra}</span>}
+                    </div>
                   )}
                   <ul className="mt-2 grid gap-1 sm:grid-cols-2">
                     {r.lines.map((l, i) => {
