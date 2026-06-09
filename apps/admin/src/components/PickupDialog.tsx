@@ -36,9 +36,6 @@ function lineSubQty(it: PickableItem, qty: number): number {
   const discAmt = Number(it.discount_amount ?? 0) * ratio;
   return Math.max(0, Math.round(afterPct * 10000) / 10000 - discAmt);
 }
-function lineSub(it: PickableItem): number {
-  return lineSubQty(it, Number(it.qty));
-}
 
 export function PickupDialog({
   open,
@@ -54,6 +51,8 @@ export function PickupDialog({
   onPickedUp: (result: { event_id: number; new_order_status: string; picked_count: number; active_remaining: number }) => void;
 }) {
   const [items, setItems] = useState<PickableItem[] | null>(null);
+  // item.id → 已退數量（return_to_hq transfer 依 SKU 聚合後分攤到各品項行）
+  const [returnedByItem, setReturnedByItem] = useState<Map<number, number>>(new Map());
   const [discountValue, setDiscountValue] = useState<DiscountValue>({ kind: "amount", value: 0 });
   const [originalDiscount, setOriginalDiscount] = useState<{ amount: number; percent: number }>({ amount: 0, percent: 0 });
   const [memberId, setMemberId] = useState<number | null>(null);
@@ -73,7 +72,7 @@ export function PickupDialog({
     let cancelled = false;
     (async () => {
       const sb = getSupabase();
-      const [iRes, hRes] = await Promise.all([
+      const [iRes, hRes, rRes] = await Promise.all([
         sb.from("customer_order_items")
           .select("id, qty, unit_price, discount_amount, discount_percent, status, sku:skus(id, sku_code, product_name, variant_name)")
           .eq("order_id", orderId)
@@ -83,14 +82,42 @@ export function PickupDialog({
           .select("discount_amount, discount_percent, member_id, wallet_paid_amount, payment_status")
           .eq("id", orderId)
           .maybeSingle<OrderHead>(),
+        // 已退回總倉量（return_to_hq transfer）— 退掉的貨店裡沒有、不可再取
+        sb.from("transfers")
+          .select("transfer_items(sku_id, qty_shipped)")
+          .eq("customer_order_id", orderId)
+          .eq("transfer_type", "return_to_hq")
+          .in("status", ["shipped", "received"]),
       ]);
       if (cancelled) return;
       if (iRes.error) { setErr(iRes.error.message); return; }
       const list = (iRes.data ?? []) as unknown as PickableItem[];
+
+      // ----- 退貨量依 SKU 聚合，再分攤到各 pending 品項行（list 已 order by id，分攤穩定）-----
+      const returnedBySku = new Map<number, number>();
+      for (const t of (rRes.data ?? []) as { transfer_items: { sku_id: number; qty_shipped: number | null }[] | null }[]) {
+        for (const ti of t.transfer_items ?? []) {
+          if (ti.sku_id == null) continue;
+          returnedBySku.set(ti.sku_id, (returnedBySku.get(ti.sku_id) ?? 0) + Number(ti.qty_shipped ?? 0));
+        }
+      }
+      const allocMap = new Map<number, number>();
+      const remaining = new Map(returnedBySku);
+      for (const it of list) {
+        const skuId = it.sku?.id;
+        if (skuId == null) { allocMap.set(it.id, 0); continue; }
+        const rem = remaining.get(skuId) ?? 0;
+        const alloc = Math.min(Number(it.qty), rem);
+        allocMap.set(it.id, alloc);
+        remaining.set(skuId, rem - alloc);
+      }
+      setReturnedByItem(allocMap);
+
       setItems(list);
-      setPicked(new Set(list.map((it) => it.id)));
-      // 預設每項全取
-      setPickQty(new Map(list.map((it) => [it.id, String(Number(it.qty))])));
+      // 預設勾選 + 全取：只含「扣掉已退後仍有可取量」的品項
+      const pickableQty = (it: PickableItem) => Math.max(0, Number(it.qty) - (allocMap.get(it.id) ?? 0));
+      setPicked(new Set(list.filter((it) => pickableQty(it) > 0).map((it) => it.id)));
+      setPickQty(new Map(list.map((it) => [it.id, String(pickableQty(it))])));
       const head = hRes.data;
       const headAmt = Number(head?.discount_amount ?? 0);
       const headPct = Number(head?.discount_percent ?? 0);
@@ -112,7 +139,7 @@ export function PickupDialog({
           if (isPaid) {
             setWalletAmount("");
           } else {
-            const itemSubtotal = list.reduce((s, it) => s + lineSub(it), 0);
+            const itemSubtotal = list.reduce((s, it) => s + lineSubQty(it, pickableQty(it)), 0);
             const dpct = Number(head?.discount_percent ?? 0);
             const damt = Number(head?.discount_amount ?? 0);
             const initialPayable = Math.max(0, Math.round(itemSubtotal * (1 - dpct / 100) - damt));
@@ -137,12 +164,21 @@ export function PickupDialog({
     });
   }
 
-  // 取得某 item 本次有效取貨數量（clamp 到 1..qty；空字串/非法 → 全取）
+  // 該品項已退回總倉量 / 仍可取量（= 訂購量 − 已退量）
+  function returnedOf(it: PickableItem): number {
+    return returnedByItem.get(it.id) ?? 0;
+  }
+  function pickableOf(it: PickableItem): number {
+    return Math.max(0, Number(it.qty) - returnedOf(it));
+  }
+
+  // 取得某 item 本次有效取貨數量（clamp 到 1..可取量；空字串/非法 → 全取可取量）
   function effQty(it: PickableItem): number {
+    const cap = pickableOf(it);
     const raw = pickQty.get(it.id);
     const n = Number(raw);
-    if (raw === "" || raw == null || !Number.isFinite(n) || n <= 0) return Number(it.qty);
-    return Math.min(Number(it.qty), Math.max(1, n));
+    if (raw === "" || raw == null || !Number.isFinite(n) || n <= 0) return cap;
+    return Math.min(cap, Math.max(1, n));
   }
   function setQty(id: number, value: string) {
     setPickQty((m) => {
@@ -290,6 +326,11 @@ export function PickupDialog({
         <p className="text-sm text-zinc-500">無可取貨 item（皆已取貨/取消/逾期）。</p>
       ) : (
         <div className="space-y-3">
+          {!items.some((it) => pickableOf(it) > 0) && (
+            <div className="rounded-md border border-orange-200 bg-orange-50 p-3 text-sm text-orange-800 dark:border-orange-900 dark:bg-orange-950/40 dark:text-orange-300">
+              ↩ 本訂單商品已全數退回總倉，無可取貨項目。
+            </div>
+          )}
           <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
             <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
               <thead className="bg-zinc-50 dark:bg-zinc-900">
@@ -304,19 +345,23 @@ export function PickupDialog({
               </thead>
               <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
                 {items.map((it) => {
+                  const returned = returnedOf(it);
+                  const pickable = pickableOf(it);
+                  const fullyReturned = pickable <= 0;
                   const take = effQty(it);
                   const sub = lineSubQty(it, take);
-                  const partial = take < Number(it.qty);
+                  const partial = take < pickable;
                   const isPicked = picked.has(it.id);
                   const hasLineDisc = Number(it.discount_amount ?? 0) > 0 || Number(it.discount_percent ?? 0) > 0;
                   return (
-                    <tr key={it.id} className={isPicked ? "bg-emerald-50 dark:bg-emerald-950" : ""}>
+                    <tr key={it.id} className={fullyReturned ? "opacity-50" : isPicked ? "bg-emerald-50 dark:bg-emerald-950" : ""}>
                       <td className="px-3 py-2">
                         <input
                           type="checkbox"
                           checked={isPicked}
                           onChange={() => toggle(it.id)}
-                          className="h-4 w-4"
+                          disabled={fullyReturned}
+                          className="h-4 w-4 disabled:opacity-40"
                         />
                       </td>
                       <td className="px-3 py-2">
@@ -329,28 +374,37 @@ export function PickupDialog({
                             (折{Number(it.discount_percent ?? 0) > 0 ? `${it.discount_percent}%` : ""}{Number(it.discount_amount ?? 0) > 0 ? ` -$${it.discount_amount}` : ""})
                           </span>
                         )}
+                        {returned > 0 && (
+                          <span className="ml-2 rounded bg-orange-100 px-1.5 py-0.5 text-[10px] font-medium text-orange-800 dark:bg-orange-950 dark:text-orange-300">
+                            ↩ 已退 {returned}
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-right">
                         <div className="flex items-center justify-end gap-1">
                           <input
                             type="number"
                             min={1}
-                            max={Number(it.qty)}
+                            max={pickable}
                             step="1"
-                            value={pickQty.get(it.id) ?? String(Number(it.qty))}
+                            value={pickQty.get(it.id) ?? String(pickable)}
                             onChange={(e) => setQty(it.id, e.target.value)}
-                            disabled={!isPicked}
+                            disabled={!isPicked || fullyReturned}
                             className="w-14 rounded-md border border-zinc-300 px-2 py-1 text-right font-mono text-sm disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-800"
                           />
-                          <span className="font-mono text-[10px] text-zinc-400">/{Number(it.qty)}</span>
+                          <span className="font-mono text-[10px] text-zinc-400">/{pickable}</span>
                         </div>
-                        {partial && isPicked && (
-                          <div className="mt-0.5 text-[10px] text-amber-600 dark:text-amber-400">剩 {Number(it.qty) - take} 留待下次</div>
+                        {partial && isPicked && !fullyReturned && (
+                          <div className="mt-0.5 text-[10px] text-amber-600 dark:text-amber-400">剩 {pickable - take} 留待下次</div>
                         )}
                       </td>
                       <td className="px-3 py-2 text-right font-mono text-zinc-500">${Number(it.unit_price)}</td>
                       <td className="px-3 py-2 text-right font-mono">${sub}</td>
-                      <td className="px-3 py-2 text-xs text-zinc-500">{it.status}</td>
+                      <td className="px-3 py-2 text-xs text-zinc-500">
+                        {fullyReturned
+                          ? <span className="rounded bg-orange-100 px-1.5 py-0.5 font-medium text-orange-800 dark:bg-orange-950 dark:text-orange-300">已退回總倉</span>
+                          : it.status}
+                      </td>
                     </tr>
                   );
                 })}
