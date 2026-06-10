@@ -6,11 +6,14 @@
 //   2. 進貨破損 — GR qty_damaged > 0
 //   3. 過量進貨 — GR cumulative qty_received > qty_ordered
 //   4. 收貨短少 — Transfer received 但 qty_received < qty_shipped
+//   5. 訂單短少 — v_order_shortage 聚合到 order 維度
+//
+// 資料與分頁:全部走 server-side。rpc_hq_exceptions(type, page, page_size)
+// 後端 union 5 來源(v_hq_exceptions)做真分頁,一次回傳 { total, counts(各 tab), rows(當前頁) }。
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
-import { fetchAllRows } from "@/lib/fetchAllRows";
 import SpinButton from "./SpinButton";
 import { TransferShortageResolveModal, type ShortageContext } from "./TransferShortageResolveModal";
 
@@ -25,19 +28,14 @@ const TAB_LABEL: Record<Tab, string> = {
   customer_shortage: "訂單短少",
 };
 
-const RESOLUTION_LABEL: Record<string, string> = {
-  notified: "✓ 已通知客戶",
-  cancelled: "✓ 已取消退款",
-  reallocated: "✓ 已改派",
-  waiting_next_po: "⏳ 等下批 PO",
-};
-
-// 與 /hq/inbox 其他來源一致的每頁筆數(client-side 分頁,資料已全撈在前端)
+// 與 /hq/inbox 其他來源一致的每頁筆數
 const PAGE_SIZE = 20;
+
+type ExceptionType = "po_shortage" | "po_damage" | "po_over" | "transfer_short" | "customer_shortage";
 
 type ExceptionRow = {
   key: string;
-  type: "po_shortage" | "po_damage" | "po_over" | "transfer_short" | "customer_shortage";
+  type: ExceptionType;
   ts: string;
   doc_no: string;
   doc_link: string;
@@ -54,6 +52,45 @@ type ExceptionRow = {
   shortage_resolution?: string | null;
 };
 
+// rpc_hq_exceptions 回傳的單列(= v_hq_exceptions 扁平欄位)
+type ViewRow = {
+  type: ExceptionType;
+  row_key: string;
+  ts: string | null;
+  doc_no: string;
+  sku_code: string | null;
+  sku_label: string;
+  expected: number | string;
+  actual: number | string;
+  diff: number | string;
+  reason: string | null;
+  extra: string;
+  transfer_item_id: number | null;
+  transfer_id: number | null;
+  transfer_no: string | null;
+  sku_id: number | null;
+  qty_shipped: number | string | null;
+  qty_received: number | string | null;
+  shortage_qty: number | string | null;
+  dest_location: number | null;
+  dest_store_id: number | null;
+  dest_store_name: string | null;
+  customer_order_id: number | null;
+  shortage_resolution: string | null;
+};
+
+type ExceptionCounts = Record<Tab, number>;
+
+const EMPTY_COUNTS: ExceptionCounts = {
+  all: 0, po_shortage: 0, po_damage: 0, po_over: 0, transfer_short: 0, customer_shortage: 0,
+};
+
+function docLinkFor(r: ViewRow): string {
+  if (r.type === "customer_shortage") return `/orders?id=${r.customer_order_id}`;
+  if (r.type === "transfer_short") return `/wms/inbound`;
+  return `/wms/receiving`;
+}
+
 export default function ExceptionsContent({
   showHeader = true,
   onCountChange,
@@ -62,6 +99,8 @@ export default function ExceptionsContent({
   onCountChange?: (count: number) => void;
 }) {
   const [rows, setRows] = useState<ExceptionRow[] | null>(null);
+  const [counts, setCounts] = useState<ExceptionCounts | null>(null);
+  const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("all");
   const [resolveCtx, setResolveCtx] = useState<ShortageContext | null>(null);
@@ -101,299 +140,97 @@ export default function ExceptionsContent({
     }
   }
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const sb = getSupabase();
-
-        const { data: pickingDemand, error: e1 } = await sb
-          .from("v_picking_demand_by_po")
-          .select("po_id, po_no, po_status, sku_id, sku_code, sku_label, qty_ordered, gr_qty, qty_shortage")
-          .gt("qty_shortage", 0);
-        if (e1) throw new Error("po_shortage: " + e1.message);
-
-        const { data: damageRows, error: e2 } = await sb
-          .from("goods_receipt_items")
-          .select("id, gr_id, sku_id, qty_received, qty_damaged, variance_reason, gr:goods_receipts!inner(id, gr_no, po_id, status, created_at)")
-          .gt("qty_damaged", 0)
-          .eq("gr.status", "confirmed");
-        if (e2) throw new Error("po_damage: " + e2.message);
-
-        // 無 filter 撈整張 v_picking_demand_by_po（PO×SKU×store 矩陣，會破千列），
-        // 必須分頁，否則 PostgREST 1000 列上限會漏掉部分 PO 的過量進貨異常。
-        // 依 view grain (po_item_id, store_id) 排序給分頁穩定 total order。
-        const overRows = await fetchAllRows<{ po_id: number; po_no: string; po_status: string; sku_id: number; sku_code: string | null; sku_label: string; qty_ordered: number; gr_qty: number }>(() =>
-          sb.from("v_picking_demand_by_po")
-            .select("po_id, po_no, po_status, sku_id, sku_code, sku_label, qty_ordered, gr_qty")
-            .order("po_item_id", { ascending: true })
-            .order("store_id", { ascending: true, nullsFirst: false }),
-        );
-
-        const { data: tShortRows, error: e4 } = await sb
-          .from("transfer_items")
-          .select("id, transfer_id, sku_id, qty_shipped, qty_received, damage_qty, shortage_resolution, transfer:transfers!inner(id, transfer_no, status, dest_location)")
-          .eq("transfer.status", "received")
-          .is("shortage_resolution", null);
-        if (e4) throw new Error("transfer_short: " + e4.message);
-
-        // 5. 客戶訂單短少 — v_order_shortage,以 order_id 聚合
-        const { data: custShortRows, error: e5 } = await sb
-          .from("v_order_shortage")
-          .select(
-            "order_id, order_no, member_id, store_name, order_status, shortage_resolution, shortage_notified_at, sku_id, product_name, variant_name, sku_code, order_qty, demand_unfulfillable, order_updated_at",
-          )
-          .limit(20000);
-        if (e5) throw new Error("customer_shortage: " + e5.message);
-
-        const destLocs = Array.from(new Set(((tShortRows ?? []) as Array<{ transfer: { dest_location: number } | { dest_location: number }[] }>)
-          .map((r) => Array.isArray(r.transfer) ? r.transfer[0]?.dest_location : r.transfer?.dest_location)
-          .filter((x): x is number => typeof x === "number")));
-        const destStoreMap = new Map<number, { id: number; name: string; loc_name: string }>();
-        if (destLocs.length > 0) {
-          const [{ data: lr }, { data: sr }] = await Promise.all([
-            sb.from("locations").select("id, name").in("id", destLocs),
-            sb.from("stores").select("id, name, location_id").in("location_id", destLocs),
-          ]);
-          const locNameMap = new Map<number, string>();
-          for (const l of (lr ?? []) as Array<{ id: number; name: string }>) locNameMap.set(l.id, l.name);
-          for (const s of (sr ?? []) as Array<{ id: number; name: string; location_id: number | null }>) {
-            if (s.location_id !== null) {
-              destStoreMap.set(s.location_id, { id: s.id, name: s.name, loc_name: locNameMap.get(s.location_id) ?? `#${s.location_id}` });
-            }
-          }
-          for (const lid of destLocs) {
-            if (!destStoreMap.has(lid)) {
-              destStoreMap.set(lid, { id: 0, name: locNameMap.get(lid) ?? `#${lid}`, loc_name: locNameMap.get(lid) ?? `#${lid}` });
-            }
-          }
-        }
-
-        const skuIds = new Set<number>();
-        for (const r of (damageRows ?? []) as Array<{ sku_id: number }>) skuIds.add(r.sku_id);
-        for (const r of (tShortRows ?? []) as Array<{ sku_id: number }>) skuIds.add(r.sku_id);
-        const skuMap = new Map<number, { sku_code: string | null; product_name: string | null; variant_name: string | null }>();
-        if (skuIds.size > 0) {
-          const { data: sk } = await sb.from("skus").select("id, sku_code, product_name, variant_name").in("id", Array.from(skuIds));
-          for (const r of (sk ?? []) as Array<{ id: number; sku_code: string | null; product_name: string | null; variant_name: string | null }>) {
-            skuMap.set(r.id, { sku_code: r.sku_code, product_name: r.product_name, variant_name: r.variant_name });
-          }
-        }
-        function skuLabel(id: number): { code: string | null; label: string } {
-          const s = skuMap.get(id);
-          if (!s) return { code: null, label: `品項#${id}` };
-          const lbl = `${s.product_name ?? ""}${s.variant_name ? ` / ${s.variant_name}` : ""}`.trim() || `品項#${id}`;
-          return { code: s.sku_code, label: lbl };
-        }
-
-        const all: ExceptionRow[] = [];
-
-        const poShortageSeen = new Set<string>();
-        for (const r of ((pickingDemand ?? []) as Array<{ po_id: number; po_no: string; po_status: string; sku_id: number; sku_code: string | null; sku_label: string; qty_ordered: number; gr_qty: number; qty_shortage: number }>)) {
-          const k = `${r.po_id}:${r.sku_id}`;
-          if (poShortageSeen.has(k)) continue;
-          poShortageSeen.add(k);
-          all.push({
-            key: `po-short-${k}`,
-            type: "po_shortage",
-            ts: "—",
-            doc_no: r.po_no,
-            doc_link: `/wms/receiving`,
-            sku_code: r.sku_code,
-            sku_label: r.sku_label,
-            expected: Number(r.qty_ordered),
-            actual: Number(r.gr_qty),
-            diff: Number(r.qty_shortage),
-            reason: null,
-            extra: "PO 已關單,差額不會到",
-          });
-        }
-
-        for (const r of ((damageRows ?? []) as Array<{ id: number; gr_id: number; sku_id: number; qty_received: number; qty_damaged: number; variance_reason: string | null; gr: { id: number; gr_no: string; po_id: number; status: string; created_at: string } | { id: number; gr_no: string; po_id: number; status: string; created_at: string }[] }>)) {
-          const gr = Array.isArray(r.gr) ? r.gr[0] : r.gr;
-          const sl = skuLabel(r.sku_id);
-          all.push({
-            key: `po-dmg-${r.id}`,
-            type: "po_damage",
-            ts: gr?.created_at ?? "—",
-            doc_no: gr?.gr_no ?? "—",
-            doc_link: `/wms/receiving`,
-            sku_code: sl.code,
-            sku_label: sl.label,
-            expected: Number(r.qty_received),
-            actual: Number(r.qty_received) - Number(r.qty_damaged),
-            diff: Number(r.qty_damaged),
-            reason: r.variance_reason,
-            extra: `已收 ${r.qty_received} 含瑕疵 ${r.qty_damaged}`,
-          });
-        }
-
-        const overSeen = new Set<string>();
-        for (const r of ((overRows ?? []) as Array<{ po_id: number; po_no: string; sku_id: number; sku_code: string | null; sku_label: string; qty_ordered: number; gr_qty: number }>)) {
-          if (Number(r.gr_qty) <= Number(r.qty_ordered)) continue;
-          const k = `${r.po_id}:${r.sku_id}`;
-          if (overSeen.has(k)) continue;
-          overSeen.add(k);
-          all.push({
-            key: `po-over-${k}`,
-            type: "po_over",
-            ts: "—",
-            doc_no: r.po_no,
-            doc_link: `/wms/receiving`,
-            sku_code: r.sku_code,
-            sku_label: r.sku_label,
-            expected: Number(r.qty_ordered),
-            actual: Number(r.gr_qty),
-            diff: Number(r.gr_qty) - Number(r.qty_ordered),
-            reason: null,
-            extra: "供應商多送或重複入庫",
-          });
-        }
-
-        for (const r of ((tShortRows ?? []) as Array<{ id: number; transfer_id: number; sku_id: number; qty_shipped: number; qty_received: number; damage_qty: number | null; transfer: { id: number; transfer_no: string; status: string; dest_location: number } | { id: number; transfer_no: string; status: string; dest_location: number }[] }>)) {
-          if (Number(r.qty_received) >= Number(r.qty_shipped)) continue;
-          const tr = Array.isArray(r.transfer) ? r.transfer[0] : r.transfer;
-          const sl = skuLabel(r.sku_id);
-          const diff = Number(r.qty_shipped) - Number(r.qty_received);
-          const destInfo = tr?.dest_location ? destStoreMap.get(tr.dest_location) : undefined;
-          all.push({
-            key: `tshort-${r.id}`,
-            type: "transfer_short",
-            ts: "—",
-            doc_no: tr?.transfer_no ?? "—",
-            doc_link: `/wms/inbound`,
-            sku_code: sl.code,
-            sku_label: sl.label,
-            expected: Number(r.qty_shipped),
-            actual: Number(r.qty_received),
-            diff,
-            reason: null,
-            extra: r.damage_qty && Number(r.damage_qty) > 0 ? `含破損 ${r.damage_qty}` : "分店少收或運送中遺失",
-            shortage_ctx: {
-              transfer_item_id: r.id,
-              transfer_id: r.transfer_id,
-              transfer_no: tr?.transfer_no ?? `#${r.transfer_id}`,
-              sku_id: r.sku_id,
-              sku_code: sl.code,
-              sku_label: sl.label,
-              qty_shipped: Number(r.qty_shipped),
-              qty_received: Number(r.qty_received),
-              shortage_qty: diff,
-              dest_location: tr?.dest_location ?? 0,
-              dest_store_id: destInfo && destInfo.id > 0 ? destInfo.id : null,
-              dest_store_name: destInfo?.name ?? `位置 #${tr?.dest_location ?? "?"}`,
-            },
-          });
-        }
-
-        // 5. 客戶訂單短少 — aggregate by order_id
-        type CustShortRaw = {
-          order_id: number;
-          order_no: string;
-          member_id: number | null;
-          store_name: string | null;
-          order_status: string;
-          shortage_resolution: string | null;
-          shortage_notified_at: string | null;
-          sku_id: number;
-          product_name: string | null;
-          variant_name: string | null;
-          sku_code: string | null;
-          order_qty: number;
-          demand_unfulfillable: number;
-          order_updated_at: string;
-        };
-        type CustShortAgg = {
-          order_id: number;
-          order_no: string;
-          member_id: number | null;
-          store_name: string | null;
-          shortage_resolution: string | null;
-          shortage_notified_at: string | null;
-          short_items: { sku_label: string; demand_unfulfillable: number }[];
-          total_unfulfillable: number;
-          total_ordered: number;
-          ts: string;
-        };
-        const custByOrder = new Map<number, CustShortAgg>();
-        for (const r of (custShortRows ?? []) as CustShortRaw[]) {
-          let s = custByOrder.get(r.order_id);
-          if (!s) {
-            s = {
-              order_id: r.order_id,
-              order_no: r.order_no,
-              member_id: r.member_id,
-              store_name: r.store_name,
-              shortage_resolution: r.shortage_resolution,
-              shortage_notified_at: r.shortage_notified_at,
-              short_items: [],
-              total_unfulfillable: 0,
-              total_ordered: 0,
-              ts: r.order_updated_at,
-            };
-            custByOrder.set(r.order_id, s);
-          }
-          const lbl = `${r.product_name ?? ""}${r.variant_name ? ` / ${r.variant_name}` : ""}`.trim() || `品項#${r.sku_id}`;
-          s.short_items.push({
-            sku_label: r.sku_code ? `${r.sku_code} ${lbl}` : lbl,
-            demand_unfulfillable: Number(r.demand_unfulfillable),
-          });
-          s.total_unfulfillable += Number(r.demand_unfulfillable);
-          s.total_ordered += Number(r.order_qty);
-        }
-        for (const s of custByOrder.values()) {
-          all.push({
-            key: `custshort-${s.order_id}`,
-            type: "customer_shortage",
-            ts: s.ts,
-            doc_no: s.order_no,
-            doc_link: `/orders?id=${s.order_id}`,
-            sku_code: null,
-            sku_label: s.short_items.map((it) => it.sku_label).join("、"),
-            expected: s.total_ordered,
-            actual: Math.max(0, s.total_ordered - s.total_unfulfillable),
-            diff: s.total_unfulfillable,
-            reason: s.shortage_resolution ? RESOLUTION_LABEL[s.shortage_resolution] ?? s.shortage_resolution : null,
-            extra: `${s.store_name ?? "—"} · 會員 #${s.member_id ?? "—"} · ${s.short_items.length} 樣品項短少`,
-            customer_order_id: s.order_id,
-            shortage_resolution: s.shortage_resolution,
-          });
-        }
-
-        if (!cancelled) {
-          setRows(all);
-          setError(null);
-          if (onCountChange) onCountChange(all.length);
-        }
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [reloadTick, onCountChange]);
-
-  const counts = useMemo(() => {
-    const c: Record<Tab, number> = { all: 0, po_shortage: 0, po_damage: 0, po_over: 0, transfer_short: 0, customer_shortage: 0 };
-    for (const r of rows ?? []) {
-      c.all += 1;
-      c[r.type] += 1;
-    }
-    return c;
-  }, [rows]);
-
-  const filtered = useMemo(() => (rows ?? []).filter((r) => tab === "all" || r.type === tab), [rows, tab]);
-
   // 切換分頁籤 → 回第 1 頁(render 階段調整 state,非 effect → 不觸發 set-state-in-effect,也不會 flash 舊頁)
   if (prevTab !== tab) {
     setPrevTab(tab);
     setPage(1);
   }
 
-  // client-side 分頁(currentPage 由 page clamp 進有效範圍,避免處理後列表縮短導致超頁)
-  const total = filtered.length;
+  // server-side 抓當前 tab + page(rpc_hq_exceptions 一次回 total / 各 tab counts / 當頁 rows)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const sb = getSupabase();
+        const { data, error: err } = await sb.rpc("rpc_hq_exceptions", {
+          p_type: tab,
+          p_page: page,
+          p_page_size: PAGE_SIZE,
+        });
+        if (err) throw err;
+        if (cancelled) return;
+
+        const resp = (data ?? { total: 0, counts: {}, rows: [] }) as {
+          total: number;
+          counts: Partial<ExceptionCounts>;
+          rows: ViewRow[];
+        };
+
+        const mapped: ExceptionRow[] = (resp.rows ?? []).map((r) => ({
+          key: r.row_key,
+          type: r.type,
+          ts: r.ts ?? "—",
+          doc_no: r.doc_no,
+          doc_link: docLinkFor(r),
+          sku_code: r.sku_code,
+          sku_label: r.sku_label,
+          expected: Number(r.expected),
+          actual: Number(r.actual),
+          diff: Number(r.diff),
+          reason: r.reason,
+          extra: r.extra,
+          shortage_ctx:
+            r.type === "transfer_short" && r.transfer_item_id != null
+              ? {
+                  transfer_item_id: r.transfer_item_id,
+                  transfer_id: r.transfer_id ?? 0,
+                  transfer_no: r.transfer_no ?? `#${r.transfer_id}`,
+                  sku_id: r.sku_id ?? 0,
+                  sku_code: r.sku_code,
+                  sku_label: r.sku_label,
+                  qty_shipped: Number(r.qty_shipped),
+                  qty_received: Number(r.qty_received),
+                  shortage_qty: Number(r.shortage_qty),
+                  dest_location: r.dest_location ?? 0,
+                  dest_store_id: r.dest_store_id,
+                  dest_store_name: r.dest_store_name ?? `位置 #${r.dest_location ?? "?"}`,
+                }
+              : undefined,
+          customer_order_id: r.customer_order_id ?? undefined,
+          shortage_resolution: r.shortage_resolution,
+        }));
+
+        const cnts: ExceptionCounts = {
+          all: resp.counts?.all ?? 0,
+          po_shortage: resp.counts?.po_shortage ?? 0,
+          po_damage: resp.counts?.po_damage ?? 0,
+          po_over: resp.counts?.po_over ?? 0,
+          transfer_short: resp.counts?.transfer_short ?? 0,
+          customer_shortage: resp.counts?.customer_shortage ?? 0,
+        };
+
+        setRows(mapped);
+        setTotal(resp.total ?? 0);
+        setCounts(cnts);
+        setError(null);
+        if (onCountChange) onCountChange(cnts.all);
+
+        // 處理掉項目後列表縮短 → 修正超出範圍的頁碼(在 async 內、非 effect body,不觸發 set-state-in-effect)
+        if (mapped.length === 0 && page > 1 && (resp.total ?? 0) > 0) {
+          setPage(Math.max(1, Math.ceil((resp.total ?? 0) / PAGE_SIZE)));
+        }
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, page, reloadTick, onCountChange]);
+
+  const c = counts ?? EMPTY_COUNTS;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
-  const paginated = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   return (
     <div className="flex flex-1 flex-col gap-4">
@@ -401,7 +238,7 @@ export default function ExceptionsContent({
         <header>
           <h1 className="text-xl font-semibold">⚠️ 異常處理</h1>
           <p className="text-sm text-zinc-500">
-            {rows === null ? "載入中…" : `共 ${rows.length} 筆異常 · 進貨短少 ${counts.po_shortage} / 進貨破損 ${counts.po_damage} / 過量 ${counts.po_over} / 收貨短少 ${counts.transfer_short} / 訂單短少 ${counts.customer_shortage}`}
+            {counts === null ? "載入中…" : `共 ${c.all} 筆異常 · 進貨短少 ${c.po_shortage} / 進貨破損 ${c.po_damage} / 過量 ${c.po_over} / 收貨短少 ${c.transfer_short} / 訂單短少 ${c.customer_shortage}`}
           </p>
         </header>
       )}
@@ -425,7 +262,7 @@ export default function ExceptionsContent({
                   : "border-transparent text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
               }`}
             >
-              {TAB_LABEL[t]} <span className="ml-1 text-xs text-zinc-400">{counts[t]}</span>
+              {TAB_LABEL[t]} <span className="ml-1 text-xs text-zinc-400">{c[t]}</span>
             </SpinButton>
           );
         })}
@@ -448,9 +285,9 @@ export default function ExceptionsContent({
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
               <tr><td colSpan={8} className="p-6 text-center text-zinc-500">載入中…</td></tr>
-            ) : filtered.length === 0 ? (
+            ) : rows.length === 0 ? (
               <tr><td colSpan={8} className="p-6 text-center text-zinc-500">沒有異常,系統運作正常 ✓</td></tr>
-            ) : paginated.map((r) => (
+            ) : rows.map((r) => (
               <tr key={r.key} className="hover:bg-zinc-50 dark:hover:bg-zinc-950">
                 <td className="px-3 py-2 whitespace-nowrap">
                   <span className={`inline-flex whitespace-nowrap rounded px-2 py-0.5 text-xs font-medium ${
@@ -526,7 +363,7 @@ export default function ExceptionsContent({
         </table>
       </div>
 
-      {/* 分頁 — client-side(資料已全撈),樣式對齊 /hq/inbox 其他來源 */}
+      {/* 分頁 — server-side(rpc_hq_exceptions),樣式對齊 /hq/inbox 其他來源 */}
       {rows !== null && total > PAGE_SIZE && (
         <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
           <span className="text-xs text-zinc-500">
