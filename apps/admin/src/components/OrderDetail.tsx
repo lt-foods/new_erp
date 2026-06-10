@@ -531,6 +531,31 @@ export function OrderDetail({
       : "已退單，貨已退回原調出店");
     setReloadTick((n) => n + 1);
   }
+
+  // 撤銷最近一次取貨（誤點取貨用）：庫存反向沖回、品項還原待取、訂單狀態重算。金流不動。
+  async function undoPickup() {
+    if (!head) return;
+    const reason = prompt(
+      `撤銷取貨：${head.order_no}\n會把最近一次取貨的品項還原為「待取」並沖回門市庫存。\n請輸入原因：`,
+    );
+    if (reason === null) return;
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id ?? null;
+    if (!operator) { alert("尚未登入"); return; }
+    const { data, error: rpcErr } = await sb.rpc("rpc_undo_pickup", {
+      p_order_id: head.id,
+      p_operator: operator,
+      p_reason: reason || null,
+    });
+    if (rpcErr) { alert(`撤銷失敗：${translateRpcError(rpcErr)}`); return; }
+    const r = data as { items_restored: number; new_status: string; wallet_paid_amount: number };
+    const walletNote = Number(r.wallet_paid_amount ?? 0) > 0
+      ? `\n⚠️ 此單已收儲值金 $${Number(r.wallet_paid_amount)}，仍保留在訂單上（之後取貨不需再付；要退款請走取消流程）。`
+      : "";
+    alert(`已撤銷取貨（${r.items_restored} 項還原為待取）\n訂單狀態：${statusLabel(r.new_status)}${walletNote}`);
+    setReloadTick((n) => n + 1);
+  }
   const pickableItems = items.filter((it) => ["pending", "reserved", "ready"].includes(it.status));
   // ready 單全可取；shipping / partially_completed 單看品項到貨狀態（部分到貨可先取已到品項）
   const canPickup =
@@ -538,6 +563,12 @@ export function OrderDetail({
       ? pickableItems.length > 0
       : ["shipping", "partially_completed"].includes(head.status) &&
         pickableItems.some((it) => itemReady.get(it.id) === true);
+  // 撤銷取貨：有已取品項且訂單未進入取消/逾期/轉出終態。權限對齊 rpc_undo_pickup 的 gate
+  const canUndoPickup =
+    role !== null &&
+    ["owner", "admin", "hq_manager", ""].includes(role) &&
+    items.some((it) => it.status === "picked_up") &&
+    !["cancelled", "expired", "transferred_out"].includes(head.status);
   const memberLabel = head.member
     ? `${head.member.name ?? "—"} (${head.member.member_no})`
     : `(${head.nickname_snapshot ?? "—"})`;
@@ -586,7 +617,7 @@ export function OrderDetail({
           </SpinButton>
         </div>
       )}
-      {(canPrintSlip || canTransfer || canPickup || canCancel || canReturn || canAidReturn || isTransferredOut) && (
+      {(canPrintSlip || canTransfer || canPickup || canUndoPickup || canCancel || canReturn || canAidReturn || isTransferredOut) && (
         <div className="flex items-center justify-end gap-2">
           {canPrintSlip && (
             <SpinButton
@@ -606,6 +637,15 @@ export function OrderDetail({
               title="顧客取貨 — 可選哪些 item"
             >
               ✅ 確認取貨
+            </SpinButton>
+          )}
+          {canUndoPickup && (
+            <SpinButton
+              onClick={undoPickup}
+              className="rounded-md border border-amber-300 px-3 py-1 text-xs font-medium text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950"
+              title="誤點取貨用：還原最近一次取貨的品項為待取，庫存反向沖回門市"
+            >
+              ⎌ 撤銷取貨
             </SpinButton>
           )}
           {canTransfer && (
