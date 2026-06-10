@@ -1,4 +1,5 @@
 import { cleanCampaignText } from "@/lib/text";
+import StatusChip from "@/components/StatusChip";
 
 export type OrderItem = {
   id: number;
@@ -11,6 +12,7 @@ export type OrderItem = {
   unit_price: number;
   subtotal: number;
   status: string;
+  stockout?: boolean;
   notes: string | null;
   image_url: string | null;
 };
@@ -18,6 +20,8 @@ export type OrderItem = {
 export type OrderRow = {
   id: number;
   order_no: string;
+  status?: string | null;
+  stockout_at?: string | null;
   pickup_deadline: string | null;
   payable_amount: number;
   items_total: number;
@@ -58,7 +62,17 @@ export default function OrderCard({ order }: { order: OrderRow }) {
   return (
     <article className="card overflow-hidden">
       <header className="bg-[var(--brand-soft)]/35 px-4 pt-4 pb-3">
-        <h3 className="truncate text-[18px] font-bold text-[var(--foreground)]">{title}</h3>
+        <div className="flex items-center gap-2">
+          <h3 className="min-w-0 truncate text-[18px] font-bold text-[var(--foreground)]">{title}</h3>
+          {order.stockout_at && (
+            <StatusChip tone="danger" label="斷貨" />
+          )}
+        </div>
+        {order.stockout_at && (
+          <p className="mt-1 text-[13px] text-[#c4271d]">
+            ⛔ 供應商斷貨，本筆訂單已取消，造成不便敬請見諒
+          </p>
+        )}
         <p className="mt-0.5 text-[14px] text-[var(--secondary-label)]">
           {fmtDate(order.created_at)}
           {order.store_name && (
@@ -85,7 +99,17 @@ export default function OrderCard({ order }: { order: OrderRow }) {
           >
             <div className="min-w-0 flex-1">
               {it.variant_name && (
-                <div className="text-[16px] text-[var(--foreground)]">{it.variant_name}</div>
+                <div className={`text-[16px] ${it.stockout ? "text-[var(--secondary-label)] line-through" : "text-[var(--foreground)]"}`}>
+                  {it.variant_name}
+                  {it.stockout && (
+                    <span className="ml-1.5 inline-block no-underline">
+                      <StatusChip tone="danger" label="斷貨" />
+                    </span>
+                  )}
+                </div>
+              )}
+              {!it.variant_name && it.stockout && (
+                <div><StatusChip tone="danger" label="斷貨" /></div>
               )}
               <div className="text-[14px] text-[var(--secondary-label)]">
                 {fmtAmount(it.unit_price)} × {it.qty}
@@ -94,7 +118,7 @@ export default function OrderCard({ order }: { order: OrderRow }) {
                 <div className="mt-0.5 text-[14px] text-[var(--secondary-label)]">📝 {it.notes}</div>
               )}
             </div>
-            <div className="flex-shrink-0 text-right text-[16px] font-medium tabular-nums text-[var(--foreground)]">
+            <div className={`flex-shrink-0 text-right text-[16px] font-medium tabular-nums ${it.stockout ? "text-[var(--secondary-label)] line-through" : "text-[var(--foreground)]"}`}>
               {fmtAmount(it.subtotal)}
             </div>
           </li>

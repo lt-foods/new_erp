@@ -264,14 +264,19 @@ async function listMyOrders(sb: any, tenantId: string, _storeId: number, memberI
   // 不依 store_id 過濾：同一 line_user 可能綁多店 OA，但 member_id 是 tenant 級；
   // 「我的訂單」呈現該 member 在所有店的訂單，OrderCard 會顯示 store_name 區別。
   let q = sb.from("v_customer_order_summary").select("*").eq("tenant_id", tenantId).eq("member_id", memberId).gte("created_at", cutoff.toISOString()).order("created_at", { ascending: false }).limit(100);
-  if (tab === "active") q = q.not("status", "in", "(completed,cancelled,expired)");
+  // active: 一般取消的訂單不顯示，但「斷貨取消」(stockout_at 有值) 要讓顧客看得到
+  if (tab === "active") q = q.not("status", "in", "(completed,expired)");
   else q = q.eq("status", "completed");
   const { data, error } = await q;
   if (error) return json({ error: error.message }, 500);
 
+  const rows = tab === "active"
+    ? (data ?? []).filter((o: any) => o.status !== "cancelled" || o.stockout_at)
+    : (data ?? []);
+
   // 把 items.image_url + campaign_cover_url 轉成 storage public URL
   const supabaseUrl = requireEnv("SUPABASE_URL");
-  const orders = (data ?? []).map((o: any) => ({
+  const orders = rows.map((o: any) => ({
     ...o,
     campaign_cover_url: toPublicUrl(supabaseUrl, "products", o.campaign_cover_url),
     items: (o.items ?? []).map((it: any) => ({

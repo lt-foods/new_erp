@@ -21,6 +21,7 @@ type Row = {
   sort_order: number;
   notes: string | null;
   locked_at: string | null;
+  stockout_at: string | null;
 };
 
 type ResyncPreview = {
@@ -62,7 +63,7 @@ export function CampaignItemsTable({
     // open / closed 留 row 不破壞訂單，但 UI 不顯示）
     const { data, error: err } = await getSupabase()
       .from("campaign_items")
-      .select("id, sku_id, unit_price, cap_qty, sort_order, notes, locked_at, skus!inner(id, sku_code, status, product_id, variant_name, products!inner(id, name))")
+      .select("id, sku_id, unit_price, cap_qty, sort_order, notes, locked_at, stockout_at, skus!inner(id, sku_code, status, product_id, variant_name, products!inner(id, name))")
       .eq("campaign_id", campaignId)
       .order("sort_order");
     if (err) { setError(err.message); return; }
@@ -70,6 +71,7 @@ export function CampaignItemsTable({
       (data as unknown as Array<{
         id: number; sku_id: number; unit_price: number; cap_qty: number | null;
         sort_order: number; notes: string | null; locked_at: string | null;
+        stockout_at: string | null;
         skus: { id: number; sku_code: string; status: string; product_id: number; variant_name: string | null;
           products: { id: number; name: string };
         };
@@ -85,6 +87,7 @@ export function CampaignItemsTable({
           variant_name: r.skus.variant_name,
           unit_price: Number(r.unit_price), cap_qty: r.cap_qty != null ? Number(r.cap_qty) : null,
           sort_order: r.sort_order, notes: r.notes, locked_at: r.locked_at,
+          stockout_at: r.stockout_at,
         }))
     );
   };
@@ -191,11 +194,21 @@ export function CampaignItemsTable({
                 </Td>
                 <Td>
                   <div className="text-xs text-zinc-500">{r.product_name ?? "—"}</div>
-                  {r.variant_name && (
-                    <div className="text-base font-bold text-zinc-900 dark:text-zinc-100">
-                      {r.variant_name}
-                    </div>
-                  )}
+                  <div className="flex items-center gap-1.5">
+                    {r.variant_name && (
+                      <span className="text-base font-bold text-zinc-900 dark:text-zinc-100">
+                        {r.variant_name}
+                      </span>
+                    )}
+                    {r.stockout_at && (
+                      <span
+                        title={`供應商斷貨於 ${new Date(r.stockout_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}`}
+                        className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-800 dark:bg-red-950 dark:text-red-300"
+                      >
+                        ⛔ 斷貨
+                      </span>
+                    )}
+                  </div>
                 </Td>
                 <Td className="text-right font-mono">${r.unit_price}</Td>
                 <Td className="text-right text-xs text-zinc-500">{r.cap_qty ?? "—"}</Td>
