@@ -32,6 +32,9 @@ const RESOLUTION_LABEL: Record<string, string> = {
   waiting_next_po: "⏳ 等下批 PO",
 };
 
+// 與 /hq/inbox 其他來源一致的每頁筆數(client-side 分頁,資料已全撈在前端)
+const PAGE_SIZE = 20;
+
 type ExceptionRow = {
   key: string;
   type: "po_shortage" | "po_damage" | "po_over" | "transfer_short" | "customer_shortage";
@@ -64,6 +67,8 @@ export default function ExceptionsContent({
   const [resolveCtx, setResolveCtx] = useState<ShortageContext | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const [busy, setBusy] = useState<number | null>(null);
+  const [page, setPage] = useState(1);
+  const [prevTab, setPrevTab] = useState<Tab>(tab);
 
   async function handleCustomerShortageAction(
     orderId: number,
@@ -378,6 +383,18 @@ export default function ExceptionsContent({
 
   const filtered = useMemo(() => (rows ?? []).filter((r) => tab === "all" || r.type === tab), [rows, tab]);
 
+  // 切換分頁籤 → 回第 1 頁(render 階段調整 state,非 effect → 不觸發 set-state-in-effect,也不會 flash 舊頁)
+  if (prevTab !== tab) {
+    setPrevTab(tab);
+    setPage(1);
+  }
+
+  // client-side 分頁(currentPage 由 page clamp 進有效範圍,避免處理後列表縮短導致超頁)
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const paginated = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
   return (
     <div className="flex flex-1 flex-col gap-4">
       {showHeader && (
@@ -433,7 +450,7 @@ export default function ExceptionsContent({
               <tr><td colSpan={8} className="p-6 text-center text-zinc-500">載入中…</td></tr>
             ) : filtered.length === 0 ? (
               <tr><td colSpan={8} className="p-6 text-center text-zinc-500">沒有異常,系統運作正常 ✓</td></tr>
-            ) : filtered.map((r) => (
+            ) : paginated.map((r) => (
               <tr key={r.key} className="hover:bg-zinc-50 dark:hover:bg-zinc-950">
                 <td className="px-3 py-2 whitespace-nowrap">
                   <span className={`inline-flex whitespace-nowrap rounded px-2 py-0.5 text-xs font-medium ${
@@ -508,6 +525,32 @@ export default function ExceptionsContent({
           </tbody>
         </table>
       </div>
+
+      {/* 分頁 — client-side(資料已全撈),樣式對齊 /hq/inbox 其他來源 */}
+      {rows !== null && total > PAGE_SIZE && (
+        <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
+          <span className="text-xs text-zinc-500">
+            共 {total} 筆 · 顯示 {(currentPage - 1) * PAGE_SIZE + 1} - {Math.min(currentPage * PAGE_SIZE, total)}
+          </span>
+          <SpinButton onClick={() => setPage(1)} disabled={currentPage === 1}
+            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+            « 第一頁
+          </SpinButton>
+          <SpinButton onClick={() => setPage(currentPage - 1)} disabled={currentPage === 1}
+            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+            ‹ 上頁
+          </SpinButton>
+          <span className="text-xs text-zinc-500">{currentPage} / {totalPages}</span>
+          <SpinButton onClick={() => setPage(currentPage + 1)} disabled={currentPage === totalPages}
+            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+            下頁 ›
+          </SpinButton>
+          <SpinButton onClick={() => setPage(totalPages)} disabled={currentPage === totalPages}
+            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+            最末頁 »
+          </SpinButton>
+        </div>
+      )}
 
       {resolveCtx && (
         <TransferShortageResolveModal
