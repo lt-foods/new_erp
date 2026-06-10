@@ -156,6 +156,8 @@ function OrdersListContent() {
       }
     >
   >(new Map());
+  // shipping 單是否有品項已到貨可先取（v_order_item_pickup_ready；部分到貨單開放「去取貨」）
+  const [hasArrivedItem, setHasArrivedItem] = useState<Map<number, boolean>>(new Map());
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detailNo, setDetailNo] = useState<string>("");
   const [returnTarget, setReturnTarget] = useState<{ orderId: number; storeId: number } | null>(null);
@@ -270,13 +272,18 @@ function OrdersListContent() {
 
         const ids = (data ?? []).map((r) => r.id);
         const memIds = Array.from(new Set((data ?? []).map((r) => r.member_id).filter((x): x is number => x != null)));
-        const [ic, ms] = await Promise.all([
+        // shipping 單查品項到貨狀態（pickup_ready=true 隱含該品項 active 且已到貨）
+        const shippingIds = (data ?? []).filter((r) => r.status === "shipping").map((r) => r.id);
+        const [ic, ms, rdy] = await Promise.all([
           ids.length
             ? getSupabase().from("customer_order_items").select("order_id, qty, unit_price, source, sku:skus(product_name, variant_name)").in("order_id", ids)
             : Promise.resolve({ data: [] as { order_id: number; qty: number; unit_price: number; source: string; sku: { product_name: string | null; variant_name: string | null } | null }[] }),
           memIds.length
             ? getSupabase().from("members").select("id, name, phone, member_no, avatar_url").in("id", memIds)
             : Promise.resolve({ data: [] as Member[] }),
+          shippingIds.length
+            ? getSupabase().from("v_order_item_pickup_ready").select("order_id, pickup_ready").in("order_id", shippingIds).eq("pickup_ready", true)
+            : Promise.resolve({ data: [] as { order_id: number; pickup_ready: boolean }[] }),
         ]);
         const im = new Map<number, { lineCount: number; totalQty: number; totalAmount: number; items: { product_name: string | null; variant_name: string | null; qty: number }[]; sources: string[] }>();
         for (const id of ids) im.set(id, { lineCount: 0, totalQty: 0, totalAmount: 0, items: [], sources: [] });
@@ -295,7 +302,11 @@ function OrdersListContent() {
         }
         const mm = new Map<number, Member>();
         for (const m of (ms.data as Member[]) ?? []) mm.set(m.id, m);
-        if (!cancelled) { setItemSummary(im); setMembers(mm); }
+        const arrived = new Map<number, boolean>();
+        for (const r of ((rdy.data ?? []) as { order_id: number; pickup_ready: boolean }[])) {
+          if (r.pickup_ready) arrived.set(r.order_id, true);
+        }
+        if (!cancelled) { setItemSummary(im); setMembers(mm); setHasArrivedItem(arrived); }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -507,7 +518,9 @@ function OrdersListContent() {
         </SpinButton>
       )}
       {!["completed","expired","cancelled","transferred_out"].includes(r.status) && (() => {
-        const canPickup = r.status === "ready" || r.status === "partially_completed";
+        // shipping 單部分到貨（≥1 品項已實收）也開放去取貨 — 已到品項可先取
+        const canPickup = r.status === "ready" || r.status === "partially_completed"
+          || (r.status === "shipping" && hasArrivedItem.get(r.id) === true);
         // 訂單頁本身不執行取貨,只導向 /pickup (帶會員編號自動搜尋)
         if (canPickup && m?.member_no) {
           return (

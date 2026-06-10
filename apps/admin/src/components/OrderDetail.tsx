@@ -159,6 +159,8 @@ export function OrderDetail({
   const [head, setHead] = useState<OrderHead | null>(null);
   const [items, setItems] = useState<ItemRow[] | null>(null);
   const [returns, setReturns] = useState<ReturnTransfer[] | null>(null);
+  // item.id → 是否已到貨可取（v_order_item_pickup_ready）。shipping 單部分到貨時，已到品項可先取
+  const [itemReady, setItemReady] = useState<Map<number, boolean>>(new Map());
   const [returnDetailId, setReturnDetailId] = useState<number | null>(null);
   const [timeline, setTimeline] = useState<TimelineStep[] | null>(null);
   const [staffNames, setStaffNames] = useState<Map<string, string>>(new Map());
@@ -210,7 +212,7 @@ export function OrderDetail({
     let cancelled = false;
     (async () => {
       const sb = getSupabase();
-      const [hRes, iRes, rRes] = await Promise.all([
+      const [hRes, iRes, rRes, arvRes] = await Promise.all([
         sb.from("customer_orders")
           .select("id, order_no, status, pickup_deadline, nickname_snapshot, created_at, updated_at, pickup_store_id, campaign_id, transferred_from_order_id, is_air_transfer, discount_amount, discount_percent, wallet_paid_amount, payment_status, paid_at, notes, member:members(id, name, phone, member_no), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
           .eq("id", orderId).maybeSingle(),
@@ -224,6 +226,9 @@ export function OrderDetail({
           .eq("transfer_type", "return_to_hq")
           .in("status", ["shipped", "received"])
           .order("shipped_at", { ascending: false }),
+        sb.from("v_order_item_pickup_ready")
+          .select("item_id, pickup_ready")
+          .eq("order_id", orderId),
       ]);
       if (cancelled) return;
       if (hRes.error) { setError(hRes.error.message); return; }
@@ -232,6 +237,12 @@ export function OrderDetail({
       if (iRes.error) { setError(iRes.error.message); return; }
       const itemsData = (iRes.data ?? []) as unknown as ItemRow[];
       setItems(itemsData);
+
+      const arrivedMap = new Map<number, boolean>();
+      for (const r of (arvRes.data ?? []) as { item_id: number; pickup_ready: boolean }[]) {
+        arrivedMap.set(r.item_id, !!r.pickup_ready);
+      }
+      setItemReady(arrivedMap);
 
       // ========== 整理退貨單（return_to_hq transfer）==========
       type RetRow = {
@@ -515,7 +526,12 @@ export function OrderDetail({
     setReloadTick((n) => n + 1);
   }
   const pickableItems = items.filter((it) => ["pending", "reserved", "ready"].includes(it.status));
-  const canPickup = pickableItems.length > 0 && head.status === "ready";
+  // ready 單全可取；shipping / partially_completed 單看品項到貨狀態（部分到貨可先取已到品項）
+  const canPickup =
+    head.status === "ready"
+      ? pickableItems.length > 0
+      : ["shipping", "partially_completed"].includes(head.status) &&
+        pickableItems.some((it) => itemReady.get(it.id) === true);
   const memberLabel = head.member
     ? `${head.member.name ?? "—"} (${head.member.member_no})`
     : `(${head.nickname_snapshot ?? "—"})`;
