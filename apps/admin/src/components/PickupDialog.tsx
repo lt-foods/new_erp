@@ -54,6 +54,9 @@ export function PickupDialog({
   const [items, setItems] = useState<PickableItem[] | null>(null);
   // item.id → 已退數量（return_to_hq transfer 依 SKU 聚合後分攤到各品項行）
   const [returnedByItem, setReturnedByItem] = useState<Map<number, number>>(new Map());
+  // item.id → 是否已到貨（v_order_item_pickup_ready）。未到貨品項鎖住不可勾，
+  // 後端 rpc_record_pickup 也會逐品項擋，這裡是前端提示。查無資料時當已到貨（交給後端把關）。
+  const [readyByItem, setReadyByItem] = useState<Map<number, boolean>>(new Map());
   const [discountValue, setDiscountValue] = useState<DiscountValue>({ kind: "amount", value: 0 });
   const [originalDiscount, setOriginalDiscount] = useState<{ amount: number; percent: number }>({ amount: 0, percent: 0 });
   const [memberId, setMemberId] = useState<number | null>(null);
@@ -73,7 +76,7 @@ export function PickupDialog({
     let cancelled = false;
     (async () => {
       const sb = getSupabase();
-      const [iRes, hRes, rRes] = await Promise.all([
+      const [iRes, hRes, rRes, arvRes] = await Promise.all([
         sb.from("customer_order_items")
           .select("id, qty, unit_price, discount_amount, discount_percent, status, sku:skus(id, sku_code, product_name, variant_name)")
           .eq("order_id", orderId)
@@ -89,6 +92,10 @@ export function PickupDialog({
           .eq("customer_order_id", orderId)
           .eq("transfer_type", "return_to_hq")
           .in("status", ["shipped", "received"]),
+        // 品項到貨狀態 — 未到貨（分店實收 0）的品項不可取
+        sb.from("v_order_item_pickup_ready")
+          .select("item_id, pickup_ready")
+          .eq("order_id", orderId),
       ]);
       if (cancelled) return;
       if (iRes.error) { setErr(iRes.error.message); return; }
@@ -114,10 +121,17 @@ export function PickupDialog({
       }
       setReturnedByItem(allocMap);
 
+      const arrivedMap = new Map<number, boolean>();
+      for (const r of (arvRes.data ?? []) as { item_id: number; pickup_ready: boolean }[]) {
+        arrivedMap.set(r.item_id, !!r.pickup_ready);
+      }
+      setReadyByItem(arrivedMap);
+      const arrived = (it: PickableItem) => arrivedMap.get(it.id) !== false;
+
       setItems(list);
-      // 預設勾選 + 全取：只含「扣掉已退後仍有可取量」的品項
+      // 預設勾選 + 全取：只含「已到貨、且扣掉已退後仍有可取量」的品項
       const pickableQty = (it: PickableItem) => Math.max(0, Number(it.qty) - (allocMap.get(it.id) ?? 0));
-      setPicked(new Set(list.filter((it) => pickableQty(it) > 0).map((it) => it.id)));
+      setPicked(new Set(list.filter((it) => pickableQty(it) > 0 && arrived(it)).map((it) => it.id)));
       setPickQty(new Map(list.map((it) => [it.id, String(pickableQty(it))])));
       const head = hRes.data;
       const headAmt = Number(head?.discount_amount ?? 0);
@@ -140,7 +154,7 @@ export function PickupDialog({
           if (isPaid) {
             setWalletAmount("");
           } else {
-            const itemSubtotal = list.reduce((s, it) => s + lineSubQty(it, pickableQty(it)), 0);
+            const itemSubtotal = list.reduce((s, it) => s + (arrived(it) ? lineSubQty(it, pickableQty(it)) : 0), 0);
             const dpct = Number(head?.discount_percent ?? 0);
             const damt = Number(head?.discount_amount ?? 0);
             const initialPayable = Math.max(0, Math.round(itemSubtotal * (1 - dpct / 100) - damt));
@@ -168,6 +182,10 @@ export function PickupDialog({
   // 該品項已退回總倉量 / 仍可取量（= 訂購量 − 已退量）
   function returnedOf(it: PickableItem): number {
     return returnedByItem.get(it.id) ?? 0;
+  }
+  // 該品項是否未到貨（分店實收 0）— 未到貨不可勾選取貨
+  function notArrived(it: PickableItem): boolean {
+    return readyByItem.get(it.id) === false;
   }
   function pickableOf(it: PickableItem): number {
     return Math.max(0, Number(it.qty) - returnedOf(it));
@@ -349,19 +367,20 @@ export function PickupDialog({
                   const returned = returnedOf(it);
                   const pickable = pickableOf(it);
                   const fullyReturned = pickable <= 0;
+                  const blocked = fullyReturned || notArrived(it);
                   const take = effQty(it);
                   const sub = lineSubQty(it, take);
                   const partial = take < pickable;
                   const isPicked = picked.has(it.id);
                   const hasLineDisc = Number(it.discount_amount ?? 0) > 0 || Number(it.discount_percent ?? 0) > 0;
                   return (
-                    <tr key={it.id} className={fullyReturned ? "opacity-50" : isPicked ? "bg-emerald-50 dark:bg-emerald-950" : ""}>
+                    <tr key={it.id} className={blocked ? "opacity-50" : isPicked ? "bg-emerald-50 dark:bg-emerald-950" : ""}>
                       <td className="px-3 py-2">
                         <input
                           type="checkbox"
                           checked={isPicked}
                           onChange={() => toggle(it.id)}
-                          disabled={fullyReturned}
+                          disabled={blocked}
                           className="h-4 w-4 disabled:opacity-40"
                         />
                       </td>
@@ -390,12 +409,12 @@ export function PickupDialog({
                             step="1"
                             value={pickQty.get(it.id) ?? String(pickable)}
                             onChange={(e) => setQty(it.id, e.target.value)}
-                            disabled={!isPicked || fullyReturned}
+                            disabled={!isPicked || blocked}
                             className="w-14 rounded-md border border-zinc-300 px-2 py-1 text-right font-mono text-sm disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-800"
                           />
                           <span className="font-mono text-[10px] text-zinc-400">/{pickable}</span>
                         </div>
-                        {partial && isPicked && !fullyReturned && (
+                        {partial && isPicked && !blocked && (
                           <div className="mt-0.5 text-[10px] text-amber-600 dark:text-amber-400">剩 {pickable - take} 留待下次</div>
                         )}
                       </td>
@@ -404,7 +423,9 @@ export function PickupDialog({
                       <td className="px-3 py-2 text-xs text-zinc-500">
                         {fullyReturned
                           ? <span className="rounded bg-orange-100 px-1.5 py-0.5 font-medium text-orange-800 dark:bg-orange-950 dark:text-orange-300">已退貨・不能取貨</span>
-                          : orderItemStatusLabel(it.status)}
+                          : notArrived(it)
+                            ? <span className="rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">⏳ 未到貨・不能取貨</span>
+                            : orderItemStatusLabel(it.status)}
                       </td>
                     </tr>
                   );

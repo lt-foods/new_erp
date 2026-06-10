@@ -51,12 +51,6 @@ type OpenOrder = {
 const ACTIVE_STATUSES = ["pending", "confirmed", "reserved", "ready", "partially_ready", "partially_completed", "shipping"];
 const INACTIVE_ITEM_STATUSES = new Set(["cancelled", "picked_up", "expired"]);
 
-function isPickable(order: OpenOrder): boolean {
-  // ready 可取；partially_completed（部分取貨後）只要還有 active 品項也可繼續取剩餘
-  if (order.status === "ready") return true;
-  if (order.status === "partially_completed") return activeItems(order).length > 0;
-  return false;
-}
 function activeItems(order: OpenOrder) {
   return order.items.filter((it) => !INACTIVE_ITEM_STATUSES.has(it.status));
 }
@@ -76,9 +70,26 @@ function PickupPageContent() {
   const [searching, setSearching] = useState(false);
   const [members, setMembers] = useState<Member[] | null>(null);
   const [orders, setOrders] = useState<Map<number, OpenOrder[]>>(new Map());
+  // item.id → 該品項是否已到貨可取（v_order_item_pickup_ready）。
+  // 部分到貨的 shipping 單靠這個讓「已到的品項」可先取。
+  const [itemReady, setItemReady] = useState<Map<number, boolean>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const autoSearchedRef = useRef(false);
+
+  // 可取貨品項：ready 單＝全部 active 品項；shipping / partially_completed 單＝
+  // 逐品項看到貨狀態（部分到貨的單可先取已到的品項）。
+  // itemReady 查無資料時的 fallback 沿用舊行為：partially_completed 可取、shipping 不可取。
+  function pickableItems(order: OpenOrder) {
+    const act = activeItems(order);
+    if (order.status === "ready") return act;
+    if (order.status === "partially_completed") return act.filter((it) => itemReady.get(it.id) !== false);
+    if (order.status === "shipping") return act.filter((it) => itemReady.get(it.id) === true);
+    return [];
+  }
+  function isPickable(order: OpenOrder): boolean {
+    return pickableItems(order).length > 0;
+  }
 
   const [pickup, setPickup] = useState<{ orderId: number; orderNo: string } | null>(null);
   const [returnTarget, setReturnTarget] = useState<{ orderId: number; storeId: number | null } | null>(null);
@@ -144,6 +155,20 @@ function PickupPageContent() {
         .order("updated_at", { ascending: false });
       if (e2) { setError(e2.message); return; }
 
+      // 品項到貨狀態（部分到貨的 shipping 單要逐品項判斷哪些可先取）
+      const orderIds = (ords ?? []).map((r) => (r as { id: number }).id);
+      const readyMap = new Map<number, boolean>();
+      if (orderIds.length > 0) {
+        const { data: irs } = await sb
+          .from("v_order_item_pickup_ready")
+          .select("item_id, pickup_ready")
+          .in("order_id", orderIds);
+        for (const r of (irs ?? []) as { item_id: number; pickup_ready: boolean }[]) {
+          readyMap.set(r.item_id, !!r.pickup_ready);
+        }
+      }
+      setItemReady(readyMap);
+
       const m = new Map<number, OpenOrder[]>();
       for (const r of (ords ?? []) as unknown as (OpenOrder & { member_id: number })[]) {
         const arr = m.get(r.member_id) ?? [];
@@ -179,9 +204,7 @@ function PickupPageContent() {
 
   async function bulkPickAllConfirmed(member: Member) {
     const memberId = member.id;
-    const allMemberOrders = (orders.get(memberId) ?? []).filter((o) =>
-      isPickable(o) && activeItems(o).length > 0,
-    );
+    const allMemberOrders = (orders.get(memberId) ?? []).filter((o) => isPickable(o));
     // 若有勾選 → 只取勾選的（且可取貨）；無勾選 → 全取
     const memberSelected = allMemberOrders.filter((o) => selected.has(o.id));
     const memberOrders = memberSelected.length > 0 ? memberSelected : allMemberOrders;
@@ -198,7 +221,8 @@ function PickupPageContent() {
       const errors: string[] = [];
       const eventIds: number[] = [];
       for (const o of memberOrders) {
-        const itemIds = activeItems(o).map((it) => it.id);
+        // 只取已到貨的品項（部分到貨的單，未到品項留待補貨後續取）
+        const itemIds = pickableItems(o).map((it) => it.id);
         const { data, error: e } = await sb.rpc("rpc_record_pickup", {
           p_order_id: o.id,
           p_item_ids: itemIds,
@@ -423,7 +447,7 @@ function PickupPageContent() {
                     <span className="font-mono text-xs text-zinc-500">{m.member_no}</span>
                     <span className="font-mono text-sm text-zinc-700 dark:text-zinc-300">{m.phone ?? "—"}</span>
                     {memberOrders.length > 0 && (() => {
-                      const pickableOrders = memberOrders.filter((o) => isPickable(o) && activeItems(o).length > 0);
+                      const pickableOrders = memberOrders.filter((o) => isPickable(o));
                       const selectedHere = pickableOrders.filter((o) => selected.has(o.id));
                       const useSel = selectedHere.length > 0;
                       const count = useSel ? selectedHere.length : pickableOrders.length;
@@ -444,9 +468,13 @@ function PickupPageContent() {
                   ) : (
                     <ul className="space-y-2">
                       {memberOrders.map((o) => {
-                        const canPickup = isPickable(o);
                         const active = activeItems(o);
-                        const pickableCount = canPickup ? active.length : 0;
+                        const pickable = pickableItems(o);
+                        const pickableIds = new Set(pickable.map((it) => it.id));
+                        const pickableCount = pickable.length;
+                        const canPickup = pickableCount > 0;
+                        // 部分到貨：有品項可取、但還有 active 品項未到
+                        const partialArrival = canPickup && pickableCount < active.length;
                         const subAmt = active.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0);
                         const discAmt = Number(o.discount_amount ?? 0);
                         const totalAmt = Math.max(0, subAmt - discAmt);
@@ -457,7 +485,7 @@ function PickupPageContent() {
                               type="checkbox"
                               checked={selected.has(o.id)}
                               onChange={() => toggleSelect(o.id)}
-                              disabled={!canPickup || pickableCount === 0}
+                              disabled={!canPickup}
                               className="mt-1 h-4 w-4 shrink-0"
                             />
                             <OrderThumb order={o} />
@@ -471,16 +499,23 @@ function PickupPageContent() {
                                 )}
                               </div>
                               <ul className="mt-0.5 space-y-0.5 text-xs text-zinc-700 dark:text-zinc-300">
-                                {activeItems(o).map((it) => (
+                                {active.map((it) => (
                                   <li key={it.id} className="flex items-baseline gap-1.5">
                                     <span className="font-bold">{it.sku?.variant_name || it.sku?.product_name || "—"}</span>
                                     <span className="font-mono text-zinc-500">× {Number(it.qty)}</span>
+                                    {partialArrival && !pickableIds.has(it.id) && (
+                                      <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">⏳ 未到貨</span>
+                                    )}
                                   </li>
                                 ))}
                               </ul>
                               <div className="mt-1 text-xs text-zinc-500">
                                 取貨店：{o.store?.name ?? "—"}
-                                {o.ready_at ? (
+                                {partialArrival ? (
+                                  <span className="ml-2 font-semibold text-amber-700 dark:text-amber-400">
+                                    🚚 部分到貨
+                                  </span>
+                                ) : o.ready_at ? (
                                   <span className="ml-2 font-semibold text-emerald-700 dark:text-emerald-400">
                                     到貨：{new Date(o.ready_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}
                                   </span>
@@ -500,7 +535,7 @@ function PickupPageContent() {
                                   </span>
                                 )}
                                 {canPickup ? (
-                                  <span className="ml-2">{pickableCount} 項可取</span>
+                                  <span className="ml-2">{partialArrival ? `${pickableCount}/${active.length} 項可取` : `${pickableCount} 項可取`}</span>
                                 ) : (
                                   <span className="ml-2 text-amber-600 dark:text-amber-400">⏳ 分店尚未收貨，無法取貨</span>
                                 )}
@@ -515,15 +550,15 @@ function PickupPageContent() {
                             <div className="flex flex-wrap gap-2 sm:shrink-0">
                             <SpinButton
                               onClick={() => notifyPickup(m, o)}
-                              disabled={!canPickup || notifyingId === o.id || m.no_notify_pickup}
-                              title={m.no_notify_pickup ? "此會員已設「不通知」" : !canPickup ? "尚未到貨無法通知" : "通知顧客來取貨（推播 + 站內訊息）"}
+                              disabled={o.status !== "ready" || notifyingId === o.id || m.no_notify_pickup}
+                              title={m.no_notify_pickup ? "此會員已設「不通知」" : o.status !== "ready" ? "尚未全部到貨無法通知" : "通知顧客來取貨（推播 + 站內訊息）"}
                               className="rounded-md border border-blue-300 px-2 py-2 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950"
                             >
                               {notifyingId === o.id ? "⌛" : "🔔 通知"}
                             </SpinButton>
                             <SpinButton
                               onClick={() => setPickup({ orderId: o.id, orderNo: o.order_no })}
-                              disabled={!canPickup || pickableCount === 0}
+                              disabled={!canPickup}
                               className="rounded-md bg-emerald-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-emerald-700 disabled:opacity-50"
                             >
                               ✅ 取貨
@@ -588,14 +623,12 @@ function PickupPageContent() {
         maxWidth="max-w-2xl"
       >
         {bulkConfirm && (() => {
-          const allMemberOrders = (orders.get(bulkConfirm.id) ?? []).filter((o) =>
-            isPickable(o) && activeItems(o).length > 0,
-          );
+          const allMemberOrders = (orders.get(bulkConfirm.id) ?? []).filter((o) => isPickable(o));
           const selectedHere = allMemberOrders.filter((o) => selected.has(o.id));
           const memberOrders = selectedHere.length > 0 ? selectedHere : allMemberOrders;
-          const totalItems = memberOrders.reduce((s, o) => s + activeItems(o).length, 0);
+          const totalItems = memberOrders.reduce((s, o) => s + pickableItems(o).length, 0);
           const totalSubtotal = memberOrders.reduce(
-            (s, o) => s + activeItems(o).reduce((ss, it) => ss + Number(it.qty) * Number(it.unit_price), 0),
+            (s, o) => s + pickableItems(o).reduce((ss, it) => ss + Number(it.qty) * Number(it.unit_price), 0),
             0,
           );
           const totalDiscount = memberOrders.reduce((s, o) => s + Number(o.discount_amount ?? 0), 0);
@@ -615,7 +648,7 @@ function PickupPageContent() {
               </p>
               <div className="max-h-80 space-y-3 overflow-y-auto rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
                 {memberOrders.map((o) => {
-                  const pickItems = activeItems(o);
+                  const pickItems = pickableItems(o);
                   return (
                     <div key={o.id} className="text-sm">
                       <div className="mb-1">
