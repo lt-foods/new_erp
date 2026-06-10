@@ -250,6 +250,34 @@ function PickupPageContent() {
     }
   }
 
+  // 單張一鍵取貨 — 不開明細視窗，直接取走所有「可取(已到貨)」品項並列印（＝「一次全取」的單張版）。
+  // 需要 折扣 / 只取部分品項 / 扣儲值金 時，改按旁邊的 ✏️（進階）開 PickupDialog。
+  async function quickPickup(order: OpenOrder) {
+    const itemIds = pickableItems(order).map((it) => it.id);
+    if (itemIds.length === 0) return;
+    setError(null);
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id;
+    if (!operator) { setError("尚未登入"); return; }
+    const { data, error: e } = await sb.rpc("rpc_record_pickup", {
+      p_order_id: order.id,
+      p_item_ids: itemIds,
+      p_operator: operator,
+      p_notes: null,
+    });
+    if (e) { setError(`${order.order_no}：${translateRpcError(e)}`); return; }
+    const ev = data as { event_id: number; active_remaining: number };
+    if (ev?.event_id) {
+      // 取貨單一定印；還有未取品項(部分到貨) → 追加取貨清單提醒剩下未取的
+      printViaIframe(withBasePath(`/pickup/print?event_ids=${ev.event_id}`));
+      if (ev.active_remaining > 0) {
+        printViaIframe(withBasePath(`/pickup/print-list?order_ids=${order.id}`));
+      }
+    }
+    setReloadTick((n) => n + 1);
+  }
+
   // 取消訂單 — 沿用訂單頁完全相同的 rpc_cancel_aid_order 流程：
   // pending/confirmed 直接取消；shipping 撤回派貨並反向回收已出庫存。
   // 取消後 reloadTick++ 重跑搜尋，該單因不在 ACTIVE_STATUSES 而從列表消失。
@@ -557,11 +585,20 @@ function PickupPageContent() {
                               {notifyingId === o.id ? "⌛" : "🔔 通知"}
                             </SpinButton>
                             <SpinButton
-                              onClick={() => setPickup({ orderId: o.id, orderNo: o.order_no })}
+                              onClick={() => quickPickup(o)}
                               disabled={!canPickup}
+                              title="一鍵取走已到貨品項並列印（不開明細視窗）"
                               className="rounded-md bg-emerald-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-emerald-700 disabled:opacity-50"
                             >
                               ✅ 取貨
+                            </SpinButton>
+                            <SpinButton
+                              onClick={() => setPickup({ orderId: o.id, orderNo: o.order_no })}
+                              disabled={!canPickup}
+                              title="進階：折扣 / 只取部分品項 / 扣儲值金"
+                              className="rounded-md border border-emerald-300 px-2 py-2 text-xs font-medium text-emerald-700 transition hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950"
+                            >
+                              ✏️
                             </SpinButton>
                             {["ready", "partially_completed"].includes(o.status) && (
                               <SpinButton
