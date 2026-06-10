@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { SendPOModal } from "@/components/SendPOModal";
 import SpinButton from "@/components/SpinButton";
+import Spinner, { LoadingBlock } from "@/components/Spinner";
 import { RowAction } from "@/components/RowAction";
 import { PO_STATUS_LABEL, PO_TERM_ZH, type POStatus } from "@/lib/poStatus";
 import { PR_TERM_ZH } from "@/lib/prStatus";
@@ -529,7 +530,11 @@ export default function PurchaseOrdersListPage() {
         <div>
           <h1 className="text-xl font-semibold">{PO_TERM_ZH}（PO）</h1>
           <p className="text-sm text-zinc-500">
-            {pos === null ? "載入中…" : `共 ${pos.length} 張 PO`}
+            {pos === null ? (
+              <Spinner size={14} className="inline-block align-[-2px]" />
+            ) : (
+              `共 ${pos.length} 張 PO`
+            )}
           </p>
         </div>
         <Link
@@ -663,9 +668,11 @@ export default function PurchaseOrdersListPage() {
           </SpinButton>
         )}
         <span className="ml-auto text-xs text-zinc-500">
-          {pos === null
-            ? "載入中…"
-            : `符合 ${total} 筆${total > PAGE_SIZE ? ` · 第 ${page}/${totalPages} 頁` : ""}`}
+          {pos === null ? (
+            <Spinner size={14} className="inline-block align-[-2px]" />
+          ) : (
+            `符合 ${total} 筆${total > PAGE_SIZE ? ` · 第 ${page}/${totalPages} 頁` : ""}`
+          )}
         </span>
       </div>
 
@@ -722,8 +729,8 @@ export default function PurchaseOrdersListPage() {
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {pos === null ? (
               <tr>
-                <td colSpan={11} className="p-6 text-center text-zinc-500">
-                  載入中…
+                <td colSpan={11}>
+                  <LoadingBlock />
                 </td>
               </tr>
             ) : pageRows.length === 0 ? (
