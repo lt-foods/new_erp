@@ -10,6 +10,7 @@
 //   D. 互助訂單 — 走 customer_orders,在 /transfers/aid
 
 import { useEffect, useMemo, useState } from "react";
+import { LoadingBlock } from "@/components/Spinner";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import FreeTransferCreateModal from "@/components/FreeTransferCreateModal";
@@ -292,7 +293,7 @@ export default function InternalTransfersPage() {
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {transfers === null ? (
-              <tr><td colSpan={8} className="p-6 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={8}><LoadingBlock /></td></tr>
             ) : filtered.length === 0 ? (
               <tr><td colSpan={8} className="p-6 text-center text-zinc-500">目前沒有資料</td></tr>
             ) : filtered.map((t) => {

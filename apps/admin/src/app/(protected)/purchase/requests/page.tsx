@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { RowAction } from "@/components/RowAction";
+import Spinner, { LoadingBlock } from "@/components/Spinner";
 import {
   PR_STATUS_LABEL,
   PR_REVIEW_LABEL,
@@ -664,7 +665,11 @@ export default function PurchaseRequestsListPage() {
         <div>
           <h1 className="text-xl font-semibold">{PR_TERM_ZH}（PR）</h1>
           <p className="text-sm text-zinc-500">
-            {rows === null ? "載入中…" : `共 ${rows.length} 筆`}
+            {rows === null ? (
+              <Spinner size={14} className="inline-block align-[-2px]" />
+            ) : (
+              `共 ${rows.length} 筆`
+            )}
           </p>
         </div>
         <div className="flex gap-2">
@@ -870,9 +875,11 @@ export default function PurchaseRequestsListPage() {
           </SpinButton>
         )}
         <span className="ml-auto text-xs text-zinc-500">
-          {rows === null
-            ? "載入中…"
-            : `符合 ${total} 筆${total > PAGE_SIZE ? ` · 第 ${page}/${totalPages} 頁` : ""}`}
+          {rows === null ? (
+            <Spinner size={14} className="inline-block align-[-2px]" />
+          ) : (
+            `符合 ${total} 筆${total > PAGE_SIZE ? ` · 第 ${page}/${totalPages} 頁` : ""}`
+          )}
         </span>
       </div>
 
@@ -922,8 +929,8 @@ export default function PurchaseRequestsListPage() {
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
               <tr>
-                <td colSpan={10} className="p-6 text-center text-zinc-500">
-                  載入中…
+                <td colSpan={10}>
+                  <LoadingBlock />
                 </td>
               </tr>
             ) : pageRows.length === 0 ? (
@@ -1059,8 +1066,8 @@ export default function PurchaseRequestsListPage() {
             </div>
             <div className="max-h-[60vh] overflow-y-auto p-4">
               {closedCampaigns === null ? (
-                <div className="text-center text-sm text-zinc-500">
-                  載入中…
+                <div className="flex justify-center py-4 text-zinc-400">
+                  <Spinner size={20} />
                 </div>
               ) : closedCampaigns.length === 0 ? (
                 <div className="text-center text-sm text-zinc-500">

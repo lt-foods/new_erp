@@ -18,6 +18,7 @@ import { CampaignItemsTable } from "@/components/CampaignItemsTable";
 import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
+import Spinner, { LoadingBlock } from "@/components/Spinner";
 import { CampaignThumb } from "@/components/CampaignThumb";
 import { campaignCoverUrl, type CampaignCoverItem } from "@/lib/campaignCover";
 import FbPublishModal from "@/components/FbPublishModal";
@@ -663,7 +664,13 @@ export default function CampaignsListPage() {
         <div>
           <h1 className="text-xl font-semibold">開團</h1>
           <p className="text-sm text-zinc-500">
-            {loading ? "載入中…" : total === 0 ? "共 0 筆" : `共 ${total} 筆（${fromIdx}-${toIdx}）`}
+            {loading ? (
+              <Spinner size={14} className="inline-block align-[-2px]" />
+            ) : total === 0 ? (
+              "共 0 筆"
+            ) : (
+              `共 ${total} 筆（${fromIdx}-${toIdx}）`
+            )}
           </p>
         </div>
         {showAdminActions && (
@@ -743,7 +750,7 @@ export default function CampaignsListPage() {
             >今天</SpinButton>
           </div>
           <span className="text-sm text-zinc-500">
-            {calRows === null ? "載入中…" : `${calRows.length} 場`}
+            {calRows === null ? <Spinner size={14} className="inline-block align-[-2px]" /> : `${calRows.length} 場`}
           </span>
         </div>
       )}
@@ -822,7 +829,11 @@ export default function CampaignsListPage() {
       {/* 手機：每筆開團一張卡片（桌機改用下方表格） */}
       <div className="space-y-2 sm:hidden">
         {rows === null ? (
-          <div className="rounded-md border border-zinc-200 p-6 text-center text-sm text-zinc-500 dark:border-zinc-800">載入中…</div>
+          <div className="rounded-md border border-zinc-200 p-6 dark:border-zinc-800">
+            <div className="flex justify-center text-zinc-400">
+              <Spinner size={20} />
+            </div>
+          </div>
         ) : rows.length === 0 ? (
           <div className="rounded-md border border-zinc-200 p-6 text-center text-sm text-zinc-500 dark:border-zinc-800">
             {total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}
@@ -1129,7 +1140,7 @@ function CalendarView({
   showEdit: boolean;
 }) {
   if (rows === null) {
-    return <div className="p-6 text-center text-sm text-zinc-500">載入中…</div>;
+    return <LoadingBlock />;
   }
   // 按日期分桶（key = YYYY-MM-DD）
   const buckets = new Map<string, CalRow[]>();

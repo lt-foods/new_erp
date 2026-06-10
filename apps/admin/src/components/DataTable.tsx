@@ -1,6 +1,7 @@
 "use client";
 
 import type { MouseEventHandler, ReactNode } from "react";
+import Spinner from "./Spinner";
 
 type Align = "left" | "center" | "right";
 
@@ -131,8 +132,12 @@ export function LoadingRow({
 }) {
   return (
     <tr>
-      <td colSpan={colSpan} className="p-3 text-center text-sm text-zinc-500">
-        {children ?? "載入中…"}
+      <td colSpan={colSpan} className="p-3 text-zinc-400">
+        {children ?? (
+          <div className="flex justify-center">
+            <Spinner size={20} />
+          </div>
+        )}
       </td>
     </tr>
   );

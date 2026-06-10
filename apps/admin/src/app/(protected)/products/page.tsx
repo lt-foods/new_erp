@@ -12,6 +12,7 @@ import { ProductCampaignsPanel } from "@/components/ProductCampaignsPanel";
 import { CreateCampaignModal, type SelectedProduct, type StorageType } from "@/components/CreateCampaignModal";
 import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
+import Spinner, { LoadingBlock } from "@/components/Spinner";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow } from "@/components/DataTable";
 
 type Status = "draft" | "active" | "inactive" | "discontinued";
@@ -45,7 +46,7 @@ const PAGE_SIZE = 20;
 // ============================================================
 export default function ProductListPage() {
   return (
-    <Suspense fallback={<div className="p-6 text-sm text-zinc-500">載入中…</div>}>
+    <Suspense fallback={<LoadingBlock />}>
       <PageContent />
     </Suspense>
   );
@@ -364,11 +365,13 @@ function PageContent() {
         <div>
           <h1 className="text-xl font-semibold">商品</h1>
           <p className="text-sm text-zinc-500">
-            {loading
-              ? "載入中…"
-              : total === 0
-                ? "共 0 筆"
-                : `共 ${total} 筆（顯示 ${fromIdx}-${toIdx}）`}
+            {loading ? (
+              <Spinner size={14} className="inline-block align-[-2px]" />
+            ) : total === 0 ? (
+              "共 0 筆"
+            ) : (
+              `共 ${total} 筆（顯示 ${fromIdx}-${toIdx}）`
+            )}
           </p>
         </div>
         <SpinButton

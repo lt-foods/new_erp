@@ -6,6 +6,7 @@ import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import RestockDetailModal from "@/components/RestockDetailModal";
+import Spinner from "@/components/Spinner";
 
 const PAGE_SIZE = 20;
 
@@ -164,7 +165,7 @@ export default function RestockListPage() {
       <header className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold">補貨申請</h1>
-          <p className="text-sm text-zinc-500">{rows === null ? "載入中…" : `共 ${rows.length} 筆`}</p>
+          <p className="text-sm text-zinc-500">{rows === null ? <Spinner size={14} className="inline-block align-[-2px]" /> : `共 ${rows.length} 筆`}</p>
         </div>
         <Link href="/restock/new" className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900">
           + 建立申請

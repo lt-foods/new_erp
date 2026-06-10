@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import Spinner from "@/components/Spinner";
 import {
   TransferReceiveModal,
   TRANSFER_TYPE_LABEL,
@@ -406,13 +407,15 @@ export default function TransfersInboxPage() {
         <div>
           <h1 className="text-xl font-semibold">📦 收貨待辦</h1>
           <p className="text-sm text-zinc-500">
-            {transfers === null
-              ? "載入中…"
-              : (() => {
-                  const pending = filtered.filter((t) => t.status === "shipped").length;
-                  const done = filtered.length - pending;
-                  return `待收 ${pending} · 已收 ${done}`;
-                })()}
+            {transfers === null ? (
+              <Spinner size={14} className="inline-block align-[-2px]" />
+            ) : (
+              (() => {
+                const pending = filtered.filter((t) => t.status === "shipped").length;
+                const done = filtered.length - pending;
+                return `待收 ${pending} · 已收 ${done}`;
+              })()
+            )}
           </p>
         </div>
         {branchLocationId == null && (

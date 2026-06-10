@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
+import Spinner, { LoadingBlock } from "@/components/Spinner";
 import OrderReturnCreateModal from "@/components/OrderReturnCreateModal";
 import { translateRpcError } from "@/lib/rpcError";
 import { withBasePath } from "@/lib/basePath";
@@ -99,7 +100,7 @@ function cardTint(status: OrderStatus): string {
 
 export default function OrdersListPage() {
   return (
-    <Suspense fallback={<div className="p-6 text-sm text-zinc-500">載入中…</div>}>
+    <Suspense fallback={<LoadingBlock />}>
       <OrdersListContent />
     </Suspense>
   );
@@ -596,7 +597,13 @@ function OrdersListContent() {
         <div>
           <h1 className="text-xl font-semibold">訂單</h1>
           <p className="text-sm text-zinc-500">
-            {loading ? "載入中…" : total === 0 ? "共 0 筆" : `共 ${total} 筆（${fromIdx}-${toIdx}）`}
+            {loading ? (
+              <Spinner size={14} className="inline-block align-[-2px]" />
+            ) : total === 0 ? (
+              "共 0 筆"
+            ) : (
+              `共 ${total} 筆（${fromIdx}-${toIdx}）`
+            )}
           </p>
         </div>
         <Link
@@ -815,7 +822,11 @@ function OrdersListContent() {
       {/* 手機：每筆訂單一張卡片（桌機改用下方表格） */}
       <div className="space-y-2 sm:hidden">
         {rows === null ? (
-          <div className="rounded-md border border-zinc-200 p-6 text-center text-sm text-zinc-500 dark:border-zinc-800">載入中…</div>
+          <div className="rounded-md border border-zinc-200 p-6 dark:border-zinc-800">
+            <div className="flex justify-center text-zinc-400">
+              <Spinner size={20} />
+            </div>
+          </div>
         ) : rows.length === 0 ? (
           <div className="rounded-md border border-zinc-200 p-6 text-center text-sm text-zinc-500 dark:border-zinc-800">
             {total === 0 && campaignIds.length === 0 && !storeId && !keyword ? "此 tab 下尚無訂單。" : "沒有符合條件的訂單。"}
@@ -901,7 +912,7 @@ function OrdersListContent() {
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={9} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={9}><LoadingBlock /></td></tr>
             ) : rows.length === 0 ? (
               <tr><td colSpan={9} className="p-6 text-center text-zinc-500">{total === 0 && campaignIds.length === 0 && !storeId && !keyword ? `此 tab 下尚無訂單。` : "沒有符合條件的訂單。"}</td></tr>
             ) : rows.map((r) => {

@@ -2,11 +2,12 @@
 
 import { Suspense, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { LoadingBlock } from "@/components/Spinner";
 
 // 已整合到 /wms/transfers + /hq/inbox — 此頁僅做 redirect
 export default function TransfersListRedirect() {
   return (
-    <Suspense fallback={<div className="p-6 text-sm text-zinc-500">載入中…</div>}>
+    <Suspense fallback={<LoadingBlock />}>
       <RedirectInner />
     </Suspense>
   );
