@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { SendPOModal } from "@/components/SendPOModal";
 import SpinButton from "@/components/SpinButton";
@@ -33,6 +33,8 @@ type POHeader = {
   sent_at: string | null;
   sent_by: string | null;
   sent_channel: string | null;
+  stockout_at: string | null;
+  stockout_reason: string | null;
   created_by: string | null;
   created_at: string | null;
   updated_at: string | null;
@@ -64,6 +66,7 @@ export default function EditPurchaseOrderPage() {
 }
 
 function PageContent() {
+  const router = useRouter();
   const params = useSearchParams();
   const idStr = params.get("id");
   const id = idStr ? Number(idStr) : null;
@@ -84,7 +87,7 @@ function PageContent() {
         supabase
           .from("purchase_orders")
           .select(
-            "id, po_no, status, supplier_id, dest_location_id, order_date, expected_date, subtotal, total, payment_terms, notes, sent_at, sent_by, sent_channel, created_by, created_at, updated_at",
+            "id, po_no, status, supplier_id, dest_location_id, order_date, expected_date, subtotal, total, payment_terms, notes, sent_at, sent_by, sent_channel, stockout_at, stockout_reason, created_by, created_at, updated_at",
           )
           .eq("id", id)
           .maybeSingle(),
@@ -172,6 +175,61 @@ function PageContent() {
 
   const editable = header?.status === "draft";
   const canSend = header?.status === "draft";
+  const canStockout =
+    header?.status === "sent" || header?.status === "partially_received";
+  const canDelete =
+    header?.status === "draft" ||
+    header?.status === "sent" ||
+    header?.status === "cancelled";
+
+  async function markStockout() {
+    if (!header) return;
+    const reason = window.prompt(
+      `將 ${header.po_no} 標記為「斷貨」？\n供應商無法供貨時使用：未到貨的數量不再等待，單據直接結掉。\n\n可填寫斷貨原因（可留空）：`,
+    );
+    if (reason === null) return;
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { error: rpcErr } = await supabase.rpc(
+        "rpc_stockout_purchase_order",
+        {
+          p_po_id: header.id,
+          p_operator: userData.user?.id,
+          p_reason: reason || null,
+        },
+      );
+      if (rpcErr) throw new Error(rpcErr.message);
+      await reload();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function deletePO() {
+    if (!header) return;
+    if (
+      !window.confirm(
+        `確定要刪除 ${header.po_no}？\n刪除後無法復原；來源請購單的品項會解除連結、可重新拆單。`,
+      )
+    )
+      return;
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { error: rpcErr } = await supabase.rpc(
+        "rpc_delete_purchase_order",
+        {
+          p_po_id: header.id,
+          p_operator: userData.user?.id,
+        },
+      );
+      if (rpcErr) throw new Error(rpcErr.message);
+      router.replace("/purchase/orders");
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    }
+  }
   const totalReceived = items.reduce((s, r) => s + r.qty_received, 0);
   const totalOrdered = items.reduce((s, r) => s + r.qty_ordered, 0);
   const recvPct = totalOrdered > 0 ? (totalReceived / totalOrdered) * 100 : 0;
@@ -248,7 +306,34 @@ function PageContent() {
                   {header.sent_at && new Date(header.sent_at).toLocaleString("zh-TW")}
                 </div>
               )}
-              {!editable && !canSend && (
+              {canStockout && (
+                <SpinButton
+                  onClick={markStockout}
+                  className="rounded-md border border-amber-400 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-900"
+                >
+                  ⛔ 標記斷貨
+                </SpinButton>
+              )}
+              {canDelete && (
+                <SpinButton
+                  onClick={deletePO}
+                  className="rounded-md border border-red-400 bg-red-50 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-100 dark:border-red-700 dark:bg-red-950 dark:text-red-300 dark:hover:bg-red-900"
+                >
+                  🗑 刪除{PO_TERM_ZH}
+                </SpinButton>
+              )}
+              {header.stockout_at && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+                  ⛔ 已斷貨：{new Date(header.stockout_at).toLocaleString("zh-TW")}
+                  {header.stockout_reason && (
+                    <>
+                      <br />
+                      原因：{header.stockout_reason}
+                    </>
+                  )}
+                </div>
+              )}
+              {!editable && !canSend && !canStockout && !canDelete && (
                 <p className="text-xs text-zinc-500">此{PO_TERM_ZH}已 {STATUS_LABEL(header.status)}。</p>
               )}
             </div>

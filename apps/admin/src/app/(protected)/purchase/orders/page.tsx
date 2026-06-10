@@ -43,6 +43,7 @@ type PO = {
   expected_date: string | null;
   sent_at: string | null;
   sent_channel: string | null;
+  stockout_at: string | null;
   created_at: string;
   updated_at: string;
   pr_id: number | null;
@@ -106,7 +107,7 @@ export default function PurchaseOrdersListPage() {
         const { data: poData, error: poErr } = await supabase
           .from("purchase_orders")
           .select(
-            "id, po_no, supplier_id, status, total, expected_date, sent_at, sent_channel, created_at, updated_at, suppliers(name)",
+            "id, po_no, supplier_id, status, total, expected_date, sent_at, sent_channel, stockout_at, created_at, updated_at, suppliers(name)",
           )
           .order("updated_at", { ascending: false })
           .limit(500);
@@ -122,6 +123,7 @@ export default function PurchaseOrdersListPage() {
           expected_date: string | null;
           sent_at: string | null;
           sent_channel: string | null;
+          stockout_at: string | null;
           created_at: string;
           updated_at: string;
           suppliers: { name: string } | { name: string }[] | null;
@@ -138,6 +140,7 @@ export default function PurchaseOrdersListPage() {
             expected_date: r.expected_date,
             sent_at: r.sent_at,
             sent_channel: r.sent_channel,
+            stockout_at: r.stockout_at,
             created_at: r.created_at,
             updated_at: r.updated_at,
             pr_id: null,
@@ -449,6 +452,53 @@ export default function PurchaseOrdersListPage() {
     }
   }
 
+  async function markStockout(po: PO) {
+    const reason = window.prompt(
+      `將 ${po.po_no} 標記為「斷貨」？\n供應商無法供貨時使用：未到貨的數量不再等待，單據直接結掉。\n\n可填寫斷貨原因（可留空）：`,
+    );
+    if (reason === null) return;
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { error: rpcErr } = await supabase.rpc(
+        "rpc_stockout_purchase_order",
+        {
+          p_po_id: po.id,
+          p_operator: userData.user?.id,
+          p_reason: reason || null,
+        },
+      );
+      if (rpcErr) throw new Error(rpcErr.message);
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function deletePO(po: PO) {
+    if (
+      !window.confirm(
+        `確定要刪除 ${po.po_no}？\n刪除後無法復原；來源${PR_TERM_ZH}的品項會解除連結、可重新拆單。`,
+      )
+    )
+      return;
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { error: rpcErr } = await supabase.rpc(
+        "rpc_delete_purchase_order",
+        {
+          p_po_id: po.id,
+          p_operator: userData.user?.id,
+        },
+      );
+      if (rpcErr) throw new Error(rpcErr.message);
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   function setSort(col: SortCol) {
     if (sortBy === col) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -703,6 +753,8 @@ export default function PurchaseOrdersListPage() {
                     key={p.id}
                     po={p}
                     onSend={openSendModal}
+                    onStockout={markStockout}
+                    onDelete={deletePO}
                     sendBusyId={sendBusyId}
                   />
                 )),
@@ -713,6 +765,8 @@ export default function PurchaseOrdersListPage() {
                   key={p.id}
                   po={p}
                   onSend={openSendModal}
+                  onStockout={markStockout}
+                  onDelete={deletePO}
                   sendBusyId={sendBusyId}
                 />
               ))
@@ -820,10 +874,14 @@ function KpiCard({
 function PORow({
   po,
   onSend,
+  onStockout,
+  onDelete,
   sendBusyId,
 }: {
   po: PO;
   onSend: (p: PO) => void;
+  onStockout: (p: PO) => Promise<void>;
+  onDelete: (p: PO) => Promise<void>;
   sendBusyId: number | null;
 }) {
   const overdue =
@@ -859,6 +917,14 @@ function PORow({
         >
           {STATUS_LABEL[po.status]}
         </span>
+        {po.stockout_at && (
+          <span
+            className="ml-1 inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+            title={`斷貨於 ${new Date(po.stockout_at).toLocaleString("zh-TW")}`}
+          >
+            ⛔ 斷貨
+          </span>
+        )}
       </Td>
       <Td className="max-w-[220px]">
         {po.product_names.length === 0 ? (
@@ -940,6 +1006,18 @@ function PORow({
             >
               進貨
             </Link>
+          )}
+          {(po.status === "sent" || po.status === "partially_received") && (
+            <RowAction variant="warning" onClick={() => onStockout(po)}>
+              斷貨
+            </RowAction>
+          )}
+          {(po.status === "draft" ||
+            po.status === "sent" ||
+            po.status === "cancelled") && (
+            <RowAction variant="danger" onClick={() => onDelete(po)}>
+              刪除
+            </RowAction>
           )}
         </div>
       </Td>
