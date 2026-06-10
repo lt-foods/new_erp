@@ -295,13 +295,13 @@ function Body() {
           receipts.map((r) => (
             <div key={r.event.id} className="receipt-single bg-white p-4 text-zinc-900">
               <div className="mb-3 text-center">
-                <h1 className="text-xl font-bold">取貨單</h1>
-                <div className="text-xs text-zinc-500">
+                <h1 className="text-3xl font-bold">取貨單</h1>
+                <div className="text-base text-zinc-500">
                   {r.event.event_type === "picked_up" ? "全部取貨" : "部分取貨"}
                 </div>
               </div>
 
-              <div className="mb-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+              <div className="mb-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-base">
                 <Field label="訂單號" value={<span className="font-mono font-semibold">{r.order?.order_no ?? "—"}</span>} />
                 <Field label="取貨時間" value={new Date(r.event.created_at).toLocaleString("zh-TW")} />
                 <Field label="會員" value={r.order?.member ? `${r.order.member.name ?? "—"} (${r.order.member.member_no})` : "—"} />
@@ -310,7 +310,7 @@ function Body() {
                 <Field label="開團" value={r.order?.campaign ? `${r.order.campaign.campaign_no} ${r.order.campaign.name}` : "—"} />
               </div>
 
-              <table className="mb-2 w-full border-collapse text-xs">
+              <table className="mb-2 w-full border-collapse text-base">
                 <thead>
                   <tr className="border-b-2 border-zinc-400">
                     <th className="px-2 py-1 text-left">商品</th>
@@ -328,10 +328,10 @@ function Body() {
                       <Fragment key={it.id}>
                         <tr className={it.notes ? "" : "border-b border-zinc-200"}>
                           <td className="px-2 py-1">
-                            {it.sku?.variant_name ?? it.sku?.product_name ?? "—"}
-                            {it.sku?.sku_code && <span className="ml-1 font-mono text-[10px] text-zinc-500">{it.sku.sku_code}</span>}
+                            <span className="font-medium">{it.sku?.variant_name ?? it.sku?.product_name ?? "—"}</span>
+                            {it.sku?.sku_code && <span className="ml-1 font-mono text-xs text-zinc-500">{it.sku.sku_code}</span>}
                             {discounted && (
-                              <span className="ml-1 rounded bg-red-100 px-1 text-[9px] font-bold text-red-700">
+                              <span className="ml-1 rounded bg-red-100 px-1 text-[11px] font-bold text-red-700">
                                 {Number(it.discount_percent ?? 0) > 0 ? `${it.discount_percent}%` : `減$${it.discount_amount}`}
                               </span>
                             )}
@@ -351,7 +351,7 @@ function Body() {
                         </tr>
                         {it.notes && (
                           <tr className="border-b border-zinc-200">
-                            <td colSpan={4} className="px-2 pb-1 text-[10px] italic text-zinc-600">
+                            <td colSpan={4} className="px-2 pb-1 text-xs italic text-zinc-600">
                               ↳ 備註：{it.notes}
                             </td>
                           </tr>
@@ -372,29 +372,29 @@ function Body() {
                     return (
                       <>
                         <tr className="border-t border-zinc-300">
-                          <td colSpan={3} className="px-2 py-1 text-right text-xs text-zinc-600">小計</td>
+                          <td colSpan={3} className="px-2 py-1 text-right text-sm text-zinc-600">小計</td>
                           <td className="px-2 py-1 text-right font-mono">${sub}</td>
                         </tr>
                         {pct > 0 && (
                           <tr>
-                            <td colSpan={3} className="px-2 py-1 text-right text-xs text-zinc-600">− 折扣 {pct}%</td>
+                            <td colSpan={3} className="px-2 py-1 text-right text-sm text-zinc-600">− 折扣 {pct}%</td>
                             <td className="px-2 py-1 text-right font-mono">−${pctDed}</td>
                           </tr>
                         )}
                         {disc > 0 && (
                           <tr>
-                            <td colSpan={3} className="px-2 py-1 text-right text-xs text-zinc-600">− 折扣金額</td>
+                            <td colSpan={3} className="px-2 py-1 text-right text-sm text-zinc-600">− 折扣金額</td>
                             <td className="px-2 py-1 text-right font-mono">−${disc}</td>
                           </tr>
                         )}
-                        <tr className="border-t-2 border-zinc-400 font-bold">
+                        <tr className="border-t-2 border-zinc-400 text-xl font-bold">
                           <td colSpan={3} className="px-2 py-2 text-right">應收</td>
                           <td className="px-2 py-2 text-right font-mono">${pay}</td>
                         </tr>
                         {walletPaid > 0 && (
                           <>
                             <tr>
-                              <td colSpan={3} className="px-2 py-1 text-right text-xs text-zinc-600">− 已用儲值金</td>
+                              <td colSpan={3} className="px-2 py-1 text-right text-sm text-zinc-600">− 已用儲值金</td>
                               <td className="px-2 py-1 text-right font-mono">−${walletPaid}</td>
                             </tr>
                             <tr className="border-t border-zinc-300 font-bold">
@@ -412,10 +412,10 @@ function Body() {
               </table>
 
               {r.order?.notes && (
-                <div className="mb-1 text-xs text-zinc-700">📝 訂單備註：{r.order.notes}</div>
+                <div className="mb-1 text-sm text-zinc-700">📝 訂單備註：{r.order.notes}</div>
               )}
               {r.event.notes && (
-                <div className="mb-2 text-xs text-zinc-600">取貨備註：{r.event.notes}</div>
+                <div className="mb-2 text-sm text-zinc-600">取貨備註：{r.event.notes}</div>
               )}
             </div>
           ))
@@ -428,7 +428,7 @@ function Body() {
 function Field({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div>
-      <span className="text-xs text-zinc-500">{label}：</span>
+      <span className="text-sm text-zinc-500">{label}：</span>
       <span>{value}</span>
     </div>
   );
