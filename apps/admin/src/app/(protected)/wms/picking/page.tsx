@@ -40,6 +40,8 @@ type DemandRow = {
 type Supplier = { id: number; code: string; name: string };
 type AllocKey = string; // `${sku_id}:${store_id}`
 type ViewMode = "matrix" | "by_store";
+// 現行成本價 / 分店價是否已設定（出貨守衛 _missing_dispatch_prices 的前端預警）
+type PriceFlags = { cost: boolean; branch: boolean };
 
 type RestockRow = {
   restock_request_id: number;
@@ -79,6 +81,11 @@ export default function PickingWorkstationPage() {
   const [reloadKey, setReloadKey] = useState(0);
   // 勾選的品項（sku_id）。空集合 = 未篩選 → 建單時納入全部；非空 → 只建選取的品項。
   const [selectedSkus, setSelectedSkus] = useState<Set<number>>(new Set());
+  // 缺價預警：sku_id → 現行成本/分店價是否存在。null = 未載入或此 role 看不到價格（不顯示）。
+  const [priceFlags, setPriceFlags] = useState<Map<number, PriceFlags> | null>(null);
+  const [canFixPrices, setCanFixPrices] = useState(false);
+  const [priceEdit, setPriceEdit] = useState<{ skuId: number; scope: "cost" | "branch" } | null>(null);
+  const [priceDraft, setPriceDraft] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -116,6 +123,144 @@ export default function PickingWorkstationPage() {
     })();
     return () => { cancelled = true; };
   }, [reloadKey]);
+
+  // ===== 缺價預警：抓畫面上所有 SKU 的現行成本價 / 分店價 =====
+  // 與 DB 守衛 _missing_dispatch_prices 同條件（scope cost/branch、effective_to IS NULL、price>0）。
+  // 只有讀得到 cost/branch 價的 HQ role 才檢查 — 其他 role 被 RLS 濾掉會整片誤判缺價。
+  useEffect(() => {
+    if (!demand && !restockDemand) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const sb = getSupabase();
+        const { data: sess } = await sb.auth.getSession();
+        const role =
+          ((sess.session?.user?.app_metadata as { role?: string } | undefined)?.role ?? "");
+        if (!["owner", "admin", "hq_manager", "hq_accountant"].includes(role)) {
+          if (!cancelled) { setCanFixPrices(false); setPriceFlags(null); }
+          return;
+        }
+        const ids = new Set<number>();
+        for (const r of demand ?? []) ids.add(r.sku_id);
+        for (const r of restockDemand ?? []) ids.add(r.sku_id);
+        const all = Array.from(ids);
+        const flags = new Map<number, PriceFlags>();
+        for (const id of all) flags.set(id, { cost: false, branch: false });
+        for (let i = 0; i < all.length; i += 150) {
+          const chunk = all.slice(i, i + 150);
+          const { data, error: e } = await sb
+            .from("prices")
+            .select("sku_id, scope, price")
+            .in("scope", ["cost", "branch"])
+            .is("effective_to", null)
+            .gt("price", 0)
+            .in("sku_id", chunk);
+          if (e) throw new Error(e.message);
+          for (const row of (data ?? []) as { sku_id: number; scope: "cost" | "branch" }[]) {
+            const f = flags.get(row.sku_id);
+            if (f) f[row.scope] = true;
+          }
+        }
+        if (!cancelled) { setCanFixPrices(true); setPriceFlags(flags); }
+      } catch {
+        // 缺價檢查失敗不影響工作台主流程，僅不顯示預警
+        if (!cancelled) { setCanFixPrices(false); setPriceFlags(null); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [demand, restockDemand]);
+
+  // 補價：呼叫既有價格 wrapper RPC，成功後就地更新旗標（出貨守衛即放行）
+  async function savePrice(skuId: number, scope: "cost" | "branch") {
+    const val = Number(priceDraft);
+    if (!Number.isFinite(val) || val <= 0) return;
+    try {
+      const sb = getSupabase();
+      const { error: e } = await sb.rpc(
+        scope === "cost" ? "rpc_set_cost_price" : "rpc_set_branch_price",
+        { p_sku_id: skuId, p_price: val, p_reason: "派貨工作台補價" },
+      );
+      if (e) throw new Error(e.message);
+      setPriceFlags((prev) => {
+        if (!prev) return prev;
+        const next = new Map(prev);
+        const cur = next.get(skuId) ?? { cost: false, branch: false };
+        next.set(skuId, { ...cur, [scope]: true });
+        return next;
+      });
+      setPriceEdit(null);
+      setPriceDraft("");
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // 缺價 pill（文字標籤）＋ 點擊 inline 補價
+  function renderPriceTags(skuId: number) {
+    if (!canFixPrices || !priceFlags) return null;
+    const f = priceFlags.get(skuId);
+    if (!f) return null;
+    const missing: ("cost" | "branch")[] = [];
+    if (!f.cost) missing.push("cost");
+    if (!f.branch) missing.push("branch");
+    if (missing.length === 0) return null;
+    return (
+      <>
+        {missing.map((scope) => {
+          const label = scope === "cost" ? "缺成本" : "缺分店價";
+          const isEditing = priceEdit?.skuId === skuId && priceEdit.scope === scope;
+          if (isEditing) {
+            const val = Number(priceDraft);
+            const valid = Number.isFinite(val) && val > 0;
+            return (
+              <span key={scope} className="inline-flex items-center gap-1">
+                <input
+                  type="number"
+                  min={0.01}
+                  step="0.01"
+                  autoFocus
+                  value={priceDraft}
+                  onChange={(e) => setPriceDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") { setPriceEdit(null); setPriceDraft(""); }
+                  }}
+                  placeholder={scope === "cost" ? "成本價" : "分店價"}
+                  aria-label={`輸入${scope === "cost" ? "成本價" : "分店價"}`}
+                  className="w-16 rounded border border-rose-300 px-1 py-0.5 font-mono text-[11px] tabular-nums dark:border-rose-700 dark:bg-zinc-800"
+                />
+                <SpinButton
+                  onClick={() => savePrice(skuId, scope)}
+                  disabled={!valid}
+                  className="rounded bg-rose-600 px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-rose-700 disabled:opacity-40"
+                >
+                  儲存
+                </SpinButton>
+                <button
+                  type="button"
+                  onClick={() => { setPriceEdit(null); setPriceDraft(""); }}
+                  className="rounded border border-zinc-300 px-1.5 py-0.5 text-[10px] text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  取消
+                </button>
+              </span>
+            );
+          }
+          return (
+            <button
+              key={scope}
+              type="button"
+              onClick={() => { setPriceEdit({ skuId, scope }); setPriceDraft(""); }}
+              title={`此品項尚未設定${scope === "cost" ? "成本價" : "分店價"}，派貨會被擋下 — 點擊直接補價`}
+              className="rounded bg-rose-100 px-1 py-0.5 text-[9px] font-medium text-rose-800 hover:bg-rose-200 dark:bg-rose-950 dark:text-rose-300 dark:hover:bg-rose-900"
+            >
+              {label}
+            </button>
+          );
+        })}
+      </>
+    );
+  }
 
   // ===== 合併視角資料：每個 (sku, store) 一格，跨 PO 加總 =====
   type StoreInfo = { store_id: number; store_code: string | null; store_name: string };
@@ -575,6 +720,17 @@ export default function PickingWorkstationPage() {
     [effectiveSkuRows, allStores, demand, allocs], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
+  // 可分配清單中缺成本/分店價的品項數（派貨時會被 DB 守衛擋下）
+  const missingPriceCount = useMemo(() => {
+    if (!canFixPrices || !priceFlags) return 0;
+    let n = 0;
+    for (const sk of skuRows) {
+      const f = priceFlags.get(sk.sku_id);
+      if (f && (!f.cost || !f.branch)) n += 1;
+    }
+    return n;
+  }, [skuRows, priceFlags, canFixPrices]);
+
   // ===== 補貨申請(無 PO 來源)分組 =====
   type RestockGroup = {
     rrId: number;
@@ -728,6 +884,11 @@ export default function PickingWorkstationPage() {
                 } · 擬分 ${totalAllocSum}${involvedPos > 0 ? ` · 預計切 ${involvedPos} 張撿貨單` : ""}`
               : `${storeSections.length} 間分店有待撿貨`}
         </span>
+        {viewMode === "matrix" && missingPriceCount > 0 && (
+          <span className="text-xs font-medium text-rose-700 dark:text-rose-400">
+            缺價 {missingPriceCount} 品項 — 補價前派貨會被擋
+          </span>
+        )}
 
         {viewMode === "matrix" && skuRows.length > 0 && (
           <div className="ml-auto flex flex-wrap gap-2">
@@ -855,6 +1016,7 @@ export default function PickingWorkstationPage() {
                                   📦 補貨
                                 </span>
                               )}
+                              {renderPriceTags(sk.sku_id)}
                             </div>
                           </div>
                           <SpinButton
@@ -978,6 +1140,7 @@ export default function PickingWorkstationPage() {
                             <Td className="px-3 py-2 text-xs">
                               <div className="font-mono text-[11px] text-zinc-500">{r.sku_code ?? "—"}</div>
                               <div className="truncate" title={r.sku_label}>{r.sku_label}</div>
+                              <div className="mt-0.5 flex flex-wrap gap-1">{renderPriceTags(r.sku_id)}</div>
                             </Td>
                             <NumCell value={Number(r.demand_qty)} bold />
                             <NumCell value={Number(r.wave_qty)} muted />
@@ -1069,6 +1232,7 @@ export default function PickingWorkstationPage() {
                                 {ln.sku_code ?? "—"}
                               </div>
                               <div title={ln.sku_label}>{ln.sku_label}</div>
+                              <div className="mt-0.5 flex flex-wrap gap-1">{renderPriceTags(ln.sku_id)}</div>
                             </Td>
                             <NumCell value={Number(ln.demand_qty)} bold />
                             <NumCell
