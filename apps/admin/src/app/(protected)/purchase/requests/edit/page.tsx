@@ -89,7 +89,7 @@ function PageContent() {
   const [appending, setAppending] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"save" | "submit" | "split" | "reopen" | null>(null);
+  const [busy, setBusy] = useState<"save" | "submit" | "split" | "reopen" | "delete" | null>(null);
   const [destLocationId, setDestLocationId] = useState<number | null>(null);
 
   // 頂部「一次套用到全部品項」工具列的暫存值（空字串＝不套用該欄）
@@ -377,6 +377,11 @@ function PageContent() {
   const canSplit =
     header?.status === "submitted" && header?.review_status === "approved";
   const canReopen = header?.status === "submitted";
+  // 可刪：草稿/送審中/已作廢（已拆 PO 的 partially/fully_ordered 不在此列）
+  const canDelete =
+    header?.status === "draft" ||
+    header?.status === "submitted" ||
+    header?.status === "cancelled";
 
   const totals = useMemo(() => {
     const subtotal = items.reduce((s, r) => s + r.qty_requested * r.unit_cost, 0);
@@ -579,6 +584,31 @@ function PageContent() {
     }
   }
 
+  async function deletePr() {
+    if (!id) return;
+    if (
+      !confirm(
+        `確定刪除此${PR_TERM_ZH}？此動作無法復原。\n（若有鎖定中的團會一併解鎖回「已結單」狀態；顧客訂單不受影響）`,
+      )
+    )
+      return;
+    setBusy("delete");
+    setError(null);
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { error: rpcErr } = await supabase.rpc("rpc_delete_pr", {
+        p_pr_id: id,
+        p_operator: userData.user?.id,
+      });
+      if (rpcErr) throw new Error(rpcErr.message);
+      router.push("/purchase/requests");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(null);
+    }
+  }
+
   async function splitToPos() {
     if (!id || !destLocationId) return;
     if (unassignedCount > 0) {
@@ -742,8 +772,18 @@ function PageContent() {
                   {busy === "reopen" ? "退回中…" : "↩ 退回草稿"}
                 </SpinButton>
               )}
-              {!editable && !canSplit && !canReopen && (
+              {!editable && !canSplit && !canReopen && !canDelete && (
                 <p className="text-xs text-zinc-500">此{PR_TERM_ZH}已 {STATUS_LABEL(header.status)}，無可用動作。</p>
+              )}
+              {canDelete && (
+                <SpinButton
+                  onClick={deletePr}
+                  disabled={busy !== null}
+                  className="mt-1 rounded-md border border-red-400 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-950"
+                  title="刪除請購單（已拆 PO 的不可刪）"
+                >
+                  🗑 刪除{PR_TERM_ZH}
+                </SpinButton>
               )}
             </div>
           </section>

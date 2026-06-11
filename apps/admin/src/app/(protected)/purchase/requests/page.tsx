@@ -492,6 +492,30 @@ export default function PurchaseRequestsListPage() {
     }
   }
 
+  async function deletePr(id: number) {
+    if (
+      !confirm(
+        `確定刪除${PR_TERM_ZH} #${id}？此動作無法復原。\n（若此單有鎖定中的團，會一併解鎖回「已結單」狀態；顧客訂單不受影響）`,
+      )
+    )
+      return;
+    setBusyId(id);
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { error: rpcErr } = await supabase.rpc("rpc_delete_pr", {
+        p_pr_id: id,
+        p_operator: userData.user?.id,
+      });
+      if (rpcErr) throw new Error(rpcErr.message);
+      setReloadTick((t) => t + 1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   // === KPI 統計 ===
   const stats = useMemo(() => {
     const acc = {
@@ -963,6 +987,7 @@ export default function PurchaseRequestsListPage() {
                     busyId={busyId}
                     onApprove={approve}
                     onReject={reject}
+                    onDelete={deletePr}
                   />
                 )),
               ])
@@ -975,6 +1000,7 @@ export default function PurchaseRequestsListPage() {
                   busyId={busyId}
                   onApprove={approve}
                   onReject={reject}
+                  onDelete={deletePr}
                 />
               ))
             )}
@@ -1204,13 +1230,19 @@ function PRRow({
   busyId,
   onApprove,
   onReject,
+  onDelete,
 }: {
   row: Row;
   progress: Progress | undefined;
   busyId: number | null;
   onApprove: (id: number) => void;
   onReject: (id: number) => void;
+  onDelete: (id: number) => void;
 }) {
+  // 可刪：草稿/送審中/已作廢，且尚未拆出任何 PO（雙重保險）
+  const canDelete =
+    ["draft", "submitted", "cancelled"].includes(row.status) &&
+    (!progress || progress.po_total === 0);
   return (
     <tr className="hover:bg-zinc-50 dark:hover:bg-zinc-900/60">
       <Td className="font-mono">
@@ -1280,13 +1312,23 @@ function PRRow({
                 通過
               </RowAction>
               <RowAction
-                variant="danger"
+                variant="warning"
                 disabled={busyId === row.id}
                 onClick={() => onReject(row.id)}
               >
                 退回
               </RowAction>
             </>
+          )}
+          {canDelete && (
+            <RowAction
+              variant="danger"
+              disabled={busyId === row.id}
+              onClick={() => onDelete(row.id)}
+              title="刪除請購單（已拆 PO 的不可刪）"
+            >
+              刪除
+            </RowAction>
           )}
         </div>
       </Td>
