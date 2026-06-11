@@ -301,7 +301,7 @@ export default function PurchaseOrdersListPage() {
       if (dateTo && (p.created_at ?? "") > `${dateTo}T23:59:59.999`)
         return false;
       if (q) {
-        const hits = [p.po_no, p.supplier_name, p.pr_no]
+        const hits = [p.po_no, p.supplier_name, p.pr_no, ...p.product_names]
           .filter((x): x is string => !!x)
           .some((x) => x.toLowerCase().includes(q));
         if (!hits) return false;
@@ -613,7 +613,7 @@ export default function PurchaseOrdersListPage() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="🔍 搜尋 單號 / 供應商 / PR"
+          placeholder="🔍 搜尋 單號 / 供應商 / PR / 產品"
           className="flex-1 min-w-[180px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
         />
         <select
