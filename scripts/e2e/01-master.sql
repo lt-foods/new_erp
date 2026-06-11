@@ -221,6 +221,27 @@ SELECT :'tenant_id'::uuid, b.sku_id, 'member_tier', t.id,
        (SELECT id FROM any_user)
 FROM base b CROSS JOIN tiers t;
 
+-- ── cost / branch 價（出貨價格防呆 20260705000000：缺成本價/分店價不能出倉）──
+-- cost = retail × 0.6、branch = retail × 0.8；少這兩種價黃金路徑派貨會被守衛擋下
+WITH any_user AS (SELECT id FROM auth.users LIMIT 1),
+     base AS (
+       SELECT s.id AS sku_id, s.tenant_id,
+              (CASE s.sku_code
+                 WHEN 'SKU-001' THEN 135 WHEN 'SKU-002' THEN 80
+                 WHEN 'SKU-003' THEN 220 WHEN 'SKU-004' THEN 180
+                 WHEN 'SKU-005' THEN 95  WHEN 'SKU-006' THEN 350
+                 WHEN 'SKU-007' THEN 65  WHEN 'SKU-008' THEN 110
+                 WHEN 'SKU-009' THEN 90  WHEN 'SKU-010' THEN 480
+               END)::numeric AS retail
+       FROM skus s
+       WHERE s.tenant_id = :'tenant_id'::uuid
+     )
+INSERT INTO prices (tenant_id, sku_id, scope, scope_id, price, effective_from, created_by)
+SELECT b.tenant_id, b.sku_id, x.scope, NULL,
+       ROUND(b.retail * x.factor, 2), NOW(), (SELECT id FROM any_user)
+FROM base b
+CROSS JOIN (VALUES ('cost', 0.6::numeric), ('branch', 0.8::numeric)) AS x(scope, factor);
+
 -- ── expense_categories（5 筆 P&L 科目）────────────────────
 INSERT INTO expense_categories (tenant_id, code, name, default_pay_method) VALUES
   (:'tenant_id'::uuid, 'EC-RENT',    '租金',     'company_account'),
