@@ -9,6 +9,7 @@ import { Fragment, Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { getTenantName } from "@/lib/tenant";
+import { useAuth } from "@/components/AuthProvider";
 import SpinButton from "@/components/SpinButton";
 
 type Transfer = {
@@ -239,6 +240,8 @@ function Body() {
 }
 
 function Slip({ kind, tx, items }: { kind: CopyKind; tx: Transfer; items: Item[] }) {
+  const { tenant } = useAuth();
+  const tenantName = tenant?.name ?? getTenantName();
   const typeLabel = TYPE_LABEL[tx.transfer_type] ?? tx.transfer_type;
   const tempLabel = tx.shipping_temp ? (TEMP_LABEL[tx.shipping_temp] ?? tx.shipping_temp) : "—";
   const totalQty = items.reduce((s, it) => s + it.qty_shipped, 0);
@@ -248,7 +251,7 @@ function Slip({ kind, tx, items }: { kind: CopyKind; tx: Transfer; items: Item[]
     <div className="copy-page bg-white text-zinc-900">
       <div className="mb-2 flex items-baseline justify-between border-b-2 border-zinc-700 pb-1">
         <div>
-          <div className="text-base font-semibold">{getTenantName()}</div>
+          <div className="text-base font-semibold">{tenantName}</div>
           <div className="text-xl font-bold">{typeLabel}出貨單</div>
         </div>
         <div className="text-right">

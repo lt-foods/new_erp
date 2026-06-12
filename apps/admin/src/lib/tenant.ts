@@ -1,6 +1,7 @@
 // 集中管理 tenant 顯示名稱。
-// 目前 single-tenant，靠 NEXT_PUBLIC_TENANT_NAME env 切換；
-// 未來若要 multi-tenant，把 getTenantName() 改成 DB query 即可（呼叫端不用改）。
+// multi-tenant（SaaS 化 Phase 0）後，登入後的名稱以 DB 為主：
+// useAuth().tenant?.name（來自 rpc_get_my_tenant）→ fallback 本檔 env 名稱。
+// 這裡保留 env 版本給「登入前」的場景（login 頁、root layout metadata）。
 
 const DEFAULT_TENANT_NAME = "包子媽生鮮小舖";
 

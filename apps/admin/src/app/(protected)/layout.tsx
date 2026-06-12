@@ -130,11 +130,11 @@ function filterNavForBranch(nav: NavGroup[]): NavGroup[] {
 }
 
 export default function ProtectedLayout({ children }: { children: ReactNode }) {
-  const { session, loading, user, signOut } = useAuth();
+  const { session, loading, user, signOut, tenant } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const tenantName = getTenantName();
+  const tenantName = tenant?.name ?? getTenantName();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   // 載入 collapsed groups (localStorage)

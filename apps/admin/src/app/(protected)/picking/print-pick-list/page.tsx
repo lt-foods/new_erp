@@ -10,6 +10,7 @@ import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
 import SpinButton from "@/components/SpinButton";
 import { getTenantName } from "@/lib/tenant";
+import { useAuth } from "@/components/AuthProvider";
 
 type DemandRow = {
   po_id: number;
@@ -44,14 +45,11 @@ type SkuRow = {
 };
 
 export default function PrintPickListPage() {
+  const { tenant } = useAuth();
   const [demand, setDemand] = useState<DemandRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tenantName, setTenantName] = useState("");
+  const tenantName = tenant?.name ?? getTenantName();
   const [printedAt] = useState(() => new Date());
-
-  useEffect(() => {
-    setTenantName(getTenantName());
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
