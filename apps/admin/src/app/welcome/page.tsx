@@ -1,14 +1,35 @@
 // 推廣頁（landing page）— 試用租戶註冊的對外入口（SaaS 化）
-// 純靜態公開頁：Hero + 功能亮點（對齊實際模組）+ 試用說明 + CTA。
+// 純靜態公開頁。結構參考競品分析（樂樂團購 / 飛比+1 / EasyStore LINE 訂單，
+// 2026-06-12）：痛點開場 → 差異化定位 → 功能 → 3 步驟 → 試用承諾 → FAQ → CTA。
+// 定位：競品都聚焦「收單整單」，我們主打「收單之後的進銷存財」。
 // 對外宣傳統一導到 /welcome；root `/` 仍是登入後 dashboard。
 
 import Link from "next/link";
 
 export const metadata = {
-  title: "社區團購生意的一站式管理後台｜免費試用 14 天",
+  title: "團購生意的進銷存後台｜開團、採購、庫存、對帳一站搞定，免費試用 14 天",
   description:
-    "開團、採購、撿貨派貨、到店取貨、會員錢包點數、多店管理 — 一套後台搞定。免費試用 14 天，免信用卡。",
+    "整單只是開始。採購進貨、總倉門市庫存、撿貨派貨、會員錢包、月結對帳 — 為社區團購打造的 ERP。免費試用 14 天，免信用卡。",
 };
+
+const PAINS: { title: string; desc: string }[] = [
+  {
+    title: "對帳對到半夜",
+    desc: "訂單在 LINE、帳在 Excel、錢在心裡，每次結團都像期末考。",
+  },
+  {
+    title: "到貨日大塞車",
+    desc: "誰訂了什麼、撿了沒、派去哪家店，全靠紙條和記憶力。",
+  },
+  {
+    title: "庫存是一筆糊塗帳",
+    desc: "總倉多少、門市多少、退貨去哪了，沒人說得準。",
+  },
+  {
+    title: "店越開越多，帳越來越亂",
+    desc: "加盟店的貨、錢、權限混在一起，出錯找不到人。",
+  },
+];
 
 const FEATURES: { icon: string; title: string; desc: string }[] = [
   {
@@ -43,6 +64,24 @@ const FEATURES: { icon: string; title: string; desc: string }[] = [
   },
 ];
 
+const STEPS: { step: string; title: string; desc: string }[] = [
+  {
+    step: "1",
+    title: "填商家名稱和 Email",
+    desc: "3 分鐘開好你的專屬後台，不用裝任何東西。",
+  },
+  {
+    step: "2",
+    title: "收信完成驗證",
+    desc: "登入就有總倉和示範門市，照著真實流程跑一輪。",
+  },
+  {
+    step: "3",
+    title: "開你的第一團",
+    desc: "從開團、採購到取貨對帳，試用期內功能不設限。",
+  },
+];
+
 const TRIAL_POINTS: { title: string; desc: string }[] = [
   {
     title: "14 天全功能",
@@ -61,6 +100,36 @@ const TRIAL_POINTS: { title: string; desc: string }[] = [
     desc: "不合用？一鍵永久刪除你的全部資料與帳號，不留痕跡。",
   },
 ];
+
+const FAQS: { q: string; a: string }[] = [
+  {
+    q: "跟其他「+1 整單」工具有什麼不同？",
+    a: "整單工具幫你收單，收完之後呢？採購要下給誰、貨進到哪個倉、怎麼撿怎麼派、月底跟門市怎麼結 — 這套系統管的是收單之後的整條流程。",
+  },
+  {
+    q: "我只有一家店（或只有我自己），適合嗎？",
+    a: "適合。一人團主就用總倉＋一家示範門市跑全流程；之後展店，加門市、開帳號、分權限就好，不用換系統。",
+  },
+  {
+    q: "試用到期資料會怎樣？",
+    a: "資料原封保留、只是暫停操作。想繼續就聯絡我們開通；不想用，後台一鍵永久刪除全部資料與帳號。",
+  },
+  {
+    q: "需要綁信用卡或簽約嗎？",
+    a: "都不用。Email 驗證完就能用，到期前我們不會收你任何付款資訊。",
+  },
+];
+
+function CtaButton({ children }: { children: React.ReactNode }) {
+  return (
+    <Link
+      href="/signup"
+      className="inline-block rounded-md bg-zinc-900 px-6 py-3 text-base font-medium text-white transition hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+    >
+      {children}
+    </Link>
+  );
+}
 
 export default function WelcomePage() {
   return (
@@ -87,27 +156,43 @@ export default function WelcomePage() {
       {/* Hero */}
       <section className="mx-auto w-full max-w-3xl px-6 py-16 text-center sm:py-24">
         <h1 className="text-3xl font-bold leading-tight tracking-tight sm:text-5xl">
-          開團、跟單、取貨、對帳
+          整單只是開始，
           <br />
-          一套後台搞定
+          之後的事這套系統替你扛
         </h1>
         <p className="mx-auto mt-4 max-w-xl text-base text-zinc-600 sm:text-lg dark:text-zinc-400">
-          為社區團購與生鮮小舖打造的 ERP：從開團收單到採購進貨、
-          撿貨派貨、會員錢包，告別 Excel 和手抄帳。
+          採購進貨、總倉門市庫存、撿貨派貨、會員錢包、月結對帳 —
+          為社區團購與生鮮小舖打造的進銷存後台，告別 Excel 和手抄帳。
         </p>
         <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-          <Link
-            href="/signup"
-            className="w-full rounded-md bg-zinc-900 px-6 py-3 text-base font-medium text-white transition hover:bg-zinc-800 sm:w-auto dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
-          >
-            免費試用 14 天
-          </Link>
+          <CtaButton>免費試用 14 天</CtaButton>
           <span className="text-xs text-zinc-500">免信用卡・3 分鐘開好後台</span>
         </div>
       </section>
 
-      {/* Features */}
+      {/* Pain points */}
       <section className="border-t border-zinc-200 bg-zinc-50 px-6 py-16 dark:border-zinc-800 dark:bg-zinc-900/50">
+        <div className="mx-auto max-w-4xl">
+          <h2 className="text-center text-2xl font-semibold">這些場景，你一定不陌生</h2>
+          <div className="mt-10 grid gap-6 sm:grid-cols-2">
+            {PAINS.map((p) => (
+              <div
+                key={p.title}
+                className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900"
+              >
+                <h3 className="font-semibold">😵 {p.title}</h3>
+                <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{p.desc}</p>
+              </div>
+            ))}
+          </div>
+          <p className="mt-8 text-center text-sm text-zinc-600 dark:text-zinc-400">
+            「+1 整單」工具收完單就下班了 — 真正累人的，是收單之後的進、銷、存、財。
+          </p>
+        </div>
+      </section>
+
+      {/* Features */}
+      <section className="px-6 py-16">
         <div className="mx-auto max-w-4xl">
           <h2 className="text-center text-2xl font-semibold">生意每個環節，都有人接住</h2>
           <div className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
@@ -121,6 +206,27 @@ export default function WelcomePage() {
                 <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{f.desc}</p>
               </div>
             ))}
+          </div>
+        </div>
+      </section>
+
+      {/* 3 steps */}
+      <section className="border-t border-zinc-200 bg-zinc-50 px-6 py-16 dark:border-zinc-800 dark:bg-zinc-900/50">
+        <div className="mx-auto max-w-4xl">
+          <h2 className="text-center text-2xl font-semibold">三步驟，今天就開始</h2>
+          <div className="mt-10 grid gap-6 sm:grid-cols-3">
+            {STEPS.map((s) => (
+              <div key={s.step} className="text-center">
+                <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-zinc-900 text-lg font-bold text-white dark:bg-zinc-50 dark:text-zinc-900">
+                  {s.step}
+                </div>
+                <h3 className="mt-3 font-semibold">{s.title}</h3>
+                <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{s.desc}</p>
+              </div>
+            ))}
+          </div>
+          <div className="mt-10 text-center">
+            <CtaButton>免費試用 14 天</CtaButton>
           </div>
         </div>
       </section>
@@ -143,15 +249,27 @@ export default function WelcomePage() {
         </div>
       </section>
 
+      {/* FAQ */}
+      <section className="border-t border-zinc-200 bg-zinc-50 px-6 py-16 dark:border-zinc-800 dark:bg-zinc-900/50">
+        <div className="mx-auto max-w-3xl">
+          <h2 className="text-center text-2xl font-semibold">常見問題</h2>
+          <div className="mt-10 space-y-6">
+            {FAQS.map((f) => (
+              <div key={f.q}>
+                <h3 className="font-semibold">{f.q}</h3>
+                <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{f.a}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* Bottom CTA */}
       <section className="border-t border-zinc-200 px-6 py-16 text-center dark:border-zinc-800">
         <h2 className="text-2xl font-semibold">下一團，用系統開</h2>
-        <Link
-          href="/signup"
-          className="mt-6 inline-block rounded-md bg-zinc-900 px-6 py-3 text-base font-medium text-white transition hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
-        >
-          免費試用 14 天
-        </Link>
+        <div className="mt-6">
+          <CtaButton>免費試用 14 天</CtaButton>
+        </div>
         <p className="mt-3 text-xs text-zinc-500">
           已經有帳號？{" "}
           <Link href="/login" className="underline hover:text-zinc-700 dark:hover:text-zinc-300">
