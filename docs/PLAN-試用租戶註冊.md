@@ -199,8 +199,8 @@ UPDATE tenants SET status='deleted', purged_at=now() WHERE id=p_tenant_id;
 除 DB 外還要清：
 
 - `auth.users`：`WHERE raw_app_meta_data->>'tenant_id' = ...` 逐一 `auth.admin.deleteUser()`
-- Storage：`products` bucket、member avatars — **檔案路徑目前是否有 tenant 前綴要先查**；
-  若無，trial-signup 上線前先把上傳路徑改成 `{tenant_id}/...`，purge 才能用 prefix 刪（列為 Phase 3 前置）
+- Storage：`products` bucket 路徑**已是** `{tenant_id}/{uuid}.{ext}`（20260424120002），
+  purge 直接按 prefix 刪；member-avatars 由 LINE 流程寫入（試用範圍外），同樣按 prefix best-effort
 - 寫一筆刪除紀錄（誰、何時、刪了哪個 tenant、各表筆數）到平台層 log 表（無 tenant_id、不會被自己刪掉）
 
 ---
@@ -228,7 +228,7 @@ Phase 0–1 可先上（先能註冊試用），2–3 緊接著補（沒有 3 �
    `product_code_autogen` / `member_no` 等序號是否 tenant-scoped — 逐一盤點。
 3. **`session_replication_role` 權限**：Supabase managed Postgres 上要實測（見 5.1）。
 4. **無 tenant_id 的子表盤點**（見 5.1 第三點）。
-5. **Storage 檔案路徑無租戶前綴**（見 5.2）。
+5. ~~Storage 檔案路徑無租戶前綴~~ → 已確認 products bucket 本來就是 `{tenant_id}/...`，無此問題。
 6. **部署**：migration 一律走 Management API（CLAUDE.md 規則），不要戳 pooler TCP。
 
 ---

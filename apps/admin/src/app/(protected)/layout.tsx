@@ -6,6 +6,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { ReleaseNotesProvider, ReleaseNotesBell } from "@/components/ReleaseNotes";
+import { TrialBanner, TrialExpiredScreen } from "@/components/TrialGate";
 import { getTenantName } from "@/lib/tenant";
 import SpinButton from "@/components/SpinButton";
 
@@ -191,6 +192,11 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
         載入中…
       </div>
     );
+  }
+
+  // 試用到期 / 已刪除：整頁擋住（後端另有 _current_tenant_id 防線）
+  if (tenant && (tenant.status === "suspended" || tenant.status === "deleted")) {
+    return <TrialExpiredScreen tenant={tenant} />;
   }
 
   async function onLogout() {
@@ -384,7 +390,10 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
       )}
 
       {/* min-w-0：允許 main 在 flex row 內收縮，寬表才會在自己的 overflow-x-auto 容器內出現水平捲軸，而非把整頁撐爆 */}
-      <main className="flex min-w-0 flex-1 flex-col">{children}</main>
+      <main className="flex min-w-0 flex-1 flex-col">
+        {tenant?.status === "trial" && <TrialBanner tenant={tenant} />}
+        {children}
+      </main>
     </div>
     </ReleaseNotesProvider>
   );

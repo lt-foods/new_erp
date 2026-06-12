@@ -430,3 +430,8 @@ verify_jwt = false
 # trial-signup 是公開註冊端點（訪客還沒有帳號），rate limit 在函式內做
 [functions.trial-signup]
 verify_jwt = false
+
+# tenant-purge 函式內自行驗 caller（owner JWT 或 platform secret），
+# 對齊 staff-create：gateway 驗 JWT 會擋掉 CORS preflight
+[functions.tenant-purge]
+verify_jwt = false
