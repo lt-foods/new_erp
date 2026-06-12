@@ -119,7 +119,18 @@ Edge function 檢查：同 email 7 天 1 次、同 IP 24 小時 3 次（數字�
 - `login/page.tsx` 加「免費試用 14 天」入口連結
 - 樣式對齊現有 login page
 
-### 3.4 Email（前置作業）
+### 3.4 推廣頁（landing page）
+
+公開頁 `apps/admin/src/app/welcome/page.tsx`（2026-06-12 追加需求）：
+
+- Hero：一句話價值主張 + 「免費試用 14 天」CTA（→ `/signup`）+ 登入連結
+- 功能亮點：對齊實際模組 — 開團採購、訂單取貨、庫存/WMS、會員/錢包/點數、
+  財務月結、多店權限
+- 試用說明：免信用卡、全功能、到期資料保留、可一鍵刪除（呼應 Phase 3）
+- 純靜態頁，無後端依賴；`/login`、`/signup` 互相連結
+- 之後對外宣傳的入口統一用 `/welcome`（root `/` 仍是登入後 dashboard）
+
+### 3.5 Email（前置作業）
 
 Production SMTP 未設定 → 註冊驗證信寄不出去。需先在 Supabase dashboard 接 SMTP（Resend / SendGrid 擇一），
 並改 confirmation email template（中文、品牌）。這是 Phase 1 的 **blocking 前置項**。

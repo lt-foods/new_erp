@@ -153,6 +153,10 @@ export default function SignupPage() {
           <Link href="/login" className="underline hover:text-zinc-700 dark:hover:text-zinc-300">
             前往登入
           </Link>
+          ・想先了解功能？{" "}
+          <Link href="/welcome" className="underline hover:text-zinc-700 dark:hover:text-zinc-300">
+            看介紹
+          </Link>
         </p>
       </div>
     </div>
