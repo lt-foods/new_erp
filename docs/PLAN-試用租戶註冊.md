@@ -237,7 +237,8 @@ Phase 0–1 可先上（先能註冊試用），2–3 緊接著補（沒有 3 �
 2. **單租戶假設殘留**：`DEFAULT_TENANT_ID` / `NEXT_PUBLIC_TENANT_NAME` 等 env、
    LINE channel secrets（per-tenant 的 LINE OA 試用租戶第一版直接不給，member app 不在試用範圍）、
    `product_code_autogen` / `member_no` 等序號是否 tenant-scoped — 逐一盤點。
-3. **`session_replication_role` 權限**：Supabase managed Postgres 上要實測（見 5.1）。
+3. ~~`session_replication_role` 權限~~ → 2026-06-12 已在線上 project 實測通過
+   （Management API、postgres role、SET LOCAL + ROLLBACK 無副作用），不需 fallback。
 4. **無 tenant_id 的子表盤點**（見 5.1 第三點）。
 5. ~~Storage 檔案路徑無租戶前綴~~ → 已確認 products bucket 本來就是 `{tenant_id}/...`，無此問題。
 6. **部署**：migration 一律走 Management API（CLAUDE.md 規則），不要戳 pooler TCP。
