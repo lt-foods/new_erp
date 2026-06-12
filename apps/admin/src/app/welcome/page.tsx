@@ -101,6 +101,38 @@ const TRIAL_POINTS: { title: string; desc: string }[] = [
   },
 ];
 
+// 定價比照市場行情（2026-06 競品：飛比+1 月付 999/年繳 799、樂樂年繳 790–1290）；
+// 多店加盟為差異化模組，走專人報價。試用到期由專人開通（金流自動化 = Phase 4）。
+const PLANS: {
+  name: string;
+  price: string;
+  priceNote: string;
+  points: string[];
+  highlight: boolean;
+}[] = [
+  {
+    name: "免費試用",
+    price: "NT$0",
+    priceNote: "14 天",
+    points: ["全功能不設限", "免信用卡", "到期資料保留", "隨時一鍵刪除"],
+    highlight: false,
+  },
+  {
+    name: "正式方案",
+    price: "NT$999",
+    priceNote: "/月，年繳 NT$799/月",
+    points: ["訂單數量與金額不限", "開團、採購、庫存、財務全模組", "一個總倉＋門市", "Email 支援"],
+    highlight: true,
+  },
+  {
+    name: "多店／加盟",
+    price: "專人報價",
+    priceNote: "依店數規模",
+    points: ["多門市與調撥", "加盟店分權與月結", "員工角色權限", "專人導入協助"],
+    highlight: false,
+  },
+];
+
 const FAQS: { q: string; a: string }[] = [
   {
     q: "跟其他「+1 整單」工具有什麼不同？",
@@ -249,8 +281,44 @@ export default function WelcomePage() {
         </div>
       </section>
 
-      {/* FAQ */}
+      {/* Pricing */}
       <section className="border-t border-zinc-200 bg-zinc-50 px-6 py-16 dark:border-zinc-800 dark:bg-zinc-900/50">
+        <div className="mx-auto max-w-4xl">
+          <h2 className="text-center text-2xl font-semibold">定價，攤開來講</h2>
+          <p className="mt-2 text-center text-sm text-zinc-600 dark:text-zinc-400">
+            試用到期後由專人為你開通，不會自動扣款。
+          </p>
+          <div className="mt-10 grid gap-6 sm:grid-cols-3">
+            {PLANS.map((p) => (
+              <div
+                key={p.name}
+                className={
+                  p.highlight
+                    ? "rounded-lg border-2 border-zinc-900 bg-white p-6 dark:border-zinc-100 dark:bg-zinc-900"
+                    : "rounded-lg border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900"
+                }
+              >
+                <h3 className="font-semibold">{p.name}</h3>
+                <div className="mt-2">
+                  <span className="text-2xl font-bold">{p.price}</span>
+                  <span className="ml-1 text-xs text-zinc-500">{p.priceNote}</span>
+                </div>
+                <ul className="mt-4 space-y-2 text-sm text-zinc-600 dark:text-zinc-400">
+                  {p.points.map((pt) => (
+                    <li key={pt} className="flex gap-2">
+                      <span className="text-green-600 dark:text-green-400">✓</span>
+                      {pt}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* FAQ */}
+      <section className="border-t border-zinc-200 px-6 py-16 dark:border-zinc-800">
         <div className="mx-auto max-w-3xl">
           <h2 className="text-center text-2xl font-semibold">常見問題</h2>
           <div className="mt-10 space-y-6">
