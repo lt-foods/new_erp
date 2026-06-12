@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useState, useEffect, type FormEvent } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/AuthProvider";
 import { getTenantName } from "@/lib/tenant";
@@ -96,7 +97,11 @@ function LoginForm() {
         </form>
 
         <p className="text-xs text-zinc-500">
-          沒有帳號？請聯絡管理員在 Supabase dashboard 建立使用者。
+          沒有帳號？請聯絡管理員建立員工帳號，或{" "}
+          <Link href="/signup" className="underline hover:text-zinc-700 dark:hover:text-zinc-300">
+            免費試用 14 天
+          </Link>
+          。
         </p>
       </div>
     </div>

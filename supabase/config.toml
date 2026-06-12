@@ -426,3 +426,7 @@ verify_jwt = false
 # 收到 "Failed to send a request to the Edge Function"。
 [functions.staff-create]
 verify_jwt = false
+
+# trial-signup 是公開註冊端點（訪客還沒有帳號），rate limit 在函式內做
+[functions.trial-signup]
+verify_jwt = false
