@@ -48,8 +48,8 @@ const CAPABILITIES: {
     title: "錢和會員，每一筆都收得回來",
     desc: "會員錢包、點數、分級價養回購；應收應付、門市月結、零用金，月底結帳不再用猜的。",
     points: ["LINE 會員、錢包、點數", "應收應付與門市月結", "經營成效一頁看懂"],
-    img: "/landing/dashboard.jpg",
-    alt: "經營數據儀表板",
+    img: "/landing/counter.jpg",
+    alt: "店面櫃台結帳",
   },
 ];
 
