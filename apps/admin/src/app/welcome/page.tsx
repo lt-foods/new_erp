@@ -107,15 +107,15 @@ const PLANS: { name: string; price: string; note: string; points: string[]; high
   },
 ];
 
-// 模組單買（只需要部分功能時，基礎方案 + 按需加購）。
-// ⚠️ 價格為示意數字，實際定價待確認後調整。
-const MODULE_BASE = "NT$399";
+// 模組單買（基礎方案 + 按需加購）。
+// 基礎 = 完整「能出貨」流程（開團→採購→庫存→撿貨→出貨→取貨），不可拆；
+// 加購只放與出貨無關、真正可選的能力。⚠️ 價格為示意數字，待實際定價確認。
+const MODULE_BASE = "NT$599";
+const MODULE_BASE_DESC = "開團・訂單・請購採購收貨・庫存・撿貨派貨・到店取貨";
 const MODULES: { name: string; price: string }[] = [
-  { name: "採購進貨", price: "+NT$200" },
-  { name: "庫存・WMS（總倉/門市/調撥/盤點）", price: "+NT$300" },
-  { name: "會員・錢包・點數", price: "+NT$200" },
-  { name: "財務・月結・應收應付", price: "+NT$200" },
-  { name: "通知・行銷推播", price: "+NT$150" },
+  { name: "會員・錢包・點數", price: "+NT$150" },
+  { name: "財務・月結・應收應付", price: "+NT$150" },
+  { name: "通知・行銷推播", price: "+NT$100" },
   { name: "多店・加盟分權", price: "專人報價" },
 ];
 
@@ -340,13 +340,19 @@ export default function WelcomePage() {
 
         {/* 模組單買 — 只需要部分功能時 */}
         <div className="mt-8 rounded-xl border border-stone-200 bg-white p-6 sm:p-8">
-          <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
-            <h3 className="text-lg font-semibold">只用得到部分功能？依模組計費</h3>
-            <p className="text-sm text-stone-500">
-              基礎方案 <span className="font-semibold text-stone-900">{MODULE_BASE}</span>／月（含開團・訂單・取貨），其餘按需加購
+          <h3 className="text-lg font-semibold">只用得到部分功能？依模組計費</h3>
+          <div className="mt-4 rounded-lg bg-orange-50 px-4 py-3">
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <span className="font-semibold">基礎方案</span>
+              <span className="text-lg font-bold text-stone-900">{MODULE_BASE}</span>
+              <span className="text-xs text-stone-500">／月</span>
+            </div>
+            <p className="mt-1 text-xs text-stone-600">
+              {MODULE_BASE_DESC} —— 一套完整能出貨的流程，不管加不加購都跑得動。
             </p>
           </div>
-          <div className="mt-6 grid gap-x-10 sm:grid-cols-2">
+          <p className="mt-5 text-xs font-medium uppercase tracking-wider text-stone-400">依需求加購</p>
+          <div className="mt-2 grid gap-x-10 sm:grid-cols-2">
             {MODULES.map((m) => (
               <div
                 key={m.name}
@@ -358,7 +364,7 @@ export default function WelcomePage() {
             ))}
           </div>
           <p className="mt-5 text-xs text-stone-500">
-            全部加購約 NT$1,449／月；需要全模組的話，直接選上方「正式方案」NT$799 最划算。
+            全部加購約 NT$999／月；要全部直接選上方「正式方案」NT$799（年繳）最划算。
           </p>
         </div>
       </section>
