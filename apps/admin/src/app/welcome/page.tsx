@@ -107,6 +107,18 @@ const PLANS: { name: string; price: string; note: string; points: string[]; high
   },
 ];
 
+// 模組單買（只需要部分功能時，基礎方案 + 按需加購）。
+// ⚠️ 價格為示意數字，實際定價待確認後調整。
+const MODULE_BASE = "NT$399";
+const MODULES: { name: string; price: string }[] = [
+  { name: "採購進貨", price: "+NT$200" },
+  { name: "庫存・WMS（總倉/門市/調撥/盤點）", price: "+NT$300" },
+  { name: "會員・錢包・點數", price: "+NT$200" },
+  { name: "財務・月結・應收應付", price: "+NT$200" },
+  { name: "通知・行銷推播", price: "+NT$150" },
+  { name: "多店・加盟分權", price: "專人報價" },
+];
+
 const FAQS: { q: string; a: string }[] = [
   {
     q: "跟其他「+1 整單」工具有什麼不同？",
@@ -324,6 +336,30 @@ export default function WelcomePage() {
               </ul>
             </div>
           ))}
+        </div>
+
+        {/* 模組單買 — 只需要部分功能時 */}
+        <div className="mt-8 rounded-xl border border-stone-200 bg-white p-6 sm:p-8">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+            <h3 className="text-lg font-semibold">只用得到部分功能？依模組計費</h3>
+            <p className="text-sm text-stone-500">
+              基礎方案 <span className="font-semibold text-stone-900">{MODULE_BASE}</span>／月（含開團・訂單・取貨），其餘按需加購
+            </p>
+          </div>
+          <div className="mt-6 grid gap-x-10 sm:grid-cols-2">
+            {MODULES.map((m) => (
+              <div
+                key={m.name}
+                className="flex items-center justify-between border-b border-stone-100 py-2.5 text-sm"
+              >
+                <span className="text-stone-700">{m.name}</span>
+                <span className="font-medium text-stone-900">{m.price}</span>
+              </div>
+            ))}
+          </div>
+          <p className="mt-5 text-xs text-stone-500">
+            全部加購約 NT$1,449／月；需要全模組的話，直接選上方「正式方案」NT$799 最划算。
+          </p>
         </div>
       </section>
 
