@@ -95,7 +95,7 @@ const PLANS: { name: string; price: string; note: string; points: string[]; high
     name: "正式方案",
     price: "NT$799",
     note: "／月（年繳）・單月 NT$999",
-    points: ["年繳省 NT$2,400", "訂單數量與金額不限", "開團、採購、庫存、財務全模組", "一個總倉＋門市・Email 支援"],
+    points: ["年繳省 NT$2,400", "全模組（含 LINE／FB +1 整單）", "訂單數量與金額不限", "一個總倉＋門市・Email 支援"],
     highlight: true,
   },
   {
@@ -112,7 +112,12 @@ const PLANS: { name: string; price: string; note: string; points: string[]; high
 // 加購只放與出貨無關、真正可選的能力。⚠️ 價格為示意數字，待實際定價確認。
 const MODULE_BASE = "NT$599";
 const MODULE_BASE_DESC = "開團・訂單・請購採購收貨・庫存・撿貨派貨・到店取貨";
-const MODULES: { name: string; price: string }[] = [
+const MODULES: { name: string; price: string; note?: string }[] = [
+  {
+    name: "LINE 群組／FB 社團 +1 整單",
+    price: "+NT$300",
+    note: "自動爬留言成單，別人的招牌功能在這只是加購",
+  },
   { name: "會員・錢包・點數", price: "+NT$150" },
   { name: "財務・月結・應收應付", price: "+NT$150" },
   { name: "通知・行銷推播", price: "+NT$100" },
@@ -356,15 +361,18 @@ export default function WelcomePage() {
             {MODULES.map((m) => (
               <div
                 key={m.name}
-                className="flex items-center justify-between border-b border-stone-100 py-2.5 text-sm"
+                className="flex items-center justify-between gap-3 border-b border-stone-100 py-2.5 text-sm"
               >
-                <span className="text-stone-700">{m.name}</span>
-                <span className="font-medium text-stone-900">{m.price}</span>
+                <span className="min-w-0">
+                  <span className="text-stone-700">{m.name}</span>
+                  {m.note && <span className="mt-0.5 block text-xs text-stone-400">{m.note}</span>}
+                </span>
+                <span className="shrink-0 font-medium text-stone-900">{m.price}</span>
               </div>
             ))}
           </div>
           <p className="mt-5 text-xs text-stone-500">
-            全部加購約 NT$999／月；要全部直接選上方「正式方案」NT$799（年繳）最划算。
+            全部加購約 NT$1,299／月；要全部直接選上方「正式方案」NT$799（年繳）最划算。
           </p>
         </div>
       </section>
