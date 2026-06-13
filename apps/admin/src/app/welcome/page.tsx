@@ -9,7 +9,7 @@ import Link from "next/link";
 import { withBasePath } from "@/lib/basePath";
 
 export const metadata = {
-  title: "社區團購的進銷存後台｜開團、採購、庫存、對帳一站搞定，免費試用 14 天",
+  title: "Groupo｜社區團購的進銷存後台 — 開團、採購、庫存、對帳一站搞定，免費試用 14 天",
   description:
     "整單只是開始。採購進貨、總倉門市庫存、撿貨派貨、會員錢包、月結對帳 — 為社區團購與生鮮小舖打造的 ERP。免費試用 14 天，免信用卡。",
 };
@@ -126,9 +126,9 @@ export default function WelcomePage() {
       {/* Header */}
       <header className="sticky top-0 z-20 border-b border-zinc-200/70 bg-white/85 backdrop-blur dark:border-zinc-800/70 dark:bg-zinc-950/85">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-3.5">
-          <div className="flex items-center gap-2 text-[15px] font-semibold tracking-tight">
+          <div className="flex items-center gap-2 text-[17px] font-bold tracking-tight">
             <span className="inline-block h-4 w-4 rounded-[5px] bg-orange-600" />
-            團購生意後台
+            Groupo
           </div>
           <nav className="flex items-center gap-2 text-sm">
             <Link
@@ -345,8 +345,14 @@ export default function WelcomePage() {
         </div>
       </section>
 
-      <footer className="border-t border-zinc-200 px-6 py-8 text-center text-xs text-zinc-400 dark:border-zinc-800">
-        試用期滿資料保留、可隨時一鍵刪除；詳見註冊頁說明。
+      <footer className="border-t border-zinc-200 px-6 py-8 dark:border-zinc-800">
+        <div className="mx-auto flex max-w-5xl flex-col items-center justify-between gap-2 text-xs text-zinc-400 sm:flex-row">
+          <div className="flex items-center gap-1.5 font-semibold text-zinc-500 dark:text-zinc-400">
+            <span className="inline-block h-3 w-3 rounded-[4px] bg-orange-600" />
+            Groupo
+          </div>
+          <span>試用期滿資料保留、可隨時一鍵刪除；詳見註冊頁說明。</span>
+        </div>
       </footer>
     </div>
   );

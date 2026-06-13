@@ -83,6 +83,10 @@ export default function SignupPage() {
     <div className="flex flex-1 items-center justify-center bg-zinc-50 p-6 dark:bg-zinc-950">
       <div className="w-full max-w-sm space-y-6 rounded-lg border border-zinc-200 bg-white p-8 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
         <div className="space-y-1">
+          <Link href="/welcome" className="mb-2 flex items-center gap-1.5 text-sm font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
+            <span className="inline-block h-3.5 w-3.5 rounded-[4px] bg-orange-600" />
+            Groupo
+          </Link>
           <h1 className="text-2xl font-semibold">免費試用 14 天</h1>
           <p className="text-sm text-zinc-500">
             建立你的商家後台，試用期內功能不設限
