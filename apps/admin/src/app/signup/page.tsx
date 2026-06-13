@@ -2,7 +2,9 @@
 
 // 試用租戶自助註冊（SaaS 化 Phase 1）
 // 呼叫公開 edge function trial-signup：建 tenant + owner 帳號 + seed 基礎資料，
-// Supabase Auth 寄驗證信，驗完才能登入。樣式對齊 /login。
+// Supabase Auth 寄驗證信，驗完才能登入。
+// 配色：固定淺暖色（暖奶油底 + 白卡 + stone 暖灰 + 橘色主按鈕），
+//       與推廣頁一致、不隨系統深色模式變化（故不使用 dark: 變體）。
 
 import { useState, type FormEvent } from "react";
 import Link from "next/link";
@@ -10,8 +12,10 @@ import { getSupabase } from "@/lib/supabase";
 import { GroupoWordmark } from "@/components/Brand";
 import SpinButton from "@/components/SpinButton";
 
+const PAGE_BG = "#fdf1e6";
+
 const inputCls =
-  "w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800";
+  "w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 placeholder:text-stone-400 focus:border-orange-500 focus:outline-none";
 
 export default function SignupPage() {
   const [companyName, setCompanyName] = useState("");
@@ -62,16 +66,16 @@ export default function SignupPage() {
 
   if (done) {
     return (
-      <div className="flex flex-1 items-center justify-center bg-zinc-50 p-6 dark:bg-zinc-950">
-        <div className="w-full max-w-sm space-y-4 rounded-lg border border-zinc-200 bg-white p-8 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="flex flex-1 items-center justify-center p-6 text-stone-900" style={{ backgroundColor: PAGE_BG }}>
+        <div className="w-full max-w-sm space-y-4 rounded-lg border border-stone-200 bg-white p-8 shadow-sm">
           <h1 className="text-2xl font-semibold">驗證信已寄出 ✉️</h1>
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          <p className="text-sm text-stone-600">
             我們已寄一封驗證信到 <span className="font-medium">{email}</span>。
             點擊信中連結完成驗證後，即可登入開始 14 天免費試用。
           </p>
           <Link
             href="/login"
-            className="block w-full rounded-md bg-zinc-900 px-3 py-2 text-center text-sm font-medium text-white transition hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+            className="block w-full rounded-md bg-orange-600 px-3 py-2 text-center text-sm font-medium text-white transition hover:bg-orange-700"
           >
             前往登入
           </Link>
@@ -81,14 +85,14 @@ export default function SignupPage() {
   }
 
   return (
-    <div className="flex flex-1 items-center justify-center bg-zinc-50 p-6 dark:bg-zinc-950">
-      <div className="w-full max-w-sm space-y-6 rounded-lg border border-zinc-200 bg-white p-8 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+    <div className="flex flex-1 items-center justify-center p-6 text-stone-900" style={{ backgroundColor: PAGE_BG }}>
+      <div className="w-full max-w-sm space-y-6 rounded-lg border border-stone-200 bg-white p-8 shadow-sm">
         <div className="space-y-1">
           <Link href="/welcome" className="mb-2 inline-flex">
             <GroupoWordmark size="sm" />
           </Link>
           <h1 className="text-2xl font-semibold">免費試用 14 天</h1>
-          <p className="text-sm text-zinc-500">
+          <p className="text-sm text-stone-500">
             建立你的商家後台，試用期內功能不設限
           </p>
         </div>
@@ -138,7 +142,7 @@ export default function SignupPage() {
           </Field>
 
           {error && (
-            <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">
+            <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
               {error}
             </p>
           )}
@@ -146,19 +150,19 @@ export default function SignupPage() {
           <SpinButton
             type="submit"
             disabled={submitting}
-            className="w-full rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+            className="w-full rounded-md bg-orange-600 px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-orange-700 disabled:opacity-50"
           >
             {submitting ? "建立中…" : "開始免費試用"}
           </SpinButton>
         </form>
 
-        <p className="text-xs text-zinc-500">
+        <p className="text-xs text-stone-500">
           已經有帳號？{" "}
-          <Link href="/login" className="underline hover:text-zinc-700 dark:hover:text-zinc-300">
+          <Link href="/login" className="underline hover:text-stone-700">
             前往登入
           </Link>
           ・想先了解功能？{" "}
-          <Link href="/welcome" className="underline hover:text-zinc-700 dark:hover:text-zinc-300">
+          <Link href="/welcome" className="underline hover:text-stone-700">
             看介紹
           </Link>
         </p>
@@ -170,7 +174,7 @@ export default function SignupPage() {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block space-y-1">
-      <span className="text-sm font-medium">{label}</span>
+      <span className="text-sm font-medium text-stone-700">{label}</span>
       {children}
     </label>
   );
