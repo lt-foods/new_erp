@@ -1,5 +1,5 @@
-// Groupo 購寶 品牌元件 — 草寫 G 標誌（G2）+ 草寫字標 + 中文副標。
-// 標誌為自繪 SVG（G2 變體）、字標用 script 字型（--font-script，layout 注入）。
+// Groupo 購寶 品牌元件 — 手繪 G 標誌（G2）+ 手寫字標（Caveat）+ 中文副標。
+// 標誌為自繪 SVG（G2 變體）、字標用手寫字型（--font-script = Caveat，layout 注入）。
 // 主色 orange-600。推廣頁、註冊頁共用，favicon 見 public/groupo-mark.svg。
 
 // G2：起筆入鋒、橫桿收小鉤的草寫 G（viewBox 0 0 64 64，stroke-based）
@@ -16,10 +16,11 @@ export function GroupoMark({ className = "h-7 w-7" }: { className?: string }) {
   );
 }
 
+// Caveat 視覺偏小，en 字級比一般 sans 放大一級
 const SIZES = {
-  sm: { mark: "h-6 w-6", en: "text-[22px]", zh: "text-xs" },
-  md: { mark: "h-8 w-8", en: "text-[30px]", zh: "text-sm" },
-  lg: { mark: "h-10 w-10", en: "text-[40px]", zh: "text-base" },
+  sm: { mark: "h-6 w-6", en: "text-[26px]", zh: "text-xs" },
+  md: { mark: "h-8 w-8", en: "text-[34px]", zh: "text-sm" },
+  lg: { mark: "h-10 w-10", en: "text-[46px]", zh: "text-base" },
 } as const;
 
 export function GroupoWordmark({
