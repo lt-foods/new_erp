@@ -1,16 +1,22 @@
-// Groupo 購寶 品牌元件 — 手繪 G 標誌（G2）+ 手寫字標（Caveat）+ 中文副標。
-// 標誌為自繪 SVG（G2 變體）、字標用手寫字型（--font-script = Caveat，layout 注入）。
-// 主色 orange-600。推廣頁、註冊頁共用，favicon 見 public/groupo-mark.svg。
-
-// G2：起筆入鋒、橫桿收小鉤的草寫 G（viewBox 0 0 64 64，stroke-based）
-const G2_PATH =
-  "M50 24 c -2 -4 -9 -6 -15 -5 C 21 21, 14 33, 19 43 c 4 8 14 11 22 6 c 5 -3 7 -8 5 -13 c -1 -2 -3 -3 -5 -2 l -6 1";
+// Groupo 購寶 品牌元件 — 標誌與字標同一個手寫 G（Caveat）+ 中文副標。
+// 標誌：橘底白色「G」，用 Caveat 字型（--font-script，layout 注入）渲染，
+//       和字標的 Groupo 字首完全一致；SVG <text> 隨容器尺寸自動縮放。
+// favicon 見 public/groupo-mark.svg（Caveat G 已轉成 path、不依賴字型）。
+// 主色 orange-600。推廣頁、註冊頁共用。
 
 export function GroupoMark({ className = "h-7 w-7" }: { className?: string }) {
   return (
     <span className={`inline-flex shrink-0 items-center justify-center rounded-[28%] bg-orange-600 ${className}`}>
-      <svg viewBox="0 0 64 64" fill="none" className="h-[70%] w-[70%]" aria-hidden>
-        <path d={G2_PATH} stroke="#fff" strokeWidth={6.5} strokeLinecap="round" strokeLinejoin="round" />
+      <svg viewBox="0 0 64 64" className="h-full w-full" aria-hidden>
+        <text
+          x="33"
+          y="47"
+          textAnchor="middle"
+          fill="#fff"
+          style={{ fontFamily: "var(--font-script)", fontWeight: 700, fontSize: "48px" }}
+        >
+          G
+        </text>
       </svg>
     </span>
   );
