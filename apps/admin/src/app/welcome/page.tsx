@@ -2,20 +2,43 @@
 //
 // 設計取向（2026-06-13）：版型與文字主導，攝影退為「安靜襯底」——
 // 一律去飽和 + 降透明 + 覆蓋層淡出，不做花俏大圖、不堆 icon。
+// 配色：固定淺暖色（暖白底 + stone 暖灰中性 + 橘色主色），
+//       不隨系統深色模式變化（對外行銷頁需一致呈現），故不使用 dark: 變體。
 // 圖片來源見 public/landing/CREDITS.md（Unsplash License，商用免標註）。
-// 色彩以墨黑/中性為主，輔以克制的橘色當品牌點綴。
 
 import Link from "next/link";
 import { withBasePath } from "@/lib/basePath";
 import { GroupoWordmark } from "@/components/Brand";
 
+// 部署網域（GitHub Pages）+ basePath；OG/分享縮圖需要絕對網址。
+const SITE = "https://lt-foods.github.io" + (process.env.NEXT_PUBLIC_BASE_PATH ?? "");
+const OG_TITLE = "Groupo 購寶｜社區團購的進銷存後台";
+const OG_DESC =
+  "整單只是開始。採購進貨、總倉門市庫存、撿貨派貨、會員錢包、月結對帳 — 為社區團購與生鮮小舖打造的 ERP。免費試用 14 天，免信用卡。";
+
 export const metadata = {
   title: "Groupo 購寶｜社區團購的進銷存後台 — 開團、採購、庫存、對帳一站搞定，免費試用 14 天",
-  description:
-    "整單只是開始。採購進貨、總倉門市庫存、撿貨派貨、會員錢包、月結對帳 — 為社區團購與生鮮小舖打造的 ERP。免費試用 14 天，免信用卡。",
+  description: OG_DESC,
   icons: { icon: withBasePath("/groupo-mark.svg") },
+  openGraph: {
+    type: "website",
+    locale: "zh_TW",
+    siteName: "Groupo 購寶",
+    url: SITE + "/welcome/",
+    title: OG_TITLE,
+    description: OG_DESC,
+    images: [{ url: SITE + "/og.png", width: 1200, height: 630, alt: "Groupo 購寶" }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: OG_TITLE,
+    description: OG_DESC,
+    images: [SITE + "/og.png"],
+  },
 };
 
+// 暖白底色（整頁固定）
+const WARM_BG = "#fffaf4";
 // 安靜襯底：去飽和 + 微降透明，讓照片退到文字後面
 const MUTED: React.CSSProperties = { filter: "grayscale(0.35) saturate(0.85)", opacity: 0.92 };
 
@@ -105,7 +128,7 @@ const FAQS: { q: string; a: string }[] = [
 
 function Check() {
   return (
-    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2} className="mt-0.5 h-4 w-4 shrink-0 text-orange-600 dark:text-orange-500" aria-hidden>
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2} className="mt-0.5 h-4 w-4 shrink-0 text-orange-600" aria-hidden>
       <path strokeLinecap="round" strokeLinejoin="round" d="m4 10.5 3.5 3.5L16 6" />
     </svg>
   );
@@ -115,7 +138,7 @@ function PrimaryCta({ children }: { children: React.ReactNode }) {
   return (
     <Link
       href="/signup"
-      className="inline-flex items-center justify-center rounded-md bg-orange-600 px-6 py-3 text-base font-medium text-white transition hover:bg-orange-700"
+      className="inline-flex items-center justify-center rounded-md bg-orange-600 px-6 py-3 text-base font-medium text-white shadow-sm transition hover:bg-orange-700"
     >
       {children}
     </Link>
@@ -124,21 +147,21 @@ function PrimaryCta({ children }: { children: React.ReactNode }) {
 
 export default function WelcomePage() {
   return (
-    <div className="flex flex-1 flex-col bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+    <div className="flex flex-1 flex-col text-stone-900" style={{ backgroundColor: WARM_BG }}>
       {/* Header */}
-      <header className="sticky top-0 z-20 border-b border-zinc-200/70 bg-white/85 backdrop-blur dark:border-zinc-800/70 dark:bg-zinc-950/85">
+      <header className="sticky top-0 z-20 border-b border-stone-200/70 backdrop-blur" style={{ backgroundColor: `${WARM_BG}d9` }}>
         <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-3.5">
           <GroupoWordmark size="sm" />
           <nav className="flex items-center gap-2 text-sm">
             <Link
               href="/login"
-              className="rounded-md px-3 py-1.5 text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900"
+              className="rounded-md px-3 py-1.5 text-stone-600 hover:bg-stone-200/60"
             >
               登入
             </Link>
             <Link
               href="/signup"
-              className="rounded-md bg-zinc-900 px-3 py-1.5 font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
+              className="rounded-md bg-orange-600 px-3 py-1.5 font-medium text-white hover:bg-orange-700"
             >
               免費試用
             </Link>
@@ -147,7 +170,7 @@ export default function WelcomePage() {
       </header>
 
       {/* Hero — 文字主導，照片淡出於下緣 */}
-      <section className="relative overflow-hidden border-b border-zinc-200 dark:border-zinc-800">
+      <section className="relative overflow-hidden border-b border-stone-200">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={withBasePath("/landing/hero.jpg")}
@@ -156,9 +179,12 @@ export default function WelcomePage() {
           style={MUTED}
           className="pointer-events-none absolute inset-x-0 bottom-0 h-[55%] w-full object-cover"
         />
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white via-white/92 to-white/70 dark:from-zinc-950 dark:via-zinc-950/92 dark:to-zinc-950/70" />
+        <div
+          className="pointer-events-none absolute inset-0"
+          style={{ backgroundImage: `linear-gradient(to bottom, ${WARM_BG}, ${WARM_BG}eb 55%, ${WARM_BG}b3)` }}
+        />
         <div className="relative mx-auto max-w-5xl px-6 pb-28 pt-20 sm:pb-40 sm:pt-28">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-orange-600 dark:text-orange-500">
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-orange-600">
             社區團購・生鮮小舖 ERP
           </p>
           <h1 className="mt-4 max-w-2xl text-4xl font-bold leading-[1.15] tracking-tight sm:text-6xl">
@@ -166,13 +192,13 @@ export default function WelcomePage() {
             <br />
             後面的進銷存交給系統
           </h1>
-          <p className="mt-5 max-w-xl text-base text-zinc-600 sm:text-lg dark:text-zinc-300">
+          <p className="mt-5 max-w-xl text-base text-stone-600 sm:text-lg">
             採購進貨、總倉門市庫存、撿貨派貨、會員錢包、月結對帳 —
             為社區團購打造的一站式後台，告別 Excel 和手抄帳。
           </p>
           <div className="mt-8 flex flex-col items-start gap-3 sm:flex-row sm:items-center">
             <PrimaryCta>免費試用 14 天</PrimaryCta>
-            <span className="text-xs text-zinc-500">免信用卡・3 分鐘開好後台</span>
+            <span className="text-xs text-stone-500">免信用卡・3 分鐘開好後台</span>
           </div>
         </div>
       </section>
@@ -181,19 +207,19 @@ export default function WelcomePage() {
       <section className="mx-auto max-w-5xl px-6 py-20">
         <div className="grid gap-10 sm:grid-cols-2 sm:gap-16">
           <div>
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-stone-400">
               「+1 整單」到這裡就停了
             </h2>
-            <p className="mt-3 text-lg leading-relaxed text-zinc-500 dark:text-zinc-400">
+            <p className="mt-3 text-lg leading-relaxed text-stone-500">
               收單、成團、通知 — 然後呢？採購、進貨、庫存、撿貨、對帳，
               一樣樣回到你的 Excel 和記憶力。
             </p>
           </div>
           <div>
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-orange-600 dark:text-orange-500">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-orange-600">
               我們從這裡開始
             </h2>
-            <p className="mt-3 text-lg leading-relaxed text-zinc-800 dark:text-zinc-200">
+            <p className="mt-3 text-lg leading-relaxed text-stone-800">
               把收單之後的進、銷、存、財整條接起來，
               從一人團主到多店加盟，同一套系統長大。
             </p>
@@ -202,22 +228,22 @@ export default function WelcomePage() {
       </section>
 
       {/* 能力：左右交錯圖文，照片安靜襯底 */}
-      <section className="border-t border-zinc-200 dark:border-zinc-800">
-        <div className="mx-auto max-w-5xl divide-y divide-zinc-200 px-6 dark:divide-zinc-800">
+      <section className="border-t border-stone-200">
+        <div className="mx-auto max-w-5xl divide-y divide-stone-200 px-6">
           {CAPABILITIES.map((c, i) => (
             <div
               key={c.title}
               className="grid items-center gap-8 py-16 sm:grid-cols-2 sm:gap-14"
             >
               <div className={i % 2 === 1 ? "sm:order-2" : ""}>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-orange-600 dark:text-orange-500">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-orange-600">
                   {c.kicker}
                 </p>
                 <h3 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">{c.title}</h3>
-                <p className="mt-3 text-zinc-600 dark:text-zinc-400">{c.desc}</p>
+                <p className="mt-3 text-stone-600">{c.desc}</p>
                 <ul className="mt-5 space-y-2.5">
                   {c.points.map((p) => (
-                    <li key={p} className="flex gap-2.5 text-sm text-zinc-700 dark:text-zinc-300">
+                    <li key={p} className="flex gap-2.5 text-sm text-stone-700">
                       <Check />
                       {p}
                     </li>
@@ -225,7 +251,7 @@ export default function WelcomePage() {
                 </ul>
               </div>
               <div className={i % 2 === 1 ? "sm:order-1" : ""}>
-                <div className="relative overflow-hidden rounded-xl ring-1 ring-zinc-200 dark:ring-zinc-800">
+                <div className="relative overflow-hidden rounded-xl ring-1 ring-stone-200">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={withBasePath(c.img)}
@@ -234,7 +260,7 @@ export default function WelcomePage() {
                     style={MUTED}
                     className="aspect-[4/3] w-full object-cover"
                   />
-                  <div className="pointer-events-none absolute inset-0 bg-zinc-900/[0.04] dark:bg-zinc-950/25" />
+                  <div className="pointer-events-none absolute inset-0 bg-orange-900/[0.04]" />
                 </div>
               </div>
             </div>
@@ -243,16 +269,16 @@ export default function WelcomePage() {
       </section>
 
       {/* 試用承諾 */}
-      <section className="border-t border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/40">
+      <section className="border-t border-stone-200" style={{ backgroundColor: "#fdf1e6" }}>
         <div className="mx-auto max-w-5xl px-6 py-20">
           <h2 className="text-2xl font-semibold tracking-tight">試用，沒有套路</h2>
           <div className="mt-10 grid gap-x-10 gap-y-8 sm:grid-cols-2">
             {TRIAL_POINTS.map((p) => (
-              <div key={p.title} className="flex gap-3 border-t border-zinc-200 pt-5 dark:border-zinc-800">
+              <div key={p.title} className="flex gap-3 border-t border-stone-300/60 pt-5">
                 <Check />
                 <div>
                   <h3 className="font-semibold">{p.title}</h3>
-                  <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{p.desc}</p>
+                  <p className="mt-1 text-sm text-stone-600">{p.desc}</p>
                 </div>
               </div>
             ))}
@@ -264,7 +290,7 @@ export default function WelcomePage() {
       <section className="mx-auto max-w-5xl px-6 py-20">
         <div className="flex flex-col items-baseline justify-between gap-2 sm:flex-row">
           <h2 className="text-2xl font-semibold tracking-tight">定價，攤開來講</h2>
-          <p className="text-sm text-zinc-500">試用到期由專人開通，不會自動扣款。</p>
+          <p className="text-sm text-stone-500">試用到期由專人開通，不會自動扣款。</p>
         </div>
         <div className="mt-10 grid gap-6 sm:grid-cols-3">
           {PLANS.map((p) => (
@@ -272,25 +298,25 @@ export default function WelcomePage() {
               key={p.name}
               className={
                 p.highlight
-                  ? "rounded-xl border-2 border-orange-600 bg-white p-6 dark:bg-zinc-900"
-                  : "rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-800 dark:bg-zinc-900"
+                  ? "rounded-xl border-2 border-orange-600 bg-white p-6 shadow-sm"
+                  : "rounded-xl border border-stone-200 bg-white p-6"
               }
             >
               <div className="flex items-center justify-between">
                 <h3 className="font-semibold">{p.name}</h3>
                 {p.highlight && (
-                  <span className="rounded-full bg-orange-600/10 px-2 py-0.5 text-[11px] font-medium text-orange-600 dark:text-orange-400">
+                  <span className="rounded-full bg-orange-600/10 px-2 py-0.5 text-[11px] font-medium text-orange-600">
                     最多人選
                   </span>
                 )}
               </div>
               <div className="mt-3">
                 <span className="text-2xl font-bold tracking-tight">{p.price}</span>
-                <span className="ml-1 text-xs text-zinc-500">{p.note}</span>
+                <span className="ml-1 text-xs text-stone-500">{p.note}</span>
               </div>
               <ul className="mt-5 space-y-2.5">
                 {p.points.map((pt) => (
-                  <li key={pt} className="flex gap-2.5 text-sm text-zinc-600 dark:text-zinc-400">
+                  <li key={pt} className="flex gap-2.5 text-sm text-stone-600">
                     <Check />
                     {pt}
                   </li>
@@ -302,14 +328,14 @@ export default function WelcomePage() {
       </section>
 
       {/* FAQ */}
-      <section className="border-t border-zinc-200 dark:border-zinc-800">
+      <section className="border-t border-stone-200">
         <div className="mx-auto max-w-3xl px-6 py-20">
           <h2 className="text-2xl font-semibold tracking-tight">常見問題</h2>
-          <div className="mt-10 divide-y divide-zinc-200 dark:divide-zinc-800">
+          <div className="mt-10 divide-y divide-stone-200">
             {FAQS.map((f) => (
               <div key={f.q} className="py-6">
                 <h3 className="font-semibold">{f.q}</h3>
-                <p className="mt-2 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">{f.a}</p>
+                <p className="mt-2 text-sm leading-relaxed text-stone-600">{f.a}</p>
               </div>
             ))}
           </div>
@@ -317,7 +343,7 @@ export default function WelcomePage() {
       </section>
 
       {/* 收尾 CTA — 照片重度淡化為襯底 */}
-      <section className="relative overflow-hidden border-t border-zinc-200 dark:border-zinc-800">
+      <section className="relative overflow-hidden border-t border-stone-200">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={withBasePath("/landing/closing.jpg")}
@@ -326,26 +352,26 @@ export default function WelcomePage() {
           style={{ filter: "grayscale(0.5) saturate(0.7)", opacity: 0.5 }}
           className="pointer-events-none absolute inset-0 h-full w-full object-cover"
         />
-        <div className="pointer-events-none absolute inset-0 bg-white/82 dark:bg-zinc-950/85" />
+        <div className="pointer-events-none absolute inset-0" style={{ backgroundColor: `${WARM_BG}d1` }} />
         <div className="relative mx-auto max-w-5xl px-6 py-24 text-center">
           <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">下一團，用系統開</h2>
-          <p className="mx-auto mt-3 max-w-md text-zinc-600 dark:text-zinc-300">
+          <p className="mx-auto mt-3 max-w-md text-stone-600">
             3 分鐘開好你的後台，14 天免費把整條流程跑過一遍。
           </p>
           <div className="mt-8">
             <PrimaryCta>免費試用 14 天</PrimaryCta>
           </div>
-          <p className="mt-4 text-xs text-zinc-500">
+          <p className="mt-4 text-xs text-stone-500">
             已經有帳號？{" "}
-            <Link href="/login" className="underline hover:text-zinc-700 dark:hover:text-zinc-300">
+            <Link href="/login" className="underline hover:text-stone-700">
               前往登入
             </Link>
           </p>
         </div>
       </section>
 
-      <footer className="border-t border-zinc-200 px-6 py-8 dark:border-zinc-800">
-        <div className="mx-auto flex max-w-5xl flex-col items-center justify-between gap-2 text-xs text-zinc-400 sm:flex-row">
+      <footer className="border-t border-stone-200 px-6 py-8">
+        <div className="mx-auto flex max-w-5xl flex-col items-center justify-between gap-2 text-xs text-stone-400 sm:flex-row">
           <GroupoWordmark size="sm" />
           <span>試用期滿資料保留、可隨時一鍵刪除；詳見註冊頁說明。</span>
         </div>
