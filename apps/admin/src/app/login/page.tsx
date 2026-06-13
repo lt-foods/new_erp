@@ -12,7 +12,7 @@ import SpinButton from "@/components/SpinButton";
 
 const PAGE_BG = "#fdf1e6";
 const inputCls =
-  "w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 focus:border-orange-500 focus:outline-none";
+  "w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 focus:border-brand-500 focus:outline-none";
 
 export default function LoginPage() {
   return (
@@ -97,7 +97,7 @@ function LoginForm() {
           <SpinButton
             type="submit"
             disabled={submitting}
-            className="w-full rounded-md bg-orange-600 px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-orange-700 disabled:opacity-50"
+            className="w-full rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-brand-700 disabled:opacity-50"
           >
             {submitting ? "登入中…" : "登入"}
           </SpinButton>

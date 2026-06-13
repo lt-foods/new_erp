@@ -20,6 +20,21 @@
   --font-mono: var(--font-geist-mono);
 }
 
+/* 品牌主色（Groupo 購寶）— 燒橘 #C2570F，刻意偏離蝦皮/淘寶的紅橘。
+   只用於對外/入口頁（welcome/signup/login）與品牌元件；
+   後台狀態色仍用 Tailwind 內建 orange-*，兩者互不影響。 */
+@theme {
+  --color-brand-50:  #fcf3ec;
+  --color-brand-100: #f8e0cd;
+  --color-brand-200: #f0be97;
+  --color-brand-400: #d9783a;
+  --color-brand-500: #cb6320;
+  --color-brand-600: #c2570f;
+  --color-brand-700: #9f4711;
+  --color-brand-800: #7e3a13;
+  --color-brand-900: #683211;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);

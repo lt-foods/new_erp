@@ -15,7 +15,7 @@ import SpinButton from "@/components/SpinButton";
 const PAGE_BG = "#fdf1e6";
 
 const inputCls =
-  "w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 placeholder:text-stone-400 focus:border-orange-500 focus:outline-none";
+  "w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm text-stone-900 placeholder:text-stone-400 focus:border-brand-500 focus:outline-none";
 
 export default function SignupPage() {
   const [companyName, setCompanyName] = useState("");
@@ -75,7 +75,7 @@ export default function SignupPage() {
           </p>
           <Link
             href="/login"
-            className="block w-full rounded-md bg-orange-600 px-3 py-2 text-center text-sm font-medium text-white transition hover:bg-orange-700"
+            className="block w-full rounded-md bg-brand-600 px-3 py-2 text-center text-sm font-medium text-white transition hover:bg-brand-700"
           >
             前往登入
           </Link>
@@ -150,7 +150,7 @@ export default function SignupPage() {
           <SpinButton
             type="submit"
             disabled={submitting}
-            className="w-full rounded-md bg-orange-600 px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-orange-700 disabled:opacity-50"
+            className="w-full rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-brand-700 disabled:opacity-50"
           >
             {submitting ? "建立中…" : "開始免費試用"}
           </SpinButton>

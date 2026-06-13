@@ -2,11 +2,11 @@
 // 標誌：橘底白色「G」，用 Caveat 字型（--font-script，layout 注入）渲染，
 //       和字標的 Groupo 字首完全一致；SVG <text> 隨容器尺寸自動縮放。
 // favicon 見 public/groupo-mark.svg（Caveat G 已轉成 path、不依賴字型）。
-// 主色 orange-600。固定淺暖色（不隨系統深色模式變化，對外行銷一致）。
+// 主色 brand-600。固定淺暖色（不隨系統深色模式變化，對外行銷一致）。
 
 export function GroupoMark({ className = "h-7 w-7" }: { className?: string }) {
   return (
-    <span className={`inline-flex shrink-0 items-center justify-center rounded-[28%] bg-orange-600 ${className}`}>
+    <span className={`inline-flex shrink-0 items-center justify-center rounded-[28%] bg-brand-600 ${className}`}>
       <svg viewBox="0 0 64 64" className="h-full w-full" aria-hidden>
         <text
           x="33"

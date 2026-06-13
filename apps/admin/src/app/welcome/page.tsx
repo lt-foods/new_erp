@@ -145,7 +145,7 @@ const FAQS: { q: string; a: string }[] = [
 
 function Check() {
   return (
-    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2} className="mt-0.5 h-4 w-4 shrink-0 text-orange-600" aria-hidden>
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2} className="mt-0.5 h-4 w-4 shrink-0 text-brand-600" aria-hidden>
       <path strokeLinecap="round" strokeLinejoin="round" d="m4 10.5 3.5 3.5L16 6" />
     </svg>
   );
@@ -155,7 +155,7 @@ function PrimaryCta({ children }: { children: React.ReactNode }) {
   return (
     <Link
       href="/signup"
-      className="inline-flex items-center justify-center rounded-md bg-orange-600 px-6 py-3 text-base font-medium text-white shadow-sm transition hover:bg-orange-700"
+      className="inline-flex items-center justify-center rounded-md bg-brand-600 px-6 py-3 text-base font-medium text-white shadow-sm transition hover:bg-brand-700"
     >
       {children}
     </Link>
@@ -178,7 +178,7 @@ export default function WelcomePage() {
             </Link>
             <Link
               href="/signup"
-              className="rounded-md bg-orange-600 px-3 py-1.5 font-medium text-white hover:bg-orange-700"
+              className="rounded-md bg-brand-600 px-3 py-1.5 font-medium text-white hover:bg-brand-700"
             >
               免費試用
             </Link>
@@ -201,7 +201,7 @@ export default function WelcomePage() {
           style={{ backgroundImage: `linear-gradient(to bottom, ${WARM_BG}, ${WARM_BG}eb 55%, ${WARM_BG}b3)` }}
         />
         <div className="relative mx-auto max-w-5xl px-6 pb-28 pt-20 sm:pb-40 sm:pt-28">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-orange-600">
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-brand-600">
             社區團購・生鮮小舖 ERP
           </p>
           <h1 className="mt-4 max-w-2xl text-4xl font-bold leading-[1.15] tracking-tight sm:text-6xl">
@@ -233,7 +233,7 @@ export default function WelcomePage() {
             </p>
           </div>
           <div>
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-orange-600">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-brand-600">
               我們從這裡開始
             </h2>
             <p className="mt-3 text-lg leading-relaxed text-stone-800">
@@ -253,7 +253,7 @@ export default function WelcomePage() {
               className="grid items-center gap-8 py-16 sm:grid-cols-2 sm:gap-14"
             >
               <div className={i % 2 === 1 ? "sm:order-2" : ""}>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-orange-600">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600">
                   {c.kicker}
                 </p>
                 <h3 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">{c.title}</h3>
@@ -277,7 +277,7 @@ export default function WelcomePage() {
                     style={MUTED}
                     className="aspect-[4/3] w-full object-cover"
                   />
-                  <div className="pointer-events-none absolute inset-0 bg-orange-900/[0.04]" />
+                  <div className="pointer-events-none absolute inset-0 bg-brand-900/[0.04]" />
                 </div>
               </div>
             </div>
@@ -315,14 +315,14 @@ export default function WelcomePage() {
               key={p.name}
               className={
                 p.highlight
-                  ? "rounded-xl border-2 border-orange-600 bg-white p-6 shadow-sm"
+                  ? "rounded-xl border-2 border-brand-600 bg-white p-6 shadow-sm"
                   : "rounded-xl border border-stone-200 bg-white p-6"
               }
             >
               <div className="flex items-center justify-between">
                 <h3 className="font-semibold">{p.name}</h3>
                 {p.highlight && (
-                  <span className="rounded-full bg-orange-600/10 px-2 py-0.5 text-[11px] font-medium text-orange-600">
+                  <span className="rounded-full bg-brand-600/10 px-2 py-0.5 text-[11px] font-medium text-brand-600">
                     最多人選
                   </span>
                 )}
@@ -346,7 +346,7 @@ export default function WelcomePage() {
         {/* 模組單買 — 只需要部分功能時 */}
         <div className="mt-8 rounded-xl border border-stone-200 bg-white p-6 sm:p-8">
           <h3 className="text-lg font-semibold">只用得到部分功能？依模組計費</h3>
-          <div className="mt-4 rounded-lg bg-orange-50 px-4 py-3">
+          <div className="mt-4 rounded-lg bg-brand-50 px-4 py-3">
             <div className="flex flex-wrap items-baseline gap-x-2">
               <span className="font-semibold">基礎方案</span>
               <span className="text-lg font-bold text-stone-900">{MODULE_BASE}</span>
