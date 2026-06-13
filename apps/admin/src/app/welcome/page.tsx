@@ -93,9 +93,9 @@ const PLANS: { name: string; price: string; note: string; points: string[]; high
   },
   {
     name: "正式方案",
-    price: "NT$999",
-    note: "／月・年繳 NT$799／月",
-    points: ["訂單數量與金額不限", "開團、採購、庫存、財務全模組", "一個總倉＋門市", "Email 支援"],
+    price: "NT$799",
+    note: "／月（年繳）・單月 NT$999",
+    points: ["年繳省 NT$2,400", "訂單數量與金額不限", "開團、採購、庫存、財務全模組", "一個總倉＋門市・Email 支援"],
     highlight: true,
   },
   {
