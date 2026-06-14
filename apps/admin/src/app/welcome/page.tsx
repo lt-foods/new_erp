@@ -94,8 +94,8 @@ const PLANS: { name: string; price: string; note: string; points: string[]; high
   {
     name: "正式方案",
     price: "NT$799",
-    note: "／月（年繳）・單月 NT$999",
-    points: ["年繳省 NT$2,400", "全模組（含 LINE／FB +1 整單）", "訂單數量與金額不限", "一個總倉＋門市・Email 支援"],
+    note: "／月（年繳）・單月 NT$999・+1 整單另計",
+    points: ["年繳省 NT$2,400", "開團・採購・庫存・會員・財務全包", "訂單數量與金額不限", "一個總倉＋門市・Email 支援"],
     highlight: true,
   },
   {
@@ -116,7 +116,7 @@ const MODULES: { name: string; price: string; note?: string }[] = [
   {
     name: "LINE 群組／FB 社團 +1 整單",
     price: "+NT$300",
-    note: "自動爬留言成單，別人的招牌功能在這只是加購",
+    note: "自動爬留言成單・獨立加購，任何方案都另計",
   },
   { name: "會員・錢包・點數", price: "+NT$150" },
   { name: "財務・月結・應收應付", price: "+NT$150" },
@@ -372,7 +372,7 @@ export default function WelcomePage() {
             ))}
           </div>
           <p className="mt-5 text-xs text-stone-500">
-            全部加購約 NT$1,299／月；要全部直接選上方「正式方案」NT$799（年繳）最划算。
+            後端全模組單買約 NT$999／月，選上方「正式方案」NT$799（年繳）更划算；LINE/FB +1 整單一律另加 NT$300。
           </p>
         </div>
       </section>
