@@ -505,6 +505,36 @@ export function OrderDetail({
     setReloadTick((n) => n + 1);
   }
 
+  // 刪除 pending 訂單裡的單一品項（rpc_delete_order_item：軟刪 status->cancelled）。
+  // 權限/狀態閘與「改數量」一致（canEditQty）；刪到最後一項會自動取消整單。
+  async function deleteItem(it: ItemRow) {
+    if (!head) return;
+    const label = it.sku
+      ? `${it.sku.product_name ?? it.sku.sku_code}${it.sku.variant_name ? ` / ${it.sku.variant_name}` : ""}`
+      : `#${it.id}`;
+    const onlyActive = (items ?? []).filter((x) => !["cancelled", "expired"].includes(x.status)).length <= 1;
+    const reason = prompt(
+      `刪除品項：${label}（${head.order_no}）` +
+        (onlyActive ? "\n\n⚠️ 這是訂單最後一個品項，刪除後整單會一併取消。" : "") +
+        "\n請輸入刪除原因：",
+    );
+    if (reason === null) return;
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id ?? null;
+    if (!operator) { alert("尚未登入"); return; }
+    const { data, error: rpcErr } = await sb.rpc("rpc_delete_order_item", {
+      p_order_id: head.id,
+      p_item_id: it.id,
+      p_operator: operator,
+      p_reason: reason.trim() === "" ? null : reason.trim(),
+    });
+    if (rpcErr) { alert(`刪除失敗：${translateRpcError(rpcErr)}`); return; }
+    const cancelled = !!(data as { order_cancelled?: boolean } | null)?.order_cancelled;
+    alert(cancelled ? "已刪除品項，整單已一併取消" : "已刪除品項");
+    setReloadTick((n) => n + 1);
+  }
+
   async function aidReturn() {
     if (!head) return;
     const walletPaid = Number(head.wallet_paid_amount ?? 0);
@@ -854,11 +884,12 @@ export function OrderDetail({
                 <th className="px-3 py-2 text-left font-medium text-zinc-500">備註</th>
                 <th className="px-3 py-2 text-left font-medium text-zinc-500">第一次加</th>
                 <th className="px-3 py-2 text-left font-medium text-zinc-500">最後更新</th>
+                {canEditQty && <th className="px-3 py-2 text-right font-medium text-zinc-500">操作</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
               {items.length === 0 ? (
-                <tr><td colSpan={9} className="p-4 text-center text-zinc-500">尚無明細</td></tr>
+                <tr><td colSpan={canEditQty ? 10 : 9} className="p-4 text-center text-zinc-500">尚無明細</td></tr>
               ) : items.map((it) => {
                 const eff = itemEffective(it);
                 const sub = computeLineSubtotal(Number(eff.qty), eff.unit_price, eff.discount);
@@ -947,6 +978,19 @@ export function OrderDetail({
                       {fmtDt(it.updated_at)}<br />
                       <span className="text-[10px]">by {staffLabel(it.updated_by, staffNames)}</span>
                     </td>
+                    {canEditQty && (
+                      <td className="px-3 py-2 text-right">
+                        {!["cancelled", "expired"].includes(it.status) && !isPicked ? (
+                          <SpinButton
+                            onClick={() => deleteItem(it)}
+                            title="刪除此品項（待確認訂單，刪到最後一項會自動取消整單）"
+                            className="rounded-md border border-red-300 px-2 py-1 text-[11px] font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
+                          >
+                            刪除
+                          </SpinButton>
+                        ) : null}
+                      </td>
+                    )}
                   </tr>
                 );
               })}
