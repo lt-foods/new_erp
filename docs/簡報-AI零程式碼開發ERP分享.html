@@ -61,6 +61,15 @@
   .loop .arrow{ align-self:center; color:var(--accent); font-weight:800; font-size:1.2rem; }
   .loopback{ margin-top:clamp(1rem,2.5vh,1.5rem); background:var(--accent-soft); border:1px solid #c7e8dc; border-radius:12px; padding:.85rem 1.2rem; text-align:center; color:#0a6b53; font-size:clamp(.92rem,2.5vw,1.12rem); font-weight:600; line-height:1.5; }
 
+  /* 閉環 SVG 環形圖 */
+  .ring{ display:block; margin:0 auto; width:100%; max-width:620px; height:auto; max-height:64vh; }
+  .ring .node ellipse{ fill:#ffffff; stroke:var(--accent); stroke-width:2; }
+  .ring .node .bg{ fill:var(--accent); }
+  .ring .node .bg.h{ fill:var(--human); }
+  .ring .node .bn{ fill:#ffffff; font-size:16px; font-weight:800; text-anchor:middle; }
+  .ring .node .bl{ fill:var(--ink); font-size:20px; font-weight:800; text-anchor:middle; }
+  .ringcap{ text-align:center; max-width:62ch; margin:clamp(.8rem,2vh,1.4rem) auto 0; font-size:clamp(.9rem,2.4vw,1.15rem); color:var(--sub); line-height:1.6; }
+
   /* harness */
   .harness-grid{ display:grid; grid-template-columns:repeat(2,1fr); gap:clamp(.7rem,1.6vw,1.1rem); }
   @media (min-width:820px){ .harness-grid{ grid-template-columns:repeat(3,1fr); } }
@@ -143,18 +152,42 @@
 </section>
 
 <section class="slide"><span class="tag">核心觀念 1</span><span class="pgnum">04 / 12</span>
-  <h2>整套系統，是同一個<span class="hl">閉環</span>跑了 438 次</h2>
-  <div class="loop">
-    <div class="step"><span class="k">STEP 1</span><b>我講需求</b><span>用白話說想要什麼、現在哪裡不順</span></div>
-    <div class="arrow">→</div>
-    <div class="step"><span class="k">STEP 2</span><b>AI 反問釐清</b><span>邊界條件、例外狀況先講清楚</span></div>
-    <div class="arrow">→</div>
-    <div class="step"><span class="k">STEP 3</span><b>AI 寫好發 PR</b><span>程式碼 + DB 變更 + 說明，一包送上</span></div>
-    <div class="arrow">→</div>
-    <div class="step"><span class="k">STEP 4</span><b>我驗收</b><span>實際操作系統，OK 就合併上線</span></div>
-  </div>
-  <div class="loopback">不 OK 就用白話回報，AI 修完再驗——驗收結果直接回流成下一輪需求，閉環就這樣一圈一圈轉</div>
-  <p class="sub">重點不是「AI 很會寫」，而是每一圈都小、都能驗收、錯了能退回。閉環讓品質可控。</p>
+  <h2>整套系統，就是這個<span class="hl">閉環</span>週而復始</h2>
+  <svg class="ring" viewBox="0 0 800 700" role="img" aria-label="開發閉環：需求、寫文件、開 Task、寫測試項目、開發、驗證、部署、更新 Wiki，再回到需求">
+    <defs>
+      <marker id="arrA" markerWidth="10" markerHeight="10" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#0b8f6e"/></marker>
+      <marker id="arrH" markerWidth="10" markerHeight="10" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#b4690e"/></marker>
+    </defs>
+    <!-- 環身 -->
+    <circle cx="400" cy="350" r="250" fill="none" stroke="#eef1f6" stroke-width="16"/>
+    <!-- 流向弧（順時針） -->
+    <path d="M460.5,107.4 A250,250 0 0 1 528.8,135.7" fill="none" stroke="#0b8f6e" stroke-width="3" marker-end="url(#arrA)"/>
+    <path d="M614.3,221.2 A250,250 0 0 1 642.6,289.5" fill="none" stroke="#0b8f6e" stroke-width="3" marker-end="url(#arrA)"/>
+    <path d="M642.6,410.5 A250,250 0 0 1 614.3,478.8" fill="none" stroke="#0b8f6e" stroke-width="3" marker-end="url(#arrA)"/>
+    <path d="M528.8,564.3 A250,250 0 0 1 460.5,592.6" fill="none" stroke="#0b8f6e" stroke-width="3" marker-end="url(#arrA)"/>
+    <path d="M339.5,592.6 A250,250 0 0 1 271.2,564.3" fill="none" stroke="#0b8f6e" stroke-width="3" marker-end="url(#arrA)"/>
+    <path d="M185.7,478.8 A250,250 0 0 1 157.4,410.5" fill="none" stroke="#0b8f6e" stroke-width="3" marker-end="url(#arrA)"/>
+    <path d="M157.4,289.5 A250,250 0 0 1 185.7,221.2" fill="none" stroke="#0b8f6e" stroke-width="3" marker-end="url(#arrA)"/>
+    <!-- 收尾：更新 Wiki 回到需求（橘色，強調回到起點） -->
+    <path d="M271.2,135.7 A250,250 0 0 1 339.5,107.4" fill="none" stroke="#b4690e" stroke-width="3.5" marker-end="url(#arrH)"/>
+
+    <!-- 中心 -->
+    <circle cx="400" cy="350" r="92" fill="#e3f4ee" stroke="#0b8f6e" stroke-width="2"/>
+    <text x="400" y="338" text-anchor="middle" font-family="inherit" font-size="32" font-weight="800" fill="#0b8f6e">閉環</text>
+    <text x="400" y="364" text-anchor="middle" font-family="inherit" font-size="11" letter-spacing="2" fill="#7b8597">CLOSED LOOP</text>
+    <text x="400" y="386" text-anchor="middle" font-family="inherit" font-size="12.5" fill="#5b6678">迭代 438 次</text>
+
+    <!-- 節點 -->
+    <g class="node"><ellipse cx="400" cy="100" rx="74" ry="46"/><circle class="bg" cx="400" cy="70" r="14"/><text class="bn" x="400" y="75">1</text><text class="bl" x="400" y="112">需求</text></g>
+    <g class="node"><ellipse cx="577" cy="173" rx="74" ry="46"/><circle class="bg" cx="577" cy="143" r="14"/><text class="bn" x="577" y="148">2</text><text class="bl" x="577" y="185">寫文件</text></g>
+    <g class="node"><ellipse cx="650" cy="350" rx="74" ry="46"/><circle class="bg" cx="650" cy="320" r="14"/><text class="bn" x="650" y="325">3</text><text class="bl" x="650" y="362">開 Task</text></g>
+    <g class="node"><ellipse cx="577" cy="527" rx="78" ry="46"/><circle class="bg" cx="577" cy="497" r="14"/><text class="bn" x="577" y="502">4</text><text class="bl" x="577" y="539">寫測試項目</text></g>
+    <g class="node"><ellipse cx="400" cy="600" rx="74" ry="46"/><circle class="bg" cx="400" cy="570" r="14"/><text class="bn" x="400" y="575">5</text><text class="bl" x="400" y="612">開發</text></g>
+    <g class="node"><ellipse cx="223" cy="527" rx="74" ry="46"/><circle class="bg" cx="223" cy="497" r="14"/><text class="bn" x="223" y="502">6</text><text class="bl" x="223" y="539">驗證</text></g>
+    <g class="node"><ellipse cx="150" cy="350" rx="74" ry="46"/><circle class="bg" cx="150" cy="320" r="14"/><text class="bn" x="150" y="325">7</text><text class="bl" x="150" y="362">部署</text></g>
+    <g class="node"><ellipse cx="223" cy="173" rx="78" ry="46"/><circle class="bg h" cx="223" cy="143" r="14"/><text class="bn" x="223" y="148">8</text><text class="bl" x="223" y="185">更新 Wiki</text></g>
+  </svg>
+  <p class="ringcap">每一圈都小、都能驗收、錯了能退回——<b>閉環讓品質可控</b>。驗收與 wiki 又回流成下一輪需求，於是一圈一圈轉下去。</p>
 </section>
 
 <section class="slide"><span class="tag">核心觀念 2</span><span class="pgnum">05 / 12</span>
