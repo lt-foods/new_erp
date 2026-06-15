@@ -62,12 +62,12 @@
   .loopback{ margin-top:clamp(1rem,2.5vh,1.5rem); background:var(--accent-soft); border:1px solid #c7e8dc; border-radius:12px; padding:.85rem 1.2rem; text-align:center; color:#0a6b53; font-size:clamp(.92rem,2.5vw,1.12rem); font-weight:600; line-height:1.5; }
 
   /* 閉環 SVG 環形圖 */
-  .ring{ display:block; margin:0 auto; width:100%; max-width:620px; height:auto; max-height:64vh; }
-  .ring .node ellipse{ fill:#ffffff; stroke:var(--accent); stroke-width:2; }
-  .ring .node .bg{ fill:var(--accent); }
-  .ring .node .bg.h{ fill:var(--human); }
-  .ring .node .bn{ fill:#ffffff; font-size:16px; font-weight:800; text-anchor:middle; }
-  .ring .node .bl{ fill:var(--ink); font-size:20px; font-weight:800; text-anchor:middle; }
+  .ring{ display:block; margin:0 auto; width:100%; max-width:600px; height:auto; max-height:66vh; }
+  .ring .badge circle{ fill:#ffffff; stroke:var(--accent); stroke-width:2.5; }
+  .ring .badge.h circle{ stroke:var(--human); }
+  .ring .badge text{ fill:var(--accent); font-size:19px; font-weight:800; text-anchor:middle; dominant-baseline:central; }
+  .ring .badge.h text{ fill:var(--human); }
+  .ring .lbl text{ fill:var(--ink); font-size:20px; font-weight:800; dominant-baseline:middle; }
   .ringcap{ text-align:center; max-width:62ch; margin:clamp(.8rem,2vh,1.4rem) auto 0; font-size:clamp(.9rem,2.4vw,1.15rem); color:var(--sub); line-height:1.6; }
 
   /* harness */
@@ -153,41 +153,65 @@
 
 <section class="slide"><span class="tag">核心觀念 1</span><span class="pgnum">04 / 12</span>
   <h2>整套系統，就是這個<span class="hl">閉環</span>週而復始</h2>
-  <svg class="ring" viewBox="0 0 800 700" role="img" aria-label="開發閉環：需求、寫文件、開 Task、寫測試項目、開發、驗證、部署、更新 Wiki，再回到需求">
+  <svg class="ring" viewBox="0 0 800 720" role="img" aria-label="開發閉環：需求、寫文件、開 Task、寫測試項目、開發、驗證、部署、更新 Wiki，再回到需求">
     <defs>
-      <marker id="arrA" markerWidth="10" markerHeight="10" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#0b8f6e"/></marker>
-      <marker id="arrH" markerWidth="10" markerHeight="10" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#b4690e"/></marker>
+      <linearGradient id="ringg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#1bb290"/>
+        <stop offset="1" stop-color="#097a5c"/>
+      </linearGradient>
+      <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+        <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#0b3a2b" flood-opacity="0.16"/>
+      </filter>
     </defs>
-    <!-- 環身 -->
-    <circle cx="400" cy="350" r="250" fill="none" stroke="#eef1f6" stroke-width="16"/>
-    <!-- 流向弧（順時針） -->
-    <path d="M460.5,107.4 A250,250 0 0 1 528.8,135.7" fill="none" stroke="#0b8f6e" stroke-width="3" marker-end="url(#arrA)"/>
-    <path d="M614.3,221.2 A250,250 0 0 1 642.6,289.5" fill="none" stroke="#0b8f6e" stroke-width="3" marker-end="url(#arrA)"/>
-    <path d="M642.6,410.5 A250,250 0 0 1 614.3,478.8" fill="none" stroke="#0b8f6e" stroke-width="3" marker-end="url(#arrA)"/>
-    <path d="M528.8,564.3 A250,250 0 0 1 460.5,592.6" fill="none" stroke="#0b8f6e" stroke-width="3" marker-end="url(#arrA)"/>
-    <path d="M339.5,592.6 A250,250 0 0 1 271.2,564.3" fill="none" stroke="#0b8f6e" stroke-width="3" marker-end="url(#arrA)"/>
-    <path d="M185.7,478.8 A250,250 0 0 1 157.4,410.5" fill="none" stroke="#0b8f6e" stroke-width="3" marker-end="url(#arrA)"/>
-    <path d="M157.4,289.5 A250,250 0 0 1 185.7,221.2" fill="none" stroke="#0b8f6e" stroke-width="3" marker-end="url(#arrA)"/>
-    <!-- 收尾：更新 Wiki 回到需求（橘色，強調回到起點） -->
-    <path d="M271.2,135.7 A250,250 0 0 1 339.5,107.4" fill="none" stroke="#b4690e" stroke-width="3.5" marker-end="url(#arrH)"/>
+
+    <!-- 甜甜圈環身 -->
+    <circle cx="400" cy="360" r="202" fill="none" stroke="url(#ringg)" stroke-width="66" filter="url(#soft)"/>
+
+    <!-- 方向箭頭（順時針，白色；收尾那支橘色標示回到起點） -->
+    <g fill="#ffffff">
+      <path d="M0,-10 L8,8 L-8,8 Z" transform="translate(477.3,173.4) rotate(112.5)"/>
+      <path d="M0,-10 L8,8 L-8,8 Z" transform="translate(586.6,282.7) rotate(157.5)"/>
+      <path d="M0,-10 L8,8 L-8,8 Z" transform="translate(586.6,437.3) rotate(202.5)"/>
+      <path d="M0,-10 L8,8 L-8,8 Z" transform="translate(477.3,546.6) rotate(247.5)"/>
+      <path d="M0,-10 L8,8 L-8,8 Z" transform="translate(322.7,546.6) rotate(292.5)"/>
+      <path d="M0,-10 L8,8 L-8,8 Z" transform="translate(213.4,437.3) rotate(337.5)"/>
+      <path d="M0,-10 L8,8 L-8,8 Z" transform="translate(213.4,282.7) rotate(22.5)"/>
+    </g>
+    <path d="M0,-11 L9,9 L-9,9 Z" fill="#f5a623" transform="translate(322.7,173.4) rotate(67.5)"/>
+
+    <!-- 數字徽章 -->
+    <g class="badge">
+      <circle cx="400" cy="158" r="19"/><text x="400" y="158">1</text>
+      <circle cx="542.8" cy="217.2" r="19"/><text x="542.8" y="217.2">2</text>
+      <circle cx="602" cy="360" r="19"/><text x="602" y="360">3</text>
+      <circle cx="542.8" cy="502.8" r="19"/><text x="542.8" y="502.8">4</text>
+      <circle cx="400" cy="562" r="19"/><text x="400" y="562">5</text>
+      <circle cx="257.2" cy="502.8" r="19"/><text x="257.2" y="502.8">6</text>
+      <circle cx="198" cy="360" r="19"/><text x="198" y="360">7</text>
+    </g>
+    <g class="badge h">
+      <circle cx="257.2" cy="217.2" r="19"/><text x="257.2" y="217.2">8</text>
+    </g>
 
     <!-- 中心 -->
-    <circle cx="400" cy="350" r="92" fill="#e3f4ee" stroke="#0b8f6e" stroke-width="2"/>
-    <text x="400" y="338" text-anchor="middle" font-family="inherit" font-size="32" font-weight="800" fill="#0b8f6e">閉環</text>
-    <text x="400" y="364" text-anchor="middle" font-family="inherit" font-size="11" letter-spacing="2" fill="#7b8597">CLOSED LOOP</text>
-    <text x="400" y="386" text-anchor="middle" font-family="inherit" font-size="12.5" fill="#5b6678">迭代 438 次</text>
+    <circle cx="400" cy="360" r="118" fill="#ffffff" stroke="#eef1f6" stroke-width="1.5" filter="url(#soft)"/>
+    <text x="400" y="350" text-anchor="middle" font-size="34" font-weight="800" fill="#0b8f6e">閉環</text>
+    <text x="400" y="377" text-anchor="middle" font-size="11" letter-spacing="2.5" fill="#9aa3b5">CLOSED LOOP</text>
+    <text x="400" y="400" text-anchor="middle" font-size="13" fill="#5b6678">迭代 438 次</text>
 
-    <!-- 節點 -->
-    <g class="node"><ellipse cx="400" cy="100" rx="74" ry="46"/><circle class="bg" cx="400" cy="70" r="14"/><text class="bn" x="400" y="75">1</text><text class="bl" x="400" y="112">需求</text></g>
-    <g class="node"><ellipse cx="577" cy="173" rx="74" ry="46"/><circle class="bg" cx="577" cy="143" r="14"/><text class="bn" x="577" y="148">2</text><text class="bl" x="577" y="185">寫文件</text></g>
-    <g class="node"><ellipse cx="650" cy="350" rx="74" ry="46"/><circle class="bg" cx="650" cy="320" r="14"/><text class="bn" x="650" y="325">3</text><text class="bl" x="650" y="362">開 Task</text></g>
-    <g class="node"><ellipse cx="577" cy="527" rx="78" ry="46"/><circle class="bg" cx="577" cy="497" r="14"/><text class="bn" x="577" y="502">4</text><text class="bl" x="577" y="539">寫測試項目</text></g>
-    <g class="node"><ellipse cx="400" cy="600" rx="74" ry="46"/><circle class="bg" cx="400" cy="570" r="14"/><text class="bn" x="400" y="575">5</text><text class="bl" x="400" y="612">開發</text></g>
-    <g class="node"><ellipse cx="223" cy="527" rx="74" ry="46"/><circle class="bg" cx="223" cy="497" r="14"/><text class="bn" x="223" y="502">6</text><text class="bl" x="223" y="539">驗證</text></g>
-    <g class="node"><ellipse cx="150" cy="350" rx="74" ry="46"/><circle class="bg" cx="150" cy="320" r="14"/><text class="bn" x="150" y="325">7</text><text class="bl" x="150" y="362">部署</text></g>
-    <g class="node"><ellipse cx="223" cy="173" rx="78" ry="46"/><circle class="bg h" cx="223" cy="143" r="14"/><text class="bn" x="223" y="148">8</text><text class="bl" x="223" y="185">更新 Wiki</text></g>
+    <!-- 外側標籤 -->
+    <g class="lbl">
+      <text x="400" y="88"  text-anchor="middle">需求</text>
+      <text x="592.3" y="167.7" text-anchor="start">寫文件</text>
+      <text x="672" y="360" text-anchor="start">開 Task</text>
+      <text x="592.3" y="552.3" text-anchor="start">寫測試項目</text>
+      <text x="400" y="640" text-anchor="middle">開發</text>
+      <text x="207.7" y="552.3" text-anchor="end">驗證</text>
+      <text x="128" y="360" text-anchor="end">部署</text>
+      <text x="207.7" y="167.7" text-anchor="end" fill="#b4690e">更新 Wiki</text>
+    </g>
   </svg>
-  <p class="ringcap">每一圈都小、都能驗收、錯了能退回——<b>閉環讓品質可控</b>。驗收與 wiki 又回流成下一輪需求，於是一圈一圈轉下去。</p>
+  <p class="ringcap">每一圈都小、都能驗收、錯了能退回——<b>閉環讓品質可控</b>。驗收與更新後的 wiki 又回流成下一輪需求，於是一圈一圈轉下去。</p>
 </section>
 
 <section class="slide"><span class="tag">核心觀念 2</span><span class="pgnum">05 / 12</span>
