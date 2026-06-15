@@ -145,6 +145,14 @@ function fmtDateTime(iso: string | null): string {
   return `${yyyy}/${mm}/${dd} ${hh}:${mi}`;
 }
 
+// ISO → <input type="datetime-local"> 需要的本地時間字串（YYYY-MM-DDTHH:mm）
+function toDatetimeLocal(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export default function CampaignsListPage() {
   const role = useRole();
   const showAdminActions = isAdmin(role);
@@ -181,6 +189,11 @@ export default function CampaignsListPage() {
   const [endAtOpen, setEndAtOpen] = useState(false);
   const [bulkEndAt, setBulkEndAt] = useState("");
   const [endAtErr, setEndAtErr] = useState<string | null>(null);
+
+  // 單筆「延長結單」（open 限定，只能往後延）
+  const [extendTarget, setExtendTarget] = useState<{ id: number; name: string; endAt: string | null } | null>(null);
+  const [extendVal, setExtendVal] = useState("");
+  const [extendErr, setExtendErr] = useState<string | null>(null);
 
   const [view, setView] = useState<View>(() => {
     if (typeof window === "undefined") return "list";
@@ -250,6 +263,25 @@ export default function CampaignsListPage() {
       }
     } catch (e) {
       setEndAtErr(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function extendDeadline() {
+    if (!extendTarget) return;
+    setExtendErr(null);
+    if (!extendVal) { setExtendErr("請選擇新的收單時間"); return; }
+    const iso = new Date(extendVal).toISOString();
+    try {
+      const { error: rpcErr } = await getSupabase().rpc("rpc_extend_campaign_deadline", {
+        p_campaign_id: extendTarget.id,
+        p_new_end_at: iso,
+      });
+      if (rpcErr) throw rpcErr;
+      setExtendTarget(null);
+      setExtendVal("");
+      setReloadTick((t) => t + 1);
+    } catch (e) {
+      setExtendErr(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -628,6 +660,18 @@ export default function CampaignsListPage() {
           className="text-xs text-amber-600 hover:underline disabled:opacity-50 dark:text-amber-400"
         >
           {closingId === r.id ? "結單中…" : "結單"}
+        </SpinButton>
+      )}
+      {showAdminActions && r.status === "open" && (
+        <SpinButton
+          onClick={() => {
+            setExtendTarget({ id: r.id, name: r.name, endAt: r.end_at });
+            setExtendVal(toDatetimeLocal(r.end_at));
+            setExtendErr(null);
+          }}
+          className="text-xs text-teal-600 hover:underline dark:text-teal-400"
+        >
+          延長結單
         </SpinButton>
       )}
       {showAdminActions && (["open", "closed", "locked", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
@@ -1051,6 +1095,47 @@ export default function CampaignsListPage() {
                 className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900"
               >
                 確定套用
+              </SpinButton>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={!!extendTarget}
+        onClose={() => setExtendTarget(null)}
+        title={extendTarget ? `延長結單時間｜${extendTarget.name}` : ""}
+        maxWidth="max-w-md"
+      >
+        {extendTarget && (
+          <div className="space-y-4">
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">
+              目前收單時間：<span className="font-semibold">{fmtDateTime(extendTarget.endAt)}</span>。
+              新時間必須晚於目前、且在未來；僅「開團中」可延長。
+            </p>
+            <label className="block text-sm">
+              <span className="text-zinc-600 dark:text-zinc-400">新收單時間</span>
+              <input
+                type="datetime-local"
+                value={extendVal}
+                onChange={(e) => setExtendVal(e.target.value)}
+                className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                aria-label="新收單時間"
+              />
+            </label>
+            {extendErr && <p className="text-xs text-rose-600">{extendErr}</p>}
+            <div className="flex justify-end gap-2 pt-2">
+              <SpinButton
+                onClick={() => setExtendTarget(null)}
+                className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                取消
+              </SpinButton>
+              <SpinButton
+                onClick={extendDeadline}
+                className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900"
+              >
+                確定延長
               </SpinButton>
             </div>
           </div>
