@@ -6,77 +6,119 @@
 <title>用 AI、0 行手寫程式碼，做出一套 ERP</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  :root { --green:#6ee7b7; --yellow:#fbbf24; --text:#e8eaf0; --muted:#9aa3b5; --card:#1a1f2b; --border:#2a3245; --dim:#6b7385; }
-  html { scroll-snap-type: y mandatory; scroll-behavior: smooth; }
-  body { background:#0f1117; color:var(--text); font-family:"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif; }
-
-  .slide {
-    min-height: 100vh; min-height: 100svh;
-    scroll-snap-align: start; scroll-snap-stop: always;
-    display: flex; flex-direction: column; justify-content: center;
-    padding: 6vh 7vw; gap: 0.2rem;
-    border-bottom: 1px solid #161a24;
-    position: relative;
+  :root{
+    --bg:#f4f6f9; --ink:#1b2330; --sub:#5b6678; --muted:#7b8597;
+    --accent:#0b8f6e; --accent-soft:#e3f4ee;
+    --human:#b4690e; --human-soft:#fbf0df;
+    --card:#ffffff; --border:#e3e7ee; --line:#eef1f6;
+    --shadow:0 1px 2px rgba(20,30,50,.04), 0 8px 24px rgba(20,30,50,.06);
   }
-  .pgnum { position:absolute; top:2.5vh; right:6vw; color:var(--dim); font-size:.85rem; letter-spacing:.1em; }
+  html { scroll-snap-type: y mandatory; scroll-behavior: smooth; }
+  body { background:var(--bg); color:var(--ink); font-family:"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif; -webkit-font-smoothing:antialiased; }
 
-  .kicker { color:var(--green); font-size:clamp(.8rem,2.6vw,1.1rem); letter-spacing:.25em; margin-bottom:1rem; font-weight:600; }
-  h1 { font-size:clamp(1.8rem,6vw,3.2rem); line-height:1.25; font-weight:800; }
-  h2 { font-size:clamp(1.4rem,4.6vw,2.4rem); line-height:1.3; font-weight:800; margin-bottom:clamp(1.2rem,3vh,2.2rem); }
-  .hl { color:var(--green); }
-  p.sub { font-size:clamp(.95rem,2.7vw,1.3rem); color:var(--muted); margin-top:clamp(1rem,2.5vh,1.5rem); line-height:1.65; }
+  .slide{
+    min-height:100vh; min-height:100svh;
+    scroll-snap-align:start; scroll-snap-stop:always;
+    display:flex; flex-direction:column; justify-content:center;
+    padding:7vh 7vw; gap:.2rem; position:relative;
+  }
+  .pgnum{ position:absolute; top:3vh; right:6vw; color:var(--muted); font-size:.8rem; letter-spacing:.12em; }
+  .tag{ position:absolute; top:3vh; left:6vw; font-size:.72rem; letter-spacing:.28em; font-weight:700; color:var(--accent); }
 
-  .cards { display:grid; grid-template-columns:repeat(3,1fr); gap:clamp(.6rem,1.5vw,1.2rem); }
-  .card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:clamp(1rem,2.2vw,1.6rem) clamp(.8rem,1.8vw,1.4rem); }
-  .card .num { font-size:clamp(1.6rem,5vw,2.6rem); font-weight:800; color:var(--green); }
-  .card .lbl { font-size:clamp(.78rem,2vw,1.05rem); color:var(--muted); margin-top:.4rem; line-height:1.5; }
+  .kicker{ color:var(--accent); font-size:clamp(.8rem,2.6vw,1.05rem); letter-spacing:.26em; margin-bottom:1rem; font-weight:700; }
+  h1{ font-size:clamp(1.8rem,5.8vw,3.1rem); line-height:1.28; font-weight:800; letter-spacing:-.01em; }
+  h2{ font-size:clamp(1.4rem,4.4vw,2.3rem); line-height:1.3; font-weight:800; margin-bottom:clamp(1.2rem,3vh,2rem); letter-spacing:-.01em; }
+  .hl{ color:var(--accent); }
+  p.sub{ font-size:clamp(.95rem,2.6vw,1.25rem); color:var(--sub); margin-top:clamp(1rem,2.5vh,1.4rem); line-height:1.7; }
+  .lead{ font-size:clamp(1rem,2.7vw,1.3rem); color:var(--sub); line-height:1.7; max-width:60ch; }
 
-  .two { display:grid; grid-template-columns:1fr 1fr; gap:clamp(.8rem,2vw,1.5rem); }
-  .panel { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:clamp(1.1rem,2.5vw,1.8rem); }
-  .panel h3 { font-size:clamp(1.05rem,2.8vw,1.4rem); margin-bottom:1rem; }
-  .panel.me h3 { color:var(--yellow); }
-  .panel.ai h3 { color:var(--green); }
-  ul { list-style:none; }
-  ul li { font-size:clamp(.9rem,2.5vw,1.25rem); line-height:1.55; padding:.4rem 0 .4rem 1.5rem; position:relative; color:#cfd6e4; }
-  ul li::before { content:"›"; position:absolute; left:.1rem; color:var(--green); font-weight:800; }
-  .big-list li { font-size:clamp(1rem,3vw,1.45rem); padding:.6rem 0 .6rem 1.7rem; }
+  .cards{ display:grid; grid-template-columns:repeat(3,1fr); gap:clamp(.6rem,1.4vw,1.1rem); }
+  .card{ background:var(--card); border:1px solid var(--border); border-radius:16px; padding:clamp(1rem,2.2vw,1.6rem) clamp(.85rem,1.8vw,1.4rem); box-shadow:var(--shadow); }
+  .card .num{ font-size:clamp(1.6rem,5vw,2.6rem); font-weight:800; color:var(--accent); letter-spacing:-.02em; }
+  .card .lbl{ font-size:clamp(.78rem,2vw,1.02rem); color:var(--sub); margin-top:.4rem; line-height:1.5; }
 
-  .flow { display:flex; flex-direction:column; gap:.7rem; }
-  @media (min-width:780px){ .flow { flex-direction:row; align-items:stretch; } }
-  .flow .step { flex:1; background:var(--card); border:1px solid var(--border); border-radius:12px; padding:clamp(.9rem,2vw,1.2rem) 1rem; text-align:center; }
-  .flow .step b { display:block; font-size:clamp(1rem,2.6vw,1.15rem); color:var(--green); margin-bottom:.5rem; }
-  .flow .step span { font-size:clamp(.85rem,2.2vw,.98rem); color:var(--muted); line-height:1.5; display:block; }
-  .flow .arrow { align-self:center; color:#4b5568; font-size:1.4rem; }
-  .loop-note { margin-top:clamp(1rem,2.5vh,1.6rem); text-align:center; color:var(--yellow); font-size:clamp(.95rem,2.6vw,1.15rem); line-height:1.5; }
+  .two{ display:grid; grid-template-columns:1fr 1fr; gap:clamp(.8rem,2vw,1.4rem); }
+  .panel{ background:var(--card); border:1px solid var(--border); border-radius:16px; padding:clamp(1.1rem,2.5vw,1.8rem); box-shadow:var(--shadow); }
+  .panel h3{ font-size:clamp(1.05rem,2.8vw,1.35rem); margin-bottom:1rem; font-weight:800; }
+  .panel.me h3{ color:var(--human); }
+  .panel.ai h3{ color:var(--accent); }
 
-  .quote { background:var(--card); border-left:4px solid var(--green); border-radius:0 12px 12px 0; padding:clamp(.8rem,1.8vw,1.1rem) clamp(1rem,2vw,1.4rem); margin:.5rem 0; font-size:clamp(.9rem,2.5vw,1.2rem); color:#cfd6e4; line-height:1.55; }
-  .quote small { display:block; color:var(--dim); margin-top:.3rem; font-size:clamp(.75rem,2vw,.95rem); }
+  ul{ list-style:none; }
+  ul li{ font-size:clamp(.9rem,2.4vw,1.18rem); line-height:1.55; padding:.42rem 0 .42rem 1.4rem; position:relative; color:#36404f; }
+  ul li::before{ content:""; position:absolute; left:.1rem; top:.95em; width:.5rem; height:.5rem; border-radius:2px; background:var(--accent); }
+  .panel.me ul li::before{ background:var(--human); }
+  .big-list li{ font-size:clamp(1rem,2.9vw,1.4rem); padding:.6rem 0 .6rem 1.6rem; }
+  .big-list li::before{ top:1.05em; }
+  b{ color:var(--ink); font-weight:700; }
 
-  .hint { position:fixed; bottom:2vh; left:50%; transform:translateX(-50%); color:var(--dim); font-size:.8rem; background:rgba(15,17,23,.8); padding:.3rem .9rem; border-radius:20px; pointer-events:none; }
+  /* 閉環 */
+  .loop{ display:flex; flex-direction:column; gap:.6rem; }
+  @media (min-width:820px){ .loop{ flex-direction:row; align-items:stretch; } }
+  .loop .step{ flex:1; background:var(--card); border:1px solid var(--border); border-radius:14px; padding:clamp(.95rem,2vw,1.25rem) 1rem; box-shadow:var(--shadow); position:relative; }
+  .loop .step .k{ font-size:.78rem; font-weight:800; color:var(--accent); letter-spacing:.05em; }
+  .loop .step b{ display:block; font-size:clamp(1rem,2.5vw,1.18rem); margin:.25rem 0 .35rem; }
+  .loop .step span{ font-size:clamp(.82rem,2.1vw,.96rem); color:var(--sub); line-height:1.5; display:block; }
+  .loop .arrow{ align-self:center; color:var(--accent); font-weight:800; font-size:1.2rem; }
+  .loopback{ margin-top:clamp(1rem,2.5vh,1.5rem); background:var(--accent-soft); border:1px solid #c7e8dc; border-radius:12px; padding:.85rem 1.2rem; text-align:center; color:#0a6b53; font-size:clamp(.92rem,2.5vw,1.12rem); font-weight:600; line-height:1.5; }
+
+  /* harness */
+  .harness-grid{ display:grid; grid-template-columns:repeat(2,1fr); gap:clamp(.7rem,1.6vw,1.1rem); }
+  @media (min-width:820px){ .harness-grid{ grid-template-columns:repeat(3,1fr); } }
+  .hcard{ background:var(--card); border:1px solid var(--border); border-radius:14px; padding:clamp(1rem,2vw,1.3rem); box-shadow:var(--shadow); }
+  .hcard .ht{ font-weight:800; font-size:clamp(.98rem,2.4vw,1.12rem); color:var(--ink); margin-bottom:.35rem; }
+  .hcard .hd{ font-size:clamp(.82rem,2.1vw,.98rem); color:var(--sub); line-height:1.55; }
+  .hcard .hk{ font-size:.72rem; font-weight:800; letter-spacing:.06em; color:var(--accent); display:block; margin-bottom:.5rem; }
+
+  .quote{ background:var(--card); border:1px solid var(--border); border-left:4px solid var(--accent); border-radius:0 12px 12px 0; padding:clamp(.8rem,1.7vw,1.05rem) clamp(1rem,2vw,1.3rem); margin:.45rem 0; font-size:clamp(.9rem,2.4vw,1.18rem); color:#36404f; line-height:1.55; box-shadow:var(--shadow); }
+  .quote small{ display:block; color:var(--muted); margin-top:.3rem; font-size:clamp(.74rem,1.9vw,.92rem); }
+
+  .define{ display:grid; grid-template-columns:1fr; gap:.9rem; margin-top:.4rem; }
+  @media (min-width:820px){ .define{ grid-template-columns:1fr 1fr; } }
+  .define .d{ background:var(--card); border:1px solid var(--border); border-radius:14px; padding:clamp(1.1rem,2.3vw,1.6rem); box-shadow:var(--shadow); }
+  .define .d .dk{ font-size:.74rem; font-weight:800; letter-spacing:.22em; margin-bottom:.5rem; }
+  .define .d.loopd .dk{ color:var(--accent); }
+  .define .d.harnessd .dk{ color:var(--human); }
+  .define .d .dt{ font-size:clamp(1.05rem,2.7vw,1.35rem); font-weight:800; margin-bottom:.5rem; }
+  .define .d .dx{ font-size:clamp(.88rem,2.2vw,1.05rem); color:var(--sub); line-height:1.65; }
+
+  .hint{ position:fixed; bottom:2vh; left:50%; transform:translateX(-50%); color:var(--muted); font-size:.78rem; background:rgba(255,255,255,.85); border:1px solid var(--border); padding:.3rem .9rem; border-radius:20px; pointer-events:none; }
+
+  /* 影片挖空 */
+  .videoframe{
+    margin-top:.4rem; width:100%; aspect-ratio:16/9; border-radius:16px;
+    border:2px dashed #c2cad6; background:
+      repeating-linear-gradient(45deg, #ffffff, #ffffff 14px, #f1f4f8 14px, #f1f4f8 28px);
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.6rem;
+    color:var(--muted); text-align:center;
+  }
+  .videoframe .vt{ font-size:clamp(1rem,3vw,1.4rem); font-weight:800; color:var(--sub); }
+  .videoframe .vd{ font-size:clamp(.82rem,2.2vw,1rem); color:var(--muted); line-height:1.5; max-width:48ch; padding:0 1rem; }
+  .videoframe .vbadge{ font-size:.72rem; font-weight:800; letter-spacing:.2em; color:var(--human); background:var(--human-soft); border:1px solid #ecd6ad; padding:.3rem .8rem; border-radius:20px; }
+  .videoframe video{ width:100%; height:100%; border-radius:14px; object-fit:cover; }
 </style>
 </head>
 <body>
 
-<section class="slide"><span class="pgnum">01 / 10</span>
+<section class="slide"><span class="pgnum">01 / 12</span>
   <div class="kicker">AI × NO-CODE 開發分享</div>
   <h1>我用 AI、<span class="hl">0 行手寫程式碼</span>，<br>做出一套團購店 ERP</h1>
-  <p class="sub">不會寫程式也能當「產品負責人 + 驗收者」，<br>把寫 code 這件事整個交給 AI（Claude Code）。</p>
+  <p class="sub">不會寫程式，也能當「產品負責人 + 驗收者」。<br>把寫 code 整件事交給 AI（Claude Code）——<br>真正的關鍵，是一個<span class="hl">閉環</span>，加上一套讓它可靠運轉的 <span class="hl">harness</span>。</p>
 </section>
 
-<section class="slide"><span class="pgnum">02 / 10</span>
+<section class="slide"><span class="pgnum">02 / 12</span>
   <h2>先看結果：<span class="hl">約 7 週</span>，從零到上線維運中</h2>
   <div class="cards">
     <div class="card"><div class="num">52,000+</div><div class="lbl">行 TypeScript 程式碼（每一行都是 AI 寫的）</div></div>
-    <div class="card"><div class="num">54</div><div class="lbl">個後台頁面：訂單／採購／撿貨／取貨／庫存／財務…</div></div>
+    <div class="card"><div class="num">54</div><div class="lbl">個後台頁面：訂單／採購／撿貨／取貨／庫存／財務</div></div>
     <div class="card"><div class="num">438+</div><div class="lbl">個 Pull Request，全部由 AI 發、我驗收合併</div></div>
     <div class="card"><div class="num">311</div><div class="lbl">支資料庫 migration（Supabase / PostgreSQL）</div></div>
     <div class="card"><div class="num">2</div><div class="lbl">個前端 App：管理後台 + 會員端（LINE LIFF）</div></div>
-    <div class="card"><div class="num">148</div><div class="lbl">份文件：PRD、DB 設計、E2E 測試、交接——也是 AI 寫的</div></div>
+    <div class="card"><div class="num">148</div><div class="lbl">份文件：PRD、DB 設計、E2E 測試、交接，也是 AI 寫的</div></div>
   </div>
-  <p class="sub">場景：團購店 ERP — 總倉 1 + 門市 + 上萬 SKU，開團 → 下單 → 採購 → 進貨 → 撿貨 → 取貨全流程。</p>
+  <p class="sub">場景：團購店 ERP — 總倉 1 + 門市 + 上萬 SKU，開團、下單、採購、進貨、撿貨、取貨全流程。</p>
 </section>
 
-<section class="slide"><span class="pgnum">03 / 10</span>
+<section class="slide"><span class="pgnum">03 / 12</span>
   <h2>分工很簡單：<span class="hl">我出腦袋，AI 出手</span></h2>
   <div class="two">
     <div class="panel me">
@@ -89,7 +131,7 @@
       </ul>
     </div>
     <div class="panel ai">
-      <h3>AI 做的事（全部的「技術活」）</h3>
+      <h3>AI 做的事（全部的技術活）</h3>
       <ul>
         <li>把需求整理成 PRD、設計資料庫</li>
         <li>寫前後端程式碼、發 PR</li>
@@ -100,54 +142,84 @@
   </div>
 </section>
 
-<section class="slide"><span class="pgnum">04 / 10</span>
-  <h2>整個專案就是不斷重複<span class="hl">這一個循環</span></h2>
-  <div class="flow">
-    <div class="step"><b>1. 我講需求</b><span>用白話說想要什麼、現在哪裡不順</span></div>
-    <div class="arrow">↓</div>
-    <div class="step"><b>2. AI 反問釐清</b><span>邊界條件、例外狀況先講清楚</span></div>
-    <div class="arrow">↓</div>
-    <div class="step"><b>3. AI 寫好發 PR</b><span>程式碼 + DB 變更 + 說明，一包送上來</span></div>
-    <div class="arrow">↓</div>
-    <div class="step"><b>4. 我驗收</b><span>實際操作系統，OK 就合併上線</span></div>
+<section class="slide"><span class="tag">核心觀念 1</span><span class="pgnum">04 / 12</span>
+  <h2>整套系統，是同一個<span class="hl">閉環</span>跑了 438 次</h2>
+  <div class="loop">
+    <div class="step"><span class="k">STEP 1</span><b>我講需求</b><span>用白話說想要什麼、現在哪裡不順</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><span class="k">STEP 2</span><b>AI 反問釐清</b><span>邊界條件、例外狀況先講清楚</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><span class="k">STEP 3</span><b>AI 寫好發 PR</b><span>程式碼 + DB 變更 + 說明，一包送上</span></div>
+    <div class="arrow">→</div>
+    <div class="step"><span class="k">STEP 4</span><b>我驗收</b><span>實際操作系統，OK 就合併上線</span></div>
   </div>
-  <div class="loop-note">↺ 不 OK？用白話回報，AI 修完再驗 — 一個功能通常一段對話就收掉</div>
-  <p class="sub">438 個 PR = 這個循環跑了 438 次。每次循環小而快，錯了也容易退回。</p>
+  <div class="loopback">不 OK 就用白話回報，AI 修完再驗——驗收結果直接回流成下一輪需求，閉環就這樣一圈一圈轉</div>
+  <p class="sub">重點不是「AI 很會寫」，而是每一圈都小、都能驗收、錯了能退回。閉環讓品質可控。</p>
 </section>
 
-<section class="slide"><span class="pgnum">05 / 10</span>
+<section class="slide"><span class="tag">核心觀念 2</span><span class="pgnum">05 / 12</span>
+  <h2>讓閉環自己穩定轉起來的，是 <span class="hl">harness</span></h2>
+  <p class="lead" style="margin-bottom:1.4rem">閉環是「怎麼做」；harness 是那套讓 AI 能可靠、重複、自動把一圈跑完的<b>支架與工具鏈</b>。沒有 harness，AI 只是聊天；有了 harness，AI 才真的能交付。</p>
+  <div class="harness-grid">
+    <div class="hcard"><span class="hk">工具能力</span><div class="ht">Claude Code 本體</div><div class="hd">能讀寫檔案、跑指令、操作 git、直接開 Pull Request——不是只會回字，而是會動手。</div></div>
+    <div class="hcard"><span class="hk">長期記憶</span><div class="ht">CLAUDE.md 守則檔</div><div class="hd">每次開工先讀。踩過的雷（部署管道、改函式前先查歷史）寫進去，之後不再犯。</div></div>
+    <div class="hcard"><span class="hk">接力棒</span><div class="ht">HANDOFF 交接文件</div><div class="hd">每段工作結束寫下進度與待辦，下一段對話無縫接手，跨對話不掉鏈。</div></div>
+    <div class="hcard"><span class="hk">驗收依據</span><div class="ht">E2E 測試 + 一鍵重置</div><div class="hd">14 套測試情境，加上一鍵重建測試資料，讓「驗收」有標準、可重複。</div></div>
+    <div class="hcard"><span class="hk">安全部署</span><div class="ht">Migration 部署管道</div><div class="hd">資料庫變更走固定、受控的部署方式，上線步驟一致、不靠手動硬幹。</div></div>
+    <div class="hcard"><span class="hk">交付單位</span><div class="ht">每次都是一個 PR</div><div class="hd">每一圈閉環都收斂成一個可審查、可回退的 Pull Request，變更全程留痕。</div></div>
+  </div>
+</section>
+
+<section class="slide"><span class="pgnum">06 / 12</span>
+  <h2>閉環與 harness，<span class="hl">一句話分清楚</span></h2>
+  <div class="define">
+    <div class="d loopd">
+      <div class="dk">閉環 / CLOSED LOOP</div>
+      <div class="dt">是「行為」</div>
+      <div class="dx">講需求、釐清、發 PR、驗收、回報——一圈一圈、每圈都收斂的工作節奏。它決定了<b>品質怎麼被控制住</b>。</div>
+    </div>
+    <div class="d harnessd">
+      <div class="dk">HARNESS / 支架</div>
+      <div class="dt">是「機器」</div>
+      <div class="dx">工具、守則、交接、測試、部署管道——讓那一圈能可靠、自動、重複跑完的底層裝置。它決定了<b>閉環跑得動、跑得久</b>。</div>
+    </div>
+  </div>
+  <p class="sub">先有 harness 撐住，閉環才轉得起來；閉環轉得越多，又回頭把 harness 養得越好。兩者互相加強。</p>
+</section>
+
+<section class="slide"><span class="pgnum">07 / 12</span>
   <h2>第一步不是寫程式，是<span class="hl">陪 AI 把需求聊透</span></h2>
   <ul class="big-list">
-    <li>開工前先花時間跟 AI 對談，產出各模組 <b>PRD（產品需求文件）</b>：商品、會員、庫存、採購、銷售、取貨…</li>
-    <li>AI 根據 PRD 先設計好<b>資料庫架構</b>，再開始寫第一行程式</li>
-    <li>需求文件是用「我的語言」寫的 — 我看得懂、改得動，AI 照著做</li>
+    <li>開工前先跟 AI 對談，產出各模組 <b>PRD（產品需求文件）</b>：商品、會員、庫存、採購、銷售、取貨</li>
+    <li>AI 根據 PRD 先設計好<b>資料庫架構</b>，再寫第一行程式</li>
+    <li>需求文件用「我的語言」寫——我看得懂、改得動，AI 照著做</li>
   </ul>
-  <p class="sub">心得：跟 AI 合作，前期把「要做什麼」講清楚，比急著要它寫 code 重要十倍。</p>
+  <p class="sub">心得：跟 AI 合作，前期把「要做什麼」講清楚，比急著要它寫 code 重要十倍。這也是閉環的第一步。</p>
 </section>
 
-<section class="slide"><span class="pgnum">06 / 10</span>
+<section class="slide"><span class="pgnum">08 / 12</span>
   <h2>我跟 AI 的對話，<span class="hl">就像在跟工程師同事講話</span></h2>
-  <div class="quote">「取貨單幫我改成 80mm 熱感紙的小白單版型」<small>→ AI 改好收據版型，發 PR #430</small></div>
-  <div class="quote">「列表的『載入中…』太陽春，全部改成轉圈圈」<small>→ AI 一次改了 8 個列表頁的 loading 狀態，PR #427</small></div>
-  <div class="quote">「開團列表的『加單』按鈕太小，加粗加大」<small>→ AI 調整樣式，PR #404</small></div>
-  <div class="quote">「貨還沒到齊的訂單，已到的品項要可以先取」<small>→ AI 把取貨邏輯從「整單」改成「品項層級」，含 DB 變更，PR #423</small></div>
-  <p class="sub">從調一個按鈕大小，到改整套取貨邏輯，講的方式是一樣的：說清楚「我要什麼」就好。</p>
+  <div class="quote">「取貨單幫我改成 80mm 熱感紙的小白單版型」<small>AI 改好收據版型，發 PR #430</small></div>
+  <div class="quote">「列表的『載入中』太陽春，全部改成轉圈圈」<small>AI 一次改了 8 個列表頁的 loading 狀態，PR #427</small></div>
+  <div class="quote">「貨還沒到齊的訂單，已到的品項要可以先取」<small>AI 把取貨邏輯從「整單」改成「品項層級」，含 DB 變更，PR #423</small></div>
+  <p class="sub">從調一個按鈕，到改整套取貨邏輯，講法都一樣：說清楚「我要什麼」，剩下交給閉環。</p>
 </section>
 
-<section class="slide"><span class="pgnum">07 / 10</span>
-  <h2>關鍵技巧：讓 AI <span class="hl">記住踩過的雷</span></h2>
-  <ul class="big-list">
-    <li><b>CLAUDE.md 守則檔</b>：AI 每次開工都會先讀。踩過一次的雷（例如部署資料庫的正確管道、改函式前要先查歷史版本）就寫進去，之後不再犯</li>
-    <li><b>交接文件（HANDOFF）</b>：每段工作結束請 AI 寫下進度與待辦，下一段對話無縫接手</li>
-    <li><b>測試腳本</b>：請 AI 建好 14 套 E2E 測試情境 + 一鍵重置測試資料的指令，驗收有依據</li>
-  </ul>
-  <p class="sub">AI 沒有長期記憶，但「文件」有。把經驗寫成文件，就是在幫 AI 累積資歷。</p>
+<section class="slide"><span class="tag">現場演示</span><span class="pgnum">09 / 12</span>
+  <h2>實際看一次：<span class="hl">我跟 AI 是怎麼互動的</span></h2>
+  <div class="videoframe">
+    <!-- 影片待補：把下面這行的註解打開，並把 src 換成你的影片檔名（建議放在 docs/ 同一層）
+    <video src="demo-互動演示.mp4" controls preload="metadata"></video> -->
+    <div class="vbadge">影片待補 PLACEHOLDER</div>
+    <div class="vt">［ 互動演示影片放這裡 ］</div>
+    <div class="vd">一段真實對話：我用白話講需求，AI 釐清、寫程式、發 PR，我驗收——把前面講的「閉環」實際跑一次給大家看。</div>
+  </div>
 </section>
 
-<section class="slide"><span class="pgnum">08 / 10</span>
+<section class="slide"><span class="pgnum">10 / 12</span>
   <h2>一路下來<span class="hl">學到的事</span></h2>
   <div class="two">
-    <div class="panel me">
+    <div class="panel ai">
       <h3>有用的習慣</h3>
       <ul>
         <li>一次只要一個功能，小步快跑</li>
@@ -156,40 +228,39 @@
         <li>出錯時描述「現象」，讓 AI 自己查原因</li>
       </ul>
     </div>
-    <div class="panel ai">
+    <div class="panel me">
       <h3>要注意的坑</h3>
       <ul>
-        <li>需求講得模糊，AI 會自己腦補 — 要驗收抓出來</li>
+        <li>需求講得模糊，AI 會自己腦補，要靠驗收抓出來</li>
         <li>同個地方改多次，要提醒 AI 別蓋掉之前的修正</li>
-        <li>AI 說「做完了」≠ 真的好了，驗收不能省</li>
+        <li>AI 說「做完了」不等於真的好了，驗收不能省</li>
       </ul>
     </div>
   </div>
 </section>
 
-<section class="slide"><span class="pgnum">09 / 10</span>
+<section class="slide"><span class="pgnum">11 / 12</span>
   <h2>如果你也想試：<span class="hl">三個建議</span></h2>
   <ul class="big-list">
-    <li><b>1. 把自己當 PM，不是工程師</b> — 你的價值是懂業務、會驗收，程式碼交給 AI</li>
-    <li><b>2. 從一個小流程開始</b> — 先做一張表單、一個報表，跑順「需求 → PR → 驗收」的循環再放大</li>
-    <li><b>3. 經驗寫成文件餵回去</b> — 守則檔 + 交接文件，是讓 AI 從「臨時工」變「老員工」的關鍵</li>
+    <li><b>把自己當 PM，不是工程師</b>——你的價值是懂業務、會驗收，程式碼交給 AI</li>
+    <li><b>先建立閉環，再追求速度</b>——把「需求、PR、驗收」一圈跑順，再放大功能範圍</li>
+    <li><b>把經驗養進 harness</b>——守則檔、交接、測試，讓 AI 從「臨時工」變「老員工」</li>
   </ul>
   <p class="sub">門檻不是會不會寫程式，是能不能把需求講清楚、願不願意認真驗收。</p>
 </section>
 
-<section class="slide"><span class="pgnum">10 / 10</span>
+<section class="slide"><span class="pgnum">12 / 12</span>
   <div class="kicker">TAKEAWAY</div>
   <h1>寫程式的時代沒有結束，<br>但<span class="hl">「只有工程師能做系統」</span>的時代結束了。</h1>
-  <p class="sub">Q & A — 歡迎現場示範一次「講需求 → AI 發 PR」給大家看。</p>
+  <p class="sub">記住兩個字：<b>閉環</b>讓品質可控，<b>harness</b>讓閉環跑得動。<br>Q &amp; A——歡迎現場示範一次「講需求，AI 發 PR」。</p>
 </section>
 
-<div class="hint" id="hint">上下滑動翻頁 · 桌機可按 ↑ ↓ 或空白鍵</div>
+<div class="hint" id="hint">上下滑動翻頁 · 桌機可按 上 / 下 或空白鍵</div>
 
 <script>
   const slides = [...document.querySelectorAll('.slide')];
   function go(dir){
-    const y = window.scrollY, h = window.innerHeight;
-    const i = Math.round(y / h);
+    const i = Math.round(scrollY / innerHeight);
     const t = Math.max(0, Math.min(slides.length - 1, i + dir));
     slides[t].scrollIntoView({behavior:'smooth'});
   }
