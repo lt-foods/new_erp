@@ -8,6 +8,8 @@ import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 import { Modal } from "@/components/Modal";
 import { MemberForm, type MemberFormValues } from "@/components/MemberForm";
 import { MemberDetail } from "@/components/MemberDetail";
+import { MemberBulkDeleteModal, type BulkDeleteTarget } from "@/components/MemberBulkDeleteModal";
+import { isAdmin, useRole } from "@/lib/role";
 import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow } from "@/components/DataTable";
@@ -92,6 +94,11 @@ function MembersListBody() {
   // 因 push_subscriptions RLS 對 admin（role 非 hq）會靜默回 0 列。
   const [pushSet, setPushSet] = useState<Set<number>>(new Set());
   const [reloadTick, setReloadTick] = useState(0);
+  const role = useRole();
+  const canBulkDelete = isAdmin(role);
+  // 批次刪除：勾選的會員（id → 顯示資訊；跨頁保留，切換搜尋 / 門市時清空）
+  const [selected, setSelected] = useState<Map<number, BulkDeleteTarget>>(new Map());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [modal, setModal] = useState<
     | { mode: "new" }
     | { mode: "edit"; values: MemberFormValues }
@@ -117,6 +124,8 @@ function MembersListBody() {
     const t = setTimeout(() => {
       setQuery(queryDraft);
       setPage(1);
+      // 換搜尋字串 → 結果集變了，清空跨頁勾選，避免誤刪看不見的會員
+      setSelected(new Map());
     }, 250);
     return () => clearTimeout(t);
   }, [queryDraft, query]);
@@ -306,6 +315,36 @@ function MembersListBody() {
     }
   }
 
+  // 可勾選刪除的列：排除已刪除 / 已合併（這些不是有效操作對象）
+  const selectableRows = (rows ?? []).filter(
+    (r) => r.status !== "deleted" && r.status !== "merged",
+  );
+  const pageAllSelected =
+    selectableRows.length > 0 && selectableRows.every((r) => selected.has(r.id));
+  // 表格欄數（管理員多一個勾選欄），給 Skeleton / EmptyRow 的 colSpan 用
+  const colCount = canBulkDelete ? 12 : 11;
+
+  function toggleOne(r: MemberRow) {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      if (next.has(r.id)) next.delete(r.id);
+      else next.set(r.id, { id: r.id, member_no: r.member_no, name: r.name });
+      return next;
+    });
+  }
+
+  function togglePageAll() {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      if (pageAllSelected) {
+        for (const r of selectableRows) next.delete(r.id);
+      } else {
+        for (const r of selectableRows) next.set(r.id, { id: r.id, member_no: r.member_no, name: r.name });
+      }
+      return next;
+    });
+  }
+
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header className="flex items-center justify-between">
@@ -344,7 +383,7 @@ function MembersListBody() {
         </div>
         <select
           value={storeId}
-          onChange={(e) => setStoreId(e.target.value)}
+          onChange={(e) => { setStoreId(e.target.value); setSelected(new Map()); }}
           className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
         >
           <option value="">全部門市</option>
@@ -363,8 +402,39 @@ function MembersListBody() {
         </div>
       )}
 
+      {canBulkDelete && selected.size > 0 && (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 px-4 py-2 text-sm dark:border-red-900 dark:bg-red-950/40">
+          <span className="text-red-800 dark:text-red-300">已選 {selected.size} 筆</span>
+          <div className="flex items-center gap-2">
+            <SpinButton
+              onClick={() => setSelected(new Map())}
+              className="rounded-md border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            >
+              清除選取
+            </SpinButton>
+            <SpinButton
+              onClick={() => setBulkDeleteOpen(true)}
+              className="rounded-md bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700"
+            >
+              🗑️ 刪除所選（{selected.size}）
+            </SpinButton>
+          </div>
+        </div>
+      )}
+
       <Table>
         <THead>
+          {canBulkDelete && (
+            <Th>
+              <input
+                type="checkbox"
+                aria-label="全選本頁"
+                checked={pageAllSelected}
+                onChange={togglePageAll}
+                className="h-4 w-4 align-middle"
+              />
+            </Th>
+          )}
           <ThSort label="姓名" col="name" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
           <ThSort label="取貨店" col="home_store_id" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
           <Th>手機</Th>
@@ -379,9 +449,9 @@ function MembersListBody() {
         </THead>
         <TBody>
           {rows === null ? (
-            <SkeletonRows cols={11} />
+            <SkeletonRows cols={colCount} />
           ) : rows.length === 0 ? (
-            <EmptyRow colSpan={11}>
+            <EmptyRow colSpan={colCount}>
               {total === 0 && !query ? "還沒有會員，按「新增會員」開始建立。" : "沒有符合條件的會員。"}
             </EmptyRow>
           ) : (
@@ -394,6 +464,21 @@ function MembersListBody() {
                   onClick={() => setModal({ mode: "detail", memberId: r.id, memberNo: r.member_no })}
                   className="cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800/50"
                 >
+                  {canBulkDelete && (
+                    <Td onClick={(e) => e.stopPropagation()}>
+                      {r.status === "deleted" || r.status === "merged" ? (
+                        <span className="inline-block h-4 w-4" />
+                      ) : (
+                        <input
+                          type="checkbox"
+                          aria-label={`選取 ${r.name ?? r.member_no}`}
+                          checked={selected.has(r.id)}
+                          onChange={() => toggleOne(r)}
+                          className="h-4 w-4 align-middle"
+                        />
+                      )}
+                    </Td>
+                  )}
                   <Td>
                     <div className="flex items-center gap-2">
                       <span className="flex w-12 shrink-0 flex-col items-end gap-0.5">
@@ -540,6 +625,17 @@ function MembersListBody() {
           />
         ) : null}
       </Modal>
+
+      <MemberBulkDeleteModal
+        open={bulkDeleteOpen}
+        onClose={() => setBulkDeleteOpen(false)}
+        members={[...selected.values()]}
+        onDeleted={() => {
+          setBulkDeleteOpen(false);
+          setSelected(new Map());
+          setReloadTick((t) => t + 1);
+        }}
+      />
 
       {totalPages > 1 && (
         <div className="flex items-center justify-end gap-2 text-sm">
