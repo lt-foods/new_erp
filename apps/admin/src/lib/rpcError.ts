@@ -236,6 +236,11 @@ const RULES: Rule[] = [
     pattern: /source member \d+ is already merged/i,
     render: () => "來源會員已經合併過了。",
   },
+  // ===== rpc_member_gdpr_delete（會員刪除） =====
+  {
+    pattern: /member \d+ not found/i,
+    render: () => "找不到此會員（可能已被刪除）。",
+  },
   // ===== rpc_register_damage =====
   {
     pattern: /damage_qty must be > 0/i,

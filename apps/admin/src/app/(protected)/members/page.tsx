@@ -524,7 +524,14 @@ function MembersListBody() {
         maxWidth={modal?.mode === "detail" ? "max-w-4xl" : "max-w-3xl"}
       >
         {modal?.mode === "detail" ? (
-          <MemberDetail memberId={modal.memberId} />
+          <MemberDetail
+            memberId={modal.memberId}
+            onDeleted={() => {
+              setModal(null);
+              setReloadTick((t) => t + 1);
+              if (idFromUrl) router.replace("/members");
+            }}
+          />
         ) : modal ? (
           <MemberForm
             initial={modal.mode === "edit" ? modal.values : undefined}

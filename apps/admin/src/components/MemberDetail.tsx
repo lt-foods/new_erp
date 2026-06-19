@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { MemberMergeModal } from "@/components/MemberMergeModal";
+import { MemberDeleteModal } from "@/components/MemberDeleteModal";
 import { WalletActionModal, type WalletActionMode } from "@/components/WalletActionModal";
 import { translateRpcError } from "@/lib/rpcError";
-import { canAdjustWallet, useRole } from "@/lib/role";
+import { canAdjustWallet, isAdmin, useRole } from "@/lib/role";
 import { walletLedgerTypeLabel, walletPaymentMethodLabel } from "@/lib/walletLedger";
 import { maskLineUserId } from "@/lib/maskLineUserId";
 import SpinButton from "@/components/SpinButton";
@@ -69,7 +70,7 @@ type WalletEntry = {
   created_at: string;
 };
 
-export function MemberDetail({ memberId }: { memberId: number }) {
+export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDeleted?: () => void }) {
   const [member, setMember] = useState<Member | null>(null);
   const [tier, setTier] = useState<Tier | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
@@ -82,6 +83,7 @@ export function MemberDetail({ memberId }: { memberId: number }) {
   const [sending, setSending] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
   const [mergeOpen, setMergeOpen] = useState<false | "guest-to-real" | "real-from-guest">(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [mergedFrom, setMergedFrom] = useState<MergedFrom[]>([]);
   const [savingFlags, setSavingFlags] = useState(false);
   const [draftAdminNote, setDraftAdminNote] = useState("");
@@ -252,11 +254,14 @@ export function MemberDetail({ memberId }: { memberId: number }) {
   if (!member) return <div className="text-sm text-zinc-500">載入中…</div>;
 
   const isMerged = member.status === "merged";
+  const isDeleted = member.status === "deleted";
   const hasLine = !!member.line_user_id;
   // 「合併到已綁 LINE 會員」：自己未綁 LINE + status≠merged 才出現
-  const canMergeOut = !hasLine && !isMerged;
+  const canMergeOut = !hasLine && !isMerged && !isDeleted;
   // 「合併未綁 LINE 會員進來」：自己已綁 LINE + status≠merged 才出現
-  const canAbsorbGuest = hasLine && !isMerged;
+  const canAbsorbGuest = hasLine && !isMerged && !isDeleted;
+  // 刪除（GDPR 軟刪除）：僅管理員，且非已合併 / 已刪除
+  const canDelete = isAdmin(role) && !isMerged && !isDeleted;
 
   return (
     <div className="space-y-5">
@@ -303,7 +308,22 @@ export function MemberDetail({ memberId }: { memberId: number }) {
             📥 合併舊會員進來
           </SpinButton>
         )}
+        {canDelete && (
+          <SpinButton
+            onClick={() => setDeleteOpen(true)}
+            className="rounded-md border border-red-300 px-3 py-1 text-xs font-medium text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950"
+            title="刪除會員：清除個資、退卡、移除標籤；流水 / 訂單依稅務規定保留（不可還原）"
+          >
+            🗑️ 刪除會員
+          </SpinButton>
+        )}
       </div>
+
+      {isDeleted && (
+        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+          此會員已刪除（個資已清除）。歷史交易 / 流水紀錄依稅務規定保留。
+        </div>
+      )}
 
       {/* 黑名單 / 管理員備註 */}
       <div className="rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
@@ -424,6 +444,17 @@ export function MemberDetail({ memberId }: { memberId: number }) {
           ? { id: member.id, name: member.name, phone: member.phone, member_no: member.member_no }
           : undefined}
         onMerged={() => { setMergeOpen(false); setReloadTick((n) => n + 1); }}
+      />
+
+      <MemberDeleteModal
+        open={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        member={{ id: member.id, member_no: member.member_no, name: member.name }}
+        onDeleted={() => {
+          setDeleteOpen(false);
+          setReloadTick((n) => n + 1);
+          onDeleted?.();
+        }}
       />
 
       {walletAction && tenantId && (
