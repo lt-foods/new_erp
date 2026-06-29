@@ -50,6 +50,7 @@ type Item = {
   qty_ordered: number;
   qty_received: number;
   qty_returned: number;
+  qty_shipped: number;
   unit_cost: number;
   line_subtotal: number;
   notes: string | null;
@@ -138,6 +139,13 @@ function PageContent() {
         });
       }
 
+      // 已出（衍生：該 PO 已揀/出貨波次本 sku 加總）
+      const { data: shipRows } = await supabase.rpc("rpc_po_items_shipped", { p_po_id: id });
+      const shipMap = new Map<number, number>();
+      for (const s of (shipRows as { po_item_id: number; qty_shipped: number }[] | null) ?? []) {
+        shipMap.set(Number(s.po_item_id), Number(s.qty_shipped));
+      }
+
       const merged: Item[] = (itemRows ?? []).map((r) => {
         const m = skuMap.get(r.sku_id);
         return {
@@ -150,6 +158,7 @@ function PageContent() {
           qty_ordered: Number(r.qty_ordered),
           qty_received: Number(r.qty_received),
           qty_returned: Number(r.qty_returned),
+          qty_shipped: shipMap.get(r.id) ?? 0,
           unit_cost: Number(r.unit_cost),
           line_subtotal: Number(r.line_subtotal ?? 0),
           notes: r.notes,
@@ -174,6 +183,11 @@ function PageContent() {
   }, [items]);
 
   const editable = header?.status === "draft";
+  // 已收量可調整：已發送之後（草稿請改訂購量；已結案/已取消鎖定）
+  const recvEditable =
+    header?.status === "sent" ||
+    header?.status === "partially_received" ||
+    header?.status === "fully_received";
   const canSend = header?.status === "draft";
   const canStockout =
     header?.status === "sent" || header?.status === "partially_received";
@@ -369,6 +383,7 @@ function PageContent() {
                   <Th className="text-right">訂購</Th>
                   <Th className="text-right">已收</Th>
                   <Th className="text-right">已退</Th>
+                  <Th className="text-right">已出</Th>
                   <Th className="text-right">成本</Th>
                   <Th className="text-right">小計</Th>
                 </tr>
@@ -376,7 +391,7 @@ function PageContent() {
               <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
                 {items.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="p-6 text-center text-zinc-500">無品項</td>
+                    <td colSpan={9} className="p-6 text-center text-zinc-500">無品項</td>
                   </tr>
                 ) : (
                   items.map((r, idx) => (
@@ -388,11 +403,20 @@ function PageContent() {
                       </Td>
                       <Td className="text-zinc-500">{r.unit_uom ?? "—"}</Td>
                       <Td className="text-right">{r.qty_ordered}</Td>
-                      <Td className="text-right text-emerald-600 dark:text-emerald-400">
-                        {r.qty_received > 0 ? r.qty_received : "—"}
+                      <Td className="text-right">
+                        {recvEditable ? (
+                          <ReceivedCell key={`${r.id}:${r.qty_received}`} item={r} onSaved={reload} />
+                        ) : (
+                          <span className="text-emerald-600 dark:text-emerald-400">
+                            {r.qty_received > 0 ? r.qty_received : "—"}
+                          </span>
+                        )}
                       </Td>
                       <Td className="text-right text-zinc-500">
                         {r.qty_returned > 0 ? r.qty_returned : "—"}
+                      </Td>
+                      <Td className="text-right text-zinc-500">
+                        {r.qty_shipped > 0 ? r.qty_shipped : "—"}
                       </Td>
                       <Td className="text-right font-medium text-amber-600 dark:text-amber-400">${r.unit_cost.toFixed(0)}</Td>
                       <Td className="text-right font-mono">${(r.qty_ordered * r.unit_cost).toFixed(0)}</Td>
@@ -440,6 +464,82 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
     <div className="flex items-center justify-between">
       <dt className="text-zinc-500">{label}</dt>
       <dd className="font-mono">{children}</dd>
+    </div>
+  );
+}
+
+/**
+ * 已收量行內編輯。
+ * 下限 = 已退 + 已出（已離開庫存的量不能再被「未收」回去）；上限 = 訂購量。
+ * 儲存呼叫 rpc_adjust_po_item_received（連動庫存：補收入庫 / 改少出庫修正）。
+ */
+// 由父層以 key={`${id}:${qty_received}`} 掛載：儲存成功 reload 後 qty_received 變動 →
+// 元件重掛、val 重置；輸入過程中 qty_received 不變 → 不重掛、保留輸入值。
+function ReceivedCell({ item, onSaved }: { item: Item; onSaved: () => void | Promise<void> }) {
+  const [val, setVal] = useState(String(item.qty_received));
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const floor = item.qty_returned + item.qty_shipped;
+  const max = item.qty_ordered;
+  const num = Number(val);
+  const dirty = num !== item.qty_received;
+  const invalid = val.trim() === "" || Number.isNaN(num) || num < floor || num > max;
+
+  async function save() {
+    setErr(null);
+    if (invalid) {
+      setErr(`已收量需介於 ${floor}~${max}`);
+      return;
+    }
+    setSaving(true);
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { error: rpcErr } = await supabase.rpc("rpc_adjust_po_item_received", {
+        p_po_item_id: item.id,
+        p_new_qty: num,
+        p_operator: userData.user?.id,
+      });
+      if (rpcErr) throw new Error(rpcErr.message);
+      await onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      <div className="flex items-center justify-end gap-1">
+        <input
+          type="number"
+          inputMode="numeric"
+          value={val}
+          min={floor}
+          max={max}
+          disabled={saving}
+          onChange={(e) => setVal(e.target.value)}
+          className={`w-16 rounded border bg-white px-1 py-0.5 text-right text-sm tabular-nums dark:bg-zinc-800 ${
+            invalid && dirty
+              ? "border-red-400 dark:border-red-700"
+              : "border-zinc-300 dark:border-zinc-700"
+          }`}
+          aria-label={`已收量（下限 ${floor}、上限 ${max}）`}
+        />
+        {dirty && (
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving || invalid}
+            className="rounded bg-emerald-600 px-1.5 py-0.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-40"
+          >
+            {saving ? "…" : "儲存"}
+          </button>
+        )}
+      </div>
+      {err && <span className="max-w-[10rem] text-right text-[11px] leading-tight text-red-500">{err}</span>}
     </div>
   );
 }
