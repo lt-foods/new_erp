@@ -5,6 +5,7 @@ import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
+import { parseReturnNote } from "@/lib/returnNote";
 
 const RETURNABLE_STATUSES = ["shipping", "ready", "partially_completed", "completed", "expired"] as const;
 
@@ -32,8 +33,10 @@ type DeliveredSku = {
   sku_id: number;
   sku_code: string;
   sku_name: string;
-  delivered: number;
-  already_returned: number;
+  delivered: number; // R：已收(訂單)量（含已取貨）
+  picked: number; // P：已取貨量（status='picked_up'）
+  returned_unpicked: number; // 已退量：一般退貨（未帶 |取貨後退回 tag）
+  returned_picked: number; // 已退量：取貨後退回（帶 |取貨後退回 tag）
   store_stock: number;
 };
 
@@ -216,12 +219,14 @@ export default function OrderReturnCreateModal({
         .eq("order_id", orderId)
         .not("status", "in", "(cancelled,expired)");
 
-      const deliveredMap = new Map<number, { qty: number; sku_code: string; sku_name: string }>();
+      // deliveredMap.qty = 已收(訂單)量（含已取貨）；picked = 已取貨量（status='picked_up'）
+      const deliveredMap = new Map<number, { qty: number; picked: number; sku_code: string; sku_name: string }>();
       // Supabase 自動 typegen 對 FK relation 一律當 array，雖然這裡實際是 1:1。
       // 用 unknown 中轉 cast，再對 array 取 [0]。
       type ItemRow = {
         sku_id: number;
         qty: number | null;
+        status: string | null;
         skus: { sku_code: string; products: { name?: string } | { name?: string }[] | null } | Array<{
           sku_code: string;
           products: { name?: string } | { name?: string }[] | null;
@@ -240,27 +245,32 @@ export default function OrderReturnCreateModal({
         const qty = Number(row.qty ?? 0);
         deliveredMap.set(row.sku_id, {
           qty: (prev?.qty ?? 0) + qty,
+          picked: (prev?.picked ?? 0) + (row.status === "picked_up" ? qty : 0),
           sku_code: skuObj?.sku_code ?? prev?.sku_code ?? "",
           sku_name: prodObj?.name ?? prev?.sku_name ?? "",
         });
       }
 
-      // 已退量（先前的 return_to_hq transfer 累加）
+      // 已退量（先前的 return_to_hq transfer 累加），依 notes |取貨後退回 tag 分兩池
       const { data: returnedRows } = await sb
         .from("transfers")
-        .select("id, transfer_type, status, source_location, transfer_items(sku_id, qty_shipped)")
+        .select("id, transfer_type, status, source_location, notes, transfer_items(sku_id, qty_shipped)")
         .eq("customer_order_id", orderId)
         .eq("transfer_type", "return_to_hq")
         .in("status", ["shipped", "received"])
         .eq("source_location", store.location_id);
 
-      const returnedMap = new Map<number, number>();
+      const returnedUnpickedMap = new Map<number, number>();
+      const returnedPickedMap = new Map<number, number>();
       for (const t of (returnedRows ?? []) as Array<{
+        notes: string | null;
         transfer_items: Array<{ sku_id: number; qty_shipped: number | null }>;
       }>) {
+        const isRestock = parseReturnNote(t.notes).isRestock;
+        const target = isRestock ? returnedPickedMap : returnedUnpickedMap;
         for (const ti of t.transfer_items ?? []) {
           if (ti.sku_id == null) continue;
-          returnedMap.set(ti.sku_id, (returnedMap.get(ti.sku_id) ?? 0) + Number(ti.qty_shipped ?? 0));
+          target.set(ti.sku_id, (target.get(ti.sku_id) ?? 0) + Number(ti.qty_shipped ?? 0));
         }
       }
 
@@ -283,7 +293,9 @@ export default function OrderReturnCreateModal({
         sku_code: info.sku_code,
         sku_name: info.sku_name,
         delivered: info.qty,
-        already_returned: returnedMap.get(sku_id) ?? 0,
+        picked: info.picked,
+        returned_unpicked: returnedUnpickedMap.get(sku_id) ?? 0,
+        returned_picked: returnedPickedMap.get(sku_id) ?? 0,
         store_stock: stockMap.get(sku_id) ?? 0,
       }));
       list.sort((a, b) => a.sku_code.localeCompare(b.sku_code));
@@ -298,10 +310,13 @@ export default function OrderReturnCreateModal({
     setRestockFirst(orderStatus === "completed");
   }, [orderStatus]);
 
-  // 有效可退量：未勾 restock 時受店端實際庫存上限；勾了會先入庫故不卡庫存
+  // 有效可退量：依是否「客戶已取貨後退回」分流
+  //   勾 restock：客戶取走又拿回 → 上限 = 已取貨量 − 已退(取貨後)量
+  //   不勾：退店端未取貨的貨 → 上限 = (已收 − 已取) − 已退(一般)量，再受店端實際庫存限制
   const effRemaining = (s: DeliveredSku): number => {
-    const byOrder = s.delivered - s.already_returned;
-    return restockFirst ? byOrder : Math.min(byOrder, s.store_stock);
+    if (restockFirst) return Math.max(0, s.picked - s.returned_picked);
+    const unpicked = s.delivered - s.picked - s.returned_unpicked;
+    return Math.max(0, Math.min(unpicked, s.store_stock));
   };
 
   const totalToReturn = useMemo(() => {
@@ -365,7 +380,8 @@ export default function OrderReturnCreateModal({
         )}
 
         <p className="text-sm text-zinc-500">
-          以訂單的 SKU 為準，退量不可超過訂單量 - 已退量；若店端庫存不足會被擋下。
+          退量上限依是否「客戶已取貨後退回」分流：未勾 → 退店端「未取貨」的貨（上限 = 已收 − 已取 − 已退，受店端庫存限制）；
+          勾選 → 客戶取走又拿回（上限 = 已取貨量 − 已退）。
         </p>
 
         {!isPrefilled && (
@@ -482,6 +498,7 @@ export default function OrderReturnCreateModal({
                   <th className="px-3 py-2">SKU</th>
                   <th className="px-3 py-2">品名</th>
                   <th className="px-3 py-2 text-right">訂單量</th>
+                  <th className="px-3 py-2 text-right">已取</th>
                   <th className="px-3 py-2 text-right">已退</th>
                   <th className="px-3 py-2 text-right">店端庫存</th>
                   <th className="px-3 py-2 text-right">可退</th>
@@ -490,23 +507,27 @@ export default function OrderReturnCreateModal({
               </thead>
               <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
                 {skus === null ? (
-                  <tr><td colSpan={7} className="p-4 text-center text-zinc-500">載入中…</td></tr>
+                  <tr><td colSpan={8} className="p-4 text-center text-zinc-500">載入中…</td></tr>
                 ) : skus.length === 0 ? (
-                  <tr><td colSpan={7} className="p-4 text-center text-zinc-500">此訂單目前沒有可退的 SKU（全部已取消 / 過期）</td></tr>
+                  <tr><td colSpan={8} className="p-4 text-center text-zinc-500">此訂單目前沒有可退的 SKU（全部已取消 / 過期）</td></tr>
                 ) : skus.map((s) => {
-                  const byOrder = s.delivered - s.already_returned;
+                  // 顯示的已退量依當前模式（取貨後退回 / 一般）對應的那一池
+                  const shownReturned = restockFirst ? s.returned_picked : s.returned_unpicked;
+                  // 未勾 restock 時，可退量受店端實際庫存限制（訂單上未取貨量 vs 實庫存）
+                  const unpicked = s.delivered - s.picked - s.returned_unpicked;
                   const cap = effRemaining(s);
-                  const cappedByStock = !restockFirst && s.store_stock < byOrder;
+                  const cappedByStock = !restockFirst && s.store_stock < unpicked;
                   return (
                     <tr key={s.sku_id}>
                       <td className="px-3 py-2 font-mono text-xs">{s.sku_code}</td>
                       <td className="px-3 py-2">{s.sku_name || "—"}</td>
                       <td className="px-3 py-2 text-right">{s.delivered}</td>
-                      <td className="px-3 py-2 text-right text-zinc-500">{s.already_returned}</td>
+                      <td className="px-3 py-2 text-right text-zinc-500">{s.picked}</td>
+                      <td className="px-3 py-2 text-right text-zinc-500">{shownReturned}</td>
                       <td className={`px-3 py-2 text-right ${cappedByStock ? "text-amber-600 dark:text-amber-400" : "text-zinc-500"}`}>
                         {s.store_stock}
                       </td>
-                      <td className="px-3 py-2 text-right font-medium" title={cappedByStock ? `受店端庫存限制（訂單可退 ${byOrder}）` : undefined}>
+                      <td className="px-3 py-2 text-right font-medium" title={cappedByStock ? `受店端庫存限制（訂單未取貨可退 ${unpicked}）` : undefined}>
                         {cap}
                       </td>
                       <td className="px-3 py-2 text-right">
