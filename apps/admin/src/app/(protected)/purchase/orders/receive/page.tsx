@@ -98,8 +98,7 @@ function PageContent() {
   const [invoiceNo, setInvoiceNo] = useState("");
   const [notes, setNotes] = useState("");
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [reloadKey, setReloadKey] = useState(0);
-  const [reloading, setReloading] = useState(false); // 送出成功後重新載入中：期間鎖住送出，避免用舊資料重複進貨
+  const [reloading, setReloading] = useState(false); // 送出成功後導頁中：期間鎖住送出，避免重複進貨
   const submitLock = useRef(false); // 同步防重入鎖（React state 非同步，擋不住同一 tick 連點）
 
   useEffect(() => {
@@ -243,7 +242,7 @@ function PageContent() {
       }
     })();
     return () => { cancelled = true; };
-  }, [poId, reloadKey]);
+  }, [poId]);
 
   function updateForm(idx: number, patch: Partial<ArrivalForm>) {
     setForms((cur) => {
@@ -403,32 +402,12 @@ function PageContent() {
       setSuccessMsg(
         `✅ 已完成進貨:進貨單 ${result.gr_no}` +
           (result.wave_code ? `／撿貨波次 ${result.wave_code}` : "") +
-          "。可繼續在本頁收下一項。"
+          "。返回採購清單…"
       );
-      // 本地立即套用本次到貨：累計已收 += 本次實到、清空本次輸入。
-      // 增量用「實際送進 RPC 的 arrivals 快照」計算（非即時畫面 state），
-      // 避免 RPC 進行中使用者改動輸入導致補償錯誤；即使隨後 reload 失敗，剩餘量仍正確、不會重複進貨。
-      const receivedByItem = new Map(arrivals.map((a) => [a.po_item_id, a.qty_received]));
-      setForms((cur) =>
-        cur
-          ? cur.map((f) => ({
-              ...f,
-              qty_already_received: f.qty_already_received + (receivedByItem.get(f.po_item_id) ?? 0),
-              // 清空所有「本次收貨」欄位，回到乾淨的下一筆狀態（unit_cost 是 PO 成本、保留）。
-              // 否則 reload 失敗 fallback 時，舊的差異原因/批號/效期會殘留並隨下一筆送出。
-              qty_received: "0",
-              qty_damaged: "0",
-              variance_reason: "",
-              batch_no: "",
-              expiry_date: "",
-              allocations: f.allocations.map((a) => ({ ...a, qty: "0" })),
-            }))
-          : cur
-      );
-      setInvoiceNo("");
-      setNotes("");
-      setReloading(true); // UI 鎖：顯示「更新中…」；submitLock 維持上鎖到 reload 完成才釋放
-      setReloadKey((k) => k + 1); // 重新載入 PO（權威資料）:更新累計已收/剩餘/進度與歷史 GR
+      // 確認進貨後直接跳回採購清單頁。維持 submitLock 上鎖（不釋放、不重載），
+      // 避免導頁空檔被連點重複送出本次到貨。
+      setReloading(true); // 鎖住送出按鈕，顯示處理中狀態直到導頁完成
+      router.push("/purchase/orders");
     } catch (e) {
       setError(translateRpcError(e));
       submitLock.current = false; // 失敗：釋放鎖讓使用者修正後重試
