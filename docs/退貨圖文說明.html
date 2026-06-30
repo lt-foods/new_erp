@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Noto Sans CJK TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    background: #f4f6f8; color: #1f2933; padding: 32px;
+    width: 1080px;
+  }
+  .sheet { background: #fff; border-radius: 20px; padding: 40px 44px;
+           box-shadow: 0 8px 30px rgba(0,0,0,.08); }
+  h1 { font-size: 34px; color: #c2410c; display: flex; align-items: center; gap: 12px; }
+  h1 .tag { font-size: 15px; background: #fff7ed; color: #c2410c; border: 1px solid #fdba74;
+            padding: 4px 12px; border-radius: 999px; font-weight: 600; }
+  .lead { margin: 14px 0 28px; font-size: 17px; color: #52606d; line-height: 1.6; }
+  .lead b { color: #1f2933; }
+
+  .steps { display: flex; flex-direction: column; gap: 14px; margin-bottom: 30px; }
+  .step { display: flex; gap: 18px; align-items: flex-start;
+          background: #f8fafc; border: 1px solid #e4e9ef; border-radius: 14px; padding: 18px 20px; }
+  .num { flex: 0 0 46px; height: 46px; border-radius: 50%; background: #2563eb; color: #fff;
+         font-size: 22px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+  .step h3 { font-size: 20px; margin-bottom: 4px; }
+  .step p { font-size: 16px; color: #52606d; line-height: 1.55; }
+  .step .big { font-size: 16px; }
+  .kbd { display: inline-block; background: #fff; border: 1px solid #cbd5e1; border-bottom-width: 2px;
+         border-radius: 6px; padding: 1px 9px; font-weight: 600; color: #1f2933; }
+
+  .split { display: flex; gap: 18px; margin: 6px 0 4px; }
+  .card { flex: 1; border-radius: 14px; padding: 18px 20px; border: 2px solid; }
+  .card.blue { background: #eff6ff; border-color: #93c5fd; }
+  .card.amber { background: #fff7ed; border-color: #fdba74; }
+  .card .icon { font-size: 30px; }
+  .card h4 { font-size: 19px; margin: 6px 0; }
+  .card.blue h4 { color: #1d4ed8; } .card.amber h4 { color: #c2410c; }
+  .card .do { font-size: 16px; margin-top: 8px; line-height: 1.5; }
+  .card .formula { margin-top: 10px; background: #fff; border-radius: 8px; padding: 8px 12px;
+                   font-size: 15px; font-weight: 600; }
+
+  .types { display: flex; gap: 12px; margin: 6px 0 26px; }
+  .chip { flex: 1; text-align: center; border-radius: 12px; padding: 14px; font-size: 17px; font-weight: 600;
+          border: 1px solid #e4e9ef; background: #f8fafc; }
+  .chip span { display: block; font-size: 13px; font-weight: 400; color: #7b8794; margin-top: 4px; }
+
+  .note { background: #fffbeb; border: 1px solid #fde68a; border-radius: 12px; padding: 16px 20px;
+          font-size: 15px; color: #7a5c00; line-height: 1.7; }
+  .note b { color: #92400e; }
+  .note .t { font-size: 16px; font-weight: 700; color: #92400e; margin-bottom: 6px; display:block;}
+  .done { margin-top: 22px; background: #ecfdf5; border: 1px solid #6ee7b7; border-radius: 12px;
+          padding: 16px 20px; font-size: 16px; color: #065f46; line-height: 1.6; }
+  .done b { color: #047857; }
+  .secTitle { font-size: 15px; font-weight: 700; color: #9aa5b1; letter-spacing: 1px;
+              margin: 18px 0 10px; }
+</style>
+</head>
+<body>
+<div class="sheet">
+  <h1>↩ 收貨後怎麼退貨 <span class="tag">給分店店員</span></h1>
+  <p class="lead">分店<b>收到貨</b>之後，要把貨退回總倉（瑕疵、客戶取消、客戶拿回來退）就照這張做。<br>
+     最重要的一步：先看 <b>「客戶取走了沒」</b>，決定要不要勾那個框。</p>
+
+  <div class="step">
+    <div class="num">1</div>
+    <div>
+      <h3>找到那張訂單，按退貨</h3>
+      <p class="big">在 <b>訂單列表</b> / <b>訂單明細</b> / <b>取貨頁</b>，按
+         <span class="kbd">↩ 退貨</span> 或 <span class="kbd">↩ 退訂單</span>，
+         會跳出「退訂單回總倉」視窗。</p>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="num">2</div>
+    <div style="flex:1">
+      <h3>判斷：客戶取走了嗎？（決定要不要勾框）</h3>
+      <div class="split">
+        <div class="card blue">
+          <div class="icon">📦</div>
+          <h4>還沒取走</h4>
+          <div style="font-size:14px;color:#64748b">退瑕疵品 / 客戶取消</div>
+          <div class="do">👉 <b>不要勾</b>「客戶已取貨後退回」<br>（一般退貨）</div>
+          <div class="formula">可退 = 已收 − 已取 − 已退</div>
+        </div>
+        <div class="card amber">
+          <div class="icon">🔄</div>
+          <h4>取走又拿回來</h4>
+          <div style="font-size:14px;color:#9a6b3f">客戶取貨後又退回</div>
+          <div class="do">👉 <b>勾起</b>「客戶已取貨後退回」<br>（系統先入庫再退回總倉）</div>
+          <div class="formula">可退 = 已取貨量 − 已退</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="num">3</div>
+    <div style="flex:1">
+      <h3>選退貨類型</h3>
+      <div class="types">
+        <div class="chip">一般退貨<span>正常退回</span></div>
+        <div class="chip">破損<span>瑕疵品選這個</span></div>
+        <div class="chip">過期<span>過期品</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="num">4</div>
+    <div>
+      <h3>填數量 → 建立退貨單</h3>
+      <p class="big">在「<b>退多少</b>」填數量（<b>不可超過「可退」</b>），可選填退貨原因，
+         按 <span class="kbd">建立退貨單</span>。</p>
+    </div>
+  </div>
+
+  <div class="done">
+    ✅ <b>完成！</b>系統會把貨從店端出庫、在途退回總倉，<b>等總倉收貨</b>即結束。
+       退掉的貨之後會標示「<b>已退貨·不能取貨</b>」，客戶不會再被配到。
+  </div>
+
+  <div class="secTitle">⚠️ 注意事項</div>
+  <div class="note">
+    <span class="t">遇到這些狀況別緊張：</span>
+    • <b>「可退」是 0？</b> 先確認畫面有沒有重新整理；確認開的是<b>對的那張單</b>。<br>
+    • <b>店長只能退/看自己店</b>的訂單與庫存，別家店的單退不了是正常的。<br>
+    • <b>沒有任何「已取貨」的單</b>，「客戶已取貨後退回」會是<b>灰色不能勾</b> → 請用一般退貨。<br>
+    • 數量超過「可退」會被擋下；真的庫存不夠系統也會提醒。
+  </div>
+</div>
+</body>
+</html>
