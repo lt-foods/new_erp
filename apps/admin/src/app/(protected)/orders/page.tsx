@@ -166,7 +166,6 @@ function OrdersListContent() {
 
   // KPI trend (當月 1 號 ~ 今天 每日 + 本月累計、套 filter 開團+店家、排除 transferred_out)
   const [trend, setTrend] = useState<TrendData | null>(null);
-  const [trendTruncated, setTrendTruncated] = useState(false);
 
   useEffect(() => { setPage(1); }, [campaignIds, tab, storeId, keyword]);
 
@@ -317,159 +316,72 @@ function OrdersListContent() {
     return () => { cancelled = true; };
   }, [campaignIds, tab, storeId, page, reloadOrders, keyword]);
 
-  // 各 tab 數量 — 切 tab 不重抓,只在其他 filter / reload 時更新
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const sb = getSupabase();
-      const kwOr = await buildKeywordOr(keyword);
-      if (cancelled) return;
-      const buildBase = () => {
-        let q = sb.from("customer_orders").select("id", { count: "exact", head: true });
-        if (campaignIds.length === 1) q = q.eq("campaign_id", Number(campaignIds[0]));
-        else if (campaignIds.length > 1) q = q.in("campaign_id", campaignIds.map((x) => Number(x)));
-        if (storeId) q = q.eq("pickup_store_id", Number(storeId));
-        if (kwOr) q = q.or(kwOr);
-        return q;
-      };
-      const [p, pc, c, x, tr] = await Promise.all([
-        buildBase().in("status", PENDING_STATUSES),
-        buildBase().eq("status", "partially_completed"),
-        buildBase().eq("status", "completed"),
-        buildBase().in("status", CANCELLED_STATUSES),
-        buildBase().eq("status", "transferred_out"),
-      ]);
-      if (cancelled) return;
-      setTabCounts({
-        pending: p.count ?? 0,
-        partially: pc.count ?? 0,
-        completed: c.count ?? 0,
-        cancelled: x.count ?? 0,
-        transferred: tr.count ?? 0,
-      });
-    })();
-    return () => { cancelled = true; };
-  }, [campaignIds, storeId, reloadOrders, keyword]);
-
-  // KPI Trend — 當月 1 號到今天每日 (套 filter 開團+店家, 排除 transferred_out)
+  // 頁首聚合（tab 數量 + 月趨勢）— 單一伺服端 RPC rpc_order_overview
+  // 取代之前 client 端「5 個 count:exact 全表掃描」+「搬整月訂單+全部明細
+  // 回瀏覽器做聚合」的做法（後者一個月幾萬筆訂單時是主要的慢點）。
+  // 切 tab 不重抓,只在 campaign / 店家 / keyword / reload 變動時更新。
   useEffect(() => {
     let cancelled = false;
     setTrend(null);
-    setTrendTruncated(false);
     (async () => {
       const sb = getSupabase();
       const today = new Date();
       const startDate = new Date(today.getFullYear(), today.getMonth(), 1);
 
-      // Chunked fetch — bypass PostgREST max-rows cap (預設 1000)
-      // 用 id range pagination、可疊到 50K rows
-      const orders: { id: number; member_id: number | null; created_at: string }[] = [];
-      const PAGE = 1000;
-      const MAX_PAGES = 50;
-      let truncated = false;
-      for (let p = 0; p < MAX_PAGES; p++) {
-        let pq = sb
-          .from("customer_orders")
-          .select("id, member_id, created_at")
-          // 營收 KPI 不計：取消 / 逾期 / 轉出（皆非有效成交）
-          .not("status", "in", "(cancelled,expired,transferred_out)")
-          .gte("created_at", startDate.toISOString())
-          .order("id", { ascending: true });
-        if (campaignIds.length === 1) pq = pq.eq("campaign_id", Number(campaignIds[0]));
-        else if (campaignIds.length > 1)
-          pq = pq.in("campaign_id", campaignIds.map((x) => Number(x)));
-        if (storeId) pq = pq.eq("pickup_store_id", Number(storeId));
-        pq = pq.range(p * PAGE, (p + 1) * PAGE - 1);
-        const { data: pData, error: pErr } = await pq;
-        if (cancelled) return;
-        if (pErr) {
-          setTrend({ days: buildEmptyTrend(today), total: { orders: 0, amount: 0, members: 0, aov: 0 } });
-          return;
-        }
-        const rows = (pData ?? []) as typeof orders;
-        orders.push(...rows);
-        if (rows.length < PAGE) break;
-        if (p === MAX_PAGES - 1) truncated = true;
-      }
-      setTrendTruncated(truncated);
-
-      // 本月累計 — orders 每筆 id 唯一、members 跨日 distinct
-      const monthMemberIds = new Set<number>();
-      for (const o of orders) {
-        if (o.member_id != null) monthMemberIds.add(o.member_id);
-      }
-
-      // 每日 buckets — key = 台北日 YYYY-MM-DD（不能用 created_at.slice(0,10)，
-      // 那是 UTC 日，會把台北凌晨的訂單錯誤歸到前一天）
-      const tpeFmt = new Intl.DateTimeFormat("en-CA", {
-        timeZone: "Asia/Taipei",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
+      const { data, error: rpcErr } = await sb.rpc("rpc_order_overview", {
+        p_campaign_ids: campaignIds.length ? campaignIds.map((x) => Number(x)) : null,
+        p_store_id: storeId ? Number(storeId) : null,
+        p_keyword: keyword || null,
+        p_month_start: startDate.toISOString(),
       });
-      const buckets = new Map<
-        string,
-        { orderIds: Set<number>; memberIds: Set<number>; amount: number }
-      >();
-      const orderDay = new Map<number, string>();
-      for (const o of orders) {
-        const ymd = tpeFmt.format(new Date(o.created_at));
-        orderDay.set(o.id, ymd);
-        let b = buckets.get(ymd);
-        if (!b) {
-          b = { orderIds: new Set(), memberIds: new Set(), amount: 0 };
-          buckets.set(ymd, b);
-        }
-        b.orderIds.add(o.id);
-        if (o.member_id != null) b.memberIds.add(o.member_id);
-      }
-
-      const orderIds = orders.map((o) => o.id);
-      if (orderIds.length > 0) {
-        for (let i = 0; i < orderIds.length; i += 1000) {
-          const chunk = orderIds.slice(i, i + 1000);
-          const { data: iData } = await sb
-            .from("customer_order_items")
-            .select("order_id, qty, unit_price")
-            .in("order_id", chunk);
-          if (cancelled) return;
-          for (const it of (iData as
-            | { order_id: number; qty: number; unit_price: number }[]
-            | null) ?? []) {
-            const ymd = orderDay.get(it.order_id);
-            if (!ymd) continue;
-            const b = buckets.get(ymd);
-            if (b) b.amount += Number(it.qty) * Number(it.unit_price);
-          }
-        }
-      }
       if (cancelled) return;
 
-      // 補齊當月 1 號 ~ 今天每一日 (沒資料補 0)
-      let monthOrders = 0;
-      let monthAmount = 0;
+      type Overview = {
+        tab_counts: { pending: number; partially: number; completed: number; cancelled: number; transferred: number };
+        trend_days: { ymd: string; orders: number; members: number; amount: number }[];
+        trend_total: { orders: number; members: number; amount: number };
+      };
+      if (rpcErr || !data) {
+        setTabCounts(null);
+        setTrend({ days: buildEmptyTrend(today), total: { orders: 0, amount: 0, members: 0, aov: 0 } });
+        return;
+      }
+      const ov = data as Overview;
+      setTabCounts({
+        pending: ov.tab_counts.pending ?? 0,
+        partially: ov.tab_counts.partially ?? 0,
+        completed: ov.tab_counts.completed ?? 0,
+        cancelled: ov.tab_counts.cancelled ?? 0,
+        transferred: ov.tab_counts.transferred ?? 0,
+      });
+
+      // 把 RPC 回的每日聚合補齊成「當月 1 號 ~ 今天」連續序列（沒資料補 0）
+      const dayMap = new Map<string, { orders: number; members: number; amount: number }>();
+      for (const d of ov.trend_days ?? []) {
+        dayMap.set(d.ymd, { orders: Number(d.orders), members: Number(d.members), amount: Number(d.amount) });
+      }
       const days: DayTrend[] = [];
       const cur = new Date(startDate);
       while (cur <= today) {
         const ymd = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}-${String(cur.getDate()).padStart(2, "0")}`;
-        const b = buckets.get(ymd);
-        const orderCnt = b?.orderIds.size ?? 0;
+        const b = dayMap.get(ymd);
+        const orderCnt = b?.orders ?? 0;
         const amt = b?.amount ?? 0;
         days.push({
           ymd,
           orders: orderCnt,
           amount: amt,
-          members: b?.memberIds.size ?? 0,
+          members: b?.members ?? 0,
           aov: orderCnt > 0 ? amt / orderCnt : 0,
         });
-        monthOrders += orderCnt;
-        monthAmount += amt;
         cur.setDate(cur.getDate() + 1);
       }
+      const monthOrders = Number(ov.trend_total?.orders ?? 0);
+      const monthAmount = Number(ov.trend_total?.amount ?? 0);
       const total: MonthAgg = {
         orders: monthOrders,
         amount: monthAmount,
-        members: monthMemberIds.size,
+        members: Number(ov.trend_total?.members ?? 0),
         aov: monthOrders > 0 ? monthAmount / monthOrders : 0,
       };
       setTrend({ days, total });
@@ -477,7 +389,7 @@ function OrdersListContent() {
     return () => {
       cancelled = true;
     };
-  }, [campaignIds, storeId, reloadOrders]);
+  }, [campaignIds, storeId, reloadOrders, keyword]);
 
   const campaignMap = useMemo(() => new Map(campaigns.map((c) => [c.id, c])), [campaigns]);
   const storeMap = useMemo(() => new Map(stores.map((s) => [s.id, s])), [stores]);
@@ -637,7 +549,6 @@ function OrdersListContent() {
           getDaily={(d) => d.amount}
           fmt={(v) => `$${Math.round(v).toLocaleString("zh-TW")}`}
           subLabel="日均"
-          hint={trendTruncated ? "已截斷 20000 筆" : undefined}
         />
         <TrendCard
           label="本月訂單數"
