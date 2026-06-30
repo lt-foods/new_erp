@@ -37,8 +37,12 @@ export default function TransfersInboxPage() {
   const [doneTotal, setDoneTotal] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [batchBusy, setBatchBusy] = useState(false);
-  type DateFilter = "tomorrow" | "today_or_earlier" | "all_pending" | "done" | null;
+  // 待收子篩選（僅在「未收」分頁內作用）
+  type DateFilter = "tomorrow" | "today_or_earlier" | "all_pending" | null;
   const [dateFilter, setDateFilter] = useState<DateFilter>(null);
+  // 分頁：未收(shipped) / 已收(received)，預設未收
+  type InboxTab = "unreceived" | "received";
+  const [tab, setTab] = useState<InboxTab>("unreceived");
 
   // 分店帳號鎖定：把 store.name 比對 user.app_metadata.stores，回該分店的 location_id。
   // 分店帳號只能看自己分店（dest_location = 該 location_id）；HQ/總倉回 null = 看全部。
@@ -226,10 +230,10 @@ export default function TransfersInboxPage() {
     const tomorrowStr = tomorrow.toLocaleDateString("sv-SE");
     return (transfers ?? []).filter((t) => {
       if (locationFilter !== "all" && t.dest_location !== locationFilter) return false;
-      if (dateFilter === null) return true;
-      if (dateFilter === "done") return t.status === "received";
+      // 分頁為主篩選：已收 = received；未收 = shipped（再套待收子篩選）
+      if (tab === "received") return t.status === "received";
       if (t.status !== "shipped") return false;
-      if (dateFilter === "all_pending") return true;
+      if (dateFilter === null || dateFilter === "all_pending") return true;
       const wid = parseWaveId(t.transfer_no);
       const w = wid !== null ? waves.get(wid) : undefined;
       const wd = w?.wave_date ?? null;
@@ -237,7 +241,7 @@ export default function TransfersInboxPage() {
       if (dateFilter === "today_or_earlier") return !!wd && wd <= todayStr;
       return true;
     });
-  }, [transfers, locationFilter, dateFilter, waves]);
+  }, [transfers, locationFilter, tab, dateFilter, waves]);
 
   const groups = useMemo(() => {
     const map = new Map<
@@ -410,11 +414,7 @@ export default function TransfersInboxPage() {
             {transfers === null ? (
               <Spinner size={14} className="inline-block align-[-2px]" />
             ) : (
-              (() => {
-                const pending = filtered.filter((t) => t.status === "shipped").length;
-                const done = filtered.length - pending;
-                return `待收 ${pending} · 已收 ${done}`;
-              })()
+              `待收 ${summaries.allPending} · 已收 ${summaries.done}`
             )}
           </p>
         </div>
@@ -439,6 +439,35 @@ export default function TransfersInboxPage() {
         )}
       </header>
 
+      {/* 分頁：未收 / 已收（預設未收） */}
+      <div className="flex items-center gap-1 border-b border-zinc-200 dark:border-zinc-800">
+        {([
+          { value: "unreceived", label: "未收", count: summaries.allPending },
+          { value: "received", label: "已收", count: summaries.done },
+        ] as const).map((tb) => {
+          const active = tab === tb.value;
+          return (
+            <SpinButton
+              key={tb.value}
+              onClick={() => { setTab(tb.value); setDateFilter(null); setSelected(new Set()); }}
+              className={`relative px-4 py-2 text-sm font-medium transition-colors ${
+                active
+                  ? "text-zinc-900 dark:text-zinc-100"
+                  : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+              }`}
+            >
+              {tb.label}
+              <span className={`ml-1.5 ${active ? "" : "text-zinc-400 dark:text-zinc-500"}`}>
+                ({tb.count})
+              </span>
+              {active && (
+                <span className="absolute -bottom-px left-0 right-0 h-0.5 bg-zinc-900 dark:bg-zinc-100" />
+              )}
+            </SpinButton>
+          );
+        })}
+      </div>
+
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
           {error}
@@ -452,37 +481,49 @@ export default function TransfersInboxPage() {
           hint="wave_date = 明天 的待收"
           value={summaries.tomorrow}
           accent="text-blue-700 dark:text-blue-400"
-          active={dateFilter === "tomorrow"}
-          onClick={() => setDateFilter(dateFilter === "tomorrow" ? null : "tomorrow")}
+          active={tab === "unreceived" && dateFilter === "tomorrow"}
+          onClick={() =>
+            tab === "unreceived" && dateFilter === "tomorrow"
+              ? setDateFilter(null)
+              : (setTab("unreceived"), setDateFilter("tomorrow"))
+          }
         />
         <KpiCard
           label="⏳ 今日及更早"
           hint="wave_date ≤ 今天、還沒收"
           value={summaries.todayOrEarlier}
           accent="text-amber-700 dark:text-amber-400"
-          active={dateFilter === "today_or_earlier"}
-          onClick={() => setDateFilter(dateFilter === "today_or_earlier" ? null : "today_or_earlier")}
+          active={tab === "unreceived" && dateFilter === "today_or_earlier"}
+          onClick={() =>
+            tab === "unreceived" && dateFilter === "today_or_earlier"
+              ? setDateFilter(null)
+              : (setTab("unreceived"), setDateFilter("today_or_earlier"))
+          }
         />
         <KpiCard
           label="📋 全部待收"
           hint="status = shipped"
           value={summaries.allPending}
           accent="text-rose-700 dark:text-rose-400"
-          active={dateFilter === "all_pending"}
-          onClick={() => setDateFilter(dateFilter === "all_pending" ? null : "all_pending")}
+          active={tab === "unreceived" && dateFilter === "all_pending"}
+          onClick={() =>
+            tab === "unreceived" && dateFilter === "all_pending"
+              ? setDateFilter(null)
+              : (setTab("unreceived"), setDateFilter("all_pending"))
+          }
         />
         <KpiCard
           label="✓ 已收"
           hint="status = received"
           value={summaries.done}
           accent="text-emerald-700 dark:text-emerald-400"
-          active={dateFilter === "done"}
-          onClick={() => setDateFilter(dateFilter === "done" ? null : "done")}
+          active={tab === "received"}
+          onClick={() => { setTab("received"); setDateFilter(null); setSelected(new Set()); }}
         />
       </div>
 
-      {/* 批次工具列 */}
-      {pendingIds.length > 0 && (
+      {/* 批次工具列（僅未收分頁） */}
+      {tab === "unreceived" && pendingIds.length > 0 && (
         <div className="flex flex-wrap items-center gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm dark:border-zinc-800 dark:bg-zinc-900">
           <span className="text-xs text-zinc-500">
             {selected.size > 0
@@ -672,8 +713,8 @@ export default function TransfersInboxPage() {
         })}
       </div>
 
-      {/* 已收歷史分頁:目前 doneLimit 比 doneTotal 少時顯示 */}
-      {doneLimit < doneTotal && (
+      {/* 已收歷史分頁:目前 doneLimit 比 doneTotal 少時顯示（僅已收分頁） */}
+      {tab === "received" && doneLimit < doneTotal && (
         <div className="flex items-center justify-center gap-3 py-2 text-xs text-zinc-500">
           <span>已顯示 {Math.min(doneLimit, doneTotal)} / {doneTotal} 筆已收歷史</span>
           <SpinButton
