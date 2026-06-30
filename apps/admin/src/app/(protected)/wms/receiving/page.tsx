@@ -58,86 +58,25 @@ export default function ReceivingWorkbenchPage() {
     let cancelled = false;
     (async () => {
       try {
+        // 單一伺服端聚合 RPC（取代之前瀏覽器端跨 6 表 client join + 撈整張
+        // restock_requests）。回傳已算好的 PORow[]，一次 round-trip。
         const sb = getSupabase();
-        const { data: poData, error: e } = await sb
-          .from("purchase_orders")
-          .select("id, po_no, status, sent_at, supplier_id")
-          .in("status", ["sent", "partially_received", "fully_received"])
-          .order("sent_at", { ascending: false, nullsFirst: false })
-          .limit(200);
+        const { data, error: e } = await sb.rpc("rpc_receiving_workbench");
         if (e) throw new Error(e.message);
-        const pos = (poData ?? []) as Array<Pick<PORow, "id" | "po_no" | "status" | "sent_at" | "supplier_id">>;
-
-        if (pos.length === 0) {
-          if (!cancelled) { setRows([]); setError(null); }
-          return;
-        }
-
-        const poIds = pos.map((p) => p.id);
-        const supplierIds = Array.from(new Set(pos.map((p) => p.supplier_id)));
-
-        const [{ data: supRows }, { data: poiRows }, { data: griRows }] = await Promise.all([
-          sb.from("suppliers").select("id, code, name").in("id", supplierIds),
-          sb.from("purchase_order_items").select("id, po_id, qty_ordered").in("po_id", poIds),
-          sb.from("goods_receipt_items")
-            .select("po_item_id, qty_received, gr:goods_receipts!inner(po_id, status)")
-            .in("gr.po_id", poIds)
-            .eq("gr.status", "confirmed"),
-        ]);
-        // 偵測 restock-sourced
-        const { data: restockPos } = await sb
-          .from("restock_requests")
-          .select("linked_pr_id")
-          .not("linked_pr_id", "is", null);
-        const restockPrIds = new Set(((restockPos ?? []) as { linked_pr_id: number }[]).map((r) => r.linked_pr_id));
-        const { data: priRows } = await sb
-          .from("purchase_request_items")
-          .select("po_item_id, pr_id")
-          .in("po_item_id", (poiRows ?? []).map((p: { id: number }) => p.id));
-        const restockPoItemIds = new Set(
-          ((priRows ?? []) as { po_item_id: number | null; pr_id: number }[])
-            .filter((r) => r.po_item_id !== null && restockPrIds.has(r.pr_id))
-            .map((r) => r.po_item_id as number),
-        );
-
-        const supMap = new Map<number, { code: string | null; name: string }>();
-        for (const s of (supRows ?? []) as { id: number; code: string | null; name: string }[]) supMap.set(s.id, { code: s.code, name: s.name });
-
-        const poiByPo = new Map<number, { id: number; qty_ordered: number }[]>();
-        for (const it of (poiRows ?? []) as { id: number; po_id: number; qty_ordered: number }[]) {
-          const arr = poiByPo.get(it.po_id) ?? [];
-          arr.push(it);
-          poiByPo.set(it.po_id, arr);
-        }
-
-        const grByPoItem = new Map<number, number>();
-        for (const it of ((griRows ?? []) as Array<{ po_item_id: number; qty_received: number }>)) {
-          grByPoItem.set(it.po_item_id, (grByPoItem.get(it.po_item_id) ?? 0) + Number(it.qty_received));
-        }
-
-        const result: PORow[] = pos.map((po) => {
-          const items = poiByPo.get(po.id) ?? [];
-          const totalOrdered = items.reduce((s, i) => s + Number(i.qty_ordered), 0);
-          const totalReceived = items.reduce((s, i) => s + (grByPoItem.get(i.id) ?? 0), 0);
-          const isRestock = items.some((i) => restockPoItemIds.has(i.id));
-          const sup = supMap.get(po.supplier_id);
-          return {
-            id: po.id,
-            po_no: po.po_no,
-            status: po.status as POStatus,
-            sent_at: po.sent_at,
-            supplier_id: po.supplier_id,
-            supplier_name: sup?.name ?? `#${po.supplier_id}`,
-            supplier_code: sup?.code ?? null,
-            total_qty_ordered: totalOrdered,
-            total_qty_received: totalReceived,
-            line_count: items.length,
-            is_restock: isRestock,
-          };
-        });
-
         if (!cancelled) {
-          setRows(result);
+          setRows(((data ?? []) as Array<Record<string, unknown>>).map((r) => ({
+            id: Number(r.id),
+            po_no: String(r.po_no),
+            status: r.status as POStatus,
+            sent_at: (r.sent_at as string | null) ?? null,
+            supplier_id: Number(r.supplier_id),
+            supplier_name: String(r.supplier_name),
+            supplier_code: (r.supplier_code as string | null) ?? null,
+            total_qty_ordered: Number(r.total_qty_ordered),
+            total_qty_received: Number(r.total_qty_received),
+            line_count: Number(r.line_count),
+            is_restock: Boolean(r.is_restock),
+          })));
           setError(null);
         }
       } catch (err) {
