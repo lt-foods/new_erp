@@ -587,17 +587,20 @@ export default function TransfersInboxPage() {
                           <div className="w-4 mt-1.5" />
                         )}
                         <div className="flex-1 min-w-0">
+                          {/* 品項（放大、置頂）+ 狀態標籤 */}
                           <div className="flex flex-wrap items-baseline gap-2">
-                            <span className="font-medium">{locations.get(t.dest_location) ?? `#${t.dest_location}`}</span>
-                            <span className="font-mono text-[11px] text-zinc-500">{t.transfer_no}</span>
-                            <span className="text-[10px] text-zinc-400">{TRANSFER_TYPE_LABEL[t.transfer_type] ?? t.transfer_type}</span>
-                            {wave?.wave_date && (
+                            {summary && summary.lines > 0 ? (
                               <span
-                                className="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-800 dark:bg-blue-950 dark:text-blue-300"
-                                title="配送日"
+                                className="text-base font-bold text-zinc-900 dark:text-zinc-100 break-words"
+                                title={summary.names.join("\n")}
                               >
-                                📅 {wave.wave_date}
+                                {summary.names.slice(0, 2).join("、")}
+                                {summary.names.length > 2 && (
+                                  <span className="ml-1 text-xs font-normal text-zinc-400">… +{summary.names.length - 2}</span>
+                                )}
                               </span>
+                            ) : (
+                              <span className="text-base font-bold text-zinc-400">—</span>
                             )}
                             {isShipped ? (
                               <span className="inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">待收</span>
@@ -608,28 +611,36 @@ export default function TransfersInboxPage() {
                               </span>
                             )}
                           </div>
-                          {summary && summary.lines > 0 && (
-                            <div className="mt-0.5 flex flex-wrap items-baseline gap-x-3 text-xs text-zinc-600 dark:text-zinc-300" title={summary.names.join("\n")}>
-                              <span className="text-zinc-500">{summary.lines} 項 / 共 {summary.totalQty} 件</span>
-                              <span className="truncate">
-                                {summary.names.slice(0, 2).join("、")}
-                                {summary.names.length > 2 && <span className="text-zinc-400"> … +{summary.names.length - 2}</span>}
+                          {/* 店名（縮小、次要）+ 編號 / 類型 / 配送日 / 項數 / 訂單連結 */}
+                          <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] text-zinc-500">
+                            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">{locations.get(t.dest_location) ?? `#${t.dest_location}`}</span>
+                            <span className="font-mono">{t.transfer_no}</span>
+                            <span className="text-zinc-400">{TRANSFER_TYPE_LABEL[t.transfer_type] ?? t.transfer_type}</span>
+                            {wave?.wave_date && (
+                              <span
+                                className="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-800 dark:bg-blue-950 dark:text-blue-300"
+                                title="配送日"
+                              >
+                                📅 {wave.wave_date}
                               </span>
-                              {storeId && (
-                                <Link
-                                  href={`/orders?${(() => {
-                                    const qs = new URLSearchParams({ storeId: String(storeId) });
-                                    if (cids.length > 0) qs.set("campaignIds", cids.join(","));
-                                    return qs.toString();
-                                  })()}`}
-                                  className="text-[11px] text-blue-600 hover:underline dark:text-blue-400"
-                                  title={cids.length > 0 ? `關聯 ${cids.length} 個開團` : undefined}
-                                >
-                                  → 訂單{cids.length > 0 ? `(${cids.length} 團)` : ""}
-                                </Link>
-                              )}
-                            </div>
-                          )}
+                            )}
+                            {summary && summary.lines > 0 && (
+                              <span>{summary.lines} 項 / 共 {summary.totalQty} 件</span>
+                            )}
+                            {storeId && (
+                              <Link
+                                href={`/orders?${(() => {
+                                  const qs = new URLSearchParams({ storeId: String(storeId) });
+                                  if (cids.length > 0) qs.set("campaignIds", cids.join(","));
+                                  return qs.toString();
+                                })()}`}
+                                className="text-blue-600 hover:underline dark:text-blue-400"
+                                title={cids.length > 0 ? `關聯 ${cids.length} 個開團` : undefined}
+                              >
+                                → 訂單{cids.length > 0 ? `(${cids.length} 團)` : ""}
+                              </Link>
+                            )}
+                          </div>
                           {t.shipped_at && (
                             <div className="mt-0.5 text-[10px] text-zinc-400">派出 {new Date(t.shipped_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}</div>
                           )}
