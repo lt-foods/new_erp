@@ -172,18 +172,21 @@ export default function TransfersInboxPage() {
         }
 
         // 抓每張 transfer 涵蓋的 campaign_ids（用於 /orders link 多選 filter）
+        // 批次：一次傳全部 transfer id、回 { transfer_id: [campaign_ids] }，
+        // 取代之前每張 transfer 各打一次 RPC（N+1，開頁 ~50+ round-trip）。
         const tcMap = new Map<number, number[]>();
-        await Promise.allSettled(
-          rows.map(async (r) => {
-            const { data: cs } = await sb.rpc("rpc_get_campaigns_for_transfer", {
-              p_transfer_id: r.id,
-            });
-            const ids = ((cs as { campaign_id: number }[] | null) ?? [])
-              .map((x) => Number(x.campaign_id))
+        if (rows.length > 0) {
+          const { data: tcData } = await sb.rpc("rpc_get_campaigns_for_transfers", {
+            p_transfer_ids: rows.map((r) => r.id),
+          });
+          const obj = (tcData as Record<string, unknown> | null) ?? {};
+          for (const [tid, cids] of Object.entries(obj)) {
+            const ids = (Array.isArray(cids) ? cids : [])
+              .map((x) => Number(x))
               .filter((x) => Number.isFinite(x));
-            tcMap.set(r.id, ids);
-          }),
-        );
+            tcMap.set(Number(tid), ids);
+          }
+        }
 
         if (!cancelled) {
           setTransfers(rows);
