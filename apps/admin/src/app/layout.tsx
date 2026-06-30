@@ -22,21 +22,26 @@ const handScript = Caveat({
   weight: ["700"],
 });
 
+// Next 不會自動把 basePath 補到 metadata.icons 的字串 URL，靜態匯出 + GH Pages
+// （NEXT_PUBLIC_BASE_PATH=/new_erp）下會變成 /icons/... → 404 → 分頁退回預設黑 icon。
+// 一律手動補 prefix。
+const bp = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+
 export const metadata: Metadata = {
   title: getAdminTitle(),
   description: `${getTenantName()} 管理後台`,
   icons: {
     icon: [
-      { url: "/icons/ios/32.png", sizes: "32x32", type: "image/png" },
-      { url: "/icons/ios/16.png", sizes: "16x16", type: "image/png" },
-      { url: "/icons/android/launchericon-192x192.png", sizes: "192x192", type: "image/png" },
-      { url: "/icons/android/launchericon-512x512.png", sizes: "512x512", type: "image/png" },
+      { url: `${bp}/icons/ios/32.png`, sizes: "32x32", type: "image/png" },
+      { url: `${bp}/icons/ios/16.png`, sizes: "16x16", type: "image/png" },
+      { url: `${bp}/icons/android/launchericon-192x192.png`, sizes: "192x192", type: "image/png" },
+      { url: `${bp}/icons/android/launchericon-512x512.png`, sizes: "512x512", type: "image/png" },
     ],
     apple: [
-      { url: "/icons/ios/120.png", sizes: "120x120" },
-      { url: "/icons/ios/152.png", sizes: "152x152" },
-      { url: "/icons/ios/167.png", sizes: "167x167" },
-      { url: "/icons/ios/180.png", sizes: "180x180" },
+      { url: `${bp}/icons/ios/120.png`, sizes: "120x120" },
+      { url: `${bp}/icons/ios/152.png`, sizes: "152x152" },
+      { url: `${bp}/icons/ios/167.png`, sizes: "167x167" },
+      { url: `${bp}/icons/ios/180.png`, sizes: "180x180" },
     ],
   },
 };
