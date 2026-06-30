@@ -1,0 +1,33 @@
+flowchart TD
+    Start([分店已收貨<br/>要把貨退回總倉]) --> Find["在訂單列表 / 訂單明細 / 取貨頁<br/>按 ↩ 退貨 / 退訂單"]
+    Find --> Modal[/開啟「退訂單回總倉」視窗/]
+    Modal --> Q1{客戶<b>取走</b>了嗎?}
+
+    Q1 -- 還沒取走<br/>(退瑕疵/客戶取消) --> N1["不要勾<br/>『客戶已取貨後退回』"]
+    Q1 -- 取走又拿回來 --> Y1["勾起<br/>『客戶已取貨後退回』<br/>(系統先入庫再退回)"]
+
+    N1 --> CapN["可退上限 =<br/>已收 − 已取 − 已退"]
+    Y1 --> CapY["可退上限 =<br/>已取貨量 − 已退"]
+
+    CapN --> Type{選退貨類型}
+    CapY --> Type
+    Type -- 正常 --> TN[一般退貨]
+    Type -- 瑕疵 --> TD[破損<br/>會計分流]
+    Type -- 過期 --> TE[過期]
+
+    TN --> Fill["在『退多少』填數量<br/>(不可超過 可退)"]
+    TD --> Fill
+    TE --> Fill
+    Fill --> Reason["(選填) 填退貨原因"]
+    Reason --> Submit["按『建立退貨單』"]
+    Submit --> Out["店端出庫 → 在途退回總倉"]
+    Out --> Done([等總倉收貨<br/>該貨標示『已退貨·不能取貨』<br/>客戶不會再被配到])
+
+    Note1["店長只能退/看<br/>自己店的訂單與庫存"]:::note -.-> Find
+    Note2["沒有任何已取貨的單<br/>不能勾『取貨後退回』"]:::note -.-> Q1
+
+    classDef note fill:#fff7d6,stroke:#e0c200,color:#7a6500,font-size:12px;
+    classDef startEnd fill:#e6f4ea,stroke:#34a853,color:#1e4620;
+    classDef decision fill:#e8f0fe,stroke:#4285f4,color:#1a3c8a;
+    class Start,Done startEnd;
+    class Q1,Type decision;
