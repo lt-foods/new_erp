@@ -45,12 +45,17 @@ type PORow = {
 };
 
 type Filter = "today" | "this_week" | "all";
+type ReceiveTab = "unreceived" | "received";
+
+// 已收 = 全收；未收 = sent + 部分收
+const isReceived = (r: PORow) => r.status === "fully_received";
 
 export default function ReceivingWorkbenchPage() {
   const [rows, setRows] = useState<PORow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("this_week");
-  const [statusFilter, setStatusFilter] = useState<"pending" | "all">("pending");
+  // 分頁：未收(sent+部分收) / 已收(全收)，預設未收
+  const [tab, setTab] = useState<ReceiveTab>("unreceived");
   const [detailPoId, setDetailPoId] = useState<number | null>(null);
   const [detailPoNo, setDetailPoNo] = useState<string>("");
 
@@ -86,7 +91,8 @@ export default function ReceivingWorkbenchPage() {
     return () => { cancelled = true; };
   }, []);
 
-  const filtered = useMemo(() => {
+  // 先套期間 filter（分頁數量與列表都基於同一份期間集合）
+  const periodFiltered = useMemo(() => {
     if (!rows) return [];
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
@@ -95,7 +101,6 @@ export default function ReceivingWorkbenchPage() {
     const weekAgoStr = weekAgo.toISOString().slice(0, 10);
 
     return rows.filter((r) => {
-      if (statusFilter === "pending" && r.status === "fully_received") return false;
       if (filter === "today") {
         const dateRef = r.sent_at?.slice(0, 10) ?? "";
         if (dateRef !== today) return false;
@@ -106,7 +111,24 @@ export default function ReceivingWorkbenchPage() {
       }
       return true;
     });
-  }, [rows, filter, statusFilter]);
+  }, [rows, filter]);
+
+  // 分頁數量（反映目前期間）
+  const tabCounts = useMemo(() => {
+    let unreceived = 0;
+    let received = 0;
+    for (const r of periodFiltered) {
+      if (isReceived(r)) received += 1;
+      else unreceived += 1;
+    }
+    return { unreceived, received };
+  }, [periodFiltered]);
+
+  // 再套分頁：未收(非全收) / 已收(全收)
+  const filtered = useMemo(
+    () => periodFiltered.filter((r) => (tab === "received" ? isReceived(r) : !isReceived(r))),
+    [periodFiltered, tab],
+  );
 
   const counts = useMemo(() => {
     if (!rows) return { sent: 0, partial: 0, full: 0, restock: 0 };
@@ -150,6 +172,35 @@ export default function ReceivingWorkbenchPage() {
         <Stat label="🔁 補貨來源" value={counts.restock} accent="text-indigo-700 dark:text-indigo-400" />
       </div>
 
+      {/* 分頁：未收 / 已收（預設未收） */}
+      <div className="flex items-center gap-1 border-b border-zinc-200 dark:border-zinc-800">
+        {([
+          { value: "unreceived", label: "未收", count: tabCounts.unreceived },
+          { value: "received", label: "已收", count: tabCounts.received },
+        ] as const).map((t) => {
+          const active = tab === t.value;
+          return (
+            <SpinButton
+              key={t.value}
+              onClick={() => setTab(t.value)}
+              className={`relative px-4 py-2 text-sm font-medium transition-colors ${
+                active
+                  ? "text-zinc-900 dark:text-zinc-100"
+                  : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+              }`}
+            >
+              {t.label}
+              <span className={`ml-1.5 ${active ? "" : "text-zinc-400 dark:text-zinc-500"}`}>
+                ({t.count})
+              </span>
+              {active && (
+                <span className="absolute -bottom-px left-0 right-0 h-0.5 bg-zinc-900 dark:bg-zinc-100" />
+              )}
+            </SpinButton>
+          );
+        })}
+      </div>
+
       {/* Filter */}
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-zinc-500">期間:</span>
@@ -164,20 +215,6 @@ export default function ReceivingWorkbenchPage() {
             }`}
           >
             {f === "today" ? "今日" : f === "this_week" ? "近 7 天" : "全部"}
-          </SpinButton>
-        ))}
-        <span className="ml-3 text-xs text-zinc-500">狀態:</span>
-        {(["pending", "all"] as const).map((s) => (
-          <SpinButton
-            key={s}
-            onClick={() => setStatusFilter(s)}
-            className={`rounded-full border px-3 py-1 text-xs ${
-              statusFilter === s
-                ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
-                : "border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
-            }`}
-          >
-            {s === "pending" ? "待收(未收+部分收)" : "全部含已全收"}
           </SpinButton>
         ))}
       </div>
