@@ -305,6 +305,14 @@ export default function OrderReturnCreateModal({
     return Math.max(0, s.delivered - s.picked - s.returned_unpicked);
   };
 
+  // 整單是否有已取貨量；沒有就不能走「客戶已取貨後退回」（勾了也退不了）
+  const hasPicked = useMemo(() => (skus ?? []).some((s) => s.picked > 0), [skus]);
+
+  // 載到沒有已取貨的單時，強制取消「客戶已取貨後退回」勾選
+  useEffect(() => {
+    if (!hasPicked && restockFirst) setRestockFirst(false);
+  }, [hasPicked, restockFirst]);
+
   const totalToReturn = useMemo(() => {
     if (!skus) return 0;
     return skus.reduce((acc, s) => acc + (Number(qtys[s.sku_id] ?? 0) || 0), 0);
@@ -553,10 +561,11 @@ export default function OrderReturnCreateModal({
               )}
             </div>
             <div className="flex flex-col gap-1.5 text-sm">
-              <label className="flex cursor-pointer items-center gap-2">
+              <label className={`flex items-center gap-2 ${hasPicked ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}>
                 <input
                   type="checkbox"
                   checked={restockFirst}
+                  disabled={!hasPicked}
                   onChange={(e) => {
                     restockTouched.current = true;
                     setRestockFirst(e.target.checked);
@@ -565,9 +574,11 @@ export default function OrderReturnCreateModal({
                 <span>客戶已取貨後退回（先把退回商品入庫店端再退回總倉）</span>
               </label>
               <span className="text-xs text-zinc-500">
-                {orderStatus === "completed"
-                  ? "此訂單已完成（客戶已取貨），店端庫存通常為 0；勾選後系統自動先入庫再退回，免店員手動兩步。"
-                  : "店端尚有未取貨庫存時不需勾選；僅「客戶取貨後又拿回來」才勾。"}
+                {!hasPicked
+                  ? "此訂單沒有已取貨的品項，無法走「取貨後退回」（此情況請用一般退貨）。"
+                  : orderStatus === "completed"
+                    ? "此訂單已完成（客戶已取貨），店端庫存通常為 0；勾選後系統自動先入庫再退回，免店員手動兩步。"
+                    : "店端尚有未取貨庫存時不需勾選；僅「客戶取貨後又拿回來」才勾。"}
               </span>
             </div>
           </div>
