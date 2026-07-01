@@ -7,6 +7,14 @@ import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
 
 type Store = { id: number; name: string; code: string };
+export type TransferItem = {
+  id: number;
+  sku_id: number;
+  qty: number;
+  product_name: string | null;
+  variant_name: string | null;
+  sku_code: string | null;
+};
 type MemberHit = {
   id: number;
   member_no: string;
@@ -18,11 +26,17 @@ type MemberHit = {
   admin_note: string | null;
 };
 
+function itemLabel(it: TransferItem): string {
+  const base = it.product_name ?? `SKU #${it.sku_id}`;
+  return it.variant_name ? `${base} / ${it.variant_name}` : base;
+}
+
 export function OrderTransferModal({
   orderId,
   orderNo,
   currentPickupStoreId,
   currentMemberLabel,
+  items,
   open,
   onClose,
   onSubmitted,
@@ -31,6 +45,7 @@ export function OrderTransferModal({
   orderNo: string;
   currentPickupStoreId: number | null;
   currentMemberLabel: string;
+  items: TransferItem[];
   open: boolean;
   onClose: () => void;
   onSubmitted: (newOrderId: number) => void;
@@ -48,6 +63,17 @@ export function OrderTransferModal({
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // 每個品項的轉移勾選 + 數量（預設全選、全量 = 整單轉出）
+  const [picks, setPicks] = useState<Record<number, { checked: boolean; qty: string }>>({});
+  // 開窗（或換訂單）時重置勾選 — 用 render-time reset 而非 effect，避免 cascading render
+  const [picksKey, setPicksKey] = useState<string | null>(null);
+  const curPicksKey = open ? String(orderId) : null;
+  if (curPicksKey !== picksKey) {
+    setPicksKey(curPicksKey);
+    const next: Record<number, { checked: boolean; qty: string }> = {};
+    for (const it of items) next[it.id] = { checked: true, qty: String(it.qty) };
+    setPicks(next);
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -106,6 +132,33 @@ export function OrderTransferModal({
       setErr("請選擇接收店");
       return;
     }
+
+    // 蒐集勾選的品項與數量
+    const chosen: { item: TransferItem; qty: number }[] = [];
+    for (const it of items) {
+      const p = picks[it.id];
+      if (!p?.checked) continue;
+      const qtyN = Number(p.qty);
+      if (!Number.isFinite(qtyN) || qtyN <= 0) {
+        setErr(`「${itemLabel(it)}」轉移數量需大於 0`);
+        return;
+      }
+      if (qtyN > it.qty) {
+        setErr(`「${itemLabel(it)}」轉移數量不可超過 ${it.qty}`);
+        return;
+      }
+      chosen.push({ item: it, qty: qtyN });
+    }
+    if (chosen.length === 0) {
+      setErr("請至少選擇一項要轉移的品項");
+      return;
+    }
+
+    // 整單轉出 = 全部品項都勾選且都轉全量；否則走部分轉出
+    const isFull =
+      chosen.length === items.length &&
+      chosen.every((c) => c.qty === c.item.qty);
+
     if (toStore === currentPickupStoreId) {
       if (!confirm("接收店與原店相同（同店換客人）。確定繼續？")) return;
     }
@@ -114,16 +167,38 @@ export function OrderTransferModal({
     try {
       const sb = getSupabase();
       const { data: { user } } = await sb.auth.getUser();
-      const { data, error: e } = await sb.rpc("rpc_transfer_order_to_store", {
-        p_order_id: orderId,
-        p_to_pickup_store_id: toStore,
-        p_to_member_id: toMember === "internal" ? null : toMember,
-        p_to_channel_id: null,
-        p_operator: user?.id,
-        p_reason: reason || null,
-      });
-      if (e) throw new Error(e.message);
-      const newId = data as number;
+      let newId: number;
+      if (isFull) {
+        const { data, error: e } = await sb.rpc("rpc_transfer_order_to_store", {
+          p_order_id: orderId,
+          p_to_pickup_store_id: toStore,
+          p_to_member_id: toMember === "internal" ? null : toMember,
+          p_to_channel_id: null,
+          p_operator: user?.id,
+          p_reason: reason || null,
+        });
+        if (e) throw new Error(e.message);
+        newId = data as number;
+      } else {
+        // 依 sku 彙總轉移數量（RPC 以 sku_id 拆單）
+        const bySku = new Map<number, number>();
+        for (const c of chosen) {
+          bySku.set(c.item.sku_id, (bySku.get(c.item.sku_id) ?? 0) + c.qty);
+        }
+        const pItems = Array.from(bySku, ([sku_id, qty]) => ({ sku_id, qty }));
+        const { data, error: e } = await sb.rpc("rpc_transfer_order_partial", {
+          p_order_id: orderId,
+          p_to_pickup_store_id: toStore,
+          p_to_member_id: toMember === "internal" ? null : toMember,
+          p_to_channel_id: null,
+          p_operator: user?.id,
+          p_reason: reason || null,
+          p_items: pItems,
+          p_is_air_transfer: false,
+        });
+        if (e) throw new Error(e.message);
+        newId = data as number;
+      }
       onSubmitted(newId);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -131,6 +206,9 @@ export function OrderTransferModal({
       setBusy(false);
     }
   };
+
+  const chosenCount = items.filter((it) => picks[it.id]?.checked).length;
+  const allChosen = items.length > 0 && chosenCount === items.length;
 
   return (
     <Modal open={open} onClose={onClose} title={`轉出訂單 ${orderNo}`} maxWidth="max-w-lg">
@@ -261,6 +339,88 @@ export function OrderTransferModal({
           </div>
         )}
 
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-500">轉移品項</span>
+            {items.length > 1 && (
+              <SpinButton
+                type="button"
+                onClick={() => {
+                  setPicks((prev) => {
+                    const next = { ...prev };
+                    for (const it of items) {
+                      next[it.id] = {
+                        checked: !allChosen,
+                        qty: next[it.id]?.qty ?? String(it.qty),
+                      };
+                    }
+                    return next;
+                  });
+                }}
+                className="text-xs text-blue-600 hover:underline"
+              >
+                {allChosen ? "全部取消" : "全選"}
+              </SpinButton>
+            )}
+          </div>
+          {items.length === 0 ? (
+            <div className="rounded-md border border-zinc-200 p-2 text-xs text-zinc-400 dark:border-zinc-700">
+              此訂單無可轉移品項
+            </div>
+          ) : (
+            <div className="divide-y divide-zinc-100 rounded-md border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-700">
+              {items.map((it) => {
+                const p = picks[it.id] ?? { checked: true, qty: String(it.qty) };
+                return (
+                  <label
+                    key={it.id}
+                    className="flex items-center gap-2 px-2 py-1.5 text-sm"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={p.checked}
+                      onChange={(e) =>
+                        setPicks((prev) => ({
+                          ...prev,
+                          [it.id]: { ...p, checked: e.target.checked },
+                        }))
+                      }
+                      className="h-4 w-4"
+                    />
+                    <span className="min-w-0 flex-1 truncate">
+                      {itemLabel(it)}
+                      {it.sku_code && (
+                        <span className="ml-1 font-mono text-xs text-zinc-400">
+                          {it.sku_code}
+                        </span>
+                      )}
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={it.qty}
+                      step={1}
+                      value={p.qty}
+                      disabled={!p.checked}
+                      onChange={(e) =>
+                        setPicks((prev) => ({
+                          ...prev,
+                          [it.id]: { ...p, qty: e.target.value },
+                        }))
+                      }
+                      className="w-16 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-800"
+                    />
+                    <span className="w-10 text-xs text-zinc-400">/ {it.qty}</span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+          <span className="text-[11px] text-zinc-400">
+            預設全選全量 = 整單轉出；取消勾選或減少數量 = 部分轉出（原單保留剩餘）
+          </span>
+        </div>
+
         <label className="flex flex-col gap-1">
           <span className="text-zinc-500">轉出原因</span>
           <textarea
@@ -282,7 +442,7 @@ export function OrderTransferModal({
           </SpinButton>
           <SpinButton
             onClick={submit}
-            disabled={busy || !toStore}
+            disabled={busy || !toStore || chosenCount === 0}
             className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white disabled:bg-zinc-300"
           >
             {busy ? "轉出中…" : "確認轉出"}

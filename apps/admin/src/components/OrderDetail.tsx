@@ -1095,9 +1095,19 @@ export function OrderDetail({
         orderNo={head.order_no}
         currentPickupStoreId={head.pickup_store_id}
         currentMemberLabel={memberLabel}
+        items={pickableItems
+          .filter((it) => it.sku?.id != null)
+          .map((it) => ({
+            id: it.id,
+            sku_id: it.sku!.id,
+            qty: Number(it.qty),
+            product_name: it.sku?.product_name ?? null,
+            variant_name: it.sku?.variant_name ?? null,
+            sku_code: it.sku?.sku_code ?? null,
+          }))}
         onSubmitted={(newId) => {
           setTransferOpen(false);
-          alert(`訂單已轉出 → 新訂單 #${newId}`);
+          alert(`轉出完成 → 訂單 #${newId}（部分轉出時原單保留未轉出品項）`);
           setReloadTick((n) => n + 1);
         }}
       />
