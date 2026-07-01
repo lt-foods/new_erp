@@ -27,6 +27,7 @@ type Row = {
   pickup_store_id: number;
   pickup_deadline: string | null;
   status: OrderStatus;
+  transferred_from_order_id: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -246,7 +247,7 @@ function OrdersListContent() {
       try {
         let q = getSupabase()
           .from("customer_orders")
-          .select("id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, created_at, updated_at", { count: "exact" })
+          .select("id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, transferred_from_order_id, created_at, updated_at", { count: "exact" })
           .order("updated_at", { ascending: false })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
@@ -416,6 +417,29 @@ function OrdersListContent() {
     setReloadOrders((n) => n + 1);
   }
 
+  // 互助單已收貨(ready)退回原店：反向退回原調出店並還原來源單（rpc_return_aid_order）
+  async function returnAidToSource(orderId: number, orderNo: string) {
+    const reason = prompt(
+      `退回原店：${orderNo}\n會把已收貨品反向退回原調出店，並把來源單還原。請輸入原因：`,
+    );
+    if (reason === null) return;
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id ?? null;
+    if (!operator) { alert("尚未登入"); return; }
+    const { data, error: rpcErr } = await sb.rpc("rpc_return_aid_order", {
+      p_order_id: orderId,
+      p_reason: reason,
+      p_operator: operator,
+    });
+    if (rpcErr) { alert(`退回失敗：${translateRpcError(rpcErr)}`); return; }
+    const refunded = Number((data as { wallet_refunded?: number } | null)?.wallet_refunded ?? 0);
+    alert(refunded > 0
+      ? `已退回原店，已退回 $${refunded} 儲值金到會員餘額`
+      : "已退回原店，貨已退回原調出店");
+    setReloadOrders((n) => n + 1);
+  }
+
   // 操作按鈕（去取貨 / 取消 / ↩退貨 / 狀態鈕）— 桌機表格與手機卡片共用，單一維護點
   const orderActions = (r: Row, m: Member | null | undefined) => (
     <>
@@ -465,6 +489,16 @@ function OrdersListContent() {
           取消
         </SpinButton>
       )}
+      {/* 互助單已收貨（ready）：退回原調出店，而非退回總倉（貨源是分店不是總倉） */}
+      {r.status === "ready" && r.transferred_from_order_id != null && (
+        <SpinButton
+          onClick={() => returnAidToSource(r.id, r.order_no)}
+          title="互助單已收貨：反向退回原調出店並還原來源單"
+          className="rounded-md border border-orange-300 px-2 py-1 text-[11px] font-medium text-orange-700 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-950"
+        >
+          ↩ 退回原店
+        </SpinButton>
+      )}
       {r.status === "cancelled" && (
         <SpinButton
           disabled
@@ -501,7 +535,8 @@ function OrdersListContent() {
           已轉出
         </SpinButton>
       )}
-      {["ready", "partially_completed", "completed", "expired"].includes(r.status) && (
+      {["ready", "partially_completed", "completed", "expired"].includes(r.status)
+        && !(r.status === "ready" && r.transferred_from_order_id != null) && (
         <SpinButton
           onClick={() => setReturnTarget({ orderId: r.id, storeId: r.pickup_store_id })}
           title="已收貨/已取貨，無法取消；點此退貨回總倉（反向回收已派庫存）"

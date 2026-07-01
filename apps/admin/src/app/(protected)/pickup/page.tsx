@@ -31,6 +31,7 @@ type OpenOrder = {
   pickup_store_id: number | null;
   discount_amount: number;
   ready_at: string | null;       // 到貨時間 (shipping → ready 自動寫入)
+  transferred_from_order_id: number | null; // 互助轉入單才有；用來判斷是否走「退回原店」
   last_notify_pickup_at: string | null;
   notify_pickup_count: number;
   campaign: { id: number; campaign_no: string; name: string } | null;
@@ -143,7 +144,7 @@ function PickupPageContent() {
       const { data: ords, error: e2 } = await sb
         .from("customer_orders")
         .select(
-          `id, order_no, status, pickup_deadline, pickup_store_id, discount_amount, ready_at, last_notify_pickup_at, notify_pickup_count, member_id,
+          `id, order_no, status, pickup_deadline, pickup_store_id, discount_amount, ready_at, transferred_from_order_id, last_notify_pickup_at, notify_pickup_count, member_id,
            campaign:group_buy_campaigns(id, campaign_no, name),
            store:stores!customer_orders_pickup_store_id_fkey(id, name),
            items:customer_order_items(id, qty, unit_price, status, sku:skus(variant_name, product_name, product:products(images)))`,
@@ -299,6 +300,30 @@ function PickupPageContent() {
     });
     if (rpcErr) { alert(`取消失敗：${translateRpcError(rpcErr)}`); return; }
     alert("已取消");
+    setReloadTick((n) => n + 1);
+  }
+
+  // 互助單已收貨(ready)退回原店：反向退回原調出店並還原來源單（rpc_return_aid_order）。
+  // 貨源是分店不是總倉，所以不走「退貨回總倉」。
+  async function returnAidToSource(order: OpenOrder) {
+    const reason = prompt(
+      `退回原店：${order.order_no}\n會把已收貨品反向退回原調出店，並把來源單還原。請輸入原因：`,
+    );
+    if (reason === null) return;
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id ?? null;
+    if (!operator) { alert("尚未登入"); return; }
+    const { data, error: rpcErr } = await sb.rpc("rpc_return_aid_order", {
+      p_order_id: order.id,
+      p_reason: reason,
+      p_operator: operator,
+    });
+    if (rpcErr) { alert(`退回失敗：${translateRpcError(rpcErr)}`); return; }
+    const refunded = Number((data as { wallet_refunded?: number } | null)?.wallet_refunded ?? 0);
+    alert(refunded > 0
+      ? `已退回原店，已退回 $${refunded} 儲值金到會員餘額`
+      : "已退回原店，貨已退回原調出店");
     setReloadTick((n) => n + 1);
   }
 
@@ -600,13 +625,24 @@ function PickupPageContent() {
                             >
                               ✏️
                             </SpinButton>
-                            {["ready", "partially_completed"].includes(o.status) && (
+                            {["ready", "partially_completed"].includes(o.status)
+                              && !(o.status === "ready" && o.transferred_from_order_id != null) && (
                               <SpinButton
                                 onClick={() => setReturnTarget({ orderId: o.id, storeId: o.pickup_store_id ?? o.store?.id ?? null })}
                                 title="已收貨，無法取消；點此退貨回總倉（反向回收已派庫存）"
                                 className="rounded-md border border-orange-300 px-2 py-2 text-xs font-medium text-orange-700 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-950"
                               >
                                 ↩ 退貨
+                              </SpinButton>
+                            )}
+                            {/* 互助單已收貨：退回原調出店（貨源是分店不是總倉） */}
+                            {o.status === "ready" && o.transferred_from_order_id != null && (
+                              <SpinButton
+                                onClick={() => returnAidToSource(o)}
+                                title="互助單已收貨：反向退回原調出店並還原來源單"
+                                className="rounded-md border border-orange-300 px-2 py-2 text-xs font-medium text-orange-700 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-950"
+                              >
+                                ↩ 退回原店
                               </SpinButton>
                             )}
                             {["pending", "confirmed", "shipping"].includes(o.status) && (

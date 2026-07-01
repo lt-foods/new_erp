@@ -11,6 +11,7 @@ import { RowAction } from "@/components/RowAction";
 //   confirmed → shipping  (rpc_ship_aid_order — 派貨 + outbound 庫存 + 建 transfer chain)
 //   shipping → ready      (由店家在「收貨」代辦頁觸發,rpc_receive_transfer 內部自動推進)
 //   ready → completed     (由門市在「取貨」流程觸發、HQ 不需手動推進)
+//   ready → (退回原店)     (接收店已收貨但要退,rpc_return_aid_order 反向退回原調出店 + 還原來源單)
 const ADVANCE_NEXT: Partial<Record<OrderStatus, OrderStatus>> = {
   pending: "confirmed",
 };
@@ -25,6 +26,8 @@ export function AidOrderStatusActions({ order, onChanged }: AidOrderStatusAction
   const advanceNext = ADVANCE_NEXT[order.status];
   const isShipAction = order.status === "confirmed";
   const isCancellable = ["pending", "confirmed", "shipping"].includes(order.status);
+  // 已收貨(ready)不能走取消,要走「退回原店」— 反向退回原調出店並還原來源單
+  const isReturnable = order.status === "ready";
 
   async function getOperator(): Promise<string | null> {
     const sb = getSupabase();
@@ -89,6 +92,26 @@ export function AidOrderStatusActions({ order, onChanged }: AidOrderStatusAction
     }
   }
 
+  // 已收貨(ready)退回原店:反向退回原調出店、還原來源單(rpc_return_aid_order)
+  async function returnToSource() {
+    const reason = prompt("退回原店原因(會把已收貨品反向退回原調出店,並還原來源單):");
+    if (reason === null) return;
+    setBusy(true);
+    try {
+      const operator = await getOperator();
+      if (!operator) { alert("尚未登入"); return; }
+      const { error } = await getSupabase().rpc("rpc_return_aid_order", {
+        p_order_id: order.id,
+        p_reason: reason,
+        p_operator: operator,
+      });
+      if (error) { alert(`退回失敗:${translateRpcError(error)}`); return; }
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <>
       {advanceNext && (
@@ -109,6 +132,16 @@ export function AidOrderStatusActions({ order, onChanged }: AidOrderStatusAction
       {isCancellable && (
         <RowAction variant="danger" onClick={cancel} disabled={busy}>
           {order.status === "shipping" ? "撤回" : "取消"}
+        </RowAction>
+      )}
+      {isReturnable && (
+        <RowAction
+          variant="danger"
+          onClick={returnToSource}
+          disabled={busy}
+          title="已收貨:反向退回原調出店並還原來源單"
+        >
+          退回原店
         </RowAction>
       )}
     </>
