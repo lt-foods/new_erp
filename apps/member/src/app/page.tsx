@@ -98,8 +98,11 @@ export default function LandingPage() {
     setStandalone(sa);
 
     // 已綁(有 memberId)才跳走;只有 token 沒 member_id 不跳,避免跟 /shop 互推產生
-    // redirect loop。PWA standalone → /shop;LINE / 一般瀏覽器 → /me
-    const landing = sa ? "/shop" : "/me";
+    // redirect loop。standalone PWA 與 LINE LIFF 內建瀏覽器 → /shop(完整商店);
+    // 一般外部瀏覽器 → /me
+    const isLine =
+      typeof navigator !== "undefined" && / Line\//i.test(navigator.userAgent);
+    const landing = sa || isLine ? "/shop" : "/me";
 
     const existing = getSession();
     if (existing && existing.memberId) {
@@ -505,7 +508,7 @@ async function runLiffSession(
   });
   if (data.line_name)    frag.set("line_name",    String(data.line_name));
   if (data.line_picture) frag.set("line_picture", String(data.line_picture));
-  // LIFF 自然登入(沒帶 pair) = 在 LINE webview 內,只停在 /me 會員中心。
-  // PWA 端的完整商店體驗在 standalone 才開放。
-  window.location.href = `/me#${frag.toString()}`;
+  // LIFF 自然登入(沒帶 pair) = 在 LINE webview 內。放行完整商店體驗:
+  // 直接進 /shop,跟 standalone PWA 一致(不再只停在 /me)。
+  window.location.href = `/shop#${frag.toString()}`;
 }

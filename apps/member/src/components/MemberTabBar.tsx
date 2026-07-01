@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useUnreadNotifications } from "@/lib/useUnreadNotifications";
@@ -60,24 +59,11 @@ const tabs: Tab[] = [
 
 export default function MemberTabBar() {
   const pathname = usePathname() ?? "";
-  const [hide, setHide] = useState(false);
   const { count: unreadCount } = useUnreadNotifications();
 
-  // 從 LINE app 的 LIFF webview 進來,不顯示 tab bar(整個 PWA 導航體驗只屬於
-  // 加入主畫面後的 standalone 模式)
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const ua = navigator.userAgent;
-    const isLine = /Line\//i.test(ua);
-    const isStandalone =
-      (window.navigator as { standalone?: boolean }).standalone === true ||
-      window.matchMedia("(display-mode: standalone)").matches;
-    setHide(isLine && !isStandalone);
-  }, []);
-
-  // 商品詳細頁有自己的 sticky 下單 bar、會跟 tab bar 打架,直接隱藏
+  // LINE LIFF 內建瀏覽器現在也走完整商店,tab bar 一律顯示(standalone / 一般瀏覽器 / LINE 皆同)。
+  // 商品詳細頁有自己的 sticky 下單 bar、會跟 tab bar 打架,直接隱藏。
   if (pathname.startsWith("/shop/c/")) return null;
-  if (hide) return null;
 
   return (
     <nav

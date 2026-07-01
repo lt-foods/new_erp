@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import MemberTabBar from "./MemberTabBar";
 
@@ -27,16 +26,6 @@ export default function PageShell({
   const pathname = usePathname() ?? "";
   const showBack = !TOP_LEVEL_PATHS.has(pathname);
 
-  const [tabBarHidden, setTabBarHidden] = useState(false);
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const isLine = /Line\//i.test(navigator.userAgent);
-    const isStandalone =
-      (window.navigator as { standalone?: boolean }).standalone === true ||
-      window.matchMedia("(display-mode: standalone)").matches;
-    setTabBarHidden(isLine && !isStandalone);
-  }, []);
-
   // 點回上一頁: 有 history 就 back, 沒有 (深連結 / LINE 開新分頁) fallback 到 /shop
   const handleBack = () => {
     if (typeof window !== "undefined" && window.history.length > 1) {
@@ -50,9 +39,8 @@ export default function PageShell({
     <div
       className="relative min-h-[100dvh]"
       style={{
-        paddingBottom: tabBarHidden
-          ? "env(safe-area-inset-bottom)"
-          : "calc(92px + env(safe-area-inset-bottom))",
+        // tab bar 一律顯示(含 LINE LIFF),固定保留其高度
+        paddingBottom: "calc(92px + env(safe-area-inset-bottom))",
       }}
     >
       <main className="relative mx-auto w-full max-w-md">
