@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import Spinner from "@/components/Spinner";
 import {
@@ -36,7 +36,7 @@ export default function TransfersInboxPage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [doneLimit, setDoneLimit] = useState(50);
   const [doneTotal, setDoneTotal] = useState(0);
-  // 撿貨單號（wave）分頁：一次顯示 20 個 wave，往下滑點「載入更多」+20
+  // 撿貨單號（wave）分頁：一次顯示 20 個 wave，滑到底自動載入下一批（+20）
   const [groupLimit, setGroupLimit] = useState(20);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [batchBusy, setBatchBusy] = useState(false);
@@ -308,6 +308,23 @@ export default function TransfersInboxPage() {
   }, [tab, dateFilter, locationFilter, search]);
 
   const visibleGroups = useMemo(() => groups.slice(0, groupLimit), [groups, groupLimit]);
+
+  // 滑到底自動載入下一批撿貨單號（+20），不用手動按。sentinel 進入視窗就 +20；
+  // effect 依 groupLimit/groups.length 重建 observer，若 sentinel 仍在視窗內會連續補到看不見為止。
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (groupLimit >= groups.length) return;
+    const el = sentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) setGroupLimit((n) => n + 20);
+      },
+      { rootMargin: "300px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [groupLimit, groups.length]);
 
   function toggle(key: string) {
     setExpanded((cur) => {
@@ -811,22 +828,10 @@ export default function TransfersInboxPage() {
         })}
       </div>
 
-      {/* 撿貨單號分頁：一次顯示 20 個 wave，往下滑點「載入更多」+20 */}
+      {/* 撿貨單號分頁：一次顯示 20 個 wave，滑到底自動載入下一批（+20），不用手動按 */}
       {groups.length > groupLimit && (
-        <div className="flex items-center justify-center gap-3 py-2 text-xs text-zinc-500">
-          <span>已顯示 {Math.min(groupLimit, groups.length)} / {groups.length} 個撿貨單號</span>
-          <SpinButton
-            onClick={() => setGroupLimit((n) => n + 20)}
-            className="rounded-md border border-zinc-300 px-3 py-1.5 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-          >
-            載入更多 (+20)
-          </SpinButton>
-          <SpinButton
-            onClick={() => setGroupLimit(groups.length)}
-            className="rounded-md border border-zinc-300 px-3 py-1.5 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-          >
-            載入全部
-          </SpinButton>
+        <div ref={sentinelRef} className="flex items-center justify-center py-4">
+          <Spinner size={16} />
         </div>
       )}
 
