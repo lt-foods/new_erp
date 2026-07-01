@@ -354,6 +354,37 @@ export default function TransfersInboxPage() {
     }
   }
 
+  // 退回收貨 — 把已收(received)的 transfer 退回待收(shipped)，沖銷入庫並還原訂單
+  async function unreceive(t: Transfer) {
+    const dest = locations.get(t.dest_location) ?? `#${t.dest_location}`;
+    if (
+      !confirm(
+        `退回收貨 ${t.transfer_no}(送到 ${dest})?\n\n` +
+        `會沖銷本次入庫的庫存、並把此調撥單改回「待收」。\n` +
+        `若該批貨已被取貨/售出將無法退回。`,
+      )
+    )
+      return;
+    setBatchBusy(true);
+    try {
+      const sb = getSupabase();
+      const { data: sess } = await sb.auth.getSession();
+      const operator = sess.session?.user?.id;
+      if (!operator) throw new Error("尚未登入");
+      const { error: e } = await sb.rpc("rpc_unreceive_transfer", {
+        p_transfer_id: t.id,
+        p_operator: operator,
+        p_notes: null,
+      });
+      if (e) throw new Error(translateRpcError(e));
+      setReloadTick((n) => n + 1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
   async function batchReceive() {
     if (selected.size === 0) return;
     if (!confirm(`確認批次收貨 ${selected.size} 筆?\n\n所有品項都將以「全收」(實收 = 派出量,無破損)處理。需要編輯數量請點個別「收貨」按鈕。`)) return;
@@ -706,12 +737,22 @@ export default function TransfersInboxPage() {
                               </SpinButton>
                             </>
                           ) : (
-                            <SpinButton
-                              onClick={() => setOpening(t)}
-                              className="rounded-md border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-                            >
-                              看明細
-                            </SpinButton>
+                            <>
+                              <SpinButton
+                                onClick={() => setOpening(t)}
+                                className="rounded-md border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                              >
+                                看明細
+                              </SpinButton>
+                              <SpinButton
+                                onClick={() => unreceive(t)}
+                                disabled={batchBusy}
+                                className="rounded-md border border-amber-300 px-2 py-1 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950"
+                                title="退回收貨：沖銷入庫、改回待收"
+                              >
+                                ↩ 退回收貨
+                              </SpinButton>
+                            </>
                           )}
                         </div>
                       </li>
