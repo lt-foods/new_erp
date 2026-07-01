@@ -14,6 +14,7 @@ import {
 import SpinButton from "@/components/SpinButton";
 import { translateRpcError } from "@/lib/rpcError";
 import { useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
+import { fetchAllRows } from "@/lib/fetchAllRows";
 
 type Location = { id: number; name: string };
 type StoreLite = { id: number; location_id: number | null };
@@ -138,19 +139,24 @@ export default function TransfersInboxPage() {
         const summary = new Map<number, ItemSummary>();
         if (rows.length > 0) {
           const transferIds = rows.map((r) => r.id);
-          const { data: tiRows } = await sb
-            .from("transfer_items")
-            .select("transfer_id, sku_id, qty_shipped")
-            .in("transfer_id", transferIds);
-          const items = (tiRows ?? []) as { transfer_id: number; sku_id: number; qty_shipped: number }[];
+          // 走 fetchAllRows 分頁：待收 transfer 數不設限，×每張多列品項很容易破
+          // PostgREST 1000 列上限；不分頁的話最新 wave（transfer_id 最大、排在尾端）
+          // 的品項會整批被截掉 → summary.lines=0 → 品名全變「—」。
+          const items = await fetchAllRows<{ transfer_id: number; sku_id: number; qty_shipped: number }>(
+            () =>
+              sb
+                .from("transfer_items")
+                .select("transfer_id, sku_id, qty_shipped")
+                .in("transfer_id", transferIds)
+                .order("id"),
+          );
           const skuIds = Array.from(new Set(items.map((it) => it.sku_id)));
           const skuNameMap = new Map<number, string>();
           if (skuIds.length > 0) {
-            const { data: skuRows } = await sb
-              .from("skus")
-              .select("id, product_name, variant_name")
-              .in("id", skuIds);
-            for (const s of (skuRows ?? []) as { id: number; product_name: string | null; variant_name: string | null }[]) {
+            const skuRows = await fetchAllRows<{ id: number; product_name: string | null; variant_name: string | null }>(
+              () => sb.from("skus").select("id, product_name, variant_name").in("id", skuIds).order("id"),
+            );
+            for (const s of skuRows) {
               const label = `${s.product_name ?? ""}${s.variant_name ? ` / ${s.variant_name}` : ""}`.trim() || `#${s.id}`;
               skuNameMap.set(s.id, label);
             }
