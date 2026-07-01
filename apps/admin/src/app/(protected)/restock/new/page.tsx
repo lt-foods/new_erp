@@ -197,7 +197,7 @@ function LineRow({
           .eq("products.is_virtual", false)
           .limit(15);
         const safe = term.replace(/[%,()]/g, " ").trim();
-        if (safe) q = q.or(`sku_code.ilike.%${safe}%,variant_name.ilike.%${safe}%`);
+        if (safe) q = q.or(`sku_code.ilike.%${safe}%,product_name.ilike.%${safe}%,variant_name.ilike.%${safe}%`);
         const { data } = await q;
         const ids = (data ?? []).map((r) => r.id);
         let priceMap = new Map<number, { retail?: number; branch?: number }>();
