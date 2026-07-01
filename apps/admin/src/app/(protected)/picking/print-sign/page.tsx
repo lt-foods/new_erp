@@ -386,7 +386,8 @@ export default function PrintSignPage() {
                   <th className="border border-zinc-400 px-2 py-1.5 text-left text-xs">#</th>
                   <th className="border border-zinc-400 px-2 py-1.5 text-left text-xs">商品編號</th>
                   <th className="border border-zinc-400 px-2 py-1.5 text-left text-xs">品名</th>
-                  <th className="border border-zinc-400 px-2 py-1.5 text-right text-xs">數量</th>
+                  <th className="border border-zinc-400 px-2 py-1.5 text-right text-xs">訂購數量</th>
+                  <th className="border border-zinc-400 px-2 py-1.5 text-right text-xs">配發數量</th>
                   <th className="border border-zinc-400 px-2 py-1.5 text-center text-xs">收貨確認</th>
                 </tr>
               </thead>
@@ -404,12 +405,12 @@ export default function PrintSignPage() {
                       )}
                     </td>
                     <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono">
-                      {r.pickedQty}
-                      {r.pickedQty < r.qty && (
-                        <span className="ml-1 text-[10px] text-rose-600" title={`原派 ${r.qty}、實撿 ${r.pickedQty}`}>
-                          (派 {r.qty})
-                        </span>
-                      )}
+                      {r.qty}
+                    </td>
+                    <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono">
+                      <span className={r.pickedQty < r.qty ? "text-rose-600" : ""} title={r.pickedQty < r.qty ? `配發 ${r.pickedQty} 少於訂購 ${r.qty}` : undefined}>
+                        {r.pickedQty}
+                      </span>
                     </td>
                     <td className="border border-zinc-400 px-2 py-1.5 text-center">
                       <span className="text-zinc-300">□</span>
@@ -424,12 +425,16 @@ export default function PrintSignPage() {
                     <td className="border border-zinc-400 px-2 py-3"></td>
                     <td className="border border-zinc-400 px-2 py-3"></td>
                     <td className="border border-zinc-400 px-2 py-3"></td>
+                    <td className="border border-zinc-400 px-2 py-3"></td>
                   </tr>
                 ))}
                 {/* 合計列 */}
                 <tr className="bg-zinc-100 font-semibold">
                   <td colSpan={3} className="border border-zinc-400 px-2 py-1.5 text-right">
                     合計
+                  </td>
+                  <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono">
+                    {sheet.rows.reduce((s, r) => s + r.qty, 0)}
                   </td>
                   <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono">
                     {sheet.totalPicked}
