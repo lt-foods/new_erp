@@ -274,8 +274,12 @@ export default function PurchaseOrdersListPage() {
   }, [reloadKey]);
 
   // 樞紐資料：lazy 撈「已下單 + 部分到貨」PO 的品項（訂購量 / 已到量），切到樞紐才撈一次。
+  // 注意：pivotLoading 不可放進本 effect 的依賴陣列，也不可拿來當守衛條件。
+  // 否則 setPivotLoading(true) 會立刻改動依賴 → React 先跑 cleanup 把 cancelled 設 true
+  // → 進行中的查詢回來時所有 setState（含 finally 的 setPivotLoading(false)）都被 !cancelled 擋掉
+  // → 樞紐永遠停在「載入中」。重入保護改由 pivotItems !== null 負責（載入完成/失敗都會離開 null）。
   useEffect(() => {
-    if (viewMode !== "pivot" || pivotItems !== null || pivotLoading || !pos) return;
+    if (viewMode !== "pivot" || pivotItems !== null || !pos) return;
     let cancelled = false;
     setPivotLoading(true);
     (async () => {
@@ -381,7 +385,7 @@ export default function PurchaseOrdersListPage() {
     return () => {
       cancelled = true;
     };
-  }, [viewMode, pivotItems, pivotLoading, pos]);
+  }, [viewMode, pivotItems, pos]);
 
   // === KPI 統計 ===
   const today = new Date().toISOString().slice(0, 10);
