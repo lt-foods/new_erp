@@ -102,6 +102,54 @@ function emptyItem(): ItemRow {
   return { campaign_item_id: null, sku_label: "", qty: "", unit_price: 0 };
 }
 
+// 加單成功後通知被加單的會員（僅 customer 模式：internal 是合成店家 member、offset 是庫存抵減，皆不通知）。
+// 沿用取貨/轉運既有的 admin-notify fanout；best-effort，推播失敗不影響已建立的訂單。
+async function fanoutOrderAddedNotifications(
+  rows: { member_id: number | null; items: { qty: number }[] }[],
+  campaignName: string,
+): Promise<void> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!supabaseUrl) return;
+
+  // 依會員彙總件數（同一會員多列合併成一則通知）
+  const qtyByMember = new Map<number, number>();
+  for (const r of rows) {
+    if (!r.member_id) continue;
+    const q = r.items.reduce((s, it) => s + (Number(it.qty) || 0), 0);
+    if (q <= 0) continue;
+    qtyByMember.set(r.member_id, (qtyByMember.get(r.member_id) ?? 0) + q);
+  }
+  if (qtyByMember.size === 0) return;
+
+  const sb = getSupabase();
+  const { data: sess } = await sb.auth.getSession();
+  const token = sess.session?.access_token;
+  if (!token) return;
+
+  await Promise.allSettled(
+    [...qtyByMember.entries()].map(async ([memberId, qty]) => {
+      try {
+        await fetch(`${supabaseUrl}/functions/v1/admin-notify`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            member_id: memberId,
+            title: "您有一筆新訂單",
+            message: `「${campaignName}」已為您加入 ${qty} 件商品，點此查看`,
+            url: "/orders",
+            category: "order_added",
+          }),
+        });
+      } catch (e) {
+        console.warn(`order-added push to member ${memberId} failed:`, e);
+      }
+    }),
+  );
+}
+
 export default function OrderEntryPage() {
   return (
     <Suspense fallback={<div className="p-6 text-sm text-zinc-500">載入中…</div>}>
@@ -362,6 +410,8 @@ function PageContent() {
       if (err) { setError(err.message); return; }
       const created = (data as { out_order_id: number; out_order_no: string; out_item_count: number }[]) ?? [];
       setToast(`已建立/更新 ${created.length} 筆訂單`);
+      // 通知被加單的會員（best-effort，不 await 以免拖慢表單重置）
+      void fanoutOrderAddedNotifications(rows, campaign?.name ?? "");
       setEntries([newEntry()]);
       localStorage.removeItem(draftKey);
       setTimeout(() => setToast(null), 3000);
