@@ -61,6 +61,8 @@ export function OrderTransferModal({
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchWrapRef = useRef<HTMLDivElement | null>(null);
   const [reason, setReason] = useState("");
+  // 空中轉：直接店對店、不經總倉；不勾 = 經總倉中轉（總倉需確認到貨再配送）
+  const [isAir, setIsAir] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // 每個品項的轉移勾選 + 數量（預設全選、全量 = 整單轉出）
@@ -73,6 +75,7 @@ export function OrderTransferModal({
     const next: Record<number, { checked: boolean; qty: string }> = {};
     for (const it of items) next[it.id] = { checked: true, qty: String(it.qty) };
     setPicks(next);
+    setIsAir(false);
   }
 
   useEffect(() => {
@@ -162,6 +165,8 @@ export function OrderTransferModal({
     if (toStore === currentPickupStoreId) {
       if (!confirm("接收店與原店相同（同店換客人）。確定繼續？")) return;
     }
+    // 空中轉僅對跨店有意義；同店換客人沒有物理配送、一律非空中轉
+    const airFlag = isAir && toStore !== currentPickupStoreId;
     setBusy(true);
     setErr(null);
     try {
@@ -176,6 +181,7 @@ export function OrderTransferModal({
           p_to_channel_id: null,
           p_operator: user?.id,
           p_reason: reason || null,
+          p_is_air_transfer: airFlag,
         });
         if (e) throw new Error(e.message);
         newId = data as number;
@@ -194,7 +200,7 @@ export function OrderTransferModal({
           p_operator: user?.id,
           p_reason: reason || null,
           p_items: pItems,
-          p_is_air_transfer: false,
+          p_is_air_transfer: airFlag,
         });
         if (e) throw new Error(e.message);
         newId = data as number;
@@ -420,6 +426,25 @@ export function OrderTransferModal({
             預設全選全量 = 整單轉出；取消勾選或減少數量 = 部分轉出（原單保留剩餘）
           </span>
         </div>
+
+        {toStore !== "" && toStore !== currentPickupStoreId && (
+          <div className="flex flex-col gap-1">
+            <label className="flex items-start gap-2 rounded-md border border-zinc-200 p-2 dark:border-zinc-700">
+              <input
+                type="checkbox"
+                checked={isAir}
+                onChange={(e) => setIsAir(e.target.checked)}
+                className="mt-0.5 h-4 w-4"
+              />
+              <span className="min-w-0 flex-1">
+                <span className="font-medium">空中轉（直接店對店、不經總倉）</span>
+                <span className="mt-0.5 block text-[11px] text-zinc-400">
+                  勾選 = 轉出店直接配送到接收店、只需接收店收貨；不勾 = 經總倉中轉，總倉需確認到貨再配送
+                </span>
+              </span>
+            </label>
+          </div>
+        )}
 
         <label className="flex flex-col gap-1">
           <span className="text-zinc-500">轉出原因</span>
