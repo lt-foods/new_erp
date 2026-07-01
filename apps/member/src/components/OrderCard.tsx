@@ -125,12 +125,6 @@ export default function OrderCard({ order }: { order: OrderRow }) {
         ))}
       </ul>
 
-      {order.notes && (
-        <div className="mx-4 mb-3 rounded-xl bg-[#7676801a] p-3 text-[14px] text-[var(--secondary-label)]">
-          📝 {order.notes}
-        </div>
-      )}
-
       <div className="space-y-1 border-t border-[var(--separator)] px-4 py-3 text-[14px]">
         <div className="flex justify-between text-[var(--secondary-label)]">
           <span>商品（{totalQty} 件）</span>
