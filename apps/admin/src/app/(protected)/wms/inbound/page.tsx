@@ -36,6 +36,8 @@ export default function TransfersInboxPage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [doneLimit, setDoneLimit] = useState(50);
   const [doneTotal, setDoneTotal] = useState(0);
+  // 撿貨單號（wave）分頁：一次顯示 20 個 wave，往下滑點「載入更多」+20
+  const [groupLimit, setGroupLimit] = useState(20);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [batchBusy, setBatchBusy] = useState(false);
   // 待收子篩選（僅在「未收」分頁內作用）
@@ -271,7 +273,7 @@ export default function TransfersInboxPage() {
   const groups = useMemo(() => {
     const map = new Map<
       string,
-      { label: string; subLabel: string; transfers: Transfer[]; sortKey: number }
+      { label: string; subLabel: string; transfers: Transfer[]; sortCode: string }
     >();
     for (const t of filtered) {
       const wid = parseWaveId(t.transfer_no);
@@ -283,16 +285,29 @@ export default function TransfersInboxPage() {
           label: w?.wave_code ?? (wid !== null ? `WAVE-${wid}` : "其他 transfer"),
           subLabel: w ? `配送日 ${w.wave_date}` : "",
           transfers: [],
-          sortKey: w ? new Date(w.created_at).getTime() : 0,
+          // 排序鍵＝撿貨單號（wave_code）；wave_code 已內含日期，字串遞減即最新在前
+          sortCode: w?.wave_code ?? (wid !== null ? `WAVE-${wid}` : ""),
         };
         map.set(key, entry);
       }
       entry.transfers.push(t);
     }
     return Array.from(map.entries())
-      .sort((a, b) => b[1].sortKey - a[1].sortKey)
-      .map(([key, v]) => ({ key, ...v }));
+      .map(([key, v]) => ({ key, ...v }))
+      .sort((a, b) => {
+        // 「其他 transfer」永遠墊底，其餘依撿貨單號遞減
+        if (a.key === "other") return 1;
+        if (b.key === "other") return -1;
+        return b.sortCode.localeCompare(a.sortCode);
+      });
   }, [filtered, waves]);
+
+  // 切分頁 / 篩選 / 搜尋時，撿貨單號分頁歸零回第一頁（20 筆）
+  useEffect(() => {
+    setGroupLimit(20);
+  }, [tab, dateFilter, locationFilter, search]);
+
+  const visibleGroups = useMemo(() => groups.slice(0, groupLimit), [groups, groupLimit]);
 
   function toggle(key: string) {
     setExpanded((cur) => {
@@ -626,7 +641,7 @@ export default function TransfersInboxPage() {
       )}
 
       <div className="flex flex-col gap-2">
-        {groups.map((g) => {
+        {visibleGroups.map((g) => {
           // 搜尋進行中時，展開所有符合的群組，避免結果被收合藏住
           const open = expanded.has(g.key) || !!search.trim();
           const pendingCount = g.transfers.filter((t) => t.status === "shipped").length;
@@ -795,6 +810,25 @@ export default function TransfersInboxPage() {
           );
         })}
       </div>
+
+      {/* 撿貨單號分頁：一次顯示 20 個 wave，往下滑點「載入更多」+20 */}
+      {groups.length > groupLimit && (
+        <div className="flex items-center justify-center gap-3 py-2 text-xs text-zinc-500">
+          <span>已顯示 {Math.min(groupLimit, groups.length)} / {groups.length} 個撿貨單號</span>
+          <SpinButton
+            onClick={() => setGroupLimit((n) => n + 20)}
+            className="rounded-md border border-zinc-300 px-3 py-1.5 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            載入更多 (+20)
+          </SpinButton>
+          <SpinButton
+            onClick={() => setGroupLimit(groups.length)}
+            className="rounded-md border border-zinc-300 px-3 py-1.5 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            載入全部
+          </SpinButton>
+        </div>
+      )}
 
       {/* 已收歷史分頁:目前 doneLimit 比 doneTotal 少時顯示（僅已收分頁） */}
       {tab === "received" && doneLimit < doneTotal && (
