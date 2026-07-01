@@ -365,28 +365,25 @@ export default function TransfersInboxPage() {
       if (!operator) throw new Error("尚未登入");
 
       const ids = Array.from(selected);
-      const results = await Promise.allSettled(
-        ids.map((id) =>
-          sb.rpc("rpc_receive_transfer", {
-            p_transfer_id: id,
-            p_lines: null,
-            p_operator: operator,
-            p_notes: "批次收貨",
-          }),
-        ),
-      );
-
-      let okCount = 0;
-      const failures: { id: number; error: string }[] = [];
-      results.forEach((r, i) => {
-        if (r.status === "fulfilled" && !r.value.error) okCount += 1;
-        else {
-          const errMsg = r.status === "fulfilled"
-            ? translateRpcError(r.value.error)
-            : (r.reason instanceof Error ? r.reason.message : String(r.reason));
-          failures.push({ id: ids[i], error: errMsg });
-        }
+      // 單一 round-trip 伺服端批次：序列處理避免 N 筆並行搶同店 row lock /
+      // 重複跑 pickup_ready 造成的 statement timeout（見
+      // 20260710000000_rpc_receive_transfer_batch.sql）。
+      const { data, error: e } = await sb.rpc("rpc_receive_transfer_batch", {
+        p_transfer_ids: ids,
+        p_operator: operator,
+        p_notes: "批次收貨",
       });
+      if (e) throw new Error(translateRpcError(e));
+
+      const res = (data ?? {}) as {
+        ok_count?: number;
+        failed?: { id: number; error: string }[];
+      };
+      const okCount = res.ok_count ?? 0;
+      const failures = (res.failed ?? []).map((f) => ({
+        id: f.id,
+        error: translateRpcError(f.error),
+      }));
 
       if (failures.length === 0) {
         alert(`✅ 批次收貨完成:${okCount} 筆`);
