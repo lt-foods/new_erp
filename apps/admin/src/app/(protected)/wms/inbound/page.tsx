@@ -19,7 +19,8 @@ import { fetchAllRows } from "@/lib/fetchAllRows";
 type Location = { id: number; name: string };
 type StoreLite = { id: number; location_id: number | null };
 type StoreRow = { id: number; name: string; location_id: number | null };
-type ItemSummary = { lines: number; totalQty: number; names: string[] };
+// codes：本張 transfer 涵蓋的品項編號(sku_code) / 商品編號(product_code)，僅供搜尋比對用
+type ItemSummary = { lines: number; totalQty: number; names: string[]; codes: string[] };
 
 export default function TransfersInboxPage() {
   const [transfers, setTransfers] = useState<Transfer[] | null>(null);
@@ -46,7 +47,7 @@ export default function TransfersInboxPage() {
   // 分頁：未收(shipped) / 已收(received)，預設未收
   type InboxTab = "unreceived" | "received";
   const [tab, setTab] = useState<InboxTab>("unreceived");
-  // 搜尋：調撥單號 / 分店 / 商品名
+  // 搜尋：撿貨單號(wave_code) / 調撥單號 / 分店 / 商品名 / 商品編號(product_code) / 品項編號(sku_code)
   const [search, setSearch] = useState("");
 
   // 分店帳號鎖定：把 store.name 比對 user.app_metadata.stores，回該分店的 location_id。
@@ -154,21 +155,38 @@ export default function TransfersInboxPage() {
           );
           const skuIds = Array.from(new Set(items.map((it) => it.sku_id)));
           const skuNameMap = new Map<number, string>();
+          // sku_code = 品項編號、product_code = 商品編號（products embed）；供搜尋比對
+          const skuCodeMap = new Map<number, string>();
           if (skuIds.length > 0) {
-            const skuRows = await fetchAllRows<{ id: number; product_name: string | null; variant_name: string | null }>(
-              () => sb.from("skus").select("id, product_name, variant_name").in("id", skuIds).order("id"),
+            const skuRows = await fetchAllRows<{
+              id: number;
+              product_name: string | null;
+              variant_name: string | null;
+              sku_code: string | null;
+              products: { product_code: string | null } | null;
+            }>(
+              () =>
+                sb
+                  .from("skus")
+                  .select("id, product_name, variant_name, sku_code, products(product_code)")
+                  .in("id", skuIds)
+                  .order("id"),
             );
             for (const s of skuRows) {
               const label = `${s.product_name ?? ""}${s.variant_name ? ` / ${s.variant_name}` : ""}`.trim() || `#${s.id}`;
               skuNameMap.set(s.id, label);
+              const code = [s.sku_code, s.products?.product_code].filter(Boolean).join(" ").trim();
+              if (code) skuCodeMap.set(s.id, code);
             }
           }
-          for (const tid of transferIds) summary.set(tid, { lines: 0, totalQty: 0, names: [] });
+          for (const tid of transferIds) summary.set(tid, { lines: 0, totalQty: 0, names: [], codes: [] });
           for (const it of items) {
-            const cur = summary.get(it.transfer_id) ?? { lines: 0, totalQty: 0, names: [] };
+            const cur = summary.get(it.transfer_id) ?? { lines: 0, totalQty: 0, names: [], codes: [] };
             cur.lines += 1;
             cur.totalQty += Number(it.qty_shipped);
             cur.names.push(`${skuNameMap.get(it.sku_id) ?? `#${it.sku_id}`} × ${Number(it.qty_shipped)}`);
+            const code = skuCodeMap.get(it.sku_id);
+            if (code) cur.codes.push(code);
             summary.set(it.transfer_id, cur);
           }
         }
@@ -245,10 +263,14 @@ export default function TransfersInboxPage() {
     const matchSearch = (t: Transfer) => {
       if (!q) return true;
       const summary = itemSummary.get(t.id);
+      const wid = parseWaveId(t.transfer_no);
+      const wave = wid !== null ? waves.get(wid) : undefined;
       const haystack = [
         t.transfer_no,
+        wave?.wave_code ?? "", // 撿貨單號
         locations.get(t.dest_location) ?? "",
-        ...(summary?.names ?? []),
+        ...(summary?.names ?? []), // 商品名
+        ...(summary?.codes ?? []), // 品項編號 sku_code / 商品編號 product_code
       ]
         .join(" ")
         .toLowerCase();
@@ -540,7 +562,7 @@ export default function TransfersInboxPage() {
       <input
         value={search}
         onChange={(e) => setSearch(e.target.value)}
-        placeholder="🔍 搜尋 調撥單號 / 分店 / 商品名"
+        placeholder="🔍 搜尋 撿貨單號 / 調撥單號 / 分店 / 商品名 / 商品編號 / 品項編號"
         className="w-full min-w-[180px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
       />
 
