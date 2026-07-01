@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
+import { fetchAllRows } from "@/lib/fetchAllRows";
 import { SendPOModal } from "@/components/SendPOModal";
 import SpinButton from "@/components/SpinButton";
 import Spinner, { LoadingBlock } from "@/components/Spinner";
@@ -55,6 +56,29 @@ type PO = {
 
 type StatusTab = "all" | POStatus;
 
+// 樞紐（依廠商彙整品項）用的扁平品項列
+type PivotItem = {
+  po_id: number;
+  po_no: string;
+  supplier_id: number;
+  supplier_name: string | null;
+  status: POStatus;
+  sku_id: number;
+  sku_label: string;
+  ordered: number;
+  received: number;
+};
+
+type PivotSkuAgg = { sku_id: number; label: string; ordered: number; received: number; poNos: Set<string> };
+type PivotGroup = {
+  supplier_id: number;
+  supplier_name: string;
+  skus: PivotSkuAgg[];
+  ordered: number;
+  received: number;
+  poCount: number;
+};
+
 const STATUS_LABEL = PO_STATUS_LABEL;
 
 const STATUS_BADGE: Record<POStatus, string> = {
@@ -97,6 +121,12 @@ export default function PurchaseOrdersListPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const [sendBusyId, setSendBusyId] = useState<number | null>(null);
   const [sendCtx, setSendCtx] = useState<SendCtx | null>(null);
+  // 檢視模式：清單（原本）/ 樞紐（依廠商彙整已下單＋部分到貨的品項）
+  const [viewMode, setViewMode] = useState<"list" | "pivot">("list");
+  // 樞紐狀態子篩選：兩者 / 僅已下單 / 僅部分到貨
+  const [pivotStatus, setPivotStatus] = useState<"both" | "sent" | "partially_received">("both");
+  const [pivotItems, setPivotItems] = useState<PivotItem[] | null>(null);
+  const [pivotLoading, setPivotLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -237,6 +267,104 @@ export default function PurchaseOrdersListPage() {
       cancelled = true;
     };
   }, [reloadKey]);
+
+  // 資料重載（reloadKey 變動）→ 讓樞紐下次進去重撈
+  useEffect(() => {
+    setPivotItems(null);
+  }, [reloadKey]);
+
+  // 樞紐資料：lazy 撈「已下單 + 部分到貨」PO 的品項（訂購量 / 已到量），切到樞紐才撈一次。
+  useEffect(() => {
+    if (viewMode !== "pivot" || pivotItems !== null || pivotLoading || !pos) return;
+    let cancelled = false;
+    setPivotLoading(true);
+    (async () => {
+      try {
+        const sb = getSupabase();
+        const chunk = <T,>(arr: T[], n: number): T[][] => {
+          const out: T[][] = [];
+          for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+          return out;
+        };
+        const targetPos = pos.filter(
+          (p) => p.status === "sent" || p.status === "partially_received",
+        );
+        const poMeta = new Map(targetPos.map((p) => [p.id, p]));
+        const poIds = targetPos.map((p) => p.id);
+        if (poIds.length === 0) {
+          if (!cancelled) setPivotItems([]);
+          return;
+        }
+        // 1. PO 品項（訂購量）— fetchAllRows 分頁，避免 PostgREST 1000 列上限截斷。
+        const poiRows: { id: number; po_id: number; sku_id: number; qty_ordered: number }[] = [];
+        for (const c of chunk(poIds, 200)) {
+          const rows = await fetchAllRows<{ id: number; po_id: number; sku_id: number; qty_ordered: number }>(
+            () =>
+              sb
+                .from("purchase_order_items")
+                .select("id, po_id, sku_id, qty_ordered")
+                .in("po_id", c)
+                .order("id", { ascending: true }),
+          );
+          poiRows.push(...rows);
+        }
+        // 2. 已到量：confirmed 收貨的 goods_receipt_items，per po_item 加總（同樣分頁）
+        const recvByItem = new Map<number, number>();
+        const itemIds = poiRows.map((r) => r.id);
+        for (const c of chunk(itemIds, 200)) {
+          const rows = await fetchAllRows<{ po_item_id: number; qty_received: number }>(
+            () =>
+              sb
+                .from("goods_receipt_items")
+                .select("po_item_id, qty_received, goods_receipts!inner(status)")
+                .eq("goods_receipts.status", "confirmed")
+                .in("po_item_id", c)
+                .order("po_item_id", { ascending: true }),
+          );
+          for (const r of rows) {
+            recvByItem.set(r.po_item_id, (recvByItem.get(r.po_item_id) ?? 0) + Number(r.qty_received));
+          }
+        }
+        // 3. SKU 標籤
+        const skuIds = Array.from(new Set(poiRows.map((r) => r.sku_id)));
+        const skuLabel = new Map<number, string>();
+        for (const c of chunk(skuIds, 300)) {
+          const { data } = await sb
+            .from("skus")
+            .select("id, sku_code, variant_name, products!inner(name)")
+            .in("id", c);
+          type SkuLite = { id: number; sku_code: string | null; variant_name: string | null; products: { name: string } | { name: string }[] | null };
+          for (const s of (data as SkuLite[] | null) ?? []) {
+            const prod = Array.isArray(s.products) ? s.products[0] : s.products;
+            const base = prod?.name ?? s.sku_code ?? `#${s.id}`;
+            skuLabel.set(s.id, s.variant_name ? `${base} / ${s.variant_name}` : base);
+          }
+        }
+        const items: PivotItem[] = poiRows.map((r) => {
+          const p = poMeta.get(r.po_id)!;
+          return {
+            po_id: r.po_id,
+            po_no: p.po_no,
+            supplier_id: p.supplier_id,
+            supplier_name: p.supplier_name,
+            status: p.status,
+            sku_id: r.sku_id,
+            sku_label: skuLabel.get(r.sku_id) ?? `#${r.sku_id}`,
+            ordered: Number(r.qty_ordered),
+            received: recvByItem.get(r.id) ?? 0,
+          };
+        });
+        if (!cancelled) setPivotItems(items);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setPivotLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode, pivotItems, pivotLoading, pos]);
 
   // === KPI 統計 ===
   const today = new Date().toISOString().slice(0, 10);
@@ -509,6 +637,58 @@ export default function PurchaseOrdersListPage() {
     }
   }
 
+  // 樞紐分組：依廠商 → SKU 彙整（訂購 / 已到 / 未到），套用 pivotStatus + 供應商 + 搜尋。
+  const pivotGroups: PivotGroup[] = useMemo(() => {
+    if (!pivotItems) return [];
+    const q = search.trim().toLowerCase();
+    const bySup = new Map<
+      number,
+      { supplier_id: number; supplier_name: string; skus: Map<number, PivotSkuAgg>; poIds: Set<number> }
+    >();
+    for (const it of pivotItems) {
+      if (pivotStatus !== "both" && it.status !== pivotStatus) continue;
+      if (supplierFilter !== "all" && it.supplier_id !== supplierFilter) continue;
+      if (q) {
+        const hit = [it.po_no, it.supplier_name, it.sku_label]
+          .filter((x): x is string => !!x)
+          .some((x) => x.toLowerCase().includes(q));
+        if (!hit) continue;
+      }
+      let sup = bySup.get(it.supplier_id);
+      if (!sup) {
+        sup = {
+          supplier_id: it.supplier_id,
+          supplier_name: it.supplier_name ?? `#${it.supplier_id}`,
+          skus: new Map(),
+          poIds: new Set(),
+        };
+        bySup.set(it.supplier_id, sup);
+      }
+      sup.poIds.add(it.po_id);
+      let sk = sup.skus.get(it.sku_id);
+      if (!sk) {
+        sk = { sku_id: it.sku_id, label: it.sku_label, ordered: 0, received: 0, poNos: new Set() };
+        sup.skus.set(it.sku_id, sk);
+      }
+      sk.ordered += it.ordered;
+      sk.received += it.received;
+      sk.poNos.add(it.po_no);
+    }
+    return Array.from(bySup.values())
+      .map((sup) => {
+        const skus = Array.from(sup.skus.values()).sort((a, b) => a.label.localeCompare(b.label));
+        return {
+          supplier_id: sup.supplier_id,
+          supplier_name: sup.supplier_name,
+          skus,
+          ordered: skus.reduce((s, r) => s + r.ordered, 0),
+          received: skus.reduce((s, r) => s + r.received, 0),
+          poCount: sup.poIds.size,
+        };
+      })
+      .sort((a, b) => a.supplier_name.localeCompare(b.supplier_name));
+  }, [pivotItems, pivotStatus, supplierFilter, search]);
+
   const filtersActive =
     tab !== "all" ||
     !!search ||
@@ -585,10 +765,48 @@ export default function PurchaseOrdersListPage() {
         />
       </div>
 
-      {/* === 狀態 tabs === */}
+      {/* === 檢視切換：清單 / 樞紐 === */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="inline-flex rounded-md border border-zinc-300 p-0.5 dark:border-zinc-700">
+          <SpinButton
+            onClick={() => setViewMode("list")}
+            className={`rounded px-3 py-1 text-sm ${viewMode === "list" ? "bg-blue-600 font-semibold text-white" : "text-zinc-600 dark:text-zinc-300"}`}
+          >
+            清單
+          </SpinButton>
+          <SpinButton
+            onClick={() => setViewMode("pivot")}
+            className={`rounded px-3 py-1 text-sm ${viewMode === "pivot" ? "bg-blue-600 font-semibold text-white" : "text-zinc-600 dark:text-zinc-300"}`}
+          >
+            樞紐（依廠商）
+          </SpinButton>
+        </div>
+        {viewMode === "pivot" && (
+          <div className="inline-flex rounded-md border border-zinc-300 p-0.5 text-sm dark:border-zinc-700">
+            {(
+              [
+                ["both", "已下單＋部分到貨"],
+                ["sent", "已下單廠商"],
+                ["partially_received", "部分到貨"],
+              ] as const
+            ).map(([v, lbl]) => (
+              <SpinButton
+                key={v}
+                onClick={() => setPivotStatus(v)}
+                className={`rounded px-2.5 py-1 ${pivotStatus === v ? "bg-amber-500 font-semibold text-white" : "text-zinc-600 dark:text-zinc-300"}`}
+              >
+                {lbl}
+              </SpinButton>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* === 狀態 tabs（清單模式）=== */}
+      {viewMode === "list" && (
       <div className="flex flex-wrap gap-1 border-b border-zinc-200 dark:border-zinc-800">
         {STATUS_TAB_ORDER.map((s) => {
-          const label = s === "all" ? "全部" : STATUS_LABEL[s];
+          const label = s === "all" ? "全部" : s === "sent" ? "已下單廠商" : STATUS_LABEL[s];
           const count = tabCounts[s];
           const active = tab === s;
           return (
@@ -607,6 +825,7 @@ export default function PurchaseOrdersListPage() {
           );
         })}
       </div>
+      )}
 
       {/* === 篩選 / 搜尋工具列 === */}
       <div className="flex flex-wrap items-center gap-2">
@@ -676,6 +895,8 @@ export default function PurchaseOrdersListPage() {
         </span>
       </div>
 
+      {viewMode === "list" && (
+        <>
       {/* === 主表格 === */}
       <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
@@ -822,6 +1043,12 @@ export default function PurchaseOrdersListPage() {
           </SpinButton>
         </div>
       )}
+        </>
+      )}
+
+      {viewMode === "pivot" && (
+        <PoPivot groups={pivotGroups} loading={pivotLoading || pivotItems === null} />
+      )}
 
       {sendCtx && (
         <SendPOModal
@@ -875,6 +1102,86 @@ function KpiCard({
         <div className="mt-0.5 text-[10px] text-zinc-400">{hint}</div>
       )}
     </Wrapper>
+  );
+}
+
+function PoPivot({ groups, loading }: { groups: PivotGroup[]; loading: boolean }) {
+  if (loading) {
+    return (
+      <div className="rounded-md border border-zinc-200 p-12 text-center text-sm text-zinc-500 dark:border-zinc-800">
+        載入樞紐資料中…
+      </div>
+    );
+  }
+  if (groups.length === 0) {
+    return (
+      <div className="rounded-md border border-zinc-200 p-12 text-center text-sm text-zinc-500 dark:border-zinc-800">
+        目前沒有「已下單 / 部分到貨」的品項。
+      </div>
+    );
+  }
+  const totOrdered = groups.reduce((s, g) => s + g.ordered, 0);
+  const totReceived = groups.reduce((s, g) => s + g.received, 0);
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="text-xs text-zinc-500">
+        {groups.length} 家廠商 · 訂購合計 {totOrdered} · 已到 {totReceived} · 未到 {totOrdered - totReceived}
+      </div>
+      {groups.map((g) => (
+        <div
+          key={g.supplier_id}
+          className="overflow-hidden rounded-md border border-zinc-200 dark:border-zinc-800"
+        >
+          <div className="flex flex-wrap items-baseline justify-between gap-2 bg-zinc-50 px-3 py-2 dark:bg-zinc-900">
+            <div className="font-semibold">
+              {g.supplier_name}
+              <span className="ml-2 text-xs font-normal text-zinc-500">
+                {g.poCount} 張 PO · {g.skus.length} 品項
+              </span>
+            </div>
+            <div className="text-xs text-zinc-500">
+              訂購 {g.ordered} · 已到 {g.received} ·{" "}
+              <span className={g.ordered - g.received > 0 ? "text-amber-600 dark:text-amber-400" : ""}>
+                未到 {g.ordered - g.received}
+              </span>
+            </div>
+          </div>
+          <table className="min-w-full text-sm">
+            <thead className="text-xs text-zinc-500">
+              <tr className="border-b border-zinc-200 dark:border-zinc-800">
+                <th className="px-3 py-1.5 text-left font-medium">品項</th>
+                <th className="px-3 py-1.5 text-right font-medium">訂購</th>
+                <th className="px-3 py-1.5 text-right font-medium">已到</th>
+                <th className="px-3 py-1.5 text-right font-medium">未到</th>
+                <th className="px-3 py-1.5 text-left font-medium">來源 PO</th>
+              </tr>
+            </thead>
+            <tbody>
+              {g.skus.map((s) => {
+                const outstanding = s.ordered - s.received;
+                return (
+                  <tr key={s.sku_id} className="border-b border-zinc-100 dark:border-zinc-800/60">
+                    <td className="px-3 py-1.5">{s.label}</td>
+                    <td className="px-3 py-1.5 text-right font-mono">{s.ordered}</td>
+                    <td className="px-3 py-1.5 text-right font-mono">{s.received}</td>
+                    <td
+                      className={`px-3 py-1.5 text-right font-mono ${
+                        outstanding > 0 ? "text-amber-600 dark:text-amber-400" : "text-zinc-400"
+                      }`}
+                    >
+                      {outstanding}
+                    </td>
+                    <td className="px-3 py-1.5 font-mono text-xs text-zinc-500">
+                      {Array.from(s.poNos).sort().join("、")}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
   );
 }
 
