@@ -43,6 +43,8 @@ export default function TransfersInboxPage() {
   // 分頁：未收(shipped) / 已收(received)，預設未收
   type InboxTab = "unreceived" | "received";
   const [tab, setTab] = useState<InboxTab>("unreceived");
+  // 搜尋：調撥單號 / 分店 / 商品名
+  const [search, setSearch] = useState("");
 
   // 分店帳號鎖定：把 store.name 比對 user.app_metadata.stores，回該分店的 location_id。
   // 分店帳號只能看自己分店（dest_location = 該 location_id）；HQ/總倉回 null = 看全部。
@@ -231,8 +233,22 @@ export default function TransfersInboxPage() {
     tomorrow.setDate(today.getDate() + 1);
     const todayStr = today.toLocaleDateString("sv-SE");
     const tomorrowStr = tomorrow.toLocaleDateString("sv-SE");
+    const q = search.trim().toLowerCase();
+    const matchSearch = (t: Transfer) => {
+      if (!q) return true;
+      const summary = itemSummary.get(t.id);
+      const haystack = [
+        t.transfer_no,
+        locations.get(t.dest_location) ?? "",
+        ...(summary?.names ?? []),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(q);
+    };
     return (transfers ?? []).filter((t) => {
       if (locationFilter !== "all" && t.dest_location !== locationFilter) return false;
+      if (!matchSearch(t)) return false;
       // 分頁為主篩選：已收 = received；未收 = shipped（再套待收子篩選）
       if (tab === "received") return t.status === "received";
       if (t.status !== "shipped") return false;
@@ -244,7 +260,7 @@ export default function TransfersInboxPage() {
       if (dateFilter === "today_or_earlier") return !!wd && wd <= todayStr;
       return true;
     });
-  }, [transfers, locationFilter, tab, dateFilter, waves]);
+  }, [transfers, locationFilter, tab, dateFilter, waves, search, itemSummary, locations]);
 
   const groups = useMemo(() => {
     const map = new Map<
@@ -468,6 +484,14 @@ export default function TransfersInboxPage() {
         })}
       </div>
 
+      {/* 搜尋 */}
+      <input
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="🔍 搜尋 調撥單號 / 分店 / 商品名"
+        className="w-full min-w-[180px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+      />
+
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
           {error}
@@ -566,7 +590,8 @@ export default function TransfersInboxPage() {
 
       <div className="flex flex-col gap-2">
         {groups.map((g) => {
-          const open = expanded.has(g.key);
+          // 搜尋進行中時，展開所有符合的群組，避免結果被收合藏住
+          const open = expanded.has(g.key) || !!search.trim();
           const pendingCount = g.transfers.filter((t) => t.status === "shipped").length;
           const doneCount = g.transfers.length - pendingCount;
           return (
