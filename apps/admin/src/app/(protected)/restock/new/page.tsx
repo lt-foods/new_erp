@@ -126,7 +126,7 @@ export default function RestockNewPage() {
             <tr className="text-left text-xs uppercase tracking-wide text-zinc-500">
               <th className="px-3 py-2">商品 / 規格 *</th>
               <th className="px-3 py-2 text-right">數量 *</th>
-              <th className="px-3 py-2 text-right">單價 *</th>
+              <th className="px-3 py-2 text-right">單價</th>
               <th className="px-3 py-2">備註</th>
               <th className="px-3 py-2"></th>
             </tr>
@@ -277,7 +277,7 @@ function LineRow({
         )}
       </td>
       <td className="px-3 py-2"><input type="number" min="0" step="1" value={line.qty} onChange={(e) => onChange({ qty: e.target.value })} className="w-24 rounded border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800" /></td>
-      <td className="px-3 py-2"><input type="number" min="0" step="1" value={line.unit_price} onChange={(e) => onChange({ unit_price: e.target.value })} className="w-24 rounded border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800" /></td>
+      <td className="px-3 py-2 text-right font-mono text-sm text-zinc-700 dark:text-zinc-300">${line.unit_price}</td>
       <td className="px-3 py-2"><input value={line.notes} onChange={(e) => onChange({ notes: e.target.value })} placeholder="（選填）" className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800" /></td>
       <td className="px-3 py-2">
         {onRemove && (
