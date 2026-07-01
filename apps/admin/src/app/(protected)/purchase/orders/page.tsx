@@ -308,17 +308,30 @@ export default function PurchaseOrdersListPage() {
           );
           poiRows.push(...rows);
         }
-        // 2. 已到量：confirmed 收貨的 goods_receipt_items，per po_item 加總（同樣分頁）
+        // 2. 已到量：先抓這些 PO 的 confirmed 收貨單，再依 gr_id 撈明細加總。
+        //    （不走 goods_receipts!inner 內嵌過濾 — 內嵌 join 在部分 RLS 下行為不穩，
+        //     直接兩段查詢較可靠，且收貨單數量遠少於品項數。）
+        const grIds: number[] = [];
+        for (const c of chunk(poIds, 200)) {
+          const rows = await fetchAllRows<{ id: number }>(
+            () =>
+              sb
+                .from("goods_receipts")
+                .select("id")
+                .eq("status", "confirmed")
+                .in("po_id", c)
+                .order("id", { ascending: true }),
+          );
+          grIds.push(...rows.map((r) => r.id));
+        }
         const recvByItem = new Map<number, number>();
-        const itemIds = poiRows.map((r) => r.id);
-        for (const c of chunk(itemIds, 200)) {
+        for (const c of chunk(grIds, 200)) {
           const rows = await fetchAllRows<{ po_item_id: number; qty_received: number }>(
             () =>
               sb
                 .from("goods_receipt_items")
-                .select("po_item_id, qty_received, goods_receipts!inner(status)")
-                .eq("goods_receipts.status", "confirmed")
-                .in("po_item_id", c)
+                .select("po_item_id, qty_received")
+                .in("gr_id", c)
                 .order("po_item_id", { ascending: true }),
           );
           for (const r of rows) {
@@ -356,7 +369,11 @@ export default function PurchaseOrdersListPage() {
         });
         if (!cancelled) setPivotItems(items);
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        // 設成空陣列避免「載入中」卡死；錯誤原因由上方 error banner 呈現。
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : String(e));
+          setPivotItems([]);
+        }
       } finally {
         if (!cancelled) setPivotLoading(false);
       }
