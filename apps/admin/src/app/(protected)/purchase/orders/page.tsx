@@ -664,7 +664,7 @@ export default function PurchaseOrdersListPage() {
     const q = search.trim().toLowerCase();
     const bySup = new Map<
       number,
-      { supplier_id: number; supplier_name: string; skus: Map<number, PivotSkuAgg>; poIds: Set<number> }
+      { supplier_id: number; supplier_name: string; skus: Map<number, PivotSkuAgg> }
     >();
     for (const it of pivotItems) {
       if (pivotStatus !== "both" && it.status !== pivotStatus) continue;
@@ -681,11 +681,9 @@ export default function PurchaseOrdersListPage() {
           supplier_id: it.supplier_id,
           supplier_name: it.supplier_name ?? `#${it.supplier_id}`,
           skus: new Map(),
-          poIds: new Set(),
         };
         bySup.set(it.supplier_id, sup);
       }
-      sup.poIds.add(it.po_id);
       let sk = sup.skus.get(it.sku_id);
       if (!sk) {
         sk = { sku_id: it.sku_id, label: it.sku_label, ordered: 0, received: 0, poNos: new Set() };
@@ -697,16 +695,24 @@ export default function PurchaseOrdersListPage() {
     }
     return Array.from(bySup.values())
       .map((sup) => {
-        const skus = Array.from(sup.skus.values()).sort((a, b) => a.label.localeCompare(b.label));
+        // 只留還沒到齊的品項：訂購與已到相符（已收滿）的不顯示；未收滿或超收都保留。
+        const skus = Array.from(sup.skus.values())
+          .filter((s) => s.ordered !== s.received)
+          .sort((a, b) => a.label.localeCompare(b.label));
+        // PO 張數 / 合計都用「還沒到齊的品項」重算，數字才會跟畫面列出的品項一致。
+        const poNos = new Set<string>();
+        for (const s of skus) for (const n of s.poNos) poNos.add(n);
         return {
           supplier_id: sup.supplier_id,
           supplier_name: sup.supplier_name,
           skus,
           ordered: skus.reduce((s, r) => s + r.ordered, 0),
           received: skus.reduce((s, r) => s + r.received, 0),
-          poCount: sup.poIds.size,
+          poCount: poNos.size,
         };
       })
+      // 整組品項都已收滿的廠商就不顯示。
+      .filter((g) => g.skus.length > 0)
       .sort((a, b) => a.supplier_name.localeCompare(b.supplier_name));
   }, [pivotItems, pivotStatus, supplierFilter, search]);
 
