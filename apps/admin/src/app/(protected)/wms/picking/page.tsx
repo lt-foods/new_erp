@@ -65,7 +65,11 @@ function defaultWaveDate() {
 
 export default function PickingWorkstationPage() {
   const router = useRouter();
+  // 矩陣視角只撈「還有庫存可分配」的列（has_stock_left），避免整張 view（線上上萬列）全撈。
   const [demand, setDemand] = useState<DemandRow[] | null>(null);
+  // 依分店檢視要看「缺貨待到」的品項 → lazy 撈完整 view（切到該分頁才撈一次）。
+  const [fullDemand, setFullDemand] = useState<DemandRow[] | null>(null);
+  const [loadingFull, setLoadingFull] = useState(false);
   const [restockDemand, setRestockDemand] = useState<RestockRow[] | null>(null);
   const [suppliers, setSuppliers] = useState<Map<number, Supplier>>(new Map());
   const [waveDate, setWaveDate] = useState(defaultWaveDate());
@@ -90,14 +94,18 @@ export default function PickingWorkstationPage() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setFullDemand(null); // reloadKey 變動（建單後）→ 讓依分店完整清單下次進去重撈
     (async () => {
       try {
         const sb = getSupabase();
         // 全部走 fetchAll 分頁，避免 PostgREST 1000 列上限把整張 PO 截掉。
         // .order() 給分頁一個穩定的 total order（否則跨頁可能漏/重複列）。
+        // 矩陣視角只需可分配列 → .eq("has_stock_left", true)：線上 12,240 列 → ~37 列，
+        // 13 趟分頁 → 1 趟，解決「派貨工作台讀取不出來」。
         const [dRows, supRows, rrRows] = await Promise.all([
           fetchAllRows<DemandRow>(() =>
             sb.from("v_picking_demand_by_po").select("*")
+              .eq("has_stock_left", true)
               .order("po_item_id", { ascending: true })
               .order("store_id", { ascending: true, nullsFirst: false }),
           ),
@@ -123,6 +131,29 @@ export default function PickingWorkstationPage() {
     })();
     return () => { cancelled = true; };
   }, [reloadKey]);
+
+  // 依分店檢視分頁：lazy 撈完整 view（含缺貨待到的品項），只在切到該分頁時撈一次。
+  useEffect(() => {
+    if (viewMode !== "by_store" || fullDemand !== null || loadingFull) return;
+    let cancelled = false;
+    setLoadingFull(true);
+    (async () => {
+      try {
+        const sb = getSupabase();
+        const data = await fetchAllRows<DemandRow>(() =>
+          sb.from("v_picking_demand_by_po").select("*")
+            .order("po_item_id", { ascending: true })
+            .order("store_id", { ascending: true, nullsFirst: false }),
+        );
+        if (!cancelled) setFullDemand(data);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (!cancelled) setLoadingFull(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [viewMode, fullDemand, loadingFull]);
 
   // ===== 缺價預警：抓畫面上所有 SKU 的現行成本價 / 分店價 =====
   // 與 DB 守衛 _missing_dispatch_prices 同條件（scope cost/branch、effective_to IS NULL、price>0）。
@@ -379,9 +410,10 @@ export default function PickingWorkstationPage() {
     rows: DemandRow[];
   };
   const storeSections: StoreSection[] = useMemo(() => {
-    if (!demand) return [];
+    // 依分店檢視用完整清單（含缺貨待到）；矩陣的 demand 只有可分配列，不夠。
+    if (!fullDemand) return [];
     const grouped = new Map<number, StoreSection>();
-    for (const r of demand) {
+    for (const r of fullDemand) {
       if (r.store_id === null) continue;
       if (!grouped.has(r.store_id)) {
         grouped.set(r.store_id, {
@@ -394,7 +426,7 @@ export default function PickingWorkstationPage() {
       grouped.get(r.store_id)!.rows.push(r);
     }
     return Array.from(grouped.values()).sort((a, b) => (a.storeCode ?? "").localeCompare(b.storeCode ?? ""));
-  }, [demand]);
+  }, [fullDemand]);
 
   // 補貨申請預設分配 = min(申請量 - 已撿, HQ 庫存) per (rr, sku)
   useEffect(() => {
@@ -882,7 +914,9 @@ export default function PickingWorkstationPage() {
               ? `${skuRows.length} 個品項 · ${allStores.length} 間分店${
                   hasSelection ? ` · 已選 ${selectedRows.length} 品項` : ""
                 } · 擬分 ${totalAllocSum}${involvedPos > 0 ? ` · 預計切 ${involvedPos} 張撿貨單` : ""}`
-              : `${storeSections.length} 間分店有待撿貨`}
+              : loadingFull || fullDemand === null
+                ? "載入完整清單中…"
+                : `${storeSections.length} 間分店有待撿貨`}
         </span>
         {viewMode === "matrix" && missingPriceCount > 0 && (
           <span className="text-xs font-medium text-rose-700 dark:text-rose-400">
@@ -1084,8 +1118,12 @@ export default function PickingWorkstationPage() {
           </div>
         )
       ) : (
-        // 依分店視角 (純檢視)
-        storeSections.length === 0 ? (
+        // 依分店視角 (純檢視) — 用 lazy 撈的完整清單
+        fullDemand === null ? (
+          <div className="rounded-md border border-zinc-200 p-12 text-center text-sm text-zinc-500 dark:border-zinc-800">
+            載入完整清單中…
+          </div>
+        ) : storeSections.length === 0 ? (
           <div className="rounded-md border border-zinc-200 p-12 text-center text-sm text-zinc-500 dark:border-zinc-800">
             沒有任何分店有待撿貨。
           </div>
