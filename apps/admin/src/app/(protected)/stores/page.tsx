@@ -119,8 +119,8 @@ export default function StoresPage() {
   async function handleDelete(r: Store) {
     const ok = window.confirm(
       `確定刪除門市「${r.name}」(${r.code})？\n\n` +
-      `刪除後從預設列表消失（可在「僅已刪除」找到並還原）。\n` +
-      `若有進行中訂單或補貨申請、或還在啟用中，後端會拒絕。`,
+      `刪除會同時停用該門市、並從預設列表消失（可在「僅已刪除」找到並還原）。\n` +
+      `若有進行中訂單或補貨申請，後端會拒絕。`,
     );
     if (!ok) return;
     try {
@@ -322,7 +322,7 @@ export default function StoresPage() {
                           編輯
                         </SpinButton>
                       )}
-                      {!r.deleted_at && !r.is_active && (
+                      {!r.deleted_at && (
                         <SpinButton
                           onClick={() => handleDelete(r)}
                           className="text-xs text-red-600 hover:underline dark:text-red-400"
