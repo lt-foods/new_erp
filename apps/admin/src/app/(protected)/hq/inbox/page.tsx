@@ -18,7 +18,7 @@ import RestockDetailModal from "@/components/RestockDetailModal";
 import { ORDER_STATUS_LABEL as AID_STATUS_LABEL, type OrderStatus as AidStatus } from "@/lib/orderStatus";
 
 type Stage = "pending" | "in_transit" | "done" | "rejected";
-type SourceTag = "restock" | "transfer" | "aid" | "air" | "shortage" | "picking" | "exception";
+type SourceTag = "restock" | "transfer" | "aid" | "shortage" | "picking" | "exception";
 
 const STAGE_LABEL: Record<Stage, string> = {
   pending: "待處理",
@@ -38,7 +38,6 @@ const SOURCE_LABEL: Record<SourceTag, string> = {
   restock: "補貨申請",
   transfer: "轉貨單",
   aid: "互助訂單",
-  air: "空中轉",
   shortage: "⚠️ 短少訂單",
   picking: "撿貨單",
   exception: "⚠️ 異常",
@@ -48,7 +47,6 @@ const SOURCE_COLOR: Record<SourceTag, string> = {
   restock: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300",
   transfer: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
   aid: "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-950 dark:text-fuchsia-300",
-  air: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300",
   shortage: "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
   picking: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   exception: "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
@@ -145,7 +143,6 @@ type Row =
   | { key: string; source: "restock"; ts: number; stage: Stage; raw: RestockRaw }
   | { key: string; source: "transfer"; ts: number; stage: Stage; raw: TransferRaw }
   | { key: string; source: "aid"; ts: number; stage: Stage; raw: AidRaw }
-  | { key: string; source: "air"; ts: number; stage: Stage; raw: AidRaw }
   | { key: string; source: "shortage"; ts: number; stage: Stage; raw: ShortageRaw }
   | { key: string; source: "picking"; ts: number; stage: Stage; raw: PickingRaw };
 
@@ -458,15 +455,13 @@ async function fetchTransferRows(
   return { rows, total: count ?? 0 };
 }
 
-// airMode: "aid" = 互助訂單(排除空中轉,只 is_air_transfer 為 null/false)
-//          "air" = 空中轉(只 is_air_transfer=true)
 async function fetchAidRows(
   sb: SBClient,
   stage: Stage | null,
   page: number,
   dateFrom: string,
   dateTo: string,
-  airMode: "aid" | "air",
+  aidMode: "all" | "air" | "via_warehouse",
   aidStatus: string,
 ): Promise<{ rows: Row[]; total: number }> {
   let q = sb
@@ -482,8 +477,8 @@ async function fetchAidRows(
     .order("updated_at", { ascending: false });
   if (stage) q = q.in("status", AID_STATUS_BY_STAGE[stage] as string[]);
   if (aidStatus) q = q.eq("status", aidStatus);
-  if (airMode === "air") q = q.eq("is_air_transfer", true);
-  else q = q.or("is_air_transfer.is.null,is_air_transfer.eq.false");
+  if (aidMode === "air") q = q.eq("is_air_transfer", true);
+  if (aidMode === "via_warehouse") q = q.eq("is_air_transfer", false);
   if (dateFrom) q = q.gte("updated_at", `${dateFrom}T00:00:00`);
   if (dateTo) q = q.lte("updated_at", `${dateTo}T23:59:59.999`);
   const start = (page - 1) * PAGE_SIZE;
@@ -507,8 +502,8 @@ async function fetchAidRows(
   const itemsMap = await fetchItemsSummaryMap(sb, "customer_order_items", "order_id", aidIds, "qty");
 
   const rows: Row[] = aidRows.map((a) => ({
-    key: `${airMode}-${a.id}`,
-    source: airMode,
+    key: `aid-${a.id}`,
+    source: "aid" as const,
     ts: new Date(a.updated_at).getTime(),
     stage: classifyAid(a.status),
     raw: {
@@ -786,10 +781,9 @@ async function fetchTransferRowsByIds(sb: SBClient, ids: number[]): Promise<Row[
   }));
 }
 
-// airMode: "aid" 排除空中轉 / "air" 只留空中轉(tag 用,決定 row.source 與 key 前綴)
-async function fetchAidRowsByIds(sb: SBClient, ids: number[], airMode: "aid" | "air" = "aid"): Promise<Row[]> {
+async function fetchAidRowsByIds(sb: SBClient, ids: number[]): Promise<Row[]> {
   if (ids.length === 0) return [];
-  let q = sb
+  const { data, error } = await sb
     .from("customer_orders")
     .select(
       `id, order_no, status, is_air_transfer, pickup_store_id, updated_at,
@@ -799,9 +793,6 @@ async function fetchAidRowsByIds(sb: SBClient, ids: number[], airMode: "aid" | "
     )
     .eq("items.source", "aid_transfer")
     .in("id", ids);
-  if (airMode === "air") q = q.eq("is_air_transfer", true);
-  else q = q.or("is_air_transfer.is.null,is_air_transfer.eq.false");
-  const { data, error } = await q;
   if (error) throw new Error("aid: " + error.message);
   const aidRows = (data ?? []) as unknown as Array<{
     id: number;
@@ -816,8 +807,8 @@ async function fetchAidRowsByIds(sb: SBClient, ids: number[], airMode: "aid" | "
   }>;
   const itemsMap = await fetchItemsSummaryMap(sb, "customer_order_items", "order_id", aidRows.map((a) => a.id), "qty");
   return aidRows.map((a) => ({
-    key: `${airMode}-${a.id}`,
-    source: airMode,
+    key: `aid-${a.id}`,
+    source: "aid" as const,
     ts: new Date(a.updated_at).getTime(),
     stage: classifyAid(a.status),
     raw: {
@@ -918,11 +909,11 @@ function HqInboxContent() {
   const [sourceFilter, setSourceFilter] = useState<SourceTag | "all">(() => {
     if (typeof window === "undefined") return "picking";
     const fromUrl = new URLSearchParams(window.location.search).get("source");
-    if (fromUrl === "restock" || fromUrl === "transfer" || fromUrl === "aid" || fromUrl === "air" || fromUrl === "shortage" || fromUrl === "picking" || fromUrl === "exception" || fromUrl === "all") {
+    if (fromUrl === "restock" || fromUrl === "transfer" || fromUrl === "aid" || fromUrl === "shortage" || fromUrl === "picking" || fromUrl === "exception" || fromUrl === "all") {
       return fromUrl;
     }
     const saved = window.localStorage.getItem("hq-inbox-source");
-    if (saved === "restock" || saved === "transfer" || saved === "aid" || saved === "air" || saved === "shortage" || saved === "picking" || saved === "exception") {
+    if (saved === "restock" || saved === "transfer" || saved === "aid" || saved === "shortage" || saved === "picking" || saved === "exception") {
       return saved;
     }
     // 舊 localStorage 是 "all" → 改成 picking(因為 UI 沒入口了)
@@ -940,7 +931,7 @@ function HqInboxContent() {
   // 跟 ?source= URL param 同步(支援從 /transfers/aid redirect 過來)
   useEffect(() => {
     const src = searchParams.get("source");
-    if (src === "restock" || src === "transfer" || src === "aid" || src === "air" || src === "shortage" || src === "picking" || src === "exception") {
+    if (src === "restock" || src === "transfer" || src === "aid" || src === "shortage" || src === "picking" || src === "exception") {
       setSourceFilter(src);
     }
   }, [searchParams]);
@@ -949,7 +940,8 @@ function HqInboxContent() {
   const [dateFrom, setDateFrom] = useState<string>("");
   const [dateTo, setDateTo] = useState<string>("");
 
-  // Aid 專屬篩選 (source=aid 時才顯示;空中轉已獨立成 air source,故不再有 mode 下拉)
+  // Aid 專屬篩選 (source=aid 時才顯示)
+  const [aidModeFilter, setAidModeFilter] = useState<"all" | "air" | "via_warehouse">("all");
   const [aidStatusFilter, setAidStatusFilter] = useState<string>("");
   // Transfer 專屬篩選 (source=transfer 時才顯示)
   type TransferKind = "all" | "store_to_store" | "return_to_hq" | "hq_to_store" | "aid_handoff";
@@ -1004,7 +996,7 @@ function HqInboxContent() {
       try {
         const sb = getSupabase();
         const fallback: Record<Stage, number> = { pending: 0, in_transit: 0, done: 0, rejected: 0 };
-        const [{ data, error }, pickingCounts, airCounts] = await Promise.all([
+        const [{ data, error }, pickingCounts] = await Promise.all([
           sb.rpc("rpc_inbox_counts"),
           // picking 還沒進 rpc_inbox_counts(server-side migration 待 deploy),先 client-side 算
           (async () => {
@@ -1016,38 +1008,14 @@ function HqInboxContent() {
             }
             return result;
           })(),
-          // 空中轉(air):rpc_inbox_counts 仍把空中轉併進 aid,故 client-side 另算一份,
-          // 之後從 aid 扣掉、避免重複計。
-          (async () => {
-            const result: Record<Stage, number> = { ...fallback };
-            const { data: rows } = await sb
-              .from("customer_orders")
-              .select("status, items:customer_order_items!inner(source)")
-              .eq("items.source", "aid_transfer")
-              .eq("is_air_transfer", true);
-            for (const r of (rows as { status: AidStatus }[] | null) ?? []) {
-              const stg = classifyAid(r.status);
-              result[stg] += 1;
-            }
-            return result;
-          })(),
         ]);
         if (cancelled) return;
         if (error) throw error;
         const raw = (data ?? {}) as Partial<Record<SourceTag, Partial<Record<Stage, number>>>>;
-        const serverAid: Record<Stage, number> = { ...fallback, ...(raw.aid ?? {}) };
-        // aid 扣掉 air(server 端 aid 尚含空中轉)
-        const aidCounts: Record<Stage, number> = {
-          pending: Math.max(0, serverAid.pending - airCounts.pending),
-          in_transit: Math.max(0, serverAid.in_transit - airCounts.in_transit),
-          done: Math.max(0, serverAid.done - airCounts.done),
-          rejected: Math.max(0, serverAid.rejected - airCounts.rejected),
-        };
         const newCounts: Record<SourceTag, Record<Stage, number>> = {
           restock: { ...fallback, ...(raw.restock ?? {}) },
           transfer: { ...fallback, ...(raw.transfer ?? {}) },
-          aid: aidCounts,
-          air: airCounts,
+          aid: { ...fallback, ...(raw.aid ?? {}) },
           shortage: { ...fallback, ...(raw.shortage ?? {}) },
           picking: pickingCounts,
           exception: { ...fallback }, // 由 <ExceptionsContent /> 透過 onCountChange callback 自報、不走 rpc
@@ -1086,7 +1054,7 @@ function HqInboxContent() {
           });
           if (keysErr) throw keysErr;
           const keysObj = (keysData ?? { rows: [], total: 0 }) as { rows: Array<{ row_key: string; source: SourceTag; stage: Stage; ts: string; source_id: number }>; total: number };
-          const idsBy: Record<SourceTag, number[]> = { restock: [], transfer: [], aid: [], air: [], shortage: [], picking: [], exception: [] };
+          const idsBy: Record<SourceTag, number[]> = { restock: [], transfer: [], aid: [], shortage: [], picking: [], exception: [] };
           // v_hq_inbox 還沒含 picking;若未來 server-side 加進去,picking 鍵也已就位
           for (const k of keysObj.rows) {
             if (idsBy[k.source]) idsBy[k.source].push(Number(k.source_id));
@@ -1112,9 +1080,7 @@ function HqInboxContent() {
           } else if (sourceFilter === "transfer") {
             res = await fetchTransferRows(sb, stageArg, page, dateFrom, dateTo, transferKindFilter);
           } else if (sourceFilter === "aid") {
-            res = await fetchAidRows(sb, stageArg, page, dateFrom, dateTo, "aid", aidStatusFilter);
-          } else if (sourceFilter === "air") {
-            res = await fetchAidRows(sb, stageArg, page, dateFrom, dateTo, "air", "");
+            res = await fetchAidRows(sb, stageArg, page, dateFrom, dateTo, aidModeFilter, aidStatusFilter);
           } else if (sourceFilter === "picking") {
             res = await fetchPickingRows(sb, stageArg, page, dateFrom, dateTo);
           } else {
@@ -1137,7 +1103,7 @@ function HqInboxContent() {
     return () => {
       cancelled = true;
     };
-  }, [sourceFilter, stage, page, dateFrom, dateTo, aidStatusFilter, transferKindFilter, reloadTick]);
+  }, [sourceFilter, stage, page, dateFrom, dateTo, aidModeFilter, aidStatusFilter, transferKindFilter, reloadTick]);
 
   // stage tab counts:依當前 sourceFilter,從 cached counts 算出
   const stageCounts = useMemo(() => {
@@ -1156,12 +1122,12 @@ function HqInboxContent() {
 
   // source chip counts:依當前 stage,從 cached counts 算出
   const sourceCounts = useMemo(() => {
-    const c: Record<SourceTag, number> = { restock: 0, transfer: 0, aid: 0, air: 0, shortage: 0, picking: 0, exception: 0 };
+    const c: Record<SourceTag, number> = { restock: 0, transfer: 0, aid: 0, shortage: 0, picking: 0, exception: 0 };
     if (!counts) return c;
     const stages: Stage[] = stage === "all"
       ? ["pending", "in_transit", "done", "rejected"]
       : [stage];
-    for (const s of ["restock", "transfer", "aid", "air", "shortage", "picking", "exception"] as SourceTag[]) {
+    for (const s of ["restock", "transfer", "aid", "shortage", "picking", "exception"] as SourceTag[]) {
       for (const stg of stages) c[s] += counts[s][stg];
     }
     return c;
@@ -1204,7 +1170,7 @@ function HqInboxContent() {
   // 任何 server 端篩選變動 → 回到第 1 頁(避免 page 超出範圍)
   useEffect(() => {
     setPage(1);
-  }, [stage, sourceFilter, aidStatusFilter, transferKindFilter, dateFrom, dateTo]);
+  }, [stage, sourceFilter, aidModeFilter, aidStatusFilter, transferKindFilter, dateFrom, dateTo]);
 
   // 計算 group key for each row
   function getGroupKey(r: Row): { key: string; label: string } {
@@ -1213,13 +1179,13 @@ function HqInboxContent() {
       let label = "未指定";
       if (r.source === "restock") label = r.raw.store_name ?? "未指定";
       else if (r.source === "transfer") label = r.raw.dest_name;
-      else if (r.source === "aid" || r.source === "air") label = r.raw.store_name ?? "未指定";
+      else if (r.source === "aid") label = r.raw.store_name ?? "未指定";
       else if (r.source === "shortage") label = r.raw.store_name ?? "未指定";
       return { key: label, label };
     }
     if (groupBy === "campaign") {
       let key = "—", label = "無開團";
-      if (r.source === "aid" || r.source === "air") {
+      if (r.source === "aid") {
         label = r.raw.campaign_no ?? "無開團";
         key = label;
       }
@@ -1321,7 +1287,6 @@ function HqInboxContent() {
   // - 其他 source:只 pending
   const batchableKeys = useMemo(() => {
     if (sourceFilter === "all") return [] as string[];
-    if (sourceFilter === "air") return [] as string[]; // 空中轉唯讀,不可批次
     return paginatedRows
       .filter((r) => {
         if (r.source !== sourceFilter) return false;
@@ -1701,29 +1666,22 @@ function HqInboxContent() {
 
       {/* === 來源資料夾 chip bar === */}
       <div className="flex flex-wrap items-center gap-2">
-        {(["picking", "restock", "transfer", "aid", "air", "exception"] as const).map((s) => {
+        {(["picking", "restock", "transfer", "aid", "exception"] as const).map((s) => {
           const active = sourceFilter === s;
           const label = ({
             picking: "📋 撿貨單",
             restock: "📦 補貨申請",
             transfer: "🚚 轉貨單",
             aid: "🤝 互助訂單",
-            air: "✈️ 空中轉",
             exception: "⚠️ 異常",
           } as const)[s];
           // chip 顯示「該來源」的待處理數(從 cached counts 算,固定值,跟 stage 切換無關)
           // exception 是 client-side 計算、直接使用 exceptionCount
-          // air 顯示「在途」數(空中轉自動出貨,貨在飛=in_transit),非 pending
-          const count = s === "exception"
-            ? exceptionCount
-            : s === "air"
-              ? (!counts ? 0 : counts.air.in_transit)
-              : (!counts ? 0 : counts[s].pending);
+          const count = s === "exception" ? exceptionCount : (!counts ? 0 : counts[s].pending);
           return (
             <SpinButton
               key={s}
-              // 空中轉自動出貨、無 pending 單;選它時跳「全部」stage 才看得到紀錄
-              onClick={() => { setSourceFilter(s); if (s === "air") setStage("all"); }}
+              onClick={() => setSourceFilter(s)}
               className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition ${
                 active
                   ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
@@ -1743,10 +1701,19 @@ function HqInboxContent() {
         })}
       </div>
 
-      {/* Aid 專屬篩選 — 選 Aid 才出現(空中轉已獨立成 air source,故只剩狀態篩選) */}
+      {/* Aid 專屬篩選 — 選 Aid 才出現 */}
       {sourceFilter === "aid" && (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-fuchsia-200 bg-fuchsia-50 px-3 py-2 text-xs dark:border-fuchsia-900 dark:bg-fuchsia-950/30">
           <span className="font-semibold text-fuchsia-700 dark:text-fuchsia-300">互助專屬:</span>
+          <select
+            value={aidModeFilter}
+            onChange={(e) => setAidModeFilter(e.target.value as typeof aidModeFilter)}
+            className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+          >
+            <option value="all">全部模式</option>
+            <option value="air">空中轉</option>
+            <option value="via_warehouse">經總倉中轉</option>
+          </select>
           <select
             value={aidStatusFilter}
             onChange={(e) => setAidStatusFilter(e.target.value)}
@@ -1757,9 +1724,10 @@ function HqInboxContent() {
               <option key={v} value={v}>{l}</option>
             ))}
           </select>
-          {aidStatusFilter && (
+          {(aidModeFilter !== "all" || aidStatusFilter) && (
             <SpinButton
               onClick={() => {
+                setAidModeFilter("all");
                 setAidStatusFilter("");
               }}
               className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
@@ -2168,7 +2136,6 @@ function MailRow({
     restock: "border-l-indigo-500",
     transfer: "border-l-blue-500",
     aid: "border-l-fuchsia-500",
-    air: "border-l-sky-500",
     shortage: "border-l-rose-500",
     picking: "border-l-emerald-500",
   } as const)[row.source];
@@ -2393,22 +2360,6 @@ function MailRow({
         </RowAction>
       );
     }
-  } else if (row.source === "air") {
-    // 空中轉:唯讀,只顯示資訊(訂單號 / 店 / 開團 / 品項 / 狀態),不出任何動作按鈕
-    const a = row.raw;
-    idText = a.order_no;
-    title = <>{a.campaign_no ?? "—"} <span className="text-zinc-400 mx-1">→</span> {a.store_name ?? "—"}</>;
-    subtitle = (
-      <>
-        {a.line_count} 項
-        <span className="ml-1">· ✈ 空中轉</span>
-        <span className="ml-1">· {AID_STATUS_LABEL[a.status]}</span>
-      </>
-    );
-    timeIso = a.updated_at;
-    actions = (
-      <RowAction variant="neutral" onClick={() => onOpenAidDetail(a.id)}>查看訂單</RowAction>
-    );
   } else {
     const a = row.raw;
     idText = a.order_no;
@@ -2433,14 +2384,14 @@ function MailRow({
 
   // 點 row 任意空白處開明細
   const rowClickable =
-    row.source === "picking" || row.source === "aid" || row.source === "air" ||
+    row.source === "picking" || row.source === "aid" ||
     row.source === "transfer" || row.source === "restock";
   const handleRowClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!rowClickable) return;
     const target = e.target as HTMLElement;
     if (target.closest("button, a, input, select, textarea, label")) return;
     if (row.source === "picking") onPickingEdit(row.raw);
-    else if (row.source === "aid" || row.source === "air") onOpenAidDetail(row.raw.id);
+    else if (row.source === "aid") onOpenAidDetail(row.raw.id);
     else if (row.source === "transfer") onOpenTransferDetail(row.raw.id);
     else if (row.source === "restock") onOpenRestockDetail(row.raw.id);
   };
