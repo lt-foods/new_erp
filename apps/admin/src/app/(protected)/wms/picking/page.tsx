@@ -59,7 +59,7 @@ type RestockRow = {
 
 function defaultWaveDate() {
   const d = new Date();
-  d.setDate(d.getDate() + 2);
+  d.setDate(d.getDate() + 1); // 預設配送日 = 隔天
   return d.toLocaleDateString("sv-SE");
 }
 
