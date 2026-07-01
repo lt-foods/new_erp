@@ -705,7 +705,7 @@ export default function PurchaseOrdersListPage() {
   }
 
   return (
-    <div className="flex flex-1 flex-col gap-4 p-6">
+    <div className="flex flex-1 flex-col gap-4 p-4 sm:p-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">{PO_TERM_ZH}（PO）</h1>
@@ -1146,39 +1146,77 @@ function PoPivot({ groups, loading }: { groups: PivotGroup[]; loading: boolean }
               </span>
             </div>
           </div>
-          <table className="min-w-full text-sm">
-            <thead className="text-xs text-zinc-500">
-              <tr className="border-b border-zinc-200 dark:border-zinc-800">
-                <th className="px-3 py-1.5 text-left font-medium">品項</th>
-                <th className="px-3 py-1.5 text-right font-medium">訂購</th>
-                <th className="px-3 py-1.5 text-right font-medium">已到</th>
-                <th className="px-3 py-1.5 text-right font-medium">未到</th>
-                <th className="px-3 py-1.5 text-left font-medium">來源 PO</th>
-              </tr>
-            </thead>
-            <tbody>
-              {g.skus.map((s) => {
-                const outstanding = s.ordered - s.received;
-                return (
-                  <tr key={s.sku_id} className="border-b border-zinc-100 dark:border-zinc-800/60">
-                    <td className="px-3 py-1.5">{s.label}</td>
-                    <td className="px-3 py-1.5 text-right font-mono">{s.ordered}</td>
-                    <td className="px-3 py-1.5 text-right font-mono">{s.received}</td>
-                    <td
-                      className={`px-3 py-1.5 text-right font-mono ${
-                        outstanding > 0 ? "text-amber-600 dark:text-amber-400" : "text-zinc-400"
-                      }`}
-                    >
-                      {outstanding}
-                    </td>
-                    <td className="px-3 py-1.5 font-mono text-xs text-zinc-500">
-                      {Array.from(s.poNos).sort().join("、")}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          {/* 桌機：表格 */}
+          <div className="hidden overflow-x-auto sm:block">
+            <table className="min-w-full text-sm">
+              <thead className="text-xs text-zinc-500">
+                <tr className="border-b border-zinc-200 dark:border-zinc-800">
+                  <th className="px-3 py-1.5 text-left font-medium">品項</th>
+                  <th className="px-3 py-1.5 text-right font-medium">訂購</th>
+                  <th className="px-3 py-1.5 text-right font-medium">已到</th>
+                  <th className="px-3 py-1.5 text-right font-medium">未到</th>
+                  <th className="px-3 py-1.5 text-left font-medium">來源 PO</th>
+                </tr>
+              </thead>
+              <tbody>
+                {g.skus.map((s) => {
+                  const outstanding = s.ordered - s.received;
+                  return (
+                    <tr key={s.sku_id} className="border-b border-zinc-100 dark:border-zinc-800/60">
+                      <td className="px-3 py-1.5">{s.label}</td>
+                      <td className="px-3 py-1.5 text-right font-mono">{s.ordered}</td>
+                      <td className="px-3 py-1.5 text-right font-mono">{s.received}</td>
+                      <td
+                        className={`px-3 py-1.5 text-right font-mono ${
+                          outstanding > 0 ? "text-amber-600 dark:text-amber-400" : "text-zinc-400"
+                        }`}
+                      >
+                        {outstanding}
+                      </td>
+                      <td className="px-3 py-1.5 font-mono text-xs text-zinc-500">
+                        {Array.from(s.poNos).sort().join("、")}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 手機：每個品項一張堆疊卡片 */}
+          <ul className="divide-y divide-zinc-100 sm:hidden dark:divide-zinc-800/60">
+            {g.skus.map((s) => {
+              const outstanding = s.ordered - s.received;
+              return (
+                <li key={s.sku_id} className="px-3 py-2">
+                  <div className="text-sm">{s.label}</div>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-xs text-zinc-500">
+                    <span>
+                      訂購{" "}
+                      <span className="font-mono text-zinc-800 dark:text-zinc-200">{s.ordered}</span>
+                    </span>
+                    <span>
+                      已到{" "}
+                      <span className="font-mono text-zinc-800 dark:text-zinc-200">{s.received}</span>
+                    </span>
+                    <span>
+                      未到{" "}
+                      <span
+                        className={`font-mono ${
+                          outstanding > 0 ? "text-amber-600 dark:text-amber-400" : "text-zinc-400"
+                        }`}
+                      >
+                        {outstanding}
+                      </span>
+                    </span>
+                  </div>
+                  <div className="mt-0.5 font-mono text-[11px] text-zinc-400">
+                    PO {Array.from(s.poNos).sort().join("、")}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
         </div>
       ))}
     </div>
