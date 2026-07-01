@@ -54,6 +54,7 @@ export default function ReceivingWorkbenchPage() {
   const [rows, setRows] = useState<PORow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("this_week");
+  const [search, setSearch] = useState("");
   // 分頁：未收(sent+部分收) / 已收(全收)，預設未收
   const [tab, setTab] = useState<ReceiveTab>("unreceived");
   const [detailPoId, setDetailPoId] = useState<number | null>(null);
@@ -91,7 +92,7 @@ export default function ReceivingWorkbenchPage() {
     return () => { cancelled = true; };
   }, []);
 
-  // 先套期間 filter（分頁數量與列表都基於同一份期間集合）
+  // 先套期間 + 搜尋 filter（分頁數量與列表都基於同一份集合）
   const periodFiltered = useMemo(() => {
     if (!rows) return [];
     const now = new Date();
@@ -99,6 +100,7 @@ export default function ReceivingWorkbenchPage() {
     const weekAgo = new Date(now);
     weekAgo.setDate(weekAgo.getDate() - 7);
     const weekAgoStr = weekAgo.toISOString().slice(0, 10);
+    const q = search.trim().toLowerCase();
 
     return rows.filter((r) => {
       if (filter === "today") {
@@ -109,9 +111,15 @@ export default function ReceivingWorkbenchPage() {
         const dateRef = r.sent_at?.slice(0, 10) ?? "";
         if (!dateRef || dateRef < weekAgoStr) return false;
       }
+      if (q) {
+        const haystack = [r.po_no, r.supplier_name, r.supplier_code ?? ""]
+          .join(" ")
+          .toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
       return true;
     });
-  }, [rows, filter]);
+  }, [rows, filter, search]);
 
   // 分頁數量（反映目前期間）
   const tabCounts = useMemo(() => {
@@ -200,6 +208,14 @@ export default function ReceivingWorkbenchPage() {
           );
         })}
       </div>
+
+      {/* 搜尋 */}
+      <input
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="🔍 搜尋 PO 編號 / 供應商"
+        className="w-full min-w-[180px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+      />
 
       {/* Filter */}
       <div className="flex flex-wrap items-center gap-2">
