@@ -27,6 +27,16 @@ function genPairToken(): string {
   ).join("");
 }
 
+/**
+ * LIFF 會把原始 query 包進 liff.state，而且常帶著路徑，格式可能是：
+ *   "?store=1"、"/?store=1"、"/shop?store=1"、或純 "store=1"。
+ * 一律抓「第一個 ? 之後」的部分當 query 解析（沒有 ? 就整串當 query）。
+ */
+function liffStateParams(raw: string): URLSearchParams {
+  const q = raw.indexOf("?");
+  return new URLSearchParams(q >= 0 ? raw.slice(q + 1) : raw);
+}
+
 function readPairFromUrl(): string | null {
   if (typeof window === "undefined") return null;
   const sp = new URLSearchParams(window.location.search);
@@ -34,10 +44,7 @@ function readPairFromUrl(): string | null {
   if (direct) return direct;
   // LIFF 把 query 包進 liff.state
   const ls = sp.get("liff.state");
-  if (ls) {
-    const inner = new URLSearchParams(ls.startsWith("?") ? ls.slice(1) : ls);
-    return inner.get("pair");
-  }
+  if (ls) return liffStateParams(ls).get("pair");
   return null;
 }
 
@@ -460,10 +467,7 @@ function readStore(): string | null {
   const s = sp.get("store");
   if (s) return s;
   const raw = sp.get("liff.state");
-  if (raw) {
-    const inner = new URLSearchParams(raw.startsWith("?") ? raw.slice(1) : raw);
-    return inner.get("store");
-  }
+  if (raw) return liffStateParams(raw).get("store");
   return null;
 }
 
