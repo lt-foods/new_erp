@@ -160,7 +160,11 @@ export default function PrintSignPage() {
         waveCodes: new Set<string>(),
       };
       cur.qty += it.qty;
-      cur.pickedQty += Number(it.picked_qty ?? 0);
+      // picked_qty 為 NULL = 該波尚未做「撿貨確認」(rpc_confirm_picked 還沒 backfill)。
+      // 這種情況下 fallback 顯示派貨計畫量 qty,讓「撿貨前先列印簽收單給司機」也印得出數量;
+      // 撿貨確認後 picked_qty 會被寫成實撿量,短撿差異仍靠下方 (派 {qty}) 標註呈現。
+      // 注意:明確被設成 0(短撿到 0)不是 NULL,會照實顯示 0,不走 fallback。
+      cur.pickedQty += it.picked_qty == null ? it.qty : it.picked_qty;
       const wc = waveCodeMap.get(it.wave_id);
       if (wc) cur.waveCodes.add(wc);
       const wd = waveDateMap.get(it.wave_id);
