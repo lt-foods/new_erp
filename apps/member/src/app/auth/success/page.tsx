@@ -12,26 +12,26 @@ export default function AuthSuccessPage() {
   });
 
   useEffect(() => {
-    // 從 hash 抓 code / paired 旗標 (line-oauth-callback 把全部塞進 fragment)
-    const hash = window.location.hash.replace(/^#/, "");
-    if (hash) {
-      const hp = new URLSearchParams(hash);
-      const c = hp.get("code");
-      if (c) setCode(c);
-      if (hp.get("paired") === "1") setPaired(true);
-    }
-
-    // 備援: query string
+    // 從 hash / query 抓 code / paired 旗標 (line-oauth-callback 把全部塞進 fragment)
+    const hp = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     const sp = new URLSearchParams(window.location.search);
-    const qc = sp.get("code");
-    if (qc) setCode(qc);
-    if (sp.get("paired") === "1") setPaired(true);
+    const isPaired = hp.get("paired") === "1" || sp.get("paired") === "1";
 
-    // 把 fragment 寫進 localStorage 並清 URL；同時抓 LINE 個資顯示
+    // 把 fragment 寫進 localStorage 並清 URL（會回傳 session）
     const session = consumeFragmentToSession();
-    if (session) {
-      setProfile({ name: session.lineName, picture: session.linePicture });
+
+    // LINE webview 內、且不是 PWA 配對回流 → 直接進商店,不停在這個「安裝/取碼」頁。
+    // (PWA 配對 paired=1 要留在這頁提示回桌面；桌機取碼流程也維持原樣)
+    const isLine = typeof navigator !== "undefined" && / Line\//i.test(navigator.userAgent);
+    if (session && session.memberId && isLine && !isPaired) {
+      window.location.replace("/shop");
+      return;
     }
+
+    const c = hp.get("code") ?? sp.get("code");
+    if (c) setCode(c);
+    if (isPaired) setPaired(true);
+    if (session) setProfile({ name: session.lineName, picture: session.linePicture });
   }, []);
 
   return (
