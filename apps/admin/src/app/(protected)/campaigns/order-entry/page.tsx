@@ -905,6 +905,8 @@ function CustomerSearch({
   const [open, setOpen] = useState(false);
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [aliases, setAliases] = useState<AliasRow[]>([]);
+  // 本頻道已綁定的 member ids（不受搜尋字串限制，用來收起已綁會員的「+綁」按鈕）
+  const [boundMemberIds, setBoundMemberIds] = useState<Set<number>>(new Set());
   const [searching, setSearching] = useState(false);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -932,8 +934,20 @@ function CustomerSearch({
             ? sb.rpc("rpc_search_aliases", { p_channel_id: channelId, p_term: term, p_limit: 8 })
             : Promise.resolve({ data: [], error: null }),
         ]);
-        setMembers((mRes.data as MemberRow[]) ?? []);
+        const memberRows = (mRes.data as MemberRow[]) ?? [];
+        setMembers(memberRows);
         setAliases((aRes.data as AliasRow[]) ?? []);
+
+        // 這批會員裡，哪些已在本頻道綁過暱稱（與搜尋字串無關）→ 收起「+綁」避免重複綁定
+        if (channelId && memberRows.length > 0) {
+          const { data: bound } = await sb.rpc("rpc_channel_bound_member_ids", {
+            p_channel_id: channelId,
+            p_member_ids: memberRows.map((m) => m.id),
+          });
+          setBoundMemberIds(new Set(((bound as { member_id: number }[]) ?? []).map((b) => b.member_id)));
+        } else {
+          setBoundMemberIds(new Set());
+        }
       } finally {
         setSearching(false);
       }
@@ -1016,7 +1030,7 @@ function CustomerSearch({
             <div>
               <div className="px-2 py-1 text-xs font-medium text-zinc-400">會員</div>
               {members.map((m) => {
-                const aliased = aliases.some((a) => a.member_id === m.id);
+                const aliased = boundMemberIds.has(m.id) || aliases.some((a) => a.member_id === m.id);
                 const dup = pickedMemberIds.has(m.id);
                 const noStore = m.home_store_id == null;
                 const blacklisted = !!m.no_new_order;
