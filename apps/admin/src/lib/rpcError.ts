@@ -294,6 +294,14 @@ const RULES: Rule[] = [
     render: (m) => `此補貨申請狀態為「${restockStatus(m[1])}」，只有「待處理」可以刪除。`,
   },
   {
+    pattern: /permission denied: role (\w+) cannot delete restock request/i,
+    render: (m) => `權限不足：角色「${m[1]}」無法刪除補貨申請。`,
+  },
+  {
+    pattern: /store role can only delete request for own store/i,
+    render: () => "門市角色只能刪除自己店的補貨申請。",
+  },
+  {
     pattern: /restock request \d+ already has picking waves, cannot delete/i,
     render: () => "此補貨申請已建立撿貨單，無法刪除。請先處理撿貨單後再試。",
   },
