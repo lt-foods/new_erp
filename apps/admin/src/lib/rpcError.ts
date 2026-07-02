@@ -16,6 +16,17 @@ const TRANSFER_STATUS_ZH: Record<string, string> = {
 };
 const tStatus = (s: string) => TRANSFER_STATUS_ZH[s] ?? s;
 
+const RESTOCK_STATUS_ZH: Record<string, string> = {
+  pending: "待處理",
+  approved_transfer: "已派貨",
+  approved_pr: "已轉採購",
+  shipped: "已出貨",
+  received: "已收貨",
+  rejected: "已拒絕",
+  cancelled: "已取消",
+};
+const restockStatus = (s: string) => RESTOCK_STATUS_ZH[s] ?? s;
+
 const cStatus = campaignStatusLabel;
 const oStatus = orderStatusLabel;
 
@@ -276,6 +287,23 @@ const RULES: Rule[] = [
     pattern: /product \d+ still referenced by other records, cannot delete/i,
     render: () =>
       "此商品仍被其他資料（如庫存／採購／調撥）參照，無法刪除。請先解除關聯後再試。",
+  },
+  // ===== rpc_delete_restock_request（補貨申請刪除守門） =====
+  {
+    pattern: /restock request \d+ is (\w+), only pending can be deleted/i,
+    render: (m) => `此補貨申請狀態為「${restockStatus(m[1])}」，只有「待處理」可以刪除。`,
+  },
+  {
+    pattern: /restock request \d+ already has picking waves, cannot delete/i,
+    render: () => "此補貨申請已建立撿貨單，無法刪除。請先處理撿貨單後再試。",
+  },
+  {
+    pattern: /restock request \d+ (?:internal order )?still referenced(?: by other records)?, cannot delete/i,
+    render: () => "此補貨申請仍被其他資料參照，無法刪除。請先解除關聯後再試。",
+  },
+  {
+    pattern: /restock request \d+ not found/i,
+    render: () => "找不到此補貨申請（可能已被刪除）。",
   },
   {
     pattern: /product \d+ not found/i,

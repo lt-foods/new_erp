@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
+import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import RestockDetailModal from "@/components/RestockDetailModal";
@@ -160,6 +161,23 @@ export default function RestockListPage() {
     [filtered, page],
   );
 
+  async function handleDelete(r: Row) {
+    const ok = window.confirm(
+      `確定刪除補貨申請 #${r.id}（${r.store_name ?? "—"}）？\n\n` +
+      `共 ${r.line_count} 個品項、$${r.total_amount.toFixed(0)}。\n` +
+      `刪除後無法復原；只有「待處理」的申請可以刪除。`,
+    );
+    if (!ok) return;
+    try {
+      const { error: err } = await getSupabase().rpc("rpc_delete_restock_request", { p_request_id: r.id });
+      if (err) throw err;
+      setError(null);
+      setRows((prev) => (prev ?? []).filter((x) => x.id !== r.id));
+    } catch (e) {
+      setError(translateRpcError(e));
+    }
+  }
+
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header className="flex items-center justify-between">
@@ -199,12 +217,13 @@ export default function RestockListPage() {
           <Th>狀態</Th>
           <Th>連結 / 拒絕原因</Th>
           <Th>備註</Th>
+          <Th align="right">操作</Th>
         </THead>
         <TBody>
           {rows === null ? (
-            <LoadingRow colSpan={8} />
+            <LoadingRow colSpan={9} />
           ) : filtered.length === 0 ? (
-            <EmptyRow colSpan={8}>沒有符合條件的申請</EmptyRow>
+            <EmptyRow colSpan={9}>沒有符合條件的申請</EmptyRow>
           ) : paginated.map((r) => (
             <Tr
               key={r.id}
@@ -246,6 +265,16 @@ export default function RestockListPage() {
               </Td>
               <Td className="max-w-xs text-xs text-zinc-500">
                 <span title={r.notes ?? ""}>{r.notes ? r.notes.slice(0, 30) + (r.notes.length > 30 ? "…" : "") : "—"}</span>
+              </Td>
+              <Td align="right">
+                {r.status === "pending" && (
+                  <SpinButton
+                    onClick={(e) => { e.stopPropagation(); return handleDelete(r); }}
+                    className="rounded-md border border-red-300 px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
+                  >
+                    刪除
+                  </SpinButton>
+                )}
               </Td>
             </Tr>
           ))}
