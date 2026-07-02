@@ -91,6 +91,9 @@ function PageContent() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"save" | "submit" | "split" | "reopen" | "delete" | null>(null);
   const [destLocationId, setDestLocationId] = useState<number | null>(null);
+  // UI 上被移除、但尚未存檔的品項 id — saveDraft 時才真正從 DB 刪除。
+  // 之前只從 state filter 掉，DB 列還在 → 送審後拆 PO 被「未指派供應商」殘列擋死。
+  const [removedIds, setRemovedIds] = useState<number[]>([]);
 
   // 頂部「一次套用到全部品項」工具列的暫存值（空字串＝不套用該欄）
   const [bulkSupplier, setBulkSupplier] = useState<number | null>(null);
@@ -402,7 +405,11 @@ function PageContent() {
   }
 
   function removeItem(idx: number) {
-    setItems((cur) => cur.filter((_, i) => i !== idx));
+    setItems((cur) => {
+      const target = cur[idx];
+      if (target) setRemovedIds((ids) => (ids.includes(target.id) ? ids : [...ids, target.id]));
+      return cur.filter((_, i) => i !== idx);
+    });
   }
 
   // 把頂部工具列的值一次套用到所有品項；留空的欄位不動，避免誤清既有值
@@ -433,12 +440,21 @@ function PageContent() {
     );
   }
 
-  async function saveDraft() {
-    if (!id) return;
+  async function saveDraft(): Promise<boolean> {
+    if (!id) return false;
     setBusy("save");
     setError(null);
     try {
       const supabase = getSupabase();
+      // 先把 UI 上移除的品項真正從 DB 刪掉，避免殘列卡住送審後的拆 PO
+      if (removedIds.length > 0) {
+        const { error: delErr } = await supabase
+          .from("purchase_request_items")
+          .delete()
+          .in("id", removedIds);
+        if (delErr) throw new Error(delErr.message);
+        setRemovedIds([]);
+      }
       const dirtyRows = items.filter((r) => r.dirty);
       for (const r of dirtyRows) {
         const { error: err } = await supabase
@@ -462,8 +478,10 @@ function PageContent() {
         if (hErr) throw new Error(hErr.message);
       }
       setItems((cur) => cur.map((r) => ({ ...r, dirty: false })));
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      return false;
     } finally {
       setBusy(null);
     }
@@ -505,7 +523,8 @@ function PageContent() {
     if (!confirm("確定送出審核？")) {
       return;
     }
-    await saveDraft();
+    // 存檔失敗（含刪除移除列失敗）就中止送審，避免 DB 與畫面不一致下送出
+    if (!(await saveDraft())) return;
     setBusy("submit");
     setError(null);
     try {
