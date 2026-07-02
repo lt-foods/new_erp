@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { useRole, canSeeBranch } from "@/lib/role";
+import { useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
 
@@ -44,17 +45,15 @@ export default function RestockNewPage() {
   useEffect(() => {
     (async () => {
       const sb = getSupabase();
-      const [{ data: storeData }, { data: sess }] = await Promise.all([
-        sb.from("stores").select("id, code, name").eq("is_active", true).order("code"),
-        sb.auth.getSession(),
-      ]);
+      const { data: storeData } = await sb
+        .from("stores").select("id, code, name").eq("is_active", true).order("code");
       setStores((storeData ?? []) as Store[]);
-      // 分店 role 自動帶 store_id
-      const meta = sess.session?.user?.app_metadata as Record<string, unknown> | undefined;
-      const sId = meta?.store_id ? Number(meta.store_id) : null;
-      if (sId) setStoreId(sId);
     })();
   }, []);
+
+  // 分店 role 未手動選店時自動帶自己店（app_metadata.stores 店名比對；JWT 沒有 store_id claim）
+  const branchStoreId = useUserBranchStoreId(stores);
+  const effectiveStoreId = storeId ?? branchStoreId;
 
   const setLine = <K extends keyof Line>(idx: number, key: K, value: Line[K]) => {
     setLines((arr) => arr.map((l, i) => (i === idx ? { ...l, [key]: value } : l)));
@@ -63,20 +62,20 @@ export default function RestockNewPage() {
   const removeLine = (idx: number) => setLines((arr) => arr.filter((_, i) => i !== idx));
 
   const valid =
-    storeId !== null &&
+    effectiveStoreId !== null &&
     lines.length > 0 &&
     lines.every((l) => l.sku_id !== null && Number(l.qty) > 0 && Number(l.unit_price) >= 0);
 
   async function handleSubmit() {
     setError(null);
-    if (!valid || storeId === null) {
+    if (!valid || effectiveStoreId === null) {
       setError("請選分店、每行需挑商品 + 填數量");
       return;
     }
     setBusy(true);
     try {
       const { data, error: err } = await getSupabase().rpc("rpc_create_restock_request", {
-        p_store_id: storeId,
+        p_store_id: effectiveStoreId,
         p_lines: lines.map((l) => ({
           sku_id: l.sku_id,
           qty: Number(l.qty),
@@ -112,7 +111,7 @@ export default function RestockNewPage() {
 
       <label className="flex flex-col gap-1 text-sm sm:max-w-md">
         <span className="text-zinc-600 dark:text-zinc-400">收貨分店 *</span>
-        <select value={storeId ?? ""} onChange={(e) => setStoreId(Number(e.target.value) || null)} className={inputCls}>
+        <select value={effectiveStoreId ?? ""} onChange={(e) => setStoreId(Number(e.target.value) || null)} className={inputCls}>
           <option value="">— 請選 —</option>
           {stores.map((s) => (
             <option key={s.id} value={s.id}>{s.code} {s.name}</option>
