@@ -141,6 +141,20 @@ SELECT proname, pg_get_function_arguments(oid) FROM pg_proc
 
 **預期：** 成功（自家店 only）
 
+### 2.14 rpc_approve_restock_lines_to_pr — 依品相分張開請購單（20260714000040）
+**情境：** pending request 有 2 個品相（不同 SKU），HQ 先只選品相 A 呼叫
+`rpc_approve_restock_lines_to_pr(req_id, ARRAY[line_a])`，再呼叫第二次（p_line_ids=NULL）
+
+**預期：**
+- 第一次：新 draft PR 只含品相 A、line_a.linked_pr_id 寫入；request 停留 'pending'、
+  header linked_pr_id 記第一張 PR、approved_at 仍 NULL
+- 部分開單期間：rpc_approve_restock_to_transfer / rpc_reject_restock /
+  rpc_delete_restock_request 全部 RAISE（不可整張派貨/拒絕/刪除）
+- 重複開同一明細 → RAISE '已開過請購單'；別張申請的明細 id → RAISE '不屬於補貨申請'
+- 第二次（NULL = 全部剩餘品相）：第二張獨立 PR；全明細開單 → status='approved_pr'、
+  approved_by/at 寫入、header linked_pr_id 仍為第一張
+- 舊 rpc_approve_restock_to_pr(req_id) 為薄包裝（= 全部剩餘品相一張 PR），行為不變
+
 ---
 
 ## 3. UI 行為（preview 互動）

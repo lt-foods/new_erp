@@ -30,6 +30,8 @@ type Line = {
   sku_code: string;
   sku_name: string;
   variant_name: string | null;
+  linked_pr_id: number | null;
+  linked_pr_no: string | null;
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -111,7 +113,7 @@ export default function RestockDetailModal({
 
       const { data: lData } = await sb
         .from("restock_request_lines")
-        .select("id, sku_id, qty, unit_price, skus(sku_code, variant_name, products(name))")
+        .select("id, sku_id, qty, unit_price, linked_pr_id, purchase_requests(pr_no), skus(sku_code, variant_name, products(name))")
         .eq("request_id", restockId)
         .order("id");
       if (cancelled) return;
@@ -120,6 +122,8 @@ export default function RestockDetailModal({
         sku_id: number;
         qty: number;
         unit_price: number;
+        linked_pr_id: number | null;
+        purchase_requests: { pr_no?: string } | { pr_no?: string }[] | null;
         skus:
           | { sku_code: string; variant_name: string | null; products: { name?: string } | { name?: string }[] | null }
           | Array<{ sku_code: string; variant_name: string | null; products: { name?: string } | { name?: string }[] | null }>
@@ -128,6 +132,7 @@ export default function RestockDetailModal({
       const rows: Line[] = ((lData ?? []) as unknown as ApiL[]).map((row) => {
         const skuObj = Array.isArray(row.skus) ? row.skus[0] : row.skus;
         const prodObj = skuObj ? (Array.isArray(skuObj.products) ? skuObj.products[0] : skuObj.products) : null;
+        const prObj = Array.isArray(row.purchase_requests) ? row.purchase_requests[0] : row.purchase_requests;
         return {
           id: row.id,
           sku_id: row.sku_id,
@@ -136,6 +141,8 @@ export default function RestockDetailModal({
           sku_code: skuObj?.sku_code ?? `#${row.sku_id}`,
           sku_name: prodObj?.name ?? "",
           variant_name: skuObj?.variant_name ?? null,
+          linked_pr_id: row.linked_pr_id ?? null,
+          linked_pr_no: prObj?.pr_no ?? null,
         };
       });
       setLines(rows);
@@ -222,6 +229,16 @@ export default function RestockDetailModal({
                         <td className="px-3 py-2 text-xs">
                           {l.sku_name || "—"}
                           {l.variant_name && <span className="ml-1 text-zinc-500">/ {l.variant_name}</span>}
+                          {l.linked_pr_id != null && (
+                            <div>
+                              <Link
+                                href={`/purchase/requests/edit?id=${l.linked_pr_id}`}
+                                className="font-mono text-blue-600 hover:underline dark:text-blue-400"
+                              >
+                                → {l.linked_pr_no ?? `${PR_TERM_ZH} #${l.linked_pr_id}`}
+                              </Link>
+                            </div>
+                          )}
                         </td>
                         <td className="px-3 py-2 text-right font-mono">{l.qty}</td>
                         <td className="px-3 py-2 text-right font-mono">${l.unit_price}</td>

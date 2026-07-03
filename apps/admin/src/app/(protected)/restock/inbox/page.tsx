@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import RestockToPrModal from "@/components/RestockToPrModal";
 import { PR_TERM_ZH } from "@/lib/prStatus";
 
 type Status = "pending" | "approved_transfer" | "approved_pr" | "shipped" | "received" | "rejected" | "cancelled";
@@ -25,6 +26,10 @@ type Row = {
   rejected_at: string | null;
   line_count: number;
   total_amount: number;
+  /** 已開請購單的明細（品相）數；pending 但 >0 = 部分開單 */
+  pr_line_count: number;
+  /** 明細層開出的請購單（依品相分張） */
+  line_prs: { id: number; no: string | null }[];
 };
 
 const STATUS_LABEL: Record<Status, string> = {
@@ -53,6 +58,7 @@ export default function RestockInboxPage() {
   const [tab, setTab] = useState<"pending" | "history">("pending");
   const [busy, setBusy] = useState<number | null>(null);
   const [rejectModal, setRejectModal] = useState<{ id: number; reason: string } | null>(null);
+  const [prModalId, setPrModalId] = useState<number | null>(null);
   const [reload, setReload] = useState(0);
 
   useEffect(() => {
@@ -66,19 +72,26 @@ export default function RestockInboxPage() {
       if (err) { setError(err.message); return; }
       const reqRows = (data ?? []) as unknown as Array<Row & { stores?: { name: string } }>;
       const ids = reqRows.map((r) => r.id);
-      const lineMap = new Map<number, { count: number; total: number }>();
+      const lineMap = new Map<number, { count: number; total: number; prCount: number; prIds: number[] }>();
       if (ids.length > 0) {
-        const { data: lineData } = await sb.from("restock_request_lines").select("request_id, qty, unit_price").in("request_id", ids);
-        for (const l of (lineData ?? []) as { request_id: number; qty: number; unit_price: number }[]) {
-          const slot = lineMap.get(l.request_id) ?? { count: 0, total: 0 };
+        const { data: lineData } = await sb.from("restock_request_lines").select("request_id, qty, unit_price, linked_pr_id").in("request_id", ids);
+        for (const l of (lineData ?? []) as { request_id: number; qty: number; unit_price: number; linked_pr_id: number | null }[]) {
+          const slot = lineMap.get(l.request_id) ?? { count: 0, total: 0, prCount: 0, prIds: [] };
           slot.count += 1;
           slot.total += Number(l.qty) * Number(l.unit_price);
+          if (l.linked_pr_id != null) {
+            slot.prCount += 1;
+            if (!slot.prIds.includes(l.linked_pr_id)) slot.prIds.push(l.linked_pr_id);
+          }
           lineMap.set(l.request_id, slot);
         }
       }
-      // 取 transfer_no / pr_no
+      // 取 transfer_no / pr_no（header 連結 + 明細層依品相開出的 PR）
       const transferIds = reqRows.map((r) => r.linked_transfer_id).filter((x): x is number => !!x);
-      const prIds = reqRows.map((r) => r.linked_pr_id).filter((x): x is number => !!x);
+      const prIds = Array.from(new Set([
+        ...reqRows.map((r) => r.linked_pr_id).filter((x): x is number => !!x),
+        ...Array.from(lineMap.values()).flatMap((s) => s.prIds),
+      ]));
       const xferMap = new Map<number, string>();
       const prMap = new Map<number, string>();
       if (transferIds.length > 0) {
@@ -95,6 +108,8 @@ export default function RestockInboxPage() {
         store_name: r.stores?.name ?? null,
         line_count: lineMap.get(r.id)?.count ?? 0,
         total_amount: lineMap.get(r.id)?.total ?? 0,
+        pr_line_count: lineMap.get(r.id)?.prCount ?? 0,
+        line_prs: (lineMap.get(r.id)?.prIds ?? []).map((id) => ({ id, no: prMap.get(id) ?? null })),
         linked_transfer_no: r.linked_transfer_id ? xferMap.get(r.linked_transfer_id) ?? null : null,
         linked_pr_no: r.linked_pr_id ? prMap.get(r.linked_pr_id) ?? null : null,
       })));
@@ -106,20 +121,6 @@ export default function RestockInboxPage() {
     setBusy(id);
     try {
       const { error: err } = await getSupabase().rpc("rpc_approve_restock_to_transfer", { p_request_id: id });
-      if (err) throw err;
-      setReload((t) => t + 1);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function approveToPr(id: number) {
-    if (!confirm(`確定下訂單？此動作會獨立建立一張新的${PR_TERM_ZH}。`)) return;
-    setBusy(id);
-    try {
-      const { error: err } = await getSupabase().rpc("rpc_approve_restock_to_pr", { p_request_id: id });
       if (err) throw err;
       setReload((t) => t + 1);
     } catch (e) {
@@ -231,18 +232,39 @@ export default function RestockInboxPage() {
                 <td className="max-w-xs px-3 py-3 text-xs text-zinc-500">{r.notes ?? "—"}</td>
                 <td className="px-3 py-3">
                   {r.status === "pending" ? (
-                    <div className="flex flex-wrap gap-1">
-                      <SpinButton onClick={() => approveToTransfer(r.id)} disabled={busy === r.id} className="rounded border border-blue-400 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300">派貨</SpinButton>
-                      <SpinButton onClick={() => approveToPr(r.id)} disabled={busy === r.id} className="rounded border border-indigo-400 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50 dark:border-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">下訂單</SpinButton>
-                      <SpinButton onClick={() => setRejectModal({ id: r.id, reason: "" })} disabled={busy === r.id} className="rounded border border-red-400 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50 dark:border-red-700 dark:bg-red-950 dark:text-red-300">拒絕</SpinButton>
+                    <div className="flex flex-col gap-1">
+                      <div className="flex flex-wrap gap-1">
+                        {r.pr_line_count === 0 && (
+                          <SpinButton onClick={() => approveToTransfer(r.id)} disabled={busy === r.id} className="rounded border border-blue-400 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300">派貨</SpinButton>
+                        )}
+                        <SpinButton onClick={() => setPrModalId(r.id)} disabled={busy === r.id} className="rounded border border-indigo-400 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50 dark:border-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">下訂單</SpinButton>
+                        {r.pr_line_count === 0 && (
+                          <SpinButton onClick={() => setRejectModal({ id: r.id, reason: "" })} disabled={busy === r.id} className="rounded border border-red-400 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50 dark:border-red-700 dark:bg-red-950 dark:text-red-300">拒絕</SpinButton>
+                        )}
+                      </div>
+                      {r.pr_line_count > 0 && (
+                        <div className="flex flex-col gap-0.5 text-xs">
+                          <span className="text-indigo-600 dark:text-indigo-400">已開單 {r.pr_line_count}/{r.line_count} 品相</span>
+                          {r.line_prs.map((p) => (
+                            <Link key={p.id} href={`/purchase/requests/edit?id=${p.id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
+                              → {p.no ?? `${PR_TERM_ZH} #${p.id}`}
+                            </Link>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="flex flex-col gap-1 text-xs">
-                      {r.linked_pr_id && (
-                        <Link href={`/purchase/requests/edit?id=${r.linked_pr_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
-                          → {r.linked_pr_no ?? `${PR_TERM_ZH} #${r.linked_pr_id}`}
+                      {(r.line_prs.length > 0
+                        ? r.line_prs
+                        : r.linked_pr_id
+                          ? [{ id: r.linked_pr_id, no: r.linked_pr_no }]
+                          : []
+                      ).map((p) => (
+                        <Link key={p.id} href={`/purchase/requests/edit?id=${p.id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
+                          → {p.no ?? `${PR_TERM_ZH} #${p.id}`}
                         </Link>
-                      )}
+                      ))}
                       {r.linked_transfer_id && (
                         <Link href={`/hq/inbox?source=transfer&id=${r.linked_transfer_id}`} className="font-mono text-blue-600 hover:underline dark:text-blue-400">
                           → {r.linked_transfer_no ?? `轉貨單 #${r.linked_transfer_id}`}
@@ -266,6 +288,13 @@ export default function RestockInboxPage() {
           </tbody>
         </table>
       </div>
+
+      <RestockToPrModal
+        open={prModalId !== null}
+        restockId={prModalId}
+        onClose={() => setPrModalId(null)}
+        onDone={() => setReload((t) => t + 1)}
+      />
 
       {rejectModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
