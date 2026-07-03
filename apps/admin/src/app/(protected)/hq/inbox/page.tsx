@@ -15,6 +15,7 @@ import { PickModal, type PickWave } from "@/components/PickModal";
 import ExceptionsContent from "@/components/ExceptionsContent";
 import TransferDetailModal from "@/components/TransferDetailModal";
 import RestockDetailModal from "@/components/RestockDetailModal";
+import RestockToPrModal from "@/components/RestockToPrModal";
 import { ORDER_STATUS_LABEL as AID_STATUS_LABEL, type OrderStatus as AidStatus } from "@/lib/orderStatus";
 
 type Stage = "pending" | "in_transit" | "done" | "rejected";
@@ -970,6 +971,7 @@ function HqInboxContent() {
   const [aidDetailId, setAidDetailId] = useState<number | null>(null);
   const [transferDetailId, setTransferDetailId] = useState<number | null>(null);
   const [restockDetailId, setRestockDetailId] = useState<number | null>(null);
+  const [restockPrId, setRestockPrId] = useState<number | null>(null);
   const [editingWave, setEditingWave] = useState<PickWave | null>(null);
   const [dispatchingWaveId, setDispatchingWaveId] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -1260,18 +1262,9 @@ function HqInboxContent() {
     }
   }
 
+  // 下訂單改開品相勾選視窗（RestockToPrModal），可依品相分張開請購單
   async function approveToPr(id: number) {
-    if (!confirm(`確定下訂單？此動作會獨立建立一張新的${PR_TERM_ZH}。`)) return;
-    setBusy(`restock-${id}-pr`);
-    try {
-      const { error: err } = await getSupabase().rpc("rpc_approve_restock_to_pr", { p_request_id: id });
-      if (err) throw err;
-      setReloadTick((t) => t + 1);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
+    setRestockPrId(id);
   }
 
   async function shipPrReceived(id: number) {
@@ -2097,6 +2090,12 @@ function HqInboxContent() {
         open={restockDetailId !== null}
         restockId={restockDetailId}
         onClose={() => setRestockDetailId(null)}
+      />
+      <RestockToPrModal
+        open={restockPrId !== null}
+        restockId={restockPrId}
+        onClose={() => setRestockPrId(null)}
+        onDone={() => setReloadTick((t) => t + 1)}
       />
 
       {editingWave && (
