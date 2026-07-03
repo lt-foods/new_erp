@@ -1461,6 +1461,7 @@ function HqInboxContent() {
         if (r.source === "restock") {
           const id = r.raw.id;
           if (action === "派貨") return sb.rpc("rpc_approve_restock_to_transfer", { p_request_id: id });
+          // 批次下訂單＝整張申請開一張請購單；要依品相分張請用單筆列的「下訂單」
           if (action === "下訂單") return sb.rpc("rpc_approve_restock_to_pr", { p_request_id: id });
         }
         if (r.source === "aid") {
