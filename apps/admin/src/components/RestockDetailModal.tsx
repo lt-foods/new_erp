@@ -32,6 +32,7 @@ type Line = {
   variant_name: string | null;
   linked_pr_id: number | null;
   linked_pr_no: string | null;
+  cancelled: boolean;
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -53,12 +54,15 @@ export default function RestockDetailModal({
   restockId: number | null;
   onClose: () => void;
 }) {
-  const [hd, setHd] = useState<RestockRow | null>(null);
-  const [lines, setLines] = useState<Line[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [hdState, setHd] = useState<RestockRow | null>(null);
+  const [linesState, setLines] = useState<Line[] | null>(null);
+  const [errState, setErr] = useState<string | null>(null);
+  // 以 restockId 為 key 判斷載入結果是否屬於目前開啟的申請：
+  // 換單/關閉不需同步 reset state（react-hooks/set-state-in-effect）
+  const [loadedFor, setLoadedFor] = useState<number | null>(null);
 
   useEffect(() => {
-    if (!open || restockId == null) { setHd(null); setLines(null); setErr(null); return; }
+    if (!open || restockId == null) return;
     let cancelled = false;
     (async () => {
       const sb = getSupabase();
@@ -74,6 +78,8 @@ export default function RestockDetailModal({
       if (rErr || !rData) {
         setErr(rErr?.message ?? "找不到此補貨申請");
         setHd(null);
+        setLines(null);
+        setLoadedFor(restockId);
         return;
       }
       type ApiR = {
@@ -92,6 +98,7 @@ export default function RestockDetailModal({
         purchase_requests: { pr_no?: string } | { pr_no?: string }[] | null;
       };
       const r = rData as unknown as ApiR;
+      setErr(null);
       const storeObj = Array.isArray(r.stores) ? r.stores[0] : r.stores;
       const txObj = Array.isArray(r.transfers) ? r.transfers[0] : r.transfers;
       const prObj = Array.isArray(r.purchase_requests) ? r.purchase_requests[0] : r.purchase_requests;
@@ -113,7 +120,7 @@ export default function RestockDetailModal({
 
       const { data: lData } = await sb
         .from("restock_request_lines")
-        .select("id, sku_id, qty, unit_price, linked_pr_id, purchase_requests(pr_no), skus(sku_code, variant_name, products(name))")
+        .select("id, sku_id, qty, unit_price, linked_pr_id, cancelled_at, purchase_requests(pr_no), skus(sku_code, variant_name, products(name))")
         .eq("request_id", restockId)
         .order("id");
       if (cancelled) return;
@@ -123,6 +130,7 @@ export default function RestockDetailModal({
         qty: number;
         unit_price: number;
         linked_pr_id: number | null;
+        cancelled_at: string | null;
         purchase_requests: { pr_no?: string } | { pr_no?: string }[] | null;
         skus:
           | { sku_code: string; variant_name: string | null; products: { name?: string } | { name?: string }[] | null }
@@ -143,16 +151,23 @@ export default function RestockDetailModal({
           variant_name: skuObj?.variant_name ?? null,
           linked_pr_id: row.linked_pr_id ?? null,
           linked_pr_no: prObj?.pr_no ?? null,
+          cancelled: row.cancelled_at !== null,
         };
       });
       setLines(rows);
+      setLoadedFor(restockId);
     })();
     return () => {
       cancelled = true;
     };
   }, [open, restockId]);
 
-  const total = (lines ?? []).reduce((acc, l) => acc + l.qty * l.unit_price, 0);
+  const ready = open && restockId != null && loadedFor === restockId;
+  const hd = ready ? hdState : null;
+  const lines = ready ? linesState : null;
+  const err = ready ? errState : null;
+
+  const total = (lines ?? []).filter((l) => !l.cancelled).reduce((acc, l) => acc + l.qty * l.unit_price, 0);
   const title = hd ? `📦 補貨申請 RESTOCK#${hd.id}` : "補貨申請";
 
   return (
@@ -226,9 +241,10 @@ export default function RestockDetailModal({
                     {lines.map((l) => (
                       <tr key={l.id}>
                         <td className="px-3 py-2 font-mono text-xs">{l.sku_code}</td>
-                        <td className="px-3 py-2 text-xs">
+                        <td className={`px-3 py-2 text-xs ${l.cancelled ? "line-through opacity-60" : ""}`}>
                           {l.sku_name || "—"}
                           {l.variant_name && <span className="ml-1 text-zinc-500">/ {l.variant_name}</span>}
+                          {l.cancelled && <span className="ml-2 text-red-600 no-underline dark:text-red-400">已刪除</span>}
                           {l.linked_pr_id != null && (
                             <div>
                               <Link

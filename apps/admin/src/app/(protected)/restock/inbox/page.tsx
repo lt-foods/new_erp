@@ -74,11 +74,13 @@ export default function RestockInboxPage() {
       const ids = reqRows.map((r) => r.id);
       const lineMap = new Map<number, { count: number; total: number; prCount: number; prIds: number[] }>();
       if (ids.length > 0) {
-        const { data: lineData } = await sb.from("restock_request_lines").select("request_id, qty, unit_price, linked_pr_id").in("request_id", ids);
-        for (const l of (lineData ?? []) as { request_id: number; qty: number; unit_price: number; linked_pr_id: number | null }[]) {
+        const { data: lineData } = await sb.from("restock_request_lines").select("request_id, qty, unit_price, linked_pr_id, cancelled_at").in("request_id", ids);
+        for (const l of (lineData ?? []) as { request_id: number; qty: number; unit_price: number; linked_pr_id: number | null; cancelled_at: string | null }[]) {
           const slot = lineMap.get(l.request_id) ?? { count: 0, total: 0, prCount: 0, prIds: [] };
-          slot.count += 1;
-          slot.total += Number(l.qty) * Number(l.unit_price);
+          if (l.cancelled_at === null) {
+            slot.count += 1;
+            slot.total += Number(l.qty) * Number(l.unit_price);
+          }
           if (l.linked_pr_id != null) {
             slot.prCount += 1;
             if (!slot.prIds.includes(l.linked_pr_id)) slot.prIds.push(l.linked_pr_id);

@@ -17,12 +17,13 @@ type Line = {
   variant_name: string | null;
   linked_pr_id: number | null;
   linked_pr_no: string | null;
+  cancelled: boolean;
 };
 
 /**
  * 補貨申請「下訂單」品相選擇 Modal：
  * 勾選要開請購單的品相（明細），可分次為不同品相各開一張 PR。
- * 已開單的品相鎖定顯示其 PR 連結。
+ * 已開單的品相鎖定顯示其 PR 連結；已有品相開單後，剩餘品相可刪除（不再補貨）。
  */
 export default function RestockToPrModal({
   open,
@@ -52,7 +53,7 @@ export default function RestockToPrModal({
       const sb = getSupabase();
       const { data, error } = await sb
         .from("restock_request_lines")
-        .select("id, sku_id, qty, unit_price, linked_pr_id, purchase_requests(pr_no), skus(sku_code, variant_name, products(name))")
+        .select("id, sku_id, qty, unit_price, linked_pr_id, cancelled_at, purchase_requests(pr_no), skus(sku_code, variant_name, products(name))")
         .eq("request_id", restockId)
         .order("id");
       if (cancelled) return;
@@ -67,6 +68,7 @@ export default function RestockToPrModal({
         qty: number;
         unit_price: number;
         linked_pr_id: number | null;
+        cancelled_at: string | null;
         purchase_requests: { pr_no?: string } | { pr_no?: string }[] | null;
         skus:
           | { sku_code: string; variant_name: string | null; products: { name?: string } | { name?: string }[] | null }
@@ -87,19 +89,21 @@ export default function RestockToPrModal({
           variant_name: skuObj?.variant_name ?? null,
           linked_pr_id: row.linked_pr_id,
           linked_pr_no: prObj?.pr_no ?? null,
+          cancelled: row.cancelled_at !== null,
         };
       });
       setErr(null);
       setLoaded({ restockId, lines: rows });
-      // 預設全選尚未開單的品相
-      setChecked(new Set(rows.filter((l) => l.linked_pr_id === null).map((l) => l.id)));
+      // 預設全選尚未開單且未刪除的品相
+      setChecked(new Set(rows.filter((l) => l.linked_pr_id === null && !l.cancelled).map((l) => l.id)));
     })();
     return () => {
       cancelled = true;
     };
   }, [open, restockId, reload]);
 
-  const openable = useMemo(() => (lines ?? []).filter((l) => l.linked_pr_id === null), [lines]);
+  const openable = useMemo(() => (lines ?? []).filter((l) => l.linked_pr_id === null && !l.cancelled), [lines]);
+  const hasOrdered = useMemo(() => (lines ?? []).some((l) => l.linked_pr_id !== null), [lines]);
   const selectedTotal = useMemo(
     () => (lines ?? []).filter((l) => checked.has(l.id)).reduce((acc, l) => acc + l.qty * l.unit_price, 0),
     [lines, checked]
@@ -125,7 +129,31 @@ export default function RestockToPrModal({
       });
       if (error) throw error;
       onDone();
-      // 還有品相沒開單 → 留在 modal 續開下一張；全開完 → 關閉
+      // 還有品相沒處理 → 留在 modal 續處理；全處理完 → 關閉
+      if (checked.size < openable.length) {
+        setReload((t) => t + 1);
+      } else {
+        onClose();
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelLines() {
+    if (restockId == null || checked.size === 0) return;
+    if (!confirm(`確定刪除勾選的 ${checked.size} 個品相？刪除後不再補貨、無法復原。`)) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const { error } = await getSupabase().rpc("rpc_cancel_restock_lines", {
+        p_request_id: restockId,
+        p_line_ids: Array.from(checked),
+      });
+      if (error) throw error;
+      onDone();
       if (checked.size < openable.length) {
         setReload((t) => t + 1);
       } else {
@@ -143,6 +171,7 @@ export default function RestockToPrModal({
       <div className="space-y-3">
         <p className="text-sm text-zinc-500">
           勾選要下訂的品相：勾選的品項會建成一張新的{PR_TERM_ZH}；可分次為不同品相各開一張。
+          {hasOrdered && "剩餘不補貨的品相可勾選後刪除。"}
         </p>
 
         {err && (
@@ -170,11 +199,14 @@ export default function RestockToPrModal({
               ) : (
                 lines.map((l) => {
                   const ordered = l.linked_pr_id !== null;
+                  const locked = ordered || l.cancelled;
                   return (
-                    <tr key={l.id} className={ordered ? "opacity-60" : "cursor-pointer"} onClick={() => !ordered && toggle(l.id)}>
+                    <tr key={l.id} className={locked ? "opacity-60" : "cursor-pointer"} onClick={() => !locked && toggle(l.id)}>
                       <td className="px-3 py-2">
                         {ordered ? (
                           <span title="已開單">✅</span>
+                        ) : l.cancelled ? (
+                          <span title="已刪除（不再補貨）">🗑️</span>
                         ) : (
                           <input
                             type="checkbox"
@@ -185,9 +217,10 @@ export default function RestockToPrModal({
                         )}
                       </td>
                       <td className="px-3 py-2 font-mono text-xs">{l.sku_code}</td>
-                      <td className="px-3 py-2 text-xs">
+                      <td className={`px-3 py-2 text-xs ${l.cancelled ? "line-through" : ""}`}>
                         {l.sku_name || "—"}
                         {l.variant_name && <span className="ml-1 text-zinc-500">/ {l.variant_name}</span>}
+                        {l.cancelled && <span className="ml-2 text-red-600 no-underline dark:text-red-400">已刪除</span>}
                         {ordered && (
                           <span className="ml-2">
                             →{" "}
@@ -219,12 +252,21 @@ export default function RestockToPrModal({
             <SpinButton onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">
               取消
             </SpinButton>
+            {hasOrdered && (
+              <SpinButton
+                onClick={cancelLines}
+                disabled={busy || checked.size === 0}
+                className="rounded-md border border-red-400 bg-red-50 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-100 disabled:opacity-50 dark:border-red-700 dark:bg-red-950 dark:text-red-300"
+              >
+                刪除勾選品相
+              </SpinButton>
+            )}
             <SpinButton
               onClick={submit}
               disabled={busy || checked.size === 0}
               className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
             >
-              {busy ? "建立中…" : `為勾選品相開一張${PR_TERM_ZH}`}
+              {busy ? "處理中…" : `為勾選品相開一張${PR_TERM_ZH}`}
             </SpinButton>
           </div>
         </div>

@@ -155,6 +155,19 @@ SELECT proname, pg_get_function_arguments(oid) FROM pg_proc
   approved_by/at 寫入、header linked_pr_id 仍為第一張
 - 舊 rpc_approve_restock_to_pr(req_id) 為薄包裝（= 全部剩餘品相一張 PR），行為不變
 
+### 2.15 rpc_cancel_restock_lines — 剩餘品相刪除（不再補貨）（20260714000050）
+**情境：** 品相 A 已開請購單的 pending request，HQ 對品相 B 呼叫
+`rpc_cancel_restock_lines(req_id, ARRAY[line_b])`，之後再開單/刪除剩餘品相
+
+**預期：**
+- 未開任何請購單前呼叫 → RAISE '請用「拒絕」'（整張不補貨走既有拒絕流程）
+- 刪 B：line_b.cancelled_at 寫入、sentinel RR- 訂單對應 sku 明細 status='cancelled'；
+  還有品相未處理 → request 停留 'pending'
+- 已開單品相不可刪、已刪品相不可再刪、已刪品相不可開請購單 → 各自 RAISE
+- 開單 NULL（全部剩餘）會排除已刪品相；全品相處理完（開單或刪除）→
+  status='approved_pr'、approved_by/at 寫入
+- 「刪除全部剩餘品相」也會直接結案（至少一個品相已開單 → approved_pr）
+
 ---
 
 ## 3. UI 行為（preview 互動）
