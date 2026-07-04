@@ -1324,7 +1324,6 @@ function HqInboxContent() {
         return r.stage === "pending";
       })
       .map((r) => r.key);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paginatedRows, sourceFilter]);
 
   function selectAllVisible() {
