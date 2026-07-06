@@ -51,6 +51,13 @@ type CloseDateGroup = {
   total_qty: number;
 };
 
+type SupplementableDate = {
+  close_date: string;
+  campaign_count: number;
+  remaining_skus: number;
+  remaining_qty: number;
+};
+
 type ClosedCampaignRow = {
   id: number;
   name: string;
@@ -105,6 +112,10 @@ export default function PurchaseRequestsListPage() {
   const [pendingDates, setPendingDates] = useState<CloseDateGroup[] | null>(
     null,
   );
+  const [supplementDates, setSupplementDates] = useState<
+    SupplementableDate[] | null
+  >(null);
+  const [busySuppDate, setBusySuppDate] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // 篩選 / 排序 / 分組
@@ -299,6 +310,58 @@ export default function PurchaseRequestsListPage() {
       cancelled = true;
     };
   }, [reloadTick]);
+
+  // ============== 載入「結單日補單」cards ==============
+  // 已建過 close_date PR、但該日仍有未請購量(delta>0)的結單日。
+  // delta 邏輯全在 rpc_list_supplementable_close_dates（單一真相）。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data, error: err } = await getSupabase().rpc(
+          "rpc_list_supplementable_close_dates",
+        );
+        if (cancelled) return;
+        if (err) {
+          setSupplementDates([]);
+          return;
+        }
+        const list = ((data as SupplementableDate[] | null) ?? []).map((d) => ({
+          close_date: d.close_date,
+          campaign_count: Number(d.campaign_count),
+          remaining_skus: Number(d.remaining_skus),
+          remaining_qty: Number(d.remaining_qty),
+        }));
+        setSupplementDates(list);
+      } catch {
+        if (!cancelled) setSupplementDates([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadTick]);
+
+  async function handleSupplement(closeDate: string) {
+    setBusySuppDate(closeDate);
+    setError(null);
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { data: prId, error: rpcErr } = await supabase.rpc(
+        "rpc_create_supplementary_pr_from_close_date",
+        {
+          p_close_date: closeDate,
+          p_operator: userData.user?.id,
+        },
+      );
+      if (rpcErr) throw new Error(rpcErr.message);
+      router.push(`/purchase/requests/edit?id=${prId}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusySuppDate(null);
+    }
+  }
 
   async function handleImport(closeDate: string) {
     setBusyDate(closeDate);
@@ -794,6 +857,45 @@ export default function PurchaseRequestsListPage() {
                   className="w-full rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
                 >
                   {busyDate === g.close_date ? "建立中…" : "📋 開始建立"}
+                </SpinButton>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* === 結單日補單 cards（已建單但仍有未請購量）=== */}
+      {supplementDates !== null && supplementDates.length > 0 && (
+        <section className="rounded-md border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/30">
+          <h2 className="mb-1 text-sm font-semibold text-amber-900 dark:text-amber-200">
+            🔁 結單日補單（{supplementDates.length}）
+          </h2>
+          <p className="mb-3 text-xs text-amber-800/80 dark:text-amber-300/70">
+            這些結單日已建過{PR_TERM_ZH}，但仍有尚未請購的數量。補單只會帶入「新增未請購量」，原單不受影響。
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {supplementDates.map((g) => (
+              <div
+                key={g.close_date}
+                className="rounded-md border border-amber-200 bg-white p-3 shadow-sm dark:border-amber-900 dark:bg-zinc-900"
+              >
+                <div className="mb-1 text-base font-semibold">
+                  {g.close_date}
+                </div>
+                <div className="mb-2 text-xs text-zinc-500">
+                  {g.campaign_count} 個團 · 尚缺 {g.remaining_skus} 個品項 · 補單量{" "}
+                  {g.remaining_qty}
+                </div>
+                <SpinButton
+                  onClick={() => handleSupplement(g.close_date)}
+                  disabled={busySuppDate !== null}
+                  className="flex w-full items-center justify-center rounded-md bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+                >
+                  {busySuppDate === g.close_date ? (
+                    <Spinner size={16} />
+                  ) : (
+                    "➕ 補單"
+                  )}
                 </SpinButton>
               </div>
             ))}
