@@ -9,7 +9,7 @@
 
 ## 1. Edge Function 合約
 
-- [ ] 函式 `staff-create` 已部署；`supabase/config.toml` **無** `[functions.staff-create]` 區塊（沿用 `verify_jwt = true` 預設，與 `admin-notify` 一致）
+- [ ] 函式 `staff-create` 已部署；`supabase/config.toml` **有** `[functions.staff-create] verify_jwt = false` 區塊。原設計沿用 `verify_jwt = true` 預設，但那會讓 gateway 擋掉不帶 Authorization 的 CORS preflight(OPTIONS)，前端收到 `Failed to send a request to the Edge Function`；函式內已自行驗 caller JWT（`sb.auth.getUser`）+ owner/admin + tenant，故改成 `verify_jwt = false`。**注意：config 改了要重新部署才生效**（部署方式見 `CLAUDE.md` §部署 Edge Function 走 curl + Management API）
 - [ ] 只需內建 secret `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`，未新增其他 secret
 - [ ] `OPTIONS` 回 CORS（`_shared/cors.ts`）；非 `POST` 回 405
 - [ ] 缺 `Authorization` header → 401
