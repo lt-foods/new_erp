@@ -31,6 +31,13 @@ export function canSeeCost(role: Role | null): boolean {
   return HQ_ROLES.includes(role);
 }
 
+// 總倉層級：可進入總倉收件匣 / 採購請購單等總倉專屬頁面。
+// 分店角色（store_manager / store_staff）不屬於此群，看到的 TR/PR 編號應為純文字、不可點。
+export function isHqRole(role: Role | null): boolean {
+  if (role === null) return false;
+  return HQ_ROLES.includes(role);
+}
+
 export function canSeeBranch(role: Role | null): boolean {
   if (role === null) return false;
   return BRANCH_ROLES.includes(role);

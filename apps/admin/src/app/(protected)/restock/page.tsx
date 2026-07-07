@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
+import { useRole, isHqRole } from "@/lib/role";
 import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
@@ -58,6 +59,9 @@ export default function RestockListPage() {
   const [tab, setTab] = useState<Tab>("pending");
   const [page, setPage] = useState(1);
   const [detailId, setDetailId] = useState<number | null>(null);
+  const role = useRole();
+  // 分店角色（店長 / 店員）不可點 TR / PR 連結進總倉頁面，只顯示純文字編號
+  const canFollowLinks = isHqRole(role);
 
   useEffect(() => { setPage(1); }, [tab]);
 
@@ -244,22 +248,30 @@ export default function RestockListPage() {
               </Td>
               <Td className="text-xs">
                 {r.linked_transfer_no && (
-                  <Link
-                    href={`/hq/inbox?source=transfer&id=${r.linked_transfer_id}`}
-                    onClick={(e) => e.stopPropagation()}
-                    className="font-mono text-blue-600 hover:underline dark:text-blue-400"
-                  >
-                    → {r.linked_transfer_no}
-                  </Link>
+                  canFollowLinks ? (
+                    <Link
+                      href={`/hq/inbox?source=transfer&id=${r.linked_transfer_id}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="font-mono text-blue-600 hover:underline dark:text-blue-400"
+                    >
+                      → {r.linked_transfer_no}
+                    </Link>
+                  ) : (
+                    <span className="font-mono text-zinc-600 dark:text-zinc-300">→ {r.linked_transfer_no}</span>
+                  )
                 )}
                 {r.linked_pr_no && (
-                  <Link
-                    href={`/purchase/requests/edit?id=${r.linked_pr_id}`}
-                    onClick={(e) => e.stopPropagation()}
-                    className="font-mono text-blue-600 hover:underline dark:text-blue-400"
-                  >
-                    → {r.linked_pr_no}
-                  </Link>
+                  canFollowLinks ? (
+                    <Link
+                      href={`/purchase/requests/edit?id=${r.linked_pr_id}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="font-mono text-blue-600 hover:underline dark:text-blue-400"
+                    >
+                      → {r.linked_pr_no}
+                    </Link>
+                  ) : (
+                    <span className="font-mono text-zinc-600 dark:text-zinc-300">→ {r.linked_pr_no}</span>
+                  )
                 )}
                 {r.status === "rejected" && r.rejected_reason && <span className="text-red-600">拒絕：{r.rejected_reason}</span>}
               </Td>
