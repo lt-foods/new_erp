@@ -59,18 +59,25 @@ type HqToStoreItem = {
   unit_cost: number;
   line_amount: number;
   received_at: string;
-  entry_type: "hq_inbound" | "air_in" | "air_out";
+  entry_type: "hq_inbound" | "air_in" | "air_out" | "free_in" | "free_out" | "return_out";
+  description: string | null;
 };
 
 const ENTRY_TYPE_LABEL: Record<HqToStoreItem["entry_type"], string> = {
   hq_inbound: "HQ 進貨",
   air_in: "空中轉入",
   air_out: "空中轉出",
+  free_in: "自由轉入",
+  free_out: "自由轉出",
+  return_out: "退貨沖回",
 };
 const ENTRY_TYPE_COLOR: Record<HqToStoreItem["entry_type"], string> = {
   hq_inbound: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
   air_in: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   air_out: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  free_in: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300",
+  free_out: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-300",
+  return_out: "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
 };
 
 type Transfer = {
@@ -367,7 +374,7 @@ function HqToStoreDetail({
       const sb = getSupabase();
       const { data, error } = await sb
         .from("store_monthly_settlement_items")
-        .select("id, transfer_id, transfer_item_id, sku_id, qty_received, unit_cost, line_amount, received_at, entry_type")
+        .select("id, transfer_id, transfer_item_id, sku_id, qty_received, unit_cost, line_amount, received_at, entry_type, description")
         .eq("settlement_id", settlement.id)
         .order("entry_type", { ascending: true })
         .order("received_at", { ascending: true });
@@ -479,9 +486,16 @@ function HqToStoreDetail({
                     <Td className="text-xs">{new Date(it.received_at).toLocaleDateString("zh-TW")}</Td>
                     <Td className="font-mono text-xs">{tx?.transfer_no ?? `#${it.transfer_id}`}</Td>
                     <Td className="text-xs">
-                      <span className="font-mono text-zinc-500">{sku?.sku_code ?? "—"}</span>{" "}
-                      <span>{sku?.product_name ?? "—"}</span>
-                      {sku?.variant_name && <span className="ml-1 text-zinc-400">/ {sku.variant_name}</span>}
+                      {it.description ? (
+                        // 自由轉貨行：無真 SKU，顯示轉貨時填的描述
+                        <span className="break-words">{it.description}</span>
+                      ) : (
+                        <>
+                          <span className="font-mono text-zinc-500">{sku?.sku_code ?? "—"}</span>{" "}
+                          <span>{sku?.product_name ?? "—"}</span>
+                          {sku?.variant_name && <span className="ml-1 text-zinc-400">/ {sku.variant_name}</span>}
+                        </>
+                      )}
                     </Td>
                     <Td className="text-right font-mono">{Number(it.qty_received).toLocaleString()}</Td>
                     <Td className="text-right font-mono text-zinc-500">${Number(it.unit_cost).toFixed(2)}</Td>
