@@ -12,7 +12,7 @@ Migration：`20260714000090_restock_order_internal_member_and_retail_transfer.sq
 - [ ] T3a 指定真會員 → ride-along 單掛該會員、notes 前綴【指定會員】、items 單價 = 當下現售價（scope='retail'，無則 fallback 分店價）；restock_request_lines 仍存分店價。
 - [ ] T3b 指定會員不在 tenant → 擋。
 - [ ] T3c 舊 3 參數簽名已 DROP：前端 3 參數呼叫（不帶 p_member_id）走 DEFAULT NULL 正常；PostgREST 無 overload 歧義。
-- [ ] T3d 建單頁 UI：訂購會員欄預設「內部店庫存」提示；搜尋選會員後顯示姓名+編號、可「改回內部」；送出帶 p_member_id。
+- [ ] T3d 建單頁 UI：訂購會員欄**預設即已選【內部】該店**（chip 顯示、隨收貨分店連動店名）；點「指定會員」切搜尋、選定顯示姓名+編號、可「改回內部」；內部送 p_member_id=null（RPC 端解析）、指定送該會員 id。
 - [ ] T3e 指定真會員的單收貨後直接 ready → 該會員在取貨頁可取（免轉手）。
 
 ### 收貨（rpc_receive_transfer 邏輯 D 擴充）

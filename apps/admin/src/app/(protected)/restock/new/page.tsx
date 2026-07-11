@@ -140,7 +140,12 @@ export default function RestockNewPage() {
         </select>
       </label>
 
-      <MemberField member={member} onChange={setMember} inputCls={inputCls} />
+      <MemberField
+        member={member}
+        onChange={setMember}
+        inputCls={inputCls}
+        storeName={stores.find((s) => s.id === effectiveStoreId)?.name ?? null}
+      />
 
 
       <div className="rounded-md border border-zinc-200 dark:border-zinc-800">
@@ -188,33 +193,36 @@ export default function RestockNewPage() {
   );
 }
 
-// 訂購會員欄：預設【內部】店庫存；搜尋指定真會員（貨到即該會員的可取貨訂單、單價鎖現售價）
+// 訂購會員欄：預設已選【內部】該店（送出 p_member_id=null、RPC 端解析內部會員）；
+// 點「指定會員」切到搜尋，指定真會員＝貨到即該會員的可取貨訂單（單價鎖現售價）
 function MemberField({
   member,
   onChange,
   inputCls,
+  storeName,
 }: {
   member: MemberHit | null;
   onChange: (m: MemberHit | null) => void;
   inputCls: string;
+  storeName: string | null;
 }) {
-  const [open, setOpen] = useState(false);
+  const [picking, setPicking] = useState(false);
   const [term, setTerm] = useState("");
   const [hits, setHits] = useState<MemberHit[]>([]);
   const [searching, setSearching] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (!open) return;
+    if (!picking) return;
     const onDown = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+      if (!wrapRef.current?.contains(e.target as Node)) setPicking(false);
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
-  }, [open]);
+  }, [picking]);
 
   useEffect(() => {
-    if (!open) {
+    if (!picking) {
       setSearching(false);
       return;
     }
@@ -231,49 +239,63 @@ function MemberField({
       }
     }, 200);
     return () => clearTimeout(t);
-  }, [term, open]);
+  }, [term, picking]);
+
+  const chipCls =
+    "flex items-center justify-between gap-2 rounded-md border border-zinc-300 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-800";
+  const btnCls =
+    "shrink-0 rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-700";
 
   return (
     <div ref={wrapRef} className="relative flex flex-col gap-1 text-sm sm:max-w-md">
       <span className="text-zinc-600 dark:text-zinc-400">訂購會員</span>
       {member ? (
-        <div className="flex items-center justify-between gap-2 rounded-md border border-zinc-300 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-800">
+        // 已指定真會員
+        <div className={chipCls}>
           <div className="min-w-0 flex-1 text-sm">
             <span className="font-medium">{member.name ?? "—"}</span>
             <span className="ml-2 font-mono text-xs text-zinc-500">{member.member_no}</span>
           </div>
-          <SpinButton
-            type="button"
-            onClick={() => { onChange(null); setTerm(""); }}
-            className="shrink-0 rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-700"
-          >
+          <SpinButton type="button" onClick={() => { onChange(null); setTerm(""); setPicking(false); }} className={btnCls}>
             改回內部
           </SpinButton>
         </div>
-      ) : (
+      ) : picking ? (
+        // 搜尋模式
         <div className="relative">
           <input
+            autoFocus
             value={term}
-            onFocus={() => setOpen(true)}
-            onChange={(e) => { setTerm(e.target.value); setOpen(true); }}
-            placeholder="預設：【內部】店庫存 — 搜尋會員可直接指定"
+            onChange={(e) => setTerm(e.target.value)}
+            placeholder="搜尋 會員編號 / 姓名 / 手機"
             className={`${inputCls} w-full pr-8`}
           />
           <SearchSpinner active={searching} />
         </div>
+      ) : (
+        // 預設：已選內部該店（送出 p_member_id=null，RPC 端解析/自動建立內部會員）
+        <div className={chipCls}>
+          <div className="min-w-0 flex-1 text-sm">
+            <span className="font-medium">【內部】{storeName ?? "該店"}</span>
+            <span className="ml-2 text-xs text-zinc-500">店庫存</span>
+          </div>
+          <SpinButton type="button" onClick={() => { setPicking(true); setTerm(""); }} className={btnCls}>
+            指定會員
+          </SpinButton>
+        </div>
       )}
       {!member && (
         <p className="text-xs text-zinc-400">
-          不指定＝貨到掛店庫存，之後再轉單給客人；指定會員＝貨到即為該會員的可取貨訂單（單價鎖現售價）
+          內部＝貨到掛店庫存，之後再轉單給客人；指定會員＝貨到即為該會員的可取貨訂單（單價鎖現售價）
         </p>
       )}
-      {open && !member && hits.length > 0 && (
+      {picking && !member && hits.length > 0 && (
         <div className="absolute left-0 top-full z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800">
           {hits.map((h) => (
             <SpinButton
               key={h.id}
               type="button"
-              onClick={() => { onChange(h); setOpen(false); setTerm(""); }}
+              onClick={() => { onChange(h); setPicking(false); setTerm(""); }}
               className="block w-full px-3 py-1.5 text-left text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700"
             >
               <span className="font-medium">{h.name ?? "—"}</span>
