@@ -1148,6 +1148,21 @@ export function OrderDetail({
   );
 }
 
+// 顧客取貨時間：取 order_pickup_events 中最新一筆取貨事件（picked_up / partial_pickup）的 created_at。
+// order_pickup_events 為 append-only，是取貨時間的權威來源（customer_orders.updated_at 會被改折扣等其它操作覆寫）。
+async function fetchPickupTs(orderId: number): Promise<string | null> {
+  const sb = getSupabase();
+  const { data } = await sb
+    .from("order_pickup_events")
+    .select("created_at")
+    .eq("order_id", orderId)
+    .in("event_type", ["picked_up", "partial_pickup"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return (data as { created_at: string } | null)?.created_at ?? null;
+}
+
 async function buildTimeline(
   head: OrderHead,
   skuIds: number[],
@@ -1231,7 +1246,7 @@ async function buildTimeline(
     };
     const customerStep: TimelineStep = {
       label: "顧客取貨",
-      ts: null,
+      ts: rank >= 5 ? await fetchPickupTs(head.id) : null,
       done: rank >= 5,
       detail: rank >= 5 ? "已完成" : `當前：${statusLabel(head.status)}`,
     };
@@ -1406,13 +1421,16 @@ async function buildTimeline(
 
   // Step 5: 顧客取貨 — order.status
   const pickedUp = status === "completed" || status === "picked_up";
+  // 已（部分）取貨才查事件時間，避免對未取貨訂單多打一次 DB
+  const pickedUpTs =
+    pickedUp || status === "partially_completed" ? await fetchPickupTs(head.id) : null;
 
   return [
     { label: "採購到貨", ts: poTs, done: poDone, detail: poDetail || undefined },
     { label: "撿貨完成", ts: waveTs, done: wavePicked, detail: waveDetail || undefined, detailHref: waveHref },
     { label: "派貨出倉", ts: shippedTs, done: xferShipped, detail: xferDetail || undefined, detailHref: xferHref },
     { label: "分店收貨", ts: receivedTs, done: xferReceived, detail: xferDetail || undefined, detailHref: xferHref },
-    { label: "顧客取貨", ts: null, done: pickedUp, detail: statusLabel(status) },
+    { label: "顧客取貨", ts: pickedUpTs, done: pickedUp, detail: statusLabel(status) },
   ];
 }
 
