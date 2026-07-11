@@ -14,6 +14,7 @@ import { LoadingBlock } from "@/components/Spinner";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import FreeTransferCreateModal from "@/components/FreeTransferCreateModal";
+import FreeTransferExplainerModal, { FT_EXPLAINER_HIDE_KEY } from "@/components/FreeTransferExplainerModal";
 import OrderReturnCreateModal from "@/components/OrderReturnCreateModal";
 import TransferDetailModal from "@/components/TransferDetailModal";
 import { printViaIframe } from "@/lib/printIframe";
@@ -62,6 +63,11 @@ export default function InternalTransfersPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [showReturn, setShowReturn] = useState(false);
   const [detailId, setDetailId] = useState<number | null>(null);
+  // 進頁自動播放運作說明動畫（勾過「不再自動顯示」則否；header ❓ 可隨時重看）
+  const [showExplainer, setShowExplainer] = useState(false);
+  useEffect(() => {
+    if (localStorage.getItem(FT_EXPLAINER_HIDE_KEY) !== "1") setShowExplainer(true);
+  }, []);
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
@@ -213,6 +219,12 @@ export default function InternalTransfersPage() {
         </div>
         <div className="flex flex-wrap gap-2">
           <SpinButton
+            onClick={() => setShowExplainer(true)}
+            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            ❓ 運作說明
+          </SpinButton>
+          <SpinButton
             onClick={() => setShowReturn(true)}
             className="rounded-md bg-orange-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-700"
           >
@@ -226,6 +238,8 @@ export default function InternalTransfersPage() {
           </SpinButton>
         </div>
       </header>
+
+      <FreeTransferExplainerModal open={showExplainer} onClose={() => setShowExplainer(false)} />
 
       <FreeTransferCreateModal
         open={showCreate}
