@@ -228,7 +228,13 @@ const RULES: Rule[] = [
   },
   // ===== rpc_merge_member（會員合併守門） =====
   {
-    // 目標(已綁 LINE)會員已有訂單 → 擋下（只支援併入「尚無訂單」的 LINE 會員）
+    // 新版（20260714000070+）：只有同 (團, 頻道, 訂單類型) 兩邊都有進行中訂單才擋
+    pattern: /merge would collide: source \d+ and target \d+ both have an active order in the same campaign\/channel, cannot merge/i,
+    render: () =>
+      "兩筆會員在「同一團、同一頻道」都有進行中的訂單，無法自動合併（會撞單）。請先把其中一筆的該訂單處理掉（取消／轉單）後再合併。",
+  },
+  {
+    // 舊版守門（20260714000070 之前）：目標(已綁 LINE)會員有任何訂單就擋。保留以相容舊部署的錯誤訊息。
     pattern: /target member \d+ already has orders, cannot merge/i,
     render: () =>
       "目標（已綁 LINE）會員已經有訂單，無法把另一筆併進來。此功能僅支援把（可含訂單的）未綁 LINE 會員，併入「尚無訂單」的 LINE 會員；請改選一個沒有訂單的會員作為合併目標。",

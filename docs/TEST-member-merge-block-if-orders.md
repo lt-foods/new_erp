@@ -1,5 +1,10 @@
 # 測試項目 — 會員合併：來源有訂單則禁止合併
 
+> ⚠️ **已被後續版本取代（歷史文件，勿依此驗收）**
+> - 2026-07-01 起（`20260701030000`）：來源(未綁 LINE)**可以**有訂單，訂單會一起搬到目標；改為「目標(已綁 LINE)有訂單就擋」。
+> - 2026-07-11 起（`20260714000070`）：目標**也可以**有訂單；只有當來源與目標在同一 `(tenant, campaign, channel, order_kind)` 都有 active 訂單（真的會撞唯一索引）時才擋。
+> 目前正確行為請看 **`docs/TEST-member-merge-target-orders-collision.md`**。
+
 **對應 migration:** `supabase/migrations/20260618000030_rpc_merge_member_block_if_guest_has_orders.sql`
 **對應 UI:** `apps/admin/src/components/MemberMergeModal.tsx`、`apps/admin/src/lib/rpcError.ts`
 
