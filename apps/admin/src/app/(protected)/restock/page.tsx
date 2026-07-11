@@ -14,6 +14,9 @@ const PAGE_SIZE = 20;
 
 type Status = "pending" | "approved_transfer" | "approved_pr" | "shipped" | "received" | "rejected" | "cancelled";
 
+// 一個商品底下可有多個品項（規格），品項各自帶數量
+type ItemGroup = { productName: string; variants: string[] };
+
 type Row = {
   id: number;
   requesting_store_id: number;
@@ -28,7 +31,7 @@ type Row = {
   created_at: string;
   line_count: number;
   total_amount: number;
-  items_summary: string;
+  item_groups: ItemGroup[];
 };
 
 const STATUS_LABEL: Record<Status, string> = {
@@ -76,8 +79,9 @@ export default function RestockListPage() {
       if (err) { setError(err.message); return; }
       const reqRows = (data ?? []) as unknown as Array<Row & { stores?: { name: string } }>;
       const ids = reqRows.map((r) => r.id);
-      // 取 line count + total + items summary（含 sku_code + 商品名）
-      const lineMap = new Map<number, { count: number; total: number; summary: string }>();
+      // 取 line count + total；品項依商品分組（一個商品可帶多個品項/規格）
+      const lineMap = new Map<number, { count: number; total: number }>();
+      const groupMap = new Map<number, ItemGroup[]>();
       if (ids.length > 0) {
         const { data: lineData } = await sb
           .from("restock_request_lines")
@@ -87,7 +91,7 @@ export default function RestockListPage() {
 
         // 撈 SKU + 商品名（restock_request_lines.sku_id 有 FK 但兩階段 fetch 較穩）
         const skuIds = Array.from(new Set(lines.map((l) => l.sku_id))).filter((x) => x != null);
-        let skuLabelMap = new Map<number, string>();
+        let skuInfoMap = new Map<number, { productKey: string; productName: string; variantName: string | null; skuCode: string }>();
         if (skuIds.length > 0) {
           const { data: skus } = await sb
             .from("skus")
@@ -100,32 +104,40 @@ export default function RestockListPage() {
             const { data: prods } = await sb.from("products").select("id, name").in("id", prodIds);
             prodNameMap = new Map(((prods ?? []) as { id: number; name: string }[]).map((p) => [p.id, p.name]));
           }
-          skuLabelMap = new Map(
+          skuInfoMap = new Map(
             skuArr.map((s) => {
-              // 品名 + 品相一起顯示（品相有值才接，無則退回 sku_code）
               const prodName = s.product_id != null ? prodNameMap.get(s.product_id) ?? null : null;
-              const base = prodName ?? s.sku_code;
-              const label = s.variant_name ? `${base} / ${s.variant_name}` : base;
-              return [s.id, label];
+              return [s.id, {
+                productKey: s.product_id != null ? `p${s.product_id}` : `s${s.id}`,
+                productName: prodName ?? s.sku_code,
+                variantName: s.variant_name,
+                skuCode: s.sku_code,
+              }];
             })
           );
         }
 
-        const partsMap = new Map<number, string[]>();
+        // 每張申請：依商品 key 分組，同商品的多個品項收在一起
+        const grpTmp = new Map<number, Map<string, ItemGroup>>();
         for (const l of lines) {
-          const slot = lineMap.get(l.request_id) ?? { count: 0, total: 0, summary: "" };
+          const slot = lineMap.get(l.request_id) ?? { count: 0, total: 0 };
           slot.count += 1;
           slot.total += Number(l.qty) * Number(l.unit_price);
           lineMap.set(l.request_id, slot);
-          const label = skuLabelMap.get(l.sku_id) ?? `#${l.sku_id}`;
-          const parts = partsMap.get(l.request_id) ?? [];
-          parts.push(`${label}×${Number(l.qty)}`);
-          partsMap.set(l.request_id, parts);
+
+          const info = skuInfoMap.get(l.sku_id);
+          const productName = info?.productName ?? `#${l.sku_id}`;
+          const productKey = info?.productKey ?? `s${l.sku_id}`;
+          // 品項標籤：品相有值用品相，無則退回 sku_code
+          const variantLabel = `${info?.variantName ?? info?.skuCode ?? `#${l.sku_id}`}×${Number(l.qty)}`;
+
+          const g = grpTmp.get(l.request_id) ?? new Map<string, ItemGroup>();
+          const existing = g.get(productKey);
+          if (existing) existing.variants.push(variantLabel);
+          else g.set(productKey, { productName, variants: [variantLabel] });
+          grpTmp.set(l.request_id, g);
         }
-        for (const [rid, parts] of partsMap) {
-          const slot = lineMap.get(rid);
-          if (slot) slot.summary = parts.join("、");
-        }
+        for (const [rid, g] of grpTmp) groupMap.set(rid, Array.from(g.values()));
       }
       // 取 transfer / pr 編號
       const transferIds = reqRows.map((r) => r.linked_transfer_id).filter((x): x is number => !!x);
@@ -146,7 +158,7 @@ export default function RestockListPage() {
         store_name: r.stores?.name ?? null,
         line_count: lineMap.get(r.id)?.count ?? 0,
         total_amount: lineMap.get(r.id)?.total ?? 0,
-        items_summary: lineMap.get(r.id)?.summary ?? "",
+        item_groups: groupMap.get(r.id) ?? [],
         linked_transfer_no: r.linked_transfer_id ? xferMap.get(r.linked_transfer_id) ?? null : null,
         linked_pr_no: r.linked_pr_id ? prMap.get(r.linked_pr_id) ?? null : null,
       })));
@@ -219,6 +231,7 @@ export default function RestockListPage() {
           <Th>日期</Th>
           <Th>店</Th>
           <Th align="right">商品數</Th>
+          <Th>商品</Th>
           <Th>品項</Th>
           <Th align="right">總金額</Th>
           <Th>狀態</Th>
@@ -228,9 +241,9 @@ export default function RestockListPage() {
         </THead>
         <TBody>
           {rows === null ? (
-            <LoadingRow colSpan={9} />
+            <LoadingRow colSpan={10} />
           ) : filtered.length === 0 ? (
-            <EmptyRow colSpan={9}>沒有符合條件的申請</EmptyRow>
+            <EmptyRow colSpan={10}>沒有符合條件的申請</EmptyRow>
           ) : paginated.map((r) => (
             <Tr
               key={r.id}
@@ -240,8 +253,23 @@ export default function RestockListPage() {
               <Td className="whitespace-nowrap text-xs text-zinc-500">{new Date(r.created_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}</Td>
               <Td>{r.store_name ?? "—"}</Td>
               <Td align="right" className="font-mono">{r.line_count}</Td>
-              <Td className="max-w-md text-xs text-zinc-600 dark:text-zinc-300">
-                <span title={r.items_summary} className="line-clamp-2">{r.items_summary || "—"}</span>
+              <Td className="max-w-[14rem] text-xs text-zinc-700 dark:text-zinc-200">
+                {r.item_groups.length === 0 ? "—" : (
+                  <div className="flex flex-col gap-1.5">
+                    {r.item_groups.map((g, i) => (
+                      <div key={i} className="break-words font-medium">{g.productName}</div>
+                    ))}
+                  </div>
+                )}
+              </Td>
+              <Td className="max-w-[16rem] text-xs text-zinc-600 dark:text-zinc-300">
+                {r.item_groups.length === 0 ? "—" : (
+                  <div className="flex flex-col gap-1.5">
+                    {r.item_groups.map((g, i) => (
+                      <div key={i} className="break-words">{g.variants.join("、")}</div>
+                    ))}
+                  </div>
+                )}
               </Td>
               <Td align="right" className="font-mono">${r.total_amount.toFixed(0)}</Td>
               <Td>
