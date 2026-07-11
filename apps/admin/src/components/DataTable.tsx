@@ -84,6 +84,7 @@ export function Td({
   children,
   className = "",
   colSpan,
+  rowSpan,
   align,
   onClick,
   title,
@@ -91,6 +92,7 @@ export function Td({
   children?: ReactNode;
   className?: string;
   colSpan?: number;
+  rowSpan?: number;
   align?: Align;
   onClick?: MouseEventHandler<HTMLTableCellElement>;
   title?: string;
@@ -98,6 +100,7 @@ export function Td({
   return (
     <td
       colSpan={colSpan}
+      rowSpan={rowSpan}
       title={title}
       onClick={onClick}
       className={`px-4 py-3 ${alignCls(align)} ${className}`}

@@ -244,83 +244,90 @@ export default function RestockListPage() {
             <LoadingRow colSpan={10} />
           ) : filtered.length === 0 ? (
             <EmptyRow colSpan={10}>沒有符合條件的申請</EmptyRow>
-          ) : paginated.map((r) => (
-            <Tr
-              key={r.id}
-              onClick={() => setDetailId(r.id)}
-              className="cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-950"
-            >
-              <Td className="whitespace-nowrap text-xs text-zinc-500">{new Date(r.created_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}</Td>
-              <Td>{r.store_name ?? "—"}</Td>
-              <Td align="right" className="font-mono">{r.line_count}</Td>
-              <Td className="max-w-[14rem] text-xs text-zinc-700 dark:text-zinc-200">
-                {r.item_groups.length === 0 ? "—" : (
-                  <div className="flex flex-col gap-1.5">
-                    {r.item_groups.map((g, i) => (
-                      <div key={i} className="break-words font-medium">{g.productName}</div>
-                    ))}
-                  </div>
-                )}
-              </Td>
-              <Td className="max-w-[16rem] text-xs text-zinc-600 dark:text-zinc-300">
-                {r.item_groups.length === 0 ? "—" : (
-                  <div className="flex flex-col gap-1.5">
-                    {r.item_groups.map((g, i) => (
-                      <div key={i} className="break-words">{g.variants.join("、")}</div>
-                    ))}
-                  </div>
-                )}
-              </Td>
-              <Td align="right" className="font-mono">${r.total_amount.toFixed(0)}</Td>
-              <Td>
-                <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[r.status]}`}>
-                  {STATUS_LABEL[r.status]}
-                </span>
-              </Td>
-              <Td className="text-xs">
-                {r.linked_transfer_no && (
-                  canFollowLinks ? (
-                    <Link
-                      href={`/hq/inbox?source=transfer&id=${r.linked_transfer_id}`}
-                      onClick={(e) => e.stopPropagation()}
-                      className="font-mono text-blue-600 hover:underline dark:text-blue-400"
-                    >
-                      → {r.linked_transfer_no}
-                    </Link>
-                  ) : (
-                    <span className="font-mono text-zinc-600 dark:text-zinc-300">→ {r.linked_transfer_no}</span>
-                  )
-                )}
-                {r.linked_pr_no && (
-                  canFollowLinks ? (
-                    <Link
-                      href={`/purchase/requests/edit?id=${r.linked_pr_id}`}
-                      onClick={(e) => e.stopPropagation()}
-                      className="font-mono text-blue-600 hover:underline dark:text-blue-400"
-                    >
-                      → {r.linked_pr_no}
-                    </Link>
-                  ) : (
-                    <span className="font-mono text-zinc-600 dark:text-zinc-300">→ {r.linked_pr_no}</span>
-                  )
-                )}
-                {r.status === "rejected" && r.rejected_reason && <span className="text-red-600">拒絕：{r.rejected_reason}</span>}
-              </Td>
-              <Td className="max-w-xs text-xs text-zinc-500">
-                <span title={r.notes ?? ""}>{r.notes ? r.notes.slice(0, 30) + (r.notes.length > 30 ? "…" : "") : "—"}</span>
-              </Td>
-              <Td align="right">
-                {r.status === "pending" && (
-                  <SpinButton
-                    onClick={(e) => { e.stopPropagation(); return handleDelete(r); }}
-                    className="rounded-md border border-red-300 px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
+          ) : paginated.flatMap((r) => {
+            // 每個品項獨立一列；同商品的多個品項用 rowSpan 併「商品」欄，
+            // 申請層級欄位（日期/店/金額/狀態/連結/備註/操作）rowSpan 併整張申請。
+            const groups = r.item_groups.length > 0 ? r.item_groups : [{ productName: "—", variants: ["—"] }];
+            const totalLines = groups.reduce((s, g) => s + Math.max(1, g.variants.length), 0);
+            return groups.flatMap((g, gi) => {
+              const variants = g.variants.length > 0 ? g.variants : ["—"];
+              return variants.map((v, vi) => {
+                const firstOfRequest = gi === 0 && vi === 0;
+                const firstOfGroup = vi === 0;
+                return (
+                  <Tr
+                    key={`${r.id}:${gi}:${vi}`}
+                    onClick={() => setDetailId(r.id)}
+                    className="cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-950"
                   >
-                    刪除
-                  </SpinButton>
-                )}
-              </Td>
-            </Tr>
-          ))}
+                    {firstOfRequest && (
+                      <>
+                        <Td rowSpan={totalLines} className="whitespace-nowrap align-top text-xs text-zinc-500">{new Date(r.created_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}</Td>
+                        <Td rowSpan={totalLines} className="align-top">{r.store_name ?? "—"}</Td>
+                        <Td rowSpan={totalLines} align="right" className="align-top font-mono">{r.line_count}</Td>
+                      </>
+                    )}
+                    {firstOfGroup && (
+                      <Td rowSpan={variants.length} className="max-w-[14rem] break-words align-top text-xs font-medium text-zinc-700 dark:text-zinc-200">{g.productName}</Td>
+                    )}
+                    <Td className="max-w-[16rem] break-words align-top text-xs text-zinc-600 dark:text-zinc-300">{v}</Td>
+                    {firstOfRequest && (
+                      <>
+                        <Td rowSpan={totalLines} align="right" className="align-top font-mono">${r.total_amount.toFixed(0)}</Td>
+                        <Td rowSpan={totalLines} className="align-top">
+                          <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[r.status]}`}>
+                            {STATUS_LABEL[r.status]}
+                          </span>
+                        </Td>
+                        <Td rowSpan={totalLines} className="align-top text-xs">
+                          {r.linked_transfer_no && (
+                            canFollowLinks ? (
+                              <Link
+                                href={`/hq/inbox?source=transfer&id=${r.linked_transfer_id}`}
+                                onClick={(e) => e.stopPropagation()}
+                                className="font-mono text-blue-600 hover:underline dark:text-blue-400"
+                              >
+                                → {r.linked_transfer_no}
+                              </Link>
+                            ) : (
+                              <span className="font-mono text-zinc-600 dark:text-zinc-300">→ {r.linked_transfer_no}</span>
+                            )
+                          )}
+                          {r.linked_pr_no && (
+                            canFollowLinks ? (
+                              <Link
+                                href={`/purchase/requests/edit?id=${r.linked_pr_id}`}
+                                onClick={(e) => e.stopPropagation()}
+                                className="font-mono text-blue-600 hover:underline dark:text-blue-400"
+                              >
+                                → {r.linked_pr_no}
+                              </Link>
+                            ) : (
+                              <span className="font-mono text-zinc-600 dark:text-zinc-300">→ {r.linked_pr_no}</span>
+                            )
+                          )}
+                          {r.status === "rejected" && r.rejected_reason && <span className="text-red-600">拒絕：{r.rejected_reason}</span>}
+                        </Td>
+                        <Td rowSpan={totalLines} className="max-w-xs align-top text-xs text-zinc-500">
+                          <span title={r.notes ?? ""}>{r.notes ? r.notes.slice(0, 30) + (r.notes.length > 30 ? "…" : "") : "—"}</span>
+                        </Td>
+                        <Td rowSpan={totalLines} align="right" className="align-top">
+                          {r.status === "pending" && (
+                            <SpinButton
+                              onClick={(e) => { e.stopPropagation(); return handleDelete(r); }}
+                              className="rounded-md border border-red-300 px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
+                            >
+                              刪除
+                            </SpinButton>
+                          )}
+                        </Td>
+                      </>
+                    )}
+                  </Tr>
+                );
+              });
+            });
+          })}
         </TBody>
       </Table>
 
