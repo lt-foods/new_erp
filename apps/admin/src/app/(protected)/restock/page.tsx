@@ -101,10 +101,13 @@ export default function RestockListPage() {
             prodNameMap = new Map(((prods ?? []) as { id: number; name: string }[]).map((p) => [p.id, p.name]));
           }
           skuLabelMap = new Map(
-            skuArr.map((s) => [
-              s.id,
-              s.product_id != null ? prodNameMap.get(s.product_id) ?? s.sku_code : s.sku_code,
-            ])
+            skuArr.map((s) => {
+              // 品名 + 品相一起顯示（品相有值才接，無則退回 sku_code）
+              const prodName = s.product_id != null ? prodNameMap.get(s.product_id) ?? null : null;
+              const base = prodName ?? s.sku_code;
+              const label = s.variant_name ? `${base} / ${s.variant_name}` : base;
+              return [s.id, label];
+            })
           );
         }
 
