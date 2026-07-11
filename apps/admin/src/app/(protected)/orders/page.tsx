@@ -11,7 +11,8 @@ import OrderReturnCreateModal from "@/components/OrderReturnCreateModal";
 import { translateRpcError } from "@/lib/rpcError";
 import { withBasePath } from "@/lib/basePath";
 import { printViaIframe } from "@/lib/printIframe";
-import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
+import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
+import { useRole } from "@/lib/role";
 import { ORDER_STATUS_LABEL as STATUS_LABEL, type OrderStatus } from "@/lib/orderStatus";
 import { summarizeOrderSource } from "@/lib/orderSource";
 import { OrderSourceBadge } from "@/components/OrderSourceBadge";
@@ -173,6 +174,16 @@ function OrdersListContent() {
   // 取貨店篩選不鎖分店：所有帳號都可自由選任一店 / 全部
   // （僅保留軟性預設選中自家店，使用者可自行切換到別店或「全部」）
   useDefaultStoreFromUser(stores, storeId, setStoreId);
+
+  // 店端快速鈕：一鍵搜尋自己店的【內部】會員訂單（補貨現貨單掛在該會員名下，
+  // 從這裡找到 ready 的內部單即可「轉手」拆給客人）
+  const role = useRole();
+  const branchStoreId = useUserBranchStoreId(stores);
+  const internalKeyword = (() => {
+    if (role !== "store_manager" && role !== "store_staff") return null;
+    const name = stores.find((s) => s.id === branchStoreId)?.name;
+    return name ? `【內部】${name}` : null;
+  })();
 
   // 載入 stores 一次
   useEffect(() => {
@@ -767,6 +778,19 @@ function OrdersListContent() {
               className="shrink-0 rounded-md border border-zinc-300 px-2 py-2 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
             >
               ✕
+            </SpinButton>
+          )}
+          {internalKeyword && (
+            <SpinButton
+              type="button"
+              onClick={() => { setTab("pending"); setKwInput(internalKeyword); setKeyword(internalKeyword); }}
+              title="搜尋本店【內部】會員名下的訂單（補貨現貨單），可從中轉手給客人"
+              className={keyword === internalKeyword
+                ? "shrink-0 rounded-md border border-amber-400 bg-amber-100 px-3 py-2 text-sm font-medium text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                : "shrink-0 rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              }
+            >
+              內部店庫存單
             </SpinButton>
           )}
         </form>
