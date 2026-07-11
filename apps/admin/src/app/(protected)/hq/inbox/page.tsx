@@ -280,10 +280,12 @@ async function fetchItemsSummaryMap(
       prodMap = new Map(((ps ?? []) as { id: number; name: string }[]).map((p) => [p.id, p.name]));
     }
     skuLabelMap = new Map(
-      arr.map((s) => [
-        s.id,
-        s.product_id != null ? (prodMap.get(s.product_id) ?? s.sku_code) : s.sku_code,
-      ])
+      arr.map((s) => {
+        // 品名 + 品相一起顯示（品相有值才接，無則退回 sku_code）
+        const prodName = s.product_id != null ? (prodMap.get(s.product_id) ?? null) : null;
+        const base = prodName ?? s.sku_code;
+        return [s.id, s.variant_name ? `${base} / ${s.variant_name}` : base];
+      })
     );
   }
   const partsMap = new Map<number, string[]>();
