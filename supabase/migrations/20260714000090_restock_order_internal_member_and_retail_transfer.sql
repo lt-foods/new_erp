@@ -14,8 +14,11 @@
 --      （= 補貨建單時的分店價 snapshot），賣給會員應該用現售價。
 --
 -- 修法：
---   1. rpc_create_restock_request：ride-along 單 member_id 改掛
---      rpc_get_or_create_store_member(p_store_id)（【內部】xx店）。
+--   1. rpc_create_restock_request：加 p_member_id 參數（預設 NULL＝掛
+--      rpc_get_or_create_store_member(p_store_id)【內部】xx店）；建單時可
+--      直接指定真會員 → ride-along 單掛該會員、order items 單價鎖當下
+--      現售價（貨到即該會員的可取貨訂單，免轉手）。
+--      舊 3 參數簽名 DROP 掉再建 4 參數版（避免 PostgREST overload 歧義）。
 --   2. rpc_receive_transfer 邏輯 D 擴充：收貨時 ride-along 單推 'ready'
 --      （之後店端即可在訂單頁對它按「轉手」拆給客人，同店轉手新單 mirror ready、
 --       客人當場可取貨；取貨守衛 Path C 由本補貨的已收轉貨單滿足）。
@@ -33,17 +36,24 @@
 --                                 惟其 restock status backfill 仍建議先套 80 再套本檔）
 --   rpc_unreceive_transfer      = 20260714000080（同上）
 --   rpc_transfer_order_partial  = 20260714000010（逐字保留僅加內部單→真會員的現售價改寫）
--- Rollback：CREATE OR REPLACE 回上列各基底版本；backfill 回復：
+-- Rollback：CREATE OR REPLACE 回上列各基底版本（rpc_create_restock_request 因簽名
+--   變更需先 DROP FUNCTION public.rpc_create_restock_request(BIGINT,JSONB,TEXT,BIGINT)
+--   再建回 20260714000020 的 3 參數版）；backfill 回復：
 --   UPDATE customer_orders SET member_id=NULL WHERE order_kind='restock';（不建議）
 -- ============================================================
 
 -- ----------------------------------------------------------------
--- 1. rpc_create_restock_request — ride-along 單掛店內部會員
+-- 1. rpc_create_restock_request — ride-along 單掛店內部會員（可指定真會員）
+--    舊 3 參數簽名先 DROP：CREATE 新 4 參數版若共存會造成 PostgREST
+--    named-args 呼叫 overload 歧義。
 -- ----------------------------------------------------------------
+DROP FUNCTION IF EXISTS public.rpc_create_restock_request(BIGINT, JSONB, TEXT);
+
 CREATE OR REPLACE FUNCTION public.rpc_create_restock_request(
-  p_store_id BIGINT,
-  p_lines    JSONB,
-  p_notes    TEXT DEFAULT NULL
+  p_store_id  BIGINT,
+  p_lines     JSONB,
+  p_notes     TEXT   DEFAULT NULL,
+  p_member_id BIGINT DEFAULT NULL
 ) RETURNS BIGINT
 LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = public
@@ -65,6 +75,10 @@ DECLARE
   v_unit_price   NUMERIC;
   v_qty          NUMERIC;
   v_member_id    BIGINT;
+  v_member_is_internal BOOLEAN := TRUE;
+  v_retail_price NUMERIC;
+  v_item_price   NUMERIC;
+  v_now          TIMESTAMPTZ := NOW();
 BEGIN
   IF v_role NOT IN ('owner','admin','hq_manager','store_manager','store_staff','') THEN
     RAISE EXCEPTION 'permission denied: role % cannot create restock request', v_role;
@@ -91,10 +105,24 @@ BEGIN
   ) RETURNING id INTO v_request_id;
 
   -- 2. 建 sentinel campaign + channel + customer_order
-  --    ride-along 單掛店內部會員（【內部】xx店），貨到後才能對它轉手給客人
+  --    ride-along 單預設掛店內部會員（【內部】xx店），貨到後轉手給客人；
+  --    建單時也可直接指定真會員 → 貨到即該會員的可取貨訂單（免轉手）。
   v_campaign_id := public._restock_sentinel_campaign(v_tenant);
   v_channel_id  := public._restock_sentinel_channel(v_tenant, p_store_id);
-  v_member_id   := public.rpc_get_or_create_store_member(p_store_id, v_user);
+
+  IF p_member_id IS NOT NULL THEN
+    SELECT (m.member_type = 'store_internal') INTO v_member_is_internal
+      FROM members m
+     WHERE m.id = p_member_id AND m.tenant_id = v_tenant;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'member % not in tenant', p_member_id;
+    END IF;
+    v_member_id := p_member_id;
+  ELSE
+    v_member_id := public.rpc_get_or_create_store_member(p_store_id, v_user);
+    v_member_is_internal := TRUE;
+  END IF;
+
   v_order_no := 'RR-' || v_request_id::TEXT;
 
   INSERT INTO customer_orders (
@@ -104,7 +132,8 @@ BEGIN
   ) VALUES (
     v_tenant, v_order_no, v_campaign_id, v_channel_id, v_member_id, p_store_id,
     'pending', 'restock', 'regular', 'manual', v_order_no,
-    '【內部】補貨申請 #' || v_request_id::TEXT,
+    CASE WHEN v_member_is_internal THEN '【內部】補貨申請 #' ELSE '【指定會員】補貨申請 #' END
+      || v_request_id::TEXT,
     v_user, v_user
   ) RETURNING id INTO v_order_id;
 
@@ -143,11 +172,27 @@ BEGIN
       v_tenant, v_campaign_id, v_sku_id, v_unit_price
     );
 
+    -- 指定真會員 → order item 單價鎖當下現售價（與轉手同規則；無則 fallback 分店價）；
+    -- 內部單維持分店價 snapshot（轉手時才改現售價）。restock_request_lines 一律存分店價。
+    v_item_price := v_unit_price;
+    IF NOT v_member_is_internal THEN
+      SELECT price INTO v_retail_price
+        FROM prices
+       WHERE tenant_id = v_tenant
+         AND sku_id    = v_sku_id
+         AND scope     = 'retail'
+         AND effective_from <= v_now
+         AND (effective_to IS NULL OR effective_to > v_now)
+       ORDER BY effective_from DESC
+       LIMIT 1;
+      v_item_price := COALESCE(v_retail_price, v_unit_price);
+    END IF;
+
     INSERT INTO customer_order_items (
       tenant_id, order_id, campaign_item_id, sku_id, qty, unit_price,
       status, source, created_by, updated_by
     ) VALUES (
-      v_tenant, v_order_id, v_campaign_item_id, v_sku_id, v_qty, v_unit_price,
+      v_tenant, v_order_id, v_campaign_item_id, v_sku_id, v_qty, v_item_price,
       'pending', 'manual', v_user, v_user
     );
 
@@ -161,12 +206,13 @@ BEGIN
   RETURN v_request_id;
 END $$;
 
-GRANT EXECUTE ON FUNCTION public.rpc_create_restock_request(BIGINT, JSONB, TEXT)
+GRANT EXECUTE ON FUNCTION public.rpc_create_restock_request(BIGINT, JSONB, TEXT, BIGINT)
   TO authenticated;
 
 COMMENT ON FUNCTION public.rpc_create_restock_request IS
-  'Case 2：分店建補貨申請（pending 狀態、限真實 SKU，同步建 restock customer_order 並掛店內部會員）。'
-  '店端角色只能建自家店申請，自己店由 app_metadata.stores 經 _jwt_store_ids() 判定。';
+  'Case 2：分店建補貨申請（pending 狀態、限真實 SKU，同步建 restock customer_order）。'
+  'p_member_id 預設 NULL＝掛店內部會員(【內部】xx店)；指定真會員時 order items 鎖現售價、'
+  '貨到即該會員的可取貨訂單。店端角色只能建自家店申請（_jwt_store_ids() 判定）。';
 
 -- ----------------------------------------------------------------
 -- 2. rpc_receive_transfer — 邏輯 D 擴充：ride-along 單推 ready

@@ -5,10 +5,15 @@ Migration：`20260714000090_restock_order_internal_member_and_retail_transfer.sq
 
 ## 測試項目
 
-### 建單（rpc_create_restock_request）
-- [ ] T1 新建補貨申請 → ride-along 單（RR-<id>）member_id = 該店 store_internal 會員（【內部】xx店），訂單頁可見歸屬。
+### 建單（rpc_create_restock_request，新 4 參數簽名）
+- [ ] T1 不指定會員（p_member_id NULL / 省略）→ ride-along 單 member_id = 該店 store_internal 會員（【內部】xx店），notes 前綴【內部】，items 維持分店價 snapshot。
 - [ ] T2 店端(store_manager/staff)建單不被擋（rpc_get_or_create_store_member 無 role gate）。
 - [ ] T3 既有行為迴歸：sentinel campaign/channel/item、虛擬 SKU 拒絕、qty 守衛、_jwt_store_ids 自店檢查（20260714000020）全保留。
+- [ ] T3a 指定真會員 → ride-along 單掛該會員、notes 前綴【指定會員】、items 單價 = 當下現售價（scope='retail'，無則 fallback 分店價）；restock_request_lines 仍存分店價。
+- [ ] T3b 指定會員不在 tenant → 擋。
+- [ ] T3c 舊 3 參數簽名已 DROP：前端 3 參數呼叫（不帶 p_member_id）走 DEFAULT NULL 正常；PostgREST 無 overload 歧義。
+- [ ] T3d 建單頁 UI：訂購會員欄預設「內部店庫存」提示；搜尋選會員後顯示姓名+編號、可「改回內部」；送出帶 p_member_id。
+- [ ] T3e 指定真會員的單收貨後直接 ready → 該會員在取貨頁可取（免轉手）。
 
 ### 收貨（rpc_receive_transfer 邏輯 D 擴充）
 - [ ] T4 補貨轉貨單收貨 → restock=received（#520 行為）且 ride-along 單 pending→ready、ready_at 壓收貨當下。

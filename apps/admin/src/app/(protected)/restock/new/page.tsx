@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { useRole, canSeeBranch } from "@/lib/role";
@@ -9,6 +9,14 @@ import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
 
 type Store = { id: number; code: string; name: string };
+
+type MemberHit = {
+  id: number;
+  member_no: string;
+  name: string | null;
+  phone: string | null;
+  home_store_name: string | null;
+};
 
 type SkuOption = {
   id: number;
@@ -51,6 +59,8 @@ export default function RestockNewPage() {
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 訂購會員：null = 預設掛店內部會員(【內部】xx店)；指定真會員則貨到即該會員可取貨
+  const [member, setMember] = useState<MemberHit | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -93,6 +103,7 @@ export default function RestockNewPage() {
           notes: l.notes.trim() || null,
         })),
         p_notes: notes.trim() || null,
+        p_member_id: member?.id ?? null,
       });
       if (err) throw err;
       router.push(`/restock?id=${Number(data)}`);
@@ -128,6 +139,9 @@ export default function RestockNewPage() {
           ))}
         </select>
       </label>
+
+      <MemberField member={member} onChange={setMember} inputCls={inputCls} />
+
 
       <div className="rounded-md border border-zinc-200 dark:border-zinc-800">
         <table className="w-full text-sm">
@@ -170,6 +184,105 @@ export default function RestockNewPage() {
         </SpinButton>
         <SpinButton onClick={() => router.back()} disabled={busy} className="rounded-md border border-zinc-300 px-4 py-2 text-sm dark:border-zinc-700">取消</SpinButton>
       </div>
+    </div>
+  );
+}
+
+// 訂購會員欄：預設【內部】店庫存；搜尋指定真會員（貨到即該會員的可取貨訂單、單價鎖現售價）
+function MemberField({
+  member,
+  onChange,
+  inputCls,
+}: {
+  member: MemberHit | null;
+  onChange: (m: MemberHit | null) => void;
+  inputCls: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [term, setTerm] = useState("");
+  const [hits, setHits] = useState<MemberHit[]>([]);
+  const [searching, setSearching] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const t = setTimeout(async () => {
+      try {
+        const { data } = await getSupabase().rpc("rpc_search_members", {
+          p_term: term,
+          p_limit: 10,
+        });
+        setHits((data as MemberHit[] | null) ?? []);
+      } finally {
+        setSearching(false);
+      }
+    }, 200);
+    return () => clearTimeout(t);
+  }, [term, open]);
+
+  return (
+    <div ref={wrapRef} className="relative flex flex-col gap-1 text-sm sm:max-w-md">
+      <span className="text-zinc-600 dark:text-zinc-400">訂購會員</span>
+      {member ? (
+        <div className="flex items-center justify-between gap-2 rounded-md border border-zinc-300 bg-white px-3 py-2 dark:border-zinc-700 dark:bg-zinc-800">
+          <div className="min-w-0 flex-1 text-sm">
+            <span className="font-medium">{member.name ?? "—"}</span>
+            <span className="ml-2 font-mono text-xs text-zinc-500">{member.member_no}</span>
+          </div>
+          <SpinButton
+            type="button"
+            onClick={() => { onChange(null); setTerm(""); }}
+            className="shrink-0 rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-700"
+          >
+            改回內部
+          </SpinButton>
+        </div>
+      ) : (
+        <div className="relative">
+          <input
+            value={term}
+            onFocus={() => setOpen(true)}
+            onChange={(e) => { setTerm(e.target.value); setOpen(true); }}
+            placeholder="預設：【內部】店庫存 — 搜尋會員可直接指定"
+            className={`${inputCls} w-full pr-8`}
+          />
+          <SearchSpinner active={searching} />
+        </div>
+      )}
+      {!member && (
+        <p className="text-xs text-zinc-400">
+          不指定＝貨到掛店庫存，之後再轉單給客人；指定會員＝貨到即為該會員的可取貨訂單（單價鎖現售價）
+        </p>
+      )}
+      {open && !member && hits.length > 0 && (
+        <div className="absolute left-0 top-full z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800">
+          {hits.map((h) => (
+            <SpinButton
+              key={h.id}
+              type="button"
+              onClick={() => { onChange(h); setOpen(false); setTerm(""); }}
+              className="block w-full px-3 py-1.5 text-left text-xs hover:bg-zinc-100 dark:hover:bg-zinc-700"
+            >
+              <span className="font-medium">{h.name ?? "—"}</span>
+              <span className="ml-2 font-mono text-zinc-400">{h.member_no}</span>
+              {h.home_store_name && <span className="ml-2 text-zinc-500">{h.home_store_name}</span>}
+            </SpinButton>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
