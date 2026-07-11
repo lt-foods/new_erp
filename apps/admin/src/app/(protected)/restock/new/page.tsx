@@ -22,13 +22,23 @@ type SkuOption = {
 
 type Line = {
   sku_id: number | null;
-  sku_label: string;
+  product_name: string;
+  variant_name: string | null;
+  sku_code: string;
   qty: string;
   unit_price: string;
   notes: string;
 };
 
-const emptyLine = (): Line => ({ sku_id: null, sku_label: "", qty: "1", unit_price: "0", notes: "" });
+const emptyLine = (): Line => ({
+  sku_id: null,
+  product_name: "",
+  variant_name: null,
+  sku_code: "",
+  qty: "1",
+  unit_price: "0",
+  notes: "",
+});
 
 export default function RestockNewPage() {
   const router = useRouter();
@@ -234,20 +244,44 @@ function LineRow({
 
   return (
     <tr>
-      <td className="relative px-3 py-2">
-        <input
-          value={line.sku_id ? line.sku_label : term}
-          onFocus={() => setOpen(true)}
-          onChange={(e) => {
-            if (line.sku_id) onChange({ sku_id: null, sku_label: "", unit_price: "0" });
-            setTerm(e.target.value);
-            setOpen(true);
-          }}
-          placeholder="搜尋商品 / 品項"
-          className="w-full rounded border border-zinc-300 bg-white px-2 py-1 pr-8 text-sm dark:border-zinc-700 dark:bg-zinc-800"
-        />
-        <SearchSpinner active={searching} />
-        {open && opts.length > 0 && (
+      <td className="relative px-3 py-2 align-top">
+        {line.sku_id ? (
+          <div className="flex items-start justify-between gap-2 rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800">
+            <div className="min-w-0 flex-1">
+              <div className="break-words text-sm font-medium text-zinc-900 dark:text-zinc-100">{line.product_name}</div>
+              <div className="break-words text-xs text-zinc-500">
+                {line.variant_name && <span>{line.variant_name}</span>}
+                <span className={line.variant_name ? "ml-1 font-mono text-zinc-400" : "font-mono text-zinc-400"}>{line.sku_code}</span>
+              </div>
+            </div>
+            <SpinButton
+              type="button"
+              onClick={() => {
+                onChange({ sku_id: null, product_name: "", variant_name: null, sku_code: "", unit_price: "0" });
+                setTerm("");
+                setOpen(true);
+              }}
+              className="shrink-0 rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-700"
+            >
+              更改
+            </SpinButton>
+          </div>
+        ) : (
+          <>
+            <input
+              value={term}
+              onFocus={() => setOpen(true)}
+              onChange={(e) => {
+                setTerm(e.target.value);
+                setOpen(true);
+              }}
+              placeholder="搜尋商品 / 品項"
+              className="w-full rounded border border-zinc-300 bg-white px-2 py-1 pr-8 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+            />
+            <SearchSpinner active={searching} />
+          </>
+        )}
+        {open && !line.sku_id && opts.length > 0 && (
           <div className="absolute left-0 top-full z-10 mt-1 max-h-60 w-96 overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800" onMouseLeave={() => setOpen(false)}>
             {opts.map((o) => {
               const price = showBranch && o.branch_price !== null ? o.branch_price : o.retail_price ?? 0;
@@ -258,7 +292,9 @@ function LineRow({
                   onClick={() => {
                     onChange({
                       sku_id: o.id,
-                      sku_label: `${o.product_name}${o.variant_name ? ` / ${o.variant_name}` : ""} (${o.sku_code})`,
+                      product_name: o.product_name,
+                      variant_name: o.variant_name,
+                      sku_code: o.sku_code,
                       unit_price: String(price),
                     });
                     setOpen(false); setTerm("");
@@ -275,10 +311,10 @@ function LineRow({
           </div>
         )}
       </td>
-      <td className="px-3 py-2"><input type="number" min="0" step="1" value={line.qty} onChange={(e) => onChange({ qty: e.target.value })} className="w-24 rounded border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800" /></td>
-      <td className="px-3 py-2 text-right font-mono text-sm text-zinc-700 dark:text-zinc-300">${line.unit_price}</td>
-      <td className="px-3 py-2"><input value={line.notes} onChange={(e) => onChange({ notes: e.target.value })} placeholder="（選填）" className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800" /></td>
-      <td className="px-3 py-2">
+      <td className="px-3 py-2 align-top"><input type="number" min="0" step="1" value={line.qty} onChange={(e) => onChange({ qty: e.target.value })} className="w-24 rounded border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800" /></td>
+      <td className="px-3 py-2 text-right align-top font-mono text-sm text-zinc-700 dark:text-zinc-300"><span className="inline-block py-1">${line.unit_price}</span></td>
+      <td className="px-3 py-2 align-top"><input value={line.notes} onChange={(e) => onChange({ notes: e.target.value })} placeholder="（選填）" className="w-full rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800" /></td>
+      <td className="px-3 py-2 align-top">
         {onRemove && (
           <SpinButton onClick={onRemove} className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-400">移除</SpinButton>
         )}
