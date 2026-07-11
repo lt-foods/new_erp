@@ -27,7 +27,11 @@
 --      目標 member 是真會員（非 store_internal）→ 轉出 item 單價改用
 --      當下現售價（prices scope='retail' 最新生效版；查無現售價 fallback 來源價）。
 --      店↔店互助轉手（目標也是 internal）不受影響、維持原價。
---   4. Backfill：存量 ride-along 單補掛內部會員；linked transfer 已收貨的
+--   4. customer_orders_trio_kind_active_uniq 排除 order_kind='restock'：
+--      同店多張併行補貨的 ride-along 單共用 (sentinel campaign, sentinel channel,
+--      內部會員, 'restock')，掛上內部會員後必撞唯一鍵（prod 實測撞出）。
+--      RR 單唯一性由 order_no='RR-<id>' 保證；一般單/offset 的 dedup 語意不變。
+--   5. Backfill：存量 ride-along 單補掛內部會員；linked transfer 已收貨的
 --      ride-along 單補推 ready（RESTOCK#18 的 RR-18 在列）。
 --
 -- 基底版本：
@@ -38,7 +42,8 @@
 --   rpc_transfer_order_partial  = 20260714000010（逐字保留僅加內部單→真會員的現售價改寫）
 -- Rollback：CREATE OR REPLACE 回上列各基底版本（rpc_create_restock_request 因簽名
 --   變更需先 DROP FUNCTION public.rpc_create_restock_request(BIGINT,JSONB,TEXT,BIGINT)
---   再建回 20260714000020 的 3 參數版）；backfill 回復：
+--   再建回 20260714000020 的 3 參數版）；索引回復＝重建 20260516000000 版
+--   （注意：須先清掉同 trio 多張 active restock 單否則建不回去）；backfill 回復：
 --   UPDATE customer_orders SET member_id=NULL WHERE order_kind='restock';（不建議）
 -- ============================================================
 
@@ -955,7 +960,26 @@ COMMENT ON FUNCTION public.rpc_transfer_order_partial(BIGINT, BIGINT, BIGINT, BI
   '基底 20260714000010。';
 
 -- ----------------------------------------------------------------
--- 5. Backfill
+-- 5. 唯一索引排除 restock ride-along 單
+--    基底 20260516000000：key=(tenant,campaign,channel,member,order_kind)、
+--    WHERE 排除 closed。加排 order_kind='restock'：同店多張併行補貨單
+--    共用 sentinel trio + 內部會員，本來就該允許共存（唯一性由 order_no 保證）。
+-- ----------------------------------------------------------------
+DROP INDEX IF EXISTS customer_orders_trio_kind_active_uniq;
+
+CREATE UNIQUE INDEX customer_orders_trio_kind_active_uniq
+  ON customer_orders (tenant_id, campaign_id, channel_id, member_id, order_kind)
+  WHERE status NOT IN ('transferred_out', 'expired', 'cancelled')
+    AND order_kind <> 'restock';
+
+COMMENT ON INDEX customer_orders_trio_kind_active_uniq IS
+  '同 (tenant, campaign, channel, member, order_kind) 只允許一筆 active 訂單；'
+  'closed (transferred_out/expired/cancelled) 不佔 slot。'
+  '加 order_kind 是為了讓 store_internal member 可同時有 normal 與 offset 兩張單。'
+  'order_kind=restock 的 ride-along 單排除在外（同店可多張併行補貨，唯一性由 order_no=RR-<id> 保證）。';
+
+-- ----------------------------------------------------------------
+-- 6. Backfill
 -- ----------------------------------------------------------------
 DO $$
 DECLARE
