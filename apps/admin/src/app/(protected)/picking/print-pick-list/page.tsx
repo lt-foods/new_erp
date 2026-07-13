@@ -26,7 +26,7 @@ type DemandRow = {
   demand_qty: number;
   wave_qty: number;
   shipped_qty: number;
-  // per (po, sku) 跨 store 已撿真值（與 RPC 守衛對齊）。
+  // per (po, sku) 跨 store 已派真值（wave ＋ 補貨直派 transfer，與 RPC 守衛對齊）。
   // 同 (po, sku) 各 row 共享同值；NULL fallback 給未套 migration 環境。
   po_sku_already_wave?: number | null;
 };
@@ -40,8 +40,9 @@ type SkuRow = {
   totalGr: number;
   totalAlreadyWave: number;
   totalAvailable: number;
+  demandLeft: number;              // 各店未派需求加總 = Σ max(0, demand − wave)
   storeDemand: Map<number, number>;
-  storeWave: Map<number, number>;  // 每店「已撿」量（wave_qty）
+  storeWave: Map<number, number>;  // 每店「已派」量（wave_qty，含補貨直派）
 };
 
 export default function PrintPickListPage() {
@@ -96,6 +97,7 @@ export default function PrintPickListPage() {
           totalGr: 0,
           totalAlreadyWave: 0,
           totalAvailable: 0,
+          demandLeft: 0,
           storeDemand: new Map(),
           storeWave: new Map(),
         };
@@ -106,8 +108,9 @@ export default function PrintPickListPage() {
         poSkuSeen.add(poSkuKey);
         s.totalOrdered += Number(r.qty_ordered);
         s.totalGr += Number(r.gr_qty);
-        // 用 view 新欄位 po_sku_already_wave：per (po, sku) 跨 store 真值，
-        // 與 RPC 守衛 SUM(pwi) 對齊。fallback 給未套 migration 的本地環境（會偏低）。
+        // 用 view 欄位 po_sku_already_wave：per (po, sku) 跨 store 已派真值
+        // （wave ＋ 補貨直派 transfer），與 RPC 守衛對齊。
+        // fallback 給未套 migration 的本地環境（會偏低）。
         s.totalAlreadyWave += Number(r.po_sku_already_wave ?? 0);
       }
       s.storeDemand.set(r.store_id, (s.storeDemand.get(r.store_id) ?? 0) + Number(r.demand_qty));
@@ -115,13 +118,18 @@ export default function PrintPickListPage() {
     }
     for (const s of skuMap.values()) {
       s.totalAvailable = Math.max(0, s.totalGr - s.totalAlreadyWave);
+      // 各店未派需求 = Σ max(0, demand − wave)；wave 已含補貨直派 → 派完(含直派)的品項不再列印
+      for (const [storeId, d] of s.storeDemand) {
+        s.demandLeft += Math.max(0, d - (s.storeWave.get(storeId) ?? 0));
+      }
     }
     const stores = Array.from(storeMap.values()).sort((a, b) =>
       (a.store_code ?? "").localeCompare(b.store_code ?? "")
     );
     const skuRows = Array.from(skuMap.values())
-      // 隱藏「已到貨且全部撿完」的 SKU
-      .filter((s) => !(s.totalGr > 0 && s.totalAvailable === 0))
+      // 隱藏「已到貨且全部派完」與「需求已全數派完（含補貨直派）」的 SKU —
+      // 與派貨工作台矩陣的 has_stock_left + has_demand_left 過濾同語意
+      .filter((s) => !(s.totalGr > 0 && s.totalAvailable === 0) && s.demandLeft > 0)
       .sort((a, b) => (a.sku_code ?? "").localeCompare(b.sku_code ?? ""));
     return { skuRows, stores };
   }, [demand]);
@@ -220,7 +228,7 @@ export default function PrintPickListPage() {
                 <tr>
                   <th className="frozen-col">訂購</th>
                   <th className="frozen-col">已到</th>
-                  <th className="frozen-col">已撿</th>
+                  <th className="frozen-col">已派</th>
                   <th className="frozen-col">可分配</th>
                   {stores.map((s) => (
                     <th key={s.store_id} className="store-col">

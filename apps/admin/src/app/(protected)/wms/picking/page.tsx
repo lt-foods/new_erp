@@ -32,9 +32,11 @@ type DemandRow = {
   wave_qty: number;
   shipped_qty: number;
   is_restock_sourced?: boolean;
-  // per (po_id, sku_id) 跨 store 已撿真值（與 RPC 守衛對齊）。
+  // per (po_id, sku_id) 跨 store 已派真值（wave ＋ 補貨直派 transfer，與 RPC 守衛對齊）。
   // 同 (po, sku) 各 row 共享同值；NULL fallback 給未套 migration 的本地環境（會偏低，但不會 crash）。
   po_sku_already_wave?: number | null;
+  // per (po_id, sku_id) 是否還有任一分店「需求 > 已派」。矩陣視角 server-side 過濾用。
+  has_demand_left?: boolean;
 };
 
 type Supplier = { id: number; code: string; name: string };
@@ -102,10 +104,13 @@ export default function PickingWorkstationPage() {
         // .order() 給分頁一個穩定的 total order（否則跨頁可能漏/重複列）。
         // 矩陣視角只需可分配列 → .eq("has_stock_left", true)：線上 12,240 列 → ~37 列，
         // 13 趟分頁 → 1 趟，解決「派貨工作台讀取不出來」。
+        // 再疊 .eq("has_demand_left", true)：需求全派完（含補貨直派、門市已收貨）的
+        // 列自動下架 — 補貨帶囤貨的 PO（訂 51 件、需求 1 件）不再永遠掛在工作台。
         const [dRows, supRows, rrRows] = await Promise.all([
           fetchAllRows<DemandRow>(() =>
             sb.from("v_picking_demand_by_po").select("*")
               .eq("has_stock_left", true)
+              .eq("has_demand_left", true)
               .order("po_item_id", { ascending: true })
               .order("store_id", { ascending: true, nullsFirst: false }),
           ),
@@ -360,8 +365,9 @@ export default function PickingWorkstationPage() {
           qty_ordered: Number(r.qty_ordered),
           qty_in_transit: inTransit,
           qty_shortage: shortage,
-          // 用 view 新欄位 po_sku_already_wave：per (po, sku) 跨 store 真值，
-          // 與 RPC 守衛 SUM(pwi) 對齊。fallback 給未套 migration 的本地環境（會偏低）。
+          // 用 view 欄位 po_sku_already_wave：per (po, sku) 跨 store 已派真值
+          // （wave ＋ 補貨直派 transfer），與 RPC 守衛對齊。
+          // fallback 給未套 migration 的本地環境（會偏低）。
           already_wave_for_sku: Number(r.po_sku_already_wave ?? 0),
           is_restock_sourced: !!r.is_restock_sourced,
         });
@@ -446,24 +452,25 @@ export default function PickingWorkstationPage() {
     });
   }, [restockDemand]);
 
-  // 預設分配 = max(0, demand - wave - shipped) per (sku, store)
+  // 預設分配 = max(0, demand - wave) per (sku, store)
+  // wave_qty 已含撿貨單與補貨直派 transfer（不論是否已收貨），
+  // shipped 是 wave 的子集合（已收貨的部分），再減會重複扣 → 不減。
   useEffect(() => {
     if (!demand) return;
     setAllocs((prev) => {
       const next = new Map(prev);
-      const agg = new Map<AllocKey, { demand: number; wave: number; shipped: number }>();
+      const agg = new Map<AllocKey, { demand: number; wave: number }>();
       for (const r of demand) {
         if (r.store_id === null) continue;
         const k: AllocKey = `${r.sku_id}:${r.store_id}`;
-        const slot = agg.get(k) ?? { demand: 0, wave: 0, shipped: 0 };
+        const slot = agg.get(k) ?? { demand: 0, wave: 0 };
         slot.demand += Number(r.demand_qty);
         slot.wave += Number(r.wave_qty);
-        slot.shipped += Number(r.shipped_qty);
         agg.set(k, slot);
       }
       for (const [k, v] of agg.entries()) {
         if (!next.has(k)) {
-          next.set(k, Math.max(0, v.demand - v.wave - v.shipped));
+          next.set(k, Math.max(0, v.demand - v.wave));
         }
       }
       return next;
@@ -505,8 +512,15 @@ export default function PickingWorkstationPage() {
     for (const st of allStores) sum += getAlloc(skuRow.sku_id, st.store_id);
     return sum;
   }
-  // 「⚖ 平均」自動分配:把 totalAvailable 平均分到「需求 > 0」的店,cap 在各店 demand。
-  // 若有店 demand 不足分到的份額,剩餘量會在下一輪重新平均。
+  // 各店尚未派的需求 = max(0, demand − wave)。wave 已含撿貨單與補貨直派。
+  function storeDemandLeft(sku: SkuRow, storeId: number): number {
+    return Math.max(
+      0,
+      (sku.storeDemand.get(storeId) ?? 0) - (sku.storeWave.get(storeId) ?? 0),
+    );
+  }
+  // 「⚖ 平均」自動分配:把 totalAvailable 平均分到「未派需求 > 0」的店,cap 在各店未派需求。
+  // 若有店需求不足分到的份額,剩餘量會在下一輪重新平均。
   function autoDistribute(sku: SkuRow) {
     const stores = allStores;
     let pool = sku.totalAvailable;
@@ -514,22 +528,20 @@ export default function PickingWorkstationPage() {
     for (const s of stores) give.set(s.store_id, 0);
     for (let iter = 0; iter < 10 && pool > 0; iter += 1) {
       const eligible = stores.filter((s) => {
-        const d = sku.storeDemand.get(s.store_id) ?? 0;
+        const d = storeDemandLeft(sku, s.store_id);
         const cur = give.get(s.store_id) ?? 0;
         return cur < d;
       });
       if (eligible.length === 0) break;
       const base = Math.floor(pool / eligible.length);
       if (base === 0) {
-        // pool < eligible 數量,依 demand 大小排序給 +1
+        // pool < eligible 數量,依未派需求大小排序給 +1
         const sorted = [...eligible].sort(
-          (a, b) =>
-            (sku.storeDemand.get(b.store_id) ?? 0) -
-            (sku.storeDemand.get(a.store_id) ?? 0),
+          (a, b) => storeDemandLeft(sku, b.store_id) - storeDemandLeft(sku, a.store_id),
         );
         for (let i = 0; i < pool && i < sorted.length; i += 1) {
           const s = sorted[i];
-          const d = sku.storeDemand.get(s.store_id) ?? 0;
+          const d = storeDemandLeft(sku, s.store_id);
           const cur = give.get(s.store_id) ?? 0;
           if (cur < d) give.set(s.store_id, cur + 1);
         }
@@ -538,7 +550,7 @@ export default function PickingWorkstationPage() {
       }
       let givenThisRound = 0;
       for (const s of eligible) {
-        const d = sku.storeDemand.get(s.store_id) ?? 0;
+        const d = storeDemandLeft(sku, s.store_id);
         const cur = give.get(s.store_id) ?? 0;
         const add = Math.min(base, d - cur);
         give.set(s.store_id, cur + add);
@@ -859,7 +871,7 @@ export default function PickingWorkstationPage() {
         <div>
           <h1 className="text-xl font-semibold">🚦 派貨工作台</h1>
           <p className="text-sm text-zinc-500">
-            合併所有未派完 PO 為一張矩陣 — 直接針對 品項 × 分店分配,提交時依 PO 自動切分。包含客戶訂單派貨與補貨申請(📦)。
+            合併所有還有分店需求未派的 PO 為一張矩陣 — 直接針對 品項 × 分店分配,提交時依 PO 自動切分。包含客戶訂單派貨與補貨申請(📦);需求派完的品項會自動下架。
           </p>
         </div>
         <Link
@@ -968,7 +980,7 @@ export default function PickingWorkstationPage() {
       ) : viewMode === "matrix" ? (
         skuRows.length === 0 ? (
           <div className="rounded-md border border-zinc-200 p-12 text-center text-sm text-zinc-500 dark:border-zinc-800">
-            目前沒有可分配的品項(已到貨的都派完了,在途的等收貨後再回來)。
+            目前沒有待派的品項(該派的都派完了;在途的等收貨後、新需求進來後會自動回來)。
           </div>
         ) : (
           // 只保留水平(左右)捲軸:拿掉高度上限,表格整高展開、跟著整頁一起垂直捲動,
@@ -1006,7 +1018,7 @@ export default function PickingWorkstationPage() {
                   <Th className="text-center">已到</Th>
                   <Th className="text-center" title="PO 還沒結、還會繼續到的數量">在途</Th>
                   <Th className="text-center" title="PO 結了但供應商少給的數量(永遠不會到)">短少</Th>
-                  <Th className="text-center">已撿</Th>
+                  <Th className="text-center" title="已派出的數量(含撿貨單與補貨直派)">已派</Th>
                   <Th className="text-center">可分配</Th>
                   <Th className="text-center">合計</Th>
                   {allStores.map((st) => (
@@ -1057,7 +1069,7 @@ export default function PickingWorkstationPage() {
                             type="button"
                             onClick={() => autoDistribute(sk)}
                             disabled={sk.totalAvailable === 0}
-                            title={`依可分配 ${sk.totalAvailable} 平均分到各店(cap 在各店需求量)`}
+                            title={`依可分配 ${sk.totalAvailable} 平均分到各店(cap 在各店未派需求量)`}
                             className="shrink-0 self-center rounded border border-blue-300 bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-40 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300 dark:hover:bg-blue-900"
                           >
                             ⚖ 平均
@@ -1089,6 +1101,7 @@ export default function PickingWorkstationPage() {
                       {allStores.map((st) => {
                         const value = getAlloc(sk.sku_id, st.store_id);
                         const demandQty = sk.storeDemand.get(st.store_id) ?? 0;
+                        const demandLeft = storeDemandLeft(sk, st.store_id);
                         const maxForCell = value + Math.max(0, sk.totalAvailable - allocSum);
                         return (
                           <td key={st.store_id} className="px-2 py-1.5 text-center align-top">
@@ -1099,14 +1112,21 @@ export default function PickingWorkstationPage() {
                               min={0}
                               max={maxForCell}
                               step={1}
-                              title={`需 ${demandQty} · 此格最多可填 ${maxForCell}`}
+                              title={`未派需求 ${demandLeft}（原始需求 ${demandQty}）· 此格最多可填 ${maxForCell}`}
                               className={`w-full max-w-[68px] rounded border px-1 py-0.5 text-center font-mono text-sm font-medium tabular-nums dark:bg-zinc-800 ${
                                 value === 0
                                   ? "border-zinc-200 text-zinc-300 dark:border-zinc-700"
                                   : "border-blue-300 text-blue-700 dark:border-blue-700 dark:text-blue-300"
                               }`}
                             />
-                            <div className="mt-0.5 text-[10px] text-zinc-400">需 {demandQty}</div>
+                            {/* 需 = 尚未派的需求（demand − 已派，含補貨直派）；派完顯示 ✓，別再邀請使用者重複派 */}
+                            <div className="mt-0.5 text-[10px] text-zinc-400">
+                              {demandLeft > 0
+                                ? `需 ${demandLeft}`
+                                : demandQty > 0
+                                  ? <span className="text-emerald-600 dark:text-emerald-500">✓ 已派</span>
+                                  : "需 0"}
+                            </div>
                           </td>
                         );
                       })}
