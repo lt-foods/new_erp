@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { ProductImagesField } from "@/components/ProductImagesField";
 import { CategoryCombobox, type CategoryOption } from "@/components/CategoryCombobox";
+import { SupplierCombobox } from "@/components/SupplierCombobox";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import SpinButton from "@/components/SpinButton";
 
@@ -288,20 +289,11 @@ export function ProductForm({
           </select>
         </Field>
         <Field label="預設供應商">
-          <select
-            value={values.default_supplier_id ?? ""}
-            onChange={(e) =>
-              set("default_supplier_id", e.target.value ? Number(e.target.value) : null)
-            }
-            className={selectClass}
-          >
-            <option value="">—（不設定）</option>
-            {suppliers.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name} ({s.code})
-              </option>
-            ))}
-          </select>
+          <SupplierCombobox
+            value={values.default_supplier_id}
+            options={suppliers}
+            onChange={(id) => set("default_supplier_id", id)}
+          />
         </Field>
       </Grid>
 

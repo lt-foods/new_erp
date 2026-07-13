@@ -1,26 +1,21 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 
-export type CategoryOption = { id: number; name: string; code: string };
+export type SupplierOption = { id: number; name: string; code: string };
 
-export function CategoryCombobox({
+export function SupplierCombobox({
   value,
   options,
   onChange,
-  onCreated,
 }: {
   value: number | null;
-  options: CategoryOption[];
+  options: SupplierOption[];
   onChange: (id: number | null) => void;
-  onCreated: (cat: CategoryOption) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -29,7 +24,6 @@ export function CategoryCombobox({
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setOpen(false);
         setQuery("");
-        setError(null);
       }
     }
     if (open) document.addEventListener("mousedown", onClickAway);
@@ -40,46 +34,14 @@ export function CategoryCombobox({
     if (open) inputRef.current?.focus();
   }, [open]);
 
-  const selected = value != null ? options.find((c) => c.id === value) ?? null : null;
+  const selected = value != null ? options.find((s) => s.id === value) ?? null : null;
 
   const q = query.trim().toLowerCase();
   const filtered = q
     ? options.filter(
-        (c) => c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q)
+        (s) => s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q)
       )
-    : options.slice(0, 50);
-  const exactMatch = q
-    ? options.some((c) => c.name.toLowerCase() === q)
-    : true;
-
-  async function handleCreate() {
-    const name = query.trim();
-    if (!name) return;
-    setError(null);
-    setCreating(true);
-    try {
-      const sb = getSupabase();
-      const { data: id, error: rpcErr } = await sb.rpc("rpc_upsert_category", {
-        p_id: null,
-        p_parent_id: null,
-        p_code: name,
-        p_name: name,
-        p_level: 1,
-        p_sort_order: 0,
-        p_is_active: true,
-      });
-      if (rpcErr) throw rpcErr;
-      const newCat: CategoryOption = { id: Number(id), name, code: name };
-      onCreated(newCat);
-      onChange(Number(id));
-      setQuery("");
-      setOpen(false);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setCreating(false);
-    }
-  }
+    : options;
 
   return (
     <div ref={containerRef} className="relative">
@@ -91,10 +53,8 @@ export function CategoryCombobox({
         >
           {selected ? (
             <span className="inline-flex items-center gap-2">
-              <span className="rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-800 dark:bg-blue-950 dark:text-blue-300">
-                {selected.name}
-              </span>
-              <span className="text-xs text-zinc-500">{selected.code}</span>
+              <span className="truncate">{selected.name}</span>
+              <span className="shrink-0 text-xs text-zinc-500">{selected.code}</span>
             </span>
           ) : (
             <span className="text-zinc-500">—（不設定）</span>
@@ -110,19 +70,16 @@ export function CategoryCombobox({
             if (e.key === "Escape") {
               setOpen(false);
               setQuery("");
-              setError(null);
             } else if (e.key === "Enter") {
               e.preventDefault();
               if (filtered.length > 0) {
                 onChange(filtered[0].id);
                 setOpen(false);
                 setQuery("");
-              } else if (q && !exactMatch) {
-                void handleCreate();
               }
             }
           }}
-          placeholder="搜尋分類，或輸入新名稱建立"
+          placeholder="搜尋供應商名稱或代號"
           className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800"
         />
       )}
@@ -144,42 +101,29 @@ export function CategoryCombobox({
               清除選擇
             </SpinButton>
           )}
-          {filtered.length === 0 && q === "" ? (
-            <p className="px-3 py-2 text-xs text-zinc-500">尚無分類</p>
+          {filtered.length === 0 ? (
+            <p className="px-3 py-2 text-xs text-zinc-500">
+              {q ? "找不到符合的供應商" : "尚無供應商"}
+            </p>
           ) : (
-            filtered.map((c) => (
+            filtered.map((s) => (
               <SpinButton
-                key={c.id}
+                key={s.id}
                 type="button"
                 onClick={(e) => {
                   e.preventDefault();
-                  onChange(c.id);
+                  onChange(s.id);
                   setOpen(false);
                   setQuery("");
                 }}
                 className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800 ${
-                  c.id === value ? "bg-blue-50 dark:bg-blue-950" : ""
+                  s.id === value ? "bg-blue-50 dark:bg-blue-950" : ""
                 }`}
               >
-                <span className="truncate">{c.name}</span>
-                <span className="ml-2 shrink-0 text-xs text-zinc-500">{c.code}</span>
+                <span className="truncate">{s.name}</span>
+                <span className="ml-2 shrink-0 text-xs text-zinc-500">{s.code}</span>
               </SpinButton>
             ))
-          )}
-          {q && !exactMatch && (
-            <SpinButton
-              type="button"
-              onClick={handleCreate}
-              disabled={creating}
-              className="block w-full border-t border-zinc-200 px-3 py-2 text-left text-sm text-blue-700 hover:bg-blue-50 disabled:opacity-50 dark:border-zinc-700 dark:text-blue-300 dark:hover:bg-blue-950"
-            >
-              {creating ? "建立中…" : `+ 建立分類「${query.trim()}」`}
-            </SpinButton>
-          )}
-          {error && (
-            <p className="border-t border-zinc-200 px-3 py-2 text-xs text-red-600 dark:border-zinc-700 dark:text-red-400">
-              {error}
-            </p>
           )}
         </div>
       )}
