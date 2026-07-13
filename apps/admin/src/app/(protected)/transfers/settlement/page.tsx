@@ -30,6 +30,8 @@ type HqToStoreSettlement = {
   settlement_month: string;
   store_id: number;
   payable_amount: number;
+  cost_amount: number;
+  branch_amount: number;
   transfer_count: number;
   item_count: number;
   status: SettlementStatusExt;
@@ -58,6 +60,8 @@ type HqToStoreItem = {
   qty_received: number;
   unit_cost: number;
   line_amount: number;
+  unit_branch_price: number;
+  branch_amount: number;
   received_at: string;
   entry_type: "hq_inbound" | "air_in" | "air_out" | "free_in" | "free_out" | "return_out";
   description: string | null;
@@ -123,6 +127,7 @@ export default function SettlementPage() {
         <h1 className="text-xl font-semibold">月結算</h1>
         <p className="text-sm text-zinc-500">
           總倉對各分店：賣斷制、依 hq_to_store 已收貨 transfers 計算貨款（含空中轉調整）。
+          每筆分錄同時帶成本價與分店價兩個口徑分開計算。
         </p>
       </header>
 
@@ -159,7 +164,7 @@ function HqToStoreTab() {
         let q = sb
           .from("store_monthly_settlements")
           .select(
-            "id, settlement_month, store_id, payable_amount, transfer_count, item_count, status, confirmed_at, settled_at, generated_receivable_id, notes, updated_at",
+            "id, settlement_month, store_id, payable_amount, cost_amount, branch_amount, transfer_count, item_count, status, confirmed_at, settled_at, generated_receivable_id, notes, updated_at",
           )
           .order("settlement_month", { ascending: false })
           .order("store_id", { ascending: true })
@@ -203,8 +208,10 @@ function HqToStoreTab() {
         p_operator: operator,
       });
       if (e) throw new Error(e.message);
-      const r = data as { stores_count?: number; total_amount?: number };
-      setGenResult(`已產生 ${r?.stores_count ?? 0} 家分店 ${genMonth} 月結算（總額 $${r?.total_amount?.toLocaleString?.() ?? 0}）。`);
+      const r = data as { stores_count?: number; total_cost_amount?: number; total_branch_amount?: number };
+      setGenResult(
+        `已產生 ${r?.stores_count ?? 0} 家分店 ${genMonth} 月結算（成本價口徑 $${r?.total_cost_amount?.toLocaleString?.() ?? 0}／分店價口徑 $${r?.total_branch_amount?.toLocaleString?.() ?? 0}）。`,
+      );
       setReloadTick((t) => t + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -214,6 +221,7 @@ function HqToStoreTab() {
   }
 
   const totalPayable = rows?.reduce((sum, r) => sum + Number(r.payable_amount), 0) ?? 0;
+  const totalBranch = rows?.reduce((sum, r) => sum + Number(r.branch_amount ?? 0), 0) ?? 0;
 
   return (
     <>
@@ -280,7 +288,8 @@ function HqToStoreTab() {
             <tr>
               <Th>月份</Th>
               <Th>分店</Th>
-              <Th className="text-right">應付總倉</Th>
+              <Th className="text-right">應付總倉（成本價）</Th>
+              <Th className="text-right">分店價口徑</Th>
               <Th className="text-right">調撥單數</Th>
               <Th className="text-right">商品行數</Th>
               <Th>狀態</Th>
@@ -289,9 +298,9 @@ function HqToStoreTab() {
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={7} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={8} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={7} className="p-6 text-center text-zinc-500">{loading ? "載入中…" : "尚無結算紀錄。先用上方「產生 / 重算 draft」。"}</td></tr>
+              <tr><td colSpan={8} className="p-6 text-center text-zinc-500">{loading ? "載入中…" : "尚無結算紀錄。先用上方「產生 / 重算 draft」。"}</td></tr>
             ) : rows.map((r) => {
               const s = stores.get(r.store_id);
               const month = r.settlement_month?.slice(0, 7);
@@ -303,6 +312,7 @@ function HqToStoreTab() {
                     <span className="text-zinc-700 dark:text-zinc-200">{s?.name ?? `#${r.store_id}`}</span>
                   </Td>
                   <Td className="text-right font-mono text-rose-600">${Number(r.payable_amount).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</Td>
+                  <Td className="text-right font-mono text-sky-700 dark:text-sky-400">${Number(r.branch_amount ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</Td>
                   <Td className="text-right font-mono">{r.transfer_count}</Td>
                   <Td className="text-right font-mono">{r.item_count}</Td>
                   <Td><span className={`inline-block rounded px-2 py-0.5 text-xs ${STATUS_COLOR[r.status]}`}>{STATUS_LABEL[r.status]}</span></Td>
@@ -324,6 +334,9 @@ function HqToStoreTab() {
                 <td colSpan={2} className="px-3 py-2 text-right text-xs text-zinc-500">合計</td>
                 <td className="px-3 py-2 text-right font-mono font-medium text-rose-600">
                   ${totalPayable.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                </td>
+                <td className="px-3 py-2 text-right font-mono font-medium text-sky-700 dark:text-sky-400">
+                  ${totalBranch.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                 </td>
                 <td colSpan={4}></td>
               </tr>
@@ -374,7 +387,7 @@ function HqToStoreDetail({
       const sb = getSupabase();
       const { data, error } = await sb
         .from("store_monthly_settlement_items")
-        .select("id, transfer_id, transfer_item_id, sku_id, qty_received, unit_cost, line_amount, received_at, entry_type, description")
+        .select("id, transfer_id, transfer_item_id, sku_id, qty_received, unit_cost, line_amount, unit_branch_price, branch_amount, received_at, entry_type, description")
         .eq("settlement_id", settlement.id)
         .order("entry_type", { ascending: true })
         .order("received_at", { ascending: true });
@@ -428,7 +441,9 @@ function HqToStoreDetail({
         <Stat label="分店" value={store?.name ?? `#${settlement.store_id}`} />
         <Stat label="月份" value={settlement.settlement_month?.slice(0, 7)} />
         <Stat label="狀態" value={STATUS_LABEL[settlement.status]} />
-        <Stat label="應付金額" value={`$${Number(settlement.payable_amount).toLocaleString("zh-TW")}`} accent="negative" />
+        <Stat label="應付金額（成本價口徑）" value={`$${Number(settlement.payable_amount).toLocaleString("zh-TW")}`} accent="negative" />
+        <Stat label="分店價口徑金額" value={`$${Number(settlement.branch_amount ?? 0).toLocaleString("zh-TW")}`} accent="info" />
+        <Stat label="口徑差額（總部毛利）" value={`$${(Number(settlement.branch_amount ?? 0) - Number(settlement.cost_amount ?? settlement.payable_amount)).toLocaleString("zh-TW")}`} />
         <Stat label="調撥單數" value={String(settlement.transfer_count)} />
         <Stat label="商品行數" value={String(settlement.item_count)} />
       </div>
@@ -452,7 +467,8 @@ function HqToStoreDetail({
       <div>
         <div className="mb-2 text-sm font-medium">出貨明細（{items?.length ?? 0} 筆）</div>
         <p className="mb-2 text-xs text-zinc-500">
-          📦 HQ 進貨：總倉送來；✈️ 空中轉入：別店空中轉來（加應付）；✈️ 空中轉出：空中轉去別店（減應付，金額負）
+          📦 HQ 進貨：總倉送來；✈️ 空中轉入：別店空中轉來（加應付）；✈️ 空中轉出：空中轉去別店（減應付，金額負）。
+          每行同時列成本價（出貨當下成本）與分店價（收貨當下生效分店價）兩個口徑分開計算；自由轉貨行以估價入帳、兩口徑同額。
         </p>
         <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
           <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
@@ -463,15 +479,17 @@ function HqToStoreDetail({
                 <Th>調撥單</Th>
                 <Th>商品</Th>
                 <Th className="text-right">數量</Th>
-                <Th className="text-right">單價</Th>
-                <Th className="text-right">小計</Th>
+                <Th className="text-right">成本單價</Th>
+                <Th className="text-right">成本小計</Th>
+                <Th className="text-right">分店單價</Th>
+                <Th className="text-right">分店小計</Th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
               {items === null ? (
-                <tr><td colSpan={7} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+                <tr><td colSpan={9} className="p-3 text-center text-zinc-500">載入中…</td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={7} className="p-3 text-center text-zinc-500">無明細。</td></tr>
+                <tr><td colSpan={9} className="p-3 text-center text-zinc-500">無明細。</td></tr>
               ) : items.map((it) => {
                 const tx = transfers.get(it.transfer_id);
                 const sku = skus.get(it.sku_id);
@@ -502,6 +520,10 @@ function HqToStoreDetail({
                     <Td className={`text-right font-mono ${isNeg ? "text-amber-600" : ""}`}>
                       ${Number(it.line_amount).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                     </Td>
+                    <Td className="text-right font-mono text-zinc-500">${Number(it.unit_branch_price ?? 0).toFixed(2)}</Td>
+                    <Td className={`text-right font-mono ${Number(it.branch_amount ?? 0) < 0 ? "text-amber-600" : "text-sky-700 dark:text-sky-400"}`}>
+                      ${Number(it.branch_amount ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                    </Td>
                   </tr>
                 );
               })}
@@ -512,6 +534,10 @@ function HqToStoreDetail({
                   <td colSpan={6} className="px-3 py-2 text-right text-xs text-zinc-500">合計</td>
                   <td className="px-3 py-2 text-right font-mono font-medium text-rose-600">
                     ${items.reduce((sum, it) => sum + Number(it.line_amount), 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                  </td>
+                  <td></td>
+                  <td className="px-3 py-2 text-right font-mono font-medium text-sky-700 dark:text-sky-400">
+                    ${items.reduce((sum, it) => sum + Number(it.branch_amount ?? 0), 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                   </td>
                 </tr>
               </tfoot>
@@ -923,10 +949,11 @@ function TabBtn({ active, onClick, children }: { active: boolean; onClick: () =>
   );
 }
 
-function Stat({ label, value, accent }: { label: string; value: string; accent?: "positive" | "negative" | "neutral" }) {
+function Stat({ label, value, accent }: { label: string; value: string; accent?: "positive" | "negative" | "neutral" | "info" }) {
   const cls =
     accent === "positive" ? "text-emerald-600" :
     accent === "negative" ? "text-rose-600" :
+    accent === "info" ? "text-sky-700 dark:text-sky-400" :
     "text-zinc-700 dark:text-zinc-200";
   return (
     <div className="rounded-md border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
