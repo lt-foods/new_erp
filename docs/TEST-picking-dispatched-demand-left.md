@@ -78,11 +78,30 @@ SELECT pg_get_functiondef('public.rpc_create_wave_from_po(bigint,date,jsonb,uuid
        LIKE '%linked_transfer_id%';  -- true ✅
 ```
 
-## 已知殘留（follow-up，不在本修範圍）
+## D. 補貨重複派貨守衛（20260715000020，同日追加）
 
-- **收件匣直派路徑不知道 wave 已派過**：`rpc_ship_restock_pr_received` 照
-  restock lines 全量建 transfer，不扣已透過工作台 wave 派出的量。工作台這頭
-  修好後（派完就下架），反向的重複派貨入口只剩收件匣「派貨」鈕 — 該 RPC
-  應改成只派「申請量 − 已 wave 量」或全派完時直接擋下。
+三個出貨入口全改成「只派剩餘量、派完就擋」，歸屬原則：
+「已派給此補貨」= campaign_id IS NULL 的 wave items（補貨 justification）
+＋ 補貨直派 transfer；campaign_id 非 NULL 的 wave 屬客戶訂單、不抵補貨。
+
+| 入口 | 改動 |
+|---|---|
+| `rpc_ship_restock_pr_received`（收件匣「派貨」直派） | 逐 line 只出「申請量 − 已 wave 量」；全部為 0 → RAISE「已全數透過撿貨單派出」 |
+| `rpc_create_wave_from_po`（工作台矩陣） | 補貨 justification 的分配加上限 = 剩餘補貨需求（申請 − wave(campaign NULL) − 直派）；要多推庫存 → 引導走內部調撥 |
+| `rpc_create_wave_from_restock`（amber 區塊） | 守衛改累計：單次分配 ≤ 申請量 − 該申請已 wave 量 |
+
+### 驗證（線上，2026-07-13）
+
+- 對已派完的 RR-51 品項再從矩陣派 1 件（PO#409 / F00005-01 / 龍潭店）：
+  RAISE「補貨需求只剩 0 件未派（申請 1、已派 8，含撿貨單與直派），本次分配 1
+  超過」，且無殘留 wave（PO#409 wave 數維持 7）。✅
+- 模擬 `rpc_ship_restock_pr_received` 對 RR-51 的逐 line 計算：全部
+  would_ship = 0 → 會 RAISE、不再重複直派。✅
+- `pg_get_functiondef` 確認三支函式皆為新版（waved_agg / v_ship_qty）。✅
+
+## 設計取捨備忘
+
 - 「依分店（檢視）」分頁維持完整清單（含已派完的列，有 已撿/已派 進度欄），
   未套 demand filter — 屬檢視性質，保留全貌。
+- 龍潭店已多收的 7–8 件貨（重複派貨造成、已入店庫存）屬營運資料，
+  需人工決定調撥回總倉或留店銷售 — 程式端不代為沖帳。
