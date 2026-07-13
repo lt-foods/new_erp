@@ -204,12 +204,12 @@ export default function PrintSettlementPage() {
               </div>
             </div>
             <div className="text-right">
-              <div className="text-xs text-zinc-500">應付總倉金額（成本價口徑）</div>
+              <div className="text-xs text-zinc-500">應付總倉金額（分店價）</div>
               <div className="text-lg font-semibold text-rose-600">
                 ${Number(settlement.payable_amount).toLocaleString()}
               </div>
               <div className="mt-0.5 text-xs text-zinc-600">
-                分店價口徑：<span className="font-mono font-semibold">${Number(settlement.branch_amount ?? 0).toLocaleString()}</span>
+                成本價口徑（參考）：<span className="font-mono font-semibold">${Number(settlement.cost_amount ?? 0).toLocaleString()}</span>
               </div>
               {receivable && (
                 <div className="mt-0.5 text-xs text-zinc-500">到期日：{receivable.due_date}</div>
@@ -271,11 +271,11 @@ export default function PrintSettlementPage() {
               {/* 合計列 */}
               <tr className="bg-zinc-100 font-semibold">
                 <td colSpan={8} className="border border-zinc-400 px-2 py-1.5 text-right">合計</td>
-                <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono text-rose-600">
+                <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono">
                   ${total.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                 </td>
                 <td className="border border-zinc-400 px-2 py-1.5"></td>
-                <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono">
+                <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono text-rose-600">
                   ${totalBranch.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                 </td>
               </tr>
@@ -287,7 +287,7 @@ export default function PrintSettlementPage() {
             ※ 類型說明：HQ 進貨 = 總倉直接出貨給本店；空中轉入 = 別店空中轉來（加應付）；空中轉出 = 空中轉去別店（減應付）；
             自由轉入／轉出 = 店間自由轉貨（估價入帳）；退貨沖回 = 退貨回總倉（減應付）。
             <br />
-            ※ 價格口徑：成本單價 = 出貨當下成本；分店單價 = 收貨當下生效之分店價；兩口徑分開計算。自由轉貨行以估價入帳、兩口徑同額。
+            ※ 價格口徑：分店單價 = 收貨當下生效之分店價，<span className="font-semibold">應付貨款以「分店小計」為準</span>；成本單價 = 出貨當下成本（總倉參考口徑）。自由轉貨行以估價入帳、兩口徑同額。
           </div>
 
           {/* 簽收區 */}
