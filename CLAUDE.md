@@ -20,6 +20,16 @@ Content-Type: application/json
 
 不要再嘗試 `psql postgresql://...pooler...`、`supabase db push` 直連、Node `pg` client 等等 — 都會卡在 network，浪費時間。
 
+另外，Python `urllib` 打 api.supabase.com 會被 Cloudflare 擋（HTTP 403 error 1010）；用 `curl` 就正常。SQL 檔要先包成 JSON payload（例：`python3 -c "import json; ...json.dumps({'query': sql})"` 寫到暫存檔）再 `curl -d @file`。
+
+### Migration merge 進 main ≠ 已部署 — 前端功能「看起來壞掉」先查 RPC 在不在線上
+
+migration 是**手動**經 Management API 套用的，`supabase_migrations.schema_migrations` 也不會記錄（最後一筆停在很舊的版本，別拿它當部署依據）。曾發生：補單功能（#509）前端 7/6 就合併自動部署了，但 DB migration 沒人套，RPC 不存在 → 前端 `.rpc()` 吃到錯誤把卡片整個隱藏，使用者以為功能不存在，拖了 8 天（7/14 才發現）。
+
+- 判斷某支 migration 是否已上線：直接查物件，`SELECT proname FROM pg_proc WHERE proname='<rpc名>'`（trigger 查 `pg_trigger`），不要看 schema_migrations。
+- 合併含 migration 的 PR 後，**當場**用 Management API 套用並驗證物件存在，不要假設會有人接手。
+- 驗證要吃 `_current_tenant_id()` 的 RPC 時，Management API 沒有 JWT claim，先 `PERFORM set_config('request.jwt.claims', '{"tenant_id":"<uuid>"}', false)` 再呼叫。
+
 ### 部署 Edge Function 走 curl + Management API，不要用 supabase CLI
 
 `supabase functions deploy`（不論加不加 `--use-api`）在這個環境的 outbound proxy 下**一定失敗**，回 `{"code":"UnknownError","message":"failed to deploy function: TransportError"}`。原因是 CLI 的 Go HTTP client 過 proxy 做 streaming multipart POST 會炸（同一支 CLI 的 GET 正常，只有帶 body 的上傳掛掉）。別再花時間試 CLI / 裝 Docker / 調 `SSL_CERT_FILE`，都沒用。
