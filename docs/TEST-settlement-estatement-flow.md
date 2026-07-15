@@ -59,9 +59,17 @@ Migration：`20260715000120_settlement_estatement_flow.sql`
 - [x] T22 rollback 測試後線上無殘留（#47 仍 draft、無 dispute/receivable rows）。
 - [x] T23 HQ 直接確認（跳過核對）路徑保留（confirm v2 接受 draft）。
 
+### 側欄選單通知小數字（migration 20260715000130，追加）
+- [x] T24 `rpc_settlement_action_count()`（線上 rollback 測試）：
+      分店＝自己店 sent+confirmed 筆數（sent=1／confirmed=1／別店 remitted 不算=0）；
+      總部＝全 tenant disputed+remitted（=2）；無 tenant claim=0。
+- [x] T25 側欄「月結算」掛紅色數字（桌機＋手機 drawer 都有）；分店帳號選單
+      改名「月結對帳」；count=0 不顯示。換頁／視窗 focus／對帳操作
+      （settlement-badge-refresh 事件）後重抓。Playwright 3/3 通過。
+
 ## 待辦 / 已知限制
-- [ ] 送單後無推播通知店家（現有 notifications 表是 member/LIFF 導向；店家開
-      月結對帳頁看到「待核對」）。要推播需另做 staff 通知管道。
+- [x] ~~送單後無推播通知店家~~ → 已用側欄選單小數字當通知
+      （rpc_settlement_action_count + layout badge）。真推播（LINE/push）仍未做。
 - [ ] store_monthly_settlement_items 的 RLS 仍 tenant 全讀（歷史政策 auth_read_smsi），
       分店帳號技術上可從 REST 讀到 unit_cost 欄位——UI 已全面隱藏，
       要 API 層鎖成本欄需另開 column-level view migration。

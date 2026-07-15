@@ -8,6 +8,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { ReleaseNotesProvider, ReleaseNotesBell } from "@/components/ReleaseNotes";
 import { TrialBanner, TrialExpiredScreen } from "@/components/TrialGate";
 import { getTenantName } from "@/lib/tenant";
+import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 
 type NavItem = { href: string; label: string; match: RegExp };
@@ -125,9 +126,53 @@ function filterNavForBranch(nav: NavGroup[]): NavGroup[] {
     .filter((g) => !g.title || !BRANCH_HIDDEN_GROUPS.has(g.title))
     .map((g) => ({
       ...g,
-      items: g.items.filter((it) => !BRANCH_HIDDEN_HREFS.has(it.href)),
+      items: g.items
+        .filter((it) => !BRANCH_HIDDEN_HREFS.has(it.href))
+        // 分店帳號看到的是店家核對介面，選單改叫「月結對帳」
+        .map((it) => (it.href === "/transfers/settlement" ? { ...it, label: "月結對帳" } : it)),
     }))
     .filter((g) => g.items.length > 0);
+}
+
+// 月結對帳待辦數（分店：待核對+待匯款；總部：待處理爭議+待確認收款）。
+// 掛在「月結算」選單當通知小數字；換頁/回到視窗/對帳操作後重抓。
+export const SETTLEMENT_BADGE_REFRESH_EVENT = "settlement-badge-refresh";
+
+function useSettlementActionCount(enabled: boolean, pathname: string | null): number {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const { data } = await getSupabase().rpc("rpc_settlement_action_count");
+        if (!cancelled && typeof data === "number") setCount(data);
+      } catch {
+        /* badge 失敗不影響操作 */
+      }
+    };
+    void load();
+    const onRefresh = () => { void load(); };
+    window.addEventListener("focus", onRefresh);
+    window.addEventListener(SETTLEMENT_BADGE_REFRESH_EVENT, onRefresh);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", onRefresh);
+      window.removeEventListener(SETTLEMENT_BADGE_REFRESH_EVENT, onRefresh);
+    };
+  }, [enabled, pathname]);
+
+  return count;
+}
+
+function NavBadge({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold leading-none text-white">
+      {count > 99 ? "99+" : count}
+    </span>
+  );
 }
 
 export default function ProtectedLayout({ children }: { children: ReactNode }) {
@@ -137,6 +182,8 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const tenantName = tenant?.name ?? getTenantName();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const settlementCount = useSettlementActionCount(!!session, pathname);
+  const navBadges: Record<string, number> = { "/transfers/settlement": settlementCount };
 
   // 載入 collapsed groups (localStorage)
   useEffect(() => {
@@ -255,7 +302,10 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
                             }
                           >
                             <span>{it.label}</span>
-                            {active && <span className="text-xs opacity-60">›</span>}
+                            <span className="flex items-center gap-1.5">
+                              <NavBadge count={navBadges[it.href] ?? 0} />
+                              {active && <span className="text-xs opacity-60">›</span>}
+                            </span>
                           </Link>
                         </li>
                       );
@@ -362,7 +412,10 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
                                 }
                               >
                                 <span>{it.label}</span>
-                                {active && <span className="text-xs opacity-60">›</span>}
+                                <span className="flex items-center gap-1.5">
+                                  <NavBadge count={navBadges[it.href] ?? 0} />
+                                  {active && <span className="text-xs opacity-60">›</span>}
+                                </span>
                               </Link>
                             </li>
                           );

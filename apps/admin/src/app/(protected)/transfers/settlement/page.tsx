@@ -408,8 +408,12 @@ function HqToStoreTab() {
             onConfirmed={() => {
               setDetail(null);
               setReloadTick((t) => t + 1);
+              window.dispatchEvent(new Event("settlement-badge-refresh"));
             }}
-            onChanged={() => setReloadTick((t) => t + 1)}
+            onChanged={() => {
+              setReloadTick((t) => t + 1);
+              window.dispatchEvent(new Event("settlement-badge-refresh"));
+            }}
           />
         )}
       </Modal>

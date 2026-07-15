@@ -212,6 +212,7 @@ export default function StoreSettlementReview() {
             onChanged={() => {
               setDetail(null);
               setReloadTick((t) => t + 1);
+              window.dispatchEvent(new Event("settlement-badge-refresh"));
             }}
           />
         )}
