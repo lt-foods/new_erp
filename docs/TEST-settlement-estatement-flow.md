@@ -67,6 +67,21 @@ Migration：`20260715000120_settlement_estatement_flow.sql`
       改名「月結對帳」；count=0 不顯示。換頁／視窗 focus／對帳操作
       （settlement-badge-refresh 事件）後重抓。Playwright 3/3 通過。
 
+### 分店核對整頁化（追加，依使用回饋）
+- [x] T26 分店對帳改整頁 `/transfers/settlement/review?id=`（取代彈窗）；
+      列表「核對／回報匯款／查看」是連結。
+- [x] T27 調撥單號可點：`/wms/transfers?open=<id>` 深連結直接開該張明細
+      （modal 依 id 抓、不受列表 type 過濾影響，hq_to_store 也開得到）。
+- [x] T28 逐筆「✓ 核對」＝本機核對進度標記（localStorage、重整保留、
+      顯示已核對 X／Y）；與「有問題」互斥；不必全核對完即可送出。
+- [x] T29 送出動作（畫押／爭議／已匯款）改頁內固定確認列，全程不跳
+      瀏覽器對話框（Playwright 監聽 dialog 事件驗證 0 次）。
+- [x] T30 收貨頁搜尋修正：已收貨只載入最近 50 筆、搜尋原本只過濾已載入
+      資料 → 搜尋字觸發後端 transfer_no ilike 補查合併（分店帳號仍限
+      自己店），上個月的 WAVE-xx 搜得到了（回報案例：WAVE-19-S2，
+      6/10 已收、被後續收貨擠出載入範圍）。
+- [x] T31 Playwright 15/15 通過；tsc 乾淨；eslint 僅既有 baseline finding。
+
 ## 待辦 / 已知限制
 - [x] ~~送單後無推播通知店家~~ → 已用側欄選單小數字當通知
       （rpc_settlement_action_count + layout badge）。真推播（LINE/push）仍未做。

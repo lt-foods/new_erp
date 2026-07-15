@@ -49,6 +49,13 @@ export default function TransfersInboxPage() {
   const [tab, setTab] = useState<InboxTab>("unreceived");
   // 搜尋：撿貨單號(wave_code) / 調撥單號 / 分店 / 商品名 / 商品編號(product_code) / 品項編號(sku_code)
   const [search, setSearch] = useState("");
+  // 已收貨只載入最近 doneLimit 筆，客端搜尋會漏掉更早的單（例：月結對帳回頭查
+  // 上個月的 WAVE-xx）→ 搜尋字像單號時另外打一發後端 ilike 補查合併進列表。
+  const [serverSearch, setServerSearch] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setServerSearch(search.trim()), 400);
+    return () => clearTimeout(t);
+  }, [search]);
 
   // 分店帳號鎖定：把 store.name 比對 user.app_metadata.stores，回該分店的 location_id。
   // 分店帳號只能看自己分店（dest_location = 該 location_id）；HQ/總倉回 null = 看全部。
@@ -111,6 +118,25 @@ export default function TransfersInboxPage() {
         if (e2) throw new Error(e2.message);
         if (!cancelled) setDoneTotal(doneCount ?? 0);
         const rows = ([...(pendingData ?? []), ...(doneData ?? [])] as Transfer[]);
+
+        // 搜尋補查：老單被 doneLimit 擠出載入範圍時，用單號直接查後端合併進來
+        if (serverSearch) {
+          let extraQ = sb
+            .from("transfers")
+            .select(
+              "id, transfer_no, source_location, dest_location, status, transfer_type, shipped_at, received_at, notes",
+            )
+            .ilike("transfer_no", `%${serverSearch}%`)
+            .in("status", ["shipped", "received"])
+            .order("id", { ascending: false })
+            .limit(30);
+          if (branchLocationId != null) extraQ = extraQ.eq("dest_location", branchLocationId);
+          const { data: extraData } = await extraQ;
+          const seen = new Set(rows.map((r) => r.id));
+          for (const r of (extraData ?? []) as Transfer[]) {
+            if (!seen.has(r.id)) rows.push(r);
+          }
+        }
 
         const locIds = Array.from(
           new Set(rows.flatMap((r) => [r.source_location, r.dest_location])),
@@ -243,7 +269,7 @@ export default function TransfersInboxPage() {
     return () => {
       cancelled = true;
     };
-  }, [reloadTick, doneLimit, branchLocationId]);
+  }, [reloadTick, doneLimit, branchLocationId, serverSearch]);
 
   const destOptions = useMemo(() => {
     const set = new Map<number, string>();

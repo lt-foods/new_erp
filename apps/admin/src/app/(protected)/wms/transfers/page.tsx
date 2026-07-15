@@ -68,6 +68,13 @@ export default function InternalTransfersPage() {
   useEffect(() => {
     if (localStorage.getItem(FT_EXPLAINER_HIDE_KEY) !== "1") setShowExplainer(true);
   }, []);
+  // 深連結：?open=<transferId> 直接開調撥單明細（月結對帳單的調撥單號連過來）
+  useEffect(() => {
+    const openId = new URLSearchParams(window.location.search).get("open");
+    if (!openId || !(Number(openId) > 0)) return;
+    const t = setTimeout(() => setDetailId(Number(openId)), 0);
+    return () => clearTimeout(t);
+  }, []);
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
