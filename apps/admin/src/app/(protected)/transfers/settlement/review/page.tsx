@@ -406,7 +406,7 @@ export default function SettlementReviewPage() {
                 d?.status === "open" ? "bg-red-50 dark:bg-red-950/40"
                 : flagged ? "bg-amber-50 dark:bg-amber-950/40"
                 : isChecked ? "bg-emerald-50/60 dark:bg-emerald-950/30"
-                : "";
+                : "hover:bg-zinc-50 dark:hover:bg-zinc-900";
               return (
                 <tr key={it.id} className={rowCls}>
                   <td className="whitespace-nowrap px-3 py-2 text-xs">{ENTRY_TYPE_LABEL[it.entry_type] ?? it.entry_type}</td>

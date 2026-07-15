@@ -494,7 +494,7 @@ export default function HqSettlementDetailPage() {
                 const isNeg = Number(it.line_amount) < 0;
                 const isFree = it.entry_type === "free_in" || it.entry_type === "free_out";
                 return (
-                  <tr key={it.id}>
+                  <tr key={it.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
                     <Td>
                       <span className={`inline-block whitespace-nowrap rounded px-2 py-0.5 text-xs ${ENTRY_TYPE_COLOR[it.entry_type] ?? ENTRY_TYPE_COLOR.hq_inbound}`}>
                         {ENTRY_TYPE_LABEL[it.entry_type] ?? it.entry_type}
