@@ -127,7 +127,7 @@ export default function SettlementPage() {
         <h1 className="text-xl font-semibold">月結算</h1>
         <p className="text-sm text-zinc-500">
           總倉對各分店：賣斷制、依 hq_to_store 已收貨 transfers 計算貨款（含空中轉調整）。
-          每筆分錄同時帶成本價與分店價兩個口徑分開計算。
+          應付金額以分店價口徑計；成本口徑另計、供總倉毛利參考。
         </p>
       </header>
 
@@ -210,7 +210,7 @@ function HqToStoreTab() {
       if (e) throw new Error(e.message);
       const r = data as { stores_count?: number; total_cost_amount?: number; total_branch_amount?: number };
       setGenResult(
-        `已產生 ${r?.stores_count ?? 0} 家分店 ${genMonth} 月結算（成本價口徑 $${r?.total_cost_amount?.toLocaleString?.() ?? 0}／分店價口徑 $${r?.total_branch_amount?.toLocaleString?.() ?? 0}）。`,
+        `已產生 ${r?.stores_count ?? 0} 家分店 ${genMonth} 月結算（應付合計（分店價口徑）$${r?.total_branch_amount?.toLocaleString?.() ?? 0}／成本口徑 $${r?.total_cost_amount?.toLocaleString?.() ?? 0}）。`,
       );
       setReloadTick((t) => t + 1);
     } catch (err) {
@@ -221,7 +221,7 @@ function HqToStoreTab() {
   }
 
   const totalPayable = rows?.reduce((sum, r) => sum + Number(r.payable_amount), 0) ?? 0;
-  const totalBranch = rows?.reduce((sum, r) => sum + Number(r.branch_amount ?? 0), 0) ?? 0;
+  const totalCost = rows?.reduce((sum, r) => sum + Number(r.cost_amount ?? 0), 0) ?? 0;
 
   return (
     <>
@@ -288,8 +288,8 @@ function HqToStoreTab() {
             <tr>
               <Th>月份</Th>
               <Th>分店</Th>
-              <Th className="text-right">應付總倉（成本價）</Th>
-              <Th className="text-right">分店價口徑</Th>
+              <Th className="text-right">應付總倉（分店價）</Th>
+              <Th className="text-right">成本口徑（參考）</Th>
               <Th className="text-right">調撥單數</Th>
               <Th className="text-right">商品行數</Th>
               <Th>狀態</Th>
@@ -312,7 +312,7 @@ function HqToStoreTab() {
                     <span className="text-zinc-700 dark:text-zinc-200">{s?.name ?? `#${r.store_id}`}</span>
                   </Td>
                   <Td className="text-right font-mono text-rose-600">${Number(r.payable_amount).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</Td>
-                  <Td className="text-right font-mono text-sky-700 dark:text-sky-400">${Number(r.branch_amount ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</Td>
+                  <Td className="text-right font-mono text-zinc-500">${Number(r.cost_amount ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</Td>
                   <Td className="text-right font-mono">{r.transfer_count}</Td>
                   <Td className="text-right font-mono">{r.item_count}</Td>
                   <Td><span className={`inline-block rounded px-2 py-0.5 text-xs ${STATUS_COLOR[r.status]}`}>{STATUS_LABEL[r.status]}</span></Td>
@@ -335,8 +335,8 @@ function HqToStoreTab() {
                 <td className="px-3 py-2 text-right font-mono font-medium text-rose-600">
                   ${totalPayable.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                 </td>
-                <td className="px-3 py-2 text-right font-mono font-medium text-sky-700 dark:text-sky-400">
-                  ${totalBranch.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                <td className="px-3 py-2 text-right font-mono font-medium text-zinc-500">
+                  ${totalCost.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                 </td>
                 <td colSpan={4}></td>
               </tr>
@@ -353,12 +353,14 @@ function HqToStoreTab() {
       >
         {detail && (
           <HqToStoreDetail
+            key={detail.id}
             settlement={detail}
             store={stores.get(detail.store_id) ?? null}
             onConfirmed={() => {
               setDetail(null);
               setReloadTick((t) => t + 1);
             }}
+            onChanged={() => setReloadTick((t) => t + 1)}
           />
         )}
       </Modal>
@@ -370,21 +372,41 @@ function HqToStoreDetail({
   settlement,
   store,
   onConfirmed,
+  onChanged,
 }: {
   settlement: HqToStoreSettlement;
   store: Store | null;
   onConfirmed: () => void;
+  onChanged: () => void;
 }) {
   const [items, setItems] = useState<HqToStoreItem[] | null>(null);
   const [transfers, setTransfers] = useState<Map<number, Transfer>>(new Map());
   const [skus, setSkus] = useState<Map<number, Sku>>(new Map());
   const [confirming, setConfirming] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // 改估價後整個月的 draft 會重算，明細與表頭金額都要重抓
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [header, setHeader] = useState<HqToStoreSettlement>(settlement);
+
+  // 自由轉貨行改估價
+  const [editItem, setEditItem] = useState<HqToStoreItem | null>(null);
+  const [editAmount, setEditAmount] = useState("");
+  const [editReason, setEditReason] = useState("");
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const sb = getSupabase();
+      if (refreshTick > 0) {
+        const { data: h } = await sb
+          .from("store_monthly_settlements")
+          .select("id, settlement_month, store_id, payable_amount, cost_amount, branch_amount, transfer_count, item_count, status, confirmed_at, settled_at, generated_receivable_id, notes, updated_at")
+          .eq("id", settlement.id)
+          .maybeSingle();
+        if (cancelled) return;
+        if (h) setHeader(h as HqToStoreSettlement);
+      }
       const { data, error } = await sb
         .from("store_monthly_settlement_items")
         .select("id, transfer_id, transfer_item_id, sku_id, qty_received, unit_cost, line_amount, unit_branch_price, branch_amount, received_at, entry_type, description")
@@ -411,7 +433,37 @@ function HqToStoreDetail({
       setSkus(skMap);
     })();
     return () => { cancelled = true; };
-  }, [settlement.id]);
+  }, [settlement.id, refreshTick]);
+
+  async function onSaveEstimate() {
+    if (!editItem) return;
+    const amt = Number(editAmount);
+    if (!Number.isFinite(amt) || amt < 0) { setErr("估價需為 >= 0 的數字"); return; }
+    setSaving(true);
+    setErr(null);
+    try {
+      const sb = getSupabase();
+      const { data: sess } = await sb.auth.getSession();
+      const operator = sess.session?.user?.id;
+      if (!operator) throw new Error("尚未登入");
+      const { error } = await sb.rpc("rpc_update_free_transfer_amount", {
+        p_transfer_item_id: editItem.transfer_item_id,
+        p_new_amount: amt,
+        p_operator: operator,
+        p_reason: editReason.trim() || null,
+      });
+      if (error) throw new Error(error.message);
+      setEditItem(null);
+      setEditAmount("");
+      setEditReason("");
+      setRefreshTick((t) => t + 1);
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function onConfirm() {
     if (!confirm("確認此月結算？確認後將自動產生應付帳款單入帳。")) return;
@@ -435,23 +487,25 @@ function HqToStoreDetail({
     }
   }
 
+  const isDraft = header.status === "draft";
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-3 gap-3 text-sm">
-        <Stat label="分店" value={store?.name ?? `#${settlement.store_id}`} />
-        <Stat label="月份" value={settlement.settlement_month?.slice(0, 7)} />
-        <Stat label="狀態" value={STATUS_LABEL[settlement.status]} />
-        <Stat label="應付金額（成本價口徑）" value={`$${Number(settlement.payable_amount).toLocaleString("zh-TW")}`} accent="negative" />
-        <Stat label="分店價口徑金額" value={`$${Number(settlement.branch_amount ?? 0).toLocaleString("zh-TW")}`} accent="info" />
-        <Stat label="口徑差額（總部毛利）" value={`$${(Number(settlement.branch_amount ?? 0) - Number(settlement.cost_amount ?? settlement.payable_amount)).toLocaleString("zh-TW")}`} />
-        <Stat label="調撥單數" value={String(settlement.transfer_count)} />
-        <Stat label="商品行數" value={String(settlement.item_count)} />
+        <Stat label="分店" value={store?.name ?? `#${header.store_id}`} />
+        <Stat label="月份" value={header.settlement_month?.slice(0, 7)} />
+        <Stat label="狀態" value={STATUS_LABEL[header.status]} />
+        <Stat label="應付金額（分店價口徑）" value={`$${Number(header.payable_amount).toLocaleString("zh-TW")}`} accent="negative" />
+        <Stat label="成本口徑金額（參考）" value={`$${Number(header.cost_amount ?? 0).toLocaleString("zh-TW")}`} />
+        <Stat label="口徑差額（總部毛利）" value={`$${(Number(header.branch_amount ?? 0) - Number(header.cost_amount ?? 0)).toLocaleString("zh-TW")}`} accent="info" />
+        <Stat label="調撥單數" value={String(header.transfer_count)} />
+        <Stat label="商品行數" value={String(header.item_count)} />
       </div>
 
       <div className="flex items-center justify-between gap-2">
         <div className="text-xs text-zinc-500">
-          {settlement.generated_receivable_id && (
-            <span>已產生 HQ 應收單 #{settlement.generated_receivable_id}</span>
+          {header.generated_receivable_id && (
+            <span>已產生 HQ 應收單 #{header.generated_receivable_id}</span>
           )}
         </div>
         <a
@@ -468,8 +522,54 @@ function HqToStoreDetail({
         <div className="mb-2 text-sm font-medium">出貨明細（{items?.length ?? 0} 筆）</div>
         <p className="mb-2 text-xs text-zinc-500">
           📦 HQ 進貨：總倉送來；✈️ 空中轉入：別店空中轉來（加應付）；✈️ 空中轉出：空中轉去別店（減應付，金額負）。
-          每行同時列成本價（出貨當下成本）與分店價（收貨當下生效分店價）兩個口徑分開計算；自由轉貨行以估價入帳、兩口徑同額。
+          應付以分店價口徑計、成本口徑供毛利參考；自由轉貨行以轉貨時申報的估價入帳、兩口徑同額，
+          {isDraft ? "金額回報錯誤可按行內「改估價」修正（兩邊分店的 draft 會一起重算）。" : "已確認的結算不可再改估價。"}
         </p>
+
+        {editItem && (
+          <div className="mb-2 rounded-md border border-violet-300 bg-violet-50 p-3 text-sm dark:border-violet-800 dark:bg-violet-950">
+            <div className="mb-2 text-xs text-violet-800 dark:text-violet-300">
+              修改自由轉貨估價：<span className="font-medium">{editItem.description ?? `#${editItem.transfer_item_id}`}</span>
+              （目前 ${Math.abs(Number(editItem.line_amount)).toLocaleString("zh-TW")}）
+            </div>
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="text-xs">
+                <span className="mb-1 block text-zinc-500">新估價（總額）</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={editAmount}
+                  onChange={(e) => setEditAmount(e.target.value)}
+                  className="w-32 rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                />
+              </label>
+              <label className="flex-1 text-xs">
+                <span className="mb-1 block text-zinc-500">修正原因（選填）</span>
+                <input
+                  value={editReason}
+                  onChange={(e) => setEditReason(e.target.value)}
+                  placeholder="例：店端回報金額與實際分店價不符"
+                  className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                />
+              </label>
+              <SpinButton
+                onClick={onSaveEstimate}
+                disabled={saving}
+                className="rounded-md bg-violet-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-violet-800 disabled:opacity-50"
+              >
+                {saving ? "儲存中…" : "儲存並重算"}
+              </SpinButton>
+              <SpinButton
+                onClick={() => { setEditItem(null); setErr(null); }}
+                disabled={saving}
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700"
+              >
+                取消
+              </SpinButton>
+            </div>
+          </div>
+        )}
         <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
           <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
             <thead className="bg-zinc-50 dark:bg-zinc-900">
@@ -483,17 +583,19 @@ function HqToStoreDetail({
                 <Th className="text-right">成本小計</Th>
                 <Th className="text-right">分店單價</Th>
                 <Th className="text-right">分店小計</Th>
+                {isDraft && <Th className="text-right">操作</Th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
               {items === null ? (
-                <tr><td colSpan={9} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+                <tr><td colSpan={isDraft ? 10 : 9} className="p-3 text-center text-zinc-500">載入中…</td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={9} className="p-3 text-center text-zinc-500">無明細。</td></tr>
+                <tr><td colSpan={isDraft ? 10 : 9} className="p-3 text-center text-zinc-500">無明細。</td></tr>
               ) : items.map((it) => {
                 const tx = transfers.get(it.transfer_id);
                 const sku = skus.get(it.sku_id);
                 const isNeg = Number(it.line_amount) < 0;
+                const isFree = it.entry_type === "free_in" || it.entry_type === "free_out";
                 return (
                   <tr key={it.id}>
                     <Td>
@@ -524,6 +626,23 @@ function HqToStoreDetail({
                     <Td className={`text-right font-mono ${Number(it.branch_amount ?? 0) < 0 ? "text-amber-600" : "text-sky-700 dark:text-sky-400"}`}>
                       ${Number(it.branch_amount ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                     </Td>
+                    {isDraft && (
+                      <Td className="text-right">
+                        {isFree && (
+                          <SpinButton
+                            onClick={() => {
+                              setEditItem(it);
+                              setEditAmount(String(Math.abs(Number(it.line_amount))));
+                              setEditReason("");
+                              setErr(null);
+                            }}
+                            className="rounded-md border border-violet-300 px-2 py-1 text-xs text-violet-700 hover:bg-violet-50 dark:border-violet-800 dark:text-violet-300 dark:hover:bg-violet-950"
+                          >
+                            改估價
+                          </SpinButton>
+                        )}
+                      </Td>
+                    )}
                   </tr>
                 );
               })}
@@ -532,13 +651,14 @@ function HqToStoreDetail({
               <tfoot className="bg-zinc-50 dark:bg-zinc-900">
                 <tr>
                   <td colSpan={6} className="px-3 py-2 text-right text-xs text-zinc-500">合計</td>
-                  <td className="px-3 py-2 text-right font-mono font-medium text-rose-600">
+                  <td className="px-3 py-2 text-right font-mono font-medium text-zinc-500">
                     ${items.reduce((sum, it) => sum + Number(it.line_amount), 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                   </td>
                   <td></td>
                   <td className="px-3 py-2 text-right font-mono font-medium text-sky-700 dark:text-sky-400">
                     ${items.reduce((sum, it) => sum + Number(it.branch_amount ?? 0), 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                   </td>
+                  {isDraft && <td></td>}
                 </tr>
               </tfoot>
             )}
@@ -552,7 +672,7 @@ function HqToStoreDetail({
         </div>
       )}
 
-      {settlement.status === "draft" && (
+      {isDraft && (
         <div className="flex justify-end">
           <SpinButton
             onClick={onConfirm}

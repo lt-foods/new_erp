@@ -45,8 +45,13 @@ const ENTRY_TYPE_LABEL: Record<SettlementItem["entry_type"], string> = {
   return_out: "退貨沖回",
 };
 
+// 分店版（預設）：給店家的對帳單，只列分店價，不露總倉成本。
+// 內部版：加列成本單價/成本小計與口徑差額（總部毛利），總部對帳用。
+type PrintView = "store" | "internal";
+
 export default function PrintSettlementPage() {
   const [settlementId, setSettlementId] = useState<number | null>(null);
+  const [view, setView] = useState<PrintView>("store");
   const [settlement, setSettlement] = useState<Settlement | null>(null);
   const [store, setStore] = useState<Store | null>(null);
   const [items, setItems] = useState<SettlementItem[]>([]);
@@ -56,11 +61,13 @@ export default function PrintSettlementPage() {
   const [receivable, setReceivable] = useState<Receivable | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // 從 query 抓 settlement_id
+  // 從 query 抓 settlement_id + view
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const id = new URLSearchParams(window.location.search).get("settlement_id");
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get("settlement_id");
     if (id) setSettlementId(Number(id));
+    if (params.get("view") === "internal") setView("internal");
   }, []);
 
   useEffect(() => {
@@ -142,19 +149,24 @@ export default function PrintSettlementPage() {
   }
 
   const monthLabel = settlement.settlement_month?.slice(0, 7);
-  const total = items.reduce((s, it) => s + Number(it.line_amount), 0);
+  const totalCost = items.reduce((s, it) => s + Number(it.line_amount), 0);
   const totalBranch = items.reduce((s, it) => s + Number(it.branch_amount ?? 0), 0);
   const today = new Date().toLocaleDateString("zh-TW");
+  const internal = view === "internal";
 
   return (
     <>
       <style jsx global>{`
         @media print {
-          @page { size: A4; margin: 12mm; }
+          @page { size: A4; margin: 10mm; }
           .no-print { display: none !important; }
           .sheet { page-break-after: always; }
           .sheet:last-child { page-break-after: auto; }
           body { background: white !important; }
+          .stmt-table { font-size: 10px; }
+          .stmt-table th, .stmt-table td { padding: 2px 4px; }
+          .stmt-table thead { display: table-header-group; }
+          .stmt-table tr { break-inside: avoid; }
         }
       `}</style>
 
@@ -165,6 +177,20 @@ export default function PrintSettlementPage() {
           <span className="text-sm text-zinc-500">
             {store.name} / {monthLabel} / 應付總倉 ${Number(settlement.payable_amount).toLocaleString()}
           </span>
+          <div className="flex overflow-hidden rounded-md border border-zinc-300 text-sm">
+            <SpinButton
+              onClick={() => setView("store")}
+              className={`px-3 py-1.5 ${!internal ? "bg-zinc-900 font-semibold text-white" : "bg-white text-zinc-600 hover:bg-zinc-100"}`}
+            >
+              分店版（給店家）
+            </SpinButton>
+            <SpinButton
+              onClick={() => setView("internal")}
+              className={`px-3 py-1.5 ${internal ? "bg-zinc-900 font-semibold text-white" : "bg-white text-zinc-600 hover:bg-zinc-100"}`}
+            >
+              內部版（含成本）
+            </SpinButton>
+          </div>
           <SpinButton
             onClick={() => window.print()}
             className="ml-auto rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700"
@@ -204,13 +230,16 @@ export default function PrintSettlementPage() {
               </div>
             </div>
             <div className="text-right">
-              <div className="text-xs text-zinc-500">應付總倉金額（成本價口徑）</div>
+              <div className="text-xs text-zinc-500">應付總倉金額{internal && "（分店價口徑）"}</div>
               <div className="text-lg font-semibold text-rose-600">
                 ${Number(settlement.payable_amount).toLocaleString()}
               </div>
-              <div className="mt-0.5 text-xs text-zinc-600">
-                分店價口徑：<span className="font-mono font-semibold">${Number(settlement.branch_amount ?? 0).toLocaleString()}</span>
-              </div>
+              {internal && (
+                <div className="mt-0.5 text-xs text-zinc-600">
+                  成本口徑：<span className="font-mono font-semibold">${Number(settlement.cost_amount ?? 0).toLocaleString()}</span>
+                  <span className="ml-2">總部毛利：<span className="font-mono font-semibold">${(Number(settlement.branch_amount ?? 0) - Number(settlement.cost_amount ?? 0)).toLocaleString()}</span></span>
+                </div>
+              )}
               {receivable && (
                 <div className="mt-0.5 text-xs text-zinc-500">到期日：{receivable.due_date}</div>
               )}
@@ -218,7 +247,7 @@ export default function PrintSettlementPage() {
           </div>
 
           {/* 商品明細表 */}
-          <table className="w-full border-collapse text-xs">
+          <table className="stmt-table w-full border-collapse text-xs">
             <thead>
               <tr className="border-b-2 border-zinc-900">
                 <th className="border border-zinc-400 px-2 py-1.5 text-left">#</th>
@@ -228,24 +257,28 @@ export default function PrintSettlementPage() {
                 <th className="border border-zinc-400 px-2 py-1.5 text-left">商品編號</th>
                 <th className="border border-zinc-400 px-2 py-1.5 text-left">品名</th>
                 <th className="border border-zinc-400 px-2 py-1.5 text-right">數量</th>
-                <th className="border border-zinc-400 px-2 py-1.5 text-right">成本單價</th>
-                <th className="border border-zinc-400 px-2 py-1.5 text-right">成本小計</th>
-                <th className="border border-zinc-400 px-2 py-1.5 text-right">分店單價</th>
-                <th className="border border-zinc-400 px-2 py-1.5 text-right">分店小計</th>
+                {internal && (
+                  <>
+                    <th className="border border-zinc-400 px-2 py-1.5 text-right">成本單價</th>
+                    <th className="border border-zinc-400 px-2 py-1.5 text-right">成本小計</th>
+                  </>
+                )}
+                <th className="border border-zinc-400 px-2 py-1.5 text-right">{internal ? "分店單價" : "單價"}</th>
+                <th className="border border-zinc-400 px-2 py-1.5 text-right">{internal ? "分店小計" : "小計"}</th>
               </tr>
             </thead>
             <tbody>
               {items.map((it, i) => {
                 const tx = transfers.get(it.transfer_id);
                 const sku = skus.get(it.sku_id);
-                const isNeg = Number(it.line_amount) < 0;
+                const isFree = it.description != null; // 自由轉貨行：估價入帳、無單價
                 return (
                   <tr key={it.id}>
                     <td className="border border-zinc-400 px-2 py-1">{i + 1}</td>
-                    <td className="border border-zinc-400 px-2 py-1">{new Date(it.received_at).toLocaleDateString("zh-TW")}</td>
-                    <td className="border border-zinc-400 px-2 py-1">{ENTRY_TYPE_LABEL[it.entry_type]}</td>
-                    <td className="border border-zinc-400 px-2 py-1 font-mono">{tx?.transfer_no ?? `#${it.transfer_id}`}</td>
-                    <td className="border border-zinc-400 px-2 py-1 font-mono">{sku?.sku_code ?? "—"}</td>
+                    <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{new Date(it.received_at).toLocaleDateString("zh-TW")}</td>
+                    <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{ENTRY_TYPE_LABEL[it.entry_type]}</td>
+                    <td className="border border-zinc-400 px-2 py-1 font-mono whitespace-nowrap">{tx?.transfer_no ?? `#${it.transfer_id}`}</td>
+                    <td className="border border-zinc-400 px-2 py-1 font-mono whitespace-nowrap">{sku?.sku_code ?? "—"}</td>
                     <td className="border border-zinc-400 px-2 py-1">
                       {it.description ? (
                         <span>{it.description}</span>
@@ -257,12 +290,20 @@ export default function PrintSettlementPage() {
                       )}
                     </td>
                     <td className="border border-zinc-400 px-2 py-1 text-right font-mono">{Number(it.qty_received).toLocaleString()}</td>
-                    <td className="border border-zinc-400 px-2 py-1 text-right font-mono">${Number(it.unit_cost).toFixed(2)}</td>
-                    <td className={`border border-zinc-400 px-2 py-1 text-right font-mono ${isNeg ? "text-amber-600" : ""}`}>
-                      ${Number(it.line_amount).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                    {internal && (
+                      <>
+                        <td className="border border-zinc-400 px-2 py-1 text-right font-mono whitespace-nowrap">
+                          {isFree ? "—" : `$${Number(it.unit_cost).toFixed(2)}`}
+                        </td>
+                        <td className={`border border-zinc-400 px-2 py-1 text-right font-mono whitespace-nowrap ${Number(it.line_amount) < 0 ? "text-amber-600" : ""}`}>
+                          ${Number(it.line_amount).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                        </td>
+                      </>
+                    )}
+                    <td className="border border-zinc-400 px-2 py-1 text-right font-mono whitespace-nowrap">
+                      {isFree ? "—" : `$${Number(it.unit_branch_price ?? 0).toFixed(2)}`}
                     </td>
-                    <td className="border border-zinc-400 px-2 py-1 text-right font-mono">${Number(it.unit_branch_price ?? 0).toFixed(2)}</td>
-                    <td className={`border border-zinc-400 px-2 py-1 text-right font-mono ${Number(it.branch_amount ?? 0) < 0 ? "text-amber-600" : ""}`}>
+                    <td className={`border border-zinc-400 px-2 py-1 text-right font-mono whitespace-nowrap ${Number(it.branch_amount ?? 0) < 0 ? "text-amber-600" : ""}`}>
                       ${Number(it.branch_amount ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                     </td>
                   </tr>
@@ -270,12 +311,17 @@ export default function PrintSettlementPage() {
               })}
               {/* 合計列 */}
               <tr className="bg-zinc-100 font-semibold">
-                <td colSpan={8} className="border border-zinc-400 px-2 py-1.5 text-right">合計</td>
-                <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono text-rose-600">
-                  ${total.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
-                </td>
+                <td colSpan={7} className="border border-zinc-400 px-2 py-1.5 text-right">合計</td>
+                {internal && (
+                  <>
+                    <td className="border border-zinc-400 px-2 py-1.5"></td>
+                    <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono whitespace-nowrap">
+                      ${totalCost.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                    </td>
+                  </>
+                )}
                 <td className="border border-zinc-400 px-2 py-1.5"></td>
-                <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono">
+                <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono whitespace-nowrap text-rose-600">
                   ${totalBranch.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                 </td>
               </tr>
@@ -285,9 +331,13 @@ export default function PrintSettlementPage() {
           {/* 說明 */}
           <div className="mt-3 text-[10px] text-zinc-500">
             ※ 類型說明：HQ 進貨 = 總倉直接出貨給本店；空中轉入 = 別店空中轉來（加應付）；空中轉出 = 空中轉去別店（減應付）；
-            自由轉入／轉出 = 店間自由轉貨（估價入帳）；退貨沖回 = 退貨回總倉（減應付）。
-            <br />
-            ※ 價格口徑：成本單價 = 出貨當下成本；分店單價 = 收貨當下生效之分店價；兩口徑分開計算。自由轉貨行以估價入帳、兩口徑同額。
+            自由轉入／轉出 = 店間自由轉貨（轉貨時申報金額入帳）；退貨沖回 = 退貨回總倉（減應付）。
+            {internal && (
+              <>
+                <br />
+                ※ 價格口徑：成本單價 = 出貨當下成本；分店單價 = 收貨當下生效之分店價。應付金額以分店價口徑計，成本口徑供總倉毛利參考。
+              </>
+            )}
           </div>
 
           {/* 簽收區 */}
