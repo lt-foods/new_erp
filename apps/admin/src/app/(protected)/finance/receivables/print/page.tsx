@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import { useRole, canSeeCost } from "@/lib/role";
 
 type Settlement = {
   id: number;
@@ -50,6 +51,9 @@ const ENTRY_TYPE_LABEL: Record<SettlementItem["entry_type"], string> = {
 type PrintView = "store" | "internal";
 
 export default function PrintSettlementPage() {
+  const role = useRole();
+  // 分店帳號只能看分店版（不含成本）
+  const costAllowed = canSeeCost(role);
   const [settlementId, setSettlementId] = useState<number | null>(null);
   const [view, setView] = useState<PrintView>("store");
   const [settlement, setSettlement] = useState<Settlement | null>(null);
@@ -152,7 +156,7 @@ export default function PrintSettlementPage() {
   const totalCost = items.reduce((s, it) => s + Number(it.line_amount), 0);
   const totalBranch = items.reduce((s, it) => s + Number(it.branch_amount ?? 0), 0);
   const today = new Date().toLocaleDateString("zh-TW");
-  const internal = view === "internal";
+  const internal = view === "internal" && costAllowed;
 
   return (
     <>
@@ -177,20 +181,22 @@ export default function PrintSettlementPage() {
           <span className="text-sm text-zinc-500">
             {store.name} / {monthLabel} / 應付總倉 ${Number(settlement.payable_amount).toLocaleString()}
           </span>
-          <div className="flex overflow-hidden rounded-md border border-zinc-300 text-sm">
-            <SpinButton
-              onClick={() => setView("store")}
-              className={`px-3 py-1.5 ${!internal ? "bg-zinc-900 font-semibold text-white" : "bg-white text-zinc-600 hover:bg-zinc-100"}`}
-            >
-              分店版（給店家）
-            </SpinButton>
-            <SpinButton
-              onClick={() => setView("internal")}
-              className={`px-3 py-1.5 ${internal ? "bg-zinc-900 font-semibold text-white" : "bg-white text-zinc-600 hover:bg-zinc-100"}`}
-            >
-              內部版（含成本）
-            </SpinButton>
-          </div>
+          {costAllowed && (
+            <div className="flex overflow-hidden rounded-md border border-zinc-300 text-sm">
+              <SpinButton
+                onClick={() => setView("store")}
+                className={`px-3 py-1.5 ${!internal ? "bg-zinc-900 font-semibold text-white" : "bg-white text-zinc-600 hover:bg-zinc-100"}`}
+              >
+                分店版（給店家）
+              </SpinButton>
+              <SpinButton
+                onClick={() => setView("internal")}
+                className={`px-3 py-1.5 ${internal ? "bg-zinc-900 font-semibold text-white" : "bg-white text-zinc-600 hover:bg-zinc-100"}`}
+              >
+                內部版（含成本）
+              </SpinButton>
+            </div>
+          )}
           <SpinButton
             onClick={() => window.print()}
             className="ml-auto rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700"

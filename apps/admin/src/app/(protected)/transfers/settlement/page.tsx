@@ -5,9 +5,11 @@ import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { withBasePath } from "@/lib/basePath";
 import SpinButton from "@/components/SpinButton";
+import { useRole, isHqRole } from "@/lib/role";
+import StoreSettlementReview from "@/components/StoreSettlementReview";
 
 type SettlementStatus = "draft" | "confirmed" | "settled" | "disputed";
-type SettlementStatusExt = SettlementStatus | "cancelled";
+type SettlementStatusExt = SettlementStatus | "cancelled" | "sent" | "remitted";
 
 type StoreToStoreSettlement = {
   id: number;
@@ -40,7 +42,33 @@ type HqToStoreSettlement = {
   generated_receivable_id: number | null;
   notes: string | null;
   updated_at: string;
+  sent_at: string | null;
+  store_agreed_at: string | null;
+  remitted_at: string | null;
+  remit_note: string | null;
 };
+
+type SettlementDispute = {
+  id: number;
+  settlement_id: number;
+  transfer_item_id: number;
+  item_snapshot: {
+    entry_type?: string;
+    description?: string | null;
+    sku_id?: number;
+    qty_received?: number;
+    branch_amount?: number;
+    received_at?: string;
+  };
+  reason: string;
+  status: "open" | "resolved";
+  raised_at: string;
+  resolved_at: string | null;
+  resolution_note: string | null;
+};
+
+const SETTLEMENT_SELECT =
+  "id, settlement_month, store_id, payable_amount, cost_amount, branch_amount, transfer_count, item_count, status, confirmed_at, settled_at, generated_receivable_id, notes, updated_at, sent_at, store_agreed_at, remitted_at, remit_note";
 
 type Store = { id: number; code: string; name: string };
 
@@ -95,16 +123,20 @@ type Sku = { id: number; sku_code: string | null; product_name: string | null; v
 
 const STATUS_LABEL: Record<SettlementStatusExt, string> = {
   draft: "草稿",
-  confirmed: "已確認",
-  settled: "已結清",
-  disputed: "爭議中",
+  sent: "已送店家核對",
+  disputed: "店家有爭議",
+  confirmed: "已鎖定待匯款",
+  remitted: "店家已匯款",
+  settled: "已結案",
   cancelled: "已取消",
 };
 const STATUS_COLOR: Record<SettlementStatusExt, string> = {
   draft: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
-  confirmed: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
-  settled: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
+  sent: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
   disputed: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
+  confirmed: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
+  remitted: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300",
+  settled: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   cancelled: "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400",
 };
 
@@ -121,6 +153,24 @@ function monthToDate(m: string): string {
 // 註：「店間互調」tab (StoreToStoreTab) 隱藏中 — 目前所有調撥都走 HQ 中轉、
 // 直接店間互調 transfer 一直為 0。component 保留以備未來啟用、schema/RPC 不動。
 export default function SettlementPage() {
+  const role = useRole();
+
+  // 分店帳號：走店家對帳流程（線上核對/畫押/爭議/已匯款），不見成本口徑
+  if (role !== null && !isHqRole(role)) {
+    return (
+      <div className="flex flex-1 flex-col gap-4 p-6">
+        <header>
+          <h1 className="text-xl font-semibold">月結對帳</h1>
+          <p className="text-sm text-zinc-500">
+            總部送來的月結對帳單：逐筆核對，有問題的行按「有問題」附備註送出爭議；
+            全部無誤按「同意畫押」鎖定，匯款後回來按「我已匯款」。
+          </p>
+        </header>
+        <StoreSettlementReview />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header>
@@ -128,6 +178,7 @@ export default function SettlementPage() {
         <p className="text-sm text-zinc-500">
           總倉對各分店：賣斷制、依 hq_to_store 已收貨 transfers 計算貨款（含空中轉調整）。
           應付金額以分店價口徑計；成本口徑另計、供總倉毛利參考。
+          流程：產生 → 送店家核對 → （爭議處理）→ 雙方同意鎖定 → 店家匯款 → 收款結案。
         </p>
       </header>
 
@@ -163,9 +214,7 @@ function HqToStoreTab() {
         const sb = getSupabase();
         let q = sb
           .from("store_monthly_settlements")
-          .select(
-            "id, settlement_month, store_id, payable_amount, cost_amount, branch_amount, transfer_count, item_count, status, confirmed_at, settled_at, generated_receivable_id, notes, updated_at",
-          )
+          .select(SETTLEMENT_SELECT)
           .order("settlement_month", { ascending: false })
           .order("store_id", { ascending: true })
           .limit(200);
@@ -382,9 +431,11 @@ function HqToStoreDetail({
   const [items, setItems] = useState<HqToStoreItem[] | null>(null);
   const [transfers, setTransfers] = useState<Map<number, Transfer>>(new Map());
   const [skus, setSkus] = useState<Map<number, Sku>>(new Map());
+  const [disputes, setDisputes] = useState<SettlementDispute[]>([]);
   const [confirming, setConfirming] = useState(false);
+  const [acting, setActing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // 改估價後整個月的 draft 會重算，明細與表頭金額都要重抓
+  // 改估價/流程操作後表頭與明細都要重抓
   const [refreshTick, setRefreshTick] = useState(0);
   const [header, setHeader] = useState<HqToStoreSettlement>(settlement);
 
@@ -401,19 +452,28 @@ function HqToStoreDetail({
       if (refreshTick > 0) {
         const { data: h } = await sb
           .from("store_monthly_settlements")
-          .select("id, settlement_month, store_id, payable_amount, cost_amount, branch_amount, transfer_count, item_count, status, confirmed_at, settled_at, generated_receivable_id, notes, updated_at")
+          .select(SETTLEMENT_SELECT)
           .eq("id", settlement.id)
           .maybeSingle();
         if (cancelled) return;
-        if (h) setHeader(h as HqToStoreSettlement);
+        if (h) setHeader(h as unknown as HqToStoreSettlement);
       }
-      const { data, error } = await sb
-        .from("store_monthly_settlement_items")
-        .select("id, transfer_id, transfer_item_id, sku_id, qty_received, unit_cost, line_amount, unit_branch_price, branch_amount, received_at, entry_type, description")
-        .eq("settlement_id", settlement.id)
-        .order("entry_type", { ascending: true })
-        .order("received_at", { ascending: true });
+      const [{ data, error }, { data: dData }] = await Promise.all([
+        sb
+          .from("store_monthly_settlement_items")
+          .select("id, transfer_id, transfer_item_id, sku_id, qty_received, unit_cost, line_amount, unit_branch_price, branch_amount, received_at, entry_type, description")
+          .eq("settlement_id", settlement.id)
+          .order("entry_type", { ascending: true })
+          .order("received_at", { ascending: true }),
+        sb
+          .from("store_settlement_disputes")
+          .select("id, settlement_id, transfer_item_id, item_snapshot, reason, status, raised_at, resolved_at, resolution_note")
+          .eq("settlement_id", settlement.id)
+          .order("status", { ascending: false })
+          .order("raised_at", { ascending: true }),
+      ]);
       if (cancelled) return;
+      setDisputes((dData ?? []) as SettlementDispute[]);
       if (error) { setErr(error.message); setItems([]); return; }
       const list = (data ?? []) as HqToStoreItem[];
       setItems(list);
@@ -466,7 +526,7 @@ function HqToStoreDetail({
   }
 
   async function onConfirm() {
-    if (!confirm("確認此月結算？確認後將自動產生應付帳款單入帳。")) return;
+    if (!confirm("直接確認此月結算（跳過店家線上核對）？確認後鎖定並自動產生應付帳款單。")) return;
     setConfirming(true);
     setErr(null);
     try {
@@ -487,7 +547,66 @@ function HqToStoreDetail({
     }
   }
 
+  // 通用流程動作（送單 / 處理爭議 / 收款結案）
+  async function runFlowAction(fn: (operator: string) => Promise<void>) {
+    setActing(true);
+    setErr(null);
+    try {
+      const sb = getSupabase();
+      const { data: sess } = await sb.auth.getSession();
+      const operator = sess.session?.user?.id;
+      if (!operator) throw new Error("尚未登入");
+      await fn(operator);
+      setRefreshTick((t) => t + 1);
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setActing(false);
+    }
+  }
+
+  function onSendToStore() {
+    const isResend = header.status === "disputed";
+    if (!confirm(isResend ? "爭議已處理完，重新送店家核對？" : "送出對帳單給店家線上核對？")) return;
+    void runFlowAction(async (operator) => {
+      const { error } = await getSupabase().rpc("rpc_send_settlement_to_store", {
+        p_settlement_id: settlement.id,
+        p_operator: operator,
+      });
+      if (error) throw new Error(error.message);
+    });
+  }
+
+  function onResolveDispute(d: SettlementDispute) {
+    const note = window.prompt("處理說明（選填，例：已修正估價為 $280）", "");
+    if (note === null) return;
+    void runFlowAction(async (operator) => {
+      const { error } = await getSupabase().rpc("rpc_resolve_settlement_dispute", {
+        p_dispute_id: d.id,
+        p_operator: operator,
+        p_note: note.trim() || null,
+      });
+      if (error) throw new Error(error.message);
+    });
+  }
+
+  function onSettle() {
+    if (!confirm("確認已收到店家匯款？結案後應收單將自動入帳，不可再改。")) return;
+    void runFlowAction(async (operator) => {
+      const { error } = await getSupabase().rpc("rpc_settle_store_monthly_settlement", {
+        p_settlement_id: settlement.id,
+        p_operator: operator,
+        p_note: null,
+      });
+      if (error) throw new Error(error.message);
+    });
+  }
+
   const isDraft = header.status === "draft";
+  // 鎖定（confirmed）前都可修估價；生成器會同步重建 draft/sent/disputed
+  const canEditEst = ["draft", "sent", "disputed"].includes(header.status);
+  const openDisputes = disputes.filter((d) => d.status === "open");
 
   return (
     <div className="space-y-4">
@@ -501,6 +620,72 @@ function HqToStoreDetail({
         <Stat label="調撥單數" value={String(header.transfer_count)} />
         <Stat label="商品行數" value={String(header.item_count)} />
       </div>
+
+      {/* 流程狀態列 */}
+      {header.status === "sent" && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+          📨 已送店家核對（{header.sent_at ? new Date(header.sent_at).toLocaleString("zh-TW") : "—"}），等待店家同意畫押或提出爭議。
+        </div>
+      )}
+      {header.status === "confirmed" && (
+        <div className="rounded-md border border-blue-300 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-300">
+          🔒 雙方已同意鎖定{header.store_agreed_at ? `（店家畫押：${new Date(header.store_agreed_at).toLocaleString("zh-TW")}）` : "（總部直接確認）"}，等待店家匯款。
+        </div>
+      )}
+      {header.status === "remitted" && (
+        <div className="rounded-md border border-indigo-300 bg-indigo-50 p-3 text-sm text-indigo-800 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">
+          💸 店家已回報匯款（{header.remitted_at ? new Date(header.remitted_at).toLocaleString("zh-TW") : "—"}）
+          {header.remit_note && <>，備註：<span className="font-medium">{header.remit_note}</span></>}
+          。請核對入帳後按「確認收款結案」。
+        </div>
+      )}
+      {header.status === "settled" && (
+        <div className="rounded-md border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+          ✅ 已結案{header.settled_at ? `（${new Date(header.settled_at).toLocaleString("zh-TW")}）` : ""}。
+        </div>
+      )}
+
+      {/* 爭議清單 */}
+      {disputes.length > 0 && (
+        <div className="rounded-md border border-red-200 dark:border-red-900">
+          <div className="border-b border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+            店家爭議（未處理 {openDisputes.length}／共 {disputes.length} 筆）
+            {header.status === "disputed" && openDisputes.length > 0 && (
+              <span className="ml-2 font-normal">— 修正或說明後逐筆「標記已處理」，全部處理完才能重新送單</span>
+            )}
+          </div>
+          <ul className="divide-y divide-red-100 dark:divide-red-950">
+            {disputes.map((d) => (
+              <li key={d.id} className="flex items-start gap-3 px-3 py-2 text-sm">
+                <span className={`mt-0.5 inline-block rounded px-2 py-0.5 text-xs ${d.status === "open" ? "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300" : "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"}`}>
+                  {d.status === "open" ? "未處理" : "已處理"}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs text-zinc-500">
+                    {ENTRY_TYPE_LABEL[(d.item_snapshot?.entry_type ?? "hq_inbound") as HqToStoreItem["entry_type"]] ?? d.item_snapshot?.entry_type}
+                    {" · "}
+                    {d.item_snapshot?.description ?? `SKU #${d.item_snapshot?.sku_id ?? "?"}`}
+                    {" · "}${Number(d.item_snapshot?.branch_amount ?? 0).toLocaleString("zh-TW")}
+                  </div>
+                  <div className="break-words">🗣 {d.reason}</div>
+                  {d.resolution_note && (
+                    <div className="text-xs text-emerald-700 dark:text-emerald-400">↳ 總部：{d.resolution_note}</div>
+                  )}
+                </div>
+                {d.status === "open" && (
+                  <SpinButton
+                    onClick={() => onResolveDispute(d)}
+                    disabled={acting}
+                    className="shrink-0 rounded-md border border-emerald-300 px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950"
+                  >
+                    標記已處理
+                  </SpinButton>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="flex items-center justify-between gap-2">
         <div className="text-xs text-zinc-500">
@@ -523,7 +708,7 @@ function HqToStoreDetail({
         <p className="mb-2 text-xs text-zinc-500">
           📦 HQ 進貨：總倉送來；✈️ 空中轉入：別店空中轉來（加應付）；✈️ 空中轉出：空中轉去別店（減應付，金額負）。
           應付以分店價口徑計、成本口徑供毛利參考；自由轉貨行以轉貨時申報的估價入帳、兩口徑同額，
-          {isDraft ? "金額回報錯誤可按行內「改估價」修正（兩邊分店的 draft 會一起重算）。" : "已確認的結算不可再改估價。"}
+          {canEditEst ? "金額回報錯誤可按行內「改估價」修正（兩邊分店未鎖定的結算會一起重算）。" : "已鎖定的結算不可再改估價。"}
         </p>
 
         {editItem && (
@@ -583,14 +768,14 @@ function HqToStoreDetail({
                 <Th className="text-right">成本小計</Th>
                 <Th className="text-right">分店單價</Th>
                 <Th className="text-right">分店小計</Th>
-                {isDraft && <Th className="text-right">操作</Th>}
+                {canEditEst && <Th className="text-right">操作</Th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
               {items === null ? (
-                <tr><td colSpan={isDraft ? 10 : 9} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+                <tr><td colSpan={canEditEst ? 10 : 9} className="p-3 text-center text-zinc-500">載入中…</td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={isDraft ? 10 : 9} className="p-3 text-center text-zinc-500">無明細。</td></tr>
+                <tr><td colSpan={canEditEst ? 10 : 9} className="p-3 text-center text-zinc-500">無明細。</td></tr>
               ) : items.map((it) => {
                 const tx = transfers.get(it.transfer_id);
                 const sku = skus.get(it.sku_id);
@@ -626,7 +811,7 @@ function HqToStoreDetail({
                     <Td className={`text-right font-mono ${Number(it.branch_amount ?? 0) < 0 ? "text-amber-600" : "text-sky-700 dark:text-sky-400"}`}>
                       ${Number(it.branch_amount ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                     </Td>
-                    {isDraft && (
+                    {canEditEst && (
                       <Td className="text-right">
                         {isFree && (
                           <SpinButton
@@ -658,7 +843,7 @@ function HqToStoreDetail({
                   <td className="px-3 py-2 text-right font-mono font-medium text-sky-700 dark:text-sky-400">
                     ${items.reduce((sum, it) => sum + Number(it.branch_amount ?? 0), 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                   </td>
-                  {isDraft && <td></td>}
+                  {canEditEst && <td></td>}
                 </tr>
               </tfoot>
             )}
@@ -672,17 +857,46 @@ function HqToStoreDetail({
         </div>
       )}
 
-      {isDraft && (
-        <div className="flex justify-end">
+      <div className="flex flex-wrap justify-end gap-2">
+        {isDraft && (
+          <>
+            <SpinButton
+              onClick={onSendToStore}
+              disabled={acting}
+              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
+            >
+              {acting ? "送出中…" : "📨 送店家線上核對"}
+            </SpinButton>
+            <SpinButton
+              onClick={onConfirm}
+              disabled={confirming}
+              className="rounded-md border border-zinc-300 px-4 py-2 text-sm transition hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            >
+              {confirming ? "確認中…" : "直接確認（跳過店家核對）"}
+            </SpinButton>
+          </>
+        )}
+        {header.status === "disputed" && (
           <SpinButton
-            onClick={onConfirm}
-            disabled={confirming}
-            className="rounded-md bg-zinc-900 px-4 py-2 text-sm text-white transition hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+            onClick={onSendToStore}
+            disabled={acting || openDisputes.length > 0}
+            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
           >
-            {confirming ? "確認中…" : "確認此結算（產生應付帳款單）"}
+            {openDisputes.length > 0
+              ? `還有 ${openDisputes.length} 筆爭議未處理`
+              : acting ? "送出中…" : "📨 重新送店家核對"}
           </SpinButton>
-        </div>
-      )}
+        )}
+        {header.status === "remitted" && (
+          <SpinButton
+            onClick={onSettle}
+            disabled={acting}
+            className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:opacity-50"
+          >
+            {acting ? "處理中…" : "✅ 確認收款結案（應收單入帳）"}
+          </SpinButton>
+        )}
+      </div>
     </div>
   );
 }
