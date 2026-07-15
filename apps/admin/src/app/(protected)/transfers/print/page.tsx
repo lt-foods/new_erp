@@ -203,29 +203,31 @@ function Body() {
 
   return (
     <>
+      {/* 80mm 熱感出單機版型（對齊取貨小白單）。門市出單機印 A5 版會整頁縮小到看不清楚 */}
       <style jsx global>{`
         @media print {
-          @page { size: A5; margin: 6mm; }
+          @page { margin: 3mm; size: 80mm auto; }
           body { background: white !important; }
           .no-print { display: none !important; }
           .copy-page { page-break-after: always; }
           .copy-page:last-child { page-break-after: auto; }
         }
         @media screen {
+          body { background: #f0f0f0; }
           .copy-page { margin-bottom: 24px; }
         }
       `}</style>
-      <div className="mx-auto max-w-2xl p-4">
+      <div className="mx-auto my-4 max-w-[80mm] print:my-0">
         <div className="no-print mb-3 flex justify-end gap-2">
           <SpinButton
             onClick={() => window.print()}
-            className="rounded-md bg-zinc-900 px-4 py-2 text-sm text-white hover:bg-zinc-700"
+            className="rounded bg-zinc-900 px-3 py-1 text-xs text-white hover:bg-zinc-700"
           >
             🖨️ 再次列印
           </SpinButton>
           <SpinButton
             onClick={() => window.close()}
-            className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-100"
+            className="rounded border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100"
           >
             關閉
           </SpinButton>
@@ -248,121 +250,105 @@ function Slip({ kind, tx, items }: { kind: CopyKind; tx: Transfer; items: Item[]
   const totalEst = items.reduce((s, it) => s + (it.estimated_amount ?? 0), 0);
 
   return (
-    <div className="copy-page bg-white text-zinc-900">
-      <div className="mb-2 flex items-baseline justify-between border-b-2 border-zinc-700 pb-1">
-        <div>
-          <div className="text-base font-semibold">{tenantName}</div>
-          <div className="text-xl font-bold">{typeLabel}出貨單</div>
-        </div>
-        <div className="text-right">
-          <div className="inline-block rounded border-2 border-zinc-700 px-2 py-0.5 text-sm font-bold">
+    <div className="copy-page bg-white p-2 font-mono text-[13px] leading-tight text-black shadow print:shadow-none">
+      <div className="border-b-2 border-black pb-1 text-center">
+        <div className="text-[14px] font-bold">{tenantName}</div>
+        <div className="text-[20px] font-bold">{typeLabel}出貨單</div>
+        <div className="mt-0.5 flex items-center justify-center gap-2">
+          <span className="inline-block rounded border-2 border-black px-1.5 py-0.5 text-[13px] font-bold">
             {COPY_LABEL[kind]}
-          </div>
-          <div className="mt-1 font-mono text-sm font-bold">{tx.transfer_no}</div>
+          </span>
+          <span className="text-[13px] font-bold">{tx.transfer_no}</span>
         </div>
       </div>
 
-      <table className="mb-2 w-full text-xs">
-        <tbody>
-          <tr>
-            <td className="w-16 py-0.5 text-zinc-500">來源店</td>
-            <td className="py-0.5 font-semibold">{tx.source_name}</td>
-            <td className="w-16 py-0.5 text-zinc-500">目的店</td>
-            <td className="py-0.5 font-semibold">{tx.dest_name}</td>
-          </tr>
-          <tr>
-            <td className="py-0.5 text-zinc-500">建立</td>
-            <td className="py-0.5 font-mono">{new Date(tx.created_at).toLocaleString("zh-TW")}</td>
-            <td className="py-0.5 text-zinc-500">溫層</td>
-            <td className="py-0.5">{tempLabel}{tx.is_air_transfer ? " · 空運" : ""}</td>
-          </tr>
-          {tx.shipped_at && (
-            <tr>
-              <td className="py-0.5 text-zinc-500">出貨</td>
-              <td className="py-0.5 font-mono">{new Date(tx.shipped_at).toLocaleString("zh-TW")}</td>
-              {tx.customer_order_id != null ? (
-                <>
-                  <td className="py-0.5 text-zinc-500">關聯訂單</td>
-                  <td className="py-0.5 font-mono">#{tx.customer_order_id}</td>
-                </>
-              ) : (
-                <>
-                  <td className="py-0.5"></td>
-                  <td className="py-0.5"></td>
-                </>
-              )}
-            </tr>
-          )}
-        </tbody>
-      </table>
+      <div className="border-b border-dashed border-black py-1.5">
+        <div className="text-[15px] font-bold">
+          {tx.source_name} <span className="font-normal">→</span> {tx.dest_name}
+        </div>
+        <div className="text-[12px]">
+          建立 {new Date(tx.created_at).toLocaleString("zh-TW", { hour12: false })}
+        </div>
+        <div className="text-[12px]">
+          溫層 {tempLabel}{tx.is_air_transfer ? " · ✈ 空運" : ""}
+        </div>
+        {tx.shipped_at && (
+          <div className="text-[12px]">
+            出貨 {new Date(tx.shipped_at).toLocaleString("zh-TW", { hour12: false })}
+          </div>
+        )}
+        {tx.customer_order_id != null && (
+          <div className="text-[12px]">關聯訂單 #{tx.customer_order_id}</div>
+        )}
+      </div>
 
-      <table className="mb-2 w-full border-collapse text-xs">
+      <table className="w-full border-collapse">
         <thead>
-          <tr className="border-y-2 border-zinc-700">
-            <th className="w-8 px-1 py-1 text-left">#</th>
-            <th className="px-1 py-1 text-left">品名 / 描述</th>
-            <th className="w-16 px-1 py-1 text-right">應出</th>
-            <th className="w-16 px-1 py-1 text-right">實出</th>
-            <th className="w-12 px-1 py-1 text-center">點收</th>
+          <tr className="border-b border-black text-[12px]">
+            <th className="w-5 py-1 text-left">#</th>
+            <th className="py-1 text-left">品名 / 描述</th>
+            <th className="w-9 py-1 text-right">應出</th>
+            <th className="w-9 py-1 text-right">實出</th>
+            <th className="w-8 py-1 text-center">點收</th>
           </tr>
         </thead>
         <tbody>
           {items.length === 0 ? (
-            <tr><td colSpan={5} className="px-1 py-2 text-center text-zinc-500">無明細</td></tr>
+            <tr><td colSpan={5} className="py-2 text-center text-zinc-500">無明細</td></tr>
           ) : (
             items.map((it, idx) => (
               <Fragment key={it.id}>
-                <tr className="border-b border-zinc-200">
-                  <td className="px-1 py-1 font-mono align-top">{idx + 1}</td>
-                  <td className="px-1 py-1 align-top">
+                <tr className="border-b border-dashed border-zinc-400">
+                  <td className="py-1 align-top">{idx + 1}</td>
+                  <td className="py-1 align-top">
                     {it.description ? (
-                      <span>{it.description}</span>
+                      <span className="break-words font-bold">{it.description}</span>
                     ) : (
                       <>
-                        <span className="font-medium">{it.sku_name || "—"}</span>
-                        {it.variant_name && <span className="ml-1 text-zinc-600">/ {it.variant_name}</span>}
+                        <span className="break-words font-bold">{it.sku_name || "—"}</span>
+                        {it.variant_name && <span className="ml-1">/ {it.variant_name}</span>}
                         {it.sku_code && (
-                          <span className="ml-1 font-mono text-[10px] text-zinc-500">{it.sku_code}</span>
+                          <div className="text-[10px] text-zinc-500">{it.sku_code}</div>
                         )}
                       </>
                     )}
                     {it.notes && (
-                      <div className="text-[10px] italic text-zinc-600">↳ {it.notes}</div>
+                      <div className="text-[11px] italic">↳ {it.notes}</div>
                     )}
                   </td>
-                  <td className="px-1 py-1 text-right font-mono align-top">{it.qty_requested}</td>
-                  <td className="px-1 py-1 text-right font-mono align-top font-semibold">{it.qty_shipped}</td>
-                  <td className="px-1 py-1 text-center align-top">☐</td>
+                  <td className="py-1 text-right align-top">{it.qty_requested}</td>
+                  <td className="py-1 text-right align-top font-bold">{it.qty_shipped}</td>
+                  <td className="py-1 text-center align-top text-[15px]">☐</td>
                 </tr>
               </Fragment>
             ))
           )}
         </tbody>
         <tfoot>
-          <tr className="border-t-2 border-zinc-700 font-semibold">
-            <td colSpan={2} className="px-1 py-1 text-right">合計</td>
-            <td className="px-1 py-1 text-right font-mono">{items.reduce((s, it) => s + it.qty_requested, 0)}</td>
-            <td className="px-1 py-1 text-right font-mono">{totalQty}</td>
-            <td className="px-1 py-1 text-center text-[10px] text-zinc-500">{items.length} 項</td>
+          <tr className="border-t-2 border-black font-bold">
+            <td colSpan={2} className="py-1 text-right">合計</td>
+            <td className="py-1 text-right">{items.reduce((s, it) => s + it.qty_requested, 0)}</td>
+            <td className="py-1 text-right">{totalQty}</td>
+            <td className="py-1 text-center text-[11px]">{items.length} 項</td>
           </tr>
           {totalEst > 0 && (
             <tr>
-              <td colSpan={4} className="px-1 py-0.5 text-right text-[10px] text-zinc-600">估價合計</td>
-              <td className="px-1 py-0.5 text-right font-mono text-[10px]">${totalEst.toFixed(0)}</td>
+              <td colSpan={3} className="py-0.5 text-right text-[12px]">估價合計</td>
+              <td colSpan={2} className="py-0.5 text-right text-[12px] font-bold">${totalEst.toFixed(0)}</td>
             </tr>
           )}
         </tfoot>
       </table>
 
       {tx.notes && (
-        <div className="mb-2 rounded border border-zinc-300 p-1.5 text-[11px]">
-          <span className="font-semibold">備註：</span>
+        <div className="mt-1.5 border border-black p-1.5 text-[12px]">
+          <span className="font-bold">備註：</span>
           {tx.notes}
         </div>
       )}
 
-      <div className="mt-1 text-right text-[9px] text-zinc-500">
-        列印時間 {new Date().toLocaleString("zh-TW")}
+      <div className="mt-1 text-right text-[10px] text-zinc-500">
+        列印時間 {new Date().toLocaleString("zh-TW", { hour12: false })}
       </div>
     </div>
   );
