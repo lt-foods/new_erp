@@ -82,6 +82,15 @@ Migration：`20260715000120_settlement_estatement_flow.sql`
       6/10 已收、被後續收貨擠出載入範圍）。
 - [x] T31 Playwright 15/15 通過；tsc 乾淨；eslint 僅既有 baseline finding。
 
+### 總倉明細整頁化（追加）
+- [x] T32 HQ 月結算明細改整頁 `/transfers/settlement/detail?id=`（取代彈窗）；
+      列表「明細」是連結；統計卡／流程狀態列／爭議面板／改估價面板照搬。
+- [x] T33 HQ 動作全改頁內確認：送單／直接確認／收款結案＝底部固定確認列；
+      處理爭議＝爭議列行內展開說明輸入（取代 window.prompt）。
+      Playwright 監聽 dialog 驗證全程 0 瀏覽器對話框。
+- [x] T34 HQ 明細調撥單號同樣可點（/wms/transfers?open= 深連結）。
+- [x] T35 Playwright 12/12 通過；tsc 乾淨；eslint 僅既有 baseline finding。
+
 ## 待辦 / 已知限制
 - [x] ~~送單後無推播通知店家~~ → 已用側欄選單小數字當通知
       （rpc_settlement_action_count + layout badge）。真推播（LINE/push）仍未做。
