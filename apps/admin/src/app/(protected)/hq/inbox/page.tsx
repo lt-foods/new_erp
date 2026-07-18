@@ -2449,61 +2449,63 @@ function MailRow({
   return (
     <div
       onClick={handleRowClick}
-      className={`flex items-start gap-3 border-b border-l-4 px-4 py-3 transition hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-950 ${accent} ${row.source === "shortage" ? "bg-rose-50/30 dark:bg-rose-950/20" : ""} ${selected ? "bg-blue-50 dark:bg-blue-950/30" : ""} ${rowClickable ? "cursor-pointer" : ""}`}
+      className={`flex flex-col gap-2 border-b border-l-4 px-4 py-3 transition hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-950 sm:flex-row sm:items-start sm:gap-3 ${accent} ${row.source === "shortage" ? "bg-rose-50/30 dark:bg-rose-950/20" : ""} ${selected ? "bg-blue-50 dark:bg-blue-950/30" : ""} ${rowClickable ? "cursor-pointer" : ""}`}
     >
-      {/* checkbox */}
-      <div className="w-5 shrink-0 pt-1">
-        {showCheckbox && batchable ? (
-          <input type="checkbox" checked={selected} onChange={onToggleSelect} className="cursor-pointer" />
-        ) : null}
-      </div>
+      <div className="flex items-start gap-3">
+        {/* checkbox */}
+        <div className="w-5 shrink-0 pt-1">
+          {showCheckbox && batchable ? (
+            <input type="checkbox" checked={selected} onChange={onToggleSelect} className="cursor-pointer" />
+          ) : null}
+        </div>
 
-      {/* source chip + 未讀 dot (sm+) */}
-      <div className="hidden sm:block w-28 shrink-0 pt-0.5">
-        <span
-          className={`inline-flex w-fit items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium ${sourceCls}`}
-          title={sourceTitle}
-        >
-          {isPending && <span className="h-1.5 w-1.5 rounded-full bg-current opacity-80" aria-hidden />}
-          {sourceText}
-        </span>
-      </div>
-
-      {/* 主旨 + 摘要 */}
-      <div className="min-w-0 flex-1">
-        <div className={`flex flex-wrap items-baseline gap-x-2 ${isPending ? "font-semibold" : "text-zinc-700 dark:text-zinc-300"}`}>
-          <span className="truncate text-sm">{title}</span>
-          <span className="font-mono text-[10px] text-zinc-500">{idText}</span>
-          <span className={`sm:hidden inline-flex rounded px-1.5 py-0.5 text-[9px] font-medium ${sourceCls}`}>
+        {/* source chip + 未讀 dot (sm+) */}
+        <div className="hidden sm:block w-28 shrink-0 pt-0.5">
+          <span
+            className={`inline-flex w-fit items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium ${sourceCls}`}
+            title={sourceTitle}
+          >
+            {isPending && <span className="h-1.5 w-1.5 rounded-full bg-current opacity-80" aria-hidden />}
             {sourceText}
           </span>
         </div>
-        <div className="mt-0.5 truncate text-xs text-zinc-500">{subtitle}</div>
-        {row.source !== "shortage" && (() => {
-          const summary = (row.raw as { items_summary?: string }).items_summary;
-          if (!summary) return null;
-          return (
-            <div
-              className="mt-0.5 truncate text-[11px] text-zinc-600 dark:text-zinc-400"
-              title={summary}
-            >
-              📦 {summary}
-            </div>
-          );
-        })()}
+
+        {/* 主旨 + 摘要 */}
+        <div className="min-w-0 flex-1">
+          <div className={`flex flex-wrap items-baseline gap-x-2 ${isPending ? "font-semibold" : "text-zinc-700 dark:text-zinc-300"}`}>
+            <span className="truncate text-sm">{title}</span>
+            <span className="font-mono text-[10px] text-zinc-500">{idText}</span>
+            <span className={`sm:hidden inline-flex rounded px-1.5 py-0.5 text-[9px] font-medium ${sourceCls}`}>
+              {sourceText}
+            </span>
+          </div>
+          <div className="mt-0.5 truncate text-xs text-zinc-500">{subtitle}</div>
+          {row.source !== "shortage" && (() => {
+            const summary = (row.raw as { items_summary?: string }).items_summary;
+            if (!summary) return null;
+            return (
+              <div
+                className="mt-0.5 truncate text-[11px] text-zinc-600 dark:text-zinc-400"
+                title={summary}
+              >
+                📦 {summary}
+              </div>
+            );
+          })()}
+        </div>
+
+        {/* 階段 chip 直接放在內容右邊 */}
+        <div className="flex shrink-0 items-start pt-0.5">
+          <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] ${stageCls}`}>{stageText}</span>
+        </div>
       </div>
 
-      {/* 階段 chip 直接放在動作區左邊(時間移到動作下方右下) */}
-      <div className="hidden md:flex shrink-0 items-start pt-0.5">
-        <span className={`inline-flex rounded px-1.5 py-0.5 text-[10px] ${stageCls}`}>{stageText}</span>
-      </div>
-
-      {/* 動作 + 時間(右下)— 固定寬度 */}
-      <div className="flex w-[400px] shrink-0 flex-col items-end gap-1">
-        <div className="flex flex-nowrap items-center justify-end gap-1">
+      {/* 動作 + 時間 — 手機版全寬換行,sm+ 固定寬度靠右 */}
+      <div className="flex w-full flex-col items-stretch gap-1 pl-8 sm:w-[400px] sm:shrink-0 sm:items-end sm:pl-0">
+        <div className="flex flex-wrap items-center gap-1 sm:justify-end">
           {actions}
         </div>
-        <span className="text-[11px] text-zinc-400">{time}</span>
+        <span className="text-[11px] text-zinc-400 sm:text-right">{time}</span>
       </div>
     </div>
   );
