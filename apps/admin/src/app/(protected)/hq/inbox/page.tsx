@@ -67,6 +67,7 @@ type RestockRaw = {
   status: "pending" | "approved_transfer" | "approved_pr" | "shipped" | "received" | "rejected" | "cancelled";
   notes: string | null;
   rejected_reason: string | null;
+  stockout_at: string | null;
   linked_transfer_id: number | null;
   linked_pr_id: number | null;
   linked_transfer_no: string | null;
@@ -327,7 +328,7 @@ async function fetchRestockRows(
   let q = sb
     .from("restock_requests")
     .select(
-      "id, status, notes, rejected_reason, linked_transfer_id, linked_pr_id, requested_at, stores!inner(name)",
+      "id, status, notes, rejected_reason, stockout_at, linked_transfer_id, linked_pr_id, requested_at, stores!inner(name)",
       { count: "exact" },
     )
     .order("requested_at", { ascending: false });
@@ -379,6 +380,7 @@ async function fetchRestockRows(
       status: r.status,
       notes: r.notes,
       rejected_reason: r.rejected_reason,
+      stockout_at: r.stockout_at,
       linked_transfer_id: r.linked_transfer_id,
       linked_pr_id: r.linked_pr_id,
       linked_transfer_no: r.linked_transfer_id ? xferNoMap.get(r.linked_transfer_id) ?? null : null,
@@ -696,7 +698,7 @@ async function fetchRestockRowsByIds(sb: SBClient, ids: number[]): Promise<Row[]
   const { data, error } = await sb
     .from("restock_requests")
     .select(
-      "id, status, notes, rejected_reason, linked_transfer_id, linked_pr_id, requested_at, stores!inner(name)",
+      "id, status, notes, rejected_reason, stockout_at, linked_transfer_id, linked_pr_id, requested_at, stores!inner(name)",
     )
     .in("id", ids);
   if (error) throw new Error("restock: " + error.message);
@@ -737,6 +739,7 @@ async function fetchRestockRowsByIds(sb: SBClient, ids: number[]): Promise<Row[]
       status: r.status,
       notes: r.notes,
       rejected_reason: r.rejected_reason,
+      stockout_at: r.stockout_at,
       linked_transfer_id: r.linked_transfer_id,
       linked_pr_id: r.linked_pr_id,
       linked_transfer_no: r.linked_transfer_id ? xferNoMap.get(r.linked_transfer_id) ?? null : null,
@@ -2238,6 +2241,9 @@ function MailRow({
         )}
         {s.status === "rejected" && s.rejected_reason && (
           <span className="ml-2 text-red-600" title={s.rejected_reason}>· 拒絕:{s.rejected_reason}</span>
+        )}
+        {s.status === "cancelled" && s.stockout_at && (
+          <span className="ml-2 text-red-600" title={`採購斷貨於 ${new Date(s.stockout_at).toLocaleString("zh-TW")}`}>· ⛔ 斷貨</span>
         )}
       </>
     );

@@ -29,6 +29,7 @@ type Row = {
   linked_transfer_no: string | null;
   linked_pr_no: string | null;
   created_at: string;
+  stockout_at: string | null;
   line_count: number;
   total_amount: number;
   item_groups: ItemGroup[];
@@ -73,7 +74,7 @@ export default function RestockListPage() {
       const sb = getSupabase();
       const { data, error: err } = await sb
         .from("restock_requests")
-        .select("id, requesting_store_id, status, notes, rejected_reason, linked_transfer_id, linked_pr_id, created_at, stores!inner(name)")
+        .select("id, requesting_store_id, status, notes, rejected_reason, linked_transfer_id, linked_pr_id, created_at, stockout_at, stores!inner(name)")
         .order("created_at", { ascending: false })
         .limit(100);
       if (err) { setError(err.message); return; }
@@ -275,9 +276,19 @@ export default function RestockListPage() {
                       <>
                         <Td rowSpan={totalLines} align="right" className="align-top font-mono">${r.total_amount.toFixed(0)}</Td>
                         <Td rowSpan={totalLines} className="align-top">
-                          <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[r.status]}`}>
-                            {STATUS_LABEL[r.status]}
-                          </span>
+                          {/* 斷貨取消（stockout_at 有值）與一般取消區分顯示 */}
+                          {r.status === "cancelled" && r.stockout_at ? (
+                            <span
+                              title={`採購斷貨於 ${new Date(r.stockout_at).toLocaleString("zh-TW")}`}
+                              className="inline-flex rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-950 dark:text-red-300"
+                            >
+                              ⛔ 斷貨
+                            </span>
+                          ) : (
+                            <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[r.status]}`}>
+                              {STATUS_LABEL[r.status]}
+                            </span>
+                          )}
                         </Td>
                         <Td rowSpan={totalLines} className="align-top text-xs">
                           {r.linked_transfer_no && (

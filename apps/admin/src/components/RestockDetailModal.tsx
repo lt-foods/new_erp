@@ -17,6 +17,7 @@ type RestockRow = {
   requested_at: string;
   approved_at: string | null;
   rejected_at: string | null;
+  stockout_at: string | null;
   linked_transfer_id: number | null;
   linked_pr_id: number | null;
   linked_transfer_no: string | null;
@@ -39,6 +40,7 @@ type Line = {
   linked_pr_id: number | null;
   linked_pr_no: string | null;
   cancelled: boolean;
+  stockout: boolean;
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -75,7 +77,7 @@ export default function RestockDetailModal({
       const { data: rData, error: rErr } = await sb
         .from("restock_requests")
         .select(
-          "id, requesting_store_id, status, notes, rejected_reason, requested_at, approved_at, rejected_at, linked_transfer_id, linked_pr_id, " +
+          "id, requesting_store_id, status, notes, rejected_reason, requested_at, approved_at, rejected_at, stockout_at, linked_transfer_id, linked_pr_id, " +
             "stores(name), transfers(transfer_no, status, shipped_at, received_at), purchase_requests(pr_no, status)"
         )
         .eq("id", restockId)
@@ -97,6 +99,7 @@ export default function RestockDetailModal({
         requested_at: string;
         approved_at: string | null;
         rejected_at: string | null;
+        stockout_at: string | null;
         linked_transfer_id: number | null;
         linked_pr_id: number | null;
         stores: { name?: string } | { name?: string }[] | null;
@@ -121,6 +124,7 @@ export default function RestockDetailModal({
         requested_at: r.requested_at,
         approved_at: r.approved_at,
         rejected_at: r.rejected_at,
+        stockout_at: r.stockout_at,
         linked_transfer_id: r.linked_transfer_id,
         linked_pr_id: r.linked_pr_id,
         linked_transfer_no: txObj?.transfer_no ?? null,
@@ -133,7 +137,7 @@ export default function RestockDetailModal({
 
       const { data: lData } = await sb
         .from("restock_request_lines")
-        .select("id, sku_id, qty, unit_price, linked_pr_id, cancelled_at, purchase_requests(pr_no), skus(sku_code, variant_name, products(name))")
+        .select("id, sku_id, qty, unit_price, linked_pr_id, cancelled_at, stockout_at, purchase_requests(pr_no), skus(sku_code, variant_name, products(name))")
         .eq("request_id", restockId)
         .order("id");
       if (cancelled) return;
@@ -144,6 +148,7 @@ export default function RestockDetailModal({
         unit_price: number;
         linked_pr_id: number | null;
         cancelled_at: string | null;
+        stockout_at: string | null;
         purchase_requests: { pr_no?: string } | { pr_no?: string }[] | null;
         skus:
           | { sku_code: string; variant_name: string | null; products: { name?: string } | { name?: string }[] | null }
@@ -165,6 +170,7 @@ export default function RestockDetailModal({
           linked_pr_id: row.linked_pr_id ?? null,
           linked_pr_no: prObj?.pr_no ?? null,
           cancelled: row.cancelled_at !== null,
+          stockout: row.stockout_at !== null,
         };
       });
       setLines(rows);
@@ -269,7 +275,7 @@ export default function RestockDetailModal({
                         <td className={`px-3 py-2 text-xs ${l.cancelled ? "line-through opacity-60" : ""}`}>
                           {l.sku_name || "—"}
                           {l.variant_name && <span className="ml-1 text-zinc-500">/ {l.variant_name}</span>}
-                          {l.cancelled && <span className="ml-2 text-red-600 no-underline dark:text-red-400">已刪除</span>}
+                          {l.cancelled && <span className="ml-2 text-red-600 no-underline dark:text-red-400">{l.stockout ? "⛔ 斷貨" : "已刪除"}</span>}
                           {l.linked_pr_id != null && (
                             <div>
                               <Link
@@ -327,7 +333,9 @@ function ProgressTimeline({ hd }: { hd: RestockRow }) {
       { key: "requested", label: "申請", at: hd.requested_at, state: "done" },
       st === "rejected"
         ? { key: "terminal", label: "已拒絕", at: hd.rejected_at, state: "reject", note: hd.rejected_reason ?? undefined }
-        : { key: "terminal", label: "已取消", at: null, state: "cancel" },
+        : hd.stockout_at
+          ? { key: "terminal", label: "⛔ 斷貨取消", at: hd.stockout_at, state: "reject", note: "採購斷貨，供應商無法供貨" }
+          : { key: "terminal", label: "已取消", at: null, state: "cancel" },
     ];
     return <Timeline steps={steps} />;
   }

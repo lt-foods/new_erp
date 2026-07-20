@@ -24,6 +24,7 @@ type Row = {
   requested_at: string;
   approved_at: string | null;
   rejected_at: string | null;
+  stockout_at: string | null;
   line_count: number;
   total_amount: number;
   /** 已開請購單的明細（品相）數；pending 但 >0 = 部分開單 */
@@ -66,7 +67,7 @@ export default function RestockInboxPage() {
       const sb = getSupabase();
       const { data, error: err } = await sb
         .from("restock_requests")
-        .select("id, requesting_store_id, status, notes, rejected_reason, linked_transfer_id, linked_pr_id, created_at, requested_at, approved_at, rejected_at, stores!inner(name)")
+        .select("id, requesting_store_id, status, notes, rejected_reason, linked_transfer_id, linked_pr_id, created_at, requested_at, approved_at, rejected_at, stockout_at, stores!inner(name)")
         .order("created_at", { ascending: false })
         .limit(200);
       if (err) { setError(err.message); return; }
@@ -230,7 +231,19 @@ export default function RestockInboxPage() {
                 <td className="whitespace-nowrap px-3 py-3 text-xs text-zinc-500">{new Date(r.requested_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}</td>
                 <td className="px-3 py-3">{r.store_name ?? "—"}</td>
                 <td className="px-3 py-3 text-right font-mono text-xs">{r.line_count} 項 / ${r.total_amount.toFixed(0)}</td>
-                <td className="px-3 py-3"><span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[r.status]}`}>{STATUS_LABEL[r.status]}</span></td>
+                <td className="px-3 py-3">
+                  {/* 斷貨取消（stockout_at 有值）與一般取消區分顯示 */}
+                  {r.status === "cancelled" && r.stockout_at ? (
+                    <span
+                      title={`採購斷貨於 ${new Date(r.stockout_at).toLocaleString("zh-TW")}`}
+                      className="inline-flex rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-950 dark:text-red-300"
+                    >
+                      ⛔ 斷貨
+                    </span>
+                  ) : (
+                    <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[r.status]}`}>{STATUS_LABEL[r.status]}</span>
+                  )}
+                </td>
                 <td className="max-w-xs px-3 py-3 text-xs text-zinc-500">{r.notes ?? "—"}</td>
                 <td className="px-3 py-3">
                   {r.status === "pending" ? (
