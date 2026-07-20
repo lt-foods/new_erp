@@ -134,11 +134,18 @@ function filterNavForBranch(nav: NavGroup[]): NavGroup[] {
     .filter((g) => g.items.length > 0);
 }
 
-// 月結對帳待辦數（分店：待核對+待匯款；總部：待處理爭議+待確認收款）。
-// 掛在「月結算」選單當通知小數字；換頁/回到視窗/對帳操作後重抓。
+// 側欄選單通知小數字：換頁/回到視窗/對應操作後（refreshEvent）重抓。
+// 月結對帳待辦數（分店：待核對+待匯款；總部：待處理爭議+待確認收款）
 export const SETTLEMENT_BADGE_REFRESH_EVENT = "settlement-badge-refresh";
+// 分店收貨待辦數（已派出 shipped、還沒收的調撥單）
+export const INBOUND_BADGE_REFRESH_EVENT = "inbound-badge-refresh";
 
-function useSettlementActionCount(enabled: boolean, pathname: string | null): number {
+function useNavBadgeCount(
+  enabled: boolean,
+  pathname: string | null,
+  rpc: "rpc_settlement_action_count" | "rpc_inbound_pending_count",
+  refreshEvent: string,
+): number {
   const [count, setCount] = useState(0);
 
   useEffect(() => {
@@ -146,7 +153,7 @@ function useSettlementActionCount(enabled: boolean, pathname: string | null): nu
     let cancelled = false;
     const load = async () => {
       try {
-        const { data } = await getSupabase().rpc("rpc_settlement_action_count");
+        const { data } = await getSupabase().rpc(rpc);
         if (!cancelled && typeof data === "number") setCount(data);
       } catch {
         /* badge 失敗不影響操作 */
@@ -155,13 +162,13 @@ function useSettlementActionCount(enabled: boolean, pathname: string | null): nu
     void load();
     const onRefresh = () => { void load(); };
     window.addEventListener("focus", onRefresh);
-    window.addEventListener(SETTLEMENT_BADGE_REFRESH_EVENT, onRefresh);
+    window.addEventListener(refreshEvent, onRefresh);
     return () => {
       cancelled = true;
       window.removeEventListener("focus", onRefresh);
-      window.removeEventListener(SETTLEMENT_BADGE_REFRESH_EVENT, onRefresh);
+      window.removeEventListener(refreshEvent, onRefresh);
     };
-  }, [enabled, pathname]);
+  }, [enabled, pathname, rpc, refreshEvent]);
 
   return count;
 }
@@ -182,8 +189,18 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const tenantName = tenant?.name ?? getTenantName();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const settlementCount = useSettlementActionCount(!!session, pathname);
-  const navBadges: Record<string, number> = { "/transfers/settlement": settlementCount };
+  const branchUser = isBranchUser(user);
+  const settlementCount = useNavBadgeCount(
+    !!session, pathname, "rpc_settlement_action_count", SETTLEMENT_BADGE_REFRESH_EVENT,
+  );
+  // 收貨 badge 只服務分店帳號；HQ 在 /wms/inbound 看的是全分店監控，不掛通知
+  const inboundCount = useNavBadgeCount(
+    !!session && branchUser, pathname, "rpc_inbound_pending_count", INBOUND_BADGE_REFRESH_EVENT,
+  );
+  const navBadges: Record<string, number> = {
+    "/transfers/settlement": settlementCount,
+    "/wms/inbound": inboundCount,
+  };
 
   // 載入 collapsed groups (localStorage)
   useEffect(() => {
@@ -251,7 +268,6 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
     router.replace("/login");
   }
 
-  const branchUser = isBranchUser(user);
   const visibleNav = filterNavForRole(branchUser ? filterNavForBranch(NAV) : NAV, user);
 
   return (

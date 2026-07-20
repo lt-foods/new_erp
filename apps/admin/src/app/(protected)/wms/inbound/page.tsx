@@ -431,6 +431,12 @@ export default function TransfersInboxPage() {
     setSelected(new Set());
   }
 
+  // 收貨狀態變動後重載列表,並通知側欄「收貨」badge 重抓(見 layout INBOUND_BADGE_REFRESH_EVENT)
+  function reloadAndRefreshBadge() {
+    setReloadTick((n) => n + 1);
+    window.dispatchEvent(new Event("inbound-badge-refresh"));
+  }
+
   // 單筆全收 — 直接 confirm + RPC,跟批次邏輯一樣(p_lines=null)
   async function quickReceive(t: Transfer) {
     const dest = locations.get(t.dest_location) ?? `#${t.dest_location}`;
@@ -448,7 +454,7 @@ export default function TransfersInboxPage() {
         p_notes: null,
       });
       if (e) throw new Error(translateRpcError(e));
-      setReloadTick((n) => n + 1);
+      reloadAndRefreshBadge();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -479,7 +485,7 @@ export default function TransfersInboxPage() {
         p_notes: null,
       });
       if (e) throw new Error(translateRpcError(e));
-      setReloadTick((n) => n + 1);
+      reloadAndRefreshBadge();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -530,7 +536,7 @@ export default function TransfersInboxPage() {
         );
       }
       setSelected(new Set());
-      setReloadTick((t) => t + 1);
+      reloadAndRefreshBadge();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -914,7 +920,7 @@ export default function TransfersInboxPage() {
           onClose={() => setOpening(null)}
           onSubmitted={() => {
             setOpening(null);
-            setReloadTick((t) => t + 1);
+            reloadAndRefreshBadge();
           }}
         />
       )}
