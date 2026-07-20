@@ -93,6 +93,18 @@ async function buildKeywordOr(keyword: string): Promise<string | null> {
 }
 
 // 手機卡片底色（依訂單狀態）— 對應桌機表格列底色
+// 一般開團「一團一品」：開團名＝商品名（顯示在粗體行上方），粗體行只放規格即可；
+// 補貨 sentinel 團（【內部】補貨申請）等開團名非商品名時，補上商品名，避免只剩「一盒」看不出是什麼。
+function itemLabel(
+  it: { product_name: string | null; variant_name: string | null },
+  campaignName: string,
+): string {
+  if (it.product_name && it.product_name !== campaignName) {
+    return it.variant_name ? `${it.product_name} / ${it.variant_name}` : it.product_name;
+  }
+  return it.variant_name || it.product_name || "—";
+}
+
 function cardTint(status: OrderStatus): string {
   if (status === "cancelled") return "border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/30";
   if (status === "expired") return "border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30";
@@ -834,7 +846,7 @@ function OrdersListContent() {
                       <div className="break-words text-xs text-zinc-500">{c.name}</div>
                       {(sum?.items ?? []).map((it, idx) => (
                         <div key={idx} className="break-words text-base font-bold text-zinc-900 dark:text-zinc-100">
-                          {it.variant_name || it.product_name || "—"}
+                          {itemLabel(it, c.name)}
                           <span className="ml-1.5 text-xs font-normal text-zinc-500">× {it.qty}</span>
                         </div>
                       ))}
@@ -931,7 +943,7 @@ function OrdersListContent() {
                                 key={idx}
                                 className="break-words text-base font-bold text-zinc-900 dark:text-zinc-100"
                               >
-                                {it.variant_name || it.product_name || "—"}
+                                {itemLabel(it, c.name)}
                                 <span className="ml-1.5 text-xs font-normal text-zinc-500">
                                   × {it.qty}
                                 </span>
