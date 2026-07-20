@@ -82,6 +82,13 @@ export default function MutualAidPage() {
   const [offerModalOpen, setOfferModalOpen] = useState(false);
   const [threadPost, setThreadPost] = useState<Post | null>(null);
 
+  // 貼文數變動（發文/關貼/認領）後重載列表，並通知側欄「互助交流板」badge 重抓
+  // (見 layout AID_BADGE_REFRESH_EVENT)
+  function reloadAndRefreshBadge() {
+    setReloadTick((n) => n + 1);
+    window.dispatchEvent(new Event("aid-badge-refresh"));
+  }
+
   // 載入 stores 一次
   useEffect(() => {
     let cancelled = false;
@@ -253,7 +260,7 @@ export default function MutualAidPage() {
         stores={stores}
         onPosted={() => {
           setRequestModalOpen(false);
-          setReloadTick((n) => n + 1);
+          reloadAndRefreshBadge();
         }}
       />
 
@@ -263,7 +270,7 @@ export default function MutualAidPage() {
         stores={stores}
         onPosted={() => {
           setOfferModalOpen(false);
-          setReloadTick((n) => n + 1);
+          reloadAndRefreshBadge();
         }}
       />
 
@@ -274,7 +281,7 @@ export default function MutualAidPage() {
           onClose={() => setThreadPost(null)}
           onClosed={() => {
             setThreadPost(null);
-            setReloadTick((n) => n + 1);
+            reloadAndRefreshBadge();
           }}
         />
       )}

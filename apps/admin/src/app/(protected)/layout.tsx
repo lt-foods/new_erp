@@ -139,11 +139,13 @@ function filterNavForBranch(nav: NavGroup[]): NavGroup[] {
 export const SETTLEMENT_BADGE_REFRESH_EVENT = "settlement-badge-refresh";
 // 分店收貨待辦數（已派出 shipped、還沒收的調撥單）
 export const INBOUND_BADGE_REFRESH_EVENT = "inbound-badge-refresh";
+// 互助交流板進行中貼文數
+export const AID_BADGE_REFRESH_EVENT = "aid-badge-refresh";
 
 function useNavBadgeCount(
   enabled: boolean,
   pathname: string | null,
-  rpc: "rpc_settlement_action_count" | "rpc_inbound_pending_count",
+  rpc: "rpc_settlement_action_count" | "rpc_inbound_pending_count" | "rpc_aid_board_active_count",
   refreshEvent: string,
 ): number {
   const [count, setCount] = useState(0);
@@ -197,9 +199,14 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
   const inboundCount = useNavBadgeCount(
     !!session && branchUser, pathname, "rpc_inbound_pending_count", INBOUND_BADGE_REFRESH_EVENT,
   );
+  // 互助交流板 badge：分店帳號看到全 tenant 進行中貼文數（跨店佈告欄）
+  const aidCount = useNavBadgeCount(
+    !!session && branchUser, pathname, "rpc_aid_board_active_count", AID_BADGE_REFRESH_EVENT,
+  );
   const navBadges: Record<string, number> = {
     "/transfers/settlement": settlementCount,
     "/wms/inbound": inboundCount,
+    "/inventory/mutual-aid": aidCount,
   };
 
   // 載入 collapsed groups (localStorage)
