@@ -97,6 +97,8 @@ type TransferItem = {
   qty_requested: number;
   qty_shipped: number;
   qty_received: number;
+  // 自由轉貨（店轉店）的實際品名；有值時掛在虛擬 SKU 上，顯示要用它取代虛擬 SKU 名稱
+  description: string | null;
 };
 
 type Sku = {
@@ -147,7 +149,7 @@ export function TransferReceiveModal({
         const sb = getSupabase();
         const { data: itemRows, error: e } = await sb
           .from("transfer_items")
-          .select("id, transfer_id, sku_id, qty_requested, qty_shipped, qty_received")
+          .select("id, transfer_id, sku_id, qty_requested, qty_shipped, qty_received, description")
           .eq("transfer_id", transfer.id)
           .order("id");
         if (e) throw new Error(e.message);
@@ -385,11 +387,22 @@ export function TransferReceiveModal({
                     return (
                       <tr key={it.id}>
                         <td className="px-3 py-2">
-                          <div className="font-medium">{sku?.product_name ?? "—"}</div>
-                          <div className="text-xs text-zinc-500">
-                            {sku?.sku_code}
-                            {sku?.variant_name ? ` / ${sku.variant_name}` : ""}
-                          </div>
+                          {it.description ? (
+                            <>
+                              <div className="font-medium">{it.description}</div>
+                              <div className="text-xs text-zinc-500">
+                                <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-950 dark:text-blue-300">自由轉貨</span>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="font-medium">{sku?.product_name ?? "—"}</div>
+                              <div className="text-xs text-zinc-500">
+                                {sku?.sku_code}
+                                {sku?.variant_name ? ` / ${sku.variant_name}` : ""}
+                              </div>
+                            </>
+                          )}
                         </td>
                         <td className="px-3 py-2 text-right font-mono text-zinc-600 dark:text-zinc-300">
                           {it.qty_shipped}

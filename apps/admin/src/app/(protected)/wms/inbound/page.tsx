@@ -171,11 +171,18 @@ export default function TransfersInboxPage() {
           // 走 fetchAllRows 分頁：待收 transfer 數不設限，×每張多列品項很容易破
           // PostgREST 1000 列上限；不分頁的話最新 wave（transfer_id 最大、排在尾端）
           // 的品項會整批被截掉 → summary.lines=0 → 品名全變「—」。
-          const items = await fetchAllRows<{ transfer_id: number; sku_id: number; qty_shipped: number }>(
+          // description = 自由轉貨（店轉店）的實際品名；有值時掛在虛擬 SKU（MISC-01
+          // 「虛擬轉貨商品」）上，顯示要用 description 而不是虛擬 SKU 的佔位名稱。
+          const items = await fetchAllRows<{
+            transfer_id: number;
+            sku_id: number;
+            qty_shipped: number;
+            description: string | null;
+          }>(
             () =>
               sb
                 .from("transfer_items")
-                .select("transfer_id, sku_id, qty_shipped")
+                .select("transfer_id, sku_id, qty_shipped, description")
                 .in("transfer_id", transferIds)
                 .order("id"),
           );
@@ -210,7 +217,9 @@ export default function TransfersInboxPage() {
             const cur = summary.get(it.transfer_id) ?? { lines: 0, totalQty: 0, names: [], codes: [] };
             cur.lines += 1;
             cur.totalQty += Number(it.qty_shipped);
-            cur.names.push(`${skuNameMap.get(it.sku_id) ?? `#${it.sku_id}`} × ${Number(it.qty_shipped)}`);
+            const name =
+              it.description?.trim() || (skuNameMap.get(it.sku_id) ?? `#${it.sku_id}`);
+            cur.names.push(`${name} × ${Number(it.qty_shipped)}`);
             const code = skuCodeMap.get(it.sku_id);
             if (code) cur.codes.push(code);
             summary.set(it.transfer_id, cur);
@@ -330,7 +339,7 @@ export default function TransfersInboxPage() {
       if (!entry) {
         const w = wid !== null ? waves.get(wid) : undefined;
         entry = {
-          label: w?.wave_code ?? (wid !== null ? `WAVE-${wid}` : "其他 transfer"),
+          label: w?.wave_code ?? (wid !== null ? `WAVE-${wid}` : "其他調撥"),
           subLabel: w ? `配送日 ${w.wave_date}` : "",
           transfers: [],
           // 排序鍵＝撿貨單號（wave_code）；wave_code 已內含日期，字串遞減即最新在前
@@ -343,7 +352,7 @@ export default function TransfersInboxPage() {
     return Array.from(map.entries())
       .map(([key, v]) => ({ key, ...v }))
       .sort((a, b) => {
-        // 「其他 transfer」永遠墊底，其餘依撿貨單號遞減
+        // 「其他調撥」永遠墊底，其餘依撿貨單號遞減
         if (a.key === "other") return 1;
         if (b.key === "other") return -1;
         return b.sortCode.localeCompare(a.sortCode);
@@ -707,7 +716,7 @@ export default function TransfersInboxPage() {
 
       {transfers !== null && groups.length === 0 && (
         <div className="rounded-md border border-zinc-200 bg-white p-6 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
-          沒有符合條件的 transfer。
+          沒有符合條件的調撥單。
         </div>
       )}
 
