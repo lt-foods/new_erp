@@ -182,27 +182,46 @@ export default function PurchaseOrdersListPage() {
         });
 
         // 2. 透過 purchase_order_items + purchase_request_items 找來源 PR + 商品/品項
+        // 500 張 PO 的品項列數很容易破 PostgREST 1000 列上限，且一次 .in() 塞幾百個
+        // id 會撐爆 URL — 一律 chunk + fetchAllRows 分頁（同下方樞紐檢視的作法）。
+        const chunk = <T,>(arr: T[], n: number): T[][] => {
+          const out: T[][] = [];
+          for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+          return out;
+        };
         const poIds = baseList.map((p) => p.id);
         const poToPR = new Map<number, number>();
         const poItemMap = new Map<number, number[]>(); // po_id -> sku_ids[]
-        if (poIds.length) {
-          const { data: poiRows } = await supabase
-            .from("purchase_order_items")
-            .select("id, po_id, sku_id")
-            .in("po_id", poIds);
+        {
+          const poiRows: { id: number; po_id: number; sku_id: number }[] = [];
+          for (const c of chunk(poIds, 200)) {
+            const rows = await fetchAllRows<{ id: number; po_id: number; sku_id: number }>(
+              () =>
+                supabase
+                  .from("purchase_order_items")
+                  .select("id, po_id, sku_id")
+                  .in("po_id", c)
+                  .order("id", { ascending: true }),
+            );
+            poiRows.push(...rows);
+          }
           const poiToPo = new Map<number, number>();
-          for (const r of poiRows ?? []) {
+          for (const r of poiRows) {
             poiToPo.set(r.id, r.po_id);
             if (!poItemMap.has(r.po_id)) poItemMap.set(r.po_id, []);
             poItemMap.get(r.po_id)!.push(r.sku_id);
           }
-          const poiIds = (poiRows ?? []).map((r) => r.id);
-          if (poiIds.length) {
-            const { data: priRows } = await supabase
-              .from("purchase_request_items")
-              .select("po_item_id, pr_id")
-              .in("po_item_id", poiIds);
-            for (const r of priRows ?? []) {
+          const poiIds = poiRows.map((r) => r.id);
+          for (const c of chunk(poiIds, 200)) {
+            const priRows = await fetchAllRows<{ po_item_id: number | null; pr_id: number | null }>(
+              () =>
+                supabase
+                  .from("purchase_request_items")
+                  .select("po_item_id, pr_id")
+                  .in("po_item_id", c)
+                  .order("po_item_id", { ascending: true }),
+            );
+            for (const r of priRows) {
               const po = r.po_item_id ? poiToPo.get(r.po_item_id) : null;
               if (po && r.pr_id) poToPR.set(po, r.pr_id);
             }
@@ -214,11 +233,12 @@ export default function PurchaseOrdersListPage() {
           new Set(Array.from(poItemMap.values()).flat()),
         );
         const skuToProduct = new Map<number, string>();
-        if (allSkuIds.length) {
-          const { data: skuRows } = await supabase
+        for (const c of chunk(allSkuIds, 300)) {
+          const { data: skuRows, error: skuErr } = await supabase
             .from("skus")
             .select("id, products!inner(name)")
-            .in("id", allSkuIds);
+            .in("id", c);
+          if (skuErr) throw new Error(skuErr.message);
           type SkuLite = {
             id: number;
             products: { name: string } | { name: string }[] | null;
@@ -240,11 +260,12 @@ export default function PurchaseOrdersListPage() {
         }
         const prIds = Array.from(new Set(Array.from(poToPR.values())));
         const prMap = new Map<number, string>();
-        if (prIds.length) {
-          const { data: prRows } = await supabase
+        for (const c of chunk(prIds, 200)) {
+          const { data: prRows, error: prErr } = await supabase
             .from("purchase_requests")
             .select("id, pr_no")
-            .in("id", prIds);
+            .in("id", c);
+          if (prErr) throw new Error(prErr.message);
           for (const r of prRows ?? []) prMap.set(r.id, r.pr_no);
         }
         for (const p of baseList) {
