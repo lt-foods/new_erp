@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import { stripTransferNotes } from "@/lib/orderNotes";
 import SpinButton from "@/components/SpinButton";
 
 type PickupEvent = {
@@ -183,11 +184,12 @@ function Body() {
             const pay = orderPay(r);
             // pctDed 倒推（subtotal − pct − amt = payable，所以 pctDed = subtotal − payable − amt）
             const pctDed = Math.max(0, sub - pay - disc);
+            const orderNotes = stripTransferNotes(r.order?.notes);
             return (
               <div key={r.event.id} className="border-b border-dashed border-zinc-400 pb-1">
                 <div className="text-[13px]">{r.order?.campaign?.name ?? "(未知活動)"}</div>
-                {r.order?.notes && (
-                  <div className="text-[13px] italic">📝 {r.order.notes}</div>
+                {orderNotes && (
+                  <div className="text-[13px] italic">📝 {orderNotes}</div>
                 )}
                 {r.items.map((it) => {
                   const subtotal = lineSub(it);
