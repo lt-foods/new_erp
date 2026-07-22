@@ -2547,7 +2547,8 @@ function MailRow({
       onClick={handleRowClick}
       className={`flex flex-col gap-2 border-b border-l-4 px-4 py-3 transition hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-950 sm:flex-row sm:items-start sm:gap-3 ${accent} ${row.source === "shortage" ? "bg-rose-50/30 dark:bg-rose-950/20" : ""} ${selected ? "bg-blue-50 dark:bg-blue-950/30" : ""} ${rowClickable ? "cursor-pointer" : ""}`}
     >
-      <div className="flex items-start gap-3">
+      {/* min-w-0 flex-1:內容區撐滿剩餘寬度,右側 400px 動作區才會每列貼右對齊(不然按鈕跟著內容長短跑) */}
+      <div className="flex min-w-0 flex-1 items-start gap-3">
         {/* checkbox */}
         <div className="w-5 shrink-0 pt-1">
           {showCheckbox && batchable ? (
