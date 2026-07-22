@@ -18,6 +18,7 @@ type RestockRow = {
   approved_at: string | null;
   rejected_at: string | null;
   stockout_at: string | null;
+  standby_at: string | null;
   linked_transfer_id: number | null;
   linked_pr_id: number | null;
   linked_transfer_no: string | null;
@@ -77,7 +78,7 @@ export default function RestockDetailModal({
       const { data: rData, error: rErr } = await sb
         .from("restock_requests")
         .select(
-          "id, requesting_store_id, status, notes, rejected_reason, requested_at, approved_at, rejected_at, stockout_at, linked_transfer_id, linked_pr_id, " +
+          "id, requesting_store_id, status, notes, rejected_reason, requested_at, approved_at, rejected_at, stockout_at, standby_at, linked_transfer_id, linked_pr_id, " +
             "stores(name), transfers(transfer_no, status, shipped_at, received_at), purchase_requests(pr_no, status)"
         )
         .eq("id", restockId)
@@ -100,6 +101,7 @@ export default function RestockDetailModal({
         approved_at: string | null;
         rejected_at: string | null;
         stockout_at: string | null;
+        standby_at: string | null;
         linked_transfer_id: number | null;
         linked_pr_id: number | null;
         stores: { name?: string } | { name?: string }[] | null;
@@ -125,6 +127,7 @@ export default function RestockDetailModal({
         approved_at: r.approved_at,
         rejected_at: r.rejected_at,
         stockout_at: r.stockout_at,
+        standby_at: r.standby_at,
         linked_transfer_id: r.linked_transfer_id,
         linked_pr_id: r.linked_pr_id,
         linked_transfer_no: txObj?.transfer_no ?? null,
@@ -201,7 +204,14 @@ export default function RestockDetailModal({
         <div className="space-y-4">
           <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
             <Field label="申請門市" value={hd.store_name ?? `#${hd.requesting_store_id}`} />
-            <Field label="狀態" value={STATUS_LABEL[hd.status] ?? hd.status} />
+            <Field
+              label="狀態"
+              value={
+                hd.status === "pending" && hd.standby_at
+                  ? `待處理（⏳ 候補中，${new Date(hd.standby_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })} 轉入）`
+                  : STATUS_LABEL[hd.status] ?? hd.status
+              }
+            />
             <Field label="申請時間" value={new Date(hd.requested_at).toLocaleString("zh-TW")} />
             <Field
               label="核可時間"

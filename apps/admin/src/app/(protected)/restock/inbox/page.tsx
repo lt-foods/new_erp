@@ -25,6 +25,7 @@ type Row = {
   approved_at: string | null;
   rejected_at: string | null;
   stockout_at: string | null;
+  standby_at: string | null;
   line_count: number;
   total_amount: number;
   /** 已開請購單的明細（品相）數；pending 但 >0 = 部分開單 */
@@ -67,7 +68,7 @@ export default function RestockInboxPage() {
       const sb = getSupabase();
       const { data, error: err } = await sb
         .from("restock_requests")
-        .select("id, requesting_store_id, status, notes, rejected_reason, linked_transfer_id, linked_pr_id, created_at, requested_at, approved_at, rejected_at, stockout_at, stores!inner(name)")
+        .select("id, requesting_store_id, status, notes, rejected_reason, linked_transfer_id, linked_pr_id, created_at, requested_at, approved_at, rejected_at, stockout_at, standby_at, stores!inner(name)")
         .order("created_at", { ascending: false })
         .limit(200);
       if (err) { setError(err.message); return; }
@@ -138,6 +139,19 @@ export default function RestockInboxPage() {
     setBusy(id);
     try {
       const { error: err } = await getSupabase().rpc("rpc_ship_restock_pr_received", { p_request_id: id });
+      if (err) throw err;
+      setReload((t) => t + 1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function setStandby(id: number, standby: boolean) {
+    setBusy(id);
+    try {
+      const { error: err } = await getSupabase().rpc("rpc_restock_set_standby", { p_request_id: id, p_standby: standby });
       if (err) throw err;
       setReload((t) => t + 1);
     } catch (e) {
@@ -240,6 +254,13 @@ export default function RestockInboxPage() {
                     >
                       ⛔ 斷貨
                     </span>
+                  ) : r.status === "pending" && r.standby_at ? (
+                    <span
+                      title={`轉入候補於 ${new Date(r.standby_at).toLocaleString("zh-TW")}`}
+                      className="inline-flex rounded bg-violet-100 px-2 py-0.5 text-xs font-medium text-violet-800 dark:bg-violet-950 dark:text-violet-300"
+                    >
+                      ⏳ 候補中
+                    </span>
                   ) : (
                     <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[r.status]}`}>{STATUS_LABEL[r.status]}</span>
                   )}
@@ -253,6 +274,11 @@ export default function RestockInboxPage() {
                           <SpinButton onClick={() => approveToTransfer(r.id)} disabled={busy === r.id} className="rounded border border-blue-400 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300">派貨</SpinButton>
                         )}
                         <SpinButton onClick={() => setPrModalId(r.id)} disabled={busy === r.id} className="rounded border border-indigo-400 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50 dark:border-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">下訂單</SpinButton>
+                        {r.standby_at ? (
+                          <SpinButton onClick={() => setStandby(r.id, false)} disabled={busy === r.id} className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">取消候補</SpinButton>
+                        ) : (
+                          <SpinButton onClick={() => setStandby(r.id, true)} disabled={busy === r.id} title="等貨源、先移入候補" className="rounded border border-violet-400 bg-violet-50 px-2 py-1 text-xs font-medium text-violet-700 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-700 dark:bg-violet-950 dark:text-violet-300">⏳ 轉候補</SpinButton>
+                        )}
                         {r.pr_line_count === 0 && (
                           <SpinButton onClick={() => setRejectModal({ id: r.id, reason: "" })} disabled={busy === r.id} className="rounded border border-red-400 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50 dark:border-red-700 dark:bg-red-950 dark:text-red-300">拒絕</SpinButton>
                         )}

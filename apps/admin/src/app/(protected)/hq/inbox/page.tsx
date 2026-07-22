@@ -18,11 +18,13 @@ import RestockDetailModal from "@/components/RestockDetailModal";
 import RestockToPrModal from "@/components/RestockToPrModal";
 import { ORDER_STATUS_LABEL as AID_STATUS_LABEL, type OrderStatus as AidStatus } from "@/lib/orderStatus";
 
-type Stage = "pending" | "in_transit" | "done" | "rejected";
+// standby(候補)目前只有 restock 來源會用到:pending + standby_at 有值 = 等貨源、先不佔待處理
+type Stage = "pending" | "standby" | "in_transit" | "done" | "rejected";
 type SourceTag = "restock" | "transfer" | "aid" | "air" | "shortage" | "picking" | "exception";
 
 const STAGE_LABEL: Record<Stage, string> = {
   pending: "待處理",
+  standby: "候補",
   in_transit: "在途",
   done: "已完成",
   rejected: "已拒絕 / 取消",
@@ -30,10 +32,13 @@ const STAGE_LABEL: Record<Stage, string> = {
 
 const STAGE_COLOR: Record<Stage, string> = {
   pending: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  standby: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-300",
   in_transit: "bg-cyan-100 text-cyan-800 dark:bg-cyan-950 dark:text-cyan-300",
   done: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   rejected: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
 };
+
+const ALL_STAGES: Stage[] = ["pending", "standby", "in_transit", "done", "rejected"];
 
 const SOURCE_LABEL: Record<SourceTag, string> = {
   restock: "補貨申請",
@@ -68,6 +73,9 @@ type RestockRaw = {
   notes: string | null;
   rejected_reason: string | null;
   stockout_at: string | null;
+  standby_at: string | null;
+  /** 已開請購單的明細（品相）數；pending 但 >0 = 部分開單 */
+  pr_line_count: number;
   linked_transfer_id: number | null;
   linked_pr_id: number | null;
   linked_transfer_no: string | null;
@@ -151,8 +159,8 @@ type Row =
   | { key: string; source: "shortage"; ts: number; stage: Stage; raw: ShortageRaw }
   | { key: string; source: "picking"; ts: number; stage: Stage; raw: PickingRaw };
 
-function classifyRestock(s: RestockRaw["status"]): Stage {
-  if (s === "pending") return "pending";
+function classifyRestock(s: RestockRaw["status"], standbyAt: string | null): Stage {
+  if (s === "pending") return standbyAt ? "standby" : "pending";
   if (s === "approved_transfer" || s === "approved_pr" || s === "shipped") return "in_transit";
   if (s === "received") return "done";
   return "rejected";
@@ -194,14 +202,17 @@ function classifyPicking(s: PickingRaw["status"]): Stage {
 }
 
 // === Status → Stage 對應(server-side 過濾用)===
+// restock 的 pending / standby 不能只靠 status 分——fetchRestockRows 會再依 standby_at 過濾
 const RESTOCK_STATUS_BY_STAGE: Record<Stage, string[]> = {
   pending: ["pending"],
+  standby: ["pending"],
   in_transit: ["approved_transfer", "approved_pr", "shipped"],
   done: ["received"],
   rejected: ["rejected", "cancelled"],
 };
 const TRANSFER_STATUS_BY_STAGE: Record<Stage, string[]> = {
   pending: ["draft", "confirmed"],
+  standby: [], // 轉貨單沒有候補概念
   in_transit: ["shipped"],
   done: ["received"],
   rejected: ["cancelled"],
@@ -216,18 +227,21 @@ const TRANSFER_STATUS_LABEL: Record<string, string> = {
 };
 const AID_STATUS_BY_STAGE: Record<Stage, AidStatus[]> = {
   pending: ["pending", "confirmed"],
+  standby: [],
   in_transit: ["shipping"],
   done: ["ready", "completed", "partially_completed"],
   rejected: ["cancelled"],
 };
 const PICKING_STATUS_BY_STAGE: Record<Stage, string[]> = {
   pending: ["draft", "picking", "picked"],
+  standby: [],
   in_transit: [], // 撿貨單沒有「在途」概念,出貨後直接 done
   done: ["shipped"],
   rejected: ["cancelled"],
 };
 const SHORTAGE_RESOLUTION_BY_STAGE: Record<Stage, string[] | null> = {
   pending: null, // resolution IS NULL
+  standby: [],
   in_transit: ["notified", "waiting_next_po"],
   done: ["cancelled", "reallocated"],
   rejected: [], // never
@@ -328,11 +342,14 @@ async function fetchRestockRows(
   let q = sb
     .from("restock_requests")
     .select(
-      "id, status, notes, rejected_reason, stockout_at, linked_transfer_id, linked_pr_id, requested_at, stores!inner(name)",
+      "id, status, notes, rejected_reason, stockout_at, standby_at, linked_transfer_id, linked_pr_id, requested_at, stores!inner(name)",
       { count: "exact" },
     )
     .order("requested_at", { ascending: false });
-  if (stage) q = q.in("status", RESTOCK_STATUS_BY_STAGE[stage]);
+  // pending / standby 都是 status='pending',差在 standby_at 有沒有值
+  if (stage === "pending") q = q.eq("status", "pending").is("standby_at", null);
+  else if (stage === "standby") q = q.eq("status", "pending").not("standby_at", "is", null);
+  else if (stage) q = q.in("status", RESTOCK_STATUS_BY_STAGE[stage]);
   if (dateFrom) q = q.gte("requested_at", `${dateFrom}T00:00:00`);
   if (dateTo) q = q.lte("requested_at", `${dateTo}T23:59:59.999`);
   const start = (page - 1) * PAGE_SIZE;
@@ -342,16 +359,17 @@ async function fetchRestockRows(
   const rsRows = (data ?? []) as unknown as Array<RestockRaw & { stores?: { name: string } }>;
 
   const reqIds = rsRows.map((r) => r.id);
-  const lineMap = new Map<number, { count: number; total: number }>();
+  const lineMap = new Map<number, { count: number; total: number; prCount: number }>();
   if (reqIds.length > 0) {
     const { data: lineData } = await sb
       .from("restock_request_lines")
-      .select("request_id, qty, unit_price")
+      .select("request_id, qty, unit_price, linked_pr_id")
       .in("request_id", reqIds);
-    for (const l of (lineData ?? []) as { request_id: number; qty: number; unit_price: number }[]) {
-      const slot = lineMap.get(l.request_id) ?? { count: 0, total: 0 };
+    for (const l of (lineData ?? []) as { request_id: number; qty: number; unit_price: number; linked_pr_id: number | null }[]) {
+      const slot = lineMap.get(l.request_id) ?? { count: 0, total: 0, prCount: 0 };
       slot.count += 1;
       slot.total += Number(l.qty) * Number(l.unit_price);
+      if (l.linked_pr_id != null) slot.prCount += 1;
       lineMap.set(l.request_id, slot);
     }
   }
@@ -374,13 +392,14 @@ async function fetchRestockRows(
     key: `restock-${r.id}`,
     source: "restock" as const,
     ts: new Date(r.requested_at).getTime(),
-    stage: classifyRestock(r.status),
+    stage: classifyRestock(r.status, r.standby_at),
     raw: {
       id: r.id,
       status: r.status,
       notes: r.notes,
       rejected_reason: r.rejected_reason,
       stockout_at: r.stockout_at,
+      standby_at: r.standby_at,
       linked_transfer_id: r.linked_transfer_id,
       linked_pr_id: r.linked_pr_id,
       linked_transfer_no: r.linked_transfer_id ? xferNoMap.get(r.linked_transfer_id) ?? null : null,
@@ -389,6 +408,7 @@ async function fetchRestockRows(
       requested_at: r.requested_at,
       line_count: lineMap.get(r.id)?.count ?? 0,
       total_amount: lineMap.get(r.id)?.total ?? 0,
+      pr_line_count: lineMap.get(r.id)?.prCount ?? 0,
       items_summary: itemsMap.get(r.id) ?? "",
     },
   }));
@@ -403,6 +423,7 @@ async function fetchTransferRows(
   dateTo: string,
   transferKind: "all" | "store_to_store" | "return_to_hq" | "hq_to_store" | "aid_handoff" = "all",
 ): Promise<{ rows: Row[]; total: number }> {
+  if (stage === "standby") return { rows: [], total: 0 }; // 只有 restock 有候補
   let q = sb
     .from("transfers")
     .select(
@@ -474,6 +495,7 @@ async function fetchAidRows(
   airMode: "aid" | "air",
   aidStatus: string,
 ): Promise<{ rows: Row[]; total: number }> {
+  if (stage === "standby") return { rows: [], total: 0 }; // 只有 restock 有候補
   let q = sb
     .from("customer_orders")
     .select(
@@ -698,21 +720,22 @@ async function fetchRestockRowsByIds(sb: SBClient, ids: number[]): Promise<Row[]
   const { data, error } = await sb
     .from("restock_requests")
     .select(
-      "id, status, notes, rejected_reason, stockout_at, linked_transfer_id, linked_pr_id, requested_at, stores!inner(name)",
+      "id, status, notes, rejected_reason, stockout_at, standby_at, linked_transfer_id, linked_pr_id, requested_at, stores!inner(name)",
     )
     .in("id", ids);
   if (error) throw new Error("restock: " + error.message);
   const rsRows = (data ?? []) as unknown as Array<RestockRaw & { stores?: { name: string } }>;
-  const lineMap = new Map<number, { count: number; total: number }>();
+  const lineMap = new Map<number, { count: number; total: number; prCount: number }>();
   if (rsRows.length > 0) {
     const { data: lineData } = await sb
       .from("restock_request_lines")
-      .select("request_id, qty, unit_price")
+      .select("request_id, qty, unit_price, linked_pr_id")
       .in("request_id", rsRows.map((r) => r.id));
-    for (const l of (lineData ?? []) as { request_id: number; qty: number; unit_price: number }[]) {
-      const slot = lineMap.get(l.request_id) ?? { count: 0, total: 0 };
+    for (const l of (lineData ?? []) as { request_id: number; qty: number; unit_price: number; linked_pr_id: number | null }[]) {
+      const slot = lineMap.get(l.request_id) ?? { count: 0, total: 0, prCount: 0 };
       slot.count += 1;
       slot.total += Number(l.qty) * Number(l.unit_price);
+      if (l.linked_pr_id != null) slot.prCount += 1;
       lineMap.set(l.request_id, slot);
     }
   }
@@ -733,13 +756,14 @@ async function fetchRestockRowsByIds(sb: SBClient, ids: number[]): Promise<Row[]
     key: `restock-${r.id}`,
     source: "restock" as const,
     ts: new Date(r.requested_at).getTime(),
-    stage: classifyRestock(r.status),
+    stage: classifyRestock(r.status, r.standby_at),
     raw: {
       id: r.id,
       status: r.status,
       notes: r.notes,
       rejected_reason: r.rejected_reason,
       stockout_at: r.stockout_at,
+      standby_at: r.standby_at,
       linked_transfer_id: r.linked_transfer_id,
       linked_pr_id: r.linked_pr_id,
       linked_transfer_no: r.linked_transfer_id ? xferNoMap.get(r.linked_transfer_id) ?? null : null,
@@ -748,6 +772,7 @@ async function fetchRestockRowsByIds(sb: SBClient, ids: number[]): Promise<Row[]
       requested_at: r.requested_at,
       line_count: lineMap.get(r.id)?.count ?? 0,
       total_amount: lineMap.get(r.id)?.total ?? 0,
+      pr_line_count: lineMap.get(r.id)?.prCount ?? 0,
       items_summary: itemsMap.get(r.id) ?? "",
     },
   }));
@@ -951,6 +976,11 @@ function HqInboxContent() {
     }
   }, [searchParams]);
 
+  // 「候補」stage 只屬於補貨申請;來源不是 restock 時(例如 ?source= URL 直接切走)
+  // 一律視為「待處理」,不改 state、純 derive,避免 effect 裡 setState
+  const effectiveStage: Stage | "all" =
+    stage === "standby" && sourceFilter !== "restock" ? "pending" : stage;
+
   // 共用日期區間(所有來源)
   const [dateFrom, setDateFrom] = useState<string>("");
   const [dateTo, setDateTo] = useState<string>("");
@@ -1010,7 +1040,7 @@ function HqInboxContent() {
     (async () => {
       try {
         const sb = getSupabase();
-        const fallback: Record<Stage, number> = { pending: 0, in_transit: 0, done: 0, rejected: 0 };
+        const fallback: Record<Stage, number> = { pending: 0, standby: 0, in_transit: 0, done: 0, rejected: 0 };
         const [{ data, error }, pickingCounts, airCounts] = await Promise.all([
           sb.rpc("rpc_inbox_counts"),
           // picking 還沒進 rpc_inbox_counts(server-side migration 待 deploy),先 client-side 算
@@ -1046,6 +1076,7 @@ function HqInboxContent() {
         // aid 扣掉 air(server 端 aid 尚含空中轉)
         const aidCounts: Record<Stage, number> = {
           pending: Math.max(0, serverAid.pending - airCounts.pending),
+          standby: 0,
           in_transit: Math.max(0, serverAid.in_transit - airCounts.in_transit),
           done: Math.max(0, serverAid.done - airCounts.done),
           rejected: Math.max(0, serverAid.rejected - airCounts.rejected),
@@ -1077,7 +1108,7 @@ function HqInboxContent() {
     (async () => {
       try {
         const sb = getSupabase();
-        const stageArg: Stage | null = stage === "all" ? null : stage;
+        const stageArg: Stage | null = effectiveStage === "all" ? null : effectiveStage;
 
         let resultRows: Row[] = [];
         let resultTotal = 0;
@@ -1144,18 +1175,18 @@ function HqInboxContent() {
     return () => {
       cancelled = true;
     };
-  }, [sourceFilter, stage, page, dateFrom, dateTo, aidStatusFilter, transferKindFilter, reloadTick]);
+  }, [sourceFilter, effectiveStage, page, dateFrom, dateTo, aidStatusFilter, transferKindFilter, reloadTick]);
 
   // stage tab counts:依當前 sourceFilter,從 cached counts 算出
   const stageCounts = useMemo(() => {
-    const c: Record<Stage, number> = { pending: 0, in_transit: 0, done: 0, rejected: 0 };
+    const c: Record<Stage, number> = { pending: 0, standby: 0, in_transit: 0, done: 0, rejected: 0 };
     if (!counts) return c;
     const sources: SourceTag[] = sourceFilter === "all"
       ? ["restock", "transfer", "aid", "shortage"]
       : [sourceFilter];
     for (const s of sources) {
-      for (const stg of ["pending", "in_transit", "done", "rejected"] as Stage[]) {
-        c[stg] += counts[s][stg];
+      for (const stg of ALL_STAGES) {
+        c[stg] += counts[s][stg] ?? 0;
       }
     }
     return c;
@@ -1165,14 +1196,12 @@ function HqInboxContent() {
   const sourceCounts = useMemo(() => {
     const c: Record<SourceTag, number> = { restock: 0, transfer: 0, aid: 0, air: 0, shortage: 0, picking: 0, exception: 0 };
     if (!counts) return c;
-    const stages: Stage[] = stage === "all"
-      ? ["pending", "in_transit", "done", "rejected"]
-      : [stage];
+    const stages: Stage[] = effectiveStage === "all" ? ALL_STAGES : [effectiveStage];
     for (const s of ["restock", "transfer", "aid", "air", "shortage", "picking", "exception"] as SourceTag[]) {
-      for (const stg of stages) c[s] += counts[s][stg];
+      for (const stg of stages) c[s] += counts[s][stg] ?? 0;
     }
     return c;
-  }, [counts, stage]);
+  }, [counts, effectiveStage]);
 
   // server-side 已過濾 source / stage / 日期 / Aid filters,client-side 只做 search(限當前頁)
   const filtered = useMemo(() => {
@@ -1272,6 +1301,23 @@ function HqInboxContent() {
     setRestockPrId(id);
   }
 
+  // 轉入 / 轉出候補區(status 維持 pending,只掛 standby_at 旗標;可隨時反悔,不跳 confirm)
+  async function setStandby(id: number, standby: boolean) {
+    setBusy(`restock-${id}-standby`);
+    try {
+      const { error: err } = await getSupabase().rpc("rpc_restock_set_standby", {
+        p_request_id: id,
+        p_standby: standby,
+      });
+      if (err) throw err;
+      setReloadTick((t) => t + 1);
+    } catch (e) {
+      setError(translateRpcError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function shipPrReceived(id: number) {
     if (!confirm("確定 PR 已到貨、現在從 HQ 派貨到分店？")) return;
     setBusy(`restock-${id}-ship`);
@@ -1326,6 +1372,9 @@ function HqInboxContent() {
         if (sourceFilter === "transfer") {
           return r.stage === "pending" || r.stage === "in_transit";
         }
+        if (sourceFilter === "restock") {
+          return r.stage === "pending" || r.stage === "standby";
+        }
         return r.stage === "pending";
       })
       .map((r) => r.key);
@@ -1350,7 +1399,12 @@ function HqInboxContent() {
           }
         : sourceFilter === "picking"
           ? { "派貨出倉": ["pending"], "取消": ["pending"] }
-          : {};
+          : sourceFilter === "restock"
+            ? {
+                "派貨": ["pending", "standby"], "下訂單": ["pending", "standby"],
+                "轉候補": ["pending"], "取消候補": ["standby"],
+              }
+            : {};
     const allowedStages = validStages[action] ?? (["pending"] as Stage[]);
     let items = paginatedRows.filter(
       (r) => selected.has(r.key) && allowedStages.includes(r.stage),
@@ -1467,6 +1521,8 @@ function HqInboxContent() {
           if (action === "派貨") return sb.rpc("rpc_approve_restock_to_transfer", { p_request_id: id });
           // 批次下訂單＝整張申請開一張請購單；要依品相分張請用單筆列的「下訂單」
           if (action === "下訂單") return sb.rpc("rpc_approve_restock_to_pr", { p_request_id: id });
+          if (action === "轉候補") return sb.rpc("rpc_restock_set_standby", { p_request_id: id, p_standby: true });
+          if (action === "取消候補") return sb.rpc("rpc_restock_set_standby", { p_request_id: id, p_standby: false });
         }
         if (r.source === "aid") {
           const id = r.raw.id;
@@ -1721,7 +1777,12 @@ function HqInboxContent() {
             <SpinButton
               key={s}
               // 空中轉自動出貨、無 pending 單;選它時跳「全部」stage 才看得到紀錄
-              onClick={() => { setSourceFilter(s); if (s === "air") setStage("all"); }}
+              // 「候補」stage 只有補貨申請有,切走時退回「待處理」
+              onClick={() => {
+                setSourceFilter(s);
+                if (s === "air") setStage("all");
+                else if (stage === "standby" && s !== "restock") setStage("pending");
+              }}
               className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition ${
                 active
                   ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
@@ -1842,14 +1903,17 @@ function HqInboxContent() {
             </label>
           </div>
 
-          {/* Stage tabs (套用在當前資料夾) */}
+          {/* Stage tabs (套用在當前資料夾;「候補」只有補貨申請有) */}
           <div className="flex flex-wrap gap-1 border-b border-zinc-200 dark:border-zinc-800">
-            {(["pending", "in_transit", "done", "rejected", "all"] as const).map((s) => {
+            {(sourceFilter === "restock"
+              ? (["pending", "standby", "in_transit", "done", "rejected", "all"] as const)
+              : (["pending", "in_transit", "done", "rejected", "all"] as const)
+            ).map((s) => {
               const label = s === "all" ? "全部" : STAGE_LABEL[s];
               const count = s === "all"
                 ? Object.values(stageCounts).reduce((a, b) => a + b, 0)
                 : stageCounts[s];
-              const active = stage === s;
+              const active = effectiveStage === s;
               return (
                 <SpinButton
                   key={s}
@@ -1902,6 +1966,12 @@ function HqInboxContent() {
                     <>
                       <RowAction variant="success" onClick={() => batchAction("派貨")} disabled={batchBusy}>派貨 ({selected.size})</RowAction>
                       <RowAction variant="indigo" onClick={() => batchAction("下訂單")} disabled={batchBusy}>下訂單 ({selected.size})</RowAction>
+                      {effectiveStage === "pending" && (
+                        <RowAction variant="warning" onClick={() => batchAction("轉候補")} disabled={batchBusy}>⏳ 轉候補 ({selected.size})</RowAction>
+                      )}
+                      {effectiveStage === "standby" && (
+                        <RowAction variant="neutral" onClick={() => batchAction("取消候補")} disabled={batchBusy}>取消候補 ({selected.size})</RowAction>
+                      )}
                     </>
                   )}
                   {sourceFilter === "aid" && (
@@ -1989,6 +2059,7 @@ function HqInboxContent() {
                   return (
                     <MailRow key={r.key} row={r} busy={busy}
                       onApproveTransfer={approveToTransfer} onApprovePr={approveToPr} onShipPrReceived={shipPrReceived}
+                      onSetStandby={setStandby}
                       onOpenReject={(id) => setRejectModal({ id, reason: "" })}
                       onOpenAidDetail={setAidDetailId} onAidChanged={() => setReloadTick((t) => t + 1)}
                       onOpenTransferDetail={setTransferDetailId} onOpenRestockDetail={setRestockDetailId}
@@ -2126,6 +2197,7 @@ function MailRow({
   onApproveTransfer,
   onApprovePr,
   onShipPrReceived,
+  onSetStandby,
   onOpenReject,
   onOpenAidDetail,
   onAidChanged,
@@ -2148,6 +2220,7 @@ function MailRow({
   onApproveTransfer: (id: number) => Promise<void>;
   onApprovePr: (id: number) => Promise<void>;
   onShipPrReceived: (id: number) => Promise<void>;
+  onSetStandby: (id: number, standby: boolean) => Promise<void>;
   onOpenReject: (id: number) => void;
   onOpenAidDetail: (id: number) => void;
   onAidChanged: () => void;
@@ -2229,6 +2302,12 @@ function MailRow({
     subtitle = (
       <>
         急補 {s.line_count} 項 · NT${s.total_amount.toFixed(0)}
+        {/* 部分品相已開請購單、整張還掛 pending/候補 → 標出來,不然看不出「到底訂了沒」 */}
+        {s.status === "pending" && s.pr_line_count > 0 && (
+          <span className="ml-2 font-medium text-indigo-600 dark:text-indigo-400">
+            · 已開單 {s.pr_line_count}/{s.line_count} 品相
+          </span>
+        )}
         {s.linked_pr_id && (
           <Link href={`/purchase/requests/edit?id=${s.linked_pr_id}`} className="ml-2 font-mono text-blue-600 hover:underline dark:text-blue-400">
             · {s.linked_pr_no ?? `${PR_TERM_ZH} #${s.linked_pr_id}`}
@@ -2249,11 +2328,22 @@ function MailRow({
     );
     timeIso = s.requested_at;
     if (s.status === "pending") {
+      const isBusy = busy?.startsWith(`restock-${s.id}`) ?? false;
+      const inStandby = s.standby_at !== null;
       actions = (
         <>
-          <RowAction variant="success" onClick={() => onApproveTransfer(s.id)} disabled={busy?.startsWith(`restock-${s.id}`) ?? false}>派貨</RowAction>
-          <RowAction variant="indigo" onClick={() => onApprovePr(s.id)} disabled={busy?.startsWith(`restock-${s.id}`) ?? false}>下訂單</RowAction>
-          <RowAction variant="danger" onClick={() => onOpenReject(s.id)} disabled={busy?.startsWith(`restock-${s.id}`) ?? false}>拒絕</RowAction>
+          <RowAction variant="success" onClick={() => onApproveTransfer(s.id)} disabled={isBusy}>派貨</RowAction>
+          <RowAction variant="indigo" onClick={() => onApprovePr(s.id)} disabled={isBusy}>下訂單</RowAction>
+          {inStandby ? (
+            <RowAction variant="neutral" onClick={() => onSetStandby(s.id, false)} disabled={isBusy} title="移回「待處理」">
+              取消候補
+            </RowAction>
+          ) : (
+            <RowAction variant="warning" onClick={() => onSetStandby(s.id, true)} disabled={isBusy} title="等貨源、先移到「候補」分類（不佔待處理）">
+              ⏳ 轉候補
+            </RowAction>
+          )}
+          <RowAction variant="danger" onClick={() => onOpenReject(s.id)} disabled={isBusy}>拒絕</RowAction>
         </>
       );
     } else if (s.status === "approved_pr") {
