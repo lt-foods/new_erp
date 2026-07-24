@@ -6,6 +6,7 @@ import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import RestockToPrModal from "@/components/RestockToPrModal";
 import { PR_TERM_ZH } from "@/lib/prStatus";
+import { translateRpcError } from "@/lib/rpcError";
 
 type Status = "pending" | "approved_transfer" | "approved_pr" | "shipped" | "received" | "rejected" | "cancelled";
 
@@ -128,7 +129,7 @@ export default function RestockInboxPage() {
       if (err) throw err;
       setReload((t) => t + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(translateRpcError(e));
     } finally {
       setBusy(null);
     }
@@ -142,7 +143,7 @@ export default function RestockInboxPage() {
       if (err) throw err;
       setReload((t) => t + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(translateRpcError(e));
     } finally {
       setBusy(null);
     }
@@ -155,7 +156,7 @@ export default function RestockInboxPage() {
       if (err) throw err;
       setReload((t) => t + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(translateRpcError(e));
     } finally {
       setBusy(null);
     }
@@ -173,7 +174,7 @@ export default function RestockInboxPage() {
       setRejectModal(null);
       setReload((t) => t + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(translateRpcError(e));
     } finally {
       setBusy(null);
     }

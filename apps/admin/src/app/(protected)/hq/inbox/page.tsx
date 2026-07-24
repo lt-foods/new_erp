@@ -1167,7 +1167,7 @@ function HqInboxContent() {
         setTotal(resultTotal);
         setError(null);
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(translateRpcError(e));
       } finally {
         if (!cancelled) setLoadingRows(false);
       }
@@ -1290,7 +1290,7 @@ function HqInboxContent() {
       if (err) throw err;
       setReloadTick((t) => t + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(translateRpcError(e));
     } finally {
       setBusy(null);
     }
@@ -1326,7 +1326,7 @@ function HqInboxContent() {
       if (err) throw err;
       setReloadTick((t) => t + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(translateRpcError(e));
     } finally {
       setBusy(null);
     }
@@ -1344,7 +1344,7 @@ function HqInboxContent() {
       setRejectModal(null);
       setReloadTick((t) => t + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(translateRpcError(e));
     } finally {
       setBusy(null);
     }
@@ -1620,7 +1620,7 @@ function HqInboxContent() {
       }
       setReloadTick((t) => t + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(translateRpcError(e));
     } finally {
       setBusy(null);
     }
@@ -1649,7 +1649,7 @@ function HqInboxContent() {
       // TODO: action='notified' 觸發 PWA push edge function
       setReloadTick((t) => t + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(translateRpcError(e));
     } finally {
       setBusy(null);
     }
