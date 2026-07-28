@@ -193,6 +193,28 @@
 
 ---
 
+## 3.6 店長店員編輯備註（2026-07-28 `20260728000000_order_notes_store_edit.sql`）
+
+> 備註 RPC 權限自 `_check_order_edit_perm`（認 `store_id`，實際 staff 帳號沒有此欄）
+> 改為 `_check_order_edit_notes_perm`（認 `app_metadata.stores[]` 店名，同 qty 編輯）。
+> §2.9 / §3.4 的 store_id 矩陣對備註兩支 RPC 已不適用，以下取代：
+
+| 角色 | rpc_update_order_notes / rpc_update_order_item_notes | 預期 |
+|---|---|---|
+| HQ owner / admin / hq_manager / hq_accountant / role NULL | 兩支 | 成功 |
+| stores[] 含 '總倉' | 兩支 | 成功 |
+| store_manager / store_staff，stores[] 含訂單取貨店名 | 兩支 | 成功 |
+| store_manager / store_staff，stores[] 不含訂單取貨店名 | 兩支 | RAISE `permission denied` |
+| 單價 / 折扣 4 支 RPC | 權限不變 | 店長店員仍被拒 |
+
+- [ ] 店長帳號開自店訂單 → 單頭備註 + 品項備註可點擊編輯、儲存後 reload 還在
+- [ ] 店員帳號開自店訂單 → 同上
+- [ ] 店長/店員開**他店**訂單 → 備註純文字、無 input
+- [ ] 店長/店員開自店訂單 → 單價、折扣欄仍唯讀
+- [ ] 備註修改寫入 audit log，店家帳號在「查看編輯歷史」看得到
+
+---
+
 ## 4. Regression
 
 - [ ] LIFF `/orders/:id` 顧客端的 `payable_amount` 仍正確（直接讀 `v_customer_order_summary` 不應壞）

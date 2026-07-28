@@ -198,7 +198,7 @@ export function OrderDetail({
   const { user } = useAuth();
   const role = useRole();
   const userStores = (user?.app_metadata?.stores as unknown[] | undefined) ?? [];
-  // 整單編輯（單價/折扣/備註）— 限 HQ tier 或總倉成員
+  // 整單編輯（單價/折扣）— 限 HQ tier 或總倉成員
   const canEdit = useMemo(() => {
     if (role === null) return false;
     if (HQ_ROLES.has(role)) return true;
@@ -213,6 +213,9 @@ export function OrderDetail({
 
   // qty 只有 pending 訂單可改;一旦被 PR 鎖定變 confirmed 就唯讀
   const canEditQty = (canEdit || isStoreOfThisOrder) && head?.status === "pending";
+
+  // 備註（單頭/品項）：店長店員也可編自店訂單，對齊 _check_order_edit_notes_perm
+  const canEditNotes = canEdit || isStoreOfThisOrder;
 
   useEffect(() => {
     let cancelled = false;
@@ -812,7 +815,7 @@ export function OrderDetail({
           value={
             <EditableText
               value={orderNotesValue}
-              disabled={!canEdit}
+              disabled={!canEditNotes}
               placeholder="（點此加備註）"
               onSave={async (v) => setOrderDraft({ notes: v })}
               multiline
@@ -965,7 +968,7 @@ export function OrderDetail({
                     <td className="px-3 py-2">
                       <EditableText
                         value={eff.notes}
-                        disabled={!canEdit}
+                        disabled={!canEditNotes}
                         placeholder="（點此加備註）"
                         onSave={async (v) => setItemDraft(it.id, { notes: v })}
                       />
