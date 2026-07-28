@@ -1,8 +1,10 @@
 "use client";
 
-// 會員批次刪除（GDPR 軟刪除）— 呼叫 rpc_member_gdpr_delete_bulk
-// 行為與單筆版（MemberDeleteModal）相同，只是一次處理多筆：
-//   清 PII / 退卡 / 移除標籤 / 流水訂單保留；不可還原；已刪除/已合併會被後端略過。
+// 會員批次刪除 — 兩種模式（與單筆版 MemberDeleteModal 相同）：
+//   徹底刪除（預設）— rpc_member_purge_bulk：實體刪除會員與附屬資料，
+//     訂單等單據保留但解除會員連結；分店內部會員（store_internal）自動略過。
+//   保留紀錄刪除 — rpc_member_gdpr_delete_bulk：清 PII / 退卡 / 移除標籤，
+//     流水訂單保留；已刪除／已合併會被後端略過。
 // 二次確認：須輸入「刪除」二字，避免誤刪一整批。
 
 import { useState } from "react";
@@ -12,6 +14,8 @@ import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
 
 const CONFIRM_WORD = "刪除";
+
+type DeleteMode = "purge" | "gdpr";
 
 export type BulkDeleteTarget = { id: number; member_no: string; name: string | null };
 
@@ -27,6 +31,7 @@ export function MemberBulkDeleteModal({
   /** 後端回傳實際刪除筆數 */
   onDeleted: (deletedCount: number) => void;
 }) {
+  const [mode, setMode] = useState<DeleteMode>("purge");
   const [confirmText, setConfirmText] = useState("");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -36,6 +41,7 @@ export function MemberBulkDeleteModal({
   const confirmed = confirmText.trim() === CONFIRM_WORD;
 
   function reset() {
+    setMode("purge");
     setConfirmText("");
     setReason("");
     setErr(null);
@@ -51,18 +57,39 @@ export function MemberBulkDeleteModal({
     setErr(null);
     try {
       const sb = getSupabase();
-      const { error, data } = await sb.rpc("rpc_member_gdpr_delete_bulk", {
-        p_member_ids: members.map((m) => m.id),
-        p_reason: reason.trim() || null,
-      });
-      if (error) {
-        setErr(translateRpcError(error));
-        return;
+
+      if (mode === "purge") {
+        const { error, data } = await sb.rpc("rpc_member_purge_bulk", {
+          p_member_ids: members.map((m) => m.id),
+          p_reason: reason.trim() || null,
+        });
+        if (error) {
+          setErr(translateRpcError(error));
+          return;
+        }
+        const result = (data ?? {}) as { purged?: number; skipped_internal?: number };
+        const purged = result.purged ?? count;
+        const skippedInternal = result.skipped_internal ?? 0;
+        alert(
+          `已徹底刪除 ${purged} 位會員（會員資料與點數／儲值紀錄已完全移除）` +
+            (skippedInternal > 0 ? `\n略過 ${skippedInternal} 位分店內部會員（無法刪除）` : ""),
+        );
+        reset();
+        onDeleted(purged);
+      } else {
+        const { error, data } = await sb.rpc("rpc_member_gdpr_delete_bulk", {
+          p_member_ids: members.map((m) => m.id),
+          p_reason: reason.trim() || null,
+        });
+        if (error) {
+          setErr(translateRpcError(error));
+          return;
+        }
+        const deleted = typeof data === "number" ? data : count;
+        alert(`已刪除 ${deleted} 位會員（個資已清除，歷史交易紀錄依稅務規定保留）`);
+        reset();
+        onDeleted(deleted);
       }
-      const deleted = typeof data === "number" ? data : count;
-      alert(`已刪除 ${deleted} 位會員（個資已清除，歷史交易紀錄依稅務規定保留）`);
-      reset();
-      onDeleted(deleted);
     } finally {
       setBusy(false);
     }
@@ -97,16 +124,41 @@ export function MemberBulkDeleteModal({
           </ul>
         </div>
 
-        <div className="rounded-md border border-zinc-200 p-3 text-xs text-zinc-600 dark:border-zinc-800 dark:text-zinc-400">
-          <div className="mb-1 font-medium text-zinc-700 dark:text-zinc-300">刪除後：</div>
-          <ul className="list-disc space-y-0.5 pl-4">
-            <li>清除個資（姓名 / 電話 / Email / 生日 / LINE 綁定 / 大頭照）</li>
-            <li>會員卡全部退卡、標籤全部移除</li>
-            <li>
-              <b>積分 / 儲值流水、訂單、銷售紀錄會保留</b>（依稅捐稽徵法需留存 7 年）
-            </li>
-            <li>已刪除 / 已合併的會員會自動略過</li>
-          </ul>
+        <div className="space-y-2">
+          <label className="flex cursor-pointer items-start gap-2 rounded-md border border-zinc-200 p-3 has-[:checked]:border-red-400 has-[:checked]:bg-red-50/50 dark:border-zinc-800 dark:has-[:checked]:border-red-800 dark:has-[:checked]:bg-red-950/20">
+            <input
+              type="radio"
+              name="bulk-delete-mode"
+              checked={mode === "purge"}
+              onChange={() => setMode("purge")}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="block font-medium">徹底刪除</span>
+              <span className="mt-0.5 block text-xs text-zinc-500">
+                會員資料完全從系統移除：個資、積分／儲值流水、會員卡、標籤、LINE
+                綁定、推播訂閱全數刪除。訂單等營運單據保留，但不再掛在會員名下。
+                分店內部會員會自動略過。
+              </span>
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2 rounded-md border border-zinc-200 p-3 has-[:checked]:border-red-400 has-[:checked]:bg-red-50/50 dark:border-zinc-800 dark:has-[:checked]:border-red-800 dark:has-[:checked]:bg-red-950/20">
+            <input
+              type="radio"
+              name="bulk-delete-mode"
+              checked={mode === "gdpr"}
+              onChange={() => setMode("gdpr")}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="block font-medium">保留紀錄刪除</span>
+              <span className="mt-0.5 block text-xs text-zinc-500">
+                清除個資（姓名／電話／Email／生日／LINE／大頭照）、退卡、移除標籤；
+                <b>積分／儲值流水、訂單、銷售紀錄保留</b>（依稅捐稽徵法留存 7 年）。
+                已刪除／已合併的會員自動略過。
+              </span>
+            </span>
+          </label>
         </div>
 
         <label className="block">
@@ -161,7 +213,11 @@ export function MemberBulkDeleteModal({
             disabled={busy || !confirmed || count === 0}
             className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
           >
-            {busy ? "刪除中…" : `🗑️ 確認刪除 ${count} 筆（不可還原）`}
+            {busy
+              ? "刪除中…"
+              : mode === "purge"
+                ? `🗑️ 徹底刪除 ${count} 筆（不可還原）`
+                : `🗑️ 確認刪除 ${count} 筆（不可還原）`}
           </SpinButton>
         </div>
       </div>

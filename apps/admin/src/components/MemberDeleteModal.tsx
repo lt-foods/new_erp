@@ -1,12 +1,12 @@
 "use client";
 
-// 會員刪除（GDPR 軟刪除）— 呼叫 rpc_member_gdpr_delete
-// 後端行為（見 supabase/migrations/20260618000040_rpc_member_gdpr_delete.sql）：
-//   - members：清 PII（姓名 / 電話 / email / 生日 / LINE / 大頭照）、status='deleted'
-//   - member_cards：全部退卡（retired）
-//   - member_tags：全部刪除
-//   - points_ledger / wallet_ledger / 訂單 / sales：保留（稅捐稽徵法 7 年留存）
-//   - 不可還原；冪等（已刪除再按為 no-op）
+// 會員刪除 — 兩種模式：
+//   徹底刪除（預設）— 呼叫 rpc_member_purge（20260728000010）：
+//     members 資料列連同點數/儲值流水、卡片、標籤、LINE 綁定、推播訂閱實體刪除，
+//     會員完全消失；訂單/候補/欠品僅解除會員連結（單據保留）。
+//     分店內部會員（store_internal）後端會擋。
+//   保留紀錄刪除 — 呼叫 rpc_member_gdpr_delete（20260618000040）：
+//     清 PII、status='deleted'、退卡、移除標籤；流水/訂單保留（稅捐稽徵法 7 年）。
 //
 // 權限：RPC 為 SECURITY DEFINER 不自帶 role gate（與 rpc_merge_member 同慣例，
 //   由呼叫端把關）。本 modal 只在 isAdmin(role) 時於 MemberDetail 掛出，
@@ -17,6 +17,8 @@ import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
+
+type DeleteMode = "purge" | "gdpr";
 
 export function MemberDeleteModal({
   open,
@@ -29,6 +31,7 @@ export function MemberDeleteModal({
   member: { id: number; member_no: string; name: string | null };
   onDeleted: () => void;
 }) {
+  const [mode, setMode] = useState<DeleteMode>("purge");
   const [confirmText, setConfirmText] = useState("");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -38,6 +41,7 @@ export function MemberDeleteModal({
   const confirmed = confirmText.trim() === member.member_no;
 
   function reset() {
+    setMode("purge");
     setConfirmText("");
     setReason("");
     setErr(null);
@@ -52,19 +56,31 @@ export function MemberDeleteModal({
     setErr(null);
     try {
       const sb = getSupabase();
-      const { data: sess } = await sb.auth.getSession();
-      const operator = sess.session?.user?.id;
 
-      const { error } = await sb.rpc("rpc_member_gdpr_delete", {
-        p_member_id: member.id,
-        p_reason: reason.trim() || null,
-        p_operator: operator ?? null,
-      });
-      if (error) {
-        setErr(translateRpcError(error));
-        return;
+      if (mode === "purge") {
+        const { error } = await sb.rpc("rpc_member_purge", {
+          p_member_id: member.id,
+          p_reason: reason.trim() || null,
+        });
+        if (error) {
+          setErr(translateRpcError(error));
+          return;
+        }
+        alert(`已徹底刪除會員 #${member.member_no}（會員資料與點數／儲值紀錄已完全移除）`);
+      } else {
+        const { data: sess } = await sb.auth.getSession();
+        const operator = sess.session?.user?.id;
+        const { error } = await sb.rpc("rpc_member_gdpr_delete", {
+          p_member_id: member.id,
+          p_reason: reason.trim() || null,
+          p_operator: operator ?? null,
+        });
+        if (error) {
+          setErr(translateRpcError(error));
+          return;
+        }
+        alert(`已刪除會員 #${member.member_no}（個資已清除，歷史交易紀錄依稅務規定保留）`);
       }
-      alert(`已刪除會員 #${member.member_no}（個資已清除，歷史交易紀錄依稅務規定保留）`);
       reset();
       onDeleted();
     } finally {
@@ -95,16 +111,39 @@ export function MemberDeleteModal({
           </div>
         </div>
 
-        <div className="rounded-md border border-zinc-200 p-3 text-xs text-zinc-600 dark:border-zinc-800 dark:text-zinc-400">
-          <div className="mb-1 font-medium text-zinc-700 dark:text-zinc-300">刪除後：</div>
-          <ul className="list-disc space-y-0.5 pl-4">
-            <li>清除個資（姓名 / 電話 / Email / 生日 / LINE 綁定 / 大頭照）</li>
-            <li>會員卡全部退卡、標籤全部移除</li>
-            <li>會員將從列表消失、無法再以電話 / 卡號查詢</li>
-            <li>
-              <b>積分 / 儲值流水、訂單、銷售紀錄會保留</b>（依稅捐稽徵法需留存 7 年）
-            </li>
-          </ul>
+        <div className="space-y-2">
+          <label className="flex cursor-pointer items-start gap-2 rounded-md border border-zinc-200 p-3 has-[:checked]:border-red-400 has-[:checked]:bg-red-50/50 dark:border-zinc-800 dark:has-[:checked]:border-red-800 dark:has-[:checked]:bg-red-950/20">
+            <input
+              type="radio"
+              name="delete-mode"
+              checked={mode === "purge"}
+              onChange={() => setMode("purge")}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="block font-medium">徹底刪除</span>
+              <span className="mt-0.5 block text-xs text-zinc-500">
+                會員資料完全從系統移除：個資、積分／儲值流水、會員卡、標籤、LINE
+                綁定、推播訂閱全數刪除。訂單等營運單據保留，但不再掛在此會員名下。
+              </span>
+            </span>
+          </label>
+          <label className="flex cursor-pointer items-start gap-2 rounded-md border border-zinc-200 p-3 has-[:checked]:border-red-400 has-[:checked]:bg-red-50/50 dark:border-zinc-800 dark:has-[:checked]:border-red-800 dark:has-[:checked]:bg-red-950/20">
+            <input
+              type="radio"
+              name="delete-mode"
+              checked={mode === "gdpr"}
+              onChange={() => setMode("gdpr")}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="block font-medium">保留紀錄刪除</span>
+              <span className="mt-0.5 block text-xs text-zinc-500">
+                清除個資（姓名／電話／Email／生日／LINE／大頭照）、退卡、移除標籤；
+                <b>積分／儲值流水、訂單、銷售紀錄保留</b>（依稅捐稽徵法留存 7 年）。
+              </span>
+            </span>
+          </label>
         </div>
 
         <label className="block">
@@ -159,7 +198,11 @@ export function MemberDeleteModal({
             disabled={busy || !confirmed}
             className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
           >
-            {busy ? "刪除中…" : "🗑️ 確認刪除（不可還原）"}
+            {busy
+              ? "刪除中…"
+              : mode === "purge"
+                ? "🗑️ 徹底刪除（不可還原）"
+                : "🗑️ 確認刪除（不可還原）"}
           </SpinButton>
         </div>
       </div>

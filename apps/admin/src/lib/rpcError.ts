@@ -253,7 +253,11 @@ const RULES: Rule[] = [
     pattern: /source member \d+ is already merged/i,
     render: () => "來源會員已經合併過了。",
   },
-  // ===== rpc_member_gdpr_delete（會員刪除） =====
+  // ===== rpc_member_gdpr_delete / rpc_member_purge（會員刪除） =====
+  {
+    pattern: /member \d+ is a store-internal member, cannot purge/i,
+    render: () => "此為分店內部會員（補貨／叫貨用），無法刪除。",
+  },
   {
     pattern: /member \d+ not found/i,
     render: () => "找不到此會員（可能已被刪除）。",
