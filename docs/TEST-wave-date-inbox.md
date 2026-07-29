@@ -42,7 +42,15 @@
 - [ ] 「📄 簽收單」連結的 `?date=` 反映更新後日期
 - [ ] RPC 失敗（如狀態已變 shipped）時錯誤訊息顯示於頁面 error 區
 
-### 3.3 PickModal 明細標頭
+### 3.3 批次設定配送日（hq/inbox 撿貨單批次工具列）
+- [ ] 勾選多張待處理撿貨單 → 批次工具列出現「📅 設定配送日 (n)」，日期鈕顯示所選中最早的配送日
+- [ ] 點日期開日曆 → 選新日期 → confirm 後對每張未達該日期的 wave 各打一次 `rpc_update_wave_date`
+- [ ] 全部成功：alert 顯示成功張數、選取清空、列表 reload 後每張都是新日期
+- [ ] 部分失敗（例如中途被別人派貨）：alert 顯示「成功 N / 失敗 M」與前 3 筆錯誤
+- [ ] 選中的 wave 配送日已全等於目標日期 → 不發 RPC、不跳 confirm
+- [ ] 已派貨（done）/ 已取消 row 不可勾選，因此不會進批次範圍
+
+### 3.4 PickModal 明細標頭
 - [ ] 未 shipped/cancelled 的 wave：標頭「配送日」可點開日曆改日期，改完標頭立即顯示新值
 - [ ] shipped / cancelled 的 wave：配送日維持純文字
 - [ ] 關閉 modal 後列表 reload，row 顯示新日期
@@ -55,6 +63,7 @@
 - [ ] 收件匣其他來源 row（restock / transfer / aid / air / shortage）渲染與動作不受影響
 - [ ] `/picking/print-sign` 依日期列印照常（該頁自有 DatePicker 不受影響）
 - [ ] DatePicker 其他 6 個使用點（campaigns、MemberForm、CreateCampaignModal、community-candidates、finance/receivables、print-sign）行為不變
+- [ ] DatePicker 加 `defaultMonth` 後：開啟時停在「目前選定日期」的月份（原本一律開在今天的月份），其他使用點不受負面影響
 
 ## 5. 驗收門檻
 
