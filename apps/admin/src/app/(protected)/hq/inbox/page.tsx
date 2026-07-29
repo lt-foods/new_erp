@@ -1381,6 +1381,15 @@ function HqInboxContent() {
       .map((r) => r.key);
   }, [paginatedRows, sourceFilter]);
 
+  // 批次配送日選擇器顯示值 = 所選撿貨單中最早的配送日（不另存 state，改完 reload 自動跟著更新）
+  const batchWaveDate = useMemo(() => {
+    const dates = paginatedRows
+      .filter((r) => selected.has(r.key) && r.source === "picking")
+      .map((r) => (r.raw as PickingRaw).wave_date)
+      .sort();
+    return dates[0] ?? "";
+  }, [paginatedRows, selected]);
+
   function selectAllVisible() {
     setSelected(new Set(batchableKeys));
   }
@@ -1563,6 +1572,53 @@ function HqInboxContent() {
         results.forEach((r) => {
           if (r.status === "rejected") errs.push(translateRpcError(r.reason));
           else if ((r.value as { error?: { message?: string } })?.error) errs.push(translateRpcError((r.value as { error: { message: string } }).error.message));
+        });
+        alert(`成功 ${okCount} / 失敗 ${failed}\n\n${errs.slice(0, 3).join("\n")}`);
+      }
+      setSelected(new Set());
+      setReloadTick((t) => t + 1);
+    } catch (e) {
+      setError(translateRpcError(e));
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
+  // 批次設定配送日 — 只對勾選的「待處理」撿貨單（shipped/cancelled 不在 batchable 內，RPC 端也擋）
+  async function batchSetWaveDate(newDate: string) {
+    const targets = paginatedRows.filter(
+      (r) => selected.has(r.key) && r.source === "picking" && r.stage === "pending" && r.raw.wave_date !== newDate,
+    );
+    if (targets.length === 0) return;
+    if (!confirm(`將選中的 ${targets.length} 張撿貨單配送日改為 ${newDate}？`)) return;
+    setBatchBusy(true);
+    setError(null);
+    try {
+      const sb = getSupabase();
+      const { data: sess } = await sb.auth.getSession();
+      const operator = sess.session?.user?.id;
+      if (!operator) throw new Error("尚未登入");
+
+      const results = await Promise.allSettled(
+        targets.map((r) =>
+          sb.rpc("rpc_update_wave_date", {
+            p_wave_id: (r.raw as PickingRaw).id,
+            p_new_date: newDate,
+            p_operator: operator,
+          }),
+        ),
+      );
+      const okCount = results.filter((r) => r.status === "fulfilled" && !(r.value as { error?: unknown })?.error).length;
+      const failed = results.length - okCount;
+      if (failed === 0) {
+        alert(`✅ 已將 ${okCount} 張撿貨單配送日改為 ${newDate}`);
+      } else {
+        const errs: string[] = [];
+        results.forEach((r) => {
+          if (r.status === "rejected") errs.push(translateRpcError(r.reason));
+          else if ((r.value as { error?: { message?: string } })?.error) {
+            errs.push(translateRpcError((r.value as { error: { message: string } }).error.message));
+          }
         });
         alert(`成功 ${okCount} / 失敗 ${failed}\n\n${errs.slice(0, 3).join("\n")}`);
       }
@@ -2023,6 +2079,19 @@ function HqInboxContent() {
                       >
                         📄 列印簽收單 ({selected.size})
                       </Link>
+                      <div
+                        className="inline-flex items-center gap-1 rounded border border-blue-300 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                        title="一次把所選撿貨單的配送日改成同一天"
+                      >
+                        📅 設定配送日 ({selected.size})
+                        <DatePicker
+                          value={batchWaveDate}
+                          onChange={batchSetWaveDate}
+                          popover="fixed"
+                          disabled={batchBusy}
+                          className="rounded border border-dashed border-blue-400 px-1 font-mono text-xs font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-50 dark:border-blue-600 dark:text-blue-300 dark:hover:bg-blue-900"
+                        />
+                      </div>
                       <RowAction variant="success" onClick={() => batchAction("派貨出倉")} disabled={batchBusy}>派貨出倉 ({selected.size})</RowAction>
                       <RowAction variant="danger" onClick={() => batchAction("取消")} disabled={batchBusy}>取消 ({selected.size})</RowAction>
                     </>
