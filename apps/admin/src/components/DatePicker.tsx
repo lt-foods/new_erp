@@ -84,6 +84,9 @@ export function DatePicker({
             <DayPicker
               mode="single"
               selected={selected}
+              // 沒帶 defaultMonth 時 DayPicker 一律開在「今天」那個月；
+              // 配送日可能排到數週後，開起來會在錯的月份 → 對齊目前選定日期
+              defaultMonth={selected}
               onSelect={(d) => {
                 if (d) {
                   onChange(formatLocal(d));
