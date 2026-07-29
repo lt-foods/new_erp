@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
+import { DatePicker } from "@/components/DatePicker";
 
 export type PickWave = {
   id: number;
@@ -72,6 +73,9 @@ export function PickModal({
   const [shipping, setShipping] = useState(false);
   const [hqLocId, setHqLocId] = useState<number | null>(null);
   const [effectiveStatus] = useState<string>(wave.status);
+  // 配送日在收件匣設定；shipped/cancelled 唯讀（RPC 也擋）
+  const [waveDate, setWaveDate] = useState(wave.wave_date);
+  const [savingDate, setSavingDate] = useState(false);
 
   const shortageCount = useMemo(() => {
     if (!items) return 0;
@@ -157,6 +161,29 @@ export function PickModal({
       next.set(itemId, val);
       return next;
     });
+  }
+
+  async function changeDate(newDate: string) {
+    if (newDate === waveDate) return;
+    setSavingDate(true);
+    setError(null);
+    try {
+      const sb = getSupabase();
+      const { data: userRes } = await sb.auth.getUser();
+      const operator = userRes?.user?.id;
+      if (!operator) throw new Error("未登入");
+      const { error: e } = await sb.rpc("rpc_update_wave_date", {
+        p_wave_id: wave.id,
+        p_new_date: newDate,
+        p_operator: operator,
+      });
+      if (e) throw new Error(e.message);
+      setWaveDate(newDate);
+    } catch (e) {
+      setError(translateRpcError(e));
+    } finally {
+      setSavingDate(false);
+    }
   }
 
   async function saveEdits() {
@@ -262,11 +289,11 @@ export function PickModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="flex max-h-[90vh] w-full max-w-[90vw] flex-col overflow-hidden rounded-md bg-white shadow-xl dark:bg-zinc-900">
         <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-          <div>
+          <div className="flex flex-wrap items-center gap-2">
             <h2 className="font-semibold">
               修正數量：<span className="font-mono">{wave.wave_code}</span>{" "}
               <span className="text-xs text-zinc-500">
-                · 配送日 {wave.wave_date} · 狀態 {WAVE_STATUS_LABEL[effectiveStatus] ?? effectiveStatus}
+                · 狀態 {WAVE_STATUS_LABEL[effectiveStatus] ?? effectiveStatus}
               </span>
               {shortageCount > 0 && (
                 <span className="ml-2 inline-block rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
@@ -274,6 +301,24 @@ export function PickModal({
                 </span>
               )}
             </h2>
+            {/* DatePicker 根節點是 div，不能塞進 h2（heading 只能含 phrasing content）→ 做成 h2 的 sibling chip */}
+            {effectiveStatus !== "shipped" && effectiveStatus !== "cancelled" ? (
+              <div
+                className="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-xs font-semibold text-blue-800 dark:bg-blue-950 dark:text-blue-300"
+                title="點日期修改配送日"
+              >
+                📅 配送日
+                <DatePicker
+                  value={waveDate}
+                  onChange={changeDate}
+                  popover="fixed"
+                  disabled={savingDate}
+                  className="rounded border border-dashed border-blue-400 px-1 font-mono text-xs font-semibold text-blue-800 hover:bg-blue-200 disabled:opacity-50 dark:border-blue-600 dark:text-blue-300 dark:hover:bg-blue-900"
+                />
+              </div>
+            ) : (
+              <span className="text-xs text-zinc-500">📅 配送日 {waveDate}</span>
+            )}
           </div>
           <div className="flex gap-2">
             {effectiveStatus !== "shipped" && edits.size > 0 && (

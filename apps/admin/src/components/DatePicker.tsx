@@ -13,6 +13,8 @@ type DatePickerProps = {
   min?: string;
   max?: string;
   className?: string;
+  /** "fixed"：日曆彈層在所有斷點都固定置中（供 overflow-hidden 容器內使用，避免被裁切） */
+  popover?: "auto" | "fixed";
 };
 
 export function DatePicker({
@@ -23,6 +25,7 @@ export function DatePicker({
   min,
   max,
   className = "",
+  popover = "auto",
 }: DatePickerProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -67,11 +70,17 @@ export function DatePicker({
       {open && (
         <>
           <div
-            className="fixed inset-0 z-40 bg-black/20 sm:hidden"
+            className={`fixed inset-0 z-40 bg-black/20 ${popover === "fixed" ? "" : "sm:hidden"}`}
             aria-hidden="true"
             onClick={() => setOpen(false)}
           />
-          <div className="fixed left-1/2 top-1/2 z-50 max-h-[85vh] max-w-[calc(100vw-1.5rem)] -translate-x-1/2 -translate-y-1/2 overflow-auto rounded-md border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-800 dark:bg-zinc-900 sm:absolute sm:left-0 sm:right-auto sm:top-full sm:mt-1 sm:max-h-none sm:max-w-none sm:translate-x-0 sm:translate-y-0 sm:overflow-visible">
+          <div
+            className={`fixed left-1/2 top-1/2 z-50 max-h-[85vh] max-w-[calc(100vw-1.5rem)] -translate-x-1/2 -translate-y-1/2 overflow-auto rounded-md border border-zinc-200 bg-white p-2 shadow-lg dark:border-zinc-800 dark:bg-zinc-900 ${
+              popover === "fixed"
+                ? ""
+                : "sm:absolute sm:left-0 sm:right-auto sm:top-full sm:mt-1 sm:max-h-none sm:max-w-none sm:translate-x-0 sm:translate-y-0 sm:overflow-visible"
+            }`}
+          >
             <DayPicker
               mode="single"
               selected={selected}

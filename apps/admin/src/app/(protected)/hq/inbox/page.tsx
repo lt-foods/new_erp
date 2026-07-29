@@ -7,6 +7,7 @@ import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import { PR_TERM_ZH } from "@/lib/prStatus";
 import SpinButton from "@/components/SpinButton";
+import { DatePicker } from "@/components/DatePicker";
 import { RowAction } from "@/components/RowAction";
 import { OrderDetail } from "@/components/OrderDetail";
 import { Modal } from "@/components/Modal";
@@ -1716,6 +1717,30 @@ function HqInboxContent() {
     }
   }
 
+  // 配送日改在收件匣設定（派貨工作台建單只帶預設隔天）；shipped/cancelled 由 RPC 擋
+  async function changeWaveDate(w: PickingRaw, newDate: string) {
+    if (newDate === w.wave_date) return;
+    setBusy(`picking-${w.id}-date`);
+    setError(null);
+    try {
+      const sb = getSupabase();
+      const { data: sess } = await sb.auth.getSession();
+      const operator = sess.session?.user?.id;
+      if (!operator) throw new Error("尚未登入");
+      const { error: e } = await sb.rpc("rpc_update_wave_date", {
+        p_wave_id: w.id,
+        p_new_date: newDate,
+        p_operator: operator,
+      });
+      if (e) throw new Error(translateRpcError(e));
+      setReloadTick((t) => t + 1);
+    } catch (e) {
+      setError(translateRpcError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function openWaveEdit(w: PickingRaw) {
     // PickModal 需要的欄位跟 PickingRaw 完全相同(除了 source_po_no 在 outbound 是 null|string,picking 也是)
     setEditingWave({
@@ -2065,6 +2090,7 @@ function HqInboxContent() {
                       onOpenTransferDetail={setTransferDetailId} onOpenRestockDetail={setRestockDetailId}
                       onShortageAction={handleShortageAction} onTransferAction={handleTransferAction}
                       onPickingDispatch={dispatchWave} onPickingEdit={openWaveEdit} onPickingCancel={cancelWave}
+                      onPickingDateChange={changeWaveDate}
                       dispatchingWaveId={dispatchingWaveId}
                       hqLocId={hqLocId}
                       showCheckbox={showCheckbox} batchable={batchable}
@@ -2208,6 +2234,7 @@ function MailRow({
   onPickingDispatch,
   onPickingEdit,
   onPickingCancel,
+  onPickingDateChange,
   dispatchingWaveId,
   hqLocId,
   showCheckbox,
@@ -2231,6 +2258,7 @@ function MailRow({
   onPickingDispatch: (w: PickingRaw) => Promise<void>;
   onPickingEdit: (w: PickingRaw) => void;
   onPickingCancel: (w: PickingRaw) => Promise<void>;
+  onPickingDateChange: (w: PickingRaw, newDate: string) => Promise<void>;
   dispatchingWaveId: number | null;
   hqLocId: number | null;
   showCheckbox: boolean;
@@ -2409,11 +2437,30 @@ function MailRow({
     const diff = w.actual_total - w.expected_total;
     const completion = w.expected_total > 0 ? Math.round((w.actual_total / w.expected_total) * 100) : 0;
     idText = w.wave_code;
+    // 配送日在此設定（派貨工作台建單只帶預設隔天）；shipped/cancelled 唯讀
+    const dateEditable = w.status !== "shipped" && w.status !== "cancelled";
     title = (
       <>
-        <span className="inline-block rounded bg-blue-100 px-1.5 py-0.5 text-xs font-semibold text-blue-800 dark:bg-blue-950 dark:text-blue-300">
-          📅 配送日 {w.wave_date}
-        </span>
+        {dateEditable ? (
+          <div
+            className="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-xs font-semibold text-blue-800 dark:bg-blue-950 dark:text-blue-300"
+            title="點日期修改配送日"
+            onClick={(e) => e.stopPropagation()}
+          >
+            📅 配送日
+            <DatePicker
+              value={w.wave_date}
+              onChange={(d) => onPickingDateChange(w, d)}
+              popover="fixed"
+              disabled={busy === `picking-${w.id}-date`}
+              className="rounded border border-dashed border-blue-400 px-1 font-mono text-xs font-semibold text-blue-800 hover:bg-blue-200 disabled:opacity-50 dark:border-blue-600 dark:text-blue-300 dark:hover:bg-blue-900"
+            />
+          </div>
+        ) : (
+          <span className="inline-block rounded bg-blue-100 px-1.5 py-0.5 text-xs font-semibold text-blue-800 dark:bg-blue-950 dark:text-blue-300">
+            📅 配送日 {w.wave_date}
+          </span>
+        )}
         {w.source_po_no && (
           <span className="ml-2 text-[11px] text-zinc-500">← {w.source_po_no}</span>
         )}
@@ -2570,7 +2617,8 @@ function MailRow({
         {/* 主旨 + 摘要 */}
         <div className="min-w-0 flex-1">
           <div className={`flex flex-wrap items-baseline gap-x-2 ${isPending ? "font-semibold" : "text-zinc-700 dark:text-zinc-300"}`}>
-            <span className="truncate text-sm">{title}</span>
+            {/* div 不用 span:撿貨單 title 內含 DatePicker(根節點是 div),span 包 div 會觸發 React DOM nesting 警告 */}
+            <div className="truncate text-sm">{title}</div>
             <span className="font-mono text-[10px] text-zinc-500">{idText}</span>
             <span className={`sm:hidden inline-flex rounded px-1.5 py-0.5 text-[9px] font-medium ${sourceCls}`}>
               {sourceText}

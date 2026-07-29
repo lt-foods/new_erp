@@ -9,7 +9,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
-import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
 
 type DemandRow = {
@@ -74,7 +73,6 @@ export default function PickingWorkstationPage() {
   const [loadingFull, setLoadingFull] = useState(false);
   const [restockDemand, setRestockDemand] = useState<RestockRow[] | null>(null);
   const [suppliers, setSuppliers] = useState<Map<number, Supplier>>(new Map());
-  const [waveDate, setWaveDate] = useState(defaultWaveDate());
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("matrix");
@@ -639,7 +637,8 @@ export default function PickingWorkstationPage() {
       if (insufficient.length > 0) throw new Error("可分配量不足：\n" + insufficient.join("\n"));
       if (perPoAllocs.size === 0) throw new Error("沒有任何分配 — 請先填數量");
 
-      // 對每個 PO 各發一次 RPC
+      // 對每個 PO 各發一次 RPC（配送日固定帶隔天，建單後可在總倉收件匣的撿貨單上調整）
+      const waveDate = defaultWaveDate();
       const results: { po_no: string; wave_id: number; wave_code: string }[] = [];
       const failures: { po_no: string; error: string }[] = [];
       for (const [poId, allocations] of perPoAllocs.entries()) {
@@ -837,7 +836,7 @@ export default function PickingWorkstationPage() {
       }
       const { data, error: e } = await sb.rpc("rpc_create_wave_from_restock", {
         p_restock_request_id: group.rrId,
-        p_wave_date: waveDate,
+        p_wave_date: defaultWaveDate(),
         p_allocations: allocations,
         p_operator: operator,
       });
@@ -911,14 +910,9 @@ export default function PickingWorkstationPage() {
 
       {/* 控制列 */}
       <div className="flex flex-wrap items-end gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900">
-        <label className="text-sm">
-          <span className="mb-1 block text-xs text-zinc-500">配送日</span>
-          <DatePicker
-            value={waveDate}
-            onChange={setWaveDate}
-            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-          />
-        </label>
+        <span className="text-xs text-zinc-500" title="建單後到「總倉收件匣 → 撿貨單」點配送日即可修改">
+          📅 配送日預設隔天，建單後可在總倉收件匣的撿貨單上調整
+        </span>
         <span className="text-xs text-zinc-500">
           {loading
             ? "載入中…"
