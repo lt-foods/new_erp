@@ -202,34 +202,44 @@ export default function PurchaseRequestsListPage() {
     let cancelled = false;
     (async () => {
       try {
-        const { data, error: err } = await getSupabase()
-          .from("purchase_requests")
-          .select(
-            "id, pr_no, source_type, source_close_date, status, review_status, total_amount, notes, updated_at",
-          )
-          .order("updated_at", { ascending: false })
-          .limit(500);
+        // 全部撈回來 — 篩選 / 搜尋 / KPI 都是前端算的，截斷會讓超出的單
+        // 連搜單號都搜不到（採購單頁就是這樣漏掉第 500 張之後的 PO）。
+        // updated_at 有同值，補 id 當 tiebreaker 給分頁一個穩定的 total order。
+        const prRows = await fetchAllRows<Row>(() =>
+          getSupabase()
+            .from("purchase_requests")
+            .select(
+              "id, pr_no, source_type, source_close_date, status, review_status, total_amount, notes, updated_at",
+            )
+            .order("updated_at", { ascending: false })
+            .order("id", { ascending: false }),
+        );
         if (cancelled) return;
-        if (err) {
-          setError(err.message);
-          return;
-        }
         setError(null);
-        const prRows = (data ?? []) as Row[];
         setRows(prRows);
 
         const ids = prRows.map((r) => r.id);
         if (ids.length) {
-          const { data: prog } = await getSupabase()
-            .from("v_pr_progress")
-            .select(
-              "pr_id, po_total, po_sent, po_received_fully, transfer_total, transfer_shipped, transfer_delivered, item_count, unassigned_supplier_count, all_campaigns_finalized",
-            )
-            .in("pr_id", ids);
+          // 一次 .in() 塞幾百個 id 會撐爆 URL → chunk；progress 一張單一列，
+          // 破千張時也需要分頁
+          type ProgRow = Progress & { pr_id: number };
+          const prog: ProgRow[] = [];
+          for (let i = 0; i < ids.length; i += 200) {
+            const c = ids.slice(i, i + 200);
+            const part = await fetchAllRows<ProgRow>(() =>
+              getSupabase()
+                .from("v_pr_progress")
+                .select(
+                  "pr_id, po_total, po_sent, po_received_fully, transfer_total, transfer_shipped, transfer_delivered, item_count, unassigned_supplier_count, all_campaigns_finalized",
+                )
+                .in("pr_id", c)
+                .order("pr_id", { ascending: true }),
+            );
+            prog.push(...part);
+          }
           if (!cancelled) {
             const m = new Map<number, Progress>();
-            type ProgRow = Progress & { pr_id: number };
-            for (const p of (prog as ProgRow[] | null) ?? []) {
+            for (const p of prog) {
               m.set(p.pr_id, {
                 po_total: Number(p.po_total),
                 po_sent: Number(p.po_sent),

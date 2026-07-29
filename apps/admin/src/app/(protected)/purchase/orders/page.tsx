@@ -135,17 +135,6 @@ export default function PurchaseOrdersListPage() {
       try {
         const supabase = getSupabase();
 
-        // 1. 撈 POs(拉多一點以利 KPI 計算與分頁)
-        const { data: poData, error: poErr } = await supabase
-          .from("purchase_orders")
-          .select(
-            "id, po_no, supplier_id, status, total, expected_date, sent_at, sent_channel, stockout_at, created_at, updated_at, suppliers(name)",
-          )
-          .order("updated_at", { ascending: false })
-          .limit(500);
-        if (poErr) throw new Error(poErr.message);
-        if (cancelled) return;
-
         type RawPO = {
           id: number;
           po_no: string;
@@ -160,7 +149,23 @@ export default function PurchaseOrdersListPage() {
           updated_at: string;
           suppliers: { name: string } | { name: string }[] | null;
         };
-        const baseList: PO[] = ((poData as RawPO[] | null) ?? []).map((r) => {
+        // 1. 撈 POs — 全部撈回來，篩選 / 搜尋 / KPI 都是前端算的。
+        //    原本是 .limit(500) 取最近更新的 500 張：超出的 PO 不只翻不到，
+        //    連搜單號都找不到（實測 778 張時，第 501 張之後全部搜不到），
+        //    而且狀態頁籤數字與 KPI 也會少算。改用 fetchAllRows 分頁拿完整清單。
+        //    updated_at 會有同值，補 id 當 tiebreaker 給分頁一個穩定的 total order。
+        const poData = await fetchAllRows<RawPO>(() =>
+          supabase
+            .from("purchase_orders")
+            .select(
+              "id, po_no, supplier_id, status, total, expected_date, sent_at, sent_channel, stockout_at, created_at, updated_at, suppliers(name)",
+            )
+            .order("updated_at", { ascending: false })
+            .order("id", { ascending: false }),
+        );
+        if (cancelled) return;
+
+        const baseList: PO[] = poData.map((r) => {
           const sup = Array.isArray(r.suppliers) ? r.suppliers[0] : r.suppliers;
           return {
             id: r.id,
