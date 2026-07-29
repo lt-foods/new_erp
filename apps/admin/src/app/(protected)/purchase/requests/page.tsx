@@ -43,6 +43,9 @@ type Progress = {
   item_count: number;
   unassigned_supplier_count: number;
   all_campaigns_finalized: boolean;
+  // 命中搜尋關鍵字的品項（沒帶關鍵字時為 null / 0）
+  matched_items: string[] | null;
+  matched_item_count: number;
 };
 
 type CloseDateGroup = {
@@ -936,7 +939,7 @@ export default function PurchaseRequestsListPage() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="🔍 搜尋 單號 / 備註"
+          placeholder="🔍 搜尋 單號 / 備註 / 品項 / 廠商"
           className="flex-1 min-w-[180px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
         />
         <select
@@ -1507,6 +1510,20 @@ function PrLinks({ prs }: { prs: { id: number; pr_no: string }[] }) {
   );
 }
 
+// 搜尋命中的品項：讓使用者一眼看出「這張單為什麼被搜出來」，
+// 不必逐張點進去。沒帶關鍵字時 matched_items 為 null → 不顯示。
+function MatchedItems({ progress }: { progress: Progress | undefined }) {
+  const items = progress?.matched_items;
+  if (!items || items.length === 0) return null;
+  const rest = (progress?.matched_item_count ?? 0) - items.length;
+  return (
+    <div className="mt-0.5 font-sans text-[11px] leading-tight text-zinc-500 dark:text-zinc-400">
+      {items.join("、")}
+      {rest > 0 && ` 等 ${progress?.matched_item_count} 項`}
+    </div>
+  );
+}
+
 function PRRow({
   row,
   progress,
@@ -1535,6 +1552,7 @@ function PRRow({
         >
           {row.pr_no}
         </Link>
+        <MatchedItems progress={progress} />
       </Td>
       <Td className="text-xs text-zinc-500">
         {SOURCE_LABEL[row.source_type as SourceType] ?? row.source_type}
