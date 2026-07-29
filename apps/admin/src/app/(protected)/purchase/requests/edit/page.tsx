@@ -7,7 +7,7 @@ import { getSupabase } from "@/lib/supabase";
 import { PrPipelineStepper, type PrStepEvents, type POSummary, type TransferSummary } from "@/components/PrPipelineStepper";
 import SpinButton from "@/components/SpinButton";
 import { prStatusLabel, prReviewLabel, PR_TERM_ZH } from "@/lib/prStatus";
-import { PO_TERM_ZH } from "@/lib/poStatus";
+import { PO_TERM_ZH, poStatusLabel } from "@/lib/poStatus";
 
 type PRHeader = {
   id: number;
@@ -32,6 +32,7 @@ type DerivedPO = {
   id: number;
   po_no: string;
   status: string;
+  supplier_id: number | null;
   created_at: string | null;
   created_by: string | null;
   sent_at: string | null;
@@ -56,8 +57,18 @@ type ItemRow = {
   retail_price: number | null;     // PR snapshot，可手動覆寫
   franchise_price: number | null;  // PR snapshot，可手動覆寫
   purchased_so_far: number;        // 同 (campaign, sku) 在其他已通過 PR 的累積採購量
+  po_id: number | null;            // 此列被拆進哪一張 PO（未拆單為 null）
   dirty: boolean;
 };
+
+// 依 PO 分組後的清單；rows 帶 idx 是為了讓 patchItem / removeItem 仍能吃到
+// items 陣列的原始 index（分組只是顯示層的重排，不改 state 結構）
+type PoGroup = { po: DerivedPO | null; rows: { r: ItemRow; idx: number }[] };
+
+// 表格渲染序列的元素：分組標題列或品項列
+type RenderEntry =
+  | { kind: "group"; key: string; group: PoGroup }
+  | { kind: "item"; key: string; r: ItemRow; idx: number; seq: number };
 
 const STATUS_LABEL = prStatusLabel;
 const REVIEW_LABEL = prReviewLabel;
@@ -100,6 +111,8 @@ function PageContent() {
   const [bulkCost, setBulkCost] = useState<string>("");
   const [bulkBranch, setBulkBranch] = useState<string>("");
   const [bulkRetail, setBulkRetail] = useState<string>("");
+  // 品項清單是否依「拆出的採購單」分組顯示（拆過 PO 才有意義，預設開）
+  const [groupByPo, setGroupByPo] = useState(true);
 
   useEffect(() => {
     if (!id) {
@@ -153,21 +166,26 @@ function PageContent() {
         setDestLocationId(prData.source_location_id ?? locRow?.id ?? null);
 
         // 抓拆出的 PO（透過 PR items 反查）
+        // poItemToPo：po_item_id → po_id，讓每一列 PR 品項知道自己被拆進哪張 PO
+        const poItemToPo = new Map<number, number>();
         const itemIds = (itemRows ?? [])
           .map((r) => r.po_item_id)
           .filter((x): x is number => x !== null && x !== undefined);
         if (itemIds.length) {
           const { data: poiRows } = await supabase
             .from("purchase_order_items")
-            .select("po_id")
+            .select("id, po_id")
             .in("id", itemIds);
-          const poIds = Array.from(
-            new Set((poiRows ?? []).map((r) => r.po_id).filter((x): x is number => !!x)),
-          );
+          for (const r of ((poiRows ?? []) as { id: number; po_id: number | null }[])) {
+            if (r.po_id) poItemToPo.set(r.id, r.po_id);
+          }
+          const poIds = Array.from(new Set(poItemToPo.values()));
           if (poIds.length) {
             const { data: pos } = await supabase
               .from("purchase_orders")
-              .select("id, po_no, status, created_at, created_by, sent_at, sent_by, sent_channel")
+              .select(
+                "id, po_no, status, supplier_id, created_at, created_by, sent_at, sent_by, sent_channel",
+              )
               .in("id", poIds)
               .order("id");
             setDerivedPOs((pos ?? []) as DerivedPO[]);
@@ -353,6 +371,7 @@ function PageContent() {
             retail_price: retail,
             franchise_price: branch,
             purchased_so_far: purchasedMap.get(r.sku_id) ?? 0,
+            po_id: r.po_item_id ? poItemToPo.get(r.po_item_id) ?? null : null,
             // 若用了 fallback、標 dirty 讓 UI 提示「儲存後 PR 留紀錄」
             dirty: usedFallback,
           };
@@ -392,6 +411,56 @@ function PageContent() {
   }, [items]);
 
   const unassignedCount = items.filter((r) => !r.suggested_supplier_id).length;
+
+  const poById = useMemo(() => new Map(derivedPOs.map((p) => [p.id, p])), [derivedPOs]);
+  const supplierNameById = useMemo(
+    () => new Map(suppliers.map((s) => [s.id, s.name])),
+    [suppliers],
+  );
+  // 已拆出 PO 才顯示「採購單」欄與分組
+  const hasPos = derivedPOs.length > 0;
+
+  // 依 PO 分組：有 PO 的照 po_no 排在前，未拆單的一組排最後
+  const poGroups: PoGroup[] = useMemo(() => {
+    const map = new Map<number | null, PoGroup>();
+    items.forEach((r, idx) => {
+      const key = r.po_id ?? null;
+      let g = map.get(key);
+      if (!g) {
+        g = { po: key === null ? null : poById.get(key) ?? null, rows: [] };
+        map.set(key, g);
+      }
+      g.rows.push({ r, idx });
+    });
+    return Array.from(map.values()).sort((a, b) => {
+      if (!a.po && !b.po) return 0;
+      if (!a.po) return 1;
+      if (!b.po) return -1;
+      return a.po.po_no.localeCompare(b.po.po_no, undefined, { numeric: true });
+    });
+  }, [items, poById]);
+
+  // 攤平成「分組標題列 + 品項列」的渲染序列；關掉分組時就是原本的平鋪順序。
+  // seq 是畫面上的連續序號（跨組不重來），idx 仍是 items 的原始 index。
+  const displayRows: RenderEntry[] = useMemo(() => {
+    if (!groupByPo || !hasPos) {
+      return items.map((r, idx) => ({ kind: "item" as const, key: `i${r.id}`, r, idx, seq: idx + 1 }));
+    }
+    const out: RenderEntry[] = [];
+    let seq = 0;
+    for (const g of poGroups) {
+      out.push({ kind: "group", key: `g${g.po?.id ?? "none"}`, group: g });
+      for (const { r, idx } of g.rows) {
+        seq += 1;
+        out.push({ kind: "item", key: `i${r.id}`, r, idx, seq });
+      }
+    }
+    return out;
+  }, [groupByPo, hasPos, items, poGroups]);
+
+  const colCount = hasPos ? 12 : 11;
+  // 實際生效的分組（沒拆過 PO 時就算勾了也不分組）
+  const grouped = groupByPo && hasPos;
 
   function patchItem(idx: number, patch: Partial<ItemRow>) {
     setItems((cur) =>
@@ -732,6 +801,7 @@ function PageContent() {
                   0
                 )}
               </Row>
+              {hasPos && <Row label={PO_TERM_ZH}>{derivedPOs.length}</Row>}
               <div className="my-2 border-t border-zinc-200 dark:border-zinc-700" />
               <Row label="總計">
                 <span className="text-lg font-semibold text-blue-600 dark:text-blue-400">
@@ -823,11 +893,24 @@ function PageContent() {
 
         {/* 右側採購清單 */}
         <div className="flex flex-col rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-          <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
             <h3 className="text-sm font-semibold">📋 內部採購清單</h3>
-            <span className="text-xs text-zinc-500">
-              *成本=廠商給的價格，售價=ERP 商品價格
-            </span>
+            <div className="flex items-center gap-3">
+              {hasPos && (
+                <label className="flex cursor-pointer items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-300">
+                  <input
+                    type="checkbox"
+                    checked={groupByPo}
+                    onChange={(e) => setGroupByPo(e.target.checked)}
+                    className="h-3.5 w-3.5 accent-blue-600"
+                  />
+                  依{PO_TERM_ZH}分組（{derivedPOs.length} 張）
+                </label>
+              )}
+              <span className="text-xs text-zinc-500">
+                *成本=廠商給的價格，售價=ERP 商品價格
+              </span>
+            </div>
           </div>
           {editable && items.length > 0 && (
             <div className="flex flex-wrap items-end gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-2 dark:border-zinc-800 dark:bg-zinc-900/50">
@@ -892,6 +975,7 @@ function PageContent() {
             <tr>
               <Th>#</Th>
               <Th>品名</Th>
+              {hasPos && <Th>{PO_TERM_ZH}</Th>}
               <Th>供應商</Th>
               <Th>單位</Th>
               <Th className="text-right">已採購</Th>
@@ -906,7 +990,7 @@ function PageContent() {
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {items.length === 0 ? (
               <tr>
-                <td colSpan={11} className="p-6 text-center text-zinc-500">
+                <td colSpan={colCount} className="p-6 text-center text-zinc-500">
                   {header?.source_type === "manual" ? (
                     <div className="space-y-1">
                       <div>無品項</div>
@@ -920,7 +1004,44 @@ function PageContent() {
                 </td>
               </tr>
             ) : (
-              items.map((r, idx) => {
+              displayRows.map((entry) => {
+                if (entry.kind === "group") {
+                  const g = entry.group;
+                  const sub = g.rows.reduce((s, x) => s + x.r.qty_requested * x.r.unit_cost, 0);
+                  // 供應商優先取 PO 上的；PO 尚未建立（未轉單組）才退回第一列的建議供應商
+                  const supId = g.po?.supplier_id ?? g.rows[0]?.r.suggested_supplier_id ?? null;
+                  const supName = supId != null ? supplierNameById.get(supId) : null;
+                  return (
+                    <tr key={entry.key} className="bg-zinc-100/80 dark:bg-zinc-800/60">
+                      <td colSpan={colCount} className="px-3 py-1.5">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                          {g.po ? (
+                            <>
+                              <Link
+                                href={`/purchase/orders/edit?id=${g.po.id}`}
+                                className="font-mono text-sm font-semibold text-blue-600 hover:underline dark:text-blue-400"
+                              >
+                                📦 {g.po.po_no}
+                              </Link>
+                              <span className="rounded bg-white px-1.5 py-0.5 text-[11px] text-zinc-600 dark:bg-zinc-900 dark:text-zinc-300">
+                                {poStatusLabel(g.po.status)}
+                              </span>
+                            </>
+                          ) : (
+                            <span className="text-sm font-semibold text-zinc-500">
+                              尚未轉{PO_TERM_ZH}
+                            </span>
+                          )}
+                          <span className="text-zinc-600 dark:text-zinc-300">{supName ?? "—"}</span>
+                          <span className="text-zinc-500">{g.rows.length} 項</span>
+                          <span className="font-mono text-zinc-500">${sub.toFixed(0)}</span>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                }
+                const { r, idx, seq } = entry;
+                const rowPo = r.po_id != null ? poById.get(r.po_id) ?? null : null;
                 // 成本 ≤ 分店價 < 售價 必須遞增，三值有任一缺則不檢查（送審前才擋）
                 const cost = Number(r.unit_cost);
                 const branch = r.franchise_price != null ? Number(r.franchise_price) : null;
@@ -931,8 +1052,8 @@ function PageContent() {
                   ? "border-rose-400 bg-rose-50 dark:border-rose-700 dark:bg-rose-950"
                   : "border-zinc-300 dark:border-zinc-700";
                 return (
-                <tr key={r.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
-                  <Td className="text-zinc-500">{idx + 1}</Td>
+                <tr key={entry.key} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
+                  <Td className="text-zinc-500">{seq}</Td>
                   <Td>
                     <div>{r.product_name}{r.variant_name ? `-${r.variant_name}` : ""}</div>
                     <div className="font-mono text-xs text-zinc-500">{r.sku_code}</div>
@@ -942,6 +1063,32 @@ function PageContent() {
                       </div>
                     )}
                   </Td>
+                  {hasPos && (
+                    <Td>
+                      {rowPo ? (
+                        <>
+                          <Link
+                            href={`/purchase/orders/edit?id=${rowPo.id}`}
+                            className={`font-mono text-xs hover:underline ${
+                              grouped
+                                ? "text-zinc-400 dark:text-zinc-500"
+                                : "text-blue-600 dark:text-blue-400"
+                            }`}
+                          >
+                            {rowPo.po_no}
+                          </Link>
+                          {/* 分組時狀態已在群組標題列，不重複 */}
+                          {!grouped && (
+                            <div className="text-[11px] text-zinc-500">
+                              {poStatusLabel(rowPo.status)}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-xs text-zinc-400">未轉單</span>
+                      )}
+                    </Td>
+                  )}
                   <Td>
                     {editable ? (
                       <SupplierPicker
