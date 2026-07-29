@@ -107,11 +107,26 @@ const PAGE_SIZE = 30;
 
 type SortCol = "updated_at" | "expected_date" | "total" | "po_no" | "supplier";
 
+// rpc_po_list 的回傳形狀（server-side 篩選 / 排序 / 分頁）
+type ListResp = {
+  total: number;
+  counts: Record<StatusTab, number>;
+  kpi: { draft: number; pending_arrival: number; overdue: number; pending_amount: number };
+  suppliers: { id: number; name: string }[];
+  rows: PO[];
+};
+
+const EMPTY_COUNTS: Record<StatusTab, number> = {
+  all: 0, draft: 0, sent: 0, partially_received: 0, fully_received: 0, closed: 0, cancelled: 0,
+};
+
 export default function PurchaseOrdersListPage() {
-  const [pos, setPos] = useState<PO[] | null>(null);
+  const [data, setData] = useState<ListResp | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<StatusTab>("all");
+  // search 是輸入框當下的值；dSearch 是進 DB 查詢的 debounce 值（打字不會每個字一次查詢）
   const [search, setSearch] = useState("");
+  const [dSearch, setDSearch] = useState("");
   const [supplierFilter, setSupplierFilter] = useState<number | "all">("all");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -129,163 +144,34 @@ export default function PurchaseOrdersListPage() {
   const [pivotItems, setPivotItems] = useState<PivotItem[] | null>(null);
   const [pivotLoading, setPivotLoading] = useState(false);
 
+  // 搜尋 debounce：打字停 300ms 才進 DB
+  useEffect(() => {
+    const t = setTimeout(() => setDSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // === 清單資料：全部交給 rpc_po_list（篩選 / 排序 / 分頁 / 計數都在 DB 算）===
+  // 前端只收當頁 PAGE_SIZE 筆。原本是「全撈再前端篩」，線上 778 張時
+  // 搜舊單會搜不到（曾寫死 .limit(500)），且傳輸量隨單數線性長。
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const supabase = getSupabase();
-
-        type RawPO = {
-          id: number;
-          po_no: string;
-          supplier_id: number;
-          status: POStatus;
-          total: number;
-          expected_date: string | null;
-          sent_at: string | null;
-          sent_channel: string | null;
-          stockout_at: string | null;
-          created_at: string;
-          updated_at: string;
-          suppliers: { name: string } | { name: string }[] | null;
-        };
-        // 1. 撈 POs — 全部撈回來，篩選 / 搜尋 / KPI 都是前端算的。
-        //    原本是 .limit(500) 取最近更新的 500 張：超出的 PO 不只翻不到，
-        //    連搜單號都找不到（實測 778 張時，第 501 張之後全部搜不到），
-        //    而且狀態頁籤數字與 KPI 也會少算。改用 fetchAllRows 分頁拿完整清單。
-        //    updated_at 會有同值，補 id 當 tiebreaker 給分頁一個穩定的 total order。
-        const poData = await fetchAllRows<RawPO>(() =>
-          supabase
-            .from("purchase_orders")
-            .select(
-              "id, po_no, supplier_id, status, total, expected_date, sent_at, sent_channel, stockout_at, created_at, updated_at, suppliers(name)",
-            )
-            .order("updated_at", { ascending: false })
-            .order("id", { ascending: false }),
-        );
-        if (cancelled) return;
-
-        const baseList: PO[] = poData.map((r) => {
-          const sup = Array.isArray(r.suppliers) ? r.suppliers[0] : r.suppliers;
-          return {
-            id: r.id,
-            po_no: r.po_no,
-            supplier_id: r.supplier_id,
-            supplier_name: sup?.name ?? null,
-            status: r.status,
-            total: Number(r.total),
-            expected_date: r.expected_date,
-            sent_at: r.sent_at,
-            sent_channel: r.sent_channel,
-            stockout_at: r.stockout_at,
-            created_at: r.created_at,
-            updated_at: r.updated_at,
-            pr_id: null,
-            pr_no: null,
-            product_names: [],
-            item_count: 0,
-          };
+        const { data: resp, error: rpcErr } = await getSupabase().rpc("rpc_po_list", {
+          p_status: tab === "all" ? null : tab,
+          p_supplier_id: supplierFilter === "all" ? null : supplierFilter,
+          p_search: dSearch.trim() || null,
+          p_date_from: dateFrom || null,
+          p_date_to: dateTo || null,
+          p_sort: sortBy,
+          p_dir: sortDir,
+          p_page: page,
+          p_page_size: PAGE_SIZE,
         });
-
-        // 2. 透過 purchase_order_items + purchase_request_items 找來源 PR + 商品/品項
-        // 500 張 PO 的品項列數很容易破 PostgREST 1000 列上限，且一次 .in() 塞幾百個
-        // id 會撐爆 URL — 一律 chunk + fetchAllRows 分頁（同下方樞紐檢視的作法）。
-        const chunk = <T,>(arr: T[], n: number): T[][] => {
-          const out: T[][] = [];
-          for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
-          return out;
-        };
-        const poIds = baseList.map((p) => p.id);
-        const poToPR = new Map<number, number>();
-        const poItemMap = new Map<number, number[]>(); // po_id -> sku_ids[]
-        {
-          const poiRows: { id: number; po_id: number; sku_id: number }[] = [];
-          for (const c of chunk(poIds, 200)) {
-            const rows = await fetchAllRows<{ id: number; po_id: number; sku_id: number }>(
-              () =>
-                supabase
-                  .from("purchase_order_items")
-                  .select("id, po_id, sku_id")
-                  .in("po_id", c)
-                  .order("id", { ascending: true }),
-            );
-            poiRows.push(...rows);
-          }
-          const poiToPo = new Map<number, number>();
-          for (const r of poiRows) {
-            poiToPo.set(r.id, r.po_id);
-            if (!poItemMap.has(r.po_id)) poItemMap.set(r.po_id, []);
-            poItemMap.get(r.po_id)!.push(r.sku_id);
-          }
-          const poiIds = poiRows.map((r) => r.id);
-          for (const c of chunk(poiIds, 200)) {
-            const priRows = await fetchAllRows<{ po_item_id: number | null; pr_id: number | null }>(
-              () =>
-                supabase
-                  .from("purchase_request_items")
-                  .select("po_item_id, pr_id")
-                  .in("po_item_id", c)
-                  .order("po_item_id", { ascending: true }),
-            );
-            for (const r of priRows) {
-              const po = r.po_item_id ? poiToPo.get(r.po_item_id) : null;
-              if (po && r.pr_id) poToPR.set(po, r.pr_id);
-            }
-          }
-        }
-
-        // 3. 撈 SKU -> product name(批次)
-        const allSkuIds = Array.from(
-          new Set(Array.from(poItemMap.values()).flat()),
-        );
-        const skuToProduct = new Map<number, string>();
-        for (const c of chunk(allSkuIds, 300)) {
-          const { data: skuRows, error: skuErr } = await supabase
-            .from("skus")
-            .select("id, products!inner(name)")
-            .in("id", c);
-          if (skuErr) throw new Error(skuErr.message);
-          type SkuLite = {
-            id: number;
-            products: { name: string } | { name: string }[] | null;
-          };
-          for (const s of (skuRows as SkuLite[] | null) ?? []) {
-            const prod = Array.isArray(s.products) ? s.products[0] : s.products;
-            if (prod?.name) skuToProduct.set(s.id, prod.name);
-          }
-        }
-        for (const p of baseList) {
-          const skuIds = poItemMap.get(p.id) ?? [];
-          p.item_count = skuIds.length;
-          const nameSet = new Set<string>();
-          for (const sid of skuIds) {
-            const name = skuToProduct.get(sid);
-            if (name) nameSet.add(name);
-          }
-          p.product_names = Array.from(nameSet);
-        }
-        const prIds = Array.from(new Set(Array.from(poToPR.values())));
-        const prMap = new Map<number, string>();
-        for (const c of chunk(prIds, 200)) {
-          const { data: prRows, error: prErr } = await supabase
-            .from("purchase_requests")
-            .select("id, pr_no")
-            .in("id", c);
-          if (prErr) throw new Error(prErr.message);
-          for (const r of prRows ?? []) prMap.set(r.id, r.pr_no);
-        }
-        for (const p of baseList) {
-          const prId = poToPR.get(p.id);
-          if (prId) {
-            p.pr_id = prId;
-            p.pr_no = prMap.get(prId) ?? null;
-          }
-        }
-
-        if (!cancelled) {
-          setPos(baseList);
-          setError(null);
-        }
+        if (cancelled) return;
+        if (rpcErr) throw new Error(rpcErr.message);
+        setData(resp as ListResp);
+        setError(null);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       }
@@ -293,8 +179,7 @@ export default function PurchaseOrdersListPage() {
     return () => {
       cancelled = true;
     };
-  }, [reloadKey]);
-
+  }, [tab, supplierFilter, dSearch, dateFrom, dateTo, sortBy, sortDir, page, reloadKey]);
   // 資料重載（reloadKey 變動）→ 讓樞紐下次進去重撈
   useEffect(() => {
     setPivotItems(null);
@@ -306,7 +191,7 @@ export default function PurchaseOrdersListPage() {
   // → 進行中的查詢回來時所有 setState（含 finally 的 setPivotLoading(false)）都被 !cancelled 擋掉
   // → 樞紐永遠停在「載入中」。重入保護改由 pivotItems !== null 負責（載入完成/失敗都會離開 null）。
   useEffect(() => {
-    if (viewMode !== "pivot" || pivotItems !== null || !pos) return;
+    if (viewMode !== "pivot" || pivotItems !== null) return;
     let cancelled = false;
     setPivotLoading(true);
     (async () => {
@@ -317,11 +202,36 @@ export default function PurchaseOrdersListPage() {
           for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
           return out;
         };
-        const targetPos = pos.filter(
-          (p) => p.status === "sent" || p.status === "partially_received",
+        // 樞紐看的是「全部已下單 / 部分到貨」的 PO，不受清單分頁影響 → 自己查一次
+        type PivotPO = {
+          id: number;
+          po_no: string;
+          supplier_id: number;
+          status: POStatus;
+          suppliers: { name: string } | { name: string }[] | null;
+        };
+        const targetRows = await fetchAllRows<PivotPO>(() =>
+          sb
+            .from("purchase_orders")
+            .select("id, po_no, supplier_id, status, suppliers(name)")
+            .in("status", ["sent", "partially_received"])
+            .order("id", { ascending: true }),
         );
-        const poMeta = new Map(targetPos.map((p) => [p.id, p]));
-        const poIds = targetPos.map((p) => p.id);
+        const poMeta = new Map(
+          targetRows.map((p) => {
+            const sup = Array.isArray(p.suppliers) ? p.suppliers[0] : p.suppliers;
+            return [
+              p.id,
+              {
+                po_no: p.po_no,
+                supplier_id: p.supplier_id,
+                supplier_name: sup?.name ?? null,
+                status: p.status,
+              },
+            ] as const;
+          }),
+        );
+        const poIds = targetRows.map((p) => p.id);
         if (poIds.length === 0) {
           if (!cancelled) setPivotItems([]);
           return;
@@ -384,9 +294,11 @@ export default function PurchaseOrdersListPage() {
             skuLabel.set(s.id, s.variant_name ? `${base} / ${s.variant_name}` : base);
           }
         }
-        const items: PivotItem[] = poiRows.map((r) => {
-          const p = poMeta.get(r.po_id)!;
-          return {
+        // 查不到對應 PO 的品項直接略過，不要用 non-null assertion
+        const items: PivotItem[] = poiRows.flatMap((r) => {
+          const p = poMeta.get(r.po_id);
+          if (!p) return [];
+          return [{
             po_id: r.po_id,
             po_no: p.po_no,
             supplier_id: p.supplier_id,
@@ -396,7 +308,7 @@ export default function PurchaseOrdersListPage() {
             sku_label: skuLabel.get(r.sku_id) ?? `#${r.sku_id}`,
             ordered: Number(r.qty_ordered),
             received: recvByItem.get(r.id) ?? 0,
-          };
+          }];
         });
         if (!cancelled) setPivotItems(items);
       } catch (e) {
@@ -412,117 +324,25 @@ export default function PurchaseOrdersListPage() {
     return () => {
       cancelled = true;
     };
-  }, [viewMode, pivotItems, pos]);
+  }, [viewMode, pivotItems]);
 
-  // === KPI 統計 ===
-  const today = new Date().toISOString().slice(0, 10);
-
-  const stats = useMemo(() => {
-    const acc = {
-      draft: 0,
-      sent: 0,
-      partially_received: 0,
-      fully_received: 0,
-      closed: 0,
-      cancelled: 0,
-      overdue: 0,
-      pendingAmount: 0,
-    };
-    for (const p of pos ?? []) {
-      acc[p.status] += 1;
-      const inFlight =
-        p.status === "sent" || p.status === "partially_received";
-      if (inFlight) acc.pendingAmount += p.total;
-      if (inFlight && p.expected_date && p.expected_date < today) {
-        acc.overdue += 1;
-      }
-    }
-    return acc;
-  }, [pos, today]);
-
-  // 供應商下拉選項
-  const supplierOptions = useMemo(() => {
-    const set = new Map<number, string>();
-    for (const p of pos ?? []) {
-      if (p.supplier_id && p.supplier_name) {
-        set.set(p.supplier_id, p.supplier_name);
-      }
-    }
-    return Array.from(set.entries()).sort((a, b) => a[1].localeCompare(b[1]));
-  }, [pos]);
-
-  // tab counts
-  const tabCounts = useMemo(
-    () => ({
-      all: pos?.length ?? 0,
-      draft: stats.draft,
-      sent: stats.sent,
-      partially_received: stats.partially_received,
-      fully_received: stats.fully_received,
-      closed: stats.closed,
-      cancelled: stats.cancelled,
-    }),
-    [pos, stats],
+  // === 統計 / 選項 / 當頁資料：全部來自 rpc_po_list，前端不再自己算 ===
+  const stats = {
+    draft: data?.kpi.draft ?? 0,
+    pendingArrival: data?.kpi.pending_arrival ?? 0,
+    overdue: data?.kpi.overdue ?? 0,
+    pendingAmount: Number(data?.kpi.pending_amount ?? 0),
+  };
+  const tabCounts = data?.counts ?? EMPTY_COUNTS;
+  const supplierOptions: [number, string][] = useMemo(
+    () => (data?.suppliers ?? []).map((s) => [s.id, s.name] as [number, string]),
+    [data],
   );
-
-  // filter
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return (pos ?? []).filter((p) => {
-      if (tab !== "all" && p.status !== tab) return false;
-      if (supplierFilter !== "all" && p.supplier_id !== supplierFilter)
-        return false;
-      if (dateFrom && (p.created_at ?? "") < `${dateFrom}T00:00:00`)
-        return false;
-      if (dateTo && (p.created_at ?? "") > `${dateTo}T23:59:59.999`)
-        return false;
-      if (q) {
-        const hits = [p.po_no, p.supplier_name, p.pr_no, ...p.product_names]
-          .filter((x): x is string => !!x)
-          .some((x) => x.toLowerCase().includes(q));
-        if (!hits) return false;
-      }
-      return true;
-    });
-  }, [pos, tab, supplierFilter, dateFrom, dateTo, search]);
-
-  // sort
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      let av: string | number;
-      let bv: string | number;
-      if (sortBy === "total") {
-        av = a.total;
-        bv = b.total;
-      } else if (sortBy === "po_no") {
-        av = a.po_no;
-        bv = b.po_no;
-      } else if (sortBy === "expected_date") {
-        av = a.expected_date ?? "";
-        bv = b.expected_date ?? "";
-      } else if (sortBy === "supplier") {
-        av = a.supplier_name ?? "";
-        bv = b.supplier_name ?? "";
-      } else {
-        av = a.updated_at;
-        bv = b.updated_at;
-      }
-      if (av < bv) return sortDir === "asc" ? -1 : 1;
-      if (av > bv) return sortDir === "asc" ? 1 : -1;
-      return 0;
-    });
-    return arr;
-  }, [filtered, sortBy, sortDir]);
-
-  // 篩選變動 → 重置到第 1 頁
-  useEffect(() => {
-    setPage(1);
-  }, [tab, search, supplierFilter, dateFrom, dateTo, sortBy, sortDir, groupBy]);
-
-  const total = sorted.length;
+  // rows 已經是 DB 篩選 + 排序 + 分頁後的當前頁
+  const pageRows = useMemo(() => data?.rows ?? [], [data]);
+  const loaded = data !== null;
+  const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const pageRows = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   // group
   const grouped = useMemo(() => {
@@ -758,10 +578,10 @@ export default function PurchaseOrdersListPage() {
         <div>
           <h1 className="text-xl font-semibold">{PO_TERM_ZH}（PO）</h1>
           <p className="text-sm text-zinc-500">
-            {pos === null ? (
+            {!loaded ? (
               <Spinner size={14} className="inline-block align-[-2px]" />
             ) : (
-              `共 ${pos.length} 張 PO`
+              `共 ${tabCounts.all} 張 PO`
             )}
           </p>
         </div>
@@ -792,7 +612,7 @@ export default function PurchaseOrdersListPage() {
         <KpiCard
           label="待到貨"
           hint="已發送 + 部分到貨"
-          value={stats.sent + stats.partially_received}
+          value={stats.pendingArrival}
           accent="text-blue-700 dark:text-blue-400"
           active={tab === "sent" || tab === "partially_received"}
           onClick={() =>
@@ -935,7 +755,7 @@ export default function PurchaseOrdersListPage() {
           </SpinButton>
         )}
         <span className="ml-auto text-xs text-zinc-500">
-          {pos === null ? (
+          {!loaded ? (
             <Spinner size={14} className="inline-block align-[-2px]" />
           ) : (
             `符合 ${total} 筆${total > PAGE_SIZE ? ` · 第 ${page}/${totalPages} 頁` : ""}`
@@ -995,7 +815,7 @@ export default function PurchaseOrdersListPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-            {pos === null ? (
+            {!loaded ? (
               <tr>
                 <td colSpan={10}>
                   <LoadingBlock />

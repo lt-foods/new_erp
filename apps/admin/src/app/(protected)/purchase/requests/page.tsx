@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
-import { fetchAllRows } from "@/lib/fetchAllRows";
 import SpinButton from "@/components/SpinButton";
 import { RowAction } from "@/components/RowAction";
 import Spinner, { LoadingBlock } from "@/components/Spinner";
@@ -71,36 +70,40 @@ type ClosedCampaignRow = {
 type StatusTab = "all" | PRStatus;
 
 // === 樞紐（依廠商彙整品項）===
-// 每一列是「某張 PR 的某個品項」，扁平化後在前端 group by 廠商 → SKU。
-type PivotItem = {
-  pr_id: number;
-  pr_no: string;
-  supplier_id: number | null;
-  supplier_name: string | null;
-  sku_id: number;
-  sku_label: string;
-  qty: number;
-  amount: number;
-  ordered: boolean; // 已轉成 PO 品項
-};
-
-// prs: pr_id -> pr_no（保留 id 讓來源 PR 可連回詳細頁）
+// 形狀直接對應 rpc_pr_supplier_pivot 的回傳（聚合已在 DB 算完）
 type PivotSkuAgg = {
   sku_id: number;
   label: string;
   qty: number;
-  orderedQty: number;
+  ordered_qty: number;
   amount: number;
-  prs: Map<number, string>;
+  prs: { id: number; pr_no: string }[];
 };
 type PivotGroup = {
   supplier_id: number | null;
   supplier_name: string;
   skus: PivotSkuAgg[];
   qty: number;
-  orderedQty: number;
+  ordered_qty: number;
   amount: number;
-  prCount: number;
+  pr_count: number;
+};
+
+// rpc_pr_list 的回傳形狀（server-side 篩選 / 排序 / 分頁）
+type ListResp = {
+  total: number;
+  counts: Record<StatusTab, number>;
+  kpi: {
+    pending_review: number;
+    to_split: number;
+    amount_in_flight: number;
+    unassigned: number;
+  };
+  rows: (Row & Progress)[];
+};
+
+const EMPTY_COUNTS: Record<StatusTab, number> = {
+  all: 0, draft: 0, submitted: 0, partially_ordered: 0, fully_ordered: 0, cancelled: 0,
 };
 
 const STATUS_LABEL = PR_STATUS_LABEL;
@@ -143,7 +146,6 @@ type SortCol = "updated_at" | "source_close_date" | "total_amount" | "pr_no";
 
 export default function PurchaseRequestsListPage() {
   const router = useRouter();
-  const [rows, setRows] = useState<Row[] | null>(null);
   const [pendingDates, setPendingDates] = useState<CloseDateGroup[] | null>(
     null,
   );
@@ -180,83 +182,54 @@ export default function PurchaseRequestsListPage() {
   );
   const [campaignQuery, setCampaignQuery] = useState("");
   const [creatingMulti, setCreatingMulti] = useState(false);
-  const [progressById, setProgressById] = useState<Map<number, Progress>>(
-    new Map(),
-  );
+  const [data, setData] = useState<ListResp | null>(null);
 
   // 檢視模式：清單（原本）/ 樞紐（把篩選出的 PR 品項依廠商彙整）
   const [viewMode, setViewMode] = useState<"list" | "pivot">("list");
   // 樞紐子篩選：全部品項 / 只看還沒轉成 PO 的品項（＝還要去跟廠商下單的量）
   const [pivotOnlyUnordered, setPivotOnlyUnordered] = useState(false);
-  // 樞紐資料連同抓取當下的 reloadTick 一起存，tick 對不上就是過期 → 重撈。
-  // （用「資料自帶版本」取代 effect 裡同步 setState 清快取 / 開 loading）
-  const [pivotData, setPivotData] = useState<{ tick: number; list: PivotItem[] } | null>(
-    null,
-  );
-  const pivotReady = pivotData !== null && pivotData.tick === reloadTick;
-  const pivotItems = pivotReady ? pivotData.list : null;
+  // 樞紐資料連同抓取當下的條件指紋一起存，指紋對不上就是過期 → 重撈
+  const [pivotData, setPivotData] = useState<{ tick: string; groups: PivotGroup[] } | null>(null);
+
+  // search 是輸入框當下的值；dSearch 是進 DB 查詢的 debounce 值
+  const [dSearch, setDSearch] = useState("");
+
+  // 樞紐快取鍵：任一篩選條件或資料重載都會讓既有彙總過期
+  const pivotTick = JSON.stringify([
+    reloadTick, tab, reviewFilter, sourceFilter, dSearch, dateFrom, dateTo, pivotOnlyUnordered,
+  ]);
+  const pivotReady = pivotData !== null && pivotData.tick === pivotTick;
+  const pivotGroups = pivotReady ? pivotData.groups : [];
   const pivotLoading = viewMode === "pivot" && !pivotReady;
 
-  // ============== 載入既有 PRs ==============
+  // 搜尋 debounce：打字停 300ms 才進 DB
+  useEffect(() => {
+    const t = setTimeout(() => setDSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // ============== 清單資料：全部交給 rpc_pr_list ==============
+  // 篩選 / 排序 / 分頁 / 計數 / 進度都在 DB 算完，前端只收當頁 PAGE_SIZE 筆。
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        // 全部撈回來 — 篩選 / 搜尋 / KPI 都是前端算的，截斷會讓超出的單
-        // 連搜單號都搜不到（採購單頁就是這樣漏掉第 500 張之後的 PO）。
-        // updated_at 有同值，補 id 當 tiebreaker 給分頁一個穩定的 total order。
-        const prRows = await fetchAllRows<Row>(() =>
-          getSupabase()
-            .from("purchase_requests")
-            .select(
-              "id, pr_no, source_type, source_close_date, status, review_status, total_amount, notes, updated_at",
-            )
-            .order("updated_at", { ascending: false })
-            .order("id", { ascending: false }),
-        );
+        const { data: resp, error: err } = await getSupabase().rpc("rpc_pr_list", {
+          p_status: tab === "all" ? null : tab,
+          p_review: reviewFilter || null,
+          p_source: sourceFilter || null,
+          p_search: dSearch.trim() || null,
+          p_date_from: dateFrom || null,
+          p_date_to: dateTo || null,
+          p_sort: sortBy,
+          p_dir: sortDir,
+          p_page: page,
+          p_page_size: PAGE_SIZE,
+        });
         if (cancelled) return;
+        if (err) throw new Error(err.message);
+        setData(resp as ListResp);
         setError(null);
-        setRows(prRows);
-
-        const ids = prRows.map((r) => r.id);
-        if (ids.length) {
-          // 一次 .in() 塞幾百個 id 會撐爆 URL → chunk；progress 一張單一列，
-          // 破千張時也需要分頁
-          type ProgRow = Progress & { pr_id: number };
-          const prog: ProgRow[] = [];
-          for (let i = 0; i < ids.length; i += 200) {
-            const c = ids.slice(i, i + 200);
-            const part = await fetchAllRows<ProgRow>(() =>
-              getSupabase()
-                .from("v_pr_progress")
-                .select(
-                  "pr_id, po_total, po_sent, po_received_fully, transfer_total, transfer_shipped, transfer_delivered, item_count, unassigned_supplier_count, all_campaigns_finalized",
-                )
-                .in("pr_id", c)
-                .order("pr_id", { ascending: true }),
-            );
-            prog.push(...part);
-          }
-          if (!cancelled) {
-            const m = new Map<number, Progress>();
-            for (const p of prog) {
-              m.set(p.pr_id, {
-                po_total: Number(p.po_total),
-                po_sent: Number(p.po_sent),
-                po_received_fully: Number(p.po_received_fully),
-                transfer_total: Number(p.transfer_total),
-                transfer_shipped: Number(p.transfer_shipped),
-                transfer_delivered: Number(p.transfer_delivered),
-                item_count: Number(p.item_count),
-                unassigned_supplier_count: Number(p.unassigned_supplier_count),
-                all_campaigns_finalized: !!p.all_campaigns_finalized,
-              });
-            }
-            setProgressById(m);
-          }
-        } else {
-          setProgressById(new Map());
-        }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       }
@@ -264,119 +237,43 @@ export default function PurchaseRequestsListPage() {
     return () => {
       cancelled = true;
     };
-  }, [reloadTick]);
+  }, [tab, reviewFilter, sourceFilter, dSearch, dateFrom, dateTo, sortBy, sortDir, page, reloadTick]);
 
   // ============== 樞紐資料（lazy）==============
-  // 切到樞紐才撈一次：所有未作廢 PR 的品項 + SKU 標籤 + 廠商名。
-  // 篩選（頁籤 / 搜尋 / 日期…）一律在前端套用，打字搜尋不會重打 API。
-  // 重入保護靠 pivotReady：抓取期間它維持 false 但依賴陣列不變，所以不會
-  // 重複發查詢；抓完（或失敗塞空陣列）才翻成 true 離開這個 effect。
+  // 聚合直接在 DB 做（rpc_pr_supplier_pivot），前端只收各廠商的彙總結果。
+  // 重入保護靠 pivotReady：抓取期間維持 false 但依賴不變，不會重複發查詢。
   useEffect(() => {
-    if (viewMode !== "pivot" || pivotReady || !rows) return;
+    if (viewMode !== "pivot" || pivotReady) return;
     let cancelled = false;
     (async () => {
       try {
-        const sb = getSupabase();
-        const chunk = <T,>(arr: T[], n: number): T[][] => {
-          const out: T[][] = [];
-          for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
-          return out;
-        };
-        const targetPrs = rows.filter((r) => r.status !== "cancelled");
-        const prMeta = new Map(targetPrs.map((r) => [r.id, r]));
-        const prIds = targetPrs.map((r) => r.id);
-        if (prIds.length === 0) {
-          if (!cancelled) setPivotData({ tick: reloadTick, list: [] });
-          return;
-        }
-
-        type PrItemRow = {
-          pr_id: number;
-          sku_id: number;
-          qty_requested: number;
-          unit_cost: number;
-          suggested_supplier_id: number | null;
-          po_item_id: number | null;
-        };
-        // fetchAllRows 分頁：PR 品項很容易破 PostgREST 的 1000 列上限
-        const itemRows: PrItemRow[] = [];
-        for (const c of chunk(prIds, 200)) {
-          const part = await fetchAllRows<PrItemRow>(() =>
-            sb
-              .from("purchase_request_items")
-              .select(
-                "id, pr_id, sku_id, qty_requested, unit_cost, suggested_supplier_id, po_item_id",
-              )
-              .in("pr_id", c)
-              .order("id", { ascending: true }),
-          );
-          itemRows.push(...part);
-        }
-
-        // SKU 標籤
-        const skuIds = Array.from(new Set(itemRows.map((r) => r.sku_id)));
-        const skuLabel = new Map<number, string>();
-        for (const c of chunk(skuIds, 300)) {
-          const { data } = await sb
-            .from("skus")
-            .select("id, sku_code, variant_name, products!inner(name)")
-            .in("id", c);
-          type SkuLite = {
-            id: number;
-            sku_code: string | null;
-            variant_name: string | null;
-            products: { name: string } | { name: string }[] | null;
-          };
-          for (const s of (data as SkuLite[] | null) ?? []) {
-            const prod = Array.isArray(s.products) ? s.products[0] : s.products;
-            const base = prod?.name ?? s.sku_code ?? `#${s.id}`;
-            skuLabel.set(s.id, s.variant_name ? `${base} / ${s.variant_name}` : base);
-          }
-        }
-
-        // 廠商名
-        const supName = new Map<number, string>();
-        {
-          const { data } = await sb.from("suppliers").select("id, name");
-          for (const s of ((data ?? []) as { id: number; name: string }[])) {
-            supName.set(s.id, s.name);
-          }
-        }
-
-        // 查不到對應 PR 的品項直接略過（例：撈到一半那張 PR 被作廢 / 刪掉），
-        // 不要用 non-null assertion — 一個孤兒列就會讓整個樞紐炸成空白。
-        const list: PivotItem[] = itemRows.flatMap((r) => {
-          const pr = prMeta.get(r.pr_id);
-          if (!pr) return [];
-          const qty = Number(r.qty_requested) || 0;
-          return [{
-            pr_id: r.pr_id,
-            pr_no: pr.pr_no,
-            supplier_id: r.suggested_supplier_id,
-            supplier_name:
-              r.suggested_supplier_id !== null
-                ? supName.get(r.suggested_supplier_id) ?? null
-                : null,
-            sku_id: r.sku_id,
-            sku_label: skuLabel.get(r.sku_id) ?? `#${r.sku_id}`,
-            qty,
-            amount: qty * (Number(r.unit_cost) || 0),
-            ordered: r.po_item_id !== null,
-          }];
+        const { data: resp, error: err } = await getSupabase().rpc("rpc_pr_supplier_pivot", {
+          p_status: tab === "all" ? null : tab,
+          p_review: reviewFilter || null,
+          p_source: sourceFilter || null,
+          p_search: dSearch.trim() || null,
+          p_date_from: dateFrom || null,
+          p_date_to: dateTo || null,
+          p_only_unordered: pivotOnlyUnordered,
         });
-        if (!cancelled) setPivotData({ tick: reloadTick, list });
+        if (cancelled) return;
+        if (err) throw new Error(err.message);
+        setPivotData({
+          tick: pivotTick,
+          groups: ((resp as { groups: PivotGroup[] } | null)?.groups ?? []),
+        });
       } catch (e) {
-        // 設成空陣列避免「載入中」卡死；錯誤原因由上方 error banner 呈現。
+        // 塞空陣列避免「載入中」卡死；錯誤原因由上方 error banner 呈現
         if (!cancelled) {
           setError(e instanceof Error ? e.message : String(e));
-          setPivotData({ tick: reloadTick, list: [] });
+          setPivotData({ tick: pivotTick, groups: [] });
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [viewMode, pivotReady, rows, reloadTick]);
+  }, [viewMode, pivotReady, pivotTick, tab, reviewFilter, sourceFilter, dSearch, dateFrom, dateTo, pivotOnlyUnordered]);
 
   // ============== 載入「結單日待開單」cards ==============
   useEffect(() => {
@@ -749,119 +646,23 @@ export default function PurchaseRequestsListPage() {
     }
   }
 
-  // === KPI 統計 ===
-  const stats = useMemo(() => {
-    const acc = {
-      draft: 0,
-      submitted: 0,
-      partially_ordered: 0,
-      fully_ordered: 0,
-      cancelled: 0,
-      pending_review: 0,
-      to_split: 0, // approved + draft + submitted, status not fully/cancelled
-      total_amount_in_flight: 0,
-      unassigned: 0,
-    };
-    for (const r of rows ?? []) {
-      acc[r.status] += 1;
-      if (r.review_status === "pending_review") acc.pending_review += 1;
-      const inFlight =
-        r.review_status === "approved" &&
-        r.status !== "fully_ordered" &&
-        r.status !== "cancelled";
-      if (inFlight) {
-        acc.to_split += 1;
-        acc.total_amount_in_flight += Number(r.total_amount) || 0;
-      }
-      const p = progressById.get(r.id);
-      if (p) acc.unassigned += p.unassigned_supplier_count;
-    }
-    return acc;
-  }, [rows, progressById]);
-
-  // tab counts
-  const tabCounts = useMemo(
-    () => ({
-      all: rows?.length ?? 0,
-      draft: stats.draft,
-      submitted: stats.submitted,
-      partially_ordered: stats.partially_ordered,
-      fully_ordered: stats.fully_ordered,
-      cancelled: stats.cancelled,
-    }),
-    [rows, stats],
-  );
-
-  // 篩選變動 → 重置到第 1 頁
-  useEffect(() => {
-    setPage(1);
-  }, [
-    tab,
-    reviewFilter,
-    sourceFilter,
-    search,
-    dateFrom,
-    dateTo,
-    sortBy,
-    sortDir,
-    groupBy,
-  ]);
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return (rows ?? []).filter((r) => {
-      if (tab !== "all" && r.status !== tab) return false;
-      if (reviewFilter && r.review_status !== reviewFilter) return false;
-      if (sourceFilter && r.source_type !== sourceFilter) return false;
-      if (
-        dateFrom &&
-        (!r.source_close_date || r.source_close_date < dateFrom)
-      )
-        return false;
-      if (dateTo && (!r.source_close_date || r.source_close_date > dateTo))
-        return false;
-      if (q) {
-        const hits = [r.pr_no, r.notes]
-          .filter((x): x is string => !!x)
-          .some((x) => x.toLowerCase().includes(q));
-        if (!hits) return false;
-      }
-      return true;
-    });
-  }, [rows, tab, reviewFilter, sourceFilter, search, dateFrom, dateTo]);
-
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
-    arr.sort((a, b) => {
-      let av: string | number;
-      let bv: string | number;
-      if (sortBy === "total_amount") {
-        av = Number(a.total_amount) || 0;
-        bv = Number(b.total_amount) || 0;
-      } else if (sortBy === "pr_no") {
-        av = a.pr_no;
-        bv = b.pr_no;
-      } else if (sortBy === "source_close_date") {
-        av = a.source_close_date ?? "";
-        bv = b.source_close_date ?? "";
-      } else {
-        av = a.updated_at;
-        bv = b.updated_at;
-      }
-      if (av < bv) return sortDir === "asc" ? -1 : 1;
-      if (av > bv) return sortDir === "asc" ? 1 : -1;
-      return 0;
-    });
-    return arr;
-  }, [filtered, sortBy, sortDir]);
-
-  const total = sorted.length;
+  // === 統計 / 當頁資料：全部來自 rpc_pr_list，前端不再自己算 ===
+  const stats = {
+    pending_review: data?.kpi.pending_review ?? 0,
+    to_split: data?.kpi.to_split ?? 0,
+    unassigned: data?.kpi.unassigned ?? 0,
+    amountInFlight: Number(data?.kpi.amount_in_flight ?? 0),
+  };
+  const tabCounts = data?.counts ?? EMPTY_COUNTS;
+  // rows 已經是 DB 篩選 + 排序 + 分頁後的當前頁，且每列自帶進度欄位
+  const pageRows = useMemo(() => data?.rows ?? [], [data]);
+  const loaded = data !== null;
+  const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const pageRows = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   const grouped = useMemo(() => {
     if (groupBy === "none") return null;
-    const map = new Map<string, { label: string; rows: Row[] }>();
+    const map = new Map<string, { label: string; rows: (Row & Progress)[] }>();
     for (const r of pageRows) {
       let key = "—";
       let label = "—";
@@ -890,84 +691,6 @@ export default function PurchaseRequestsListPage() {
       })
       .map(([k, v]) => ({ key: k, ...v }));
   }, [pageRows, groupBy]);
-
-  // 樞紐分組：依廠商 → SKU 彙整（請購量 / 已轉單 / 未轉單 / 金額）。
-  // 只納入目前篩選結果（filtered）裡的 PR，所以頁籤、搜尋、日期都自然生效。
-  const pivotGroups: PivotGroup[] = useMemo(() => {
-    if (!pivotItems) return [];
-    const visiblePrIds = new Set(filtered.map((r) => r.id));
-    const q = search.trim().toLowerCase();
-    const bySup = new Map<
-      number | null,
-      {
-        supplier_id: number | null;
-        supplier_name: string;
-        skus: Map<number, PivotSkuAgg>;
-        prIds: Set<number>;
-      }
-    >();
-    for (const it of pivotItems) {
-      if (!visiblePrIds.has(it.pr_id)) continue;
-      if (pivotOnlyUnordered && it.ordered) continue;
-      // filtered 只比對過 PR 單號 / 備註，樞紐再多讓廠商、品名也能命中
-      if (q) {
-        const hit = [it.pr_no, it.supplier_name, it.sku_label]
-          .filter((x): x is string => !!x)
-          .some((x) => x.toLowerCase().includes(q));
-        if (!hit) continue;
-      }
-      let sup = bySup.get(it.supplier_id);
-      if (!sup) {
-        sup = {
-          supplier_id: it.supplier_id,
-          supplier_name:
-            it.supplier_name ??
-            (it.supplier_id === null ? "未指派供應商" : `#${it.supplier_id}`),
-          skus: new Map(),
-          prIds: new Set(),
-        };
-        bySup.set(it.supplier_id, sup);
-      }
-      sup.prIds.add(it.pr_id);
-      let sk = sup.skus.get(it.sku_id);
-      if (!sk) {
-        sk = {
-          sku_id: it.sku_id,
-          label: it.sku_label,
-          qty: 0,
-          orderedQty: 0,
-          amount: 0,
-          prs: new Map(),
-        };
-        sup.skus.set(it.sku_id, sk);
-      }
-      sk.qty += it.qty;
-      if (it.ordered) sk.orderedQty += it.qty;
-      sk.amount += it.amount;
-      sk.prs.set(it.pr_id, it.pr_no);
-    }
-    return Array.from(bySup.values())
-      .map((sup) => {
-        const skus = Array.from(sup.skus.values()).sort((a, b) =>
-          a.label.localeCompare(b.label),
-        );
-        return {
-          supplier_id: sup.supplier_id,
-          supplier_name: sup.supplier_name,
-          skus,
-          qty: skus.reduce((s, r) => s + r.qty, 0),
-          orderedQty: skus.reduce((s, r) => s + r.orderedQty, 0),
-          amount: skus.reduce((s, r) => s + r.amount, 0),
-          prCount: sup.prIds.size,
-        };
-      })
-      .sort((a, b) => {
-        // 未指派供應商排最前面（最需要處理）
-        if (a.supplier_id === null) return -1;
-        if (b.supplier_id === null) return 1;
-        return a.supplier_name.localeCompare(b.supplier_name);
-      });
-  }, [pivotItems, filtered, search, pivotOnlyUnordered]);
 
   function setSort(col: SortCol) {
     if (sortBy === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -1000,10 +723,10 @@ export default function PurchaseRequestsListPage() {
         <div>
           <h1 className="text-xl font-semibold">{PR_TERM_ZH}（PR）</h1>
           <p className="text-sm text-zinc-500">
-            {rows === null ? (
+            {!loaded ? (
               <Spinner size={14} className="inline-block align-[-2px]" />
             ) : (
-              `共 ${rows.length} 筆`
+              `共 ${tabCounts.all} 筆`
             )}
           </p>
         </div>
@@ -1283,7 +1006,7 @@ export default function PurchaseRequestsListPage() {
           </SpinButton>
         )}
         <span className="ml-auto text-xs text-zinc-500">
-          {rows === null ? (
+          {!loaded ? (
             <Spinner size={14} className="inline-block align-[-2px]" />
           ) : (
             `符合 ${total} 筆${total > PAGE_SIZE ? ` · 第 ${page}/${totalPages} 頁` : ""}`
@@ -1340,7 +1063,7 @@ export default function PurchaseRequestsListPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-            {rows === null ? (
+            {!loaded ? (
               <tr>
                 <td colSpan={10}>
                   <LoadingBlock />
@@ -1372,7 +1095,7 @@ export default function PurchaseRequestsListPage() {
                   <PRRow
                     key={r.id}
                     row={r}
-                    progress={progressById.get(r.id)}
+                    progress={r}
                     busyId={busyId}
                     onApprove={approve}
                     onReject={reject}
@@ -1385,7 +1108,7 @@ export default function PurchaseRequestsListPage() {
                 <PRRow
                   key={r.id}
                   row={r}
-                  progress={progressById.get(r.id)}
+                  progress={r}
                   busyId={busyId}
                   onApprove={approve}
                   onReject={reject}
@@ -1641,7 +1364,7 @@ function PrPivot({
     );
   }
   const totQty = groups.reduce((s, g) => s + g.qty, 0);
-  const totOrdered = groups.reduce((s, g) => s + g.orderedQty, 0);
+  const totOrdered = groups.reduce((s, g) => s + g.ordered_qty, 0);
   const totAmount = groups.reduce((s, g) => s + g.amount, 0);
   return (
     <div className="flex flex-col gap-4">
@@ -1650,7 +1373,7 @@ function PrPivot({
         {totQty - totOrdered} · 金額 ${Math.round(totAmount).toLocaleString()}
       </div>
       {groups.map((g) => {
-        const outstanding = g.qty - g.orderedQty;
+        const outstanding = g.qty - g.ordered_qty;
         return (
           <div
             key={g.supplier_id ?? "none"}
@@ -1664,11 +1387,11 @@ function PrPivot({
               >
                 {g.supplier_name}
                 <span className="ml-2 text-xs font-normal text-zinc-500">
-                  {g.prCount} 張 {PR_TERM_ZH} · {g.skus.length} 品項
+                  {g.pr_count} 張 {PR_TERM_ZH} · {g.skus.length} 品項
                 </span>
               </div>
               <div className="text-xs text-zinc-500">
-                請購 {g.qty} · 已轉單 {g.orderedQty} ·{" "}
+                請購 {g.qty} · 已轉單 {g.ordered_qty} ·{" "}
                 <span className={outstanding > 0 ? "text-amber-600 dark:text-amber-400" : ""}>
                   未轉單 {outstanding}
                 </span>{" "}
@@ -1691,12 +1414,12 @@ function PrPivot({
                 </thead>
                 <tbody>
                   {g.skus.map((s) => {
-                    const left = s.qty - s.orderedQty;
+                    const left = s.qty - s.ordered_qty;
                     return (
                       <tr key={s.sku_id} className="border-b border-zinc-100 dark:border-zinc-800/60">
                         <td className="px-3 py-1.5">{s.label}</td>
                         <td className="px-3 py-1.5 text-right font-mono">{s.qty}</td>
-                        <td className="px-3 py-1.5 text-right font-mono">{s.orderedQty}</td>
+                        <td className="px-3 py-1.5 text-right font-mono">{s.ordered_qty}</td>
                         <td
                           className={`px-3 py-1.5 text-right font-mono ${
                             left > 0 ? "text-amber-600 dark:text-amber-400" : "text-zinc-400"
@@ -1720,7 +1443,7 @@ function PrPivot({
             {/* 手機：每個品項一張堆疊卡片 */}
             <ul className="divide-y divide-zinc-100 sm:hidden dark:divide-zinc-800/60">
               {g.skus.map((s) => {
-                const left = s.qty - s.orderedQty;
+                const left = s.qty - s.ordered_qty;
                 return (
                   <li key={s.sku_id} className="px-3 py-2">
                     <div className="text-sm">{s.label}</div>
@@ -1732,7 +1455,7 @@ function PrPivot({
                       <span>
                         已轉單{" "}
                         <span className="font-mono text-zinc-800 dark:text-zinc-200">
-                          {s.orderedQty}
+                          {s.ordered_qty}
                         </span>
                       </span>
                       <span>
@@ -1762,8 +1485,11 @@ function PrPivot({
 }
 
 // 樞紐裡的來源 PR 單號清單：每個單號連到 PR 詳細頁
-function PrLinks({ prs }: { prs: Map<number, string> }) {
-  const entries = Array.from(prs.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+function PrLinks({ prs }: { prs: { id: number; pr_no: string }[] }) {
+  // 同一 SKU 可能來自多張 PR；去重後照單號排序
+  const entries = Array.from(new Map(prs.map((p) => [p.id, p.pr_no])).entries()).sort(
+    (a, b) => a[1].localeCompare(b[1]),
+  );
   return (
     <>
       {entries.map(([id, no], i) => (
