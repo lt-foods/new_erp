@@ -71,17 +71,18 @@ export default function StoresPage() {
   useEffect(() => { setPage(1); }, [query, activeFilter, leleFilter]);
 
   // 載入 locations (供下拉)
+  async function loadLocations() {
+    const { data, error: err } = await getSupabase()
+      .from("locations")
+      .select("id, code, name")
+      .eq("type", "store")
+      .eq("is_active", true)
+      .order("name");
+    if (err) setError(err.message);
+    else setLocations((data ?? []) as Location[]);
+  }
   useEffect(() => {
-    (async () => {
-      const { data, error: err } = await getSupabase()
-        .from("locations")
-        .select("id, code, name")
-        .eq("type", "store")
-        .eq("is_active", true)
-        .order("name");
-      if (err) setError(err.message);
-      else setLocations((data ?? []) as Location[]);
-    })();
+    (async () => { await loadLocations(); })();
   }, []);
 
   async function reload() {
@@ -164,7 +165,8 @@ export default function StoresPage() {
       setEditing(null);
       setCreating(false);
       setError(null);
-      await reload();
+      // 新增未指定倉時後端會自動建「{名稱}倉」，重載下拉才看得到
+      await Promise.all([reload(), loadLocations()]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(/duplicate key|unique/.test(msg) ? `代碼 ${v.code} 已存在` : msg);
@@ -446,7 +448,11 @@ function StoreForm({
             onChange={(e) => up("location_id", e.target.value ? Number(e.target.value) : null)}
             className={inputCls}
           >
-            <option value="">— 未設定 —</option>
+            <option value="">
+              {initial.id === null
+                ? `— 自動建立「${v.name.trim() || "門市名"}倉」 —`
+                : "— 未設定 —"}
+            </option>
             {locations.map((l) => (
               <option key={l.id} value={l.id}>
                 {l.name} ({l.code})
