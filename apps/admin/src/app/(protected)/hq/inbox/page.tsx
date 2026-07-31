@@ -562,83 +562,38 @@ async function fetchShortageRows(
   dateFrom: string,
   dateTo: string,
 ): Promise<{ rows: Row[]; total: number }> {
-  // v_order_shortage 是 (order × sku) 維度,需多撈再聚合。
-  // 先做簡化版:抓所有相關 row,client-side 聚合 + 切頁。
-  let q = sb
-    .from("v_order_shortage")
-    .select(
-      "order_id, order_no, member_id, store_name, order_status, shortage_resolution, shortage_notified_at, sku_id, product_name, variant_name, sku_code, order_qty, demand_unfulfillable, order_updated_at",
-    )
-    .order("order_updated_at", { ascending: false });
-  if (stage) {
-    const resolutions = SHORTAGE_RESOLUTION_BY_STAGE[stage];
-    if (resolutions === null) q = q.is("shortage_resolution", null);
-    else if (resolutions.length === 0) return { rows: [], total: 0 };
-    else q = q.in("shortage_resolution", resolutions);
+  // server-side 分頁:rpc_hq_shortage_orders 在 DB 端把 v_order_shortage
+  // (order × sku) 聚合到 order 維度、套 stage / 日期篩選後分頁,
+  // 一次回傳 { total, rows(ShortageRaw 形狀) },前端只收當頁 20 筆。
+  if (stage && (SHORTAGE_RESOLUTION_BY_STAGE[stage]?.length ?? 1) === 0) {
+    return { rows: [], total: 0 }; // standby / rejected:訂單短少沒有這兩個 stage
   }
-  if (dateFrom) q = q.gte("order_updated_at", `${dateFrom}T00:00:00`);
-  if (dateTo) q = q.lte("order_updated_at", `${dateTo}T23:59:59.999`);
-  // v_order_shortage 是 (order × sku) 維度,撈夠多 row 才能聚合出正確 distinct 訂單數
-  q = q.limit(20000);
-  const { data, error } = await q;
+  const { data, error } = await sb.rpc("rpc_hq_shortage_orders", {
+    p_stage: stage,
+    p_page: page,
+    p_page_size: PAGE_SIZE,
+    p_date_from: dateFrom ? `${dateFrom}T00:00:00` : null,
+    p_date_to: dateTo ? `${dateTo}T23:59:59.999` : null,
+  });
   if (error) throw new Error("shortage: " + error.message);
 
-  type ShortageRowRaw = {
-    order_id: number;
-    order_no: string;
-    member_id: number | null;
-    store_name: string | null;
-    order_status: string;
-    shortage_resolution: string | null;
-    shortage_notified_at: string | null;
-    sku_id: number;
-    product_name: string | null;
-    variant_name: string | null;
-    sku_code: string | null;
-    order_qty: number;
-    demand_unfulfillable: number;
-    order_updated_at: string;
-  };
-  const shortageRaw = (data ?? []) as ShortageRowRaw[];
-  const shortageByOrder = new Map<number, ShortageRaw>();
-  for (const r of shortageRaw) {
-    let s = shortageByOrder.get(r.order_id);
-    if (!s) {
-      s = {
-        order_id: r.order_id,
-        order_no: r.order_no,
-        member_id: r.member_id,
-        store_name: r.store_name,
-        order_status: r.order_status,
-        shortage_resolution: r.shortage_resolution,
-        shortage_notified_at: r.shortage_notified_at,
-        short_items: [],
-        total_unfulfillable: 0,
-        order_updated_at: r.order_updated_at,
-      };
-      shortageByOrder.set(r.order_id, s);
-    }
-    const skuLabel = `${r.product_name ?? ""}${r.variant_name ? ` / ${r.variant_name}` : ""}`.trim() || `品項#${r.sku_id}`;
-    s.short_items.push({
-      sku_id: r.sku_id,
-      sku_label: r.sku_code ? `${r.sku_code} ${skuLabel}` : skuLabel,
-      order_qty: Number(r.order_qty),
-      demand_unfulfillable: Number(r.demand_unfulfillable),
-    });
-    s.total_unfulfillable += Number(r.demand_unfulfillable);
-  }
-  const allOrderRows = Array.from(shortageByOrder.values());
-  const total = allOrderRows.length;
-  const start = (page - 1) * PAGE_SIZE;
-  const pageRows = allOrderRows.slice(start, start + PAGE_SIZE);
-  const rows: Row[] = pageRows.map((s) => ({
+  const resp = (data ?? { total: 0, rows: [] }) as { total: number; rows: ShortageRaw[] };
+  const rows: Row[] = (resp.rows ?? []).map((s) => ({
     key: `shortage-${s.order_id}`,
     source: "shortage" as const,
     ts: new Date(s.order_updated_at).getTime(),
     stage: classifyShortage(s.shortage_resolution),
-    raw: s,
+    raw: {
+      ...s,
+      total_unfulfillable: Number(s.total_unfulfillable),
+      short_items: (s.short_items ?? []).map((it) => ({
+        ...it,
+        order_qty: Number(it.order_qty),
+        demand_unfulfillable: Number(it.demand_unfulfillable),
+      })),
+    },
   }));
-  return { rows, total };
+  return { rows, total: resp.total ?? 0 };
 }
 
 async function fetchPickingRows(
@@ -1237,6 +1192,33 @@ function HqInboxContent() {
   // server-side 已分頁,paginatedRows 直接 = filtered(當前頁的 rows 經過 search 過濾)
   const paginatedRows = filtered;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  // 分頁控制列 — 列表上、下各放一份(手機不用滑到底才能換頁)
+  const paginationBar = total > PAGE_SIZE ? (
+    <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
+      <span className="text-xs text-zinc-500">
+        共 {total} 筆 ·
+        顯示 {(page - 1) * PAGE_SIZE + 1} - {Math.min(page * PAGE_SIZE, total)}
+      </span>
+      <SpinButton onClick={() => setPage(1)} disabled={page === 1}
+        className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+        « 第一頁
+      </SpinButton>
+      <SpinButton onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+        className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+        ‹ 上頁
+      </SpinButton>
+      <span className="text-xs text-zinc-500">{page} / {totalPages}</span>
+      <SpinButton onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+        className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+        下頁 ›
+      </SpinButton>
+      <SpinButton onClick={() => setPage(totalPages)} disabled={page === totalPages}
+        className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+        最末頁 »
+      </SpinButton>
+    </div>
+  ) : null;
 
   // 任何 server 端篩選變動 → 回到第 1 頁(避免 page 超出範圍)
   useEffect(() => {
@@ -2139,6 +2121,9 @@ function HqInboxContent() {
             </div>
           )}
 
+          {/* 分頁 — 列表上方(手機優先看得到) */}
+          {paginationBar}
+
           {/* === Row list (郵件列) === */}
           <div className="overflow-hidden rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
             {rows === null ? (
@@ -2180,32 +2165,8 @@ function HqInboxContent() {
             )}
           </div>
 
-          {/* 分頁 — server-side,所有來源(含「全部」)都可用 */}
-          {total > PAGE_SIZE && (
-            <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
-              <span className="text-xs text-zinc-500">
-                共 {total} 筆 ·
-                顯示 {(page - 1) * PAGE_SIZE + 1} - {Math.min(page * PAGE_SIZE, total)}
-              </span>
-              <SpinButton onClick={() => setPage(1)} disabled={page === 1}
-                className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
-                « 第一頁
-              </SpinButton>
-              <SpinButton onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
-                className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
-                ‹ 上頁
-              </SpinButton>
-              <span className="text-xs text-zinc-500">{page} / {totalPages}</span>
-              <SpinButton onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}
-                className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
-                下頁 ›
-              </SpinButton>
-              <SpinButton onClick={() => setPage(totalPages)} disabled={page === totalPages}
-                className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
-                最末頁 »
-              </SpinButton>
-            </div>
-          )}
+          {/* 分頁 — server-side,所有來源(含「全部」)都可用;列表下方再放一份 */}
+          {paginationBar}
           </>
         )}
       </div>

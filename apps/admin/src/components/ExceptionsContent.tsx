@@ -232,6 +232,33 @@ export default function ExceptionsContent({
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
 
+  // 分頁控制列 — server-side(rpc_hq_exceptions),表格上、下各放一份
+  // (手機不用滑過整頁 20 列才能換頁),樣式對齊 /hq/inbox 其他來源
+  const paginationBar = rows !== null && total > PAGE_SIZE ? (
+    <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
+      <span className="text-xs text-zinc-500">
+        共 {total} 筆 · 顯示 {(currentPage - 1) * PAGE_SIZE + 1} - {Math.min(currentPage * PAGE_SIZE, total)}
+      </span>
+      <SpinButton onClick={() => setPage(1)} disabled={currentPage === 1}
+        className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+        « 第一頁
+      </SpinButton>
+      <SpinButton onClick={() => setPage(currentPage - 1)} disabled={currentPage === 1}
+        className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+        ‹ 上頁
+      </SpinButton>
+      <span className="text-xs text-zinc-500">{currentPage} / {totalPages}</span>
+      <SpinButton onClick={() => setPage(currentPage + 1)} disabled={currentPage === totalPages}
+        className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+        下頁 ›
+      </SpinButton>
+      <SpinButton onClick={() => setPage(totalPages)} disabled={currentPage === totalPages}
+        className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+        最末頁 »
+      </SpinButton>
+    </div>
+  ) : null;
+
   return (
     <div className="flex flex-1 flex-col gap-4">
       {showHeader && (
@@ -267,6 +294,9 @@ export default function ExceptionsContent({
           );
         })}
       </div>
+
+      {/* 分頁 — 表格上方(手機優先看得到) */}
+      {paginationBar}
 
       <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
@@ -363,31 +393,8 @@ export default function ExceptionsContent({
         </table>
       </div>
 
-      {/* 分頁 — server-side(rpc_hq_exceptions),樣式對齊 /hq/inbox 其他來源 */}
-      {rows !== null && total > PAGE_SIZE && (
-        <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
-          <span className="text-xs text-zinc-500">
-            共 {total} 筆 · 顯示 {(currentPage - 1) * PAGE_SIZE + 1} - {Math.min(currentPage * PAGE_SIZE, total)}
-          </span>
-          <SpinButton onClick={() => setPage(1)} disabled={currentPage === 1}
-            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
-            « 第一頁
-          </SpinButton>
-          <SpinButton onClick={() => setPage(currentPage - 1)} disabled={currentPage === 1}
-            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
-            ‹ 上頁
-          </SpinButton>
-          <span className="text-xs text-zinc-500">{currentPage} / {totalPages}</span>
-          <SpinButton onClick={() => setPage(currentPage + 1)} disabled={currentPage === totalPages}
-            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
-            下頁 ›
-          </SpinButton>
-          <SpinButton onClick={() => setPage(totalPages)} disabled={currentPage === totalPages}
-            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
-            最末頁 »
-          </SpinButton>
-        </div>
-      )}
+      {/* 分頁 — 表格下方再放一份 */}
+      {paginationBar}
 
       {resolveCtx && (
         <TransferShortageResolveModal
