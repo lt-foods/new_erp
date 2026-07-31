@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { stripTransferNotes } from "@/lib/orderNotes";
+import { parseReturnNote } from "@/lib/returnNote";
 import SpinButton from "@/components/SpinButton";
 
 type Order = {
@@ -20,6 +21,7 @@ type Order = {
   store: { id: number; name: string } | null;
   items: {
     id: number;
+    sku_id: number;
     qty: number;
     unit_price: number;
     discount_amount: number;
@@ -30,13 +32,19 @@ type Order = {
   }[];
 };
 
-function lineGross(it: { qty: number; unit_price: number }): number {
-  return Number(it.qty) * Number(it.unit_price);
+function lineGross(it: { unit_price: number }, qty: number): number {
+  return qty * Number(it.unit_price);
 }
-function lineSub(it: { qty: number; unit_price: number; discount_amount: number; discount_percent: number }): number {
-  const gross = Number(it.qty) * Number(it.unit_price);
+// 以指定數量計算小計（line-level 折扣金額按比例分攤，對齊 PickupDialog.lineSubQty）
+function lineSub(
+  it: { qty: number; unit_price: number; discount_amount: number; discount_percent: number },
+  qty: number,
+): number {
+  const fullQty = Number(it.qty) || 0;
+  const ratio = fullQty > 0 ? qty / fullQty : 0;
+  const gross = qty * Number(it.unit_price);
   const afterPct = gross * (1 - Number(it.discount_percent ?? 0) / 100);
-  return Math.max(0, Math.round(afterPct * 10000) / 10000 - Number(it.discount_amount ?? 0));
+  return Math.max(0, Math.round(afterPct * 10000) / 10000 - Number(it.discount_amount ?? 0) * ratio);
 }
 function hasLineDisc(it: { discount_amount: number; discount_percent: number }): boolean {
   return Number(it.discount_amount ?? 0) > 0 || Number(it.discount_percent ?? 0) > 0;
@@ -59,6 +67,9 @@ function Body() {
   // 由 PickupDialog 「列印小白單」帶入：本次「即將」扣的儲值金（尚未寫 DB,只在這張單上顯示）
   const walletPreview = Math.max(0, Number(sp.get("wallet_preview") ?? 0)) || 0;
   const [orders, setOrders] = useState<Order[] | null>(null);
+  // order_id → (item_id → 已退量)。未取退貨（非「取貨後退回」）依 SKU 聚合後
+  // 分攤到 active 品項行 — 退掉的貨不能取也不收錢（對齊 PickupDialog / v_customer_order_summary）
+  const [returnedByItem, setReturnedByItem] = useState<Map<number, Map<number, number>>>(new Map());
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -69,22 +80,60 @@ function Body() {
     }
     (async () => {
       const sb = getSupabase();
-      const { data, error: e } = await sb
-        .from("customer_orders")
-        .select(
-          `id, order_no, status, discount_amount, discount_percent, wallet_paid_amount, payment_status, notes,
-           member:members(id, member_no, name, phone),
-           campaign:group_buy_campaigns(id, name),
-           store:stores!customer_orders_pickup_store_id_fkey(id, name),
-           items:customer_order_items(id, qty, unit_price, discount_amount, discount_percent, notes, status, sku:skus(variant_name, product_name))`,
-        )
-        .in("id", ids);
+      const [oRes, rRes] = await Promise.all([
+        sb.from("customer_orders")
+          .select(
+            `id, order_no, status, discount_amount, discount_percent, wallet_paid_amount, payment_status, notes,
+             member:members(id, member_no, name, phone),
+             campaign:group_buy_campaigns(id, name),
+             store:stores!customer_orders_pickup_store_id_fkey(id, name),
+             items:customer_order_items(id, sku_id, qty, unit_price, discount_amount, discount_percent, notes, status, sku:skus(variant_name, product_name))`,
+          )
+          .in("id", ids),
+        sb.from("transfers")
+          .select("customer_order_id, notes, transfer_items(sku_id, qty_shipped)")
+          .in("customer_order_id", ids)
+          .eq("transfer_type", "return_to_hq")
+          .in("status", ["shipped", "received"]),
+      ]);
       if (cancelled) return;
-      if (e) {
-        setError(e.message);
+      if (oRes.error) {
+        setError(oRes.error.message);
         return;
       }
-      setOrders((data ?? []) as unknown as Order[]);
+      const orderList = (oRes.data ?? []) as unknown as Order[];
+
+      // 未取退貨量：order → SKU 聚合（「取貨後退回」是已取走的貨，不佔未取額度）
+      const returnedBySku = new Map<number, Map<number, number>>();
+      type RetRow = { customer_order_id: number; notes: string | null; transfer_items: { sku_id: number; qty_shipped: number | null }[] | null };
+      for (const t of (rRes.data ?? []) as RetRow[]) {
+        if (parseReturnNote(t.notes).isRestock) continue;
+        const m = returnedBySku.get(t.customer_order_id) ?? new Map<number, number>();
+        for (const ti of t.transfer_items ?? []) {
+          if (ti.sku_id == null) continue;
+          m.set(ti.sku_id, (m.get(ti.sku_id) ?? 0) + Number(ti.qty_shipped ?? 0));
+        }
+        returnedBySku.set(t.customer_order_id, m);
+      }
+      // 分攤到各 active 品項行（依 id 排序，分攤穩定 — 對齊 PickupDialog）
+      const alloc = new Map<number, Map<number, number>>();
+      for (const o of orderList) {
+        const remaining = new Map(returnedBySku.get(o.id) ?? []);
+        const m = new Map<number, number>();
+        const active = o.items
+          .filter((it) => ACTIVE_ITEM_STATUSES.has(it.status))
+          .sort((a, b) => a.id - b.id);
+        for (const it of active) {
+          const rem = remaining.get(it.sku_id) ?? 0;
+          if (rem <= 0) continue;
+          const a = Math.min(Number(it.qty), rem);
+          m.set(it.id, a);
+          remaining.set(it.sku_id, rem - a);
+        }
+        alloc.set(o.id, m);
+      }
+      setReturnedByItem(alloc);
+      setOrders(orderList);
     })();
     return () => {
       cancelled = true;
@@ -107,9 +156,13 @@ function Body() {
   // 假設 bulkConfirm 進來都是同一個會員
   const member = orders[0]?.member;
   const store = orders[0]?.store;
+  // 該行已退量 / 實際可取量（= 訂購量 − 未取退貨量）— 小白單只列、只收「取得到的貨」
+  const returnedOf = (o: Order, itemId: number) => returnedByItem.get(o.id)?.get(itemId) ?? 0;
+  const effQty = (o: Order, it: Order["items"][number]) => Math.max(0, Number(it.qty) - returnedOf(o, it.id));
+  const activeOf = (o: Order) =>
+    o.items.filter((it) => ACTIVE_ITEM_STATUSES.has(it.status)).sort((a, b) => a.id - b.id);
   const orderSub = (o: Order) => {
-    const active = o.items.filter((it) => ACTIVE_ITEM_STATUSES.has(it.status));
-    return active.reduce((a, it) => a + lineSub(it), 0);
+    return activeOf(o).reduce((a, it) => a + lineSub(it, effQty(o, it)), 0);
   };
   // payable 四捨五入到整數 NTD（對齊 v_customer_order_summary）
   const orderPay = (o: Order) => {
@@ -128,8 +181,7 @@ function Body() {
   const grandWalletPaid = grandWalletPaidDb + previewCapped;
   const grandBalanceDue = Math.max(0, grandTotal - grandWalletPaid);
   const totalQty = orders.reduce((s, o) => {
-    const active = o.items.filter((it) => ACTIVE_ITEM_STATUSES.has(it.status));
-    return s + active.reduce((a, it) => a + Number(it.qty), 0);
+    return s + activeOf(o).reduce((a, it) => a + effQty(o, it), 0);
   }, 0);
 
   return (
@@ -176,7 +228,7 @@ function Body() {
 
         <div className="mt-2 space-y-2">
           {orders.map((o) => {
-            const active = o.items.filter((it) => ACTIVE_ITEM_STATUSES.has(it.status));
+            const active = activeOf(o);
             const disc = Number(o.discount_amount ?? 0);
             const pct = Number(o.discount_percent ?? 0);
             const sub = orderSub(o);
@@ -191,8 +243,10 @@ function Body() {
                   <div className="text-[13px] italic">📝 {orderNotes}</div>
                 )}
                 {active.map((it) => {
-                  const subtotal = lineSub(it);
-                  const gross = lineGross(it);
+                  const returned = returnedOf(o, it.id);
+                  const qty = effQty(o, it);
+                  const subtotal = lineSub(it, qty);
+                  const gross = lineGross(it, qty);
                   const discounted = hasLineDisc(it);
                   return (
                     <div key={it.id}>
@@ -201,7 +255,7 @@ function Body() {
                           {it.sku?.variant_name || it.sku?.product_name || "—"}
                         </span>
                         <span className="whitespace-nowrap text-[15px]">
-                          × {Number(it.qty)}
+                          × {qty}
                           {discounted ? (
                             <>
                               <span className="ml-1.5 text-[13px] line-through">${gross}</span>
@@ -212,6 +266,9 @@ function Body() {
                           )}
                         </span>
                       </div>
+                      {returned > 0 && (
+                        <div className="pl-2 text-[13px] font-bold">↳ ↩ 已退貨 {returned} 件（不收費）</div>
+                      )}
                       {discounted && (
                         <div className="pl-2 text-[13px] font-bold text-red-700">
                           ↳ 折扣 {Number(it.discount_percent ?? 0) > 0
