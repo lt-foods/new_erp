@@ -15,6 +15,7 @@ import SpinButton from "@/components/SpinButton";
 import { translateRpcError } from "@/lib/rpcError";
 import { useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 import { fetchAllRows } from "@/lib/fetchAllRows";
+import { fanoutPickupNotifications } from "@/lib/pickupNotify";
 
 type Location = { id: number; name: string };
 type StoreLite = { id: number; location_id: number | null };
@@ -41,6 +42,16 @@ export default function TransfersInboxPage() {
   const [groupLimit, setGroupLimit] = useState(20);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [batchBusy, setBatchBusy] = useState(false);
+  // 收貨後是否整批推播「到貨」給受影響會員；店家可自行開關，記在 localStorage（預設開）
+  const [notifyMembers, setNotifyMembers] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    return window.localStorage.getItem("inbound-notify-members") !== "0";
+  });
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("inbound-notify-members", notifyMembers ? "1" : "0");
+    }
+  }, [notifyMembers]);
   // 待收子篩選（僅在「未收」分頁內作用）
   type DateFilter = "tomorrow" | "today_or_earlier" | "all_pending" | null;
   const [dateFilter, setDateFilter] = useState<DateFilter>(null);
@@ -446,10 +457,16 @@ export default function TransfersInboxPage() {
     window.dispatchEvent(new Event("inbound-badge-refresh"));
   }
 
+  // confirm 對話框裡的「是否通知會員」提示行（依開關狀態）
+  const notifyHint = () =>
+    notifyMembers
+      ? "📩 收貨後會推播「到貨」通知給相關會員。"
+      : "🔕 已關閉會員通知,本次收貨不推播。";
+
   // 單筆全收 — 直接 confirm + RPC,跟批次邏輯一樣(p_lines=null)
   async function quickReceive(t: Transfer) {
     const dest = locations.get(t.dest_location) ?? `#${t.dest_location}`;
-    if (!confirm(`確認收貨 ${t.transfer_no}(送到 ${dest})?\n\n以「全收」(實收 = 派出量,無破損)處理。需要調整數量請點「調整」。`)) return;
+    if (!confirm(`確認收貨 ${t.transfer_no}(送到 ${dest})?\n\n以「全收」(實收 = 派出量,無破損)處理。需要調整數量請點「調整」。\n${notifyHint()}`)) return;
     setBatchBusy(true);
     try {
       const sb = getSupabase();
@@ -463,6 +480,14 @@ export default function TransfersInboxPage() {
         p_notes: null,
       });
       if (e) throw new Error(translateRpcError(e));
+      // 依「收貨後通知會員」設定推播到貨通知；失敗不影響收貨流程
+      if (notifyMembers) {
+        const pushed = await fanoutPickupNotifications([t.id]).catch((err) => {
+          console.warn("push fanout error:", err);
+          return 0;
+        });
+        if (pushed > 0) alert(`📩 已推播 ${pushed} 位顧客`);
+      }
       reloadAndRefreshBadge();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -504,7 +529,7 @@ export default function TransfersInboxPage() {
 
   async function batchReceive() {
     if (selected.size === 0) return;
-    if (!confirm(`確認批次收貨 ${selected.size} 筆?\n\n所有品項都將以「全收」(實收 = 派出量,無破損)處理。需要編輯數量請點個別「收貨」按鈕。`)) return;
+    if (!confirm(`確認批次收貨 ${selected.size} 筆?\n\n所有品項都將以「全收」(實收 = 派出量,無破損)處理。需要編輯數量請點個別「收貨」按鈕。\n${notifyHint()}`)) return;
     setBatchBusy(true);
     try {
       const sb = getSupabase();
@@ -533,13 +558,26 @@ export default function TransfersInboxPage() {
         error: translateRpcError(f.error),
       }));
 
+      // 依「收貨後通知會員」設定，對成功收貨的單整批推播（跨單去重同會員只推一次）
+      let pushNote = "";
+      if (notifyMembers && okCount > 0) {
+        const failedIds = new Set((res.failed ?? []).map((f) => f.id));
+        const okIds = ids.filter((id) => !failedIds.has(id));
+        const pushed = await fanoutPickupNotifications(okIds).catch((err) => {
+          console.warn("push fanout error:", err);
+          return 0;
+        });
+        if (pushed > 0) pushNote = `\n📩 已推播 ${pushed} 位顧客`;
+      }
+
       if (failures.length === 0) {
-        alert(`✅ 批次收貨完成:${okCount} 筆`);
+        alert(`✅ 批次收貨完成:${okCount} 筆${pushNote}`);
       } else {
         const failBrief = failures.slice(0, 5).map((f) => `  #${f.id}: ${f.error}`).join("\n");
         alert(
           `⚠ 部分成功:\n` +
-          `成功 ${okCount} 筆 / 失敗 ${failures.length} 筆\n\n` +
+          `成功 ${okCount} 筆 / 失敗 ${failures.length} 筆` +
+          pushNote + `\n\n` +
           `失敗(前 5):\n${failBrief}` +
           (failures.length > 5 ? `\n…(還有 ${failures.length - 5} 筆)` : ""),
         );
@@ -703,6 +741,19 @@ export default function TransfersInboxPage() {
               清空
             </SpinButton>
           )}
+          {/* 收貨後是否整批推播「到貨」給會員 — 適用單筆收貨 / 批次收貨 / 調整 modal，設定會記住 */}
+          <label
+            className="flex cursor-pointer items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-300"
+            title="開啟:收貨完成後整批推播「您的商品到貨」給該店受影響的會員(不通知名單會自動排除)。關閉:收貨不推播。"
+          >
+            <input
+              type="checkbox"
+              checked={notifyMembers}
+              onChange={(e) => setNotifyMembers(e.target.checked)}
+              className="cursor-pointer"
+            />
+            {notifyMembers ? "📩 收貨後通知會員" : "🔕 收貨後不通知會員"}
+          </label>
           <SpinButton
             type="button"
             onClick={batchReceive}
@@ -926,6 +977,7 @@ export default function TransfersInboxPage() {
             const wid = parseWaveId(opening.transfer_no);
             return wid !== null ? waves.get(wid) ?? null : null;
           })()}
+          notifyMembers={notifyMembers}
           onClose={() => setOpening(null)}
           onSubmitted={() => {
             setOpening(null);

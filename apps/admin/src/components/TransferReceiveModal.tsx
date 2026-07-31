@@ -3,73 +3,8 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
+import { fanoutPickupNotifications } from "@/lib/pickupNotify";
 import SpinButton from "@/components/SpinButton";
-
-async function fanoutPushNotifications(transferId: number): Promise<number> {
-  const sb = getSupabase();
-  const { data: rows, error } = await sb.rpc("rpc_get_members_to_notify_for_transfer", {
-    p_transfer_id: transferId,
-  });
-  if (error) {
-    console.warn("get members for push failed:", error.message);
-    return 0;
-  }
-  const list = (rows as { member_id: number; order_id: number; order_no: string; last_notify_pickup_at: string | null }[] | null) ?? [];
-  if (list.length === 0) return 0;  // RPC 已過濾黑名單會員
-
-  // 去重：同一會員多張訂單只推一次（取第一張當代表）
-  const seenMembers = new Set<number>();
-  const uniqueByMember = list.filter((r) => {
-    if (seenMembers.has(r.member_id)) return false;
-    seenMembers.add(r.member_id);
-    return true;
-  });
-
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  if (!supabaseUrl) return 0;
-  const { data: sess } = await sb.auth.getSession();
-  const token = sess.session?.access_token;
-  const operator = sess.session?.user?.id;
-  if (!token) return 0;
-
-  let success = 0;
-  await Promise.allSettled(
-    uniqueByMember.map(async (r) => {
-      try {
-        const resp = await fetch(`${supabaseUrl}/functions/v1/admin-notify`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            member_id: r.member_id,
-            title: "您的商品到貨",
-            message: "點此開啟訂單頁查看",
-            url: "/orders",
-            category: "order_arrived",
-          }),
-        });
-        if (resp.ok) success += 1;
-      } catch (e) {
-        console.warn(`push to member ${r.member_id} failed:`, e);
-      }
-    }),
-  );
-
-  // 不論推播成功與否，都把所有受影響訂單 (含同會員多張) 標 last_notify_pickup_at
-  // 讓 /pickup 顯示「📨 上次通知 X」避免再手動重複推
-  await Promise.allSettled(
-    list.map((r) =>
-      sb.rpc("rpc_mark_pickup_notified", {
-        p_order_id: r.order_id,
-        p_operator: operator ?? null,
-      }),
-    ),
-  );
-
-  return success;
-}
 
 export type Transfer = {
   id: number;
@@ -124,6 +59,7 @@ export function TransferReceiveModal({
   srcName,
   dstName,
   wave,
+  notifyMembers = true,
   onClose,
   onSubmitted,
 }: {
@@ -131,6 +67,8 @@ export function TransferReceiveModal({
   srcName: string;
   dstName: string;
   wave: Wave | null;
+  // 收貨完成後是否整批推播「到貨」給受影響會員（收貨待辦頁的開關）
+  notifyMembers?: boolean;
   onClose: () => void;
   onSubmitted: () => void;
 }) {
@@ -250,12 +188,14 @@ export function TransferReceiveModal({
           ? `\n⚠ 短收 ${Math.abs(Number(r.total_variance))}`
           : "";
 
-      // Fire-and-forget：通知該店所有受影響的顧客「貨已到店」
+      // Fire-and-forget：通知該店所有受影響的顧客「貨已到店」，依「收貨後通知會員」設定可整批關掉
       // 失敗不影響收貨流程（push 失敗只是該會員拿不到推播）
-      const pushed = await fanoutPushNotifications(transfer.id).catch((err) => {
-        console.warn("push fanout error:", err);
-        return 0;
-      });
+      const pushed = notifyMembers
+        ? await fanoutPickupNotifications([transfer.id]).catch((err) => {
+            console.warn("push fanout error:", err);
+            return 0;
+          })
+        : 0;
       const pushNote = pushed > 0 ? `\n📩 已推播 ${pushed} 位顧客` : "";
       alert(
         `收貨完成：${r?.items_received ?? 0} 行，實收合計 ${r?.total_qty_received ?? 0}${varNote}${pushNote}`,
