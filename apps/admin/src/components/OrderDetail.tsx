@@ -349,7 +349,36 @@ export function OrderDetail({
     return s + computeLineSubtotal(Number(eff.qty), eff.unit_price, eff.discount);
   }, 0);
   const lineDiscountTotal = Math.round((grossTotal - subtotal) * 10000) / 10000;
-  const { deduction: orderDeduction, payable: payableAmount } = applyOrderDiscount(subtotal, orderDiscountValue);
+
+  // ----- 未取退貨扣減：退回總倉的貨不收錢；「取貨後退回」不扣（錢已在取貨時收，退款走儲值金）-----
+  // 退貨單只記 SKU+量：依品項行序把退貨量分攤到該 SKU 未取消行，以該行小計差額折算金額
+  // （對齊 v_customer_order_summary.returned_deduction 的分攤邏輯）
+  const unpickedReturnedBySku = new Map<number, number>();
+  for (const r of returns ?? []) {
+    if (parseReturnNote(r.notes).isRestock) continue;
+    for (const l of r.lines) {
+      unpickedReturnedBySku.set(l.sku_id, (unpickedReturnedBySku.get(l.sku_id) ?? 0) + Number(l.qty_shipped));
+    }
+  }
+  let returnedDeduction = 0;
+  {
+    const remaining = new Map(unpickedReturnedBySku);
+    for (const it of items) {
+      if (["cancelled", "expired"].includes(it.status)) continue;
+      const skuId = it.sku?.id;
+      const rem = skuId != null ? (remaining.get(skuId) ?? 0) : 0;
+      if (skuId == null || rem <= 0) continue;
+      const eff = itemEffective(it);
+      const alloc = Math.min(Number(eff.qty), rem);
+      returnedDeduction +=
+        computeLineSubtotal(Number(eff.qty), eff.unit_price, eff.discount) -
+        computeLineSubtotal(Number(eff.qty) - alloc, eff.unit_price, eff.discount);
+      remaining.set(skuId, rem - alloc);
+    }
+    returnedDeduction = Math.round(returnedDeduction * 10000) / 10000;
+  }
+  const netSubtotal = Math.max(0, Math.round((subtotal - returnedDeduction) * 10000) / 10000);
+  const { deduction: orderDeduction, payable: payableAmount } = applyOrderDiscount(netSubtotal, orderDiscountValue);
 
   // ----- 退貨彙整：總退貨件數 + SKU lookup（給 ReturnList 顯示品名）-----
   const totalReturnedQty = (returns ?? []).reduce(
@@ -806,7 +835,7 @@ export function OrderDetail({
               value={orderDiscountValue}
               disabled={!canEdit}
               onChange={(v) => setOrderDraft({ discount: v })}
-              referenceAmount={subtotal}
+              referenceAmount={netSubtotal}
             />
           }
         />
@@ -839,6 +868,9 @@ export function OrderDetail({
               <span className="text-zinc-500">− 單品折扣 ${Math.round(lineDiscountTotal)}</span>
             )}
             <span className="text-zinc-500">小計 ${Math.round(subtotal)}</span>
+            {returnedDeduction > 0 && (
+              <span className="text-orange-700 dark:text-orange-400">− 退貨 ${Math.round(returnedDeduction)}</span>
+            )}
             {orderDeduction > 0 && (
               <span className="text-zinc-500">
                 − 整單折扣

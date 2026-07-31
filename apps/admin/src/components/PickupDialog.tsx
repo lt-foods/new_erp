@@ -9,6 +9,7 @@ import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
 import { EditableDiscount, deriveDiscount, type DiscountValue } from "@/components/EditableDiscount";
 import { orderItemStatusLabel } from "@/lib/orderStatus";
+import { parseReturnNote } from "@/lib/returnNote";
 
 type PickableItem = {
   id: number;
@@ -86,9 +87,10 @@ export function PickupDialog({
           .select("discount_amount, discount_percent, member_id, wallet_paid_amount, payment_status")
           .eq("id", orderId)
           .maybeSingle<OrderHead>(),
-        // 已退回總倉量（return_to_hq transfer）— 退掉的貨店裡沒有、不可再取
+        // 已退回總倉量（return_to_hq transfer）— 退掉的貨店裡沒有、不可再取。
+        // notes 供分辨「取貨後退回」（那批是已取走的貨，不佔未取品項的可取量）
         sb.from("transfers")
-          .select("transfer_items(sku_id, qty_shipped)")
+          .select("notes, transfer_items(sku_id, qty_shipped)")
           .eq("customer_order_id", orderId)
           .eq("transfer_type", "return_to_hq")
           .in("status", ["shipped", "received"]),
@@ -102,8 +104,10 @@ export function PickupDialog({
       const list = (iRes.data ?? []) as unknown as PickableItem[];
 
       // ----- 退貨量依 SKU 聚合，再分攤到各 pending 品項行（list 已 order by id，分攤穩定）-----
+      // 只算「未取退貨」：取貨後退回（|取貨後退回）的是客戶已取走的貨，不扣未取品項的可取量
       const returnedBySku = new Map<number, number>();
-      for (const t of (rRes.data ?? []) as { transfer_items: { sku_id: number; qty_shipped: number | null }[] | null }[]) {
+      for (const t of (rRes.data ?? []) as { notes: string | null; transfer_items: { sku_id: number; qty_shipped: number | null }[] | null }[]) {
+        if (parseReturnNote(t.notes).isRestock) continue;
         for (const ti of t.transfer_items ?? []) {
           if (ti.sku_id == null) continue;
           returnedBySku.set(ti.sku_id, (returnedBySku.get(ti.sku_id) ?? 0) + Number(ti.qty_shipped ?? 0));
