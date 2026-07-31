@@ -79,6 +79,9 @@ export function TransferReceiveModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const readOnly = transfer.status !== "shipped";
+  // 撿貨波次派貨單：背後掛著多張顧客訂單，店端拒收會讓訂單卡在派貨中、
+  // 庫存虛回總倉（2026-07-30 湖口誤拒收事故）。不給拒收，RPC 端也有同款守衛。
+  const isWaveDispatch = wave !== null || parseWaveId(transfer.transfer_no) !== null;
 
   useEffect(() => {
     let cancelled = false;
@@ -209,7 +212,10 @@ export function TransferReceiveModal({
   }
 
   async function reject() {
-    const reason = prompt("拒收原因（會把貨退回 source 端）：");
+    const reason = prompt(
+      "⚠ 拒收＝退貨作廢：整張調撥單會被取消、貨退回寄出端，對應的顧客訂單也會一併取消。\n" +
+        "貨還沒送到？請按「取消」關閉此視窗，等貨到再收即可。\n\n確定要拒收請輸入原因:",
+    );
     if (reason === null) return;
     setError(null);
     setSubmitting(true);
@@ -272,13 +278,22 @@ export function TransferReceiveModal({
                 >
                   {submitting ? "送出中…" : "確認收貨"}
                 </SpinButton>
-                <SpinButton
-                  onClick={reject}
-                  disabled={submitting || !items}
-                  className="rounded-md border border-red-500 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-950"
-                >
-                  ✗ 拒收
-                </SpinButton>
+                {isWaveDispatch ? (
+                  <span
+                    className="self-center text-[11px] text-zinc-400"
+                    title="總倉派貨單不可拒收：貨還沒到請等貨到再收；貨品有誤或毀損請聯繫總倉處理"
+                  >
+                    有問題請聯繫總倉
+                  </span>
+                ) : (
+                  <SpinButton
+                    onClick={reject}
+                    disabled={submitting || !items}
+                    className="rounded-md border border-red-500 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-950"
+                  >
+                    ✗ 拒收
+                  </SpinButton>
+                )}
               </>
             )}
             <SpinButton

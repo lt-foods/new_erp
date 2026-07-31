@@ -15,6 +15,7 @@ import { AidOrderStatusActions } from "@/components/AidOrderStatusActions";
 import { PickModal, type PickWave } from "@/components/PickModal";
 import ExceptionsContent from "@/components/ExceptionsContent";
 import TransferDetailModal from "@/components/TransferDetailModal";
+import { parseWaveId } from "@/components/TransferReceiveModal";
 import RestockDetailModal from "@/components/RestockDetailModal";
 import RestockToPrModal from "@/components/RestockToPrModal";
 import { ORDER_STATUS_LABEL as AID_STATUS_LABEL, type OrderStatus as AidStatus } from "@/lib/orderStatus";
@@ -1631,12 +1632,13 @@ function HqInboxContent() {
     }
   }
 
-  async function handleTransferAction(transferId: number, action: "ship" | "arrive_at_hq" | "delete" | "reject") {
+  async function handleTransferAction(transferId: number, action: "ship" | "arrive_at_hq" | "delete" | "reject" | "unreject") {
     const labels: Record<typeof action, string> = {
       ship: "從 HQ 出貨(扣庫存、推到「已出貨」)",
       arrive_at_hq: "確認到倉(全收、入 HQ 庫存)",
       delete: "刪除草稿",
       reject: "取消(拒收、將貨退回 source location)",
+      unreject: "恢復在途(沖銷拒收回流、單據回到店端待收)",
     };
     let reason: string | null = null;
     if (action === "reject") {
@@ -1665,6 +1667,9 @@ function HqInboxContent() {
       } else if (action === "reject") {
         rpcName = "rpc_reject_transfer";
         params = { p_transfer_id: transferId, p_reason: reason, p_operator: operator };
+      } else if (action === "unreject") {
+        rpcName = "rpc_unreject_transfer";
+        params = { p_transfer_id: transferId, p_operator: operator, p_notes: null };
       } else {
         rpcName = "rpc_transfer_batch_delete";
         params = { p_transfer_ids: [transferId], p_operator: operator };
@@ -2323,7 +2328,7 @@ function MailRow({
   onOpenTransferDetail: (id: number) => void;
   onOpenRestockDetail: (id: number) => void;
   onShortageAction: (orderId: number, action: "notified" | "cancelled" | "waiting_next_po" | "reallocated") => Promise<void>;
-  onTransferAction: (transferId: number, action: "ship" | "arrive_at_hq" | "delete" | "reject") => Promise<void>;
+  onTransferAction: (transferId: number, action: "ship" | "arrive_at_hq" | "delete" | "reject" | "unreject") => Promise<void>;
   onPickingDispatch: (w: PickingRaw) => Promise<void>;
   onPickingEdit: (w: PickingRaw) => void;
   onPickingCancel: (w: PickingRaw) => Promise<void>;
@@ -2734,12 +2739,32 @@ function TransferActions({
   transfer: TransferRaw;
   hqLocId: number | null;
   busy: string | null;
-  onAction: (transferId: number, action: "ship" | "arrive_at_hq" | "delete" | "reject") => Promise<void>;
+  onAction: (transferId: number, action: "ship" | "arrive_at_hq" | "delete" | "reject" | "unreject") => Promise<void>;
 }) {
   const isBusy = busy?.startsWith(`transfer-${transfer.id}`) ?? false;
   const isHqDest = hqLocId !== null && transfer.dest_location === hqLocId;
   const isOrderReturn = isOrderReturnTransfer(transfer.notes);
   const buttons: React.ReactNode[] = [];
+
+  // 誤拒收復原：波次派貨單被拒收(cancelled + [rejected:...]) → 一鍵恢復在途
+  // RPC 端有完整守衛（重複復原/庫存不足/aid 鏈皆擋），這裡只做入口
+  if (
+    transfer.status === "cancelled" &&
+    parseWaveId(transfer.transfer_no) !== null &&
+    (transfer.notes ?? "").includes("[rejected:")
+  ) {
+    buttons.push(
+      <RowAction
+        key="unreject"
+        variant="warning"
+        onClick={() => onAction(transfer.id, "unreject")}
+        disabled={isBusy}
+        title="沖銷拒收回流、單據回到「在途」，店端收貨待辦會重新出現"
+      >
+        恢復在途
+      </RowAction>,
+    );
+  }
 
   // draft: 可刪除
   if (transfer.status === "draft") {
