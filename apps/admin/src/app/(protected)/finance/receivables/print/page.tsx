@@ -32,6 +32,13 @@ type SettlementItem = {
   description: string | null;
 };
 
+type Adjustment = {
+  id: number;
+  amount: number;
+  reason: string;
+  created_at: string;
+};
+
 type Store = { id: number; code: string; name: string };
 type Sku = { id: number; sku_code: string | null; product_name: string | null; variant_name: string | null };
 type Transfer = { id: number; transfer_no: string };
@@ -59,6 +66,7 @@ export default function PrintSettlementPage() {
   const [settlement, setSettlement] = useState<Settlement | null>(null);
   const [store, setStore] = useState<Store | null>(null);
   const [items, setItems] = useState<SettlementItem[]>([]);
+  const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
   const [transfers, setTransfers] = useState<Map<number, Transfer>>(new Map());
   const [skus, setSkus] = useState<Map<number, Sku>>(new Map());
   const [tenantName, setTenantName] = useState("");
@@ -91,7 +99,7 @@ export default function PrintSettlementPage() {
         const sd = s as Settlement;
         setSettlement(sd);
 
-        const [{ data: storeData }, { data: itemRows }, { data: tenantData }] = await Promise.all([
+        const [{ data: storeData }, { data: itemRows }, { data: tenantData }, { data: adjData }] = await Promise.all([
           sb.from("stores").select("id, code, name").eq("id", sd.store_id).maybeSingle(),
           sb.from("store_monthly_settlement_items")
             .select("id, transfer_id, sku_id, qty_received, unit_cost, line_amount, unit_branch_price, branch_amount, received_at, entry_type, description")
@@ -99,9 +107,16 @@ export default function PrintSettlementPage() {
             .order("entry_type")
             .order("received_at"),
           sb.from("tenants").select("name").limit(1),
+          sb.from("store_settlement_adjustments")
+            .select("id, amount, reason, created_at")
+            .eq("store_id", sd.store_id)
+            .eq("settlement_month", sd.settlement_month)
+            .eq("status", "active")
+            .order("created_at"),
         ]);
         if (cancelled) return;
         if (storeData) setStore(storeData as Store);
+        setAdjustments((adjData ?? []) as Adjustment[]);
         const itList = (itemRows ?? []) as SettlementItem[];
         setItems(itList);
         const t = (tenantData as { name: string }[] | null)?.[0];
@@ -155,6 +170,7 @@ export default function PrintSettlementPage() {
   const monthLabel = settlement.settlement_month?.slice(0, 7);
   const totalCost = items.reduce((s, it) => s + Number(it.line_amount), 0);
   const totalBranch = items.reduce((s, it) => s + Number(it.branch_amount ?? 0), 0);
+  const adjTotal = adjustments.reduce((s, a) => s + Number(a.amount), 0);
   const today = new Date().toLocaleDateString("zh-TW");
   const internal = view === "internal" && costAllowed;
 
@@ -334,10 +350,52 @@ export default function PrintSettlementPage() {
             </tbody>
           </table>
 
+          {/* 金額調整（明細以外的加減項＋原因） */}
+          {adjustments.length > 0 && (
+            <>
+              <div className="mt-4 mb-1 text-xs font-semibold">金額調整</div>
+              <table className="stmt-table w-full border-collapse text-xs">
+                <thead>
+                  <tr className="border-b-2 border-zinc-900">
+                    <th className="border border-zinc-400 px-2 py-1.5 text-left">#</th>
+                    <th className="border border-zinc-400 px-2 py-1.5 text-left">日期</th>
+                    <th className="border border-zinc-400 px-2 py-1.5 text-left">原因</th>
+                    <th className="border border-zinc-400 px-2 py-1.5 text-right">金額</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {adjustments.map((a, i) => (
+                    <tr key={a.id}>
+                      <td className="border border-zinc-400 px-2 py-1">{i + 1}</td>
+                      <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{new Date(a.created_at).toLocaleDateString("zh-TW")}</td>
+                      <td className="border border-zinc-400 px-2 py-1">{a.reason}</td>
+                      <td className={`border border-zinc-400 px-2 py-1 text-right font-mono whitespace-nowrap ${Number(a.amount) < 0 ? "text-emerald-700" : ""}`}>
+                        {Number(a.amount) < 0 ? "−" : "+"}${Math.abs(Number(a.amount)).toLocaleString("zh-TW")}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="bg-zinc-100 font-semibold">
+                    <td colSpan={3} className="border border-zinc-400 px-2 py-1.5 text-right">調整合計</td>
+                    <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono whitespace-nowrap">
+                      {adjTotal < 0 ? "−" : "+"}${Math.abs(adjTotal).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <div className="mt-2 text-right text-sm font-semibold">
+                商品合計 ${totalBranch.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                <span className="mx-1">＋</span>調整 {adjTotal < 0 ? "−" : "+"}${Math.abs(adjTotal).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                <span className="mx-1">＝</span>應付金額{" "}
+                <span className="text-rose-600">${Number(settlement.payable_amount).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</span>
+              </div>
+            </>
+          )}
+
           {/* 說明 */}
           <div className="mt-3 text-[10px] text-zinc-500">
             ※ 類型說明：HQ 進貨 = 總倉直接出貨給本店；空中轉入 = 別店空中轉來（加應付）；空中轉出 = 空中轉去別店（減應付）；
             自由轉入／轉出 = 店間自由轉貨（轉貨時申報金額入帳）；退貨沖回 = 退貨回總倉（減應付）。
+            {adjustments.length > 0 && "金額調整 = 總部人工加減項（正=加收、負=減收），原因如上表。"}
             {internal && (
               <>
                 <br />

@@ -20,6 +20,7 @@ type Settlement = {
   settlement_month: string;
   store_id: number;
   payable_amount: number;
+  adjustment_amount: number;
   item_count: number;
   status: "sent" | "disputed" | "confirmed" | "remitted" | "settled" | "draft" | "cancelled";
   sent_at: string | null;
@@ -48,6 +49,13 @@ type Dispute = {
   reason: string;
   status: "open" | "resolved";
   resolution_note: string | null;
+};
+
+type Adjustment = {
+  id: number;
+  amount: number;
+  reason: string;
+  created_at: string;
 };
 
 type Transfer = { id: number; transfer_no: string };
@@ -102,6 +110,7 @@ export default function SettlementReviewPage() {
   const [store, setStore] = useState<StoreRow | null>(null);
   const [items, setItems] = useState<Item[] | null>(null);
   const [disputes, setDisputes] = useState<Dispute[]>([]);
+  const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
   const [transfers, setTransfers] = useState<Map<number, Transfer>>(new Map());
   const [skus, setSkus] = useState<Map<number, Sku>>(new Map());
   const [err, setErr] = useState<string | null>(null);
@@ -137,7 +146,7 @@ export default function SettlementReviewPage() {
       const [{ data: s, error: e0 }, { data: itemRows, error: e1 }, { data: dData }] = await Promise.all([
         sb
           .from("store_monthly_settlements")
-          .select("id, settlement_month, store_id, payable_amount, item_count, status, sent_at, store_agreed_at, remitted_at, remit_note, settled_at")
+          .select("id, settlement_month, store_id, payable_amount, adjustment_amount, item_count, status, sent_at, store_agreed_at, remitted_at, remit_note, settled_at")
           .eq("id", settlementId)
           .maybeSingle(),
         sb
@@ -162,7 +171,7 @@ export default function SettlementReviewPage() {
       const list = (itemRows ?? []) as Item[];
       setItems(list);
 
-      const [{ data: storeData }, { data: tx }, { data: sk }] = await Promise.all([
+      const [{ data: storeData }, { data: tx }, { data: sk }, { data: adjData }] = await Promise.all([
         sb.from("stores").select("id, name").eq("id", sd.store_id).maybeSingle(),
         list.length
           ? sb.from("transfers").select("id, transfer_no").in("id", Array.from(new Set(list.map((it) => it.transfer_id))))
@@ -170,9 +179,17 @@ export default function SettlementReviewPage() {
         list.length
           ? sb.from("skus").select("id, sku_code, product_name, variant_name").in("id", Array.from(new Set(list.map((it) => it.sku_id))))
           : Promise.resolve({ data: [] as Sku[] }),
+        sb
+          .from("store_settlement_adjustments")
+          .select("id, amount, reason, created_at")
+          .eq("store_id", sd.store_id)
+          .eq("settlement_month", sd.settlement_month)
+          .eq("status", "active")
+          .order("created_at", { ascending: true }),
       ]);
       if (cancelled) return;
       if (storeData) setStore(storeData as StoreRow);
+      setAdjustments((adjData ?? []) as Adjustment[]);
       const tm = new Map<number, Transfer>();
       for (const t of (tx ?? []) as Transfer[]) tm.set(t.id, t);
       setTransfers(tm);
@@ -504,6 +521,40 @@ export default function SettlementReviewPage() {
           )}
         </table>
       </div>
+
+      {/* 總部金額調整（明細以外的加減項，含原因） */}
+      {adjustments.length > 0 && (
+        <div className="rounded-md border border-zinc-200 dark:border-zinc-800">
+          <div className="border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-medium dark:border-zinc-800 dark:bg-zinc-900">
+            總部金額調整（{adjustments.length} 筆）
+          </div>
+          <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
+            {adjustments.map((a) => {
+              const positive = Number(a.amount) > 0;
+              return (
+                <li key={a.id} className="flex items-start justify-between gap-3 px-3 py-2 text-sm">
+                  <div className="min-w-0 flex-1">
+                    <span className="break-words">{a.reason}</span>
+                    <span className="ml-2 text-xs text-zinc-500">{new Date(a.created_at).toLocaleDateString("zh-TW")}</span>
+                  </div>
+                  <span className={`shrink-0 font-mono ${positive ? "text-rose-600" : "text-emerald-600"}`}>
+                    {positive ? "+" : "−"}${Math.abs(Number(a.amount)).toLocaleString("zh-TW")}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+          <div className="border-t border-zinc-200 bg-zinc-50 px-3 py-2 text-right text-sm dark:border-zinc-800 dark:bg-zinc-900">
+            商品合計 <span className="font-mono">${total.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</span>
+            <span className="mx-1">＋</span>調整{" "}
+            <span className="font-mono">
+              {Number(settlement.adjustment_amount ?? 0) < 0 ? "−" : "+"}${Math.abs(Number(settlement.adjustment_amount ?? 0)).toLocaleString("zh-TW")}
+            </span>
+            <span className="mx-1">＝</span>應付總部{" "}
+            <span className="font-mono font-semibold text-rose-600">${Number(settlement.payable_amount).toLocaleString("zh-TW")}</span>
+          </div>
+        </div>
+      )}
 
       {err && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">

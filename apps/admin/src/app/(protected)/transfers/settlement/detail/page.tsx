@@ -19,6 +19,7 @@ type Settlement = {
   payable_amount: number;
   cost_amount: number;
   branch_amount: number;
+  adjustment_amount: number;
   transfer_count: number;
   item_count: number;
   status: SettlementStatus;
@@ -67,12 +68,22 @@ type Dispute = {
   resolution_note: string | null;
 };
 
+type Adjustment = {
+  id: number;
+  amount: number;
+  reason: string;
+  status: "active" | "voided";
+  created_at: string;
+  voided_at: string | null;
+  void_reason: string | null;
+};
+
 type Store = { id: number; code: string; name: string };
 type Transfer = { id: number; transfer_no: string; status: string; shipped_at: string | null };
 type Sku = { id: number; sku_code: string | null; product_name: string | null; variant_name: string | null };
 
 const SETTLEMENT_SELECT =
-  "id, settlement_month, store_id, payable_amount, cost_amount, branch_amount, transfer_count, item_count, status, confirmed_at, settled_at, generated_receivable_id, notes, updated_at, sent_at, store_agreed_at, remitted_at, remit_note";
+  "id, settlement_month, store_id, payable_amount, cost_amount, branch_amount, adjustment_amount, transfer_count, item_count, status, confirmed_at, settled_at, generated_receivable_id, notes, updated_at, sent_at, store_agreed_at, remitted_at, remit_note";
 
 const ENTRY_TYPE_LABEL: Record<Item["entry_type"], string> = {
   hq_inbound: "HQ 進貨",
@@ -116,6 +127,7 @@ export default function HqSettlementDetailPage() {
   const [store, setStore] = useState<Store | null>(null);
   const [items, setItems] = useState<Item[] | null>(null);
   const [disputes, setDisputes] = useState<Dispute[]>([]);
+  const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
   const [transfers, setTransfers] = useState<Map<number, Transfer>>(new Map());
   const [skus, setSkus] = useState<Map<number, Sku>>(new Map());
   const [err, setErr] = useState<string | null>(null);
@@ -131,6 +143,14 @@ export default function HqSettlementDetailPage() {
   const [pendingAction, setPendingAction] = useState<"send" | "confirm" | "settle" | null>(null);
   const [resolvingId, setResolvingId] = useState<number | null>(null);
   const [resolveNote, setResolveNote] = useState("");
+
+  // 金額調整（增減金額＋原因）
+  const [showAdjForm, setShowAdjForm] = useState(false);
+  const [adjSign, setAdjSign] = useState<"add" | "minus">("add");
+  const [adjAmount, setAdjAmount] = useState("");
+  const [adjReason, setAdjReason] = useState("");
+  const [voidingAdjId, setVoidingAdjId] = useState<number | null>(null);
+  const [voidReason, setVoidReason] = useState("");
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -170,7 +190,7 @@ export default function HqSettlementDetailPage() {
       const list = (data ?? []) as Item[];
       setItems(list);
 
-      const [{ data: storeData }, { data: tx }, { data: sk }] = await Promise.all([
+      const [{ data: storeData }, { data: tx }, { data: sk }, { data: adjData }] = await Promise.all([
         sb.from("stores").select("id, code, name").eq("id", hd.store_id).maybeSingle(),
         list.length
           ? sb.from("transfers").select("id, transfer_no, status, shipped_at").in("id", Array.from(new Set(list.map((it) => it.transfer_id))))
@@ -178,9 +198,16 @@ export default function HqSettlementDetailPage() {
         list.length
           ? sb.from("skus").select("id, sku_code, product_name, variant_name").in("id", Array.from(new Set(list.map((it) => it.sku_id))))
           : Promise.resolve({ data: [] as Sku[] }),
+        sb
+          .from("store_settlement_adjustments")
+          .select("id, amount, reason, status, created_at, voided_at, void_reason")
+          .eq("store_id", hd.store_id)
+          .eq("settlement_month", hd.settlement_month)
+          .order("created_at", { ascending: true }),
       ]);
       if (cancelled) return;
       if (storeData) setStore(storeData as Store);
+      setAdjustments((adjData ?? []) as Adjustment[]);
       const tm = new Map<number, Transfer>();
       for (const t of (tx ?? []) as Transfer[]) tm.set(t.id, t);
       setTransfers(tm);
@@ -209,6 +236,11 @@ export default function HqSettlementDetailPage() {
       setPendingAction(null);
       setResolvingId(null);
       setResolveNote("");
+      setShowAdjForm(false);
+      setAdjAmount("");
+      setAdjReason("");
+      setVoidingAdjId(null);
+      setVoidReason("");
       refresh();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -244,6 +276,18 @@ export default function HqSettlementDetailPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function onAddAdjustment() {
+    if (!settlementId) return;
+    const amt = Number(adjAmount);
+    if (!Number.isFinite(amt) || amt <= 0) { setErr("調整金額需為 > 0 的數字"); return; }
+    if (!adjReason.trim()) { setErr("調整金額必須填原因"); return; }
+    void runRpc("rpc_add_settlement_adjustment", {
+      p_settlement_id: settlementId,
+      p_amount: adjSign === "minus" ? -amt : amt,
+      p_reason: adjReason.trim(),
+    });
   }
 
   function onConfirmPending() {
@@ -295,9 +339,16 @@ export default function HqSettlementDetailPage() {
       </header>
 
       <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 lg:grid-cols-6">
-        <Stat label="應付金額（分店價口徑）" value={`$${Number(header.payable_amount).toLocaleString("zh-TW")}`} accent="negative" />
+        <Stat label="應付金額（含調整）" value={`$${Number(header.payable_amount).toLocaleString("zh-TW")}`} accent="negative" />
         <Stat label="成本口徑金額（參考）" value={`$${Number(header.cost_amount ?? 0).toLocaleString("zh-TW")}`} />
         <Stat label="口徑差額（總部毛利）" value={`$${(Number(header.branch_amount ?? 0) - Number(header.cost_amount ?? 0)).toLocaleString("zh-TW")}`} accent="info" />
+        {Number(header.adjustment_amount ?? 0) !== 0 && (
+          <Stat
+            label="人工調整合計"
+            value={`${Number(header.adjustment_amount) > 0 ? "+" : "−"}$${Math.abs(Number(header.adjustment_amount)).toLocaleString("zh-TW")}`}
+            accent="info"
+          />
+        )}
         <Stat label="調撥單數" value={String(header.transfer_count)} />
         <Stat label="商品行數" value={String(header.item_count)} />
         <Stat label="月份" value={monthLabel} />
@@ -413,6 +464,168 @@ export default function HqSettlementDetailPage() {
           📄 列印對帳單
         </a>
       </div>
+
+      {/* 金額調整（增減金額＋原因） */}
+      {(adjustments.length > 0 || canEditEst) && (
+        <div className="rounded-md border border-zinc-200 dark:border-zinc-800">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 bg-zinc-50 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900">
+            <span className="text-sm font-medium">金額調整（加收 / 減收，需填原因）</span>
+            {canEditEst && !showAdjForm && (
+              <SpinButton
+                onClick={() => { setShowAdjForm(true); setAdjSign("add"); setAdjAmount(""); setAdjReason(""); setVoidingAdjId(null); setErr(null); }}
+                disabled={busy}
+                className="rounded-md border border-blue-300 px-2 py-1 text-xs text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950"
+              >
+                ＋ 新增調整
+              </SpinButton>
+            )}
+          </div>
+
+          {showAdjForm && (
+            <div className="border-b border-zinc-200 p-3 dark:border-zinc-800">
+              <div className="flex flex-wrap items-end gap-2">
+                <label className="text-xs">
+                  <span className="mb-1 block text-zinc-500">方向</span>
+                  <select
+                    value={adjSign}
+                    onChange={(e) => setAdjSign(e.target.value as "add" | "minus")}
+                    className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                  >
+                    <option value="add">增加金額（加收 +）</option>
+                    <option value="minus">減少金額（減收 −）</option>
+                  </select>
+                </label>
+                <label className="text-xs">
+                  <span className="mb-1 block text-zinc-500">金額</span>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={adjAmount}
+                    onChange={(e) => setAdjAmount(e.target.value)}
+                    className="w-32 rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                  />
+                </label>
+                <label className="min-w-48 flex-1 text-xs">
+                  <span className="mb-1 block text-zinc-500">原因（必填）</span>
+                  <input
+                    value={adjReason}
+                    onChange={(e) => setAdjReason(e.target.value)}
+                    placeholder="例：11 月運費分攤／破損折讓"
+                    className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                  />
+                </label>
+                <SpinButton
+                  onClick={onAddAdjustment}
+                  disabled={busy}
+                  className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {busy ? "儲存中…" : "儲存調整"}
+                </SpinButton>
+                <SpinButton
+                  onClick={() => { setShowAdjForm(false); setErr(null); }}
+                  disabled={busy}
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700"
+                >
+                  取消
+                </SpinButton>
+              </div>
+            </div>
+          )}
+
+          {adjustments.length === 0 ? (
+            <div className="p-3 text-sm text-zinc-500">
+              尚無調整。明細以外的加減項（運費、折讓、補貼、尾差沖抵…）可在此直接增減應付金額。
+            </div>
+          ) : (
+            <>
+              <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                {adjustments.map((a) => {
+                  const voided = a.status === "voided";
+                  const positive = Number(a.amount) > 0;
+                  return (
+                    <li key={a.id} className="flex flex-wrap items-start gap-3 px-3 py-2 text-sm">
+                      <span
+                        className={`mt-0.5 inline-block rounded px-2 py-0.5 text-xs ${
+                          voided
+                            ? "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
+                            : positive
+                              ? "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300"
+                              : "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                        }`}
+                      >
+                        {voided ? "已作廢" : positive ? "加收" : "減收"}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className={voided ? "text-zinc-400 line-through" : ""}>
+                          <span className="font-mono font-medium">
+                            {positive ? "+" : "−"}${Math.abs(Number(a.amount)).toLocaleString("zh-TW")}
+                          </span>
+                          <span className="ml-2 break-words">{a.reason}</span>
+                        </div>
+                        <div className="text-xs text-zinc-500">
+                          {new Date(a.created_at).toLocaleString("zh-TW")}
+                          {voided && a.voided_at && (
+                            <span className="ml-2">
+                              作廢於 {new Date(a.voided_at).toLocaleString("zh-TW")}
+                              {a.void_reason && `（${a.void_reason}）`}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      {!voided && canEditEst && voidingAdjId !== a.id && (
+                        <SpinButton
+                          onClick={() => { setVoidingAdjId(a.id); setVoidReason(""); setShowAdjForm(false); setErr(null); }}
+                          disabled={busy}
+                          className="shrink-0 rounded-md border border-zinc-300 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                        >
+                          作廢
+                        </SpinButton>
+                      )}
+                      {voidingAdjId === a.id && (
+                        <div className="flex w-full flex-wrap items-end gap-2 rounded-md border border-amber-300 bg-amber-50 p-2 dark:border-amber-800 dark:bg-amber-950">
+                          <label className="flex-1 text-xs">
+                            <span className="mb-1 block text-zinc-500">作廢原因（選填）</span>
+                            <input
+                              value={voidReason}
+                              onChange={(e) => setVoidReason(e.target.value)}
+                              placeholder="例：金額打錯，另開一筆"
+                              className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                            />
+                          </label>
+                          <SpinButton
+                            onClick={() => void runRpc("rpc_void_settlement_adjustment", { p_adjustment_id: a.id, p_reason: voidReason.trim() || null })}
+                            disabled={busy}
+                            className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+                          >
+                            {busy ? "作廢中…" : "確定作廢"}
+                          </SpinButton>
+                          <SpinButton
+                            onClick={() => setVoidingAdjId(null)}
+                            disabled={busy}
+                            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700"
+                          >
+                            取消
+                          </SpinButton>
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="border-t border-zinc-200 bg-zinc-50 px-3 py-2 text-right text-sm dark:border-zinc-800 dark:bg-zinc-900">
+                貨款合計（分店價）<span className="font-mono">${Number(header.branch_amount ?? 0).toLocaleString("zh-TW")}</span>
+                <span className="mx-1">＋</span>調整合計{" "}
+                <span className="font-mono">
+                  {Number(header.adjustment_amount ?? 0) < 0 ? "−" : "+"}${Math.abs(Number(header.adjustment_amount ?? 0)).toLocaleString("zh-TW")}
+                </span>
+                <span className="mx-1">＝</span>應付金額{" "}
+                <span className="font-mono font-semibold text-rose-600">${Number(header.payable_amount).toLocaleString("zh-TW")}</span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       <div>
         <div className="mb-2 text-sm font-medium">出貨明細（{items?.length ?? 0} 筆）</div>
