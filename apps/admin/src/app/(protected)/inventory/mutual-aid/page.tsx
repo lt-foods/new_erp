@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
@@ -36,6 +36,7 @@ type PendingOrder = {
   pickup_store_id: number;
   status: string;
   member_name: string | null;
+  member_phone: string | null;
   items: { campaign_item_id: number | null; sku_id: number | null; qty: number; sku_label: string }[];
 };
 
@@ -511,6 +512,7 @@ function OfferModal({
 }) {
   const [storeId, setStoreId] = useState<number | "">("");
   const [orders, setOrders] = useState<PendingOrder[] | null>(null);
+  const [orderSearch, setOrderSearch] = useState("");
   const [pickedOrder, setPickedOrder] = useState<PendingOrder | null>(null);
   const [pickedItemIdx, setPickedItemIdx] = useState(0);
   const [qty, setQty] = useState("");
@@ -521,7 +523,7 @@ function OfferModal({
 
   useEffect(() => {
     if (open) {
-      setStoreId(""); setOrders(null); setPickedOrder(null); setPickedItemIdx(0);
+      setStoreId(""); setOrders(null); setOrderSearch(""); setPickedOrder(null); setPickedItemIdx(0);
       setQty(""); setNote(""); setErr(null);
       setExpiresAt(defaultExpiresAt());
     }
@@ -537,20 +539,21 @@ function OfferModal({
         .from("customer_orders")
         .select(`
           id, order_no, pickup_store_id, status,
-          member:members(name),
+          member:members(name, phone),
           items:customer_order_items(campaign_item_id, sku_id, qty, status, sku:skus(sku_code, product_name, variant_name))
         `)
         .eq("pickup_store_id", storeId)
         .eq("status", "ready")
         .order("id", { ascending: false })
-        .limit(50);
+        .limit(200);
       if (cancelled) return;
       if (e) { setErr(e.message); return; }
       type RawSku = { sku_code: string; product_name: string; variant_name: string | null };
       type RawItem = { campaign_item_id: number | null; sku_id: number | null; qty: number; status: string; sku: RawSku | RawSku[] | null };
+      type RawMember = { name: string | null; phone: string | null };
       type RawOrder = {
         id: number; order_no: string; pickup_store_id: number; status: string;
-        member: { name: string | null } | { name: string | null }[] | null;
+        member: RawMember | RawMember[] | null;
         items: RawItem[];
       };
       const enriched: PendingOrder[] = ((data as unknown as RawOrder[] | null) ?? []).map((o) => {
@@ -561,6 +564,7 @@ function OfferModal({
           pickup_store_id: o.pickup_store_id,
           status: o.status,
           member_name: memberObj?.name ?? null,
+          member_phone: memberObj?.phone ?? null,
           items: (o.items ?? [])
             // 排除已 cancelled / expired 的 item — 不該算進可釋出範圍
             .filter((it) => it.status !== "cancelled" && it.status !== "expired" && it.status !== "picked_up")
@@ -588,6 +592,19 @@ function OfferModal({
       setQty(String(pickedOrder.items[pickedItemIdx].qty));
     }
   }, [pickedOrder, pickedItemIdx]);
+
+  // 搜尋過濾：品項 / 訂單編號 / 會員姓名 / 電話（空白分隔多關鍵字 = AND）
+  const filteredOrders = useMemo(() => {
+    if (!orders) return null;
+    const terms = orderSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return orders;
+    return orders.filter((o) => {
+      const haystack = [o.order_no, o.member_name ?? "", o.member_phone ?? "", ...o.items.map((it) => it.sku_label)]
+        .join(" ")
+        .toLowerCase();
+      return terms.every((t) => haystack.includes(t));
+    });
+  }, [orders, orderSearch]);
 
   async function submit() {
     if (submitting) return;
@@ -640,7 +657,7 @@ function OfferModal({
             value={storeId}
             onChange={(e) => {
               setStoreId(e.target.value ? Number(e.target.value) : "");
-              setPickedOrder(null); setPickedItemIdx(0); setQty("");
+              setOrderSearch(""); setPickedOrder(null); setPickedItemIdx(0); setQty("");
             }}
             className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
           >
@@ -657,8 +674,18 @@ function OfferModal({
             ) : orders.length === 0 ? (
               <div className="rounded-md border border-dashed border-zinc-300 p-3 text-xs text-zinc-500 dark:border-zinc-700">該店目前沒有可釋出的 pending / confirmed / reserved 訂單</div>
             ) : (
+              <>
+                <input
+                  value={orderSearch}
+                  onChange={(e) => setOrderSearch(e.target.value)}
+                  placeholder="搜尋品項 / 訂單編號 / 姓名 / 電話…"
+                  className="mb-1.5 w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+                />
+                {filteredOrders && filteredOrders.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-zinc-300 p-3 text-xs text-zinc-500 dark:border-zinc-700">沒有符合「{orderSearch.trim()}」的訂單</div>
+                ) : (
               <div className="max-h-60 overflow-y-auto rounded-md border border-zinc-200 dark:border-zinc-800">
-                {orders.map((o) => (
+                {(filteredOrders ?? []).map((o) => (
                   <SpinButton
                     key={o.id}
                     type="button"
@@ -668,7 +695,7 @@ function OfferModal({
                     }`}
                   >
                     <div className="flex items-center justify-between">
-                      <span><span className="font-mono">{o.order_no}</span> · {o.member_name ?? "—"} · <span className="text-zinc-500">{o.status}</span></span>
+                      <span><span className="font-mono">{o.order_no}</span> · {o.member_name ?? "—"}{o.member_phone && <span className="text-zinc-500"> · {o.member_phone}</span>} · <span className="text-zinc-500">{o.status}</span></span>
                       <span className="text-zinc-500">{o.items.length} 項</span>
                     </div>
                     {pickedOrder?.id === o.id && o.items.length > 1 && (
@@ -695,6 +722,8 @@ function OfferModal({
                   </SpinButton>
                 ))}
               </div>
+                )}
+              </>
             )}
           </div>
         )}
@@ -1131,7 +1160,7 @@ function FulfillRequestDialog({
         .from("customer_orders")
         .select(`
           id, order_no, pickup_store_id, status,
-          member:members(name),
+          member:members(name, phone),
           items:customer_order_items!inner(sku_id, qty, status, sku:skus(sku_code, product_name, variant_name))
         `)
         .eq("pickup_store_id", myStore)
@@ -1144,9 +1173,10 @@ function FulfillRequestDialog({
       if (e) { setErr(e.message); return; }
       type RawSku = { sku_code: string; product_name: string; variant_name: string | null };
       type RawItem = { sku_id: number | null; qty: number; status: string; sku: RawSku | RawSku[] | null };
+      type RawMember = { name: string | null; phone: string | null };
       type RawOrder = {
         id: number; order_no: string; pickup_store_id: number; status: string;
-        member: { name: string | null } | { name: string | null }[] | null;
+        member: RawMember | RawMember[] | null;
         items: RawItem[];
       };
       const enriched: PendingOrder[] = ((data as unknown as RawOrder[] | null) ?? []).map((o) => {
@@ -1154,6 +1184,7 @@ function FulfillRequestDialog({
         return {
           id: o.id, order_no: o.order_no, pickup_store_id: o.pickup_store_id, status: o.status,
           member_name: memberObj?.name ?? null,
+          member_phone: memberObj?.phone ?? null,
           items: (o.items ?? [])
             .filter((it) => it.status !== "cancelled" && it.status !== "expired" && it.status !== "picked_up")
             .map((it) => {
