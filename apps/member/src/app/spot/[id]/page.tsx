@@ -7,7 +7,7 @@ import { consumeFragmentToSession, getSession } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import { LoadingScreen } from "@/components/Spinner";
-import Countdown from "@/components/Countdown";
+import { cleanCampaignText } from "@/lib/text";
 import { isInLiffClient, sendLineInquiry, spotInquiryHref } from "@/lib/lineInquiry";
 import { type SpotProduct, spotProductTitle } from "@/components/SpotProductCard";
 
@@ -185,11 +185,6 @@ export default function SpotDetailPage() {
               <Row label="釋出分店">
                 <span className="font-semibold">{item.store_name ?? "—"}</span>
               </Row>
-              <Row label="剩餘時間">
-                <span className="font-semibold tabular-nums text-[var(--brand-strong)]">
-                  <Countdown target={item.expires_at} compact />
-                </span>
-              </Row>
               {item.sku_code && (
                 <Row label="商品編號">
                   <span className="font-mono text-[13px] text-[var(--secondary-label)]">
@@ -199,14 +194,20 @@ export default function SpotDetailPage() {
               )}
             </dl>
 
-            {item.description && (
-              <section className="card px-4 py-3">
-                <h3 className="pb-1.5 text-[15px] font-bold text-[var(--foreground)]">商品說明</h3>
-                <p className="whitespace-pre-line text-[15px] leading-relaxed text-[var(--secondary-label)]">
-                  {item.description}
-                </p>
-              </section>
-            )}
+            {/* description 來自後台 TipTap，存的是 HTML —— 直接印會露出 <p>/<br>。
+                走全站共用的 cleanCampaignText 轉純文字（同 /shop/c/[id] 的做法）。 */}
+            {item.description && (() => {
+              const desc = cleanCampaignText(item.description);
+              if (!desc) return null;
+              return (
+                <section className="card px-4 py-3">
+                  <h3 className="pb-1.5 text-[15px] font-bold text-[var(--foreground)]">商品說明</h3>
+                  <p className="whitespace-pre-line text-[15px] leading-relaxed text-[var(--secondary-label)]">
+                    {desc}
+                  </p>
+                </section>
+              );
+            })()}
 
             <p className="px-1 text-[13px] leading-relaxed text-[var(--secondary-label)]">
               {item.is_my_store
