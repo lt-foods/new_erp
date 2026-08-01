@@ -114,9 +114,7 @@ export default function OrderCard({ order }: { order: OrderRow }) {
               <div className="text-[14px] text-[var(--secondary-label)]">
                 {fmtAmount(it.unit_price)} × {it.qty}
               </div>
-              {it.notes && (
-                <div className="mt-0.5 text-[14px] text-[var(--secondary-label)]">📝 {it.notes}</div>
-              )}
+              {/* it.notes 是內部備註（補貨申請 / 轉單軌跡等），顧客端不顯示 */}
             </div>
             <div className={`flex-shrink-0 text-right text-[16px] font-medium tabular-nums ${it.stockout ? "text-[var(--secondary-label)] line-through" : "text-[var(--foreground)]"}`}>
               {fmtAmount(it.subtotal)}
@@ -125,11 +123,7 @@ export default function OrderCard({ order }: { order: OrderRow }) {
         ))}
       </ul>
 
-      {order.notes && (
-        <div className="mx-4 mb-3 rounded-xl bg-[#7676801a] p-3 text-[14px] text-[var(--secondary-label)]">
-          📝 {order.notes}
-        </div>
-      )}
+      {/* order.notes 同為內部備註，顧客端不顯示 */}
 
       <div className="space-y-1 border-t border-[var(--separator)] px-4 py-3 text-[14px]">
         <div className="flex justify-between text-[var(--secondary-label)]">
