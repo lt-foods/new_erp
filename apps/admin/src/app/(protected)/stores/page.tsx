@@ -242,6 +242,7 @@ export default function StoresPage() {
         <THead>
           <Th>代碼</Th>
           <Th>名稱</Th>
+          <Th>LINE@</Th>
           <Th>對應 location</Th>
           <Th align="right">取貨窗 (天)</Th>
           <Th>付款方式</Th>
@@ -251,14 +252,14 @@ export default function StoresPage() {
         </THead>
         <TBody>
           {rows === null ? (
-            <LoadingRow colSpan={8} />
+            <LoadingRow colSpan={9} />
           ) : rows.length === 0 ? (
-            <EmptyRow colSpan={8}>沒有符合條件的門市</EmptyRow>
+            <EmptyRow colSpan={9}>沒有符合條件的門市</EmptyRow>
           ) : (
             paginated.map((r) =>
               editing?.id === r.id ? (
                 <tr key={r.id}>
-                  <td colSpan={8} className="p-0">
+                  <td colSpan={9} className="p-0">
                     <StoreForm
                       initial={{ ...r, id: r.id }}
                       title="編輯"
@@ -284,6 +285,17 @@ export default function StoresPage() {
                     </div>
                   </Td>
                   <Td>{r.name}</Td>
+                  {/* 會員端現貨專區的「LINE 詢問」要靠這個值才能直接開對話；
+                      沒設的店會退成「複製訊息」，所以列表要一眼看得出哪幾間還沒填。 */}
+                  <Td className="whitespace-nowrap font-mono text-xs">
+                    {r.line_oa_basic_id ? (
+                      r.line_oa_basic_id
+                    ) : (
+                      <span className="rounded bg-zinc-100 px-1.5 py-0.5 font-sans text-[11px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                        未設定
+                      </span>
+                    )}
+                  </Td>
                   <Td className="text-xs text-zinc-500">
                     {r.location_id
                       ? locations.find((l) => l.id === r.location_id)?.name ?? `#${r.location_id}`
