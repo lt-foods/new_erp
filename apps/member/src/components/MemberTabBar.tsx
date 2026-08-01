@@ -73,7 +73,8 @@ export default function MemberTabBar() {
 
   // LINE LIFF 內建瀏覽器現在也走完整商店,tab bar 一律顯示(standalone / 一般瀏覽器 / LINE 皆同)。
   // 商品詳細頁有自己的 sticky 下單 bar、會跟 tab bar 打架,直接隱藏。
-  if (pathname.startsWith("/shop/c/")) return null;
+  // /spot/[id] 現貨詳情頁同理（底部是常駐「LINE 詢問」列）；/spot 列表頁不受影響。
+  if (pathname.startsWith("/shop/c/") || pathname.startsWith("/spot/")) return null;
 
   return (
     <nav

@@ -4,8 +4,8 @@
 > 分支：`claude/merchant-products-cross-store-hide-5c9v47`
 >
 > **上線前還差一步（要人做）**：設環境變數 `NEXT_PUBLIC_LINE_OA_ID`，或在 admin
-> `/stores` 幫各店填「LINE@ ID」。兩者都空的話，現貨卡上的「LINE 詢問」按鈕
-> 不會出現（其餘功能正常）。見 §5.5。
+> `/stores` 幫各店填「LINE@ ID」。兩者都空的話，詳情頁底部的「用 LINE 詢問店家」
+> 那條不會出現（其餘功能正常）。見 §5.5。
 
 ---
 
@@ -74,12 +74,15 @@ tab active 判斷是 `pathname.startsWith(t.href)`。所以現貨專區**必須�
 │ 可提供 3 包  │ 可提供 1 盒   │
 │ $149         │🔒跨店·金額不顯示│
 │ ⏱ 02天06:16  │ ⏱ 01天03:44   │
-│ [💬 LINE 詢問]│[💬 LINE 詢問] │
 └──────────────┴──────────────┘
+        整張卡可點 → /spot/[id]
 ```
 
 - 排序：本店的一律排前面（看得到金額、真的拿得到貨），其餘最新在前
 - 分頁：`全部` / `〈本店名〉`
+- **點卡片 → `/spot/[id]` 詳情頁**（2026-08-01 加）：大圖、品名、金額或鎖頭、
+  可提供數量／釋出分店／剩餘時間／商品編號、商品說明，底部常駐「用 LINE 詢問店家」。
+  LINE CTA 從卡片移到詳情頁 —— 一張小卡上疊兩個可點區域太容易誤觸。
 - 空狀態：📦「目前沒有店家釋出現貨」／分頁下是「你的店目前沒有現貨」
 - 下拉重新整理
 - 未登入 / session 過期 → redirect 回 `/`
@@ -104,7 +107,11 @@ tab active 判斷是 `pathname.startsWith(t.href)`。所以現貨專區**必須�
 
 ### 5.1 觸發方式
 
-卡片上一顆明確的 CTA 按鈕「💬 LINE 詢問」，**不是整張卡可點** —— 避免滑動時誤觸把人彈出 App。
+**在 `/spot/[id]` 詳情頁底部常駐一條「💬 用 LINE 詢問店家」**。
+
+原本 CTA 放在列表卡片上，2026-08-01 改成整張卡連到詳情頁、CTA 移進詳情頁 ——
+一張小卡上疊兩個可點區域（進詳情 vs 跳 LINE）太容易誤觸，而且詳情頁才有空間
+把品名、數量、到期時間攤開讓人看清楚再決定要不要問。
 
 ### 5.2 訊息範本
 
@@ -163,10 +170,11 @@ https://line.me/R/oaMessage/{basicId}/?{encodeURIComponent(text)}
 
 | 檔案 | 動作 | 說明 |
 |---|---|---|
-| `supabase/functions/liff-api/index.ts` | 改 | action `list_released_products` → **`list_spot_products`**；response 加 `my_store_line_oa_id`。線上目前沒有任何前端用舊名，改名零風險。改完重新部署 |
-| `apps/member/src/app/spot/page.tsx` | 新增 | 現貨專區主頁（由 `/shop/released` 搬過來改名） |
+| `supabase/functions/liff-api/index.ts` | 改 | action `list_released_products` → **`list_spot_products`**；response 加 `my_store_line_oa_id`。2026-08-01 再加 **`get_spot_product`**（單筆詳情，上架條件與列表一致，知道 id 也繞不過去）。改完重新部署 |
+| `apps/member/src/app/spot/page.tsx` | 新增 | 現貨專區列表頁（由 `/shop/released` 搬過來改名） |
+| `apps/member/src/app/spot/[id]/page.tsx` | 新增 | 現貨商品詳情頁（2026-08-01）；底部常駐 LINE 詢問列 |
 | `apps/member/src/app/shop/released/page.tsx` | 刪除 | 還沒進 main、沒人收藏過網址，直接改名不留 redirect |
-| `apps/member/src/components/SpotProductCard.tsx` | 改名 | 由 `ReleasedProductCard` 而來；type `ReleasedProduct` → `SpotProduct`；加「💬 LINE 詢問」CTA |
+| `apps/member/src/components/SpotProductCard.tsx` | 改名 | 由 `ReleasedProductCard` 而來；type `ReleasedProduct` → `SpotProduct`。2026-08-01 整張卡改成連到 `/spot/[id]`，卡上的 LINE CTA 移進詳情頁 |
 | `apps/member/src/lib/lineInquiry.ts` | 新增 | 組訊息文字 + `line.me/R/oaMessage` URL；本店/跨店兩種範本都在這裡，單一真相來源 |
 | `apps/member/src/components/MemberTabBar.tsx` | 改 | 4 tab → 5 tab，中間插入現貨專區凸起圓鈕 |
 | `apps/member/src/components/PageShell.tsx` | 改 | `TOP_LEVEL_PATHS` 加 `/spot`；`paddingBottom` 92px → 104px |
@@ -203,10 +211,11 @@ https://line.me/R/oaMessage/{basicId}/?{encodeURIComponent(text)}
 | A4 | **跨店卡** | 畫面沒有任何金額；**raw response 的 `unit_price` 是 `null`** |
 | A5 | 本店 LINE 詢問 | 開 LINE 對話，訊息含品名 + `金額：$xxx` |
 | A6 | **跨店 LINE 詢問** | 開 LINE 對話，訊息含品名 +「（◯◯店釋出）」，**不含任何金額**，結尾是「請問可以幫我調貨嗎？」 |
-| A7 | LINE@ 沒設定 | CTA 按鈕不出現（不是點了跳空白） |
+| A7 | LINE@ 沒設定 | 詳情頁底部詢問列不出現（不是點了跳空白） |
 | A8 | 板上 0 則 | `/spot` 空狀態（`/shop` 已無現貨區塊，見 §6） |
 | A9 | 被認領光 / 到期 | 該筆自動從 App 消失 |
 | A10 | 迴歸 | `/shop` 團購列表、banner、排序、`/orders`、`/notifications`、`/me` 全部照舊 |
+| A11 | 詳情頁 | 點卡片進得去；直接用網址開已下架 / 別租戶的 id 一律 404 落到空狀態 |
 
 ---
 

@@ -14,7 +14,6 @@ type Resp = {
   items: SpotProduct[];
   my_store_id: number;
   my_store_name: string | null;
-  my_store_line_oa_id: string | null;
 };
 
 /**
@@ -28,7 +27,6 @@ export default function SpotPage() {
   const router = useRouter();
   const [items, setItems] = useState<SpotProduct[]>([]);
   const [myStoreName, setMyStoreName] = useState<string | null>(null);
-  const [lineOaId, setLineOaId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [tab, setTab] = useState<"all" | "mine">("all");
@@ -43,7 +41,6 @@ export default function SpotPage() {
       const d = await callLiffApi<Resp>(s.token, { action: "list_spot_products" });
       setItems(d.items ?? []);
       setMyStoreName(d.my_store_name ?? null);
-      setLineOaId(d.my_store_line_oa_id ?? null);
       setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -124,7 +121,7 @@ export default function SpotPage() {
           {visible.length > 0 && (
             <div className="grid grid-cols-2 gap-3">
               {visible.map((item) => (
-                <SpotProductCard key={item.id} item={item} lineOaId={lineOaId} />
+                <SpotProductCard key={item.id} item={item} />
               ))}
             </div>
           )}

@@ -6,9 +6,9 @@
 跨店的金額被隱藏（含 LINE 詢問訊息內也不能帶）。
 
 ## 涵蓋範圍
-- Edge Function `liff-api` action：`list_spot_products`
+- Edge Function `liff-api` actions：`list_spot_products`、`get_spot_product`
 - Migration `20260801000020_rpc_upsert_store_line_oa.sql`（`rpc_upsert_store` 加 `p_line_oa_basic_id`）
-- 會員端：底部 tab bar 中央凸起鍵、`/spot`（`/shop` 的現貨導流區塊已移除，見 T6）
+- 會員端：底部 tab bar 中央凸起鍵、`/spot` 列表、`/spot/[id]` 詳情（`/shop` 的現貨導流區塊已移除，見 T6）
 - 元件：`SpotProductCard.tsx`、`lib/lineInquiry.ts`
 - admin：`/stores` 的「LINE@ ID」欄位
 
@@ -91,20 +91,21 @@
 | T4-9 | 沒有商品圖的 SKU | 暖色品牌底 + 箱子圖示，不是灰底破圖 |
 | T4-10 | 空狀態 | 全部分頁「目前沒有店家釋出現貨」；我的店分頁「你的店目前沒有現貨」 |
 | T4-11 | 下拉重新整理 | 重抓 |
+| T4-13 | 點任一張卡 | 整張卡可點，進 `/spot/<該筆 id>` 詳情頁；卡片上**不該再有** LINE 詢問按鈕 |
 | T4-12 | 未登入 / session 過期直接開 | redirect 回 `/` |
 
-## T5 — LINE 詢問（金額隱藏第二道關卡）
+## T5 — LINE 詢問（在詳情頁，金額隱藏第二道關卡）
 
 | # | 步驟 | 預期 |
 |---|------|------|
-| T5-1 | 卡片可點區域 | **只有底部綠色「LINE 詢問」按鈕**可點；整張卡不是連結（避免捲動誤觸彈出 App） |
-| T5-2 | 點 A 店卡的 LINE 詢問 | 開啟 LINE 與 A 店 LINE@ 的對話，輸入框已預填 |
+| T5-1 | CTA 位置 | 在 `/spot/[id]` 詳情頁底部常駐一條綠色「用 LINE 詢問店家」；列表卡片上沒有 CTA |
+| T5-2 | 開 A 店商品詳情、點詢問 | 開啟 LINE 與 A 店 LINE@ 的對話，輸入框已預填 |
 | T5-3 | A 店訊息內容 | `您好，我想詢問今日現貨` / `「〈品名〉／〈規格〉」` / `金額：$149` / `請問店家目前還有貨嗎？` |
-| T5-4 | **點 B 店卡的 LINE 詢問** | 同樣開 **A 店（會員自己的店）** 的 LINE@ 對話 —— 不是 B 店 |
+| T5-4 | **開 B 店商品詳情、點詢問** | 同樣開 **A 店（會員自己的店）** 的 LINE@ 對話 —— 不是 B 店 |
 | T5-5 | **B 店訊息內容（重點）** | `「〈品名〉」（B店釋出）` + `請問可以幫我調貨嗎？`，**整則訊息不含任何金額** |
 | T5-6 | A 店有填 LINE@ | 用 A 店自己的 `line_oa_basic_id` |
 | T5-7 | A 店沒填 LINE@、有 `NEXT_PUBLIC_LINE_OA_ID` | 用租戶層預設 |
-| T5-8 | 兩者都沒有 | **CTA 按鈕整顆不出現**（不是點了跳空白） |
+| T5-8 | 兩者都沒有 | **整條底部詢問列不出現**（不是點了跳空白）；詳情頁其餘內容照常 |
 | T5-9 | 填的 ID 沒有 `@` 開頭（例 `abc1234`） | 連結仍正確（`buildLineOaMessageUrl` 會自動補 `@`） |
 | T5-10 | 在 LINE 內建瀏覽器 / 外部瀏覽器 / PWA standalone 各試一次 | 三種都能開到 LINE 對話 |
 
@@ -119,16 +120,36 @@
 | T6-3 | banner 輪播與「團購商品」標題之間 | 直接相接，沒有多餘空白或殘留分隔 |
 | T6-4 | 要看現貨 | 只有底部中間 tab 一個入口 |
 
-## T7 — 迴歸
+## T7 — `/spot/[id]` 詳情頁
 
 | # | 步驟 | 預期 |
 |---|------|------|
-| T7-1 | `/shop` 團購列表、banner 輪播、排序 tab | 照舊 |
-| T7-2 | 暫時讓 `list_spot_products` 失敗（改 action 名） | `/shop` 完全不受影響（它已經不呼叫這支）；`/spot` 顯示錯誤訊息 |
-| T7-3 | admin `/inventory/mutual-aid` 認領 / 取消 / 留言 | 不受影響（沒動互助板任何 RPC） |
-| T7-4 | offer 被別店認領到 `qty_remaining=0`（`exhausted`） | 會員端該筆自動消失 |
-| T7-5 | offer 到期（cron `purge-expired-aid-board`） | 會員端該筆自動消失 |
-| T7-6 | admin `/stores` 建立 / 編輯 / 刪除 / 還原門市 | 照舊 |
+| T7-1 | 從列表點進本店商品 | 圖片、品名、`本店釋出` 標籤、`$金額`、可提供數量、釋出分店、剩餘時間倒數、商品編號 |
+| T7-2 | **點進跨店商品（重點）** | 同上但價格位置是「跨店 · 金額不顯示」鎖頭，**畫面與 raw response 都沒有金額** |
+| T7-3 | `curl POST {"action":"get_spot_product","id":<跨店那筆>}` | `item.unit_price` 為 `null`、`is_my_store=false` |
+| T7-4 | `my_store_line_oa_id` | 只回會員自己店那一間；**不能出現釋出店的 LINE@** |
+| T7-5 | 商品有多張圖 | 可左右滑，底部有頁碼點 |
+| T7-6 | 商品沒有圖 | 品牌底 + 線稿箱子，不是破圖 |
+| T7-7 | 商品有 `products.description` | 顯示「商品說明」區塊；沒有就整塊不出現 |
+| T7-8 | 底部提示文字 | 本店寫「數量有限，先問先得」；跨店寫「由店家幫你調貨」 |
+| T7-9 | tab bar | 詳情頁**隱藏** tab bar（底部是詢問列，會打架）；回到 `/spot` 列表後 tab bar 回來 |
+| T7-10 | 標題列 | 有返回鍵（`/spot/[id]` 不在 `TOP_LEVEL_PATHS`） |
+| T7-11 | 捲到最底 | 最後一行字不被底部詢問列蓋住 |
+| T7-12 | **直接用網址開已下架的 id**（cancelled / 過期 / `qty_remaining=0` / 別租戶的 id） | API 回 404，頁面顯示「這個現貨已經不在架上了」+「回現貨專區」按鈕。**不能因為知道 id 就看到列表看不到的東西** |
+| T7-13 | 網址塞非數字（`/spot/abc`） | 同上空狀態，且**不發 API 請求** |
+| T7-14 | 未登入 / session 過期直接開詳情頁 | redirect 回 `/` |
+
+## T8 — 迴歸
+
+| # | 步驟 | 預期 |
+|---|------|------|
+| T8-1 | `/shop` 團購列表、banner 輪播、排序 tab | 照舊 |
+| T8-2 | 暫時讓 `list_spot_products` 失敗（改 action 名） | `/shop` 完全不受影響（它已經不呼叫這支）；`/spot` 顯示錯誤訊息 |
+| T8-7 | `/shop/c/[id]` 團購詳情頁 | tab bar 仍隱藏、sticky 下單 bar 正常（改動只多加 `/spot/` 這條判斷） |
+| T8-3 | admin `/inventory/mutual-aid` 認領 / 取消 / 留言 | 不受影響（沒動互助板任何 RPC） |
+| T8-4 | offer 被別店認領到 `qty_remaining=0`（`exhausted`） | 會員端該筆自動消失 |
+| T8-5 | offer 到期（cron `purge-expired-aid-board`） | 會員端該筆自動消失 |
+| T8-6 | admin `/stores` 建立 / 編輯 / 刪除 / 還原門市 | 照舊 |
 
 ---
 

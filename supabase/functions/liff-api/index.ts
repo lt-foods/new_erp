@@ -316,22 +316,33 @@ async function listMySettlements(sb: any, tenantId: string, _storeId: number, me
  * LINE@ 只回「會員所屬店」那一間的（my_store_line_oa_id），
  * 其他店的聯絡方式不外流 — 會員一律只跟自己的店往來。
  */
+/**
+ * 會員所屬店：以 members.home_store_id 為準，未綁定會員退回 JWT 的 store_id。
+ * 現貨專區的金額可見性整個建立在這個值上，list / detail 共用同一份判斷。
+ */
+async function resolveMemberStoreId(
+  sb: any,
+  tenantId: string,
+  jwtStoreId: number,
+  memberId: number | null,
+): Promise<number> {
+  if (!memberId) return jwtStoreId;
+  const { data: m } = await sb
+    .from("members")
+    .select("home_store_id")
+    .eq("tenant_id", tenantId)
+    .eq("id", memberId)
+    .maybeSingle();
+  return m?.home_store_id ? Number(m.home_store_id) : jwtStoreId;
+}
+
 async function listSpotProducts(
   sb: any,
   tenantId: string,
   jwtStoreId: number,
   memberId: number | null,
 ) {
-  let myStoreId = jwtStoreId;
-  if (memberId) {
-    const { data: m } = await sb
-      .from("members")
-      .select("home_store_id")
-      .eq("tenant_id", tenantId)
-      .eq("id", memberId)
-      .maybeSingle();
-    if (m?.home_store_id) myStoreId = Number(m.home_store_id);
-  }
+  const myStoreId = await resolveMemberStoreId(sb, tenantId, jwtStoreId, memberId);
 
   const { data: rows, error } = await sb
     .from("mutual_aid_board")
@@ -427,6 +438,109 @@ async function listSpotProducts(
     items,
     my_store_id: myStoreId,
     my_store_name: storeNameMap.get(myStoreId) ?? null,
+    my_store_line_oa_id: myStoreLineOaId,
+  });
+}
+
+/**
+ * 現貨專區單一商品詳情。
+ *
+ * 上架條件和列表完全一致（offer / active / 未到期 / 還有量）—— 條件不符就回
+ * 404，不能因為「知道 id」就繞過列表看得到的範圍（例如已被認領光、已取消、
+ * 已過期的貼文，或別租戶的 id）。
+ *
+ * 金額規則同列表：跨店連查都不查，`unit_price` 恆為 null。
+ * 板上的 note 一樣不外露；LINE@ 只回會員自己店那一間的。
+ */
+async function getSpotProduct(
+  sb: any,
+  tenantId: string,
+  jwtStoreId: number,
+  memberId: number | null,
+  boardId: number,
+) {
+  if (!boardId) return json({ error: "id required" }, 400);
+  const myStoreId = await resolveMemberStoreId(sb, tenantId, jwtStoreId, memberId);
+
+  const { data: r, error } = await sb
+    .from("mutual_aid_board")
+    .select(
+      "id, offering_store_id, sku_id, qty_remaining, expires_at, created_at, source_customer_order_id, sku:skus(sku_code, product_name, variant_name, base_unit, product:products(name, description, images))",
+    )
+    .eq("tenant_id", tenantId)
+    .eq("id", boardId)
+    .eq("post_type", "offer")
+    .eq("status", "active")
+    .gt("qty_remaining", 0)
+    .gt("expires_at", new Date().toISOString())
+    .maybeSingle();
+  if (error) return json({ error: error.message }, 500);
+  if (!r) return json({ error: "spot product not found" }, 404);
+
+  const isMyStore = Number(r.offering_store_id) === myStoreId;
+
+  const { data: ss } = await sb
+    .from("stores")
+    .select("id, name, line_oa_basic_id")
+    .eq("tenant_id", tenantId)
+    .in("id", Array.from(new Set([myStoreId, Number(r.offering_store_id)])));
+  let storeName: string | null = null;
+  let myStoreName: string | null = null;
+  let myStoreLineOaId: string | null = null;
+  for (const s of ss ?? []) {
+    if (Number(s.id) === Number(r.offering_store_id)) storeName = s.name;
+    if (Number(s.id) === myStoreId) {
+      myStoreName = s.name;
+      // 只回自己店的 LINE@，別店的聯絡方式不外流
+      myStoreLineOaId = (s.line_oa_basic_id ?? "").trim() || null;
+    }
+  }
+
+  let unitPrice: number | null = null;
+  if (isMyStore && r.source_customer_order_id != null) {
+    const { data: it } = await sb
+      .from("customer_order_items")
+      .select("unit_price")
+      .eq("tenant_id", tenantId)
+      .eq("order_id", r.source_customer_order_id)
+      .eq("sku_id", r.sku_id)
+      .limit(1)
+      .maybeSingle();
+    const p = Number(it?.unit_price);
+    unitPrice = Number.isFinite(p) ? p : null;
+  }
+
+  const supabaseUrl = requireEnv("SUPABASE_URL");
+  const rawImgs = r.sku?.product?.images;
+  const images: string[] = [];
+  if (Array.isArray(rawImgs)) {
+    for (const img of rawImgs) {
+      const path = typeof img === "string" ? img : img?.url ?? null;
+      const url = toPublicUrl(supabaseUrl, "products", path);
+      if (url && !images.includes(url)) images.push(url);
+    }
+  }
+
+  return json({
+    item: {
+      id: Number(r.id),
+      sku_id: Number(r.sku_id),
+      sku_code: r.sku?.sku_code ?? null,
+      product_name: r.sku?.product_name ?? r.sku?.product?.name ?? null,
+      variant_name: r.sku?.variant_name ?? null,
+      description: r.sku?.product?.description ?? null,
+      unit: r.sku?.base_unit ?? null,
+      image_url: images[0] ?? null,
+      images,
+      store_id: Number(r.offering_store_id),
+      store_name: storeName,
+      qty_remaining: Number(r.qty_remaining ?? 0),
+      expires_at: r.expires_at,
+      is_my_store: isMyStore,
+      unit_price: isMyStore ? unitPrice : null,
+    },
+    my_store_id: myStoreId,
+    my_store_name: myStoreName,
     my_store_line_oa_id: myStoreLineOaId,
   });
 }
@@ -923,6 +1037,7 @@ Deno.serve(async (req) => {
       case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId, typeof body.close_type === "string" ? body.close_type : null, memberId);
       case "get_campaign_detail": return await getCampaignDetail(sb, tenantId, Number(body.campaign_id ?? 0));
       case "list_spot_products": return await listSpotProducts(sb, tenantId, storeId, memberId);
+      case "get_spot_product": return await getSpotProduct(sb, tenantId, storeId, memberId, Number(body.id ?? 0));
       case "place_member_order": if (!memberId) return json({ error: "no member_id" }, 401); return await placeMemberOrder(sb, tenantId, memberId, body);
       default: return json({ error: `unknown action: ${action}` }, 400);
     }

@@ -1,7 +1,7 @@
 "use client";
 
+import Link from "next/link";
 import Countdown from "./Countdown";
-import { spotInquiryHref } from "@/lib/lineInquiry";
 
 /**
  * 現貨專區商品（互助交流板「我有庫存可提供」）在會員端的資料形狀。
@@ -55,35 +55,23 @@ function CoverFallback() {
 }
 
 /**
- * 現貨卡。沒有商品詳情頁 → 整張卡不是連結，只有底部一顆「LINE 詢問」CTA
- * 可點（避免捲動時誤觸把人彈出 App）。
+ * 現貨卡。整張卡連到 /spot/[id] 詳情頁，LINE 詢問在詳情頁裡（卡片上不再放
+ * CTA —— 兩顆可點區域疊在一張小卡上很容易誤觸）。
  *
  * 金額顯示規則：
  *   - 自己所在店家釋出 → 顯示金額
  *   - 其他分店釋出     → 金額隱藏，改顯示「跨店 · 金額不顯示」
  * 後端已經不回跨店金額，這層只負責畫面表達。
- *
- * lineOaId 算不出來時（店家沒設 LINE@ 且沒有租戶層預設）整顆 CTA 不畫，
- * 寧可少一顆按鈕，也不要點下去跳空白頁。
  */
-export default function SpotProductCard({
-  item,
-  lineOaId,
-}: {
-  item: SpotProduct;
-  lineOaId: string | null;
-}) {
+export default function SpotProductCard({ item }: { item: SpotProduct }) {
   const title = spotProductTitle(item);
   const qtyText = `${item.qty_remaining.toLocaleString()}${item.unit ?? ""}`;
-  const href = spotInquiryHref(lineOaId, {
-    title,
-    storeName: item.store_name,
-    isMyStore: item.is_my_store,
-    unitPrice: item.unit_price,
-  });
 
   return (
-    <div className="card flex h-full flex-col overflow-hidden">
+    <Link
+      href={`/spot/${item.id}`}
+      className="card flex h-full flex-col overflow-hidden transition-transform duration-200 active:scale-[0.97]"
+    >
       <div className="relative aspect-square w-full">
         {item.image_url ? (
           // eslint-disable-next-line @next/next/no-img-element
@@ -136,21 +124,7 @@ export default function SpotProductCard({
           </svg>
           <Countdown target={item.expires_at} compact />
         </div>
-
-        {href && (
-          <a
-            href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-1.5 flex items-center justify-center gap-1 rounded-full bg-[#06C755] px-3 py-2 text-[13px] font-bold text-white transition-transform duration-200 active:scale-[0.97]"
-          >
-            <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4 shrink-0" aria-hidden>
-              <path d="M12 3C6.98 3 3 6.34 3 10.4c0 3.63 3.05 6.67 7.18 7.27.28.06.66.19.76.42.09.22.06.55.03.77l-.12.73c-.04.22-.17.86.76.47.93-.4 5-2.95 6.82-5.05C19.7 13.6 21 12.15 21 10.4 21 6.34 17.02 3 12 3Z" />
-            </svg>
-            LINE 詢問
-          </a>
-        )}
       </div>
-    </div>
+    </Link>
   );
 }
