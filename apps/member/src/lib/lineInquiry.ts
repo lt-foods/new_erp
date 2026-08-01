@@ -54,17 +54,7 @@ export function buildLineOaMessageUrl(basicId: string, text: string): string {
   return `https://line.me/R/oaMessage/${encodeURIComponent(id)}/?${encodeURIComponent(text)}`;
 }
 
-/** 一步到位：算不出 LINE@ 就回 null，呼叫端據此決定要不要畫按鈕。 */
-export function spotInquiryHref(
-  storeLineOaId: string | null | undefined,
-  subject: SpotInquirySubject,
-): string | null {
-  const oa = resolveLineOaId(storeLineOaId);
-  if (!oa) return null;
-  return buildLineOaMessageUrl(oa, buildSpotInquiryText(subject));
-}
-
-export type SendResult = "sent_in_liff" | "opened_line" | "failed";
+export type SendResult = "sent_in_liff" | "opened_line" | "copied" | "failed";
 
 /**
  * 把詢問訊息送出去。App 有兩種跑法，走的路不一樣：
@@ -78,7 +68,12 @@ export type SendResult = "sent_in_liff" | "opened_line" | "failed";
  * 2. **PWA / 一般瀏覽器（或 LIFF 條件不符）** → 開 `line.me/R/oaMessage` universal link
  *    跳到 LINE 開啟與該 LINE@ 的對話並預填文字，使用者自己按送出。
  *
- * 兩條都走不通才回 "failed"，呼叫端顯示錯誤。
+ * 3. **連 LINE@ id 都沒設定** → 把訊息複製到剪貼簿，請使用者自己貼給店家。
+ *    以前這種情況是「整顆按鈕不畫」，但實際上線時 23 間店的 line_oa_basic_id
+ *    全是 NULL、env 也沒設，結果功能整個看不見、像壞掉。按鈕一律要在，
+ *    最差也要留一條路給使用者走。
+ *
+ * 三條都走不通才回 "failed"，呼叫端顯示錯誤。
  */
 export async function sendLineInquiry(
   storeLineOaId: string | null | undefined,
@@ -99,7 +94,15 @@ export async function sendLineInquiry(
 
   // 2. 退路：universal link 開 LINE 對話並預填
   const oa = resolveLineOaId(storeLineOaId);
-  if (!oa) return "failed";
+  if (!oa) {
+    // 3. 最後退路：沒有任何 LINE@ 可以指向 → 複製訊息，讓使用者自己貼
+    try {
+      await navigator.clipboard.writeText(text);
+      return "copied";
+    } catch {
+      return "failed";
+    }
+  }
   const url = buildLineOaMessageUrl(oa, text);
   try {
     const liff = await initLiff();

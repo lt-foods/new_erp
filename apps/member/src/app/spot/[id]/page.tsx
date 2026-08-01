@@ -9,7 +9,7 @@ import PageShell from "@/components/PageShell";
 import { LoadingScreen } from "@/components/Spinner";
 import Countdown from "@/components/Countdown";
 import { cleanCampaignText } from "@/lib/text";
-import { isInLiffClient, sendLineInquiry, spotInquiryHref } from "@/lib/lineInquiry";
+import { isInLiffClient, sendLineInquiry } from "@/lib/lineInquiry";
 import { type SpotProduct, spotProductTitle } from "@/components/SpotProductCard";
 
 /** 把 children 渲染到 document.body（保證 fixed 相對 viewport）。同 /shop/c/[id]。 */
@@ -57,7 +57,7 @@ export default function SpotDetailPage() {
   // 偵測是非同步的，還沒回來之前先當 PWA（那條路哪裡都能用）。
   const [inLiff, setInLiff] = useState(false);
   const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
+  const [done, setDone] = useState<"sent_in_liff" | "copied" | null>(null);
   const [sendErr, setSendErr] = useState<string | null>(null);
 
   // portal 要等 client mount（同 /shop/c/[id] 的做法，避免 hydration 對不上）
@@ -97,19 +97,16 @@ export default function SpotDetailPage() {
         unitPrice: item.unit_price,
       }
     : null;
-  const href = subject ? spotInquiryHref(lineOaId, subject) : null;
-
-  // LIFF 直送不需要 LINE@ id（送進當前聊天室即可），所以只要在 LIFF 裡就給按鈕；
-  // PWA 那條一定要有 id 才畫得出連結。
-  const canInquire = !!subject && (inLiff || !!href);
-
+  // 按鈕一律出現。實際走哪條路由 sendLineInquiry 在點下去時決定：
+  // LIFF 直送 → universal link → 複製訊息。沒設 LINE@ 也還有最後那條，
+  // 不會變成「整顆按鈕消失、功能像壞掉」。
   const onSend = async () => {
     if (!subject || sending) return;
     setSending(true);
     setSendErr(null);
     const r = await sendLineInquiry(lineOaId, subject);
     setSending(false);
-    if (r === "sent_in_liff") setSent(true);
+    if (r === "sent_in_liff" || r === "copied") setDone(r);
     else if (r === "failed") setSendErr("送不出去，請直接私訊店家");
   };
 
@@ -227,21 +224,24 @@ export default function SpotDetailPage() {
       {/* 常駐底部詢問列 — portal 到 body，永遠釘在 viewport（同 /shop/c/[id] 的做法）。
           LIFF 走 sendMessages 直送（不需要 LINE@ id），PWA 走 universal link；
           兩條都不成立時整條不出現，寧可少一顆按鈕也不要點下去跳空白。 */}
-      <Portal enabled={mounted && canInquire}>
+      <Portal enabled={mounted && !!item}>
         <div
           className="fixed inset-x-0 bottom-0 z-40 border-t border-[var(--separator)] bg-white/95 backdrop-blur-xl"
           style={{ paddingBottom: "max(env(safe-area-inset-bottom), 10px)" }}
         >
           <div className="mx-auto max-w-md px-4 pt-3">
-            {sent ? (
+            {done ? (
               <div className="rounded-2xl bg-[#06C755]/10 px-4 py-3 text-center">
-                <p className="text-[15px] font-bold text-[#04833a]">已送出詢問訊息</p>
+                <p className="text-[15px] font-bold text-[#04833a]">
+                  {done === "sent_in_liff" ? "已送出詢問訊息" : "已複製詢問訊息"}
+                </p>
                 <p className="pt-0.5 text-[13px] text-[var(--secondary-label)]">
-                  店家收到後會在 LINE 回覆你
+                  {done === "sent_in_liff"
+                    ? "店家收到後會在 LINE 回覆你"
+                    : "貼到 LINE 傳給店家就可以了"}
                 </p>
               </div>
-            ) : inLiff ? (
-              // LIFF：直接把文字送進當前 LINE 聊天室，人留在 App 裡
+            ) : (
               <button
                 type="button"
                 onClick={onSend}
@@ -249,28 +249,17 @@ export default function SpotDetailPage() {
                 className="flex w-full items-center justify-center gap-2 rounded-full bg-[#06C755] py-3.5 text-[17px] font-bold text-white shadow-[0_8px_20px_-8px_rgba(6,199,85,0.7)] transition-transform active:scale-[0.99] disabled:opacity-60"
               >
                 <LineGlyph />
-                {sending ? "傳送中…" : "用 LINE 詢問店家"}
+                {sending ? "處理中…" : "用 LINE 詢問店家"}
               </button>
-            ) : (
-              // PWA / 一般瀏覽器：跳去 LINE 開對話並預填文字
-              <a
-                href={href ?? "#"}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-center gap-2 rounded-full bg-[#06C755] py-3.5 text-[17px] font-bold text-white shadow-[0_8px_20px_-8px_rgba(6,199,85,0.7)] transition-transform active:scale-[0.99]"
-              >
-                <LineGlyph />
-                用 LINE 詢問店家
-              </a>
             )}
             {sendErr && (
               <p className="pt-1.5 text-center text-[12px] text-[#c4271d]">{sendErr}</p>
             )}
-            {!sent && !sendErr && (
+            {!done && !sendErr && (
               <p className="pt-1.5 text-center text-[12px] text-[var(--secondary-label)]">
                 {inLiff
                   ? "會以你的身分把詢問訊息傳進這個 LINE 對話"
-                  : "會帶一段詢問訊息到你所在店家的 LINE，送出前可以自己改"}
+                  : "會帶一段詢問訊息到 LINE 給店家，送出前可以自己改"}
               </p>
             )}
           </div>
