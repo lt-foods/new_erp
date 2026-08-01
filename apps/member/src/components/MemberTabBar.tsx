@@ -96,8 +96,10 @@ export default function MemberTabBar() {
               <li key={t.href} className="flex-1">
                 <Link
                   href={t.href}
-                  className={`flex flex-col items-center justify-center gap-1 px-1 pb-2.5 pt-2.5 text-[12px] font-semibold transition-colors duration-200 ${
-                    active ? "text-[var(--brand-strong)]" : "text-[var(--ios-gray)]"
+                  className={`flex flex-col items-center justify-center gap-1 px-1 pb-2.5 pt-2.5 text-[12px] transition-colors duration-200 ${
+                    active
+                      ? "font-extrabold text-[var(--brand-strong)]"
+                      : "font-semibold text-[var(--ios-gray)]"
                   }`}
                 >
                   {/* 外層維持和其他 tab 相同的 h-9 佔位，label 基線才會齊；
@@ -106,18 +108,22 @@ export default function MemberTabBar() {
                       外圈品牌漸層細邊 + 更深的陰影來表示。 */}
                   <span className="relative flex h-9 w-14 items-center justify-center">
                     <span
-                      className={`absolute -top-6 flex h-14 w-14 items-center justify-center rounded-full p-[3px] ring-4 ring-white transition-all duration-300 ${
+                      className={`absolute -top-6 flex h-14 w-14 items-center justify-center rounded-full ring-4 ring-white transition-all duration-300 ${
                         active
-                          ? "brand-gradient scale-100 shadow-[0_10px_22px_-6px_rgba(158,47,80,0.75)]"
-                          : "scale-95 bg-white shadow-[0_6px_16px_-6px_rgba(158,47,80,0.5)]"
+                          ? "brand-gradient scale-110 p-1 shadow-[0_0_0_3px_rgba(158,47,80,0.28),0_14px_26px_-6px_rgba(158,47,80,0.85)]"
+                          : "scale-90 bg-white p-[3px] shadow-[0_6px_16px_-8px_rgba(0,0,0,0.35)]"
                       }`}
                     >
+                      {/* 未選取時 logo 去彩度 + 壓透明度，對齊其他四格「灰→品牌色」的
+                          既有規則；選取時放大、上彩、外掛品牌漸層邊與光暈。 */}
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src="/brand/logo.jpg"
                         alt=""
                         aria-hidden
-                        className="h-full w-full rounded-full object-cover"
+                        className={`h-full w-full rounded-full object-cover transition-all duration-300 ${
+                          active ? "" : "opacity-55 grayscale"
+                        }`}
                       />
                     </span>
                   </span>
