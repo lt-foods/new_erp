@@ -52,6 +52,7 @@ type PO = {
   pr_no: string | null;
   product_names: string[];
   item_count: number;
+  stockout_items: number;
 };
 
 type StatusTab = "all" | POStatus;
@@ -449,29 +450,6 @@ export default function PurchaseOrdersListPage() {
     }
   }
 
-  async function markStockout(po: PO) {
-    const reason = window.prompt(
-      `將 ${po.po_no} 標記為「斷貨」？\n供應商無法供貨時使用：未到貨的數量不再等待，單據直接結掉。\n\n可填寫斷貨原因（可留空）：`,
-    );
-    if (reason === null) return;
-    try {
-      const supabase = getSupabase();
-      const { data: userData } = await supabase.auth.getUser();
-      const { error: rpcErr } = await supabase.rpc(
-        "rpc_stockout_purchase_order",
-        {
-          p_po_id: po.id,
-          p_operator: userData.user?.id,
-          p_reason: reason || null,
-        },
-      );
-      if (rpcErr) throw new Error(rpcErr.message);
-      setReloadKey((k) => k + 1);
-    } catch (e) {
-      alert(e instanceof Error ? e.message : String(e));
-    }
-  }
-
   async function deletePO(po: PO) {
     if (
       !window.confirm(
@@ -848,7 +826,6 @@ export default function PurchaseOrdersListPage() {
                     key={p.id}
                     po={p}
                     onSend={openSendModal}
-                    onStockout={markStockout}
                     onDelete={deletePO}
                     sendBusyId={sendBusyId}
                   />
@@ -860,7 +837,6 @@ export default function PurchaseOrdersListPage() {
                   key={p.id}
                   po={p}
                   onSend={openSendModal}
-                  onStockout={markStockout}
                   onDelete={deletePO}
                   sendBusyId={sendBusyId}
                 />
@@ -1115,13 +1091,11 @@ function PoLinks({ pos }: { pos: Map<number, string> }) {
 function PORow({
   po,
   onSend,
-  onStockout,
   onDelete,
   sendBusyId,
 }: {
   po: PO;
   onSend: (p: PO) => void;
-  onStockout: (p: PO) => Promise<void>;
   onDelete: (p: PO) => Promise<void>;
   sendBusyId: number | null;
 }) {
@@ -1158,14 +1132,21 @@ function PORow({
         >
           {STATUS_LABEL[po.status]}
         </span>
-        {po.stockout_at && (
+        {po.stockout_at ? (
           <span
             className="ml-1 inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300"
             title={`斷貨於 ${new Date(po.stockout_at).toLocaleString("zh-TW")}`}
           >
             ⛔ 斷貨
           </span>
-        )}
+        ) : po.stockout_items > 0 ? (
+          <span
+            className="ml-1 inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+            title="部分品項已標記斷貨（明細見編輯頁）"
+          >
+            ⛔ 斷貨 {po.stockout_items} 項
+          </span>
+        ) : null}
       </Td>
       <Td className="text-right text-xs">
         {po.item_count > 0 ? (
@@ -1235,11 +1216,6 @@ function PORow({
             >
               進貨
             </Link>
-          )}
-          {(po.status === "sent" || po.status === "partially_received") && (
-            <RowAction variant="warning" onClick={() => onStockout(po)}>
-              斷貨
-            </RowAction>
           )}
           {(po.status === "draft" ||
             po.status === "sent" ||

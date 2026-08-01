@@ -25,6 +25,7 @@ type POItem = {
   sku_code: string | null;
   sku_name: string | null;
   product_name: string | null;
+  stockout_at: string | null;
 };
 
 type DemandRow = {
@@ -91,6 +92,7 @@ function PageContent() {
     sent_at: string | null;
   } | null>(null);
   const [forms, setForms] = useState<ArrivalForm[] | null>(null);
+  const [stockoutLabels, setStockoutLabels] = useState<string[]>([]);
   const [priorGRs, setPriorGRs] = useState<PriorGR[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -114,14 +116,14 @@ function PageContent() {
 
         const [{ data: po, error: poErr }, { data: items, error: itemsErr }, { data: priors, error: priorErr }] = await Promise.all([
           sb.from("purchase_orders").select("id, po_no, status, sent_at, suppliers(name)").eq("id", poId).single(),
-          sb.from("purchase_order_items").select("id, sku_id, qty_ordered, qty_received, unit_cost").eq("po_id", poId).order("id"),
+          sb.from("purchase_order_items").select("id, sku_id, qty_ordered, qty_received, unit_cost, stockout_at").eq("po_id", poId).order("id"),
           sb.from("goods_receipts").select("id, gr_no, status, supplier_invoice_no, notes, created_at").eq("po_id", poId).order("created_at", { ascending: false }),
         ]);
         if (poErr) throw new Error(poErr.message);
         if (itemsErr) throw new Error(itemsErr.message);
         if (priorErr) throw new Error(priorErr.message);
 
-        type RawItem = { id: number; sku_id: number; qty_ordered: number; qty_received: number; unit_cost: number };
+        type RawItem = { id: number; sku_id: number; qty_ordered: number; qty_received: number; unit_cost: number; stockout_at: string | null };
         const skuIds = Array.from(new Set(((items as RawItem[]) ?? []).map((r) => r.sku_id)));
         const skuMap = new Map<number, { code: string | null; name: string | null; product_name: string | null }>();
         if (skuIds.length) {
@@ -142,6 +144,7 @@ function PageContent() {
             sku_code: sku?.code ?? null,
             sku_name: sku?.name ?? null,
             product_name: sku?.product_name ?? null,
+            stockout_at: r.stockout_at ?? null,
           };
         });
 
@@ -191,7 +194,9 @@ function PageContent() {
           return Array.isArray(s) ? s[0]?.name ?? null : s?.name ?? null;
         })();
 
-        const formArr: ArrivalForm[] = poiArr.map((it) => {
+        // 已斷貨品項收貨已定案，不進收貨表單（下方顯示排除清單）
+        const stockoutArr = poiArr.filter((it) => it.stockout_at);
+        const formArr: ArrivalForm[] = poiArr.filter((it) => !it.stockout_at).map((it) => {
           const allocs = demandArr
             .filter((d) => d.po_item_id === it.id)
             .map((d) => ({
@@ -227,6 +232,11 @@ function PageContent() {
             sent_at: (po as { sent_at?: string | null }).sent_at ?? null,
           });
           setForms(formArr);
+          setStockoutLabels(
+            stockoutArr.map((it) =>
+              `${it.sku_code ?? ""} ${it.product_name ?? ""}${it.sku_name ? ` / ${it.sku_name}` : ""}`.trim(),
+            ),
+          );
           setPriorGRs(priorRows);
         }
       } catch (e) {
@@ -561,6 +571,13 @@ function PageContent() {
           >
             完成、返回進貨待辦 →
           </Link>
+        </div>
+      )}
+
+      {/* 已斷貨品項：不進收貨表單 */}
+      {stockoutLabels.length > 0 && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+          ⛔ 已斷貨品項不列入本次收貨：{stockoutLabels.join("、")}
         </div>
       )}
 

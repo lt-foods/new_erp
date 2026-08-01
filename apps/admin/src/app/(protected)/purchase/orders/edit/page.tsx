@@ -54,6 +54,8 @@ type Item = {
   unit_cost: number;
   line_subtotal: number;
   notes: string | null;
+  stockout_at: string | null;
+  stockout_reason: string | null;
 };
 
 const STATUS_LABEL = poStatusLabel;
@@ -94,7 +96,7 @@ function PageContent() {
           .maybeSingle(),
         supabase
           .from("purchase_order_items")
-          .select("id, sku_id, qty_ordered, qty_received, qty_returned, unit_cost, line_subtotal, notes")
+          .select("id, sku_id, qty_ordered, qty_received, qty_returned, unit_cost, line_subtotal, notes, stockout_at, stockout_reason")
           .eq("po_id", id)
           .order("id"),
       ]);
@@ -162,6 +164,8 @@ function PageContent() {
           unit_cost: Number(r.unit_cost),
           line_subtotal: Number(r.line_subtotal ?? 0),
           notes: r.notes,
+          stockout_at: r.stockout_at ?? null,
+          stockout_reason: r.stockout_reason ?? null,
         };
       });
       setItems(merged);
@@ -196,23 +200,22 @@ function PageContent() {
     header?.status === "sent" ||
     header?.status === "cancelled";
 
-  async function markStockout() {
-    if (!header) return;
+  async function stockoutItem(item: Item) {
+    const label = item.product_name + (item.variant_name ? `-${item.variant_name}` : "");
+    const remaining = item.qty_ordered - item.qty_received;
     const reason = window.prompt(
-      `將 ${header.po_no} 標記為「斷貨」？\n供應商無法供貨時使用：未到貨的數量不再等待，單據直接結掉。\n\n可填寫斷貨原因（可留空）：`,
+      `將品項「${label}」標記為「斷貨」？\n供應商無法供貨時使用：未到的 ${remaining} ${item.unit_uom ?? "件"}不再等待；` +
+        `全部品項定案（到齊或斷貨）後單據會自動結掉。\n\n可填寫斷貨原因（可留空）：`,
     );
     if (reason === null) return;
     try {
       const supabase = getSupabase();
       const { data: userData } = await supabase.auth.getUser();
-      const { error: rpcErr } = await supabase.rpc(
-        "rpc_stockout_purchase_order",
-        {
-          p_po_id: header.id,
-          p_operator: userData.user?.id,
-          p_reason: reason || null,
-        },
-      );
+      const { error: rpcErr } = await supabase.rpc("rpc_stockout_po_item", {
+        p_po_item_id: item.id,
+        p_operator: userData.user?.id,
+        p_reason: reason || null,
+      });
       if (rpcErr) throw new Error(rpcErr.message);
       await reload();
     } catch (e) {
@@ -247,6 +250,7 @@ function PageContent() {
   const totalReceived = items.reduce((s, r) => s + r.qty_received, 0);
   const totalOrdered = items.reduce((s, r) => s + r.qty_ordered, 0);
   const recvPct = totalOrdered > 0 ? (totalReceived / totalOrdered) * 100 : 0;
+  const stockoutCount = items.filter((r) => r.stockout_at).length;
 
   if (!id) {
     return (
@@ -289,6 +293,11 @@ function PageContent() {
             <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">摘要</h3>
             <dl className="space-y-2 text-sm">
               <Row label="品項數">{items.length}</Row>
+              {stockoutCount > 0 && (
+                <Row label="斷貨品項">
+                  <span className="text-amber-600 dark:text-amber-400">{stockoutCount}</span>
+                </Row>
+              )}
               <Row label="訂購總量">{totalOrdered}</Row>
               <Row label="已收貨量">{totalReceived}</Row>
               <Row label="到貨進度">{recvPct.toFixed(0)}%</Row>
@@ -321,12 +330,9 @@ function PageContent() {
                 </div>
               )}
               {canStockout && (
-                <SpinButton
-                  onClick={markStockout}
-                  className="rounded-md border border-amber-400 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-900"
-                >
-                  ⛔ 標記斷貨
-                </SpinButton>
+                <p className="rounded-md border border-zinc-200 bg-zinc-50 p-2 text-xs leading-relaxed text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800/60 dark:text-zinc-400">
+                  ⛔ 供應商斷貨請在右側明細列逐品項標記；全部品項定案（到齊或斷貨）後單據會自動結掉。
+                </p>
               )}
               {canDelete && (
                 <SpinButton
@@ -386,16 +392,24 @@ function PageContent() {
                   <Th className="text-right">已出</Th>
                   <Th className="text-right">成本</Th>
                   <Th className="text-right">小計</Th>
+                  <Th className="text-center">斷貨</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
                 {items.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="p-6 text-center text-zinc-500">無品項</td>
+                    <td colSpan={10} className="p-6 text-center text-zinc-500">無品項</td>
                   </tr>
                 ) : (
                   items.map((r, idx) => (
-                    <tr key={r.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
+                    <tr
+                      key={r.id}
+                      className={
+                        r.stockout_at
+                          ? "bg-amber-50/50 hover:bg-amber-50 dark:bg-amber-950/20 dark:hover:bg-amber-950/40"
+                          : "hover:bg-zinc-50 dark:hover:bg-zinc-900"
+                      }
+                    >
                       <Td className="text-zinc-500">{idx + 1}</Td>
                       <Td>
                         <div>{r.product_name}{r.variant_name ? `-${r.variant_name}` : ""}</div>
@@ -404,7 +418,7 @@ function PageContent() {
                       <Td className="text-zinc-500">{r.unit_uom ?? "—"}</Td>
                       <Td className="text-right">{r.qty_ordered}</Td>
                       <Td className="text-right">
-                        {recvEditable ? (
+                        {recvEditable && !r.stockout_at ? (
                           <ReceivedCell key={`${r.id}:${r.qty_received}`} item={r} onSaved={reload} />
                         ) : (
                           <span className="text-emerald-600 dark:text-emerald-400">
@@ -420,6 +434,28 @@ function PageContent() {
                       </Td>
                       <Td className="text-right font-medium text-amber-600 dark:text-amber-400">${r.unit_cost.toFixed(0)}</Td>
                       <Td className="text-right font-mono">${(r.qty_ordered * r.unit_cost).toFixed(0)}</Td>
+                      <Td className="text-center">
+                        {r.stockout_at ? (
+                          <span
+                            className="inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[11px] text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                            title={
+                              `斷貨於 ${new Date(r.stockout_at).toLocaleString("zh-TW")}` +
+                              (r.stockout_reason ? `\n原因：${r.stockout_reason}` : "")
+                            }
+                          >
+                            ⛔ 斷貨
+                          </span>
+                        ) : canStockout && r.qty_received < r.qty_ordered ? (
+                          <SpinButton
+                            onClick={() => stockoutItem(r)}
+                            className="rounded border border-amber-400 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-900"
+                          >
+                            ⛔ 斷貨
+                          </SpinButton>
+                        ) : (
+                          <span className="text-zinc-400">—</span>
+                        )}
+                      </Td>
                     </tr>
                   ))
                 )}
