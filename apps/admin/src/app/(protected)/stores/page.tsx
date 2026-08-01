@@ -27,6 +27,7 @@ type Store = {
   allowed_payment_methods: PaymentMethod[];
   is_active: boolean;
   notes: string | null;
+  line_oa_basic_id: string | null;
   updated_at: string;
   deleted_at: string | null;
 };
@@ -43,6 +44,7 @@ const EMPTY: Omit<Store, "id" | "updated_at" | "deleted_at"> = {
   allowed_payment_methods: ["cash"],
   is_active: true,
   notes: null,
+  line_oa_basic_id: null,
 };
 
 type ActiveFilter = "active" | "all" | "deleted";
@@ -87,7 +89,7 @@ export default function StoresPage() {
   async function reload() {
     let q = getSupabase()
       .from("stores")
-      .select("id, code, name, location_id, pickup_window_days, allowed_payment_methods, is_active, notes, updated_at, deleted_at")
+      .select("id, code, name, location_id, pickup_window_days, allowed_payment_methods, is_active, notes, line_oa_basic_id, updated_at, deleted_at")
       .order("updated_at", { ascending: false })
       .limit(500);
     if (query.trim()) {
@@ -159,6 +161,7 @@ export default function StoresPage() {
         p_allowed_payment_methods: v.allowed_payment_methods,
         p_is_active: v.is_active,
         p_notes: v.notes,
+        p_line_oa_basic_id: v.line_oa_basic_id,
       });
       if (err) throw err;
       setEditing(null);
@@ -487,6 +490,18 @@ function StoreForm({
             />
             <span>{v.is_active ? "啟用中" : "停用"}</span>
           </label>
+        </F>
+
+        <F label="LINE@ ID" className="sm:col-span-2">
+          <input
+            value={v.line_oa_basic_id ?? ""}
+            onChange={(e) => up("line_oa_basic_id", e.target.value || null)}
+            placeholder="@example（留空 = 用租戶預設）"
+            className={inputCls}
+          />
+          <span className="text-[11px] text-zinc-500">
+            會員 App 現貨專區「LINE 詢問」會把訊息帶到這個官方帳號
+          </span>
         </F>
 
         <F label="備註" className="sm:col-span-4">

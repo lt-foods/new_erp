@@ -8,6 +8,8 @@ type Tab = {
   href: string;
   label: string;
   showBadge?: boolean;
+  /** 凸起中央鍵（現貨專區）：畫成往上浮出 bar 的品牌漸層圓鈕 */
+  raised?: boolean;
   icon: (active: boolean) => React.ReactNode;
 };
 
@@ -32,6 +34,19 @@ const tabs: Tab[] = [
     icon: (active) => (
       <svg viewBox="0 0 24 24" fill={active ? "currentColor" : "none"} stroke={stroke(active)} strokeWidth={active ? 0 : 1.8} className="h-7 w-7">
         <path strokeLinecap="round" strokeLinejoin="round" d="M5 7h14l-1.2 11.1A2 2 0 0 1 15.8 20H8.2a2 2 0 0 1-2-1.9L5 7Zm3 0V5a4 4 0 0 1 8 0v2" />
+      </svg>
+    ),
+  },
+  {
+    // 現貨專區站正中間（5 格的第 3 格）。必須是獨立頂層路由 —— 掛在 /shop/...
+    // 底下的話，下面 startsWith 的 active 判斷會讓「商品」tab 一起亮。
+    href: "/spot",
+    label: "現貨專區",
+    raised: true,
+    icon: () => (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} className="h-7 w-7">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3 8.5 12 4l9 4.5v7L12 20l-9-4.5v-7Z" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="m3 8.5 9 4.5 9-4.5M12 13v7" />
       </svg>
     ),
   },
@@ -78,6 +93,37 @@ export default function MemberTabBar() {
           const active = pathname.startsWith(t.href);
           const showBadge = t.showBadge && unreadCount > 0;
           const badgeText = unreadCount > 99 ? "99+" : String(unreadCount);
+
+          // 凸起中央鍵：圓鈕往上浮出 bar，用白色外圈打穿邊線。
+          // 文字仍留在原本位置，五格的 label 基線才會齊。
+          if (t.raised) {
+            return (
+              <li key={t.href} className="flex-1">
+                <Link
+                  href={t.href}
+                  className={`flex flex-col items-center justify-center gap-1 px-1 pb-2.5 pt-2.5 text-[12px] font-semibold transition-colors duration-200 ${
+                    active ? "text-[var(--brand-strong)]" : "text-[var(--ios-gray)]"
+                  }`}
+                >
+                  {/* 外層維持和其他 tab 相同的 h-9 佔位，label 基線才會齊；
+                      圓鈕用 absolute 往上溢出，凸出 bar 上緣約 14px。 */}
+                  <span className="relative flex h-9 w-14 items-center justify-center">
+                    <span
+                      className={`brand-gradient absolute -top-6 flex h-14 w-14 items-center justify-center rounded-full text-white ring-4 ring-white transition-all duration-300 ${
+                        active
+                          ? "scale-100 shadow-[0_10px_22px_-6px_rgba(158,47,80,0.75)]"
+                          : "scale-95 shadow-[0_6px_16px_-6px_rgba(158,47,80,0.5)]"
+                      }`}
+                    >
+                      {t.icon(active)}
+                    </span>
+                  </span>
+                  <span>{t.label}</span>
+                </Link>
+              </li>
+            );
+          }
+
           return (
             <li key={t.href} className="flex-1">
               <Link

@@ -299,7 +299,7 @@ async function listMySettlements(sb: any, tenantId: string, _storeId: number, me
 }
 
 /**
- * 店家釋出商品 — 互助交流板「我有庫存可提供」(post_type='offer') 曝光到會員端。
+ * 現貨專區 — 互助交流板「我有庫存可提供」(post_type='offer') 曝光到會員端。
  *
  * 只回還在架上的：status='active'、未到期、qty_remaining > 0。
  * （request「我要求助」是店對店的求援，不是可買的貨，不外露給會員。）
@@ -313,8 +313,10 @@ async function listMySettlements(sb: any, tenantId: string, _storeId: number, me
  * （就是他掃碼進站的那間店）。
  *
  * 板上的 note 是店對店的內部備註，不外露。
+ * LINE@ 只回「會員所屬店」那一間的（my_store_line_oa_id），
+ * 其他店的聯絡方式不外流 — 會員一律只跟自己的店往來。
  */
-async function listReleasedProducts(
+async function listSpotProducts(
   sb: any,
   tenantId: string,
   jwtStoreId: number,
@@ -351,13 +353,20 @@ async function listReleasedProducts(
     ].filter((id) => Number.isFinite(id) && id > 0)),
   );
   const storeNameMap = new Map<number, string>();
+  let myStoreLineOaId: string | null = null;
   if (storeIds.length > 0) {
     const { data: ss } = await sb
       .from("stores")
-      .select("id, name")
+      .select("id, name, line_oa_basic_id")
       .eq("tenant_id", tenantId)
       .in("id", storeIds);
-    for (const s of ss ?? []) storeNameMap.set(Number(s.id), s.name);
+    for (const s of ss ?? []) {
+      storeNameMap.set(Number(s.id), s.name);
+      // 只留自己店的 LINE@，別店的不進 payload
+      if (Number(s.id) === myStoreId) {
+        myStoreLineOaId = (s.line_oa_basic_id ?? "").trim() || null;
+      }
+    }
   }
 
   // 單價只查「自己店」那幾筆的來源訂單 — 跨店的價格連查都不查，
@@ -418,6 +427,7 @@ async function listReleasedProducts(
     items,
     my_store_id: myStoreId,
     my_store_name: storeNameMap.get(myStoreId) ?? null,
+    my_store_line_oa_id: myStoreLineOaId,
   });
 }
 
@@ -912,7 +922,7 @@ Deno.serve(async (req) => {
       case "generate_pwa_auth_code": if (!memberId) return json({ error: "no member_id" }, 401); return await generatePwaAuthCode(sb, tenantId, memberId, claims, token, body);
       case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId, typeof body.close_type === "string" ? body.close_type : null, memberId);
       case "get_campaign_detail": return await getCampaignDetail(sb, tenantId, Number(body.campaign_id ?? 0));
-      case "list_released_products": return await listReleasedProducts(sb, tenantId, storeId, memberId);
+      case "list_spot_products": return await listSpotProducts(sb, tenantId, storeId, memberId);
       case "place_member_order": if (!memberId) return json({ error: "no member_id" }, 401); return await placeMemberOrder(sb, tenantId, memberId, body);
       default: return json({ error: `unknown action: ${action}` }, 400);
     }

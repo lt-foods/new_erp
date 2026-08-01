@@ -1,8 +1,11 @@
 # PLAN — 會員 App「現貨專區」
 
-> 狀態：待施工（規劃已與 Alex 對過三個決策點）
+> 狀態：**已施工完成**（2026-08-01）。程式碼、migration、edge function 都上了。
 > 分支：`claude/merchant-products-cross-store-hide-5c9v47`
-> 前一版（已推）：入口是 `/shop` 內的「店家釋出」小區塊 + `/shop/released` 子頁 —— 本規劃會把它升級成底部 tab bar 正中間的一級入口並改名。
+>
+> **上線前還差一步（要人做）**：設環境變數 `NEXT_PUBLIC_LINE_OA_ID`，或在 admin
+> `/stores` 幫各店填「LINE@ ID」。兩者都空的話，現貨卡上的「LINE 詢問」按鈕
+> 不會出現（其餘功能正常）。見 §5.5。
 
 ---
 

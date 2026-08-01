@@ -4,7 +4,7 @@ import { usePathname, useRouter } from "next/navigation";
 import MemberTabBar from "./MemberTabBar";
 
 // 底部 tab 的根頁面不顯示回上一頁 (它們是 app 的入口)
-const TOP_LEVEL_PATHS = new Set(["/shop", "/orders", "/notifications", "/me"]);
+const TOP_LEVEL_PATHS = new Set(["/shop", "/orders", "/spot", "/notifications", "/me"]);
 
 /**
  * iOS 大標題樣式的頁面外殼。
@@ -39,8 +39,10 @@ export default function PageShell({
     <div
       className="relative min-h-[100dvh]"
       style={{
-        // tab bar 一律顯示(含 LINE LIFF),固定保留其高度
-        paddingBottom: "calc(92px + env(safe-area-inset-bottom))",
+        // tab bar 一律顯示(含 LINE LIFF),固定保留其高度。
+        // 104 而非 92：中間「現貨專區」是凸起圓鈕，會往上多佔約 14px，
+        // 留少了會蓋住頁尾最後一列內容。
+        paddingBottom: "calc(104px + env(safe-area-inset-bottom))",
       }}
     >
       <main className="relative mx-auto w-full max-w-md">

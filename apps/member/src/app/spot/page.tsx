@@ -8,27 +8,27 @@ import PageShell from "@/components/PageShell";
 import PullToRefresh from "@/components/PullToRefresh";
 import { LoadingScreen } from "@/components/Spinner";
 import SubTabs from "@/components/SubTabs";
-import ReleasedProductCard, {
-  type ReleasedProduct,
-} from "@/components/ReleasedProductCard";
+import SpotProductCard, { type SpotProduct } from "@/components/SpotProductCard";
 
 type Resp = {
-  items: ReleasedProduct[];
+  items: SpotProduct[];
   my_store_id: number;
   my_store_name: string | null;
+  my_store_line_oa_id: string | null;
 };
 
 /**
- * 店家釋出商品專區。
+ * 現貨專區（底部 tab bar 正中間的一級入口）。
  *
  * 資料來源是互助交流板的「我有庫存可提供」貼文（post_type='offer'）——
- * 店家把手上多的貨釋出，這裡就看得到。金額只在「自己所在店家」釋出時顯示，
- * 跨店的金額後端不回（見 liff-api listReleasedProducts）。
+ * 店家把手上多的現貨釋出，這裡就看得到。金額只在「自己所在店家」釋出時顯示，
+ * 跨店的金額後端不回（見 liff-api listSpotProducts）。
  */
-export default function ReleasedProductsPage() {
+export default function SpotPage() {
   const router = useRouter();
-  const [items, setItems] = useState<ReleasedProduct[]>([]);
+  const [items, setItems] = useState<SpotProduct[]>([]);
   const [myStoreName, setMyStoreName] = useState<string | null>(null);
+  const [lineOaId, setLineOaId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [tab, setTab] = useState<"all" | "mine">("all");
@@ -40,9 +40,10 @@ export default function ReleasedProductsPage() {
       return;
     }
     try {
-      const d = await callLiffApi<Resp>(s.token, { action: "list_released_products" });
+      const d = await callLiffApi<Resp>(s.token, { action: "list_spot_products" });
       setItems(d.items ?? []);
       setMyStoreName(d.my_store_name ?? null);
+      setLineOaId(d.my_store_line_oa_id ?? null);
       setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -55,7 +56,7 @@ export default function ReleasedProductsPage() {
       await load();
       setLoading(false);
     })();
-    // load 只依賴 router（getSession 是讀 localStorage），掛載時跑一次就夠
+    // load 只讀 localStorage 取 session，掛載時跑一次就夠
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
@@ -63,7 +64,7 @@ export default function ReleasedProductsPage() {
   const visible = tab === "mine" ? mine : items;
 
   return (
-    <PageShell title="店家釋出">
+    <PageShell title="現貨專區">
       <PullToRefresh onRefresh={load}>
         <SubTabs
           value={tab}
@@ -76,9 +77,8 @@ export default function ReleasedProductsPage() {
 
         <div className="space-y-3 px-4 pt-3 pb-6">
           <p className="text-[13px] leading-relaxed text-[var(--secondary-label)]">
-            分店手上多出來的現貨會釋出在這裡。
-            {myStoreName ? `${myStoreName}` : "你所在店家"}釋出的才看得到金額，
-            其他分店的商品金額不顯示。
+            分店手上多出來的現貨會放在這裡。
+            {myStoreName ?? "你所在店家"}的才看得到金額，其他分店的商品金額不顯示。
           </p>
 
           {loading && <LoadingScreen />}
@@ -101,7 +101,7 @@ export default function ReleasedProductsPage() {
                 📦
               </div>
               <p className="mt-4 text-[17px] font-semibold text-[var(--foreground)]">
-                {tab === "mine" ? "你的店目前沒有釋出商品" : "目前沒有店家釋出商品"}
+                {tab === "mine" ? "你的店目前沒有現貨" : "目前沒有店家釋出現貨"}
               </p>
               <p className="mt-1 text-[14px] text-[var(--secondary-label)]">
                 下拉重新整理，有店家釋出就會出現在這裡
@@ -112,7 +112,7 @@ export default function ReleasedProductsPage() {
           {visible.length > 0 && (
             <div className="grid grid-cols-2 gap-3">
               {visible.map((item) => (
-                <ReleasedProductCard key={item.id} item={item} />
+                <SpotProductCard key={item.id} item={item} lineOaId={lineOaId} />
               ))}
             </div>
           )}
