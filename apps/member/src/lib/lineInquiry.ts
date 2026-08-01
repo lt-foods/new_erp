@@ -1,3 +1,5 @@
+import { initLiff } from "./liff";
+
 /**
  * 現貨專區「LINE 詢問」訊息與連結。
  *
@@ -60,4 +62,71 @@ export function spotInquiryHref(
   const oa = resolveLineOaId(storeLineOaId);
   if (!oa) return null;
   return buildLineOaMessageUrl(oa, buildSpotInquiryText(subject));
+}
+
+export type SendResult = "sent_in_liff" | "opened_line" | "failed";
+
+/**
+ * 把詢問訊息送出去。App 有兩種跑法，走的路不一樣：
+ *
+ * 1. **LIFF（LINE 內建瀏覽器）** → `liff.sendMessages()`
+ *    以使用者身分把文字直接送進「開啟這個 LIFF 的那個聊天室」（也就是 OA 的對話）。
+ *    使用者不會被踢出 App，送完停在原地。
+ *    需要 LIFF app 有開 `chat_message.write` scope、而且是從聊天室 / 圖文選單進來的
+ *    （有 chat context）。條件不符 SDK 會 reject → 自動掉到第 2 條。
+ *
+ * 2. **PWA / 一般瀏覽器（或 LIFF 條件不符）** → 開 `line.me/R/oaMessage` universal link
+ *    跳到 LINE 開啟與該 LINE@ 的對話並預填文字，使用者自己按送出。
+ *
+ * 兩條都走不通才回 "failed"，呼叫端顯示錯誤。
+ */
+export async function sendLineInquiry(
+  storeLineOaId: string | null | undefined,
+  subject: SpotInquirySubject,
+): Promise<SendResult> {
+  const text = buildSpotInquiryText(subject);
+
+  // 1. LIFF 內：直接送進當前聊天室
+  try {
+    const liff = await initLiff();
+    if (liff?.isInClient() && typeof liff.sendMessages === "function") {
+      await liff.sendMessages([{ type: "text", text }]);
+      return "sent_in_liff";
+    }
+  } catch {
+    // 沒 scope / 沒 chat context / 使用者取消 → 掉到 universal link
+  }
+
+  // 2. 退路：universal link 開 LINE 對話並預填
+  const oa = resolveLineOaId(storeLineOaId);
+  if (!oa) return "failed";
+  const url = buildLineOaMessageUrl(oa, text);
+  try {
+    const liff = await initLiff();
+    // LIFF 內要用 openWindow(external) 才會跳出 LINE 內建瀏覽器開對話
+    if (liff?.isInClient() && typeof liff.openWindow === "function") {
+      liff.openWindow({ url, external: true });
+      return "opened_line";
+    }
+  } catch {
+    // 落到一般 window.open
+  }
+  // 用 location 導頁而不是 window.open：非同步之後才開新視窗會被彈出視窗
+  // 阻擋器擋掉（已經不算 user gesture）。universal link 用導頁一樣會交棒給
+  // LINE app，PWA 本身留在原地。
+  window.location.href = url;
+  return "opened_line";
+}
+
+/**
+ * 這台裝置的這次瀏覽是不是跑在 LIFF 裡。
+ * 用來決定 CTA 要畫成 <button>（LIFF 直送）還是 <a href>（PWA 開連結）。
+ */
+export async function isInLiffClient(): Promise<boolean> {
+  try {
+    const liff = await initLiff();
+    return !!liff?.isInClient();
+  } catch {
+    return false;
+  }
 }

@@ -8,7 +8,7 @@ import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import { LoadingScreen } from "@/components/Spinner";
 import Countdown from "@/components/Countdown";
-import { spotInquiryHref } from "@/lib/lineInquiry";
+import { isInLiffClient, sendLineInquiry, spotInquiryHref } from "@/lib/lineInquiry";
 import { type SpotProduct, spotProductTitle } from "@/components/SpotProductCard";
 
 /** 把 children 渲染到 document.body（保證 fixed 相對 viewport）。同 /shop/c/[id]。 */
@@ -50,9 +50,21 @@ export default function SpotDetailPage() {
   const [loading, setLoading] = useState(() => validId);
   const [err, setErr] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
+  // App 有 PWA / LIFF 兩種跑法，CTA 的行為不一樣：
+  //   LIFF → liff.sendMessages 直送當前聊天室，人留在 App 裡
+  //   PWA  → line.me universal link 跳去 LINE 開對話並預填
+  // 偵測是非同步的，還沒回來之前先當 PWA（那條路哪裡都能用）。
+  const [inLiff, setInLiff] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [sendErr, setSendErr] = useState<string | null>(null);
 
   // portal 要等 client mount（同 /shop/c/[id] 的做法，避免 hydration 對不上）
   useEffect(() => setMounted(true), []);
+
+  useEffect(() => {
+    isInLiffClient().then(setInLiff).catch(() => {});
+  }, []);
 
   useEffect(() => {
     consumeFragmentToSession();
@@ -76,14 +88,29 @@ export default function SpotDetailPage() {
   }, [router, id, validId]);
 
   const title = item ? spotProductTitle(item) : "";
-  const href = item
-    ? spotInquiryHref(lineOaId, {
+  const subject = item
+    ? {
         title,
         storeName: item.store_name,
         isMyStore: item.is_my_store,
         unitPrice: item.unit_price,
-      })
+      }
     : null;
+  const href = subject ? spotInquiryHref(lineOaId, subject) : null;
+
+  // LIFF 直送不需要 LINE@ id（送進當前聊天室即可），所以只要在 LIFF 裡就給按鈕；
+  // PWA 那條一定要有 id 才畫得出連結。
+  const canInquire = !!subject && (inLiff || !!href);
+
+  const onSend = async () => {
+    if (!subject || sending) return;
+    setSending(true);
+    setSendErr(null);
+    const r = await sendLineInquiry(lineOaId, subject);
+    setSending(false);
+    if (r === "sent_in_liff") setSent(true);
+    else if (r === "failed") setSendErr("送不出去，請直接私訊店家");
+  };
 
   return (
     <PageShell title="現貨商品">
@@ -191,31 +218,66 @@ export default function SpotDetailPage() {
       </div>
 
       {/* 常駐底部詢問列 — portal 到 body，永遠釘在 viewport（同 /shop/c/[id] 的做法）。
-          算不出 LINE@ 時整條不出現，寧可少一顆按鈕也不要點下去跳空白。 */}
-      <Portal enabled={mounted && !!item && !!href}>
+          LIFF 走 sendMessages 直送（不需要 LINE@ id），PWA 走 universal link；
+          兩條都不成立時整條不出現，寧可少一顆按鈕也不要點下去跳空白。 */}
+      <Portal enabled={mounted && canInquire}>
         <div
           className="fixed inset-x-0 bottom-0 z-40 border-t border-[var(--separator)] bg-white/95 backdrop-blur-xl"
           style={{ paddingBottom: "max(env(safe-area-inset-bottom), 10px)" }}
         >
           <div className="mx-auto max-w-md px-4 pt-3">
-            <a
-              href={href ?? "#"}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center justify-center gap-2 rounded-full bg-[#06C755] py-3.5 text-[17px] font-bold text-white shadow-[0_8px_20px_-8px_rgba(6,199,85,0.7)] transition-transform active:scale-[0.99]"
-            >
-              <svg viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5 shrink-0" aria-hidden>
-                <path d="M12 3C6.98 3 3 6.34 3 10.4c0 3.63 3.05 6.67 7.18 7.27.28.06.66.19.76.42.09.22.06.55.03.77l-.12.73c-.04.22-.17.86.76.47.93-.4 5-2.95 6.82-5.05C19.7 13.6 21 12.15 21 10.4 21 6.34 17.02 3 12 3Z" />
-              </svg>
-              用 LINE 詢問店家
-            </a>
-            <p className="pt-1.5 text-center text-[12px] text-[var(--secondary-label)]">
-              會帶一段詢問訊息到你所在店家的 LINE，送出前可以自己改
-            </p>
+            {sent ? (
+              <div className="rounded-2xl bg-[#06C755]/10 px-4 py-3 text-center">
+                <p className="text-[15px] font-bold text-[#04833a]">已送出詢問訊息</p>
+                <p className="pt-0.5 text-[13px] text-[var(--secondary-label)]">
+                  店家收到後會在 LINE 回覆你
+                </p>
+              </div>
+            ) : inLiff ? (
+              // LIFF：直接把文字送進當前 LINE 聊天室，人留在 App 裡
+              <button
+                type="button"
+                onClick={onSend}
+                disabled={sending}
+                className="flex w-full items-center justify-center gap-2 rounded-full bg-[#06C755] py-3.5 text-[17px] font-bold text-white shadow-[0_8px_20px_-8px_rgba(6,199,85,0.7)] transition-transform active:scale-[0.99] disabled:opacity-60"
+              >
+                <LineGlyph />
+                {sending ? "傳送中…" : "用 LINE 詢問店家"}
+              </button>
+            ) : (
+              // PWA / 一般瀏覽器：跳去 LINE 開對話並預填文字
+              <a
+                href={href ?? "#"}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-2 rounded-full bg-[#06C755] py-3.5 text-[17px] font-bold text-white shadow-[0_8px_20px_-8px_rgba(6,199,85,0.7)] transition-transform active:scale-[0.99]"
+              >
+                <LineGlyph />
+                用 LINE 詢問店家
+              </a>
+            )}
+            {sendErr && (
+              <p className="pt-1.5 text-center text-[12px] text-[#c4271d]">{sendErr}</p>
+            )}
+            {!sent && !sendErr && (
+              <p className="pt-1.5 text-center text-[12px] text-[var(--secondary-label)]">
+                {inLiff
+                  ? "會以你的身分把詢問訊息傳進這個 LINE 對話"
+                  : "會帶一段詢問訊息到你所在店家的 LINE，送出前可以自己改"}
+              </p>
+            )}
           </div>
         </div>
       </Portal>
     </PageShell>
+  );
+}
+
+function LineGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5 shrink-0" aria-hidden>
+      <path d="M12 3C6.98 3 3 6.34 3 10.4c0 3.63 3.05 6.67 7.18 7.27.28.06.66.19.76.42.09.22.06.55.03.77l-.12.73c-.04.22-.17.86.76.47.93-.4 5-2.95 6.82-5.05C19.7 13.6 21 12.15 21 10.4 21 6.34 17.02 3 12 3Z" />
+    </svg>
   );
 }
 

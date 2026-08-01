@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import Countdown from "./Countdown";
 
 /**
  * 現貨專區商品（互助交流板「我有庫存可提供」）在會員端的資料形狀。
@@ -115,14 +114,6 @@ export default function SpotProductCard({ item }: { item: SpotProduct }) {
               跨店 · 金額不顯示
             </div>
           )}
-        </div>
-
-        <div className="inline-flex w-fit items-center gap-1 rounded-md bg-[var(--brand-soft)] px-1.5 py-0.5 text-[12px] font-semibold tabular-nums text-[var(--brand-strong)]">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} className="h-3 w-3 shrink-0">
-            <circle cx="12" cy="12" r="9" />
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 7.5V12l3 2" />
-          </svg>
-          <Countdown target={item.expires_at} compact />
         </div>
       </div>
     </Link>

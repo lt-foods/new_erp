@@ -73,7 +73,6 @@ tab active 判斷是 `pathname.startsWith(t.href)`。所以現貨專區**必須�
 │ 上海小籠湯包 │ 日夜藍莓護眼  │
 │ 可提供 3 包  │ 可提供 1 盒   │
 │ $149         │🔒跨店·金額不顯示│
-│ ⏱ 02天06:16  │ ⏱ 01天03:44   │
 └──────────────┴──────────────┘
         整張卡可點 → /spot/[id]
 ```
@@ -83,6 +82,7 @@ tab active 判斷是 `pathname.startsWith(t.href)`。所以現貨專區**必須�
 - **點卡片 → `/spot/[id]` 詳情頁**（2026-08-01 加）：大圖、品名、金額或鎖頭、
   可提供數量／釋出分店／剩餘時間／商品編號、商品說明，底部常駐「用 LINE 詢問店家」。
   LINE CTA 從卡片移到詳情頁 —— 一張小卡上疊兩個可點區域太容易誤觸。
+- 卡片不顯示到期倒數（2026-08-01 拿掉，太吵）；要看剩餘時間進詳情頁
 - 空狀態：📦「目前沒有店家釋出現貨」／分頁下是「你的店目前沒有現貨」
 - 下拉重新整理
 - 未登入 / session 過期 → redirect 回 `/`
@@ -138,14 +138,27 @@ tab active 判斷是 `pathname.startsWith(t.href)`。所以現貨專區**必須�
 所以跨店那則的收尾才改成「請問可以幫我調貨嗎？」而不是「還有貨嗎」。
 這同時也守住金額隱藏 —— 價格由自己的店回報，不會從別店的報價外洩。
 
-### 5.4 Deep link
+### 5.4 兩種跑法：PWA 與 LIFF 走不同路（2026-08-01）
 
-```
-https://line.me/R/oaMessage/{basicId}/?{encodeURIComponent(text)}
-```
-- `basicId` 要含 `@`（URL 編碼成 `%40`）
-- LINE app 內、外部瀏覽器、PWA standalone 都吃這個 universal link
-- 用一般 `<a href target="_blank">` 即可，不需要 LIFF SDK 分支
+這個 App 有兩種載入型態，送訊息的方式不一樣，**不能只寫一條**：
+
+| 型態 | 做法 | 使用者體感 |
+|---|---|---|
+| **LIFF**（LINE 內建瀏覽器） | `liff.sendMessages([{type:'text',text}])` | 文字直接進 LINE 對話，**人留在 App 裡**，不被踢走 |
+| **PWA / 一般瀏覽器** | `line.me/R/oaMessage/{basicId}/?{text}` universal link | 跳去 LINE 開對話並預填，使用者自己按送出 |
+
+實作在 `lib/lineInquiry.ts` 的 `sendLineInquiry()`，退路是一路往下掉：
+`liff.sendMessages` →（失敗）`liff.openWindow(external)` →（失敗）`location.href` 導頁。
+
+⚠ **兩個前提**：
+1. LIFF app 要開 **`chat_message.write`** scope，否則 `sendMessages` 一定 reject
+   （會自動掉到 universal link，功能不會壞，只是體驗差一截）。
+2. `sendMessages` 送進的是「開啟這個 LIFF 的那個聊天室」。從 OA 聊天室 / 圖文選單
+   進來就是送給該 OA；從其他入口進來沒有 chat context，一樣掉到 universal link。
+
+`basicId` 要含 `@`（URL 編碼成 `%40`）；`buildLineOaMessageUrl` 會自動補。
+
+非同步偵測 LIFF 還沒回來之前一律先當 PWA —— 那條路哪裡都能用，不會卡住。
 
 ### 5.5 ⚠ 資料前置（會擋到上線）
 
@@ -211,7 +224,8 @@ https://line.me/R/oaMessage/{basicId}/?{encodeURIComponent(text)}
 | A4 | **跨店卡** | 畫面沒有任何金額；**raw response 的 `unit_price` 是 `null`** |
 | A5 | 本店 LINE 詢問 | 開 LINE 對話，訊息含品名 + `金額：$xxx` |
 | A6 | **跨店 LINE 詢問** | 開 LINE 對話，訊息含品名 +「（◯◯店釋出）」，**不含任何金額**，結尾是「請問可以幫我調貨嗎？」 |
-| A7 | LINE@ 沒設定 | 詳情頁底部詢問列不出現（不是點了跳空白） |
+| A7 | LINE@ 沒設定 | PWA 下詳情頁底部詢問列不出現（不是點了跳空白）；**LIFF 下仍要出現**（sendMessages 不需要 LINE@ id） |
+| A12 | LIFF 送訊息 | 在 LINE 內開 App → 按詢問 → 文字直接進對話、人留在 App，顯示「已送出詢問訊息」 |
 | A8 | 板上 0 則 | `/spot` 空狀態（`/shop` 已無現貨區塊，見 §6） |
 | A9 | 被認領光 / 到期 | 該筆自動從 App 消失 |
 | A10 | 迴歸 | `/shop` 團購列表、banner、排序、`/orders`、`/notifications`、`/me` 全部照舊 |
