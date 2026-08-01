@@ -58,6 +58,9 @@ export default function SpotDetailPage() {
   const [inLiff, setInLiff] = useState(false);
   const [sending, setSending] = useState(false);
   const [done, setDone] = useState<"sent_in_liff" | "copied" | null>(null);
+  // LIFF 直送成功時跳置中 popup（比底部 banner 明顯 —— 使用者沒有被帶去
+  // LINE、畫面沒變化，必須有個明確回饋說「已經發出去了」）
+  const [sentPopup, setSentPopup] = useState(false);
   const [sendErr, setSendErr] = useState<string | null>(null);
 
   // portal 要等 client mount（同 /shop/c/[id] 的做法，避免 hydration 對不上）
@@ -107,6 +110,7 @@ export default function SpotDetailPage() {
     const r = await sendLineInquiry(lineOaId, subject);
     setSending(false);
     if (r === "sent_in_liff" || r === "copied") setDone(r);
+    if (r === "sent_in_liff") setSentPopup(true);
     else if (r === "failed") setSendErr("送不出去，請直接私訊店家");
   };
 
@@ -262,6 +266,27 @@ export default function SpotDetailPage() {
                   : "會帶一段詢問訊息到 LINE 給店家，送出前可以自己改"}
               </p>
             )}
+          </div>
+        </div>
+      </Portal>
+
+      {/* LIFF 直送成功 popup — 樣式對齊 /shop/c/[id] 的下單成功 sheet */}
+      <Portal enabled={mounted && sentPopup}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-6">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 text-center">
+            <div className="text-5xl">✅</div>
+            <h3 className="mt-3 text-[22px] font-bold text-[var(--foreground)]">已發送詢問</h3>
+            <p className="mt-1 text-[15px] leading-relaxed text-[var(--secondary-label)]">
+              訊息已傳進你和店家的 LINE 對話
+              {"\n"}店家看到後會回覆你
+            </p>
+            <button
+              type="button"
+              onClick={() => setSentPopup(false)}
+              className="mt-5 w-full rounded-full brand-gradient py-3 text-[16px] font-bold text-white active:opacity-85"
+            >
+              好
+            </button>
           </div>
         </div>
       </Portal>
