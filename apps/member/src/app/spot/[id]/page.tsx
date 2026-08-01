@@ -7,6 +7,7 @@ import { consumeFragmentToSession, getSession } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import { LoadingScreen } from "@/components/Spinner";
+import Countdown from "@/components/Countdown";
 import { cleanCampaignText } from "@/lib/text";
 import { isInLiffClient, sendLineInquiry, spotInquiryHref } from "@/lib/lineInquiry";
 import { type SpotProduct, spotProductTitle } from "@/components/SpotProductCard";
@@ -184,6 +185,11 @@ export default function SpotDetailPage() {
               </Row>
               <Row label="釋出分店">
                 <span className="font-semibold">{item.store_name ?? "—"}</span>
+              </Row>
+              <Row label="剩餘時間">
+                <span className="font-semibold tabular-nums text-[var(--brand-strong)]">
+                  <Countdown target={item.expires_at} compact />
+                </span>
               </Row>
               {item.sku_code && (
                 <Row label="商品編號">
