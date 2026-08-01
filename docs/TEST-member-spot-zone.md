@@ -8,7 +8,7 @@
 ## 涵蓋範圍
 - Edge Function `liff-api` action：`list_spot_products`
 - Migration `20260801000020_rpc_upsert_store_line_oa.sql`（`rpc_upsert_store` 加 `p_line_oa_basic_id`）
-- 會員端：底部 tab bar 中央凸起鍵、`/spot`、`/shop` 的現貨導流區塊
+- 會員端：底部 tab bar 中央凸起鍵、`/spot`（`/shop` 的現貨導流區塊已移除，見 T6）
 - 元件：`SpotProductCard.tsx`、`lib/lineInquiry.ts`
 - admin：`/stores` 的「LINE@ ID」欄位
 
@@ -108,24 +108,23 @@
 | T5-9 | 填的 ID 沒有 `@` 開頭（例 `abc1234`） | 連結仍正確（`buildLineOaMessageUrl` 會自動補 `@`） |
 | T5-10 | 在 LINE 內建瀏覽器 / 外部瀏覽器 / PWA standalone 各試一次 | 三種都能開到 LINE 對話 |
 
-## T6 — `/shop` 導流區塊
+## T6 — `/shop` 不該再有現貨區塊（2026-08-01 移除）
+
+有了中間 tab 之後那塊是重複入口，整塊拿掉，`/shop` 回到只管團購。
 
 | # | 步驟 | 預期 |
 |---|------|------|
-| T6-1 | 進 `/shop` | 團購商品區塊上方有「現貨專區 📦」＋右上「去現貨專區 ›」 |
-| T6-2 | 橫向欄 | 最多露 **4 張**（`SPOT_PREVIEW_COUNT`），可左右滑 |
-| T6-3 | 卡片行為 | 與 `/spot` 一致（本店有金額、跨店鎖頭、LINE 詢問） |
-| T6-4 | 點「去現貨專區 ›」 | 進 `/spot` |
-| T6-5 | 板上 0 則 active offer | 整個區塊不出現（不留空殼標題） |
-| T6-6 | 下拉 pull-to-refresh | 現貨區塊一起更新 |
-| T6-7 | 進 `/spot` 再返回 `/shop` | 捲動位置、排序、現貨列表都還原（走既有 `shopCache`） |
+| T6-1 | 進 `/shop` | **沒有**「現貨專區 📦」區塊、沒有「去現貨專區 ›」連結 |
+| T6-2 | 開 devtools Network 看 `/shop` 的請求 | **只打 `list_active_campaigns` 一支**，不再打 `list_spot_products` |
+| T6-3 | banner 輪播與「團購商品」標題之間 | 直接相接，沒有多餘空白或殘留分隔 |
+| T6-4 | 要看現貨 | 只有底部中間 tab 一個入口 |
 
 ## T7 — 迴歸
 
 | # | 步驟 | 預期 |
 |---|------|------|
 | T7-1 | `/shop` 團購列表、banner 輪播、排序 tab | 照舊 |
-| T7-2 | 暫時讓 `list_spot_products` 失敗（改 action 名） | `/shop` 團購列表仍正常，只是沒有現貨區塊（前端各自 catch，不連坐） |
+| T7-2 | 暫時讓 `list_spot_products` 失敗（改 action 名） | `/shop` 完全不受影響（它已經不呼叫這支）；`/spot` 顯示錯誤訊息 |
 | T7-3 | admin `/inventory/mutual-aid` 認領 / 取消 / 留言 | 不受影響（沒動互助板任何 RPC） |
 | T7-4 | offer 被別店認領到 `qty_remaining=0`（`exhausted`） | 會員端該筆自動消失 |
 | T7-5 | offer 到期（cron `purge-expired-aid-board`） | 會員端該筆自動消失 |

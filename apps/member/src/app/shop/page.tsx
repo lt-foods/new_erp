@@ -10,14 +10,10 @@ import PullToRefresh from "@/components/PullToRefresh";
 import CampaignCard, { type CampaignSummary } from "@/components/CampaignCard";
 import Countdown from "@/components/Countdown";
 import ShopBannerCarousel from "@/components/ShopBannerCarousel";
-import SpotProductCard, { type SpotProduct } from "@/components/SpotProductCard";
 import { cleanCampaignText } from "@/lib/text";
 import { setCampaignHints } from "@/lib/campaignHints";
 
 type SortKey = "new" | "hot" | "recent";
-
-/** 首頁「現貨專區」橫向欄最多露幾張，其餘進 /spot 看 */
-const SPOT_PREVIEW_COUNT = 4;
 
 /**
  * 模組層快取：client 端 SPA 導航（/shop ↔ /shop/c/[id]）期間都存活，
@@ -29,8 +25,6 @@ const SPOT_PREVIEW_COUNT = 4;
  */
 type ShopCache = {
   campaigns: CampaignSummary[];
-  spot: SpotProduct[];
-  spotLineOaId: string | null;
   sortBy: SortKey;
   scrollY: number;
   pendingPickupCount: number;
@@ -56,10 +50,6 @@ export default function ShopPage() {
   const [pendingPickupCount, setPendingPickupCount] = useState<number>(
     () => shopCache?.pendingPickupCount ?? 0,
   );
-  const [spot, setSpot] = useState<SpotProduct[]>(() => shopCache?.spot ?? []);
-  const [spotLineOaId, setSpotLineOaId] = useState<string | null>(
-    () => shopCache?.spotLineOaId ?? null,
-  );
   const [loading, setLoading] = useState(() => shopCache == null);
   const [err, setErr] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortKey>(
@@ -75,29 +65,16 @@ export default function ShopPage() {
       }
       if (!silent) setErr(null);
       try {
-        // 現貨專區是加值區塊：edge function 還沒部署新 action 時會回
-        // 400 unknown action，不能讓它把整個商品頁的團購列表一起弄掛 →
-        // 各自 catch，現貨區塊失敗就當空的。
-        const [d, spotResp] = await Promise.all([
-          callLiffApi<{ campaigns: CampaignSummary[]; pending_pickup_count?: number }>(s.token, {
-            action: "list_active_campaigns",
-          }),
-          callLiffApi<{ items: SpotProduct[]; my_store_line_oa_id: string | null }>(s.token, {
-            action: "list_spot_products",
-          }).catch(() => ({ items: [] as SpotProduct[], my_store_line_oa_id: null })),
-        ]);
-        const spotItems = spotResp.items ?? [];
-        const spotOaId = spotResp.my_store_line_oa_id ?? null;
+        const d = await callLiffApi<{ campaigns: CampaignSummary[]; pending_pickup_count?: number }>(
+          s.token,
+          { action: "list_active_campaigns" },
+        );
         setCampaigns(d.campaigns);
         setCampaignHints(d.campaigns);
-        setSpot(spotItems);
-        setSpotLineOaId(spotOaId);
         const pickupCount = d.pending_pickup_count ?? 0;
         setPendingPickupCount(pickupCount);
         shopCache = {
           campaigns: d.campaigns,
-          spot: spotItems,
-          spotLineOaId: spotOaId,
           sortBy: shopCache?.sortBy ?? "new",
           scrollY: shopCache?.scrollY ?? 0,
           pendingPickupCount: pickupCount,
@@ -252,31 +229,6 @@ export default function ShopPage() {
                   }))
           }
         />
-
-        {/* 現貨專區導流 — 互助板「我有庫存可提供」的現貨。這裡只露 4 張,
-            全部進中間 tab 的 /spot。金額只有自己店的才有(後端就擋掉跨店金額)。 */}
-        {spot.length > 0 && (
-          <section>
-            <div className="flex items-baseline justify-between px-1 pb-2.5">
-              <h2 className="text-[22px] font-bold tracking-tight text-[var(--foreground)]">
-                現貨專區 📦
-              </h2>
-              <Link
-                href="/spot"
-                className="text-[13px] font-medium text-[var(--brand-strong)] active:opacity-60"
-              >
-                去現貨專區 ›
-              </Link>
-            </div>
-            <div className="hide-scrollbar -mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-1">
-              {spot.slice(0, SPOT_PREVIEW_COUNT).map((item) => (
-                <div key={item.id} className="w-[46%] shrink-0 snap-start">
-                  <SpotProductCard item={item} lineOaId={spotLineOaId} />
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
 
         {/* 團購商品 + 排序 */}
         {visible.length > 0 && (

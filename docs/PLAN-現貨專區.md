@@ -170,7 +170,7 @@ https://line.me/R/oaMessage/{basicId}/?{encodeURIComponent(text)}
 | `apps/member/src/lib/lineInquiry.ts` | 新增 | 組訊息文字 + `line.me/R/oaMessage` URL；本店/跨店兩種範本都在這裡，單一真相來源 |
 | `apps/member/src/components/MemberTabBar.tsx` | 改 | 4 tab → 5 tab，中間插入現貨專區凸起圓鈕 |
 | `apps/member/src/components/PageShell.tsx` | 改 | `TOP_LEVEL_PATHS` 加 `/spot`；`paddingBottom` 92px → 104px |
-| `apps/member/src/app/shop/page.tsx` | 改 | 區塊標題「店家釋出 📦」→「現貨專區 📦」；預覽張數 6 → **4**；右上連結改「去現貨專區 ›」指向 `/spot` |
+| `apps/member/src/app/shop/page.tsx` | 改 | ~~加現貨導流區塊~~ → **2026-08-01 已移除**：有了中間 tab 之後這塊是重複入口，`/shop` 回到只管團購（連 `list_spot_products` 的呼叫也一起拿掉，不再多打一支 API） |
 | `apps/admin/src/app/(protected)/stores/page.tsx` | 改 | 表單加「LINE@ ID」欄位（寫 `line_oa_basic_id`），含 `Store` type 與存檔路徑 |
 | `apps/member/.env` / Vercel | 設定 | 加 `NEXT_PUBLIC_LINE_OA_ID` |
 | `docs/TEST-member-released-products.md` | 改名 | → `docs/TEST-member-spot-zone.md`，內容同步 |
@@ -187,7 +187,7 @@ https://line.me/R/oaMessage/{basicId}/?{encodeURIComponent(text)}
 3. `lineInquiry.ts` + `SpotProductCard`（含兩種訊息範本）
 4. `/shop/released` → `/spot`
 5. `MemberTabBar` 5 格凸起鍵 + `PageShell` padding 與 `TOP_LEVEL_PATHS`
-6. `/shop` 區塊改名、縮 4 張、改連結
+6. ~~`/shop` 區塊改名、縮 4 張、改連結~~ → 後來整塊移除（見 §6、§9）
 7. `npx tsc --noEmit` + `next build`（member 與 admin 都要）+ 只看新檔的 lint
 8. 更新測試文件、commit、push
 
@@ -204,7 +204,7 @@ https://line.me/R/oaMessage/{basicId}/?{encodeURIComponent(text)}
 | A5 | 本店 LINE 詢問 | 開 LINE 對話，訊息含品名 + `金額：$xxx` |
 | A6 | **跨店 LINE 詢問** | 開 LINE 對話，訊息含品名 +「（◯◯店釋出）」，**不含任何金額**，結尾是「請問可以幫我調貨嗎？」 |
 | A7 | LINE@ 沒設定 | CTA 按鈕不出現（不是點了跳空白） |
-| A8 | 板上 0 則 | `/spot` 空狀態；`/shop` 的現貨區塊整塊不出現 |
+| A8 | 板上 0 則 | `/spot` 空狀態（`/shop` 已無現貨區塊，見 §6） |
 | A9 | 被認領光 / 到期 | 該筆自動從 App 消失 |
 | A10 | 迴歸 | `/shop` 團購列表、banner、排序、`/orders`、`/notifications`、`/me` 全部照舊 |
 
@@ -215,7 +215,8 @@ https://line.me/R/oaMessage/{basicId}/?{encodeURIComponent(text)}
 **已決策（2026-08-01 與 Alex 對過）**
 - 中間 tab 樣式 → **凸起中央鍵**
 - 會員互動 → **不直接下單，點了用 LINE 詢問店家**
-- `/shop` 首頁橫向區塊 → **保留，縮成 4 張**
+- `/shop` 首頁橫向區塊 → 原本決定「保留，縮成 4 張」，**2026-08-01 改為整塊移除**：
+  中間 tab 上線後這塊變成重複入口，商品頁回到只管團購。
 
 **未決（施工中若沒回覆就照下面預設走）**
 - `NEXT_PUBLIC_LINE_OA_ID` 要填哪個 LINE@ → 預設填 包子媽生鮮小舖 主帳號
