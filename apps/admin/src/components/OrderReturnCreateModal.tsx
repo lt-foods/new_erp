@@ -352,8 +352,14 @@ export default function OrderReturnCreateModal({
         p_restock_first: restockFirst,
       });
       if (err) throw err;
-      const transferId = (data as { return_transfer_id?: number })?.return_transfer_id;
-      onCreated(Number(transferId ?? 0));
+      const result = data as { return_transfer_id?: number; order_closed_as?: string | null };
+      // 全數退貨收尾：後端把未取量退光的訂單自動取消/結案，提示操作者訂單會從未取清單消失
+      if (result?.order_closed_as === "cancelled") {
+        alert("已建立退貨單。此訂單商品已全數退回總倉，訂單已自動取消（不再出現在未取清單）。");
+      } else if (result?.order_closed_as === "completed") {
+        alert("已建立退貨單。剩餘未取商品已全數退回總倉，訂單已自動結案（已取部分照常計收）。");
+      }
+      onCreated(Number(result?.return_transfer_id ?? 0));
     } catch (e) {
       setError(translateRpcError(e));
     } finally {

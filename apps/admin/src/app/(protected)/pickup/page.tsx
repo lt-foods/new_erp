@@ -12,6 +12,7 @@ import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
 import { getPickupRecents, recordPickupRecent, type RecentCustomer } from "@/lib/pickupRecents";
 import { publicProductUrl } from "@/lib/campaignCover";
+import { parseReturnNote } from "@/lib/returnNote";
 
 type Member = {
   id: number;
@@ -38,6 +39,7 @@ type OpenOrder = {
   store: { id: number; name: string } | null;
   items: {
     id: number;
+    sku_id: number | null;
     qty: number;
     unit_price: number;
     status: string;
@@ -74,15 +76,27 @@ function PickupPageContent() {
   // item.id → 該品項是否已到貨可取（v_order_item_pickup_ready）。
   // 部分到貨的 shipping 單靠這個讓「已到的品項」可先取。
   const [itemReady, setItemReady] = useState<Map<number, boolean>>(new Map());
+  // item.id → 未取退貨量（return_to_hq transfer 依 SKU 聚合後分攤到各品項行，
+  // 與 PickupDialog 同構）。退回總倉的量店裡沒有、不可再取。
+  const [returnedByItem, setReturnedByItem] = useState<Map<number, number>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const autoSearchedRef = useRef(false);
 
+  // 該品項未取退貨量 / 扣掉已退後仍可取量
+  function returnedOf(it: OpenOrder["items"][number]): number {
+    return returnedByItem.get(it.id) ?? 0;
+  }
+  function remainingQty(it: OpenOrder["items"][number]): number {
+    return Math.max(0, Number(it.qty) - returnedOf(it));
+  }
+
   // 可取貨品項：ready 單＝全部 active 品項；shipping / partially_completed 單＝
   // 逐品項看到貨狀態（部分到貨的單可先取已到的品項）。
   // itemReady 查無資料時的 fallback 沿用舊行為：partially_completed 可取、shipping 不可取。
+  // 一律排除「量已被未取退貨蓋掉」的品項行（退回總倉的貨不可再取）。
   function pickableItems(order: OpenOrder) {
-    const act = activeItems(order);
+    const act = activeItems(order).filter((it) => remainingQty(it) > 0);
     if (order.status === "ready") return act;
     if (order.status === "partially_completed") return act.filter((it) => itemReady.get(it.id) !== false);
     if (order.status === "shipping") return act.filter((it) => itemReady.get(it.id) === true);
@@ -147,7 +161,7 @@ function PickupPageContent() {
           `id, order_no, status, pickup_deadline, pickup_store_id, discount_amount, ready_at, transferred_from_order_id, last_notify_pickup_at, notify_pickup_count, member_id,
            campaign:group_buy_campaigns(id, campaign_no, name),
            store:stores!customer_orders_pickup_store_id_fkey(id, name),
-           items:customer_order_items(id, qty, unit_price, status, sku:skus(variant_name, product_name, product:products(images)))`,
+           items:customer_order_items(id, sku_id, qty, unit_price, status, sku:skus(variant_name, product_name, product:products(images)))`,
         )
         .in("member_id", list.map((m) => m.id))
         .in("status", ACTIVE_STATUSES)
@@ -169,6 +183,44 @@ function PickupPageContent() {
         }
       }
       setItemReady(readyMap);
+
+      // 未取退貨量（return_to_hq transfer）— 退掉的貨店裡沒有、不可再取。
+      // 依 SKU 聚合後分攤到各 active 品項行（行序 by id，與 PickupDialog 同構）。
+      // 「取貨後退回」(|取貨後退回) 是客戶已取走的貨，不佔未取品項的可取量。
+      const retMap = new Map<number, number>();
+      if (orderIds.length > 0) {
+        const { data: rts } = await sb
+          .from("transfers")
+          .select("customer_order_id, notes, transfer_items(sku_id, qty_shipped)")
+          .in("customer_order_id", orderIds)
+          .eq("transfer_type", "return_to_hq")
+          .in("status", ["shipped", "received"]);
+        const retBySku = new Map<number, Map<number, number>>(); // orderId → skuId → 已退量
+        for (const t of (rts ?? []) as { customer_order_id: number; notes: string | null; transfer_items: { sku_id: number | null; qty_shipped: number | null }[] | null }[]) {
+          if (parseReturnNote(t.notes).isRestock) continue;
+          const m2 = retBySku.get(t.customer_order_id) ?? new Map<number, number>();
+          for (const ti of t.transfer_items ?? []) {
+            if (ti.sku_id == null) continue;
+            m2.set(ti.sku_id, (m2.get(ti.sku_id) ?? 0) + Number(ti.qty_shipped ?? 0));
+          }
+          retBySku.set(t.customer_order_id, m2);
+        }
+        for (const r of (ords ?? []) as unknown as OpenOrder[]) {
+          const m2 = retBySku.get(r.id);
+          if (!m2 || m2.size === 0) continue;
+          const remaining = new Map(m2);
+          const acts = activeItems(r).slice().sort((a, b) => a.id - b.id);
+          for (const it of acts) {
+            if (it.sku_id == null) continue;
+            const rem = remaining.get(it.sku_id) ?? 0;
+            if (rem <= 0) continue;
+            const alloc = Math.min(Number(it.qty), rem);
+            retMap.set(it.id, alloc);
+            remaining.set(it.sku_id, rem - alloc);
+          }
+        }
+      }
+      setReturnedByItem(retMap);
 
       const m = new Map<number, OpenOrder[]>();
       for (const r of (ords ?? []) as unknown as (OpenOrder & { member_id: number })[]) {
@@ -223,12 +275,20 @@ function PickupPageContent() {
       const eventIds: number[] = [];
       for (const o of memberOrders) {
         // 只取已到貨的品項（部分到貨的單，未到品項留待補貨後續取）
-        const itemIds = pickableItems(o).map((it) => it.id);
+        const picks = pickableItems(o);
+        const itemIds = picks.map((it) => it.id);
+        // 部分退貨的品項行只取「扣掉已退」的量（整行取會被後端退貨守門擋下）
+        const itemQtys: Record<string, number> = {};
+        for (const it of picks) {
+          const take = remainingQty(it);
+          if (take < Number(it.qty)) itemQtys[String(it.id)] = take;
+        }
         const { data, error: e } = await sb.rpc("rpc_record_pickup", {
           p_order_id: o.id,
           p_item_ids: itemIds,
           p_operator: operator,
           p_notes: "一次全取",
+          ...(Object.keys(itemQtys).length > 0 ? { p_item_qtys: itemQtys } : {}),
         });
         if (e) errors.push(`${o.order_no}: ${e.message}`);
         else {
@@ -254,18 +314,26 @@ function PickupPageContent() {
   // 單張一鍵取貨 — 不開明細視窗，直接取走所有「可取(已到貨)」品項並列印（＝「一次全取」的單張版）。
   // 需要 折扣 / 只取部分品項 / 扣儲值金 時，改按旁邊的 ✏️（進階）開 PickupDialog。
   async function quickPickup(order: OpenOrder) {
-    const itemIds = pickableItems(order).map((it) => it.id);
+    const picks = pickableItems(order);
+    const itemIds = picks.map((it) => it.id);
     if (itemIds.length === 0) return;
     setError(null);
     const sb = getSupabase();
     const { data: sess } = await sb.auth.getSession();
     const operator = sess.session?.user?.id;
     if (!operator) { setError("尚未登入"); return; }
+    // 部分退貨的品項行只取「扣掉已退」的量（整行取會被後端退貨守門擋下）
+    const itemQtys: Record<string, number> = {};
+    for (const it of picks) {
+      const take = remainingQty(it);
+      if (take < Number(it.qty)) itemQtys[String(it.id)] = take;
+    }
     const { data, error: e } = await sb.rpc("rpc_record_pickup", {
       p_order_id: order.id,
       p_item_ids: itemIds,
       p_operator: operator,
       p_notes: null,
+      ...(Object.keys(itemQtys).length > 0 ? { p_item_qtys: itemQtys } : {}),
     });
     if (e) { setError(`${order.order_no}：${translateRpcError(e)}`); return; }
     const ev = data as { event_id: number; active_remaining: number };
@@ -522,13 +590,17 @@ function PickupPageContent() {
                     <ul className="space-y-2">
                       {memberOrders.map((o) => {
                         const active = activeItems(o);
+                        // 扣掉未取退貨後仍有量的品項（退回總倉的貨不可再取）
+                        const activeRemaining = active.filter((it) => remainingQty(it) > 0);
+                        const fullyReturned = active.length > 0 && activeRemaining.length === 0;
                         const pickable = pickableItems(o);
                         const pickableIds = new Set(pickable.map((it) => it.id));
                         const pickableCount = pickable.length;
                         const canPickup = pickableCount > 0;
-                        // 部分到貨：有品項可取、但還有 active 品項未到
-                        const partialArrival = canPickup && pickableCount < active.length;
-                        const subAmt = active.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0);
+                        // 部分到貨：有品項可取、但還有（未被退光的）active 品項未到
+                        const partialArrival = canPickup && pickableCount < activeRemaining.length;
+                        // 金額扣掉已退量（未取退貨不收錢，與應收 payable 扣減一致）
+                        const subAmt = active.reduce((s, it) => s + remainingQty(it) * Number(it.unit_price), 0);
                         const discAmt = Number(o.discount_amount ?? 0);
                         const totalAmt = Math.max(0, subAmt - discAmt);
                         return (
@@ -556,7 +628,10 @@ function PickupPageContent() {
                                   <li key={it.id} className="flex items-baseline gap-1.5">
                                     <span className="font-bold">{it.sku?.variant_name || it.sku?.product_name || "—"}</span>
                                     <span className="font-mono text-zinc-500">× {Number(it.qty)}</span>
-                                    {partialArrival && !pickableIds.has(it.id) && (
+                                    {returnedOf(it) > 0 && (
+                                      <span className="rounded bg-orange-100 px-1 py-0.5 text-[10px] font-medium text-orange-800 dark:bg-orange-950 dark:text-orange-300">↩ 已退 {returnedOf(it)}</span>
+                                    )}
+                                    {partialArrival && remainingQty(it) > 0 && !pickableIds.has(it.id) && (
                                       <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">⏳ 未到貨</span>
                                     )}
                                   </li>
@@ -588,7 +663,9 @@ function PickupPageContent() {
                                   </span>
                                 )}
                                 {canPickup ? (
-                                  <span className="ml-2">{partialArrival ? `${pickableCount}/${active.length} 項可取` : `${pickableCount} 項可取`}</span>
+                                  <span className="ml-2">{partialArrival ? `${pickableCount}/${activeRemaining.length} 項可取` : `${pickableCount} 項可取`}</span>
+                                ) : fullyReturned ? (
+                                  <span className="ml-2 font-semibold text-orange-700 dark:text-orange-400">↩ 已全數退回總倉，無可取貨項目</span>
                                 ) : (
                                   <span className="ml-2 text-amber-600 dark:text-amber-400">⏳ 分店尚未收貨，無法取貨</span>
                                 )}
@@ -603,8 +680,8 @@ function PickupPageContent() {
                             <div className="flex flex-wrap gap-2 sm:shrink-0">
                             <SpinButton
                               onClick={() => notifyPickup(m, o)}
-                              disabled={o.status !== "ready" || notifyingId === o.id || m.no_notify_pickup}
-                              title={m.no_notify_pickup ? "此會員已設「不通知」" : o.status !== "ready" ? "尚未全部到貨無法通知" : "通知顧客來取貨（推播 + 站內訊息）"}
+                              disabled={o.status !== "ready" || notifyingId === o.id || m.no_notify_pickup || fullyReturned}
+                              title={m.no_notify_pickup ? "此會員已設「不通知」" : fullyReturned ? "商品已全數退回總倉，無可取貨項目" : o.status !== "ready" ? "尚未全部到貨無法通知" : "通知顧客來取貨（推播 + 站內訊息）"}
                               className="rounded-md border border-blue-300 px-2 py-2 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950"
                             >
                               {notifyingId === o.id ? "⌛" : "🔔 通知"}
