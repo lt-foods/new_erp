@@ -298,6 +298,129 @@ async function listMySettlements(sb: any, tenantId: string, _storeId: number, me
   return json({ settlements: data ?? [] });
 }
 
+/**
+ * 店家釋出商品 — 互助交流板「我有庫存可提供」(post_type='offer') 曝光到會員端。
+ *
+ * 只回還在架上的：status='active'、未到期、qty_remaining > 0。
+ * （request「我要求助」是店對店的求援，不是可買的貨，不外露給會員。）
+ *
+ * 金額規則（跨店金額隱藏）：
+ *   只有「釋出店 = 會員所屬店」才回 unit_price；跨店一律回 null，
+ *   而且是在 server 端就不放進 payload — 前端根本拿不到金額，
+ *   不是只有 UI 藏起來（避免看 network response 就繞過）。
+ *
+ * 會員所屬店以 members.home_store_id 為準；未綁定會員退回 JWT 的 store_id
+ * （就是他掃碼進站的那間店）。
+ *
+ * 板上的 note 是店對店的內部備註，不外露。
+ */
+async function listReleasedProducts(
+  sb: any,
+  tenantId: string,
+  jwtStoreId: number,
+  memberId: number | null,
+) {
+  let myStoreId = jwtStoreId;
+  if (memberId) {
+    const { data: m } = await sb
+      .from("members")
+      .select("home_store_id")
+      .eq("tenant_id", tenantId)
+      .eq("id", memberId)
+      .maybeSingle();
+    if (m?.home_store_id) myStoreId = Number(m.home_store_id);
+  }
+
+  const { data: rows, error } = await sb
+    .from("mutual_aid_board")
+    .select(
+      "id, offering_store_id, sku_id, qty_remaining, expires_at, created_at, source_customer_order_id, sku:skus(sku_code, product_name, variant_name, base_unit, product:products(name, images))",
+    )
+    .eq("tenant_id", tenantId)
+    .eq("post_type", "offer")
+    .eq("status", "active")
+    .gt("qty_remaining", 0)
+    .gt("expires_at", new Date().toISOString())
+    .order("created_at", { ascending: false });
+  if (error) return json({ error: error.message }, 500);
+
+  const storeIds = Array.from(
+    new Set([
+      myStoreId,
+      ...(rows ?? []).map((r: any) => Number(r.offering_store_id)),
+    ].filter((id) => Number.isFinite(id) && id > 0)),
+  );
+  const storeNameMap = new Map<number, string>();
+  if (storeIds.length > 0) {
+    const { data: ss } = await sb
+      .from("stores")
+      .select("id, name")
+      .eq("tenant_id", tenantId)
+      .in("id", storeIds);
+    for (const s of ss ?? []) storeNameMap.set(Number(s.id), s.name);
+  }
+
+  // 單價只查「自己店」那幾筆的來源訂單 — 跨店的價格連查都不查，
+  // 保證不可能因為之後改動而不小心漏進 response。
+  const myOrderIds = Array.from(
+    new Set(
+      (rows ?? [])
+        .filter((r: any) => Number(r.offering_store_id) === myStoreId)
+        .map((r: any) => r.source_customer_order_id)
+        .filter((x: any): x is number => x != null),
+    ),
+  );
+  const priceMap = new Map<string, number>();
+  if (myOrderIds.length > 0) {
+    const { data: its } = await sb
+      .from("customer_order_items")
+      .select("order_id, sku_id, unit_price")
+      .eq("tenant_id", tenantId)
+      .in("order_id", myOrderIds);
+    for (const it of its ?? []) {
+      const price = Number(it.unit_price);
+      if (!Number.isFinite(price)) continue;
+      priceMap.set(`${it.order_id}:${it.sku_id}`, price);
+    }
+  }
+
+  const supabaseUrl = requireEnv("SUPABASE_URL");
+  const items = (rows ?? []).map((r: any) => {
+    const isMyStore = Number(r.offering_store_id) === myStoreId;
+    const imgs = r.sku?.product?.images;
+    const rawImg = Array.isArray(imgs) && imgs.length > 0
+      ? (typeof imgs[0] === "string" ? imgs[0] : imgs[0]?.url ?? null)
+      : null;
+    const price = isMyStore && r.source_customer_order_id != null
+      ? priceMap.get(`${r.source_customer_order_id}:${r.sku_id}`) ?? null
+      : null;
+    return {
+      id: Number(r.id),
+      sku_id: Number(r.sku_id),
+      sku_code: r.sku?.sku_code ?? null,
+      product_name: r.sku?.product_name ?? r.sku?.product?.name ?? null,
+      variant_name: r.sku?.variant_name ?? null,
+      unit: r.sku?.base_unit ?? null,
+      image_url: toPublicUrl(supabaseUrl, "products", rawImg),
+      store_id: Number(r.offering_store_id),
+      store_name: storeNameMap.get(Number(r.offering_store_id)) ?? null,
+      qty_remaining: Number(r.qty_remaining ?? 0),
+      expires_at: r.expires_at,
+      is_my_store: isMyStore,
+      unit_price: isMyStore ? price : null,
+    };
+  });
+
+  // 自己店的排前面（那些才看得到金額、才真的買得到），其餘維持最新在前
+  items.sort((a: any, b: any) => Number(b.is_my_store) - Number(a.is_my_store));
+
+  return json({
+    items,
+    my_store_id: myStoreId,
+    my_store_name: storeNameMap.get(myStoreId) ?? null,
+  });
+}
+
 async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string | null, memberId?: number | null) {
   // end_at IS NULL 表示「無到期日」(管理員未設),也算進行中,要保留
   let q = sb
@@ -789,6 +912,7 @@ Deno.serve(async (req) => {
       case "generate_pwa_auth_code": if (!memberId) return json({ error: "no member_id" }, 401); return await generatePwaAuthCode(sb, tenantId, memberId, claims, token, body);
       case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId, typeof body.close_type === "string" ? body.close_type : null, memberId);
       case "get_campaign_detail": return await getCampaignDetail(sb, tenantId, Number(body.campaign_id ?? 0));
+      case "list_released_products": return await listReleasedProducts(sb, tenantId, storeId, memberId);
       case "place_member_order": if (!memberId) return json({ error: "no member_id" }, 401); return await placeMemberOrder(sb, tenantId, memberId, body);
       default: return json({ error: `unknown action: ${action}` }, 400);
     }

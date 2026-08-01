@@ -10,10 +10,16 @@ import PullToRefresh from "@/components/PullToRefresh";
 import CampaignCard, { type CampaignSummary } from "@/components/CampaignCard";
 import Countdown from "@/components/Countdown";
 import ShopBannerCarousel from "@/components/ShopBannerCarousel";
+import ReleasedProductCard, {
+  type ReleasedProduct,
+} from "@/components/ReleasedProductCard";
 import { cleanCampaignText } from "@/lib/text";
 import { setCampaignHints } from "@/lib/campaignHints";
 
 type SortKey = "new" | "hot" | "recent";
+
+/** 首頁「店家釋出」橫向欄最多露幾張，其餘進 /shop/released 看 */
+const RELEASED_PREVIEW_COUNT = 6;
 
 /**
  * 模組層快取：client 端 SPA 導航（/shop ↔ /shop/c/[id]）期間都存活，
@@ -25,6 +31,7 @@ type SortKey = "new" | "hot" | "recent";
  */
 type ShopCache = {
   campaigns: CampaignSummary[];
+  released: ReleasedProduct[];
   sortBy: SortKey;
   scrollY: number;
   pendingPickupCount: number;
@@ -50,6 +57,9 @@ export default function ShopPage() {
   const [pendingPickupCount, setPendingPickupCount] = useState<number>(
     () => shopCache?.pendingPickupCount ?? 0,
   );
+  const [released, setReleased] = useState<ReleasedProduct[]>(
+    () => shopCache?.released ?? [],
+  );
   const [loading, setLoading] = useState(() => shopCache == null);
   const [err, setErr] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortKey>(
@@ -65,15 +75,27 @@ export default function ShopPage() {
       }
       if (!silent) setErr(null);
       try {
-        const d = await callLiffApi<{ campaigns: CampaignSummary[]; pending_pickup_count?: number }>(s.token, {
-          action: "list_active_campaigns",
-        });
+        // 店家釋出商品是加值區塊：edge function 還沒部署新 action 時會回
+        // 400 unknown action，不能讓它把整個商品頁的團購列表一起弄掛 →
+        // 各自 catch，釋出區塊失敗就當空的。
+        const [d, releasedItems] = await Promise.all([
+          callLiffApi<{ campaigns: CampaignSummary[]; pending_pickup_count?: number }>(s.token, {
+            action: "list_active_campaigns",
+          }),
+          callLiffApi<{ items: ReleasedProduct[] }>(s.token, {
+            action: "list_released_products",
+          })
+            .then((r) => r.items ?? [])
+            .catch(() => [] as ReleasedProduct[]),
+        ]);
         setCampaigns(d.campaigns);
         setCampaignHints(d.campaigns);
+        setReleased(releasedItems);
         const pickupCount = d.pending_pickup_count ?? 0;
         setPendingPickupCount(pickupCount);
         shopCache = {
           campaigns: d.campaigns,
+          released: releasedItems,
           sortBy: shopCache?.sortBy ?? "new",
           scrollY: shopCache?.scrollY ?? 0,
           pendingPickupCount: pickupCount,
@@ -228,6 +250,31 @@ export default function ShopPage() {
                   }))
           }
         />
+
+        {/* 店家釋出 — 互助板「我有庫存可提供」的現貨。橫向欄先露幾張,
+            全部進 /shop/released。金額只有自己店的才有(後端就擋掉跨店金額)。 */}
+        {released.length > 0 && (
+          <section>
+            <div className="flex items-baseline justify-between px-1 pb-2.5">
+              <h2 className="text-[22px] font-bold tracking-tight text-[var(--foreground)]">
+                店家釋出 📦
+              </h2>
+              <Link
+                href="/shop/released"
+                className="text-[13px] font-medium text-[var(--brand-strong)] active:opacity-60"
+              >
+                全部 {released.length} 件 ›
+              </Link>
+            </div>
+            <div className="hide-scrollbar -mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-1">
+              {released.slice(0, RELEASED_PREVIEW_COUNT).map((item) => (
+                <div key={item.id} className="w-[46%] shrink-0 snap-start">
+                  <ReleasedProductCard item={item} />
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* 團購商品 + 排序 */}
         {visible.length > 0 && (
