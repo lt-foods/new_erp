@@ -327,6 +327,35 @@ const RULES: Rule[] = [
     pattern: /product \d+ not found/i,
     render: () => "找不到此商品（可能已被刪除）。",
   },
+  // ===== rpc_delete_free_transfer（自由轉貨刪除守門） =====
+  {
+    pattern: /permission denied: role (\w+) cannot delete free transfer/i,
+    render: (m) => `權限不足：角色「${m[1]}」無法刪除自由轉貨。`,
+  },
+  {
+    pattern: /transfer \d+ is not a free transfer \((?:type=)?(\w+)\), cannot delete/i,
+    render: () => "此調撥單不是自由轉貨（例如互助接力單、總倉派貨），無法在此刪除。",
+  },
+  {
+    pattern: /store role can only delete free transfer involving own store/i,
+    render: () => "門市角色只能刪除自己店參與的自由轉貨。",
+  },
+  {
+    pattern: /transfer \d+ is (\w+), only draft can be deleted/i,
+    render: (m) => `此自由轉貨狀態為「${tStatus(m[1])}」，只有「草稿」（總倉配送前）可以刪除。`,
+  },
+  {
+    pattern: /transfer \d+ already referenced by picking waves, cannot delete/i,
+    render: () => "此調撥單已被撿貨單引用，無法刪除。",
+  },
+  {
+    pattern: /transfer \d+ still referenced by other records, cannot delete/i,
+    render: () => "此調撥單仍被其他資料參照，無法刪除。請先解除關聯後再試。",
+  },
+  {
+    pattern: /transfer (\d+) not found/i,
+    render: () => "找不到此調撥單（可能已被刪除）。",
+  },
   // ===== 撿貨單號碼衝突(同秒多筆提交時的 race) =====
   {
     pattern: /duplicate key value violates unique constraint "picking_waves_tenant_id_wave_code_key"/i,

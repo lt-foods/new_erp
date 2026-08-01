@@ -12,6 +12,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { LoadingBlock } from "@/components/Spinner";
 import { getSupabase } from "@/lib/supabase";
+import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
 import FreeTransferCreateModal from "@/components/FreeTransferCreateModal";
 import FreeTransferExplainerModal, { FT_EXPLAINER_HIDE_KEY } from "@/components/FreeTransferExplainerModal";
@@ -30,6 +31,7 @@ type TransferRow = {
   dest_location: number;
   status: string;
   transfer_type: string;
+  customer_order_id: number | null;
   notes: string | null;
   created_at: string;
   shipped_at: string | null;
@@ -84,7 +86,7 @@ export default function InternalTransfersPage() {
         const sb = getSupabase();
         const { data, error: e } = await sb
           .from("transfers")
-          .select("id, transfer_no, source_location, dest_location, status, transfer_type, notes, created_at, shipped_at, received_at")
+          .select("id, transfer_no, source_location, dest_location, status, transfer_type, customer_order_id, notes, created_at, shipped_at, received_at")
           .in("transfer_type", ["store_to_store", "return_to_hq"])
           .order("id", { ascending: false })
           .limit(200);
@@ -177,6 +179,30 @@ export default function InternalTransfersPage() {
   // 退訂單(由 rpc_create_order_return 產生,note 以「[order return」開頭)
   function isOrderReturn(notes: string | null): boolean {
     return !!notes && notes.startsWith("[order return");
+  }
+
+  // 可刪除 = 自由轉貨(店↔店、無綁訂單)且還在草稿(總倉配送前);互助接力單/退訂單不可刪
+  function canDelete(t: TransferRow): boolean {
+    return t.status === "draft" && t.transfer_type === "store_to_store" && t.customer_order_id == null;
+  }
+
+  async function handleDelete(t: TransferRow) {
+    const src = locs.get(t.source_location)?.name ?? `#${t.source_location}`;
+    const dst = locs.get(t.dest_location)?.name ?? `#${t.dest_location}`;
+    const ok = window.confirm(
+      `確定刪除自由轉貨 ${t.transfer_no}(${src} → ${dst})?\n\n` +
+      `${t.items_summary || "(無品項)"}\n` +
+      `刪除後無法復原;只有「草稿」(總倉配送前)的自由轉貨可以刪除。`,
+    );
+    if (!ok) return;
+    try {
+      const { error: err } = await getSupabase().rpc("rpc_delete_free_transfer", { p_transfer_id: t.id });
+      if (err) throw err;
+      setError(null);
+      setTransfers((prev) => (prev ?? []).filter((x) => x.id !== t.id));
+    } catch (e) {
+      setError(translateRpcError(e));
+    }
   }
 
   // 翻譯系統產生的 note tag,例如:
@@ -346,15 +372,26 @@ export default function InternalTransfersPage() {
                   <td className="px-3 py-2"><span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[t.status] ?? STATUS_COLOR.draft}`}>{STATUS_LABEL[t.status] ?? t.status}</span></td>
                   <td className="px-3 py-2 text-xs text-zinc-500" title={t.notes ?? undefined}>{formatNote(t.notes)}</td>
                   <td className="px-3 py-2 text-right" onClick={(e) => e.stopPropagation()}>
-                    <SpinButton
-                      onClick={() =>
-                        printViaIframe(withBasePath(`/transfers/print?transfer_id=${t.id}&copies=driver,stub`))
-                      }
-                      title="列印出貨單（司機聯 + 店家存根聯）"
-                      className="rounded-md border border-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                    >
-                      列印出貨單
-                    </SpinButton>
+                    <div className="flex justify-end gap-1.5">
+                      <SpinButton
+                        onClick={() =>
+                          printViaIframe(withBasePath(`/transfers/print?transfer_id=${t.id}&copies=driver,stub`))
+                        }
+                        title="列印出貨單（司機聯 + 店家存根聯）"
+                        className="rounded-md border border-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                      >
+                        列印出貨單
+                      </SpinButton>
+                      {canDelete(t) && (
+                        <SpinButton
+                          onClick={() => handleDelete(t)}
+                          title="刪除自由轉貨（僅草稿可刪）"
+                          className="rounded-md border border-red-300 px-2 py-1 text-[11px] font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
+                        >
+                          刪除
+                        </SpinButton>
+                      )}
+                    </div>
                   </td>
                 </tr>
               );

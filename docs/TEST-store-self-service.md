@@ -168,6 +168,19 @@ SELECT proname, pg_get_function_arguments(oid) FROM pg_proc
   status='approved_pr'、approved_by/at 寫入
 - 「刪除全部剩餘品相」也會直接結案（至少一個品相已開單 → approved_pr）
 
+### 2.16 rpc_delete_free_transfer — 自由轉貨刪除（20260801000010）
+**情境：** 分店建錯自由轉貨（draft、store_to_store、無訂單 FK），店家自行刪除
+
+**預期：**
+- HQ 職能（owner/admin/hq_manager/''）：任何 draft 自由轉貨可刪
+- 門市職能（store_manager/store_staff）：source 或 dest 在自己店
+  （_jwt_store_location_ids()）→ 可刪；不相干店 → RAISE 'own store'
+- 非 store_to_store、customer_order_id 有值（互助接力單）、
+  next_transfer_id 有值 → RAISE 'not a free transfer'
+- 非 draft（總倉已配送）→ RAISE 'only draft can be deleted'
+- 硬刪 transfers、transfer_items 由 ON DELETE CASCADE 連帶刪
+- 跨 tenant id → 'not found'
+
 ---
 
 ## 3. UI 行為（preview 互動）
@@ -198,6 +211,12 @@ SELECT proname, pg_get_function_arguments(oid) FROM pg_proc
 - [ ] 「派貨」彈確認 → 呼叫 approve_to_transfer → row 移除 pending tab、出現在 history tab
 - [ ] 「進貨」同上
 - [ ] 「拒絕」彈出原因輸入 modal → 提交
+
+### 3.4b /wms/transfers — 自由轉貨刪除按鈕
+- [x] draft + store_to_store + 無 customer_order_id 的 row 顯示「刪除」
+- [x] shipped / 互助接力單（customer_order_id 有值）/ 退訂單（return_to_hq）不顯示
+- [x] 按刪除 → confirm → 呼叫 rpc_delete_free_transfer → row 移除、無 console error
+      （Playwright + fixture 驗證，store_manager 角色）
 
 ### 3.5 撿貨頁 description fallback
 - [ ] 撿貨工作站 wave row 顯示：`{transfer_items.description ?? sku.product_name}`
