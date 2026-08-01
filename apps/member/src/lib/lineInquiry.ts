@@ -69,7 +69,7 @@ export type SendResult = "sent_in_liff" | "opened_line" | "copied" | "failed";
  *    跳到 LINE 開啟與該 LINE@ 的對話並預填文字，使用者自己按送出。
  *
  * 3. **連 LINE@ id 都沒設定** → 把訊息複製到剪貼簿，請使用者自己貼給店家。
- *    以前這種情況是「整顆按鈕不畫」，但實際上線時 23 間店的 line_oa_basic_id
+ *    以前這種情況是「整顆按鈕不畫」，但實際上線時 20 間啟用中的店 line_oa_basic_id
  *    全是 NULL、env 也沒設，結果功能整個看不見、像壞掉。按鈕一律要在，
  *    最差也要留一條路給使用者走。
  *
@@ -123,7 +123,8 @@ export async function sendLineInquiry(
 
 /**
  * 這台裝置的這次瀏覽是不是跑在 LIFF 裡。
- * 用來決定 CTA 要畫成 <button>（LIFF 直送）還是 <a href>（PWA 開連結）。
+ * CTA 本身兩種情況都是同一顆 button（實際走哪條由 sendLineInquiry 決定），
+ * 這支只用來換按鈕底下那行說明文字。
  */
 export async function isInLiffClient(): Promise<boolean> {
   try {
