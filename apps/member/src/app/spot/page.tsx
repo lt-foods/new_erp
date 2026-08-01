@@ -91,14 +91,26 @@ export default function SpotPage() {
 
           {!loading && !err && visible.length === 0 && (
             <div className="flex flex-col items-center py-16 text-center">
+              {/* 用品牌色線稿箱子，不用 📦 emoji —— emoji 的咖啡色在粉色底上
+                  很跳，而且和卡片沒有圖時的 CoverFallback 是同一支圖示語言。 */}
               <div
-                className="flex h-24 w-24 items-center justify-center rounded-full text-5xl"
+                className="flex h-24 w-24 items-center justify-center rounded-full"
                 style={{
                   background:
                     "linear-gradient(135deg, var(--brand-soft) 0%, #fff4f6 100%)",
                 }}
               >
-                📦
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="var(--brand)"
+                  strokeWidth={1.3}
+                  className="h-12 w-12 opacity-80"
+                  aria-hidden
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 8.5 12 4l9 4.5v7L12 20l-9-4.5v-7Z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m3 8.5 9 4.5 9-4.5M12 13v7" />
+                </svg>
               </div>
               <p className="mt-4 text-[17px] font-semibold text-[var(--foreground)]">
                 {tab === "mine" ? "你的店目前沒有現貨" : "目前沒有店家釋出現貨"}
