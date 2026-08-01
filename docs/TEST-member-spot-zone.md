@@ -113,11 +113,15 @@
 
 App 有 PWA 與 LIFF 兩種載入型態，送訊息的路不同，**兩種都要測**。
 
+LIFF 直送要三件事同時成立：`NEXT_PUBLIC_LIFF_ID` 有設（Vercel）、LIFF app 開了
+`chat_message.write` scope（2026-08-01 已確認開啟）、使用者從聊天室 / 圖文選單進來。
+任一不成立都會自動退到 universal link。
+
 | # | 步驟 | 預期 |
 |---|------|------|
 | T5b-1 | **在 LINE 裡開 App**（從 OA 聊天室 / 圖文選單進 LIFF）→ 進現貨詳情 → 按詢問 | 文字**直接進 LINE 對話**，人留在 App 裡沒有被踢走；按鈕位置換成「已送出詢問訊息」 |
 | T5b-2 | 回 LINE 對話看 | 有一則以會員身分送出的文字，內容同 T5-3 / T5-5 的範本 |
-| T5b-3 | LIFF 但 **`chat_message.write` scope 沒開** | 自動退到 universal link（跳 LINE 開對話預填），功能不壞、只是多一步 |
+| T5b-3 | LIFF 但 **`chat_message.write` scope 沒開**（2026-08-01 現況：已開，此列是退路驗證） | 自動退到 universal link（跳 LINE 開對話預填），功能不壞、只是多一步 |
 | T5b-4 | LIFF 但**沒有 chat context**（不是從聊天室進來） | 同上，退到 universal link |
 | T5b-5 | **LIFF 且 LINE@ 都沒設定** | 詢問按鈕仍要出現且直送成功（sendMessages 不需要 LINE@ id） |
 | T5b-9 | **PWA 且 LINE@ 都沒設定** | 按鈕仍要出現 → 複製訊息到剪貼簿（第三條退路） |

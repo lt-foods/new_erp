@@ -152,12 +152,17 @@ tab active 判斷是 `pathname.startsWith(t.href)`。所以現貨專區**必須�
 ⚠ **兩個前提**：
 1. LIFF app 要開 **`chat_message.write`** scope，否則 `sendMessages` 一定 reject
    （會自動掉到 universal link，功能不會壞，只是體驗差一截）。
+   → **2026-08-01 Alex 確認已開**，不用再查 LINE Developers。
 2. `sendMessages` 送進的是「開啟這個 LIFF 的那個聊天室」。從 OA 聊天室 / 圖文選單
    進來就是送給該 OA；從其他入口進來沒有 chat context，一樣掉到 universal link。
 
 `basicId` 要含 `@`（URL 編碼成 `%40`）；`buildLineOaMessageUrl` 會自動補。
 
 非同步偵測 LIFF 還沒回來之前一律先當 PWA —— 那條路哪裡都能用，不會卡住。
+
+另外 `initLiff()` 需要 **`NEXT_PUBLIC_LIFF_ID`** 有設，否則直接回 null、永遠走 PWA 那條。
+這個值只存在 Vercel 環境變數裡（會編進前端 bundle），repo 內查不到。
+要確認的話最快是直接在 LINE 裡開 App 走一次 T5b-1。
 
 ### 5.5 ⚠ 資料前置（會擋到上線）
 
