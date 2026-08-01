@@ -73,11 +73,6 @@ export default function SpotPage() {
         />
 
         <div className="space-y-3 px-4 pt-3 pb-6">
-          <p className="text-[13px] leading-relaxed text-[var(--secondary-label)]">
-            分店手上多出來的現貨會放在這裡。
-            {myStoreName ?? "你所在店家"}的才看得到金額，其他分店的商品金額不顯示。
-          </p>
-
           {loading && <LoadingScreen />}
 
           {err && (
