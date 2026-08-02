@@ -68,9 +68,10 @@ export default function SpotPage() {
         <SubTabs
           value={tab}
           onChange={(v) => setTab(v as "all" | "mine")}
+          // 本店排左邊、也是預設選中的那格 —— 主要動線放前面，「全部」是次要
           options={[
-            { value: "all", label: "全部", count: items.length },
             { value: "mine", label: myStoreName ?? "我的店", count: mine.length },
+            { value: "all", label: "全部", count: items.length },
           ]}
         />
 
