@@ -376,6 +376,9 @@ async function listSpotProducts(
     .eq("status", "active")
     .gt("qty_remaining", 0)
     .gt("expires_at", new Date().toISOString())
+    // 店家把「其他分店的會員也看得到」關掉的，只有釋出店自己的會員查得到。
+    // 一定要在這裡濾 —— 前端藏卡片沒用，raw response 還是會外流。
+    .or(`spot_visible_to_other_stores.eq.true,offering_store_id.eq.${myStoreId}`)
     .order("created_at", { ascending: false });
   if (error) return json({ error: error.message }, 500);
 
@@ -477,9 +480,9 @@ async function listSpotProducts(
 /**
  * 現貨專區單一商品詳情。
  *
- * 上架條件和列表完全一致（offer / active / 未到期 / 還有量）—— 條件不符就回
- * 404，不能因為「知道 id」就繞過列表看得到的範圍（例如已被認領光、已取消、
- * 已過期的貼文，或別租戶的 id）。
+ * 上架條件和列表完全一致（offer / active / 未到期 / 還有量 / 跨店可見性）——
+ * 條件不符就回 404，不能因為「知道 id」就繞過列表看得到的範圍（例如已被認領光、
+ * 已取消、已過期的貼文，別租戶的 id，或別店設成「只給本店會員看」的現貨）。
  *
  * 金額規則同列表：跨店連查都不查，`unit_price` 恆為 null。
  * 板上的 note 一樣不外露；LINE@ 只回會員自己店那一間的。
@@ -505,6 +508,8 @@ async function getSpotProduct(
     .eq("status", "active")
     .gt("qty_remaining", 0)
     .gt("expires_at", new Date().toISOString())
+    // 同列表：只給本店看的，別店會員連知道 id 也開不出來（落到下面的 404）
+    .or(`spot_visible_to_other_stores.eq.true,offering_store_id.eq.${myStoreId}`)
     .maybeSingle();
   if (error) return json({ error: error.message }, 500);
   if (!r) return json({ error: "spot product not found" }, 404);

@@ -29,6 +29,7 @@
 | 商品標題 | `mutual_aid_board.spot_title`（上架時可改寫，2026-08-02 加）優先；沒改則由會員端組 `product_name／variant_name` |
 | 商品圖片 | `mutual_aid_board.spot_images`（JSONB 路徑陣列，2026-08-02 加）優先；沒設 fallback `products.images` |
 | 數量單位 | `mutual_aid_board.spot_unit`（2026-08-02 加）優先；沒設 fallback `skus.base_unit` |
+| 跨店可見性 | `mutual_aid_board.spot_visible_to_other_stores`（2026-08-02 加，預設 `TRUE`）。`FALSE` = 只有釋出店的會員查得到，別店會員連 detail 都是 404。見 §4.1 |
 | 會員所在店 | `members.home_store_id`；未綁定會員退回 JWT 的 `store_id`（掃碼進站那間） |
 
 **命名分工**：對會員講「現貨專區」（現成的貨、不用等團購結單）；卡片上仍標「◯◯店 釋出」當來源。
@@ -124,6 +125,25 @@ tab active 判斷是 `pathname.startsWith(t.href)`。所以現貨專區**必須�
 
 驗收：直接看 raw response，跨店那筆 `unit_price` 必須是 `null`（測試文件 T2-5）。
 **改動時別把它退化成前端過濾。**
+
+### 4.1 跨店可見性開關（2026-08-02 加）
+
+金額隱藏之外，手動現貨還有一個**要不要讓別店會員看到這項商品**的開關
+（`spot_visible_to_other_stores`，預設 `TRUE`）。兩者疊起來是三段式：
+
+| 狀態 | 別店會員的體感 |
+|---|---|
+| 開關 ON（預設） | 看得到卡片，但金額是鎖頭（既有行為，沒變） |
+| 開關 OFF | 列表查不到、詳情 404 —— 對別店會員來說這筆不存在 |
+| 本店會員 | 不受開關影響，永遠看得到而且有金額 |
+
+實作：`liff-api` 的 list 與 detail **都要**加同一條
+`.or("spot_visible_to_other_stores.eq.true,offering_store_id.eq.<myStoreId>")`。
+detail 漏掉的話，知道 board id 就能直接開出別店設為不公開的商品 —— 和 §4 同一個原則：
+**後端擋，不能只藏 UI**。
+
+開關目前只在手動現貨的表單露出（從訂單釋出的貼文一律 `TRUE`）。要開放給訂單釋出的
+貼文只是 UI 一行的事，DB 那層本來就通用。
 
 ---
 
@@ -234,6 +254,7 @@ tab active 判斷是 `pathname.startsWith(t.href)`。所以現貨專區**必須�
 | `supabase/migrations/20260802000020_aid_listing_edit_expires_at.sql` | 新增 | 上面那支加 `p_expires_at`（4 → 5 參數）。⚠ 它的 NULL 語意與另兩個相反：`expires_at` 是 NOT NULL 欄位，NULL = 不動；且不得設到過去（要立刻下架請用「結束此貼」） |
 | `supabase/migrations/20260802000030_aid_board_spot_title.sql` | 新增 | `mutual_aid_board` 加 `spot_title`；`rpc_post_aid_board` 10 → 11、`rpc_update_aid_board_listing` 5 → 6 參數。NULL = 沒改，會員端 fallback 回 SKU 組出的標題 |
 | `supabase/migrations/20260802000040_manual_spot_listing.sql` | 新增 | 手動現貨（見 §1.1）：`sku_id` 放寬 nullable、放寬 `aid_board_source_consistency`、加 `spot_images` / `spot_unit` 與兩條 CHECK、新增 `rpc_post_manual_spot`、`rpc_update_aid_board_listing` 6 → 9 參數 |
+| `supabase/migrations/20260802000050_spot_cross_store_visibility.sql` | 新增 | 跨店可見性開關（見 §4.1）：加 `spot_visible_to_other_stores`（預設 TRUE）＋ partial index；`rpc_post_manual_spot` 11 → 12、`rpc_update_aid_board_listing` 9 → 10 參數 |
 | `apps/admin/src/app/(protected)/inventory/mutual-aid/page.tsx` | 改 | 「我有庫存可提供」表單加「商品標題」（預填 `product_name／variant_name`）、「釋出單價」（預填原價，可改；低於原價有提示）與「商品說明」textarea（預填原文純文字，可改寫）；沒改的值送 NULL。ThreadModal 的「✏️ 修改內容」同樣四欄都能改。新增 `ManualSpotModal`（➕ 手動新增現貨）；列表與 ThreadModal 對手動貼文標「手動」badge、藏掉認領鍵 |
 | `apps/admin/src/components/ProductImagesField.tsx` | 沿用 | 手動現貨與編輯區的圖片上傳直接重用商品主檔那支（同 `products` bucket、同 `tenant_id/uuid.ext` 路徑規則） |
 

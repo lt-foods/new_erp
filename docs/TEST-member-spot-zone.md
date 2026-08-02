@@ -11,6 +11,7 @@
 - Migration `20260802000000_aid_board_spot_price_description.sql`（互助板 offer 可自訂釋出單價與商品說明）
 - Migration `20260802000030_aid_board_spot_title.sql`（互助板 offer 可自訂商品標題，上架時填、發佈後可改）
 - Migration `20260802000040_manual_spot_listing.sql`（手動新增現貨：免訂單、可手打商品、可傳圖）
+- Migration `20260802000050_spot_cross_store_visibility.sql`（手動現貨可設成只給本店會員看）
 - 會員端：底部 tab bar 中央凸起鍵、`/spot` 列表、`/spot/[id]` 詳情（`/shop` 的現貨導流區塊已移除，見 T6）
 - 元件：`SpotProductCard.tsx`、`lib/lineInquiry.ts`
 - admin：`/stores` 的「LINE@ ID」欄位
@@ -88,6 +89,27 @@
 | T1M-19 | SQL 直呼 `rpc_post_manual_spot` 帶 `p_spot_images => '{"a":1}'::jsonb` | 炸 `spot_images must be a JSON array of storage paths` |
 | T1M-20 | SQL 直接 INSERT 一列 `post_type='request'` 且 `sku_id IS NULL` | 撞 CHECK `chk_aid_board_request_needs_sku`（求助一定要有 SKU 才轉得了單） |
 | T1M-21 | SQL 直呼 `rpc_post_aid_board` 用 `p_post_type='offer'` 但 `p_source_customer_order_id => NULL` | 仍炸 `offer post requires p_source_customer_order_id`（放寬 CHECK 沒有替訂單釋出路徑開洞） |
+
+## T1V — 跨店可見性開關（手動現貨）
+
+前提：A 店（測試會員 M 的所在店）與 B 店各有一則手動現貨。
+
+| # | 步驟 | 預期 |
+|---|------|------|
+| T1V-1 | 開「➕ 手動新增現貨」看開關 | 「其他分店的會員也看得到」**預設打勾**；說明文字是「所有會員都看得到這項商品；跨店的金額照舊隱藏（顯示鎖頭）」 |
+| T1V-2 | 把勾取消 | 說明文字改成「只有「〈選定的店〉」的會員看得到，其他分店的會員完全查不到這一筆」 |
+| T1V-3 | 取消勾選後上架 | `mutual_aid_board.spot_visible_to_other_stores = false` |
+| T1V-4 | 不動開關上架 | 該欄為 `true`（維持既有行為） |
+| T1V-5 | **B 店關掉開關** → 會員 M（A 店）看 `/spot` | **完全看不到那一筆**（不是有卡片但鎖金額 —— 是整筆消失） |
+| T1V-6 | 會員 M 直接打 `/spot/<那筆 id>` | **404「已經不在架上」**；`curl {"action":"get_spot_product","id":<該筆>}` 回 404，不是回商品內容 |
+| T1V-7 | B 店自己的會員看 | 照常看得到，而且有金額 |
+| T1V-8 | **A 店關掉開關**（自己店的商品）→ 會員 M 看 | 照常看得到、照常有金額（開關只擋別店會員） |
+| T1V-9 | 列表與 ThreadModal 標頭 | 關掉的貼文有橘色「🔒 限本店會員」badge |
+| T1V-10 | ThreadModal →「✏️ 修改內容」 | 手動現貨的編輯區最下面有同一顆開關，帶目前狀態 |
+| T1V-11 | 發佈後把開關關掉存檔 | 標頭立刻出現「🔒 限本店會員」；別店會員重新整理後該筆消失 |
+| T1V-12 | 再打開存檔 | badge 消失；別店會員重新整理後又看得到（金額仍鎖） |
+| T1V-13 | **訂單來源**的貼文 →「✏️ 修改內容」 | **沒有**這顆開關（只對手動現貨開放）；存檔後 `spot_visible_to_other_stores` 維持 `true` 不被動到 |
+| T1V-14 | SQL 直呼 `rpc_update_aid_board_listing` 只送 9 個具名參數（不帶 `p_visible_to_other_stores`） | 可見性**不變**（NULL = 不動，不是重設成 true） |
 | T1-2 | 同上用 B 店再發一則（挑不同 SKU 好辨識） | 貼文成立 |
 | T1-3 | `SELECT id, post_type, status, offering_store_id, sku_id, qty_remaining, expires_at FROM mutual_aid_board WHERE post_type='offer' AND status='active';` | 兩筆，`expires_at` 在未來、`qty_remaining > 0` |
 

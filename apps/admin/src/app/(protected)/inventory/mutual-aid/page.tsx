@@ -29,6 +29,8 @@ type Post = {
   spot_title: string | null;
   spot_unit: string | null;
   spot_images: string[] | null;
+  /** false = 只有 offering_store_id 那間店的會員看得到（liff-api 直接濾掉） */
+  spot_visible_to_other_stores: boolean;
   created_at: string;
   created_by: string | null;
   store_name?: string;
@@ -145,7 +147,7 @@ export default function MutualAidPage() {
         const sb = getSupabase();
         let q = sb
           .from("mutual_aid_board")
-          .select("id, post_type, offering_store_id, sku_id, qty_available, qty_remaining, expires_at, note, status, source_customer_order_id, spot_price, spot_description, spot_title, spot_unit, spot_images, created_at, created_by")
+          .select("id, post_type, offering_store_id, sku_id, qty_available, qty_remaining, expires_at, note, status, source_customer_order_id, spot_price, spot_description, spot_title, spot_unit, spot_images, spot_visible_to_other_stores, created_at, created_by")
           .eq("status", "active")
           .order("created_at", { ascending: false })
           .limit(200);
@@ -287,6 +289,11 @@ export default function MutualAidPage() {
                   {p.post_type === "offer" && p.source_customer_order_id == null && (
                     <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
                       手動
+                    </span>
+                  )}
+                  {p.post_type === "offer" && !p.spot_visible_to_other_stores && (
+                    <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                      🔒 限本店會員
                     </span>
                   )}
                   <span className="ml-auto text-xs text-zinc-500">💬 {p.replies_count} 留言</span>
@@ -573,6 +580,39 @@ function RequestModal({
   );
 }
 
+/**
+ * 「其他分店的會員也看得到」開關。上架表單與 ThreadModal 編輯區共用。
+ *
+ * 開（預設）= 維持既有行為：別店會員在現貨專區看得到這張卡，但金額隱藏。
+ * 關         = 別店會員的列表與詳情都查不到（過濾在 liff-api，不是前端藏）。
+ */
+function VisibilityToggle({
+  checked, onChange, storeName,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  storeName: string | null;
+}) {
+  return (
+    <label className="flex cursor-pointer items-start gap-2 rounded-md border border-zinc-200 p-2 dark:border-zinc-800">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 h-4 w-4 shrink-0 accent-emerald-600"
+      />
+      <span className="text-xs">
+        <span className="font-medium text-zinc-700 dark:text-zinc-300">其他分店的會員也看得到</span>
+        <span className="mt-0.5 block text-zinc-500">
+          {checked
+            ? "所有會員都看得到這項商品；跨店的金額照舊隱藏（顯示鎖頭）。"
+            : `只有${storeName ? `「${storeName}」` : "釋出店"}的會員看得到，其他分店的會員完全查不到這一筆。`}
+        </span>
+      </span>
+    </label>
+  );
+}
+
 // ============================================================
 // Manual Spot Modal — 手動新增現貨（不需要來源訂單）
 //
@@ -599,6 +639,8 @@ function ManualSpotModal({
   const [desc, setDesc] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const [note, setNote] = useState("");
+  // 預設「其他分店的會員也看得到」（維持既有行為：跨店看得到卡片、金額隱藏）
+  const [visibleToOthers, setVisibleToOthers] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -606,6 +648,7 @@ function ManualSpotModal({
     if (open) {
       setStoreId(""); setPicked(null); setTitle(""); setQty(""); setUnit("");
       setPrice(""); setDesc(""); setImages([]); setNote(""); setErr(null);
+      setVisibleToOthers(true);
       setExpiresAt(defaultExpiresAt());
     }
   }, [open]);
@@ -654,6 +697,7 @@ function ManualSpotModal({
         p_spot_images: images.length > 0 ? images : null,
         p_note: note.trim() || null,
         p_operator: operator,
+        p_visible_to_other_stores: visibleToOthers,
       });
       if (e) { setErr(e.message); return; }
       onPosted();
@@ -776,6 +820,12 @@ function ManualSpotModal({
           </span>
           <ProductImagesField value={images} onChange={setImages} />
         </div>
+
+        <VisibilityToggle
+          checked={visibleToOthers}
+          onChange={setVisibleToOthers}
+          storeName={stores.find((s) => s.id === storeId)?.name ?? null}
+        />
 
         <label>
           <span className="mb-1 block text-xs text-zinc-500">備註（選填，店對店內部訊息，不會給會員看）</span>
@@ -1187,6 +1237,9 @@ function ThreadModal({
   const [editUnit, setEditUnit] = useState(post.spot_unit ?? "");
   const [editImages, setEditImages] = useState<string[]>(post.spot_images ?? []);
   const [editQty, setEditQty] = useState(String(post.qty_available));
+  const [editVisible, setEditVisible] = useState(post.spot_visible_to_other_stores);
+  // 存檔後 post prop 仍是父層舊資料，標頭的「限本店」標記用本地值蓋
+  const [savedVisible, setSavedVisible] = useState(post.spot_visible_to_other_stores);
   const [editExpiresAt, setEditExpiresAt] = useState(() => toLocalInput(post.expires_at));
   // 存檔後 post prop 仍是父層舊資料，標頭到期時間 / 數量用本地值蓋
   const [savedExpiresAt, setSavedExpiresAt] = useState(post.expires_at);
@@ -1292,12 +1345,15 @@ function ThreadModal({
         p_spot_images: editImages.length > 0 ? editImages : null,
         p_spot_unit: editUnit.trim() || null,
         p_qty_available: qtyParam,
+        // 只有手動現貨開放這個開關，訂單來源的送 null（= 不動，維持看得到）
+        p_visible_to_other_stores: isManual ? editVisible : null,
       });
       if (e) { setErr(e.message); return; }
       setSavedSpotPrice(spotPriceParam);
       setSavedSpotTitle(spotTitleParam);
       setSavedExpiresAt(expDate.toISOString());
       if (qtyParam != null) setSavedQty({ available: qtyParam, remaining: qtyParam });
+      if (isManual) setSavedVisible(editVisible);
       setEditOpen(false);
       onEdited();
     } catch (e) {
@@ -1391,6 +1447,11 @@ function ThreadModal({
             {isManual && (
               <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
                 手動{post.sku_id == null ? "・手打商品" : ""}
+              </span>
+            )}
+            {!savedVisible && (
+              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                🔒 限本店會員
               </span>
             )}
             {savedSpotTitle && (
@@ -1517,6 +1578,13 @@ function ThreadModal({
               </span>
               <ProductImagesField value={editImages} onChange={setEditImages} />
             </div>
+            {isManual && (
+              <VisibilityToggle
+                checked={editVisible}
+                onChange={setEditVisible}
+                storeName={post.store_name ?? null}
+              />
+            )}
             <div className="flex justify-end gap-2">
               <SpinButton
                 onClick={() => setEditOpen(false)}
