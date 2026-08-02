@@ -29,7 +29,9 @@ export default function SpotPage() {
   const [myStoreName, setMyStoreName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [tab, setTab] = useState<"all" | "mine">("all");
+  // 預設停在自己的店 —— 那些才看得到金額、才真的拿得到貨；
+  // 想看別店的再自己切到「全部」。
+  const [tab, setTab] = useState<"all" | "mine">("mine");
 
   const load = async () => {
     const s = getSession();
@@ -110,6 +112,17 @@ export default function SpotPage() {
               <p className="mt-1 text-[14px] text-[var(--secondary-label)]">
                 下拉重新整理，有店家釋出就會出現在這裡
               </p>
+              {/* 預設就停在「我的店」，本店沒貨時別讓人卡在空畫面
+                  —— 其他分店有貨就給一條路過去 */}
+              {tab === "mine" && items.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setTab("all")}
+                  className="mt-4 rounded-full bg-[var(--brand-soft)] px-4 py-2 text-[14px] font-semibold text-[var(--brand-strong)] active:scale-95"
+                >
+                  看看其他分店的現貨（{items.length}）
+                </button>
+              )}
             </div>
           )}
 
