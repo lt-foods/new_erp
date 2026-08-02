@@ -347,7 +347,7 @@ async function listSpotProducts(
   const { data: rows, error } = await sb
     .from("mutual_aid_board")
     .select(
-      "id, offering_store_id, sku_id, qty_remaining, expires_at, created_at, source_customer_order_id, spot_price, sku:skus(sku_code, product_name, variant_name, base_unit, product:products(name, images))",
+      "id, offering_store_id, sku_id, qty_remaining, expires_at, created_at, source_customer_order_id, spot_price, spot_title, sku:skus(sku_code, product_name, variant_name, base_unit, product:products(name, images))",
     )
     .eq("tenant_id", tenantId)
     .eq("post_type", "offer")
@@ -429,6 +429,8 @@ async function listSpotProducts(
       sku_code: r.sku?.sku_code ?? null,
       product_name: r.sku?.product_name ?? r.sku?.product?.name ?? null,
       variant_name: r.sku?.variant_name ?? null,
+      // 上架時改寫的標題優先；沒改就由前端組 product_name／variant_name
+      spot_title: r.spot_title ?? null,
       unit: r.sku?.base_unit ?? null,
       image_url: toPublicUrl(supabaseUrl, "products", rawImg),
       store_id: Number(r.offering_store_id),
@@ -475,7 +477,7 @@ async function getSpotProduct(
   const { data: r, error } = await sb
     .from("mutual_aid_board")
     .select(
-      "id, offering_store_id, sku_id, qty_remaining, expires_at, created_at, source_customer_order_id, spot_price, spot_description, sku:skus(sku_code, product_name, variant_name, base_unit, product:products(name, description, images))",
+      "id, offering_store_id, sku_id, qty_remaining, expires_at, created_at, source_customer_order_id, spot_price, spot_description, spot_title, sku:skus(sku_code, product_name, variant_name, base_unit, product:products(name, description, images))",
     )
     .eq("tenant_id", tenantId)
     .eq("id", boardId)
@@ -549,6 +551,8 @@ async function getSpotProduct(
       sku_code: r.sku?.sku_code ?? null,
       product_name: r.sku?.product_name ?? r.sku?.product?.name ?? null,
       variant_name: r.sku?.variant_name ?? null,
+      // 上架時改寫的標題優先；沒改就由前端組 product_name／variant_name
+      spot_title: r.spot_title ?? null,
       // 上架時改寫的說明優先；沒改就 fallback 回商品主檔
       description: r.spot_description ?? r.sku?.product?.description ?? null,
       unit: r.sku?.base_unit ?? null,

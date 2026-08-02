@@ -24,6 +24,7 @@ type Post = {
   source_customer_order_id: number | null;
   spot_price: number | null;
   spot_description: string | null;
+  spot_title: string | null;
   created_at: string;
   created_by: string | null;
   store_name?: string;
@@ -39,7 +40,17 @@ type PendingOrder = {
   status: string;
   member_name: string | null;
   member_phone: string | null;
-  items: { campaign_item_id: number | null; sku_id: number | null; qty: number; sku_label: string; unit_price: number | null; product_description: string | null }[];
+  items: {
+    campaign_item_id: number | null;
+    sku_id: number | null;
+    qty: number;
+    sku_label: string;
+    /** 會員 App 沒有自訂標題時會組出的字串（product_name／variant_name）。
+     *  上架表單拿它當「商品標題」的預設值，店家沒動就不寫進 spot_title。 */
+    default_title: string;
+    unit_price: number | null;
+    product_description: string | null;
+  }[];
 };
 
 type Reply = {
@@ -129,7 +140,7 @@ export default function MutualAidPage() {
         const sb = getSupabase();
         let q = sb
           .from("mutual_aid_board")
-          .select("id, post_type, offering_store_id, sku_id, qty_available, qty_remaining, expires_at, note, status, source_customer_order_id, spot_price, spot_description, created_at, created_by")
+          .select("id, post_type, offering_store_id, sku_id, qty_available, qty_remaining, expires_at, note, status, source_customer_order_id, spot_price, spot_description, spot_title, created_at, created_by")
           .eq("status", "active")
           .order("created_at", { ascending: false })
           .limit(200);
@@ -546,8 +557,9 @@ function OfferModal({
   const [qty, setQty] = useState("");
   const [expiresAt, setExpiresAt] = useState(defaultExpiresAt);
   const [note, setNote] = useState("");
-  // 釋出單價與商品說明：預填來源訂單原價 / 商品主檔原文，店家可改。
-  // 價低於原價時會員端會以刪除線顯示原價。
+  // 商品標題 / 釋出單價 / 商品說明：預填 SKU 組出的標題、來源訂單原價、
+  // 商品主檔原文，店家可改。價低於原價時會員端會以刪除線顯示原價。
+  const [spotTitle, setSpotTitle] = useState("");
   const [spotPrice, setSpotPrice] = useState("");
   const [spotDesc, setSpotDesc] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -556,7 +568,7 @@ function OfferModal({
   useEffect(() => {
     if (open) {
       setStoreId(""); setOrders(null); setOrderSearch(""); setPickedOrder(null); setPickedItemIdx(0);
-      setQty(""); setNote(""); setSpotPrice(""); setSpotDesc(""); setErr(null);
+      setQty(""); setNote(""); setSpotTitle(""); setSpotPrice(""); setSpotDesc(""); setErr(null);
       setExpiresAt(defaultExpiresAt());
     }
   }, [open]);
@@ -612,6 +624,10 @@ function OfferModal({
                 sku_label: sku
                   ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} (${sku.sku_code})`
                   : `品項#${it.sku_id}`,
+                // 和會員端 spotProductTitle() 的組法一字不差（全形／、不含 sku_code）
+                default_title: sku
+                  ? `${sku.product_name}${sku.variant_name ? `／${sku.variant_name}` : ""}`
+                  : `品項#${it.sku_id}`,
                 unit_price: Number.isFinite(priceN) ? priceN : null,
                 product_description: product?.description ?? null,
               };
@@ -623,11 +639,12 @@ function OfferModal({
     return () => { cancelled = true; };
   }, [open, storeId]);
 
-  // 選了訂單 → 自動帶該 item 的數量、原價、商品說明（後兩者可改）
+  // 選了訂單 → 自動帶該 item 的數量、標題、原價、商品說明（後三者可改）
   useEffect(() => {
     const item = pickedOrder?.items[pickedItemIdx];
     if (item) {
       setQty(String(item.qty));
+      setSpotTitle(item.default_title);
       setSpotPrice(item.unit_price != null ? String(item.unit_price) : "");
       setSpotDesc(stripHtmlToText(item.product_description));
     }
@@ -663,11 +680,13 @@ function OfferModal({
       priceN = Number(priceRaw);
       if (!Number.isFinite(priceN) || priceN <= 0) { setErr("釋出單價需 > 0（留空 = 沿用原價）"); return; }
     }
-    // 沒改的值送 null（= 沿用原價 / 商品主檔原文），改了才存進板上
+    // 沒改的值送 null（= 沿用原價 / 商品主檔原文 / SKU 組出的標題），改了才存進板上
     const spotPriceParam = priceN != null && priceN !== item.unit_price ? priceN : null;
     const descTrim = spotDesc.trim();
     const spotDescParam =
       descTrim !== "" && descTrim !== stripHtmlToText(item.product_description) ? descTrim : null;
+    const titleTrim = spotTitle.trim();
+    const spotTitleParam = titleTrim !== "" && titleTrim !== item.default_title ? titleTrim : null;
 
     setSubmitting(true);
     try {
@@ -686,6 +705,7 @@ function OfferModal({
         p_source_customer_order_id: pickedOrder.id,
         p_spot_price: spotPriceParam,
         p_spot_description: spotDescParam,
+        p_spot_title: spotTitleParam,
       });
       if (e) { setErr(e.message); return; }
       onPosted();
@@ -781,6 +801,15 @@ function OfferModal({
           </div>
         )}
 
+        <label>
+          <span className="mb-1 block text-xs text-zinc-500">商品標題（會員 App 現貨專區顯示的名稱，可改寫）</span>
+          <input
+            value={spotTitle}
+            onChange={(e) => setSpotTitle(e.target.value)}
+            placeholder="選了品項會自動帶入商品名稱，可直接改寫"
+            className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
+          />
+        </label>
         <div className="grid grid-cols-3 gap-3">
           <label>
             <span className="mb-1 block text-xs text-zinc-500">釋出數量 <span className="text-red-500">*</span></span>
@@ -869,7 +898,7 @@ function ThreadModal({
   stores: Store[];
   onClose: () => void;
   onClosed: () => void;
-  /** 編輯單價/說明存檔後呼叫（父層重抓列表；modal 留在原地） */
+  /** 編輯標題/單價/到期/說明存檔後呼叫（父層重抓列表；modal 留在原地） */
   onEdited: () => void;
 }) {
   const [replies, setReplies] = useState<Reply[] | null>(null);
@@ -881,19 +910,22 @@ function ThreadModal({
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [claimOpen, setClaimOpen] = useState(false);
   const [fulfillOpen, setFulfillOpen] = useState(false);
-  // 發佈後編輯釋出單價 / 商品說明（僅 offer + active）。
-  // originalPrice / originalDesc 是「沿用值」：原價來自來源訂單、原文來自商品主檔，
-  // 編輯表單要靠它們判斷「改回原值 = 清除自訂」。
+  // 發佈後編輯商品標題 / 釋出單價 / 到期時間 / 商品說明（僅 offer + active）。
+  // originalPrice / originalDesc / originalTitle 是「沿用值」：原價來自來源訂單、
+  // 原文與標題來自商品主檔 / SKU，編輯表單要靠它們判斷「改回原值 = 清除自訂」。
   const [editOpen, setEditOpen] = useState(false);
   // 存檔後 post prop 還是父層舊資料（列表重抓不會回填 modal），標頭單價用這個本地值蓋
   const [savedSpotPrice, setSavedSpotPrice] = useState<number | null>(post.spot_price);
+  const [savedSpotTitle, setSavedSpotTitle] = useState<string | null>(post.spot_title);
   const [editPrice, setEditPrice] = useState(post.spot_price != null ? String(post.spot_price) : "");
   const [editDesc, setEditDesc] = useState(post.spot_description ?? "");
+  const [editTitle, setEditTitle] = useState(post.spot_title ?? "");
   const [editExpiresAt, setEditExpiresAt] = useState(() => toLocalInput(post.expires_at));
   // 存檔後 post prop 仍是父層舊資料，標頭到期時間用本地值蓋
   const [savedExpiresAt, setSavedExpiresAt] = useState(post.expires_at);
   const [originalPrice, setOriginalPrice] = useState<number | null>(null);
   const [originalDesc, setOriginalDesc] = useState("");
+  const [originalTitle, setOriginalTitle] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
   const canEdit = post.post_type === "offer" && post.status === "active";
 
@@ -908,17 +940,28 @@ function ThreadModal({
               .eq("order_id", post.source_customer_order_id).eq("sku_id", post.sku_id)
               .limit(1).maybeSingle()
           : Promise.resolve({ data: null }),
-        sb.from("skus").select("product:products(description)").eq("id", post.sku_id).maybeSingle(),
+        sb.from("skus").select("product_name, variant_name, product:products(description)").eq("id", post.sku_id).maybeSingle(),
       ]);
       if (cancelled) return;
       const priceN = Number((priceRes.data as { unit_price?: number | string } | null)?.unit_price);
       setOriginalPrice(Number.isFinite(priceN) ? priceN : null);
-      const productRaw = (skuRes.data as { product?: { description: string | null } | { description: string | null }[] | null } | null)?.product;
+      const skuRow = skuRes.data as {
+        product_name?: string | null;
+        variant_name?: string | null;
+        product?: { description: string | null } | { description: string | null }[] | null;
+      } | null;
+      const productRaw = skuRow?.product;
       const product = Array.isArray(productRaw) ? productRaw[0] : productRaw;
       const desc = stripHtmlToText(product?.description);
       setOriginalDesc(desc);
-      // 沒有自訂說明時，編輯框預填原文（跟上架表單同一套預填邏輯）
+      // 和會員端 spotProductTitle() 的組法一字不差（全形／）
+      const title = skuRow?.product_name
+        ? `${skuRow.product_name}${skuRow.variant_name ? `／${skuRow.variant_name}` : ""}`
+        : "";
+      setOriginalTitle(title);
+      // 沒有自訂說明/標題時，編輯框預填原值（跟上架表單同一套預填邏輯）
       if (post.spot_description == null && desc) setEditDesc((cur) => (cur === "" ? desc : cur));
+      if (post.spot_title == null && title) setEditTitle((cur) => (cur === "" ? title : cur));
     })();
     return () => { cancelled = true; };
     // post.id 換了整個 modal 會重掛，這裡跑一次就好
@@ -938,6 +981,8 @@ function ThreadModal({
     const spotPriceParam = priceN != null && priceN !== originalPrice ? priceN : null;
     const descTrim = editDesc.trim();
     const spotDescParam = descTrim !== "" && descTrim !== originalDesc ? descTrim : null;
+    const titleTrim = editTitle.trim();
+    const spotTitleParam = titleTrim !== "" && titleTrim !== originalTitle ? titleTrim : null;
     const expDate = new Date(editExpiresAt);
     if (Number.isNaN(expDate.getTime())) { setErr("到期時間格式不正確"); return; }
     if (expDate <= new Date()) { setErr("到期時間需在未來（要立刻下架請用「結束此貼」）"); return; }
@@ -953,9 +998,11 @@ function ThreadModal({
         p_spot_price: spotPriceParam,
         p_spot_description: spotDescParam,
         p_expires_at: expDate.toISOString(),
+        p_spot_title: spotTitleParam,
       });
       if (e) { setErr(e.message); return; }
       setSavedSpotPrice(spotPriceParam);
+      setSavedSpotTitle(spotTitleParam);
       setSavedExpiresAt(expDate.toISOString());
       setEditOpen(false);
       onEdited();
@@ -1047,6 +1094,11 @@ function ThreadModal({
             <span className="font-medium text-zinc-700 dark:text-zinc-300">{post.store_name}</span>
             <span className="text-zinc-500">釋出</span>
             <span>{post.sku_label}</span>
+            {savedSpotTitle && (
+              <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] text-blue-800 dark:bg-blue-950 dark:text-blue-300">
+                App 標題：{savedSpotTitle}
+              </span>
+            )}
           </div>
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-zinc-500">
             <span>
@@ -1077,9 +1129,19 @@ function ThreadModal({
           </div>
         </div>
 
-        {/* 發佈後編輯：釋出單價 / 商品說明（僅 offer + active；改完會員端即時生效） */}
+        {/* 發佈後編輯：商品標題 / 釋出單價 / 到期時間 / 商品說明
+            （僅 offer + active；改完會員端即時生效） */}
         {canEdit && editOpen && (
           <div className="flex flex-col gap-2 rounded-md border border-blue-200 bg-blue-50/40 p-3 text-xs dark:border-blue-900 dark:bg-blue-950/20">
+            <label>
+              <span className="mb-1 block text-zinc-500">商品標題（會員 App 現貨專區顯示的名稱，可改寫）</span>
+              <input
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                placeholder={originalTitle || "留空 = 沿用商品名稱"}
+                className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
+              />
+            </label>
             <label>
               <span className="mb-1 block text-zinc-500">釋出單價</span>
               <input
@@ -1452,9 +1514,10 @@ function FulfillRequestDialog({
             const sku = Array.isArray(it.sku) ? it.sku[0] : it.sku;
             return {
               campaign_item_id: null, sku_id: it.sku_id, qty: Number(it.qty),
-              // 這個 modal（回應求助）用不到單價/說明，補 null 滿足共用型別
+              // 這個 modal（回應求助）用不到單價/說明/自訂標題，補 null 滿足共用型別
               unit_price: null, product_description: null,
               sku_label: sku ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} (${sku.sku_code})` : `品項#${it.sku_id}`,
+              default_title: sku ? `${sku.product_name}${sku.variant_name ? `／${sku.variant_name}` : ""}` : `品項#${it.sku_id}`,
             };
           }),
         };

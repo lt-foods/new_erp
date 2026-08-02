@@ -14,6 +14,8 @@ export type SpotProduct = {
   sku_code: string | null;
   product_name: string | null;
   variant_name: string | null;
+  /** 店家上架時自訂的標題。null = 沒改，走 product_name／variant_name。 */
+  spot_title: string | null;
   unit: string | null;
   image_url: string | null;
   store_id: number;
@@ -28,6 +30,8 @@ export type SpotProduct = {
 };
 
 export function spotProductTitle(p: SpotProduct): string {
+  // 店家自訂標題優先（後台互助板可在上架時填、發佈後改）
+  if (p.spot_title) return p.spot_title;
   const base = p.product_name ?? p.sku_code ?? "商品";
   return p.variant_name ? `${base}／${p.variant_name}` : base;
 }

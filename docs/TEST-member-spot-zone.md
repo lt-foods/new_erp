@@ -9,6 +9,7 @@
 - Edge Function `liff-api` actions：`list_spot_products`、`get_spot_product`
 - Migration `20260801000020_rpc_upsert_store_line_oa.sql`（`rpc_upsert_store` 加 `p_line_oa_basic_id`）
 - Migration `20260802000000_aid_board_spot_price_description.sql`（互助板 offer 可自訂釋出單價與商品說明）
+- Migration `20260802000030_aid_board_spot_title.sql`（互助板 offer 可自訂商品標題，上架時填、發佈後可改）
 - 會員端：底部 tab bar 中央凸起鍵、`/spot` 列表、`/spot/[id]` 詳情（`/shop` 的現貨導流區塊已移除，見 T6）
 - 元件：`SpotProductCard.tsx`、`lib/lineInquiry.ts`
 - admin：`/stores` 的「LINE@ ID」欄位
@@ -47,13 +48,19 @@
 | T1-6 | 單價填 0 / 負數 | 擋下「釋出單價需 > 0（留空 = 沿用原價）」 |
 | T1-7 | 單價留空 or 沒動、說明沒動 | 送出後 `mutual_aid_board.spot_price` / `spot_description` 為 `NULL`（= 沿用原值，不是存一份複本） |
 | T1-8 | SQL 直呼 `rpc_post_aid_board` 用 `p_post_type='request'` 帶 `p_spot_price` | 炸 `spot_price is only valid for offer posts` |
-| T1-9 | **發佈後編輯**：點開自己店的 offer 貼文 → 「✏️ 修改內容」 | 出現編輯區：單價（帶目前值或空 = 沿用原價，含原價提示）＋**到期時間**（帶目前值）＋商品說明（帶改寫版或原文）；標頭顯示目前單價與到期時間 |
+| T1-9 | **發佈後編輯**：點開自己店的 offer 貼文 → 「✏️ 修改內容」 | 出現編輯區：**商品標題**（帶改寫版或 SKU 組出的預設）＋單價（帶目前值或空 = 沿用原價，含原價提示）＋**到期時間**（帶目前值）＋商品說明（帶改寫版或原文）；標頭顯示目前單價與到期時間 |
 | T1-10 | 改單價存檔 → 會員 App 重新整理 | App 立刻顯示新價（讀取端每次現查，不用重發貼文）；標頭單價同步更新 |
 | T1-11 | 把單價清空存檔 | `spot_price` 回 `NULL` = 沿用原價；App 回到顯示原價、無刪除線 |
 | T1-12 | 對已結束（cancelled / expired / exhausted）的貼文 | 沒有「修改內容」按鈕；SQL 直呼 `rpc_update_aid_board_listing` 會炸 `only active posts can be edited` |
 | T1-13 | **改到期時間**（延長或縮短）存檔 | 標頭「到期」即時更新；會員端 `/spot` 該筆的下架時間跟著變 |
 | T1-14 | 到期時間設到**過去** | 擋下「到期時間需在未來（要立刻下架請用「結束此貼」）」；SQL 直呼也會炸 `expires_at must be in the future` |
 | T1-15 | 只改單價、不動到期 | 到期時間維持原值（前端一律帶值；SQL 層 `p_expires_at=NULL` 也是不動該欄） |
+| T1-16 | 選了品項後看「商品標題」欄位 | 預填 `商品名稱／規格`（全形／，不含 SKU code），和 App 沒改時顯示的字串一模一樣 |
+| T1-17 | 標題沒動就送出 | `mutual_aid_board.spot_title` 為 `NULL`（= 沿用 SKU 組出的標題；商品主檔之後改名會自動跟上） |
+| T1-18 | 標題改成別的字（例「今日現貨・梅花豬」）送出 | `spot_title` 存改寫值；會員 App 的 `/spot` 卡片、`/spot/[id]` 詳情、LINE 詢問文字三處都用新標題 |
+| T1-19 | **發佈後改標題**：ThreadModal →「✏️ 修改內容」→ 改「商品標題」存檔 | 標頭出現藍色「App 標題：◯◯」標記；App 重新整理即時生效 |
+| T1-20 | 把標題清空（或改回預填值）存檔 | `spot_title` 回 `NULL`，App 回到 SKU 組出的標題 |
+| T1-21 | SQL 直呼 `rpc_post_aid_board` 用 `p_post_type='request'` 帶 `p_spot_title` | 炸 `spot_title is only valid for offer posts` |
 | T1-2 | 同上用 B 店再發一則（挑不同 SKU 好辨識） | 貼文成立 |
 | T1-3 | `SELECT id, post_type, status, offering_store_id, sku_id, qty_remaining, expires_at FROM mutual_aid_board WHERE post_type='offer' AND status='active';` | 兩筆，`expires_at` 在未來、`qty_remaining > 0` |
 
@@ -170,6 +177,7 @@ LIFF 直送要三件事同時成立：`NEXT_PUBLIC_LIFF_ID` 有設（Vercel）�
 | T7-6 | 商品沒有圖 | 品牌底 + 線稿箱子，不是破圖 |
 | T7-7 | 商品有說明 | 顯示「商品說明」區塊：上架時有改寫 → 顯示改寫版（`spot_description`）；沒改 → fallback 商品主檔原文；兩者皆無 → 整塊不出現 |
 | T7-17 | 詳情頁價格（釋出價低於原價） | 大字 `$149` 旁有刪除線 `~~$199~~`；LINE 詢問訊息帶的金額是 **149**（釋出價） |
+| T7-18 | 上架時改過商品標題的品項 | 詳情頁標題、列表卡片、LINE 詢問訊息的「今日現貨『◯◯』」三處都是改寫後的標題（`spot_title`）；沒改則是 `商品名稱／規格` |
 | T7-16 | **商品說明的排版（重點）** | 後台 TipTap 存的是 HTML。畫面上**不能出現 `<p>` `<br>` `</p>` 這種標籤字樣**，段落要正常換行（走 `cleanCampaignText`，同 `/shop/c/[id]`） |
 | T7-8 | 底部提示文字 | 本店寫「數量有限，先問先得」；跨店寫「由店家幫你調貨」 |
 | T7-9 | tab bar | 詳情頁**隱藏** tab bar（底部是詢問列，會打架）；回到 `/spot` 列表後 tab bar 回來 |
