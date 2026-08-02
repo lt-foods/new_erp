@@ -204,8 +204,8 @@ tab active 判斷是 `pathname.startsWith(t.href)`。所以現貨專區**必須�
 | `apps/admin/src/app/(protected)/stores/page.tsx` | 改 | 表單加「LINE@ ID」欄位（寫 `line_oa_basic_id`），含 `Store` type 與存檔路徑 |
 | `apps/member/.env` / Vercel | 設定 | 加 `NEXT_PUBLIC_LINE_OA_ID` |
 | `docs/TEST-member-released-products.md` | 改名 | → `docs/TEST-member-spot-zone.md`，內容同步 |
-
 | `supabase/migrations/20260802000000_aid_board_spot_price_description.sql` | 新增 | `mutual_aid_board` 加 `spot_price` / `spot_description`；`rpc_post_aid_board` 8 → 10 參數（DROP+CREATE，新參數有 DEFAULT 無空窗） |
+| `supabase/migrations/20260802000010_rpc_update_aid_board_listing.sql` | 新增 | 發佈後編輯：`rpc_update_aid_board_listing`（僅 active offer；NULL = 清除自訂回到沿用）。互助板點開貼文 →「✏️ 修改內容」 |
 | `apps/admin/src/app/(protected)/inventory/mutual-aid/page.tsx` | 改 | 「我有庫存可提供」表單加「釋出單價」（預填原價，可改；低於原價有提示）與「商品說明」textarea（預填原文純文字，可改寫）；沒改的值送 NULL |
 
 店家操作照舊：按「我有庫存可提供」發貼文，會員端就自動看得到；價格與說明想改才改。

@@ -22,6 +22,8 @@ type Post = {
   note: string | null;
   status: "active" | "exhausted" | "expired" | "cancelled";
   source_customer_order_id: number | null;
+  spot_price: number | null;
+  spot_description: string | null;
   created_at: string;
   created_by: string | null;
   store_name?: string;
@@ -127,7 +129,7 @@ export default function MutualAidPage() {
         const sb = getSupabase();
         let q = sb
           .from("mutual_aid_board")
-          .select("id, post_type, offering_store_id, sku_id, qty_available, qty_remaining, expires_at, note, status, source_customer_order_id, created_at, created_by")
+          .select("id, post_type, offering_store_id, sku_id, qty_available, qty_remaining, expires_at, note, status, source_customer_order_id, spot_price, spot_description, created_at, created_by")
           .eq("status", "active")
           .order("created_at", { ascending: false })
           .limit(200);
@@ -297,6 +299,7 @@ export default function MutualAidPage() {
         <ThreadModal
           post={threadPost}
           stores={stores}
+          onEdited={() => reloadAndRefreshBadge()}
           onClose={() => setThreadPost(null)}
           onClosed={() => {
             setThreadPost(null);
@@ -853,12 +856,14 @@ function OfferModal({
 // Thread Modal
 // ============================================================
 function ThreadModal({
-  post, stores, onClose, onClosed,
+  post, stores, onClose, onClosed, onEdited,
 }: {
   post: Post;
   stores: Store[];
   onClose: () => void;
   onClosed: () => void;
+  /** 編輯單價/說明存檔後呼叫（父層重抓列表；modal 留在原地） */
+  onEdited: () => void;
 }) {
   const [replies, setReplies] = useState<Reply[] | null>(null);
   const [body, setBody] = useState("");
@@ -869,6 +874,82 @@ function ThreadModal({
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [claimOpen, setClaimOpen] = useState(false);
   const [fulfillOpen, setFulfillOpen] = useState(false);
+  // 發佈後編輯釋出單價 / 商品說明（僅 offer + active）。
+  // originalPrice / originalDesc 是「沿用值」：原價來自來源訂單、原文來自商品主檔，
+  // 編輯表單要靠它們判斷「改回原值 = 清除自訂」。
+  const [editOpen, setEditOpen] = useState(false);
+  // 存檔後 post prop 還是父層舊資料（列表重抓不會回填 modal），標頭單價用這個本地值蓋
+  const [savedSpotPrice, setSavedSpotPrice] = useState<number | null>(post.spot_price);
+  const [editPrice, setEditPrice] = useState(post.spot_price != null ? String(post.spot_price) : "");
+  const [editDesc, setEditDesc] = useState(post.spot_description ?? "");
+  const [originalPrice, setOriginalPrice] = useState<number | null>(null);
+  const [originalDesc, setOriginalDesc] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+  const canEdit = post.post_type === "offer" && post.status === "active";
+
+  useEffect(() => {
+    if (!canEdit) return;
+    let cancelled = false;
+    (async () => {
+      const sb = getSupabase();
+      const [priceRes, skuRes] = await Promise.all([
+        post.source_customer_order_id != null
+          ? sb.from("customer_order_items").select("unit_price")
+              .eq("order_id", post.source_customer_order_id).eq("sku_id", post.sku_id)
+              .limit(1).maybeSingle()
+          : Promise.resolve({ data: null }),
+        sb.from("skus").select("product:products(description)").eq("id", post.sku_id).maybeSingle(),
+      ]);
+      if (cancelled) return;
+      const priceN = Number((priceRes.data as { unit_price?: number | string } | null)?.unit_price);
+      setOriginalPrice(Number.isFinite(priceN) ? priceN : null);
+      const productRaw = (skuRes.data as { product?: { description: string | null } | { description: string | null }[] | null } | null)?.product;
+      const product = Array.isArray(productRaw) ? productRaw[0] : productRaw;
+      const desc = stripHtmlToText(product?.description);
+      setOriginalDesc(desc);
+      // 沒有自訂說明時，編輯框預填原文（跟上架表單同一套預填邏輯）
+      if (post.spot_description == null && desc) setEditDesc((cur) => (cur === "" ? desc : cur));
+    })();
+    return () => { cancelled = true; };
+    // post.id 換了整個 modal 會重掛，這裡跑一次就好
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [post.id, canEdit]);
+
+  async function saveEdit() {
+    if (savingEdit) return;
+    setErr(null);
+    const raw = editPrice.trim();
+    let priceN: number | null = null;
+    if (raw !== "") {
+      priceN = Number(raw);
+      if (!Number.isFinite(priceN) || priceN <= 0) { setErr("釋出單價需 > 0（留空 = 沿用原價）"); return; }
+    }
+    // 與原值相同就存 NULL（= 沿用），跟上架表單同語意
+    const spotPriceParam = priceN != null && priceN !== originalPrice ? priceN : null;
+    const descTrim = editDesc.trim();
+    const spotDescParam = descTrim !== "" && descTrim !== originalDesc ? descTrim : null;
+    setSavingEdit(true);
+    try {
+      const sb = getSupabase();
+      const { data: userRes } = await sb.auth.getUser();
+      const operator = userRes.user?.id;
+      if (!operator) { setErr("未登入或 session 過期"); return; }
+      const { error: e } = await sb.rpc("rpc_update_aid_board_listing", {
+        p_board_id: post.id,
+        p_operator: operator,
+        p_spot_price: spotPriceParam,
+        p_spot_description: spotDescParam,
+      });
+      if (e) { setErr(e.message); return; }
+      setSavedSpotPrice(spotPriceParam);
+      setEditOpen(false);
+      onEdited();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingEdit(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -962,9 +1043,76 @@ function ThreadModal({
             </span>
             <span>到期 <span className="text-zinc-700 dark:text-zinc-300">{fmtDt(post.expires_at)}</span></span>
             <span>發佈 {fmtDt(post.created_at)}</span>
+            {post.post_type === "offer" && (
+              <span>
+                單價{" "}
+                <span className="font-mono text-zinc-700 dark:text-zinc-300">
+                  {savedSpotPrice != null
+                    ? `$${savedSpotPrice}`
+                    : originalPrice != null
+                      ? `$${originalPrice}`
+                      : "沿用原價"}
+                </span>
+                {savedSpotPrice != null && originalPrice != null && originalPrice > savedSpotPrice && (
+                  <s className="ml-1 text-zinc-400">${originalPrice}</s>
+                )}
+              </span>
+            )}
             {post.note && <div className="basis-full pt-1 text-zinc-700 dark:text-zinc-300">「{post.note}」</div>}
           </div>
         </div>
+
+        {/* 發佈後編輯：釋出單價 / 商品說明（僅 offer + active；改完會員端即時生效） */}
+        {canEdit && editOpen && (
+          <div className="flex flex-col gap-2 rounded-md border border-blue-200 bg-blue-50/40 p-3 text-xs dark:border-blue-900 dark:bg-blue-950/20">
+            <label>
+              <span className="mb-1 block text-zinc-500">釋出單價</span>
+              <input
+                value={editPrice}
+                onChange={(e) => setEditPrice(e.target.value)}
+                inputMode="decimal"
+                placeholder="留空 = 原價"
+                className="w-40 rounded border border-zinc-300 bg-white px-2 py-1.5 text-right dark:border-zinc-700 dark:bg-zinc-800"
+              />
+              {(() => {
+                if (originalPrice == null) return null;
+                const n = Number(editPrice);
+                if (editPrice.trim() !== "" && Number.isFinite(n) && n < originalPrice) {
+                  return (
+                    <span className="ml-2 text-[11px] text-emerald-600 dark:text-emerald-400">
+                      低於原價 <s>${originalPrice.toLocaleString()}</s> — App 會用刪除線顯示原價
+                    </span>
+                  );
+                }
+                return <span className="ml-2 text-[11px] text-zinc-400">原價 ${originalPrice.toLocaleString()}</span>;
+              })()}
+            </label>
+            <label>
+              <span className="mb-1 block text-zinc-500">商品說明（會顯示在會員 App 的商品詳情，可改寫）</span>
+              <textarea
+                value={editDesc}
+                onChange={(e) => setEditDesc(e.target.value)}
+                rows={4}
+                className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
+              />
+            </label>
+            <div className="flex justify-end gap-2">
+              <SpinButton
+                onClick={() => setEditOpen(false)}
+                className="rounded border border-zinc-300 px-3 py-1.5 dark:border-zinc-700"
+              >
+                取消
+              </SpinButton>
+              <SpinButton
+                onClick={saveEdit}
+                disabled={savingEdit}
+                className="rounded bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+              >
+                {savingEdit ? "儲存中…" : "儲存修改"}
+              </SpinButton>
+            </div>
+          </div>
+        )}
 
         {/* Replies thread */}
         <div className="flex flex-col gap-2 max-h-80 overflow-y-auto pr-1">
@@ -1020,6 +1168,16 @@ function ThreadModal({
                     title="把釋出店的訂單轉成接收店的（走 5b-1 棄單轉出）"
                   >
                     ✋ 我要認領
+                  </SpinButton>
+                )}
+                {canEdit && !editOpen && (
+                  <SpinButton
+                    type="button"
+                    onClick={() => setEditOpen(true)}
+                    className="rounded-md border border-blue-400 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300 dark:hover:bg-blue-900"
+                    title="修改釋出單價 / 商品說明（會員端即時生效）"
+                  >
+                    ✏️ 修改內容
                   </SpinButton>
                 )}
                 {post.post_type === "request" && (
