@@ -145,6 +145,28 @@ detail 漏掉的話，知道 board id 就能直接開出別店設為不公開的
 開關目前只在手動現貨的表單露出（從訂單釋出的貼文一律 `TRUE`）。要開放給訂單釋出的
 貼文只是 UI 一行的事，DB 那層本來就通用。
 
+#### 後台也一起藏（2026-08-02 加）
+
+設為不公開的貼文，**admin 互助交流板也只有該店的帳號看得到 —— 連
+`admin` / `hq_manager` / `owner` 都看不到**。後台是拿使用者 session 直接查表，
+所以這層擋在 `mutual_aid_board` 的 SELECT RLS（`can_see_aid_post()`）。
+
+⚠ 動 RLS 的兩個坑，改的時候別踩回去：
+
+1. **`aid_board_owner_write` 原本是 `FOR ALL`**。permissive policy 之間是 OR，
+   `FOR ALL` 連 SELECT 都放行 —— 只收緊 read policy 的話，
+   owner/admin/hq_manager 照樣從那條看得到。已拆成 INSERT / UPDATE / DELETE
+   三條（predicate 原封不動），不再涵蓋 SELECT。
+2. **`mutual_aid_replies` 的留言也要一起擋**，否則貼文藏了、留言還撈得到。
+
+「該店」是比對 JWT `app_metadata.stores` 裡的**店名**（本 repo 既有慣例，
+沒有 `store_id` claim）。副作用：門市改名後，該店帳號要等 `stores` 一起更新
+才看得回自己的不公開貼文。之後若補上 `store_id` claim，只要改
+`can_see_aid_post()` 內部，policy 不用動。
+
+側欄 badge（`rpc_aid_board_active_count`）是 SECURITY DEFINER、會繞過 RLS，
+所以裡面也要自己判一次，數字才會和列表一致。
+
 ---
 
 ## 5. LINE 詢問
@@ -255,6 +277,7 @@ detail 漏掉的話，知道 board id 就能直接開出別店設為不公開的
 | `supabase/migrations/20260802000030_aid_board_spot_title.sql` | 新增 | `mutual_aid_board` 加 `spot_title`；`rpc_post_aid_board` 10 → 11、`rpc_update_aid_board_listing` 5 → 6 參數。NULL = 沒改，會員端 fallback 回 SKU 組出的標題 |
 | `supabase/migrations/20260802000040_manual_spot_listing.sql` | 新增 | 手動現貨（見 §1.1）：`sku_id` 放寬 nullable、放寬 `aid_board_source_consistency`、加 `spot_images` / `spot_unit` 與兩條 CHECK、新增 `rpc_post_manual_spot`、`rpc_update_aid_board_listing` 6 → 9 參數 |
 | `supabase/migrations/20260802000050_spot_cross_store_visibility.sql` | 新增 | 跨店可見性開關（見 §4.1）：加 `spot_visible_to_other_stores`（預設 TRUE）＋ partial index；`rpc_post_manual_spot` 11 → 12、`rpc_update_aid_board_listing` 9 → 10 參數 |
+| `supabase/migrations/20260802000060_aid_board_hidden_posts_rls.sql` | 新增 | 不公開的貼文後台也只有該店看得到（見 §4.1）：`can_see_aid_post()` + 收緊 `mutual_aid_board` / `mutual_aid_replies` 的 SELECT RLS、拆掉 `FOR ALL` 的 SELECT 面、badge RPC 一起排除 |
 | `apps/admin/src/app/(protected)/inventory/mutual-aid/page.tsx` | 改 | 「我有庫存可提供」表單加「商品標題」（預填 `product_name／variant_name`）、「釋出單價」（預填原價，可改；低於原價有提示）與「商品說明」textarea（預填原文純文字，可改寫）；沒改的值送 NULL。ThreadModal 的「✏️ 修改內容」同樣四欄都能改。新增 `ManualSpotModal`（➕ 手動新增現貨）；列表與 ThreadModal 對手動貼文標「手動」badge、藏掉認領鍵 |
 | `apps/admin/src/components/ProductImagesField.tsx` | 沿用 | 手動現貨與編輯區的圖片上傳直接重用商品主檔那支（同 `products` bucket、同 `tenant_id/uuid.ext` 路徑規則） |
 

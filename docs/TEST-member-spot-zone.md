@@ -12,6 +12,7 @@
 - Migration `20260802000030_aid_board_spot_title.sql`（互助板 offer 可自訂商品標題，上架時填、發佈後可改）
 - Migration `20260802000040_manual_spot_listing.sql`（手動新增現貨：免訂單、可手打商品、可傳圖）
 - Migration `20260802000050_spot_cross_store_visibility.sql`（手動現貨可設成只給本店會員看）
+- Migration `20260802000060_aid_board_hidden_posts_rls.sql`（不公開的貼文後台也只有該店看得到，含管理員）
 - 會員端：底部 tab bar 中央凸起鍵、`/spot` 列表、`/spot/[id]` 詳情（`/shop` 的現貨導流區塊已移除，見 T6）
 - 元件：`SpotProductCard.tsx`、`lib/lineInquiry.ts`
 - admin：`/stores` 的「LINE@ ID」欄位
@@ -110,6 +111,23 @@
 | T1V-12 | 再打開存檔 | badge 消失；別店會員重新整理後又看得到（金額仍鎖） |
 | T1V-13 | **訂單來源**的貼文 →「✏️ 修改內容」 | **沒有**這顆開關（只對手動現貨開放）；存檔後 `spot_visible_to_other_stores` 維持 `true` 不被動到 |
 | T1V-14 | SQL 直呼 `rpc_update_aid_board_listing` 只送 9 個具名參數（不帶 `p_visible_to_other_stores`） | 可見性**不變**（NULL = 不動，不是重設成 true） |
+
+### T1V-B — 不公開的貼文，**後台**也只有該店看得到
+
+前提：用 B 店（例：松山店）的手動現貨，把開關關掉。
+
+| # | 步驟 | 預期 |
+|---|------|------|
+| T1V-B1 | 用 **B 店店長**帳號進 `/inventory/mutual-aid` | 看得到那則，標橘色「🔒 限本店會員」 |
+| T1V-B2 | 用 **admin（總倉）**帳號進同一頁 | **看不到那一則**（不是灰掉，是列表裡沒有） |
+| T1V-B3 | 用 **hq_manager** 帳號 | 同樣看不到；頁面正常載入不報錯（該帳號 `app_metadata.stores` 是 `null`） |
+| T1V-B4 | 用 **C 店（別的分店）**店長帳號 | 看不到 |
+| T1V-B5 | 多店店長（`stores` 含 B 店） | 看得到 |
+| T1V-B6 | admin 直接打 PostgREST `GET /mutual_aid_board?id=eq.<該筆>` | 回 `[]`（RLS 擋掉，不是靠前端過濾） |
+| T1V-B7 | admin 直接打 `GET /mutual_aid_replies?board_id=eq.<該筆>` | 回 `[]`（貼文看不到，留言也不能撈） |
+| T1V-B8 | 分店側欄「互助交流板」badge | 數字**不含**別店的不公開貼文，和列表筆數對得起來 |
+| T1V-B9 | 公開貼文（絕大多數） | 所有帳號行為完全不變 |
+| T1V-B10 | 把開關打開後重看 | admin 立刻又看得到 |
 | T1-2 | 同上用 B 店再發一則（挑不同 SKU 好辨識） | 貼文成立 |
 | T1-3 | `SELECT id, post_type, status, offering_store_id, sku_id, qty_remaining, expires_at FROM mutual_aid_board WHERE post_type='offer' AND status='active';` | 兩筆，`expires_at` 在未來、`qty_remaining > 0` |
 
