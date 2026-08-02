@@ -20,17 +20,41 @@
 
 | 項目 | 內容 |
 |---|---|
-| 資料來源 | `mutual_aid_board` 的 `post_type='offer'`（互助交流板「我有庫存可提供」） |
+| 資料來源 | `mutual_aid_board` 的 `post_type='offer'`。兩條進貨路徑：①「我有庫存可提供」從既有訂單釋出（有 `source_customer_order_id`）②「手動新增現貨」店家直接上架（`source_customer_order_id IS NULL`，見 §1.1） |
 | 上架條件 | `status='active'` ＋ `expires_at > now()` ＋ `qty_remaining > 0` |
 | 不收錄 | `post_type='request'`（我要求助，是店對店求援不是貨）；板上 `note`（店對店內部備註，不外流） |
 | 自動下架 | 被認領光（`exhausted`）／到期（既有 cron `purge-expired-aid-board` 每 10 分鐘跑）／店家取消 —— 三種都自動從 App 消失，不必另外做 |
 | 單價來源 | `mutual_aid_board.spot_price`（店家上架時可改，2026-08-02 加）優先；沒改則用來源訂單 `customer_order_items.unit_price`。釋出價**低於**原價時回 `original_price`，會員端畫刪除線 |
 | 商品說明 | `mutual_aid_board.spot_description`（上架時可改寫原文）優先；沒改 fallback `products.description` |
 | 商品標題 | `mutual_aid_board.spot_title`（上架時可改寫，2026-08-02 加）優先；沒改則由會員端組 `product_name／variant_name` |
+| 商品圖片 | `mutual_aid_board.spot_images`（JSONB 路徑陣列，2026-08-02 加）優先；沒設 fallback `products.images` |
+| 數量單位 | `mutual_aid_board.spot_unit`（2026-08-02 加）優先；沒設 fallback `skus.base_unit` |
 | 會員所在店 | `members.home_store_id`；未綁定會員退回 JWT 的 `store_id`（掃碼進站那間） |
 
 **命名分工**：對會員講「現貨專區」（現成的貨、不用等團購結單）；卡片上仍標「◯◯店 釋出」當來源。
 對店家端（admin 互助交流板）用語完全不動。
+
+### 1.1 手動現貨（2026-08-02 加）
+
+店裡自製、臨時進的貨不會有客人棄單的訂單可以釋出，所以另開一條路：admin 互助板
+「➕ 手動新增現貨」。可以從商品庫挑 SKU 帶出名稱與主檔圖，也可以**整個手打**
+（`sku_id` 留 NULL）。金額、單位、圖片、說明、到期都自己填。
+
+| | 從訂單釋出（📦 我有庫存可提供） | 手動新增（➕ 手動新增現貨） |
+|---|---|---|
+| 入口 RPC | `rpc_post_aid_board` | `rpc_post_manual_spot` |
+| `source_customer_order_id` | 必填 | 恆為 NULL |
+| `sku_id` | 必填（來自訂單品項） | 選填 |
+| 金額 | 預填訂單原價，可改；低於原價畫刪除線 | 純自填，沒有「原價」可比 → 不會有刪除線 |
+| 別店可否認領 | ✅ 走 `rpc_transfer_order_partial` 轉訂單 | ❌ 沒有訂單可轉，admin 藏掉認領鍵 |
+| 數量可否事後改 | ❌ 和認領扣量的帳綁在一起 | ✅ 沒有扣量帳，直接覆寫 |
+
+**「手動」的判準就是 `source_customer_order_id IS NULL`**，不另立 `is_manual` 旗標
+—— 少一個會不同步的欄位。
+
+⚠ 為此放寬了 `20260509000001` 訂的 `aid_board_source_consistency`（原本要求
+offer 一定有 source_order）。offer 那半邊的把關改由 `rpc_post_aid_board` 自己
+`RAISE` 負責（那支一行沒動），走訂單釋出路徑一樣進不來沒有訂單的列。
 
 ---
 
@@ -209,7 +233,9 @@ tab active 判斷是 `pathname.startsWith(t.href)`。所以現貨專區**必須�
 | `supabase/migrations/20260802000010_rpc_update_aid_board_listing.sql` | 新增 | 發佈後編輯：`rpc_update_aid_board_listing`（僅 active offer；NULL = 清除自訂回到沿用）。互助板點開貼文 →「✏️ 修改內容」 |
 | `supabase/migrations/20260802000020_aid_listing_edit_expires_at.sql` | 新增 | 上面那支加 `p_expires_at`（4 → 5 參數）。⚠ 它的 NULL 語意與另兩個相反：`expires_at` 是 NOT NULL 欄位，NULL = 不動；且不得設到過去（要立刻下架請用「結束此貼」） |
 | `supabase/migrations/20260802000030_aid_board_spot_title.sql` | 新增 | `mutual_aid_board` 加 `spot_title`；`rpc_post_aid_board` 10 → 11、`rpc_update_aid_board_listing` 5 → 6 參數。NULL = 沒改，會員端 fallback 回 SKU 組出的標題 |
-| `apps/admin/src/app/(protected)/inventory/mutual-aid/page.tsx` | 改 | 「我有庫存可提供」表單加「商品標題」（預填 `product_name／variant_name`）、「釋出單價」（預填原價，可改；低於原價有提示）與「商品說明」textarea（預填原文純文字，可改寫）；沒改的值送 NULL。ThreadModal 的「✏️ 修改內容」同樣四欄都能改 |
+| `supabase/migrations/20260802000040_manual_spot_listing.sql` | 新增 | 手動現貨（見 §1.1）：`sku_id` 放寬 nullable、放寬 `aid_board_source_consistency`、加 `spot_images` / `spot_unit` 與兩條 CHECK、新增 `rpc_post_manual_spot`、`rpc_update_aid_board_listing` 6 → 9 參數 |
+| `apps/admin/src/app/(protected)/inventory/mutual-aid/page.tsx` | 改 | 「我有庫存可提供」表單加「商品標題」（預填 `product_name／variant_name`）、「釋出單價」（預填原價，可改；低於原價有提示）與「商品說明」textarea（預填原文純文字，可改寫）；沒改的值送 NULL。ThreadModal 的「✏️ 修改內容」同樣四欄都能改。新增 `ManualSpotModal`（➕ 手動新增現貨）；列表與 ThreadModal 對手動貼文標「手動」badge、藏掉認領鍵 |
+| `apps/admin/src/components/ProductImagesField.tsx` | 沿用 | 手動現貨與編輯區的圖片上傳直接重用商品主檔那支（同 `products` bucket、同 `tenant_id/uuid.ext` 路徑規則） |
 
 店家操作照舊：按「我有庫存可提供」發貼文，會員端就自動看得到；標題、價格與說明想改才改。
 

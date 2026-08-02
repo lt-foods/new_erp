@@ -10,6 +10,7 @@
 - Migration `20260801000020_rpc_upsert_store_line_oa.sql`（`rpc_upsert_store` 加 `p_line_oa_basic_id`）
 - Migration `20260802000000_aid_board_spot_price_description.sql`（互助板 offer 可自訂釋出單價與商品說明）
 - Migration `20260802000030_aid_board_spot_title.sql`（互助板 offer 可自訂商品標題，上架時填、發佈後可改）
+- Migration `20260802000040_manual_spot_listing.sql`（手動新增現貨：免訂單、可手打商品、可傳圖）
 - 會員端：底部 tab bar 中央凸起鍵、`/spot` 列表、`/spot/[id]` 詳情（`/shop` 的現貨導流區塊已移除，見 T6）
 - 元件：`SpotProductCard.tsx`、`lib/lineInquiry.ts`
 - admin：`/stores` 的「LINE@ ID」欄位
@@ -61,6 +62,32 @@
 | T1-19 | **發佈後改標題**：ThreadModal →「✏️ 修改內容」→ 改「商品標題」存檔 | 標頭出現藍色「App 標題：◯◯」標記；App 重新整理即時生效 |
 | T1-20 | 把標題清空（或改回預填值）存檔 | `spot_title` 回 `NULL`，App 回到 SKU 組出的標題 |
 | T1-21 | SQL 直呼 `rpc_post_aid_board` 用 `p_post_type='request'` 帶 `p_spot_title` | 炸 `spot_title is only valid for offer posts` |
+
+## T1M — 手動新增現貨（免訂單）
+
+| # | 步驟 | 預期 |
+|---|------|------|
+| T1M-1 | admin `/inventory/mutual-aid` →「➕ 手動新增現貨」 | 開出 modal，最上面有綠色提示說明「不需要來源訂單、別的分店不能認領」 |
+| T1M-2 | **不選 SKU**、標題留空就送出 | 擋下「沒有從商品庫選品項時，商品標題必填」 |
+| T1M-3 | **不選 SKU**、標題打「今日現滷拼盤」＋數量 8＋單位「份」＋金額 180＋上傳 2 張圖 | 上架成功；`mutual_aid_board` 該列 `sku_id IS NULL`、`source_customer_order_id IS NULL`、`spot_images` 是 2 個路徑的陣列 |
+| T1M-4 | 從商品庫選 SKU | 「商品標題」自動帶入 `商品名稱／規格`；已經手打過的標題**不會**被覆蓋 |
+| T1M-5 | 選了 SKU 後按「清除選擇，改成手打」 | SKU 清掉，但已經打好的標題保留（打過的字不憑空消失） |
+| T1M-6 | 選了 SKU、圖片留空 | 會員端 fallback 顯示商品主檔的圖 |
+| T1M-7 | 金額留空 | 上架成功，`spot_price IS NULL`；會員端本店看到的價格位置是「—」 |
+| T1M-8 | 金額填 0 / 負數 | 擋下「金額需 > 0（留空 = 不顯示金額）」 |
+| T1M-9 | 到期時間設到過去 | 擋下「到期時間需在未來」 |
+| T1M-10 | 手動貼文在列表 | 品名旁有綠色「手動」badge |
+| T1M-11 | 點開手動貼文 | **沒有「✋ 我要認領」按鈕**，改顯示「手動現貨・只給會員看，不開放跨店認領」 |
+| T1M-12 | 手動貼文 →「✏️ 修改內容」 | 編輯區比訂單來源的多出 **數量** 與 **單位** 兩欄，最下面有 **商品圖片** 上傳區 |
+| T1M-13 | 改數量存檔 | 標頭「可釋」即時更新；`qty_available` 與 `qty_remaining` 一起被覆寫 |
+| T1M-14 | **訂單來源**的貼文 →「✏️ 修改內容」 | **沒有**數量欄（qty 和認領扣量的帳綁在一起）；SQL 直呼帶 `p_qty_available` 會炸 `qty of an order-sourced listing cannot be edited` |
+| T1M-15 | 手打（無 SKU）貼文把標題清空存檔 | 擋下「這則是手打的商品、沒有商品主檔可沿用，標題不能留空」；SQL 直呼也會炸 `this listing has no sku — spot_title cannot be cleared` |
+| T1M-16 | 編輯區把圖片全刪掉存檔 | `spot_images` 回 `NULL`；有 SKU 的話 App 回到顯示主檔圖，手打的話變成品牌底placeholder |
+| T1M-17 | 會員 App `/spot` | 手動現貨和訂單現貨混在同一個列表，本店的一樣排前面、一樣看得到金額；跨店一樣鎖頭 |
+| T1M-18 | 手打商品的 `/spot/[id]` | 標題是 `spot_title`、圖是 `spot_images`、**沒有「商品編號」那一列**（沒有 SKU） |
+| T1M-19 | SQL 直呼 `rpc_post_manual_spot` 帶 `p_spot_images => '{"a":1}'::jsonb` | 炸 `spot_images must be a JSON array of storage paths` |
+| T1M-20 | SQL 直接 INSERT 一列 `post_type='request'` 且 `sku_id IS NULL` | 撞 CHECK `chk_aid_board_request_needs_sku`（求助一定要有 SKU 才轉得了單） |
+| T1M-21 | SQL 直呼 `rpc_post_aid_board` 用 `p_post_type='offer'` 但 `p_source_customer_order_id => NULL` | 仍炸 `offer post requires p_source_customer_order_id`（放寬 CHECK 沒有替訂單釋出路徑開洞） |
 | T1-2 | 同上用 B 店再發一則（挑不同 SKU 好辨識） | 貼文成立 |
 | T1-3 | `SELECT id, post_type, status, offering_store_id, sku_id, qty_remaining, expires_at FROM mutual_aid_board WHERE post_type='offer' AND status='active';` | 兩筆，`expires_at` 在未來、`qty_remaining > 0` |
 

@@ -10,7 +10,8 @@ import Link from "next/link";
  */
 export type SpotProduct = {
   id: number;
-  sku_id: number;
+  /** 手動上架的現貨可能沒有 SKU（店家直接手打的商品，商品主檔沒有） */
+  sku_id: number | null;
   sku_code: string | null;
   product_name: string | null;
   variant_name: string | null;
