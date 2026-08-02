@@ -46,6 +46,28 @@ function toPublicUrl(
   return `${supabaseUrl}/storage/v1/object/public/${bucket}/${pathOrUrl}`;
 }
 
+/**
+ * 現貨貼文的圖片：貼文自帶的 spot_images 優先，沒有才 fallback 回商品主檔。
+ *
+ * 兩邊都是 products bucket 的相對路徑陣列，但主檔那份歷史上允許
+ * `{ url }` 物件，所以這裡兩種形狀都收。手打的商品沒有 SKU、只有 spot_images。
+ */
+function resolveSpotImages(
+  supabaseUrl: string,
+  spotImages: unknown,
+  productImages: unknown,
+): string[] {
+  const src = Array.isArray(spotImages) && spotImages.length > 0 ? spotImages : productImages;
+  if (!Array.isArray(src)) return [];
+  const out: string[] = [];
+  for (const img of src) {
+    const path = typeof img === "string" ? img : (img as any)?.url ?? null;
+    const url = toPublicUrl(supabaseUrl, "products", path);
+    if (url && !out.includes(url)) out.push(url);
+  }
+  return out;
+}
+
 // ─── actions ─────────────────────────────────────────────────────────────────
 
 async function listStores(sb: any, tenantId: string) {
@@ -347,7 +369,7 @@ async function listSpotProducts(
   const { data: rows, error } = await sb
     .from("mutual_aid_board")
     .select(
-      "id, offering_store_id, sku_id, qty_remaining, expires_at, created_at, source_customer_order_id, spot_price, spot_title, sku:skus(sku_code, product_name, variant_name, base_unit, product:products(name, images))",
+      "id, offering_store_id, sku_id, qty_remaining, expires_at, created_at, source_customer_order_id, spot_price, spot_title, spot_unit, spot_images, sku:skus(sku_code, product_name, variant_name, base_unit, product:products(name, images))",
     )
     .eq("tenant_id", tenantId)
     .eq("post_type", "offer")
@@ -407,10 +429,7 @@ async function listSpotProducts(
   const supabaseUrl = requireEnv("SUPABASE_URL");
   const items = (rows ?? []).map((r: any) => {
     const isMyStore = Number(r.offering_store_id) === myStoreId;
-    const imgs = r.sku?.product?.images;
-    const rawImg = Array.isArray(imgs) && imgs.length > 0
-      ? (typeof imgs[0] === "string" ? imgs[0] : imgs[0]?.url ?? null)
-      : null;
+    const images = resolveSpotImages(supabaseUrl, r.spot_images, r.sku?.product?.images);
     // 原價 = 來源訂單單價；釋出價 = 店家上架時自訂的 spot_price（沒填就用原價）。
     // 釋出價低於原價才回 original_price（會員端據此畫刪除線）；跨店兩者皆 null。
     const original = isMyStore && r.source_customer_order_id != null
@@ -425,14 +444,15 @@ async function listSpotProducts(
       : null;
     return {
       id: Number(r.id),
-      sku_id: Number(r.sku_id),
+      // 手動上架的現貨可能完全沒有 SKU（店家直接手打的商品）
+      sku_id: r.sku_id != null ? Number(r.sku_id) : null,
       sku_code: r.sku?.sku_code ?? null,
       product_name: r.sku?.product_name ?? r.sku?.product?.name ?? null,
       variant_name: r.sku?.variant_name ?? null,
       // 上架時改寫的標題優先；沒改就由前端組 product_name／variant_name
       spot_title: r.spot_title ?? null,
-      unit: r.sku?.base_unit ?? null,
-      image_url: toPublicUrl(supabaseUrl, "products", rawImg),
+      unit: r.spot_unit ?? r.sku?.base_unit ?? null,
+      image_url: images[0] ?? null,
       store_id: Number(r.offering_store_id),
       store_name: storeNameMap.get(Number(r.offering_store_id)) ?? null,
       qty_remaining: Number(r.qty_remaining ?? 0),
@@ -477,7 +497,7 @@ async function getSpotProduct(
   const { data: r, error } = await sb
     .from("mutual_aid_board")
     .select(
-      "id, offering_store_id, sku_id, qty_remaining, expires_at, created_at, source_customer_order_id, spot_price, spot_description, spot_title, sku:skus(sku_code, product_name, variant_name, base_unit, product:products(name, description, images))",
+      "id, offering_store_id, sku_id, qty_remaining, expires_at, created_at, source_customer_order_id, spot_price, spot_description, spot_title, spot_unit, spot_images, sku:skus(sku_code, product_name, variant_name, base_unit, product:products(name, description, images))",
     )
     .eq("tenant_id", tenantId)
     .eq("id", boardId)
@@ -534,20 +554,13 @@ async function getSpotProduct(
   }
 
   const supabaseUrl = requireEnv("SUPABASE_URL");
-  const rawImgs = r.sku?.product?.images;
-  const images: string[] = [];
-  if (Array.isArray(rawImgs)) {
-    for (const img of rawImgs) {
-      const path = typeof img === "string" ? img : img?.url ?? null;
-      const url = toPublicUrl(supabaseUrl, "products", path);
-      if (url && !images.includes(url)) images.push(url);
-    }
-  }
+  const images = resolveSpotImages(supabaseUrl, r.spot_images, r.sku?.product?.images);
 
   return json({
     item: {
       id: Number(r.id),
-      sku_id: Number(r.sku_id),
+      // 手動上架的現貨可能完全沒有 SKU（店家直接手打的商品）
+      sku_id: r.sku_id != null ? Number(r.sku_id) : null,
       sku_code: r.sku?.sku_code ?? null,
       product_name: r.sku?.product_name ?? r.sku?.product?.name ?? null,
       variant_name: r.sku?.variant_name ?? null,
@@ -555,7 +568,7 @@ async function getSpotProduct(
       spot_title: r.spot_title ?? null,
       // 上架時改寫的說明優先；沒改就 fallback 回商品主檔
       description: r.spot_description ?? r.sku?.product?.description ?? null,
-      unit: r.sku?.base_unit ?? null,
+      unit: r.spot_unit ?? r.sku?.base_unit ?? null,
       image_url: images[0] ?? null,
       images,
       store_id: Number(r.offering_store_id),

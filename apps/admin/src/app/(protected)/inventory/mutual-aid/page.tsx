@@ -5,6 +5,7 @@ import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
+import { ProductImagesField } from "@/components/ProductImagesField";
 
 type Store = { id: number; code: string; name: string };
 type SkuOption = { id: number; sku_code: string; product_name: string; variant_name: string | null };
@@ -15,7 +16,8 @@ type Post = {
   id: number;
   post_type: PostType;
   offering_store_id: number;
-  sku_id: number;
+  /** 手動現貨可能沒有 SKU（店家直接手打的商品） */
+  sku_id: number | null;
   qty_available: number;
   qty_remaining: number;
   expires_at: string;
@@ -25,6 +27,8 @@ type Post = {
   spot_price: number | null;
   spot_description: string | null;
   spot_title: string | null;
+  spot_unit: string | null;
+  spot_images: string[] | null;
   created_at: string;
   created_by: string | null;
   store_name?: string;
@@ -112,6 +116,7 @@ export default function MutualAidPage() {
   const [reloadTick, setReloadTick] = useState(0);
   const [requestModalOpen, setRequestModalOpen] = useState(false);
   const [offerModalOpen, setOfferModalOpen] = useState(false);
+  const [manualModalOpen, setManualModalOpen] = useState(false);
   const [threadPost, setThreadPost] = useState<Post | null>(null);
 
   // 貼文數變動（發文/關貼/認領）後重載列表，並通知側欄「互助交流板」badge 重抓
@@ -140,7 +145,7 @@ export default function MutualAidPage() {
         const sb = getSupabase();
         let q = sb
           .from("mutual_aid_board")
-          .select("id, post_type, offering_store_id, sku_id, qty_available, qty_remaining, expires_at, note, status, source_customer_order_id, spot_price, spot_description, spot_title, created_at, created_by")
+          .select("id, post_type, offering_store_id, sku_id, qty_available, qty_remaining, expires_at, note, status, source_customer_order_id, spot_price, spot_description, spot_title, spot_unit, spot_images, created_at, created_by")
           .eq("status", "active")
           .order("created_at", { ascending: false })
           .limit(200);
@@ -152,13 +157,16 @@ export default function MutualAidPage() {
           if (!cancelled) setPosts([]);
           return;
         }
-        const skuIds = Array.from(new Set(rows.map((r) => r.sku_id)));
+        // 手打的手動現貨沒有 sku_id，別把 null 塞進 .in() 查詢
+        const skuIds = Array.from(new Set(rows.map((r) => r.sku_id).filter((x): x is number => x != null)));
         const storeIds = Array.from(new Set(rows.map((r) => r.offering_store_id)));
         const boardIds = rows.map((r) => r.id);
         const orderIds = Array.from(new Set(rows.map((r) => r.source_customer_order_id).filter((x): x is number => x != null)));
 
         const [skuRes, storeRes, replyRes, orderRes] = await Promise.all([
-          sb.from("skus").select("id, sku_code, product_name, variant_name").in("id", skuIds),
+          skuIds.length > 0
+            ? sb.from("skus").select("id, sku_code, product_name, variant_name").in("id", skuIds)
+            : Promise.resolve({ data: [], error: null }),
           sb.from("stores").select("id, name").in("id", storeIds),
           sb.from("mutual_aid_replies").select("board_id").in("board_id", boardIds),
           orderIds.length > 0
@@ -173,11 +181,16 @@ export default function MutualAidPage() {
           replyCount.set(r.board_id, (replyCount.get(r.board_id) ?? 0) + 1);
         }
         const enriched = rows.map((r) => {
-          const sku = skuMap.get(r.sku_id);
+          const sku = r.sku_id != null ? skuMap.get(r.sku_id) : undefined;
           return {
             ...r,
             store_name: storeMap.get(r.offering_store_id) ?? `#${r.offering_store_id}`,
-            sku_label: sku ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} (${sku.sku_code})` : `品項#${r.sku_id}`,
+            // 沒 SKU 的手打商品只有 spot_title 可以顯示
+            sku_label: sku
+              ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} (${sku.sku_code})`
+              : r.sku_id != null
+                ? `品項#${r.sku_id}`
+                : r.spot_title ?? "（未命名）",
             source_order_no: r.source_customer_order_id ? orderMap.get(r.source_customer_order_id) ?? null : null,
             replies_count: replyCount.get(r.id) ?? 0,
           };
@@ -213,6 +226,13 @@ export default function MutualAidPage() {
             className="rounded-md bg-pink-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-pink-700"
           >
             📦 我有庫存可提供
+          </SpinButton>
+          <SpinButton
+            type="button"
+            onClick={() => setManualModalOpen(true)}
+            className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700"
+          >
+            ➕ 手動新增現貨
           </SpinButton>
         </div>
       </header>
@@ -264,6 +284,11 @@ export default function MutualAidPage() {
                   </span>
                   <span className="text-sm font-medium">{p.store_name}</span>
                   <span className="text-sm">{p.sku_label}</span>
+                  {p.post_type === "offer" && p.source_customer_order_id == null && (
+                    <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                      手動
+                    </span>
+                  )}
                   <span className="ml-auto text-xs text-zinc-500">💬 {p.replies_count} 留言</span>
                 </div>
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
@@ -302,6 +327,16 @@ export default function MutualAidPage() {
         stores={stores}
         onPosted={() => {
           setOfferModalOpen(false);
+          reloadAndRefreshBadge();
+        }}
+      />
+
+      <ManualSpotModal
+        open={manualModalOpen}
+        onClose={() => setManualModalOpen(false)}
+        stores={stores}
+        onPosted={() => {
+          setManualModalOpen(false);
           reloadAndRefreshBadge();
         }}
       />
@@ -531,6 +566,235 @@ function RequestModal({
             className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
           >
             {submitting ? "送出中…" : "發佈求助"}
+          </SpinButton>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================
+// Manual Spot Modal — 手動新增現貨（不需要來源訂單）
+//
+// 和 OfferModal 的差別：那支是「把客人棄單的訂單釋出去」，一切資料都從訂單帶；
+// 這支是店家直接把店裡有的東西上架 —— 可以從商品庫挑 SKU 帶出名字，
+// 也可以整個手打（店裡自製、臨時進的貨，主檔根本沒有）。
+// 這種貼文**不會出現認領按鈕**：沒有訂單可以轉移給別店。
+// ============================================================
+function ManualSpotModal({
+  open, onClose, stores, onPosted,
+}: {
+  open: boolean;
+  onClose: () => void;
+  stores: Store[];
+  onPosted: () => void;
+}) {
+  const [storeId, setStoreId] = useState<number | "">("");
+  const [picked, setPicked] = useState<SkuOption | null>(null);
+  const [title, setTitle] = useState("");
+  const [qty, setQty] = useState("");
+  const [unit, setUnit] = useState("");
+  const [price, setPrice] = useState("");
+  const [expiresAt, setExpiresAt] = useState(defaultExpiresAt);
+  const [desc, setDesc] = useState("");
+  const [images, setImages] = useState<string[]>([]);
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setStoreId(""); setPicked(null); setTitle(""); setQty(""); setUnit("");
+      setPrice(""); setDesc(""); setImages([]); setNote(""); setErr(null);
+      setExpiresAt(defaultExpiresAt());
+    }
+  }, [open]);
+
+  // 挑了 SKU → 帶出標題當起點（和會員端 spotProductTitle() 同一套組法）；
+  // 已經手打過的標題不覆蓋，清掉選擇也不清標題（打過的字不該憑空消失）。
+  function pickSku(s: SkuOption | null) {
+    setPicked(s);
+    if (!s) return;
+    const def = `${s.product_name}${s.variant_name ? `／${s.variant_name}` : ""}`;
+    setTitle((cur) => (cur.trim() === "" ? def : cur));
+  }
+
+  async function submit() {
+    if (submitting) return;
+    setErr(null);
+    if (!storeId) { setErr("請選釋出店"); return; }
+    const titleTrim = title.trim();
+    if (!picked && titleTrim === "") { setErr("沒有從商品庫選品項時，商品標題必填"); return; }
+    const qtyN = Number(qty);
+    if (!Number.isFinite(qtyN) || qtyN <= 0) { setErr("數量需 > 0"); return; }
+    let priceN: number | null = null;
+    if (price.trim() !== "") {
+      priceN = Number(price);
+      if (!Number.isFinite(priceN) || priceN <= 0) { setErr("金額需 > 0（留空 = 不顯示金額）"); return; }
+    }
+    const expDate = new Date(expiresAt);
+    if (Number.isNaN(expDate.getTime())) { setErr("到期時間格式不正確"); return; }
+    if (expDate <= new Date()) { setErr("到期時間需在未來"); return; }
+
+    setSubmitting(true);
+    try {
+      const sb = getSupabase();
+      const { data: userRes } = await sb.auth.getUser();
+      const operator = userRes.user?.id;
+      if (!operator) { setErr("未登入或 session 過期"); return; }
+      const { error: e } = await sb.rpc("rpc_post_manual_spot", {
+        p_offering_store_id: storeId,
+        p_sku_id: picked?.id ?? null,
+        p_spot_title: titleTrim || null,
+        p_qty_available: qtyN,
+        p_expires_at: expDate.toISOString(),
+        p_spot_price: priceN,
+        p_spot_description: desc.trim() || null,
+        p_spot_unit: unit.trim() || null,
+        p_spot_images: images.length > 0 ? images : null,
+        p_note: note.trim() || null,
+        p_operator: operator,
+      });
+      if (e) { setErr(e.message); return; }
+      onPosted();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="➕ 手動新增現貨" maxWidth="max-w-2xl">
+      <div className="flex flex-col gap-3 text-sm">
+        {err && (
+          <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+            {err}
+          </div>
+        )}
+        <p className="rounded-md border border-emerald-200 bg-emerald-50/50 p-2 text-xs text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">
+          直接上架店裡現有的東西，不需要來源訂單。可以從商品庫選品項，也可以整個手打。
+          <br />
+          這種貼文只給會員看，<strong>別的分店不能認領</strong>（沒有訂單可以轉移）。
+        </p>
+
+        <label>
+          <span className="mb-1 block text-xs text-zinc-500">釋出店 <span className="text-red-500">*</span></span>
+          <select
+            value={storeId}
+            onChange={(e) => setStoreId(e.target.value ? Number(e.target.value) : "")}
+            className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
+          >
+            <option value="">— 選店 —</option>
+            {stores.map((s) => (<option key={s.id} value={s.id}>{s.name} ({s.code})</option>))}
+          </select>
+        </label>
+
+        <div>
+          <span className="mb-1 block text-xs text-zinc-500">
+            從商品庫選品項（選填 —— 選了會帶出名稱與圖片，不選就純手打）
+          </span>
+          <SkuSearchInput value={picked} onChange={pickSku} />
+          {picked && (
+            <SpinButton
+              type="button"
+              onClick={() => setPicked(null)}
+              className="mt-1 text-[11px] text-zinc-500 underline hover:text-zinc-700 dark:hover:text-zinc-300"
+            >
+              清除選擇，改成手打
+            </SpinButton>
+          )}
+        </div>
+
+        <label>
+          <span className="mb-1 block text-xs text-zinc-500">
+            商品標題{!picked && <span className="text-red-500"> *</span>}
+            <span className="ml-1 text-zinc-400">（會員 App 現貨專區顯示的名稱）</span>
+          </span>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder={picked ? "留空 = 沿用商品名稱" : "例：今日現滷拼盤"}
+            className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
+          />
+        </label>
+
+        <div className="grid grid-cols-4 gap-3">
+          <label>
+            <span className="mb-1 block text-xs text-zinc-500">數量 <span className="text-red-500">*</span></span>
+            <input
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+              inputMode="decimal"
+              className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-right dark:border-zinc-700 dark:bg-zinc-800"
+            />
+          </label>
+          <label>
+            <span className="mb-1 block text-xs text-zinc-500">單位</span>
+            <input
+              value={unit}
+              onChange={(e) => setUnit(e.target.value)}
+              placeholder={picked ? "留空 = 商品單位" : "包 / 份"}
+              className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
+            />
+          </label>
+          <label>
+            <span className="mb-1 block text-xs text-zinc-500">金額</span>
+            <input
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+              inputMode="decimal"
+              placeholder="留空 = 不顯示"
+              className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-right dark:border-zinc-700 dark:bg-zinc-800"
+            />
+          </label>
+          <label>
+            <span className="mb-1 block text-xs text-zinc-500">到期時間 <span className="text-red-500">*</span></span>
+            <input
+              type="datetime-local"
+              value={expiresAt}
+              onChange={(e) => setExpiresAt(e.target.value)}
+              className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
+            />
+          </label>
+        </div>
+
+        <label>
+          <span className="mb-1 block text-xs text-zinc-500">商品說明（會顯示在會員 App 的商品詳情）</span>
+          <textarea
+            value={desc}
+            onChange={(e) => setDesc(e.target.value)}
+            rows={4}
+            placeholder="這批貨的狀況、口味、注意事項…"
+            className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
+          />
+        </label>
+
+        <div>
+          <span className="mb-1 block text-xs text-zinc-500">
+            商品圖片{picked && <span className="ml-1 text-zinc-400">（留空 = 沿用商品主檔的圖）</span>}
+          </span>
+          <ProductImagesField value={images} onChange={setImages} />
+        </div>
+
+        <label>
+          <span className="mb-1 block text-xs text-zinc-500">備註（選填，店對店內部訊息，不會給會員看）</span>
+          <input
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
+          />
+        </label>
+
+        <div className="mt-2 flex justify-end gap-2">
+          <SpinButton type="button" onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700">取消</SpinButton>
+          <SpinButton
+            type="button"
+            onClick={submit}
+            disabled={submitting}
+            className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+          >
+            {submitting ? "上架中…" : "上架"}
           </SpinButton>
         </div>
       </div>
@@ -920,14 +1184,23 @@ function ThreadModal({
   const [editPrice, setEditPrice] = useState(post.spot_price != null ? String(post.spot_price) : "");
   const [editDesc, setEditDesc] = useState(post.spot_description ?? "");
   const [editTitle, setEditTitle] = useState(post.spot_title ?? "");
+  const [editUnit, setEditUnit] = useState(post.spot_unit ?? "");
+  const [editImages, setEditImages] = useState<string[]>(post.spot_images ?? []);
+  const [editQty, setEditQty] = useState(String(post.qty_available));
   const [editExpiresAt, setEditExpiresAt] = useState(() => toLocalInput(post.expires_at));
-  // 存檔後 post prop 仍是父層舊資料，標頭到期時間用本地值蓋
+  // 存檔後 post prop 仍是父層舊資料，標頭到期時間 / 數量用本地值蓋
   const [savedExpiresAt, setSavedExpiresAt] = useState(post.expires_at);
+  const [savedQty, setSavedQty] = useState<{ available: number; remaining: number }>({
+    available: post.qty_available,
+    remaining: post.qty_remaining,
+  });
   const [originalPrice, setOriginalPrice] = useState<number | null>(null);
   const [originalDesc, setOriginalDesc] = useState("");
   const [originalTitle, setOriginalTitle] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
   const canEdit = post.post_type === "offer" && post.status === "active";
+  /** 手動現貨：沒有來源訂單 → 不能被認領，但數量可以直接改 */
+  const isManual = post.post_type === "offer" && post.source_customer_order_id == null;
 
   useEffect(() => {
     if (!canEdit) return;
@@ -940,7 +1213,11 @@ function ThreadModal({
               .eq("order_id", post.source_customer_order_id).eq("sku_id", post.sku_id)
               .limit(1).maybeSingle()
           : Promise.resolve({ data: null }),
-        sb.from("skus").select("product_name, variant_name, product:products(description)").eq("id", post.sku_id).maybeSingle(),
+        // 手打的手動現貨沒有 SKU，沒有主檔可以查（標題/說明也就沒有「沿用值」）
+        post.sku_id != null
+          ? sb.from("skus").select("product_name, variant_name, product:products(description)")
+              .eq("id", post.sku_id).maybeSingle()
+          : Promise.resolve({ data: null }),
       ]);
       if (cancelled) return;
       const priceN = Number((priceRes.data as { unit_price?: number | string } | null)?.unit_price);
@@ -983,9 +1260,21 @@ function ThreadModal({
     const spotDescParam = descTrim !== "" && descTrim !== originalDesc ? descTrim : null;
     const titleTrim = editTitle.trim();
     const spotTitleParam = titleTrim !== "" && titleTrim !== originalTitle ? titleTrim : null;
+    // 沒 SKU 的手打商品沒有 fallback，標題不能清空（DB 也會擋，這裡先講人話）
+    if (post.sku_id == null && spotTitleParam == null) {
+      setErr("這則是手打的商品、沒有商品主檔可沿用，標題不能留空");
+      return;
+    }
     const expDate = new Date(editExpiresAt);
     if (Number.isNaN(expDate.getTime())) { setErr("到期時間格式不正確"); return; }
     if (expDate <= new Date()) { setErr("到期時間需在未來（要立刻下架請用「結束此貼」）"); return; }
+    // 數量只有手動現貨能改；從訂單釋出的貼文 qty 和認領扣量綁在一起，不送這個參數
+    let qtyParam: number | null = null;
+    if (isManual) {
+      const qtyN = Number(editQty);
+      if (!Number.isFinite(qtyN) || qtyN <= 0) { setErr("數量需 > 0"); return; }
+      qtyParam = qtyN;
+    }
     setSavingEdit(true);
     try {
       const sb = getSupabase();
@@ -999,11 +1288,16 @@ function ThreadModal({
         p_spot_description: spotDescParam,
         p_expires_at: expDate.toISOString(),
         p_spot_title: spotTitleParam,
+        // 圖片留空 = 清除自訂、回沿用商品主檔的圖
+        p_spot_images: editImages.length > 0 ? editImages : null,
+        p_spot_unit: editUnit.trim() || null,
+        p_qty_available: qtyParam,
       });
       if (e) { setErr(e.message); return; }
       setSavedSpotPrice(spotPriceParam);
       setSavedSpotTitle(spotTitleParam);
       setSavedExpiresAt(expDate.toISOString());
+      if (qtyParam != null) setSavedQty({ available: qtyParam, remaining: qtyParam });
       setEditOpen(false);
       onEdited();
     } catch (e) {
@@ -1094,6 +1388,11 @@ function ThreadModal({
             <span className="font-medium text-zinc-700 dark:text-zinc-300">{post.store_name}</span>
             <span className="text-zinc-500">釋出</span>
             <span>{post.sku_label}</span>
+            {isManual && (
+              <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                手動{post.sku_id == null ? "・手打商品" : ""}
+              </span>
+            )}
             {savedSpotTitle && (
               <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] text-blue-800 dark:bg-blue-950 dark:text-blue-300">
                 App 標題：{savedSpotTitle}
@@ -1103,9 +1402,9 @@ function ThreadModal({
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-zinc-500">
             <span>
               {post.post_type === "request" ? "尚需" : "可釋"}{" "}
-              <span className="font-mono text-zinc-700 dark:text-zinc-300">{post.qty_remaining}</span>
-              {post.qty_remaining !== post.qty_available && (
-                <span className="ml-1 text-[10px] text-zinc-400">/ 原 {post.qty_available}</span>
+              <span className="font-mono text-zinc-700 dark:text-zinc-300">{savedQty.remaining}</span>
+              {savedQty.remaining !== savedQty.available && (
+                <span className="ml-1 text-[10px] text-zinc-400">/ 原 {savedQty.available}</span>
               )}
             </span>
             <span>到期 <span className="text-zinc-700 dark:text-zinc-300">{fmtDt(savedExpiresAt)}</span></span>
@@ -1129,8 +1428,8 @@ function ThreadModal({
           </div>
         </div>
 
-        {/* 發佈後編輯：商品標題 / 釋出單價 / 到期時間 / 商品說明
-            （僅 offer + active；改完會員端即時生效） */}
+        {/* 發佈後編輯：商品標題 / 釋出單價 / 單位 / 數量 / 到期時間 / 商品說明 / 圖片
+            （僅 offer + active；改完會員端即時生效。數量只有手動現貨能改） */}
         {canEdit && editOpen && (
           <div className="flex flex-col gap-2 rounded-md border border-blue-200 bg-blue-50/40 p-3 text-xs dark:border-blue-900 dark:bg-blue-950/20">
             <label>
@@ -1138,21 +1437,47 @@ function ThreadModal({
               <input
                 value={editTitle}
                 onChange={(e) => setEditTitle(e.target.value)}
-                placeholder={originalTitle || "留空 = 沿用商品名稱"}
+                placeholder={originalTitle || (post.sku_id == null ? "手打商品，標題必填" : "留空 = 沿用商品名稱")}
                 className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
               />
             </label>
+            {isManual && (
+              <div className="grid grid-cols-2 gap-2">
+                <label>
+                  <span className="mb-1 block text-zinc-500">數量</span>
+                  <input
+                    value={editQty}
+                    onChange={(e) => setEditQty(e.target.value)}
+                    inputMode="decimal"
+                    className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-right dark:border-zinc-700 dark:bg-zinc-800"
+                  />
+                  <span className="mt-0.5 block text-[11px] text-zinc-400">手動現貨沒有認領扣量，改了就直接覆蓋剩餘量</span>
+                </label>
+                <label>
+                  <span className="mb-1 block text-zinc-500">單位</span>
+                  <input
+                    value={editUnit}
+                    onChange={(e) => setEditUnit(e.target.value)}
+                    placeholder={post.sku_id != null ? "留空 = 商品單位" : "包 / 份"}
+                    className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
+                  />
+                </label>
+              </div>
+            )}
             <label>
               <span className="mb-1 block text-zinc-500">釋出單價</span>
               <input
                 value={editPrice}
                 onChange={(e) => setEditPrice(e.target.value)}
                 inputMode="decimal"
-                placeholder="留空 = 原價"
+                placeholder={originalPrice != null ? "留空 = 原價" : "留空 = 不顯示"}
                 className="w-40 rounded border border-zinc-300 bg-white px-2 py-1.5 text-right dark:border-zinc-700 dark:bg-zinc-800"
               />
               {(() => {
-                if (originalPrice == null) return null;
+                // 手動現貨沒有來源訂單 → 沒有「原價」可比，也就沒有刪除線那套
+                if (originalPrice == null) {
+                  return <span className="ml-2 text-[11px] text-zinc-400">沒有來源訂單，留空的話 App 不顯示金額</span>;
+                }
                 const n = Number(editPrice);
                 if (editPrice.trim() !== "" && Number.isFinite(n) && n < originalPrice) {
                   return (
@@ -1185,6 +1510,13 @@ function ThreadModal({
                 className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
               />
             </label>
+            <div>
+              <span className="mb-1 block text-zinc-500">
+                商品圖片
+                {post.sku_id != null && <span className="ml-1 text-zinc-400">（留空 = 沿用商品主檔的圖）</span>}
+              </span>
+              <ProductImagesField value={editImages} onChange={setEditImages} />
+            </div>
             <div className="flex justify-end gap-2">
               <SpinButton
                 onClick={() => setEditOpen(false)}
@@ -1249,7 +1581,8 @@ function ThreadModal({
             />
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap gap-2">
-                {post.post_type === "offer" && (
+                {/* 手動現貨沒有來源訂單 → 沒東西可轉移，認領按鈕不該出現 */}
+                {post.post_type === "offer" && !isManual && (
                   <SpinButton
                     type="button"
                     onClick={() => setClaimOpen(true)}
@@ -1259,12 +1592,17 @@ function ThreadModal({
                     ✋ 我要認領
                   </SpinButton>
                 )}
+                {post.post_type === "offer" && isManual && (
+                  <span className="self-center text-[11px] text-zinc-400">
+                    手動現貨・只給會員看，不開放跨店認領
+                  </span>
+                )}
                 {canEdit && !editOpen && (
                   <SpinButton
                     type="button"
                     onClick={() => setEditOpen(true)}
                     className="rounded-md border border-blue-400 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300 dark:hover:bg-blue-900"
-                    title="修改釋出單價 / 商品說明（會員端即時生效）"
+                    title="修改標題 / 單價 / 到期 / 說明 / 圖片（會員端即時生效）"
                   >
                     ✏️ 修改內容
                   </SpinButton>
