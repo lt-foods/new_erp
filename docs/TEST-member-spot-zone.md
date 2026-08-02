@@ -8,6 +8,7 @@
 ## 涵蓋範圍
 - Edge Function `liff-api` actions：`list_spot_products`、`get_spot_product`
 - Migration `20260801000020_rpc_upsert_store_line_oa.sql`（`rpc_upsert_store` 加 `p_line_oa_basic_id`）
+- Migration `20260802000000_aid_board_spot_price_description.sql`（互助板 offer 可自訂釋出單價與商品說明）
 - 會員端：底部 tab bar 中央凸起鍵、`/spot` 列表、`/spot/[id]` 詳情（`/shop` 的現貨導流區塊已移除，見 T6）
 - 元件：`SpotProductCard.tsx`、`lib/lineInquiry.ts`
 - admin：`/stores` 的「LINE@ ID」欄位
@@ -41,6 +42,11 @@
 | # | 步驟 | 預期 |
 |---|------|------|
 | T1-1 | admin 用 A 店帳號進 `/inventory/mutual-aid` →「我有庫存可提供」→ 選 A 店訂單 + 品項 + 數量 | 貼文成立，列表出現「釋出 / 進行中 / A店」 |
+| T1-4 | 選了品項後看「釋出單價」與「商品說明」欄位 | 單價預填來源訂單原價（欄位下方顯示「原價 $X」）；說明預填商品主檔原文的**純文字**（無 HTML 標籤），皆可改 |
+| T1-5 | 把單價改低於原價 | 欄位下方出現綠色提示「低於原價 ~~$X~~ — App 會用刪除線顯示原價」 |
+| T1-6 | 單價填 0 / 負數 | 擋下「釋出單價需 > 0（留空 = 沿用原價）」 |
+| T1-7 | 單價留空 or 沒動、說明沒動 | 送出後 `mutual_aid_board.spot_price` / `spot_description` 為 `NULL`（= 沿用原值，不是存一份複本） |
+| T1-8 | SQL 直呼 `rpc_post_aid_board` 用 `p_post_type='request'` 帶 `p_spot_price` | 炸 `spot_price is only valid for offer posts` |
 | T1-2 | 同上用 B 店再發一則（挑不同 SKU 好辨識） | 貼文成立 |
 | T1-3 | `SELECT id, post_type, status, offering_store_id, sku_id, qty_remaining, expires_at FROM mutual_aid_board WHERE post_type='offer' AND status='active';` | 兩筆，`expires_at` 在未來、`qty_remaining > 0` |
 
@@ -55,7 +61,11 @@
 | T2-5 | A 店那筆 | `is_my_store=true`，`unit_price` 是數字，= 來源訂單該 SKU 的 `customer_order_items.unit_price` |
 | T2-6 | **B 店那筆（重點）** | `is_my_store=false`，**`unit_price` 為 `null`** —— 看 raw response 也拿不到金額 |
 | T2-7 | 排序 | `is_my_store=true` 的排前面 |
-| T2-8 | 每筆欄位 | `id, sku_id, sku_code, product_name, variant_name, unit, image_url, store_id, store_name, qty_remaining, expires_at, is_my_store, unit_price` |
+| T2-8 | 每筆欄位 | `id, sku_id, sku_code, product_name, variant_name, unit, image_url, store_id, store_name, qty_remaining, expires_at, is_my_store, unit_price, original_price` |
+| T2-15 | **改價後的 A 店貼文（原價 199、釋出價 149）** | `unit_price=149`、`original_price=199` |
+| T2-16 | 改價**高於**原價（例 249） | `unit_price=249`、`original_price=null`（漲價不畫刪除線） |
+| T2-17 | 沒改價 | `unit_price=原價`、`original_price=null` |
+| T2-18 | **跨店 + 有改價** | `unit_price` 與 `original_price` **都是 `null`** —— 折扣資訊也是金額，不外流 |
 | T2-9 | response 不含 `note` | 板上備註是店對店內部訊息，不外流 |
 | T2-10 | 把 A 店那筆改 `status='cancelled'` 後重打 | 只剩 1 筆（B 店） |
 | T2-11 | 把 B 店那筆 `expires_at` 改成過去後重打 | 0 筆 |
@@ -86,6 +96,7 @@
 | T4-4 | 切回「全部」 | 跨店卡回來，仍然沒有金額 |
 | T4-5 | 說明文字 | **沒有**說明段落（2026-08-01 拿掉）；分頁下面直接接卡片 |
 | T4-6 | A 店卡片 | 左上紫紅「本店釋出」；價格是品牌漸層大字 `$xxx` |
+| T4-14 | A 店卡片（釋出價低於原價） | 大字 `$149` 旁有灰色刪除線 `~~$199~~` |
 | T4-7 | **B 店卡片（重點）** | 左上深色「B店 釋出」；價格位置是灰色鎖頭膠囊「跨店 · 金額不顯示」，畫面上沒有任何金額 |
 | T4-8 | 每張卡 | 有「可提供 N〈單位〉」綠膠囊；**沒有到期倒數**（2026-08-01 從卡片拿掉，剩餘時間只在詳情頁） |
 | T4-9 | 沒有商品圖的 SKU | 暖色品牌底 + 箱子圖示，不是灰底破圖 |
@@ -150,7 +161,8 @@ LIFF 直送要三件事同時成立：`NEXT_PUBLIC_LIFF_ID` 有設（Vercel）�
 | T7-4 | `my_store_line_oa_id` | 只回會員自己店那一間；**不能出現釋出店的 LINE@** |
 | T7-5 | 商品有多張圖 | 可左右滑，底部有頁碼點 |
 | T7-6 | 商品沒有圖 | 品牌底 + 線稿箱子，不是破圖 |
-| T7-7 | 商品有 `products.description` | 顯示「商品說明」區塊；沒有就整塊不出現 |
+| T7-7 | 商品有說明 | 顯示「商品說明」區塊：上架時有改寫 → 顯示改寫版（`spot_description`）；沒改 → fallback 商品主檔原文；兩者皆無 → 整塊不出現 |
+| T7-17 | 詳情頁價格（釋出價低於原價） | 大字 `$149` 旁有刪除線 `~~$199~~`；LINE 詢問訊息帶的金額是 **149**（釋出價） |
 | T7-16 | **商品說明的排版（重點）** | 後台 TipTap 存的是 HTML。畫面上**不能出現 `<p>` `<br>` `</p>` 這種標籤字樣**，段落要正常換行（走 `cleanCampaignText`，同 `/shop/c/[id]`） |
 | T7-8 | 底部提示文字 | 本店寫「數量有限，先問先得」；跨店寫「由店家幫你調貨」 |
 | T7-9 | tab bar | 詳情頁**隱藏** tab bar（底部是詢問列，會打架）；回到 `/spot` 列表後 tab bar 回來 |

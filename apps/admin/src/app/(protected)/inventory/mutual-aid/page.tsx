@@ -37,7 +37,7 @@ type PendingOrder = {
   status: string;
   member_name: string | null;
   member_phone: string | null;
-  items: { campaign_item_id: number | null; sku_id: number | null; qty: number; sku_label: string }[];
+  items: { campaign_item_id: number | null; sku_id: number | null; qty: number; sku_label: string; unit_price: number | null; product_description: string | null }[];
 };
 
 type Reply = {
@@ -62,6 +62,24 @@ const STATUS_COLOR: Record<Post["status"], string> = {
   expired: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
   cancelled: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
 };
+
+/** TipTap HTML → 純文字（textarea 預填用）：區塊標籤轉換行、去標籤、還原常見 entity */
+function stripHtmlToText(raw: string | null | undefined): string {
+  if (!raw) return "";
+  return raw
+    .replace(/<\/(p|div|h[1-6]|li|tr|blockquote)\s*>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/(&#0*39;|&apos;)/gi, "'")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 const TYPE_LABEL: Record<PostType, string> = {
   offer: "釋出",
@@ -518,13 +536,17 @@ function OfferModal({
   const [qty, setQty] = useState("");
   const [expiresAt, setExpiresAt] = useState(defaultExpiresAt);
   const [note, setNote] = useState("");
+  // 釋出單價與商品說明：預填來源訂單原價 / 商品主檔原文，店家可改。
+  // 價低於原價時會員端會以刪除線顯示原價。
+  const [spotPrice, setSpotPrice] = useState("");
+  const [spotDesc, setSpotDesc] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
       setStoreId(""); setOrders(null); setOrderSearch(""); setPickedOrder(null); setPickedItemIdx(0);
-      setQty(""); setNote(""); setErr(null);
+      setQty(""); setNote(""); setSpotPrice(""); setSpotDesc(""); setErr(null);
       setExpiresAt(defaultExpiresAt());
     }
   }, [open]);
@@ -540,7 +562,7 @@ function OfferModal({
         .select(`
           id, order_no, pickup_store_id, status,
           member:members(name, phone),
-          items:customer_order_items(campaign_item_id, sku_id, qty, status, sku:skus(sku_code, product_name, variant_name))
+          items:customer_order_items(campaign_item_id, sku_id, qty, status, unit_price, sku:skus(sku_code, product_name, variant_name, product:products(description)))
         `)
         .eq("pickup_store_id", storeId)
         .eq("status", "ready")
@@ -548,8 +570,9 @@ function OfferModal({
         .limit(200);
       if (cancelled) return;
       if (e) { setErr(e.message); return; }
-      type RawSku = { sku_code: string; product_name: string; variant_name: string | null };
-      type RawItem = { campaign_item_id: number | null; sku_id: number | null; qty: number; status: string; sku: RawSku | RawSku[] | null };
+      type RawProduct = { description: string | null };
+      type RawSku = { sku_code: string; product_name: string; variant_name: string | null; product?: RawProduct | RawProduct[] | null };
+      type RawItem = { campaign_item_id: number | null; sku_id: number | null; qty: number; status: string; unit_price: number | string | null; sku: RawSku | RawSku[] | null };
       type RawMember = { name: string | null; phone: string | null };
       type RawOrder = {
         id: number; order_no: string; pickup_store_id: number; status: string;
@@ -570,6 +593,8 @@ function OfferModal({
             .filter((it) => it.status !== "cancelled" && it.status !== "expired" && it.status !== "picked_up")
             .map((it) => {
               const sku = Array.isArray(it.sku) ? it.sku[0] : it.sku;
+              const product = sku ? (Array.isArray(sku.product) ? sku.product[0] : sku.product) : null;
+              const priceN = Number(it.unit_price);
               return {
                 campaign_item_id: it.campaign_item_id,
                 sku_id: it.sku_id,
@@ -577,6 +602,8 @@ function OfferModal({
                 sku_label: sku
                   ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} (${sku.sku_code})`
                   : `品項#${it.sku_id}`,
+                unit_price: Number.isFinite(priceN) ? priceN : null,
+                product_description: product?.description ?? null,
               };
             }),
         };
@@ -586,10 +613,13 @@ function OfferModal({
     return () => { cancelled = true; };
   }, [open, storeId]);
 
-  // 選了訂單 → 自動帶第一個 item 的 qty
+  // 選了訂單 → 自動帶該 item 的數量、原價、商品說明（後兩者可改）
   useEffect(() => {
-    if (pickedOrder && pickedOrder.items[pickedItemIdx]) {
-      setQty(String(pickedOrder.items[pickedItemIdx].qty));
+    const item = pickedOrder?.items[pickedItemIdx];
+    if (item) {
+      setQty(String(item.qty));
+      setSpotPrice(item.unit_price != null ? String(item.unit_price) : "");
+      setSpotDesc(stripHtmlToText(item.product_description));
     }
   }, [pickedOrder, pickedItemIdx]);
 
@@ -617,6 +647,17 @@ function OfferModal({
     if (!Number.isFinite(qtyN) || qtyN <= 0) { setErr("數量需 > 0"); return; }
     const expDate = new Date(expiresAt);
     if (expDate <= new Date()) { setErr("到期時間需在未來"); return; }
+    const priceRaw = spotPrice.trim();
+    let priceN: number | null = null;
+    if (priceRaw !== "") {
+      priceN = Number(priceRaw);
+      if (!Number.isFinite(priceN) || priceN <= 0) { setErr("釋出單價需 > 0（留空 = 沿用原價）"); return; }
+    }
+    // 沒改的值送 null（= 沿用原價 / 商品主檔原文），改了才存進板上
+    const spotPriceParam = priceN != null && priceN !== item.unit_price ? priceN : null;
+    const descTrim = spotDesc.trim();
+    const spotDescParam =
+      descTrim !== "" && descTrim !== stripHtmlToText(item.product_description) ? descTrim : null;
 
     setSubmitting(true);
     try {
@@ -633,6 +674,8 @@ function OfferModal({
         p_operator: operator,
         p_post_type: "offer",
         p_source_customer_order_id: pickedOrder.id,
+        p_spot_price: spotPriceParam,
+        p_spot_description: spotDescParam,
       });
       if (e) { setErr(e.message); return; }
       onPosted();
@@ -728,7 +771,7 @@ function OfferModal({
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           <label>
             <span className="mb-1 block text-xs text-zinc-500">釋出數量 <span className="text-red-500">*</span></span>
             <input
@@ -737,6 +780,29 @@ function OfferModal({
               inputMode="decimal"
               className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-right dark:border-zinc-700 dark:bg-zinc-800"
             />
+          </label>
+          <label>
+            <span className="mb-1 block text-xs text-zinc-500">釋出單價</span>
+            <input
+              value={spotPrice}
+              onChange={(e) => setSpotPrice(e.target.value)}
+              inputMode="decimal"
+              placeholder="留空 = 原價"
+              className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-right dark:border-zinc-700 dark:bg-zinc-800"
+            />
+            {(() => {
+              const orig = pickedOrder?.items[pickedItemIdx]?.unit_price;
+              const n = Number(spotPrice);
+              if (orig == null) return null;
+              if (spotPrice.trim() !== "" && Number.isFinite(n) && n < orig) {
+                return (
+                  <span className="mt-0.5 block text-[11px] text-emerald-600 dark:text-emerald-400">
+                    低於原價 <s>${orig.toLocaleString()}</s> — App 會用刪除線顯示原價
+                  </span>
+                );
+              }
+              return <span className="mt-0.5 block text-[11px] text-zinc-400">原價 ${orig.toLocaleString()}</span>;
+            })()}
           </label>
           <label>
             <span className="mb-1 block text-xs text-zinc-500">到期時間 <span className="text-red-500">*</span></span>
@@ -749,7 +815,17 @@ function OfferModal({
           </label>
         </div>
         <label>
-          <span className="mb-1 block text-xs text-zinc-500">備註（選填）</span>
+          <span className="mb-1 block text-xs text-zinc-500">商品說明（會顯示在會員 App 的商品詳情，可改寫）</span>
+          <textarea
+            value={spotDesc}
+            onChange={(e) => setSpotDesc(e.target.value)}
+            rows={4}
+            placeholder="選了品項會自動帶入商品主檔的說明，可直接改寫"
+            className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
+          />
+        </label>
+        <label>
+          <span className="mb-1 block text-xs text-zinc-500">備註（選填，店對店內部訊息，不會給會員看）</span>
           <input
             value={note}
             onChange={(e) => setNote(e.target.value)}
@@ -1191,6 +1267,8 @@ function FulfillRequestDialog({
             const sku = Array.isArray(it.sku) ? it.sku[0] : it.sku;
             return {
               campaign_item_id: null, sku_id: it.sku_id, qty: Number(it.qty),
+              // 這個 modal（回應求助）用不到單價/說明，補 null 滿足共用型別
+              unit_price: null, product_description: null,
               sku_label: sku ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} (${sku.sku_code})` : `品項#${it.sku_id}`,
             };
           }),

@@ -24,7 +24,8 @@
 | 上架條件 | `status='active'` ＋ `expires_at > now()` ＋ `qty_remaining > 0` |
 | 不收錄 | `post_type='request'`（我要求助，是店對店求援不是貨）；板上 `note`（店對店內部備註，不外流） |
 | 自動下架 | 被認領光（`exhausted`）／到期（既有 cron `purge-expired-aid-board` 每 10 分鐘跑）／店家取消 —— 三種都自動從 App 消失，不必另外做 |
-| 單價來源 | 該貼文 `source_customer_order_id` 的訂單中，對應 `sku_id` 的 `customer_order_items.unit_price` |
+| 單價來源 | `mutual_aid_board.spot_price`（店家上架時可改，2026-08-02 加）優先；沒改則用來源訂單 `customer_order_items.unit_price`。釋出價**低於**原價時回 `original_price`，會員端畫刪除線 |
+| 商品說明 | `mutual_aid_board.spot_description`（上架時可改寫原文）優先；沒改 fallback `products.description` |
 | 會員所在店 | `members.home_store_id`；未綁定會員退回 JWT 的 `store_id`（掃碼進站那間） |
 
 **命名分工**：對會員講「現貨專區」（現成的貨、不用等團購結單）；卡片上仍標「◯◯店 釋出」當來源。
@@ -204,8 +205,10 @@ tab active 判斷是 `pathname.startsWith(t.href)`。所以現貨專區**必須�
 | `apps/member/.env` / Vercel | 設定 | 加 `NEXT_PUBLIC_LINE_OA_ID` |
 | `docs/TEST-member-released-products.md` | 改名 | → `docs/TEST-member-spot-zone.md`，內容同步 |
 
-**沒有 migration、不動任何 RPC、不動 admin 互助交流板的既有流程。**
-店家操作完全照舊：按「我有庫存可提供」發貼文，會員端就自動看得到。
+| `supabase/migrations/20260802000000_aid_board_spot_price_description.sql` | 新增 | `mutual_aid_board` 加 `spot_price` / `spot_description`；`rpc_post_aid_board` 8 → 10 參數（DROP+CREATE，新參數有 DEFAULT 無空窗） |
+| `apps/admin/src/app/(protected)/inventory/mutual-aid/page.tsx` | 改 | 「我有庫存可提供」表單加「釋出單價」（預填原價，可改；低於原價有提示）與「商品說明」textarea（預填原文純文字，可改寫）；沒改的值送 NULL |
+
+店家操作照舊：按「我有庫存可提供」發貼文，會員端就自動看得到；價格與說明想改才改。
 
 ---
 

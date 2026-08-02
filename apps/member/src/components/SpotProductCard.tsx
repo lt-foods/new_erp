@@ -22,6 +22,9 @@ export type SpotProduct = {
   expires_at: string;
   is_my_store: boolean;
   unit_price: number | null;
+  /** 原價（來源訂單單價）。只在「店家有改價且改得比原價低」時才有值，
+   *  會員端據此畫刪除線。跨店一律 null（金額隱藏）。 */
+  original_price: number | null;
 };
 
 export function spotProductTitle(p: SpotProduct): string {
@@ -102,8 +105,15 @@ export default function SpotProductCard({ item }: { item: SpotProduct }) {
 
         <div className="mt-auto pt-1">
           {item.is_my_store ? (
-            <div className="brand-gradient-text text-[24px] font-extrabold tabular-nums leading-none">
-              {item.unit_price != null ? `$${item.unit_price.toLocaleString()}` : "—"}
+            <div className="flex items-baseline gap-1.5">
+              <span className="brand-gradient-text text-[24px] font-extrabold tabular-nums leading-none">
+                {item.unit_price != null ? `$${item.unit_price.toLocaleString()}` : "—"}
+              </span>
+              {item.original_price != null && (
+                <s className="text-[14px] font-medium tabular-nums text-[var(--secondary-label)]">
+                  ${item.original_price.toLocaleString()}
+                </s>
+              )}
             </div>
           ) : (
             <div className="inline-flex items-center gap-1 rounded-md bg-black/5 px-1.5 py-1 text-[12px] font-medium text-[var(--secondary-label)] dark:bg-white/10">

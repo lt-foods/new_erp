@@ -163,8 +163,15 @@ export default function SpotDetailPage() {
               </h2>
 
               {item.is_my_store ? (
-                <div className="brand-gradient-text text-[32px] font-extrabold tabular-nums leading-none">
-                  {item.unit_price != null ? `$${item.unit_price.toLocaleString()}` : "—"}
+                <div className="flex items-baseline gap-2">
+                  <span className="brand-gradient-text text-[32px] font-extrabold tabular-nums leading-none">
+                    {item.unit_price != null ? `$${item.unit_price.toLocaleString()}` : "—"}
+                  </span>
+                  {item.original_price != null && (
+                    <s className="text-[17px] font-medium tabular-nums text-[var(--secondary-label)]">
+                      ${item.original_price.toLocaleString()}
+                    </s>
+                  )}
                 </div>
               ) : (
                 <div className="inline-flex items-center gap-1.5 rounded-lg bg-black/5 px-2.5 py-1.5 text-[14px] font-medium text-[var(--secondary-label)] dark:bg-white/10">

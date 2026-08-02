@@ -347,7 +347,7 @@ async function listSpotProducts(
   const { data: rows, error } = await sb
     .from("mutual_aid_board")
     .select(
-      "id, offering_store_id, sku_id, qty_remaining, expires_at, created_at, source_customer_order_id, sku:skus(sku_code, product_name, variant_name, base_unit, product:products(name, images))",
+      "id, offering_store_id, sku_id, qty_remaining, expires_at, created_at, source_customer_order_id, spot_price, sku:skus(sku_code, product_name, variant_name, base_unit, product:products(name, images))",
     )
     .eq("tenant_id", tenantId)
     .eq("post_type", "offer")
@@ -411,8 +411,17 @@ async function listSpotProducts(
     const rawImg = Array.isArray(imgs) && imgs.length > 0
       ? (typeof imgs[0] === "string" ? imgs[0] : imgs[0]?.url ?? null)
       : null;
-    const price = isMyStore && r.source_customer_order_id != null
+    // 原價 = 來源訂單單價；釋出價 = 店家上架時自訂的 spot_price（沒填就用原價）。
+    // 釋出價低於原價才回 original_price（會員端據此畫刪除線）；跨店兩者皆 null。
+    const original = isMyStore && r.source_customer_order_id != null
       ? priceMap.get(`${r.source_customer_order_id}:${r.sku_id}`) ?? null
+      : null;
+    const spot = r.spot_price != null && Number.isFinite(Number(r.spot_price))
+      ? Number(r.spot_price)
+      : null;
+    const price = isMyStore ? (spot ?? original) : null;
+    const originalPrice = isMyStore && spot != null && original != null && original > spot
+      ? original
       : null;
     return {
       id: Number(r.id),
@@ -427,7 +436,8 @@ async function listSpotProducts(
       qty_remaining: Number(r.qty_remaining ?? 0),
       expires_at: r.expires_at,
       is_my_store: isMyStore,
-      unit_price: isMyStore ? price : null,
+      unit_price: price,
+      original_price: originalPrice,
     };
   });
 
@@ -465,7 +475,7 @@ async function getSpotProduct(
   const { data: r, error } = await sb
     .from("mutual_aid_board")
     .select(
-      "id, offering_store_id, sku_id, qty_remaining, expires_at, created_at, source_customer_order_id, sku:skus(sku_code, product_name, variant_name, base_unit, product:products(name, description, images))",
+      "id, offering_store_id, sku_id, qty_remaining, expires_at, created_at, source_customer_order_id, spot_price, spot_description, sku:skus(sku_code, product_name, variant_name, base_unit, product:products(name, description, images))",
     )
     .eq("tenant_id", tenantId)
     .eq("id", boardId)
@@ -496,18 +506,29 @@ async function getSpotProduct(
     }
   }
 
+  // 原價 = 來源訂單單價；釋出價 = spot_price 優先。低於原價才回 original_price
+  // （刪除線用）。跨店連查都不查，兩者皆 null —— 同列表的金額隱藏規則。
+  let originalPrice: number | null = null;
   let unitPrice: number | null = null;
-  if (isMyStore && r.source_customer_order_id != null) {
-    const { data: it } = await sb
-      .from("customer_order_items")
-      .select("unit_price")
-      .eq("tenant_id", tenantId)
-      .eq("order_id", r.source_customer_order_id)
-      .eq("sku_id", r.sku_id)
-      .limit(1)
-      .maybeSingle();
-    const p = Number(it?.unit_price);
-    unitPrice = Number.isFinite(p) ? p : null;
+  if (isMyStore) {
+    let original: number | null = null;
+    if (r.source_customer_order_id != null) {
+      const { data: it } = await sb
+        .from("customer_order_items")
+        .select("unit_price")
+        .eq("tenant_id", tenantId)
+        .eq("order_id", r.source_customer_order_id)
+        .eq("sku_id", r.sku_id)
+        .limit(1)
+        .maybeSingle();
+      const p = Number(it?.unit_price);
+      original = Number.isFinite(p) ? p : null;
+    }
+    const spot = r.spot_price != null && Number.isFinite(Number(r.spot_price))
+      ? Number(r.spot_price)
+      : null;
+    unitPrice = spot ?? original;
+    originalPrice = spot != null && original != null && original > spot ? original : null;
   }
 
   const supabaseUrl = requireEnv("SUPABASE_URL");
@@ -528,7 +549,8 @@ async function getSpotProduct(
       sku_code: r.sku?.sku_code ?? null,
       product_name: r.sku?.product_name ?? r.sku?.product?.name ?? null,
       variant_name: r.sku?.variant_name ?? null,
-      description: r.sku?.product?.description ?? null,
+      // 上架時改寫的說明優先；沒改就 fallback 回商品主檔
+      description: r.spot_description ?? r.sku?.product?.description ?? null,
       unit: r.sku?.base_unit ?? null,
       image_url: images[0] ?? null,
       images,
@@ -537,7 +559,8 @@ async function getSpotProduct(
       qty_remaining: Number(r.qty_remaining ?? 0),
       expires_at: r.expires_at,
       is_my_store: isMyStore,
-      unit_price: isMyStore ? unitPrice : null,
+      unit_price: unitPrice,
+      original_price: originalPrice,
     },
     my_store_id: myStoreId,
     my_store_name: myStoreName,
