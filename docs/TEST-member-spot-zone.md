@@ -47,10 +47,13 @@
 | T1-6 | 單價填 0 / 負數 | 擋下「釋出單價需 > 0（留空 = 沿用原價）」 |
 | T1-7 | 單價留空 or 沒動、說明沒動 | 送出後 `mutual_aid_board.spot_price` / `spot_description` 為 `NULL`（= 沿用原值，不是存一份複本） |
 | T1-8 | SQL 直呼 `rpc_post_aid_board` 用 `p_post_type='request'` 帶 `p_spot_price` | 炸 `spot_price is only valid for offer posts` |
-| T1-9 | **發佈後編輯**：點開自己店的 offer 貼文 → 「✏️ 修改內容」 | 出現編輯區：單價（帶目前值或空 = 沿用原價，含原價提示）＋商品說明（帶改寫版或原文）；標頭顯示目前單價，低於原價時旁邊有刪除線原價 |
+| T1-9 | **發佈後編輯**：點開自己店的 offer 貼文 → 「✏️ 修改內容」 | 出現編輯區：單價（帶目前值或空 = 沿用原價，含原價提示）＋**到期時間**（帶目前值）＋商品說明（帶改寫版或原文）；標頭顯示目前單價與到期時間 |
 | T1-10 | 改單價存檔 → 會員 App 重新整理 | App 立刻顯示新價（讀取端每次現查，不用重發貼文）；標頭單價同步更新 |
 | T1-11 | 把單價清空存檔 | `spot_price` 回 `NULL` = 沿用原價；App 回到顯示原價、無刪除線 |
 | T1-12 | 對已結束（cancelled / expired / exhausted）的貼文 | 沒有「修改內容」按鈕；SQL 直呼 `rpc_update_aid_board_listing` 會炸 `only active posts can be edited` |
+| T1-13 | **改到期時間**（延長或縮短）存檔 | 標頭「到期」即時更新；會員端 `/spot` 該筆的下架時間跟著變 |
+| T1-14 | 到期時間設到**過去** | 擋下「到期時間需在未來（要立刻下架請用「結束此貼」）」；SQL 直呼也會炸 `expires_at must be in the future` |
+| T1-15 | 只改單價、不動到期 | 到期時間維持原值（前端一律帶值；SQL 層 `p_expires_at=NULL` 也是不動該欄） |
 | T1-2 | 同上用 B 店再發一則（挑不同 SKU 好辨識） | 貼文成立 |
 | T1-3 | `SELECT id, post_type, status, offering_store_id, sku_id, qty_remaining, expires_at FROM mutual_aid_board WHERE post_type='offer' AND status='active';` | 兩筆，`expires_at` 在未來、`qty_remaining > 0` |
 

@@ -206,6 +206,7 @@ tab active 判斷是 `pathname.startsWith(t.href)`。所以現貨專區**必須�
 | `docs/TEST-member-released-products.md` | 改名 | → `docs/TEST-member-spot-zone.md`，內容同步 |
 | `supabase/migrations/20260802000000_aid_board_spot_price_description.sql` | 新增 | `mutual_aid_board` 加 `spot_price` / `spot_description`；`rpc_post_aid_board` 8 → 10 參數（DROP+CREATE，新參數有 DEFAULT 無空窗） |
 | `supabase/migrations/20260802000010_rpc_update_aid_board_listing.sql` | 新增 | 發佈後編輯：`rpc_update_aid_board_listing`（僅 active offer；NULL = 清除自訂回到沿用）。互助板點開貼文 →「✏️ 修改內容」 |
+| `supabase/migrations/20260802000020_aid_listing_edit_expires_at.sql` | 新增 | 上面那支加 `p_expires_at`（4 → 5 參數）。⚠ 它的 NULL 語意與另兩個相反：`expires_at` 是 NOT NULL 欄位，NULL = 不動；且不得設到過去（要立刻下架請用「結束此貼」） |
 | `apps/admin/src/app/(protected)/inventory/mutual-aid/page.tsx` | 改 | 「我有庫存可提供」表單加「釋出單價」（預填原價，可改；低於原價有提示）與「商品說明」textarea（預填原文純文字，可改寫）；沒改的值送 NULL |
 
 店家操作照舊：按「我有庫存可提供」發貼文，會員端就自動看得到；價格與說明想改才改。

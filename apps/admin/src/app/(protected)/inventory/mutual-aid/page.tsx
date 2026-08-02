@@ -385,6 +385,13 @@ function SkuSearchInput({
   );
 }
 
+/** ISO timestamp → <input type="datetime-local"> 需要的本地時間字串 */
+function toLocalInput(iso: string): string {
+  const d = new Date(iso);
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 16);
+}
+
 function defaultExpiresAt() {
   const d = new Date(Date.now() + 7 * 86400_000);
   d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
@@ -882,6 +889,9 @@ function ThreadModal({
   const [savedSpotPrice, setSavedSpotPrice] = useState<number | null>(post.spot_price);
   const [editPrice, setEditPrice] = useState(post.spot_price != null ? String(post.spot_price) : "");
   const [editDesc, setEditDesc] = useState(post.spot_description ?? "");
+  const [editExpiresAt, setEditExpiresAt] = useState(() => toLocalInput(post.expires_at));
+  // 存檔後 post prop 仍是父層舊資料，標頭到期時間用本地值蓋
+  const [savedExpiresAt, setSavedExpiresAt] = useState(post.expires_at);
   const [originalPrice, setOriginalPrice] = useState<number | null>(null);
   const [originalDesc, setOriginalDesc] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
@@ -928,6 +938,9 @@ function ThreadModal({
     const spotPriceParam = priceN != null && priceN !== originalPrice ? priceN : null;
     const descTrim = editDesc.trim();
     const spotDescParam = descTrim !== "" && descTrim !== originalDesc ? descTrim : null;
+    const expDate = new Date(editExpiresAt);
+    if (Number.isNaN(expDate.getTime())) { setErr("到期時間格式不正確"); return; }
+    if (expDate <= new Date()) { setErr("到期時間需在未來（要立刻下架請用「結束此貼」）"); return; }
     setSavingEdit(true);
     try {
       const sb = getSupabase();
@@ -939,9 +952,11 @@ function ThreadModal({
         p_operator: operator,
         p_spot_price: spotPriceParam,
         p_spot_description: spotDescParam,
+        p_expires_at: expDate.toISOString(),
       });
       if (e) { setErr(e.message); return; }
       setSavedSpotPrice(spotPriceParam);
+      setSavedExpiresAt(expDate.toISOString());
       setEditOpen(false);
       onEdited();
     } catch (e) {
@@ -1041,7 +1056,7 @@ function ThreadModal({
                 <span className="ml-1 text-[10px] text-zinc-400">/ 原 {post.qty_available}</span>
               )}
             </span>
-            <span>到期 <span className="text-zinc-700 dark:text-zinc-300">{fmtDt(post.expires_at)}</span></span>
+            <span>到期 <span className="text-zinc-700 dark:text-zinc-300">{fmtDt(savedExpiresAt)}</span></span>
             <span>發佈 {fmtDt(post.created_at)}</span>
             {post.post_type === "offer" && (
               <span>
@@ -1086,6 +1101,18 @@ function ThreadModal({
                 }
                 return <span className="ml-2 text-[11px] text-zinc-400">原價 ${originalPrice.toLocaleString()}</span>;
               })()}
+            </label>
+            <label>
+              <span className="mb-1 block text-zinc-500">到期時間</span>
+              <input
+                type="datetime-local"
+                value={editExpiresAt}
+                onChange={(e) => setEditExpiresAt(e.target.value)}
+                className="rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
+              />
+              <span className="ml-2 text-[11px] text-zinc-400">
+                到期後會員端自動下架；要立刻收回請用「結束此貼」
+              </span>
             </label>
             <label>
               <span className="mb-1 block text-zinc-500">商品說明（會顯示在會員 App 的商品詳情，可改寫）</span>
