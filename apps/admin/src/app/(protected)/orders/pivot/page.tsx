@@ -7,6 +7,7 @@ import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
 import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
+import { useHasStaffPerm } from "@/lib/staffPerms";
 import { ORDER_STATUSES, ORDER_STATUS_LABEL, type OrderStatus } from "@/lib/orderStatus";
 import { type CampaignStatus } from "@/lib/campaignStatus";
 import SpinButton from "@/components/SpinButton";
@@ -273,14 +274,19 @@ function PivotContent() {
     }
   }, [hydrated, campaignIds, viewBy, dateFrom, dateTo, statusSet, storeId, metric, closedOnly]);
 
-  // 分店帳號鎖
-  const branchStoreId = useUserBranchStoreId(stores);
+  // 分店帳號鎖 —— 可被「訂單樞紐：檢視所有門市」功能權限個別解除。
+  // 該權限由 owner/admin 在 /staff 逐人授予（app_metadata.perms），
+  // 讓特定分店同仁看得到全部店的樞紐，又不必把他整個升成 HQ 帳號。
+  const canSeeAllStores = useHasStaffPerm("orders_pivot_all_stores");
+  const ownBranchStoreId = useUserBranchStoreId(stores);
+  const branchStoreId = canSeeAllStores ? null : ownBranchStoreId;
   useEffect(() => {
     if (branchStoreId != null && storeId !== String(branchStoreId)) {
       setStoreId(String(branchStoreId));
     }
   }, [branchStoreId, storeId]);
-  useDefaultStoreFromUser(stores, storeId, setStoreId);
+  // 有授權者預設停在「全部取貨店」，不要被帶回自己店
+  useDefaultStoreFromUser(stores, storeId, setStoreId, !canSeeAllStores);
 
   // Load stores 一次
   useEffect(() => {
@@ -803,6 +809,11 @@ function PivotContent() {
           <select
             value={storeId}
             onChange={(e) => setStoreId(e.target.value)}
+            title={
+              canSeeAllStores && ownBranchStoreId != null
+                ? "已個別授權「訂單樞紐：檢視所有門市」"
+                : undefined
+            }
             className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
           >
             <option value="">全部取貨店</option>

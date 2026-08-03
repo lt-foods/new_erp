@@ -9,6 +9,7 @@ import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow } from "@/components/DataTable";
 import { RoleChip, ALL_ROLES, roleLabel, type StaffRole } from "@/components/RoleChip";
+import { ALL_STAFF_PERMS, permLabel } from "@/lib/staffPerms";
 
 type StaffRow = {
   user_id: string;
@@ -16,6 +17,8 @@ type StaffRow = {
   display_name: string | null;
   role: string;
   stores: string[];
+  // 功能權限（app_metadata.perms）— role 之外個別授予的細粒度開關
+  perms: string[];
   disabled: boolean;
   created_at: string;
   last_sign_in_at: string | null;
@@ -27,6 +30,7 @@ type Modal =
   | { mode: "create" }
   | { mode: "role"; row: StaffRow }
   | { mode: "stores"; row: StaffRow }
+  | { mode: "perms"; row: StaffRow }
   | { mode: "disable"; row: StaffRow }
   | null;
 
@@ -62,7 +66,13 @@ export default function StaffPage() {
       if (s.error) { setError(s.error.message); return; }
       if (l.error) { setError(l.error.message); return; }
       setStores((s.data ?? []) as Store[]);
-      setRows((l.data ?? []) as StaffRow[]);
+      // perms 是後加的欄位；線上 RPC 還沒套 migration 時會是 undefined → 補成空陣列
+      setRows(
+        ((l.data ?? []) as StaffRow[]).map((r) => ({
+          ...r,
+          perms: Array.isArray(r.perms) ? r.perms : [],
+        })),
+      );
     })();
     return () => { cancelled = true; };
   }, [canManage, reloadTick]);
@@ -110,15 +120,16 @@ export default function StaffPage() {
           <Th>顯示名</Th>
           <Th>角色</Th>
           <Th>綁定店</Th>
+          <Th>功能權限</Th>
           <Th align="right">建立</Th>
           <Th align="right">最後登入</Th>
           <Th>{""}</Th>
         </THead>
         <TBody>
           {rows === null ? (
-            <EmptyRow colSpan={7}>載入中…</EmptyRow>
+            <EmptyRow colSpan={8}>載入中…</EmptyRow>
           ) : rows.length === 0 ? (
-            <EmptyRow colSpan={7}>沒有員工</EmptyRow>
+            <EmptyRow colSpan={8}>沒有員工</EmptyRow>
           ) : (
             rows.map((r) => {
               const isSelf = r.user_id === user?.id;
@@ -138,6 +149,22 @@ export default function StaffPage() {
                       <div className="flex flex-wrap gap-1">
                         {r.stores.map((s) => (
                           <span key={s} className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">{s}</span>
+                        ))}
+                      </div>
+                    )}
+                  </Td>
+                  <Td>
+                    {r.perms.length === 0 ? (
+                      <span className="text-xs text-zinc-400">—</span>
+                    ) : (
+                      <div className="flex flex-wrap gap-1">
+                        {r.perms.map((p) => (
+                          <span
+                            key={p}
+                            className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] text-sky-700 dark:bg-sky-950 dark:text-sky-300"
+                          >
+                            {permLabel(p)}
+                          </span>
                         ))}
                       </div>
                     )}
@@ -167,6 +194,13 @@ export default function StaffPage() {
                         className="text-xs text-blue-600 hover:underline dark:text-blue-400"
                       >
                         綁店
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setModal({ mode: "perms", row: r })}
+                        className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                      >
+                        功能權限
                       </button>
                       {disabled ? (
                         <button
@@ -216,6 +250,13 @@ export default function StaffPage() {
         <StoresModal
           row={modal.row}
           stores={stores}
+          onClose={() => setModal(null)}
+          onSaved={() => { setModal(null); reload(); }}
+        />
+      )}
+      {modal?.mode === "perms" && (
+        <PermsModal
+          row={modal.row}
           onClose={() => setModal(null)}
           onSaved={() => { setModal(null); reload(); }}
         />
@@ -335,6 +376,64 @@ function StoresModal({
               />
               <span>{s.name}</span>
               <span className="ml-auto text-[10px] text-zinc-400">{s.code}</span>
+            </label>
+          ))}
+        </div>
+        <p className="text-[11px] text-zinc-500">改完員工需重新登入才會生效。</p>
+        {err && <p className="text-xs text-rose-600">{err}</p>}
+        <div className="flex justify-end gap-2 pt-2">
+          <SpinButton onClick={onClose} className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">取消</SpinButton>
+          <SpinButton onClick={save} className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900">儲存</SpinButton>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function PermsModal({
+  row, onClose, onSaved,
+}: { row: StaffRow; onClose: () => void; onSaved: () => void }) {
+  const [sel, setSel] = useState<Set<string>>(new Set(row.perms));
+  const [err, setErr] = useState<string | null>(null);
+
+  function toggle(key: string) {
+    setSel((s) => {
+      const n = new Set(s);
+      if (n.has(key)) n.delete(key); else n.add(key);
+      return n;
+    });
+  }
+
+  async function save() {
+    const { error } = await getSupabase().rpc("rpc_update_staff_perms", {
+      p_user_id: row.user_id, p_perms: Array.from(sel),
+    });
+    if (error) { setErr(error.message); return; }
+    onSaved();
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`功能權限 — ${row.email}`} maxWidth="max-w-md">
+      <div className="space-y-3 p-5">
+        <p className="text-xs text-zinc-500">
+          角色之外「個別加開」的功能。不勾＝依角色/綁店的預設權限。
+        </p>
+        <div className="space-y-2">
+          {ALL_STAFF_PERMS.map((p) => (
+            <label
+              key={p.key}
+              className="flex cursor-pointer items-start gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-700"
+            >
+              <input
+                type="checkbox"
+                checked={sel.has(p.key)}
+                onChange={() => toggle(p.key)}
+                className="mt-0.5 h-4 w-4"
+              />
+              <span>
+                <span className="font-medium">{p.label}</span>
+                <span className="mt-0.5 block text-[11px] text-zinc-500">{p.desc}</span>
+              </span>
             </label>
           ))}
         </div>

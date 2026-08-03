@@ -27,6 +27,8 @@ export function useUserBranchStoreId(
  *   設成 storeId state (如果現在還是空的)
  * - HQ 帳號 (沒 stores 或包含「總倉」) → 不動
  * - 一旦套過就不再 reapply,使用者手動切回「全部」也尊重
+ * - enabled=false → 完全不套（給「被個別授權可看全部店」的分店帳號用,
+ *   讓它預設停在「全部門市」而不是被帶回自己店）
  *
  * 用法:
  *   useDefaultStoreFromUser(stores, storeId, setStoreId);
@@ -35,11 +37,13 @@ export function useDefaultStoreFromUser(
   stores: ReadonlyArray<{ id: number | string; name: string }>,
   currentStoreId: string,
   setStoreId: (v: string) => void,
+  enabled = true,
 ) {
   const { user } = useAuth();
   const appliedRef = useRef(false);
 
   useEffect(() => {
+    if (!enabled) return;
     if (appliedRef.current) return;
     if (currentStoreId) {
       // URL 或使用者已預先設過 → 不覆蓋
@@ -55,5 +59,5 @@ export function useDefaultStoreFromUser(
       setStoreId(String(match.id));
       appliedRef.current = true;
     }
-  }, [stores, user, currentStoreId, setStoreId]);
+  }, [stores, user, currentStoreId, setStoreId, enabled]);
 }
