@@ -58,18 +58,58 @@ type TrendData = {
   total: MonthAgg;
 };
 
-type Tab = "pending" | "partially" | "completed" | "cancelled" | "transferred";
+// 「可取貨」= status 'ready'（ORDER_STATUS_LABEL.ready），貨已到店、會員還沒來取。
+// 它是「未取貨」(pending/confirmed/shipping/ready) 的子集 — 兩個 tab 刻意重疊：
+// 未取貨是全部未取的總覽，可取貨是其中今天真的能交貨的那批。
+type Tab = "pending" | "ready" | "partially" | "completed" | "cancelled" | "transferred";
 const TABS: { value: Tab; label: string }[] = [
   { value: "pending", label: "未取貨" },
+  { value: "ready", label: "可取貨" },
   { value: "partially", label: "部分取貨" },
   { value: "completed", label: "已完成" },
   { value: "transferred", label: "轉出" },
   { value: "cancelled", label: "取消" },
 ];
+const TAB_VALUES = TABS.map((t) => t.value);
 const PENDING_STATUSES: OrderStatus[] = ["pending", "confirmed", "shipping", "ready"];
 const CANCELLED_STATUSES: OrderStatus[] = ["cancelled", "expired"];
 
 const PAGE_SIZE = 50;
+
+// 日期區間 filter — <input type="date"> 給的是 "YYYY-MM-DD" 當地日期，
+// created_at 是 timestamptz，因此在瀏覽器時區換算成半開區間 [from, to)：
+//   from = 起日 00:00、to = 迄日的「隔天」00:00（迄日當天整天算進來）。
+// 同一組字串同時餵給 PostgREST 列表查詢與 rpc_order_overview，確保列表與 tab 數量一致。
+function dayStartIso(ymd: string, addDays = 0): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(y, m - 1, d + addDays, 0, 0, 0, 0).toISOString();
+}
+
+// Date → "YYYY-MM-DD"（當地時區；不能用 toISOString().slice(0,10)，UTC 會差一天）
+function fmtYmd(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// 日期區間快捷：回傳 [起, 迄]（皆含當日）
+const DATE_PRESETS: { label: string; range: () => [string, string] }[] = [
+  { label: "今天", range: () => { const t = new Date(); return [fmtYmd(t), fmtYmd(t)]; } },
+  {
+    label: "近 7 天",
+    range: () => {
+      const t = new Date();
+      const from = new Date(t.getFullYear(), t.getMonth(), t.getDate() - 6);
+      return [fmtYmd(from), fmtYmd(t)];
+    },
+  },
+  {
+    label: "本月",
+    range: () => {
+      const t = new Date();
+      return [fmtYmd(new Date(t.getFullYear(), t.getMonth(), 1)), fmtYmd(t)];
+    },
+  },
+];
 
 // 關鍵字 → PostgREST or-filter：先用 members 解出符合的會員 id，
 // 再讓 customer_orders 以 (order_no ∨ nickname_snapshot ∨ member_id ∈ ids) 過濾。
@@ -131,11 +171,14 @@ function OrdersListContent() {
   })();
   const initialTab: Tab = (() => {
     const t = searchParams.get("tab");
-    if (t === "pending" || t === "partially" || t === "completed" || t === "cancelled" || t === "transferred") return t;
-    return "pending";
+    return TAB_VALUES.includes(t as Tab) ? (t as Tab) : "pending";
   })();
   const initialStoreId = searchParams.get("storeId") ?? "";
   const initialKeyword = searchParams.get("q") ?? "";
+  const initialDate = (key: string) => {
+    const v = searchParams.get(key) ?? "";
+    return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : "";
+  };
 
   const [rows, setRows] = useState<Row[] | null>(null);
   const [total, setTotal] = useState(0);
@@ -145,6 +188,9 @@ function OrdersListContent() {
   const [campaignIds, setCampaignIds] = useState<string[]>(initialCampaignIds);
   const [tab, setTab] = useState<Tab>(initialTab);
   const [storeId, setStoreId] = useState(initialStoreId);
+  // 訂單日 (created_at) 區間；"" = 不限
+  const [dateFrom, setDateFrom] = useState(initialDate("from"));
+  const [dateTo, setDateTo] = useState(initialDate("to"));
   const [tabCounts, setTabCounts] = useState<Record<Tab, number> | null>(null);
   const [page, setPage] = useState(1);
   const [kwInput, setKwInput] = useState(initialKeyword);
@@ -181,7 +227,11 @@ function OrdersListContent() {
   // KPI trend (當月 1 號 ~ 今天 每日 + 本月累計、套 filter 開團+店家、排除 transferred_out)
   const [trend, setTrend] = useState<TrendData | null>(null);
 
-  useEffect(() => { setPage(1); }, [campaignIds, tab, storeId, keyword]);
+  const fromTs = useMemo(() => (dateFrom ? dayStartIso(dateFrom) : null), [dateFrom]);
+  const toTs = useMemo(() => (dateTo ? dayStartIso(dateTo, 1) : null), [dateTo]);
+  const hasFilter = campaignIds.length > 0 || !!storeId || !!keyword || !!dateFrom || !!dateTo;
+
+  useEffect(() => { setPage(1); }, [campaignIds, tab, storeId, keyword, fromTs, toTs]);
 
   // 取貨店篩選不鎖分店：所有帳號都可自由選任一店 / 全部
   // （僅保留軟性預設選中自家店，使用者可自行切換到別店或「全部」）
@@ -277,12 +327,15 @@ function OrdersListContent() {
         if (campaignIds.length === 1) q = q.eq("campaign_id", Number(campaignIds[0]));
         else if (campaignIds.length > 1) q = q.in("campaign_id", campaignIds.map((x) => Number(x)));
         // 依 tab 套狀態過濾;一律隱藏 transferred_out (視同關閉、金額/數量不入統計)
-        if (tab === "partially") q = q.eq("status", "partially_completed");
+        if (tab === "ready") q = q.eq("status", "ready");
+        else if (tab === "partially") q = q.eq("status", "partially_completed");
         else if (tab === "completed") q = q.eq("status", "completed");
         else if (tab === "cancelled") q = q.in("status", CANCELLED_STATUSES);
         else if (tab === "transferred") q = q.eq("status", "transferred_out");
         else q = q.in("status", PENDING_STATUSES);
         if (storeId) q = q.eq("pickup_store_id", Number(storeId));
+        if (fromTs) q = q.gte("created_at", fromTs);
+        if (toTs) q = q.lt("created_at", toTs);
         const kwOr = await buildKeywordOr(keyword);
         if (cancelled) return;
         if (kwOr) q = q.or(kwOr);
@@ -338,7 +391,7 @@ function OrdersListContent() {
       }
     })();
     return () => { cancelled = true; };
-  }, [campaignIds, tab, storeId, page, reloadOrders, keyword]);
+  }, [campaignIds, tab, storeId, page, reloadOrders, keyword, fromTs, toTs]);
 
   // 頁首聚合（tab 數量 + 月趨勢）— 單一伺服端 RPC rpc_order_overview
   // 取代之前 client 端「5 個 count:exact 全表掃描」+「搬整月訂單+全部明細
@@ -352,16 +405,19 @@ function OrdersListContent() {
       const today = new Date();
       const startDate = new Date(today.getFullYear(), today.getMonth(), 1);
 
+      // p_date_from/p_date_to 只收斂 tab 數量（趨勢卡維持「本月」語意，見 migration 20260803000000）
       const { data, error: rpcErr } = await sb.rpc("rpc_order_overview", {
         p_campaign_ids: campaignIds.length ? campaignIds.map((x) => Number(x)) : null,
         p_store_id: storeId ? Number(storeId) : null,
         p_keyword: keyword || null,
         p_month_start: startDate.toISOString(),
+        p_date_from: fromTs,
+        p_date_to: toTs,
       });
       if (cancelled) return;
 
       type Overview = {
-        tab_counts: { pending: number; partially: number; completed: number; cancelled: number; transferred: number };
+        tab_counts: { pending: number; ready: number; partially: number; completed: number; cancelled: number; transferred: number };
         trend_days: { ymd: string; orders: number; members: number; amount: number }[];
         trend_total: { orders: number; members: number; amount: number };
       };
@@ -373,6 +429,7 @@ function OrdersListContent() {
       const ov = data as Overview;
       setTabCounts({
         pending: ov.tab_counts.pending ?? 0,
+        ready: ov.tab_counts.ready ?? 0,
         partially: ov.tab_counts.partially ?? 0,
         completed: ov.tab_counts.completed ?? 0,
         cancelled: ov.tab_counts.cancelled ?? 0,
@@ -413,7 +470,7 @@ function OrdersListContent() {
     return () => {
       cancelled = true;
     };
-  }, [campaignIds, storeId, reloadOrders, keyword]);
+  }, [campaignIds, storeId, reloadOrders, keyword, fromTs, toTs]);
 
   const campaignMap = useMemo(() => new Map(campaigns.map((c) => [c.id, c])), [campaigns]);
   const storeMap = useMemo(() => new Map(stores.map((s) => [s.id, s])), [stores]);
@@ -636,8 +693,9 @@ function OrdersListContent() {
         />
       </div>
 
-      {/* Tab bar — 未取貨 / 部分取貨 / 已完成 / 轉出 / 取消;含各 tab 數量 */}
-      <div className="flex items-center gap-1 border-b border-zinc-200 dark:border-zinc-800">
+      {/* Tab bar — 未取貨 / 可取貨 / 部分取貨 / 已完成 / 轉出 / 取消;含各 tab 數量 */}
+      {/* 6 個 tab 在手機寬度放不下 → 橫向捲動,不要擠壓/換行 */}
+      <div className="flex items-center gap-1 overflow-x-auto border-b border-zinc-200 dark:border-zinc-800">
         {TABS.map((t) => {
           const active = tab === t.value;
           const count = tabCounts?.[t.value];
@@ -645,7 +703,7 @@ function OrdersListContent() {
             <SpinButton
               key={t.value}
               onClick={() => setTab(t.value)}
-              className={`relative px-4 py-2 text-sm font-medium transition-colors ${
+              className={`relative shrink-0 whitespace-nowrap px-3 py-2 text-sm font-medium transition-colors sm:px-4 ${
                 active
                   ? "text-zinc-900 dark:text-zinc-100"
                   : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
@@ -765,6 +823,7 @@ function OrdersListContent() {
           <option value="">全部取貨店</option>
           {stores.map((s) => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
         </select>
+
         <form
           onSubmit={(e) => { e.preventDefault(); setKeyword(kwInput.trim()); }}
           className="flex gap-2"
@@ -808,6 +867,59 @@ function OrdersListContent() {
         </form>
       </div>
 
+      {/* 訂單日 (created_at) 區間 — 含起訖當日；留空 = 不限。
+          自成一列：兩個 date input + 快捷鈕塞進上面的 3 欄 grid 會被壓到看不到年份。 */}
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <div
+          className="flex items-center gap-1 rounded-md border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-800"
+          title="依訂單日 (created_at) 篩選，含起訖當日；留空 = 不限"
+        >
+          <span className="shrink-0 pl-1 text-xs text-zinc-500">訂單日</span>
+          <input
+            type="date"
+            value={dateFrom}
+            max={dateTo || undefined}
+            onChange={(e) => setDateFrom(e.target.value)}
+            className="bg-transparent px-1 py-1 outline-none"
+          />
+          <span className="text-zinc-400">~</span>
+          <input
+            type="date"
+            value={dateTo}
+            min={dateFrom || undefined}
+            onChange={(e) => setDateTo(e.target.value)}
+            className="bg-transparent px-1 py-1 outline-none"
+          />
+        </div>
+        {DATE_PRESETS.map((p) => {
+          const [f, t] = p.range();
+          const active = dateFrom === f && dateTo === t;
+          return (
+            <SpinButton
+              key={p.label}
+              type="button"
+              onClick={() => { setDateFrom(f); setDateTo(t); }}
+              className={active
+                ? "rounded-md border border-zinc-900 bg-zinc-900 px-2.5 py-1.5 text-xs font-medium text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+                : "rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              }
+            >
+              {p.label}
+            </SpinButton>
+          );
+        })}
+        {(dateFrom || dateTo) && (
+          <SpinButton
+            type="button"
+            onClick={() => { setDateFrom(""); setDateTo(""); }}
+            title="清除日期區間"
+            className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            ✕ 清除
+          </SpinButton>
+        )}
+      </div>
+
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
           <p className="font-medium">讀取失敗</p><p className="mt-1 font-mono text-xs">{error}</p>
@@ -824,7 +936,7 @@ function OrdersListContent() {
           </div>
         ) : rows.length === 0 ? (
           <div className="rounded-md border border-zinc-200 p-6 text-center text-sm text-zinc-500 dark:border-zinc-800">
-            {total === 0 && campaignIds.length === 0 && !storeId && !keyword ? "此 tab 下尚無訂單。" : "沒有符合條件的訂單。"}
+            {total === 0 && !hasFilter ? "此 tab 下尚無訂單。" : "沒有符合條件的訂單。"}
           </div>
         ) : rows.map((r) => {
           const m = r.member_id ? members.get(r.member_id) : null;
@@ -909,7 +1021,7 @@ function OrdersListContent() {
             {rows === null ? (
               <tr><td colSpan={9}><LoadingBlock /></td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">{total === 0 && campaignIds.length === 0 && !storeId && !keyword ? `此 tab 下尚無訂單。` : "沒有符合條件的訂單。"}</td></tr>
+              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">{total === 0 && !hasFilter ? "此 tab 下尚無訂單。" : "沒有符合條件的訂單。"}</td></tr>
             ) : rows.map((r) => {
               const m = r.member_id ? members.get(r.member_id) : null;
               const c = campaignMap.get(r.campaign_id);
