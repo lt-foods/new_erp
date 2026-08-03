@@ -29,6 +29,11 @@ function clearSessionFlag(key: string) {
   try { sessionStorage.removeItem(key); } catch { /* noop */ }
 }
 
+/** liff.* 在 init 失敗 / SDK 狀態不完整時會 throw，讀值一律包起來 */
+function safe<T>(fn: () => T): T | null {
+  try { return fn(); } catch { return null; }
+}
+
 /** 是否在 LINE 的內建瀏覽器裡（含 LIFF browser）。UA 帶 " Line/"。 */
 function isInLineApp(): boolean {
   if (typeof navigator === "undefined") return false;
@@ -359,17 +364,47 @@ export default function LandingPage() {
       return;
     }
 
-    // 在 LINE 內建瀏覽器、又沒有 LIFF context —— 這裡沒有任何能走的登入路：
-    //   - access.line.me 的 OAuth 授權頁在 LINE webview 內會回 400
-    //   - 導去 liff.line.me 也沒用：LIFF app 的 Endpoint URL 不是本站網域，
-    //     LIFF 登入會帶著本站網址當 redirect_uri，被 LINE 擋成同一頁 400
-    //     （2026-08-03 實測：redirect_uri 指本站 → 400，指 LIFF endpoint → 200）
-    // 所以不要再彈了，直接給使用者能自己脫困的指引。
+    const liff = liffRef.current;
+
+    // 已經登入 LIFF（含 web 登入完成回來）：直接拿 id_token 建 session。
+    // 首次 init 若因後端暫時性錯誤失敗（例：缺 env），使用者按登入就是在重試這條。
+    if (liff && safe(() => liff.isLoggedIn())) {
+      const idToken = safe(() => liff.getIDToken());
+      if (idToken) {
+        setStatus("liff_auth");
+        runLiffSession(idToken, storeId, readPairFromUrl()).catch((e) => {
+          logCaught("liff_session_retry_failed", e, { store: storeId });
+          setError(e instanceof Error ? e.message : String(e));
+          setStatus("idle");
+        });
+        return;
+      }
+    }
+
+    // 在 LINE 內、還沒登入 LIFF → 跑 LIFF 登入。
+    // 2026-08-03 之前這條必定回 400（LIFF 的 Endpoint URL 不是本站網域，
+    // redirect_uri 沒被 channel 認可）；換上 endpoint = 本站的 LIFF 後已實測放行。
+    // 只試一次，回來還是沒登入就給外部瀏覽器指引，不要讓使用者在 LINE 裡鬼打牆。
     if (isInLineApp()) {
+      if (liff && !sessionFlag(LIFF_RETRY_KEY)) {
+        setSessionFlag(LIFF_RETRY_KEY);
+        logClientError(
+          "liff_login_from_line_browser",
+          "LINE 內建瀏覽器：跑 LIFF 登入",
+          { store: storeId },
+          "warn",
+        );
+        try {
+          liff.login();
+          return;
+        } catch (e) {
+          logCaught("liff_login_failed", e, { store: storeId });
+        }
+      }
       logClientError(
         "line_browser_login_blocked",
-        "LINE 內建瀏覽器且無 LIFF context，改顯示外部瀏覽器指引",
-        { store: storeId, has_liff_id: Boolean(liffId) },
+        "LINE 內建瀏覽器登入不成，改顯示外部瀏覽器指引",
+        { store: storeId, has_liff_id: Boolean(liffId), has_liff: Boolean(liff) },
       );
       setLineStuck(true);
       return;
@@ -380,14 +415,8 @@ export default function LandingPage() {
   };
 
   /**
-   * 卡在 LINE 裡時的「再試一次」：直接跑 LIFF 登入。
-   *
-   * 現況（2026-08-03）這條會失敗 —— `NEXT_PUBLIC_LIFF_ID` 借用的是「包子媽團購」
-   * worker 站那支 LIFF，它註冊的 Endpoint URL 不是本站網域，LIFF 登入會把本站
-   * 網址當 redirect_uri 送出去，被 LINE 擋成 400。所以這顆是**次要**按鈕，
-   * 主要指引仍是改用外部瀏覽器。
-   *
-   * 等 LIFF ID 換成 endpoint = 本站的那支之後，這條就會直接生效，不用再改程式。
+   * 指引畫面上的「再試一次」：start() 已經自動試過一輪 LIFF 登入，
+   * 這顆是給使用者手動再試的（例如上一次是網路瞬斷、或他剛切換了 LINE 帳號）。
    */
   const retryLiffLogin = () => {
     const liff = liffRef.current;
