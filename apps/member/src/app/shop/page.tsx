@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { consumeFragmentToSession, getSession } from "@/lib/session";
+import { consumeFragmentToSession, getSession, loginPath } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import PullToRefresh from "@/components/PullToRefresh";
@@ -60,7 +60,7 @@ export default function ShopPage() {
     async (silent = false) => {
       const s = getSession();
       if (!s || !s.memberId) {
-        router.replace("/");
+        router.replace(loginPath());
         return;
       }
       if (!silent) setErr(null);

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { consumeFragmentToSession, getSession } from "@/lib/session";
+import { consumeFragmentToSession, getSession, loginPath } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import { LoadingScreen } from "@/components/Spinner";
@@ -22,7 +22,7 @@ export default function SettlementsPage() {
     consumeFragmentToSession();
     const s = getSession();
     if (!s || !s.memberId) {
-      router.replace("/");
+      router.replace(loginPath());
       return;
     }
     (async () => {

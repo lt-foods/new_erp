@@ -78,6 +78,39 @@ LIFF ↔ 網頁互推的迴圈，第二次還沒登入就給文字指引（請�
 debug 提醒：`line-oauth-start` 用 curl 打回 302 → LINE login page **不代表沒問題** —
 這條路在一般瀏覽器本來就會過，400 只在真的 LINE webview 裡才會出現。
 
+### LIFF app 的 Endpoint URL 必須跟會員站同網域，中間不能跨網域轉址
+
+LIFF 登入（`access.line.me/liff/v1/authorize`）會把**當下的網址**當 `redirect_uri` 送出去。
+只要那個網址不在 LIFF app 註冊的 Endpoint URL 底下，LINE 就回 **400 Bad Request**。
+
+2026-08-03 實測（同一支 LIFF，只換 `redirect_uri`）：
+
+```
+redirect_uri=<LIFF app 註冊的 endpoint>        → HTTP 200（正常登入頁）
+redirect_uri=https://new-erp-admin.vercel.app/ → HTTP 400 ← 會員看到的那頁
+```
+
+當時的坑：LIFF `2009883687-NZX6xXEW` 的 endpoint 被指到一個 Cloudflare Worker
+（`line-richmenu-branches.www161616.workers.dev`），那支 worker 又 302 到
+`new-erp-admin.vercel.app/orders`。**一跨出網域，LIFF context 就沒了**
+（`isInClient()` 變 false、沒有 auto login、LINE 還會跳「此為外部網站」），
+接下來任何登入動作都是 400。
+
+所以：要在 LIFF 內轉址，一律轉去 **`https://liff.line.me/{另一支 endpoint 正確的 LIFF_ID}`**，
+不要直接 302 到別的網域。查一支 LIFF 的 endpoint：
+
+```bash
+curl -s https://liff.line.me/<LIFF_ID> | grep liffEndpointUrl
+```
+
+驗 redirect_uri 會不會被擋（不用真的手機）：
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' -L \
+  "https://access.line.me/liff/v1/authorize?app_id=<LIFF_ID>&state=x&response_type=code\
+&code_challenge_method=S256&code_challenge=<43字元>&liff_sdk_version=2.29.2&redirect_uri=<URL編碼>"
+```
+
 ---
 
 ## 會員前端（apps/member）

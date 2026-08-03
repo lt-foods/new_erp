@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { lineOauthStartUrl, callLiffApi } from "@/lib/supabase";
 import { loadLiff } from "@/lib/liff";
 import { clearSession, getSession, listenForSession } from "@/lib/session";
-import { logCaught, logClientError } from "@/lib/clientLog";
+import { isPageUnloading, logCaught, logClientError } from "@/lib/clientLog";
 import Spinner, { LoadingScreen } from "@/components/Spinner";
 
 type Status = "loading" | "idle" | "liff_auth" | "pair_done" | "error";
@@ -44,7 +44,8 @@ function liffAppUrl(
 }
 
 const LINE_BROWSER_HINT =
-  "LINE 內建瀏覽器無法完成 LINE 登入。請點右上角「⋮」選「用其他瀏覽器開啟」後再登入，或從 LINE 官方帳號的選單重新進入。";
+  "這個畫面是在 LINE 的內建瀏覽器開啟的，LINE 不允許在這裡完成登入。" +
+  "請點右上角「⋮」選「用其他瀏覽器開啟」，或複製下面的連結貼到 Safari / Chrome 再登入。";
 
 function isStandalone(): boolean {
   if (typeof window === "undefined") return false;
@@ -131,6 +132,11 @@ export default function LandingPage() {
   const [status, setStatus] = useState<Status>("loading");
   const [error, setError] = useState<string | null>(null);
   const [standalone, setStandalone] = useState(false);
+  /** 在 LINE 內建瀏覽器又沒有 LIFF context = 無路可走，改給外部瀏覽器指引 */
+  const [lineStuck, setLineStuck] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
+  /** LIFF 已登入但缺門市時留下的 id_token，選完門市直接拿它補完登入 */
+  const liffIdTokenRef = useRef<string | null>(null);
 
   // 6 位數驗證碼 fallback
   const [syncCode, setSyncCode] = useState("");
@@ -163,6 +169,8 @@ export default function LandingPage() {
     callLiffApi<{ stores: StoreOption[] }>("", { action: "list_stores" })
       .then((r) => setStores(r.stores ?? []))
       .catch((e) => {
+        // 跳頁把這個 fetch 取消掉不算故障（Safari 回 "Load failed"），記了只是雜訊
+        if (isPageUnloading()) return;
         // 抓不到就退回手動輸入；但要留痕以免靜默失敗（例：.env.local 缺 NEXT_PUBLIC_SUPABASE_URL → callLiffApi throw）
         logCaught("list_stores_failed", e, { fallback: "manual_store_input" });
       });
@@ -256,7 +264,10 @@ export default function LandingPage() {
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
               if (msg.includes("store_required")) {
-                // 首次註冊、又沒帶 store → 顯示 store picker
+                // 首次註冊、又沒帶 store → 顯示 store picker。
+                // 留著 idToken：使用者選完門市按登入時要用它把 LIFF 登入補完，
+                // 絕對不能退回 OAuth —— 在 LINE 裡走 OAuth 就是那頁 400。
+                liffIdTokenRef.current = idToken;
                 setStatus("idle");
                 return;
               }
@@ -326,33 +337,53 @@ export default function LandingPage() {
       return;
     }
 
-    // 在 LINE 內建瀏覽器開本站（例：從聊天室 / 貼文點連結進來，不是 LIFF context）：
-    // 一樣不能把人丟去 access.line.me 跑 OAuth，會回 400 Bad Request。
-    // 改用 LIFF URL 讓 LINE 以 LIFF 重開這個 app（LIFF 內是自動登入）。
+    // 已經在 LIFF 裡、只是缺門市（後端回 store_required）：
+    // 選完門市用手上的 id_token 把登入補完就好，不要再繞任何 LINE 的授權頁。
+    const pendingIdToken = liffIdTokenRef.current;
+    if (pendingIdToken) {
+      setStatus("liff_auth");
+      runLiffSession(pendingIdToken, storeId, readPairFromUrl()).catch((e) => {
+        logCaught("liff_session_retry_failed", e, { store: storeId });
+        setError(e instanceof Error ? e.message : String(e));
+        setStatus("idle");
+      });
+      return;
+    }
+
+    // 在 LINE 內建瀏覽器、又沒有 LIFF context —— 這裡沒有任何能走的登入路：
+    //   - access.line.me 的 OAuth 授權頁在 LINE webview 內會回 400
+    //   - 導去 liff.line.me 也沒用：LIFF app 的 Endpoint URL 不是本站網域，
+    //     LIFF 登入會帶著本站網址當 redirect_uri，被 LINE 擋成同一頁 400
+    //     （2026-08-03 實測：redirect_uri 指本站 → 400，指 LIFF endpoint → 200）
+    // 所以不要再彈了，直接給使用者能自己脫困的指引。
     if (isInLineApp()) {
-      if (liffId && !sessionFlag(LIFF_RETRY_KEY)) {
-        logClientError(
-          "line_browser_oauth_blocked",
-          "LINE 內建瀏覽器按登入，改導 LIFF URL",
-          { store: storeId },
-          "warn",
-        );
-        setSessionFlag(LIFF_RETRY_KEY);
-        clearSession();
-        window.location.href = liffAppUrl(liffId, storeId);
-        return;
-      }
       logClientError(
-        "line_browser_login_dead_end",
-        "LINE 內建瀏覽器無法登入且沒有 LIFF 退路",
+        "line_browser_login_blocked",
+        "LINE 內建瀏覽器且無 LIFF context，改顯示外部瀏覽器指引",
         { store: storeId, has_liff_id: Boolean(liffId) },
       );
-      setError(LINE_BROWSER_HINT);
+      setLineStuck(true);
       return;
     }
 
     clearSession();
     window.location.href = lineOauthStartUrl(storeId);
+  };
+
+  /** 卡在 LINE 內建瀏覽器時唯一的出路：把網址帶去外部瀏覽器 */
+  const copyLoginLink = async () => {
+    const url = storeId
+      ? `${window.location.origin}/?store=${encodeURIComponent(storeId)}`
+      : window.location.origin;
+    try {
+      await navigator.clipboard.writeText(url);
+      setLinkCopied(true);
+      setTimeout(() => setLinkCopied(false), 3000);
+    } catch (e) {
+      // LINE webview 常擋剪貼簿 —— 退回顯示網址讓使用者自己長按複製
+      logCaught("copy_login_link_failed", e, { store: storeId });
+      setError(`請手動開啟：${url}`);
+    }
   };
 
   const handleManualStoreSubmit = (e: React.FormEvent) => {
@@ -484,15 +515,29 @@ export default function LandingPage() {
                     </span>{" "}
                     門市
                   </p>
-                  <button
-                    onClick={start}
-                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#06C755] px-4 py-3.5 text-[16px] font-semibold text-white shadow-[0_10px_24px_-10px_rgba(6,199,85,0.7)] transition active:scale-[0.98]"
-                  >
-                    <svg viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
-                      <path d="M12 3C6.5 3 2 6.6 2 11c0 3.9 3.5 7.2 8.3 7.9.3.06.7.2.8.45.08.23.05.58.03.81l-.13.8c-.04.24-.19.93.81.51 1-.42 5.4-3.2 7.36-5.47C20.5 14.5 22 12.9 22 11c0-4.4-4.5-8-10-8Z" />
-                    </svg>
-                    {standalone ? "用 LINE 登入" : "用 LINE 註冊 / 登入"}
-                  </button>
+                  {lineStuck ? (
+                    <div className="space-y-3 text-left">
+                      <p className="text-[14px] leading-relaxed text-[var(--foreground)]">
+                        {LINE_BROWSER_HINT}
+                      </p>
+                      <button
+                        onClick={copyLoginLink}
+                        className="w-full rounded-xl brand-gradient px-4 py-3 text-[15px] font-semibold text-white transition active:scale-[0.98]"
+                      >
+                        {linkCopied ? "已複製，請貼到瀏覽器開啟" : "複製本頁連結"}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={start}
+                      className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#06C755] px-4 py-3.5 text-[16px] font-semibold text-white shadow-[0_10px_24px_-10px_rgba(6,199,85,0.7)] transition active:scale-[0.98]"
+                    >
+                      <svg viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5">
+                        <path d="M12 3C6.5 3 2 6.6 2 11c0 3.9 3.5 7.2 8.3 7.9.3.06.7.2.8.45.08.23.05.58.03.81l-.13.8c-.04.24-.19.93.81.51 1-.42 5.4-3.2 7.36-5.47C20.5 14.5 22 12.9 22 11c0-4.4-4.5-8-10-8Z" />
+                      </svg>
+                      {standalone ? "用 LINE 登入" : "用 LINE 註冊 / 登入"}
+                    </button>
+                  )}
                   {standalone && (
                     <p className="text-[12px] text-[var(--tertiary-label)]">
                       將在 LINE app 中完成登入，再回到此 PWA App。

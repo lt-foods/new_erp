@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { consumeFragmentToSession, getSession } from "@/lib/session";
+import { consumeFragmentToSession, getSession, loginPath } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import PullToRefresh from "@/components/PullToRefresh";
@@ -36,7 +36,7 @@ export default function SpotPage() {
   const load = async () => {
     const s = getSession();
     if (!s || !s.memberId) {
-      router.replace("/");
+      router.replace(loginPath());
       return;
     }
     try {

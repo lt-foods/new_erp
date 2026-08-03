@@ -161,6 +161,22 @@ async function sendRemote(entry: ClientLogEntry): Promise<void> {
   }
 }
 
+let pageUnloading = false;
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", () => { pageUnloading = true; });
+}
+
+/**
+ * 頁面正在離開嗎？
+ *
+ * 跳頁時所有 in-flight 的 fetch 都會被瀏覽器取消，變成 TypeError（Safari 是
+ * "Load failed"），看起來跟真的網路故障一模一樣。這種不是錯誤，不要記 —
+ * 不然真的故障會被淹在雜訊裡。
+ */
+export function isPageUnloading(): boolean {
+  return pageUnloading;
+}
+
 let handlersInstalled = false;
 
 /**

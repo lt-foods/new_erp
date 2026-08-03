@@ -128,6 +128,25 @@ export function clearSession() {
     .forEach((k) => localStorage.removeItem(k));
 }
 
+/**
+ * 內頁發現沒登入、要退回登入頁時用這個，不要寫死 "/"。
+ *
+ * LIFF 進來的門市資訊是掛在 query 上的（`liff.state` / `store`），
+ * 寫死 "/" 會把它整個丟掉，使用者到了首頁還得自己選一次門市 —— 而且我們
+ * 也就失去了「他本來要去哪一間店」的線索。
+ */
+export function loginPath(): string {
+  if (typeof window === "undefined") return "/";
+  const sp = new URLSearchParams(window.location.search);
+  const keep = new URLSearchParams();
+  for (const k of ["liff.state", "store", "pair"]) {
+    const v = sp.get(k);
+    if (v) keep.set(k, v);
+  }
+  const qs = keep.toString();
+  return qs ? `/?${qs}` : "/";
+}
+
 /** 監聽來自其他視窗的登入成功的訊息 (用於 PWA 視窗感應瀏覽器視窗的登入) */
 export function listenForSession(callback: (s: Session) => void) {
   if (typeof window === "undefined" || !("BroadcastChannel" in window)) return () => {};

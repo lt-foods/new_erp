@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useParams, useRouter } from "next/navigation";
-import { consumeFragmentToSession, getSession } from "@/lib/session";
+import { consumeFragmentToSession, getSession, loginPath } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import Spinner from "@/components/Spinner";
@@ -71,7 +71,7 @@ export default function CampaignDetailPage() {
     consumeFragmentToSession();
     const s = getSession();
     if (!s || !s.memberId) {
-      router.replace("/");
+      router.replace(loginPath());
       return;
     }
     if (!id) return;
