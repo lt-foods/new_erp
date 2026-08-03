@@ -1,7 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { clearLocalLogs, getLocalLogs, type ClientLogEntry } from "@/lib/clientLog";
+import {
+  clearLocalLogs,
+  getLocalLogs,
+  reportLogsToBackend,
+  type ClientLogEntry,
+} from "@/lib/clientLog";
 
 /**
  * 客服用的錯誤紀錄頁：會員回報「壞掉」時，請他開 /debug 截圖或按「複製」貼給我們。
@@ -13,6 +18,7 @@ export default function DebugPage() {
   const [logs, setLogs] = useState<ClientLogEntry[]>([]);
   const [copied, setCopied] = useState(false);
   const [env, setEnv] = useState<Record<string, string>>({});
+  const [reportState, setReportState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
 
   useEffect(() => {
     setLogs(getLocalLogs().slice().reverse());
@@ -29,6 +35,14 @@ export default function DebugPage() {
       "UA": nav.userAgent,
     });
   }, []);
+
+  const report = async () => {
+    if (reportState === "sending") return;
+    setReportState("sending");
+    const ok = await reportLogsToBackend();
+    setReportState(ok ? "sent" : "failed");
+    if (ok) setTimeout(() => setReportState("idle"), 3000);
+  };
 
   const copy = async () => {
     const text = JSON.stringify({ env, logs }, null, 2);
@@ -58,7 +72,18 @@ export default function DebugPage() {
         ))}
       </div>
 
-      <div className="mt-4 flex gap-2">
+      <button
+        onClick={report}
+        disabled={reportState === "sending"}
+        className="mt-4 w-full rounded-xl bg-[#06C755] px-4 py-3 text-[15px] font-semibold text-white transition active:scale-[0.98] disabled:opacity-60"
+      >
+        {reportState === "sending" && "傳送中…"}
+        {reportState === "sent" && "✓ 已傳送給客服"}
+        {reportState === "failed" && "傳送失敗，請改用截圖"}
+        {reportState === "idle" && "傳送給客服分析"}
+      </button>
+
+      <div className="mt-2 flex gap-2">
         <button
           onClick={copy}
           className="flex-1 rounded-xl brand-gradient px-4 py-2.5 text-[15px] font-semibold text-white active:scale-[0.98]"

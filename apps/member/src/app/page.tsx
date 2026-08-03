@@ -4,7 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { lineOauthStartUrl, callLiffApi } from "@/lib/supabase";
 import { loadLiff } from "@/lib/liff";
 import { clearSession, getSession, listenForSession } from "@/lib/session";
-import { isPageUnloading, logCaught, logClientError } from "@/lib/clientLog";
+import {
+  isPageUnloading,
+  logCaught,
+  logClientError,
+  reportLogsToBackend,
+} from "@/lib/clientLog";
 import Spinner, { LoadingScreen } from "@/components/Spinner";
 
 type Status = "loading" | "idle" | "liff_auth" | "pair_done" | "error";
@@ -135,6 +140,7 @@ export default function LandingPage() {
   /** 在 LINE 內建瀏覽器又沒有 LIFF context = 無路可走，改給外部瀏覽器指引 */
   const [lineStuck, setLineStuck] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
+  const [reportState, setReportState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
   /** LIFF 已登入但缺門市時留下的 id_token，選完門市直接拿它補完登入 */
   const liffIdTokenRef = useRef<string | null>(null);
   /** init 成功的 liff 實例（給「卡在 LINE 裡」時的手動重試用） */
@@ -399,6 +405,14 @@ export default function LandingPage() {
     }
   };
 
+  /** 把本機錯誤紀錄整包送到後端（client_error_logs 的 user_report），給客服後續分析 */
+  const reportProblem = async () => {
+    if (reportState === "sending") return;
+    setReportState("sending");
+    const ok = await reportLogsToBackend(error ?? undefined);
+    setReportState(ok ? "sent" : "failed");
+  };
+
   /** 卡在 LINE 內建瀏覽器時唯一的出路：把網址帶去外部瀏覽器 */
   const copyLoginLink = async () => {
     const url = storeId
@@ -489,8 +503,18 @@ export default function LandingPage() {
         {status === "idle" && (
           <div className="w-full space-y-5">
             {error && (
-              <div className="w-full rounded-2xl bg-[var(--ios-red)]/10 p-3 text-left text-[14px] text-[#c4271d]">
-                發生錯誤：{error}
+              <div className="w-full space-y-2 rounded-2xl bg-[var(--ios-red)]/10 p-3 text-left text-[14px] text-[#c4271d]">
+                <p>發生錯誤：{error}</p>
+                <button
+                  onClick={reportProblem}
+                  disabled={reportState === "sending"}
+                  className="w-full rounded-lg border border-[#c4271d]/30 px-3 py-2 text-[13px] font-semibold text-[#c4271d] transition active:scale-[0.98] disabled:opacity-60"
+                >
+                  {reportState === "sending" && "傳送中…"}
+                  {reportState === "sent" && "✓ 已傳送，客服會盡快處理"}
+                  {reportState === "failed" && "傳送失敗，請截圖給客服"}
+                  {reportState === "idle" && "回報此問題給客服"}
+                </button>
               </div>
             )}
 
@@ -563,6 +587,16 @@ export default function LandingPage() {
                           仍要在 LINE 內再試一次
                         </button>
                       )}
+                      <button
+                        onClick={reportProblem}
+                        disabled={reportState === "sending"}
+                        className="w-full rounded-xl border border-[var(--separator)] px-4 py-2.5 text-[14px] font-medium text-[var(--secondary-label)] transition active:scale-[0.98] disabled:opacity-60"
+                      >
+                        {reportState === "sending" && "傳送中…"}
+                        {reportState === "sent" && "✓ 已回報，客服會盡快處理"}
+                        {reportState === "failed" && "回報失敗，請截圖給客服"}
+                        {reportState === "idle" && "回報此問題給客服"}
+                      </button>
                     </div>
                   ) : (
                     <button

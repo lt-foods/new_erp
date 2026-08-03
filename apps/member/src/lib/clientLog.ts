@@ -161,6 +161,45 @@ async function sendRemote(entry: ClientLogEntry): Promise<void> {
   }
 }
 
+/**
+ * 使用者主動回報：把本機 ring buffer 整包送到後端，存成一筆 `user_report`。
+ *
+ * 跟自動送的 logClientError 不同 —— 這是使用者按按鈕觸發的，
+ * 不吃 30s 去重與單次瀏覽上限（自動送可能已被節流丟掉的內容，這裡補齊）。
+ * 回傳是否成功，呼叫端據此顯示「已送出 / 失敗請截圖」。
+ */
+export async function reportLogsToBackend(note?: string): Promise<boolean> {
+  try {
+    if (typeof window === "undefined") return false;
+    const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    if (!base) return false;
+
+    const token = localStorage.getItem("member_jwt");
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    const resp = await fetch(`${base}/functions/v1/liff-api`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        action: "report_client_logs",
+        note: note ?? null,
+        logs: getLocalLogs().slice(-50),
+        store_code: localStorage.getItem("member_store_id"),
+        line_user_id: localStorage.getItem("line_user_id"),
+        page_url: window.location.href.slice(0, 500),
+        user_agent: navigator.userAgent,
+        env: env(),
+      }),
+    });
+    if (!resp.ok) return false;
+    const data = await resp.json().catch(() => ({}));
+    return data?.ok === true;
+  } catch {
+    return false;
+  }
+}
+
 let pageUnloading = false;
 if (typeof window !== "undefined") {
   window.addEventListener("pagehide", () => { pageUnloading = true; });
