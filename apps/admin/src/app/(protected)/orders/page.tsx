@@ -640,7 +640,7 @@ function OrdersListContent() {
 
       {/* KPI Trend — 大字 = 本月累計 / sparkline = 每日 / 副字 = 日均 (套 filter, 排除 transferred_out)
           最後一張「今日取貨金額」是取貨視角（依取貨當天切），大字 = 今天、副字 = 本月累計 */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 2xl:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <TrendCard
           label="本月營業額"
           trend={trend}
@@ -657,26 +657,8 @@ function OrdersListContent() {
           fmt={(v) => v.toLocaleString("zh-TW")}
           subLabel="日均"
         />
-        <TrendCard
-          label="客單價"
-          trend={trend}
-          getTotal={(t) => t.aov}
-          getDaily={(d) => d.aov}
-          fmt={(v) => `$${Math.round(v).toLocaleString("zh-TW")}`}
-          subLabel="今日"
-          subMode="last_day"
-        />
-        <TrendCard
-          label="本月會員數"
-          trend={trend}
-          getTotal={(t) => t.members}
-          getDaily={(d) => d.members}
-          fmt={(v) => v.toLocaleString("zh-TW")}
-          subLabel="今日"
-          subMode="last_day"
-        />
         {/* 今日取貨金額 — 已取貨品項的 qty×unit_price，依「取貨當天」切
-            （其餘四張卡是下單視角、依 created_at 切） */}
+            （其餘兩張卡是下單視角、依 created_at 切） */}
         <TrendCard
           label="今日取貨金額"
           trend={pickupTrend}
@@ -1363,15 +1345,14 @@ function TrendCard({
             {subLabel} {fmt(subValue)}
           </div>
         </div>
-        {/* KPI 卡從 4 張變 5 張後每張變窄：sparkline 收到 88px 並在窄螢幕整個收起，
-            否則大字（7 位數金額）會被 truncate 成 "$1,4…" */}
-        <div className="hidden lg:block">
+        {/* sparkline 佔掉的寬度會把大字擠成 "$1,4…"（7 位數金額 ~109px）。
+            xl 以上一張卡才夠放 140px sparkline + 完整大字，以下整個收起讓大字吃滿。 */}
+        <div className="hidden xl:block">
           <Sparkline
             values={dailyValues}
             labels={trend.days.map((d) => fmtMD(d.ymd))}
             fmt={fmt}
             color={sparkColor}
-            width={88}
           />
         </div>
       </div>
