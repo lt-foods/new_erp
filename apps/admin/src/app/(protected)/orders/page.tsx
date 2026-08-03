@@ -43,6 +43,7 @@ type DayTrend = {
   amount: number;
   members: number;
   aov: number; // amount / orders
+  qty: number; // 件數；只有取貨趨勢 (pickupTrend) 會填，下單趨勢一律 0
 };
 
 // 本月累計 (member 是跨日 distinct, 不是日 sum)
@@ -51,6 +52,7 @@ type MonthAgg = {
   amount: number;
   members: number;
   aov: number;
+  qty: number;
 };
 
 type TrendData = {
@@ -226,6 +228,9 @@ function OrdersListContent() {
 
   // KPI trend (當月 1 號 ~ 今天 每日 + 本月累計、套 filter 開團+店家、排除 transferred_out)
   const [trend, setTrend] = useState<TrendData | null>(null);
+  // 取貨 KPI — 同一支 RPC 回的 pickup_days/pickup_total（已取貨品項的金額，
+  // 依取貨當天切；「今日取貨金額」卡用最後一天＝今天）
+  const [pickupTrend, setPickupTrend] = useState<TrendData | null>(null);
 
   const fromTs = useMemo(() => (dateFrom ? dayStartIso(dateFrom) : null), [dateFrom]);
   const toTs = useMemo(() => (dateTo ? dayStartIso(dateTo, 1) : null), [dateTo]);
@@ -400,6 +405,7 @@ function OrdersListContent() {
   useEffect(() => {
     let cancelled = false;
     setTrend(null);
+    setPickupTrend(null);
     (async () => {
       const sb = getSupabase();
       const today = new Date();
@@ -416,14 +422,19 @@ function OrdersListContent() {
       });
       if (cancelled) return;
 
+      type AggRow = { ymd?: string; orders?: number; members?: number; amount?: number; qty?: number };
       type Overview = {
         tab_counts: { pending: number; ready: number; partially: number; completed: number; cancelled: number; transferred: number };
-        trend_days: { ymd: string; orders: number; members: number; amount: number }[];
-        trend_total: { orders: number; members: number; amount: number };
+        trend_days: (AggRow & { ymd: string })[];
+        trend_total: AggRow;
+        // v3 (migration 20260803000010) 起：已取貨品項金額，依取貨當天切
+        pickup_days?: (AggRow & { ymd: string })[];
+        pickup_total?: AggRow;
       };
       if (rpcErr || !data) {
         setTabCounts(null);
-        setTrend({ days: buildEmptyTrend(today), total: { orders: 0, amount: 0, members: 0, aov: 0 } });
+        setTrend(buildTrend(startDate, today, [], null));
+        setPickupTrend(buildTrend(startDate, today, [], null));
         return;
       }
       const ov = data as Overview;
@@ -436,36 +447,8 @@ function OrdersListContent() {
         transferred: ov.tab_counts.transferred ?? 0,
       });
 
-      // 把 RPC 回的每日聚合補齊成「當月 1 號 ~ 今天」連續序列（沒資料補 0）
-      const dayMap = new Map<string, { orders: number; members: number; amount: number }>();
-      for (const d of ov.trend_days ?? []) {
-        dayMap.set(d.ymd, { orders: Number(d.orders), members: Number(d.members), amount: Number(d.amount) });
-      }
-      const days: DayTrend[] = [];
-      const cur = new Date(startDate);
-      while (cur <= today) {
-        const ymd = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}-${String(cur.getDate()).padStart(2, "0")}`;
-        const b = dayMap.get(ymd);
-        const orderCnt = b?.orders ?? 0;
-        const amt = b?.amount ?? 0;
-        days.push({
-          ymd,
-          orders: orderCnt,
-          amount: amt,
-          members: b?.members ?? 0,
-          aov: orderCnt > 0 ? amt / orderCnt : 0,
-        });
-        cur.setDate(cur.getDate() + 1);
-      }
-      const monthOrders = Number(ov.trend_total?.orders ?? 0);
-      const monthAmount = Number(ov.trend_total?.amount ?? 0);
-      const total: MonthAgg = {
-        orders: monthOrders,
-        amount: monthAmount,
-        members: Number(ov.trend_total?.members ?? 0),
-        aov: monthOrders > 0 ? monthAmount / monthOrders : 0,
-      };
-      setTrend({ days, total });
+      setTrend(buildTrend(startDate, today, ov.trend_days ?? [], ov.trend_total));
+      setPickupTrend(buildTrend(startDate, today, ov.pickup_days ?? [], ov.pickup_total));
     })();
     return () => {
       cancelled = true;
@@ -655,8 +638,9 @@ function OrdersListContent() {
         </Link>
       </header>
 
-      {/* KPI Trend — 大字 = 本月累計 / sparkline = 每日 / 副字 = 日均 (套 filter, 排除 transferred_out) */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {/* KPI Trend — 大字 = 本月累計 / sparkline = 每日 / 副字 = 日均 (套 filter, 排除 transferred_out)
+          最後一張「今日取貨金額」是取貨視角（依取貨當天切），大字 = 今天、副字 = 本月累計 */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <TrendCard
           label="本月營業額"
           trend={trend}
@@ -673,23 +657,21 @@ function OrdersListContent() {
           fmt={(v) => v.toLocaleString("zh-TW")}
           subLabel="日均"
         />
+        {/* 今日取貨金額 — 已取貨品項的 qty×unit_price，依「取貨當天」切
+            （其餘兩張卡是下單視角、依 created_at 切） */}
         <TrendCard
-          label="客單價"
-          trend={trend}
-          getTotal={(t) => t.aov}
-          getDaily={(d) => d.aov}
+          label="今日取貨金額"
+          trend={pickupTrend}
+          getTotal={(t) => t.amount}
+          getDaily={(d) => d.amount}
           fmt={(v) => `$${Math.round(v).toLocaleString("zh-TW")}`}
-          subLabel="今日"
-          subMode="last_day"
-        />
-        <TrendCard
-          label="本月會員數"
-          trend={trend}
-          getTotal={(t) => t.members}
-          getDaily={(d) => d.members}
-          fmt={(v) => v.toLocaleString("zh-TW")}
-          subLabel="今日"
-          subMode="last_day"
+          mainMode="last_day"
+          subLabel="本月累計"
+          subMode="total"
+          accent
+          mainTitle={pickupTrend
+            ? `今日取貨 ${pickupTrend.days[pickupTrend.days.length - 1]?.orders ?? 0} 單 · ${pickupTrend.days[pickupTrend.days.length - 1]?.qty ?? 0} 件`
+            : undefined}
         />
       </div>
 
@@ -1153,15 +1135,46 @@ function OrdersListContent() {
   );
 }
 
-function buildEmptyTrend(today: Date): DayTrend[] {
+// 把 RPC 回的每日聚合補齊成「當月 1 號 ~ 今天」連續序列（沒資料補 0）。
+// 下單趨勢 (trend_days/trend_total) 與取貨趨勢 (pickup_days/pickup_total)
+// 形狀相同、只有各自用得到的欄位有值，共用同一支避免兩份補值邏輯漂移。
+type AggLike = { ymd?: string; orders?: number; members?: number; amount?: number; qty?: number };
+function buildTrend(
+  startDate: Date,
+  today: Date,
+  rows: (AggLike & { ymd: string })[],
+  totalRow: AggLike | null | undefined,
+): TrendData {
+  const dayMap = new Map(rows.map((d) => [d.ymd, d]));
   const days: DayTrend[] = [];
-  const cur = new Date(today.getFullYear(), today.getMonth(), 1);
+  const cur = new Date(startDate);
   while (cur <= today) {
-    const ymd = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}-${String(cur.getDate()).padStart(2, "0")}`;
-    days.push({ ymd, orders: 0, amount: 0, members: 0, aov: 0 });
+    const ymd = fmtYmd(cur);
+    const b = dayMap.get(ymd);
+    const orders = Number(b?.orders ?? 0);
+    const amount = Number(b?.amount ?? 0);
+    days.push({
+      ymd,
+      orders,
+      amount,
+      members: Number(b?.members ?? 0),
+      qty: Number(b?.qty ?? 0),
+      aov: orders > 0 ? amount / orders : 0,
+    });
     cur.setDate(cur.getDate() + 1);
   }
-  return days;
+  const tOrders = Number(totalRow?.orders ?? 0);
+  const tAmount = Number(totalRow?.amount ?? 0);
+  return {
+    days,
+    total: {
+      orders: tOrders,
+      amount: tAmount,
+      members: Number(totalRow?.members ?? 0),
+      qty: Number(totalRow?.qty ?? 0),
+      aov: tOrders > 0 ? tAmount / tOrders : 0,
+    },
+  };
 }
 
 function Sparkline({
@@ -1169,14 +1182,16 @@ function Sparkline({
   labels,
   fmt,
   color = "currentColor",
+  width = 140,
 }: {
   values: number[];
   labels?: string[];
   fmt?: (v: number) => string;
   color?: string;
+  width?: number;
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
-  const w = 140;
+  const w = width;
   const h = 32;
   const pad = 2;
   const n = values.length;
@@ -1253,7 +1268,10 @@ function TrendCard({
   getDaily,
   fmt,
   subLabel,
+  mainMode = "total",
   subMode = "avg",
+  accent = false,
+  mainTitle,
   hint,
 }: {
   label: string;
@@ -1262,7 +1280,10 @@ function TrendCard({
   getDaily: (d: DayTrend) => number;
   fmt: (v: number) => string;
   subLabel: string;
-  subMode?: "avg" | "last_day"; // 副字: 日均 or 最後一天
+  mainMode?: "total" | "last_day"; // 大字: 本月累計 or 今天（最後一天）
+  subMode?: "avg" | "last_day" | "total"; // 副字: 日均 / 最後一天 / 本月累計
+  accent?: boolean; // 綠色強調 — 標示這張卡講的是「今天」而不是「本月」
+  mainTitle?: string; // 大字 hover 補充（例：今日單數/件數）
   hint?: string;
 }) {
   if (!trend) {
@@ -1275,16 +1296,21 @@ function TrendCard({
   }
   const total = getTotal(trend.total);
   const dailyValues = trend.days.map(getDaily);
+  const lastDayValue = dailyValues[dailyValues.length - 1] ?? 0;
+  // 大字算法
+  const mainValue = mainMode === "last_day" ? lastDayValue : total;
   // 副字算法
   const daysPassed = trend.days.length;
   const subValue =
     subMode === "last_day"
-      ? dailyValues[dailyValues.length - 1] ?? 0
+      ? lastDayValue
+      : subMode === "total"
+      ? total
       : daysPassed > 0
       ? total / daysPassed
       : 0;
   // sparkline 顏色 — 用最後一天 vs 上一天的差判斷
-  const curr = dailyValues[dailyValues.length - 1] ?? 0;
+  const curr = lastDayValue;
   const prev = dailyValues[dailyValues.length - 2] ?? 0;
   const trendUp = curr > prev;
   const trendFlat = curr === prev;
@@ -1300,23 +1326,28 @@ function TrendCard({
     return `${Number(m)}/${Number(d)}`;
   };
   return (
-    <div className="rounded-md border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950">
+    <div className={accent
+      ? "rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 dark:border-emerald-900 dark:bg-emerald-950/30"
+      : "rounded-md border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950"
+    }>
       <div className="flex items-center justify-between">
-        <div className="text-xs text-zinc-500">{label}</div>
+        <div className={accent ? "text-xs font-medium text-emerald-700 dark:text-emerald-400" : "text-xs text-zinc-500"}>{label}</div>
         <div className="text-[10px] text-zinc-400" title={`本月每日 (共 ${daysPassed} 天)`}>
           {fmtMD(firstDay)} ~ {fmtMD(lastDay)}
         </div>
       </div>
       <div className="mt-1 flex items-end justify-between gap-3">
         <div className="min-w-0">
-          <div className="truncate text-xl font-semibold tabular-nums" title={fmt(total)}>
-            {fmt(total)}
+          <div className="truncate text-xl font-semibold tabular-nums" title={mainTitle ?? fmt(mainValue)}>
+            {fmt(mainValue)}
           </div>
           <div className="mt-0.5 text-[11px] text-zinc-500">
             {subLabel} {fmt(subValue)}
           </div>
         </div>
-        <div className="hidden sm:block">
+        {/* sparkline 佔掉的寬度會把大字擠成 "$1,4…"（7 位數金額 ~109px）。
+            xl 以上一張卡才夠放 140px sparkline + 完整大字，以下整個收起讓大字吃滿。 */}
+        <div className="hidden xl:block">
           <Sparkline
             values={dailyValues}
             labels={trend.days.map((d) => fmtMD(d.ymd))}
