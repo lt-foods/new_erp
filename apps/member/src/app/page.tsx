@@ -179,6 +179,8 @@ export default function LandingPage() {
   const [linkCopied, setLinkCopied] = useState(false);
   /** 驗證碼是退路，預設收起來，不跟「用 LINE 登入」並列 */
   const [showSyncCode, setShowSyncCode] = useState(false);
+  /** PWA 等待畫面用：LINE 沒自動開起來時讓使用者手動再開一次 */
+  const [pwaLoginUrl, setPwaLoginUrl] = useState<string | null>(null);
   const [reportState, setReportState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
   /** LIFF 已登入但缺門市時留下的 id_token，選完門市直接拿它補完登入 */
   const liffIdTokenRef = useRef<string | null>(null);
@@ -375,16 +377,29 @@ export default function LandingPage() {
         ? liffAppUrl(liffId, storeId, token)
         : lineOauthStartUrl(storeId, token);
 
-      const a = document.createElement("a");
-      a.href = targetUrl;
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      // ⚠️ 這裡**不要**用 a.target="_blank"。
+      // iOS 的 standalone PWA 對程式化開新視窗不可靠：可能靜默失敗（畫面
+      // 停在等待、LINE 根本沒開），也可能開到 Safari —— 那更糟，登入完成後
+      // session 進的是 Safari，PWA 這端永遠領不到。
+      // 2026-08-03 實測就是卡在這：等待畫面出現，但 pwa_auth_codes 與
+      // client_error_logs 全無紀錄，代表 LINE 那端根本沒被開起來。
+      //
+      // 直接導航兩種結果都走得通：
+      //   1. iOS 攔截 universal link → 開 LINE，PWA 留在背景、頁面沒變，
+      //      切回來時 visibilitychange 觸發領取
+      //   2. 沒被攔截 → 在 PWA 內走到本站（liff.state 帶著 store 與 pair），
+      //      整段登入就在 PWA 內完成，session 直接落地，連配對都不需要
+      setPwaLoginUrl(targetUrl);
+      logClientError(
+        "pwa_login_started",
+        "PWA 觸發 LINE 登入",
+        { store: storeId, via: liffId ? "liff" : "oauth" },
+        "info",
+      );
       // 讓使用者知道「回來這裡就會自動完成」，否則切回來看到原本的登入頁
       // 會以為失敗，就去打驗證碼了
       setStatus("pwa_waiting");
+      window.location.href = targetUrl;
       return;
     }
 
@@ -569,6 +584,16 @@ export default function LandingPage() {
               <br />
               不需要輸入任何驗證碼。
             </p>
+            {/* LINE 沒被開起來時的自救 —— 沒有這顆就只能乾等，
+                而使用者無從判斷是「還沒好」還是「根本沒開」 */}
+            {pwaLoginUrl && (
+              <a
+                href={pwaLoginUrl}
+                className="block w-full rounded-xl bg-[#06C755] px-4 py-3 text-[15px] font-semibold text-white transition active:scale-[0.98]"
+              >
+                LINE 沒有開啟？點這裡再試一次
+              </a>
+            )}
             <button
               onClick={() => setStatus("idle")}
               className="text-[14px] font-medium text-[var(--secondary-label)] underline underline-offset-4"
