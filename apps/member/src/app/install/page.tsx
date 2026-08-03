@@ -86,6 +86,34 @@ export default function InstallPage() {
     setTimeout(() => setCopyMsg(null), 4000);
   };
 
+  /**
+   * 直接把這一頁丟給系統的預設瀏覽器開啟。
+   *
+   * 「複製網址 → 自己去開 Safari → 貼上」對一般會員來說步驟太多，
+   * 掉在中間任何一步就裝不成。這裡改成一個按鈕：
+   *   iOS      x-safari-https://… （iOS 專用 scheme，可從 in-app browser 跳出去）
+   *   Android  intent://…#Intent;scheme=https;end（不指定 package，交給系統選預設瀏覽器）
+   *
+   * 兩者都不是保證會成功的 API（LINE 各版本行為不一），所以不能只做這條：
+   * 用「頁面有沒有進背景」判斷有沒有真的跳走，沒跳走就自動退回複製 +
+   * 顯示原本的手動步驟，使用者不會卡在一顆沒反應的按鈕上。
+   */
+  const openInBrowser = () => {
+    const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const target = isIos
+      ? `x-safari-${pageUrl}`
+      : `intent://${pageUrl.replace(/^https?:\/\//, "")}#Intent;scheme=https;end`;
+
+    setCopyMsg("正在開啟瀏覽器…");
+    window.location.href = target;
+
+    // 沒跳走 = 這個 scheme 在此環境無效，退回複製那條路
+    window.setTimeout(() => {
+      if (document.visibilityState !== "visible") return;
+      void copyUrl();
+    }, 1500);
+  };
+
   return (
     <main className="mx-auto flex min-h-[100dvh] w-full max-w-md flex-col items-center px-5 pt-10 pb-12">
       {/* 品牌 header */}
@@ -133,22 +161,24 @@ export default function InstallPage() {
           </p>
           <div className="mt-4 space-y-3">
             <Step n={1}>
-              點下方按鈕複製網址
+              點下方按鈕，用 Safari 開啟這一頁
             </Step>
             <Step n={2}>
-              {env === "ios-line"
-                ? "點右上角 ⋯ → 「在 Safari 中開啟」(或長按貼到 Safari 網址列)"
-                : "切到 Safari → 網址列長按 → 貼上"}
-            </Step>
-            <Step n={3}>
               到 Safari 後,按下方分享按鈕 → 加入主畫面
             </Step>
           </div>
           <button
-            onClick={copyUrl}
+            onClick={openInBrowser}
             className="mt-5 w-full rounded-full bg-[#007aff] py-3 text-[16px] font-semibold text-white active:opacity-80"
           >
-            複製網址
+            用 Safari 開啟
+          </button>
+          {/* 上面那顆用的 scheme 不保證每個 LINE 版本都吃，留原本的手動路當退路 */}
+          <button
+            onClick={copyUrl}
+            className="mt-2 w-full rounded-full border border-zinc-300 py-2.5 text-[14px] font-medium text-zinc-600 active:opacity-70"
+          >
+            沒反應？改用複製網址
           </button>
           {copyMsg && (
             <p className="mt-2 text-center text-[13px] text-emerald-600">{copyMsg}</p>
@@ -189,14 +219,21 @@ export default function InstallPage() {
             LINE 內建瀏覽器無法安裝 App。請改用 Chrome:
           </p>
           <div className="mt-4 space-y-3">
-            <Step n={1}>點 LINE 視窗右上角 ⋯ → 「在其他應用程式中打開」→ 選 Chrome</Step>
+            <Step n={1}>點下方按鈕，用瀏覽器開啟這一頁</Step>
             <Step n={2}>進入 Chrome 後,看到「安裝 App」按鈕點下去</Step>
           </div>
           <button
-            onClick={copyUrl}
-            className="mt-5 w-full rounded-full bg-[#7676801f] py-3 text-[15px] font-medium text-zinc-700"
+            onClick={openInBrowser}
+            className="mt-5 w-full rounded-full bg-[#007aff] py-3 text-[16px] font-semibold text-white active:opacity-80"
           >
-            或複製網址
+            用瀏覽器開啟
+          </button>
+          {/* intent:// 不保證每個 LINE 版本都吃，留手動路當退路 */}
+          <button
+            onClick={copyUrl}
+            className="mt-2 w-full rounded-full border border-zinc-300 py-2.5 text-[14px] font-medium text-zinc-600 active:opacity-70"
+          >
+            沒反應？改用複製網址
           </button>
           {copyMsg && (
             <p className="mt-2 text-center text-[13px] text-emerald-600">{copyMsg}</p>
