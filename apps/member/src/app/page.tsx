@@ -12,7 +12,17 @@ import {
 } from "@/lib/clientLog";
 import Spinner, { LoadingScreen } from "@/components/Spinner";
 
-type Status = "loading" | "idle" | "liff_auth" | "pair_done" | "error";
+type Status = "loading" | "idle" | "liff_auth" | "pair_done" | "pwa_waiting" | "error";
+
+/**
+ * 切回 PWA 時「輪詢」領取配對 token，而不是只試一次。
+ *
+ * 使用者關掉 LINE 回到 PWA 的那一瞬間，LIFF 端可能還在寫 pwa_auth_codes。
+ * 只試一次很容易剛好落在寫入完成之前 —— 一旦錯過，在使用者再次切出去切回來
+ * 之前都不會重試，體感就是「自動登入沒用」，只好去打驗證碼。
+ */
+const CLAIM_RETRY_ATTEMPTS = 8;
+const CLAIM_RETRY_DELAY_MS = 1500;
 
 const PAIR_TOKEN_KEY = "pwa_pair_token";
 /** 只允許往 LIFF 彈一次的旗標（sessionStorage），避免 LIFF ↔ 網頁互推無限迴圈 */
@@ -133,6 +143,28 @@ async function tryClaimPairToken(): Promise<boolean> {
   }
 }
 
+/** 同時間只跑一輪輪詢（多次 visibilitychange 不該疊出好幾輪） */
+let claimPolling = false;
+
+async function claimPairTokenWithRetry(): Promise<void> {
+  if (typeof window === "undefined" || claimPolling) return;
+  if (!localStorage.getItem(PAIR_TOKEN_KEY)) return;
+
+  claimPolling = true;
+  try {
+    for (let i = 0; i < CLAIM_RETRY_ATTEMPTS; i++) {
+      // 成功會直接 navigate 到 /shop，不會回到這裡
+      if (await tryClaimPairToken()) return;
+      // 被別的分頁 / 這輪之外的呼叫領走了，或使用者切走了 → 收工
+      if (!localStorage.getItem(PAIR_TOKEN_KEY)) return;
+      if (document.visibilityState !== "visible") return;
+      await new Promise((r) => setTimeout(r, CLAIM_RETRY_DELAY_MS));
+    }
+  } finally {
+    claimPolling = false;
+  }
+}
+
 type StoreOption = { id: number; code: string; name: string };
 
 export default function LandingPage() {
@@ -145,6 +177,8 @@ export default function LandingPage() {
   /** 在 LINE 內建瀏覽器又沒有 LIFF context = 無路可走，改給外部瀏覽器指引 */
   const [lineStuck, setLineStuck] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
+  /** 驗證碼是退路，預設收起來，不跟「用 LINE 登入」並列 */
+  const [showSyncCode, setShowSyncCode] = useState(false);
   const [reportState, setReportState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
   /** LIFF 已登入但缺門市時留下的 id_token，選完門市直接拿它補完登入 */
   const liffIdTokenRef = useRef<string | null>(null);
@@ -189,9 +223,9 @@ export default function LandingPage() {
       });
 
     // 3. 從 LIFF 配對流程切回 PWA 時，自動 claim
-    void tryClaimPairToken();
+    void claimPairTokenWithRetry();
     const onVis = () => {
-      if (document.visibilityState === "visible") void tryClaimPairToken();
+      if (document.visibilityState === "visible") void claimPairTokenWithRetry();
     };
     document.addEventListener("visibilitychange", onVis);
 
@@ -348,6 +382,9 @@ export default function LandingPage() {
       document.body.appendChild(a);
       a.click();
       a.remove();
+      // 讓使用者知道「回來這裡就會自動完成」，否則切回來看到原本的登入頁
+      // 會以為失敗，就去打驗證碼了
+      setStatus("pwa_waiting");
       return;
     }
 
@@ -411,7 +448,11 @@ export default function LandingPage() {
     }
 
     clearSession();
-    window.location.href = lineOauthStartUrl(storeId);
+    // 帶上 URL 裡的 pair：PWA 把使用者導到瀏覽器登入時（例如 iOS 沒把
+    // liff.line.me 交給 LINE app，而是開在 Safari），pair 會跟著 liff.state 過來。
+    // 不轉交給 OAuth 的話，登入成功後不會寫 pwa_auth_codes，PWA 那端永遠領不到，
+    // 使用者就只剩手動輸入驗證碼一條路 —— 這正是要消滅的情境。
+    window.location.href = lineOauthStartUrl(storeId, readPairFromUrl() ?? undefined);
   };
 
   /**
@@ -516,6 +557,26 @@ export default function LandingPage() {
         {status === "loading" && <LoadingScreen className="py-14" />}
 
         {status === "liff_auth" && <LoadingScreen className="py-14" />}
+
+        {status === "pwa_waiting" && (
+          <div className="card space-y-4 p-6 text-center">
+            <Spinner size={28} />
+            <p className="text-[17px] font-bold text-[var(--foreground)]">
+              請在 LINE 完成登入
+            </p>
+            <p className="text-[14px] leading-relaxed text-[var(--secondary-label)]">
+              完成後關閉 LINE、回到這個 App，我們會自動帶您進入。
+              <br />
+              不需要輸入任何驗證碼。
+            </p>
+            <button
+              onClick={() => setStatus("idle")}
+              className="text-[14px] font-medium text-[var(--secondary-label)] underline underline-offset-4"
+            >
+              返回
+            </button>
+          </div>
+        )}
 
         {status === "pair_done" && (
           <div className="card p-6 text-center">
@@ -645,22 +706,25 @@ export default function LandingPage() {
                   )}
                 </div>
 
-                {standalone && (
-                  <>
-                    <div className="relative">
-                      <div className="absolute inset-0 flex items-center">
-                        <span className="w-full border-t border-[var(--separator)]" />
-                      </div>
-                      <div className="relative flex justify-center">
-                        <span className="bg-[var(--background)] px-3 text-[12px] font-medium text-[var(--tertiary-label)]">
-                          或者
-                        </span>
-                      </div>
-                    </div>
+                {/* 驗證碼是「自動配對失敗」時的救命繩，不是並列的登入選項。
+                    平鋪出來會讓會員以為登入本來就要打一組碼 —— 而那段流程
+                    （自己先去瀏覽器登入、記下 6 碼、切回來輸入）對一般人根本走不完。
+                    預設收起來，只有真的卡住的人才會展開。 */}
+                {standalone && !showSyncCode && (
+                  <button
+                    onClick={() => setShowSyncCode(true)}
+                    className="mx-auto block text-[13px] text-[var(--tertiary-label)] underline underline-offset-4"
+                  >
+                    登入遇到問題？用驗證碼手動同步
+                  </button>
+                )}
 
+                {standalone && showSyncCode && (
+                  <>
                     <div className="card space-y-3 p-5">
                       <p className="text-[14px] text-[var(--secondary-label)]">
-                        如果您已在瀏覽器登入，請輸入驗證碼：
+                        僅在自動登入失敗時需要：請先用手機瀏覽器開啟本站登入，
+                        再把該畫面顯示的 6 位數驗證碼輸入這裡。
                       </p>
                       <form onSubmit={handleSyncSubmit} className="flex gap-2">
                         <input
