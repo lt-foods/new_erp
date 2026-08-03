@@ -636,18 +636,19 @@ export default function LandingPage() {
           <div className="card space-y-4 p-6 text-center">
             <Spinner size={28} />
             <p className="text-[17px] font-bold text-[var(--foreground)]">
-              請在 LINE 完成登入
+              請完成 LINE 登入
             </p>
             <p className="text-[14px] leading-relaxed text-[var(--secondary-label)]">
               完成後請回到本 App，我們會自動帶您進入，不需要輸入任何驗證碼。
             </p>
-            {/* iOS 從 LINE 回來的路不只一條，而使用者不見得找得到 —— 明講兩種 */}
+            {/* 回來的路不只一條，而使用者不見得找得到 —— 明講兩種。
+                改走 OAuth 後多數情況是在瀏覽器視窗完成，關掉即可回到這裡 */}
             <div className="w-full rounded-xl bg-[var(--fill-quaternary,rgba(120,120,128,0.08))] p-3 text-left text-[13px] leading-relaxed text-[var(--secondary-label)]">
               回來的方式：
               <br />
-              1. 點 LINE 畫面左上角的「◀ 包子媽生鮮小舖」
+              1. 點登入畫面左上角的「✕」或「◀」關閉
               <br />
-              2. 或關閉 LINE，從手機桌面重新點開本 App
+              2. 或從手機桌面重新點開本 App
             </div>
             {/* LINE 沒被開起來時的自救 —— 沒有這顆就只能乾等，
                 而使用者無從判斷是「還沒好」還是「根本沒開」 */}
@@ -656,7 +657,7 @@ export default function LandingPage() {
                 href={pwaLoginUrl}
                 className="block w-full rounded-xl bg-[#06C755] px-4 py-3 text-[15px] font-semibold text-white transition active:scale-[0.98]"
               >
-                LINE 沒有開啟？點這裡再試一次
+                登入畫面沒開啟？點這裡再試一次
               </a>
             )}
             <button
@@ -796,7 +797,7 @@ export default function LandingPage() {
                   )}
                   {standalone && (
                     <p className="text-[12px] text-[var(--tertiary-label)]">
-                      將在 LINE app 中完成登入，再回到此 PWA App。
+                      將開啟 LINE 登入頁，完成後自動回到此 App。
                     </p>
                   )}
                 </div>
