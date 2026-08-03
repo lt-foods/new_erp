@@ -137,6 +137,8 @@ export default function LandingPage() {
   const [linkCopied, setLinkCopied] = useState(false);
   /** LIFF 已登入但缺門市時留下的 id_token，選完門市直接拿它補完登入 */
   const liffIdTokenRef = useRef<string | null>(null);
+  /** init 成功的 liff 實例（給「卡在 LINE 裡」時的手動重試用） */
+  const liffRef = useRef<Awaited<ReturnType<typeof loadLiff>> | null>(null);
 
   // 6 位數驗證碼 fallback
   const [syncCode, setSyncCode] = useState("");
@@ -207,6 +209,7 @@ export default function LandingPage() {
         try {
           const liff = await loadLiff();
           await liff.init({ liffId });
+          liffRef.current = liff;
 
           const sFromLiff = readStore();
           if (sFromLiff) {
@@ -370,6 +373,32 @@ export default function LandingPage() {
     window.location.href = lineOauthStartUrl(storeId);
   };
 
+  /**
+   * 卡在 LINE 裡時的「再試一次」：直接跑 LIFF 登入。
+   *
+   * 現況（2026-08-03）這條會失敗 —— `NEXT_PUBLIC_LIFF_ID` 借用的是「包子媽團購」
+   * worker 站那支 LIFF，它註冊的 Endpoint URL 不是本站網域，LIFF 登入會把本站
+   * 網址當 redirect_uri 送出去，被 LINE 擋成 400。所以這顆是**次要**按鈕，
+   * 主要指引仍是改用外部瀏覽器。
+   *
+   * 等 LIFF ID 換成 endpoint = 本站的那支之後，這條就會直接生效，不用再改程式。
+   */
+  const retryLiffLogin = () => {
+    const liff = liffRef.current;
+    if (!liff) return;
+    logClientError(
+      "liff_login_manual_retry",
+      "使用者在 LINE 內手動重試 LIFF 登入",
+      { store: storeId },
+      "warn",
+    );
+    try {
+      liff.login();
+    } catch (e) {
+      logCaught("liff_login_manual_retry_failed", e, { store: storeId });
+    }
+  };
+
   /** 卡在 LINE 內建瀏覽器時唯一的出路：把網址帶去外部瀏覽器 */
   const copyLoginLink = async () => {
     const url = storeId
@@ -526,6 +555,14 @@ export default function LandingPage() {
                       >
                         {linkCopied ? "已複製，請貼到瀏覽器開啟" : "複製本頁連結"}
                       </button>
+                      {liffRef.current && (
+                        <button
+                          onClick={retryLiffLogin}
+                          className="w-full rounded-xl border border-[var(--separator)] px-4 py-2.5 text-[14px] font-medium text-[var(--secondary-label)] transition active:scale-[0.98]"
+                        >
+                          仍要在 LINE 內再試一次
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <button
