@@ -125,6 +125,15 @@ Deno.serve(async (req) => {
 
     // 若帶了 pair_code（PWA 主動觸發 LIFF 登入流程），把 session 寫進 pwa_auth_codes
     // 讓 PWA 切回桌面後可以用該 code claim 拿回 session。
+    // pair_written 回給前端是為了可觀測性：
+    //   null  = 這趟根本沒帶 pair 進來（PWA 配對的鑰匙在路上就掉了）
+    //   false = 有帶但寫入失敗
+    //   true  = 已寫入，PWA 那端輪詢就領得到
+    // 少了這個欄位，「沒被呼叫」與「呼叫了但失敗」在外面看起來一模一樣，
+    // 只能靠猜 —— 2026-08-03 查這個問題就卡在這裡。
+    let pairWritten: boolean | null = null;
+    let pairError: string | null = null;
+
     if (pairCode && pairCode.length >= 8 && pairCode.length <= 64) {
       const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
       const insertResp = await fetch(`${supabaseUrl}/rest/v1/pwa_auth_codes`, {
@@ -142,13 +151,17 @@ Deno.serve(async (req) => {
           expires_at: expiresAt,
         }),
       });
+      pairWritten = insertResp.ok;
       if (!insertResp.ok) {
-        console.error("pwa_auth_codes insert failed", insertResp.status, await insertResp.text());
+        pairError = `${insertResp.status}: ${(await insertResp.text()).slice(0, 200)}`;
+        console.error("pwa_auth_codes insert failed", pairError);
         // 不擋使用者，繼續回 session 給 LIFF 端
       }
     }
 
-    return json(sessionPayload);
+    // 注意：pair_written / pair_error 只回給前端，不能混進 sessionPayload ——
+    // 那份會原封不動存進 pwa_auth_codes 再交給 PWA 當 session 用
+    return json({ ...sessionPayload, pair_written: pairWritten, pair_error: pairError });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("liff-session error:", msg);

@@ -892,6 +892,20 @@ async function runLiffSession(
     );
   }
 
+  // 記錄配對鑰匙有沒有真的寄存到遠端 —— PWA 那端輪詢領不到時，
+  // 靠這筆才分得出是「根本沒寫進去」還是「寫了但沒領到」
+  logClientError(
+    "liff_session_ok",
+    `liff-session 完成（pair_written=${String((data as { pair_written?: unknown }).pair_written)}）`,
+    {
+      has_pair: Boolean(pairCode),
+      pair_written: (data as { pair_written?: unknown }).pair_written ?? null,
+      pair_error: (data as { pair_error?: unknown }).pair_error ?? null,
+      store: storeId,
+    },
+    "info",
+  );
+
   // 若是 PWA pairing 流程,session 已經寫進 pwa_auth_codes,
   // 這裡 LIFF 端不需要也不應該跳到 /me（user 應該回 PWA）。
   if (pairCode) {
