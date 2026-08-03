@@ -57,3 +57,23 @@ grep -rn "<function_name>" supabase/migrations/
 
 把每一個動過該 function 的 migration 都讀過，基於**時間最新**那個版本擴寫，確保所有 prior fix 都保留。
 新 migration 檔頭註解務必列出「以哪個版本為基底」、「rollback 指回哪個版本」。
+
+---
+
+## LINE / LIFF
+
+### 在 LINE 內建瀏覽器裡，絕對不要把使用者導去 `access.line.me`
+
+LINE 官方明講「LIFF browser 內的 LINE Login 授權請求行為不保證」，實際結果是
+`access.line.me/oauth2/v2.1/authorize` 直接回一頁 **400 Bad Request**，使用者卡死。
+兩個都會踩到：
+
+- `liff.login()`（LIFF browser 內登入是 `liff.init()` 自動跑的，**不可以**自己再呼叫一次）
+- 自家的 `line-oauth-start` → 302 到 authorize（給外部瀏覽器 / PWA 用的，不能在 LINE 內用）
+
+在 LINE 內（UA 含 `" Line/"`）要登入 → 一律導去 `https://liff.line.me/{LIFF_ID}?store=...`
+讓 LINE 重開 LIFF、走 init 的 auto login。往 LIFF 彈要有 sessionStorage 一次性旗標擋住
+LIFF ↔ 網頁互推的迴圈，第二次還沒登入就給文字指引（請用外部瀏覽器開）。
+
+debug 提醒：`line-oauth-start` 用 curl 打回 302 → LINE login page **不代表沒問題** —
+這條路在一般瀏覽器本來就會過，400 只在真的 LINE webview 裡才會出現。

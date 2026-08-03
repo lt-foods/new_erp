@@ -9,6 +9,41 @@ import Spinner, { LoadingScreen } from "@/components/Spinner";
 type Status = "loading" | "idle" | "liff_auth" | "pair_done" | "error";
 
 const PAIR_TOKEN_KEY = "pwa_pair_token";
+/** 只允許往 LIFF 彈一次的旗標（sessionStorage），避免 LIFF ↔ 網頁互推無限迴圈 */
+const LIFF_RETRY_KEY = "liff_login_retry";
+
+/** sessionStorage 在無痕 / 被擋時會 throw，一律包起來 */
+function sessionFlag(key: string): boolean {
+  try { return sessionStorage.getItem(key) !== null; } catch { return false; }
+}
+function setSessionFlag(key: string) {
+  try { sessionStorage.setItem(key, "1"); } catch { /* noop */ }
+}
+function clearSessionFlag(key: string) {
+  try { sessionStorage.removeItem(key); } catch { /* noop */ }
+}
+
+/** 是否在 LINE 的內建瀏覽器裡（含 LIFF browser）。UA 帶 " Line/"。 */
+function isInLineApp(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return / Line\//i.test(navigator.userAgent);
+}
+
+/** 組 LIFF 入口 URL（LINE 會用 LIFF 重開這個 app，init 時自動登入） */
+function liffAppUrl(
+  liffId: string,
+  storeId?: string | null,
+  pairCode?: string | null,
+): string {
+  const q = new URLSearchParams();
+  if (storeId) q.set("store", storeId);
+  if (pairCode) q.set("pair", pairCode);
+  const qs = q.toString();
+  return `https://liff.line.me/${encodeURIComponent(liffId)}${qs ? `?${qs}` : ""}`;
+}
+
+const LINE_BROWSER_HINT =
+  "LINE 內建瀏覽器無法完成 LINE 登入。請點右上角「⋮」選「用其他瀏覽器開啟」後再登入，或從 LINE 官方帳號的選單重新進入。";
 
 function isStandalone(): boolean {
   if (typeof window === "undefined") return false;
@@ -113,6 +148,7 @@ export default function LandingPage() {
 
     const existing = getSession();
     if (existing && existing.memberId) {
+      clearSessionFlag(LIFF_RETRY_KEY);
       window.location.href = landing;
       return;
     }
@@ -169,9 +205,25 @@ export default function LandingPage() {
           if (liff.isInClient()) {
             setStatus("liff_auth");
             if (!liff.isLoggedIn()) {
-              liff.login();
+              // ⚠️ 這裡**不能**呼叫 liff.login()。
+              // LIFF browser 內的登入是 liff.init() 自動跑的；官方明講
+              // 「LIFF browser 內的 LINE Login 授權請求行為不保證」，
+              // 實際呼叫會被導到 access.line.me 然後回一頁 400 Bad Request，
+              // 使用者就卡死在那頁（2026-08 會員回報）。
+              // 正解：重新開一次 LIFF app，讓 init 的 auto login 再跑一次；
+              // 只重試一次，第二次還不行就給明確指引，不要無限彈。
+              if (!sessionFlag(LIFF_RETRY_KEY)) {
+                setSessionFlag(LIFF_RETRY_KEY);
+                window.location.href = liffAppUrl(liffId, s, readPairFromUrl());
+                return;
+              }
+              setError(
+                "LINE 自動登入沒有完成。請關掉這個視窗，從 LINE 官方帳號的選單重新開啟一次；若還是不行，請改用手機瀏覽器開啟本站登入。",
+              );
+              setStatus("idle");
               return;
             }
+            clearSessionFlag(LIFF_RETRY_KEY);
             // LIFF 走自動登入,先把 webview 內任何殘留的舊 session 清掉,
             // 避免 fragment 寫入後跟舊 key 撞
             clearSession();
@@ -239,9 +291,7 @@ export default function LandingPage() {
       localStorage.setItem(PAIR_TOKEN_KEY, token);
 
       const targetUrl = liffId
-        ? `https://liff.line.me/${encodeURIComponent(liffId)}` +
-          `?store=${encodeURIComponent(storeId)}` +
-          `&pair=${encodeURIComponent(token)}`
+        ? liffAppUrl(liffId, storeId, token)
         : lineOauthStartUrl(storeId, token);
 
       const a = document.createElement("a");
@@ -251,6 +301,20 @@ export default function LandingPage() {
       document.body.appendChild(a);
       a.click();
       a.remove();
+      return;
+    }
+
+    // 在 LINE 內建瀏覽器開本站（例：從聊天室 / 貼文點連結進來，不是 LIFF context）：
+    // 一樣不能把人丟去 access.line.me 跑 OAuth，會回 400 Bad Request。
+    // 改用 LIFF URL 讓 LINE 以 LIFF 重開這個 app（LIFF 內是自動登入）。
+    if (isInLineApp()) {
+      if (liffId && !sessionFlag(LIFF_RETRY_KEY)) {
+        setSessionFlag(LIFF_RETRY_KEY);
+        clearSession();
+        window.location.href = liffAppUrl(liffId, storeId);
+        return;
+      }
+      setError(LINE_BROWSER_HINT);
       return;
     }
 
