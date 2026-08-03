@@ -510,6 +510,15 @@ export default function MePage() {
         <p className="px-4 pt-2 text-[12px] text-[var(--tertiary-label)]">
           會員卡 QR、點數等更多功能持續開發中。
         </p>
+
+        {/* 登出放最下面、樣式低調 —— 這是少數人偶爾才需要的動作（換帳號、
+            把裝置交給別人），擺太醒目只會提高誤觸機率 */}
+        <a
+          href="/logout"
+          className="mx-auto block pt-4 text-[14px] font-medium text-[var(--ios-red)] underline underline-offset-4"
+        >
+          登出
+        </a>
       </div>
     </PageShell>
   );
