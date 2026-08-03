@@ -19,7 +19,10 @@ import { exchangeCode, verifyIdToken } from "../_shared/line.ts";
 import { autoRegister } from "../_shared/auto-register.ts";
 import { resolveStore } from "../_shared/store-resolve.ts";
 
-const SESSION_TTL_SEC = 60 * 60 * 24 * 30; // 30 天
+// 半年。必須與 liff-session 的 SESSION_TTL_SEC 一致 —— 兩條登入路徑
+// （LIFF 自動登入 / 網頁 OAuth）簽的是同一種 session token，值不同會變成
+// 「用哪條路登入決定能撐多久」，之後很難查。
+const SESSION_TTL_SEC = 60 * 60 * 24 * 180;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
