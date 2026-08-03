@@ -657,22 +657,7 @@ function OrdersListContent() {
           fmt={(v) => v.toLocaleString("zh-TW")}
           subLabel="日均"
         />
-        {/* 今日取貨金額 — 已取貨品項的 qty×unit_price，依「取貨當天」切
-            （其餘兩張卡是下單視角、依 created_at 切） */}
-        <TrendCard
-          label="今日取貨金額"
-          trend={pickupTrend}
-          getTotal={(t) => t.amount}
-          getDaily={(d) => d.amount}
-          fmt={(v) => `$${Math.round(v).toLocaleString("zh-TW")}`}
-          mainMode="last_day"
-          subLabel="本月累計"
-          subMode="total"
-          accent
-          mainTitle={pickupTrend
-            ? `今日取貨 ${pickupTrend.days[pickupTrend.days.length - 1]?.orders ?? 0} 單 · ${pickupTrend.days[pickupTrend.days.length - 1]?.qty ?? 0} 件`
-            : undefined}
-        />
+        <PickupTodayCard trend={pickupTrend} />
       </div>
 
       {/* Tab bar — 未取貨 / 可取貨 / 部分取貨 / 已完成 / 轉出 / 取消;含各 tab 數量 */}
@@ -1182,16 +1167,14 @@ function Sparkline({
   labels,
   fmt,
   color = "currentColor",
-  width = 140,
 }: {
   values: number[];
   labels?: string[];
   fmt?: (v: number) => string;
   color?: string;
-  width?: number;
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
-  const w = width;
+  const w = 140;
   const h = 32;
   const pad = 2;
   const n = values.length;
@@ -1261,6 +1244,38 @@ function Sparkline({
   );
 }
 
+// 今日取貨金額 — 只看今天：已取貨品項 (status='picked_up') 的 qty×unit_price，
+// 依「取貨當天」切。與另外兩張「本月」卡時間基準不同（那兩張依下單日 created_at），
+// 所以綠底標示、也不放 sparkline / 本月累計 — 這張卡就只回答「今天交出去多少」。
+function PickupTodayCard({ trend }: { trend: TrendData | null }) {
+  const today = trend ? trend.days[trend.days.length - 1] : null;
+  const num = (v: number) => v.toLocaleString("zh-TW");
+  return (
+    <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 dark:border-emerald-900 dark:bg-emerald-950/30">
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-medium text-emerald-700 dark:text-emerald-400">今日取貨金額</div>
+        {today && (
+          <div className="text-[10px] text-zinc-400">
+            {Number(today.ymd.split("-")[1])}/{Number(today.ymd.split("-")[2])}
+          </div>
+        )}
+      </div>
+      {!trend ? (
+        <div className="mt-1 text-xl font-semibold tabular-nums text-zinc-400">—</div>
+      ) : (
+        <>
+          <div className="mt-1 truncate text-xl font-semibold tabular-nums">
+            ${num(Math.round(today?.amount ?? 0))}
+          </div>
+          <div className="mt-0.5 text-[11px] text-zinc-500">
+            {num(today?.orders ?? 0)} 單 · {num(today?.qty ?? 0)} 件
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function TrendCard({
   label,
   trend,
@@ -1268,10 +1283,7 @@ function TrendCard({
   getDaily,
   fmt,
   subLabel,
-  mainMode = "total",
   subMode = "avg",
-  accent = false,
-  mainTitle,
   hint,
 }: {
   label: string;
@@ -1280,10 +1292,7 @@ function TrendCard({
   getDaily: (d: DayTrend) => number;
   fmt: (v: number) => string;
   subLabel: string;
-  mainMode?: "total" | "last_day"; // 大字: 本月累計 or 今天（最後一天）
-  subMode?: "avg" | "last_day" | "total"; // 副字: 日均 / 最後一天 / 本月累計
-  accent?: boolean; // 綠色強調 — 標示這張卡講的是「今天」而不是「本月」
-  mainTitle?: string; // 大字 hover 補充（例：今日單數/件數）
+  subMode?: "avg" | "last_day"; // 副字: 日均 or 最後一天
   hint?: string;
 }) {
   if (!trend) {
@@ -1297,18 +1306,10 @@ function TrendCard({
   const total = getTotal(trend.total);
   const dailyValues = trend.days.map(getDaily);
   const lastDayValue = dailyValues[dailyValues.length - 1] ?? 0;
-  // 大字算法
-  const mainValue = mainMode === "last_day" ? lastDayValue : total;
   // 副字算法
   const daysPassed = trend.days.length;
   const subValue =
-    subMode === "last_day"
-      ? lastDayValue
-      : subMode === "total"
-      ? total
-      : daysPassed > 0
-      ? total / daysPassed
-      : 0;
+    subMode === "last_day" ? lastDayValue : daysPassed > 0 ? total / daysPassed : 0;
   // sparkline 顏色 — 用最後一天 vs 上一天的差判斷
   const curr = lastDayValue;
   const prev = dailyValues[dailyValues.length - 2] ?? 0;
@@ -1326,20 +1327,17 @@ function TrendCard({
     return `${Number(m)}/${Number(d)}`;
   };
   return (
-    <div className={accent
-      ? "rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 dark:border-emerald-900 dark:bg-emerald-950/30"
-      : "rounded-md border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950"
-    }>
+    <div className="rounded-md border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950">
       <div className="flex items-center justify-between">
-        <div className={accent ? "text-xs font-medium text-emerald-700 dark:text-emerald-400" : "text-xs text-zinc-500"}>{label}</div>
+        <div className="text-xs text-zinc-500">{label}</div>
         <div className="text-[10px] text-zinc-400" title={`本月每日 (共 ${daysPassed} 天)`}>
           {fmtMD(firstDay)} ~ {fmtMD(lastDay)}
         </div>
       </div>
       <div className="mt-1 flex items-end justify-between gap-3">
         <div className="min-w-0">
-          <div className="truncate text-xl font-semibold tabular-nums" title={mainTitle ?? fmt(mainValue)}>
-            {fmt(mainValue)}
+          <div className="truncate text-xl font-semibold tabular-nums" title={fmt(total)}>
+            {fmt(total)}
           </div>
           <div className="mt-0.5 text-[11px] text-zinc-500">
             {subLabel} {fmt(subValue)}
