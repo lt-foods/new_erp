@@ -77,3 +77,28 @@ LIFF ↔ 網頁互推的迴圈，第二次還沒登入就給文字指引（請�
 
 debug 提醒：`line-oauth-start` 用 curl 打回 302 → LINE login page **不代表沒問題** —
 這條路在一般瀏覽器本來就會過，400 只在真的 LINE webview 裡才會出現。
+
+---
+
+## 會員前端（apps/member）
+
+### 使用者會卡住的分支，一律留 log
+
+會員端的錯誤只發生在對方手機上，我們看不到 console；靠截圖來回問要花掉整個下午。
+所以前端只要走到「使用者會卡住 / 功能默默降級」的分支，一律呼叫
+`logClientError()` 或 `logCaught()`（`apps/member/src/lib/clientLog.ts`）。
+
+- 寫兩份：DB `client_error_logs`（`liff-api` 的 `log_client_error` action，**免 token**，
+  因為最需要記的就是「還沒登入就壞掉」）+ 本機 ring buffer（會員開 `/debug` 可當場給客服）。
+- 已在 layout 掛 `ErrorLogger` 攔 `window.onerror` / `unhandledrejection`，
+  但**未捕捉的例外不等於有記到**：被 `try/catch` 吞掉的分支要自己補呼叫。
+- 不要在 catch 裡只寫 `console.warn` 就算了 — 那等於沒記。
+
+查最近的錯誤：
+
+```sql
+SELECT created_at, source, message, detail, env
+  FROM client_error_logs ORDER BY id DESC LIMIT 50;
+```
+
+保留期自己顧：`SELECT purge_client_error_logs(30);`

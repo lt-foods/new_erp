@@ -1036,6 +1036,68 @@ async function upsertPushSubscription(sb: any, tenantId: string, memberId: numbe
   return json({ ok: true, id: insertedId, debug: rpcParams });
 }
 
+/**
+ * 收前端的錯誤 log。**不需要 token** — 最需要記錄的正是「還沒登入就壞掉」。
+ *
+ * 因為是開放端點，所有欄位一律截長度、且每分鐘全域上限 300 筆；
+ * 超過就靜默丟掉（回 ok，不讓前端因為 log 失敗再噴一次錯）。
+ * 有帶合法 token 時才補 member_id / store_id / line_user_id。
+ */
+async function logClientError(
+  sb: any,
+  tenantId: string,
+  body: Record<string, unknown>,
+  claims: Record<string, unknown> | null,
+) {
+  const cut = (v: unknown, n: number): string | null => {
+    if (v === null || v === undefined) return null;
+    const s = typeof v === "string" ? v : String(v);
+    return s.length > n ? s.slice(0, n) : s;
+  };
+  const cutJson = (v: unknown, n: number): unknown => {
+    if (v === null || v === undefined) return null;
+    const s = JSON.stringify(v);
+    if (s === undefined) return null;
+    return s.length > n ? { truncated: true, raw: s.slice(0, n) } : v;
+  };
+
+  const message = cut(body.message, 500);
+  if (!message) return json({ ok: false, error: "message required" }, 400);
+
+  // 洩洪閥：前端進到 render loop 時不要把 DB 灌爆
+  const since = new Date(Date.now() - 60_000).toISOString();
+  const { count } = await sb
+    .from("client_error_logs")
+    .select("id", { count: "exact", head: true })
+    .gte("created_at", since);
+  if (typeof count === "number" && count >= 300) {
+    return json({ ok: true, dropped: "rate_limited" });
+  }
+
+  const level = ["error", "warn", "info"].includes(String(body.level))
+    ? String(body.level)
+    : "error";
+
+  const { error } = await sb.from("client_error_logs").insert({
+    tenant_id:    tenantId,
+    member_id:    claims?.member_id ? Number(claims.member_id) : null,
+    line_user_id: claims?.line_user_id ? cut(claims.line_user_id, 64) : cut(body.line_user_id, 64),
+    store_code:   cut(body.store_code, 32),
+    level,
+    source:       cut(body.source, 64) ?? "unknown",
+    message,
+    detail:       cutJson(body.detail, 4000),
+    page_url:     cut(body.page_url, 500),
+    user_agent:   cut(body.user_agent, 300),
+    env:          cutJson(body.env, 1000),
+  });
+  if (error) {
+    console.error("log_client_error insert failed:", error);
+    return json({ ok: false, error: error.message }, 500);
+  }
+  return json({ ok: true });
+}
+
 // ─── main ────────────────────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
@@ -1050,6 +1112,23 @@ Deno.serve(async (req) => {
     // ── 不需要 Token 的 actions ──
     if (action === "claim_pwa_auth_code") return await claimPwaAuthCode(sb, String(body.code ?? ""));
     if (action === "list_stores") return await listStores(sb, requireEnv("DEFAULT_TENANT_ID"));
+    if (action === "log_client_error") {
+      // 有帶 token 就順便解出來補會員資訊；解不開不算錯（登入前的錯誤本來就沒 token）
+      let logClaims: Record<string, unknown> | null = null;
+      const logAuth = req.headers.get("authorization");
+      if (logAuth) {
+        try {
+          logClaims = await verifyJwtHs256(
+            logAuth.replace(/^Bearer\s+/i, ""),
+            requireEnv("PROJECT_JWT_SECRET"),
+          ) as Record<string, unknown>;
+        } catch { /* 匿名記錄 */ }
+      }
+      const logTenant = logClaims?.tenant_id
+        ? String(logClaims.tenant_id)
+        : requireEnv("DEFAULT_TENANT_ID");
+      return await logClientError(sb, logTenant, body, logClaims);
+    }
 
     const auth = req.headers.get("authorization");
     if (!auth) return json({ error: "missing authorization" }, 401);

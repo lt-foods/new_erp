@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
+import ErrorLogger from "@/components/ErrorLogger";
 
 export const metadata: Metadata = {
   title: "包子媽生鮮小舖",
@@ -41,6 +42,7 @@ export default function RootLayout({
   return (
     <html lang="zh-Hant" className="h-full antialiased">
       <body className="min-h-full flex flex-col">
+        <ErrorLogger />
         <ServiceWorkerRegister />
         {children}
       </body>

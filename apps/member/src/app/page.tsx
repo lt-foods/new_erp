@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { lineOauthStartUrl, callLiffApi } from "@/lib/supabase";
 import { loadLiff } from "@/lib/liff";
 import { clearSession, getSession, listenForSession } from "@/lib/session";
+import { logCaught, logClientError } from "@/lib/clientLog";
 import Spinner, { LoadingScreen } from "@/components/Spinner";
 
 type Status = "loading" | "idle" | "liff_auth" | "pair_done" | "error";
@@ -162,8 +163,8 @@ export default function LandingPage() {
     callLiffApi<{ stores: StoreOption[] }>("", { action: "list_stores" })
       .then((r) => setStores(r.stores ?? []))
       .catch((e) => {
-        // 抓不到就退回手動輸入；但要 warn 以免靜默失敗（例：.env.local 缺 NEXT_PUBLIC_SUPABASE_URL → callLiffApi throw）
-        console.warn("[liff] list_stores failed, falling back to text input:", e);
+        // 抓不到就退回手動輸入；但要留痕以免靜默失敗（例：.env.local 缺 NEXT_PUBLIC_SUPABASE_URL → callLiffApi throw）
+        logCaught("list_stores_failed", e, { fallback: "manual_store_input" });
       });
 
     // 3. 從 LIFF 配對流程切回 PWA 時，自動 claim
@@ -175,7 +176,11 @@ export default function LandingPage() {
 
     (async () => {
       const errInUrl = new URLSearchParams(window.location.search).get("error");
-      if (errInUrl) setError(errInUrl);
+      if (errInUrl) {
+        // OAuth callback 失敗會把原因塞回 ?error=，這是登入壞掉最直接的證據
+        logClientError("oauth_callback_error", errInUrl);
+        setError(errInUrl);
+      }
 
       const liffId = process.env.NEXT_PUBLIC_LIFF_ID;
 
@@ -213,10 +218,21 @@ export default function LandingPage() {
               // 正解：重新開一次 LIFF app，讓 init 的 auto login 再跑一次；
               // 只重試一次，第二次還不行就給明確指引，不要無限彈。
               if (!sessionFlag(LIFF_RETRY_KEY)) {
+                logClientError(
+                  "liff_auto_login_failed",
+                  "LIFF isInClient 但 isLoggedIn=false，重開 LIFF 重試一次",
+                  { store: s, has_pair: Boolean(readPairFromUrl()) },
+                  "warn",
+                );
                 setSessionFlag(LIFF_RETRY_KEY);
                 window.location.href = liffAppUrl(liffId, s, readPairFromUrl());
                 return;
               }
+              logClientError(
+                "liff_auto_login_failed_final",
+                "重開 LIFF 後仍未登入，改顯示指引",
+                { store: s },
+              );
               setError(
                 "LINE 自動登入沒有完成。請關掉這個視窗，從 LINE 官方帳號的選單重新開啟一次；若還是不行，請改用手機瀏覽器開啟本站登入。",
               );
@@ -228,7 +244,10 @@ export default function LandingPage() {
             // 避免 fragment 寫入後跟舊 key 撞
             clearSession();
             const idToken = liff.getIDToken();
-            if (!idToken) throw new Error("LIFF getIDToken returned null");
+            if (!idToken) {
+              logClientError("liff_id_token_null", "LIFF getIDToken 回 null", { store: s });
+              throw new Error("LIFF getIDToken returned null");
+            }
 
             const pairCode = readPairFromUrl();
             try {
@@ -241,6 +260,7 @@ export default function LandingPage() {
                 setStatus("idle");
                 return;
               }
+              logCaught("liff_session_failed", e, { store: s, has_pair: Boolean(pairCode) });
               throw e;
             }
 
@@ -258,7 +278,9 @@ export default function LandingPage() {
             return;
           }
         } catch (e) {
-          console.warn("liff init failed, falling back:", e);
+          // 走到這裡 = LIFF 這條路整條掛掉，使用者會退回選門市 + OAuth。
+          // 不是致命，但要留痕：多數 LIFF 問題都只在會員手機上重現得出來。
+          logCaught("liff_init_failed", e, { store: s, liff_id: liffId });
         }
       }
 
@@ -309,11 +331,22 @@ export default function LandingPage() {
     // 改用 LIFF URL 讓 LINE 以 LIFF 重開這個 app（LIFF 內是自動登入）。
     if (isInLineApp()) {
       if (liffId && !sessionFlag(LIFF_RETRY_KEY)) {
+        logClientError(
+          "line_browser_oauth_blocked",
+          "LINE 內建瀏覽器按登入，改導 LIFF URL",
+          { store: storeId },
+          "warn",
+        );
         setSessionFlag(LIFF_RETRY_KEY);
         clearSession();
         window.location.href = liffAppUrl(liffId, storeId);
         return;
       }
+      logClientError(
+        "line_browser_login_dead_end",
+        "LINE 內建瀏覽器無法登入且沒有 LIFF 退路",
+        { store: storeId, has_liff_id: Boolean(liffId) },
+      );
       setError(LINE_BROWSER_HINT);
       return;
     }
@@ -357,6 +390,7 @@ export default function LandingPage() {
       });
       window.location.href = `/shop#${frag.toString()}`;
     } catch (e) {
+      logCaught("pwa_sync_code_failed", e);
       setError(e instanceof Error ? e.message : "驗證碼無效或已過期");
     } finally {
       setSyncing(false);
