@@ -175,8 +175,12 @@ async function registerAndBind(sb: any, p: any) {
 }
 
 async function getMe(sb: any, tenantId: string, memberId: number) {
-  const { data, error } = await sb.from("members").select("id, member_no, name, phone, email, birthday, gender, home_store_id, avatar_url, status").eq("tenant_id", tenantId).eq("id", memberId).single();
+  // maybeSingle：會員可能已被後台刪除（rpc_member_purge），但對方手機的 JWT 還沒過期。
+  // 這時要回明確的 member_not_found 讓前端清 session 重新登入，
+  // 不能讓 .single() 的「Cannot coerce ...」原始錯誤流到畫面上（2026-08 實際發生）。
+  const { data, error } = await sb.from("members").select("id, member_no, name, phone, email, birthday, gender, home_store_id, avatar_url, status").eq("tenant_id", tenantId).eq("id", memberId).maybeSingle();
   if (error) return json({ error: error.message }, 500);
+  if (!data) return json({ error: "member_not_found" }, 401);
   let home_store_name: string | null = null;
   if (data.home_store_id) {
     const { data: s } = await sb.from("stores").select("name").eq("tenant_id", tenantId).eq("id", data.home_store_id).maybeSingle();

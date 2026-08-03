@@ -1,4 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { clearSession } from "@/lib/session";
+import { logClientError } from "@/lib/clientLog";
 
 /**
  * 以 custom JWT 認證的 Supabase client（目前未使用，保留給未來讀取 RLS 保護的資料用）
@@ -52,6 +54,23 @@ export async function callLiffApi<T = unknown>(
   if (!resp.ok) {
     const msg = (data as { error?: string; detail?: string }).error
       ?? `liff-api ${resp.status}`;
+
+    // 會員已被後台刪除（rpc_member_purge）但手機上的 JWT 還沒過期：
+    // 這顆殭屍 session 會讓所有頁面互踢（/ 看到 member_id 跳內頁、內頁查無人噴錯）。
+    // 集中在這裡拆彈：清 session、回登入頁重新註冊。
+    if (resp.status === 401 && msg === "member_not_found") {
+      logClientError(
+        "member_not_found_session_cleared",
+        "會員已不存在，清除本機 session 回登入頁",
+        { action: body.action },
+        "warn",
+      );
+      clearSession();
+      if (typeof window !== "undefined") window.location.replace("/");
+      // 讓呼叫端的 catch 拿到可讀訊息（頁面即將跳走，訊息幾乎不會被看到）
+      throw new Error("此帳號已被移除，請重新註冊");
+    }
+
     const err = new Error(msg);
     (err as Error & { detail?: unknown }).detail = (data as { detail?: unknown }).detail;
     throw err;
