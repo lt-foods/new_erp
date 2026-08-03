@@ -130,8 +130,23 @@ export default function StoreSettlementReview() {
             ) : rows.map((r) => (
               <tr key={r.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
                 <td className="px-3 py-2 font-mono text-xs">{r.settlement_month?.slice(0, 7)}</td>
-                <td className="px-3 py-2 text-right font-mono text-rose-600">
-                  ${Number(r.payable_amount).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                <td className="px-3 py-2 text-right font-mono">
+                  {/* 有明細卻 0 元 = 該月進退相抵；負數 = 退貨多於進貨，總倉要退款給店家。
+                      兩種情況都用紅字寫「$0 / $-x」店家會看不懂，分開標示。 */}
+                  {Number(r.payable_amount) < 0 ? (
+                    <span className="text-emerald-600">
+                      總倉應退 ${Math.abs(Number(r.payable_amount)).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                    </span>
+                  ) : (
+                    <>
+                      <span className={Number(r.payable_amount) > 0 ? "text-rose-600" : "text-zinc-500"}>
+                        ${Number(r.payable_amount).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                      </span>
+                      {Number(r.payable_amount) === 0 && r.item_count > 0 && (
+                        <span className="block text-[10px] text-zinc-500">進貨與退貨相抵</span>
+                      )}
+                    </>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-right font-mono">{r.item_count}</td>
                 <td className="px-3 py-2">

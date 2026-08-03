@@ -106,12 +106,21 @@ export default function SettlementPage() {
   if (role !== null && !isHqRole(role)) {
     return (
       <div className="flex flex-1 flex-col gap-4 p-6">
-        <header>
-          <h1 className="text-xl font-semibold">月結對帳</h1>
-          <p className="text-sm text-zinc-500">
-            總部送來的月結對帳單：逐筆核對，有問題的行按「有問題」附備註送出爭議；
-            全部無誤按「同意畫押」鎖定，匯款後回來按「我已匯款」。
-          </p>
+        <header className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-semibold">月結對帳</h1>
+            <p className="text-sm text-zinc-500">
+              總部送來的月結對帳單：逐筆核對，有問題的行按「有問題」附備註送出爭議；
+              全部無誤按「同意畫押」鎖定，匯款後回來按「我已匯款」。
+            </p>
+          </div>
+          {/* 店家當天就想知道「今天進了多少錢」— 不用等月結送單 */}
+          <Link
+            href="/transfers/settlement/daily"
+            className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+          >
+            查每日進貨金額
+          </Link>
         </header>
         <StoreSettlementReview />
       </div>
@@ -120,13 +129,22 @@ export default function SettlementPage() {
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
-      <header>
-        <h1 className="text-xl font-semibold">月結算</h1>
-        <p className="text-sm text-zinc-500">
-          總倉對各分店：賣斷制、依 hq_to_store 已收貨 transfers 計算貨款（含空中轉調整）。
-          應付金額以分店價口徑計；成本口徑另計、供總倉毛利參考。
-          流程：產生 → 送店家核對 → （爭議處理）→ 雙方同意鎖定 → 店家匯款 → 收款結案。
-        </p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">月結算</h1>
+          <p className="text-sm text-zinc-500">
+            總倉對各分店：賣斷制、依 hq_to_store 已收貨 transfers 計算貨款（含空中轉調整）。
+            應付金額以分店價口徑計；成本口徑另計、供總倉毛利參考。
+            流程：產生 → 送店家核對 → （爭議處理）→ 雙方同意鎖定 → 店家匯款 → 收款結案。
+          </p>
+        </div>
+        {/* 店家臨時問「今天進了多少」時，總部也能直接查任一店的每日金額 */}
+        <Link
+          href="/transfers/settlement/daily"
+          className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+        >
+          查分店每日進貨金額
+        </Link>
       </header>
 
       <HqToStoreTab />
