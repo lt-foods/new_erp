@@ -366,6 +366,34 @@ export default function LandingPage() {
             return;
           }
 
+          // 走到這裡 = 不在 LIFF client（LINE 內建瀏覽器或一般瀏覽器）。
+          //
+          // 但 liff.login() 跑完回來時就是這個狀態：isInClient 仍是 false，
+          // isLoggedIn 卻已經是 true。原本沒有這段，於是登入其實已經完成，
+          // 使用者卻被丟回登入頁、得再按一次「用 LINE 登入」才會真的進去
+          // —— 這就是「LIFF 登入要按兩次」。這裡直接把它補完。
+          if (safe(() => liff.isLoggedIn())) {
+            const idToken = safe(() => liff.getIDToken());
+            if (idToken) {
+              // 缺門市時留給 start()：使用者選完店按一次就能補完，不必重登
+              liffIdTokenRef.current = idToken;
+              if (s) {
+                setStatus("liff_auth");
+                try {
+                  await runLiffSession(idToken, s, resolvePairCode());
+                  return;
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : String(e);
+                  // store_required 不是錯誤，只是還要選門市
+                  if (!msg.includes("store_required")) {
+                    logCaught("liff_auto_complete_failed", e, { store: s });
+                  }
+                  // 落回下面的 idle，讓使用者手動重試
+                }
+              }
+            }
+          }
+
           if (!s) {
             setStatus("idle");
             return;
