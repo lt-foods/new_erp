@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { getSession, listenForSession } from "./session";
 import { callLiffApi } from "./supabase";
+import { syncAppBadge } from "./appBadge";
 
 /**
  * 提供 tab bar 上的「通知」未讀數
@@ -24,13 +25,19 @@ export function useUnreadNotifications() {
     const s = getSession();
     if (!s || !s.memberId || !s.token) {
       setCount(0);
+      // 沒登入就不該留著上一個帳號的數字在桌面圖示上
+      void syncAppBadge(0);
       return;
     }
     try {
       const d = await callLiffApi<{ count: number }>(s.token, {
         action: "get_my_unread_notification_count",
       });
-      setCount(Number(d.count ?? 0));
+      const n = Number(d.count ?? 0);
+      setCount(n);
+      // 以後端真值覆蓋 PWA 圖示上的 badge —— service worker 在背景只能累加，
+      // 這裡是唯一有真實數字的地方，順便把它的計數校正回來
+      void syncAppBadge(n);
     } catch {
       // 靜默失敗,bar 上不要冒紅字
     }

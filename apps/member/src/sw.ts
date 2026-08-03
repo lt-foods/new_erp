@@ -3,6 +3,7 @@
 import { defaultCache } from "@serwist/next/worker";
 import type { PrecacheEntry, SerwistGlobalConfig } from "serwist";
 import { Serwist } from "serwist";
+import { readStoredBadge, setAppBadgeCount, writeStoredBadge } from "@/lib/appBadge";
 
 declare global {
   interface ServiceWorkerGlobalScope extends SerwistGlobalConfig {
@@ -32,8 +33,17 @@ self.addEventListener("push", (event: PushEvent) => {
     data: data.url || "/",
   };
 
-  // @ts-ignore
-  event.waitUntil(self.registration.showNotification(title, options));
+  event.waitUntil(
+    (async () => {
+      // @ts-ignore
+      await self.registration.showNotification(title, options);
+      // app 關著時查不到真正的未讀數（要 member token），只能本地累加。
+      // 使用者開啟 app 後 useUnreadNotifications 會用後端真值覆蓋，誤差自我修正。
+      const next = (await readStoredBadge()) + 1;
+      await writeStoredBadge(next);
+      await setAppBadgeCount(next);
+    })(),
+  );
 });
 
 // @ts-ignore
