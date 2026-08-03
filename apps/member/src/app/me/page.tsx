@@ -511,11 +511,13 @@ export default function MePage() {
           會員卡 QR、點數等更多功能持續開發中。
         </p>
 
-        {/* 登出放最下面、樣式低調 —— 這是少數人偶爾才需要的動作（換帳號、
-            把裝置交給別人），擺太醒目只會提高誤觸機率 */}
+        {/* 登出仍放最下面（少數人偶爾才需要），但要點得到：
+            原本的 mx-auto 對全寬 block 不生效，變成靠左的一行小字，
+            又緊貼底部 tab bar，實際上很難按。改成明確的按鈕。
+            用外框而非實心紅 —— 要好按，但不該比頁面主要動作更搶眼。 */}
         <a
           href="/logout"
-          className="mx-auto block pt-4 text-[14px] font-medium text-[var(--ios-red)] underline underline-offset-4"
+          className="mt-2 block w-full rounded-xl border border-[var(--ios-red)]/35 bg-[var(--ios-red)]/[0.06] px-4 py-3.5 text-center text-[16px] font-semibold text-[var(--ios-red)] transition active:scale-[0.98]"
         >
           登出
         </a>
