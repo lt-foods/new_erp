@@ -1,5 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { clearSession } from "@/lib/session";
+import { clearSession, updateSessionToken } from "@/lib/session";
 import { logClientError } from "@/lib/clientLog";
 
 /**
@@ -75,5 +75,11 @@ export async function callLiffApi<T = unknown>(
     (err as Error & { detail?: unknown }).detail = (data as { detail?: unknown }).detail;
     throw err;
   }
+
+  // 滑動續期：後端在 token 快到期時夾帶新的回來，換上去即可。
+  // 每個 API 呼叫本身就是「使用者還在用」的證據，所以只要持續使用就不會被登出。
+  const renewed = (data as { renewed_token?: unknown }).renewed_token;
+  if (typeof renewed === "string" && renewed) updateSessionToken(renewed);
+
   return data as T;
 }

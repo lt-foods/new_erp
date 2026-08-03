@@ -129,6 +129,20 @@ export function clearSession() {
 }
 
 /**
+ * 換掉 localStorage 裡的 session token（滑動續期用）。
+ *
+ * 後端在 token 快到期時會夾帶 `renewed_token` 回來，換上去就等於「只要有在用
+ * 就不會被登出」。只動 token —— 續期不是重新登入，member_id / store 等其他
+ * session 欄位一律沿用，不然會在使用者無感的情況下改到身分。
+ */
+export function updateSessionToken(token: string): void {
+  if (typeof window === "undefined") return;
+  // 沒有既有 session 就不要憑空建一個（例如免 token 的 API 意外回了這欄位）
+  if (!localStorage.getItem(TOKEN_KEY)) return;
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+/**
  * 內頁發現沒登入、要退回登入頁時用這個，不要寫死 "/"。
  *
  * LIFF 進來的門市資訊是掛在 query 上的（`liff.state` / `store`），

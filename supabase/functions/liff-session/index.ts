@@ -19,16 +19,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { corsHeaders } from "../_shared/cors.ts";
-import { signJwtHs256 } from "../_shared/jwt.ts";
+import { signSessionToken } from "../_shared/session.ts";
 import { verifyIdToken } from "../_shared/line.ts";
 import { autoRegister } from "../_shared/auto-register.ts";
 import { resolveStore } from "../_shared/store-resolve.ts";
 
-// 半年。沒有續期機制（絕對過期），所以這個值就是「會員最久多久要重登一次」。
-// LINE 內每次開 LIFF 都會重跑 init 自動登入，實際上碰不到；真正有感的是 PWA —
-// 它是獨立 localStorage，時間一到就真的斷線，重登要繞 LIFF 配對，體驗差。
-// 兩支簽 session 的函式（本檔與 line-oauth-callback）必須一致，改一邊等於埋雷。
-const SESSION_TTL_SEC = 60 * 60 * 24 * 180;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -107,12 +102,10 @@ Deno.serve(async (req) => {
     }
 
     // 4) 簽 JWT
-    const now = Math.floor(Date.now() / 1000);
-    const jwt = await signJwtHs256({
+    const jwt = await signSessionToken({
       iss: "supabase",
       role: "authenticated",
       aud: "authenticated",
-      exp: now + SESSION_TTL_SEC,
       tenant_id: tenantId,
       store_id: storeNumericId,
       store_code: storeCode,

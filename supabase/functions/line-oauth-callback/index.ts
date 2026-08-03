@@ -14,15 +14,12 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 import { corsHeaders } from "../_shared/cors.ts";
-import { signJwtHs256, verifyStateToken } from "../_shared/jwt.ts";
+import { verifyStateToken } from "../_shared/jwt.ts";
+import { signSessionToken } from "../_shared/session.ts";
 import { exchangeCode, verifyIdToken } from "../_shared/line.ts";
 import { autoRegister } from "../_shared/auto-register.ts";
 import { resolveStore } from "../_shared/store-resolve.ts";
 
-// 半年。必須與 liff-session 的 SESSION_TTL_SEC 一致 —— 兩條登入路徑
-// （LIFF 自動登入 / 網頁 OAuth）簽的是同一種 session token，值不同會變成
-// 「用哪條路登入決定能撐多久」，之後很難查。
-const SESSION_TTL_SEC = 60 * 60 * 24 * 180;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -143,13 +140,11 @@ Deno.serve(async (req) => {
     }
 
     // 6) sign session JWT（memberId 保證有值）
-    const now = Math.floor(Date.now() / 1000);
-    const jwt = await signJwtHs256(
+    const jwt = await signSessionToken(
       {
         iss: "supabase",
         role: "authenticated",
         aud: "authenticated",
-        exp: now + SESSION_TTL_SEC,
         tenant_id: tenantId,
         store_id: storeNumericId,
         store_code: storeCode,

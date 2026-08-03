@@ -1,6 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 import { corsHeaders } from "../_shared/cors.ts";
-import { verifyJwtHs256 } from "../_shared/jwt.ts";
+import { verifyJwtHs256, type JwtClaims } from "../_shared/jwt.ts";
+import { renewSessionTokenIfNeeded } from "../_shared/session.ts";
 import webpush from "https://esm.sh/web-push@3.6.7";
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -1159,6 +1160,38 @@ async function reportClientLogs(
   return json({ ok: true, received: logs.length });
 }
 
+/**
+ * 滑動續期：token 剩餘壽命不足就換發一顆，用 `renewed_token` 欄位夾帶回前端。
+ *
+ * 為什麼寄生在既有回應上而不是獨立端點：續期要「使用者有在用」才發生，
+ * 而每個 action 本身就是「有在用」的證據，多開一支端點只是多一次往返。
+ *
+ * 三個保護：
+ *   - 只加在成功的 JSON 物件回應上（失敗回應前端走 throw 路徑，不會讀 body）
+ *   - 用 clone() 讀 body，續期失敗時原回應還能原封不動送出去
+ *   - 整段包 try —— 延長 session 是加值功能，絕不能讓它把本來成功的請求弄失敗
+ */
+async function withRenewedToken(
+  resp: Response,
+  claims: JwtClaims,
+  secret: string,
+): Promise<Response> {
+  try {
+    if (!resp.ok) return resp;
+    if (!resp.headers.get("content-type")?.includes("application/json")) return resp;
+
+    const next = await renewSessionTokenIfNeeded(claims, secret);
+    if (!next) return resp;
+
+    const body = await resp.clone().json();
+    if (body === null || typeof body !== "object" || Array.isArray(body)) return resp;
+    return json({ ...body, renewed_token: next });
+  } catch (e) {
+    console.error("token renew failed:", e);
+    return resp;
+  }
+}
+
 // ─── main ────────────────────────────────────────────────────────────────────
 
 Deno.serve(async (req) => {
@@ -1206,28 +1239,31 @@ Deno.serve(async (req) => {
     const memberId = claims.member_id ? Number(claims.member_id) : null;
     if (!tenantId || !storeId || !lineUserId) return json({ error: "missing claims in token" }, 401);
 
-    switch (action) {
-      case "lookup_by_phone": return await lookupByPhone(sb, tenantId, String(body.phone ?? ""));
-      case "register_and_bind": return await registerAndBind(sb, { tenantId, storeId, lineUserId, phone: String(body.phone ?? ""), name: String(body.name ?? ""), birthday: String(body.birthday ?? "") });
-      case "get_me": if (!memberId) return json({ error: "no member_id" }, 401); return await getMe(sb, tenantId, memberId);
-      case "update_me": if (!memberId) return json({ error: "no member_id" }, 401); return await updateMe(sb, tenantId, memberId, body);
-      case "get_overview": if (!memberId) return json({ error: "no member_id" }, 401); return await getOverview(sb, tenantId, storeId, memberId);
-      case "get_wallet": if (!memberId) return json({ error: "no member_id" }, 401); return await getWallet(sb, tenantId, memberId);
-      case "list_wallet_ledger": if (!memberId) return json({ error: "no member_id" }, 401); return await listWalletLedger(sb, tenantId, memberId, body);
-      case "list_my_orders": if (!memberId) return json({ error: "no member_id" }, 401); return await listMyOrders(sb, tenantId, storeId, memberId, String(body.tab ?? ""));
-      case "list_my_settlements": if (!memberId) return json({ error: "no member_id" }, 401); return await listMySettlements(sb, tenantId, storeId, memberId, String(body.tab ?? ""));
-      case "upsert_push_subscription": if (!memberId) return json({ error: "no member_id" }, 401); return await upsertPushSubscription(sb, tenantId, memberId, body);
-      case "list_my_notifications": if (!memberId) return json({ error: "no member_id" }, 401); return await listMyNotifications(sb, tenantId, memberId);
-      case "get_my_unread_notification_count": if (!memberId) return json({ error: "no member_id" }, 401); return await getMyUnreadNotificationCount(sb, tenantId, memberId);
-      case "mark_notification_read": if (!memberId) return json({ error: "no member_id" }, 401); return await markNotificationRead(sb, tenantId, memberId, body);
-      case "generate_pwa_auth_code": if (!memberId) return json({ error: "no member_id" }, 401); return await generatePwaAuthCode(sb, tenantId, memberId, claims, token, body);
-      case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId, typeof body.close_type === "string" ? body.close_type : null, memberId);
-      case "get_campaign_detail": return await getCampaignDetail(sb, tenantId, Number(body.campaign_id ?? 0));
-      case "list_spot_products": return await listSpotProducts(sb, tenantId, storeId, memberId);
-      case "get_spot_product": return await getSpotProduct(sb, tenantId, storeId, memberId, Number(body.id ?? 0));
-      case "place_member_order": if (!memberId) return json({ error: "no member_id" }, 401); return await placeMemberOrder(sb, tenantId, memberId, body);
-      default: return json({ error: `unknown action: ${action}` }, 400);
-    }
+    const resp = await (async (): Promise<Response> => {
+      switch (action) {
+        case "lookup_by_phone": return await lookupByPhone(sb, tenantId, String(body.phone ?? ""));
+        case "register_and_bind": return await registerAndBind(sb, { tenantId, storeId, lineUserId, phone: String(body.phone ?? ""), name: String(body.name ?? ""), birthday: String(body.birthday ?? "") });
+        case "get_me": if (!memberId) return json({ error: "no member_id" }, 401); return await getMe(sb, tenantId, memberId);
+        case "update_me": if (!memberId) return json({ error: "no member_id" }, 401); return await updateMe(sb, tenantId, memberId, body);
+        case "get_overview": if (!memberId) return json({ error: "no member_id" }, 401); return await getOverview(sb, tenantId, storeId, memberId);
+        case "get_wallet": if (!memberId) return json({ error: "no member_id" }, 401); return await getWallet(sb, tenantId, memberId);
+        case "list_wallet_ledger": if (!memberId) return json({ error: "no member_id" }, 401); return await listWalletLedger(sb, tenantId, memberId, body);
+        case "list_my_orders": if (!memberId) return json({ error: "no member_id" }, 401); return await listMyOrders(sb, tenantId, storeId, memberId, String(body.tab ?? ""));
+        case "list_my_settlements": if (!memberId) return json({ error: "no member_id" }, 401); return await listMySettlements(sb, tenantId, storeId, memberId, String(body.tab ?? ""));
+        case "upsert_push_subscription": if (!memberId) return json({ error: "no member_id" }, 401); return await upsertPushSubscription(sb, tenantId, memberId, body);
+        case "list_my_notifications": if (!memberId) return json({ error: "no member_id" }, 401); return await listMyNotifications(sb, tenantId, memberId);
+        case "get_my_unread_notification_count": if (!memberId) return json({ error: "no member_id" }, 401); return await getMyUnreadNotificationCount(sb, tenantId, memberId);
+        case "mark_notification_read": if (!memberId) return json({ error: "no member_id" }, 401); return await markNotificationRead(sb, tenantId, memberId, body);
+        case "generate_pwa_auth_code": if (!memberId) return json({ error: "no member_id" }, 401); return await generatePwaAuthCode(sb, tenantId, memberId, claims, token, body);
+        case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId, typeof body.close_type === "string" ? body.close_type : null, memberId);
+        case "get_campaign_detail": return await getCampaignDetail(sb, tenantId, Number(body.campaign_id ?? 0));
+        case "list_spot_products": return await listSpotProducts(sb, tenantId, storeId, memberId);
+        case "get_spot_product": return await getSpotProduct(sb, tenantId, storeId, memberId, Number(body.id ?? 0));
+        case "place_member_order": if (!memberId) return json({ error: "no member_id" }, 401); return await placeMemberOrder(sb, tenantId, memberId, body);
+        default: return json({ error: `unknown action: ${action}` }, 400);
+      }
+    })();
+    return await withRenewedToken(resp, claims, jwtSecret);
   } catch (e) {
     console.error("liff-api error:", e);
     return json({ error: "internal", detail: String(e) }, 500);
