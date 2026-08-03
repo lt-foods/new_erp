@@ -94,6 +94,34 @@ function liffStateParams(raw: string): URLSearchParams {
   return new URLSearchParams(q >= 0 ? raw.slice(q + 1) : raw);
 }
 
+/** 本次瀏覽暫存的配對碼（URL 被沖掉後還讀得到） */
+const PAIR_PENDING_KEY = "pending_pair_code";
+
+/**
+ * 取配對碼：URL 優先，其次是本 context 稍早存下的那份。
+ *
+ * 為什麼一定要備份：liff.login() 導去 LINE 再回來時，URL 上的 liff.state
+ * （裡面才有 pair）會被 LIFF 換成 `?code=...&liffClientId=...`，pair 就此消失。
+ * 於是登入是成功了，卻不會寫 pwa_auth_codes，PWA 那端永遠領不到 ——
+ * 2026-08-03 實測「手動回到 PWA 還是停在等待畫面」的卡點就在這裡。
+ *
+ * 用 sessionStorage 而非 localStorage：配對碼只在這一趟登入有意義，
+ * 留到下次瀏覽只會拿舊碼去領一個早就過期的 session。
+ */
+function resolvePairCode(): string | null {
+  if (typeof window === "undefined") return null;
+  const fromUrl = readPairFromUrl();
+  if (fromUrl) {
+    try { sessionStorage.setItem(PAIR_PENDING_KEY, fromUrl); } catch { /* noop */ }
+    return fromUrl;
+  }
+  try { return sessionStorage.getItem(PAIR_PENDING_KEY); } catch { return null; }
+}
+
+function clearPendingPairCode() {
+  try { sessionStorage.removeItem(PAIR_PENDING_KEY); } catch { /* noop */ }
+}
+
 function readPairFromUrl(): string | null {
   if (typeof window === "undefined") return null;
   const sp = new URLSearchParams(window.location.search);
@@ -241,6 +269,10 @@ export default function LandingPage() {
 
       const liffId = process.env.NEXT_PUBLIC_LIFF_ID;
 
+      // 一進頁面就把配對碼備份起來 —— 必須趕在 liff.login() 把 URL 上的
+      // liff.state 換成 ?code=... 之前，否則這趟 PWA 配對就再也接不回去了
+      resolvePairCode();
+
       // 讀門市
       let s = readStore();
       if (!s && typeof window !== "undefined") {
@@ -279,11 +311,11 @@ export default function LandingPage() {
                 logClientError(
                   "liff_auto_login_failed",
                   "LIFF isInClient 但 isLoggedIn=false，重開 LIFF 重試一次",
-                  { store: s, has_pair: Boolean(readPairFromUrl()) },
+                  { store: s, has_pair: Boolean(resolvePairCode()) },
                   "warn",
                 );
                 setSessionFlag(LIFF_RETRY_KEY);
-                window.location.href = liffAppUrl(liffId, s, readPairFromUrl());
+                window.location.href = liffAppUrl(liffId, s, resolvePairCode());
                 return;
               }
               logClientError(
@@ -307,7 +339,7 @@ export default function LandingPage() {
               throw new Error("LIFF getIDToken returned null");
             }
 
-            const pairCode = readPairFromUrl();
+            const pairCode = resolvePairCode();
             try {
               // 沒帶 store 也試 — 後端會用 line_user_id 找既有 binding
               await runLiffSession(idToken, s, pairCode);
@@ -426,7 +458,7 @@ export default function LandingPage() {
     const pendingIdToken = liffIdTokenRef.current;
     if (pendingIdToken) {
       setStatus("liff_auth");
-      runLiffSession(pendingIdToken, storeId, readPairFromUrl()).catch((e) => {
+      runLiffSession(pendingIdToken, storeId, resolvePairCode()).catch((e) => {
         logCaught("liff_session_retry_failed", e, { store: storeId });
         setError(e instanceof Error ? e.message : String(e));
         setStatus("idle");
@@ -442,7 +474,7 @@ export default function LandingPage() {
       const idToken = safe(() => liff.getIDToken());
       if (idToken) {
         setStatus("liff_auth");
-        runLiffSession(idToken, storeId, readPairFromUrl()).catch((e) => {
+        runLiffSession(idToken, storeId, resolvePairCode()).catch((e) => {
           logCaught("liff_session_retry_failed", e, { store: storeId });
           setError(e instanceof Error ? e.message : String(e));
           setStatus("idle");
@@ -485,7 +517,7 @@ export default function LandingPage() {
     // liff.line.me 交給 LINE app，而是開在 Safari），pair 會跟著 liff.state 過來。
     // 不轉交給 OAuth 的話，登入成功後不會寫 pwa_auth_codes，PWA 那端永遠領不到，
     // 使用者就只剩手動輸入驗證碼一條路 —— 這正是要消滅的情境。
-    window.location.href = lineOauthStartUrl(storeId, readPairFromUrl() ?? undefined);
+    window.location.href = lineOauthStartUrl(storeId, resolvePairCode() ?? undefined);
   };
 
   /**
@@ -862,7 +894,12 @@ async function runLiffSession(
 
   // 若是 PWA pairing 流程,session 已經寫進 pwa_auth_codes,
   // 這裡 LIFF 端不需要也不應該跳到 /me（user 應該回 PWA）。
-  if (pairCode) return;
+  if (pairCode) {
+    // 已經交棒給 PWA 了，備份就該清掉 —— 留著只會讓這個 context 之後
+    // 又拿同一組碼去寫一次，覆蓋掉 PWA 可能已經領走的那筆
+    clearPendingPairCode();
+    return;
+  }
 
   const frag = new URLSearchParams({
     token:        String(data.token),
