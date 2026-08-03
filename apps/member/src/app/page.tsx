@@ -399,7 +399,25 @@ export default function LandingPage() {
       // 讓使用者知道「回來這裡就會自動完成」，否則切回來看到原本的登入頁
       // 會以為失敗，就去打驗證碼了
       setStatus("pwa_waiting");
-      window.location.href = targetUrl;
+
+      // 先試開新視窗：iOS 只有這樣才會建立返回鏈，LINE 左上角才會出現
+      // 「◀ 包子媽生鮮小舖」讓使用者一鍵回來。直接用 location.href 導航雖然
+      // 一定開得起來，卻沒有那條返回鏈 —— 使用者就回不到 PWA 了。
+      //
+      // 但 standalone PWA 的 window.open 有時會靜默失敗，所以不靠回傳值判斷
+      // （iOS 可能回一個沒真的開起來的 window），改看「頁面有沒有進背景」：
+      // 真的開起來了，這個頁面就會被切到背景。
+      window.open(targetUrl, "_blank");
+      window.setTimeout(() => {
+        if (document.visibilityState !== "visible") return;
+        logClientError(
+          "pwa_login_open_fallback",
+          "window.open 沒開起來，改直接導航",
+          { store: storeId },
+          "warn",
+        );
+        window.location.href = targetUrl;
+      }, 2000);
       return;
     }
 
@@ -580,10 +598,16 @@ export default function LandingPage() {
               請在 LINE 完成登入
             </p>
             <p className="text-[14px] leading-relaxed text-[var(--secondary-label)]">
-              完成後關閉 LINE、回到這個 App，我們會自動帶您進入。
-              <br />
-              不需要輸入任何驗證碼。
+              完成後請回到本 App，我們會自動帶您進入，不需要輸入任何驗證碼。
             </p>
+            {/* iOS 從 LINE 回來的路不只一條，而使用者不見得找得到 —— 明講兩種 */}
+            <div className="w-full rounded-xl bg-[var(--fill-quaternary,rgba(120,120,128,0.08))] p-3 text-left text-[13px] leading-relaxed text-[var(--secondary-label)]">
+              回來的方式：
+              <br />
+              1. 點 LINE 畫面左上角的「◀ 包子媽生鮮小舖」
+              <br />
+              2. 或關閉 LINE，從手機桌面重新點開本 App
+            </div>
             {/* LINE 沒被開起來時的自救 —— 沒有這顆就只能乾等，
                 而使用者無從判斷是「還沒好」還是「根本沒開」 */}
             {pwaLoginUrl && (
@@ -609,8 +633,13 @@ export default function LandingPage() {
               ✓
             </div>
             <p className="mt-3 text-[17px] font-bold text-[var(--foreground)]">登入完成</p>
-            <p className="mt-1 text-[14px] text-[var(--secondary-label)]">
-              請關閉 LINE 視窗，回到桌面點擊 PWA 圖示。
+            {/* 「PWA 圖示」是黑話，會員看不懂；而且回去的路有兩條，都要講 */}
+            <p className="mt-2 text-left text-[14px] leading-relaxed text-[var(--secondary-label)]">
+              請回到「包子媽生鮮小舖」App：
+              <br />
+              1. 點左上角的「◀ 包子媽生鮮小舖」
+              <br />
+              2. 或關閉 LINE，從手機桌面重新點開本 App
             </p>
           </div>
         )}
