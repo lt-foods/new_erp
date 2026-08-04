@@ -123,6 +123,25 @@ curl -sS -o /dev/null -w '%{http_code}\n' -L \
 
 ## 會員前端（apps/member）
 
+### 要「用 LINE 登入」的新頁面，一律用 useLineLogin，不要自己重寫
+
+登入這條路上的每一個分支都是踩雷換來的（LIFF browser 不能自己 `liff.login()`、
+PWA 不能走 LIFF、LINE 內建瀏覽器要改走 OAuth、pair code 會被 liff.state 沖掉…），
+全部收在 `apps/member/src/lib/useLineLogin.ts` + `lib/lineAuth.ts`。
+
+複製一份到新頁面 = 下次修 bug 只會修到其中一份，而這種 bug 只在會員手機上重現得出來。
+新頁面要登入就：
+
+```tsx
+const { status, error, storeId, chooseStore, stores, start, ... } = useLineLogin();
+```
+
+畫面自己畫，登入邏輯不要碰。目前使用者：`/`（首頁登入）、`/join`（社群推廣註冊頁）。
+
+順帶一提：**註冊不需要任何表單**。`liff-session` 查不到 binding 又拿到 store 時
+會直接 auto-register，所以「用 LINE 登入」＝「用 LINE 註冊」，一顆按鈕就結束
+（`/register` 那頁是綁手機號碼用的另一條路，不是註冊的必經之路）。
+
 ### 使用者會卡住的分支，一律留 log
 
 會員端的錯誤只發生在對方手機上，我們看不到 console；靠截圖來回問要花掉整個下午。
