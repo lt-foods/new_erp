@@ -62,16 +62,19 @@ export function Th({
   align,
   onClick,
   scope = "col",
+  title,
 }: {
   children?: ReactNode;
   className?: string;
   align?: Align;
   onClick?: () => void;
   scope?: "col" | "row";
+  title?: string;
 }) {
   return (
     <th
       scope={scope}
+      title={title}
       onClick={onClick}
       className={`px-4 py-2 ${alignCls(align)} text-xs font-medium uppercase tracking-wide text-zinc-500 ${onClick ? "cursor-pointer select-none hover:text-zinc-900 dark:hover:text-zinc-100" : ""} ${className}`}
     >

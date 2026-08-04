@@ -15,7 +15,14 @@ import SearchSpinner from "@/components/SearchSpinner";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow } from "@/components/DataTable";
 import type { OrderStatus } from "@/lib/orderStatus";
 
-const PENDING_STATUSES: OrderStatus[] = ["pending", "confirmed", "shipping", "ready"];
+// 「已配單未取貨」/「未取貨金額」兩欄同口徑：貨已經在店裡、等客人來取的單。
+// 與 v_admin_member_list.unpicked_order_count（migration 20260804000010）一致 —
+// pending/confirmed/shipping 是「還沒到貨」，店裡沒東西，不算欠貨。
+const UNPICKED_STATUSES: OrderStatus[] = ["ready", "partially_completed"];
+// 未取貨金額只算「還留在店裡沒被領走」的品項行：picked_up 已被領走（partially_completed
+// 單一定有這種行）、cancelled / expired 已作廢，都要排除。與取貨頁 INACTIVE_ITEM_STATUSES 同義。
+// 註：未取退貨（退回總倉）需要 SKU 層攤提，列表頁不做，金額可能略高於取貨頁的實收。
+const INACTIVE_ITEM_STATUSES = new Set<string>(["picked_up", "cancelled", "expired"]);
 
 type Status = "active" | "inactive" | "blocked" | "merged" | "deleted";
 type SortKey =
@@ -253,7 +260,7 @@ function MembersListBody() {
             if (!VOID_STATUSES.has(o.status)) {
               countByMember.set(o.member_id, (countByMember.get(o.member_id) ?? 0) + 1);
             }
-            if ((PENDING_STATUSES as string[]).includes(o.status)) {
+            if ((UNPICKED_STATUSES as string[]).includes(o.status)) {
               orderToMember.set(o.id, o.member_id);
             }
           }
@@ -263,9 +270,10 @@ function MembersListBody() {
           if (orderIds.length) {
             const items = await getSupabase()
               .from("customer_order_items")
-              .select("order_id, qty, unit_price")
+              .select("order_id, qty, unit_price, status")
               .in("order_id", orderIds);
-            for (const it of (items.data ?? []) as { order_id: number; qty: number; unit_price: number }[]) {
+            for (const it of (items.data ?? []) as { order_id: number; qty: number; unit_price: number; status: string }[]) {
+              if (INACTIVE_ITEM_STATUSES.has(it.status)) continue;
               const mid = orderToMember.get(it.order_id);
               if (mid == null) continue;
               const cur = m.get(mid);
@@ -438,9 +446,9 @@ function MembersListBody() {
           <ThSort label="姓名" col="name" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
           <ThSort label="取貨店" col="home_store_id" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
           <Th>手機</Th>
-          <Th align="right">訂單數</Th>
-          <ThSort label="已配單未取貨" col="unpicked_order_count" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} align="right" />
-          <Th align="right">未取貨金額</Th>
+          <Th align="right" title="歷史累計有效訂單數（不含取消/過期/轉出）；已取貨的單仍會計入，不代表還欠貨">累計訂單數</Th>
+          <ThSort label="已配單未取貨" col="unpicked_order_count" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} align="right" title="貨已到店、還沒被領走的訂單數（可取貨／部分取貨）" />
+          <Th align="right" title="上一欄那些單還留在店裡的品項金額（不含未到貨的單）">未取貨金額</Th>
           <Th align="right">儲值</Th>
           <ThSort label="加入時間" col="joined_at" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} align="right" />
           <ThSort label="最後登入" col="last_visit_at" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} align="right" />
@@ -651,15 +659,16 @@ function MembersListBody() {
 }
 
 function ThSort({
-  label, col, sortBy, sortDir, onToggle, align = "left",
+  label, col, sortBy, sortDir, onToggle, align = "left", title,
 }: {
   label: string; col: SortKey; sortBy: SortKey; sortDir: SortDir;
-  onToggle: (c: SortKey) => void; align?: "left" | "right";
+  onToggle: (c: SortKey) => void; align?: "left" | "right"; title?: string;
 }) {
   const active = sortBy === col;
   const arrow = active ? (sortDir === "asc" ? "↑" : "↓") : "";
   return (
     <th
+      title={title}
       onClick={() => onToggle(col)}
       className={`cursor-pointer px-4 py-2 text-xs font-medium uppercase tracking-wide text-zinc-500 select-none hover:text-zinc-900 dark:hover:text-zinc-100 ${align === "right" ? "text-right" : "text-left"}`}
     >
