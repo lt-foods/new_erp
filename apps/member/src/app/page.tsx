@@ -43,6 +43,9 @@ const AUTO_COMPLETE_KEY = "liff_auto_complete_done";
  */
 const LOGIN_STUCK_MS = 10_000;
 
+/** liff.init() 掛住時的止血點（要比 LOGIN_STUCK_MS 短，才有機會走完後續退路） */
+const LIFF_INIT_TIMEOUT_MS = 5_000;
+
 /** sessionStorage 在無痕 / 被擋時會 throw，一律包起來 */
 function sessionFlag(key: string): boolean {
   try { return sessionStorage.getItem(key) !== null; } catch { return false; }
@@ -319,7 +322,16 @@ export default function LandingPage() {
       if (liffId) {
         try {
           const liff = await loadLiff();
-          await liff.init({ liffId });
+          // liff.init() 會掛住不 resolve —— 實測 2026-08-04：從 liff.login()
+          // 帶著 ?code= 回來時，SDK 在內部換 token 那步卡死，init 永遠不回，
+          // 整個頁面就停在 loading（liffRef 也因此一直是 null）。
+          // 沒有 timeout 的 await 等於把整條登入流程押在 SDK 身上。
+          await Promise.race([
+            liff.init({ liffId }),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("liff.init timeout")), LIFF_INIT_TIMEOUT_MS),
+            ),
+          ]);
           liffRef.current = liff;
 
           const sFromLiff = readStore();
@@ -557,25 +569,31 @@ export default function LandingPage() {
       }
     }
 
-    // 在 LINE 內、還沒登入 LIFF → 跑 LIFF 登入。
-    // 2026-08-03 之前這條必定回 400（LIFF 的 Endpoint URL 不是本站網域，
-    // redirect_uri 沒被 channel 認可）；換上 endpoint = 本站的 LIFF 後已實測放行。
-    // 只試一次，回來還是沒登入就給外部瀏覽器指引，不要讓使用者在 LINE 裡鬼打牆。
+    // 在 LINE 內建瀏覽器、還沒登入 → 走自家 OAuth，不要用 liff.login()。
+    //
+    // 2026-08-04 實測：liff.login() 導去 LINE 授權後帶著 ?code= 回來，
+    // liff.init() 會在內部換 token 那步掛死、永遠不 resolve，頁面就停在
+    // loading（liffRef 也一直是 null），使用者只能關掉重進。
+    //
+    // OAuth 這條完全不碰 LIFF SDK，也就沒有那個掛點：
+    //   - redirect_uri 是 line-oauth-callback（channel 已註冊，不會 400 ——
+    //     先前那個 400 是 LIFF 的 redirect_uri 指到本站造成的，與這條無關）
+    //   - callback 302 回本站，session 在同一個 context 直接落地
+    // PWA 早先改走這條之後就沒再出過事，LINE 內建瀏覽器同理。
+    //
+    // 只試一次，回來還是沒登入才給外部瀏覽器指引，不要在 LINE 裡鬼打牆。
     if (isInLineApp()) {
-      if (liff && !sessionFlag(LIFF_RETRY_KEY)) {
+      if (!sessionFlag(LIFF_RETRY_KEY)) {
         setSessionFlag(LIFF_RETRY_KEY);
         logClientError(
-          "liff_login_from_line_browser",
-          "LINE 內建瀏覽器：跑 LIFF 登入",
+          "line_browser_oauth_login",
+          "LINE 內建瀏覽器：走 OAuth 登入",
           { store: storeId },
           "warn",
         );
-        try {
-          liff.login();
-          return;
-        } catch (e) {
-          logCaught("liff_login_failed", e, { store: storeId });
-        }
+        clearSession();
+        window.location.href = lineOauthStartUrl(storeId, resolvePairCode() ?? undefined);
+        return;
       }
       logClientError(
         "line_browser_login_blocked",
