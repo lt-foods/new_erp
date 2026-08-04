@@ -30,6 +30,19 @@ const LIFF_RETRY_KEY = "liff_login_retry";
 /** 「已登入但不在 LIFF client」的自動補完每次瀏覽只做一次，避免 / ↔ /shop 互推 */
 const AUTO_COMPLETE_KEY = "liff_auto_complete_done";
 
+/**
+ * 轉圈超過這個時間就直接切到登入頁。
+ *
+ * 自動登入牽涉 LIFF SDK 載入、init、liff-session、LINE 的 verify API…
+ * 任何一段掛住，使用者看到的都是同一個轉不完的圈，而且什麼都不能按 ——
+ * 只能關掉重進（實測這樣反而就登入成功了）。與其讓他自己摸索，
+ * 不如逾時就把可以操作的登入頁交回去。
+ *
+ * 10 秒是留給慢網路的餘裕：正常流程 2–5 秒會走完；真的成功了會導頁，
+ * 元件卸載、這個 timer 也就跟著清掉，不會誤觸。
+ */
+const LOGIN_STUCK_MS = 10_000;
+
 /** sessionStorage 在無痕 / 被擋時會 throw，一律包起來 */
 function sessionFlag(key: string): boolean {
   try { return sessionStorage.getItem(key) !== null; } catch { return false; }
@@ -264,6 +277,20 @@ export default function LandingPage() {
     };
     document.addEventListener("visibilitychange", onVis);
 
+    // 保底：轉圈太久就把可操作的登入頁交回去，不要讓使用者只能關掉重進
+    const stuckTimer = window.setTimeout(() => {
+      setStatus((cur) => {
+        if (cur !== "loading" && cur !== "liff_auth") return cur;
+        logClientError(
+          "login_stuck_timeout",
+          `登入流程逾時（${LOGIN_STUCK_MS / 1000}s），改顯示登入頁`,
+          { stuck_at: cur },
+          "warn",
+        );
+        return "idle";
+      });
+    }, LOGIN_STUCK_MS);
+
     (async () => {
       const errInUrl = new URLSearchParams(window.location.search).get("error");
       if (errInUrl) {
@@ -419,6 +446,7 @@ export default function LandingPage() {
 
     return () => {
       document.removeEventListener("visibilitychange", onVis);
+      window.clearTimeout(stuckTimer);
       unlisten();
     };
   }, []);
