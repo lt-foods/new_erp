@@ -19,6 +19,7 @@ import {
   logClientError,
 } from "@/lib/clientLog";
 import {
+  AUTH_CODE_INTENT_KEY,
   AUTO_COMPLETE_KEY,
   LIFF_INIT_TIMEOUT_MS,
   LIFF_RETRY_KEY,
@@ -30,6 +31,7 @@ import {
   isInLineApp,
   isStandalone,
   liffAppUrl,
+  readParam,
   readStore,
   resolvePairCode,
   runLiffSession,
@@ -179,6 +181,11 @@ export function useLineLogin(options: UseLineLoginOptions = {}): UseLineLogin {
       // 一進頁面就把配對碼備份起來 —— 必須趕在 liff.login() 把 URL 上的
       // liff.state 換成 ?code=... 之前，否則這趟 PWA 配對就再也接不回去了
       resolvePairCode();
+
+      // 從 PWA 的「取驗證碼」指引連結進來的才帶 want_code=1。
+      // 記在 sessionStorage，等 OAuth 轉一圈回到 /auth/success 時，那頁才知道
+      // 這個人是來取碼的，不要把他直接送進商店。
+      if (readParam("want_code") === "1") setSessionFlag(AUTH_CODE_INTENT_KEY);
 
       // 讀門市
       let s = readStore();

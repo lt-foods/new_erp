@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { consumeFragmentToSession } from "@/lib/session";
+import { AUTH_CODE_INTENT_KEY, clearSessionFlag, sessionFlag } from "@/lib/lineAuth";
 
 export default function AuthSuccessPage() {
   const [code, setCode] = useState<string | null>(null);
@@ -20,13 +21,23 @@ export default function AuthSuccessPage() {
     // 把 fragment 寫進 localStorage 並清 URL（會回傳 session）
     const session = consumeFragmentToSession();
 
-    // LINE webview 內、且不是 PWA 配對回流 → 直接進商店,不停在這個「安裝/取碼」頁。
-    // (PWA 配對 paired=1 要留在這頁提示回桌面；桌機取碼流程也維持原樣)
-    const isLine = typeof navigator !== "undefined" && / Line\//i.test(navigator.userAgent);
-    if (session && session.memberId && isLine && !isPaired) {
+    // 登入成功的人**預設就該進商店**，這頁只是 OAuth 的落點，不是目的地。
+    //
+    // 只有兩種人要留在這裡：
+    //   1. paired=1 —— PWA 自動配對回流，要提示他回桌面開 App
+    //   2. want_code —— PWA 自動配對失敗，照指引跑來瀏覽器取那 6 碼
+    // 除此之外（自己從 /join 或首頁登入的人）一律送進 /shop。
+    //
+    // 原本的條件是「只有 LINE webview 內才送進商店」，於是從 /join 用 Safari
+    // 登入的人會停在這頁的「前往安裝步驟 + 6 位數驗證碼」畫面 —— 對他來說
+    // 那組碼毫無意義，而他要的商品在哪完全沒講，等於推廣流量走到一半斷掉。
+    const wantsCode = sessionFlag(AUTH_CODE_INTENT_KEY);
+    if (session && session.memberId && !isPaired && !wantsCode) {
       window.location.replace("/shop");
       return;
     }
+    // 取碼意圖只用這一次，用完就清掉，否則同一個分頁之後每次登入都會卡在取碼頁
+    if (wantsCode) clearSessionFlag(AUTH_CODE_INTENT_KEY);
 
     const c = hp.get("code") ?? sp.get("code");
     if (c) setCode(c);

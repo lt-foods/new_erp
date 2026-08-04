@@ -25,6 +25,7 @@ export default function LandingPage() {
 
   const [inputStoreId, setInputStoreId] = useState("");
   const [linkCopied, setLinkCopied] = useState(false);
+  const [codeLinkCopied, setCodeLinkCopied] = useState(false);
   /** 驗證碼是退路，預設收起來，不跟「用 LINE 登入」並列 */
   const [showSyncCode, setShowSyncCode] = useState(false);
   const [reportState, setReportState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
@@ -54,6 +55,27 @@ export default function LandingPage() {
       // LINE webview 常擋剪貼簿 —— 退回顯示網址讓使用者自己長按複製
       logCaught("copy_login_link_failed", e, { store: storeId });
       setError(`請手動開啟：${url}`);
+    }
+  };
+
+  /**
+   * 取碼流程的登入連結。
+   *
+   * `want_code=1` 是關鍵：帶了這個，OAuth 回來的 /auth/success 才會停下來顯示
+   * 6 位數驗證碼；沒帶就會直接把人送進 /shop（那是自己登入的人要的行為）。
+   */
+  const copyCodeLoginLink = async () => {
+    const url = new URL("/", window.location.origin);
+    url.searchParams.set("want_code", "1");
+    if (storeId) url.searchParams.set("store", storeId);
+    const link = url.toString();
+    try {
+      await navigator.clipboard.writeText(link);
+      setCodeLinkCopied(true);
+      setTimeout(() => setCodeLinkCopied(false), 3000);
+    } catch (e) {
+      logCaught("copy_code_login_link_failed", e, { store: storeId });
+      setError(`請手動開啟：${link}`);
     }
   };
 
@@ -304,6 +326,16 @@ export default function LandingPage() {
                         僅在自動登入失敗時需要：請先用手機瀏覽器開啟本站登入，
                         再把該畫面顯示的 6 位數驗證碼輸入這裡。
                       </p>
+                      {/* 這顆是取碼流程唯一的正確入口。
+                          網址一定要帶 want_code=1 —— 沒帶的話瀏覽器登入完會被
+                          直接送進 /shop（那才是多數人要的），使用者永遠等不到那 6 碼。
+                          順帶也省掉「自己把網址打進瀏覽器」這一步。 */}
+                      <button
+                        onClick={copyCodeLoginLink}
+                        className="w-full rounded-xl border border-[var(--separator)] px-4 py-2.5 text-[13px] font-medium text-[var(--brand-strong)] transition active:scale-[0.98]"
+                      >
+                        {codeLinkCopied ? "✓ 已複製，請貼到瀏覽器開啟" : "複製取碼用的登入連結"}
+                      </button>
                       <form onSubmit={handleSyncSubmit} className="flex gap-2">
                         <input
                           type="text"

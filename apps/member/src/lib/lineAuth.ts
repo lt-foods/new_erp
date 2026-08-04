@@ -31,6 +31,21 @@ export const LIFF_RETRY_KEY = "liff_login_retry";
 export const AUTO_COMPLETE_KEY = "liff_auto_complete_done";
 
 /**
+ * 「這趟登入是為了取 6 位數驗證碼給 PWA 用」的旗標。
+ *
+ * 為什麼需要它：OAuth 回來一律停在 /auth/success，而那頁要嘛顯示驗證碼、
+ * 要嘛直接把人送進商店 —— 兩種使用者從網址上長得一模一樣：
+ *   A. 從 /join 或首頁自己登入的人 → 想看到商品，停在取碼頁是死路
+ *   B. PWA 自動配對失敗、照指引跑來瀏覽器取碼的人 → 一定要看到那 6 碼
+ * 分不出來就只能犧牲其中一邊。所以改成在**出發時**就標記意圖：
+ * PWA 的取碼指引連結會帶 `?want_code=1`，其他入口都不帶。
+ *
+ * 用 sessionStorage：意圖只在這一趟登入有效，而且 OAuth 全程在同一個分頁，
+ * 換頁、跨網域轉回來都還在。
+ */
+export const AUTH_CODE_INTENT_KEY = "want_auth_code";
+
+/**
  * 轉圈超過這個時間就直接切到登入頁。
  *
  * 自動登入牽涉 LIFF SDK 載入、init、liff-session、LINE 的 verify API…
