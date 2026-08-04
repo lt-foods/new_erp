@@ -348,12 +348,13 @@ function PickupPageContent() {
   }
 
   // 取消訂單 — 沿用訂單頁完全相同的 rpc_cancel_aid_order 流程：
-  // pending/confirmed 直接取消；shipping 撤回派貨並反向回收已出庫存。
+  // pending/confirmed 直接取消；shipping 若有掛單的派貨單（互助單）會撤回並反向回收已出庫存，
+  // 波次出貨的一般訂單沒有 per-order transfer → 直接取消、不動庫存。
   // 取消後 reloadTick++ 重跑搜尋，該單因不在 ACTIVE_STATUSES 而從列表消失。
   async function cancelOrder(order: OpenOrder) {
     const reason = prompt(
       order.status === "shipping"
-        ? `撤回派貨：${order.order_no}\n會反向回收已出庫存，請輸入原因：`
+        ? `撤回派貨：${order.order_no}\n互助單會撤回派貨單並反向回收已出庫存；波次出貨的訂單不動庫存。請輸入原因：`
         : `取消訂單：${order.order_no}\n請輸入取消原因：`,
     );
     if (reason === null) return;

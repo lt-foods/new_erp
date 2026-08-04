@@ -115,7 +115,7 @@ const RULES: Rule[] = [
   },
   {
     pattern: /order \d+ is shipping but has no terminal transfer/i,
-    render: () => "訂單是 shipping 狀態但找不到對應的 transfer，資料不一致。請聯繫工程師。",
+    render: () => "此互助單是 shipping 狀態但找不到對應的派貨單（transfer），資料不一致。請聯繫工程師。",
   },
   {
     pattern: /transfer \d+ already received, cannot cancel chain/i,

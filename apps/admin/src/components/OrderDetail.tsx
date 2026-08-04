@@ -516,7 +516,7 @@ export function OrderDetail({
       : "";
     const reason = prompt(
       (head.status === "shipping"
-        ? `撤回派貨：${head.order_no}\n會反向回收已出庫存，請輸入原因：`
+        ? `撤回派貨：${head.order_no}\n${isAidOrder ? "會撤回派貨單並反向回收已出庫存" : "波次出貨的訂單不動庫存，貨留在店端"}，請輸入原因：`
         : `取消訂單：${head.order_no}\n請輸入取消原因：`) + walletNote
     );
     if (reason === null) return;

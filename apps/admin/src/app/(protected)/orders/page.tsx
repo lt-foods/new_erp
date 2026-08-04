@@ -462,7 +462,7 @@ function OrdersListContent() {
   async function cancelOrder(orderId: number, orderNo: string, status: string) {
     const reason = prompt(
       status === "shipping"
-        ? `撤回派貨：${orderNo}\n會反向回收已出庫存，請輸入原因：`
+        ? `撤回派貨：${orderNo}\n互助單會撤回派貨單並反向回收已出庫存；波次出貨的訂單不動庫存。請輸入原因：`
         : `取消訂單：${orderNo}\n請輸入取消原因：`
     );
     if (reason === null) return;
