@@ -8,6 +8,7 @@ import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
 import { useUserBranchStoreId, useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 import { maskLineUserId } from "@/lib/maskLineUserId";
+import { useRole, canSeeCost } from "@/lib/role";
 
 type Loc = { id: number; code: string; name: string; type: string };
 type StoreRow = { id: number; name: string; location_id: number | null };
@@ -25,7 +26,6 @@ type Reorder = { location_id: number; sku_id: number; safety_stock: number; reor
 type Movement = {
   id: number;
   quantity: number;
-  unit_cost: number | null;
   movement_type: string;
   source_doc_type: string | null;
   source_doc_id: number | null;
@@ -80,6 +80,11 @@ function sanitizeSearch(q: string): string {
 }
 
 export default function InventoryOverviewPage() {
+  // 成本只給總倉層級看（分店 store_manager / store_staff 一律遮掉）
+  const role = useRole();
+  const showCost = canSeeCost(role);
+  const colCount = showCost ? 9 : 8;
+
   const [locs, setLocs] = useState<Loc[]>([]);
   const [stores, setStores] = useState<StoreRow[]>([]);
 
@@ -91,7 +96,7 @@ export default function InventoryOverviewPage() {
 
   const [rows, setRows] = useState<Balance[] | null>(null);
   const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -138,12 +143,16 @@ export default function InventoryOverviewPage() {
 
   // 主查詢
   useEffect(() => {
+    // 等 role 解析完再查 — 免得先用「不能看成本」的欄位查一次、role 到齊又重查一次
+    if (role === null) return;
     let cancelled = false;
     setLoading(true);
     setSearching(true);
     (async () => {
       try {
         const sb = getSupabase();
+        // 不能看成本的角色連 avg_cost 都不撈，資料不會出現在 network payload
+        const balanceCols = `location_id, sku_id, on_hand, reserved, in_transit_in, last_movement_at${showCost ? ", avg_cost" : ""}`;
 
         // 搜尋 → 先解析符合的 sku_id
         let skuIdFilter: number[] | null = null;
@@ -184,13 +193,13 @@ export default function InventoryOverviewPage() {
           const ruleSkuIds = Array.from(new Set(rules.map((r) => r.sku_id)));
           let bq = sb
             .from("stock_balances")
-            .select("location_id, sku_id, on_hand, reserved, in_transit_in, avg_cost, last_movement_at")
+            .select(balanceCols)
             .in("sku_id", ruleSkuIds);
           if (locationId) bq = bq.eq("location_id", Number(locationId));
           const { data: bData, error: bErr } = await bq.limit(10000);
           if (bErr) throw bErr;
           const ruleByKey = new Map(rules.map((r) => [`${r.location_id}-${r.sku_id}`, r]));
-          const low = ((bData as Balance[]) ?? [])
+          const low = ((bData as unknown as Balance[]) ?? [])
             .map((b) => ({ ...b, on_hand: num(b.on_hand), reserved: num(b.reserved), in_transit_in: num(b.in_transit_in), avg_cost: num(b.avg_cost) }))
             .filter((b) => {
               const r = ruleByKey.get(`${b.location_id}-${b.sku_id}`);
@@ -202,14 +211,14 @@ export default function InventoryOverviewPage() {
         } else {
           let bq = sb
             .from("stock_balances")
-            .select("location_id, sku_id, on_hand, reserved, in_transit_in, avg_cost, last_movement_at", { count: "exact" })
+            .select(balanceCols, { count: "exact" })
             .order("last_movement_at", { ascending: false, nullsFirst: false })
             .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
           if (locationId) bq = bq.eq("location_id", Number(locationId));
           if (skuIdFilter) bq = bq.in("sku_id", skuIdFilter);
           const { data: bData, count: bCount, error: bErr } = await bq;
           if (bErr) throw bErr;
-          pageRows = ((bData as Balance[]) ?? []).map((b) => ({
+          pageRows = ((bData as unknown as Balance[]) ?? []).map((b) => ({
             ...b,
             on_hand: num(b.on_hand),
             reserved: num(b.reserved),
@@ -255,7 +264,7 @@ export default function InventoryOverviewPage() {
     return () => {
       cancelled = true;
     };
-  }, [locationId, search, onlyLow, page]);
+  }, [locationId, search, onlyLow, page, role, showCost]);
 
   const storeByLoc = useMemo(() => {
     const m = new Map<number, string>();
@@ -279,7 +288,7 @@ export default function InventoryOverviewPage() {
     try {
       const { data } = await getSupabase()
         .from("stock_movements")
-        .select("id, quantity, unit_cost, movement_type, source_doc_type, source_doc_id, batch_no, expiry_date, reason, notes, created_at")
+        .select("id, quantity, movement_type, source_doc_type, source_doc_id, batch_no, expiry_date, reason, notes, created_at")
         .eq("location_id", loc)
         .eq("sku_id", sku)
         .order("created_at", { ascending: false })
@@ -369,15 +378,15 @@ export default function InventoryOverviewPage() {
           <Th align="right">保留</Th>
           <Th align="right">在途</Th>
           <Th align="right">可用</Th>
-          <Th align="right">均成本</Th>
+          {showCost && <Th align="right">均成本</Th>}
           <Th align="right">最後異動</Th>
           <Th />
         </THead>
         <TBody>
           {rows === null ? (
-            <LoadingRow colSpan={9} />
+            <LoadingRow colSpan={colCount} />
           ) : rows.length === 0 ? (
-            <EmptyRow colSpan={9}>沒有符合條件的庫存。</EmptyRow>
+            <EmptyRow colSpan={colCount}>沒有符合條件的庫存。</EmptyRow>
           ) : (
             rows.flatMap((r) => {
               const key = `${r.location_id}-${r.sku_id}`;
@@ -413,7 +422,7 @@ export default function InventoryOverviewPage() {
                   <Td align="right" className={`font-mono ${available < 0 ? "text-red-600 dark:text-red-400" : ""}`}>
                     {fmtQty(available)}
                   </Td>
-                  <Td align="right" className="font-mono text-zinc-500">{fmtCost(r.avg_cost)}</Td>
+                  {showCost && <Td align="right" className="font-mono text-zinc-500">{fmtCost(r.avg_cost)}</Td>}
                   <Td align="right" className="text-xs text-zinc-500">
                     <span title={fmtDateTime(r.last_movement_at)}>
                       {r.last_movement_at
@@ -428,7 +437,7 @@ export default function InventoryOverviewPage() {
                 const moves = moveCache.get(key);
                 out.push(
                   <tr key={`${key}-detail`} className="bg-zinc-50 dark:bg-zinc-900/50">
-                    <td colSpan={9} className="px-4 py-3">
+                    <td colSpan={colCount} className="px-4 py-3">
                       <div className="text-xs font-medium text-zinc-500">近 50 筆庫存異動</div>
                       {moveLoading && !moves ? (
                         <div className="py-3 text-center text-sm text-zinc-500">載入中…</div>
