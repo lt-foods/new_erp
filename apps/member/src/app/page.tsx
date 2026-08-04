@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { lineOauthStartUrl, callLiffApi } from "@/lib/supabase";
 import { loadLiff } from "@/lib/liff";
-import { clearSession, getSession, listenForSession } from "@/lib/session";
+import { clearSession, getSession, listenForSession, saveSession } from "@/lib/session";
 import {
   isPageUnloading,
   logCaught,
@@ -27,6 +27,8 @@ const CLAIM_RETRY_DELAY_MS = 1500;
 const PAIR_TOKEN_KEY = "pwa_pair_token";
 /** 只允許往 LIFF 彈一次的旗標（sessionStorage），避免 LIFF ↔ 網頁互推無限迴圈 */
 const LIFF_RETRY_KEY = "liff_login_retry";
+/** 「已登入但不在 LIFF client」的自動補完每次瀏覽只做一次，避免 / ↔ /shop 互推 */
+const AUTO_COMPLETE_KEY = "liff_auto_complete_done";
 
 /** sessionStorage 在無痕 / 被擋時會 throw，一律包起來 */
 function sessionFlag(key: string): boolean {
@@ -153,17 +155,18 @@ async function tryClaimPairToken(): Promise<boolean> {
       line_picture: string | null;
     }>("", { action: "claim_pwa_auth_code", code: token });
 
-    const frag = new URLSearchParams({
-      token: data.token,
-      store: data.store,
-      bound: "1",
-      member_id: String(data.member_id),
-      line_user_id: data.line_user_id,
-      line_name: data.line_name ?? "",
-      line_picture: data.line_picture ?? "",
+    // 直接寫入，不繞 URL fragment（理由同 runLiffSession：長 fragment 在
+    // Android WebView 上不保證留得住，掉了就等於白登入一場）
+    saveSession({
+      token:       data.token,
+      storeId:     data.store,
+      memberId:    data.member_id,
+      lineUserId:  data.line_user_id,
+      lineName:    data.line_name,
+      linePicture: data.line_picture,
     });
     localStorage.removeItem(PAIR_TOKEN_KEY);
-    window.location.href = `/shop#${frag.toString()}`;
+    window.location.href = "/shop";
     return true;
   } catch {
     // 沒到期或還沒寫入 → 等下次
@@ -232,7 +235,9 @@ export default function LandingPage() {
 
     const existing = getSession();
     if (existing && existing.memberId) {
+      // 真的登入成功了才把兩個一次性旗標清掉，下次登入才有完整的重試額度
       clearSessionFlag(LIFF_RETRY_KEY);
+      clearSessionFlag(AUTO_COMPLETE_KEY);
       window.location.href = landing;
       return;
     }
@@ -377,7 +382,11 @@ export default function LandingPage() {
             if (idToken) {
               // 缺門市時留給 start()：使用者選完店按一次就能補完，不必重登
               liffIdTokenRef.current = idToken;
-              if (s) {
+              // 自動補完每次瀏覽只做一次。萬一 session 寫了卻沒被 /shop 認出來
+              // （或還有別的破口），會被踢回這裡再補完一次 → 又導 /shop →
+              // 無限轉圈，而 log 因為去重只留得下第一筆，等於什麼線索都沒有。
+              if (s && !sessionFlag(AUTO_COMPLETE_KEY)) {
+                setSessionFlag(AUTO_COMPLETE_KEY);
                 setStatus("liff_auth");
                 try {
                   await runLiffSession(idToken, s, resolvePairCode());
@@ -625,16 +634,15 @@ export default function LandingPage() {
         line_picture: string | null;
       }>("", { action: "claim_pwa_auth_code", code: syncCode });
 
-      const frag = new URLSearchParams({
-        token: data.token,
-        store: data.store,
-        bound: "1",
-        member_id: String(data.member_id),
-        line_user_id: data.line_user_id,
-        line_name: data.line_name ?? "",
-        line_picture: data.line_picture ?? "",
+      saveSession({
+        token:       data.token,
+        storeId:     data.store,
+        memberId:    data.member_id,
+        lineUserId:  data.line_user_id,
+        lineName:    data.line_name,
+        linePicture: data.line_picture,
       });
-      window.location.href = `/shop#${frag.toString()}`;
+      window.location.href = "/shop";
     } catch (e) {
       logCaught("pwa_sync_code_failed", e);
       setError(e instanceof Error ? e.message : "驗證碼無效或已過期");
@@ -953,16 +961,21 @@ async function runLiffSession(
     return;
   }
 
-  const frag = new URLSearchParams({
-    token:        String(data.token),
-    store:        String(data.store),
-    bound:        "1",
-    member_id:    String(data.member_id),
-    line_user_id: String(data.line_user_id ?? ""),
+  // 直接寫進 localStorage，不繞 URL fragment。
+  // 繞 fragment 是 OAuth 那條的限制（後端 302 只能這樣帶 token），LIFF 這條
+  // 資料已經在手上，多繞一趟只是多一個失敗點：token 是 300+ 字元的 JWT，
+  // 在 Android WebView 上長 fragment 不保證留得住 —— 掉了 /shop 就讀不到
+  // session，被踢回登入頁，而登入頁又會自動補完再導一次，卡成轉圈圈迴圈。
+  saveSession({
+    token:       String(data.token),
+    storeId:     String(data.store),
+    memberId:    data.member_id != null ? Number(data.member_id) : null,
+    lineUserId:  data.line_user_id != null ? String(data.line_user_id) : null,
+    lineName:    data.line_name    != null ? String(data.line_name)    : null,
+    linePicture: data.line_picture != null ? String(data.line_picture) : null,
   });
-  if (data.line_name)    frag.set("line_name",    String(data.line_name));
-  if (data.line_picture) frag.set("line_picture", String(data.line_picture));
+
   // LIFF 自然登入(沒帶 pair) = 在 LINE webview 內。放行完整商店體驗:
   // 直接進 /shop,跟 standalone PWA 一致(不再只停在 /me)。
-  window.location.href = `/shop#${frag.toString()}`;
+  window.location.href = "/shop";
 }

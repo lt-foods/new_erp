@@ -20,6 +20,51 @@ export type Session = {
   linePicture: string | null;
 };
 
+/**
+ * 直接把 session 寫進儲存空間（不經過 URL fragment）。
+ *
+ * OAuth 那條是後端 302 回來，只能靠 fragment 帶 token；但 LIFF 這條是前端
+ * 自己拿到 JSON，繞一趟 fragment 只是多一個失敗點 —— token 是 300+ 字元的
+ * JWT，在 Android WebView 上長 fragment 不保證留得住，掉了就等於沒登入，
+ * 使用者會被踢回登入頁又自動重登，卡在轉圈圈（2026-08-04 實測）。
+ * 順帶好處：網址列不會留下 token。
+ */
+export function saveSession(input: {
+  token: string;
+  storeId: string;
+  memberId: number | null;
+  lineUserId?: string | null;
+  lineName?: string | null;
+  linePicture?: string | null;
+}): Session {
+  const memberId = input.memberId ?? memberIdFromJwt(input.token);
+
+  localStorage.setItem(TOKEN_KEY, input.token);
+  localStorage.setItem(STORE_KEY, input.storeId);
+  if (memberId)         localStorage.setItem(MEMBER_KEY, String(memberId));
+  if (input.lineUserId) localStorage.setItem(LINE_UID_KEY, input.lineUserId);
+  if (input.lineName)   localStorage.setItem(LINE_NAME_KEY, input.lineName);
+  if (input.linePicture) localStorage.setItem(LINE_PIC_KEY, input.linePicture);
+
+  const session: Session = {
+    token: input.token,
+    storeId: input.storeId,
+    memberId,
+    bound: memberId != null,
+    lineUserId:  input.lineUserId  ?? null,
+    lineName:    input.lineName    ?? null,
+    linePicture: input.linePicture ?? null,
+  };
+
+  // 跟 consumeFragmentToSession 一樣要廣播，其他視窗（PWA）才跟得上
+  if ("BroadcastChannel" in window) {
+    const channel = new BroadcastChannel(AUTH_CHANNEL_NAME);
+    channel.postMessage({ type: "LOGIN_SUCCESS", session });
+    channel.close();
+  }
+  return session;
+}
+
 /** 從 URL fragment 解出 session，存入儲存空間，並清理 URL。 */
 export function consumeFragmentToSession(): Session | null {
   if (typeof window === "undefined") return null;
