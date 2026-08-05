@@ -31,7 +31,10 @@ export function AddStockModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [locationId, setLocationId] = useState<string>(defaultLocationId);
+  // 分店帳號：清單已被呼叫端過濾成只有自己店，直接選它（免得停在「請選倉別」）
+  const [locationId, setLocationId] = useState<string>(
+    defaultLocationId || (locations.length === 1 ? String(locations[0].id) : ""),
+  );
   const [search, setSearch] = useState("");
   const [hits, setHits] = useState<SkuHit[]>([]);
   const [searching, setSearching] = useState(false);

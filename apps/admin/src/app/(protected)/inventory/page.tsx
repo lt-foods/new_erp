@@ -525,10 +525,14 @@ export default function InventoryOverviewPage() {
 
       {adding && (
         <AddStockModal
-          locations={locs.map((l) => ({
-            id: l.id,
-            label: `${storeByLoc.get(l.id) ?? l.name}${l.type === "central_warehouse" ? "（總倉）" : ""}`,
-          }))}
+          // 分店帳號只能對自己店的倉別加庫存 — 清單本身就過濾掉別店，
+          // 不只是把下拉 disabled（disabled 的下拉仍會列出全部店名）
+          locations={locs
+            .filter((l) => branchLocationId == null || l.id === branchLocationId)
+            .map((l) => ({
+              id: l.id,
+              label: `${storeByLoc.get(l.id) ?? l.name}${l.type === "central_warehouse" ? "（總倉）" : ""}`,
+            }))}
           defaultLocationId={locationId}
           locked={branchLocked}
           onClose={() => setAdding(false)}

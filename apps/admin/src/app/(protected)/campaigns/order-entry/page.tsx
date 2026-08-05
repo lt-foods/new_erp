@@ -1,12 +1,14 @@
 "use client";
 
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
 import { CampaignThumb } from "@/components/CampaignThumb";
 import { campaignCoverUrl, type CampaignCoverItem } from "@/lib/campaignCover";
+import { useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 
 type Campaign = {
   id: number;
@@ -20,7 +22,7 @@ type Campaign = {
 
 type Channel = { id: number; name: string; home_store_id: number };
 
-type Store = { id: number; code: string; name: string };
+type Store = { id: number; code: string; name: string; location_id: number | null };
 
 type Mode = "customer" | "internal" | "offset";
 
@@ -127,6 +129,16 @@ function PageContent() {
   const [offsetStoreId, setOffsetStoreId] = useState<number | null>(null);
   const [offsetReason, setOffsetReason] = useState("");
   const [offsetItems, setOffsetItems] = useState<ItemRow[]>([emptyItem()]);
+  // 抵減可指定客人 =「現貨直售」：建客人訂單＋抵減單＋當下用店內現貨交貨結案。
+  // 不選客人 = 純抵減（只讓採購少買）。
+  const [offsetCustomer, setOffsetCustomer] = useState<CustomerEntry>(newEntry());
+  // 店倉帳上可用現貨（sku_id → on_hand − reserved），抵減量不能超過
+  const [offsetStock, setOffsetStock] = useState<Map<number, number>>(new Map());
+  // 分店帳號：抵減 / 現貨直售會動到店庫存，只能對自己那間店開（HQ 回 null = 不限）
+  const branchStoreId = useUserBranchStoreId(stores);
+  useEffect(() => {
+    if (branchStoreId != null && offsetStoreId !== branchStoreId) setOffsetStoreId(branchStoreId);
+  }, [branchStoreId, offsetStoreId]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -147,7 +159,7 @@ function PageContent() {
         sb.from("line_channels")
           .select("id, name, home_store_id").eq("is_active", true).order("name"),
         sb.from("stores")
-          .select("id, code, name").eq("is_active", true).order("name"),
+          .select("id, code, name, location_id").eq("is_active", true).order("name"),
       ]);
       if (cancelled) return;
       if (cRes.error) { setError(cRes.error.message); return; }
@@ -372,16 +384,53 @@ function PageContent() {
     }
   }
 
+  // 店倉帳上可用現貨：抵減模式下，選了店就把本團所有 SKU 的餘額抓回來。
+  // 抵減 = 用店內現貨吸收需求，超過帳上可用會被伺服端擋（先到庫存總覽入帳）。
+  useEffect(() => {
+    if (mode !== "offset" || !offsetStoreId || campaignSkus.length === 0) {
+      setOffsetStock(new Map());
+      return;
+    }
+    const loc = stores.find((s) => s.id === offsetStoreId)?.location_id;
+    if (!loc) { setOffsetStock(new Map()); return; }
+    let cancelled = false;
+    (async () => {
+      const { data } = await getSupabase()
+        .from("stock_balances")
+        .select("sku_id, on_hand, reserved")
+        .eq("location_id", loc)
+        .in("sku_id", campaignSkus.map((s) => s.sku_id));
+      if (cancelled) return;
+      const m = new Map<number, number>();
+      for (const r of (data ?? []) as { sku_id: number; on_hand: number; reserved: number }[]) {
+        m.set(r.sku_id, Number(r.on_hand) - Number(r.reserved));
+      }
+      setOffsetStock(m);
+    })();
+    return () => { cancelled = true; };
+  }, [mode, offsetStoreId, stores, campaignSkus]);
+
   async function submitOffset() {
     if (!offsetStoreId) { setError("請選取貨店"); return; }
-    if (!offsetReason.trim()) { setError("抵減原因必填"); return; }
+    const directSale = offsetCustomer.member_id != null;
+    if (!directSale && !offsetReason.trim()) { setError("純抵減（沒選客人）時，抵減原因必填"); return; }
     const items = offsetItems
       .filter((i) => i.campaign_item_id && Number(i.qty) > 0)
       .map((i) => ({
         campaign_item_id: i.campaign_item_id,
-        qty: -Math.abs(Number(i.qty)), // 自動轉為負
+        qty: Math.abs(Number(i.qty)),
       }));
     if (items.length === 0) { setError("請至少加一項商品"); return; }
+
+    if (
+      directSale &&
+      !confirm(
+        `現貨直售給「${offsetCustomer.display_name}」共 ${items.reduce((s, i) => s + i.qty, 0)} 件？\n\n` +
+          `會建立客人訂單、開抵減單（採購不多買），並立刻用店內現貨交貨結案\n` +
+          `（扣店庫存，與到店取貨同一套帳）。開錯只能走退貨流程沖回。`,
+      )
+    )
+      return;
 
     setSubmitting(true);
     try {
@@ -389,18 +438,38 @@ function PageContent() {
       const { data: userRes } = await sb.auth.getUser();
       const operator = userRes.user?.id;
       if (!operator) { setError("未登入或 session 過期"); return; }
-      const { data, error: err } = await sb.rpc("rpc_create_offset_order", {
-        p_campaign_id: campaignId,
-        p_store_id: offsetStoreId,
-        p_items: items,
-        p_reason: offsetReason.trim(),
-        p_operator: operator,
-      });
-      if (err) { setError(err.message); return; }
-      setToast(`已建立抵減單 #${data}`);
+      if (directSale) {
+        // 現貨直售：客人訂單 + 抵減單 + 當下交貨結案（單一交易）
+        const { data, error: err } = await sb.rpc("rpc_create_offset_sale", {
+          p_campaign_id: campaignId,
+          p_channel_id: channelId,
+          p_store_id: offsetStoreId,
+          p_member_id: offsetCustomer.member_id,
+          p_nickname: offsetCustomer.nickname || offsetCustomer.display_name || null,
+          p_items: items,
+          p_reason: offsetReason.trim() || null,
+          p_operator: operator,
+        });
+        if (err) { setError(err.message); return; }
+        const r = (data ?? {}) as { order_no?: string; offset_order_no?: string; delivered_qty?: number };
+        setToast(
+          `✅ 現貨直售完成：訂單 ${r.order_no ?? ""} 已交貨 ${r.delivered_qty ?? ""} 件（抵減單 ${r.offset_order_no ?? ""}）`,
+        );
+        setOffsetCustomer(newEntry());
+      } else {
+        const { data, error: err } = await sb.rpc("rpc_create_offset_order", {
+          p_campaign_id: campaignId,
+          p_store_id: offsetStoreId,
+          p_items: items.map((i) => ({ ...i, qty: -i.qty })), // 純抵減轉負數
+          p_reason: offsetReason.trim(),
+          p_operator: operator,
+        });
+        if (err) { setError(err.message); return; }
+        setToast(`已建立抵減單 #${data}`);
+      }
       setOffsetItems([emptyItem()]);
       setOffsetReason("");
-      setTimeout(() => setToast(null), 3000);
+      setTimeout(() => setToast(null), 4000);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -510,9 +579,9 @@ function PageContent() {
               ? "bg-red-700 text-white"
               : "bg-white text-red-700 hover:bg-red-50 dark:bg-zinc-900 dark:text-red-400 dark:hover:bg-red-950"
           }`}
-          title="店內已有庫存、不想多訂 → 採購聚合會自動扣掉這筆數量"
+          title="用店內現貨出貨：選客人＝直接加給客人並結案；不選客人＝只做採購抵減"
         >
-          庫存抵減單
+          店內現貨 / 抵減
         </SpinButton>
       </div>
 
@@ -529,7 +598,9 @@ function PageContent() {
         </p>
       ) : (
         <p className="text-xs text-red-700 dark:text-red-400">
-          庫存抵減單：店內已有庫存不想多訂時建立。qty 會自動轉為負，採購聚合自動扣掉這筆。訂單編號 <span className="font-mono">XXX-OFF0001</span>，不影響顧客視角。
+          店內現貨：<b>選客人</b> = 現貨直售（建訂單＋抵減＋當下交貨結案，扣店庫存）；
+          <b>不選客人</b> = 純抵減（只讓採購少買，訂單編號 <span className="font-mono">XXX-OFF0001</span>）。
+          兩者都需要店內帳上有現貨 — 沒有請先到庫存總覽新增庫存。
         </p>
       )}
 
@@ -621,6 +692,8 @@ function PageContent() {
           stores={stores}
           storeId={offsetStoreId}
           onStoreChange={setOffsetStoreId}
+          // 抵減 / 現貨直售會動到店庫存 → 分店帳號只能對自己店開
+          lockedStoreId={branchStoreId}
           notes={offsetReason}
           onNotesChange={setOffsetReason}
           items={offsetItems}
@@ -631,6 +704,55 @@ function PageContent() {
           onSubmit={handleSubmit}
           submitting={submitting}
           offsetMode
+          submitLabel={
+            offsetCustomer.member_id
+              ? "送出現貨直售（Ctrl+S）"
+              : "送出抵減單（Ctrl+S）"
+          }
+          headerExtra={
+            <div className="mb-3">
+              <span className="mb-1 block text-xs text-zinc-500">
+                客人（選了 = <b>現貨直售</b>：建訂單＋抵減＋當下交貨結案；留空 = 純抵減，只讓採購少買）
+              </span>
+              <div className="flex items-center gap-2">
+                <CustomerSearch
+                  channelId={channelId}
+                  value={offsetCustomer}
+                  pickedMemberIds={new Set()}
+                  onPick={(patch) => {
+                    setOffsetCustomer((prev) => ({ ...prev, ...patch }));
+                    // 客人的預設取貨店自動帶成抵減店（仍可手動改）
+                    if (patch.pickup_store_id) setOffsetStoreId(patch.pickup_store_id);
+                  }}
+                />
+                {offsetCustomer.member_id != null && (
+                  <SpinButton
+                    type="button"
+                    onClick={() => setOffsetCustomer(newEntry())}
+                    className="shrink-0 rounded border border-zinc-300 px-2 py-1.5 text-xs text-zinc-500 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                  >
+                    清除
+                  </SpinButton>
+                )}
+              </div>
+              {offsetCustomer.member_id != null && (
+                <p className="mt-1 text-[11px] text-violet-700 dark:text-violet-400">
+                  送出後：客人訂單成立並「立刻交貨結案」（扣店內庫存、與到店取貨同一套帳），採購不會為這幾件多買。
+                </p>
+              )}
+            </div>
+          }
+          stockHints={offsetItems
+            .filter((i) => i.campaign_item_id && Number(i.qty) > 0)
+            .map((i) => {
+              const sku = campaignSkus.find((s) => s.campaign_item_id === i.campaign_item_id);
+              return {
+                key: String(i.campaign_item_id),
+                label: sku ? (sku.variant_name || sku.product_name) : i.sku_label,
+                need: Number(i.qty),
+                available: sku ? offsetStock.get(sku.sku_id) ?? 0 : 0,
+              };
+            })}
         />
       )}
     </div>
@@ -643,7 +765,7 @@ function PageContent() {
 function InternalOrderPanel({
   campaignId, campaignSkus, stores, storeId, onStoreChange,
   notes, onNotesChange, items, onItemChange, onAddItem, onRemoveItem, onAddSku,
-  onSubmit, submitting, offsetMode = false,
+  onSubmit, submitting, offsetMode = false, submitLabel, headerExtra, stockHints, lockedStoreId = null,
 }: {
   campaignId: number;
   campaignSkus: SkuOption[];
@@ -660,6 +782,13 @@ function InternalOrderPanel({
   onSubmit: () => void;
   submitting: boolean;
   offsetMode?: boolean;
+  submitLabel?: string;
+  // 抵減模式用：客人選擇器（現貨直售）
+  headerExtra?: React.ReactNode;
+  // 抵減模式用：各品項的店倉帳上可用現貨（抵減量不能超過，伺服端也會擋）
+  stockHints?: { key: string; label: string; need: number; available: number }[];
+  // 分店帳號鎖定：只能對這間店開單（清單直接過濾掉別店，不只是 disabled）
+  lockedStoreId?: number | null;
 }) {
   const pickedIds = new Set(items.map((it) => it.campaign_item_id).filter((x): x is number => x != null));
   const availableSkus = campaignSkus.filter((s) => !pickedIds.has(s.campaign_item_id));
@@ -672,23 +801,27 @@ function InternalOrderPanel({
     <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
       <div className="flex flex-col gap-3">
         <div className="rounded-md border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
+          {headerExtra}
           <div className="mb-3 grid gap-3 sm:grid-cols-[200px_1fr]">
             <label className="text-xs">
               <span className="mb-1 block text-zinc-500">取貨店 <span className="text-red-500">*</span></span>
               <select
                 value={storeId ?? ""}
                 onChange={(e) => onStoreChange(e.target.value ? Number(e.target.value) : null)}
-                className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                disabled={lockedStoreId != null}
+                className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm disabled:opacity-70 dark:border-zinc-700 dark:bg-zinc-800"
               >
                 <option value="">— 選店 —</option>
-                {stores.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
-                ))}
+                {stores
+                  .filter((s) => lockedStoreId == null || s.id === lockedStoreId)
+                  .map((s) => (
+                    <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
+                  ))}
               </select>
             </label>
             <label className="text-xs">
               <span className="mb-1 block text-zinc-500">
-                {offsetMode ? <>抵減原因 <span className="text-red-500">*</span></> : "備註（選填）"}
+                {offsetMode ? "抵減原因（沒選客人時必填）" : "備註（選填）"}
               </span>
               <input
                 value={notes}
@@ -754,32 +887,70 @@ function InternalOrderPanel({
           + 新增空白項目（Alt+N）
         </SpinButton>
 
+        {/* 抵減 / 現貨直售的庫存預檢：帳上不夠就先擋在前端（伺服端仍會再擋一次） */}
+        {offsetMode && (stockHints ?? []).some((h) => h.need > h.available) && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+            ⚠ 店內帳上現貨不足，送出會被擋：
+            <ul className="mt-1 space-y-0.5">
+              {(stockHints ?? [])
+                .filter((h) => h.need > h.available)
+                .map((h) => (
+                  <li key={h.key}>
+                    {h.label}：要 {h.need} 件、帳上只有 {h.available} 件
+                  </li>
+                ))}
+            </ul>
+            請先到
+            <Link href="/inventory" target="_blank" className="mx-1 underline">
+              庫存總覽
+            </Link>
+            對這些商品「新增庫存」把現貨入帳。
+          </div>
+        )}
+
         <div className="flex justify-end">
           <SpinButton
             type="button"
             onClick={onSubmit}
-            disabled={submitting}
-            className={`rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${
+            disabled={submitting || (offsetMode && (stockHints ?? []).some((h) => h.need > h.available))}
+            className={`rounded-md px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50 ${
               offsetMode
                 ? "bg-red-700 hover:bg-red-800"
                 : "bg-zinc-900 hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
             }`}
           >
-            {submitting ? "送出中…" : offsetMode ? "送出抵減單（Ctrl+S）" : "送出內部訂單（Ctrl+S）"}
+            {submitting
+              ? "送出中…"
+              : submitLabel ?? (offsetMode ? "送出抵減單（Ctrl+S）" : "送出內部訂單（Ctrl+S）")}
           </SpinButton>
         </div>
       </div>
 
       <aside className="sticky top-4 h-fit rounded-md border border-zinc-200 bg-white p-3 text-sm dark:border-zinc-800 dark:bg-zinc-900">
-        <h2 className="mb-2 text-sm font-semibold">{offsetMode ? "本次抵減（負數）" : "本次統計（內部）"}</h2>
+        <h2 className="mb-2 text-sm font-semibold">{offsetMode ? "本次抵減 / 直售" : "本次統計（內部）"}</h2>
         <div className="grid grid-cols-2 gap-2 text-xs">
           <Stat label="件數" value={totalQty} />
-          <Stat label="總金額" value={offsetMode ? `-$${totalAmount}` : `$${totalAmount}`} />
+          <Stat label="總金額" value={`$${totalAmount}`} />
         </div>
         {offsetMode && (
-          <p className="mt-2 text-[11px] text-red-700 dark:text-red-400">
-            ⚠ 送出時 qty 自動轉為負，採購聚合會扣掉這部分。
-          </p>
+          <>
+            <p className="mt-2 text-[11px] text-red-700 dark:text-red-400">
+              ⚠ 採購聚合會扣掉這部分（不會為這幾件多買）。
+            </p>
+            {(stockHints ?? []).length > 0 && (
+              <div className="mt-2 border-t border-zinc-200 pt-2 text-[11px] dark:border-zinc-800">
+                <div className="mb-1 text-zinc-500">店內帳上現貨</div>
+                {(stockHints ?? []).map((h) => (
+                  <div key={h.key} className="flex justify-between gap-2">
+                    <span className="truncate" title={h.label}>{h.label}</span>
+                    <span className={h.need > h.available ? "font-medium text-red-600" : "text-zinc-500"}>
+                      {h.need} / {h.available}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </aside>
     </div>

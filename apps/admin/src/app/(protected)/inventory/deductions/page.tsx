@@ -157,6 +157,28 @@ export default function InventoryDeductionsPage() {
     return g.items.reduce((s, r) => s + (give.get(r.item_id) ?? 0), 0);
   }
 
+  // 整組全選 / 全不選：全選時以店倉帳上可用量為上限，由早到晚依序給滿
+  //（帳上不夠時不會勾到超過，省得按了才發現要減回來）。
+  // 判斷用「有沒有勾任何一筆」而不是「是否全滿」—— 庫存不夠時永遠到不了全滿，
+  // 那樣按鈕會卡在「全選」再也清不掉。
+  function toggleGroupAll(g: Group) {
+    const anyOn = g.items.some((r) => (give.get(r.item_id) ?? 0) > 0);
+    setGive((cur) => {
+      const next = new Map(cur);
+      if (anyOn) {
+        for (const r of g.items) next.set(r.item_id, 0);
+        return next;
+      }
+      let left = g.storeOnHand;
+      for (const r of g.items) {
+        const q = Math.max(0, Math.min(r.qty, left));
+        next.set(r.item_id, q);
+        left -= q;
+      }
+      return next;
+    });
+  }
+
   // 對一組 (團, 品項) 開減抵單交貨
   async function createNote(g: Group) {
     const allocations: Record<string, number> = {};
@@ -267,6 +289,8 @@ export default function InventoryDeductionsPage() {
       {groups.map((g) => {
         const total = groupTotal(g);
         const exceed = total > g.storeOnHand;
+        // 勾了任何一筆就顯示「全不選」；庫存不夠時到不了全滿，用 every 會清不掉
+        const anyChecked = total > 0;
         return (
           <section
             key={g.key}
@@ -290,6 +314,18 @@ export default function InventoryDeductionsPage() {
                 </div>
               </div>
               <SpinButton
+                onClick={() => toggleGroupAll(g)}
+                disabled={busy || g.storeOnHand <= 0}
+                className="shrink-0 rounded-md border border-zinc-300 px-3 py-2 text-xs text-zinc-600 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                title={
+                  g.storeOnHand <= 0
+                    ? "店倉帳上沒有現貨，請先到庫存總覽新增庫存"
+                    : "整組全選 / 全不選（全選時以帳上可用現貨為上限，由早到晚給滿）"
+                }
+              >
+                {anyChecked ? "全不選" : "全選"}
+              </SpinButton>
+              <SpinButton
                 onClick={() => createNote(g)}
                 disabled={busy || total <= 0 || exceed}
                 className="shrink-0 rounded-md bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-zinc-300 dark:disabled:bg-zinc-700"
@@ -310,7 +346,19 @@ export default function InventoryDeductionsPage() {
             <table className="w-full min-w-[560px] text-sm">
               <thead>
                 <tr className="border-b border-zinc-200 bg-white text-[11px] text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
-                  <th className="w-28 px-3 py-2 text-left font-medium">交貨數量</th>
+                  <th className="w-28 px-3 py-2 text-left font-medium">
+                    <label className="flex cursor-pointer items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={anyChecked}
+                        onChange={() => toggleGroupAll(g)}
+                        disabled={g.storeOnHand <= 0}
+                        className="cursor-pointer disabled:cursor-not-allowed"
+                        title="整組全選 / 全不選"
+                      />
+                      交貨數量
+                    </label>
+                  </th>
                   <th className="px-3 py-2 text-left font-medium">訂單編號</th>
                   <th className="px-3 py-2 text-left font-medium">顧客</th>
                   <th className="px-3 py-2 text-left font-medium">下單時間</th>
