@@ -135,6 +135,9 @@ function PickupPageContent() {
   const [pickedEvents, setPickedEvents] = useState<Map<number, PickupEventRow[]>>(new Map());
   // 已取貨模式的合併列印確認視窗（對齊未取貨的「一次全取」— 先看清單與合計再印）
   const [printConfirm, setPrintConfirm] = useState<Member | null>(null);
+  // 已取貨模式的「品項層級」勾選（item.id）。客人這批只要 A/B/D 不要 C 時就挑品項；
+  // 整張勾＝把該張的已取品項全部加進來，兩種粒度共用同一個集合。
+  const [selectedItems, setSelectedItems] = useState<Set<number>>(new Set());
 
   // overrideQuery：常用顧客快選按鈕用 — 直接帶該顧客查單，
   // 刻意「不」寫進搜尋框（保持輸入框乾淨，按鈕本身就是捷徑）
@@ -153,6 +156,7 @@ function PickupPageContent() {
     setOrders(new Map());
     setPickedEvents(new Map());
     setSelected(new Set());
+    setSelectedItems(new Set());
     try {
       const sb = getSupabase();
       // Google 式：以空白 / + 拆 token，每個 token 都要在 name / phone / member_no 至少一欄命中
@@ -300,27 +304,73 @@ function PickupPageContent() {
     }
   }
 
-  // 已取貨模式：該會員「勾選的（沒勾＝全部）」且還印得出收據的訂單。
-  // 一次只印一個會員 — 收據頁的表頭與合計都取第一張單的會員，跨會員合印會印錯人。
-  function pickedPrintTargets(member: Member): OpenOrder[] {
-    const printable = (orders.get(member.id) ?? []).filter((o) => (pickedEvents.get(o.id)?.length ?? 0) > 0);
-    const chosen = printable.filter((o) => selected.has(o.id));
-    return chosen.length > 0 ? chosen : printable;
+  // 該張單「已取走」的品項（撤銷取貨會把品項還原成 pending，所以撤銷過的不會出現）
+  function pickedItemsOf(order: OpenOrder) {
+    return order.items.filter((it) => it.status === "picked_up");
+  }
+  function orderSelState(order: OpenOrder): "all" | "some" | "none" {
+    const its = pickedItemsOf(order);
+    if (its.length === 0) return "none";
+    const n = its.filter((it) => selectedItems.has(it.id)).length;
+    return n === 0 ? "none" : n === its.length ? "all" : "some";
+  }
+  function toggleItem(itemId: number) {
+    setSelectedItems((s) => {
+      const next = new Set(s);
+      if (next.has(itemId)) next.delete(itemId); else next.add(itemId);
+      return next;
+    });
+  }
+  // 整張的勾選框＝該張所有已取品項一起加/減
+  function toggleOrderItems(order: OpenOrder) {
+    const its = pickedItemsOf(order);
+    const all = orderSelState(order) === "all";
+    setSelectedItems((s) => {
+      const next = new Set(s);
+      for (const it of its) { if (all) next.delete(it.id); else next.add(it.id); }
+      return next;
+    });
   }
 
-  // 把上面那批合併成「一張」收據送印
+  // 已取貨模式：算出「這次要印哪些」。沒勾任何東西＝該會員全部已取品項。
+  // 一次只印一個會員 — 列印頁的表頭與合計都取第一張的會員，跨會員合印會印錯人。
+  function pickedSelection(member: Member) {
+    const memberOrders = (orders.get(member.id) ?? []).filter((o) => pickedItemsOf(o).length > 0);
+    const anySelected = memberOrders.some((o) => orderSelState(o) !== "none");
+    const groups = memberOrders
+      .map((o) => ({
+        order: o,
+        items: anySelected
+          ? pickedItemsOf(o).filter((it) => selectedItems.has(it.id))
+          : pickedItemsOf(o),
+      }))
+      .filter((g) => g.items.length > 0);
+    // 全都是「整張全取」且每張都有取貨事件 → 可以印回「當時那張收據」（依取貨當次分段）；
+    // 只要有一張是挑品項的，就改印品項明細（收據是以取貨事件為單位，挑不了單一品項）。
+    const wholeOrders = groups.every(
+      (g) => g.items.length === pickedItemsOf(g.order).length && (pickedEvents.get(g.order.id)?.length ?? 0) > 0,
+    );
+    const itemIds = groups.flatMap((g) => g.items.map((it) => it.id)).sort((a, b) => a - b);
+    const eventIds = groups
+      .flatMap((g) => (pickedEvents.get(g.order.id) ?? []).map((e) => e.id))
+      .sort((a, b) => a - b);
+    return { groups, wholeOrders, itemIds, eventIds };
+  }
+
+  // 送印：整張全取 → 原樣收據（/pickup/print）；挑品項 → 品項明細（/pickup/print-picked）
   function printPickedMerged(member: Member) {
-    const target = pickedPrintTargets(member);
+    const { groups, wholeOrders, itemIds, eventIds } = pickedSelection(member);
     setPrintConfirm(null);
-    if (target.length === 0) {
-      setError("這些訂單沒有可補印的取貨紀錄（可能取貨已被撤銷）");
+    if (groups.length === 0) {
+      setError("沒有可列印的已取品項（取貨可能已被撤銷）");
       return;
     }
-    const eventIds = target
-      .flatMap((o) => (pickedEvents.get(o.id) ?? []).map((e) => e.id))
-      .sort((a, b) => a - b);
     setError(null);
-    printViaIframe(withBasePath(`/pickup/print?event_ids=${eventIds.join(",")}`));
+    printViaIframe(withBasePath(
+      wholeOrders
+        ? `/pickup/print?event_ids=${eventIds.join(",")}`
+        : `/pickup/print-picked?item_ids=${itemIds.join(",")}`,
+    ));
   }
 
   function toggleSelect(orderId: number) {
@@ -678,18 +728,20 @@ function PickupPageContent() {
                     <span className="font-mono text-xs text-zinc-500">{m.member_no}</span>
                     <span className="font-mono text-sm text-zinc-700 dark:text-zinc-300">{m.phone ?? "—"}</span>
                     {mode === "picked" && memberOrders.length > 0 && (() => {
-                      const printable = memberOrders.filter((o) => (pickedEvents.get(o.id)?.length ?? 0) > 0);
-                      const selectedHere = printable.filter((o) => selected.has(o.id));
-                      const useSel = selectedHere.length > 0;
-                      const count = useSel ? selectedHere.length : printable.length;
-                      if (printable.length === 0) return null;
+                      const { groups, wholeOrders, itemIds } = pickedSelection(m);
+                      if (groups.length === 0) return null;
+                      const anySelected = memberOrders.some((o) => orderSelState(o) !== "none");
                       return (
                         <SpinButton
                           onClick={() => setPrintConfirm(m)}
-                          title="把這些已取訂單合併成「一張」收據補印（80mm 熱感）"
+                          title={wholeOrders
+                            ? "整張全取 → 補印當時那張收據（多張合併成一張）"
+                            : "只挑了部分品項 → 印一張「取貨明細」，只列勾到的品項"}
                           className="ml-auto rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
                         >
-                          🖨️ {useSel ? `合併列印選定的 ${count} 張` : `合併列印（${count} 張）`}
+                          🖨️ {anySelected
+                            ? `合併列印選定的 ${itemIds.length} 項`
+                            : `合併列印（${groups.length} 張、${itemIds.length} 項）`}
                         </SpinButton>
                       );
                     })()}
@@ -717,14 +769,15 @@ function PickupPageContent() {
                       <ul className="space-y-2">
                         {memberOrders.map((o) => {
                           const evs = pickedEvents.get(o.id) ?? [];
-                          const picked = o.items.filter((it) => it.status === "picked_up");
+                          const picked = pickedItemsOf(o);
                           const amount = picked.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0);
                           const canReprint = evs.length > 0;
+                          const selState = orderSelState(o);
                           return (
                             <li
                               key={o.id}
                               className={`flex flex-col gap-3 rounded-md border p-3 sm:flex-row sm:items-center ${
-                                selected.has(o.id)
+                                selState !== "none"
                                   ? "border-emerald-400 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950"
                                   : "border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"
                               }`}
@@ -732,10 +785,11 @@ function PickupPageContent() {
                               <div className="flex min-w-0 flex-1 items-start gap-3">
                                 <input
                                   type="checkbox"
-                                  checked={selected.has(o.id)}
-                                  onChange={() => toggleSelect(o.id)}
-                                  disabled={!canReprint}
-                                  title={canReprint ? "勾選後合併列印" : "此單沒有可補印的取貨紀錄"}
+                                  checked={selState === "all"}
+                                  ref={(el) => { if (el) el.indeterminate = selState === "some"; }}
+                                  onChange={() => toggleOrderItems(o)}
+                                  disabled={picked.length === 0}
+                                  title={picked.length === 0 ? "此單沒有已取品項" : "整張勾選（也可只勾下面個別品項）"}
                                   className="mt-1 h-4 w-4 shrink-0"
                                 />
                                 <OrderThumb order={o} />
@@ -748,11 +802,21 @@ function PickupPageContent() {
                                       </span>
                                     )}
                                   </div>
+                                  {/* 品項層級勾選 — 客人這批只要 A/B/D 不要 C 時就挑這裡 */}
                                   <ul className="mt-0.5 space-y-0.5 text-xs text-zinc-700 dark:text-zinc-300">
                                     {picked.map((it) => (
-                                      <li key={it.id} className="flex items-baseline gap-1.5">
-                                        <span className="font-bold">{it.sku?.variant_name || it.sku?.product_name || "—"}</span>
-                                        <span className="font-mono text-zinc-500">× {Number(it.qty)}</span>
+                                      <li key={it.id}>
+                                        <label className="flex cursor-pointer items-baseline gap-1.5">
+                                          <input
+                                            type="checkbox"
+                                            checked={selectedItems.has(it.id)}
+                                            onChange={() => toggleItem(it.id)}
+                                            className="h-3.5 w-3.5 shrink-0 translate-y-0.5"
+                                          />
+                                          <span className="font-bold">{it.sku?.variant_name || it.sku?.product_name || "—"}</span>
+                                          <span className="font-mono text-zinc-500">× {Number(it.qty)}</span>
+                                          <span className="font-mono text-zinc-400">${Number(it.qty) * Number(it.unit_price)}</span>
+                                        </label>
                                       </li>
                                     ))}
                                     {picked.length === 0 && <li className="text-zinc-400">（無已取品項）</li>}
@@ -993,20 +1057,21 @@ function PickupPageContent() {
         maxWidth="max-w-2xl"
       >
         {printConfirm && (() => {
-          const target = pickedPrintTargets(printConfirm);
-          const pickedOf = (o: OpenOrder) => o.items.filter((it) => it.status === "picked_up");
-          const totalItems = target.reduce((s, o) => s + pickedOf(o).length, 0);
-          const totalSubtotal = target.reduce(
-            (s, o) => s + pickedOf(o).reduce((ss, it) => ss + Number(it.qty) * Number(it.unit_price), 0),
+          const { groups, wholeOrders, itemIds, eventIds } = pickedSelection(printConfirm);
+          const totalQty = groups.reduce((s, g) => s + g.items.reduce((ss, it) => ss + Number(it.qty), 0), 0);
+          const totalSubtotal = groups.reduce(
+            (s, g) => s + g.items.reduce((ss, it) => ss + Number(it.qty) * Number(it.unit_price), 0),
             0,
           );
-          const totalDiscount = target.reduce((s, o) => s + Number(o.discount_amount ?? 0), 0);
+          // 整單折扣是單頭層級的：整張全取才攤得準，挑品項時不計入（列印頁也會註明）
+          const totalDiscount = wholeOrders
+            ? groups.reduce((s, g) => s + Number(g.order.discount_amount ?? 0), 0)
+            : 0;
           const totalAmount = Math.max(0, totalSubtotal - totalDiscount);
-          const totalEvents = target.reduce((s, o) => s + (pickedEvents.get(o.id)?.length ?? 0), 0);
           return (
             <div className="space-y-3">
               <p className="text-sm text-zinc-600 dark:text-zinc-300">
-                即將補印 <b>{target.length}</b> 張已取訂單、共 <b>{totalItems}</b> 項商品，合併成 <b>1 張</b>收據。
+                即將列印 <b>{groups.length}</b> 張訂單裡的 <b>{itemIds.length}</b> 項商品（共 {totalQty} 件），合併成 <b>1 張</b>。
                 {totalDiscount > 0 ? (
                   <>
                     <br />
@@ -1017,23 +1082,34 @@ function PickupPageContent() {
                 )}
               </p>
               <p className="text-xs text-zinc-500">
-                收據依「取貨當次」分段列出（共 {totalEvents} 次取貨紀錄）；金額為現行單價與折扣，非取貨當下的快照。
+                {wholeOrders
+                  ? `整張全取 → 補印「取貨收據」，依取貨當次分段列出（共 ${eventIds.length} 次取貨紀錄）。`
+                  : "只挑了部分品項 → 印「取貨明細」，只列勾到的品項；單頭的整單折扣不計入（攤到部分品項會失真）。"}
+                {" "}金額為現行單價與折扣，非取貨當下的快照。
               </p>
               <div className="max-h-80 space-y-3 overflow-y-auto rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
-                {target.map((o) => {
-                  const evs = pickedEvents.get(o.id) ?? [];
+                {groups.map((g) => {
+                  const evs = pickedEvents.get(g.order.id) ?? [];
+                  const partial = g.items.length < pickedItemsOf(g.order).length;
                   return (
-                    <div key={o.id} className="text-sm">
+                    <div key={g.order.id} className="text-sm">
                       <div className="mb-1">
-                        <span>{o.campaign?.name ?? "(未知活動)"}</span>
-                        <span className="ml-2 text-[10px] text-zinc-500">取貨店：{o.store?.name ?? "—"}</span>
-                        <span className="ml-2 text-[10px] text-emerald-700 dark:text-emerald-400">
-                          {pickupEventLabel(evs[evs.length - 1])}
-                          {evs.length > 1 && `（共 ${evs.length} 次）`}
-                        </span>
+                        <span>{g.order.campaign?.name ?? "(未知活動)"}</span>
+                        <span className="ml-2 text-[10px] text-zinc-500">取貨店：{g.order.store?.name ?? "—"}</span>
+                        {evs.length > 0 && (
+                          <span className="ml-2 text-[10px] text-emerald-700 dark:text-emerald-400">
+                            {pickupEventLabel(evs[evs.length - 1])}
+                            {evs.length > 1 && `（共 ${evs.length} 次）`}
+                          </span>
+                        )}
+                        {partial && (
+                          <span className="ml-2 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                            只印 {g.items.length}/{pickedItemsOf(g.order).length} 項
+                          </span>
+                        )}
                       </div>
                       <ul className="ml-4 space-y-0.5 text-xs">
-                        {pickedOf(o).map((it) => (
+                        {g.items.map((it) => (
                           <li key={it.id} className="flex items-baseline gap-2">
                             <span className="font-bold">{it.sku?.variant_name || it.sku?.product_name || "—"}</span>
                             <span className="font-mono">×{Number(it.qty)}</span>
@@ -1055,7 +1131,7 @@ function PickupPageContent() {
                   onClick={() => printPickedMerged(printConfirm)}
                   className="rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:border-zinc-300 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
                 >
-                  🖨️ 合併列印（{target.length} 張、{totalItems} 項、${totalAmount}）
+                  🖨️ {wholeOrders ? "合併列印收據" : "列印取貨明細"}（{itemIds.length} 項、${totalAmount}）
                 </SpinButton>
               </div>
             </div>
