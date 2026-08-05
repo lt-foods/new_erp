@@ -40,7 +40,8 @@ export function ShortageAllocateModal({
   onSaved: () => void;
 }) {
   const [data, setData] = useState<Payload | null>(null);
-  const [allocated, setAllocated] = useState<Set<number>>(new Set());
+  // item_id → 配到的數量（可小於該行的量＝拆行：部分可取、部分待補）
+  const [alloc, setAlloc] = useState<Map<number, number>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -59,8 +60,12 @@ export function ShortageAllocateModal({
       available: Number(payload.available),
       items: (payload.items ?? []).map((r) => ({ ...r, qty: Number(r.qty) })),
     });
-    // 進來時先反映現況：沒被標待補貨的就是目前配到的
-    setAllocated(new Set((payload.items ?? []).filter((r) => !r.backorder).map((r) => r.item_id)));
+    // 進來時先反映現況：沒被標待補貨的整行都算配到
+    setAlloc(
+      new Map(
+        (payload.items ?? []).map((r) => [r.item_id, r.backorder ? 0 : Number(r.qty)] as [number, number]),
+      ),
+    );
   }, [transferId, skuId]);
 
   useEffect(() => {
@@ -78,48 +83,47 @@ export function ShortageAllocateModal({
   }, [load]);
 
   const allocatedQty = useMemo(
-    () => (data?.items ?? []).filter((r) => allocated.has(r.item_id)).reduce((s, r) => s + r.qty, 0),
-    [data, allocated],
+    () => (data?.items ?? []).reduce((s, r) => s + (alloc.get(r.item_id) ?? 0), 0),
+    [data, alloc],
   );
   const backorderQty = useMemo(
-    () => (data?.items ?? []).filter((r) => !allocated.has(r.item_id)).reduce((s, r) => s + r.qty, 0),
-    [data, allocated],
+    () => (data?.items ?? []).reduce((s, r) => s + (r.qty - (alloc.get(r.item_id) ?? 0)), 0),
+    [data, alloc],
   );
   const over = data ? allocatedQty - data.available : 0;
 
   // 依訂單時間配貨：候選已由後端依 created_at, order_no 排好，
-  // 由早到晚累加，裝得下就配、裝不下就跳過（不拆行，一筆訂單要嘛全配要嘛待補）。
+  // 由早到晚配滿為止。會拆行 —— 額度只剩 1 件而該筆要 3 件時，給他 1 件、剩 2 件待補，
+  // 額度不浪費（原本整行為單位時會整筆跳過，架上的貨就白放著）。
   function autoAllocateByTime() {
     if (!data) return;
     let left = data.available;
-    const next = new Set<number>();
+    const next = new Map<number, number>();
     for (const r of data.items) {
-      if (r.qty <= left) {
-        next.add(r.item_id);
-        left -= r.qty;
-      }
+      const give = Math.max(0, Math.min(r.qty, left));
+      next.set(r.item_id, give);
+      left -= give;
     }
-    setAllocated(next);
+    setAlloc(next);
   }
 
-  function toggle(id: number) {
-    setAllocated((cur) => {
-      const n = new Set(cur);
-      if (n.has(id)) n.delete(id);
-      else n.add(id);
-      return n;
-    });
+  function setRow(id: number, v: number, max: number) {
+    const q = Number.isFinite(v) ? Math.max(0, Math.min(Math.floor(v), max)) : 0;
+    setAlloc((cur) => new Map(cur).set(id, q));
   }
 
   async function save() {
     if (!data) return;
     if (over > 0) return;
-    const backorderCount = data.items.length - allocated.size;
+    const partial = data.items.filter((r) => {
+      const a = alloc.get(r.item_id) ?? 0;
+      return a > 0 && a < r.qty;
+    }).length;
     if (
       !confirm(
-        `確認配貨？\n\n配到 ${allocated.size} 筆（${allocatedQty} 件）\n` +
-          `待補貨 ${backorderCount} 筆（${backorderQty} 件）— 這些訂單在補到貨之前不能取貨。\n\n` +
-          `不會通知客人，請店家自行聯繫。`,
+        `確認配貨？\n\n配出 ${allocatedQty} 件、待補貨 ${backorderQty} 件。\n` +
+          (partial > 0 ? `其中 ${partial} 筆訂單是部分配到（該筆會拆成可取與待補兩行）。\n` : "") +
+          `\n待補貨的部分在補到貨之前不能取貨。不會通知客人，請店家自行聯繫。`,
       )
     )
       return;
@@ -133,12 +137,15 @@ export function ShortageAllocateModal({
       const { data: res, error: e } = await sb.rpc("rpc_allocate_shortage", {
         p_transfer_id: transferId,
         p_sku_id: skuId,
-        p_allocated_item_ids: Array.from(allocated),
+        p_allocations: Object.fromEntries(alloc),
         p_operator: operator,
       });
       if (e) throw new Error(translateRpcError(e));
-      const r = (res ?? {}) as { backordered?: number; freed?: number };
-      alert(`✅ 配貨完成：待補貨 ${r.backordered ?? 0} 筆、解除 ${r.freed ?? 0} 筆`);
+      const r = (res ?? {}) as { backordered?: number; freed?: number; split?: number };
+      alert(
+        `✅ 配貨完成：待補貨 ${r.backordered ?? 0} 筆、解除 ${r.freed ?? 0} 筆` +
+          (r.split ? `、拆行 ${r.split} 筆` : ""),
+      );
       onSaved();
       onClose();
     } catch (e) {
@@ -228,7 +235,7 @@ export function ShortageAllocateModal({
 
             {over > 0 && (
               <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-300">
-                已配 {allocatedQty} 件超過可配的 {data.available} 件，請取消勾選 {over} 件。
+                已配 {allocatedQty} 件超過可配的 {data.available} 件，請減掉 {over} 件。
               </div>
             )}
 
@@ -236,7 +243,7 @@ export function ShortageAllocateModal({
               <table className="w-full min-w-[600px] text-sm">
                 <thead>
                   <tr className="border-b border-zinc-200 bg-zinc-50 text-[11px] text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
-                    <th className="w-10 px-3 py-2">配貨</th>
+                    <th className="w-24 px-3 py-2">配貨數量</th>
                     <th className="px-3 py-2 text-left font-medium">訂單編號</th>
                     <th className="px-3 py-2 text-left font-medium">顧客</th>
                     <th className="px-3 py-2 text-left font-medium">下單時間</th>
@@ -246,16 +253,25 @@ export function ShortageAllocateModal({
                 </thead>
                 <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
                   {data.items.map((r) => {
-                    const on = allocated.has(r.item_id);
+                    const give = alloc.get(r.item_id) ?? 0;
+                    const short = r.qty - give;
                     return (
-                      <tr key={r.item_id} className={on ? "" : "bg-amber-50/60 dark:bg-amber-950/20"}>
-                        <td className="px-3 py-2 text-center">
-                          <input
-                            type="checkbox"
-                            checked={on}
-                            onChange={() => toggle(r.item_id)}
-                            className="cursor-pointer"
-                          />
+                      <tr
+                        key={r.item_id}
+                        className={short <= 0 ? "" : "bg-amber-50/60 dark:bg-amber-950/20"}
+                      >
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number"
+                              min={0}
+                              max={r.qty}
+                              value={give}
+                              onChange={(e) => setRow(r.item_id, Number(e.target.value), r.qty)}
+                              className="w-14 rounded-md border border-zinc-300 px-1.5 py-1 text-right text-sm tabular-nums dark:border-zinc-700 dark:bg-zinc-800"
+                            />
+                            <span className="text-[10px] text-zinc-400">/ {r.qty}</span>
+                          </div>
                         </td>
                         <td className="px-3 py-2 font-mono text-xs">{r.order_no}</td>
                         <td className="max-w-[220px] truncate px-3 py-2" title={r.customer ?? ""}>
@@ -269,8 +285,12 @@ export function ShortageAllocateModal({
                         </td>
                         <td className="px-3 py-2 text-right font-semibold tabular-nums">{r.qty}</td>
                         <td className="whitespace-nowrap px-3 py-2 text-right text-xs">
-                          {on ? (
+                          {short <= 0 ? (
                             <span className="text-zinc-500">{orderStatusLabel(r.order_status)}</span>
+                          ) : give > 0 ? (
+                            <span className="font-medium text-amber-700 dark:text-amber-400">
+                              部分待補 {short}
+                            </span>
                           ) : (
                             <span className="font-medium text-amber-700 dark:text-amber-400">待補貨</span>
                           )}
@@ -309,8 +329,9 @@ export function ShortageAllocateModal({
               </SpinButton>
             </div>
             <p className="text-[11px] text-zinc-500">
-              沒配到的訂單會標成「待補貨」，在補到貨之前取貨頁不會讓它取走。不會發通知給客人。
-              下一批到貨時再開這個視窗，把他們勾起來就會解除。
+              沒配到的量會標成「待補貨」，在補到貨之前取貨頁不會讓它取走。部分配到的訂單會拆成
+              「可取」與「待補」兩行，客人可以先領到手的部分。不會發通知給客人；下一批到貨時再開
+              這個視窗把數量補上去就會解除。
             </p>
           </>
         )}
