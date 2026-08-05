@@ -161,16 +161,14 @@ export default function CampaignCard({
               共 {campaign.item_count} 項
             </span>
           </div>
-          {(campaign.ordered_qty > 0 || (campaign.view_count ?? 0) > 0) && (
-            <div className="flex items-center justify-between gap-2 text-[14px] font-medium text-[var(--secondary-label)]">
-              <ViewCount count={campaign.view_count} />
-              {campaign.ordered_qty > 0 && (
-                <span className="ml-auto">
-                  已訂購 {campaign.ordered_qty.toLocaleString()} 件
-                </span>
-              )}
-            </div>
-          )}
+          <div className="flex items-center justify-between gap-2 text-[14px] font-medium text-[var(--secondary-label)]">
+            <ViewCount count={campaign.view_count} />
+            {campaign.ordered_qty > 0 && (
+              <span className="ml-auto">
+                已訂購 {campaign.ordered_qty.toLocaleString()} 件
+              </span>
+            )}
+          </div>
         </div>
       </Link>
     );

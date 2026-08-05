@@ -14,12 +14,14 @@ export default function ViewCount({
   size?: "sm" | "md";
   className?: string;
 }) {
-  const n = Number(count ?? 0);
-  if (!Number.isFinite(n) || n <= 0) return null;
+  // 0 也照顯示。新功能上線時每個商品都還是 0，藏起來的話整個列表看起來
+  // 就像功能沒做（2026-08-05 就是這樣被回報「App 上面沒有看到」）。
+  const raw = Number(count ?? 0);
+  const n = Number.isFinite(raw) && raw > 0 ? raw : 0;
   const isMd = size === "md";
   return (
     <span
-      className={`inline-flex items-center gap-1 text-[var(--tertiary-label)] ${
+      className={`inline-flex items-center gap-1 text-[var(--secondary-label)] ${
         isMd ? "text-[13px]" : "text-[12px]"
       } ${className}`}
       title={`${n.toLocaleString()} 次瀏覽`}
