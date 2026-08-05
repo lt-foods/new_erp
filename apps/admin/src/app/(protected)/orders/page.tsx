@@ -83,6 +83,8 @@ const DATE_FIELD_LABEL: Record<Tab, { label: string; hint: string }> = {
   cancelled:   { label: "取消日", hint: "依取消／過期的日期篩選" },
   transferred: { label: "轉出日", hint: "依轉出（開出接手單）的日期篩選" },
 };
+// 一個 tab 在目前篩選條件下的加總（rpc_order_overview.tab_amounts）
+type TabAgg = { orders: number; qty: number; amount: number };
 const PENDING_STATUSES: OrderStatus[] = ["pending", "confirmed", "shipping", "ready"];
 const CANCELLED_STATUSES: OrderStatus[] = ["cancelled", "expired"];
 
@@ -204,6 +206,8 @@ function OrdersListContent() {
   const [dateFrom, setDateFrom] = useState(initialDate("from"));
   const [dateTo, setDateTo] = useState(initialDate("to"));
   const [tabCounts, setTabCounts] = useState<Record<Tab, number> | null>(null);
+  // 目前篩選條件下各 tab 的金額 / 單數 / 件數（頁首「篩選結果」卡用），來自同一支 RPC
+  const [tabAmounts, setTabAmounts] = useState<Partial<Record<Tab, TabAgg>> | null>(null);
   const [page, setPage] = useState(1);
   const [kwInput, setKwInput] = useState(initialKeyword);
   const [keyword, setKeyword] = useState(initialKeyword);
@@ -253,6 +257,14 @@ function OrdersListContent() {
   // ⚠ 不要改用 updated_at：它會被之後任何寫入 touch 掉（線上 26% 的已完成單偏差 >1h）。
   const dateOnEvent = tab !== "pending";
   const hasFilter = campaignIds.length > 0 || !!storeId || !!keyword || !!dateFrom || !!dateTo;
+  // 「篩選結果」卡右下角的日期摘要：8/4 / 8/3~8/5 / 8/3 起 / ~8/5 / 不限日期
+  const rangeLabel = useMemo(() => {
+    const md = (ymd: string) => `${Number(ymd.slice(5, 7))}/${Number(ymd.slice(8, 10))}`;
+    if (dateFrom && dateTo) return dateFrom === dateTo ? md(dateFrom) : `${md(dateFrom)}~${md(dateTo)}`;
+    if (dateFrom) return `${md(dateFrom)} 起`;
+    if (dateTo) return `~${md(dateTo)}`;
+    return "不限日期";
+  }, [dateFrom, dateTo]);
 
   useEffect(() => { setPage(1); }, [campaignIds, tab, storeId, keyword, fromTs, toTs]);
 
@@ -448,6 +460,9 @@ function OrdersListContent() {
       type AggRow = { ymd?: string; orders?: number; members?: number; amount?: number; qty?: number };
       type Overview = {
         tab_counts: { pending: number; ready: number; partially: number; completed: number; cancelled: number; transferred: number };
+        // v6 (migration 20260805000140) 起：各 tab 在「目前篩選條件」下的金額 / 單數 / 件數。
+        // 沒有資料的 tab 不會有 key（例：轉出 0 筆），前端補 0。
+        tab_amounts?: Partial<Record<Tab, TabAgg>>;
         trend_days: (AggRow & { ymd: string })[];
         trend_total: AggRow;
         // v3 (migration 20260803000010) 起：已取貨品項金額，依取貨當天切
@@ -456,6 +471,7 @@ function OrdersListContent() {
       };
       if (rpcErr || !data) {
         setTabCounts(null);
+        setTabAmounts(null);
         setTrend(buildTrend(startDate, today, [], null));
         setPickupTrend(buildTrend(startDate, today, [], null));
         return;
@@ -469,6 +485,7 @@ function OrdersListContent() {
         cancelled: ov.tab_counts.cancelled ?? 0,
         transferred: ov.tab_counts.transferred ?? 0,
       });
+      setTabAmounts(ov.tab_amounts ?? {});
 
       setTrend(buildTrend(startDate, today, ov.trend_days ?? [], ov.trend_total));
       setPickupTrend(buildTrend(startDate, today, ov.pickup_days ?? [], ov.pickup_total));
@@ -662,8 +679,11 @@ function OrdersListContent() {
       </header>
 
       {/* KPI Trend — 大字 = 本月累計 / sparkline = 每日 / 副字 = 日均 (套 filter, 排除 transferred_out)
-          最後一張「今日取貨金額」是取貨視角（依取貨當天切），大字 = 今天、副字 = 本月累計 */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          「今日取貨金額」是取貨視角（依取貨當天切），大字 = 今天、副字 = 本月累計。
+          「篩選結果」則是唯一會跟著下方分頁 + 日期區間跑的一張（見 FilteredTotalCard）。
+          四張卡一律 2 欄（手機 2×2、桌機 2×2），只有 2xl 以上才排成一列 —— 1280px 排四張
+          會把 TrendCard 的大字擠成 "$64,…"（sparkline 佔 140px，見 TrendCard 內註解）。 */}
+      <div className="grid grid-cols-2 gap-3 2xl:grid-cols-4">
         <TrendCard
           label="本月營業額"
           trend={trend}
@@ -681,6 +701,11 @@ function OrdersListContent() {
           subLabel="日均"
         />
         <PickupTodayCard trend={pickupTrend} />
+        <FilteredTotalCard
+          agg={tabAmounts ? (tabAmounts[tab] ?? { orders: 0, qty: 0, amount: 0 }) : null}
+          tabLabel={TABS.find((t) => t.value === tab)?.label ?? ""}
+          dateLabel={rangeLabel}
+        />
       </div>
 
       {/* Tab bar — 未取貨 / 可取貨 / 部分取貨 / 已完成 / 轉出 / 取消;含各 tab 數量 */}
@@ -1295,6 +1320,41 @@ function PickupTodayCard({ trend }: { trend: TrendData | null }) {
           </div>
           <div className="mt-0.5 text-[11px] text-zinc-500">
             {num(today?.orders ?? 0)} 單 · {num(today?.qty ?? 0)} 件
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// 篩選結果金額 — 唯一跟著下方篩選條件（分頁 + 日期區間 + 開團/店家/關鍵字）跑的 KPI。
+// 數字來自 rpc_order_overview.tab_amounts，與 tab 上的筆數同一組條件算出來，
+// 所以「共 N 筆」與這張卡的單數一定一致。
+// 金額 = 訂單全部明細的 qty×unit_price（不扣折扣），與「本月營業額」同公式；
+// 這是「訂單金額」不是「已取貨金額」—— 部分取貨的單算整張單的值。
+function FilteredTotalCard({
+  agg, tabLabel, dateLabel,
+}: {
+  agg: TabAgg | null;
+  tabLabel: string;
+  dateLabel: string;
+}) {
+  const num = (v: number) => Math.round(v).toLocaleString("zh-TW");
+  return (
+    <div className="rounded-md border border-sky-200 bg-sky-50 px-4 py-3 dark:border-sky-900 dark:bg-sky-950/30">
+      <div className="flex items-center justify-between gap-1">
+        <div className="text-xs font-medium text-sky-700 dark:text-sky-400">篩選結果金額</div>
+        <div className="shrink-0 text-[10px] text-zinc-400">{dateLabel}</div>
+      </div>
+      {!agg ? (
+        <div className="mt-1 text-xl font-semibold tabular-nums text-zinc-400">—</div>
+      ) : (
+        <>
+          <div className="mt-1 truncate text-xl font-semibold tabular-nums" title={`$${num(agg.amount)}`}>
+            ${num(agg.amount)}
+          </div>
+          <div className="mt-0.5 truncate text-[11px] text-zinc-500">
+            {tabLabel} · {num(agg.orders)} 單 · {num(agg.qty)} 件
           </div>
         </>
       )}
