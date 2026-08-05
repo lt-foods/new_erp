@@ -16,6 +16,7 @@ import { translateRpcError } from "@/lib/rpcError";
 import { useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 import { fetchAllRows } from "@/lib/fetchAllRows";
 import { fanoutPickupNotifications } from "@/lib/pickupNotify";
+import { TransferOrdersModal, type ModalSkuLine } from "@/components/TransferOrdersModal";
 
 type Location = { id: number; name: string };
 type StoreLite = { id: number; location_id: number | null };
@@ -23,8 +24,8 @@ type StoreRow = { id: number; name: string; location_id: number | null };
 // codes：本張 transfer 涵蓋的品項編號(sku_code) / 商品編號(product_code)，僅供搜尋比對用
 // items：拆開的品項行（key = 合併同品相用的識別；自由轉貨掛虛擬 SKU，要用 description 當 key）
 // product = 只有商品名（不含規格），給群組標題用；name = 商品名 / 規格，明細表用
-type ItemLine = { key: string; product: string; name: string; skuCode: string | null; qty: number };
-// extraQty：總倉撿貨時多撿給店裡的量（picked_qty − 應發 qty，見下方查詢註解）
+type ItemLine = { key: string; skuId: number | null; product: string; name: string; skuCode: string | null; qty: number };
+// extraQty：這張單裡「沒有訂單對應」的件數（派出量 − 訂單需求量），見下方查詢註解
 type ItemSummary = {
   lines: number;
   totalQty: number;
@@ -59,6 +60,10 @@ export default function TransfersInboxPage() {
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const [opening, setOpening] = useState<Transfer | null>(null);
+  // 點數量開的「訂單明細」彈窗：看這幾件分別是誰的訂單、多給的幾件沒人訂
+  const [ordersFor, setOrdersFor] = useState<
+    { transferId: number; transferNo: string; skuLines: ModalSkuLine[] } | null
+  >(null);
   const [locationFilter, setLocationFilter] = useState<number | "all">("all");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [doneLimit, setDoneLimit] = useState(50);
@@ -291,6 +296,8 @@ export default function TransfersInboxPage() {
             cur.names.push(`${name} × ${qty}`);
             cur.items.push({
               key: desc ? `d:${desc}` : `s:${it.sku_id}`,
+              // 自由轉貨掛在虛擬 SKU 上，對不到顧客訂單 → 不給 skuId
+              skuId: desc ? null : it.sku_id,
               product: desc || skuProductMap.get(it.sku_id) || name,
               name,
               skuCode: desc ? null : skuOnlyCodeMap.get(it.sku_id) ?? null,
@@ -301,28 +308,16 @@ export default function TransfersInboxPage() {
             summary.set(it.transfer_id, cur);
           }
 
-          // 「總倉多給」：撿貨時實撿 > 應發。派貨產生的 transfer_items 是照實撿量寫的
-          // （qty_requested = qty_shipped = picked_qty，見 generate_transfer_from_wave），
-          // 所以單看 transfer_items 永遠看不出多給多少 → 要回頭比 picking_wave_items
-          // 的 qty(應發) vs picked_qty(實撿)。picked_qty 為 NULL = 還沒做撿貨確認，不算。
-          const waveItems = await fetchAllRows<{
-            generated_transfer_id: number | null;
-            qty: number;
-            picked_qty: number | null;
-          }>(
-            () =>
-              sb
-                .from("picking_wave_items")
-                .select("generated_transfer_id, qty, picked_qty")
-                .in("generated_transfer_id", transferIds)
-                .order("id"),
-          );
-          for (const wi of waveItems) {
-            if (wi.generated_transfer_id == null || wi.picked_qty == null) continue;
-            const diff = Number(wi.picked_qty) - Number(wi.qty);
-            if (!(diff > 0)) continue;
-            const cur = summary.get(wi.generated_transfer_id);
-            if (cur) cur.extraQty += diff;
+          // 「總倉多給」= 派出量 > 該店該團的訂單需求量（沒有訂單對應的那幾件）。
+          // 不是比 picking_wave_items 的 picked_qty vs qty — 線上 17429 列裡
+          // over_pick 是 0，用那個定義標籤永遠不會亮（見 20260805000040 migration）。
+          // 每張單的件數與彈窗裡「派出 − 訂單合計」同一套 join，兩邊數字保證一致。
+          const { data: overData } = await sb.rpc("rpc_get_over_ship_for_transfers", {
+            p_transfer_ids: transferIds,
+          });
+          for (const [tid, extra] of Object.entries((overData as Record<string, unknown> | null) ?? {})) {
+            const cur = summary.get(Number(tid));
+            if (cur) cur.extraQty = Number(extra) || 0;
           }
         }
 
@@ -1166,7 +1161,20 @@ export default function TransfersInboxPage() {
                                         <span className="mr-1.5 font-mono text-[10px] text-zinc-400">{it.skuCode}</span>
                                       )}
                                       {it.name}
-                                      <span className="ml-1 font-semibold tabular-nums">× {it.qty}</span>
+                                      {/* 點數量 → 這幾件分別是誰的訂單 */}
+                                      <SpinButton
+                                        onClick={() =>
+                                          setOrdersFor({
+                                            transferId: t.id,
+                                            transferNo: wave?.wave_code ?? t.transfer_no,
+                                            skuLines: [it],
+                                          })
+                                        }
+                                        className="ml-1 rounded font-semibold tabular-nums text-blue-600 underline decoration-dotted underline-offset-2 hover:text-blue-800 dark:text-blue-400"
+                                        title="看這幾件對應哪幾筆訂單"
+                                      >
+                                        × {it.qty}
+                                      </SpinButton>
                                     </li>
                                   ))}
                                 </ul>
@@ -1198,15 +1206,28 @@ export default function TransfersInboxPage() {
                                 )}
                               </div>
                             </td>
-                            <td className="whitespace-nowrap px-3 py-2 text-right align-top font-semibold tabular-nums">
-                              {summary?.totalQty ?? 0}
+                            <td className="whitespace-nowrap px-3 py-2 text-right align-top">
+                              <SpinButton
+                                onClick={() =>
+                                  setOrdersFor({
+                                    transferId: t.id,
+                                    transferNo: wave?.wave_code ?? t.transfer_no,
+                                    skuLines: summary?.items ?? [],
+                                  })
+                                }
+                                disabled={!summary || summary.lines === 0}
+                                className="font-semibold tabular-nums text-blue-600 underline decoration-dotted underline-offset-2 hover:text-blue-800 disabled:text-zinc-400 disabled:no-underline dark:text-blue-400"
+                                title="看這張單對應哪幾筆訂單"
+                              >
+                                {summary?.totalQty ?? 0}
+                              </SpinButton>
                               {summary && summary.lines > 1 && (
                                 <span className="ml-1 text-[10px] font-normal text-zinc-400">{summary.lines} 項</span>
                               )}
                               {summary && summary.extraQty > 0 && (
                                 <div
                                   className="text-[10px] font-medium text-blue-600 dark:text-blue-400"
-                                  title="總倉撿貨時實撿量大於應發量，多出來的部分"
+                                  title="派出量比店裡的訂單需求還多，多出來的部分沒有訂單對應"
                                 >
                                   🎁 多給 {summary.extraQty}
                                 </div>
@@ -1286,6 +1307,15 @@ export default function TransfersInboxPage() {
             載入全部
           </SpinButton>
         </div>
+      )}
+
+      {ordersFor && (
+        <TransferOrdersModal
+          transferId={ordersFor.transferId}
+          transferNo={ordersFor.transferNo}
+          skuLines={ordersFor.skuLines}
+          onClose={() => setOrdersFor(null)}
+        />
       )}
 
       {opening && (
