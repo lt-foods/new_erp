@@ -29,6 +29,8 @@ type ItemLine = { key: string; skuId: number | null; product: string; name: stri
 // extraQty / shortQty：這張單的派出量 vs 訂單需求量差額（見下方查詢註解）
 //   extraQty = 多給、沒有訂單對應；shortQty = 不夠分，會有客人領不到
 //   coveredQty = 缺口中已用「店內現貨減抵單」吸收的件數（shortQty 已淨掉這部分）
+//   prefilledQty = 這批到貨其實是「補回店家先墊的現貨」的件數（店家已用店內現貨
+//     把客人的貨交掉，總倉的貨照樣會來 — 見 20260805000220 migration）
 type ItemSummary = {
   lines: number;
   totalQty: number;
@@ -38,6 +40,7 @@ type ItemSummary = {
   extraQty: number;
   shortQty: number;
   coveredQty: number;
+  prefilledQty: number;
 };
 
 // 列表上的一個可收合群組（product 模式＝同品相，wave 模式＝同撿貨單號）
@@ -54,6 +57,7 @@ type Group = {
   extraQty: number;        // 這組總共被總倉多給幾件
   shortQty: number;        // 這組總共少了幾件（訂單比派出多，已淨掉現貨減抵）
   coveredQty: number;      // 這組用店內現貨減抵掉幾件
+  prefilledQty: number;    // 這組有幾件是補回店家先墊的現貨
 };
 
 export default function TransfersInboxPage() {
@@ -298,7 +302,7 @@ export default function TransfersInboxPage() {
               if (code) skuCodeMap.set(s.id, code);
             }
           }
-          const emptySummary = (): ItemSummary => ({ lines: 0, totalQty: 0, names: [], codes: [], items: [], extraQty: 0, shortQty: 0, coveredQty: 0 });
+          const emptySummary = (): ItemSummary => ({ lines: 0, totalQty: 0, names: [], codes: [], items: [], extraQty: 0, shortQty: 0, coveredQty: 0, prefilledQty: 0 });
           for (const tid of transferIds) summary.set(tid, emptySummary());
           for (const it of items) {
             const cur = summary.get(it.transfer_id) ?? emptySummary();
@@ -331,13 +335,14 @@ export default function TransfersInboxPage() {
             p_transfer_ids: transferIds,
           });
           const diffs =
-            (diffData as Record<string, { over?: number; short?: number; covered?: number }> | null) ?? {};
+            (diffData as Record<string, { over?: number; short?: number; covered?: number; prefilled?: number }> | null) ?? {};
           for (const [tid, d] of Object.entries(diffs)) {
             const cur = summary.get(Number(tid));
             if (!cur) continue;
             cur.extraQty = Number(d?.over) || 0;
             cur.shortQty = Number(d?.short) || 0;
             cur.coveredQty = Number(d?.covered) || 0;
+            cur.prefilledQty = Number(d?.prefilled) || 0;
           }
         }
 
@@ -479,6 +484,7 @@ export default function TransfersInboxPage() {
             extraQty: 0,
             shortQty: 0,
             coveredQty: 0,
+            prefilledQty: 0,
           };
           map.set(key, entry);
         }
@@ -487,6 +493,7 @@ export default function TransfersInboxPage() {
         entry.extraQty += itemSummary.get(t.id)?.extraQty ?? 0;
         entry.shortQty += itemSummary.get(t.id)?.shortQty ?? 0;
         entry.coveredQty += itemSummary.get(t.id)?.coveredQty ?? 0;
+        entry.prefilledQty += itemSummary.get(t.id)?.prefilledQty ?? 0;
       }
       return Array.from(map.values()).sort((a, b) => {
         // 「其他調撥」永遠墊底，其餘依撿貨單號遞減
@@ -528,6 +535,7 @@ export default function TransfersInboxPage() {
           extraQty: 0,
           shortQty: 0,
           coveredQty: 0,
+          prefilledQty: 0,
         };
         map.set(key, entry);
       }
@@ -536,6 +544,7 @@ export default function TransfersInboxPage() {
       entry.extraQty += s?.extraQty ?? 0;
       entry.shortQty += s?.shortQty ?? 0;
       entry.coveredQty += s?.coveredQty ?? 0;
+      entry.prefilledQty += s?.prefilledQty ?? 0;
     }
     const asc = tab === "unreceived";
     return Array.from(map.values()).sort((a, b) =>
@@ -1119,6 +1128,9 @@ export default function TransfersInboxPage() {
                   {dueTag && <Pill tone={dueTag === "逾期" ? "rose" : "amber"}>{dueTag}</Pill>}
                   {g.shortQty > 0 && <Pill tone="rose">⚠ 少 {g.shortQty} 件 · 訂單比到貨多</Pill>}
                   {g.coveredQty > 0 && <Pill tone="violet">🏬 現貨減抵 {g.coveredQty} 件</Pill>}
+                  {g.prefilledQty > 0 && (
+                    <Pill tone="violet">🔄 補回先墊 {g.prefilledQty} 件</Pill>
+                  )}
                   {g.extraQty > 0 && <Pill tone="blue">🎁 總倉多給 {g.extraQty} 件</Pill>}
                 </div>
 
@@ -1317,6 +1329,14 @@ export default function TransfersInboxPage() {
                                   title="訂單比這批到貨量多，這幾件會有客人領不到 — 點數量看是哪幾筆訂單"
                                 >
                                   ⚠ 少 {summary.shortQty}
+                                </div>
+                              )}
+                              {summary && summary.prefilledQty > 0 && (
+                                <div
+                                  className="text-[10px] font-medium text-violet-600 dark:text-violet-400"
+                                  title="這幾件的客人早就用店內現貨交過了（減抵單 / 現貨直售），這批到貨是把店家先墊的貨補回架上 — 收貨後放回庫存即可，不會有人來領"
+                                >
+                                  🔄 補回先墊 {summary.prefilledQty}
                                 </div>
                               )}
                               {summary && summary.coveredQty > 0 && (
