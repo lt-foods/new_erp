@@ -18,7 +18,7 @@ export type OrderLine = {
   order_status: string;
   order_qty: number;
   campaign_id: number | null;
-  match_kind: "wave" | "aid" | "store_sku";
+  match_kind: "wave" | "aid" | "restock" | "store_sku";
 };
 
 // 呼叫端已經有的品項資訊 — 免得彈窗再查一次 skus
@@ -105,13 +105,14 @@ export function TransferOrdersModal({
                   {line.name}
                 </span>
                 <span className="text-xs text-zinc-500">
-                  派出 <b className="text-zinc-800 dark:text-zinc-200">{line.qty}</b> 件 · 訂單{" "}
-                  <b className="text-zinc-800 dark:text-zinc-200">{orderQty}</b> 件 ·{" "}
-                  {orders.length} 筆
+                  派出 <b className="text-zinc-800 dark:text-zinc-200">{line.qty}</b> 件 ·{" "}
+                  {orders.some((o) => o.match_kind === "restock") ? "申請" : "訂單"}{" "}
+                  <b className="text-zinc-800 dark:text-zinc-200">{orderQty}</b> 件 · {orders.length} 筆
                 </span>
                 {extra > 0 && (
                   <span className="rounded-md bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-950 dark:text-blue-300">
-                    🎁 總倉多給 {extra} 件（沒有訂單對應）
+                    🎁 總倉多給 {extra} 件（
+                    {orders.some((o) => o.match_kind === "restock") ? "超過申請量" : "沒有訂單對應"}）
                   </span>
                 )}
                 {extra < 0 && (
@@ -123,9 +124,9 @@ export function TransferOrdersModal({
 
               {orders.length === 0 ? (
                 <div className="px-3 py-4 text-center text-sm text-zinc-500">
-                  這個品項查不到對應的訂單 — 可能是訂單已取消／過期，或這幾件是總倉多給的。
+                  這個品項查不到對應的單 — 可能是訂單已取消／過期，或這幾件是總倉多給的。
                   <br />
-                  （補貨與自由轉貨的單本來就沒有顧客訂單，收貨頁不會給「看訂單」的入口。）
+                  （自由轉貨 / 店對店的單沒有可對應的單據，收貨頁不會給這個入口。）
                 </div>
               ) : (
                 <div className="overflow-x-auto">
@@ -141,7 +142,14 @@ export function TransferOrdersModal({
                     <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
                       {orders.map((o) => (
                         <tr key={o.order_id}>
-                          <td className="px-3 py-1.5 font-mono text-xs">{o.order_no}</td>
+                          <td className="px-3 py-1.5 font-mono text-xs">
+                            {o.order_no}
+                            {o.match_kind === "restock" && (
+                              <span className="ml-1.5 rounded bg-violet-100 px-1 py-0.5 font-sans text-[10px] font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300">
+                                補貨申請
+                              </span>
+                            )}
+                          </td>
                           <td className="max-w-[260px] truncate px-3 py-1.5" title={o.customer ?? ""}>
                             {o.customer || "—"}
                           </td>

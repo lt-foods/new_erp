@@ -1196,7 +1196,7 @@ export default function TransfersInboxPage() {
                                       )}
                                       {it.name}
                                       {/* 點數量 → 這幾件分別是誰的訂單 */}
-                                      {srcKind === "campaign" ? (
+                                      {srcKind !== "free" ? (
                                         <SpinButton
                                           onClick={() =>
                                             setOrdersFor({
@@ -1242,17 +1242,17 @@ export default function TransfersInboxPage() {
                                 {srcKind === "restock" && (
                                   <span
                                     className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300"
-                                    title="補貨申請產生的單，背後沒有顧客訂單"
+                                    title="補貨申請（RR-xxx）產生的單，不是開團派貨；點數量可看對應的補貨申請"
                                   >
-                                    🔁 補貨（無顧客訂單）
+                                    🔁 補貨
                                   </span>
                                 )}
                                 {srcKind === "free" && (
                                   <span
                                     className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
-                                    title="沒有撿貨波次的單（自由轉貨 / 互助 / 直送），背後沒有顧客訂單"
+                                    title="沒有撿貨波次也沒掛訂單的單（自由轉貨 / 店對店），沒有可對應的單據"
                                   >
-                                    ↔ 轉貨（無顧客訂單）
+                                    ↔ 轉貨
                                   </span>
                                 )}
                                 {!isShipped && t.received_at && (
@@ -1276,7 +1276,7 @@ export default function TransfersInboxPage() {
                               </div>
                             </td>
                             <td className="whitespace-nowrap px-3 py-2 text-right align-top">
-                              {srcKind === "campaign" ? (
+                              {srcKind !== "free" ? (
                                 <SpinButton
                                   onClick={() =>
                                     setOrdersFor({
@@ -1292,7 +1292,7 @@ export default function TransfersInboxPage() {
                                   {summary?.totalQty ?? 0}
                                 </SpinButton>
                               ) : (
-                                // 補貨 / 自由轉貨背後沒有顧客訂單，不給死連結
+                                // 自由轉貨背後沒有任何單，不給死連結（補貨有 RR-xxx 可看）
                                 <span className="font-semibold tabular-nums">{summary?.totalQty ?? 0}</span>
                               )}
                               {summary && summary.lines > 1 && (
