@@ -281,11 +281,12 @@ export default function MutualAidPage() {
       ) : (
         <ul className="space-y-2">
           {posts.map((p) => (
-            <li key={p.id}>
+            // 卡片本身是按鈕（開貼文），小白單鈕不能包在裡面（button 不能巢狀）→ 排成兄弟
+            <li key={p.id} className="flex items-stretch gap-2">
               <SpinButton
                 type="button"
                 onClick={() => setThreadPost(p)}
-                className="block w-full rounded-md border border-zinc-200 bg-white p-3 text-left transition hover:border-zinc-400 hover:shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-600"
+                className="block min-w-0 flex-1 rounded-md border border-zinc-200 bg-white p-3 text-left transition hover:border-zinc-400 hover:shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-600"
               >
                 <div className="mb-1 flex flex-wrap items-center gap-2">
                   <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${TYPE_COLOR[p.post_type]}`}>
@@ -322,6 +323,15 @@ export default function MutualAidPage() {
                   )}
                   {p.note && <span className="text-zinc-700 dark:text-zinc-300">「{p.note}」</span>}
                 </div>
+              </SpinButton>
+              <SpinButton
+                type="button"
+                onClick={() => printViaIframe(withBasePath(`/inventory/mutual-aid/print-slip?id=${p.id}`))}
+                title="列印這一筆的小白單（80mm，給司機帶著對貨簽收）"
+                className="shrink-0 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-600 transition hover:border-zinc-400 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:bg-zinc-800"
+              >
+                🖨️
+                <span className="block text-[10px] leading-tight">小白單</span>
               </SpinButton>
             </li>
           ))}
@@ -1496,6 +1506,16 @@ function ThreadModal({
               </span>
             )}
             {post.note && <div className="basis-full pt-1 text-zinc-700 dark:text-zinc-300">「{post.note}」</div>}
+          </div>
+          <div className="mt-2 flex justify-end">
+            <SpinButton
+              type="button"
+              onClick={() => printViaIframe(withBasePath(`/inventory/mutual-aid/print-slip?id=${post.id}`))}
+              title="列印這一筆的小白單（80mm，給司機帶著對貨簽收）"
+              className="rounded-md border border-zinc-300 px-2.5 py-1 text-[11px] font-medium text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            >
+              🖨️ 列印小白單
+            </SpinButton>
           </div>
         </div>
 
