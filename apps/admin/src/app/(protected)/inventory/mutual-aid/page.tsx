@@ -6,6 +6,8 @@ import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
 import { ProductImagesField } from "@/components/ProductImagesField";
+import { printViaIframe } from "@/lib/printIframe";
+import { withBasePath } from "@/lib/basePath";
 
 type Store = { id: number; code: string; name: string };
 type SkuOption = { id: number; sku_code: string; product_name: string; variant_name: string | null };
@@ -215,6 +217,14 @@ export default function MutualAidPage() {
           </p>
         </div>
         <div className="flex gap-2">
+          <SpinButton
+            type="button"
+            onClick={() => printViaIframe(withBasePath(`/inventory/mutual-aid/print?type=${filter}`))}
+            title="列印目前這個分頁的貼文清單（A4 橫式）"
+            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          >
+            🖨️ 列印
+          </SpinButton>
           <SpinButton
             type="button"
             onClick={() => setRequestModalOpen(true)}
