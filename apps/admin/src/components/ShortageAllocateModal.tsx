@@ -36,6 +36,9 @@ type DeductionNote = {
   qty: number;
   reason: string | null;
   created_at: string;
+  // note = 庫存減抵單（已交貨結案）；offset = 抵減單（order_kind='offset' 負數訂單，
+  // 開團時就宣告用店內現貨、已抵掉採購，客人照正常流程取貨）
+  kind?: "note" | "offset";
 };
 
 type Payload = {
@@ -410,12 +413,13 @@ export function ShortageAllocateModal({
                 )}
                 {data.notes.map((n) => (
                   <div
-                    key={n.id}
+                    key={`${n.kind ?? "note"}-${n.id}`}
                     className="flex flex-wrap items-center gap-2 border-t border-violet-200/70 pt-2 text-xs dark:border-violet-900/50"
                   >
                     <span className="font-mono text-violet-800 dark:text-violet-300">{n.note_no}</span>
-                    <span>
-                      現貨減抵交貨 <b>{n.qty}</b> 件
+                    <span title={n.kind === "offset" ? "開團時開的負數訂單，已抵掉採購量；這幾件客人照正常流程取貨" : undefined}>
+                      {n.kind === "offset" ? "抵減單（開團時已抵採購）" : "現貨減抵交貨"}{" "}
+                      <b>{n.qty}</b> 件
                     </span>
                     <span className="text-zinc-500">
                       {new Date(n.created_at).toLocaleString("zh-TW", {
@@ -423,7 +427,7 @@ export function ShortageAllocateModal({
                         timeStyle: "short",
                       })}
                     </span>
-                    {n.reason && <span className="text-zinc-500">{n.reason}</span>}
+                    {n.reason && <span className="max-w-[360px] truncate text-zinc-500" title={n.reason}>{n.reason}</span>}
                   </div>
                 ))}
               </div>
