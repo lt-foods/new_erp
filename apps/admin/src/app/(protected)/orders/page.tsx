@@ -74,6 +74,16 @@ const TABS: { value: Tab; label: string }[] = [
   { value: "cancelled", label: "取消" },
 ];
 const TAB_VALUES = TABS.map((t) => t.value);
+// 日期區間欄位在各 tab 的名稱與說明 —— 對應 v_admin_orders.event_at 的來源
+// （只有「未取貨」看訂單日 created_at，其餘看該狀態自己的事件時間）。
+const DATE_FIELD_LABEL: Record<Tab, { label: string; hint: string }> = {
+  pending:     { label: "訂單日", hint: "依訂單日 (created_at) 篩選" },
+  ready:       { label: "可取日", hint: "依「到貨變成可取貨」的日期篩選" },
+  partially:   { label: "取貨日", hint: "依最後一次取貨的日期篩選" },
+  completed:   { label: "取貨日", hint: "依取貨完成的日期篩選" },
+  cancelled:   { label: "取消日", hint: "依取消／過期的日期篩選" },
+  transferred: { label: "轉出日", hint: "依轉出（開出接手單）的日期篩選" },
+};
 const PENDING_STATUSES: OrderStatus[] = ["pending", "confirmed", "shipping", "ready"];
 const CANCELLED_STATUSES: OrderStatus[] = ["cancelled", "expired"];
 // 可印小白單（取貨清單）的狀態 — 小白單只列還沒取的品項，取完的單印出來會是空單
@@ -148,6 +158,8 @@ type OrderFilters = {
   fromTs: string | null;
   toTs: string | null;
   keywordOr: string | null;
+  // 日期區間看事件日（event_at）還是訂單日（created_at）— 語意跟著 tab 走，見 dateOnEvent
+  dateOnEvent: boolean;
 };
 
 // 套用目前的篩選條件（開團 / tab 狀態 / 取貨店 / 日期區間 / 關鍵字）。
@@ -175,8 +187,9 @@ function applyOrderFilters<
   else if (f.tab === "transferred") eq("status", "transferred_out");
   else inList("status", PENDING_STATUSES);
   if (f.storeId) eq("pickup_store_id", Number(f.storeId));
-  if (f.fromTs) out = out.gte("created_at", f.fromTs as never);
-  if (f.toTs) out = out.lt("created_at", f.toTs as never);
+  const dateCol = f.dateOnEvent ? "event_at" : "created_at";
+  if (f.fromTs) out = out.gte(dateCol, f.fromTs as never);
+  if (f.toTs) out = out.lt(dateCol, f.toTs as never);
   if (f.keywordOr) out = out.or(f.keywordOr);
   return out;
 }
@@ -284,6 +297,14 @@ function OrdersListContent() {
 
   const fromTs = useMemo(() => (dateFrom ? dayStartIso(dateFrom) : null), [dateFrom]);
   const toTs = useMemo(() => (dateTo ? dayStartIso(dateTo, 1) : null), [dateTo]);
+  // 日期區間的語意跟著 tab 走（不另做切換 UI）：只有「未取貨」看訂單日，其餘每個 tab
+  // 都看該狀態自己的事件日 v_admin_orders.event_at（可取=ready_at、取貨=completed_at /
+  // 最後一次取貨、取消=cancelled_at、轉出=接手單 created_at）。
+  // 團購下單到取貨隔好幾天甚至幾週，終態 tab 用訂單日篩最近幾天永遠是 0 筆 ——
+  // 使用者要問的是「這幾天*發生*了什麼」。定義與覆蓋率見 migration
+  // 20260805000120_v_admin_orders_event_at.sql；tab 數量同步改法見 20260805000130。
+  // ⚠ 不要改用 updated_at：它會被之後任何寫入 touch 掉（線上 26% 的已完成單偏差 >1h）。
+  const dateOnEvent = tab !== "pending";
   const hasFilter = campaignIds.length > 0 || !!storeId || !!keyword || !!dateFrom || !!dateTo;
 
   useEffect(() => {
@@ -378,27 +399,31 @@ function OrdersListContent() {
     setLoading(true);
     (async () => {
       try {
+        // 查 v_admin_orders（= customer_orders + 事件日 event_at），日期區間才有單一
+        // 欄位可篩；事件日 tab 也照事件日排序（照 updated_at 排會讓被批次寫入 touch
+        // 過的舊單浮到最前面）。
         const base = getSupabase()
-          .from("customer_orders")
+          .from("v_admin_orders")
           .select("id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, transferred_from_order_id, created_at, updated_at", { count: "exact" })
-          .order("updated_at", { ascending: false })
+          .order(dateOnEvent ? "event_at" : "updated_at", { ascending: false })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
         const kwOr = await buildKeywordOr(keyword);
         if (cancelled) return;
-        const q = applyOrderFilters(base, { campaignIds, tab, storeId, fromTs, toTs, keywordOr: kwOr });
+        const q = applyOrderFilters(base, { campaignIds, tab, storeId, fromTs, toTs, keywordOr: kwOr, dateOnEvent });
 
         const { data, count, error } = await q;
         if (cancelled) return;
         if (error) { setError(error.message); return; }
         setError(null);
-        setRows((data ?? []) as Row[]);
+        const list = (data ?? []) as unknown as Row[];
+        setRows(list);
         setTotal(count ?? 0);
 
-        const ids = (data ?? []).map((r) => r.id);
-        const memIds = Array.from(new Set((data ?? []).map((r) => r.member_id).filter((x): x is number => x != null)));
+        const ids = list.map((r) => r.id);
+        const memIds = Array.from(new Set(list.map((r) => r.member_id).filter((x): x is number => x != null)));
         // shipping 單查品項到貨狀態（pickup_ready=true 隱含該品項 active 且已到貨）
-        const shippingIds = (data ?? []).filter((r) => r.status === "shipping").map((r) => r.id);
+        const shippingIds = list.filter((r) => r.status === "shipping").map((r) => r.id);
         const [ic, ms, rdy] = await Promise.all([
           ids.length
             ? getSupabase().from("customer_order_items").select("order_id, qty, unit_price, source, sku:skus(product_name, variant_name)").in("order_id", ids)
@@ -439,7 +464,7 @@ function OrdersListContent() {
       }
     })();
     return () => { cancelled = true; };
-  }, [campaignIds, tab, storeId, page, reloadOrders, keyword, fromTs, toTs]);
+  }, [campaignIds, tab, dateOnEvent, storeId, page, reloadOrders, keyword, fromTs, toTs]);
 
   // 頁首聚合（tab 數量 + 月趨勢）— 單一伺服端 RPC rpc_order_overview
   // 取代之前 client 端「5 個 count:exact 全表掃描」+「搬整月訂單+全部明細
@@ -678,12 +703,12 @@ function OrdersListContent() {
     setBulkPrintErr(null);
     const kwOr = await buildKeywordOr(keyword);
     const base = getSupabase()
-      .from("customer_orders")
+      .from("v_admin_orders")
       .select("id")
-      .order("updated_at", { ascending: false })
+      .order(dateOnEvent ? "event_at" : "updated_at", { ascending: false })
       .limit(SELECT_ALL_MAX);
     const { data, error } = await applyOrderFilters(base, {
-      campaignIds, tab, storeId, fromTs, toTs, keywordOr: kwOr,
+      campaignIds, tab, storeId, fromTs, toTs, keywordOr: kwOr, dateOnEvent,
     });
     if (error) { setBulkPrintErr(error.message); return; }
     const ids = ((data ?? []) as { id: number }[]).map((r) => r.id);
@@ -976,14 +1001,17 @@ function OrdersListContent() {
         </form>
       </div>
 
-      {/* 訂單日 (created_at) 區間 — 含起訖當日；留空 = 不限。
+      {/* 日期區間 — 含起訖當日；留空 = 不限。語意跟著 tab 走（見 dateOnEvent 與
+          DATE_FIELD_LABEL）：未取貨 = 訂單日，其餘 = 該狀態的事件日。
           自成一列：兩個 date input + 快捷鈕塞進上面的 3 欄 grid 會被壓到看不到年份。 */}
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <div
           className="flex items-center gap-1 rounded-md border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-800"
-          title="依訂單日 (created_at) 篩選，含起訖當日；留空 = 不限"
+          title={`${DATE_FIELD_LABEL[tab].hint}，含起訖當日；留空 = 不限`}
         >
-          <span className="shrink-0 pl-1 text-xs text-zinc-500">訂單日</span>
+          <span className={`shrink-0 pl-1 text-xs ${dateOnEvent ? "font-medium text-emerald-700 dark:text-emerald-400" : "text-zinc-500"}`}>
+            {DATE_FIELD_LABEL[tab].label}
+          </span>
           <input
             type="date"
             value={dateFrom}

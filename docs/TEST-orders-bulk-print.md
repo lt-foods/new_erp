@@ -8,7 +8,7 @@
   - `undonePickupEventIds()` / `pickupEventLabel()`
   - `OrderDetail.tsx` 改用這支，行為不變。
 - `apps/admin/src/app/(protected)/orders/page.tsx`
-  - `applyOrderFilters(q, filters)`：把「開團 / tab 狀態 / 取貨店 / 日期區間 / 關鍵字」的條件抽成一支，**列表分頁查詢與「選全部符合篩選」共用** — 保證「勾到的」＝「看到的」。
+  - `applyOrderFilters(q, filters)`：把「開團 / tab 狀態 / 取貨店 / 日期區間 / 關鍵字」的條件抽成一支，**列表分頁查詢與「選全部符合篩選」共用** — 保證「勾到的」＝「看到的」。日期欄位跟著 `dateOnEvent` 走（事件日 `event_at` / 訂單日 `created_at`，見 #619），兩邊也都查同一個 `v_admin_orders`。
   - `selected: Set<orderId>`：桌機表格與手機卡片各一顆勾選框、表頭 / 工具列「選本頁」全選；篩選或 tab 一變就清空（避免印到已看不見的單）。勾選可跨分頁累加。
   - 「選全部 N 筆」：用同一組條件另撈 id，不受目前 50 筆分頁限制，上限 `SELECT_ALL_MAX = 500`（超過會提示只選到最新 500 筆）。
   - `bulkPrint("receipt" | "slip")`：補撈 `id, member_id, status` → **依會員分組** → 每組一次 `printViaIframe`。
