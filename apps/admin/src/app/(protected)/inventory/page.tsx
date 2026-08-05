@@ -9,6 +9,7 @@ import SearchSpinner from "@/components/SearchSpinner";
 import { useUserBranchStoreId, useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 import { maskLineUserId } from "@/lib/maskLineUserId";
 import { useRole, canSeeCost } from "@/lib/role";
+import { AddStockModal } from "@/components/AddStockModal";
 
 type Loc = { id: number; code: string; name: string; type: string };
 type StoreRow = { id: number; name: string; location_id: number | null };
@@ -107,6 +108,9 @@ export default function InventoryOverviewPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [moveCache, setMoveCache] = useState<Map<string, Movement[]>>(new Map());
   const [moveLoading, setMoveLoading] = useState(false);
+  // 依商品新增庫存（manual_adjust +N）— 開庫存減抵單前把帳外現貨補進帳用
+  const [adding, setAdding] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0);
 
   // 分店帳號鎖定：用 store.name 比對 user.app_metadata.stores，回該 store 的 location_id
   const storeLocOptions = useMemo(
@@ -264,7 +268,7 @@ export default function InventoryOverviewPage() {
     return () => {
       cancelled = true;
     };
-  }, [locationId, search, onlyLow, page, role, showCost]);
+  }, [locationId, search, onlyLow, page, role, showCost, reloadTick]);
 
   const storeByLoc = useMemo(() => {
     const m = new Map<number, string>();
@@ -315,12 +319,27 @@ export default function InventoryOverviewPage() {
           {truncated && <span className="ml-2 text-amber-600 dark:text-amber-400">（低庫存掃描已達 {LOW_STOCK_SCAN_CAP} 上限）</span>}
         </p>
         </div>
-        <Link
-          href="/inventory/reorder-rules"
-          className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-        >
-          補貨規則 →
-        </Link>
+        <div className="flex items-center gap-2">
+          <SpinButton
+            onClick={() => setAdding(true)}
+            className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700"
+            title="對某倉別某商品直接加庫存（手動調整）。店內現貨沒入帳時先補帳，才能開庫存減抵單。"
+          >
+            ＋ 新增庫存
+          </SpinButton>
+          <Link
+            href="/inventory/deductions"
+            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            庫存減抵單 →
+          </Link>
+          <Link
+            href="/inventory/reorder-rules"
+            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            補貨規則 →
+          </Link>
+        </div>
       </header>
 
       <div className="grid gap-3 sm:grid-cols-3">
@@ -502,6 +521,23 @@ export default function InventoryOverviewPage() {
           <PagerBtn disabled={page === totalPages} onClick={() => setPage((p) => p + 1)}>下頁 ›</PagerBtn>
           <PagerBtn disabled={page === totalPages} onClick={() => setPage(totalPages)}>最末頁 »</PagerBtn>
         </div>
+      )}
+
+      {adding && (
+        <AddStockModal
+          locations={locs.map((l) => ({
+            id: l.id,
+            label: `${storeByLoc.get(l.id) ?? l.name}${l.type === "central_warehouse" ? "（總倉）" : ""}`,
+          }))}
+          defaultLocationId={locationId}
+          locked={branchLocked}
+          onClose={() => setAdding(false)}
+          onSaved={() => {
+            // 重載當前列表 + 清掉展開列的異動快取（新異動要看得到）
+            setMoveCache(new Map());
+            setReloadTick((n) => n + 1);
+          }}
+        />
       )}
     </div>
   );

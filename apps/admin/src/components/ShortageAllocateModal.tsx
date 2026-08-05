@@ -13,6 +13,11 @@ import { translateRpcError } from "@/lib/rpcError";
 // 沒配到的標成「待補貨」（customer_order_items.backorder_at），在補到之前不可取貨
 // —— 取貨閘門 is_order_item_pickup_ready 會擋，rpc_record_pickup 也擋得住。
 // 見 20260805000060_shortage_allocation.sql。
+//
+// 店內有現貨時可開「庫存減抵單」：把待補貨的品項改用店內現貨直接交貨結案 ——
+// 開單當下扣店倉庫存、品項標已取貨、訂單結案（與到店取貨同一套帳）。
+// 開單前店倉帳上要有現貨（庫存總覽可依商品新增庫存），伺服端會檢查可用量。
+// 見 20260805000170_inventory_deduction_notes.sql。
 
 type Candidate = {
   item_id: number;
@@ -25,7 +30,25 @@ type Candidate = {
   created_at: string;
 };
 
-type Payload = { supplied: number; picked: number; available: number; items: Candidate[] };
+type DeductionNote = {
+  id: number;
+  note_no: string;
+  qty: number;
+  reason: string | null;
+  created_at: string;
+};
+
+type Payload = {
+  store_id: number;
+  campaign_id: number;
+  supplied: number;
+  covered: number;
+  picked: number;
+  available: number;
+  store_on_hand: number;
+  notes: DeductionNote[];
+  items: Candidate[];
+};
 
 export function ShortageAllocateModal({
   transferId,
@@ -45,6 +68,8 @@ export function ShortageAllocateModal({
   const [alloc, setAlloc] = useState<Map<number, number>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // 減抵單數量輸入（預設 = 目前缺口，load 時帶入）
+  const [deductQty, setDeductQty] = useState(0);
 
   const load = useCallback(async () => {
     const sb = getSupabase();
@@ -53,20 +78,27 @@ export function ShortageAllocateModal({
       p_sku_id: skuId,
     });
     if (e) throw new Error(e.message);
-    const payload = d as Payload;
-    setData({
-      ...payload,
-      supplied: Number(payload.supplied),
-      picked: Number(payload.picked),
-      available: Number(payload.available),
-      items: (payload.items ?? []).map((r) => ({ ...r, qty: Number(r.qty) })),
-    });
+    const raw = d as Payload;
+    const payload: Payload = {
+      ...raw,
+      supplied: Number(raw.supplied),
+      covered: Number(raw.covered) || 0,
+      picked: Number(raw.picked),
+      available: Number(raw.available),
+      store_on_hand: Number(raw.store_on_hand) || 0,
+      notes: (raw.notes ?? []).map((n) => ({ ...n, qty: Number(n.qty) })),
+      items: (raw.items ?? []).map((r) => ({ ...r, qty: Number(r.qty) })),
+    };
+    setData(payload);
     // 進來時先反映現況：沒被標待補貨的整行都算配到
     setAlloc(
       new Map(
-        (payload.items ?? []).map((r) => [r.item_id, r.backorder ? 0 : Number(r.qty)] as [number, number]),
+        payload.items.map((r) => [r.item_id, r.backorder ? 0 : r.qty] as [number, number]),
       ),
     );
+    // 減抵輸入預設帶「目前待補貨」總量（減抵單只能交待補貨的品項）
+    setDeductQty(payload.items.reduce((s, r) => s + (r.backorder ? r.qty : 0), 0));
+    return payload;
   }, [transferId, skuId]);
 
   useEffect(() => {
@@ -92,20 +124,88 @@ export function ShortageAllocateModal({
     [data, alloc],
   );
   const over = data ? allocatedQty - data.available : 0;
+  // 目前缺口 = 未取合計 − 可配額度；>0 時才需要開減抵單
+  const gap = useMemo(
+    () => (data ? Math.max(0, data.items.reduce((s, r) => s + r.qty, 0) - data.available) : 0),
+    [data],
+  );
+  // DB 現況的待補貨總量（減抵單只能交已標待補貨的行；畫面上未儲存的調整不算）
+  const backorderedDb = useMemo(
+    () => (data?.items ?? []).reduce((s, r) => s + (r.backorder ? r.qty : 0), 0),
+    [data],
+  );
 
   // 依訂單時間配貨：候選已由後端依 created_at, order_no 排好，
   // 由早到晚配滿為止。會拆行 —— 額度只剩 1 件而該筆要 3 件時，給他 1 件、剩 2 件待補，
   // 額度不浪費（原本整行為單位時會整筆跳過，架上的貨就白放著）。
-  function autoAllocateByTime() {
-    if (!data) return;
-    let left = data.available;
+  function allocByTime(payload: Payload) {
+    let left = payload.available;
     const next = new Map<number, number>();
-    for (const r of data.items) {
+    for (const r of payload.items) {
       const give = Math.max(0, Math.min(r.qty, left));
       next.set(r.item_id, give);
       left -= give;
     }
-    setAlloc(next);
+    return next;
+  }
+
+  function autoAllocateByTime() {
+    if (!data) return;
+    setAlloc(allocByTime(data));
+  }
+
+  // 開庫存減抵單：把待補貨的品項改用店內現貨「直接交貨結案」。
+  // 依下單時間由早到晚挑待補貨的行，湊滿 deductQty 件（可拆行部分交）。
+  async function createDeduction() {
+    if (!data || deductQty <= 0) return;
+    // 從 DB 現況（backorder 旗標）挑要交貨的行 — 畫面上未儲存的配貨調整不算
+    const allocations: Record<string, number> = {};
+    let left = deductQty;
+    for (const r of data.items) {
+      if (!r.backorder || left <= 0) continue;
+      const give = Math.min(r.qty, left);
+      allocations[String(r.item_id)] = give;
+      left -= give;
+    }
+    const total = deductQty - left;
+    if (total <= 0) return;
+    if (
+      !confirm(
+        `用店內現貨交貨 ${total} 件（${Object.keys(allocations).length} 筆待補貨訂單）？\n\n` +
+          `會立刻扣店內庫存、品項標成已取貨、訂單結案 — 跟客人到店取貨同一套帳。\n` +
+          `店倉帳上可用現貨：${data.store_on_hand} 件。開錯只能走退貨流程沖回，請確認。`,
+      )
+    )
+      return;
+    setBusy(true);
+    setError(null);
+    try {
+      const sb = getSupabase();
+      const { data: sess } = await sb.auth.getSession();
+      const operator = sess.session?.user?.id;
+      if (!operator) throw new Error("尚未登入");
+      const { data: res, error: e } = await sb.rpc("rpc_create_inventory_deduction", {
+        p_store_id: data.store_id,
+        p_campaign_id: data.campaign_id,
+        p_sku_id: skuId,
+        p_allocations: allocations,
+        p_reason: null,
+        p_operator: operator,
+        p_transfer_id: transferId,
+      });
+      if (e) throw new Error(translateRpcError(e));
+      const note = (res ?? {}) as { note_no?: string; qty?: number; orders?: number };
+      await load();
+      alert(
+        `✅ 減抵單 ${note.note_no ?? ""} 完成：已用店內現貨交貨 ${note.qty ?? total} 件、` +
+          `${note.orders ?? "?"} 張訂單結案。`,
+      );
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
   }
 
   function setRow(id: number, v: number, max: number) {
@@ -214,6 +314,15 @@ export function ShortageAllocateModal({
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-900/60">
               <span>
                 到貨 <b>{data.supplied}</b> 件
+                {data.covered > 0 && (
+                  <span
+                    className="text-violet-700 dark:text-violet-400"
+                    title="店內現貨減抵：缺口由店內現貨吸收，計入可配額度"
+                  >
+                    {" "}
+                    ＋現貨減抵 <b>{data.covered}</b>
+                  </span>
+                )}
                 {data.picked > 0 && <span className="text-zinc-500">（已領走 {data.picked}）</span>}
               </span>
               <span>
@@ -237,6 +346,86 @@ export function ShortageAllocateModal({
             {over > 0 && (
               <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-300">
                 已配 {allocatedQty} 件超過可配的 {data.available} 件，請減掉 {over} 件。
+              </div>
+            )}
+
+            {/* 庫存減抵單：待補貨的品項可改用店內現貨直接交貨結案 */}
+            {(backorderedDb > 0 || gap > 0 || data.notes.length > 0) && (
+              <div className="space-y-2 rounded-md border border-violet-200 bg-violet-50/60 px-3 py-2 text-sm dark:border-violet-900 dark:bg-violet-950/30">
+                {backorderedDb > 0 ? (
+                  <>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium text-violet-800 dark:text-violet-300">
+                        🏬 店內有現貨？
+                      </span>
+                      <span className="text-zinc-600 dark:text-zinc-300">
+                        待補貨 <b>{backorderedDb}</b> 件可改用店內現貨直接交貨結案
+                        <span className="ml-1 text-xs text-zinc-500">
+                          （店倉帳上可用 {data.store_on_hand} 件）
+                        </span>
+                      </span>
+                      <div className="ml-auto flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          min={1}
+                          max={backorderedDb}
+                          value={deductQty}
+                          onChange={(e) => {
+                            const v = Math.floor(Number(e.target.value));
+                            setDeductQty(
+                              Number.isFinite(v) ? Math.max(0, Math.min(v, backorderedDb)) : 0,
+                            );
+                          }}
+                          className="w-16 rounded-md border border-zinc-300 px-1.5 py-1 text-right text-sm tabular-nums dark:border-zinc-700 dark:bg-zinc-800"
+                        />
+                        <span className="text-xs text-zinc-500">件</span>
+                        <SpinButton
+                          onClick={createDeduction}
+                          disabled={busy || deductQty <= 0}
+                          className="rounded-md bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
+                          title="依下單時間由早到晚交貨。開單當下扣店庫存、訂單結案（與到店取貨同一套帳）。"
+                        >
+                          用現貨交貨
+                        </SpinButton>
+                      </div>
+                    </div>
+                    {deductQty > data.store_on_hand && (
+                      <div className="text-xs text-amber-700 dark:text-amber-400">
+                        ⚠ 店倉帳上現貨不夠交 {deductQty} 件 — 請先到
+                        <Link href="/inventory" target="_blank" className="mx-1 underline">
+                          庫存總覽
+                        </Link>
+                        對這個商品「新增庫存」把現貨入帳，再回來開減抵單。
+                      </div>
+                    )}
+                  </>
+                ) : gap > 0 ? (
+                  <div className="text-xs text-zinc-600 dark:text-zinc-300">
+                    店內有現貨想直接交貨？請先按「儲存配貨」把沒配到的標成待補貨，再回這裡開減抵單。
+                  </div>
+                ) : (
+                  <div className="text-xs text-zinc-600 dark:text-zinc-300">
+                    缺口已由店內現貨減抵交貨完畢。
+                  </div>
+                )}
+                {data.notes.map((n) => (
+                  <div
+                    key={n.id}
+                    className="flex flex-wrap items-center gap-2 border-t border-violet-200/70 pt-2 text-xs dark:border-violet-900/50"
+                  >
+                    <span className="font-mono text-violet-800 dark:text-violet-300">{n.note_no}</span>
+                    <span>
+                      現貨減抵交貨 <b>{n.qty}</b> 件
+                    </span>
+                    <span className="text-zinc-500">
+                      {new Date(n.created_at).toLocaleString("zh-TW", {
+                        dateStyle: "short",
+                        timeStyle: "short",
+                      })}
+                    </span>
+                    {n.reason && <span className="text-zinc-500">{n.reason}</span>}
+                  </div>
+                ))}
               </div>
             )}
 
@@ -342,7 +531,8 @@ export function ShortageAllocateModal({
             <p className="text-[11px] text-zinc-500">
               沒配到的量會標成「待補貨」，在補到貨之前取貨頁不會讓它取走。部分配到的訂單會拆成
               「可取」與「待補」兩行，客人可以先領到手的部分。不會發通知給客人；下一批到貨時再開
-              這個視窗把數量補上去就會解除。
+              這個視窗把數量補上去就會解除。店內有現貨的話可開「減抵單」把待補貨直接交貨結案
+              （會扣店庫存，與到店取貨同一套帳）。
             </p>
           </>
         )}
