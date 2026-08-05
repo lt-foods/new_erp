@@ -133,6 +133,8 @@ function PickupPageContent() {
   const [mode, setMode] = useState<PickupMode>("open");
   // 已取貨模式：order_id → 可補印的取貨事件（已濾掉被撤銷的）
   const [pickedEvents, setPickedEvents] = useState<Map<number, PickupEventRow[]>>(new Map());
+  // 已取貨模式的合併列印確認視窗（對齊未取貨的「一次全取」— 先看清單與合計再印）
+  const [printConfirm, setPrintConfirm] = useState<Member | null>(null);
 
   // overrideQuery：常用顧客快選按鈕用 — 直接帶該顧客查單，
   // 刻意「不」寫進搜尋框（保持輸入框乾淨，按鈕本身就是捷徑）
@@ -298,12 +300,18 @@ function PickupPageContent() {
     }
   }
 
-  // 已取貨模式：把該會員「勾選的（沒勾＝全部）」已取訂單合併成一張收據補印。
+  // 已取貨模式：該會員「勾選的（沒勾＝全部）」且還印得出收據的訂單。
   // 一次只印一個會員 — 收據頁的表頭與合計都取第一張單的會員，跨會員合印會印錯人。
-  function printPickedMerged(member: Member) {
+  function pickedPrintTargets(member: Member): OpenOrder[] {
     const printable = (orders.get(member.id) ?? []).filter((o) => (pickedEvents.get(o.id)?.length ?? 0) > 0);
     const chosen = printable.filter((o) => selected.has(o.id));
-    const target = chosen.length > 0 ? chosen : printable;
+    return chosen.length > 0 ? chosen : printable;
+  }
+
+  // 把上面那批合併成「一張」收據送印
+  function printPickedMerged(member: Member) {
+    const target = pickedPrintTargets(member);
+    setPrintConfirm(null);
     if (target.length === 0) {
       setError("這些訂單沒有可補印的取貨紀錄（可能取貨已被撤銷）");
       return;
@@ -677,7 +685,7 @@ function PickupPageContent() {
                       if (printable.length === 0) return null;
                       return (
                         <SpinButton
-                          onClick={() => printPickedMerged(m)}
+                          onClick={() => setPrintConfirm(m)}
                           title="把這些已取訂單合併成「一張」收據補印（80mm 熱感）"
                           className="ml-auto rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
                         >
@@ -976,6 +984,84 @@ function PickupPageContent() {
         prefillOrderId={returnTarget?.orderId ?? null}
         prefillStoreId={returnTarget?.storeId ?? null}
       />
+
+      {/* 已取貨：合併補印確認 — 版型對齊「一次全取」，先看清單與合計再印 */}
+      <Modal
+        open={printConfirm !== null}
+        onClose={() => setPrintConfirm(null)}
+        title={printConfirm ? `🖨️ 合併補印 — ${printConfirm.name ?? "—"} (${printConfirm.member_no})` : ""}
+        maxWidth="max-w-2xl"
+      >
+        {printConfirm && (() => {
+          const target = pickedPrintTargets(printConfirm);
+          const pickedOf = (o: OpenOrder) => o.items.filter((it) => it.status === "picked_up");
+          const totalItems = target.reduce((s, o) => s + pickedOf(o).length, 0);
+          const totalSubtotal = target.reduce(
+            (s, o) => s + pickedOf(o).reduce((ss, it) => ss + Number(it.qty) * Number(it.unit_price), 0),
+            0,
+          );
+          const totalDiscount = target.reduce((s, o) => s + Number(o.discount_amount ?? 0), 0);
+          const totalAmount = Math.max(0, totalSubtotal - totalDiscount);
+          const totalEvents = target.reduce((s, o) => s + (pickedEvents.get(o.id)?.length ?? 0), 0);
+          return (
+            <div className="space-y-3">
+              <p className="text-sm text-zinc-600 dark:text-zinc-300">
+                即將補印 <b>{target.length}</b> 張已取訂單、共 <b>{totalItems}</b> 項商品，合併成 <b>1 張</b>收據。
+                {totalDiscount > 0 ? (
+                  <>
+                    <br />
+                    小計 <span className="font-mono">${totalSubtotal}</span> − 折扣 <span className="font-mono text-red-600 dark:text-red-400">${totalDiscount}</span> = <b className="font-mono text-base text-zinc-900 dark:text-zinc-100">${totalAmount}</b>
+                  </>
+                ) : (
+                  <>合計 <b className="font-mono text-base text-zinc-900 dark:text-zinc-100">${totalAmount}</b></>
+                )}
+              </p>
+              <p className="text-xs text-zinc-500">
+                收據依「取貨當次」分段列出（共 {totalEvents} 次取貨紀錄）；金額為現行單價與折扣，非取貨當下的快照。
+              </p>
+              <div className="max-h-80 space-y-3 overflow-y-auto rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
+                {target.map((o) => {
+                  const evs = pickedEvents.get(o.id) ?? [];
+                  return (
+                    <div key={o.id} className="text-sm">
+                      <div className="mb-1">
+                        <span>{o.campaign?.name ?? "(未知活動)"}</span>
+                        <span className="ml-2 text-[10px] text-zinc-500">取貨店：{o.store?.name ?? "—"}</span>
+                        <span className="ml-2 text-[10px] text-emerald-700 dark:text-emerald-400">
+                          {pickupEventLabel(evs[evs.length - 1])}
+                          {evs.length > 1 && `（共 ${evs.length} 次）`}
+                        </span>
+                      </div>
+                      <ul className="ml-4 space-y-0.5 text-xs">
+                        {pickedOf(o).map((it) => (
+                          <li key={it.id} className="flex items-baseline gap-2">
+                            <span className="font-bold">{it.sku?.variant_name || it.sku?.product_name || "—"}</span>
+                            <span className="font-mono">×{Number(it.qty)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap justify-end gap-2">
+                <SpinButton
+                  onClick={() => setPrintConfirm(null)}
+                  className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  取消
+                </SpinButton>
+                <SpinButton
+                  onClick={() => printPickedMerged(printConfirm)}
+                  className="rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:border-zinc-300 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+                >
+                  🖨️ 合併列印（{target.length} 張、{totalItems} 項、${totalAmount}）
+                </SpinButton>
+              </div>
+            </div>
+          );
+        })()}
+      </Modal>
 
       <Modal
         open={bulkConfirm !== null}
