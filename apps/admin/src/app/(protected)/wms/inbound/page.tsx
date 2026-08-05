@@ -1073,29 +1073,17 @@ export default function TransfersInboxPage() {
                 >
                   <span className="mt-0.5 shrink-0 text-zinc-400">{open ? "▾" : "▸"}</span>
                   <span className="min-w-0">
-                    <span className="flex flex-wrap items-center gap-2">
-                      <span
-                        title={g.labelTitle || undefined}
-                        className={`break-words ${
-                          g.mono
-                            ? "font-mono text-sm font-bold text-blue-700 dark:text-blue-400"
-                            : "text-base font-bold text-zinc-900 dark:text-zinc-100"
-                        }`}
-                      >
-                        {g.label}
-                      </span>
-                      {pendingCount > 0 ? (
-                        <Pill tone="amber">待收 {pendingCount} 單</Pill>
-                      ) : (
-                        <Pill tone="emerald">✓ 已收到</Pill>
-                      )}
-                      {dueTag && <Pill tone={dueTag === "逾期" ? "rose" : "amber"}>{dueTag}</Pill>}
-                      {g.shortQty > 0 && (
-                        <Pill tone="rose">⚠ 少 {g.shortQty} 件 · 訂單比到貨多</Pill>
-                      )}
-                      {g.extraQty > 0 && (
-                        <Pill tone="blue">🎁 總倉多給 {g.extraQty} 件</Pill>
-                      )}
+                    {/* 標題只留品名/單號 — 狀態膠囊統一靠右對齊，長短不一的品名才不會
+                        把膠囊推到每列不同位置，一整頁掃下來看不出哪些有狀況 */}
+                    <span
+                      title={g.labelTitle || undefined}
+                      className={`block break-words ${
+                        g.mono
+                          ? "font-mono text-sm font-bold text-blue-700 dark:text-blue-400"
+                          : "text-base font-bold text-zinc-900 dark:text-zinc-100"
+                      }`}
+                    >
+                      {g.label}
                     </span>
                     <span className="mt-1.5 flex flex-wrap items-center gap-1.5">
                       {g.subLabel
@@ -1110,6 +1098,19 @@ export default function TransfersInboxPage() {
                     </span>
                   </span>
                 </SpinButton>
+
+                {/* 狀態膠囊：一律靠右，跟收貨按鈕同一區 */}
+                <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                  {pendingCount > 0 ? (
+                    <Pill tone="amber">待收 {pendingCount} 單</Pill>
+                  ) : (
+                    <Pill tone="emerald">✓ 已收到</Pill>
+                  )}
+                  {dueTag && <Pill tone={dueTag === "逾期" ? "rose" : "amber"}>{dueTag}</Pill>}
+                  {g.shortQty > 0 && <Pill tone="rose">⚠ 少 {g.shortQty} 件 · 訂單比到貨多</Pill>}
+                  {g.extraQty > 0 && <Pill tone="blue">🎁 總倉多給 {g.extraQty} 件</Pill>}
+                </div>
+
                 {pendingCount > 0 && (
                   <SpinButton
                     onClick={() => receiveGroup(g)}
