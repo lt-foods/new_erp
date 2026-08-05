@@ -95,3 +95,35 @@ export function canPayWithWallet(
 //   partially_ready       → 部分可取
 //   picked_up             → 已取貨   （只用於 customer_order_items.status）
 // ============================================================
+
+// ============================================================
+// 訂單清單頁的深連結
+//
+// /orders 沒有「全部」分頁，預設落在「未取貨」(PENDING_STATUSES)。
+// 直接用 ?q=<order_no> 連過去，已完成 / 已取消的單會找不到 —— 所以要依訂單
+// 當下的 status 一併帶上對的 tab。對應關係與 orders/page.tsx 的查詢一致：
+//   pending  → status IN (pending, confirmed, shipping, ready)
+//   ready    → status = ready            （已被 pending 涵蓋，不特別導過去）
+//   partially/completed/cancelled/transferred → 各自對應
+// ============================================================
+export function orderListTabFor(status: string | null | undefined): string {
+  switch (status) {
+    case "partially_completed":
+      return "partially";
+    case "completed":
+      return "completed";
+    case "cancelled":
+    case "expired":
+      return "cancelled";
+    case "transferred_out":
+      return "transferred";
+    default:
+      return "pending";
+  }
+}
+
+/** 訂單清單頁的深連結；帶上 status 對應的 tab，確保連過去看得到那張單 */
+export function orderListHref(orderNo: string, status?: string | null): string {
+  const qs = new URLSearchParams({ q: orderNo, tab: orderListTabFor(status) });
+  return `/orders?${qs.toString()}`;
+}

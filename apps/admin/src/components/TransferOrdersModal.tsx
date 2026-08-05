@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Modal } from "@/components/Modal";
 import Spinner from "@/components/Spinner";
 import { getSupabase } from "@/lib/supabase";
-import { orderStatusLabel } from "@/lib/orderStatus";
+import Link from "next/link";
+import { orderStatusLabel, orderListHref } from "@/lib/orderStatus";
 
 // 這張派貨單（可再限定單一品項）背後的顧客訂單。
 // 用途是回答店家的「這幾件是誰的？」以及「多出來的幾件為什麼沒人訂？」
@@ -143,7 +144,16 @@ export function TransferOrdersModal({
                       {orders.map((o) => (
                         <tr key={o.order_id}>
                           <td className="px-3 py-1.5 font-mono text-xs">
-                            {o.order_no}
+                            {/* 開新分頁：收貨 / 配貨做到一半不該被導走 */}
+                            <Link
+                              href={orderListHref(o.order_no, o.order_status)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 hover:underline dark:text-blue-400"
+                              title="開新分頁查看這張訂單"
+                            >
+                              {o.order_no} ↗
+                            </Link>
                             {o.match_kind === "restock" && (
                               <span className="ml-1.5 rounded bg-violet-100 px-1 py-0.5 font-sans text-[10px] font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300">
                                 補貨申請

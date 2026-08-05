@@ -5,7 +5,8 @@ import { Modal } from "@/components/Modal";
 import Spinner from "@/components/Spinner";
 import SpinButton from "@/components/SpinButton";
 import { getSupabase } from "@/lib/supabase";
-import { orderStatusLabel } from "@/lib/orderStatus";
+import Link from "next/link";
+import { orderStatusLabel, orderListHref } from "@/lib/orderStatus";
 import { translateRpcError } from "@/lib/rpcError";
 
 // 少發配貨：到貨量不夠分給所有訂單時，由收貨的人決定這批配給誰。
@@ -273,7 +274,17 @@ export function ShortageAllocateModal({
                             <span className="text-[10px] text-zinc-400">/ {r.qty}</span>
                           </div>
                         </td>
-                        <td className="px-3 py-2 font-mono text-xs">{r.order_no}</td>
+                        <td className="px-3 py-2 font-mono text-xs">
+                          <Link
+                            href={orderListHref(r.order_no, r.order_status)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:underline dark:text-blue-400"
+                            title="開新分頁查看這張訂單（配貨中的內容不會遺失）"
+                          >
+                            {r.order_no} ↗
+                          </Link>
+                        </td>
                         <td className="max-w-[220px] truncate px-3 py-2" title={r.customer ?? ""}>
                           {r.customer || "—"}
                         </td>
