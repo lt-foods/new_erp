@@ -17,6 +17,7 @@ import { useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 import { fetchAllRows } from "@/lib/fetchAllRows";
 import { fanoutPickupNotifications } from "@/lib/pickupNotify";
 import { TransferOrdersModal, type ModalSkuLine } from "@/components/TransferOrdersModal";
+import { ShortageAllocateModal } from "@/components/ShortageAllocateModal";
 
 type Location = { id: number; name: string };
 type StoreLite = { id: number; location_id: number | null };
@@ -66,6 +67,10 @@ export default function TransfersInboxPage() {
   // 點數量開的「訂單明細」彈窗：看這幾件分別是誰的訂單、多給的幾件沒人訂
   const [ordersFor, setOrdersFor] = useState<
     { transferId: number; transferNo: string; skuLines: ModalSkuLine[] } | null
+  >(null);
+  // 少發配貨對話框：這批不夠分時決定配給誰
+  const [allocFor, setAllocFor] = useState<
+    { transferId: number; skuId: number; skuName: string } | null
   >(null);
   const [locationFilter, setLocationFilter] = useState<number | "all">("all");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -1188,6 +1193,21 @@ export default function TransfersInboxPage() {
                                       >
                                         × {it.qty}
                                       </SpinButton>
+                                      {summary.shortQty > 0 && it.skuId != null && (
+                                        <SpinButton
+                                          onClick={() =>
+                                            setAllocFor({
+                                              transferId: t.id,
+                                              skuId: it.skuId as number,
+                                              skuName: it.name,
+                                            })
+                                          }
+                                          className="ml-1.5 rounded border border-rose-300 px-1.5 py-0.5 text-[10px] font-medium text-rose-700 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
+                                          title="這批不夠分 — 決定配給哪幾筆訂單"
+                                        >
+                                          ⚖️ 配貨
+                                        </SpinButton>
+                                      )}
                                     </li>
                                   ))}
                                 </ul>
@@ -1328,6 +1348,16 @@ export default function TransfersInboxPage() {
             載入全部
           </SpinButton>
         </div>
+      )}
+
+      {allocFor && (
+        <ShortageAllocateModal
+          transferId={allocFor.transferId}
+          skuId={allocFor.skuId}
+          skuName={allocFor.skuName}
+          onClose={() => setAllocFor(null)}
+          onSaved={() => reloadAndRefreshBadge()}
+        />
       )}
 
       {ordersFor && (

@@ -97,13 +97,20 @@ function PickupPageContent() {
   // 一律排除「量已被未取退貨蓋掉」的品項行（退回總倉的貨不可再取）。
   function pickableItems(order: OpenOrder) {
     const act = activeItems(order).filter((it) => remainingQty(it) > 0);
-    if (order.status === "ready") return act;
+    // ready 單原本整單放行，但「少發配貨」會把沒配到的品項標成待補貨
+    // （customer_order_items.backorder_at → is_order_item_pickup_ready 回 false）。
+    // 不濾掉的話店員會勾得到、按下去才被 rpc_record_pickup 擋，訊息還會誤導成「尚未到貨」。
+    if (order.status === "ready") return act.filter((it) => itemReady.get(it.id) !== false);
     if (order.status === "partially_completed") return act.filter((it) => itemReady.get(it.id) !== false);
     if (order.status === "shipping") return act.filter((it) => itemReady.get(it.id) === true);
     return [];
   }
   function isPickable(order: OpenOrder): boolean {
     return pickableItems(order).length > 0;
+  }
+  // 該品項是否為「少發沒配到」→ 取貨頁要明講待補貨，不要只是消失
+  function isBackordered(order: OpenOrder, it: OpenOrder["items"][number]): boolean {
+    return order.status !== "shipping" && itemReady.get(it.id) === false;
   }
 
   const [pickup, setPickup] = useState<{ orderId: number; orderNo: string } | null>(null);
@@ -632,8 +639,18 @@ function PickupPageContent() {
                                     {returnedOf(it) > 0 && (
                                       <span className="rounded bg-orange-100 px-1 py-0.5 text-[10px] font-medium text-orange-800 dark:bg-orange-950 dark:text-orange-300">↩ 已退 {returnedOf(it)}</span>
                                     )}
-                                    {partialArrival && remainingQty(it) > 0 && !pickableIds.has(it.id) && (
-                                      <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">⏳ 未到貨</span>
+                                    {/* 少發配貨沒配到 → 明講「待補貨」，別讓品項無聲消失讓店員以為是系統壞了 */}
+                                    {remainingQty(it) > 0 && isBackordered(o, it) ? (
+                                      <span
+                                        className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                                        title="這批到貨量不夠分，這筆沒配到，要等下一批補貨"
+                                      >
+                                        ⏳ 待補貨
+                                      </span>
+                                    ) : (
+                                      partialArrival && remainingQty(it) > 0 && !pickableIds.has(it.id) && (
+                                        <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">⏳ 未到貨</span>
+                                      )
                                     )}
                                   </li>
                                 ))}
