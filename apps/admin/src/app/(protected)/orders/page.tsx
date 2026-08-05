@@ -11,6 +11,7 @@ import OrderReturnCreateModal from "@/components/OrderReturnCreateModal";
 import { translateRpcError } from "@/lib/rpcError";
 import { withBasePath } from "@/lib/basePath";
 import { printViaIframe } from "@/lib/printIframe";
+import { fetchReprintableEvents } from "@/lib/pickupReceipt";
 import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 import { useRole } from "@/lib/role";
 import { ORDER_STATUS_LABEL as STATUS_LABEL, type OrderStatus } from "@/lib/orderStatus";
@@ -75,8 +76,14 @@ const TABS: { value: Tab; label: string }[] = [
 const TAB_VALUES = TABS.map((t) => t.value);
 const PENDING_STATUSES: OrderStatus[] = ["pending", "confirmed", "shipping", "ready"];
 const CANCELLED_STATUSES: OrderStatus[] = ["cancelled", "expired"];
+// 可印小白單（取貨清單）的狀態 — 小白單只列還沒取的品項，取完的單印出來會是空單
+const SLIP_STATUSES: OrderStatus[] = [...PENDING_STATUSES, "partially_completed"];
 
 const PAGE_SIZE = 50;
+// 「選取全部符合篩選」一次最多抓幾筆 id（列印是 client 端逐張跑，太多會卡瀏覽器）
+const SELECT_ALL_MAX = 500;
+// 依會員分組後超過這個張數，先跟使用者確認再印
+const BULK_PRINT_CONFIRM = 20;
 
 // 日期區間 filter — <input type="date"> 給的是 "YYYY-MM-DD" 當地日期，
 // created_at 是 timestamptz，因此在瀏覽器時區換算成半開區間 [from, to)：
@@ -132,6 +139,46 @@ async function buildKeywordOr(keyword: string): Promise<string | null> {
   const ors = [`order_no.ilike.%${safe}%`, `nickname_snapshot.ilike.%${safe}%`];
   if (ids.length > 0) ors.push(`member_id.in.(${ids.join(",")})`);
   return ors.join(",");
+}
+
+type OrderFilters = {
+  campaignIds: string[];
+  tab: Tab;
+  storeId: string;
+  fromTs: string | null;
+  toTs: string | null;
+  keywordOr: string | null;
+};
+
+// 套用目前的篩選條件（開團 / tab 狀態 / 取貨店 / 日期區間 / 關鍵字）。
+// 列表分頁查詢與「選取全部符合篩選」共用同一支，確保「勾到的」＝「看到的」。
+function applyOrderFilters<
+  Q extends {
+    eq(column: string, value: never): Q;
+    in(column: string, values: never[]): Q;
+    gte(column: string, value: never): Q;
+    lt(column: string, value: never): Q;
+    or(filters: string): Q;
+  },
+>(q: Q, f: OrderFilters): Q {
+  let out = q;
+  const eq = (col: string, val: unknown) => { out = out.eq(col, val as never); };
+  const inList = (col: string, vals: unknown[]) => { out = out.in(col, vals as never[]); };
+
+  if (f.campaignIds.length === 1) eq("campaign_id", Number(f.campaignIds[0]));
+  else if (f.campaignIds.length > 1) inList("campaign_id", f.campaignIds.map((x) => Number(x)));
+  // 依 tab 套狀態過濾;一律隱藏 transferred_out (視同關閉、金額/數量不入統計)
+  if (f.tab === "ready") eq("status", "ready");
+  else if (f.tab === "partially") eq("status", "partially_completed");
+  else if (f.tab === "completed") eq("status", "completed");
+  else if (f.tab === "cancelled") inList("status", CANCELLED_STATUSES);
+  else if (f.tab === "transferred") eq("status", "transferred_out");
+  else inList("status", PENDING_STATUSES);
+  if (f.storeId) eq("pickup_store_id", Number(f.storeId));
+  if (f.fromTs) out = out.gte("created_at", f.fromTs as never);
+  if (f.toTs) out = out.lt("created_at", f.toTs as never);
+  if (f.keywordOr) out = out.or(f.keywordOr);
+  return out;
 }
 
 // 手機卡片底色（依訂單狀態）— 對應桌機表格列底色
@@ -225,6 +272,9 @@ function OrdersListContent() {
   const [detailNo, setDetailNo] = useState<string>("");
   const [returnTarget, setReturnTarget] = useState<{ orderId: number; storeId: number } | null>(null);
   const [reloadOrders, setReloadOrders] = useState(0);
+  // 批量列印用的勾選（跨分頁累加；換 tab / 改篩選會清空，避免印到看不見的單）
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkPrintErr, setBulkPrintErr] = useState<string | null>(null);
 
   // KPI trend (當月 1 號 ~ 今天 每日 + 本月累計、套 filter 開團+店家、排除 transferred_out)
   const [trend, setTrend] = useState<TrendData | null>(null);
@@ -236,7 +286,12 @@ function OrdersListContent() {
   const toTs = useMemo(() => (dateTo ? dayStartIso(dateTo, 1) : null), [dateTo]);
   const hasFilter = campaignIds.length > 0 || !!storeId || !!keyword || !!dateFrom || !!dateTo;
 
-  useEffect(() => { setPage(1); }, [campaignIds, tab, storeId, keyword, fromTs, toTs]);
+  useEffect(() => {
+    setPage(1);
+    // 篩選一變，勾選就作廢 — 不然會印到已經看不見的單
+    setSelected(new Set());
+    setBulkPrintErr(null);
+  }, [campaignIds, tab, storeId, keyword, fromTs, toTs]);
 
   // 取貨店篩選不鎖分店：所有帳號都可自由選任一店 / 全部
   // （僅保留軟性預設選中自家店，使用者可自行切換到別店或「全部」）
@@ -323,27 +378,15 @@ function OrdersListContent() {
     setLoading(true);
     (async () => {
       try {
-        let q = getSupabase()
+        const base = getSupabase()
           .from("customer_orders")
           .select("id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, transferred_from_order_id, created_at, updated_at", { count: "exact" })
           .order("updated_at", { ascending: false })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
-        if (campaignIds.length === 1) q = q.eq("campaign_id", Number(campaignIds[0]));
-        else if (campaignIds.length > 1) q = q.in("campaign_id", campaignIds.map((x) => Number(x)));
-        // 依 tab 套狀態過濾;一律隱藏 transferred_out (視同關閉、金額/數量不入統計)
-        if (tab === "ready") q = q.eq("status", "ready");
-        else if (tab === "partially") q = q.eq("status", "partially_completed");
-        else if (tab === "completed") q = q.eq("status", "completed");
-        else if (tab === "cancelled") q = q.in("status", CANCELLED_STATUSES);
-        else if (tab === "transferred") q = q.eq("status", "transferred_out");
-        else q = q.in("status", PENDING_STATUSES);
-        if (storeId) q = q.eq("pickup_store_id", Number(storeId));
-        if (fromTs) q = q.gte("created_at", fromTs);
-        if (toTs) q = q.lt("created_at", toTs);
         const kwOr = await buildKeywordOr(keyword);
         if (cancelled) return;
-        if (kwOr) q = q.or(kwOr);
+        const q = applyOrderFilters(base, { campaignIds, tab, storeId, fromTs, toTs, keywordOr: kwOr });
 
         const { data, count, error } = await q;
         if (cancelled) return;
@@ -610,6 +653,105 @@ function OrdersListContent() {
       )}
     </>
   );
+  // ---------- 批量列印（勾選 → 依會員分組 → 逐張送印） ----------
+  const pageIds = (rows ?? []).map((r) => r.id);
+  const pageAllSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
+
+  function toggleOne(id: number) {
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function togglePage() {
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (pageAllSelected) for (const id of pageIds) next.delete(id);
+      else for (const id of pageIds) next.add(id);
+      return next;
+    });
+  }
+
+  // 「選取全部符合篩選」— 用跟列表同一組條件再撈一次 id（不受目前分頁 50 筆限制）
+  async function selectAllMatching() {
+    setBulkPrintErr(null);
+    const kwOr = await buildKeywordOr(keyword);
+    const base = getSupabase()
+      .from("customer_orders")
+      .select("id")
+      .order("updated_at", { ascending: false })
+      .limit(SELECT_ALL_MAX);
+    const { data, error } = await applyOrderFilters(base, {
+      campaignIds, tab, storeId, fromTs, toTs, keywordOr: kwOr,
+    });
+    if (error) { setBulkPrintErr(error.message); return; }
+    const ids = ((data ?? []) as { id: number }[]).map((r) => r.id);
+    setSelected(new Set(ids));
+    if (total > ids.length) {
+      setBulkPrintErr(`符合條件共 ${total} 筆，一次最多選 ${SELECT_ALL_MAX} 筆（已選最新的 ${ids.length} 筆）`);
+    }
+  }
+
+  async function bulkPrint(kind: "receipt" | "slip") {
+    setBulkPrintErr(null);
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    const { data, error } = await getSupabase()
+      .from("customer_orders")
+      .select("id, member_id, status")
+      .in("id", ids);
+    if (error) { setBulkPrintErr(error.message); return; }
+    const orders = (data ?? []) as { id: number; member_id: number | null; status: OrderStatus }[];
+
+    // 列印頁（收據 /pickup/print、小白單 /pickup/print-list）都假設「一次進來的是同一個會員」
+    // — 表頭與合計都取第一張單的會員。所以這裡依會員分組，一個會員印一張，不能全部倒進同一個 URL。
+    const groups = new Map<string, number[]>();
+    const push = (memberId: number | null, orderId: number, payload: number[]) => {
+      const key = memberId != null ? `m${memberId}` : `o${orderId}`;
+      groups.set(key, [...(groups.get(key) ?? []), ...payload]);
+    };
+    let skipped = 0;
+
+    if (kind === "slip") {
+      for (const o of orders) {
+        if (!SLIP_STATUSES.includes(o.status)) { skipped++; continue; }
+        push(o.member_id, o.id, [o.id]);
+      }
+    } else {
+      const evMap = await fetchReprintableEvents(ids);
+      for (const o of orders) {
+        const evs = evMap.get(o.id) ?? [];
+        if (evs.length === 0) { skipped++; continue; }
+        push(o.member_id, o.id, evs.map((e) => e.id));
+      }
+    }
+
+    if (groups.size === 0) {
+      setBulkPrintErr(
+        kind === "slip"
+          ? `選取的 ${ids.length} 張都不能印小白單（已取貨 / 已取消的單印出來會是空單）`
+          : `選取的 ${ids.length} 張都沒有可補印的收據（還沒取貨，或取貨已被撤銷）`,
+      );
+      return;
+    }
+    if (
+      groups.size > BULK_PRINT_CONFIRM
+      && !window.confirm(`會依會員分成 ${groups.size} 張單依序列印（每張都會跳一次列印對話框），確定？`)
+    ) return;
+
+    const path = kind === "slip" ? "/pickup/print-list?order_ids=" : "/pickup/print?event_ids=";
+    for (const payload of groups.values()) {
+      printViaIframe(withBasePath(`${path}${payload.join(",")}`));
+    }
+    if (skipped > 0) {
+      setBulkPrintErr(
+        `已送印 ${groups.size} 張（依會員分組）；另有 ${skipped} 張略過（`
+        + (kind === "slip" ? "已取貨 / 已取消，印出來會是空單）" : "還沒取貨或取貨已撤銷）"),
+      );
+    }
+  }
+
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const fromIdx = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const toIdx = Math.min(page * PAGE_SIZE, total);
@@ -893,6 +1035,62 @@ function OrdersListContent() {
         </div>
       )}
 
+      {/* 批量列印工具列 — 勾選（可跨分頁累加）後依會員分組送印 */}
+      {rows !== null && rows.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-900">
+          <label className="flex cursor-pointer items-center gap-1.5">
+            <input
+              type="checkbox"
+              checked={pageAllSelected}
+              onChange={togglePage}
+              className="h-4 w-4 cursor-pointer accent-emerald-600"
+            />
+            <span>選本頁（{pageIds.length}）</span>
+          </label>
+          {total > pageIds.length && (
+            <SpinButton
+              onClick={selectAllMatching}
+              title={`選取全部符合目前篩選的訂單（最多 ${SELECT_ALL_MAX} 筆）`}
+              className="rounded-md border border-zinc-300 px-2 py-1 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            >
+              選全部 {total} 筆
+            </SpinButton>
+          )}
+          <span className={selected.size > 0 ? "font-semibold text-emerald-700 dark:text-emerald-400" : "text-zinc-500"}>
+            已選 {selected.size} 筆
+          </span>
+          {selected.size > 0 && (
+            <SpinButton
+              onClick={() => { setSelected(new Set()); setBulkPrintErr(null); }}
+              className="text-zinc-500 underline-offset-2 hover:underline"
+            >
+              清除
+            </SpinButton>
+          )}
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <SpinButton
+              onClick={() => bulkPrint("receipt")}
+              disabled={selected.size === 0}
+              title="補印已取貨那次的收據（80mm 熱感）— 同一會員的多張單合印一張，沒取貨的自動略過"
+              className="rounded-md border border-zinc-300 px-2 py-1 font-medium hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            >
+              🖨️ 補印收據
+            </SpinButton>
+            <SpinButton
+              onClick={() => bulkPrint("slip")}
+              disabled={selected.size === 0}
+              title="列印小白單（取貨清單，只列還沒取的品項）— 同一會員的多張單合印一張"
+              className="rounded-md border border-zinc-300 px-2 py-1 font-medium hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            >
+              🖨️ 列印小白單
+            </SpinButton>
+          </div>
+          {bulkPrintErr && (
+            <div className="w-full text-amber-700 dark:text-amber-400">{bulkPrintErr}</div>
+          )}
+        </div>
+      )}
+
       {/* 手機：每筆訂單一張卡片（桌機改用下方表格） */}
       <div className="space-y-2 sm:hidden">
         {rows === null ? (
@@ -935,6 +1133,13 @@ function OrdersListContent() {
               </button>
 
               <div className="mt-2 flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={selected.has(r.id)}
+                  onChange={() => toggleOne(r.id)}
+                  title={`勾選 ${r.order_no} 供批量列印`}
+                  className="h-4 w-4 shrink-0 cursor-pointer accent-emerald-600"
+                />
                 {m ? (
                   <>
                     <Avatar src={m.avatar_url} name={m.name ?? r.nickname_snapshot ?? "?"} />
@@ -981,14 +1186,22 @@ function OrdersListContent() {
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
-              <Th className="min-w-[14rem]">開團</Th><Th className="whitespace-nowrap">會員 / 暱稱</Th><Th className="whitespace-nowrap">來源</Th><Th className="whitespace-nowrap">取貨店</Th><Th className="whitespace-nowrap text-right">項數</Th><Th className="whitespace-nowrap text-right">總數量</Th><Th className="whitespace-nowrap text-right">總金額</Th><Th className="whitespace-nowrap text-right">日期</Th><Th className="whitespace-nowrap text-right">操作</Th>
+              <Th className="w-8">
+                <input
+                  type="checkbox"
+                  checked={pageAllSelected}
+                  onChange={togglePage}
+                  title="選取本頁全部"
+                  className="h-4 w-4 cursor-pointer accent-emerald-600"
+                />
+              </Th><Th className="min-w-[14rem]">開團</Th><Th className="whitespace-nowrap">會員 / 暱稱</Th><Th className="whitespace-nowrap">來源</Th><Th className="whitespace-nowrap">取貨店</Th><Th className="whitespace-nowrap text-right">項數</Th><Th className="whitespace-nowrap text-right">總數量</Th><Th className="whitespace-nowrap text-right">總金額</Th><Th className="whitespace-nowrap text-right">日期</Th><Th className="whitespace-nowrap text-right">操作</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={9}><LoadingBlock /></td></tr>
+              <tr><td colSpan={10}><LoadingBlock /></td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">{total === 0 && !hasFilter ? "此 tab 下尚無訂單。" : "沒有符合條件的訂單。"}</td></tr>
+              <tr><td colSpan={10} className="p-6 text-center text-zinc-500">{total === 0 && !hasFilter ? "此 tab 下尚無訂單。" : "沒有符合條件的訂單。"}</td></tr>
             ) : rows.map((r) => {
               const m = r.member_id ? members.get(r.member_id) : null;
               const c = campaignMap.get(r.campaign_id);
@@ -1006,6 +1219,15 @@ function OrdersListContent() {
                       : "odd:bg-white even:bg-zinc-50 hover:bg-zinc-100 dark:odd:bg-zinc-950 dark:even:bg-zinc-900 dark:hover:bg-zinc-800"
                   }
                 >
+                  <Td className="w-8 align-top">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(r.id)}
+                      onChange={() => toggleOne(r.id)}
+                      title={`勾選 ${r.order_no} 供批量列印`}
+                      className="h-4 w-4 cursor-pointer accent-emerald-600"
+                    />
+                  </Td>
                   <Td className="min-w-[14rem]">
                     <SpinButton
                       onClick={() => { setDetailId(r.id); setDetailNo(r.order_no); }}

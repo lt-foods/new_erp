@@ -20,6 +20,11 @@ import { withBasePath } from "@/lib/basePath";
 import { printViaIframe } from "@/lib/printIframe";
 import { translateRpcError } from "@/lib/rpcError";
 import { parseReturnNote } from "@/lib/returnNote";
+import {
+  fetchReprintableEvents,
+  pickupEventLabel,
+  type PickupEventRow,
+} from "@/lib/pickupReceipt";
 import SpinButton from "@/components/SpinButton";
 
 type OrderHead = {
@@ -79,27 +84,6 @@ type ReturnTransfer = {
   shipped_by: string | null;
   lines: ReturnLine[];
 };
-
-// 取貨事件（order_pickup_events，append-only）。收據 /pickup/print 是以 event_id 為準，
-// 所以取貨當下沒印到 / 印壞了，事後都能靠這裡的 id 補印出「當時那張」收據。
-type PickupEventRow = {
-  id: number;
-  event_type: string;      // picked_up | partial_pickup | pickup_undone
-  created_at: string;
-  notes: string | null;
-};
-
-// 撤銷取貨不刪原事件（表禁改禁刪），而是補一筆 pickup_undone，
-// notes 固定為 `撤銷取貨事件 #<id>…`（rpc_undo_pickup）。被撤銷的那次不該再補印收據。
-function undonePickupEventIds(rows: PickupEventRow[]): Set<number> {
-  const undone = new Set<number>();
-  for (const r of rows) {
-    if (r.event_type !== "pickup_undone") continue;
-    const m = /撤銷取貨事件 #(\d+)/.exec(r.notes ?? "");
-    if (m) undone.add(Number(m[1]));
-  }
-  return undone;
-}
 
 // 品項狀態標籤（部分取貨會把一行拆成「已取」+「待取」兩行，標籤讓兩者一眼可分）
 function itemStatusBadge(status: string, stockout = false): { label: string; cls: string } | null {
@@ -174,11 +158,6 @@ function staffLabel(uid: string | null, names: Map<string, string>): string {
 
 function fmtDt(iso: string): string {
   return new Date(iso).toLocaleString("zh-TW", { hour12: false });
-}
-
-function pickupEventLabel(ev: PickupEventRow | undefined): string {
-  if (!ev) return "—";
-  return `${ev.event_type === "partial_pickup" ? "部分取貨" : "取貨"} ${fmtDt(ev.created_at)}`;
 }
 
 export function OrderDetail({
@@ -266,11 +245,7 @@ export function OrderDetail({
         sb.from("v_order_item_pickup_ready")
           .select("item_id, pickup_ready")
           .eq("order_id", orderId),
-        sb.from("order_pickup_events")
-          .select("id, event_type, created_at, notes")
-          .eq("order_id", orderId)
-          .in("event_type", ["picked_up", "partial_pickup", "pickup_undone"])
-          .order("id", { ascending: true }),
+        fetchReprintableEvents([orderId]),
       ]);
       if (cancelled) return;
       if (hRes.error) { setError(hRes.error.message); return; }
@@ -286,13 +261,7 @@ export function OrderDetail({
       }
       setItemReady(arrivedMap);
 
-      const pevRows = (pevRes.data ?? []) as unknown as PickupEventRow[];
-      const undoneIds = undonePickupEventIds(pevRows);
-      setPickupEvents(
-        pevRows.filter(
-          (e) => e.event_type !== "pickup_undone" && !undoneIds.has(e.id),
-        ),
-      );
+      setPickupEvents(pevRes.get(orderId) ?? []);
 
       // ========== 整理退貨單（return_to_hq transfer）==========
       type RetRow = {
