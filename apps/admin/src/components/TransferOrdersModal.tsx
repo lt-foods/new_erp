@@ -123,7 +123,9 @@ export function TransferOrdersModal({
 
               {orders.length === 0 ? (
                 <div className="px-3 py-4 text-center text-sm text-zinc-500">
-                  查不到對應的訂單 — 這批可能是補貨（本來就沒有顧客訂單）或自由轉貨。
+                  這個品項查不到對應的訂單 — 可能是訂單已取消／過期，或這幾件是總倉多給的。
+                  <br />
+                  （補貨與自由轉貨的單本來就沒有顧客訂單，收貨頁不會給「看訂單」的入口。）
                 </div>
               ) : (
                 <div className="overflow-x-auto">

@@ -61,6 +61,9 @@ export default function TransfersInboxPage() {
   const [itemSummary, setItemSummary] = useState<Map<number, ItemSummary>>(new Map());
   const [locationToStore, setLocationToStore] = useState<Map<number, number>>(new Map());
   const [transferCampaigns, setTransferCampaigns] = useState<Map<number, number[]>>(new Map());
+  // 每張單的來源：campaign=開團派貨（背後有顧客訂單）/ restock=補貨 / free=自由轉貨・互助
+  // 補貨與自由轉貨本來就沒有顧客訂單，畫面要講清楚，不然點開只看到「查不到訂單」會以為壞了
+  const [sourceKinds, setSourceKinds] = useState<Map<number, string>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const [opening, setOpening] = useState<Transfer | null>(null);
@@ -332,6 +335,17 @@ export default function TransfersInboxPage() {
           }
         }
 
+        // 來源類型（開團 / 補貨 / 自由轉貨）— 決定要不要給「看訂單」入口
+        const kindMap = new Map<number, string>();
+        if (rows.length > 0) {
+          const { data: kindData } = await sb.rpc("rpc_get_transfer_source_kinds", {
+            p_transfer_ids: rows.map((r) => r.id),
+          });
+          for (const [tid, kind] of Object.entries((kindData as Record<string, string> | null) ?? {})) {
+            kindMap.set(Number(tid), kind);
+          }
+        }
+
         // location → store mapping (for /orders link filter)
         const locStoreMap = new Map<number, number>();
         if (locIds.length > 0) {
@@ -368,6 +382,7 @@ export default function TransfersInboxPage() {
           setItemSummary(summary);
           setLocationToStore(locStoreMap);
           setTransferCampaigns(tcMap);
+          setSourceKinds(kindMap);
           setError(null);
           const auto = new Set<string>();
           for (const r of rows) {
@@ -1133,6 +1148,7 @@ export default function TransfersInboxPage() {
                         const isSelected = selected.has(t.id);
                         const wid = parseWaveId(t.transfer_no);
                         const wave = wid !== null ? waves.get(wid) : undefined;
+                        const srcKind = sourceKinds.get(t.id) ?? "campaign";
                         // 編號欄：合併同商品時看撿貨單號（哪一車來的），依撿貨單時看調撥單號
                         const code =
                           groupMode === "product" ? wave?.wave_code ?? t.transfer_no : t.transfer_no;
@@ -1180,19 +1196,23 @@ export default function TransfersInboxPage() {
                                       )}
                                       {it.name}
                                       {/* 點數量 → 這幾件分別是誰的訂單 */}
-                                      <SpinButton
-                                        onClick={() =>
-                                          setOrdersFor({
-                                            transferId: t.id,
-                                            transferNo: wave?.wave_code ?? t.transfer_no,
-                                            skuLines: [it],
-                                          })
-                                        }
-                                        className="ml-1 rounded font-semibold tabular-nums text-blue-600 underline decoration-dotted underline-offset-2 hover:text-blue-800 dark:text-blue-400"
-                                        title="看這幾件對應哪幾筆訂單"
-                                      >
-                                        × {it.qty}
-                                      </SpinButton>
+                                      {srcKind === "campaign" ? (
+                                        <SpinButton
+                                          onClick={() =>
+                                            setOrdersFor({
+                                              transferId: t.id,
+                                              transferNo: wave?.wave_code ?? t.transfer_no,
+                                              skuLines: [it],
+                                            })
+                                          }
+                                          className="ml-1 rounded font-semibold tabular-nums text-blue-600 underline decoration-dotted underline-offset-2 hover:text-blue-800 dark:text-blue-400"
+                                          title="看這幾件對應哪幾筆訂單"
+                                        >
+                                          × {it.qty}
+                                        </SpinButton>
+                                      ) : (
+                                        <span className="ml-1 font-semibold tabular-nums">× {it.qty}</span>
+                                      )}
                                       {summary.shortQty > 0 && it.skuId != null && (
                                         <SpinButton
                                           onClick={() =>
@@ -1219,6 +1239,22 @@ export default function TransfersInboxPage() {
                                   <span>{locations.get(t.dest_location) ?? `#${t.dest_location}`}</span>
                                 )}
                                 {groupMode === "wave" && wave?.wave_date && <span>📅 {wave.wave_date}</span>}
+                                {srcKind === "restock" && (
+                                  <span
+                                    className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300"
+                                    title="補貨申請產生的單，背後沒有顧客訂單"
+                                  >
+                                    🔁 補貨（無顧客訂單）
+                                  </span>
+                                )}
+                                {srcKind === "free" && (
+                                  <span
+                                    className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+                                    title="沒有撿貨波次的單（自由轉貨 / 互助 / 直送），背後沒有顧客訂單"
+                                  >
+                                    ↔ 轉貨（無顧客訂單）
+                                  </span>
+                                )}
                                 {!isShipped && t.received_at && (
                                   <span className="text-emerald-700 dark:text-emerald-400">
                                     ✅ 收貨 {new Date(t.received_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}
@@ -1240,20 +1276,25 @@ export default function TransfersInboxPage() {
                               </div>
                             </td>
                             <td className="whitespace-nowrap px-3 py-2 text-right align-top">
-                              <SpinButton
-                                onClick={() =>
-                                  setOrdersFor({
-                                    transferId: t.id,
-                                    transferNo: wave?.wave_code ?? t.transfer_no,
-                                    skuLines: summary?.items ?? [],
-                                  })
-                                }
-                                disabled={!summary || summary.lines === 0}
-                                className="font-semibold tabular-nums text-blue-600 underline decoration-dotted underline-offset-2 hover:text-blue-800 disabled:text-zinc-400 disabled:no-underline dark:text-blue-400"
-                                title="看這張單對應哪幾筆訂單"
-                              >
-                                {summary?.totalQty ?? 0}
-                              </SpinButton>
+                              {srcKind === "campaign" ? (
+                                <SpinButton
+                                  onClick={() =>
+                                    setOrdersFor({
+                                      transferId: t.id,
+                                      transferNo: wave?.wave_code ?? t.transfer_no,
+                                      skuLines: summary?.items ?? [],
+                                    })
+                                  }
+                                  disabled={!summary || summary.lines === 0}
+                                  className="font-semibold tabular-nums text-blue-600 underline decoration-dotted underline-offset-2 hover:text-blue-800 disabled:text-zinc-400 disabled:no-underline dark:text-blue-400"
+                                  title="看這張單對應哪幾筆訂單"
+                                >
+                                  {summary?.totalQty ?? 0}
+                                </SpinButton>
+                              ) : (
+                                // 補貨 / 自由轉貨背後沒有顧客訂單，不給死連結
+                                <span className="font-semibold tabular-nums">{summary?.totalQty ?? 0}</span>
+                              )}
                               {summary && summary.lines > 1 && (
                                 <span className="ml-1 text-[10px] font-normal text-zinc-400">{summary.lines} 項</span>
                               )}
