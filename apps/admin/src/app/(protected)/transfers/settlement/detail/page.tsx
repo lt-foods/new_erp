@@ -140,9 +140,10 @@ export default function HqSettlementDetailPage() {
   const [editReason, setEditReason] = useState("");
 
   // 頁內確認列（取代 confirm()）與爭議處理行內輸入（取代 prompt()）
-  const [pendingAction, setPendingAction] = useState<"send" | "confirm" | "settle" | null>(null);
+  const [pendingAction, setPendingAction] = useState<"send" | "confirm" | "settle" | "revoke" | null>(null);
   const [resolvingId, setResolvingId] = useState<number | null>(null);
   const [resolveNote, setResolveNote] = useState("");
+  const [revokeReason, setRevokeReason] = useState("");
 
   // 金額調整（增減金額＋原因）
   const [showAdjForm, setShowAdjForm] = useState(false);
@@ -236,6 +237,7 @@ export default function HqSettlementDetailPage() {
       setPendingAction(null);
       setResolvingId(null);
       setResolveNote("");
+      setRevokeReason("");
       setShowAdjForm(false);
       setAdjAmount("");
       setAdjReason("");
@@ -294,6 +296,11 @@ export default function HqSettlementDetailPage() {
     if (!settlementId || !pendingAction) return;
     if (pendingAction === "send") {
       void runRpc("rpc_send_settlement_to_store", { p_settlement_id: settlementId });
+    } else if (pendingAction === "revoke") {
+      void runRpc("rpc_revoke_settlement_send", {
+        p_settlement_id: settlementId,
+        p_reason: revokeReason.trim() || null,
+      });
     } else if (pendingAction === "confirm") {
       void runRpc("rpc_confirm_store_monthly_settlement", { p_settlement_id: settlementId });
     } else {
@@ -319,7 +326,8 @@ export default function HqSettlementDetailPage() {
   const canEditEst = ["draft", "sent", "disputed"].includes(header.status);
   const openDisputes = disputes.filter((d) => d.status === "open");
   const monthLabel = header.settlement_month?.slice(0, 7);
-  const showActionBar = isDraft || header.status === "disputed" || header.status === "remitted";
+  const showActionBar =
+    isDraft || header.status === "sent" || header.status === "disputed" || header.status === "remitted";
 
   return (
     <div className={`flex flex-1 flex-col gap-4 p-6 ${showActionBar ? "pb-28" : ""}`}>
@@ -358,6 +366,7 @@ export default function HqSettlementDetailPage() {
       {header.status === "sent" && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
           📨 已送店家核對（{header.sent_at ? new Date(header.sent_at).toLocaleString("zh-TW") : "—"}），等待店家同意畫押或提出爭議。
+          店家還沒回應前，總部可用下方「撤銷送審」把單子收回草稿再改。
         </div>
       )}
       {header.status === "confirmed" && (
@@ -375,6 +384,14 @@ export default function HqSettlementDetailPage() {
       {header.status === "settled" && (
         <div className="rounded-md border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
           ✅ 已結案{header.settled_at ? `（${new Date(header.settled_at).toLocaleString("zh-TW")}）` : ""}。
+        </div>
+      )}
+
+      {/* 備註／軌跡（撤銷送審等操作會 append） */}
+      {header.notes && (
+        <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
+          <div className="mb-1 font-medium">備註／軌跡</div>
+          <div className="whitespace-pre-wrap">{header.notes}</div>
         </div>
       )}
 
@@ -819,6 +836,15 @@ export default function HqSettlementDetailPage() {
                     </SpinButton>
                   </>
                 )}
+                {header.status === "sent" && (
+                  <SpinButton
+                    onClick={() => setPendingAction("revoke")}
+                    disabled={busy}
+                    className="rounded-md border border-amber-400 px-4 py-2 text-sm font-medium text-amber-700 transition hover:bg-amber-50 disabled:opacity-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950"
+                  >
+                    ↩ 撤銷送審（退回草稿）
+                  </SpinButton>
+                )}
                 {header.status === "disputed" && (
                   <SpinButton
                     onClick={() => setPendingAction("send")}
@@ -846,9 +872,18 @@ export default function HqSettlementDetailPage() {
                   {pendingAction === "send" && (header.status === "disputed"
                     ? "爭議已處理完，重新送店家核對？"
                     : "送出對帳單給店家線上核對？")}
+                  {pendingAction === "revoke" && "撤銷送審、把對帳單收回草稿？店家清單會看不到這張單，也不能再核對。"}
                   {pendingAction === "confirm" && "直接確認此月結算（跳過店家線上核對）？確認後鎖定並自動產生應付帳款單。"}
                   {pendingAction === "settle" && "確認已收到店家匯款？結案後應收單將自動入帳，不可再改。"}
                 </span>
+                {pendingAction === "revoke" && (
+                  <input
+                    value={revokeReason}
+                    onChange={(e) => setRevokeReason(e.target.value)}
+                    placeholder="撤銷原因（選填，會記進備註）"
+                    className="w-64 rounded-md border border-zinc-300 px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                  />
+                )}
                 <SpinButton
                   onClick={onConfirmPending}
                   disabled={busy}
@@ -857,7 +892,7 @@ export default function HqSettlementDetailPage() {
                   {busy ? "送出中…" : "確定"}
                 </SpinButton>
                 <SpinButton
-                  onClick={() => setPendingAction(null)}
+                  onClick={() => { setPendingAction(null); setRevokeReason(""); }}
                   disabled={busy}
                   className="rounded-md border border-zinc-300 px-4 py-2 text-sm dark:border-zinc-700"
                 >
