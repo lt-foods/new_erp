@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useParams, useRouter } from "next/navigation";
 import { consumeFragmentToSession, getSession, loginPath } from "@/lib/session";
@@ -8,7 +8,9 @@ import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import { LoadingScreen } from "@/components/Spinner";
 import Countdown from "@/components/Countdown";
+import ViewCount from "@/components/ViewCount";
 import { cleanCampaignText } from "@/lib/text";
+import { logCaught } from "@/lib/clientLog";
 import { isInLiffClient, sendLineInquiry } from "@/lib/lineInquiry";
 import { type SpotProduct, spotProductTitle } from "@/components/SpotProductCard";
 
@@ -62,6 +64,8 @@ export default function SpotDetailPage() {
   // LINE、畫面沒變化，必須有個明確回饋說「已經發出去了」）
   const [sentPopup, setSentPopup] = useState(false);
   const [sendErr, setSendErr] = useState<string | null>(null);
+  // 瀏覽次數：detail 先給一個值，track 回來再蓋掉（含本次瀏覽）
+  const [viewCount, setViewCount] = useState(0);
 
   // portal 要等 client mount（同 /shop/c/[id] 的做法，避免 hydration 對不上）
   useEffect(() => setMounted(true), []);
@@ -83,6 +87,7 @@ export default function SpotDetailPage() {
         const d = await callLiffApi<Resp>(s.token, { action: "get_spot_product", id });
         setItem(d.item);
         setLineOaId(d.my_store_line_oa_id ?? null);
+        if (typeof d.item.view_count === "number") setViewCount(d.item.view_count);
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
       } finally {
@@ -90,6 +95,27 @@ export default function SpotDetailPage() {
       }
     })();
   }, [router, id, validId]);
+
+  // 記一次瀏覽，並拿回含本次的最新計數（去重在後端做，同 /shop/c/[id]）
+  const trackedRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!validId || trackedRef.current === id) return;
+    const s = getSession();
+    if (!s || !s.memberId) return;
+    trackedRef.current = id;
+    (async () => {
+      try {
+        const r = await callLiffApi<{ view_count: number }>(s.token, {
+          action: "track_spot_view",
+          id,
+        });
+        if (typeof r.view_count === "number") setViewCount(r.view_count);
+      } catch (e) {
+        // 記不到不能影響詢問流程，但要留痕（只在會員手機上重現得出來）
+        logCaught("track_spot_view_failed", e, { board_id: id });
+      }
+    })();
+  }, [id, validId]);
 
   const title = item ? spotProductTitle(item) : "";
   const subject = item
@@ -161,6 +187,8 @@ export default function SpotDetailPage() {
               <h2 className="text-[24px] font-bold leading-tight text-[var(--foreground)]">
                 {title}
               </h2>
+
+              <ViewCount count={viewCount} size="md" />
 
               {item.is_my_store ? (
                 <div className="flex items-baseline gap-2">

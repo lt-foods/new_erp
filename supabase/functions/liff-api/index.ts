@@ -434,6 +434,19 @@ async function listSpotProducts(
     }
   }
 
+  // 瀏覽次數（顧客端卡片顯示「👁 N」）。RPC 未部署時整段當 0，不影響列表。
+  const viewMap = new Map<number, number>();
+  const boardIds = (rows ?? []).map((r: any) => Number(r.id));
+  if (boardIds.length > 0) {
+    const { data: viewRows } = await sb.rpc("rpc_spot_view_counts", {
+      p_tenant: tenantId,
+      p_board_ids: boardIds,
+    });
+    for (const v of viewRows ?? []) {
+      viewMap.set(Number(v.board_id), Number(v.view_count ?? 0));
+    }
+  }
+
   const supabaseUrl = requireEnv("SUPABASE_URL");
   const items = (rows ?? []).map((r: any) => {
     const isMyStore = Number(r.offering_store_id) === myStoreId;
@@ -468,6 +481,7 @@ async function listSpotProducts(
       is_my_store: isMyStore,
       unit_price: price,
       original_price: originalPrice,
+      view_count: viewMap.get(Number(r.id)) ?? 0,
     };
   });
 
@@ -566,6 +580,12 @@ async function getSpotProduct(
   const supabaseUrl = requireEnv("SUPABASE_URL");
   const images = resolveSpotImages(supabaseUrl, r.spot_images, r.sku?.product?.images);
 
+  // 瀏覽次數（本次瀏覽由前端另外打 track_spot_view 記，並拿回最新計數）
+  const { data: viewRows } = await sb.rpc("rpc_spot_view_counts", {
+    p_tenant: tenantId,
+    p_board_ids: [Number(r.id)],
+  });
+
   return json({
     item: {
       id: Number(r.id),
@@ -588,6 +608,8 @@ async function getSpotProduct(
       is_my_store: isMyStore,
       unit_price: unitPrice,
       original_price: originalPrice,
+      view_count: Number(viewRows?.[0]?.view_count ?? 0),
+      viewer_count: Number(viewRows?.[0]?.viewer_count ?? 0),
     },
     my_store_id: myStoreId,
     my_store_name: myStoreName,
@@ -819,6 +841,27 @@ async function trackCampaignView(
   const { data, error } = await sb.rpc("rpc_track_campaign_view", {
     p_tenant: tenantId,
     p_campaign_id: campaignId,
+    p_member_id: memberId,
+  });
+  if (error) return json({ error: error.message }, 500);
+  const row = Array.isArray(data) ? data[0] : data;
+  return json({
+    view_count: Number(row?.view_count ?? 0),
+    viewer_count: Number(row?.viewer_count ?? 0),
+  });
+}
+
+/** 記一次現貨商品瀏覽（規則同 trackCampaignView，只是換一張表） */
+async function trackSpotView(
+  sb: any,
+  tenantId: string,
+  memberId: number,
+  boardId: number,
+) {
+  if (!boardId) return json({ error: "id required" }, 400);
+  const { data, error } = await sb.rpc("rpc_track_spot_view", {
+    p_tenant: tenantId,
+    p_board_id: boardId,
     p_member_id: memberId,
   });
   if (error) return json({ error: error.message }, 500);
@@ -1307,6 +1350,7 @@ Deno.serve(async (req) => {
         case "track_campaign_view": if (!memberId) return json({ error: "no member_id" }, 401); return await trackCampaignView(sb, tenantId, memberId, Number(body.campaign_id ?? 0));
         case "list_spot_products": return await listSpotProducts(sb, tenantId, storeId, memberId);
         case "get_spot_product": return await getSpotProduct(sb, tenantId, storeId, memberId, Number(body.id ?? 0));
+        case "track_spot_view": if (!memberId) return json({ error: "no member_id" }, 401); return await trackSpotView(sb, tenantId, memberId, Number(body.id ?? 0));
         case "place_member_order": if (!memberId) return json({ error: "no member_id" }, 401); return await placeMemberOrder(sb, tenantId, memberId, body);
         default: return json({ error: `unknown action: ${action}` }, 400);
       }

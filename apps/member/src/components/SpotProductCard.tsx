@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import ViewCount from "./ViewCount";
 
 /**
  * 現貨專區商品（互助交流板「我有庫存可提供」）在會員端的資料形狀。
@@ -28,6 +29,8 @@ export type SpotProduct = {
   /** 原價（來源訂單單價）。只在「店家有改價且改得比原價低」時才有值，
    *  會員端據此畫刪除線。跨店一律 null（金額隱藏）。 */
   original_price: number | null;
+  /** 總瀏覽次數。後端未部署前可能沒有這個欄位（當 0 處理、不顯示）。 */
+  view_count?: number;
 };
 
 export function spotProductTitle(p: SpotProduct): string {
@@ -104,8 +107,13 @@ export default function SpotProductCard({ item }: { item: SpotProduct }) {
           {title}
         </h3>
 
-        <div className="inline-flex w-fit items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[12px] font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
-          可提供 {qtyText}
+        {/* 瀏覽數放在「可提供」這排，不跟價格 / 跨店徽章同排 ——
+            「跨店 · 金額不顯示」本身就快佔滿兩欄卡的寬度，擠不下第二個元素。 */}
+        <div className="flex items-center justify-between gap-1.5">
+          <div className="inline-flex w-fit items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[12px] font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+            可提供 {qtyText}
+          </div>
+          <ViewCount count={item.view_count} />
         </div>
 
         <div className="mt-auto pt-1">
