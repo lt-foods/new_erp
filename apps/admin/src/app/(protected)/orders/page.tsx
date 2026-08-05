@@ -73,6 +73,16 @@ const TABS: { value: Tab; label: string }[] = [
   { value: "cancelled", label: "取消" },
 ];
 const TAB_VALUES = TABS.map((t) => t.value);
+// 日期區間欄位在各 tab 的名稱與說明 —— 對應 v_admin_orders.event_at 的來源
+// （只有「未取貨」看訂單日 created_at，其餘看該狀態自己的事件時間）。
+const DATE_FIELD_LABEL: Record<Tab, { label: string; hint: string }> = {
+  pending:     { label: "訂單日", hint: "依訂單日 (created_at) 篩選" },
+  ready:       { label: "可取日", hint: "依「到貨變成可取貨」的日期篩選" },
+  partially:   { label: "取貨日", hint: "依最後一次取貨的日期篩選" },
+  completed:   { label: "取貨日", hint: "依取貨完成的日期篩選" },
+  cancelled:   { label: "取消日", hint: "依取消／過期的日期篩選" },
+  transferred: { label: "轉出日", hint: "依轉出（開出接手單）的日期篩選" },
+};
 const PENDING_STATUSES: OrderStatus[] = ["pending", "confirmed", "shipping", "ready"];
 const CANCELLED_STATUSES: OrderStatus[] = ["cancelled", "expired"];
 
@@ -234,11 +244,14 @@ function OrdersListContent() {
 
   const fromTs = useMemo(() => (dateFrom ? dayStartIso(dateFrom) : null), [dateFrom]);
   const toTs = useMemo(() => (dateTo ? dayStartIso(dateTo, 1) : null), [dateTo]);
-  // 日期區間的語意跟著 tab 走（不另做切換 UI）：已完成 / 部分取貨 = 取貨日，其餘 = 訂單日。
-  // 團購下單到取貨隔好幾天甚至幾週，在「已完成」用訂單日篩最近幾天永遠是 0 筆；
-  // 這兩個 tab 使用者真正要問的是「這幾天交出去哪些貨」。DB 端 tab 數量同步改法見
-  // migration 20260805000110_rpc_order_overview_pickup_date_tabs.sql。
-  const dateOnPickup = tab === "completed" || tab === "partially";
+  // 日期區間的語意跟著 tab 走（不另做切換 UI）：只有「未取貨」看訂單日，其餘每個 tab
+  // 都看該狀態自己的事件日 v_admin_orders.event_at（可取=ready_at、取貨=completed_at /
+  // 最後一次取貨、取消=cancelled_at、轉出=接手單 created_at）。
+  // 團購下單到取貨隔好幾天甚至幾週，終態 tab 用訂單日篩最近幾天永遠是 0 筆 ——
+  // 使用者要問的是「這幾天*發生*了什麼」。定義與覆蓋率見 migration
+  // 20260805000120_v_admin_orders_event_at.sql；tab 數量同步改法見 20260805000130。
+  // ⚠ 不要改用 updated_at：它會被之後任何寫入 touch 掉（線上 26% 的已完成單偏差 >1h）。
+  const dateOnEvent = tab !== "pending";
   const hasFilter = campaignIds.length > 0 || !!storeId || !!keyword || !!dateFrom || !!dateTo;
 
   useEffect(() => { setPage(1); }, [campaignIds, tab, storeId, keyword, fromTs, toTs]);
@@ -328,18 +341,13 @@ function OrdersListContent() {
     setLoading(true);
     (async () => {
       try {
-        const cols = "id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, transferred_from_order_id, created_at, updated_at";
-        // 取貨日模式（已完成 / 部分取貨 + 有設日期）：改用 PostgREST 內嵌 !inner 過濾
-        // 「該區間內有 picked_up 明細」的訂單。內嵌是 lateral，父列不會因多筆明細重複，
-        // count:exact 仍等於訂單數（線上對照 EXISTS 版 SQL：同為 213 筆）。
-        const pickupRange = dateOnPickup && !!(fromTs || toTs);
-        // select 字串是動態的（兩種 shape），supabase-js 的型別解析器吃不了 union，
-        // 故標成 string 讓它退回 any；回傳值下面照舊 cast 成 Row[]。
-        const sel: string = pickupRange ? `${cols}, customer_order_items!inner(order_id)` : cols;
+        // 查 v_admin_orders（= customer_orders + 事件日 event_at），日期區間才有單一
+        // 欄位可篩；事件日 tab 也照事件日排序（照 updated_at 排會讓被批次寫入 touch
+        // 過的舊單浮到最前面）。
         let q = getSupabase()
-          .from("customer_orders")
-          .select(sel, { count: "exact" })
-          .order("updated_at", { ascending: false })
+          .from("v_admin_orders")
+          .select("id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, transferred_from_order_id, created_at, updated_at", { count: "exact" })
+          .order(dateOnEvent ? "event_at" : "updated_at", { ascending: false })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
         if (campaignIds.length === 1) q = q.eq("campaign_id", Number(campaignIds[0]));
@@ -352,15 +360,9 @@ function OrdersListContent() {
         else if (tab === "transferred") q = q.eq("status", "transferred_out");
         else q = q.in("status", PENDING_STATUSES);
         if (storeId) q = q.eq("pickup_store_id", Number(storeId));
-        if (pickupRange) {
-          // 取貨日 = picked_up 明細的 updated_at（與 KPI「今日取貨金額」同一定義）
-          q = q.eq("customer_order_items.status", "picked_up");
-          if (fromTs) q = q.gte("customer_order_items.updated_at", fromTs);
-          if (toTs) q = q.lt("customer_order_items.updated_at", toTs);
-        } else {
-          if (fromTs) q = q.gte("created_at", fromTs);
-          if (toTs) q = q.lt("created_at", toTs);
-        }
+        const dateCol = dateOnEvent ? "event_at" : "created_at";
+        if (fromTs) q = q.gte(dateCol, fromTs);
+        if (toTs) q = q.lt(dateCol, toTs);
         const kwOr = await buildKeywordOr(keyword);
         if (cancelled) return;
         if (kwOr) q = q.or(kwOr);
@@ -417,7 +419,7 @@ function OrdersListContent() {
       }
     })();
     return () => { cancelled = true; };
-  }, [campaignIds, tab, dateOnPickup, storeId, page, reloadOrders, keyword, fromTs, toTs]);
+  }, [campaignIds, tab, dateOnEvent, storeId, page, reloadOrders, keyword, fromTs, toTs]);
 
   // 頁首聚合（tab 數量 + 月趨勢）— 單一伺服端 RPC rpc_order_overview
   // 取代之前 client 端「5 個 count:exact 全表掃描」+「搬整月訂單+全部明細
@@ -855,18 +857,16 @@ function OrdersListContent() {
         </form>
       </div>
 
-      {/* 日期區間 — 含起訖當日；留空 = 不限。語意跟著 tab 走（見 dateOnPickup）：
-          已完成 / 部分取貨 = 取貨日，其餘 = 訂單日 (created_at)。
+      {/* 日期區間 — 含起訖當日；留空 = 不限。語意跟著 tab 走（見 dateOnEvent 與
+          DATE_FIELD_LABEL）：未取貨 = 訂單日，其餘 = 該狀態的事件日。
           自成一列：兩個 date input + 快捷鈕塞進上面的 3 欄 grid 會被壓到看不到年份。 */}
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <div
           className="flex items-center gap-1 rounded-md border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-800"
-          title={dateOnPickup
-            ? "此分頁依取貨日篩選（已取貨品項的取貨時間），含起訖當日；留空 = 不限"
-            : "依訂單日 (created_at) 篩選，含起訖當日；留空 = 不限"}
+          title={`${DATE_FIELD_LABEL[tab].hint}，含起訖當日；留空 = 不限`}
         >
-          <span className={`shrink-0 pl-1 text-xs ${dateOnPickup ? "font-medium text-emerald-700 dark:text-emerald-400" : "text-zinc-500"}`}>
-            {dateOnPickup ? "取貨日" : "訂單日"}
+          <span className={`shrink-0 pl-1 text-xs ${dateOnEvent ? "font-medium text-emerald-700 dark:text-emerald-400" : "text-zinc-500"}`}>
+            {DATE_FIELD_LABEL[tab].label}
           </span>
           <input
             type="date"
