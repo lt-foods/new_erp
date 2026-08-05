@@ -25,7 +25,8 @@ type StoreRow = { id: number; name: string; location_id: number | null };
 // items：拆開的品項行（key = 合併同品相用的識別；自由轉貨掛虛擬 SKU，要用 description 當 key）
 // product = 只有商品名（不含規格），給群組標題用；name = 商品名 / 規格，明細表用
 type ItemLine = { key: string; skuId: number | null; product: string; name: string; skuCode: string | null; qty: number };
-// extraQty：這張單裡「沒有訂單對應」的件數（派出量 − 訂單需求量），見下方查詢註解
+// extraQty / shortQty：這張單的派出量 vs 訂單需求量差額（見下方查詢註解）
+//   extraQty = 多給、沒有訂單對應；shortQty = 不夠分，會有客人領不到
 type ItemSummary = {
   lines: number;
   totalQty: number;
@@ -33,6 +34,7 @@ type ItemSummary = {
   codes: string[];
   items: ItemLine[];
   extraQty: number;
+  shortQty: number;
 };
 
 // 列表上的一個可收合群組（product 模式＝同品相，wave 模式＝同撿貨單號）
@@ -47,6 +49,7 @@ type Group = {
   sortCode: string;
   waveDate: string | null; // 配送日，用來標「逾期 / 今天」
   extraQty: number;        // 這組總共被總倉多給幾件
+  shortQty: number;        // 這組總共少了幾件（訂單比派出多）
 };
 
 export default function TransfersInboxPage() {
@@ -284,7 +287,7 @@ export default function TransfersInboxPage() {
               if (code) skuCodeMap.set(s.id, code);
             }
           }
-          const emptySummary = (): ItemSummary => ({ lines: 0, totalQty: 0, names: [], codes: [], items: [], extraQty: 0 });
+          const emptySummary = (): ItemSummary => ({ lines: 0, totalQty: 0, names: [], codes: [], items: [], extraQty: 0, shortQty: 0 });
           for (const tid of transferIds) summary.set(tid, emptySummary());
           for (const it of items) {
             const cur = summary.get(it.transfer_id) ?? emptySummary();
@@ -308,16 +311,19 @@ export default function TransfersInboxPage() {
             summary.set(it.transfer_id, cur);
           }
 
-          // 「總倉多給」= 派出量 > 該店該團的訂單需求量（沒有訂單對應的那幾件）。
-          // 不是比 picking_wave_items 的 picked_qty vs qty — 線上 17429 列裡
-          // over_pick 是 0，用那個定義標籤永遠不會亮（見 20260805000040 migration）。
-          // 每張單的件數與彈窗裡「派出 − 訂單合計」同一套 join，兩邊數字保證一致。
-          const { data: overData } = await sb.rpc("rpc_get_over_ship_for_transfers", {
+          // 派出量 vs 該店該團的訂單需求量：多給（沒訂單對應）與不夠分（會有人領不到）。
+          // 不是比 picking_wave_items 的 picked_qty vs qty — 線上 17429 列裡 over_pick
+          // 是 0，用那個定義標籤永遠不會亮（見 20260805000050 migration）。
+          // 件數與彈窗裡「派出 − 訂單合計」同一套 join，兩邊數字保證一致。
+          const { data: diffData } = await sb.rpc("rpc_get_ship_vs_demand_for_transfers", {
             p_transfer_ids: transferIds,
           });
-          for (const [tid, extra] of Object.entries((overData as Record<string, unknown> | null) ?? {})) {
+          const diffs = (diffData as Record<string, { over?: number; short?: number }> | null) ?? {};
+          for (const [tid, d] of Object.entries(diffs)) {
             const cur = summary.get(Number(tid));
-            if (cur) cur.extraQty = Number(extra) || 0;
+            if (!cur) continue;
+            cur.extraQty = Number(d?.over) || 0;
+            cur.shortQty = Number(d?.short) || 0;
           }
         }
 
@@ -445,12 +451,14 @@ export default function TransfersInboxPage() {
             sortCode: w?.wave_code ?? (wid !== null ? `WAVE-${wid}` : ""),
             waveDate: w?.wave_date ?? null,
             extraQty: 0,
+            shortQty: 0,
           };
           map.set(key, entry);
         }
         entry.transfers.push(t);
         entry.totalQty += itemSummary.get(t.id)?.totalQty ?? 0;
         entry.extraQty += itemSummary.get(t.id)?.extraQty ?? 0;
+        entry.shortQty += itemSummary.get(t.id)?.shortQty ?? 0;
       }
       return Array.from(map.values()).sort((a, b) => {
         // 「其他調撥」永遠墊底，其餘依撿貨單號遞減
@@ -490,12 +498,14 @@ export default function TransfersInboxPage() {
           sortCode: `${date || "9999-99-99"}|${products.join("、")}|${dest}`,
           waveDate: date || null,
           extraQty: 0,
+          shortQty: 0,
         };
         map.set(key, entry);
       }
       entry.transfers.push(t);
       entry.totalQty += s?.totalQty ?? 0;
       entry.extraQty += s?.extraQty ?? 0;
+      entry.shortQty += s?.shortQty ?? 0;
     }
     const asc = tab === "unreceived";
     return Array.from(map.values()).sort((a, b) =>
@@ -1060,6 +1070,9 @@ export default function TransfersInboxPage() {
                         <Pill tone="emerald">✓ 已收到</Pill>
                       )}
                       {dueTag && <Pill tone={dueTag === "逾期" ? "rose" : "amber"}>{dueTag}</Pill>}
+                      {g.shortQty > 0 && (
+                        <Pill tone="rose">⚠ 少 {g.shortQty} 件 · 訂單比到貨多</Pill>
+                      )}
                       {g.extraQty > 0 && (
                         <Pill tone="blue">🎁 總倉多給 {g.extraQty} 件</Pill>
                       )}
@@ -1223,6 +1236,14 @@ export default function TransfersInboxPage() {
                               </SpinButton>
                               {summary && summary.lines > 1 && (
                                 <span className="ml-1 text-[10px] font-normal text-zinc-400">{summary.lines} 項</span>
+                              )}
+                              {summary && summary.shortQty > 0 && (
+                                <div
+                                  className="text-[10px] font-medium text-rose-600 dark:text-rose-400"
+                                  title="訂單比這批到貨量多，這幾件會有客人領不到 — 點數量看是哪幾筆訂單"
+                                >
+                                  ⚠ 少 {summary.shortQty}
+                                </div>
                               )}
                               {summary && summary.extraQty > 0 && (
                                 <div
