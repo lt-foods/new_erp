@@ -41,6 +41,19 @@ type DeductionNote = {
   kind?: "note" | "offset";
 };
 
+// 已領走的品項行：唯讀對帳用（那 N 件是誰領走的），不參與配貨
+type PickedRow = {
+  item_id: number;
+  order_id: number;
+  order_no: string;
+  customer: string | null;
+  order_status: string;
+  item_status: string;
+  qty: number;
+  picked_at: string | null;
+  created_at: string;
+};
+
 type Payload = {
   store_id: number;
   campaign_id: number;
@@ -51,6 +64,7 @@ type Payload = {
   store_on_hand: number;
   notes: DeductionNote[];
   items: Candidate[];
+  picked_items?: PickedRow[];
 };
 
 export function ShortageAllocateModal({
@@ -91,6 +105,7 @@ export function ShortageAllocateModal({
       store_on_hand: Number(raw.store_on_hand) || 0,
       notes: (raw.notes ?? []).map((n) => ({ ...n, qty: Number(n.qty) })),
       items: (raw.items ?? []).map((r) => ({ ...r, qty: Number(r.qty) })),
+      picked_items: (raw.picked_items ?? []).map((r) => ({ ...r, qty: Number(r.qty) })),
     };
     setData(payload);
     // 進來時先反映現況：沒被標待補貨的整行都算配到
@@ -508,6 +523,54 @@ export function ShortageAllocateModal({
                         沒有未取的訂單 — 這批不需要配貨。
                       </td>
                     </tr>
+                  )}
+                  {(data.picked_items ?? []).length > 0 && (
+                    <>
+                      <tr className="border-t border-zinc-200 bg-zinc-100/80 dark:border-zinc-800 dark:bg-zinc-900">
+                        <td colSpan={6} className="px-3 py-1.5 text-[11px] font-medium text-zinc-500">
+                          已領走 {data.picked} 件（唯讀，僅供對帳 — 這些貨已經被領走，不能重新配）
+                        </td>
+                      </tr>
+                      {(data.picked_items ?? []).map((r) => (
+                        <tr key={`picked-${r.item_id}`} className="text-zinc-400 dark:text-zinc-500">
+                          <td className="px-3 py-2 text-center">—</td>
+                          <td className="px-3 py-2 font-mono text-xs">
+                            <Link
+                              href={orderListHref(r.order_no, r.order_status)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="hover:underline"
+                              title="開新分頁查看這張訂單"
+                            >
+                              {r.order_no} ↗
+                            </Link>
+                          </td>
+                          <td className="max-w-[220px] truncate px-3 py-2" title={r.customer ?? ""}>
+                            {r.customer || "—"}
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-2 text-xs">
+                            {new Date(r.created_at).toLocaleString("zh-TW", {
+                              dateStyle: "short",
+                              timeStyle: "short",
+                            })}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums">{r.qty}</td>
+                          <td
+                            className="whitespace-nowrap px-3 py-2 text-right text-xs"
+                            title={
+                              r.picked_at
+                                ? `領走時間 ${new Date(r.picked_at).toLocaleString("zh-TW", {
+                                    dateStyle: "short",
+                                    timeStyle: "short",
+                                  })}`
+                                : undefined
+                            }
+                          >
+                            {r.item_status === "partially_picked_up" ? "部分領走" : "已領走"}
+                          </td>
+                        </tr>
+                      ))}
+                    </>
                   )}
                 </tbody>
               </table>
