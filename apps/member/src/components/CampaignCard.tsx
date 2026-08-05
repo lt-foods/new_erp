@@ -17,6 +17,8 @@ export type CampaignSummary = {
   order_count: number;
   /** 近 7 天訂單數（近期售出排序用）。 */
   recent_order_count: number;
+  /** 總瀏覽次數。後端未部署前可能沒有這個欄位，詳情頁只拿來當預填值。 */
+  view_count?: number;
   end_at: string | null;
   pickup_deadline: string | null;
   item_count: number;

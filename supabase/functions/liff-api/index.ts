@@ -634,6 +634,18 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
     }
   }
 
+  // 瀏覽次數（顧客端顯示「N 次瀏覽」）。RPC 未部署時整段當 0，不影響列表。
+  const viewMap = new Map<number, number>();
+  if (allIds.length > 0) {
+    const { data: viewRows } = await sb.rpc("rpc_campaign_view_counts", {
+      p_tenant: tenantId,
+      p_campaign_ids: allIds,
+    });
+    for (const r of viewRows ?? []) {
+      viewMap.set(Number(r.campaign_id), Number(r.view_count ?? 0));
+    }
+  }
+
   // 全分店訂單數 + 近 7 天訂單數（顧客端排序用：最熱銷 / 近期售出）。
   // 走 SQL 聚合 RPC，避免訂單列數超過 PostgREST 1000 上限被截斷而計數失準。
   const countMap = new Map<number, number>();
@@ -678,6 +690,7 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
       ordered_qty: orderedMap.get(Number(c.id)) ?? 0,
       order_count: countMap.get(Number(c.id)) ?? 0,
       recent_order_count: recentMap.get(Number(c.id)) ?? 0,
+      view_count: viewMap.get(Number(c.id)) ?? 0,
       end_at: c.end_at,
       pickup_deadline: c.pickup_deadline,
       item_count: prices.length,
@@ -727,6 +740,14 @@ async function getCampaignDetail(sb: any, tenantId: string, campaignId: number) 
     .not("status", "in", "(cancelled,expired)")
     .or("order_kind.is.null,order_kind.eq.normal");
   c.order_count = orderCount ?? 0;
+
+  // 瀏覽次數（這次的瀏覽由前端另外打 track_campaign_view 記，並拿回最新計數）
+  const { data: viewRows } = await sb.rpc("rpc_campaign_view_counts", {
+    p_tenant: tenantId,
+    p_campaign_ids: [campaignId],
+  });
+  c.view_count = Number(viewRows?.[0]?.view_count ?? 0);
+  c.viewer_count = Number(viewRows?.[0]?.viewer_count ?? 0);
 
   // 算出各品項已下單總量
   const itemOrderedMap = new Map<number, number>();
@@ -780,6 +801,32 @@ async function getCampaignDetail(sb: any, tenantId: string, campaignId: number) 
     };
   });
   return json({ campaign: c, items: flat, hero_images: heroPaths });
+}
+
+/**
+ * 記一次商品瀏覽，回傳更新後的計數。
+ *
+ * 去重（同會員同商品 30 分鐘內只算一次）在 SQL 裡做 —— 前端的 useEffect
+ * 會因為返回 / 重整重跑，只靠前端擋不住，數字會失真。
+ */
+async function trackCampaignView(
+  sb: any,
+  tenantId: string,
+  memberId: number,
+  campaignId: number,
+) {
+  if (!campaignId) return json({ error: "campaign_id required" }, 400);
+  const { data, error } = await sb.rpc("rpc_track_campaign_view", {
+    p_tenant: tenantId,
+    p_campaign_id: campaignId,
+    p_member_id: memberId,
+  });
+  if (error) return json({ error: error.message }, 500);
+  const row = Array.isArray(data) ? data[0] : data;
+  return json({
+    view_count: Number(row?.view_count ?? 0),
+    viewer_count: Number(row?.viewer_count ?? 0),
+  });
 }
 
 async function placeMemberOrder(
@@ -1257,6 +1304,7 @@ Deno.serve(async (req) => {
         case "generate_pwa_auth_code": if (!memberId) return json({ error: "no member_id" }, 401); return await generatePwaAuthCode(sb, tenantId, memberId, claims, token, body);
         case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId, typeof body.close_type === "string" ? body.close_type : null, memberId);
         case "get_campaign_detail": return await getCampaignDetail(sb, tenantId, Number(body.campaign_id ?? 0));
+        case "track_campaign_view": if (!memberId) return json({ error: "no member_id" }, 401); return await trackCampaignView(sb, tenantId, memberId, Number(body.campaign_id ?? 0));
         case "list_spot_products": return await listSpotProducts(sb, tenantId, storeId, memberId);
         case "get_spot_product": return await getSpotProduct(sb, tenantId, storeId, memberId, Number(body.id ?? 0));
         case "place_member_order": if (!memberId) return json({ error: "no member_id" }, 401); return await placeMemberOrder(sb, tenantId, memberId, body);

@@ -99,6 +99,7 @@ type CampaignsCache = {
   total: number;
   itemCounts: Map<number, number>;
   listOrderCounts: Map<number, { normalQty: number; offsetQty: number }>;
+  viewCounts: Map<number, { views: number; viewers: number }>;
   queryDraft: string;
   query: string;
   status: string;
@@ -164,6 +165,8 @@ export default function CampaignsListPage() {
 
   const [itemCounts, setItemCounts] = useState<Map<number, number>>(() => campaignsCache?.itemCounts ?? new Map());
   const [listOrderCounts, setListOrderCounts] = useState<Map<number, { normalQty: number; offsetQty: number }>>(() => campaignsCache?.listOrderCounts ?? new Map());
+  // 會員 App 的商品瀏覽次數（views = 總次數、viewers = 不重複會員數）
+  const [viewCounts, setViewCounts] = useState<Map<number, { views: number; viewers: number }>>(() => campaignsCache?.viewCounts ?? new Map());
 
   // 從 cache 還原時，第一輪 render 的 reset-page / 主 fetch 都要跳過，
   // 否則會把 cache 的 page=3 重置回 1、或把畫面歸零重抓。
@@ -527,6 +530,7 @@ export default function CampaignsListPage() {
         // 為了寫回 cache，沿用 ids.length===0 時舊有狀態（與原本 setItemCounts 不動的行為一致）
         let computedItemCounts: Map<number, number> = campaignsCache?.itemCounts ?? new Map();
         let computedOrderCounts: Map<number, { normalQty: number; offsetQty: number }> = campaignsCache?.listOrderCounts ?? new Map();
+        let computedViewCounts: Map<number, { views: number; viewers: number }> = campaignsCache?.viewCounts ?? new Map();
 
         // 補商品數 + 下單總數量（normal / offset 分開、SUM(qty)）
         // chunked fetch: 跨萬筆訂單仍 work (bypass PostgREST 1000 row cap)
@@ -567,6 +571,25 @@ export default function CampaignsListPage() {
           }
           if (!cancelled) setListOrderCounts(om);
           computedOrderCounts = om;
+
+          // 商品瀏覽次數（會員 App）。走 SQL 聚合 RPC —— 瀏覽列數會超過
+          // PostgREST 1000 列上限，撈回來自己 count 會失準。
+          // RPC 還沒部署時當作沒有瀏覽資料，不能讓整頁掛掉。
+          const { data: viewRows, error: viewErr } = await getSupabase()
+            .rpc("rpc_campaign_view_counts", { p_campaign_ids: ids });
+          if (viewErr) {
+            console.warn("rpc_campaign_view_counts failed:", viewErr.message);
+          } else {
+            const vm = new Map<number, { views: number; viewers: number }>();
+            for (const v of (viewRows ?? []) as { campaign_id: number; view_count: number; viewer_count: number }[]) {
+              vm.set(Number(v.campaign_id), {
+                views: Number(v.view_count ?? 0),
+                viewers: Number(v.viewer_count ?? 0),
+              });
+            }
+            if (!cancelled) setViewCounts(vm);
+            computedViewCounts = vm;
+          }
         }
 
         // 寫回 cache 給下次返回用（保留 queryDraft / scrollY 不被洗掉）
@@ -576,6 +599,7 @@ export default function CampaignsListPage() {
             total: count ?? 0,
             itemCounts: computedItemCounts,
             listOrderCounts: computedOrderCounts,
+            viewCounts: computedViewCounts,
             queryDraft: campaignsCache?.queryDraft ?? query,
             query,
             status,
@@ -999,6 +1023,14 @@ export default function CampaignsListPage() {
                   </Link>
                 );
               })()}
+              {(() => {
+                const vc = viewCounts.get(r.id);
+                return (
+                  <span title={`會員 App 商品頁瀏覽次數${vc ? `\n不重複會員：${vc.viewers} 人` : ""}`}>
+                    瀏覽 {vc?.views ?? 0}
+                  </span>
+                );
+              })()}
               <span className="ml-auto">更新 {new Date(r.updated_at).toLocaleDateString("zh-TW")}</span>
             </div>
             <div
@@ -1029,13 +1061,13 @@ export default function CampaignsListPage() {
               className="cursor-pointer"
             />
           </Th>
-          <Th className="w-12">{""}</Th><Th className="w-20">{""}</Th><Th className="min-w-[14rem]">名稱</Th><Th className="whitespace-nowrap">狀態</Th><Th className="whitespace-nowrap">收單</Th><Th className="whitespace-nowrap">開團/收單</Th><Th className="whitespace-nowrap">取貨截止</Th><Th align="right" className="whitespace-nowrap">商品數</Th><Th align="right" className="whitespace-nowrap">下單總數</Th><Th align="right" className="whitespace-nowrap">更新</Th><Th>{""}</Th>
+          <Th className="w-12">{""}</Th><Th className="w-20">{""}</Th><Th className="min-w-[14rem]">名稱</Th><Th className="whitespace-nowrap">狀態</Th><Th className="whitespace-nowrap">收單</Th><Th className="whitespace-nowrap">開團/收單</Th><Th className="whitespace-nowrap">取貨截止</Th><Th align="right" className="whitespace-nowrap">商品數</Th><Th align="right" className="whitespace-nowrap">下單總數</Th><Th align="right" className="whitespace-nowrap">瀏覽數</Th><Th align="right" className="whitespace-nowrap">更新</Th><Th>{""}</Th>
         </THead>
         <TBody>
           {rows === null ? (
-            <LoadingRow colSpan={12} />
+            <LoadingRow colSpan={13} />
           ) : rows.length === 0 ? (
-            <EmptyRow colSpan={12}>{total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}</EmptyRow>
+            <EmptyRow colSpan={13}>{total === 0 && !query && !status ? "還沒有開團，按「新增開團」開始。" : "沒有符合條件的開團。"}</EmptyRow>
           ) : rows.map((r) => (
             <Tr key={r.id} onClick={() => openEdit(r.id)} className={selectedIds.has(r.id) ? "bg-blue-50 dark:bg-blue-950/30" : ""}>
                 <Td className="w-10">
@@ -1090,6 +1122,20 @@ export default function CampaignsListPage() {
                           </span>
                         )}
                       </Link>
+                    );
+                  })()}
+                </Td>
+                <Td align="right">
+                  {(() => {
+                    const vc = viewCounts.get(r.id);
+                    if (!vc || vc.views === 0) return <span className="font-mono text-zinc-400">0</span>;
+                    return (
+                      <span
+                        className="font-mono whitespace-nowrap"
+                        title={`會員 App 商品頁瀏覽次數：${vc.views} 次\n不重複會員：${vc.viewers} 人`}
+                      >
+                        {vc.views}
+                      </span>
                     );
                   })()}
                 </Td>
