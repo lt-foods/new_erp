@@ -21,7 +21,27 @@ type Location = { id: number; name: string };
 type StoreLite = { id: number; location_id: number | null };
 type StoreRow = { id: number; name: string; location_id: number | null };
 // codes：本張 transfer 涵蓋的品項編號(sku_code) / 商品編號(product_code)，僅供搜尋比對用
-type ItemSummary = { lines: number; totalQty: number; names: string[]; codes: string[] };
+// items：拆開的品項行（key = 合併同品相用的識別；自由轉貨掛虛擬 SKU，要用 description 當 key）
+type ItemLine = { key: string; name: string; qty: number };
+type ItemSummary = {
+  lines: number;
+  totalQty: number;
+  names: string[];
+  codes: string[];
+  items: ItemLine[];
+};
+
+// 列表上的一個可收合群組（product 模式＝同品相，wave 模式＝同撿貨單號）
+type Group = {
+  key: string;
+  label: string;
+  subLabel: string;
+  mono: boolean; // label 是單號 → 等寬字
+  transfers: Transfer[];
+  totalQty: number;
+  sortCode: string;
+  waveDate: string | null; // 配送日，用來標「逾期 / 今天」
+};
 
 export default function TransfersInboxPage() {
   const [transfers, setTransfers] = useState<Transfer[] | null>(null);
@@ -52,6 +72,32 @@ export default function TransfersInboxPage() {
       window.localStorage.setItem("inbound-notify-members", notifyMembers ? "1" : "0");
     }
   }, [notifyMembers]);
+  // 檢視模式：product = 同品相（同分店 + 同配送日 + 同品項組合）的單合併成一列；
+  // wave = 舊行為，依撿貨單號分組。店家幾乎都是一單一品，合併後畫面短很多 → 預設 product。
+  type GroupMode = "product" | "wave";
+  const [groupMode, setGroupMode] = useState<GroupMode>(() => {
+    if (typeof window === "undefined") return "product";
+    return window.localStorage.getItem("inbound-group-mode") === "wave" ? "wave" : "product";
+  });
+  // 技術欄位（調撥單號 / 調撥類型 / 派出時間 / 訂單連結 / KPI 說明）。
+  // 店家看不懂也用不到，預設收起來；總倉要對單再自己打開，設定記在 localStorage。
+  const [showDetail, setShowDetail] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("inbound-show-detail") === "1";
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("inbound-group-mode", groupMode);
+    window.localStorage.setItem("inbound-show-detail", showDetail ? "1" : "0");
+  }, [groupMode, showDetail]);
+  // 載入完成時要不要自動展開群組 — 只有 wave 模式才展開（product 模式標題已經寫著品名+數量，
+  // 展開只是把畫面拉長）。放 ref 是為了不讓 groupMode 進到抓資料的 effect deps 觸發重抓。
+  const groupModeRef = useRef(groupMode);
+  useEffect(() => { groupModeRef.current = groupMode; }, [groupMode]);
+
+  // 今天（本地時區 YYYY-MM-DD），用來標群組的「逾期 / 今天到貨」
+  const todayStr = useMemo(() => new Date().toLocaleDateString("sv-SE"), []);
+
   // 待收子篩選（僅在「未收」分頁內作用）
   type DateFilter = "tomorrow" | "today_or_earlier" | "all_pending" | null;
   const [dateFilter, setDateFilter] = useState<DateFilter>(null);
@@ -223,14 +269,17 @@ export default function TransfersInboxPage() {
               if (code) skuCodeMap.set(s.id, code);
             }
           }
-          for (const tid of transferIds) summary.set(tid, { lines: 0, totalQty: 0, names: [], codes: [] });
+          const emptySummary = (): ItemSummary => ({ lines: 0, totalQty: 0, names: [], codes: [], items: [] });
+          for (const tid of transferIds) summary.set(tid, emptySummary());
           for (const it of items) {
-            const cur = summary.get(it.transfer_id) ?? { lines: 0, totalQty: 0, names: [], codes: [] };
+            const cur = summary.get(it.transfer_id) ?? emptySummary();
             cur.lines += 1;
-            cur.totalQty += Number(it.qty_shipped);
-            const name =
-              it.description?.trim() || (skuNameMap.get(it.sku_id) ?? `#${it.sku_id}`);
-            cur.names.push(`${name} × ${Number(it.qty_shipped)}`);
+            const qty = Number(it.qty_shipped);
+            cur.totalQty += qty;
+            const desc = it.description?.trim();
+            const name = desc || (skuNameMap.get(it.sku_id) ?? `#${it.sku_id}`);
+            cur.names.push(`${name} × ${qty}`);
+            cur.items.push({ key: desc ? `d:${desc}` : `s:${it.sku_id}`, name, qty });
             const code = skuCodeMap.get(it.sku_id);
             if (code) cur.codes.push(code);
             summary.set(it.transfer_id, cur);
@@ -280,7 +329,9 @@ export default function TransfersInboxPage() {
             const wid = parseWaveId(r.transfer_no);
             auto.add(wid !== null ? `wave-${wid}` : "other");
           }
-          setExpanded(auto);
+          // product 模式的群組 key 由內容算出、重載後仍相同 → 保留使用者展開的狀態，
+          // 不要每次收完貨都把畫面重設。
+          setExpanded((prev) => (groupModeRef.current === "wave" ? auto : prev));
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -339,41 +390,97 @@ export default function TransfersInboxPage() {
   }, [transfers, locationFilter, tab, dateFilter, waves, search, itemSummary, locations]);
 
   const groups = useMemo(() => {
-    const map = new Map<
-      string,
-      { label: string; subLabel: string; transfers: Transfer[]; sortCode: string }
-    >();
-    for (const t of filtered) {
-      const wid = parseWaveId(t.transfer_no);
-      const key = wid !== null ? `wave-${wid}` : "other";
-      let entry = map.get(key);
-      if (!entry) {
-        const w = wid !== null ? waves.get(wid) : undefined;
-        entry = {
-          label: w?.wave_code ?? (wid !== null ? `WAVE-${wid}` : "其他調撥"),
-          subLabel: w ? `配送日 ${w.wave_date}` : "",
-          transfers: [],
-          // 排序鍵＝撿貨單號（wave_code）；wave_code 已內含日期，字串遞減即最新在前
-          sortCode: w?.wave_code ?? (wid !== null ? `WAVE-${wid}` : ""),
-        };
-        map.set(key, entry);
+    const map = new Map<string, Group>();
+    if (groupMode === "wave") {
+      for (const t of filtered) {
+        const wid = parseWaveId(t.transfer_no);
+        const key = wid !== null ? `wave-${wid}` : "other";
+        let entry = map.get(key);
+        if (!entry) {
+          const w = wid !== null ? waves.get(wid) : undefined;
+          entry = {
+            key,
+            label: w?.wave_code ?? (wid !== null ? `WAVE-${wid}` : "其他調撥"),
+            subLabel: w ? `配送日 ${w.wave_date}` : "",
+            mono: true,
+            transfers: [],
+            totalQty: 0,
+            // 排序鍵＝撿貨單號（wave_code）；wave_code 已內含日期，字串遞減即最新在前
+            sortCode: w?.wave_code ?? (wid !== null ? `WAVE-${wid}` : ""),
+            waveDate: w?.wave_date ?? null,
+          };
+          map.set(key, entry);
+        }
+        entry.transfers.push(t);
+        entry.totalQty += itemSummary.get(t.id)?.totalQty ?? 0;
       }
-      entry.transfers.push(t);
-    }
-    return Array.from(map.entries())
-      .map(([key, v]) => ({ key, ...v }))
-      .sort((a, b) => {
+      return Array.from(map.values()).sort((a, b) => {
         // 「其他調撥」永遠墊底，其餘依撿貨單號遞減
         if (a.key === "other") return 1;
         if (b.key === "other") return -1;
         return b.sortCode.localeCompare(a.sortCode);
       });
-  }, [filtered, waves]);
+    }
 
-  // 切分頁 / 篩選 / 搜尋時，撿貨單號分頁歸零回第一頁（20 筆）
+    // product 模式：同分店 + 同配送日 + 同品項組合 → 併成一列。
+    // 配送日進 key 是刻意的：把 8/3 沒收到的跟 8/5 的併在一起會讓逾期的那批消失在總數裡。
+    for (const t of filtered) {
+      const s = itemSummary.get(t.id);
+      const wid = parseWaveId(t.transfer_no);
+      const w = wid !== null ? waves.get(wid) : undefined;
+      const date = w?.wave_date ?? "";
+      const lines = [...(s?.items ?? [])].sort((a, b) => a.key.localeCompare(b.key));
+      const sig = lines.map((l) => l.key).join("|") || "empty";
+      const key = `p-${t.dest_location}-${date}-${sig}`;
+      let entry = map.get(key);
+      if (!entry) {
+        const dest = locations.get(t.dest_location) ?? `#${t.dest_location}`;
+        // 品名不帶數量 — 數量在群組層加總（× 1 + × 14 + × 6 = 共 21 件）
+        const names = Array.from(new Set(lines.map((l) => l.name)));
+        entry = {
+          key,
+          label: names.join("、") || "—",
+          subLabel: [dest, date ? `配送日 ${date}` : ""].filter(Boolean).join(" · "),
+          mono: false,
+          transfers: [],
+          totalQty: 0,
+          // 未收：日期小的（逾期/今天）排前面；已收：日期大的（最近收的）排前面。見下方 sort。
+          sortCode: `${date || "9999-99-99"}|${names.join("、")}|${dest}`,
+          waveDate: date || null,
+        };
+        map.set(key, entry);
+      }
+      entry.transfers.push(t);
+      entry.totalQty += s?.totalQty ?? 0;
+    }
+    const asc = tab === "unreceived";
+    return Array.from(map.values()).sort((a, b) =>
+      asc ? a.sortCode.localeCompare(b.sortCode) : b.sortCode.localeCompare(a.sortCode),
+    );
+  }, [filtered, waves, itemSummary, locations, groupMode, tab]);
+
+  // 切分頁 / 篩選 / 搜尋 / 檢視模式時，群組分頁歸零回第一頁（20 筆）
   useEffect(() => {
     setGroupLimit(20);
-  }, [tab, dateFilter, locationFilter, search]);
+  }, [tab, dateFilter, locationFilter, search, groupMode]);
+
+  // 切到「依撿貨單」時把待收的撿貨單展開（沿用舊行為 — 收起來只剩單號，看不到品名）；
+  // 切回「合併同商品」則全部收起，標題本身就寫著品名與總數。
+  function switchGroupMode(mode: GroupMode) {
+    if (mode === groupMode) return;
+    setGroupMode(mode);
+    if (mode !== "wave") {
+      setExpanded(new Set());
+      return;
+    }
+    const auto = new Set<string>();
+    for (const r of transfers ?? []) {
+      if (r.status !== "shipped") continue;
+      const wid = parseWaveId(r.transfer_no);
+      auto.add(wid !== null ? `wave-${wid}` : "other");
+    }
+    setExpanded(auto);
+  }
 
   const visibleGroups = useMemo(() => groups.slice(0, groupLimit), [groups, groupLimit]);
 
@@ -408,6 +515,21 @@ export default function TransfersInboxPage() {
       const next = new Set(cur);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+      return next;
+    });
+  }
+
+  // 群組層的勾選：整組待收全勾 / 全取消
+  function toggleGroupSelected(g: Group) {
+    const ids = g.transfers.filter((t) => t.status === "shipped").map((t) => t.id);
+    if (ids.length === 0) return;
+    setSelected((cur) => {
+      const next = new Set(cur);
+      const allOn = ids.every((id) => next.has(id));
+      for (const id of ids) {
+        if (allOn) next.delete(id);
+        else next.add(id);
+      }
       return next;
     });
   }
@@ -530,6 +652,37 @@ export default function TransfersInboxPage() {
   async function batchReceive() {
     if (selected.size === 0) return;
     if (!confirm(`確認批次收貨 ${selected.size} 筆?\n\n所有品項都將以「全收」(實收 = 派出量,無破損)處理。需要編輯數量請點個別「收貨」按鈕。\n${notifyHint()}`)) return;
+    await runBatchReceive(Array.from(selected));
+    setSelected(new Set());
+  }
+
+  // 群組層「整組收貨」— 同品相合併後最常用的動作：一次收掉這個品項的全部待收單
+  async function receiveGroup(g: Group) {
+    const pending = g.transfers.filter((t) => t.status === "shipped");
+    if (pending.length === 0) return;
+    if (pending.length === 1) {
+      await quickReceive(pending[0]);
+      return;
+    }
+    const qty = pending.reduce((s, t) => s + (itemSummary.get(t.id)?.totalQty ?? 0), 0);
+    if (
+      !confirm(
+        `確認收貨「${g.label}」全部 ${pending.length} 單(共 ${qty} 件)?\n\n` +
+        `以「全收」(實收 = 派出量,無破損)處理。需要調整數量請展開後個別處理。\n${notifyHint()}`,
+      )
+    )
+      return;
+    const ids = pending.map((t) => t.id);
+    await runBatchReceive(ids);
+    setSelected((cur) => {
+      const next = new Set(cur);
+      for (const id of ids) next.delete(id);
+      return next;
+    });
+  }
+
+  async function runBatchReceive(ids: number[]) {
+    if (ids.length === 0) return;
     setBatchBusy(true);
     try {
       const sb = getSupabase();
@@ -537,7 +690,6 @@ export default function TransfersInboxPage() {
       const operator = sess.session?.user?.id;
       if (!operator) throw new Error("尚未登入");
 
-      const ids = Array.from(selected);
       // 單一 round-trip 伺服端批次：序列處理避免 N 筆並行搶同店 row lock /
       // 重複跑 pickup_ready 造成的 statement timeout（見
       // 20260710000000_rpc_receive_transfer_batch.sql）。
@@ -582,7 +734,6 @@ export default function TransfersInboxPage() {
           (failures.length > 5 ? `\n…(還有 ${failures.length - 5} 筆)` : ""),
         );
       }
-      setSelected(new Set());
       reloadAndRefreshBadge();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -654,13 +805,47 @@ export default function TransfersInboxPage() {
         })}
       </div>
 
-      {/* 搜尋 */}
-      <input
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        placeholder="🔍 搜尋 撿貨單號 / 調撥單號 / 分店 / 商品名 / 商品編號 / 品項編號"
-        className="w-full min-w-[180px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-      />
+      {/* 搜尋 + 檢視模式（合併同商品 / 依撿貨單）+ 細節開關 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="🔍 搜尋 商品 / 單號 / 分店"
+          title="可搜尋 撿貨單號 / 調撥單號 / 分店 / 商品名 / 商品編號 / 品項編號"
+          className="w-full min-w-[180px] flex-1 basis-[240px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+        />
+        <div className="flex shrink-0 items-center rounded-md border border-zinc-300 p-0.5 text-xs dark:border-zinc-700">
+          {([
+            { value: "product", label: "合併同商品", hint: "同分店、同配送日、同品項的單併成一列，可整組收貨" },
+            { value: "wave", label: "依撿貨單", hint: "依撿貨單號(WAVE)分組，總倉對單用" },
+          ] as const).map((m) => (
+            <SpinButton
+              key={m.value}
+              onClick={() => switchGroupMode(m.value)}
+              title={m.hint}
+              className={`rounded px-2.5 py-1 font-medium transition ${
+                groupMode === m.value
+                  ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                  : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
+              }`}
+            >
+              {m.label}
+            </SpinButton>
+          ))}
+        </div>
+        <label
+          className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-zinc-500 dark:text-zinc-400"
+          title="顯示調撥單號 / 調撥類型 / 派出時間 / 訂單連結等對單用欄位"
+        >
+          <input
+            type="checkbox"
+            checked={showDetail}
+            onChange={(e) => setShowDetail(e.target.checked)}
+            className="cursor-pointer"
+          />
+          顯示單號等細節
+        </label>
+      </div>
 
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
@@ -673,6 +858,7 @@ export default function TransfersInboxPage() {
         <KpiCard
           label="🚚 明天到貨"
           hint="wave_date = 明天 的待收"
+          showHint={showDetail}
           value={summaries.tomorrow}
           accent="text-blue-700 dark:text-blue-400"
           active={tab === "unreceived" && dateFilter === "tomorrow"}
@@ -685,6 +871,7 @@ export default function TransfersInboxPage() {
         <KpiCard
           label="⏳ 今日及更早"
           hint="wave_date ≤ 今天、還沒收"
+          showHint={showDetail}
           value={summaries.todayOrEarlier}
           accent="text-amber-700 dark:text-amber-400"
           active={tab === "unreceived" && dateFilter === "today_or_earlier"}
@@ -697,6 +884,7 @@ export default function TransfersInboxPage() {
         <KpiCard
           label="📋 全部待收"
           hint="status = shipped"
+          showHint={showDetail}
           value={summaries.allPending}
           accent="text-rose-700 dark:text-rose-400"
           active={tab === "unreceived" && dateFilter === "all_pending"}
@@ -709,6 +897,7 @@ export default function TransfersInboxPage() {
         <KpiCard
           label="✓ 已收"
           hint="status = received"
+          showHint={showDetail}
           value={summaries.done}
           accent="text-emerald-700 dark:text-emerald-400"
           active={tab === "received"}
@@ -775,39 +964,96 @@ export default function TransfersInboxPage() {
         {visibleGroups.map((g) => {
           // 搜尋進行中時，展開所有符合的群組，避免結果被收合藏住
           const open = expanded.has(g.key) || !!search.trim();
-          const pendingCount = g.transfers.filter((t) => t.status === "shipped").length;
+          const pendingList = g.transfers.filter((t) => t.status === "shipped");
+          const pendingCount = pendingList.length;
           const doneCount = g.transfers.length - pendingCount;
+          const allSelected = pendingCount > 0 && pendingList.every((t) => selected.has(t.id));
+          // 該收沒收的用紅字標出來 — 店家最常漏的就是前幾天沒收完的那批
+          const dueTag =
+            pendingCount > 0 && g.waveDate
+              ? g.waveDate < todayStr
+                ? "逾期"
+                : g.waveDate === todayStr
+                  ? "今天到貨"
+                  : null
+              : null;
           return (
             <section
               key={g.key}
               className="overflow-hidden rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
             >
-              <SpinButton
-                onClick={() => toggle(g.key)}
-                className="flex w-full items-center justify-between gap-3 px-4 py-2 text-left hover:bg-zinc-50 dark:hover:bg-zinc-950"
-              >
-                <div className="flex items-center gap-3">
-                  <span className="text-zinc-400">{open ? "▾" : "▸"}</span>
-                  <div>
-                    <div className="font-mono text-sm font-semibold">{g.label}</div>
-                    {g.subLabel && (
-                      <div className="text-[11px] text-zinc-500">{g.subLabel}</div>
+              <div className="flex items-center gap-2 px-3 py-2 hover:bg-zinc-50 dark:hover:bg-zinc-950">
+                {pendingCount > 0 && (
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={() => toggleGroupSelected(g)}
+                    className="cursor-pointer"
+                    title={`勾選這組 ${pendingCount} 筆待收`}
+                  />
+                )}
+                <SpinButton
+                  onClick={() => toggle(g.key)}
+                  className="flex min-w-0 flex-1 items-center gap-2 py-0.5 text-left"
+                >
+                  <span className="shrink-0 text-zinc-400">{open ? "▾" : "▸"}</span>
+                  <span className="min-w-0">
+                    <span
+                      className={`block break-words ${
+                        g.mono
+                          ? "font-mono text-sm font-semibold"
+                          : "text-base font-bold text-zinc-900 dark:text-zinc-100"
+                      }`}
+                    >
+                      {g.label}
+                    </span>
+                    {(g.subLabel || dueTag) && (
+                      <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
+                        {g.subLabel}
+                        {dueTag && (
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                              dueTag === "逾期"
+                                ? "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
+                                : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                            }`}
+                          >
+                            {dueTag}
+                          </span>
+                        )}
+                      </span>
                     )}
+                  </span>
+                </SpinButton>
+                <div className="flex shrink-0 items-center gap-2">
+                  <div className="text-right">
+                    <div className="text-sm font-semibold tabular-nums">共 {g.totalQty} 件</div>
+                    <div className="text-[11px] text-zinc-500">
+                      {pendingCount > 0 && (
+                        <span className="text-amber-700 dark:text-amber-400">待收 {pendingCount} 單</span>
+                      )}
+                      {pendingCount > 0 && doneCount > 0 && " · "}
+                      {doneCount > 0 && (
+                        <span className="text-emerald-700 dark:text-emerald-400">已收 {doneCount} 單</span>
+                      )}
+                    </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-2 text-xs">
                   {pendingCount > 0 && (
-                    <span className="rounded bg-amber-100 px-2 py-0.5 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                      待收 {pendingCount}
-                    </span>
-                  )}
-                  {doneCount > 0 && (
-                    <span className="rounded bg-emerald-100 px-2 py-0.5 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
-                      已收 {doneCount}
-                    </span>
+                    <SpinButton
+                      onClick={() => receiveGroup(g)}
+                      disabled={batchBusy}
+                      className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                      title={
+                        pendingCount > 1
+                          ? `一次收掉這組 ${pendingCount} 筆(全收:實收 = 派出量)`
+                          : "直接全收(實收 = 派出量,無破損)"
+                      }
+                    >
+                      ✓ 收貨{pendingCount > 1 ? ` ${pendingCount} 單` : ""}
+                    </SpinButton>
                   )}
                 </div>
-              </SpinButton>
+              </div>
 
               {open && (
                 <ul className="divide-y divide-zinc-200 border-t border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
@@ -836,9 +1082,15 @@ export default function TransfersInboxPage() {
                           <div className="w-4 mt-1.5" />
                         )}
                         <div className="flex-1 min-w-0">
-                          {/* 品項（放大、置頂）+ 狀態標籤 */}
+                          {/* 主標：合併同商品模式下品名已在群組標題，這裡只留數量；依撿貨單模式才列品名 */}
                           <div className="flex flex-wrap items-baseline gap-2">
-                            {summary && summary.lines > 0 ? (
+                            {groupMode === "product" ? (
+                              <span className="text-base font-bold text-zinc-900 dark:text-zinc-100 tabular-nums">
+                                {summary && summary.lines === 1
+                                  ? `× ${summary.totalQty}`
+                                  : `共 ${summary?.totalQty ?? 0} 件`}
+                              </span>
+                            ) : summary && summary.lines > 0 ? (
                               <span
                                 className="text-base font-bold text-zinc-900 dark:text-zinc-100 break-words"
                                 title={summary.names.join("\n")}
@@ -860,12 +1112,13 @@ export default function TransfersInboxPage() {
                               </span>
                             )}
                           </div>
-                          {/* 店名（縮小、次要）+ 編號 / 類型 / 配送日 / 項數 / 訂單連結 */}
+                          {/* 次要資訊：只留店家看得懂的（店名 / 配送日 / 件數）；
+                              調撥單號、調撥類型、派出時間、訂單連結收在「顯示單號等細節」後面 */}
                           <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] text-zinc-500">
-                            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">{locations.get(t.dest_location) ?? `#${t.dest_location}`}</span>
-                            <span className="font-mono">{t.transfer_no}</span>
-                            <span className="text-zinc-400">{TRANSFER_TYPE_LABEL[t.transfer_type] ?? t.transfer_type}</span>
-                            {wave?.wave_date && (
+                            {groupMode === "wave" && (
+                              <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">{locations.get(t.dest_location) ?? `#${t.dest_location}`}</span>
+                            )}
+                            {groupMode === "wave" && wave?.wave_date && (
                               <span
                                 className="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-800 dark:bg-blue-950 dark:text-blue-300"
                                 title="配送日"
@@ -873,26 +1126,37 @@ export default function TransfersInboxPage() {
                                 📅 {wave.wave_date}
                               </span>
                             )}
-                            {summary && summary.lines > 0 && (
+                            {groupMode === "wave" && summary && summary.lines > 0 && (
                               <span>{summary.lines} 項 / 共 {summary.totalQty} 件</span>
                             )}
-                            {storeId && (
-                              <Link
-                                href={`/orders?${(() => {
-                                  const qs = new URLSearchParams({ storeId: String(storeId) });
-                                  if (cids.length > 0) qs.set("campaignIds", cids.join(","));
-                                  return qs.toString();
-                                })()}`}
-                                className="text-blue-600 hover:underline dark:text-blue-400"
-                                title={cids.length > 0 ? `關聯 ${cids.length} 個開團` : undefined}
-                              >
-                                → 訂單{cids.length > 0 ? `(${cids.length} 團)` : ""}
-                              </Link>
+                            {showDetail && (
+                              <>
+                                <span className="font-mono">{t.transfer_no}</span>
+                                <span className="text-zinc-400">{TRANSFER_TYPE_LABEL[t.transfer_type] ?? t.transfer_type}</span>
+                                {groupMode === "product" && (
+                                  <span className="font-mono text-zinc-400">{wave?.wave_code ?? ""}</span>
+                                )}
+                                {storeId && (
+                                  <Link
+                                    href={`/orders?${(() => {
+                                      const qs = new URLSearchParams({ storeId: String(storeId) });
+                                      if (cids.length > 0) qs.set("campaignIds", cids.join(","));
+                                      return qs.toString();
+                                    })()}`}
+                                    className="text-blue-600 hover:underline dark:text-blue-400"
+                                    title={cids.length > 0 ? `關聯 ${cids.length} 個開團` : undefined}
+                                  >
+                                    → 訂單{cids.length > 0 ? `(${cids.length} 團)` : ""}
+                                  </Link>
+                                )}
+                                {t.shipped_at && (
+                                  <span className="text-zinc-400">
+                                    派出 {new Date(t.shipped_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}
+                                  </span>
+                                )}
+                              </>
                             )}
                           </div>
-                          {t.shipped_at && (
-                            <div className="mt-0.5 text-[10px] text-zinc-400">派出 {new Date(t.shipped_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}</div>
-                          )}
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
                           {isShipped ? (
@@ -1000,6 +1264,7 @@ function Th({ children }: { children?: React.ReactNode }) {
 function KpiCard({
   label,
   hint,
+  showHint,
   value,
   accent,
   active,
@@ -1007,6 +1272,8 @@ function KpiCard({
 }: {
   label: string;
   hint?: string;
+  // hint 是「wave_date ≤ 今天」這種對店家沒意義的欄位說明，預設只留 tooltip 不佔版面
+  showHint?: boolean;
   value: number | string;
   accent: string;
   active?: boolean;
@@ -1026,7 +1293,7 @@ function KpiCard({
     >
       <div className="text-xs text-zinc-500">{label}</div>
       <div className={`mt-0.5 text-2xl font-semibold ${accent}`}>{value}</div>
-      {hint && <div className="mt-0.5 text-[10px] text-zinc-400">{hint}</div>}
+      {hint && showHint && <div className="mt-0.5 text-[10px] text-zinc-400">{hint}</div>}
     </Wrapper>
   );
 }
