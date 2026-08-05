@@ -8,6 +8,7 @@ import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import Spinner from "@/components/Spinner";
 import Countdown from "@/components/Countdown";
+import ViewCount from "@/components/ViewCount";
 import { cleanCampaignText } from "@/lib/text";
 import { getCampaignHint } from "@/lib/campaignHints";
 import { logCaught } from "@/lib/clientLog";
@@ -234,12 +235,9 @@ export default function CampaignDetailPage() {
                   </div>
                 )}
               </div>
-              {viewCount > 0 && (
-                <div className="flex items-center gap-1.5 text-[13px] text-[var(--tertiary-label)]">
-                  <EyeIcon />
-                  <span className="tabular-nums">{viewCount.toLocaleString()} 次瀏覽</span>
-                </div>
-              )}
+              <ViewCount count={viewCount} size="md" />
+
+
               {displayDescription && (() => {
                 const desc = cleanCampaignText(displayDescription);
                 if (!desc) return null;
@@ -382,16 +380,6 @@ export default function CampaignDetailPage() {
         </div>
       </Portal>
     </PageShell>
-  );
-}
-
-/** 瀏覽次數用的眼睛 icon */
-function EyeIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} className="h-4 w-4 shrink-0">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
-      <circle cx="12" cy="12" r="3" />
-    </svg>
   );
 }
 

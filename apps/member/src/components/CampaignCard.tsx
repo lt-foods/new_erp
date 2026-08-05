@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import Countdown from "./Countdown";
+import ViewCount from "./ViewCount";
 import { cleanCampaignText } from "@/lib/text";
 
 export type CampaignSummary = {
@@ -17,7 +18,7 @@ export type CampaignSummary = {
   order_count: number;
   /** 近 7 天訂單數（近期售出排序用）。 */
   recent_order_count: number;
-  /** 總瀏覽次數。後端未部署前可能沒有這個欄位，詳情頁只拿來當預填值。 */
+  /** 總瀏覽次數。後端未部署前可能沒有這個欄位（當 0 處理、不顯示）。 */
   view_count?: number;
   end_at: string | null;
   pickup_deadline: string | null;
@@ -160,9 +161,14 @@ export default function CampaignCard({
               共 {campaign.item_count} 項
             </span>
           </div>
-          {campaign.ordered_qty > 0 && (
-            <div className="text-right text-[14px] font-medium text-[var(--secondary-label)]">
-              已訂購 {campaign.ordered_qty.toLocaleString()} 件
+          {(campaign.ordered_qty > 0 || (campaign.view_count ?? 0) > 0) && (
+            <div className="flex items-center justify-between gap-2 text-[14px] font-medium text-[var(--secondary-label)]">
+              <ViewCount count={campaign.view_count} />
+              {campaign.ordered_qty > 0 && (
+                <span className="ml-auto">
+                  已訂購 {campaign.ordered_qty.toLocaleString()} 件
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -229,11 +235,14 @@ export default function CampaignCard({
           <div className="brand-gradient-text text-[24px] font-extrabold tabular-nums leading-none">
             {priceText}
           </div>
-          {campaign.ordered_qty > 0 && (
-            <div className="text-[12px] font-medium text-[var(--secondary-label)]">
-              已訂購 {campaign.ordered_qty.toLocaleString()} 件
-            </div>
-          )}
+          {/* 已訂購 / 瀏覽數直向堆疊在價格右邊 —— 卡片是兩欄格線，
+              跟倒數同一列會擠爆（倒數字串長達「14 天 23:19:10」）。 */}
+          <div className="flex shrink-0 flex-col items-end gap-0.5 text-[12px] font-medium text-[var(--secondary-label)]">
+            {campaign.ordered_qty > 0 && (
+              <span>已訂購 {campaign.ordered_qty.toLocaleString()} 件</span>
+            )}
+            <ViewCount count={campaign.view_count} />
+          </div>
         </div>
         {campaign.end_at && (
           <div className="inline-flex items-center gap-1 rounded-md bg-[var(--brand-soft)] px-1.5 py-0.5 text-[12px] font-semibold tabular-nums text-[var(--brand-strong)]">

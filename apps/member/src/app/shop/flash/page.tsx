@@ -13,6 +13,7 @@ import CampaignCard, {
   type CampaignSummary,
 } from "@/components/CampaignCard";
 import Countdown from "@/components/Countdown";
+import ViewCount from "@/components/ViewCount";
 import { cleanCampaignText } from "@/lib/text";
 import { setCampaignHints } from "@/lib/campaignHints";
 
@@ -158,6 +159,7 @@ function FlashRow({ campaign }: { campaign: CampaignSummary }) {
               {campaign.order_count} 筆訂單
             </div>
           )}
+          <ViewCount count={campaign.view_count} />
         </div>
         {campaign.ordered_qty > 0 && (
           <div className="text-[12px] font-medium text-[var(--tertiary-label)]">
