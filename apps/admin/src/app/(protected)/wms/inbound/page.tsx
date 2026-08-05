@@ -982,7 +982,8 @@ export default function TransfersInboxPage() {
               key={g.key}
               className="overflow-hidden rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
             >
-              <div className="flex items-center gap-2 px-3 py-2 hover:bg-zinc-50 dark:hover:bg-zinc-950">
+              {/* 卡片標題：單號/品名 + 狀態膠囊 + 一排資訊膠囊（分店 / 配送日 / 件數 / 單數） */}
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-zinc-200 bg-zinc-50 px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-900/60">
                 {pendingCount > 0 && (
                   <input
                     type="checkbox"
@@ -994,149 +995,130 @@ export default function TransfersInboxPage() {
                 )}
                 <SpinButton
                   onClick={() => toggle(g.key)}
-                  className="flex min-w-0 flex-1 items-center gap-2 py-0.5 text-left"
+                  className="flex min-w-0 flex-1 items-start gap-2 text-left"
                 >
-                  <span className="shrink-0 text-zinc-400">{open ? "▾" : "▸"}</span>
+                  <span className="mt-0.5 shrink-0 text-zinc-400">{open ? "▾" : "▸"}</span>
                   <span className="min-w-0">
-                    <span
-                      className={`block break-words ${
-                        g.mono
-                          ? "font-mono text-sm font-semibold"
-                          : "text-base font-bold text-zinc-900 dark:text-zinc-100"
-                      }`}
-                    >
-                      {g.label}
-                    </span>
-                    {(g.subLabel || dueTag) && (
-                      <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
-                        {g.subLabel}
-                        {dueTag && (
-                          <span
-                            className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                              dueTag === "逾期"
-                                ? "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"
-                                : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-                            }`}
-                          >
-                            {dueTag}
-                          </span>
-                        )}
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span
+                        className={`break-words ${
+                          g.mono
+                            ? "font-mono text-sm font-bold text-blue-700 dark:text-blue-400"
+                            : "text-base font-bold text-zinc-900 dark:text-zinc-100"
+                        }`}
+                      >
+                        {g.label}
                       </span>
-                    )}
+                      {pendingCount > 0 ? (
+                        <Pill tone="amber">待收 {pendingCount} 單</Pill>
+                      ) : (
+                        <Pill tone="emerald">✓ 已收到</Pill>
+                      )}
+                      {dueTag && <Pill tone={dueTag === "逾期" ? "rose" : "amber"}>{dueTag}</Pill>}
+                    </span>
+                    <span className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                      {g.subLabel
+                        .split(" · ")
+                        .filter(Boolean)
+                        .map((part, i) => (
+                          <Chip key={i}>{part.startsWith("配送日") ? `📅 ${part}` : `🏬 ${part}`}</Chip>
+                        ))}
+                      <Chip>📦 共 {g.totalQty} 件</Chip>
+                      <Chip>🧾 {g.transfers.length} 單</Chip>
+                      {doneCount > 0 && pendingCount > 0 && <Chip>✅ 已收 {doneCount} 單</Chip>}
+                    </span>
                   </span>
                 </SpinButton>
-                <div className="flex shrink-0 items-center gap-2">
-                  <div className="text-right">
-                    <div className="text-sm font-semibold tabular-nums">共 {g.totalQty} 件</div>
-                    <div className="text-[11px] text-zinc-500">
-                      {pendingCount > 0 && (
-                        <span className="text-amber-700 dark:text-amber-400">待收 {pendingCount} 單</span>
-                      )}
-                      {pendingCount > 0 && doneCount > 0 && " · "}
-                      {doneCount > 0 && (
-                        <span className="text-emerald-700 dark:text-emerald-400">已收 {doneCount} 單</span>
-                      )}
-                    </div>
-                  </div>
-                  {pendingCount > 0 && (
-                    <SpinButton
-                      onClick={() => receiveGroup(g)}
-                      disabled={batchBusy}
-                      className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
-                      title={
-                        pendingCount > 1
-                          ? `一次收掉這組 ${pendingCount} 筆(全收:實收 = 派出量)`
-                          : "直接全收(實收 = 派出量,無破損)"
-                      }
-                    >
-                      ✓ 收貨{pendingCount > 1 ? ` ${pendingCount} 單` : ""}
-                    </SpinButton>
-                  )}
-                </div>
+                {pendingCount > 0 && (
+                  <SpinButton
+                    onClick={() => receiveGroup(g)}
+                    disabled={batchBusy}
+                    className="shrink-0 rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                    title={
+                      pendingCount > 1
+                        ? `一次收掉這組 ${pendingCount} 筆(全收:實收 = 派出量)`
+                        : "直接全收(實收 = 派出量,無破損)"
+                    }
+                  >
+                    ✓ 收貨{pendingCount > 1 ? ` ${pendingCount} 單` : ""}
+                  </SpinButton>
+                )}
               </div>
 
+              {/* 明細表：編號 / 商品 / 數量 / 動作 */}
               {open && (
-                <ul className="divide-y divide-zinc-200 border-t border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
-                  {g.transfers.map((t) => {
-                    const isShipped = t.status === "shipped";
-                    const summary = itemSummary.get(t.id);
-                    const storeId = locationToStore.get(t.dest_location);
-                    const cids = transferCampaigns.get(t.id) ?? [];
-                    const isSelected = selected.has(t.id);
-                    const wid = parseWaveId(t.transfer_no);
-                    const wave = wid !== null ? waves.get(wid) : undefined;
-                    return (
-                      <li
-                        key={t.id}
-                        className={`flex flex-wrap items-start gap-3 px-4 py-2.5 transition hover:bg-zinc-50 dark:hover:bg-zinc-950 ${isShipped ? "" : "opacity-70"} ${isSelected ? "bg-blue-50 dark:bg-blue-950/30" : ""}`}
-                      >
-                        {isShipped ? (
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => toggleSelected(t.id)}
-                            className="mt-1.5 cursor-pointer"
-                            title="勾選後可批次收貨"
-                          />
-                        ) : (
-                          <div className="w-4 mt-1.5" />
-                        )}
-                        <div className="flex-1 min-w-0">
-                          {/* 主標：合併同商品模式下品名已在群組標題，這裡只留數量；依撿貨單模式才列品名 */}
-                          <div className="flex flex-wrap items-baseline gap-2">
-                            {groupMode === "product" ? (
-                              <span className="text-base font-bold text-zinc-900 dark:text-zinc-100 tabular-nums">
-                                {summary && summary.lines === 1
-                                  ? `× ${summary.totalQty}`
-                                  : `共 ${summary?.totalQty ?? 0} 件`}
-                              </span>
-                            ) : summary && summary.lines > 0 ? (
-                              <span
-                                className="text-base font-bold text-zinc-900 dark:text-zinc-100 break-words"
-                                title={summary.names.join("\n")}
-                              >
-                                {summary.names.slice(0, 2).join("、")}
-                                {summary.names.length > 2 && (
-                                  <span className="ml-1 text-xs font-normal text-zinc-400">… +{summary.names.length - 2}</span>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[560px] text-sm">
+                    <thead>
+                      <tr className="border-b border-zinc-200 bg-white text-[11px] text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
+                        <th className="w-8 px-3 py-2" />
+                        <th className="px-3 py-2 text-left font-medium">編號</th>
+                        <th className="px-3 py-2 text-left font-medium">商品</th>
+                        <th className="px-3 py-2 text-right font-medium">數量</th>
+                        <th className="px-3 py-2 text-right font-medium">動作</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                      {g.transfers.map((t) => {
+                        const isShipped = t.status === "shipped";
+                        const summary = itemSummary.get(t.id);
+                        const storeId = locationToStore.get(t.dest_location);
+                        const cids = transferCampaigns.get(t.id) ?? [];
+                        const isSelected = selected.has(t.id);
+                        const wid = parseWaveId(t.transfer_no);
+                        const wave = wid !== null ? waves.get(wid) : undefined;
+                        // 編號欄：合併同商品時看撿貨單號（哪一車來的），依撿貨單時看調撥單號
+                        const code =
+                          groupMode === "product" ? wave?.wave_code ?? t.transfer_no : t.transfer_no;
+                        return (
+                          <tr
+                            key={t.id}
+                            className={`transition hover:bg-zinc-50 dark:hover:bg-zinc-950 ${
+                              isSelected ? "bg-blue-50 dark:bg-blue-950/30" : ""
+                            }`}
+                          >
+                            <td className="px-3 py-2 align-top">
+                              {isShipped && (
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() => toggleSelected(t.id)}
+                                  className="cursor-pointer"
+                                  title="勾選後可批次收貨"
+                                />
+                              )}
+                            </td>
+                            <td className="px-3 py-2 align-top font-mono text-xs text-zinc-500">
+                              <div>{code}</div>
+                              {showDetail && (
+                                <div className="mt-0.5 font-sans text-[10px] text-zinc-400">
+                                  {groupMode === "product" && <span className="mr-1">{t.transfer_no}</span>}
+                                  {TRANSFER_TYPE_LABEL[t.transfer_type] ?? t.transfer_type}
+                                  {t.shipped_at && (
+                                    <span className="ml-1">
+                                      派出 {new Date(t.shipped_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 align-top">
+                              <div className="break-words text-zinc-900 dark:text-zinc-100" title={summary?.names.join("\n")}>
+                                {summary && summary.lines > 0
+                                  ? summary.items.map((it) => it.name).join("、")
+                                  : "—"}
+                              </div>
+                              <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
+                                {groupMode === "wave" && (
+                                  <span>{locations.get(t.dest_location) ?? `#${t.dest_location}`}</span>
                                 )}
-                              </span>
-                            ) : (
-                              <span className="text-base font-bold text-zinc-400">—</span>
-                            )}
-                            {isShipped ? (
-                              <span className="inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">待收</span>
-                            ) : (
-                              <span className="inline-flex rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
-                                ✓ 已收
-                                {t.received_at && <span className="ml-1 font-normal opacity-70">{new Date(t.received_at).toLocaleDateString("zh-TW")}</span>}
-                              </span>
-                            )}
-                          </div>
-                          {/* 次要資訊：只留店家看得懂的（店名 / 配送日 / 件數）；
-                              調撥單號、調撥類型、派出時間、訂單連結收在「顯示單號等細節」後面 */}
-                          <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px] text-zinc-500">
-                            {groupMode === "wave" && (
-                              <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">{locations.get(t.dest_location) ?? `#${t.dest_location}`}</span>
-                            )}
-                            {groupMode === "wave" && wave?.wave_date && (
-                              <span
-                                className="inline-flex items-center gap-1 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-800 dark:bg-blue-950 dark:text-blue-300"
-                                title="配送日"
-                              >
-                                📅 {wave.wave_date}
-                              </span>
-                            )}
-                            {groupMode === "wave" && summary && summary.lines > 0 && (
-                              <span>{summary.lines} 項 / 共 {summary.totalQty} 件</span>
-                            )}
-                            {showDetail && (
-                              <>
-                                <span className="font-mono">{t.transfer_no}</span>
-                                <span className="text-zinc-400">{TRANSFER_TYPE_LABEL[t.transfer_type] ?? t.transfer_type}</span>
-                                {groupMode === "product" && (
-                                  <span className="font-mono text-zinc-400">{wave?.wave_code ?? ""}</span>
+                                {groupMode === "wave" && wave?.wave_date && <span>📅 {wave.wave_date}</span>}
+                                {!isShipped && t.received_at && (
+                                  <span className="text-emerald-700 dark:text-emerald-400">
+                                    ✅ 收貨 {new Date(t.received_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}
+                                  </span>
                                 )}
-                                {storeId && (
+                                {showDetail && storeId && (
                                   <Link
                                     href={`/orders?${(() => {
                                       const qs = new URLSearchParams({ storeId: String(storeId) });
@@ -1149,57 +1131,58 @@ export default function TransfersInboxPage() {
                                     → 訂單{cids.length > 0 ? `(${cids.length} 團)` : ""}
                                   </Link>
                                 )}
-                                {t.shipped_at && (
-                                  <span className="text-zinc-400">
-                                    派出 {new Date(t.shipped_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}
-                                  </span>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1">
-                          {isShipped ? (
-                            <>
-                              <SpinButton
-                                onClick={() => quickReceive(t)}
-                                disabled={batchBusy}
-                                className="rounded-md bg-emerald-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
-                                title="直接全收(實收 = 派出量,無破損)"
-                              >
-                                收貨
-                              </SpinButton>
-                              <SpinButton
-                                onClick={() => setOpening(t)}
-                                className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                                title="調整數量 / 標記破損 / 短收"
-                              >
-                                ✎ 調整
-                              </SpinButton>
-                            </>
-                          ) : (
-                            <>
-                              <SpinButton
-                                onClick={() => setOpening(t)}
-                                className="rounded-md border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-                              >
-                                看明細
-                              </SpinButton>
-                              <SpinButton
-                                onClick={() => unreceive(t)}
-                                disabled={batchBusy}
-                                className="rounded-md border border-amber-300 px-2 py-1 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950"
-                                title="退回收貨：沖銷入庫、改回待收"
-                              >
-                                ↩ 退回收貨
-                              </SpinButton>
-                            </>
-                          )}
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
+                              </div>
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-2 text-right align-top font-semibold tabular-nums">
+                              {summary?.totalQty ?? 0}
+                              {summary && summary.lines > 1 && (
+                                <span className="ml-1 text-[10px] font-normal text-zinc-400">{summary.lines} 項</span>
+                              )}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-2 text-right align-top">
+                              {isShipped ? (
+                                <div className="flex justify-end gap-1">
+                                  <SpinButton
+                                    onClick={() => quickReceive(t)}
+                                    disabled={batchBusy}
+                                    className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                                    title="直接全收(實收 = 派出量,無破損)"
+                                  >
+                                    收貨
+                                  </SpinButton>
+                                  <SpinButton
+                                    onClick={() => setOpening(t)}
+                                    className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                                    title="調整數量 / 標記破損 / 短收"
+                                  >
+                                    ✎ 調整
+                                  </SpinButton>
+                                </div>
+                              ) : (
+                                <div className="flex justify-end gap-1">
+                                  <SpinButton
+                                    onClick={() => setOpening(t)}
+                                    className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                                  >
+                                    看明細
+                                  </SpinButton>
+                                  <SpinButton
+                                    onClick={() => unreceive(t)}
+                                    disabled={batchBusy}
+                                    className="rounded-md border border-amber-300 px-2 py-1 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950"
+                                    title="退回收貨：沖銷入庫、改回待收"
+                                  >
+                                    ↩ 退回
+                                  </SpinButton>
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </section>
           );
@@ -1258,6 +1241,29 @@ function Th({ children }: { children?: React.ReactNode }) {
     <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">
       {children}
     </th>
+  );
+}
+
+// 卡片標題旁的狀態膠囊（待收 / 已收到 / 逾期）
+function Pill({ tone, children }: { tone: "amber" | "emerald" | "rose"; children: React.ReactNode }) {
+  const cls = {
+    amber: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+    emerald: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
+    rose: "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300",
+  }[tone];
+  return (
+    <span className={`inline-flex shrink-0 rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>
+      {children}
+    </span>
+  );
+}
+
+// 標題下那排白底資訊膠囊（分店 / 配送日 / 件數 / 單數）
+function Chip({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-md border border-zinc-200 bg-white px-2 py-0.5 text-[11px] text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+      {children}
+    </span>
   );
 }
 
