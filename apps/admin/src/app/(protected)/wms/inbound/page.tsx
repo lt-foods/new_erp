@@ -22,7 +22,8 @@ type StoreLite = { id: number; location_id: number | null };
 type StoreRow = { id: number; name: string; location_id: number | null };
 // codes：本張 transfer 涵蓋的品項編號(sku_code) / 商品編號(product_code)，僅供搜尋比對用
 // items：拆開的品項行（key = 合併同品相用的識別；自由轉貨掛虛擬 SKU，要用 description 當 key）
-type ItemLine = { key: string; name: string; qty: number };
+// product = 只有商品名（不含規格），給群組標題用；name = 商品名 / 規格，明細表用
+type ItemLine = { key: string; product: string; name: string; skuCode: string | null; qty: number };
 // extraQty：總倉撿貨時多撿給店裡的量（picked_qty − 應發 qty，見下方查詢註解）
 type ItemSummary = {
   lines: number;
@@ -37,6 +38,7 @@ type ItemSummary = {
 type Group = {
   key: string;
   label: string;
+  labelTitle: string; // hover 才看得到的完整品名 / 規格清單
   subLabel: string;
   mono: boolean; // label 是單號 → 等寬字
   transfers: Transfer[];
@@ -248,6 +250,9 @@ export default function TransfersInboxPage() {
           );
           const skuIds = Array.from(new Set(items.map((it) => it.sku_id)));
           const skuNameMap = new Map<number, string>();
+          // 群組標題只用商品名（同商品的多個規格會被去重成一筆），規格留給展開的明細
+          const skuProductMap = new Map<number, string>();
+          const skuOnlyCodeMap = new Map<number, string>();
           // sku_code = 品項編號、product_code = 商品編號（products embed）；供搜尋比對
           const skuCodeMap = new Map<number, string>();
           if (skuIds.length > 0) {
@@ -268,6 +273,8 @@ export default function TransfersInboxPage() {
             for (const s of skuRows) {
               const label = `${s.product_name ?? ""}${s.variant_name ? ` / ${s.variant_name}` : ""}`.trim() || `#${s.id}`;
               skuNameMap.set(s.id, label);
+              skuProductMap.set(s.id, (s.product_name ?? "").trim() || label);
+              if (s.sku_code) skuOnlyCodeMap.set(s.id, s.sku_code);
               const code = [s.sku_code, s.products?.product_code].filter(Boolean).join(" ").trim();
               if (code) skuCodeMap.set(s.id, code);
             }
@@ -282,7 +289,13 @@ export default function TransfersInboxPage() {
             const desc = it.description?.trim();
             const name = desc || (skuNameMap.get(it.sku_id) ?? `#${it.sku_id}`);
             cur.names.push(`${name} × ${qty}`);
-            cur.items.push({ key: desc ? `d:${desc}` : `s:${it.sku_id}`, name, qty });
+            cur.items.push({
+              key: desc ? `d:${desc}` : `s:${it.sku_id}`,
+              product: desc || skuProductMap.get(it.sku_id) || name,
+              name,
+              skuCode: desc ? null : skuOnlyCodeMap.get(it.sku_id) ?? null,
+              qty,
+            });
             const code = skuCodeMap.get(it.sku_id);
             if (code) cur.codes.push(code);
             summary.set(it.transfer_id, cur);
@@ -428,6 +441,7 @@ export default function TransfersInboxPage() {
           entry = {
             key,
             label: w?.wave_code ?? (wid !== null ? `WAVE-${wid}` : "其他調撥"),
+            labelTitle: "",
             subLabel: w ? `配送日 ${w.wave_date}` : "",
             mono: true,
             transfers: [],
@@ -464,17 +478,21 @@ export default function TransfersInboxPage() {
       let entry = map.get(key);
       if (!entry) {
         const dest = locations.get(t.dest_location) ?? `#${t.dest_location}`;
-        // 品名不帶數量 — 數量在群組層加總（× 1 + × 14 + × 6 = 共 21 件）
-        const names = Array.from(new Set(lines.map((l) => l.name)));
+        // 標題只列商品名、去重、最多 3 個 — 一張單常含同商品的十幾個規格
+        // （例：「水麥芽手撕蛋糕 / (A)經典原味」…(G)），全列出來標題會佔掉整個畫面。
+        // 規格與 SKU 編號留在展開的明細表。
+        const products = Array.from(new Set(lines.map((l) => l.product)));
+        const shown = products.slice(0, 3).join("、");
         entry = {
           key,
-          label: names.join("、") || "—",
+          label: (products.length > 3 ? `${shown} …+${products.length - 3} 項` : shown) || "—",
+          labelTitle: Array.from(new Set(lines.map((l) => l.name))).join("\n"),
           subLabel: [dest, date ? `配送日 ${date}` : ""].filter(Boolean).join(" · "),
           mono: false,
           transfers: [],
           totalQty: 0,
           // 未收：日期小的（逾期/今天）排前面；已收：日期大的（最近收的）排前面。見下方 sort。
-          sortCode: `${date || "9999-99-99"}|${names.join("、")}|${dest}`,
+          sortCode: `${date || "9999-99-99"}|${products.join("、")}|${dest}`,
           waveDate: date || null,
           extraQty: 0,
         };
@@ -1032,6 +1050,7 @@ export default function TransfersInboxPage() {
                   <span className="min-w-0">
                     <span className="flex flex-wrap items-center gap-2">
                       <span
+                        title={g.labelTitle || undefined}
                         className={`break-words ${
                           g.mono
                             ? "font-mono text-sm font-bold text-blue-700 dark:text-blue-400"
@@ -1137,11 +1156,23 @@ export default function TransfersInboxPage() {
                               )}
                             </td>
                             <td className="px-3 py-2 align-top">
-                              <div className="break-words text-zinc-900 dark:text-zinc-100" title={summary?.names.join("\n")}>
-                                {summary && summary.lines > 0
-                                  ? summary.items.map((it) => it.name).join("、")
-                                  : "—"}
-                              </div>
+                              {/* 一列一個 SKU（品項編號 + 品名 / 規格 × 數量）— 一張單十幾個規格時
+                                  串成一段會整片糊掉，這裡是唯一該看得到規格的地方 */}
+                              {summary && summary.lines > 0 ? (
+                                <ul className="space-y-0.5">
+                                  {summary.items.map((it, i) => (
+                                    <li key={i} className="break-words text-zinc-900 dark:text-zinc-100">
+                                      {it.skuCode && (
+                                        <span className="mr-1.5 font-mono text-[10px] text-zinc-400">{it.skuCode}</span>
+                                      )}
+                                      {it.name}
+                                      <span className="ml-1 font-semibold tabular-nums">× {it.qty}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <div className="text-zinc-400">—</div>
+                              )}
                               <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
                                 {groupMode === "wave" && (
                                   <span>{locations.get(t.dest_location) ?? `#${t.dest_location}`}</span>
