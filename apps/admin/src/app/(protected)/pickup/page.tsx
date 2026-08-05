@@ -13,6 +13,7 @@ import SpinButton from "@/components/SpinButton";
 import { getPickupRecents, recordPickupRecent, type RecentCustomer } from "@/lib/pickupRecents";
 import { publicProductUrl } from "@/lib/campaignCover";
 import { parseReturnNote } from "@/lib/returnNote";
+import { fetchReprintableEvents, pickupEventLabel, type PickupEventRow } from "@/lib/pickupReceipt";
 
 type Member = {
   id: number;
@@ -53,6 +54,12 @@ type OpenOrder = {
 
 const ACTIVE_STATUSES = ["pending", "confirmed", "reserved", "ready", "partially_ready", "partially_completed", "shipping"];
 const INACTIVE_ITEM_STATUSES = new Set(["cancelled", "picked_up", "expired"]);
+// 「已取貨」模式：取過的單（partially_completed 兩邊都會出現 — 未取模式看還沒取的，
+// 已取模式看已經取走的那部分）。一次最多列這麼多張，避免老客戶幾百張單全撈回來。
+const PICKED_STATUSES = ["completed", "partially_completed"];
+const PICKED_LIMIT = 50;
+
+type PickupMode = "open" | "picked";
 
 function activeItems(order: OpenOrder) {
   return order.items.filter((it) => !INACTIVE_ITEM_STATUSES.has(it.status));
@@ -82,6 +89,9 @@ function PickupPageContent() {
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const autoSearchedRef = useRef(false);
+  // 最後一次真的查成功的關鍵字。常用顧客快選與 ?q= 進來時刻意不寫進搜尋框，
+  // 之後的重查（取貨後 reload、切換未取/已取）就沒有關鍵字可用 → 會誤報「請至少輸入 2 字」。
+  const lastSearchRef = useRef("");
 
   // 該品項未取退貨量 / 扣掉已退後仍可取量
   function returnedOf(it: OpenOrder["items"][number]): number {
@@ -119,20 +129,28 @@ function PickupPageContent() {
   const [bulking, setBulking] = useState<number | null>(null);
   const [bulkConfirm, setBulkConfirm] = useState<Member | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  // 未取貨（預設，可取貨/合併取貨）↔ 已取貨（補印收據用）
+  const [mode, setMode] = useState<PickupMode>("open");
+  // 已取貨模式：order_id → 可補印的取貨事件（已濾掉被撤銷的）
+  const [pickedEvents, setPickedEvents] = useState<Map<number, PickupEventRow[]>>(new Map());
 
   // overrideQuery：常用顧客快選按鈕用 — 直接帶該顧客查單，
   // 刻意「不」寫進搜尋框（保持輸入框乾淨，按鈕本身就是捷徑）
-  async function search(e?: React.FormEvent, overrideQuery?: string) {
+  async function search(e?: React.FormEvent, overrideQuery?: string, overrideMode?: PickupMode) {
     e?.preventDefault();
-    const q = (overrideQuery ?? query).trim();
+    const activeMode = overrideMode ?? mode;
+    const q = (overrideQuery ?? (query.trim() || lastSearchRef.current)).trim();
     if (q.length < 2) {
       setError("請至少輸入 2 字 (姓名 / 電話末 N 碼 / 會員編號)");
       return;
     }
+    lastSearchRef.current = q;
     setSearching(true);
     setError(null);
     setMembers(null);
     setOrders(new Map());
+    setPickedEvents(new Map());
+    setSelected(new Set());
     try {
       const sb = getSupabase();
       // Google 式：以空白 / + 拆 token，每個 token 都要在 name / phone / member_no 至少一欄命中
@@ -162,7 +180,7 @@ function PickupPageContent() {
         setRecents(getPickupRecents());
       }
 
-      const { data: ords, error: e2 } = await sb
+      const ordQ = sb
         .from("customer_orders")
         .select(
           `id, order_no, status, pickup_deadline, pickup_store_id, discount_amount, ready_at, transferred_from_order_id, last_notify_pickup_at, notify_pickup_count, member_id,
@@ -170,15 +188,41 @@ function PickupPageContent() {
            store:stores!customer_orders_pickup_store_id_fkey(id, name),
            items:customer_order_items(id, sku_id, qty, unit_price, status, sku:skus(variant_name, product_name, product:products(images)))`,
         )
-        .in("member_id", list.map((m) => m.id))
-        .in("status", ACTIVE_STATUSES)
-        // 到貨時間早 (久) 的排前面（催客人取貨優先）；尚未到貨的擺後面
-        .order("ready_at", { ascending: true, nullsFirst: false })
-        .order("updated_at", { ascending: false });
+        .in("member_id", list.map((m) => m.id));
+      const { data: ords, error: e2 } = await (
+        activeMode === "picked"
+          // 已取貨：最近取的排前面（completed_at 由 rpc_record_pickup 寫入、撤銷取貨時清空）
+          ? ordQ
+              .in("status", PICKED_STATUSES)
+              .order("completed_at", { ascending: false, nullsFirst: false })
+              .order("updated_at", { ascending: false })
+              .limit(PICKED_LIMIT)
+          // 未取貨：到貨時間早 (久) 的排前面（催客人取貨優先）；尚未到貨的擺後面
+          : ordQ
+              .in("status", ACTIVE_STATUSES)
+              .order("ready_at", { ascending: true, nullsFirst: false })
+              .order("updated_at", { ascending: false })
+      );
       if (e2) { setError(e2.message); return; }
 
-      // 品項到貨狀態（部分到貨的 shipping 單要逐品項判斷哪些可先取）
       const orderIds = (ords ?? []).map((r) => (r as { id: number }).id);
+
+      // 已取貨模式只需要「哪幾張還印得出收據」— 到貨狀態 / 未取退貨都與補印無關，不查。
+      if (activeMode === "picked") {
+        setPickedEvents(await fetchReprintableEvents(orderIds));
+        setItemReady(new Map());
+        setReturnedByItem(new Map());
+        const pm = new Map<number, OpenOrder[]>();
+        for (const r of (ords ?? []) as unknown as (OpenOrder & { member_id: number })[]) {
+          const arr = pm.get(r.member_id) ?? [];
+          arr.push(r);
+          pm.set(r.member_id, arr);
+        }
+        setOrders(pm);   // 順序沿用查詢的 completed_at DESC（最近取的在最上面）
+        return;
+      }
+
+      // 品項到貨狀態（部分到貨的 shipping 單要逐品項判斷哪些可先取）
       const readyMap = new Map<number, boolean>();
       if (orderIds.length > 0) {
         const { data: irs } = await sb
@@ -252,6 +296,23 @@ function PickupPageContent() {
     } finally {
       setSearching(false);
     }
+  }
+
+  // 已取貨模式：把該會員「勾選的（沒勾＝全部）」已取訂單合併成一張收據補印。
+  // 一次只印一個會員 — 收據頁的表頭與合計都取第一張單的會員，跨會員合印會印錯人。
+  function printPickedMerged(member: Member) {
+    const printable = (orders.get(member.id) ?? []).filter((o) => (pickedEvents.get(o.id)?.length ?? 0) > 0);
+    const chosen = printable.filter((o) => selected.has(o.id));
+    const target = chosen.length > 0 ? chosen : printable;
+    if (target.length === 0) {
+      setError("這些訂單沒有可補印的取貨紀錄（可能取貨已被撤銷）");
+      return;
+    }
+    const eventIds = target
+      .flatMap((o) => (pickedEvents.get(o.id) ?? []).map((e) => e.id))
+      .sort((a, b) => a - b);
+    setError(null);
+    printViaIframe(withBasePath(`/pickup/print?event_ids=${eventIds.join(",")}`));
   }
 
   function toggleSelect(orderId: number) {
@@ -472,7 +533,9 @@ function PickupPageContent() {
   useEffect(() => {
     if (!autoSearchedRef.current && initialQuery.trim().length >= 2) {
       autoSearchedRef.current = true;
-      search();
+      // 明確帶入 ?q=（不能只靠 query state — 它是首次 render 的快照，
+      // searchParams 晚一步到位時會是空字串，變成「請至少輸入 2 字」）
+      search(undefined, initialQuery);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -481,8 +544,39 @@ function PickupPageContent() {
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header>
         <h1 className="text-xl font-semibold">取貨</h1>
-        <p className="text-sm text-zinc-500">輸入 姓名 / 電話末 N 碼 / 會員編號 → 找出本人未取訂單 → 確認取貨。</p>
+        <p className="text-sm text-zinc-500">
+          {mode === "open"
+            ? "輸入 姓名 / 電話末 N 碼 / 會員編號 → 找出本人未取訂單 → 確認取貨。"
+            : "輸入 姓名 / 電話末 N 碼 / 會員編號 → 找出本人已取訂單 → 勾選後合併補印收據。"}
+        </p>
       </header>
+
+      {/* 未取貨 ↔ 已取貨：同一個搜尋框，切換時直接重查 */}
+      <div className="flex gap-1 rounded-md border border-zinc-200 bg-zinc-50 p-1 text-sm dark:border-zinc-800 dark:bg-zinc-900 sm:w-fit">
+        {([
+          { v: "open" as PickupMode, label: "🛍️ 未取貨" },
+          { v: "picked" as PickupMode, label: "✅ 已取貨（補印）" },
+        ]).map((t) => (
+          <SpinButton
+            key={t.v}
+            type="button"
+            onClick={() => {
+              if (mode === t.v) return;
+              setMode(t.v);
+              setSelected(new Set());
+              setBulkConfirm(null);
+              if (query.trim().length >= 2 || members) search(undefined, undefined, t.v);
+            }}
+            className={`flex-1 rounded px-3 py-1.5 text-center font-medium transition sm:flex-none ${
+              mode === t.v
+                ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                : "text-zinc-600 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            }`}
+          >
+            {t.label}
+          </SpinButton>
+        ))}
+      </div>
 
       <form onSubmit={search} className="flex items-end gap-2">
         <label className="text-sm flex-1 max-w-md">
@@ -575,7 +669,23 @@ function PickupPageContent() {
                     )}
                     <span className="font-mono text-xs text-zinc-500">{m.member_no}</span>
                     <span className="font-mono text-sm text-zinc-700 dark:text-zinc-300">{m.phone ?? "—"}</span>
-                    {memberOrders.length > 0 && (() => {
+                    {mode === "picked" && memberOrders.length > 0 && (() => {
+                      const printable = memberOrders.filter((o) => (pickedEvents.get(o.id)?.length ?? 0) > 0);
+                      const selectedHere = printable.filter((o) => selected.has(o.id));
+                      const useSel = selectedHere.length > 0;
+                      const count = useSel ? selectedHere.length : printable.length;
+                      if (printable.length === 0) return null;
+                      return (
+                        <SpinButton
+                          onClick={() => printPickedMerged(m)}
+                          title="把這些已取訂單合併成「一張」收據補印（80mm 熱感）"
+                          className="ml-auto rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+                        >
+                          🖨️ {useSel ? `合併列印選定的 ${count} 張` : `合併列印（${count} 張）`}
+                        </SpinButton>
+                      );
+                    })()}
+                    {mode === "open" && memberOrders.length > 0 && (() => {
                       const pickableOrders = memberOrders.filter((o) => isPickable(o));
                       const selectedHere = pickableOrders.filter((o) => selected.has(o.id));
                       const useSel = selectedHere.length > 0;
@@ -592,7 +702,90 @@ function PickupPageContent() {
                       );
                     })()}
                   </div>
-                  {memberOrders.length === 0 ? (
+                  {mode === "picked" ? (
+                    memberOrders.length === 0 ? (
+                      <p className="text-xs text-zinc-500">無已取訂單。</p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {memberOrders.map((o) => {
+                          const evs = pickedEvents.get(o.id) ?? [];
+                          const picked = o.items.filter((it) => it.status === "picked_up");
+                          const amount = picked.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0);
+                          const canReprint = evs.length > 0;
+                          return (
+                            <li
+                              key={o.id}
+                              className={`flex flex-col gap-3 rounded-md border p-3 sm:flex-row sm:items-center ${
+                                selected.has(o.id)
+                                  ? "border-emerald-400 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950"
+                                  : "border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"
+                              }`}
+                            >
+                              <div className="flex min-w-0 flex-1 items-start gap-3">
+                                <input
+                                  type="checkbox"
+                                  checked={selected.has(o.id)}
+                                  onChange={() => toggleSelect(o.id)}
+                                  disabled={!canReprint}
+                                  title={canReprint ? "勾選後合併列印" : "此單沒有可補印的取貨紀錄"}
+                                  className="mt-1 h-4 w-4 shrink-0"
+                                />
+                                <OrderThumb order={o} />
+                                <div className="min-w-0 flex-1 text-sm">
+                                  <div className="flex flex-wrap items-baseline gap-2">
+                                    <span>{o.campaign?.name ?? "(未知活動)"}</span>
+                                    {o.status === "partially_completed" && (
+                                      <span className="rounded bg-teal-100 px-2 py-0.5 text-[10px] font-medium text-teal-800 dark:bg-teal-950 dark:text-teal-300">
+                                        部分已取
+                                      </span>
+                                    )}
+                                  </div>
+                                  <ul className="mt-0.5 space-y-0.5 text-xs text-zinc-700 dark:text-zinc-300">
+                                    {picked.map((it) => (
+                                      <li key={it.id} className="flex items-baseline gap-1.5">
+                                        <span className="font-bold">{it.sku?.variant_name || it.sku?.product_name || "—"}</span>
+                                        <span className="font-mono text-zinc-500">× {Number(it.qty)}</span>
+                                      </li>
+                                    ))}
+                                    {picked.length === 0 && <li className="text-zinc-400">（無已取品項）</li>}
+                                  </ul>
+                                  <div className="mt-1 text-xs text-zinc-500">
+                                    取貨店：{o.store?.name ?? "—"}
+                                    <span className="ml-2 font-mono font-semibold text-zinc-700 dark:text-zinc-200">${amount}</span>
+                                    {canReprint ? (
+                                      <span
+                                        className="ml-2 font-semibold text-emerald-700 dark:text-emerald-400"
+                                        title={evs.map((e) => pickupEventLabel(e)).join("\n")}
+                                      >
+                                        ✅ {pickupEventLabel(evs[evs.length - 1])}
+                                        {evs.length > 1 && `（共 ${evs.length} 次）`}
+                                      </span>
+                                    ) : (
+                                      <span className="ml-2 text-amber-600 dark:text-amber-400">⚠️ 無取貨紀錄可補印（取貨已撤銷？）</span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap gap-2 sm:shrink-0">
+                                <SpinButton
+                                  onClick={() =>
+                                    printViaIframe(
+                                      withBasePath(`/pickup/print?event_ids=${evs.map((e) => e.id).join(",")}`),
+                                    )
+                                  }
+                                  disabled={!canReprint}
+                                  title="只補印這一張"
+                                  className="rounded-md border border-zinc-300 px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                                >
+                                  🖨️ 補印
+                                </SpinButton>
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )
+                  ) : memberOrders.length === 0 ? (
                     <p className="text-xs text-zinc-500">無未取訂單。</p>
                   ) : (
                     <ul className="space-y-2">
