@@ -23,12 +23,14 @@ type StoreRow = { id: number; name: string; location_id: number | null };
 // codes：本張 transfer 涵蓋的品項編號(sku_code) / 商品編號(product_code)，僅供搜尋比對用
 // items：拆開的品項行（key = 合併同品相用的識別；自由轉貨掛虛擬 SKU，要用 description 當 key）
 type ItemLine = { key: string; name: string; qty: number };
+// extraQty：總倉撿貨時多撿給店裡的量（picked_qty − 應發 qty，見下方查詢註解）
 type ItemSummary = {
   lines: number;
   totalQty: number;
   names: string[];
   codes: string[];
   items: ItemLine[];
+  extraQty: number;
 };
 
 // 列表上的一個可收合群組（product 模式＝同品相，wave 模式＝同撿貨單號）
@@ -41,6 +43,7 @@ type Group = {
   totalQty: number;
   sortCode: string;
   waveDate: string | null; // 配送日，用來標「逾期 / 今天」
+  extraQty: number;        // 這組總共被總倉多給幾件
 };
 
 export default function TransfersInboxPage() {
@@ -269,7 +272,7 @@ export default function TransfersInboxPage() {
               if (code) skuCodeMap.set(s.id, code);
             }
           }
-          const emptySummary = (): ItemSummary => ({ lines: 0, totalQty: 0, names: [], codes: [], items: [] });
+          const emptySummary = (): ItemSummary => ({ lines: 0, totalQty: 0, names: [], codes: [], items: [], extraQty: 0 });
           for (const tid of transferIds) summary.set(tid, emptySummary());
           for (const it of items) {
             const cur = summary.get(it.transfer_id) ?? emptySummary();
@@ -283,6 +286,30 @@ export default function TransfersInboxPage() {
             const code = skuCodeMap.get(it.sku_id);
             if (code) cur.codes.push(code);
             summary.set(it.transfer_id, cur);
+          }
+
+          // 「總倉多給」：撿貨時實撿 > 應發。派貨產生的 transfer_items 是照實撿量寫的
+          // （qty_requested = qty_shipped = picked_qty，見 generate_transfer_from_wave），
+          // 所以單看 transfer_items 永遠看不出多給多少 → 要回頭比 picking_wave_items
+          // 的 qty(應發) vs picked_qty(實撿)。picked_qty 為 NULL = 還沒做撿貨確認，不算。
+          const waveItems = await fetchAllRows<{
+            generated_transfer_id: number | null;
+            qty: number;
+            picked_qty: number | null;
+          }>(
+            () =>
+              sb
+                .from("picking_wave_items")
+                .select("generated_transfer_id, qty, picked_qty")
+                .in("generated_transfer_id", transferIds)
+                .order("id"),
+          );
+          for (const wi of waveItems) {
+            if (wi.generated_transfer_id == null || wi.picked_qty == null) continue;
+            const diff = Number(wi.picked_qty) - Number(wi.qty);
+            if (!(diff > 0)) continue;
+            const cur = summary.get(wi.generated_transfer_id);
+            if (cur) cur.extraQty += diff;
           }
         }
 
@@ -408,11 +435,13 @@ export default function TransfersInboxPage() {
             // 排序鍵＝撿貨單號（wave_code）；wave_code 已內含日期，字串遞減即最新在前
             sortCode: w?.wave_code ?? (wid !== null ? `WAVE-${wid}` : ""),
             waveDate: w?.wave_date ?? null,
+            extraQty: 0,
           };
           map.set(key, entry);
         }
         entry.transfers.push(t);
         entry.totalQty += itemSummary.get(t.id)?.totalQty ?? 0;
+        entry.extraQty += itemSummary.get(t.id)?.extraQty ?? 0;
       }
       return Array.from(map.values()).sort((a, b) => {
         // 「其他調撥」永遠墊底，其餘依撿貨單號遞減
@@ -447,11 +476,13 @@ export default function TransfersInboxPage() {
           // 未收：日期小的（逾期/今天）排前面；已收：日期大的（最近收的）排前面。見下方 sort。
           sortCode: `${date || "9999-99-99"}|${names.join("、")}|${dest}`,
           waveDate: date || null,
+          extraQty: 0,
         };
         map.set(key, entry);
       }
       entry.transfers.push(t);
       entry.totalQty += s?.totalQty ?? 0;
+      entry.extraQty += s?.extraQty ?? 0;
     }
     const asc = tab === "unreceived";
     return Array.from(map.values()).sort((a, b) =>
@@ -1015,6 +1046,9 @@ export default function TransfersInboxPage() {
                         <Pill tone="emerald">✓ 已收到</Pill>
                       )}
                       {dueTag && <Pill tone={dueTag === "逾期" ? "rose" : "amber"}>{dueTag}</Pill>}
+                      {g.extraQty > 0 && (
+                        <Pill tone="blue">🎁 總倉多給 {g.extraQty} 件</Pill>
+                      )}
                     </span>
                     <span className="mt-1.5 flex flex-wrap items-center gap-1.5">
                       {g.subLabel
@@ -1138,6 +1172,14 @@ export default function TransfersInboxPage() {
                               {summary && summary.lines > 1 && (
                                 <span className="ml-1 text-[10px] font-normal text-zinc-400">{summary.lines} 項</span>
                               )}
+                              {summary && summary.extraQty > 0 && (
+                                <div
+                                  className="text-[10px] font-medium text-blue-600 dark:text-blue-400"
+                                  title="總倉撿貨時實撿量大於應發量，多出來的部分"
+                                >
+                                  🎁 多給 {summary.extraQty}
+                                </div>
+                              )}
                             </td>
                             <td className="whitespace-nowrap px-3 py-2 text-right align-top">
                               {isShipped ? (
@@ -1245,11 +1287,12 @@ function Th({ children }: { children?: React.ReactNode }) {
 }
 
 // 卡片標題旁的狀態膠囊（待收 / 已收到 / 逾期）
-function Pill({ tone, children }: { tone: "amber" | "emerald" | "rose"; children: React.ReactNode }) {
+function Pill({ tone, children }: { tone: "amber" | "emerald" | "rose" | "blue"; children: React.ReactNode }) {
   const cls = {
     amber: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
     emerald: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
     rose: "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300",
+    blue: "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300",
   }[tone];
   return (
     <span className={`inline-flex shrink-0 rounded-md px-2 py-0.5 text-[11px] font-medium ${cls}`}>
