@@ -155,12 +155,18 @@ type OrderFilters = {
   campaignIds: string[];
   tab: Tab;
   storeId: string;
+  skuIds: string[];
   fromTs: string | null;
   toTs: string | null;
   keywordOr: string | null;
   // 日期區間看事件日（event_at）還是訂單日（created_at）— 語意跟著 tab 走，見 dateOnEvent
   dateOnEvent: boolean;
 };
+
+// 品項（SKU）篩選用的內嵌 join：applyOrderFilters 的 items.sku_id 過濾要靠 select
+// 帶這段內嵌才會生效（!inner 把父列收斂到「至少一列品項命中」的訂單）。
+// 沒篩品項時不要帶，免得多一個無謂的 join。
+const ITEM_EMBED = ", items:customer_order_items!inner(sku_id)";
 
 // 套用目前的篩選條件（開團 / tab 狀態 / 取貨店 / 日期區間 / 關鍵字）。
 // 列表分頁查詢與「選取全部符合篩選」共用同一支，確保「勾到的」＝「看到的」。
@@ -187,6 +193,9 @@ function applyOrderFilters<
   else if (f.tab === "transferred") eq("status", "transferred_out");
   else inList("status", PENDING_STATUSES);
   if (f.storeId) eq("pickup_store_id", Number(f.storeId));
+  // 品項篩選 — select 需帶 ITEM_EMBED 內嵌（見上），tab 數量端則由
+  // rpc_order_overview 的 p_sku_ids 套同一條件，兩邊數字才對得起來
+  if (f.skuIds.length > 0) inList("items.sku_id", f.skuIds.map((x) => Number(x)));
   const dateCol = f.dateOnEvent ? "event_at" : "created_at";
   if (f.fromTs) out = out.gte(dateCol, f.fromTs as never);
   if (f.toTs) out = out.lt(dateCol, f.toTs as never);
@@ -236,6 +245,7 @@ function OrdersListContent() {
     return TAB_VALUES.includes(t as Tab) ? (t as Tab) : "pending";
   })();
   const initialStoreId = searchParams.get("storeId") ?? "";
+  const initialSkuId = searchParams.get("skuId") ?? "";
   const initialKeyword = searchParams.get("q") ?? "";
   const initialDate = (key: string) => {
     const v = searchParams.get(key) ?? "";
@@ -250,6 +260,12 @@ function OrdersListContent() {
   const [campaignIds, setCampaignIds] = useState<string[]>(initialCampaignIds);
   const [tab, setTab] = useState<Tab>(initialTab);
   const [storeId, setStoreId] = useState(initialStoreId);
+  // 品項（SKU）二層篩選 — 只在選了開團後出現；"" = 全部品項
+  const [skuId, setSkuId] = useState(initialSkuId);
+  // 所選開團的品項清單（campaign_items）；label 於 render 時再組（要等 campaignMap）
+  const [skuOptionRows, setSkuOptionRows] = useState<
+    { skuId: number; campaignId: number; productName: string | null; variantName: string | null }[]
+  >([]);
   // 訂單日 (created_at) 區間；"" = 不限
   const [dateFrom, setDateFrom] = useState(initialDate("from"));
   const [dateTo, setDateTo] = useState(initialDate("to"));
@@ -305,14 +321,57 @@ function OrdersListContent() {
   // 20260805000120_v_admin_orders_event_at.sql；tab 數量同步改法見 20260805000130。
   // ⚠ 不要改用 updated_at：它會被之後任何寫入 touch 掉（線上 26% 的已完成單偏差 >1h）。
   const dateOnEvent = tab !== "pending";
-  const hasFilter = campaignIds.length > 0 || !!storeId || !!keyword || !!dateFrom || !!dateTo;
+  // 品項篩選只在有選開團時生效（下拉也只在那時渲染）。開團清空不硬清 skuId，
+  // 改由這裡歸零 — 篩選不能在 UI 看不到的情況下默默生效。
+  const activeSkuId = campaignIds.length > 0 ? skuId : "";
+  const hasFilter = campaignIds.length > 0 || !!storeId || !!activeSkuId || !!keyword || !!dateFrom || !!dateTo;
 
   useEffect(() => {
     setPage(1);
     // 篩選一變，勾選就作廢 — 不然會印到已經看不見的單
     setSelected(new Set());
     setBulkPrintErr(null);
-  }, [campaignIds, tab, storeId, keyword, fromTs, toTs]);
+  }, [campaignIds, tab, storeId, activeSkuId, keyword, fromTs, toTs]);
+
+  // 品項下拉的選項 = 所選開團的 campaign_items。沒選開團就不提供品項篩選
+  // （全庫 SKU 太多、也沒有情境）。products.name 是 source of truth
+  // （skus.product_name 是 denorm 可能過期，見 CampaignItemsTable 同註解）。
+  useEffect(() => {
+    // 沒選開團：下拉未渲染，舊選項留著無妨 — 下次選團會整批重抓
+    if (campaignIds.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await getSupabase()
+        .from("campaign_items")
+        .select("campaign_id, sku_id, sort_order, skus!inner(id, variant_name, products!inner(name))")
+        .in("campaign_id", campaignIds.map((x) => Number(x)))
+        .order("campaign_id")
+        .order("sort_order");
+      if (cancelled) return;
+      type ItemRow = {
+        campaign_id: number;
+        sku_id: number;
+        skus:
+          | { id: number; variant_name: string | null; products: { name: string } | { name: string }[] | null }
+          | { id: number; variant_name: string | null; products: { name: string } | { name: string }[] | null }[]
+          | null;
+      };
+      const rows = ((data ?? []) as unknown as ItemRow[]).map((r) => {
+        const sku = Array.isArray(r.skus) ? r.skus[0] : r.skus;
+        const prod = sku && (Array.isArray(sku.products) ? sku.products[0] : sku.products);
+        return {
+          skuId: r.sku_id,
+          campaignId: r.campaign_id,
+          productName: prod?.name ?? null,
+          variantName: sku?.variant_name ?? null,
+        };
+      });
+      setSkuOptionRows(rows);
+      // 換了開團組合後，原本選的品項若不在新清單裡就歸回「全部品項」
+      setSkuId((cur) => (cur && !rows.some((r) => String(r.skuId) === cur) ? "" : cur));
+    })();
+    return () => { cancelled = true; };
+  }, [campaignIds]);
 
   // 取貨店篩選不鎖分店：所有帳號都可自由選任一店 / 全部
   // （僅保留軟性預設選中自家店，使用者可自行切換到別店或「全部」）
@@ -404,13 +463,17 @@ function OrdersListContent() {
         // 過的舊單浮到最前面）。
         const base = getSupabase()
           .from("v_admin_orders")
-          .select("id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, transferred_from_order_id, created_at, updated_at", { count: "exact" })
+          .select(
+            "id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, transferred_from_order_id, created_at, updated_at"
+              + (activeSkuId ? ITEM_EMBED : ""),
+            { count: "exact" },
+          )
           .order(dateOnEvent ? "event_at" : "updated_at", { ascending: false })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
         const kwOr = await buildKeywordOr(keyword);
         if (cancelled) return;
-        const q = applyOrderFilters(base, { campaignIds, tab, storeId, fromTs, toTs, keywordOr: kwOr, dateOnEvent });
+        const q = applyOrderFilters(base, { campaignIds, tab, storeId, skuIds: activeSkuId ? [activeSkuId] : [], fromTs, toTs, keywordOr: kwOr, dateOnEvent });
 
         const { data, count, error } = await q;
         if (cancelled) return;
@@ -464,7 +527,7 @@ function OrdersListContent() {
       }
     })();
     return () => { cancelled = true; };
-  }, [campaignIds, tab, dateOnEvent, storeId, page, reloadOrders, keyword, fromTs, toTs]);
+  }, [campaignIds, tab, dateOnEvent, storeId, activeSkuId, page, reloadOrders, keyword, fromTs, toTs]);
 
   // 頁首聚合（tab 數量 + 月趨勢）— 單一伺服端 RPC rpc_order_overview
   // 取代之前 client 端「5 個 count:exact 全表掃描」+「搬整月訂單+全部明細
@@ -487,6 +550,9 @@ function OrdersListContent() {
         p_month_start: startDate.toISOString(),
         p_date_from: fromTs,
         p_date_to: toTs,
+        // p_sku_ids 是 v6（20260806000020）才有的參數：沒篩品項就不帶這個 key，
+        // 萬一線上還是舊版函式，其餘功能不受影響
+        ...(activeSkuId ? { p_sku_ids: [Number(activeSkuId)] } : {}),
       });
       if (cancelled) return;
 
@@ -521,10 +587,28 @@ function OrdersListContent() {
     return () => {
       cancelled = true;
     };
-  }, [campaignIds, storeId, reloadOrders, keyword, fromTs, toTs]);
+  }, [campaignIds, storeId, activeSkuId, reloadOrders, keyword, fromTs, toTs]);
 
   const campaignMap = useMemo(() => new Map(campaigns.map((c) => [c.id, c])), [campaigns]);
   const storeMap = useMemo(() => new Map(stores.map((s) => [s.id, s])), [stores]);
+  // 品項下拉顯示用：跨團 dedupe by sku_id；label 沿用 itemLabel 慣例
+  // （一團一品時商品名＝開團名 → 只顯示規格，否則顯示「商品 / 規格」）
+  const skuFilterOptions = useMemo(() => {
+    const seen = new Set<number>();
+    const out: { id: number; label: string }[] = [];
+    for (const r of skuOptionRows) {
+      if (seen.has(r.skuId)) continue;
+      seen.add(r.skuId);
+      out.push({
+        id: r.skuId,
+        label: itemLabel(
+          { product_name: r.productName, variant_name: r.variantName },
+          campaignMap.get(r.campaignId)?.name ?? "",
+        ),
+      });
+    }
+    return out;
+  }, [skuOptionRows, campaignMap]);
 
   // 批次取貨 — 抓所有勾選訂單的 pickable items, 連續呼 rpc_record_pickup,
   async function cancelOrder(orderId: number, orderNo: string, status: string) {
@@ -704,14 +788,14 @@ function OrdersListContent() {
     const kwOr = await buildKeywordOr(keyword);
     const base = getSupabase()
       .from("v_admin_orders")
-      .select("id")
+      .select("id" + (activeSkuId ? ITEM_EMBED : ""))
       .order(dateOnEvent ? "event_at" : "updated_at", { ascending: false })
       .limit(SELECT_ALL_MAX);
     const { data, error } = await applyOrderFilters(base, {
-      campaignIds, tab, storeId, fromTs, toTs, keywordOr: kwOr, dateOnEvent,
+      campaignIds, tab, storeId, skuIds: activeSkuId ? [activeSkuId] : [], fromTs, toTs, keywordOr: kwOr, dateOnEvent,
     });
     if (error) { setBulkPrintErr(error.message); return; }
-    const ids = ((data ?? []) as { id: number }[]).map((r) => r.id);
+    const ids = ((data ?? []) as unknown as { id: number }[]).map((r) => r.id);
     setSelected(new Set(ids));
     if (total > ids.length) {
       setBulkPrintErr(`符合條件共 ${total} 筆，一次最多選 ${SELECT_ALL_MAX} 筆（已選最新的 ${ids.length} 筆）`);
@@ -952,6 +1036,20 @@ function OrdersListContent() {
             </div>
           )}
         </div>
+        {/* 品項二層篩選 — 選了開團才出現（選項 = 所選開團的品項），只看含此品項的訂單 */}
+        {campaignIds.length > 0 && (
+          <select
+            value={skuId}
+            onChange={(e) => setSkuId(e.target.value)}
+            title="再依品項（規格）篩選：只看含此品項的訂單"
+            className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+          >
+            <option value="">全部品項</option>
+            {skuFilterOptions.map((o) => (
+              <option key={o.id} value={o.id}>{o.label}</option>
+            ))}
+          </select>
+        )}
         <select value={storeId} onChange={(e) => setStoreId(e.target.value)}
           className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800">
           <option value="">全部取貨店</option>
