@@ -644,7 +644,7 @@ export function OrderDetail({
   // 撤銷取貨：有已取品項且訂單未進入取消/逾期/轉出終態。權限對齊 rpc_undo_pickup 的 gate
   const canUndoPickup =
     role !== null &&
-    ["owner", "admin", "hq_manager", ""].includes(role) &&
+    ["owner", "admin", "hq_manager", "store_manager", ""].includes(role) &&
     items.some((it) => it.status === "picked_up") &&
     !["cancelled", "expired", "transferred_out"].includes(head.status);
   const memberLabel = head.member
