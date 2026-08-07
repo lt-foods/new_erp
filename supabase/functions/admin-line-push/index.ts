@@ -7,6 +7,9 @@
 // actions:
 //   check — GET LINE profile，回「這個 line_user_id 對這支 OA 能不能推」
 //           （404 = 沒加好友 **或** Login channel 跟 OA 不同 provider、ID 對不上）
+//   quota — 本月推播額度（limit=null 表示方案無上限）。注意額度只算「主動
+//           推播」（push/broadcast/群發），OA 後台 1:1 聊天不吃額度 —
+//           後台數字跟這裡對不上時，先想這件事。
 //   send  — push 文字和/或圖片。圖片 URL 限定自家 line-media bucket，
 //           防止拿這支函式對會員推任意外部圖。
 //
@@ -19,6 +22,7 @@ import { corsHeaders } from "../_shared/cors.ts";
 
 const LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push";
 const LINE_PROFILE_URL = "https://api.line.me/v2/bot/profile";
+const LINE_QUOTA_URL = "https://api.line.me/v2/bot/message/quota";
 
 function requireEnv(name: string): string {
   const v = Deno.env.get(name);
@@ -58,7 +62,38 @@ Deno.serve(async (req) => {
     if (!tenantId) return json({ error: "user has no tenant_id" }, 403);
 
     const body = await req.json();
-    const action = body.action === "check" ? "check" : "send";
+    const action = body.action === "check" ? "check"
+      : body.action === "quota" ? "quota"
+      : "send";
+
+    const oaToken = Deno.env.get("LINE_MESSAGING_CHANNEL_ACCESS_TOKEN");
+    if (!oaToken) {
+      return json({
+        error: "not_configured",
+        message: "尚未設定 LINE_MESSAGING_CHANNEL_ACCESS_TOKEN（LINE 官方帳號的 Messaging API channel access token）",
+      }, 503);
+    }
+    const oaHeaders = { "Authorization": `Bearer ${oaToken}` };
+
+    // ── quota：本月推播額度（不需要 member_id）─────────────────────────────
+    if (action === "quota") {
+      const [qResp, cResp] = await Promise.all([
+        fetch(LINE_QUOTA_URL, { headers: oaHeaders }),
+        fetch(`${LINE_QUOTA_URL}/consumption`, { headers: oaHeaders }),
+      ]);
+      if (!qResp.ok || !cResp.ok) {
+        const detail = `quota ${qResp.status} / consumption ${cResp.status}`;
+        return json({ error: "line_api_error", detail }, 502);
+      }
+      const q = await qResp.json();
+      const c = await cResp.json();
+      return json({
+        ok: true,
+        limit: q.type === "limited" ? q.value : null,  // null = 方案無上限
+        used: c.totalUsage ?? 0,
+      });
+    }
+
     const memberId = body.member_id;
     if (!memberId) return json({ error: "member_id is required" }, 400);
 
@@ -73,15 +108,6 @@ Deno.serve(async (req) => {
     if (!member.line_user_id) {
       return json({ error: "member_no_line", message: "此會員未綁定 LINE" }, 400);
     }
-
-    const oaToken = Deno.env.get("LINE_MESSAGING_CHANNEL_ACCESS_TOKEN");
-    if (!oaToken) {
-      return json({
-        error: "not_configured",
-        message: "尚未設定 LINE_MESSAGING_CHANNEL_ACCESS_TOKEN（LINE 官方帳號的 Messaging API channel access token）",
-      }, 503);
-    }
-    const oaHeaders = { "Authorization": `Bearer ${oaToken}` };
 
     // ── check：能不能推得到這個人 ───────────────────────────────────────────
     if (action === "check") {

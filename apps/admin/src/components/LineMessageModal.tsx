@@ -27,6 +27,10 @@ type Reachable =
   | { state: "not_configured"; message: string }
   | { state: "error"; message: string };
 
+// limit=null = 方案無則數上限。額度只算「主動推播」（這個功能就是），
+// OA 後台 1:1 聊天不吃額度，所以這裡的數字跟後台聊天量對不上是正常的。
+type Quota = { limit: number | null; used: number };
+
 async function callFn(body: Record<string, unknown>) {
   const sb = getSupabase();
   const { data: { session } } = await sb.auth.getSession();
@@ -75,6 +79,7 @@ export function LineMessageModal({
   tenantId: string;
 }) {
   const [reachable, setReachable] = useState<Reachable>({ state: "checking" });
+  const [quota, setQuota] = useState<Quota | null>(null);
   const [text, setText] = useState("");
   const [image, setImage] = useState<File | null>(null);
   const [sending, setSending] = useState(false);
@@ -101,6 +106,13 @@ export function LineMessageModal({
       } catch (e) {
         if (!cancelled) setReachable({ state: "error", message: e instanceof Error ? e.message : String(e) });
       }
+    })();
+    // 額度另外抓，失敗就不顯示（不擋發送流程）
+    (async () => {
+      try {
+        const { result } = await callFn({ action: "quota" });
+        if (!cancelled && result.ok) setQuota({ limit: result.limit ?? null, used: result.used ?? 0 });
+      } catch { /* 額度顯示是輔助資訊，抓不到就算了 */ }
     })();
     return () => { cancelled = true; };
   }, [open, member.id]);
@@ -217,6 +229,19 @@ export function LineMessageModal({
           <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
             {reachable.message}
           </div>
+        )}
+
+        {/* 本月推播額度（只算主動推播；OA 後台 1:1 聊天不吃額度） */}
+        {quota && (
+          quota.limit !== null && quota.used >= quota.limit ? (
+            <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+              本月推播額度已用完（{quota.used} / {quota.limit} 則），發送會失敗。額度每月 1 號重置；OA 後台 1:1 聊天不受影響。
+            </div>
+          ) : (
+            <div className="text-xs text-zinc-500" title="只計算主動推播（此功能 / 群發）；官方帳號後台 1:1 聊天不吃額度">
+              本月推播已用 {quota.used} / {quota.limit ?? "無上限"} 則
+            </div>
+          )
         )}
 
         <label className="block text-sm">
