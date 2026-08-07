@@ -623,7 +623,13 @@ async function fetchPickingRows(
   const { data, count, error } = await q;
   if (error) throw new Error("picking: " + error.message);
   const waveRows = (data ?? []) as Array<Omit<PickingRaw, "expected_total" | "actual_total" | "source_po_no">>;
+  return { rows: await hydratePickingRows(sb, waveRows), total: count ?? 0 };
+}
 
+async function hydratePickingRows(
+  sb: SBClient,
+  waveRows: Array<Omit<PickingRaw, "expected_total" | "actual_total" | "source_po_no">>,
+): Promise<Row[]> {
   // 補 expected/actual + source_po_no
   // item_count 用 distinct sku_id;原本 row count 會把 (store × sku) 都算進去
   const ids = waveRows.map((w) => w.id);
@@ -652,7 +658,7 @@ async function fetchPickingRows(
   }
   const itemsMap = await fetchItemsSummaryMap(sb, "picking_wave_items", "wave_id", ids, "qty");
 
-  const rows: Row[] = waveRows.map((w) => ({
+  return waveRows.map((w) => ({
     key: `picking-${w.id}`,
     source: "picking" as const,
     ts: new Date(w.created_at).getTime(),
@@ -667,7 +673,17 @@ async function fetchPickingRows(
       items_summary: itemsMap.get(w.id) ?? "",
     },
   }));
-  return { rows, total: count ?? 0 };
+}
+
+async function fetchPickingRowsByIds(sb: SBClient, ids: number[]): Promise<Row[]> {
+  if (ids.length === 0) return [];
+  const { data, error } = await sb
+    .from("picking_waves")
+    .select("id, wave_code, wave_date, status, store_count, item_count, total_qty, note, created_at, source_po_id")
+    .in("id", ids);
+  if (error) throw new Error("picking: " + error.message);
+  const waveRows = (data ?? []) as Array<Omit<PickingRaw, "expected_total" | "actual_total" | "source_po_no">>;
+  return hydratePickingRows(sb, waveRows);
 }
 
 // === ByIds 變體 — 給「全部」視圖分頁用(已從 v_hq_inbox 拿到 page keys 後,反查各表詳情) ===
@@ -917,6 +933,12 @@ function HqInboxContent() {
     return "picking";
   });
   const [search, setSearch] = useState("");
+  // debounce 後的搜尋字串 — 觸發 server-side 搜尋(rpc_hq_inbox_search)
+  const [searchQ, setSearchQ] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setSearchQ(search.trim()), 350);
+    return () => clearTimeout(t);
+  }, [search]);
 
   // sourceFilter 變動 → 寫回 localStorage
   useEffect(() => {
@@ -1070,7 +1092,38 @@ function HqInboxContent() {
         let resultRows: Row[] = [];
         let resultTotal = 0;
 
-        if (sourceFilter === "all") {
+        // server-side 搜尋:先 rpc_hq_inbox_search 拿符合的當頁 ids(含品項比對),
+        // 再走既有 by-id fetcher 補完整欄位("all" / "exception" 不走這條)
+        const searchableSources: SourceTag[] = ["restock", "transfer", "aid", "air", "picking", "shortage"];
+        if (searchQ && searchableSources.includes(sourceFilter as SourceTag)) {
+          const { data: sData, error: sErr } = await sb.rpc("rpc_hq_inbox_search", {
+            p_source: sourceFilter,
+            p_q: searchQ,
+            p_stage: stageArg,
+            p_date_from: dateFrom ? `${dateFrom}T00:00:00` : null,
+            p_date_to: dateTo ? `${dateTo}T23:59:59.999` : null,
+            p_transfer_kind: sourceFilter === "transfer" ? transferKindFilter : null,
+            p_aid_status: sourceFilter === "aid" && aidStatusFilter ? aidStatusFilter : null,
+            p_page: page,
+            p_page_size: PAGE_SIZE,
+          });
+          if (sErr) throw sErr;
+          const sResp = (sData ?? { total: 0, ids: [] }) as { total: number; ids: number[] };
+          const ids = (sResp.ids ?? []).map(Number);
+          let rowsById: Row[];
+          if (sourceFilter === "restock") rowsById = await fetchRestockRowsByIds(sb, ids);
+          else if (sourceFilter === "transfer") rowsById = await fetchTransferRowsByIds(sb, ids);
+          else if (sourceFilter === "aid") rowsById = await fetchAidRowsByIds(sb, ids, "aid");
+          else if (sourceFilter === "air") rowsById = await fetchAidRowsByIds(sb, ids, "air");
+          else if (sourceFilter === "picking") rowsById = await fetchPickingRowsByIds(sb, ids);
+          else rowsById = await fetchShortageRowsByIds(sb, ids);
+          // 依 RPC 回傳的 ids 順序(新→舊)排列
+          const orderIdx = new Map(ids.map((id, i) => [id, i]));
+          const rawId = (r: Row) => (r.source === "shortage" ? r.raw.order_id : r.raw.id);
+          rowsById.sort((a, b) => (orderIdx.get(rawId(a)) ?? 0) - (orderIdx.get(rawId(b)) ?? 0));
+          resultRows = rowsById;
+          resultTotal = sResp.total ?? 0;
+        } else if (sourceFilter === "all") {
           // 「全部」視圖:用 rpc_hq_inbox_keys 從 v_hq_inbox 拿 page keys,再 by-id 反查各表詳情
           const { data: keysData, error: keysErr } = await sb.rpc("rpc_hq_inbox_keys", {
             p_stage: stageArg,
@@ -1132,7 +1185,7 @@ function HqInboxContent() {
     return () => {
       cancelled = true;
     };
-  }, [sourceFilter, effectiveStage, page, dateFrom, dateTo, aidStatusFilter, transferKindFilter, reloadTick]);
+  }, [sourceFilter, effectiveStage, page, dateFrom, dateTo, aidStatusFilter, transferKindFilter, searchQ, reloadTick]);
 
   // stage tab counts:依當前 sourceFilter,從 cached counts 算出
   const stageCounts = useMemo(() => {
@@ -1160,20 +1213,22 @@ function HqInboxContent() {
     return c;
   }, [counts, effectiveStage]);
 
-  // server-side 已過濾 source / stage / 日期 / Aid filters,client-side 只做 search(限當前頁)
+  // 搜尋:一般來源走 server-side(rpc_hq_inbox_search,含品項比對、跨頁);
+  // 只剩 "all" 視圖(無 UI 入口的 legacy)還走 client-side 過濾當前頁
+  const serverSearchActive = searchQ !== "" && sourceFilter !== "all";
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
+    if (!q || serverSearchActive) return rows ?? [];
     return (rows ?? []).filter((r) => {
-      if (!q) return true;
       if (r.source === "restock") {
         const s = r.raw;
-        return [s.store_name, s.notes, s.linked_transfer_no, s.linked_pr_no, `RESTOCK#${s.id}`]
+        return [s.store_name, s.notes, s.linked_transfer_no, s.linked_pr_no, `RESTOCK#${s.id}`, s.items_summary]
           .filter((x): x is string => !!x)
           .some((x) => x.toLowerCase().includes(q));
       }
       if (r.source === "transfer") {
         const t = r.raw;
-        return [t.transfer_no, t.source_name, t.dest_name, t.hq_notes].filter((x): x is string => !!x).some((x) => x.toLowerCase().includes(q));
+        return [t.transfer_no, t.source_name, t.dest_name, t.hq_notes, t.items_summary].filter((x): x is string => !!x).some((x) => x.toLowerCase().includes(q));
       }
       if (r.source === "shortage") {
         const sh = r.raw;
@@ -1182,13 +1237,13 @@ function HqInboxContent() {
       }
       if (r.source === "picking") {
         const w = r.raw;
-        return [w.wave_code, w.source_po_no, w.note]
+        return [w.wave_code, w.source_po_no, w.note, w.items_summary]
           .filter((x): x is string => !!x).some((x) => x.toLowerCase().includes(q));
       }
       const a = r.raw;
-      return [a.order_no, a.store_name, a.campaign_no].filter((x): x is string => !!x).some((x) => x.toLowerCase().includes(q));
+      return [a.order_no, a.store_name, a.campaign_no, a.items_summary].filter((x): x is string => !!x).some((x) => x.toLowerCase().includes(q));
     });
-  }, [rows, search]);
+  }, [rows, search, serverSearchActive]);
 
   // server-side 已分頁,paginatedRows 直接 = filtered(當前頁的 rows 經過 search 過濾)
   const paginatedRows = filtered;
@@ -1224,7 +1279,7 @@ function HqInboxContent() {
   // 任何 server 端篩選變動 → 回到第 1 頁(避免 page 超出範圍)
   useEffect(() => {
     setPage(1);
-  }, [stage, sourceFilter, aidStatusFilter, transferKindFilter, dateFrom, dateTo]);
+  }, [stage, sourceFilter, aidStatusFilter, transferKindFilter, dateFrom, dateTo, searchQ]);
 
   // 計算 group key for each row
   function getGroupKey(r: Row): { key: string; label: string } {
@@ -1939,7 +1994,7 @@ function HqInboxContent() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="🔍 搜尋 單號 / 店 / 備註"
+              placeholder="🔍 搜尋 單號 / 店 / 品項 / 備註"
               className="flex-1 min-w-[180px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             />
             <input

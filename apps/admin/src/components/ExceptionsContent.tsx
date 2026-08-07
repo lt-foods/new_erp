@@ -124,6 +124,10 @@ export default function ExceptionsContent({
   const [busy, setBusy] = useState<number | null>(null);
   const [page, setPage] = useState(1);
   const [prevTab, setPrevTab] = useState<Tab>(tab);
+  // 搜尋(server-side,rpc_hq_exceptions p_search):input 即打即存,debounce 後才打 RPC
+  const [search, setSearch] = useState("");
+  const [searchQ, setSearchQ] = useState("");
+  const [prevSearchQ, setPrevSearchQ] = useState("");
   // 多選批次處理:只針對「訂單短少」且尚未處理的列(其他類型需逐筆開 modal / 前往單據)
   const [selected, setSelected] = useState<number[]>([]);
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -197,6 +201,18 @@ export default function ExceptionsContent({
     setPage(1);
     setSelected([]);
   }
+  // 搜尋字串(debounced)變動 → 回第 1 頁(同上,render 階段調整)
+  if (prevSearchQ !== searchQ) {
+    setPrevSearchQ(searchQ);
+    setPage(1);
+    setSelected([]);
+  }
+
+  // input → debounce 350ms → searchQ(才觸發 RPC)
+  useEffect(() => {
+    const t = setTimeout(() => setSearchQ(search.trim()), 350);
+    return () => clearTimeout(t);
+  }, [search]);
 
   // server-side 抓當前 tab + page(rpc_hq_exceptions 一次回 total / 各 tab counts / 當頁 rows)
   useEffect(() => {
@@ -208,6 +224,7 @@ export default function ExceptionsContent({
           p_type: tab,
           p_page: page,
           p_page_size: PAGE_SIZE,
+          p_search: searchQ || null,
         });
         if (err) throw err;
         if (cancelled) return;
@@ -273,7 +290,8 @@ export default function ExceptionsContent({
         setTotal(resp.total ?? 0);
         setCounts(cnts);
         setError(null);
-        if (onCountChange) onCountChange(cnts.all);
+        // 搜尋中不回報 — 收件匣「異常」chip 徽章維持未過濾的總數
+        if (onCountChange && !searchQ) onCountChange(cnts.all);
 
         // 處理掉項目後列表縮短 → 修正超出範圍的頁碼(在 async 內、非 effect body,不觸發 set-state-in-effect)
         if (mapped.length === 0 && page > 1 && (resp.total ?? 0) > 0) {
@@ -286,7 +304,7 @@ export default function ExceptionsContent({
     return () => {
       cancelled = true;
     };
-  }, [tab, page, reloadTick, onCountChange]);
+  }, [tab, page, searchQ, reloadTick, onCountChange]);
 
   const c = counts ?? EMPTY_COUNTS;
   // 可多選的列 = 當頁「訂單短少」且尚未處理者
@@ -347,6 +365,14 @@ export default function ExceptionsContent({
           {error}
         </div>
       )}
+
+      {/* 搜尋 — server-side(rpc_hq_exceptions p_search),跨頁、跨 tab 計數同步反映 */}
+      <input
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="🔍 搜尋 單號 / 品項 / 倉別"
+        className="w-full rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+      />
 
       <div className="flex flex-wrap gap-1 border-b border-zinc-200 dark:border-zinc-800">
         {(["all", "po_shortage", "po_damage", "po_over", "transfer_short", "customer_shortage"] as const).map((t) => {
