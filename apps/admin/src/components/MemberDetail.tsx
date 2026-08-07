@@ -509,6 +509,7 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
           onClose={() => setLineMsgOpen(false)}
           member={{ id: member.id, name: member.name, member_no: member.member_no }}
           tenantId={tenantId}
+          homeStoreId={member.home_store_id}
         />
       )}
 

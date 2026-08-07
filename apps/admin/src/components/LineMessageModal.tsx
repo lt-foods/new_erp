@@ -36,6 +36,15 @@ type Quota = { limit: number | null; used: number };
 // chatMode "bot" = 後台把「聊天」關掉了、只走 webhook，連過去也不能回。
 type Chat = { url: string | null; mode: string | null };
 
+/**
+ * 該店 OA 好友名冊裡「還沒配對到會員」的人。
+ *
+ * webhook 只收得到 LINE 使用者，收不到「他是哪位會員」—— 官方的 account link
+ * 是自動化正解但要碰顧客端，還沒做。在那之前讓店員自己挑：他們本來就認得
+ * 顧客的 LINE 名稱與頭像，這是最直覺的補救。
+ */
+type Follower = { line_user_id: string; display_name: string | null; picture_url: string | null };
+
 // 訊息樣板。連結由後端 links action 給（來自 MEMBER_FRONT_BASE_URL），
 // 不在這裡寫死網址 —— 換網域時只要改 secret，不用重新部署前端。
 //
@@ -88,17 +97,21 @@ async function encodeJpeg(file: File, maxDim: number, quality: number): Promise<
 }
 
 export function LineMessageModal({
-  open, onClose, member, tenantId,
+  open, onClose, member, tenantId, homeStoreId = null,
 }: {
   open: boolean;
   onClose: () => void;
   member: { id: number; name: string | null; member_no: string };
   tenantId: string;
+  /** 會員取貨店 —— 決定要看哪一家店的 OA 名冊 */
+  homeStoreId?: number | null;
 }) {
   const [reachable, setReachable] = useState<Reachable>({ state: "checking" });
   const [quota, setQuota] = useState<Quota | null>(null);
   const [chat, setChat] = useState<Chat | null>(null);
   const [ordersUrl, setOrdersUrl] = useState<string | null>(null);
+  const [followers, setFollowers] = useState<Follower[]>([]);
+  const [binding, setBinding] = useState(false);
   const [text, setText] = useState("");
   const [image, setImage] = useState<File | null>(null);
   const [sending, setSending] = useState(false);
@@ -139,6 +152,18 @@ export function LineMessageModal({
         if (!cancelled && result.ok) setQuota({ limit: result.limit ?? null, used: result.used ?? 0 });
       } catch { /* 額度顯示是輔助資訊，抓不到就算了 */ }
     })();
+    // 該店還沒配對的 OA 好友：推不到時要讓店員手動挑
+    (async () => {
+      if (homeStoreId == null) return;
+      const { data } = await getSupabase()
+        .from("store_line_followers")
+        .select("line_user_id, display_name, picture_url")
+        .eq("store_id", homeStoreId)
+        .is("member_id", null)
+        .eq("followed", true)
+        .limit(50);
+      if (!cancelled) setFollowers((data as Follower[]) ?? []);
+    })();
     // 樣板用的會員站連結（不需要 LINE token，所以 token 沒設也拿得到）
     (async () => {
       try {
@@ -147,7 +172,7 @@ export function LineMessageModal({
       } catch { /* 拿不到就不顯示樣板按鈕 */ }
     })();
     return () => { cancelled = true; };
-  }, [open, member.id]);
+  }, [open, member.id, homeStoreId]);
 
   // 貼上截圖（Ctrl/Cmd+V）— modal 開著時掛在 document 上，不用先點進哪個欄位
   useEffect(() => {
@@ -276,6 +301,54 @@ export function LineMessageModal({
               本月推播已用 {quota.used} / {quota.limit ?? "無上限"} 則
             </div>
           )
+        )}
+
+        {/* 推不到 + 該店名冊有人 → 讓店員手動配對 */}
+        {reachable.state === "unreachable" && followers.length > 0 && (
+          <div className="rounded-md border border-sky-200 bg-sky-50 p-2 dark:border-sky-900 dark:bg-sky-950/40">
+            <div className="mb-1 text-xs font-medium text-sky-900 dark:text-sky-200">
+              這位會員在本店官方帳號是哪一個？
+            </div>
+            <p className="mb-2 text-[11px] text-sky-800/80 dark:text-sky-300/80">
+              以下是已加入本店官方帳號、但還沒對應到會員的人。選對之後就能發送。
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {followers.map((f) => (
+                <SpinButton
+                  key={f.line_user_id}
+                  disabled={binding}
+                  onClick={async () => {
+                    setBinding(true);
+                    try {
+                      const { error } = await getSupabase().rpc("rpc_bind_store_line_follower", {
+                        p_member_id: member.id,
+                        p_line_user_id: f.line_user_id,
+                      });
+                      if (error) { setError(error.message); return; }
+                      // 綁完重新預檢，畫面才會從「推不到」翻成「可發送」
+                      setReachable({ state: "checking" });
+                      const { result } = await callFn({ action: "check", member_id: member.id });
+                      if (result.ok && result.reachable) {
+                        setReachable({ state: "ok", displayName: result.display_name ?? null });
+                        setFollowers([]);
+                      } else {
+                        setReachable({ state: "unreachable", message: result.message ?? "仍然推不到" });
+                      }
+                    } finally {
+                      setBinding(false);
+                    }
+                  }}
+                  className="flex items-center gap-2 rounded-md border border-sky-300 bg-white px-2 py-1 text-xs hover:bg-sky-100 disabled:opacity-50 dark:border-sky-800 dark:bg-zinc-900 dark:hover:bg-sky-950"
+                >
+                  {f.picture_url && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={f.picture_url} alt="" className="h-5 w-5 rounded-full object-cover" />
+                  )}
+                  {f.display_name ?? f.line_user_id.slice(0, 8) + "…"}
+                </SpinButton>
+              ))}
+            </div>
+          </div>
         )}
 
         {/* 免額度替代路徑：OA 後台 1:1 聊天室。額度用完時這條仍然能發。 */}

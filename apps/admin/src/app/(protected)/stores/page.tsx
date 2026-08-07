@@ -519,7 +519,7 @@ function StoreForm({
           </span>
         </F>
 
-        <StoreLineOaField storeId={v.id} liffId={v.line_liff_id} />
+        <StoreLineOaField storeId={v.id} />
 
         <F label="備註" className="sm:col-span-4">
           <textarea

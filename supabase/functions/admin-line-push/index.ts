@@ -311,8 +311,30 @@ Deno.serve(async (req) => {
       .maybeSingle();
     if (memErr) return json({ error: memErr.message }, 500);
     if (!member) return json({ error: "member not found" }, 404);
-    if (!member.line_user_id) {
-      return json({ error: "member_no_line", message: "此會員未綁定 LINE" }, 400);
+    // 推播要用的 ID：優先取「該店 OA webhook 收到並已配對」的那組。
+    //
+    // members.line_user_id 是**登入用 Login channel provider** 的 ID，對各店 OA
+    // 一律查不到（2026-08-07 實測：松山店 12 位會員全數 404）。真正推得動的是
+    // store_line_followers 裡、由該店 OA 自己的 webhook 收進來的 ID。
+    // 舊欄位只留作退路：單一 OA 的租戶、或 provider 剛好一致時仍然有效。
+    const { data: follower } = await sb
+      .from("store_line_followers")
+      .select("line_user_id, followed")
+      .eq("tenant_id", tenantId)
+      .eq("store_id", member.home_store_id ?? -1)
+      .eq("member_id", member.id)
+      .maybeSingle();
+
+    const targetLineUserId: string | null =
+      (follower?.followed ? follower.line_user_id : null) ?? member.line_user_id ?? null;
+
+    if (!targetLineUserId) {
+      return json({
+        error: "member_no_line",
+        message: follower && !follower.followed
+          ? "此會員已封鎖或取消追蹤該分店的官方帳號"
+          : "此會員尚未與該分店的官方帳號建立綁定",
+      }, 400);
     }
 
     // 用「會員所屬分店」的 OA 憑證。這個租戶每家加盟店各有自己的 OA，
@@ -350,7 +372,7 @@ Deno.serve(async (req) => {
     // ── check：能不能推得到這個人 + OA 後台 1:1 聊天室連結 ──────────────────
     if (action === "check") {
       const [resp, infoResp] = await Promise.all([
-        fetch(`${LINE_PROFILE_URL}/${member.line_user_id}`, { headers: oaHeaders }),
+        fetch(`${LINE_PROFILE_URL}/${targetLineUserId}`, { headers: oaHeaders }),
         fetch(LINE_BOT_INFO_URL, { headers: oaHeaders }),
       ]);
 
@@ -360,7 +382,7 @@ Deno.serve(async (req) => {
       if (infoResp.ok) {
         const info = await infoResp.json();
         chatMode = info.chatMode ?? null;   // "chat" = 後台 1:1 聊天開著；"bot" = 只走 webhook
-        if (info.userId) chatUrl = chatConsoleUrl(info.userId, member.line_user_id);
+        if (info.userId) chatUrl = chatConsoleUrl(info.userId, targetLineUserId);
       } else {
         console.error("bot info failed:", infoResp.status, await infoResp.text());
       }
@@ -413,7 +435,7 @@ Deno.serve(async (req) => {
     const resp = await fetch(LINE_PUSH_URL, {
       method: "POST",
       headers: { ...oaHeaders, "Content-Type": "application/json" },
-      body: JSON.stringify({ to: member.line_user_id, messages }),
+      body: JSON.stringify({ to: targetLineUserId, messages }),
     });
 
     const ok = resp.ok;
@@ -422,7 +444,7 @@ Deno.serve(async (req) => {
     const { error: logErr } = await sb.from("line_push_logs").insert({
       tenant_id: tenantId,
       member_id: member.id,
-      line_user_id: member.line_user_id,
+      line_user_id: targetLineUserId,
       sent_by: user.id,
       text: text || null,
       image_url: imageUrl || null,

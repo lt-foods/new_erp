@@ -17,9 +17,7 @@ import SpinButton from "@/components/SpinButton";
 
 type Status = { channel_id: string; updated_at: string } | null;
 
-export function StoreLineOaField({
-  storeId, liffId = null,
-}: { storeId: number | null; liffId?: string | null }) {
+export function StoreLineOaField({ storeId }: { storeId: number | null }) {
   const role = useRole();
   const [status, setStatus] = useState<Status>(null);
   const [loaded, setLoaded] = useState(false);
@@ -171,94 +169,7 @@ export function StoreLineOaField({
             基於安全，secret 存進去後無法再讀出來（要換只能重填整組）。
           </p>
 
-          <StoreLiffField storeId={storeId} initial={liffId} />
         </>
-      )}
-    </div>
-  );
-}
-
-/**
- * 該店登入用的 LIFF ID。
- *
- * 為什麼要分店設定：LINE 的 user ID 綁 Provider。各店 OA 在自己的 Provider 底下，
- * 會員必須用「所屬分店那支 Login channel 的 LIFF」登入，取得的 line_user_id
- * 才跟該店 OA 通用 —— 否則存進資料庫也推不動（2026-08-07 實測：取樣 12 位
- * 松山店會員，用舊 ID 查該店 OA 的 profile 全部 404）。
- *
- * 留空 = 退回會員站的 NEXT_PUBLIC_LIFF_ID（租戶預設）。
- */
-function StoreLiffField({ storeId, initial }: { storeId: number; initial: string | null }) {
-  const [value, setValue] = useState(initial ?? "");
-  const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const dirty = value.trim() !== (initial ?? "");
-
-  async function save() {
-    setSaving(true);
-    setErr(null);
-    setMsg(null);
-    try {
-      const { error } = await getSupabase().rpc("rpc_set_store_line_liff", {
-        p_store_id: storeId,
-        p_liff_id: value.trim(),
-      });
-      if (error) { setErr(translateRpcError(error)); return; }
-      if (!value.trim()) { setMsg("已清除，改用租戶預設 LIFF"); return; }
-
-      // 存起來不代表能用：endpoint 若不在會員站網域底下，LIFF context 會消失、
-      // 登入直接 400（CLAUDE.md 記過的坑）。純前端抓不到 liff.line.me，走後端驗。
-      setMsg("已儲存，驗證 endpoint 中…");
-      const { data: { session } } = await getSupabase().auth.getSession();
-      const resp = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/admin-line-push`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${session?.access_token}` },
-        body: JSON.stringify({ action: "verify_liff", liff_id: value.trim() }),
-      });
-      const result = await resp.json().catch(() => ({}));
-      if (result.ok) {
-        setMsg(result.message ?? "✓ 已儲存");
-      } else {
-        setMsg(null);
-        setErr(result.message || result.error || `驗證失敗（HTTP ${resp.status}）`);
-      }
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="mt-3 border-t border-zinc-200 pt-3 dark:border-zinc-700">
-      <div className="mb-1 text-xs font-medium text-zinc-700 dark:text-zinc-300">
-        登入用 LIFF ID
-      </div>
-      <p className="mb-2 text-[11px] text-zinc-500">
-        這家店 Provider 底下的 LINE Login channel 所建的 LIFF app ID。會員要用這支登入，
-        取得的身分才跟本店官方帳號相通、收得到推播。留空 = 用預設。
-      </p>
-      <div className="flex flex-wrap items-center gap-2">
-        <input
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder="2001234567-AbCdEfGh"
-          autoComplete="off"
-          className="min-w-[220px] flex-1 rounded-md border border-zinc-300 bg-white px-2 py-1.5 font-mono text-xs dark:border-zinc-700 dark:bg-zinc-900"
-        />
-        {dirty && (
-          <SpinButton
-            onClick={save}
-            disabled={saving}
-            className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
-          >
-            {saving ? "儲存中…" : "💾 儲存"}
-          </SpinButton>
-        )}
-      </div>
-      {(msg || err) && (
-        <div className={`mt-1 text-[11px] ${err ? "text-red-700 dark:text-red-400" : "text-emerald-700 dark:text-emerald-400"}`}>
-          {err ?? msg}
-        </div>
       )}
     </div>
   );

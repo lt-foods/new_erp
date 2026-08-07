@@ -11,7 +11,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { loadLiff } from "@/lib/liff";
-import { cacheStoreLiffIds, resolveLiffId, resolveLiffIdSync } from "@/lib/storeLiff";
 import { callLiffApi, lineOauthStartUrl } from "@/lib/supabase";
 import { clearSession, getSession, listenForSession } from "@/lib/session";
 import {
@@ -48,13 +47,7 @@ export type LoginStatus =
   | "pair_done"
   | "pwa_waiting";
 
-export type StoreOption = {
-  id: number;
-  code: string;
-  name: string;
-  /** 該店 Provider 底下的 LIFF ID；沒設就退回 NEXT_PUBLIC_LIFF_ID */
-  line_liff_id?: string | null;
-};
+export type StoreOption = { id: number; code: string; name: string };
 
 export type UseLineLoginOptions = {
   /**
@@ -146,11 +139,7 @@ export function useLineLogin(options: UseLineLoginOptions = {}): UseLineLogin {
 
     // 抓門市清單給下拉選用(免 token,公開資訊)
     callLiffApi<{ stores: StoreOption[] }>("", { action: "list_stores" })
-      .then((r) => {
-        setStores(r.stores ?? []);
-        // 存起來給下次冷啟動用：LINE 內 liff.init() 跑在清單抓回來之前
-        cacheStoreLiffIds(r.stores ?? []);
-      })
+      .then((r) => setStores(r.stores ?? []))
       .catch((e) => {
         // 跳頁把這個 fetch 取消掉不算故障（Safari 回 "Load failed"），記了只是雜訊
         if (isPageUnloading()) return;
@@ -206,13 +195,14 @@ export function useLineLogin(options: UseLineLoginOptions = {}): UseLineLogin {
         localStorage.setItem("last_store_id", s);
       }
 
-      // 用「這家店」的 LIFF 登入，不是租戶預設的那支。
+      // 登入一律用租戶這支 LIFF。
       //
-      // LINE 的 user ID 綁 Provider：14 家店的官方帳號各在自己的 Provider，
-      // 用錯的 LIFF 登入，拿到的 line_user_id 對該店 OA 是查不到的（推播必失敗）。
-      // 這行必須排在讀門市之後、liff.init() 之前 —— 順序不能動。
-      // 該店沒設就退回 NEXT_PUBLIC_LIFF_ID，等於維持這個欄位出現前的行為。
-      const liffId = await resolveLiffId(s);
+      // 曾經試過「依分店換 LIFF」來讓登入取得的 ID 跟各店 OA 同 provider，
+      // 但那讓登入流程跟推播綁在一起 —— 登入這條路是踩了一堆雷才穩下來的
+      // （見本檔各處註解與 CLAUDE.md），不值得為推播冒險。
+      // 推播改走各店 OA 自己的 webhook 收 ID（store_line_followers），
+      // 兩條路各自獨立：登入歸登入，發訊息歸發訊息。
+      const liffId = process.env.NEXT_PUBLIC_LIFF_ID;
 
       // LIFF 初始化
       if (liffId) {
@@ -376,9 +366,7 @@ export function useLineLogin(options: UseLineLoginOptions = {}): UseLineLogin {
   const start = useCallback(() => {
     if (!storeId) return;
 
-    // 同上：用該店的 LIFF。走到這裡門市清單早就載完、快取是熱的，
-    // 所以讀快取版本就夠（這是 callback，不能 await）。
-    const liffId = resolveLiffIdSync(storeId);
+    const liffId = process.env.NEXT_PUBLIC_LIFF_ID;
 
     if (standalone) {
       // 點下登入 = 明確要重新登,清掉所有舊 session 避免「看到舊 token 就跳 /me」
