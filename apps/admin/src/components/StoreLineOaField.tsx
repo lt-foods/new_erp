@@ -17,7 +17,9 @@ import SpinButton from "@/components/SpinButton";
 
 type Status = { channel_id: string; updated_at: string } | null;
 
-export function StoreLineOaField({ storeId }: { storeId: number | null }) {
+export function StoreLineOaField({
+  storeId, storeCode,
+}: { storeId: number | null; storeCode: string }) {
   const role = useRole();
   const [status, setStatus] = useState<Status>(null);
   const [loaded, setLoaded] = useState(false);
@@ -26,6 +28,11 @@ export function StoreLineOaField({ storeId }: { storeId: number | null }) {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // 每家店一個 URL，結尾的 ?store= 不能省 —— line-webhook 要靠它決定用哪一把
+  // channel secret 驗簽（驗簽必須先於信任 body，所以不能改從 body 讀）。
+  const webhookUrl = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/line-webhook?store=${encodeURIComponent(storeCode)}`;
 
   useEffect(() => {
     // storeId 為 null 時走的是「請先儲存分店」那個分支，用不到 loaded
@@ -114,6 +121,36 @@ export function StoreLineOaField({ storeId }: { storeId: number | null }) {
               </div>
             )
           )}
+
+          <div className="mb-3 rounded border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-700 dark:bg-zinc-900">
+            <div className="mb-1 text-[11px] font-medium text-zinc-700 dark:text-zinc-300">
+              Webhook URL（貼到 LINE 後台 → 設定 → Messaging API）
+            </div>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 overflow-x-auto whitespace-nowrap rounded bg-white px-2 py-1 text-[11px] text-zinc-800 dark:bg-zinc-950 dark:text-zinc-200">
+                {webhookUrl}
+              </code>
+              <SpinButton
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(webhookUrl);
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2000);
+                  } catch {
+                    // 非 https / 舊瀏覽器沒有 clipboard API，讓使用者自己選取複製
+                    setErr("此瀏覽器不允許自動複製，請手動選取上方網址");
+                  }
+                }}
+                className="shrink-0 rounded-md border border-zinc-300 px-2 py-1 text-[11px] hover:bg-zinc-100 dark:border-zinc-600 dark:hover:bg-zinc-800"
+              >
+                {copied ? "✓ 已複製" : "複製"}
+              </SpinButton>
+            </div>
+            <p className="mt-1 text-[11px] text-zinc-500">
+              貼上後按 LINE 後台的 Verify 應顯示 Success。
+              {!status && "（要先儲存下方憑證，webhook 才驗得過簽章）"}
+            </p>
+          </div>
 
           <div className="grid gap-2 sm:grid-cols-2">
             <label className="block text-xs">
