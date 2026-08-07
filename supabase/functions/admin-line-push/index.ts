@@ -187,6 +187,7 @@ Deno.serve(async (req) => {
       : body.action === "quota" ? "quota"
       : body.action === "links" ? "links"
       : body.action === "verify_store" ? "verify_store"
+      : body.action === "verify_liff" ? "verify_liff"
       : "send";
 
     // ── links：訊息樣板要用的會員站連結（刻意放在 LINE token 檢查之前）──────
@@ -245,6 +246,47 @@ Deno.serve(async (req) => {
         display_name: info.displayName ?? null,
         basic_id: info.basicId ?? null,
         chat_mode: info.chatMode ?? null,
+      });
+    }
+
+    // ── verify_liff：檢查這支 LIFF 的 endpoint 有沒有指回會員站 ─────────────
+    // 為什麼要驗：LIFF 登入會把「當下網址」當 redirect_uri 送出去，只要 endpoint
+    // 不在會員站網域底下，LINE 直接回 400，而且一跨網域 LIFF context 就沒了
+    // （isInClient() 變 false、沒有 auto login）。這個坑 CLAUDE.md 記過一次
+    // ——endpoint 被指到一支 Cloudflare Worker，再 302 回會員站，登入全掛。
+    // 純前端擋不了（要抓 liff.line.me 的頁面），所以放後端。
+    if (action === "verify_liff") {
+      const role = user.app_metadata?.role ?? "";
+      if (!["owner", "admin", ""].includes(role)) {
+        return json({ error: "insufficient_role" }, 403);
+      }
+      const liffId = String(body.liff_id ?? "").trim();
+      if (!liffId) return json({ error: "liff_id is required" }, 400);
+
+      const resp = await fetch(`https://liff.line.me/${encodeURIComponent(liffId)}`);
+      if (!resp.ok) {
+        return json({ error: "liff_not_found", message: `查不到這支 LIFF（HTTP ${resp.status}），請確認 ID 是否正確` }, 502);
+      }
+      const html = await resp.text();
+      const endpoint = html.match(/liffEndpointUrl\s*=\s*"([^"]+)"/)?.[1] ?? null;
+      if (!endpoint) {
+        return json({ ok: true, endpoint: null, message: "讀不到 endpoint，無法自動驗證，請自行確認" });
+      }
+
+      const memberBase = (Deno.env.get("MEMBER_FRONT_BASE_URL") ?? "").replace(/\/+$/, "");
+      let sameHost = false;
+      try {
+        sameHost = new URL(endpoint).host === new URL(memberBase).host;
+      } catch { /* 網址解不開就當不相符 */ }
+
+      return json({
+        ok: sameHost,
+        endpoint,
+        message: sameHost
+          ? `✓ endpoint 正確指向會員站（${endpoint}）`
+          : `endpoint 指向 ${endpoint}，不是會員站（${memberBase}）。`
+            + "跨網域會讓 LIFF context 消失、登入回 400，這支 LIFF 不能用於登入 —— "
+            + "請把該 LIFF app 的 Endpoint URL 改成會員站網址，或改用正確的那支。",
       });
     }
 

@@ -205,7 +205,24 @@ function StoreLiffField({ storeId, initial }: { storeId: number; initial: string
         p_liff_id: value.trim(),
       });
       if (error) { setErr(translateRpcError(error)); return; }
-      setMsg(value.trim() ? "已儲存（該店會員下次登入就會用這支 LIFF）" : "已清除，改用租戶預設 LIFF");
+      if (!value.trim()) { setMsg("已清除，改用租戶預設 LIFF"); return; }
+
+      // 存起來不代表能用：endpoint 若不在會員站網域底下，LIFF context 會消失、
+      // 登入直接 400（CLAUDE.md 記過的坑）。純前端抓不到 liff.line.me，走後端驗。
+      setMsg("已儲存，驗證 endpoint 中…");
+      const { data: { session } } = await getSupabase().auth.getSession();
+      const resp = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/admin-line-push`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ action: "verify_liff", liff_id: value.trim() }),
+      });
+      const result = await resp.json().catch(() => ({}));
+      if (result.ok) {
+        setMsg(result.message ?? "✓ 已儲存");
+      } else {
+        setMsg(null);
+        setErr(result.message || result.error || `驗證失敗（HTTP ${resp.status}）`);
+      }
     } finally {
       setSaving(false);
     }
