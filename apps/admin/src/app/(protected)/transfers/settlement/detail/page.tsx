@@ -63,7 +63,9 @@ type Dispute = {
   };
   reason: string;
   status: "open" | "resolved";
+  raised_by: string;
   raised_at: string;
+  resolved_by: string | null;
   resolved_at: string | null;
   resolution_note: string | null;
 };
@@ -121,6 +123,13 @@ const STATUS_COLOR: Record<SettlementStatus, string> = {
   cancelled: "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400",
 };
 
+// 爭議訊息旁的時間戳（例：8/1 14:23）
+function fmtShortTime(iso: string) {
+  return new Date(iso).toLocaleString("zh-TW", {
+    month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+}
+
 export default function HqSettlementDetailPage() {
   const [settlementId, setSettlementId] = useState<number | null>(null);
   const [header, setHeader] = useState<Settlement | null>(null);
@@ -130,6 +139,7 @@ export default function HqSettlementDetailPage() {
   const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
   const [transfers, setTransfers] = useState<Map<number, Transfer>>(new Map());
   const [skus, setSkus] = useState<Map<number, Sku>>(new Map());
+  const [staffNames, setStaffNames] = useState<Map<string, string>>(new Map());
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
@@ -176,7 +186,7 @@ export default function HqSettlementDetailPage() {
           .order("received_at", { ascending: true }),
         sb
           .from("store_settlement_disputes")
-          .select("id, settlement_id, transfer_item_id, item_snapshot, reason, status, raised_at, resolved_at, resolution_note")
+          .select("id, settlement_id, transfer_item_id, item_snapshot, reason, status, raised_by, raised_at, resolved_by, resolved_at, resolution_note")
           .eq("settlement_id", settlementId)
           .order("status", { ascending: false })
           .order("raised_at", { ascending: true }),
@@ -186,12 +196,18 @@ export default function HqSettlementDetailPage() {
       if (!h) { setErr("找不到此月結算"); return; }
       const hd = h as unknown as Settlement;
       setHeader(hd);
-      setDisputes((dData ?? []) as Dispute[]);
+      const dList = (dData ?? []) as Dispute[];
+      setDisputes(dList);
       if (e1) { setErr(e1.message); setItems([]); return; }
       const list = (data ?? []) as Item[];
       setItems(list);
 
-      const [{ data: storeData }, { data: tx }, { data: sk }, { data: adjData }] = await Promise.all([
+      // 爭議訊息的發話人（店家提出 / 總部回覆）→ 顯示名稱
+      const staffUids = Array.from(
+        new Set(dList.flatMap((d) => [d.raised_by, d.resolved_by]).filter((x): x is string => Boolean(x))),
+      );
+
+      const [{ data: storeData }, { data: tx }, { data: sk }, { data: adjData }, { data: staffData }] = await Promise.all([
         sb.from("stores").select("id, code, name").eq("id", hd.store_id).maybeSingle(),
         list.length
           ? sb.from("transfers").select("id, transfer_no, status, shipped_at").in("id", Array.from(new Set(list.map((it) => it.transfer_id))))
@@ -205,10 +221,16 @@ export default function HqSettlementDetailPage() {
           .eq("store_id", hd.store_id)
           .eq("settlement_month", hd.settlement_month)
           .order("created_at", { ascending: true }),
+        staffUids.length
+          ? sb.rpc("rpc_get_staff_names", { p_uids: staffUids })
+          : Promise.resolve({ data: [] as { id: string; display_name: string }[] }),
       ]);
       if (cancelled) return;
       if (storeData) setStore(storeData as Store);
       setAdjustments((adjData ?? []) as Adjustment[]);
+      const nameMap = new Map<string, string>();
+      for (const n of ((staffData ?? []) as { id: string; display_name: string }[])) nameMap.set(n.id, n.display_name);
+      setStaffNames(nameMap);
       const tm = new Map<number, Transfer>();
       for (const t of (tx ?? []) as Transfer[]) tm.set(t.id, t);
       setTransfers(tm);
@@ -418,9 +440,20 @@ export default function HqSettlementDetailPage() {
                       {d.item_snapshot?.description ?? `SKU #${d.item_snapshot?.sku_id ?? "?"}`}
                       {" · "}${Number(d.item_snapshot?.branch_amount ?? 0).toLocaleString("zh-TW")}
                     </div>
-                    <div className="break-words">🗣 {d.reason}</div>
-                    {d.resolution_note && (
-                      <div className="text-xs text-emerald-700 dark:text-emerald-400">↳ 總部：{d.resolution_note}</div>
+                    <div className="break-words">
+                      🗣 <span className="font-medium">{staffNames.get(d.raised_by) ?? "店家"}</span>
+                      <span className="ml-1 text-xs text-zinc-400">{fmtShortTime(d.raised_at)}</span>
+                      ：{d.reason}
+                    </div>
+                    {d.status === "resolved" && (
+                      <div className="text-xs text-emerald-700 dark:text-emerald-400">
+                        ↳ 總部
+                        {d.resolved_by && staffNames.get(d.resolved_by) && (
+                          <span className="ml-1 font-medium">{staffNames.get(d.resolved_by)}</span>
+                        )}
+                        {d.resolved_at && <span className="ml-1 text-emerald-600/70 dark:text-emerald-500/70">{fmtShortTime(d.resolved_at)}</span>}
+                        ：{d.resolution_note ?? "已標記處理"}
+                      </div>
                     )}
                   </div>
                   {d.status === "open" && resolvingId !== d.id && (

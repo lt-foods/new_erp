@@ -48,6 +48,8 @@ type Dispute = {
   transfer_item_id: number;
   reason: string;
   status: "open" | "resolved";
+  raised_by: string;
+  resolved_by: string | null;
   resolution_note: string | null;
 };
 
@@ -113,6 +115,7 @@ export default function SettlementReviewPage() {
   const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
   const [transfers, setTransfers] = useState<Map<number, Transfer>>(new Map());
   const [skus, setSkus] = useState<Map<number, Sku>>(new Map());
+  const [staffNames, setStaffNames] = useState<Map<string, string>>(new Map());
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
@@ -157,7 +160,7 @@ export default function SettlementReviewPage() {
           .order("received_at", { ascending: true }),
         sb
           .from("store_settlement_disputes")
-          .select("id, transfer_item_id, reason, status, resolution_note")
+          .select("id, transfer_item_id, reason, status, raised_by, resolved_by, resolution_note")
           .eq("settlement_id", settlementId)
           .order("raised_at", { ascending: true }),
       ]);
@@ -166,12 +169,18 @@ export default function SettlementReviewPage() {
       if (!s) { setErr("找不到此對帳單"); return; }
       const sd = s as unknown as Settlement;
       setSettlement(sd);
-      setDisputes((dData ?? []) as Dispute[]);
+      const dList = (dData ?? []) as Dispute[];
+      setDisputes(dList);
       if (e1) { setErr(e1.message); setItems([]); return; }
       const list = (itemRows ?? []) as Item[];
       setItems(list);
 
-      const [{ data: storeData }, { data: tx }, { data: sk }, { data: adjData }] = await Promise.all([
+      // 爭議訊息的發話人（自家誰提的 / 總部誰回的）→ 顯示名稱
+      const staffUids = Array.from(
+        new Set(dList.flatMap((d) => [d.raised_by, d.resolved_by]).filter((x): x is string => Boolean(x))),
+      );
+
+      const [{ data: storeData }, { data: tx }, { data: sk }, { data: adjData }, { data: staffData }] = await Promise.all([
         sb.from("stores").select("id, name").eq("id", sd.store_id).maybeSingle(),
         list.length
           ? sb.from("transfers").select("id, transfer_no").in("id", Array.from(new Set(list.map((it) => it.transfer_id))))
@@ -186,10 +195,16 @@ export default function SettlementReviewPage() {
           .eq("settlement_month", sd.settlement_month)
           .eq("status", "active")
           .order("created_at", { ascending: true }),
+        staffUids.length
+          ? sb.rpc("rpc_get_staff_names", { p_uids: staffUids })
+          : Promise.resolve({ data: [] as { id: string; display_name: string }[] }),
       ]);
       if (cancelled) return;
       if (storeData) setStore(storeData as StoreRow);
       setAdjustments((adjData ?? []) as Adjustment[]);
+      const nameMap = new Map<string, string>();
+      for (const n of ((staffData ?? []) as { id: string; display_name: string }[])) nameMap.set(n.id, n.display_name);
+      setStaffNames(nameMap);
       const tm = new Map<number, Transfer>();
       for (const t of (tx ?? []) as Transfer[]) tm.set(t.id, t);
       setTransfers(tm);
@@ -450,10 +465,13 @@ export default function SettlementReviewPage() {
                     )}
                     {d && (
                       <div className="mt-1 text-xs text-red-700 dark:text-red-400">
-                        🗣 {d.reason}
+                        🗣 {staffNames.get(d.raised_by) && (
+                          <span className="font-medium">{staffNames.get(d.raised_by)}：</span>
+                        )}
+                        {d.reason}
                         {d.status === "resolved" && (
                           <span className="ml-1 text-emerald-700 dark:text-emerald-400">
-                            （總部已處理{d.resolution_note ? `：${d.resolution_note}` : ""}）
+                            （總部{d.resolved_by && staffNames.get(d.resolved_by) ? ` ${staffNames.get(d.resolved_by)} ` : ""}已處理{d.resolution_note ? `：${d.resolution_note}` : ""}）
                           </span>
                         )}
                       </div>
