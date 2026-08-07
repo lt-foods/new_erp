@@ -3,7 +3,7 @@
 // 收貨短少處理 Modal
 // 顯示:
 //   - transfer 短少詳情(品項、缺多少)
-//   - 影響的客戶訂單(同店該品項 pending orders)
+//   - 影響的客戶訂單(同店該品項尚未取走的行,含部分取貨單)
 //   - 4 個處理選項 + 備註
 
 import { useEffect, useState } from "react";
@@ -108,7 +108,9 @@ export function TransferShortageResolveModal({
           .select(`id, order_no, status, member_id,
                    items:customer_order_items!inner(qty, status, sku_id)`)
           .eq("pickup_store_id", ctx.dest_store_id)
-          .in("status", ["pending", "confirmed", "shipping", "ready"])
+          // partially_completed 也要看:到的品項客人先領走、沒到的那行還掛在這張單上,
+          // 正是短少最直接的受害者(GRP-20260714-013-0003 (D)芋頭生乳捲就是這樣被漏掉)
+          .in("status", ["pending", "confirmed", "shipping", "ready", "partially_completed"])
           .eq("items.sku_id", ctx.sku_id)
           .is("transferred_from_order_id", null)
           .limit(50);
@@ -121,7 +123,10 @@ export function TransferShortageResolveModal({
           member_id: number | null;
           items: Array<{ qty: number; status: string; sku_id: number }>;
         }>).map((o) => {
-          const matchingItems = o.items.filter((i) => i.sku_id === ctx.sku_id && !["cancelled", "expired"].includes(i.status));
+          // 已取走的行不算待處理需求(部分取貨單會同時有已取 / 待取兩種行)
+          const matchingItems = o.items.filter(
+            (i) => i.sku_id === ctx.sku_id && !["cancelled", "expired", "picked_up"].includes(i.status),
+          );
           const pending = matchingItems.reduce((s, i) => s + Number(i.qty), 0);
           return { id: o.id, order_no: o.order_no, member_id: o.member_id, pending_qty: pending, status: o.status };
         }).filter((x) => x.pending_qty > 0);

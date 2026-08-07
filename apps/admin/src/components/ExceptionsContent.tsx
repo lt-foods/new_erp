@@ -6,6 +6,8 @@
 //   2. 進貨破損 — GR qty_damaged > 0
 //   3. 過量進貨 — GR cumulative qty_received > qty_ordered
 //   4. 收貨短少 — Transfer received 但 qty_received < qty_shipped
+//      (標 replenish「補出貨」只是承諾:貨真的補到之前這列不會消失,
+//       extra 會標「已標補出貨,尚未補到」— 見 20260807000050)
 //   5. 訂單短少 — v_order_shortage 聚合到 order 維度
 //
 // 資料與分頁:全部走 server-side。rpc_hq_exceptions(type, page, page_size)
