@@ -15,9 +15,9 @@
 //   send  — push 文字和/或圖片。圖片 URL 限定自家 line-media bucket，
 //           防止拿這支函式對會員推任意外部圖。
 //
-// 需要 secret：LINE_MESSAGING_CHANNEL_ACCESS_TOKEN（OA 的 Messaging API
-// long-lived channel access token）。沒設會回 503 not_configured — 這是
-// 部署後第一個要檢查的東西，不是程式 bug。
+// 憑證來源（見 resolveOaToken）：會員所屬分店的 store_line_oa_credentials
+// → 租戶層 env LINE_MESSAGING_CHANNEL_ACCESS_TOKEN → 都沒有回 503 not_configured。
+// 這個租戶是每加盟店各有自己 OA 的架構，所以主線是分店憑證，env 只是退路。
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 import { corsHeaders } from "../_shared/cors.ts";
@@ -26,6 +26,7 @@ const LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push";
 const LINE_PROFILE_URL = "https://api.line.me/v2/bot/profile";
 const LINE_QUOTA_URL = "https://api.line.me/v2/bot/message/quota";
 const LINE_BOT_INFO_URL = "https://api.line.me/v2/bot/info";
+const LINE_TOKEN_URL = "https://api.line.me/v2/oauth/accessToken";
 
 // OA 後台（LINE Official Account Manager）的 1:1 聊天室連結。
 // ⚠ 這個 URL 格式是**非官方**的 — LINE 沒有把後台網址列進 API 文件，
@@ -47,6 +48,88 @@ function json(body: unknown, status = 200) {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
+}
+
+type OaResolved =
+  | { token: string; source: "store" | "env" }
+  | { error: Record<string, unknown>; status: number };
+
+/**
+ * 取「該分店」的 channel access token。
+ *
+ * 順序：分店自己的憑證（store_line_oa_credentials）→ 租戶層 env token → 都沒有就報錯。
+ * env 那層是給「只有一個 OA」的租戶用的退路，以及分店還沒設定完的過渡期。
+ *
+ * 分店憑證存的是 channel_id + channel_secret（管理員在後台填的就是這兩個，
+ * 比 console 裡的 long-lived token 好找），這裡用 client_credentials 換成
+ * access token 並快取到期限前 —— 不快取的話每發一則訊息就多打一次 oauth。
+ */
+async function resolveOaToken(
+  // deno-lint-ignore no-explicit-any
+  sb: any,
+  tenantId: string,
+  storeId: number | null,
+): Promise<OaResolved> {
+  const envToken = Deno.env.get("LINE_MESSAGING_CHANNEL_ACCESS_TOKEN");
+
+  if (storeId != null) {
+    const { data: cred, error } = await sb
+      .from("store_line_oa_credentials")
+      .select("store_id, channel_id, channel_secret, access_token, access_token_expires_at")
+      .eq("tenant_id", tenantId)
+      .eq("store_id", storeId)
+      .maybeSingle();
+    if (error) return { error: { error: "internal", detail: error.message }, status: 500 };
+
+    if (cred) {
+      // 留 5 分鐘緩衝，免得剛好在發送途中過期
+      const exp = cred.access_token_expires_at ? Date.parse(cred.access_token_expires_at) : 0;
+      if (cred.access_token && exp > Date.now() + 5 * 60_000) {
+        return { token: cred.access_token, source: "store" };
+      }
+      const resp = await fetch(LINE_TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "client_credentials",
+          client_id: cred.channel_id,
+          client_secret: cred.channel_secret,
+        }),
+      });
+      if (!resp.ok) {
+        const detail = await resp.text();
+        return {
+          error: {
+            error: "bad_store_credentials",
+            message: "分店的 LINE Channel ID / Secret 無法換到 token，請確認是否填對（要用 Messaging API channel 的，不是 Login channel）",
+            detail,
+          },
+          status: 502,
+        };
+      }
+      const tok = await resp.json();
+      const expiresAt = new Date(Date.now() + (tok.expires_in ?? 0) * 1000).toISOString();
+      const { error: upErr } = await sb
+        .from("store_line_oa_credentials")
+        .update({ access_token: tok.access_token, access_token_expires_at: expiresAt })
+        .eq("store_id", storeId);
+      // 快取寫失敗不擋發送，只是下次還要再換一次
+      if (upErr) console.error("cache access_token failed:", upErr.message);
+      return { token: tok.access_token, source: "store" };
+    }
+  }
+
+  if (envToken) return { token: envToken, source: "env" };
+
+  return {
+    error: {
+      error: "not_configured",
+      message: storeId == null
+        ? "此會員沒有設定取貨店，無法決定要用哪一個官方帳號發送"
+        : "此會員所屬分店尚未設定 LINE Messaging API 憑證（請到「分店」→ 該店 →「LINE 推播憑證」填入 Channel ID / Secret）",
+    },
+    status: 503,
+  };
 }
 
 Deno.serve(async (req) => {
@@ -99,16 +182,29 @@ Deno.serve(async (req) => {
       });
     }
 
-    const oaToken = Deno.env.get("LINE_MESSAGING_CHANNEL_ACCESS_TOKEN");
-    if (!oaToken) {
-      return json({
-        error: "not_configured",
-        message: "尚未設定 LINE_MESSAGING_CHANNEL_ACCESS_TOKEN（LINE 官方帳號的 Messaging API channel access token）",
-      }, 503);
-    }
-    const oaHeaders = { "Authorization": `Bearer ${oaToken}` };
+    const memberId = body.member_id;
+    if (!memberId) return json({ error: "member_id is required" }, 400);
 
-    // ── quota：本月推播額度（不需要 member_id）─────────────────────────────
+    const { data: member, error: memErr } = await sb
+      .from("members")
+      .select("id, name, line_user_id, home_store_id")
+      .eq("tenant_id", tenantId)
+      .eq("id", memberId)
+      .maybeSingle();
+    if (memErr) return json({ error: memErr.message }, 500);
+    if (!member) return json({ error: "member not found" }, 404);
+    if (!member.line_user_id) {
+      return json({ error: "member_no_line", message: "此會員未綁定 LINE" }, 400);
+    }
+
+    // 用「會員所屬分店」的 OA 憑證。這個租戶每家加盟店各有自己的 OA，
+    // 而 LINE 好友關係是綁在單一 OA 上的 —— 拿 B 店的 token 去推 A 店的
+    // 好友一定失敗，所以絕不能共用一組 token。
+    const oa = await resolveOaToken(sb, tenantId, member.home_store_id ?? null);
+    if ("error" in oa) return json(oa.error, oa.status);
+    const oaHeaders = { "Authorization": `Bearer ${oa.token}` };
+
+    // ── quota：本月推播額度（該分店 OA 的額度）─────────────────────────────
     if (action === "quota") {
       const [qResp, cResp] = await Promise.all([
         fetch(LINE_QUOTA_URL, { headers: oaHeaders }),
@@ -124,22 +220,8 @@ Deno.serve(async (req) => {
         ok: true,
         limit: q.type === "limited" ? q.value : null,  // null = 方案無上限
         used: c.totalUsage ?? 0,
+        source: oa.source,
       });
-    }
-
-    const memberId = body.member_id;
-    if (!memberId) return json({ error: "member_id is required" }, 400);
-
-    const { data: member, error: memErr } = await sb
-      .from("members")
-      .select("id, name, line_user_id")
-      .eq("tenant_id", tenantId)
-      .eq("id", memberId)
-      .maybeSingle();
-    if (memErr) return json({ error: memErr.message }, 500);
-    if (!member) return json({ error: "member not found" }, 404);
-    if (!member.line_user_id) {
-      return json({ error: "member_no_line", message: "此會員未綁定 LINE" }, 400);
     }
 
     // ── check：能不能推得到這個人 + OA 後台 1:1 聊天室連結 ──────────────────

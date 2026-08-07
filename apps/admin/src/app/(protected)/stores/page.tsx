@@ -5,6 +5,7 @@ import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
+import { StoreLineOaField } from "@/components/StoreLineOaField";
 
 const PAGE_SIZE = 20;
 
@@ -515,6 +516,8 @@ function StoreForm({
             會員 App 現貨專區「LINE 詢問」會把訊息帶到這個官方帳號
           </span>
         </F>
+
+        <StoreLineOaField storeId={v.id} />
 
         <F label="備註" className="sm:col-span-4">
           <textarea
