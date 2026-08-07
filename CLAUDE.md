@@ -66,6 +66,33 @@ grep -rn "<function_name>" supabase/migrations/
 把每一個動過該 function 的 migration 都讀過，基於**時間最新**那個版本擴寫，確保所有 prior fix 都保留。
 新 migration 檔頭註解務必列出「以哪個版本為基底」、「rollback 指回哪個版本」。
 
+### SQL 裡讀「應用角色」一律走 app_metadata，不要用頂層 role claim
+
+```sql
+COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '')   -- ✅ 應用角色
+auth.jwt() ->> 'role'                                   -- ❌ 永遠是 'authenticated'
+```
+
+頂層 `role` 是 **Postgres 角色**，登入使用者一律是 `'authenticated'`。
+`custom_access_token_hook` 只把 `tenant_id` 拉到頂層，**role 沒有拉**。
+寫錯的症狀是「真正的 owner / admin 也被擋掉」，回 `insufficient_role` —— 看起來
+像權限設定壞了，其實是這一行。
+
+這個坑踩過至少兩次（`20260502010000_fix_purchase_rls_role_path.sql` 修 RLS、
+`20260807000040_fix_store_line_oa_role_path.sql` 修 RPC）。注意 `_current_tenant_id()`
+用頂層 `auth.jwt() ->> 'tenant_id'` 是**對的**（hook 有拉），別一起改掉。
+
+允許清單要對齊 `apps/admin/src/lib/role.ts`：管理員層級是 `('owner','admin','')`，
+`''` 是沒有顯式 role 的 legacy/dev admin，漏掉它會把舊帳號全擋在外面。
+
+驗證不用真的登入，直接灌 claims 進去打：
+
+```sql
+SELECT set_config('request.jwt.claims',
+  '{"tenant_id":"<uuid>","app_metadata":{"tenant_id":"<uuid>","role":"admin"}}', true);
+SELECT * FROM <your_rpc>();   -- 換成 store_staff 再跑一次，應該要被擋
+```
+
 ---
 
 ## LINE / LIFF
