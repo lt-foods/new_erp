@@ -241,6 +241,16 @@ Deno.serve(async (req) => {
         }, 502);
       }
       const info = await infoResp.json();
+      // 順手記下 OA 自己的 userId：line-webhook 在 URL 沒帶 ?store= 時，
+      // 要靠 body 的 destination 反查是哪一家店（這支本來就在打 /v2/bot/info，
+      // 不必為此多一次請求）
+      if (info.userId) {
+        const { error: upErr } = await sb
+          .from("store_line_oa_credentials")
+          .update({ bot_user_id: info.userId })
+          .eq("store_id", storeId);
+        if (upErr) console.error("cache bot_user_id failed:", upErr.message);
+      }
       return json({
         ok: true,
         display_name: info.displayName ?? null,

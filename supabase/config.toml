@@ -440,3 +440,8 @@ verify_jwt = false
 # 對齊 staff-create：gateway 驗 JWT 會擋掉 CORS preflight
 [functions.admin-line-push]
 verify_jwt = false
+
+# line-webhook 由 LINE 平台直接打，不可能帶我們的 JWT。
+# 安全性靠 X-Line-Signature 驗簽（HMAC-SHA256 + 該店 channel secret）。
+[functions.line-webhook]
+verify_jwt = false
