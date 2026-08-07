@@ -435,3 +435,8 @@ verify_jwt = false
 # 對齊 staff-create：gateway 驗 JWT 會擋掉 CORS preflight
 [functions.tenant-purge]
 verify_jwt = false
+
+# admin-line-push 由 admin 瀏覽器呼叫，函式內自行驗 staff JWT + tenant，
+# 對齊 staff-create：gateway 驗 JWT 會擋掉 CORS preflight
+[functions.admin-line-push]
+verify_jwt = false
