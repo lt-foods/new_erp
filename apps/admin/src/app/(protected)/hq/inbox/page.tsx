@@ -252,6 +252,8 @@ const SHORTAGE_RESOLUTION_BY_STAGE: Record<Stage, string[] | null> = {
 const PAGE_SIZE = 20;
 
 // === 各來源的 server-side fetcher(回 { rows, total })===
+// searchTruncated:搜尋關鍵字太廣、命中的品項/單據超過掃描上限,結果只涵蓋一部分(UI 會提示)
+type FetchResult = { rows: Row[]; total: number; searchTruncated?: boolean };
 type SBClient = ReturnType<typeof getSupabase>;
 
 // 撈某張表（restock_request_lines / transfer_items / customer_order_items / picking_wave_items）
@@ -334,13 +336,217 @@ async function fetchItemsSummaryMap(
   return result;
 }
 
+// === 搜尋(server-side)===
+// 搜尋框要能打「品項 / 商品名稱」,但品名不在單據主檔上,而在明細的 sku 上。
+// 作法:先把關鍵字解析成 sku_id 清單 → 再從明細表反查母單 id → 併進主查詢的 or() 條件,
+// 這樣搜尋才是掃「全部單據」,而不是只掃當前這 20 筆。
+// server-side 有支援搜尋的來源(shortage / all 走 RPC,仍是 client-side 過濾當前頁)
+const SERVER_SEARCH_SOURCES: SourceTag[] = ["restock", "transfer", "aid", "air", "picking"];
+
+// PostgREST or() 語法用 , ( ) 當分隔;% * 是 ilike wildcard — 全部移除避免破壞 filter
+function sanitizeSearch(q: string): string {
+  return q.replace(/[,()%*]/g, " ").trim();
+}
+
+// PostgREST 的 max-rows 是 1000,一次抓不完 → 用 range() 分頁掃,最多 SCAN_PAGES 頁。
+// 掃滿還有剩 = 關鍵字太廣,回 truncated,UI 會提示使用者縮小關鍵字(不做無聲截斷)。
+const SCAN_PAGE = 1000;
+const SCAN_PAGES = 3;
+// 命中的母單 id 最後會塞進 URL 的 id.in.(...),太多會撐爆 URL 長度;
+// 超過就只留最新的(id 大的)並標記 truncated。
+const DOC_ID_CAP = 600;
+
+type Hits = { ids: number[]; truncated: boolean };
+const NO_HITS: Hits = { ids: [], truncated: false };
+
+function mergeHits(...hs: Hits[]): Hits {
+  const ids = new Set<number>();
+  let truncated = false;
+  for (const h of hs) {
+    for (const id of h.ids) ids.add(id);
+    truncated = truncated || h.truncated;
+  }
+  return { ids: Array.from(ids), truncated };
+}
+
+// id 太多就只留最新的 DOC_ID_CAP 筆(id 越大越新)
+function capIds(h: Hits): Hits {
+  if (h.ids.length <= DOC_ID_CAP) return h;
+  const ids = [...h.ids].sort((a, b) => b - a).slice(0, DOC_ID_CAP);
+  return { ids, truncated: true };
+}
+
+// 分頁掃某張表的某個 id 欄位;filter 由呼叫端用 or / in / ilike 之一表達
+type ScanFilter =
+  | { kind: "or"; expr: string }
+  | { kind: "in"; col: string; values: number[] }
+  | { kind: "ilike"; col: string; value: string };
+
+async function scanIds(sb: SBClient, table: string, idCol: string, f: ScanFilter): Promise<Hits> {
+  if (f.kind === "in" && f.values.length === 0) return NO_HITS;
+  const ids = new Set<number>();
+  for (let p = 0; p < SCAN_PAGES; p++) {
+    let q = sb.from(table).select(idCol);
+    if (f.kind === "or") q = q.or(f.expr);
+    else if (f.kind === "in") q = q.in(f.col, f.values);
+    else q = q.ilike(f.col, `%${f.value}%`);
+    const { data } = await q.range(p * SCAN_PAGE, p * SCAN_PAGE + SCAN_PAGE - 1);
+    const rows = (data ?? []) as unknown as Record<string, number>[];
+    for (const r of rows) {
+      const v = Number(r[idCol]);
+      if (Number.isFinite(v)) ids.add(v);
+    }
+    if (rows.length < SCAN_PAGE) return { ids: Array.from(ids), truncated: false };
+  }
+  return { ids: Array.from(ids), truncated: true };
+}
+
+// 關鍵字 → 命中的 sku_id(比對 sku_code / skus.product_name / variant_name / products.name)
+// skus.product_name 可能是 null(名字只在 products.name),所以 products 也要查一輪
+async function fetchMatchingSkuIds(sb: SBClient, safe: string): Promise<Hits> {
+  if (!safe) return NO_HITS;
+  const prods = await scanIds(sb, "products", "id", {
+    kind: "or",
+    expr: `name.ilike.%${safe}%,short_name.ilike.%${safe}%`,
+  });
+  const ors = [
+    `sku_code.ilike.%${safe}%`,
+    `product_name.ilike.%${safe}%`,
+    `variant_name.ilike.%${safe}%`,
+  ];
+  if (prods.ids.length > 0) ors.push(`product_id.in.(${prods.ids.join(",")})`);
+  const skus = await scanIds(sb, "skus", "id", { kind: "or", expr: ors.join(",") });
+  return mergeHits(skus, { ids: [], truncated: prods.truncated });
+}
+
+// 明細表裡用到這些 sku 的母單 id
+async function fetchDocIdsBySku(
+  sb: SBClient,
+  table: string,
+  idCol: string,
+  skus: Hits,
+): Promise<Hits> {
+  const docs = await scanIds(sb, table, idCol, { kind: "in", col: "sku_id", values: skus.ids });
+  return mergeHits(docs, { ids: [], truncated: skus.truncated });
+}
+
+// 以名稱查 stores / locations / 其他關聯表的 id(給 xxx_id.in.(...) 用)
+async function fetchIdsByColumn(
+  sb: SBClient,
+  table: string,
+  cols: string[],
+  safe: string,
+): Promise<Hits> {
+  if (!safe) return NO_HITS;
+  return scanIds(sb, table, "id", {
+    kind: "or",
+    expr: cols.map((c) => `${c}.ilike.%${safe}%`).join(","),
+  });
+}
+
+function inClause(col: string, ids: number[]): string | null {
+  return ids.length > 0 ? `${col}.in.(${ids.join(",")})` : null;
+}
+
+type SearchOr = { expr: string | null; truncated: boolean };
+const NO_SEARCH: SearchOr = { expr: null, truncated: false };
+
+async function buildRestockSearchOr(sb: SBClient, safe: string): Promise<SearchOr> {
+  if (!safe) return NO_SEARCH;
+  const [skus, stores, xfers, prs] = await Promise.all([
+    fetchMatchingSkuIds(sb, safe),
+    fetchIdsByColumn(sb, "stores", ["name", "code"], safe),
+    fetchIdsByColumn(sb, "transfers", ["transfer_no"], safe),
+    fetchIdsByColumn(sb, "purchase_requests", ["pr_no"], safe),
+  ]);
+  const lines = capIds(await fetchDocIdsBySku(sb, "restock_request_lines", "request_id", skus));
+  const ors = [`notes.ilike.%${safe}%`, `rejected_reason.ilike.%${safe}%`];
+  // 支援直接打單號:「123」或「RESTOCK#123」
+  const idHit = /^(?:restock#?)?(\d+)$/i.exec(safe);
+  if (idHit) ors.push(`id.eq.${idHit[1]}`);
+  for (const c of [
+    inClause("requesting_store_id", stores.ids),
+    inClause("id", lines.ids),
+    inClause("linked_transfer_id", xfers.ids),
+    inClause("linked_pr_id", prs.ids),
+  ]) {
+    if (c) ors.push(c);
+  }
+  return {
+    expr: ors.join(","),
+    truncated: lines.truncated || stores.truncated || xfers.truncated || prs.truncated,
+  };
+}
+
+async function buildTransferSearchOr(sb: SBClient, safe: string): Promise<SearchOr> {
+  if (!safe) return NO_SEARCH;
+  const [skus, locs, descHits] = await Promise.all([
+    fetchMatchingSkuIds(sb, safe),
+    fetchIdsByColumn(sb, "locations", ["name", "code"], safe),
+    // 自由轉貨行沒有 sku,品名寫在 description
+    scanIds(sb, "transfer_items", "transfer_id", { kind: "ilike", col: "description", value: safe }),
+  ]);
+  const skuHits = await fetchDocIdsBySku(sb, "transfer_items", "transfer_id", skus);
+  const items = capIds(mergeHits(skuHits, descHits));
+  const ors = [
+    `transfer_no.ilike.%${safe}%`,
+    `hq_notes.ilike.%${safe}%`,
+    `notes.ilike.%${safe}%`,
+  ];
+  for (const c of [
+    inClause("source_location", locs.ids),
+    inClause("dest_location", locs.ids),
+    inClause("id", items.ids),
+  ]) {
+    if (c) ors.push(c);
+  }
+  return { expr: ors.join(","), truncated: items.truncated || locs.truncated };
+}
+
+async function buildAidSearchOr(sb: SBClient, safe: string): Promise<SearchOr> {
+  if (!safe) return NO_SEARCH;
+  const [skus, stores, campaigns] = await Promise.all([
+    fetchMatchingSkuIds(sb, safe),
+    fetchIdsByColumn(sb, "stores", ["name", "code"], safe),
+    fetchIdsByColumn(sb, "group_buy_campaigns", ["campaign_no", "name"], safe),
+  ]);
+  const items = capIds(await fetchDocIdsBySku(sb, "customer_order_items", "order_id", skus));
+  const ors = [`order_no.ilike.%${safe}%`];
+  for (const c of [
+    inClause("pickup_store_id", stores.ids),
+    inClause("campaign_id", campaigns.ids),
+    inClause("id", items.ids),
+  ]) {
+    if (c) ors.push(c);
+  }
+  return {
+    expr: ors.join(","),
+    truncated: items.truncated || stores.truncated || campaigns.truncated,
+  };
+}
+
+async function buildPickingSearchOr(sb: SBClient, safe: string): Promise<SearchOr> {
+  if (!safe) return NO_SEARCH;
+  const [skus, pos] = await Promise.all([
+    fetchMatchingSkuIds(sb, safe),
+    fetchIdsByColumn(sb, "purchase_orders", ["po_no"], safe),
+  ]);
+  const items = capIds(await fetchDocIdsBySku(sb, "picking_wave_items", "wave_id", skus));
+  const ors = [`wave_code.ilike.%${safe}%`, `note.ilike.%${safe}%`];
+  for (const c of [inClause("source_po_id", pos.ids), inClause("id", items.ids)]) {
+    if (c) ors.push(c);
+  }
+  return { expr: ors.join(","), truncated: items.truncated || pos.truncated };
+}
+
 async function fetchRestockRows(
   sb: SBClient,
   stage: Stage | null,
   page: number,
   dateFrom: string,
   dateTo: string,
-): Promise<{ rows: Row[]; total: number }> {
+  search: string,
+): Promise<FetchResult> {
   let q = sb
     .from("restock_requests")
     .select(
@@ -354,6 +560,8 @@ async function fetchRestockRows(
   else if (stage) q = q.in("status", RESTOCK_STATUS_BY_STAGE[stage]);
   if (dateFrom) q = q.gte("requested_at", `${dateFrom}T00:00:00`);
   if (dateTo) q = q.lte("requested_at", `${dateTo}T23:59:59.999`);
+  const searchOr = await buildRestockSearchOr(sb, sanitizeSearch(search));
+  if (searchOr.expr) q = q.or(searchOr.expr);
   const start = (page - 1) * PAGE_SIZE;
   q = q.range(start, start + PAGE_SIZE - 1);
   const { data, count, error } = await q;
@@ -414,7 +622,7 @@ async function fetchRestockRows(
       items_summary: itemsMap.get(r.id) ?? "",
     },
   }));
-  return { rows, total: count ?? 0 };
+  return { rows, total: count ?? 0, searchTruncated: searchOr.truncated };
 }
 
 async function fetchTransferRows(
@@ -423,8 +631,9 @@ async function fetchTransferRows(
   page: number,
   dateFrom: string,
   dateTo: string,
+  search: string,
   transferKind: "all" | "store_to_store" | "return_to_hq" | "hq_to_store" | "aid_handoff" = "all",
-): Promise<{ rows: Row[]; total: number }> {
+): Promise<FetchResult> {
   if (stage === "standby") return { rows: [], total: 0 }; // 只有 restock 有候補
   let q = sb
     .from("transfers")
@@ -447,6 +656,8 @@ async function fetchTransferRows(
   if (transferKind !== "all") q = q.eq("transfer_type", transferKind);
   if (dateFrom) q = q.gte("created_at", `${dateFrom}T00:00:00`);
   if (dateTo) q = q.lte("created_at", `${dateTo}T23:59:59.999`);
+  const searchOr = await buildTransferSearchOr(sb, sanitizeSearch(search));
+  if (searchOr.expr) q = q.or(searchOr.expr);
   const start = (page - 1) * PAGE_SIZE;
   q = q.range(start, start + PAGE_SIZE - 1);
   const { data, count, error } = await q;
@@ -483,7 +694,7 @@ async function fetchTransferRows(
       items_summary: itemsMap.get(t.id) ?? "",
     },
   }));
-  return { rows, total: count ?? 0 };
+  return { rows, total: count ?? 0, searchTruncated: searchOr.truncated };
 }
 
 // airMode: "aid" = 互助訂單(排除空中轉,只 is_air_transfer 為 null/false)
@@ -496,7 +707,8 @@ async function fetchAidRows(
   dateTo: string,
   airMode: "aid" | "air",
   aidStatus: string,
-): Promise<{ rows: Row[]; total: number }> {
+  search: string,
+): Promise<FetchResult> {
   if (stage === "standby") return { rows: [], total: 0 }; // 只有 restock 有候補
   let q = sb
     .from("customer_orders")
@@ -515,6 +727,8 @@ async function fetchAidRows(
   else q = q.or("is_air_transfer.is.null,is_air_transfer.eq.false");
   if (dateFrom) q = q.gte("updated_at", `${dateFrom}T00:00:00`);
   if (dateTo) q = q.lte("updated_at", `${dateTo}T23:59:59.999`);
+  const searchOr = await buildAidSearchOr(sb, sanitizeSearch(search));
+  if (searchOr.expr) q = q.or(searchOr.expr);
   const start = (page - 1) * PAGE_SIZE;
   q = q.range(start, start + PAGE_SIZE - 1);
   const { data, count, error } = await q;
@@ -553,7 +767,7 @@ async function fetchAidRows(
       items_summary: itemsMap.get(a.id) ?? "",
     },
   }));
-  return { rows, total: count ?? 0 };
+  return { rows, total: count ?? 0, searchTruncated: searchOr.truncated };
 }
 
 async function fetchShortageRows(
@@ -562,7 +776,7 @@ async function fetchShortageRows(
   page: number,
   dateFrom: string,
   dateTo: string,
-): Promise<{ rows: Row[]; total: number }> {
+): Promise<FetchResult> {
   // server-side 分頁:rpc_hq_shortage_orders 在 DB 端把 v_order_shortage
   // (order × sku) 聚合到 order 維度、套 stage / 日期篩選後分頁,
   // 一次回傳 { total, rows(ShortageRaw 形狀) },前端只收當頁 20 筆。
@@ -603,7 +817,8 @@ async function fetchPickingRows(
   page: number,
   dateFrom: string,
   dateTo: string,
-): Promise<{ rows: Row[]; total: number }> {
+  search: string,
+): Promise<FetchResult> {
   let q = sb
     .from("picking_waves")
     .select(
@@ -618,6 +833,8 @@ async function fetchPickingRows(
   }
   if (dateFrom) q = q.gte("created_at", `${dateFrom}T00:00:00`);
   if (dateTo) q = q.lte("created_at", `${dateTo}T23:59:59.999`);
+  const searchOr = await buildPickingSearchOr(sb, sanitizeSearch(search));
+  if (searchOr.expr) q = q.or(searchOr.expr);
   const start = (page - 1) * PAGE_SIZE;
   q = q.range(start, start + PAGE_SIZE - 1);
   const { data, count, error } = await q;
@@ -667,7 +884,7 @@ async function fetchPickingRows(
       items_summary: itemsMap.get(w.id) ?? "",
     },
   }));
-  return { rows, total: count ?? 0 };
+  return { rows, total: count ?? 0, searchTruncated: searchOr.truncated };
 }
 
 // === ByIds 變體 — 給「全部」視圖分頁用(已從 v_hq_inbox 拿到 page keys 後,反查各表詳情) ===
@@ -917,6 +1134,12 @@ function HqInboxContent() {
     return "picking";
   });
   const [search, setSearch] = useState("");
+  // 搜尋改成打 server(才搜得到不在當前頁的單、以及品項/商品名稱),打字時 debounce 300ms
+  const [searchQ, setSearchQ] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setSearchQ(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
   // sourceFilter 變動 → 寫回 localStorage
   useEffect(() => {
@@ -955,6 +1178,8 @@ function HqInboxContent() {
   const [exceptionCount, setExceptionCount] = useState<number>(0);
   // server-side total: 當前 (source, stage) 篩選的總數
   const [total, setTotal] = useState(0);
+  // 搜尋關鍵字太廣 → 命中的品項/單據超過掃描上限,結果不完整,要提示使用者縮小關鍵字
+  const [searchTruncated, setSearchTruncated] = useState(false);
   // 載入狀態
   const [loadingRows, setLoadingRows] = useState(false);
 
@@ -1069,6 +1294,7 @@ function HqInboxContent() {
 
         let resultRows: Row[] = [];
         let resultTotal = 0;
+        let resultTruncated = false;
 
         if (sourceFilter === "all") {
           // 「全部」視圖:用 rpc_hq_inbox_keys 從 v_hq_inbox 拿 page keys,再 by-id 反查各表詳情
@@ -1101,27 +1327,29 @@ function HqInboxContent() {
             .filter((x): x is Row => !!x);
           resultTotal = keysObj.total;
         } else {
-          let res: { rows: Row[]; total: number };
+          let res: FetchResult;
           if (sourceFilter === "restock") {
-            res = await fetchRestockRows(sb, stageArg, page, dateFrom, dateTo);
+            res = await fetchRestockRows(sb, stageArg, page, dateFrom, dateTo, searchQ);
           } else if (sourceFilter === "transfer") {
-            res = await fetchTransferRows(sb, stageArg, page, dateFrom, dateTo, transferKindFilter);
+            res = await fetchTransferRows(sb, stageArg, page, dateFrom, dateTo, searchQ, transferKindFilter);
           } else if (sourceFilter === "aid") {
-            res = await fetchAidRows(sb, stageArg, page, dateFrom, dateTo, "aid", aidStatusFilter);
+            res = await fetchAidRows(sb, stageArg, page, dateFrom, dateTo, "aid", aidStatusFilter, searchQ);
           } else if (sourceFilter === "air") {
-            res = await fetchAidRows(sb, stageArg, page, dateFrom, dateTo, "air", "");
+            res = await fetchAidRows(sb, stageArg, page, dateFrom, dateTo, "air", "", searchQ);
           } else if (sourceFilter === "picking") {
-            res = await fetchPickingRows(sb, stageArg, page, dateFrom, dateTo);
+            res = await fetchPickingRows(sb, stageArg, page, dateFrom, dateTo, searchQ);
           } else {
             res = await fetchShortageRows(sb, stageArg, page, dateFrom, dateTo);
           }
           resultRows = res.rows;
           resultTotal = res.total;
+          resultTruncated = res.searchTruncated ?? false;
         }
 
         if (cancelled) return;
         setRows(resultRows);
         setTotal(resultTotal);
+        setSearchTruncated(resultTruncated);
         setError(null);
       } catch (e) {
         if (!cancelled) setError(translateRpcError(e));
@@ -1132,7 +1360,7 @@ function HqInboxContent() {
     return () => {
       cancelled = true;
     };
-  }, [sourceFilter, effectiveStage, page, dateFrom, dateTo, aidStatusFilter, transferKindFilter, reloadTick]);
+  }, [sourceFilter, effectiveStage, page, dateFrom, dateTo, aidStatusFilter, transferKindFilter, searchQ, reloadTick]);
 
   // stage tab counts:依當前 sourceFilter,從 cached counts 算出
   const stageCounts = useMemo(() => {
@@ -1160,20 +1388,24 @@ function HqInboxContent() {
     return c;
   }, [counts, effectiveStage]);
 
-  // server-side 已過濾 source / stage / 日期 / Aid filters,client-side 只做 search(限當前頁)
+  // server-side 已過濾 source / stage / 日期 / Aid filters。
+  // 搜尋:SERVER_SEARCH_SOURCES 的來源已在 SQL 端過濾(含品項 / 商品名稱),這裡不能再篩一次
+  //      — 否則「共 N 筆」跟實際列出的筆數會對不起來。
+  //      shortage / all 走 RPC、還沒有 server-side 搜尋,維持 client-side 過濾當前頁。
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
+    if (!q || SERVER_SEARCH_SOURCES.includes(sourceFilter as SourceTag)) return rows ?? [];
     return (rows ?? []).filter((r) => {
-      if (!q) return true;
       if (r.source === "restock") {
         const s = r.raw;
-        return [s.store_name, s.notes, s.linked_transfer_no, s.linked_pr_no, `RESTOCK#${s.id}`]
+        return [s.store_name, s.notes, s.linked_transfer_no, s.linked_pr_no, s.items_summary, `RESTOCK#${s.id}`]
           .filter((x): x is string => !!x)
           .some((x) => x.toLowerCase().includes(q));
       }
       if (r.source === "transfer") {
         const t = r.raw;
-        return [t.transfer_no, t.source_name, t.dest_name, t.hq_notes].filter((x): x is string => !!x).some((x) => x.toLowerCase().includes(q));
+        return [t.transfer_no, t.source_name, t.dest_name, t.hq_notes, t.items_summary]
+          .filter((x): x is string => !!x).some((x) => x.toLowerCase().includes(q));
       }
       if (r.source === "shortage") {
         const sh = r.raw;
@@ -1182,13 +1414,14 @@ function HqInboxContent() {
       }
       if (r.source === "picking") {
         const w = r.raw;
-        return [w.wave_code, w.source_po_no, w.note]
+        return [w.wave_code, w.source_po_no, w.note, w.items_summary]
           .filter((x): x is string => !!x).some((x) => x.toLowerCase().includes(q));
       }
       const a = r.raw;
-      return [a.order_no, a.store_name, a.campaign_no].filter((x): x is string => !!x).some((x) => x.toLowerCase().includes(q));
+      return [a.order_no, a.store_name, a.campaign_no, a.items_summary]
+        .filter((x): x is string => !!x).some((x) => x.toLowerCase().includes(q));
     });
-  }, [rows, search]);
+  }, [rows, search, sourceFilter]);
 
   // server-side 已分頁,paginatedRows 直接 = filtered(當前頁的 rows 經過 search 過濾)
   const paginatedRows = filtered;
@@ -1224,7 +1457,7 @@ function HqInboxContent() {
   // 任何 server 端篩選變動 → 回到第 1 頁(避免 page 超出範圍)
   useEffect(() => {
     setPage(1);
-  }, [stage, sourceFilter, aidStatusFilter, transferKindFilter, dateFrom, dateTo]);
+  }, [stage, sourceFilter, aidStatusFilter, transferKindFilter, dateFrom, dateTo, searchQ]);
 
   // 計算 group key for each row
   function getGroupKey(r: Row): { key: string; label: string } {
@@ -1939,7 +2172,7 @@ function HqInboxContent() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="🔍 搜尋 單號 / 店 / 備註"
+              placeholder="🔍 搜尋 單號 / 店 / 備註 / 品項 / 商品名稱"
               className="flex-1 min-w-[180px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             />
             <input
@@ -1970,6 +2203,13 @@ function HqInboxContent() {
               </select>
             </label>
           </div>
+
+          {/* 關鍵字太廣 → 命中的品項/單據超過掃描上限,結果不完整,明講不要無聲截斷 */}
+          {searchTruncated && (
+            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+              ⚠️ 這個關鍵字命中的品項 / 單據太多,以下結果只涵蓋其中一部分(以較新的單為主)。請輸入更完整的商品名稱或單號。
+            </div>
+          )}
 
           {/* Stage tabs (套用在當前資料夾;「候補」只有補貨申請有) */}
           <div className="flex flex-wrap gap-1 border-b border-zinc-200 dark:border-zinc-800">
