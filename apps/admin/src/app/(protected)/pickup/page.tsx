@@ -10,7 +10,7 @@ import { withBasePath } from "@/lib/basePath";
 import { printViaIframe } from "@/lib/printIframe";
 import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
-import { getPickupRecents, recordPickupRecent, type RecentCustomer } from "@/lib/pickupRecents";
+import { dropPickupRecent, getPickupRecents, recordPickupRecent, type RecentCustomer } from "@/lib/pickupRecents";
 import { publicProductUrl } from "@/lib/campaignCover";
 import { parseReturnNote } from "@/lib/returnNote";
 import { fetchReprintableEvents, pickupEventLabel, type PickupEventRow } from "@/lib/pickupReceipt";
@@ -159,22 +159,24 @@ function PickupPageContent() {
     setSelectedItems(new Set());
     try {
       const sb = getSupabase();
-      // Google 式：以空白 / + 拆 token，每個 token 都要在 name / phone / member_no 至少一欄命中
-      const safe = q.replace(/[%,()]/g, " ");
-      const tokens = safe.split(/[\s+]+/).filter(Boolean);
-      let memberQ = sb
-        .from("members")
-        .select("id, member_no, name, phone, admin_note, no_notify_pickup, no_new_order")
-        .neq("status", "deleted")
-        .order("last_visit_at", { ascending: false, nullsFirst: false })
-        .limit(20);
-      for (const tok of tokens) {
-        memberQ = memberQ.or(`name.ilike.%${tok}%,phone.ilike.%${tok}%,member_no.ilike.%${tok}%`);
-      }
-      const { data: ms, error: e1 } = await memberQ;
+      // 與會員頁 / 開團入單 / 轉單同一支 RPC（Google 式多 token 搜尋）。
+      // 直接查 members 只擋 deleted 會把已合併 (merged) 的舊帳號也搜出來 —
+      // 訂單早已搬到新會員身上，對舊檔什麼都做不了；RPC 會把命中的舊檔
+      // 翻譯成併入的新會員並去重
+      const { data: ms, error: e1 } = await sb.rpc("rpc_search_members", { p_term: q, p_limit: 20 });
       if (e1) { setError(e1.message); return; }
       const list = (ms ?? []) as Member[];
       setMembers(list);
+
+      // 快選鈕是用 member_no 帶進來查的（q === rc.member_no）。若那個 member_no 的
+      // 本人沒出現在結果裡，代表它已被合併到別人身上（RPC 翻成新會員了）或已刪除 →
+      // 淘汰這顆幽靈鈕，免得櫃台一直看到一排點了對不上人的舊名字。
+      const ghost = recents.find((r) => r.member_no === q);
+      if (ghost && !list.some((m) => m.id === ghost.id)) {
+        dropPickupRecent(ghost.id);
+        setRecents(getPickupRecents());
+      }
+
       if (list.length === 0) return;
 
       // 搜尋有結果即記入「常用顧客」（不必等取貨）。

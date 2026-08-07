@@ -51,6 +51,14 @@ export function getPickupRecents(): RecentCustomer[] {
     .slice(0, MAX_RETURNED);
 }
 
+// 快選鈕指到的會員已不存在（被合併到別人身上 / 已刪除）→ 從清單移除。
+// 這種鈕點下去只會查到「別人」，留著等 TTL 到期會白佔快選列的名額。
+export function dropPickupRecent(id: number): void {
+  const list = read();
+  const next = list.filter((r) => r.id !== id);
+  if (next.length !== list.length) write(next);
+}
+
 export function recordPickupRecent(m: {
   id: number;
   name: string | null;
