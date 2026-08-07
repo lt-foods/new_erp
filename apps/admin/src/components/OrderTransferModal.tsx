@@ -40,6 +40,7 @@ export function OrderTransferModal({
   open,
   onClose,
   onSubmitted,
+  sameStoreOnly = false,
 }: {
   orderId: number;
   orderNo: string;
@@ -49,6 +50,9 @@ export function OrderTransferModal({
   open: boolean;
   onClose: () => void;
   onSubmitted: (newOrderId: number) => void;
+  // 貨還沒到店（status != 'ready'）只能同店換客人：接收店鎖定原店
+  // (跟 DB rpc_transfer_order_* 20260807000000 的 gate 一致)
+  sameStoreOnly?: boolean;
 }) {
   const [stores, setStores] = useState<Store[]>([]);
   const [toStore, setToStore] = useState<number | "">("");
@@ -76,6 +80,8 @@ export function OrderTransferModal({
     for (const it of items) next[it.id] = { checked: true, qty: String(it.qty) };
     setPicks(next);
     setIsAir(false);
+    // 同店限定時直接鎖定接收店＝原店（select 也會 disabled）
+    if (sameStoreOnly && currentPickupStoreId != null) setToStore(currentPickupStoreId);
   }
 
   useEffect(() => {
@@ -133,6 +139,10 @@ export function OrderTransferModal({
   const submit = async () => {
     if (!toStore) {
       setErr("請選擇接收店");
+      return;
+    }
+    if (sameStoreOnly && toStore !== currentPickupStoreId) {
+      setErr("貨還沒到店：僅可同店換客人，不可轉到別店");
       return;
     }
 
@@ -230,10 +240,18 @@ export function OrderTransferModal({
           {stores.find((s) => s.id === currentPickupStoreId)?.name ?? `#${currentPickupStoreId}`}）
         </div>
 
+        {sameStoreOnly && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+            貨還沒到店：目前僅可<span className="font-medium">同店換客人</span>
+            （轉給本店其他會員，不影響總倉派貨）。要轉到別店請等分店收貨後再轉。
+          </div>
+        )}
+
         <label className="flex flex-col gap-1">
           <span className="text-zinc-500">接收店</span>
           <select
             value={toStore}
+            disabled={sameStoreOnly}
             onChange={(e) => {
               const v = e.target.value;
               setToStore(v === "" ? "" : Number(v));
@@ -243,10 +261,10 @@ export function OrderTransferModal({
               setResults([]);
               setSearchOpen(false);
             }}
-            className="rounded-md border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-800"
+            className="rounded-md border border-zinc-300 bg-white px-2 py-1 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-800"
           >
             <option value="">— 請選擇 —</option>
-            {stores.map((s) => (
+            {(sameStoreOnly ? stores.filter((s) => s.id === currentPickupStoreId) : stores).map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name} ({s.code})
               </option>
