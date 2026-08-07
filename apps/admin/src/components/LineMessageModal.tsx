@@ -292,6 +292,14 @@ export function LineMessageModal({
             <p className="mt-1 text-[11px] text-zinc-500">
               後台聊天<strong className="font-semibold">不吃推播額度</strong>，但需另外登入 LINE 官方帳號後台。
             </p>
+            {/* 聊天室網址也是用同一組 line_user_id 組的：profile 查不到（provider
+                不一致）時，這條連結一樣會開到不存在的對話，不能讓它看起來可用 */}
+            {reachable.state === "unreachable" && (
+              <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
+                ⚠ 此會員的 LINE ID 在這支官方帳號查不到，這條連結可能開不到正確的對話 —
+                請改用官方帳號後台自行搜尋該顧客。
+              </p>
+            )}
             {chat.mode === "bot" && (
               <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
                 ⚠ 此官方帳號目前是「Bot 模式」，後台聊天已關閉 —
