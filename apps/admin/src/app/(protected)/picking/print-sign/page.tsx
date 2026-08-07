@@ -19,6 +19,7 @@ type WaveRow = {
   wave_code: string;
   wave_date: string;
   status: string;
+  created_at: string;
 };
 
 type StoreRow = { id: number; code: string | null; name: string };
@@ -36,10 +37,20 @@ type StoreSheet = {
     qty: number;
     pickedQty: number;
     waveCodes: string[];
+    unitPrice: number | null; // 分店價(prices scope='branch' 現行價)；查無 = null
+    subtotal: number | null;
   }[];
   totalPicked: number;
+  totalAmount: number; // 只加總查得到分店價的品項
+  hasMissingPrice: boolean;
   waveDates: string[]; // 涵蓋的配送日(可能多日)
+  orderDates: string[]; // 涵蓋的撿貨單建立日 = 表頭「訂單日」
 };
+
+// 表頭金額一律無小數（分店進貨單對的是整數台幣）
+function money(n: number): string {
+  return `$${Math.round(n).toLocaleString("en-US")}`;
+}
 
 export default function PrintSignPage() {
   const [date, setDate] = useState("");
@@ -48,6 +59,7 @@ export default function PrintSignPage() {
   const [items, setItems] = useState<WaveItem[]>([]);
   const [stores, setStores] = useState<StoreRow[]>([]);
   const [skus, setSkus] = useState<SkuRow[]>([]);
+  const [prices, setPrices] = useState<Map<number, number>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [tenantName, setTenantName] = useState("");
 
@@ -76,7 +88,7 @@ export default function PrintSignPage() {
         const sb = getSupabase();
         const q = sb
           .from("picking_waves")
-          .select("id, wave_code, wave_date, status")
+          .select("id, wave_code, wave_date, status, created_at")
           .neq("status", "cancelled")
           .order("wave_date", { ascending: true })
           .order("created_at", { ascending: true });
@@ -123,6 +135,25 @@ export default function PrintSignPage() {
           setSkus((sk.data as SkuRow[]) ?? []);
         }
 
+        // 單價 = 現行分店價（prices scope='branch' 且 effective_to IS NULL）。
+        // 這是派貨守衛也在檢查的那個價，跟月結拿到的價一致；查無價的品項印「—」不併入合計。
+        // .in() 有長度上限，跟派貨工作台一樣切 150 一批。
+        const priceMap = new Map<number, number>();
+        for (let i = 0; i < skuIds.length; i += 150) {
+          const chunk = skuIds.slice(i, i + 150);
+          const { data: priceRows, error: e3 } = await sb
+            .from("prices")
+            .select("sku_id, price")
+            .eq("scope", "branch")
+            .is("effective_to", null)
+            .in("sku_id", chunk);
+          if (e3) throw new Error(e3.message);
+          for (const p of (priceRows ?? []) as { sku_id: number; price: number }[]) {
+            if (!priceMap.has(p.sku_id)) priceMap.set(p.sku_id, Number(p.price));
+          }
+        }
+        if (!cancelled) setPrices(priceMap);
+
         const { data: tenantData } = await sb.from("tenants").select("name").limit(1);
         if (!cancelled) {
           const t = (tenantData as { name: string }[] | null)?.[0];
@@ -142,6 +173,10 @@ export default function PrintSignPage() {
     const skuMap = new Map(skus.map((s) => [s.id, s]));
     const waveCodeMap = new Map(waves.map((w) => [w.id, w.wave_code]));
     const waveDateMap = new Map(waves.map((w) => [w.id, w.wave_date]));
+    // 撿貨單建立日 → 表頭「訂單日」（wave_date 是配送/出貨日，兩者常差一天）
+    const orderDateMap = new Map(
+      waves.map((w) => [w.id, new Date(w.created_at).toLocaleDateString("sv-SE")])
+    );
 
     // (store_id) -> (sku_id) -> { qty, picked_qty, waveCodes Set, waveDates Set }
     const byStore = new Map<
@@ -149,10 +184,12 @@ export default function PrintSignPage() {
       {
         skus: Map<number, { qty: number; pickedQty: number; waveCodes: Set<string> }>;
         waveDates: Set<string>;
+        orderDates: Set<string>;
       }
     >();
     for (const it of items) {
-      if (!byStore.has(it.store_id)) byStore.set(it.store_id, { skus: new Map(), waveDates: new Set() });
+      if (!byStore.has(it.store_id))
+        byStore.set(it.store_id, { skus: new Map(), waveDates: new Set(), orderDates: new Set() });
       const slot = byStore.get(it.store_id)!;
       const cur = slot.skus.get(it.sku_id) ?? {
         qty: 0,
@@ -169,6 +206,8 @@ export default function PrintSignPage() {
       if (wc) cur.waveCodes.add(wc);
       const wd = waveDateMap.get(it.wave_id);
       if (wd) slot.waveDates.add(wd);
+      const od = orderDateMap.get(it.wave_id);
+      if (od) slot.orderDates.add(od);
       slot.skus.set(it.sku_id, cur);
     }
 
@@ -177,22 +216,38 @@ export default function PrintSignPage() {
       const slot = byStore.get(store.id);
       if (!slot || slot.skus.size === 0) continue;
       const rows = Array.from(slot.skus.entries())
-        .map(([skuId, v]) => ({
-          sku: skuMap.get(skuId) ?? { id: skuId, sku_code: null, product_name: null, variant_name: null },
-          qty: v.qty,
-          pickedQty: v.pickedQty,
-          waveCodes: Array.from(v.waveCodes).sort(),
-        }))
+        .map(([skuId, v]) => {
+          const unitPrice = prices.get(skuId) ?? null;
+          return {
+            sku: skuMap.get(skuId) ?? { id: skuId, sku_code: null, product_name: null, variant_name: null },
+            qty: v.qty,
+            pickedQty: v.pickedQty,
+            waveCodes: Array.from(v.waveCodes).sort(),
+            unitPrice,
+            // 小計照「實際配發量」算 — 短撿時分店只該被收到的貨算錢
+            subtotal: unitPrice == null ? null : unitPrice * v.pickedQty,
+          };
+        })
         .sort((a, b) => (a.sku.sku_code ?? "").localeCompare(b.sku.sku_code ?? ""))
         // 派貨計畫中(qty>0)的品項都要列上,即使尚未撿貨/短缺到 0
         // ─ 司機 / 收貨店家才知道「應該」收到什麼,short-pick 也看得出來
         .filter((r) => r.qty > 0 || r.pickedQty > 0);
       if (rows.length === 0) continue;
       const totalPicked = rows.reduce((s, r) => s + r.pickedQty, 0);
-      result.push({ store, rows, totalPicked, waveDates: Array.from(slot.waveDates).sort() });
+      const totalAmount = rows.reduce((s, r) => s + (r.subtotal ?? 0), 0);
+      const hasMissingPrice = rows.some((r) => r.unitPrice == null);
+      result.push({
+        store,
+        rows,
+        totalPicked,
+        totalAmount,
+        hasMissingPrice,
+        waveDates: Array.from(slot.waveDates).sort(),
+        orderDates: Array.from(slot.orderDates).sort(),
+      });
     }
     return result;
-  }, [waves, items, stores, skus]);
+  }, [waves, items, stores, skus, prices]);
 
   if (!date && !waveIds) {
     return <div className="p-6 text-sm text-zinc-500">載入中…</div>;
@@ -291,7 +346,10 @@ export default function PrintSignPage() {
                   </span>
                 </div>
                 <div className="mt-0.5 text-xs text-zinc-600">
-                  {sheets.length} 間分店 · {sheets.reduce((s, sh) => s + sh.totalPicked, 0)} 件
+                  {sheets.length} 間分店 · {sheets.reduce((s, sh) => s + sh.totalPicked, 0)} 件 ·{" "}
+                  <span className="font-mono">
+                    {money(sheets.reduce((s, sh) => s + sh.totalAmount, 0))}
+                  </span>
                 </div>
               </div>
             </div>
@@ -309,7 +367,9 @@ export default function PrintSignPage() {
                       )}
                     </div>
                     <div className="text-xs text-zinc-600">
-                      {sheet.rows.length} 樣 · {sheet.totalPicked} 件
+                      {sheet.rows.length} 樣 · {sheet.totalPicked} 件 ·{" "}
+                      <span className="font-mono">{money(sheet.totalAmount)}</span>
+                      {sheet.hasMissingPrice && <span className="ml-1 text-zinc-400">(部分未定價)</span>}
                     </div>
                   </div>
                   <ul className="ml-2 grid grid-cols-2 gap-x-6 gap-y-0.5 text-sm">
@@ -339,80 +399,78 @@ export default function PrintSignPage() {
             key={sheet.store.id}
             className="sheet mx-auto my-6 max-w-[210mm] border border-zinc-300 bg-white p-8 print:my-0 print:border-0 print:p-0"
           >
-            {/* 表頭 */}
-            <div className="mb-4 flex items-start justify-between border-b-2 border-zinc-900 pb-2">
-              <div>
-                <div className="text-xl font-bold">分店簽收單</div>
-                {tenantName && (
-                  <div className="mt-0.5 text-xs text-zinc-500">{tenantName}</div>
-                )}
-              </div>
-              <div className="text-right text-sm">
-                <div>
-                  配送日：<span className="font-mono font-semibold">{sheet.waveDates.join("、") || date}</span>
-                </div>
-                <div className="mt-0.5 text-xs text-zinc-600">
-                  撿貨單號：
-                  <span className="font-mono">
-                    {Array.from(new Set(sheet.rows.flatMap((r) => r.waveCodes))).join("、")}
-                  </span>
-                </div>
-              </div>
+            {/* 表頭 — 公司抬頭置中，底下左右兩欄的單頭欄位（單號/訂單日 ‧ 店家/出貨日）*/}
+            <div className="mb-3 text-center">
+              {tenantName && <div className="text-lg font-bold tracking-wide">{tenantName}</div>}
+              <div className="text-xs text-zinc-500">分店進貨單</div>
             </div>
 
-            {/* 分店資訊 */}
-            <div className="mb-4 flex justify-between text-sm">
-              <div>
-                <div className="text-xs text-zinc-500">收貨分店</div>
-                <div className="text-lg font-semibold">
+            <div className="mb-2 grid grid-cols-2 gap-x-8 text-sm">
+              <div className="flex">
+                <span className="w-16 shrink-0 text-zinc-500">單號</span>
+                <span className="font-mono font-semibold">
+                  {Array.from(new Set(sheet.rows.flatMap((r) => r.waveCodes))).join("、") || "—"}
+                </span>
+              </div>
+              <div className="flex">
+                <span className="w-16 shrink-0 text-zinc-500">店家</span>
+                <span className="font-semibold">
                   {sheet.store.name}
                   {sheet.store.code && (
-                    <span className="ml-2 font-mono text-sm text-zinc-500">
-                      ({sheet.store.code})
-                    </span>
+                    <span className="ml-2 font-mono text-xs text-zinc-500">({sheet.store.code})</span>
                   )}
-                </div>
+                </span>
               </div>
-              <div className="text-right">
-                <div className="text-xs text-zinc-500">合計</div>
-                <div className="text-lg font-semibold">{sheet.totalPicked} 件</div>
+              <div className="flex">
+                <span className="w-16 shrink-0 text-zinc-500">訂單日</span>
+                <span className="font-mono">{sheet.orderDates.join("、") || "—"}</span>
+              </div>
+              <div className="flex">
+                <span className="w-16 shrink-0 text-zinc-500">出貨日</span>
+                <span className="font-mono">{sheet.waveDates.join("、") || date}</span>
               </div>
             </div>
 
-            {/* 商品表 */}
+            {/* 商品表 — 編號 / 商品名稱 / 數量 / 單價 / 小計（＋點收框）*/}
             <table className="w-full border-collapse text-sm">
               <thead>
-                <tr className="border-b-2 border-zinc-900">
-                  <th className="border border-zinc-400 px-2 py-1.5 text-left text-xs">#</th>
-                  <th className="border border-zinc-400 px-2 py-1.5 text-left text-xs">商品編號</th>
-                  <th className="border border-zinc-400 px-2 py-1.5 text-left text-xs">品名</th>
-                  <th className="border border-zinc-400 px-2 py-1.5 text-right text-xs">訂購數量</th>
-                  <th className="border border-zinc-400 px-2 py-1.5 text-right text-xs">配發數量</th>
-                  <th className="border border-zinc-400 px-2 py-1.5 text-center text-xs">收貨確認</th>
+                <tr className="bg-zinc-100">
+                  <th className="border border-zinc-400 px-2 py-1.5 text-left text-xs font-semibold">編號</th>
+                  <th className="border border-zinc-400 px-2 py-1.5 text-left text-xs font-semibold">商品名稱</th>
+                  <th className="w-16 border border-zinc-400 px-2 py-1.5 text-right text-xs font-semibold">數量</th>
+                  <th className="w-20 border border-zinc-400 px-2 py-1.5 text-right text-xs font-semibold">單價</th>
+                  <th className="w-24 border border-zinc-400 px-2 py-1.5 text-right text-xs font-semibold">小計</th>
+                  <th className="w-12 whitespace-nowrap border border-zinc-400 px-2 py-1.5 text-center text-xs font-semibold">
+                    點收
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {sheet.rows.map((r, i) => (
+                {sheet.rows.map((r) => (
                   <tr key={r.sku.id}>
-                    <td className="border border-zinc-400 px-2 py-1.5 text-xs">{i + 1}</td>
-                    <td className="border border-zinc-400 px-2 py-1.5 font-mono text-xs">
+                    <td className="border border-zinc-400 px-2 py-1 font-mono text-xs">
                       {r.sku.sku_code ?? "—"}
                     </td>
-                    <td className="border border-zinc-400 px-2 py-1.5">
+                    <td className="border border-zinc-400 px-2 py-1">
                       {r.sku.product_name ?? "—"}
                       {r.sku.variant_name && (
                         <span className="ml-1 text-xs text-zinc-500">/ {r.sku.variant_name}</span>
                       )}
                     </td>
-                    <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono">
-                      {r.qty}
+                    {/* 數量 = 實際配發量；短撿時在旁邊補註訂購量，分店才對得出少了什麼 */}
+                    <td className="border border-zinc-400 px-2 py-1 text-right font-mono">
+                      <span className={r.pickedQty < r.qty ? "text-rose-600" : ""}>{r.pickedQty}</span>
+                      {r.pickedQty < r.qty && (
+                        <span className="ml-1 text-[10px] text-zinc-500">(訂 {r.qty})</span>
+                      )}
                     </td>
-                    <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono">
-                      <span className={r.pickedQty < r.qty ? "text-rose-600" : ""} title={r.pickedQty < r.qty ? `配發 ${r.pickedQty} 少於訂購 ${r.qty}` : undefined}>
-                        {r.pickedQty}
-                      </span>
+                    <td className="border border-zinc-400 px-2 py-1 text-right font-mono">
+                      {r.unitPrice == null ? "—" : money(r.unitPrice)}
                     </td>
-                    <td className="border border-zinc-400 px-2 py-1.5 text-center">
+                    <td className="border border-zinc-400 px-2 py-1 text-right font-mono">
+                      {r.subtotal == null ? "—" : money(r.subtotal)}
+                    </td>
+                    <td className="border border-zinc-400 px-2 py-1 text-center">
                       <span className="text-zinc-300">□</span>
                     </td>
                   </tr>
@@ -428,21 +486,28 @@ export default function PrintSignPage() {
                     <td className="border border-zinc-400 px-2 py-3"></td>
                   </tr>
                 ))}
-                {/* 合計列 */}
+                {/* 合計列 — 件數 + 金額，對齊紙本單 */}
                 <tr className="bg-zinc-100 font-semibold">
-                  <td colSpan={3} className="border border-zinc-400 px-2 py-1.5 text-right">
+                  <td colSpan={2} className="border border-zinc-400 px-2 py-1.5 text-right">
                     合計
                   </td>
                   <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono">
-                    {sheet.rows.reduce((s, r) => s + r.qty, 0)}
+                    {sheet.totalPicked} 件
                   </td>
+                  <td className="border border-zinc-400 px-2 py-1.5"></td>
                   <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono">
-                    {sheet.totalPicked}
+                    {money(sheet.totalAmount)}
                   </td>
                   <td className="border border-zinc-400 px-2 py-1.5"></td>
                 </tr>
               </tbody>
             </table>
+
+            {sheet.hasMissingPrice && (
+              <div className="mt-1 text-[10px] text-zinc-500">
+                ※ 標「—」的品項尚未設定分店價，未計入合計金額。
+              </div>
+            )}
 
             {/* 簽名區 */}
             <div className="mt-8 grid grid-cols-2 gap-8 text-sm">
