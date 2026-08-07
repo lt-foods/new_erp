@@ -12,6 +12,7 @@ import Link from "next/link";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { useAuth } from "@/components/AuthProvider";
+import { withBasePath } from "@/lib/basePath";
 import Spinner, { LoadingBlock } from "@/components/Spinner";
 
 type StoreRow = { id: number; name: string; location_id: number | null };
@@ -283,13 +284,24 @@ export default function StoreDailyInboundPage() {
                 <td className="px-3 py-2 text-right font-mono text-zinc-500">{d.line_count}</td>
                 <td className={`px-3 py-2 text-right font-mono ${d.amount < 0 ? "text-emerald-600" : ""}`}>{money(d.amount)}</td>
                 <td className="px-3 py-2 text-right">
-                  <button
-                    type="button"
-                    onClick={() => toggleDay(d.date)}
-                    className="rounded-md border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-                  >
-                    {openDate === d.date ? "收合" : "看明細"}
-                  </button>
+                  <div className="flex justify-end gap-1.5">
+                    {/* 總倉帳號開列印頁後可再切「全部分店（依倉別）」一次印全部倉別 */}
+                    <a
+                      href={withBasePath(`/transfers/settlement/daily/print?store_id=${storeId}&date=${d.date}`)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="rounded-md border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                    >
+                      🖨️ 列印
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => toggleDay(d.date)}
+                      className="rounded-md border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                    >
+                      {openDate === d.date ? "收合" : "看明細"}
+                    </button>
+                  </div>
                 </td>
               </tr>
               {openDate === d.date && (

@@ -52,6 +52,30 @@ Migration：`20260803000000_store_daily_inbound.sql`（全新函式，不覆寫�
 - [x] T9 `/transfers/settlement`：新按鈕「查每日進貨金額」出現；
       `$0` 列顯示「進貨與退貨相抵」、負數列顯示綠字「總倉應退 $11,720」。
 
+### 列印（2026-08-07 追加）
+需求：每日對帳可列印；總倉列印可再依倉別（各分店）分開印。
+
+前端（無新 migration，沿用 `rpc_store_inbound_day_items`）：
+- 新頁 `/transfers/settlement/daily/print?store_id=<id|all>&date=YYYY-MM-DD`：
+  A4 版型對齊月結對帳單列印（`finance/receivables/print`），含表頭、
+  逐品項（品名/編號/類別/數量/分店價/小計/單號）、當日合計、簽收區。
+  單店模式載入完自動跳 `window.print()`；PDF 檔名 = `每日進貨對帳_店名_日期`。
+- 每日對帳頁每列加「🖨️ 列印」（開新分頁印該店該日）。
+- 總倉／HQ 帳號（stores metadata 含「總倉」或未綁店）在列印頁可切
+  「全部分店（依倉別）」：逐店打 RPC、每個倉別一張（`page-break-after`），
+  可勾選要印哪些倉別；無資料／無權限的店 disabled。分店帳號看不到此切換，
+  就算改網址，RPC 端 gate 也只回自己店。
+
+UI 驗證（Playwright + fixture，2026-08-07，24/24 PASS）：
+- [x] P1 每日列表每列有列印連結，href 帶 store_id + date。
+- [x] P2 單店列印頁：對帳單渲染、未設分店價標示、退貨負值 `-$500`、
+      自由轉入單價顯示「估價」、當日合計正確、自動觸發列印、檔名正確。
+- [x] P3 全部分店（依倉別）：有資料的店各一張、無資料店 checkbox disabled、
+      勾選增減張數即時反映、列印鈕顯示張數。
+- [x] P4 print media 下控制列（`.no-print`）隱藏、sheet 保留（sidebar 由
+      layout 既有 `print:hidden` 處理）。
+- [x] P5 分店帳號：可印自己店、看不到「全部分店」切換。
+
 ### 待辦 / 已知限制
 - [ ] 跨月當天凌晨（台北 00:00–08:00）收貨的月份歸屬，日曆與月結會差一天；
       要對齊須另開 migration 把生成器月界改成 Asia/Taipei（會動到既有 draft 金額）。
