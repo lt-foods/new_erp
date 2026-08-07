@@ -507,8 +507,10 @@ export function OrderDetail({
 
   // 互助單：有來源單 + 至少一個 aid_transfer 品項（對齊 rpc_return_aid_order 的判定）
   const isAidOrder = head.transferred_from_order_id != null && items.some((it) => it.source === "aid_transfer");
-  // 貨還沒到分店不能轉單：source 必須 status='ready' (跟 DB rpc_transfer_order_* 一致)
-  const canTransfer = head.status === "ready";
+  // 跨店轉單要等到貨（status='ready'）；同店換客人到貨前也可轉
+  // (跟 DB rpc_transfer_order_* 20260807000000 的 gate 一致；modal 會鎖定接收店＝原店)
+  const transferBeforeArrival = ["pending", "confirmed", "reserved", "shipping"].includes(head.status);
+  const canTransfer = head.status === "ready" || transferBeforeArrival;
   const canCancel = ["pending", "confirmed", "shipping"].includes(head.status);
   // 還沒到貨（pending/confirmed/shipping）也可以列印小白單；ready 透過 PickupDialog 已有入口。
   // partially_completed 也開放（對齊 /orders 列表）— 小白單只列還沒取的品項，已取走的不會重複出現。
@@ -1159,6 +1161,7 @@ export function OrderDetail({
         onClose={() => setTransferOpen(false)}
         orderId={head.id}
         orderNo={head.order_no}
+        sameStoreOnly={head.status !== "ready"}
         currentPickupStoreId={head.pickup_store_id}
         currentMemberLabel={memberLabel}
         items={pickableItems

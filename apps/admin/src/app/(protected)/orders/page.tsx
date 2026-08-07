@@ -84,6 +84,44 @@ const DATE_FIELD_LABEL: Record<Tab, { label: string; hint: string }> = {
   cancelled:   { label: "取消日", hint: "依取消／過期的日期篩選" },
   transferred: { label: "轉出日", hint: "依轉出（開出接手單）的日期篩選" },
 };
+// 表格排序 — 全部欄位都可排序。排序鍵對應 v_admin_orders_list 的欄位
+// （view 疊在 v_admin_orders 上、多出 join/彙總欄，見 migration 20260807000000），
+// 由 PostgREST 伺服端排序，跨分頁有效（client 端只排得到當頁 50 筆，沒有意義）。
+// "date" 不在 SORT_COL：它跟著 tab 的日期語意走（未取貨=updated_at、其餘=event_at）。
+type SortKey = "campaign" | "member" | "source" | "store" | "lines" | "qty" | "amount" | "date";
+const SORT_COL: Record<Exclude<SortKey, "date">, string> = {
+  campaign: "campaign_name",
+  member: "member_name",
+  source: "source_summary",
+  store: "store_name",
+  lines: "line_count",
+  qty: "total_qty",
+  amount: "total_amount",
+};
+// 第一下點擊的方向：文字欄升冪（A→Z 分組好找），數字/日期欄降冪（大→小、新→舊）
+const SORT_DEFAULT_ASC: Record<SortKey, boolean> = {
+  campaign: true,
+  member: true,
+  source: true,
+  store: true,
+  lines: false,
+  qty: false,
+  amount: false,
+  date: false,
+};
+// 手機沒有表頭可點 → 下拉選排序鍵（桌機用表頭）
+const SORT_OPTIONS: { value: SortKey; label: string }[] = [
+  { value: "date", label: "日期" },
+  { value: "campaign", label: "開團" },
+  { value: "member", label: "會員 / 暱稱" },
+  { value: "source", label: "來源" },
+  { value: "store", label: "取貨店" },
+  { value: "lines", label: "項數" },
+  { value: "qty", label: "總數量" },
+  { value: "amount", label: "總金額" },
+];
+type SortState = { key: SortKey; asc: boolean } | null;
+
 const PENDING_STATUSES: OrderStatus[] = ["pending", "confirmed", "shipping", "ready"];
 const CANCELLED_STATUSES: OrderStatus[] = ["cancelled", "expired"];
 // 可印小白單（取貨清單）的狀態 — 小白單只列還沒取的品項，取完的單印出來會是空單
@@ -301,6 +339,8 @@ function OrdersListContent() {
   const [detailNo, setDetailNo] = useState<string>("");
   const [returnTarget, setReturnTarget] = useState<{ orderId: number; storeId: number } | null>(null);
   const [reloadOrders, setReloadOrders] = useState(0);
+  // 排序；null = 預設（日期新→舊）。換 tab / 篩選不重置 — 排序是「怎麼看」不是「看什麼」
+  const [sort, setSort] = useState<SortState>(null);
   // 批量列印用的勾選（跨分頁累加；換 tab / 改篩選會清空，避免印到看不見的單）
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkPrintErr, setBulkPrintErr] = useState<string | null>(null);
@@ -321,6 +361,27 @@ function OrdersListContent() {
   // 20260805000120_v_admin_orders_event_at.sql；tab 數量同步改法見 20260805000130。
   // ⚠ 不要改用 updated_at：它會被之後任何寫入 touch 掉（線上 26% 的已完成單偏差 >1h）。
   const dateOnEvent = tab !== "pending";
+  // 伺服端排序欄位。預設（sort=null）＝原本行為：事件日 tab 照 event_at、未取貨照
+  // updated_at，皆新→舊（照 updated_at 排會讓被批次寫入 touch 過的舊單浮上來，
+  // 所以事件日 tab 不用它）。nullsFirst:false = 空值一律沉底；再以 id 當 tiebreak，
+  // 同值時分頁順序才穩定（不然翻頁會看到重複/漏單）。
+  const sortSpec = useMemo(() => {
+    const dateCol = dateOnEvent ? "event_at" : "updated_at";
+    return {
+      col: !sort || sort.key === "date" ? dateCol : SORT_COL[sort.key],
+      asc: sort?.asc ?? false,
+    };
+  }, [sort, dateOnEvent]);
+  // 換排序回第一頁（在事件端做，不開 effect）；勾選保留 — 符合條件的集合沒變，
+  // 只是換個順序看
+  function applySort(next: { key: SortKey; asc: boolean }) {
+    setSort(next);
+    setPage(1);
+  }
+  function toggleSort(k: SortKey) {
+    const eff = sort ?? { key: "date" as SortKey, asc: false };
+    applySort(eff.key === k ? { key: k, asc: !eff.asc } : { key: k, asc: SORT_DEFAULT_ASC[k] });
+  }
   // 品項篩選只在有選開團時生效（下拉也只在那時渲染）。開團清空不硬清 skuId，
   // 改由這裡歸零 — 篩選不能在 UI 看不到的情況下默默生效。
   const activeSkuId = campaignIds.length > 0 ? skuId : "";
@@ -458,17 +519,18 @@ function OrdersListContent() {
     setLoading(true);
     (async () => {
       try {
-        // 查 v_admin_orders（= customer_orders + 事件日 event_at），日期區間才有單一
-        // 欄位可篩；事件日 tab 也照事件日排序（照 updated_at 排會讓被批次寫入 touch
-        // 過的舊單浮到最前面）。
+        // 查 v_admin_orders_list（= v_admin_orders + 開團名/會員名/店名/品項彙總，
+        // 見 migration 20260807000000）：日期區間有單一欄位（event_at）可篩，
+        // 且每個表格欄位都有對應 view 欄位可給伺服端排序（sortSpec）。
         const base = getSupabase()
-          .from("v_admin_orders")
+          .from("v_admin_orders_list")
           .select(
             "id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, transferred_from_order_id, created_at, updated_at"
               + (activeSkuId ? ITEM_EMBED : ""),
             { count: "exact" },
           )
-          .order(dateOnEvent ? "event_at" : "updated_at", { ascending: false })
+          .order(sortSpec.col, { ascending: sortSpec.asc, nullsFirst: false })
+          .order("id", { ascending: false })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
         const kwOr = await buildKeywordOr(keyword);
@@ -527,7 +589,7 @@ function OrdersListContent() {
       }
     })();
     return () => { cancelled = true; };
-  }, [campaignIds, tab, dateOnEvent, storeId, activeSkuId, page, reloadOrders, keyword, fromTs, toTs]);
+  }, [campaignIds, tab, dateOnEvent, storeId, activeSkuId, page, reloadOrders, keyword, fromTs, toTs, sortSpec]);
 
   // 頁首聚合（tab 數量 + 月趨勢）— 單一伺服端 RPC rpc_order_overview
   // 取代之前 client 端「5 個 count:exact 全表掃描」+「搬整月訂單+全部明細
@@ -787,9 +849,10 @@ function OrdersListContent() {
     setBulkPrintErr(null);
     const kwOr = await buildKeywordOr(keyword);
     const base = getSupabase()
-      .from("v_admin_orders")
+      .from("v_admin_orders_list")
       .select("id" + (activeSkuId ? ITEM_EMBED : ""))
-      .order(dateOnEvent ? "event_at" : "updated_at", { ascending: false })
+      .order(sortSpec.col, { ascending: sortSpec.asc, nullsFirst: false })
+      .order("id", { ascending: false })
       .limit(SELECT_ALL_MAX);
     const { data, error } = await applyOrderFilters(base, {
       campaignIds, tab, storeId, skuIds: activeSkuId ? [activeSkuId] : [], fromTs, toTs, keywordOr: kwOr, dateOnEvent,
@@ -798,7 +861,7 @@ function OrdersListContent() {
     const ids = ((data ?? []) as unknown as { id: number }[]).map((r) => r.id);
     setSelected(new Set(ids));
     if (total > ids.length) {
-      setBulkPrintErr(`符合條件共 ${total} 筆，一次最多選 ${SELECT_ALL_MAX} 筆（已選最新的 ${ids.length} 筆）`);
+      setBulkPrintErr(`符合條件共 ${total} 筆，一次最多選 ${SELECT_ALL_MAX} 筆（已選目前排序最前的 ${ids.length} 筆）`);
     }
   }
 
@@ -1217,6 +1280,31 @@ function OrdersListContent() {
         </div>
       )}
 
+      {/* 手機排序控制 — 卡片版沒有表頭可點，改用下拉 + 方向鈕（桌機點表頭） */}
+      <div className="flex items-center gap-2 text-sm sm:hidden">
+        <span className="shrink-0 text-xs text-zinc-500">排序</span>
+        <select
+          value={(sort ?? { key: "date" }).key}
+          onChange={(e) => {
+            const k = e.target.value as SortKey;
+            applySort({ key: k, asc: SORT_DEFAULT_ASC[k] });
+          }}
+          className="min-w-0 flex-1 rounded-md border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
+        >
+          {SORT_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+        <SpinButton
+          type="button"
+          onClick={() => toggleSort((sort ?? { key: "date" as SortKey }).key)}
+          title="切換升冪 / 降冪"
+          className="shrink-0 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+        >
+          {(sort?.asc ?? false) ? "▲ 升冪" : "▼ 降冪"}
+        </SpinButton>
+      </div>
+
       {/* 手機：每筆訂單一張卡片（桌機改用下方表格） */}
       <div className="space-y-2 sm:hidden">
         {rows === null ? (
@@ -1320,7 +1408,16 @@ function OrdersListContent() {
                   title="選取本頁全部"
                   className="h-4 w-4 cursor-pointer accent-emerald-600"
                 />
-              </Th><Th className="min-w-[14rem]">開團</Th><Th className="whitespace-nowrap">會員 / 暱稱</Th><Th className="whitespace-nowrap">來源</Th><Th className="whitespace-nowrap">取貨店</Th><Th className="whitespace-nowrap text-right">項數</Th><Th className="whitespace-nowrap text-right">總數量</Th><Th className="whitespace-nowrap text-right">總金額</Th><Th className="whitespace-nowrap text-right">日期</Th><Th className="whitespace-nowrap text-right">操作</Th>
+              </Th>
+              <SortTh label="開團" k="campaign" sort={sort} onSort={toggleSort} className="min-w-[14rem]" />
+              <SortTh label="會員 / 暱稱" k="member" sort={sort} onSort={toggleSort} className="whitespace-nowrap" />
+              <SortTh label="來源" k="source" sort={sort} onSort={toggleSort} className="whitespace-nowrap" title="依來源排序（同來源的單排在一起，混合來源自成一組）" />
+              <SortTh label="取貨店" k="store" sort={sort} onSort={toggleSort} className="whitespace-nowrap" />
+              <SortTh label="項數" k="lines" sort={sort} onSort={toggleSort} right className="whitespace-nowrap" />
+              <SortTh label="總數量" k="qty" sort={sort} onSort={toggleSort} right className="whitespace-nowrap" />
+              <SortTh label="總金額" k="amount" sort={sort} onSort={toggleSort} right className="whitespace-nowrap" />
+              <SortTh label="日期" k="date" sort={sort} onSort={toggleSort} right className="whitespace-nowrap" title={`依「${dateOnEvent ? DATE_FIELD_LABEL[tab].label : "更新時間"}」排序`} />
+              <Th className="whitespace-nowrap text-right">操作</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
@@ -1709,6 +1806,41 @@ function TrendCard({
 
 function Th({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <th className={`px-4 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500 ${className}`}>{children}</th>;
+}
+// 可排序表頭：點一下依此欄排序、再點切換方向。sort=null 時實際上就是照日期
+// 新→舊在排，所以把「日期」標成作用中，讓現況看得見。
+function SortTh({
+  label, k, sort, onSort, className = "", right = false, title,
+}: {
+  label: string;
+  k: SortKey;
+  sort: SortState;
+  onSort: (k: SortKey) => void;
+  className?: string;
+  right?: boolean;
+  title?: string;
+}) {
+  const eff = sort ?? { key: "date" as SortKey, asc: false };
+  const active = eff.key === k;
+  return (
+    <th className={`px-4 py-2 text-xs font-medium ${right ? "text-right" : "text-left"} ${className}`}>
+      <button
+        type="button"
+        onClick={() => onSort(k)}
+        title={title ?? `依「${label}」排序`}
+        className={`inline-flex select-none items-center gap-0.5 uppercase tracking-wide ${
+          active
+            ? "font-semibold text-zinc-800 dark:text-zinc-200"
+            : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+        }`}
+      >
+        {label}
+        <span aria-hidden className={active ? "" : "text-zinc-300 dark:text-zinc-600"}>
+          {active ? (eff.asc ? "▲" : "▼") : "↕"}
+        </span>
+      </button>
+    </th>
+  );
 }
 function Td({ children, className = "", title }: { children: React.ReactNode; className?: string; title?: string }) {
   return <td className={`px-4 py-3 ${className}`} title={title}>{children}</td>;
