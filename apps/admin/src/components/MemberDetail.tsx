@@ -1,10 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { MemberMergeModal } from "@/components/MemberMergeModal";
 import { MemberDeleteModal } from "@/components/MemberDeleteModal";
 import { WalletActionModal, type WalletActionMode } from "@/components/WalletActionModal";
+import { Modal } from "@/components/Modal";
+import { OrderDetail } from "@/components/OrderDetail";
+import { orderStatusLabel } from "@/lib/orderStatus";
 import { translateRpcError } from "@/lib/rpcError";
 import { canAdjustWallet, isAdmin, useRole } from "@/lib/role";
 import { walletLedgerTypeLabel, walletPaymentMethodLabel } from "@/lib/walletLedger";
@@ -70,6 +74,30 @@ type WalletEntry = {
   created_at: string;
 };
 
+type MemberOrder = {
+  id: number;
+  order_no: string;
+  status: string;
+  order_kind: string | null;
+  pickup_store_id: number | null;
+  created_at: string;
+  campaign: { name: string } | { name: string }[] | null;
+  customer_order_items: { qty: number; unit_price: number }[];
+};
+
+// 與 CampaignOrdersPanel 的 STATUS_BADGE 同款配色（+ partially_completed）
+const ORDER_STATUS_BADGE: Record<string, string> = {
+  pending: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+  confirmed: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
+  shipping: "bg-cyan-100 text-cyan-800 dark:bg-cyan-950 dark:text-cyan-300",
+  ready: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
+  partially_completed: "bg-teal-100 text-teal-800 dark:bg-teal-950 dark:text-teal-300",
+  completed: "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300",
+  cancelled: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
+  expired: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
+  transferred_out: "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400",
+};
+
 export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDeleted?: () => void }) {
   const [member, setMember] = useState<Member | null>(null);
   const [tier, setTier] = useState<Tier | null>(null);
@@ -78,7 +106,9 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
   const [wallet, setWallet] = useState(0);
   const [pLedger, setPLedger] = useState<PointsEntry[]>([]);
   const [wLedger, setWLedger] = useState<WalletEntry[]>([]);
-  const [tab, setTab] = useState<"info" | "points" | "wallet" | "merges" | "test">("wallet");
+  const [orders, setOrders] = useState<MemberOrder[]>([]);
+  const [orderDetail, setOrderDetail] = useState<{ id: number; no: string } | null>(null);
+  const [tab, setTab] = useState<"orders" | "info" | "points" | "wallet" | "merges" | "test">("orders");
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
@@ -194,7 +224,7 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
       setDraftNoNewOrder(!!m.no_new_order);
       setDraftHomeStoreId(m.home_store_id ? String(m.home_store_id) : "");
 
-      const [tierQ, storesQ, pb, wb, pl, wl, mm] = await Promise.all([
+      const [tierQ, storesQ, pb, wb, pl, wl, mm, od] = await Promise.all([
         m.tier_id ? sb.from("member_tiers").select("id, name").eq("id", m.tier_id).maybeSingle<Tier>() : Promise.resolve({ data: null }),
         sb.from("stores").select("id, code, name").eq("is_active", true).order("name"),
         sb.from("member_points_balance").select("balance").eq("member_id", memberId).maybeSingle<{ balance: number }>(),
@@ -205,6 +235,10 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
           .select("id, created_at, reason, merged_member_id, members:merged_member_id (id, member_no, name, phone, avatar_url, joined_at)")
           .eq("primary_member_id", memberId)
           .order("created_at", { ascending: false }),
+        sb.from("customer_orders")
+          .select("id, order_no, status, order_kind, pickup_store_id, created_at, campaign:group_buy_campaigns(name), customer_order_items(qty, unit_price)")
+          .eq("member_id", memberId)
+          .order("created_at", { ascending: false }),
       ]);
       if (cancelled) return;
       setTier(tierQ.data as Tier | null);
@@ -213,6 +247,7 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
       setWallet(Number(wb.data?.balance ?? 0));
       setPLedger((pl.data as PointsEntry[]) ?? []);
       setWLedger((wl.data as WalletEntry[]) ?? []);
+      setOrders((od.data as unknown as MemberOrder[]) ?? []);
       type MergeMemberRow = { id: number; member_no: string; name: string | null; phone: string | null; avatar_url: string | null; joined_at: string };
       type MergeRow = {
         id: number;
@@ -457,6 +492,21 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
         }}
       />
 
+      {/* 訂單明細 — 點訂單分頁的列開啟；關閉時 reload，取貨/取消後餘額與訂單狀態才會同步 */}
+      <Modal
+        open={orderDetail !== null}
+        onClose={() => { setOrderDetail(null); setReloadTick((n) => n + 1); }}
+        title={`訂單明細 ${orderDetail?.no ?? ""}`}
+        maxWidth="max-w-4xl"
+      >
+        {orderDetail !== null && (
+          <OrderDetail
+            orderId={orderDetail.id}
+            onNavigate={(id, no) => setOrderDetail({ id, no })}
+          />
+        )}
+      </Modal>
+
       {walletAction && tenantId && (
         <WalletActionModal
           open={true}
@@ -471,6 +521,7 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
 
       <div>
         <div className="flex gap-2 border-b border-zinc-200 dark:border-zinc-800">
+          <TabBtn active={tab === "orders"}  onClick={() => setTab("orders")}>訂單 ({orders.length})</TabBtn>
           <TabBtn active={tab === "wallet"}  onClick={() => setTab("wallet")}>儲值金明細 ({wLedger.length})</TabBtn>
           <TabBtn active={tab === "points"}  onClick={() => setTab("points")}>積分明細 ({pLedger.length})</TabBtn>
           {mergedFrom.length > 0 && (
@@ -479,6 +530,100 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
           <TabBtn active={tab === "info"}    onClick={() => setTab("info")}>會員資料</TabBtn>
           <TabBtn active={tab === "test"}    onClick={() => setTab("test")}>測試操作</TabBtn>
         </div>
+
+        {tab === "orders" && (() => {
+          // 統計沿用 CampaignOrdersPanel：取消/過期不入計；order_kind=offset 是抵減單，顯示負數
+          let totalQty = 0, totalAmount = 0, normalCount = 0, offsetCount = 0;
+          for (const o of orders) {
+            const isOffset = o.order_kind === "offset";
+            const isCancelled = o.status === "cancelled" || o.status === "expired";
+            if (isOffset) offsetCount++;
+            else if (!isCancelled) normalCount++;
+            if (isCancelled) continue;
+            for (const it of o.customer_order_items ?? []) {
+              totalQty += Number(it.qty || 0);
+              totalAmount += Number(it.qty || 0) * Number(it.unit_price || 0);
+            }
+          }
+          return (
+            <div className="mt-3 space-y-2">
+              <div className="flex items-center justify-end">
+                <Link
+                  href={`/orders?q=${encodeURIComponent(member.member_no)}`}
+                  className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                  title="到訂單頁以此會員編號搜尋（可再篩狀態 / 開團 / 日期）"
+                >
+                  完整訂單頁 →
+                </Link>
+              </div>
+              <div className="max-h-[420px] overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+                <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+                  <thead className="sticky top-0 z-10 bg-zinc-50 dark:bg-zinc-900">
+                    <tr>
+                      <Th>時間</Th><Th>訂單號</Th><Th>開團</Th><Th>門市</Th><Th>狀態</Th><Th className="text-right">數量</Th><Th className="text-right">金額</Th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                    {orders.length === 0 ? (
+                      <tr><td colSpan={7} className="p-6 text-center text-zinc-500">尚無訂單</td></tr>
+                    ) : orders.map((o) => {
+                      const campaign = Array.isArray(o.campaign) ? o.campaign[0] : o.campaign;
+                      const store = stores.find((s) => s.id === o.pickup_store_id);
+                      const items = o.customer_order_items ?? [];
+                      const qty = items.reduce((s, i) => s + Number(i.qty || 0), 0);
+                      const amt = items.reduce((s, i) => s + Number(i.qty || 0) * Number(i.unit_price || 0), 0);
+                      const isOffset = o.order_kind === "offset";
+                      const isCancelled = o.status === "cancelled" || o.status === "expired";
+                      return (
+                        <tr
+                          key={o.id}
+                          onClick={() => setOrderDetail({ id: o.id, no: o.order_no })}
+                          className={`cursor-pointer ${isCancelled ? "opacity-50" : ""} hover:bg-zinc-50 dark:hover:bg-zinc-900`}
+                          title="點此查看訂單明細"
+                        >
+                          <Td className="whitespace-nowrap text-xs text-zinc-500">{new Date(o.created_at).toLocaleString("zh-TW")}</Td>
+                          <Td className="whitespace-nowrap font-mono text-xs">
+                            {o.order_no}
+                            {isOffset && (
+                              <span className="ml-1.5 rounded bg-red-200 px-1 py-0.5 text-[10px] font-medium text-red-800 dark:bg-red-900 dark:text-red-300">抵減</span>
+                            )}
+                          </Td>
+                          <Td className="max-w-[200px]">
+                            <span className="block truncate" title={campaign?.name ?? undefined}>{campaign?.name ?? "—"}</span>
+                          </Td>
+                          <Td className="whitespace-nowrap text-zinc-600 dark:text-zinc-400">{store?.name ?? (o.pickup_store_id ? `#${o.pickup_store_id}` : "—")}</Td>
+                          <Td className="whitespace-nowrap">
+                            <span className={`inline-block rounded px-1.5 py-0.5 text-xs ${ORDER_STATUS_BADGE[o.status] ?? ORDER_STATUS_BADGE.pending}`}>
+                              {orderStatusLabel(o.status)}
+                            </span>
+                          </Td>
+                          <Td className={`text-right font-mono tabular-nums ${isOffset ? "text-red-700 dark:text-red-300" : ""}`}>
+                            {isOffset ? `−${Math.abs(qty)}` : qty}
+                          </Td>
+                          <Td className={`text-right font-mono tabular-nums ${isOffset ? "text-red-700 dark:text-red-300" : ""}`}>
+                            {isOffset ? `−$${Math.abs(amt).toLocaleString()}` : `$${amt.toLocaleString()}`}
+                          </Td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  {orders.length > 0 && (
+                    <tfoot className="bg-zinc-50 dark:bg-zinc-900">
+                      <tr>
+                        <td colSpan={4} className="px-4 py-2 text-right text-xs text-zinc-500">小計（不含取消/過期）</td>
+                        <td className="px-4 py-2 text-xs text-zinc-500">
+                          {normalCount} 筆{offsetCount > 0 && ` + ${offsetCount} 抵減`}
+                        </td>
+                        <td className="px-4 py-2 text-right font-mono tabular-nums font-semibold">{totalQty}</td>
+                        <td className="px-4 py-2 text-right font-mono tabular-nums font-semibold">${totalAmount.toLocaleString()}</td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+            </div>
+          );
+        })()}
 
         {tab === "wallet" && (
           <div className="mt-3 flex flex-wrap gap-2">
@@ -564,7 +709,7 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
           </div>
         )}
 
-        <div className={tab === "info" || tab === "merges" ? "hidden" : "mt-3 max-h-[420px] overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800"}>
+        <div className={tab === "info" || tab === "merges" || tab === "orders" ? "hidden" : "mt-3 max-h-[420px] overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800"}>
           {tab === "points" ? (
             <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
               <thead className="sticky top-0 z-10 bg-zinc-50 dark:bg-zinc-900">
