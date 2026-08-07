@@ -11,6 +11,7 @@
 //   quota — 本月推播額度（limit=null 表示方案無上限）。注意額度只算「主動
 //           推播」（push/broadcast/群發），OA 後台 1:1 聊天不吃額度 —
 //           後台數字跟這裡對不上時，先想這件事。
+//   links — 訊息樣板要用的會員站連結（不需要 LINE token）。
 //   send  — push 文字和/或圖片。圖片 URL 限定自家 line-media bucket，
 //           防止拿這支函式對會員推任意外部圖。
 //
@@ -75,7 +76,28 @@ Deno.serve(async (req) => {
     const body = await req.json();
     const action = body.action === "check" ? "check"
       : body.action === "quota" ? "quota"
+      : body.action === "links" ? "links"
       : "send";
+
+    // ── links：訊息樣板要用的會員站連結（刻意放在 LINE token 檢查之前）──────
+    // 這幾條連結跟 LINE 無關，token 還沒設好時樣板也該能用。
+    //
+    // ⚠ 給的是會員站自己的網址，**不是** https://liff.line.me/... —
+    //   LIFF 連結會把使用者丟進 LIFF endpoint，而該 endpoint 目前指向一支
+    //   跨網域的 Cloudflare Worker，一跨網域 LIFF context 就沒了、登入必爆
+    //   （見 CLAUDE.md「LIFF app 的 Endpoint URL 必須跟會員站同網域」）。
+    //   會員站的 /orders 沒登入時會自己導去 `/` 走 useLineLogin，
+    //   那條路才是唯一維護中的登入邏輯。
+    if (action === "links") {
+      const base = (Deno.env.get("MEMBER_FRONT_BASE_URL") ?? "").replace(/\/+$/, "");
+      // localhost 是 README 給本機開發用的預設值，發到會員手機上是死連結
+      const usable = /^https:\/\//.test(base);
+      return json({
+        ok: true,
+        orders_url: usable ? `${base}/orders` : null,
+        message: usable ? undefined : "MEMBER_FRONT_BASE_URL 未設定或不是 https 網址，樣板連結無法產生",
+      });
+    }
 
     const oaToken = Deno.env.get("LINE_MESSAGING_CHANNEL_ACCESS_TOKEN");
     if (!oaToken) {

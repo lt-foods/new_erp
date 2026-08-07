@@ -36,6 +36,18 @@ type Quota = { limit: number | null; used: number };
 // chatMode "bot" = 後台把「聊天」關掉了、只走 webhook，連過去也不能回。
 type Chat = { url: string | null; mode: string | null };
 
+// 訊息樣板。連結由後端 links action 給（來自 MEMBER_FRONT_BASE_URL），
+// 不在這裡寫死網址 —— 換網域時只要改 secret，不用重新部署前端。
+//
+// ⚠ 連結一律用會員站自己的網址，不要換成 https://liff.line.me/...
+//   （LIFF endpoint 目前跨網域，會員點進去登入會爆，見 CLAUDE.md）。
+const TEMPLATES: { label: string; build: (ordersUrl: string) => string }[] = [
+  {
+    label: "📦 到貨通知",
+    build: (ordersUrl) => `您好，您有貨到了！\n查看訂單：${ordersUrl}`,
+  },
+];
+
 async function callFn(body: Record<string, unknown>) {
   const sb = getSupabase();
   const { data: { session } } = await sb.auth.getSession();
@@ -86,6 +98,7 @@ export function LineMessageModal({
   const [reachable, setReachable] = useState<Reachable>({ state: "checking" });
   const [quota, setQuota] = useState<Quota | null>(null);
   const [chat, setChat] = useState<Chat | null>(null);
+  const [ordersUrl, setOrdersUrl] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [image, setImage] = useState<File | null>(null);
   const [sending, setSending] = useState(false);
@@ -120,6 +133,13 @@ export function LineMessageModal({
         const { result } = await callFn({ action: "quota" });
         if (!cancelled && result.ok) setQuota({ limit: result.limit ?? null, used: result.used ?? 0 });
       } catch { /* 額度顯示是輔助資訊，抓不到就算了 */ }
+    })();
+    // 樣板用的會員站連結（不需要 LINE token，所以 token 沒設也拿得到）
+    (async () => {
+      try {
+        const { result } = await callFn({ action: "links" });
+        if (!cancelled && result.ok) setOrdersUrl(result.orders_url ?? null);
+      } catch { /* 拿不到就不顯示樣板按鈕 */ }
     })();
     return () => { cancelled = true; };
   }, [open, member.id]);
@@ -271,6 +291,27 @@ export function LineMessageModal({
                 需先到官方帳號設定把回應方式改成「聊天模式」才能在後台回覆。
               </p>
             )}
+          </div>
+        )}
+
+        {/* 樣板：填進 textarea 後仍可自由編輯再送 */}
+        {ordersUrl && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-zinc-500">套用樣板：</span>
+            {TEMPLATES.map((t) => (
+              <SpinButton
+                key={t.label}
+                onClick={() => {
+                  const next = t.build(ordersUrl);
+                  // 已經打了字才確認，避免手滑蓋掉寫好的內容
+                  if (text.trim() && !window.confirm("要用樣板取代目前已輸入的訊息嗎？")) return;
+                  setText(next);
+                }}
+                className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                {t.label}
+              </SpinButton>
+            ))}
           </div>
         )}
 
