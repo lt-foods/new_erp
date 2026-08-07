@@ -31,6 +31,11 @@ type Reachable =
 // OA 後台 1:1 聊天不吃額度，所以這裡的數字跟後台聊天量對不上是正常的。
 type Quota = { limit: number | null; used: number };
 
+// OA 後台 1:1 聊天室（chat.line.biz）。走這條發訊息不吃推播額度，
+// 但要另外登入 OA 後台、且該帳號要有這支 OA 的權限。
+// chatMode "bot" = 後台把「聊天」關掉了、只走 webhook，連過去也不能回。
+type Chat = { url: string | null; mode: string | null };
+
 async function callFn(body: Record<string, unknown>) {
   const sb = getSupabase();
   const { data: { session } } = await sb.auth.getSession();
@@ -80,6 +85,7 @@ export function LineMessageModal({
 }) {
   const [reachable, setReachable] = useState<Reachable>({ state: "checking" });
   const [quota, setQuota] = useState<Quota | null>(null);
+  const [chat, setChat] = useState<Chat | null>(null);
   const [text, setText] = useState("");
   const [image, setImage] = useState<File | null>(null);
   const [sending, setSending] = useState(false);
@@ -94,6 +100,7 @@ export function LineMessageModal({
       try {
         const { status, result } = await callFn({ action: "check", member_id: member.id });
         if (cancelled) return;
+        if (result.ok) setChat({ url: result.chat_url ?? null, mode: result.chat_mode ?? null });
         if (result.ok && result.reachable) {
           setReachable({ state: "ok", displayName: result.display_name ?? null });
         } else if (result.ok && !result.reachable) {
@@ -242,6 +249,29 @@ export function LineMessageModal({
               本月推播已用 {quota.used} / {quota.limit ?? "無上限"} 則
             </div>
           )
+        )}
+
+        {/* 免額度替代路徑：OA 後台 1:1 聊天室。額度用完時這條仍然能發。 */}
+        {chat?.url && (
+          <div className="rounded-md border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-800 dark:bg-zinc-900">
+            <a
+              href={chat.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs font-medium text-sky-700 underline hover:text-sky-900 dark:text-sky-400 dark:hover:text-sky-300"
+            >
+              💬 在官方帳號後台開啟與此會員的 1:1 聊天 ↗
+            </a>
+            <p className="mt-1 text-[11px] text-zinc-500">
+              後台聊天<strong className="font-semibold">不吃推播額度</strong>，但需另外登入 LINE 官方帳號後台。
+            </p>
+            {chat.mode === "bot" && (
+              <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
+                ⚠ 此官方帳號目前是「Bot 模式」，後台聊天已關閉 —
+                需先到官方帳號設定把回應方式改成「聊天模式」才能在後台回覆。
+              </p>
+            )}
+          </div>
         )}
 
         <label className="block text-sm">

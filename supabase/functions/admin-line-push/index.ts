@@ -7,6 +7,7 @@
 // actions:
 //   check — GET LINE profile，回「這個 line_user_id 對這支 OA 能不能推」
 //           （404 = 沒加好友 **或** Login channel 跟 OA 不同 provider、ID 對不上）
+//           同時回 chat_url（OA 後台 1:1 聊天室連結）與 chat_mode。
 //   quota — 本月推播額度（limit=null 表示方案無上限）。注意額度只算「主動
 //           推播」（push/broadcast/群發），OA 後台 1:1 聊天不吃額度 —
 //           後台數字跟這裡對不上時，先想這件事。
@@ -23,6 +24,16 @@ import { corsHeaders } from "../_shared/cors.ts";
 const LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push";
 const LINE_PROFILE_URL = "https://api.line.me/v2/bot/profile";
 const LINE_QUOTA_URL = "https://api.line.me/v2/bot/message/quota";
+const LINE_BOT_INFO_URL = "https://api.line.me/v2/bot/info";
+
+// OA 後台（LINE Official Account Manager）的 1:1 聊天室連結。
+// ⚠ 這個 URL 格式是**非官方**的 — LINE 沒有把後台網址列進 API 文件，
+//   哪天改版就會失效。所以：連結壞掉不要當程式 bug 追，先手動開
+//   https://chat.line.biz/ 看網址列現在長什麼樣，再回來改這一行。
+// 第一段是 OA 自己的 userId（/v2/bot/info 的 userId），不是 basicId(@xxx)。
+function chatConsoleUrl(botUserId: string, memberLineUserId: string): string {
+  return `https://chat.line.biz/${botUserId}/chat/${memberLineUserId}`;
+}
 
 function requireEnv(name: string): string {
   const v = Deno.env.get(name);
@@ -109,12 +120,31 @@ Deno.serve(async (req) => {
       return json({ error: "member_no_line", message: "此會員未綁定 LINE" }, 400);
     }
 
-    // ── check：能不能推得到這個人 ───────────────────────────────────────────
+    // ── check：能不能推得到這個人 + OA 後台 1:1 聊天室連結 ──────────────────
     if (action === "check") {
-      const resp = await fetch(`${LINE_PROFILE_URL}/${member.line_user_id}`, { headers: oaHeaders });
+      const [resp, infoResp] = await Promise.all([
+        fetch(`${LINE_PROFILE_URL}/${member.line_user_id}`, { headers: oaHeaders }),
+        fetch(LINE_BOT_INFO_URL, { headers: oaHeaders }),
+      ]);
+
+      // bot info 拿不到不擋主流程：少的只是「開聊天室」連結
+      let chatUrl: string | null = null;
+      let chatMode: string | null = null;
+      if (infoResp.ok) {
+        const info = await infoResp.json();
+        chatMode = info.chatMode ?? null;   // "chat" = 後台 1:1 聊天開著；"bot" = 只走 webhook
+        if (info.userId) chatUrl = chatConsoleUrl(info.userId, member.line_user_id);
+      } else {
+        console.error("bot info failed:", infoResp.status, await infoResp.text());
+      }
+
       if (resp.ok) {
         const profile = await resp.json();
-        return json({ ok: true, reachable: true, display_name: profile.displayName ?? null });
+        return json({
+          ok: true, reachable: true,
+          display_name: profile.displayName ?? null,
+          chat_url: chatUrl, chat_mode: chatMode,
+        });
       }
       const detail = await resp.text();
       if (resp.status === 404) {
@@ -122,6 +152,7 @@ Deno.serve(async (req) => {
           ok: true,
           reachable: false,
           message: "此會員尚未加入官方帳號好友（或此 LINE ID 不屬於這支官方帳號的 provider），訊息無法送達",
+          chat_url: chatUrl, chat_mode: chatMode,
         });
       }
       if (resp.status === 401) {
