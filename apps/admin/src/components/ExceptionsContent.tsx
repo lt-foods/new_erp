@@ -48,6 +48,7 @@ type ExceptionRow = {
   ts: string;
   doc_no: string;
   doc_link: string;
+  warehouse: string | null;
   sku_label: string;
   sku_code: string | null;
   expected: number;
@@ -86,6 +87,9 @@ type ViewRow = {
   dest_store_name: string | null;
   customer_order_id: number | null;
   shortage_resolution: string | null;
+  // 20260807000050 起 view 才有(部署前拿到 undefined,前端需容錯)
+  doc_id?: number | null;
+  warehouse_name?: string | null;
 };
 
 type ExceptionCounts = Record<Tab, number>;
@@ -94,10 +98,13 @@ const EMPTY_COUNTS: ExceptionCounts = {
   all: 0, po_shortage: 0, po_damage: 0, po_over: 0, transfer_short: 0, customer_shortage: 0,
 };
 
+// 單號點下去的目標:每種異常連到自己的單據頁(拿不到 id 時退回總覽頁)
 function docLinkFor(r: ViewRow): string {
   if (r.type === "customer_shortage") return `/orders?id=${r.customer_order_id}`;
-  if (r.type === "transfer_short") return `/wms/inbound`;
-  return `/wms/receiving`;
+  if (r.type === "transfer_short")
+    return r.transfer_id != null ? `/wms/transfers?open=${r.transfer_id}` : `/wms/inbound`;
+  // po_shortage / po_over / po_damage → 該 PO 的收貨明細頁
+  return r.doc_id != null ? `/purchase/orders/receive?po=${r.doc_id}` : `/wms/receiving`;
 }
 
 export default function ExceptionsContent({
@@ -217,6 +224,7 @@ export default function ExceptionsContent({
           ts: r.ts ?? "—",
           doc_no: r.doc_no,
           doc_link: docLinkFor(r),
+          warehouse: r.warehouse_name ?? r.dest_store_name ?? null,
           sku_code: r.sku_code,
           sku_label: r.sku_label,
           expected: Number(r.expected),
@@ -423,6 +431,7 @@ export default function ExceptionsContent({
               </th>
               <th className="px-3 py-2">類型</th>
               <th className="px-3 py-2">單號</th>
+              <th className="px-3 py-2">倉別</th>
               <th className="px-3 py-2">品項</th>
               <th className="px-3 py-2 text-right">預期</th>
               <th className="px-3 py-2 text-right">實際</th>
@@ -433,9 +442,9 @@ export default function ExceptionsContent({
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={10} className="p-6 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">沒有異常,系統運作正常 ✓</td></tr>
+              <tr><td colSpan={10} className="p-6 text-center text-zinc-500">沒有異常,系統運作正常 ✓</td></tr>
             ) : rows.map((r) => (
               <tr key={r.key} className="hover:bg-zinc-50 dark:hover:bg-zinc-950">
                 <td className="px-3 py-2">
@@ -459,7 +468,10 @@ export default function ExceptionsContent({
                     "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-950 dark:text-fuchsia-300"
                   }`}>{TAB_LABEL[r.type]}</span>
                 </td>
-                <td className="px-3 py-2 font-mono text-xs whitespace-nowrap">{r.doc_no}</td>
+                <td className="px-3 py-2 font-mono text-xs whitespace-nowrap">
+                  <Link href={r.doc_link} className="text-blue-600 hover:underline dark:text-blue-400">{r.doc_no}</Link>
+                </td>
+                <td className="px-3 py-2 text-xs whitespace-nowrap">{r.warehouse ?? "—"}</td>
                 <td className="px-3 py-2 text-xs min-w-[220px]">
                   {r.sku_code && <div className="font-mono text-[10px] text-zinc-500">{r.sku_code}</div>}
                   <div>{r.sku_label}</div>
