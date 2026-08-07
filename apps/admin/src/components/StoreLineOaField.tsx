@@ -61,7 +61,27 @@ export function StoreLineOaField({ storeId }: { storeId: number | null }) {
       setChannelId("");
       setChannelSecret("");
       setStatus(clear ? null : { channel_id: channelId.trim(), updated_at: new Date().toISOString() });
-      setMsg(clear ? "已清除此分店的 LINE 憑證" : "已儲存（下次發送就會用這組憑證）");
+      if (clear) {
+        setMsg("已清除此分店的 LINE 憑證");
+        return;
+      }
+
+      // 存起來不代表能用：Login channel 的憑證一樣換得到 token，
+      // 要打一支 Messaging API 端點才知道。現在就驗，不要等到發訊息才炸。
+      setMsg("已儲存，驗證中…");
+      const { data: { session } } = await getSupabase().auth.getSession();
+      const resp = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/admin-line-push`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ action: "verify_store", store_id: storeId }),
+      });
+      const result = await resp.json().catch(() => ({}));
+      if (result.ok) {
+        setMsg(`✓ 驗證通過 — 已接上官方帳號「${result.display_name ?? "?"}」${result.basic_id ?? ""}`);
+      } else {
+        setMsg(null);
+        setErr(result.message || result.detail || result.error || `驗證失敗（HTTP ${resp.status}）`);
+      }
     } finally {
       setSaving(false);
     }

@@ -12,6 +12,8 @@
 //           推播」（push/broadcast/群發），OA 後台 1:1 聊天不吃額度 —
 //           後台數字跟這裡對不上時，先想這件事。
 //   links — 訊息樣板要用的會員站連結（不需要 LINE token）。
+//   verify_store — 存完分店憑證後立刻驗一次（打 /v2/bot/info）。換 token 成功
+//           不代表能用（Login channel 也換得到），這支才是真正的分水嶺。
 //   send  — push 文字和/或圖片。圖片 URL 限定自家 line-media bucket，
 //           防止拿這支函式對會員推任意外部圖。
 //
@@ -48,6 +50,30 @@ function json(body: unknown, status = 200) {
     status,
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
+}
+
+/**
+ * 把 LINE 的錯誤翻成「店員看得懂、而且知道下一步」的話。
+ *
+ * 最容易踩的是拿 **LINE Login channel** 的 Channel ID / Secret 來設定 ——
+ * 那組 client_credentials **換得到 token**（所以設定當下不會報錯），但拿去打
+ * Messaging API 一律回 "Access to this API is not available for your account"。
+ * 辨識法：Login channel 底下才掛得了 LIFF app，所以「Channel ID 跟 LIFF ID
+ * 前綴同號」= 那是 Login channel，不是 Messaging API channel。
+ */
+function explainLineError(status: number, detail: string): string | undefined {
+  if (/not available for your account/i.test(detail)) {
+    return "這組憑證不能用 Messaging API —— 多半是填成了「LINE Login channel」的 Channel ID / Secret。"
+      + "請改用該官方帳號的「Messaging API channel」憑證"
+      + "（官方帳號管理後台 → 設定 → Messaging API；若沒看到就是還沒啟用）。";
+  }
+  if (status === 401) {
+    return "LINE 拒絕這組憑證（401）。Channel ID / Secret 可能填錯或已重新產生，請重新確認後再存一次。";
+  }
+  if (status === 429) {
+    return "已達 LINE 的發送上限（429）。額度每月 1 號重置；官方帳號後台的 1:1 聊天不吃額度，可先走那條。";
+  }
+  return undefined;
 }
 
 type OaResolved =
@@ -160,6 +186,7 @@ Deno.serve(async (req) => {
     const action = body.action === "check" ? "check"
       : body.action === "quota" ? "quota"
       : body.action === "links" ? "links"
+      : body.action === "verify_store" ? "verify_store"
       : "send";
 
     // ── links：訊息樣板要用的會員站連結（刻意放在 LINE token 檢查之前）──────
@@ -179,6 +206,45 @@ Deno.serve(async (req) => {
         ok: true,
         orders_url: usable ? `${base}/orders` : null,
         message: usable ? undefined : "MEMBER_FRONT_BASE_URL 未設定或不是 https 網址，樣板連結無法產生",
+      });
+    }
+
+    // ── verify_store：分店憑證存檔後立刻驗一次 ──────────────────────────────
+    // 為什麼需要：client_credentials 換 token 這一步，**拿 LINE Login channel
+    // 的憑證也會成功**，所以「存檔沒報錯」完全不代表能用。真正的分水嶺是打
+    // 一支 Messaging API 端點（/v2/bot/info）看回不回 403。不在這裡驗的話，
+    // 錯誤要等到店員實際要發訊息給客人時才爆出來。
+    if (action === "verify_store") {
+      const role = user.app_metadata?.role ?? "";
+      if (!["owner", "admin", ""].includes(role)) {
+        return json({ error: "insufficient_role" }, 403);
+      }
+      const storeId = Number(body.store_id);
+      if (!storeId) return json({ error: "store_id is required" }, 400);
+
+      const res = await resolveOaToken(sb, tenantId, storeId);
+      if ("error" in res) return json(res.error, res.status);
+      if (res.source !== "store") {
+        return json({ error: "no_store_credentials", message: "這家店還沒有自己的憑證" }, 400);
+      }
+
+      const infoResp = await fetch(LINE_BOT_INFO_URL, {
+        headers: { "Authorization": `Bearer ${res.token}` },
+      });
+      if (!infoResp.ok) {
+        const detail = await infoResp.text();
+        return json({
+          error: "line_api_error",
+          message: explainLineError(infoResp.status, detail) ?? `LINE 回應 ${infoResp.status}：${detail}`,
+          detail,
+        }, 502);
+      }
+      const info = await infoResp.json();
+      return json({
+        ok: true,
+        display_name: info.displayName ?? null,
+        basic_id: info.basicId ?? null,
+        chat_mode: info.chatMode ?? null,
       });
     }
 
@@ -211,8 +277,13 @@ Deno.serve(async (req) => {
         fetch(`${LINE_QUOTA_URL}/consumption`, { headers: oaHeaders }),
       ]);
       if (!qResp.ok || !cResp.ok) {
-        const detail = `quota ${qResp.status} / consumption ${cResp.status}`;
-        return json({ error: "line_api_error", detail }, 502);
+        const bad = !qResp.ok ? qResp : cResp;
+        const detail = await bad.text();
+        return json({
+          error: "line_api_error",
+          message: explainLineError(bad.status, detail) ?? `LINE 回應 ${bad.status}：${detail}`,
+          detail,
+        }, 502);
       }
       const q = await qResp.json();
       const c = await cResp.json();
@@ -259,10 +330,12 @@ Deno.serve(async (req) => {
           chat_url: chatUrl, chat_mode: chatMode,
         });
       }
-      if (resp.status === 401) {
-        return json({ error: "bad_token", message: "LINE token 無效，請重新確認 LINE_MESSAGING_CHANNEL_ACCESS_TOKEN", detail }, 502);
-      }
-      return json({ error: "line_api_error", status: resp.status, detail }, 502);
+      return json({
+        error: "line_api_error",
+        status: resp.status,
+        message: explainLineError(resp.status, detail) ?? `LINE 回應 ${resp.status}：${detail}`,
+        detail,
+      }, 502);
     }
 
     // ── send ────────────────────────────────────────────────────────────────
@@ -307,11 +380,13 @@ Deno.serve(async (req) => {
     if (logErr) console.error("line_push_logs insert failed:", logErr.message);
 
     if (!ok) {
+      const explained = explainLineError(resp.status, respText ?? "");
       // 400 幾乎都是「推不到這個人」：沒加好友 / 封鎖 / provider 不一致
-      const hint = resp.status === 400
-        ? "會員可能尚未加入官方帳號好友、已封鎖、或此 LINE ID 不屬於這支官方帳號"
-        : undefined;
-      return json({ error: "line_push_failed", status: resp.status, detail: respText, hint }, 502);
+      const message = explained
+        ?? (resp.status === 400
+          ? "發送失敗：會員可能尚未加入官方帳號好友、已封鎖、或此 LINE ID 不屬於這支官方帳號"
+          : `LINE 回應 ${resp.status}：${respText}`);
+      return json({ error: "line_push_failed", status: resp.status, message, detail: respText }, 502);
     }
     return json({ ok: true, member_name: member.name ?? null });
   } catch (e) {

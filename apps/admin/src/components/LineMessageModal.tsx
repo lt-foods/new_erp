@@ -121,7 +121,12 @@ export function LineMessageModal({
         } else if (result.error === "not_configured") {
           setReachable({ state: "not_configured", message: result.message });
         } else {
-          setReachable({ state: "error", message: result.message || result.error || `HTTP ${status}` });
+          // detail 一定要帶上：只顯示 error code（line_api_error）等於沒說，
+          // 之前就是因為這樣得回資料庫撈 line_push_logs 才知道真正原因
+          setReachable({
+            state: "error",
+            message: result.message || result.detail || result.error || `HTTP ${status}`,
+          });
         }
       } catch (e) {
         if (!cancelled) setReachable({ state: "error", message: e instanceof Error ? e.message : String(e) });
@@ -219,6 +224,8 @@ export function LineMessageModal({
       } else {
         const parts = [result.message || result.error || `HTTP ${status}`];
         if (result.hint) parts.push(result.hint);
+        // 後端沒能翻譯的錯誤，至少要把 LINE 的原文露出來
+        if (result.detail && !result.message) parts.push(String(result.detail));
         setError(parts.join("\n"));
       }
     } catch (e) {
