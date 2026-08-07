@@ -29,6 +29,7 @@ type Store = {
   is_active: boolean;
   notes: string | null;
   line_oa_basic_id: string | null;
+  line_liff_id: string | null;
   updated_at: string;
   deleted_at: string | null;
 };
@@ -46,6 +47,7 @@ const EMPTY: Omit<Store, "id" | "updated_at" | "deleted_at"> = {
   is_active: true,
   notes: null,
   line_oa_basic_id: null,
+  line_liff_id: null,
 };
 
 type ActiveFilter = "active" | "all" | "deleted";
@@ -90,7 +92,7 @@ export default function StoresPage() {
   async function reload() {
     let q = getSupabase()
       .from("stores")
-      .select("id, code, name, location_id, pickup_window_days, allowed_payment_methods, is_active, notes, line_oa_basic_id, updated_at, deleted_at")
+      .select("id, code, name, location_id, pickup_window_days, allowed_payment_methods, is_active, notes, line_oa_basic_id, line_liff_id, updated_at, deleted_at")
       .order("updated_at", { ascending: false })
       .limit(500);
     if (query.trim()) {
@@ -517,7 +519,7 @@ function StoreForm({
           </span>
         </F>
 
-        <StoreLineOaField storeId={v.id} />
+        <StoreLineOaField storeId={v.id} liffId={v.line_liff_id} />
 
         <F label="備註" className="sm:col-span-4">
           <textarea

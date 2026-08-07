@@ -72,9 +72,12 @@ function resolveSpotImages(
 // ─── actions ─────────────────────────────────────────────────────────────────
 
 async function listStores(sb: any, tenantId: string) {
+  // line_liff_id：每家店在自己 Provider 底下的 LIFF ID。會員必須用「所屬分店」
+  // 那支 LIFF 登入，拿到的 line_user_id 才跟該店官方帳號同 provider、推得動。
+  // 不是密鑰（本來就明碼在會員端 bundle），可以隨門市清單一起公開。
   const { data, error } = await sb
     .from("stores")
-    .select("id, code, name")
+    .select("id, code, name, line_liff_id")
     .eq("tenant_id", tenantId)
     .eq("is_active", true)
     .order("code", { ascending: true });
