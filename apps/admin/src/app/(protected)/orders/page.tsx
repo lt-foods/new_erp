@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
@@ -15,7 +15,7 @@ import { fetchReprintableEvents } from "@/lib/pickupReceipt";
 import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 import { useRole } from "@/lib/role";
 import { ORDER_STATUS_LABEL as STATUS_LABEL, type OrderStatus } from "@/lib/orderStatus";
-import { summarizeOrderSource } from "@/lib/orderSource";
+import { summarizeOrderSource, SOURCE_TREND_SERIES, type OrderItemSource } from "@/lib/orderSource";
 import { OrderSourceBadge } from "@/components/OrderSourceBadge";
 import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
@@ -59,6 +59,28 @@ type MonthAgg = {
 type TrendData = {
   days: DayTrend[];
   total: MonthAgg;
+};
+
+// 下單來源趨勢 — rpc_order_overview v8 的 source_days / source_total
+// （migration 20260808000030）。與 trend 同一個時間軸（當月 1 號 ~ 今天、依
+// 下單日 created_at），差別只在多按 customer_order_items.source 分組。
+// ⚠ 一張單混合來源（小幫手代 key + 會員自助）時每個來源各算一張 —— 各線
+//   加起來會比「本月訂單數」多，這是刻意的：問的是「每個通路各有幾張單在動」。
+type SourceDayAgg = { ymd: string; source: string; orders?: number; amount?: number; qty?: number };
+type SourceSeries = {
+  source: OrderItemSource;
+  label: string;
+  color: string;
+  /** 對齊 SourceTrendData.days 的每日訂單數 / 金額（沒資料補 0） */
+  daily: number[];
+  dailyAmount: number[];
+  totalOrders: number;
+  totalAmount: number;
+};
+type SourceTrendData = {
+  /** "YYYY-MM-DD" 連續序列，與 TrendData.days 同一組日期 */
+  days: string[];
+  series: SourceSeries[];
 };
 
 // 「可取貨」= status 'ready'（ORDER_STATUS_LABEL.ready），貨已到店、會員還沒來取。
@@ -350,6 +372,8 @@ function OrdersListContent() {
   // 取貨 KPI — 同一支 RPC 回的 pickup_days/pickup_total（已取貨品項的金額，
   // 依取貨當天切；「今日取貨金額」卡用最後一天＝今天）
   const [pickupTrend, setPickupTrend] = useState<TrendData | null>(null);
+  // 下單來源 KPI — 同一支 RPC 回的 source_days/source_total（App / 商城 / 小幫手）
+  const [sourceTrend, setSourceTrend] = useState<SourceTrendData | null>(null);
 
   const fromTs = useMemo(() => (dateFrom ? dayStartIso(dateFrom) : null), [dateFrom]);
   const toTs = useMemo(() => (dateTo ? dayStartIso(dateTo, 1) : null), [dateTo]);
@@ -602,6 +626,7 @@ function OrdersListContent() {
     let cancelled = false;
     setTrend(null);
     setPickupTrend(null);
+    setSourceTrend(null);
     (async () => {
       const sb = getSupabase();
       const today = new Date();
@@ -629,11 +654,17 @@ function OrdersListContent() {
         // v3 (migration 20260803000010) 起：已取貨品項金額，依取貨當天切
         pickup_days?: (AggRow & { ymd: string })[];
         pickup_total?: AggRow;
+        // v8 (migration 20260808000030) 起：依 customer_order_items.source 分組。
+        // 線上還是舊版函式時這兩個 key 不存在 → buildSourceTrend 拿空陣列，
+        // 卡片畫出三條 0 的線，其餘 KPI 不受影響。
+        source_days?: SourceDayAgg[];
+        source_total?: Omit<SourceDayAgg, "ymd">[];
       };
       if (rpcErr || !data) {
         setTabCounts(null);
         setTrend(buildTrend(startDate, today, [], null));
         setPickupTrend(buildTrend(startDate, today, [], null));
+        setSourceTrend(buildSourceTrend(startDate, today, [], []));
         return;
       }
       const ov = data as Overview;
@@ -648,6 +679,7 @@ function OrdersListContent() {
 
       setTrend(buildTrend(startDate, today, ov.trend_days ?? [], ov.trend_total));
       setPickupTrend(buildTrend(startDate, today, ov.pickup_days ?? [], ov.pickup_total));
+      setSourceTrend(buildSourceTrend(startDate, today, ov.source_days ?? [], ov.source_total ?? []));
     })();
     return () => {
       cancelled = true;
@@ -976,6 +1008,9 @@ function OrdersListContent() {
         />
         <PickupTodayCard trend={pickupTrend} />
       </div>
+
+      {/* 下單來源 KPI — App(PWA) / 商城(LIFF) / 小幫手 三條折線，看通路消長 */}
+      <SourceTrendCard trend={sourceTrend} />
 
       {/* Tab bar — 未取貨 / 可取貨 / 部分取貨 / 已完成 / 轉出 / 取消;含各 tab 數量 */}
       {/* 6 個 tab 在手機寬度放不下 → 橫向捲動,不要擠壓/換行 */}
@@ -1610,6 +1645,65 @@ function buildTrend(
   };
 }
 
+// 把 RPC 回的 (日期 × source) 聚合攤平成「每條線一組對齊日期的陣列」。
+// 只留 SOURCE_TREND_SERIES 定義的三個人工通路 —— 系統流程（遞轉/互助/匯入…）
+// 不畫線；它們不是「客人怎麼下單」的一部分，畫進去只會多兩條貼著 0 的雜訊。
+function buildSourceTrend(
+  startDate: Date,
+  today: Date,
+  rows: SourceDayAgg[],
+  totals: Omit<SourceDayAgg, "ymd">[],
+): SourceTrendData {
+  const days: string[] = [];
+  const cur = new Date(startDate);
+  while (cur <= today) {
+    days.push(fmtYmd(cur));
+    cur.setDate(cur.getDate() + 1);
+  }
+  const dayIdx = new Map(days.map((d, i) => [d, i]));
+  const totalBySource = new Map(totals.map((t) => [t.source, t]));
+
+  const series = SOURCE_TREND_SERIES.map((def) => {
+    const daily = new Array<number>(days.length).fill(0);
+    const dailyAmount = new Array<number>(days.length).fill(0);
+    for (const r of rows) {
+      if (r.source !== def.source) continue;
+      const i = dayIdx.get(r.ymd);
+      if (i === undefined) continue;
+      daily[i] = Number(r.orders ?? 0);
+      dailyAmount[i] = Number(r.amount ?? 0);
+    }
+    const t = totalBySource.get(def.source);
+    return {
+      ...def,
+      daily,
+      dailyAmount,
+      totalOrders: Number(t?.orders ?? 0),
+      totalAmount: Number(t?.amount ?? 0),
+    };
+  });
+  return { days, series };
+}
+
+// 容器實際寬度（px）—— 折線圖要滿版又要維持字級/線寬不被 viewBox 縮放，
+// 只能量出來再照 px 畫（preserveAspectRatio 會把 10px 的軸標在手機上縮成 4px）。
+function useMeasuredWidth<T extends HTMLElement>() {
+  const ref = useRef<T | null>(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setWidth(Math.round(el.clientWidth));
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      setWidth(Math.round(entries[0]?.contentRect.width ?? 0));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, width] as const;
+}
+
 function Sparkline({
   values,
   labels,
@@ -1805,6 +1899,276 @@ function TrendCard({
       {hint && <div className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">{hint}</div>}
     </div>
   );
+}
+
+// 下單來源趨勢卡 — App(PWA) / 商城(LIFF) / 小幫手 三條折線疊在同一張圖上。
+// 大字放在圖例：本月各通路累計（切「金額」時同一組線改畫金額）。
+// 時間基準跟另外兩張「本月」卡一致（依下單日 created_at），所以可以直接對照。
+function SourceTrendCard({ trend }: { trend: SourceTrendData | null }) {
+  const [metric, setMetric] = useState<"orders" | "amount">("orders");
+  const fmtOrders = (v: number) => `${Math.round(v).toLocaleString("zh-TW")} 單`;
+  const fmtAmount = (v: number) => `$${Math.round(v).toLocaleString("zh-TW")}`;
+  const fmt = metric === "orders" ? fmtOrders : fmtAmount;
+
+  const lines = (trend?.series ?? []).map((s) => ({
+    label: s.label,
+    color: s.color,
+    values: metric === "orders" ? s.daily : s.dailyAmount,
+    total: metric === "orders" ? s.totalOrders : s.totalAmount,
+  }));
+  const grandTotal = lines.reduce((sum, l) => sum + l.total, 0);
+
+  return (
+    <div className="rounded-md border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <div className="text-xs text-zinc-500">本月下單來源</div>
+          <span
+            className="cursor-help text-[10px] text-zinc-400"
+            title={
+              "依訂單日 (created_at) 每日統計，套用上方的開團／店家／品項／關鍵字篩選。\n" +
+              "App = 會員在 App（PWA / 瀏覽器）自助下單；商城 = 會員在 LINE 內下單；小幫手 = 後台代客 key 單。\n" +
+              "一張單同時有多種來源時，每個來源各算一張，所以三條線加起來會多於「本月訂單數」。\n" +
+              "2026-08-08 以前的自助訂單沒有記執行環境，一律算「商城」。"
+            }
+          >
+            ⓘ
+          </span>
+        </div>
+        {/* 同一組線換指標：看單量還是看金額 */}
+        <div className="flex items-center gap-0.5 rounded-md border border-zinc-200 p-0.5 text-[11px] dark:border-zinc-800">
+          {([["orders", "訂單數"], ["amount", "金額"]] as const).map(([v, l]) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setMetric(v)}
+              className={`rounded px-2 py-0.5 transition-colors ${
+                metric === v
+                  ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                  : "text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+              }`}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {!trend ? (
+        <div className="mt-3 h-[168px] animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />
+      ) : (
+        <>
+          {/* 圖例＝各通路本月累計 + 佔比（佔比分母是三條線的和，不是本月訂單數） */}
+          <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1">
+            {lines.map((l) => (
+              <div key={l.label} className="min-w-0">
+                <div className="flex items-center gap-1.5 text-[11px] text-zinc-500">
+                  <span aria-hidden className="h-2 w-2 rounded-full" style={{ background: l.color }} />
+                  {l.label}
+                </div>
+                <div className="text-lg font-semibold tabular-nums leading-tight">{fmt(l.total)}</div>
+                <div className="text-[10px] text-zinc-400 tabular-nums">
+                  {grandTotal > 0 ? `${Math.round((l.total / grandTotal) * 100)}%` : "—"}
+                </div>
+              </div>
+            ))}
+          </div>
+          <MultiLineChart days={trend.days} lines={lines} fmt={fmt} />
+        </>
+      )}
+    </div>
+  );
+}
+
+// 多條折線 + 共用 y 軸的小圖表（不引第三方 chart 套件 — 這裡只需要折線）。
+// 寬度量容器實際 px 再畫，字級/線寬才不會被 viewBox 縮放（見 useMeasuredWidth）。
+function MultiLineChart({
+  days,
+  lines,
+  fmt,
+  height = 168,
+}: {
+  days: string[];
+  lines: { label: string; color: string; values: number[] }[];
+  fmt: (v: number) => string;
+  height?: number;
+}) {
+  const [ref, measured] = useMeasuredWidth<HTMLDivElement>();
+  const [hovered, setHovered] = useState<number | null>(null);
+  const n = days.length;
+  const w = Math.max(measured, 240);
+  const padL = 44;
+  const padR = 10;
+  const padT = 10;
+  const padB = 18;
+  const plotW = Math.max(w - padL - padR, 10);
+  const plotH = height - padT - padB;
+
+  // y 軸上界取「好看的整數」：step ∈ {1,2,3,5}×10^k，畫 4 格 → 格線都落在整數上
+  // 下限 1：訂單數/金額都是整數，step<1 會畫出 0.3 這種刻度
+  const maxV = Math.max(1, ...lines.flatMap((l) => l.values));
+  const step = Math.max(1, niceStep(maxV / 4));
+  const top = step * 4;
+  const tickFmt = makeTickFmt(top);
+
+  const xAt = (i: number) => (n > 1 ? padL + (plotW * i) / (n - 1) : padL + plotW / 2);
+  const yAt = (v: number) => padT + plotH - (v / top) * plotH;
+  const fmtMD = (ymd: string) => {
+    const [, m, d] = ymd.split("-");
+    return `${Number(m)}/${Number(d)}`;
+  };
+  // x 軸標籤最多 ~6 個，太密會疊在一起
+  const labelEvery = Math.max(1, Math.ceil(n / 6));
+  const hoveredX = hovered != null ? xAt(hovered) : 0;
+
+  return (
+    <div
+      ref={ref}
+      className="relative mt-2"
+      style={{ height }}
+      onMouseLeave={() => setHovered(null)}
+    >
+      {measured > 0 && (
+        <svg width={w} height={height} className="select-none">
+          {/* 格線 + y 軸刻度（只標 0 / 中 / 上界，三個就夠讀） */}
+          {[0, 1, 2, 3, 4].map((k) => {
+            const v = step * k;
+            const y = yAt(v);
+            return (
+              <g key={k}>
+                <line
+                  x1={padL}
+                  y1={y}
+                  x2={w - padR}
+                  y2={y}
+                  stroke="currentColor"
+                  strokeWidth="1"
+                  className="text-zinc-200 dark:text-zinc-800"
+                />
+                {k % 2 === 0 && (
+                  <text
+                    x={padL - 6}
+                    y={y + 3}
+                    textAnchor="end"
+                    className="fill-zinc-400 text-[9px] tabular-nums"
+                  >
+                    {tickFmt(v)}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+
+          {/* x 軸日期 */}
+          {days.map((ymd, i) =>
+            i % labelEvery === 0 || i === n - 1 ? (
+              <text
+                key={ymd}
+                x={xAt(i)}
+                y={height - 5}
+                textAnchor={i === 0 ? "start" : i === n - 1 ? "end" : "middle"}
+                className="fill-zinc-400 text-[9px] tabular-nums"
+              >
+                {fmtMD(ymd)}
+              </text>
+            ) : null,
+          )}
+
+          {/* hover 垂直線畫在折線底下，不擋線 */}
+          {hovered != null && (
+            <line
+              x1={hoveredX}
+              y1={padT}
+              x2={hoveredX}
+              y2={padT + plotH}
+              stroke="rgb(161 161 170)"
+              strokeWidth="1"
+              strokeDasharray="2 2"
+            />
+          )}
+
+          {lines.map((l) => {
+            const pts = l.values.map((v, i) => `${xAt(i).toFixed(1)},${yAt(v).toFixed(1)}`);
+            return (
+              <g key={l.label}>
+                <polyline
+                  points={pts.join(" ")}
+                  fill="none"
+                  stroke={l.color}
+                  strokeWidth="1.75"
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+                {/* 只有一天（每月 1 號）時 polyline 畫不出東西 → 補一個點 */}
+                {n === 1 && <circle cx={xAt(0)} cy={yAt(l.values[0] ?? 0)} r={2.5} fill={l.color} />}
+                {hovered != null && (
+                  <circle
+                    cx={hoveredX}
+                    cy={yAt(l.values[hovered] ?? 0)}
+                    r={3}
+                    fill={l.color}
+                    stroke="white"
+                    strokeWidth="1"
+                  />
+                )}
+              </g>
+            );
+          })}
+
+          {/* 透明感應區：一天一條，滑到哪就顯示那天的三個值 */}
+          {days.map((ymd, i) => {
+            const bandW = n > 1 ? plotW / (n - 1) : plotW;
+            return (
+              <rect
+                key={ymd}
+                x={Math.max(0, xAt(i) - bandW / 2)}
+                y={0}
+                width={bandW}
+                height={height}
+                fill="transparent"
+                onMouseEnter={() => setHovered(i)}
+                onTouchStart={() => setHovered(i)}
+              />
+            );
+          })}
+        </svg>
+      )}
+      {hovered != null && (
+        <div
+          className="pointer-events-none absolute z-20 -translate-x-1/2 whitespace-nowrap rounded bg-zinc-900 px-2 py-1 text-[10px] leading-snug text-white shadow dark:bg-zinc-100 dark:text-zinc-900"
+          // 靠邊時夾住，tooltip 才不會被卡片裁掉
+          style={{ left: Math.min(Math.max(hoveredX, 56), w - 56), top: 0 }}
+        >
+          <div className="font-semibold">{fmtMD(days[hovered])}</div>
+          {lines.map((l) => (
+            <div key={l.label} className="flex items-center gap-1.5">
+              <span aria-hidden className="h-1.5 w-1.5 rounded-full" style={{ background: l.color }} />
+              <span className="opacity-70">{l.label}</span>
+              <span className="ml-auto tabular-nums">{fmt(l.values[hovered] ?? 0)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** ≥ v 的「好看的刻度間距」：1/2/3/5 × 10^k。 */
+function niceStep(v: number): number {
+  if (!(v > 0)) return 1;
+  const mag = Math.pow(10, Math.floor(Math.log10(v)));
+  const norm = v / mag;
+  const mult = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 3 ? 3 : norm <= 5 ? 5 : 10;
+  return mult * mag;
+}
+
+/** y 軸刻度標的格式化器：軸很窄，上萬用 k / 上百萬用 M 省位置。
+ *  單位看「上界」決定、不逐格判斷 —— 不然會出現 0 / 6,000 / 12k 混在同一軸上。 */
+function makeTickFmt(top: number): (v: number) => string {
+  const trim = (x: number) => Number(x.toFixed(1)).toString();
+  if (top >= 1_000_000) return (v) => (v === 0 ? "0" : `${trim(v / 1_000_000)}M`);
+  if (top >= 10_000) return (v) => (v === 0 ? "0" : `${trim(v / 1_000)}k`);
+  return (v) => Math.round(v).toLocaleString("zh-TW");
 }
 
 function Th({ children, className = "" }: { children: React.ReactNode; className?: string }) {

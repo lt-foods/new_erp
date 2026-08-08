@@ -12,6 +12,7 @@ import ViewCount from "@/components/ViewCount";
 import { cleanCampaignText } from "@/lib/text";
 import { getCampaignHint } from "@/lib/campaignHints";
 import { logCaught } from "@/lib/clientLog";
+import { detectClientChannel } from "@/lib/clientChannel";
 
 /** 把 children 渲染到 document.body（保證 fixed 相對 viewport）。 */
 function Portal({ enabled, children }: { enabled: boolean; children: React.ReactNode }) {
@@ -165,6 +166,9 @@ export default function CampaignDetailPage() {
         campaign_id: id,
         items: ordered,
         notes: notes.trim() || null,
+        // 下單通路 → customer_order_items.source（後台折線圖分 App / 商城兩條線）。
+        // 在這裡取而不是進 callLiffApi：只有「下單」這個動作要記通路。
+        client: detectClientChannel(),
       });
       setDoneOrderNo(r.order_no);
     } catch (e) {

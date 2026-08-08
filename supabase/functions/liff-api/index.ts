@@ -934,6 +934,10 @@ async function placeMemberOrder(
   const campaignId = Number(p.campaign_id);
   const items = Array.isArray(p.items) ? p.items : [];
   const notes = typeof p.notes === "string" ? p.notes.trim() : null;
+  // 下單通路（前端 detectClientChannel() 帶上來）：'pwa' = 會員 App、'liff' = LINE 商城。
+  // 只收白名單，舊版前端 / 亂帶值一律退回 'liff' —— 那是這個欄位在
+  // 2026-08-08 之前的唯一值，口徑才不會斷掉（見 migration 20260808000020）。
+  const itemSource = p.client === "pwa" ? "pwa" : "liff";
 
   if (!campaignId) return json({ error: "campaign_id required" }, 400);
   if (items.length === 0) return json({ error: "items required" }, 400);
@@ -1081,7 +1085,7 @@ async function placeMemberOrder(
         qty: qty,
         unit_price: ci.unit_price,
         status: "pending",
-        source: "liff",
+        source: itemSource,
       });
     }
   }
