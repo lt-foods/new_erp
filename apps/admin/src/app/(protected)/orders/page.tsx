@@ -551,7 +551,10 @@ function OrdersListContent() {
         const shippingIds = list.filter((r) => r.status === "shipping").map((r) => r.id);
         const [ic, ms, rdy] = await Promise.all([
           ids.length
-            ? getSupabase().from("customer_order_items").select("order_id, qty, unit_price, source, sku:skus(product_name, variant_name)").in("order_id", ids)
+            // 已取消 / 斷貨 / 過期的品項不算進項數 · 件數 · 金額，與伺服端
+            // v_admin_orders_list 的彙總（可排序欄位）同一套過濾，見 migration
+            // 20260808000010；不然「排序看到的數字」跟「格子裡的數字」會對不起來。
+            ? getSupabase().from("customer_order_items").select("order_id, qty, unit_price, source, sku:skus(product_name, variant_name)").in("order_id", ids).not("status", "in", "(cancelled,expired)")
             : Promise.resolve({ data: [] as { order_id: number; qty: number; unit_price: number; source: string; sku: { product_name: string | null; variant_name: string | null } | null }[] }),
           memIds.length
             ? getSupabase().from("members").select("id, name, phone, member_no, avatar_url").in("id", memIds)

@@ -95,6 +95,45 @@ SELECT * FROM <your_rpc>();   -- 換成 store_staff 再跑一次，應該要被�
 
 ---
 
+## 顧客訂單 (customer_orders)
+
+### 取消 / 斷貨掉一個品項之後，記得重算訂單單頭
+
+訂單單頭的狀態只有取貨那一刻（`rpc_record_pickup`）會重算。品項在**取貨之後**
+才被取消（斷貨連動、待補貨取消…）時，沒有任何東西會再去看單頭一眼，訂單就
+永遠卡在 `partially_completed`（部分取貨）結不掉 —— 2026-08 一次收尾了 18 張。
+
+既有的「全品項取消 → 整單 cancelled」規則接不住這種單：它的守衛是
+`NOT EXISTS (status NOT IN ('cancelled','expired'))`，而 `picked_up` 也在
+「NOT IN」外面，所以有取過貨就不成立。
+
+新增任何會把 `customer_order_items` 改成 `cancelled` 的路徑，一律在後面接：
+
+```sql
+PERFORM public._close_orders_all_items_settled(v_order_ids, p_operator, NOW());
+```
+
+（`20260808000000`；沒有待取品項 `pending/reserved/ready` + 至少一件 `picked_up`
+→ `completed`。active 集合刻意跟 `rpc_record_pickup` 的 `v_active_remaining` 同一套，
+「先斷貨後取貨」跟「先取貨後斷貨」才會得到同一個結果。）
+
+### 訂單金額加總一律排除 `cancelled` / `expired` 品項
+
+斷貨用的是 `status='cancelled' + stockout_at`（不另開 status 值，見
+`20260702020000`），所以任何 `SUM(qty * unit_price)` 沒濾 status 就會**跟客人收
+拿不到的貨的錢**。2026-08 修掉時線上 241 張未結單合計多算 NT$24,630。
+
+四個地方要同時改，漏一個就會出現「排序看到的數字跟格子裡的不一樣」：
+
+- `v_customer_order_summary.items_total`（admin 明細 + LIFF 會員端）
+- `rpc_wallet_pay_order.v_items_total`（儲值金可扣上限）
+- `v_admin_orders_list`（`/orders` 列表的項數 / 件數 / 總金額，伺服端排序用）
+- 前端加總：`OrderDetail.tsx`、`orders/page.tsx`、member `OrderCard.tsx`
+
+`items[]` jsonb **不要**濾 —— 前端要繼續把那一列畫出來（紅標「斷貨」/ 刪除線）。
+
+---
+
 ## LINE / LIFF
 
 ### 在 LINE 內建瀏覽器裡，絕對不要把使用者導去 `access.line.me`
