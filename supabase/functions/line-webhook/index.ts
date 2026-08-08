@@ -146,9 +146,22 @@ Deno.serve(async (req) => {
       // follow / message / 其他有 userId 的事件 → 至少把這個人記進名冊。
       // member_id 先留 NULL：webhook 只知道「有這個 LINE 使用者」，
       // 不知道他是哪位會員，要等 account link 完成才填得上。
+      // ⚠ 不能只在 type === "follow" 才抓 profile。
+      // 實際上線後多數人是先「傳訊息」才被收進名冊（既有好友不會再觸發 follow），
+      // 只認 follow 的話名冊會一整排沒有名字，店員在配對選單只看得到
+      // "U5a54b59…" 這種字串，等於選不出來（2026-08-08 實際踩到）。
+      // 所以：只要這個人在名冊裡還沒有名字，任何事件都補抓一次。
       let displayName: string | null = null;
       let pictureUrl: string | null = null;
-      if (type === "follow" && cred.access_token) {
+
+      const { data: existing } = await sb
+        .from("store_line_followers")
+        .select("display_name")
+        .eq("store_id", cred.store_id)
+        .eq("line_user_id", lineUserId)
+        .maybeSingle();
+
+      if (!existing?.display_name && cred.access_token) {
         try {
           const p = await fetch(`${LINE_PROFILE_URL}/${lineUserId}`, {
             headers: { "Authorization": `Bearer ${cred.access_token}` },
