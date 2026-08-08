@@ -1955,21 +1955,21 @@ function SourceTrendCard({ trend }: { trend: SourceTrendData | null }) {
       </div>
 
       {!trend ? (
-        <div className="mt-3 h-[168px] animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />
+        <div className="mt-2 h-[104px] animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />
       ) : (
         <>
-          {/* 圖例＝各通路本月累計 + 佔比（佔比分母是三條線的和，不是本月訂單數） */}
-          <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1">
+          {/* 圖例＝各通路本月累計 + 佔比（佔比分母是三條線的和，不是本月訂單數）。
+              排成一行、字級壓到跟上面 KPI 卡的副字同級 —— 這張卡是輔助視角，
+              不該比「本月營業額 / 訂單數」還搶眼。 */}
+          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1">
             {lines.map((l) => (
-              <div key={l.label} className="min-w-0">
-                <div className="flex items-center gap-1.5 text-[11px] text-zinc-500">
-                  <span aria-hidden className="h-2 w-2 rounded-full" style={{ background: l.color }} />
-                  {l.label}
-                </div>
-                <div className="text-lg font-semibold tabular-nums leading-tight">{fmt(l.total)}</div>
-                <div className="text-[10px] text-zinc-400 tabular-nums">
+              <div key={l.label} className="flex items-center gap-1.5">
+                <span aria-hidden className="h-2 w-2 rounded-full" style={{ background: l.color }} />
+                <span className="text-[11px] text-zinc-500">{l.label}</span>
+                <span className="text-sm font-semibold tabular-nums">{fmt(l.total)}</span>
+                <span className="text-[10px] text-zinc-400 tabular-nums">
                   {grandTotal > 0 ? `${Math.round((l.total / grandTotal) * 100)}%` : "—"}
-                </div>
+                </span>
               </div>
             ))}
           </div>
@@ -1986,7 +1986,7 @@ function MultiLineChart({
   days,
   lines,
   fmt,
-  height = 168,
+  height = 104,
 }: {
   days: string[];
   lines: { label: string; color: string; values: number[] }[];
@@ -1997,10 +1997,10 @@ function MultiLineChart({
   const [hovered, setHovered] = useState<number | null>(null);
   const n = days.length;
   const w = Math.max(measured, 240);
-  const padL = 44;
+  const padL = 34;
   const padR = 10;
-  const padT = 10;
-  const padB = 18;
+  const padT = 6;
+  const padB = 14;
   const plotW = Math.max(w - padL - padR, 10);
   const plotH = height - padT - padB;
 
@@ -2030,8 +2030,9 @@ function MultiLineChart({
     >
       {measured > 0 && (
         <svg width={w} height={height} className="select-none">
-          {/* 格線 + y 軸刻度（只標 0 / 中 / 上界，三個就夠讀） */}
-          {[0, 1, 2, 3, 4].map((k) => {
+          {/* 格線 + y 軸刻度：上界照 4 格算（貼合資料），但只畫 0 / 中 / 上界
+              三條線 —— 圖只有 ~84px 高，五條格線會糊成一片。 */}
+          {[0, 2, 4].map((k) => {
             const v = step * k;
             const y = yAt(v);
             return (
@@ -2045,16 +2046,14 @@ function MultiLineChart({
                   strokeWidth="1"
                   className="text-zinc-200 dark:text-zinc-800"
                 />
-                {k % 2 === 0 && (
-                  <text
-                    x={padL - 6}
-                    y={y + 3}
-                    textAnchor="end"
-                    className="fill-zinc-400 text-[9px] tabular-nums"
-                  >
-                    {tickFmt(v)}
-                  </text>
-                )}
+                <text
+                  x={padL - 5}
+                  y={y + 3}
+                  textAnchor="end"
+                  className="fill-zinc-400 text-[9px] tabular-nums"
+                >
+                  {tickFmt(v)}
+                </text>
               </g>
             );
           })}
