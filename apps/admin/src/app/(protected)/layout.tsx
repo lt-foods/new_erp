@@ -58,6 +58,7 @@ const NAV: NavGroup[] = [
       { href: "/hq/inbox", label: "總倉收件匣", match: /^\/hq\/inbox/ },
       { href: "/wms/receiving", label: "進貨待辦", match: /^\/wms\/receiving/ },
       { href: "/wms/picking", label: "派貨工作台", match: /^\/wms\/picking(?!\/history)|^\/picking\/workstation/ },
+      { href: "/recalls", label: "召回單", match: /^\/recalls/ },
     ],
   },
   {

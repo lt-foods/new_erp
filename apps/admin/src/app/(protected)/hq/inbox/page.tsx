@@ -17,6 +17,7 @@ import ExceptionsContent from "@/components/ExceptionsContent";
 import TransferDetailModal from "@/components/TransferDetailModal";
 import { parseWaveId } from "@/components/TransferReceiveModal";
 import RestockDetailModal from "@/components/RestockDetailModal";
+import RecallCreateModal from "@/components/RecallCreateModal";
 import RestockToPrModal from "@/components/RestockToPrModal";
 import { ORDER_STATUS_LABEL as AID_STATUS_LABEL, type OrderStatus as AidStatus } from "@/lib/orderStatus";
 
@@ -966,6 +967,8 @@ function HqInboxContent() {
   const [restockPrId, setRestockPrId] = useState<number | null>(null);
   const [editingWave, setEditingWave] = useState<PickWave | null>(null);
   const [dispatchingWaveId, setDispatchingWaveId] = useState<number | null>(null);
+  // 召回：已完成的撿貨單那一列按 🚨 召回 → 掃描各店狀態後開召回單
+  const [recallWave, setRecallWave] = useState<{ id: number; code: string } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchBusy, setBatchBusy] = useState(false);
   const [groupBy, setGroupBy] = useState<"none" | "store" | "source" | "campaign">("none");
@@ -1761,6 +1764,10 @@ function HqInboxContent() {
   }
 
   // 配送日改在收件匣設定（派貨工作台建單只帶預設隔天）；shipped/cancelled 由 RPC 擋
+  function openRecall(w: PickingRaw) {
+    setRecallWave({ id: w.id, code: w.wave_code });
+  }
+
   async function changeWaveDate(w: PickingRaw, newDate: string) {
     if (newDate === w.wave_date) return;
     setBusy(`picking-${w.id}-date`);
@@ -2150,6 +2157,7 @@ function HqInboxContent() {
                       onShortageAction={handleShortageAction} onTransferAction={handleTransferAction}
                       onPickingDispatch={dispatchWave} onPickingEdit={openWaveEdit} onPickingCancel={cancelWave}
                       onPickingDateChange={changeWaveDate}
+                      onPickingRecall={openRecall}
                       dispatchingWaveId={dispatchingWaveId}
                       hqLocId={hqLocId}
                       showCheckbox={showCheckbox} batchable={batchable}
@@ -2228,6 +2236,12 @@ function HqInboxContent() {
         restockId={restockDetailId}
         onClose={() => setRestockDetailId(null)}
       />
+      <RecallCreateModal
+        open={recallWave !== null}
+        waveId={recallWave?.id ?? null}
+        waveCode={recallWave?.code ?? ""}
+        onClose={() => setRecallWave(null)}
+      />
       <RestockToPrModal
         open={restockPrId !== null}
         restockId={restockPrId}
@@ -2270,6 +2284,7 @@ function MailRow({
   onPickingEdit,
   onPickingCancel,
   onPickingDateChange,
+  onPickingRecall,
   dispatchingWaveId,
   hqLocId,
   showCheckbox,
@@ -2294,6 +2309,7 @@ function MailRow({
   onPickingEdit: (w: PickingRaw) => void;
   onPickingCancel: (w: PickingRaw) => Promise<void>;
   onPickingDateChange: (w: PickingRaw, newDate: string) => Promise<void>;
+  onPickingRecall: (w: PickingRaw) => void;
   dispatchingWaveId: number | null;
   hqLocId: number | null;
   showCheckbox: boolean;
@@ -2562,6 +2578,14 @@ function MailRow({
             看明細
           </RowAction>
           {printLink}
+          {/* 派貨錯誤要把貨要回來：開召回單（docs/PRD-召回模組.md） */}
+          <RowAction
+            variant="danger"
+            onClick={() => onPickingRecall(w)}
+            title="這批派錯了要召回：掃描各店狀態（在途 / 在店未取 / 客人已取）後開召回單"
+          >
+            🚨 召回
+          </RowAction>
         </>
       );
     } else {

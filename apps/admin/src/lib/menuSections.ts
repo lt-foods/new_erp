@@ -7,7 +7,7 @@ export type MenuKey =
   | "campaigns" | "products" | "suppliers"
   | "orders" | "pickup" | "inbound" | "members" | "transfers" | "restock" | "mutual-aid"
   | "pr" | "po" | "inventory" | "reorder-rules" | "stocktake"
-  | "hq-inbox" | "receiving" | "picking"
+  | "hq-inbox" | "receiving" | "picking" | "recalls"
   | "receivables" | "settlement"
   | "candidates" | "calendar"
   | "staff" | "stores" | "fb-pages"
@@ -55,6 +55,7 @@ export const MENU_GROUPS: MenuGroup[] = [
       { key: "hq-inbox", label: "總倉收件匣" },
       { key: "receiving", label: "進貨待辦" },
       { key: "picking", label: "派貨工作台" },
+      { key: "recalls", label: "召回單" },
     ],
   },
   {

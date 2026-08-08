@@ -93,6 +93,20 @@ SELECT set_config('request.jwt.claims',
 SELECT * FROM <your_rpc>();   -- 換成 store_staff 再跑一次，應該要被擋
 ```
 
+### security_invoker 的彙總 view，分店讀出來的數字會「安靜地少算」
+
+`ALTER VIEW ... SET (security_invoker = on)` 是對的（不設的話 view owner 是 postgres，
+分店會看到別人的資料）。但只要 view 裡面 join / 聚合了 `transfers`、`transfer_items`、
+`customer_order_items` 這種**對分店帳號有 RLS 限縮**的表，分店直接 `select` 這支 view
+不會被擋 —— 它會照樣回一列，只是 SUM 少算了被 RLS 濾掉的那些 row。
+「被擋」看得出來，「少算」看不出來，對帳頁就會出現只有分店看得到的假數字。
+
+規則：**彙總 view 一律不給前端直接讀**，包一支 `SECURITY DEFINER` RPC
+（函式內執行時 `current_user` 是 owner，RLS 不套用 → 彙總以完整資料計算），
+再由 RPC 自己按 `app_metadata.role` + `_jwt_store_ids()` 決定回哪幾列。
+例：`rpc_recall_detail` / `rpc_recall_list`（`20260808000110`）包
+`v_recall_line_progress` / `v_recall_summary`。
+
 ---
 
 ## 顧客訂單 (customer_orders)

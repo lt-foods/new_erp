@@ -32,6 +32,7 @@ type OrderHead = {
   order_no: string;
   status: string;
   stockout_at: string | null;
+  recalled_at: string | null;
   pickup_deadline: string | null;
   nickname_snapshot: string | null;
   created_at: string;
@@ -57,6 +58,7 @@ type ItemRow = {
   unit_price: number;
   status: string;
   stockout_at: string | null;
+  recalled_at: string | null;
   source: string;
   notes: string | null;
   discount_amount: number;
@@ -86,7 +88,11 @@ type ReturnTransfer = {
 };
 
 // 品項狀態標籤（部分取貨會把一行拆成「已取」+「待取」兩行，標籤讓兩者一眼可分）
-function itemStatusBadge(status: string, stockout = false): { label: string; cls: string } | null {
+function itemStatusBadge(status: string, stockout = false, recalled = false): { label: string; cls: string } | null {
+  // 總倉召回取消（recalled_at 有值）：優先於斷貨顯示，兩者都是 status='cancelled'
+  if (recalled && status === "cancelled") {
+    return { label: "召回", cls: "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300" };
+  }
   // 斷貨取消（stockout_at 有值）與一般取消區分顯示
   if (stockout && status === "cancelled") {
     return { label: "斷貨", cls: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300" };
@@ -230,10 +236,10 @@ export function OrderDetail({
       const sb = getSupabase();
       const [hRes, iRes, rRes, arvRes, pevRes] = await Promise.all([
         sb.from("customer_orders")
-          .select("id, order_no, status, stockout_at, pickup_deadline, nickname_snapshot, created_at, updated_at, pickup_store_id, campaign_id, transferred_from_order_id, is_air_transfer, discount_amount, discount_percent, wallet_paid_amount, payment_status, paid_at, notes, member:members(id, name, phone, member_no), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
+          .select("id, order_no, status, stockout_at, recalled_at, pickup_deadline, nickname_snapshot, created_at, updated_at, pickup_store_id, campaign_id, transferred_from_order_id, is_air_transfer, discount_amount, discount_percent, wallet_paid_amount, payment_status, paid_at, notes, member:members(id, name, phone, member_no), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
           .eq("id", orderId).maybeSingle(),
         sb.from("customer_order_items")
-          .select("id, qty, unit_price, status, stockout_at, source, notes, discount_amount, discount_percent, created_at, updated_at, created_by, updated_by, sku:skus(id, sku_code, product_name, variant_name)")
+          .select("id, qty, unit_price, status, stockout_at, recalled_at, source, notes, discount_amount, discount_percent, created_at, updated_at, created_by, updated_by, sku:skus(id, sku_code, product_name, variant_name)")
           .eq("order_id", orderId)
           .order("created_at", { ascending: true }),
         sb.from("transfers")
@@ -833,6 +839,14 @@ export function OrderDetail({
                   ⛔ 斷貨
                 </span>
               )}
+              {head.recalled_at && (
+                <span
+                  title={`總倉召回於 ${new Date(head.recalled_at).toLocaleString("zh-TW")}`}
+                  className="ml-1 inline-block rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-medium text-rose-800 dark:bg-rose-950 dark:text-rose-300"
+                >
+                  🚨 召回
+                </span>
+              )}
             </>
           }
         />
@@ -968,7 +982,7 @@ export function OrderDetail({
                 const eff = itemEffective(it);
                 const sub = computeLineSubtotal(Number(eff.qty), eff.unit_price, eff.discount);
                 const isDirty = draft.items.has(it.id);
-                const badge = itemStatusBadge(it.status, !!it.stockout_at);
+                const badge = itemStatusBadge(it.status, !!it.stockout_at, !!it.recalled_at);
                 const isPicked = it.status === "picked_up";
                 return (
                   <tr key={it.id} className={isDirty ? "bg-yellow-50 dark:bg-yellow-950/30" : isPicked ? "bg-emerald-50/40 dark:bg-emerald-950/20" : ""}>

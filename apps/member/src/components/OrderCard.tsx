@@ -13,6 +13,10 @@ export type OrderItem = {
   subtotal: number;
   status: string;
   stockout?: boolean;
+  // 總倉召回（v_customer_order_summary.items[].recalled，20260808000120）。
+  // 與 stockout 一樣是 status='cancelled'，顯示上兩者共用「不算件數 + 刪除線」，
+  // 只有標籤文字不同。
+  recalled?: boolean;
   notes: string | null;
   image_url: string | null;
 };
@@ -22,6 +26,7 @@ export type OrderRow = {
   order_no: string;
   status?: string | null;
   stockout_at?: string | null;
+  recalled_at?: string | null;
   pickup_deadline: string | null;
   payable_amount: number;
   items_total: number;
@@ -73,10 +78,18 @@ export default function OrderCard({ order }: { order: OrderRow }) {
           {order.stockout_at && (
             <StatusChip tone="danger" label="斷貨" />
           )}
+          {order.recalled_at && (
+            <StatusChip tone="danger" label="召回" />
+          )}
         </div>
         {order.stockout_at && (
           <p className="mt-1 text-[13px] text-[#c4271d]">
             ⛔ 供應商斷貨，本筆訂單已取消，造成不便敬請見諒
+          </p>
+        )}
+        {order.recalled_at && !order.stockout_at && (
+          <p className="mt-1 text-[13px] text-[#c4271d]">
+            🚨 本筆商品已由總倉召回，訂單已取消、不會向您收費，造成不便敬請見諒
           </p>
         )}
         <p className="mt-0.5 text-[14px] text-[var(--secondary-label)]">
@@ -105,24 +118,24 @@ export default function OrderCard({ order }: { order: OrderRow }) {
           >
             <div className="min-w-0 flex-1">
               {it.variant_name && (
-                <div className={`text-[16px] ${it.stockout ? "text-[var(--secondary-label)] line-through" : "text-[var(--foreground)]"}`}>
+                <div className={`text-[16px] ${it.stockout || it.recalled ? "text-[var(--secondary-label)] line-through" : "text-[var(--foreground)]"}`}>
                   {it.variant_name}
-                  {it.stockout && (
+                  {(it.stockout || it.recalled) && (
                     <span className="ml-1.5 inline-block no-underline">
-                      <StatusChip tone="danger" label="斷貨" />
+                      <StatusChip tone="danger" label={it.recalled ? "召回" : "斷貨"} />
                     </span>
                   )}
                 </div>
               )}
-              {!it.variant_name && it.stockout && (
-                <div><StatusChip tone="danger" label="斷貨" /></div>
+              {!it.variant_name && (it.stockout || it.recalled) && (
+                <div><StatusChip tone="danger" label={it.recalled ? "召回" : "斷貨"} /></div>
               )}
               <div className="text-[14px] text-[var(--secondary-label)]">
                 {fmtAmount(it.unit_price)} × {it.qty}
               </div>
               {/* it.notes 是內部備註（補貨申請 / 轉單軌跡等），顧客端不顯示 */}
             </div>
-            <div className={`flex-shrink-0 text-right text-[16px] font-medium tabular-nums ${it.stockout ? "text-[var(--secondary-label)] line-through" : "text-[var(--foreground)]"}`}>
+            <div className={`flex-shrink-0 text-right text-[16px] font-medium tabular-nums ${it.stockout || it.recalled ? "text-[var(--secondary-label)] line-through" : "text-[var(--foreground)]"}`}>
               {fmtAmount(it.subtotal)}
             </div>
           </li>
