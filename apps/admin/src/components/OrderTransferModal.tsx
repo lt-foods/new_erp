@@ -398,7 +398,7 @@ export function OrderTransferModal({
                 return (
                   <label
                     key={it.id}
-                    className="flex items-center gap-2 px-2 py-1.5 text-sm"
+                    className="flex items-start gap-2 px-2 py-1.5 text-sm"
                   >
                     <input
                       type="checkbox"
@@ -409,12 +409,21 @@ export function OrderTransferModal({
                           [it.id]: { ...p, checked: e.target.checked },
                         }))
                       }
-                      className="h-4 w-4"
+                      className="mt-1 h-4 w-4 shrink-0"
                     />
-                    <span className="min-w-0 flex-1 truncate">
-                      {itemLabel(it)}
+                    {/* 品名 / 選項一律完整換行顯示 — 之前用 truncate，長品名會把「選項」整段吃掉，
+                        店員在轉單畫面看不到自己要轉的是哪個規格 */}
+                    <span className="min-w-0 flex-1 break-words">
+                      <span className="block">
+                        {it.product_name ?? `SKU #${it.sku_id}`}
+                      </span>
+                      {it.variant_name && (
+                        <span className="mt-0.5 block text-xs text-zinc-600 dark:text-zinc-300">
+                          選項：{it.variant_name}
+                        </span>
+                      )}
                       {it.sku_code && (
-                        <span className="ml-1 font-mono text-xs text-zinc-400">
+                        <span className="mt-0.5 block font-mono text-[11px] text-zinc-400">
                           {it.sku_code}
                         </span>
                       )}
@@ -432,9 +441,9 @@ export function OrderTransferModal({
                           [it.id]: { ...p, qty: e.target.value },
                         }))
                       }
-                      className="w-16 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-800"
+                      className="w-16 shrink-0 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-800"
                     />
-                    <span className="w-10 text-xs text-zinc-400">/ {it.qty}</span>
+                    <span className="w-10 shrink-0 text-xs text-zinc-400">/ {it.qty}</span>
                   </label>
                 );
               })}
