@@ -9,7 +9,7 @@ import { LineMessageModal } from "@/components/LineMessageModal";
 import { WalletActionModal, type WalletActionMode } from "@/components/WalletActionModal";
 import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
-import { orderStatusLabel } from "@/lib/orderStatus";
+import { orderStatusLabel, orderCountsInTotals, orderItemCountsInTotals } from "@/lib/orderStatus";
 import { translateRpcError } from "@/lib/rpcError";
 import { canAdjustWallet, isAdmin, useRole } from "@/lib/role";
 import { walletLedgerTypeLabel, walletPaymentMethodLabel } from "@/lib/walletLedger";
@@ -83,7 +83,7 @@ type MemberOrder = {
   pickup_store_id: number | null;
   created_at: string;
   campaign: { name: string } | { name: string }[] | null;
-  customer_order_items: { qty: number; unit_price: number }[];
+  customer_order_items: { qty: number; unit_price: number; status: string | null }[];
 };
 
 // 與 CampaignOrdersPanel 的 STATUS_BADGE 同款配色（+ partially_completed）
@@ -238,7 +238,7 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
           .eq("primary_member_id", memberId)
           .order("created_at", { ascending: false }),
         sb.from("customer_orders")
-          .select("id, order_no, status, order_kind, pickup_store_id, created_at, campaign:group_buy_campaigns(name), customer_order_items(qty, unit_price)")
+          .select("id, order_no, status, order_kind, pickup_store_id, created_at, campaign:group_buy_campaigns(name), customer_order_items(qty, unit_price, status)")
           .eq("member_id", memberId)
           .order("created_at", { ascending: false }),
       ]);
@@ -553,15 +553,17 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
         </div>
 
         {tab === "orders" && (() => {
-          // 統計沿用 CampaignOrdersPanel：取消/過期不入計；order_kind=offset 是抵減單，顯示負數
+          // 統計沿用 CampaignOrdersPanel：取消/過期/轉出不入計、已轉出的品項也不算；
+          // order_kind=offset 是抵減單，顯示負數（見 orderStatus.ts 的統計規則）
           let totalQty = 0, totalAmount = 0, normalCount = 0, offsetCount = 0;
           for (const o of orders) {
             const isOffset = o.order_kind === "offset";
-            const isCancelled = o.status === "cancelled" || o.status === "expired";
+            const counts = orderCountsInTotals(o.status);
             if (isOffset) offsetCount++;
-            else if (!isCancelled) normalCount++;
-            if (isCancelled) continue;
+            else if (counts) normalCount++;
+            if (!counts) continue;
             for (const it of o.customer_order_items ?? []) {
+              if (!orderItemCountsInTotals(it.status)) continue;
               totalQty += Number(it.qty || 0);
               totalAmount += Number(it.qty || 0) * Number(it.unit_price || 0);
             }
@@ -590,11 +592,12 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
                     ) : orders.map((o) => {
                       const campaign = Array.isArray(o.campaign) ? o.campaign[0] : o.campaign;
                       const store = stores.find((s) => s.id === o.pickup_store_id);
-                      const items = o.customer_order_items ?? [];
+                      // 只算「還在這張單上」的品項（部分轉出的來源品項留在原單但已 cancelled）
+                      const items = (o.customer_order_items ?? []).filter((i) => orderItemCountsInTotals(i.status));
                       const qty = items.reduce((s, i) => s + Number(i.qty || 0), 0);
                       const amt = items.reduce((s, i) => s + Number(i.qty || 0) * Number(i.unit_price || 0), 0);
                       const isOffset = o.order_kind === "offset";
-                      const isCancelled = o.status === "cancelled" || o.status === "expired";
+                      const isCancelled = !orderCountsInTotals(o.status);
                       return (
                         <tr
                           key={o.id}

@@ -75,6 +75,44 @@ export function isTerminalStatus(s: string | null | undefined): boolean {
   return s != null && TERMINAL_STATUSES.has(s);
 }
 
+// ============================================================
+// 數量 / 金額統計的納入規則（訂單層級 + 品項層級，兩層都要套）
+//
+// 轉單不是「搬移」而是「複製 + 標記」，所以任何加總都必須兩層都濾掉，
+// 否則同一批貨會被算兩次（同店互轉最明顯：一進一出總量卻變多）：
+//
+//   1. 整單轉出 (rpc_transfer_order_to_store)
+//      來源單 status → 'transferred_out'，但**品項原封不動留著**
+//      （轉入單是 INSERT..SELECT 複製一份）。只濾 cancelled/expired
+//      不濾 transferred_out ⇒ 來源單 + 轉入單各算一次。
+//   2. 部分轉出 (rpc_transfer_order_partial)
+//      整項轉走的來源品項 → status='cancelled' 但**仍掛在來源單上**
+//      （來源單 status 不變，還是 confirmed/ready）。不濾品項 status
+//      ⇒ 來源單照算原數量 + 轉入單再算一次。
+//      實例：GRP-20260804-007 湖口店 -0058 轉 1 顆到 -TF0157，
+//      本店小計顯示 21 顆（實際 20）、$1,325（實際 $1,250）。
+//
+// 新增任何「加總 customer_order_items」的畫面時，兩個 helper 一起用。
+// ============================================================
+
+const NON_COUNTING_ORDER_STATUSES = new Set<string>([
+  "cancelled",
+  "expired",
+  "transferred_out",
+]);
+
+/** 這張訂單的數量/金額要不要計入統計（已取消/已過期/已轉出都不計）。 */
+export function orderCountsInTotals(s: string | null | undefined): boolean {
+  return !(s != null && NON_COUNTING_ORDER_STATUSES.has(s));
+}
+
+const NON_COUNTING_ITEM_STATUSES = new Set<string>(["cancelled", "expired"]);
+
+/** 這個品項的數量/金額要不要計入統計（部分轉出會把來源品項標 cancelled 留在原單）。 */
+export function orderItemCountsInTotals(s: string | null | undefined): boolean {
+  return !(s != null && NON_COUNTING_ITEM_STATUSES.has(s));
+}
+
 /**
  * 此 status 的訂單能不能用儲值金結帳。
  * 規則：非終態 + 非已付清（payment_status 由呼叫端另判）。

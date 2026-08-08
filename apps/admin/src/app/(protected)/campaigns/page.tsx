@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import { PR_TERM_ZH } from "@/lib/prStatus";
+import { orderCountsInTotals, orderItemCountsInTotals } from "@/lib/orderStatus";
 import {
   CAMPAIGN_STATUS_LABEL,
   CAMPAIGN_STATUS_BADGE,
@@ -536,8 +537,10 @@ export default function CampaignsListPage() {
           const [itemRows, ordersList] = await Promise.all([
             fetchAll<{ campaign_id: number }>(() =>
               sb.from("campaign_items").select("campaign_id").in("campaign_id", ids).order("id", { ascending: true })),
-            fetchAll<{ id: number; campaign_id: number; order_kind: string }>(() =>
-              sb.from("customer_orders").select("id, campaign_id, order_kind").in("campaign_id", ids).order("id", { ascending: true })),
+            // 已取消/過期/轉出的單不入總數量；轉出單的品項會原樣複製到轉入單，
+            // 不濾就會一單算兩次（見 orderStatus.ts 的統計規則）
+            fetchAll<{ id: number; campaign_id: number; order_kind: string; status: string }>(() =>
+              sb.from("customer_orders").select("id, campaign_id, order_kind, status").in("campaign_id", ids).order("id", { ascending: true })),
           ]);
           const m = new Map<number, number>();
           for (const id of ids) m.set(id, 0);
@@ -547,11 +550,11 @@ export default function CampaignsListPage() {
 
           // 抓 items qty 並依 order_kind 聚合到 campaign — chunked by orderId in batches + range
           const orderIds = ordersList.map((o) => o.id);
-          const oqRows: { order_id: number; qty: number }[] = [];
+          const oqRows: { order_id: number; qty: number; status: string }[] = [];
           for (let i = 0; i < orderIds.length; i += 500) {
             const chunk = orderIds.slice(i, i + 500);
-            const rows = await fetchAll<{ order_id: number; qty: number }>(() =>
-              sb.from("customer_order_items").select("order_id, qty").in("order_id", chunk).order("id", { ascending: true }));
+            const rows = await fetchAll<{ order_id: number; qty: number; status: string }>(() =>
+              sb.from("customer_order_items").select("order_id, qty, status").in("order_id", chunk).order("id", { ascending: true }));
             oqRows.push(...rows);
           }
           const orderMeta = new Map(ordersList.map((o) => [o.id, o]));
@@ -560,6 +563,8 @@ export default function CampaignsListPage() {
           for (const it of oqRows) {
             const meta = orderMeta.get(it.order_id);
             if (!meta) continue;
+            if (!orderCountsInTotals(meta.status)) continue;
+            if (!orderItemCountsInTotals(it.status)) continue;
             const cur = om.get(meta.campaign_id) ?? { normalQty: 0, offsetQty: 0 };
             if (meta.order_kind === "offset") cur.offsetQty += Number(it.qty);
             else cur.normalQty += Number(it.qty);
@@ -652,8 +657,9 @@ export default function CampaignsListPage() {
         const [itemRows, ordersList] = await Promise.all([
           fetchAll<{ campaign_id: number }>(() =>
             sb.from("campaign_items").select("campaign_id").in("campaign_id", ids).order("id", { ascending: true })),
-          fetchAll<{ id: number; campaign_id: number; order_kind: string }>(() =>
-            sb.from("customer_orders").select("id, campaign_id, order_kind").in("campaign_id", ids).order("id", { ascending: true })),
+          // 同上：已取消/過期/轉出的單不入總數量
+          fetchAll<{ id: number; campaign_id: number; order_kind: string; status: string }>(() =>
+            sb.from("customer_orders").select("id, campaign_id, order_kind, status").in("campaign_id", ids).order("id", { ascending: true })),
         ]);
         if (cancelled) return;
         const im = new Map<number, number>();
@@ -663,11 +669,11 @@ export default function CampaignsListPage() {
         for (const it of itemRows) im.set(it.campaign_id, (im.get(it.campaign_id) ?? 0) + 1);
 
         const orderIds = ordersList.map((o) => o.id);
-        const oqRows: { order_id: number; qty: number }[] = [];
+        const oqRows: { order_id: number; qty: number; status: string }[] = [];
         for (let i = 0; i < orderIds.length; i += 500) {
           const chunk = orderIds.slice(i, i + 500);
-          const rows = await fetchAll<{ order_id: number; qty: number }>(() =>
-            sb.from("customer_order_items").select("order_id, qty").in("order_id", chunk).order("id", { ascending: true }));
+          const rows = await fetchAll<{ order_id: number; qty: number; status: string }>(() =>
+            sb.from("customer_order_items").select("order_id, qty, status").in("order_id", chunk).order("id", { ascending: true }));
           oqRows.push(...rows);
         }
         if (cancelled) return;
@@ -675,6 +681,8 @@ export default function CampaignsListPage() {
         for (const it of oqRows) {
           const meta = orderMeta.get(it.order_id);
           if (!meta) continue;
+          if (!orderCountsInTotals(meta.status)) continue;
+          if (!orderItemCountsInTotals(it.status)) continue;
           if (meta.order_kind === "offset") {
             offm.set(meta.campaign_id, (offm.get(meta.campaign_id) ?? 0) + Number(it.qty));
           } else {

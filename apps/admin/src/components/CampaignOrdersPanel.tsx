@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
-import { orderStatusLabel } from "@/lib/orderStatus";
+import { orderStatusLabel, orderCountsInTotals, orderItemCountsInTotals } from "@/lib/orderStatus";
 import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
 
@@ -18,7 +18,7 @@ type OrderRow = {
   order_kind: string | null;
   created_at: string;
   member: { id: number; name: string | null } | null;
-  customer_order_items: { qty: number; unit_price: number }[];
+  customer_order_items: { qty: number; unit_price: number; status: string | null }[];
 };
 
 type Store = { id: number; code: string; name: string };
@@ -55,7 +55,9 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
           sb
             .from("customer_orders")
             .select(
-              "id, order_no, status, pickup_store_id, nickname_snapshot, notes, order_kind, created_at, member:members(id, name), customer_order_items(qty, unit_price)",
+              // 品項 status 一定要撈：部分轉出把來源品項標 cancelled 留在原單，
+              // 不濾掉就會跟轉入單重複計（見 orderStatus.ts 的統計規則）
+              "id, order_no, status, pickup_store_id, nickname_snapshot, notes, order_kind, created_at, member:members(id, name), customer_order_items(qty, unit_price, status)",
             )
             .eq("campaign_id", campaignId)
             .order("created_at", { ascending: false }),
@@ -96,13 +98,15 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
     let normalCount = 0;
     let offsetCount = 0;
     for (const r of filtered) {
+      const counts = orderCountsInTotals(r.status);
       const isOffset = r.order_kind === "offset";
       if (isOffset) offsetCount++;
-      else if (r.status !== "cancelled" && r.status !== "expired") normalCount++;
+      else if (counts) normalCount++;
+      if (!counts) continue;
       for (const it of r.customer_order_items ?? []) {
+        if (!orderItemCountsInTotals(it.status)) continue;
         const q = Number(it.qty);
         if (!Number.isFinite(q)) continue;
-        if (r.status === "cancelled" || r.status === "expired") continue;
         qty += q;
         amount += q * Number(it.unit_price);
       }
@@ -175,11 +179,14 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
               <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
                 {filtered.map((r) => {
                   const store = stores.find((s) => s.id === r.pickup_store_id);
-                  const items = r.customer_order_items ?? [];
+                  // 只算「還在這張單上」的品項：部分轉出的來源品項留在原單但已 cancelled，
+                  // 一起算的話這列會顯示轉出前的數量、跟小計對不起來
+                  const items = (r.customer_order_items ?? []).filter((i) => orderItemCountsInTotals(i.status));
                   const qty = items.reduce((s, i) => s + Number(i.qty || 0), 0);
                   const amt = items.reduce((s, i) => s + Number(i.qty || 0) * Number(i.unit_price || 0), 0);
                   const isOffset = r.order_kind === "offset";
-                  const isCancelled = r.status === "cancelled" || r.status === "expired";
+                  // 已轉出的單跟已取消一樣不入小計 → 一樣淡化，避免看起來像漏加
+                  const isCancelled = !orderCountsInTotals(r.status);
                   return (
                     <tr
                       key={r.id}
