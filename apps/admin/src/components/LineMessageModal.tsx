@@ -159,14 +159,18 @@ export function LineMessageModal({
     // 該店還沒配對的 OA 好友：推不到時要讓店員手動挑
     (async () => {
       if (homeStoreId == null) return;
-      const { data } = await getSupabase()
+      const { data, error: fErr } = await getSupabase()
         .from("store_line_followers")
         .select("line_user_id, display_name, picture_url")
         .eq("store_id", homeStoreId)
         .is("member_id", null)
         .eq("followed", true)
         .limit(50);
-      if (!cancelled) setFollowers((data as Follower[]) ?? []);
+      if (cancelled) return;
+      // 不能吞掉錯誤：查詢失敗時清單會是空的，選單就整個不見，
+      // 畫面上卻什麼都沒說 —— 店員只會覺得「這功能壞了」而無從回報。
+      if (fErr) { setError(`讀取本店 LINE 名冊失敗：${fErr.message}`); return; }
+      setFollowers((data as Follower[]) ?? []);
     })();
     // 樣板用的會員站連結（不需要 LINE token，所以 token 沒設也拿得到）
     (async () => {
@@ -370,7 +374,8 @@ export function LineMessageModal({
         )}
 
         {/* 推不到 + 該店名冊有人 → 讓店員手動配對 */}
-        {reachable.state === "unreachable" && followers.length > 0 && (
+        {(reachable.state === "unreachable" || reachable.state === "error")
+          && followers.length > 0 && (
           <div className="rounded-md border border-sky-200 bg-sky-50 p-2 dark:border-sky-900 dark:bg-sky-950/40">
             <div className="mb-1 text-xs font-medium text-sky-900 dark:text-sky-200">
               這位會員在本店官方帳號是哪一個？
