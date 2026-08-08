@@ -1901,11 +1901,23 @@ function TrendCard({
   );
 }
 
-// 下單來源趨勢卡 — App(PWA) / 商城(LIFF) / 小幫手 三條折線疊在同一張圖上。
-// 大字放在圖例：本月各通路累計（切「金額」時同一組線改畫金額）。
-// 時間基準跟另外兩張「本月」卡一致（依下單日 created_at），所以可以直接對照。
+const SOURCE_TREND_OPEN_KEY = "orders-source-trend-open";
+
+// 下單來源卡 — App(PWA) / 商城(LIFF) / 小幫手。
+// 收起來時只有一行：三個通路的本月累計與佔比（一整列就把問題回答完了）；
+// 要看每日走勢再點開折線圖。展開與否記在 localStorage，不用每次重點。
+// 時間基準跟上面三張「本月」卡一致（依下單日 created_at），可以直接對照。
 function SourceTrendCard({ trend }: { trend: SourceTrendData | null }) {
   const [metric, setMetric] = useState<"orders" | "amount">("orders");
+  const [showChart, setShowChart] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(SOURCE_TREND_OPEN_KEY) === "1";
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(SOURCE_TREND_OPEN_KEY, showChart ? "1" : "0");
+  }, [showChart]);
+
   const fmtOrders = (v: number) => `${Math.round(v).toLocaleString("zh-TW")} 單`;
   const fmtAmount = (v: number) => `$${Math.round(v).toLocaleString("zh-TW")}`;
   const fmt = metric === "orders" ? fmtOrders : fmtAmount;
@@ -1919,24 +1931,48 @@ function SourceTrendCard({ trend }: { trend: SourceTrendData | null }) {
   const grandTotal = lines.reduce((sum, l) => sum + l.total, 0);
 
   return (
-    <div className="rounded-md border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <div className="text-xs text-zinc-500">本月下單來源</div>
-          <span
-            className="cursor-help text-[10px] text-zinc-400"
-            title={
-              "依訂單日 (created_at) 每日統計，套用上方的開團／店家／品項／關鍵字篩選。\n" +
-              "App = 會員在 App（PWA / 瀏覽器）自助下單；商城 = 會員在 LINE 內下單；小幫手 = 後台代客 key 單。\n" +
-              "一張單同時有多種來源時，每個來源各算一張，所以三條線加起來會多於「本月訂單數」。\n" +
-              "2026-08-08 以前的自助訂單沒有記執行環境，一律算「商城」。"
-            }
-          >
-            ⓘ
-          </span>
-        </div>
-        {/* 同一組線換指標：看單量還是看金額 */}
-        <div className="flex items-center gap-0.5 rounded-md border border-zinc-200 p-0.5 text-[11px] dark:border-zinc-800">
+    <div className="rounded-md border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
+      {/* 標題 + 圖例 + 展開鈕全部擠在同一行 —— 收起時整張卡就只有這一行 */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <button
+          type="button"
+          onClick={() => setShowChart((v) => !v)}
+          title={showChart ? "收起折線圖" : "展開每日折線圖"}
+          className="flex shrink-0 items-center gap-1 text-xs text-zinc-500 transition-colors hover:text-zinc-800 dark:hover:text-zinc-200"
+        >
+          <span aria-hidden className="inline-block w-2 text-[9px]">{showChart ? "▾" : "▸"}</span>
+          本月下單來源
+        </button>
+        <span
+          className="cursor-help text-[10px] text-zinc-400"
+          title={
+            "依訂單日 (created_at) 每日統計，套用上方的開團／店家／品項／關鍵字篩選。\n" +
+            "App = 會員在 App（PWA / 瀏覽器）自助下單；商城 = 會員在 LINE 內下單；小幫手 = 後台代客 key 單。\n" +
+            "一張單同時有多種來源時，每個來源各算一張，所以三條線加起來會多於「本月訂單數」。\n" +
+            "2026-08-08 以前的自助訂單沒有記執行環境，一律算「商城」。"
+          }
+        >
+          ⓘ
+        </span>
+
+        {!trend ? (
+          <span className="h-4 w-48 animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />
+        ) : (
+          /* 圖例＝各通路本月累計 + 佔比（佔比分母是三條線的和，不是本月訂單數） */
+          lines.map((l) => (
+            <div key={l.label} className="flex items-center gap-1.5">
+              <span aria-hidden className="h-2 w-2 rounded-full" style={{ background: l.color }} />
+              <span className="text-[11px] text-zinc-500">{l.label}</span>
+              <span className="text-sm font-semibold tabular-nums">{fmt(l.total)}</span>
+              <span className="text-[10px] text-zinc-400 tabular-nums">
+                {grandTotal > 0 ? `${Math.round((l.total / grandTotal) * 100)}%` : "—"}
+              </span>
+            </div>
+          ))
+        )}
+
+        {/* 同一組數字換指標：看單量還是看金額（收起時也能切，圖例跟著換） */}
+        <div className="ml-auto flex shrink-0 items-center gap-0.5 rounded-md border border-zinc-200 p-0.5 text-[11px] dark:border-zinc-800">
           {([["orders", "訂單數"], ["amount", "金額"]] as const).map(([v, l]) => (
             <button
               key={v}
@@ -1954,28 +1990,12 @@ function SourceTrendCard({ trend }: { trend: SourceTrendData | null }) {
         </div>
       </div>
 
-      {!trend ? (
-        <div className="mt-2 h-[104px] animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />
-      ) : (
-        <>
-          {/* 圖例＝各通路本月累計 + 佔比（佔比分母是三條線的和，不是本月訂單數）。
-              排成一行、字級壓到跟上面 KPI 卡的副字同級 —— 這張卡是輔助視角，
-              不該比「本月營業額 / 訂單數」還搶眼。 */}
-          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1">
-            {lines.map((l) => (
-              <div key={l.label} className="flex items-center gap-1.5">
-                <span aria-hidden className="h-2 w-2 rounded-full" style={{ background: l.color }} />
-                <span className="text-[11px] text-zinc-500">{l.label}</span>
-                <span className="text-sm font-semibold tabular-nums">{fmt(l.total)}</span>
-                <span className="text-[10px] text-zinc-400 tabular-nums">
-                  {grandTotal > 0 ? `${Math.round((l.total / grandTotal) * 100)}%` : "—"}
-                </span>
-              </div>
-            ))}
-          </div>
+      {showChart &&
+        (!trend ? (
+          <div className="mt-2 h-[104px] animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />
+        ) : (
           <MultiLineChart days={trend.days} lines={lines} fmt={fmt} />
-        </>
-      )}
+        ))}
     </div>
   );
 }
