@@ -639,25 +639,7 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
   const { data, error } = await q
     .order("end_at", { ascending: true, nullsFirst: false });
 
-  // 算出 campaign 已下單總量 (排除取消/逾期 + 排除負數抵減單),
-  // 給前端算「剩 N 份」、「搶購一空」或顯示「已售出 N 份」
-  const orderedMap = new Map<number, number>();
   const allIds = (data ?? []).map((c: any) => c.id);
-  if (allIds.length > 0) {
-    const { data: orderRows } = await sb
-      .from("customer_orders")
-      .select("campaign_id, customer_order_items(qty)")
-      .in("campaign_id", allIds)
-      .not("status", "in", "(cancelled,expired)")
-      .or("order_kind.is.null,order_kind.eq.normal");
-    for (const o of orderRows ?? []) {
-      const sum = (o.customer_order_items ?? []).reduce(
-        (a: number, x: any) => a + Number(x.qty ?? 0),
-        0,
-      );
-      orderedMap.set(Number(o.campaign_id), (orderedMap.get(Number(o.campaign_id)) ?? 0) + sum);
-    }
-  }
 
   // 瀏覽次數（顧客端顯示「N 次瀏覽」）。RPC 未部署時整段當 0，不影響列表。
   const viewMap = new Map<number, number>();
@@ -671,17 +653,37 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
     }
   }
 
-  // 全分店訂單數 + 近 7 天訂單數（顧客端排序用：最熱銷 / 近期售出）。
-  // 走 SQL 聚合 RPC，避免訂單列數超過 PostgREST 1000 上限被截斷而計數失準。
+  // 已下單總量（前端算「剩 N 份」/「搶購一空」/「已售出 N 份」）
+  // + 訂單數 / 近 7 天訂單數（最熱銷、近期售出排序）。
+  //
+  // 三個數字一律走 rpc_member_campaign_aggregates，不要退回「撈訂單再在 JS
+  // 加總」——那條路踩過兩個坑：
+  //   1. PostgREST 有 1000 列上限且是**靜默截斷**。上架中的團底下有 1600+
+  //      筆訂單，已售出會少算；換成一團一列的 RETURNS TABLE RPC 也一樣，
+  //      團數 1500+ 照樣被截，而且截掉的是 id 最大的新團（= 正在賣的那些）。
+  //      這支 RETURNS jsonb（單列單值）不受影響，再用 p_campaign_ids 限定
+  //      只算這一頁的團。
+  //   2. 轉單是「複製 + 標記」不是「搬移」，訂單層級要排除 transferred_out、
+  //      品項層級要排除 cancelled（部分轉出的來源品項留在原單），否則已售出
+  //      虛增、吃掉 cap_qty 名額，把還有貨的團顯示成售完。過濾規則收在
+  //      RPC 內，與 admin 的 lib/orderStatus.ts 同一套。
+  const orderedMap = new Map<number, number>();
   const countMap = new Map<number, number>();
   const recentMap = new Map<number, number>();
-  const { data: cntRows } = await sb.rpc("rpc_member_campaign_order_counts", {
-    p_tenant: tenantId,
-    p_recent_days: 7,
-  });
-  for (const r of cntRows ?? []) {
-    countMap.set(Number(r.campaign_id), Number(r.order_count ?? 0));
-    recentMap.set(Number(r.campaign_id), Number(r.recent_order_count ?? 0));
+  if (allIds.length > 0) {
+    const { data: aggRows, error: aggErr } = await sb.rpc("rpc_member_campaign_aggregates", {
+      p_tenant: tenantId,
+      p_recent_days: 7,
+      p_campaign_ids: allIds,
+    });
+    // 靜默失敗會變成「全部 0 人下單、已售出 0」，看起來像沒人買 —— 留 log
+    if (aggErr) console.error("[list_active_campaigns] aggregates rpc failed", aggErr);
+    for (const r of (aggRows ?? []) as any[]) {
+      const cid = Number(r.campaign_id);
+      orderedMap.set(cid, Number(r.ordered_qty ?? 0));
+      countMap.set(cid, Number(r.order_count ?? 0));
+      recentMap.set(cid, Number(r.recent_order_count ?? 0));
+    }
   }
 
   if (error) return json({ error: error.message }, 500);
@@ -774,17 +776,32 @@ async function getCampaignDetail(sb: any, tenantId: string, campaignId: number) 
   c.view_count = Number(viewRows?.[0]?.view_count ?? 0);
   c.viewer_count = Number(viewRows?.[0]?.viewer_count ?? 0);
 
-  // 算出各品項已下單總量
+  // 算出各品項已下單總量（過濾規則同 listActiveCampaigns 的 orderedMap：
+  // 訂單層級排除 cancelled/expired/transferred_out、品項層級排除 cancelled/expired，
+  // 否則轉出的量會被算兩次、吃掉 cap_qty 名額）
+  //
+  // order_kind 的「normal 或 null」不能用 .or() 寫 —— PostgREST 的 or= 是
+  // 頂層 logic tree，塞 embedded 欄位（customer_orders.order_kind.…）會被
+  // 直接拒收：PGRST100 "failed to parse logic tree"。supabase-js 把錯誤放在
+  // 這裡沒接的 error 欄位，data 變 null ⇒ 整張表已售出通通顯示 0（這段
+  // 從寫下來就是壞的，不是這次改壞的）。改成 DB 只做得到的過濾、
+  // order_kind 拉回來在 JS 判，行為與 listActiveCampaigns 那段一致。
   const itemOrderedMap = new Map<number, number>();
-  const { data: itemOrderRows } = await sb
+  const { data: itemOrderRows, error: itemOrderErr } = await sb
     .from("customer_order_items")
     .select("campaign_item_id, qty, customer_orders!inner(status, order_kind)")
     .eq("tenant_id", tenantId)
     .eq("customer_orders.campaign_id", campaignId)
-    .not("customer_orders.status", "in", "(cancelled,expired)")
-    .or("customer_orders.order_kind.is.null,customer_orders.order_kind.eq.normal");
+    .not("status", "in", "(cancelled,expired)")
+    .not("customer_orders.status", "in", "(cancelled,expired,transferred_out)");
+  if (itemOrderErr) {
+    // 靜默失敗會變成「全部已售出 0」，看起來像沒人買 —— 留 log 才查得到
+    console.error("[get_campaign_detail] item ordered_qty query failed", itemOrderErr);
+  }
 
   for (const row of itemOrderRows ?? []) {
+    const kind = row.customer_orders?.order_kind;
+    if (kind != null && kind !== "normal") continue;
     const ciId = Number(row.campaign_item_id);
     const q = Number(row.qty ?? 0);
     itemOrderedMap.set(ciId, (itemOrderedMap.get(ciId) ?? 0) + q);
