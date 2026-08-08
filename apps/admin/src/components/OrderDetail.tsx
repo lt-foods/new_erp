@@ -349,12 +349,22 @@ export function OrderDetail({
   const orderDiscountValue: DiscountValue = draft.discount ?? deriveDiscount(head.discount_percent, head.discount_amount);
   const orderNotesValue: string | null = Object.prototype.hasOwnProperty.call(draft, "notes") ? draft.notes! : head.notes;
 
-  const totalQty = items.reduce((s, i) => s + Number(itemEffective(i).qty), 0);
-  const grossTotal = items.reduce((s, i) => {
+  // 合計只算「還在這張單上」的品項。cancelled/expired 的行仍然要顯示
+  // （帶已取消 badge），但不能進數量與金額 —— 它們是：
+  //   1. 部分轉出：整項轉走的來源品項被標 cancelled，卻留在來源單上
+  //      （來源單 status 不變），不濾掉就等於跟轉入單重複收一次錢
+  //   2. 品項層級的取消 / 斷貨
+  // 這條線的權威是 v_customer_order_summary.items_total 與
+  // rpc_wallet_pay_order（兩者都只算 status NOT IN ('cancelled','expired')）；
+  // 這裡不濾的話畫面上的「應收」會跟資料庫實際收的金額對不起來。
+  const activeItems = items.filter((i) => !["cancelled", "expired"].includes(i.status));
+  const cancelledItemCount = items.length - activeItems.length;
+  const totalQty = activeItems.reduce((s, i) => s + Number(itemEffective(i).qty), 0);
+  const grossTotal = activeItems.reduce((s, i) => {
     const eff = itemEffective(i);
     return s + Number(eff.qty) * Number(eff.unit_price);
   }, 0);
-  const subtotal = items.reduce((s, i) => {
+  const subtotal = activeItems.reduce((s, i) => {
     const eff = itemEffective(i);
     return s + computeLineSubtotal(Number(eff.qty), eff.unit_price, eff.discount);
   }, 0);
@@ -889,7 +899,10 @@ export function OrderDetail({
       <div className="rounded-md border border-zinc-200 dark:border-zinc-800">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-medium dark:border-zinc-800 dark:bg-zinc-900">
           <span>
-            明細（{items.length} 項 · {totalQty} 件
+            明細（{activeItems.length} 項 · {totalQty} 件
+            {cancelledItemCount > 0 && (
+              <span className="ml-1 text-zinc-500">· 已取消 {cancelledItemCount} 項</span>
+            )}
             {totalReturnedQty > 0 && (
               <span className="ml-1 text-orange-700 dark:text-orange-400">· ↩ 已退 {totalReturnedQty} 件</span>
             )}
