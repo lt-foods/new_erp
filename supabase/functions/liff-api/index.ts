@@ -71,6 +71,39 @@ function resolveSpotImages(
 
 // ─── actions ─────────────────────────────────────────────────────────────────
 
+/**
+ * 建立 account link 用的一次性 nonce。
+ *
+ * 流程：顧客在店家 OA 傳訊息 → webhook 回一則帶 linkToken 的連結 →
+ * 顧客點進會員站 /link 並登入（到這裡我們才知道他是哪位會員）→
+ * 呼叫這支拿 nonce → 導去 LINE 的 accountLink 頁 → LINE 回 accountLink
+ * webhook，帶著同一個 nonce → 綁定完成。
+ *
+ * nonce 是「這是哪位會員」的憑據，所以必須由**已驗證的會員 token** 產生，
+ * 不能讓前端自己指定 member_id。
+ */
+async function createAccountLinkNonce(
+  // deno-lint-ignore no-explicit-any
+  sb: any, tenantId: string, memberId: number, storeCode: string,
+) {
+  const { data: store, error: sErr } = await sb
+    .from("stores").select("id").eq("tenant_id", tenantId).eq("code", storeCode).maybeSingle();
+  if (sErr) return json({ error: sErr.message }, 500);
+  if (!store) return json({ error: "store_not_found" }, 404);
+
+  // LINE 要求 nonce 至少 128 bits、用安全亂數產生
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  const nonce = btoa(String.fromCharCode(...bytes)).replace(/[+/=]/g, (c) =>
+    ({ "+": "-", "/": "_", "=": "" }[c] ?? c));
+
+  const { error } = await sb.from("line_account_link_nonces").insert({
+    nonce, tenant_id: tenantId, store_id: store.id, member_id: memberId,
+  });
+  if (error) return json({ error: error.message }, 500);
+  return json({ nonce });
+}
+
 async function listStores(sb: any, tenantId: string) {
   // line_liff_id：每家店在自己 Provider 底下的 LIFF ID。會員必須用「所屬分店」
   // 那支 LIFF 登入，拿到的 line_user_id 才跟該店官方帳號同 provider、推得動。
@@ -1353,6 +1386,7 @@ Deno.serve(async (req) => {
       switch (action) {
         case "lookup_by_phone": return await lookupByPhone(sb, tenantId, String(body.phone ?? ""));
         case "register_and_bind": return await registerAndBind(sb, { tenantId, storeId, lineUserId, phone: String(body.phone ?? ""), name: String(body.name ?? ""), birthday: String(body.birthday ?? "") });
+        case "create_account_link_nonce": if (!memberId) return json({ error: "no member_id" }, 401); return await createAccountLinkNonce(sb, tenantId, memberId, String(body.store ?? ""));
         case "get_me": if (!memberId) return json({ error: "no member_id" }, 401); return await getMe(sb, tenantId, memberId);
         case "update_me": if (!memberId) return json({ error: "no member_id" }, 401); return await updateMe(sb, tenantId, memberId, body);
         case "get_overview": if (!memberId) return json({ error: "no member_id" }, 401); return await getOverview(sb, tenantId, storeId, memberId);

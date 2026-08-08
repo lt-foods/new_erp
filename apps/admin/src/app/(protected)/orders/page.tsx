@@ -14,7 +14,7 @@ import { printViaIframe } from "@/lib/printIframe";
 import { fetchReprintableEvents } from "@/lib/pickupReceipt";
 import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 import { useRole } from "@/lib/role";
-import { ORDER_STATUS_LABEL as STATUS_LABEL, orderItemCountsInTotals, type OrderStatus } from "@/lib/orderStatus";
+import { ORDER_STATUS_LABEL as STATUS_LABEL, type OrderStatus } from "@/lib/orderStatus";
 import { summarizeOrderSource } from "@/lib/orderSource";
 import { OrderSourceBadge } from "@/components/OrderSourceBadge";
 import SpinButton from "@/components/SpinButton";
@@ -551,10 +551,11 @@ function OrdersListContent() {
         const shippingIds = list.filter((r) => r.status === "shipping").map((r) => r.id);
         const [ic, ms, rdy] = await Promise.all([
           ids.length
-            // 撈 status：部分轉出把整項轉走的來源品項標 cancelled 留在原單，
-            // 不濾掉這一列的「數量/金額」會停在轉出前的值（見 orderStatus.ts）
-            ? getSupabase().from("customer_order_items").select("order_id, qty, unit_price, source, status, sku:skus(product_name, variant_name)").in("order_id", ids)
-            : Promise.resolve({ data: [] as { order_id: number; qty: number; unit_price: number; source: string; status: string; sku: { product_name: string | null; variant_name: string | null } | null }[] }),
+            // 已取消 / 斷貨 / 過期的品項不算進項數 · 件數 · 金額，與伺服端
+            // v_admin_orders_list 的彙總（可排序欄位）同一套過濾，見 migration
+            // 20260808000010；不然「排序看到的數字」跟「格子裡的數字」會對不起來。
+            ? getSupabase().from("customer_order_items").select("order_id, qty, unit_price, source, sku:skus(product_name, variant_name)").in("order_id", ids).not("status", "in", "(cancelled,expired)")
+            : Promise.resolve({ data: [] as { order_id: number; qty: number; unit_price: number; source: string; sku: { product_name: string | null; variant_name: string | null } | null }[] }),
           memIds.length
             ? getSupabase().from("members").select("id, name, phone, member_no, avatar_url").in("id", memIds)
             : Promise.resolve({ data: [] as Member[] }),
@@ -564,8 +565,7 @@ function OrdersListContent() {
         ]);
         const im = new Map<number, { lineCount: number; totalQty: number; totalAmount: number; items: { product_name: string | null; variant_name: string | null; qty: number }[]; sources: string[] }>();
         for (const id of ids) im.set(id, { lineCount: 0, totalQty: 0, totalAmount: 0, items: [], sources: [] });
-        for (const it of (ic.data as { order_id: number; qty: number; unit_price: number; source: string; status: string; sku: { product_name: string | null; variant_name: string | null } | null }[]) ?? []) {
-          if (!orderItemCountsInTotals(it.status)) continue;
+        for (const it of (ic.data as { order_id: number; qty: number; unit_price: number; source: string; sku: { product_name: string | null; variant_name: string | null } | null }[]) ?? []) {
           const cur = im.get(it.order_id) ?? { lineCount: 0, totalQty: 0, totalAmount: 0, items: [], sources: [] };
           cur.lineCount += 1;
           cur.totalQty += Number(it.qty);

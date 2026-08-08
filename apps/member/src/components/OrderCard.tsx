@@ -56,7 +56,13 @@ function fmtDate(iso: string | null | undefined): string {
 }
 
 export default function OrderCard({ order }: { order: OrderRow }) {
-  const totalQty = order.items.reduce((s, i) => s + Number(i.qty ?? 0), 0);
+  // 斷貨 / 已取消的品項照樣列出來（畫成刪除線 + 「斷貨」標），但不算件數 —
+  // items_total / payable_amount 從 20260808000010 起就不含這些行了，
+  // 件數要跟著排除，否則「商品（5 件）$218」對不起來。
+  const totalQty = order.items.reduce(
+    (s, i) => (["cancelled", "expired"].includes(i.status) ? s : s + Number(i.qty ?? 0)),
+    0,
+  );
   const title = cleanCampaignText(order.campaign_name) || "訂單";
 
   return (

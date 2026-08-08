@@ -17,6 +17,62 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 
 const LINE_PROFILE_URL = "https://api.line.me/v2/bot/profile";
+const LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply";
+const LINE_LINK_TOKEN_URL = (uid: string) => `https://api.line.me/v2/bot/user/${uid}/linkToken`;
+
+/** 同一個人多久內只邀一次綁定 —— 不擋的話每傳一句話就收到一則機器訊息 */
+const INVITE_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * 對「還不知道是誰」的顧客回一則帶 account link 的訊息。
+ *
+ * 刻意包裝成「查看我的訂單」而不是「請完成綁定」：顧客本來就是來問訂單的，
+ * 點下去就看到訂單，綁定是順帶發生的副作用，他不需要理解綁定是什麼。
+ *
+ * 用 replyToken 回覆 —— **不吃推播額度**，所以這個機制本身零成本。
+ * 失敗一律吞掉：邀請沒送出去不該影響 webhook 回 200（LINE 會重送整批事件）。
+ */
+async function inviteAccountLink(
+  accessToken: string,
+  replyToken: string,
+  lineUserId: string,
+  storeCode: string,
+  memberBase: string,
+): Promise<boolean> {
+  try {
+    const ltResp = await fetch(LINE_LINK_TOKEN_URL(lineUserId), {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${accessToken}` },
+    });
+    if (!ltResp.ok) {
+      console.error("linkToken failed:", ltResp.status, await ltResp.text());
+      return false;
+    }
+    const { linkToken } = await ltResp.json();
+    // linkToken 只有 10 分鐘效期，所以是「當下回覆」才有意義，不能事後補寄
+    const url = `${memberBase}/link?lt=${encodeURIComponent(linkToken)}&store=${encodeURIComponent(storeCode)}`;
+
+    const rResp = await fetch(LINE_REPLY_URL, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        replyToken,
+        messages: [{
+          type: "text",
+          text: `您好！這裡可以查看您的訂單與取貨進度 👇\n${url}`,
+        }],
+      }),
+    });
+    if (!rResp.ok) {
+      console.error("reply failed:", rResp.status, await rResp.text());
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error("inviteAccountLink error:", String(e));
+    return false;
+  }
+}
 
 function requireEnv(name: string): string {
   const v = Deno.env.get(name);
@@ -84,6 +140,9 @@ Deno.serve(async (req) => {
       console.error("no credentials for store:", storeCode);
       return new Response("unknown store", { status: 404 });
     }
+    // PostgREST 的 to-one 關聯有時回物件、有時回陣列，兩種都要接得住
+    const credStoreCode: string | null =
+      (Array.isArray(cred.stores) ? cred.stores[0]?.code : cred.stores?.code) ?? storeCode;
 
     if (!await verifySignature(rawBody, signature, cred.channel_secret)) {
       console.error("bad signature for store:", storeCode);
@@ -146,9 +205,23 @@ Deno.serve(async (req) => {
       // follow / message / 其他有 userId 的事件 → 至少把這個人記進名冊。
       // member_id 先留 NULL：webhook 只知道「有這個 LINE 使用者」，
       // 不知道他是哪位會員，要等 account link 完成才填得上。
+      // ⚠ 不能只在 type === "follow" 才抓 profile。
+      // 實際上線後多數人是先「傳訊息」才被收進名冊（既有好友不會再觸發 follow），
+      // 只認 follow 的話名冊會一整排沒有名字，店員在配對選單只看得到
+      // "U5a54b59…" 這種字串，等於選不出來（2026-08-08 實際踩到）。
+      // 所以：只要這個人在名冊裡還沒有名字，任何事件都補抓一次。
       let displayName: string | null = null;
       let pictureUrl: string | null = null;
-      if (type === "follow" && cred.access_token) {
+
+      const { data: existing2 } = await sb
+        .from("store_line_followers")
+        .select("display_name, member_id, link_invited_at")
+        .eq("store_id", cred.store_id)
+        .eq("line_user_id", lineUserId)
+        .maybeSingle();
+      const existing = existing2;
+
+      if (!existing?.display_name && cred.access_token) {
         try {
           const p = await fetch(`${LINE_PROFILE_URL}/${lineUserId}`, {
             headers: { "Authorization": `Bearer ${cred.access_token}` },
@@ -177,6 +250,26 @@ Deno.serve(async (req) => {
         .from("store_line_followers")
         .upsert(row, { onConflict: "store_id,line_user_id", ignoreDuplicates: false });
       if (upErr) console.error("binding upsert failed:", upErr.message);
+
+      // 還不知道他是哪位會員 → 回一則帶 account link 的「查看我的訂單」。
+      // 只在有 replyToken 時做（reply 免額度，且 linkToken 只有 10 分鐘效期，
+      // 事後補寄沒有意義）。已配對的人不打擾。
+      const replyToken = ev.replyToken as string | undefined;
+      const memberBase = (Deno.env.get("MEMBER_FRONT_BASE_URL") ?? "").replace(/\/+$/, "");
+      const invitedAt = existing2?.link_invited_at ? Date.parse(existing2.link_invited_at) : 0;
+      const cooled = Date.now() - invitedAt > INVITE_COOLDOWN_MS;
+
+      if (replyToken && cred.access_token && memberBase && credStoreCode && !existing2?.member_id && cooled) {
+        const sent = await inviteAccountLink(
+          cred.access_token, replyToken, lineUserId, credStoreCode ?? "", memberBase,
+        );
+        if (sent) {
+          await sb.from("store_line_followers")
+            .update({ link_invited_at: new Date().toISOString() })
+            .eq("store_id", cred.store_id)
+            .eq("line_user_id", lineUserId);
+        }
+      }
     }
 
     return new Response("ok", { status: 200 });

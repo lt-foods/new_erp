@@ -349,16 +349,12 @@ export function OrderDetail({
   const orderDiscountValue: DiscountValue = draft.discount ?? deriveDiscount(head.discount_percent, head.discount_amount);
   const orderNotesValue: string | null = Object.prototype.hasOwnProperty.call(draft, "notes") ? draft.notes! : head.notes;
 
-  // 合計只算「還在這張單上」的品項。cancelled/expired 的行仍然要顯示
-  // （帶已取消 badge），但不能進數量與金額 —— 它們是：
-  //   1. 部分轉出：整項轉走的來源品項被標 cancelled，卻留在來源單上
-  //      （來源單 status 不變），不濾掉就等於跟轉入單重複收一次錢
-  //   2. 品項層級的取消 / 斷貨
-  // 這條線的權威是 v_customer_order_summary.items_total 與
-  // rpc_wallet_pay_order（兩者都只算 status NOT IN ('cancelled','expired')）；
-  // 這裡不濾的話畫面上的「應收」會跟資料庫實際收的金額對不起來。
+  // 已取消 / 斷貨 / 過期的品項行照樣列在下面的表格（紅標「斷貨」「已取消」），
+  // 但不計入件數與金額 —— 客人拿不到的貨不收錢。
+  // 與 v_customer_order_summary.items_total / rpc_wallet_pay_order 同一套過濾
+  //（migration 20260808000010）。
   const activeItems = items.filter((i) => !["cancelled", "expired"].includes(i.status));
-  const cancelledItemCount = items.length - activeItems.length;
+
   const totalQty = activeItems.reduce((s, i) => s + Number(itemEffective(i).qty), 0);
   const grossTotal = activeItems.reduce((s, i) => {
     const eff = itemEffective(i);
@@ -383,8 +379,7 @@ export function OrderDetail({
   let returnedDeduction = 0;
   {
     const remaining = new Map(unpickedReturnedBySku);
-    for (const it of items) {
-      if (["cancelled", "expired"].includes(it.status)) continue;
+    for (const it of activeItems) {
       const skuId = it.sku?.id;
       const rem = skuId != null ? (remaining.get(skuId) ?? 0) : 0;
       if (skuId == null || rem <= 0) continue;
@@ -899,10 +894,8 @@ export function OrderDetail({
       <div className="rounded-md border border-zinc-200 dark:border-zinc-800">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-medium dark:border-zinc-800 dark:bg-zinc-900">
           <span>
+            {/* 項數 / 件數不算已取消 / 斷貨的行（那些行仍列在表格裡，紅標標示） */}
             明細（{activeItems.length} 項 · {totalQty} 件
-            {cancelledItemCount > 0 && (
-              <span className="ml-1 text-zinc-500">· 已取消 {cancelledItemCount} 項</span>
-            )}
             {totalReturnedQty > 0 && (
               <span className="ml-1 text-orange-700 dark:text-orange-400">· ↩ 已退 {totalReturnedQty} 件</span>
             )}

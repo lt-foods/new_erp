@@ -1,7 +1,8 @@
 -- ============================================================
 -- 2026-08-08: 會員端「已售出 / N 人下單」改走單一聚合 RPC，修掉 1000 列截斷
 --
--- 延續 20260808000010。修完重複計數後實測顧客端列表，發現同一批數字
+-- 延續 20260808000010_member_sold_qty_exclude_transferred。修完重複計數後
+-- 實測顧客端列表，發現同一批數字
 -- 還有兩個更大的洞（都是 PostgREST 的 1000 列上限，靜默截斷、沒有錯誤）：
 --
 --   1. ordered_qty（已售出 / 剩 N 份）
@@ -26,12 +27,16 @@
 --   參數會變成新的 overload，2 參數呼叫就會 "function is not unique"），
 --   所以先 DROP 舊簽章。新簽章對舊的 2 參數具名呼叫仍相容（走 DEFAULT）。
 --
--- rpc_member_campaign_order_counts 保留不動（20260808000010 已修過過濾
+-- rpc_member_campaign_order_counts 保留不動（20260808000010_member_sold_qty_… 已修過過濾
 --   規則），但 liff-api 不再使用；COMMENT 標註它有 1000 列上限、新程式
 --   請改用本函式，避免下次有人再踩。
 --
--- 基底版本：rpc_member_campaign_aggregates = 20260808000010 版。
--- Rollback：DROP 三參數版，CREATE 回 20260808000010 的兩參數版。
+-- 基底版本：rpc_member_campaign_aggregates = 20260808000010_member_sold_qty_
+--   exclude_transferred 版。（注意 20260808000010 這個編號同時有三個檔案：
+--   另兩支 account_link_invite / payable_exclude_cancelled_items 來自 main，
+--   動到的物件與本檔不重疊，套用順序無關。）
+-- Rollback：DROP 三參數版，CREATE 回 20260808000010_member_sold_qty_exclude_
+--   transferred 的兩參數版。
 -- ============================================================
 
 DROP FUNCTION IF EXISTS public.rpc_member_campaign_aggregates(uuid, integer);
@@ -51,7 +56,7 @@ AS $function$
     FROM customer_orders co
     WHERE co.tenant_id = p_tenant
       -- 轉單是「複製 + 標記」不是「搬移」：來源單留著 transferred_out，
-      -- 不排除的話一張單會連同轉入單被算兩次（見 20260808000010）
+      -- 不排除的話一張單會連同轉入單被算兩次（見 20260808000010_member_sold_qty_exclude_transferred）
       AND co.status NOT IN ('cancelled', 'expired', 'transferred_out')
       AND COALESCE(co.order_kind, 'normal') = 'normal'
       AND (
@@ -102,7 +107,7 @@ COMMENT ON FUNCTION public.rpc_member_campaign_aggregates(uuid, integer, bigint[
   '會員端每團 order_count / recent_order_count / ordered_qty。RETURNS jsonb（單列單值），'
   '不受 PostgREST 1000 列上限影響；p_campaign_ids 限定只算這一頁要顯示的團。'
   '訂單層級排除 cancelled/expired/transferred_out、品項層級排除 cancelled/expired，'
-  '否則轉出的量會被算兩次、吃掉 cap_qty 名額。基底：20260808000010。';
+  '否則轉出的量會被算兩次、吃掉 cap_qty 名額。基底：20260808000010_member_sold_qty_exclude_transferred。';
 
 COMMENT ON FUNCTION public.rpc_member_campaign_order_counts(uuid, integer) IS
   '會員端每團訂單筆數。⚠️ RETURNS TABLE、一團一列且無 campaign 篩選 —— 團數超過 '

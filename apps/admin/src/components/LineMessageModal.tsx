@@ -16,6 +16,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
+import { renderPickupImage, type PickupOrder } from "@/lib/pickupImage";
 
 const BUCKET = "line-media";
 const FN_URL = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/admin-line-push`;
@@ -97,7 +98,7 @@ async function encodeJpeg(file: File, maxDim: number, quality: number): Promise<
 }
 
 export function LineMessageModal({
-  open, onClose, member, tenantId, homeStoreId = null,
+  open, onClose, member, tenantId, homeStoreId = null, storeName = null,
 }: {
   open: boolean;
   onClose: () => void;
@@ -105,6 +106,8 @@ export function LineMessageModal({
   tenantId: string;
   /** 會員取貨店 —— 決定要看哪一家店的 OA 名冊 */
   homeStoreId?: number | null;
+  /** 取貨店名稱，印在可取貨訂單圖的抬頭 */
+  storeName?: string | null;
 }) {
   const [reachable, setReachable] = useState<Reachable>({ state: "checking" });
   const [quota, setQuota] = useState<Quota | null>(null);
@@ -112,6 +115,7 @@ export function LineMessageModal({
   const [ordersUrl, setOrdersUrl] = useState<string | null>(null);
   const [followers, setFollowers] = useState<Follower[]>([]);
   const [binding, setBinding] = useState(false);
+  const [buildingImage, setBuildingImage] = useState(false);
   const [text, setText] = useState("");
   const [image, setImage] = useState<File | null>(null);
   const [sending, setSending] = useState(false);
@@ -195,6 +199,68 @@ export function LineMessageModal({
   useEffect(() => {
     return () => { if (imagePreview) URL.revokeObjectURL(imagePreview); };
   }, [imagePreview]);
+
+  /**
+   * 把該會員的可取貨品項畫成一張圖，直接放進附圖欄。
+   *
+   * 只取 item.status = 'ready'（可取貨）—— 同一張訂單裡可能混著已取貨 / 未到貨的
+   * 品項，整張塞給顧客會讓他白跑一趟或以為東西少了。
+   */
+  async function buildPickupImage() {
+    setBuildingImage(true);
+    setError(null);
+    try {
+      const { data, error: qErr } = await getSupabase()
+        .from("customer_orders")
+        .select("order_no, status, campaign:group_buy_campaigns(name), customer_order_items(qty, unit_price, status, skus(sku_code, products(name)))")
+        .eq("member_id", member.id)
+        .in("status", ["ready", "partially_completed"])
+        .order("created_at", { ascending: false });
+      if (qErr) { setError(qErr.message); return; }
+
+      type Row = {
+        order_no: string;
+        campaign: { name: string } | { name: string }[] | null;
+        customer_order_items: {
+          qty: number; unit_price: number | null; status: string | null;
+          skus: { sku_code: string | null; products: { name: string } | { name: string }[] | null } | null;
+        }[] | null;
+      };
+      const one = <T,>(v: T | T[] | null): T | null => (Array.isArray(v) ? v[0] ?? null : v);
+
+      const orders: PickupOrder[] = ((data ?? []) as unknown as Row[])
+        .map((o) => ({
+          orderNo: o.order_no,
+          campaign: one(o.campaign)?.name ?? null,
+          lines: (o.customer_order_items ?? [])
+            .filter((it) => it.status === "ready")
+            .map((it) => ({
+              name: one(one(it.skus)?.products ?? null)?.name
+                ?? one(it.skus)?.sku_code
+                ?? "（品項）",
+              qty: Number(it.qty ?? 0),
+              unitPrice: it.unit_price == null ? null : Number(it.unit_price),
+            })),
+        }))
+        .filter((o) => o.lines.length > 0);
+
+      if (orders.length === 0) {
+        setError("這位會員目前沒有可取貨的品項");
+        return;
+      }
+
+      const blob = await renderPickupImage({
+        storeName,
+        memberName: member.name,
+        orders,
+      });
+      setImage(new File([blob], "pickup.jpg", { type: "image/jpeg" }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBuildingImage(false);
+    }
+  }
 
   function pickImage(file: File) {
     if (!file.type.startsWith("image/")) {
@@ -419,6 +485,15 @@ export function LineMessageModal({
           <span className="mb-1 block text-xs text-zinc-500">
             截圖 / 圖片（可直接 Ctrl+V 貼上）
           </span>
+          {!imagePreview && (
+            <SpinButton
+              onClick={buildPickupImage}
+              disabled={buildingImage}
+              className="mb-2 mr-2 rounded-md border border-emerald-300 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950"
+            >
+              {buildingImage ? "產生中…" : "📋 帶入可取貨訂單圖"}
+            </SpinButton>
+          )}
           {imagePreview ? (
             <div className="relative inline-block">
               {/* eslint-disable-next-line @next/next/no-img-element */}
