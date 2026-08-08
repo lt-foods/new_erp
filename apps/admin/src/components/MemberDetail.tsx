@@ -116,6 +116,8 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
   const [mergeOpen, setMergeOpen] = useState<false | "guest-to-real" | "real-from-guest">(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [lineMsgOpen, setLineMsgOpen] = useState(false);
+  /** 該會員在所屬分店的 OA 名冊有沒有已配對的身分（推播真正靠的是這個） */
+  const [hasStoreLineBinding, setHasStoreLineBinding] = useState(false);
   const [mergedFrom, setMergedFrom] = useState<MergedFrom[]>([]);
   const [savingFlags, setSavingFlags] = useState(false);
   const [draftAdminNote, setDraftAdminNote] = useState("");
@@ -250,6 +252,20 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
       setPLedger((pl.data as PointsEntry[]) ?? []);
       setWLedger((wl.data as WalletEntry[]) ?? []);
       setOrders((od.data as unknown as MemberOrder[]) ?? []);
+
+      // 推播用的身分在 store_line_followers（該店 OA provider 的 ID），
+      // 不是 members.line_user_id。線上 370 位松山店會員有 339 位沒有舊欄位，
+      // 只看舊欄位的話這些人綁好了按鈕也不會出現。
+      if (m.home_store_id) {
+        const { data: fol } = await sb
+          .from("store_line_followers")
+          .select("line_user_id")
+          .eq("store_id", m.home_store_id)
+          .eq("member_id", m.id)
+          .eq("followed", true)
+          .maybeSingle();
+        if (!cancelled) setHasStoreLineBinding(!!fol);
+      }
       type MergeMemberRow = { id: number; member_no: string; name: string | null; phone: string | null; avatar_url: string | null; joined_at: string };
       type MergeRow = {
         id: number;
@@ -292,7 +308,8 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
 
   const isMerged = member.status === "merged";
   const isDeleted = member.status === "deleted";
-  const hasLine = !!member.line_user_id;
+  // 「發得出訊息」的條件：該店 OA 名冊已配對（主要）或還留著舊的登入 ID（退路）
+  const hasLine = hasStoreLineBinding || !!member.line_user_id;
   // 「合併到已綁 LINE 會員」：自己未綁 LINE + status≠merged 才出現
   const canMergeOut = !hasLine && !isMerged && !isDeleted;
   // 「合併未綁 LINE 會員進來」：自己已綁 LINE + status≠merged 才出現
