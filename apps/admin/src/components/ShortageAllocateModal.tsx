@@ -282,7 +282,8 @@ export function ShortageAllocateModal({
     if (
       !confirm(
         `把目前 ${ids.length} 筆「待補貨」直接取消？\n\n` +
-          `會把這些品項標成斷貨取消，若整張訂單品項都沒了且沒收過錢，訂單也會一併取消。\n` +
+          `會把這些品項標成斷貨取消，若整張訂單品項都沒了且沒收過錢，訂單也會一併取消；\n` +
+          `已取走一部分的訂單則直接結單（不會再卡在「部分取貨」）。\n` +
           `此動作不可復原。`,
       )
     )
@@ -299,8 +300,16 @@ export function ShortageAllocateModal({
         p_operator: operator,
       });
       if (e) throw new Error(translateRpcError(e));
-      const r = (res ?? {}) as { items_cancelled?: number; orders_cancelled?: number };
-      alert(`已取消 ${r.items_cancelled ?? 0} 個品項、${r.orders_cancelled ?? 0} 張訂單`);
+      const r = (res ?? {}) as {
+        items_cancelled?: number;
+        orders_cancelled?: number;
+        orders_completed?: number;
+      };
+      alert(
+        `已取消 ${r.items_cancelled ?? 0} 個品項、${r.orders_cancelled ?? 0} 張訂單` +
+          // 已取走一部分的單不會被取消，剩下的取消掉就結單（20260808000000）
+          (r.orders_completed ? `，${r.orders_completed} 張已取完的訂單結單` : ""),
+      );
       await load();
       onSaved();
     } catch (e) {
