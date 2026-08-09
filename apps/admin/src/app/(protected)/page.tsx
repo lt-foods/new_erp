@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import StoreHeatMap from "@/components/StoreHeatMap";
+import RegionPreferenceSummary from "@/components/RegionPreferenceSummary";
 import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 
 type Counts = {
@@ -201,6 +202,8 @@ export default function Dashboard() {
         </section>
 
         <StoreHeatMap focusStoreId={storeId ? Number(storeId) : null} />
+
+        <RegionPreferenceSummary focusStoreId={storeId ? Number(storeId) : null} />
 
         <section className="grid gap-6 lg:grid-cols-2">
           <div className="rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
