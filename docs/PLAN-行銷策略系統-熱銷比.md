@@ -1,0 +1,253 @@
+# 從「熱銷比」到行銷策略系統
+
+> 2026-08-09 · 規劃文件，尚未實作
+> 這份文件回答三件事：(1) 你講的「熱銷比」在業界叫什麼、(2) 你的資料現在撐得起哪些、
+> (3) 分幾階段做、每一階段要先補什麼資料。
+> 文中所有數字都是 2026-08-09 當下對線上資料庫實際查詢／回測的結果，不是估計值。
+
+---
+
+## 一頁結論
+
+**熱銷比做得起來，但它是「排序工具」不是「預測工具」。**
+
+我用你現有的資料做了一次時間切分回測（訓練 5/14–7/19 共 1,200 筆開團品項，
+測試 7/20–8/09 共 459 筆，測試期資料完全沒進特徵）：
+
+| 指標 | 結果 |
+|---|---|
+| Spearman ρ（預測排序 vs 實際排序） | **0.357** |
+| 冷啟動子集（該商品從沒開過團，占測試集 98%） | ρ = 0.354 |
+| 預測前 20% 的實際滲透率 | 3.00%（全體的 **1.56 倍**） |
+| 預測後 20% 的實際滲透率 | 1.24%（全體的 **0.64 倍**） |
+
+也就是說：**系統有辦法在開團前把「會賣得比較好的那批」跟「會比較冷的那批」分開，
+兩端差 2.4 倍。但它沒辦法告訴你「這團會賣 87 件」。**
+
+所以介面上要給的是「預估落在前 18%」這種百分位，不是一個看起來很精準的數字。
+硬要標一個絕對值，只會讓人在它猜錯的時候整套不信任。
+
+三個最大的限制，也是最該先補的三件事：
+
+1. **87% 的商品從沒開過第二次團**（1,680 個開過團的商品，只有 217 個開過 ≥2 次，最多 3 次）
+   → 沒有「這個商品上次賣多好」可查，只能靠相似品推估。這不是缺陷，是這個生意的常態，
+   業界（RELEX / Blue Yonder）處理新品也是走同一條路。
+2. **只有 83 天歷史**（2026-05-18 ~ 08-09）。季節性、節慶效應都還看不出來。
+3. **品牌／供應商主檔是空的**（`products.brand_id` 1,831 筆全 NULL，brands 表只有 3 筆）。
+   光是把商品名當文字特徵丟進去（品名裡的「包子媽」「大成」其實就是品牌），ρ 就從 0.339 升到 0.357 —— 那些字串背後其實就是品牌與供應商。
+   把它建成正式欄位，是投報率最高的一件事。
+
+---
+
+## 一、你的資料現況
+
+查詢時間 2026-08-09，`customer_orders` 涵蓋 2026-05-18 ~ 08-09。
+
+| 項目 | 數字 | 對規劃的意義 |
+|---|---|---|
+| 開團數（近 120 天） | 1,682 團，約 **145 團／週** | 量很大，人工判斷一定漏，值得自動化 |
+| 每團買家數 | 中位數 29、P90 76、最多 247 | 分佈長尾，用中位數不要用平均 |
+| **0 買家的團** | **142 團（8.4%）** | 這就是熱銷比最直接的價值：事前擋掉 |
+| 每團平均觸及店數 | 9.9 家 | 團之間曝光面不同，比較時必須正規化 |
+| 商品數 | 1,831（開過團 1,680） | |
+| 開過 ≥2 次團的商品 | **217（12.9%）**，最多 3 次 | 冷啟動是主戰場 |
+| `campaign_items.cap_qty` | **3,860 筆全部是 NULL** | 沒有備貨上限 → **算不出業界的 sell-through rate** |
+| 有下單的會員 | 3,695；其中 2,800 位有 ≥3 單 | 會員分析的量夠了 |
+| 平均每位會員訂單數 | 16.2 單／83 天 | 高頻，RFM／CLV 會很有訊號 |
+| 商品標籤 | 39 個標籤、3,887 筆標記、未分類 103 個 | 已完成，是預測的主要特徵來源 |
+
+**對標 Klaviyo 的啟用門檻**（500 位有 3 單以上的客人 + 180 天購買歷史）：
+人數你早就超過（2,800 > 500），**卡在歷史長度 —— 83 天 < 180 天**。
+照這個速度，大約 2026 年 11 月中會滿足，會員預測類功能建議排在那之後。
+
+---
+
+## 二、「熱銷比」拆開來其實是三件事
+
+你用一個詞講了三件不同的事，分開命名才算得準、也才吵不起來：
+
+| | 問的問題 | 時間點 | 業界名稱 | 你的狀態 |
+|---|---|---|---|---|
+| **A. 熱度** | 這個東西賣得好不好？ | 事後 | Penetration（滲透率）／Rate of Sale | ✅ 已做 |
+| **B. 偏好** | 這一區比別區更愛它嗎？ | 事後、相對 | **CDI / BDI**（Development Index） | ✅ 已做 |
+| **C. 熱銷比** | **開團前**，這團會多熱？ | 事前 | **NPI Demand Forecast / Purchase Propensity** | ⬜ 本文要規劃的 |
+
+建議正式命名（內部溝通用）：
+
+- A 叫 **滲透率**（買過的人數 ÷ 母體人數）
+- B 叫 **偏好指數**（該區滲透率 ÷ 全體滲透率，＝ Nielsen 的 CDI/BDI）
+- C 叫 **熱銷比**，定義成「**預估滲透率的百分位**」，介面顯示「預估前 18%（信心：中）」
+
+「熱銷比」這個名字保留沒問題 —— 它是對外／對店長溝通用的名字，
+底下對接的是業界標準定義，兩者不衝突。
+
+---
+
+## 三、業界對標表
+
+| 你的說法 | 業界標準名稱 | 誰在用 | 定義 | 你能不能現在算 |
+|---|---|---|---|---|
+| 賣得好（絕對量） | **Rate of Sale (RoS) / Velocity**；Nielsen 的 *Sales per point of distribution* | 零售通用、NielsenIQ | 單位時間、單位鋪貨點的銷量 | ✅ 首頁熱賣地圖 |
+| 賣得好（人數） | **Penetration / Buy rate** | NielsenIQ、Kantar Worldpanel（家戶滲透率） | 買過的人數 ÷ 母體人數 | ✅ 地區偏好頁 |
+| 這區特別愛 | **CDI / BDI**（Category / Brand Development Index），別名 Fair Share Index、over-index | NielsenIQ CPG Dictionary | 該區指標 ÷ 全體指標 ×100 | ✅ 我做的 `lift` 就是它 |
+| 大店什麼都買比較多要扣掉 | Nielsen 走 **ACV-weighted distribution**（用店的營業額加權，不是用店數） | NielsenIQ | 用鋪貨深度正規化 | ✅ 我用的是「品類廣度」，同一個道理 |
+| 賣光的比例 | **Sell-through rate (STR)** = 售出 ÷ 進貨 | 零售通用、Shopify 內建報表 | | ❌ **算不出來**：`cap_qty` 全空，沒有備貨量基準 |
+| **熱銷比（事前）** | **New Product Introduction (NPI) forecasting**；RELEX 叫 *reference product*，Blue Yonder 叫 *Attribute-Based Modeling*（「這是辣味洋芋片，跟墨西哥辣椒口味那支像」） | RELEX、Blue Yonder、o9 | 用屬性找相似品，借它的需求曲線當新品基準 | ⚠️ **可做 v1，ρ≈0.36** |
+| 這個客人會不會買 | **Purchase propensity / Likelihood to purchase** | Salesforce Einstein、GA4 purchase probability、Adobe | 個人層級的購買機率 | ⬜ Phase 3 |
+| 客人值多少 / 會不會跑 | **Predicted CLV、Churn risk、EDNO**（Expected Date of Next Order） | Klaviyo Predictive Analytics | 每週重訓 | ⬜ Phase 3（歷史長度 11 月才夠） |
+| 客人分群 | **RFM**（Recency / Frequency / Monetary） | 通用 | | ⬜ Phase 3（資料已足） |
+| 什麼跟什麼一起買 | **Market Basket Analysis / Association rules**（support、confidence、lift） | Amazon「Frequently bought together」 | | ⬜ Phase 4 |
+| 推播到底有沒有用 | **Incrementality / Uplift modeling**；促銷領域叫 baseline vs incremental、**TPO**（Trade Promotion Optimization） | 零售促銷分析 | 要有 holdout 對照組才算得出來 | ⬜ Phase 5 |
+| 新品排擠舊品 | **Cannibalization** | RELEX / Blue Yonder | | ⬜ Phase 5 |
+
+一句話總結對標結果：**你自己想出來的「熱銷比」，就是零售業的 NPI 需求預測；
+而我上一輪做的地區偏好，剛好就是 Nielsen 的 CDI/BDI。方向沒有走偏。**
+
+---
+
+## 四、回測怎麼做的（可重現）
+
+- **目標值**：每個「開團 × 商品」的滲透率 = 買過該商品的會員數 ÷ **當週全店下單會員數**
+  （為什麼不用團的觸及人數當分母：目前沒有記錄曝光，見第六節）
+- **時間切分**：訓練 < 2026-07-20，測試 ≥ 2026-07-20。所有層級的平均值只用訓練期算。
+- **模型 v1（刻意選最笨的）**：階層式基準 + 收縮（empirical Bayes 的簡化版）
+
+  ```
+  預測 = (n × 該商品歷史平均 + k × 先驗) / (n + k)
+  先驗 = 0.40×標籤層平均 + 0.20×價格帶平均 + 0.40×品名文字特徵平均
+  每一層都先往全體平均收縮：層平均 = (n×層內平均 + k×全體平均) / (n + k)
+  ```
+
+  收縮就是在講「這一層只有 3 筆資料，別太相信它」，樣本越少越靠向全體平均。
+
+- **重現方式**：`SUPABASE_PROJECT_REF=… SUPABASE_ACCESS_TOKEN=… python3 scripts/analysis-campaign-demand-backtest.py`
+
+- **結果**
+
+  | 特徵組合 | Spearman ρ |
+  |---|---|
+  | 標籤 + 價格帶 | 0.339 |
+  | 標籤 + 價格帶 + 品名 3-gram | **0.357** |
+
+  冷啟動子集（該商品從沒開過團，451/459 筆）ρ = 0.354 —— 跟整體幾乎一樣，
+  代表這個分數**不靠商品自己的歷史也成立**，這對你 87% 是新品的情況很關鍵。
+
+  依預測分數排序切五組，實際表現：
+
+  | 組別 | 實際平均滲透率 | 相對全體 |
+  |---|---|---|
+  | 第 1 組（預測最高 20%） | 3.00% | 1.56× |
+  | 第 2 組 | 2.11% | 1.09× |
+  | 第 3 組 | 1.62% | 0.84× |
+  | 第 4 組 | 1.68% | 0.87× |
+  | 第 5 組（預測最低 20%） | 1.24% | 0.64× |
+
+- **抓 0 買家團的能力目前很弱**：整體 0 買家率 6%，預測最低 20% 裡只有 8%。
+  幾乎沒有鑑別力。原因是「沒人買」多半不是商品不好，而是**根本沒推**——
+  這正好證明第六節那件事（要記曝光）有多重要。
+
+**誠實的評語**：ρ=0.36 在需求預測裡屬於「有訊號、可用來排序、不能單獨拿來做決策」。
+拿它當「開團前的第二意見」剛好；拿它當「自動決定開不開團」還太早。
+
+---
+
+## 五、分階段藍圖
+
+### Phase 0 ✅ 已完成（2026-08-09）
+商品多標籤（39 標籤／3,887 筆）、地區偏好（CDI/BDI）、門市熱賣地圖。
+
+### Phase 1 — 熱銷比 v1 + 開團快照（建議 2～3 週）
+
+**先補資料（沒有這些，後面每一階段都會卡）**
+
+| 要補的 | 為什麼 | 工作量 |
+|---|---|---|
+| `products.brand_id` / 供應商 | 現在 100% 空。品名文字特徵已證明有效，把它正規化成欄位還會更好 | 中（可用商品名前綴自動推薦 + 人工確認） |
+| `campaign_item_stats` 每日快照表 | 現在只看得到「現在」的累積數字，看不到「第 1 天賣多少、第 3 天賣多少」→ 沒辦法做早期預警（開團 24 小時就知道會不會爆） | 小 |
+| 開團當下的快照（價格、標籤、預測分數） | 之後才驗證得了模型；商品改名改價後歷史就對不起來了 | 小 |
+| 售完 / 下架的原因與時間 | 分得出「沒人要」與「沒貨賣」，這兩件事現在混在一起 | 小 |
+
+**要做的**
+
+- `rpc_campaign_demand_score(p_product_id, p_price, p_store_ids)` → 回傳
+  百分位分數、信心等級、**參考的相似品清單**（RELEX 的 reference product 做法）
+- 開團頁（`CampaignForm` / `CreateCampaignModal`）顯示：
+  `預估熱度：前 18%（信心：中）· 參考：不二坊蛋黃酥 3.1%、奕順軒大餅 2.7%`
+- 每週自動 backtest，把 ρ 與五分位表寫進一張表，看模型有沒有退化
+
+**驗收標準**（先寫好，免得事後各說各話）
+- ρ ≥ 0.30 且前 20% / 後 20% 的實際滲透率差距 ≥ 2 倍
+- 一定要顯示信心等級；樣本不足時顯示「資料不足」而不是硬給分數
+
+### Phase 2 — 曝光與成效歸因（建議 1 個月，可與 Phase 1 平行）
+
+- 記錄推播事件：哪一團、推到哪些店／頻道、何時、觸及多少人
+  （`line_push_logs` 已經有雛形，要補上「這一則對應哪個團」）
+- 有了曝光，滲透率的分母才是真的**觸及母體**，而不是「當週活躍會員」的近似
+- 團結束自動回填成效並與預測比對，形成閉環
+
+### Phase 3 — 會員分群（建議 2026-11 之後啟動，等歷史滿 180 天）
+
+- **RFM**（現在就能做，資料已足）→ 直接產出 LINE 分眾名單
+- **Predicted CLV / Churn risk / EDNO**（對標 Klaviyo）→ 等歷史長度
+- 產出可以直接接到現有的 LINE OA 推播
+
+### Phase 4 — 推薦與個人化
+
+- Market Basket Analysis（support / confidence / lift）→ 「買了 A 的人也買 B」
+- 個人化推薦：這一團該優先推給哪 500 個人
+- 對標：Amazon「Frequently bought together」、Bloomreach / Dynamic Yield
+
+### Phase 5 — 促銷與定價優化
+
+- **一定要做 holdout**：每次推播留 5~10% 不推的對照組，才算得出 uplift
+  （沒有對照組的「推播後業績成長」是自欺欺人 —— 本來就會買的人也算進去了）
+- 價格彈性、跨團排擠（cannibalization）
+- 對標：TPO（Trade Promotion Optimization）
+
+---
+
+## 六、五個最容易踩的坑
+
+1. **不要用金額當熱銷比。** 中和店 562 位活躍會員、湖口店 83 位，用金額永遠是中和贏。
+   你上一輪已經講對了要用人數比例 —— 熱銷比也一樣，母體要正規化。
+2. **不要拿「沒設 cap 的完售」當成功指標。** `cap_qty` 全空，現在根本沒有「賣完」這件事。
+   要用 sell-through 就得先真的填備貨量。
+3. **樣本不足時不要給分數。** 硬給一個 0.8 的分數，比誠實顯示「資料不足」傷害大得多。
+4. **自我實現預言。** 分數高 → 主推 → 賣得好 → 分數更高。
+   解法就是 Phase 2 的曝光記錄 + Phase 5 的 holdout，把「推得多」跟「本來就受歡迎」分開。
+5. **模型會退化。** 商品結構、季節、客群都在變。每週自動回測、看 ρ 有沒有掉，
+   比一次做出很厲害的模型重要。
+
+---
+
+## 七、怎麼衡量這整套系統有沒有用
+
+不要用「模型準不準」當 KPI，要用生意的指標：
+
+| 指標 | 現在（基準） | 目標 |
+|---|---|---|
+| 0 買家團的比率 | 8.4% | < 5% |
+| 每團中位數買家數 | 29 | +15% |
+| 開團決策改變率（看了分數後真的改了的比例） | — | 追蹤即可，太低表示沒人信、太高表示過度依賴 |
+| 預測排序能力 ρ | 0.357 | 每週追蹤，掉到 0.25 以下要重訓 |
+
+---
+
+## 附錄：相關檔案
+
+- 商品標籤：`supabase/migrations/20260809000020_product_tags.sql`
+- 地區偏好（CDI/BDI）：`supabase/migrations/20260809000030_rpc_region_tag_preference.sql`
+- 地區偏好頁：`apps/admin/src/app/(protected)/analytics/regions/page.tsx`
+- 熱賣地圖：`apps/admin/src/components/StoreHeatMap.tsx`
+- 本文回測腳本：`scripts/analysis-campaign-demand-backtest.py`
+
+## 附錄：參考來源
+
+- [Category development index (CDI) — NielsenIQ CPG Dictionary](https://microsites.nielseniq.com/cpg-dictionary/dictionary/category-development-index-cdi/)
+- [Brand development index (BDI) — NielsenIQ CPG Dictionary](https://microsites.nielseniq.com/cpg-dictionary/dictionary/brand-development-index-bdi/)
+- [Sales per $MM ACV — CPG Data Insights](https://www.cpgdatainsights.com/glossary-post/sales-per-million/)
+- [How to forecast demand for a new product — RELEX Solutions](https://www.relexsolutions.com/resources/how-to-forecast-demand-for-a-new-product/)
+- [What is retail demand forecasting? — Blue Yonder](https://info.blueyonder.com/retail-planning-category-management/what-is-retail-demand-forecasting)
+- [Predictive analytics — Klaviyo Academy](https://academy.klaviyo.com/en-us/quick-guides/mitigate-churn-with-predictive-insights-and-custom-clv)
+- [Churn prediction models — Klaviyo](https://www.klaviyo.com/blog/predicting-churn-risk-our-new-model)
