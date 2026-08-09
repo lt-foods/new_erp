@@ -989,16 +989,11 @@ function CustomerCard({
             onPick={(picked) => onChange(picked)}
           />
         </div>
-        <div className="w-40 shrink-0 pt-1.5 text-xs">
-          <span className="text-zinc-500">取貨店：</span>
+        <div className="w-40 shrink-0 pt-1 text-xs">
           {entry.member_id ? (
-            entry.pickup_store_name ? (
-              <span className="font-medium">{entry.pickup_store_name}</span>
-            ) : (
-              <span className="text-red-500">⚠ 未設</span>
-            )
+            <PickupStoreChip name={entry.pickup_store_name} size="md" />
           ) : (
-            <span className="text-zinc-400">—</span>
+            <span className="text-zinc-400">取貨店 —</span>
           )}
         </div>
         <SpinButton
@@ -1060,6 +1055,25 @@ function CustomerCard({
   );
 }
 
+
+// ============================================================
+// Pickup Store Chip
+// ============================================================
+// 取貨店在小幫手加單是最容易 key 錯的欄位（會員選錯 → 貨送錯店），
+// 所以搜尋結果就要看得到，而且要比 member_no / 電話那排灰字更搶眼。
+// 沒設取貨店的會員本來就不能加單（下面 noStore 會 disable），用紅色講清楚原因。
+function PickupStoreChip({ name, size = "sm" }: { name: string | null; size?: "sm" | "md" }) {
+  const pad = size === "md" ? "px-2 py-0.5 text-xs" : "px-1.5 py-0.5 text-[11px]";
+  return name ? (
+    <span className={`inline-block shrink-0 rounded font-medium ${pad} bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300`}>
+      🏪 {name}
+    </span>
+  ) : (
+    <span className={`inline-block shrink-0 rounded font-medium ${pad} bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300`}>
+      🏪 未設取貨店
+    </span>
+  );
+}
 
 // ============================================================
 // Customer Search (combo: alias + member)
@@ -1186,12 +1200,14 @@ function CustomerSearch({
                     }}
                     className="block w-full px-3 py-2 text-left text-sm hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent dark:hover:bg-zinc-700"
                   >
-                    <span className="font-medium">{a.nickname}</span>
-                    {a.admin_note && <span className="ml-1 rounded bg-amber-100 px-1 text-[9px] text-amber-800">🔒 {a.admin_note}</span>}
-                    <span className="ml-2 text-zinc-500">→ {a.member_name} ({a.member_no})</span>
-                    {blacklisted && <span className="ml-2 font-medium text-red-600">🚫 黑名單禁加單</span>}
-                    {!blacklisted && dup && <span className="ml-2 text-amber-600">已選</span>}
-                    {!blacklisted && !dup && noStore && <span className="ml-2 text-red-500">未設取貨店</span>}
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <span className="font-medium">{a.nickname}</span>
+                      <PickupStoreChip name={a.home_store_name} />
+                      {a.admin_note && <span className="rounded bg-amber-100 px-1 text-[9px] text-amber-800">🔒 {a.admin_note}</span>}
+                      {blacklisted && <span className="font-medium text-red-600">🚫 黑名單禁加單</span>}
+                      {!blacklisted && dup && <span className="text-amber-600">已選</span>}
+                    </div>
+                    <div className="mt-0.5 text-xs text-zinc-500">→ {a.member_name} ({a.member_no})</div>
                   </SpinButton>
                 );
               })}
@@ -1226,14 +1242,16 @@ function CustomerSearch({
                         });
                         setOpen(false);
                       }}
-                      className="flex-1 text-left disabled:cursor-not-allowed disabled:opacity-50"
+                      className="min-w-0 flex-1 text-left disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      <span className="font-medium">{m.name}</span>
-                      {m.admin_note && <span className="ml-1 rounded bg-amber-100 px-1 text-[9px] text-amber-800">🔒 {m.admin_note}</span>}
-                      <span className="ml-2 text-zinc-500">{m.member_no} · {m.phone ?? "—"}</span>
-                      {blacklisted && <span className="ml-2 font-medium text-red-600">🚫 黑名單禁加單</span>}
-                      {!blacklisted && dup && <span className="ml-2 text-amber-600">已選</span>}
-                      {!blacklisted && !dup && noStore && <span className="ml-2 text-red-500">未設取貨店</span>}
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className="font-medium">{m.name}</span>
+                        <PickupStoreChip name={m.home_store_name} />
+                        {m.admin_note && <span className="rounded bg-amber-100 px-1 text-[9px] text-amber-800">🔒 {m.admin_note}</span>}
+                        {blacklisted && <span className="font-medium text-red-600">🚫 黑名單禁加單</span>}
+                        {!blacklisted && dup && <span className="text-amber-600">已選</span>}
+                      </div>
+                      <div className="mt-0.5 text-xs text-zinc-500">{m.member_no} · {m.phone ?? "—"}</div>
                     </SpinButton>
                     {!aliased && channelId && !blocked && (
                       <SpinButton
