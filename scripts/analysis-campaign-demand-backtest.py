@@ -3,6 +3,8 @@
 """熱銷比可行性回測 —— 開團前只用「商品屬性 + 過往同類表現」，預測得出這一團會多熱嗎？
 
 用途：驗證 docs/PLAN-行銷策略系統-熱銷比.md 裡的數字，以及之後每次改模型時重跑比較。
+加 --ablation 會多跑一組消融比較（拆開看標籤／價格／品名各貢獻多少、
+以及分品類的準度），用來決定「該不該再細分標籤」。
 資料直接打 Supabase Management API 撈（見 CLAUDE.md：不要走 pooler TCP，會被擋）。
 
     SUPABASE_PROJECT_REF=xxx SUPABASE_ACCESS_TOKEN=xxx python3 scripts/analysis-campaign-demand-backtest.py
@@ -18,6 +20,7 @@ import json
 import math
 import os
 import statistics as st
+import sys
 import subprocess
 from collections import defaultdict
 
@@ -196,6 +199,60 @@ def spearman(xs, ys):
 pred = [predict(r) for r in test]
 act = [r["pen"] for r in test]
 print(f"\nSpearman ρ（預測 vs 實際排序）= {spearman(pred, act):.3f}")
+
+
+def _only(tag=False, band_=False, gram=False):
+    """消融用：只開指定特徵，其餘不算"""
+    def f(r):
+        parts = []
+        if tag:
+            parts.append((0.40 if (band_ or gram) else 1.0,
+                          st.mean([shrunk(tag_pens.get(t, []), 8) for t in r["tags"]]) if r["tags"] else gmean))
+        if band_:
+            parts.append((0.20 if (tag or gram) else 1.0, shrunk(band_pens.get(price_band(r["price"]), []), 20)))
+        if gram:
+            gs = [shrunk(gram_pens[t], 10) for t in (grams(r["name"]) & VOCAB)]
+            parts.append((0.40 if (tag or band_) else 1.0, st.mean(gs) if gs else None))
+        ok = [(w, v) for w, v in parts if v is not None]
+        if not ok:
+            return gmean
+        prior = sum(w * v for w, v in ok) / sum(w for w, _ in ok)
+        hist = prod_hist.get(r["pid"], [])
+        return (len(hist) * st.mean(hist) + 2 * prior) / (len(hist) + 2) if hist else prior
+    return f
+
+
+if "--ablation" in sys.argv:
+    print("\n【消融】每個特徵各貢獻多少（同一組切分，只換特徵）")
+    for label, fn in [
+        ("只用價格帶", _only(band_=True)),
+        ("只用品名文字", _only(gram=True)),
+        ("只用標籤", _only(tag=True)),
+        ("標籤+價格", _only(tag=True, band_=True)),
+        ("標籤+價格+品名", _only(tag=True, band_=True, gram=True)),
+    ]:
+        pv = [fn(r) for r in test]
+        print(f"  {label:<16} ρ = {spearman(pv, act):.3f}")
+
+    print("\n【消融】依商品的標籤數分組（標籤標得越細，是不是預測越準？）")
+    groups = {"1-2 個": [], "3-4 個": [], "5 個以上": []}
+    for p_, a_, r_ in zip(pred, act, test):
+        n = len(r_["tags"])
+        if n == 0:
+            continue
+        groups["1-2 個" if n <= 2 else "3-4 個" if n <= 4 else "5 個以上"].append((p_, a_))
+    for k, v in groups.items():
+        if len(v) >= 25:
+            print(f"  {k:<10} n={len(v):>4}  ρ = {spearman([x[0] for x in v], [x[1] for x in v]):.3f}")
+
+    print("\n【消融】分品類的準度（樣本 >= 25 才列；ρ 接近 0 = 這個類別的分數不可信）")
+    tag_names = {}
+    for r_ in query("SELECT jsonb_agg(jsonb_build_object('c', code, 'n', name)) AS rows FROM product_tags")[0]["rows"] or []:
+        tag_names[r_["c"]] = r_["n"]
+    for code, label in sorted(tag_names.items(), key=lambda kv: kv[1]):
+        sub = [(p_, a_) for p_, a_, r_ in zip(pred, act, test) if code in r_["tags"]]
+        if len(sub) >= 25:
+            print(f"  {label:<10} n={len(sub):>4}  ρ = {spearman([x[0] for x in sub], [x[1] for x in sub]):+.3f}")
 
 cold = [(p, a) for p, a, r in zip(pred, act, test) if not prod_hist.get(r["pid"])]
 print(f"冷啟動子集（該商品沒開過團）n={len(cold)}  ρ = "
