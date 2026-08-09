@@ -14,10 +14,7 @@ export type MemberFormValues = {
   id: number | null;
   member_no: string;
   phone: string;
-  /** 後台名稱：後台自己編、用來搜尋辨識這個人。會員 App 上顯示的是 line_display_name，不是這個 */
   name: string;
-  /** LINE 顯示名稱：由 LINE 登入時同步，唯讀（這裡只拿來對照，不送進 rpc_upsert_member） */
-  line_display_name?: string | null;
   gender: MemberGender;
   birthday: string | null; // yyyy-mm-dd
   email: string | null;
@@ -34,7 +31,6 @@ export const emptyMemberValues: MemberFormValues = {
   member_no: "",
   phone: "",
   name: "",
-  line_display_name: null,
   gender: null,
   birthday: null,
   email: null,
@@ -132,16 +128,9 @@ export function MemberForm({
           </select>
         </Field>
 
-        {/* 後台名稱與 LINE 顯示名稱是兩個獨立欄位：
-            改這裡不會動到客人在 App 上看到的名字（那個固定跟 LINE 走、無法從後台改）。 */}
-        <Field label="姓名 *" hint="後台用：列表、搜尋、單據都看這個">
+        <Field label="姓名 *">
           <input value={v.name} onChange={(e) => update("name", e.target.value)} className={inputCls} required />
         </Field>
-        {v.line_display_name ? (
-          <Field label="LINE 顯示名稱" hint="會員 App 上顯示的名字，同步自 LINE、無法修改">
-            <div className={`${inputCls} text-zinc-500 dark:text-zinc-400`}>{v.line_display_name}</div>
-          </Field>
-        ) : null}
         <Field label="手機">
           <input
             value={v.phone}
@@ -222,13 +211,10 @@ export function MemberForm({
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="flex flex-col gap-1 text-sm">
-      <span className="text-zinc-600 dark:text-zinc-400">
-        {label}
-        {hint && <span className="ml-1.5 text-xs text-zinc-400 dark:text-zinc-500">{hint}</span>}
-      </span>
+      <span className="text-zinc-600 dark:text-zinc-400">{label}</span>
       {children}
     </label>
   );
