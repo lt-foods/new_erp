@@ -14,7 +14,10 @@ import { useUnreadNotifications } from "@/lib/useUnreadNotifications";
 type MemberData = {
   member_id: number;
   member_no: string;
+  /** 後台自己編的名字（店員搜尋辨識用）。會員端只在沒有 LINE 名稱時當 fallback，不顯示為「你的名字」也不可編輯 */
   name: string | null;
+  /** LINE 顯示名稱 —— 會員端顯示的就是這個，來源是 LINE，要改請客人改自己的 LINE */
+  line_display_name: string | null;
   phone: string | null;
   email: string | null;
   birthday: string | null;
@@ -59,7 +62,8 @@ export default function MePage() {
 
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ name: "", phone: "", birthday: "", email: "" });
+  // 沒有 name：顯示名稱固定跟 LINE 走，會員不可編輯（後台另有自己的名字欄位）
+  const [form, setForm] = useState({ phone: "", birthday: "", email: "" });
 
   // 推播訂閱狀態 lift 到頁面層,頭像區跟底部 PushNotificationManager 共用
   const pushState = usePushNotification(getSession()?.token ?? null);
@@ -135,7 +139,6 @@ export default function MePage() {
         if (ovData) setOverview(ovData);
         if (wData) setWallet(wData);
         setForm({
-          name: meData.name ?? "",
           phone: meData.phone ?? "",
           birthday: meData.birthday ?? "",
           email: meData.email ?? "",
@@ -156,7 +159,6 @@ export default function MePage() {
     try {
       await callLiffApi(s.token, {
         action: "update_me",
-        name: form.name,
         phone: form.phone,
         birthday: form.birthday,
         email: form.email,
@@ -191,7 +193,10 @@ export default function MePage() {
   }
 
   const avatarSrc = me.avatar_url ?? linePicture;
-  const displayName = me.name ?? lineName ?? "(未提供)";
+  // 顯示名稱一律跟 LINE 走：DB 的 line_display_name（每次登入同步）優先，
+  // 其次是本次 session 帶回來的 LINE 名稱；最後才 fallback 到後台名稱
+  // （沒綁 LINE 的舊會員 / GDPR 清空後才會走到）。
+  const displayName = me.line_display_name ?? lineName ?? me.name ?? "(未提供)";
 
   const rightAction = !editing ? (
     <button
@@ -412,6 +417,8 @@ export default function MePage() {
               個人資料
             </div>
             <div className="overflow-hidden rounded-2xl bg-[var(--card-bg)] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+              {/* 名稱唯讀：顯示的就是 LINE 名稱，不開放在這裡改（改了店家會找不到人） */}
+              <InfoRow label="名稱" value={displayName} hint="來自 LINE" />
               <InfoRow label="手機" value={me.phone ?? null} mono />
               <InfoRow label="生日" value={me.birthday ?? null} />
               <InfoRow label="Email" value={me.email ?? null} breakAll />
@@ -420,6 +427,9 @@ export default function MePage() {
                 <InfoRow label="LINE ID" value={lineUserId} mono breakAll small />
               )}
             </div>
+            <p className="px-4 pt-2 text-[12px] text-[var(--tertiary-label)]">
+              名稱與大頭照同步自 LINE，如需更改請至 LINE 修改個人檔案。
+            </p>
           </section>
         ) : (
           /* 編輯模式 */
@@ -432,15 +442,12 @@ export default function MePage() {
                 個人資料
               </div>
               <div className="overflow-hidden rounded-2xl bg-[var(--card-bg)] shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
-                <FormField label="姓名" required>
-                  <input
-                    type="text"
-                    value={form.name}
-                    onChange={(e) => setForm({ ...form, name: e.target.value })}
-                    className="w-full bg-transparent text-right text-[17px] text-[var(--foreground)] outline-none placeholder:text-[var(--tertiary-label)]"
-                    placeholder="請輸入"
-                    required
-                  />
+                {/* 名稱不可編輯 —— 顯示名稱固定跟 LINE 走。
+                    （後台另有一份自己編的名字，那是店員搜尋辨識用的，不對客人顯示） */}
+                <FormField label="名稱" hint="來自 LINE，無法修改">
+                  <div className="w-full text-right text-[17px] text-[var(--secondary-label)]">
+                    {displayName}
+                  </div>
                 </FormField>
                 <FormField label="手機" hint="台灣 09xxxxxxxx">
                   <input
@@ -471,7 +478,7 @@ export default function MePage() {
                 </FormField>
               </div>
               <p className="px-4 pt-2 text-[12px] text-[var(--tertiary-label)]">
-                取貨店請聯絡店家調整。
+                名稱請至 LINE 修改；取貨店請聯絡店家調整。
               </p>
             </section>
 
@@ -482,7 +489,6 @@ export default function MePage() {
                   setEditing(false);
                   setError(null);
                   setForm({
-                    name: me.name ?? "",
                     phone: me.phone ?? "",
                     birthday: me.birthday ?? "",
                     email: me.email ?? "",
@@ -529,19 +535,24 @@ export default function MePage() {
 function InfoRow({
   label,
   value,
+  hint,
   mono,
   breakAll,
   small,
 }: {
   label: string;
   value: string | null;
+  hint?: string;
   mono?: boolean;
   breakAll?: boolean;
   small?: boolean;
 }) {
   return (
     <div className="flex items-center justify-between gap-3 border-t border-[var(--separator)] px-4 py-3.5 first:border-t-0">
-      <span className="text-[17px] text-[var(--foreground)]">{label}</span>
+      <span className="text-[17px] text-[var(--foreground)]">
+        {label}
+        {hint && <span className="ml-1.5 text-[12px] text-[var(--tertiary-label)]">{hint}</span>}
+      </span>
       <span
         className={`max-w-[60%] text-right ${small ? "text-[14px]" : "text-[17px]"} ${
           mono ? "font-mono" : ""

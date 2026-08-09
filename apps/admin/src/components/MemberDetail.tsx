@@ -20,7 +20,10 @@ type Member = {
   id: number;
   member_no: string;
   phone: string | null;
+  /** 後台自己編的名字（搜尋/單據辨識用） */
   name: string | null;
+  /** LINE 顯示名稱：會員 App 顯示的那個，同步自 LINE、不可編輯 */
+  line_display_name: string | null;
   gender: "M" | "F" | "O" | null;
   birthday: string | null;
   email: string | null;
@@ -217,7 +220,7 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
 
       const { data: m, error: err } = await sb
         .from("members")
-        .select("id, member_no, phone, name, gender, birthday, email, tier_id, home_store_id, status, member_type, notes, admin_note, no_notify_pickup, no_new_order, avatar_url, line_user_id, joined_at, last_visit_at, merged_into_member_id")
+        .select("id, member_no, phone, name, line_display_name, gender, birthday, email, tier_id, home_store_id, status, member_type, notes, admin_note, no_notify_pickup, no_new_order, avatar_url, line_user_id, joined_at, last_visit_at, merged_into_member_id")
         .eq("id", memberId).maybeSingle<Member>();
       if (cancelled) return;
       if (err) { setError(err.message); return; }
@@ -324,6 +327,15 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
         <div className="flex-1">
           <div className="flex flex-wrap items-baseline gap-2 text-lg font-semibold">
             {member.name ?? "—"}
+            {/* 客人報的是 LINE 上那個名字，跟後台名稱不同時要看得到才對得起來 */}
+            {member.line_display_name && member.line_display_name !== member.name && (
+              <span
+                className="rounded bg-zinc-100 px-2 py-0.5 text-xs font-normal text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
+                title="LINE 顯示名稱（會員 App 上顯示的名字，同步自 LINE、無法從後台修改）"
+              >
+                LINE：{member.line_display_name}
+              </span>
+            )}
             {member.admin_note && (
               <span className="rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300" title="管理員備註（不對外顯示）">
                 🔒 {member.admin_note}

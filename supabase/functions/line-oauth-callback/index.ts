@@ -17,7 +17,7 @@ import { corsHeaders } from "../_shared/cors.ts";
 import { verifyStateToken } from "../_shared/jwt.ts";
 import { signSessionToken } from "../_shared/session.ts";
 import { exchangeCode, verifyIdToken } from "../_shared/line.ts";
-import { autoRegister } from "../_shared/auto-register.ts";
+import { autoRegister, refreshLineDisplayName } from "../_shared/auto-register.ts";
 import { resolveStore } from "../_shared/store-resolve.ts";
 
 
@@ -131,6 +131,11 @@ Deno.serve(async (req) => {
         lineUserId,
         lineName: payload.name ?? null,
         linePicture: payload.picture ?? null,
+      });
+    } else {
+      // 回頭客不會走 autoRegister，顯示名稱要在這裡刷新（值沒變就不寫）
+      void refreshLineDisplayName({
+        supabaseUrl, serviceKey, memberId, lineName: payload.name ?? null,
       });
     }
 

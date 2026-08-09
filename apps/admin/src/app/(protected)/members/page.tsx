@@ -38,7 +38,10 @@ type SortDir = "asc" | "desc";
 type MemberRow = {
   id: number;
   member_no: string;
+  /** 後台自己編的名字：列表 / 搜尋 / 單據都用它，會員端看不到也改不了 */
   name: string | null;
+  /** LINE 顯示名稱（會員 App 上顯示的那個，由 LINE 同步、不可編輯） */
+  line_display_name: string | null;
   phone: string | null;
   avatar_url: string | null;
   tier_id: number | null;
@@ -56,7 +59,7 @@ type MemberRow = {
 };
 
 const MEMBER_SELECT_COLS =
-  "id, member_no, name, phone, avatar_url, tier_id, status, updated_at, joined_at, last_visit_at, external_source, external_id, line_user_id, home_store_id, takeout_store_name_hint, merged_into_member_id, unpicked_order_count";
+  "id, member_no, name, line_display_name, phone, avatar_url, tier_id, status, updated_at, joined_at, last_visit_at, external_source, external_id, line_user_id, home_store_id, takeout_store_name_hint, merged_into_member_id, unpicked_order_count";
 
 /** 顯示手機，若是 LIFF auto-register 的 placeholder (line:Uxxxx) 則視為未填 */
 function displayPhone(p: string | null): string {
@@ -172,10 +175,12 @@ function MembersListBody() {
           .order(sortBy, { ascending: sortDir === "asc" })
           .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
 
-        // Google 式：空白 / + 拆 token，每個 token 都要在 name / phone / member_no 至少一個欄位命中
+        // Google 式：空白 / + 拆 token，每個 token 都要在 name / LINE 名稱 / phone / member_no
+        // 至少一個欄位命中。line_display_name 也要吃：客人是拿 LINE 上的名字來報，
+        // 店員手上只有那個字串，搜不到就會誤判沒這個人而重複建檔。
         const tokens = query.replace(/[%,()]/g, " ").split(/[\s+]+/).filter(Boolean);
         for (const tok of tokens) {
-          q = q.or(`name.ilike.%${tok}%,phone.ilike.%${tok}%,member_no.ilike.%${tok}%`);
+          q = q.or(`name.ilike.%${tok}%,line_display_name.ilike.%${tok}%,phone.ilike.%${tok}%,member_no.ilike.%${tok}%`);
         }
         if (storeId) q = q.eq("home_store_id", Number(storeId));
         // 沒輸入搜尋字串時：只看活躍會員。
@@ -382,7 +387,7 @@ function MembersListBody() {
         <div className="relative">
           <input
             type="search"
-            placeholder="搜尋 會員編號 / 姓名 / 手機"
+            placeholder="搜尋 會員編號 / 姓名 / LINE 名稱 / 手機"
             value={queryDraft}
             onChange={(e) => setQueryDraft(e.target.value)}
             className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 pr-8 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800"
@@ -443,7 +448,7 @@ function MembersListBody() {
               />
             </Th>
           )}
-          <ThSort label="姓名" col="name" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
+          <ThSort label="姓名" col="name" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} title="後台自己編的名字（會員 App 上顯示的是 LINE 名稱，見灰標籤）" />
           <ThSort label="取貨店" col="home_store_id" sortBy={sortBy} sortDir={sortDir} onToggle={toggleSort} />
           <Th>手機</Th>
           <Th align="right" title="歷史累計有效訂單數（不含取消/過期/轉出）；已取貨的單仍會計入，不代表還欠貨">累計訂單數</Th>
@@ -518,6 +523,16 @@ function MembersListBody() {
                       <span className={r.status === "merged" || r.status === "deleted" ? "text-zinc-400" : ""}>
                         {r.name ?? "—"}
                       </span>
+                      {/* LINE 名稱與後台名稱不同時才顯示：客人報的是 LINE 上那個名字，
+                          店員要看得到才對得起來（相同就別佔版面） */}
+                      {r.line_display_name && r.line_display_name !== r.name && (
+                        <span
+                          title="LINE 顯示名稱（會員 App 上顯示的名字）"
+                          className="max-w-[10rem] truncate whitespace-nowrap rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-normal text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
+                        >
+                          LINE：{r.line_display_name}
+                        </span>
+                      )}
                       {r.external_source === "lele" && (
                         <span
                           title={r.external_id ? `樂樂顧客代號 ${r.external_id}` : "樂樂匯入"}
@@ -576,13 +591,14 @@ function MembersListBody() {
                           e.stopPropagation();
                           const { data } = await getSupabase()
                             .from("members")
-                            .select("id, member_no, phone, name, gender, birthday, email, tier_id, home_store_id, status, notes")
+                            .select("id, member_no, phone, name, line_display_name, gender, birthday, email, tier_id, home_store_id, status, notes")
                             .eq("id", r.id).maybeSingle();
                           if (data) setModal({ mode: "edit", values: {
                             id: data.id, member_no: data.member_no,
                             // LIFF auto-register 的 placeholder「line:<uid>」不要灌進編輯表單
                             phone: data.phone && !data.phone.startsWith("line:") ? data.phone : "",
-                            name: data.name ?? "", gender: data.gender, birthday: data.birthday,
+                            name: data.name ?? "", line_display_name: data.line_display_name,
+                            gender: data.gender, birthday: data.birthday,
                             email: data.email, tier_id: data.tier_id, home_store_id: data.home_store_id,
                             status: data.status, notes: data.notes,
                           }});

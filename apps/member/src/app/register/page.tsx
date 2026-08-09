@@ -87,6 +87,8 @@ export default function RegisterPage() {
         action: "register_and_bind",
         phone: phone.trim(),
         name: lookup ? "" : name.trim(),
+        // App 顯示名稱固定跟 LINE 走，跟上面表單填的「給店家的姓名」是兩回事
+        line_name: lineName ?? "",
         birthday: lookup ? "" : birthday,
       });
       window.location.href = `/shop?member_id=${resp.member_id}`;
@@ -179,7 +181,7 @@ export default function RegisterPage() {
           <>
             <label className="flex flex-col gap-1">
               <span className="text-base font-medium">
-                姓名
+                姓名 <span className="text-sm text-zinc-400">（提供給店家聯絡、取貨核對用）</span>
                 {lineName && <span className="ml-2 text-sm text-[#06C755]">✓ 已由 LINE 帶入，可修改</span>}
               </span>
               <input

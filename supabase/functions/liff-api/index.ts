@@ -189,7 +189,10 @@ async function registerAndBind(sb: any, p: any) {
         member_no: memberNo,
         phone_hash: phoneHash,
         phone: p.phone.trim(),
+        // name = 後台名稱（這裡拿註冊表單填的當初值，之後只有後台能改）
         name: p.name.trim(),
+        // line_display_name = 會員端顯示名稱，之後每次 LINE 登入都會被覆寫
+        line_display_name: p.lineName || null,
         birthday: p.birthday,
         birth_md: p.birthday.slice(5, 10),
         home_store_id: p.storeId,
@@ -215,7 +218,9 @@ async function getMe(sb: any, tenantId: string, memberId: number) {
   // maybeSingle：會員可能已被後台刪除（rpc_member_purge），但對方手機的 JWT 還沒過期。
   // 這時要回明確的 member_not_found 讓前端清 session 重新登入，
   // 不能讓 .single() 的「Cannot coerce ...」原始錯誤流到畫面上（2026-08 實際發生）。
-  const { data, error } = await sb.from("members").select("id, member_no, name, phone, email, birthday, gender, home_store_id, avatar_url, status").eq("tenant_id", tenantId).eq("id", memberId).maybeSingle();
+  // line_display_name = 會員端要顯示的名字（來自 LINE，不可編輯）；
+  // name 是後台自己編的、給店員搜尋辨識用，只在沒有 LINE 名稱時當 fallback。
+  const { data, error } = await sb.from("members").select("id, member_no, name, line_display_name, phone, email, birthday, gender, home_store_id, avatar_url, status").eq("tenant_id", tenantId).eq("id", memberId).maybeSingle();
   if (error) return json({ error: error.message }, 500);
   if (!data) return json({ error: "member_not_found" }, 401);
   let home_store_name: string | null = null;
@@ -233,11 +238,10 @@ async function getMe(sb: any, tenantId: string, memberId: number) {
 
 async function updateMe(sb: any, tenantId: string, memberId: number, p: any) {
   const patch: any = {};
-  if (p.name !== undefined) {
-    const n = p.name.trim();
-    if (!n) return json({ error: "name cannot be empty" }, 400);
-    patch.name = n;
-  }
+  // name 刻意不接受：那是後台自己編、用來搜尋辨識會員的名字，會員改了店員就搜不到人。
+  // 會員端顯示的是 line_display_name（來自 LINE，要改請改自己的 LINE 名稱）。
+  // 舊版前端（已裝在客人手機上的 PWA）仍會送 name 進來 —— 這裡靜默忽略，
+  // 回 400 會讓他們連手機/生日都存不了。
   if (p.phone !== undefined) {
     const ph = p.phone.trim();
     if (ph) {
@@ -1389,7 +1393,7 @@ Deno.serve(async (req) => {
     const resp = await (async (): Promise<Response> => {
       switch (action) {
         case "lookup_by_phone": return await lookupByPhone(sb, tenantId, String(body.phone ?? ""));
-        case "register_and_bind": return await registerAndBind(sb, { tenantId, storeId, lineUserId, phone: String(body.phone ?? ""), name: String(body.name ?? ""), birthday: String(body.birthday ?? "") });
+        case "register_and_bind": return await registerAndBind(sb, { tenantId, storeId, lineUserId, phone: String(body.phone ?? ""), name: String(body.name ?? ""), lineName: body.line_name ? String(body.line_name) : "", birthday: String(body.birthday ?? "") });
         case "create_account_link_nonce": if (!memberId) return json({ error: "no member_id" }, 401); return await createAccountLinkNonce(sb, tenantId, memberId, String(body.store ?? ""));
         case "get_me": if (!memberId) return json({ error: "no member_id" }, 401); return await getMe(sb, tenantId, memberId);
         case "update_me": if (!memberId) return json({ error: "no member_id" }, 401); return await updateMe(sb, tenantId, memberId, body);

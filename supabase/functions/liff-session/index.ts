@@ -21,7 +21,7 @@
 import { corsHeaders } from "../_shared/cors.ts";
 import { signSessionToken } from "../_shared/session.ts";
 import { verifyIdToken } from "../_shared/line.ts";
-import { autoRegister } from "../_shared/auto-register.ts";
+import { autoRegister, refreshLineDisplayName } from "../_shared/auto-register.ts";
 import { resolveStore } from "../_shared/store-resolve.ts";
 
 
@@ -75,6 +75,10 @@ Deno.serve(async (req) => {
       const resolved = await resolveStore(supabaseUrl, serviceKey, tenantId, String(storeNumericId));
       if (!resolved) return json({ error: "store_not_found", detail: String(storeNumericId) }, 500);
       storeCode = resolved.code;
+      // 回頭客不會走 autoRegister，顯示名稱要在這裡刷新（值沒變就不寫）
+      void refreshLineDisplayName({
+        supabaseUrl, serviceKey, memberId, lineName: payload.name ?? null,
+      });
     } else {
       // 沒 binding → 必須有 store 才能首次註冊
       if (!incomingStore) {
