@@ -356,6 +356,36 @@ const RULES: Rule[] = [
     pattern: /transfer (\d+) not found/i,
     render: () => "找不到此調撥單（可能已被刪除）。",
   },
+  // ===== rpc_unmerge_member（復原合併） =====
+  {
+    pattern: /^merge_not_found(?::|$)/i,
+    render: () => "找不到這筆合併紀錄（可能已被其他人復原）。請關掉視窗重開一次。",
+  },
+  {
+    pattern: /^merge_already_reverted(?::|$)/i,
+    render: () => "這筆合併已經復原過了。請關掉視窗重開一次看最新狀態。",
+  },
+  {
+    pattern: /^merge_state_changed(?::|$)/i,
+    render: () =>
+      "來源會員目前的狀態已經不是「被併入此會員」（可能已被刪除，或又被合併到別人身上），無法自動復原。請聯絡工程師處理。",
+  },
+  {
+    pattern: /^unmerge_needs_manual(?::|$)/i,
+    render: () =>
+      "這筆合併在「復原」功能上線前完成，且動到了點數／儲值／卡片，沒有足夠資料可以安全還原，請聯絡工程師處理。",
+  },
+  {
+    pattern: /^unmerge_would_collide(?::|$)/i,
+    render: () =>
+      "來源會員身上已經有同一團、同通路的有效訂單，訂單搬回去會撞單。請先處理掉其中一筆再復原。",
+  },
+  {
+    pattern: /^unmerge_balance_insufficient:\s*目標會員目前(點數|儲值金)\s*([\d.]+)\s*少於當初併入的\s*([\d.]+)/,
+    render: (m) =>
+      `無法復原：本會員目前的${m[1]}只有 ${fmt(m[2])}，少於當初併入的 ${fmt(m[3])}，扣回去會變負數。`
+      + `請先確認這筆${m[1]}的去向並手動調整後再復原。`,
+  },
   // ===== 撿貨單號碼衝突(同秒多筆提交時的 race) =====
   {
     pattern: /duplicate key value violates unique constraint "picking_waves_tenant_id_wave_code_key"/i,

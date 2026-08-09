@@ -45,6 +45,10 @@ type MergedFrom = {
   merge_id: number;
   merged_at: string;
   reason: string | null;
+  /** 合併當下有沒有記下「搬走了哪些列」。false = 舊紀錄，只能靠時間戳推回（可能有漏） */
+  recorded: boolean;
+  /** 有動到點數／儲值／卡片：舊紀錄碰到這種一律擋下不給自動復原 */
+  touchedMoney: boolean;
   guest: {
     id: number;
     member_no: string;
@@ -53,6 +57,18 @@ type MergedFrom = {
     avatar_url: string | null;
     joined_at: string;
   };
+};
+
+/** rpc_unmerge_member 的回傳 */
+type UnmergeResult = {
+  reconstructed: boolean;
+  orders_restored: number;
+  orders_expected: number;
+  aliases_restored: number;
+  cards_restored: number;
+  points_restored: number;
+  wallet_restored: number;
+  target_orders_total: number | null;
 };
 
 type PointsEntry = {
@@ -119,6 +135,8 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
   /** 該會員在所屬分店的 OA 名冊有沒有已配對的身分（推播真正靠的是這個） */
   const [hasStoreLineBinding, setHasStoreLineBinding] = useState(false);
   const [mergedFrom, setMergedFrom] = useState<MergedFrom[]>([]);
+  /** 正在復原的那筆合併 id（一次只讓按一筆） */
+  const [unmerging, setUnmerging] = useState<number | null>(null);
   const [savingFlags, setSavingFlags] = useState(false);
   const [draftAdminNote, setDraftAdminNote] = useState("");
   const [draftNoNotify, setDraftNoNotify] = useState(false);
@@ -129,6 +147,55 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
   const [walletAction, setWalletAction] = useState<{ mode: WalletActionMode; reverseTarget?: WalletEntry } | null>(null);
   const role = useRole();
   const canAdjust = canAdjustWallet(role);
+
+  /**
+   * 復原一次合併：把當初搬過來的訂單／流水／餘額還給來源會員，來源會員復活。
+   *
+   * 兩種依據（見 20260809000020）：mf.recorded=true 是合併當下記下的精準清單；
+   * false 是本功能上線前的舊紀錄，後端改用 updated_at 時間戳推回 —— 不會抓錯人，
+   * 但搬過去之後又被改過狀態的訂單會漏掉，所以確認框與結果都要把話講白。
+   */
+  async function unmerge(mf: MergedFrom) {
+    const warn = mf.recorded
+      ? ""
+      : "\n\n⚠ 這筆合併在「復原」功能上線前完成，系統沒有留下當初搬走哪些資料的清單，"
+        + "只能用合併當下的時間戳推回。合併後又被改過狀態的訂單可能推不回來，"
+        + "復原後請自行核對兩邊的訂單。";
+    if (!window.confirm(
+      `確定要復原這筆合併嗎？\n\n`
+      + `「${mf.guest.name ?? mf.guest.member_no}」會重新變回獨立會員，`
+      + `當初搬過來的訂單 / 點數 / 儲值會還給他。${warn}`
+    )) return;
+
+    const reason = window.prompt("復原原因（會記進稽核紀錄）", "合併到錯的人") ?? null;
+
+    setUnmerging(mf.merge_id);
+    setError(null);
+    try {
+      const { data, error: rpcErr } = await getSupabase().rpc("rpc_unmerge_member", {
+        p_merge_id: mf.merge_id,
+        p_reason: reason,
+      });
+      if (rpcErr) { setError(translateRpcError(rpcErr)); return; }
+
+      const r = data as UnmergeResult;
+      const lines = [`已復原：${mf.guest.name ?? mf.guest.member_no} 已變回獨立會員。`];
+      lines.push(`搬回訂單 ${r.orders_restored} 張`
+        + (r.orders_expected > r.orders_restored
+          ? `（清單上有 ${r.orders_expected} 張，其餘可能已被搬去別的會員）` : ""));
+      if (Number(r.points_restored) > 0) lines.push(`點數 ${r.points_restored} 點`);
+      if (Number(r.wallet_restored) > 0) lines.push(`儲值金 $${r.wallet_restored}`);
+      if (r.cards_restored > 0) lines.push(`卡片 ${r.cards_restored} 張`);
+      if (r.reconstructed) {
+        lines.push(`\n⚠ 這是用時間戳推回的（舊紀錄），可能有漏。`
+          + `本會員名下目前還有 ${r.target_orders_total} 張訂單，請確認沒有該還沒還的。`);
+      }
+      alert(lines.join("\n"));
+      setReloadTick((n) => n + 1);
+    } finally {
+      setUnmerging(null);
+    }
+  }
 
   async function saveFlags() {
     if (!member) return;
@@ -235,9 +302,13 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
         sb.from("wallet_balances").select("balance").eq("member_id", memberId).maybeSingle<{ balance: number }>(),
         sb.from("points_ledger").select("id, change, balance_after, source_type, reason, created_at").eq("member_id", memberId).order("created_at", { ascending: false }).limit(50),
         sb.from("wallet_ledger").select("id, change, balance_after, type, payment_method, reason, reverses, created_at").eq("member_id", memberId).order("created_at", { ascending: false }).limit(50),
+        // 已復原的合併不算在清單裡（紀錄本身保留供稽核，見 20260809000020）。
+        // moved 只取「有沒有值」：有 = 合併當下記了搬走哪些列，可精準復原；
+        // NULL = 功能上線前的舊紀錄，只能靠時間戳推回，UI 要先講清楚。
         sb.from("member_merges")
-          .select("id, created_at, reason, merged_member_id, members:merged_member_id (id, member_no, name, phone, avatar_url, joined_at)")
+          .select("id, created_at, reason, merged_member_id, points_moved, wallet_moved, cards_moved, moved, members:merged_member_id (id, member_no, name, phone, avatar_url, joined_at)")
           .eq("primary_member_id", memberId)
+          .is("reverted_at", null)
           .order("created_at", { ascending: false }),
         sb.from("customer_orders")
           .select("id, order_no, status, order_kind, pickup_store_id, created_at, campaign:group_buy_campaigns(name), customer_order_items(qty, unit_price, status)")
@@ -272,6 +343,10 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
         created_at: string;
         reason: string | null;
         merged_member_id: number;
+        points_moved: number | string | null;
+        wallet_moved: number | string | null;
+        cards_moved: number | null;
+        moved: unknown;
         members: MergeMemberRow | MergeMemberRow[] | null;
       };
       const mmRows = ((mm.data ?? []) as unknown as MergeRow[])
@@ -282,6 +357,10 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
             merge_id: r.id,
             merged_at: r.created_at,
             reason: r.reason,
+            recorded: r.moved != null,
+            touchedMoney: Number(r.points_moved ?? 0) !== 0
+              || Number(r.wallet_moved ?? 0) !== 0
+              || Number(r.cards_moved ?? 0) !== 0,
             guest,
           };
         })
@@ -744,7 +823,34 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
                     {mf.reason && (
                       <div className="text-xs text-zinc-500">原因：{mf.reason}</div>
                     )}
+                    {/* 舊紀錄先說清楚復原是「推回來的」，不要等按下去才發現有漏 */}
+                    {!mf.recorded && !mf.touchedMoney && (
+                      <div className="mt-0.5 text-[11px] text-amber-700 dark:text-amber-400">
+                        ⚠ 此筆早於「復原」功能，沒有搬移清單；復原會用合併當下的時間戳推回，可能有漏
+                      </div>
+                    )}
+                    {!mf.recorded && mf.touchedMoney && (
+                      <div className="mt-0.5 text-[11px] text-amber-700 dark:text-amber-400">
+                        ⚠ 此筆早於「復原」功能且動到點數／儲值／卡片，無法自動復原，請聯絡工程師
+                      </div>
+                    )}
                   </div>
+                  {/* 併錯人的退路。合併會讓來源會員整個消失、訂單掛到別人名下，
+                      靠人工改 DB 才救得回來 —— 所以這顆按鈕要留在管理員手上。 */}
+                  {isAdmin(role) && !isMerged && !isDeleted && (
+                    <SpinButton
+                      onClick={() => unmerge(mf)}
+                      disabled={unmerging !== null || (!mf.recorded && mf.touchedMoney)}
+                      title={
+                        !mf.recorded && mf.touchedMoney
+                          ? "此筆合併動到了點數／儲值／卡片且沒有搬移清單，無法自動復原"
+                          : "把這位會員從本會員拆回去，訂單 / 點數 / 儲值一起還回去"
+                      }
+                      className="rounded-md border border-amber-300 px-2 py-1 text-xs font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-40 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950"
+                    >
+                      ↩ 復原合併
+                    </SpinButton>
+                  )}
                 </li>
               ))}
             </ul>
