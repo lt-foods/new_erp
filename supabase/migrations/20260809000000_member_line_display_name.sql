@@ -13,19 +13,22 @@
 --   - name：維持現狀，後台照舊用（列表 / 搜尋 / 單據）。
 --     差別只在會員端不再顯示、也不再能改（liff-api 的 update_me 已拿掉 name）。
 --
--- **本檔刻意只做加欄位 + backfill，不動任何後台正在用的 view / function。**
+-- **後台看得到的東西刻意一個都不動。**
 --   v_admin_member_list、rpc_search_members、rpc_upsert_member 全部原封不動；
 --   後台的行為與這次改動前完全一致（新欄位對後台是不存在的）。
 --   註：view 的 m.* 在建立當下就展開成欄位清單，所以 v_admin_member_list
 --   不會、也不該自己冒出 line_display_name —— 後台若哪天要顯示 / 搜尋
 --   LINE 名稱，再另開 migration 重建 view 與 rpc_search_members。
+--   唯一的例外是下面的 rpc_member_gdpr_delete，只多清一個後台讀不到的新欄位，
+--   簽章與所有既有行為完全不變。
 --
--- 已知待辦（本檔不做，等後台改動一起處理）：
---   rpc_member_gdpr_delete（20260618000040）清 PII 時沒清 line_display_name，
---   GDPR 刪除後這欄的 LINE 名稱會殘留。要補的話是在該 function 的
---   `UPDATE members SET name = NULL, ...` 那段加上 `line_display_name = NULL`。
+-- 基底版本：rpc_member_gdpr_delete ← 20260618000040_rpc_member_gdpr_delete.sql
+--   （2026-08-09 已用 pg_get_functiondef 撈線上實際定義逐行比對過，
+--     與該 migration 完全一致、無手改漂移，故直接基於它擴寫。）
 --
--- Rollback：ALTER TABLE public.members DROP COLUMN IF EXISTS line_display_name;
+-- Rollback：
+--   - 重跑 20260618000040_rpc_member_gdpr_delete.sql
+--   - ALTER TABLE public.members DROP COLUMN IF EXISTS line_display_name;
 -- ============================================================================
 
 ALTER TABLE public.members
@@ -53,3 +56,103 @@ UPDATE public.members
    AND name IS NOT NULL;
 
 SELECT set_config('app.skip_updated_at', '', false);
+
+-- ── GDPR 刪除：line_display_name 也是 PII ─────────────────────────────────
+-- 基底 20260618000040（＝線上實際定義），只在 UPDATE members 那段多清一欄，
+-- 其餘一字不改：簽章、稽核內容、卡片退卡、標籤刪除、冪等守衛全部照舊。
+-- 後台完全感覺不到差別 —— 它本來就讀不到 line_display_name。
+CREATE OR REPLACE FUNCTION public.rpc_member_gdpr_delete(
+  p_member_id BIGINT,
+  p_reason    TEXT DEFAULT NULL,
+  p_operator  UUID DEFAULT NULL
+) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_tenant     UUID;
+  v_operator   UUID;
+  v_status     TEXT;
+  v_had_name   BOOLEAN;
+  v_had_email  BOOLEAN;
+  v_had_phone  BOOLEAN;
+  v_had_line   BOOLEAN;
+  v_cards      INTEGER := 0;
+  v_tags       INTEGER := 0;
+BEGIN
+  v_operator := COALESCE(p_operator, auth.uid(), '00000000-0000-0000-0000-000000000000'::uuid);
+
+  SELECT tenant_id, status,
+         (name IS NOT NULL), (email_hash IS NOT NULL),
+         (phone_hash IS NOT NULL AND phone_hash NOT LIKE 'DELETED\_%'),
+         (line_user_id IS NOT NULL)
+    INTO v_tenant, v_status, v_had_name, v_had_email, v_had_phone, v_had_line
+    FROM members WHERE id = p_member_id;
+
+  IF v_tenant IS NULL THEN
+    RAISE EXCEPTION 'member % not found', p_member_id;
+  END IF;
+
+  -- 冪等：已刪除 → 不重複動作（可安全重跑）
+  IF v_status = 'deleted' THEN
+    RAISE NOTICE 'member % already gdpr-deleted, no-op', p_member_id;
+    RETURN;
+  END IF;
+
+  -- 1) members 主檔：清 PII + status='deleted'
+  UPDATE members
+     SET name              = NULL,
+         line_display_name = NULL,   -- ← 本次唯一新增
+         phone_enc         = NULL,
+         phone_hash        = 'DELETED_' || id,
+         email_enc         = NULL,
+         email_hash        = NULL,
+         birthday_enc      = NULL,
+         birth_md          = NULL,
+         line_user_id      = NULL,
+         avatar_url        = NULL,
+         status            = 'deleted',
+         notes             = '[GDPR deleted at ' || NOW()::text || ' by ' || v_operator::text || ']',
+         updated_at        = NOW(),
+         updated_by        = v_operator
+   WHERE id = p_member_id;
+
+  -- 2) 會員卡：全部退卡
+  UPDATE member_cards
+     SET status     = 'retired',
+         retired_at = COALESCE(retired_at, NOW()),
+         updated_at = NOW(),
+         updated_by = v_operator
+   WHERE member_id = p_member_id AND status <> 'retired';
+  GET DIAGNOSTICS v_cards = ROW_COUNT;
+
+  -- 3) 會員標籤：全部刪除
+  DELETE FROM member_tags WHERE member_id = p_member_id;
+  GET DIAGNOSTICS v_tags = ROW_COUNT;
+
+  -- 4) points_ledger / wallet_ledger / sales：刻意不動（稅務 7 年留存）
+
+  -- 5) 稽核：只記非 PII 中繼資訊
+  INSERT INTO member_audit_log (
+    tenant_id, entity_type, entity_id, action,
+    before_value, after_value, reason, operator_id
+  ) VALUES (
+    v_tenant, 'member', p_member_id, 'gdpr_delete',
+    jsonb_build_object(
+      'prev_status', v_status,
+      'had_name',  v_had_name,
+      'had_email', v_had_email,
+      'had_phone', v_had_phone,
+      'had_line',  v_had_line
+    ),
+    jsonb_build_object(
+      'status',         'deleted',
+      'cards_retired',  v_cards,
+      'tags_removed',   v_tags
+    ),
+    p_reason, v_operator
+  );
+END;
+$$;
+
+COMMENT ON FUNCTION rpc_member_gdpr_delete(BIGINT, TEXT, UUID) IS
+  '會員 GDPR 刪除：軟刪除（status=deleted）+ 清 PII（姓名/LINE 顯示名稱/電話/email/生日/LINE/大頭照），'
+  '卡片退卡、標籤刪除，流水/訂單/sales 保留（稅務）。冪等、稽核只記非 PII 中繼。';
