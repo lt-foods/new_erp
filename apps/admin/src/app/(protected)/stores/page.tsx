@@ -30,6 +30,9 @@ type Store = {
   notes: string | null;
   line_oa_basic_id: string | null;
   line_liff_id: string | null;
+  address: string | null;
+  latitude: number | null;
+  longitude: number | null;
   updated_at: string;
   deleted_at: string | null;
 };
@@ -48,6 +51,9 @@ const EMPTY: Omit<Store, "id" | "updated_at" | "deleted_at"> = {
   notes: null,
   line_oa_basic_id: null,
   line_liff_id: null,
+  address: null,
+  latitude: null,
+  longitude: null,
 };
 
 type ActiveFilter = "active" | "all" | "deleted";
@@ -92,7 +98,7 @@ export default function StoresPage() {
   async function reload() {
     let q = getSupabase()
       .from("stores")
-      .select("id, code, name, location_id, pickup_window_days, allowed_payment_methods, is_active, notes, line_oa_basic_id, line_liff_id, updated_at, deleted_at")
+      .select("id, code, name, location_id, pickup_window_days, allowed_payment_methods, is_active, notes, line_oa_basic_id, line_liff_id, address, latitude, longitude, updated_at, deleted_at")
       .order("updated_at", { ascending: false })
       .limit(500);
     if (query.trim()) {
@@ -153,9 +159,9 @@ export default function StoresPage() {
     }
   }
 
-  async function save(v: StoreFormValues) {
+  async function save(v: StoreFormValues, geoDirty: boolean) {
     try {
-      const { error: err } = await getSupabase().rpc("rpc_upsert_store", {
+      const { data, error: err } = await getSupabase().rpc("rpc_upsert_store", {
         p_id: v.id ?? null,
         p_code: v.code.trim(),
         p_name: v.name.trim(),
@@ -167,6 +173,19 @@ export default function StoresPage() {
         p_line_oa_basic_id: v.line_oa_basic_id,
       });
       if (err) throw err;
+      // 地址／座標走另一支 RPC（rpc_upsert_store 的參數個數改過一次就撞過
+      // overload，見 20260809000000 的說明）。只有真的動到才呼叫 —— 它限
+      // owner/admin，沒改卻照打會讓其他角色連「改備註」都被擋。
+      const savedId = v.id ?? (typeof data === "number" ? data : null);
+      if (geoDirty && savedId != null) {
+        const { error: geoErr } = await getSupabase().rpc("rpc_set_store_geo", {
+          p_store_id: savedId,
+          p_address: v.address,
+          p_latitude: v.latitude,
+          p_longitude: v.longitude,
+        });
+        if (geoErr) throw geoErr;
+      }
       setEditing(null);
       setCreating(false);
       setError(null);
@@ -206,7 +225,7 @@ export default function StoresPage() {
           title="新增"
           locations={locations}
           onCancel={() => setCreating(false)}
-          onSave={(v) => save({ ...v, id: null })}
+          onSave={(v, geoDirty) => save({ ...v, id: null }, geoDirty)}
         />
       )}
 
@@ -268,7 +287,7 @@ export default function StoresPage() {
                       title="編輯"
                       locations={locations}
                       onCancel={() => setEditing(null)}
-                      onSave={(v) => save({ ...v, id: r.id })}
+                      onSave={(v, geoDirty) => save({ ...v, id: r.id }, geoDirty)}
                     />
                   </td>
                 </tr>
@@ -287,7 +306,20 @@ export default function StoresPage() {
                       )}
                     </div>
                   </Td>
-                  <Td>{r.name}</Td>
+                  <Td>
+                    <div className="flex items-center gap-1.5">
+                      <span>{r.name}</span>
+                      {/* 沒座標 = 不會出現在首頁「門市熱賣地圖」上，列表要一眼看得出來 */}
+                      {r.latitude == null || r.longitude == null ? (
+                        <span
+                          title="尚未設定經緯度，不會出現在首頁熱賣地圖上"
+                          className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
+                        >
+                          無座標
+                        </span>
+                      ) : null}
+                    </div>
+                  </Td>
                   {/* 會員端現貨專區的「LINE 詢問」要靠這個值才能直接開對話；
                       沒設的店會退成「複製訊息」，所以列表要一眼看得出哪幾間還沒填。 */}
                   <Td className="whitespace-nowrap font-mono text-xs">
@@ -411,13 +443,29 @@ function StoreForm({
   initial: StoreFormValues;
   title: string;
   locations: Location[];
-  onSave: (v: StoreFormValues) => void;
+  onSave: (v: StoreFormValues, geoDirty: boolean) => void;
   onCancel: () => void;
 }) {
   const [v, setV] = useState<StoreFormValues>(initial);
   function up<K extends keyof typeof v>(k: K, val: typeof v[K]) {
     setV({ ...v, [k]: val });
   }
+  // 經緯度用字串暫存：綁 number 的話打「25.」會被 Number() 吃掉小數點，
+  // 使用者永遠打不完一個座標
+  const [latStr, setLatStr] = useState(initial.latitude == null ? "" : String(initial.latitude));
+  const [lngStr, setLngStr] = useState(initial.longitude == null ? "" : String(initial.longitude));
+  const lat = parseCoord(latStr);
+  const lng = parseCoord(lngStr);
+  const geoError =
+    (latStr.trim() !== "" && lat === null) || (lngStr.trim() !== "" && lng === null)
+      ? "經緯度只能是數字"
+      : (lat === null) !== (lng === null)
+        ? "經度與緯度要一起填或一起留空"
+        : null;
+  const geoDirty =
+    (v.address ?? null) !== (initial.address ?? null) ||
+    lat !== (initial.latitude == null ? null : Number(initial.latitude)) ||
+    lng !== (initial.longitude == null ? null : Number(initial.longitude));
   function togglePayment(m: PaymentMethod) {
     const cur = new Set(v.allowed_payment_methods ?? []);
     if (cur.has(m)) cur.delete(m);
@@ -429,7 +477,8 @@ function StoreForm({
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        onSave(v);
+        if (geoError) return;
+        onSave({ ...v, latitude: lat, longitude: lng }, geoDirty);
       }}
       className="space-y-3 border-l-4 border-blue-400 bg-blue-50/40 p-4 dark:bg-blue-950/20"
     >
@@ -521,6 +570,51 @@ function StoreForm({
 
         <StoreLineOaField storeId={v.id} storeCode={v.code} />
 
+        {/* 地址 / 座標：首頁「門市熱賣地圖」靠這兩個數字定位；沒填的店不會出現在圖上。
+            座標可在 Google 地圖上對門市按右鍵，第一行就是「緯度, 經度」，直接貼上。 */}
+        <F label="地址" className="sm:col-span-2">
+          <input
+            value={v.address ?? ""}
+            onChange={(e) => up("address", e.target.value || null)}
+            placeholder="例：新北市中和區中山路二段 100 號"
+            className={inputCls}
+          />
+        </F>
+        <F label="緯度 / 經度（首頁地圖用）" className="sm:col-span-2">
+          <div className="flex items-center gap-2">
+            <input
+              value={latStr}
+              onChange={(e) => setLatStr(e.target.value)}
+              onPaste={(e) => {
+                // Google 地圖右鍵複製的是「25.0330, 121.5654」，整串貼進緯度欄時
+                // 順手拆成兩格，不要逼使用者手動剪一半
+                const pair = e.clipboardData.getData("text").match(
+                  /^\s*(-?\d+(?:\.\d+)?)\s*[,，]\s*(-?\d+(?:\.\d+)?)\s*$/,
+                );
+                if (!pair) return;
+                e.preventDefault();
+                setLatStr(pair[1]);
+                setLngStr(pair[2]);
+              }}
+              inputMode="decimal"
+              placeholder="25.033"
+              className={`${inputCls} w-full`}
+            />
+            <span className="text-zinc-400">,</span>
+            <input
+              value={lngStr}
+              onChange={(e) => setLngStr(e.target.value)}
+              inputMode="decimal"
+              placeholder="121.5654"
+              className={`${inputCls} w-full`}
+            />
+          </div>
+          <span className={`text-[11px] ${geoError ? "text-red-600 dark:text-red-400" : "text-zinc-500"}`}>
+            {geoError ??
+              "Google 地圖對門市按右鍵，第一行「25.0330, 121.5654」整串貼到左欄會自動拆開；留空 = 不出現在首頁地圖"}
+          </span>
+        </F>
+
         <F label="備註" className="sm:col-span-4">
           <textarea
             value={v.notes ?? ""}
@@ -563,6 +657,14 @@ function F({
       {children}
     </label>
   );
+}
+
+// 空字串 → null（＝清除座標）；非數字 → null，並由 geoError 擋下送出
+function parseCoord(s: string): number | null {
+  const t = s.trim();
+  if (t === "") return null;
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
 }
 
 const inputCls =

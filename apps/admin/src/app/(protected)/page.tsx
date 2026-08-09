@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import StoreHeatMap from "@/components/StoreHeatMap";
 import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 
 type Counts = {
@@ -198,6 +199,8 @@ export default function Dashboard() {
           <StatCard href="/suppliers" label="供應商（啟用）" value={counts?.suppliers} accent="text-purple-600 dark:text-purple-400" />
           <StatCard href="/campaigns" label="全部開團" value={counts?.campaigns} accent="text-zinc-600 dark:text-zinc-400" />
         </section>
+
+        <StoreHeatMap focusStoreId={storeId ? Number(storeId) : null} />
 
         <section className="grid gap-6 lg:grid-cols-2">
           <div className="rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
