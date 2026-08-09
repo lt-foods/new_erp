@@ -11,7 +11,7 @@ import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
 import { orderStatusLabel, orderCountsInTotals, orderItemCountsInTotals } from "@/lib/orderStatus";
 import { translateRpcError } from "@/lib/rpcError";
-import { canAdjustWallet, isAdmin, useRole } from "@/lib/role";
+import { canAdjustWallet, canUnmergeMember, isAdmin, useMyStores, useRole } from "@/lib/role";
 import { walletLedgerTypeLabel, walletPaymentMethodLabel } from "@/lib/walletLedger";
 import { maskLineUserId } from "@/lib/maskLineUserId";
 import SpinButton from "@/components/SpinButton";
@@ -147,6 +147,7 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
   const [walletAction, setWalletAction] = useState<{ mode: WalletActionMode; reverseTarget?: WalletEntry } | null>(null);
   const role = useRole();
   const canAdjust = canAdjustWallet(role);
+  const myStores = useMyStores();
 
   /**
    * 復原一次合併：把當初搬過來的訂單／流水／餘額還給來源會員，來源會員復活。
@@ -395,6 +396,12 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
   const canAbsorbGuest = hasLine && !isMerged && !isDeleted;
   // 刪除（GDPR 軟刪除）：僅管理員，且非已合併 / 已刪除
   const canDelete = isAdmin(role) && !isMerged && !isDeleted;
+  // 復原合併：總部層級 + 店長。店長多一層「這位會員是不是自己店的」——
+  // 條件要跟 rpc_unmerge_member 的 wrong_store 守門一致，否則按下去才被打回票。
+  const memberStoreName = stores.find((st) => st.id === member.home_store_id)?.name ?? null;
+  const canUnmerge = canUnmergeMember(role)
+    && (role !== "store_manager" || (!!memberStoreName && myStores.includes(memberStoreName)))
+    && !isMerged && !isDeleted;
 
   return (
     <div className="space-y-5">
@@ -837,7 +844,7 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
                   </div>
                   {/* 併錯人的退路。合併會讓來源會員整個消失、訂單掛到別人名下，
                       靠人工改 DB 才救得回來 —— 所以這顆按鈕要留在管理員手上。 */}
-                  {isAdmin(role) && !isMerged && !isDeleted && (
+                  {canUnmerge && (
                     <SpinButton
                       onClick={() => unmerge(mf)}
                       disabled={unmerging !== null || (!mf.recorded && mf.touchedMoney)}

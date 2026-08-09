@@ -49,6 +49,48 @@ export function canAdjustWallet(role: Role | null): boolean {
   return BRANCH_ROLES.includes(role);
 }
 
+// 復原會員合併（rpc_unmerge_member）。會搬訂單與餘額，所以不是人人可按。
+// 對齊 20260809000070 的 role gate：總部層級 + 店長；store_staff 不給。
+// ⚠ 店長還多一層「只能動自己店的會員」，那要比對 app_metadata.stores，
+//   單看 role 判不出來 —— 呼叫端要另外用 useMyStores() 收斂（見 MemberDetail）。
+const UNMERGE_ROLES: Role[] = ["owner", "admin", "hq_manager", "store_manager", ""];
+
+export function canUnmergeMember(role: Role | null): boolean {
+  if (role === null) return false;
+  return UNMERGE_ROLES.includes(role);
+}
+
+/**
+ * 這個帳號被指派到哪幾家店（app_metadata.stores，存的是**店名**）。
+ * 非分店帳號通常沒有這個欄位 → 回空陣列。
+ * 線上 33 個 staff 帳號沒有任何一個有 store_id，分店身分一律看這裡（見 20260808000020）。
+ */
+export function useMyStores(): string[] {
+  const [stores, setStores] = useState<string[]>([]);
+
+  useEffect(() => {
+    const sb = getSupabase();
+    let active = true;
+    const read = (meta: Record<string, unknown> | undefined) => {
+      const raw = meta?.stores;
+      return Array.isArray(raw) ? raw.filter((s): s is string => typeof s === "string") : [];
+    };
+    sb.auth.getSession().then(({ data }) => {
+      if (!active) return;
+      setStores(read(data.session?.user?.app_metadata as Record<string, unknown> | undefined));
+    });
+    const sub = sb.auth.onAuthStateChange((_event, session) => {
+      setStores(read(session?.user?.app_metadata as Record<string, unknown> | undefined));
+    });
+    return () => {
+      active = false;
+      sub.data.subscription.unsubscribe();
+    };
+  }, []);
+
+  return stores;
+}
+
 export function useRole(): Role | null {
   const [role, setRole] = useState<Role | null>(null);
 
