@@ -26,7 +26,6 @@ const NAV: NavGroup[] = [
       { href: "/campaigns", label: "開團", match: /^\/campaigns/ },
       { href: "/campaigns/import", label: "匯入開團", match: /^\/campaigns\/import/ },
       { href: "/products", label: "商品", match: /^\/products/ },
-      { href: "/analytics/regions", label: "地區偏好", match: /^\/analytics\/regions/ },
       { href: "/suppliers", label: "供應商", match: /^\/suppliers/ },
     ],
   },
@@ -66,6 +65,14 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/finance/receivables", label: "HQ 應收", match: /^\/finance\/receivables(?!\/print)/ },
       { href: "/transfers/settlement", label: "月結算", match: /^\/transfers\/settlement/ },
+    ],
+  },
+  {
+    title: "分析",
+    items: [
+      { href: "/analytics/regions", label: "地區偏好", match: /^\/analytics\/regions/ },
+      { href: "/analytics/members", label: "會員分析", match: /^\/analytics\/members/ },
+      { href: "/analytics/products", label: "商品分析", match: /^\/analytics\/products/ },
     ],
   },
   {
@@ -113,10 +120,10 @@ const BRANCH_HIDDEN_HREFS = new Set([
   "/finance/receivables", // HQ 應收
   "/stores",              // 門市設定 (HQ 管理)
   "/fb-pages",            // 粉絲團設定 (HQ 管理)
-  "/analytics/regions",   // 地區偏好 (跨店客群分析，加盟店不看別家)
 ]);
 const BRANCH_HIDDEN_GROUPS = new Set([
   "社群選品", // 整個 group 隱藏
+  "分析",     // 跨店客群 / 商品分析，加盟店不看別家（比照 /products）
 ]);
 
 function isBranchUser(user: { app_metadata?: Record<string, unknown> } | null | undefined): boolean {

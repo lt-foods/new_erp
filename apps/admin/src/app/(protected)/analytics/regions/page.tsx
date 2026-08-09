@@ -9,6 +9,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
+import { Seg } from "@/components/ChartKit";
 import {
   cellColor, cellValue, fmtMetric, liftWord,
   DAY_OPTIONS, DEFAULT_MIN_BUYERS, HIGHLIGHT_MIN_BUYERS, HIGHLIGHT_MIN_PEN, MIN_CELL_BUYERS, METRIC_LABEL,
@@ -360,33 +361,6 @@ function DrillDown({
         頁調整。
       </div>
     </section>
-  );
-}
-
-function Seg({
-  options, value, onChange,
-}: {
-  options: { key: string; label: string }[];
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div className="inline-flex overflow-hidden rounded-md border border-zinc-300 dark:border-zinc-700">
-      {options.map((o) => (
-        <button
-          key={o.key}
-          type="button"
-          onClick={() => onChange(o.key)}
-          className={`px-2.5 py-1 text-xs transition ${
-            o.key === value
-              ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-              : "bg-white text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
-          }`}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
   );
 }
 

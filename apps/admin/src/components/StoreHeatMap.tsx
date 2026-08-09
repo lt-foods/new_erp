@@ -12,9 +12,10 @@
 // 右下角的比例尺才有意義（範圍小到不需要 Web Mercator）。
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
+import { Seg, useMeasuredWidth } from "@/components/ChartKit";
 
 type TopProduct = { id: number; name: string; orders: number; qty: number; amount: number };
 type HeatStore = {
@@ -552,52 +553,6 @@ function BarRow({
       </button>
     </li>
   );
-}
-
-function Seg({
-  options, value, onChange,
-}: {
-  options: { key: string; label: string }[];
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div className="inline-flex overflow-hidden rounded-md border border-zinc-300 dark:border-zinc-700">
-      {options.map((o) => (
-        <button
-          key={o.key}
-          type="button"
-          onClick={() => onChange(o.key)}
-          className={`px-2.5 py-1 text-xs transition ${
-            o.key === value
-              ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-              : "bg-white text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
-          }`}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-// 容器實際寬度（px）—— 同 /orders 的折線圖：viewBox 縮放會把 10px 的字級一起縮，
-// 所以量出來再照 px 畫。
-function useMeasuredWidth<T extends HTMLElement>() {
-  const ref = useRef<T | null>(null);
-  const [width, setWidth] = useState(0);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    setWidth(Math.round(el.clientWidth));
-    if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver((entries) => {
-      setWidth(Math.round(entries[0]?.contentRect.width ?? 0));
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  return [ref, width] as const;
 }
 
 // ────────────────────────────── 投影 ──────────────────────────────

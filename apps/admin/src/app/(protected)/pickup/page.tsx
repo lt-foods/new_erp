@@ -10,6 +10,7 @@ import { withBasePath } from "@/lib/basePath";
 import { printViaIframe } from "@/lib/printIframe";
 import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
+import PickupAgingPanel from "@/components/PickupAgingPanel";
 import { dropPickupRecent, getPickupRecents, recordPickupRecent, type RecentCustomer } from "@/lib/pickupRecents";
 import { publicProductUrl } from "@/lib/campaignCover";
 import { parseReturnNote } from "@/lib/returnNote";
@@ -610,6 +611,8 @@ function PickupPageContent() {
             : "輸入 姓名 / 電話末 N 碼 / 會員編號 → 找出本人已取訂單 → 勾選後合併補印收據。"}
         </p>
       </header>
+
+      <PickupAgingPanel />
 
       {/* 未取貨 ↔ 已取貨：同一個搜尋框，切換時直接重查 */}
       <div className="flex gap-1 rounded-md border border-zinc-200 bg-zinc-50 p-1 text-sm dark:border-zinc-800 dark:bg-zinc-900 sm:w-fit">

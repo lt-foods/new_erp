@@ -4,7 +4,8 @@
 
 export type MenuKey =
   | "dashboard"
-  | "campaigns" | "products" | "region-preference" | "suppliers"
+  | "campaigns" | "products" | "suppliers"
+  | "region-preference" | "member-analytics" | "product-analytics"
   | "orders" | "pickup" | "inbound" | "members" | "transfers" | "restock" | "mutual-aid"
   | "pr" | "po" | "inventory" | "reorder-rules" | "stocktake"
   | "hq-inbox" | "receiving" | "picking"
@@ -24,7 +25,6 @@ export const MENU_GROUPS: MenuGroup[] = [
     items: [
       { key: "campaigns", label: "開團" },
       { key: "products", label: "商品" },
-      { key: "region-preference", label: "地區偏好" },
       { key: "suppliers", label: "供應商" },
     ],
   },
@@ -63,6 +63,14 @@ export const MENU_GROUPS: MenuGroup[] = [
     items: [
       { key: "receivables", label: "HQ 應收" },
       { key: "settlement", label: "月結算" },
+    ],
+  },
+  {
+    group: "分析",
+    items: [
+      { key: "region-preference", label: "地區偏好" },
+      { key: "member-analytics", label: "會員分析" },
+      { key: "product-analytics", label: "商品分析" },
     ],
   },
   {

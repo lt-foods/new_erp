@@ -26,6 +26,7 @@ import { exportLeleXls, type LeleCampaign, type LeleTruncation, type LeleSkip } 
 import FbPublishModal from "@/components/FbPublishModal";
 import FbBulkPublishModal from "@/components/FbBulkPublishModal";
 import { useRole, isAdmin } from "@/lib/role";
+import CampaignPacePanel from "@/components/CampaignPacePanel";
 
 // 共用: chunked fetch — bypass PostgREST max-rows 1000 cap
 // builder: 回 fresh query builder 的 factory (因為 .range() 後不能 reuse)
@@ -800,6 +801,9 @@ export default function CampaignsListPage() {
           </div>
         )}
       </header>
+
+      {/* 開團速度（早期訊號）—— 開團後 6 小時就看得出這團會不會冷 */}
+      <CampaignPacePanel />
 
       <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
         {(["list", "week", "month"] as View[]).map((v) => (
