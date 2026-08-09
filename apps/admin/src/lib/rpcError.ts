@@ -356,6 +356,25 @@ const RULES: Rule[] = [
     pattern: /transfer (\d+) not found/i,
     render: () => "找不到此調撥單（可能已被刪除）。",
   },
+  // ===== LINE 名冊配對（rpc_bind / rpc_unbind_store_line_follower） =====
+  {
+    pattern: /^binding_not_found(?::|$)/i,
+    render: () =>
+      "這位會員目前沒有這筆配對（可能已被其他人解除或改綁）。請關掉視窗重開一次，看看最新的配對狀態。",
+  },
+  {
+    pattern: /^follower_not_found(?::|$)/i,
+    render: () =>
+      "這個 LINE 使用者不在該會員所屬分店的名冊裡。請確認會員的取貨店設定是否正確。",
+  },
+  {
+    pattern: /^wrong_store(?::|$)/i,
+    render: () => "只能配對／解除自己店的會員。這位會員的取貨店不是您的分店，請聯絡總部處理。",
+  },
+  {
+    pattern: /^insufficient_role$/i,
+    render: () => "權限不足，此操作需要更高的角色權限。",
+  },
   // ===== 撿貨單號碼衝突(同秒多筆提交時的 race) =====
   {
     pattern: /duplicate key value violates unique constraint "picking_waves_tenant_id_wave_code_key"/i,

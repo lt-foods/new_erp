@@ -12,10 +12,11 @@
 // Login channel 跟 OA 不同 provider — 這是營運前置條件問題，不是 bug，
 // 所以要在發送前就讓店員看到，而不是發了才失敗。
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
+import { translateRpcError } from "@/lib/rpcError";
 import { renderPickupImage, type PickupOrder } from "@/lib/pickupImage";
 
 const BUCKET = "line-media";
@@ -45,6 +46,11 @@ type Chat = { url: string | null; mode: string | null };
  * 顧客的 LINE 名稱與頭像，這是最直覺的補救。
  */
 type Follower = { line_user_id: string; display_name: string | null; picture_url: string | null };
+
+/** 名冊列在畫面上的稱呼：LINE 暱稱優先，沒有就露一小截 ID（整串太長塞不下） */
+function followerLabel(f: Follower): string {
+  return f.display_name ?? `${f.line_user_id.slice(0, 8)}…`;
+}
 
 // 訊息樣板。連結由後端 links action 給（來自 MEMBER_FRONT_BASE_URL），
 // 不在這裡寫死網址 —— 換網域時只要改 secret，不用重新部署前端。
@@ -114,7 +120,14 @@ export function LineMessageModal({
   const [chat, setChat] = useState<Chat | null>(null);
   const [ordersUrl, setOrdersUrl] = useState<string | null>(null);
   const [followers, setFollowers] = useState<Follower[]>([]);
-  const [binding, setBinding] = useState(false);
+  /** 這位會員目前配對到的名冊列（null = 還沒配對）。有值才給得出「解除」這條退路。 */
+  const [bound, setBound] = useState<Follower | null>(null);
+  const [binding, setBinding] = useState<string | null>(null);
+  // 解除之後要強制把選單留在畫面上：此時 check 多半已翻成「推不到」，
+  // 但萬一舊的 members.line_user_id 剛好推得到，選單會被條件藏起來，
+  // 店員就會停在「解除了、然後呢」。
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [unbinding, setUnbinding] = useState(false);
   const [buildingImage, setBuildingImage] = useState(false);
   const [text, setText] = useState("");
   const [image, setImage] = useState<File | null>(null);
@@ -122,33 +135,77 @@ export function LineMessageModal({
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  /**
+   * 打一次可達性預檢並把結果畫上去。開啟時跑一次；配對 / 解除配對之後也要再跑
+   * 一次，畫面才會從「推不到」翻成「可發送」（或反過來）。
+   *
+   * 刻意**不**在這裡把 state 設回 checking：開啟時的初始 state 就是 checking，
+   * 在 effect 裡同步 setState 會被 react-hooks/set-state-in-effect 擋下。
+   * 需要「重新檢查中…」的呼叫端自己先設（見 recheck）。
+   */
+  const runCheck = useCallback(async () => {
+    try {
+      const { status, result } = await callFn({ action: "check", member_id: member.id });
+      if (result.ok) setChat({ url: result.chat_url ?? null, mode: result.chat_mode ?? null });
+      if (result.ok && result.reachable) {
+        setReachable({ state: "ok", displayName: result.display_name ?? null });
+      } else if (result.ok && !result.reachable) {
+        setReachable({ state: "unreachable", message: result.message });
+      } else if (result.error === "not_configured") {
+        setReachable({ state: "not_configured", message: result.message });
+      } else {
+        // detail 一定要帶上：只顯示 error code（line_api_error）等於沒說，
+        // 之前就是因為這樣得回資料庫撈 line_push_logs 才知道真正原因
+        setReachable({
+          state: "error",
+          message: result.message || result.detail || result.error || `HTTP ${status}`,
+        });
+      }
+    } catch (e) {
+      setReachable({ state: "error", message: e instanceof Error ? e.message : String(e) });
+    }
+  }, [member.id]);
+
+  const recheck = useCallback(async () => {
+    setReachable({ state: "checking" });
+    await runCheck();
+  }, [runCheck]);
+
+  /**
+   * 該店名冊的兩份資料：還沒配對的（可選）+ 這位會員目前配對到的那筆（可解除）。
+   * 配對 / 解除之後都要重抓 —— 被解除的那筆會回到「還沒配對」那份裡，
+   * 店員才選得回來。
+   */
+  const loadFollowers = useCallback(async (): Promise<{
+    list: Follower[]; bound: Follower | null; error: string | null;
+  }> => {
+    if (homeStoreId == null) return { list: [], bound: null, error: null };
+    const sb = getSupabase();
+    const cols = "line_user_id, display_name, picture_url";
+    const [unlinked, mine] = await Promise.all([
+      sb.from("store_line_followers").select(cols)
+        .eq("store_id", homeStoreId).is("member_id", null).eq("followed", true).limit(50),
+      // 不用 maybeSingle：萬一歷史資料留下同一會員兩列，maybeSingle 會直接報錯，
+      // 反而把「解除配對」這條退路一起弄不見 —— 而那正是要來清理它的工具。
+      sb.from("store_line_followers").select(cols)
+        .eq("store_id", homeStoreId).eq("member_id", member.id).limit(1),
+    ]);
+    // 不能吞掉錯誤：查詢失敗時清單會是空的，選單就整個不見，
+    // 畫面上卻什麼都沒說 —— 店員只會覺得「這功能壞了」而無從回報。
+    const err = unlinked.error ?? mine.error;
+    if (err) return { list: [], bound: null, error: `讀取本店 LINE 名冊失敗：${err.message}` };
+    return {
+      list: (unlinked.data as Follower[]) ?? [],
+      bound: ((mine.data as Follower[]) ?? [])[0] ?? null,
+      error: null,
+    };
+  }, [homeStoreId, member.id]);
+
   // 開啟時預檢可達性（modal 是條件渲染、每次開啟重新 mount，初始 state 即 checking）
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    (async () => {
-      try {
-        const { status, result } = await callFn({ action: "check", member_id: member.id });
-        if (cancelled) return;
-        if (result.ok) setChat({ url: result.chat_url ?? null, mode: result.chat_mode ?? null });
-        if (result.ok && result.reachable) {
-          setReachable({ state: "ok", displayName: result.display_name ?? null });
-        } else if (result.ok && !result.reachable) {
-          setReachable({ state: "unreachable", message: result.message });
-        } else if (result.error === "not_configured") {
-          setReachable({ state: "not_configured", message: result.message });
-        } else {
-          // detail 一定要帶上：只顯示 error code（line_api_error）等於沒說，
-          // 之前就是因為這樣得回資料庫撈 line_push_logs 才知道真正原因
-          setReachable({
-            state: "error",
-            message: result.message || result.detail || result.error || `HTTP ${status}`,
-          });
-        }
-      } catch (e) {
-        if (!cancelled) setReachable({ state: "error", message: e instanceof Error ? e.message : String(e) });
-      }
-    })();
+    (async () => { await runCheck(); })();
     // 額度另外抓，失敗就不顯示（不擋發送流程）
     (async () => {
       try {
@@ -156,21 +213,14 @@ export function LineMessageModal({
         if (!cancelled && result.ok) setQuota({ limit: result.limit ?? null, used: result.used ?? 0 });
       } catch { /* 額度顯示是輔助資訊，抓不到就算了 */ }
     })();
-    // 該店還沒配對的 OA 好友：推不到時要讓店員手動挑
+    // 該店還沒配對的 OA 好友：推不到時要讓店員手動挑；
+    // 順便撈目前已配對的那筆，綁錯時才有得解除。
     (async () => {
-      if (homeStoreId == null) return;
-      const { data, error: fErr } = await getSupabase()
-        .from("store_line_followers")
-        .select("line_user_id, display_name, picture_url")
-        .eq("store_id", homeStoreId)
-        .is("member_id", null)
-        .eq("followed", true)
-        .limit(50);
+      const r = await loadFollowers();
       if (cancelled) return;
-      // 不能吞掉錯誤：查詢失敗時清單會是空的，選單就整個不見，
-      // 畫面上卻什麼都沒說 —— 店員只會覺得「這功能壞了」而無從回報。
-      if (fErr) { setError(`讀取本店 LINE 名冊失敗：${fErr.message}`); return; }
-      setFollowers((data as Follower[]) ?? []);
+      if (r.error) { setError(r.error); return; }
+      setFollowers(r.list);
+      setBound(r.bound);
     })();
     // 樣板用的會員站連結（不需要 LINE token，所以 token 沒設也拿得到）
     (async () => {
@@ -180,7 +230,7 @@ export function LineMessageModal({
       } catch { /* 拿不到就不顯示樣板按鈕 */ }
     })();
     return () => { cancelled = true; };
-  }, [open, member.id, homeStoreId]);
+  }, [open, member.id, homeStoreId, runCheck, loadFollowers]);
 
   // 貼上截圖（Ctrl/Cmd+V）— modal 開著時掛在 document 上，不用先點進哪個欄位
   useEffect(() => {
@@ -268,6 +318,58 @@ export function LineMessageModal({
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBuildingImage(false);
+    }
+  }
+
+  /** 把名冊裡的一位配對到這位會員（RPC 會先解掉這位會員在該店的舊配對） */
+  async function bind(f: Follower) {
+    setBinding(f.line_user_id);
+    setError(null);
+    try {
+      const { error } = await getSupabase().rpc("rpc_bind_store_line_follower", {
+        p_member_id: member.id,
+        p_line_user_id: f.line_user_id,
+      });
+      if (error) { setError(translateRpcError(error)); return; }
+      // 選單裡少一個、上方多一列「目前配對」—— 綁完馬上就看得到綁到誰，
+      // 也馬上就有「解除」可按。以前這裡是 setFollowers([])，綁錯就沒有回頭路。
+      setBound(f);
+      setPickerOpen(false);
+      setFollowers((prev) => prev.filter((x) => x.line_user_id !== f.line_user_id));
+      await recheck();
+    } finally {
+      setBinding(null);
+    }
+  }
+
+  /**
+   * 解除配對 = 綁錯人的退路。
+   *
+   * 綁錯的後果是「訊息推給別的顧客」（可取貨訂單圖上有姓名與品項），
+   * 所以這顆按鈕要一直在，不能只在推不到的時候出現 —— 推得到但推錯人，
+   * 正是最需要它的情況。
+   */
+  async function unbind() {
+    if (!bound) return;
+    if (!window.confirm(
+      `要解除與「${followerLabel(bound)}」的配對嗎？\n解除後這位會員暫時收不到訊息，需要重新選一次。`
+    )) return;
+    setUnbinding(true);
+    setError(null);
+    try {
+      const { error } = await getSupabase().rpc("rpc_unbind_store_line_follower", {
+        p_member_id: member.id,
+        p_line_user_id: bound.line_user_id,
+      });
+      if (error) { setError(translateRpcError(error)); return; }
+      setBound(null);
+      setPickerOpen(true);
+      const r = await loadFollowers();
+      if (r.error) setError(r.error);
+      else { setFollowers(r.list); setBound(r.bound); }
+      await recheck();
+    } finally {
+      setUnbinding(false);
     }
   }
 
@@ -378,52 +480,60 @@ export function LineMessageModal({
           )
         )}
 
-        {/* 推不到 + 該店名冊有人 → 讓店員手動配對 */}
-        {(reachable.state === "unreachable" || reachable.state === "error")
+        {/* 目前配對到誰 + 綁錯人的退路。推得到也要顯示 —— 推得到但推錯人，
+            正是最需要「解除」的情況（訊息會連同姓名、品項送到別人手機上）。 */}
+        {bound && (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-800 dark:bg-zinc-900">
+            <span className="text-xs text-zinc-500">目前配對：</span>
+            {bound.picture_url && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={bound.picture_url} alt="" className="h-5 w-5 rounded-full object-cover" />
+            )}
+            <span className="text-xs font-medium">{followerLabel(bound)}</span>
+            <SpinButton
+              onClick={unbind}
+              disabled={unbinding || binding !== null}
+              className="ml-auto rounded-md border border-amber-300 px-2 py-1 text-[11px] text-amber-800 hover:bg-amber-50 disabled:opacity-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950"
+            >
+              ↩ 不是這個人，解除配對
+            </SpinButton>
+          </div>
+        )}
+
+        {/* 推不到（或剛解除配對）+ 該店名冊有人 → 讓店員手動配對 */}
+        {(reachable.state === "unreachable" || reachable.state === "error" || pickerOpen)
           && followers.length > 0 && (
           <div className="rounded-md border border-sky-200 bg-sky-50 p-2 dark:border-sky-900 dark:bg-sky-950/40">
             <div className="mb-1 text-xs font-medium text-sky-900 dark:text-sky-200">
               這位會員在本店官方帳號是哪一個？
             </div>
             <p className="mb-2 text-[11px] text-sky-800/80 dark:text-sky-300/80">
-              以下是已加入本店官方帳號、但還沒對應到會員的人。選對之後就能發送。
+              以下是已加入本店官方帳號、但還沒對應到會員的人。選對之後就能發送；選錯了可以按上方的「解除配對」重選。
             </p>
             <div className="flex flex-wrap gap-2">
               {followers.map((f) => (
                 <SpinButton
                   key={f.line_user_id}
-                  disabled={binding}
-                  onClick={async () => {
-                    setBinding(true);
-                    try {
-                      const { error } = await getSupabase().rpc("rpc_bind_store_line_follower", {
-                        p_member_id: member.id,
-                        p_line_user_id: f.line_user_id,
-                      });
-                      if (error) { setError(error.message); return; }
-                      // 綁完重新預檢，畫面才會從「推不到」翻成「可發送」
-                      setReachable({ state: "checking" });
-                      const { result } = await callFn({ action: "check", member_id: member.id });
-                      if (result.ok && result.reachable) {
-                        setReachable({ state: "ok", displayName: result.display_name ?? null });
-                        setFollowers([]);
-                      } else {
-                        setReachable({ state: "unreachable", message: result.message ?? "仍然推不到" });
-                      }
-                    } finally {
-                      setBinding(false);
-                    }
-                  }}
+                  disabled={binding !== null || unbinding}
+                  onClick={() => bind(f)}
                   className="flex items-center gap-2 rounded-md border border-sky-300 bg-white px-2 py-1 text-xs hover:bg-sky-100 disabled:opacity-50 dark:border-sky-800 dark:bg-zinc-900 dark:hover:bg-sky-950"
                 >
                   {f.picture_url && (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={f.picture_url} alt="" className="h-5 w-5 rounded-full object-cover" />
                   )}
-                  {f.display_name ?? f.line_user_id.slice(0, 8) + "…"}
+                  {followerLabel(f)}
                 </SpinButton>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* 解除之後名冊沒有其他人可選：不講一句的話畫面等於什麼都沒發生 */}
+        {pickerOpen && followers.length === 0 && (
+          <div className="rounded-md border border-zinc-200 bg-zinc-50 p-2 text-[11px] text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
+            已解除配對。本店官方帳號名冊裡目前沒有其他「還沒對應到會員」的人 ——
+            請先請顧客在本店官方帳號傳一則訊息（webhook 收到才會進名冊），再回來配對。
           </div>
         )}
 
