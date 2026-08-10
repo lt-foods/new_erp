@@ -19,7 +19,9 @@ export default function StatusChip({
 }) {
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2.5 py-[3px] text-[13px] font-medium leading-tight ${styles[tone]}`}
+      // shrink-0 + nowrap：放在 flex row 裡被長標題擠壓時，不能縮寬讓字直排
+      // （會變成一顆「斷/貨」疊兩行的圓）
+      className={`inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-2.5 py-[3px] text-[13px] font-medium leading-tight ${styles[tone]}`}
     >
       {label}
     </span>
