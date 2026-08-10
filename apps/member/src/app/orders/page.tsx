@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { consumeFragmentToSession, getSession, loginPath } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
@@ -24,6 +24,10 @@ const TAB_LABEL: Record<Tab, string> = {
 };
 
 const HIDDEN_PHASES = new Set(["transferred"]);
+
+// 一頁 10 筆，捲到底自動再顯示 10 筆。資料（半年內、每個 tab 最多 100 筆）
+// 一開始就整批在手上，這裡分頁的是「渲染」—— 一次畫 100 張 OrderCard 才是卡頓的來源。
+const PAGE_SIZE = 10;
 
 function fmtAmount(n: number): string {
   return Number(n ?? 0).toLocaleString();
@@ -98,15 +102,39 @@ export default function OrdersPage() {
     return b;
   }, [orders]);
 
-  const display = buckets[tab];
-  const totals = sumOrders(display);
+  const [visible, setVisible] = useState(PAGE_SIZE);
+
+  const bucket = buckets[tab];
+  const display = bucket.slice(0, visible);
+  const hasMore = bucket.length > visible;
+  // 總金額卡照整個分頁算，不是只算已渲染的 10 筆
+  const totals = sumOrders(bucket);
+
+  // 捲到底自動載入下一頁（sentinel 進到視窗下方 300px 內就先載，捲起來無縫）
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!hasMore) return;
+    const el = sentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) setVisible((v) => v + PAGE_SIZE);
+      },
+      { rootMargin: "300px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasMore, tab, loading]);
 
   return (
     <PageShell title="我的訂單">
       <SubTabs
         variant="scroll"
         value={tab}
-        onChange={(v) => setTab(v as Tab)}
+        onChange={(v) => {
+          setTab(v as Tab);
+          setVisible(PAGE_SIZE); // 換分頁回到第一頁
+        }}
         options={(Object.keys(TAB_LABEL) as Tab[]).map((t) => ({
           value: t,
           label: TAB_LABEL[t],
@@ -165,11 +193,22 @@ export default function OrdersPage() {
           <div
             key={o.id}
             className="animate-in"
-            style={{ animationDelay: `${Math.min(i, 8) * 50}ms` }}
+            style={{ animationDelay: `${Math.min(i % PAGE_SIZE, 8) * 50}ms` }}
           >
             <OrderCard order={o} />
           </div>
         ))}
+
+        {!loading && hasMore && (
+          <div ref={sentinelRef} className="py-4 text-center text-[13px] text-[var(--ios-gray)]">
+            載入更多…
+          </div>
+        )}
+        {!loading && !hasMore && bucket.length > PAGE_SIZE && (
+          <div className="py-4 text-center text-[13px] text-[var(--tertiary-label)]">
+            已顯示全部 {bucket.length} 筆
+          </div>
+        )}
       </div>
     </PageShell>
   );
