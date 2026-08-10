@@ -29,7 +29,7 @@ export type ShortageContext = {
   dest_store_name: string;
 };
 
-type Resolution = "replenish" | "cancel_orders" | "vendor_claim" | "accept";
+type Resolution = "restock_hq" | "replenish" | "cancel_orders" | "vendor_claim" | "accept";
 
 const RESOLUTION_OPTIONS: Array<{
   value: Resolution;
@@ -38,6 +38,12 @@ const RESOLUTION_OPTIONS: Array<{
   desc: string;
   cta?: { label: string; href: string; hint: string };
 }> = [
+  {
+    value: "restock_hq",
+    icon: "🏭",
+    title: "貨仍在總倉（沖回總倉庫存）",
+    desc: "漏裝/揀貨少拿,貨沒上車:把短少數量以原出庫成本記回總倉庫存,之後可再派。真的遺失請勿選(帳會多)。",
+  },
   {
     value: "replenish",
     icon: "📦",

@@ -164,6 +164,7 @@ export default function RestockNewPage() {
               <LineRow
                 key={i}
                 line={l}
+                storeId={effectiveStoreId}
                 showBranch={showBranch}
                 onChange={(patch) => setLines((arr) => arr.map((x, j) => (j === i ? { ...x, ...patch } : x)))}
                 onRemove={lines.length > 1 ? () => removeLine(i) : null}
@@ -311,11 +312,13 @@ function MemberField({
 
 function LineRow({
   line,
+  storeId,
   showBranch,
   onChange,
   onRemove,
 }: {
   line: Line;
+  storeId: number | null;
   showBranch: boolean;
   onChange: (patch: Partial<Line>) => void;
   onRemove: (() => void) | null;
@@ -324,6 +327,30 @@ function LineRow({
   const [term, setTerm] = useState("");
   const [opts, setOpts] = useState<SkuOption[]>([]);
   const [searching, setSearching] = useState(false);
+  // 選完 SKU 顯示「在途（已派未收）/ 店內現有」— 在途 > 0 提示可能重複申請
+  // （2026-08-10 松山案例：貨已在途又叫一次，HQ 重複派貨造成短收亂帳）
+  // 記住查的是哪個 SKU：換商品時舊資料自然失效，不用同步 reset
+  const [incoming, setIncoming] = useState<{ skuId: number; in_transit: number; on_hand: number } | null>(null);
+  const shownIncoming = incoming && incoming.skuId === line.sku_id ? incoming : null;
+
+  useEffect(() => {
+    if (!line.sku_id || !storeId) return;
+    const skuId = line.sku_id;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await getSupabase().rpc("rpc_store_incoming_skus", {
+          p_store_id: storeId,
+          p_sku_ids: [skuId],
+        });
+        const row = (data as Array<{ sku_id: number; in_transit: number; on_hand: number }> | null)?.[0];
+        if (!cancelled && row) setIncoming({ skuId, in_transit: Number(row.in_transit), on_hand: Number(row.on_hand) });
+      } catch {
+        // 查不到就不顯示（純提示功能，不擋建單）
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [line.sku_id, storeId]);
 
   useEffect(() => {
     if (!open) {
@@ -401,7 +428,20 @@ function LineRow({
               更改
             </SpinButton>
           </div>
-        ) : (
+        ) : null}
+        {line.sku_id && shownIncoming && (
+          shownIncoming.in_transit > 0 ? (
+            <div className="mt-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+              ⚠ 已有 <span className="font-mono font-semibold">{shownIncoming.in_transit}</span> 件在途（已派未收）
+              ・店內現有 <span className="font-mono">{shownIncoming.on_hand}</span> — 確認不是重複申請
+            </div>
+          ) : (
+            <div className="mt-1 text-[11px] text-zinc-400">
+              在途 0・店內現有 <span className="font-mono">{shownIncoming.on_hand}</span>
+            </div>
+          )
+        )}
+        {!line.sku_id && (
           <>
             <input
               value={term}

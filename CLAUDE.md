@@ -134,6 +134,27 @@ PERFORM public._close_orders_all_items_settled(v_order_ids, p_operator, NOW());
 
 ---
 
+## 補貨申請 (restock_requests)
+
+### RR 推 received 時，ride-along 內部單一律走 _settle_restock_ride_along
+
+RR- 單的品項數量是**申請量**，不是實收量；`_restock_wave_progress` 的
+`fully_dispatched` / `all_arrived` 也都不看 `qty_received`。所以「RR 推
+received → 內部單直接推 ready」會把短收沒到的貨掛在店身上（2026-08-10
+松山 RR-360：出 9 收 5，內部單照樣整張 ready）。
+
+新增任何把 restock_requests 推到 `received` 的路徑，ride-along 單一律呼叫
+`_settle_restock_ride_along(request_id, operator, at)`（20260810000000）——
+它會先把品項對齊歸屬實收（0 → cancelled＋`[短收未到]`、部分 → 拆行）再推
+ready / 全未到自動取消；反向（退回收貨）配 `_unsettle_restock_ride_along`。
+既有呼叫點：`rpc_receive_transfer` 邏輯 D/D2、`_stockout_propagate_restock`。
+
+短收造成的總倉帳差不會自動補：出庫已扣、店端沒入，貨等於帳上消失。
+HQ 要在 /wms/exceptions 用 `restock_hq`（沖回總倉庫存，20260810000010）
+或 vendor_claim / accept 收掉，別放著。
+
+---
+
 ## LINE / LIFF
 
 ### 在 LINE 內建瀏覽器裡，絕對不要把使用者導去 `access.line.me`
