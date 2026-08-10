@@ -1,21 +1,30 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { consumeFragmentToSession, getSession, loginPath } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import { LoadingScreen } from "@/components/Spinner";
 import SubTabs from "@/components/SubTabs";
-import OrderCard, { type OrderRow } from "@/components/OrderCard";
+import OrderCard, { orderPhase, type OrderRow } from "@/components/OrderCard";
 
-type Tab = "pending" | "arrived" | "history";
+// 蝦皮式分頁。我們取貨時付現金，所以沒有「待付款」；「待收貨」＝到店「待取貨」。
+// 分桶跟卡片右上角的狀態字共用 orderPhase()，兩邊永遠一致。
+type Tab = "all" | "waiting" | "pickup" | "done" | "void";
+
+const TAB_LABEL: Record<Tab, string> = {
+  all: "全部",
+  waiting: "待到貨",
+  pickup: "待取貨",
+  done: "已完成",
+  void: "不成立",
+};
 
 export default function OrdersPage() {
   const router = useRouter();
-  const [tab, setTab] = useState<Tab>("pending");
-  const [activeOrders, setActiveOrders] = useState<OrderRow[]>([]);
-  const [historyOrders, setHistoryOrders] = useState<OrderRow[]>([]);
+  const [tab, setTab] = useState<Tab>("all");
+  const [orders, setOrders] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
@@ -34,8 +43,12 @@ export default function OrdersPage() {
           callLiffApi<{ orders: OrderRow[] }>(s.token, { action: "list_my_orders", tab: "active" }),
           callLiffApi<{ orders: OrderRow[] }>(s.token, { action: "list_my_orders", tab: "history" }),
         ]);
-        setActiveOrders(active.orders);
-        setHistoryOrders(history.orders);
+        // 「全部」要照時間混排，不是先進行中再歷史
+        setOrders(
+          [...active.orders, ...history.orders].sort(
+            (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+          ),
+        );
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
       } finally {
@@ -44,21 +57,30 @@ export default function OrdersPage() {
     })();
   }, [router]);
 
-  const pending = activeOrders.filter((o) => !o.arrived);
-  const arrived = activeOrders.filter((o) => o.arrived);
-  const display = tab === "pending" ? pending : tab === "arrived" ? arrived : historyOrders;
-  const emptyLabel = tab === "pending" ? "未到貨" : tab === "arrived" ? "已到貨" : "已完成";
+  const buckets = useMemo(() => {
+    const b: Record<Tab, OrderRow[]> = { all: orders, waiting: [], pickup: [], done: [], void: [] };
+    for (const o of orders) {
+      const { phase } = orderPhase(o);
+      // transferred（已轉讓）沒有自己的分頁，只在「全部」出現（卡片有「已轉讓」標）
+      if (phase !== "transferred") b[phase].push(o);
+    }
+    return b;
+  }, [orders]);
+
+  const display = buckets[tab];
 
   return (
     <PageShell title="我的訂單">
       <SubTabs
+        variant="scroll"
         value={tab}
         onChange={(v) => setTab(v as Tab)}
-        options={[
-          { value: "pending", label: "未到貨", count: pending.length },
-          { value: "arrived", label: "已到貨", count: arrived.length },
-          { value: "history", label: "訂單紀錄", count: historyOrders.length },
-        ]}
+        options={(Object.keys(TAB_LABEL) as Tab[]).map((t) => ({
+          value: t,
+          label: TAB_LABEL[t],
+          // 「全部」不掛數字；待到貨/待取貨掛數字提醒還有幾筆
+          count: t === "all" || t === "done" ? undefined : buckets[t].length,
+        }))}
       />
 
       <div className="space-y-3 px-4 pt-3 pb-6">
@@ -79,7 +101,7 @@ export default function OrdersPage() {
               📦
             </div>
             <p className="mt-4 text-[16px] font-semibold text-[var(--foreground)]">
-              目前沒有{emptyLabel}訂單
+              {tab === "all" ? "目前沒有訂單" : `目前沒有「${TAB_LABEL[tab]}」的訂單`}
             </p>
           </div>
         )}

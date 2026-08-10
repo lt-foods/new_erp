@@ -41,6 +41,41 @@ export type OrderRow = {
   settlement_no: string;
 };
 
+/**
+ * 蝦皮式訂單階段：分頁分桶 + 卡片右上角狀態字共用同一份判定，
+ * 兩邊才不會出現「分在待取貨、標籤卻寫待到貨」。
+ *
+ * 對應（我們取貨付現，沒有「待付款」；「待收貨」＝到店「待取貨」）：
+ *   waiting     待到貨（pending / confirmed，貨還沒到店）
+ *   pickup      待取貨（已到店；partially_completed 剩的也還能取）
+ *   done        已完成
+ *   void        不成立（斷貨取消 / 逾期）
+ *   transferred 已轉讓（轉單給別人，只在「全部」出現）
+ */
+export type OrderPhase = "waiting" | "pickup" | "done" | "void" | "transferred";
+
+export function orderPhase(o: Pick<OrderRow, "status" | "arrived">): {
+  phase: OrderPhase;
+  label: string;
+  className: string;
+} {
+  switch (o.status) {
+    case "cancelled":
+      return { phase: "void", label: "訂單不成立", className: "text-[#c4271d]" };
+    case "expired":
+      return { phase: "void", label: "逾期未取", className: "text-[#c4271d]" };
+    case "transferred_out":
+      return { phase: "transferred", label: "已轉讓", className: "text-[var(--ios-gray)]" };
+    case "completed":
+      return { phase: "done", label: "已完成", className: "text-[var(--brand-strong)]" };
+    case "partially_completed":
+      return { phase: "pickup", label: "部分已取", className: "text-[#b06c00]" };
+  }
+  return o.arrived
+    ? { phase: "pickup", label: "待取貨", className: "text-[#b06c00]" }
+    : { phase: "waiting", label: "待到貨", className: "text-[#b06c00]" };
+}
+
 function fmtAmount(n: number | string | null | undefined): string {
   return Number(n ?? 0).toLocaleString();
 }
@@ -64,15 +99,22 @@ export default function OrderCard({ order }: { order: OrderRow }) {
     0,
   );
   const title = cleanCampaignText(order.campaign_name) || "訂單";
+  const phase = orderPhase(order);
 
   return (
     <article className="card overflow-hidden">
       <header className="bg-[var(--brand-soft)]/35 px-4 pt-4 pb-3">
-        <div className="flex items-center gap-2">
-          <h3 className="min-w-0 truncate text-[18px] font-bold text-[var(--foreground)]">{title}</h3>
-          {order.stockout_at && (
-            <StatusChip tone="danger" label="斷貨" />
-          )}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <h3 className="min-w-0 truncate text-[18px] font-bold text-[var(--foreground)]">{title}</h3>
+            {order.stockout_at && (
+              <StatusChip tone="danger" label="斷貨" />
+            )}
+          </div>
+          {/* 蝦皮式右上角狀態字 */}
+          <span className={`flex-shrink-0 text-[14px] font-medium ${phase.className}`}>
+            {phase.label}
+          </span>
         </div>
         {order.stockout_at && (
           <p className="mt-1 text-[13px] text-[#c4271d]">
