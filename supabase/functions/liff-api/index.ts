@@ -320,10 +320,13 @@ async function getOverview(sb: any, tenantId: string, storeId: number, memberId:
   // 不可以用 payment_status='unpaid' 當條件 —— 那個欄位全站從來沒被寫成 'paid'
   // （取貨收現金，rpc_record_pickup 不碰它），等於沒過濾，會把早就取走的訂單
   // 一路累加上去（回報案例：顯示 $3,072、實際未領只有 $1,110）。
-  const { data: unpaidRows } = await sb.from("v_customer_order_summary").select("outstanding_amount").eq("tenant_id", tenantId).eq("member_id", memberId).gt("outstanding_amount", 0);
+  // 只看最近 6 個月，跟 listMyOrders 的 cutoff 同一套 —— 團友會拿「進行中訂單」
+  // 逐張加總來對這個數字，兩邊的時間範圍不一致就又會被回報對不上。
+  const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
+  const { data: unpaidRows } = await sb.from("v_customer_order_summary").select("outstanding_amount").eq("tenant_id", tenantId).eq("member_id", memberId).gt("outstanding_amount", 0).gte("created_at", cutoff.toISOString());
   const receivable = (unpaidRows ?? []).reduce((s: number, r: any) => s + Number(r.outstanding_amount ?? 0), 0);
   // transferred_out（轉手給別人）的品項仍留在原單且維持 pending，貨已經在新單上 → 不算進行中。
-  const { count: activeCount } = await sb.from("v_customer_order_summary").select("*", { count: "exact", head: true }).eq("tenant_id", tenantId).eq("member_id", memberId).not("status", "in", "(completed,cancelled,expired,transferred_out)");
+  const { count: activeCount } = await sb.from("v_customer_order_summary").select("*", { count: "exact", head: true }).eq("tenant_id", tenantId).eq("member_id", memberId).not("status", "in", "(completed,cancelled,expired,transferred_out)").gte("created_at", cutoff.toISOString());
   return json({ store: storeRow, receivable_amount: receivable, active_orders_count: activeCount ?? 0 });
 }
 

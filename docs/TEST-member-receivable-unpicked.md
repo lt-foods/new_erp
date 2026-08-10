@@ -61,6 +61,7 @@ SELECT m.id, m.name,
 
 | # | 步驟 | 預期 |
 |---|------|------|
+| D-0 | `get_overview` 只算最近 6 個月的訂單（`created_at >= NOW() - 6 months`） | 與 `list_my_orders` 的 cutoff 同一套；否則超過半年的未領單會出現「總覽有、列表沒有」的對不上 |
 | D-1 | `POST /functions/v1/liff-api {"action":"get_overview"}`（會員 528590 的 token） | `receivable_amount = 1110` |
 | D-2 | 同上 | `active_orders_count = 7` |
 | D-3 | `{"action":"list_my_orders","tab":"active"}` 逐張 `payable_amount` 加總 | = D-1 的 `receivable_amount`（**這就是團友做的驗算，兩邊必須一致**） |
