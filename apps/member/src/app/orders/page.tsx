@@ -11,6 +11,31 @@ import OrderCard, { type OrderRow } from "@/components/OrderCard";
 
 type Tab = "pending" | "arrived" | "history";
 
+function fmtAmount(n: number): string {
+  return Number(n ?? 0).toLocaleString();
+}
+
+/**
+ * 一個分頁的金額加總。
+ *
+ * 排除 cancelled / expired 的訂單：「未到貨」刻意保留斷貨整單取消的訂單讓客人看得到
+ * （listMyOrders 的 filter），那種單不用付錢，算進去總金額就會跟每張卡上的
+ * 應付金額加起來對不上。品項層級的斷貨排除已經在 DB 做掉了（20260808000010），
+ * 這裡只要顧單頭。
+ */
+function sumOrders(list: OrderRow[]) {
+  const active = list.filter((o) => !["cancelled", "expired"].includes(String(o.status ?? "")));
+  return {
+    count: active.length,
+    payable: active.reduce((s, o) => s + Number(o.payable_amount ?? 0), 0),
+    // balance_due = 應付 − 已扣儲值金。舊版 edge function 沒回這欄時退回「沒付款就是全額」。
+    unpaid: active.reduce(
+      (s, o) => s + Number(o.balance_due ?? (o.paid ? 0 : o.payable_amount) ?? 0),
+      0,
+    ),
+  };
+}
+
 export default function OrdersPage() {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("pending");
@@ -48,6 +73,7 @@ export default function OrdersPage() {
   const arrived = activeOrders.filter((o) => o.arrived);
   const display = tab === "pending" ? pending : tab === "arrived" ? arrived : historyOrders;
   const emptyLabel = tab === "pending" ? "未到貨" : tab === "arrived" ? "已到貨" : "已完成";
+  const totals = sumOrders(display);
 
   return (
     <PageShell title="我的訂單">
@@ -63,6 +89,29 @@ export default function OrdersPage() {
 
       <div className="space-y-3 px-4 pt-3 pb-6">
         {loading && <LoadingScreen />}
+
+        {/* 這個分頁的總金額 — 客人最常問的就是「這些加起來多少錢」 */}
+        {!loading && !err && totals.count > 0 && (
+          <div className="card flex items-center justify-between gap-3 px-4 py-3">
+            <div className="min-w-0">
+              <div className="text-[16px] text-[var(--foreground)]">
+                {tab === "history" ? "訂單總金額" : "應付總金額"}
+              </div>
+              <div className="mt-0.5 text-[13px] text-[var(--secondary-label)]">
+                共 {totals.count} 筆訂單
+                {totals.unpaid > 0 && totals.unpaid !== totals.payable && (
+                  <>
+                    <span className="mx-1.5 text-[var(--tertiary-label)]">·</span>
+                    尚未付款 ${fmtAmount(totals.unpaid)}
+                  </>
+                )}
+              </div>
+            </div>
+            <span className="flex-shrink-0 text-[26px] font-semibold tabular-nums text-[var(--brand-strong)]">
+              ${fmtAmount(totals.payable)}
+            </span>
+          </div>
+        )}
 
         {err && (
           <div className="rounded-2xl bg-[var(--ios-red)]/10 p-3 text-[14px] text-[#c4271d]">
