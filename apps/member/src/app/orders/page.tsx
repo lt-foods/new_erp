@@ -11,18 +11,19 @@ import OrderCard, { orderPhase, type OrderRow } from "@/components/OrderCard";
 
 // 蝦皮式分頁。我們取貨時付現金，所以沒有「待付款」；「待收貨」＝到店「待取貨」。
 // 分桶跟卡片右上角的狀態字共用 orderPhase()，兩邊永遠一致。
-// 「不成立」（斷貨取消）跟「已轉讓」目前先整批隱藏（連「全部」也不出現），
-// 之後要開再把 HIDDEN_PHASES 拿掉、補回 void 分頁。
-type Tab = "all" | "waiting" | "pickup" | "done";
+// 「不成立」（斷貨取消）要顯示 —— 團友得知道那筆單為什麼消失（⛔ 斷貨說明）。
+// 「已轉讓」目前先隱藏（連「全部」也不出現），之後要開再把它移出 HIDDEN_PHASES。
+type Tab = "all" | "waiting" | "pickup" | "done" | "void";
 
 const TAB_LABEL: Record<Tab, string> = {
   all: "全部",
   waiting: "待到貨",
   pickup: "待取貨",
   done: "已完成",
+  void: "不成立",
 };
 
-const HIDDEN_PHASES = new Set(["void", "transferred"]);
+const HIDDEN_PHASES = new Set(["transferred"]);
 
 export default function OrdersPage() {
   const router = useRouter();
@@ -63,11 +64,11 @@ export default function OrdersPage() {
   }, [router]);
 
   const buckets = useMemo(() => {
-    const b: Record<Tab, OrderRow[]> = { all: orders, waiting: [], pickup: [], done: [] };
+    const b: Record<Tab, OrderRow[]> = { all: orders, waiting: [], pickup: [], done: [], void: [] };
     for (const o of orders) {
       const { phase } = orderPhase(o);
-      // orders 進來前已濾掉 HIDDEN_PHASES，這裡只剩三個分頁的階段
-      if (phase === "waiting" || phase === "pickup" || phase === "done") b[phase].push(o);
+      // orders 進來前已濾掉 HIDDEN_PHASES（已轉讓），剩下的都有自己的分頁
+      if (phase !== "transferred") b[phase].push(o);
     }
     return b;
   }, [orders]);
