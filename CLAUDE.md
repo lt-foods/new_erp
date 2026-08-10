@@ -161,6 +161,28 @@ PERFORM public._close_orders_all_items_settled(v_order_ids, p_operator, NOW());
 
 `items[]` jsonb **不要**濾 —— 前端要繼續把那一列畫出來（紅標「斷貨」/ 刪除線）。
 
+### 搬品項的 SQL 一律只挑 active（`pending`/`reserved`/`ready`）
+
+`customer_order_items` 的 `cancelled` 列**不會被刪掉**，永遠留在原單上。所以任何
+「把品項搬到另一張單」的 SQL 只要沒濾 status，就會把死掉的列複製成新單的
+`pending` —— 憑空生出貨。2026-08-10 忠順店：一張內部補貨單分四次轉給四位客人，
+前三次「部分轉出」把來源列標成 `cancelled`，第四次前端偵測「全選全量」自動改走
+整單轉出 `rpc_transfer_order_to_store`，而它的 `INSERT ... SELECT` 只有
+`WHERE coi.order_id = p_order_id` —— 第四位客人的單上就多出前三位客人的商品。
+這個 bug 從 20260507000000 引入整單轉出起就在，掃出 4 起，其中 3 起的幽靈品項
+**已經被取貨**（等於店裡多發了一件貨出去）。
+
+- 複製 / 挑選來源品項一律加 `AND status IN ('pending','reserved','ready')`，
+  不要寫 `!= 'cancelled'`（漏掉 `picked_up`：貨已交付還能再轉一次）。
+- 這個 active 集合跟 `rpc_record_pickup` 的 `v_active_remaining`、
+  `_close_orders_all_items_settled` 是同一套，別自己另外定義。
+- 已修：`20260810010000_transfer_copy_active_items_only.sql`（含「沒有可轉品項就
+  拒絕整單轉出」守衛，直接打 RPC 也不能生出空殼轉入單）。
+
+順帶：轉單只動訂單，**庫存只在取貨那一刻扣**（`stock_movements.movement_type='sale'`，
+`source_doc_type='customer_order'`）。所以「幽靈品項轉回內部號」不會讓庫存變多，
+把那張單作廢就結束了；只有**已取貨**的幽靈品項才真的動到庫存，要人工盤點處理。
+
 ---
 
 ## LINE / LIFF
