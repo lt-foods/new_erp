@@ -11,15 +11,18 @@ import OrderCard, { orderPhase, type OrderRow } from "@/components/OrderCard";
 
 // 蝦皮式分頁。我們取貨時付現金，所以沒有「待付款」；「待收貨」＝到店「待取貨」。
 // 分桶跟卡片右上角的狀態字共用 orderPhase()，兩邊永遠一致。
-type Tab = "all" | "waiting" | "pickup" | "done" | "void";
+// 「不成立」（斷貨取消）跟「已轉讓」目前先整批隱藏（連「全部」也不出現），
+// 之後要開再把 HIDDEN_PHASES 拿掉、補回 void 分頁。
+type Tab = "all" | "waiting" | "pickup" | "done";
 
 const TAB_LABEL: Record<Tab, string> = {
   all: "全部",
   waiting: "待到貨",
   pickup: "待取貨",
   done: "已完成",
-  void: "不成立",
 };
+
+const HIDDEN_PHASES = new Set(["void", "transferred"]);
 
 export default function OrdersPage() {
   const router = useRouter();
@@ -43,11 +46,13 @@ export default function OrdersPage() {
           callLiffApi<{ orders: OrderRow[] }>(s.token, { action: "list_my_orders", tab: "active" }),
           callLiffApi<{ orders: OrderRow[] }>(s.token, { action: "list_my_orders", tab: "history" }),
         ]);
-        // 「全部」要照時間混排，不是先進行中再歷史
+        // 「全部」要照時間混排，不是先進行中再歷史；隱藏的階段在這裡就過濾掉
         setOrders(
-          [...active.orders, ...history.orders].sort(
-            (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-          ),
+          [...active.orders, ...history.orders]
+            .filter((o) => !HIDDEN_PHASES.has(orderPhase(o).phase))
+            .sort(
+              (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+            ),
         );
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
@@ -58,11 +63,11 @@ export default function OrdersPage() {
   }, [router]);
 
   const buckets = useMemo(() => {
-    const b: Record<Tab, OrderRow[]> = { all: orders, waiting: [], pickup: [], done: [], void: [] };
+    const b: Record<Tab, OrderRow[]> = { all: orders, waiting: [], pickup: [], done: [] };
     for (const o of orders) {
       const { phase } = orderPhase(o);
-      // transferred（已轉讓）沒有自己的分頁，只在「全部」出現（卡片有「已轉讓」標）
-      if (phase !== "transferred") b[phase].push(o);
+      // orders 進來前已濾掉 HIDDEN_PHASES，這裡只剩三個分頁的階段
+      if (phase === "waiting" || phase === "pickup" || phase === "done") b[phase].push(o);
     }
     return b;
   }, [orders]);
