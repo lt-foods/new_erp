@@ -97,6 +97,35 @@ SELECT * FROM <your_rpc>();   -- 換成 store_staff 再跑一次，應該要被�
 
 ## 顧客訂單 (customer_orders)
 
+### `payment_status` 全站永遠是 `'unpaid'`，不可以拿來判斷「收到錢了沒」
+
+現金在門市取貨當下收，`rpc_record_pickup` **不回寫** `payment_status`；
+唯一會寫 `'paid'` 的 `rpc_wallet_pay_order` 線上 0 筆使用。所以：
+
+```sql
+SELECT payment_status, count(*) FROM customer_orders GROUP BY 1;
+--  unpaid | 65297        ← 全部，一筆 paid 都沒有
+```
+
+`WHERE payment_status = 'unpaid'` 等於**沒有 WHERE**。2026-08 的災情：會員中心
+「未結單金額」就是這樣寫的，把每位會員開站至今所有取過貨的訂單一路累加 ——
+一位團友畫面顯示 $3,072、實際沒領的只有 $1,110，全站多算 NT$482 萬。
+
+要表達「還沒收的錢」，一律用**品項有沒有被取走**：
+
+```sql
+SUM(qty * unit_price) FILTER (WHERE status NOT IN ('cancelled','expired','picked_up'))
+```
+
+view 已經備好 `v_customer_order_summary.outstanding_amount`（`20260810000000`），
+直接用它，不要自己重寫。兩個附帶條件：
+
+- 一定要**品項層級**算。訂單層級（`status <> 'completed'`）會把 `partially_completed`
+  已經取走的那半也算進去。
+- `transferred_out`（轉手給別人）的品項**留在原單且維持 `pending`**，貨已經在新單上
+  → 這個 status 必須整張歸零，否則跟新單重複計算。同理，任何「抓未取貨」的
+  查詢都要記得排除它（`20260507000001` 已經為此掃過一輪 view / RPC）。
+
 ### 取消 / 斷貨掉一個品項之後，記得重算訂單單頭
 
 訂單單頭的狀態只有取貨那一刻（`rpc_record_pickup`）會重算。品項在**取貨之後**

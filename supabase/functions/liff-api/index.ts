@@ -316,9 +316,14 @@ async function getOverview(sb: any, tenantId: string, storeId: number, memberId:
   // 未結金額 / 進行中筆數依 member_id 會員級加總，不依 store_id 過濾：
   // member_id 是 tenant 級、訂單 pickup 店可不同於登入店，需與 listMyOrders（跨店）一致，
   // 否則訂單列表看得到、overview 金額卻 0。
-  const { data: unpaidRows } = await sb.from("v_customer_order_summary").select("payable_amount").eq("tenant_id", tenantId).eq("member_id", memberId).eq("payment_status", "unpaid").not("status", "in", "(cancelled,expired)");
-  const receivable = (unpaidRows ?? []).reduce((s: number, r: any) => s + Number(r.payable_amount ?? 0), 0);
-  const { count: activeCount } = await sb.from("v_customer_order_summary").select("*", { count: "exact", head: true }).eq("tenant_id", tenantId).eq("member_id", memberId).not("status", "in", "(completed,cancelled,expired)");
+  // 「未結單金額」＝ 已訂未領貨 = SUM(outstanding_amount)（@20260810000000）。
+  // 不可以用 payment_status='unpaid' 當條件 —— 那個欄位全站從來沒被寫成 'paid'
+  // （取貨收現金，rpc_record_pickup 不碰它），等於沒過濾，會把早就取走的訂單
+  // 一路累加上去（回報案例：顯示 $3,072、實際未領只有 $1,110）。
+  const { data: unpaidRows } = await sb.from("v_customer_order_summary").select("outstanding_amount").eq("tenant_id", tenantId).eq("member_id", memberId).gt("outstanding_amount", 0);
+  const receivable = (unpaidRows ?? []).reduce((s: number, r: any) => s + Number(r.outstanding_amount ?? 0), 0);
+  // transferred_out（轉手給別人）的品項仍留在原單且維持 pending，貨已經在新單上 → 不算進行中。
+  const { count: activeCount } = await sb.from("v_customer_order_summary").select("*", { count: "exact", head: true }).eq("tenant_id", tenantId).eq("member_id", memberId).not("status", "in", "(completed,cancelled,expired,transferred_out)");
   return json({ store: storeRow, receivable_amount: receivable, active_orders_count: activeCount ?? 0 });
 }
 
@@ -354,7 +359,9 @@ async function listMySettlements(sb: any, tenantId: string, _storeId: number, me
   const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
   // 同 listMyOrders：跨店訂單都納入（OrderCard 顯示 store_name）。
   let q = sb.from("v_customer_order_summary").select("*").eq("tenant_id", tenantId).eq("member_id", memberId).gte("created_at", cutoff.toISOString()).order("created_at", { ascending: false }).limit(100);
-  if (tab === "unpaid") q = q.eq("payment_status", "unpaid").not("status", "in", "(cancelled,expired)");
+  // 「待付款」＝ 還有沒領走的貨（同 getOverview 的口徑，@20260810000000）。
+  // 同樣不能用 payment_status='unpaid'：那會把所有已取貨的舊單一起列出來。
+  if (tab === "unpaid") q = q.gt("outstanding_amount", 0);
   else q = q.in("status", ["shipping", "completed"]);
   const { data, error } = await q;
   if (error) return json({ error: error.message }, 500);

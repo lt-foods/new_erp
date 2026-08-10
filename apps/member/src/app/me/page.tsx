@@ -326,6 +326,9 @@ export default function MePage() {
                 ${Number(overview.receivable_amount).toLocaleString()}
               </span>
             </div>
+            <div className="mt-1 text-[12px] text-[var(--tertiary-label)]">
+              已訂購但還沒領走的金額；取貨時付款，領完就不再計入
+            </div>
             <a
               href="/orders"
               className="mt-3 flex w-full items-center justify-between rounded-xl bg-[#7676801a] px-3 py-3 text-[16px] text-[var(--foreground)] active:bg-[#76768033]"

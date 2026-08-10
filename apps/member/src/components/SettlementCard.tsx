@@ -18,6 +18,8 @@ export type SettlementRow = {
   shipping_fee: number;
   discount_amount: number;
   payable_amount: number;
+  /** 還沒領走的金額（@20260810000000）；0 = 貨都領完了 = 現金都收了 */
+  outstanding_amount?: number;
 };
 
 function fmtAmount(n: number): string {
@@ -40,7 +42,11 @@ function Row({
 }
 
 export default function SettlementCard({ settlement: s }: { settlement: SettlementRow }) {
-  const paid = s.payment_status === "paid";
+  // payment_status 全站從來沒被寫成 'paid'（取貨當下收現金，不回寫欄位），
+  // 只看它會讓每一張已取貨的單都掛「未付款」。以「還有沒有貨沒領」為準。
+  const paid =
+    s.payment_status === "paid" ||
+    (s.outstanding_amount != null && Number(s.outstanding_amount) <= 0);
   const shipped = ["shipping", "completed"].includes(s.status);
 
   return (

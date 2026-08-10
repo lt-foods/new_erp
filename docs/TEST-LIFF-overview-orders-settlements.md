@@ -41,8 +41,8 @@
 | T3-1 | `curl POST /functions/v1/liff-api { action: "get_overview" }` 用會員 A、A 店 token | 200，回 `{store: {...}, receivable_amount, active_orders_count}` |
 | T3-2 | T3-1 回應的 store.id | = JWT 中的 store_id |
 | T3-3 | T3-1 回應的 store 必含欄位 | id, code, name, banner_url, description, payment_methods_text, shipping_methods_text |
-| T3-4 | T3-1 回應的 receivable_amount | = SUM(payable_amount) WHERE payment_status='unpaid' AND status NOT IN ('cancelled','expired') for that member+store |
-| T3-5 | active_orders_count | = COUNT(*) WHERE status NOT IN ('completed','cancelled','expired') |
+| T3-4 | T3-1 回應的 receivable_amount | = SUM(outstanding_amount) WHERE outstanding_amount > 0 for that member（跨店，@20260810000000。**不可以**用 payment_status='unpaid'，見 `TEST-member-receivable-unpicked.md`） |
+| T3-5 | active_orders_count | = COUNT(*) WHERE status NOT IN ('completed','cancelled','expired','transferred_out') |
 | T3-6 | 不帶 Authorization | 401 missing authorization |
 | T3-7 | 帶過期 / 偽造 JWT | 401 invalid token |
 
