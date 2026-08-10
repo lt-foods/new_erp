@@ -350,8 +350,31 @@ export function LineMessageModal({
           </div>
         )}
         {reachable.state === "ok" && (
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300">
-            ✓ 可發送{reachable.displayName ? `（LINE 名稱：${reachable.displayName}）` : ""}
+          <div className="flex items-center justify-between gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300">
+            <span>✓ 可發送{reachable.displayName ? `（LINE 名稱：${reachable.displayName}）` : ""}</span>
+            <SpinButton
+              onClick={async () => {
+                if (!window.confirm(`解除「${reachable.displayName ?? "此 LINE 身分"}」與這位會員的綁定？（配對錯人時用）`)) return;
+                const { error: uErr } = await getSupabase().rpc("rpc_unbind_store_line_follower", { p_member_id: member.id });
+                if (uErr) { setError(uErr.message); return; }
+                // 解除後重新預檢，畫面翻回「推不到 + 配對選單」
+                setReachable({ state: "checking" });
+                const { result } = await callFn({ action: "check", member_id: member.id });
+                if (result.ok && result.reachable) setReachable({ state: "ok", displayName: result.display_name ?? null });
+                else setReachable({ state: "unreachable", message: result.message ?? "尚未綁定" });
+                if (homeStoreId != null) {
+                  const { data } = await getSupabase()
+                    .from("store_line_followers")
+                    .select("line_user_id, display_name, picture_url")
+                    .eq("store_id", homeStoreId).is("member_id", null).eq("followed", true).limit(50);
+                  setFollowers((data as Follower[]) ?? []);
+                }
+              }}
+              title="配對錯人時，解除後可重新從名冊挑選"
+              className="shrink-0 rounded border border-emerald-300 px-2 py-0.5 text-[11px] text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-900"
+            >
+              解除綁定
+            </SpinButton>
           </div>
         )}
         {reachable.state === "unreachable" && (
@@ -394,6 +417,8 @@ export function LineMessageModal({
                   key={f.line_user_id}
                   disabled={binding}
                   onClick={async () => {
+                    // 人工配對點錯過（2026-08-10 平鎮兩筆）— 綁定前把兩個名字並列確認
+                    if (!window.confirm(`把 LINE「${f.display_name ?? f.line_user_id.slice(0, 8)}」綁定為會員「${member.name ?? member.member_no}」？`)) return;
                     setBinding(true);
                     try {
                       const { error } = await getSupabase().rpc("rpc_bind_store_line_follower", {
