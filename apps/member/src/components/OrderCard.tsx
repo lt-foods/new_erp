@@ -24,6 +24,8 @@ export type OrderRow = {
   stockout_at?: string | null;
   pickup_deadline: string | null;
   payable_amount: number;
+  /** 應付 − 已用儲值金扣抵；v_customer_order_summary 有給，訂單列表的「尚未付款」用它加總 */
+  balance_due?: number;
   items_total: number;
   shipping_fee: number;
   discount_amount: number;
