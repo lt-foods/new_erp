@@ -981,9 +981,18 @@ export default function PickingWorkstationPage() {
           // 容器只在「店別欄超出寬度」時出現左右 scrollbar(overflow-x-auto),不再有內框垂直捲軸。
           // sticky 左欄在橫向捲動時固定品項欄。
           <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-            <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+            {/* table-fixed + 明確總寬：auto layout 把 <col> 寬度當建議值,店一多就把店別欄
+                壓到比 80px 窄、數量輸入框跟著縮,兩位數以上直接被裁掉(線上 17 間店整排看不到數字),
+                品項欄反而膨脹(truncate 失效)。fixed layout 嚴格吃 <col> 寬度,
+                超出容器交給外層 overflow-x-auto 出捲軸;容器比較寬時 min-w-full 照舊撐滿。
+                總寬 = 品項 240 + 數字欄 5×56(w-14) + 可分配/合計 2×64(w-16) + 店別 n×80(w-20),
+                改 colgroup 時要一起改這條。 */}
+            <table
+              className="min-w-full table-fixed divide-y divide-zinc-200 text-sm dark:divide-zinc-800"
+              style={{ width: 240 + 5 * 56 + 2 * 64 + allStores.length * 80 }}
+            >
               <colgroup>
-                <col className="w-[220px]" />
+                <col className="w-[240px]" />
                 <col className="w-14" />
                 <col className="w-14" />
                 <col className="w-14" />
@@ -1043,7 +1052,8 @@ export default function PickingWorkstationPage() {
                           <div className="flex min-w-0 flex-1 items-start justify-between gap-2">
                           <div className="min-w-0 flex-1">
                             <div className="font-mono text-[11px] text-zinc-500">{sk.sku_code ?? "—"}</div>
-                            <div className="truncate" title={sk.sku_label}>{sk.sku_label}</div>
+                            {/* 品項欄是固定寬(table-fixed),截斷改用兩行,單行 truncate 只剩 ~10 個字 */}
+                            <div className="line-clamp-2" title={sk.sku_label}>{sk.sku_label}</div>
                             <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-zinc-400">
                               {sk.poList.length === 1
                                 ? <span className="font-mono" title={`${sk.poList[0].po_status ?? ""} · 訂 ${sk.poList[0].qty_ordered}/已到 ${sk.poList[0].gr_qty}/在途 ${sk.poList[0].qty_in_transit}/短少 ${sk.poList[0].qty_shortage}`}>{sk.poList[0].po_no}</span>
