@@ -126,6 +126,26 @@ view 已經備好 `v_customer_order_summary.outstanding_amount`（`2026081000000
   → 這個 status 必須整張歸零，否則跟新單重複計算。同理，任何「抓未取貨」的
   查詢都要記得排除它（`20260507000001` 已經為此掃過一輪 view / RPC）。
 
+`payable_amount` 跟 `outstanding_amount` 是**兩個不同的問題**，別混用：
+
+| 欄位 | 回答的問題 | 用在哪 |
+|---|---|---|
+| `payable_amount` | 這張單本身多少錢 | 訂單明細、結單、admin、「已完成」的歷史總額 |
+| `outstanding_amount` | 這張單**還欠**多少錢 | 任何寫著「應付 / 未結 / 待付款」的地方 |
+
+2026-08-11 又踩一次：會員端「我的訂單」上方那張總金額卡（`orders/page.tsx`
+的 `sumOrders`）用 `payable_amount` 加總，「全部」分頁把 27 張已完成
+（$4,137）+ 1 張部分取貨已領走的那半（$98）算進「應付總金額」，
+團友看到 $8,771、實際只欠 $4,536，焦慮到打電話進來。
+**上一次（20260810000000）只掃了 `/me` 跟 liff-api，前端這張卡漏掉。**
+下次動到「應付」的口徑，這幾個地方要一起看：`liff-api getOverview` /
+`listMySettlements`、`me/page.tsx`、`orders/page.tsx` 的 `sumOrders`、
+`OrderCard` 卡片底部。
+
+卡片跟總額要用同一個口徑 —— 團友真的會拿計算機逐張加。部分取貨的卡片
+只印「應付金額」（含已領走的）就一定跟上方總額對不起來，所以要另外印
+「還需付款」。
+
 ### 取消 / 斷貨掉一個品項之後，記得重算訂單單頭
 
 訂單單頭的狀態只有取貨那一刻（`rpc_record_pickup`）會重算。品項在**取貨之後**
@@ -178,6 +198,30 @@ PERFORM public._close_orders_all_items_settled(v_order_ids, p_operator, NOW());
   `_close_orders_all_items_settled` 是同一套，別自己另外定義。
 - 已修：`20260810010000_transfer_copy_active_items_only.sql`（含「沒有可轉品項就
   拒絕整單轉出」守衛，直接打 RPC 也不能生出空殼轉入單）。
+
+### 「貨到店了沒」不可以用 `customer_orders.status` 判斷
+
+`status='shipping'` 是**派貨中**（總倉已出貨、門市**還沒收貨**），不是到店。
+`v_customer_order_summary.arrived` 從 view 建立起就把 `shipping` 算成已到店，
+會員端「我的訂單」於是在**總倉一派出**就顯示「待取貨」—— 2026-08-11 古華店
+團友照著跑去店裡，波次還在 `/wms/receive` 的「未收」。當時線上 2,260 張
+`shipping`，真的可取貨的只有 6 張。
+
+反過來只認 `status='ready'` 也會錯：單頭只有 `rpc_receive_transfer` 收到**該店
+那張 transfer** 時才會被推到 `ready`，靠**抵減單 / 庫存減抵單**（店內現貨吸收
+缺口）出貨的單永遠等不到那一刻，貨在店裡卻顯示「待到貨」（文山店 campaign
+3090 那 6 張）。
+
+要問「現在有沒有東西可以交給客人」，一律呼叫品項層級的取貨閘門
+`is_order_item_pickup_ready(item_id)` —— 那是 `rpc_record_pickup` 交貨、
+admin `PickupDialog` 勾選時用的**同一套**（Path A/B/C/D、`qty_received > 0`、
+`backorder_at` 擋板）。整單版 `is_order_pickup_ready()` 是「**全**到齊」，
+給推進 `shipping → ready` 用；**顧客端要的是「有任一項可取」**，
+店員本來就逐項發貨，要求全到齊會把有東西可領的單擋在「待到貨」。
+
+已修：`20260811000010_member_arrived_uses_pickup_gate.sql`（`arrived` =
+status 快路徑 OR (`shipping` AND 有任一項過閘門)；函式只對 `shipping` 那 3.5%
+的列呼叫，會員列表實測 11ms）。
 
 順帶：轉單只動訂單，**庫存只在取貨那一刻扣**（`stock_movements.movement_type='sale'`，
 `source_doc_type='customer_order'`）。所以「幽靈品項轉回內部號」不會讓庫存變多，
