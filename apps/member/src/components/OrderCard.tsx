@@ -48,8 +48,8 @@ export type OrderRow = {
  * 兩邊才不會出現「分在待取貨、標籤卻寫待到貨」。
  *
  * 對應（我們取貨付現，沒有「待付款」；「待收貨」＝到店「待取貨」）：
- *   waiting     待到貨（pending / confirmed / shipping，貨還沒到店）
- *   pickup      待取貨（已到店；partially_completed 剩的也還能取）
+ *   waiting     待到貨（pending / confirmed；shipping 標「運送中」，貨還沒到店）
+ *   pickup      待取貨（門市已收貨、取貨閘門放行；partially_completed 剩的也還能取）
  *   done        已完成
  *   void        不成立（斷貨取消 / 逾期）
  *   transferred 已轉讓（轉單給別人，只在「全部」出現）
@@ -72,15 +72,15 @@ export function orderPhase(o: Pick<OrderRow, "status" | "arrived">): {
       return { phase: "done", label: "已完成", className: "text-[var(--brand-strong)]" };
     case "partially_completed":
       return { phase: "pickup", label: "部分已取", className: "text-[#b06c00]" };
-    case "shipping":
-      // 派貨中 = 總倉已出貨、門市**還沒收貨**，團友這時跑來店裡會領不到東西。
-      // view 的 arrived 曾經把 shipping 當「已到店」（2026-08-11 修掉，
-      // 20260811000000）；這裡明寫一條，view 萬一被 rollback 也不會再誤報。
-      return { phase: "waiting", label: "運送中", className: "text-[#b06c00]" };
   }
-  return o.arrived
-    ? { phase: "pickup", label: "待取貨", className: "text-[#b06c00]" }
-    : { phase: "waiting", label: "待到貨", className: "text-[#b06c00]" };
+  if (o.arrived) return { phase: "pickup", label: "待取貨", className: "text-[#b06c00]" };
+  // 派貨中 = 總倉已出貨、門市**還沒收貨**，團友這時跑來店裡會領不到東西。
+  // arrived 曾經無條件把 shipping 當「已到店」（2026-08-11 修掉，20260811000010：
+  // 改問 is_order_pickup_ready）。標籤寫「運送中」比「待到貨」明確，
+  // 但仍歸在 waiting 分頁 —— 兩者對團友的意思都是「先別跑來」。
+  if (o.status === "shipping")
+    return { phase: "waiting", label: "運送中", className: "text-[#b06c00]" };
+  return { phase: "waiting", label: "待到貨", className: "text-[#b06c00]" };
 }
 
 function fmtAmount(n: number | string | null | undefined): string {
