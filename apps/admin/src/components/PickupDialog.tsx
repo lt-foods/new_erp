@@ -10,6 +10,7 @@ import SpinButton from "@/components/SpinButton";
 import { EditableDiscount, deriveDiscount, type DiscountValue } from "@/components/EditableDiscount";
 import { orderItemStatusLabel } from "@/lib/orderStatus";
 import { parseReturnNote } from "@/lib/returnNote";
+import { itemDisplayName } from "@/lib/skuLabel";
 
 type PickableItem = {
   id: number;
@@ -27,6 +28,8 @@ type OrderHead = {
   member_id: number | null;
   wallet_paid_amount: number;
   payment_status: string | null;
+  // 只拿來決定品項要不要補印商品名（見 lib/skuLabel）
+  campaign: { name: string } | { name: string }[] | null;
 };
 
 // 以指定數量計算小計（line-level 折扣金額按比例分攤，對齊後端拆行邏輯）
@@ -61,6 +64,7 @@ export function PickupDialog({
   const [discountValue, setDiscountValue] = useState<DiscountValue>({ kind: "amount", value: 0 });
   const [originalDiscount, setOriginalDiscount] = useState<{ amount: number; percent: number }>({ amount: 0, percent: 0 });
   const [memberId, setMemberId] = useState<number | null>(null);
+  const [campaignName, setCampaignName] = useState<string | null>(null);
   const [walletPaidSoFar, setWalletPaidSoFar] = useState(0);
   const [paymentStatus, setPaymentStatus] = useState<string | null>(null);
   const [walletBalance, setWalletBalance] = useState<number | null>(null);
@@ -84,7 +88,7 @@ export function PickupDialog({
           .in("status", ["pending", "reserved", "ready"])
           .order("id"),
         sb.from("customer_orders")
-          .select("discount_amount, discount_percent, member_id, wallet_paid_amount, payment_status")
+          .select("discount_amount, discount_percent, member_id, wallet_paid_amount, payment_status, campaign:group_buy_campaigns(name)")
           .eq("id", orderId)
           .maybeSingle<OrderHead>(),
         // 已退回總倉量（return_to_hq transfer）— 退掉的貨店裡沒有、不可再取。
@@ -143,6 +147,8 @@ export function PickupDialog({
       setOriginalDiscount({ amount: headAmt, percent: headPct });
       setDiscountValue(deriveDiscount(headPct, headAmt));
       setMemberId(head?.member_id ?? null);
+      const camp = Array.isArray(head?.campaign) ? head?.campaign[0] : head?.campaign;
+      setCampaignName(camp?.name ?? null);
       const alreadyPaid = Number(head?.wallet_paid_amount ?? 0);
       const isPaid = head?.payment_status === "paid";
       setWalletPaidSoFar(alreadyPaid);
@@ -389,7 +395,7 @@ export function PickupDialog({
                         />
                       </td>
                       <td className="px-3 py-2">
-                        <span className="font-medium">{it.sku?.variant_name ?? it.sku?.product_name ?? "—"}</span>
+                        <span className="font-medium">{itemDisplayName(it.sku, campaignName)}</span>
                         {it.sku?.sku_code && (
                           <span className="ml-2 font-mono text-[10px] text-zinc-400">{it.sku.sku_code}</span>
                         )}

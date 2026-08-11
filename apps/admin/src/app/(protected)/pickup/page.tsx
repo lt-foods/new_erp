@@ -15,6 +15,7 @@ import { dropPickupRecent, getPickupRecents, recordPickupRecent, type RecentCust
 import { publicProductUrl } from "@/lib/campaignCover";
 import { parseReturnNote } from "@/lib/returnNote";
 import { fetchReprintableEvents, pickupEventLabel, type PickupEventRow } from "@/lib/pickupReceipt";
+import { itemDisplayName } from "@/lib/skuLabel";
 
 type Member = {
   id: number;
@@ -818,7 +819,7 @@ function PickupPageContent() {
                                             onChange={() => toggleItem(it.id)}
                                             className="h-3.5 w-3.5 shrink-0 translate-y-0.5"
                                           />
-                                          <span className="font-bold">{it.sku?.variant_name || it.sku?.product_name || "—"}</span>
+                                          <span className="font-bold">{itemDisplayName(it.sku, o.campaign?.name)}</span>
                                           <span className="font-mono text-zinc-500">× {Number(it.qty)}</span>
                                           <span className="font-mono text-zinc-400">${Number(it.qty) * Number(it.unit_price)}</span>
                                         </label>
@@ -904,7 +905,7 @@ function PickupPageContent() {
                               <ul className="mt-0.5 space-y-0.5 text-xs text-zinc-700 dark:text-zinc-300">
                                 {active.map((it) => (
                                   <li key={it.id} className="flex items-baseline gap-1.5">
-                                    <span className="font-bold">{it.sku?.variant_name || it.sku?.product_name || "—"}</span>
+                                    <span className="font-bold">{itemDisplayName(it.sku, o.campaign?.name)}</span>
                                     <span className="font-mono text-zinc-500">× {Number(it.qty)}</span>
                                     {returnedOf(it) > 0 && (
                                       <span className="rounded bg-orange-100 px-1 py-0.5 text-[10px] font-medium text-orange-800 dark:bg-orange-950 dark:text-orange-300">↩ 已退 {returnedOf(it)}</span>
@@ -1116,7 +1117,7 @@ function PickupPageContent() {
                       <ul className="ml-4 space-y-0.5 text-xs">
                         {g.items.map((it) => (
                           <li key={it.id} className="flex items-baseline gap-2">
-                            <span className="font-bold">{it.sku?.variant_name || it.sku?.product_name || "—"}</span>
+                            <span className="font-bold">{itemDisplayName(it.sku, g.order.campaign?.name)}</span>
                             <span className="font-mono">×{Number(it.qty)}</span>
                           </li>
                         ))}
@@ -1186,7 +1187,7 @@ function PickupPageContent() {
                       <ul className="ml-4 space-y-0.5 text-xs">
                         {pickItems.map((it) => (
                           <li key={it.id} className="flex items-baseline gap-2">
-                            <span className="font-bold">{it.sku?.variant_name || it.sku?.product_name || "—"}</span>
+                            <span className="font-bold">{itemDisplayName(it.sku, o.campaign?.name)}</span>
                             <span className="font-mono">×{Number(it.qty)}</span>
                           </li>
                         ))}

@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { stripTransferNotes } from "@/lib/orderNotes";
 import { parseReturnNote } from "@/lib/returnNote";
+import { itemDisplayName } from "@/lib/skuLabel";
 import SpinButton from "@/components/SpinButton";
 
 type Order = {
@@ -252,7 +253,7 @@ function Body() {
                     <div key={it.id}>
                       <div className="flex items-baseline justify-between gap-2">
                         <span className="min-w-0 flex-1 break-words text-[16px] font-bold">
-                          {it.sku?.variant_name || it.sku?.product_name || "—"}
+                          {itemDisplayName(it.sku, o.campaign?.name)}
                         </span>
                         <span className="whitespace-nowrap text-[15px]">
                           × {qty}
