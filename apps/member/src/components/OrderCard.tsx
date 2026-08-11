@@ -1,4 +1,4 @@
-import { cleanCampaignText } from "@/lib/text";
+import { orderCardTitle } from "@/lib/orderTitle";
 import StatusChip from "@/components/StatusChip";
 
 export type OrderItem = {
@@ -42,6 +42,8 @@ export type OrderRow = {
   items: OrderItem[];
   notes: string | null;
   created_at: string;
+  /** 內部 sentinel 團判斷用（'__' 開頭）；v_customer_order_summary @20260811000050 */
+  campaign_no?: string | null;
   campaign_name: string | null;
   campaign_cover_url: string | null;
   campaign_cutoff_date: string | null;
@@ -111,7 +113,8 @@ export default function OrderCard({ order }: { order: OrderRow }) {
     (s, i) => (["cancelled", "expired"].includes(i.status) ? s : s + Number(i.qty ?? 0)),
     0,
   );
-  const title = cleanCampaignText(order.campaign_name) || "訂單";
+  // 內部 sentinel 團（店內現貨轉手單）印品項名，其餘印開團名稱 —— 見 lib/orderTitle
+  const title = orderCardTitle(order);
   const phase = orderPhase(order);
   // 已經領走一部分（取貨當場收現金）→ 這張單真正還要付的是 outstanding_amount。
   // 只在「領了一部分、還剩一部分」時才多畫一行：全部領完 / 取消的單 outstanding=0，

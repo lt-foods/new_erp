@@ -8,22 +8,25 @@
  * 對不上就得來回一整個下午。這個視圖跟 app 用同一個 view、同一套分桶與加總，
  * 客服看到的數字 = 團友手機上的數字，一眼就能對。
  *
- * 「一樣」是硬需求，三個地方要跟會員端同步（改那邊記得改這邊）：
+ * 「一樣」是硬需求，四個地方要跟會員端同步（改那邊記得改這邊）：
  *   - 資料管線 = liff-api listMyOrders：v_customer_order_summary、半年內、
  *     active / history 各最多 100 筆、一般取消不顯示但斷貨取消要顯示、已轉讓隱藏
  *   - orderPhase 分桶 = apps/member/src/components/OrderCard.tsx
  *   - 應付總金額只在「待到貨」「待取貨」顯示、用 outstanding_amount
  *     = apps/member/src/app/orders/page.tsx（2026-08-11 起「全部」不顯示金額）
+ *   - 卡片標題 orderCardTitle（內部 sentinel 團改印品項名）
+ *     = apps/member/src/lib/orderTitle.ts 的副本 lib/orderTitle.ts
  *
  * 後台加值：點卡片可直接開訂單明細（會員 app 沒有這個）。
  */
 
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
-import { cleanCampaignText } from "@/lib/text";
+import { orderCardTitle } from "@/lib/orderTitle";
 
 type AppOrderItem = {
   id: number;
+  product_name: string | null;
   variant_name: string | null;
   qty: number;
   unit_price: number;
@@ -45,6 +48,8 @@ export type AppOrderRow = {
   arrived: boolean;
   items: AppOrderItem[];
   created_at: string;
+  /** 內部 sentinel 團判斷用（'__' 開頭）；v_customer_order_summary @20260811000050 */
+  campaign_no: string | null;
   campaign_name: string | null;
   campaign_cutoff_date: string | null;
   store_name: string | null;
@@ -272,7 +277,8 @@ export function MemberOrdersAppView({
 // = apps/member/src/components/OrderCard.tsx 的卡片內容（後台配色 + 可點擊）
 function AppOrderCard({ order, onClick }: { order: AppOrderRow; onClick: () => void }) {
   const phase = orderPhase(order);
-  const title = cleanCampaignText(order.campaign_name) || "訂單";
+  // 內部 sentinel 團（店內現貨轉手單）印品項名，其餘印開團名稱 —— 見 lib/orderTitle
+  const title = orderCardTitle(order);
   const totalQty = (order.items ?? []).reduce(
     (s, i) => (["cancelled", "expired"].includes(i.status) ? s : s + Number(i.qty ?? 0)),
     0,
