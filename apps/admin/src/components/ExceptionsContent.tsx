@@ -55,6 +55,8 @@ type ExceptionRow = {
   diff: number;
   reason: string | null;
   extra: string;
+  // 該筆異常的地點:PO/GR 收貨倉、收貨分店、取貨店(v_hq_exceptions.warehouse_name)
+  warehouse_name: string | null;
   shortage_ctx?: ShortageContext;
   // customer_shortage 用
   customer_order_id?: number;
@@ -86,6 +88,7 @@ type ViewRow = {
   dest_store_name: string | null;
   customer_order_id: number | null;
   shortage_resolution: string | null;
+  warehouse_name: string | null;
 };
 
 type ExceptionCounts = Record<Tab, number>;
@@ -224,6 +227,7 @@ export default function ExceptionsContent({
           diff: Number(r.diff),
           reason: r.reason,
           extra: r.extra,
+          warehouse_name: r.warehouse_name,
           shortage_ctx:
             r.type === "transfer_short" && r.transfer_item_id != null
               ? {
@@ -423,6 +427,7 @@ export default function ExceptionsContent({
               </th>
               <th className="px-3 py-2">類型</th>
               <th className="px-3 py-2">單號</th>
+              <th className="px-3 py-2">地點</th>
               <th className="px-3 py-2">品項</th>
               <th className="px-3 py-2 text-right">預期</th>
               <th className="px-3 py-2 text-right">實際</th>
@@ -433,9 +438,9 @@ export default function ExceptionsContent({
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={10} className="p-6 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">沒有異常,系統運作正常 ✓</td></tr>
+              <tr><td colSpan={10} className="p-6 text-center text-zinc-500">沒有異常,系統運作正常 ✓</td></tr>
             ) : rows.map((r) => (
               <tr key={r.key} className="hover:bg-zinc-50 dark:hover:bg-zinc-950">
                 <td className="px-3 py-2">
@@ -460,6 +465,7 @@ export default function ExceptionsContent({
                   }`}>{TAB_LABEL[r.type]}</span>
                 </td>
                 <td className="px-3 py-2 font-mono text-xs whitespace-nowrap">{r.doc_no}</td>
+                <td className="px-3 py-2 text-xs whitespace-nowrap font-medium">{r.warehouse_name ?? "—"}</td>
                 <td className="px-3 py-2 text-xs min-w-[220px]">
                   {r.sku_code && <div className="font-mono text-[10px] text-zinc-500">{r.sku_code}</div>}
                   <div>{r.sku_label}</div>
