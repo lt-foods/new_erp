@@ -9,7 +9,7 @@ import { LineMessageModal } from "@/components/LineMessageModal";
 import { WalletActionModal, type WalletActionMode } from "@/components/WalletActionModal";
 import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
-import { MemberOrdersAppView } from "@/components/MemberOrdersAppView";
+import { MemberOrdersAppView, outstandingTotals, useMemberAppOrders } from "@/components/MemberOrdersAppView";
 import { orderStatusLabel, orderCountsInTotals, orderItemCountsInTotals } from "@/lib/orderStatus";
 import { translateRpcError } from "@/lib/rpcError";
 import { canAdjustWallet, canUnmergeMember, isAdmin, useMyStores, useRole } from "@/lib/role";
@@ -133,6 +133,9 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
+  // app 口徑的訂單抓一次、兩個視圖共用：「會員畫面」整個吃它，「列表」表尾的
+  // 應付總金額也用它 —— 這個數字必須跟團友手機上看到的一模一樣
+  const appOrders = useMemberAppOrders(memberId, reloadTick);
   const [mergeOpen, setMergeOpen] = useState<false | "guest-to-real" | "real-from-guest">(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [lineMsgOpen, setLineMsgOpen] = useState(false);
@@ -661,6 +664,10 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
         </div>
 
         {tab === "orders" && (() => {
+          // 表尾的「應付總金額」跟會員 app 完全同口徑（待到貨＋待取貨的未領貨），
+          // 團友手機上看到的就是這兩個數字 —— 跟下面的歷史小計是兩回事
+          const appWaiting = outstandingTotals(appOrders.buckets.waiting);
+          const appPickup = outstandingTotals(appOrders.buckets.pickup);
           // 統計沿用 CampaignOrdersPanel：取消/過期/轉出不入計、已轉出的品項也不算；
           // order_kind=offset 是抵減單，顯示負數（見 orderStatus.ts 的統計規則）
           let totalQty = 0, totalAmount = 0, normalCount = 0, offsetCount = 0;
@@ -708,7 +715,7 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
               </div>
               {ordersView === "app" ? (
                 <MemberOrdersAppView
-                  memberId={memberId}
+                  data={appOrders}
                   onOpenOrder={(id, no) => setOrderDetail({ id, no })}
                 />
               ) : (
@@ -773,6 +780,17 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
                         </td>
                         <td className="px-4 py-2 text-right font-mono tabular-nums font-semibold">{totalQty}</td>
                         <td className="px-4 py-2 text-right font-mono tabular-nums font-semibold">${totalAmount.toLocaleString()}</td>
+                      </tr>
+                      <tr className="border-t border-zinc-200 dark:border-zinc-800">
+                        <td colSpan={6} className="px-4 py-2 text-right text-xs text-zinc-500">
+                          應付總金額（同會員 app，未取貨才計
+                          {!appOrders.loading &&
+                            `：待到貨 $${appWaiting.amount.toLocaleString()}＋待取貨 $${appPickup.amount.toLocaleString()}`}
+                          ）
+                        </td>
+                        <td className="px-4 py-2 text-right font-mono tabular-nums font-semibold text-rose-700 dark:text-rose-400">
+                          {appOrders.loading ? "…" : `$${(appWaiting.amount + appPickup.amount).toLocaleString()}`}
+                        </td>
                       </tr>
                     </tfoot>
                   )}

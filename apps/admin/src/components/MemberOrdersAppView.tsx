@@ -32,7 +32,7 @@ type AppOrderItem = {
   stockout?: boolean;
 };
 
-type AppOrderRow = {
+export type AppOrderRow = {
   id: number;
   order_no: string;
   status: string | null;
@@ -96,18 +96,15 @@ function fmtDate(iso: string | null | undefined): string {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
 }
 
-export function MemberOrdersAppView({
-  memberId,
-  onOpenOrder,
-}: {
-  memberId: number;
-  /** 點卡片開後台訂單明細（app 沒有；後台看細節 / 操作用） */
-  onOpenOrder: (id: number, orderNo: string) => void;
-}) {
+/**
+ * 抓「會員 app 看得到的訂單」＋分桶。抽成 hook 是因為兩個地方要用同一份數字：
+ * 「會員畫面」整個視圖、以及「列表」表尾的應付總金額（同 app 口徑）——
+ * 各抓各的遲早會分家，客服又要對不上。
+ */
+export function useMemberAppOrders(memberId: number, reloadTick = 0) {
   const [orders, setOrders] = useState<AppOrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("all");
 
   useEffect(() => {
     let cancelled = false;
@@ -152,7 +149,7 @@ export function MemberOrdersAppView({
     return () => {
       cancelled = true;
     };
-  }, [memberId]);
+  }, [memberId, reloadTick]);
 
   const buckets = useMemo(() => {
     const b: Record<Tab, AppOrderRow[]> = { all: orders, waiting: [], pickup: [], done: [], void: [] };
@@ -163,17 +160,45 @@ export function MemberOrdersAppView({
     return b;
   }, [orders]);
 
+  return { orders, buckets, loading, err };
+}
+
+export type MemberAppOrders = ReturnType<typeof useMemberAppOrders>;
+
+/**
+ * 一個分桶的應付加總 = 會員 app orders/page.tsx 的 sumOrders：
+ * outstanding_amount（還沒領走的貨），排除 cancelled / expired。
+ */
+export function outstandingTotals(list: AppOrderRow[]) {
+  const active = list.filter((o) => !["cancelled", "expired"].includes(String(o.status ?? "")));
+  return {
+    count: active.length,
+    amount: active.reduce(
+      (s, o) => s + Number(o.outstanding_amount ?? o.payable_amount ?? 0),
+      0,
+    ),
+    hasPicked: active.some(
+      (o) => Number(o.outstanding_amount ?? o.payable_amount ?? 0) < Number(o.payable_amount ?? 0),
+    ),
+  };
+}
+
+export function MemberOrdersAppView({
+  data,
+  onOpenOrder,
+}: {
+  /** useMemberAppOrders 的回傳 —— 由 MemberDetail 抓一次，列表表尾共用同一份 */
+  data: MemberAppOrders;
+  /** 點卡片開後台訂單明細（app 沒有；後台看細節 / 操作用） */
+  onOpenOrder: (id: number, orderNo: string) => void;
+}) {
+  const { buckets, loading, err } = data;
+  const [tab, setTab] = useState<Tab>("all");
+
   const bucket = buckets[tab];
-  // = 會員 app orders/page.tsx：應付總金額只在待到貨 / 待取貨顯示，用 outstanding_amount
+  // = 會員 app orders/page.tsx：應付總金額只在待到貨 / 待取貨顯示
   const showTotals = tab === "waiting" || tab === "pickup";
-  const active = bucket.filter((o) => !["cancelled", "expired"].includes(String(o.status ?? "")));
-  const totalAmount = active.reduce(
-    (s, o) => s + Number(o.outstanding_amount ?? o.payable_amount ?? 0),
-    0,
-  );
-  const hasPicked = active.some(
-    (o) => Number(o.outstanding_amount ?? o.payable_amount ?? 0) < Number(o.payable_amount ?? 0),
-  );
+  const { count: activeCount, amount: totalAmount, hasPicked } = outstandingTotals(bucket);
 
   if (err) {
     return (
@@ -208,12 +233,12 @@ export function MemberOrdersAppView({
 
       {loading && <div className="p-6 text-center text-sm text-zinc-500">載入中…</div>}
 
-      {!loading && showTotals && active.length > 0 && (
+      {!loading && showTotals && activeCount > 0 && (
         <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50/60 px-4 py-3 dark:border-rose-900 dark:bg-rose-950/30">
           <div>
             <div className="text-sm text-zinc-800 dark:text-zinc-200">應付總金額</div>
             <div className="text-xs text-zinc-500">
-              共 {active.length} 筆訂單
+              共 {activeCount} 筆訂單
               {hasPicked && <span className="ml-1.5">· 已取貨的不計（取貨時付現）</span>}
             </div>
           </div>
