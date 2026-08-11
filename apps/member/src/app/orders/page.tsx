@@ -34,35 +34,28 @@ function fmtAmount(n: number): string {
 }
 
 /**
- * 一個分頁的金額加總。
+ * 一個分頁的金額加總。**只有「待到貨」「待取貨」會顯示這張卡**（見 showTotals）：
+ * 「全部」混著幾十張早就取貨付清的已完成單，掛一個「應付總金額」會讓團友以為
+ * 還欠那麼多（2026-08-11 會員 109814 的回報：$13,845 裡有 $9,959 是歷史已完成單，
+ * 真正沒領的只有 $3,886）；「已完成」「不成立」則根本沒有應付。與其在「全部」
+ * 解釋口徑，不如不顯示 —— 應付金額只出現在真的還有貨要領的分頁。
  *
  * 「應付」一律用 outstanding_amount（＝還沒領走的貨），**不可以用 payable_amount**。
  * 取貨當下就收現金，已取貨的單早就付清了，payable_amount 是「這張單本身多少錢」，
- * 不是「還欠多少」。2026-08-11 團友 528204 的災情：「全部」分頁把 27 張已完成
- * ($4,137) 加上 1 張部分取貨已領走的那半 ($98) 一起算進「應付總金額」，
- * 顯示 $8,771、實際只欠 $4,536，團友焦慮到打電話進來。
- * 這跟會員中心「未結單金額」是同一個坑 —— DB 早在 20260810000000 就備好
- * outstanding_amount，那次只修了 /me，這張總金額卡漏掉。
+ * 不是「還欠多少」（2026-08-11 團友 528204 的災情，20260810000000 有完整脈絡）。
  *
- * 「已完成」分頁例外：那裡問的是「這些單總共多少錢」（歷史金額），
- * 全部都取走了 outstanding 一律是 0，所以用 payable_amount。
- *
- * 排除 cancelled / expired 的訂單：「全部」分頁刻意保留斷貨整單取消的訂單讓客人
- * 看得到（也有自己的「不成立」分頁），那種單不用付錢，算進去總金額就會跟每張卡上的
- * 應付金額加起來對不上；「不成立」分頁全是這種單，count=0 → 總金額卡整張不顯示。
- * 品項層級的斷貨排除已經在 DB 做掉了（20260808000010），這裡只要顧單頭。
+ * 排除 cancelled / expired 是保險：待到貨 / 待取貨兩個分桶本來就不含它們，
+ * 但口徑寫在這裡，之後誰把這張卡開到別的分頁也不會把不用付錢的單算進去。
  */
-function sumOrders(list: OrderRow[], tab: Tab) {
+function sumOrders(list: OrderRow[]) {
   const active = list.filter((o) => !["cancelled", "expired"].includes(String(o.status ?? "")));
-  const historical = tab === "done";
   return {
     count: active.length,
     amount: active.reduce(
-      (s, o) =>
-        s + Number((historical ? o.payable_amount : o.outstanding_amount) ?? o.payable_amount ?? 0),
+      (s, o) => s + Number(o.outstanding_amount ?? o.payable_amount ?? 0),
       0,
     ),
-    // 這個分頁裡有沒有「已經領走一部分（或全部）」的單 —— 有的話總金額不等於
+    // 這個分頁裡有沒有「已經領走一部分」的單 —— 有的話總金額不等於
     // 各卡的應付金額相加，要在副標講清楚，不然團友手動加總又會對不上。
     hasPicked: active.some(
       (o) => Number(o.outstanding_amount ?? o.payable_amount ?? 0) < Number(o.payable_amount ?? 0),
@@ -123,8 +116,9 @@ export default function OrdersPage() {
   const bucket = buckets[tab];
   const display = bucket.slice(0, visible);
   const hasMore = bucket.length > visible;
-  // 總金額卡照整個分頁算，不是只算已渲染的 10 筆
-  const totals = sumOrders(bucket, tab);
+  // 總金額卡只在「待到貨」「待取貨」出現（理由見 sumOrders 註解），照整個分頁算
+  const showTotals = tab === "waiting" || tab === "pickup";
+  const totals = sumOrders(bucket);
 
   // 捲到底自動載入下一頁（sentinel 進到視窗下方 300px 內就先載，捲起來無縫）
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -162,16 +156,15 @@ export default function OrdersPage() {
       <div className="space-y-3 px-4 pt-3 pb-6">
         {loading && <LoadingScreen />}
 
-        {/* 這個分頁的總金額 — 客人最常問的就是「這些加起來多少錢」 */}
-        {!loading && !err && totals.count > 0 && (
+        {/* 這個分頁的應付總金額 — 客人最常問的就是「這些加起來多少錢」。
+            只在待到貨 / 待取貨出現：其他分頁掛金額只會誤導（見 sumOrders） */}
+        {!loading && !err && showTotals && totals.count > 0 && (
           <div className="card flex items-center justify-between gap-3 px-4 py-3">
             <div className="min-w-0">
-              <div className="text-[16px] text-[var(--foreground)]">
-                {tab === "done" ? "訂單總金額" : "應付總金額"}
-              </div>
+              <div className="text-[16px] text-[var(--foreground)]">應付總金額</div>
               <div className="mt-0.5 text-[13px] text-[var(--secondary-label)]">
                 共 {totals.count} 筆訂單
-                {tab !== "done" && totals.hasPicked && (
+                {totals.hasPicked && (
                   <>
                     <span className="mx-1.5 text-[var(--tertiary-label)]">·</span>
                     已取貨的不計（取貨時付現）
