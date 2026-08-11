@@ -36,20 +36,36 @@ function fmtAmount(n: number): string {
 /**
  * 一個分頁的金額加總。
  *
+ * 「應付」一律用 outstanding_amount（＝還沒領走的貨），**不可以用 payable_amount**。
+ * 取貨當下就收現金，已取貨的單早就付清了，payable_amount 是「這張單本身多少錢」，
+ * 不是「還欠多少」。2026-08-11 團友 528204 的災情：「全部」分頁把 27 張已完成
+ * ($4,137) 加上 1 張部分取貨已領走的那半 ($98) 一起算進「應付總金額」，
+ * 顯示 $8,771、實際只欠 $4,536，團友焦慮到打電話進來。
+ * 這跟會員中心「未結單金額」是同一個坑 —— DB 早在 20260810000000 就備好
+ * outstanding_amount，那次只修了 /me，這張總金額卡漏掉。
+ *
+ * 「已完成」分頁例外：那裡問的是「這些單總共多少錢」（歷史金額），
+ * 全部都取走了 outstanding 一律是 0，所以用 payable_amount。
+ *
  * 排除 cancelled / expired 的訂單：「全部」分頁刻意保留斷貨整單取消的訂單讓客人
  * 看得到（也有自己的「不成立」分頁），那種單不用付錢，算進去總金額就會跟每張卡上的
  * 應付金額加起來對不上；「不成立」分頁全是這種單，count=0 → 總金額卡整張不顯示。
  * 品項層級的斷貨排除已經在 DB 做掉了（20260808000010），這裡只要顧單頭。
  */
-function sumOrders(list: OrderRow[]) {
+function sumOrders(list: OrderRow[], tab: Tab) {
   const active = list.filter((o) => !["cancelled", "expired"].includes(String(o.status ?? "")));
+  const historical = tab === "done";
   return {
     count: active.length,
-    payable: active.reduce((s, o) => s + Number(o.payable_amount ?? 0), 0),
-    // balance_due = 應付 − 已扣儲值金。舊版 edge function 沒回這欄時退回「沒付款就是全額」。
-    unpaid: active.reduce(
-      (s, o) => s + Number(o.balance_due ?? (o.paid ? 0 : o.payable_amount) ?? 0),
+    amount: active.reduce(
+      (s, o) =>
+        s + Number((historical ? o.payable_amount : o.outstanding_amount) ?? o.payable_amount ?? 0),
       0,
+    ),
+    // 這個分頁裡有沒有「已經領走一部分（或全部）」的單 —— 有的話總金額不等於
+    // 各卡的應付金額相加，要在副標講清楚，不然團友手動加總又會對不上。
+    hasPicked: active.some(
+      (o) => Number(o.outstanding_amount ?? o.payable_amount ?? 0) < Number(o.payable_amount ?? 0),
     ),
   };
 }
@@ -108,7 +124,7 @@ export default function OrdersPage() {
   const display = bucket.slice(0, visible);
   const hasMore = bucket.length > visible;
   // 總金額卡照整個分頁算，不是只算已渲染的 10 筆
-  const totals = sumOrders(bucket);
+  const totals = sumOrders(bucket, tab);
 
   // 捲到底自動載入下一頁（sentinel 進到視窗下方 300px 內就先載，捲起來無縫）
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -155,16 +171,16 @@ export default function OrdersPage() {
               </div>
               <div className="mt-0.5 text-[13px] text-[var(--secondary-label)]">
                 共 {totals.count} 筆訂單
-                {totals.unpaid > 0 && totals.unpaid !== totals.payable && (
+                {tab !== "done" && totals.hasPicked && (
                   <>
                     <span className="mx-1.5 text-[var(--tertiary-label)]">·</span>
-                    尚未付款 ${fmtAmount(totals.unpaid)}
+                    已取貨的不計（取貨時付現）
                   </>
                 )}
               </div>
             </div>
             <span className="flex-shrink-0 text-[26px] font-semibold tabular-nums text-[var(--brand-strong)]">
-              ${fmtAmount(totals.payable)}
+              ${fmtAmount(totals.amount)}
             </span>
           </div>
         )}

@@ -24,8 +24,14 @@ export type OrderRow = {
   stockout_at?: string | null;
   pickup_deadline: string | null;
   payable_amount: number;
-  /** 應付 − 已用儲值金扣抵；v_customer_order_summary 有給，訂單列表的「尚未付款」用它加總 */
+  /** 應付 − 已用儲值金扣抵；v_customer_order_summary 有給 */
   balance_due?: number;
+  /**
+   * 這張單真正還沒收的錢＝尚未取貨的品項（20260810000000）。取貨當下收現金，
+   * 所以「已取走」＝「已付清」。訂單列表的「應付總金額」用它加總，
+   * 不可以用 payable_amount —— 那是「這張單本身多少錢」，會把取過的貨一直掛帳。
+   */
+  outstanding_amount?: number;
   items_total: number;
   shipping_fee: number;
   discount_amount: number;
@@ -107,6 +113,14 @@ export default function OrderCard({ order }: { order: OrderRow }) {
   );
   const title = cleanCampaignText(order.campaign_name) || "訂單";
   const phase = orderPhase(order);
+  // 已經領走一部分（取貨當場收現金）→ 這張單真正還要付的是 outstanding_amount。
+  // 只在「領了一部分、還剩一部分」時才多畫一行：全部領完 / 取消的單 outstanding=0，
+  // 那些維持原本單一「應付金額」的樣子。沒有這欄的舊 payload 也走原本的樣子。
+  const outstanding = Number(order.outstanding_amount ?? NaN);
+  const partlyPaid =
+    Number.isFinite(outstanding) &&
+    outstanding > 0 &&
+    outstanding < Number(order.payable_amount ?? 0);
 
   return (
     <article className="card overflow-hidden">
@@ -198,11 +212,29 @@ export default function OrderCard({ order }: { order: OrderRow }) {
           </div>
         )}
         <div className="flex items-baseline justify-between pt-2">
-          <span className="text-[16px] text-[var(--foreground)]">應付金額</span>
-          <span className="text-[24px] font-semibold tabular-nums text-[var(--brand-strong)]">
+          <span className="text-[16px] text-[var(--foreground)]">
+            {partlyPaid ? "訂單金額" : "應付金額"}
+          </span>
+          <span
+            className={
+              partlyPaid
+                ? "text-[16px] tabular-nums text-[var(--secondary-label)]"
+                : "text-[24px] font-semibold tabular-nums text-[var(--brand-strong)]"
+            }
+          >
             ${fmtAmount(order.payable_amount)}
           </span>
         </div>
+        {/* 部分取貨：取走的那幾項當場付現了，卡片只留「應付金額」會跟列表上方的
+            總金額對不上（2026-08-11 團友 528204 手動加總差 $49 就是這張單）。 */}
+        {partlyPaid && (
+          <div className="flex items-baseline justify-between">
+            <span className="text-[16px] text-[var(--foreground)]">還需付款</span>
+            <span className="text-[24px] font-semibold tabular-nums text-[var(--brand-strong)]">
+              ${fmtAmount(order.outstanding_amount)}
+            </span>
+          </div>
+        )}
       </div>
     </article>
   );
