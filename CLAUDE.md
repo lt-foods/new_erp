@@ -183,6 +183,42 @@ PERFORM public._close_orders_all_items_settled(v_order_ids, p_operator, NOW());
 `source_doc_type='customer_order'`）。所以「幽靈品項轉回內部號」不會讓庫存變多，
 把那張單作廢就結束了；只有**已取貨**的幽靈品項才真的動到庫存，要人工盤點處理。
 
+### 取貨閘門放行 ≠ 單頭 status 會動，兩套要分開想
+
+`is_order_item_pickup_ready()` 是**能不能交貨**的閘門，`customer_orders.status`
+是**畫面/通知**的依據，兩者由完全不同的程式推動，很容易各走各的：
+
+- 閘門的 Path C（該團該店沒有對齊波次 → 退用「本店該 SKU 有實收」）是 **qty-blind** 的，
+  只問有沒有收過、不問收了幾件。
+- 單頭要靠 `rpc_mark_orders_shipping_for_wave`（confirmed → shipping，**要求
+  `pwi.campaign_id = co.campaign_id`**）+ `rpc_receive_transfer` 邏輯 C（shipping → ready）。
+
+2026-08-11 忠順回報的「有加單卻沒自動配單」就是這個裂縫：總倉把
+`GRP-20260717-022` 用**補貨申請**發到 14 間店，補貨波次的
+`picking_wave_items.campaign_id` 是 `NULL` → 沒人推 shipping → 收貨端也接不到，
+105 張單全卡 `confirmed`；但閘門走 Path C 早就回 true。結果是貨在店裡、
+`/pickup` 前端卻只讓 ready/partially_completed/shipping 的單勾品項，店員發不出去，
+只剩「從 RR- 內部單轉單給客人」一條路 —— 而**轉單會開一張新單、原團購單永遠留在
+confirmed**，變成重複單（線上已抓到 5 位客人中獎，其中 3 位貨都領走了）。
+全站同狀態的有 22 個團、265 張單。
+
+所以：
+
+- **新增任何把貨送到店的路徑，收貨端一定要接上 confirmed 單的推進**，
+  不要只處理 `status='shipping'`。已修：`20260811000020` 的
+  `_advance_arrived_confirmed_orders(store, sku_ids, operator, at)`，
+  `rpc_receive_transfer` 邏輯 C 尾巴呼叫它。
+- **拿閘門當「到貨通知」的觸發條件時一定要自己加數量守衛**。閘門本身不管數量，
+  無條件放行會出現「補 2 包、團購欠 8 包 → 8 位團友都收到到貨通知卻撲空」。
+  可配量的算法：`stock_balances.on_hand − 已承諾未取量`，其中「已承諾」要
+  **排除 `members.member_type = 'store_internal'` 的單**（RR- /【內部】xx 店是
+  現貨池容器，不是對客人的承諾；不排除的話可配量會被歸零，整支等於沒作用）。
+  配法比照既有的「依訂單時間自動配」：`ORDER BY created_at, order_no`，
+  整單裝得下才推，裝不下跳過繼續試後面的小單。
+- 不要順手改成寫 `backorder_at`：那一欄是「少發配貨沒配到」的語意，寫下去
+  `is_order_item_pickup_ready` 會回 false，反而多一道要人工解除的關卡。
+  維持 `confirmed` 就好，下一批貨收進來時會自然重算。
+
 ---
 
 ## 補貨申請 (restock_requests)
