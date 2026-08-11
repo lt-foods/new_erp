@@ -7,6 +7,7 @@ import { stripTransferNotes } from "@/lib/orderNotes";
 import { parseReturnNote } from "@/lib/returnNote";
 import { itemDisplayName } from "@/lib/skuLabel";
 import SpinButton from "@/components/SpinButton";
+import { CutoffText } from "@/components/CampaignCutoff";
 
 type Order = {
   id: number;
@@ -18,7 +19,7 @@ type Order = {
   payment_status: string | null;
   notes: string | null;
   member: { id: number; member_no: string; name: string | null; phone: string | null } | null;
-  campaign: { id: number; name: string } | null;
+  campaign: { id: number; name: string; cutoff_date: string | null } | null;
   store: { id: number; name: string } | null;
   items: {
     id: number;
@@ -86,7 +87,7 @@ function Body() {
           .select(
             `id, order_no, status, discount_amount, discount_percent, wallet_paid_amount, payment_status, notes,
              member:members(id, member_no, name, phone),
-             campaign:group_buy_campaigns(id, name),
+             campaign:group_buy_campaigns(id, name, cutoff_date),
              store:stores!customer_orders_pickup_store_id_fkey(id, name),
              items:customer_order_items(id, sku_id, qty, unit_price, discount_amount, discount_percent, notes, status, sku:skus(variant_name, product_name))`,
           )
@@ -239,7 +240,10 @@ function Body() {
             const orderNotes = stripTransferNotes(o.notes);
             return (
               <div key={o.id} className="border-b border-dashed border-zinc-400 pb-1">
-                <div className="text-[13px]">{o.campaign?.name ?? "(未知活動)"}</div>
+                <div className="text-[13px]">
+                  {o.campaign?.name ?? "(未知活動)"}
+                  <CutoffText date={o.campaign?.cutoff_date} />
+                </div>
                 {orderNotes && (
                   <div className="text-[13px] italic">📝 {orderNotes}</div>
                 )}

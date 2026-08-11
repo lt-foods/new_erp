@@ -13,6 +13,7 @@ import { getSupabase } from "@/lib/supabase";
 import { stripTransferNotes } from "@/lib/orderNotes";
 import { itemDisplayName } from "@/lib/skuLabel";
 import SpinButton from "@/components/SpinButton";
+import { CutoffText } from "@/components/CampaignCutoff";
 
 type Item = {
   id: number;
@@ -33,7 +34,7 @@ type Order = {
   discount_percent: number;
   notes: string | null;
   member: { id: number; member_no: string; name: string | null; phone: string | null } | null;
-  campaign: { id: number; name: string } | null;
+  campaign: { id: number; name: string; cutoff_date: string | null } | null;
   store: { id: number; name: string } | null;
 };
 
@@ -81,7 +82,7 @@ function Body() {
       const orderIds = Array.from(new Set(items.map((it) => it.order_id)));
       const { data: ords, error: e2 } = await sb
         .from("customer_orders")
-        .select("id, order_no, discount_amount, discount_percent, notes, member:members(id, member_no, name, phone), campaign:group_buy_campaigns(id, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
+        .select("id, order_no, discount_amount, discount_percent, notes, member:members(id, member_no, name, phone), campaign:group_buy_campaigns(id, name, cutoff_date), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
         .in("id", orderIds);
       if (cancelled) return;
       if (e2) { setError(e2.message); return; }
@@ -165,7 +166,10 @@ function Body() {
             const orderNotes = stripTransferNotes(grp.order?.notes ?? null);
             return (
               <div key={gi} className="border-b border-dashed border-zinc-400 pb-1">
-                <div className="text-[13px]">{grp.order?.campaign?.name ?? "(未知活動)"}</div>
+                <div className="text-[13px]">
+                  {grp.order?.campaign?.name ?? "(未知活動)"}
+                  <CutoffText date={grp.order?.campaign?.cutoff_date} />
+                </div>
                 {orderNotes && <div className="text-[13px] italic">📝 {orderNotes}</div>}
                 {grp.items.map((it) => (
                   <div key={it.id}>

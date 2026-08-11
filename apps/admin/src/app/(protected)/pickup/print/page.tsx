@@ -6,6 +6,7 @@ import { getSupabase } from "@/lib/supabase";
 import { stripTransferNotes } from "@/lib/orderNotes";
 import { itemDisplayName } from "@/lib/skuLabel";
 import SpinButton from "@/components/SpinButton";
+import { CutoffText } from "@/components/CampaignCutoff";
 
 type PickupEvent = {
   id: number;
@@ -28,7 +29,7 @@ type Order = {
   payment_status: string | null;
   notes: string | null;
   member: { id: number; member_no: string; name: string | null; phone: string | null } | null;
-  campaign: { id: number; campaign_no: string; name: string } | null;
+  campaign: { id: number; campaign_no: string; name: string; cutoff_date: string | null } | null;
   store: { id: number; name: string } | null;
 };
 
@@ -87,7 +88,7 @@ function Body() {
       const allItemIds = events.flatMap((e) => e.item_ids ?? []);
       const [{ data: ords }, { data: itms }] = await Promise.all([
         sb.from("customer_orders")
-          .select("id, order_no, status, pickup_store_id, discount_amount, discount_percent, wallet_paid_amount, payment_status, notes, member:members(id, member_no, name, phone), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
+          .select("id, order_no, status, pickup_store_id, discount_amount, discount_percent, wallet_paid_amount, payment_status, notes, member:members(id, member_no, name, phone), campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
           .in("id", orderIds),
         allItemIds.length > 0
           ? sb.from("customer_order_items").select("id, qty, unit_price, discount_amount, discount_percent, notes, status, sku:skus(sku_code, product_name, variant_name)").in("id", allItemIds)
@@ -188,7 +189,10 @@ function Body() {
             const orderNotes = stripTransferNotes(r.order?.notes);
             return (
               <div key={r.event.id} className="border-b border-dashed border-zinc-400 pb-1">
-                <div className="text-[13px]">{r.order?.campaign?.name ?? "(未知活動)"}</div>
+                <div className="text-[13px]">
+                  {r.order?.campaign?.name ?? "(未知活動)"}
+                  <CutoffText date={r.order?.campaign?.cutoff_date} />
+                </div>
                 {orderNotes && (
                   <div className="text-[13px] italic">📝 {orderNotes}</div>
                 )}

@@ -16,6 +16,7 @@ import { publicProductUrl } from "@/lib/campaignCover";
 import { parseReturnNote } from "@/lib/returnNote";
 import { fetchReprintableEvents, pickupEventLabel, type PickupEventRow } from "@/lib/pickupReceipt";
 import { itemDisplayName } from "@/lib/skuLabel";
+import { CutoffChip } from "@/components/CampaignCutoff";
 
 type Member = {
   id: number;
@@ -802,7 +803,7 @@ function PickupPageContent() {
                                 <div className="min-w-0 flex-1 text-sm">
                                   <div className="flex flex-wrap items-baseline gap-2">
                                     <span>{o.campaign?.name ?? "(未知活動)"}</span>
-                                    <CutoffChip order={o} />
+                                    <CutoffChip date={o.campaign?.cutoff_date} />
                                     {o.status === "partially_completed" && (
                                       <span className="rounded bg-teal-100 px-2 py-0.5 text-[10px] font-medium text-teal-800 dark:bg-teal-950 dark:text-teal-300">
                                         部分已取
@@ -897,7 +898,7 @@ function PickupPageContent() {
                             <div className="min-w-0 flex-1 text-sm">
                               <div className="flex flex-wrap items-baseline gap-2">
                                 <span>{o.campaign?.name ?? "(未知活動)"}</span>
-                                <CutoffChip order={o} />
+                                <CutoffChip date={o.campaign?.cutoff_date} />
                                 {o.status === "partially_completed" && (
                                   <span className="rounded bg-teal-100 px-2 py-0.5 text-[10px] font-medium text-teal-800 dark:bg-teal-950 dark:text-teal-300">
                                     部分已取
@@ -1103,7 +1104,7 @@ function PickupPageContent() {
                     <div key={g.order.id} className="text-sm">
                       <div className="mb-1 flex flex-wrap items-baseline gap-2">
                         <span>{g.order.campaign?.name ?? "(未知活動)"}</span>
-                        <CutoffChip order={g.order} />
+                        <CutoffChip date={g.order.campaign?.cutoff_date} />
                         <span className="text-[10px] text-zinc-500">取貨店：{g.order.store?.name ?? "—"}</span>
                         {evs.length > 0 && (
                           <span className="text-[10px] text-emerald-700 dark:text-emerald-400">
@@ -1185,7 +1186,7 @@ function PickupPageContent() {
                     <div key={o.id} className="text-sm">
                       <div className="mb-1 flex flex-wrap items-baseline gap-2">
                         <span>{o.campaign?.name ?? "(未知活動)"}</span>
-                        <CutoffChip order={o} />
+                        <CutoffChip date={o.campaign?.cutoff_date} />
                         <span className="text-[10px] text-zinc-500">取貨店：{o.store?.name ?? "—"}</span>
                       </div>
                       <ul className="ml-4 space-y-0.5 text-xs">
@@ -1228,20 +1229,6 @@ function PickupPageContent() {
         })()}
       </Modal>
     </div>
-  );
-}
-
-// 結單日（團的 cutoff_date）— 櫃台常要靠它分辨同一個團的不同批次 / 回答客人
-// 「我這張是哪一次訂的」。內部補貨單等沒有團的單子沒有結單日，就不畫。
-function CutoffChip({ order }: { order: OpenOrder }) {
-  if (!order.campaign?.cutoff_date) return null;
-  return (
-    <span
-      className="rounded bg-zinc-200 px-1.5 py-0.5 font-mono text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
-      title="此團的結單日"
-    >
-      結單日 {order.campaign.cutoff_date}
-    </span>
   );
 }
 
