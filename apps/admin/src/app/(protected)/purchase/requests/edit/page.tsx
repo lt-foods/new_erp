@@ -42,6 +42,14 @@ type DerivedPO = {
 
 type Supplier = { id: number; name: string };
 
+// rpc_create_partial_pr_from_items 的 jsonb 回傳
+type PartialSplitResult = {
+  new_pr_id: number;
+  new_pr_no: string;
+  moved_count: number;
+  remaining_count: number;
+};
+
 type ItemRow = {
   id: number;
   sku_id: number;
@@ -104,11 +112,13 @@ function PageContent() {
   const [appending, setAppending] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"save" | "submit" | "split" | "reopen" | "delete" | null>(null);
+  const [busy, setBusy] = useState<"save" | "submit" | "split" | "reopen" | "delete" | "partial" | null>(null);
   const [destLocationId, setDestLocationId] = useState<number | null>(null);
   // UI 上被移除、但尚未存檔的品項 id — saveDraft 時才真正從 DB 刪除。
   // 之前只從 state filter 掉，DB 列還在 → 送審後拆 PO 被「未指派供應商」殘列擋死。
   const [removedIds, setRemovedIds] = useState<number[]>([]);
+  // 部分轉採購：勾選中的品項 id（= purchase_request_items.id），只在草稿階段用得到
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
   // 頂部「一次套用到全部品項」工具列的暫存值（空字串＝不套用該欄）
   const [bulkSupplier, setBulkSupplier] = useState<number | null>(null);
@@ -124,6 +134,25 @@ function PageContent() {
       setLoading(false);
       return;
     }
+    // 同一個路由只換 ?id= 時元件不會 unmount，state 會整包留給下一張單，所以抓資料前先歸零。
+    // 最致命的是 removedIds：在 A 單按了 ✕（只進 removedIds、還沒存檔）就切到 B 單，
+    // B 單按「存為草稿」會用 .delete().in("id", removedIds) 把 A 單的品項實體刪掉。
+    // 同理 header 不清會讓 saveDraft 拿 A 單的 notes 覆寫 B 單、selectedIds 不清會把
+    // A 單的 item id 送進部分轉採購 RPC。
+    // derivedPOs / missingCampaigns / transferSummary / campaignFinalized 都只在特定分支才被
+    // 覆寫（L206 要有 PO、L274 要 close_date+draft…），不清就會把上一張單的狀態掛在這張單上。
+    // suppliers / supplierUsage / staffNames / destLocationId 是每次都無條件覆寫的共用查表，
+    // 不清以免換單時清單閃一下。
+    setLoading(true);
+    setError(null);
+    setHeader(null);
+    setItems([]);
+    setRemovedIds([]);
+    setSelectedIds(new Set());
+    setDerivedPOs([]);
+    setMissingCampaigns([]);
+    setTransferSummary(undefined);
+    setCampaignFinalized(false);
     let cancelled = false;
     (async () => {
       try {
@@ -213,9 +242,24 @@ function PageContent() {
           }
         }
 
-        // 查 source campaigns（for 結算狀態）
-        const campIds = Array.from(
+        // 查 source campaigns（for 結算狀態）。
+        // 以 purchase_request_campaigns 為主、item.source_campaign_id 為 fallback：
+        // 部分轉採購會搬走品項列，但 PR ↔ 團的 join 表仍代表這張單已納入哪些團。
+        const itemCampIds = Array.from(
           new Set((itemRows ?? []).map((r) => r.source_campaign_id).filter((x): x is number => !!x)),
+        );
+        const { data: linkedCampaignRows, error: linkedCampaignErr } = await supabase
+          .from("purchase_request_campaigns")
+          .select("campaign_id")
+          .eq("pr_id", id);
+        if (linkedCampaignErr) throw new Error(linkedCampaignErr.message);
+        const campIds = Array.from(
+          new Set([
+            ...itemCampIds,
+            ...((linkedCampaignRows as { campaign_id: number | null }[] | null) ?? [])
+              .map((r) => r.campaign_id)
+              .filter((x): x is number => !!x),
+          ]),
         );
         if (campIds.length) {
           const { data: camps } = await supabase
@@ -470,7 +514,8 @@ function PageContent() {
     return out;
   }, [grouped, items, supplierGroups]);
 
-  const colCount = hasPos ? 12 : 11;
+  // 草稿才有最左邊的勾選欄（部分轉採購用），colSpan 要跟著加一欄
+  const colCount = (hasPos ? 12 : 11) + (editable ? 1 : 0);
 
   function patchItem(idx: number, patch: Partial<ItemRow>) {
     setItems((cur) =>
@@ -484,10 +529,36 @@ function PageContent() {
   }
 
   function removeItem(idx: number) {
+    const target = items[idx];
+    if (!target) return;
+    // ✕ 是真的刪需求（存檔時 DELETE），不是「今天先不採購」——補單會把它當沒請購過重跑出來，
+    // 所以這裡把後果講明白，並把想分批的人導去「部分轉採購」
+    if (
+      !confirm(
+        `這會從本請購單「刪除」此品項。\n刪除後，結單日補單會判定這個商品尚未請購、可能重新跑出來。\n\n如果你只是要「今天先採購一部分」，請勾選要先採購的品項、改用「部分轉採購」。\n\n確定要刪除嗎？`,
+      )
+    )
+      return;
+    // 勾選狀態要跟著清掉，否則已刪的 id 會被送進部分轉採購 RPC 而被判「不屬於本請購單」
+    setSelectedIds((s) => {
+      if (!s.has(target.id)) return s;
+      const next = new Set(s);
+      next.delete(target.id);
+      return next;
+    });
     setItems((cur) => {
-      const target = cur[idx];
-      if (target) setRemovedIds((ids) => (ids.includes(target.id) ? ids : [...ids, target.id]));
+      const t = cur[idx];
+      if (t) setRemovedIds((ids) => (ids.includes(t.id) ? ids : [...ids, t.id]));
       return cur.filter((_, i) => i !== idx);
+    });
+  }
+
+  function toggleItemSelect(itemId: number) {
+    setSelectedIds((s) => {
+      const next = new Set(s);
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
+      return next;
     });
   }
 
@@ -626,6 +697,52 @@ function PageContent() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
+      setBusy(null);
+    }
+  }
+
+  // 部分轉採購：把勾選的品項搬到一張新的草稿請購單，未勾選的留在本單。
+  // 語意是「移動」不是刪除——新單繼承 source 欄位，補單判定的總量守恆（見規格 §1）。
+  async function partialToNewPr() {
+    if (!id) return;
+    const moving = selectedIds.size;
+    const staying = items.length - moving;
+    // 全選 = 原單會被清空，RPC 那邊也會擋；這裡先擋掉不浪費一次往返
+    if (moving === 0 || staying <= 0) return;
+    if (
+      !confirm(
+        `將勾選的 ${moving} 項移到一張新的請購單，未勾選的 ${staying} 項留在本單。\n這是「移動」不是刪除，需求不會消失。確定？`,
+      )
+    )
+      return;
+    // 存檔失敗就中止，避免畫面上改過但沒存的數量／成本被搬移時丟掉（比照送審）
+    if (!(await saveDraft())) return;
+    setBusy("partial");
+    setError(null);
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { data, error: rpcErr } = await supabase.rpc("rpc_create_partial_pr_from_items", {
+        p_source_pr_id: id,
+        p_item_ids: Array.from(selectedIds),
+        p_operator: userData.user?.id,
+      });
+      if (rpcErr) throw new Error(rpcErr.message);
+      const res = data as PartialSplitResult | null;
+      if (!res || res.new_pr_id == null) throw new Error("轉出成功但沒拿到新單號，請重新整理確認");
+      setSelectedIds(new Set());
+      alert(
+        `已轉出 ${res.moved_count} 項到新${PR_TERM_ZH} ${res.new_pr_no}\n本單剩 ${res.remaining_count} 項。`,
+      );
+      // 只換 ?id= 是同一個路由，元件不會 unmount、state 整包留著：
+      // busy 不清掉的話新單的動作鈕會永久 disabled（載入 effect 不管 busy）。
+      // loading 這裡先拉起來，是為了蓋住 push 到 effect 重跑之間的空窗——effect 開頭雖然也會拉，
+      // 但要等 id 真的變了才跑，中間畫面會停在已經被搬走的舊品項上。
+      setBusy(null);
+      setLoading(true);
+      router.push(`/purchase/requests/edit?id=${res.new_pr_id}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
       setBusy(null);
     }
   }
@@ -849,6 +966,29 @@ function PageContent() {
                   >
                     {busy === "submit" ? "送審中…" : "📤 送出審核"}
                   </SpinButton>
+                  <SpinButton
+                    onClick={partialToNewPr}
+                    disabled={
+                      selectedIds.size === 0 ||
+                      selectedIds.size === items.length ||
+                      busy !== null
+                    }
+                    className="rounded-md border border-indigo-400 px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-50 disabled:opacity-50 dark:border-indigo-700 dark:text-indigo-400 dark:hover:bg-indigo-950"
+                    title={
+                      selectedIds.size === 0
+                        ? "先在右側清單勾選今天要先採購的品項"
+                        : selectedIds.size === items.length
+                          ? "要全部採購請直接送出審核"
+                          : `把勾選的 ${selectedIds.size} 項移到一張新的${PR_TERM_ZH}`
+                    }
+                  >
+                    {busy === "partial" ? "轉出中…" : `✂️ 部分轉採購（${selectedIds.size}）`}
+                  </SpinButton>
+                  {items.length > 0 && selectedIds.size === items.length && (
+                    <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                      已全選 — 要全部採購請直接「送出審核」
+                    </p>
+                  )}
                 </>
               )}
               {canSplit && (
@@ -983,6 +1123,28 @@ function PageContent() {
             <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
+              {/* 部分轉採購的勾選欄：全選一律以 items 為準（分組模式的 displayRows 混有標題列） */}
+              {editable && (
+                <Th className="w-8">
+                  <input
+                    type="checkbox"
+                    aria-label="全選品項"
+                    title="全選 / 全不選"
+                    checked={items.length > 0 && selectedIds.size === items.length}
+                    ref={(el) => {
+                      if (el)
+                        el.indeterminate =
+                          selectedIds.size > 0 && selectedIds.size < items.length;
+                    }}
+                    onChange={(e) =>
+                      setSelectedIds(
+                        e.target.checked ? new Set(items.map((r) => r.id)) : new Set(),
+                      )
+                    }
+                    className="h-3.5 w-3.5 accent-blue-600"
+                  />
+                </Th>
+              )}
               <Th>#</Th>
               <Th>品名</Th>
               {hasPos && <Th>{PO_TERM_ZH}</Th>}
@@ -1075,6 +1237,17 @@ function PageContent() {
                   : "border-zinc-300 dark:border-zinc-700";
                 return (
                 <tr key={entry.key} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
+                  {editable && (
+                    <Td>
+                      <input
+                        type="checkbox"
+                        aria-label={`勾選 ${r.sku_code}`}
+                        checked={selectedIds.has(r.id)}
+                        onChange={() => toggleItemSelect(r.id)}
+                        className="h-3.5 w-3.5 accent-blue-600"
+                      />
+                    </Td>
+                  )}
                   <Td className="text-zinc-500">{seq}</Td>
                   <Td>
                     <div>{r.product_name}{r.variant_name ? `-${r.variant_name}` : ""}</div>
@@ -1206,6 +1379,7 @@ function PageContent() {
                     {editable && (
                       <SpinButton
                         onClick={() => removeItem(idx)}
+                        title="刪除此品項（非暫緩）"
                         className="text-xs text-red-600 hover:underline dark:text-red-400"
                       >
                         ✕
