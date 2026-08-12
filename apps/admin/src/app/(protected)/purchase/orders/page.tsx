@@ -46,6 +46,11 @@ type PO = {
   sent_at: string | null;
   sent_channel: string | null;
   stockout_at: string | null;
+  stockout_reason: string | null;
+  stockout_split_from_po_id: number | null;
+  stockout_split_from_po_no: string | null;
+  /** 純斷貨單（沒到貨、沒進貨單、沒波次）→ 可一鍵回復成草稿 */
+  stockout_restorable: boolean;
   created_at: string;
   updated_at: string;
   pr_id: number | null;
@@ -55,7 +60,9 @@ type PO = {
   stockout_items: number;
 };
 
-type StatusTab = "all" | POStatus;
+// "stockout" 是虛擬分頁（stockout_at IS NOT NULL），不是 purchase_orders.status 值 —
+// 斷貨單沿用 status='cancelled'（見 20260812000000 檔頭），其餘分頁會排除斷貨單。
+type StatusTab = "all" | POStatus | "stockout";
 
 // 樞紐（依廠商彙整品項）用的扁平品項列
 type PivotItem = {
@@ -101,8 +108,20 @@ const STATUS_TAB_ORDER: StatusTab[] = [
   "partially_received",
   "fully_received",
   "closed",
+  "stockout",
   "cancelled",
 ];
+
+const TAB_LABEL: Record<StatusTab, string> = {
+  all: "全部",
+  draft: STATUS_LABEL.draft,
+  sent: "已下單廠商",
+  partially_received: STATUS_LABEL.partially_received,
+  fully_received: STATUS_LABEL.fully_received,
+  closed: STATUS_LABEL.closed,
+  cancelled: STATUS_LABEL.cancelled,
+  stockout: "⛔ 斷貨",
+};
 
 const PAGE_SIZE = 30;
 
@@ -112,13 +131,20 @@ type SortCol = "updated_at" | "expected_date" | "total" | "po_no" | "supplier";
 type ListResp = {
   total: number;
   counts: Record<StatusTab, number>;
-  kpi: { draft: number; pending_arrival: number; overdue: number; pending_amount: number };
+  kpi: {
+    draft: number;
+    pending_arrival: number;
+    overdue: number;
+    pending_amount: number;
+    stockout: number;
+  };
   suppliers: { id: number; name: string }[];
   rows: PO[];
 };
 
 const EMPTY_COUNTS: Record<StatusTab, number> = {
-  all: 0, draft: 0, sent: 0, partially_received: 0, fully_received: 0, closed: 0, cancelled: 0,
+  all: 0, draft: 0, sent: 0, partially_received: 0, fully_received: 0, closed: 0,
+  cancelled: 0, stockout: 0,
 };
 
 export default function PurchaseOrdersListPage() {
@@ -333,6 +359,7 @@ export default function PurchaseOrdersListPage() {
     pendingArrival: data?.kpi.pending_arrival ?? 0,
     overdue: data?.kpi.overdue ?? 0,
     pendingAmount: Number(data?.kpi.pending_amount ?? 0),
+    stockout: data?.kpi.stockout ?? 0,
   };
   const tabCounts = data?.counts ?? EMPTY_COUNTS;
   const supplierOptions: [number, string][] = useMemo(
@@ -474,6 +501,35 @@ export default function PurchaseOrdersListPage() {
     }
   }
 
+  async function restorePO(po: PO) {
+    if (
+      !window.confirm(
+        `確定要回復 ${po.po_no} 的斷貨？\n` +
+          `這張單會變回「草稿」（未採購），可重新發送供應商繼續走流程；\n` +
+          `先前因斷貨被取消的開團商品、顧客訂單品項、補貨申請也會一併還原，並通知會員。`,
+      )
+    )
+      return;
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { data: res, error: rpcErr } = await supabase.rpc(
+        "rpc_restore_stockout_po",
+        { p_po_id: po.id, p_operator: userData.user?.id },
+      );
+      if (rpcErr) throw new Error(rpcErr.message);
+      const r = (res ?? {}) as Record<string, number>;
+      alert(
+        `${po.po_no} 已回復為草稿。\n` +
+          `還原：開團商品 ${r.campaign_items ?? 0} 項、訂單品項 ${r.order_items ?? 0} 項、` +
+          `訂單 ${r.orders_restored ?? 0} 張、補貨明細 ${r.restock_lines ?? 0} 條`,
+      );
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   function setSort(col: SortCol) {
     if (sortBy === col) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -578,7 +634,7 @@ export default function PurchaseOrdersListPage() {
       )}
 
       {/* === 總覽 KPI cards === */}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
         <KpiCard
           label="待發送"
           hint="草稿 PO,等發給供應商"
@@ -608,6 +664,14 @@ export default function PurchaseOrdersListPage() {
           hint="已發送 + 部分到貨 的金額合計"
           value={`$${stats.pendingAmount.toLocaleString()}`}
           accent="text-emerald-700 dark:text-emerald-400"
+        />
+        <KpiCard
+          label="⛔ 斷貨"
+          hint="斷貨拆出的單，可回復重新採購"
+          value={stats.stockout}
+          accent="text-amber-700 dark:text-amber-400"
+          active={tab === "stockout"}
+          onClick={() => setTab(tab === "stockout" ? "all" : "stockout")}
         />
       </div>
 
@@ -652,7 +716,7 @@ export default function PurchaseOrdersListPage() {
       {viewMode === "list" && (
       <div className="flex flex-wrap gap-1 border-b border-zinc-200 dark:border-zinc-800">
         {STATUS_TAB_ORDER.map((s) => {
-          const label = s === "all" ? "全部" : s === "sent" ? "已下單廠商" : STATUS_LABEL[s];
+          const label = TAB_LABEL[s];
           const count = tabCounts[s];
           const active = tab === s;
           return (
@@ -827,6 +891,7 @@ export default function PurchaseOrdersListPage() {
                     po={p}
                     onSend={openSendModal}
                     onDelete={deletePO}
+                    onRestore={restorePO}
                     sendBusyId={sendBusyId}
                   />
                 )),
@@ -838,6 +903,7 @@ export default function PurchaseOrdersListPage() {
                   po={p}
                   onSend={openSendModal}
                   onDelete={deletePO}
+                  onRestore={restorePO}
                   sendBusyId={sendBusyId}
                 />
               ))
@@ -1092,11 +1158,13 @@ function PORow({
   po,
   onSend,
   onDelete,
+  onRestore,
   sendBusyId,
 }: {
   po: PO;
   onSend: (p: PO) => void;
   onDelete: (p: PO) => Promise<void>;
+  onRestore: (p: PO) => Promise<void>;
   sendBusyId: number | null;
 }) {
   const overdue =
@@ -1133,12 +1201,28 @@ function PORow({
           {STATUS_LABEL[po.status]}
         </span>
         {po.stockout_at ? (
-          <span
-            className="ml-1 inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-            title={`斷貨於 ${new Date(po.stockout_at).toLocaleString("zh-TW")}`}
-          >
-            ⛔ 斷貨
-          </span>
+          <>
+            <span
+              className="ml-1 inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+              title={
+                `斷貨於 ${new Date(po.stockout_at).toLocaleString("zh-TW")}` +
+                (po.stockout_reason ? `\n原因：${po.stockout_reason}` : "")
+              }
+            >
+              ⛔ 斷貨
+            </span>
+            {po.stockout_split_from_po_id && (
+              <span className="ml-1 whitespace-nowrap text-[10px] text-zinc-500">
+                拆自{" "}
+                <Link
+                  href={`/purchase/orders/edit?id=${po.stockout_split_from_po_id}`}
+                  className="font-mono text-blue-600 hover:underline dark:text-blue-400"
+                >
+                  {po.stockout_split_from_po_no ?? `#${po.stockout_split_from_po_id}`}
+                </Link>
+              </span>
+            )}
+          </>
         ) : po.stockout_items > 0 ? (
           <span
             className="ml-1 inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300"
@@ -1216,6 +1300,11 @@ function PORow({
             >
               進貨
             </Link>
+          )}
+          {po.stockout_restorable && (
+            <RowAction variant="warning" onClick={() => onRestore(po)}>
+              ↩ 回復斷貨
+            </RowAction>
           )}
           {(po.status === "draft" ||
             po.status === "sent" ||

@@ -35,10 +35,15 @@ type POHeader = {
   sent_channel: string | null;
   stockout_at: string | null;
   stockout_reason: string | null;
+  stockout_split_from_po_id: number | null;
+  stockout_restored_at: string | null;
   created_by: string | null;
   created_at: string | null;
   updated_at: string | null;
 };
+
+/** 斷貨拆單的另一端：本單拆出去的斷貨單，或本單的來源單 */
+type LinkedPO = { id: number; po_no: string; status: string };
 
 type Item = {
   id: number;
@@ -77,6 +82,8 @@ function PageContent() {
   const [header, setHeader] = useState<POHeader | null>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [supplier, setSupplier] = useState<Supplier | null>(null);
+  const [splitPOs, setSplitPOs] = useState<LinkedPO[]>([]);
+  const [sourcePO, setSourcePO] = useState<LinkedPO | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showSend, setShowSend] = useState(false);
@@ -90,7 +97,7 @@ function PageContent() {
         supabase
           .from("purchase_orders")
           .select(
-            "id, po_no, status, supplier_id, dest_location_id, order_date, expected_date, subtotal, total, payment_terms, notes, sent_at, sent_by, sent_channel, stockout_at, stockout_reason, created_by, created_at, updated_at",
+            "id, po_no, status, supplier_id, dest_location_id, order_date, expected_date, subtotal, total, payment_terms, notes, sent_at, sent_by, sent_channel, stockout_at, stockout_reason, stockout_split_from_po_id, stockout_restored_at, created_by, created_at, updated_at",
           )
           .eq("id", id)
           .maybeSingle(),
@@ -103,6 +110,25 @@ function PageContent() {
       if (poErr || !poData) throw new Error(poErr?.message ?? `找不到${PO_TERM_ZH}`);
       if (itemErr) throw new Error(itemErr.message);
       setHeader(poData as POHeader);
+
+      // 斷貨拆單的兩端：本單拆出去的斷貨單 / 本單的來源單
+      const { data: splitRows } = await supabase
+        .from("purchase_orders")
+        .select("id, po_no, status")
+        .eq("stockout_split_from_po_id", id)
+        .order("id");
+      setSplitPOs((splitRows as LinkedPO[] | null) ?? []);
+
+      if (poData.stockout_split_from_po_id) {
+        const { data: srcRow } = await supabase
+          .from("purchase_orders")
+          .select("id, po_no, status")
+          .eq("id", poData.stockout_split_from_po_id)
+          .maybeSingle();
+        setSourcePO((srcRow as LinkedPO | null) ?? null);
+      } else {
+        setSourcePO(null);
+      }
 
       // supplier
       if (poData.supplier_id) {
@@ -199,24 +225,70 @@ function PageContent() {
     header?.status === "draft" ||
     header?.status === "sent" ||
     header?.status === "cancelled";
+  // 純斷貨單（沒有任何到貨量）才可回復；進貨單 / 撿貨波次的守衛在 RPC 那邊
+  const canRestore =
+    !!header?.stockout_at &&
+    (header.status === "cancelled" || header.status === "closed") &&
+    items.length > 0 &&
+    items.every((r) => r.qty_received === 0);
 
   async function stockoutItem(item: Item) {
     const label = item.product_name + (item.variant_name ? `-${item.variant_name}` : "");
     const remaining = item.qty_ordered - item.qty_received;
     const reason = window.prompt(
       `將品項「${label}」標記為「斷貨」？\n供應商無法供貨時使用：未到的 ${remaining} ${item.unit_uom ?? "件"}不再等待；` +
-        `全部品項定案（到齊或斷貨）後單據會自動結掉。\n\n可填寫斷貨原因（可留空）：`,
+        (item.qty_received === 0
+          ? `這個品項會被自動拆到一張「斷貨單」（可在採購單列表的「斷貨」分頁一鍵回復）。`
+          : `這個品項已有到貨，會留在本單、只停止等待未到的量。`) +
+        `\n\n可填寫斷貨原因（可留空）：`,
     );
     if (reason === null) return;
     try {
       const supabase = getSupabase();
       const { data: userData } = await supabase.auth.getUser();
-      const { error: rpcErr } = await supabase.rpc("rpc_stockout_po_item", {
+      const { data: res, error: rpcErr } = await supabase.rpc("rpc_stockout_po_item", {
         p_po_item_id: item.id,
         p_operator: userData.user?.id,
         p_reason: reason || null,
       });
       if (rpcErr) throw new Error(rpcErr.message);
+      const r = (res ?? {}) as Record<string, unknown>;
+      if (r.stockout_po_no) {
+        alert(
+          `已標記斷貨，並拆出斷貨單 ${String(r.stockout_po_no)}（共 ${Number(r.stockout_po_items ?? 0)} 項）。\n` +
+            `供應商補到貨時，可在該單按「回復斷貨」變回未採購狀態重跑流程。`,
+        );
+      }
+      await reload();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function restorePO() {
+    if (!header) return;
+    if (
+      !window.confirm(
+        `確定要回復 ${header.po_no} 的斷貨？\n` +
+          `這張單會變回「草稿」（未採購），可重新發送供應商繼續走流程；\n` +
+          `先前因斷貨被取消的開團商品、顧客訂單品項、補貨申請也會一併還原，並通知會員。`,
+      )
+    )
+      return;
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { data: res, error: rpcErr } = await supabase.rpc("rpc_restore_stockout_po", {
+        p_po_id: header.id,
+        p_operator: userData.user?.id,
+      });
+      if (rpcErr) throw new Error(rpcErr.message);
+      const r = (res ?? {}) as Record<string, number>;
+      alert(
+        `${header.po_no} 已回復為草稿。\n` +
+          `還原：開團商品 ${r.campaign_items ?? 0} 項、訂單品項 ${r.order_items ?? 0} 項、` +
+          `訂單 ${r.orders_restored ?? 0} 張、補貨明細 ${r.restock_lines ?? 0} 條`,
+      );
       await reload();
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e));
@@ -271,6 +343,11 @@ function PageContent() {
             <span className="ml-3 inline-block rounded bg-zinc-100 px-2 py-0.5 text-xs font-normal dark:bg-zinc-800">
               {STATUS_LABEL(header.status)}
             </span>
+            {header.stockout_at && (
+              <span className="ml-1 inline-block rounded bg-amber-100 px-2 py-0.5 text-xs font-normal text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                ⛔ 斷貨單
+              </span>
+            )}
           </h1>
           <p className="text-sm text-zinc-500">
             供應商：{supplier?.name ?? "—"}
@@ -331,8 +408,17 @@ function PageContent() {
               )}
               {canStockout && (
                 <p className="rounded-md border border-zinc-200 bg-zinc-50 p-2 text-xs leading-relaxed text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800/60 dark:text-zinc-400">
-                  ⛔ 供應商斷貨請在右側明細列逐品項標記；全部品項定案（到齊或斷貨）後單據會自動結掉。
+                  ⛔ 供應商斷貨請在右側明細列逐品項標記；沒到過貨的品項會自動拆成一張「斷貨單」，
+                  其餘品項照常收貨、到齊後本單自動結掉。
                 </p>
+              )}
+              {canRestore && (
+                <SpinButton
+                  onClick={restorePO}
+                  className="rounded-md bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-500"
+                >
+                  ↩ 回復斷貨（變回草稿）
+                </SpinButton>
               )}
               {canDelete && (
                 <SpinButton
@@ -351,9 +437,46 @@ function PageContent() {
                       原因：{header.stockout_reason}
                     </>
                   )}
+                  {sourcePO && (
+                    <>
+                      <br />
+                      斷貨拆自{" "}
+                      <Link
+                        href={`/purchase/orders/edit?id=${sourcePO.id}`}
+                        className="font-mono underline"
+                      >
+                        {sourcePO.po_no}
+                      </Link>
+                    </>
+                  )}
                 </div>
               )}
-              {!editable && !canSend && !canStockout && !canDelete && (
+              {header.stockout_restored_at && !header.stockout_at && (
+                <div className="rounded-md border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300">
+                  ↩ 斷貨已回復：{new Date(header.stockout_restored_at).toLocaleString("zh-TW")}
+                  <br />
+                  可重新發送供應商，接著走到貨 / 收貨流程。
+                </div>
+              )}
+              {splitPOs.length > 0 && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+                  ⛔ 斷貨品項已拆出：
+                  {splitPOs.map((p) => (
+                    <span key={p.id} className="ml-1">
+                      <Link
+                        href={`/purchase/orders/edit?id=${p.id}`}
+                        className="font-mono underline"
+                      >
+                        {p.po_no}
+                      </Link>
+                      <span className="text-amber-600 dark:text-amber-400">
+                        （{STATUS_LABEL(p.status)}）
+                      </span>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {!editable && !canSend && !canStockout && !canDelete && !canRestore && (
                 <p className="text-xs text-zinc-500">此{PO_TERM_ZH}已 {STATUS_LABEL(header.status)}。</p>
               )}
             </div>

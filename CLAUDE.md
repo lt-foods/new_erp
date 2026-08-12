@@ -267,6 +267,50 @@ RR- ride-along 單在補貨到店**之前**就存在（單頭 `pending`/`confirm
 
 ---
 
+## 採購單 (purchase_orders)
+
+### 斷貨會「拆單」，而且要能回復 —— 一律走 `_stockout_po_items`
+
+`rpc_stockout_po_item` / `rpc_stockout_purchase_order` 只是入口，真正的核心是
+`_stockout_po_items`（20260812000000 起是 v3）。它除了標記品項、連動下游，還負責：
+
+- **拆斷貨單**：把「本次標記斷貨且 `qty_received = 0`」的品項**整列搬**
+  （`UPDATE po_id`，不是複製）到一張新 PO。搬列才能讓 `po_item_id` 不變 ——
+  `purchase_request_items.po_item_id` 是 PR → campaign 對應的**唯一** 1:1 連結
+  （`po_campaigns`，`v_picking_demand_by_po` / `v_order_shortage` 都靠它），
+  複製一份等於把貨跟團的對應弄丟。
+  部分到貨的品項**不搬**（沿用「只停止等待餘量」語意）：拆了會讓「手上的貨」
+  和「PR 連結」落在兩張單上，已到的貨就配不出去。
+  整張單都斷貨時**不拆**（原單自己就是斷貨單，不生空殼 PO）；同一張來源單
+  再斷貨會併進既有那張未回復的斷貨單。
+- **連結**：受影響的下游列寫 `stockout_po_id`（campaign_items /
+  customer_order_items / customer_orders / restock_request_lines /
+  restock_requests），`rpc_restore_stockout_po` 靠它決定要還原哪些列。
+  新增任何寫 `stockout_at` 的路徑，記得一起寫 `stockout_po_id`，
+  不然那些列回復不了（舊資料只能靠「斷貨時間 + SKU + campaign」猜）。
+
+順序有雷：**`_stockout_propagate_restock` 一定要在拆單之前呼叫**。它的
+「已有歸屬出貨」守衛走 `pri → poi.po_id → pw.source_po_id`，品項先被搬走
+守衛就對不上，會把真的已出貨的補貨明細誤判成可取消。
+
+### 斷貨單沿用 `status='cancelled'`，不要新增 status 值
+
+同 `customer_order_items` 那一套（20260702020000）：`po.status IN
+('sent','partially_received','fully_received','closed')` 散落在十幾支
+view / RPC 當供給與閘門條件，加一個 `'stockout'` 值要同時改完那些地方，
+漏一個就是靜默錯帳。斷貨＝ `status='cancelled'` + `stockout_at IS NOT NULL`，
+列表的「斷貨」分頁是 `rpc_po_list` 的虛擬 `p_status='stockout'`
+（其餘分頁會 `AND stockout_at IS NULL` 排除斷貨單，分頁加總才等於總數）。
+
+### 回復斷貨 = 回到 `draft`，不是回到 `sent`
+
+`rpc_restore_stockout_po`：斷貨單 → `draft` + 清掉 `sent_at/by/channel`
+（＝「正常未採購」，可再送一次、也可改廠商），並反向還原開團商品 / 顧客訂單
+品項（`cancelled` + 斷貨 → `pending`）/ 整單取消的訂單 / 被收尾成 `completed`
+的單（→ `partially_completed`）/ 補貨鏈 / RR- 內部單，另發一則「斷貨已恢復」通知
+（先前發過取消通知，不補一則客人會以為訂單自己長回來）。
+守衛：有到貨量 / 未取消的進貨單 / 撿貨波次 → 擋下，那不是純斷貨單。
+
 ## 補貨申請 (restock_requests)
 
 ### RR 推 received 時，ride-along 內部單一律走 _settle_restock_ride_along
