@@ -667,7 +667,7 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
   // end_at IS NULL 表示「無到期日」(管理員未設),也算進行中,要保留
   let q = sb
     .from("group_buy_campaigns")
-    .select("id, campaign_no, name, description, cover_image_url, close_type, total_cap_qty, end_at, pickup_deadline, campaign_items(unit_price, sort_order, sku:skus(product:products(images)))")
+    .select("id, campaign_no, name, description, cover_image_url, close_type, total_cap_qty, end_at, pickup_deadline, campaign_items(unit_price, cap_qty, sort_order, sku:skus(product:products(images)))")
     .eq("tenant_id", tenantId)
     .eq("status", "open")
     // 開團設定「上架個人賣場」=false 時不出現在 App / LIFF /shop
@@ -675,14 +675,23 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
     // 排除內部 sentinel 活動(補貨申請),不應出現在顧客商店
     .neq("campaign_no", "__INTERNAL_RESTOCK__")
     .or(`end_at.is.null,end_at.gt.${new Date().toISOString()}`);
-  if (closeType) q = q.eq("close_type", closeType);
+  if (closeType && closeType !== "sale_limit") q = q.eq("close_type", closeType);
   // 不加 limit：曾經 .limit(50) 在 open 團數超過 50 時把最晚結單的整批截掉
   // （end_at ASC NULLS LAST + 截 50），顧客端整個團就消失。PostgREST 仍有
   // db-max-rows=1000 兜底，55 個團也才一頁。
   const { data, error } = await q
     .order("end_at", { ascending: true, nullsFirst: false });
 
-  const allIds = (data ?? []).map((c: any) => c.id);
+  const sourceCampaigns = closeType === "sale_limit"
+    ? (data ?? []).filter((c: any) =>
+      c.close_type === "fast"
+      || c.close_type === "limited"
+      || (Number(c.total_cap_qty ?? 0) > 0 && c.close_type !== "food_train")
+      || (c.close_type !== "food_train" && (c.campaign_items ?? []).some((i: any) => Number(i.cap_qty ?? 0) > 0))
+    )
+    : (data ?? []);
+
+  const allIds = sourceCampaigns.map((c: any) => c.id);
 
   // 瀏覽次數（顧客端顯示「N 次瀏覽」）。RPC 未部署時整段當 0，不影響列表。
   const viewMap = new Map<number, number>();
@@ -732,7 +741,7 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
   if (error) return json({ error: error.message }, 500);
 
   const supabaseUrl = requireEnv("SUPABASE_URL");
-  const campaigns = (data ?? []).map((c: any) => {
+  const campaigns = sourceCampaigns.map((c: any) => {
     const items = c.campaign_items ?? [];
     const prices: number[] = items
       .map((i: any) => Number(i.unit_price))
@@ -757,6 +766,7 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
       cover_image_url: cover,
       close_type: c.close_type,
       total_cap_qty: c.total_cap_qty,
+      has_item_cap: items.some((i: any) => Number(i.cap_qty ?? 0) > 0),
       ordered_qty: orderedMap.get(Number(c.id)) ?? 0,
       order_count: countMap.get(Number(c.id)) ?? 0,
       recent_order_count: recentMap.get(Number(c.id)) ?? 0,
@@ -787,11 +797,14 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
 async function getCampaignDetail(sb: any, tenantId: string, campaignId: number) {
   const { data: c, error: cErr } = await sb
     .from("group_buy_campaigns")
-    .select("id, campaign_no, name, description, cover_image_url, status, end_at, pickup_deadline")
+    .select("id, campaign_no, name, description, cover_image_url, status, end_at, pickup_deadline, is_for_shop")
     .eq("tenant_id", tenantId)
     .eq("id", campaignId)
     .single();
   if (cErr || !c) return json({ error: "campaign not found" }, 404);
+  if (c.status !== "open" || !c.is_for_shop || (c.end_at && new Date(c.end_at).getTime() <= Date.now())) {
+    return json({ error: "campaign not available" }, 404);
+  }
 
   const { data: items, error: iErr } = await sb
     .from("campaign_items")
@@ -969,18 +982,14 @@ async function placeMemberOrder(
   const pickupStoreId = Number(p.pickup_store_id ?? member.home_store_id ?? 0);
   if (!pickupStoreId) return json({ error: "pickup_store_id required" }, 400);
 
-  // 確認活動 open + 還沒過期
-  const { data: campaign, error: cErr } = await sb
-    .from("group_buy_campaigns")
-    .select("id, status, campaign_no, end_at")
-    .eq("tenant_id", tenantId)
-    .eq("id", campaignId)
-    .single();
-  if (cErr || !campaign) return json({ error: "campaign not found" }, 404);
-  if (campaign.status !== "open") return json({ error: "campaign not open" }, 400);
-  if (campaign.end_at && new Date(campaign.end_at).getTime() <= Date.now()) {
-    return json({ error: "campaign already ended" }, 400);
+  const requested = new Map<number, number>();
+  for (const it of items) {
+    const ciId = Number(it.campaign_item_id);
+    const qty = Number(it.qty);
+    if (!ciId || !Number.isFinite(qty) || qty <= 0) continue;
+    requested.set(ciId, (requested.get(ciId) ?? 0) + qty);
   }
+  if (requested.size === 0) return json({ error: "items required" }, 400);
 
   // 找下單用 line_channel：
   //   1) 優先：pickup store 自己的 active channel
@@ -1010,97 +1019,30 @@ async function placeMemberOrder(
   }
   if (!channel) return json({ error: "no active channel for tenant" }, 400);
 
-  // 找既有訂單 or 新建(unique: tenant+campaign+channel+member)
-  const { data: existing } = await sb
-    .from("customer_orders")
-    .select("id, order_no")
-    .eq("tenant_id", tenantId)
-    .eq("campaign_id", campaignId)
-    .eq("channel_id", channel.id)
-    .eq("member_id", memberId)
-    .maybeSingle();
-
-  let orderId: number;
-  let orderNo: string;
-
-  if (existing) {
-    orderId = existing.id;
-    orderNo = existing.order_no;
-    await sb.from("customer_orders").update({
-      pickup_store_id: pickupStoreId,
-      notes: notes ?? null,
-      updated_at: new Date().toISOString(),
-    }).eq("id", orderId);
-  } else {
-    const { count } = await sb
-      .from("customer_orders")
-      .select("*", { count: "exact", head: true })
-      .eq("tenant_id", tenantId)
-      .eq("campaign_id", campaignId);
-    orderNo = `${campaign.campaign_no}-${String((count ?? 0) + 1).padStart(4, "0")}`;
-    const { data: inserted, error: insErr } = await sb
-      .from("customer_orders")
-      .insert({
-        tenant_id: tenantId,
-        order_no: orderNo,
-        campaign_id: campaignId,
-        channel_id: channel.id,
-        member_id: memberId,
-        nickname_snapshot: member.name,
-        pickup_store_id: pickupStoreId,
-        status: "pending",
-        notes: notes ?? null,
-      })
-      .select("id")
-      .single();
-    if (insErr || !inserted) {
-      return json({ error: "failed to create order", detail: insErr?.message }, 500);
-    }
-    orderId = inserted.id;
+  const rpcItems = Array.from(requested.entries()).map(([campaign_item_id, qty]) => ({
+    campaign_item_id,
+    qty,
+  }));
+  const { data: placedRows, error: placeErr } = await sb.rpc("rpc_place_member_order_guarded", {
+    p_tenant: tenantId,
+    p_campaign_id: campaignId,
+    p_channel_id: channel.id,
+    p_member_id: memberId,
+    p_pickup_store_id: pickupStoreId,
+    p_items: rpcItems,
+    p_notes: notes,
+    p_source: itemSource,
+  });
+  if (placeErr) {
+    const msg = placeErr.message ?? "";
+    if (msg.includes("item sold out")) return json({ error: "item sold out" }, 409);
+    if (msg.includes("sold out")) return json({ error: "sold out" }, 409);
+    if (msg.includes("campaign not found")) return json({ error: "campaign not found" }, 404);
+    if (msg.includes("member not found")) return json({ error: "member not found" }, 404);
+    return json({ error: msg || "failed to create order" }, 400);
   }
-
-  // items: 同 campaign_item_id 累加,否則新增
-  for (const it of items) {
-    const ciId = Number(it.campaign_item_id);
-    const qty = Number(it.qty);
-    if (!ciId || !qty || qty <= 0) continue;
-
-    const { data: ci } = await sb
-      .from("campaign_items")
-      .select("unit_price, sku_id")
-      .eq("id", ciId)
-      .eq("tenant_id", tenantId)
-      .eq("campaign_id", campaignId)
-      .maybeSingle();
-    if (!ci) continue;
-
-    const { data: existingItem } = await sb
-      .from("customer_order_items")
-      .select("id, qty")
-      .eq("order_id", orderId)
-      .eq("campaign_item_id", ciId)
-      .maybeSingle();
-
-    if (existingItem) {
-      await sb.from("customer_order_items").update({
-        qty: Number(existingItem.qty) + qty,
-        updated_at: new Date().toISOString(),
-      }).eq("id", existingItem.id);
-    } else {
-      await sb.from("customer_order_items").insert({
-        tenant_id: tenantId,
-        order_id: orderId,
-        campaign_item_id: ciId,
-        sku_id: ci.sku_id,
-        qty: qty,
-        unit_price: ci.unit_price,
-        status: "pending",
-        source: itemSource,
-      });
-    }
-  }
-
-  return json({ ok: true, order_id: orderId, order_no: orderNo });
+  const placed = Array.isArray(placedRows) ? placedRows[0] : placedRows;
+  return json({ ok: true, order_id: placed?.order_id, order_no: placed?.order_no });
 }
 
 async function generatePwaAuthCode(

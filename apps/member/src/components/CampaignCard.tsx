@@ -14,6 +14,7 @@ export type CampaignSummary = {
   cover_image_url: string | null;
   close_type: "regular" | "fast" | "limited" | "food_train" | string;
   total_cap_qty: number | null;
+  has_item_cap?: boolean;
   ordered_qty: number;
   /** 全分店訂單數（最熱銷排序用）。後端未部署前可能為 0。 */
   order_count: number;
@@ -33,7 +34,7 @@ export type CampaignSummary = {
  *  一般團幾乎都有結單日(end_at)，有結單日 ≠ 限時，否則每張卡都被貼標、
  *  標籤就失去意義（卡片本來就會單獨顯示倒數）。 */
 export function campaignBadgeLabel(c: CampaignSummary): string | null {
-  const hasCap = (c.total_cap_qty ?? 0) > 0;
+  const hasCap = (c.total_cap_qty ?? 0) > 0 || c.has_item_cap === true;
   if (c.close_type === "food_train") return "美食列車";
   if (c.close_type === "fast" && hasCap) return "限量限時";
   if (c.close_type === "fast") return "限時";

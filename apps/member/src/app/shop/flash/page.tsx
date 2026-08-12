@@ -35,7 +35,7 @@ export default function FlashPage() {
       try {
         const d = await callLiffApi<{ campaigns: CampaignSummary[] }>(s.token, {
           action: "list_active_campaigns",
-          close_type: "fast",
+          close_type: "sale_limit",
         });
         // 已 sort by end_at asc 從 backend, 就直接用
         setCampaigns(d.campaigns);

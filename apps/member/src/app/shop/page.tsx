@@ -132,7 +132,12 @@ export default function ShopPage() {
   // - 只有一個類別有  → 攤平該類別（每團一張 banner，連到該團）
   // ShopBannerCarousel 已內建 4s 輪詢。
   const foodTrains = visible.filter((c) => c.close_type === "food_train");
-  const flashes = visible.filter((c) => c.close_type === "fast");
+  const flashes = visible.filter((c) =>
+    c.close_type === "fast"
+    || c.close_type === "limited"
+    || (Number(c.total_cap_qty ?? 0) > 0 && c.close_type !== "food_train")
+    || (c.has_item_cap === true && c.close_type !== "food_train"),
+  );
   const groupMode = foodTrains.length > 0 && flashes.length > 0;
 
   // 排序：最新(id 大→小，無 created_at 用 id 近似) / 最熱銷(全分店訂單數)

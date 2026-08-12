@@ -144,8 +144,8 @@ export default function CampaignDetailPage() {
     return sum;
   }, [items, qtyMap]);
 
-  const setQty = (ciId: number, q: number, cap: number | null) => {
-    const max = cap != null ? cap : 999;
+  const setQty = (ciId: number, q: number, cap: number | null, orderedQty = 0) => {
+    const max = cap != null ? Math.max(0, cap - orderedQty) : 999;
     const next = Math.max(0, Math.min(max, q));
     setQtyMap((prev) => ({ ...prev, [ciId]: next }));
   };
@@ -610,7 +610,7 @@ function BuySheet({
   campaignName: string;
   items: Item[];
   qtyMap: Record<number, number>;
-  onQty: (ciId: number, q: number, cap: number | null) => void;
+  onQty: (ciId: number, q: number, cap: number | null, orderedQty?: number) => void;
   totalQty: number;
   totalAmount: number;
   notes: string;
@@ -694,8 +694,8 @@ function BuySheet({
                     </div>
                     <Stepper
                       qty={q}
-                      onChange={(nq) => onQty(it.campaign_item_id, nq, it.cap_qty)}
-                      max={it.cap_qty ?? 999}
+                      onChange={(nq) => onQty(it.campaign_item_id, nq, it.cap_qty, it.ordered_qty)}
+                      max={it.cap_qty != null ? Math.max(0, it.cap_qty - it.ordered_qty) : 999}
                     />
                   </div>
                 );
