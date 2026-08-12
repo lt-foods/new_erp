@@ -15,6 +15,10 @@ import {
   type PRReviewStatus,
 } from "@/lib/prStatus";
 import { PO_TERM_ZH } from "@/lib/poStatus";
+import {
+  campaignStatusLabel,
+  campaignStatusBadge,
+} from "@/lib/campaignStatus";
 
 const PAGE_SIZE = 20;
 
@@ -66,8 +70,9 @@ type ClosedCampaignRow = {
   id: number;
   name: string;
   close_date: string;
-  existing_pr_id: number | null;
-  same_close_date_has_pr: boolean;
+  status: "closed" | "locked";
+  // 已納入的未取消請購單（purchase_request_campaigns join 表）
+  linked_prs: { id: number; pr_no: string }[];
 };
 
 type StatusTab = "all" | PRStatus;
@@ -483,62 +488,53 @@ export default function PurchaseRequestsListPage() {
       const supabase = getSupabase();
       const since = new Date();
       since.setDate(since.getDate() - 60);
+      // closed（已收單）+ locked（已鎖定 = 已被請購單鎖團）都列出來 —
+      // 只列 closed 的話，團一被建單鎖定就從這裡消失，操作者無從確認
+      // 結單的商品進了哪張單、也沒辦法補單（RPC 建單只帶未請購差額，
+      // 重複選不會重複下單）。
       const { data: camps } = await supabase
         .from("group_buy_campaigns")
-        .select("id, name, end_at")
-        .eq("status", "closed")
+        .select("id, name, end_at, status")
+        .in("status", ["closed", "locked"])
         .neq("campaign_no", "__INTERNAL_RESTOCK__")
         .gte("end_at", since.toISOString())
         .order("end_at", { ascending: false });
 
-      const { data: existingCampaignPRs } = await supabase
-        .from("purchase_requests")
-        .select("id, source_campaign_id")
-        .eq("source_type", "campaign")
-        .neq("status", "cancelled");
-      const prByCamp = new Map<number, number>(
-        (
-          (existingCampaignPRs as
-            | { id: number; source_campaign_id: number | null }[]
-            | null) ?? []
-        )
-          .filter((p) => p.source_campaign_id !== null)
-          .map((p) => [p.source_campaign_id as number, p.id]),
-      );
-
-      const { data: existingCloseDatePRs } = await supabase
-        .from("purchase_requests")
-        .select("source_close_date")
-        .eq("source_type", "close_date")
-        .neq("status", "cancelled");
-      const closeDateSet = new Set(
-        (
-          (existingCloseDatePRs as
-            | { source_close_date: string | null }[]
-            | null) ?? []
-        )
-          .map((p) => p.source_close_date)
-          .filter((d): d is string => !!d),
-      );
-
-      const result: ClosedCampaignRow[] = (
+      const campRows =
         (camps as
-          | { id: number; name: string; end_at: string | null }[]
-          | null) ?? []
-      )
+          | { id: number; name: string; end_at: string | null; status: "closed" | "locked" }[]
+          | null) ?? [];
+
+      // 每團已納入的未取消請購單（join 表由所有建單路徑 + trigger 維護）
+      const prsByCamp = new Map<number, { id: number; pr_no: string }[]>();
+      if (campRows.length > 0) {
+        const { data: links } = await supabase
+          .from("purchase_request_campaigns")
+          .select("campaign_id, purchase_requests!inner(id, pr_no, status)")
+          .in("campaign_id", campRows.map((c) => c.id))
+          .neq("purchase_requests.status", "cancelled");
+        for (const l of
+          (links as
+            | {
+                campaign_id: number;
+                purchase_requests: { id: number; pr_no: string; status: string };
+              }[]
+            | null) ?? []) {
+          const list = prsByCamp.get(l.campaign_id) ?? [];
+          list.push({ id: l.purchase_requests.id, pr_no: l.purchase_requests.pr_no });
+          prsByCamp.set(l.campaign_id, list);
+        }
+      }
+
+      const result: ClosedCampaignRow[] = campRows
         .filter((c) => !!c.end_at)
-        .map((c) => {
-          const closeDate = new Date(c.end_at as string).toLocaleDateString(
-            "sv-SE",
-          );
-          return {
-            id: c.id,
-            name: c.name,
-            close_date: closeDate,
-            existing_pr_id: prByCamp.get(c.id) ?? null,
-            same_close_date_has_pr: closeDateSet.has(closeDate),
-          };
-        });
+        .map((c) => ({
+          id: c.id,
+          name: c.name,
+          close_date: new Date(c.end_at as string).toLocaleDateString("sv-SE"),
+          status: c.status,
+          linked_prs: (prsByCamp.get(c.id) ?? []).sort((a, b) => b.id - a.id),
+        }));
 
       setClosedCampaigns(result);
     } catch (e) {
@@ -1182,7 +1178,7 @@ export default function PurchaseRequestsListPage() {
               <div>
                 <h3 className="text-base font-semibold">針對團購建{PR_TERM_ZH}</h3>
                 <p className="mt-0.5 text-xs text-zinc-500">
-                  可多選、同團購可重複開單（補單）
+                  可多選、含已鎖定的團；重複開單只帶尚未請購的差額（補單）
                 </p>
               </div>
               <SpinButton
@@ -1248,19 +1244,35 @@ export default function PurchaseRequestsListPage() {
                             className="h-4 w-4 rounded border-zinc-300 text-blue-600 focus:ring-blue-500"
                           />
                           <div className="min-w-0 flex-1">
-                            <div className="truncate text-sm font-medium">
-                              {c.name}
+                            <div className="flex items-center gap-2">
+                              <span className="truncate text-sm font-medium">
+                                {c.name}
+                              </span>
+                              <span
+                                className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${campaignStatusBadge(c.status)}`}
+                              >
+                                {campaignStatusLabel(c.status)}
+                              </span>
                             </div>
                             <div className="mt-0.5 text-xs text-zinc-500">
                               結單日 {c.close_date}
-                              {c.existing_pr_id !== null && (
-                                <Link
-                                  href={`/purchase/requests/edit?id=${c.existing_pr_id}`}
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="ml-2 text-amber-600 hover:underline dark:text-amber-400"
-                                >
-                                  · 已有{PR_TERM_ZH} #{c.existing_pr_id}（補單會新建）
-                                </Link>
+                              {c.linked_prs.length > 0 && (
+                                <span className="ml-2 text-amber-600 dark:text-amber-400">
+                                  · 已納入
+                                  {c.linked_prs.slice(0, 3).map((p) => (
+                                    <Link
+                                      key={p.id}
+                                      href={`/purchase/requests/edit?id=${p.id}`}
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="ml-1 hover:underline"
+                                    >
+                                      {p.pr_no}
+                                    </Link>
+                                  ))}
+                                  {c.linked_prs.length > 3 &&
+                                    ` 等 ${c.linked_prs.length} 張`}
+                                  （補單只帶未請購差額）
+                                </span>
                               )}
                             </div>
                           </div>
