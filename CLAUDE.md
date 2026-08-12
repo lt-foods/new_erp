@@ -353,6 +353,32 @@ view / RPC 當供給與閘門條件，加一個 `'stockout'` 值要同時改完�
 （先前發過取消通知，不補一則客人會以為訂單自己長回來）。
 守衛：有到貨量 / 未取消的進貨單 / 撿貨波次 → 擋下，那不是純斷貨單。
 
+### 斷貨單本體不能刪 —— 它是「回復斷貨」的鑰匙
+
+`rpc_delete_purchase_order` 允許刪 `cancelled` 的 PO，而斷貨單正是
+`cancelled + stockout_at`（20260702020000 那套），所以斷貨單刪得掉——
+刪掉之後 `rpc_restore_stockout_po` 沒有目標可跑，被斷貨取消的顧客訂單
+全部接不回來（20260812000000 之前的舊資料 `stockout_po_id` 又是 NULL，
+連結也沒有）。2026-08-12 實案：PO2608071192（樂廚，拌牛蒡絲 200g×40）
+被誤刪，GRP-20260722-017 的 30 張顧客訂單卡死在 cancelled。
+
+誤刪的救法（已實戰驗證）：原號重建 PO + 品項，**`stockout_at` 要填回
+原本的斷貨時間戳**（從 `coi.stockout_at` 撈，μs 都要一致——restore 對
+舊資料的 fallback 是「斷貨時間戳 + SKU + campaign」精確比對；先全庫查
+該時間戳只對到目標列再動手），接回 `pri.po_item_id`、PR 狀態，再跑
+`rpc_restore_stockout_po`。不想發「斷貨已恢復」通知的話，同一個
+transaction 內刪掉 `category='stockout' AND created_at = NOW()` 的
+notifications 即可（該表無 trigger、不在 realtime publication、
+會員端是輪詢拉取，同 tx 刪 = 從未存在）。
+
+連帶兩個坑：
+- 刪 PO 後 PR 退 `partially_ordered`，而 `rpc_split_pr_to_pos` 把這個
+  狀態當「已拆過單」直接擋——多供應商 PR 誤刪其中一張 PO 後**沒有 UI
+  路徑可以重拆**，只能手動重建；單一供應商 PR 才會退回 `submitted`
+  可以整個重來（使用者以為通用的「刪掉重產」招式只在後者成立）。
+- 治本尚未實作：`rpc_delete_purchase_order` 應擋 `stockout_at IS NOT
+  NULL`（指引改走回復斷貨），避免再有人把回復的鑰匙刪掉。
+
 ## 補貨申請 (restock_requests)
 
 ### RR 推 received 時，ride-along 內部單一律走 _settle_restock_ride_along
