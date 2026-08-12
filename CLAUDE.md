@@ -379,6 +379,14 @@ notifications 即可（該表無 trigger、不在 realtime publication、
 - 治本尚未實作：`rpc_delete_purchase_order` 應擋 `stockout_at IS NOT
   NULL`（指引改走回復斷貨），避免再有人把回復的鑰匙刪掉。
 
+回復斷貨的訂單如果走補貨申請發店，**已收貨的店要手動補跑配單**：
+`_advance_arrived_confirmed_orders` 只在 `rpc_receive_transfer` 收貨當下
+跑一次，店家收貨時訂單還掛在斷貨取消的話，那一次推不到任何單，之後也
+沒有東西會再觸發。restore 完對每間**已收貨**的店補一發
+`_advance_arrived_confirmed_orders(store_id, ARRAY[sku_id], op, NOW())`
+（它自己會叫 `_trim_internal_pool` 收斂 RR- 現貨池）；還沒收貨的店
+不用動，收貨時邏輯 E 會自動接手——所以 restore 一定要趕在店家收貨之前。
+
 ## 補貨申請 (restock_requests)
 
 ### RR 推 received 時，ride-along 內部單一律走 _settle_restock_ride_along
