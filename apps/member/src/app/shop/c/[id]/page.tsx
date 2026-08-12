@@ -8,7 +8,7 @@ import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import Spinner from "@/components/Spinner";
 import Countdown from "@/components/Countdown";
-import OrderedCount, { FlameIcon } from "@/components/OrderedCount";
+import OrderedCount from "@/components/OrderedCount";
 import ViewCount from "@/components/ViewCount";
 import { cleanCampaignText } from "@/lib/text";
 import { getCampaignHint } from "@/lib/campaignHints";
@@ -295,9 +295,11 @@ export default function CampaignDetailPage() {
                               ${Number(it.unit_price).toLocaleString()}
                             </div>
                             {it.ordered_qty > 0 && (
-                              <div className="inline-flex items-center gap-0.5 text-[13px] font-semibold text-[var(--brand-strong)]">
-                                <FlameIcon className="h-3.5 w-3.5" />
-                                已售出 <span className="tabular-nums">{it.ordered_qty}</span>
+                              <div className="inline-flex items-baseline gap-1 text-[12px] font-medium text-[var(--secondary-label)]">
+                                已售出
+                                <span className="text-[14px] font-bold tabular-nums leading-none text-[var(--foreground)]">
+                                  {it.ordered_qty}
+                                </span>
                               </div>
                             )}
                           </div>
@@ -681,9 +683,11 @@ function BuySheet({
                           ${Number(it.unit_price).toLocaleString()}
                         </div>
                         {it.ordered_qty > 0 && (
-                          <div className="inline-flex items-center gap-0.5 text-[12px] font-semibold text-[var(--brand-strong)]">
-                            <FlameIcon className="h-3 w-3" />
-                            已售出 <span className="tabular-nums">{it.ordered_qty}</span>
+                          <div className="inline-flex items-baseline gap-1 text-[12px] font-medium text-[var(--secondary-label)]">
+                            已售出
+                            <span className="text-[14px] font-bold tabular-nums leading-none text-[var(--foreground)]">
+                              {it.ordered_qty}
+                            </span>
                           </div>
                         )}
                       </div>
