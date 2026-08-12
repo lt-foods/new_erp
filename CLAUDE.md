@@ -265,6 +265,48 @@ RR- ride-along 單在補貨到店**之前**就存在（單頭 `pending`/`confirm
 邏輯 D/D2 之後** —— ride-along 單要先被推 ready，池子收斂才吃得到它，
 否則整支會靜默失效（掛在邏輯 C 尾巴時就是這樣）。
 
+### `backorder_at` 是「人工標、人工解」的旗標，加新路徑要自己接解除
+
+少發配貨（`rpc_allocate_shortage`）配不到的品項會標 `backorder_at`，而
+`is_order_item_pickup_ready` 內含 `backorder_at IS NULL` → 取貨閘門直接關掉。
+問題是這一欄**在 20260811000050 之前完全沒有自動解除的路徑**：全 DB 只有
+`rpc_allocate_shortage` / `rpc_create_inventory_deduction` / `rpc_create_offset_sale` /
+`rpc_cancel_backorder_items` 會清掉它，四支都要人手動點。`rpc_receive_transfer`
+連碰都沒碰，`_advance_arrived_confirmed_orders` 還因為閘門回 false 而**主動跳過**
+這種單 —— 所以總倉補派第二批、店家也收了貨，品項照樣掛著待補貨，單頭永遠停在
+`partially_completed`（松山 GRP-20260730-016-0008 就這樣卡了 6 天）。
+
+已修：`_settle_arrived_backorders`（`rpc_receive_transfer` 邏輯 A0）。要點：
+
+- **A0 必須排在邏輯 A/B/C/E 之前**。C 的 `is_order_pickup_ready()` 與 E 的
+  `_advance_arrived_confirmed_orders` 都要 `backorder_at IS NULL` 才推得動單頭，
+  順序反了這批單要等下一次收貨才會動。
+- 可配量要**兩套算法取小**：
+  `LEAST(supplied + covered − picked − 已配到未取, on_hand − 已承諾未取)`。
+  前者對齊 `rpc_get_allocation_candidates`（自動解除才會跟店員手動點
+  「⚖️ 配貨」一致），後者對齊 `_advance_arrived_confirmed_orders`。
+  **只信前者會誤放行** —— 線上實測 5 列是「supplied 4、picked 0、on_hand 0」，
+  貨早從別的路徑出去了，照帳放行就是通知客人來撲空。
+- 算「已承諾未取」時要**排除掛著 `backorder_at` 的列**，否則它們自己擋自己，
+  整支永遠解不開任何一列。
+- 只清旗標、**永不新標**（新標是少發配貨的職責）。
+
+### 收貨頁的「短少」：單批派出量不能拿去比全期需求
+
+`rpc_get_ship_vs_demand_for_transfers` 原本拿**這一張 transfer** 的派出量，比
+**該團該店該 SKU 的全期需求**（含已領走的）。同一組分兩批到貨時，第一批早就收
+進來的量在算式裡完全不存在 → 第二批補 1 瓶會標「短少 10」。線上 349 個
+(團,店,SKU) 已經是多批到貨，283 張標短少的 transfer 有 178 張（1,002 件）是假的。
+
+供給側一律補上 `prior`（同組**其他**已收 transfer 的 `qty_received`，條件比照
+`rpc_get_allocation_candidates` 的 supplied）。`over` 刻意維持單批語意，不加
+`prior` —— 加了會讓 438 張歷史單突然亮「多給」，那是另一個題目。
+
+連帶：那個 `short` 是收貨頁「⚖️ 配貨」按鈕的顯示條件（`short > 0 || covered > 0`），
+而少發配貨是唯一能人工解除 `backorder_at` 的入口。**修掉假短少會順手拿掉入口**，
+所以 RPC 另外回一個 `backorder`（這組還掛著幾件待補貨），讓還有人在等的組別一定
+看得到入口。改這支的顯示條件時記得三個一起看。
+
 ---
 
 ## 補貨申請 (restock_requests)
