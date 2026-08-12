@@ -31,6 +31,9 @@ type ItemLine = { key: string; skuId: number | null; product: string; name: stri
 //   coveredQty = 缺口中已用「店內現貨減抵單」吸收的件數（shortQty 已淨掉這部分）
 //   prefilledQty = 這批到貨其實是「補回店家先墊的現貨」的件數（店家已用店內現貨
 //     把客人的貨交掉，總倉的貨照樣會來 — 見 20260805000220 migration）
+//   backorderQty = 這組還掛著幾件「待補貨」（少發配貨沒配到、backorder_at 未解）。
+//     收貨到店時會自動解除（20260811000050），但實體庫存對不上時不會放行 —
+//     那種情況一定要留「⚖️ 配貨」入口給店家自己處理，所以 short 歸零也要顯示。
 type ItemSummary = {
   lines: number;
   totalQty: number;
@@ -41,6 +44,7 @@ type ItemSummary = {
   shortQty: number;
   coveredQty: number;
   prefilledQty: number;
+  backorderQty: number;
 };
 
 // 列表上的一個可收合群組（product 模式＝同品相，wave 模式＝同撿貨單號）
@@ -58,6 +62,7 @@ type Group = {
   shortQty: number;        // 這組總共少了幾件（訂單比派出多，已淨掉現貨減抵）
   coveredQty: number;      // 這組用店內現貨減抵掉幾件
   prefilledQty: number;    // 這組有幾件是補回店家先墊的現貨
+  backorderQty: number;    // 這組還有幾件掛著待補貨（少發配貨沒配到）
 };
 
 export default function TransfersInboxPage() {
@@ -302,7 +307,7 @@ export default function TransfersInboxPage() {
               if (code) skuCodeMap.set(s.id, code);
             }
           }
-          const emptySummary = (): ItemSummary => ({ lines: 0, totalQty: 0, names: [], codes: [], items: [], extraQty: 0, shortQty: 0, coveredQty: 0, prefilledQty: 0 });
+          const emptySummary = (): ItemSummary => ({ lines: 0, totalQty: 0, names: [], codes: [], items: [], extraQty: 0, shortQty: 0, coveredQty: 0, prefilledQty: 0, backorderQty: 0 });
           for (const tid of transferIds) summary.set(tid, emptySummary());
           for (const it of items) {
             const cur = summary.get(it.transfer_id) ?? emptySummary();
@@ -335,7 +340,7 @@ export default function TransfersInboxPage() {
             p_transfer_ids: transferIds,
           });
           const diffs =
-            (diffData as Record<string, { over?: number; short?: number; covered?: number; prefilled?: number }> | null) ?? {};
+            (diffData as Record<string, { over?: number; short?: number; covered?: number; prefilled?: number; backorder?: number }> | null) ?? {};
           for (const [tid, d] of Object.entries(diffs)) {
             const cur = summary.get(Number(tid));
             if (!cur) continue;
@@ -343,6 +348,7 @@ export default function TransfersInboxPage() {
             cur.shortQty = Number(d?.short) || 0;
             cur.coveredQty = Number(d?.covered) || 0;
             cur.prefilledQty = Number(d?.prefilled) || 0;
+            cur.backorderQty = Number(d?.backorder) || 0;
           }
         }
 
@@ -485,6 +491,7 @@ export default function TransfersInboxPage() {
             shortQty: 0,
             coveredQty: 0,
             prefilledQty: 0,
+            backorderQty: 0,
           };
           map.set(key, entry);
         }
@@ -494,6 +501,7 @@ export default function TransfersInboxPage() {
         entry.shortQty += itemSummary.get(t.id)?.shortQty ?? 0;
         entry.coveredQty += itemSummary.get(t.id)?.coveredQty ?? 0;
         entry.prefilledQty += itemSummary.get(t.id)?.prefilledQty ?? 0;
+        entry.backorderQty += itemSummary.get(t.id)?.backorderQty ?? 0;
       }
       return Array.from(map.values()).sort((a, b) => {
         // 「其他調撥」永遠墊底，其餘依撿貨單號遞減
@@ -536,6 +544,7 @@ export default function TransfersInboxPage() {
           shortQty: 0,
           coveredQty: 0,
           prefilledQty: 0,
+          backorderQty: 0,
         };
         map.set(key, entry);
       }
@@ -545,6 +554,7 @@ export default function TransfersInboxPage() {
       entry.shortQty += s?.shortQty ?? 0;
       entry.coveredQty += s?.coveredQty ?? 0;
       entry.prefilledQty += s?.prefilledQty ?? 0;
+      entry.backorderQty += s?.backorderQty ?? 0;
     }
     const asc = tab === "unreceived";
     return Array.from(map.values()).sort((a, b) =>
@@ -1127,6 +1137,7 @@ export default function TransfersInboxPage() {
                   )}
                   {dueTag && <Pill tone={dueTag === "逾期" ? "rose" : "amber"}>{dueTag}</Pill>}
                   {g.shortQty > 0 && <Pill tone="rose">⚠ 少 {g.shortQty} 件 · 訂單比到貨多</Pill>}
+                  {g.backorderQty > 0 && <Pill tone="amber">⏳ 待補貨 {g.backorderQty} 件</Pill>}
                   {g.coveredQty > 0 && <Pill tone="violet">🏬 現貨減抵 {g.coveredQty} 件</Pill>}
                   {g.prefilledQty > 0 && (
                     <Pill tone="violet">🔄 補回先墊 {g.prefilledQty} 件</Pill>
@@ -1237,8 +1248,12 @@ export default function TransfersInboxPage() {
                                       ) : (
                                         <span className="ml-1 font-semibold tabular-nums">× {it.qty}</span>
                                       )}
-                                      {/* 有短少要配、或已有現貨減抵（進去看/作廢減抵單）都給入口 */}
-                                      {(summary.shortQty > 0 || summary.coveredQty > 0) && it.skuId != null && (
+                                      {/* 有短少要配、已有現貨減抵（進去看/作廢減抵單）、
+                                          或還掛著待補貨（20260811000060）都給入口 —
+                                          待補貨在收貨時會自動解除，但實體庫存對不上時不放行，
+                                          那種情況更需要店家自己進來看 */}
+                                      {(summary.shortQty > 0 || summary.coveredQty > 0
+                                        || summary.backorderQty > 0) && it.skuId != null && (
                                         <SpinButton
                                           onClick={() =>
                                             setAllocFor({
@@ -1329,6 +1344,14 @@ export default function TransfersInboxPage() {
                                   title="訂單比這批到貨量多，這幾件會有客人領不到 — 點數量看是哪幾筆訂單"
                                 >
                                   ⚠ 少 {summary.shortQty}
+                                </div>
+                              )}
+                              {summary && summary.backorderQty > 0 && (
+                                <div
+                                  className="text-[10px] font-medium text-amber-600 dark:text-amber-400"
+                                  title="這組還有幾件掛著「待補貨」（少發配貨沒配到）— 補的貨收進來會自動解除；沒自動解除代表店裡實際庫存對不上，點「配貨」進去處理"
+                                >
+                                  ⏳ 待補 {summary.backorderQty}
                                 </div>
                               )}
                               {summary && summary.prefilledQty > 0 && (
