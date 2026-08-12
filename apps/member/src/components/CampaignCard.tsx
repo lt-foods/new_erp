@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import Countdown from "./Countdown";
+import OrderedCount from "./OrderedCount";
 import ViewCount from "./ViewCount";
 import { cleanCampaignText } from "@/lib/text";
 
@@ -164,11 +165,7 @@ export default function CampaignCard({
           {(campaign.ordered_qty > 0 || (campaign.view_count ?? 0) > 0) && (
             <div className="flex items-center justify-between gap-2 text-[14px] font-medium text-[var(--secondary-label)]">
               <ViewCount count={campaign.view_count} />
-              {campaign.ordered_qty > 0 && (
-                <span className="ml-auto">
-                  已訂購 {campaign.ordered_qty.toLocaleString()} 件
-                </span>
-              )}
+              <OrderedCount count={campaign.ordered_qty} size="md" className="ml-auto" />
             </div>
           )}
         </div>
@@ -237,10 +234,8 @@ export default function CampaignCard({
           </div>
           {/* 已訂購 / 瀏覽數直向堆疊在價格右邊 —— 卡片是兩欄格線，
               跟倒數同一列會擠爆（倒數字串長達「14 天 23:19:10」）。 */}
-          <div className="flex shrink-0 flex-col items-end gap-0.5 text-[12px] font-medium text-[var(--secondary-label)]">
-            {campaign.ordered_qty > 0 && (
-              <span>已訂購 {campaign.ordered_qty.toLocaleString()} 件</span>
-            )}
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            <OrderedCount count={campaign.ordered_qty} size="sm" />
             <ViewCount count={campaign.view_count} />
           </div>
         </div>

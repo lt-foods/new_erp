@@ -8,6 +8,7 @@ import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import Spinner from "@/components/Spinner";
 import Countdown from "@/components/Countdown";
+import OrderedCount, { FlameIcon } from "@/components/OrderedCount";
 import ViewCount from "@/components/ViewCount";
 import { cleanCampaignText } from "@/lib/text";
 import { getCampaignHint } from "@/lib/campaignHints";
@@ -233,11 +234,11 @@ export default function CampaignDetailPage() {
                 <h1 className="flex-1 text-[26px] font-bold leading-tight text-[var(--foreground)]">
                   {cleanCampaignText(displayName)}
                 </h1>
-                {orderedQtyTotal > 0 && (
-                  <div className="mt-1.5 shrink-0 rounded-lg bg-[var(--tertiary-label)]/10 px-2 py-1 text-[13px] font-semibold text-[var(--secondary-label)]">
-                    已訂購 {orderedQtyTotal.toLocaleString()} 件
-                  </div>
-                )}
+                <OrderedCount
+                  count={orderedQtyTotal}
+                  size="lg"
+                  className="mt-1.5 shrink-0"
+                />
               </div>
               <ViewCount count={viewCount} size="md" />
 
@@ -294,8 +295,9 @@ export default function CampaignDetailPage() {
                               ${Number(it.unit_price).toLocaleString()}
                             </div>
                             {it.ordered_qty > 0 && (
-                              <div className="text-[13px] font-medium text-[var(--tertiary-label)]">
-                                已售出 {it.ordered_qty}
+                              <div className="inline-flex items-center gap-0.5 text-[13px] font-semibold text-[var(--brand-strong)]">
+                                <FlameIcon className="h-3.5 w-3.5" />
+                                已售出 <span className="tabular-nums">{it.ordered_qty}</span>
                               </div>
                             )}
                           </div>
@@ -679,8 +681,9 @@ function BuySheet({
                           ${Number(it.unit_price).toLocaleString()}
                         </div>
                         {it.ordered_qty > 0 && (
-                          <div className="text-[12px] text-[var(--tertiary-label)]">
-                            已售出 {it.ordered_qty}
+                          <div className="inline-flex items-center gap-0.5 text-[12px] font-semibold text-[var(--brand-strong)]">
+                            <FlameIcon className="h-3 w-3" />
+                            已售出 <span className="tabular-nums">{it.ordered_qty}</span>
                           </div>
                         )}
                       </div>
