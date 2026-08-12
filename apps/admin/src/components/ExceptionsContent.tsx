@@ -6,10 +6,14 @@
 //   2. 進貨破損 — GR qty_damaged > 0
 //   3. 過量進貨 — GR cumulative qty_received > qty_ordered
 //   4. 收貨短少 — Transfer received 但 qty_received < qty_shipped
-//   5. 訂單短少 — v_order_shortage 聚合到 order 維度
+//
+// 「訂單短少」(customer_shortage) 於 2026-08-11 移除:它是前瞻推算
+// (v_order_shortage),供應商短交後必然大量出現,實際短交已由
+// 進貨短少/收貨短少覆蓋 → v_hq_exceptions 已不再回傳此來源
+// (20260811020010),此處的分頁與批次處理 UI 一併拿掉。
 //
 // 資料與分頁:全部走 server-side。rpc_hq_exceptions(type, page, page_size)
-// 後端 union 5 來源(v_hq_exceptions)做真分頁,一次回傳 { total, counts(各 tab), rows(當前頁) }。
+// 後端 union 4 來源(v_hq_exceptions)做真分頁,一次回傳 { total, counts(各 tab), rows(當前頁) }。
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -17,7 +21,7 @@ import { getSupabase } from "@/lib/supabase";
 import SpinButton from "./SpinButton";
 import { TransferShortageResolveModal, type ShortageContext } from "./TransferShortageResolveModal";
 
-type Tab = "all" | "po_shortage" | "po_damage" | "po_over" | "transfer_short" | "customer_shortage";
+type Tab = "all" | "po_shortage" | "po_damage" | "po_over" | "transfer_short";
 
 const TAB_LABEL: Record<Tab, string> = {
   all: "全部",
@@ -25,22 +29,12 @@ const TAB_LABEL: Record<Tab, string> = {
   po_damage: "進貨破損",
   po_over: "過量進貨",
   transfer_short: "收貨短少",
-  customer_shortage: "訂單短少",
 };
 
 // 與 /hq/inbox 其他來源一致的每頁筆數
 const PAGE_SIZE = 20;
 
-type ShortageAction = "notified" | "cancelled" | "waiting_next_po" | "reallocated";
-
-const BULK_ACTION_LABEL: Record<ShortageAction, string> = {
-  notified: "通知客戶(標記已通知)",
-  cancelled: "取消(請去訂單頁正式取消退款)",
-  waiting_next_po: "等下批 PO 補貨",
-  reallocated: "改派(從其他店調貨)",
-};
-
-type ExceptionType = "po_shortage" | "po_damage" | "po_over" | "transfer_short" | "customer_shortage";
+type ExceptionType = "po_shortage" | "po_damage" | "po_over" | "transfer_short";
 
 type ExceptionRow = {
   key: string;
@@ -58,14 +52,13 @@ type ExceptionRow = {
   // 該筆異常的地點:PO/GR 收貨倉、收貨分店、取貨店(v_hq_exceptions.warehouse_name)
   warehouse_name: string | null;
   shortage_ctx?: ShortageContext;
-  // customer_shortage 用
-  customer_order_id?: number;
-  shortage_resolution?: string | null;
 };
 
 // rpc_hq_exceptions 回傳的單列(= v_hq_exceptions 扁平欄位)
+// type 保留 string:DB view 若尚未套 20260811020010,可能還會回 customer_shortage,
+// 前端一律濾掉(見下方 filter)。
 type ViewRow = {
-  type: ExceptionType;
+  type: ExceptionType | string;
   row_key: string;
   ts: string | null;
   doc_no: string;
@@ -94,11 +87,10 @@ type ViewRow = {
 type ExceptionCounts = Record<Tab, number>;
 
 const EMPTY_COUNTS: ExceptionCounts = {
-  all: 0, po_shortage: 0, po_damage: 0, po_over: 0, transfer_short: 0, customer_shortage: 0,
+  all: 0, po_shortage: 0, po_damage: 0, po_over: 0, transfer_short: 0,
 };
 
 function docLinkFor(r: ViewRow): string {
-  if (r.type === "customer_shortage") return `/orders?id=${r.customer_order_id}`;
   if (r.type === "transfer_short") return `/wms/inbound`;
   return `/wms/receiving`;
 }
@@ -117,81 +109,13 @@ export default function ExceptionsContent({
   const [tab, setTab] = useState<Tab>("all");
   const [resolveCtx, setResolveCtx] = useState<ShortageContext | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
-  const [busy, setBusy] = useState<number | null>(null);
   const [page, setPage] = useState(1);
   const [prevTab, setPrevTab] = useState<Tab>(tab);
-  // 多選批次處理:只針對「訂單短少」且尚未處理的列(其他類型需逐筆開 modal / 前往單據)
-  const [selected, setSelected] = useState<number[]>([]);
-  const [bulkBusy, setBulkBusy] = useState(false);
-  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
-
-  async function handleCustomerShortageAction(
-    orderId: number,
-    action: ShortageAction,
-  ) {
-    if (!confirm(`確定:${BULK_ACTION_LABEL[action]}?`)) return;
-    setBusy(orderId);
-    try {
-      const sb = getSupabase();
-      const { data: sess } = await sb.auth.getSession();
-      const operator = sess.session?.user?.id;
-      if (!operator) throw new Error("尚未登入");
-      const { error: err } = await sb.rpc("rpc_handle_shortage_order", {
-        p_order_id: orderId,
-        p_action: action,
-        p_operator: operator,
-      });
-      if (err) throw err;
-      setReloadTick((t) => t + 1);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  // 批次:對所有已選訂單依序跑 rpc_handle_shortage_order(逐筆送,單筆失敗不中斷其他筆)
-  async function handleBulkAction(action: ShortageAction) {
-    const ids = selected;
-    if (ids.length === 0) return;
-    if (!confirm(`確定對已選的 ${ids.length} 筆訂單執行:${BULK_ACTION_LABEL[action]}?`)) return;
-    setBulkBusy(true);
-    setBulkProgress({ done: 0, total: ids.length });
-    const failed: string[] = [];
-    try {
-      const sb = getSupabase();
-      const { data: sess } = await sb.auth.getSession();
-      const operator = sess.session?.user?.id;
-      if (!operator) throw new Error("尚未登入");
-      for (const orderId of ids) {
-        try {
-          const { error: err } = await sb.rpc("rpc_handle_shortage_order", {
-            p_order_id: orderId,
-            p_action: action,
-            p_operator: operator,
-          });
-          if (err) throw err;
-        } catch (e) {
-          failed.push(`#${orderId}:${e instanceof Error ? e.message : String(e)}`);
-        }
-        setBulkProgress((p) => (p ? { ...p, done: p.done + 1 } : p));
-      }
-      setError(failed.length ? `${ids.length - failed.length}/${ids.length} 筆成功,失敗:${failed.join(" / ")}` : null);
-      setSelected([]);
-      setReloadTick((t) => t + 1);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBulkBusy(false);
-      setBulkProgress(null);
-    }
-  }
 
   // 切換分頁籤 → 回第 1 頁(render 階段調整 state,非 effect → 不觸發 set-state-in-effect,也不會 flash 舊頁)
   if (prevTab !== tab) {
     setPrevTab(tab);
     setPage(1);
-    setSelected([]);
   }
 
   // server-side 抓當前 tab + page(rpc_hq_exceptions 一次回 total / 各 tab counts / 當頁 rows)
@@ -214,7 +138,10 @@ export default function ExceptionsContent({
           rows: ViewRow[];
         };
 
-        const mapped: ExceptionRow[] = (resp.rows ?? []).map((r) => ({
+        const mapped: ExceptionRow[] = (resp.rows ?? [])
+          // DB view 未套 20260811020010 前的防禦:customer_shortage 一律不顯示
+          .filter((r): r is ViewRow & { type: ExceptionType } => r.type in TAB_LABEL && r.type !== "all")
+          .map((r) => ({
           key: r.row_key,
           type: r.type,
           ts: r.ts ?? "—",
@@ -245,8 +172,6 @@ export default function ExceptionsContent({
                   dest_store_name: r.dest_store_name ?? `位置 #${r.dest_location ?? "?"}`,
                 }
               : undefined,
-          customer_order_id: r.customer_order_id ?? undefined,
-          shortage_resolution: r.shortage_resolution,
         }));
 
         const cnts: ExceptionCounts = {
@@ -255,17 +180,9 @@ export default function ExceptionsContent({
           po_damage: resp.counts?.po_damage ?? 0,
           po_over: resp.counts?.po_over ?? 0,
           transfer_short: resp.counts?.transfer_short ?? 0,
-          customer_shortage: resp.counts?.customer_shortage ?? 0,
         };
 
         setRows(mapped);
-        // 只保留仍在當頁、且仍待處理的選取(換頁 / 處理完後自動清掉失效的選取)
-        const stillSelectable = new Set(
-          mapped
-            .filter((m) => m.type === "customer_shortage" && m.customer_order_id && !m.shortage_resolution)
-            .map((m) => m.customer_order_id as number),
-        );
-        setSelected((prev) => prev.filter((id) => stillSelectable.has(id)));
         setTotal(resp.total ?? 0);
         setCounts(cnts);
         setError(null);
@@ -285,18 +202,6 @@ export default function ExceptionsContent({
   }, [tab, page, reloadTick, onCountChange]);
 
   const c = counts ?? EMPTY_COUNTS;
-  // 可多選的列 = 當頁「訂單短少」且尚未處理者
-  const selectableIds = (rows ?? [])
-    .filter((r) => r.type === "customer_shortage" && r.customer_order_id && !r.shortage_resolution)
-    .map((r) => r.customer_order_id as number);
-  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.includes(id));
-
-  function toggleRow(id: number) {
-    setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-  }
-  function toggleAll() {
-    setSelected(allSelected ? [] : selectableIds);
-  }
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
 
@@ -333,7 +238,7 @@ export default function ExceptionsContent({
         <header>
           <h1 className="text-xl font-semibold">⚠️ 異常處理</h1>
           <p className="text-sm text-zinc-500">
-            {counts === null ? "載入中…" : `共 ${c.all} 筆異常 · 進貨短少 ${c.po_shortage} / 進貨破損 ${c.po_damage} / 過量 ${c.po_over} / 收貨短少 ${c.transfer_short} / 訂單短少 ${c.customer_shortage}`}
+            {counts === null ? "載入中…" : `共 ${c.all} 筆異常 · 進貨短少 ${c.po_shortage} / 進貨破損 ${c.po_damage} / 過量 ${c.po_over} / 收貨短少 ${c.transfer_short}`}
           </p>
         </header>
       )}
@@ -345,7 +250,7 @@ export default function ExceptionsContent({
       )}
 
       <div className="flex flex-wrap gap-1 border-b border-zinc-200 dark:border-zinc-800">
-        {(["all", "po_shortage", "po_damage", "po_over", "transfer_short", "customer_shortage"] as const).map((t) => {
+        {(["all", "po_shortage", "po_damage", "po_over", "transfer_short"] as const).map((t) => {
           const active = tab === t;
           return (
             <SpinButton
@@ -366,65 +271,10 @@ export default function ExceptionsContent({
       {/* 分頁 — 表格上方(手機優先看得到) */}
       {paginationBar}
 
-      {/* 批次操作列 — 只在有選取「訂單短少」列時出現 */}
-      {selected.length > 0 && (
-        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 rounded-md border border-fuchsia-200 bg-fuchsia-50 p-2 text-sm dark:border-fuchsia-900 dark:bg-fuchsia-950">
-          <span className="font-semibold text-fuchsia-800 dark:text-fuchsia-300">
-            已選 {selected.length} 筆訂單短少
-            {bulkProgress && `(處理中 ${bulkProgress.done}/${bulkProgress.total}…)`}
-          </span>
-          <SpinButton
-            onClick={() => handleBulkAction("notified")}
-            disabled={bulkBusy}
-            className="rounded border border-blue-300 bg-blue-50 px-2 py-1 text-xs text-blue-700 hover:bg-blue-100 disabled:opacity-50 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300"
-          >
-            通知客戶
-          </SpinButton>
-          <SpinButton
-            onClick={() => handleBulkAction("waiting_next_po")}
-            disabled={bulkBusy}
-            className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-700 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300"
-          >
-            等下批
-          </SpinButton>
-          <SpinButton
-            onClick={() => handleBulkAction("reallocated")}
-            disabled={bulkBusy}
-            className="rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
-          >
-            改派
-          </SpinButton>
-          <SpinButton
-            onClick={() => handleBulkAction("cancelled")}
-            disabled={bulkBusy}
-            className="rounded border border-rose-300 bg-rose-50 px-2 py-1 text-xs text-rose-700 hover:bg-rose-100 disabled:opacity-50 dark:border-rose-700 dark:bg-rose-950 dark:text-rose-300"
-          >
-            取消退款
-          </SpinButton>
-          <SpinButton
-            onClick={() => setSelected([])}
-            disabled={bulkBusy}
-            className="ml-auto rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-600 hover:bg-white disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
-          >
-            清除選取
-          </SpinButton>
-        </div>
-      )}
-
       <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr className="text-left text-xs uppercase tracking-wide text-zinc-500">
-              <th className="px-3 py-2 w-8">
-                <input
-                  type="checkbox"
-                  aria-label="全選本頁訂單短少"
-                  className="h-4 w-4 cursor-pointer align-middle disabled:cursor-not-allowed disabled:opacity-40"
-                  checked={allSelected}
-                  disabled={selectableIds.length === 0 || bulkBusy}
-                  onChange={toggleAll}
-                />
-              </th>
               <th className="px-3 py-2">類型</th>
               <th className="px-3 py-2">單號</th>
               <th className="px-3 py-2">地點</th>
@@ -438,30 +288,17 @@ export default function ExceptionsContent({
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={10} className="p-6 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={10} className="p-6 text-center text-zinc-500">沒有異常,系統運作正常 ✓</td></tr>
+              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">沒有異常,系統運作正常 ✓</td></tr>
             ) : rows.map((r) => (
               <tr key={r.key} className="hover:bg-zinc-50 dark:hover:bg-zinc-950">
-                <td className="px-3 py-2">
-                  {r.type === "customer_shortage" && r.customer_order_id && !r.shortage_resolution && (
-                    <input
-                      type="checkbox"
-                      aria-label={`選取訂單 ${r.doc_no}`}
-                      className="h-4 w-4 cursor-pointer align-middle"
-                      checked={selected.includes(r.customer_order_id)}
-                      disabled={bulkBusy}
-                      onChange={() => toggleRow(r.customer_order_id!)}
-                    />
-                  )}
-                </td>
                 <td className="px-3 py-2 whitespace-nowrap">
                   <span className={`inline-flex whitespace-nowrap rounded px-2 py-0.5 text-xs font-medium ${
                     r.type === "po_shortage" ? "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300" :
                     r.type === "po_damage" ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300" :
                     r.type === "po_over" ? "bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300" :
-                    r.type === "transfer_short" ? "bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300" :
-                    "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-950 dark:text-fuchsia-300"
+                    "bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300"
                   }`}>{TAB_LABEL[r.type]}</span>
                 </td>
                 <td className="px-3 py-2 font-mono text-xs whitespace-nowrap">{r.doc_no}</td>
@@ -485,41 +322,6 @@ export default function ExceptionsContent({
                     >
                       處理
                     </SpinButton>
-                  ) : r.type === "customer_shortage" && r.customer_order_id ? (
-                    r.shortage_resolution ? (
-                      <Link href={r.doc_link} className="text-blue-600 hover:underline dark:text-blue-400">看訂單 →</Link>
-                    ) : (
-                      <div className="flex flex-nowrap justify-end gap-1">
-                        <SpinButton
-                          onClick={() => handleCustomerShortageAction(r.customer_order_id!, "notified")}
-                          disabled={busy === r.customer_order_id}
-                          className="rounded border border-blue-300 bg-blue-50 px-2 py-0.5 text-[11px] text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300"
-                        >
-                          通知客戶
-                        </SpinButton>
-                        <SpinButton
-                          onClick={() => handleCustomerShortageAction(r.customer_order_id!, "waiting_next_po")}
-                          disabled={busy === r.customer_order_id}
-                          className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300"
-                        >
-                          等下批
-                        </SpinButton>
-                        <SpinButton
-                          onClick={() => handleCustomerShortageAction(r.customer_order_id!, "reallocated")}
-                          disabled={busy === r.customer_order_id}
-                          className="rounded border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700 hover:bg-emerald-100 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
-                        >
-                          改派
-                        </SpinButton>
-                        <SpinButton
-                          onClick={() => handleCustomerShortageAction(r.customer_order_id!, "cancelled")}
-                          disabled={busy === r.customer_order_id}
-                          className="rounded border border-rose-300 bg-rose-50 px-2 py-0.5 text-[11px] text-rose-700 hover:bg-rose-100 dark:border-rose-700 dark:bg-rose-950 dark:text-rose-300"
-                        >
-                          取消退款
-                        </SpinButton>
-                      </div>
-                    )
                   ) : (
                     <Link href={r.doc_link} className="text-blue-600 hover:underline dark:text-blue-400">前往 →</Link>
                   )}

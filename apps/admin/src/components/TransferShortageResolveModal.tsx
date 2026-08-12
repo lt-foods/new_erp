@@ -29,7 +29,7 @@ export type ShortageContext = {
   dest_store_name: string;
 };
 
-type Resolution = "restock_hq" | "replenish" | "cancel_orders" | "vendor_claim" | "accept";
+type Resolution = "redispatch" | "restock_hq" | "replenish" | "cancel_orders" | "vendor_claim" | "accept";
 
 const RESOLUTION_OPTIONS: Array<{
   value: Resolution;
@@ -39,10 +39,16 @@ const RESOLUTION_OPTIONS: Array<{
   cta?: { label: string; href: string; hint: string };
 }> = [
   {
+    value: "redispatch",
+    icon: "🔁",
+    title: "拒絕短收 — 沖回總倉並自動重派",
+    desc: "貨仍在總倉(漏裝/揀貨少拿):短少數量沖回總倉庫存,並自動開一張撿貨單重派回原店、接回原訂單(出貨/收貨後訂單自動推進)。重派撿貨單會出現在總倉收件匣的撿貨單匣。真的遺失請勿選(帳會多)。",
+  },
+  {
     value: "restock_hq",
     icon: "🏭",
-    title: "貨仍在總倉（沖回總倉庫存）",
-    desc: "漏裝/揀貨少拿,貨沒上車:把短少數量以原出庫成本記回總倉庫存,之後可再派。真的遺失請勿選(帳會多)。",
+    title: "貨仍在總倉（只沖回庫存,不重派）",
+    desc: "把短少數量以原出庫成本記回總倉庫存,之後再自行決定怎麼派。要自動重派回原店請選上面的「拒絕短收」。真的遺失請勿選(帳會多)。",
   },
   {
     value: "replenish",
@@ -61,9 +67,10 @@ const RESOLUTION_OPTIONS: Array<{
     title: "取消客戶訂單",
     desc: "通知顧客貨拿不到,在客戶端取消訂單 / 退款。",
     cta: {
-      label: "前往總倉收件匣 → 短少訂單",
-      href: "/hq/inbox",
-      hint: "在短少訂單來源中處理該店該品項顧客",
+      // 收件匣「異常 → 訂單短少」分頁已於 2026-08-11 移除,改導去訂單管理頁處理
+      label: "前往訂單管理",
+      href: "/orders",
+      hint: "取消該店該品項的顧客訂單後,回來標記為「已處理」",
     },
   },
   {
