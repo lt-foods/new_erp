@@ -583,7 +583,7 @@ function PageContent() {
               ? "bg-red-700 text-white"
               : "bg-white text-red-700 hover:bg-red-50 dark:bg-zinc-900 dark:text-red-400 dark:hover:bg-red-950"
           }`}
-          title="用店內現貨出貨：選客人＝直接加給客人並結案；不選客人＝只做採購抵減"
+          title="用店內現貨出貨：選客人＝配給客人（待取，取貨時才扣庫存）；不選客人＝純抵減（只讓採購少買）"
         >
           店內現貨 / 抵減
         </SpinButton>
