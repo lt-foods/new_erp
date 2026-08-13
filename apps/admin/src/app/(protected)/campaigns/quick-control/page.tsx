@@ -108,6 +108,13 @@ function fromLocalInput(v: string): string | null {
   return v ? new Date(v).toISOString() : null;
 }
 
+function futureIsoFromLocalInput(v: string): string | null {
+  const iso = fromLocalInput(v);
+  if (!iso) return null;
+  const time = new Date(iso).getTime();
+  return Number.isFinite(time) && time > Date.now() ? iso : null;
+}
+
 function defaultEndAt(): string {
   const d = new Date();
   d.setHours(d.getHours() + 24, 0, 0, 0);
@@ -971,8 +978,11 @@ export default function QuickCampaignControlPage() {
                         onClick={() => quickUpdate(row, { delta }, `${row.name} 已加量 ${delta}`)}
                         className="min-h-11 rounded-md bg-zinc-900 px-4 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-950"
                       >
-                        確認加名額
+                        加整團正取
                       </SpinButton>
+                    </div>
+                    <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                      只增加整團正取上限，不會改候補名額；若有單品上限，單品已滿仍需到開團管理調整。
                     </div>
                     {previewCap != null && (
                       <div className="grid gap-1 text-sm text-zinc-500 dark:text-zinc-400">
@@ -1001,12 +1011,22 @@ export default function QuickCampaignControlPage() {
                         <SpinButton
                           type="button"
                           disabled={locked || !allowed || busyId === row.id}
-                          onClick={() =>
-                            quickUpdate(row, { status: "open", endAt: fromLocalInput(endInput) }, `${row.name} 已開團`)
-                          }
+                          onClick={() => {
+                            const nextEndAt = futureIsoFromLocalInput(endInput);
+                            if (!nextEndAt) {
+                              setError("請先設定未來的收單時間，再開團或重開。");
+                              setNotice(null);
+                              return;
+                            }
+                            quickUpdate(
+                              row,
+                              { status: "open", endAt: nextEndAt },
+                              row.status === "closed" ? `${row.name} 已重開收單` : `${row.name} 已開團`,
+                            );
+                          }}
                           className="min-h-12 rounded-md bg-emerald-600 text-base font-semibold text-white disabled:opacity-50"
                         >
-                          {row.status === "closed" ? "重開" : "開團"}
+                          {row.status === "closed" ? "重開收單" : "開團"}
                         </SpinButton>
                       )}
                       <Link
