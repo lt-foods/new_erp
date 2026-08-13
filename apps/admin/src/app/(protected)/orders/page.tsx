@@ -355,7 +355,8 @@ function OrdersListContent() {
       }
     >
   >(new Map());
-  // shipping 單是否有品項已到貨可先取（v_order_item_pickup_ready；部分到貨單開放「去取貨」）
+  // pending / confirmed / shipping 單是否有品項已到貨可取（v_order_item_pickup_ready）——
+  // 減抵覆蓋的配單與部分到貨都靠這個開放「去取貨」
   const [hasArrivedItem, setHasArrivedItem] = useState<Map<number, boolean>>(new Map());
   const [detailId, setDetailId] = useState<number | null>(null);
   const [detailNo, setDetailNo] = useState<string>("");
@@ -571,8 +572,8 @@ function OrdersListContent() {
 
         const ids = list.map((r) => r.id);
         const memIds = Array.from(new Set(list.map((r) => r.member_id).filter((x): x is number => x != null)));
-        // shipping 單查品項到貨狀態（pickup_ready=true 隱含該品項 active 且已到貨）
-        const shippingIds = list.filter((r) => r.status === "shipping").map((r) => r.id);
+        // pending / confirmed / shipping 單查品項到貨狀態（pickup_ready=true 隱含該品項 active 且已到貨）
+        const gateIds = list.filter((r) => ["shipping", "pending", "confirmed"].includes(r.status)).map((r) => r.id);
         const [ic, ms, rdy] = await Promise.all([
           ids.length
             // 已取消 / 斷貨 / 過期的品項不算進項數 · 件數 · 金額，與伺服端
@@ -583,8 +584,8 @@ function OrdersListContent() {
           memIds.length
             ? getSupabase().from("members").select("id, name, phone, member_no, avatar_url").in("id", memIds)
             : Promise.resolve({ data: [] as Member[] }),
-          shippingIds.length
-            ? getSupabase().from("v_order_item_pickup_ready").select("order_id, pickup_ready").in("order_id", shippingIds).eq("pickup_ready", true)
+          gateIds.length
+            ? getSupabase().from("v_order_item_pickup_ready").select("order_id, pickup_ready").in("order_id", gateIds).eq("pickup_ready", true)
             : Promise.resolve({ data: [] as { order_id: number; pickup_ready: boolean }[] }),
         ]);
         const im = new Map<number, { lineCount: number; totalQty: number; totalAmount: number; items: { product_name: string | null; variant_name: string | null; qty: number }[]; sources: string[] }>();
@@ -767,9 +768,11 @@ function OrdersListContent() {
         </SpinButton>
       )}
       {!["completed","expired","cancelled","transferred_out"].includes(r.status) && (() => {
-        // shipping 單部分到貨（≥1 品項已實收）也開放去取貨 — 已到品項可先取
+        // 部分到貨的 shipping 單（≥1 品項已實收）、以及減抵覆蓋的配單（貨已在店裡，
+        // 訂單停在 pending / confirmed）也開放去取貨 — 閘門說可取的品項可先取。
+        // 與取貨頁本體同一套判斷,否則這裡按不進去、那邊卻勾得到。
         const canPickup = r.status === "ready" || r.status === "partially_completed"
-          || (r.status === "shipping" && hasArrivedItem.get(r.id) === true);
+          || (["shipping", "pending", "confirmed"].includes(r.status) && hasArrivedItem.get(r.id) === true);
         // 訂單頁本身不執行取貨,只導向 /pickup (帶會員編號自動搜尋)
         if (canPickup && m?.member_no) {
           return (
