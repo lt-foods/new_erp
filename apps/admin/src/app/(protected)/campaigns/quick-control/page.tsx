@@ -360,7 +360,7 @@ export default function QuickCampaignControlPage() {
 
   async function closeCampaign(row: CampaignRow) {
     if (!allowed || busyId) return;
-    if (!confirm(`確定要關閉「${row.name}」？`)) return;
+    if (!confirm(`確定立即關團「${row.name}」？\n關團後客人將不能再下單。`)) return;
     setBusyId(row.id);
     setError(null);
     setNotice(null);
@@ -854,6 +854,8 @@ export default function QuickCampaignControlPage() {
               const locked = row.status === "locked";
               const endInput = endAtDraft[row.id] ?? toLocalInput(row.end_at) ?? defaultEndAt();
               const delta = Number(deltaDraft[row.id] ?? 0);
+              const previewCap = Number.isFinite(delta) && delta > 0 ? (cap ?? sold) + delta : null;
+              const hasItemCap = (row.campaign_items ?? []).some((item) => Number(item.cap_qty ?? 0) > 0);
 
               return (
                 <section
@@ -921,6 +923,12 @@ export default function QuickCampaignControlPage() {
                       ))}
                     </div>
 
+                    {row.status === "closed" && (
+                      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                        已關團的團若只延長時間，不會自動恢復下單；確認時間後請按「重開」。
+                      </div>
+                    )}
+
                     <div className="grid grid-cols-[1fr_auto] gap-2">
                       <input
                         type="number"
@@ -928,7 +936,7 @@ export default function QuickCampaignControlPage() {
                         step="1"
                         value={deltaDraft[row.id] ?? ""}
                         onChange={(e) => setDeltaDraft((cur) => ({ ...cur, [row.id]: e.target.value }))}
-                        placeholder="再增加可賣數量"
+                        placeholder="再增加整團正取名額"
                         disabled={locked || !allowed}
                         className="min-h-11 rounded-md border border-zinc-300 bg-white px-3 text-base outline-none focus:border-zinc-900 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
                       />
@@ -938,9 +946,21 @@ export default function QuickCampaignControlPage() {
                         onClick={() => quickUpdate(row, { delta }, `${row.name} 已加量 ${delta}`)}
                         className="min-h-11 rounded-md bg-zinc-900 px-4 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-950"
                       >
-                        加量
+                        確認加名額
                       </SpinButton>
                     </div>
+                    {previewCap != null && (
+                      <div className="grid gap-1 text-sm text-zinc-500 dark:text-zinc-400">
+                        <div>
+                          {cap == null ? "目前無整團總上限" : `目前整團總上限 ${cap}`} / 已售 {sold} / 加 {delta} 後整團總上限 {previewCap}
+                        </div>
+                        {hasItemCap && (
+                          <div className="text-amber-700 dark:text-amber-300">
+                            本頁只加整團名額；若單一品項已滿，仍需調整品項上限。
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     <div className="grid grid-cols-2 gap-2">
                       {row.status === "open" ? (
