@@ -260,8 +260,9 @@ export default function InternalTransfersPage() {
           <SpinButton
             onClick={() => setShowReturn(true)}
             className="rounded-md bg-orange-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-700"
+            title="把店端顧客訂單的貨從該店扣掉、送回總倉（必須關聯顧客訂單）"
           >
-            ↩ 退訂單
+            ↩ 退貨回總倉
           </SpinButton>
           <SpinButton
             onClick={() => setShowCreate(true)}

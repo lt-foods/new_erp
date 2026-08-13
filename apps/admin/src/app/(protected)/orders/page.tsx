@@ -753,7 +753,7 @@ function OrdersListContent() {
     setReloadOrders((n) => n + 1);
   }
 
-  // 操作按鈕（去取貨 / 取消 / ↩退貨 / 狀態鈕）— 桌機表格與手機卡片共用，單一維護點
+  // 操作按鈕（去取貨 / 取消 / ↩退貨回總倉 / 狀態鈕）— 桌機表格與手機卡片共用，單一維護點
   const orderActions = (r: Row, m: Member | null | undefined) => (
     <>
       {(PENDING_STATUSES.includes(r.status) || r.status === "partially_completed") && (
@@ -854,10 +854,10 @@ function OrdersListContent() {
         && !(r.status === "ready" && r.transferred_from_order_id != null) && (
         <SpinButton
           onClick={() => setReturnTarget({ orderId: r.id, storeId: r.pickup_store_id })}
-          title="已收貨/已取貨，無法取消；點此退貨回總倉（反向回收已派庫存）"
+          title="已收貨/已取貨，無法取消；點此把貨從本店扣掉、送回總倉（反向回收已派庫存）。若只是要換人拿，請改用「↗ 轉給別人」"
           className="rounded-md border border-orange-300 px-2 py-1 text-[11px] font-medium text-orange-700 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-950"
         >
-          ↩ 退貨
+          ↩ 退貨回總倉
         </SpinButton>
       )}
     </>

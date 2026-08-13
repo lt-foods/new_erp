@@ -752,18 +752,18 @@ export function OrderDetail({
             <SpinButton
               onClick={() => setTransferOpen(true)}
               className="rounded-md border border-blue-300 px-3 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950"
-              title="客人棄單 / 轉到其他店店長 / 互助接手"
+              title="貨留在店裡不動，只把這張單改掛給另一位客人（客人棄單、改給朋友、轉到其他店店長、互助接手都用這個）"
             >
-              ↗ 轉出此訂單
+              ↗ 轉給別人
             </SpinButton>
           )}
           {canReturn && (
             <SpinButton
               onClick={() => setReturnOpen(true)}
               className="rounded-md border border-orange-300 px-3 py-1 text-xs font-medium text-orange-700 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-950"
-              title="把此訂單已派到該店的 SKU 退回總倉"
+              title="把此訂單已派到該店的 SKU 從本店扣掉、送回總倉；若只是要換人拿，請改用「↗ 轉給別人」"
             >
-              ↩ 退訂單
+              ↩ 退貨回總倉
             </SpinButton>
           )}
           {canAidReturn && (

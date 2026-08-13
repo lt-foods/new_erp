@@ -179,7 +179,7 @@ const RULES: Rule[] = [
   // ===== rpc_return_aid_order (#234) =====
   {
     pattern: /order \d+ is not an aid order/i,
-    render: () => "這不是互助單，不能用「退單（已收貨）」。一般訂單請用「退訂單」退回總倉。",
+    render: () => "這不是互助單，不能用「退單（已收貨）」。一般訂單請用「退貨回總倉」。",
   },
   {
     pattern: /aid order \d+ is \w+ \(not yet received\)/i,

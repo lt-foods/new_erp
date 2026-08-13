@@ -227,7 +227,7 @@ export function OrderTransferModal({
   const allChosen = items.length > 0 && chosenCount === items.length;
 
   return (
-    <Modal open={open} onClose={onClose} title={`轉出訂單 ${orderNo}`} maxWidth="max-w-lg">
+    <Modal open={open} onClose={onClose} title={`轉給別人 ${orderNo}`} maxWidth="max-w-lg">
       <div className="space-y-3 p-4 text-sm">
         {err && (
           <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">

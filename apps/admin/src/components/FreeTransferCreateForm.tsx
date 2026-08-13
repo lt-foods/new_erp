@@ -103,7 +103,7 @@ export default function FreeTransferCreateForm({
 
       <p className="text-sm text-zinc-500">
         店與店之間搬運「商品檔裡沒有的東西」（例如借用的器具、樣品、零碼），在備註欄寫實際品名 / 規格即可。
-        <span className="text-amber-700 dark:text-amber-400">退貨回總倉請用「+ 退訂單」（必須關聯顧客訂單）</span>
+        <span className="text-amber-700 dark:text-amber-400">退貨回總倉請用「↩ 退貨回總倉」（必須關聯顧客訂單）</span>
       </p>
 
       <div className="grid gap-3 sm:grid-cols-2">

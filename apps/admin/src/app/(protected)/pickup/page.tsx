@@ -1053,10 +1053,10 @@ function PickupPageContent() {
                               && !(o.status === "ready" && o.transferred_from_order_id != null) && (
                               <SpinButton
                                 onClick={() => setReturnTarget({ orderId: o.id, storeId: o.pickup_store_id ?? o.store?.id ?? null })}
-                                title="已收貨，無法取消；點此退貨回總倉（反向回收已派庫存）"
+                                title="已收貨，無法取消；點此把貨從本店扣掉、送回總倉（反向回收已派庫存）。若只是要換人拿，請改用「↗ 轉給別人」"
                                 className="rounded-md border border-orange-300 px-2 py-2 text-xs font-medium text-orange-700 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-950"
                               >
-                                ↩ 退貨
+                                ↩ 退貨回總倉
                               </SpinButton>
                             )}
                             {/* 互助單已收貨：退回原調出店（貨源是分店不是總倉） */}

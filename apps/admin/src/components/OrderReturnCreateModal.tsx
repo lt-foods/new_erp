@@ -371,7 +371,7 @@ export default function OrderReturnCreateModal({
     "rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800";
 
   return (
-    <Modal open={open} onClose={onClose} title="↩ 退訂單回總倉" maxWidth="max-w-4xl">
+    <Modal open={open} onClose={onClose} title="↩ 退貨回總倉" maxWidth="max-w-4xl">
       <div className="flex flex-col gap-4">
         {error && (
           <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
@@ -419,7 +419,7 @@ export default function OrderReturnCreateModal({
                       ? "請先選分店"
                       : "載入中…"
                     : orders.length === 0
-                      ? "此店無可退訂單"
+                      ? "此店沒有可退貨的訂單"
                       : "搜尋訂單號 / 人名 / 商品名稱…"
                 }
                 disabled={orders === null || (orders ?? []).length === 0}
