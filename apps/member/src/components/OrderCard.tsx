@@ -117,7 +117,7 @@ export default function OrderCard({ order }: { order: OrderRow }) {
     0,
   );
   // 部分取貨的單，客人看不出哪行取了、哪行沒取（2026-08-13 中和店客訴）——
-  // 取過的行和還沒取的行混在同一張卡時，逐行標「已取貨 / 未取貨」。
+  // 取過的行和還沒取的行混在同一張卡時，逐行標「已取 / 未取」。
   // 全取完（已完成）或全沒取的單不標，右上角狀態字已經講完了，行內再標是噪音。
   // 部分數量取貨會拆行（20260630000010），所以每一行必屬其中一邊，不用管數量。
   const showPickChips =
@@ -125,9 +125,9 @@ export default function OrderCard({ order }: { order: OrderRow }) {
     order.items.some((i) => ACTIVE_ITEM_STATUSES.includes(i.status));
   const pickChip = (status: string) =>
     !showPickChips ? null : status === "picked_up" ? (
-      <StatusChip tone="ok" label="已取貨" />
+      <StatusChip tone="ok" label="已取" />
     ) : ACTIVE_ITEM_STATUSES.includes(status) ? (
-      <StatusChip tone="warn" label="未取貨" />
+      <StatusChip tone="warn" label="未取" />
     ) : null;
   // 內部 sentinel 團（店內現貨轉手單）印品項名，其餘印開團名稱 —— 見 lib/orderTitle
   const title = orderCardTitle(order);

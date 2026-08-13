@@ -13,14 +13,17 @@ import OrderCard, { orderPhase, type OrderRow } from "@/components/OrderCard";
 // 分桶跟卡片右上角的狀態字共用 orderPhase()，兩邊永遠一致。
 // 「不成立」（斷貨取消）要顯示 —— 團友得知道那筆單為什麼消失（⛔ 斷貨說明）。
 // 「已轉讓」目前先隱藏（連「全部」也不出現），之後要開再把它移出 HIDDEN_PHASES。
+//
+// 「全部」放最後、預設落在「待到貨」（2026-08-13 門市回報）：預設開在「全部」時
+// 待取貨跟還沒到貨的單混排，客人以為全部到貨就跑來，結果要的那件還在路上。
 type Tab = "all" | "waiting" | "pickup" | "done" | "void";
 
 const TAB_LABEL: Record<Tab, string> = {
-  all: "全部",
   waiting: "待到貨",
   pickup: "待取貨",
   done: "已完成",
   void: "不成立",
+  all: "全部",
 };
 
 const HIDDEN_PHASES = new Set(["transferred"]);
@@ -65,7 +68,7 @@ function sumOrders(list: OrderRow[]) {
 
 export default function OrdersPage() {
   const router = useRouter();
-  const [tab, setTab] = useState<Tab>("all");
+  const [tab, setTab] = useState<Tab>("waiting");
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
