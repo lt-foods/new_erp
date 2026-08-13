@@ -104,9 +104,10 @@ function PickupPageContent() {
     return Math.max(0, Number(it.qty) - returnedOf(it));
   }
 
-  // 可取貨品項：ready 單＝全部 active 品項；shipping / partially_completed 單＝
-  // 逐品項看到貨狀態（部分到貨的單可先取已到的品項）。
-  // itemReady 查無資料時的 fallback 沿用舊行為：partially_completed 可取、shipping 不可取。
+  // 可取貨品項：ready 單＝全部 active 品項；shipping / pending / confirmed /
+  // partially_completed 單＝逐品項看取貨閘門（部分到貨的單可先取已到的品項）。
+  // itemReady 查無資料時的 fallback 沿用舊行為：partially_completed 可取、
+  // shipping / pending / confirmed 不可取（要閘門明確 true 才放行）。
   // 一律排除「量已被未取退貨蓋掉」的品項行（退回總倉的貨不可再取）。
   function pickableItems(order: OpenOrder) {
     const act = activeItems(order).filter((it) => remainingQty(it) > 0);
@@ -116,14 +117,26 @@ function PickupPageContent() {
     if (order.status === "ready") return act.filter((it) => itemReady.get(it.id) !== false);
     if (order.status === "partially_completed") return act.filter((it) => itemReady.get(it.id) !== false);
     if (order.status === "shipping") return act.filter((it) => itemReady.get(it.id) === true);
+    // 現貨配單（rpc_create_offset_sale）配給客人後訂單停在 pending／confirmed，
+    // 取貨時才扣庫存收款；貨本來就在店裡，閘門 Path D 認減抵單 → 這些品項 pickup_ready = true。
+    // 原本這裡整段 return [] → 已經配好、店裡明明有貨的單在取貨頁按不動。
+    // 用嚴格 === true（不是 !== false）：只有閘門明確說可取（例如有有效減抵單覆蓋）
+    // 才放行，貨真的還沒到的 pending / confirmed 單（含查無閘門資料）一律仍擋。
+    if (order.status === "pending" || order.status === "confirmed") {
+      return act.filter((it) => itemReady.get(it.id) === true);
+    }
     return [];
   }
   function isPickable(order: OpenOrder): boolean {
     return pickableItems(order).length > 0;
   }
-  // 該品項是否為「少發沒配到」→ 取貨頁要明講待補貨，不要只是消失
+  // 該品項是否為「少發沒配到」→ 取貨頁要明講待補貨，不要只是消失。
+  // 只認 ready / partially_completed：這兩種單的貨已經到店，閘門 false 就是被少發配貨
+  // 標成待補貨。pending / confirmed / shipping 的 false 絕大多數只是「還沒到貨」，
+  // 標成待補貨會讓店員誤以為配貨少給、跑去追不存在的補貨。
   function isBackordered(order: OpenOrder, it: OpenOrder["items"][number]): boolean {
-    return order.status !== "shipping" && itemReady.get(it.id) === false;
+    return (order.status === "ready" || order.status === "partially_completed")
+      && itemReady.get(it.id) === false;
   }
 
   const [pickup, setPickup] = useState<{ orderId: number; orderNo: string } | null>(null);
