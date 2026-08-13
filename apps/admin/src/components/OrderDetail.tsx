@@ -1168,6 +1168,7 @@ export function OrderDetail({
         orderId={head.id}
         orderNo={head.order_no}
         sameStoreOnly={head.status !== "ready"}
+        canReturnToHq={canReturn}
         currentPickupStoreId={head.pickup_store_id}
         currentMemberLabel={memberLabel}
         items={pickableItems
