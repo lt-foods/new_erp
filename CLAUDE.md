@@ -22,11 +22,11 @@ Content-Type: application/json
 
 ### 套上正式庫的 SQL，對應 migration 當天就要合併進 main
 
-凡直接套上正式庫的 SQL（Management API 或 SQL Editor），對應的 migration 檔必須**當天完成 PR 合併** —— 只開 PR、沒合併不算完成。未合併期間 repo ≠ 正式庫，後續開發都會基於錯誤認知往下做：讀 repo 的人以為線上是舊行為，前端與配套改動也跟著停在半套。
+凡直接套上正式庫的 SQL（Management API 或 SQL Editor），對應的 migration 檔必須**當天真的進到 main**。沒進 main 的期間 repo ≠ 正式庫，後續開發都會基於錯誤認知往下做：讀 repo 的人以為線上還是舊行為，前端與配套改動也跟著停在半套。
 
-前例：`20260805000230`（現貨配單：配給客人＝待取，取貨時才扣庫存）於 8/06 套上線，但 PR #629 未完成合併 —— repo 與正式庫脫鉤一週，前端仍是舊的「直售＝立刻結案」語意、取貨頁放行的另一半沒上線，期間 7 張配單訂單卡在取貨頁按不動。
+**「PR 顯示 Merged」不等於「進了 main」——要看那個 PR 的 base 是不是 main。** 前例：`20260805000230`（現貨配單：配給客人＝待取，取貨時才扣庫存）8/06 套上線，同批的 PR #629 base 選成 feature 分支本身而不是 main；而該分支帶回 main 的 PR（#627）在 12 分鐘前就已經合併，之後沒有第二個 PR 再帶它回去 → 那支 migration 和同 PR 的前端改動從來沒進過 main，GitHub 上卻是綠色的 Merged。結果 repo 與正式庫脫鉤一週，前端仍是舊的「直售＝立刻結案」語意、取貨頁放行的另一半沒上線，期間 7 張配單訂單卡在取貨頁按不動。
 
-自檢：對線上跑完 SQL 後，`git log origin/main -- supabase/migrations/<檔名>` 要查得到那支才算收工。
+自檢（唯一算數的）：對線上跑完 SQL 後，`git log origin/main -- supabase/migrations/<檔名>` 查得到那支才算收工。
 
 ### 部署 Edge Function 走 curl + Management API，不要用 supabase CLI
 
