@@ -85,6 +85,16 @@ type ReturnTransfer = {
   lines: ReturnLine[];
 };
 
+// 從本單空中轉出去、還等著轉出店出貨的轉入單（confirmed、還沒建 AT- 轉移單）。
+// 空中轉不經總倉，所以出貨這一步的操作者是轉出店 —— 也就是看著本單的人。
+type PendingAirShipment = {
+  id: number;
+  order_no: string;
+  pickup_store_id: number | null;
+  store_name: string;
+  qty: number;
+};
+
 // 品項狀態標籤（部分取貨會把一行拆成「已取」+「待取」兩行，標籤讓兩者一眼可分）
 function itemStatusBadge(status: string, stockout = false): { label: string; cls: string } | null {
   // 斷貨取消（stockout_at 有值）與一般取消區分顯示
@@ -177,6 +187,10 @@ export function OrderDetail({
   const [pickupEvents, setPickupEvents] = useState<PickupEventRow[]>([]);
   const [timeline, setTimeline] = useState<TimelineStep[] | null>(null);
   const [staffNames, setStaffNames] = useState<Map<string, string>>(new Map());
+  // 本單空中轉出去、還沒出貨的轉入單（給轉出店按「✈ 出貨」用）
+  const [pendingAirOut, setPendingAirOut] = useState<PendingAirShipment[]>([]);
+  // 本單自己是空中轉轉入單且還在等出貨時，轉出店店名（給接收店看「在等誰」）
+  const [awaitingAirFrom, setAwaitingAirFrom] = useState<string | null>(null);
   // sku_id → 現行分店價（prices scope=branch, effective_to IS NULL）
   const [branchPrices, setBranchPrices] = useState<Map<number, number>>(new Map());
   const [error, setError] = useState<string | null>(null);
@@ -228,7 +242,7 @@ export function OrderDetail({
     let cancelled = false;
     (async () => {
       const sb = getSupabase();
-      const [hRes, iRes, rRes, arvRes, pevRes] = await Promise.all([
+      const [hRes, iRes, rRes, arvRes, pevRes, airRes] = await Promise.all([
         sb.from("customer_orders")
           .select("id, order_no, status, stockout_at, pickup_deadline, nickname_snapshot, created_at, updated_at, pickup_store_id, campaign_id, transferred_from_order_id, is_air_transfer, discount_amount, discount_percent, wallet_paid_amount, payment_status, paid_at, notes, member:members(id, name, phone, member_no), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
           .eq("id", orderId).maybeSingle(),
@@ -246,6 +260,13 @@ export function OrderDetail({
           .select("item_id, pickup_ready")
           .eq("order_id", orderId),
         fetchReprintableEvents([orderId]),
+        // 從本單空中轉出去、還卡在 confirmed 的轉入單。空中轉不經總倉，
+        // 出貨要由轉出店（＝正在看本單的人）按下，否則沒有任何人有入口。
+        sb.from("customer_orders")
+          .select("id, order_no, pickup_store_id, store:stores!customer_orders_pickup_store_id_fkey(name), items:customer_order_items(qty, status)")
+          .eq("transferred_from_order_id", orderId)
+          .eq("is_air_transfer", true)
+          .eq("status", "confirmed"),
       ]);
       if (cancelled) return;
       if (hRes.error) { setError(hRes.error.message); return; }
@@ -262,6 +283,45 @@ export function OrderDetail({
       setItemReady(arrivedMap);
 
       setPickupEvents(pevRes.get(orderId) ?? []);
+
+      // ========== 待出貨的空中轉（本單 → 其他店）==========
+      type AirRow = {
+        id: number; order_no: string; pickup_store_id: number | null;
+        store: { name: string } | { name: string }[] | null;
+        items: { qty: number; status: string }[] | null;
+      };
+      const airRows = ((airRes.data ?? []) as unknown as AirRow[])
+        // 同店空中轉：rpc_ship_aid_order 會以「source/dest 同 location」擋下，不給按
+        .filter((r) => r.pickup_store_id !== headData.pickup_store_id)
+        .map((r): PendingAirShipment => ({
+          id: r.id,
+          order_no: r.order_no,
+          pickup_store_id: r.pickup_store_id,
+          store_name: (Array.isArray(r.store) ? r.store[0]?.name : r.store?.name) ?? "—",
+          qty: (r.items ?? [])
+            .filter((it) => !["cancelled", "expired"].includes(it.status))
+            .reduce((s, it) => s + Number(it.qty), 0),
+        }));
+      setPendingAirOut(airRows);
+
+      // 本單自己就是等出貨的空中轉轉入單 → 讓接收店看得到在等哪一家出貨
+      if (headData.is_air_transfer && headData.status === "confirmed" && headData.transferred_from_order_id) {
+        const { data: srcRow } = await sb
+          .from("customer_orders")
+          .select("pickup_store_id, store:stores!customer_orders_pickup_store_id_fkey(name)")
+          .eq("id", headData.transferred_from_order_id)
+          .maybeSingle();
+        const src = srcRow as unknown as
+          { pickup_store_id: number | null; store: { name: string } | { name: string }[] | null } | null;
+        const st = src?.store;
+        // 同店不需要出貨（rpc_ship_aid_order 也會擋），不掛「等出貨」
+        const sameStore = src?.pickup_store_id === headData.pickup_store_id;
+        if (!cancelled) {
+          setAwaitingAirFrom(sameStore ? null : (Array.isArray(st) ? st[0]?.name : st?.name) ?? "轉出店");
+        }
+      } else if (!cancelled) {
+        setAwaitingAirFrom(null);
+      }
 
       // ========== 整理退貨單（return_to_hq transfer）==========
       type RetRow = {
@@ -588,6 +648,28 @@ export function OrderDetail({
     setReloadTick((n) => n + 1);
   }
 
+  // 空中轉出貨：建 AT- 轉移單（store_to_store, shipped）＋本店即時出庫，
+  // 轉入單 confirmed → shipping。接收店隨後在「收貨」頁收掉就變成可取貨。
+  async function shipAir(s: PendingAirShipment) {
+    if (!head) return;
+    if (!confirm(
+      `✈ 空中轉出貨：${s.order_no}（${s.store_name}）\n\n` +
+      `會從本店庫存扣掉 ${s.qty} 件並建立轉移單，${s.store_name}在「收貨」頁收貨後即可交給顧客。\n` +
+      `確定貨已經寄出／交給司機了嗎？`,
+    )) return;
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id ?? null;
+    if (!operator) { alert("尚未登入"); return; }
+    const { error: rpcErr } = await sb.rpc("rpc_ship_aid_order", {
+      p_order_id: s.id,
+      p_operator: operator,
+    });
+    if (rpcErr) { alert(`出貨失敗：${translateRpcError(rpcErr)}`); return; }
+    alert(`已出貨，等 ${s.store_name} 在「收貨」頁收貨`);
+    setReloadTick((n) => n + 1);
+  }
+
   async function aidReturn() {
     if (!head) return;
     const walletPaid = Number(head.wallet_paid_amount ?? 0);
@@ -700,8 +782,23 @@ export function OrderDetail({
           </SpinButton>
         </div>
       )}
-      {(canPrintSlip || canReprintReceipt || canTransfer || canPickup || canUndoPickup || canCancel || canReturn || canAidReturn || isTransferredOut) && (
-        <div className="flex items-center justify-end gap-2">
+      {(canPrintSlip || canReprintReceipt || canTransfer || canPickup || canUndoPickup || canCancel || canReturn || canAidReturn || isTransferredOut || pendingAirOut.length > 0 || awaitingAirFrom) && (
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {awaitingAirFrom && (
+            <span className="text-xs text-amber-700 dark:text-amber-400">
+              ✈ 等 {awaitingAirFrom} 出貨（出貨後本店在「收貨」頁收貨）
+            </span>
+          )}
+          {pendingAirOut.map((s) => (
+            <SpinButton
+              key={s.id}
+              onClick={() => shipAir(s)}
+              className="rounded-md border border-sky-300 px-3 py-1 text-xs font-medium text-sky-700 hover:bg-sky-50 dark:border-sky-800 dark:text-sky-300 dark:hover:bg-sky-950"
+              title={`空中轉：從本店出庫 ${s.qty} 件並建立轉移單，交給 ${s.store_name} 收貨（${s.order_no}）`}
+            >
+              ✈ 出貨到 {s.store_name}
+            </SpinButton>
+          ))}
           {canReprintReceipt && (
             <SpinButton
               onClick={() =>
@@ -1327,14 +1424,22 @@ async function buildTimeline(
     };
 
     if (head.is_air_transfer) {
-      // 空中轉：店對店直送
+      // 空中轉：店對店直送，全程不經總倉 —— 出貨由轉出店自己在來源訂單上按
       return [
         sourceStep,
+        {
+          label: "轉出店出貨",
+          ts: null,
+          done: rank >= 3,
+          detail: rank >= 3
+            ? "（已出庫、轉移單已建立）"
+            : `（等 ${srcStoreName} 在來源訂單按「✈ 出貨」）`,
+        },
         {
           label: "分店收貨",
           ts: null,
           done: rank >= 4,
-          detail: rank >= 4 ? "（分店已可取貨）" : "（空中轉、暫無系統紀錄）",
+          detail: rank >= 4 ? "（分店已可取貨）" : "（在「收貨」頁收 AT- 轉移單）",
         },
         customerStep,
       ];

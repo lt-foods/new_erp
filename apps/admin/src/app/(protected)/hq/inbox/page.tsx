@@ -2573,7 +2573,9 @@ function MailRow({
       );
     }
   } else if (row.source === "air") {
-    // 空中轉:唯讀,只顯示資訊(訂單號 / 店 / 開團 / 品項 / 狀態),不出任何動作按鈕
+    // 空中轉:貨走店對店、總倉不碰,所以出貨的正主是轉出店(在來源訂單上按「✈ 出貨」)。
+    // 這裡仍留一份動作按鈕當後備 —— 之前做成純唯讀,而分店帳號看不到 /hq/inbox,
+    // 結果全站沒有任何人有派貨入口,空中轉單就永遠停在「已確認」(線上卡了 5 張)。
     const a = row.raw;
     idText = a.order_no;
     title = <>{a.campaign_no ?? "—"} <span className="text-zinc-400 mx-1">→</span> {a.store_name ?? "—"}</>;
@@ -2586,7 +2588,10 @@ function MailRow({
     );
     timeIso = a.updated_at;
     actions = (
-      <RowAction variant="neutral" onClick={() => onOpenAidDetail(a.id)}>查看訂單</RowAction>
+      <>
+        <AidOrderStatusActions order={{ id: a.id, status: a.status }} onChanged={onAidChanged} />
+        <RowAction variant="neutral" onClick={() => onOpenAidDetail(a.id)}>查看訂單</RowAction>
+      </>
     );
   } else {
     const a = row.raw;
