@@ -201,7 +201,7 @@ export default function QuickCampaignControlPage() {
   const [endAtDraft, setEndAtDraft] = useState<Record<number, string>>({});
   const [deltaDraft, setDeltaDraft] = useState<Record<number, string>>({});
 
-  const [createOpen, setCreateOpen] = useState(false);
+  const [createOpen] = useState(false);
   const [productQuery, setProductQuery] = useState("");
   const [productRows, setProductRows] = useState<ProductRow[]>([]);
   const [productSearching, setProductSearching] = useState(false);
@@ -547,7 +547,7 @@ export default function QuickCampaignControlPage() {
         <header className="flex flex-col gap-3 rounded-md border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-xs font-medium text-zinc-500">手機快速開團 / 團控</p>
+              <p className="text-xs font-medium text-zinc-500">手機團控</p>
               <h1 className="text-xl font-semibold text-zinc-950 dark:text-zinc-50">
                 美食列車 / 限時 / 限量
               </h1>
@@ -559,20 +559,7 @@ export default function QuickCampaignControlPage() {
               回後台
             </Link>
           </div>
-          <div className="grid gap-2 sm:grid-cols-[auto_1fr_auto]">
-            <SpinButton
-              type="button"
-              disabled={!allowed || !QUICK_CREATE_ENABLED}
-              onClick={() => {
-                setCreateOpen((v) => !v);
-                setError(null);
-                setNotice(null);
-              }}
-              title={QUICK_CREATE_ENABLED ? undefined : "正取/候補流程對齊中，暫停手機開新團"}
-              className="min-h-11 rounded-md bg-pink-600 px-4 text-sm font-semibold text-white disabled:opacity-50"
-            >
-              {QUICK_CREATE_ENABLED ? (createOpen ? "收起開新團" : "+ 開新團") : "開新團開發中"}
-            </SpinButton>
+          <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
