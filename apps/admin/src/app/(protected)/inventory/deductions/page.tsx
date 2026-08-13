@@ -38,6 +38,7 @@ type Note = {
   qty: number;
   reason: string | null;
   created_at: string;
+  cancelled_at: string | null;
   store_id: number;
   store_name: string;
   campaign_id: number;
@@ -429,9 +430,14 @@ export default function InventoryDeductionsPage() {
               </thead>
               <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
                 {notes.map((n) => (
-                  <tr key={n.id}>
+                  <tr key={n.id} className={n.cancelled_at ? "opacity-60" : undefined}>
                     <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-violet-700 dark:text-violet-400">
                       {n.note_no}
+                      {n.cancelled_at && (
+                        <span className="ml-1.5 rounded bg-red-100 px-1 py-0.5 font-sans text-[10px] font-medium text-red-700 dark:bg-red-900/40 dark:text-red-400">
+                          已作廢
+                        </span>
+                      )}
                     </td>
                     <td className="whitespace-nowrap px-3 py-2 text-xs text-zinc-500">
                       {new Date(n.created_at).toLocaleString("zh-TW", {
