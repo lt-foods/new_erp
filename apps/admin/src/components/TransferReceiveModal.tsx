@@ -60,6 +60,7 @@ export function TransferReceiveModal({
   dstName,
   wave,
   notifyMembers = true,
+  autoAllocate = true,
   onClose,
   onSubmitted,
 }: {
@@ -69,6 +70,9 @@ export function TransferReceiveModal({
   wave: Wave | null;
   // 收貨完成後是否整批推播「到貨」給受影響會員（收貨待辦頁的開關）
   notifyMembers?: boolean;
+  // 收貨待辦頁的配單模式：false = 手動配單（收貨只入庫，不自動配 confirmed 單，
+  // 由店家在「✋ 手動配單」彈窗自己勾） — 見 20260813000000 migration
+  autoAllocate?: boolean;
   onClose: () => void;
   onSubmitted: () => void;
 }) {
@@ -175,6 +179,7 @@ export function TransferReceiveModal({
         p_lines: lines.length === 0 ? null : lines,
         p_operator: operator,
         p_notes: note.trim() === "" ? null : note.trim(),
+        p_auto_allocate: autoAllocate,
       });
       if (e) throw new Error(translateRpcError(e));
 
@@ -200,8 +205,11 @@ export function TransferReceiveModal({
           })
         : 0;
       const pushNote = pushed > 0 ? `\n📩 已推播 ${pushed} 位顧客` : "";
+      const manualNote = autoAllocate
+        ? ""
+        : "\n✋ 手動配單模式：未自動配單，請在配單視窗勾選要配給哪些訂單。";
       alert(
-        `收貨完成：${r?.items_received ?? 0} 行，實收合計 ${r?.total_qty_received ?? 0}${varNote}${pushNote}`,
+        `收貨完成：${r?.items_received ?? 0} 行，實收合計 ${r?.total_qty_received ?? 0}${varNote}${pushNote}${manualNote}`,
       );
       onSubmitted();
     } catch (e) {
