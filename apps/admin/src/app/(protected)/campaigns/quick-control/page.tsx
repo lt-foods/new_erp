@@ -157,6 +157,19 @@ function statusClass(status: QuickStatus): string {
   return "bg-zinc-100 text-zinc-700 ring-zinc-200";
 }
 
+function itemCapSummary(items: CampaignRow["campaign_items"]) {
+  const caps = (items ?? [])
+    .map((item) => Number(item.cap_qty ?? 0))
+    .filter((cap) => Number.isFinite(cap) && cap > 0);
+  if (caps.length === 0) return null;
+  return {
+    count: caps.length,
+    total: caps.reduce((sum, cap) => sum + cap, 0),
+    min: Math.min(...caps),
+    max: Math.max(...caps),
+  };
+}
+
 function productImageUrl(images: unknown): string | null {
   if (!Array.isArray(images) || images.length === 0) return null;
   const first = images[0] as unknown;
@@ -855,7 +868,7 @@ export default function QuickCampaignControlPage() {
               const endInput = endAtDraft[row.id] ?? toLocalInput(row.end_at) ?? defaultEndAt();
               const delta = Number(deltaDraft[row.id] ?? 0);
               const previewCap = Number.isFinite(delta) && delta > 0 ? (cap ?? sold) + delta : null;
-              const hasItemCap = (row.campaign_items ?? []).some((item) => Number(item.cap_qty ?? 0) > 0);
+              const itemCap = itemCapSummary(row.campaign_items);
 
               return (
                 <section
@@ -887,6 +900,18 @@ export default function QuickCampaignControlPage() {
                   </div>
 
                   <div className="mt-4 grid gap-3">
+                    {itemCap && (
+                      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                        <div className="font-medium">品項上限摘要</div>
+                        <div className="mt-1 text-xs sm:text-sm">
+                          {itemCap.count} 項有單品上限 / 合計 {itemCap.total} / 最小 {itemCap.min} / 最大 {itemCap.max}
+                        </div>
+                        <div className="mt-1 text-xs">
+                          整團加名額不會改品項上限，單品已滿仍可能無法下單。
+                        </div>
+                      </div>
+                    )}
+
                     <label className="grid gap-1 text-sm">
                       <span className="font-medium text-zinc-700 dark:text-zinc-200">收單時間</span>
                       <input
@@ -954,7 +979,7 @@ export default function QuickCampaignControlPage() {
                         <div>
                           {cap == null ? "目前無整團總上限" : `目前整團總上限 ${cap}`} / 已售 {sold} / 加 {delta} 後整團總上限 {previewCap}
                         </div>
-                        {hasItemCap && (
+                        {itemCap && (
                           <div className="text-amber-700 dark:text-amber-300">
                             本頁只加整團名額；若單一品項已滿，仍需調整品項上限。
                           </div>
