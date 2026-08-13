@@ -110,19 +110,10 @@ export default function TransfersInboxPage() {
       window.localStorage.setItem("inbound-notify-members", notifyMembers ? "1" : "0");
     }
   }, [notifyMembers]);
-  // 配單模式：auto = 收貨時依訂單時間自動配（原行為）；manual = 收貨只入庫，
-  // 由店家在「✋ 手動配單」彈窗勾選要配給哪些訂單（數量不夠分時自己決定誰先拿）。
-  // 記在 localStorage（預設自動，行為不變）。見 20260813000000 migration。
-  type AllocMode = "auto" | "manual";
-  const [allocMode, setAllocMode] = useState<AllocMode>(() => {
-    if (typeof window === "undefined") return "auto";
-    return window.localStorage.getItem("inbound-alloc-mode") === "manual" ? "manual" : "auto";
-  });
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem("inbound-alloc-mode", allocMode);
-    }
-  }, [allocMode]);
+  // 配單方式不是全域開關，而是每次收貨當下選：收貨按鈕都有兩顆 ——
+  // 「收貨·自動配」＝依訂單時間自動配（原行為）；「✋手動配」＝收貨只入庫，
+  // 收完跳出配單視窗由店家勾選要配給哪些訂單（數量不夠分時自己決定誰先拿）。
+  // 見 20260813000000 migration。
   // 檢視模式：product = 同品相（同分店 + 同配送日 + 同品項組合）的單合併成一列；
   // wave = 舊行為，依撿貨單號分組。店家幾乎都是一單一品，合併後畫面短很多 → 預設 product。
   type GroupMode = "product" | "wave";
@@ -700,14 +691,14 @@ export default function TransfersInboxPage() {
     window.dispatchEvent(new Event("inbound-badge-refresh"));
   }
 
-  // confirm 對話框裡的「是否通知會員」提示行（依開關狀態）
-  const notifyHint = () =>
+  // confirm 對話框裡的「是否通知會員」提示行（依開關狀態 + 這次點的配單方式）
+  const notifyHint = (auto: boolean) =>
     (notifyMembers
       ? "📩 收貨後會推播「到貨」通知給相關會員。"
       : "🔕 已關閉會員通知,本次收貨不推播。") +
-    (allocMode === "manual"
-      ? "\n✋ 手動配單模式:收貨只入庫不自動配單,收完後請在配單視窗勾選要配給誰。"
-      : "");
+    (auto
+      ? ""
+      : "\n✋ 手動配貨:收貨只入庫不自動配單,收完後請在配單視窗勾選要配給誰。");
 
   // 由 dest_location 解析出 store（手動配單彈窗要 store id + 顯示名）
   const storeForLocation = (loc: number): { storeId: number; storeName: string } | null => {
@@ -716,9 +707,8 @@ export default function TransfersInboxPage() {
     return { storeId: sid, storeName: locations.get(loc) ?? `#${loc}` };
   };
 
-  // 手動配單模式收完貨 → 直接開配單彈窗（同一間店才開；跨店批次給文字提示）
+  // 用「✋手動配」收完貨 → 直接開配單彈窗（同一間店才開；跨店批次給文字提示）
   const openManualAllocAfterReceive = (destLocations: number[]) => {
-    if (allocMode !== "manual") return;
     const uniq = Array.from(new Set(destLocations));
     if (uniq.length === 1) {
       const s = storeForLocation(uniq[0]);
@@ -733,9 +723,10 @@ export default function TransfersInboxPage() {
   };
 
   // 單筆全收 — 直接 confirm + RPC,跟批次邏輯一樣(p_lines=null)
-  async function quickReceive(t: Transfer) {
+  // auto = true:收貨後依訂單時間自動配;false:只入庫,收完開手動配單視窗
+  async function quickReceive(t: Transfer, auto: boolean) {
     const dest = locations.get(t.dest_location) ?? `#${t.dest_location}`;
-    if (!confirm(`確認收貨 ${t.transfer_no}(送到 ${dest})?\n\n以「全收」(實收 = 派出量,無破損)處理。需要調整數量請點「調整」。\n${notifyHint()}`)) return;
+    if (!confirm(`確認收貨 ${t.transfer_no}(送到 ${dest})?\n\n以「全收」(實收 = 派出量,無破損)處理。需要調整數量請點「調整」。\n${notifyHint(auto)}`)) return;
     setBatchBusy(true);
     try {
       const sb = getSupabase();
@@ -747,11 +738,11 @@ export default function TransfersInboxPage() {
         p_lines: null,
         p_operator: operator,
         p_notes: null,
-        p_auto_allocate: allocMode === "auto",
+        p_auto_allocate: auto,
       });
       if (e) throw new Error(translateRpcError(e));
       // 依「收貨後通知會員」設定推播到貨通知；失敗不影響收貨流程
-      // （名單只含真的可取貨的訂單 — 手動模式下沒配到的單不會被通知）
+      // （名單只含真的可取貨的訂單 — 手動配貨下沒配到的單不會被通知）
       if (notifyMembers) {
         const pushed = await fanoutPickupNotifications([t.id]).catch((err) => {
           console.warn("push fanout error:", err);
@@ -760,7 +751,7 @@ export default function TransfersInboxPage() {
         if (pushed > 0) alert(`📩 已推播 ${pushed} 位顧客`);
       }
       reloadAndRefreshBadge();
-      openManualAllocAfterReceive([t.dest_location]);
+      if (!auto) openManualAllocAfterReceive([t.dest_location]);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -799,31 +790,31 @@ export default function TransfersInboxPage() {
     }
   }
 
-  async function batchReceive() {
+  async function batchReceive(auto: boolean) {
     if (selected.size === 0) return;
-    if (!confirm(`確認批次收貨 ${selected.size} 筆?\n\n所有品項都將以「全收」(實收 = 派出量,無破損)處理。需要編輯數量請點個別「收貨」按鈕。\n${notifyHint()}`)) return;
-    await runBatchReceive(Array.from(selected));
+    if (!confirm(`確認批次收貨 ${selected.size} 筆?\n\n所有品項都將以「全收」(實收 = 派出量,無破損)處理。需要編輯數量請點個別「收貨」按鈕。\n${notifyHint(auto)}`)) return;
+    await runBatchReceive(Array.from(selected), auto);
     setSelected(new Set());
   }
 
   // 群組層「整組收貨」— 同品相合併後最常用的動作：一次收掉這個品項的全部待收單
-  async function receiveGroup(g: Group) {
+  async function receiveGroup(g: Group, auto: boolean) {
     const pending = g.transfers.filter((t) => t.status === "shipped");
     if (pending.length === 0) return;
     if (pending.length === 1) {
-      await quickReceive(pending[0]);
+      await quickReceive(pending[0], auto);
       return;
     }
     const qty = pending.reduce((s, t) => s + (itemSummary.get(t.id)?.totalQty ?? 0), 0);
     if (
       !confirm(
         `確認收貨「${g.label}」全部 ${pending.length} 單(共 ${qty} 件)?\n\n` +
-        `以「全收」(實收 = 派出量,無破損)處理。需要調整數量請展開後個別處理。\n${notifyHint()}`,
+        `以「全收」(實收 = 派出量,無破損)處理。需要調整數量請展開後個別處理。\n${notifyHint(auto)}`,
       )
     )
       return;
     const ids = pending.map((t) => t.id);
-    await runBatchReceive(ids);
+    await runBatchReceive(ids, auto);
     setSelected((cur) => {
       const next = new Set(cur);
       for (const id of ids) next.delete(id);
@@ -831,7 +822,7 @@ export default function TransfersInboxPage() {
     });
   }
 
-  async function runBatchReceive(ids: number[]) {
+  async function runBatchReceive(ids: number[], auto: boolean) {
     if (ids.length === 0) return;
     setBatchBusy(true);
     try {
@@ -847,7 +838,7 @@ export default function TransfersInboxPage() {
         p_transfer_ids: ids,
         p_operator: operator,
         p_notes: "批次收貨",
-        p_auto_allocate: allocMode === "auto",
+        p_auto_allocate: auto,
       });
       if (e) throw new Error(translateRpcError(e));
 
@@ -886,7 +877,7 @@ export default function TransfersInboxPage() {
         );
       }
       reloadAndRefreshBadge();
-      if (okCount > 0) {
+      if (!auto && okCount > 0) {
         const failedIds = new Set((res.failed ?? []).map((f) => f.id));
         const okDest = (transfers ?? [])
           .filter((t) => ids.includes(t.id) && !failedIds.has(t.id))
@@ -1121,37 +1112,24 @@ export default function TransfersInboxPage() {
             />
             {notifyMembers ? "📩 收貨後通知會員" : "🔕 收貨後不通知會員"}
           </label>
-          {/* 配單模式 — 適用單筆收貨 / 批次收貨 / 調整 modal，設定會記住。
-              數量不夠分給所有訂單時:自動=依下單時間先到先配;手動=店家自己勾誰先拿 */}
-          <div className="flex items-center gap-1 text-xs text-zinc-600 dark:text-zinc-300">
-            <span className="text-zinc-400">配單</span>
-            <div className="flex items-center rounded-md border border-zinc-300 p-0.5 dark:border-zinc-700">
-              {([
-                { value: "auto", label: "⚡ 自動", hint: "收貨後依下單時間由早到晚自動配給訂單(原行為)" },
-                { value: "manual", label: "✋ 手動", hint: "收貨只入庫不自動配單;收完後在配單視窗自己勾要配給哪些訂單(數量不夠分時自己決定誰先拿)" },
-              ] as const).map((m) => (
-                <SpinButton
-                  key={m.value}
-                  onClick={() => setAllocMode(m.value)}
-                  title={m.hint}
-                  className={`rounded px-2 py-0.5 font-medium transition ${
-                    allocMode === m.value
-                      ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                      : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
-                  }`}
-                >
-                  {m.label}
-                </SpinButton>
-              ))}
-            </div>
-          </div>
+          {/* 批次收貨兩顆:自動配(原行為) / 手動配(收完在配單視窗自己勾誰先拿) */}
           <SpinButton
             type="button"
-            onClick={batchReceive}
+            onClick={() => batchReceive(true)}
             disabled={selected.size === 0 || batchBusy}
+            title="收貨後依下單時間由早到晚自動配給訂單"
             className="ml-auto rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-zinc-300 dark:disabled:bg-zinc-700"
           >
-            {batchBusy ? "處理中…" : `✓ 批次收貨${selected.size > 0 ? ` (${selected.size})` : ""}`}
+            {batchBusy ? "處理中…" : `✓ 批次收貨·自動配${selected.size > 0 ? ` (${selected.size})` : ""}`}
+          </SpinButton>
+          <SpinButton
+            type="button"
+            onClick={() => batchReceive(false)}
+            disabled={selected.size === 0 || batchBusy}
+            title="收貨只入庫不自動配單;收完後在配單視窗自己勾要配給哪些訂單(數量不夠分時自己決定誰先拿)"
+            className="rounded-md border border-emerald-600 px-4 py-1.5 text-sm font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-zinc-300 disabled:text-zinc-400 dark:text-emerald-400 dark:hover:bg-emerald-950 dark:disabled:border-zinc-700 dark:disabled:text-zinc-500"
+          >
+            {`✋ 批次收貨·手動配${selected.size > 0 ? ` (${selected.size})` : ""}`}
           </SpinButton>
         </div>
       )}
@@ -1245,18 +1223,29 @@ export default function TransfersInboxPage() {
                 </div>
 
                 {pendingCount > 0 && (
-                  <SpinButton
-                    onClick={() => receiveGroup(g)}
-                    disabled={batchBusy}
-                    className="shrink-0 rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
-                    title={
-                      pendingCount > 1
-                        ? `一次收掉這組 ${pendingCount} 筆(全收:實收 = 派出量)`
-                        : "直接全收(實收 = 派出量,無破損)"
-                    }
-                  >
-                    ✓ 收貨{pendingCount > 1 ? ` ${pendingCount} 單` : ""}
-                  </SpinButton>
+                  <div className="flex shrink-0 flex-col items-stretch gap-1">
+                    <SpinButton
+                      onClick={() => receiveGroup(g, true)}
+                      disabled={batchBusy}
+                      className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                      title={
+                        (pendingCount > 1
+                          ? `一次收掉這組 ${pendingCount} 筆(全收:實收 = 派出量)。`
+                          : "直接全收(實收 = 派出量,無破損)。") +
+                        "收貨後依下單時間由早到晚自動配給訂單"
+                      }
+                    >
+                      ✓ 收貨·自動配{pendingCount > 1 ? ` ${pendingCount} 單` : ""}
+                    </SpinButton>
+                    <SpinButton
+                      onClick={() => receiveGroup(g, false)}
+                      disabled={batchBusy}
+                      className="rounded-md border border-emerald-600 px-4 py-1.5 text-sm font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
+                      title="收貨只入庫不自動配單;收完後在配單視窗自己勾要配給哪些訂單(數量不夠分時自己決定誰先拿)"
+                    >
+                      ✋ 收貨·手動配{pendingCount > 1 ? ` ${pendingCount} 單` : ""}
+                    </SpinButton>
+                  </div>
                 )}
               </div>
 
@@ -1482,12 +1471,20 @@ export default function TransfersInboxPage() {
                               {isShipped ? (
                                 <div className="flex justify-end gap-1">
                                   <SpinButton
-                                    onClick={() => quickReceive(t)}
+                                    onClick={() => quickReceive(t, true)}
                                     disabled={batchBusy}
                                     className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
-                                    title="直接全收(實收 = 派出量,無破損)"
+                                    title="直接全收(實收 = 派出量,無破損),收貨後依下單時間由早到晚自動配給訂單"
                                   >
-                                    收貨
+                                    收貨·自動配
+                                  </SpinButton>
+                                  <SpinButton
+                                    onClick={() => quickReceive(t, false)}
+                                    disabled={batchBusy}
+                                    className="rounded-md border border-emerald-600 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
+                                    title="收貨只入庫不自動配單;收完後在配單視窗自己勾要配給哪些訂單(數量不夠分時自己決定誰先拿)"
+                                  >
+                                    ✋ 手動配
                                   </SpinButton>
                                   <SpinButton
                                     onClick={() => setOpening(t)}
@@ -1593,15 +1590,13 @@ export default function TransfersInboxPage() {
             return wid !== null ? waves.get(wid) ?? null : null;
           })()}
           notifyMembers={notifyMembers}
-          autoAllocate={allocMode === "auto"}
           onClose={() => setOpening(null)}
-          onSubmitted={() => {
+          onSubmitted={(manualAlloc) => {
             const dest = opening.dest_location;
-            const wasShipped = opening.status === "shipped";
             setOpening(null);
             reloadAndRefreshBadge();
-            // 只有真的收了貨(原本待收)才順勢開手動配單;看明細關掉不用
-            if (wasShipped) openManualAllocAfterReceive([dest]);
+            // 用「✋ 收貨·手動配」送出才順勢開配單視窗
+            if (manualAlloc) openManualAllocAfterReceive([dest]);
           }}
         />
       )}

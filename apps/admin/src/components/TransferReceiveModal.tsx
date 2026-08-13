@@ -60,7 +60,6 @@ export function TransferReceiveModal({
   dstName,
   wave,
   notifyMembers = true,
-  autoAllocate = true,
   onClose,
   onSubmitted,
 }: {
@@ -70,11 +69,10 @@ export function TransferReceiveModal({
   wave: Wave | null;
   // 收貨完成後是否整批推播「到貨」給受影響會員（收貨待辦頁的開關）
   notifyMembers?: boolean;
-  // 收貨待辦頁的配單模式：false = 手動配單（收貨只入庫，不自動配 confirmed 單，
-  // 由店家在「✋ 手動配單」彈窗自己勾） — 見 20260813000000 migration
-  autoAllocate?: boolean;
   onClose: () => void;
-  onSubmitted: () => void;
+  // manualAlloc = true 表示用「✋ 收貨·手動配」送出（收貨只入庫，不自動配
+  // confirmed 單，由店家在「✋ 手動配單」彈窗自己勾）— 見 20260813000000 migration
+  onSubmitted: (manualAlloc: boolean) => void;
 }) {
   const [items, setItems] = useState<TransferItem[] | null>(null);
   const [skus, setSkus] = useState<Map<number, Sku>>(new Map());
@@ -149,7 +147,8 @@ export function TransferReceiveModal({
     });
   }
 
-  async function submit() {
+  // auto = true:收貨後自動配單(原行為);false:只入庫,由店家手動配
+  async function submit(auto: boolean) {
     setSubmitting(true);
     setError(null);
     try {
@@ -179,7 +178,7 @@ export function TransferReceiveModal({
         p_lines: lines.length === 0 ? null : lines,
         p_operator: operator,
         p_notes: note.trim() === "" ? null : note.trim(),
-        p_auto_allocate: autoAllocate,
+        p_auto_allocate: auto,
       });
       if (e) throw new Error(translateRpcError(e));
 
@@ -205,13 +204,13 @@ export function TransferReceiveModal({
           })
         : 0;
       const pushNote = pushed > 0 ? `\n📩 已推播 ${pushed} 位顧客` : "";
-      const manualNote = autoAllocate
+      const manualNote = auto
         ? ""
-        : "\n✋ 手動配單模式：未自動配單，請在配單視窗勾選要配給哪些訂單。";
+        : "\n✋ 手動配貨：未自動配單，請在配單視窗勾選要配給哪些訂單。";
       alert(
         `收貨完成：${r?.items_received ?? 0} 行，實收合計 ${r?.total_qty_received ?? 0}${varNote}${pushNote}${manualNote}`,
       );
-      onSubmitted();
+      onSubmitted(!auto);
     } catch (e) {
       setError(translateRpcError(e));
     } finally {
@@ -245,7 +244,7 @@ export function TransferReceiveModal({
         ? `\n已自動建立退回單 #${r.leg3_transfer_id}（HQ → 原 source 店）`
         : "";
       alert(`拒收完成。${leg3Note}`);
-      onSubmitted();
+      onSubmitted(false);
     } catch (e) {
       setError(translateRpcError(e));
     } finally {
@@ -280,11 +279,20 @@ export function TransferReceiveModal({
             ) : (
               <>
                 <SpinButton
-                  onClick={submit}
+                  onClick={() => submit(true)}
                   disabled={submitting || !items}
+                  title="收貨後依下單時間由早到晚自動配給訂單"
                   className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
                 >
-                  {submitting ? "送出中…" : "確認收貨"}
+                  {submitting ? "送出中…" : "✓ 收貨·自動配"}
+                </SpinButton>
+                <SpinButton
+                  onClick={() => submit(false)}
+                  disabled={submitting || !items}
+                  title="收貨只入庫不自動配單；收完後在配單視窗自己勾要配給哪些訂單（數量不夠分時自己決定誰先拿）"
+                  className="rounded-md border border-emerald-600 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
+                >
+                  ✋ 收貨·手動配
                 </SpinButton>
                 {isWaveDispatch ? (
                   <span
