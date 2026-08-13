@@ -81,13 +81,13 @@ const STATUS_LABEL: Record<QuickStatus, string> = {
 const TYPE_LABEL: Record<CloseType, string> = {
   regular: "一般",
   fast: "限時",
-  limited: "限量",
+  limited: "限時限量",
   food_train: "美食列車",
 };
 
 const CREATE_TYPES: { value: CreateCloseType; label: string; hint: string }[] = [
   { value: "fast", label: "限時", hint: "到時間收單" },
-  { value: "limited", label: "限量", hint: "賣完就停" },
+  { value: "limited", label: "限時限量", hint: "到時間或賣完收單" },
   { value: "food_train", label: "美食列車", hint: "美食列車專區" },
 ];
 
@@ -609,7 +609,7 @@ export default function QuickCampaignControlPage() {
         }
       }
     }
-    if (createNeedsCap) { setError("限量團請填總限量，或至少填一個規格限量"); return; }
+    if (createNeedsCap) { setError("限時限量請填總限量，或至少填一個規格限量"); return; }
 
     setCreateBusy(true);
     setError(null);
@@ -833,7 +833,7 @@ export default function QuickCampaignControlPage() {
             <div>
               <p className="text-xs font-medium text-zinc-500">手機開團 / 團控</p>
               <h1 className="text-xl font-semibold text-zinc-950 dark:text-zinc-50">
-                美食列車 / 限時 / 限量
+                美食列車 / 限時 / 限時限量
               </h1>
             </div>
             <Link
@@ -1134,7 +1134,7 @@ export default function QuickCampaignControlPage() {
                       step="1"
                       value={totalCapDraft}
                       onChange={(e) => setTotalCapDraft(e.target.value)}
-                      placeholder={createType === "limited" ? "限量團建議填寫" : "可不填"}
+                      placeholder={createType === "limited" ? "限時限量建議填寫" : "可不填"}
                       disabled={!allowed || createBusy}
                       className="min-h-11 rounded-md border border-zinc-300 bg-white px-3 text-base outline-none focus:border-pink-600 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
                     />
@@ -1280,7 +1280,7 @@ export default function QuickCampaignControlPage() {
                   )}
                   {createNeedsCap && (
                     <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-                      限量團請填總限量，或至少填一個規格限量。
+                      限時限量請填總限量，或至少填一個規格限量。
                     </div>
                   )}
 
