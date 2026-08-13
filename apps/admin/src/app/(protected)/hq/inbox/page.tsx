@@ -2325,8 +2325,8 @@ function MailRow({
     const isAidTransfer = t.transfer_no.startsWith("AT-");
     if (isOrderReturn) {
       sourceCls = "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300";
-      sourceText = "🔁 退訂單";
-      sourceTitle = "由客戶退訂單建立";
+      sourceText = "↩ 退貨回總倉";
+      sourceTitle = "由店端顧客訂單退貨回總倉建立";
     } else if (isAidTransfer) {
       sourceCls = "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-950 dark:text-fuchsia-300";
       sourceText = "🤝 互助派貨";
