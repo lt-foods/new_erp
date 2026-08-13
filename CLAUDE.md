@@ -20,6 +20,14 @@ Content-Type: application/json
 
 不要再嘗試 `psql postgresql://...pooler...`、`supabase db push` 直連、Node `pg` client 等等 — 都會卡在 network，浪費時間。
 
+### 套上正式庫的 SQL，對應 migration 當天就要合併進 main
+
+凡直接套上正式庫的 SQL（Management API 或 SQL Editor），對應的 migration 檔必須**當天完成 PR 合併** —— 只開 PR、沒合併不算完成。未合併期間 repo ≠ 正式庫，後續開發都會基於錯誤認知往下做：讀 repo 的人以為線上是舊行為，前端與配套改動也跟著停在半套。
+
+前例：`20260805000230`（現貨配單：配給客人＝待取，取貨時才扣庫存）於 8/06 套上線，但 PR #629 未完成合併 —— repo 與正式庫脫鉤一週，前端仍是舊的「直售＝立刻結案」語意、取貨頁放行的另一半沒上線，期間 7 張配單訂單卡在取貨頁按不動。
+
+自檢：對線上跑完 SQL 後，`git log origin/main -- supabase/migrations/<檔名>` 要查得到那支才算收工。
+
 ### 部署 Edge Function 走 curl + Management API，不要用 supabase CLI
 
 `supabase functions deploy`（不論加不加 `--use-api`）在這個環境的 outbound proxy 下**一定失敗**，回 `{"code":"UnknownError","message":"failed to deploy function: TransportError"}`。原因是 CLI 的 Go HTTP client 過 proxy 做 streaming multipart POST 會炸（同一支 CLI 的 GET 正常，只有帶 body 的上傳掛掉）。別再花時間試 CLI / 裝 Docker / 調 `SSL_CERT_FILE`，都沒用。
