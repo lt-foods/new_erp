@@ -12,6 +12,8 @@ import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
 import PickupAgingPanel from "@/components/PickupAgingPanel";
 import { dropPickupRecent, getPickupRecents, recordPickupRecent, type RecentCustomer } from "@/lib/pickupRecents";
+import { useMyStores, useRole } from "@/lib/role";
+import { useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 import { publicProductUrl } from "@/lib/campaignCover";
 import { parseReturnNote } from "@/lib/returnNote";
 import { fetchReprintableEvents, pickupEventLabel, type PickupEventRow } from "@/lib/pickupReceipt";
@@ -95,6 +97,36 @@ function PickupPageContent() {
   // 最後一次真的查成功的關鍵字。常用顧客快選與 ?q= 進來時刻意不寫進搜尋框，
   // 之後的重查（取貨後 reload、切換未取/已取）就沒有關鍵字可用 → 會誤報「請至少輸入 2 字」。
   const lastSearchRef = useRef("");
+
+  // 取貨只能按照店家：分店帳號（store_manager / store_staff + app_metadata.stores
+  // 非空且不含「總倉」）只顯示、只能操作「自己店」的訂單 —— 跨店按取貨會扣到
+  // 別店的庫存帳、客人也拿不到貨。rpc_record_pickup 有同款後端守衛
+  // （20260813000000_pickup_store_guard.sql），這裡藏掉入口讓櫃台不會誤按。
+  const role = useRole();
+  const myStores = useMyStores();
+  const branchLocked =
+    (role === "store_manager" || role === "store_staff") &&
+    myStores.length > 0 &&
+    !myStores.includes("總倉");
+  // stores 清單只給貨齡面板換算 store id 用（多店帳號沿用 useUserBranchStoreId
+  // 慣例取第一個 match；訂單過濾直接比店名，不等這份清單載完）
+  const [storeList, setStoreList] = useState<{ id: number; name: string }[]>([]);
+  useEffect(() => {
+    (async () => {
+      const { data } = await getSupabase().from("stores").select("id, name").order("name");
+      setStoreList((data as { id: number; name: string }[]) ?? []);
+    })();
+  }, []);
+  const branchStoreId = useUserBranchStoreId(storeList);
+
+  function isOwnStoreOrder(o: OpenOrder): boolean {
+    return o.store?.name != null && myStores.includes(o.store.name);
+  }
+  // 分店帳號看到的該會員訂單（其他店的單以摘要提示呈現，不進這份清單）
+  function visibleOrdersOf(memberId: number): OpenOrder[] {
+    const all = orders.get(memberId) ?? [];
+    return branchLocked ? all.filter(isOwnStoreOrder) : all;
+  }
 
   // 該品項未取退貨量 / 扣掉已退後仍可取量
   function returnedOf(it: OpenOrder["items"][number]): number {
@@ -340,7 +372,7 @@ function PickupPageContent() {
   // 已取貨模式：算出「這次要印哪些」。沒勾任何東西＝該會員全部已取品項。
   // 一次只印一個會員 — 列印頁的表頭與合計都取第一張的會員，跨會員合印會印錯人。
   function pickedSelection(member: Member) {
-    const memberOrders = (orders.get(member.id) ?? []).filter((o) => pickedItemsOf(o).length > 0);
+    const memberOrders = visibleOrdersOf(member.id).filter((o) => pickedItemsOf(o).length > 0);
     const anySelected = memberOrders.some((o) => orderSelState(o) !== "none");
     const groups = memberOrders
       .map((o) => ({
@@ -388,7 +420,7 @@ function PickupPageContent() {
 
   async function bulkPickAllConfirmed(member: Member) {
     const memberId = member.id;
-    const allMemberOrders = (orders.get(memberId) ?? []).filter((o) => isPickable(o));
+    const allMemberOrders = visibleOrdersOf(memberId).filter((o) => isPickable(o));
     // 若有勾選 → 只取勾選的（且可取貨）；無勾選 → 全取
     const memberSelected = allMemberOrders.filter((o) => selected.has(o.id));
     const memberOrders = memberSelected.length > 0 ? memberSelected : allMemberOrders;
@@ -612,9 +644,14 @@ function PickupPageContent() {
             ? "輸入 姓名 / 電話末 N 碼 / 會員編號 → 找出本人未取訂單 → 確認取貨。"
             : "輸入 姓名 / 電話末 N 碼 / 會員編號 → 找出本人已取訂單 → 勾選後合併補印收據。"}
         </p>
+        {branchLocked && (
+          <p className="mt-1 text-xs font-medium text-amber-700 dark:text-amber-400">
+            🔒 分店帳號：僅顯示、僅能操作 {myStores.join("、")} 的訂單，其他分店的訂單請由該店取貨。
+          </p>
+        )}
       </header>
 
-      <PickupAgingPanel />
+      <PickupAgingPanel storeId={branchLocked ? branchStoreId : null} />
 
       {/* 未取貨 ↔ 已取貨：同一個搜尋框，切換時直接重查 */}
       <div className="flex gap-1 rounded-md border border-zinc-200 bg-zinc-50 p-1 text-sm dark:border-zinc-800 dark:bg-zinc-900 sm:w-fit">
@@ -716,7 +753,12 @@ function PickupPageContent() {
         ) : (
           <div className="space-y-3">
             {members.map((m) => {
-              const memberOrders = orders.get(m.id) ?? [];
+              const memberOrders = visibleOrdersOf(m.id);
+              // 分店帳號：其他店的單不列出、不可操作，只給一行摘要讓櫃台答得出
+              // 「客人在別店還有幾張」（取貨/補印都要由該店操作）
+              const hiddenOrders = branchLocked
+                ? (orders.get(m.id) ?? []).filter((o) => !isOwnStoreOrder(o))
+                : [];
               return (
                 <div key={m.id} className="rounded-md border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
                   <div className="mb-2 flex flex-wrap items-baseline gap-2">
@@ -771,7 +813,7 @@ function PickupPageContent() {
                   </div>
                   {mode === "picked" ? (
                     memberOrders.length === 0 ? (
-                      <p className="text-xs text-zinc-500">無已取訂單。</p>
+                      <p className="text-xs text-zinc-500">{branchLocked ? "本店無已取訂單。" : "無已取訂單。"}</p>
                     ) : (
                       <ul className="space-y-2">
                         {memberOrders.map((o) => {
@@ -866,7 +908,7 @@ function PickupPageContent() {
                       </ul>
                     )
                   ) : memberOrders.length === 0 ? (
-                    <p className="text-xs text-zinc-500">無未取訂單。</p>
+                    <p className="text-xs text-zinc-500">{branchLocked ? "本店無未取訂單。" : "無未取訂單。"}</p>
                   ) : (
                     <ul className="space-y-2">
                       {memberOrders.map((o) => {
@@ -1029,6 +1071,20 @@ function PickupPageContent() {
                       })}
                     </ul>
                   )}
+                  {hiddenOrders.length > 0 && (() => {
+                    const byStore = new Map<string, number>();
+                    for (const o of hiddenOrders) {
+                      const n = o.store?.name ?? "未設定取貨店";
+                      byStore.set(n, (byStore.get(n) ?? 0) + 1);
+                    }
+                    const summary = Array.from(byStore, ([n, c]) => `${n} ×${c}`).join("、");
+                    return (
+                      <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+                        🔒 另有 {hiddenOrders.length} 張{mode === "open" ? "未取" : "已取"}訂單在其他分店（{summary}）
+                        — {mode === "open" ? "請顧客至該店取貨" : "補印收據請由該店操作"}。
+                      </p>
+                    );
+                  })()}
                 </div>
               );
             })}
@@ -1156,7 +1212,7 @@ function PickupPageContent() {
         maxWidth="max-w-2xl"
       >
         {bulkConfirm && (() => {
-          const allMemberOrders = (orders.get(bulkConfirm.id) ?? []).filter((o) => isPickable(o));
+          const allMemberOrders = visibleOrdersOf(bulkConfirm.id).filter((o) => isPickable(o));
           const selectedHere = allMemberOrders.filter((o) => selected.has(o.id));
           const memberOrders = selectedHere.length > 0 ? selectedHere : allMemberOrders;
           const totalItems = memberOrders.reduce((s, o) => s + pickableItems(o).length, 0);

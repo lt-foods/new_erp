@@ -386,6 +386,12 @@ const RULES: Rule[] = [
       `無法復原：本會員目前的${m[1]}只有 ${fmt(m[2])}，少於當初併入的 ${fmt(m[3])}，扣回去會變負數。`
       + `請先確認這筆${m[1]}的去向並手動調整後再復原。`,
   },
+  // ===== 店家守衛（rpc_record_pickup / rpc_bind_store_line_follower） =====
+  {
+    // 訊息本體已是中文（如「此訂單的取貨店是「三峽店」…」），只把機器前綴拿掉
+    pattern: /^wrong_store:\s*(.+)$/i,
+    render: (m) => m[1],
+  },
   // ===== 撿貨單號碼衝突(同秒多筆提交時的 race) =====
   {
     pattern: /duplicate key value violates unique constraint "picking_waves_tenant_id_wave_code_key"/i,
