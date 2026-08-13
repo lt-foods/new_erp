@@ -62,7 +62,7 @@ type PriceRow = {
 };
 
 const MEMBER_APP_URL = (process.env.NEXT_PUBLIC_MEMBER_APP_URL ?? "https://new-erp-admin.vercel.app").replace(/\/$/, "");
-const QUICK_CREATE_ENABLED = false;
+const QUICK_CREATE_ENABLED = true;
 
 const STATUS_LABEL: Record<QuickStatus, string> = {
   draft: "草稿",
@@ -201,12 +201,13 @@ export default function QuickCampaignControlPage() {
   const [endAtDraft, setEndAtDraft] = useState<Record<number, string>>({});
   const [deltaDraft, setDeltaDraft] = useState<Record<number, string>>({});
 
-  const [createOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
   const [productQuery, setProductQuery] = useState("");
   const [productRows, setProductRows] = useState<ProductRow[]>([]);
   const [productSearching, setProductSearching] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(null);
   const [skus, setSkus] = useState<SkuRow[]>([]);
+  const [selectedSkuIds, setSelectedSkuIds] = useState<Set<number>>(new Set());
   const [skuLoading, setSkuLoading] = useState(false);
   const [priceMap, setPriceMap] = useState<Record<number, number>>({});
   const [createType, setCreateType] = useState<CreateCloseType>("fast");
@@ -227,14 +228,23 @@ export default function QuickCampaignControlPage() {
     );
   }, [query, rows]);
 
-  const missingPrice = skus.some((sku) => priceMap[sku.id] == null);
+  const selectedSkus = useMemo(
+    () => skus.filter((sku) => selectedSkuIds.has(sku.id)),
+    [selectedSkuIds, skus],
+  );
+  const missingPrice = selectedSkus.some((sku) => priceMap[sku.id] == null);
   const totalCap = Number(totalCapDraft);
   const itemCaps = useMemo(
     () =>
       Object.entries(itemCapDraft)
         .map(([skuId, cap]) => ({ sku_id: Number(skuId), cap_qty: Number(cap) }))
-        .filter((item) => Number.isFinite(item.sku_id) && Number.isFinite(item.cap_qty) && item.cap_qty > 0),
-    [itemCapDraft],
+        .filter((item) =>
+          selectedSkuIds.has(item.sku_id)
+          && Number.isFinite(item.sku_id)
+          && Number.isFinite(item.cap_qty)
+          && item.cap_qty > 0,
+        ),
+    [itemCapDraft, selectedSkuIds],
   );
   const createNeedsCap =
     createType === "limited" && !(Number.isFinite(totalCap) && totalCap > 0) && itemCaps.length === 0;
@@ -436,6 +446,7 @@ export default function QuickCampaignControlPage() {
       if (skuErr) throw skuErr;
       const nextSkus = (skuData ?? []) as unknown as SkuRow[];
       setSkus(nextSkus);
+      setSelectedSkuIds(new Set(nextSkus.map((sku) => sku.id)));
 
       if (nextSkus.length === 0) {
         setPriceMap({});
@@ -490,7 +501,7 @@ export default function QuickCampaignControlPage() {
       setError("收單時間必須在未來");
       return;
     }
-    if (skus.length === 0) { setError("這個商品沒有 active 規格"); return; }
+    if (selectedSkus.length === 0) { setError("請至少勾選一個規格"); return; }
     if (missingPrice) { setError("有規格缺少現行零售價，請先補售價"); return; }
     if (createNeedsCap) { setError("限量團請填總限量，或至少填一個規格限量"); return; }
 
@@ -498,37 +509,87 @@ export default function QuickCampaignControlPage() {
     setError(null);
     setNotice(null);
     try {
-      const { data, error: rpcErr } = await getSupabase().rpc("rpc_quick_create_campaign_from_product", {
-        p_product_id: selectedProduct.id,
-        p_name: createName.trim(),
-        p_close_type: createType,
-        p_end_at: endIso,
-        p_description: selectedProduct.description ?? null,
-        p_pickup_deadline: pickupDeadline || null,
-        p_total_cap_qty: Number.isFinite(totalCap) && totalCap > 0 ? totalCap : null,
-        p_item_caps: itemCaps,
-      });
-      if (rpcErr) throw rpcErr;
+      const sb = getSupabase();
+      const { data: campaignNo, error: noErr } = await sb.rpc("rpc_next_campaign_no");
+      if (noErr) throw noErr;
 
-      const created = Array.isArray(data) ? data[0] : data;
-      const campaignId = Number(created?.campaign_id);
+      const nextCampaignNo = String(campaignNo ?? "").trim();
+      if (!nextCampaignNo) throw new Error("無法產生團號，請稍後再試");
+      const campaignName = createName.trim();
+      const startIso = new Date().toISOString();
+      const campaignTotalCap = Number.isFinite(totalCap) && totalCap > 0 ? totalCap : null;
+      const pickupDays = pickupDaysForStorage(selectedProduct.storage_type);
+      const { data: campaignIdData, error: campaignErr } = await sb.rpc("rpc_upsert_campaign", {
+        p_id: null,
+        p_campaign_no: nextCampaignNo,
+        p_name: campaignName,
+        p_description: selectedProduct.description ?? null,
+        p_cover_image_url: null,
+        p_status: "draft",
+        p_close_type: createType,
+        p_start_at: startIso,
+        p_end_at: endIso,
+        p_pickup_deadline: pickupDeadline || null,
+        p_pickup_days: pickupDays,
+        p_total_cap_qty: campaignTotalCap,
+        p_notes: "mobile quick create",
+        p_is_for_shop: false,
+      });
+      if (campaignErr) throw campaignErr;
+
+      const campaignId = Number(campaignIdData);
       if (!Number.isFinite(campaignId)) throw new Error("建立成功但沒有拿到團 ID");
+
+      const capBySku = new Map(itemCaps.map((item) => [item.sku_id, item.cap_qty]));
+      for (const [index, sku] of selectedSkus.entries()) {
+        const unitPrice = priceMap[sku.id];
+        if (unitPrice == null) throw new Error(`${skuLabel(sku)} 缺現行零售價`);
+        const { error: itemErr } = await sb.rpc("rpc_upsert_campaign_item", {
+          p_id: null,
+          p_campaign_id: campaignId,
+          p_sku_id: sku.id,
+          p_unit_price: unitPrice,
+          p_cap_qty: capBySku.get(sku.id) ?? null,
+          p_sort_order: index + 1,
+          p_notes: null,
+        });
+        if (itemErr) throw itemErr;
+      }
+
+      const { error: publishErr } = await sb.rpc("rpc_upsert_campaign", {
+        p_id: campaignId,
+        p_campaign_no: nextCampaignNo,
+        p_name: campaignName,
+        p_description: selectedProduct.description ?? null,
+        p_cover_image_url: null,
+        p_status: "open",
+        p_close_type: createType,
+        p_start_at: startIso,
+        p_end_at: endIso,
+        p_pickup_deadline: pickupDeadline || null,
+        p_pickup_days: pickupDays,
+        p_total_cap_qty: campaignTotalCap,
+        p_notes: "mobile quick create",
+        p_is_for_shop: true,
+      });
+      if (publishErr) throw publishErr;
 
       const url = `${MEMBER_APP_URL}/shop/c/${campaignId}`;
       setCreatedCampaignId(campaignId);
       setCreatedUrl(url);
-      setNotice(`已建立「${createName.trim()}」，客人網址已產生`);
+      setNotice(`已建立「${campaignName}」，客人網址已產生`);
       try {
         await navigator.clipboard.writeText(url);
-        setNotice(`已建立「${createName.trim()}」，客人網址已複製`);
+        setNotice(`已建立「${campaignName}」，客人網址已複製`);
       } catch {
-        setNotice(`已建立「${createName.trim()}」，請長按網址複製`);
+        setNotice(`已建立「${campaignName}」，請長按網址複製`);
       }
 
       setSelectedProduct(null);
       setProductQuery("");
       setProductRows([]);
       setSkus([]);
+      setSelectedSkuIds(new Set());
       setPriceMap({});
       setCreateName("");
       setTotalCapDraft("");
@@ -547,7 +608,7 @@ export default function QuickCampaignControlPage() {
         <header className="flex flex-col gap-3 rounded-md border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-xs font-medium text-zinc-500">手機團控</p>
+              <p className="text-xs font-medium text-zinc-500">手機開團 / 團控</p>
               <h1 className="text-xl font-semibold text-zinc-950 dark:text-zinc-50">
                 美食列車 / 限時 / 限量
               </h1>
@@ -559,7 +620,19 @@ export default function QuickCampaignControlPage() {
               回後台
             </Link>
           </div>
-          <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+          <div className="grid gap-2 sm:grid-cols-[auto_1fr_auto]">
+            <SpinButton
+              type="button"
+              disabled={!allowed || !QUICK_CREATE_ENABLED}
+              onClick={() => {
+                setCreateOpen((v) => !v);
+                setError(null);
+                setNotice(null);
+              }}
+              className="min-h-11 rounded-md bg-pink-600 px-4 text-sm font-semibold text-white disabled:opacity-50"
+            >
+              {createOpen ? "收起開新團" : "+ 開新團"}
+            </SpinButton>
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -582,7 +655,7 @@ export default function QuickCampaignControlPage() {
             <div className="mb-4 flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-lg font-semibold text-zinc-950 dark:text-zinc-50">開新團</h2>
-                <p className="text-sm text-zinc-500">選一個商品，系統會帶入所有 active 規格。</p>
+                <p className="text-sm text-zinc-500">選商品、勾規格、填正取上限，建立後直接複製客人網址。</p>
               </div>
               <span className="rounded-full bg-pink-50 px-3 py-1 text-xs font-medium text-pink-700 ring-1 ring-pink-200 dark:bg-pink-950 dark:text-pink-200 dark:ring-pink-900">
                 手機用
@@ -626,6 +699,7 @@ export default function QuickCampaignControlPage() {
                     setProductQuery(e.target.value);
                     setSelectedProduct(null);
                     setSkus([]);
+                    setSelectedSkuIds(new Set());
                     setPriceMap({});
                     setProductRows([]);
                     setProductSearching(false);
@@ -763,7 +837,22 @@ export default function QuickCampaignControlPage() {
                   </label>
 
                   <div className="grid gap-2">
-                    <div className="text-sm font-medium text-zinc-700 dark:text-zinc-200">規格限量</div>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-sm font-medium text-zinc-700 dark:text-zinc-200">規格正取上限</div>
+                      {skus.length > 0 && (
+                        <SpinButton
+                          type="button"
+                          disabled={!allowed || createBusy}
+                          onClick={() => {
+                            if (selectedSkus.length === skus.length) setSelectedSkuIds(new Set());
+                            else setSelectedSkuIds(new Set(skus.map((sku) => sku.id)));
+                          }}
+                          className="rounded-md border border-zinc-300 px-2 py-1 text-xs text-zinc-600 dark:border-zinc-700 dark:text-zinc-300"
+                        >
+                          {selectedSkus.length === skus.length ? "全不選" : "全選"}
+                        </SpinButton>
+                      )}
+                    </div>
                     {skuLoading ? (
                       <div className="rounded-md border border-zinc-200 p-3 text-sm text-zinc-500 dark:border-zinc-800">
                         讀取規格中...
@@ -775,7 +864,22 @@ export default function QuickCampaignControlPage() {
                     ) : (
                       <div className="divide-y divide-zinc-200 overflow-hidden rounded-md border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
                         {skus.map((sku) => (
-                          <div key={sku.id} className="grid grid-cols-[1fr_6rem] items-center gap-2 p-3">
+                          <div key={sku.id} className="grid grid-cols-[auto_1fr_6rem] items-center gap-2 p-3">
+                            <input
+                              type="checkbox"
+                              checked={selectedSkuIds.has(sku.id)}
+                              onChange={(e) => {
+                                setSelectedSkuIds((cur) => {
+                                  const next = new Set(cur);
+                                  if (e.target.checked) next.add(sku.id);
+                                  else next.delete(sku.id);
+                                  return next;
+                                });
+                              }}
+                              disabled={!allowed || createBusy}
+                              className="h-5 w-5"
+                              aria-label={`選取 ${skuLabel(sku)}`}
+                            />
                             <div className="min-w-0">
                               <div className="break-words text-sm font-medium text-zinc-950 dark:text-zinc-50">
                                 {skuLabel(sku)}
@@ -791,7 +895,7 @@ export default function QuickCampaignControlPage() {
                               value={itemCapDraft[sku.id] ?? ""}
                               onChange={(e) => setItemCapDraft((cur) => ({ ...cur, [sku.id]: e.target.value }))}
                               placeholder="不填"
-                              disabled={!allowed || createBusy}
+                              disabled={!allowed || createBusy || !selectedSkuIds.has(sku.id)}
                               className="min-h-10 rounded-md border border-zinc-300 bg-white px-2 text-base outline-none focus:border-pink-600 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
                             />
                           </div>
@@ -815,7 +919,7 @@ export default function QuickCampaignControlPage() {
                     type="button"
                     onClick={createCampaign}
                     loading={createBusy}
-                    disabled={!allowed || skuLoading || missingPrice || createNeedsCap || !selectedProduct}
+                    disabled={!allowed || skuLoading || missingPrice || createNeedsCap || !selectedProduct || selectedSkus.length === 0}
                     className="min-h-12 rounded-md bg-pink-600 text-base font-semibold text-white disabled:opacity-50"
                   >
                     建立開團並產生網址
