@@ -274,6 +274,9 @@ export function MemberOrdersAppView({
   );
 }
 
+// 品項的「還沒取」集合 = rpc_record_pickup 的 v_active_remaining 同一套
+const ACTIVE_ITEM_STATUSES = ["pending", "reserved", "ready"];
+
 // = apps/member/src/components/OrderCard.tsx 的卡片內容（後台配色 + 可點擊）
 function AppOrderCard({ order, onClick }: { order: AppOrderRow; onClick: () => void }) {
   const phase = orderPhase(order);
@@ -283,6 +286,21 @@ function AppOrderCard({ order, onClick }: { order: AppOrderRow; onClick: () => v
     (s, i) => (["cancelled", "expired"].includes(i.status) ? s : s + Number(i.qty ?? 0)),
     0,
   );
+  // = 會員端 OrderCard：部分取貨時逐行標「已取貨 / 未取貨」，客服看到的跟
+  // 團友手機上的一致（2026-08-13 中和店客訴：分不出哪行取了）
+  const showPickChips =
+    (order.items ?? []).some((i) => i.status === "picked_up") &&
+    (order.items ?? []).some((i) => ACTIVE_ITEM_STATUSES.includes(i.status));
+  const pickChip = (status: string) =>
+    !showPickChips ? null : status === "picked_up" ? (
+      <span className="ml-1.5 inline-block rounded bg-green-100 px-1 py-0.5 text-[10px] font-medium text-green-800 dark:bg-green-950 dark:text-green-300">
+        已取貨
+      </span>
+    ) : ACTIVE_ITEM_STATUSES.includes(status) ? (
+      <span className="ml-1.5 inline-block rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+        未取貨
+      </span>
+    ) : null;
   const outstanding = Number(order.outstanding_amount ?? NaN);
   const partlyPaid =
     Number.isFinite(outstanding) && outstanding > 0 && outstanding < Number(order.payable_amount ?? 0);
@@ -329,6 +347,7 @@ function AppOrderCard({ order, onClick }: { order: AppOrderRow; onClick: () => v
                     斷貨
                   </span>
                 )}
+                {pickChip(it.status)}
               </div>
               <div className="text-xs text-zinc-500">
                 {fmtAmount(it.unit_price)} × {it.qty}
