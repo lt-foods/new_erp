@@ -229,13 +229,12 @@ export function OrderTransferModal({
 
   const chosenCount = items.filter((it) => picks[it.id]?.checked).length;
   const allChosen = items.length > 0 && chosenCount === items.length;
-  // 「這裡選不到總倉」之後要給的出口，依訂單當下狀態而異——絕不能叫店員去按畫面上沒有的鈕：
-  // 貨還沒到店時「↩ 退貨回總倉」還沒出現，互助單則是走「↩ 退單（已收貨）」、不經總倉
+  // 「這裡選不到總倉」之後才指路，而且只在那顆鈕確定在畫面上時才指。
+  // canReturnToHq=false 可能是「貨還沒到店」、也可能是互助單（走「↩ 退單（已收貨）」、不經總倉），
+  // 光憑這個 prop 分不出是哪一種，兩者該走的出口又不同——寧可不講，也不要講一句只對一半的話
   const hqExitHint = canReturnToHq
     ? "貨要退回總倉請關掉這個視窗，改按「↩ 退貨回總倉」。"
-    : sameStoreOnly
-      ? "貨要退回總倉請等貨到店後再操作。"
-      : null;
+    : null;
 
   return (
     <Modal open={open} onClose={onClose} title={`轉給別人 ${orderNo}`} maxWidth="max-w-lg">
