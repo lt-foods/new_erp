@@ -1455,7 +1455,7 @@ function HqInboxContent() {
             }
           });
           if (fails.length === 0) {
-            alert(`✅ 取消 ${ok} 筆退訂單`);
+            alert(`✅ 取消 ${ok} 筆退貨回總倉單`);
           } else {
             const lines = fails.slice(0, 5).map((f) => `  #${f.id}: ${f.reason}`);
             alert(
@@ -2110,7 +2110,7 @@ function HqInboxContent() {
                           </>
                         )}
                         {allPending && !allPendingReturn && !allPendingNormal && (
-                          <span className="self-center text-xs text-zinc-500">已混合退訂單與一般轉貨、無法批次</span>
+                          <span className="self-center text-xs text-zinc-500">已混合退貨回總倉與一般轉貨、無法批次</span>
                         )}
                         {allInTransit && (
                           <RowAction variant="primary" onClick={() => batchAction("到倉")} disabled={batchBusy}>到倉 ({selected.size})</RowAction>
@@ -2639,9 +2639,9 @@ function MailRow({
         </div>
 
         {/* source chip + 未讀 dot (sm+) */}
-        <div className="hidden sm:block w-28 shrink-0 pt-0.5">
+        <div className="hidden sm:block min-w-28 shrink-0 pt-0.5">
           <span
-            className={`inline-flex w-fit items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium ${sourceCls}`}
+            className={`inline-flex w-fit items-center gap-1 whitespace-nowrap rounded px-2 py-0.5 text-[10px] font-medium ${sourceCls}`}
             title={sourceTitle}
           >
             {isPending && <span className="h-1.5 w-1.5 rounded-full bg-current opacity-80" aria-hidden />}

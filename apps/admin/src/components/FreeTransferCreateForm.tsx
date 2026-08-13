@@ -38,7 +38,7 @@ export default function FreeTransferCreateForm({
         .eq("is_active", true)
         .order("type")
         .order("code");
-      // 自由轉貨僅店↔店；總倉退貨走「+ 退訂單」(rpc_create_order_return)
+      // 自由轉貨僅店↔店；總倉退貨走「↩ 退貨回總倉」(rpc_create_order_return)
       const filtered = ((data ?? []) as Location[]).filter((l) => l.type !== "central_warehouse");
       setLocations(filtered);
     })();
