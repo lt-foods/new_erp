@@ -205,6 +205,7 @@ export default function QuickCampaignControlPage() {
   const [productQuery, setProductQuery] = useState("");
   const [productRows, setProductRows] = useState<ProductRow[]>([]);
   const [productSearching, setProductSearching] = useState(false);
+  const [productSearched, setProductSearched] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<ProductRow | null>(null);
   const [skus, setSkus] = useState<SkuRow[]>([]);
   const [selectedSkuIds, setSelectedSkuIds] = useState<Set<number>>(new Set());
@@ -326,7 +327,6 @@ export default function QuickCampaignControlPage() {
           .from("products")
           .select("id, product_code, name, short_name, description, storage_type, images")
           .eq("status", "active")
-          .eq("is_for_shop", true)
           .or(`product_code.ilike.%${term}%,name.ilike.%${term}%,short_name.ilike.%${term}%`)
           .order("updated_at", { ascending: false })
           .limit(20);
@@ -335,7 +335,10 @@ export default function QuickCampaignControlPage() {
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : String(e));
       } finally {
-        if (alive) setProductSearching(false);
+        if (alive) {
+          setProductSearching(false);
+          setProductSearched(true);
+        }
       }
     }, 250);
 
@@ -425,6 +428,7 @@ export default function QuickCampaignControlPage() {
     setSelectedProduct(product);
     setProductQuery(product.name);
     setProductRows([]);
+    setProductSearched(false);
     setCreateName(product.name);
     const endAt = defaultCreateEndAt();
     setCreateEndAt(endAt);
@@ -588,6 +592,7 @@ export default function QuickCampaignControlPage() {
       setSelectedProduct(null);
       setProductQuery("");
       setProductRows([]);
+      setProductSearched(false);
       setSkus([]);
       setSelectedSkuIds(new Set());
       setPriceMap({});
@@ -703,8 +708,9 @@ export default function QuickCampaignControlPage() {
                     setPriceMap({});
                     setProductRows([]);
                     setProductSearching(false);
+                    setProductSearched(false);
                   }}
-                  placeholder="輸入商品名稱或商品代碼"
+                  placeholder="輸入商品名稱、商品代碼或簡稱"
                   disabled={!allowed || createBusy}
                   className="min-h-12 rounded-md border border-zinc-300 bg-white px-3 text-base outline-none focus:border-pink-600 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
                 />
@@ -713,6 +719,12 @@ export default function QuickCampaignControlPage() {
               {productSearching && (
                 <div className="rounded-md border border-zinc-200 p-3 text-sm text-zinc-500 dark:border-zinc-800">
                   搜尋商品中...
+                </div>
+              )}
+
+              {!selectedProduct && productQuery.trim() && productSearched && productRows.length === 0 && !productSearching && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                  找不到商品。請換商品名稱、商品代碼或簡稱搜尋；如果這是新商品，需先在後台商品頁建立商品與售價。
                 </div>
               )}
 
@@ -746,8 +758,17 @@ export default function QuickCampaignControlPage() {
                 </div>
               )}
 
+              {!selectedProduct && !productSearching && productRows.length === 0 && (
+                <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950">
+                  先搜尋商品，然後點選一個商品，才會出現規格與「建立開團」按鈕。
+                </div>
+              )}
+
               {selectedProduct && (
                 <div className="grid gap-3 border-y border-zinc-200 py-3 dark:border-zinc-800">
+                  <div className="text-sm font-semibold text-pink-700 dark:text-pink-300">
+                    已選商品，往下填資料後即可建立開團
+                  </div>
                   <div className="flex items-center gap-3">
                     {productImageUrl(selectedProduct.images) ? (
                       // eslint-disable-next-line @next/next/no-img-element
