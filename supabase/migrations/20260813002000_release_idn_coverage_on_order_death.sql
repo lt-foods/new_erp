@@ -62,6 +62,16 @@ COMMENT ON COLUMN inventory_deduction_note_items.released_qty IS
   '綁定訂單取消/逾期時已釋放的覆蓋量（≤ qty）。'
   '_release_idn_coverage_for_orders 寫入；用來讓多次死亡事件冪等。';
 
+-- 防禦性約束：released_qty 永遠介於 0 與 qty 之間（程式已保證，schema 再鎖一層）
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_idn_items_released_qty') THEN
+    ALTER TABLE inventory_deduction_note_items
+      ADD CONSTRAINT chk_idn_items_released_qty
+      CHECK (released_qty >= 0 AND released_qty <= qty);
+  END IF;
+END $$;
+
 -- trigger 由 order_id 反查減抵明細用
 CREATE INDEX IF NOT EXISTS idx_idn_items_order
   ON inventory_deduction_note_items (order_id);
@@ -75,7 +85,7 @@ CREATE OR REPLACE FUNCTION public._release_idn_coverage_for_orders(
   p_operator  UUID,
   p_at        TIMESTAMPTZ DEFAULT NOW()
 ) RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 DECLARE
   r     inventory_deduction_notes%ROWTYPE;
   v_rel NUMERIC;
@@ -149,7 +159,7 @@ REVOKE ALL ON FUNCTION public._release_idn_coverage_for_orders(BIGINT[], UUID, T
 -- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.trg_release_idn_coverage()
 RETURNS trigger
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
 BEGIN
   PERFORM public._release_idn_coverage_for_orders(
     ARRAY[NEW.id],
@@ -176,7 +186,7 @@ CREATE OR REPLACE FUNCTION public.rpc_list_inventory_deduction_notes(
   p_store_id BIGINT DEFAULT NULL,
   p_limit    INT DEFAULT 50
 ) RETURNS jsonb
-LANGUAGE sql STABLE SECURITY DEFINER AS $$
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
   SELECT COALESCE(jsonb_agg(jsonb_build_object(
            'id',            n.id,
            'note_no',       n.note_no,
