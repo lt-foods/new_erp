@@ -357,9 +357,9 @@ export default function InternalTransfersPage() {
                   <td className="px-3 py-2 font-mono text-xs">
                     {t.transfer_no}
                     {isOrderReturn(t.notes) ? (
-                      <span className="ml-2 inline-block rounded bg-rose-100 px-1 py-0.5 text-[10px] font-medium text-rose-700 dark:bg-rose-950 dark:text-rose-300" title="由客戶退訂單建立">🔁 退訂單</span>
+                      <span className="ml-2 inline-block rounded bg-rose-100 px-1 py-0.5 text-[10px] font-medium text-rose-700 dark:bg-rose-950 dark:text-rose-300" title="由店端顧客訂單退貨回總倉建立">↩ 退貨回總倉</span>
                     ) : isReturn ? (
-                      <span className="ml-2 inline-block rounded bg-orange-100 px-1 py-0.5 text-[10px] text-orange-700 dark:bg-orange-950 dark:text-orange-300">↩ 退貨</span>
+                      <span className="ml-2 inline-block rounded bg-orange-100 px-1 py-0.5 text-[10px] text-orange-700 dark:bg-orange-950 dark:text-orange-300" title="店端送回總倉，非由顧客訂單建立">↩ 退貨回總倉</span>
                     ) : null}
                   </td>
                   <td className="px-3 py-2 text-xs text-zinc-500">{new Date(t.created_at).toLocaleString("zh-TW")}</td>
