@@ -62,6 +62,7 @@ type PriceRow = {
 };
 
 const MEMBER_APP_URL = (process.env.NEXT_PUBLIC_MEMBER_APP_URL ?? "https://new-erp-admin.vercel.app").replace(/\/$/, "");
+const QUICK_CREATE_ENABLED = false;
 
 const STATUS_LABEL: Record<QuickStatus, string> = {
   draft: "草稿",
@@ -541,15 +542,16 @@ export default function QuickCampaignControlPage() {
           <div className="grid gap-2 sm:grid-cols-[auto_1fr_auto]">
             <SpinButton
               type="button"
-              disabled={!allowed}
+              disabled={!allowed || !QUICK_CREATE_ENABLED}
               onClick={() => {
                 setCreateOpen((v) => !v);
                 setError(null);
                 setNotice(null);
               }}
+              title={QUICK_CREATE_ENABLED ? undefined : "正取/候補流程對齊中，暫停手機開新團"}
               className="min-h-11 rounded-md bg-pink-600 px-4 text-sm font-semibold text-white disabled:opacity-50"
             >
-              {createOpen ? "收起開新團" : "+ 開新團"}
+              {QUICK_CREATE_ENABLED ? (createOpen ? "收起開新團" : "+ 開新團") : "開新團開發中"}
             </SpinButton>
             <input
               value={query}
@@ -568,7 +570,7 @@ export default function QuickCampaignControlPage() {
           </div>
         </header>
 
-        {createOpen && (
+        {QUICK_CREATE_ENABLED && createOpen && (
           <section className="rounded-md border border-pink-200 bg-white p-4 shadow-sm dark:border-pink-900 dark:bg-zinc-900">
             <div className="mb-4 flex items-center justify-between gap-3">
               <div>
