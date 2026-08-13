@@ -272,6 +272,13 @@ export function OrderTransferModal({
           </select>
         </label>
 
+        {/* 接收店只從 stores 撈，總倉是 locations 的 central_warehouse、根本不在這個清單裡。
+            店員想「退回總倉」時會挑到同名的分店，結果把客人的單轉進該店內部帳號、客人的訂單就消失了 */}
+        <p className="text-xs text-amber-700 dark:text-amber-400">
+          這裡只能轉給<span className="font-medium">分店</span>：換一位客人拿，或轉給其他店。
+          貨要<span className="font-medium">退回總倉</span>請關掉這個視窗，改按「↩ 退貨回總倉」。
+        </p>
+
         {toStore !== "" && (
           <div className="flex flex-col gap-1">
             <span className="text-zinc-500">接收人</span>
