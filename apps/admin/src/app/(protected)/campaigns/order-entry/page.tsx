@@ -129,8 +129,8 @@ function PageContent() {
   const [offsetStoreId, setOffsetStoreId] = useState<number | null>(null);
   const [offsetReason, setOffsetReason] = useState("");
   const [offsetItems, setOffsetItems] = useState<ItemRow[]>([emptyItem()]);
-  // 抵減可指定客人 =「現貨直售」：建客人訂單＋抵減單＋當下用店內現貨交貨結案。
-  // 不選客人 = 純抵減（只讓採購少買）。
+  // 抵減可指定客人 =「現貨配單」：把店內現貨配給客人（狀態待取），
+  // 客人到店走正常取貨流程、取貨時才扣庫存收款。不選客人 = 純抵減（只讓採購少買）。
   const [offsetCustomer, setOffsetCustomer] = useState<CustomerEntry>(newEntry());
   // 店倉帳上可用現貨（sku_id → on_hand − reserved），抵減量不能超過
   const [offsetStock, setOffsetStock] = useState<Map<number, number>>(new Map());
@@ -425,9 +425,9 @@ function PageContent() {
     if (
       directSale &&
       !confirm(
-        `現貨直售給「${offsetCustomer.display_name}」共 ${items.reduce((s, i) => s + i.qty, 0)} 件？\n\n` +
-          `會建立客人訂單、開抵減單（採購不多買），並立刻用店內現貨交貨結案\n` +
-          `（扣店庫存，與到店取貨同一套帳）。開錯只能走退貨流程沖回。`,
+        `把店內現貨配給「${offsetCustomer.display_name}」共 ${items.reduce((s, i) => s + i.qty, 0)} 件？\n\n` +
+          `客人的訂單會變成「待取」，請客人到店走正常取貨流程 —\n` +
+          `取貨時才會扣店庫存、收款。若客人已下過單，會直接配到既有訂單、不會重複加。`,
       )
     )
       return;
@@ -451,9 +451,12 @@ function PageContent() {
           p_operator: operator,
         });
         if (err) { setError(err.message); return; }
-        const r = (data ?? {}) as { order_no?: string; offset_order_no?: string; delivered_qty?: number };
+        const r = (data ?? {}) as { order_no?: string; note_no?: string; assigned_qty?: number; reused_qty?: number; added_qty?: number };
+        const reused = Number(r.reused_qty) || 0;
         setToast(
-          `✅ 現貨直售完成：訂單 ${r.order_no ?? ""} 已交貨 ${r.delivered_qty ?? ""} 件（抵減單 ${r.offset_order_no ?? ""}）`,
+          `✅ 現貨配單完成：訂單 ${r.order_no ?? ""} 共 ${r.assigned_qty ?? ""} 件待取` +
+            (reused > 0 ? `（其中 ${reused} 件配到客人既有訂單）` : "") +
+            `，減抵單 ${r.note_no ?? ""}。客人到店取貨時才扣庫存。`,
         );
         setOffsetCustomer(newEntry());
       } else {
@@ -598,7 +601,7 @@ function PageContent() {
         </p>
       ) : (
         <p className="text-xs text-red-700 dark:text-red-400">
-          店內現貨：<b>選客人</b> = 現貨直售（建訂單＋抵減＋當下交貨結案，扣店庫存）；
+          店內現貨：<b>選客人</b> = 現貨配單（配給客人、待取，取貨時才扣庫存）；
           <b>不選客人</b> = 純抵減（只讓採購少買，訂單編號 <span className="font-mono">XXX-OFF0001</span>）。
           兩者都需要店內帳上有現貨 — 沒有請先到庫存總覽新增庫存。
         </p>
@@ -706,13 +709,13 @@ function PageContent() {
           offsetMode
           submitLabel={
             offsetCustomer.member_id
-              ? "送出現貨直售（Ctrl+S）"
+              ? "送出現貨配單（Ctrl+S）"
               : "送出抵減單（Ctrl+S）"
           }
           headerExtra={
             <div className="mb-3">
               <span className="mb-1 block text-xs text-zinc-500">
-                客人（選了 = <b>現貨直售</b>：建訂單＋抵減＋當下交貨結案；留空 = 純抵減，只讓採購少買）
+                客人（選了 = <b>現貨配單</b>：把店內現貨配給客人、狀態待取；留空 = 純抵減，只讓採購少買）
               </span>
               <div className="flex items-center gap-2">
                 <CustomerSearch
@@ -737,7 +740,7 @@ function PageContent() {
               </div>
               {offsetCustomer.member_id != null && (
                 <p className="mt-1 text-[11px] text-violet-700 dark:text-violet-400">
-                  送出後：客人訂單成立並「立刻交貨結案」（扣店內庫存、與到店取貨同一套帳），採購不會為這幾件多買。
+                  送出後：客人訂單成立、狀態「待取」，客人到店走正常取貨流程（取貨時才扣庫存、收款）。已下過單的客人會直接配到既有訂單。
                 </p>
               )}
             </div>
