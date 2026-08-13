@@ -895,9 +895,10 @@ export default function QuickCampaignControlPage() {
                 <input
                   readOnly
                   value={createdUrl}
+                  onFocus={(e) => e.currentTarget.select()}
                   className="min-h-11 rounded-md border border-emerald-200 bg-white px-3 text-sm text-emerald-900 dark:border-emerald-900 dark:bg-zinc-950 dark:text-emerald-100"
                 />
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid gap-2 sm:grid-cols-3">
                   <SpinButton
                     type="button"
                     onClick={() => copyCreatedUrl(createdUrl)}
@@ -905,12 +906,20 @@ export default function QuickCampaignControlPage() {
                   >
                     複製網址
                   </SpinButton>
+                  <a
+                    href={createdUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex min-h-11 items-center justify-center rounded-md border border-emerald-300 text-sm font-semibold text-emerald-800 dark:border-emerald-800 dark:text-emerald-100"
+                  >
+                    打開客人頁
+                  </a>
                   {createdCampaignId ? (
                     <Link
                       href={`/campaigns/order-entry?id=${createdCampaignId}`}
                       className="flex min-h-11 items-center justify-center rounded-md border border-emerald-300 text-sm font-semibold text-emerald-800 dark:border-emerald-800 dark:text-emerald-100"
                     >
-                      查看此團
+                      管理訂單
                     </Link>
                   ) : null}
                 </div>

@@ -797,7 +797,7 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
 async function getCampaignDetail(sb: any, tenantId: string, campaignId: number) {
   const { data: c, error: cErr } = await sb
     .from("group_buy_campaigns")
-    .select("id, campaign_no, name, description, cover_image_url, status, end_at, pickup_deadline, is_for_shop")
+    .select("id, campaign_no, name, description, cover_image_url, status, close_type, end_at, pickup_deadline, total_cap_qty, is_for_shop")
     .eq("tenant_id", tenantId)
     .eq("id", campaignId)
     .single();
