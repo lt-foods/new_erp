@@ -134,7 +134,7 @@ function PageContent() {
   const [offsetCustomer, setOffsetCustomer] = useState<CustomerEntry>(newEntry());
   // 店倉帳上可用現貨（sku_id → on_hand − reserved），抵減量不能超過
   const [offsetStock, setOffsetStock] = useState<Map<number, number>>(new Map());
-  // 分店帳號：抵減 / 現貨直售會動到店庫存，只能對自己那間店開（HQ 回 null = 不限）
+  // 分店帳號：抵減 / 現貨配單都吃自己店的帳上現貨，只能對自己那間店開（HQ 回 null = 不限）
   const branchStoreId = useUserBranchStoreId(stores);
   useEffect(() => {
     if (branchStoreId != null && offsetStoreId !== branchStoreId) setOffsetStoreId(branchStoreId);
@@ -439,7 +439,8 @@ function PageContent() {
       const operator = userRes.user?.id;
       if (!operator) { setError("未登入或 session 過期"); return; }
       if (directSale) {
-        // 現貨直售：客人訂單 + 抵減單 + 當下交貨結案（單一交易）
+        // 現貨配單：先配客人「已下單未取」的品項、不足才補建，並開庫存減抵單當 coverage（單一交易）。
+        // 不結案 —— 客人到店走正常取貨流程，那時才扣庫存、收款。
         const { data, error: err } = await sb.rpc("rpc_create_offset_sale", {
           p_campaign_id: campaignId,
           p_channel_id: channelId,
@@ -695,7 +696,7 @@ function PageContent() {
           stores={stores}
           storeId={offsetStoreId}
           onStoreChange={setOffsetStoreId}
-          // 抵減 / 現貨直售會動到店庫存 → 分店帳號只能對自己店開
+          // 抵減 / 現貨配單都吃自己店的帳上現貨 → 分店帳號只能對自己店開
           lockedStoreId={branchStoreId}
           notes={offsetReason}
           onNotesChange={setOffsetReason}
@@ -786,7 +787,7 @@ function InternalOrderPanel({
   submitting: boolean;
   offsetMode?: boolean;
   submitLabel?: string;
-  // 抵減模式用：客人選擇器（現貨直售）
+  // 抵減模式用：客人選擇器（現貨配單）
   headerExtra?: React.ReactNode;
   // 抵減模式用：各品項的店倉帳上可用現貨（抵減量不能超過，伺服端也會擋）
   stockHints?: { key: string; label: string; need: number; available: number }[];
@@ -890,7 +891,7 @@ function InternalOrderPanel({
           + 新增空白項目（Alt+N）
         </SpinButton>
 
-        {/* 抵減 / 現貨直售的庫存預檢：帳上不夠就先擋在前端（伺服端仍會再擋一次） */}
+        {/* 抵減 / 現貨配單的庫存預檢：帳上不夠就先擋在前端（伺服端仍會再擋一次） */}
         {offsetMode && (stockHints ?? []).some((h) => h.need > h.available) && (
           <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
             ⚠ 店內帳上現貨不足，送出會被擋：
@@ -930,7 +931,7 @@ function InternalOrderPanel({
       </div>
 
       <aside className="sticky top-4 h-fit rounded-md border border-zinc-200 bg-white p-3 text-sm dark:border-zinc-800 dark:bg-zinc-900">
-        <h2 className="mb-2 text-sm font-semibold">{offsetMode ? "本次抵減 / 直售" : "本次統計（內部）"}</h2>
+        <h2 className="mb-2 text-sm font-semibold">{offsetMode ? "本次抵減 / 配單" : "本次統計（內部）"}</h2>
         <div className="grid grid-cols-2 gap-2 text-xs">
           <Stat label="件數" value={totalQty} />
           <Stat label="總金額" value={`$${totalAmount}`} />
