@@ -7,7 +7,13 @@ import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import { LoadingScreen } from "@/components/Spinner";
 import SubTabs from "@/components/SubTabs";
-import OrderCard, { orderPhase, type OrderRow } from "@/components/OrderCard";
+import OrderCard, {
+  orderPhase,
+  splitOrderByPhase,
+  unpickedSubtotal,
+  type OrderPhase,
+  type OrderRow,
+} from "@/components/OrderCard";
 
 // 蝦皮式分頁。我們取貨時付現金，所以沒有「待付款」；「待收貨」＝到店「待取貨」。
 // 分桶跟卡片右上角的狀態字共用 orderPhase()，兩邊永遠一致。
@@ -104,12 +110,30 @@ export default function OrdersPage() {
     })();
   }, [router]);
 
+  // 依**品項行**分桶，不是整張單（2026-08-14）。短收之後一張單常常是
+  // 「一件已領走、一件根本還沒到」—— 整張塞「待取貨」等於叫客人來拿沒到的貨。
+  // 所以一張單會拆成數個分身，各自進自己的分頁（例：已取的行 → 已完成、
+  // 沒到貨的行 → 待到貨）。「全部」維持整張單不拆。
   const buckets = useMemo(() => {
     const b: Record<Tab, OrderRow[]> = { all: orders, waiting: [], pickup: [], done: [], void: [] };
     for (const o of orders) {
-      const { phase } = orderPhase(o);
-      // orders 進來前已濾掉 HIDDEN_PHASES（已轉讓），剩下的都有自己的分頁
-      if (phase !== "transferred") b[phase].push(o);
+      const parts = splitOrderByPhase(o);
+      // 應付金額要**分攤**到各分身，不能每個分身都掛整張單的 outstanding ——
+      // 一張單同時出現在「待到貨」和「待取貨」時會被算兩次
+      //（CLAUDE.md：未結金額重複計算是踩過的雷）。
+      // 依「該分身未取貨值 / 整張單未取貨值」等比分攤，兩頁相加仍等於原本的 outstanding。
+      const wholeUnpicked = unpickedSubtotal(o.items);
+      const outstanding = Number(o.outstanding_amount ?? o.payable_amount ?? 0);
+      for (const [phase, part] of parts) {
+        if (phase === "transferred") continue; // 已轉讓不出現在任何分頁
+        b[phase as Exclude<Tab, "all">].push({
+          ...part,
+          outstanding_amount:
+            wholeUnpicked > 0
+              ? (outstanding * unpickedSubtotal(part.items)) / wholeUnpicked
+              : 0,
+        });
+      }
     }
     return b;
   }, [orders]);
@@ -207,7 +231,8 @@ export default function OrdersPage() {
             className="animate-in"
             style={{ animationDelay: `${Math.min(i % PAGE_SIZE, 8) * 50}ms` }}
           >
-            <OrderCard order={o} />
+            {/* 分身卡的右上角狀態字要講「這一頁」的語意；「全部」不拆頁，維持整張單的狀態 */}
+            <OrderCard order={o} viewPhase={tab === "all" ? undefined : (tab as OrderPhase)} />
           </div>
         ))}
 
