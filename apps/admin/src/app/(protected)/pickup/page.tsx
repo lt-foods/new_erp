@@ -88,6 +88,10 @@ function PickupPageContent() {
   // item.id → 該品項是否已到貨可取（v_order_item_pickup_ready）。
   // 部分到貨的 shipping 單靠這個讓「已到的品項」可先取。
   const [itemReady, setItemReady] = useState<Map<number, boolean>>(new Map());
+  // item.id → 「這組到過貨，但量不夠分到這一行」（v_order_item_pickup_ready.qty_short）。
+  // 短收時（總倉派 2、分店只收 1）多出來的那幾行就是這種。要跟「少發配貨沒配到」
+  // 分開講：這種等下一批貨到就會自己放行，不需要人工配貨。
+  const [itemQtyShort, setItemQtyShort] = useState<Map<number, boolean>>(new Map());
   // item.id → 未取退貨量（return_to_hq transfer 依 SKU 聚合後分攤到各品項行，
   // 與 PickupDialog 同構）。退回總倉的量店裡沒有、不可再取。
   const [returnedByItem, setReturnedByItem] = useState<Map<number, number>>(new Map());
@@ -162,13 +166,20 @@ function PickupPageContent() {
   function isPickable(order: OpenOrder): boolean {
     return pickableItems(order).length > 0;
   }
+  // 該品項是否為「這組到過貨但量不夠分到這一行」（短收 / 這批只到一部分）。
+  // 等下一批貨收進來就會自己放行，不需要人工配貨 —— 所以不可以標成「待補貨」。
+  function isQtyShort(it: OpenOrder["items"][number]): boolean {
+    return itemQtyShort.get(it.id) === true;
+  }
   // 該品項是否為「少發沒配到」→ 取貨頁要明講待補貨，不要只是消失。
   // 只認 ready / partially_completed：這兩種單的貨已經到店，閘門 false 就是被少發配貨
   // 標成待補貨。pending / confirmed / shipping 的 false 絕大多數只是「還沒到貨」，
   // 標成待補貨會讓店員誤以為配貨少給、跑去追不存在的補貨。
+  // 量不夠（isQtyShort）也要排除：那是「還沒到貨」，去追少發配貨一樣是白跑。
   function isBackordered(order: OpenOrder, it: OpenOrder["items"][number]): boolean {
     return (order.status === "ready" || order.status === "partially_completed")
-      && itemReady.get(it.id) === false;
+      && itemReady.get(it.id) === false
+      && !isQtyShort(it);
   }
 
   const [pickup, setPickup] = useState<{ orderId: number; orderNo: string } | null>(null);
@@ -280,16 +291,19 @@ function PickupPageContent() {
 
       // 品項到貨狀態（部分到貨的 shipping 單要逐品項判斷哪些可先取）
       const readyMap = new Map<number, boolean>();
+      const shortMap = new Map<number, boolean>();
       if (orderIds.length > 0) {
         const { data: irs } = await sb
           .from("v_order_item_pickup_ready")
-          .select("item_id, pickup_ready")
+          .select("item_id, pickup_ready, qty_short")
           .in("order_id", orderIds);
-        for (const r of (irs ?? []) as { item_id: number; pickup_ready: boolean }[]) {
+        for (const r of (irs ?? []) as { item_id: number; pickup_ready: boolean; qty_short: boolean }[]) {
           readyMap.set(r.item_id, !!r.pickup_ready);
+          shortMap.set(r.item_id, !!r.qty_short);
         }
       }
       setItemReady(readyMap);
+      setItemQtyShort(shortMap);
 
       // 未取退貨量（return_to_hq transfer）— 退掉的貨店裡沒有、不可再取。
       // 依 SKU 聚合後分攤到各 active 品項行（行序 by id，與 PickupDialog 同構）。
@@ -935,6 +949,11 @@ function PickupPageContent() {
                         const canPickup = pickableCount > 0;
                         // 部分到貨：有品項可取、但還有（未被退光的）active 品項未到
                         const partialArrival = canPickup && pickableCount < activeRemaining.length;
+                        // 「這組到過貨但量不夠分」的件數 —— 短收造成的未到貨，
+                        // 訊息要跟「分店根本還沒收貨」分開講。
+                        const shortQty = activeRemaining
+                          .filter((it) => !pickableIds.has(it.id) && isQtyShort(it))
+                          .reduce((s, it) => s + remainingQty(it), 0);
                         // 金額扣掉已退量（未取退貨不收錢，與應收 payable 扣減一致）
                         const subAmt = active.reduce((s, it) => s + remainingQty(it) * Number(it.unit_price), 0);
                         const discAmt = Number(o.discount_amount ?? 0);
@@ -977,8 +996,15 @@ function PickupPageContent() {
                                         ⏳ 待補貨
                                       </span>
                                     ) : (
-                                      partialArrival && remainingQty(it) > 0 && !pickableIds.has(it.id) && (
-                                        <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">⏳ 未到貨</span>
+                                      // 量不夠分到這一行（短收）時一定要標，不能只在「部分到貨」的單上標 ——
+                                      // 整張單只剩這一行沒到時 partialArrival 是 false，不特別處理就完全沒有提示。
+                                      (partialArrival || isQtyShort(it)) && remainingQty(it) > 0 && !pickableIds.has(it.id) && (
+                                        <span
+                                          className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                                          title={isQtyShort(it) ? "這批到貨量不夠，這筆還沒到；下一批收進來就會自動放行" : undefined}
+                                        >
+                                          ⏳ 未到貨
+                                        </span>
                                       )
                                     )}
                                   </li>
@@ -1013,6 +1039,15 @@ function PickupPageContent() {
                                   <span className="ml-2">{partialArrival ? `${pickableCount}/${activeRemaining.length} 項可取` : `${pickableCount} 項可取`}</span>
                                 ) : fullyReturned ? (
                                   <span className="ml-2 font-semibold text-orange-700 dark:text-orange-400">↩ 已全數退回總倉，無可取貨項目</span>
+                                ) : shortQty > 0 ? (
+                                  // 「分店尚未收貨」在這裡是錯的 —— 分店收過了，只是這批少收。
+                                  // 講清楚才不會讓店員以為系統壞了、跑去改走轉單（那會開新單變重複單）。
+                                  <span
+                                    className="ml-2 text-amber-600 dark:text-amber-400"
+                                    title="總倉派的量分店沒有全收到（收貨時已標短少）。等下一批補進來就會自動放行；要現在就發，請開庫存減抵單。"
+                                  >
+                                    ⏳ 尚有 {shortQty} 件未到貨，無法取貨
+                                  </span>
                                 ) : (
                                   <span className="ml-2 text-amber-600 dark:text-amber-400">⏳ 分店尚未收貨，無法取貨</span>
                                 )}
