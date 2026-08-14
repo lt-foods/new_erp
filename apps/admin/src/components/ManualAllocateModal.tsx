@@ -46,6 +46,7 @@ type BudgetRow = {
   sku_code: string | null;
   name: string;
   cap: number; // 可配上限（receive 模式 = 既有可配 + 本次到貨；原始值可為負時已含在內）
+  pool: number; // 【內部】店現貨池既有未取掛帳（receive 模式伺服端回傳；store 模式 0）
 };
 
 type IncomingRow = { sku_id: number; sku_code: string | null; name: string; qty: number };
@@ -91,6 +92,8 @@ type ManualReceiveResult = {
   pullback_skipped?: Array<{ order_id: number; order_no: string | null; status: string }>;
   shipping_advanced?: number;
   allocation?: AllocResult | null;
+  // 多給的量（沒有訂單主人）掛進【內部】店現貨池的結果（20260814010000）
+  surplus?: Array<{ sku_id: number; qty: number }> | null;
 };
 
 const SKIP_REASON_LABEL: Record<string, string> = {
@@ -145,7 +148,7 @@ export function ManualAllocateModal({
         waiting_count: number;
       };
       setData({
-        budget: (raw.budget ?? []).map((b) => ({ ...b, cap: Number(b.available) })),
+        budget: (raw.budget ?? []).map((b) => ({ ...b, cap: Number(b.available), pool: 0 })),
         incoming: [],
         orders: (raw.orders ?? []).map((o) => ({
           ...o,
@@ -166,7 +169,13 @@ export function ManualAllocateModal({
       const raw = d as {
         store_id: number | null;
         incoming: IncomingRow[];
-        budget: Array<{ sku_id: number; sku_code: string | null; name: string; available: number }>;
+        budget: Array<{
+          sku_id: number;
+          sku_code: string | null;
+          name: string;
+          available: number;
+          pool?: number;
+        }>;
         orders: CandidateOrder[];
       };
       const incoming = (raw.incoming ?? []).map((r) => ({ ...r, qty: Number(r.qty) }));
@@ -185,6 +194,7 @@ export function ManualAllocateModal({
           sku_code: b.sku_code,
           name: b.name,
           cap: Number(b.available) + (incMap.get(b.sku_id) ?? 0),
+          pool: Number(b.pool) || 0,
         })),
         incoming,
         orders,
@@ -263,6 +273,32 @@ export function ManualAllocateModal({
     setSelected(next);
   }
 
+  // 多給的量（沒有訂單主人）＝確認收貨後會掛進【內部】店現貨池的預估。
+  // 逐 SKU：min(本次到貨 − 已勾選需求, 可配上限 − 全部候選需求 − 池子既有掛帳)，
+  // 夾 0 —— 與伺服端 _grow_internal_pool 同一套帳（沒勾的候選單還在等貨，
+  // 他們下一批要領的量不掛進池子）。實際掛帳以確認當下伺服端重算為準。
+  const surplusRows = useMemo(() => {
+    if (mode.kind !== "receive" || !data) return [] as Array<{ sku_id: number; qty: number }>;
+    const allNeed = new Map<number, number>();
+    for (const o of data.orders)
+      for (const it of o.items) allNeed.set(it.sku_id, (allNeed.get(it.sku_id) ?? 0) + it.qty);
+    const out: Array<{ sku_id: number; qty: number }> = [];
+    for (const inc of data.incoming) {
+      const b = budgetMap.get(inc.sku_id);
+      const used = usedMap.get(inc.sku_id) ?? 0;
+      const est = Math.min(
+        inc.qty - used,
+        (b?.cap ?? inc.qty) - (allNeed.get(inc.sku_id) ?? 0) - (b?.pool ?? 0),
+      );
+      if (est > 0) out.push({ sku_id: inc.sku_id, qty: est });
+    }
+    return out;
+  }, [mode.kind, data, budgetMap, usedMap]);
+  const surplusTotal = useMemo(
+    () => surplusRows.reduce((s, r) => s + r.qty, 0),
+    [surplusRows],
+  );
+
   // 只顯示候選訂單有用到的 SKU（budget 種子是聯集，會多）
   const visibleBudget = useMemo(() => {
     if (!data) return [] as BudgetRow[];
@@ -293,12 +329,17 @@ export function ManualAllocateModal({
         ? `⤺ 沒勾的 ${pullbackIds.length} 張「運送中」訂單會退回「已確認」，這批貨不配給他們` +
           `（客人畫面變回「待到貨」，下一批貨到時可再配）。\n`
         : "";
+    const surplusLine =
+      surplusTotal > 0
+        ? `🏬 多給的 ${surplusTotal} 件沒有訂單主人，會掛進【內部】${storeName} 現貨池（可轉單給客人）。\n`
+        : "";
     const msg = isReceive
       ? `確認收貨並配單？\n\n` +
         (selectedCount > 0
           ? `勾選的 ${selectedCount} 張訂單會標成「可取貨」，沒勾的維持原狀（下一批貨到時可再配）。\n`
           : `沒有勾選訂單 — 只收貨不配單，之後可從「✋ 手動配單」再配。\n`) +
         pullbackLine +
+        surplusLine +
         notifyLine
       : `確認把勾選的 ${selectedCount} 張訂單標成「可取貨」？\n\n沒勾的訂單維持原狀，下一批貨到時可再配。\n` +
         notifyLine;
@@ -336,10 +377,14 @@ export function ManualAllocateModal({
         // 配單總數 = 派貨中保留勾選推進的 + confirmed 走配額守衛推進的
         const advancedTotal = (r.shipping_advanced ?? 0) + (alloc?.advanced ?? 0);
         const pullSkipped = r.pullback_skipped ?? [];
+        const surplusBooked = (r.surplus ?? []).reduce((s, x) => s + Number(x.qty), 0);
         alert(
           `✅ 收貨完成：${r.transfers_received ?? mode.transferIds.length} 單` +
             (advancedTotal > 0 ? `，配單 ${advancedTotal} 張訂單已可取貨` : "，未配單") +
             ((r.pulled_back ?? 0) > 0 ? `，${r.pulled_back} 張退回「已確認」等下批` : "") +
+            (surplusBooked > 0
+              ? `\n🏬 多給 ${surplusBooked} 件已掛進【內部】${storeName} 現貨池`
+              : "") +
             pushNote +
             skipNoteOf(alloc?.skipped ?? []) +
             (pullSkipped.length > 0
@@ -559,7 +604,39 @@ export function ManualAllocateModal({
                       </tr>
                     );
                   })}
-                  {data.orders.length === 0 && (
+                  {/* 多給的跳出內部店：沒有訂單主人的剩餘量，確認收貨後會掛進
+                      【內部】店現貨池（伺服端 _grow_internal_pool 以當下重算為準）。
+                      勾選變動時數量即時跟著變，歸零就整列消失。 */}
+                  {isReceive && surplusRows.length > 0 && (
+                    <tr
+                      className="bg-blue-50/60 dark:bg-blue-950/20"
+                      title="到貨超過訂單需求的量沒有訂單主人，確認收貨後會自動掛進【內部】店現貨池，之後可從那張單轉單給客人"
+                    >
+                      <td className="px-3 py-2 text-center">🏬</td>
+                      <td className="px-3 py-2 font-mono text-xs text-zinc-400">（自動）</td>
+                      <td className="max-w-[180px] px-3 py-2">
+                        【內部】{storeName}
+                        <div className="text-[10px] text-zinc-400">
+                          多給的貨掛進現貨池，可轉單給客人
+                        </div>
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2">
+                        <span className="inline-flex rounded-md border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[11px] text-blue-700 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-400">
+                          現貨池
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-xs">
+                        {surplusRows.map((r) => (
+                          <div key={r.sku_id} className="whitespace-nowrap">
+                            {budgetMap.get(r.sku_id)?.name ?? `#${r.sku_id}`}{" "}
+                            <b className="tabular-nums">× {r.qty}</b>
+                          </div>
+                        ))}
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2 text-xs text-zinc-400">—</td>
+                    </tr>
+                  )}
+                  {data.orders.length === 0 && surplusRows.length === 0 && (
                     <tr>
                       <td colSpan={6} className="px-3 py-6 text-center text-zinc-500">
                         {isReceive
@@ -609,6 +686,7 @@ export function ManualAllocateModal({
                 ? "按「確認收貨」會一次完成入庫與配單（同一筆交易，失敗即整筆取消、不會收到一半）。" +
                   "配好的訂單會標成「可取貨」，並從【內部】店現貨池扣掉相應數量；" +
                   "沒勾的「運送中」訂單退回「已確認」，下一批貨到時可再配。" +
+                  "多給的量（沒有訂單主人）會自動掛進【內部】店現貨池，之後可轉單給客人。" +
                   "伺服端會再驗一次可配量，裝不下的單會被跳過並告知，不會硬配。"
                 : "配好的訂單會標成「可取貨」，取貨頁就能發貨；同時會從【內部】店現貨池" +
                   "扣掉相應數量，避免同一批貨再被轉單給別人。伺服端送出時會再驗一次可配量，" +
