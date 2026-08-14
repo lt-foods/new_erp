@@ -16,15 +16,18 @@ import {
 
 // 手動配貨：補貨到店數量不夠分給所有訂單時，由店家自己勾「這批配給誰」。
 //
-// 兩種模式（見 20260813000000 / 20260813010000 migration）：
+// 兩種模式（見 20260813000000 / 20260813010000 / 20260814000000 migration）：
 // - receive：收貨前開（「✋ 收貨·手動配」按鈕）。列出**這批到貨單對到的訂單**，
 //   勾完按「確認收貨」才一次完成收貨＋配單（同一交易；取消＝什麼都沒發生）。
+//   「已確認」（等貨中）和「派貨中」（波次出貨時已配給他）都列：派貨中預設
+//   勾選，取消勾選＝把該單拉回「已確認」、這批貨讓給別人（下批到貨可再配）。
 // - store：收完貨之後想（再）配時用（「✋ 手動配單」常駐入口）。列出全店
 //   貨已到齊、還沒配的訂單，勾選配單。
 //
 // 可配量算法跟自動配單（_advance_arrived_confirmed_orders）同一套：整單每個
 // 品項都裝得下才能配、不拆單。送出時伺服端會再驗一次，勾了但裝不下的單會被
-// 跳過並回報，不會硬推。
+// 跳過並回報，不會硬推。例外：派貨中的單本來就是這批貨的主人，重勾不受
+// 額度擋（伺服端與收貨邏輯 C 同樣不驗量）。
 
 export type ReceiveLine = { transfer_item_id: number; qty_received: number };
 
@@ -54,8 +57,19 @@ type CandidateOrder = {
   customer: string | null;
   campaign_name: string | null;
   created_at: string;
+  // 單頭狀態（receive 模式伺服端回傳；store 模式候選必為 confirmed 且閘門已過）
+  status: string;
+  arrived: boolean;
   items: Array<{ sku_id: number; qty: number }>;
 };
+
+// 「客人看到」欄：判定對齊會員端 apps/member OrderCard.orderPhase ——
+// 取貨閘門放行＝待取貨；派貨中＝運送中；其餘＝待到貨。
+function customerStatusLabel(o: Pick<CandidateOrder, "status" | "arrived">): string {
+  if (o.arrived) return "待取貨";
+  if (o.status === "shipping") return "運送中";
+  return "待到貨";
+}
 
 type Data = {
   budget: BudgetRow[];
@@ -69,6 +83,14 @@ type AllocResult = {
   orders: Array<{ order_id: number; order_no: string; customer: string | null }>;
   skipped: Array<{ order_id: number; order_no: string | null; reason: string }>;
   notify: NotifyTarget[];
+};
+
+type ManualReceiveResult = {
+  transfers_received?: number;
+  pulled_back?: number;
+  pullback_skipped?: Array<{ order_id: number; order_no: string | null; status: string }>;
+  shipping_advanced?: number;
+  allocation?: AllocResult | null;
 };
 
 const SKIP_REASON_LABEL: Record<string, string> = {
@@ -127,10 +149,14 @@ export function ManualAllocateModal({
         incoming: [],
         orders: (raw.orders ?? []).map((o) => ({
           ...o,
+          // store 模式候選 = confirmed 且閘門已過（伺服端定義），標籤固定「待取貨」
+          status: "confirmed",
+          arrived: true,
           items: (o.items ?? []).map((i) => ({ sku_id: i.sku_id, qty: Number(i.qty) })),
         })),
         waiting_count: Number(raw.waiting_count) || 0,
       });
+      setSelected(new Set());
     } else {
       const { data: d, error: e } = await sb.rpc("rpc_get_transfer_allocation_preview", {
         p_transfer_ids: mode.transferIds,
@@ -145,8 +171,15 @@ export function ManualAllocateModal({
       };
       const incoming = (raw.incoming ?? []).map((r) => ({ ...r, qty: Number(r.qty) }));
       const incMap = new Map(incoming.map((r) => [r.sku_id, r.qty]));
+      const orders = (raw.orders ?? []).map((o) => ({
+        ...o,
+        status: o.status ?? "confirmed",
+        arrived: Boolean(o.arrived),
+        items: (o.items ?? []).map((i) => ({ sku_id: i.sku_id, qty: Number(i.qty) })),
+      }));
       setData({
-        // 可配上限 = 既有可配（可能為負）+ 本次到貨 —— 跟確認收貨後伺服端算出的預算一致
+        // 可配上限 = 既有可配（可能為負；伺服端已把畫面上的派貨中單從「已承諾」
+        // 排除）+ 本次到貨 —— 跟確認收貨後伺服端算出的預算一致
         budget: (raw.budget ?? []).map((b) => ({
           sku_id: b.sku_id,
           sku_code: b.sku_code,
@@ -154,14 +187,12 @@ export function ManualAllocateModal({
           cap: Number(b.available) + (incMap.get(b.sku_id) ?? 0),
         })),
         incoming,
-        orders: (raw.orders ?? []).map((o) => ({
-          ...o,
-          items: (o.items ?? []).map((i) => ({ sku_id: i.sku_id, qty: Number(i.qty) })),
-        })),
+        orders,
         waiting_count: 0,
       });
+      // 派貨中的單＝這批貨出貨時就配給他的，預設勾選；取消勾選＝拉回讓貨
+      setSelected(new Set(orders.filter((o) => o.status === "shipping").map((o) => o.order_id)));
     }
-    setSelected(new Set());
   }, [mode]);
 
   useEffect(() => {
@@ -209,7 +240,9 @@ export function ManualAllocateModal({
     setSelected((cur) => {
       const next = new Set(cur);
       if (next.has(o.order_id)) next.delete(o.order_id);
-      else if (fits(o)) next.add(o.order_id);
+      // 派貨中的單本來就是這批貨的主人：重勾不受剩餘額度擋
+      //（伺服端與收貨邏輯 C 同樣不對它驗量），取消勾選過的人才能反悔
+      else if (fits(o) || o.status === "shipping") next.add(o.order_id);
       return next;
     });
   }
@@ -245,14 +278,27 @@ export function ManualAllocateModal({
     if (!data || busy) return;
     if (!isReceive && selectedCount === 0) return;
 
+    // 沒勾的「派貨中」訂單＝拉回：這批貨不配給他，單頭退回「已確認」
+    const pullbackIds = isReceive
+      ? data.orders
+          .filter((o) => o.status === "shipping" && !selected.has(o.order_id))
+          .map((o) => o.order_id)
+      : [];
+
     const notifyLine = notify
       ? "📩 完成後會推播「商品到貨」給可取貨的客人。"
       : "🔕 不會推播通知，請自行聯繫客人。";
+    const pullbackLine =
+      pullbackIds.length > 0
+        ? `⤺ 沒勾的 ${pullbackIds.length} 張「運送中」訂單會退回「已確認」，這批貨不配給他們` +
+          `（客人畫面變回「待到貨」，下一批貨到時可再配）。\n`
+        : "";
     const msg = isReceive
       ? `確認收貨並配單？\n\n` +
         (selectedCount > 0
           ? `勾選的 ${selectedCount} 張訂單會標成「可取貨」，沒勾的維持原狀（下一批貨到時可再配）。\n`
           : `沒有勾選訂單 — 只收貨不配單，之後可從「✋ 手動配單」再配。\n`) +
+        pullbackLine +
         notifyLine
       : `確認把勾選的 ${selectedCount} 張訂單標成「可取貨」？\n\n沒勾的訂單維持原狀，下一批貨到時可再配。\n` +
         notifyLine;
@@ -274,12 +320,10 @@ export function ManualAllocateModal({
           p_order_ids: selectedCount > 0 ? Array.from(selected) : null,
           p_notes: mode.note ?? null,
           p_lines: mode.lines && mode.lines.length > 0 ? mode.lines : null,
+          p_pullback_order_ids: pullbackIds.length > 0 ? pullbackIds : null,
         });
         if (e) throw new Error(translateRpcError(e));
-        const r = (res ?? {}) as {
-          transfers_received?: number;
-          allocation?: AllocResult | null;
-        };
+        const r = (res ?? {}) as ManualReceiveResult;
         let pushNote = "";
         if (notify) {
           const pushed = await fanoutPickupNotifications(mode.transferIds).catch((err) => {
@@ -289,11 +333,19 @@ export function ManualAllocateModal({
           if (pushed > 0) pushNote = `\n📩 已推播 ${pushed} 位顧客`;
         }
         const alloc = r.allocation;
+        // 配單總數 = 派貨中保留勾選推進的 + confirmed 走配額守衛推進的
+        const advancedTotal = (r.shipping_advanced ?? 0) + (alloc?.advanced ?? 0);
+        const pullSkipped = r.pullback_skipped ?? [];
         alert(
           `✅ 收貨完成：${r.transfers_received ?? mode.transferIds.length} 單` +
-            (alloc ? `，配單 ${alloc.advanced ?? 0} 張訂單已可取貨` : "，未配單") +
+            (advancedTotal > 0 ? `，配單 ${advancedTotal} 張訂單已可取貨` : "，未配單") +
+            ((r.pulled_back ?? 0) > 0 ? `，${r.pulled_back} 張退回「已確認」等下批` : "") +
             pushNote +
-            skipNoteOf(alloc?.skipped ?? []),
+            skipNoteOf(alloc?.skipped ?? []) +
+            (pullSkipped.length > 0
+              ? `\n⚠ ${pullSkipped.length} 張拉不回（狀態已變）：` +
+                pullSkipped.map((s) => s.order_no ?? `#${s.order_id}`).join("、")
+              : ""),
         );
         onSaved();
         onClose();
@@ -373,7 +425,9 @@ export function ManualAllocateModal({
 
             <p className="text-sm text-zinc-600 dark:text-zinc-300">
               {isReceive
-                ? "勾選要配到貨的訂單，按「確認收貨」才會完成收貨；關閉視窗則不收貨。"
+                ? "勾選要配到貨的訂單，按「確認收貨」才會完成收貨；關閉視窗則不收貨。" +
+                  "「運送中」的訂單出貨時就是配給他的、已預先勾好 — 取消勾選會把該單" +
+                  "退回「已確認」，把這批貨讓給別人。"
                 : "勾選要先拿到貨的訂單 — 沒勾的維持原狀，下一批貨到時再配即可。"}
             </p>
 
@@ -410,12 +464,13 @@ export function ManualAllocateModal({
             )}
 
             <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
-              <table className="w-full min-w-[600px] text-sm">
+              <table className="w-full min-w-[680px] text-sm">
                 <thead>
                   <tr className="border-b border-zinc-200 bg-zinc-50 text-[11px] text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
                     <th className="w-10 px-3 py-2" />
                     <th className="px-3 py-2 text-left font-medium">訂單編號</th>
                     <th className="px-3 py-2 text-left font-medium">顧客</th>
+                    <th className="px-3 py-2 text-left font-medium">客人看到</th>
                     <th className="px-3 py-2 text-left font-medium">商品</th>
                     <th className="px-3 py-2 text-left font-medium">下單時間</th>
                   </tr>
@@ -423,7 +478,7 @@ export function ManualAllocateModal({
                 <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
                   {data.orders.map((o) => {
                     const checked = selected.has(o.order_id);
-                    const canCheck = checked || fits(o);
+                    const canCheck = checked || fits(o) || o.status === "shipping";
                     return (
                       <tr
                         key={o.order_id}
@@ -449,7 +504,7 @@ export function ManualAllocateModal({
                         </td>
                         <td className="px-3 py-2 font-mono text-xs">
                           <Link
-                            href={orderListHref(o.order_no, "confirmed")}
+                            href={orderListHref(o.order_no, o.status)}
                             target="_blank"
                             rel="noopener noreferrer"
                             onClick={(e) => e.stopPropagation()}
@@ -470,6 +525,23 @@ export function ManualAllocateModal({
                             </div>
                           )}
                         </td>
+                        <td className="whitespace-nowrap px-3 py-2">
+                          <span
+                            className={
+                              "inline-flex rounded-md border px-1.5 py-0.5 text-[11px] " +
+                              (o.status === "shipping"
+                                ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-400"
+                                : "border-zinc-200 bg-zinc-50 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300")
+                            }
+                            title={
+                              o.status === "shipping"
+                                ? "出貨時已配給這張單；取消勾選會退回「已確認」（客人畫面變回「待到貨」）"
+                                : "客人在會員端目前看到的狀態"
+                            }
+                          >
+                            {customerStatusLabel(o)}
+                          </span>
+                        </td>
                         <td className="px-3 py-2 text-xs">
                           {o.items.map((it) => (
                             <div key={it.sku_id} className="whitespace-nowrap">
@@ -489,7 +561,7 @@ export function ManualAllocateModal({
                   })}
                   {data.orders.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="px-3 py-6 text-center text-zinc-500">
+                      <td colSpan={6} className="px-3 py-6 text-center text-zinc-500">
                         {isReceive
                           ? "這批貨對不到任何等貨中的訂單 — 可直接確認收貨入庫。"
                           : "目前沒有可配的訂單。"}
@@ -535,7 +607,8 @@ export function ManualAllocateModal({
             <p className="text-[11px] text-zinc-500">
               {isReceive
                 ? "按「確認收貨」會一次完成入庫與配單（同一筆交易，失敗即整筆取消、不會收到一半）。" +
-                  "配好的訂單會標成「可取貨」，並從【內部】店現貨池扣掉相應數量。" +
+                  "配好的訂單會標成「可取貨」，並從【內部】店現貨池扣掉相應數量；" +
+                  "沒勾的「運送中」訂單退回「已確認」，下一批貨到時可再配。" +
                   "伺服端會再驗一次可配量，裝不下的單會被跳過並告知，不會硬配。"
                 : "配好的訂單會標成「可取貨」，取貨頁就能發貨；同時會從【內部】店現貨池" +
                   "扣掉相應數量，避免同一批貨再被轉單給別人。伺服端送出時會再驗一次可配量，" +
