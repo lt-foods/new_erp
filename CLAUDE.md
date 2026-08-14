@@ -344,6 +344,57 @@ RR- ride-along 單在補貨到店**之前**就存在（單頭 `pending`/`confirm
 `SELECT status, count(*), sum((SELECT count(*) FROM transfers t WHERE t.customer_order_id = co.id)) ...`
 數字是 0 就是沒人按得到。
 
+### 空中轉沒有「派貨」這一步 —— 轉單當下就建 AT- 單並出貨
+
+前一節那個洞的收尾（2026-08-14）：空中轉的正解不是「把派貨鈕搬給對的人」，
+而是**根本不要有那一步**。勾了空中轉＝貨當下就從轉出店出去，
+所以 `rpc_transfer_order_to_store` / `rpc_transfer_order_partial` 自己呼叫
+`_air_ship_order_items`（20260814030000）建 AT- 轉移單（`store_to_store` /
+`shipped` / `is_air_transfer=TRUE` / `customer_order_id=轉入單`）＋轉出店出庫，
+轉入單直接進 `shipping`。接收店在 `/wms/inbound` 收掉就 → `ready`（`rpc_receive_transfer`
+邏輯 B），月結的 `air_in` / `air_out` 早就實作好（20260512000012），
+它只需要那張 transfer 存在且被收貨 —— 不用另外寫加減。
+
+三個踩過的點：
+
+- **出庫要 `p_allow_negative => TRUE`**。轉出店的 `on_hand` 常低於實際
+  （同 SKU 被別張單取走、到貨沒入帳），擋下來整筆轉單就失敗、單子永遠卡在收件匣
+  —— 2026-08-01 湖口→龍潭那兩張就是這樣停在「已確認」13 天，按派貨一律
+  `Insufficient stock`。貨實際上離開轉出店了，記下這筆出庫比拒絕記錄準確；
+  負庫存在庫存頁看得到，交給盤點。順手帶 `p_fallback_unit_cost =>
+  _current_cost_price(...)`，否則 `avg_cost` 缺值時月結會算 0 元。
+- **只出「本次搬進去的」品項**。部分轉出可能分次追加到同一張轉入單，
+  每次各有自己的 AT- 單；整張單重出就是重複出貨。所以 helper 收
+  `p_item_ids BIGINT[]`（整單版用 `WITH ins AS (INSERT ... RETURNING id)` 收集，
+  部分版在迴圈裡 `array_append`）。
+- **同店（換客人 / 併入的既有單就在轉出店）不建單**，helper 以
+  `source location = dest location` 判掉回 NULL —— `transfers` 有
+  `CHECK (source_location <> dest_location)`，硬塞會炸。
+
+`rpc_ship_aid_order` 留著當後備（自動出貨上線前卡住的舊單要有人推得動，
+在來源訂單頁「✈ 補出貨」），空中轉分支改成委派同一個 helper，
+並加了「已有轉移單就擋下」避免重複出貨。
+
+### 自由轉貨（rpc_create_free_transfer）已停用
+
+2026-08-14 起不再開放建單：`/wms/transfers` 的「+ 建自由轉貨」與 `/transfers/free`
+表單都移除，`authenticated` 的 EXECUTE 也收回（20260814050000）——
+按鈕拿掉但 API 還通等於沒停。既有 199 張單的檢視 / 收貨 / 刪草稿 / 改估價全部保留。
+店對店調貨改走「訂單轉給別人 + 勾空中轉」，店內補貨走補貨申請。
+
+連帶（就是前面那條「拿掉入口前先確認有人推得動」）：收貨短少處理彈窗的
+「補出貨」CTA 本來指 `/transfers/free`，一起改指 `/restock/new`，
+不然那個選項會把人送到一頁沒有按鈕的畫面。
+
+### 沒有撿貨波次≠沒有單據：`rpc_get_transfer_source_kinds` 的 `air`
+
+收貨頁的來源類型原本只看波次，沒有波次行就回 `'free'` →
+畫面標「↔ 轉貨・沒有可對應的單據」而且數量不給點。但空中轉／互助的 AT- 單
+**有**掛訂單（`transfers.customer_order_id`），`rpc_get_orders_for_transfer` 的
+`from_aid` 分支查得到是哪一張、哪位客人。20260814040000 因此加了
+`customer_order_id IS NOT NULL → 'air'`；前端凡是 `srcKind !== 'free'` 的地方
+（點數量看訂單）自動對它生效。新增這類「無波次但有單據」的調撥時記得回來看這支。
+
 ---
 
 ## 採購單 (purchase_orders)

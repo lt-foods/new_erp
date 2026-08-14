@@ -9,6 +9,8 @@ import { RowAction } from "@/components/RowAction";
 // 互助訂單狀態流程:
 //   pending → confirmed   (rpc_advance_order_status)
 //   confirmed → shipping  (rpc_ship_aid_order — 派貨 + outbound 庫存 + 建 transfer chain)
+//     ※ 空中轉不走這一步:轉單當下就自動出貨、直接建成 shipping(20260814030000)。
+//       這顆「派貨」只在 confirmed 出現,對空中轉來說 = 補推自動出貨前卡住的舊單。
 //   shipping → ready      (由店家在「收貨」代辦頁觸發,rpc_receive_transfer 內部自動推進)
 //   ready → completed     (由門市在「取貨」流程觸發、HQ 不需手動推進)
 //   ready → (退回原店)     (接收店已收貨但要退,rpc_return_aid_order 反向退回原調出店 + 還原來源單)

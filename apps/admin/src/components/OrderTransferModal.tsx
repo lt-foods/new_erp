@@ -500,7 +500,8 @@ export function OrderTransferModal({
               <span className="min-w-0 flex-1">
                 <span className="font-medium">空中轉（直接店對店、不經總倉）</span>
                 <span className="mt-0.5 block text-[11px] text-zinc-400">
-                  勾選 = 轉出店直接配送到接收店、只需接收店收貨；不勾 = 經總倉中轉，總倉需確認到貨再配送
+                  勾選 = 送出時就從本店出庫、建好轉移單，接收店在「收貨」頁收掉即可（不用總倉派貨），
+                  月結自動一加一扣；不勾 = 經總倉中轉，總倉需確認到貨再配送
                 </span>
               </span>
             </label>

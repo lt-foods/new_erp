@@ -56,8 +56,10 @@ const RESOLUTION_OPTIONS: Array<{
     title: "補出貨",
     desc: "從 HQ 庫存或他店再派一筆貨給該店補上短少。",
     cta: {
-      label: "前往自由轉貨建單",
-      href: "/transfers/free",
+      // 自由轉貨 2026-08-14 停止建單（20260814050000）→ 改走補貨申請由總倉派貨；
+      // 貨要從別店調的話走該店訂單的「轉給別人 + 空中轉」，不從這裡開單
+      label: "前往補貨申請建單",
+      href: "/restock/new",
       hint: "建單後回來標記為「已處理」",
     },
   },

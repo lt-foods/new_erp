@@ -1393,6 +1393,14 @@ export default function TransfersInboxPage() {
                                     🔁 補貨
                                   </span>
                                 )}
+                                {srcKind === "air" && (
+                                  <span
+                                    className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-950 dark:text-sky-300"
+                                    title="別店空中轉／互助過來的訂單轉移單（AT-xxx）：收貨後該筆訂單就變可取貨；點數量可看是哪一筆訂單"
+                                  >
+                                    ✈ 空中轉
+                                  </span>
+                                )}
                                 {srcKind === "free" && (
                                   <span
                                     className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"

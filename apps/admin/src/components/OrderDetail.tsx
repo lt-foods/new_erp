@@ -86,7 +86,9 @@ type ReturnTransfer = {
 };
 
 // 從本單空中轉出去、還等著轉出店出貨的轉入單（confirmed、還沒建 AT- 轉移單）。
-// 空中轉不經總倉，所以出貨這一步的操作者是轉出店 —— 也就是看著本單的人。
+// 空中轉自 20260814030000 起在轉單當下就自動出貨（轉入單直接 shipping），
+// 所以這裡只會撈到那之前卡住的舊單 —— 留這顆鈕當補推的後備入口，
+// 操作者是轉出店（貨從他們手上出去），也就是看著本單的人。
 type PendingAirShipment = {
   id: number;
   order_no: string;
@@ -187,7 +189,7 @@ export function OrderDetail({
   const [pickupEvents, setPickupEvents] = useState<PickupEventRow[]>([]);
   const [timeline, setTimeline] = useState<TimelineStep[] | null>(null);
   const [staffNames, setStaffNames] = useState<Map<string, string>>(new Map());
-  // 本單空中轉出去、還沒出貨的轉入單（給轉出店按「✈ 出貨」用）
+  // 本單空中轉出去、還沒出貨的轉入單（舊單補推用；新單轉單時就自動出貨了）
   const [pendingAirOut, setPendingAirOut] = useState<PendingAirShipment[]>([]);
   // 本單自己是空中轉轉入單且還在等出貨時，轉出店店名（給接收店看「在等誰」）
   const [awaitingAirFrom, setAwaitingAirFrom] = useState<string | null>(null);
@@ -260,8 +262,8 @@ export function OrderDetail({
           .select("item_id, pickup_ready")
           .eq("order_id", orderId),
         fetchReprintableEvents([orderId]),
-        // 從本單空中轉出去、還卡在 confirmed 的轉入單。空中轉不經總倉，
-        // 出貨要由轉出店（＝正在看本單的人）按下，否則沒有任何人有入口。
+        // 從本單空中轉出去、還卡在 confirmed 的轉入單（＝自動出貨上線前的舊單）。
+        // 空中轉不經總倉，補推要由轉出店（＝正在看本單的人）按下，否則沒人有入口。
         sb.from("customer_orders")
           .select("id, order_no, pickup_store_id, store:stores!customer_orders_pickup_store_id_fkey(name), items:customer_order_items(qty, status)")
           .eq("transferred_from_order_id", orderId)
@@ -654,12 +656,14 @@ export function OrderDetail({
     setReloadTick((n) => n + 1);
   }
 
-  // 空中轉出貨：建 AT- 轉移單（store_to_store, shipped）＋本店即時出庫，
+  // 空中轉補出貨：建 AT- 轉移單（store_to_store, shipped）＋本店即時出庫，
   // 轉入單 confirmed → shipping。接收店隨後在「收貨」頁收掉就變成可取貨。
+  // 新單在轉單當下就走完這一段（rpc_transfer_order_* → _air_ship_order_items），
+  // 這支只用在自動出貨上線前卡住的舊單。
   async function shipAir(s: PendingAirShipment) {
     if (!head) return;
     if (!confirm(
-      `✈ 空中轉出貨：${s.order_no}（${s.store_name}）\n\n` +
+      `✈ 空中轉補出貨：${s.order_no}（${s.store_name}）\n\n` +
       `會從本店庫存扣掉 ${s.qty} 件並建立轉移單，${s.store_name}在「收貨」頁收貨後即可交給顧客。\n` +
       `確定貨已經寄出／交給司機了嗎？`,
     )) return;
@@ -792,7 +796,7 @@ export function OrderDetail({
         <div className="flex flex-wrap items-center justify-end gap-2">
           {awaitingAirFrom && (
             <span className="text-xs text-amber-700 dark:text-amber-400">
-              ✈ 等 {awaitingAirFrom} 出貨（出貨後本店在「收貨」頁收貨）
+              ✈ 等 {awaitingAirFrom} 補出貨（出貨後本店在「收貨」頁收貨）
             </span>
           )}
           {pendingAirOut.map((s) => (
@@ -800,9 +804,9 @@ export function OrderDetail({
               key={s.id}
               onClick={() => shipAir(s)}
               className="rounded-md border border-sky-300 px-3 py-1 text-xs font-medium text-sky-700 hover:bg-sky-50 dark:border-sky-800 dark:text-sky-300 dark:hover:bg-sky-950"
-              title={`空中轉：從本店出庫 ${s.qty} 件並建立轉移單，交給 ${s.store_name} 收貨（${s.order_no}）`}
+              title={`這張空中轉單還沒出貨（自動出貨上線前的舊單）：按下會從本店出庫 ${s.qty} 件並建立轉移單，交給 ${s.store_name} 收貨（${s.order_no}）`}
             >
-              ✈ 出貨到 {s.store_name}
+              ✈ 補出貨到 {s.store_name}
             </SpinButton>
           ))}
           {canReprintReceipt && (
@@ -1432,7 +1436,7 @@ async function buildTimeline(
     };
 
     if (head.is_air_transfer) {
-      // 空中轉：店對店直送，全程不經總倉 —— 出貨由轉出店自己在來源訂單上按
+      // 空中轉：店對店直送，全程不經總倉 —— 轉單當下就自動出貨（無派貨步驟）
       return [
         sourceStep,
         {
@@ -1440,8 +1444,8 @@ async function buildTimeline(
           ts: null,
           done: rank >= 3,
           detail: rank >= 3
-            ? "（已出庫、轉移單已建立）"
-            : `（等 ${srcStoreName} 在來源訂單按「✈ 出貨」）`,
+            ? "（轉單時已自動出庫、轉移單已建立）"
+            : `（等 ${srcStoreName} 在來源訂單按「✈ 補出貨」）`,
         },
         {
           label: "分店收貨",
