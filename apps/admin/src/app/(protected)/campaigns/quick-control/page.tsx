@@ -91,6 +91,18 @@ const CREATE_TYPES: { value: CreateCloseType; label: string; hint: string }[] = 
   { value: "food_train", label: "美食列車", hint: "美食列車專區" },
 ];
 
+function errorText(e: unknown) {
+  if (e instanceof Error && e.message) return e.message;
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object") {
+    const value = e as { message?: unknown; details?: unknown; hint?: unknown; error?: unknown };
+    return [value.message, value.details, value.hint, value.error]
+      .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+      .join(" / ") || JSON.stringify(e);
+  }
+  return "操作失敗，請稍後再試";
+}
+
 const STORAGE_TYPES: { value: Exclude<StorageType, null>; label: string }[] = [
   { value: "room_temp", label: "常溫" },
   { value: "refrigerated", label: "冷藏" },
@@ -348,7 +360,7 @@ export default function QuickCampaignControlPage() {
       setSoldMap(nextSold);
       setEndAtDraft(Object.fromEntries(campaigns.map((r) => [r.id, editableEndAt(r.end_at)])));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setLoading(false);
     }
@@ -385,7 +397,7 @@ export default function QuickCampaignControlPage() {
         if (productErr) throw productErr;
         if (alive) setProductRows((data ?? []) as unknown as ProductRow[]);
       } catch (e) {
-        if (alive) setError(e instanceof Error ? e.message : String(e));
+        if (alive) setError(errorText(e));
       } finally {
         if (alive) {
           setProductSearching(false);
@@ -437,7 +449,7 @@ export default function QuickCampaignControlPage() {
       setDeltaDraft((cur) => ({ ...cur, [row.id]: "" }));
       setNotice(successText);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setBusyId(null);
     }
@@ -460,7 +472,7 @@ export default function QuickCampaignControlPage() {
       setRows((cur) => cur.map((r) => (r.id === row.id ? { ...r, status: "closed" } : r)));
       setNotice(`${row.name} 已關團`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setBusyId(null);
     }
@@ -562,7 +574,7 @@ export default function QuickCampaignControlPage() {
       }
       setPriceMap(nextPrices);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setSkuLoading(false);
     }
@@ -819,7 +831,7 @@ export default function QuickCampaignControlPage() {
       setItemCapDraft({});
       void load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setCreateBusy(false);
     }
