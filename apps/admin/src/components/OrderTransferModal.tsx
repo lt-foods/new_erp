@@ -41,6 +41,7 @@ export function OrderTransferModal({
   onClose,
   onSubmitted,
   sameStoreOnly = false,
+  partialOnly = false,
 }: {
   orderId: number;
   orderNo: string;
@@ -53,6 +54,10 @@ export function OrderTransferModal({
   // 貨還沒到店（status != 'ready'）只能同店換客人：接收店鎖定原店
   // (跟 DB rpc_transfer_order_* 20260807000000 的 gate 一致)
   sameStoreOnly?: boolean;
+  // 部分取貨（partially_completed）的單：整單轉出會把已取走品項的營收標成
+  // transferred_out 整張歸零，所以「全選全量」也強制走部分轉出 RPC
+  // （剩餘 active 全轉走後原單由 _close_orders_all_items_settled 收尾成 completed）
+  partialOnly?: boolean;
 }) {
   const [stores, setStores] = useState<Store[]>([]);
   const [toStore, setToStore] = useState<number | "">("");
@@ -167,8 +172,10 @@ export function OrderTransferModal({
       return;
     }
 
-    // 整單轉出 = 全部品項都勾選且都轉全量；否則走部分轉出
+    // 整單轉出 = 全部品項都勾選且都轉全量；否則走部分轉出。
+    // partialOnly（來源單已有取走品項）時全選全量也走部分轉出
     const isFull =
+      !partialOnly &&
       chosen.length === items.length &&
       chosen.every((c) => c.qty === c.item.qty);
 
@@ -450,7 +457,9 @@ export function OrderTransferModal({
             </div>
           )}
           <span className="text-[11px] text-zinc-400">
-            預設全選全量 = 整單轉出；取消勾選或減少數量 = 部分轉出（原單保留剩餘）
+            {partialOnly
+              ? "此單已有品項取走：只會轉出勾選的未取品項，已取走的營收留在原單；未取品項全轉走後原單自動結案"
+              : "預設全選全量 = 整單轉出；取消勾選或減少數量 = 部分轉出（原單保留剩餘）"}
           </span>
         </div>
 

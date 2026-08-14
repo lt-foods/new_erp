@@ -573,9 +573,15 @@ export function OrderDetail({
   // 互助單：有來源單 + 至少一個 aid_transfer 品項（對齊 rpc_return_aid_order 的判定）
   const isAidOrder = head.transferred_from_order_id != null && items.some((it) => it.source === "aid_transfer");
   // 跨店轉單要等到貨（status='ready'）；同店換客人到貨前也可轉
-  // (跟 DB rpc_transfer_order_* 20260807000000 的 gate 一致；modal 會鎖定接收店＝原店)
+  // (跟 DB rpc_transfer_order_* 20260814000020 的 gate 一致；modal 會鎖定接收店＝原店)
   const transferBeforeArrival = ["pending", "confirmed", "reserved", "shipping"].includes(head.status);
-  const canTransfer = head.status === "ready" || transferBeforeArrival;
+  // 部分取貨的單也能轉剩餘品項（20260814000020）：內部現貨池臨櫃賣掉一件就進
+  // partially_completed，不開放等於池子賣過一次就不能再轉給客人。
+  // 已取走的品項不會進轉移清單（modal 吃 pickableItems），且一律走部分轉出 RPC。
+  const transferAfterPartialPickup =
+    head.status === "partially_completed" &&
+    items.some((it) => ["pending", "reserved", "ready"].includes(it.status));
+  const canTransfer = head.status === "ready" || transferBeforeArrival || transferAfterPartialPickup;
   const canCancel = ["pending", "confirmed", "shipping"].includes(head.status);
   // 還沒到貨（pending/confirmed/shipping）也可以列印小白單；ready 透過 PickupDialog 已有入口。
   // partially_completed 也開放（對齊 /orders 列表）— 小白單只列還沒取的品項，已取走的不會重複出現。
@@ -1264,7 +1270,8 @@ export function OrderDetail({
         onClose={() => setTransferOpen(false)}
         orderId={head.id}
         orderNo={head.order_no}
-        sameStoreOnly={head.status !== "ready"}
+        sameStoreOnly={!["ready", "partially_completed"].includes(head.status)}
+        partialOnly={head.status === "partially_completed"}
         currentPickupStoreId={head.pickup_store_id}
         currentMemberLabel={memberLabel}
         items={pickableItems
