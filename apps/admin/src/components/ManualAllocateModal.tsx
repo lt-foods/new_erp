@@ -26,8 +26,15 @@ import {
 //
 // 可配量算法跟自動配單（_advance_arrived_confirmed_orders）同一套：整單每個
 // 品項都裝得下才能配、不拆單。送出時伺服端會再驗一次，勾了但裝不下的單會被
-// 跳過並回報，不會硬推。例外：派貨中的單本來就是這批貨的主人，重勾不受
-// 額度擋（伺服端與收貨邏輯 C 同樣不驗量）。
+// 跳過並回報，不會硬推。
+//
+// **貨不夠分時，派貨中的單也一樣受額度擋**（Alex 2026-08-14：「少的也不能全部
+// 訂單都可以勾選」）。派貨中＝出貨時就配給他的，所以預設**依訂單時間由早到晚
+// 勾到額度用完為止**，勾不下的留空 —— 那些單確認收貨時會被拉回「已確認」，
+// 客人畫面回到「待到貨」等下一批。這一關只能在前端做：伺服端收貨邏輯 C 是
+// qty-blind 的（20260814000000），它只認「這張單還是不是 shipping」，
+// 所以「不勾＝先拉回 confirmed」就是唯一攔得住的閘門，額度用完還能繼續勾
+// 的話等於把不存在的貨許給客人。
 
 export type ReceiveLine = { transfer_item_id: number; qty_received: number };
 
@@ -186,22 +193,34 @@ export function ManualAllocateModal({
         arrived: Boolean(o.arrived),
         items: (o.items ?? []).map((i) => ({ sku_id: i.sku_id, qty: Number(i.qty) })),
       }));
-      setData({
-        // 可配上限 = 既有可配（可能為負；伺服端已把畫面上的派貨中單從「已承諾」
-        // 排除）+ 本次到貨 —— 跟確認收貨後伺服端算出的預算一致
-        budget: (raw.budget ?? []).map((b) => ({
-          sku_id: b.sku_id,
-          sku_code: b.sku_code,
-          name: b.name,
-          cap: Number(b.available) + (incMap.get(b.sku_id) ?? 0),
-          pool: Number(b.pool) || 0,
-        })),
-        incoming,
-        orders,
-        waiting_count: 0,
-      });
-      // 派貨中的單＝這批貨出貨時就配給他的，預設勾選；取消勾選＝拉回讓貨
-      setSelected(new Set(orders.filter((o) => o.status === "shipping").map((o) => o.order_id)));
+      // 可配上限 = 既有可配（可能為負；伺服端已把畫面上的派貨中單從「已承諾」
+      // 排除）+ 本次到貨 —— 跟確認收貨後伺服端算出的預算一致
+      const budgetRows = (raw.budget ?? []).map((b) => ({
+        sku_id: b.sku_id,
+        sku_code: b.sku_code,
+        name: b.name,
+        cap: Number(b.available) + (incMap.get(b.sku_id) ?? 0),
+        pool: Number(b.pool) || 0,
+      }));
+      setData({ budget: budgetRows, incoming, orders, waiting_count: 0 });
+
+      // 派貨中的單＝這批貨出貨時就配給他的，預設勾選；取消勾選＝拉回讓貨。
+      // 貨不夠分時**只勾到額度用完為止**（依訂單時間由早到晚，orders 已由
+      // 伺服端 ORDER BY created_at, order_no 排好）—— 全部勾起來就是把不存在
+      // 的貨許給客人，勾不下的確認時會被拉回「已確認」等下一批。
+      const capOf = new Map(budgetRows.map((b) => [b.sku_id, b.cap]));
+      const used = new Map<number, number>();
+      const pre = new Set<number>();
+      for (const o of orders) {
+        if (o.status !== "shipping") continue;
+        const ok = o.items.every(
+          (it) => it.qty <= (capOf.get(it.sku_id) ?? 0) - (used.get(it.sku_id) ?? 0),
+        );
+        if (!ok) continue;
+        pre.add(o.order_id);
+        for (const it of o.items) used.set(it.sku_id, (used.get(it.sku_id) ?? 0) + it.qty);
+      }
+      setSelected(pre);
     }
   }, [mode]);
 
@@ -250,9 +269,9 @@ export function ManualAllocateModal({
     setSelected((cur) => {
       const next = new Set(cur);
       if (next.has(o.order_id)) next.delete(o.order_id);
-      // 派貨中的單本來就是這批貨的主人：重勾不受剩餘額度擋
-      //（伺服端與收貨邏輯 C 同樣不對它驗量），取消勾選過的人才能反悔
-      else if (fits(o) || o.status === "shipping") next.add(o.order_id);
+      // 派貨中的單也受額度擋：貨不夠分時不能全部勾（會許出不存在的貨）。
+      // 要改配給別人 → 先取消勾別張，額度空出來才勾得起來。
+      else if (fits(o)) next.add(o.order_id);
       return next;
     });
   }
@@ -309,6 +328,17 @@ export function ManualAllocateModal({
 
   const selectedCount = selected.size;
   const isReceive = mode.kind === "receive";
+
+  // 貨不夠分 → 有幾張「運送中」的單勾不起來（確認時會被拉回「已確認」）。
+  // 只是把 checkbox 變灰的話店員會以為是壞掉，這裡明講會發生什麼事。
+  const shortShipping = useMemo(
+    () =>
+      isReceive
+        ? data?.orders.filter((o) => o.status === "shipping" && !selected.has(o.order_id)).length ??
+          0
+        : 0,
+    [isReceive, data, selected],
+  );
 
   async function save() {
     if (!data || busy) return;
@@ -471,10 +501,18 @@ export function ManualAllocateModal({
             <p className="text-sm text-zinc-600 dark:text-zinc-300">
               {isReceive
                 ? "勾選要配到貨的訂單，按「確認收貨」才會完成收貨；關閉視窗則不收貨。" +
-                  "「運送中」的訂單出貨時就是配給他的、已預先勾好 — 取消勾選會把該單" +
-                  "退回「已確認」，把這批貨讓給別人。"
+                  "「運送中」的訂單出貨時就是配給他的，已依訂單時間先後預先勾到" +
+                  "這批貨分完為止 — 取消勾選會把該單退回「已確認」，把這批貨讓給別人。"
                 : "勾選要先拿到貨的訂單 — 沒勾的維持原狀，下一批貨到時再配即可。"}
             </p>
+
+            {shortShipping > 0 && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                ⚠️ 這批貨不夠分：有 <b>{shortShipping}</b> 張「運送中」的訂單勾不起來。
+                確認收貨後它們會退回「已確認」（客人畫面變回「待到貨」），下一批貨到時可再配。
+                要優先配給其中某一張，先取消勾別張、額度空出來就勾得起來了。
+              </div>
+            )}
 
             {/* 各 SKU 剩餘可配量 */}
             {visibleBudget.length > 0 && (
@@ -523,7 +561,7 @@ export function ManualAllocateModal({
                 <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
                   {data.orders.map((o) => {
                     const checked = selected.has(o.order_id);
-                    const canCheck = checked || fits(o) || o.status === "shipping";
+                    const canCheck = checked || fits(o);
                     return (
                       <tr
                         key={o.order_id}
@@ -535,7 +573,14 @@ export function ManualAllocateModal({
                             ? "cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-950"
                             : "opacity-50"
                         }
-                        title={canCheck ? undefined : "剩餘可配量不夠整張單，先取消別張才能勾"}
+                        title={
+                          canCheck
+                            ? undefined
+                            : o.status === "shipping"
+                            ? "這批貨不夠分到這張單 — 確認收貨時會退回「已確認」等下一批。" +
+                              "要優先配給他就先取消勾別張，額度空出來才勾得起來。"
+                            : "剩餘可配量不夠整張單，先取消別張才能勾"
+                        }
                       >
                         <td className="px-3 py-2">
                           <input
