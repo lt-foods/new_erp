@@ -1,14 +1,15 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { useRole, isAdmin } from "@/lib/role";
 import { CAMPAIGN_STATUS_LABEL, type CampaignStatus } from "@/lib/campaignStatus";
+import { getNotifyTemplate, renderNotifyText, type CloseType } from "@/lib/campaignNotifyText";
 
-export type { CampaignStatus };
-export type CloseType = "regular" | "fast" | "limited" | "food_train";
+export type { CampaignStatus, CloseType };
 
 export type CampaignFormValues = {
   id: number | null;
@@ -24,6 +25,9 @@ export type CampaignFormValues = {
   total_cap_qty: number | null;
   notes: string | null;
   is_for_shop: boolean;
+  listing_notify_enabled: boolean;
+  listing_notify_at: string | null;
+  listing_notify_sent_at: string | null;
 };
 
 export const emptyCampaignValues: CampaignFormValues = {
@@ -40,6 +44,9 @@ export const emptyCampaignValues: CampaignFormValues = {
   total_cap_qty: null,
   notes: null,
   is_for_shop: true,
+  listing_notify_enabled: false,
+  listing_notify_at: null,
+  listing_notify_sent_at: null,
 };
 
 // 使用者可手動切換的狀態僅 3 個；ordered / receiving / ready / completed / cancelled
@@ -84,6 +91,10 @@ export function CampaignForm({
         throw new Error("快團必須設定「收單時間」(在下方欄位輸入)");
       }
 
+      if (v.listing_notify_enabled && !v.listing_notify_at) {
+        throw new Error("已開啟上架通知，請設定發送時間");
+      }
+
       // 開團驗證：status='open' 時、所有關聯商品需為 'active'（不可有 draft 商品）
       if (v.status === "open" && v.id != null) {
         const sb = getSupabase();
@@ -125,17 +136,24 @@ export function CampaignForm({
         p_total_cap_qty: v.total_cap_qty,
         p_notes: v.notes,
         p_is_for_shop: v.is_for_shop,
+        p_listing_notify_enabled: v.listing_notify_enabled,
+        p_listing_notify_at: v.listing_notify_at,
       });
       if (err) throw err;
       const newId = Number(data);
 
       // 美食列車且 status 從非 open → open 時, 廣播推播給全 tenant 顧客
       // (失敗不阻擋儲存; 顯示警告但仍視為成功)
-      if (v.close_type === "food_train" && v.status === "open" && !wasOpen) {
+      // 有排定上架通知的話交給排程發，這裡不重複廣播
+      if (v.close_type === "food_train" && v.status === "open" && !wasOpen && !v.listing_notify_enabled) {
         try {
           await broadcastFoodTrainOpen({
             campaignId: newId,
-            campaignName: (v.name || "美食列車").trim(),
+            campaign: {
+              name: (v.name || "美食列車").trim(),
+              campaign_no: v.campaign_no,
+              end_at: v.end_at,
+            },
           });
         } catch (broadcastErr) {
           console.error("food_train broadcast failed:", broadcastErr);
@@ -190,7 +208,9 @@ export function CampaignForm({
           </select>
           {v.close_type === "food_train" && v.status === "open" && (initial?.status ?? null) !== "open" && (
             <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-              儲存後將推播給所有未取消通知的顧客。
+              {v.listing_notify_enabled
+                ? "已排定上架通知，將於排定時間推播（儲存時不立即廣播）。"
+                : "儲存後將推播給所有未取消通知的顧客。"}
             </p>
           )}
         </Field>
@@ -290,6 +310,71 @@ export function CampaignForm({
           onToggle={() => update("is_for_shop", !v.is_for_shop)}
           ariaLabel="上架個人賣場"
         />
+      </div>
+
+      <div className="rounded-md border border-zinc-200 px-3 py-2.5 dark:border-zinc-700">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">上架通知</span>
+            <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+              於排定時間推播「新團上架」給全體會員；文本依收單類型套用（可自訂）。
+              排定時間到時本團須為「開團中」且已上架個人賣場，還沒開團就等開團後才發。
+            </span>
+          </div>
+          <SwitchToggle
+            checked={v.listing_notify_enabled}
+            onToggle={() => {
+              setV((prev) => ({
+                ...prev,
+                listing_notify_enabled: !prev.listing_notify_enabled,
+                // 開啟且還沒設定時間 → 預設早上 10:00
+                listing_notify_at:
+                  !prev.listing_notify_enabled && !prev.listing_notify_at
+                    ? defaultListingNotifyAt(prev.start_at)
+                    : prev.listing_notify_at,
+              }));
+            }}
+            ariaLabel="上架通知"
+          />
+        </div>
+        {v.listing_notify_enabled && (
+          v.listing_notify_sent_at ? (
+            <p className="mt-2 text-xs text-emerald-700 dark:text-emerald-400">
+              已於 {new Date(v.listing_notify_sent_at).toLocaleString("zh-TW", { hour12: false })} 發送過，不會再重複發送。
+            </p>
+          ) : (
+            <div className="mt-2 flex flex-col gap-1">
+              <input
+                type="datetime-local"
+                value={toDtLocal(v.listing_notify_at)}
+                onChange={(e) =>
+                  update("listing_notify_at", e.target.value ? new Date(e.target.value).toISOString() : null)
+                }
+                className={inputCls}
+                aria-label="上架通知時間"
+              />
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500">
+                <span>快速：</span>
+                {NOTIFY_QUICK.map((q) => (
+                  <SpinButton
+                    key={q.label}
+                    type="button"
+                    onClick={() => update("listing_notify_at", q.value())}
+                    className="rounded-md border border-zinc-200 px-2 py-0.5 text-[11px] hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                  >
+                    {q.label}
+                  </SpinButton>
+                ))}
+                <Link
+                  href="/campaigns/notify-templates"
+                  className="ml-auto text-[11px] text-blue-600 hover:underline dark:text-blue-400"
+                >
+                  編輯通知文本 →
+                </Link>
+              </div>
+            </div>
+          )
+        )}
       </div>
 
       <p className="text-xs text-zinc-500 dark:text-zinc-400">
@@ -453,19 +538,50 @@ function SwitchToggle({
 const inputCls =
   "rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800";
 
-// 美食列車開團上架時, 廣播給全 tenant 顧客
+// 上架通知預設時間：早上 10:00。
+// 開團日（沒填就今天）的 10:00 已過 → 下一個早上 10:00。
+function defaultListingNotifyAt(startAt: string | null): string {
+  const now = new Date();
+  const d = startAt ? new Date(startAt) : new Date();
+  d.setHours(10, 0, 0, 0);
+  if (d <= now) {
+    d.setTime(now.getTime());
+    d.setHours(10, 0, 0, 0);
+    if (d <= now) d.setDate(d.getDate() + 1);
+  }
+  return d.toISOString();
+}
+
+const NOTIFY_QUICK: { label: string; value: () => string }[] = [
+  {
+    label: "明早 10:00",
+    value: () => {
+      const d = new Date();
+      d.setDate(d.getDate() + 1);
+      d.setHours(10, 0, 0, 0);
+      return d.toISOString();
+    },
+  },
+  {
+    label: "下一個早上 10:00",
+    value: () => defaultListingNotifyAt(null),
+  },
+];
+
+// 美食列車開團上架時, 廣播給全 tenant 顧客（文字吃 close_type 對應的通知文本）
 async function broadcastFoodTrainOpen({
   campaignId,
-  campaignName,
+  campaign,
 }: {
   campaignId: number;
-  campaignName: string;
+  campaign: { name: string; campaign_no: string; end_at: string | null };
 }): Promise<void> {
   const sb = getSupabase();
   const { data: { session } } = await sb.auth.getSession();
   if (!session) throw new Error("尚未登入");
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   if (!supabaseUrl) throw new Error("NEXT_PUBLIC_SUPABASE_URL 未設定");
+  const tpl = await getNotifyTemplate("food_train");
   const resp = await fetch(`${supabaseUrl}/functions/v1/admin-notify`, {
     method: "POST",
     headers: {
@@ -475,8 +591,8 @@ async function broadcastFoodTrainOpen({
     body: JSON.stringify({
       broadcast: true,
       category: "food_train",
-      title: "美食列車新團上架",
-      message: campaignName,
+      title: renderNotifyText(tpl.title, campaign),
+      message: renderNotifyText(tpl.body, campaign),
       url: `/shop/c/${campaignId}`,
     }),
   });
