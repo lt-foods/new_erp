@@ -58,12 +58,14 @@ export type AppOrderRow = {
 type Phase = "waiting" | "pickup" | "done" | "void" | "transferred";
 type Tab = "all" | "waiting" | "pickup" | "done" | "void";
 
+// 「全部」放最後、預設落在「待到貨」＝會員 app（2026-08-13：預設「全部」會讓
+// 待取貨跟未到貨混排，客人以為全到貨跑來撲空）
 const TAB_LABEL: Record<Tab, string> = {
-  all: "全部",
   waiting: "待到貨",
   pickup: "待取貨",
   done: "已完成",
   void: "不成立",
+  all: "全部",
 };
 
 // = apps/member/src/components/OrderCard.tsx 的 orderPhase（分桶 + 右上角狀態字）
@@ -198,7 +200,7 @@ export function MemberOrdersAppView({
   onOpenOrder: (id: number, orderNo: string) => void;
 }) {
   const { buckets, loading, err } = data;
-  const [tab, setTab] = useState<Tab>("all");
+  const [tab, setTab] = useState<Tab>("waiting");
 
   const bucket = buckets[tab];
   // = 會員 app orders/page.tsx：應付總金額只在待到貨 / 待取貨顯示
@@ -274,6 +276,9 @@ export function MemberOrdersAppView({
   );
 }
 
+// 品項的「還沒取」集合 = rpc_record_pickup 的 v_active_remaining 同一套
+const ACTIVE_ITEM_STATUSES = ["pending", "reserved", "ready"];
+
 // = apps/member/src/components/OrderCard.tsx 的卡片內容（後台配色 + 可點擊）
 function AppOrderCard({ order, onClick }: { order: AppOrderRow; onClick: () => void }) {
   const phase = orderPhase(order);
@@ -283,6 +288,21 @@ function AppOrderCard({ order, onClick }: { order: AppOrderRow; onClick: () => v
     (s, i) => (["cancelled", "expired"].includes(i.status) ? s : s + Number(i.qty ?? 0)),
     0,
   );
+  // = 會員端 OrderCard：部分取貨時逐行標「已取 / 未取」，客服看到的跟
+  // 團友手機上的一致（2026-08-13 中和店客訴：分不出哪行取了）
+  const showPickChips =
+    (order.items ?? []).some((i) => i.status === "picked_up") &&
+    (order.items ?? []).some((i) => ACTIVE_ITEM_STATUSES.includes(i.status));
+  const pickChip = (status: string) =>
+    !showPickChips ? null : status === "picked_up" ? (
+      <span className="ml-1.5 inline-block rounded bg-green-100 px-1 py-0.5 text-[10px] font-medium text-green-800 dark:bg-green-950 dark:text-green-300">
+        已取
+      </span>
+    ) : ACTIVE_ITEM_STATUSES.includes(status) ? (
+      <span className="ml-1.5 inline-block rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+        未取
+      </span>
+    ) : null;
   const outstanding = Number(order.outstanding_amount ?? NaN);
   const partlyPaid =
     Number.isFinite(outstanding) && outstanding > 0 && outstanding < Number(order.payable_amount ?? 0);
@@ -329,6 +349,7 @@ function AppOrderCard({ order, onClick }: { order: AppOrderRow; onClick: () => v
                     斷貨
                   </span>
                 )}
+                {pickChip(it.status)}
               </div>
               <div className="text-xs text-zinc-500">
                 {fmtAmount(it.unit_price)} × {it.qty}

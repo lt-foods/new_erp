@@ -12,6 +12,8 @@ import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
 import PickupAgingPanel from "@/components/PickupAgingPanel";
 import { dropPickupRecent, getPickupRecents, recordPickupRecent, type RecentCustomer } from "@/lib/pickupRecents";
+import { useMyStores, useRole } from "@/lib/role";
+import { useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 import { publicProductUrl } from "@/lib/campaignCover";
 import { parseReturnNote } from "@/lib/returnNote";
 import { fetchReprintableEvents, pickupEventLabel, type PickupEventRow } from "@/lib/pickupReceipt";
@@ -96,6 +98,36 @@ function PickupPageContent() {
   // 之後的重查（取貨後 reload、切換未取/已取）就沒有關鍵字可用 → 會誤報「請至少輸入 2 字」。
   const lastSearchRef = useRef("");
 
+  // 取貨只能按照店家：分店帳號（store_manager / store_staff + app_metadata.stores
+  // 非空且不含「總倉」）只顯示、只能操作「自己店」的訂單 —— 跨店按取貨會扣到
+  // 別店的庫存帳、客人也拿不到貨。rpc_record_pickup 有同款後端守衛
+  // （20260813000000_pickup_store_guard.sql），這裡藏掉入口讓櫃台不會誤按。
+  const role = useRole();
+  const myStores = useMyStores();
+  const branchLocked =
+    (role === "store_manager" || role === "store_staff") &&
+    myStores.length > 0 &&
+    !myStores.includes("總倉");
+  // stores 清單只給貨齡面板換算 store id 用（多店帳號沿用 useUserBranchStoreId
+  // 慣例取第一個 match；訂單過濾直接比店名，不等這份清單載完）
+  const [storeList, setStoreList] = useState<{ id: number; name: string }[]>([]);
+  useEffect(() => {
+    (async () => {
+      const { data } = await getSupabase().from("stores").select("id, name").order("name");
+      setStoreList((data as { id: number; name: string }[]) ?? []);
+    })();
+  }, []);
+  const branchStoreId = useUserBranchStoreId(storeList);
+
+  function isOwnStoreOrder(o: OpenOrder): boolean {
+    return o.store?.name != null && myStores.includes(o.store.name);
+  }
+  // 分店帳號看到的該會員訂單（其他店的單以摘要提示呈現，不進這份清單）
+  function visibleOrdersOf(memberId: number): OpenOrder[] {
+    const all = orders.get(memberId) ?? [];
+    return branchLocked ? all.filter(isOwnStoreOrder) : all;
+  }
+
   // 該品項未取退貨量 / 扣掉已退後仍可取量
   function returnedOf(it: OpenOrder["items"][number]): number {
     return returnedByItem.get(it.id) ?? 0;
@@ -104,9 +136,10 @@ function PickupPageContent() {
     return Math.max(0, Number(it.qty) - returnedOf(it));
   }
 
-  // 可取貨品項：ready 單＝全部 active 品項；shipping / partially_completed 單＝
-  // 逐品項看到貨狀態（部分到貨的單可先取已到的品項）。
-  // itemReady 查無資料時的 fallback 沿用舊行為：partially_completed 可取、shipping 不可取。
+  // 可取貨品項：ready 單＝全部 active 品項；shipping / pending / confirmed /
+  // partially_completed 單＝逐品項看取貨閘門（部分到貨的單可先取已到的品項）。
+  // itemReady 查無資料時的 fallback 沿用舊行為：partially_completed 可取、
+  // shipping / pending / confirmed 不可取（要閘門明確 true 才放行）。
   // 一律排除「量已被未取退貨蓋掉」的品項行（退回總倉的貨不可再取）。
   function pickableItems(order: OpenOrder) {
     const act = activeItems(order).filter((it) => remainingQty(it) > 0);
@@ -116,14 +149,26 @@ function PickupPageContent() {
     if (order.status === "ready") return act.filter((it) => itemReady.get(it.id) !== false);
     if (order.status === "partially_completed") return act.filter((it) => itemReady.get(it.id) !== false);
     if (order.status === "shipping") return act.filter((it) => itemReady.get(it.id) === true);
+    // 現貨配單（rpc_create_offset_sale）配給客人後訂單停在 pending／confirmed，
+    // 取貨時才扣庫存收款；貨本來就在店裡，閘門 Path D 認減抵單 → 這些品項 pickup_ready = true。
+    // 原本這裡整段 return [] → 已經配好、店裡明明有貨的單在取貨頁按不動。
+    // 用嚴格 === true（不是 !== false）：只有閘門明確說可取（例如有有效減抵單覆蓋）
+    // 才放行，貨真的還沒到的 pending / confirmed 單（含查無閘門資料）一律仍擋。
+    if (order.status === "pending" || order.status === "confirmed") {
+      return act.filter((it) => itemReady.get(it.id) === true);
+    }
     return [];
   }
   function isPickable(order: OpenOrder): boolean {
     return pickableItems(order).length > 0;
   }
-  // 該品項是否為「少發沒配到」→ 取貨頁要明講待補貨，不要只是消失
+  // 該品項是否為「少發沒配到」→ 取貨頁要明講待補貨，不要只是消失。
+  // 只認 ready / partially_completed：這兩種單的貨已經到店，閘門 false 就是被少發配貨
+  // 標成待補貨。pending / confirmed / shipping 的 false 絕大多數只是「還沒到貨」，
+  // 標成待補貨會讓店員誤以為配貨少給、跑去追不存在的補貨。
   function isBackordered(order: OpenOrder, it: OpenOrder["items"][number]): boolean {
-    return order.status !== "shipping" && itemReady.get(it.id) === false;
+    return (order.status === "ready" || order.status === "partially_completed")
+      && itemReady.get(it.id) === false;
   }
 
   const [pickup, setPickup] = useState<{ orderId: number; orderNo: string } | null>(null);
@@ -340,7 +385,7 @@ function PickupPageContent() {
   // 已取貨模式：算出「這次要印哪些」。沒勾任何東西＝該會員全部已取品項。
   // 一次只印一個會員 — 列印頁的表頭與合計都取第一張的會員，跨會員合印會印錯人。
   function pickedSelection(member: Member) {
-    const memberOrders = (orders.get(member.id) ?? []).filter((o) => pickedItemsOf(o).length > 0);
+    const memberOrders = visibleOrdersOf(member.id).filter((o) => pickedItemsOf(o).length > 0);
     const anySelected = memberOrders.some((o) => orderSelState(o) !== "none");
     const groups = memberOrders
       .map((o) => ({
@@ -388,7 +433,7 @@ function PickupPageContent() {
 
   async function bulkPickAllConfirmed(member: Member) {
     const memberId = member.id;
-    const allMemberOrders = (orders.get(memberId) ?? []).filter((o) => isPickable(o));
+    const allMemberOrders = visibleOrdersOf(memberId).filter((o) => isPickable(o));
     // 若有勾選 → 只取勾選的（且可取貨）；無勾選 → 全取
     const memberSelected = allMemberOrders.filter((o) => selected.has(o.id));
     const memberOrders = memberSelected.length > 0 ? memberSelected : allMemberOrders;
@@ -612,9 +657,14 @@ function PickupPageContent() {
             ? "輸入 姓名 / 電話末 N 碼 / 會員編號 → 找出本人未取訂單 → 確認取貨。"
             : "輸入 姓名 / 電話末 N 碼 / 會員編號 → 找出本人已取訂單 → 勾選後合併補印收據。"}
         </p>
+        {branchLocked && (
+          <p className="mt-1 text-xs font-medium text-amber-700 dark:text-amber-400">
+            🔒 分店帳號：僅顯示、僅能操作 {myStores.join("、")} 的訂單，其他分店的訂單請由該店取貨。
+          </p>
+        )}
       </header>
 
-      <PickupAgingPanel />
+      <PickupAgingPanel storeId={branchLocked ? branchStoreId : null} />
 
       {/* 未取貨 ↔ 已取貨：同一個搜尋框，切換時直接重查 */}
       <div className="flex gap-1 rounded-md border border-zinc-200 bg-zinc-50 p-1 text-sm dark:border-zinc-800 dark:bg-zinc-900 sm:w-fit">
@@ -716,7 +766,12 @@ function PickupPageContent() {
         ) : (
           <div className="space-y-3">
             {members.map((m) => {
-              const memberOrders = orders.get(m.id) ?? [];
+              const memberOrders = visibleOrdersOf(m.id);
+              // 分店帳號：其他店的單不列出、不可操作，只給一行摘要讓櫃台答得出
+              // 「客人在別店還有幾張」（取貨/補印都要由該店操作）
+              const hiddenOrders = branchLocked
+                ? (orders.get(m.id) ?? []).filter((o) => !isOwnStoreOrder(o))
+                : [];
               return (
                 <div key={m.id} className="rounded-md border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
                   <div className="mb-2 flex flex-wrap items-baseline gap-2">
@@ -771,7 +826,7 @@ function PickupPageContent() {
                   </div>
                   {mode === "picked" ? (
                     memberOrders.length === 0 ? (
-                      <p className="text-xs text-zinc-500">無已取訂單。</p>
+                      <p className="text-xs text-zinc-500">{branchLocked ? "本店無已取訂單。" : "無已取訂單。"}</p>
                     ) : (
                       <ul className="space-y-2">
                         {memberOrders.map((o) => {
@@ -866,7 +921,7 @@ function PickupPageContent() {
                       </ul>
                     )
                   ) : memberOrders.length === 0 ? (
-                    <p className="text-xs text-zinc-500">無未取訂單。</p>
+                    <p className="text-xs text-zinc-500">{branchLocked ? "本店無未取訂單。" : "無未取訂單。"}</p>
                   ) : (
                     <ul className="space-y-2">
                       {memberOrders.map((o) => {
@@ -998,10 +1053,10 @@ function PickupPageContent() {
                               && !(o.status === "ready" && o.transferred_from_order_id != null) && (
                               <SpinButton
                                 onClick={() => setReturnTarget({ orderId: o.id, storeId: o.pickup_store_id ?? o.store?.id ?? null })}
-                                title="已收貨，無法取消；點此退貨回總倉（反向回收已派庫存）"
+                                title="已收貨，無法取消；點此把貨從本店扣掉、送回總倉（反向回收已派庫存）。若只是要換人拿，請改用「↗ 轉給別人」"
                                 className="rounded-md border border-orange-300 px-2 py-2 text-xs font-medium text-orange-700 hover:bg-orange-50 dark:border-orange-800 dark:text-orange-300 dark:hover:bg-orange-950"
                               >
-                                ↩ 退貨
+                                ↩ 退貨回總倉
                               </SpinButton>
                             )}
                             {/* 互助單已收貨：退回原調出店（貨源是分店不是總倉） */}
@@ -1029,6 +1084,20 @@ function PickupPageContent() {
                       })}
                     </ul>
                   )}
+                  {hiddenOrders.length > 0 && (() => {
+                    const byStore = new Map<string, number>();
+                    for (const o of hiddenOrders) {
+                      const n = o.store?.name ?? "未設定取貨店";
+                      byStore.set(n, (byStore.get(n) ?? 0) + 1);
+                    }
+                    const summary = Array.from(byStore, ([n, c]) => `${n} ×${c}`).join("、");
+                    return (
+                      <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+                        🔒 另有 {hiddenOrders.length} 張{mode === "open" ? "未取" : "已取"}訂單在其他分店（{summary}）
+                        — {mode === "open" ? "請顧客至該店取貨" : "補印收據請由該店操作"}。
+                      </p>
+                    );
+                  })()}
                 </div>
               );
             })}
@@ -1156,7 +1225,7 @@ function PickupPageContent() {
         maxWidth="max-w-2xl"
       >
         {bulkConfirm && (() => {
-          const allMemberOrders = (orders.get(bulkConfirm.id) ?? []).filter((o) => isPickable(o));
+          const allMemberOrders = visibleOrdersOf(bulkConfirm.id).filter((o) => isPickable(o));
           const selectedHere = allMemberOrders.filter((o) => selected.has(o.id));
           const memberOrders = selectedHere.length > 0 ? selectedHere : allMemberOrders;
           const totalItems = memberOrders.reduce((s, o) => s + pickableItems(o).length, 0);

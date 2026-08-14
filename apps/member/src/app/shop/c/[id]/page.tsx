@@ -28,8 +28,10 @@ type CampaignDetail = {
   description: string | null;
   cover_image_url: string | null;
   status: string;
+  close_type: string | null;
   end_at: string | null;
   pickup_deadline: string | null;
+  total_cap_qty: number | null;
   /** 總瀏覽次數。後端未部署 track_campaign_view 前可能沒有這個欄位。 */
   view_count?: number;
 };
@@ -46,6 +48,19 @@ type Item = {
   ordered_qty: number;
 };
 
+function itemRemaining(item: Item): number | null {
+  const cap = Number(item.cap_qty ?? 0);
+  if (cap <= 0) return null;
+  return Math.max(0, cap - Number(item.ordered_qty ?? 0));
+}
+
+function itemOrderMax(item: Item, campaignRemaining: number | null, currentQty: number): number {
+  const remaining = itemRemaining(item);
+  const itemMax = remaining ?? 999;
+  const campaignMax = campaignRemaining == null ? 999 : currentQty + campaignRemaining;
+  return Math.max(0, Math.min(itemMax, campaignMax));
+}
+
 export default function CampaignDetailPage() {
   const router = useRouter();
   const params = useParams();
@@ -60,7 +75,6 @@ export default function CampaignDetailPage() {
   const [items, setItems] = useState<Item[]>([]);
   const [heroImages, setHeroImages] = useState<string[]>([]);
   const [qtyMap, setQtyMap] = useState<Record<number, number>>({});
-  const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   // 瀏覽次數：先用列表 hint 的值墊著，detail / track 回來再蓋掉（含本次瀏覽）
   const [viewCount, setViewCount] = useState<number>(() => hint?.view_count ?? 0);
@@ -73,7 +87,10 @@ export default function CampaignDetailPage() {
   // 把常駐下單列 / sheet portal 到 body，確保一定釘在 viewport（不受任何祖先
   // transform / filter 形成的 containing block 影響、不用滑到底才看得到）
   const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setMounted(true), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     consumeFragmentToSession();
@@ -101,8 +118,6 @@ export default function CampaignDetailPage() {
         }
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e));
-      } finally {
-        setLoading(false);
       }
     })();
   }, [id, router]);
@@ -144,8 +159,19 @@ export default function CampaignDetailPage() {
     return sum;
   }, [items, qtyMap]);
 
+  const orderedQtyTotal = items.reduce((s, it) => s + Number(it.ordered_qty ?? 0), 0);
+  const campaignRemaining = useMemo(() => {
+    const cap = Number(campaign?.total_cap_qty ?? 0);
+    if (cap <= 0) return null;
+    return Math.max(0, cap - orderedQtyTotal);
+  }, [campaign?.total_cap_qty, orderedQtyTotal]);
+  const hasAvailableItem = items.some((it) => itemOrderMax(it, campaignRemaining, 0) > 0);
+
   const setQty = (ciId: number, q: number, cap: number | null, orderedQty = 0) => {
-    const max = cap != null ? Math.max(0, cap - orderedQty) : 999;
+    const currentQty = qtyMap[ciId] ?? 0;
+    const maxByItem = cap != null ? Math.max(0, cap - orderedQty) : 999;
+    const maxByCampaign = campaignRemaining == null ? 999 : currentQty + campaignRemaining;
+    const max = Math.min(maxByItem, maxByCampaign);
     const next = Math.max(0, Math.min(max, q));
     setQtyMap((prev) => ({ ...prev, [ciId]: next }));
   };
@@ -173,7 +199,11 @@ export default function CampaignDetailPage() {
       });
       setDoneOrderNo(r.order_no);
     } catch (e) {
-      alert(`下單失敗：${e instanceof Error ? e.message : String(e)}`);
+      const message = e instanceof Error ? e.message : String(e);
+      const friendly = message.includes("sold out")
+        ? "已售完或數量不足，請重新整理後再選。"
+        : message;
+      alert(`下單失敗：${friendly}`);
     } finally {
       setSubmitting(false);
     }
@@ -199,7 +229,6 @@ export default function CampaignDetailPage() {
           : [];
 
   const showShell = !!campaign || !!hint;
-  const orderedQtyTotal = items.reduce((s, it) => s + Number(it.ordered_qty ?? 0), 0);
 
   return (
     <PageShell title={cleanCampaignText(displayName) || "商品"}>
@@ -242,6 +271,15 @@ export default function CampaignDetailPage() {
               </div>
               <ViewCount count={viewCount} size="md" />
 
+              {campaignRemaining !== null && (
+                <div className={`inline-flex rounded-full px-3 py-1 text-[14px] font-semibold ${
+                  campaignRemaining > 0
+                    ? "bg-[var(--brand-soft)] text-[var(--brand-strong)]"
+                    : "bg-zinc-100 text-zinc-600"
+                }`}>
+                  {campaignRemaining > 0 ? `本團剩 ${campaignRemaining} 份` : "本團已售完"}
+                </div>
+              )}
 
               {displayDescription && (() => {
                 const desc = cleanCampaignText(displayDescription);
@@ -277,10 +315,12 @@ export default function CampaignDetailPage() {
                 ) : (
                   items.map((it, idx) => {
                     const q = qtyMap[it.campaign_item_id] ?? 0;
+                    const remaining = itemRemaining(it);
+                    const soldOut = itemOrderMax(it, campaignRemaining, q) <= 0 && q === 0;
                     return (
                       <div
                         key={it.campaign_item_id}
-                        className={`flex items-center gap-3 px-4 py-3.5 ${idx === items.length - 1 ? "" : "border-b border-[var(--separator)]"}`}
+                        className={`flex items-center gap-3 px-4 py-3.5 ${idx === items.length - 1 ? "" : "border-b border-[var(--separator)]"} ${soldOut ? "opacity-60" : ""}`}
                       >
                         <SkuThumb url={it.image_url} />
                         <div className="min-w-0 flex-1">
@@ -303,8 +343,17 @@ export default function CampaignDetailPage() {
                               </div>
                             )}
                           </div>
+                          {remaining !== null && (
+                            <div className={`mt-1 text-[12px] font-semibold ${remaining > 0 ? "text-[#c4271d]" : "text-zinc-500"}`}>
+                              {remaining > 0 ? `剩 ${remaining} 份` : "此規格已售完"}
+                            </div>
+                          )}
                         </div>
-                        {q > 0 && (
+                        {soldOut ? (
+                          <span className="shrink-0 rounded-full bg-zinc-100 px-2.5 py-1 text-[13px] font-semibold text-zinc-600">
+                            售完
+                          </span>
+                        ) : q > 0 && (
                           <span className="shrink-0 rounded-full bg-[var(--brand-soft)] px-2.5 py-1 text-[13px] font-semibold text-[var(--brand-strong)]">
                             已選 ×{q}
                           </span>
@@ -336,9 +385,14 @@ export default function CampaignDetailPage() {
             )}
             <button
               onClick={() => setSheetOpen(true)}
-              className="flex-1 rounded-full brand-gradient py-3.5 text-[17px] font-bold text-white shadow-[0_8px_20px_-8px_rgba(158,47,80,0.6)] transition-transform active:scale-[0.99]"
+              disabled={!hasAvailableItem}
+              className={`flex-1 rounded-full py-3.5 text-[17px] font-bold text-white transition-transform active:scale-[0.99] ${
+                hasAvailableItem
+                  ? "brand-gradient shadow-[0_8px_20px_-8px_rgba(158,47,80,0.6)]"
+                  : "bg-zinc-400 opacity-60 shadow-none"
+              }`}
             >
-              {totalQty > 0 ? "送出訂單" : "選擇規格・立即下單"}
+              {!hasAvailableItem ? "已售完" : totalQty > 0 ? "送出訂單" : "選擇規格・立即下單"}
             </button>
           </div>
         </div>
@@ -353,6 +407,7 @@ export default function CampaignDetailPage() {
           onQty={setQty}
           totalQty={totalQty}
           totalAmount={totalAmount}
+          campaignRemaining={campaignRemaining}
           notes={notes}
           onNotes={setNotes}
           onClose={() => setSheetOpen(false)}
@@ -561,6 +616,13 @@ function Stepper({
   onChange: (q: number) => void;
   max: number;
 }) {
+  if (max <= 0 && qty === 0) {
+    return (
+      <span className="shrink-0 rounded-full bg-zinc-100 px-3 py-1.5 text-[13px] font-semibold text-zinc-600">
+        售完
+      </span>
+    );
+  }
   if (qty === 0) {
     return (
       <button
@@ -601,6 +663,7 @@ function BuySheet({
   onQty,
   totalQty,
   totalAmount,
+  campaignRemaining,
   notes,
   onNotes,
   onClose,
@@ -613,6 +676,7 @@ function BuySheet({
   onQty: (ciId: number, q: number, cap: number | null, orderedQty?: number) => void;
   totalQty: number;
   totalAmount: number;
+  campaignRemaining: number | null;
   notes: string;
   onNotes: (v: string) => void;
   onClose: () => void;
@@ -661,12 +725,15 @@ function BuySheet({
             ) : (
               items.map((it, idx) => {
                 const q = qtyMap[it.campaign_item_id] ?? 0;
+                const remaining = itemRemaining(it);
+                const max = itemOrderMax(it, campaignRemaining, q);
+                const soldOut = max <= 0 && q === 0;
                 return (
                   <div
                     key={it.campaign_item_id}
                     className={`flex items-center gap-3 px-4 py-3.5 ${
                       idx === items.length - 1 ? "" : "border-b border-[var(--separator)]"
-                    } ${q > 0 ? "bg-[var(--brand-soft)]/40" : ""}`}
+                    } ${q > 0 ? "bg-[var(--brand-soft)]/40" : ""} ${soldOut ? "opacity-60" : ""}`}
                   >
                     <SkuThumb url={it.image_url} />
                     <div className="min-w-0 flex-1">
@@ -689,14 +756,19 @@ function BuySheet({
                               {it.ordered_qty}
                             </span>
                           </div>
+                          )}
+                        </div>
+                        {remaining !== null && (
+                          <div className={`mt-1 text-[12px] font-semibold ${remaining > 0 ? "text-[#c4271d]" : "text-zinc-500"}`}>
+                            {remaining > 0 ? `剩 ${remaining} 份` : "此規格已售完"}
+                          </div>
                         )}
                       </div>
-                    </div>
-                    <Stepper
-                      qty={q}
-                      onChange={(nq) => onQty(it.campaign_item_id, nq, it.cap_qty, it.ordered_qty)}
-                      max={it.cap_qty != null ? Math.max(0, it.cap_qty - it.ordered_qty) : 999}
-                    />
+                      <Stepper
+                        qty={q}
+                        onChange={(nq) => onQty(it.campaign_item_id, nq, it.cap_qty, it.ordered_qty)}
+                        max={max}
+                      />
                   </div>
                 );
               })

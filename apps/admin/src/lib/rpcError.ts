@@ -179,7 +179,7 @@ const RULES: Rule[] = [
   // ===== rpc_return_aid_order (#234) =====
   {
     pattern: /order \d+ is not an aid order/i,
-    render: () => "這不是互助單，不能用「退單（已收貨）」。一般訂單請用「退訂單」退回總倉。",
+    render: () => "這不是互助單，不能用「退單（已收貨）」。一般訂單請用「退貨回總倉」。",
   },
   {
     pattern: /aid order \d+ is \w+ \(not yet received\)/i,
@@ -385,6 +385,12 @@ const RULES: Rule[] = [
     render: (m) =>
       `無法復原：本會員目前的${m[1]}只有 ${fmt(m[2])}，少於當初併入的 ${fmt(m[3])}，扣回去會變負數。`
       + `請先確認這筆${m[1]}的去向並手動調整後再復原。`,
+  },
+  // ===== 店家守衛（rpc_record_pickup / rpc_bind_store_line_follower） =====
+  {
+    // 訊息本體已是中文（如「此訂單的取貨店是「三峽店」…」），只把機器前綴拿掉
+    pattern: /^wrong_store:\s*(.+)$/i,
+    render: (m) => m[1],
   },
   // ===== 撿貨單號碼衝突(同秒多筆提交時的 race) =====
   {

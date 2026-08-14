@@ -20,6 +20,14 @@ Content-Type: application/json
 
 不要再嘗試 `psql postgresql://...pooler...`、`supabase db push` 直連、Node `pg` client 等等 — 都會卡在 network，浪費時間。
 
+### 套上正式庫的 SQL，對應 migration 當天就要合併進 main
+
+凡直接套上正式庫的 SQL（Management API 或 SQL Editor），對應的 migration 檔必須**當天真的進到 main**。沒進 main 的期間 repo ≠ 正式庫，後續開發都會基於錯誤認知往下做：讀 repo 的人以為線上還是舊行為，前端與配套改動也跟著停在半套。
+
+**「PR 顯示 Merged」不等於「進了 main」——要看那個 PR 的 base 是不是 main。** 前例：`20260805000230`（現貨配單：配給客人＝待取，取貨時才扣庫存）8/06 套上線，同批的 PR #629 base 選成 feature 分支本身而不是 main；而該分支帶回 main 的 PR（#627）在 12 分鐘前就已經合併，之後沒有第二個 PR 再帶它回去 → 那支 migration 和同 PR 的前端改動從來沒進過 main，GitHub 上卻是綠色的 Merged。結果 repo 與正式庫脫鉤一週，前端仍是舊的「直售＝立刻結案」語意、取貨頁放行的另一半沒上線，期間 7 張配單訂單卡在取貨頁按不動。
+
+自檢（唯一算數的）：對線上跑完 SQL 後，`git log origin/main -- supabase/migrations/<檔名>` 查得到那支才算收工。
+
 ### 部署 Edge Function 走 curl + Management API，不要用 supabase CLI
 
 `supabase functions deploy`（不論加不加 `--use-api`）在這個環境的 outbound proxy 下**一定失敗**，回 `{"code":"UnknownError","message":"failed to deploy function: TransportError"}`。原因是 CLI 的 Go HTTP client 過 proxy 做 streaming multipart POST 會炸（同一支 CLI 的 GET 正常，只有帶 body 的上傳掛掉）。別再花時間試 CLI / 裝 Docker / 調 `SSL_CERT_FILE`，都沒用。
@@ -306,6 +314,35 @@ RR- ride-along 單在補貨到店**之前**就存在（單頭 `pending`/`confirm
 而少發配貨是唯一能人工解除 `backorder_at` 的入口。**修掉假短少會順手拿掉入口**，
 所以 RPC 另外回一個 `backorder`（這組還掛著幾件待補貨），讓還有人在等的組別一定
 看得到入口。改這支的顯示條件時記得三個一起看。
+
+### 把某個角色的動作按鈕拿掉之前，先確認狀態機還有別人推得動
+
+「這一頁不該由總倉操作」是對的判斷，但把按鈕拿掉**不等於**別人就長出入口。
+狀態機卡在中間沒有任何 UI 的話，畫面上不會報錯，只會安靜地不動。
+
+前例（空中轉，2026-08）：`rpc_ship_aid_order`（confirmed → shipping，建 AT- 轉移單
+＋轉出店出庫）全站唯一入口是 `AidOrderStatusActions`，只掛在 `/hq/inbox`；
+而 `/hq/inbox` 在 `BRANCH_HIDDEN_HREFS` 裡、分店根本看不到。後來 air 被拆成獨立
+分頁並做成「唯讀、不出任何動作按鈕」（理由沒錯：空中轉不經總倉）→ **全站沒有任何人
+能派貨**。線上 5 張單卡在 `confirmed`、`transfers` 一張沒建，最久的卡了 12 天；
+進度條還照實寫著「（空中轉、暫無系統紀錄）」沒人當回事。
+
+所以動 UI 權限時：
+
+- 先 `grep -rn "<rpc_name>" apps/` 數一數入口有幾個。**只有一個**就不能只是拿掉，
+  要先把它搬到新的正主看得到的地方。
+- 正主＝**實際做那件事的人**。空中轉出貨是轉出店（貨從他們手上出去），
+  所以按鈕放在轉出店自己那張來源訂單上（`OrderDetail` 反查
+  `transferred_from_order_id = 本單 AND is_air_transfer AND status='confirmed'`）。
+  **反查、不要用 `transferred_to_order_id`** —— 部分轉出不寫那一欄。
+- 對面那一側（接收店）要看得到「在等誰」，不然他們只看到「已確認」三個字，
+  只能改走轉單，就變重複單。
+- 拿掉入口的同時留一份後備給 HQ；卡住時才有人救得了。
+
+驗這種洞不用等使用者回報，直接問 DB：
+「某狀態的單有多少張、對應的下游單據建了沒」——
+`SELECT status, count(*), sum((SELECT count(*) FROM transfers t WHERE t.customer_order_id = co.id)) ...`
+數字是 0 就是沒人按得到。
 
 ---
 

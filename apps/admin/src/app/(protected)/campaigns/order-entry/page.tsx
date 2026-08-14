@@ -129,12 +129,12 @@ function PageContent() {
   const [offsetStoreId, setOffsetStoreId] = useState<number | null>(null);
   const [offsetReason, setOffsetReason] = useState("");
   const [offsetItems, setOffsetItems] = useState<ItemRow[]>([emptyItem()]);
-  // 抵減可指定客人 =「現貨直售」：建客人訂單＋抵減單＋當下用店內現貨交貨結案。
-  // 不選客人 = 純抵減（只讓採購少買）。
+  // 抵減可指定客人 =「現貨配單」：把店內現貨配給客人（狀態待取），
+  // 客人到店走正常取貨流程、取貨時才扣庫存收款。不選客人 = 純抵減（只讓採購少買）。
   const [offsetCustomer, setOffsetCustomer] = useState<CustomerEntry>(newEntry());
   // 店倉帳上可用現貨（sku_id → on_hand − reserved），抵減量不能超過
   const [offsetStock, setOffsetStock] = useState<Map<number, number>>(new Map());
-  // 分店帳號：抵減 / 現貨直售會動到店庫存，只能對自己那間店開（HQ 回 null = 不限）
+  // 分店帳號：抵減 / 現貨配單都吃自己店的帳上現貨，只能對自己那間店開（HQ 回 null = 不限）
   const branchStoreId = useUserBranchStoreId(stores);
   useEffect(() => {
     if (branchStoreId != null && offsetStoreId !== branchStoreId) setOffsetStoreId(branchStoreId);
@@ -425,9 +425,9 @@ function PageContent() {
     if (
       directSale &&
       !confirm(
-        `現貨直售給「${offsetCustomer.display_name}」共 ${items.reduce((s, i) => s + i.qty, 0)} 件？\n\n` +
-          `會建立客人訂單、開抵減單（採購不多買），並立刻用店內現貨交貨結案\n` +
-          `（扣店庫存，與到店取貨同一套帳）。開錯只能走退貨流程沖回。`,
+        `把店內現貨配給「${offsetCustomer.display_name}」共 ${items.reduce((s, i) => s + i.qty, 0)} 件？\n\n` +
+          `客人的訂單會變成「待取」，請客人到店走正常取貨流程 —\n` +
+          `取貨時才會扣店庫存、收款。若客人已下過單，會直接配到既有訂單、不會重複加。`,
       )
     )
       return;
@@ -439,7 +439,8 @@ function PageContent() {
       const operator = userRes.user?.id;
       if (!operator) { setError("未登入或 session 過期"); return; }
       if (directSale) {
-        // 現貨直售：客人訂單 + 抵減單 + 當下交貨結案（單一交易）
+        // 現貨配單：先配客人「已下單未取」的品項、不足才補建，並開庫存減抵單當 coverage（單一交易）。
+        // 不結案 —— 客人到店走正常取貨流程，那時才扣庫存、收款。
         const { data, error: err } = await sb.rpc("rpc_create_offset_sale", {
           p_campaign_id: campaignId,
           p_channel_id: channelId,
@@ -451,9 +452,12 @@ function PageContent() {
           p_operator: operator,
         });
         if (err) { setError(err.message); return; }
-        const r = (data ?? {}) as { order_no?: string; offset_order_no?: string; delivered_qty?: number };
+        const r = (data ?? {}) as { order_no?: string; note_no?: string; assigned_qty?: number; reused_qty?: number; added_qty?: number };
+        const reused = Number(r.reused_qty) || 0;
         setToast(
-          `✅ 現貨直售完成：訂單 ${r.order_no ?? ""} 已交貨 ${r.delivered_qty ?? ""} 件（抵減單 ${r.offset_order_no ?? ""}）`,
+          `✅ 現貨配單完成：訂單 ${r.order_no ?? ""} 共 ${r.assigned_qty ?? ""} 件待取` +
+            (reused > 0 ? `（其中 ${reused} 件配到客人既有訂單）` : "") +
+            `，減抵單 ${r.note_no ?? ""}。客人到店取貨時才扣庫存。`,
         );
         setOffsetCustomer(newEntry());
       } else {
@@ -579,7 +583,7 @@ function PageContent() {
               ? "bg-red-700 text-white"
               : "bg-white text-red-700 hover:bg-red-50 dark:bg-zinc-900 dark:text-red-400 dark:hover:bg-red-950"
           }`}
-          title="用店內現貨出貨：選客人＝直接加給客人並結案；不選客人＝只做採購抵減"
+          title="用店內現貨出貨：選客人＝配給客人（待取，取貨時才扣庫存）；不選客人＝純抵減（只讓採購少買）"
         >
           店內現貨 / 抵減
         </SpinButton>
@@ -598,7 +602,7 @@ function PageContent() {
         </p>
       ) : (
         <p className="text-xs text-red-700 dark:text-red-400">
-          店內現貨：<b>選客人</b> = 現貨直售（建訂單＋抵減＋當下交貨結案，扣店庫存）；
+          店內現貨：<b>選客人</b> = 現貨配單（配給客人、待取，取貨時才扣庫存）；
           <b>不選客人</b> = 純抵減（只讓採購少買，訂單編號 <span className="font-mono">XXX-OFF0001</span>）。
           兩者都需要店內帳上有現貨 — 沒有請先到庫存總覽新增庫存。
         </p>
@@ -692,7 +696,7 @@ function PageContent() {
           stores={stores}
           storeId={offsetStoreId}
           onStoreChange={setOffsetStoreId}
-          // 抵減 / 現貨直售會動到店庫存 → 分店帳號只能對自己店開
+          // 抵減 / 現貨配單都吃自己店的帳上現貨 → 分店帳號只能對自己店開
           lockedStoreId={branchStoreId}
           notes={offsetReason}
           onNotesChange={setOffsetReason}
@@ -706,13 +710,13 @@ function PageContent() {
           offsetMode
           submitLabel={
             offsetCustomer.member_id
-              ? "送出現貨直售（Ctrl+S）"
+              ? "送出現貨配單（Ctrl+S）"
               : "送出抵減單（Ctrl+S）"
           }
           headerExtra={
             <div className="mb-3">
               <span className="mb-1 block text-xs text-zinc-500">
-                客人（選了 = <b>現貨直售</b>：建訂單＋抵減＋當下交貨結案；留空 = 純抵減，只讓採購少買）
+                客人（選了 = <b>現貨配單</b>：把店內現貨配給客人、狀態待取；留空 = 純抵減，只讓採購少買）
               </span>
               <div className="flex items-center gap-2">
                 <CustomerSearch
@@ -737,7 +741,7 @@ function PageContent() {
               </div>
               {offsetCustomer.member_id != null && (
                 <p className="mt-1 text-[11px] text-violet-700 dark:text-violet-400">
-                  送出後：客人訂單成立並「立刻交貨結案」（扣店內庫存、與到店取貨同一套帳），採購不會為這幾件多買。
+                  送出後：客人訂單成立、狀態「待取」，客人到店走正常取貨流程（取貨時才扣庫存、收款）。已下過單的客人會直接配到既有訂單。
                 </p>
               )}
             </div>
@@ -783,7 +787,7 @@ function InternalOrderPanel({
   submitting: boolean;
   offsetMode?: boolean;
   submitLabel?: string;
-  // 抵減模式用：客人選擇器（現貨直售）
+  // 抵減模式用：客人選擇器（現貨配單）
   headerExtra?: React.ReactNode;
   // 抵減模式用：各品項的店倉帳上可用現貨（抵減量不能超過，伺服端也會擋）
   stockHints?: { key: string; label: string; need: number; available: number }[];
@@ -887,7 +891,7 @@ function InternalOrderPanel({
           + 新增空白項目（Alt+N）
         </SpinButton>
 
-        {/* 抵減 / 現貨直售的庫存預檢：帳上不夠就先擋在前端（伺服端仍會再擋一次） */}
+        {/* 抵減 / 現貨配單的庫存預檢：帳上不夠就先擋在前端（伺服端仍會再擋一次） */}
         {offsetMode && (stockHints ?? []).some((h) => h.need > h.available) && (
           <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
             ⚠ 店內帳上現貨不足，送出會被擋：
@@ -927,7 +931,7 @@ function InternalOrderPanel({
       </div>
 
       <aside className="sticky top-4 h-fit rounded-md border border-zinc-200 bg-white p-3 text-sm dark:border-zinc-800 dark:bg-zinc-900">
-        <h2 className="mb-2 text-sm font-semibold">{offsetMode ? "本次抵減 / 直售" : "本次統計（內部）"}</h2>
+        <h2 className="mb-2 text-sm font-semibold">{offsetMode ? "本次抵減 / 配單" : "本次統計（內部）"}</h2>
         <div className="grid grid-cols-2 gap-2 text-xs">
           <Stat label="件數" value={totalQty} />
           <Stat label="總金額" value={`$${totalAmount}`} />

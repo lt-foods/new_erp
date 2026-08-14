@@ -1455,7 +1455,7 @@ function HqInboxContent() {
             }
           });
           if (fails.length === 0) {
-            alert(`✅ 取消 ${ok} 筆退訂單`);
+            alert(`✅ 取消 ${ok} 筆退貨回總倉單`);
           } else {
             const lines = fails.slice(0, 5).map((f) => `  #${f.id}: ${f.reason}`);
             alert(
@@ -2110,7 +2110,7 @@ function HqInboxContent() {
                           </>
                         )}
                         {allPending && !allPendingReturn && !allPendingNormal && (
-                          <span className="self-center text-xs text-zinc-500">已混合退訂單與一般轉貨、無法批次</span>
+                          <span className="self-center text-xs text-zinc-500">已混合退貨回總倉與一般轉貨、無法批次</span>
                         )}
                         {allInTransit && (
                           <RowAction variant="primary" onClick={() => batchAction("到倉")} disabled={batchBusy}>到倉 ({selected.size})</RowAction>
@@ -2325,8 +2325,8 @@ function MailRow({
     const isAidTransfer = t.transfer_no.startsWith("AT-");
     if (isOrderReturn) {
       sourceCls = "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300";
-      sourceText = "🔁 退訂單";
-      sourceTitle = "由客戶退訂單建立";
+      sourceText = "↩ 退貨回總倉";
+      sourceTitle = "由店端顧客訂單退貨回總倉建立";
     } else if (isAidTransfer) {
       sourceCls = "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-950 dark:text-fuchsia-300";
       sourceText = "🤝 互助派貨";
@@ -2573,7 +2573,9 @@ function MailRow({
       );
     }
   } else if (row.source === "air") {
-    // 空中轉:唯讀,只顯示資訊(訂單號 / 店 / 開團 / 品項 / 狀態),不出任何動作按鈕
+    // 空中轉:貨走店對店、總倉不碰,所以出貨的正主是轉出店(在來源訂單上按「✈ 出貨」)。
+    // 這裡仍留一份動作按鈕當後備 —— 之前做成純唯讀,而分店帳號看不到 /hq/inbox,
+    // 結果全站沒有任何人有派貨入口,空中轉單就永遠停在「已確認」(線上卡了 5 張)。
     const a = row.raw;
     idText = a.order_no;
     title = <>{a.campaign_no ?? "—"} <span className="text-zinc-400 mx-1">→</span> {a.store_name ?? "—"}</>;
@@ -2586,7 +2588,10 @@ function MailRow({
     );
     timeIso = a.updated_at;
     actions = (
-      <RowAction variant="neutral" onClick={() => onOpenAidDetail(a.id)}>查看訂單</RowAction>
+      <>
+        <AidOrderStatusActions order={{ id: a.id, status: a.status }} onChanged={onAidChanged} />
+        <RowAction variant="neutral" onClick={() => onOpenAidDetail(a.id)}>查看訂單</RowAction>
+      </>
     );
   } else {
     const a = row.raw;
@@ -2639,9 +2644,9 @@ function MailRow({
         </div>
 
         {/* source chip + 未讀 dot (sm+) */}
-        <div className="hidden sm:block w-28 shrink-0 pt-0.5">
+        <div className="hidden sm:block min-w-28 shrink-0 pt-0.5">
           <span
-            className={`inline-flex w-fit items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium ${sourceCls}`}
+            className={`inline-flex w-fit items-center gap-1 whitespace-nowrap rounded px-2 py-0.5 text-[10px] font-medium ${sourceCls}`}
             title={sourceTitle}
           >
             {isPending && <span className="h-1.5 w-1.5 rounded-full bg-current opacity-80" aria-hidden />}
