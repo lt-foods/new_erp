@@ -42,6 +42,7 @@ export function OrderTransferModal({
   onSubmitted,
   sameStoreOnly = false,
   partialOnly = false,
+  canReturnToHq = false,
 }: {
   orderId: number;
   orderNo: string;
@@ -58,6 +59,9 @@ export function OrderTransferModal({
   // transferred_out 整張歸零，所以「全選全量」也強制走部分轉出 RPC
   // （剩餘 active 全轉走後原單由 _close_orders_all_items_settled 收尾成 completed）
   partialOnly?: boolean;
+  // 訂單頁此刻有沒有顯示「↩ 退貨回總倉」鈕（= OrderDetail 的 canReturn）。
+  // 只用來決定提示要不要指向那顆鈕，不參與任何轉出判斷；預設 false = 不提，寧可少講也別指向不存在的鈕
+  canReturnToHq?: boolean;
 }) {
   const [stores, setStores] = useState<Store[]>([]);
   const [toStore, setToStore] = useState<number | "">("");
@@ -232,6 +236,12 @@ export function OrderTransferModal({
 
   const chosenCount = items.filter((it) => picks[it.id]?.checked).length;
   const allChosen = items.length > 0 && chosenCount === items.length;
+  // 「這裡選不到總倉」之後才指路，而且只在那顆鈕確定在畫面上時才指。
+  // canReturnToHq=false 可能是「貨還沒到店」、也可能是互助單（走「↩ 退單（已收貨）」、不經總倉），
+  // 光憑這個 prop 分不出是哪一種，兩者該走的出口又不同——寧可不講，也不要講一句只對一半的話
+  const hqExitHint = canReturnToHq
+    ? "貨要退回總倉請關掉這個視窗，改按「↩ 退貨回總倉」。"
+    : null;
 
   return (
     <Modal open={open} onClose={onClose} title={`轉給別人 ${orderNo}`} maxWidth="max-w-lg">
@@ -278,6 +288,21 @@ export function OrderTransferModal({
             ))}
           </select>
         </label>
+
+        {/* 接收店只從 stores 撈，總倉是 locations 的 central_warehouse、根本不在這個清單裡。
+            店員想「退回總倉」時會挑到同名的分店，結果把客人的單轉進該店內部帳號、客人的訂單就消失了 */}
+        <p className="text-xs text-amber-700 dark:text-amber-400">
+          {sameStoreOnly ? (
+            <>
+              貨還沒到店，這裡只能<span className="font-medium">同店換客人</span>（換另一位客人來拿）
+            </>
+          ) : (
+            <>
+              這裡只能轉給<span className="font-medium">分店</span>：換一位客人拿，或轉給其他店
+            </>
+          )}
+          ，<span className="font-medium">選不到總倉</span>。{hqExitHint}
+        </p>
 
         {toStore !== "" && (
           <div className="flex flex-col gap-1">

@@ -1272,6 +1272,7 @@ export function OrderDetail({
         orderNo={head.order_no}
         sameStoreOnly={!["ready", "partially_completed"].includes(head.status)}
         partialOnly={head.status === "partially_completed"}
+        canReturnToHq={canReturn}
         currentPickupStoreId={head.pickup_store_id}
         currentMemberLabel={memberLabel}
         items={pickableItems
