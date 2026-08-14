@@ -34,6 +34,9 @@ type OpenOrder = {
   id: number;
   order_no: string;
   status: string;
+  // normal / offset / restock。0 元防呆只認 normal —— restock（內部補貨，虛擬 SKU
+  // MISC-01）與 offset（抵減負數單）設計上就是 0 元，擋掉內部流程會整條掛掉。
+  order_kind: string | null;
   pickup_deadline: string | null;
   pickup_store_id: number | null;
   discount_amount: number;
@@ -136,13 +139,23 @@ function PickupPageContent() {
     return Math.max(0, Number(it.qty) - returnedOf(it));
   }
 
+  // 0 元防呆：一般客人訂單的品項單價 0 = 開團沒設價，取走等於免費送出去。
+  // restock（內部補貨，虛擬 SKU MISC-01）與 offset（抵減負數單）設計上就是 0 元，放行。
+  // 與後端 rpc_record_pickup 的守衛同一套判定（20260814060000_pickup_guard_zero_price.sql）。
+  function isZeroPrice(order: OpenOrder, it: OpenOrder["items"][number]): boolean {
+    return (order.order_kind ?? "normal") === "normal" && Number(it.unit_price) === 0;
+  }
+
   // 可取貨品項：ready 單＝全部 active 品項；shipping / pending / confirmed /
   // partially_completed 單＝逐品項看取貨閘門（部分到貨的單可先取已到的品項）。
   // itemReady 查無資料時的 fallback 沿用舊行為：partially_completed 可取、
   // shipping / pending / confirmed 不可取（要閘門明確 true 才放行）。
-  // 一律排除「量已被未取退貨蓋掉」的品項行（退回總倉的貨不可再取）。
+  // 一律排除「量已被未取退貨蓋掉」的品項行（退回總倉的貨不可再取）
+  // 與「0 元的一般訂單品項」（按下去也會被後端擋，不如不給勾）。
   function pickableItems(order: OpenOrder) {
-    const act = activeItems(order).filter((it) => remainingQty(it) > 0);
+    const act = activeItems(order)
+      .filter((it) => remainingQty(it) > 0)
+      .filter((it) => !isZeroPrice(order, it));
     // ready 單原本整單放行，但「少發配貨」會把沒配到的品項標成待補貨
     // （customer_order_items.backorder_at → is_order_item_pickup_ready 回 false）。
     // 不濾掉的話店員會勾得到、按下去才被 rpc_record_pickup 擋，訊息還會誤導成「尚未到貨」。
@@ -239,7 +252,9 @@ function PickupPageContent() {
       const ordQ = sb
         .from("customer_orders")
         .select(
-          `id, order_no, status, pickup_deadline, pickup_store_id, discount_amount, ready_at, transferred_from_order_id, last_notify_pickup_at, notify_pickup_count, member_id,
+          // order_kind 是 0 元防呆的例外判準（restock / offset 本來就 0 元），少撈這欄
+          // 會把內部補貨單也擋成不可取
+          `id, order_no, status, order_kind, pickup_deadline, pickup_store_id, discount_amount, ready_at, transferred_from_order_id, last_notify_pickup_at, notify_pickup_count, member_id,
            campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date),
            store:stores!customer_orders_pickup_store_id_fkey(id, name),
            items:customer_order_items(id, sku_id, qty, unit_price, status, sku:skus(variant_name, product_name, product:products(images)))`,
@@ -968,8 +983,17 @@ function PickupPageContent() {
                                     {returnedOf(it) > 0 && (
                                       <span className="rounded bg-orange-100 px-1 py-0.5 text-[10px] font-medium text-orange-800 dark:bg-orange-950 dark:text-orange-300">↩ 已退 {returnedOf(it)}</span>
                                     )}
-                                    {/* 少發配貨沒配到 → 明講「待補貨」，別讓品項無聲消失讓店員以為是系統壞了 */}
-                                    {remainingQty(it) > 0 && isBackordered(o, it) ? (
+                                    {/* 0 元＝開團沒設價，取走就是免費送出去。優先於下面的到貨相關提示，
+                                        免得店員看到「未到貨」跑去追一批其實已經在店裡的貨 */}
+                                    {remainingQty(it) > 0 && isZeroPrice(o, it) ? (
+                                      <span
+                                        className="rounded bg-red-100 px-1 py-0.5 text-[10px] font-medium text-red-800 dark:bg-red-950 dark:text-red-300"
+                                        title="這筆的開團售價是 0 元，取貨等於免費送出去。請先到開團頁補上售價（可用「重新同步商品/價格」批次回填）"
+                                      >
+                                        ⚠ 0 元・不可取貨，請先補售價
+                                      </span>
+                                    ) : /* 少發配貨沒配到 → 明講「待補貨」，別讓品項無聲消失讓店員以為是系統壞了 */
+                                    remainingQty(it) > 0 && isBackordered(o, it) ? (
                                       <span
                                         className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
                                         title="這批到貨量不夠分，這筆沒配到，要等下一批補貨"

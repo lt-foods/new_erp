@@ -352,6 +352,8 @@ function OrdersListContent() {
         totalAmount: number;
         items: { product_name: string | null; variant_name: string | null; qty: number }[];
         sources: string[];
+        // 有沒有 0 元品項（只認 order_kind=normal 的單；restock / offset 本來就是 0 元）
+        hasZeroPrice: boolean;
       }
     >
   >(new Map());
@@ -574,7 +576,7 @@ function OrdersListContent() {
         const memIds = Array.from(new Set(list.map((r) => r.member_id).filter((x): x is number => x != null)));
         // pending / confirmed / shipping 單查品項到貨狀態（pickup_ready=true 隱含該品項 active 且已到貨）
         const gateIds = list.filter((r) => ["shipping", "pending", "confirmed"].includes(r.status)).map((r) => r.id);
-        const [ic, ms, rdy] = await Promise.all([
+        const [ic, ms, rdy, knd] = await Promise.all([
           ids.length
             // 已取消 / 斷貨 / 過期的品項不算進項數 · 件數 · 金額，與伺服端
             // v_admin_orders_list 的彙總（可排序欄位）同一套過濾，見 migration
@@ -587,14 +589,29 @@ function OrdersListContent() {
           gateIds.length
             ? getSupabase().from("v_order_item_pickup_ready").select("order_id, pickup_ready").in("order_id", gateIds).eq("pickup_ready", true)
             : Promise.resolve({ data: [] as { order_id: number; pickup_ready: boolean }[] }),
+          // 0 元防呆要分辨 restock / offset（這兩種本來就 0 元、不該標警示），但列表查的
+          // v_admin_orders_list 沒有 order_kind（v_admin_orders 是逐欄列舉、未含此欄，
+          // 見 20260805000120_v_admin_orders_event_at.sql）→ 直接向 customer_orders 補撈。
+          // 放在同一個 Promise.all 內平行送出，不增加往返延遲。
+          ids.length
+            ? getSupabase().from("customer_orders").select("id, order_kind").in("id", ids)
+            : Promise.resolve({ data: [] as { id: number; order_kind: string | null }[] }),
         ]);
-        const im = new Map<number, { lineCount: number; totalQty: number; totalAmount: number; items: { product_name: string | null; variant_name: string | null; qty: number }[]; sources: string[] }>();
-        for (const id of ids) im.set(id, { lineCount: 0, totalQty: 0, totalAmount: 0, items: [], sources: [] });
+        const kindMap = new Map<number, string>();
+        for (const k of ((knd.data ?? []) as { id: number; order_kind: string | null }[])) {
+          kindMap.set(k.id, k.order_kind ?? "normal");
+        }
+        const im = new Map<number, { lineCount: number; totalQty: number; totalAmount: number; items: { product_name: string | null; variant_name: string | null; qty: number }[]; sources: string[]; hasZeroPrice: boolean }>();
+        for (const id of ids) im.set(id, { lineCount: 0, totalQty: 0, totalAmount: 0, items: [], sources: [], hasZeroPrice: false });
         for (const it of (ic.data as { order_id: number; qty: number; unit_price: number; source: string; sku: { product_name: string | null; variant_name: string | null } | null }[]) ?? []) {
-          const cur = im.get(it.order_id) ?? { lineCount: 0, totalQty: 0, totalAmount: 0, items: [], sources: [] };
+          const cur = im.get(it.order_id) ?? { lineCount: 0, totalQty: 0, totalAmount: 0, items: [], sources: [], hasZeroPrice: false };
           cur.lineCount += 1;
           cur.totalQty += Number(it.qty);
           cur.totalAmount += Number(it.qty) * Number(it.unit_price);
+          // 0 元＝開團沒設價，客人照抄 0 元下單、取貨會被 rpc_record_pickup 擋
+          if (Number(it.unit_price) === 0 && (kindMap.get(it.order_id) ?? "normal") === "normal") {
+            cur.hasZeroPrice = true;
+          }
           cur.items.push({
             product_name: it.sku?.product_name ?? null,
             variant_name: it.sku?.variant_name ?? null,
@@ -1421,6 +1438,14 @@ function OrdersListContent() {
                 <span>{sum?.lineCount ?? 0} 項</span>
                 <span>共 {sum?.totalQty ?? 0} 件</span>
                 <span className="font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100">${sum?.totalAmount ?? 0}</span>
+                {sum?.hasZeroPrice && (
+                  <span
+                    className="rounded bg-red-100 px-1 py-0.5 text-[10px] font-medium text-red-800 dark:bg-red-950 dark:text-red-300"
+                    title="這張單有品項的單價是 0 元（開團忘了設價），取貨時會被擋下。請到開團頁補上售價"
+                  >
+                    ⚠ 含 0 元品項
+                  </span>
+                )}
                 <span
                   className="ml-auto"
                   title={`訂單日：${new Date(r.created_at).toLocaleString("zh-TW", { hour12: false })}\n更新日：${new Date(r.updated_at).toLocaleString("zh-TW", { hour12: false })}`}
@@ -1548,7 +1573,17 @@ function OrdersListContent() {
                   <Td className="whitespace-nowrap text-xs">{s?.name ?? "—"}</Td>
                   <Td className="whitespace-nowrap text-right font-mono">{itemSummary.get(r.id)?.lineCount ?? 0}</Td>
                   <Td className="whitespace-nowrap text-right font-mono">{itemSummary.get(r.id)?.totalQty ?? 0}</Td>
-                  <Td className="whitespace-nowrap text-right font-mono">${itemSummary.get(r.id)?.totalAmount ?? 0}</Td>
+                  <Td className="whitespace-nowrap text-right font-mono">
+                    ${itemSummary.get(r.id)?.totalAmount ?? 0}
+                    {itemSummary.get(r.id)?.hasZeroPrice && (
+                      <span
+                        className="ml-1.5 rounded bg-red-100 px-1 py-0.5 font-sans text-[10px] font-medium text-red-800 dark:bg-red-950 dark:text-red-300"
+                        title="這張單有品項的單價是 0 元（開團忘了設價），取貨時會被擋下。請到開團頁補上售價"
+                      >
+                        ⚠ 含 0 元品項
+                      </span>
+                    )}
+                  </Td>
                   <Td
                     className="whitespace-nowrap text-right text-xs text-zinc-500"
                     title={`訂單日：${new Date(r.created_at).toLocaleString("zh-TW", { hour12: false })}\n更新日：${new Date(r.updated_at).toLocaleString("zh-TW", { hour12: false })}`}

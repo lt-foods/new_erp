@@ -56,6 +56,9 @@ export function CampaignItemsTable({
   const canResync = (status === "draft" || status === "open") && isAdmin(role);
   // 店長/店員不能跳轉到商品編輯頁
   const isStoreLevel = role === "store_manager" || role === "store_staff";
+  // 0 元防呆提醒：開團設定價是 0，客人下單就照抄 0 元（2026-08-14 三團中招）。
+  // 這裡只提醒不擋開團；最後防線在取貨 RPC（20260814060000_pickup_guard_zero_price.sql）。
+  const zeroPriceCount = (rows ?? []).filter((r) => Number(r.unit_price) === 0).length;
 
   const reload = async () => {
     // products.name 是 source of truth；skus.product_name 是 denorm 可能過期、不用它
@@ -165,6 +168,13 @@ export function CampaignItemsTable({
         <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">{error}</div>
       )}
 
+      {zeroPriceCount > 0 && (
+        <div className="rounded-md border border-red-300 bg-red-50 p-2 text-xs font-medium text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+          ⚠ 本團有 {zeroPriceCount} 個規格是 0 元，客人會用 0 元下單
+          {canResync && <span className="font-normal">（可按上方「重新同步商品/價格」從商品零售價回填）</span>}
+        </div>
+      )}
+
       <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
@@ -210,7 +220,20 @@ export function CampaignItemsTable({
                     )}
                   </div>
                 </Td>
-                <Td className="text-right font-mono">${r.unit_price}</Td>
+                {/* 0 元＝忘了設價，客人會照抄 0 元下單 → 標紅提醒（不擋，補價入口在上方） */}
+                {Number(r.unit_price) === 0 ? (
+                  <Td className="text-right font-mono font-bold text-red-700 dark:text-red-400">
+                    ${r.unit_price}
+                    <span
+                      className="ml-1.5 rounded bg-red-100 px-1 py-0.5 font-sans text-[10px] font-medium text-red-800 dark:bg-red-950 dark:text-red-300"
+                      title="這個規格沒有設價，客人下單會是 0 元、取貨時會被擋下"
+                    >
+                      ⚠ 0 元
+                    </span>
+                  </Td>
+                ) : (
+                  <Td className="text-right font-mono">${r.unit_price}</Td>
+                )}
                 <Td className="text-right text-xs text-zinc-500">{r.cap_qty ?? "—"}</Td>
                 <Td className="text-xs text-zinc-500">
                   {r.locked_at ? new Date(r.locked_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" }) : "—"}

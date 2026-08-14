@@ -31,6 +31,9 @@ type OrderHead = {
   id: number;
   order_no: string;
   status: string;
+  // normal / offset / restock。0 元警示只標 normal —— restock（內部補貨）與
+  // offset（抵減負數單）設計上就是 0 元。
+  order_kind: string | null;
   stockout_at: string | null;
   pickup_deadline: string | null;
   nickname_snapshot: string | null;
@@ -246,7 +249,7 @@ export function OrderDetail({
       const sb = getSupabase();
       const [hRes, iRes, rRes, arvRes, pevRes, airRes] = await Promise.all([
         sb.from("customer_orders")
-          .select("id, order_no, status, stockout_at, pickup_deadline, nickname_snapshot, created_at, updated_at, pickup_store_id, campaign_id, transferred_from_order_id, is_air_transfer, discount_amount, discount_percent, wallet_paid_amount, payment_status, paid_at, notes, member:members(id, name, phone, member_no), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
+          .select("id, order_no, status, order_kind, stockout_at, pickup_deadline, nickname_snapshot, created_at, updated_at, pickup_store_id, campaign_id, transferred_from_order_id, is_air_transfer, discount_amount, discount_percent, wallet_paid_amount, payment_status, paid_at, notes, member:members(id, name, phone, member_no), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
           .eq("id", orderId).maybeSingle(),
         sb.from("customer_order_items")
           .select("id, qty, unit_price, status, stockout_at, source, notes, discount_amount, discount_percent, created_at, updated_at, created_by, updated_by, sku:skus(id, sku_code, product_name, variant_name)")
@@ -408,6 +411,12 @@ export function OrderDetail({
     const discount: DiscountValue = d?.discount ?? deriveDiscount(it.discount_percent, it.discount_amount);
     return { qty, unit_price, notes, discount };
   };
+  // 0 元防呆：一般客人訂單的品項單價 0 = 開團沒設價，取貨會被 rpc_record_pickup 擋
+  // （20260814060000_pickup_guard_zero_price.sql）。restock（內部補貨，虛擬 SKU
+  // MISC-01）與 offset（抵減負數單）設計上就是 0 元，不標警示。
+  const isZeroPriceItem = (unitPrice: number) =>
+    (head.order_kind ?? "normal") === "normal" && Number(unitPrice) === 0;
+
   const orderDiscountValue: DiscountValue = draft.discount ?? deriveDiscount(head.discount_percent, head.discount_amount);
   const orderNotesValue: string | null = Object.prototype.hasOwnProperty.call(draft, "notes") ? draft.notes! : head.notes;
 
@@ -1127,6 +1136,16 @@ export function OrderDetail({
                         disabled={!canEdit || isPicked}
                         onSave={async (v) => setItemDraft(it.id, { unit_price: v })}
                       />
+                      {/* 0 元＝開團忘了設價，取貨會被 rpc_record_pickup 擋下；
+                          restock / offset 單本來就是 0 元，不標 */}
+                      {isZeroPriceItem(Number(eff.unit_price)) && (
+                        <span
+                          className="ml-1.5 rounded bg-red-100 px-1 py-0.5 font-sans text-[10px] font-medium text-red-800 dark:bg-red-950 dark:text-red-300"
+                          title="這筆的單價是 0 元（開團忘了設價），取貨時會被擋下。請到開團頁補上售價後再取"
+                        >
+                          ⚠ 0 元
+                        </span>
+                      )}
                     </td>
                     <td className="px-3 py-2 text-right font-mono text-zinc-500">
                       {it.sku && branchPrices.has(it.sku.id)
