@@ -252,7 +252,6 @@ export default function QuickCampaignControlPage() {
   const [createName, setCreateName] = useState("");
   const [createEndAt, setCreateEndAt] = useState(defaultCreateEndAt);
   const [pickupDeadline, setPickupDeadline] = useState(() => pickupDeadlineFrom(defaultCreateEndAt(), DEFAULT_NEW_STORAGE_TYPE));
-  const [totalCapDraft, setTotalCapDraft] = useState("");
   const [itemCapDraft, setItemCapDraft] = useState<Record<number, string>>({});
   const [createBusy, setCreateBusy] = useState(false);
   const [createdUrl, setCreatedUrl] = useState<string | null>(null);
@@ -282,15 +281,7 @@ export default function QuickCampaignControlPage() {
         .filter((sku) => sku.name || sku.price || sku.cap),
     [newSkuDrafts],
   );
-  const newItemCaps = useMemo(
-    () =>
-      newSkuRows
-        .map((sku, index) => ({ index, cap_qty: Number(sku.cap) }))
-        .filter((item) => Number.isFinite(item.cap_qty) && item.cap_qty > 0),
-    [newSkuRows],
-  );
   const missingPrice = selectedSkus.some((sku) => priceMap[sku.id] == null);
-  const totalCap = Number(totalCapDraft);
   const itemCaps = useMemo(
     () =>
       Object.entries(itemCapDraft)
@@ -303,10 +294,16 @@ export default function QuickCampaignControlPage() {
         ),
     [itemCapDraft, selectedSkuIds],
   );
+  const itemCapBySkuId = useMemo(() => new Map(itemCaps.map((item) => [item.sku_id, item.cap_qty])), [itemCaps]);
+  const limitedMissingItemCap = createType === "limited" && (
+    createMode === "existing"
+      ? selectedSkus.some((sku) => !itemCapBySkuId.has(sku.id))
+      : newSkuRows.some((sku) => !(Number.isFinite(Number(sku.cap)) && Number(sku.cap) > 0))
+  );
   const createNeedsCap =
     createType === "limited"
-    && !(Number.isFinite(totalCap) && totalCap > 0)
-    && (createMode === "existing" ? itemCaps.length === 0 : newItemCaps.length === 0);
+    && (createMode === "existing" ? selectedSkus.length > 0 : newSkuRows.length > 0)
+    && limitedMissingItemCap;
   const createSubmitDisabled =
     !allowed
     || createBusy
@@ -531,7 +528,6 @@ export default function QuickCampaignControlPage() {
     const endAt = defaultCreateEndAt();
     setCreateEndAt(endAt);
     setPickupDeadline(pickupDeadlineFrom(endAt, product.storage_type));
-    setTotalCapDraft("");
     setItemCapDraft({});
     setCreatedUrl(null);
     setCreatedCampaignId(null);
@@ -621,7 +617,7 @@ export default function QuickCampaignControlPage() {
         }
       }
     }
-    if (createNeedsCap) { setError("限時限量請填總限量，或至少填一個規格限量"); return; }
+    if (createNeedsCap) { setError("限時限量請幫每個規格填正取上限"); return; }
 
     setCreateBusy(true);
     setError(null);
@@ -634,7 +630,7 @@ export default function QuickCampaignControlPage() {
       const nextCampaignNo = String(campaignNo ?? "").trim();
       if (!nextCampaignNo) throw new Error("無法產生團號，請稍後再試");
       const startIso = new Date().toISOString();
-      const campaignTotalCap = Number.isFinite(totalCap) && totalCap > 0 ? totalCap : null;
+      const campaignTotalCap = null;
       const productStorageType = isExistingProduct ? selectedProduct?.storage_type ?? null : newStorageType;
       const pickupDays = pickupDaysForStorage(productStorageType);
       const campaignDescription = isExistingProduct ? selectedProduct?.description ?? null : null;
@@ -827,7 +823,6 @@ export default function QuickCampaignControlPage() {
       setNewProductName("");
       setNewStorageType(DEFAULT_NEW_STORAGE_TYPE);
       setNewSkuDrafts([{ key: newSkuKey(), name: "", price: "", cap: "" }]);
-      setTotalCapDraft("");
       setItemCapDraft({});
       void load();
     } catch (e) {
@@ -1147,20 +1142,6 @@ export default function QuickCampaignControlPage() {
                     </label>
                   </div>
 
-                  <label className="grid gap-1 text-sm">
-                    <span className="font-medium text-zinc-700 dark:text-zinc-200">總限量</span>
-                    <input
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={totalCapDraft}
-                      onChange={(e) => setTotalCapDraft(e.target.value)}
-                      placeholder={createType === "limited" ? "限時限量建議填寫" : "可不填"}
-                      disabled={!allowed || createBusy}
-                      className="min-h-11 rounded-md border border-zinc-300 bg-white px-3 text-base outline-none focus:border-pink-600 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
-                    />
-                  </label>
-
                   <div className="grid gap-2">
                     <div className="flex items-center justify-between gap-2">
                       <div className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
@@ -1301,7 +1282,7 @@ export default function QuickCampaignControlPage() {
                   )}
                   {createNeedsCap && (
                     <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-                      限時限量請填總限量，或至少填一個規格限量。
+                      限時限量請幫每個規格填正取上限。
                     </div>
                   )}
 
