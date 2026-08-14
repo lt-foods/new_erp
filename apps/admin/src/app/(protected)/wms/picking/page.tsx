@@ -1122,22 +1122,16 @@ export default function PickingWorkstationPage() {
       {/* 篩選列：開團 / 商品 / 時間（平板友善的大下拉） */}
       {skuRows.length > 0 && (
         <div className="flex flex-wrap items-end gap-3 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
-          <label className="flex min-w-[220px] flex-1 flex-col gap-1 sm:max-w-xs">
+          {/* div 不用 label 包：自訂 combobox 會被 label 的 click 轉發重新打開（見 verify skill 的坑） */}
+          <div className="flex min-w-[240px] flex-1 flex-col gap-1 sm:max-w-sm">
             <span className="text-xs font-medium text-zinc-500">開團</span>
-            <select
+            <CampaignCombobox
               value={effFilterCampaign}
-              onChange={(e) => setFilterCampaign(e.target.value)}
-              className="h-11 w-full rounded-md border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-800"
-            >
-              <option value="all">全部開團</option>
-              {hasNoCampaignRows && <option value="none">無開團來源（補貨等）</option>}
-              {campaignOptions.map((c) => (
-                <option key={c.id} value={String(c.id)}>
-                  {c.campaign_no} · {c.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              options={campaignOptions}
+              hasNoneOption={hasNoCampaignRows}
+              onChange={setFilterCampaign}
+            />
+          </div>
           <label className="flex min-w-[220px] flex-1 flex-col gap-1 sm:max-w-xs">
             <span className="text-xs font-medium text-zinc-500">商品</span>
             <select
@@ -1686,6 +1680,161 @@ export default function PickingWorkstationPage() {
 // ============================================================
 // Helpers
 // ============================================================
+
+// 開團下拉：可搜尋（開團編號 / 名稱），清單只呈現最近 10 筆（options 已依結團時間新→舊排），
+// 更多的靠輸入關鍵字縮小範圍。互動模式抄 SupplierCombobox（含 e.preventDefault() 防
+// label click 轉發把剛關掉的下拉重新打開的坑）。
+function CampaignCombobox({
+  value,
+  options,
+  hasNoneOption,
+  onChange,
+}: {
+  value: string; // "all" | "none" | `${campaign_id}`
+  options: CampaignInfo[];
+  hasNoneOption: boolean;
+  onChange: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    function onClickAway(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setQuery("");
+      }
+    }
+    if (open) document.addEventListener("mousedown", onClickAway);
+    return () => document.removeEventListener("mousedown", onClickAway);
+  }, [open]);
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+
+  const selected =
+    value !== "all" && value !== "none" ? options.find((c) => String(c.id) === value) ?? null : null;
+  const q = query.trim().toLowerCase();
+  const matched = q
+    ? options.filter(
+        (c) => c.campaign_no.toLowerCase().includes(q) || c.name.toLowerCase().includes(q),
+      )
+    : options;
+  const shown = matched.slice(0, 10);
+  const more = matched.length - shown.length;
+
+  function pick(e: React.MouseEvent, v: string) {
+    e.preventDefault(); // 取消 click 轉發，避免關閉後又被轉發的 click 重新打開
+    onChange(v);
+    setOpen(false);
+    setQuery("");
+  }
+  const endDate = (c: CampaignInfo) => {
+    const ref = c.end_at ?? c.start_at;
+    return ref ? new Date(ref).toLocaleDateString("sv-SE") : "—";
+  };
+
+  return (
+    <div ref={containerRef} className="relative">
+      {!open ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="flex h-11 w-full items-center justify-between gap-2 rounded-md border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+        >
+          {selected ? (
+            <span className="flex min-w-0 items-baseline gap-2">
+              <span className="shrink-0 font-mono text-xs text-zinc-500">{selected.campaign_no}</span>
+              <span className="truncate">{selected.name}</span>
+            </span>
+          ) : value === "none" ? (
+            <span>無開團來源（補貨等）</span>
+          ) : (
+            <span>全部開團</span>
+          )}
+          <span className="shrink-0 text-zinc-400">▾</span>
+        </button>
+      ) : (
+        <input
+          ref={inputRef}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setOpen(false);
+              setQuery("");
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              if (shown.length > 0) {
+                onChange(String(shown[0].id));
+                setOpen(false);
+                setQuery("");
+              }
+            }
+          }}
+          placeholder="搜尋開團編號或名稱…"
+          className="h-11 w-full rounded-md border border-zinc-300 bg-white px-3 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800"
+        />
+      )}
+
+      {open && (
+        <div className="absolute left-0 right-0 z-30 mt-1 max-h-80 overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+          <button
+            type="button"
+            onClick={(e) => pick(e, "all")}
+            className={`block w-full px-3 py-2.5 text-left text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800 ${
+              value === "all" ? "bg-blue-50 dark:bg-blue-950" : ""
+            }`}
+          >
+            全部開團
+          </button>
+          {hasNoneOption && (
+            <button
+              type="button"
+              onClick={(e) => pick(e, "none")}
+              className={`block w-full border-b border-zinc-200 px-3 py-2.5 text-left text-sm hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-800 ${
+                value === "none" ? "bg-blue-50 dark:bg-blue-950" : ""
+              }`}
+            >
+              無開團來源（補貨等）
+            </button>
+          )}
+          {shown.length === 0 ? (
+            <p className="px-3 py-2.5 text-xs text-zinc-500">
+              {q ? "找不到符合的開團" : "目前沒有待派的開團"}
+            </p>
+          ) : (
+            shown.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={(e) => pick(e, String(c.id))}
+                className={`block w-full px-3 py-2.5 text-left hover:bg-zinc-50 dark:hover:bg-zinc-800 ${
+                  String(c.id) === value ? "bg-blue-50 dark:bg-blue-950" : ""
+                }`}
+              >
+                <span className="flex items-baseline justify-between gap-2">
+                  <span className="flex min-w-0 items-baseline gap-2">
+                    <span className="shrink-0 font-mono text-xs text-zinc-500">{c.campaign_no}</span>
+                    <span className="truncate text-sm">{c.name}</span>
+                  </span>
+                  <span className="shrink-0 text-[11px] text-zinc-400">結團 {endDate(c)}</span>
+                </span>
+              </button>
+            ))
+          )}
+          {more > 0 && (
+            <p className="border-t border-zinc-200 px-3 py-2 text-xs text-zinc-400 dark:border-zinc-800">
+              另有 {more} 團未顯示 — 輸入開團編號或名稱縮小範圍
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function TabBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
