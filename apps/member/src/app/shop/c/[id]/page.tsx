@@ -200,9 +200,16 @@ export default function CampaignDetailPage() {
       setDoneOrderNo(r.order_no);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      const friendly = message.includes("sold out")
-        ? "已售完或數量不足，請重新整理後再選。"
-        : message;
+      const soldOut = message.includes("sold out");
+      // 售完是熱團的正常結果不記；其餘下單失敗會員只看得到 alert，一定要留 log
+      // （2026-08-14 線上 RPC 沒部署、全 APP 下單掛掉，client_error_logs 一筆都沒有）。
+      if (!soldOut) {
+        logCaught("place_member_order_failed", e, {
+          campaign_id: id,
+          items: ordered.length,
+        });
+      }
+      const friendly = soldOut ? "已售完或數量不足，請重新整理後再選。" : message;
       alert(`下單失敗：${friendly}`);
     } finally {
       setSubmitting(false);
