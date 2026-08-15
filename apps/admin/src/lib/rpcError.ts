@@ -386,6 +386,20 @@ const RULES: Rule[] = [
       `無法復原：本會員目前的${m[1]}只有 ${fmt(m[2])}，少於當初併入的 ${fmt(m[3])}，扣回去會變負數。`
       + `請先確認這筆${m[1]}的去向並手動調整後再復原。`,
   },
+  // ===== 零元守衛（rpc_record_pickup / rpc_fill_zero_order_item_price） =====
+  {
+    // 訊息本體已是中文（「品項「X」的單價是 $0…」），只把機器前綴拿掉
+    pattern: /^zero_price(?:_fill)?:\s*([\s\S]+)$/i,
+    render: (m) => m[1],
+  },
+  {
+    // _check_order_edit_notes_perm 的拒絕訊息（補填金額沿用它做權限判斷，
+    // 所以字面上會寫「edit notes」）— 對店員講清楚是「不是你們店的單」
+    pattern: /permission denied: role=(\S+) stores=\{([^}]*)\} cannot edit notes of order/i,
+    render: (m) =>
+      `這張訂單不屬於你的店（你的帳號是 ${m[1]}，可操作：${m[2] || "未設定"}），無法修改。`
+      + `請由該店的帳號操作，或請總部處理。`,
+  },
   // ===== 店家守衛（rpc_record_pickup / rpc_bind_store_line_follower） =====
   {
     // 訊息本體已是中文（如「此訂單的取貨店是「三峽店」…」），只把機器前綴拿掉

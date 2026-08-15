@@ -902,6 +902,70 @@ async function getCampaignDetail(sb: any, tenantId: string, campaignId: number) 
 }
 
 /**
+ * 分享連結的預覽卡資料（OG tags 用），**免 token**。
+ *
+ * 為什麼要另外一支而不是重用 get_campaign_detail：貼到 LINE / FB 之後去抓
+ * OG tag 的是對方的爬蟲，它沒有、也不可能有會員 JWT。所以這支必須掛在
+ * dispatcher 的免 token 區，回傳的欄位也只挑「連結本來就打算給所有人看的」
+ * ——團名、封面圖、起跳價、結單時間，沒有任何會員 / 訂單資訊。
+ *
+ * 過期或已結單的團**照樣回**：連結已經在群組裡了，讓它顯示團名與圖，
+ * 比退回一張店家 logo 的通用卡有用（頁面本身還是會擋下單）。
+ * 只擋掉「本來就不該出現在賣場」的：非 is_for_shop、內部補貨 sentinel。
+ */
+async function getCampaignPreview(sb: any, tenantId: string, campaignId: number) {
+  if (!campaignId) return json({ error: "campaign_id required" }, 400);
+
+  const { data: c, error } = await sb
+    .from("group_buy_campaigns")
+    .select(
+      "id, campaign_no, name, description, cover_image_url, status, is_for_shop, end_at, campaign_items(unit_price, sort_order, sku:skus(product:products(images)))",
+    )
+    .eq("tenant_id", tenantId)
+    .eq("id", campaignId)
+    .maybeSingle();
+  if (error) return json({ error: error.message }, 500);
+  if (!c || !c.is_for_shop || c.campaign_no === "__INTERNAL_RESTOCK__") {
+    return json({ error: "campaign not found" }, 404);
+  }
+
+  const supabaseUrl = requireEnv("SUPABASE_URL");
+  const items = [...(c.campaign_items ?? [])].sort(
+    (a: any, b: any) => Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0),
+  );
+
+  // 圖：團封面優先，沒設就退回第一個品項的商品主圖 —— 很多團是直接沿用
+  // 商品照沒另外上傳封面，少了這一步那些團的預覽卡就沒圖。
+  let image = toPublicUrl(supabaseUrl, "products", c.cover_image_url);
+  if (!image) {
+    for (const it of items) {
+      const imgs = (it as any).sku?.product?.images;
+      if (!Array.isArray(imgs) || imgs.length === 0) continue;
+      const raw = typeof imgs[0] === "string" ? imgs[0] : imgs[0]?.url ?? null;
+      const url = toPublicUrl(supabaseUrl, "products", raw);
+      if (url) { image = url; break; }
+    }
+  }
+
+  const prices = items
+    .map((it: any) => Number(it.unit_price))
+    .filter((n: number) => Number.isFinite(n) && n > 0);
+
+  return json({
+    campaign: {
+      id: c.id,
+      campaign_no: c.campaign_no,
+      name: c.name,
+      description: c.description,
+      image_url: image,
+      price_from: prices.length > 0 ? Math.min(...prices) : null,
+      status: c.status,
+      end_at: c.end_at,
+    },
+  });
+}
+
+/**
  * 記一次商品瀏覽，回傳更新後的計數。
  *
  * 去重（同會員同商品 30 分鐘內只算一次）在 SQL 裡做 —— 前端的 useEffect
@@ -1305,6 +1369,10 @@ Deno.serve(async (req) => {
     // ── 不需要 Token 的 actions ──
     if (action === "claim_pwa_auth_code") return await claimPwaAuthCode(sb, String(body.code ?? ""));
     if (action === "list_stores") return await listStores(sb, requireEnv("DEFAULT_TENANT_ID"));
+    // 分享連結的 OG 預覽：呼叫的是 LINE / FB 的爬蟲（沒有會員 token），必須免驗
+    if (action === "get_campaign_preview") {
+      return await getCampaignPreview(sb, requireEnv("DEFAULT_TENANT_ID"), Number(body.campaign_id ?? 0));
+    }
     if (action === "log_client_error" || action === "report_client_logs") {
       // 有帶 token 就順便解出來補會員資訊；解不開不算錯（登入前的錯誤本來就沒 token）
       let logClaims: Record<string, unknown> | null = null;

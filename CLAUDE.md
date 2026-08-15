@@ -556,3 +556,29 @@ SELECT created_at, source, message, detail, env
 ```
 
 保留期自己顧：`SELECT purge_client_error_logs(30);`
+
+### 分享連結的預覽卡（OG tag）：client component 頁面要拆一層 server wrapper
+
+貼連結到 LINE / FB 時，對方爬蟲讀的是**伺服器吐出來的 HTML**裡的 og tag，
+client component 自己 `fetch` 回來的資料它完全看不到。所以 `"use client"` 的頁面
+不管畫得多漂亮，預覽卡永遠是站台預設值（沒設 og 時 LINE 會退到 apple-touch-icon，
+就是那張店家 logo 小方圖）。
+
+`/shop/c/[id]` 的作法（2026-08-15）：把原本的 client 頁改名 `CampaignDetailClient.tsx`，
+`page.tsx` 只留 server wrapper + `generateMetadata`，資料走 liff-api 的
+**免 token** action `get_campaign_preview`（爬蟲沒有、也不可能有會員 JWT，
+掛在需要 token 的 switch 裡等於整支失效）。三個連帶注意：
+
+- 免 token 的 action 只回「連結本來就打算公開的東西」（團名 / 圖 / 起跳價 / 結單時間），
+  不要順手把訂單、會員欄位帶出去。
+- og 圖必須是**絕對網址**（爬蟲沒有「當前網域」概念）；站台網域統一從
+  `apps/member/src/lib/site.ts` 的 `SITE_URL` 拿，不要每頁各寫一份。
+- 封面沒設就退回第一個品項的商品主圖，再沒有才退店家 banner —— 很多團直接沿用
+  商品照沒上傳封面，少了這層 fallback 那些團的卡就沒圖。
+
+LINE 會**依網址快取預覽**，改完 og tag 後舊訊息裡的卡片不會變，要貼新網址
+（或加 `?v=2`）才看得到新的。驗證不用真的貼 LINE：
+
+```bash
+curl -sS <url> | grep -o '<meta property="og[^>]*>'
+```

@@ -32,6 +32,9 @@ type OrderHead = {
   payment_status: string | null;
   // 只拿來決定品項要不要補印商品名（見 lib/skuLabel）
   campaign: { name: string } | { name: string }[] | null;
+  // store_internal = 【內部】xx 店 / RR- / OV- 現貨池容器單：單價 0 是掛帳用的，
+  // 不算漏填，零元守衛（migration 20260815000000）前後端都放行
+  member: { member_type: string | null } | { member_type: string | null }[] | null;
   // 取貨店店名 — 判斷「這是不是我自己店的單」（改折扣權限用，見 canEditAmount）
   store: { name: string } | { name: string }[] | null;
 };
@@ -65,6 +68,9 @@ export function PickupDialog({
   // item.id → 是否已到貨（v_order_item_pickup_ready）。未到貨品項鎖住不可勾，
   // 後端 rpc_record_pickup 也會逐品項擋，這裡是前端提示。查無資料時當已到貨（交給後端把關）。
   const [readyByItem, setReadyByItem] = useState<Map<number, boolean>>(new Map());
+  // 這張單是不是現貨池容器單（member_type='store_internal'）。是的話 $0 不算漏填，
+  // 零元守衛放行 —— 與 rpc_record_pickup 同一條例外。
+  const [isInternalPool, setIsInternalPool] = useState(false);
   const [discountValue, setDiscountValue] = useState<DiscountValue>({ kind: "amount", value: 0 });
   const [originalDiscount, setOriginalDiscount] = useState<{ amount: number; percent: number }>({ amount: 0, percent: 0 });
   const [memberId, setMemberId] = useState<number | null>(null);
@@ -106,7 +112,7 @@ export function PickupDialog({
           .in("status", ["pending", "reserved", "ready"])
           .order("id"),
         sb.from("customer_orders")
-          .select("discount_amount, discount_percent, member_id, wallet_paid_amount, payment_status, campaign:group_buy_campaigns(name), store:stores!customer_orders_pickup_store_id_fkey(name)")
+          .select("discount_amount, discount_percent, member_id, wallet_paid_amount, payment_status, campaign:group_buy_campaigns(name), member:members(member_type), store:stores!customer_orders_pickup_store_id_fkey(name)")
           .eq("id", orderId)
           .maybeSingle<OrderHead>(),
         // 已退回總倉量（return_to_hq transfer）— 退掉的貨店裡沒有、不可再取。
@@ -124,6 +130,12 @@ export function PickupDialog({
       if (cancelled) return;
       if (iRes.error) { setErr(iRes.error.message); return; }
       const list = (iRes.data ?? []) as unknown as PickableItem[];
+
+      // 零元守衛的例外判定要在「預設勾選」之前算出來（$0 品項預設不勾）
+      const headMember = Array.isArray(hRes.data?.member) ? hRes.data?.member[0] : hRes.data?.member;
+      const internalPool = headMember?.member_type === "store_internal";
+      setIsInternalPool(internalPool);
+      const zeroPriced = (it: PickableItem) => !internalPool && Number(it.unit_price) === 0;
 
       // ----- 退貨量依 SKU 聚合，再分攤到各 pending 品項行（list 已 order by id，分攤穩定）-----
       // 只算「未取退貨」：取貨後退回（|取貨後退回）的是客戶已取走的貨，不扣未取品項的可取量
@@ -155,9 +167,11 @@ export function PickupDialog({
       const arrived = (it: PickableItem) => arrivedMap.get(it.id) !== false;
 
       setItems(list);
-      // 預設勾選 + 全取：只含「已到貨、且扣掉已退後仍有可取量」的品項
+      // 預設勾選 + 全取：只含「已到貨、且扣掉已退後仍有可取量」的品項。
+      // 單價 $0（漏填金額）的品項也排除 —— 勾了整批都會被後端零元守衛擋掉，
+      // 預設不勾才能讓店員把有價格的那幾項先取走。
       const pickableQty = (it: PickableItem) => Math.max(0, Number(it.qty) - (allocMap.get(it.id) ?? 0));
-      setPicked(new Set(list.filter((it) => pickableQty(it) > 0 && arrived(it)).map((it) => it.id)));
+      setPicked(new Set(list.filter((it) => pickableQty(it) > 0 && arrived(it) && !zeroPriced(it)).map((it) => it.id)));
       setPickQty(new Map(list.map((it) => [it.id, String(pickableQty(it))])));
       const head = hRes.data;
       const headAmt = Number(head?.discount_amount ?? 0);
@@ -216,6 +230,12 @@ export function PickupDialog({
   // 該品項是否未到貨（分店實收 0）— 未到貨不可勾選取貨
   function notArrived(it: PickableItem): boolean {
     return readyByItem.get(it.id) === false;
+  }
+  // 該品項是否漏填金額（單價 $0）。取貨＝收錢，$0 收不到錢 → 鎖住不可勾，
+  // 後端 rpc_record_pickup 的零元守衛也會擋（migration 20260815000000）。
+  // 現貨池容器單（store_internal）的 0 是掛帳用的，不算。
+  function zeroPrice(it: PickableItem): boolean {
+    return !isInternalPool && Number(it.unit_price) === 0;
   }
   function pickableOf(it: PickableItem): number {
     return Math.max(0, Number(it.qty) - returnedOf(it));
@@ -380,6 +400,13 @@ export function PickupDialog({
               ↩ 本訂單商品已全數退回總倉，無可取貨項目。
             </div>
           )}
+          {items.some((it) => zeroPrice(it)) && (
+            <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+              ⚠️ 有 {items.filter((it) => zeroPrice(it)).length} 個品項的單價是 $0（可能是開團時漏填金額），
+              已鎖住不能取貨。請到取貨頁該品項旁「補填」金額，或到訂單明細改單價；
+              其餘有價格的品項可以先取。
+            </div>
+          )}
           <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
             <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
               <thead className="bg-zinc-50 dark:bg-zinc-900">
@@ -397,7 +424,7 @@ export function PickupDialog({
                   const returned = returnedOf(it);
                   const pickable = pickableOf(it);
                   const fullyReturned = pickable <= 0;
-                  const blocked = fullyReturned || notArrived(it);
+                  const blocked = fullyReturned || notArrived(it) || zeroPrice(it);
                   const take = effQty(it);
                   const sub = lineSubQty(it, take);
                   const partial = take < pickable;
@@ -455,7 +482,9 @@ export function PickupDialog({
                           ? <span className="rounded bg-orange-100 px-1.5 py-0.5 font-medium text-orange-800 dark:bg-orange-950 dark:text-orange-300">已退貨・不能取貨</span>
                           : notArrived(it)
                             ? <span className="rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">⏳ 未到貨・不能取貨</span>
-                            : orderItemStatusLabel(it.status)}
+                            : zeroPrice(it)
+                              ? <span className="rounded bg-red-100 px-1.5 py-0.5 font-medium text-red-700 dark:bg-red-950 dark:text-red-300">⚠️ 未填金額・不能取貨</span>
+                              : orderItemStatusLabel(it.status)}
                       </td>
                     </tr>
                   );

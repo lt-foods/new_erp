@@ -2,11 +2,26 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
 import ErrorLogger from "@/components/ErrorLogger";
+import { SITE_NAME, SITE_OG_IMAGE, SITE_URL } from "@/lib/site";
+
+const DESCRIPTION = "包子媽生鮮小舖 — LINE 團購會員 App";
 
 export const metadata: Metadata = {
-  title: "包子媽生鮮小舖",
-  description: "包子媽生鮮小舖 — LINE 團購會員 App",
+  metadataBase: new URL(SITE_URL),
+  title: SITE_NAME,
+  description: DESCRIPTION,
   manifest: "/manifest.json",
+  // 站台預設的分享預覽卡。沒有這段時，貼到 LINE 只會抓到 apple-touch-icon
+  // （店家 logo 小方圖）；各頁要更好的卡就自己覆寫 openGraph（例：
+  // /shop/c/[id] 換成該團的商品圖，/join 換成 banner）。
+  openGraph: {
+    type: "website",
+    siteName: SITE_NAME,
+    title: SITE_NAME,
+    description: DESCRIPTION,
+    locale: "zh_TW",
+    images: [{ url: SITE_OG_IMAGE, width: 1800, height: 600, alt: SITE_NAME }],
+  },
   icons: {
     icon: [
       { url: "/icons/android/launchericon-192x192.png", sizes: "192x192", type: "image/png" },

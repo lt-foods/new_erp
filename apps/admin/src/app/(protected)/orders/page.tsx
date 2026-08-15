@@ -32,6 +32,11 @@ type Row = {
   transferred_from_order_id: number | null;
   created_at: string;
   updated_at: string;
+  // 單價 $0 的品項行數（v_admin_orders_list @20260815000000）。>0 = 開團／代 key
+  // 漏填金額 —— 取貨時 rpc_record_pickup 的零元守衛會擋下整張單。
+  // 【內部】xx 店 / RR- / OV- 容器單（member_type='store_internal'）恆為 0：
+  // 池子單價本來就可能是 0，不是漏填。
+  zero_price_lines: number | null;
 };
 
 type Campaign = { id: number; campaign_no: string; name: string; cover_image_url: string | null; start_at: string | null };
@@ -221,6 +226,9 @@ type OrderFilters = {
   keywordOr: string | null;
   // 日期區間看事件日（event_at）還是訂單日（created_at）— 語意跟著 tab 走，見 dateOnEvent
   dateOnEvent: boolean;
+  // 只看「含 $0 品項」的訂單（漏填金額）。伺服端篩 v_admin_orders_list.zero_price_lines，
+  // 跨分頁有效 —— client 端只濾得到當頁 50 筆，數字會跟提示條對不起來
+  zeroOnly: boolean;
 };
 
 // 品項（SKU）篩選用的內嵌 join：applyOrderFilters 的 items.sku_id 過濾要靠 select
@@ -234,6 +242,7 @@ function applyOrderFilters<
   Q extends {
     eq(column: string, value: never): Q;
     in(column: string, values: never[]): Q;
+    gt(column: string, value: never): Q;
     gte(column: string, value: never): Q;
     lt(column: string, value: never): Q;
     or(filters: string): Q;
@@ -260,6 +269,7 @@ function applyOrderFilters<
   if (f.fromTs) out = out.gte(dateCol, f.fromTs as never);
   if (f.toTs) out = out.lt(dateCol, f.toTs as never);
   if (f.keywordOr) out = out.or(f.keywordOr);
+  if (f.zeroOnly) out = out.gt("zero_price_lines", 0 as never);
   return out;
 }
 
@@ -281,6 +291,20 @@ function cardTint(status: OrderStatus): string {
   if (status === "expired") return "border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30";
   if (status === "transferred_out") return "border-zinc-200 bg-zinc-100 text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900";
   return "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950";
+}
+
+// 「這張單有 $0 品項」紅標 — 數字來自 v_admin_orders_list.zero_price_lines
+// （伺服端算的，與提示條的數量、「只看 $0」篩選同一個來源，不會各說各話）
+function ZeroPriceBadge({ lines }: { lines: number | null }) {
+  if (!lines || lines <= 0) return null;
+  return (
+    <span
+      title="這張單有品項的單價是 $0，可能是開團時漏填金額。取貨會被擋下，請先補上金額。"
+      className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-950 dark:text-red-300"
+    >
+      ⚠️ $0 品項 ×{lines}
+    </span>
+  );
 }
 
 export default function OrdersListPage() {
@@ -305,6 +329,8 @@ function OrdersListContent() {
     return TAB_VALUES.includes(t as Tab) ? (t as Tab) : "pending";
   })();
   const initialStoreId = searchParams.get("storeId") ?? "";
+  // ?zero=1 —— 讓「$0 提示條」可以被貼成連結丟給同事
+  const initialZeroOnly = searchParams.get("zero") === "1";
   const initialSkuId = searchParams.get("skuId") ?? "";
   const initialKeyword = searchParams.get("q") ?? "";
   const initialDate = (key: string) => {
@@ -326,6 +352,10 @@ function OrdersListContent() {
   const [skuOptionRows, setSkuOptionRows] = useState<
     { skuId: number; campaignId: number; productName: string | null; variantName: string | null }[]
   >([]);
+  // 只看含 $0 品項的訂單（提示條的「只看這些」）
+  const [zeroOnly, setZeroOnly] = useState(initialZeroOnly);
+  // 目前 tab + 篩選底下有幾張含 $0 品項的訂單（提示條的數字；zeroOnly 關掉時也要算）
+  const [zeroCount, setZeroCount] = useState<number | null>(null);
   // 訂單日 (created_at) 區間；"" = 不限
   const [dateFrom, setDateFrom] = useState(initialDate("from"));
   const [dateTo, setDateTo] = useState(initialDate("to"));
@@ -410,14 +440,14 @@ function OrdersListContent() {
   // 品項篩選只在有選開團時生效（下拉也只在那時渲染）。開團清空不硬清 skuId，
   // 改由這裡歸零 — 篩選不能在 UI 看不到的情況下默默生效。
   const activeSkuId = campaignIds.length > 0 ? skuId : "";
-  const hasFilter = campaignIds.length > 0 || !!storeId || !!activeSkuId || !!keyword || !!dateFrom || !!dateTo;
+  const hasFilter = campaignIds.length > 0 || !!storeId || !!activeSkuId || !!keyword || !!dateFrom || !!dateTo || zeroOnly;
 
   useEffect(() => {
     setPage(1);
     // 篩選一變，勾選就作廢 — 不然會印到已經看不見的單
     setSelected(new Set());
     setBulkPrintErr(null);
-  }, [campaignIds, tab, storeId, activeSkuId, keyword, fromTs, toTs]);
+  }, [campaignIds, tab, storeId, activeSkuId, keyword, fromTs, toTs, zeroOnly]);
 
   // 品項下拉的選項 = 所選開團的 campaign_items。沒選開團就不提供品項篩選
   // （全庫 SKU 太多、也沒有情境）。products.name 是 source of truth
@@ -550,7 +580,7 @@ function OrdersListContent() {
         const base = getSupabase()
           .from("v_admin_orders_list")
           .select(
-            "id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, transferred_from_order_id, created_at, updated_at"
+            "id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, transferred_from_order_id, created_at, updated_at, zero_price_lines"
               + (activeSkuId ? ITEM_EMBED : ""),
             { count: "exact" },
           )
@@ -560,7 +590,7 @@ function OrdersListContent() {
 
         const kwOr = await buildKeywordOr(keyword);
         if (cancelled) return;
-        const q = applyOrderFilters(base, { campaignIds, tab, storeId, skuIds: activeSkuId ? [activeSkuId] : [], fromTs, toTs, keywordOr: kwOr, dateOnEvent });
+        const q = applyOrderFilters(base, { campaignIds, tab, storeId, skuIds: activeSkuId ? [activeSkuId] : [], fromTs, toTs, keywordOr: kwOr, dateOnEvent, zeroOnly });
 
         const { data, count, error } = await q;
         if (cancelled) return;
@@ -617,7 +647,31 @@ function OrdersListContent() {
       }
     })();
     return () => { cancelled = true; };
-  }, [campaignIds, tab, dateOnEvent, storeId, activeSkuId, page, reloadOrders, keyword, fromTs, toTs, sortSpec]);
+  }, [campaignIds, tab, dateOnEvent, storeId, activeSkuId, page, reloadOrders, keyword, fromTs, toTs, sortSpec, zeroOnly]);
+
+  // 「$0 品項」提示條的數字 — 與列表同一組篩選（含 tab），只多一條
+  // zero_price_lines > 0。刻意獨立一支查詢而不是數當頁 rows：跨分頁才算得準，
+  // 而且 zeroOnly 關著的時候也要能顯示「有 N 張要處理」。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setZeroCount(null);
+      const kwOr = await buildKeywordOr(keyword);
+      if (cancelled) return;
+      const base = getSupabase()
+        .from("v_admin_orders_list")
+        .select("id" + (activeSkuId ? ITEM_EMBED : ""), { count: "exact", head: true });
+      const { count, error } = await applyOrderFilters(base, {
+        campaignIds, tab, storeId, skuIds: activeSkuId ? [activeSkuId] : [],
+        fromTs, toTs, keywordOr: kwOr, dateOnEvent, zeroOnly: true,
+      });
+      if (cancelled) return;
+      // 查不到就當 0（例如線上還沒套 migration、view 沒有這一欄）——
+      // 提示條消失即可，不要讓訂單頁整頁報錯
+      setZeroCount(error ? 0 : count ?? 0);
+    })();
+    return () => { cancelled = true; };
+  }, [campaignIds, tab, dateOnEvent, storeId, activeSkuId, reloadOrders, keyword, fromTs, toTs]);
 
   // 頁首聚合（tab 數量 + 月趨勢）— 單一伺服端 RPC rpc_order_overview
   // 取代之前 client 端「5 個 count:exact 全表掃描」+「搬整月訂單+全部明細
@@ -893,7 +947,7 @@ function OrdersListContent() {
       .order("id", { ascending: false })
       .limit(SELECT_ALL_MAX);
     const { data, error } = await applyOrderFilters(base, {
-      campaignIds, tab, storeId, skuIds: activeSkuId ? [activeSkuId] : [], fromTs, toTs, keywordOr: kwOr, dateOnEvent,
+      campaignIds, tab, storeId, skuIds: activeSkuId ? [activeSkuId] : [], fromTs, toTs, keywordOr: kwOr, dateOnEvent, zeroOnly,
     });
     if (error) { setBulkPrintErr(error.message); return; }
     const ids = ((data ?? []) as unknown as { id: number }[]).map((r) => r.id);
@@ -1044,6 +1098,31 @@ function OrdersListContent() {
           );
         })}
       </div>
+
+      {/* ⚠ 漏填金額提示 — 目前 tab + 篩選底下有幾張訂單含 $0 品項。
+          $0 幾乎都是開團 / 代 key 時漏填單價（線上抽查 notes 全為 NULL，沒有一筆是
+          刻意的贈品），取貨那一刻就是收錢的時候 → 不補金額等於把貨白送。
+          取貨頁與 rpc_record_pickup 會擋下這種單，所以這裡要讓人一眼看到、點得進去。*/}
+      {(zeroOnly || (zeroCount ?? 0) > 0) && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+          <span className="font-semibold">
+            ⚠️ 有 {zeroCount ?? "…"} 張訂單含 $0 品項
+          </span>
+          <span className="text-xs">
+            可能是開團時漏填金額。這些單在取貨頁會被擋下，請先補上金額（點訂單開明細改單價，或在取貨頁該品項旁直接補填）。
+          </span>
+          <SpinButton
+            type="button"
+            onClick={() => setZeroOnly((v) => !v)}
+            className={zeroOnly
+              ? "ml-auto shrink-0 rounded-md bg-red-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-red-700"
+              : "ml-auto shrink-0 rounded-md border border-red-400 px-2.5 py-1 text-xs font-medium hover:bg-red-100 dark:hover:bg-red-950"
+            }
+          >
+            {zeroOnly ? "✕ 取消只看 $0" : "只看這些"}
+          </SpinButton>
+        </div>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="relative">
@@ -1421,6 +1500,7 @@ function OrdersListContent() {
                 <span>{sum?.lineCount ?? 0} 項</span>
                 <span>共 {sum?.totalQty ?? 0} 件</span>
                 <span className="font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100">${sum?.totalAmount ?? 0}</span>
+                <ZeroPriceBadge lines={r.zero_price_lines} />
                 <span
                   className="ml-auto"
                   title={`訂單日：${new Date(r.created_at).toLocaleString("zh-TW", { hour12: false })}\n更新日：${new Date(r.updated_at).toLocaleString("zh-TW", { hour12: false })}`}
@@ -1548,7 +1628,14 @@ function OrdersListContent() {
                   <Td className="whitespace-nowrap text-xs">{s?.name ?? "—"}</Td>
                   <Td className="whitespace-nowrap text-right font-mono">{itemSummary.get(r.id)?.lineCount ?? 0}</Td>
                   <Td className="whitespace-nowrap text-right font-mono">{itemSummary.get(r.id)?.totalQty ?? 0}</Td>
-                  <Td className="whitespace-nowrap text-right font-mono">${itemSummary.get(r.id)?.totalAmount ?? 0}</Td>
+                  <Td className="whitespace-nowrap text-right font-mono">
+                    ${itemSummary.get(r.id)?.totalAmount ?? 0}
+                    {(r.zero_price_lines ?? 0) > 0 && (
+                      <div className="mt-0.5">
+                        <ZeroPriceBadge lines={r.zero_price_lines} />
+                      </div>
+                    )}
+                  </Td>
                   <Td
                     className="whitespace-nowrap text-right text-xs text-zinc-500"
                     title={`訂單日：${new Date(r.created_at).toLocaleString("zh-TW", { hour12: false })}\n更新日：${new Date(r.updated_at).toLocaleString("zh-TW", { hour12: false })}`}
