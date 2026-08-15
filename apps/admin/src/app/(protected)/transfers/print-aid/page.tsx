@@ -61,9 +61,11 @@ type Leg = {
 
 type CopyKind = "driver" | "stub";
 
+// 版型 / 聯別一律對齊內部調撥的轉貨單（/transfers/print）—— 店家兩種單都在同一台
+// 出單機印、同一疊紙歸檔，格式不一樣就會被當成兩種單據。
 const COPY_LABEL: Record<CopyKind, string> = {
-  driver: "隨貨聯 (隨箱)",
-  stub: "出貨店存根聯",
+  driver: "司機聯 (隨貨)",
+  stub: "店家存根聯",
 };
 
 const LEG_STATUS_LABEL: Record<string, string> = {
@@ -339,14 +341,15 @@ function Slip({
         <thead>
           <tr className="border-b border-black text-[12px]">
             <th className="w-5 py-1 text-left">#</th>
-            <th className="py-1 text-left">品名 / 規格</th>
-            <th className="w-10 py-1 text-right">數量</th>
+            <th className="py-1 text-left">品名 / 描述</th>
+            <th className="w-9 py-1 text-right">應出</th>
+            <th className="w-9 py-1 text-right">實出</th>
             <th className="w-8 py-1 text-center">點收</th>
           </tr>
         </thead>
         <tbody>
           {items.length === 0 ? (
-            <tr><td colSpan={4} className="py-2 text-center text-zinc-500">無明細</td></tr>
+            <tr><td colSpan={5} className="py-2 text-center text-zinc-500">無明細</td></tr>
           ) : (
             items.map((it, idx) => (
               <Fragment key={it.id}>
@@ -360,6 +363,8 @@ function Slip({
                     )}
                     {it.notes && <div className="text-[11px] italic">↳ {it.notes}</div>}
                   </td>
+                  {/* 訂單品項只有一個數量欄；應出＝實出，跟轉貨單同欄位好對帳 */}
+                  <td className="py-1 text-right align-top">{Number(it.qty)}</td>
                   <td className="py-1 text-right align-top font-bold">{Number(it.qty)}</td>
                   <td className="py-1 text-center align-top text-[15px]">☐</td>
                 </tr>
@@ -370,6 +375,7 @@ function Slip({
         <tfoot>
           <tr className="border-t-2 border-black font-bold">
             <td colSpan={2} className="py-1 text-right">合計</td>
+            <td className="py-1 text-right">{totalQty}</td>
             <td className="py-1 text-right">{totalQty}</td>
             <td className="py-1 text-center text-[11px]">{items.length} 項</td>
           </tr>

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import AidShipmentReminder from "@/components/AidShipmentReminder";
 import StoreHeatMap from "@/components/StoreHeatMap";
 import RegionPreferenceSummary from "@/components/RegionPreferenceSummary";
 import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
@@ -181,6 +182,9 @@ export default function Dashboard() {
             {error}
           </div>
         )}
+
+        {/* 一進系統就看得到：本店有互助的貨等著被載走 → 提醒把出貨單印給司機 */}
+        <AidShipmentReminder storeId={storeId ? Number(storeId) : null} />
 
         {pendingCandidates !== null && pendingCandidates > 0 && (
           <Link
