@@ -18,6 +18,11 @@ export const ALL_STAFF_PERMS = [
     label: "訂單樞紐：檢視所有門市",
     desc: "分店帳號在「訂單 — 樞紐表」不再被鎖在自己那間店，可切換／同時檢視每一間店。",
   },
+  {
+    key: "orders_edit_amount",
+    label: "訂單金額：可改單價與折扣",
+    desc: "分店帳號可修改自己店訂單的單價、整單折扣、單品折扣。所有改動都會記進稽核紀錄。",
+  },
 ] as const;
 
 export type StaffPerm = (typeof ALL_STAFF_PERMS)[number]["key"];

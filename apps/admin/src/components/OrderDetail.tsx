@@ -13,6 +13,7 @@ import { EditableNumber, EditableText } from "@/components/EditableCell";
 import { EditableDiscount, deriveDiscount, type DiscountValue } from "@/components/EditableDiscount";
 import { useAuth } from "@/components/AuthProvider";
 import { useRole } from "@/lib/role";
+import { useHasStaffPerm } from "@/lib/staffPerms";
 import { orderStatusLabel as statusLabel, canPayWithWallet } from "@/lib/orderStatus";
 import { summarizeOrderSource } from "@/lib/orderSource";
 import { ItemSourceBadge, OrderSourceBadge } from "@/components/OrderSourceBadge";
@@ -233,6 +234,16 @@ export function OrderDetail({
   const isStoreOfThisOrder = !!head?.store?.name
     && Array.isArray(userStores)
     && userStores.includes(head.store.name);
+
+  // 金額編輯（單價／整單折扣／單品折扣）— 與 DB 守衛 _check_order_edit_perm 逐條對齊
+  //   1. HQ tier：照舊全開，不受功能權限影響
+  //   2. 其餘角色：要有「訂單金額：可改單價與折扣」功能權限（owner/admin 在 /staff 逐人勾），
+  //      且只能改自己店的單（stores 含「總倉」視同不鎖店，同 DB 判定）
+  // 沒權限就把欄位鎖成唯讀，不要讓人改了按儲存才跳 permission denied。
+  const hasEditAmountPerm = useHasStaffPerm("orders_edit_amount");
+  const isWarehouseMember = Array.isArray(userStores) && userStores.includes("總倉");
+  const canEditAmount = (role !== null && HQ_ROLES.has(role))
+    || (hasEditAmountPerm && (isWarehouseMember || isStoreOfThisOrder));
 
   // qty 只有 pending 訂單可改;一旦被 PR 鎖定變 confirmed 就唯讀
   const canEditQty = (canEdit || isStoreOfThisOrder) && head?.status === "pending";
@@ -978,7 +989,7 @@ export function OrderDetail({
           value={
             <EditableDiscount
               value={orderDiscountValue}
-              disabled={!canEdit}
+              disabled={!canEditAmount}
               onChange={(v) => setOrderDraft({ discount: v })}
               referenceAmount={netSubtotal}
             />
@@ -1124,7 +1135,7 @@ export function OrderDetail({
                         value={Number(eff.unit_price)}
                         min={0}
                         prefix="$"
-                        disabled={!canEdit || isPicked}
+                        disabled={!canEditAmount || isPicked}
                         onSave={async (v) => setItemDraft(it.id, { unit_price: v })}
                       />
                     </td>
@@ -1136,7 +1147,7 @@ export function OrderDetail({
                     <td className="px-3 py-2 text-right font-mono">
                       <EditableDiscount
                         value={eff.discount}
-                        disabled={!canEdit || isPicked}
+                        disabled={!canEditAmount || isPicked}
                         onChange={(v) => setItemDraft(it.id, { discount: v })}
                         compact
                         referenceAmount={Number(eff.qty) * Number(eff.unit_price)}

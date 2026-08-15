@@ -11,6 +11,8 @@ import { EditableDiscount, deriveDiscount, type DiscountValue } from "@/componen
 import { orderItemStatusLabel } from "@/lib/orderStatus";
 import { parseReturnNote } from "@/lib/returnNote";
 import { itemDisplayName } from "@/lib/skuLabel";
+import { isHqRole, useMyStores, useRole } from "@/lib/role";
+import { useHasStaffPerm } from "@/lib/staffPerms";
 
 type PickableItem = {
   id: number;
@@ -30,6 +32,8 @@ type OrderHead = {
   payment_status: string | null;
   // 只拿來決定品項要不要補印商品名（見 lib/skuLabel）
   campaign: { name: string } | { name: string }[] | null;
+  // 取貨店店名 — 判斷「這是不是我自己店的單」（改折扣權限用，見 canEditAmount）
+  store: { name: string } | { name: string }[] | null;
 };
 
 // 以指定數量計算小計（line-level 折扣金額按比例分攤，對齊後端拆行邏輯）
@@ -65,6 +69,7 @@ export function PickupDialog({
   const [originalDiscount, setOriginalDiscount] = useState<{ amount: number; percent: number }>({ amount: 0, percent: 0 });
   const [memberId, setMemberId] = useState<number | null>(null);
   const [campaignName, setCampaignName] = useState<string | null>(null);
+  const [pickupStoreName, setPickupStoreName] = useState<string | null>(null);
   const [walletPaidSoFar, setWalletPaidSoFar] = useState(0);
   const [paymentStatus, setPaymentStatus] = useState<string | null>(null);
   const [walletBalance, setWalletBalance] = useState<number | null>(null);
@@ -75,6 +80,19 @@ export function PickupDialog({
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // 改「整單折扣」的權限 — 與 DB 守衛 _check_order_edit_perm 逐條對齊：
+  //   1. HQ tier（owner/admin/hq_manager/hq_accountant/空）：照舊全開
+  //   2. 其餘角色：要有「訂單金額：可改單價與折扣」功能權限（owner/admin 在 /staff 逐人勾），
+  //      且只能改自己店的單（stores 含「總倉」視同不鎖店，同 DB 判定）
+  // 沒權限就把折扣欄鎖成唯讀，不要讓人打了折按確認取貨才跳 permission denied。
+  const role = useRole();
+  const myStores = useMyStores();
+  const hasEditAmountPerm = useHasStaffPerm("orders_edit_amount");
+  const canEditAmount = isHqRole(role)
+    || (hasEditAmountPerm
+        && (myStores.includes("總倉")
+            || (!!pickupStoreName && myStores.includes(pickupStoreName))));
 
   useEffect(() => {
     if (!open) return;
@@ -88,7 +106,7 @@ export function PickupDialog({
           .in("status", ["pending", "reserved", "ready"])
           .order("id"),
         sb.from("customer_orders")
-          .select("discount_amount, discount_percent, member_id, wallet_paid_amount, payment_status, campaign:group_buy_campaigns(name)")
+          .select("discount_amount, discount_percent, member_id, wallet_paid_amount, payment_status, campaign:group_buy_campaigns(name), store:stores!customer_orders_pickup_store_id_fkey(name)")
           .eq("id", orderId)
           .maybeSingle<OrderHead>(),
         // 已退回總倉量（return_to_hq transfer）— 退掉的貨店裡沒有、不可再取。
@@ -149,6 +167,8 @@ export function PickupDialog({
       setMemberId(head?.member_id ?? null);
       const camp = Array.isArray(head?.campaign) ? head?.campaign[0] : head?.campaign;
       setCampaignName(camp?.name ?? null);
+      const st = Array.isArray(head?.store) ? head?.store[0] : head?.store;
+      setPickupStoreName(st?.name ?? null);
       const alreadyPaid = Number(head?.wallet_paid_amount ?? 0);
       const isPaid = head?.payment_status === "paid";
       setWalletPaidSoFar(alreadyPaid);
@@ -455,11 +475,20 @@ export function PickupDialog({
                         待存
                       </span>
                     )}
+                    {!canEditAmount && (
+                      <span
+                        className="ml-1 text-[10px] text-zinc-400"
+                        title="需由總部在「員工管理 → 功能權限」勾選「訂單金額：可改單價與折扣」，勾完要重新登入才生效"
+                      >
+                        （無權限）
+                      </span>
+                    )}
                   </td>
                   <td colSpan={2} className="px-3 py-1 text-left">
                     <EditableDiscount
                       value={discountValue}
                       onChange={setDiscountValue}
+                      disabled={!canEditAmount}
                       referenceAmount={subtotal}
                       compact
                     />
