@@ -95,6 +95,13 @@ function PickupPageContent() {
   // item.id → 未取退貨量（return_to_hq transfer 依 SKU 聚合後分攤到各品項行，
   // 與 PickupDialog 同構）。退回總倉的量店裡沒有、不可再取。
   const [returnedByItem, setReturnedByItem] = useState<Map<number, number>>(new Map());
+  // member_type='store_internal' 的會員 id（【內部】xx 店 / RR- / OV- 現貨池容器）。
+  // 這些單的 unit_price 本來就可能是 0（掛帳用，轉單給客人時才鎖現售價），
+  // 不算漏填 —— 零元守衛前後端都放行，見 migration 20260815000000。
+  const [internalMemberIds, setInternalMemberIds] = useState<Set<number>>(new Set());
+  // item.id → 櫃台補填金額的輸入值 / 正在送出的那一筆
+  const [zeroFillDraft, setZeroFillDraft] = useState<Map<number, string>>(new Map());
+  const [zeroFilling, setZeroFilling] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const autoSearchedRef = useRef(false);
@@ -163,8 +170,20 @@ function PickupPageContent() {
     }
     return [];
   }
+  // 本次要取的品項裡，單價是 $0 的那些 —— 開團 / 代 key 漏填金額。
+  // 取貨就是收錢的那一刻，放行等於把貨白送（線上已經這樣送掉 111 列），
+  // 所以整張擋下、要求先補金額。rpc_record_pickup 有同款守衛（zero_price:），
+  // 這裡是為了讓店員在按下去之前就看到、而且當場補得了。
+  // 【內部】xx 店 / RR- / OV- 現貨池容器單的 0 是掛帳用的，不擋。
+  function zeroPriceItems(order: OpenOrder & { member_id?: number }) {
+    if (order.member_id != null && internalMemberIds.has(order.member_id)) return [];
+    return pickableItems(order).filter((it) => Number(it.unit_price) === 0);
+  }
+  function hasZeroPrice(order: OpenOrder): boolean {
+    return zeroPriceItems(order).length > 0;
+  }
   function isPickable(order: OpenOrder): boolean {
-    return pickableItems(order).length > 0;
+    return pickableItems(order).length > 0 && !hasZeroPrice(order);
   }
   // 該品項是否為「這組到過貨但量不夠分到這一行」（短收 / 這批只到一部分）。
   // 等下一批貨收進來就會自己放行，不需要人工配貨 —— 所以不可以標成「待補貨」。
@@ -237,6 +256,17 @@ function PickupPageContent() {
       }
 
       if (list.length === 0) return;
+
+      // 現貨池容器會員（member_type='store_internal'）—— 零元守衛對它們不生效。
+      // rpc_search_members 不回 member_type，所以另外撈一次（結果最多 20 筆）。
+      {
+        const { data: its } = await sb
+          .from("members")
+          .select("id")
+          .in("id", list.map((mem) => mem.id))
+          .eq("member_type", "store_internal");
+        setInternalMemberIds(new Set(((its ?? []) as { id: number }[]).map((x) => x.id)));
+      }
 
       // 搜尋有結果即記入「常用顧客」（不必等取貨）。
       // ≤5 筆視為「找到特定顧客」才記；>5 視為廣搜（如只打姓氏），不記以免洗版。
@@ -535,6 +565,39 @@ function PickupPageContent() {
       }
     }
     setReloadTick((n) => n + 1);
+  }
+
+  // 櫃台補填漏填的金額（$0 → 正數）。走窄口徑的 rpc_fill_zero_order_item_price：
+  // 改單價的 rpc_update_order_item_price 認 app_metadata.store_id，分店帳號一個都沒有
+  // （店歸屬存的是 stores 店名陣列）→ 店員按不動。沒有這個入口的話，零元守衛會變成
+  // 「客人在櫃台、按鈕按不下去、自己又改不了」，只能打電話找總部或改走轉單（重複單）。
+  async function fillZeroPrice(order: OpenOrder, itemId: number) {
+    const raw = (zeroFillDraft.get(itemId) ?? "").trim();
+    const price = Number(raw);
+    if (!raw || !Number.isFinite(price) || price <= 0) {
+      setError("請先輸入大於 0 的金額再補填");
+      return;
+    }
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id;
+    if (!operator) { setError("尚未登入"); return; }
+    setZeroFilling(itemId);
+    setError(null);
+    try {
+      const { error: e } = await sb.rpc("rpc_fill_zero_order_item_price", {
+        p_order_id: order.id,
+        p_item_id: itemId,
+        p_new_unit_price: price,
+        p_operator: operator,
+        p_reason: null,
+      });
+      if (e) { setError(`${order.order_no} 補填金額失敗：${translateRpcError(e)}`); return; }
+      setZeroFillDraft((m2) => { const next = new Map(m2); next.delete(itemId); return next; });
+      setReloadTick((n) => n + 1);
+    } finally {
+      setZeroFilling(null);
+    }
   }
 
   // 取消訂單 — 沿用訂單頁完全相同的 rpc_cancel_aid_order 流程：
@@ -946,9 +1009,14 @@ function PickupPageContent() {
                         const pickable = pickableItems(o);
                         const pickableIds = new Set(pickable.map((it) => it.id));
                         const pickableCount = pickable.length;
-                        const canPickup = pickableCount > 0;
-                        // 部分到貨：有品項可取、但還有（未被退光的）active 品項未到
-                        const partialArrival = canPickup && pickableCount < activeRemaining.length;
+                        // 漏填金額（$0）→ 整張擋下，補完才放行（後端 rpc_record_pickup 同款守衛）
+                        const zeroItems = zeroPriceItems(o);
+                        const zeroIds = new Set(zeroItems.map((it) => it.id));
+                        const canPickup = pickableCount > 0 && zeroItems.length === 0;
+                        // 部分到貨：有品項可取、但還有（未被退光的）active 品項未到。
+                        // 一律看「到貨」本身（pickableCount），不要跟 canPickup 綁 ——
+                        // 被漏填金額擋住的單，貨其實在店裡，講成「未到貨」會讓店員跑去追補貨。
+                        const partialArrival = pickableCount > 0 && pickableCount < activeRemaining.length;
                         // 「這組到過貨但量不夠分」的件數 —— 短收造成的未到貨，
                         // 訊息要跟「分店根本還沒收貨」分開講。
                         const shortQty = activeRemaining
@@ -981,9 +1049,46 @@ function PickupPageContent() {
                               </div>
                               <ul className="mt-0.5 space-y-0.5 text-xs text-zinc-700 dark:text-zinc-300">
                                 {active.map((it) => (
-                                  <li key={it.id} className="flex items-baseline gap-1.5">
+                                  <li key={it.id} className="flex flex-wrap items-baseline gap-1.5">
                                     <span className="font-bold">{itemDisplayName(it.sku, o.campaign?.name)}</span>
                                     <span className="font-mono text-zinc-500">× {Number(it.qty)}</span>
+                                    {/* 漏填金額：當場補（$0 → 正數）。不給補的話櫃台只能打電話找總部，
+                                        或改走轉單開新單 → 變重複單。 */}
+                                    {zeroIds.has(it.id) && (
+                                      <span className="flex items-center gap-1">
+                                        <span
+                                          className="rounded bg-red-100 px-1 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-950 dark:text-red-300"
+                                          title="這個品項的單價是 $0，可能是開團時漏填金額。補上金額才能取貨。"
+                                        >
+                                          ⚠️ 未填金額
+                                        </span>
+                                        <span className="text-[10px] text-zinc-500">$</span>
+                                        <input
+                                          type="number"
+                                          min={1}
+                                          step="1"
+                                          inputMode="numeric"
+                                          value={zeroFillDraft.get(it.id) ?? ""}
+                                          onChange={(e) =>
+                                            setZeroFillDraft((m2) => {
+                                              const next = new Map(m2);
+                                              next.set(it.id, e.target.value);
+                                              return next;
+                                            })
+                                          }
+                                          placeholder="單價"
+                                          className="w-16 rounded border border-red-300 px-1 py-0.5 text-right font-mono text-xs dark:border-red-800 dark:bg-zinc-900"
+                                        />
+                                        <SpinButton
+                                          onClick={() => fillZeroPrice(o, it.id)}
+                                          disabled={zeroFilling === it.id}
+                                          title="把這個品項的單價補上（只能從 $0 補成正數，會寫入異動紀錄）"
+                                          className="rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                                        >
+                                          {zeroFilling === it.id ? "…" : "補填"}
+                                        </SpinButton>
+                                      </span>
+                                    )}
                                     {returnedOf(it) > 0 && (
                                       <span className="rounded bg-orange-100 px-1 py-0.5 text-[10px] font-medium text-orange-800 dark:bg-orange-950 dark:text-orange-300">↩ 已退 {returnedOf(it)}</span>
                                     )}
@@ -1020,7 +1125,7 @@ function PickupPageContent() {
                                   <span className="ml-2 font-semibold text-emerald-700 dark:text-emerald-400">
                                     到貨：{new Date(o.ready_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}
                                   </span>
-                                ) : canPickup ? (
+                                ) : pickableCount > 0 ? (
                                   <span className="ml-2 font-semibold text-emerald-700 dark:text-emerald-400">
                                     ✅ 已到貨
                                   </span>
@@ -1035,7 +1140,11 @@ function PickupPageContent() {
                                     (含 ${discAmt} 折扣)
                                   </span>
                                 )}
-                                {canPickup ? (
+                                {zeroItems.length > 0 ? (
+                                  <span className="ml-2 font-semibold text-red-700 dark:text-red-400">
+                                    ⚠️ 有 {zeroItems.length} 項未填金額，無法取貨
+                                  </span>
+                                ) : canPickup ? (
                                   <span className="ml-2">{partialArrival ? `${pickableCount}/${activeRemaining.length} 項可取` : `${pickableCount} 項可取`}</span>
                                 ) : fullyReturned ? (
                                   <span className="ml-2 font-semibold text-orange-700 dark:text-orange-400">↩ 已全數退回總倉，無可取貨項目</span>
@@ -1071,14 +1180,18 @@ function PickupPageContent() {
                             <SpinButton
                               onClick={() => quickPickup(o)}
                               disabled={!canPickup}
-                              title="一鍵取走已到貨品項並列印（不開明細視窗）"
+                              title={zeroItems.length > 0
+                                ? "有品項的單價是 $0（可能漏填金額），補上金額才能取貨"
+                                : "一鍵取走已到貨品項並列印（不開明細視窗）"}
                               className="rounded-md bg-emerald-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-emerald-700 disabled:opacity-50"
                             >
                               ✅ 取貨
                             </SpinButton>
+                            {/* ✏️ 不跟著零元守衛一起關掉：一張單只有其中一項漏填時，
+                                進階視窗可以只取有價格的那幾項（$0 那列在視窗裡是鎖住的）。*/}
                             <SpinButton
                               onClick={() => setPickup({ orderId: o.id, orderNo: o.order_no })}
-                              disabled={!canPickup}
+                              disabled={pickableCount === 0}
                               title="進階：折扣 / 只取部分品項 / 扣儲值金"
                               className="rounded-md border border-emerald-300 px-2 py-2 text-xs font-medium text-emerald-700 transition hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950"
                             >
