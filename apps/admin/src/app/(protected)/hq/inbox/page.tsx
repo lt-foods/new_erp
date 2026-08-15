@@ -19,6 +19,8 @@ import { parseWaveId } from "@/components/TransferReceiveModal";
 import RestockDetailModal from "@/components/RestockDetailModal";
 import RestockToPrModal from "@/components/RestockToPrModal";
 import { ORDER_STATUS_LABEL as AID_STATUS_LABEL, type OrderStatus as AidStatus } from "@/lib/orderStatus";
+import { printViaIframe } from "@/lib/printIframe";
+import { withBasePath } from "@/lib/basePath";
 
 // standby(候補)目前只有 restock 來源會用到:pending + standby_at 有值 = 等貨源、先不佔待處理
 type Stage = "pending" | "standby" | "in_transit" | "done" | "rejected";
@@ -2592,6 +2594,7 @@ function MailRow({
     actions = (
       <>
         <AidOrderStatusActions order={{ id: a.id, status: a.status }} onChanged={onAidChanged} />
+        <AidPrintAction order={a} />
         <RowAction variant="neutral" onClick={() => onOpenAidDetail(a.id)}>查看訂單</RowAction>
       </>
     );
@@ -2610,6 +2613,7 @@ function MailRow({
     actions = (
       <>
         <AidOrderStatusActions order={{ id: a.id, status: a.status }} onChanged={onAidChanged} />
+        <AidPrintAction order={a} />
         <RowAction variant="neutral" onClick={() => onOpenAidDetail(a.id)}>查看訂單</RowAction>
       </>
     );
@@ -2695,6 +2699,22 @@ function MailRow({
         <span className="text-[11px] text-zinc-400 sm:text-right">{time}</span>
       </div>
     </div>
+  );
+}
+
+// 互助 / 空中轉的出貨單（隨貨聯 + 出貨店存根聯）。
+// 經總倉的互助拆兩段、Leg-1 身上沒有訂單也看不出最終要送到哪家店（見
+// /transfers/print-aid 檔頭），所以這裡一律用訂單 id 印整條路徑的單。
+function AidPrintAction({ order }: { order: AidRaw }) {
+  if (["cancelled", "expired"].includes(order.status)) return null;
+  return (
+    <RowAction
+      variant="neutral"
+      onClick={() => printViaIframe(withBasePath(`/transfers/print-aid?order_id=${order.id}`))}
+      title="列印互助出貨單（隨貨聯 + 出貨店存根聯）：印出來跟著箱子走，總倉／收貨店照單點收簽名"
+    >
+      🖨 出貨單
+    </RowAction>
   );
 }
 

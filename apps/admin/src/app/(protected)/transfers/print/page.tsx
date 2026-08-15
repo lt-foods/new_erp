@@ -23,11 +23,23 @@ type Transfer = {
   shipping_temp: string | null;
   is_air_transfer: boolean | null;
   customer_order_id: number | null;
+  next_transfer_id: number | null;
   shipped_at: string | null;
   received_at: string | null;
   created_at: string;
   source_name: string;
   dest_name: string;
+};
+
+// 掛在這張調撥單上的顧客訂單（互助 AT- 單才有）。
+// 經總倉的互助會拆兩段（rpc_ship_aid_order）：Leg-1（來源店→總倉）身上是
+// customer_order_id = NULL，訂單掛在 next_transfer_id 指到的 Leg-2 上 ——
+// 只印本段的話，總倉手上那張紙看不出貨最後要送去哪一家店（正是店家回報的痛點），
+// 所以這裡往後追一段，把最終收貨店印出來。
+type LinkedOrder = {
+  order_no: string;
+  store_name: string | null;
+  via_next_leg: boolean;
 };
 
 type Item = {
@@ -84,6 +96,7 @@ function Body() {
 
   const [tx, setTx] = useState<Transfer | null>(null);
   const [items, setItems] = useState<Item[] | null>(null);
+  const [linkedOrder, setLinkedOrder] = useState<LinkedOrder | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const paramError = !transferId ? "缺 transfer_id 參數" : null;
@@ -97,7 +110,7 @@ function Body() {
         .from("transfers")
         .select(
           "id, transfer_no, source_location, dest_location, status, transfer_type, notes, " +
-            "shipping_temp, is_air_transfer, customer_order_id, shipped_at, received_at, created_at"
+            "shipping_temp, is_air_transfer, customer_order_id, next_transfer_id, shipped_at, received_at, created_at"
         )
         .eq("id", transferId)
         .maybeSingle();
@@ -169,6 +182,39 @@ function Body() {
         };
       });
 
+      // 掛著的顧客訂單：本段沒有就往 next_transfer_id 追一段（經總倉的互助 Leg-1）。
+      // 一定要在 setTx 之前解完 —— 資料到齊就會自動跳列印，晚一步紙上就少一行。
+      let orderId = t.customer_order_id;
+      let viaNextLeg = false;
+      if (orderId == null && t.next_transfer_id != null) {
+        const { data: nextRow } = await sb
+          .from("transfers")
+          .select("customer_order_id")
+          .eq("id", t.next_transfer_id)
+          .maybeSingle();
+        if (cancelled) return;
+        orderId = (nextRow as { customer_order_id: number | null } | null)?.customer_order_id ?? null;
+        viaNextLeg = orderId != null;
+      }
+      if (orderId != null) {
+        const { data: ordRow } = await sb
+          .from("customer_orders")
+          .select("order_no, store:stores!customer_orders_pickup_store_id_fkey(name)")
+          .eq("id", orderId)
+          .maybeSingle();
+        if (cancelled) return;
+        const ord = ordRow as unknown as
+          { order_no: string; store: { name: string } | { name: string }[] | null } | null;
+        if (ord) {
+          const st = ord.store;
+          setLinkedOrder({
+            order_no: ord.order_no,
+            store_name: (Array.isArray(st) ? st[0]?.name : st?.name) ?? null,
+            via_next_leg: viaNextLeg,
+          });
+        }
+      }
+
       if (!cancelled) {
         setTx({
           ...t,
@@ -234,14 +280,16 @@ function Body() {
         </div>
 
         {copies.map((kind, idx) => (
-          <Slip key={`${kind}-${idx}`} kind={kind} tx={tx} items={items} />
+          <Slip key={`${kind}-${idx}`} kind={kind} tx={tx} items={items} linkedOrder={linkedOrder} />
         ))}
       </div>
     </>
   );
 }
 
-function Slip({ kind, tx, items }: { kind: CopyKind; tx: Transfer; items: Item[] }) {
+function Slip({ kind, tx, items, linkedOrder }: {
+  kind: CopyKind; tx: Transfer; items: Item[]; linkedOrder: LinkedOrder | null;
+}) {
   const { tenant } = useAuth();
   const tenantName = tenant?.name ?? getTenantName();
   const typeLabel = TYPE_LABEL[tx.transfer_type] ?? tx.transfer_type;
@@ -277,8 +325,21 @@ function Slip({ kind, tx, items }: { kind: CopyKind; tx: Transfer; items: Item[]
             出貨 {new Date(tx.shipped_at).toLocaleString("zh-TW", { hour12: false })}
           </div>
         )}
-        {tx.customer_order_id != null && (
-          <div className="text-[12px]">關聯訂單 #{tx.customer_order_id}</div>
+        {linkedOrder ? (
+          <>
+            <div className="text-[12px]">關聯訂單 {linkedOrder.order_no}</div>
+            {/* 這一段的目的地不是最終收貨店（互助 Leg-1 只到總倉）→ 把最終收貨店框起來，
+                總倉才知道這箱貨要再轉給誰 */}
+            {linkedOrder.store_name && linkedOrder.via_next_leg && (
+              <div className="mt-0.5 border border-black p-1 text-center text-[15px] font-bold">
+                最終收貨店：{linkedOrder.store_name}
+              </div>
+            )}
+          </>
+        ) : (
+          tx.customer_order_id != null && (
+            <div className="text-[12px]">關聯訂單 #{tx.customer_order_id}</div>
+          )
         )}
       </div>
 

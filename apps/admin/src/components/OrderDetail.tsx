@@ -97,6 +97,16 @@ type PendingAirShipment = {
   qty: number;
 };
 
+// 從本單互助 / 空中轉出去、貨還在路上的轉入單（給轉出店印出貨單隨貨走）。
+// 跟 PendingAirShipment 不同：不限空中轉、也不限 confirmed —— 經總倉的互助派貨後
+// 是 shipping，那才是最需要印單的時候（總倉要照單把貨轉給收貨店）。
+type OutgoingAidOrder = {
+  id: number;
+  order_no: string;
+  store_name: string;
+  is_air_transfer: boolean;
+};
+
 // 品項狀態標籤（部分取貨會把一行拆成「已取」+「待取」兩行，標籤讓兩者一眼可分）
 function itemStatusBadge(status: string, stockout = false): { label: string; cls: string } | null {
   // 斷貨取消（stockout_at 有值）與一般取消區分顯示
@@ -191,6 +201,8 @@ export function OrderDetail({
   const [staffNames, setStaffNames] = useState<Map<string, string>>(new Map());
   // 本單空中轉出去、還沒出貨的轉入單（舊單補推用；新單轉單時就自動出貨了）
   const [pendingAirOut, setPendingAirOut] = useState<PendingAirShipment[]>([]);
+  // 從本單轉出去、還在路上的互助單（轉出店印出貨單隨貨走）
+  const [outgoingAid, setOutgoingAid] = useState<OutgoingAidOrder[]>([]);
   // 本單自己是空中轉轉入單且還在等出貨時，轉出店店名（給接收店看「在等誰」）
   const [awaitingAirFrom, setAwaitingAirFrom] = useState<string | null>(null);
   // sku_id → 現行分店價（prices scope=branch, effective_to IS NULL）
@@ -262,13 +274,13 @@ export function OrderDetail({
           .select("item_id, pickup_ready")
           .eq("order_id", orderId),
         fetchReprintableEvents([orderId]),
-        // 從本單空中轉出去、還卡在 confirmed 的轉入單（＝自動出貨上線前的舊單）。
-        // 空中轉不經總倉，補推要由轉出店（＝正在看本單的人）按下，否則沒人有入口。
+        // 從本單互助 / 空中轉出去的轉入單。兩個用途：
+        //   1. 還卡在 confirmed 的空中轉 → 「✈ 補出貨」（自動出貨上線前的舊單，
+        //      空中轉不經總倉，補推要由轉出店＝正在看本單的人按下，否則沒人有入口）
+        //   2. 貨還沒交到客人手上的（含經總倉、含已出貨）→ 「🖨 出貨單」隨貨走
         sb.from("customer_orders")
-          .select("id, order_no, pickup_store_id, store:stores!customer_orders_pickup_store_id_fkey(name), items:customer_order_items(qty, status)")
-          .eq("transferred_from_order_id", orderId)
-          .eq("is_air_transfer", true)
-          .eq("status", "confirmed"),
+          .select("id, order_no, pickup_store_id, status, is_air_transfer, store:stores!customer_orders_pickup_store_id_fkey(name), items:customer_order_items(qty, status, source)")
+          .eq("transferred_from_order_id", orderId),
       ]);
       if (cancelled) return;
       if (hRes.error) { setError(hRes.error.message); return; }
@@ -286,25 +298,45 @@ export function OrderDetail({
 
       setPickupEvents(pevRes.get(orderId) ?? []);
 
-      // ========== 待出貨的空中轉（本單 → 其他店）==========
+      // ========== 從本單轉出去的互助 / 空中轉（本單 → 其他店）==========
       type AirRow = {
         id: number; order_no: string; pickup_store_id: number | null;
+        status: string; is_air_transfer: boolean | null;
         store: { name: string } | { name: string }[] | null;
-        items: { qty: number; status: string }[] | null;
+        items: { qty: number; status: string; source: string | null }[] | null;
       };
-      const airRows = ((airRes.data ?? []) as unknown as AirRow[])
-        // 同店空中轉：rpc_ship_aid_order 會以「source/dest 同 location」擋下，不給按
+      const childRows = ((airRes.data ?? []) as unknown as AirRow[])
+        // 同店轉單（換客人）不是出貨，貨沒離開本店；rpc_ship_aid_order 也會以
+        //「source/dest 同 location」擋下 —— 不算互助出貨，兩個用途都不該出現
         .filter((r) => r.pickup_store_id !== headData.pickup_store_id)
-        .map((r): PendingAirShipment => ({
-          id: r.id,
-          order_no: r.order_no,
-          pickup_store_id: r.pickup_store_id,
-          store_name: (Array.isArray(r.store) ? r.store[0]?.name : r.store?.name) ?? "—",
-          qty: (r.items ?? [])
-            .filter((it) => !["cancelled", "expired"].includes(it.status))
-            .reduce((s, it) => s + Number(it.qty), 0),
-        }));
-      setPendingAirOut(airRows);
+        // 互助品項才是真的要寄出去的貨
+        .filter((r) => (r.items ?? []).some((it) => it.source === "aid_transfer"));
+      const storeNameOf = (r: AirRow) =>
+        (Array.isArray(r.store) ? r.store[0]?.name : r.store?.name) ?? "—";
+      setPendingAirOut(
+        childRows
+          .filter((r) => r.is_air_transfer === true && r.status === "confirmed")
+          .map((r): PendingAirShipment => ({
+            id: r.id,
+            order_no: r.order_no,
+            pickup_store_id: r.pickup_store_id,
+            store_name: storeNameOf(r),
+            qty: (r.items ?? [])
+              .filter((it) => !["cancelled", "expired"].includes(it.status))
+              .reduce((s, it) => s + Number(it.qty), 0),
+          })),
+      );
+      // 出貨單入口：貨還在路上（未取貨、未取消）的才印，已完成的舊單不用洗版
+      setOutgoingAid(
+        childRows
+          .filter((r) => ["pending", "confirmed", "shipping", "ready", "partially_completed"].includes(r.status))
+          .map((r): OutgoingAidOrder => ({
+            id: r.id,
+            order_no: r.order_no,
+            store_name: storeNameOf(r),
+            is_air_transfer: r.is_air_transfer === true,
+          })),
+      );
 
       // 本單自己就是等出貨的空中轉轉入單 → 讓接收店看得到在等哪一家出貨
       if (headData.is_air_transfer && headData.status === "confirmed" && headData.transferred_from_order_id) {
@@ -792,13 +824,38 @@ export function OrderDetail({
           </SpinButton>
         </div>
       )}
-      {(canPrintSlip || canReprintReceipt || canTransfer || canPickup || canUndoPickup || canCancel || canReturn || canAidReturn || isTransferredOut || pendingAirOut.length > 0 || awaitingAirFrom) && (
+      {(canPrintSlip || canReprintReceipt || canTransfer || canPickup || canUndoPickup || canCancel || canReturn || canAidReturn || isTransferredOut || pendingAirOut.length > 0 || outgoingAid.length > 0 || awaitingAirFrom) && (
         <div className="flex flex-wrap items-center justify-end gap-2">
           {awaitingAirFrom && (
             <span className="text-xs text-amber-700 dark:text-amber-400">
               ✈ 等 {awaitingAirFrom} 補出貨（出貨後本店在「收貨」頁收貨）
             </span>
           )}
+          {/* 本單是互助轉入單 → 收貨店自己重印一份（單子丟了、要補簽收） */}
+          {isAidOrder && (
+            <SpinButton
+              onClick={() => printViaIframe(withBasePath(`/transfers/print-aid?order_id=${head.id}`))}
+              className="rounded-md border border-fuchsia-300 px-3 py-1 text-xs font-medium text-fuchsia-700 hover:bg-fuchsia-50 dark:border-fuchsia-800 dark:text-fuchsia-300 dark:hover:bg-fuchsia-950"
+              title="列印互助出貨單（隨貨聯 + 出貨店存根聯）"
+            >
+              🖨 互助出貨單
+            </SpinButton>
+          )}
+          {/* 本單把貨互助給別店 → 轉出店裝箱時印一張夾在貨上，
+              經總倉的單上面就寫著最終要送到哪一家店，總倉照單轉交、不會掉 */}
+          {outgoingAid.map((o) => (
+            <SpinButton
+              key={`aid-print-${o.id}`}
+              onClick={() => printViaIframe(withBasePath(`/transfers/print-aid?order_id=${o.id}`))}
+              className="rounded-md border border-fuchsia-300 px-3 py-1 text-xs font-medium text-fuchsia-700 hover:bg-fuchsia-50 dark:border-fuchsia-800 dark:text-fuchsia-300 dark:hover:bg-fuchsia-950"
+              title={
+                `列印互助出貨單（${o.order_no}・${o.is_air_transfer ? "空中轉直送" : "經總倉中轉"}）：` +
+                `隨貨聯夾在箱子上，${o.is_air_transfer ? "" : "總倉、"}${o.store_name}照單點收簽名`
+              }
+            >
+              🖨 出貨單 → {o.store_name}
+            </SpinButton>
+          ))}
           {pendingAirOut.map((s) => (
             <SpinButton
               key={s.id}

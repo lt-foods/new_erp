@@ -375,6 +375,24 @@ RR- ride-along 單在補貨到店**之前**就存在（單頭 `pending`/`confirm
 在來源訂單頁「✈ 補出貨」），空中轉分支改成委派同一個 helper，
 並加了「已有轉移單就擋下」避免重複出貨。
 
+### 經總倉的互助：Leg-1 身上沒有訂單，別拿單段 transfer 當「這箱貨要去哪」的依據
+
+`rpc_ship_aid_order`（20260510000004）對經總倉的互助拆兩段：
+Leg-1 來源店 → 總倉（`customer_order_id = NULL`、`next_transfer_id` = Leg-2）、
+Leg-2 總倉 → 收貨店（`customer_order_id` = 轉入單）。所以**只看單一 transfer 的
+`customer_order_id` / `dest_location`，Leg-1 會回「沒有訂單、目的地是總倉」** ——
+拿它產生的單據給總倉，紙上永遠看不出這箱貨最後要轉去哪一家店（2026-08-15 店家回報
+「互助沒有列印、貨會掉」就是這個）。而且派貨之前根本還沒有 transfer，來源店裝箱時
+無單可印。
+
+- 要表達「這批互助貨的去向」一律**從 `customer_orders` 出發**（來源店 =
+  `transferred_from_order_id` 那張單的 `pickup_store_id`，收貨店 = 本單的
+  `pickup_store_id`），不要從單段 transfer 反推。互助出貨單 `/transfers/print-aid`
+  就是這樣做的。
+- 真的只有 transfer id 可用時（例：內部調撥列表的列印鈕），
+  `customer_order_id IS NULL` 就往 `next_transfer_id` 追一段再拿訂單。
+- 空中轉（`is_air_transfer`）只有一段、直送收貨店，沒有這個問題。
+
 ### 自由轉貨（rpc_create_free_transfer）已停用
 
 2026-08-14 起不再開放建單：`/wms/transfers` 的「+ 建自由轉貨」與 `/transfers/free`
