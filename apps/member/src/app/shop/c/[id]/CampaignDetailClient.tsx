@@ -10,6 +10,8 @@ import Spinner from "@/components/Spinner";
 import Countdown from "@/components/Countdown";
 import OrderedCount from "@/components/OrderedCount";
 import ViewCount from "@/components/ViewCount";
+import ShareButtons from "@/components/ShareButtons";
+import { campaignShareUrl } from "@/lib/shareLink";
 import { cleanCampaignText } from "@/lib/text";
 import { getCampaignHint } from "@/lib/campaignHints";
 import { logCaught } from "@/lib/clientLog";
@@ -237,6 +239,22 @@ export default function CampaignDetailClient() {
 
   const showShell = !!campaign || !!hint;
 
+  const minItemPrice = useMemo(() => {
+    const prices = items
+      .map((it) => Number(it.unit_price))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    return prices.length > 0 ? Math.min(...prices) : null;
+  }, [items]);
+
+  // 分享用的網址與文案。網址一律重組（不能用 location.href，那上面可能還掛著
+  // 登入用的 fragment），文案給團名 + 起跳價，其餘（縮圖 / 說明）由連結自己的
+  // og tag 補完，見 page.tsx 的 generateMetadata。
+  const shareUrl = campaignShareUrl(id);
+  const shareText = [
+    cleanCampaignText(displayName),
+    minItemPrice != null ? `$${minItemPrice.toLocaleString()} 起` : hintPriceText,
+  ].filter(Boolean).join("｜");
+
   return (
     <PageShell title={cleanCampaignText(displayName) || "商品"}>
       <div className="space-y-4 px-0 pb-[160px]">
@@ -276,7 +294,10 @@ export default function CampaignDetailClient() {
                   className="mt-1.5 shrink-0"
                 />
               </div>
-              <ViewCount count={viewCount} size="md" />
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <ViewCount count={viewCount} size="md" />
+                <ShareButtons url={shareUrl} text={shareText} />
+              </div>
 
               {campaignRemaining !== null && (
                 <div className={`inline-flex rounded-full px-3 py-1 text-[14px] font-semibold ${
@@ -432,7 +453,19 @@ export default function CampaignDetailClient() {
             <p className="mt-1 font-mono text-[14px] text-[var(--secondary-label)]">
               {doneOrderNo}
             </p>
-            <div className="mt-5 flex gap-2">
+            {/* 下單成功是最想揪人的那一刻，順手給一個分享入口 */}
+            <div className="mt-5 rounded-2xl bg-[var(--brand-soft)] p-3">
+              <p className="text-[14px] font-medium text-[var(--brand-deep)]">
+                揪朋友一起買
+              </p>
+              <ShareButtons
+                url={shareUrl}
+                text={shareText}
+                className="mt-2 flex flex-col items-center"
+              />
+            </div>
+
+            <div className="mt-4 flex gap-2">
               <button
                 onClick={() => router.push("/orders")}
                 className="flex-1 rounded-xl bg-[#7676801f] py-3 text-[16px] font-medium text-[var(--foreground)] active:bg-[#76768033]"

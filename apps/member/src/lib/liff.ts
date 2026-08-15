@@ -24,6 +24,13 @@ type LiffStatic = {
    *  需要 LIFF app 開 `chat_message.write` scope，且要有 chat context
    *  （從 OA 聊天室 / 圖文選單進來）。條件不符會 reject。 */
   sendMessages?: (messages: Array<{ type: "text"; text: string }>) => Promise<void>;
+  /** 開分享目標選擇器（好友 / 群組 / 聊天室），以使用者身分送出訊息。
+   *  需要 LIFF app 在 Developers Console 打開 `shareTargetPicker`，
+   *  沒開的話 SDK 會 reject。使用者按取消是 resolve(null)，不是 reject。 */
+  shareTargetPicker?: (
+    messages: Array<{ type: "text"; text: string }>,
+    options?: { isMultiple?: boolean },
+  ) => Promise<{ status: string } | null>;
   openWindow?: (params: { url: string; external?: boolean }) => void;
   getContext?: () => { type?: string } | null;
 };
