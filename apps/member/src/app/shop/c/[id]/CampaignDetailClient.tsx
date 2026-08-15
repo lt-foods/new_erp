@@ -250,8 +250,9 @@ export default function CampaignDetailClient() {
   // 登入用的 fragment），文案給團名 + 起跳價，其餘（縮圖 / 說明）由連結自己的
   // og tag 補完，見 page.tsx 的 generateMetadata。
   const shareUrl = campaignShareUrl(id);
+  const shareTitle = cleanCampaignText(displayName);
   const shareText = [
-    cleanCampaignText(displayName),
+    shareTitle,
     minItemPrice != null ? `$${minItemPrice.toLocaleString()} 起` : hintPriceText,
   ].filter(Boolean).join("｜");
 
@@ -296,7 +297,7 @@ export default function CampaignDetailClient() {
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <ViewCount count={viewCount} size="md" />
-                <ShareButtons url={shareUrl} text={shareText} />
+                <ShareButtons url={shareUrl} title={shareTitle} text={shareText} />
               </div>
 
               {campaignRemaining !== null && (
@@ -460,6 +461,7 @@ export default function CampaignDetailClient() {
               </p>
               <ShareButtons
                 url={shareUrl}
+                title={shareTitle}
                 text={shareText}
                 className="mt-2 flex flex-col items-center"
               />

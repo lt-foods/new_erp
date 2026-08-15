@@ -1,13 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { copyText, shareToLine, type ShareResult } from "@/lib/shareLink";
+import { copyText, sharePage, type ShareResult } from "@/lib/shareLink";
 
 /**
- * 「分享到 LINE / 複製連結」兩顆鈕。
+ * 「分享 / 複製連結」兩顆鈕。
+ *
+ * 「分享」叫的是**手機自帶的分享面板**（iOS 那張由下往上的表、Android 的分享匣），
+ * LINE、訊息、AirDrop 都在裡面 —— 不替使用者決定要分享到哪。沒有這個 API 的環境
+ * 會自動退到 LINE 的分享路徑，退法在 lib/shareLink.ts。
  *
  * 分享出去的連結長什麼樣（縮圖、團名、起跳價）是伺服器端的 og tag 決定的，
- * 這個元件只負責把網址交給 LINE，實際的退路鏈在 lib/shareLink.ts。
+ * 這個元件只負責把網址交出去。
  *
  * 提示訊息一律畫在按鈕下方而不是用 alert：LIFF / PWA 裡的 alert 會蓋掉整個
  * 畫面，而「已複製」這種回饋值不了那個代價。複製失敗（非 https / 舊 webview
@@ -16,11 +20,14 @@ import { copyText, shareToLine, type ShareResult } from "@/lib/shareLink";
  */
 export default function ShareButtons({
   url,
+  title,
   text,
   className = "",
 }: {
   url: string;
-  /** 附在連結前面的一行字（例：團名） */
+  /** 原生分享面板顯示的標題（例：團名） */
+  title?: string;
+  /** 附在連結前面的一行字 */
   text?: string;
   className?: string;
 }) {
@@ -33,18 +40,21 @@ export default function ShareButtons({
     if (msg) window.setTimeout(() => setHint((cur) => (cur === msg ? null : cur)), 3000);
   };
 
+  // 注意：不要在 sharePage() 之前 await 任何東西 —— navigator.share 需要
+  // user gesture，先 await 過 Safari 就會判定不是手勢而拒絕叫出面板。
   const onShare = async () => {
     if (busy) return;
     setBusy(true);
     setFallbackUrl(null);
     try {
-      const r: ShareResult = await shareToLine({ url, text });
-      if (r === "copied") flash("這個裝置不能直接開 LINE，連結已複製，貼給朋友就可以了");
+      const r: ShareResult = await sharePage({ url, title, text });
+      if (r === "copied") flash("這個裝置叫不出分享面板，連結已複製，貼給朋友就可以了");
       else if (r === "failed") {
         setFallbackUrl(url);
         flash("分享失敗，請長按下面的連結複製");
       } else if (r === "shared_in_line") flash("已分享 🎉");
-      // cancelled / opened_line 不提示：使用者自己取消，或畫面已經交棒給 LINE
+      // shared_native / cancelled / opened_line 不提示：
+      // 面板自己會回饋，或使用者本來就取消了
     } finally {
       setBusy(false);
     }
@@ -67,10 +77,10 @@ export default function ShareButtons({
           type="button"
           onClick={onShare}
           disabled={busy}
-          className="inline-flex items-center gap-1.5 rounded-full bg-[#06C755] px-3.5 py-1.5 text-[14px] font-semibold text-white shadow-[0_6px_14px_-8px_rgba(6,199,85,0.9)] transition-transform active:scale-[0.97] disabled:opacity-60"
+          className="inline-flex items-center gap-1.5 rounded-full bg-[var(--brand-soft)] px-3.5 py-1.5 text-[14px] font-semibold text-[var(--brand-strong)] transition-transform active:scale-[0.97] disabled:opacity-60"
         >
           <ShareIcon className="h-4 w-4" />
-          分享到 LINE
+          分享
         </button>
         <button
           type="button"
@@ -93,6 +103,7 @@ export default function ShareButtons({
   );
 }
 
+/** iOS 的分享圖示（方框 + 往上的箭頭），跟系統面板長一樣，使用者一眼認得 */
 function ShareIcon({ className = "h-4 w-4" }: { className?: string }) {
   return (
     <svg

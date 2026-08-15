@@ -1,24 +1,28 @@
 // 把站內的頁面分享出去（目前用於團購商品頁）。
 //
 // 分享的價值全在那張預覽卡：連結的 og tag 由 server 端的 generateMetadata 產生
-// （見 app/shop/c/[id]/page.tsx），所以這裡只負責「把網址送進 LINE」。
+// （見 app/shop/c/[id]/page.tsx），所以這裡只負責「把網址交出去」。
 //
-// 為什麼不是一行 window.open：會員站有三種跑法，能用的 API 完全不同 ——
-// LINE 裡面（LIFF）、安裝成 App 的 PWA、一般瀏覽器。跟 lineInquiry.ts 同一套
-// 思路：一條一條退，最差也要留一條路（複製連結）給使用者走，不要讓按鈕看起來壞掉。
+// 主線是**手機自帶的分享面板**（Web Share API）—— iOS / Android 都是使用者最熟的
+// 那張表，LINE、訊息、AirDrop、複製都在裡面，我們不用替他決定要分享到哪。
+// 但會員站有三種跑法（LINE 裡的 LIFF、安裝成 App 的 PWA、一般瀏覽器），
+// 不是每種都有這個 API，所以比照 lineInquiry.ts 一條一條退，
+// 最差也要留一條路（複製連結）給使用者走，不要讓按鈕看起來壞掉。
 
 import { initLiff } from "@/lib/liff";
 import { SITE_URL } from "@/lib/site";
 import { logCaught } from "@/lib/clientLog";
 
 export type ShareResult =
-  /** LIFF 的分享目標選擇器送出成功 */
+  /** 叫出了手機自帶的分享面板 */
+  | "shared_native"
+  /** 退到 LIFF 的分享目標選擇器並送出成功 */
   | "shared_in_line"
-  /** 使用者在選擇器裡按了取消（不是錯誤，畫面不要報錯） */
+  /** 使用者自己取消（不是錯誤，畫面不要報錯） */
   | "cancelled"
   /** 已交棒給 LINE 的網頁分享頁 */
   | "opened_line"
-  /** 三條都不通，退成複製到剪貼簿 */
+  /** 都不通，退成複製到剪貼簿 */
   | "copied"
   | "failed";
 
@@ -38,26 +42,52 @@ function lineWebShareUrl(url: string, text: string): string {
   return `https://social-plugins.line.me/lineit/share?${qs.toString()}`;
 }
 
+/** 使用者在原生面板 / 選擇器按取消 —— 要跟真的失敗分開，不然會誤跳錯誤提示 */
+function isAbort(e: unknown): boolean {
+  return e instanceof Error && (e.name === "AbortError" || e.name === "NotAllowedError");
+}
+
 /**
- * 分享到 LINE。三條路，依序退：
+ * 分享這一頁。四條路，依序退：
  *
- * 1. **LINE 裡面（LIFF）** → `liff.shareTargetPicker()`
- *    跳出好友 / 群組選擇器，以使用者身分送出，人留在 App 裡。
- *    需要該 LIFF app 在 Developers Console 打開 shareTargetPicker，
- *    沒開會 reject → 自動掉到第 2 條（所以就算忘了開，按鈕也不會壞）。
- * 2. **其他環境（PWA / 瀏覽器）** → LINE 的網頁分享頁
- *    手機上會直接交棒給 LINE app 選聊天室。
- * 3. **連開頁都失敗** → 複製連結，請使用者自己貼。
+ * 1. **手機自帶的分享面板**（`navigator.share`）
+ *    iOS / Android / 桌機 Chrome 都有，使用者自己挑 LINE、訊息、AirDrop…。
+ *    需要 https + user gesture，所以呼叫端一定要直接掛在 onClick 上，
+ *    不要先 await 別的東西（等過再叫，Safari 會判定不是手勢而拒絕）。
+ * 2. **LINE 裡面（LIFF）沒有原生面板時** → `liff.shareTargetPicker()`
+ *    跳好友 / 群組選擇器，以使用者身分送出，人留在 App 裡。
+ *    需要該 LIFF app 在 Developers Console 打開 shareTargetPicker，沒開會 reject。
+ * 3. **LINE 的網頁分享頁** → 手機交棒給 LINE app 選聊天室，桌機開網頁版。
+ * 4. **連開頁都失敗** → 複製連結，請使用者自己貼。
+ *
+ * 任何一條走到「使用者按取消」都直接回 cancelled，不要再往下退 ——
+ * 他已經表達不想分享了，繼續彈下一個面板只會很煩。
  */
-export async function shareToLine(opts: {
+export async function sharePage(opts: {
   url: string;
-  /** 附在連結前面的一行字（團名之類）。LINE 會另外自己抓 og 預覽卡。 */
+  /** 標題（原生面板顯示用，例：團名） */
+  title?: string;
+  /** 附在連結前面的一行字。LINE 會另外自己抓 og 預覽卡。 */
   text?: string;
 }): Promise<ShareResult> {
+  const title = opts.title?.trim() || undefined;
   const text = opts.text?.trim() ?? "";
+
+  // 1. 手機自帶的分享面板
+  if (typeof navigator !== "undefined" && typeof navigator.share === "function") {
+    try {
+      await navigator.share({ title, text: text || undefined, url: opts.url });
+      return "shared_native";
+    } catch (e) {
+      if (isAbort(e)) return "cancelled";
+      // 有 API 但叫不出來（webview 沒開權限、非 https…）→ 往下退
+      logCaught("native_share_failed", e, { url: opts.url });
+    }
+  }
+
   const message = text ? `${text}\n${opts.url}` : opts.url;
 
-  // 1. LIFF：分享目標選擇器
+  // 2. LIFF：分享目標選擇器
   try {
     const liff = await initLiff();
     if (liff?.isInClient() && typeof liff.shareTargetPicker === "function") {
@@ -71,7 +101,7 @@ export async function shareToLine(opts: {
     logCaught("share_target_picker_failed", e, { url: opts.url });
   }
 
-  // 2. 網頁分享頁
+  // 3. LINE 網頁分享頁
   const webShare = lineWebShareUrl(opts.url, text);
   try {
     const liff = await initLiff();
@@ -93,7 +123,7 @@ export async function shareToLine(opts: {
     logCaught("line_web_share_failed", e, { url: opts.url });
   }
 
-  // 3. 最後退路：複製連結
+  // 4. 最後退路：複製連結
   return (await copyText(opts.url)) ? "copied" : "failed";
 }
 
