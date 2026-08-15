@@ -1,4 +1,5 @@
-import { orderCardTitle } from "@/lib/orderTitle";
+import Link from "next/link";
+import { orderCardTitle, isInternalCampaign } from "@/lib/orderTitle";
 import StatusChip from "@/components/StatusChip";
 import SkuThumb from "@/components/SkuThumb";
 
@@ -54,6 +55,8 @@ export type OrderRow = {
   created_at: string;
   /** 內部 sentinel 團判斷用（'__' 開頭）；v_customer_order_summary @20260811000050 */
   campaign_no?: string | null;
+  /** 點品項連到 /shop/c/[id] 用 */
+  campaign_id?: number | null;
   campaign_name: string | null;
   campaign_cover_url: string | null;
   campaign_cutoff_date: string | null;
@@ -221,6 +224,13 @@ export default function OrderCard({
   };
   // 內部 sentinel 團（店內現貨轉手單）印品項名，其餘印開團名稱 —— 見 lib/orderTitle
   const title = orderCardTitle(order);
+  // 點品項 → 開團商品頁。已結單的團也連得過去（liff-api 對「自己買過這團」的會員
+  // 回唯讀版，2026-08-15）—— 線上 97% 的訂單都是已結單的團，不放行等於全是死連結。
+  //
+  // 內部 sentinel 團（【內部】補貨申請、現貨轉手單）不連：那一頁列的是整本內部
+  // 補貨帳，不是客人買的東西。
+  const campaignHref =
+    order.campaign_id && !isInternalCampaign(order) ? `/shop/c/${order.campaign_id}` : null;
   // 分身卡（依分頁拆出來的）右上角要講該分頁的語意，不是整張單的
   const phase = viewPhase
     ? { ...orderPhase(order), ...PHASE_LABEL[viewPhase] }
@@ -275,49 +285,70 @@ export default function OrderCard({
       </header>
 
       <ul className="border-t border-[var(--separator)] px-4">
-        {order.items.map((it, idx) => (
-          <li
-            key={it.id}
-            className={`flex items-start gap-3 py-3 ${
-              idx > 0 ? "border-t border-[var(--separator)]" : ""
-            }`}
-          >
-            {/* 商品沒自己的圖時退到開團封面 —— 團購品項多半只有封面，
-                不退一層的話整張單會是一排購物袋 placeholder。 */}
-            <SkuThumb
-              url={it.image_url ?? order.campaign_cover_url}
-              muted={["cancelled", "expired"].includes(it.status)}
-            />
-            <div className="min-w-0 flex-1">
-              {it.variant_name && (
-                <div className={`text-[16px] ${it.stockout ? "text-[var(--secondary-label)] line-through" : "text-[var(--foreground)]"}`}>
-                  {it.variant_name}
-                  {it.stockout && (
-                    <span className="ml-1.5 inline-block no-underline">
-                      <StatusChip tone="danger" label="斷貨" />
-                    </span>
-                  )}
-                  {pickChip(it) && (
-                    <span className="ml-1.5 inline-block">{pickChip(it)}</span>
-                  )}
+        {order.items.map((it, idx) => {
+          const row = (
+            <>
+              {/* 商品沒自己的圖時退到開團封面 —— 團購品項多半只有封面，
+                  不退一層的話整張單會是一排購物袋 placeholder。 */}
+              <SkuThumb
+                url={it.image_url ?? order.campaign_cover_url}
+                muted={["cancelled", "expired"].includes(it.status)}
+              />
+              <div className="min-w-0 flex-1">
+                {it.variant_name && (
+                  <div className={`text-[16px] ${it.stockout ? "text-[var(--secondary-label)] line-through" : "text-[var(--foreground)]"}`}>
+                    {it.variant_name}
+                    {it.stockout && (
+                      <span className="ml-1.5 inline-block no-underline">
+                        <StatusChip tone="danger" label="斷貨" />
+                      </span>
+                    )}
+                    {pickChip(it) && (
+                      <span className="ml-1.5 inline-block">{pickChip(it)}</span>
+                    )}
+                  </div>
+                )}
+                {!it.variant_name && (it.stockout || pickChip(it)) && (
+                  <div className="flex items-center gap-1.5">
+                    {it.stockout && <StatusChip tone="danger" label="斷貨" />}
+                    {pickChip(it)}
+                  </div>
+                )}
+                <div className="text-[14px] text-[var(--secondary-label)]">
+                  {fmtAmount(it.unit_price)} × {it.qty}
                 </div>
-              )}
-              {!it.variant_name && (it.stockout || pickChip(it)) && (
-                <div className="flex items-center gap-1.5">
-                  {it.stockout && <StatusChip tone="danger" label="斷貨" />}
-                  {pickChip(it)}
-                </div>
-              )}
-              <div className="text-[14px] text-[var(--secondary-label)]">
-                {fmtAmount(it.unit_price)} × {it.qty}
+                {/* it.notes 是內部備註（補貨申請 / 轉單軌跡等），顧客端不顯示 */}
               </div>
-              {/* it.notes 是內部備註（補貨申請 / 轉單軌跡等），顧客端不顯示 */}
-            </div>
-            <div className={`flex-shrink-0 text-right text-[16px] font-medium tabular-nums ${it.stockout ? "text-[var(--secondary-label)] line-through" : "text-[var(--foreground)]"}`}>
-              {fmtAmount(it.subtotal)}
-            </div>
-          </li>
-        ))}
+              <div className={`flex-shrink-0 text-right text-[16px] font-medium tabular-nums ${it.stockout ? "text-[var(--secondary-label)] line-through" : "text-[var(--foreground)]"}`}>
+                {fmtAmount(it.subtotal)}
+              </div>
+              {campaignHref && (
+                <span
+                  aria-hidden
+                  className="mt-0.5 flex-shrink-0 text-[18px] leading-none text-[var(--tertiary-label)]"
+                >
+                  ›
+                </span>
+              )}
+            </>
+          );
+          const cls = `flex items-start gap-3 py-3 ${
+            idx > 0 ? "border-t border-[var(--separator)]" : ""
+          }`;
+          return (
+            <li key={it.id}>
+              {campaignHref ? (
+                // prefetch 關掉：一次畫幾十張卡 = 幾十個 /shop/c/[id] 預抓，
+                // 而那是 dynamic route，每一個都會真的打到伺服器。
+                <Link href={campaignHref} prefetch={false} className={`${cls} active:opacity-60`}>
+                  {row}
+                </Link>
+              ) : (
+                <div className={cls}>{row}</div>
+              )}
+            </li>
+          );
+        })}
       </ul>
 
       {/* order.notes 同為內部備註，顧客端不顯示 */}

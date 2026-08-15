@@ -37,6 +37,12 @@ type CampaignDetail = {
   total_cap_qty: number | null;
   /** 總瀏覽次數。後端未部署 track_campaign_view 前可能沒有這個欄位。 */
   view_count?: number;
+  /**
+   * 還能不能下單。false = 已結單 / 已下架，只放行「自己買過這團」的會員回頭看
+   * （從訂單卡點進來的路徑），畫面要收掉所有下單入口。
+   * 舊版後端沒有這個欄位 → undefined，一律當可下單（那時候不可下單的團根本 404）。
+   */
+  available?: boolean;
 };
 
 type Item = {
@@ -127,9 +133,13 @@ export default function CampaignDetailClient() {
 
   // 記一次瀏覽，並拿回含本次的最新計數。
   // 同會員同商品 30 分鐘內在後端去重，所以「返回列表再點進來」不會灌水。
+  //
+  // 已結單的團不記：那些瀏覽是團友回頭看自己的訂單，不是還在考慮要不要買的人，
+  // 記下去會讓「熱門度」被結單後的回訪灌水。
   const trackedRef = useRef<number | null>(null);
   useEffect(() => {
     if (!id || trackedRef.current === id) return;
+    if (!campaign || campaign.available === false) return;
     const s = getSession();
     if (!s || !s.memberId) return;
     trackedRef.current = id;
@@ -146,7 +156,7 @@ export default function CampaignDetailClient() {
         logCaught("track_campaign_view_failed", e, { campaign_id: id });
       }
     })();
-  }, [id]);
+  }, [id, campaign]);
 
   const totalQty = useMemo(
     () => Object.values(qtyMap).reduce((s, n) => s + (n || 0), 0),
@@ -162,6 +172,8 @@ export default function CampaignDetailClient() {
     return sum;
   }, [items, qtyMap]);
 
+  // 已結單 / 已下架的團（只有買過的會員從訂單卡點得進來）：整頁收成唯讀。
+  const readOnly = campaign?.available === false;
   const orderedQtyTotal = items.reduce((s, it) => s + Number(it.ordered_qty ?? 0), 0);
   const campaignRemaining = useMemo(() => {
     const cap = Number(campaign?.total_cap_qty ?? 0);
@@ -259,7 +271,8 @@ export default function CampaignDetailClient() {
 
   return (
     <PageShell title={cleanCampaignText(displayName) || "商品"}>
-      <div className="space-y-4 px-0 pb-[160px]">
+      {/* 唯讀模式沒有常駐下單列，底部不用留它的位置 */}
+      <div className={`space-y-4 px-0 ${readOnly ? "pb-10" : "pb-[160px]"}`}>
         {err && (
           <div className="mx-4 rounded-2xl bg-[#ff3b30]/10 p-3 text-[15px] text-[#c4271d]">
             {err}
@@ -277,7 +290,13 @@ export default function CampaignDetailClient() {
             {/* 封面 carousel — 有 hint 時先顯示列表封面, detail 回來再換成完整圖集 */}
             <div className="relative">
               <HeroCarousel images={heroImageList} />
-              {displayEndAt && (
+              {/* 已結單的團不畫倒數（Countdown 過期會回「已結束」，包在「剩 …」裡
+                  變成「剩 已結束」）；改標一顆狀態膠囊。 */}
+              {readOnly ? (
+                <div className="absolute right-3 top-3 rounded-full bg-black/70 px-3 py-1 text-[14px] font-medium text-white backdrop-blur">
+                  已結單
+                </div>
+              ) : displayEndAt && (
                 <div className="absolute right-3 top-3 rounded-full bg-black/70 px-3 py-1 text-[14px] font-medium text-white backdrop-blur">
                   剩 <Countdown target={displayEndAt} compact className="text-white" />
                 </div>
@@ -301,7 +320,15 @@ export default function CampaignDetailClient() {
                 <ShareButtons url={shareUrl} title={shareTitle} text={shareText} />
               </div>
 
-              {campaignRemaining !== null && (
+              {readOnly && (
+                <div className="rounded-2xl bg-zinc-100 px-4 py-3 text-[15px] text-[var(--secondary-label)]">
+                  本團已結單，這裡只能查看商品內容。
+                  <br />
+                  你的訂單狀態請看「訂單」分頁。
+                </div>
+              )}
+
+              {!readOnly && campaignRemaining !== null && (
                 <div className={`inline-flex rounded-full px-3 py-1 text-[14px] font-semibold ${
                   campaignRemaining > 0
                     ? "bg-[var(--brand-soft)] text-[var(--brand-strong)]"
@@ -346,7 +373,9 @@ export default function CampaignDetailClient() {
                   items.map((it, idx) => {
                     const q = qtyMap[it.campaign_item_id] ?? 0;
                     const remaining = itemRemaining(it);
-                    const soldOut = itemOrderMax(it, campaignRemaining, q) <= 0 && q === 0;
+                    // 唯讀模式（已結單）不談售完 / 剩餘 —— 那是「還能不能買」的語言，
+                    // 團都結了再標「售完」只會讓回頭看訂單的客人以為是自己沒買到。
+                    const soldOut = !readOnly && itemOrderMax(it, campaignRemaining, q) <= 0 && q === 0;
                     return (
                       <div
                         key={it.campaign_item_id}
@@ -373,7 +402,7 @@ export default function CampaignDetailClient() {
                               </div>
                             )}
                           </div>
-                          {remaining !== null && (
+                          {!readOnly && remaining !== null && (
                             <div className={`mt-1 text-[12px] font-semibold ${remaining > 0 ? "text-[#c4271d]" : "text-zinc-500"}`}>
                               {remaining > 0 ? `剩 ${remaining} 份` : "此規格已售完"}
                             </div>
@@ -399,7 +428,7 @@ export default function CampaignDetailClient() {
       </div>
 
       {/* 常駐底部購買列 — portal 到 body，永遠釘在 viewport（蝦皮式，免滑到底）*/}
-      <Portal enabled={mounted && !!campaign && items.length > 0}>
+      <Portal enabled={mounted && !!campaign && items.length > 0 && !readOnly}>
         <div
           className="fixed inset-x-0 bottom-0 z-40 border-t border-[var(--separator)] bg-white/95 backdrop-blur-xl"
           style={{ paddingBottom: "max(env(safe-area-inset-bottom), 10px)" }}

@@ -794,7 +794,22 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
   return json({ campaigns, pending_pickup_count: pendingPickupCount });
 }
 
-async function getCampaignDetail(sb: any, tenantId: string, campaignId: number) {
+/**
+ * 開團詳細。`available=false` 代表「只能看、不能下單」。
+ *
+ * 為什麼要有唯讀模式：訂單卡的品項點得進商品頁（2026-08-15），而會員的訂單
+ * 絕大多數是**已結單**的團 —— 線上 6 個月內 69,540 張單裡，通過原本那道
+ * 「open + is_for_shop + 還沒到 end_at」閘門的只有 2,114 張（3%）。
+ * 沿用原本無條件 404 的話，等於每 30 張訂單卡有 29 張點下去是死路。
+ *
+ * 放寬的範圍卡在「這位會員自己買過這一團」：沒買過的人（含猜 id 的）
+ * 一律維持 404，未上架 / 內部團不會因此外流。
+ *
+ * 不必擔心唯讀模式被繞過下單：`rpc_place_member_order_guarded`
+ * 自己也擋 status / is_for_shop / end_at（20260813000000），
+ * 寫入端的閘門跟這裡的讀取端閘門是同一套條件。
+ */
+async function getCampaignDetail(sb: any, tenantId: string, campaignId: number, memberId: number | null) {
   const { data: c, error: cErr } = await sb
     .from("group_buy_campaigns")
     .select("id, campaign_no, name, description, cover_image_url, status, close_type, end_at, pickup_deadline, total_cap_qty, is_for_shop")
@@ -802,9 +817,22 @@ async function getCampaignDetail(sb: any, tenantId: string, campaignId: number) 
     .eq("id", campaignId)
     .single();
   if (cErr || !c) return json({ error: "campaign not found" }, 404);
-  if (c.status !== "open" || !c.is_for_shop || (c.end_at && new Date(c.end_at).getTime() <= Date.now())) {
-    return json({ error: "campaign not available" }, 404);
+  const available = c.status === "open"
+    && !!c.is_for_shop
+    && !(c.end_at && new Date(c.end_at).getTime() <= Date.now());
+  if (!available) {
+    if (!memberId) return json({ error: "campaign not available" }, 404);
+    // 自己的訂單（含取消 / 逾期的）才放行 —— 客人要回頭看「我買的是什麼」，
+    // 而訂單被取消時最需要看的就是那一頁。
+    const { count, error: oErr } = await sb
+      .from("customer_orders")
+      .select("id", { count: "exact", head: true })
+      .eq("tenant_id", tenantId)
+      .eq("member_id", memberId)
+      .eq("campaign_id", campaignId);
+    if (oErr || !count) return json({ error: "campaign not available" }, 404);
   }
+  c.available = available;
 
   const { data: items, error: iErr } = await sb
     .from("campaign_items")
@@ -1424,7 +1452,7 @@ Deno.serve(async (req) => {
         case "mark_notification_read": if (!memberId) return json({ error: "no member_id" }, 401); return await markNotificationRead(sb, tenantId, memberId, body);
         case "generate_pwa_auth_code": if (!memberId) return json({ error: "no member_id" }, 401); return await generatePwaAuthCode(sb, tenantId, memberId, claims, token, body);
         case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId, typeof body.close_type === "string" ? body.close_type : null, memberId);
-        case "get_campaign_detail": return await getCampaignDetail(sb, tenantId, Number(body.campaign_id ?? 0));
+        case "get_campaign_detail": return await getCampaignDetail(sb, tenantId, Number(body.campaign_id ?? 0), memberId);
         case "track_campaign_view": if (!memberId) return json({ error: "no member_id" }, 401); return await trackCampaignView(sb, tenantId, memberId, Number(body.campaign_id ?? 0));
         case "list_spot_products": return await listSpotProducts(sb, tenantId, storeId, memberId);
         case "get_spot_product": return await getSpotProduct(sb, tenantId, storeId, memberId, Number(body.id ?? 0));
