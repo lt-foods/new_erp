@@ -1,5 +1,6 @@
 import { orderCardTitle } from "@/lib/orderTitle";
 import StatusChip from "@/components/StatusChip";
+import SkuThumb from "@/components/SkuThumb";
 
 export type OrderItem = {
   id: number;
@@ -281,6 +282,12 @@ export default function OrderCard({
               idx > 0 ? "border-t border-[var(--separator)]" : ""
             }`}
           >
+            {/* 商品沒自己的圖時退到開團封面 —— 團購品項多半只有封面，
+                不退一層的話整張單會是一排購物袋 placeholder。 */}
+            <SkuThumb
+              url={it.image_url ?? order.campaign_cover_url}
+              muted={["cancelled", "expired"].includes(it.status)}
+            />
             <div className="min-w-0 flex-1">
               {it.variant_name && (
                 <div className={`text-[16px] ${it.stockout ? "text-[var(--secondary-label)] line-through" : "text-[var(--foreground)]"}`}>

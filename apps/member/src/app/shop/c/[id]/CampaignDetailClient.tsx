@@ -11,6 +11,7 @@ import Countdown from "@/components/Countdown";
 import OrderedCount from "@/components/OrderedCount";
 import ViewCount from "@/components/ViewCount";
 import ShareButtons from "@/components/ShareButtons";
+import SkuThumb from "@/components/SkuThumb";
 import { campaignShareUrl } from "@/lib/shareLink";
 import { cleanCampaignText } from "@/lib/text";
 import { getCampaignHint } from "@/lib/campaignHints";
@@ -631,21 +632,6 @@ function ItemSkeleton({ priceText }: { priceText: string | null }) {
         </div>
       ))}
     </>
-  );
-}
-
-function SkuThumb({ url }: { url: string | null }) {
-  if (url) {
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img src={url} alt="" className="h-14 w-14 shrink-0 rounded-xl object-cover" />;
-  }
-  return (
-    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-[var(--brand-soft)] text-[var(--brand)]">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.4} className="h-6 w-6">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M5 8h14l-1 11a2 2 0 0 1-2 1.8H8A2 2 0 0 1 6 19L5 8Z" />
-        <path strokeLinecap="round" strokeLinejoin="round" d="M9 8V6.5a3 3 0 0 1 6 0V8" />
-      </svg>
-    </div>
   );
 }
 
