@@ -74,7 +74,18 @@ export type StoreRef = { id: number; code: string; name: string };
 
 export type StoreColumn = StoreRef & { state: "active" | "inactive" | "missing" | "unknown" };
 
-export type SkuRow = { sku_id: number; code: string; label: string; missing: boolean };
+/**
+ * ⭐ 商品的存在性是**三態**，與分店那邊 (StoreColumn.state) 語意一致：
+ *   active  = 商品主檔查得到
+ *   missing = 查得到別的、就是查不到這一樣 → 真的被刪了
+ *   unknown = 查詢異常／結果不可信 → **無法確認**
+ * ⛔ 不可以用「不標記」來表達 unknown：那會讓「草稿裡的商品真的全被刪光」
+ *    看起來一切正常（阿審 #751 P1）。
+ */
+export type SkuRow = { sku_id: number; code: string; label: string; state: "active" | "missing" | "unknown" };
+
+/** 商品存在性的查詢結果。known + 空集合 = 「確實一個都沒有」（例如空草稿），不是異常 */
+export type SkuExistence = { kind: "known"; ids: Set<number> } | { kind: "unknown" };
 
 /**
  * 矩陣要有哪些分店欄位 = 「目前啟用中的分店」∪「這張草稿裡出現過的分店」。
@@ -117,22 +128,26 @@ export function buildStoreColumns(
     return { ...fallback, state: "missing" as const };
   });
 
-  return [...cols, ...extras];
+  // ⭐ 全部欄位（啟用 / 停用 / 已刪除 / 無法確認）**用單一 key 一起排**，
+  //   對齊派貨工作台的 wms/picking/page.tsx:825 `localeCompare(store_code)`。
+  //   ⛔ 不分段串接：狀態差異用視覺（標籤／底色）表達，不用位置表達 ——
+  //   位置會讓老闆在兩頁之間找不到同一家店。
+  return [...cols, ...extras].sort((a, b) => (a.code ?? "").localeCompare(b.code ?? ""));
 }
 
 /**
  * 一列 = 一樣商品。品名 / 品號一律取**快照值**（草稿是快照：商品之後改名或被刪，
  * 印出來的仍是當初挑的那樣東西）。
  *
- * @param existingSkuIds 目前 skus 裡還查得到的 id；
- *                       傳 null = 這次查不出來（查詢失敗）→ 一律不標記，
- *                       寧可不標，也不要憑一次失敗的查詢就對老闆說「商品不見了」
+ * @param existence 商品存在性的查詢結果：
+ *                  { kind:"known", ids } → 查得到的 id 集合（空集合＝確實一個都沒有）
+ *                  { kind:"unknown" }    → 查詢異常／不可信 → 每一列都標「無法確認」
  */
-export function buildSkuRows(cells: DraftCell[], existingSkuIds: Set<number> | null): SkuRow[] {
+export function buildSkuRows(cells: DraftCell[], existence: SkuExistence): SkuRow[] {
   // ⚠ 兩邊的 id 都先正規化成數字再比。BIGINT 經過 PostgREST / JSON 有可能是數字也可能是
   //   字串，而 TypeScript 的 `{ id: number }` 宣告**不會在執行期檢查** ——
   //   一邊是 "1630"、另一邊是 1630，Set.has() 就必定失敗、整批誤判成「已不存在」。
-  const alive = existingSkuIds ? new Set(Array.from(existingSkuIds, (v) => Number(v))) : null;
+  const alive = existence.kind === "known" ? new Set(Array.from(existence.ids, (v) => Number(v))) : null;
   const m = new Map<number, SkuRow>();
   for (const c of cells) {
     const skuId = Number(c.sku_id);
@@ -141,7 +156,7 @@ export function buildSkuRows(cells: DraftCell[], existingSkuIds: Set<number> | n
       sku_id: skuId,
       code: c.snapshot_sku_code ?? "",
       label: c.snapshot_sku_label ?? `（商品 #${skuId}，沒有留下品名）`,
-      missing: alive ? !alive.has(skuId) : false,
+      state: alive ? (alive.has(skuId) ? "active" : "missing") : "unknown",
     });
   }
   return Array.from(m.values()).sort((a, b) => a.code.localeCompare(b.code));
