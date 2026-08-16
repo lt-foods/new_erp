@@ -102,6 +102,14 @@ let pickedOwnerKey: string | null = null; // 目前可以寫進哪一把 key；n
 //   (b) 曾經有身分、後來沒了（登出／session 失效）→ 記憶體裡的是「上一個人的」，
 //       絕對不可以在下一把 key 綁定時寫進去。
 let pickedEverBound = false;
+// 「身分世代」：已挑清單的歸屬每換一次（換人、換 scope／換綁 key）就 +1。
+// ⛔ 這是跨使用者資料污染的根本防線。React 的 passive effects 是同一輪一起跑的，
+//    前面的 effect 換掉了 store 的內容與歸屬，**不會**讓後面 effect 的 closure 跟著更新
+//    （阿審第三輪抓到的 P0 就是這個：prune effect 拿 A 的舊 pickedIds 寫進 B 的 key）。
+//    所以寫入端必須帶上「它讀到資料時的世代」，對不上就整批拒絕 —— 不只修掉現在這一個洞，
+//    以後任何人（含平行 session）新增寫入點也一樣擋得住。
+// ⚠️ 每次 +1 之後一定要 emitPicked()，否則畫面上的世代會過期、之後的挑選會被自己擋掉。
+let pickedEpoch = 0;
 const pickedListeners = new Set<() => void>();
 function emitPicked() { for (const l of pickedListeners) l(); }
 function subscribePicked(cb: () => void) {
@@ -109,6 +117,7 @@ function subscribePicked(cb: () => void) {
   return () => { pickedListeners.delete(cb); };
 }
 function getPickedSkuIds() { return pickedSkuIds; }
+function getPickedEpoch() { return pickedEpoch; }
 function readStoredPicked(key: string): number[] {
   try {
     const raw = localStorage.getItem(key);
@@ -125,10 +134,14 @@ function writeStoredPicked(key: string, ids: number[]) {
   } catch { /* 隱私模式：存不了就算了，畫面照常運作 */ }
 }
 // 一律寫進 store 目前綁定的 key（pickedOwnerKey）。還沒綁定（拿不到 tenant/user）就只留在記憶體。
-function setPickedSkuIds(ids: number[]) {
+// expectedEpoch = 呼叫端「讀到這批資料時」的世代，對不上就整批拒絕（連記憶體都不動）。
+// 回傳有沒有寫進去，方便測試與除錯。
+function setPickedSkuIds(ids: number[], expectedEpoch: number): boolean {
+  if (expectedEpoch !== pickedEpoch) return false; // 換人／換 scope 了 —— 這批是上一個人的，丟掉
   pickedSkuIds = ids;
   if (pickedOwnerKey) writeStoredPicked(pickedOwnerKey, ids);
   emitPicked();
+  return true;
 }
 // storage key 一成立（或換帳號 / 換租戶）就對齊一次。
 // 「還沒綁定過」且本機已經挑了東西 → 把它寫下去（tenant 晚到不該讓剛挑的掉）；
@@ -139,13 +152,13 @@ function bindPickedStorage(key: string) {
   //    登出後 pickedOwnerKey 也會是 null，若用它判斷會把上一個人的清單寫進下一個人的 key。
   const draftBeforeAnyIdentity = !pickedEverBound;
   if (draftBeforeAnyIdentity && pickedSkuIds.length > 0) {
+    // 同一個人的草稿落地，歸屬沒變 → 不動世代
     writeStoredPicked(key, pickedSkuIds);
   } else {
-    const stored = readStoredPicked(key);
-    const same =
-      stored.length === pickedSkuIds.length && stored.every((v, i) => v === pickedSkuIds[i]);
-    pickedSkuIds = stored;
-    if (!same) emitPicked();
+    // 改讀另一把 key 的存檔 = 歸屬換了 → 世代 +1，並且一定要 emit（讓畫面重新讀到新世代）
+    pickedSkuIds = readStoredPicked(key);
+    pickedEpoch += 1;
+    emitPicked();
   }
   pickedOwnerKey = key;
   pickedEverBound = true;
@@ -177,9 +190,9 @@ function syncPickedUser(userId: string | null) {
   pickedOwnerKey = null;      // 新的 key 由 bindPickedStorage 接手；在那之前不准寫
   // ⚠️ 不動 pickedEverBound：留 true 才會讓下一次 bind 走「讀新 key 的存檔」那條路。
   //    若把它設回 false，bind 會把現在這個空陣列當成草稿寫下去，反而洗掉 B 自己存好的清單。
-  const had = pickedSkuIds.length > 0;
   pickedSkuIds = [];
-  if (had) emitPicked();
+  pickedEpoch += 1;           // 換人 = 歸屬換了 → 舊世代的寫入一律作廢
+  emitPicked();
 }
 // 跨分頁：別的分頁改了同一個 key → 重讀，避免兩個分頁互相覆蓋
 function refreshPickedFromStorage(key: string) {
@@ -240,6 +253,8 @@ export default function PickingWorkstationPage() {
   const authUserId = user?.id ?? null;
   const pickedStorageKey = pickedStorageKeyFor(tenant?.id, authUserId);
   const pickedIds = useSyncExternalStore(subscribePicked, getPickedSkuIds, getPickedSkuIds);
+  // 讀到 pickedIds 的那一刻是「第幾世代」。所有寫入都要帶著它，換人後的舊世代寫入會被擋掉。
+  const pickedEpoch = useSyncExternalStore(subscribePicked, getPickedEpoch, getPickedEpoch);
   const pickedSkus = useMemo(() => new Set(pickedIds), [pickedIds]);
   // 換人（user.id 從一個非 null 值變成另一個）→ 立刻清掉畫面上的已挑清單。
   // user.id 比 tenant 早到位，所以 B 不會在 tenant 載回來之前看到 A 挑好的東西。
@@ -267,14 +282,21 @@ export default function PickingWorkstationPage() {
   // 已挑清單失效清理：把「已無可分配量」（被別人派完 / 下架）的品項移除並提示。
   // ⚠️ 比對基準是「未經任何篩選」的 alivePickableSkuIds(demand)，不是搜尋結果 ——
   //    拿目前清單去交集正是舊版「選了 30 樣、按建單只剩 1 樣」的根因。
-  // 放 effect 而不是 fetch 回呼：依賴 pickedIds，storage key 晚一步綁定
-  //    （tenant 是登入後非同步拿到的）而從 localStorage 灌回來的清單也會被重檢，
-  //    不會因為「demand 先到、清單後到」而漏掉。清掉 stale 之後 pickedIds 變動
-  //    會再跑一次，此時已無 stale → 直接 return，不會迴圈。
+  // 放 effect 而不是 fetch 回呼：storage key 晚一步綁定（tenant 是登入後非同步拿到的），
+  //    從 localStorage 灌回來的清單也會被重檢，不會因為「demand 先到、清單後到」而漏掉。
+  //    清掉 stale 之後 pickedIds 變動會再跑一次，此時已無 stale → 直接 return，不會迴圈。
+  // ⚠️⚠️ 一定要讀 live snapshot，不可以用 closure 的 pickedIds：
+  //    同一輪 passive effects 裡，上面兩個 effect（換人重置 / 綁新 key）已經換掉 store 的
+  //    內容與歸屬，但 React **不會**替這個 effect 更新 closure。用舊的 pickedIds 算出來的
+  //    結果會被寫進「新那個人」的 key —— 阿審第三輪抓到的 P0 就是這條。
+  //    pickedIds / pickedStorageKey 在依賴陣列裡只當「什麼時候該重檢」的觸發器，值本身不拿來算。
   useEffect(() => {
     if (!demand) return;
+    const livePicked = getPickedSkuIds();
+    const liveEpoch = getPickedEpoch();
+    if (livePicked.length === 0) return;
     const aliveSkus = alivePickableSkuIds(demand);
-    const stalePicks = pickedIds.filter((id) => !aliveSkus.has(id));
+    const stalePicks = livePicked.filter((id) => !aliveSkus.has(id));
     if (stalePicks.length === 0) return;
     // 對外部系統（module store + localStorage）收斂 + 一次性提示，
     // 本質上就是「effect 同步外部資料」，guard 保證不會連鎖重跑。
@@ -282,8 +304,10 @@ export default function PickingWorkstationPage() {
     setPrunedNotice(
       `已挑清單有 ${stalePicks.length} 個品項已無可分配量（可能被別人派完或已下架），已自動移除。`,
     );
-    setPickedSkuIds(pickedIds.filter((id) => aliveSkus.has(id)));
-  }, [demand, pickedIds]);
+    setPickedSkuIds(livePicked.filter((id) => aliveSkus.has(id)), liveEpoch);
+    // pickedStorageKey 也放進來：明講「這個 effect 是在某個 owner scope 下 prune」，
+    // 換人／換 scope 之後要再檢一次，而不是靠 effect 的宣告順序默契。
+  }, [demand, pickedIds, pickedStorageKey]);
   // 矩陣分頁的兩步驟：select = 先挑商品；confirm = 確認數量並建單
   const [pickStep, setPickStep] = useState<"select" | "confirm">("select");
   // 缺價預警：sku_id → 現行成本/分店價是否存在。null = 未載入或此 role 看不到價格（不顯示）。
@@ -854,13 +878,14 @@ export default function PickingWorkstationPage() {
   function togglePick(skuId: number) {
     setPickedSkuIds(
       pickedIds.includes(skuId) ? pickedIds.filter((id) => id !== skuId) : [...pickedIds, skuId],
+      pickedEpoch,
     );
   }
   // 「全部加入」= 把目前搜尋結果一次丟進已挑清單（是聯集，不會蓋掉先前挑的）
   function addAllVisiblePicks() {
     const next = new Set(pickedIds);
     for (const sk of visiblePickRows) next.add(sk.sku_id);
-    setPickedSkuIds(Array.from(next));
+    setPickedSkuIds(Array.from(next), pickedEpoch);
   }
 
   // 本次建單納入的品項：有挑 → 只取挑中的（⚠️ 從 skuRows 取，不與 filteredSkuRows 交集）；
@@ -1179,7 +1204,8 @@ export default function PickingWorkstationPage() {
         // 「已無可分配量、自動移除」的黃色警示（剛建完單看到會以為出事）；
         // 部分派出的品項則殘留在清單裡、下次又被預填數量順手派出去。
         // 部分失敗（failures > 0）不清 —— 留在原地讓使用者修正後重送。
-        setPickedSkuIds([]);
+        // 帶 render 當下的世代：建單途中若換了人，這個清空會被擋掉（不會清到新那個人的清單）。
+        setPickedSkuIds([], pickedEpoch);
         router.push("/hq/inbox?source=picking");
       } else {
         const okPart =
@@ -1620,7 +1646,7 @@ export default function PickingWorkstationPage() {
                   {hasPicked && (
                     <button
                       type="button"
-                      onClick={() => setPickedSkuIds([])}
+                      onClick={() => setPickedSkuIds([], pickedEpoch)}
                       className="min-h-[44px] rounded-md border border-zinc-300 px-3 text-sm text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                     >
                       清空
