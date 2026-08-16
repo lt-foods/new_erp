@@ -1270,7 +1270,7 @@ export default function CampaignsListPage() {
               />
             </div>
             <div className="border-t border-zinc-200 pt-4 dark:border-zinc-800">
-              <CampaignOrdersPanel key={resyncTick} campaignId={modal.values.id!} />
+              <CampaignOrdersPanel key={resyncTick} campaignId={modal.values.id!} campaignName={modal.values.name} />
             </div>
           </div>
         )}
