@@ -7,6 +7,15 @@ import { useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 import { orderStatusLabel, orderCountsInTotals, orderItemCountsInTotals } from "@/lib/orderStatus";
 import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
+import { itemDisplayName } from "@/lib/skuLabel";
+
+type OrderItemRow = {
+  id: number;
+  qty: number;
+  unit_price: number;
+  status: string | null;
+  sku: { product_name: string | null; variant_name: string | null } | null;
+};
 
 type OrderRow = {
   id: number;
@@ -18,7 +27,7 @@ type OrderRow = {
   order_kind: string | null;
   created_at: string;
   member: { id: number; name: string | null } | null;
-  customer_order_items: { qty: number; unit_price: number; status: string | null }[];
+  customer_order_items: OrderItemRow[];
 };
 
 type Store = { id: number; code: string; name: string };
@@ -36,7 +45,43 @@ const STATUS_BADGE: Record<string, string> = {
   transferred_out: "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400",
 };
 
-export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
+// 品項顯示：一團一品時 skus.product_name 就是開團名 → itemDisplayName 只留規格
+//（「【內部】補貨申請」這種團名不含商品名的才補上商品名）。
+// 斷貨 / 轉出的品項不入數量與金額小計，畫成刪除線才看得出「數量為何比列出來的少」。
+function ItemLines({
+  items,
+  campaignName,
+}: {
+  items: OrderItemRow[];
+  campaignName?: string | null;
+}) {
+  if (items.length === 0) return <span className="text-zinc-400">—</span>;
+  return (
+    <div className="space-y-0.5">
+      {items.map((it) => (
+        <div
+          key={it.id}
+          className={
+            orderItemCountsInTotals(it.status)
+              ? ""
+              : "text-zinc-400 line-through dark:text-zinc-500"
+          }
+        >
+          {itemDisplayName(it.sku, campaignName)}
+          <span className="ml-1 text-zinc-500">× {it.qty}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function CampaignOrdersPanel({
+  campaignId,
+  campaignName,
+}: {
+  campaignId: number;
+  campaignName?: string | null;
+}) {
   const [rows, setRows] = useState<OrderRow[] | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
   const [storeFilter, setStoreFilter] = useState<string>("");
@@ -57,7 +102,7 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
             .select(
               // 品項 status 一定要撈：部分轉出把來源品項標 cancelled 留在原單，
               // 不濾掉就會跟轉入單重複計（見 orderStatus.ts 的統計規則）
-              "id, order_no, status, pickup_store_id, nickname_snapshot, notes, order_kind, created_at, member:members(id, name), customer_order_items(qty, unit_price, status)",
+              "id, order_no, status, pickup_store_id, nickname_snapshot, notes, order_kind, created_at, member:members(id, name), customer_order_items(id, qty, unit_price, status, sku:skus(product_name, variant_name))",
             )
             .eq("campaign_id", campaignId)
             .order("created_at", { ascending: false }),
@@ -170,6 +215,9 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
                 <tr>
                   <th className="px-3 py-1.5 text-left font-medium uppercase tracking-wide text-zinc-500">訂單號</th>
                   <th className="px-3 py-1.5 text-left font-medium uppercase tracking-wide text-zinc-500">會員</th>
+                  {/* 品項在手機上塞不進第三欄（中文會逐字斷行，整列拉成一直條），
+                      改成印在訂單號底下；md 以上才獨立成一欄 */}
+                  <th className="hidden px-3 py-1.5 text-left font-medium uppercase tracking-wide text-zinc-500 md:table-cell">品項</th>
                   <th className="px-3 py-1.5 text-left font-medium uppercase tracking-wide text-zinc-500">門市</th>
                   <th className="px-3 py-1.5 text-left font-medium uppercase tracking-wide text-zinc-500">狀態</th>
                   <th className="px-3 py-1.5 text-right font-medium uppercase tracking-wide text-zinc-500">數量</th>
@@ -181,7 +229,8 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
                   const store = stores.find((s) => s.id === r.pickup_store_id);
                   // 只算「還在這張單上」的品項：部分轉出的來源品項留在原單但已 cancelled，
                   // 一起算的話這列會顯示轉出前的數量、跟小計對不起來
-                  const items = (r.customer_order_items ?? []).filter((i) => orderItemCountsInTotals(i.status));
+                  const allItems = [...(r.customer_order_items ?? [])].sort((a, b) => a.id - b.id);
+                  const items = allItems.filter((i) => orderItemCountsInTotals(i.status));
                   const qty = items.reduce((s, i) => s + Number(i.qty || 0), 0);
                   const amt = items.reduce((s, i) => s + Number(i.qty || 0) * Number(i.unit_price || 0), 0);
                   const isOffset = r.order_kind === "offset";
@@ -204,6 +253,9 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
                             抵減
                           </span>
                         )}
+                        <div className="mt-0.5 font-sans md:hidden">
+                          <ItemLines items={allItems} campaignName={campaignName} />
+                        </div>
                       </td>
                       <td className="px-3 py-1.5">
                         {r.member?.name ? (
@@ -219,6 +271,9 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
                         ) : (
                           "—"
                         )}
+                      </td>
+                      <td className="hidden px-3 py-1.5 md:table-cell">
+                        <ItemLines items={allItems} campaignName={campaignName} />
                       </td>
                       <td className="px-3 py-1.5 text-zinc-600 dark:text-zinc-400">{store?.name ?? "—"}</td>
                       <td className="px-3 py-1.5">
@@ -238,7 +293,11 @@ export function CampaignOrdersPanel({ campaignId }: { campaignId: number }) {
               </tbody>
               <tfoot className="bg-zinc-50 dark:bg-zinc-900">
                 <tr>
-                  <td colSpan={3} className="px-3 py-1.5 text-right text-zinc-500">
+                  {/* 品項欄在手機上不存在（md:table-cell）→ 小計列也要跟著少一格，
+                      否則整排會往右錯開一欄 */}
+                  <td colSpan={2} className="px-3 py-1.5" />
+                  <td className="hidden px-3 py-1.5 md:table-cell" />
+                  <td className="px-3 py-1.5 text-right text-zinc-500">
                     {storeFilter ? "本店小計" : "全店小計"}
                   </td>
                   <td className="px-3 py-1.5 text-zinc-500">
