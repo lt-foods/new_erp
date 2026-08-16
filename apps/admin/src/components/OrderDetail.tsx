@@ -657,7 +657,7 @@ export function OrderDetail({
       (head.status === "shipping"
         ? `撤回派貨：${head.order_no}\n${isAidOrder ? "會撤回派貨單並反向回收已出庫存" : "波次出貨的訂單不動庫存，貨留在店端"}，請輸入原因：`
         : isSpotSale
-          ? `取消現貨直配單：${head.order_no}\n這張單還沒扣庫存，取消後那些貨會變回「可分配」。\n請輸入取消原因：`
+          ? `退回庫存：${head.order_no}\n這張單的貨還沒扣庫存，退回後會變回「可分配」，可以再配給別人。\n請輸入原因：`
           : `取消訂單：${head.order_no}\n請輸入取消原因：`) + walletNote
     );
     if (reason === null) return;
@@ -674,7 +674,9 @@ export function OrderDetail({
     const refunded = Number((data as { wallet_refunded?: number } | null)?.wallet_refunded ?? 0);
     alert(refunded > 0
       ? `已取消，已退回 $${refunded} 儲值金到會員餘額`
-      : "已取消");
+      : isSpotSale
+        ? "✅ 已退回庫存，這些貨變回「可分配」了"
+        : "已取消");
     setReloadTick((n) => n + 1);
   }
 
@@ -962,10 +964,22 @@ export function OrderDetail({
           {canCancel && (
             <SpinButton
               onClick={cancelOrder}
-              className="rounded-md border border-red-300 px-3 py-1 text-xs font-medium text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950"
-              title={head.status === "shipping" ? "撤回派貨並反向回收已出庫存" : "取消訂單"}
+              className={`rounded-md border px-3 py-1 text-xs font-medium ${
+                isSpotSale
+                  ? "border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950"
+                  : "border-red-300 text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950"
+              }`}
+              title={
+                head.status === "shipping"
+                  ? "撤回派貨並反向回收已出庫存"
+                  : isSpotSale
+                    ? "這張單的貨還沒扣庫存，退回後會變回「可分配」，可以再配給別人"
+                    : "取消訂單"
+              }
             >
-              取消
+              {/* 現貨直配的貨是從庫存配出去的，退掉＝貨回到可分配，
+                  講「取消」像是作廢一筆買賣，跟店員腦中的動作對不起來（2026-08-16 回報）*/}
+              {isSpotSale ? "↩ 退回庫存" : "取消"}
               {Number(head.wallet_paid_amount ?? 0) > 0 && (
                 <span className="ml-1 text-[10px] font-normal text-zinc-500">(將退 ${Number(head.wallet_paid_amount)})</span>
               )}
