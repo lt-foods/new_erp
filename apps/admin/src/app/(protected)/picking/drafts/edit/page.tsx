@@ -86,7 +86,7 @@ function Body() {
   const [extraStores, setExtraStores] = useState<Map<number, Store> | null>(new Map());
   // 目前 skus 還查得到的 id；null = 這次查不出來 → 一律不標「商品已不存在」
   // 商品存在性：三態（見 SkuExistence）。⛔ 不要用 null 同時表達「異常」與「不標記」
-  const [skuExistence, setSkuExistence] = useState<SkuExistence>({ kind: "unknown" });
+  const [skuExistence, setSkuExistence] = useState<SkuExistence>({ kind: "unknown", confirmedIds: new Set() });
   // 網址沒帶 ?id= 就沒有東西要載 → 一開始就不是 loading，直接落到下面的錯誤畫面
   const [loading, setLoading] = useState(validId);
   const [error, setError] = useState<string | null>(null);
@@ -179,7 +179,7 @@ function Body() {
           //   ⛔ 不可以靜靜放過（那會讓「真的全被刪」看起來一切正常，阿審 P1），
           //   也不該武斷說「都被刪了」→ 一律標「無法確認」，並在畫面上說清楚。
           if (found.size === 0) {
-            existence = { kind: "unknown" };
+            existence = { kind: "unknown", confirmedIds: new Set() };
             skuCheckWarning =
               `無法確認這張草稿裡 ${skuIds.length} 樣商品是否還在商品主檔（查詢回傳空的）—— ` +
               `表格內會標「無法確認」。可能是查詢異常，也可能這些商品真的都被刪了，請通知工程師確認。`;
@@ -187,7 +187,7 @@ function Body() {
             existence = { kind: "known", ids: found };
           }
         } catch {
-          existence = { kind: "unknown" };
+          existence = { kind: "unknown", confirmedIds: new Set() };
           skuCheckWarning = `無法確認這張草稿裡的商品是否還在商品主檔（查詢失敗）—— 表格內會標「無法確認」。`;
         }
       }
@@ -401,8 +401,13 @@ function Body() {
       //   於是每一樣剛加進去的商品都被標成「⚠ 此商品已不存在」。
       //   這樣商品是剛從 skus 搜出來的，存在性無庸置疑 → 直接補進集合。
       //   （集合是 null＝「這次查不出來」時維持 null，不要無中生有地開始宣稱知道。）
+      // ⭐ 不論先前是 known 還是 unknown，剛加進來的商品都是**確定存在**的
+      //   （它就是從 skus 搜出來的）→ 兩種狀態都要記住，否則整批查詢異常之後
+      //   新加的商品也會被標「無法確認」（阿審 #751 複審 P2）。
       setSkuExistence((prev) =>
-        prev.kind === "known" ? { kind: "known", ids: new Set(prev.ids).add(Number(opt.id)) } : prev,
+        prev.kind === "known"
+          ? { kind: "known", ids: new Set(prev.ids).add(Number(opt.id)) }
+          : { kind: "unknown", confirmedIds: new Set(prev.confirmedIds).add(Number(opt.id)) },
       );
 
       // 帶出來的量與實際需求對不上時一定要講出來。
@@ -534,6 +539,12 @@ function Body() {
             className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
             {readOnly ? "重新開啟" : "標記完成"}
+          </SpinButton>
+          <SpinButton
+            onClick={() => window.open(`/picking/drafts/print?id=${draftId}`, "_blank")}
+            className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            🖨 列印 / 匯出
           </SpinButton>
           <SpinButton
             onClick={load}
