@@ -107,7 +107,26 @@
 - 訂單列表／會員端不用改：這是真客人＋`order_kind='normal'` 的正常單，
   金額報表、未結金額、商品分析**本來就該算它**——它就是一筆真實銷售。
 
-### 2.4 明確不做
+### 2.4 列表也要顯示承諾拆解（2026-08-16 回報後追加）
+
+回報：「已承諾未取要在清單上就出現了，清單上的可分配庫存要區分開來」。
+
+病灶：列表的「可用」＝ `on_hand − reserved`，而 **`reserved` 全站沒在維護**
+（實測 7,712 筆有庫存的列，`reserved <> 0` 的是 **0 筆**）→「可用」恆等於「在庫」。
+截圖那筆松山店 G01150-01：列表寫「可用 3」、配單視窗寫「自由量 0」（promised 3）
+—— 同一頁的兩個數字互相打臉，比沒有數字更糟。
+
+改法（`20260816000020` ＋ 前端）：
+
+- 列表欄位「保留 / 可用」→ 換成 **「已承諾 / 池子 / 可分配」**。
+  `reserved` 不給整欄，改成非 0 時才在「在庫」旁邊冒一個標記，
+  哪天真的開始用不會被靜靜吃掉。
+- `rpc_get_stock_commitment_bulk(p_pairs jsonb)`：一頁 50 列一次算完。
+  **free 在伺服端算完才回**，前端只顯示 —— 若讓前端自己 `on_hand − …`，
+  等於把公式又抄一份到第五個地方。
+- 「已承諾」欄在有等貨需求時附掛 `+N待`；「可分配」> 0 才給綠色。
+
+### 2.5 明確不做
 
 - 不讓訂單脫離 campaign（動核心不變量，全站 join 假設崩）。
 - 不做多品項購物車、不做折扣（改單價欄位即是）。
@@ -206,8 +225,9 @@ offset，`_grow` 換用後少掛那 112 件 —— 這是修正，不是 regress
 | 2 | **Migration B** `20260816000010`：`rpc_create_spot_sale` ＋ `rpc_get_spot_availability` | ✅ 已寫、語法過 |
 | 3 | **前端**：`/inventory` 展開列動作＋`SpotSaleModal` | ✅ 已寫，tsc 乾淨 / 新檔 lint 0 / Playwright 驗過 |
 | 4 | **部署到線上** | ✅ 已套＋等價性驗證通過（§4.2） |
-| 5 | **migration 進 main** | ⛔ **未做** — 見 §4.3 |
-| 6 | **TEST 文件** `docs/TEST-spot-sale.md` | ⏸ 待店家實際跑一輪後補 |
+| 5 | **Migration C** `20260816000020`：`rpc_get_stock_commitment_bulk` ＋ 列表欄位改版 | ✅ 已套（§2.4） |
+| 6 | **migration 進 main** | ⛔ **未做** — 見 §4.3 |
+| 7 | **TEST 文件** `docs/TEST-spot-sale.md` | ⏸ 待店家實際跑一輪後補 |
 
 ### 4.1 離線驗證工具（本次新增）
 
@@ -256,6 +276,7 @@ bugfix_units: 112
 ```bash
 git log origin/main -- supabase/migrations/20260816000000_sku_commitment_canonical.sql
 git log origin/main -- supabase/migrations/20260816000010_rpc_create_spot_sale.sql
+git log origin/main -- supabase/migrations/20260816000020_stock_commitment_bulk.sql
 ```
 
 ⚠ 開 PR 時注意 base 一定要選 **main**（前例 #629 base 選成 feature 分支，
