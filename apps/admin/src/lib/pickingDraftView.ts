@@ -72,7 +72,7 @@ export type DraftCell = {
 
 export type StoreRef = { id: number; code: string; name: string };
 
-export type StoreColumn = StoreRef & { state: "active" | "inactive" | "missing" };
+export type StoreColumn = StoreRef & { state: "active" | "inactive" | "missing" | "unknown" };
 
 export type SkuRow = { sku_id: number; code: string; label: string; missing: boolean };
 
@@ -90,28 +90,33 @@ export type SkuRow = { sku_id: number; code: string; label: string; missing: boo
 export function buildStoreColumns(
   active: StoreRef[],
   cells: DraftCell[],
-  known: Map<number, StoreRef>,
+  known: Map<number, StoreRef> | null,
 ): StoreColumn[] {
-  const activeIds = new Set(active.map((s) => s.id));
-  const cols: StoreColumn[] = active.map((s) => ({ ...s, state: "active" }));
+  // id 一律正規化成數字再比（理由同 buildSkuRows）
+  const activeIds = new Set(active.map((s) => Number(s.id)));
+  const knownById = known ? new Map(Array.from(known, ([k, v]) => [Number(k), v])) : null;
+  const cols: StoreColumn[] = active.map((s) => ({ ...s, id: Number(s.id), state: "active" }));
 
-  const extraIds = Array.from(new Set(cells.map((c) => c.store_id))).filter((id) => !activeIds.has(id));
+  const extraIds = Array.from(new Set(cells.map((c) => Number(c.store_id)))).filter(
+    (id) => !activeIds.has(id),
+  );
   const extras: StoreColumn[] = extraIds.map((id) => {
-    const hit = known.get(id);
-    if (hit) return { ...hit, state: "inactive" as const };
-    // stores 裡整筆查不到 = 被硬刪 → 退回加入當下的分店快照。
-    // 列印（切片 C）直接吃這個：分店沒了還是要印得出「原本要給哪一家」。
-    const snap = cells.find((c) => c.store_id === id);
-    return {
+    const snap = cells.find((c) => Number(c.store_id) === id);
+    const fallback = {
       id,
       code: snap?.snapshot_store_code ?? `#${id}`,
-      name: snap?.snapshot_store_name ?? `已刪除的分店 #${id}`,
-      state: "missing" as const,
+      name: snap?.snapshot_store_name ?? `分店 #${id}`,
     };
+    // ⛔ 查詢失敗（known = null）**不可以**當成「這些店都被刪了」——
+    //   系統異常偽裝成資料狀態，正是本專案反覆踩過的病。標成「無法確認」。
+    if (!knownById) return { ...fallback, state: "unknown" as const };
+    const hit = knownById.get(id);
+    if (hit) return { ...hit, id, state: "inactive" as const };
+    // stores 裡查得到別人、就是查不到這一家 = 真的被硬刪 → 退回加入當下的分店快照。
+    // 列印（切片 C）直接吃這個：分店沒了還是要印得出「原本要給哪一家」。
+    return { ...fallback, state: "missing" as const };
   });
-  extras.sort((a, b) => a.code.localeCompare(b.code));
 
-  // 額外的排在啟用中的後面：常用的欄位維持在左邊，異常的集中在右邊比較好認
   return [...cols, ...extras];
 }
 
@@ -124,14 +129,19 @@ export function buildStoreColumns(
  *                       寧可不標，也不要憑一次失敗的查詢就對老闆說「商品不見了」
  */
 export function buildSkuRows(cells: DraftCell[], existingSkuIds: Set<number> | null): SkuRow[] {
+  // ⚠ 兩邊的 id 都先正規化成數字再比。BIGINT 經過 PostgREST / JSON 有可能是數字也可能是
+  //   字串，而 TypeScript 的 `{ id: number }` 宣告**不會在執行期檢查** ——
+  //   一邊是 "1630"、另一邊是 1630，Set.has() 就必定失敗、整批誤判成「已不存在」。
+  const alive = existingSkuIds ? new Set(Array.from(existingSkuIds, (v) => Number(v))) : null;
   const m = new Map<number, SkuRow>();
   for (const c of cells) {
-    if (m.has(c.sku_id)) continue;
-    m.set(c.sku_id, {
-      sku_id: c.sku_id,
+    const skuId = Number(c.sku_id);
+    if (m.has(skuId)) continue;
+    m.set(skuId, {
+      sku_id: skuId,
       code: c.snapshot_sku_code ?? "",
-      label: c.snapshot_sku_label ?? `（商品 #${c.sku_id}，沒有留下品名）`,
-      missing: existingSkuIds ? !existingSkuIds.has(c.sku_id) : false,
+      label: c.snapshot_sku_label ?? `（商品 #${skuId}，沒有留下品名）`,
+      missing: alive ? !alive.has(skuId) : false,
     });
   }
   return Array.from(m.values()).sort((a, b) => a.code.localeCompare(b.code));
