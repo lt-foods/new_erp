@@ -21,12 +21,15 @@ import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
 import {
+  addOutcomeMessage,
   buildSkuRows,
   buildStoreColumns,
-  computePrefill,
+  classifyAddOutcome,
   describeDraftDbError,
+  lateCellSnapshot,
+  loadPrefill,
   rowTotal,
-  type DemandRow,
+  type PrefillResult,
   type StoreRef,
 } from "@/lib/pickingDraftView";
 import SpinButton from "@/components/SpinButton";
@@ -63,84 +66,6 @@ type SkuOption = {
 const cellKey = (skuId: number, storeId: number) => `${skuId}:${storeId}`;
 
 const STORE_STATE_LABEL = { inactive: "已停用", missing: "已刪除" } as const;
-
-type PrefillResult = {
-  available: number;
-  byStore: Map<number, { demandLeft: number; give: number }>;
-  closeDate: string | null;
-  extra: Record<string, unknown>;
-};
-
-const EMPTY_PREFILL: PrefillResult = { available: 0, byStore: new Map(), closeDate: null, extra: {} };
-
-/**
- * 加入商品時，算「各分店要帶出多少」。
- *
- * ⛔⛔ 全程**唯讀**：只對兩張既有 view 下 SELECT，沒有任何寫回、也沒有呼叫任何 RPC。
- *     老闆原話：「這裡的修改是不會動到原始的，你懂嗎」——
- *     草稿做什麼都不可以改變派貨工作台看到的數字。
- *     （這裡刻意不寫出 RPC 呼叫的字面寫法：審查是 grep「全檔不得出現」，
- *       寫在註解裡會被誤判成違規 —— 與 migration 檔頭同一個理由。）
- *
- * 查詢條件與排序**逐項對齊**派貨工作台（wms/picking/page.tsx:379-385），
- * 只多一個 .eq("sku_id") 把範圍縮到這樣商品：
- *   - has_stock_left  = 這張 PO 這個 SKU 還有可分配量
- *   - has_demand_left = 還有分店的需求沒派完
- *   兩個都對齊，預填出來的數字才會跟工作台一致。
- *   ⚠ 排序也要一樣：逐格分配是依序吃可分配量的，順序不同結果就不同。
- */
-async function loadPrefill(skuId: number): Promise<PrefillResult> {
-  const sb = getSupabase();
-  let rows: (DemandRow & { po_id: number })[];
-  try {
-    rows = await fetchAllRows<DemandRow & { po_id: number }>(() =>
-      sb
-        .from("v_picking_demand_by_po")
-        .select("po_id, store_id, demand_qty, wave_qty, gr_qty, po_sku_already_wave")
-        .eq("sku_id", skuId)
-        .eq("has_stock_left", true)
-        .eq("has_demand_left", true)
-        .order("po_item_id", { ascending: true })
-        .order("store_id", { ascending: true, nullsFirst: false }),
-    );
-  } catch {
-    // 需求撈不到就全部帶 0，商品照樣加得進去 ——
-    // 老闆本來就會加「包子媽突然要插進來」的商品，那種商品在需求裡根本不存在。
-    return EMPTY_PREFILL;
-  }
-
-  const pre = computePrefill(rows);
-
-  // 結單日：切片 C 列印老闆指定要看到。v_picking_demand_by_po 沒有這一欄，
-  // 要從 v_po_demand_by_store 取（收貨頁 purchase/orders/receive 用的是同一支）。
-  // ⚠ 同一樣商品可能橫跨多個結單日 → 主欄位存**最早**那個，
-  //   完整清單另外收進 snapshot_extra，不靜默丟掉資訊（切片 C 再決定怎麼呈現）。
-  //   拿不到就留 null，絕不擋住「加入商品」。
-  let closeDate: string | null = null;
-  const extra: Record<string, unknown> = {};
-  const poIds = Array.from(new Set(rows.map((r) => r.po_id)));
-  if (poIds.length > 0) {
-    try {
-      const cdRows = await fetchAllRows<{ close_date: string | null }>(() =>
-        sb
-          .from("v_po_demand_by_store")
-          .select("close_date")
-          .eq("sku_id", skuId)
-          .in("po_id", poIds)
-          .not("close_date", "is", null)
-          .order("close_date", { ascending: true }),
-      );
-      const dates = Array.from(
-        new Set(cdRows.map((r) => r.close_date).filter((d): d is string => !!d)),
-      ).sort();
-      if (dates.length > 0) closeDate = dates[0];
-      if (dates.length > 1) extra.close_dates = dates;
-    } catch {
-      // 結單日是給列印用的加值資訊，拿不到不影響這一版
-    }
-  }
-  return { ...pre, closeDate, extra };
-}
 
 export default function PickingDraftEditPage() {
   return (
@@ -330,13 +255,23 @@ function Body() {
         if (err) throw err;
         setItems((arr) => arr.map((it) => (it.id === existing.id ? { ...it, qty: n } : it)));
       } else {
-        // 這格還沒有列：加入這樣商品之後才啟用的分店。
+        // 這格還沒有列：加入這樣商品之後才啟用（或才被撈出來）的分店。
         // 品號/品名沿用同商品其他列的快照值；分店名稱取「現在這一欄」的值
         // （這一欄可能來自 stores 現況，也可能來自別列的分店快照，兩者都對）。
-        // 數量快照(snapshot_at / demand / available) 留 NULL ——
-        // 這一格不在當初那次快照裡，切片 B 對照現況時要看得出來。
+        //
+        // ⭐ 數量快照**當下重拍一次**，不留一堆 NULL：
+        //   切片 B 的「對照現況」要拿快照當基準算落差，同一張草稿裡有些格子有基準、
+        //   有些沒有，落差就算不出來。所以這裡照樣去讀一次需求。
+        //   讀失敗**不擋這次改數量**（使用者的意圖是填數字，快照只是附帶的中繼資料），
+        //   但一定要在 snapshot_extra 標記原因 —— ⛔ 不可以讓切片 B 面對裸 NULL 去猜。
         const sibling = items.find((it) => it.sku_id === skuId);
         const col = storeCols.find((c) => c.id === storeId);
+        let pre: PrefillResult | null = null;
+        try {
+          pre = await loadPrefill({ db: sb, fetchAll: fetchAllRows }, skuId);
+        } catch {
+          pre = null; // lateCellSnapshot 會標 demand_lookup: "failed"
+        }
         const { data, error: err } = await sb
           .from("picking_draft_items")
           .insert({
@@ -349,6 +284,7 @@ function Body() {
             snapshot_sku_label: sibling?.snapshot_sku_label ?? null,
             snapshot_store_code: col?.code ?? null,
             snapshot_store_name: col?.name ?? null,
+            ...lateCellSnapshot(pre, storeId, new Date().toISOString()),
             created_by: uid,
             updated_by: uid,
           })
@@ -376,12 +312,29 @@ function Body() {
     }
     setError(null);
     setNotice(null);
+
+    // ⛔ 先把需求讀起來。讀不到就**整個中止、商品不加進去**。
+    //   不可以退回「空需求」照樣建 14 個 0 的列 —— 那跟「真的沒人要」長得一模一樣，
+    //   老闆會分不出是壞掉還是真的沒有，然後把錯的清單印給樓下去撿。
+    let pre: PrefillResult;
+    try {
+      pre = await loadPrefill({ db: getSupabase(), fetchAll: fetchAllRows }, opt.id);
+    } catch (e) {
+      setError(
+        addOutcomeMessage({
+          kind: "failed",
+          productName: opt.product_name,
+          reason: describeDraftDbError(e),
+        }),
+      );
+      return; // ⛔ 這個 return 就是 P1-1 的修法：下面那段 insert 根本不會跑到
+    }
+
     try {
       const sb = getSupabase();
       const { tenantId, uid } = await sessionInfo();
       const label = `${opt.product_name}${opt.variant_name ? ` ${opt.variant_name}` : ""}`;
       const now = new Date().toISOString();
-      const pre = await loadPrefill(opt.id);
       const { data, error: err } = await sb
         .from("picking_draft_items")
         .insert(
@@ -405,7 +358,9 @@ function Body() {
               snapshot_demand_qty: p?.demandLeft ?? 0,
               snapshot_available_qty: pre.available,
               snapshot_close_date: pre.closeDate,
-              snapshot_extra: pre.extra,
+              // 標明這一格的快照是「加入商品那一刻」拍的。後來才補的格子會標
+              // cell_created_later —— 切片 B 要分得出來，不能靠欄位是不是 NULL 去猜。
+              snapshot_extra: { ...pre.extra, snapshot_source: "add_sku" },
               created_by: uid,
               updated_by: uid,
             };
@@ -415,7 +370,9 @@ function Body() {
       if (err) throw err;
       setItems((arr) => [...arr, ...((data ?? []) as DraftItem[])]);
 
-      // 帶出來的量與實際需求對不上時一定要講出來
+      // 帶出來的量與實際需求對不上時一定要講出來。
+      // ⚠ 「查詢正常但沒需求」與上面「讀取失敗」的畫面都是一排 0，只能靠訊息分辨
+      //   → 措辭由 addOutcomeMessage 統一維護，避免哪天改了一句忘了另一句。
       let demandTotal = 0;
       let giveTotal = 0;
       for (const st of stores) {
@@ -423,19 +380,15 @@ function Body() {
         demandTotal += p?.demandLeft ?? 0;
         giveTotal += p?.give ?? 0;
       }
-      if (demandTotal === 0) {
-        setNotice(
-          `已加入「${opt.product_name}」，但目前查不到這樣商品有未派的需求（可能是貨還沒到、需求已派完，或這是臨時插進來的商品）— 數量請自己填。`,
-        );
-      } else if (giveTotal < demandTotal) {
-        setNotice(
-          `已加入「${opt.product_name}」：各店未派需求合計 ${demandTotal} 件，` +
-            `但目前可分配只有 ${pre.available} 件 → 帶出 ${giveTotal} 件。` +
-            `差額 ${demandTotal - giveTotal} 件要等貨到才派得出去，先印給樓下也撿不到。`,
-        );
-      } else {
-        setNotice(`已加入「${opt.product_name}」，帶出各店未派需求共 ${giveTotal} 件。`);
-      }
+      setNotice(
+        addOutcomeMessage({
+          kind: classifyAddOutcome(demandTotal, giveTotal),
+          productName: opt.product_name,
+          demandTotal,
+          giveTotal,
+          available: pre.available,
+        }),
+      );
     } catch (e) {
       setError(describeDraftDbError(e));
     }

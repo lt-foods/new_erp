@@ -218,3 +218,178 @@ export function rowTotal(cells: DraftCell[], skuId: number): number {
   for (const c of cells) if (c.sku_id === skuId) sum += Number(c.qty);
   return sum;
 }
+
+
+export type PrefillResult = {
+  available: number;
+  byStore: Map<number, { demandLeft: number; give: number }>;
+  closeDate: string | null;
+  extra: Record<string, unknown>;
+};
+
+// 這支 lib 刻意**不 import 任何東西**（連 supabase / fetchAllRows 都不 import）：
+// 全部靠呼叫端注入，才驗得起來 —— 測試可以餵一個「會丟錯」的假 db 進來，
+// 證明查詢失敗時 loadPrefill 是**丟出例外**而不是回傳空需求。
+/** 只用到「下 SELECT」這條唯讀鏈 */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type ReadOnlyDb = { from: (table: string) => any };
+/** 分頁抓全部（呼叫端傳 @/lib/fetchAllRows 進來） */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type FetchAll = <T>(builder: () => any) => Promise<T[]>;
+export type PrefillDeps = { db: ReadOnlyDb; fetchAll: FetchAll };
+
+/**
+ * 加入商品時，算「各分店要帶出多少」。
+ *
+ * ⛔⛔ 全程**唯讀**：只對兩張既有 view 下 SELECT，沒有任何寫回、也沒有呼叫任何 RPC。
+ *     老闆原話：「這裡的修改是不會動到原始的，你懂嗎」——
+ *     草稿做什麼都不可以改變派貨工作台看到的數字。
+ *     （這裡刻意不寫出 RPC 呼叫的字面寫法：審查是 grep「全檔不得出現」，
+ *       寫在註解裡會被誤判成違規 —— 與 migration 檔頭同一個理由。）
+ *
+ * 查詢條件與排序**逐項對齊**派貨工作台（wms/picking/page.tsx:379-385），
+ * 只多一個 .eq("sku_id") 把範圍縮到這樣商品：
+ *   - has_stock_left  = 這張 PO 這個 SKU 還有可分配量
+ *   - has_demand_left = 還有分店的需求沒派完
+ *   兩個都對齊，預填出來的數字才會跟工作台一致。
+ *   ⚠ 排序也要一樣：逐格分配是依序吃可分配量的，順序不同結果就不同。
+ */
+export async function loadPrefill({ db, fetchAll }: PrefillDeps, skuId: number): Promise<PrefillResult> {
+  // ⛔⛔ 這裡**故意不 catch**：查詢失敗要讓呼叫端整個失敗、商品不要加進去。
+  //   舊版失敗時退回「空需求」，畫面會長成 14 個 0 —— 跟「這樣商品真的沒人要」
+  //   一模一樣，老闆分不出是壞掉還是真的沒有，然後把錯的清單印給樓下去撿。
+  //   這正是本專案反覆踩過的靜默丟失（PR #744 的根因）。
+  const rows = await fetchAll<DemandRow & { po_id: number }>(() =>
+    db
+      .from("v_picking_demand_by_po")
+      .select("po_id, store_id, demand_qty, wave_qty, gr_qty, po_sku_already_wave")
+      .eq("sku_id", skuId)
+      .eq("has_stock_left", true)
+      .eq("has_demand_left", true)
+      .order("po_item_id", { ascending: true })
+      .order("store_id", { ascending: true, nullsFirst: false }),
+  );
+
+  const pre = computePrefill(rows);
+
+  // 結單日：切片 C 列印老闆指定要看到。v_picking_demand_by_po 沒有這一欄，
+  // 要從 v_po_demand_by_store 取（收貨頁 purchase/orders/receive 用的是同一支）。
+  // ⚠ 同一樣商品可能橫跨多個結單日 → 主欄位存**最早**那個，
+  //   完整清單另外收進 snapshot_extra，不靜默丟掉資訊（切片 C 再決定怎麼呈現）。
+  //   拿不到就留 null，絕不擋住「加入商品」——
+  //   ⚠ 但**要在 snapshot_extra 標記是「查失敗」還是「本來就沒有」**，
+  //     不可以讓切片 C 面對一個沒頭沒尾的 null 去猜（同 P1-1 的道理）。
+  let closeDate: string | null = null;
+  const extra: Record<string, unknown> = {};
+  const poIds = Array.from(new Set(rows.map((r) => r.po_id)));
+  if (poIds.length > 0) {
+    try {
+      const cdRows = await fetchAll<{ close_date: string | null }>(() =>
+        db
+          .from("v_po_demand_by_store")
+          .select("close_date")
+          .eq("sku_id", skuId)
+          .in("po_id", poIds)
+          .not("close_date", "is", null)
+          .order("close_date", { ascending: true }),
+      );
+      const dates = Array.from(
+        new Set(cdRows.map((r) => r.close_date).filter((d): d is string => !!d)),
+      ).sort();
+      if (dates.length > 0) closeDate = dates[0];
+      if (dates.length > 1) extra.close_dates = dates;
+    } catch {
+      // 結單日是給列印用的加值資訊，拿不到不擋加入商品；
+      // 但要留下記號，切片 C 才分得出「沒有結單日」與「當時查失敗」
+      extra.close_date_lookup = "failed";
+    }
+  }
+  return { ...pre, closeDate, extra };
+}
+
+// ============================================================
+// 加入商品之後要對老闆說什麼
+// ============================================================
+
+/**
+ * ⭐ 三種狀態的措辭必須**一眼分得出來**，因為其中兩種的畫面長得幾乎一樣
+ *   （都是一排 0）：
+ *     failed  = 需求讀取失敗 → **商品沒有加進去**，要重試
+ *     none    = 查詢正常，這樣商品就是沒有未派需求 → 商品已加入，數量自己填
+ *     clamped = 有需求但可分配量不夠 → 已加入，帶出被夾住的量
+ *     ok      = 有需求且貨夠 → 已加入，帶出完整需求
+ *   舊版把 failed 混進 none（查詢失敗就退回空需求），老闆分不出是壞了還是真的沒有，
+ *   會把錯的清單印給樓下去撿。這是本專案反覆踩過的靜默丟失。
+ */
+export type AddOutcome = "failed" | "none" | "clamped" | "ok";
+
+export function addOutcomeMessage(o: {
+  kind: AddOutcome;
+  productName: string;
+  demandTotal?: number;
+  giveTotal?: number;
+  available?: number;
+  reason?: string;
+}): string {
+  const { kind, productName, demandTotal = 0, giveTotal = 0, available = 0, reason = "" } = o;
+  switch (kind) {
+    case "failed":
+      return (
+        `⚠ 讀取各分店需求失敗，「${productName}」**沒有**加入草稿 —— 請再按一次重試。` +
+        `（這是系統讀取出錯，不是這樣商品沒有需求。原因：${reason}）`
+      );
+    case "none":
+      return (
+        `已加入「${productName}」。需求查詢正常，這樣商品目前**沒有**任何未派需求` +
+        `（貨還沒到、需求已派完，或這是臨時插進來的商品）— 各店數量請自己填。`
+      );
+    case "clamped":
+      return (
+        `已加入「${productName}」：各店未派需求合計 ${demandTotal} 件，` +
+        `但目前可分配只有 ${available} 件 → 帶出 ${giveTotal} 件。` +
+        `差額 ${demandTotal - giveTotal} 件要等貨到才派得出去，先印給樓下也撿不到。`
+      );
+    default:
+      return `已加入「${productName}」，帶出各店未派需求共 ${giveTotal} 件。`;
+  }
+}
+
+/** demandTotal / giveTotal 決定是 none / clamped / ok（failed 由呼叫端在讀取階段就決定） */
+export function classifyAddOutcome(demandTotal: number, giveTotal: number): AddOutcome {
+  if (demandTotal === 0) return "none";
+  if (giveTotal < demandTotal) return "clamped";
+  return "ok";
+}
+
+/**
+ * 「加入商品之後才補出來的那一格」要寫什麼快照。
+ *
+ * ⭐ 一定要有 snapshot_at 與 snapshot_source：
+ *   切片 B 的「對照現況」拿快照當基準算落差，同一張草稿裡有些格子有基準、
+ *   有些是裸 NULL，落差就算不出來、也分不出「沒拍」與「拍了但當時是 0」。
+ *   ⛔ 不可以全靠 NULL 讓切片 B 去猜。
+ *
+ * @param pre 當下重拍的需求；傳 null = 這次讀取失敗（改數量照樣要成功，
+ *            但要在 extra 標明白為什麼數字是 NULL）
+ */
+export function lateCellSnapshot(pre: PrefillResult | null, storeId: number, nowIso: string) {
+  const extra: Record<string, unknown> = { snapshot_source: "cell_created_later" };
+  if (!pre) {
+    extra.demand_lookup = "failed";
+    return {
+      snapshot_at: nowIso,
+      snapshot_demand_qty: null,
+      snapshot_available_qty: null,
+      snapshot_close_date: null,
+      snapshot_extra: extra,
+    };
+  }
+  Object.assign(extra, pre.extra, { snapshot_source: "cell_created_later" });
+  return {
+    snapshot_at: nowIso,
+    snapshot_demand_qty: pre.byStore.get(storeId)?.demandLeft ?? 0,
+    snapshot_available_qty: pre.available,
+    snapshot_close_date: pre.closeDate,
+    snapshot_extra: extra,
+  };
+}
