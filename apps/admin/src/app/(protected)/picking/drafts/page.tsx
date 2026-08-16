@@ -27,6 +27,10 @@ type Draft = {
   updated_at: string;
 };
 
+// 列表一次最多列幾張草稿。50 張 × 每張 ~700 列明細 ≈ 3.5 萬列，
+// 還在 fetchAllRows 的 50 頁上限（5 萬列）之內，數字不會被靜默截斷算少。
+const LIST_LIMIT = 50;
+
 function defaultDraftName() {
   // 老闆的實務是「早上一批、下午一批」→ 預設帶日期，重複也沒關係（不設 unique）
   return `${new Date().toLocaleDateString("sv-SE")} 撿貨`;
@@ -37,21 +41,27 @@ export default function PickingDraftsPage() {
   const [skuCounts, setSkuCounts] = useState<Map<number, number>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [newName, setNewName] = useState(defaultDraftName);
+  const [truncated, setTruncated] = useState(false);
 
   // ⚠ 第一件事就 await，不在 effect body 同步 setState
   // （react-hooks/set-state-in-effect；錯誤訊息等查完回來再一起更新）
   const load = useCallback(async () => {
     try {
       const sb = getSupabase();
-      const rows = await fetchAllRows<Draft>(() =>
-        sb
-          .from("picking_drafts")
-          .select("id, name, status, created_at, updated_at")
-          .order("created_at", { ascending: false })
-          .order("id", { ascending: false }),
-      );
+      // 只列最近 LIST_LIMIT 張。刻意**不**撈全部：下面算品項數要把這些草稿的明細
+      // 整包拉回來（一張草稿 = 商品數 × 分店數，50 樣 × 十幾家店就 ~700 列），
+      // 不設上限的話用久了會變成每次開頁拉好幾萬列。
+      const { data, error: err } = await sb
+        .from("picking_drafts")
+        .select("id, name, status, created_at, updated_at")
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(LIST_LIMIT);
+      if (err) throw new Error(err.message);
+      const rows = (data ?? []) as Draft[];
       setError(null);
       setDrafts(rows);
+      setTruncated(rows.length >= LIST_LIMIT);
 
       // 品項數 = 各草稿有幾樣**商品**（明細是一格一列 SKU×分店，所以要去重 sku_id）。
       // 只撈 draft_id / sku_id 兩欄，並依既有慣例分批 200 個 draft_id；
@@ -188,6 +198,11 @@ export default function PickingDraftsPage() {
             emptyHint="還沒有已完成的草稿。"
             action={{ label: "重新開啟", to: "draft", onClick: setStatus }}
           />
+          {truncated && (
+            <p className="text-xs text-zinc-400">
+              只列出最近 {LIST_LIMIT} 張草稿，更舊的沒有顯示。
+            </p>
+          )}
         </>
       )}
     </div>
