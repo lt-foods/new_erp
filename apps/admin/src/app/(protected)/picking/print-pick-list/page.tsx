@@ -2,10 +2,13 @@
 
 // 撿貨清單列印 — SKU × 店家 矩陣，給現場撿貨用
 // 列 = SKU；前幾欄 = 訂購/已到/已撿/可分配；之後是各店家需求數量。
-// 開啟方式：從 /wms/picking 點「📄 列印撿貨清單」開新分頁。
-// data source: 與派貨工作台同 v_picking_demand_by_po。
+// 開啟方式：從 /wms/picking 點「📄 列印…」開新分頁。
+// data source: 與派貨工作台同 v_picking_demand_by_po（本頁自己撈，與工作台零耦合）。
+// ?skus=1,2,3 → 只印這幾個 sku（派貨工作台步驟 1 挑好的品項）。
+//   沒帶這個參數時一切照舊，印全部待撿清單。
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
 import SpinButton from "@/components/SpinButton";
@@ -46,11 +49,31 @@ type SkuRow = {
 };
 
 export default function PrintPickListPage() {
+  return (
+    <Suspense fallback={<div className="p-4 text-sm text-zinc-500">載入中…</div>}>
+      <Body />
+    </Suspense>
+  );
+}
+
+function Body() {
   const { tenant } = useAuth();
+  const sp = useSearchParams();
   const [demand, setDemand] = useState<DemandRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const tenantName = tenant?.name ?? getTenantName();
   const [printedAt] = useState(() => new Date());
+
+  // 由派貨工作台「📄 列印已挑 N 樣」帶入。null = 沒帶參數 = 印全部（原行為，一個字不變）。
+  // 參數存在但解析不出東西時回空集合（不是 null）—— 寧可印 0 列並明說，
+  // 也不要「以為只印挑好的、實際印出 180 樣全表」。
+  const skusParam = sp.get("skus");
+  const pickedSkuIds = useMemo(() => {
+    if (skusParam === null) return null;
+    return new Set(
+      skusParam.split(",").map(Number).filter((n) => Number.isInteger(n) && n > 0),
+    );
+  }, [skusParam]);
 
   useEffect(() => {
     let cancelled = false;
@@ -130,9 +153,12 @@ export default function PrintPickListPage() {
       // 隱藏「已到貨且全部派完」與「需求已全數派完（含補貨直派）」的 SKU —
       // 與派貨工作台矩陣的 has_stock_left + has_demand_left 過濾同語意
       .filter((s) => !(s.totalGr > 0 && s.totalAvailable === 0) && s.demandLeft > 0)
+      // ?skus= 帶進來的已挑清單（null = 沒帶 = 不過濾，行為與舊版完全相同）。
+      // 只縮列，不動 stores：店別欄位維持原本的算法，欄位位置在每次列印間保持一致。
+      .filter((s) => pickedSkuIds === null || pickedSkuIds.has(s.sku_id))
       .sort((a, b) => (a.sku_code ?? "").localeCompare(b.sku_code ?? ""));
     return { skuRows, stores };
-  }, [demand]);
+  }, [demand, pickedSkuIds]);
 
   return (
     <>
@@ -175,13 +201,20 @@ export default function PrintPickListPage() {
       <div className="bg-white text-zinc-900 print:bg-white">
         {/* 控制列（列印時隱藏）*/}
         <div className="no-print sticky top-0 z-20 flex flex-wrap items-center gap-3 border-b border-zinc-200 bg-zinc-50 p-3 print:hidden">
-          <h1 className="text-base font-semibold">📄 撿貨清單列印</h1>
+          <h1 className="text-base font-semibold">
+            📄 撿貨清單列印{pickedSkuIds !== null && "（本次已挑）"}
+          </h1>
           <span className="text-sm text-zinc-500">
             {demand === null
               ? "載入中…"
               : skuRows.length === 0
                 ? "（無資料）"
                 : `${skuRows.length} 個 SKU × ${stores.length} 間分店`}
+            {pickedSkuIds !== null && demand !== null && skuRows.length < pickedSkuIds.size && (
+              <span className="ml-2 text-amber-700">
+                （挑了 {pickedSkuIds.size} 樣，其中 {pickedSkuIds.size - skuRows.length} 樣已無待撿需求，未列出）
+              </span>
+            )}
           </span>
           <SpinButton
             onClick={() => window.print()}
@@ -200,7 +233,9 @@ export default function PrintPickListPage() {
 
         {skuRows.length === 0 && demand !== null && (
           <div className="no-print p-6 text-center text-sm text-zinc-500">
-            目前沒有待撿項目。
+            {pickedSkuIds === null
+              ? "目前沒有待撿項目。"
+              : "已挑的品項目前都沒有待撿需求（可能剛建過撿貨單，或需求已派完）。"}
           </div>
         )}
 
@@ -208,7 +243,9 @@ export default function PrintPickListPage() {
           <div className="mx-auto p-4 print:p-0">
             <div className="mb-3 flex items-end justify-between border-b-2 border-zinc-900 pb-2">
               <div>
-                <div className="text-xl font-bold">撿貨清單</div>
+                <div className="text-xl font-bold">
+                  撿貨清單{pickedSkuIds !== null && <span className="ml-2 text-sm font-normal">（本次挑選）</span>}
+                </div>
                 {tenantName && <div className="mt-0.5 text-xs text-zinc-500">{tenantName}</div>}
               </div>
               <div className="text-right text-xs text-zinc-600">

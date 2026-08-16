@@ -10,11 +10,12 @@
 //   不動 v_picking_demand_by_po（CREATE OR REPLACE VIEW 欄位順序限制多、風險高）。
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
 import SpinButton from "@/components/SpinButton";
+import { useAuth } from "@/components/AuthProvider";
 
 type DemandRow = {
   po_id: number;
@@ -79,95 +80,96 @@ function defaultWaveDate() {
   return d.toLocaleDateString("sv-SE");
 }
 
-// 步驟 1 挑好的「商品 × 採購單」存 localStorage：換分頁、重新整理都不會掉。
-// 慣例照 repo 既有寫法（components/AidShipmentReminder.tsx、transfers/settlement/review）。
-const PICKED_KEY = "wms-picking-picked-v1";
-function loadPickedKeys(): Set<string> {
+// ===== 已挑清單（步驟 1 挑好的商品）的外部儲存 =====
+// key 帶 tenant + user：樓下的人共用現場 iPad，A 挑的東西不可以殘留給 B。
+// 拿不到 tenant / user（舊 DB 未套 tenants migration、或 session 還沒到）就不落地，
+// 退回純 session 暫存 —— 不用預設值硬湊，寧可不持久化也不要串到別人的清單。
+const PICKED_KEY_PREFIX = "wms-picking-picked-v2";
+function pickedStorageKeyFor(tenantId: string | null | undefined, userId: string | null | undefined) {
+  return tenantId && userId ? `${PICKED_KEY_PREFIX}:${tenantId}:${userId}` : null;
+}
+
+// 用 useSyncExternalStore 訂閱這個 module store，而不是 useState + effect 載入。理由：
+//   1. tenant 是登入後才用 rpc_get_my_tenant 非同步拿到的 → storage key 晚一步才成立。
+//      用 effect 載入會在 key 到位那一刻「用存檔覆蓋掉使用者剛挑好的東西」。
+//   2. 跨分頁同步（storage 事件）天生就是外部 store 的訂閱，順手解掉。
+//   3. 不需要在 effect body 裡 setState。
+let pickedSkuIds: number[] = [];          // 唯一真相；localStorage 只是鏡像
+let pickedOwnerKey: string | null = null; // pickedSkuIds 目前屬於哪個 tenant/user key
+const pickedListeners = new Set<() => void>();
+function emitPicked() { for (const l of pickedListeners) l(); }
+function subscribePicked(cb: () => void) {
+  pickedListeners.add(cb);
+  return () => { pickedListeners.delete(cb); };
+}
+function getPickedSkuIds() { return pickedSkuIds; }
+function readStoredPicked(key: string): number[] {
   try {
-    const raw = localStorage.getItem(PICKED_KEY);
+    const raw = localStorage.getItem(key);
     const arr = raw ? (JSON.parse(raw) as unknown) : [];
-    // 只收 `${po_id}:${sku_id}` 形狀的字串，擋掉手改過 / 舊版殘留的髒資料
-    return new Set(
-      Array.isArray(arr) ? arr.map(String).filter((s) => /^\d+:\d+$/.test(s)) : [],
-    );
+    if (!Array.isArray(arr)) return [];
+    return arr.map(Number).filter((n) => Number.isInteger(n) && n > 0);
   } catch {
-    return new Set(); // 隱私模式 / JSON 壞掉：當作沒挑過，不讓工作台整頁掛掉
+    return []; // 隱私模式 / JSON 壞掉：當作沒挑過，不讓工作台整頁掛掉
   }
 }
-function savePickedKeys(keys: Set<string>) {
+function writeStoredPicked(key: string, ids: number[]) {
   try {
-    localStorage.setItem(PICKED_KEY, JSON.stringify(Array.from(keys)));
+    localStorage.setItem(key, JSON.stringify(ids));
   } catch { /* 隱私模式：存不了就算了，畫面照常運作 */ }
 }
+// 一律寫進 store 目前綁定的 key（pickedOwnerKey）。還沒綁定（拿不到 tenant/user）就只留在記憶體。
+function setPickedSkuIds(ids: number[]) {
+  pickedSkuIds = ids;
+  if (pickedOwnerKey) writeStoredPicked(pickedOwnerKey, ids);
+  emitPicked();
+}
+// storage key 一成立（或換帳號 / 換租戶）就對齊一次。
+// 首次綁定且本機已經挑了東西 → 把它寫下去（tenant 晚到不該讓剛挑的掉）；
+// 換 key → 一律改讀新 key 的存檔，絕不把前一個帳號的清單帶過去。
+function bindPickedStorage(key: string) {
+  if (pickedOwnerKey === key) return;
+  const firstBind = pickedOwnerKey === null;
+  if (firstBind && pickedSkuIds.length > 0) {
+    writeStoredPicked(key, pickedSkuIds);
+  } else {
+    const stored = readStoredPicked(key);
+    const same =
+      stored.length === pickedSkuIds.length && stored.every((v, i) => v === pickedSkuIds[i]);
+    pickedSkuIds = stored;
+    if (!same) emitPicked();
+  }
+  pickedOwnerKey = key;
+}
+// 跨分頁：別的分頁改了同一個 key → 重讀，避免兩個分頁互相覆蓋
+function refreshPickedFromStorage(key: string) {
+  const stored = readStoredPicked(key);
+  const same =
+    stored.length === pickedSkuIds.length && stored.every((v, i) => v === pickedSkuIds[i]);
+  if (same) return;
+  pickedSkuIds = stored;
+  emitPicked();
+}
 
-// 步驟 1（挑選商品）的一列 = 一個商品 × 一張採購單。只給挑選畫面用，不進建單流程。
-type PickRow = {
-  key: string;                          // `${po_id}:${sku_id}` — 已挑清單存的就是這個
-  po_id: number;
-  po_no: string;
-  sku_id: number;
-  sku_code: string | null;
-  sku_label: string;
-  grQty: number;                        // 這一團（這張採購單）到了多少
-  available: number;                    // 可分配 = 該 PO 該 SKU 已到貨 − 已派（按採購單各自算）
-  campaignIds: number[];
-  isRestockSourced: boolean;
-};
-
-// 從 demand 列組出「商品 × 採購單」清單。
-// 老闆原話：「會一直重覆開團，相同的品名容易搞錯，第一團未到、第二團到了會派錯」
-// → 不能像矩陣那樣把同商品跨團合成一列。
-// ⚠️ 這是純顯示用的衍生資料。矩陣與建單仍走 skuRows(per sku) ＋ submitAll 的 FIFO，
-//    因為 allocs 的 key 是 `${sku_id}:${store_id}`（沒有 po_id），
-//    把 skuRows 拆成 per PO 會讓 FIFO 對同一個 qty 派兩次。那段一個字都沒動。
-// 放模組層是為了讓「已挑清單失效清理」能用同一支算 alive key，避免兩處條件飄移。
-function buildPickRows(
-  demand: DemandRow[] | null,
-  poItemCampaigns: Map<number, number[]> | null,
-): PickRow[] {
-  if (!demand) return [];
-  const m = new Map<string, PickRow>();
-  const cidSets = new Map<string, Set<number>>();
+// 從 demand 算出「還有可分配量」的 sku_id 集合 —— 條件與 skuRows 的
+// filter(totalAvailable > 0) 完全一致（per (po, sku) 去重後 Σgr − Σ已派）。
+// 給「已挑清單失效清理」用，避免兩處條件飄移。
+function alivePickableSkuIds(demand: DemandRow[]): Set<number> {
+  const avail = new Map<number, number>();
+  const poSkuSeen = new Set<string>();
   for (const r of demand) {
     if (r.store_id === null) continue; // 與 skuRows 同條件
-    const key = `${r.po_id}:${r.sku_id}`;
-    let row = m.get(key);
-    if (!row) {
-      // gr_qty / po_sku_already_wave 在同 (po, sku) 的各 store row 是同值（view 保證），取首列即可
-      const gr = Number(r.gr_qty);
-      const already = Number(r.po_sku_already_wave ?? 0);
-      row = {
-        key,
-        po_id: r.po_id,
-        po_no: r.po_no,
-        sku_id: r.sku_id,
-        sku_code: r.sku_code,
-        sku_label: r.sku_label,
-        grQty: gr,
-        // 「可分配 = 0 就隱藏」按採購單各自算：第一團未到(到貨 0)或已派完的那列不會掛在畫面上
-        available: Math.max(0, gr - already),
-        campaignIds: [],
-        isRestockSourced: !!r.is_restock_sourced,
-      };
-      m.set(key, row);
-      cidSets.set(key, new Set<number>());
-    }
-    if (r.is_restock_sourced) row.isRestockSourced = true;
-    // 同一張 PO 的同一個 SKU 可能來自多個 po_item → 開團取聯集
-    for (const cid of poItemCampaigns?.get(r.po_item_id) ?? []) cidSets.get(key)!.add(cid);
-  }
-  for (const [key, set] of cidSets) {
-    const row = m.get(key);
-    if (row) row.campaignIds = Array.from(set);
-  }
-  return Array.from(m.values())
-    .filter((p) => p.available > 0)
-    .sort(
-      (a, b) =>
-        (a.sku_code ?? "").localeCompare(b.sku_code ?? "") ||
-        a.sku_label.localeCompare(b.sku_label) ||
-        a.po_id - b.po_id,
+    const poSkuKey = `${r.po_id}:${r.sku_id}`;
+    if (poSkuSeen.has(poSkuKey)) continue;
+    poSkuSeen.add(poSkuKey);
+    avail.set(
+      r.sku_id,
+      (avail.get(r.sku_id) ?? 0) + Number(r.gr_qty) - Number(r.po_sku_already_wave ?? 0),
     );
+  }
+  const alive = new Set<number>();
+  for (const [skuId, v] of avail) if (v > 0) alive.add(skuId);
+  return alive;
 }
 
 export default function PickingWorkstationPage() {
@@ -189,16 +191,28 @@ export default function PickingWorkstationPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submittingRrId, setSubmittingRrId] = useState<number | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
-  // 步驟 1「已挑清單」：key = `${po_id}:${sku_id}`（一列 = 一個商品 × 一張採購單）。
+  // 步驟 1「已挑清單」＝ sku_id 集合（與建單 scope 同粒度：submitAll 的 FIFO 是 per sku 運作）。
   // ⚠️ 這是獨立集合，絕不與「目前搜尋結果」做交集 —— 舊版就是死在交集上
   //    （搜商品 → 清單只剩 1 列 → 交集後只剩 1 樣，老闆說的「發現只選了一樣」）。
-  //    已無可分配量的品項改由「撈完 demand 之後的失效清理」移除並明示提示（見上面的 fetch effect）。
-  // 初值直接讀 localStorage（同 components/AidShipmentReminder.tsx 的慣例）。
-  // 不會有 hydration 落差：demand 還沒撈回來前，畫面上所有跟已挑清單有關的東西
-  // 都是從 allPickRows（此時是空陣列）推出來的，SSR 與 client 首次 render 的輸出相同。
-  const [pickedKeys, setPickedKeys] = useState<Set<string>>(
-    () => (typeof window === "undefined" ? new Set<string>() : loadPickedKeys()),
-  );
+  //    已無可分配量的品項由「撈完 demand 之後的失效清理」移除並明示提示（見下面的 fetch effect）。
+  // 存在 module store 裡（含 tenant/user scope、跨分頁同步），細節見檔頭。
+  const { user, tenant } = useAuth();
+  const pickedStorageKey = pickedStorageKeyFor(tenant?.id, user?.id);
+  const pickedIds = useSyncExternalStore(subscribePicked, getPickedSkuIds, getPickedSkuIds);
+  const pickedSkus = useMemo(() => new Set(pickedIds), [pickedIds]);
+  // storage key 一成立（或換帳號 / 換租戶）就對齊一次；純寫外部系統，沒有 setState
+  useEffect(() => {
+    if (pickedStorageKey) bindPickedStorage(pickedStorageKey);
+  }, [pickedStorageKey]);
+  // 跨分頁：別的分頁改了同一把 key → 重讀（避免兩個分頁互相覆蓋）
+  useEffect(() => {
+    if (!pickedStorageKey) return;
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === pickedStorageKey) refreshPickedFromStorage(pickedStorageKey);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [pickedStorageKey]);
   // 已挑清單被自動移除時的提示（不靜默處理）
   const [prunedNotice, setPrunedNotice] = useState<string | null>(null);
   // 矩陣分頁的兩步驟：select = 先挑商品；confirm = 確認數量並建單
@@ -256,17 +270,15 @@ export default function PickingWorkstationPage() {
         setDemand(dRows);
         setRestockDemand(rrRows);
         // 已挑清單失效清理：資料一到就把「已無可分配量」（被別人派完 / 下架）的品項移除並提示。
-        // ⚠️ 比對基準是「未經任何篩選」的 buildPickRows(dRows)，不是搜尋結果 ——
+        // ⚠️ 比對基準是「未經任何篩選」的 alivePickableSkuIds(dRows)，不是搜尋結果 ——
         //    拿目前清單去交集正是舊版「選了 30 樣、按建單只剩 1 樣」的根因。
-        // 這裡讀 localStorage 而不是 pickedKeys state：本回呼是 async 的，閉包裡的 state 是舊快照，
-        // 而 localStorage 在每次挑選後都會被寫回（見下方 persist effect），永遠是最新值。
-        // 隱私模式下讀不到 → 不清也不提示；已挑清單的顯示與建單範圍本來就只算 allPickRows 裡還在的列，
-        // 殘留的失效 key 不會被派出去。
-        const alivePickKeys = new Set(buildPickRows(dRows, null).map((p) => p.key));
-        const persistedPicks = Array.from(loadPickedKeys());
-        const stalePicks = persistedPicks.filter((k) => !alivePickKeys.has(k));
+        // 讀 module store 的 getPickedSkuIds() 而不是閉包裡的 pickedIds：本回呼是 async 的，
+        // 閉包抓到的是舊快照；module store 永遠是最新值。
+        const aliveSkus = alivePickableSkuIds(dRows);
+        const currentPicks = getPickedSkuIds();
+        const stalePicks = currentPicks.filter((id) => !aliveSkus.has(id));
         if (stalePicks.length > 0) {
-          setPickedKeys(new Set(persistedPicks.filter((k) => alivePickKeys.has(k))));
+          setPickedSkuIds(currentPicks.filter((id) => aliveSkus.has(id)));
           setPrunedNotice(
             `已挑清單有 ${stalePicks.length} 個品項已無可分配量（可能被別人派完或已下架），已自動移除。`,
           );
@@ -737,65 +749,65 @@ export default function PickingWorkstationPage() {
     [skuRows, effFilterCampaign, skuQueryNorm, filterTime, timeCutoff, campaignsById],
   );
 
-  // ===== 步驟 1 的挑選清單：一列 = 一個商品 × 一張採購單（組法見模組層 buildPickRows）=====
-  const allPickRows: PickRow[] = useMemo(
-    () => buildPickRows(demand, poItemCampaigns),
-    [demand, poItemCampaigns],
-  );
+  // ===== 步驟 1 的挑選清單 =====
+  // 一列 = 一個商品（＝ skuRows 的粒度，與建單 scope 一致：看到多少就派多少）。
+  // 團／採購單資訊在列內攤開顯示，但「不是可選項」——
+  // allocs 的 key 是 `${sku_id}:${store_id}`（沒有 po_id），submitAll 的 FIFO 是 per sku 跑的，
+  // 給使用者一個「只挑某一團」的選項，實際做不到，比沒有團資訊更危險（阿審 P1 判定）。
+  const visiblePickRows = filteredSkuRows;
 
-  // 目前搜尋 / 開團 / 時間 篩選後要顯示的挑選列（只影響「看得到什麼」，不影響已挑清單）
-  const visiblePickRows = useMemo(
-    () => allPickRows.filter((p) => rowPassesFilters(p.campaignIds, p.sku_label, p.sku_code)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [allPickRows, effFilterCampaign, skuQueryNorm, filterTime, timeCutoff, campaignsById],
-  );
+  // 每張採購單對應哪幾團（poList 只有 po_id，開團對應在 poItemCampaigns 上，需經 po_item 轉一手）
+  const campaignsByPoId = useMemo(() => {
+    const m = new Map<number, Set<number>>();
+    if (!demand) return m;
+    for (const r of demand) {
+      const cids = poItemCampaigns?.get(r.po_item_id);
+      if (!cids || cids.length === 0) continue;
+      let set = m.get(r.po_id);
+      if (!set) { set = new Set<number>(); m.set(r.po_id, set); }
+      for (const cid of cids) set.add(cid);
+    }
+    return m;
+  }, [demand, poItemCampaigns]);
 
-  // 已挑的列。⚠️ 比對基準是「未經任何篩選」的 allPickRows，不是 visiblePickRows ——
+  // 一列要攤開列出的團明細：只列「這一團真的到貨了」的採購單（gr_qty = 0 不列，避免以為有貨）
+  function pickRowPoLines(sk: SkuRow) {
+    return sk.poList
+      .filter((po) => po.gr_qty > 0)
+      .map((po) => ({
+        po_id: po.po_id,
+        po_no: po.po_no,
+        grQty: po.gr_qty,
+        available: Math.max(0, po.gr_qty - po.already_wave_for_sku),
+        campaigns: Array.from(campaignsByPoId.get(po.po_id) ?? [])
+          .map((cid) => campaignsById?.get(cid))
+          .filter((c): c is CampaignInfo => !!c),
+      }));
+  }
+
+  // 已挑的列。⚠️ 比對基準是「未經任何篩選」的 skuRows，不是 filteredSkuRows ——
   // 拿目前搜尋結果去交集，正是老闆遇到的「選了 30 樣、按建單只剩 1 樣」的根因。
-  const pickedPickRows = useMemo(
-    () => allPickRows.filter((p) => pickedKeys.has(p.key)),
-    [allPickRows, pickedKeys],
+  const pickedRows = useMemo(
+    () => skuRows.filter((sk) => pickedSkus.has(sk.sku_id)),
+    [skuRows, pickedSkus],
   );
+  const hasPicked = pickedRows.length > 0;
 
-  // 已挑清單寫回 localStorage（純粹把 React state 同步到外部系統，正是 effect 該做的事）
-  useEffect(() => {
-    savePickedKeys(pickedKeys);
-  }, [pickedKeys]);
-
-  function togglePick(key: string) {
-    setPickedKeys((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
+  function togglePick(skuId: number) {
+    setPickedSkuIds(
+      pickedIds.includes(skuId) ? pickedIds.filter((id) => id !== skuId) : [...pickedIds, skuId],
+    );
   }
   // 「全部加入」= 把目前搜尋結果一次丟進已挑清單（是聯集，不會蓋掉先前挑的）
   function addAllVisiblePicks() {
-    setPickedKeys((prev) => {
-      const next = new Set(prev);
-      for (const p of visiblePickRows) next.add(p.key);
-      return next;
-    });
-  }
-  function pickRowCampaigns(p: PickRow): CampaignInfo[] {
-    return p.campaignIds
-      .map((cid) => campaignsById?.get(cid))
-      .filter((c): c is CampaignInfo => !!c);
+    const next = new Set(pickedIds);
+    for (const sk of visiblePickRows) next.add(sk.sku_id);
+    setPickedSkuIds(Array.from(next));
   }
 
-  // 一個商品可能跨多張 PO 被挑到 → 去重成 sku 集合（矩陣與 submitAll 的 FIFO 都是 per sku 運作）
-  const pickedSkuIds = useMemo(
-    () => new Set(pickedPickRows.map((p) => p.sku_id)),
-    [pickedPickRows],
-  );
-  const hasPicked = pickedSkuIds.size > 0;
   // 本次建單納入的品項：有挑 → 只取挑中的（⚠️ 從 skuRows 取，不與 filteredSkuRows 交集）；
   // 沒挑 → 維持現行「篩選範圍內全部」語意，行為不變。
-  const effectiveSkuRows = useMemo(
-    () => (hasPicked ? skuRows.filter((sk) => pickedSkuIds.has(sk.sku_id)) : filteredSkuRows),
-    [hasPicked, skuRows, pickedSkuIds, filteredSkuRows],
-  );
+  const effectiveSkuRows = hasPicked ? pickedRows : filteredSkuRows;
 
   // 平板塞不下 17 欄 → 預設只顯示「本次建單範圍內還有未派需求、或已填擬分量」的分店欄。
   // 注意：分配上限（getSkuAllocTotal）永遠算全部分店，隱藏欄的擬分量照樣計入。
@@ -1401,7 +1413,7 @@ export default function PickingWorkstationPage() {
       {viewMode === "matrix" && (
         <div className="flex flex-wrap items-center gap-2">
           <StepBtn active={pickStep === "select"} onClick={() => setPickStep("select")}>
-            ① 挑選商品{hasPicked ? `（已挑 ${pickedPickRows.length}）` : ""}
+            ① 挑選商品{hasPicked ? `（已挑 ${pickedRows.length}）` : ""}
           </StepBtn>
           <span className="text-zinc-300 dark:text-zinc-600">→</span>
           <StepBtn active={pickStep === "confirm"} onClick={() => setPickStep("confirm")}>
@@ -1420,11 +1432,11 @@ export default function PickingWorkstationPage() {
             ? "載入中…"
             : viewMode === "matrix"
               ? pickStep === "select"
-                ? `${visiblePickRows.length}${hasActiveFilter ? ` / ${allPickRows.length}` : ""} 筆可挑 (商品 × 採購單) · 已挑 ${pickedPickRows.length} 樣`
+                ? `${visiblePickRows.length}${hasActiveFilter ? ` / ${skuRows.length}` : ""} 樣可挑 · 已挑 ${pickedRows.length} 樣`
                 : `${effectiveSkuRows.length}${hasPicked || hasActiveFilter ? ` / ${skuRows.length}` : ""} 個品項 · ${visibleStores.length}${
                     hiddenStoreCount > 0 ? ` / ${allStores.length}` : ""
                   } 間分店${
-                    hasPicked ? ` · 已挑 ${pickedPickRows.length} 樣` : ""
+                    hasPicked ? ` · 已挑 ${pickedRows.length} 樣` : ""
                   } · 擬分 ${totalAllocSum}${involvedPos > 0 ? ` · 預計切 ${involvedPos} 張撿貨單` : ""}`
               : loadingFull || fullDemand === null
                 ? "載入完整清單中…"
@@ -1457,21 +1469,29 @@ export default function PickingWorkstationPage() {
 
         {viewMode === "matrix" && (
           <div className="ml-auto flex flex-wrap gap-2">
+            {/* 老闆的流程是「挑 30-50 樣 → 列印 → 拿給樓下的人撿」，所以列印要跟著已挑清單走。
+                用 query string 傳 sku_id：列印頁本來就跟工作台零耦合（自己撈 view），
+                走網址參數不必共用 localStorage key（那把 key 綁 tenant/user，列印頁得再算一次）。
+                長度：50 個 id 約 350 字元，遠低於瀏覽器上限。沒挑 → 不帶參數 → 印全部（行為不變）。 */}
             <Link
-              href="/picking/print-pick-list"
+              href={
+                hasPicked
+                  ? `/picking/print-pick-list?skus=${pickedRows.map((sk) => sk.sku_id).join(",")}`
+                  : "/picking/print-pick-list"
+              }
               target="_blank"
               className="rounded-md border border-blue-300 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300 dark:hover:bg-blue-900"
             >
-              📄 列印撿貨清單
+              {hasPicked ? `📄 列印已挑 ${pickedRows.length} 樣` : "📄 列印全部待撿清單"}
             </Link>
             {pickStep === "select" ? (
               <SpinButton
                 onClick={() => setPickStep("confirm")}
-                disabled={allPickRows.length === 0}
+                disabled={skuRows.length === 0}
                 className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
               >
                 {hasPicked
-                  ? `下一步：確認數量 (${pickedPickRows.length} 樣) →`
+                  ? `下一步：確認數量 (${pickedRows.length} 樣) →`
                   : "下一步：確認數量（未挑 = 全部）→"}
               </SpinButton>
             ) : (
@@ -1523,7 +1543,7 @@ export default function PickingWorkstationPage() {
             <div className="rounded-md border border-blue-200 bg-blue-50/50 p-3 dark:border-blue-900 dark:bg-blue-950/20">
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                 <span className="text-sm font-semibold text-blue-900 dark:text-blue-200">
-                  ✅ 已挑選 · {pickedPickRows.length} 樣
+                  ✅ 已挑選 · {pickedRows.length} 樣
                 </span>
                 <div className="flex flex-wrap gap-2">
                   <button
@@ -1537,7 +1557,7 @@ export default function PickingWorkstationPage() {
                   {hasPicked && (
                     <button
                       type="button"
-                      onClick={() => setPickedKeys(new Set())}
+                      onClick={() => setPickedSkuIds([])}
                       className="min-h-[44px] rounded-md border border-zinc-300 px-3 text-sm text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                     >
                       清空
@@ -1545,29 +1565,30 @@ export default function PickingWorkstationPage() {
                   )}
                 </div>
               </div>
-              {pickedPickRows.length === 0 ? (
+              {pickedRows.length === 0 ? (
                 <p className="text-xs text-zinc-500">
                   還沒挑任何商品 — 用上面的「商品搜尋」打商品名稱,找到就按「加入」;換搜尋字不會把已挑的洗掉。
                   不挑直接按「下一步」= 沿用舊行為(整個篩選範圍一起建單)。
+                  {pickedStorageKey === null && "（目前無法記住已挑清單：讀不到帳號/租戶，重新整理會清空）"}
                 </p>
               ) : (
                 <div className="flex flex-wrap gap-1.5">
-                  {pickedPickRows.map((p) => (
+                  {pickedRows.map((sk) => (
                     <span
-                      key={p.key}
+                      key={sk.sku_id}
                       className="inline-flex items-center gap-1 rounded-full border border-blue-300 bg-white py-1 pl-2.5 pr-1 text-xs dark:border-blue-800 dark:bg-zinc-900"
                     >
                       <span
                         className="max-w-[220px] truncate"
-                        title={`${p.sku_code ?? ""} ${p.sku_label} · ${p.po_no} · 這團到 ${p.grQty} · 可分配 ${p.available}`}
+                        title={`${sk.sku_code ?? ""} ${sk.sku_label} · 可分配 ${sk.totalAvailable}`}
                       >
-                        {p.sku_label}
+                        {sk.sku_label}
                       </span>
-                      <span className="font-mono text-[10px] text-zinc-400">{p.po_no}</span>
+                      <span className="font-mono text-[10px] tabular-nums text-zinc-400">{sk.totalAvailable}</span>
                       <button
                         type="button"
-                        onClick={() => togglePick(p.key)}
-                        aria-label={`移除 ${p.sku_label}（${p.po_no}）`}
+                        onClick={() => togglePick(sk.sku_id)}
+                        aria-label={`移除 ${sk.sku_label}`}
                         className="ml-0.5 h-6 w-6 rounded-full text-zinc-400 hover:bg-rose-100 hover:text-rose-700 dark:hover:bg-rose-950 dark:hover:text-rose-300"
                       >
                         ✕
@@ -1578,8 +1599,8 @@ export default function PickingWorkstationPage() {
               )}
             </div>
 
-            {/* 可挑清單：一列 = 一個商品 × 一張採購單（同商品跨三團 → 三列，各自標團號/採購單） */}
-            {allPickRows.length === 0 ? (
+            {/* 可挑清單：一列 = 一個商品，列內攤開這個商品有哪幾團／哪幾張採購單、各團各到多少 */}
+            {skuRows.length === 0 ? (
               <div className="rounded-md border border-zinc-200 p-12 text-center text-sm text-zinc-500 dark:border-zinc-800">
                 目前沒有可分配的品項(該派的都派完了;在途的等收貨後、新需求進來後會自動回來)。
               </div>
@@ -1588,25 +1609,31 @@ export default function PickingWorkstationPage() {
                 {skuQueryNorm !== ""
                   ? `找不到符合「${skuQuery.trim()}」的商品 — 換個關鍵字,或清除搜尋 / 篩選。`
                   : "目前的篩選條件下沒有可挑品項 — 換個開團 / 時間,或清除篩選。"}
-                {pickedPickRows.length > 0 && (
-                  <div className="mt-1 text-xs">（已挑的 {pickedPickRows.length} 樣不受影響,還在上面的清單裡）</div>
+                {pickedRows.length > 0 && (
+                  <div className="mt-1 text-xs">（已挑的 {pickedRows.length} 樣不受影響,還在上面的清單裡）</div>
                 )}
               </div>
             ) : (
               <ul className="divide-y divide-zinc-200 rounded-md border border-zinc-200 bg-white dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-900">
-                {visiblePickRows.map((p) => {
-                  const picked = pickedKeys.has(p.key);
-                  const cams = pickRowCampaigns(p);
+                {visiblePickRows.map((sk) => {
+                  const picked = pickedSkus.has(sk.sku_id);
+                  const poLines = pickRowPoLines(sk);
                   return (
                     <li
-                      key={p.key}
-                      className={`flex items-center gap-3 p-3 ${picked ? "bg-blue-50/60 dark:bg-blue-950/20" : ""}`}
+                      key={sk.sku_id}
+                      className={`flex items-start gap-3 p-3 ${picked ? "bg-blue-50/60 dark:bg-blue-950/20" : ""}`}
                     >
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                          <span className="font-mono text-[11px] text-zinc-500">{p.sku_code ?? "—"}</span>
-                          <span className="text-sm font-medium">{p.sku_label}</span>
-                          {p.isRestockSourced && (
+                          <span className="font-mono text-[11px] text-zinc-500">{sk.sku_code ?? "—"}</span>
+                          <span className="text-sm font-medium">{sk.sku_label}</span>
+                          <span
+                            className="font-mono text-xs font-semibold tabular-nums text-emerald-700 dark:text-emerald-400"
+                            title="可分配 = 總倉已到貨 − 已派。這就是建單時實際會派出去的上限"
+                          >
+                            可分配 {sk.totalAvailable}
+                          </span>
+                          {sk.poList.some((p) => p.is_restock_sourced) && (
                             <span
                               className="rounded bg-amber-100 px-1 py-0.5 text-[9px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
                               title="此 PO 來源為補貨申請(restock)"
@@ -1614,35 +1641,50 @@ export default function PickingWorkstationPage() {
                               📦 補貨
                             </span>
                           )}
-                          {renderPriceTags(p.sku_id)}
+                          {renderPriceTags(sk.sku_id)}
                         </div>
-                        {/* 老闆：「相同的品名容易搞錯,第一團未到、第二團到了會派錯」→ 每列都標團號/團名/採購單/到貨量 */}
-                        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-zinc-500">
-                          {cams.length === 0 ? (
-                            <span className="text-zinc-400">無開團來源</span>
+                        {/* 老闆：「第一頁應該要有詳細開團的資訊」「相同的品名容易搞錯，第一團未到、第二團到了會派錯」
+                            → 攤開列出這個商品有哪幾團／哪幾張採購單、各團各到了多少。
+                            ⚠️ 只是資訊，不是可選項：建單是 per 商品跑 FIFO，挑不了單一團。
+                            沒到貨的團（gr_qty = 0）不列，免得以為有貨。 */}
+                        <ul className="mt-1 flex flex-col gap-0.5">
+                          {poLines.length === 0 ? (
+                            <li className="text-[11px] text-zinc-400">無已到貨的採購單</li>
                           ) : (
-                            cams.map((c) => (
-                              <span key={c.id} className="truncate">
-                                <span className="font-mono text-zinc-400">{c.campaign_no}</span> {c.name}
-                              </span>
+                            poLines.map((po) => (
+                              <li
+                                key={po.po_id}
+                                className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-zinc-500"
+                              >
+                                <span className="text-zinc-300 dark:text-zinc-600">·</span>
+                                {po.campaigns.length === 0 ? (
+                                  <span className="text-zinc-400">無開團來源</span>
+                                ) : (
+                                  po.campaigns.map((c) => (
+                                    <span key={c.id} className="truncate">
+                                      <span className="font-mono text-zinc-400">{c.campaign_no}</span> {c.name}
+                                    </span>
+                                  ))
+                                )}
+                                <span className="font-mono text-zinc-400" title="採購單號">{po.po_no}</span>
+                                <span className="font-mono tabular-nums" title="這一團(這張採購單)已到貨量">
+                                  到 {po.grQty}
+                                </span>
+                                <span
+                                  className="font-mono tabular-nums text-zinc-400"
+                                  title="這張採購單此商品的已到貨 − 已派"
+                                >
+                                  剩 {po.available}
+                                </span>
+                              </li>
                             ))
                           )}
-                          <span className="font-mono text-zinc-400" title="採購單號">{p.po_no}</span>
-                          <span className="font-mono tabular-nums" title="這一團(這張採購單)已到貨量">
-                            這團到 {p.grQty}
-                          </span>
-                          <span
-                            className="font-mono font-semibold tabular-nums text-emerald-700 dark:text-emerald-400"
-                            title="可分配 = 這張採購單此商品的已到貨 − 已派"
-                          >
-                            可分配 {p.available}
-                          </span>
-                        </div>
+                        </ul>
                       </div>
                       {/* 觸控目標 ≥ 44px（平板現場單手點） */}
                       <button
                         type="button"
-                        onClick={() => togglePick(p.key)}
+                        onClick={() => togglePick(sk.sku_id)}
                         className={`min-h-[44px] min-w-[104px] shrink-0 rounded-md px-3 text-sm font-semibold ${
                           picked
                             ? "border border-blue-300 bg-white text-blue-700 hover:bg-blue-50 dark:border-blue-700 dark:bg-zinc-900 dark:text-blue-300 dark:hover:bg-blue-950"
