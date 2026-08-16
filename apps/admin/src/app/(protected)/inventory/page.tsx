@@ -94,7 +94,7 @@ export default function InventoryOverviewPage() {
   // 成本只給總倉層級看（分店 store_manager / store_staff 一律遮掉）
   const role = useRole();
   const showCost = canSeeCost(role);
-  // 商品/倉別/在庫/已承諾/內部單/可分配/在途/(均成本)/最後異動/展開箭頭
+  // 商品/倉別/在庫/待客取/內部單/可分配/在途/(均成本)/最後異動/展開箭頭
   const colCount = showCost ? 10 : 9;
 
   const [locs, setLocs] = useState<Loc[]>([]);
@@ -497,7 +497,7 @@ export default function InventoryOverviewPage() {
               （截圖回報：列表寫可用 3、配單視窗寫自由量 0）。
               換成真的有意義的三欄。reserved 若哪天真的開始用，會以標記
               形式掛在「在庫」旁邊（見下方 rows 渲染）。 */}
-          <Th align="right">已承諾</Th>
+          <Th align="right">待客取</Th>
           <Th align="right">內部單</Th>
           <Th align="right">可分配</Th>
           <Th align="right">在途</Th>
@@ -550,7 +550,7 @@ export default function InventoryOverviewPage() {
                       </span>
                     )}
                   </Td>
-                  <Td align="right" className="font-mono text-zinc-500" title="已承諾未取：客人單已到貨、等他來領的量">
+                  <Td align="right" className="font-mono text-zinc-500" title="待客取：貨已到店、客人的訂單也掛著了，就等他來領 —— 不能再賣給別人">
                     {commit ? fmtQty(commit.promised) : "—"}
                     {commit != null && commit.waiting > 0 && (
                       <span className="ml-1 text-[10px] text-zinc-400" title="還在等貨的 confirmed 訂單需求">
@@ -570,7 +570,7 @@ export default function InventoryOverviewPage() {
                           ? "text-emerald-700 dark:text-emerald-400"
                           : "text-zinc-400"
                     }`}
-                    title="可分配＝在庫 − 已承諾 − 等貨 − 內部單。這才是能直接配給客人的量"
+                    title="可分配＝在庫 − 待客取 − 等貨 − 內部單。這才是能直接配給客人的量"
                   >
                     {commit ? fmtQty(commit.free) : "—"}
                   </Td>

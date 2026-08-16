@@ -199,7 +199,7 @@ export function SpotSaleModal({
           </div>
           {avail && (
             <div className="mt-1 text-[11px] text-zinc-400">
-              在庫 {avail.on_hand} − 已承諾未取 {avail.promised} − 等貨中 {avail.waiting} − 內部單{" "}
+              在庫 {avail.on_hand} − 待客取 {avail.promised} − 等貨中 {avail.waiting} − 內部單{" "}
               {avail.pool}
             </div>
           )}
