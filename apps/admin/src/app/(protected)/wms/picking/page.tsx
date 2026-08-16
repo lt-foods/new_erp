@@ -1098,7 +1098,92 @@ export default function PickingWorkstationPage() {
     });
   }
 
-  // FIFO 提交：把每個 (sku, store) 的擬分量切分到含此 sku 的多張 PO，再對每張 PO 各別發 RPC。
+  // ===== FIFO 規劃器：把每個 (sku, store) 的擬分量切分到含此 sku 的多張 PO =====
+  // submitAll 與 involvedPosFor 共用（20260816 借調上線前兩處各養一份、已經開始漂移）。
+  // 第一輪（既有跨團守衛，原樣保留）：只倒給「該店在此 PO 確實有需求」的 PO ——
+  //   view 只在某店對某 PO 對應的開團 / 補貨有需求時才產生該 (po,sku,store) 列，
+  //   「有列 = 有需求」，避免把別團需求倒給最舊的 PO。
+  // 第二輪（跨團借調，20260816000050）：第一輪吃完還有剩、且該店該 SKU 確實還有
+  //   未派需求（storeDemandLeft > 0，不是憑空多派）→ 從同 SKU 其他 PO 的「餘量」補。
+  //   餘量 = 該 PO 剩餘容量 − max(0, 該 PO 自己的未派需求 − 第一輪已派給它的量)：
+  //   借調永遠不吃來源 PO 自己團的客人還沒拿到的貨。DB 端步驟 4.5 是同一套算法的守衛，
+  //   wave item 會被 RPC 標成「實際被服務的那一團」，訂單推進不會卡。
+  function planWaveAllocations(scopeRows: SkuRow[]): {
+    perPoAllocs: Map<number, Array<{ sku_id: number; store_id: number; qty: number }>>;
+    insufficient: string[];
+  } {
+    const perPoAllocs = new Map<number, Array<{ sku_id: number; store_id: number; qty: number }>>();
+    const insufficient: string[] = [];
+    if (!demand) return { perPoAllocs, insufficient };
+
+    const demandPoSkuStore = new Set<string>();
+    // 該 PO 該 SKU「自己的未派需求」Σ max(0, demand − wave)，口徑同 view 的 demand_left
+    //（wave_qty 含借調歸屬分支，之前借出去的量不會被重複保留）。
+    const ownUnmet = new Map<string, number>();
+    for (const r of demand) {
+      if (r.store_id === null) continue;
+      demandPoSkuStore.add(`${r.po_id}:${r.sku_id}:${r.store_id}`);
+      const k = `${r.po_id}:${r.sku_id}`;
+      ownUnmet.set(k, (ownUnmet.get(k) ?? 0) + Math.max(0, Number(r.demand_qty) - Number(r.wave_qty)));
+    }
+
+    // 可消耗的 PO 容量表 perPoSkuLeft.get(`${po}:${sku}`) = 該 PO 該 SKU 還可分配
+    const perPoSkuLeft = new Map<string, number>();
+    for (const sk of scopeRows) {
+      for (const po of sk.poList) {
+        perPoSkuLeft.set(`${po.po_id}:${sk.sku_id}`, Math.max(0, po.gr_qty - po.already_wave_for_sku));
+      }
+    }
+    // 第一輪派給各 PO 的量（借調的保留量要先扣掉這些 —— 已經在服務自己團的需求了）
+    const matchedTaken = new Map<string, number>();
+
+    for (const sk of scopeRows) {
+      for (const st of allStores) {
+        const qty = getAlloc(sk.sku_id, st.store_id);
+        if (qty <= 0) continue;
+        let remaining = qty;
+        // 第一輪：有需求的 PO
+        for (const po of sk.poList) {
+          if (remaining <= 0) break;
+          if (!demandPoSkuStore.has(`${po.po_id}:${sk.sku_id}:${st.store_id}`)) continue;
+          const k = `${po.po_id}:${sk.sku_id}`;
+          const av = perPoSkuLeft.get(k) ?? 0;
+          if (av <= 0) continue;
+          const take = Math.min(remaining, av);
+          const slot = perPoAllocs.get(po.po_id) ?? [];
+          slot.push({ sku_id: sk.sku_id, store_id: st.store_id, qty: take });
+          perPoAllocs.set(po.po_id, slot);
+          perPoSkuLeft.set(k, av - take);
+          matchedTaken.set(k, (matchedTaken.get(k) ?? 0) + take);
+          remaining -= take;
+        }
+        // 第二輪：跨團借調（只在該店該 SKU 還有未派需求時啟動）
+        if (remaining > 0 && storeDemandLeft(sk, st.store_id) > 0) {
+          for (const po of sk.poList) {
+            if (remaining <= 0) break;
+            // 有需求的 PO 第一輪拿過了；這一輪只看「對該店沒需求、但有餘量」的 PO
+            if (demandPoSkuStore.has(`${po.po_id}:${sk.sku_id}:${st.store_id}`)) continue;
+            const k = `${po.po_id}:${sk.sku_id}`;
+            const left = perPoSkuLeft.get(k) ?? 0;
+            const reserve = Math.max(0, (ownUnmet.get(k) ?? 0) - (matchedTaken.get(k) ?? 0));
+            const take = Math.min(remaining, Math.max(0, left - reserve));
+            if (take <= 0) continue;
+            const slot = perPoAllocs.get(po.po_id) ?? [];
+            slot.push({ sku_id: sk.sku_id, store_id: st.store_id, qty: take });
+            perPoAllocs.set(po.po_id, slot);
+            perPoSkuLeft.set(k, left - take);
+            remaining -= take;
+          }
+        }
+        if (remaining > 0) {
+          insufficient.push(`「${sk.sku_code ?? ""} ${sk.sku_label}」→ ${st.store_name} 缺 ${remaining}`);
+        }
+      }
+    }
+    return { perPoAllocs, insufficient };
+  }
+
+  // FIFO 提交：規劃（planWaveAllocations）後對每張 PO 各別發 RPC。
   // scopeRows = 本次要納入建單的品項；勾選了部分品項時只傳選取的，未勾選時傳全部。
   async function submitAll(scopeRows: SkuRow[] = skuRows) {
     if (!demand) return;
@@ -1120,51 +1205,7 @@ export default function PickingWorkstationPage() {
       }
       if (overSkus.length > 0) throw new Error("超過可分配量：\n" + overSkus.join("\n"));
 
-      // 該 (po, sku, store) 是否「確實有需求」— 來自 v_picking_demand_by_po 的列。
-      // view 只在某店對某 PO 對應的開團 / 補貨有需求時，才會產生該 (po,sku,store) 列，
-      // 所以「有列 = 有需求」。FIFO 只倒給有需求的 PO，避免把別團需求撿到別團的 PO
-      // （對齊後端 rpc_create_wave_from_po 的跨團守衛）。
-      const demandPoSkuStore = new Set<string>();
-      for (const r of demand) {
-        if (r.store_id !== null) demandPoSkuStore.add(`${r.po_id}:${r.sku_id}:${r.store_id}`);
-      }
-
-      // 建可消耗的 PO 容量表 perPoSkuLeft.get(`${po}:${sku}`) = 該 PO 該 SKU 還可分配
-      const perPoSkuLeft = new Map<string, number>();
-      for (const sk of scopeRows) {
-        for (const po of sk.poList) {
-          const left = Math.max(0, po.gr_qty - po.already_wave_for_sku);
-          perPoSkuLeft.set(`${po.po_id}:${sk.sku_id}`, left);
-        }
-      }
-
-      // 對每個 (sku, store) 的擬分量做 FIFO 切到 PO
-      const perPoAllocs = new Map<number, Array<{ sku_id: number; store_id: number; qty: number }>>();
-      const insufficient: string[] = [];
-      for (const sk of scopeRows) {
-        for (const st of allStores) {
-          const qty = getAlloc(sk.sku_id, st.store_id);
-          if (qty <= 0) continue;
-          let remaining = qty;
-          for (const po of sk.poList) {
-            if (remaining <= 0) break;
-            // 只撿給「該店在此 PO 確實有需求」的 PO（尊重開團邊界，別把別團需求倒給最舊的 PO）
-            if (!demandPoSkuStore.has(`${po.po_id}:${sk.sku_id}:${st.store_id}`)) continue;
-            const k = `${po.po_id}:${sk.sku_id}`;
-            const av = perPoSkuLeft.get(k) ?? 0;
-            if (av <= 0) continue;
-            const take = Math.min(remaining, av);
-            const slot = perPoAllocs.get(po.po_id) ?? [];
-            slot.push({ sku_id: sk.sku_id, store_id: st.store_id, qty: take });
-            perPoAllocs.set(po.po_id, slot);
-            perPoSkuLeft.set(k, av - take);
-            remaining -= take;
-          }
-          if (remaining > 0) {
-            insufficient.push(`「${sk.sku_code ?? ""} ${sk.sku_label}」→ ${st.store_name} 缺 ${remaining}`);
-          }
-        }
-      }
+      const { perPoAllocs, insufficient } = planWaveAllocations(scopeRows);
 
       if (insufficient.length > 0) throw new Error("可分配量不足：\n" + insufficient.join("\n"));
       if (perPoAllocs.size === 0) throw new Error("沒有任何分配 — 請先填數量");
@@ -1241,37 +1282,8 @@ export default function PickingWorkstationPage() {
 
   // 預估會切出幾張 wave（與 submitAll 同 FIFO 邏輯），可限定品項範圍
   function involvedPosFor(scopeRows: SkuRow[]): number {
-    if (!demand) return 0;
-    // 與 submitAll 同邏輯：逐 (sku, store) FIFO，且只算「該店在此 PO 確實有需求」的 PO
-    const demandPoSkuStore = new Set<string>();
-    for (const r of demand) {
-      if (r.store_id !== null) demandPoSkuStore.add(`${r.po_id}:${r.sku_id}:${r.store_id}`);
-    }
-    const perPoSkuLeft = new Map<string, number>();
-    for (const sk of scopeRows) {
-      for (const po of sk.poList) {
-        perPoSkuLeft.set(`${po.po_id}:${sk.sku_id}`, Math.max(0, po.gr_qty - po.already_wave_for_sku));
-      }
-    }
-    const set = new Set<number>();
-    for (const sk of scopeRows) {
-      for (const st of allStores) {
-        let remaining = getAlloc(sk.sku_id, st.store_id);
-        if (remaining <= 0) continue;
-        for (const po of sk.poList) {
-          if (remaining <= 0) break;
-          if (!demandPoSkuStore.has(`${po.po_id}:${sk.sku_id}:${st.store_id}`)) continue;
-          const k = `${po.po_id}:${sk.sku_id}`;
-          const av = perPoSkuLeft.get(k) ?? 0;
-          if (av <= 0) continue;
-          const take = Math.min(remaining, av);
-          if (take > 0) set.add(po.po_id);
-          perPoSkuLeft.set(k, av - take);
-          remaining -= take;
-        }
-      }
-    }
-    return set.size;
+    // 與 submitAll 完全同一支規劃器（含借調第二輪），預估的張數不會再跟實際切的漂移
+    return planWaveAllocations(scopeRows).perPoAllocs.size;
   }
   const involvedPos = useMemo(
     () => involvedPosFor(effectiveSkuRows),
