@@ -23,8 +23,10 @@ import { fetchAllRows } from "@/lib/fetchAllRows";
 import {
   buildSkuRows,
   buildStoreColumns,
+  computePrefill,
   describeDraftDbError,
   rowTotal,
+  type DemandRow,
   type StoreRef,
 } from "@/lib/pickingDraftView";
 import SpinButton from "@/components/SpinButton";
@@ -62,6 +64,84 @@ const cellKey = (skuId: number, storeId: number) => `${skuId}:${storeId}`;
 
 const STORE_STATE_LABEL = { inactive: "已停用", missing: "已刪除" } as const;
 
+type PrefillResult = {
+  available: number;
+  byStore: Map<number, { demandLeft: number; give: number }>;
+  closeDate: string | null;
+  extra: Record<string, unknown>;
+};
+
+const EMPTY_PREFILL: PrefillResult = { available: 0, byStore: new Map(), closeDate: null, extra: {} };
+
+/**
+ * 加入商品時，算「各分店要帶出多少」。
+ *
+ * ⛔⛔ 全程**唯讀**：只對兩張既有 view 下 SELECT，沒有任何寫回、也沒有呼叫任何 RPC。
+ *     老闆原話：「這裡的修改是不會動到原始的，你懂嗎」——
+ *     草稿做什麼都不可以改變派貨工作台看到的數字。
+ *     （這裡刻意不寫出 RPC 呼叫的字面寫法：審查是 grep「全檔不得出現」，
+ *       寫在註解裡會被誤判成違規 —— 與 migration 檔頭同一個理由。）
+ *
+ * 查詢條件與排序**逐項對齊**派貨工作台（wms/picking/page.tsx:379-385），
+ * 只多一個 .eq("sku_id") 把範圍縮到這樣商品：
+ *   - has_stock_left  = 這張 PO 這個 SKU 還有可分配量
+ *   - has_demand_left = 還有分店的需求沒派完
+ *   兩個都對齊，預填出來的數字才會跟工作台一致。
+ *   ⚠ 排序也要一樣：逐格分配是依序吃可分配量的，順序不同結果就不同。
+ */
+async function loadPrefill(skuId: number): Promise<PrefillResult> {
+  const sb = getSupabase();
+  let rows: (DemandRow & { po_id: number })[];
+  try {
+    rows = await fetchAllRows<DemandRow & { po_id: number }>(() =>
+      sb
+        .from("v_picking_demand_by_po")
+        .select("po_id, store_id, demand_qty, wave_qty, gr_qty, po_sku_already_wave")
+        .eq("sku_id", skuId)
+        .eq("has_stock_left", true)
+        .eq("has_demand_left", true)
+        .order("po_item_id", { ascending: true })
+        .order("store_id", { ascending: true, nullsFirst: false }),
+    );
+  } catch {
+    // 需求撈不到就全部帶 0，商品照樣加得進去 ——
+    // 老闆本來就會加「包子媽突然要插進來」的商品，那種商品在需求裡根本不存在。
+    return EMPTY_PREFILL;
+  }
+
+  const pre = computePrefill(rows);
+
+  // 結單日：切片 C 列印老闆指定要看到。v_picking_demand_by_po 沒有這一欄，
+  // 要從 v_po_demand_by_store 取（收貨頁 purchase/orders/receive 用的是同一支）。
+  // ⚠ 同一樣商品可能橫跨多個結單日 → 主欄位存**最早**那個，
+  //   完整清單另外收進 snapshot_extra，不靜默丟掉資訊（切片 C 再決定怎麼呈現）。
+  //   拿不到就留 null，絕不擋住「加入商品」。
+  let closeDate: string | null = null;
+  const extra: Record<string, unknown> = {};
+  const poIds = Array.from(new Set(rows.map((r) => r.po_id)));
+  if (poIds.length > 0) {
+    try {
+      const cdRows = await fetchAllRows<{ close_date: string | null }>(() =>
+        sb
+          .from("v_po_demand_by_store")
+          .select("close_date")
+          .eq("sku_id", skuId)
+          .in("po_id", poIds)
+          .not("close_date", "is", null)
+          .order("close_date", { ascending: true }),
+      );
+      const dates = Array.from(
+        new Set(cdRows.map((r) => r.close_date).filter((d): d is string => !!d)),
+      ).sort();
+      if (dates.length > 0) closeDate = dates[0];
+      if (dates.length > 1) extra.close_dates = dates;
+    } catch {
+      // 結單日是給列印用的加值資訊，拿不到不影響這一版
+    }
+  }
+  return { ...pre, closeDate, extra };
+}
+
 export default function PickingDraftEditPage() {
   return (
     <Suspense fallback={<div className="p-6 text-sm text-zinc-500">載入中…</div>}>
@@ -83,6 +163,9 @@ function Body() {
   // 網址沒帶 ?id= 就沒有東西要載 → 一開始就不是 loading，直接落到下面的錯誤畫面
   const [loading, setLoading] = useState(validId);
   const [error, setError] = useState<string | null>(null);
+  // 加入商品後的說明（帶出來的量被可分配量夾住、或整個沒有需求）。
+  // ⛔ 不能靜默：老闆看到 105 卻不知道那家店其實要 108，會照著印給樓下。
+  const [notice, setNotice] = useState<string | null>(null);
   // 正在輸入、還沒 blur 的格子（key → 使用者打的字）。commit 成功後清掉。
   const [edits, setEdits] = useState<Map<string, string>>(new Map());
   const [nameDraft, setNameDraft] = useState("");
@@ -161,6 +244,7 @@ function Body() {
       }
 
       setError(null);
+      setNotice(null); // 重新整理 = 重新看現況，舊訊息不留著
       setDraft(head as Draft);
       setNameDraft((head as Draft).name);
       setStores(activeStores);
@@ -280,7 +364,7 @@ function Body() {
     }
   }
 
-  // ---- 加入商品：替**所有啟用分店**各建一列（qty 0），這樣矩陣天生就是「所有分店」----
+  // ---- 加入商品：替**所有啟用分店**各建一列，數量帶出「各店還沒派的需求」----
   async function addSku(opt: SkuOption) {
     if (skuRows.some((r) => r.sku_id === opt.id)) {
       setError(`「${opt.product_name}」已經在這張草稿裡了`);
@@ -291,34 +375,67 @@ function Body() {
       return;
     }
     setError(null);
+    setNotice(null);
     try {
       const sb = getSupabase();
       const { tenantId, uid } = await sessionInfo();
       const label = `${opt.product_name}${opt.variant_name ? ` ${opt.variant_name}` : ""}`;
       const now = new Date().toISOString();
+      const pre = await loadPrefill(opt.id);
       const { data, error: err } = await sb
         .from("picking_draft_items")
         .insert(
-          stores.map((st) => ({
-            tenant_id: tenantId,
-            draft_id: draftId,
-            sku_id: opt.id,
-            store_id: st.id,
-            qty: 0,
-            snapshot_at: now,
-            snapshot_sku_code: opt.sku_code,
-            snapshot_sku_label: label,
-            // 分店名稱也拍下來：store_id 沒有外鍵，分店被硬刪之後
-            // 畫面與列印都還要說得出「原本要給哪一家」，不能只剩一個 #id
-            snapshot_store_code: st.code,
-            snapshot_store_name: st.name,
-            created_by: uid,
-            updated_by: uid,
-          })),
+          stores.map((st) => {
+            const p = pre.byStore.get(st.id);
+            return {
+              tenant_id: tenantId,
+              draft_id: draftId,
+              sku_id: opt.id,
+              store_id: st.id,
+              // 帶出「這家店還沒派的需求」，已夾在可分配量之內（見 computePrefill）
+              qty: p?.give ?? 0,
+              snapshot_at: now,
+              snapshot_sku_code: opt.sku_code,
+              snapshot_sku_label: label,
+              // 分店名稱也拍下來：store_id 沒有外鍵，分店被硬刪之後
+              // 畫面與列印都還要說得出「原本要給哪一家」，不能只剩一個 #id
+              snapshot_store_code: st.code,
+              snapshot_store_name: st.name,
+              // 快照：加入當下的「未派需求」與「可分配量」，切片 B 對照現況要用
+              snapshot_demand_qty: p?.demandLeft ?? 0,
+              snapshot_available_qty: pre.available,
+              snapshot_close_date: pre.closeDate,
+              snapshot_extra: pre.extra,
+              created_by: uid,
+              updated_by: uid,
+            };
+          }),
         )
         .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name");
       if (err) throw err;
       setItems((arr) => [...arr, ...((data ?? []) as DraftItem[])]);
+
+      // 帶出來的量與實際需求對不上時一定要講出來
+      let demandTotal = 0;
+      let giveTotal = 0;
+      for (const st of stores) {
+        const p = pre.byStore.get(st.id);
+        demandTotal += p?.demandLeft ?? 0;
+        giveTotal += p?.give ?? 0;
+      }
+      if (demandTotal === 0) {
+        setNotice(
+          `已加入「${opt.product_name}」，但目前查不到這樣商品有未派的需求（可能是貨還沒到、需求已派完，或這是臨時插進來的商品）— 數量請自己填。`,
+        );
+      } else if (giveTotal < demandTotal) {
+        setNotice(
+          `已加入「${opt.product_name}」：各店未派需求合計 ${demandTotal} 件，` +
+            `但目前可分配只有 ${pre.available} 件 → 帶出 ${giveTotal} 件。` +
+            `差額 ${demandTotal - giveTotal} 件要等貨到才派得出去，先印給樓下也撿不到。`,
+        );
+      } else {
+        setNotice(`已加入「${opt.product_name}」，帶出各店未派需求共 ${giveTotal} 件。`);
+      }
     } catch (e) {
       setError(describeDraftDbError(e));
     }
@@ -328,6 +445,7 @@ function Body() {
   async function removeSku(skuId: number, label: string) {
     if (!confirm(`把「${label}」從這張草稿移除？（只動草稿，不影響任何庫存或訂單）`)) return;
     setError(null);
+    setNotice(null); // 剛才那則「已加入 …」講的可能就是這一樣，留著會對不上
     try {
       const { error: err } = await getSupabase()
         .from("picking_draft_items")
@@ -445,6 +563,20 @@ function Body() {
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
           {error}
+        </div>
+      )}
+
+      {notice && (
+        <div className="flex items-start justify-between gap-3 rounded-md border border-sky-300 bg-sky-50 p-3 text-sm text-sky-900 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
+          <span>{notice}</span>
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            aria-label="關閉這則訊息"
+            className="shrink-0 rounded px-1.5 text-sky-700 hover:bg-sky-100 dark:text-sky-300 dark:hover:bg-sky-900"
+          >
+            ✕
+          </button>
         </div>
       )}
 

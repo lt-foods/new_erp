@@ -137,6 +137,76 @@ export function buildSkuRows(cells: DraftCell[], existingSkuIds: Set<number> | n
   return Array.from(m.values()).sort((a, b) => a.code.localeCompare(b.code));
 }
 
+// ============================================================
+// 加入商品時，各分店要帶出多少（＝派貨工作台的自動預填）
+// ============================================================
+
+/** v_picking_demand_by_po 之中，算預填會用到的欄位 */
+export type DemandRow = {
+  po_id: number;
+  store_id: number | null;
+  demand_qty: number;
+  wave_qty: number;
+  gr_qty: number;
+  po_sku_already_wave?: number | null;
+};
+
+export type Prefill = {
+  /** 這樣商品的可分配量 = per (po,sku) 去重後 Σgr_qty − Σ已派 */
+  available: number;
+  /** store_id → { 未派需求, 這次要帶出的量 } */
+  byStore: Map<number, { demandLeft: number; give: number }>;
+};
+
+/**
+ * 預填量 = max(0, 需求 − 已派)，**並夾在該 SKU 的可分配量之內**。
+ *
+ * ⛔ 這支是**純計算**：只吃傳進來的列，不碰資料庫、不呼叫任何 RPC。
+ *
+ * ⚠ 這是「照抄」而不是重新發明：語意逐行對齊派貨工作台的預填 effect
+ *   `wms/picking/page.tsx:1047-1091`，包含四個容易寫錯的細節：
+ *   1. `wave_qty` 已含撿貨單與補貨直派 transfer，`shipped_qty` 是它的子集合 →
+ *      **不能再減 shipped**，會重複扣。
+ *   2. 可分配量要 **per (po, sku) 去重**後才加總（同一張 PO 會有多列，
+ *      gr_qty / po_sku_already_wave 在那些列上是同一個值，不去重會重複累加）。
+ *   3. `store_id IS NULL` 的列整列跳過 —— 連可分配量都不算它
+ *      （對齊工作台的 `if (r.store_id === null) continue;` 位置）。
+ *   4. ⭐ **夾在可分配量上限**：訂 108 只到 105 時，不夾就會預填 108，
+ *      老闆照著印給樓下、撿出來卻派不出去（建單會被「超過可分配量」擋掉）。
+ *      工作台在 PR #744 已經夾了，這裡是同一套。
+ *
+ * 逐格分配的順序 = 傳進來的列順序，所以呼叫端要用穩定排序
+ *（po_item_id, store_id），否則同樣的資料可能填出不同結果。
+ */
+export function computePrefill(rows: DemandRow[]): Prefill {
+  const poSeen = new Set<number>();
+  let availRaw = 0;
+  const agg = new Map<number, { demand: number; wave: number }>();
+
+  for (const r of rows) {
+    if (r.store_id === null) continue;
+    if (!poSeen.has(r.po_id)) {
+      poSeen.add(r.po_id);
+      availRaw += Number(r.gr_qty) - Number(r.po_sku_already_wave ?? 0);
+    }
+    const slot = agg.get(r.store_id) ?? { demand: 0, wave: 0 };
+    slot.demand += Number(r.demand_qty);
+    slot.wave += Number(r.wave_qty);
+    agg.set(r.store_id, slot);
+  }
+
+  const available = Math.max(0, availRaw);
+  let room = available;
+  const byStore = new Map<number, { demandLeft: number; give: number }>();
+  for (const [storeId, v] of agg) {
+    const demandLeft = Math.max(0, v.demand - v.wave);
+    const give = Math.min(demandLeft, room);
+    byStore.set(storeId, { demandLeft, give });
+    room -= give;
+  }
+  return { available, byStore };
+}
+
 /**
  * 一樣商品的合計。
  * ⚠ 直接從 cells 加總，**不是**加總畫面上看得到的欄位 ——
