@@ -10,6 +10,7 @@ import { useUserBranchStoreId, useDefaultStoreFromUser } from "@/lib/useDefaultS
 import { maskLineUserId } from "@/lib/maskLineUserId";
 import { useRole, canSeeCost } from "@/lib/role";
 import { AddStockModal } from "@/components/AddStockModal";
+import { SpotSaleModal } from "@/components/SpotSaleModal";
 
 type Loc = { id: number; code: string; name: string; type: string };
 type StoreRow = { id: number; name: string; location_id: number | null };
@@ -110,6 +111,14 @@ export default function InventoryOverviewPage() {
   const [moveLoading, setMoveLoading] = useState(false);
   // 依商品新增庫存（manual_adjust +N）— 開庫存減抵單前把帳外現貨補進帳用
   const [adding, setAdding] = useState(false);
+  // 現貨直配：把自由庫存直接配給客人（不用先開團）。null = 沒開
+  const [spotTarget, setSpotTarget] = useState<{
+    storeId: number;
+    storeName: string;
+    skuId: number;
+    skuCode: string | null;
+    skuLabel: string;
+  } | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
 
   // 分店帳號鎖定：用 store.name 比對 user.app_metadata.stores，回該 store 的 location_id
@@ -273,6 +282,13 @@ export default function InventoryOverviewPage() {
   const storeByLoc = useMemo(() => {
     const m = new Map<number, string>();
     for (const s of stores) if (s.location_id != null) m.set(s.location_id, s.name);
+    return m;
+  }, [stores]);
+  // 現貨直配要的是 store_id（承諾量/訂單都掛在店上，不是倉別上）；
+  // 總倉這類沒有對應分店的倉別查不到 → 不出「配給客人」按鈕。
+  const storeObjByLoc = useMemo(() => {
+    const m = new Map<number, StoreRow>();
+    for (const s of stores) if (s.location_id != null) m.set(s.location_id, s);
     return m;
   }, [stores]);
   const locLabel = (id: number) => {
@@ -457,6 +473,37 @@ export default function InventoryOverviewPage() {
                 out.push(
                   <tr key={`${key}-detail`} className="bg-zinc-50 dark:bg-zinc-900/50">
                     <td colSpan={colCount} className="px-4 py-3">
+                      {/* 現貨直配入口：把沒有訂單掛著的自由庫存直接配給客人。
+                          可配量（自由量）由 modal 自己去 rpc_get_spot_availability 拿 ——
+                          這裡不預先撈，免得展開每一列都多打一次 RPC。 */}
+                      {(() => {
+                        const st = storeObjByLoc.get(r.location_id);
+                        if (!st) return null; // 總倉等沒有對應分店的倉別不出這顆
+                        return (
+                          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 pb-2 dark:border-zinc-800">
+                            <span className="text-xs text-zinc-500">
+                              店內現貨可以直接配給客人（不用先開團）—— 配單＝待取，取貨時才扣庫存收款。
+                            </span>
+                            <SpinButton
+                              onClick={() =>
+                                setSpotTarget({
+                                  storeId: st.id,
+                                  storeName: st.name,
+                                  skuId: r.sku_id,
+                                  skuCode: sku?.sku_code ?? null,
+                                  skuLabel:
+                                    `${sku?.product_name ?? ""}${sku?.variant_name ? ` / ${sku.variant_name}` : ""}`.trim() ||
+                                    `sku#${r.sku_id}`,
+                                })
+                              }
+                              className="shrink-0 rounded-md bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-700"
+                              title="把店內自由庫存直接配給客人（會開一張待取訂單）"
+                            >
+                              🤝 配給客人
+                            </SpinButton>
+                          </div>
+                        );
+                      })()}
                       <div className="text-xs font-medium text-zinc-500">近 50 筆庫存異動</div>
                       {moveLoading && !moves ? (
                         <div className="py-3 text-center text-sm text-zinc-500">載入中…</div>
@@ -538,6 +585,22 @@ export default function InventoryOverviewPage() {
           onClose={() => setAdding(false)}
           onSaved={() => {
             // 重載當前列表 + 清掉展開列的異動快取（新異動要看得到）
+            setMoveCache(new Map());
+            setReloadTick((n) => n + 1);
+          }}
+        />
+      )}
+
+      {spotTarget && (
+        <SpotSaleModal
+          storeId={spotTarget.storeId}
+          storeName={spotTarget.storeName}
+          skuId={spotTarget.skuId}
+          skuCode={spotTarget.skuCode}
+          skuLabel={spotTarget.skuLabel}
+          onClose={() => setSpotTarget(null)}
+          onSaved={() => {
+            // 配單當下不動庫存（取貨才扣），但自由量變了 → 重載讓下次展開拿到新數字
             setMoveCache(new Map());
             setReloadTick((n) => n + 1);
           }}

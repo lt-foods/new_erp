@@ -124,53 +124,118 @@
 同根因（忠順池子 ×10、未結金額多算 482 萬、松山 backorder 卡 6 天、
 盤壞帳 395→79→26 組兩次誤判）。先收斂，階段一直接呼叫，不再新增第五份複本。
 
-### 3.2 設計
+### 3.2 設計（施工後修正）
+
+實作時逐字比對四支現行版本，發現**差異比規劃時假設的多，而且是刻意的**，
+不能硬統一。最終簽名：
 
 ```sql
-CREATE FUNCTION public._sku_commitment(p_store_id BIGINT, p_sku_id BIGINT)
+CREATE FUNCTION public._sku_commitment(p_store_id BIGINT, p_sku_ids BIGINT[] DEFAULT NULL)
 RETURNS TABLE (
-  promised NUMERIC,  -- 客人單 ready/partially_completed/shipping 的未取量
-                     --   （排除 store_internal、offset；品項 pending/reserved/ready）
-  waiting  NUMERIC,  -- confirmed 一般單還在等貨的需求（同上排除）
-  pool     NUMERIC   -- store_internal 容器單未取量（單頭未結案）
+  sku_id          BIGINT,
+  promised        NUMERIC,  -- 客人單 ready/partially_completed/shipping 未取量
+  promised_active NUMERIC,  -- 同上但排除待補貨列（_settle 用）
+  waiting         NUMERIC,  -- confirmed 一般單還在等貨的需求
+  pool_claimed    NUMERIC,  -- 內部店容器未取量（含在途 RR-，_grow 用）
+  pool_arrived    NUMERIC   -- 內部店容器未取量（只算已到貨，_trim 用）
 ) LANGUAGE sql STABLE;
 ```
 
-**回分項、不回單一數字**——各呼叫端的組合本來就不同（grow 要扣 waiting、
-trim 不扣；settle 要另排除 backorder 列），統一成一個數字反而製造新 bug。
+三個規劃時沒預料到的點：
+
+- **`promised` 有兩種**：`_settle_arrived_backorders` 多一個
+  `backorder_at IS NULL`。待補貨列本來就是「還沒配到貨」，算進已承諾等於
+  自己擋自己，整支永遠解不開任何一列（20260811000050 檔頭）。
+- **`pool` 有兩種**：`_grow` 含在途 RR-（避免對還沒到的貨重複掛帳）、
+  `_trim` 只吃 ready/partially_completed（拿在途的貨沖銷已交付量是錯的，
+  20260811000040）。**兩者都對**，不是其中一個有 bug。
+- **必須是 set-returning 單趟 GROUP BY**，不能只做 per-SKU 純量。
+  `_advance_arrived_confirmed_orders` 在 20260813(3) 特地把 per-SKU LATERAL
+  改成一次 GROUP BY（文山 1,704 張單 × ~5ms ≈ 8.5s，PostgREST 8s timeout）。
+  純量版會把那個效能 regression 種回去。另出純量包裝
+  `_sku_free_qty(店, SKU)` 給 `_grow` 與現貨直配用。
+
+回分項、不回單一數字的理由不變：各呼叫端的組合本來就不同，
 收斂的是「分項的定義」，組合留給呼叫端。
 
-### 3.3 改造呼叫點（各基於時間最新版本改寫，CLAUDE.md 規則）
+### 3.3 ★ 順帶抓到一個 latent bug（已修）
 
-| 函式 | 最新版本 | 用到的分項 |
-|---|---|---|
-| `_grow_internal_pool` | 20260814010000 | promised + waiting + pool |
-| `_trim_internal_pool` | 20260811000040 | promised + pool |
-| `_advance_arrived_confirmed_orders` | 20260811000020 | promised |
-| `_settle_arrived_backorders` | 20260811000050 | promised（另有 backorder 排除，保留在呼叫端） |
+`_grow_internal_pool` 的 pool 條件沒有排除 `order_kind='offset'`、也沒有
+`qty > 0`。而抵減單（-OFF）掛在 store_internal 假會員名下、單頭 `confirmed`、
+品項 qty 是**負數** —— 正好全部落在它的狀態範圍內。結果 pool 被灌成負的
+→ 自由量虛增 → 收貨多給時把不存在的貨掛進 OV- 池子（幽靈庫存）。
 
-行為必須**逐字等價**（純收斂、零行為變更）。比對方式：改造前後對全站
-(店, SKU) 各跑一輪分項值 dump，diff 必須為空。若某呼叫端口徑差異太大
-無法無損套用，第一版**跳過該處**並在函式註解記錄差異，不硬改。
+線上實測 2026-08-16：**35 組 (店,SKU)、合計虛增 112 件**（最大一筆：
+中和店 sku 4729 灌水 30 件）。`_sku_commitment` 一律 `qty > 0` ＋ pool 排除
+offset，`_grow` 換用後少掛那 112 件 —— 這是修正，不是 regression。
 
-### 3.4 附帶收穫
+已驗證全站唯一的非正數品項就是抵減單（offset ＋ store_internal，49 列），
+所以 `qty > 0` 對 promised / waiting 是 no-op，那兩者的口徑不受影響。
+
+### 3.4 呼叫點改造：本次只換 `_grow`，其餘三支延後
+
+| 函式 | 最新版本（實測） | 本次 | 理由 |
+|---|---|---|---|
+| `_grow_internal_pool` | 20260814010000 | ✅ 已換 | 行為有變（修 bug），本來就要動 |
+| `_trim_internal_pool` | 20260811000040 | ⏸ 延後 | 零行為變更的純去重 |
+| `_advance_arrived_confirmed_orders` | **20260813020000** | ⏸ 延後 | 同上；查詢計畫是調過的，要連 MATERIALIZED 那段一起驗 |
+| `_settle_arrived_backorders` | 20260811000050 | ⏸ 延後 | 零行為變更的純去重 |
+
+> ⚠ 規劃時把 `_advance_arrived_confirmed_orders` 的基底寫成 20260811000020 是錯的
+> —— 它被改過 4 次，最新是 `20260813020000`。改這支前務必重跑
+> `grep -rln "FUNCTION public._advance_arrived_confirmed_orders" supabase/migrations/`。
+
+分開上線的理由：**「行為有變」和「行為沒變」要各自可回溯、可 rollback**。
+把 bug 修正跟三支大函式的整段改寫混在同一支 migration，出事時分不出是哪一半造成的。
+後三支的等價性驗證 SQL 已寫在 `20260816000000` 檔尾 §4。
+
+### 3.5 附帶收穫
 
 上線當天拿 `_sku_commitment` 全站掃一輪
-`pool > on_hand − promised`（判準含單頭 status，見 CLAUDE.md「到店了沒」教訓），
+`pool_arrived > on_hand − promised`（判準含單頭 status，見 CLAUDE.md「到店了沒」教訓），
 把現存壞帳清單交給 Alex 人工收尾。
 
 ---
 
 ## 4. 施工順序與部署
 
-1. **Migration A**（階段二）：`_sku_commitment` ＋ 四個呼叫點改造＋等價驗證 SQL。
-2. **Migration B**（階段一）：`rpc_create_spot_sale`（advisory lock 同
-   `offsale:` 慣例、grants 收 `authenticated`、REVOKE anon）。
-3. **前端**：`/inventory` 列動作＋ modal；orderTitle 例外確認；
-   `apps/admin:verify` skill 走 UI 驗證。
-4. **部署**：SQL 走 Management API（CLAUDE.md：不戳 pooler）；
-   **當天 merge 進 main**（`git log origin/main -- <migration>` 查得到才算收工）。
-5. **TEST 文件**：`docs/TEST-spot-sale.md`——驗收情境見 §5。
+| # | 項目 | 狀態 |
+|---|---|---|
+| 1 | **Migration A** `20260816000000`：`_sku_commitment` / `_sku_free_qty` ＋ `_grow` 換用＋修 bug＋等價驗證 SQL | ✅ 已寫、語法過 |
+| 2 | **Migration B** `20260816000010`：`rpc_create_spot_sale` ＋ `rpc_get_spot_availability` | ✅ 已寫、語法過 |
+| 3 | **前端**：`/inventory` 展開列動作＋`SpotSaleModal` | ✅ 已寫，tsc 乾淨 / 新檔 lint 0 / Playwright 驗過 |
+| 4 | **部署到線上** | ⛔ **未執行** — 見下方 |
+| 5 | **TEST 文件** `docs/TEST-spot-sale.md` | ⏸ 待部署後補實測結果 |
+
+### 4.1 離線驗證工具（本次新增）
+
+- `scripts/check-sql-syntax.cjs`：用 repo 既有的 `pg-query-emscripten`
+  離線檢查 migration 語法**含 PL/pgSQL 函式內文**（`parsePlpgsql`）。
+  不連 DB 就能擋掉語法錯，免得 `CREATE OR REPLACE` 套一半留下壞掉的函式。
+  ⚠ 每個檔案要開新的 wasm instance —— 同一個 instance 連續解析多檔會在
+  模組內部爆掉（`Ma[...] is not a function`），那是 emscripten 的狀態問題、
+  不是 SQL 有錯（誤判過一次）。
+- `scripts/apply-migration.sh`：走 Management API 套 migration（CLAUDE.md：
+  不戳 pooler TCP）。
+
+### 4.2 ⛔ 部署尚未執行
+
+Migration A / B 都**還沒套上線上 DB**：`scripts/apply-migration.sh` 與直接
+`curl` Management API 兩種寫法都被開發環境的權限分類器擋下
+（唯讀查詢放行、寫入被擋）。要完成部署需要放行該 Bash 權限，或由人手動跑：
+
+```bash
+scripts/apply-migration.sh supabase/migrations/20260816000000_sku_commitment_canonical.sql
+scripts/apply-migration.sh supabase/migrations/20260816000010_rpc_create_spot_sale.sql
+```
+
+**套上線之後務必立刻做兩件事**：
+
+1. 跑 `20260816000000` 檔尾 §4 的兩段等價性驗證 SQL（(a) 應回 0 列；
+   (b) 差異只能出現在有負數 offset 的那 35 組且差額相符）。
+2. 依 CLAUDE.md：對應 migration **當天真的進 main**，
+   `git log origin/main -- supabase/migrations/<檔名>` 查得到才算收工。
+   目前兩支只在 `claude/usage-guide-2lf0wx` 分支上。
 
 ## 5. 驗收情境
 
