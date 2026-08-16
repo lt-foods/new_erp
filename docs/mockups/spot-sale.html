@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>現貨直配（配給客人）| mockup | new_erp</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: -apple-system, "Segoe UI", "Noto Sans TC", sans-serif; }
+</style>
+</head>
+<body class="bg-gray-100">
+
+<div class="max-w-5xl mx-auto px-6 py-8 space-y-10">
+
+<header>
+  <h1 class="text-xl font-bold text-gray-900">現貨直配（配給客人）— 畫面規劃</h1>
+  <p class="text-sm text-gray-500 mt-1">
+    對應 <span class="font-mono">docs/PLAN-現貨直配與承諾收斂.md</span> §2。
+    共 4 個狀態：入口 → 配單視窗 → 擋下態 → 完成態。
+  </p>
+</header>
+
+<!-- ============================================================ -->
+<!-- 狀態 A：庫存總覽的入口 -->
+<!-- ============================================================ -->
+<section>
+  <h2 class="text-sm font-bold text-gray-700 mb-2">A. 入口：庫存總覽（/inventory）展開面板</h2>
+  <p class="text-xs text-gray-500 mb-3">
+    列點開後的異動面板頂部加動作列。「配給客人」只在<b>自由量 &gt; 0</b> 時可按；
+    為 0 時 disabled ＋ tooltip 說明去向（貨都有主了 / 帳上沒貨）。
+  </p>
+
+  <div class="bg-white rounded-lg border border-gray-200 overflow-hidden shadow-sm">
+    <!-- 庫存列 -->
+    <table class="w-full text-sm">
+      <thead class="bg-gray-50 text-xs text-gray-500">
+        <tr>
+          <th class="px-4 py-2 text-left">商品 / SKU</th>
+          <th class="px-3 py-2 text-left">倉別</th>
+          <th class="px-3 py-2 text-right">在庫</th>
+          <th class="px-3 py-2 text-right">保留</th>
+          <th class="px-3 py-2 text-right">在途</th>
+          <th class="px-3 py-2 text-right">可用</th>
+          <th class="px-3 py-2"></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="border-t border-gray-100 bg-blue-50/40">
+          <td class="px-4 py-2">
+            <div class="font-medium">Doppelherz 藍莓護眼膠囊 <span class="text-gray-500">/ 30粒/盒</span></div>
+            <div class="font-mono text-xs text-gray-400">G00704-01</div>
+          </td>
+          <td class="px-3 py-2 text-xs">松山店</td>
+          <td class="px-3 py-2 text-right font-mono">6</td>
+          <td class="px-3 py-2 text-right font-mono text-gray-400">0</td>
+          <td class="px-3 py-2 text-right font-mono text-gray-400">0</td>
+          <td class="px-3 py-2 text-right font-mono">6</td>
+          <td class="px-3 py-2 text-right text-gray-400">▾</td>
+        </tr>
+        <!-- 展開面板 -->
+        <tr class="bg-gray-50">
+          <td colspan="7" class="px-4 py-3">
+            <!-- ★ 新增：動作列 -->
+            <div class="flex items-center justify-between mb-3">
+              <div class="text-xs text-gray-500">
+                自由量
+                <b class="text-emerald-700 text-sm">2</b> 件
+                <span class="text-gray-400 ml-1" title="在庫 6 − 已承諾未取 2 − 等貨中 1 − 內部店池子 1">
+                  ＝ 在庫 6 − 承諾 2 − 等貨 1 − 池子 1 ⓘ
+                </span>
+              </div>
+              <button class="rounded-md bg-violet-600 text-white text-xs font-semibold px-3 py-1.5 hover:bg-violet-700">
+                🤝 配給客人
+              </button>
+            </div>
+            <div class="text-xs font-medium text-gray-500 border-t border-gray-200 pt-2">近 50 筆庫存異動</div>
+            <div class="text-xs text-gray-400 mt-1">（既有異動表格，不動）</div>
+          </td>
+        </tr>
+        <!-- 自由量 0 的列（disabled 範例） -->
+        <tr class="border-t border-gray-100">
+          <td class="px-4 py-2">
+            <div class="font-medium">鎮德蔘藥行 蕎麥餐後消化茶 <span class="text-gray-500">/ 一袋</span></div>
+            <div class="font-mono text-xs text-gray-400">G00940-01</div>
+          </td>
+          <td class="px-3 py-2 text-xs">松山店</td>
+          <td class="px-3 py-2 text-right font-mono">1</td>
+          <td class="px-3 py-2 text-right font-mono text-gray-400">0</td>
+          <td class="px-3 py-2 text-right font-mono text-gray-400">0</td>
+          <td class="px-3 py-2 text-right font-mono">1</td>
+          <td class="px-3 py-2 text-right text-gray-400">▾</td>
+        </tr>
+        <tr class="bg-gray-50 border-t border-gray-100">
+          <td colspan="7" class="px-4 py-3">
+            <div class="flex items-center justify-between">
+              <div class="text-xs text-gray-500">
+                自由量 <b class="text-rose-600 text-sm">0</b> 件
+                <span class="text-gray-400 ml-1">＝ 在庫 1 − 承諾 1（王小明的團購單待取）</span>
+              </div>
+              <button disabled class="rounded-md bg-gray-200 text-gray-400 text-xs font-semibold px-3 py-1.5 cursor-not-allowed"
+                      title="帳上的貨都已有訂單主人（承諾 1 件）。要多賣請先「+ 新增庫存」把現貨入帳。">
+                🤝 配給客人
+              </button>
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 狀態 B：配單 modal -->
+<!-- ============================================================ -->
+<section>
+  <h2 class="text-sm font-bold text-gray-700 mb-2">B. 配單視窗（正常態）</h2>
+  <p class="text-xs text-gray-500 mb-3">
+    客人搜尋沿用加單頁元件（打字搜會員名/電話/暱稱）。數量上限＝自由量；
+    單價預填分店價→現售價，可改、必須 &gt; 0。
+  </p>
+
+  <div class="max-w-md mx-auto bg-white rounded-xl border border-gray-300 shadow-lg overflow-hidden">
+    <div class="px-5 py-3 border-b border-gray-200 flex items-center justify-between">
+      <div class="font-semibold">🤝 配給客人</div>
+      <button class="text-gray-400">✕</button>
+    </div>
+    <div class="px-5 py-4 space-y-4 text-sm">
+      <!-- 商品（唯讀） -->
+      <div class="rounded-md bg-gray-50 border border-gray-200 px-3 py-2">
+        <div class="font-medium">Doppelherz 藍莓護眼膠囊 / 30粒/盒</div>
+        <div class="text-xs text-gray-500 mt-0.5">
+          <span class="font-mono">G00704-01</span> · 松山店 ·
+          自由量 <b class="text-emerald-700">2</b> 件
+        </div>
+      </div>
+      <!-- 客人 -->
+      <div>
+        <label class="block text-xs text-gray-500 mb-1">客人 <span class="text-rose-500">*</span></label>
+        <div class="flex items-center gap-2 rounded-md border border-gray-300 px-3 py-2">
+          <img class="w-6 h-6 rounded-full bg-gray-200" alt="">
+          <div class="flex-1">
+            <span class="font-medium">陳美惠</span>
+            <span class="text-xs text-gray-500 ml-1">M2026-0331 · 0912-345-678 · 松山店</span>
+          </div>
+          <button class="text-xs text-gray-400 hover:text-gray-600">換人</button>
+        </div>
+      </div>
+      <!-- 數量 + 單價 -->
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">數量 <span class="text-rose-500">*</span></label>
+          <div class="flex items-center rounded-md border border-gray-300">
+            <button class="px-3 py-2 text-gray-500">−</button>
+            <input value="2" class="w-full text-center py-2 outline-none font-mono">
+            <button class="px-3 py-2 text-gray-500">＋</button>
+          </div>
+          <div class="text-[11px] text-gray-400 mt-1">上限 2（自由量）</div>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">單價 <span class="text-rose-500">*</span></label>
+          <div class="flex items-center rounded-md border border-gray-300 px-3">
+            <span class="text-gray-400">$</span>
+            <input value="350" class="w-full text-right py-2 outline-none font-mono">
+          </div>
+          <div class="text-[11px] text-gray-400 mt-1">預填現售價，可改；不可為 0</div>
+        </div>
+      </div>
+      <!-- 說明 -->
+      <div class="rounded-md bg-violet-50 border border-violet-200 px-3 py-2 text-xs text-violet-800">
+        送出＝把貨配到客人名下（<b>待取</b>）。現在不扣庫存、不收款；
+        客人取貨時才扣庫存、收款（取貨頁）。
+      </div>
+    </div>
+    <div class="px-5 py-3 border-t border-gray-200 flex justify-end gap-2">
+      <button class="px-4 py-2 text-sm rounded-md border border-gray-300 text-gray-600">取消</button>
+      <button class="px-4 py-2 text-sm rounded-md bg-violet-600 text-white font-semibold hover:bg-violet-700">
+        配給陳美惠（2 件 · $700）
+      </button>
+    </div>
+  </div>
+
+  <!-- 確認框文案 -->
+  <div class="max-w-md mx-auto mt-3 rounded-md border border-dashed border-gray-300 bg-white px-4 py-3 text-xs text-gray-600">
+    <b>confirm() 文案：</b><br>
+    把「Doppelherz 藍莓護眼膠囊 / 30粒/盒」×2（$350/件）配給 陳美惠？<br><br>
+    訂單為「待取」，客人到店取貨時才扣庫存、收款 $700。<br>
+    配錯可在訂單頁取消品項。
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 狀態 C：擋下態 -->
+<!-- ============================================================ -->
+<section>
+  <h2 class="text-sm font-bold text-gray-700 mb-2">C. 擋下態（伺服端重驗，兩台同時配也會被 advisory lock 序列化）</h2>
+  <div class="grid md:grid-cols-2 gap-4">
+    <div class="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+      <b>自由量不足</b><br>
+      <span class="text-xs">「Doppelherz 藍莓護眼膠囊」可配 1 件、要配 2 件
+      （在庫 6，其中 4 件已有訂單主人、1 件在內部店池子）。<br>
+      架上實際有更多貨的話，請先到庫存總覽「+ 新增庫存」入帳。</span>
+    </div>
+    <div class="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+      <b>單價為 0</b><br>
+      <span class="text-xs">單價必須大於 0（$0 品項會在取貨時被擋下）。
+      前端擋一次、伺服端再擋一次。</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 狀態 D：完成態 -->
+<!-- ============================================================ -->
+<section>
+  <h2 class="text-sm font-bold text-gray-700 mb-2">D. 完成態</h2>
+  <div class="max-w-md rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+    ✅ 已配給 陳美惠：Doppelherz 藍莓護眼膠囊 ×2（$700）<br>
+    <span class="text-xs">
+      訂單 <span class="font-mono">__INTERNAL_RESTOCK__-0412</span>（顯示為「藍莓護眼膠囊 等 1 項」）· 狀態：待取<br>
+      客人到店後在「取貨」頁完成交貨；配錯可在訂單頁取消品項。
+    </span>
+  </div>
+  <div class="mt-3 text-xs text-gray-500 max-w-2xl">
+    <b>後續（既有頁面，不用改就會對）：</b>
+    取貨頁該客人出現這張待取單、可勾可交；會員 LINE 端「我的訂單」看得到（標題顯示品項名，
+    不露出 sentinel 團名 — orderTitle 例外）；取貨當下寫 sale 異動，庫存總覽異動面板看得到
+    「銷售出貨 −2 / customer_order #xxxxx」。
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 同客人再配一次 -->
+<!-- ============================================================ -->
+<section>
+  <h2 class="text-sm font-bold text-gray-700 mb-2">E. 同客人再配（append，不開新單）</h2>
+  <div class="max-w-md rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+    ✅ 已配給 陳美惠：蕎麥餐後消化茶 ×1（$180）<br>
+    <span class="text-xs">
+      併入既有待取單 <span class="font-mono">__INTERNAL_RESTOCK__-0412</span>（現在共 2 項 3 件）。<br>
+      若原單已結案 → 自動重開為「部分取貨」，客人續取。
+    </span>
+  </div>
+</section>
+
+</div>
+</body>
+</html>
