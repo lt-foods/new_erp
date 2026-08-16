@@ -10,7 +10,8 @@
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
-import { stripTransferNotes } from "@/lib/orderNotes";
+import { stripTransferNotes, stripItemNotes } from "@/lib/orderNotes";
+import { internalOrderSource } from "@/lib/orderTitle";
 import { itemDisplayName } from "@/lib/skuLabel";
 import SpinButton from "@/components/SpinButton";
 import { CutoffText } from "@/components/CampaignCutoff";
@@ -34,7 +35,7 @@ type Order = {
   discount_percent: number;
   notes: string | null;
   member: { id: number; member_no: string; name: string | null; phone: string | null } | null;
-  campaign: { id: number; name: string; cutoff_date: string | null } | null;
+  campaign: { id: number; campaign_no: string; name: string; cutoff_date: string | null } | null;
   store: { id: number; name: string } | null;
 };
 
@@ -82,7 +83,7 @@ function Body() {
       const orderIds = Array.from(new Set(items.map((it) => it.order_id)));
       const { data: ords, error: e2 } = await sb
         .from("customer_orders")
-        .select("id, order_no, discount_amount, discount_percent, notes, member:members(id, member_no, name, phone), campaign:group_buy_campaigns(id, name, cutoff_date), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
+        .select("id, order_no, discount_amount, discount_percent, notes, member:members(id, member_no, name, phone), campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
         .in("id", orderIds);
       if (cancelled) return;
       if (e2) { setError(e2.message); return; }
@@ -167,7 +168,9 @@ function Body() {
             return (
               <div key={gi} className="border-b border-dashed border-zinc-400 pb-1">
                 <div className="text-[13px]">
-                  {grp.order?.campaign?.name ?? "(未知活動)"}
+                  {grp.order?.campaign?.campaign_no?.startsWith("__")
+                    ? internalOrderSource(grp.order?.order_no)?.label ?? "店內現貨"
+                    : grp.order?.campaign?.name ?? "(未知活動)"}
                   <CutoffText date={grp.order?.campaign?.cutoff_date} />
                 </div>
                 {orderNotes && <div className="text-[13px] italic">📝 {orderNotes}</div>}
@@ -189,7 +192,7 @@ function Body() {
                         )}
                       </span>
                     </div>
-                    {it.notes && <div className="text-[12px] italic text-zinc-600">・{it.notes}</div>}
+                    {stripItemNotes(it.notes) && <div className="text-[12px] italic text-zinc-600">・{stripItemNotes(it.notes)}</div>}
                   </div>
                 ))}
               </div>
