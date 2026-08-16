@@ -455,16 +455,23 @@ Leg-2 總倉 → 收貨店（`customer_order_id` = 轉入單）。所以**只看
   `customer_order_id IS NULL` 就往 `next_transfer_id` 追一段再拿訂單。
 - 空中轉（`is_air_transfer`）只有一段、直送收貨店，沒有這個問題。
 
-### 自由轉貨（rpc_create_free_transfer）已停用
+### 自由轉貨（rpc_create_free_transfer）：停用過一次，2026-08-16 又打開
 
-2026-08-14 起不再開放建單：`/wms/transfers` 的「+ 建自由轉貨」與 `/transfers/free`
-表單都移除，`authenticated` 的 EXECUTE 也收回（20260814050000）——
-按鈕拿掉但 API 還通等於沒停。既有 199 張單的檢視 / 收貨 / 刪草稿 / 改估價全部保留。
-店對店調貨改走「訂單轉給別人 + 勾空中轉」，店內補貨走補貨申請。
+時間軸：8/14 停用（`/wms/transfers` 的「+ 建自由轉貨」與 `/transfers/free`
+表單移除、`authenticated` 的 EXECUTE 收回，20260814050000）→ 8/16 重新開放
+（20260816000040 把 GRANT 還回去、兩個前端入口接回）。既有單的檢視 / 收貨 /
+刪草稿 / 改估價從頭到尾都沒動過。
 
-連帶（就是前面那條「拿掉入口前先確認有人推得動」）：收貨短少處理彈窗的
-「補出貨」CTA 本來指 `/transfers/free`，一起改指 `/restock/new`，
-不然那個選項會把人送到一頁沒有按鈕的畫面。
+要點：**功能開關要兩層一起動**。只拿掉按鈕、EXECUTE 還通 = 沒停；只接回按鈕、
+EXECUTE 還被 REVOKE 著 = 使用者按下去拿到 `permission denied for function`
+（前端唯一呼叫點 `FreeTransferCreateForm` 走 authenticated 的 anon key，
+函式本體那層角色守衛擋不到這個）。
+
+分工（自由轉貨開著也一樣）：自由轉貨＝商品檔裡沒有的東西（器具 / 樣品 / 零碼，
+掛虛擬 SKU + 估價）、只給店↔店（表單濾掉總倉）；有掛顧客訂單的貨走「訂單轉給別人
++ 勾空中轉」；店裡缺貨要總倉派走補貨申請。收貨短少彈窗的「補出貨」CTA 因此留在
+`/restock/new`（短少多半是總倉再補一次，而自由轉貨選不到總倉），別再改回
+`/transfers/free`。
 
 ### 沒有撿貨波次≠沒有單據：`rpc_get_transfer_source_kinds` 的 `air`
 
