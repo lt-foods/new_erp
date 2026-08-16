@@ -225,6 +225,35 @@ function alivePickableSkuIds(demand: DemandRow[]): Set<number> {
   return alive;
 }
 
+// 把「請購單層級」的團清單收斂成「這個商品自己的團」。
+//
+// 為什麼需要：請購單有三種來源，老闆主要用 close_date（依結單日一次請購當天所有團的商品）。
+// rpc_create_supplementary_pr_from_close_date（20260714000060）寫進去的是：
+//   - purchase_request_items.source_campaign_id ← 只有 dq.first_campaign_id（該商品的第一團，不完整）
+//   - purchase_request_campaigns                ← 該結單日「所有」closed/locked 團（與商品無關，太寬）
+// 上面的 mapping 把兩者聯集（與 view 的 po_campaigns CTE 同構），於是一個商品下面會列出
+// 那天結單的所有團 —— 老闆實測「安城湯麵」一列列出 24 團，含眼鏡袋、蟑螂剋星。
+// campaign_items 才是「這個團真的有賣這個 sku」的唯一真相（UNIQUE (campaign_id, sku_id)），
+// 拿它做交集把清單收回來。
+//
+// ⛔ 只收斂，不製造空集合 —— 三種情況一律原樣回傳（＝維持修改前的行為）：
+//    (1) soldBySku 是 null：campaign_items 撈失敗 / 這個 role 讀不到 → 不過濾
+//    (2) 這個 sku 一筆 campaign_items 都沒撈到 → 不過濾
+//    (3) 交集為空（資料不一致、或需求純粹來自補貨申請而非開團）→ 不過濾
+//    寧可多列一團，也不要讓老闆在派貨工作台找不到商品。
+//    （商品清單 skuRows 本身不吃這個函式，商品數不會因此變動；見 skuRows 的 filter 條件。）
+function narrowToSoldCampaigns(
+  soldBySku: Map<number, Set<number>> | null,
+  skuId: number,
+  campaignIds: Iterable<number>,
+): number[] {
+  const all = Array.from(campaignIds);
+  const sold = soldBySku?.get(skuId);
+  if (!sold || sold.size === 0) return all;
+  const hit = all.filter((cid) => sold.has(cid));
+  return hit.length > 0 ? hit : all;
+}
+
 export default function PickingWorkstationPage() {
   const router = useRouter();
   // 矩陣視角只撈「還有庫存可分配」的列（has_stock_left），避免整張 view（線上上萬列）全撈。
@@ -320,6 +349,9 @@ export default function PickingWorkstationPage() {
   // po_item_id → campaign_ids（前端組的 po_campaigns 對應）。null = 尚未載入。
   const [poItemCampaigns, setPoItemCampaigns] = useState<Map<number, number[]> | null>(null);
   const [campaignsById, setCampaignsById] = useState<Map<number, CampaignInfo> | null>(null);
+  // sku_id → 這個 sku 真的被賣過的團（campaign_items）。用來把上面那份過寬的團清單收斂。
+  // null = 沒撈到 / 撈失敗 → narrowToSoldCampaigns 一律不過濾（維持現行行為）。
+  const [skuSoldCampaigns, setSkuSoldCampaigns] = useState<Map<number, Set<number>> | null>(null);
   // 總倉即時在庫（stock_balances.on_hand @ central_warehouse），純參考顯示。
   const [hqOnHand, setHqOnHand] = useState<Map<number, number> | null>(null);
   const [filterCampaign, setFilterCampaign] = useState<string>("all"); // "all" | "none" | `${campaign_id}`
@@ -511,6 +543,35 @@ export default function PickingWorkstationPage() {
           for (const c of (data ?? []) as CampaignInfo[]) cMap.set(c.id, c);
         }
 
+        // 「這個團真的有賣這個 sku」對應（campaign_items）—— 把上面那份請購單層級的
+        // 過寬清單收回來，用途見 narrowToSoldCampaigns。
+        // 兩個維度都分批 200：URL 長度與本檔既有的 .in(...200) 查詢同級（已在線上跑很久）；
+        // 每批再走 fetchAllRows 分頁，避免 PostgREST 1000 列靜默截斷把對應撈缺。
+        // 失敗只清空 → 下面 set null → 不過濾，跟總倉在庫那塊同樣是「壞了也不擋派貨」。
+        const sold = new Map<number, Set<number>>();
+        try {
+          type CiRow = { campaign_id: number; sku_id: number };
+          for (let i = 0; i < skuIds.length; i += 200) {
+            const skuChunk = skuIds.slice(i, i + 200);
+            for (let j = 0; j < campaignIds.length; j += 200) {
+              const campaignChunk = campaignIds.slice(j, j + 200);
+              const rows = await fetchAllRows<CiRow>(() =>
+                sb.from("campaign_items")
+                  .select("campaign_id, sku_id")
+                  .in("sku_id", skuChunk)
+                  .in("campaign_id", campaignChunk)
+                  .order("id", { ascending: true }));
+              for (const r of rows) {
+                let set = sold.get(r.sku_id);
+                if (!set) { set = new Set<number>(); sold.set(r.sku_id, set); }
+                set.add(r.campaign_id);
+              }
+            }
+          }
+        } catch {
+          sold.clear();
+        }
+
         // 總倉即時在庫（有些 role 讀不到 stock_balances → 留 null 不顯示，不報錯）
         const oh = new Map<number, number>();
         try {
@@ -538,6 +599,7 @@ export default function PickingWorkstationPage() {
         if (!cancelled) {
           setPoItemCampaigns(new Map(Array.from(mapping.entries()).map(([k, v]) => [k, Array.from(v)])));
           setCampaignsById(cMap);
+          setSkuSoldCampaigns(sold.size > 0 ? sold : null);
           setHqOnHand(oh.size > 0 ? oh : null);
         }
       } catch {
@@ -545,6 +607,7 @@ export default function PickingWorkstationPage() {
         if (!cancelled) {
           setPoItemCampaigns(new Map());
           setCampaignsById(new Map());
+          setSkuSoldCampaigns(null); // null = 不過濾團號（本來就沒團可濾）
           setHqOnHand(null);
         }
       }
@@ -734,13 +797,18 @@ export default function PickingWorkstationPage() {
       s.totalAlreadyWave = s.poList.reduce((sum, p) => sum + p.already_wave_for_sku, 0);
       s.totalAvailable = Math.max(0, s.totalGr - s.totalAlreadyWave);
       s.poList.sort((a, b) => a.po_id - b.po_id);
+      // 團清單收斂成「這個商品真的有賣的團」。⚠️ 只換 campaignIds 的內容，
+      // 不影響 totalAvailable，所以下面 filter(totalAvailable > 0) 的結果、
+      // 也就是「有幾樣商品可以挑」完全不變（只影響顯示哪些團 + 開團篩選）。
+      // 收斂也絕不會把非空變成空 → hasNoCampaignRows 的「無開團來源」判定同樣不變。
+      s.campaignIds = new Set(narrowToSoldCampaigns(skuSoldCampaigns, s.sku_id, s.campaignIds));
     }
     return Array.from(grouped.values())
       // 只看有數量可以分配的 SKU(totalAvailable > 0)。已派完 / 還在途的都先隱藏,
       // 派貨工作台是「我現在可以分配什麼」,在途的等 PO 收貨後自然會回來。
       .filter((s) => s.totalAvailable > 0)
       .sort((a, b) => (a.sku_code ?? "").localeCompare(b.sku_code ?? ""));
-  }, [demand, poItemCampaigns]);
+  }, [demand, poItemCampaigns, skuSoldCampaigns]);
 
   const allStores: StoreInfo[] = useMemo(() => {
     if (!demand) return [];
@@ -823,6 +891,13 @@ export default function PickingWorkstationPage() {
     return true;
   };
   const hasActiveFilter = effFilterCampaign !== "all" || skuQueryNorm !== "" || filterTime !== "all";
+  // 目前選中的那一團（"all" / "none" / 對應還沒載入 → null）。給空狀態文案指名道姓用：
+  // 團號過濾收乾淨之後，選一團而清單是空的，代表「這團的貨已經派完或還沒到」，
+  // 不是系統壞了 —— 文案要講出團名，老闆才不會以為畫面掛掉。
+  const selectedCampaign =
+    effFilterCampaign === "all" || effFilterCampaign === "none"
+      ? null
+      : campaignsById?.get(Number(effFilterCampaign)) ?? null;
 
   // 通過全部篩選的矩陣列
   const filteredSkuRows = useMemo(
@@ -861,7 +936,9 @@ export default function PickingWorkstationPage() {
         po_no: po.po_no,
         grQty: po.gr_qty,
         available: Math.max(0, po.gr_qty - po.already_wave_for_sku),
-        campaigns: Array.from(campaignsByPoId.get(po.po_id) ?? [])
+        // campaignsByPoId 是 PO 層級（該 PO 所有 po_item 的團聯集），比 sk.campaignIds 更寬
+        // → 一定要再用這個 sku 自己的 campaign_items 收斂一次，不能直接列出來。
+        campaigns: narrowToSoldCampaigns(skuSoldCampaigns, sk.sku_id, campaignsByPoId.get(po.po_id) ?? [])
           .map((cid) => campaignsById?.get(cid))
           .filter((c): c is CampaignInfo => !!c),
       }));
@@ -923,7 +1000,13 @@ export default function PickingWorkstationPage() {
       if (r.store_id === null) continue;
       // ⚠️ 商品比對要用「該列自己的名稱/品號」：fullDemand 含缺貨待到的品項，
       //    拿矩陣那份 sku_id 集合去比會把它們整批濾掉。
-      if (!rowPassesFilters(poItemCampaigns?.get(r.po_item_id) ?? [], r.sku_label, r.sku_code)) continue;
+      // 團清單同樣要先收斂成「這一列的商品自己的團」，否則選「眼鏡袋」那一團
+      // 會把同一天結單的安城湯麵也一起列出來（與矩陣視角同一個根因）。
+      if (!rowPassesFilters(
+        narrowToSoldCampaigns(skuSoldCampaigns, r.sku_id, poItemCampaigns?.get(r.po_item_id) ?? []),
+        r.sku_label,
+        r.sku_code,
+      )) continue;
       if (!grouped.has(r.store_id)) {
         grouped.set(r.store_id, {
           storeId: r.store_id,
@@ -936,7 +1019,7 @@ export default function PickingWorkstationPage() {
     }
     return Array.from(grouped.values()).sort((a, b) => (a.storeCode ?? "").localeCompare(b.storeCode ?? ""));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fullDemand, poItemCampaigns, effFilterCampaign, skuQueryNorm, filterTime, timeCutoff, campaignsById]);
+  }, [fullDemand, poItemCampaigns, skuSoldCampaigns, effFilterCampaign, skuQueryNorm, filterTime, timeCutoff, campaignsById]);
 
   // 補貨申請預設分配 = min(申請量 - 已撿, HQ 庫存) per (rr, sku)
   useEffect(() => {
@@ -1709,7 +1792,9 @@ export default function PickingWorkstationPage() {
               <div className="rounded-md border border-zinc-200 p-12 text-center text-sm text-zinc-500 dark:border-zinc-800">
                 {skuQueryNorm !== ""
                   ? `找不到符合「${skuQuery.trim()}」的商品 — 換個關鍵字,或清除搜尋 / 篩選。`
-                  : "目前的篩選條件下沒有可挑品項 — 換個開團 / 時間,或清除篩選。"}
+                  : selectedCampaign
+                    ? `「${selectedCampaign.campaign_no} ${selectedCampaign.name}」這一團目前沒有可派的品項 — 這團的貨可能已經派完,或是還沒到。換一團,或清除篩選看全部。`
+                    : "目前的篩選條件下沒有可挑品項 — 換個開團 / 時間,或清除篩選。"}
                 {pickedRows.length > 0 && (
                   <div className="mt-1 text-xs">（已挑的 {pickedRows.length} 樣不受影響,還在上面的清單裡）</div>
                 )}
@@ -1748,35 +1833,45 @@ export default function PickingWorkstationPage() {
                             → 攤開列出這個商品有哪幾團／哪幾張採購單、各團各到了多少。
                             ⚠️ 只是資訊，不是可選項：建單是 per 商品跑 FIFO，挑不了單一團。
                             沒到貨的團（gr_qty = 0）不列，免得以為有貨。 */}
-                        <ul className="mt-1 flex flex-col gap-0.5">
+                        {/* 一張採購單 = 一張小卡：團在上、數量在下，兩行綁在同一個框裡。
+                            舊版把團名和數量擠成一行、團一多就分不清哪個數字屬於哪一團
+                            （正是老闆說的「第一團未到、第二團到了會派錯」）。
+                            平板優先：團名 12px、數字 12px 且 tabular-nums，觸控不需要點。 */}
+                        <ul className="mt-1 flex flex-col gap-1">
                           {poLines.length === 0 ? (
                             <li className="text-[11px] text-zinc-400">無已到貨的採購單</li>
                           ) : (
                             poLines.map((po) => (
                               <li
                                 key={po.po_id}
-                                className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-zinc-500"
+                                className="rounded border border-zinc-100 bg-zinc-50 px-2 py-1 dark:border-zinc-800 dark:bg-zinc-800/40"
                               >
-                                <span className="text-zinc-300 dark:text-zinc-600">·</span>
-                                {po.campaigns.length === 0 ? (
-                                  <span className="text-zinc-400">無開團來源</span>
-                                ) : (
-                                  po.campaigns.map((c) => (
-                                    <span key={c.id} className="truncate">
-                                      <span className="font-mono text-zinc-400">{c.campaign_no}</span> {c.name}
-                                    </span>
-                                  ))
-                                )}
-                                <span className="font-mono text-zinc-400" title="採購單號">{po.po_no}</span>
-                                <span className="font-mono tabular-nums" title="這一團(這張採購單)已到貨量">
-                                  到 {po.grQty}
-                                </span>
-                                <span
-                                  className="font-mono tabular-nums text-zinc-400"
-                                  title="這張採購單此商品的已到貨 − 已派"
-                                >
-                                  剩 {po.available}
-                                </span>
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                  {po.campaigns.length === 0 ? (
+                                    <span className="text-xs text-zinc-400">無開團來源</span>
+                                  ) : (
+                                    po.campaigns.map((c) => (
+                                      <span key={c.id} className="inline-flex min-w-0 items-baseline gap-1">
+                                        <span className="shrink-0 rounded bg-white px-1 font-mono text-[10px] text-zinc-500 ring-1 ring-zinc-200 dark:bg-zinc-900 dark:text-zinc-400 dark:ring-zinc-700">
+                                          {c.campaign_no}
+                                        </span>
+                                        <span className="truncate text-xs text-zinc-700 dark:text-zinc-300">{c.name}</span>
+                                      </span>
+                                    ))
+                                  )}
+                                </div>
+                                <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-zinc-500">
+                                  <span className="font-mono text-zinc-400" title="採購單號">{po.po_no}</span>
+                                  <span className="font-mono tabular-nums" title="這一團(這張採購單)已到貨量">
+                                    到 {po.grQty}
+                                  </span>
+                                  <span
+                                    className="font-mono tabular-nums text-zinc-400"
+                                    title="這張採購單此商品的已到貨 − 已派"
+                                  >
+                                    剩 {po.available}
+                                  </span>
+                                </div>
                               </li>
                             ))
                           )}
@@ -1804,7 +1899,9 @@ export default function PickingWorkstationPage() {
           <div className="rounded-md border border-zinc-200 p-12 text-center text-sm text-zinc-500 dark:border-zinc-800">
             {skuRows.length === 0
               ? "目前沒有待派的品項(該派的都派完了;在途的等收貨後、新需求進來後會自動回來)。"
-              : "目前的篩選條件下沒有待派品項 — 回步驟 1 挑商品,或換個開團 / 時間、清除篩選。"}
+              : selectedCampaign
+                ? `「${selectedCampaign.campaign_no} ${selectedCampaign.name}」這一團目前沒有待派的品項 — 這團的貨可能已經派完,或是還沒到。回步驟 1 挑商品,或換一團 / 清除篩選。`
+                : "目前的篩選條件下沒有待派品項 — 回步驟 1 挑商品,或換個開團 / 時間、清除篩選。"}
           </div>
         ) : (
           // 只保留水平(左右)捲軸:拿掉高度上限,表格整高展開、跟著整頁一起垂直捲動,
