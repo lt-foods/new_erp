@@ -25,4 +25,5 @@ if echo "$resp" | jq -e 'type == "object" and has("message")' >/dev/null 2>&1; t
   exit 1
 fi
 echo "✓ 完成"
-echo "$resp" | head -c 400
+# 也用來跑唯讀查詢（驗證 SQL），所以把結果完整印出來、不要截斷
+echo "$resp" | jq . 2>/dev/null || echo "$resp"

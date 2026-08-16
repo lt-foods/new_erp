@@ -74,6 +74,47 @@ grep -rn "<function_name>" supabase/migrations/
 把每一個動過該 function 的 migration 都讀過，基於**時間最新**那個版本擴寫，確保所有 prior fix 都保留。
 新 migration 檔頭註解務必列出「以哪個版本為基底」、「rollback 指回哪個版本」。
 
+**別信文件裡寫的基底版本，每次都重 grep。** 2026-08-16 的 PLAN 文件把
+`_advance_arrived_confirmed_orders` 的基底寫成 `20260811000020`，實際上它被改過
+4 次、最新是 `20260813020000`（中間那兩次還是效能修正：per-SKU LATERAL 改成一次
+GROUP BY，文山 1,704 張單 × ~5ms ≈ 8.5s 撞 PostgREST 8s timeout）。照文件寫的版本
+改下去，等於把 timeout 修正整個蓋掉。
+
+### 套 SQL 前先用 pg-query-emscripten 離線驗語法
+
+`scripts/check-sql-syntax.cjs`（用 repo 既有的 `pg-query-emscripten`）不連 DB 就能
+擋掉語法錯 —— 免得 Management API 套到一半失敗、`CREATE OR REPLACE` 留下壞掉的函式。
+
+```bash
+node scripts/check-sql-syntax.cjs supabase/migrations/<檔名>.sql
+```
+
+它會跑 `parse`（外層 SQL）**和 `parsePlpgsql`（函式內文）**。只跑前者等於沒驗到，
+因為 PL/pgSQL 的 body 對 parser 來說只是一個字串常數，而 migration 的程式碼大半在那裡面。
+
+⚠ 每個檔案要開新的 wasm instance：同一個 instance 連續 `parsePlpgsql` 多份檔案會在
+模組內部爆掉（`Ma[...] is not a function`），那是 emscripten 的狀態問題、不是 SQL 有錯。
+
+### 「收斂前後對拍」的驗證查詢，兩側母體必須完全一樣
+
+把散落的算法收斂成 canonical 函式之後，一定要對全站跑一次「新舊逐筆比對」。
+但**比對查詢本身很容易寫歪，然後你會去修一個不存在的 bug**。
+
+2026-08-16 收斂 `_sku_commitment` 時：新側寫 `FROM stores st WHERE st.is_active`，
+舊側直接 `GROUP BY co.pickup_store_id` 沒濾 —— 而**已停用的 5 家分店身上還掛著
+1,327 組 (店,SKU) 的未取品項**，於是回了 1,117 筆假 mismatch。函式其實完全正確。
+
+診斷的第一步永遠是先分類，不要直接看數值：
+
+```sql
+CASE WHEN 新側 IS NULL THEN 'only_in_legacy'    -- ← 母體不一致，多半是這個
+     WHEN 舊側 IS NULL THEN 'only_in_new'
+     ELSE 'both_but_diff' END                    -- ← 真的算錯才會落在這裡
+```
+
+全部落在 `only_in_*` 就是母體問題，不是算法問題。
+既有的驗證 SQL：`scripts/verify-sku-commitment-equivalence.sql`。
+
 ### SQL 裡讀「應用角色」一律走 app_metadata，不要用頂層 role claim
 
 ```sql

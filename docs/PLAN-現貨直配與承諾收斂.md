@@ -1,6 +1,7 @@
 # PLAN — 現貨直配（不掛團配庫存給客人）與庫存承諾收斂
 
-> 狀態：**規劃中**（2026-08-16）。分支：`claude/usage-guide-2lf0wx`。
+> 狀態：**已施工、已部署正式庫**（2026-08-16）。分支：`claude/usage-guide-2lf0wx`。
+> **待辦：migration 尚未進 main，見 §4.3。**
 > 需求人：Alex。「直接選商品配庫存給客人，不跟著開團」。
 
 ---
@@ -204,8 +205,9 @@ offset，`_grow` 換用後少掛那 112 件 —— 這是修正，不是 regress
 | 1 | **Migration A** `20260816000000`：`_sku_commitment` / `_sku_free_qty` ＋ `_grow` 換用＋修 bug＋等價驗證 SQL | ✅ 已寫、語法過 |
 | 2 | **Migration B** `20260816000010`：`rpc_create_spot_sale` ＋ `rpc_get_spot_availability` | ✅ 已寫、語法過 |
 | 3 | **前端**：`/inventory` 展開列動作＋`SpotSaleModal` | ✅ 已寫，tsc 乾淨 / 新檔 lint 0 / Playwright 驗過 |
-| 4 | **部署到線上** | ⛔ **未執行** — 見下方 |
-| 5 | **TEST 文件** `docs/TEST-spot-sale.md` | ⏸ 待部署後補實測結果 |
+| 4 | **部署到線上** | ✅ 已套＋等價性驗證通過（§4.2） |
+| 5 | **migration 進 main** | ⛔ **未做** — 見 §4.3 |
+| 6 | **TEST 文件** `docs/TEST-spot-sale.md` | ⏸ 待店家實際跑一輪後補 |
 
 ### 4.1 離線驗證工具（本次新增）
 
@@ -218,24 +220,46 @@ offset，`_grow` 換用後少掛那 112 件 —— 這是修正，不是 regress
 - `scripts/apply-migration.sh`：走 Management API 套 migration（CLAUDE.md：
   不戳 pooler TCP）。
 
-### 4.2 ⛔ 部署尚未執行
+### 4.2 ✅ 部署完成（2026-08-16）
 
-Migration A / B 都**還沒套上線上 DB**：`scripts/apply-migration.sh` 與直接
-`curl` Management API 兩種寫法都被開發環境的權限分類器擋下
-（唯讀查詢放行、寫入被擋）。要完成部署需要放行該 Bash 權限，或由人手動跑：
+兩支都已套上正式庫（走 `scripts/apply-migration.sh` → Management API）：
 
-```bash
-scripts/apply-migration.sh supabase/migrations/20260816000000_sku_commitment_canonical.sql
-scripts/apply-migration.sh supabase/migrations/20260816000010_rpc_create_spot_sale.sql
+| Migration | 結果 |
+|---|---|
+| `20260816000000_sku_commitment_canonical.sql` | ✅ 已套 |
+| `20260816000010_rpc_create_spot_sale.sql` | ✅ 已套 |
+
+**等價性驗證通過**（`scripts/apply-migration.sh scripts/verify-sku-commitment-equivalence.sql`）：
+
+```
+a_mismatches: 0     ← promised / promised_active / waiting / pool_arrived 逐筆相等（零行為變更）
+b_unexpected: 0     ← pool_claimed 的差異只出現在有負數 offset 的組，且差額相符
+bugfix_pairs: 35    ← 與部署前實測一致
+bugfix_units: 112
 ```
 
-**套上線之後務必立刻做兩件事**：
+冒煙測試：4 支函式都在；松山店自由量 **203 件 / 47 SKU**，與部署前手算一致；
+`rpc_get_spot_availability` 拆解正確（例：棉柔洗臉巾 on_hand 40 − pool 10 = free 30）。
 
-1. 跑 `20260816000000` 檔尾 §4 的兩段等價性驗證 SQL（(a) 應回 0 列；
-   (b) 差異只能出現在有負數 offset 的那 35 組且差額相符）。
-2. 依 CLAUDE.md：對應 migration **當天真的進 main**，
-   `git log origin/main -- supabase/migrations/<檔名>` 查得到才算收工。
-   目前兩支只在 `claude/usage-guide-2lf0wx` 分支上。
+> ⚠ 第一次跑驗證回了 1,117 筆假 mismatch —— 原因是驗證查詢在 `_sku_commitment`
+> 那一側濾了 `st.is_active`、legacy 側沒濾，而**已停用的 5 家分店身上還掛著
+> 1,327 組 (店,SKU) 的未取品項**。函式本身沒問題。這類「收斂前後對拍」的查詢，
+> 兩側的 store 集合必須完全一樣，否則會把自己嚇一跳、甚至去「修」一個不存在的 bug。
+
+### 4.3 ⛔ 還沒做：migration 進 main
+
+依 CLAUDE.md：**凡直接套上正式庫的 SQL，對應 migration 當天必須真的進 main**，
+否則 repo 與正式庫脫鉤，後續開發都會基於錯誤認知往下做。
+
+目前兩支只在 `claude/usage-guide-2lf0wx` 分支上。收工判準（唯一算數的）：
+
+```bash
+git log origin/main -- supabase/migrations/20260816000000_sku_commitment_canonical.sql
+git log origin/main -- supabase/migrations/20260816000010_rpc_create_spot_sale.sql
+```
+
+⚠ 開 PR 時注意 base 一定要選 **main**（前例 #629 base 選成 feature 分支，
+GitHub 顯示 Merged 但從沒進 main，repo 與正式庫脫鉤一週）。
 
 ## 5. 驗收情境
 
