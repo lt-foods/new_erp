@@ -17,6 +17,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
+import { describeDraftDbError } from "@/lib/pickingDraftView";
 import SpinButton from "@/components/SpinButton";
 
 type Draft = {
@@ -42,6 +43,10 @@ export default function PickingDraftsPage() {
   const [error, setError] = useState<string | null>(null);
   const [newName, setNewName] = useState(defaultDraftName);
   const [truncated, setTruncated] = useState(false);
+  // 載入本身就失敗（最常見：migration 還沒套、表根本不存在）。
+  // 這種時候不可以照樣畫出「還沒有草稿，建一張吧」—— 那會讓人以為只是還沒建，
+  // 按下去又失敗一次。整頁只留錯誤訊息 + 重試。
+  const [loadFailed, setLoadFailed] = useState(false);
 
   // ⚠ 第一件事就 await，不在 effect body 同步 setState
   // （react-hooks/set-state-in-effect；錯誤訊息等查完回來再一起更新）
@@ -57,9 +62,10 @@ export default function PickingDraftsPage() {
         .order("created_at", { ascending: false })
         .order("id", { ascending: false })
         .limit(LIST_LIMIT);
-      if (err) throw new Error(err.message);
+      if (err) throw err;
       const rows = (data ?? []) as Draft[];
       setError(null);
+      setLoadFailed(false);
       setDrafts(rows);
       setTruncated(rows.length >= LIST_LIMIT);
 
@@ -85,7 +91,8 @@ export default function PickingDraftsPage() {
       }
       setSkuCounts(new Map(Array.from(counts.entries()).map(([k, v]) => [k, v.size])));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(describeDraftDbError(e));
+      setLoadFailed(true);
       setDrafts([]);
     }
   }, []);
@@ -119,7 +126,7 @@ export default function PickingDraftsPage() {
       setNewName(defaultDraftName());
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(describeDraftDbError(e));
     }
   }
 
@@ -135,7 +142,7 @@ export default function PickingDraftsPage() {
       if (err) throw err;
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(describeDraftDbError(e));
     }
   }
 
@@ -162,25 +169,36 @@ export default function PickingDraftsPage() {
         </div>
       )}
 
-      <div className="flex flex-wrap items-end gap-2 rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
-        <label className="flex min-w-60 flex-1 flex-col gap-1 text-sm">
-          <span className="text-xs font-medium text-zinc-500">新草稿名稱</span>
-          <input
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="例如：8/17 早上那批"
-            className={inputCls}
-          />
-        </label>
+      {loadFailed ? (
+        // 載不到就只留「重試」。⛔ 不要照樣畫出建立草稿的框跟兩個空區塊 ——
+        // 那會讓人以為只是還沒建過，按下去又失敗一次。
         <SpinButton
-          onClick={handleCreate}
-          className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900"
+          onClick={load}
+          className="w-fit rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
         >
-          + 建立草稿
+          重新載入
         </SpinButton>
-      </div>
+      ) : (
+        <div className="flex flex-wrap items-end gap-2 rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
+          <label className="flex min-w-60 flex-1 flex-col gap-1 text-sm">
+            <span className="text-xs font-medium text-zinc-500">新草稿名稱</span>
+            <input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="例如：8/17 早上那批"
+              className={inputCls}
+            />
+          </label>
+          <SpinButton
+            onClick={handleCreate}
+            className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900"
+          >
+            + 建立草稿
+          </SpinButton>
+        </div>
+      )}
 
-      {drafts === null ? (
+      {loadFailed ? null : drafts === null ? (
         <div className="text-sm text-zinc-500">載入中…</div>
       ) : (
         <>

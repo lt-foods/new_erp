@@ -13,6 +13,53 @@
 //   - 分店 missing ：stores 裡整筆查不到（被硬刪）
 //   - 商品 missing ：skus 裡查不到 → 用 snapshot 的品名品號照樣印
 
+/**
+ * 把 DB 錯誤翻成老闆看得懂、而且知道下一步要做什麼的話。
+ *
+ * ⚠ 最重要的情境：**前端已上線、migration 還沒人工套**的空窗期。
+ *   這個系統的 migration 全部人工套，所以「頁面在、表還沒建」是一定會發生的狀態。
+ *   這時 PostgREST 會回英文的 "Could not find the table ... in the schema cache"，
+ *   老闆看到只會以為系統壞了 —— 要明講「是 migration 還沒套，不是資料壞掉」。
+ *
+ * 傳進來的是 supabase-js 的 PostgrestError（它是 Error 的子類，另外帶 code），
+ * 也接受任何東西 —— 不會因為錯誤形狀不對就變成 "[object Object]"。
+ */
+export function describeDraftDbError(err: unknown): string {
+  const e = (err ?? {}) as { code?: unknown; message?: unknown };
+  const code = typeof e.code === "string" ? e.code : "";
+  let raw = typeof e.message === "string" && e.message ? e.message : String(err);
+  // 丟進來的不是 Error 也不是 PostgrestError 時，String() 會給 "[object Object]" ——
+  // 那是老闆完全看不懂的字。寧可印 JSON，也不要留一句沒有資訊的話。
+  if (!raw || raw === "[object Object]") {
+    try {
+      raw = JSON.stringify(err) ?? "";
+    } catch {
+      raw = "";
+    }
+    if (!raw || raw === "{}") raw = "未知錯誤（系統沒有回傳錯誤訊息）";
+  }
+
+  // 42P01 = Postgres undefined_table；PGRST205 = PostgREST 在 schema cache 找不到這張表
+  const tableMissing =
+    code === "42P01" ||
+    code === "PGRST205" ||
+    (/picking_draft/i.test(raw) && /(does not exist|schema cache)/i.test(raw));
+  if (tableMissing) {
+    return (
+      "「派貨草稿」的資料表還沒建立 —— 這個功能的 migration 還沒套到資料庫。" +
+      "請通知工程師套用 20260817000000_picking_drafts.sql，套好之後這一頁就會正常。" +
+      "（這不是資料壞掉，也完全不影響其他頁面。）"
+    );
+  }
+
+  // 42501 = insufficient_privilege；RLS 只開給總部角色（見 migration 的 RLS 段）
+  if (code === "42501" || /row-level security/i.test(raw)) {
+    return `這個帳號沒有「派貨草稿」的存取權限（草稿只開給總部角色）。原始訊息：${raw}`;
+  }
+
+  return raw;
+}
+
 export type DraftCell = {
   sku_id: number;
   store_id: number;

@@ -20,7 +20,13 @@ import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
-import { buildSkuRows, buildStoreColumns, rowTotal, type StoreRef } from "@/lib/pickingDraftView";
+import {
+  buildSkuRows,
+  buildStoreColumns,
+  describeDraftDbError,
+  rowTotal,
+  type StoreRef,
+} from "@/lib/pickingDraftView";
 import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
 
@@ -93,11 +99,11 @@ function Body() {
         // 所有啟用中的分店（含這次沒下訂單的），排序沿用 restock/new 的 code 排法
         sb.from("stores").select("id, code, name").eq("is_active", true).order("code"),
       ]);
-      if (headErr) throw new Error(headErr.message);
+      if (headErr) throw headErr;
       if (!head) throw new Error(`找不到草稿 #${draftId}（可能已被刪除，或這個帳號看不到）`);
       // 分店撈失敗一定要吭聲：靜靜當成 0 家店的話，矩陣會變成沒有任何欄位、
       // 「加入商品」也會失敗，畫面上看起來像是草稿壞掉。
-      if (storeRes.error) throw new Error(`撈分店清單失敗：${storeRes.error.message}`);
+      if (storeRes.error) throw new Error(`撈分店清單失敗：${describeDraftDbError(storeRes.error)}`);
 
       // 明細是 SKU×分店 一格一列，50 樣 × 十幾家店就破千 →
       // 一定要走 fetchAllRows 分頁，否則 PostgREST 會靜默截在 1000 列、後面的商品整個消失。
@@ -161,7 +167,7 @@ function Body() {
       setItems(cells);
       setEdits(new Map());
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(describeDraftDbError(e));
     } finally {
       setLoading(false);
     }
@@ -262,7 +268,7 @@ function Body() {
       }
       clearEdit();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(describeDraftDbError(e));
       clearEdit();
     }
   }
@@ -303,7 +309,7 @@ function Body() {
       if (err) throw err;
       setItems((arr) => [...arr, ...((data ?? []) as DraftItem[])]);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(describeDraftDbError(e));
     }
   }
 
@@ -320,7 +326,7 @@ function Body() {
       if (err) throw err;
       setItems((arr) => arr.filter((it) => it.sku_id !== skuId));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(describeDraftDbError(e));
     }
   }
 
@@ -344,7 +350,7 @@ function Body() {
       if (err) throw err;
       setDraft({ ...draft, name });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(describeDraftDbError(e));
     }
   }
 
@@ -360,7 +366,7 @@ function Body() {
       if (err) throw err;
       setDraft((d) => (d ? { ...d, status } : d));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(describeDraftDbError(e));
     }
   }
 
