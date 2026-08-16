@@ -199,14 +199,14 @@ export function SpotSaleModal({
           </div>
           {avail && (
             <div className="mt-1 text-[11px] text-zinc-400">
-              在庫 {avail.on_hand} − 已承諾未取 {avail.promised} − 等貨中 {avail.waiting} − 內部店池子{" "}
+              在庫 {avail.on_hand} − 已承諾未取 {avail.promised} − 等貨中 {avail.waiting} − 內部單{" "}
               {avail.pool}
             </div>
           )}
           {avail && free <= 0 && (
             <div className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">
               沒有可配的自由庫存。架上實際有貨 → 先用「＋ 新增庫存」入帳；
-              貨在池子裡 → 走訂單頁的「轉單給客人」。
+              貨掛在內部單上 → 走訂單頁的「轉單給客人」。
             </div>
           )}
         </div>
