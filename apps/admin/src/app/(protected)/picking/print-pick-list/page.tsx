@@ -74,6 +74,9 @@ function Body() {
       skusParam.split(",").map(Number).filter((n) => Number.isInteger(n) && n > 0),
     );
   }, [skusParam]);
+  // 帶了 ?skus= 但一個有效商品編號都解析不出來（?skus= 空的、?skus=abc）。
+  // 這跟「挑的商品都沒貨」是完全不同的兩件事，文案不可以混在一起講。
+  const skusParamInvalid = pickedSkuIds !== null && pickedSkuIds.size === 0;
 
   useEffect(() => {
     let cancelled = false;
@@ -202,7 +205,8 @@ function Body() {
         {/* 控制列（列印時隱藏）*/}
         <div className="no-print sticky top-0 z-20 flex flex-wrap items-center gap-3 border-b border-zinc-200 bg-zinc-50 p-3 print:hidden">
           <h1 className="text-base font-semibold">
-            📄 撿貨清單列印{pickedSkuIds !== null && "（本次已挑）"}
+            📄 撿貨清單列印
+            {skusParamInvalid ? "（網址參數無效）" : pickedSkuIds !== null && "（本次已挑）"}
           </h1>
           <span className="text-sm text-zinc-500">
             {demand === null
@@ -235,7 +239,9 @@ function Body() {
           <div className="no-print p-6 text-center text-sm text-zinc-500">
             {pickedSkuIds === null
               ? "目前沒有待撿項目。"
-              : "已挑的品項目前都沒有待撿需求（可能剛建過撿貨單，或需求已派完）。"}
+              : skusParamInvalid
+                ? "網址參數（?skus=）沒有有效的商品編號，未列印任何列 — 請回派貨工作台重新點「📄 列印已挑 N 樣」。"
+                : "已挑的品項目前都沒有待撿需求（可能剛建過撿貨單，或需求已派完）。"}
           </div>
         )}
 

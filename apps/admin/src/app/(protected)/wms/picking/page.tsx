@@ -95,7 +95,13 @@ function pickedStorageKeyFor(tenantId: string | null | undefined, userId: string
 //   2. 跨分頁同步（storage 事件）天生就是外部 store 的訂閱，順手解掉。
 //   3. 不需要在 effect body 裡 setState。
 let pickedSkuIds: number[] = [];          // 唯一真相；localStorage 只是鏡像
-let pickedOwnerKey: string | null = null; // pickedSkuIds 目前屬於哪個 tenant/user key
+let pickedOwnerKey: string | null = null; // 目前可以寫進哪一把 key；null = 不落地
+// 是否曾經綁定過任何一把 key。用來分辨 pickedOwnerKey === null 的兩種來源：
+//   (a) 從頭到現在都還沒拿到身分（tenant 非同步載入中）→ 記憶體裡的挑選是「還沒存檔的草稿」，
+//       key 一到位要把它寫下去，否則使用者剛挑好的東西會掉。
+//   (b) 曾經有身分、後來沒了（登出／session 失效）→ 記憶體裡的是「上一個人的」，
+//       絕對不可以在下一把 key 綁定時寫進去。
+let pickedEverBound = false;
 const pickedListeners = new Set<() => void>();
 function emitPicked() { for (const l of pickedListeners) l(); }
 function subscribePicked(cb: () => void) {
@@ -125,12 +131,14 @@ function setPickedSkuIds(ids: number[]) {
   emitPicked();
 }
 // storage key 一成立（或換帳號 / 換租戶）就對齊一次。
-// 首次綁定且本機已經挑了東西 → 把它寫下去（tenant 晚到不該讓剛挑的掉）；
-// 換 key → 一律改讀新 key 的存檔，絕不把前一個帳號的清單帶過去。
+// 「還沒綁定過」且本機已經挑了東西 → 把它寫下去（tenant 晚到不該讓剛挑的掉）；
+// 其他情況（換 key、登出後再登入）→ 一律改讀新 key 的存檔，絕不把前一個帳號的清單帶過去。
 function bindPickedStorage(key: string) {
   if (pickedOwnerKey === key) return;
-  const firstBind = pickedOwnerKey === null;
-  if (firstBind && pickedSkuIds.length > 0) {
+  // ⚠️ 判斷依據是 pickedEverBound，不是 pickedOwnerKey === null。
+  //    登出後 pickedOwnerKey 也會是 null，若用它判斷會把上一個人的清單寫進下一個人的 key。
+  const draftBeforeAnyIdentity = !pickedEverBound;
+  if (draftBeforeAnyIdentity && pickedSkuIds.length > 0) {
     writeStoredPicked(key, pickedSkuIds);
   } else {
     const stored = readStoredPicked(key);
@@ -140,6 +148,13 @@ function bindPickedStorage(key: string) {
     if (!same) emitPicked();
   }
   pickedOwnerKey = key;
+  pickedEverBound = true;
+}
+// 身分沒了（登出 / session 失效 / 讀不到 tenant）→ 立刻停止寫 localStorage。
+// ⚠️ 不清空記憶體：key 變 null 也可能只是「tenant 還在載入」，清了會把使用者剛挑好的弄丟。
+//    上一個人的殘留由 bindPickedStorage 擋（pickedEverBound 為 true 時一律改讀新 key 的存檔）。
+function unbindPickedStorage() {
+  pickedOwnerKey = null;
 }
 // 跨分頁：別的分頁改了同一個 key → 重讀，避免兩個分頁互相覆蓋
 function refreshPickedFromStorage(key: string) {
@@ -200,9 +215,11 @@ export default function PickingWorkstationPage() {
   const pickedStorageKey = pickedStorageKeyFor(tenant?.id, user?.id);
   const pickedIds = useSyncExternalStore(subscribePicked, getPickedSkuIds, getPickedSkuIds);
   const pickedSkus = useMemo(() => new Set(pickedIds), [pickedIds]);
-  // storage key 一成立（或換帳號 / 換租戶）就對齊一次；純寫外部系統，沒有 setState
+  // storage key 一成立（或換帳號 / 換租戶）就對齊一次；純寫外部系統，沒有 setState。
+  // key 變回 null（登出 / session 失效）→ 立刻 unbind，之後的挑選不會再寫進上一個人的 key。
   useEffect(() => {
     if (pickedStorageKey) bindPickedStorage(pickedStorageKey);
+    else unbindPickedStorage();
   }, [pickedStorageKey]);
   // 跨分頁：別的分頁改了同一把 key → 重讀（避免兩個分頁互相覆蓋）
   useEffect(() => {
