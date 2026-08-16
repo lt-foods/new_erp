@@ -126,6 +126,32 @@
   等於把公式又抄一份到第五個地方。
 - 「已承諾」欄在有等貨需求時附掛 `+N待`；「可分配」> 0 才給綠色。
 
+### 2.4.1 「只看可配給客人」篩選（2026-08-16 追加）
+
+庫存總覽多一個 checkbox：只列出**可分配 > 0** 的品項 —— 店員想知道
+「現在有哪些貨可以直接配給客人」。可與「只看低於補貨點」並用（取交集）。
+
+- `rpc_list_allocatable_pairs(倉別, SKU集合, limit)` 回候選 (倉別, SKU)。
+  前端拿它當候選集合，再照既有「只看低於補貨點」的作法撈 `stock_balances`、自己分頁。
+  全站實測 **507 組 / 15 個倉別 / 6,647 件**，集合很小，這個作法夠用。
+- 「全部倉別」時伺服端要走過每間店的訂單一次（實測 ~3s），單店 143ms。
+
+#### 順帶修掉自己種下的效能地雷
+
+做這個篩選時量測才發現，`20260816000020` 那版 `rpc_get_stock_commitment_bulk`
+對 `p_pairs` 的**每一列**各呼叫一次 `_sku_commitment` —— 一頁 50 列就把該店訂單
+掃 50 遍。文山店（1,704 張單）實測 **3.8 秒**，逼近 PostgREST 的 8 秒上限；
+想拿它掃全站直接 `statement timeout`（>120s）。
+
+這正是 CLAUDE.md 記過、`_advance_arrived_confirmed_orders` 在 20260813(3)
+才修掉的同一個坑，而 `_sku_commitment` 本來就設計成「傳 SKU 陣列、單趟 GROUP BY」
+—— 卻用 `ARRAY[單一 sku]` 呼叫，把那個設計浪費掉。
+
+`20260816000030` 改成**一間店只呼叫一次**（把 pairs 依倉別分組後傳整個 SKU 陣列）：
+**3.8s → 60ms（63×）**，數值逐筆不變。
+教訓：`_sku_commitment` 這種「吃陣列、單趟算完」的函式，
+包一層 per-row LATERAL 就等於退化回原本要避免的寫法。
+
 ### 2.5 明確不做
 
 - 不讓訂單脫離 campaign（動核心不變量，全站 join 假設崩）。
@@ -227,6 +253,7 @@ offset，`_grow` 換用後少掛那 112 件 —— 這是修正，不是 regress
 | 4 | **部署到線上** | ✅ 已套＋等價性驗證通過（§4.2） |
 | 5 | **Migration C** `20260816000020`：`rpc_get_stock_commitment_bulk` ＋ 列表欄位改版 | ✅ 已套（§2.4） |
 | 6 | **migration 進 main** | ⛔ **未做** — 見 §4.3 |
+| 6.5 | **Migration D** `20260816000030`：bulk 改一間店一趟（3.8s→60ms）＋ `rpc_list_allocatable_pairs` | ✅ 已套 |
 | 7 | **TEST 文件** `docs/TEST-spot-sale.md` | ⏸ 待店家實際跑一輪後補 |
 
 ### 4.1 離線驗證工具（本次新增）
@@ -277,6 +304,7 @@ bugfix_units: 112
 git log origin/main -- supabase/migrations/20260816000000_sku_commitment_canonical.sql
 git log origin/main -- supabase/migrations/20260816000010_rpc_create_spot_sale.sql
 git log origin/main -- supabase/migrations/20260816000020_stock_commitment_bulk.sql
+git log origin/main -- supabase/migrations/20260816000030_commitment_one_pass_and_allocatable_filter.sql
 ```
 
 ⚠ 開 PR 時注意 base 一定要選 **main**（前例 #629 base 選成 feature 分支，

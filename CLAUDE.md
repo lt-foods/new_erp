@@ -95,6 +95,27 @@ node scripts/check-sql-syntax.cjs supabase/migrations/<檔名>.sql
 ⚠ 每個檔案要開新的 wasm instance：同一個 instance 連續 `parsePlpgsql` 多份檔案會在
 模組內部爆掉（`Ma[...] is not a function`），那是 emscripten 的狀態問題、不是 SQL 有錯。
 
+### 吃陣列的批次函式，不要包一層 per-row LATERAL
+
+`_sku_commitment(store, sku_ids[])`（20260816000000）刻意設計成「傳一整個 SKU
+陣列、單趟 GROUP BY 算完」—— 就是為了不要重蹈 `_advance_arrived_confirmed_orders`
+的 8.5s timeout。但 20260816000020 把它寫成：
+
+```sql
+LEFT JOIN LATERAL public._sku_commitment(st.store_id, ARRAY[req.s_id]) c ON TRUE  -- ❌ 每列掃一遍
+```
+
+一頁 50 列 = 把該店訂單掃 50 遍。文山店（1,704 張單）實測 **3.8 秒**，
+逼近 PostgREST 8 秒上限；拿去掃全站直接 `statement timeout`（>120s）。
+改成先依店分組、**一間店只呼叫一次**（20260816000030）後：**60ms，63 倍**。
+
+```sql
+CROSS JOIN LATERAL public._sku_commitment(
+  st.store_id, ARRAY(SELECT r.s_id FROM req r WHERE r.loc_id = st.location_id)) k  -- ✅
+```
+
+看到 `ARRAY[單一變數]` 傳進一支收陣列的函式，就是這個坑。
+
 ### 「收斂前後對拍」的驗證查詢，兩側母體必須完全一樣
 
 把散落的算法收斂成 canonical 函式之後，一定要對全站跑一次「新舊逐筆比對」。
