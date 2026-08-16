@@ -80,6 +80,27 @@ grep -rn "<function_name>" supabase/migrations/
 GROUP BY，文山 1,704 張單 × ~5ms ≈ 8.5s 撞 PostgREST 8s timeout）。照文件寫的版本
 改下去，等於把 timeout 修正整個蓋掉。
 
+### 開新 migration 前先看有沒有撞號
+
+檔名的時間戳是手選的，很容易跟**同一天別人正在做的**那支撞在一起。
+2026-08-16 就撞過：`20260816000040_reenable_free_transfer`（#737）與
+`20260816000040_wording_align_spot_sale_error` 同號。兩支動的函式不同、
+也都已套上線，實務上沒炸，但「從零重跑」時的順序只能由檔名字串決定，
+而且 `git log -- <檔名>` 這類追溯會抓到兩支。
+
+編號前一律先看一眼現況（含同事剛推的）：
+
+```bash
+git fetch origin main -q && git ls-tree --name-only origin/main supabase/migrations/ | tail -5
+ls supabase/migrations/ | tail -5
+```
+
+真的撞到而且**還沒進 main**：直接改號。**已經進 main 又已套上線**（本次情形）：
+改名是安全的 —— `supabase_migrations.schema_migrations` 只記錄走 CLI 套過的版本，
+而這個 repo 一律走 Management API 直接跑 SQL、**根本不會寫那張表**
+（2026-08-16 實測：追蹤表停在 `20260812021000`／248 筆，repo 已有 514 支）。
+改名記得把其他 migration 檔頭引用它當「基底版本」的地方一起改，否則追溯線會斷。
+
 ### 套 SQL 前先用 pg-query-emscripten 離線驗語法
 
 `scripts/check-sql-syntax.cjs`（用 repo 既有的 `pg-query-emscripten`）不連 DB 就能

@@ -30,11 +30,11 @@
 --
 -- 基底版本：
 --   rpc_add_stock_by_product = 20260805000170（唯一版本）
---   rpc_create_spot_sale     = 20260816000040（最新；本檔的函式本體是從該檔
+--   rpc_create_spot_sale     = 20260816000045（最新；本檔的函式本體是從該檔
 --                              逐字抽出後插入守衛，不是手抄）
 -- rollback:
 --   重跑 20260805000170 的 rpc_add_stock_by_product；
---   重跑 20260816000040 的 rpc_create_spot_sale。
+--   重跑 20260816000045 的 rpc_create_spot_sale。
 -- ============================================================
 
 -- ------------------------------------------------------------
@@ -114,7 +114,7 @@ GRANT EXECUTE ON FUNCTION public.rpc_add_stock_by_product(BIGINT, BIGINT, NUMERI
 
 -- ------------------------------------------------------------
 -- 2. rpc_create_spot_sale ＋ 店家守衛
---    （基底 20260816000040 逐字抽出，只加 DECLARE 兩個變數與守衛段）
+--    （基底 20260816000045 逐字抽出，只加 DECLARE 兩個變數與守衛段）
 -- ------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.rpc_create_spot_sale(
   p_store_id   BIGINT,
