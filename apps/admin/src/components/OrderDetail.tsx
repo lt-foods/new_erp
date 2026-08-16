@@ -628,7 +628,13 @@ export function OrderDetail({
     head.status === "partially_completed" &&
     items.some((it) => ["pending", "reserved", "ready"].includes(it.status));
   const canTransfer = head.status === "ready" || transferBeforeArrival || transferAfterPartialPickup;
-  const canCancel = ["pending", "confirmed", "shipping"].includes(head.status);
+  // 現貨直配（SP-）單一建立就是 'ready'，但還沒扣庫存 → 取消是安全的，
+  // 只是把可分配量放回去（20260816000070 放寬了伺服端守衛）。
+  // 不放寬一般 ready 單：那代表貨已配到客人頭上，取消的連動完全不同。
+  const isSpotSale = head.order_no?.startsWith("SP-") ?? false;
+  const canCancel =
+    ["pending", "confirmed", "shipping"].includes(head.status) ||
+    (isSpotSale && head.status === "ready");
   // 還沒到貨（pending/confirmed/shipping）也可以列印小白單；ready 透過 PickupDialog 已有入口。
   // partially_completed 也開放（對齊 /orders 列表）— 小白單只列還沒取的品項，已取走的不會重複出現。
   const canPrintSlip = ["pending", "confirmed", "shipping", "ready", "partially_completed"].includes(head.status);
@@ -650,7 +656,9 @@ export function OrderDetail({
     const reason = prompt(
       (head.status === "shipping"
         ? `撤回派貨：${head.order_no}\n${isAidOrder ? "會撤回派貨單並反向回收已出庫存" : "波次出貨的訂單不動庫存，貨留在店端"}，請輸入原因：`
-        : `取消訂單：${head.order_no}\n請輸入取消原因：`) + walletNote
+        : isSpotSale
+          ? `取消現貨直配單：${head.order_no}\n這張單還沒扣庫存，取消後那些貨會變回「可分配」。\n請輸入取消原因：`
+          : `取消訂單：${head.order_no}\n請輸入取消原因：`) + walletNote
     );
     if (reason === null) return;
     const sb = getSupabase();
