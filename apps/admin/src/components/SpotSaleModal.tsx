@@ -154,13 +154,12 @@ export function SpotSaleModal({
         p_reason: reason.trim() || null,
       });
       if (e) throw new Error(translateRpcError(e));
-      const r = (res ?? {}) as { order_no?: string; appended?: boolean; amount?: number };
+      // 20260816000060 起一次配單一張單（不再併進既有單），所以不用再分兩種訊息
+      const r = (res ?? {}) as { order_no?: string; amount?: number };
       alert(
         `✅ 已配給 ${member.name}：${skuLabel} ×${qty}（$${num(r.amount) || amount}）\n\n` +
-          (r.appended
-            ? `併入既有待取單 ${r.order_no ?? ""}。`
-            : `訂單 ${r.order_no ?? ""} · 狀態：待取。`) +
-          `\n客人到店後在「取貨」頁完成交貨。`,
+          `訂單 ${r.order_no ?? ""} · 狀態：待取。\n` +
+          `客人到店後在「取貨」頁完成交貨（每次配貨各一張單，可分別取貨）。`,
       );
       onSaved();
       onClose();

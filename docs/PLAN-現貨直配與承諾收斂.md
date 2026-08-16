@@ -105,9 +105,15 @@
    不是 `on_hand − reserved`。用後者會把「別的客人正在等的貨」「池子登記的貨」
    賣掉——就是忠順 8 位團友撲空那型災情。池子（RR-/OV-）的貨要賣走既有
    「轉單給客人」，直配不碰。
-4. **建單**：reuse-first——trio partial UNIQUE 保證同客人同店只有一張 active 單，
-   有就 append、`completed` 就 `_reopen_order_if_completed`（20260805000140），
-   沒有就 `rpc_create_customer_orders` 新建。
+4. **建單：一次配單一張 `SP-` 單**（20260816000060 起）。
+   原本是 reuse-first（併進同客人同店的既有單），但實測回報「待取貨的品項沒有分開」
+   —— 兩次配貨併成一張，店員無法分別取貨／取消，客人也看不出是兩次配的。
+   改法是**放寬 `customer_orders_trio_kind_active_uniq` 的 predicate 排除 `SP-` 單**
+   （該索引本來就有 `order_kind <> 'restock'` 的先例），**不新增 order_kind**：
+   新 kind 會被全站 26 支 `order_kind='normal'` 的口徑整批排除（營收、未結金額、
+   商品分析…），那是靜默錯帳，比併單嚴重得多。
+   索引原本的「一會員一活動一張單」是**真團**的不變量；SP- 單掛 sentinel 假團，
+   客人不是照開團下單、是店員一次一次配的，那個不變量本來就沒有意義。
 5. **取貨閘門**：開一張 DN 減抵單當 coverage → `is_order_item_pickup_ready`
    Path D 放行（與 `rpc_create_offset_sale` 20260805000230 完全同法，
    含「不呼叫 rpc_record_pickup、配單＝待取」的語意）。單頭推 `ready`。
