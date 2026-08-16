@@ -45,6 +45,8 @@ type DraftItem = {
   qty: number;
   snapshot_sku_code: string | null;
   snapshot_sku_label: string | null;
+  snapshot_store_code: string | null;
+  snapshot_store_name: string | null;
 };
 
 type Store = StoreRef;
@@ -110,7 +112,7 @@ function Body() {
       const cells = await fetchAllRows<DraftItem>(() =>
         sb
           .from("picking_draft_items")
-          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label")
+          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name")
           .eq("draft_id", draftId)
           .order("id", { ascending: true }),
       );
@@ -245,9 +247,12 @@ function Body() {
         setItems((arr) => arr.map((it) => (it.id === existing.id ? { ...it, qty: n } : it)));
       } else {
         // 這格還沒有列：加入這樣商品之後才啟用的分店。
-        // 品號/品名沿用同商品其他列的快照值；數量快照(snapshot_at / demand / available)
-        // 留 NULL —— 這一格不在當初那次快照裡，切片 B 對照現況時要看得出來。
+        // 品號/品名沿用同商品其他列的快照值；分店名稱取「現在這一欄」的值
+        // （這一欄可能來自 stores 現況，也可能來自別列的分店快照，兩者都對）。
+        // 數量快照(snapshot_at / demand / available) 留 NULL ——
+        // 這一格不在當初那次快照裡，切片 B 對照現況時要看得出來。
         const sibling = items.find((it) => it.sku_id === skuId);
+        const col = storeCols.find((c) => c.id === storeId);
         const { data, error: err } = await sb
           .from("picking_draft_items")
           .insert({
@@ -258,10 +263,12 @@ function Body() {
             qty: n,
             snapshot_sku_code: sibling?.snapshot_sku_code ?? null,
             snapshot_sku_label: sibling?.snapshot_sku_label ?? null,
+            snapshot_store_code: col?.code ?? null,
+            snapshot_store_name: col?.name ?? null,
             created_by: uid,
             updated_by: uid,
           })
-          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label")
+          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name")
           .single();
         if (err) throw err;
         setItems((arr) => [...arr, data as DraftItem]);
@@ -301,11 +308,15 @@ function Body() {
             snapshot_at: now,
             snapshot_sku_code: opt.sku_code,
             snapshot_sku_label: label,
+            // 分店名稱也拍下來：store_id 沒有外鍵，分店被硬刪之後
+            // 畫面與列印都還要說得出「原本要給哪一家」，不能只剩一個 #id
+            snapshot_store_code: st.code,
+            snapshot_store_name: st.name,
             created_by: uid,
             updated_by: uid,
           })),
         )
-        .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label");
+        .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name");
       if (err) throw err;
       setItems((arr) => [...arr, ...((data ?? []) as DraftItem[])]);
     } catch (e) {

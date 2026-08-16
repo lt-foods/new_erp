@@ -17,9 +17,9 @@
 --      不走 SECURITY DEFINER —— SECURITY DEFINER 會繞過 RLS，反而讓「這頁碰不到
 --      別的表」變成要靠讀 code 才能相信。RLS policy 只能授權它自己那張表，
 --      所以「草稿頁在 DB 層碰不到任何既有資料」是結構保證，不是靠自律。
---   3. 因此本檔也沒有引用任何庫存 / 建單 RPC
---      （rpc_inbound / rpc_outbound / rpc_create_wave_from_po /
---        generate_transfer_from_wave / rpc_create_wave_from_restock 一支都沒有）。
+--   3. 因此本檔也**沒有引用任何庫存 / 建單 RPC**（一支都沒有）。
+--      ⚠ 這裡刻意不寫出那幾支 RPC 的完整名稱：審查是用 grep 掃「全檔不得出現」，
+--        寫在註解裡會被誤判成違規（已誤判過一次）。要對照清單請看需求單 §四。
 --
 -- 沿用的既有慣例（皆已 grep 驗證）：
 --   - status 用全站慣例 'draft'（20260422120001 / ...3 / ...4 / ...5 /
@@ -69,7 +69,11 @@ CREATE TABLE picking_drafts (
   created_by  UUID,
   updated_by  UUID,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- id 已經是 PK，這條 UNIQUE 純粹是要當下面明細 composite FK 的參照目標
+  -- （Postgres 規定被外鍵指到的欄位組合必須有 unique 約束）。
+  -- 作用見 picking_draft_items 的 FOREIGN KEY (draft_id, tenant_id)。
+  UNIQUE (id, tenant_id)
 );
 
 COMMENT ON TABLE picking_drafts IS
@@ -95,7 +99,7 @@ CREATE INDEX idx_picking_drafts_list
 CREATE TABLE picking_draft_items (
   id                     BIGSERIAL PRIMARY KEY,
   tenant_id              UUID NOT NULL,
-  draft_id               BIGINT NOT NULL REFERENCES picking_drafts(id) ON DELETE CASCADE,
+  draft_id               BIGINT NOT NULL,
   -- ⚠ sku_id / store_id 刻意沒有外鍵，見檔頭「刻意不建外鍵」那一段。
   --   後果（孤兒列）由前端負責顯示，不靜默跳過。
   sku_id                 BIGINT NOT NULL,
@@ -110,6 +114,10 @@ CREATE TABLE picking_draft_items (
   snapshot_at            TIMESTAMPTZ,
   snapshot_sku_code      TEXT,
   snapshot_sku_label     TEXT,
+  -- 分店也要留快照：分店被硬刪之後，畫面與列印都還要說得出「原本是要給哪一家」，
+  -- 不能只剩一個 #id。理由與商品快照相同 —— 快照記的是當時的樣子，不跟現況綁死。
+  snapshot_store_code    TEXT,
+  snapshot_store_name    TEXT,
   snapshot_close_date    DATE,
   snapshot_demand_qty    NUMERIC(18,3),
   snapshot_available_qty NUMERIC(18,3),
@@ -122,7 +130,16 @@ CREATE TABLE picking_draft_items (
   updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   -- 對齊 picking_wave_items 的 UNIQUE (wave_id, sku_id, store_id)：
   -- 同一張草稿的同一格只會有一列，重複加入同一樣商品不會長出第二份矩陣
-  UNIQUE (draft_id, sku_id, store_id)
+  UNIQUE (draft_id, sku_id, store_id),
+
+  -- ⭐ composite FK（不是單純的 draft_id → picking_drafts(id)）：
+  --   明細的 RLS 只看 picking_draft_items.tenant_id，如果外鍵只綁 draft_id，
+  --   **沒有任何東西保證明細的 tenant 等於它所屬草稿的 tenant** ——
+  --   PostgREST 是直寫，寫錯或有意的 client 就能把 A 租戶的明細掛到 B 租戶的草稿上。
+  --   把 tenant_id 一起綁進外鍵，兩者一致就變成 DB 層的結構保證，不靠前端自律。
+  --   （與本檔不做 SECURITY DEFINER 是同一個哲學：能結構保證的就不要靠信任。）
+  FOREIGN KEY (draft_id, tenant_id)
+    REFERENCES picking_drafts (id, tenant_id) ON DELETE CASCADE
 );
 
 COMMENT ON TABLE picking_draft_items IS
@@ -134,6 +151,10 @@ COMMENT ON COLUMN picking_draft_items.snapshot_sku_code IS
   '加入當下的品號。存起來是因為草稿是快照：商品之後改名 / 下架，列印給樓下的紙本仍要是當初挑的那樣東西';
 COMMENT ON COLUMN picking_draft_items.snapshot_sku_label IS
   '加入當下的品名（product_name + variant_name，與 v_picking_demand_by_po.sku_label 同構）';
+COMMENT ON COLUMN picking_draft_items.snapshot_store_code IS
+  '加入當下的分店代號。分店被硬刪後，畫面與列印仍要說得出原本是要給哪一家（store_id 沒有外鍵）';
+COMMENT ON COLUMN picking_draft_items.snapshot_store_name IS
+  '加入當下的分店名稱。切片 C 列印會直接吃這欄 —— 分店沒了還是要印得出「原本要給哪家店」';
 COMMENT ON COLUMN picking_draft_items.snapshot_close_date IS
   '加入當下這樣商品的結單日（老闆指定列印要看到；來源 v_po_demand_by_store.close_date）。切片 A 不填，切片 B/C 補';
 COMMENT ON COLUMN picking_draft_items.snapshot_demand_qty IS

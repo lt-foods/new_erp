@@ -66,6 +66,8 @@ export type DraftCell = {
   qty: number;
   snapshot_sku_code: string | null;
   snapshot_sku_label: string | null;
+  snapshot_store_code: string | null;
+  snapshot_store_name: string | null;
 };
 
 export type StoreRef = { id: number; code: string; name: string };
@@ -96,9 +98,16 @@ export function buildStoreColumns(
   const extraIds = Array.from(new Set(cells.map((c) => c.store_id))).filter((id) => !activeIds.has(id));
   const extras: StoreColumn[] = extraIds.map((id) => {
     const hit = known.get(id);
-    return hit
-      ? { ...hit, state: "inactive" as const }
-      : { id, code: `#${id}`, name: `已刪除的分店 #${id}`, state: "missing" as const };
+    if (hit) return { ...hit, state: "inactive" as const };
+    // stores 裡整筆查不到 = 被硬刪 → 退回加入當下的分店快照。
+    // 列印（切片 C）直接吃這個：分店沒了還是要印得出「原本要給哪一家」。
+    const snap = cells.find((c) => c.store_id === id);
+    return {
+      id,
+      code: snap?.snapshot_store_code ?? `#${id}`,
+      name: snap?.snapshot_store_name ?? `已刪除的分店 #${id}`,
+      state: "missing" as const,
+    };
   });
   extras.sort((a, b) => a.code.localeCompare(b.code));
 
