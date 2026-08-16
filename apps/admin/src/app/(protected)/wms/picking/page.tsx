@@ -209,7 +209,7 @@ export default function PickingWorkstationPage() {
   // 步驟 1「已挑清單」＝ sku_id 集合（與建單 scope 同粒度：submitAll 的 FIFO 是 per sku 運作）。
   // ⚠️ 這是獨立集合，絕不與「目前搜尋結果」做交集 —— 舊版就是死在交集上
   //    （搜商品 → 清單只剩 1 列 → 交集後只剩 1 樣，老闆說的「發現只選了一樣」）。
-  //    已無可分配量的品項由「撈完 demand 之後的失效清理」移除並明示提示（見下面的 fetch effect）。
+  //    已無可分配量的品項由「失效清理 effect」移除並明示提示（見 prunedNotice 底下）。
   // 存在 module store 裡（含 tenant/user scope、跨分頁同步），細節見檔頭。
   const { user, tenant } = useAuth();
   const pickedStorageKey = pickedStorageKeyFor(tenant?.id, user?.id);
@@ -232,6 +232,26 @@ export default function PickingWorkstationPage() {
   }, [pickedStorageKey]);
   // 已挑清單被自動移除時的提示（不靜默處理）
   const [prunedNotice, setPrunedNotice] = useState<string | null>(null);
+  // 已挑清單失效清理：把「已無可分配量」（被別人派完 / 下架）的品項移除並提示。
+  // ⚠️ 比對基準是「未經任何篩選」的 alivePickableSkuIds(demand)，不是搜尋結果 ——
+  //    拿目前清單去交集正是舊版「選了 30 樣、按建單只剩 1 樣」的根因。
+  // 放 effect 而不是 fetch 回呼：依賴 pickedIds，storage key 晚一步綁定
+  //    （tenant 是登入後非同步拿到的）而從 localStorage 灌回來的清單也會被重檢，
+  //    不會因為「demand 先到、清單後到」而漏掉。清掉 stale 之後 pickedIds 變動
+  //    會再跑一次，此時已無 stale → 直接 return，不會迴圈。
+  useEffect(() => {
+    if (!demand) return;
+    const aliveSkus = alivePickableSkuIds(demand);
+    const stalePicks = pickedIds.filter((id) => !aliveSkus.has(id));
+    if (stalePicks.length === 0) return;
+    // 對外部系統（module store + localStorage）收斂 + 一次性提示，
+    // 本質上就是「effect 同步外部資料」，guard 保證不會連鎖重跑。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPrunedNotice(
+      `已挑清單有 ${stalePicks.length} 個品項已無可分配量（可能被別人派完或已下架），已自動移除。`,
+    );
+    setPickedSkuIds(pickedIds.filter((id) => aliveSkus.has(id)));
+  }, [demand, pickedIds]);
   // 矩陣分頁的兩步驟：select = 先挑商品；confirm = 確認數量並建單
   const [pickStep, setPickStep] = useState<"select" | "confirm">("select");
   // 缺價預警：sku_id → 現行成本/分店價是否存在。null = 未載入或此 role 看不到價格（不顯示）。
@@ -286,20 +306,9 @@ export default function PickingWorkstationPage() {
         setError(null);
         setDemand(dRows);
         setRestockDemand(rrRows);
-        // 已挑清單失效清理：資料一到就把「已無可分配量」（被別人派完 / 下架）的品項移除並提示。
-        // ⚠️ 比對基準是「未經任何篩選」的 alivePickableSkuIds(dRows)，不是搜尋結果 ——
-        //    拿目前清單去交集正是舊版「選了 30 樣、按建單只剩 1 樣」的根因。
-        // 讀 module store 的 getPickedSkuIds() 而不是閉包裡的 pickedIds：本回呼是 async 的，
-        // 閉包抓到的是舊快照；module store 永遠是最新值。
-        const aliveSkus = alivePickableSkuIds(dRows);
-        const currentPicks = getPickedSkuIds();
-        const stalePicks = currentPicks.filter((id) => !aliveSkus.has(id));
-        if (stalePicks.length > 0) {
-          setPickedSkuIds(currentPicks.filter((id) => aliveSkus.has(id)));
-          setPrunedNotice(
-            `已挑清單有 ${stalePicks.length} 個品項已無可分配量（可能被別人派完或已下架），已自動移除。`,
-          );
-        }
+        // 已挑清單失效清理在獨立的 effect（依賴 demand + pickedIds），不在這個回呼裡做：
+        // 回呼只跑一次，若 demand 比 tenant 先到位，此刻 store 還是空的、
+        // bind 之後才從 localStorage 灌回來的那批就永遠漏檢（靜默失效）。
         const sm = new Map<number, Supplier>();
         for (const s of supRows) sm.set(s.id, s);
         setSuppliers(sm);
@@ -1134,6 +1143,11 @@ export default function PickingWorkstationPage() {
               results.map((r) => `  ${r.po_no} → ${r.wave_code}`).join("\n"),
           );
         }
+        // 這批已經建完 → 清空已挑清單。留著的話：全派完的品項下次進來會觸發
+        // 「已無可分配量、自動移除」的黃色警示（剛建完單看到會以為出事）；
+        // 部分派出的品項則殘留在清單裡、下次又被預填數量順手派出去。
+        // 部分失敗（failures > 0）不清 —— 留在原地讓使用者修正後重送。
+        setPickedSkuIds([]);
         router.push("/hq/inbox?source=picking");
       } else {
         const okPart =
