@@ -33,19 +33,20 @@
 --     role 從 app_metadata 讀（頂層 'role' 是 Postgres 角色、永遠是 authenticated，
 --     這個坑 repo 踩過兩次：20260502010000、20260807000040）
 --
--- ⚠️ 唯一與既有行為相連的地方（誠實揭露，請審查特別看這一段）：
---   本檔對 skus(id) / stores(id) 建了外鍵。外鍵不會改那兩張表的定義、也不寫入它們，
---   但 Postgres 會在它們身上掛參照完整性檢查 → **被草稿引用中的商品，硬刪除會被擋下來**。
---   - 會踩到的路徑只有一條：rpc_delete_product（20260630000030）。
---     它本來就有 `WHEN foreign_key_violation` 分支，會回傳可讀訊息
---     「product % still referenced by other records, cannot delete」並把保護 trigger 補回，
---     不會壞資料、也不會留下半刪狀態。
---   - 實際上幾乎踩不到：該 RPC 的守門 2/3 已經先擋掉「有開團」「有訂單」的商品，
---     剩下的只有「從沒開過團、也沒訂單，卻被加進草稿」這種商品。
---   - 為什麼還是留外鍵：picking_wave_items 對 skus/stores 用的是一模一樣的寫法
---     （20260423120002:50-51），這是本 repo 的既有慣例；拿掉外鍵才是特例。
---   → 如果審查／老闆認為「寧可零耦合」，把這兩個 REFERENCES 拿掉即可
---     （草稿本來就存了 snapshot_sku_code / snapshot_sku_label，商品沒了也印得出來）。
+-- ⭐ sku_id / store_id **刻意不建外鍵**（CEO 2026-08-17 裁示）：
+--   picking_wave_items 對 skus/stores 是有外鍵的（20260423120002:50-51），本檔刻意不比照。
+--   三個理由：
+--   1. 外鍵會是這個 PR 唯一的既有耦合點 —— Postgres 會在 skus/stores 上掛參照完整性檢查，
+--      「被草稿引用中的商品硬刪除會被擋」。拿掉之後「完全不影響既有」是**結構上的事實**，
+--      不需要靠「只影響 rpc_delete_product、而它本來就有 foreign_key_violation 分支」
+--      這種需要信任鏈的說明。與本檔不做 SECURITY DEFINER RPC 是同一個道理。
+--   2. 草稿是暫時性資料（撿完就完成），不該擋住主資料的操作。
+--   3. 快照已經接住了：snapshot_sku_code / snapshot_sku_label 存的是加入當下的樣子，
+--      商品被刪掉照樣印得出來 —— 這正是「快照」該有的語意：**記當時的樣子，不跟現在的資料綁死**。
+--   ⚠️ 代價是可能出現孤兒列（引用到已刪除的商品／分店）。這一點**由前端負責顯示**：
+--      查不到就印快照名稱並標「已不存在 / 已停用」，⛔ 絕不靜默跳過那一列
+--      （靜默丟棄正是 PR #744 的根因）。見 apps/admin/src/lib/pickingDraftView.ts。
+--   ⓘ draft_id 的外鍵**保留**（ON DELETE CASCADE）—— 那是本檔自己的表，刪草稿要連帶清明細。
 --
 -- Rollback：
 --   DROP TABLE IF EXISTS picking_draft_items;
@@ -95,8 +96,10 @@ CREATE TABLE picking_draft_items (
   id                     BIGSERIAL PRIMARY KEY,
   tenant_id              UUID NOT NULL,
   draft_id               BIGINT NOT NULL REFERENCES picking_drafts(id) ON DELETE CASCADE,
-  sku_id                 BIGINT NOT NULL REFERENCES skus(id),
-  store_id               BIGINT NOT NULL REFERENCES stores(id),
+  -- ⚠ sku_id / store_id 刻意沒有外鍵，見檔頭「刻意不建外鍵」那一段。
+  --   後果（孤兒列）由前端負責顯示，不靜默跳過。
+  sku_id                 BIGINT NOT NULL,
+  store_id               BIGINT NOT NULL,
   qty                    NUMERIC(18,3) NOT NULL DEFAULT 0 CHECK (qty >= 0),
 
   -- ---- 快照欄位（切片 A 只填身分那三個，數量快照是切片 B 的事）----
