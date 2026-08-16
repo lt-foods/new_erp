@@ -3,7 +3,8 @@
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
-import { stripTransferNotes } from "@/lib/orderNotes";
+import { stripTransferNotes, stripItemNotes } from "@/lib/orderNotes";
+import { internalOrderSource } from "@/lib/orderTitle";
 import { parseReturnNote } from "@/lib/returnNote";
 import { itemDisplayName } from "@/lib/skuLabel";
 import SpinButton from "@/components/SpinButton";
@@ -19,7 +20,7 @@ type Order = {
   payment_status: string | null;
   notes: string | null;
   member: { id: number; member_no: string; name: string | null; phone: string | null } | null;
-  campaign: { id: number; name: string; cutoff_date: string | null } | null;
+  campaign: { id: number; campaign_no: string; name: string; cutoff_date: string | null } | null;
   store: { id: number; name: string } | null;
   items: {
     id: number;
@@ -87,7 +88,7 @@ function Body() {
           .select(
             `id, order_no, status, discount_amount, discount_percent, wallet_paid_amount, payment_status, notes,
              member:members(id, member_no, name, phone),
-             campaign:group_buy_campaigns(id, name, cutoff_date),
+             campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date),
              store:stores!customer_orders_pickup_store_id_fkey(id, name),
              items:customer_order_items(id, sku_id, qty, unit_price, discount_amount, discount_percent, notes, status, sku:skus(variant_name, product_name))`,
           )
@@ -241,7 +242,9 @@ function Body() {
             return (
               <div key={o.id} className="border-b border-dashed border-zinc-400 pb-1">
                 <div className="text-[13px]">
-                  {o.campaign?.name ?? "(未知活動)"}
+                  {o.campaign?.campaign_no?.startsWith("__")
+                    ? internalOrderSource(o.order_no)?.label ?? "店內現貨"
+                    : o.campaign?.name ?? "(未知活動)"}
                   <CutoffText date={o.campaign?.cutoff_date} />
                 </div>
                 {orderNotes && (
@@ -281,8 +284,8 @@ function Body() {
                             : `-$${it.discount_amount}`}
                         </div>
                       )}
-                      {it.notes && (
-                        <div className="pl-2 text-[13px] italic">↳ 備註：{it.notes}</div>
+                      {stripItemNotes(it.notes) && (
+                        <div className="pl-2 text-[13px] italic">↳ 備註：{stripItemNotes(it.notes)}</div>
                       )}
                     </div>
                   );

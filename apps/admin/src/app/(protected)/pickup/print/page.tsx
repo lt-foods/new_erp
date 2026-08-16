@@ -3,7 +3,8 @@
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
-import { stripTransferNotes } from "@/lib/orderNotes";
+import { stripTransferNotes, stripItemNotes } from "@/lib/orderNotes";
+import { internalOrderSource } from "@/lib/orderTitle";
 import { itemDisplayName } from "@/lib/skuLabel";
 import SpinButton from "@/components/SpinButton";
 import { CutoffText } from "@/components/CampaignCutoff";
@@ -190,7 +191,9 @@ function Body() {
             return (
               <div key={r.event.id} className="border-b border-dashed border-zinc-400 pb-1">
                 <div className="text-[13px]">
-                  {r.order?.campaign?.name ?? "(未知活動)"}
+                  {r.order?.campaign?.campaign_no?.startsWith("__")
+                    ? internalOrderSource(r.order?.order_no)?.label ?? "店內現貨"
+                    : r.order?.campaign?.name ?? "(未知活動)"}
                   <CutoffText date={r.order?.campaign?.cutoff_date} />
                 </div>
                 {orderNotes && (
@@ -225,8 +228,8 @@ function Body() {
                             : `-$${it.discount_amount}`}
                         </div>
                       )}
-                      {it.notes && (
-                        <div className="pl-2 text-[13px] italic">↳ 備註：{it.notes}</div>
+                      {stripItemNotes(it.notes) && (
+                        <div className="pl-2 text-[13px] italic">↳ 備註：{stripItemNotes(it.notes)}</div>
                       )}
                     </div>
                   );
