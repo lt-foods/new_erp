@@ -156,6 +156,31 @@ function bindPickedStorage(key: string) {
 function unbindPickedStorage() {
   pickedOwnerKey = null;
 }
+
+// 已挑清單目前屬於哪一位使用者（auth user.id）。null = 還不知道是誰。
+let pickedUserId: string | null = null;
+// 換人就把記憶體裡的已挑清單清掉。
+// 為什麼需要這個（storage key 已經隔離了，資料不會汙染）：風險不在資料，在人。
+//   樓下共用現場 iPad，A 登出、B 登入，storage key 要等 tenant 的 RPC 回來才成立；
+//   在那幾百毫秒裡畫面上還掛著 A 挑好的 30 樣，B 很可能以為是自己挑的，
+//   直接按「下一步」→ 建單 → 把 A 要派的貨派出去。這種操作錯誤在現場很難事後發現。
+//   user.id 是同步就有的（不必等 tenant），所以能在那個窗口之前先把畫面清乾淨。
+// ⚠️ 只有「非 null → 另一個不同的非 null」才算換人。其他轉換一律不清：
+//   null → 有值：首次登入 / session 剛載回來，記憶體是這個人自己的草稿，清了就是掉選
+//   有值 → null：登出或 session 暫時失效，交給 unbindPickedStorage 停寫入就好
+//   同一個 user：什麼都不做
+function syncPickedUser(userId: string | null) {
+  if (userId === null) return;
+  if (pickedUserId === null) { pickedUserId = userId; return; }
+  if (pickedUserId === userId) return;
+  pickedUserId = userId;
+  pickedOwnerKey = null;      // 新的 key 由 bindPickedStorage 接手；在那之前不准寫
+  // ⚠️ 不動 pickedEverBound：留 true 才會讓下一次 bind 走「讀新 key 的存檔」那條路。
+  //    若把它設回 false，bind 會把現在這個空陣列當成草稿寫下去，反而洗掉 B 自己存好的清單。
+  const had = pickedSkuIds.length > 0;
+  pickedSkuIds = [];
+  if (had) emitPicked();
+}
 // 跨分頁：別的分頁改了同一個 key → 重讀，避免兩個分頁互相覆蓋
 function refreshPickedFromStorage(key: string) {
   const stored = readStoredPicked(key);
@@ -212,9 +237,16 @@ export default function PickingWorkstationPage() {
   //    已無可分配量的品項由「失效清理 effect」移除並明示提示（見 prunedNotice 底下）。
   // 存在 module store 裡（含 tenant/user scope、跨分頁同步），細節見檔頭。
   const { user, tenant } = useAuth();
-  const pickedStorageKey = pickedStorageKeyFor(tenant?.id, user?.id);
+  const authUserId = user?.id ?? null;
+  const pickedStorageKey = pickedStorageKeyFor(tenant?.id, authUserId);
   const pickedIds = useSyncExternalStore(subscribePicked, getPickedSkuIds, getPickedSkuIds);
   const pickedSkus = useMemo(() => new Set(pickedIds), [pickedIds]);
+  // 換人（user.id 從一個非 null 值變成另一個）→ 立刻清掉畫面上的已挑清單。
+  // user.id 比 tenant 早到位，所以 B 不會在 tenant 載回來之前看到 A 挑好的東西。
+  // ⚠️ 必須排在下面的 bind effect 之前（effect 依宣告順序執行）。
+  useEffect(() => {
+    syncPickedUser(authUserId);
+  }, [authUserId]);
   // storage key 一成立（或換帳號 / 換租戶）就對齊一次；純寫外部系統，沒有 setState。
   // key 變回 null（登出 / session 失效）→ 立刻 unbind，之後的挑選不會再寫進上一個人的 key。
   useEffect(() => {
