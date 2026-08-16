@@ -301,6 +301,13 @@ export default function MutualAidPage() {
                       手動
                     </span>
                   )}
+                  {/* 沒選商品的手動現貨別店認領不了 —— 在列表就標出來，
+                      不用點進去才發現（20260816000000） */}
+                  {p.post_type === "offer" && p.sku_id == null && (
+                    <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300" title="沒有選商品，別的分店無法認領；請點進貼文用「✏️ 修改內容」補選">
+                      待補商品
+                    </span>
+                  )}
                   {p.post_type === "offer" && !p.spot_visible_to_other_stores && (
                     <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300">
                       🔒 限本店會員
@@ -677,7 +684,9 @@ function ManualSpotModal({
     setErr(null);
     if (!storeId) { setErr("請選釋出店"); return; }
     const titleTrim = title.trim();
-    if (!picked && titleTrim === "") { setErr("沒有從商品庫選品項時，商品標題必填"); return; }
+    // 商品必選：別店認領＝把這個 SKU 轉單過去，沒 SKU 就沒東西可以轉
+    // （20260816000000；主檔沒有的商品請先去「商品」頁建一筆）
+    if (!picked) { setErr("請從商品庫選商品 —— 沒選商品的話別的分店無法認領"); return; }
     const qtyN = Number(qty);
     if (!Number.isFinite(qtyN) || qtyN <= 0) { setErr("數量需 > 0"); return; }
     let priceN: number | null = null;
@@ -727,9 +736,10 @@ function ManualSpotModal({
           </div>
         )}
         <p className="rounded-md border border-emerald-200 bg-emerald-50/50 p-2 text-xs text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">
-          直接上架店裡現有的東西，不需要來源訂單。可以從商品庫選品項，也可以整個手打。
+          直接上架店裡現有的東西，不需要來源訂單。名稱 / 說明 / 圖片都可以自己改寫。
           <br />
-          這種貼文只給會員看，<strong>別的分店不能認領</strong>（沒有訂單可以轉移）。
+          <strong>商品要從商品庫選</strong>：別店認領＝把這個商品轉單過去，沒選就沒東西可以轉
+          （主檔還沒有的商品，請先到「商品」頁建一筆）。
         </p>
 
         <label>
@@ -746,7 +756,8 @@ function ManualSpotModal({
 
         <div>
           <span className="mb-1 block text-xs text-zinc-500">
-            從商品庫選品項（選填 —— 選了會帶出名稱與圖片，不選就純手打）
+            從商品庫選商品 <span className="text-red-500">*</span>
+            <span className="ml-1 text-zinc-400">（帶出名稱與圖片；別店要認領一定要有它）</span>
           </span>
           <SkuSearchInput value={picked} onChange={pickSku} />
           {picked && (
@@ -755,7 +766,7 @@ function ManualSpotModal({
               onClick={() => setPicked(null)}
               className="mt-1 text-[11px] text-zinc-500 underline hover:text-zinc-700 dark:hover:text-zinc-300"
             >
-              清除選擇，改成手打
+              清除選擇，重新搜尋
             </SpinButton>
           )}
         </div>
@@ -911,7 +922,10 @@ function OfferModal({
           items:customer_order_items(campaign_item_id, sku_id, qty, status, unit_price, sku:skus(sku_code, product_name, variant_name, product:products(description)))
         `)
         .eq("pickup_store_id", storeId)
-        .eq("status", "ready")
+        // partially_completed 也要列：內部現貨池的單臨櫃賣掉一件就變這個狀態，
+        // 只列 ready 的話「店裡明明還有貨」卻挑不到單，店家只好改發手動現貨
+        // （轉單 RPC 本來就接受這兩個狀態，20260814000020）
+        .in("status", ["ready", "partially_completed"])
         .order("id", { ascending: false })
         .limit(200);
       if (cancelled) return;
@@ -1262,8 +1276,14 @@ function ThreadModal({
   const [originalTitle, setOriginalTitle] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
   const canEdit = post.post_type === "offer" && post.status === "active";
-  /** 手動現貨：沒有來源訂單 → 不能被認領，但數量可以直接改 */
+  /** 手動現貨：沒有來源訂單（數量可以直接改；認領走 rpc_claim_manual_spot） */
   const isManual = post.post_type === "offer" && post.source_customer_order_id == null;
+  /** 補選商品後 post prop 還是父層舊資料，認領鈕的判斷用這個本地值蓋 */
+  const [savedSkuId, setSavedSkuId] = useState<number | null>(post.sku_id);
+  const [editSku, setEditSku] = useState<SkuOption | null>(null);
+  /** 可認領＝有來源訂單（原本那條），或手動現貨但已經選好商品 */
+  const canClaim = post.post_type === "offer" && post.status === "active" &&
+    (!isManual || savedSkuId != null);
 
   useEffect(() => {
     if (!canEdit) return;
@@ -1357,12 +1377,21 @@ function ThreadModal({
         p_qty_available: qtyParam,
         // 只有手動現貨開放這個開關，訂單來源的送 null（= 不動，維持看得到）
         p_visible_to_other_stores: isManual ? editVisible : null,
+        // 補選商品：沒挑就送 null（= 不動）；訂單來源的貼文 SKU 綁著來源品項不可改
+        p_sku_id: isManual && editSku ? editSku.id : null,
       });
       if (e) { setErr(e.message); return; }
       setSavedSpotPrice(spotPriceParam);
       setSavedSpotTitle(spotTitleParam);
       setSavedExpiresAt(expDate.toISOString());
-      if (qtyParam != null) setSavedQty({ available: qtyParam, remaining: qtyParam });
+      if (editSku) setSavedSkuId(editSku.id);
+      // 已認領的量要留著（伺服端同一套算法），不能直接把 remaining 蓋成新總量
+      if (qtyParam != null) {
+        setSavedQty((prev) => ({
+          available: qtyParam,
+          remaining: Math.max(0, qtyParam - Math.max(0, prev.available - prev.remaining)),
+        }));
+      }
       if (isManual) setSavedVisible(editVisible);
       setEditOpen(false);
       onEdited();
@@ -1512,6 +1541,27 @@ function ThreadModal({
                 className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
               />
             </label>
+            {/* 補選商品：沒選 SKU 的手動現貨別店認領不了（沒東西可以轉單）。
+                選了就不能改回「沒有」—— 送 NULL 是「不動」，不是清除。 */}
+            {isManual && (
+              <div>
+                <span className="mb-1 block text-zinc-500">
+                  商品（SKU）
+                  {savedSkuId == null && (
+                    <span className="ml-1 text-amber-600 dark:text-amber-400">— 沒選商品的話，別的分店無法認領</span>
+                  )}
+                </span>
+                {savedSkuId != null && !editSku ? (
+                  <div className="flex items-center gap-2">
+                    <span className="rounded bg-white px-2 py-1 dark:bg-zinc-800">{post.sku_label ?? `#${savedSkuId}`}</span>
+                    <span className="text-[11px] text-zinc-400">已可被認領；要換商品請在下方重新搜尋</span>
+                  </div>
+                ) : null}
+                <div className="mt-1">
+                  <SkuSearchInput value={editSku} onChange={setEditSku} />
+                </div>
+              </div>
+            )}
             {isManual && (
               <div className="grid grid-cols-2 gap-2">
                 <label>
@@ -1522,7 +1572,7 @@ function ThreadModal({
                     inputMode="decimal"
                     className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-right dark:border-zinc-700 dark:bg-zinc-800"
                   />
-                  <span className="mt-0.5 block text-[11px] text-zinc-400">手動現貨沒有認領扣量，改了就直接覆蓋剩餘量</span>
+                  <span className="mt-0.5 block text-[11px] text-zinc-400">改總量會保留已被認領的部分（剩餘量 = 新總量 − 已認領）</span>
                 </label>
                 <label>
                   <span className="mb-1 block text-zinc-500">單位</span>
@@ -1659,20 +1709,24 @@ function ThreadModal({
             />
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap gap-2">
-                {/* 手動現貨沒有來源訂單 → 沒東西可轉移，認領按鈕不該出現 */}
-                {post.post_type === "offer" && !isManual && (
+                {/* 手動現貨也能認領（20260816000000）：認領當下才在釋出店建一張
+                    載體單再轉給認領店。但沒選商品（SKU）就沒東西可以轉 —— 那種
+                    貼文要先按「✏️ 修改內容」補選商品。 */}
+                {post.post_type === "offer" && canClaim && (
                   <SpinButton
                     type="button"
                     onClick={() => setClaimOpen(true)}
                     className="rounded-md border border-pink-400 bg-pink-50 px-3 py-1.5 text-xs font-medium text-pink-700 hover:bg-pink-100 dark:border-pink-700 dark:bg-pink-950 dark:text-pink-300 dark:hover:bg-pink-900"
-                    title="把釋出店的訂單轉成接收店的（走 5b-1 棄單轉出）"
+                    title={isManual
+                      ? "把這批現貨轉給接收店（系統會在釋出店開一張內部載體單再轉單）"
+                      : "把釋出店的訂單轉成接收店的（走 5b-1 棄單轉出）"}
                   >
                     ✋ 我要認領
                   </SpinButton>
                 )}
-                {post.post_type === "offer" && isManual && (
-                  <span className="self-center text-[11px] text-zinc-400">
-                    手動現貨・只給會員看，不開放跨店認領
+                {post.post_type === "offer" && !canClaim && (
+                  <span className="self-center text-[11px] text-amber-600 dark:text-amber-400">
+                    這則還沒選商品 → 別店認領不了，請按「✏️ 修改內容」補選商品
                   </span>
                 )}
                 {canEdit && !editOpen && (
@@ -1726,6 +1780,7 @@ function ThreadModal({
       {claimOpen && (
         <ClaimOfferDialog
           post={post}
+          skuId={savedSkuId}
           stores={stores}
           onCancel={() => setClaimOpen(false)}
           onDone={() => {
@@ -1753,9 +1808,11 @@ function ThreadModal({
 // Claim Offer Dialog — 認領釋出（receiving store 從釋出方拿訂單）
 // ============================================================
 function ClaimOfferDialog({
-  post, stores, onCancel, onDone,
+  post, skuId, stores, onCancel, onDone,
 }: {
   post: Post;
+  /** 補選商品後父層 post 還是舊資料，SKU 一律吃 thread modal 的本地值 */
+  skuId: number | null;
   stores: Store[];
   onCancel: () => void;
   onDone: () => void;
@@ -1767,11 +1824,14 @@ function ClaimOfferDialog({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  const isManual = post.source_customer_order_id == null;
+
   async function submit() {
     if (busy) return;
     setErr(null);
     if (!toStore) { setErr("請選接收店"); return; }
-    if (!post.source_customer_order_id) { setErr("此 offer 缺 source_customer_order_id（資料異常）"); return; }
+    if (!isManual && !post.source_customer_order_id) { setErr("此 offer 缺 source_customer_order_id（資料異常）"); return; }
+    if (isManual && !skuId) { setErr("這則貼文還沒選商品，請先用「✏️ 修改內容」補選"); return; }
     const qtyN = Number(qty);
     if (!Number.isFinite(qtyN) || qtyN <= 0) { setErr("認領數量需 > 0"); return; }
     if (qtyN > post.qty_remaining) { setErr(`認領數量超過剩餘量 ${post.qty_remaining}`); return; }
@@ -1780,6 +1840,21 @@ function ClaimOfferDialog({
       const sb = getSupabase();
       const { data: { user } } = await sb.auth.getUser();
       if (!user?.id) { setErr("未登入"); return; }
+      // 手動現貨沒有來源訂單 → 走 rpc_claim_manual_spot：它會在釋出店建一張
+      // 載體單、當場轉給接收店、扣貼文量，全部在同一個交易裡（20260816000000）
+      if (isManual) {
+        const { error: eM } = await sb.rpc("rpc_claim_manual_spot", {
+          p_board_id: post.id,
+          p_to_store_id: toStore,
+          p_qty: qtyN,
+          p_operator: user.id,
+          p_reason: reason || null,
+          p_is_air_transfer: isAir,
+        });
+        if (eM) { setErr(eM.message); return; }
+        onDone();
+        return;
+      }
       const { error: e1 } = await sb.rpc("rpc_transfer_order_partial", {
         p_order_id: post.source_customer_order_id,
         p_to_pickup_store_id: toStore,
@@ -1814,7 +1889,16 @@ function ClaimOfferDialog({
           <div className="mb-2 rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">{err}</div>
         )}
         <div className="mb-3 rounded bg-zinc-50 p-2 text-xs dark:bg-zinc-950">
-          從「{post.store_name}」的訂單 <span className="font-mono">{post.source_order_no ?? `#${post.source_customer_order_id}`}</span> 取出指定數量、開新單給接收店（走 5b-1 partial transfer）。
+          {isManual ? (
+            <>
+              把「{post.store_name}」的現貨 <span className="font-medium">{post.spot_title ?? post.sku_label}</span> 轉給接收店：
+              系統會在釋出店開一張內部載體單再轉單，接收店在「收貨」頁收貨後就能出給客人。
+            </>
+          ) : (
+            <>
+              從「{post.store_name}」的訂單 <span className="font-mono">{post.source_order_no ?? `#${post.source_customer_order_id}`}</span> 取出指定數量、開新單給接收店（走 5b-1 partial transfer）。
+            </>
+          )}
         </div>
         <div className="mb-3 grid grid-cols-2 gap-3 text-sm">
           <label>

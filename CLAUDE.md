@@ -397,6 +397,45 @@ RR- ride-along 單在補貨到店**之前**就存在（單頭 `pending`/`confirm
 
 ---
 
+## 互助交流板 (mutual_aid_board)
+
+### 「認領」的本體是訂單轉移；載體單只能存在於那一個交易裡
+
+跨店認領＝`rpc_transfer_order_partial` 把釋出店那張單的品項轉成認領店的單，
+貨才會走既有那一套（空中轉／經總倉、收貨頁、月結一加一扣）。所以**沒有訂單就
+認領不了**：2026-08-16 線上 29 則進行中的釋出貼文有 27 則是「➕ 手動新增現貨」
+（`source_customer_order_id IS NULL`），前端直接不畫認領鈕，店家只看到
+「不開放跨店認領」——「怎麼看不到認領的按鈕」就是這個。
+
+補法（`20260816000000`）是認領當下才在釋出店建一張 `AB-<store>-<seq>` 載體單
+（restock sentinel trio、單頭 ready），**同一個交易內**立刻轉走。
+
+- **不要改成發文時就建載體單**。載體單掛在 `member_type='store_internal'` 上，
+  只要以 ready 停在庫裡就會進 `_trim_internal_pool`（20260811000030/40）的池子
+  口徑；手動現貨常常是店家自己的貨、不在 `on_hand` 裡 → 下一次自動配單就把它
+  當超額掛帳砍掉（標 `[已配給團購單]`），貼文的貨會莫名其妙消失。
+- 手動現貨開放認領之後，`rpc_update_aid_board_listing` 原本「手動現貨沒有認領
+  扣量、`qty_available`/`qty_remaining` 一起覆寫」的假設就不成立了 ——
+  改總量要保留已認領量（`remaining = 新 available − 已認領`）。
+
+### 新開 order_no 前綴之前，先查線上有沒有人用了
+
+`SP-` 已經被「現貨直配」(`rpc_create_spot_sale`) 用掉了，而**那支 RPC 在
+`supabase/migrations/` 裡找不到**（線上有、repo 沒有 —— 直接套上正式庫沒回寫
+migration 的典型後果，見本檔開頭那條）。差一點就讓互助板的載體單跟它撞號。
+
+開新前綴一律先問線上，不要只 grep repo：
+
+```sql
+SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname = 'public' AND p.prosrc LIKE '%<你的前綴>-%';
+SELECT count(*) FROM customer_orders WHERE order_no LIKE '<你的前綴>-%';
+```
+
+順帶：`customer_orders_trio_kind_active_uniq` 的 predicate 已經排除
+`order_kind='restock'` 與 `order_no LIKE 'SP-%'`，容器單走 `restock` 就不會撞
+一店一單的唯一索引。
+
 ## 採購單 (purchase_orders)
 
 ### 斷貨會「拆單」，而且要能回復 —— 一律走 `_stockout_po_items`
