@@ -51,6 +51,40 @@ function distinctItemNames(items: TitleItemLike[]): string[] {
   return out;
 }
 
+/**
+ * 內部 sentinel 團底下的單「實際上是哪一條路來的」。
+ *
+ * 那些單全部掛在共用假團 `__INTERNAL_RESTOCK__`「【內部】補貨申請」下面
+ * （共用是刻意的：全站 10+ 處濾網現成，另開新 sentinel 漏一處就會外顯給客人）。
+ * 代價是後台訂單明細的「開團」欄會照實印出那個名字 —— 一張現貨直配單寫著
+ * 「【內部】補貨申請」，店員會以為是補貨（2026-08-16 回報）。
+ *
+ * 來源判斷一律用 **order_no 前綴**，不要用 notes 內文比對：
+ * 單號是建單時就決定、之後不會被編輯，notes 是自由文字會被人改掉。
+ */
+export type InternalOrderSource = { label: string; hint: string };
+
+export function internalOrderSource(orderNo: string | null | undefined): InternalOrderSource | null {
+  const no = (orderNo ?? "").trim();
+  if (!no) return null;
+  if (no.startsWith("SP-")) {
+    return { label: "🤝 現貨直配", hint: "店內現貨直接配給客人（待取，取貨時才扣庫存收款）" };
+  }
+  if (no.startsWith("RR-")) {
+    return { label: "📦 補貨申請", hint: "店家跟總倉叫貨；貨到店後掛在【內部】店名下" };
+  }
+  if (no.startsWith("OV-")) {
+    return { label: "📥 收貨多給", hint: "到貨超過訂單需求的量，沒有主人先掛在店內" };
+  }
+  if (/-TF\d+$/.test(no)) {
+    return { label: "↔ 轉單轉入", hint: "從別張訂單轉過來的品項" };
+  }
+  if (/-INT\d+$/.test(no)) {
+    return { label: "🏪 內部叫貨", hint: "店家自己下的內部單" };
+  }
+  return null;
+}
+
 export function orderCardTitle(order: TitleOrderLike): string {
   const campaign = cleanCampaignText(order.campaign_name);
   if (!isInternalCampaign(order)) return campaign || "訂單";

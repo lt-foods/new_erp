@@ -19,6 +19,7 @@ import { summarizeOrderSource } from "@/lib/orderSource";
 import { ItemSourceBadge, OrderSourceBadge } from "@/components/OrderSourceBadge";
 import { withBasePath } from "@/lib/basePath";
 import { printViaIframe } from "@/lib/printIframe";
+import { internalOrderSource } from "@/lib/orderTitle";
 import { translateRpcError } from "@/lib/rpcError";
 import { parseReturnNote } from "@/lib/returnNote";
 import {
@@ -1027,7 +1028,35 @@ export function OrderDetail({
             )
           }
         />
-        <Field label="開團" value={head.campaign ? `${head.campaign.campaign_no} ${head.campaign.name}` : "—"} />
+        {/* 內部 sentinel 團的單（現貨直配 / 補貨 / 轉單…）不要照實印
+            「__INTERNAL_RESTOCK__【內部】補貨申請」—— 那是共用假團的名字，
+            一張現貨直配單寫著「補貨申請」店員會看錯（2026-08-16 回報）。
+            改標實際來源；真團維持印開團名稱。 */}
+        {(() => {
+          const internal =
+            head.campaign?.campaign_no?.startsWith("__")
+              ? internalOrderSource(head.order_no)
+              : null;
+          if (internal) {
+            return (
+              <Field
+                label="來源"
+                value={
+                  <span title={internal.hint}>
+                    {internal.label}
+                    <span className="ml-1.5 text-xs text-zinc-500">{internal.hint}</span>
+                  </span>
+                }
+              />
+            );
+          }
+          return (
+            <Field
+              label="開團"
+              value={head.campaign ? `${head.campaign.campaign_no} ${head.campaign.name}` : "—"}
+            />
+          );
+        })()}
         <Field label="取貨店" value={head.store?.name ?? "—"} />
         <Field
           label="下單來源"

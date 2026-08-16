@@ -19,6 +19,7 @@ import { summarizeOrderSource, SOURCE_TREND_SERIES, type OrderItemSource } from 
 import { OrderSourceBadge } from "@/components/OrderSourceBadge";
 import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
+import { internalOrderSource } from "@/lib/orderTitle";
 
 type Row = {
   id: number;
@@ -284,6 +285,29 @@ function itemLabel(
     return it.variant_name ? `${it.product_name} / ${it.variant_name}` : it.product_name;
   }
   return it.variant_name || it.product_name || "—";
+}
+
+// 開團名那一行：內部 sentinel 團（現貨直配 / 補貨 / 轉單…）改標「實際來源」。
+// 那些單都掛在共用假團「【內部】補貨申請」底下，照實印會讓一張現貨直配單
+// 看起來像補貨單（2026-08-16 回報）。真團維持印開團名稱。
+function CampaignOrSource({
+  campaignNo,
+  campaignName,
+  orderNo,
+}: {
+  campaignNo: string | null | undefined;
+  campaignName: string;
+  orderNo: string | null | undefined;
+}) {
+  const internal = campaignNo?.startsWith("__") ? internalOrderSource(orderNo) : null;
+  if (internal) {
+    return (
+      <div className="break-words text-xs font-medium text-violet-700 dark:text-violet-400" title={internal.hint}>
+        {internal.label}
+      </div>
+    );
+  }
+  return <div className="break-words text-xs text-zinc-500">{campaignName}</div>;
 }
 
 function cardTint(status: OrderStatus): string {
@@ -1454,7 +1478,7 @@ function OrdersListContent() {
                   <div className="flex items-start gap-2">
                     <CoverThumb src={c.cover_image_url} alt={c.name} />
                     <div className="min-w-0 flex-1 space-y-0.5">
-                      <div className="break-words text-xs text-zinc-500">{c.name}</div>
+                      <CampaignOrSource campaignNo={c.campaign_no} campaignName={c.name} orderNo={r.order_no} />
                       {(sum?.items ?? []).map((it, idx) => (
                         <div key={idx} className="break-words text-base font-bold text-zinc-900 dark:text-zinc-100">
                           {itemLabel(it, c.name)}
@@ -1582,7 +1606,7 @@ function OrdersListContent() {
                         <div className="flex items-start gap-2">
                           <CoverThumb src={c.cover_image_url} alt={c.name} />
                           <div className="min-w-0 flex-1 space-y-0.5">
-                            <div className="text-xs text-zinc-500 break-words">{c.name}</div>
+                            <CampaignOrSource campaignNo={c.campaign_no} campaignName={c.name} orderNo={r.order_no} />
                             {(itemSummary.get(r.id)?.items ?? []).map((it, idx) => (
                               <div
                                 key={idx}
