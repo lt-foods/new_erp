@@ -57,6 +57,10 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/hq/inbox", label: "總倉收件匣", match: /^\/hq\/inbox/ },
       { href: "/wms/receiving", label: "進貨待辦", match: /^\/wms\/receiving/ },
+      // 選單順序＝工作流程順序：先在草稿上挑好給樓下撿，撿完確定了才到工作台建正式單。
+      // ⚠ 路徑刻意不放在 /wms/picking 底下 —— 派貨工作台的 match 是 ^\/wms\/picking(?!\/history)，
+      //   /wms/picking-drafts 之類的路徑會一起命中，兩個選單項會同時亮起來。
+      { href: "/picking/drafts", label: "派貨草稿", match: /^\/picking\/drafts/ },
       { href: "/wms/picking", label: "派貨工作台", match: /^\/wms\/picking(?!\/history)|^\/picking\/workstation/ },
     ],
   },
@@ -115,6 +119,7 @@ const BRANCH_HIDDEN_HREFS = new Set([
   "/purchase/requests",   // 請購單 (PR)
   "/purchase/orders",     // 採購單 (PO)
   "/wms/receiving",       // 進貨待辦 (HQ)
+  "/picking/drafts",      // 派貨草稿 (HQ；比照派貨工作台，RLS 也只開給總部角色)
   "/wms/picking",         // 派貨工作台
   // /wms/inbound 跟 /wms/transfers 不在這裡 — 分店要用,屬於分店業務
   "/finance/receivables", // HQ 應收
