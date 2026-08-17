@@ -108,8 +108,10 @@ function Body() {
           .select("id, name, status, created_at, updated_at")
           .eq("id", draftId)
           .maybeSingle(),
-        // ⭐ 撈**全部**分店（含停用）：只撈 is_active 的話，「已停用、而且這張草稿
-        //   沒有那家店明細」的分店會整欄消失（阿審 #752 P1-1）。老闆要所有分店都有欄位。
+        // ⭐ 這裡撈的是 stores **全表（含停用）**，「哪些欄位要顯示」由 buildStoreColumns 決定
+        //   （停用且這張草稿數量合計為 0 的才藏起來，老闆 2026-08-17 定案）。
+        //   ⛔ 不可以在查詢就 .eq("is_active", true) 先濾掉：那樣「停用但草稿裡有數量」的店
+        //   會掉進 extraStores 的路徑，被標成「已刪除／無法確認」——說了一件不是事實的事。
         sb.from("stores").select("id, code, name, is_active").order("code"),
       ]);
       if (headErr) throw headErr;
@@ -221,7 +223,8 @@ function Body() {
   }, [items]);
 
   // 一列 = 一樣商品；欄位 = 啟用中的分店 ∪ 這張草稿用到的分店。
-  // 兩者都可能含「已停用 / 已刪除」的東西，一律照樣顯示並標示（見 lib/pickingDraftView.ts）。
+  // 「已停用」的分店只有在這張草稿還有數量時才留欄位（並標「已停用」），零數量的不顯示；
+  // 「已刪除 / 無法確認」一律照樣顯示並標示。判準與理由見 lib/pickingDraftView.ts。
   const skuRows = useMemo(() => buildSkuRows(items, skuExistence), [items, skuExistence]);
   const storeCols = useMemo(
     () => buildStoreColumns(stores, items, extraStores),
@@ -234,6 +237,14 @@ function Body() {
     () => storeCols.filter((c) => c.state !== "active").length,
     [storeCols],
   );
+  // 被藏起來的停用分店有幾家。⛔ 不能完全不提：把某一格改成 0 之後，那一欄會**當場消失**
+  //   （storeCols 是跟著 items 重算的），老闆會以為自己按壞了什麼。
+  //   一行小字說明「藏起來了，因為數量都是 0」就夠 —— 老闆要的是紙上不要有那些欄，
+  //   不是連「有這回事」都不知道。
+  const hiddenInactiveCount = useMemo(() => {
+    const shown = new Set(storeCols.map((c) => c.id));
+    return stores.filter((s) => s.is_active === false && !shown.has(Number(s.id))).length;
+  }, [stores, storeCols]);
 
   const readOnly = draft?.status === "done";
 
@@ -704,6 +715,8 @@ function Body() {
       <p className="text-xs text-zinc-400">
         共 {skuRows.length} 樣商品 × {storeCols.length} 個分店欄位
         {orphanStoreCount > 0 && `（其中 ${orphanStoreCount} 個已停用／已刪除／無法確認）`}。
+        {hiddenInactiveCount > 0 &&
+          `另有 ${hiddenInactiveCount} 家已停用的分店沒有顯示（這張草稿裡它們的數量都是 0，已經收掉的店不用再撿）。`}
         「對照現況」「列印」「送到派貨工作台」是後續切片，這一版還沒有。
       </p>
     </div>

@@ -4,8 +4,10 @@
 // 開啟方式：草稿編輯頁點「🖨 列印」開新分頁。 /picking/drafts/print?id=<草稿編號>
 //
 // 老闆指定要看到的三樣（＋合計）：結單日 / 品名 / 所有分店的數量 / 合計。
-//   「所有分店」＝全部分店都要有欄位，不是只有這次有需求的那幾家
+//   「所有分店」＝**還在營業的分店**都要有欄位，不是只有這次有需求的那幾家
 //   （他可能有庫存就多給沒下訂單的店）。
+//   已停用（店收掉了）的分店只有在這張草稿還有數量時才印，並標「已停用」
+//   —— 零數量的不印（老闆 2026-08-17：「已停用的店家就不用出現了」）。
 //   結單日：本公司同一個商品會重複開團，光看品名分不出「這批是哪一次的」。
 //
 // ⛔ 為什麼不是改既有的 picking/print-pick-list：
@@ -73,8 +75,10 @@ function Body() {
       const sb = getSupabase();
       const [{ data: head, error: headErr }, storeRes] = await Promise.all([
         sb.from("picking_drafts").select("id, name, status, created_at").eq("id", draftId).maybeSingle(),
-        // ⭐ 撈**全部**分店（含停用）：只撈 is_active 的話，「已停用、而且這張草稿
-        //   沒有那家店明細」的分店會整欄消失 —— 老闆要的是所有分店都有欄位。
+        // ⭐ 這裡撈的是 stores **全表（含停用）**，「哪些欄位要印」由 buildStoreColumns 決定
+        //   （停用且這張草稿數量合計為 0 的才不印，老闆 2026-08-17 定案）。
+        //   ⛔ 不可以在查詢就 .eq("is_active", true) 先濾掉：那樣「停用但草稿裡有數量」的店
+        //   會掉進 extraStores 的路徑，紙上被標成「已刪除／無法確認」——那不是事實。
         sb.from("stores").select("id, code, name, is_active").order("code"),
       ]);
       if (headErr) throw headErr;

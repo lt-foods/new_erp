@@ -17,7 +17,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
-import { describeDraftDbError } from "@/lib/pickingDraftView";
+import { deleteDraftConfirmMessage, describeDraftDbError } from "@/lib/pickingDraftView";
 import SpinButton from "@/components/SpinButton";
 
 type Draft = {
@@ -41,6 +41,8 @@ export default function PickingDraftsPage() {
   const [drafts, setDrafts] = useState<Draft[] | null>(null);
   const [skuCounts, setSkuCounts] = useState<Map<number, number>>(new Map());
   const [error, setError] = useState<string | null>(null);
+  // 刪除成功的回饋。⛔ 刪完不可以靜默：清單少一列很容易看漏（尤其一次刪好幾張）。
+  const [notice, setNotice] = useState<string | null>(null);
   const [newName, setNewName] = useState(defaultDraftName);
   const [truncated, setTruncated] = useState(false);
   // 載入本身就失敗（最常見：migration 還沒套、表根本不存在）。
@@ -108,6 +110,7 @@ export default function PickingDraftsPage() {
       return;
     }
     setError(null);
+    setNotice(null); // 上一則「已刪除…」講的是別張草稿，留著會跟這次的動作對不上
     try {
       const sb = getSupabase();
       const { data: sess } = await sb.auth.getSession();
@@ -132,6 +135,7 @@ export default function PickingDraftsPage() {
 
   async function setStatus(id: number, status: "draft" | "done") {
     setError(null);
+    setNotice(null);
     try {
       const sb = getSupabase();
       const { data: sess } = await sb.auth.getSession();
@@ -141,6 +145,70 @@ export default function PickingDraftsPage() {
         .eq("id", id);
       if (err) throw err;
       await load();
+    } catch (e) {
+      setError(describeDraftDbError(e));
+    }
+  }
+
+  // ---- 刪除草稿（硬刪；明細由 DB 的 ON DELETE CASCADE 一起帶走）----
+  //
+  // 老闆 2026-08-17 拍板的規則：
+  //   1. 只有「進行中」刪得掉；「已完成」＝他心裡的留底，不能直接刪。
+  //   2. 真要毀掉已完成的，得先按「重新開啟」變回進行中 —— **兩個動作**才毀得掉，
+  //      這是刻意的防手滑，不是漏做。
+  //
+  // ⛔ 只碰 picking_drafts 這一張表。明細由外鍵 CASCADE 清掉
+  //    （migration 20260817000000_picking_drafts.sql:141-142），
+  //    不碰任何既有表、不呼叫任何 RPC、完全不影響庫存與派貨工作台。
+  async function handleDelete(d: Draft) {
+    // 品項數要在刪之前抓：刪完 load() 就查不到了，訊息會變成 0
+    const skuCount = skuCounts.get(d.id) ?? 0;
+    if (!confirm(deleteDraftConfirmMessage(d.name, skuCount))) return;
+    setError(null);
+    setNotice(null);
+    try {
+      const sb = getSupabase();
+      // ⭐ .eq("status","draft") 不是裝飾：條件寫在 **DELETE 語句本身**，
+      //   另一台 iPad 剛把它標成完成時，這裡會是「一列都刪不到」而不是照樣毀掉留底。
+      //   前端「只在進行中區塊放按鈕」擋不住這種時間差（畫面是幾秒前的快照）。
+      // ⭐ .select("id") 是為了知道「到底刪到幾列」：沒有它，刪 0 列與刪 1 列都算成功，
+      //   按下去就沒反應 —— 老闆分不出是刪掉了還是壞了。
+      const { data, error: err } = await sb
+        .from("picking_drafts")
+        .delete()
+        .eq("id", d.id)
+        .eq("status", "draft")
+        .select("id");
+      if (err) throw err;
+
+      if ((data ?? []).length === 0) {
+        // 刪不到任何一列 → ⛔ 一定要說出為什麼。重查一次現況才分得出
+        // 「剛被別台標成完成」與「已經被別人刪掉」——這兩件事該講的話完全不同。
+        const { data: now, error: probeErr } = await sb
+          .from("picking_drafts")
+          .select("id, status")
+          .eq("id", d.id)
+          .maybeSingle();
+        const msg = probeErr
+          ? `刪不掉草稿「${d.name}」，而且查不出原因：${describeDraftDbError(probeErr)}。請通知工程師。`
+          : !now
+            ? `草稿「${d.name}」已經不在了（可能是另一台 iPad 剛剛刪掉的）。清單已重新整理。`
+            : (now as { status?: string }).status === "done"
+              ? `草稿「${d.name}」現在是「已完成」，已完成的草稿不能直接刪除 —— 請先按「重新開啟」，再刪。`
+              : `刪不掉草稿「${d.name}」：資料庫一列都沒刪到（這個帳號可能沒有刪除權限）。請通知工程師。`;
+        // ⚠ 順序不能顛倒：load() 成功時會 setError(null)，訊息一定要在它**之後**才設，
+        //   否則剛設好的原因會被清掉，又變成「按了沒反應」。
+        await load();
+        setError(msg);
+        return;
+      }
+
+      await load();
+      setNotice(
+        skuCount > 0
+          ? `已刪除草稿「${d.name}」，連同裡面的 ${skuCount} 樣商品。`
+          : `已刪除草稿「${d.name}」。`,
+      );
     } catch (e) {
       setError(describeDraftDbError(e));
     }
@@ -166,6 +234,20 @@ export default function PickingDraftsPage() {
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
           {error}
+        </div>
+      )}
+
+      {notice && (
+        <div className="flex items-start justify-between gap-3 rounded-md border border-sky-300 bg-sky-50 p-3 text-sm text-sky-900 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
+          <span>{notice}</span>
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            aria-label="關閉這則訊息"
+            className="shrink-0 rounded px-1.5 text-sky-700 hover:bg-sky-100 dark:text-sky-300 dark:hover:bg-sky-900"
+          >
+            ✕
+          </button>
         </div>
       )}
 
@@ -208,6 +290,7 @@ export default function PickingDraftsPage() {
             skuCounts={skuCounts}
             emptyHint="目前沒有進行中的草稿 — 用上面的「建立草稿」開一張。"
             action={{ label: "標記完成", to: "done", onClick: setStatus }}
+            onDelete={handleDelete}
           />
           <Section
             title="已完成"
@@ -215,6 +298,9 @@ export default function PickingDraftsPage() {
             skuCounts={skuCounts}
             emptyHint="還沒有已完成的草稿。"
             action={{ label: "重新開啟", to: "draft", onClick: setStatus }}
+            // ⛔ 這一區刻意**沒有**刪除鈕：已完成＝留底。要毀掉得先「重新開啟」，
+            //    兩個動作才刪得成 —— 不講清楚的話老闆會以為功能壞了，所以一定要有這句話。
+            note="已完成的草稿不能直接刪除（那是留底）。真的要刪，先按「重新開啟」把它變回進行中，再刪。"
           />
           {truncated && (
             <p className="text-xs text-zinc-400">
@@ -233,12 +319,18 @@ function Section({
   skuCounts,
   emptyHint,
   action,
+  onDelete,
+  note,
 }: {
   title: string;
   rows: Draft[];
   skuCounts: Map<number, number>;
   emptyHint: string;
   action: { label: string; to: "draft" | "done"; onClick: (id: number, s: "draft" | "done") => Promise<void> };
+  /** 有傳才長出「刪除」鈕 —— 只有「進行中」那一區會傳（老闆：已完成的不能直接刪） */
+  onDelete?: (d: Draft) => Promise<void>;
+  /** 這一區要對老闆補充的一句話（例如：為什麼這裡沒有刪除鈕） */
+  note?: string;
 }) {
   return (
     <section className="flex flex-col gap-2">
@@ -275,13 +367,23 @@ function Section({
                   <td className="px-3 py-2 text-right font-mono">{skuCounts.get(d.id) ?? 0}</td>
                   <td className="px-3 py-2 text-xs text-zinc-500">{fmtTime(d.created_at)}</td>
                   <td className="px-3 py-2 text-xs text-zinc-500">{fmtTime(d.updated_at)}</td>
-                  <td className="px-3 py-2 text-right">
-                    <SpinButton
-                      onClick={() => action.onClick(d.id, action.to)}
-                      className="rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                    >
-                      {action.label}
-                    </SpinButton>
+                  <td className="px-3 py-2">
+                    <div className="flex justify-end gap-2">
+                      <SpinButton
+                        onClick={() => action.onClick(d.id, action.to)}
+                        className="rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                      >
+                        {action.label}
+                      </SpinButton>
+                      {onDelete && (
+                        <SpinButton
+                          onClick={() => onDelete(d)}
+                          className="rounded border border-red-300 px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                        >
+                          刪除
+                        </SpinButton>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -289,6 +391,7 @@ function Section({
           </table>
         </div>
       )}
+      {note && rows.length > 0 && <p className="text-xs text-zinc-500">{note}</p>}
     </section>
   );
 }

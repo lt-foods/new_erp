@@ -101,26 +101,77 @@ export type SkuExistence =
     };
 
 /**
- * 矩陣要有哪些分店欄位 = 「目前啟用中的分店」∪「這張草稿裡出現過的分店」。
+ * 這張草稿裡「數量合計 > 0」的分店 id。buildStoreColumns 用它決定停用分店要不要顯示。
  *
- * ⚠ 只取啟用中的分店是不夠的：草稿建立後有人把分店停用 / 刪掉，
- *   那家店的數量會留在 DB 裡卻在畫面上整欄消失 —— 合計也會跟著少算。
- *   這正是「靜默丟失」，所以額外的分店一定要補成欄位、並標出狀態。
+ * ⚠ 兩個刻意的保守處理，都是同一個理由：**寧可多顯示一欄，也不要把有數字的欄藏掉**。
+ *   1. qty 讀不成有限數字（NUMERIC 經過 PostgREST 可能是字串，資料異常也可能是 undefined）
+ *      → 直接當成「有量」。讀不懂就藏起來，是拿系統異常冒充「這家沒東西」。
+ *   2. 除了「合計 > 0」也認「任一格不是 0」。qty 的 CHECK 是 (qty >= 0)
+ *      （migration 20260817000000_picking_drafts.sql:107），所以兩者等價；
+ *      但萬一哪天有負數混進來，只看合計會出現 +5/−5 抵消成 0、把有數字的欄藏掉 ——
+ *      那正是「橫的加起來 ≠ 合計」。多這一條，被藏掉的欄就保證每一格都是 0。
+ */
+export function storeIdsWithQty(cells: DraftCell[]): Set<number> {
+  const sum = new Map<number, number>();
+  const hasQty = new Set<number>();
+  for (const c of cells) {
+    const id = Number(c.store_id);
+    const n = Number(c.qty);
+    if (!Number.isFinite(n)) {
+      hasQty.add(id);
+      continue;
+    }
+    if (n !== 0) hasQty.add(id);
+    sum.set(id, (sum.get(id) ?? 0) + n);
+  }
+  for (const [id, v] of sum) if (v > 0) hasQty.add(id);
+  return hasQty;
+}
+
+/**
+ * 矩陣要有哪些分店欄位。
  *
- * @param active 目前 is_active = true 的分店（已依 code 排序）
- * @param cells  這張草稿的所有明細
- * @param known  額外查回來的分店資料（key = store_id）；查不到的就是被硬刪了
+ * 規則（老闆 2026-08-17 親口定案。原話：「已停用的店家就不用出現了」；
+ *       追問「那草稿裡有數量的呢」→「還是顯示，標『已停用』」）：
+ *   啟用中 active                          → 一律有欄位（就算這張草稿一格都沒填）
+ *   已停用 inactive ＋本草稿數量合計 = 0   → ⛔ 不顯示這一欄
+ *   已停用 inactive ＋本草稿數量合計 > 0   → ✅ 照樣顯示，標「已停用」
+ *   已刪除 missing / 無法確認 unknown      → 一律顯示（維持原狀，見下）
+ *
+ * ⚠ 判準是「這家店在**這張草稿**的數量合計」，**不是**「有沒有那一列」：
+ *   加入商品時會替每一家分店都建一列、qty 預設 0
+ *   （migration 20260817000000_picking_drafts.sql:96-97、:107），
+ *   所以「有沒有 cells」根本分不出東西 —— 這一點最容易做錯。
+ *
+ * ⭐ 為什麼「有數量的一定要顯示」不是保守而是必要：
+ *   rowTotal() 是把**該商品所有 cells** 加總、完全不看畫面上有沒有那一欄（見本檔 rowTotal）。
+ *   藏掉一個有數量的欄，紙上橫的加起來就 ≠ 合計，樓下會發現數字兜不攏。
+ *   反過來看，被藏掉的欄保證每一格都是 0（見 storeIdsWithQty），
+ *   對每一列的貢獻都是 0 → 橫加與合計仍然相等。這才是安全的前提。
+ *
+ * ⚠ missing / unknown **刻意不套這條規則**：那兩種本來就只在 cells 有資料時才會出現，
+ *   而且是異常狀態（分店被硬刪 / 查詢失敗）。把它們藏起來就是拿系統異常冒充一切正常，
+ *   正是本專案一路踩過的病。
+ *
+ * ⓘ 為什麼跟 PR #752 相反：#752 曾把「已停用分店整欄消失」開成 P1，才改成全部顯示。
+ *   那條 P1 的前提是錯的 —— 需求原文「要能列出所有分店」的理由是
+ *   「有庫存可能多給**沒下訂單**的店」，而已停用＝已經收掉的店，根本不是那一種。
+ *   老闆本人 2026-08-17 已經講明，所以這裡改回「零數量的停用店不顯示」。
+ *
+ * @param allStores stores **全表**（含停用；is_active === false ＝ 停用），已依 code 排序
+ * @param cells     這張草稿的所有明細
+ * @param known     額外查回來的分店資料（key = store_id）；null = 查詢失敗 → 標「無法確認」
  */
 export function buildStoreColumns(
   allStores: StoreRow[],
   cells: DraftCell[],
   known: Map<number, StoreRef> | null,
 ): StoreColumn[] {
-  // ⭐ 第一個參數是 **stores 全表（含停用）**，不是只有 is_active 的那些。
-  //   只撈 active 的話，「已停用、而且這張草稿剛好沒有那家店的明細列」會整欄消失 ——
-  //   老闆要的是「所有分店都有欄位」（他可能臨時多給某店），少一欄就是靜默丟失。
+  // ⭐ 「已經有欄位」要用 **stores 全表（含停用）** 來判，不是用下面過濾後的結果 ——
+  //   否則被藏起來的停用分店會從 cells 那邊又被當成「不在清單裡」補回來
+  //   （變成 missing／unknown 欄），等於白藏，而且還多貼一個錯的狀態標籤。
   // id 一律正規化成數字再比（理由同 buildSkuRows）
-  const activeIds = new Set(allStores.map((s) => Number(s.id)));
+  const listedIds = new Set(allStores.map((s) => Number(s.id)));
   const knownById = known ? new Map(Array.from(known, ([k, v]) => [Number(k), v])) : null;
   const cols: StoreColumn[] = allStores.map((s) => ({
     ...s,
@@ -129,7 +180,7 @@ export function buildStoreColumns(
   }));
 
   const extraIds = Array.from(new Set(cells.map((c) => Number(c.store_id)))).filter(
-    (id) => !activeIds.has(id),
+    (id) => !listedIds.has(id),
   );
   const extras: StoreColumn[] = extraIds.map((id) => {
     const snap = cells.find((c) => Number(c.store_id) === id);
@@ -148,11 +199,19 @@ export function buildStoreColumns(
     return { ...fallback, state: "missing" as const };
   });
 
+  // 「停用 + 這張草稿數量合計 0」的欄位到這裡才一起濾掉。
+  // ⭐ 刻意放在最後、對 cols 與 extras 一起做：兩邊都可能長出 inactive 欄
+  //   （extras 那邊是 stores 全表沒撈到、但單查查得到的情況），
+  //   只濾其中一邊就會出現「同樣是停用零數量，有的藏有的沒藏」。
+  const withQty = storeIdsWithQty(cells);
+
   // ⭐ 全部欄位（啟用 / 停用 / 已刪除 / 無法確認）**用單一 key 一起排**，
   //   對齊派貨工作台的 wms/picking/page.tsx:825 `localeCompare(store_code)`。
   //   ⛔ 不分段串接：狀態差異用視覺（標籤／底色）表達，不用位置表達 ——
   //   位置會讓老闆在兩頁之間找不到同一家店。
-  return [...cols, ...extras].sort((a, b) => (a.code ?? "").localeCompare(b.code ?? ""));
+  return [...cols, ...extras]
+    .filter((c) => c.state !== "inactive" || withQty.has(c.id))
+    .sort((a, b) => (a.code ?? "").localeCompare(b.code ?? ""));
 }
 
 /**
@@ -504,4 +563,36 @@ export function formatCloseDates(
   // legacy 由呼叫端傳入（用 isLegacyDraftCell 判定），或這裡自己看 metadata
   if (opts?.legacy ?? isLegacyDraftCell(extra)) return { text: "—", kind: "legacy" };
   return { text: "無", kind: "none" };
+}
+
+// ============================================================
+// 刪除草稿
+// ============================================================
+
+/**
+ * 刪草稿之前，老闆唯一會看到的那段字。
+ *
+ * ⭐ 一定要明講「連帶刪掉 N 樣商品」：明細是 DB 的 ON DELETE CASCADE 帶走的
+ *   （migration 20260817000000_picking_drafts.sql:141-142），刪了**救不回來**，
+ *   而列表頁上只看得到一個名字 —— 老闆不會意識到自己順手毀掉了幾十樣商品
+ *   × 十幾家店已經填好的數量。
+ * ⭐ 也要明講「不影響庫存 / 訂單 / 派貨工作台」：這個系統是正式營運中的，
+ *   一個叫「刪除」的紅色按鈕不講清楚範圍，老闆根本不敢按。
+ *
+ * ⓘ 為什麼措辭放在這支 lib 而不是寫在頁面裡：與 addOutcomeMessage 同一個理由 ——
+ *   老闆會讀到的字集中一處維護，才不會哪天改了一句忘了另一句。
+ *
+ * @param skuCount 這張草稿的品項數（去重後的商品數，＝列表頁「品項數」那一欄的數字）
+ */
+export function deleteDraftConfirmMessage(name: string, skuCount: number): string {
+  const body =
+    skuCount > 0
+      ? `會連帶刪掉裡面的 ${skuCount} 樣商品，包含各分店已經填好的數量。`
+      : `這張草稿裡目前沒有商品。`;
+  return (
+    `確定要刪除草稿「${name}」？\n\n` +
+    `${body}\n` +
+    `刪掉就救不回來 —— 沒有復原、也不會進垃圾桶。\n\n` +
+    `（只刪這張草稿：不會動到任何庫存、訂單，也不影響派貨工作台。）`
+  );
 }
