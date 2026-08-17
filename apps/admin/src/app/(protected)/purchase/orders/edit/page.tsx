@@ -232,6 +232,138 @@ function PageContent() {
     items.length > 0 &&
     items.every((r) => r.qty_received === 0);
 
+  // ── 已收量：填值（全到／全部到齊）＋ 儲存（單格／全部儲存）────────────────
+  // 編輯中的數值放父層（不是每格自己 useState）：不然「全部到齊」改不到別人的格子，
+  // 父層也不知道誰有未存的改動、做不出「全部儲存」。
+  // 只放使用者實際動過的格子；沒有 entry 就顯示 DB 的 qty_received。
+  const [recvEdits, setRecvEdits] = useState<Record<number, string>>({});
+  const [recvErrs, setRecvErrs] = useState<Record<number, string>>({});
+  const [recvSavingId, setRecvSavingId] = useState<number | null>(null);
+  const [recvBatchSaving, setRecvBatchSaving] = useState(false);
+  const [recvBatchResult, setRecvBatchResult] =
+    useState<{ ok: number; failed: { label: string; msg: string }[] } | null>(null);
+
+  // 斷貨品項的已收量後端會擋（RPC 守衛 2b），批次操作必須跟畫面用同一組條件。
+  const recvRows = recvEditable ? items.filter((r) => !r.stockout_at) : [];
+  const recvValue = (r: Item) => recvEdits[r.id] ?? String(r.qty_received);
+  const recvPending = recvRows.filter((r) => recvState(r, recvValue(r)).dirty);
+  // RPC 會對母單 FOR UPDATE，同頁併發送出只會互相卡住 → 一次只讓一筆在飛。
+  const recvBusy = recvSavingId !== null || recvBatchSaving;
+
+  function fillReceived(r: Item) {
+    setRecvEdits((prev) => ({ ...prev, [r.id]: String(r.qty_ordered) }));
+  }
+
+  // 只填值、不儲存。存下去會建進貨單 + rpc_confirm_gr 真的入庫，誤觸沒有反悔機會。
+  function fillAllReceived() {
+    const changing = recvRows.filter((r) => recvValue(r) !== String(r.qty_ordered));
+    if (changing.length === 0) return;
+    const overwrite = changing.filter((r) => recvEdits[r.id] !== undefined).length;
+    if (
+      !window.confirm(
+        `把 ${changing.length} 個品項的已收量都填成訂購量？\n` +
+          (overwrite > 0 ? `其中 ${overwrite} 格是你手動改過、還沒儲存的，會被蓋掉。\n` : "") +
+          `\n這一步只填數字、不會入庫；要再按「全部儲存」才會真的進貨。`,
+      )
+    )
+      return;
+    setRecvEdits((prev) => {
+      const next = { ...prev };
+      for (const r of recvRows) next[r.id] = String(r.qty_ordered);
+      return next;
+    });
+  }
+
+  async function saveReceived(r: Item) {
+    const { num, floor, max, invalid } = recvState(r, recvValue(r));
+    if (invalid) {
+      setRecvErrs((prev) => ({ ...prev, [r.id]: `已收量需介於 ${floor}~${max}` }));
+      return;
+    }
+    setRecvSavingId(r.id);
+    // 單格存完，上一輪批次的「失敗 N 筆」就過期了（多半就是來修那幾筆的），別留在畫面上誤導。
+    setRecvBatchResult(null);
+    setRecvErrs((prev) => {
+      const next = { ...prev };
+      delete next[r.id];
+      return next;
+    });
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { error: rpcErr } = await supabase.rpc("rpc_adjust_po_item_received", {
+        p_po_item_id: r.id,
+        p_new_qty: num,
+        p_operator: userData.user?.id,
+      });
+      if (rpcErr) throw new Error(rpcErr.message);
+      await reload();
+      // 一定要等 reload 完才丟掉編輯值：先丟的話這一格會閃回舊的 qty_received 再跳成新值。
+      setRecvEdits((prev) => {
+        const next = { ...prev };
+        delete next[r.id];
+        return next;
+      });
+    } catch (e) {
+      setRecvErrs((prev) => ({ ...prev, [r.id]: e instanceof Error ? e.message : String(e) }));
+    } finally {
+      setRecvSavingId(null);
+    }
+  }
+
+  // 「全部儲存」：逐筆呼叫既有 RPC。每一筆都是各自獨立的交易——成功的就真的入庫了，
+  // 沒有整批 rollback 這回事，所以：
+  //   ① 迴圈中間不 reload（跑完再 reload 一次）；
+  //   ② 失敗要逐筆講出是哪一樣、為什麼，不能只丟一句籠統的錯，不然不知道到底進了多少貨；
+  //   ③ 只送真的有改動的（delta = 0 後端會直接 return，沒必要送）。
+  async function saveAllReceived() {
+    const targets = recvPending;
+    if (targets.length === 0) return;
+    setRecvBatchSaving(true);
+    setRecvBatchResult(null);
+    const errs: Record<number, string> = {};
+    const failed: { label: string; msg: string }[] = [];
+    const okIds: number[] = [];
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      for (const r of targets) {
+        const label = r.product_name + (r.variant_name ? `-${r.variant_name}` : "");
+        const { num, floor, max, invalid } = recvState(r, recvValue(r));
+        if (invalid) {
+          // 不靜默跳過：跳過會讓人以為那一格存好了。
+          const msg = `已收量需介於 ${floor}~${max}`;
+          errs[r.id] = msg;
+          failed.push({ label, msg });
+          continue;
+        }
+        const { error: rpcErr } = await supabase.rpc("rpc_adjust_po_item_received", {
+          p_po_item_id: r.id,
+          p_new_qty: num,
+          p_operator: userData.user?.id,
+        });
+        if (rpcErr) {
+          errs[r.id] = rpcErr.message;
+          failed.push({ label, msg: rpcErr.message });
+        } else {
+          okIds.push(r.id);
+        }
+      }
+      await reload();
+      setRecvEdits((prev) => {
+        const next = { ...prev };
+        for (const okId of okIds) delete next[okId];
+        return next;
+      });
+    } catch (e) {
+      failed.push({ label: "（整批）", msg: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setRecvErrs(errs);
+      setRecvBatchResult({ ok: okIds.length, failed });
+      setRecvBatchSaving(false);
+    }
+  }
+
   async function stockoutItem(item: Item) {
     const label = item.product_name + (item.variant_name ? `-${item.variant_name}` : "");
     const remaining = item.qty_ordered - item.qty_received;
@@ -499,9 +631,66 @@ function PageContent() {
 
         {/* 右側：line items 表格 */}
         <div className="flex flex-col rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-          <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
             <h3 className="text-sm font-semibold">📦 訂單明細</h3>
+            {recvRows.length > 0 && (
+              /* 觸控目標 ≥ 44px：樓下是用 iPad 單手點的。
+                 touch-manipulation = touch-action: manipulation，關掉這幾顆鈕上的
+                 double-tap-to-zoom：本頁 viewport 可縮放，iOS 會先等 ~350ms 看有沒有第二下才送 click，
+                 那個延遲正是讓人以為沒按到、再多戳一下（然後畫面被放大）的原因。 */
+              <div className="flex flex-wrap items-center gap-2">
+                {recvPending.length > 0 && (
+                  <span className="rounded bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                    {recvPending.length} 格已改、未儲存
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={fillAllReceived}
+                  disabled={recvBusy}
+                  className="min-h-[44px] touch-manipulation rounded-md border border-blue-300 bg-white px-3 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-40 dark:border-blue-700 dark:bg-zinc-900 dark:text-blue-300 dark:hover:bg-blue-950"
+                >
+                  全部到齊
+                </button>
+                <button
+                  type="button"
+                  onClick={saveAllReceived}
+                  disabled={recvBusy || recvPending.length === 0}
+                  className="min-h-[44px] touch-manipulation rounded-md bg-emerald-600 px-3 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-40"
+                >
+                  {recvBatchSaving ? "儲存中…" : `全部儲存${recvPending.length > 0 ? `（${recvPending.length}）` : ""}`}
+                </button>
+              </div>
+            )}
           </div>
+          {recvBatchResult && (
+            <div
+              className={`border-b px-4 py-2 text-sm ${
+                recvBatchResult.failed.length > 0
+                  ? "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
+                  : "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300"
+              }`}
+            >
+              <div className="font-medium">
+                成功 {recvBatchResult.ok} 筆
+                {recvBatchResult.failed.length > 0 && `、失敗 ${recvBatchResult.failed.length} 筆`}
+              </div>
+              {recvBatchResult.failed.length > 0 && (
+                <>
+                  <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                    {recvBatchResult.failed.map((f, i) => (
+                      <li key={`${f.label}:${i}`}>
+                        {f.label}：{f.msg}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="mt-1 text-xs">
+                    成功那幾筆已經入庫了、失敗的沒有（每筆各自獨立，不會整批退回）。修正後再按一次「全部儲存」。
+                  </p>
+                </>
+              )}
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
               <thead className="bg-zinc-50 dark:bg-zinc-900">
@@ -542,7 +731,16 @@ function PageContent() {
                       <Td className="text-right">{r.qty_ordered}</Td>
                       <Td className="text-right">
                         {recvEditable && !r.stockout_at ? (
-                          <ReceivedCell key={`${r.id}:${r.qty_received}`} item={r} onSaved={reload} />
+                          <ReceivedCell
+                            item={r}
+                            value={recvValue(r)}
+                            saving={recvSavingId === r.id}
+                            disabled={recvBusy}
+                            err={recvErrs[r.id]}
+                            onChange={(v) => setRecvEdits((prev) => ({ ...prev, [r.id]: v }))}
+                            onFill={() => fillReceived(r)}
+                            onSave={() => saveReceived(r)}
+                          />
                         ) : (
                           <span className="text-emerald-600 dark:text-emerald-400">
                             {r.qty_received > 0 ? r.qty_received : "—"}
@@ -628,71 +826,94 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 /**
- * 已收量行內編輯。
+ * 已收量的邊界與狀態。
  * 下限 = 已退 + 已出（已離開庫存的量不能再被「未收」回去）；上限 = 訂購量。
- * 儲存呼叫 rpc_adjust_po_item_received（連動庫存：補收入庫 / 改少出庫修正）。
+ * 父層（全部到齊／全部儲存）和每一格共用這一份，兩邊才不會算出不一樣的 dirty / invalid。
  */
-// 由父層以 key={`${id}:${qty_received}`} 掛載：儲存成功 reload 後 qty_received 變動 →
-// 元件重掛、val 重置；輸入過程中 qty_received 不變 → 不重掛、保留輸入值。
-function ReceivedCell({ item, onSaved }: { item: Item; onSaved: () => void | Promise<void> }) {
-  const [val, setVal] = useState(String(item.qty_received));
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
+function recvState(item: Item, value: string) {
   const floor = item.qty_returned + item.qty_shipped;
   const max = item.qty_ordered;
-  const num = Number(val);
-  const dirty = num !== item.qty_received;
-  const invalid = val.trim() === "" || Number.isNaN(num) || num < floor || num > max;
+  const num = Number(value);
+  return {
+    floor,
+    max,
+    num,
+    dirty: num !== item.qty_received,
+    invalid: value.trim() === "" || Number.isNaN(num) || num < floor || num > max,
+  };
+}
 
-  async function save() {
-    setErr(null);
-    if (invalid) {
-      setErr(`已收量需介於 ${floor}~${max}`);
-      return;
-    }
-    setSaving(true);
-    try {
-      const supabase = getSupabase();
-      const { data: userData } = await supabase.auth.getUser();
-      const { error: rpcErr } = await supabase.rpc("rpc_adjust_po_item_received", {
-        p_po_item_id: item.id,
-        p_new_qty: num,
-        p_operator: userData.user?.id,
-      });
-      if (rpcErr) throw new Error(rpcErr.message);
-      await onSaved();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
-    }
-  }
+/**
+ * 已收量行內編輯（純呈現，數值狀態在父層 —— 「全部到齊／全部儲存」要跨格操作）。
+ * 儲存呼叫 rpc_adjust_po_item_received（連動庫存：補收入庫 / 改少出庫修正）。
+ *
+ * 原本這裡用 key={`${id}:${qty_received}`} 重掛元件來清乾淨；改用父層 state 之後，
+ * 「乾淨」是靠 value = edits[id] ?? qty_received 這個式子自然成立的：
+ * 儲存成功 reload 後 qty_received 追上輸入值 → dirty 立刻變 false（儲存鈕消失、黃底退掉），
+ * 不需要、也不會依賴重掛。輸入到一半被 reload 也不會被洗掉：reload 只動 items、不碰 edits。
+ */
+function ReceivedCell({
+  item,
+  value,
+  saving,
+  disabled,
+  err,
+  onChange,
+  onFill,
+  onSave,
+}: {
+  item: Item;
+  value: string;
+  saving: boolean;
+  disabled: boolean;
+  err?: string;
+  onChange: (v: string) => void;
+  onFill: () => void;
+  onSave: () => void;
+}) {
+  const { floor, max, num, dirty, invalid } = recvState(item, value);
 
   return (
     <div className="flex flex-col items-end gap-0.5">
       <div className="flex items-center justify-end gap-1">
+        {/* text-base = 16px：iOS 對字級 < 16px 的輸入框會在 focus 時自動放大整頁，
+            樓下用 iPad 點這一格畫面就會亂跳。寬度同步放到 w-20 才容得下 16px 的四位數。 */}
         <input
           type="number"
           inputMode="numeric"
-          value={val}
+          value={value}
           min={floor}
           max={max}
-          disabled={saving}
-          onChange={(e) => setVal(e.target.value)}
-          className={`w-16 rounded border bg-white px-1 py-0.5 text-right text-sm tabular-nums dark:bg-zinc-800 ${
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
+          className={`w-20 rounded border px-1 py-0.5 text-right text-base tabular-nums ${
             invalid && dirty
-              ? "border-red-400 dark:border-red-700"
-              : "border-zinc-300 dark:border-zinc-700"
+              ? "border-red-400 bg-white dark:border-red-700 dark:bg-zinc-800"
+              : dirty
+                ? // 改過、還沒存：黃底黃框，一眼看得出哪幾格是待儲存的
+                  "border-amber-400 bg-amber-50 dark:border-amber-600 dark:bg-amber-950/40"
+                : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-800"
           }`}
           aria-label={`已收量（下限 ${floor}、上限 ${max}）`}
         />
+        {/* 觸控目標 ≥ 44px：樓下是用 iPad 單手點的。touch-manipulation 見上方明細標題列的說明。
+            已經等於訂購量就沒事可做 → 直接 disabled，不做「按了沒反應」的鈕。 */}
+        <button
+          type="button"
+          onClick={onFill}
+          disabled={disabled || num === max}
+          title={`帶入訂購量 ${max}`}
+          aria-label={`帶入訂購量 ${max}`}
+          className="min-h-[44px] min-w-[44px] shrink-0 touch-manipulation rounded-md border border-blue-300 bg-white px-2 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-40 dark:border-blue-700 dark:bg-zinc-900 dark:text-blue-300 dark:hover:bg-blue-950"
+        >
+          全到
+        </button>
         {dirty && (
           <button
             type="button"
-            onClick={save}
-            disabled={saving || invalid}
-            className="rounded bg-emerald-600 px-1.5 py-0.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-40"
+            onClick={onSave}
+            disabled={disabled || invalid}
+            className="min-h-[44px] min-w-[44px] shrink-0 touch-manipulation rounded-md bg-emerald-600 px-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-40"
           >
             {saving ? "…" : "儲存"}
           </button>
