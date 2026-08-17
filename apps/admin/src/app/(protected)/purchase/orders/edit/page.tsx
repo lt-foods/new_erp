@@ -495,7 +495,10 @@ function PageContent() {
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-[280px_1fr]">
+      {/* minmax(0,1fr) 不是 1fr：1fr 等同 minmax(auto,1fr)，auto 的最小值＝內容的 min-content，
+          右欄會被寬表撐開 → 橫向捲動跑到整頁去，表格自己的 overflow-x-auto 永遠不會生效。
+          同 layout.tsx:484 <main> 那個 min-w-0 在解的問題，只是頁面這一層的 grid 沒跟上。 */}
+      <div className="grid gap-4 md:grid-cols-[280px_minmax(0,1fr)]">
         <aside className="flex flex-col gap-4">
           {/* 摘要 */}
           <section className="rounded-md border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
