@@ -17,18 +17,19 @@ import OrderCard, {
 
 // 蝦皮式分頁。我們取貨時付現金，所以沒有「待付款」；「待收貨」＝到店「待取貨」。
 // 分桶跟卡片右上角的狀態字共用 orderPhase()，兩邊永遠一致。
-// 「不成立」（斷貨取消）要顯示 —— 團友得知道那筆單為什麼消失（⛔ 斷貨說明）。
+// 「不成立」分頁 2026-08-17 應店家要求拿掉（大多時候是空的）。單子**沒有**藏：
+// 取消 / 逾期的單仍出現在「全部」，紅字「訂單不成立」＋ ⛔ 斷貨說明照畫 ——
+// 團友還是得知道那筆單為什麼消失。要連「全部」也不出現才加進 HIDDEN_PHASES。
 // 「已轉讓」目前先隱藏（連「全部」也不出現），之後要開再把它移出 HIDDEN_PHASES。
 //
 // 「全部」放最後、預設落在「待到貨」（2026-08-13 門市回報）：預設開在「全部」時
 // 待取貨跟還沒到貨的單混排，客人以為全部到貨就跑來，結果要的那件還在路上。
-type Tab = "all" | "waiting" | "pickup" | "done" | "void";
+type Tab = "all" | "waiting" | "pickup" | "done";
 
 const TAB_LABEL: Record<Tab, string> = {
   waiting: "待到貨",
   pickup: "待取貨",
   done: "已完成",
-  void: "不成立",
   all: "全部",
 };
 
@@ -46,7 +47,7 @@ function fmtAmount(n: number): string {
  * 一個分頁的金額加總。**只有「待到貨」「待取貨」會顯示這張卡**（見 showTotals）：
  * 「全部」混著幾十張早就取貨付清的已完成單，掛一個「應付總金額」會讓團友以為
  * 還欠那麼多（2026-08-11 會員 109814 的回報：$13,845 裡有 $9,959 是歷史已完成單，
- * 真正沒領的只有 $3,886）；「已完成」「不成立」則根本沒有應付。與其在「全部」
+ * 真正沒領的只有 $3,886）；「已完成」則根本沒有應付。與其在「全部」
  * 解釋口徑，不如不顯示 —— 應付金額只出現在真的還有貨要領的分頁。
  *
  * 「應付」一律用 outstanding_amount（＝還沒領走的貨），**不可以用 payable_amount**。
@@ -115,7 +116,7 @@ export default function OrdersPage() {
   // 所以一張單會拆成數個分身，各自進自己的分頁（例：已取的行 → 已完成、
   // 沒到貨的行 → 待到貨）。「全部」維持整張單不拆。
   const buckets = useMemo(() => {
-    const b: Record<Tab, OrderRow[]> = { all: orders, waiting: [], pickup: [], done: [], void: [] };
+    const b: Record<Tab, OrderRow[]> = { all: orders, waiting: [], pickup: [], done: [] };
     for (const o of orders) {
       const parts = splitOrderByPhase(o);
       // 應付金額要**分攤**到各分身，不能每個分身都掛整張單的 outstanding ——
@@ -125,7 +126,9 @@ export default function OrdersPage() {
       const wholeUnpicked = unpickedSubtotal(o.items);
       const outstanding = Number(o.outstanding_amount ?? o.payable_amount ?? 0);
       for (const [phase, part] of parts) {
-        if (phase === "transferred") continue; // 已轉讓不出現在任何分頁
+        // 已轉讓不出現在任何分頁；「不成立」分頁已拿掉，void 分身沒地方去
+        //（整張取消 / 逾期的單照樣以整單型態出現在「全部」，不會消失）
+        if (phase === "transferred" || phase === "void") continue;
         b[phase as Exclude<Tab, "all">].push({
           ...part,
           outstanding_amount:
