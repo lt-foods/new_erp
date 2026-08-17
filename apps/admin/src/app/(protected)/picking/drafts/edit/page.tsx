@@ -30,14 +30,20 @@ import {
   computeDraftPrecheck,
   describeDraftDbError,
   lateCellSnapshot,
+  loadHqLocationId,
   loadPrecheckDemand,
   loadPrefill,
+  loadSkuPreviewBatch,
   precheckHeadline,
   rowTotal,
+  skuPreviewCell,
+  SKU_PREVIEW_ALL_FAILED,
   type AddBatchReport,
   type DraftPrecheck,
   type PrefillResult,
+  type PreviewTone,
   type SkuExistence,
+  type SkuPreviewBatch,
   type StoreRow,
 } from "@/lib/pickingDraftView";
 import SpinButton from "@/components/SpinButton";
@@ -103,6 +109,9 @@ function Body() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [items, setItems] = useState<DraftItem[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
+  // 總倉的 location id，給搜尋下拉顯示「總倉庫存」用（載入時查一次，見 load()）。
+  // null = 還沒載完、查不到、或根本沒有啟用中的總倉 → 那一欄顯示「查詢失敗」，⛔ 不顯示 0。
+  const [hqLocationId, setHqLocationId] = useState<number | null>(null);
   // 草稿引用到、但已經不在啟用清單裡的分店（停用或被刪）。key = store_id，查不到就是被刪了。
   const [extraStores, setExtraStores] = useState<Map<number, Store> | null>(new Map());
   // 目前 skus 還查得到的 id；null = 這次查不出來 → 一律不標「商品已不存在」
@@ -131,7 +140,7 @@ function Body() {
     if (!validId) return;
     try {
       const sb = getSupabase();
-      const [{ data: head, error: headErr }, storeRes] = await Promise.all([
+      const [{ data: head, error: headErr }, storeRes, hqLoc] = await Promise.all([
         sb
           .from("picking_drafts")
           .select("id, name, status, created_at, updated_at")
@@ -142,6 +151,12 @@ function Body() {
         //   ⛔ 不可以在查詢就 .eq("is_active", true) 先濾掉：那樣「停用但草稿裡有數量」的店
         //   會掉進 extraStores 的路徑，被標成「已刪除／無法確認」——說了一件不是事實的事。
         sb.from("stores").select("id, code, name, is_active").order("code"),
+        // 總倉是哪一個 location —— 搜尋下拉那一列要顯示「總倉庫存」。
+        // ⭐ 一頁只查這一次（總倉不會在使用中途換掉），搜尋時就不必再問一次：
+        //   下拉每搜一次的額外查詢有 3 次的預算，這一次要省下來給那三個來源。
+        // ⛔ 查不到不擋整頁 —— 草稿頁的主功能（改數量、檢查、列印）跟總倉庫存無關，
+        //   所以這裡用 .catch 收成 null，讓那一欄顯示「查詢失敗」就好。
+        loadHqLocationId({ db: sb }).catch(() => null),
       ]);
       if (headErr) throw headErr;
       if (!head) throw new Error(`找不到草稿 #${draftId}（可能已被刪除，或這個帳號看不到）`);
@@ -230,6 +245,7 @@ function Body() {
       setDraft(head as Draft);
       setNameDraft((head as Draft).name);
       setStores(allStores);
+      setHqLocationId(hqLoc);
       setExtraStores(extra);
       setSkuExistence(existence);
       setItems(cells);
@@ -731,7 +747,12 @@ function Body() {
           這張草稿已標記完成，先按「重新開啟」才能繼續改。
         </p>
       ) : (
-        <AddSkuBox onAdd={addSkus} inDraft={inDraftSkuIds} inputCls={inputCls} />
+        <AddSkuBox
+          onAdd={addSkus}
+          inDraft={inDraftSkuIds}
+          inputCls={inputCls}
+          hqLocationId={hqLocationId}
+        />
       )}
 
       {skuRows.length === 0 ? (
@@ -1029,12 +1050,15 @@ function AddSkuBox({
   onAdd,
   inDraft,
   inputCls,
+  hqLocationId,
 }: {
   /** 回傳「沒加成功、要留在勾選裡」的 sku_id（見 addSkus） */
   onAdd: (opts: SkuOption[]) => Promise<number[]>;
   /** 已經在這張草稿裡的 sku_id，用來標示、並停掉勾選框 */
   inDraft: Set<number>;
   inputCls: string;
+  /** 總倉 location id（頁面載入時查一次）。null ⇒ 總倉庫存那一欄顯示「查詢失敗」 */
+  hqLocationId: number | null;
 }) {
   const [term, setTerm] = useState("");
   const [opts, setOpts] = useState<SkuOption[]>([]);
@@ -1120,6 +1144,45 @@ function AddSkuBox({
       clearTimeout(t);
     };
   }, [term, open]);
+
+  // ---- 每一列的「結單日 / 總倉庫存 / 可分配量」（老闆 2026-08-17：0 庫存也拉得下去，浪費時間）----
+  //
+  // ⭐ 刻意是**獨立於搜尋的另一個 effect**：商品列先出來、數字後到再補上。
+  //   ⛔ 不可以等數字回來才渲染下拉 —— 老闆要的是「哪幾樣可以挑」，
+  //     為了三個附加數字讓下拉空白幾百毫秒是本末倒置。
+  // ⚠ 結果**綁在「這一批 sku_id」上**（previewKey）：慢的舊批次回來時 key 對不上，
+  //   算出來的東西就永遠不會被畫出來 —— ⛔ 不可能發生「A 商品那一列掛著 B 那批的數字」。
+  //   這比 cancelled 旗標更強：連「已經 setState 完、下一次 render 才用到」的縫都關掉了。
+  const [preview, setPreview] = useState<{ key: string; batch: SkuPreviewBatch } | null>(null);
+  const previewKey = opts.map((o) => o.id).join(",");
+
+  useEffect(() => {
+    let cancelled = false;
+    const ids = previewKey ? previewKey.split(",").map(Number) : [];
+    void (async () => {
+      // ⛔ loadSkuPreviewBatch 自己會把三個來源的失敗各自記成 null（＝「查詢失敗」），
+      //   這裡的 try 只擋最外層那種錯（例如連 supabase client 都取不到）。
+      //   ⛔ 一樣不可以吞成「沒有資料」—— 全 null ＝ 三欄都印「查詢失敗」，不是印 0。
+      let batch: SkuPreviewBatch;
+      try {
+        batch = await loadSkuPreviewBatch(
+          { db: getSupabase(), fetchAll: fetchAllRows },
+          ids,
+          hqLocationId,
+        );
+      } catch {
+        batch = SKU_PREVIEW_ALL_FAILED;
+      }
+      if (cancelled) return;
+      setPreview({ key: previewKey, batch });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [previewKey, hqLocationId]);
+
+  // key 對不上 = 這一批的數字還沒回來 → 顯示「查詢中…」，⛔ 不顯示上一批的數字
+  const previewBatch = preview?.key === previewKey ? preview.batch : null;
 
   // 目前搜尋結果裡「還可以勾」的（已在草稿的不給勾，避免重複加）
   const selectable = opts.filter((o) => !inDraft.has(o.id));
@@ -1291,6 +1354,15 @@ function AddSkuBox({
               >
                 收起
               </button>
+              {/* ⭐ 這兩個數字**不是同一件事**，不寫清楚老闆會把它們當成同一個（正是本功能的重點）：
+                  總倉 ＝ 樓下撿得到的貨；可派 ＝ 派貨工作台准你派的量（進貨 − 已派）。
+                  ⛔ 也要講明「標紅還是可以勾」，不然他會以為系統把那幾樣鎖住了。 */}
+              <p className="w-full text-xs text-zinc-500 dark:text-zinc-400">
+                <span className="font-medium">總倉</span>＝樓下撿得到的量、
+                <span className="font-medium">可派</span>＝派貨工作台准你派的量（進貨 − 已派）。
+                任一為 <span className="font-semibold text-red-600 dark:text-red-400">0</span> 會標紅
+                —— 只是提醒，<strong>照樣可以勾選加入</strong>。
+              </p>
             </div>
             <ul className="divide-y divide-zinc-100 overflow-y-auto dark:divide-zinc-700">
               {opts.map((o) => {
@@ -1322,6 +1394,7 @@ function AddSkuBox({
                       <span className="font-medium">{o.product_name}</span>
                       {o.variant_name && <span className="ml-1 text-zinc-500">/ {o.variant_name}</span>}
                       <span className="ml-2 font-mono text-xs text-zinc-400">{o.sku_code}</span>
+                      <SkuPreviewLine batch={previewBatch} skuId={o.id} />
                     </div>
                     {already && (
                       // 已經加過的照樣列出來、但標明白 —— ⛔ 不從搜尋結果裡藏掉，
@@ -1337,6 +1410,51 @@ function AddSkuBox({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// 搜尋下拉每一列底下那一行小字：`結單 8/19　總倉 24 / 可派 0`
+//
+// ⭐⭐ 為什麼是**兩個**數字（老闆 2026-08-17，辣椒醬 G01159-01 是活例）：
+//   總倉 24 ＝ 樓下撿得到的貨；可派 0 ＝ 派貨工作台准你派的量（進貨 − 已派）。
+//   只看一個都會白跑 —— 只看庫存會撿得到卻建不了單，只看可分配量會以為沒貨其實總倉還有。
+//
+// ⛔ 任一為 0 只**標紅**，⛔ 不擋勾選（老闆選 A：標示但不擋）。
+// ⛔⛔ 查詢失敗印「查詢失敗」，⛔ 絕對不可以印 0 —— 老闆看到 0 會直接跳過這一樣，
+//   而系統其實根本不知道有沒有貨。#757 才剛踩過同一個病（搜尋失敗偽裝成「沒這商品」）。
+const PREVIEW_TONE_CLS: Record<PreviewTone, string> = {
+  ok: "",
+  muted: "text-zinc-400 dark:text-zinc-500",
+  zero: "font-semibold text-red-600 dark:text-red-400",
+  // 「無法確認」沿用本頁其他地方的琥珀色（分店已停用／商品查不到都是這個色）
+  failed: "font-semibold text-amber-700 dark:text-amber-400",
+};
+
+function SkuPreviewLine({ batch, skuId }: { batch: SkuPreviewBatch | null; skuId: number }) {
+  // 還沒回來 → 佔一行同樣高度的淡字，⛔ 不要讓那一列在數字到達時上下跳動
+  if (!batch) {
+    return <div className="mt-0.5 text-xs text-zinc-300 dark:text-zinc-600">結單 · 總倉 / 可派　查詢中…</div>;
+  }
+  const c = skuPreviewCell(batch, skuId);
+  return (
+    <div className={`mt-0.5 text-xs ${c.zero ? "text-red-600 dark:text-red-400" : "text-zinc-500 dark:text-zinc-400"}`}>
+      結單 <span className={PREVIEW_TONE_CLS[c.close.tone]}>{c.close.text}</span>
+      <span className="mx-1.5 text-zinc-300 dark:text-zinc-600">·</span>
+      總倉 <span className={PREVIEW_TONE_CLS[c.hq.tone]}>{c.hq.text}</span>
+      {" / "}
+      可派 <span className={PREVIEW_TONE_CLS[c.avail.tone]}>{c.avail.text}</span>
+      {c.zero && (
+        // ⭐ 顏色以外一定要有字：這一頁有深色模式、老闆也可能用平板在強光下看，
+        //   只靠紅色的話「這一樣有問題」就傳達不到（同列印頁那條「顏色以外要另有文字標示」）。
+        <span className="ml-1.5 font-semibold">
+          {c.hq.tone === "zero" && c.avail.tone === "zero"
+            ? "⚠ 總倉沒貨、也派不出去"
+            : c.hq.tone === "zero"
+              ? "⚠ 總倉沒貨（撿不到）"
+              : "⚠ 派不出去（工作台可分配量 0）"}
+        </span>
+      )}
     </div>
   );
 }

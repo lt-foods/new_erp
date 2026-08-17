@@ -1045,3 +1045,267 @@ export async function loadPrecheckDemand({ db, fetchAll }: PrefillDeps): Promise
       .order("store_id", { ascending: true, nullsFirst: false }),
   );
 }
+
+// ============================================================
+// 加入商品「之前」就看得到：結單日 / 總倉庫存 / 可分配量
+// ============================================================
+//
+// 老闆 2026-08-17 原話：
+//   「我發現選品項時，如果數量是 0 庫存也可以拉，這樣會浪費我的時間。」
+//   「a，可以顯示結單日嗎?」
+//
+// ⭐⭐ 為什麼一定要顯示**兩個**數字（2026-08-17 辣椒醬 G01159-01 是活例）：
+//     總倉庫存 24 ＝ 樓下**撿得到**的貨（stock_balances @ central_warehouse）
+//     可分配量  0 ＝ 派貨工作台**准你派**的量（進貨 − 已派）
+//   只看一個都會白跑：只看庫存 → 撿得到但建不了單；只看可分配量 → 顯示 0 但總倉其實有貨。
+//
+// ⛔⛔ 效能是這一段最硬的約束：搜尋一次最多 15 筆（drafts/edit 的 .limit(15)）。
+//   ⛔ **不可以對每個 SKU 各呼叫一次 loadPrefill** —— 那是 15×2＝30 次往返，下拉會卡住。
+//   → 三個來源**各一次 .in() 查完**，一次搜尋固定 3 次查詢。
+//   ⛔ 也不可以改 loadPrefill 去配合這裡：它有兩個既有呼叫點（drafts/edit 的補格子與批次加入），
+//     行為必須零變化 —— 所以這裡是**另外一支批次版**，loadPrefill 一個字都沒動。
+//
+// ⛔ 全程唯讀：三個來源都只下 SELECT，沒有寫回、沒有呼叫任何遠端程序，也不碰派貨工作台
+//   （草稿頁＝準備紙本、工作台＝實際派貨，老闆 2026-08-17 裁示兩邊不互相伸手）。
+
+/**
+ * 搜尋下拉每一列要顯示的三個數字。
+ *
+ * ⭐⭐ 每個來源各自是 `Map | null`，⛔ **不是**「查不到就給 0」：
+ *   `Map`  ＝ 這個來源查成功了。裡面沒有那個 sku_id ⇒ **查得到、就是 0／就是沒有**（那是事實）
+ *   `null` ＝ 這個來源查失敗 ⇒ 畫面必須印「查詢失敗」，⛔ 絕對不可以印 0。
+ *   老闆看到 0 會直接判定「這樣沒貨、跳過」——「系統異常偽裝成資料狀態」正是本專案
+ *   反覆踩過的病，最近一次是 #757（搜尋失敗偽裝成「沒這個商品」）。
+ */
+export type SkuPreviewBatch = {
+  /** sku_id → 可分配量（＝派貨工作台上看得到的那個數字）。null ＝ 查詢失敗 */
+  available: Map<number, number> | null;
+  /** sku_id → 總倉實際庫存 on_hand。null ＝ 查詢失敗（含「連總倉是哪一個都問不到」） */
+  hqOnHand: Map<number, number> | null;
+  /** sku_id → 結單日（已去重、已由小到大排序）。null ＝ 查詢失敗 */
+  closeDates: Map<number, string[]> | null;
+};
+
+/** 三個來源全部拿不到（例如連 supabase client 都取不到）→ 每一欄都顯示「查詢失敗」 */
+export const SKU_PREVIEW_ALL_FAILED: SkuPreviewBatch = {
+  available: null,
+  hqOnHand: null,
+  closeDates: null,
+};
+
+/**
+ * 總倉是哪一個 location。
+ *
+ * ⚠ 取法對齊 `rpc_approve_restock_to_transfer`（`20260515000004:46-48`）：
+ *   `type='central_warehouse' AND is_active` → **`ORDER BY id LIMIT 1`**。
+ *   既有前端兩處（`wms/picking/page.tsx:581`、`components/PickModal.tsx:186`）沒有 ORDER BY，
+ *   真的有兩個總倉時取到哪一個並不確定 —— 這裡照 DB 那支補上，
+ *   顯示的庫存才保證跟真正會出貨的那一個倉是同一個。
+ *
+ * @returns location id；`null` ＝ 查得到別的、就是沒有啟用中的總倉（⛔ 查詢失敗會 throw，不會回 null）
+ */
+export async function loadHqLocationId({ db }: { db: ReadOnlyDb }): Promise<number | null> {
+  const { data, error } = await db
+    .from("locations")
+    .select("id")
+    .eq("type", "central_warehouse")
+    .eq("is_active", true)
+    .order("id", { ascending: true })
+    .limit(1);
+  if (error) throw error;
+  const id = ((data ?? []) as { id: number }[])[0]?.id;
+  return id === undefined || id === null ? null : Number(id);
+}
+
+/**
+ * 一次把 N 樣商品的「可分配量／總倉庫存／結單日」查回來（N ≤ 15，見上面的效能說明）。
+ *
+ * ⭐ 與 `loadPrefill` 的分工：
+ *   `loadPrefill`        ＝ 加入商品**當下**要寫進快照的量（逐店分配、要夾可分配量上限）
+ *   `loadSkuPreviewBatch` ＝ 加入**之前**在下拉上先看一眼（只要三個總數，不逐店）
+ *   兩支共用同一份可分配量算式（`availableBySku`），⛔ 不會出現「下拉說 5、加進去變 3」。
+ *
+ * ⛔⛔ 這支**刻意會 catch**，與 `loadPrefill`（刻意不 catch）相反 —— 理由不同所以做法不同：
+ *   loadPrefill 失敗代表「這樣商品不該被加進草稿」，必須讓呼叫端整個失敗；
+ *   這裡失敗只代表「這三個數字暫時給不出來」，⛔ 不可以連帶讓老闆挑不了商品。
+ *   但失敗**一定要看得見**：記成 `null`（＝「查詢失敗」），⛔ 不是記成 0。
+ *   三個來源各自成敗 —— 庫存查不到，不該連可分配量也一起變成「查詢失敗」。
+ *
+ * @param hqLocationId 總倉 location id（呼叫端在頁面載入時查一次就好，見 loadHqLocationId）。
+ *                     `null` ⇒ 總倉庫存那一欄一律「查詢失敗」（⛔ 不是 0）
+ */
+export async function loadSkuPreviewBatch(
+  { db, fetchAll }: PrefillDeps,
+  skuIds: number[],
+  hqLocationId: number | null,
+): Promise<SkuPreviewBatch> {
+  // id 一律 Number() 正規化再去重：BIGINT 經過 PostgREST 可能是字串（#751 踩過），
+  // 不正規化的話 Map.get() 必定對不上、每一列都變成「查詢失敗」。
+  const ids = Array.from(new Set(skuIds.map((v) => Number(v)))).filter((v) => Number.isFinite(v));
+  // 沒東西可查 ＝ 三個來源都「查得到、就是空的」，⛔ 不是失敗
+  if (ids.length === 0) return { available: new Map(), hqOnHand: new Map(), closeDates: new Map() };
+
+  // ---- 查詢 ①②：可分配量與總倉庫存互不相依 → 併發送出，而且各自成敗 ----
+  const [demandRows, hqOnHand] = await Promise.all([
+    // ⚠ 篩選與排序**逐項對齊** loadPrecheckDemand／派貨工作台（wms/picking/page.tsx:375-385），
+    //   只多一個 .in("sku_id") 把範圍縮到這次搜尋的 15 樣 ——
+    //   算出來的可分配量才跟老闆待會在工作台上看到的是同一個數字。
+    // ⚠ 走 fetchAll：PostgREST 的 1000 列上限是**靜默**截斷，被截掉的商品會變成
+    //   「查不到 → 可派 0」，剛好是最像真的那種假訊息。
+    //   ⓘ 這兩個篩選會把整個 view 收到數十列（見 loadPrecheckDemand），加上 .in 只會更少
+    //   → 實務上就是 1 次請求。
+    fetchAll<PrecheckDemandRow>(() =>
+      db
+        .from("v_picking_demand_by_po")
+        .select("po_id, sku_id, store_id, gr_qty, po_sku_already_wave")
+        .in("sku_id", ids)
+        .eq("has_stock_left", true)
+        .eq("has_demand_left", true)
+        .order("po_item_id", { ascending: true })
+        .order("store_id", { ascending: true, nullsFirst: false }),
+    ).catch(() => null),
+    loadHqOnHand({ db }, ids, hqLocationId),
+  ]);
+
+  const available = demandRows ? availableBySku(demandRows) : null;
+
+  // ---- 查詢 ③：結單日 ----
+  // ⚠ 只認「這次真的有可分配量、也真的還有未派需求」的那些 (sku, po)，
+  //   與 loadPrefill 的取法逐字相同（它是拿自己那批 rows 的 po_id 去 .in）——
+  //   已無庫存／已無需求的團不顯示結單日，老闆 2026-08-17 確認**不需要**補顯示。
+  // ⚠ po_id 取**全部**回傳列（含 store_id 為 NULL 的），這一點也與 loadPrefill 一致；
+  //   availableBySku 才需要跳過 NULL 店的列。
+  let closeDates: Map<number, string[]> | null = null;
+  if (demandRows) {
+    closeDates = new Map();
+    const poIds = Array.from(new Set(demandRows.map((r) => Number(r.po_id))));
+    // (sku, po) 配對表：`.in(sku).in(po)` 是**交叉**的，會撈到「A 商品 × B 商品那張 PO」，
+    // 那種列在逐樣版的 loadPrefill 裡根本不會出現 → 撈回來之後要濾掉，兩邊才會給同一個日期。
+    const allowed = new Set(demandRows.map((r) => `${Number(r.sku_id)}:${Number(r.po_id)}`));
+    if (poIds.length > 0) {
+      try {
+        const rows = await fetchAll<{ sku_id: number; po_id: number; close_date: string | null }>(
+          () =>
+            db
+              .from("v_po_demand_by_store")
+              .select("sku_id, po_id, close_date")
+              .in("sku_id", ids)
+              .in("po_id", poIds)
+              .not("close_date", "is", null)
+              .order("close_date", { ascending: true })
+              // 分頁要有穩定的全序，否則跨頁可能漏列（這一支是 PO×SKU×店 粒度）
+              .order("po_item_id", { ascending: true })
+              .order("store_id", { ascending: true, nullsFirst: false }),
+        );
+        const bag = new Map<number, Set<string>>();
+        for (const r of rows) {
+          const skuId = Number(r.sku_id);
+          if (!allowed.has(`${skuId}:${Number(r.po_id)}`)) continue;
+          if (typeof r.close_date !== "string" || !r.close_date) continue;
+          const set = bag.get(skuId) ?? new Set<string>();
+          set.add(r.close_date);
+          bag.set(skuId, set);
+        }
+        for (const [skuId, set] of bag) closeDates.set(skuId, Array.from(set).sort());
+      } catch {
+        // ⛔ 不可以退回空 Map：那會讓「查詢失敗」長得跟「這樣商品沒有結單日」一模一樣
+        closeDates = null;
+      }
+    }
+  }
+
+  return { available, hqOnHand, closeDates };
+}
+
+/**
+ * 總倉的 on_hand。
+ *
+ * ⚠ 用 `on_hand` 而不是 `on_hand − reserved`：這一欄回答的是「**樓下撿不撿得到**」，
+ *   與派貨工作台的總倉即時在庫（`wms/picking/page.tsx:588`，同樣是純參考顯示）同一個口徑。
+ *   （`PickModal` 用 `on_hand − reserved` 是因為它算的是「派得出去多少」，不是同一件事。）
+ *
+ * ⛔ 任何一步失敗都回 `null`（＝畫面印「查詢失敗」），⛔ 不回空 Map（會被畫成一整排 0）。
+ */
+async function loadHqOnHand(
+  { db }: { db: ReadOnlyDb },
+  ids: number[],
+  hqLocationId: number | null,
+): Promise<Map<number, number> | null> {
+  if (hqLocationId === null) return null;
+  try {
+    // ids ≤ 15（搜尋下拉的 .limit(15)）→ 一次查得完，不必分批、也不會碰到 1000 列上限。
+    const { data, error } = await db
+      .from("stock_balances")
+      .select("sku_id, on_hand")
+      .eq("location_id", hqLocationId)
+      .in("sku_id", ids);
+    if (error) throw error;
+    const m = new Map<number, number>();
+    for (const r of (data ?? []) as { sku_id: number; on_hand: number }[]) {
+      const v = Number(r.on_hand);
+      // 讀不成數字就當作「不知道」——⛔ 寧可整批標查詢失敗，也不要把壞資料畫成 0
+      if (!Number.isFinite(v)) throw new Error(`stock_balances.on_hand 不是數字：${String(r.on_hand)}`);
+      m.set(Number(r.sku_id), v);
+    }
+    // 沒有結存列 ＝ 這樣商品在總倉沒有庫存 → 0。
+    // 這是「查得到、就是 0」，不是「查不到」——與 PickModal.tsx:207 同一個判斷。
+    for (const id of ids) if (!m.has(id)) m.set(id, 0);
+    return m;
+  } catch {
+    return null;
+  }
+}
+
+/** 一個數字的狀態：ok ＝ 正常、muted ＝ 沒有這個資料、zero ＝ 確定是 0、failed ＝ 查詢失敗 */
+export type PreviewTone = "ok" | "muted" | "zero" | "failed";
+
+/** 下拉一列上那三個欄位要印的字與語氣 */
+export type SkuPreviewCell = {
+  /** 結單日：「8/19」「6/24、7/01」「—」（查得到、就是沒有）「查詢失敗」 */
+  close: { text: string; tone: PreviewTone };
+  /** 總倉庫存 */
+  hq: { text: string; tone: PreviewTone };
+  /** 可分配量 */
+  avail: { text: string; tone: PreviewTone };
+  /**
+   * 兩個數字**確定**有一個是 0 → 這一列標紅（老闆 2026-08-17 選 A：**標示但不擋**，
+   * ⛔ 照樣可以勾選）。
+   * ⚠ 查詢失敗**不算**：查不到不等於沒貨，標成紅的等於替系統異常下了一個它沒資格下的判斷。
+   */
+  zero: boolean;
+};
+
+/**
+ * 把批次結果變成「這一列要印什麼字」。
+ *
+ * ⛔ 純函式、沒有 I/O —— 措辭與紅字判準集中在這裡一處維護（同本檔其他措辭函式的理由）。
+ */
+export function skuPreviewCell(batch: SkuPreviewBatch, skuId: number): SkuPreviewCell {
+  const id = Number(skuId);
+
+  const num = (m: Map<number, number> | null): { text: string; tone: PreviewTone } => {
+    if (!m) return { text: "查詢失敗", tone: "failed" };
+    // 查得到、但沒有這一筆 ⇒ 就是 0（可分配量 0 的商品本來就不在工作台上；
+    // 總倉沒有結存列就是沒庫存）。這是事實，不是查不到。
+    const v = m.get(id) ?? 0;
+    return { text: String(v), tone: v === 0 ? "zero" : "ok" };
+  };
+  const hq = num(batch.hqOnHand);
+  const avail = num(batch.available);
+
+  // 結單日的格式（月不補零、日補零、跨多團用「、」串起來）沿用列印頁那一支，⛔ 不另寫一份。
+  // ⓘ 只有「沒有日期」那一句刻意不一樣：列印頁要分辨「舊版草稿（—）」與「本來就沒有（無）」，
+  //   而下拉是**現查現顯示**、根本沒有舊版草稿這回事 → 一律印「—」（老闆指定的格式）。
+  let close: { text: string; tone: PreviewTone };
+  if (!batch.closeDates) {
+    close = { text: "查詢失敗", tone: "failed" };
+  } else {
+    const dates = batch.closeDates.get(id) ?? [];
+    close =
+      dates.length === 0
+        ? { text: "—", tone: "muted" }
+        : { text: formatCloseDates(dates[0], { close_dates: dates }).text, tone: "ok" };
+  }
+
+  return { close, hq, avail, zero: hq.tone === "zero" || avail.tone === "zero" };
+}
