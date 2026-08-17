@@ -674,7 +674,19 @@ function Body() {
                   {storeCols.map((st) => {
                     const key = cellKey(row.sku_id, st.id);
                     const stored = itemsByKey.get(key)?.qty;
-                    const value = edits.get(key) ?? (stored === undefined ? "0" : String(Number(stored)));
+                    // 沒量的格子**留白**（placeholder 一個淡「－」），⛔ 不要顯示 0。
+                    // 老闆原話：14 家店 × 一堆商品，滿畫面的 0 會把「真的要撿的數字」蓋掉。
+                    // 「沒這一列」與「這一列是 0」在紙上、畫面上都是同一件事（都不用撿），
+                    // 所以兩種都留白 —— 列印頁 drafts/print 早就是這樣印的（`q === 0 ? "－" : q`）。
+                    //
+                    // ⛔ 這只是**顯示**：存檔那條路一行都沒動。
+                    //   - 老闆正在打字時 edits 有值 → 一律以 edits 為準，絕不蓋掉他打的東西
+                    //   - 清空一格 → commitCell 的 `raw.trim() === "" ? 0` 照樣存成 0（本檔 :274）
+                    //   - 從沒動過的格子 → commitCell 的 `raw === undefined` 直接 return，不寫 DB（本檔 :265）
+                    //   合計走 rowTotal(items)、不看這個字串，所以改前改後完全一樣。
+                    const edited = edits.get(key);
+                    const value =
+                      edited ?? (stored === undefined || Number(stored) === 0 ? "" : String(Number(stored)));
                     return (
                       <td
                         key={st.id}
@@ -688,6 +700,7 @@ function Body() {
                           min="0"
                           step="1"
                           value={value}
+                          placeholder="－"
                           disabled={readOnly}
                           aria-label={`${row.label} / ${st.name} 數量`}
                           onChange={(e) => {
@@ -695,7 +708,7 @@ function Body() {
                             setEdits((m) => new Map(m).set(key, v));
                           }}
                           onBlur={() => void commitCell(row.sku_id, st.id)}
-                          className="w-16 rounded border border-zinc-300 bg-white px-1 py-1 text-center text-sm disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-800"
+                          className="w-16 rounded border border-zinc-300 bg-white px-1 py-1 text-center text-sm placeholder:text-zinc-300 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-800 dark:placeholder:text-zinc-600"
                         />
                       </td>
                     );
