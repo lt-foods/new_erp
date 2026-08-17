@@ -94,6 +94,19 @@ export default function PrintSignPage() {
     let cancelled = false;
     (async () => {
       try {
+        // ⚠ 每次查詢一開始，先把上一輪的錯誤與資料全部清掉。
+        //   這兩件事**必須成對做**，只做一半比不做更糟：
+        //   ‧ 只清資料、不清 error → 老闆遇到一次失敗後列印/CSV 永遠按不下去，要重開分頁才解得掉
+        //   ‧ 只清 error、不清資料 → 查詢中途失敗時會留著上一輪的 prices，跟這一輪剛寫進去的
+        //     新商品混出一張「金額是舊的」簽收單 —— 而那是要印給店家簽收的錢（阿審 #759 第三輪 P0-2）
+        //   ⛔ 清除一律放在這裡（async 內、第一個 await 之前），不要搬到 effect 本體：
+        //     搬上去會多一條 react-hooks/set-state-in-effect。
+        setError(null);
+        setWaves(null);
+        setItems([]);
+        setStores([]);
+        setSkus([]);
+        setPrices(new Map());
         const sb = getSupabase();
         const q = sb
           .from("picking_waves")
@@ -134,11 +147,18 @@ export default function PrintSignPage() {
         const [ss, sk] = await Promise.all([
           storeIds.length
             ? sb.from("stores").select("id, code, name").in("id", storeIds).order("code")
-            : Promise.resolve({ data: [] as StoreRow[] }),
+            : Promise.resolve({ data: [] as StoreRow[], error: null }),
           skuIds.length
             ? sb.from("skus").select("id, sku_code, product_name, variant_name").in("id", skuIds)
-            : Promise.resolve({ data: [] as SkuRow[] }),
+            : Promise.resolve({ data: [] as SkuRow[], error: null }),
         ]);
+        // ⚠ 這兩個查詢的 error 原本沒人看：失敗時 data 是 null → `?? []` 變成空陣列 →
+        //   畫面走「此日無已派貨資料」，老闆會以為那天真的沒出貨（阿審 #759 第三輪 P0-1）。
+        //   skus 失敗更陰險：紙本與 CSV 會把品號品名印成「—」，看起來就只是缺資料。
+        //   一律比照上面 e1 / e2 / e3 的既有寫法直接 throw，交給 catch 走錯誤狀態。
+        //   （`error: null` 是上面兩個空清單捷徑補的，補了這裡才讀得到 .error）
+        if (ss.error) throw new Error(ss.error.message);
+        if (sk.error) throw new Error(sk.error.message);
         if (!cancelled) {
           setStores((ss.data as StoreRow[]) ?? []);
           setSkus((sk.data as SkuRow[]) ?? []);
@@ -365,37 +385,53 @@ export default function PrintSignPage() {
               />
             </label>
           )}
-          <span className="text-sm text-zinc-500">
-            {waves === null
+          {/* ⚠ 「出錯了」和「這天真的沒貨」在畫面上必須一眼分得出來 —— 兩者都是空畫面，
+              但一個要重試、一個不用。error 優先於其他狀態顯示。 */}
+          <span className={error ? "text-sm font-semibold text-red-700" : "text-sm text-zinc-500"}>
+            {error
+              ? "⚠ 載入失敗（不是沒資料）"
+              : waves === null
               ? "載入中…"
               : sheets.length === 0
               ? "（無資料）"
               : `${sheets.length} 間分店、${waves.length} 張撿貨單`}
           </span>
+          {/* ⚠ 有 error 就不准列印/匯出：載入到一半失敗時手上這份資料是殘缺的，
+              印出去就是拿錯的金額給店家簽收（阿審 #759 第三輪 P0-2）。
+              ⛔ 這個 disable 一定要搭配「查詢開始時 setError(null)」一起看 —— 少了那半邊，
+                 老闆遇到一次失敗就再也按不了按鈕。 */}
           <SpinButton
             onClick={exportCsv}
-            disabled={sheets.length === 0}
+            disabled={sheets.length === 0 || error !== null}
             className="ml-auto rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
           >
             ⬇ 匯出 CSV
           </SpinButton>
           <SpinButton
             onClick={() => window.print()}
-            disabled={sheets.length === 0}
+            disabled={sheets.length === 0 || error !== null}
             className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
           >
             🖨️ 列印
           </SpinButton>
         </div>
 
+        {/* ⚠ 錯誤訊息本身是 Supabase 丟回來的英文技術字串，老闆看不出「要不要重試」，
+            所以上面補一句白話結論。原文照留在最下面，工程師才查得下去。 */}
         {error && (
           <div className="no-print m-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-            {error}
+            <div className="font-semibold">⚠ 資料載入失敗 —— 這不是「今天沒有貨」。</div>
+            <div className="mt-1">
+              畫面上的資料不完整，已停用列印與匯出 CSV。請重新整理或重選配送日再試一次。
+            </div>
+            <div className="mt-1 font-mono text-xs break-words text-red-700">{error}</div>
           </div>
         )}
 
         {/* 簽收單內容 */}
-        {sheets.length === 0 && waves !== null && (
+        {/* ⚠ `!error` 這個條件是重點：沒有它，查詢失敗（例如 stores 查不到）也會落到這一行，
+            畫面就變成「此日無已派貨資料」—— 系統壞掉偽裝成當天沒出貨，老闆分不出來。 */}
+        {sheets.length === 0 && waves !== null && !error && (
           <div className="no-print p-6 text-center text-sm text-zinc-500">
             此日無已派貨資料 — 請選擇有撿貨單的配送日。
           </div>
@@ -405,7 +441,14 @@ export default function PrintSignPage() {
             2026-08-17 老闆指示移除：它自己就是一張 A4（`sheet` 有 page-break-after），
             內容又跟後面每一張簽收單完全重複 —— 每次列印白白多印一整張紙。 */}
 
-        {sheets.map((sheet) => (
+        {/* ⚠ 有 error 就整批不渲染。價格查詢失敗時 waves/items/stores/skus 其實都已經進 state，
+            簽收單照樣排得出來，只是單價全變「—」、合計變 $0，底下還會掛一句
+            「※ 標『—』的品項尚未設定分店價」—— 那句在這個情況下是**騙人的**（價格不是沒設，
+            是根本沒查到）。按鈕擋得住我們自己的列印鈕，擋不住瀏覽器的 Ctrl+P，
+            所以錯誤狀態下乾脆不給任何可印的東西（阿審 #759 第三輪 P0-2:「清空可列印資料」）。
+            ⛔ 這是唯一對簽收單本體的改動，而且只在 error 非 null 時生效 ——
+              正常情境下每一格的文字與 class 都跟 5a50b7e 逐字元相同（v5 指紋已驗）。 */}
+        {(error ? [] : sheets).map((sheet) => (
           <div
             key={sheet.store.id}
             className="sheet mx-auto my-6 max-w-[210mm] border border-zinc-300 bg-white p-8 print:my-0 print:border-0 print:p-0"
