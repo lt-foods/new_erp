@@ -31,7 +31,7 @@ import {
   rowTotal,
   type PrefillResult,
   type SkuExistence,
-  type StoreRef,
+  type StoreRow,
 } from "@/lib/pickingDraftView";
 import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
@@ -55,7 +55,7 @@ type DraftItem = {
   snapshot_store_name: string | null;
 };
 
-type Store = StoreRef;
+type Store = StoreRow;
 
 type SkuOption = {
   id: number;
@@ -108,8 +108,9 @@ function Body() {
           .select("id, name, status, created_at, updated_at")
           .eq("id", draftId)
           .maybeSingle(),
-        // 所有啟用中的分店（含這次沒下訂單的），排序沿用 restock/new 的 code 排法
-        sb.from("stores").select("id, code, name").eq("is_active", true).order("code"),
+        // ⭐ 撈**全部**分店（含停用）：只撈 is_active 的話，「已停用、而且這張草稿
+        //   沒有那家店明細」的分店會整欄消失（阿審 #752 P1-1）。老闆要所有分店都有欄位。
+        sb.from("stores").select("id, code, name, is_active").order("code"),
       ]);
       if (headErr) throw headErr;
       if (!head) throw new Error(`找不到草稿 #${draftId}（可能已被刪除，或這個帳號看不到）`);
@@ -127,14 +128,14 @@ function Body() {
           .order("id", { ascending: true }),
       );
 
-      const activeStores = (storeRes.data ?? []) as Store[];
+      const allStores = (storeRes.data ?? []) as Store[];
 
       // ---- 孤兒列的解析（sku_id / store_id 沒有外鍵，草稿可能引用到已刪除的東西）----
       // ⛔ 目的不是「濾掉」，是「查出來好標示」。查失敗一律退化成「不標記」，
       //    絕不因為一次查詢失敗就把資料藏起來或對老闆說東西不見了。
-      const activeIds = new Set(activeStores.map((s) => s.id));
+      const listedIds = new Set(allStores.map((s) => Number(s.id)));
       const missingStoreIds = Array.from(new Set(cells.map((c) => c.store_id))).filter(
-        (id) => !activeIds.has(id),
+        (id) => !listedIds.has(Number(id)),
       );
       // ⛔ 查詢失敗要跟「查得到、但這幾家真的被刪了」分開：
       //   舊版沒有檢查 error，也在 catch 裡 extra.clear()，等於把「查不出來」
@@ -197,7 +198,7 @@ function Body() {
       setNotice(skuCheckWarning);
       setDraft(head as Draft);
       setNameDraft((head as Draft).name);
-      setStores(activeStores);
+      setStores(allStores);
       setExtraStores(extra);
       setSkuExistence(existence);
       setItems(cells);

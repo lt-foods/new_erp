@@ -72,6 +72,9 @@ export type DraftCell = {
 
 export type StoreRef = { id: number; code: string; name: string };
 
+/** stores 全表的一列：**含停用**。`is_active === false` → 欄位標「已停用」 */
+export type StoreRow = StoreRef & { is_active?: boolean | null };
+
 export type StoreColumn = StoreRef & { state: "active" | "inactive" | "missing" | "unknown" };
 
 /**
@@ -109,14 +112,21 @@ export type SkuExistence =
  * @param known  額外查回來的分店資料（key = store_id）；查不到的就是被硬刪了
  */
 export function buildStoreColumns(
-  active: StoreRef[],
+  allStores: StoreRow[],
   cells: DraftCell[],
   known: Map<number, StoreRef> | null,
 ): StoreColumn[] {
+  // ⭐ 第一個參數是 **stores 全表（含停用）**，不是只有 is_active 的那些。
+  //   只撈 active 的話，「已停用、而且這張草稿剛好沒有那家店的明細列」會整欄消失 ——
+  //   老闆要的是「所有分店都有欄位」（他可能臨時多給某店），少一欄就是靜默丟失。
   // id 一律正規化成數字再比（理由同 buildSkuRows）
-  const activeIds = new Set(active.map((s) => Number(s.id)));
+  const activeIds = new Set(allStores.map((s) => Number(s.id)));
   const knownById = known ? new Map(Array.from(known, ([k, v]) => [Number(k), v])) : null;
-  const cols: StoreColumn[] = active.map((s) => ({ ...s, id: Number(s.id), state: "active" }));
+  const cols: StoreColumn[] = allStores.map((s) => ({
+    ...s,
+    id: Number(s.id),
+    state: s.is_active === false ? ("inactive" as const) : ("active" as const),
+  }));
 
   const extraIds = Array.from(new Set(cells.map((c) => Number(c.store_id)))).filter(
     (id) => !activeIds.has(id),
@@ -460,6 +470,16 @@ export function lateCellSnapshot(pre: PrefillResult | null, storeId: number, now
  */
 export type CloseDateView = { text: string; kind: "dates" | "none" | "failed" | "legacy" };
 
+/**
+ * ⚠️ legacy 的判定**必須看 metadata**，不可以看「欄位存不存在」——
+ * SELECT 一旦固定選了那個欄位，key 就永遠存在，判斷永遠 false（阿審 #752 P1-2）。
+ * 這裡用 `snapshot_extra.snapshot_source`：新版寫入一定有 add_sku / cell_created_later，
+ * 「結單日功能上線前」建的列則沒有。
+ */
+export function isLegacyDraftCell(extra: Record<string, unknown> | null | undefined): boolean {
+  return !extra || typeof extra.snapshot_source !== "string";
+}
+
 export function formatCloseDates(
   closeDate: string | null | undefined,
   extra: Record<string, unknown> | null | undefined,
@@ -481,6 +501,7 @@ export function formatCloseDates(
   if (extra && extra.close_date_lookup === "failed") {
     return { text: "查詢失敗", kind: "failed" };
   }
-  if (opts?.legacy) return { text: "—", kind: "legacy" };
+  // legacy 由呼叫端傳入（用 isLegacyDraftCell 判定），或這裡自己看 metadata
+  if (opts?.legacy ?? isLegacyDraftCell(extra)) return { text: "—", kind: "legacy" };
   return { text: "無", kind: "none" };
 }

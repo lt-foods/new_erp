@@ -31,8 +31,9 @@ import {
   type DraftCell,
   type SkuExistence,
   type StoreRef,
+  type StoreRow,
 } from "@/lib/pickingDraftView";
-import { PRINT_SHEET_CSS, csvFileName, toCsv } from "@/lib/printSheet";
+import { PRINT_SHEET_CSS, csvFileName, excelSafeText, toCsv } from "@/lib/printSheet";
 import SpinButton from "@/components/SpinButton";
 import { getTenantName } from "@/lib/tenant";
 
@@ -59,7 +60,7 @@ function Body() {
   const validId = Number.isFinite(draftId) && draftId > 0;
   const [draft, setDraft] = useState<Draft | null>(null);
   const [cells, setCells] = useState<Cell[]>([]);
-  const [stores, setStores] = useState<StoreRef[]>([]);
+  const [stores, setStores] = useState<StoreRow[]>([]);
   const [extraStores, setExtraStores] = useState<Map<number, StoreRef> | null>(new Map());
   const [skuExistence, setSkuExistence] = useState<SkuExistence>({ kind: "unknown", confirmedIds: new Set() });
   const [loading, setLoading] = useState(validId);
@@ -72,7 +73,9 @@ function Body() {
       const sb = getSupabase();
       const [{ data: head, error: headErr }, storeRes] = await Promise.all([
         sb.from("picking_drafts").select("id, name, status, created_at").eq("id", draftId).maybeSingle(),
-        sb.from("stores").select("id, code, name").eq("is_active", true).order("code"),
+        // ⭐ 撈**全部**分店（含停用）：只撈 is_active 的話，「已停用、而且這張草稿
+        //   沒有那家店明細」的分店會整欄消失 —— 老闆要的是所有分店都有欄位。
+        sb.from("stores").select("id, code, name, is_active").order("code"),
       ]);
       if (headErr) throw headErr;
       if (!head) throw new Error(`找不到草稿 #${draftId}`);
@@ -90,9 +93,9 @@ function Body() {
           .order("id", { ascending: true }),
       );
 
-      const activeStores = (storeRes.data ?? []) as StoreRef[];
-      const activeIds = new Set(activeStores.map((s) => Number(s.id)));
-      const extraIds = Array.from(new Set(rows.map((c) => Number(c.store_id)))).filter((id) => !activeIds.has(id));
+      const allStores = (storeRes.data ?? []) as StoreRow[];
+      const listedIds = new Set(allStores.map((s) => Number(s.id)));
+      const extraIds = Array.from(new Set(rows.map((c) => Number(c.store_id)))).filter((id) => !listedIds.has(id));
       // ⛔ 查詢失敗（null）要跟「查得到、就是查不到這家」分開 —— 前者標「無法確認」
       let extra: Map<number, StoreRef> | null = new Map<number, StoreRef>();
       if (extraIds.length > 0) {
@@ -130,7 +133,7 @@ function Body() {
 
       setError(null);
       setDraft(head as Draft);
-      setStores(activeStores);
+      setStores(allStores);
       setExtraStores(extra);
       setSkuExistence(existence);
       setCells(rows);
@@ -142,7 +145,9 @@ function Body() {
   }, [draftId, validId]);
 
   useEffect(() => {
-    void load();
+    // 新檔案：不在 effect body 同步觸發 setState（react-hooks/set-state-in-effect）。
+    // 既有兩頁是舊寫法、屬於既有問題，本次不動。
+    queueMicrotask(() => void load());
   }, [load]);
 
   const skuRows = useMemo(() => buildSkuRows(cells, skuExistence), [cells, skuExistence]);
@@ -159,7 +164,9 @@ function Body() {
     for (const c of cells) {
       const id = Number(c.sku_id);
       if (m.has(id)) continue;
-      m.set(id, formatCloseDates(c.snapshot_close_date, c.snapshot_extra, { legacy: !("snapshot_close_date" in c) }));
+      // ⛔ 不可以用「欄位存不存在」判斷 —— SELECT 固定選了它，key 永遠在。
+      //   改看 metadata（snapshot_extra.snapshot_source），見 isLegacyDraftCell。
+      m.set(id, formatCloseDates(c.snapshot_close_date, c.snapshot_extra));
     }
     return m;
   }, [cells]);
@@ -167,7 +174,7 @@ function Body() {
   // 整張草稿都沒有結單日資料 = 多半是「結單日功能上線前」建的那幾張。
   // ⚠ 這句話要跟「查詢失敗」明顯不同 —— 不可以讓老闆以為系統壞了。
   const legacyDraft = useMemo(
-    () => skuRows.length > 0 && skuRows.every((r) => closeDateBySku.get(r.sku_id)?.kind === "none"),
+    () => skuRows.length > 0 && skuRows.every((r) => closeDateBySku.get(r.sku_id)?.kind === "legacy"),
     [skuRows, closeDateBySku],
   );
   const anyLookupFailed = useMemo(
@@ -179,6 +186,8 @@ function Body() {
   // 匯出 CSV：欄位與紙本完全一致（結單日 / 品名 / 品號 / 合計 / 各分店），
   // 免得紙本與檔案對不起來。⚠ 一定要 BOM，否則 Excel 開中文是亂碼。
   function exportCsv() {
+    // ⚠ 文字欄位一律過 excelSafeText：擋公式注入 + 擋 Excel 把品號改成日期/科學記號。
+    //   數量欄維持數字，Excel 才加得了總。
     const header = [
       "結單日",
       "品名",
@@ -187,9 +196,11 @@ function Body() {
       ...storeCols.map((st) => (st.state === "active" ? st.name : `${st.name}(${STORE_STATE_LABEL[st.state]})`)),
     ];
     const body = skuRows.map((row) => [
-      closeDateBySku.get(row.sku_id)?.text ?? "無",
-      row.state === "active" ? row.label : `${row.label}（${row.state === "missing" ? "商品主檔已查不到" : "無法確認"}）`,
-      row.code,
+      excelSafeText(closeDateBySku.get(row.sku_id)?.text ?? "無"),
+      excelSafeText(
+        row.state === "active" ? row.label : `${row.label}（${row.state === "missing" ? "商品主檔已查不到" : "無法確認"}）`,
+      ),
+      excelSafeText(row.code),
       rowTotal(cells, row.sku_id),
       ...storeCols.map((st) => byKey.get(`${row.sku_id}:${st.id}`) ?? 0),
     ]);
