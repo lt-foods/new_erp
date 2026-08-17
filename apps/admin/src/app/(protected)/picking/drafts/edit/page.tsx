@@ -37,6 +37,7 @@ import {
 } from "@/lib/pickingDraftView";
 import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
+import { withBasePath } from "@/lib/basePath";
 
 type Draft = {
   id: number;
@@ -560,7 +561,15 @@ function Body() {
             {readOnly ? "重新開啟" : "標記完成"}
           </SpinButton>
           <SpinButton
-            onClick={() => window.open(`/picking/drafts/print?id=${draftId}`, "_blank")}
+            // ⚠ 路徑一定要包 withBasePath，不可以直接寫裸路徑：
+            //    本站是 output:"export" + basePath（next.config.ts，線上是 /new_erp）。
+            //    <Link> / router.push 會自動補上 basePath，但 window.open **不會** ——
+            //    裸路徑會開成 /picking/drafts/print 而不是 /new_erp/picking/drafts/print → 404。
+            //    （本機沒設 NEXT_PUBLIC_BASE_PATH 時 withBasePath 原樣回傳，開發不受影響，
+            //      所以這種錯在本機測不出來，只有線上會炸。）
+            onClick={() =>
+              window.open(withBasePath(`/picking/drafts/print?id=${draftId}`), "_blank")
+            }
             className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
             🖨 列印 / 匯出
