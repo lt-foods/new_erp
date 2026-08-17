@@ -14,6 +14,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
+import { compareStoreOrder } from "@/lib/storeOrder";
 import SpinButton from "@/components/SpinButton";
 import { useAuth } from "@/components/AuthProvider";
 
@@ -822,7 +823,11 @@ export default function PickingWorkstationPage() {
         });
       }
     }
-    return Array.from(m.values()).sort((a, b) => (a.store_code ?? "").localeCompare(b.store_code ?? ""));
+    // 分店欄位順序 = 老闆 2026-08-17 指定的那份（lib/storeOrder）；
+    // 對不上的排最後、彼此照 store_code 排。⛔ 只排序，一家都不會少（.sort 不會改變長度）。
+    return Array.from(m.values()).sort((a, b) =>
+      compareStoreOrder(a.store_code, a.store_name, b.store_code, b.store_name),
+    );
   }, [demand]);
 
   // ===== 篩選：開團 / 商品 / 時間 =====

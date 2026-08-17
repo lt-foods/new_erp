@@ -19,6 +19,11 @@
 //        ⭐ 但有量的一定要留：rowTotal 是把該商品所有 cells 加總、不看畫面上有沒有那一欄，
 //        藏掉一個有量的欄，紙上橫的加起來就 ≠ 合計。判準與證明見 buildStoreColumns。
 
+// 唯一的 import：一份純資料 + 純函式的順序表，沒有 I/O、也不需要在測試裡 mock。
+// 這支 lib 對「有副作用的東西」（supabase / fetchAllRows）仍然一個都不 import，
+// 全部靠呼叫端注入 —— 理由見 loadPrefill 上面那段。
+import { compareStoreOrder } from "./storeOrder";
+
 /**
  * 把 DB 錯誤翻成老闆看得懂、而且知道下一步要做什麼的話。
  *
@@ -216,12 +221,15 @@ export function buildStoreColumns(
   const withQty = storeIdsWithQty(cells);
 
   // ⭐ 全部欄位（啟用 / 停用 / 已刪除 / 無法確認）**用單一 key 一起排**，
-  //   對齊派貨工作台的 wms/picking/page.tsx:825 `localeCompare(store_code)`。
+  //   排法用 lib/storeOrder 那份老闆指定的順序，與派貨工作台矩陣（wms/picking）、
+  //   列印撿貨單（picking/print-pick-list）import 的是同一份。
   //   ⛔ 不分段串接：狀態差異用視覺（標籤／底色）表達，不用位置表達 ——
   //   位置會讓老闆在兩頁之間找不到同一家店。
+  //   ⓘ 對不上順序表的（例如已刪除只剩快照名稱的 missing 欄）會排到最後面，
+  //     ⛔ 但照樣顯示 —— storeOrder 只排序、不過濾。
   return [...cols, ...extras]
     .filter((c) => c.state !== "inactive" || withQty.has(c.id))
-    .sort((a, b) => (a.code ?? "").localeCompare(b.code ?? ""));
+    .sort((a, b) => compareStoreOrder(a.code, a.name, b.code, b.name));
 }
 
 /**
@@ -357,9 +365,10 @@ export type PrefillResult = {
   extra: Record<string, unknown>;
 };
 
-// 這支 lib 刻意**不 import 任何東西**（連 supabase / fetchAllRows 都不 import）：
+// 這支 lib 刻意**不 import 任何有副作用／要連外的東西**（連 supabase / fetchAllRows 都不 import）：
 // 全部靠呼叫端注入，才驗得起來 —— 測試可以餵一個「會丟錯」的假 db 進來，
 // 證明查詢失敗時 loadPrefill 是**丟出例外**而不是回傳空需求。
+// （檔頭那支 ./storeOrder 是唯一的例外：純資料 + 純函式，不需要 mock 也驗得起來。）
 /** 只用到「下 SELECT」這條唯讀鏈 */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type ReadOnlyDb = { from: (table: string) => any };

@@ -11,6 +11,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
+import { compareStoreOrder } from "@/lib/storeOrder";
 import SpinButton from "@/components/SpinButton";
 import { getTenantName } from "@/lib/tenant";
 import { useAuth } from "@/components/AuthProvider";
@@ -149,8 +150,11 @@ function Body() {
         s.demandLeft += Math.max(0, d - (s.storeWave.get(storeId) ?? 0));
       }
     }
+    // 分店欄位順序 = 老闆 2026-08-17 指定的那份（lib/storeOrder），與派貨工作台、
+    // 撿貨草稿同一份；對不上的排最後、彼此照 store_code 排。
+    // ⛔ 只排序，一家都不會少（.sort 不會改變長度）——「只縮列、不動 stores」的前提沒變。
     const stores = Array.from(storeMap.values()).sort((a, b) =>
-      (a.store_code ?? "").localeCompare(b.store_code ?? "")
+      compareStoreOrder(a.store_code, a.store_name, b.store_code, b.store_name)
     );
     const skuRows = Array.from(skuMap.values())
       // 隱藏「已到貨且全部派完」與「需求已全數派完（含補貨直派）」的 SKU —
