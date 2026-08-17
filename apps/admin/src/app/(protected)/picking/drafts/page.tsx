@@ -17,7 +17,11 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
-import { deleteDraftConfirmMessage, describeDraftDbError } from "@/lib/pickingDraftView";
+import {
+  deleteDraftConfirmMessage,
+  describeDraftDbError,
+  type DraftSkuRecount,
+} from "@/lib/pickingDraftView";
 import SpinButton from "@/components/SpinButton";
 
 type Draft = {
@@ -35,6 +39,43 @@ const LIST_LIMIT = 50;
 function defaultDraftName() {
   // 老闆的實務是「早上一批、下午一批」→ 預設帶日期，重複也沒關係（不設 unique）
   return `${new Date().toLocaleDateString("sv-SE")} 撿貨`;
+}
+
+/**
+ * 品項數 = 每張草稿有幾樣**商品**（明細是一格一列 SKU×分店，所以要去重 sku_id）。
+ *
+ * ⭐ 列表與「刪除確認框」**共用這一支**：兩處各寫一份遲早會飄移，而飄移的下場是
+ *   確認框說 12 樣、cascade 實際帶走 32 樣 —— 而且救不回來。
+ *
+ * 只撈 draft_id / sku_id 兩欄，並依既有慣例分批 200 個 draft_id；
+ * 每批走 fetchAllRows 分頁，避免 PostgREST 1000 列靜默截斷把數字算少。
+ *
+ * ⛔ 查詢失敗**照樣往上丟**（fetchAllRows 會 throw）：呼叫端必須分得出
+ *   「真的是 0 樣」與「查不出來」—— 在這裡吞成 0 就是靜默偽裝。
+ *
+ * @returns key = draft_id；一列明細都沒有的草稿不會出現在 map 裡（呼叫端自己 ?? 0）
+ */
+async function countDraftSkus(
+  sb: ReturnType<typeof getSupabase>,
+  draftIds: number[],
+): Promise<Map<number, number>> {
+  const counts = new Map<number, Set<number>>();
+  for (let i = 0; i < draftIds.length; i += 200) {
+    const chunk = draftIds.slice(i, i + 200);
+    const cells = await fetchAllRows<{ draft_id: number; sku_id: number }>(() =>
+      sb
+        .from("picking_draft_items")
+        .select("draft_id, sku_id")
+        .in("draft_id", chunk)
+        .order("id", { ascending: true }),
+    );
+    for (const c of cells) {
+      const set = counts.get(c.draft_id) ?? new Set<number>();
+      set.add(c.sku_id);
+      counts.set(c.draft_id, set);
+    }
+  }
+  return new Map(Array.from(counts.entries()).map(([k, v]) => [k, v.size]));
 }
 
 export default function PickingDraftsPage() {
@@ -71,27 +112,8 @@ export default function PickingDraftsPage() {
       setDrafts(rows);
       setTruncated(rows.length >= LIST_LIMIT);
 
-      // 品項數 = 各草稿有幾樣**商品**（明細是一格一列 SKU×分店，所以要去重 sku_id）。
-      // 只撈 draft_id / sku_id 兩欄，並依既有慣例分批 200 個 draft_id；
-      // 每批走 fetchAllRows 分頁，避免 PostgREST 1000 列靜默截斷把數字算少。
-      const ids = rows.map((d) => d.id);
-      const counts = new Map<number, Set<number>>();
-      for (let i = 0; i < ids.length; i += 200) {
-        const chunk = ids.slice(i, i + 200);
-        const cells = await fetchAllRows<{ draft_id: number; sku_id: number }>(() =>
-          sb
-            .from("picking_draft_items")
-            .select("draft_id, sku_id")
-            .in("draft_id", chunk)
-            .order("id", { ascending: true }),
-        );
-        for (const c of cells) {
-          const set = counts.get(c.draft_id) ?? new Set<number>();
-          set.add(c.sku_id);
-          counts.set(c.draft_id, set);
-        }
-      }
-      setSkuCounts(new Map(Array.from(counts.entries()).map(([k, v]) => [k, v.size])));
+      // 品項數（去重 sku_id）。⭐ 與刪除確認框共用 countDraftSkus，算法保證不飄移。
+      setSkuCounts(await countDraftSkus(sb, rows.map((d) => d.id)));
     } catch (e) {
       setError(describeDraftDbError(e));
       setLoadFailed(true);
@@ -161,9 +183,21 @@ export default function PickingDraftsPage() {
   //    （migration 20260817000000_picking_drafts.sql:141-142），
   //    不碰任何既有表、不呼叫任何 RPC、完全不影響庫存與派貨工作台。
   async function handleDelete(d: Draft) {
-    // 品項數要在刪之前抓：刪完 load() 就查不到了，訊息會變成 0
-    const skuCount = skuCounts.get(d.id) ?? 0;
-    if (!confirm(deleteDraftConfirmMessage(d.name, skuCount))) return;
+    // ⭐ 畫面上那個數字是列表 load() 當下算的、**可能已經過期** —— 樓下同時在另一台
+    //   iPad 上加商品正是本功能的設計前提。按下去先重查一次，確認框才不會說「12 樣」
+    //   而 cascade 實際帶走 32 樣（見 deleteDraftConfirmMessage 的說明）。
+    //   ⓘ 也一定要在**刪之前**查：刪完 load() 就查不到了，訊息會變成 0。
+    const shown = skuCounts.get(d.id) ?? 0;
+    let recount: DraftSkuRecount;
+    try {
+      const counts = await countDraftSkus(getSupabase(), [d.id]);
+      // 一列明細都沒有的草稿不會出現在 map 裡 → 0（與列表同一套語意）
+      recount = { kind: "ok", count: counts.get(d.id) ?? 0, shown };
+    } catch (e) {
+      // ⛔ 查不出來就明講，不可以靜默沿用 shown 照樣宣稱「會刪掉 N 樣」
+      recount = { kind: "failed", shown, reason: describeDraftDbError(e) };
+    }
+    if (!confirm(deleteDraftConfirmMessage(d.name, recount))) return;
     setError(null);
     setNotice(null);
     try {
@@ -204,10 +238,14 @@ export default function PickingDraftsPage() {
       }
 
       await load();
+      // 回報用**重查到的**數字，那才是真的被 cascade 帶走的量。
+      // ⛔ 重查失敗時不掰一個數字出來（唯一有的是那個過期的 shown，講出來就是說謊）。
       setNotice(
-        skuCount > 0
-          ? `已刪除草稿「${d.name}」，連同裡面的 ${skuCount} 樣商品。`
-          : `已刪除草稿「${d.name}」。`,
+        recount.kind === "failed"
+          ? `已刪除草稿「${d.name}」。（刪除前查不到品項數，所以這裡不寫幾樣。）`
+          : recount.count > 0
+            ? `已刪除草稿「${d.name}」，連同裡面的 ${recount.count} 樣商品。`
+            : `已刪除草稿「${d.name}」。`,
       );
     } catch (e) {
       setError(describeDraftDbError(e));
