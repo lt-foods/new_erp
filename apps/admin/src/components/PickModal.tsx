@@ -305,6 +305,59 @@ export function PickModal({
   /** 「儲存修正 (N)」的 N ＝ 改過的既有格 ＋ 新加的格 */
   const pendingCount = edits.size + newCells.size;
 
+  /**
+   * 每樣商品的「應發 / 實分 / 這次新加」三個合計。
+   *
+   * ⭐ 抽成單一來源、表頭徽章與矩陣列**共用**：⛔ 不要兩邊各算一份 ——
+   *   算式一旦漂移，畫面上會出現「表頭說 3 樣缺貨、但只有 2 列是紅的」這種
+   *   互相矛盾的數字，而那種矛盾沒有人會發現。
+   */
+  const skuTotals = useMemo(() => {
+    const m = new Map<number, { expected: number; actual: number; added: number }>();
+    for (const sku of skus) {
+      const row = matrix.get(sku.id);
+      let expected = 0;
+      let actual = 0;
+      let added = 0;
+      for (const st of stores) {
+        const it = row?.get(st.id);
+        if (!it) {
+          // 原本沒這一列 → 新加的話，應發與實分都是填的那個數
+          //（rpc_add_wave_item 把 qty 與 picked_qty 都設成 p_qty）
+          const nq = newCellQty(sku.id, st.id) ?? 0;
+          added += nq;
+          expected += nq;
+          actual += nq;
+          continue;
+        }
+        expected += Number(it.qty);
+        const edit = edits.get(it.id);
+        const v = edit !== undefined ? Number(edit) : Number(it.picked_qty ?? it.qty);
+        actual += Number.isNaN(v) ? 0 : v;
+      }
+      m.set(sku.id, { expected, actual, added });
+    }
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skus, stores, matrix, edits, newCells]);
+
+  /**
+   * 有幾樣商品「這次要出的量 > 總倉可用量」。
+   * ⛔ 這是**警示用的計數，不是閘門**（老闆 2026-08-17：不要擋我）——
+   *   沒有任何按鈕會因為它被 disable。真正擋人的是派貨時 rpc_outbound 檢查總倉實際庫存。
+   * ⛔ hqAvail 是 null（讀不到庫存）時回 0：不知道就不要亂報「N 樣缺貨」，
+   *   畫面另有「總倉庫存讀不到」把讀取失敗講出來。
+   */
+  const stockShortCount = useMemo(() => {
+    if (!hqAvail) return 0;
+    let n = 0;
+    for (const [skuId, t] of skuTotals) {
+      const avail = hqAvail.get(skuId);
+      if (avail !== undefined && t.actual > avail) n += 1;
+    }
+    return n;
+  }, [hqAvail, skuTotals]);
+
   async function changeDate(newDate: string) {
     if (newDate === waveDate) return;
     setSavingDate(true);
@@ -497,6 +550,13 @@ export function PickModal({
                   ⚠ {shortageCount} 行短缺（可派貨，部分店家拿不到應有量）
                 </span>
               )}
+              {/* ⭐ 老闆的痛點是「按下派貨才整張爆」。解法不是加守衛擋他，是讓他當下就看得到。
+                  ⛔ 這顆徽章純警示：不 disable 任何按鈕、不擋任何輸入。 */}
+              {stockShortCount > 0 && (
+                <span className="ml-2 inline-block rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-950 dark:text-red-300">
+                  ⚠ {stockShortCount} 樣總倉庫存不夠（可以照填，補了庫存才派得出去）
+                </span>
+              )}
             </h2>
             {/* DatePicker 根節點是 div，不能塞進 h2（heading 只能含 phrasing content）→ 做成 h2 的 sibling chip */}
             {effectiveStatus !== "shipped" && effectiveStatus !== "cancelled" ? (
@@ -564,14 +624,14 @@ export function PickModal({
             這裡列出所有分店。<span className="font-semibold text-sky-700 dark:text-sky-300">虛線</span>
             的格子代表那家店原本沒有叫貨 —— 直接填數量就會幫它新增一列，一起出貨。
             已停用而且本單沒有東西的店不會出現。
-            {/* ⚠ 這一句是 tooltip 塞不下、但一定要看得到的事：兩條路徑擋人的東西不一樣。
-                不寫在畫面上的話，老闆被「可分配量」擋下時第一個反應一定是去按「＋ 補庫存」，
-                補完再試還是進不來 —— 而他不會知道為什麼。 */}
+            {/* ⭐ 老闆 2026-08-17 裁示：不擋、只顯示。填多少都填得下去，
+                真正的限制是總倉實際有沒有貨（派貨時 rpc_outbound 會擋）。
+                所以這裡的責任是「讓他當下就看得到超了」，⛔ 不是攔住他。 */}
             <span className="mt-0.5 block">
-              ⚠「＋ 補庫存」只補<span className="font-semibold">總倉庫存</span>
-              （影響的是改既有格子後派不派得出去），
-              <span className="font-semibold">不會</span>增加這張採購單的可分配量。
-              新增給沒叫貨的店若被可分配量擋下，正解是走「補貨申請」。
+              每樣商品左邊會顯示<span className="font-semibold">總倉目前可用量</span>。
+              填的總數超過可用量會標成紅色 —— 這裡<span className="font-semibold">不會擋你</span>，
+              但要等總倉真的有貨才派得出去。不夠就按「＋ 補庫存」把總倉庫存補上，
+              補完這裡的可用量就會跟著增加。
             </span>
           </div>
         )}
@@ -608,23 +668,12 @@ export function PickModal({
               <tbody className="divide-y-2 divide-zinc-300 dark:divide-zinc-700">
                 {skuList.map((sku) => {
                   const row = matrix.get(sku.id);
-                  // 這次新加的量。新列的 qty 與 picked_qty 一樣（rpc_add_wave_item 兩個都寫 p_qty），
-                  // 所以應發與實分都要加同一個數 → 對 totalDiff 的貢獻是 0，不會假裝成超賣。
-                  const newForSku = stores.reduce(
-                    (s, st) => s + (row?.get(st.id) ? 0 : (newCellQty(sku.id, st.id) ?? 0)),
-                    0,
-                  );
-                  const expectedTotal = stores.reduce((s, st) => {
-                    const it = row?.get(st.id);
-                    return it ? s + Number(it.qty) : s;
-                  }, 0) + newForSku;
-                  const actualTotal = stores.reduce((s, st) => {
-                    const it = row?.get(st.id);
-                    if (!it) return s;
-                    const edit = edits.get(it.id);
-                    const v = edit !== undefined ? Number(edit) : Number(it.picked_qty ?? it.qty);
-                    return s + (Number.isNaN(v) ? 0 : v);
-                  }, 0) + newForSku;
+                  // ⭐ 合計取自 skuTotals（與表頭徽章同一份，見該 memo 的說明）。
+                  //   新列的 qty 與 picked_qty 一樣，所以應發與實分都含它 →
+                  //   對 totalDiff 的貢獻是 0，不會假裝成超賣。
+                  const t = skuTotals.get(sku.id) ?? { expected: 0, actual: 0, added: 0 };
+                  const expectedTotal = t.expected;
+                  const actualTotal = t.actual;
                   const totalDiff = actualTotal - expectedTotal;
                   // 總倉可用量 vs 這次要出的量。⛔ avail === null ＝「沒讀到」，
                   //   絕對不可以當成 0 顯示成缺貨（見 hqAvail 的說明）。
@@ -666,25 +715,25 @@ export function PickModal({
                           {!locked && (
                             <div className="mt-1 flex flex-wrap items-center gap-1">
                               <span
-                                className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                                  avail === null
-                                    ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
-                                    : shortStock > 0
-                                    ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                                className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                                  avail !== null && shortStock > 0
+                                    // 超過可用量＝紅的。⛔ 這是警示不是阻擋：照樣填得下去、照樣按得下派貨，
+                                    //   真正擋人的是派貨時 rpc_outbound 檢查總倉實際庫存。
+                                    ? "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300"
                                     : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
                                 }`}
                                 title={
-                                  "總倉可用量 ＝ 在庫 − 已保留。" +
-                                  "改既有格子的數量時，派貨出倉扣的就是這個數字。\n" +
-                                  "⚠ 但「新增給沒叫貨的店」不看這個數字 —— 那一條受這張採購單的" +
-                                  "可分配量（進貨 − 已派）限制，補庫存不會讓它變大。"
+                                  "總倉可用量 ＝ 在庫 − 已保留，" +
+                                  "與派貨出倉時實際扣庫存檢查的是同一個數字。\n" +
+                                  "填超過不會被擋，但要等總倉真的有貨才派得出去 —— " +
+                                  "按「＋ 補庫存」補上去，這個數字就會跟著增加。"
                                 }
                               >
                                 {/* ⛔ 讀不到就要講「讀不到」，不可以顯示 0 —— 那跟真的沒貨長得一模一樣 */}
                                 {avail === null
                                   ? "總倉庫存讀不到"
                                   : shortStock > 0
-                                  ? `總倉可用 ${avail}，短少 ${shortStock}`
+                                  ? `⚠ 總倉可用 ${avail}，這次要 ${actualTotal}、差 ${shortStock}`
                                   : `總倉可用 ${avail}`}
                               </span>
                               {/* P2（阿審 #762）：沒短缺就不給按 —— 這顆鈕寫的是不可逆的手動調整，
@@ -701,9 +750,9 @@ export function PickModal({
                                     ? "找不到總倉 location，請先確認倉庫設定"
                                     : avail !== null && shortStock <= 0
                                     ? "總倉庫存夠，不需要補"
-                                    : "對總倉補一筆手動庫存（不可刪除、不可修改）。\n" +
-                                      "⚠ 只會增加總倉庫存，不會增加這張採購單的可分配量 ——" +
-                                      "要多給沒叫貨的店，請走「補貨申請」。"
+                                    : "對總倉補一筆手動庫存 —— 補完左邊的「總倉可用」就會增加，\n" +
+                                      "這樣這批貨就派得出去了。\n" +
+                                      "⚠ 按下去無法刪除、也無法修改，要更正只能到「庫存盤點」重盤。"
                                 }
                                 className="rounded border border-emerald-300 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-40 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950"
                               >

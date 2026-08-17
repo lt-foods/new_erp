@@ -8,6 +8,34 @@
 --   所以「沒人叫貨的店」在撿貨矩陣裡連一列都不會有（需求鏈見
 --   v_picking_demand_by_po）。老闆要的是 ERP 邏輯：貨進來了，想給誰就給誰。
 --
+-- ⛔⛔ 這一支**刻意沒有「採購單可分配量」守衛**（老闆 2026-08-17 親自裁示）。
+--   施工中途曾加過一版（GR 實收 − 已派，口徑抄 rpc_create_wave_from_po 步驟 4），
+--   老闆看到就打回來了。原話：
+--     「不能列出所有店家然後在那店家直接增加數量嗎？一定要走補貨申請嗎！！！！」
+--     「我就不想要還要再按什麼派貨…就一般的 ERP：進貨單、銷貨單、月結單。」
+--   那道守衛是**團購邏輯**的產物（「這張採購單進的貨只能給有訂那張單的人」），
+--   而這個案子的主線正是要離開團購邏輯：**先進貨 → 有貨就能賣，想給誰就給誰。**
+--   它同時也是「補庫存等於白按」的根因 —— 補庫存寫 stock_movements.manual_adjust，
+--   不會讓 GR 實收變大，所以補了也還是被擋。拿掉它，三件事才自洽。
+--
+--   ⭐ 真正的限制留在**物理上有沒有貨**那一關，而且本來就存在：
+--     派貨時 generate_transfer_from_wave → rpc_outbound(p_allow_negative => FALSE)
+--     檢查 stock_balances.on_hand − reserved（20260705000000:24,37），
+--     不足就 RAISE，**不會產生負庫存**。前端另外在矩陣上即時顯示同一個數字，
+--     讓人在填的當下就看得到超了，而不是按下派貨才整張爆。
+--
+--   ⚠⚠ 刻意接受的後果（**這是取捨，不是 bug**，Alex 請看這裡）：
+--     總倉是**一個共同的池子**、先來後到，所以拿掉 PO 配額之後
+--     **同一張採購單可能派出比它進的還多**（吃到別張單進的貨）。
+--     帳是對的：庫存不會變負、月結照 transfers 算，一毛都不會少或多。
+--     但**採購單維度的報表**（例如「這張 PO 進 100 卻派了 120」）看起來會怪。
+--     老闆明確要這個行為。⛔ 不要「順手修正」把配額加回來。
+--
+--   ⓘ 連帶：本支**沒有任何 advisory lock**。曾經為了保護上述配額的
+--     read-modify-write 加過一把（key 抄 rpc_create_wave_from_po 的
+--     'wave:po:' || po_id），配額拿掉後那把鎖已經沒有要保護的東西 → 一併移除。
+--     現有的併發保護只靠第 1 點那行 FOR UPDATE，理由與盤點證據寫在該處。
+--
 -- ⭐ 資料層本來就支援，這支 RPC 只是把缺的入口補上：
 --   picking_wave_items.campaign_id 可為 NULL（20260423120002:56），
 --   整張表沒有任何欄位指向客人訂單 →「一定要先有人叫貨」是介面的限制，不是資料的。
@@ -55,17 +83,28 @@ DECLARE
   v_tenant      UUID;
   v_status      TEXT;
   v_wave_code   TEXT;
-  v_source_po   BIGINT;
   v_store_name  TEXT;
   v_sku_label   TEXT;
   v_new_item_id BIGINT;
-  v_avail       RECORD;
 BEGIN
   -- 1. wave 存在，FOR UPDATE 鎖住（對齊 rpc_update_picked_qty）
-  --    ⭐ 這道鎖同時讓下面的「已經有這一列」檢查對同一張 wave 是安全的：
-  --      並行的第二筆會卡在這裡，等第一筆 commit 之後才看得到它插進去的列。
-  SELECT pw.tenant_id, pw.status, pw.wave_code, pw.source_po_id
-    INTO v_tenant, v_status, v_wave_code, v_source_po
+  --
+  --    ⭐⭐ 這一支的併發保護**全部**靠這一行，沒有別的鎖（刻意的，見檔頭）。
+  --    盤過所有會動到同一張 wave 的寫入者，每一支都在同一列上 FOR UPDATE，
+  --    所以對同一張 wave 的操作是互斥的：
+  --      rpc_update_picked_qty        `FOR UPDATE OF pwi, pw`（20260502070000:22）
+  --      generate_transfer_from_wave  advisory(p_wave_id) ＋ FOR UPDATE（20260717000000:24,27）
+  --      rpc_cancel_picking_wave      FOR UPDATE（20260609000002:32）
+  --      本支                          這一行
+  --    建單那幾支（rpc_create_wave_from_po / _from_restock）都是**自己新建一張 wave**
+  --    再往裡面塞列，那張 wave 在 commit 前別的交易看不到 → 不會跟這裡爭用。
+  --    ⇒ 下面第 6 點的「已經有這一列」檢查因此是安全的：並行的第二筆會卡在這裡，
+  --      等第一筆 commit 之後才跑，看得到它插進去的列。
+  --    ⇒ 第 10 點重算表頭 aggregates 同理，不會兩邊互相蓋掉。
+  --    （真的還是有未知路徑繞過的話，UNIQUE 約束＋第 8 點的 unique_violation
+  --      例外處理是最後一道網，結果是一句看得懂的錯誤，不會寫出壞資料。）
+  SELECT pw.tenant_id, pw.status, pw.wave_code
+    INTO v_tenant, v_status, v_wave_code
     FROM picking_waves pw
    WHERE pw.id = p_wave_id
    FOR UPDATE;
@@ -134,121 +173,7 @@ BEGIN
       v_wave_code, v_store_name, v_sku_label;
   END IF;
 
-  -- 7. 可分配量守衛（CEO 2026-08-17 拍板要做在 RPC 內）。
-  --    判準是「漏的時候往哪邊倒」：不做的話要等按下「派貨出倉」才整張爆掉、
-  --    而且整張 rollback；做了最多是當下擋住、而且訊息講得清楚。
-  --
-  --    口徑逐條對齊 rpc_create_wave_from_po 步驟 4（最新版 20260816000050:325-372）：
-  --      可分配量 = GR 實收（只認 confirmed 的驗收單）
-  --               − 已派（該 PO 的所有非 cancelled wave items ＋ 補貨直派 transfer）
-  --    ⚠ 新列自己的 qty 也會計入下一次的「已派」，所以連按兩次不會各自過關。
-  --
-  --    ⛔ 只在 wave 有 source_po_id 時檢查：補貨來源的 wave
-  --      （rpc_create_wave_from_restock，20260715000020:609）只填
-  --      source_restock_request_id、source_po_id 是 NULL，根本沒有 PO 這個池子可以量。
-  --      那種情況底線仍在：派貨時 rpc_outbound(p_allow_negative => FALSE) 會擋，
-  --      不會產生負庫存。
-  --
-  --    ⭐⭐ 口徑（CEO 2026-08-17 複審後確認**維持**，⛔ 不要改成看總倉 on_hand）：
-  --      這道守衛量的是「**這張採購單**進了多少貨」，不是「總倉現在有多少貨」。
-  --      改成看總倉 on_hand 的話，這張撿貨單就跟所有其他 PO 共用同一個池子，
-  --      會吃掉本該留給別團的貨 —— 與 rpc_create_wave_from_po 的隔離設計直接衝突。
-  --
-  --      ⚠ 連帶的事實（錯誤訊息裡一定要講出來，見下面兩處 RAISE）：
-  --        彈窗裡的「＋ 補庫存」寫的是 stock_movements.manual_adjust，
-  --        **不是** goods_receipt_items → 補了也不會讓這裡的可分配量變大。
-  --      ⓘ 兩條路徑擋人的東西不一樣，別搞混：
-  --        改**既有**格子的數量 → 走 rpc_update_picked_qty（零檢查），
-  --          真正擋人的是派貨時 rpc_outbound 檢查的總倉 on_hand → 補庫存**有效**
-  --        **新增**給沒叫貨的店 → 走本支，擋的是這張採購單的可分配量 → 補庫存**無效**，
-  --          正解是走補貨申請（見 docs/PRD-WMS-倉儲管理工作台.md §13 的 B 類）
-  IF v_source_po IS NOT NULL THEN
-    -- ⚠⚠⚠ 先上鎖再算，⛔ 不可以只有「讀 → 比較 → 寫」。
-    --   兩張不同的撿貨單同時對**同一張 PO 的同一個 SKU** 新增列時，
-    --   兩邊都會讀到同一份「還剩多少」而一起通過（read-modify-write race），
-    --   分配總量就超過實際進貨量 → 要等到按下「派貨出倉」才整張爆、而且整張 rollback。
-    --   上面的 `picking_waves ... FOR UPDATE` 擋不住這一種：那把鎖只鎖**單一張 wave**，
-    --   而這裡爭用的資源是**跨 wave 共用的那張 PO 的可分配量**。
-    --
-    --   ⭐ key 與 rpc_create_wave_from_po（最新版 20260816000050:307）**逐字相同**：
-    --       PERFORM pg_advisory_xact_lock(hashtext('wave:po:' || p_po_id::text));
-    --     字串一個字不一樣就是兩把不同的鎖，兩邊各鎖各的 ＝ 等於沒鎖。
-    --     （那支的 p_po_id 與這裡的 v_source_po 都是 BIGINT，::text 產生同一個字面值。）
-    --
-    --   ⛔ 這一行刻意放在 `IF v_source_po IS NOT NULL` 裡面，與可分配量守衛同進同出：
-    --     NULL 丟進 hashtext 會變成 'wave:po:' 這一個字串 → 所有沒綁 PO 的補貨 wave
-    --     共用同一把全域鎖，互相排隊卻什麼都沒保護到。
-    --
-    --   ⓘ 死結分析：本支的取鎖順序是「wave 列 → advisory(po)」，
-    --     rpc_create_wave_from_po 是「purchase_orders 列 → advisory(po)」——
-    --     沒有任何一對資源被兩支以相反順序取用，形成不了環。
-    PERFORM pg_advisory_xact_lock(hashtext('wave:po:' || v_source_po::text));
-
-    -- ⚠⚠ 這一段**必須**在下面的聚合之前單獨做，不能靠「算出來是 NULL」去偵測。
-    --   下面那個 SELECT 沒有 GROUP BY ＝ 對零列做聚合，Postgres 照樣回**一列**，
-    --   而 gr_qty 已經被 COALESCE 成 0 → 「這張 PO 裡根本沒有這樣商品」與
-    --   「有這樣商品但剛好剩 0」會算出一模一樣的結果。
-    --   兩者都該擋，但**要講不同的話**：前者是選錯商品／選錯撿貨單，
-    --   叫他去看「進貨 0、已派 0」只會讓人以為是貨還沒到。
-    --   （2026-08-17 用 pglite 實跑才發現，原本寫的 `IS NULL` 判斷是永遠不會成立的死碼。）
-    IF NOT EXISTS (
-      SELECT 1 FROM purchase_order_items
-       WHERE po_id = v_source_po AND sku_id = p_sku_id
-    ) THEN
-      RAISE EXCEPTION
-        '撿貨單 % 對應的採購單裡沒有「%」這樣商品，無法判斷可分配量。'
-        '⚠ 按「＋ 補庫存」沒有用 —— 那只會增加總倉庫存，不會讓這張採購單多出可分配量。'
-        '要額外給分店貨，請走「補貨申請」',
-        v_wave_code, v_sku_label;
-    END IF;
-
-    WITH po_sku_state AS (
-      SELECT
-        COALESCE(SUM(gri.qty_received) FILTER (WHERE gr.status = 'confirmed'), 0) AS gr_qty,
-        COALESCE((
-          SELECT SUM(pwi.qty)
-            FROM picking_wave_items pwi
-            JOIN picking_waves pw ON pw.id = pwi.wave_id
-           WHERE pw.source_po_id = v_source_po
-             AND pwi.sku_id = p_sku_id
-             AND pw.status <> 'cancelled'
-        ), 0)
-        + COALESCE((
-          SELECT SUM(ti.qty_requested)
-            FROM restock_requests rr
-            JOIN transfers t ON t.id = rr.linked_transfer_id
-            JOIN transfer_items ti ON ti.transfer_id = t.id
-            JOIN purchase_request_items pri ON pri.pr_id = rr.linked_pr_id
-            JOIN purchase_order_items poi2 ON poi2.id = pri.po_item_id AND poi2.sku_id = ti.sku_id
-           WHERE poi2.po_id = v_source_po
-             AND poi2.sku_id = p_sku_id
-             AND t.transfer_type = 'hq_to_store'
-             AND t.status <> 'cancelled'
-        ), 0) AS already_wave
-      FROM purchase_order_items poi
-      LEFT JOIN goods_receipt_items gri ON gri.po_item_id = poi.id
-      LEFT JOIN goods_receipts gr ON gr.id = gri.gr_id
-      WHERE poi.po_id = v_source_po
-        AND poi.sku_id = p_sku_id
-    )
-    SELECT ps.gr_qty, ps.already_wave, (ps.gr_qty - ps.already_wave) AS available
-      INTO v_avail
-      FROM po_sku_state ps;
-
-    IF p_qty > v_avail.available THEN
-      -- ⛔ 這句話一定要明講「補庫存沒有用」：老闆手上就有一顆「＋ 補庫存」，
-      --   不講的話他一定會去按，按了還是加不進來（補庫存寫的是 stock_movements，
-      --   這裡量的是這張採購單的 GR 實收 − 已派，兩個是不同的池子）。
-      RAISE EXCEPTION
-        '「%」在這張採購單只剩可分配 % 件（進貨 %、已派 %），這次要給「%」% 件、超過了。'
-        '⚠ 按「＋ 補庫存」沒有用 —— 那只會增加總倉庫存，不會讓這張採購單多出可分配量。'
-        '要額外給分店貨，請走「補貨申請」',
-        v_sku_label, v_avail.available, v_avail.gr_qty, v_avail.already_wave,
-        v_store_name, p_qty;
-    END IF;
-  END IF;
-
-  -- 8. 寫入。
+  -- 7. 寫入。
   --    campaign_id 明確寫 NULL：這批貨本來就沒有團，
   --    ⛔ 不自作聰明去猜一個團塞進去（猜錯會讓 rpc_mark_orders_shipping_for_wave
   --      去推別人的客人訂單）。
@@ -271,7 +196,7 @@ BEGIN
       v_wave_code, v_store_name, v_sku_label;
   END;
 
-  -- 9. 稽核（對齊 rpc_update_picked_qty；action 用建表時就允許的 'item_added'，
+  -- 8. 稽核（對齊 rpc_update_picked_qty；action 用建表時就允許的 'item_added'，
   --    見 20260423120002:74-77 的 CHECK 清單）。
   --    before_value 是 NULL ＝ 這一格本來不存在，與 picked_qty_changed 的語意分得開。
   INSERT INTO picking_wave_audit_log (
@@ -286,8 +211,8 @@ BEGIN
     p_note, p_operator
   );
 
-  -- 10. 重算表頭 cached aggregates。⛔ 少了這一段，列表上的件數／店數就跟彈窗裡對不上
-  --     （算式逐字照抄 rpc_update_picked_qty，包含 total_qty 以 picked_qty 為準）。
+  -- 9. 重算表頭 cached aggregates。⛔ 少了這一段，列表上的件數／店數就跟彈窗裡對不上
+  --    （算式逐字照抄 rpc_update_picked_qty，包含 total_qty 以 picked_qty 為準）。
   UPDATE picking_waves pw
      SET item_count  = agg.item_count,
          store_count = agg.store_count,
@@ -302,7 +227,7 @@ BEGIN
     ) agg
    WHERE pw.id = p_wave_id;
 
-  -- 11. draft → picking（對齊 rpc_update_picked_qty：動過就不是草稿了）
+  -- 10. draft → picking（對齊 rpc_update_picked_qty：動過就不是草稿了）
   IF v_status = 'draft' THEN
     UPDATE picking_waves SET status = 'picking', updated_by = p_operator WHERE id = p_wave_id;
   END IF;
@@ -314,7 +239,9 @@ $$;
 COMMENT ON FUNCTION public.rpc_add_wave_item(BIGINT, BIGINT, BIGINT, NUMERIC, UUID, TEXT) IS
   '在既有撿貨單裡替「原本沒叫貨的分店」補一列（campaign_id 一律 NULL、qty = picked_qty = p_qty）。'
   '總倉收件匣「✎ 修正數量」彈窗專用。守衛：狀態、數量 > 0、品項/分店存在、分店角色只能動自己店、'
-  '同一格不重複新增（報錯不 UPSERT）、可分配量（僅 source_po_id 不為 NULL 時）。';
+  '同一格不重複新增（報錯不 UPSERT）。'
+  '⛔ 刻意沒有採購單可分配量守衛（老闆 2026-08-17 裁示：先進貨→有貨就能賣、想給誰就給誰）；'
+  '真正的限制是派貨時 rpc_outbound 檢查的總倉實際庫存。詳見本檔檔頭。';
 
 -- ⭐ 明確寫權限，⛔ 不比照 rpc_update_picked_qty 三個版本都沒寫的壞習慣
 --   （沒寫 = 依 PostgreSQL 預設 EXECUTE 開給 PUBLIC）。寫法對齊 20260816000050。
