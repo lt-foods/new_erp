@@ -15,6 +15,7 @@ import SpinButton from "@/components/SpinButton";
 import { translateRpcError } from "@/lib/rpcError";
 import { useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 import { fetchAllRows } from "@/lib/fetchAllRows";
+import { cleanCampaignText } from "@/lib/text";
 import { fanoutPickupNotifications } from "@/lib/pickupNotify";
 import { TransferOrdersModal, type ModalSkuLine } from "@/components/TransferOrdersModal";
 import { ShortageAllocateModal } from "@/components/ShortageAllocateModal";
@@ -26,6 +27,11 @@ import {
 
 type Location = { id: number; name: string };
 type StoreLite = { id: number; location_id: number | null };
+// 這張調撥單背後是哪一團 —— 群組標題印的是「商品名」，而商品名會被重開的團改掉
+// （products.name 一改，trg_products_sync_sku_name 會把該商品**所有** SKU 的
+//  product_name 一起換掉，歷史波次跟著顯示新的「⏰x/xx結單」），所以光看標題無法
+//  分辨這批貨是哪一團的。開團名稱／編號只掛在該團身上，不會被後來的團污染。
+type CampaignLite = { id: number; campaign_no: string | null; name: string | null; end_at: string | null };
 type StoreRow = { id: number; name: string; location_id: number | null };
 // codes：本張 transfer 涵蓋的品項編號(sku_code) / 商品編號(product_code)，僅供搜尋比對用
 // items：拆開的品項行（key = 合併同品相用的識別；自由轉貨掛虛擬 SKU，要用 description 當 key）
@@ -68,6 +74,7 @@ type Group = {
   coveredQty: number;      // 這組用店內現貨減抵掉幾件
   prefilledQty: number;    // 這組有幾件是補回店家先墊的現貨
   backorderQty: number;    // 這組還有幾件掛著待補貨（少發配貨沒配到）
+  campaignIds: number[];   // 這組涵蓋哪幾團（去重、依出現順序）
 };
 
 export default function TransfersInboxPage() {
@@ -78,6 +85,11 @@ export default function TransfersInboxPage() {
   const [itemSummary, setItemSummary] = useState<Map<number, ItemSummary>>(new Map());
   const [locationToStore, setLocationToStore] = useState<Map<number, number>>(new Map());
   const [transferCampaigns, setTransferCampaigns] = useState<Map<number, number[]>>(new Map());
+  // 這張單「是為哪一團派的」（撿貨波次 / AT- 單掛的訂單）→ 畫面上的「🏷」膠囊。
+  // 跟上面那個 transferCampaigns 不同：那個是鬆散比對，只給 /orders 連結當 filter。
+  const [dispatchCampaigns, setDispatchCampaigns] = useState<Map<number, number[]>>(new Map());
+  // campaign_id → 開團名稱 / 編號 / 結單時間
+  const [campaignInfo, setCampaignInfo] = useState<Map<number, CampaignLite>>(new Map());
   // 每張單的來源：campaign=開團派貨（背後有顧客訂單）/ restock=補貨 / free=自由轉貨・互助
   // 補貨與自由轉貨本來就沒有顧客訂單，畫面要講清楚，不然點開只看到「查不到訂單」會以為壞了
   const [sourceKinds, setSourceKinds] = useState<Map<number, string>>(new Map());
@@ -407,6 +419,68 @@ export default function TransfersInboxPage() {
           }
         }
 
+        // 這張單「是為哪一團派的」。準的來源是撿貨波次明細
+        //（picking_wave_items.generated_transfer_id → campaign_id），
+        // **不要**拿上面的 rpc_get_campaigns_for_transfers 來顯示：那支是
+        //「收貨店 + 同 SKU」的鬆散比對（給 /orders 連結的多選 filter 用），
+        // 同一個商品重開一團就會把新團一起帶出來 —— 正好是這個畫面要分辨的東西。
+        // 補貨波次的 campaign_id 是 NULL（見 CLAUDE.md），自然不會有開團膠囊。
+        const dispatchMap = new Map<number, number[]>();
+        if (rows.length > 0) {
+          const pwiRows = await fetchAllRows<{
+            generated_transfer_id: number | null;
+            campaign_id: number | null;
+          }>(() =>
+            sb
+              .from("picking_wave_items")
+              .select("generated_transfer_id, campaign_id")
+              .in("generated_transfer_id", rows.map((r) => r.id))
+              .not("campaign_id", "is", null)
+              .order("id"),
+          );
+          for (const r of pwiRows) {
+            if (r.generated_transfer_id == null || r.campaign_id == null) continue;
+            const cur = dispatchMap.get(r.generated_transfer_id) ?? [];
+            if (!cur.includes(r.campaign_id)) cur.push(r.campaign_id);
+            dispatchMap.set(r.generated_transfer_id, cur);
+          }
+          // 空中轉 / 互助的 AT- 單沒有波次，但直接掛著訂單（transfers.customer_order_id）
+          const noWave = rows.filter((r) => !dispatchMap.has(r.id)).map((r) => r.id);
+          for (let i = 0; i < noWave.length; i += 200) {
+            const { data: aidRows } = await sb
+              .from("transfers")
+              .select("id, customer_order_id")
+              .in("id", noWave.slice(i, i + 200))
+              .not("customer_order_id", "is", null);
+            const pairs = (aidRows ?? []) as { id: number; customer_order_id: number }[];
+            if (pairs.length === 0) continue;
+            const { data: coRows } = await sb
+              .from("customer_orders")
+              .select("id, campaign_id")
+              .in("id", Array.from(new Set(pairs.map((p) => p.customer_order_id))));
+            const coCamp = new Map<number, number | null>(
+              ((coRows ?? []) as { id: number; campaign_id: number | null }[]).map((c) => [c.id, c.campaign_id]),
+            );
+            for (const p of pairs) {
+              const cid = coCamp.get(p.customer_order_id);
+              if (cid != null) dispatchMap.set(p.id, [cid]);
+            }
+          }
+        }
+
+        // 開團名稱 / 編號 / 結單時間 —— 群組標題的商品名會被重開的團改掉，
+        // 這是唯一能認出「這批是哪一團的貨」的資料。分店角色也讀得到
+        //（RLS auth_read_group_buy_campaigns：同 tenant 即可讀）。
+        const campMap = new Map<number, CampaignLite>();
+        const campIds = Array.from(new Set(Array.from(dispatchMap.values()).flat()));
+        for (let i = 0; i < campIds.length; i += 200) {
+          const { data: campRows } = await sb
+            .from("group_buy_campaigns")
+            .select("id, campaign_no, name, end_at")
+            .in("id", campIds.slice(i, i + 200));
+          for (const c of (campRows ?? []) as CampaignLite[]) campMap.set(c.id, c);
+        }
+
         if (!cancelled) {
           setTransfers(rows);
           setLocations(locMap);
@@ -414,6 +488,8 @@ export default function TransfersInboxPage() {
           setItemSummary(summary);
           setLocationToStore(locStoreMap);
           setTransferCampaigns(tcMap);
+          setDispatchCampaigns(dispatchMap);
+          setCampaignInfo(campMap);
           setSourceKinds(kindMap);
           setError(null);
           const auto = new Set<string>();
@@ -455,12 +531,18 @@ export default function TransfersInboxPage() {
       const summary = itemSummary.get(t.id);
       const wid = parseWaveId(t.transfer_no);
       const wave = wid !== null ? waves.get(wid) : undefined;
+      const camps = (dispatchCampaigns.get(t.id) ?? [])
+        .map((cid) => campaignInfo.get(cid))
+        .filter(Boolean) as CampaignLite[];
       const haystack = [
         t.transfer_no,
         wave?.wave_code ?? "", // 撿貨單號
         locations.get(t.dest_location) ?? "",
         ...(summary?.names ?? []), // 商品名
         ...(summary?.codes ?? []), // 品項編號 sku_code / 商品編號 product_code
+        // 開團名稱 / 編號：商品被改名之後，用舊團名或團號一樣找得到那批貨
+        ...camps.map((c) => c.name ?? ""),
+        ...camps.map((c) => c.campaign_no ?? ""),
       ]
         .join(" ")
         .toLowerCase();
@@ -480,10 +562,19 @@ export default function TransfersInboxPage() {
       if (dateFilter === "today_or_earlier") return !!wd && wd <= todayStr;
       return true;
     });
-  }, [transfers, locationFilter, tab, dateFilter, waves, search, itemSummary, locations]);
+  }, [
+    transfers, locationFilter, tab, dateFilter, waves, search, itemSummary, locations,
+    dispatchCampaigns, campaignInfo,
+  ]);
 
   const groups = useMemo(() => {
     const map = new Map<string, Group>();
+    // 一個群組可能併了多張單、跨到不只一團（同分店同配送日同品項組合）→ 去重收集
+    const addCampaigns = (entry: Group, transferId: number) => {
+      for (const cid of dispatchCampaigns.get(transferId) ?? []) {
+        if (!entry.campaignIds.includes(cid)) entry.campaignIds.push(cid);
+      }
+    };
     if (groupMode === "wave") {
       for (const t of filtered) {
         const wid = parseWaveId(t.transfer_no);
@@ -507,10 +598,12 @@ export default function TransfersInboxPage() {
             coveredQty: 0,
             prefilledQty: 0,
             backorderQty: 0,
+            campaignIds: [],
           };
           map.set(key, entry);
         }
         entry.transfers.push(t);
+        addCampaigns(entry, t.id);
         entry.totalQty += itemSummary.get(t.id)?.totalQty ?? 0;
         entry.extraQty += itemSummary.get(t.id)?.extraQty ?? 0;
         entry.shortQty += itemSummary.get(t.id)?.shortQty ?? 0;
@@ -560,10 +653,12 @@ export default function TransfersInboxPage() {
           coveredQty: 0,
           prefilledQty: 0,
           backorderQty: 0,
+          campaignIds: [],
         };
         map.set(key, entry);
       }
       entry.transfers.push(t);
+      addCampaigns(entry, t.id);
       entry.totalQty += s?.totalQty ?? 0;
       entry.extraQty += s?.extraQty ?? 0;
       entry.shortQty += s?.shortQty ?? 0;
@@ -575,7 +670,7 @@ export default function TransfersInboxPage() {
     return Array.from(map.values()).sort((a, b) =>
       asc ? a.sortCode.localeCompare(b.sortCode) : b.sortCode.localeCompare(a.sortCode),
     );
-  }, [filtered, waves, itemSummary, locations, groupMode, tab]);
+  }, [filtered, waves, itemSummary, locations, groupMode, tab, dispatchCampaigns]);
 
   // 切分頁 / 篩選 / 搜尋 / 檢視模式時，群組分頁歸零回第一頁（20 筆）
   useEffect(() => {
@@ -1219,6 +1314,33 @@ export default function TransfersInboxPage() {
                       <Chip>📦 共 {g.totalQty} 件</Chip>
                       <Chip>🧾 {g.transfers.length} 單</Chip>
                       {doneCount > 0 && pendingCount > 0 && <Chip>✅ 已收 {doneCount} 單</Chip>}
+                      {/* 這批是哪一團派的 —— 標題印的商品名會被「同商品重開一團」改掉
+                          （歷史波次跟著顯示新的結單日），開團名稱／編號才認得出真正的團 */}
+                      {g.campaignIds.slice(0, 2).map((cid) => {
+                        const c = campaignInfo.get(cid);
+                        if (!c) return null;
+                        return (
+                          <Chip key={cid} title={campaignTitle(c)}>
+                            🏷 {campaignLabel(c)}
+                            {showDetail && c.campaign_no && (
+                              <span className="font-mono text-[10px] text-zinc-400">{c.campaign_no}</span>
+                            )}
+                          </Chip>
+                        );
+                      })}
+                      {g.campaignIds.length > 2 && (
+                        <Chip
+                          title={g.campaignIds
+                            .slice(2)
+                            .map((cid) => {
+                              const c = campaignInfo.get(cid);
+                              return c ? campaignLabel(c) : `#${cid}`;
+                            })
+                            .join("\n")}
+                        >
+                          …+{g.campaignIds.length - 2} 團
+                        </Chip>
+                      )}
                     </span>
                   </span>
                 </SpinButton>
@@ -1385,6 +1507,22 @@ export default function TransfersInboxPage() {
                                   <span>{locations.get(t.dest_location) ?? `#${t.dest_location}`}</span>
                                 )}
                                 {groupMode === "wave" && wave?.wave_date && <span>📅 {wave.wave_date}</span>}
+                                {/* 一個群組併到不只一團時，逐張單標出各自的團，
+                                    不然使用者只知道「這組有兩團」卻分不出哪張是哪一團 */}
+                                {g.campaignIds.length > 1 &&
+                                  (dispatchCampaigns.get(t.id) ?? []).map((cid) => {
+                                    const c = campaignInfo.get(cid);
+                                    if (!c) return null;
+                                    return (
+                                      <span
+                                        key={cid}
+                                        title={campaignTitle(c)}
+                                        className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                                      >
+                                        🏷 {campaignLabel(c)}
+                                      </span>
+                                    );
+                                  })}
                                 {srcKind === "restock" && (
                                   <span
                                     className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-950 dark:text-violet-300"
@@ -1659,9 +1797,32 @@ function Pill({ tone, children }: { tone: "amber" | "emerald" | "rose" | "blue" 
 }
 
 // 標題下那排白底資訊膠囊（分店 / 配送日 / 件數 / 單數）
-function Chip({ children }: { children: React.ReactNode }) {
+/** 開團膠囊要印的字：團名（清掉 LINE 匯入的佔位字）→ 沒有才退團號 */
+function campaignLabel(c: CampaignLite): string {
+  return cleanCampaignText(c.name) || c.campaign_no || `#${c.id}`;
+}
+
+/** hover 提示：團號 + 系統的結單時間。
+ *  刻意不把日期印在膠囊上 —— 團名裡的「⏰x/xx結單」是店家自己打的，
+ *  跟 end_at 常差一天（例：GRP-20260817-007 名字寫 8/19、end_at 是 8/20 23:59），
+ *  兩個日期並排會變成新的一種混淆。要對時間的人 hover 看真值就好。 */
+function campaignTitle(c: CampaignLite): string {
+  const parts: string[] = [];
+  if (c.campaign_no) parts.push(`開團編號 ${c.campaign_no}`);
+  if (c.end_at) {
+    parts.push(
+      `結單 ${new Date(c.end_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })}`,
+    );
+  }
+  return parts.join("｜");
+}
+
+function Chip({ children, title }: { children: React.ReactNode; title?: string }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-md border border-zinc-200 bg-white px-2 py-0.5 text-[11px] text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+    <span
+      title={title}
+      className="inline-flex items-center gap-1 rounded-md border border-zinc-200 bg-white px-2 py-0.5 text-[11px] text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+    >
       {children}
     </span>
   );
