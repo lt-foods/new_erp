@@ -88,8 +88,13 @@ function PageContent() {
   const [error, setError] = useState<string | null>(null);
   const [showSend, setShowSend] = useState(false);
 
-  async function reload() {
-    if (!id) return;
+  // 回傳「這次重新載入有沒有成功」。儲存流程要靠它決定能不能把編輯值清掉：
+  // 這裡的 catch 只 setError 不 rethrow，所以呼叫端的 await 永遠不會炸；
+  // 若 RPC 已存進去、但接著這支查詢失敗，items 還停在舊值，這時清掉編輯值
+  // 會讓畫面「乾淨地顯示舊數字」＝謊報沒存到。
+  // 既有呼叫點（useEffect / 斷貨 / 回復 / 刪除 / SendPOModal）忽略回傳值，行為不變。
+  async function reload(): Promise<boolean> {
+    if (!id) return false;
     setLoading(true);
     try {
       const supabase = getSupabase();
@@ -195,8 +200,10 @@ function PageContent() {
         };
       });
       setItems(merged);
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      return false;
     } finally {
       setLoading(false);
     }
@@ -236,22 +243,63 @@ function PageContent() {
   // 編輯中的數值放父層（不是每格自己 useState）：不然「全部到齊」改不到別人的格子，
   // 父層也不知道誰有未存的改動、做不出「全部儲存」。
   // 只放使用者實際動過的格子；沒有 entry 就顯示 DB 的 qty_received。
-  const [recvEdits, setRecvEdits] = useState<Record<number, string>>({});
+  //
+  // 除了輸入字串，還要記 base = 這一格「開始編輯」當下的 qty_received，
+  // 也就是使用者是看著哪個數字做的判斷。RPC 是絕對值介面
+  // （p_new_qty 直接成為終值，沒有 expected-old-value、沒有版本欄位，
+  //  delta 是拿資料庫當下的值現算），所以「別人在我打字期間改過這一列」若不擋，
+  // 送出去就是在本人完全不知情下覆蓋掉別人剛存的數字、而且真的動到庫存。
+  const [recvEdits, setRecvEdits] = useState<Record<number, { value: string; base: number }>>({});
   const [recvErrs, setRecvErrs] = useState<Record<number, string>>({});
   const [recvSavingId, setRecvSavingId] = useState<number | null>(null);
   const [recvBatchSaving, setRecvBatchSaving] = useState(false);
   const [recvBatchResult, setRecvBatchResult] =
-    useState<{ ok: number; failed: { label: string; msg: string }[] } | null>(null);
+    useState<{ ok: number; failed: { label: string; msg: string }[]; reloadOk: boolean } | null>(null);
 
   // 斷貨品項的已收量後端會擋（RPC 守衛 2b），批次操作必須跟畫面用同一組條件。
   const recvRows = recvEditable ? items.filter((r) => !r.stockout_at) : [];
-  const recvValue = (r: Item) => recvEdits[r.id] ?? String(r.qty_received);
+  const recvValue = (r: Item) => recvEdits[r.id]?.value ?? String(r.qty_received);
   const recvPending = recvRows.filter((r) => recvState(r, recvValue(r)).dirty);
   // RPC 會對母單 FOR UPDATE，同頁併發送出只會互相卡住 → 一次只讓一筆在飛。
   const recvBusy = recvSavingId !== null || recvBatchSaving;
 
+  // 有值 = 這一格的輸入基於過期資料（值本身就是開始編輯時看到的已收量）。
+  // 條件：開始編輯時的 base，和現在 items 裡的 qty_received 對不上了。
+  const recvStaleBase = (r: Item) => {
+    const e = recvEdits[r.id];
+    return e !== undefined && e.base !== r.qty_received ? e.base : undefined;
+  };
+  const recvStaleMsg = (r: Item) =>
+    `這一列已被更新為 ${r.qty_received}（你是看著 ${recvStaleBase(r)} 輸入的）。` +
+    `已收量是直接覆蓋、不是累加，請確認後重新輸入。`;
+  const recvStaleRows = recvRows.filter((r) => recvStaleBase(r) !== undefined);
+
+  // base 只在這一格「開始編輯」時記一次；中途改字不重記，
+  // 不然使用者一邊打字就一邊把 base 往前推，被別人更新過反而偵測不到。
+  function setRecvEdit(r: Item, value: string) {
+    setRecvEdits((prev) => ({
+      ...prev,
+      [r.id]: { value, base: prev[r.id]?.base ?? r.qty_received },
+    }));
+  }
+
+  // 過期的格子唯一的出路：丟掉自己的輸入、退回目前的 DB 值，才能用新的 base 重打。
+  // （若讓「再打一次字」就重記 base，上面那道防呆等於沒有。）
+  function discardRecvEdit(r: Item) {
+    setRecvEdits((prev) => {
+      const next = { ...prev };
+      delete next[r.id];
+      return next;
+    });
+    setRecvErrs((prev) => {
+      const next = { ...prev };
+      delete next[r.id];
+      return next;
+    });
+  }
+
   function fillReceived(r: Item) {
-    setRecvEdits((prev) => ({ ...prev, [r.id]: String(r.qty_ordered) }));
+    setRecvEdit(r, String(r.qty_ordered));
   }
 
   // 只填值、不儲存。存下去會建進貨單 + rpc_confirm_gr 真的入庫，誤觸沒有反悔機會。
@@ -269,12 +317,20 @@ function PageContent() {
       return;
     setRecvEdits((prev) => {
       const next = { ...prev };
-      for (const r of recvRows) next[r.id] = String(r.qty_ordered);
+      // 同樣不重記 base：已經在編輯中的格子沿用原本的起點，過期偵測才不會被這一鍵洗掉。
+      for (const r of recvRows) {
+        next[r.id] = { value: String(r.qty_ordered), base: prev[r.id]?.base ?? r.qty_received };
+      }
       return next;
     });
   }
 
   async function saveReceived(r: Item) {
+    // 過期就擋，不送。RPC 沒有樂觀鎖，送出去等於直接覆蓋別人剛存的值。
+    if (recvStaleBase(r) !== undefined) {
+      setRecvErrs((prev) => ({ ...prev, [r.id]: recvStaleMsg(r) }));
+      return;
+    }
     const { num, floor, max, invalid } = recvState(r, recvValue(r));
     if (invalid) {
       setRecvErrs((prev) => ({ ...prev, [r.id]: `已收量需介於 ${floor}~${max}` }));
@@ -297,13 +353,21 @@ function PageContent() {
         p_operator: userData.user?.id,
       });
       if (rpcErr) throw new Error(rpcErr.message);
-      await reload();
-      // 一定要等 reload 完才丟掉編輯值：先丟的話這一格會閃回舊的 qty_received 再跳成新值。
-      setRecvEdits((prev) => {
-        const next = { ...prev };
-        delete next[r.id];
-        return next;
-      });
+      // 只有 reload 真的成功才清編輯值：
+      // 一定要等 reload 完才丟（先丟的話這一格會閃回舊的 qty_received 再跳成新值）；
+      // 而 reload 失敗時 items 還停在舊值，這時清掉會變成「乾淨地顯示舊數字」＝謊報沒存到。
+      if (await reload()) {
+        setRecvEdits((prev) => {
+          const next = { ...prev };
+          delete next[r.id];
+          return next;
+        });
+      } else {
+        setRecvErrs((prev) => ({
+          ...prev,
+          [r.id]: "已存檔成功，但重新載入失敗；畫面數字可能不是最新的，請手動重新整理確認。",
+        }));
+      }
     } catch (e) {
       setRecvErrs((prev) => ({ ...prev, [r.id]: e instanceof Error ? e.message : String(e) }));
     } finally {
@@ -324,11 +388,20 @@ function PageContent() {
     const errs: Record<number, string> = {};
     const failed: { label: string; msg: string }[] = [];
     const okIds: number[] = [];
+    let reloadOk = true;
     try {
       const supabase = getSupabase();
       const { data: userData } = await supabase.auth.getUser();
       for (const r of targets) {
         const label = r.product_name + (r.variant_name ? `-${r.variant_name}` : "");
+        // 過期的那幾列擋掉就好，其他列照存 —— 本來就沒有整批 rollback，
+        // 為了一列全擋反而讓人更難收拾。
+        if (recvStaleBase(r) !== undefined) {
+          const msg = recvStaleMsg(r);
+          errs[r.id] = msg;
+          failed.push({ label, msg });
+          continue;
+        }
         const { num, floor, max, invalid } = recvState(r, recvValue(r));
         if (invalid) {
           // 不靜默跳過：跳過會讓人以為那一格存好了。
@@ -349,17 +422,21 @@ function PageContent() {
           okIds.push(r.id);
         }
       }
-      await reload();
-      setRecvEdits((prev) => {
-        const next = { ...prev };
-        for (const okId of okIds) delete next[okId];
-        return next;
-      });
+      // 同單筆：reload 失敗就不清編輯值，否則已經入庫的那幾列會被顯示成「舊值且乾淨」，
+      // 老闆會以為那批貨沒進到。
+      reloadOk = await reload();
+      if (reloadOk) {
+        setRecvEdits((prev) => {
+          const next = { ...prev };
+          for (const okId of okIds) delete next[okId];
+          return next;
+        });
+      }
     } catch (e) {
       failed.push({ label: "（整批）", msg: e instanceof Error ? e.message : String(e) });
     } finally {
       setRecvErrs(errs);
-      setRecvBatchResult({ ok: okIds.length, failed });
+      setRecvBatchResult({ ok: okIds.length, failed, reloadOk });
       setRecvBatchSaving(false);
     }
   }
@@ -647,6 +724,12 @@ function PageContent() {
                     {recvPending.length} 格已改、未儲存
                   </span>
                 )}
+                {recvStaleRows.length > 0 && (
+                  /* 過期的格子存不進去，先讓人在按「全部儲存」之前就看到 */
+                  <span className="rounded bg-red-100 px-2 py-1 text-xs font-medium text-red-800 dark:bg-red-950 dark:text-red-300">
+                    {recvStaleRows.length} 格已被別人改過
+                  </span>
+                )}
                 <button
                   type="button"
                   onClick={fillAllReceived}
@@ -669,7 +752,7 @@ function PageContent() {
           {recvBatchResult && (
             <div
               className={`border-b px-4 py-2 text-sm ${
-                recvBatchResult.failed.length > 0
+                recvBatchResult.failed.length > 0 || !recvBatchResult.reloadOk
                   ? "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
                   : "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300"
               }`}
@@ -678,6 +761,14 @@ function PageContent() {
                 成功 {recvBatchResult.ok} 筆
                 {recvBatchResult.failed.length > 0 && `、失敗 ${recvBatchResult.failed.length} 筆`}
               </div>
+              {!recvBatchResult.reloadOk && (
+                /* 存進去了但畫面沒能重抓：這時桌面上的數字不代表資料庫，要講明白，
+                   不然老闆會以為那批貨沒進到、又存一次。 */
+                <p className="mt-1">
+                  ⚠️ 上面成功的 {recvBatchResult.ok} 筆<strong>確實已經入庫</strong>，但重新載入失敗、
+                  畫面可能還顯示舊數字（那幾格會繼續標成未儲存）。請手動重新整理這一頁確認。
+                </p>
+              )}
               {recvBatchResult.failed.length > 0 && (
                 <>
                   <ul className="mt-1 list-disc space-y-0.5 pl-5">
@@ -740,9 +831,11 @@ function PageContent() {
                             saving={recvSavingId === r.id}
                             disabled={recvBusy}
                             err={recvErrs[r.id]}
-                            onChange={(v) => setRecvEdits((prev) => ({ ...prev, [r.id]: v }))}
+                            staleBase={recvStaleBase(r)}
+                            onChange={(v) => setRecvEdit(r, v)}
                             onFill={() => fillReceived(r)}
                             onSave={() => saveReceived(r)}
+                            onDiscard={() => discardRecvEdit(r)}
                           />
                         ) : (
                           <span className="text-emerald-600 dark:text-emerald-400">
@@ -770,9 +863,10 @@ function PageContent() {
                             ⛔ 斷貨
                           </span>
                         ) : canStockout && r.qty_received < r.qty_ordered ? (
+                          /* 同一列裡的觸控目標要一致：已收量那三顆是 44px，這顆也跟上 */
                           <SpinButton
                             onClick={() => stockoutItem(r)}
-                            className="rounded border border-amber-400 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-900"
+                            className="min-h-[44px] touch-manipulation rounded-md border border-amber-400 bg-amber-50 px-2 text-sm font-medium text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-900"
                           >
                             ⛔ 斷貨
                           </SpinButton>
@@ -854,6 +948,10 @@ function recvState(item: Item, value: string) {
  * 「乾淨」是靠 value = edits[id] ?? qty_received 這個式子自然成立的：
  * 儲存成功 reload 後 qty_received 追上輸入值 → dirty 立刻變 false（儲存鈕消失、黃底退掉），
  * 不需要、也不會依賴重掛。輸入到一半被 reload 也不會被洗掉：reload 只動 items、不碰 edits。
+ *
+ * stale = 開始編輯後，這一列的 qty_received 已經被別人改掉了。此時擋住儲存，
+ * 只給「改用最新值」（丟掉自己的輸入、退回 DB 值）——RPC 是絕對值覆蓋，
+ * 讓他基於舊認知送出去會直接蓋掉別人剛存的數字。
  */
 function ReceivedCell({
   item,
@@ -861,20 +959,26 @@ function ReceivedCell({
   saving,
   disabled,
   err,
+  staleBase,
   onChange,
   onFill,
   onSave,
+  onDiscard,
 }: {
   item: Item;
   value: string;
   saving: boolean;
   disabled: boolean;
   err?: string;
+  /** 有值＝這一格過期了；值本身是開始編輯時看到的已收量 */
+  staleBase?: number;
   onChange: (v: string) => void;
   onFill: () => void;
   onSave: () => void;
+  onDiscard: () => void;
 }) {
   const { floor, max, num, dirty, invalid } = recvState(item, value);
+  const stale = staleBase !== undefined;
 
   return (
     <div className="flex flex-col items-end gap-0.5">
@@ -887,10 +991,10 @@ function ReceivedCell({
           value={value}
           min={floor}
           max={max}
-          disabled={disabled}
+          disabled={disabled || stale}
           onChange={(e) => onChange(e.target.value)}
           className={`w-20 rounded border px-1 py-0.5 text-right text-base tabular-nums ${
-            invalid && dirty
+            stale || (invalid && dirty)
               ? "border-red-400 bg-white dark:border-red-700 dark:bg-zinc-800"
               : dirty
                 ? // 改過、還沒存：黃底黃框，一眼看得出哪幾格是待儲存的
@@ -900,29 +1004,51 @@ function ReceivedCell({
           aria-label={`已收量（下限 ${floor}、上限 ${max}）`}
         />
         {/* 觸控目標 ≥ 44px：樓下是用 iPad 單手點的。touch-manipulation 見上方明細標題列的說明。
-            已經等於訂購量就沒事可做 → 直接 disabled，不做「按了沒反應」的鈕。 */}
+            已經等於訂購量就沒事可做 → 直接 disabled，不做「按了沒反應」的鈕。
+            過期時整格凍結（含輸入框與這兩顆鈕），只留「改用最新值」一條路：
+            再讓他改字只會讓他基於舊認知送出，而 RPC 是絕對值覆蓋。 */}
         <button
           type="button"
           onClick={onFill}
-          disabled={disabled || num === max}
+          disabled={disabled || stale || num === max}
           title={`帶入訂購量 ${max}`}
           aria-label={`帶入訂購量 ${max}`}
           className="min-h-[44px] min-w-[44px] shrink-0 touch-manipulation rounded-md border border-blue-300 bg-white px-2 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-40 dark:border-blue-700 dark:bg-zinc-900 dark:text-blue-300 dark:hover:bg-blue-950"
         >
           全到
         </button>
-        {dirty && (
+        {stale ? (
           <button
             type="button"
-            onClick={onSave}
-            disabled={disabled || invalid}
-            className="min-h-[44px] min-w-[44px] shrink-0 touch-manipulation rounded-md bg-emerald-600 px-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-40"
+            onClick={onDiscard}
+            disabled={disabled}
+            title={`丟掉你輸入的 ${value}，改用最新的 ${item.qty_received}`}
+            className="min-h-[44px] shrink-0 touch-manipulation rounded-md border border-red-400 bg-white px-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-40 dark:border-red-700 dark:bg-zinc-900 dark:text-red-300 dark:hover:bg-red-950"
           >
-            {saving ? "…" : "儲存"}
+            改用最新值
           </button>
+        ) : (
+          dirty && (
+            <button
+              type="button"
+              onClick={onSave}
+              disabled={disabled || invalid}
+              className="min-h-[44px] min-w-[44px] shrink-0 touch-manipulation rounded-md bg-emerald-600 px-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-40"
+            >
+              {saving ? "…" : "儲存"}
+            </button>
+          )
         )}
       </div>
-      {err && <span className="max-w-[10rem] text-right text-[11px] leading-tight text-red-500">{err}</span>}
+      {stale && (
+        <span className="max-w-[13rem] text-right text-[11px] leading-tight text-red-600 dark:text-red-400">
+          ⚠️ 這一列已被別人改成 {item.qty_received}（你是看著 {staleBase} 輸入的）。
+          已收量是覆蓋、不是累加 —— 請按「改用最新值」再重打。
+        </span>
+      )}
+      {err && !stale && (
+        <span className="max-w-[10rem] text-right text-[11px] leading-tight text-red-500">{err}</span>
+      )}
     </div>
   );
 }
