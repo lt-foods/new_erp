@@ -8,10 +8,16 @@
 //      （PR #744 的根因就是「選取 ∩ 目前清單」把勾選悄悄丟掉）。
 //   把判斷抽成純函式，才驗得起來（含孤兒情境），也才不會散在 JSX 裡。
 //
-// 三種「不在正常狀態」的欄位／列，一律**照樣顯示**並標示出來：
-//   - 分店 inactive：stores 裡還在，但 is_active = false（停用後才建的草稿還看得到舊資料）
-//   - 分店 missing ：stores 裡整筆查不到（被硬刪）
-//   - 商品 missing ：skus 裡查不到 → 用 snapshot 的品名品號照樣印
+// 「不在正常狀態」的欄位／列分**兩類**，處理方式不一樣：
+//   ① 異常狀態 → 一律**照樣顯示**並標示出來（藏起來就是拿系統異常冒充一切正常）：
+//      - 分店 missing ：stores 裡整筆查不到（被硬刪）
+//      - 分店 unknown ：分店查詢失敗 → 標「無法確認」，不武斷說被刪了
+//      - 商品 missing / unknown：skus 裡查不到、或查不出來 → 用 snapshot 的品名品號照樣印
+//   ② 正常狀態 → 只有「**本草稿有量**」才顯示：
+//      - 分店 inactive：stores 裡還在，但 is_active = false ＝ 已經收掉的店，
+//        不該再出現在撿貨單上（老闆 2026-08-17：「已停用的店家就不用出現了」）。
+//        ⭐ 但有量的一定要留：rowTotal 是把該商品所有 cells 加總、不看畫面上有沒有那一欄，
+//        藏掉一個有量的欄，紙上橫的加起來就 ≠ 合計。判準與證明見 buildStoreColumns。
 
 /**
  * 把 DB 錯誤翻成老闆看得懂、而且知道下一步要做什麼的話。
@@ -72,7 +78,11 @@ export type DraftCell = {
 
 export type StoreRef = { id: number; code: string; name: string };
 
-/** stores 全表的一列：**含停用**。`is_active === false` → 欄位標「已停用」 */
+/**
+ * stores 全表的一列：**含停用**。
+ * `is_active === false` → 這一欄只有「本草稿有量」時才留下來，並標「已停用」；
+ * 零數量的整欄不顯示（判準見 buildStoreColumns）。
+ */
 export type StoreRow = StoreRef & { is_active?: boolean | null };
 
 export type StoreColumn = StoreRef & { state: "active" | "inactive" | "missing" | "unknown" };
@@ -329,6 +339,9 @@ export function computePrefill(rows: DemandRow[]): Prefill {
  * ⚠ 直接從 cells 加總，**不是**加總畫面上看得到的欄位 ——
  *   萬一哪天欄位漏了一欄，合計也還是對的（寧可欄位與合計對不起來被發現，
  *   也不要合計跟著一起少算而看不出來）。
+ * ⓘ 「欄位漏了一欄」現在已經是**常態而不是意外**：buildStoreColumns 會藏掉
+ *   「停用且本草稿數量合計 0」的欄。那種欄保證每一格都是 0、對合計的貢獻是 0，
+ *   所以橫加仍然等於合計 —— 這支照樣不能改成加總畫面上的欄位。
  */
 export function rowTotal(cells: DraftCell[], skuId: number): number {
   let sum = 0;

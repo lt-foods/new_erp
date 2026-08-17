@@ -4,10 +4,12 @@
 //
 // 矩陣：商品(SKU) × 分店。樓下可以「增商品 / 刪商品 / 改任一格數量」（老闆 2026-08-17 拍板）。
 //
-// ⭐ 分店欄位是**另外撈 stores 全表**（is_active），不是沿用派貨工作台的 allStores。
+// ⭐ 分店欄位的來源是**另外撈 stores 全表**（含停用、帶 is_active），不是沿用派貨工作台的 allStores。
 //    理由（老闆）：「有可能有庫存就會多給沒下訂單的店家內部」。
 //    派貨工作台的 allStores 只收「demand 裡出現過的店」（wms/picking/page.tsx:813-826），
 //    沒下訂單的店在那邊連欄位都不存在。
+//    ⚠ 撈全表 **≠** 全部都變成欄位：實際顯示哪幾欄由 buildStoreColumns 決定 ——
+//      「停用且這張草稿數量合計 0」的不顯示（老闆 2026-08-17：「已停用的店家就不用出現了」）。
 //
 // ⛔ 本檔只讀寫 picking_drafts / picking_draft_items 兩張新表，外加**唯讀** stores / skus / products。
 //    不呼叫任何庫存或建單 RPC、不寫入任何既有表、完全不扣庫存。
@@ -339,7 +341,12 @@ function Body() {
     }
   }
 
-  // ---- 加入商品：替**所有啟用分店**各建一列，數量帶出「各店還沒派的需求」----
+  // ---- 加入商品：替 stores **全表（含停用）** 各建一列，數量帶出「各店還沒派的需求」----
+  //
+  // ⚠ 是「全表」不是「啟用分店」—— stores 就是上面撈回來的全表。停用分店照樣建一列，
+  //   但它幾乎不會有未派需求 → qty = 0 → buildStoreColumns 會把那一欄藏起來，畫面與紙上都看不到。
+  //   萬一它真的還有未派需求，那一列就有量、欄位會照樣顯示並標「已停用」——
+  //   正是「有量的一定要留」那條規則要保住的東西（見 lib/pickingDraftView.ts）。
   async function addSku(opt: SkuOption) {
     if (skuRows.some((r) => r.sku_id === opt.id)) {
       setError(`「${opt.product_name}」已經在這張草稿裡了`);
