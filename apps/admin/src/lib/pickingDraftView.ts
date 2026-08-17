@@ -773,3 +773,275 @@ export function deleteDraftConfirmMessage(name: string, recount: DraftSkuRecount
         `現在實際是 ${count} 樣（可能是另一台 iPad 剛剛加了或刪了商品）。\n\n`;
   return head + drift + `${body}\n` + tail;
 }
+
+// ============================================================
+// 「檢查」—— 拿這張草稿去派貨工作台建單，會不會卡住
+// ============================================================
+//
+// 這一整段回答的**只有一個問題**（老闆 2026-08-17 定案的流程）：
+//   草稿改完 →【檢查】→ 列印 → 拿紙去派貨工作台**人工**挑商品、填數字、建單。
+//   ⛔ 檢查鈕不導頁、不送資料、不建任何單、不改任何數字 —— 全程只下 SELECT。
+//
+// ⭐ 判準一律**對齊派貨工作台畫面上真正會發生的事**，⛔ 不去複製後端建單守衛的邏輯：
+//   那支守衛還有跨團借調等例外（見 migration 20260816000050 檔頭），複製一份必定失準，
+//   而且會隨著它改版而靜默飄移。「工作台上填不填得進去」才是老闆真正會遇到的事。
+//
+// ⛔ 明確**不檢查**「某店的量超過該店的訂單需求」（老闆 2026-08-17）：
+//   可分配量與訂單需求是兩回事，老闆本來就會多給沒訂滿的店 —— 那不是問題，
+//   標成紅的只會讓真正的問題被淹掉。
+
+/**
+ * v_picking_demand_by_po 之中，「檢查」用得到的欄位。
+ * ⚠ 欄位挑選刻意與派貨工作台的可分配量算式對齊（gr_qty、po_sku_already_wave），
+ *   ⛔ 不含任何寫入用的東西。
+ */
+export type PrecheckDemandRow = {
+  po_id: number;
+  sku_id: number;
+  store_id: number | null;
+  gr_qty: number;
+  po_sku_already_wave?: number | null;
+};
+
+/**
+ * 每個 SKU 目前的可分配量（只留 > 0 的，也就是「工作台上真的看得到」的那些）。
+ *
+ * ⭐⭐ 這支是**照抄**派貨工作台，不是重新發明。三處必須一字不差，逐條對照：
+ *
+ *   wms/picking/page.tsx `skuRows`（:740-811，工作台商品清單的真相）
+ *       if (r.store_id === null) continue;
+ *       const poSkuKey = `${r.po_id}:${r.sku_id}`;
+ *       if (!poSkuSeen.has(poSkuKey)) { poSkuSeen.add(poSkuKey);
+ *         s.totalGr          += Number(r.gr_qty);
+ *         already_wave_for_sku = Number(r.po_sku_already_wave ?? 0); }
+ *       s.totalAlreadyWave = Σ already_wave_for_sku
+ *       s.totalAvailable   = Math.max(0, s.totalGr - s.totalAlreadyWave)
+ *       …
+ *       .filter((s) => s.totalAvailable > 0)          ← :810「商品在不在工作台」
+ *
+ *   wms/picking/page.tsx `alivePickableSkuIds`（:212-227，工作台自己的第二份實作，
+ *       檔內註解已寫明「條件與 skuRows 的 filter(totalAvailable > 0) 完全一致」）
+ *       —— 與本函式**逐行同構**（連累加「差」而不是分別累加兩個總數都一樣）。
+ *
+ * ⚠ Σ(gr) − Σ(already) 與 Σ(gr − already) 相等，所以工作台那邊分開累加、
+ *   這邊累加差值，結果保證同一個數字。
+ * ⚠ id 一律 Number() 正規化：BIGINT 經過 PostgREST 可能是字串（#751 踩過），
+ *   不正規化 Map.get() 就必定對不上、整批商品被誤判成「已不在工作台」。
+ */
+export function availableBySku(rows: PrecheckDemandRow[]): Map<number, number> {
+  const raw = new Map<number, number>();
+  const poSkuSeen = new Set<string>();
+  for (const r of rows) {
+    if (r.store_id === null) continue; // 與工作台同條件
+    const skuId = Number(r.sku_id);
+    const poSkuKey = `${Number(r.po_id)}:${skuId}`;
+    if (poSkuSeen.has(poSkuKey)) continue;
+    poSkuSeen.add(poSkuKey);
+    raw.set(skuId, (raw.get(skuId) ?? 0) + Number(r.gr_qty) - Number(r.po_sku_already_wave ?? 0));
+  }
+  const out = new Map<number, number>();
+  // max(0, …) 之後才 filter(> 0)，與工作台 :799 + :810 的兩步一致
+  for (const [skuId, v] of raw) {
+    const avail = Math.max(0, v);
+    if (avail > 0) out.set(skuId, avail);
+  }
+  return out;
+}
+
+/** (SKU, 分店) 這一格在 view 裡有沒有列。key 的組法只有這一支，⛔ 不要在別處手拼字串 */
+export function demandCellKeys(rows: PrecheckDemandRow[]): Set<string> {
+  const keys = new Set<string>();
+  for (const r of rows) {
+    if (r.store_id === null) continue;
+    keys.add(`${Number(r.sku_id)}:${Number(r.store_id)}`);
+  }
+  return keys;
+}
+
+export type PrecheckSkuRef = { sku_id: number; code: string; label: string };
+/** 草稿填的量超過目前可分配量 */
+export type PrecheckOver = PrecheckSkuRef & { planned: number; available: number };
+/** 這一格的分店，目前在工作台上沒有這樣商品的需求 */
+export type PrecheckNoDemand = PrecheckSkuRef & { store_id: number; store_name: string; qty: number };
+/** 這樣商品目前整個不在工作台上（派掉了、或還沒到貨） */
+export type PrecheckGone = PrecheckSkuRef & { planned: number };
+/** 沒有問題，可以照著去建單 */
+export type PrecheckReady = PrecheckSkuRef & { planned: number };
+
+/**
+ * 檢查結果。
+ *
+ * ⭐⭐ 做成 union 而不是「一包欄位 + 一個 ok 布林」的唯一理由：
+ *   **查詢失敗絕對不可以長得像全部通過**（本專案已經犯過四次靜默偽裝）。
+ *   union 逼著呼叫端先分辨 kind 才拿得到 over / noDemand / ready ——
+ *   靠型別擋，不是靠自律（同 DraftSkuRecount 的作法）。
+ */
+export type DraftPrecheck =
+  | { kind: "failed"; at: string; reason: string }
+  | {
+      kind: "checked";
+      at: string;
+      over: PrecheckOver[];
+      noDemand: PrecheckNoDemand[];
+      gone: PrecheckGone[];
+      ready: PrecheckReady[];
+      /** ready 這些商品的件數合計 */
+      readyQty: number;
+      /** 整列每一格都是 0 的商品數（不用撿 → 這次沒有檢查，但要講出來免得數字對不起來） */
+      emptySkuCount: number;
+    };
+
+/** 「檢查於 HH:MM」的那個 HH:MM。⛔ 不用 toLocaleTimeString：各環境格式不一，測不起來 */
+export function checkedAtLabel(d: Date): string {
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * 純計算：草稿現況 × 工作台現況 → 四類結果。
+ *
+ * ⛔ 不碰資料庫、不排序副作用；列的順序沿用傳進來的 skuRows / storeCols，
+ *   老闆在結果清單裡看到的順序與上面那張表**完全一樣**（找得到同一列）。
+ *
+ * 分類順序是刻意的：
+ *   1. 整列都是 0             → 不用撿，四類都不進（只計數）
+ *   2. 商品不在工作台         → ⚠ 只講這一件。它的每一格必然也「沒有需求」，
+ *                               再列一次紅的只會讓老闆以為有兩個不同的問題
+ *   3. 合計 > 可分配量        → ❌
+ *   4. 某格的店沒有這樣商品的需求 → ❌（3 與 4 可以同時中）
+ *   5. 其餘                   → ✅
+ */
+export function computeDraftPrecheck(opts: {
+  skuRows: SkuRow[];
+  cells: DraftCell[];
+  storeCols: StoreColumn[];
+  demandRows: PrecheckDemandRow[];
+  at: string;
+}): Extract<DraftPrecheck, { kind: "checked" }> {
+  const { skuRows, cells, storeCols, demandRows, at } = opts;
+  const avail = availableBySku(demandRows);
+  const cellKeys = demandCellKeys(demandRows);
+  // 分店的顯示名稱與欄位順序都取自 storeCols（＝老闆畫面上那些欄），
+  // 撈不到就退回這一格自己的分店快照 —— 分店被硬刪時照樣講得出「原本要給哪一家」。
+  const storeName = new Map(storeCols.map((c) => [Number(c.id), c.name]));
+  const storeOrder = new Map(storeCols.map((c, i) => [Number(c.id), i]));
+
+  const over: PrecheckOver[] = [];
+  const noDemand: PrecheckNoDemand[] = [];
+  const gone: PrecheckGone[] = [];
+  const ready: PrecheckReady[] = [];
+  let readyQty = 0;
+  let emptySkuCount = 0;
+
+  for (const row of skuRows) {
+    const ref: PrecheckSkuRef = { sku_id: row.sku_id, code: row.code, label: row.label };
+    const mine = cells.filter((c) => Number(c.sku_id) === row.sku_id);
+    const withQty = mine
+      .filter((c) => Number(c.qty) > 0)
+      .sort(
+        (a, b) =>
+          (storeOrder.get(Number(a.store_id)) ?? Number.MAX_SAFE_INTEGER) -
+          (storeOrder.get(Number(b.store_id)) ?? Number.MAX_SAFE_INTEGER),
+      );
+    const planned = rowTotal(cells, row.sku_id);
+    // 整列沒東西要撿 → 不進四類。⚠ 兩個條件都要（qty 的 CHECK 是 >= 0，
+    //   但萬一有負數混進來，只看合計會出現 +5/−5 抵消成 0 而漏檢 —— 同 storeIdsWithQty 的理由）
+    if (planned <= 0 && withQty.length === 0) {
+      emptySkuCount++;
+      continue;
+    }
+
+    const available = avail.get(row.sku_id);
+    if (available === undefined) {
+      gone.push({ ...ref, planned });
+      continue;
+    }
+
+    let bad = false;
+    if (planned > available) {
+      over.push({ ...ref, planned, available });
+      bad = true;
+    }
+    for (const c of withQty) {
+      const storeId = Number(c.store_id);
+      if (cellKeys.has(`${row.sku_id}:${storeId}`)) continue;
+      noDemand.push({
+        ...ref,
+        store_id: storeId,
+        store_name: storeName.get(storeId) ?? c.snapshot_store_name ?? `分店 #${storeId}`,
+        qty: Number(c.qty),
+      });
+      bad = true;
+    }
+    if (!bad) {
+      ready.push({ ...ref, planned });
+      readyQty += planned;
+    }
+  }
+
+  return { kind: "checked", at, over, noDemand, gone, ready, readyQty, emptySkuCount };
+}
+
+/**
+ * 檢查結果最上面那一句 —— 老闆只掃一眼的話就是看這一句。
+ *
+ * ⛔⛔ 失敗那一句是本功能最重要的一行字：一定要先講「檢查失敗」、再講
+ *   「不代表沒問題」。⛔ 絕對不可以出現任何像「通過」的字眼。
+ *   本專案已經犯過四次「系統異常偽裝成一切正常」，這一條是專門擋它的。
+ *
+ * ⓘ 這幾段字是丟進 <div>{text}</div> 純文字渲染的，⛔ 不要寫 `**粗體**`（會原樣印出星號）。
+ */
+export function precheckHeadline(r: DraftPrecheck): string {
+  if (r.kind === "failed") {
+    // ⚠ 原因擺在**最後**：describeDraftDbError 回的是整句話、自己就帶句號，
+    //   夾在中間會變成「…資料庫。 請再按一次…」多一個句點加一個空格
+    //   （deleteDraftConfirmMessage 踩過同一個坑）。
+    return (
+      `⚠ 檢查失敗（${r.at}）—— 這次「什麼都沒有檢查到」，不代表這張草稿沒問題。` +
+      `請再按一次「檢查」；一直失敗就要通知工程師。` +
+      `在這之前，不要把這張草稿當成已經檢查過的。原因：${r.reason}`
+    );
+  }
+  const blockers = r.over.length + r.noDemand.length;
+  if (blockers > 0) {
+    return `⚠ 檢查完成（${r.at}）：有 ${blockers} 件事要先處理，照現在這張草稿去派貨工作台建單會卡住。`;
+  }
+  if (r.gone.length > 0) {
+    return (
+      `檢查完成（${r.at}）：沒有會卡住建單的問題，` +
+      `但有 ${r.gone.length} 樣目前在派貨工作台上找不到（見下面）。`
+    );
+  }
+  if (r.ready.length > 0) {
+    return `✅ 檢查完成（${r.at}）：${r.ready.length} 樣、共 ${r.readyQty} 件，可以拿去派貨工作台建單。`;
+  }
+  return `檢查完成（${r.at}）：這張草稿目前沒有任何要撿的數量（每一格都是空的）。`;
+}
+
+/**
+ * 抓「檢查」要用的現況。
+ *
+ * ⛔⛔ 全程唯讀：對 v_picking_demand_by_po 下一次 SELECT，沒有任何寫回、沒有任何遠端程序呼叫。
+ *
+ * ⚠ 查詢條件與排序**逐項對齊**派貨工作台載入 demand 的那一段（wms/picking/page.tsx:375-385）：
+ *   同樣的兩個 .eq 篩選、同樣的排序。⛔ 這裡刻意**不加** .in("sku_id", …) 把範圍縮到草稿裡那幾樣：
+ *   撈回**一模一樣的那批列**，可分配量與「有沒有那一列」才保證跟老闆待會看到的畫面同一份，
+ *   也少掉一個「超過 200 個 id 要分批」的出錯面。線上這兩個篩選會把上萬列收到數十列。
+ *
+ * ⚠ 一定要走 fetchAllRows：PostgREST 預設 1000 列上限會**靜默**截斷，
+ *   被截掉的那些商品會變成「查不到 → 已不在工作台」，剛好是最像真的那種假訊息。
+ *
+ * ⛔⛔ 這裡**故意不 catch**：查詢失敗要讓呼叫端整個失敗、顯示「檢查失敗」。
+ *   吞掉錯誤退回空陣列的話，畫面會變成「全部通過」——
+ *   那正是本專案已經犯過四次的靜默偽裝，也是本切片唯一不能出的錯。
+ */
+export async function loadPrecheckDemand({ db, fetchAll }: PrefillDeps): Promise<PrecheckDemandRow[]> {
+  return fetchAll<PrecheckDemandRow>(() =>
+    db
+      .from("v_picking_demand_by_po")
+      .select("po_id, sku_id, store_id, gr_qty, po_sku_already_wave")
+      .eq("has_stock_left", true)
+      .eq("has_demand_left", true)
+      .order("po_item_id", { ascending: true })
+      .order("store_id", { ascending: true, nullsFirst: false }),
+  );
+}

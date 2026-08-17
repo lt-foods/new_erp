@@ -26,11 +26,16 @@ import {
   addBatchMessage,
   buildSkuRows,
   buildStoreColumns,
+  checkedAtLabel,
+  computeDraftPrecheck,
   describeDraftDbError,
   lateCellSnapshot,
+  loadPrecheckDemand,
   loadPrefill,
+  precheckHeadline,
   rowTotal,
   type AddBatchReport,
+  type DraftPrecheck,
   type PrefillResult,
   type SkuExistence,
   type StoreRow,
@@ -112,6 +117,14 @@ function Body() {
   // 正在輸入、還沒 blur 的格子（key → 使用者打的字）。commit 成功後清掉。
   const [edits, setEdits] = useState<Map<string, string>>(new Map());
   const [nameDraft, setNameDraft] = useState("");
+  // 「檢查」的結果。null = 這一頁還沒檢查過。
+  // ⛔ 失敗與通過是 union 的兩個 kind，不可能不小心混在一起顯示（見 DraftPrecheck）。
+  const [precheck, setPrecheck] = useState<DraftPrecheck | null>(null);
+  // 檢查完之後草稿又被改過 → 結果已經不算數了。
+  // ⛔ 不可以繼續原樣顯示那個綠色的「可以去建單」：老闆剛改完數量，
+  //   畫面卻還掛著改之前的結論，等於系統對他說謊。
+  //   ⚠ 也刻意**不直接清掉**：那樣結果會無聲消失，他會以為自己按到了什麼。
+  const [precheckStale, setPrecheckStale] = useState(false);
 
   // ⚠ 第一件事就 await，不在 effect body 同步 setState（react-hooks/set-state-in-effect）
   const load = useCallback(async () => {
@@ -221,6 +234,10 @@ function Body() {
       setSkuExistence(existence);
       setItems(cells);
       setEdits(new Map());
+      // 重新載入 = 換一份現況（另一台 iPad 可能剛改過）→ 舊的檢查結論一律作廢。
+      // ⛔ 不可以留著：它是對「上一份資料」下的結論。
+      setPrecheck(null);
+      setPrecheckStale(false);
     } catch (e) {
       setError(describeDraftDbError(e));
     } finally {
@@ -350,6 +367,8 @@ function Body() {
         if (err) throw err;
         setItems((arr) => [...arr, data as DraftItem]);
       }
+      // 數字真的改了 → 先前那份檢查結果不算數了
+      setPrecheckStale(true);
       clearEdit();
     } catch (e) {
       setError(describeDraftDbError(e));
@@ -453,6 +472,8 @@ function Body() {
         // ⭐ 每成功一樣就立刻進畫面（functional updater，不怕批次更新交錯）——
         //   第 3 樣掛掉時，前兩樣已經看得到，不會整批一起消失。
         setItems((arr) => [...arr, ...((data ?? []) as DraftItem[])]);
+        // 草稿內容變了 → 先前那份檢查結果不算數了（新加的這樣商品根本沒被檢查過）
+        setPrecheckStale(true);
         // ⭐⭐ existingSkuIds 原本只在 load() 算一次，加完商品只更新了 items、沒更新它
         //   → 新加的商品必然不在那個舊集合裡，於是每一樣剛加進去的都被標成
         //   「⚠ 此商品已不存在」。這樣商品是剛從 skus 搜出來的，存在性無庸置疑
@@ -509,9 +530,32 @@ function Body() {
         .eq("sku_id", skuId);
       if (err) throw err;
       setItems((arr) => arr.filter((it) => it.sku_id !== skuId));
+      // 少了一樣商品 → 先前那份檢查結果不算數了
+      setPrecheckStale(true);
     } catch (e) {
       setError(describeDraftDbError(e));
     }
+  }
+
+  // ---- 檢查：拿這張草稿去派貨工作台建單，會不會卡住（⛔ 純唯讀，零寫入）----
+  //
+  // ⛔ 這顆鈕**不做任何動作**：不導頁、不送資料、不建單、不改任何數字，
+  //   只回答一個問題，答完就結束。老闆 2026-08-17 裁示的流程是
+  //   「檢查 → 列印 → 拿紙去派貨工作台人工建單」，兩邊不互相伸手。
+  async function runPrecheck() {
+    const at = checkedAtLabel(new Date());
+    try {
+      // ⛔ loadPrecheckDemand 是刻意不 catch 的（見該函式），錯誤要在這裡被接住
+      //   並且**明講失敗**。⛔ 不可以 catch 成空陣列 —— 那會算出一份漂亮的「全部通過」。
+      const demandRows = await loadPrecheckDemand({ db: getSupabase(), fetchAll: fetchAllRows });
+      setPrecheck(
+        computeDraftPrecheck({ skuRows, cells: items, storeCols, demandRows, at }),
+      );
+    } catch (e) {
+      setPrecheck({ kind: "failed", at, reason: describeDraftDbError(e) });
+    }
+    // ⚠ 成功或失敗都要把 stale 清掉：這份結果（含「失敗」）就是對「現在」講的。
+    setPrecheckStale(false);
   }
 
   async function saveName() {
@@ -603,6 +647,12 @@ function Body() {
             {readOnly ? "重新開啟" : "標記完成"}
           </SpinButton>
           <SpinButton
+            onClick={runPrecheck}
+            className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            🔍 檢查
+          </SpinButton>
+          <SpinButton
             // ⚠ 路徑一定要包 withBasePath，不可以直接寫裸路徑：
             //    本站是 output:"export" + basePath（next.config.ts，線上是 /new_erp）。
             //    <Link> / router.push 會自動補上 basePath，但 window.open **不會** ——
@@ -663,6 +713,17 @@ function Body() {
           數量都還在（下面標黃色的就是），顯示的是<strong>加入當下的名稱</strong>；
           要移除請按該列的「移除」。
         </div>
+      )}
+
+      {precheck && (
+        <PrecheckPanel
+          result={precheck}
+          stale={precheckStale}
+          onClose={() => {
+            setPrecheck(null);
+            setPrecheckStale(false);
+          }}
+        />
       )}
 
       {readOnly ? (
@@ -789,7 +850,162 @@ function Body() {
         {orphanStoreCount > 0 && `（其中 ${orphanStoreCount} 個已停用／已刪除／無法確認）`}。
         {hiddenInactiveCount > 0 &&
           `另有 ${hiddenInactiveCount} 家已停用的分店沒有顯示（這張草稿裡它們的數量都是 0，已經收掉的店不用再撿）。`}
-        「對照現況」「列印」「送到派貨工作台」是後續切片，這一版還沒有。
+        {/* ⚠ 這一句原本寫「『對照現況』『列印』『送到派貨工作台』是後續切片，這一版還沒有」——
+            列印早就做好了，檢查是這一版做的，而「送到派貨工作台」老闆 2026-08-17 已裁示**不做**
+            （改成拿紙本去工作台人工建單，理由見實作計畫第二節「六條會多派出去的路徑」）。
+            ⛔ 留著那句話會讓老闆以為系統還會長出一顆自動轉出鈕，一直在等。 */}
+        數字改好之後按「檢查」，看拿去派貨工作台會不會卡住；接著「列印 / 匯出」印出來，
+        拿紙本到派貨工作台挑商品、填數字、建單。<strong className="text-zinc-700 dark:text-zinc-300">
+        這一頁不會自動把草稿送過去</strong>，建單一律在派貨工作台上手動完成。
+      </p>
+    </div>
+  );
+}
+
+// 「檢查」的結果面板。
+//
+// ⛔⛔ 這個元件唯一不可以做錯的事：**查詢失敗絕對不能長得像通過**。
+//   所以 failed 走一條完全獨立的分支（紅框 + 「檢查失敗」標題），
+//   ⛔ 連一個綠色的字都不會出現 —— 型別上也拿不到 ready / over 那些欄位。
+//
+// ⛔ 面板裡沒有任何會動到資料的按鈕：只有一顆關閉、一條到補貨申請的連結。
+//   老闆 2026-08-17 裁示「只給連結，不自動建」。
+function PrecheckPanel({
+  result,
+  stale,
+  onClose,
+}: {
+  result: DraftPrecheck;
+  /** 檢查完之後草稿又被改過 */
+  stale: boolean;
+  onClose: () => void;
+}) {
+  const headline = precheckHeadline(result);
+  const closeBtn = (
+    <button
+      type="button"
+      onClick={onClose}
+      aria-label="關閉檢查結果"
+      className="shrink-0 rounded px-1.5 text-current opacity-60 hover:opacity-100"
+    >
+      ✕
+    </button>
+  );
+
+  if (result.kind === "failed") {
+    return (
+      <div className="rounded-md border-2 border-red-400 bg-red-50 p-3 text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-200">
+        <div className="flex items-start justify-between gap-3">
+          {/* ⛔ 整句都用粗體大字，而且**只有這一句** —— 不另外加一行標題：
+              標題與內文都寫「檢查失敗」會變成同一句話講兩次，而且措辭一旦分成兩處
+              就會有一天只改到其中一邊。措辭的唯一出處是 precheckHeadline。 */}
+          <p className="text-base font-bold leading-relaxed">{headline}</p>
+          {closeBtn}
+        </div>
+      </div>
+    );
+  }
+
+  const blockers = result.over.length + result.noDemand.length;
+  // 底色只由「有沒有會卡住建單的問題」決定；⚠ 找不到的商品是黃的、全部沒事才是綠的
+  const tone =
+    blockers > 0
+      ? "border-red-300 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/50 dark:text-red-200"
+      : result.gone.length > 0
+        ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+        : "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200";
+
+  return (
+    <div className={`flex flex-col gap-3 rounded-md border p-3 text-sm ${tone}`}>
+      {stale && (
+        // ⛔ 不可以讓一份過期的結論繼續看起來有效 —— 尤其是綠色那個「可以去建單」。
+        <div className="rounded-md border border-amber-400 bg-amber-100 p-2 text-sm font-semibold text-amber-900 dark:border-amber-600 dark:bg-amber-900/60 dark:text-amber-100">
+          ⚠ 檢查完之後草稿又被改過了 —— 下面這份結果已經不算數，請再按一次「檢查」。
+        </div>
+      )}
+
+      <div className="flex items-start justify-between gap-3">
+        <p className="font-semibold">{headline}</p>
+        {closeBtn}
+      </div>
+
+      {result.over.length > 0 && (
+        <section>
+          <h3 className="font-semibold">
+            ❌ 這 {result.over.length} 樣超過派貨工作台現在能分配的量
+          </h3>
+          <ul className="mt-1 flex flex-col gap-0.5">
+            {result.over.map((o) => (
+              <li key={o.sku_id}>
+                「{o.label}」<span className="font-mono text-xs opacity-70">{o.code}</span>：
+                草稿填了 {o.planned} 件，現在只剩 <strong>{o.available}</strong> 件可以分配
+                → 要減 {o.planned - o.available} 件。
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {result.noDemand.length > 0 && (
+        <section>
+          <h3 className="font-semibold">
+            ❌ 這 {result.noDemand.length} 格的分店，目前沒有這樣商品的需求
+          </h3>
+          <ul className="mt-1 flex flex-col gap-0.5">
+            {result.noDemand.map((n) => (
+              <li key={`${n.sku_id}:${n.store_id}`}>
+                「{n.label}」<span className="font-mono text-xs opacity-70">{n.code}</span>
+                {" → "}
+                <strong>{n.store_name}</strong> {n.qty} 件
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1.5">
+            派貨工作台的分店欄位是照「需求」長出來的，這幾家店目前沒有這樣商品的需求。
+            要給這些店，正規做法是先開一張補貨申請：{" "}
+            {/* ⛔ 只給連結，系統絕不自動建（老闆 2026-08-17 裁示）。
+                ⓘ <Link> 會自己補 basePath，不需要 withBasePath（那是給 window.open 用的）。
+                另開分頁，才不會把這份檢查結果沖掉。 */}
+            <Link
+              href="/restock/new"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-semibold underline underline-offset-2"
+            >
+              開補貨申請（另開分頁）
+            </Link>
+            。這一頁<strong>不會</strong>替你開，也不會改上面任何數字。
+          </p>
+        </section>
+      )}
+
+      {result.gone.length > 0 && (
+        <section>
+          <h3 className="font-semibold">
+            ⚠ 這 {result.gone.length} 樣目前在派貨工作台找不到
+          </h3>
+          <p className="mt-0.5">可能已經被派掉了、或是這批貨還沒到。</p>
+          <ul className="mt-1 flex flex-col gap-0.5">
+            {result.gone.map((g) => (
+              <li key={g.sku_id}>
+                「{g.label}」<span className="font-mono text-xs opacity-70">{g.code}</span>：
+                草稿填了 {g.planned} 件
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {result.ready.length > 0 && blockers + result.gone.length > 0 && (
+        // 有問題時也要講清楚「其餘這些是好的」，⛔ 不要讓老闆以為整張都不能用
+        <p>✅ 其餘 {result.ready.length} 樣、共 {result.readyQty} 件沒有問題，可以照著建單。</p>
+      )}
+
+      <p className="text-xs opacity-80">
+        檢查於 {result.at}
+        {result.emptySkuCount > 0 &&
+          `　·　另有 ${result.emptySkuCount} 樣整列都沒有數量，不用撿，這次沒有檢查`}
+        。現況隨時會變（樓下、別人都可能同時在動）—— 真的要去派貨工作台建單之前，最好再按一次「檢查」。
       </p>
     </div>
   );
