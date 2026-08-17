@@ -37,6 +37,10 @@ type OpenOrder = {
   pickup_deadline: string | null;
   pickup_store_id: number | null;
   discount_amount: number;
+  discount_percent: number;
+  // 儲值金結帳用（rpc_wallet_pay_order 的可扣上限 = 應收 − 已扣；已 paid 的單它會直接擋）
+  wallet_paid_amount: number;
+  payment_status: string | null;
   ready_at: string | null;       // 到貨時間 (shipping → ready 自動寫入)
   transferred_from_order_id: number | null; // 互助轉入單才有；用來判斷是否走「退回原店」
   last_notify_pickup_at: string | null;
@@ -102,6 +106,9 @@ function PickupPageContent() {
   // item.id → 櫃台補填金額的輸入值 / 正在送出的那一筆
   const [zeroFillDraft, setZeroFillDraft] = useState<Map<number, string>>(new Map());
   const [zeroFilling, setZeroFilling] = useState<number | null>(null);
+  // member.id → 儲值金餘額（wallet_balances）。取貨頁的「儲值金結帳」用；
+  // 查無資料＝沒儲值過，視為 0。
+  const [walletBalances, setWalletBalances] = useState<Map<number, number>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const autoSearchedRef = useRef(false);
@@ -185,6 +192,23 @@ function PickupPageContent() {
   function isPickable(order: OpenOrder): boolean {
     return pickableItems(order).length > 0 && !hasZeroPrice(order);
   }
+  // 這批品項的應收 —— 算式與 PickupDialog / v_customer_order_summary.payable_amount
+  // 同步：round(小計 × (1 − 折扣%) − 折扣金額)，小計一律用「扣掉未取退貨後的量」。
+  // 折扣% 以前這頁沒算（只減 discount_amount），有設 % 的單畫面會比實收多。
+  function payableOf(order: OpenOrder, items: OpenOrder["items"]): number {
+    const subtotal = items.reduce((s, it) => s + remainingQty(it) * Number(it.unit_price), 0);
+    const pct = Number(order.discount_percent ?? 0);
+    const amt = Number(order.discount_amount ?? 0);
+    return Math.max(0, Math.round(subtotal * (1 - pct / 100) - amt));
+  }
+  // 這張單這次最多能扣多少儲值金 = 本次應收 − 已扣。
+  // rpc_wallet_pay_order 自己的上限是「整張單應收 − 已扣」（含還沒到貨的品項），
+  // 只取部分品項時要用本次的應收才不會先把還沒拿到的貨也收了錢。
+  // payment_status='paid' 的單它會直接 RAISE，這裡先歸零跳過。
+  function walletChargeableOf(order: OpenOrder, items: OpenOrder["items"]): number {
+    if (order.payment_status === "paid") return 0;
+    return Math.max(0, payableOf(order, items) - Number(order.wallet_paid_amount ?? 0));
+  }
   // 該品項是否為「這組到過貨但量不夠分到這一行」（短收 / 這批只到一部分）。
   // 等下一批貨收進來就會自己放行，不需要人工配貨 —— 所以不可以標成「待補貨」。
   function isQtyShort(it: OpenOrder["items"][number]): boolean {
@@ -205,7 +229,8 @@ function PickupPageContent() {
   const [returnTarget, setReturnTarget] = useState<{ orderId: number; storeId: number | null } | null>(null);
   const [recents, setRecents] = useState<RecentCustomer[]>([]);
   const [bulking, setBulking] = useState<number | null>(null);
-  const [bulkConfirm, setBulkConfirm] = useState<Member | null>(null);
+  // 一次全取的確認視窗。wallet=true → 這次要走「儲值金結帳」（視窗會多一段試算）
+  const [bulkConfirm, setBulkConfirm] = useState<{ member: Member; wallet: boolean } | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   // 未取貨（預設，可取貨/合併取貨）↔ 已取貨（補印收據用）
   const [mode, setMode] = useState<PickupMode>("open");
@@ -235,6 +260,7 @@ function PickupPageContent() {
     setPickedEvents(new Map());
     setSelected(new Set());
     setSelectedItems(new Set());
+    setWalletBalances(new Map());
     try {
       const sb = getSupabase();
       // 與會員頁 / 開團入單 / 轉單同一支 RPC（Google 式多 token 搜尋）。
@@ -268,6 +294,17 @@ function PickupPageContent() {
         setInternalMemberIds(new Set(((its ?? []) as { id: number }[]).map((x) => x.id)));
       }
 
+      // 儲值金餘額（「💳 儲值金結帳」的可扣上限之一，與 PickupDialog 同一張表）
+      {
+        const { data: wbs } = await sb
+          .from("wallet_balances")
+          .select("member_id, balance")
+          .in("member_id", list.map((mem) => mem.id));
+        setWalletBalances(
+          new Map(((wbs ?? []) as { member_id: number; balance: number }[]).map((w) => [w.member_id, Number(w.balance ?? 0)])),
+        );
+      }
+
       // 搜尋有結果即記入「常用顧客」（不必等取貨）。
       // ≤5 筆視為「找到特定顧客」才記；>5 視為廣搜（如只打姓氏），不記以免洗版。
       if (list.length <= 5) {
@@ -280,7 +317,7 @@ function PickupPageContent() {
       const ordQ = sb
         .from("customer_orders")
         .select(
-          `id, order_no, status, pickup_deadline, pickup_store_id, discount_amount, ready_at, transferred_from_order_id, last_notify_pickup_at, notify_pickup_count, member_id,
+          `id, order_no, status, pickup_deadline, pickup_store_id, discount_amount, discount_percent, wallet_paid_amount, payment_status, ready_at, transferred_from_order_id, last_notify_pickup_at, notify_pickup_count, member_id,
            campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date),
            store:stores!customer_orders_pickup_store_id_fkey(id, name),
            items:customer_order_items(id, sku_id, qty, unit_price, status, sku:skus(variant_name, product_name, product:products(images)))`,
@@ -475,12 +512,72 @@ function PickupPageContent() {
     });
   }
 
-  async function bulkPickAllConfirmed(member: Member) {
+  // ── 全選 ────────────────────────────────────────────────────────────
+  // 未取貨模式：該會員所有「可取貨」的單（不可取的單勾選框本來就 disabled，
+  // 全選也不能把它們勾起來 —— 勾了按下去只會被後端擋）。
+  function pickableOrdersOf(memberId: number): OpenOrder[] {
+    return visibleOrdersOf(memberId).filter((o) => isPickable(o));
+  }
+  function selectAllState(memberId: number): "all" | "some" | "none" {
+    const list = pickableOrdersOf(memberId);
+    if (list.length === 0) return "none";
+    const n = list.filter((o) => selected.has(o.id)).length;
+    return n === 0 ? "none" : n === list.length ? "all" : "some";
+  }
+  function toggleSelectAll(memberId: number) {
+    const list = pickableOrdersOf(memberId);
+    const all = selectAllState(memberId) === "all";
+    setSelected((s) => {
+      const next = new Set(s);
+      for (const o of list) { if (all) next.delete(o.id); else next.add(o.id); }
+      return next;
+    });
+  }
+  // 已取貨模式：該會員所有已取品項（補印用；粒度是品項，與整張勾選共用同一個集合）
+  function pickedSelectAllState(memberId: number): "all" | "some" | "none" {
+    const its = visibleOrdersOf(memberId).flatMap((o) => pickedItemsOf(o));
+    if (its.length === 0) return "none";
+    const n = its.filter((it) => selectedItems.has(it.id)).length;
+    return n === 0 ? "none" : n === its.length ? "all" : "some";
+  }
+  function togglePickedSelectAll(memberId: number) {
+    const its = visibleOrdersOf(memberId).flatMap((o) => pickedItemsOf(o));
+    const all = pickedSelectAllState(memberId) === "all";
+    setSelectedItems((s) => {
+      const next = new Set(s);
+      for (const it of its) { if (all) next.delete(it.id); else next.add(it.id); }
+      return next;
+    });
+  }
+
+  // 本次要一起取的單（勾了就只取勾的；沒勾＝全取）。確認視窗、儲值金試算、
+  // 實際送出三邊都吃這一支，才不會「視窗上看到的」跟「真的取走的」不一樣。
+  function bulkTargets(member: Member): OpenOrder[] {
+    const all = pickableOrdersOf(member.id);
+    const sel = all.filter((o) => selected.has(o.id));
+    return sel.length > 0 ? sel : all;
+  }
+  // 這批單的儲值金試算：餘額依序（列表順序）分配給每張單的本次應收。
+  // 餘額不夠時前面幾張全額扣、後面的收現 —— 與實際送出的分配邏輯完全同一套。
+  function walletPlan(member: Member) {
+    const balance = walletBalances.get(member.id) ?? 0;
+    let left = balance;
+    const perOrder = new Map<number, number>();
+    let total = 0;
+    for (const o of bulkTargets(member)) {
+      if (left <= 0) break;
+      const amt = Math.min(left, walletChargeableOf(o, pickableItems(o)));
+      if (amt <= 0) continue;
+      perOrder.set(o.id, amt);
+      left -= amt;
+      total += amt;
+    }
+    return { balance, perOrder, total, left };
+  }
+
+  async function bulkPickAllConfirmed(member: Member, useWallet = false) {
     const memberId = member.id;
-    const allMemberOrders = visibleOrdersOf(memberId).filter((o) => isPickable(o));
-    // 若有勾選 → 只取勾選的（且可取貨）；無勾選 → 全取
-    const memberSelected = allMemberOrders.filter((o) => selected.has(o.id));
-    const memberOrders = memberSelected.length > 0 ? memberSelected : allMemberOrders;
+    const memberOrders = bulkTargets(member);
     if (memberOrders.length === 0) return;
     setBulkConfirm(null);
     setBulking(memberId);
@@ -493,10 +590,35 @@ function PickupPageContent() {
       let okCount = 0;
       const errors: string[] = [];
       const eventIds: number[] = [];
+      const okOrderIds: number[] = [];
+      // 餘額只有一份，逐張扣、扣到沒有為止（試算與這裡同一套分配法）
+      let walletLeft = useWallet ? (walletBalances.get(memberId) ?? 0) : 0;
+      let walletUsedTotal = 0;
       for (const o of memberOrders) {
         // 只取已到貨的品項（部分到貨的單，未到品項留待補貨後續取）
         const picks = pickableItems(o);
         const itemIds = picks.map((it) => it.id);
+        if (itemIds.length === 0) continue;
+
+        // 儲值金要先扣：rpc_record_pickup 會把單推成 completed，
+        // 而 rpc_wallet_pay_order 對 completed 直接 RAISE（跟 PickupDialog 同順序）。
+        // 扣款失敗就整張跳過 —— 錢沒收就不能把貨交出去。
+        let walletUsed = 0;
+        if (walletLeft > 0) {
+          const amt = Math.min(walletLeft, walletChargeableOf(o, picks));
+          if (amt > 0) {
+            const { error: wErr } = await sb.rpc("rpc_wallet_pay_order", {
+              p_order_id: o.id,
+              p_amount: amt,
+              p_operator: operator,
+            });
+            if (wErr) { errors.push(`${o.order_no}: 儲值金扣款失敗 — ${translateRpcError(wErr)}`); continue; }
+            walletLeft -= amt;
+            walletUsed = amt;
+            walletUsedTotal += amt;
+          }
+        }
+
         // 部分退貨的品項行只取「扣掉已退」的量（整行取會被後端退貨守門擋下）
         const itemQtys: Record<string, number> = {};
         for (const it of picks) {
@@ -507,12 +629,13 @@ function PickupPageContent() {
           p_order_id: o.id,
           p_item_ids: itemIds,
           p_operator: operator,
-          p_notes: "一次全取",
+          p_notes: walletUsed > 0 ? `一次全取（儲值金 $${walletUsed}）` : "一次全取",
           ...(Object.keys(itemQtys).length > 0 ? { p_item_qtys: itemQtys } : {}),
         });
         if (e) errors.push(`${o.order_no}: ${e.message}`);
         else {
           okCount++;
+          okOrderIds.push(o.id);
           const ev = data as { event_id: number };
           if (ev?.event_id) eventIds.push(ev.event_id);
         }
@@ -520,11 +643,15 @@ function PickupPageContent() {
       if (errors.length > 0) setError(errors.join("\n"));
       if (eventIds.length > 0) {
         // 自動列印 — 大張取貨單 + 熱感應小白單（隱藏 iframe,不跳新分頁;依序印）
+        // 只印真的取成功的那幾張（扣款失敗／取貨失敗的單不該出單）
         printViaIframe(withBasePath(`/pickup/print?event_ids=${eventIds.join(",")}`));
-        const okOrderIds = memberOrders.map((o) => o.id).join(",");
-        printViaIframe(withBasePath(`/pickup/print-list?order_ids=${okOrderIds}`));
+        printViaIframe(withBasePath(`/pickup/print-list?order_ids=${okOrderIds.join(",")}`));
       }
-      alert(`完成 ${okCount}/${memberOrders.length} 張取貨${errors.length > 0 ? `\n失敗 ${errors.length} 張：\n${errors.join("\n")}` : ""}`);
+      alert(
+        `完成 ${okCount}/${memberOrders.length} 張取貨`
+        + (walletUsedTotal > 0 ? `\n已扣儲值金 $${walletUsedTotal}（餘額剩 $${Math.max(0, walletLeft)}）` : "")
+        + (errors.length > 0 ? `\n失敗 ${errors.length} 張：\n${errors.join("\n")}` : ""),
+      );
       setReloadTick((t) => t + 1);
     } finally {
       setBulking(null);
@@ -870,18 +997,35 @@ function PickupPageContent() {
                       const { groups, wholeOrders, itemIds } = pickedSelection(m);
                       if (groups.length === 0) return null;
                       const anySelected = memberOrders.some((o) => orderSelState(o) !== "none");
+                      const allState = pickedSelectAllState(m.id);
+                      const allCount = memberOrders.reduce((n, o) => n + pickedItemsOf(o).length, 0);
                       return (
-                        <SpinButton
-                          onClick={() => setPrintConfirm(m)}
-                          title={wholeOrders
-                            ? "整張全取 → 補印當時那張收據（多張合併成一張）"
-                            : "只挑了部分品項 → 印一張「取貨明細」，只列勾到的品項"}
-                          className="ml-auto rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-                        >
-                          🖨️ {anySelected
-                            ? `合併列印選定的 ${itemIds.length} 項`
-                            : `合併列印（${groups.length} 張、${itemIds.length} 項）`}
-                        </SpinButton>
+                        <div className="ml-auto flex flex-wrap items-center gap-2">
+                          <label
+                            className="flex cursor-pointer items-center gap-1.5 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs font-medium text-zinc-700 transition hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                            title="一次勾起／取消這位顧客的全部已取品項"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={allState === "all"}
+                              ref={(el) => { if (el) el.indeterminate = allState === "some"; }}
+                              onChange={() => togglePickedSelectAll(m.id)}
+                              className="h-4 w-4"
+                            />
+                            {allState === "all" ? `取消全選（${allCount} 項）` : `全選（${allCount} 項）`}
+                          </label>
+                          <SpinButton
+                            onClick={() => setPrintConfirm(m)}
+                            title={wholeOrders
+                              ? "整張全取 → 補印當時那張收據（多張合併成一張）"
+                              : "只挑了部分品項 → 印一張「取貨明細」，只列勾到的品項"}
+                            className="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+                          >
+                            🖨️ {anySelected
+                              ? `合併列印選定的 ${itemIds.length} 項`
+                              : `合併列印（${groups.length} 張、${itemIds.length} 項）`}
+                          </SpinButton>
+                        </div>
                       );
                     })()}
                     {mode === "open" && memberOrders.length > 0 && (() => {
@@ -890,14 +1034,42 @@ function PickupPageContent() {
                       const useSel = selectedHere.length > 0;
                       const count = useSel ? selectedHere.length : pickableOrders.length;
                       if (pickableOrders.length === 0) return null;
+                      const allState = selectAllState(m.id);
+                      const wallet = walletBalances.get(m.id) ?? 0;
                       return (
-                        <SpinButton
-                          onClick={() => setBulkConfirm(m)}
-                          disabled={bulking === m.id}
-                          className="ml-auto rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-50"
-                        >
-                          {bulking === m.id ? "處理中…" : useSel ? `📦 取選定的 ${count} 張` : `📦 一次全取（${count} 張）`}
-                        </SpinButton>
+                        <div className="ml-auto flex flex-wrap items-center gap-2">
+                          <label
+                            className="flex cursor-pointer items-center gap-1.5 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs font-medium text-zinc-700 transition hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                            title="一次勾起／取消這位顧客所有可取貨的訂單"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={allState === "all"}
+                              ref={(el) => { if (el) el.indeterminate = allState === "some"; }}
+                              onChange={() => toggleSelectAll(m.id)}
+                              className="h-4 w-4"
+                            />
+                            {allState === "all" ? `取消全選（${pickableOrders.length} 張）` : `全選（${pickableOrders.length} 張）`}
+                          </label>
+                          <SpinButton
+                            onClick={() => setBulkConfirm({ member: m, wallet: false })}
+                            disabled={bulking === m.id}
+                            className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-50"
+                          >
+                            {bulking === m.id ? "處理中…" : useSel ? `📦 取選定的 ${count} 張` : `📦 一次全取（${count} 張）`}
+                          </SpinButton>
+                          {/* 儲值金結帳 —— 餘額 0 的會員不畫按鈕（櫃台按了也只會拿到「餘額不足」） */}
+                          {wallet > 0 && (
+                            <SpinButton
+                              onClick={() => setBulkConfirm({ member: m, wallet: true })}
+                              disabled={bulking === m.id}
+                              title={`會員儲值餘額 $${Math.round(wallet)} — 依序抵扣這幾張的應收，不足的部分仍收現`}
+                              className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
+                            >
+                              💳 用儲值金結帳（餘額 ${Math.round(wallet)}）
+                            </SpinButton>
+                          )}
+                        </div>
                       );
                     })()}
                   </div>
@@ -1025,7 +1197,9 @@ function PickupPageContent() {
                         // 金額扣掉已退量（未取退貨不收錢，與應收 payable 扣減一致）
                         const subAmt = active.reduce((s, it) => s + remainingQty(it) * Number(it.unit_price), 0);
                         const discAmt = Number(o.discount_amount ?? 0);
-                        const totalAmt = Math.max(0, subAmt - discAmt);
+                        // 折扣% 也要算（payableOf 與 v_customer_order_summary.payable_amount 同式）
+                        const totalAmt = payableOf(o, active);
+                        const walletPaid = Number(o.wallet_paid_amount ?? 0);
                         return (
                           <li key={o.id} className={`flex flex-col gap-3 rounded-md border p-3 sm:flex-row sm:items-center ${selected.has(o.id) ? "border-emerald-400 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950" : "border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"}`}>
                             <div className="flex min-w-0 flex-1 items-start gap-3">
@@ -1135,6 +1309,11 @@ function PickupPageContent() {
                                 {o.pickup_deadline && <span className="ml-2">截止：{o.pickup_deadline}</span>}
                                 {/* 訂單金額一律顯示（含未到貨的單），方便核帳 */}
                                 <span className="ml-2 font-mono font-semibold text-zinc-700 dark:text-zinc-200">${totalAmt}</span>
+                                {walletPaid > 0 && (
+                                  <span className="ml-1 text-[10px] font-medium text-indigo-600 dark:text-indigo-400" title="這張單已用儲值金扣過款">
+                                    (已扣儲值 ${Math.round(walletPaid)})
+                                  </span>
+                                )}
                                 {discAmt > 0 && (
                                   <span className="ml-1 text-[10px] text-red-600 dark:text-red-400" title={`小計 $${subAmt} − 折扣 $${discAmt}`}>
                                     (含 ${discAmt} 折扣)
@@ -1369,20 +1548,31 @@ function PickupPageContent() {
       <Modal
         open={bulkConfirm !== null}
         onClose={() => setBulkConfirm(null)}
-        title={bulkConfirm ? `📦 一次全取 — ${bulkConfirm.name ?? "—"} (${bulkConfirm.member_no})` : ""}
+        title={bulkConfirm
+          ? `${bulkConfirm.wallet ? "💳 儲值金結帳" : "📦 一次全取"} — ${bulkConfirm.member.name ?? "—"} (${bulkConfirm.member.member_no})`
+          : ""}
         maxWidth="max-w-2xl"
       >
         {bulkConfirm && (() => {
-          const allMemberOrders = visibleOrdersOf(bulkConfirm.id).filter((o) => isPickable(o));
-          const selectedHere = allMemberOrders.filter((o) => selected.has(o.id));
-          const memberOrders = selectedHere.length > 0 ? selectedHere : allMemberOrders;
+          const member = bulkConfirm.member;
+          const useWallet = bulkConfirm.wallet;
+          const memberOrders = bulkTargets(member);
           const totalItems = memberOrders.reduce((s, o) => s + pickableItems(o).length, 0);
           const totalSubtotal = memberOrders.reduce(
-            (s, o) => s + pickableItems(o).reduce((ss, it) => ss + Number(it.qty) * Number(it.unit_price), 0),
+            (s, o) => s + pickableItems(o).reduce((ss, it) => ss + remainingQty(it) * Number(it.unit_price), 0),
             0,
           );
-          const totalDiscount = memberOrders.reduce((s, o) => s + Number(o.discount_amount ?? 0), 0);
-          const totalAmount = Math.max(0, totalSubtotal - totalDiscount);
+          // 應收逐張算（折扣% 要套在該張自己的小計上），不要用「總小計 − 總折扣」
+          const totalAmount = memberOrders.reduce((s, o) => s + payableOf(o, pickableItems(o)), 0);
+          const totalDiscount = Math.max(0, totalSubtotal - totalAmount);
+          const plan = walletPlan(member);
+          // 已扣過儲值金的單，本次應收要扣掉已付的那部分才是真的要收的錢
+          const alreadyPaid = memberOrders.reduce(
+            (s, o) => s + Math.min(Number(o.wallet_paid_amount ?? 0), payableOf(o, pickableItems(o))),
+            0,
+          );
+          const dueNow = Math.max(0, totalAmount - alreadyPaid);
+          const cashDue = Math.max(0, dueNow - (useWallet ? plan.total : 0));
           return (
             <div className="space-y-3">
               <p className="text-sm text-zinc-600 dark:text-zinc-300">
@@ -1395,7 +1585,33 @@ function PickupPageContent() {
                 ) : (
                   <>合計 <b className="font-mono text-base text-zinc-900 dark:text-zinc-100">${totalAmount}</b></>
                 )}
+                {alreadyPaid > 0 && (
+                  <>
+                    <br />
+                    已扣儲值金 <span className="font-mono text-zinc-500">−${alreadyPaid}</span> → 尚需 <b className="font-mono">${dueNow}</b>
+                  </>
+                )}
               </p>
+              {useWallet && (
+                <div className="rounded-md border border-indigo-200 bg-indigo-50 p-3 text-sm dark:border-indigo-900 dark:bg-indigo-950/40">
+                  <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                    <span>會員儲值餘額：<b className="font-mono">${Math.round(plan.balance)}</b></span>
+                    <span>本次抵扣：<b className="font-mono text-indigo-700 dark:text-indigo-300">−${plan.total}</b></span>
+                    <span>需收現：<b className="font-mono text-base">${cashDue}</b></span>
+                    <span className="text-xs text-zinc-500">結帳後餘額 ${Math.round(plan.left)}</span>
+                  </div>
+                  {plan.total > 0 && plan.total < dueNow && (
+                    <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                      ⚠️ 餘額不足以付清，不足的 ${cashDue} 仍需向客人收現（前面幾張先扣滿，後面的收現）。
+                    </p>
+                  )}
+                  {plan.total === 0 && (
+                    <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                      ⚠️ 這幾張都沒有可扣的金額（已付清或應收為 0），按下去只會純取貨。
+                    </p>
+                  )}
+                </div>
+              )}
               <div className="max-h-80 space-y-3 overflow-y-auto rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
                 {memberOrders.map((o) => {
                   const pickItems = pickableItems(o);
@@ -1435,10 +1651,12 @@ function PickupPageContent() {
                   🖨️ 列印小白單
                 </SpinButton>
                 <SpinButton
-                  onClick={() => bulkPickAllConfirmed(bulkConfirm)}
-                  className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700"
+                  onClick={() => bulkPickAllConfirmed(member, useWallet)}
+                  className={`rounded-md px-4 py-2 text-sm font-medium text-white ${useWallet ? "bg-indigo-600 hover:bg-indigo-700" : "bg-emerald-600 hover:bg-emerald-700"}`}
                 >
-                  ✅ 確認取貨（{memberOrders.length} 張、{totalItems} 項、${totalAmount}）
+                  {useWallet
+                    ? `💳 扣儲值金 $${plan.total} + 收現 $${cashDue}（${memberOrders.length} 張、${totalItems} 項）`
+                    : `✅ 確認取貨（${memberOrders.length} 張、${totalItems} 項、$${dueNow}）`}
                 </SpinButton>
               </div>
             </div>
