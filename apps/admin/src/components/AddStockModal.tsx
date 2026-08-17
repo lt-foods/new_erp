@@ -9,25 +9,39 @@ import { translateRpcError } from "@/lib/rpcError";
 // 庫存總覽「依商品新增庫存」：對某倉別某品項寫 manual_adjust(+N)。
 // 主要用途：店內現貨是帳外的（自購 / 贈品 / 盤盈沒入帳）時先把帳補上，
 // 才能開「庫存減抵單」把待補貨的訂單用現貨交貨。見 20260805000170 migration。
+//
+// 第二個呼叫端（2026-08-17）：總倉收件匣「✎ 修正數量」彈窗的「＋ 補庫存」——
+// 那邊商品與倉別都是當下那一列決定的，所以多了 presetSku / defaultQty 兩個
+// **選填** prop。⛔ 不帶這兩個 prop 時行為與原本一字不差（庫存總覽不受影響）。
 
-type SkuHit = {
+/** 呼叫端要指定商品時傳這個。刻意只要求真的用得到的四個欄位 */
+export type AddStockSku = {
   id: number;
   sku_code: string | null;
   product_name: string | null;
   variant_name: string | null;
-  base_unit: string | null;
 };
+
+// base_unit 是搜尋結果附帶的欄位（目前畫面上沒用到），所以設成選填 ——
+// 這樣呼叫端手上只有 AddStockSku 也傳得進來，不必為了型別去補一個假的欄位。
+type SkuHit = AddStockSku & { base_unit?: string | null };
 
 export function AddStockModal({
   locations,
   defaultLocationId,
   locked,
+  presetSku,
+  defaultQty,
   onClose,
   onSaved,
 }: {
   locations: { id: number; label: string }[];
   defaultLocationId: string; // 預設倉別（"" = 未選）
   locked: boolean; // 分店帳號鎖定：不能換倉別
+  /** 指定商品；有值時商品欄鎖住（呼叫端已經知道是哪一樣，讓人改反而容易補錯品項） */
+  presetSku?: AddStockSku | null;
+  /** 預設數量（例：短少的差額）。⛔ 一律夾到 >= 1：0 會讓「新增庫存」鈕直接是 disabled，看起來像壞掉 */
+  defaultQty?: number;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -38,8 +52,11 @@ export function AddStockModal({
   const [search, setSearch] = useState("");
   const [hits, setHits] = useState<SkuHit[]>([]);
   const [searching, setSearching] = useState(false);
-  const [sku, setSku] = useState<SkuHit | null>(null);
-  const [qty, setQty] = useState(1);
+  const [sku, setSku] = useState<SkuHit | null>(presetSku ?? null);
+  const [qty, setQty] = useState(() => {
+    const n = Math.floor(Number(defaultQty));
+    return Number.isFinite(n) && n >= 1 ? n : 1;
+  });
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -144,15 +161,19 @@ export function AddStockModal({
                 <span className="font-mono text-xs text-zinc-500">{sku.sku_code}</span>{" "}
                 {skuLabel(sku)}
               </span>
-              <SpinButton
-                onClick={() => {
-                  setSku(null);
-                  setSearch("");
-                }}
-                className="shrink-0 text-xs text-zinc-500 underline"
-              >
-                重選
-              </SpinButton>
+              {/* 呼叫端指定了商品就不給改：那一顆鈕是從某一列長出來的，
+                  換成別的商品等於補到錯的品項上，而且 append-only 救不回來 */}
+              {!presetSku && (
+                <SpinButton
+                  onClick={() => {
+                    setSku(null);
+                    setSearch("");
+                  }}
+                  className="shrink-0 text-xs text-zinc-500 underline"
+                >
+                  重選
+                </SpinButton>
+              )}
             </div>
           ) : (
             <>
@@ -222,6 +243,13 @@ export function AddStockModal({
             {busy ? "處理中…" : "新增庫存"}
           </SpinButton>
         </div>
+        {/* ⚠ 這段警語**不分呼叫端一律顯示**：不可逆是 rpc_add_stock_by_product 本身的性質
+            （寫進 stock_movements，而該表有 trigger 擋死 UPDATE/DELETE），
+            不是哪一頁才有的事。做成 prop 就會有某一頁忘了帶、少一道真實的安全警告。 */}
+        <p className="rounded-md border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+          ⚠ 這是<strong>手動補帳</strong>：按下去之後<strong>無法刪除、也無法修改</strong>
+          （庫存異動是只能新增的紀錄），要更正只能到「庫存盤點」重新盤一次。請先確認數量再按。
+        </p>
         <p className="text-[11px] text-zinc-500">
           用途：店內現貨還沒入帳（自購、贈品、盤盈）時先補帳，才能開「庫存減抵單」
           把待補貨的訂單用現貨交貨。會寫一筆可追溯的「手動調整」異動。

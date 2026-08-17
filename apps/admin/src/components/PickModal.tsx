@@ -1,9 +1,16 @@
 "use client";
 
+// 總倉收件匣「✎ 修正數量」彈窗（商品 × 分店矩陣）。
+//
+// ⭐ 切片 A（老闆 2026-08-17 原話）：
+//   「修正數量如果 1 改 2 會出現要增加數量，有辦法在旁邊幫我加一個鈕 就是增加庫存嗎」
+//   → 商品那一欄多一顆「＋ 補庫存」，開既有的 AddStockModal。**後端零改動**，
+//     用的就是庫存總覽那支 rpc_add_stock_by_product。
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
+import { AddStockModal } from "@/components/AddStockModal";
 import { DatePicker } from "@/components/DatePicker";
 
 export type PickWave = {
@@ -72,10 +79,23 @@ export function PickModal({
   const [submitting, setSubmitting] = useState(false);
   const [shipping, setShipping] = useState(false);
   const [hqLocId, setHqLocId] = useState<number | null>(null);
+  /**
+   * 總倉目前可用量（on_hand − reserved，與 rpc_outbound 的判準同一條算式）。
+   * ⛔ null ＝ **沒讀到**（有些角色讀不到 stock_balances），不是「庫存 0」——
+   *   這兩件事在畫面上必須講不同的話，否則系統異常會偽裝成真的缺貨。
+   */
+  const [hqAvail, setHqAvail] = useState<Map<number, number> | null>(null);
+  /** 開著「＋ 補庫存」的是哪一樣商品、預設補多少 */
+  const [addStock, setAddStock] = useState<{ sku: Sku; qty: number } | null>(null);
+  /** 補完庫存要就地重載（彈窗不關），讓老闆接著按派貨 */
+  const [reloadTick, setReloadTick] = useState(0);
   const [effectiveStatus] = useState<string>(wave.status);
   // 配送日在收件匣設定；shipped/cancelled 唯讀（RPC 也擋）
   const [waveDate, setWaveDate] = useState(wave.wave_date);
   const [savingDate, setSavingDate] = useState(false);
+
+  /** 已派貨／已取消 → 不給補庫存（那張單已經定案了） */
+  const locked = effectiveStatus === "shipped" || effectiveStatus === "cancelled";
 
   const shortageCount = useMemo(() => {
     if (!items) return 0;
@@ -106,7 +126,9 @@ export function PickModal({
         }));
         setItems(arr);
 
-        const skuIds = Array.from(new Set(arr.map((r) => r.sku_id)));
+        // ⚠ id 一律 Number() 正規化再拿去當 Map 的 key：BIGINT 經過 PostgREST 可能是字串，
+        //   而 TypeScript 的 `{ id: number }` 宣告在執行期不檢查（本專案 #751 踩過）。
+        const skuIds = Array.from(new Set(arr.map((r) => Number(r.sku_id))));
         const storeIds = Array.from(new Set(arr.map((r) => r.store_id)));
 
         if (skuIds.length) {
@@ -131,7 +153,35 @@ export function PickModal({
           .eq("type", "central_warehouse")
           .eq("is_active", true)
           .limit(1);
-        if (!cancelled) setHqLocId(((loc as { id: number }[] | null) ?? [])[0]?.id ?? null);
+        const hq = ((loc as { id: number }[] | null) ?? [])[0]?.id ?? null;
+        if (!cancelled) setHqLocId(hq);
+
+        // 總倉即時可用量（切片 A 的「差額」要用）。
+        // ⚠ 分批 200 筆：對齊派貨工作台既有寫法（wms/picking/page.tsx:582），避免 URL 過長。
+        // ⛔ 讀失敗一律留 null（＝「不知道」），不要退回空 Map 讓畫面顯示「可用 0」——
+        //   那會長得跟真的缺貨一模一樣，是本專案反覆踩過的靜默偽裝。
+        if (hq != null && skuIds.length) {
+          try {
+            const m = new Map<number, number>();
+            for (let i = 0; i < skuIds.length; i += 200) {
+              const { data, error: eb } = await sb
+                .from("stock_balances")
+                .select("sku_id, on_hand, reserved")
+                .eq("location_id", hq)
+                .in("sku_id", skuIds.slice(i, i + 200));
+              if (eb) throw new Error(eb.message);
+              for (const r of (data ?? []) as { sku_id: number; on_hand: number; reserved: number }[]) {
+                // 與 rpc_outbound（20260705000000:144）同一條算式：on_hand − reserved
+                m.set(Number(r.sku_id), Number(r.on_hand) - Number(r.reserved));
+              }
+            }
+            // 沒有結存列 = 這樣商品在總倉沒有庫存 → 0（這是「查得到、就是 0」，不是查不到）
+            for (const id of skuIds) if (!m.has(id)) m.set(id, 0);
+            if (!cancelled) setHqAvail(m);
+          } catch {
+            if (!cancelled) setHqAvail(null);
+          }
+        }
       } catch (e) {
         if (!cancelled) setError(translateRpcError(e));
       }
@@ -139,7 +189,7 @@ export function PickModal({
     return () => {
       cancelled = true;
     };
-  }, [wave.id]);
+  }, [wave.id, reloadTick]);
 
   const matrix: Map<number, Map<number, PickWaveItem>> = useMemo(() => {
     const m = new Map<number, Map<number, PickWaveItem>>();
@@ -397,6 +447,10 @@ export function PickModal({
                     return s + (Number.isNaN(v) ? 0 : v);
                   }, 0);
                   const totalDiff = actualTotal - expectedTotal;
+                  // 總倉可用量 vs 這次要出的量。⛔ avail === null ＝「沒讀到」，
+                  //   絕對不可以當成 0 顯示成缺貨（見 hqAvail 的說明）。
+                  const avail = hqAvail?.get(Number(sku.id)) ?? null;
+                  const shortStock = avail !== null ? Math.max(0, actualTotal - avail) : 0;
                   let skuShortStores = 0;
                   let skuShortQty = 0;
                   if (row) {
@@ -426,6 +480,41 @@ export function PickModal({
                           {skuHasShortage && (
                             <div className="mt-1 inline-block rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-700 dark:bg-red-950 dark:text-red-300">
                               ⚠ 短缺 {skuShortStores} 店 / {skuShortQty} 件
+                            </div>
+                          )}
+                          {/* 切片 A：總倉庫存不夠時，就地把庫存補上（老闆：「有辦法在旁邊幫我加一個鈕
+                              就是增加庫存嗎」）。後端零改動，用的是庫存總覽那支 rpc_add_stock_by_product。 */}
+                          {!locked && (
+                            <div className="mt-1 flex flex-wrap items-center gap-1">
+                              <span
+                                className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                  avail !== null && shortStock > 0
+                                    ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                                    : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                                }`}
+                                title="總倉可用量 = 在庫 − 已保留，與派貨時實際檢查的是同一個數字"
+                              >
+                                {/* ⛔ 讀不到就要講「讀不到」，不可以顯示 0 —— 那跟真的沒貨長得一模一樣 */}
+                                {avail === null
+                                  ? "總倉庫存讀不到"
+                                  : shortStock > 0
+                                  ? `總倉可用 ${avail}，短少 ${shortStock}`
+                                  : `總倉可用 ${avail}`}
+                              </span>
+                              <SpinButton
+                                onClick={() =>
+                                  setAddStock({ sku, qty: Math.max(1, Math.ceil(shortStock)) })
+                                }
+                                disabled={hqLocId === null}
+                                title={
+                                  hqLocId === null
+                                    ? "找不到總倉 location，請先確認倉庫設定"
+                                    : "對總倉補一筆手動庫存（不可刪除、不可修改）"
+                                }
+                                className="rounded border border-emerald-300 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-40 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950"
+                              >
+                                ＋ 補庫存
+                              </SpinButton>
                             </div>
                           )}
                         </td>
@@ -531,6 +620,21 @@ export function PickModal({
           )}
         </div>
       </div>
+
+      {/* 切片 A：就地補總倉庫存。用的是庫存總覽那一支既有的彈窗與 RPC，後端零改動。
+          倉別鎖成總倉（locked）、商品鎖成這一列（presetSku）、數量預設帶短少的差額。
+          ⛔ 存完不關 PickModal，只重載一次數字 —— 老闆補完貨要能接著按「派貨出倉」。 */}
+      {addStock && hqLocId !== null && (
+        <AddStockModal
+          locations={[{ id: hqLocId, label: "總倉" }]}
+          defaultLocationId={String(hqLocId)}
+          locked
+          presetSku={addStock.sku}
+          defaultQty={addStock.qty}
+          onClose={() => setAddStock(null)}
+          onSaved={() => setReloadTick((n) => n + 1)}
+        />
+      )}
     </div>
   );
 }
