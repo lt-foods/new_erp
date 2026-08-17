@@ -53,6 +53,20 @@ function money(n: number): string {
   return `$${Math.round(n).toLocaleString("en-US")}`;
 }
 
+// CSV 合計列在「編號」欄放的固定標記（老闆 2026-08-17 追加合計列時定的）。
+// 明細列的那一欄永遠是品號或「—」，不可能是這兩個字 —— 老闆在 Excel 把這個值篩掉，
+// 就能一次排除全部合計列，樞紐才不會把每家店的金額重複算一次。
+const CSV_TOTAL_MARK = "合計";
+
+// CSV 的「店號 / 店名」兩欄。老闆 2026-08-17 要求拆開：`三峽店(S01)` 擠在一格
+// 就沒辦法拿去跑 Excel 樞紐，而店號排序比店名穩，所以店號放前面。
+// ⚠ stores.code 沒有 NOT NULL，查無一律印「—」：空白格在樞紐裡會顯示成「(空白)」，
+//   而本頁其他查無資料的欄位（編號 / 品名）用的也是「—」，保持一致。
+//   註：「—」是 U+2014，不是 ASCII 的 `-`，不會被 excelSafeText 當成公式開頭加引號。
+function storeCsvCells(s: StoreRow): string[] {
+  return [excelSafeText(s.code || "—"), excelSafeText(s.name)];
+}
+
 export default function PrintSignPage() {
   const [date, setDate] = useState("");
   const [waveIds, setWaveIds] = useState<number[] | null>(null); // 非 null 表示用 ID list,優先於 date
@@ -250,19 +264,17 @@ export default function PrintSignPage() {
     return result;
   }, [waves, items, stores, skus, prices]);
 
-  // 匯出 CSV — 全部分店合在同一個檔，靠第一欄「店家」分辨（老闆 2026-08-17 定案：
+  // 匯出 CSV — 全部分店合在同一個檔，靠前兩欄「店號 / 店名」分辨（老闆 2026-08-17 定案：
   // 不要一間店一個檔）。欄位跟紙本對得起來，才能拿檔案核簽回來的那疊紙。
   function exportCsv() {
     // ⚠ 文字欄一律過 excelSafeText：擋公式注入，也擋 Excel 把 `G00351-01` 這種碼
     //   自作主張改成日期／科學記號。數量與金額維持純數字，Excel 才加得了總。
     // ⚠ 金額先 Math.round 再輸出 —— 紙上的 money() 印的就是四捨五入後的整數，
     //   CSV 若給沒進位的小數，老闆兩邊會對不起來。這裡不做任何別的算術。
-    const header = ["店家", "編號", "商品名稱", "數量", "訂購量", "單價", "小計"];
-    const body = sheets.flatMap((sheet) =>
-      sheet.rows.map((r) => [
-        excelSafeText(
-          sheet.store.code ? `${sheet.store.name}(${sheet.store.code})` : sheet.store.name
-        ),
+    const header = ["店號", "店名", "編號", "商品名稱", "數量", "訂購量", "單價", "小計"];
+    const body = sheets.flatMap((sheet) => [
+      ...sheet.rows.map((r) => [
+        ...storeCsvCells(sheet.store),
         excelSafeText(r.sku.sku_code ?? "—"),
         excelSafeText(
           r.sku.variant_name
@@ -274,8 +286,28 @@ export default function PrintSignPage() {
         r.qty,
         r.unitPrice == null ? "" : Math.round(r.unitPrice),
         r.subtotal == null ? "" : Math.round(r.subtotal),
-      ])
-    );
+      ]),
+      // 每家店的明細後面接一列合計（老闆 2026-08-17 追加）。
+      // ⚠ 編號欄放 CSV_TOTAL_MARK 就是為了讓老闆一個篩選排除掉整批合計列 ——
+      //   他拆兩欄的目的是跑樞紐，而樞紐會把這一列的金額跟明細再加一次。
+      // ⛔ 刻意不在檔尾再加一列總計：老闆沒要，而且多一層更難篩。
+      // ⚠ 數量與金額直接用 sheets 已經算好的 totalPicked / totalAmount，跟紙上那列
+      //   印的是同一個值（連四捨五入的時機都一樣），沒有在這裡重算過。
+      //   訂購量紙上沒有合計，只能在這裡加總 —— 加法比照 useMemo 裡 totalPicked 的寫法。
+      [
+        ...storeCsvCells(sheet.store),
+        excelSafeText(CSV_TOTAL_MARK),
+        excelSafeText(
+          sheet.store.code
+            ? `${sheet.store.name}(${sheet.store.code}) 合計`
+            : `${sheet.store.name} 合計`
+        ),
+        sheet.totalPicked,
+        sheet.rows.reduce((s, r) => s + r.qty, 0),
+        "", // 單價：把各品項的單價加起來沒有意義，留空
+        Math.round(sheet.totalAmount),
+      ],
+    ]);
     const csv = toCsv([header, ...body]);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
