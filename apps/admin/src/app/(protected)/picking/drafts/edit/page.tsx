@@ -44,6 +44,7 @@ import {
   type PreviewTone,
   type SkuExistence,
   type SkuPreviewBatch,
+  type SkuPreviewCell,
   type StoreRow,
 } from "@/lib/pickingDraftView";
 import SpinButton from "@/components/SpinButton";
@@ -1368,11 +1369,22 @@ function AddSkuBox({
               {opts.map((o) => {
                 const already = inDraft.has(o.id);
                 const checked = selected.has(o.id);
+                // ⭐ 紅字判準提到這一層算（原本只有底下那行小字知道）：老闆掃下拉時
+                //    **視線是在商品名稱上**的，警示只放在下面那行小字會被整行跳過。
+                //    純函式、無 I/O，一列算一次（一次搜尋最多 15 列）。
+                const cell = previewBatch ? skuPreviewCell(previewBatch, o.id) : null;
                 return (
                   <li
                     key={o.id}
+                    // ⛔ 勾起來的藍底**優先於**警示紅底：紅的東西照樣可以勾（老闆選 A：標示但不擋），
+                    //    勾了卻沒有變色會讓人以為系統擋掉了。警示不會因此消失 —— 商品名旁邊那顆
+                    //    紅標籤是常駐的，勾選前後都在。
                     className={`flex items-center gap-2 px-2 ${
-                      checked && !already ? "bg-blue-50/60 dark:bg-blue-950/20" : ""
+                      checked && !already
+                        ? "bg-blue-50/60 dark:bg-blue-950/20"
+                        : cell?.zero
+                          ? "bg-red-50/60 dark:bg-red-950/20"
+                          : ""
                     }`}
                   >
                     {/* 觸控目標 ≥ 44px：樓下是用 iPad 單手點的 */}
@@ -1391,10 +1403,13 @@ function AddSkuBox({
                       />
                     </label>
                     <div className="min-w-0 flex-1 py-2 text-sm">
+                      {/* 標籤放在商品名**前面**：15 列一起看時所有標籤會對齊成一直排，
+                          掃起來比接在長短不一的商品名後面快得多。 */}
+                      {cell?.zero && <SkuZeroBadge cell={cell} />}
                       <span className="font-medium">{o.product_name}</span>
                       {o.variant_name && <span className="ml-1 text-zinc-500">/ {o.variant_name}</span>}
                       <span className="ml-2 font-mono text-xs text-zinc-400">{o.sku_code}</span>
-                      <SkuPreviewLine batch={previewBatch} skuId={o.id} />
+                      <SkuPreviewLine cell={cell} />
                     </div>
                     {already && (
                       // 已經加過的照樣列出來、但標明白 —— ⛔ 不從搜尋結果裡藏掉，
@@ -1431,12 +1446,34 @@ const PREVIEW_TONE_CLS: Record<PreviewTone, string> = {
   failed: "font-semibold text-amber-700 dark:text-amber-400",
 };
 
-function SkuPreviewLine({ batch, skuId }: { batch: SkuPreviewBatch | null; skuId: number }) {
+// 商品名稱**那一行**的紅色小標籤（阿審 2026-08-17 P1：警示原本只出現在底下那行小字）。
+//
+// ⭐ 老闆的原始痛點是「選品項時 0 庫存也可以拉，浪費我的時間」——
+//    他快速掃下拉時眼睛落在商品名上，警示必須出現在他真的在看的那一行。
+//
+// ⛔⛔ 刻意只加「標籤」＋「整列淡紅底」，⛔ **不**把商品名改成紅字／灰字／降透明度：
+//    那三種都是這套 UI 用來表示「不能選」的長相（同列 `已在草稿中` 的灰底就是），
+//    做下去會變成反效果 —— 老闆會以為系統擋他，而不是提醒他。他選的是 A：標示但不擋。
+//
+// 措辭是底下那行小字的短版（同一組判準、同一份用詞），⛔ 不另外發明一套說法。
+function SkuZeroBadge({ cell }: { cell: SkuPreviewCell }) {
+  return (
+    <span className="mr-1 whitespace-nowrap rounded bg-red-100 px-1 align-middle text-[10px] font-semibold text-red-700 dark:bg-red-900/70 dark:text-red-200">
+      {cell.hq.tone === "zero" && cell.avail.tone === "zero"
+        ? "⚠ 總倉／可派 0"
+        : cell.hq.tone === "zero"
+          ? "⚠ 總倉 0"
+          : "⚠ 可派 0"}
+    </span>
+  );
+}
+
+// cell ＝ null 代表三個數字還沒回來（⛔ 不是「查詢失敗」，失敗是 tone: "failed"）
+function SkuPreviewLine({ cell: c }: { cell: SkuPreviewCell | null }) {
   // 還沒回來 → 佔一行同樣高度的淡字，⛔ 不要讓那一列在數字到達時上下跳動
-  if (!batch) {
+  if (!c) {
     return <div className="mt-0.5 text-xs text-zinc-300 dark:text-zinc-600">結單 · 總倉 / 可派　查詢中…</div>;
   }
-  const c = skuPreviewCell(batch, skuId);
   return (
     <div className={`mt-0.5 text-xs ${c.zero ? "text-red-600 dark:text-red-400" : "text-zinc-500 dark:text-zinc-400"}`}>
       結單 <span className={PREVIEW_TONE_CLS[c.close.tone]}>{c.close.text}</span>
