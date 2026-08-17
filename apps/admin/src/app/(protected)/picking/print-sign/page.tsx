@@ -52,11 +52,6 @@ function money(n: number): string {
   return `$${Math.round(n).toLocaleString("en-US")}`;
 }
 
-// CSV 合計列在「編號」欄放的固定標記（老闆 2026-08-17 追加合計列時定的）。
-// 明細列的那一欄永遠是品號或「—」，不可能是這兩個字 —— 老闆在 Excel 把這個值篩掉，
-// 就能一次排除全部合計列，樞紐才不會把每家店的金額重複算一次。
-const CSV_TOTAL_MARK = "合計";
-
 // CSV 的「店號 / 店名」兩欄。老闆 2026-08-17 要求拆開：`三峽店(S01)` 擠在一格
 // 就沒辦法拿去跑 Excel 樞紐，而店號排序比店名穩，所以店號放前面。
 // ⚠ stores.code 沒有 NOT NULL，查無一律印「—」：空白格在樞紐裡會顯示成「(空白)」，
@@ -255,16 +250,22 @@ export default function PrintSignPage() {
     return result;
   }, [waves, items, stores, skus, prices]);
 
-  // 匯出 CSV — 全部分店合在同一個檔，靠前兩欄「店號 / 店名」分辨（老闆 2026-08-17 定案：
+  // 匯出 CSV — 全部分店合在同一個檔，靠「店號 / 店名」兩欄分辨（老闆 2026-08-17 定案：
   // 不要一間店一個檔）。欄位跟紙本對得起來，才能拿檔案核簽回來的那疊紙。
   function exportCsv() {
     // ⚠ 文字欄一律過 excelSafeText：擋公式注入，也擋 Excel 把 `G00351-01` 這種碼
     //   自作主張改成日期／科學記號。數量與金額維持純數字，Excel 才加得了總。
     // ⚠ 金額先 Math.round 再輸出 —— 紙上的 money() 印的就是四捨五入後的整數，
     //   CSV 若給沒進位的小數，老闆兩邊會對不起來。這裡不做任何別的算術。
-    const header = ["店號", "店名", "編號", "商品名稱", "數量", "訂購量", "單價", "小計"];
+    // ⚠ 第一欄「類型」＝明細／合計。**這是唯一能分辨合計列的欄位**，老闆要在 Excel 篩掉
+    //   合計列（不然樞紐會把每家店的金額重複算一次）就篩這一欄。
+    //   ⛔ 不可以改回用「編號」欄放標記：sku_code 只有 `TEXT NOT NULL`，DB 沒有任何約束
+    //      擋得住某個品號真的就叫「合計」；真撞上時篩選會連那列明細一起刪掉，
+    //      而且刪掉的是金額、老闆不會發現（阿審 #759 複審 P1）。
+    const header = ["類型", "店號", "店名", "編號", "商品名稱", "數量", "訂購量", "單價", "小計"];
     const body = sheets.flatMap((sheet) => [
       ...sheet.rows.map((r) => [
+        excelSafeText("明細"),
         ...storeCsvCells(sheet.store),
         excelSafeText(r.sku.sku_code ?? "—"),
         excelSafeText(
@@ -279,15 +280,15 @@ export default function PrintSignPage() {
         r.subtotal == null ? "" : Math.round(r.subtotal),
       ]),
       // 每家店的明細後面接一列合計（老闆 2026-08-17 追加）。
-      // ⚠ 編號欄放 CSV_TOTAL_MARK 就是為了讓老闆一個篩選排除掉整批合計列 ——
-      //   他拆兩欄的目的是跑樞紐，而樞紐會把這一列的金額跟明細再加一次。
       // ⛔ 刻意不在檔尾再加一列總計：老闆沒要，而且多一層更難篩。
+      // ⚠ 編號欄留空 —— 識別合計列一律看「類型」欄（見上面 header 的說明）。
       // ⚠ 數量與金額直接用 sheets 已經算好的 totalPicked / totalAmount，跟紙上那列
       //   印的是同一個值（連四捨五入的時機都一樣），沒有在這裡重算過。
       //   訂購量紙上沒有合計，只能在這裡加總 —— 加法比照 useMemo 裡 totalPicked 的寫法。
       [
+        excelSafeText("合計"),
         ...storeCsvCells(sheet.store),
-        excelSafeText(CSV_TOTAL_MARK),
+        "",
         excelSafeText(
           sheet.store.code
             ? `${sheet.store.name}(${sheet.store.code}) 合計`
@@ -416,30 +417,36 @@ export default function PrintSignPage() {
             </div>
 
             {/* ⛔ 這一區原本有第四格「單號」(撿貨單號 wave_code)。2026-08-17 老闆指示整格刪掉:
-                wave_code 全站只出現在總部／倉庫端的頁面(總倉收件匣 / 派貨工作台 / 採購收貨 / 進貨待辦),
-                分店端一個頁面都查不到它 —— 紙上那串字分店拿去系統裡對照不到任何東西。
-                而且它是「本張簽收單涵蓋的所有撿貨單」,不是逐商品對應,定位能力接近零。
+                分店根本不需要關心單號是多少。紙上那串是「本張簽收單涵蓋的所有撿貨單」,
+                不是逐商品對應 —— 拿在手上也指不出哪一項貨是哪一張單來的,定位能力接近零。
+                分店真要對照,系統的收貨畫面(wms/inbound 的收貨視窗)本來就會顯示
+                「來自撿貨單 WV-xxx」,不必靠這張紙。
+                ⛔ 這裡只講「這張紙上為什麼不印」;wave_code 在別的頁面怎麼用不是本頁的事,
+                  也不要在這裡替全站下斷語(前一版就是這樣寫錯了)。
                 分店要定位改看「店家＋訂單日＋出貨日」:同一天、同一家店就是這一張。
                 ⚠ 連帶收掉了「單號獨佔一整行」那一圈外層 div —— 那圈是上一版為了讓單號不被折行
                   才加的,單號沒了就沒有存在意義,留著只會多一層空殼。
-                三個短欄位並排;放不下就自己換行,不去擠壓彼此。 */}
-            <div className="mb-2 flex flex-wrap gap-x-8 text-sm">
-              <div className="flex">
+                三個短欄位並排;放不下就自己換行,不去擠壓彼此。
+                ⚠ min-w-0 / max-w-full / break-* 是給極端值用的:flex item 預設 min-width:auto,
+                  沒有 min-w-0 就縮不到內容寬度以下,超長店名或超長店號會直接把 A4 撐破。
+                  店號用 break-all(整串沒有空白也沒有斷點),其餘用 break-words。 */}
+            <div className="mb-2 flex flex-wrap gap-x-8 gap-y-1 text-sm">
+              <div className="flex min-w-0 max-w-full">
                 <span className="w-16 shrink-0 text-zinc-500">店家</span>
-                <span className="font-semibold">
+                <span className="min-w-0 break-words font-semibold">
                   {sheet.store.name}
                   {sheet.store.code && (
-                    <span className="ml-2 font-mono text-xs text-zinc-500">({sheet.store.code})</span>
+                    <span className="ml-2 break-all font-mono text-xs text-zinc-500">({sheet.store.code})</span>
                   )}
                 </span>
               </div>
-              <div className="flex">
+              <div className="flex min-w-0 max-w-full">
                 <span className="w-16 shrink-0 text-zinc-500">訂單日</span>
-                <span className="font-mono">{sheet.orderDates.join("、") || "—"}</span>
+                <span className="min-w-0 break-words font-mono">{sheet.orderDates.join("、") || "—"}</span>
               </div>
-              <div className="flex">
+              <div className="flex min-w-0 max-w-full">
                 <span className="w-16 shrink-0 text-zinc-500">出貨日</span>
-                <span className="font-mono">{sheet.waveDates.join("、") || date}</span>
+                <span className="min-w-0 break-words font-mono">{sheet.waveDates.join("、") || date}</span>
               </div>
             </div>
 
