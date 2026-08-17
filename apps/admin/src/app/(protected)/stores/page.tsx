@@ -6,6 +6,7 @@ import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import { StoreLineOaField } from "@/components/StoreLineOaField";
+import { isAdmin, useRole } from "@/lib/role";
 
 const PAGE_SIZE = 20;
 
@@ -70,6 +71,8 @@ export default function StoresPage() {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Store | null>(null);
   const [creating, setCreating] = useState(false);
+  const [merging, setMerging] = useState<Store | null>(null);
+  const role = useRole();
   const [page, setPage] = useState(1);
 
   useEffect(() => {
@@ -372,6 +375,15 @@ export default function StoresPage() {
                           編輯
                         </SpinButton>
                       )}
+                      {/* 兩店合併：rpc_merge_stores 本體限 owner/admin，按鈕同步只給管理員層級 */}
+                      {!r.deleted_at && isAdmin(role) && (
+                        <SpinButton
+                          onClick={() => setMerging(r)}
+                          className="text-xs text-purple-600 hover:underline dark:text-purple-400"
+                        >
+                          合併
+                        </SpinButton>
+                      )}
                       {!r.deleted_at && (
                         <SpinButton
                           onClick={() => handleDelete(r)}
@@ -396,6 +408,17 @@ export default function StoresPage() {
           )}
         </TBody>
       </Table>
+
+      {merging && (
+        <MergeStoreDialog
+          source={merging}
+          onClose={() => setMerging(null)}
+          onDone={async () => {
+            setMerging(null);
+            await reload();
+          }}
+        />
+      )}
 
       {(rows?.length ?? 0) > PAGE_SIZE && (
         <div className="flex flex-wrap items-center justify-end gap-2 text-sm">
@@ -669,3 +692,179 @@ function parseCoord(s: string): number | null {
 
 const inputCls =
   "rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800";
+
+type MergeTarget = { id: number; code: string; name: string };
+
+// rpc_merge_stores 回傳的 jsonb → 畫面文案
+const MERGE_RESULT_LABELS: [string, string][] = [
+  ["bindings_moved", "LINE 綁定改掛目標店"],
+  ["bindings_deduped", "LINE 綁定去重刪除（兩店都綁過）"],
+  ["members_moved", "會員改隸目標店"],
+  ["orders_moved", "訂單改掛目標店"],
+  ["stock_lines", "庫存移轉 SKU 數"],
+  ["stock_qty", "庫存移轉件數"],
+];
+
+function MergeStoreDialog({
+  source,
+  onClose,
+  onDone,
+}: {
+  source: { id: number; code: string; name: string };
+  onClose: () => void;
+  onDone: () => void | Promise<void>;
+}) {
+  const [targets, setTargets] = useState<MergeTarget[]>([]);
+  const [targetId, setTargetId] = useState<number | "">("");
+  const [confirmText, setConfirmText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const { data, error: err } = await getSupabase()
+        .from("stores")
+        .select("id, code, name")
+        .eq("is_active", true)
+        .is("deleted_at", null)
+        .neq("id", source.id)
+        .order("name");
+      if (err) setError(err.message);
+      else setTargets((data ?? []) as MergeTarget[]);
+    })();
+  }, [source.id]);
+
+  async function run() {
+    if (targetId === "") return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { data, error: err } = await getSupabase().rpc("rpc_merge_stores", {
+        p_source_store_id: source.id,
+        p_target_store_id: targetId,
+      });
+      if (err) throw err;
+      setResult((data ?? {}) as Record<string, unknown>);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const target = targets.find((t) => t.id === targetId);
+  const canRun = targetId !== "" && confirmText.trim() === source.code && !busy;
+  const pendingAid = Number(result?.aid_listings_open ?? 0);
+  const pendingStaff = Number(result?.staff_assignments_pending ?? 0);
+  const negLeft = Number(result?.negative_balances_left ?? 0);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-lg rounded-lg bg-white p-5 shadow-xl dark:bg-zinc-900">
+        {result === null ? (
+          <>
+            <h2 className="text-base font-semibold">
+              合併門市：{source.name}（{source.code}）
+            </h2>
+            <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+              會把 <b>{source.name}</b> 的 LINE 綁定（兩店重複的自動去重）、會員、
+              全部訂單改掛到目標店，店倉庫存開正式調撥單（MG-）整批移轉並自動收貨，
+              完成後停用來源店。<b>此動作無法自動復原。</b>
+            </p>
+            <p className="mt-1 text-xs text-zinc-500">
+              來源店若還有在途入庫調撥單或進行中補貨申請，後端會拒絕 —— 先收完或取消再合併。
+            </p>
+
+            <label className="mt-4 block text-sm">
+              <span className="text-zinc-600 dark:text-zinc-400">目標店（承接方，須為啟用中門市）</span>
+              <select
+                value={targetId}
+                onChange={(e) => setTargetId(e.target.value === "" ? "" : Number(e.target.value))}
+                className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-950"
+              >
+                <option value="">— 選擇目標店 —</option>
+                {targets.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}（{t.code}）
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="mt-3 block text-sm">
+              <span className="text-zinc-600 dark:text-zinc-400">
+                輸入來源店代碼 <b className="font-mono">{source.code}</b> 以確認
+              </span>
+              <input
+                value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value)}
+                placeholder={source.code}
+                className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 font-mono text-sm dark:border-zinc-700 dark:bg-zinc-950"
+              />
+            </label>
+
+            {error && (
+              <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+                {error}
+              </div>
+            )}
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={onClose}
+                disabled={busy}
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700"
+              >
+                取消
+              </button>
+              <SpinButton
+                onClick={run}
+                disabled={!canRun}
+                className="rounded-md bg-purple-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-40"
+              >
+                {busy ? "合併中…" : `合併到 ${target ? target.name : "…"}`}
+              </SpinButton>
+            </div>
+          </>
+        ) : (
+          <>
+            <h2 className="text-base font-semibold">
+              ✅ 合併完成：{String(result.source_store)} → {String(result.target_store)}
+            </h2>
+            <ul className="mt-3 space-y-1 text-sm">
+              {MERGE_RESULT_LABELS.map(([k, label]) => (
+                <li key={k} className="flex justify-between gap-4">
+                  <span className="text-zinc-600 dark:text-zinc-400">{label}</span>
+                  <span className="font-mono">{String(result[k] ?? 0)}</span>
+                </li>
+              ))}
+              {result.stock_transfer_no ? (
+                <li className="flex justify-between gap-4">
+                  <span className="text-zinc-600 dark:text-zinc-400">庫存調撥單</span>
+                  <span className="font-mono text-xs">{String(result.stock_transfer_no)}</span>
+                </li>
+              ) : null}
+            </ul>
+            {(pendingAid > 0 || pendingStaff > 0 || negLeft > 0) && (
+              <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+                需要人工收尾：
+                {pendingAid > 0 && <div>・互助板還有 {pendingAid} 則進行中釋出掛在來源店，請手動結掉或改店。</div>}
+                {pendingStaff > 0 && <div>・{pendingStaff} 個員工帳號的分店指派（app_metadata.stores）還指著來源店名，請到員工管理更新。</div>}
+                {negLeft > 0 && <div>・來源店倉還有 {negLeft} 筆負庫存留在原地，請盤點處理。</div>}
+              </div>
+            )}
+            <div className="mt-4 flex justify-end">
+              <SpinButton
+                onClick={onDone}
+                className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white dark:bg-zinc-50 dark:text-zinc-900"
+              >
+                完成
+              </SpinButton>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
