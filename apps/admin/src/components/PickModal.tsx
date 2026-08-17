@@ -2,13 +2,24 @@
 
 // 總倉收件匣「✎ 修正數量」彈窗（商品 × 分店矩陣）。
 //
-// ⭐ 切片 A（老闆 2026-08-17 原話）：
-//   「修正數量如果 1 改 2 會出現要增加數量，有辦法在旁邊幫我加一個鈕 就是增加庫存嗎」
-//   → 商品那一欄多一顆「＋ 補庫存」，開既有的 AddStockModal。**後端零改動**，
-//     用的就是庫存總覽那支 rpc_add_stock_by_product。
+// ⭐ 2026-08-17 兩件事（老闆原話）：
+//   ①「修正數量如果 1 改 2 會出現要增加數量，有辦法在旁邊幫我加一個鈕 就是增加庫存嗎」
+//     → 商品那一欄多一顆「＋ 補庫存」，開既有的 AddStockModal（後端零改動）。
+//   ②「還有修正數量，要一次把所有分店都秀出來，因為我入庫的會是原本沒叫貨的店家」
+//     → 分店欄位改撈 stores 全表；空格子可以直接填，填了就用 rpc_add_wave_item 補一列。
+//
+// ⭐ 分店欄位的規則**不是新發明的**，逐條沿用撿貨草稿頁兩天前才定案的那一套
+//   （lib/pickingDraftView.ts buildStoreColumns 的檔頭，老闆 2026-08-17 親口拍板）：
+//     啟用中                    → 一律有欄位（就算這張撿貨單一格都沒有）
+//     已停用 ＋ 本單沒有任何一列 → ⛔ 不顯示（「已停用的店家就不用出現了」）
+//     已停用 ＋ 本單有列         → ✅ 照樣顯示，標「已停用」
+//   排序也沿用共用的 lib/storeOrder（老闆指定的撿貨動線順序），
+//   與派貨工作台矩陣／列印撿貨單／撿貨草稿同一份 —— ⛔ 不要各自再排一套。
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { fetchAllRows } from "@/lib/fetchAllRows";
 import { translateRpcError } from "@/lib/rpcError";
+import { compareStoreOrder } from "@/lib/storeOrder";
 import SpinButton from "@/components/SpinButton";
 import { AddStockModal } from "@/components/AddStockModal";
 import { DatePicker } from "@/components/DatePicker";
@@ -38,13 +49,17 @@ export type PickWaveItem = {
   generated_transfer_id: number | null;
 };
 
-type Store = { id: number; name: string };
+/** stores 全表的一列（含停用）。`is_active === false` ＝ 已經收掉的店 */
+type Store = { id: number; code: string | null; name: string; is_active: boolean | null };
 type Sku = {
   id: number;
   sku_code: string | null;
   product_name: string | null;
   variant_name: string | null;
 };
+
+/** 「這次新加的那一格」的 key。⛔ 只有這一支會組，不要在別處手拼字串 */
+const cellKey = (skuId: number, storeId: number) => `${skuId}:${storeId}`;
 
 export const WAVE_STATUS_LABEL: Record<string, string> = {
   draft: "草稿",
@@ -72,9 +87,11 @@ export function PickModal({
   onSubmitted: () => void;
 }) {
   const [items, setItems] = useState<PickWaveItem[] | null>(null);
-  const [stores, setStores] = useState<Store[]>([]);
+  const [allStores, setAllStores] = useState<Store[]>([]);
   const [skus, setSkus] = useState<Sku[]>([]);
   const [edits, setEdits] = useState<Map<number, string>>(new Map());
+  /** 原本沒有那一列、這次要新加的格子。key = cellKey(sku, store)，value = 輸入框的原始字串 */
+  const [newCells, setNewCells] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [shipping, setShipping] = useState(false);
@@ -94,7 +111,7 @@ export function PickModal({
   const [waveDate, setWaveDate] = useState(wave.wave_date);
   const [savingDate, setSavingDate] = useState(false);
 
-  /** 已派貨／已取消 → 不給補庫存（那張單已經定案了） */
+  /** 已派貨／已取消 → 整張唯讀（rpc_add_wave_item 與 rpc_update_picked_qty 後端也都擋） */
   const locked = effectiveStatus === "shipped" || effectiveStatus === "cancelled";
 
   const shortageCount = useMemo(() => {
@@ -113,39 +130,55 @@ export function PickModal({
     (async () => {
       try {
         const sb = getSupabase();
-        const { data: itemsData, error: e1 } = await sb
-          .from("picking_wave_items")
-          .select("id, sku_id, store_id, qty, picked_qty, generated_transfer_id")
-          .eq("wave_id", wave.id);
-        if (e1) throw new Error(e1.message);
+        // ⚠ 一定要走 fetchAllRows：一張 wave = 一張採購單 × 全部分店，
+        //   180 品項 × 17 店 = 3060 列，PostgREST 預設 1000 列會**靜默**截斷。
+        //   被截掉的列在畫面上就是「空格子」—— 而空格子現在是可以填的，
+        //   老闆會往一個其實已經有列的格子填數字，然後撞 UNIQUE 錯誤。
+        //   （切片 B 把空格子變成入口之後，這條就不再只是顯示問題。）
+        const itemsData = await fetchAllRows<PickWaveItem>(() =>
+          sb
+            .from("picking_wave_items")
+            .select("id, sku_id, store_id, qty, picked_qty, generated_transfer_id")
+            .eq("wave_id", wave.id)
+            .order("id", { ascending: true }),
+        );
         if (cancelled) return;
-        const arr = ((itemsData as PickWaveItem[] | null) ?? []).map((r) => ({
+        // ⚠⚠ id 一律在**載入邊界**正規化成數字。BIGINT 經過 PostgREST 可能是數字、
+        //   也可能是字串，而 TypeScript 的 `{ id: number }` 宣告在執行期完全不檢查。
+        //   矩陣是 Map.get() 查的：一邊 "1630"、另一邊 1630 就必定查不到 ——
+        //   而「查不到」在切片 B 之後不再只是顯示成「·」，它會變成一個**可以填的新增格**，
+        //   老闆會往一個其實已經有列的格子填數字。本專案已經因為相信宣告的型別踩過一次（#751）。
+        const arr = itemsData.map((r) => ({
           ...r,
+          id: Number(r.id),
+          sku_id: Number(r.sku_id),
+          store_id: Number(r.store_id),
           qty: Number(r.qty),
           picked_qty: r.picked_qty === null ? null : Number(r.picked_qty),
         }));
         setItems(arr);
 
-        // ⚠ id 一律 Number() 正規化再拿去當 Map 的 key：BIGINT 經過 PostgREST 可能是字串，
-        //   而 TypeScript 的 `{ id: number }` 宣告在執行期不檢查（本專案 #751 踩過）。
-        const skuIds = Array.from(new Set(arr.map((r) => Number(r.sku_id))));
-        const storeIds = Array.from(new Set(arr.map((r) => r.store_id)));
+        const skuIds = Array.from(new Set(arr.map((r) => r.sku_id)));
 
         if (skuIds.length) {
           const { data: skuData } = await sb
             .from("skus")
             .select("id, sku_code, product_name, variant_name")
             .in("id", skuIds);
-          if (!cancelled) setSkus((skuData as Sku[] | null) ?? []);
+          if (!cancelled) {
+            setSkus(((skuData as Sku[] | null) ?? []).map((s) => ({ ...s, id: Number(s.id) })));
+          }
         }
-        if (storeIds.length) {
-          const { data: storeData } = await sb
-            .from("stores")
-            .select("id, name")
-            .in("id", storeIds)
-            .order("id");
-          if (!cancelled) setStores((storeData as Store[] | null) ?? []);
-        }
+
+        // ⭐ 切片 B：分店改撈**全表**（含停用，帶 is_active），不再只撈本單有列的那幾家。
+        //   老闆：「我入庫的會是原本沒叫貨的店家」——沒叫貨的店在舊寫法裡連欄位都不存在。
+        //   撈全表 ≠ 全部都變成欄位：實際顯示哪幾欄由下面的 storeCols 決定。
+        const { data: storeData, error: eStore } = await sb
+          .from("stores")
+          .select("id, code, name, is_active")
+          .order("code");
+        if (eStore) throw new Error(eStore.message);
+        if (!cancelled) setAllStores((storeData as Store[] | null) ?? []);
 
         const { data: loc } = await sb
           .from("locations")
@@ -191,6 +224,8 @@ export function PickModal({
     };
   }, [wave.id, reloadTick]);
 
+  // ⚠ key 一定是數字（items 在載入時就正規化過了，見上面那段說明）。
+  //   ⛔ 不要把那段正規化拿掉：這張 Map 查不到 = 那一格會被當成「可以新增」。
   const matrix: Map<number, Map<number, PickWaveItem>> = useMemo(() => {
     const m = new Map<number, Map<number, PickWaveItem>>();
     for (const it of items ?? []) {
@@ -205,6 +240,28 @@ export function PickModal({
     [skus],
   );
 
+  /**
+   * 矩陣要有哪些分店欄位。
+   *
+   * 規則與撿貨草稿頁**逐條相同**（老闆 2026-08-17 拍板，見 lib/pickingDraftView.ts:149-174）：
+   *   啟用中                    → 一律有欄位
+   *   已停用 ＋ 本單一列都沒有  → ⛔ 不顯示
+   *   已停用 ＋ 本單有列        → ✅ 照樣顯示，標「已停用」
+   *
+   * ⭐ 判準是「本單有沒有那一列」而不是「數量大不大」：撿貨單的 qty 表上是
+   *   CHECK (qty > 0)（20260423120002:68），有列就一定有量 —— 這一點跟草稿不一樣
+   *   （草稿會替每家店建 qty = 0 的列，所以那邊必須看合計）。
+   * ⛔ 有列的一定要留：合計是把該商品所有 items 加總、不看畫面上有沒有那一欄，
+   *   藏掉一個有量的欄，橫的加起來就 ≠ 合計。
+   */
+  const stores = useMemo(() => {
+    const hasRow = new Set((items ?? []).map((it) => Number(it.store_id)));
+    return allStores
+      .filter((s) => s.is_active !== false || hasRow.has(Number(s.id)))
+      .map((s) => ({ ...s, id: Number(s.id) }))
+      .sort((a, b) => compareStoreOrder(a.code, a.name, b.code, b.name));
+  }, [allStores, items]);
+
   function setEdit(itemId: number, val: string) {
     setEdits((cur) => {
       const next = new Map(cur);
@@ -212,6 +269,41 @@ export function PickModal({
       return next;
     });
   }
+
+  function setNewCell(skuId: number, storeId: number, val: string) {
+    setNewCells((cur) => {
+      const next = new Map(cur);
+      const k = cellKey(skuId, storeId);
+      // 清空 ＝ 這一格不新增。⛔ 不可以留一個空字串在 Map 裡：
+      //   Number("") === 0，會變成「送出 0」然後被後端擋掉，
+      //   老闆只是把打錯的字刪掉而已（同一個空字串陷阱在本檔 saveEdits 也存在，
+      //   那是既有缺口、不在本案範圍）。
+      if (val.trim() === "") next.delete(k);
+      else next.set(k, val);
+      return next;
+    });
+  }
+
+  /** 這一格新填的數量；不是有效正數就回 null（畫面用它判斷要不要標成錯的） */
+  function newCellQty(skuId: number, storeId: number): number | null {
+    const raw = newCells.get(cellKey(skuId, storeId));
+    if (raw === undefined) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+
+  /** 有填但填得不對（負數、0、亂碼）的格子數 —— ⛔ 不可以靜默略過，要擋下存檔 */
+  const badNewCells = useMemo(() => {
+    let n = 0;
+    for (const raw of newCells.values()) {
+      const v = Number(raw);
+      if (!Number.isFinite(v) || v <= 0) n += 1;
+    }
+    return n;
+  }, [newCells]);
+
+  /** 「儲存修正 (N)」的 N ＝ 改過的既有格 ＋ 新加的格 */
+  const pendingCount = edits.size + newCells.size;
 
   async function changeDate(newDate: string) {
     if (newDate === waveDate) return;
@@ -236,30 +328,74 @@ export function PickModal({
     }
   }
 
+  /**
+   * 把畫面上的暫存改動寫回 DB。存修正與派貨兩條路都走這一支，⛔ 不要各寫一份
+   * （原本那兩份就是逐字複製的，改一份忘了另一份是遲早的事）。
+   *
+   * 順序：先改既有格、再補新格。兩者互不影響（新格的 qty 與 picked_qty
+   * 在新增當下就一起寫定），所以順序只影響「先落地哪一種」，不影響結果。
+   */
+  async function applyPending(
+    sb: ReturnType<typeof getSupabase>,
+    operator: string,
+    note: string,
+  ) {
+    for (const [itemId, val] of edits) {
+      const newQty = Number(val);
+      if (Number.isNaN(newQty) || newQty < 0) continue;
+      const { error: e } = await sb.rpc("rpc_update_picked_qty", {
+        p_wave_item_id: itemId,
+        p_new_qty: newQty,
+        p_operator: operator,
+        p_note: note,
+      });
+      if (e) throw new Error(`item ${itemId}: ${e.message}`);
+    }
+    for (const [k, raw] of newCells) {
+      const [skuIdStr, storeIdStr] = k.split(":");
+      const qty = Number(raw);
+      // 這裡不會發生（存檔前已被 badNewCells 擋下），留著是最後一道防線：
+      // ⛔ 絕不把不合法的數字送進去撞後端的 CHECK。
+      if (!Number.isFinite(qty) || qty <= 0) continue;
+      // ⛔ 不加前綴：後端回的已經是完整中文句子，加上 "item N:" 會讓
+      //   rpcError.ts 那條 ^wrong_store: 的規則比對不到。
+      const { error: e } = await sb.rpc("rpc_add_wave_item", {
+        p_wave_id: wave.id,
+        p_sku_id: Number(skuIdStr),
+        p_store_id: Number(storeIdStr),
+        p_qty: qty,
+        p_operator: operator,
+        p_note: note,
+      });
+      if (e) throw new Error(e.message);
+    }
+  }
+
+  /** 有填但填得不對的格子 → 擋下整次存檔並講清楚是哪裡不對 */
+  function assertNewCellsValid() {
+    if (badNewCells > 0) {
+      throw new Error(
+        `有 ${badNewCells} 個新增的格子填的不是大於 0 的數字。` +
+          `請改成正確的數量，或把該格清空（清空＝這家店不加）。`,
+      );
+    }
+  }
+
   async function saveEdits() {
-    if (edits.size === 0) {
+    if (pendingCount === 0) {
       onSubmitted();
       return;
     }
     setSubmitting(true);
     setError(null);
     try {
+      assertNewCellsValid();
       const sb = getSupabase();
       const { data: userRes } = await sb.auth.getUser();
       const operator = userRes?.user?.id;
       if (!operator) throw new Error("未登入");
 
-      for (const [itemId, val] of edits) {
-        const newQty = Number(val);
-        if (Number.isNaN(newQty) || newQty < 0) continue;
-        const { error: e } = await sb.rpc("rpc_update_picked_qty", {
-          p_wave_item_id: itemId,
-          p_new_qty: newQty,
-          p_operator: operator,
-          p_note: "manual fix in /hq/inbox (picking tab)",
-        });
-        if (e) throw new Error(`item ${itemId}: ${e.message}`);
-      }
+      await applyPending(sb, operator, "manual fix in /hq/inbox (picking tab)");
       onSubmitted();
     } catch (e) {
       setError(translateRpcError(e));
@@ -274,7 +410,12 @@ export function PickModal({
       return;
     }
 
-    const allZero = items != null && items.length > 0 && items.every((it) => {
+    // 這次新加的格子也算「有量」——否則整張本來都是 0、只靠新加的那幾格出貨時會被誤擋
+    const hasNewQty = Array.from(newCells.values()).some((v) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0;
+    });
+    const allZero = !hasNewQty && items != null && items.length > 0 && items.every((it) => {
       const e = edits.get(it.id);
       const v = e !== undefined ? Number(e) : Number(it.picked_qty ?? it.qty);
       return !Number.isNaN(v) && v === 0;
@@ -284,14 +425,30 @@ export function PickModal({
       return;
     }
 
+    if (badNewCells > 0) {
+      setError(
+        `有 ${badNewCells} 個新增的格子填的不是大於 0 的數字，先處理完才能派貨。` +
+          `請改成正確的數量，或把該格清空（清空＝這家店不加）。`,
+      );
+      return;
+    }
+
     const needsConfirm = effectiveStatus !== "picked";
     const shortMsg = shortageCount > 0
       ? `\n\n⚠ 有 ${shortageCount} 行短缺（撿到的數量少於應撿量），派貨後該店家會拿不到應有量。是否仍要繼續？`
       : "";
+    // ⛔ 新增的分店一定要在確認框講出來：wave.store_count 是這一頁載入當下的數字，
+    //   新加的店還沒算進去，只看那個數字會以為沒有多派給誰。
+    const newStoreCount = new Set(
+      Array.from(newCells.keys()).map((k) => k.split(":")[1]),
+    ).size;
+    const addMsg = newCells.size > 0
+      ? `\n\n本次還會新增 ${newCells.size} 個品項給 ${newStoreCount} 間原本沒有叫貨的分店（會一起出貨）。`
+      : "";
     const stepMsg = needsConfirm
       ? `\n\n目前狀態為「${WAVE_STATUS_LABEL[effectiveStatus] ?? effectiveStatus}」,將自動 確認撿貨完成 + 派貨出倉。`
       : "";
-    if (!confirm(`確認派貨？將為 ${wave.store_count} 間分店產生 transfer 並從總倉出庫。${stepMsg}${shortMsg}`)) return;
+    if (!confirm(`確認派貨？將為 ${wave.store_count} 間分店產生 transfer 並從總倉出庫。${addMsg}${stepMsg}${shortMsg}`)) return;
     setShipping(true);
     setError(null);
     try {
@@ -300,18 +457,8 @@ export function PickModal({
       const operator = userRes?.user?.id;
       if (!operator) throw new Error("未登入");
 
-      if (edits.size > 0) {
-        for (const [itemId, val] of edits) {
-          const newQty = Number(val);
-          if (Number.isNaN(newQty) || newQty < 0) continue;
-          const { error: e } = await sb.rpc("rpc_update_picked_qty", {
-            p_wave_item_id: itemId,
-            p_new_qty: newQty,
-            p_operator: operator,
-            p_note: "manual fix before dispatch",
-          });
-          if (e) throw new Error(`item ${itemId}: ${e.message}`);
-        }
+      if (pendingCount > 0) {
+        await applyPending(sb, operator, "manual fix before dispatch");
       }
       if (needsConfirm) {
         const { error: ec } = await sb.rpc("rpc_confirm_picked", {
@@ -371,14 +518,14 @@ export function PickModal({
             )}
           </div>
           <div className="flex gap-2">
-            {effectiveStatus !== "shipped" && edits.size > 0 && (
+            {effectiveStatus !== "shipped" && pendingCount > 0 && (
               <SpinButton
                 onClick={saveEdits}
                 disabled={submitting}
                 className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-semibold text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
                 title="僅儲存修正不派貨"
               >
-                {submitting ? "儲存中…" : `儲存修正 (${edits.size})`}
+                {submitting ? "儲存中…" : `儲存修正 (${pendingCount})`}
               </SpinButton>
             )}
             {effectiveStatus !== "shipped" && effectiveStatus !== "cancelled" && (
@@ -410,6 +557,16 @@ export function PickModal({
           </div>
         )}
 
+        {/* 這一行是必要的說明，不是裝飾：矩陣現在會列出**全部**分店，
+            虛線格子代表「這家店原本沒叫貨」。不講的話老闆會以為系統多跑出一堆店。 */}
+        {!locked && (
+          <div className="border-b border-zinc-200 bg-zinc-50 px-3 py-1.5 text-[11px] text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
+            這裡列出所有分店。<span className="font-semibold text-sky-700 dark:text-sky-300">虛線</span>
+            的格子代表那家店原本沒有叫貨 —— 直接填數量就會幫它新增一列，一起出貨。
+            已停用而且本單沒有東西的店不會出現。
+          </div>
+        )}
+
         <div className="overflow-auto p-3">
           {items === null ? (
             <div className="p-6 text-center text-sm text-zinc-500">載入中…</div>
@@ -427,6 +584,13 @@ export function PickModal({
                       className="px-2 py-2 text-right text-xs uppercase text-zinc-500"
                     >
                       {s.name}
+                      {/* 已停用但本單有列 → 一定要標出來，⛔ 不可以長得跟正常的店一樣
+                          （藏起來或不標，都是拿異常狀態冒充一切正常） */}
+                      {s.is_active === false && (
+                        <span className="ml-1 inline-block rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium normal-case text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                          已停用
+                        </span>
+                      )}
                     </th>
                   ))}
                   <th className="px-3 py-2 text-right text-xs uppercase text-zinc-500">合計</th>
@@ -435,21 +599,27 @@ export function PickModal({
               <tbody className="divide-y-2 divide-zinc-300 dark:divide-zinc-700">
                 {skuList.map((sku) => {
                   const row = matrix.get(sku.id);
+                  // 這次新加的量。新列的 qty 與 picked_qty 一樣（rpc_add_wave_item 兩個都寫 p_qty），
+                  // 所以應發與實分都要加同一個數 → 對 totalDiff 的貢獻是 0，不會假裝成超賣。
+                  const newForSku = stores.reduce(
+                    (s, st) => s + (row?.get(st.id) ? 0 : (newCellQty(sku.id, st.id) ?? 0)),
+                    0,
+                  );
                   const expectedTotal = stores.reduce((s, st) => {
                     const it = row?.get(st.id);
                     return it ? s + Number(it.qty) : s;
-                  }, 0);
+                  }, 0) + newForSku;
                   const actualTotal = stores.reduce((s, st) => {
                     const it = row?.get(st.id);
                     if (!it) return s;
                     const edit = edits.get(it.id);
                     const v = edit !== undefined ? Number(edit) : Number(it.picked_qty ?? it.qty);
                     return s + (Number.isNaN(v) ? 0 : v);
-                  }, 0);
+                  }, 0) + newForSku;
                   const totalDiff = actualTotal - expectedTotal;
                   // 總倉可用量 vs 這次要出的量。⛔ avail === null ＝「沒讀到」，
                   //   絕對不可以當成 0 顯示成缺貨（見 hqAvail 的說明）。
-                  const avail = hqAvail?.get(Number(sku.id)) ?? null;
+                  const avail = hqAvail?.get(sku.id) ?? null;
                   const shortStock = avail !== null ? Math.max(0, actualTotal - avail) : 0;
                   let skuShortStores = 0;
                   let skuShortQty = 0;
@@ -488,7 +658,9 @@ export function PickModal({
                             <div className="mt-1 flex flex-wrap items-center gap-1">
                               <span
                                 className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${
-                                  avail !== null && shortStock > 0
+                                  avail === null
+                                    ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                                    : shortStock > 0
                                     ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
                                     : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
                                 }`}
@@ -521,9 +693,23 @@ export function PickModal({
                         <td className="px-2 py-1 text-xs text-zinc-500">應發</td>
                         {stores.map((st) => {
                           const it = row?.get(st.id);
+                          if (it) {
+                            return (
+                              <td key={st.id} className="px-2 py-1 text-right font-mono text-zinc-500">
+                                {Number(it.qty)}
+                              </td>
+                            );
+                          }
+                          // 這一格原本沒有人叫貨。填了數字之後，新列的應發＝填的數字
+                          // （rpc_add_wave_item 把 qty 與 picked_qty 都設成同一個值）。
+                          const nq = newCellQty(sku.id, st.id);
                           return (
-                            <td key={st.id} className="px-2 py-1 text-right font-mono text-zinc-500">
-                              {it ? Number(it.qty) : <span className="text-zinc-300">·</span>}
+                            <td key={st.id} className="px-2 py-1 text-right font-mono">
+                              {nq !== null ? (
+                                <span className="text-sky-700 dark:text-sky-300">{nq}</span>
+                              ) : (
+                                <span className="text-zinc-300">·</span>
+                              )}
                             </td>
                           );
                         })}
@@ -533,7 +719,32 @@ export function PickModal({
                         <td className="px-2 py-1 text-xs font-semibold">實分</td>
                         {stores.map((st) => {
                           const it = row?.get(st.id);
-                          if (!it) return <td key={st.id} className="px-2 py-1 text-right text-zinc-300">·</td>;
+                          // ⭐ 切片 B：原本這裡是唯讀的「·」。改成可以填 —— 填了就用
+                          //   rpc_add_wave_item 補一列（campaign_id = NULL，不用有團、不用有客人訂單）。
+                          //   視覺上刻意用**虛線框 + 天藍色**，與既有列（實線框）一眼分得開。
+                          if (!it) {
+                            const raw = newCells.get(cellKey(sku.id, st.id)) ?? "";
+                            const bad = raw.trim() !== "" && newCellQty(sku.id, st.id) === null;
+                            return (
+                              <td key={st.id} className="px-1 py-1 text-right">
+                                <input
+                                  inputMode="decimal"
+                                  disabled={locked}
+                                  value={raw}
+                                  placeholder="＋"
+                                  onChange={(e) => setNewCell(sku.id, st.id, e.target.value)}
+                                  title={`${st.name}原本沒有叫貨，填了數量就會新增一列`}
+                                  className={`w-14 rounded-md border border-dashed px-1 py-0.5 text-right font-mono text-sm font-semibold placeholder:font-normal placeholder:text-zinc-300 disabled:opacity-60 ${
+                                    bad
+                                      ? "border-red-400 bg-red-50 text-red-700 dark:border-red-700 dark:bg-red-950 dark:text-red-300"
+                                      : raw.trim() !== ""
+                                      ? "border-sky-500 bg-sky-50 text-sky-800 dark:border-sky-600 dark:bg-sky-950 dark:text-sky-200"
+                                      : "border-zinc-300 bg-transparent dark:border-zinc-700"
+                                  }`}
+                                />
+                              </td>
+                            );
+                          }
                           const edit = edits.get(it.id);
                           const cur = edit !== undefined ? edit : String(it.picked_qty ?? it.qty);
                           const curNum = Number(cur);
@@ -578,7 +789,28 @@ export function PickModal({
                         <td className="px-2 py-1 text-xs text-zinc-500">狀態</td>
                         {stores.map((st) => {
                           const it = row?.get(st.id);
-                          if (!it) return <td key={st.id} className="px-2 py-1 text-right text-zinc-300">—</td>;
+                          if (!it) {
+                            const raw = newCells.get(cellKey(sku.id, st.id)) ?? "";
+                            const nq = newCellQty(sku.id, st.id);
+                            if (raw.trim() === "") {
+                              return <td key={st.id} className="px-2 py-1 text-right text-zinc-300">—</td>;
+                            }
+                            // ⛔ 填了但不是有效正數 → 一定要當場標紅，不可以看起來跟沒填一樣
+                            //   （本專案反覆踩過的靜默丟失：填了、沒存進去、畫面零提示）
+                            return (
+                              <td key={st.id} className="px-2 py-1 text-right">
+                                <span
+                                  className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                                    nq === null
+                                      ? "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300"
+                                      : "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300"
+                                  }`}
+                                >
+                                  {nq === null ? "數字不對" : `+${nq} 新增`}
+                                </span>
+                              </td>
+                            );
+                          }
                           const edit = edits.get(it.id);
                           const cur = Number(edit !== undefined ? edit : (it.picked_qty ?? it.qty));
                           const diff = !Number.isNaN(cur) ? cur - Number(it.qty) : 0;
