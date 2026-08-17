@@ -564,6 +564,15 @@ export function PickModal({
             這裡列出所有分店。<span className="font-semibold text-sky-700 dark:text-sky-300">虛線</span>
             的格子代表那家店原本沒有叫貨 —— 直接填數量就會幫它新增一列，一起出貨。
             已停用而且本單沒有東西的店不會出現。
+            {/* ⚠ 這一句是 tooltip 塞不下、但一定要看得到的事：兩條路徑擋人的東西不一樣。
+                不寫在畫面上的話，老闆被「可分配量」擋下時第一個反應一定是去按「＋ 補庫存」，
+                補完再試還是進不來 —— 而他不會知道為什麼。 */}
+            <span className="mt-0.5 block">
+              ⚠「＋ 補庫存」只補<span className="font-semibold">總倉庫存</span>
+              （影響的是改既有格子後派不派得出去），
+              <span className="font-semibold">不會</span>增加這張採購單的可分配量。
+              新增給沒叫貨的店若被可分配量擋下，正解是走「補貨申請」。
+            </span>
           </div>
         )}
 
@@ -664,7 +673,12 @@ export function PickModal({
                                     ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
                                     : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
                                 }`}
-                                title="總倉可用量 = 在庫 − 已保留，與派貨時實際檢查的是同一個數字"
+                                title={
+                                  "總倉可用量 ＝ 在庫 − 已保留。" +
+                                  "改既有格子的數量時，派貨出倉扣的就是這個數字。\n" +
+                                  "⚠ 但「新增給沒叫貨的店」不看這個數字 —— 那一條受這張採購單的" +
+                                  "可分配量（進貨 − 已派）限制，補庫存不會讓它變大。"
+                                }
                               >
                                 {/* ⛔ 讀不到就要講「讀不到」，不可以顯示 0 —— 那跟真的沒貨長得一模一樣 */}
                                 {avail === null
@@ -673,15 +687,23 @@ export function PickModal({
                                   ? `總倉可用 ${avail}，短少 ${shortStock}`
                                   : `總倉可用 ${avail}`}
                               </span>
+                              {/* P2（阿審 #762）：沒短缺就不給按 —— 這顆鈕寫的是不可逆的手動調整，
+                                  不需要的時候擺在那裡只會被誤按。
+                                  ⛔ 但 avail === null（庫存讀不到）**照樣給按**：那是「不知道有沒有短缺」，
+                                    把它當成「沒短缺」而擋住，就是拿系統異常替老闆做決定。 */}
                               <SpinButton
                                 onClick={() =>
                                   setAddStock({ sku, qty: Math.max(1, Math.ceil(shortStock)) })
                                 }
-                                disabled={hqLocId === null}
+                                disabled={hqLocId === null || (avail !== null && shortStock <= 0)}
                                 title={
                                   hqLocId === null
                                     ? "找不到總倉 location，請先確認倉庫設定"
-                                    : "對總倉補一筆手動庫存（不可刪除、不可修改）"
+                                    : avail !== null && shortStock <= 0
+                                    ? "總倉庫存夠，不需要補"
+                                    : "對總倉補一筆手動庫存（不可刪除、不可修改）。\n" +
+                                      "⚠ 只會增加總倉庫存，不會增加這張採購單的可分配量 ——" +
+                                      "要多給沒叫貨的店，請走「補貨申請」。"
                                 }
                                 className="rounded border border-emerald-300 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-40 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950"
                               >

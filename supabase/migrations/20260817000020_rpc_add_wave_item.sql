@@ -149,13 +149,41 @@ BEGIN
   --      那種情況底線仍在：派貨時 rpc_outbound(p_allow_negative => FALSE) 會擋，
   --      不會產生負庫存。
   --
-  --    ⚠⚠ 已知的取捨（施工時提報，待 Alex／老闆確認）：
-  --      這道守衛量的是「這張 PO 進了多少貨」，不是「總倉現在有多少貨」。
-  --      老闆用彈窗裡的「＋ 補庫存」把總倉庫存補上去，**不會**讓這個數字變大
-  --      （補庫存寫的是 stock_movements.manual_adjust，不是 goods_receipt_items）。
-  --      所以「這張 PO 的貨已經分光了、但總倉還有別的貨」時，這裡會擋住。
-  --      正解是走補貨申請（見 docs/PRD-WMS §13 的 B 類）。
+  --    ⭐⭐ 口徑（CEO 2026-08-17 複審後確認**維持**，⛔ 不要改成看總倉 on_hand）：
+  --      這道守衛量的是「**這張採購單**進了多少貨」，不是「總倉現在有多少貨」。
+  --      改成看總倉 on_hand 的話，這張撿貨單就跟所有其他 PO 共用同一個池子，
+  --      會吃掉本該留給別團的貨 —— 與 rpc_create_wave_from_po 的隔離設計直接衝突。
+  --
+  --      ⚠ 連帶的事實（錯誤訊息裡一定要講出來，見下面兩處 RAISE）：
+  --        彈窗裡的「＋ 補庫存」寫的是 stock_movements.manual_adjust，
+  --        **不是** goods_receipt_items → 補了也不會讓這裡的可分配量變大。
+  --      ⓘ 兩條路徑擋人的東西不一樣，別搞混：
+  --        改**既有**格子的數量 → 走 rpc_update_picked_qty（零檢查），
+  --          真正擋人的是派貨時 rpc_outbound 檢查的總倉 on_hand → 補庫存**有效**
+  --        **新增**給沒叫貨的店 → 走本支，擋的是這張採購單的可分配量 → 補庫存**無效**，
+  --          正解是走補貨申請（見 docs/PRD-WMS-倉儲管理工作台.md §13 的 B 類）
   IF v_source_po IS NOT NULL THEN
+    -- ⚠⚠⚠ 先上鎖再算，⛔ 不可以只有「讀 → 比較 → 寫」。
+    --   兩張不同的撿貨單同時對**同一張 PO 的同一個 SKU** 新增列時，
+    --   兩邊都會讀到同一份「還剩多少」而一起通過（read-modify-write race），
+    --   分配總量就超過實際進貨量 → 要等到按下「派貨出倉」才整張爆、而且整張 rollback。
+    --   上面的 `picking_waves ... FOR UPDATE` 擋不住這一種：那把鎖只鎖**單一張 wave**，
+    --   而這裡爭用的資源是**跨 wave 共用的那張 PO 的可分配量**。
+    --
+    --   ⭐ key 與 rpc_create_wave_from_po（最新版 20260816000050:307）**逐字相同**：
+    --       PERFORM pg_advisory_xact_lock(hashtext('wave:po:' || p_po_id::text));
+    --     字串一個字不一樣就是兩把不同的鎖，兩邊各鎖各的 ＝ 等於沒鎖。
+    --     （那支的 p_po_id 與這裡的 v_source_po 都是 BIGINT，::text 產生同一個字面值。）
+    --
+    --   ⛔ 這一行刻意放在 `IF v_source_po IS NOT NULL` 裡面，與可分配量守衛同進同出：
+    --     NULL 丟進 hashtext 會變成 'wave:po:' 這一個字串 → 所有沒綁 PO 的補貨 wave
+    --     共用同一把全域鎖，互相排隊卻什麼都沒保護到。
+    --
+    --   ⓘ 死結分析：本支的取鎖順序是「wave 列 → advisory(po)」，
+    --     rpc_create_wave_from_po 是「purchase_orders 列 → advisory(po)」——
+    --     沒有任何一對資源被兩支以相反順序取用，形成不了環。
+    PERFORM pg_advisory_xact_lock(hashtext('wave:po:' || v_source_po::text));
+
     -- ⚠⚠ 這一段**必須**在下面的聚合之前單獨做，不能靠「算出來是 NULL」去偵測。
     --   下面那個 SELECT 沒有 GROUP BY ＝ 對零列做聚合，Postgres 照樣回**一列**，
     --   而 gr_qty 已經被 COALESCE 成 0 → 「這張 PO 裡根本沒有這樣商品」與
@@ -169,7 +197,8 @@ BEGIN
     ) THEN
       RAISE EXCEPTION
         '撿貨單 % 對應的採購單裡沒有「%」這樣商品，無法判斷可分配量。'
-        '要額外補庫存給分店請走「補貨申請」',
+        '⚠ 按「＋ 補庫存」沒有用 —— 那只會增加總倉庫存，不會讓這張採購單多出可分配量。'
+        '要額外給分店貨，請走「補貨申請」',
         v_wave_code, v_sku_label;
     END IF;
 
@@ -207,9 +236,13 @@ BEGIN
       FROM po_sku_state ps;
 
     IF p_qty > v_avail.available THEN
+      -- ⛔ 這句話一定要明講「補庫存沒有用」：老闆手上就有一顆「＋ 補庫存」，
+      --   不講的話他一定會去按，按了還是加不進來（補庫存寫的是 stock_movements，
+      --   這裡量的是這張採購單的 GR 實收 − 已派，兩個是不同的池子）。
       RAISE EXCEPTION
-        '「%」只剩可分配 % 件（這張採購單進貨 %、已派 %），這次要給「%」% 件、超過了。'
-        '要額外補庫存給分店請走「補貨申請」',
+        '「%」在這張採購單只剩可分配 % 件（進貨 %、已派 %），這次要給「%」% 件、超過了。'
+        '⚠ 按「＋ 補庫存」沒有用 —— 那只會增加總倉庫存，不會讓這張採購單多出可分配量。'
+        '要額外給分店貨，請走「補貨申請」',
         v_sku_label, v_avail.available, v_avail.gr_qty, v_avail.already_wave,
         v_store_name, p_qty;
     END IF;
