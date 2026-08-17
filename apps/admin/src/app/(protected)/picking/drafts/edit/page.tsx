@@ -18,19 +18,19 @@
 //    留一堆未存檔的暫存狀態最危險（換人接手就掉了）。
 
 import Link from "next/link";
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
 import {
-  addOutcomeMessage,
+  addBatchMessage,
   buildSkuRows,
   buildStoreColumns,
-  classifyAddOutcome,
   describeDraftDbError,
   lateCellSnapshot,
   loadPrefill,
   rowTotal,
+  type AddBatchReport,
   type PrefillResult,
   type SkuExistence,
   type StoreRow,
@@ -68,6 +68,19 @@ type SkuOption = {
 };
 
 const cellKey = (skuId: number, storeId: number) => `${skuId}:${storeId}`;
+
+/**
+ * 訊息裡要怎麼稱呼一樣商品。
+ *
+ * ⚠⚠ **一定要帶上規格名**，不可以只用 product_name —— 這正是老闆這次的情境：
+ *   搜「花蓮阿咘」跳出的 7 列，product_name 全都是「花蓮阿咘吉手作泡菜系列」，
+ *   差別只在 variant_name（A：韓式辣味泡菜 … G：蔭鳳梨）。
+ *   只印 product_name 的話，「這 2 樣沒有加入草稿」會印出兩個一模一樣的名字，
+ *   老闆根本看不出是哪兩個 —— 等於沒講（本專案最忌諱的那種「講了等於沒講」）。
+ * ⓘ 分隔符與下拉、勾選清單上看到的一致（「品名 / 規格」），才對得起來。
+ */
+const skuDisplayName = (o: SkuOption) =>
+  `${o.product_name}${o.variant_name ? ` / ${o.variant_name}` : ""}`;
 
 const STORE_STATE_LABEL = { inactive: "已停用", missing: "已刪除", unknown: "無法確認" } as const;
 
@@ -233,6 +246,8 @@ function Body() {
     () => buildStoreColumns(stores, items, extraStores),
     [stores, items, extraStores],
   );
+  // 搜尋下拉要標得出「這樣我已經加過了」，才不會重複加（也不會白按一次才被擋）
+  const inDraftSkuIds = useMemo(() => new Set(skuRows.map((r) => r.sku_id)), [skuRows]);
   const missingSkuCount = useMemo(() => skuRows.filter((r) => r.state === "missing").length, [skuRows]);
   const unknownSkuCount = useMemo(() => skuRows.filter((r) => r.state === "unknown").length, [skuRows]);
   const orphanSkuCount = missingSkuCount + unknownSkuCount;
@@ -348,110 +363,137 @@ function Body() {
   //   但它幾乎不會有未派需求 → qty = 0 → buildStoreColumns 會把那一欄藏起來，畫面與紙上都看不到。
   //   萬一它真的還有未派需求，那一列就有量、欄位會照樣顯示並標「已停用」——
   //   正是「有量的一定要留」那條規則要保住的東西（見 lib/pickingDraftView.ts）。
-  async function addSku(opt: SkuOption) {
-    if (skuRows.some((r) => r.sku_id === opt.id)) {
-      setError(`「${opt.product_name}」已經在這張草稿裡了`);
-      return;
-    }
+  // ⭐ 一次可以加一整批（老闆 2026-08-17：搜「花蓮阿咘」跳出同系列 7 個口味，
+  //   本來就會一起撿，不該一個一個點）。
+  //
+  //   做法是**逐樣跑完整的單樣流程**，⛔ 不是把 N 樣合併成一次大查詢：
+  //     - 每一樣各自 loadPrefill、各自 insert → 某一樣壞掉，其他樣照樣進得去
+  //     - 語意與「一次加一樣」逐字相同（同一支 loadPrefill、同一份 insert 欄位），
+  //       不可能因為改走批次而漂移
+  //   代價是 N 次往返。但這正是「哪幾樣沒進去」講得出來的原因 —— 值得。
+  //
+  // ⛔ 回傳「失敗的 sku_id」而不是 void：呼叫端要拿它**留住勾選**讓老闆直接重試。
+  //   回 void 就等於逼他把那幾樣重挑一次，而且訊息一關就再也不知道是哪幾樣 ——
+  //   那正是本專案最痛的那種靜默丟失。
+  async function addSkus(opts: SkuOption[]): Promise<number[]> {
+    if (opts.length === 0) return [];
     if (stores.length === 0) {
       setError("撈不到任何啟用中的分店，無法加入商品");
-      return;
+      return opts.map((o) => o.id); // 全部留在勾選裡
     }
     setError(null);
     setNotice(null);
 
-    // ⛔ 先把需求讀起來。讀不到就**整個中止、商品不加進去**。
-    //   不可以退回「空需求」照樣建 14 個 0 的列 —— 那跟「真的沒人要」長得一模一樣，
-    //   老闆會分不出是壞掉還是真的沒有，然後把錯的清單印給樓下去撿。
-    let pre: PrefillResult;
+    // 身分只取一次：整批共用，而且拿不到就**一樣都加不了** ——
+    // 這是批次層級的失敗，不是「某幾樣」的失敗，訊息要講成整批沒進去。
+    let tenantId: string;
+    let uid: string | null;
     try {
-      pre = await loadPrefill({ db: getSupabase(), fetchAll: fetchAllRows }, opt.id);
+      ({ tenantId, uid } = await sessionInfo());
     } catch (e) {
-      setError(
-        addOutcomeMessage({
-          kind: "failed",
-          productName: opt.product_name,
-          reason: describeDraftDbError(e),
-        }),
-      );
-      return; // ⛔ 這個 return 就是 P1-1 的修法：下面那段 insert 根本不會跑到
+      setError(`${describeDraftDbError(e)}（一樣都沒有加進去，勾選都還留著。）`);
+      return opts.map((o) => o.id);
     }
 
-    try {
-      const sb = getSupabase();
-      const { tenantId, uid } = await sessionInfo();
-      const label = `${opt.product_name}${opt.variant_name ? ` ${opt.variant_name}` : ""}`;
-      const now = new Date().toISOString();
-      const { data, error: err } = await sb
-        .from("picking_draft_items")
-        .insert(
-          stores.map((st) => {
-            const p = pre.byStore.get(st.id);
-            return {
-              tenant_id: tenantId,
-              draft_id: draftId,
-              sku_id: opt.id,
-              store_id: st.id,
-              // 帶出「這家店還沒派的需求」，已夾在可分配量之內（見 computePrefill）
-              qty: p?.give ?? 0,
-              snapshot_at: now,
-              snapshot_sku_code: opt.sku_code,
-              snapshot_sku_label: label,
-              // 分店名稱也拍下來：store_id 沒有外鍵，分店被硬刪之後
-              // 畫面與列印都還要說得出「原本要給哪一家」，不能只剩一個 #id
-              snapshot_store_code: st.code,
-              snapshot_store_name: st.name,
-              // 快照：加入當下的「未派需求」與「可分配量」，切片 B 對照現況要用
-              snapshot_demand_qty: p?.demandLeft ?? 0,
-              snapshot_available_qty: pre.available,
-              snapshot_close_date: pre.closeDate,
-              // 標明這一格的快照是「加入商品那一刻」拍的。後來才補的格子會標
-              // cell_created_later —— 切片 B 要分得出來，不能靠欄位是不是 NULL 去猜。
-              snapshot_extra: { ...pre.extra, snapshot_source: "add_sku" },
-              created_by: uid,
-              updated_by: uid,
-            };
-          }),
-        )
-        .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name");
-      if (err) throw err;
-      setItems((arr) => [...arr, ...((data ?? []) as DraftItem[])]);
-      // ⭐⭐ 這一行是本次 bug 的正解：existingSkuIds 原本只在 load() 算一次，
-      //   加完商品只更新了 items、沒更新它 → 新加的商品必然不在那個舊集合裡，
-      //   於是每一樣剛加進去的商品都被標成「⚠ 此商品已不存在」。
-      //   這樣商品是剛從 skus 搜出來的，存在性無庸置疑 → 直接補進集合。
-      //   （集合是 null＝「這次查不出來」時維持 null，不要無中生有地開始宣稱知道。）
-      // ⭐ 不論先前是 known 還是 unknown，剛加進來的商品都是**確定存在**的
-      //   （它就是從 skus 搜出來的）→ 兩種狀態都要記住，否則整批查詢異常之後
-      //   新加的商品也會被標「無法確認」（阿審 #751 複審 P2）。
-      setSkuExistence((prev) =>
-        prev.kind === "known"
-          ? { kind: "known", ids: new Set(prev.ids).add(Number(opt.id)) }
-          : { kind: "unknown", confirmedIds: new Set(prev.confirmedIds).add(Number(opt.id)) },
-      );
+    // 已經在草稿裡的：略過但**明講**，不重複插入、也不算失敗。
+    // ⚠ 這個集合在迴圈開始前算一次就好：opts 每一樣的 id 都不同（來源是以 id 為 key 的 Map），
+    //   而 skuRows 是 items 的 memo、迴圈中本來就不會同步更新。
+    const inDraft = new Set(skuRows.map((r) => r.sku_id));
+    const report: AddBatchReport = { added: [], skipped: [], failed: [] };
+    const failedIds: number[] = [];
 
-      // 帶出來的量與實際需求對不上時一定要講出來。
-      // ⚠ 「查詢正常但沒需求」與上面「讀取失敗」的畫面都是一排 0，只能靠訊息分辨
-      //   → 措辭由 addOutcomeMessage 統一維護，避免哪天改了一句忘了另一句。
-      let demandTotal = 0;
-      let giveTotal = 0;
-      for (const st of stores) {
-        const p = pre.byStore.get(st.id);
-        demandTotal += p?.demandLeft ?? 0;
-        giveTotal += p?.give ?? 0;
+    for (const opt of opts) {
+      if (inDraft.has(opt.id)) {
+        report.skipped.push(skuDisplayName(opt));
+        continue;
       }
-      setNotice(
-        addOutcomeMessage({
-          kind: classifyAddOutcome(demandTotal, giveTotal),
-          productName: opt.product_name,
+      try {
+        // ⛔ 先把需求讀起來。讀不到就**這一樣不加**（不是整批中止，更不是退回空需求）。
+        //   退回「空需求」照樣建一排 0 的列，畫面跟「真的沒人要」長得一模一樣，
+        //   老闆分不出是壞掉還是真的沒有，然後把錯的清單印給樓下去撿。
+        //   ⚠ loadPrefill 是**刻意不 catch** 的，就是要在這裡被擋下來 ——
+        //     ⛔ 不可以為了讓批次「順利跑完」而放寬成 try/空值。
+        const sb = getSupabase();
+        const pre: PrefillResult = await loadPrefill({ db: sb, fetchAll: fetchAllRows }, opt.id);
+        const label = `${opt.product_name}${opt.variant_name ? ` ${opt.variant_name}` : ""}`;
+        const now = new Date().toISOString();
+        const { data, error: err } = await sb
+          .from("picking_draft_items")
+          .insert(
+            stores.map((st) => {
+              const p = pre.byStore.get(st.id);
+              return {
+                tenant_id: tenantId,
+                draft_id: draftId,
+                sku_id: opt.id,
+                store_id: st.id,
+                // 帶出「這家店還沒派的需求」，已夾在可分配量之內（見 computePrefill）
+                qty: p?.give ?? 0,
+                snapshot_at: now,
+                snapshot_sku_code: opt.sku_code,
+                snapshot_sku_label: label,
+                // 分店名稱也拍下來：store_id 沒有外鍵，分店被硬刪之後
+                // 畫面與列印都還要說得出「原本要給哪一家」，不能只剩一個 #id
+                snapshot_store_code: st.code,
+                snapshot_store_name: st.name,
+                // 快照：加入當下的「未派需求」與「可分配量」，切片 B 對照現況要用
+                snapshot_demand_qty: p?.demandLeft ?? 0,
+                snapshot_available_qty: pre.available,
+                snapshot_close_date: pre.closeDate,
+                // 標明這一格的快照是「加入商品那一刻」拍的。後來才補的格子會標
+                // cell_created_later —— 切片 B 要分得出來，不能靠欄位是不是 NULL 去猜。
+                snapshot_extra: { ...pre.extra, snapshot_source: "add_sku" },
+                created_by: uid,
+                updated_by: uid,
+              };
+            }),
+          )
+          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name");
+        if (err) throw err;
+        // ⭐ 每成功一樣就立刻進畫面（functional updater，不怕批次更新交錯）——
+        //   第 3 樣掛掉時，前兩樣已經看得到，不會整批一起消失。
+        setItems((arr) => [...arr, ...((data ?? []) as DraftItem[])]);
+        // ⭐⭐ existingSkuIds 原本只在 load() 算一次，加完商品只更新了 items、沒更新它
+        //   → 新加的商品必然不在那個舊集合裡，於是每一樣剛加進去的都被標成
+        //   「⚠ 此商品已不存在」。這樣商品是剛從 skus 搜出來的，存在性無庸置疑
+        //   → 直接補進集合（PR #751）。
+        // ⭐ 不論先前是 known 還是 unknown，剛加進來的商品都是**確定存在**的
+        //   → 兩種狀態都要記住，否則整批查詢異常之後新加的商品也會被標
+        //   「無法確認」（阿審 #751 複審 P2）。
+        setSkuExistence((prev) =>
+          prev.kind === "known"
+            ? { kind: "known", ids: new Set(prev.ids).add(Number(opt.id)) }
+            : { kind: "unknown", confirmedIds: new Set(prev.confirmedIds).add(Number(opt.id)) },
+        );
+
+        // 帶出來的量與實際需求對不上時一定要講出來。
+        // ⚠ 「查詢正常但沒需求」與「讀取失敗」的畫面都是一排空格，只能靠訊息分辨
+        //   → 措辭由 addBatchMessage / addOutcomeMessage 統一維護。
+        let demandTotal = 0;
+        let giveTotal = 0;
+        for (const st of stores) {
+          const p = pre.byStore.get(st.id);
+          demandTotal += p?.demandLeft ?? 0;
+          giveTotal += p?.give ?? 0;
+        }
+        report.added.push({
+          name: skuDisplayName(opt),
           demandTotal,
           giveTotal,
           available: pre.available,
-        }),
-      );
-    } catch (e) {
-      setError(describeDraftDbError(e));
+        });
+      } catch (e) {
+        // ⛔ 這一樣沒進去就是沒進去 —— 記下名字與原因，繼續跑下一樣。
+        //   不 rethrow（會害後面幾樣連試都沒試），也不靜默（那是本專案的老毛病）。
+        report.failed.push({ name: skuDisplayName(opt), reason: describeDraftDbError(e) });
+        failedIds.push(opt.id);
+      }
     }
+
+    const msg = addBatchMessage(report);
+    setNotice(msg.notice);
+    setError(msg.error);
+    return failedIds;
   }
 
   // ---- 刪商品：整列（該 SKU 的所有分店格子）一起刪 ----
@@ -628,12 +670,13 @@ function Body() {
           這張草稿已標記完成，先按「重新開啟」才能繼續改。
         </p>
       ) : (
-        <AddSkuBox onPick={addSku} inputCls={inputCls} />
+        <AddSkuBox onAdd={addSkus} inDraft={inDraftSkuIds} inputCls={inputCls} />
       )}
 
       {skuRows.length === 0 ? (
         <p className="rounded-md border border-dashed border-zinc-300 p-6 text-sm text-zinc-500 dark:border-zinc-700">
-          還沒加任何商品 — 用上面的搜尋框打商品名稱或品號，找到就按下去加進來。
+          還沒加任何商品 — 用上面的搜尋框打商品名稱或品號，把要加的勾起來，再按「加入選取的 N 樣」。
+          同一系列的多個口味可以一次勾完；換關鍵字再搜，先前勾的不會不見。
         </p>
       ) : (
         <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
@@ -755,11 +798,48 @@ function Body() {
 // 商品搜尋（名稱 / 品號）。查的是 skus 主檔而不是派貨工作台的需求清單 ——
 // 老闆要的正是「包子媽突然要插商品進來」，那種商品在需求清單裡根本不會出現。
 // 查法沿用 restock/new 的既有寫法（active + 非虛擬商品）。
-function AddSkuBox({ onPick, inputCls }: { onPick: (o: SkuOption) => Promise<void>; inputCls: string }) {
+//
+// 老闆 2026-08-17 的實際情境：搜「花蓮阿咘」跳出同一系列 7 個口味（G01414-01…-07），
+//   這種同商品多規格本來就會一起撿 → 每列勾選框 + 全選 + 「加入選取的 N 樣」。
+//
+// ⚠⚠ 勾選集合**獨立於目前的搜尋結果**，這是本元件最重要的一條：
+//   PR #744 的根因就是「選取 ∩ 目前清單」—— 一改篩選條件就靜默丟掉勾選，畫面零提示。
+//   所以這裡：
+//     ① 勾選存的是**整個 SkuOption**（不只是 id），換搜尋字也補得出品名品號
+//     ② 「加入」送出的是**全部勾選**，不是「目前看得到的勾選」
+//     ③ 已勾選幾樣**隨時看得到**（在搜尋框上方，下拉蓋不到），可以逐樣檢視／移除
+//   老闆可以搜「花蓮阿咘」勾 7 樣、再搜別的字勾更多，先前勾的一樣都不會消失。
+function AddSkuBox({
+  onAdd,
+  inDraft,
+  inputCls,
+}: {
+  /** 回傳「沒加成功、要留在勾選裡」的 sku_id（見 addSkus） */
+  onAdd: (opts: SkuOption[]) => Promise<number[]>;
+  /** 已經在這張草稿裡的 sku_id，用來標示、並停掉勾選框 */
+  inDraft: Set<number>;
+  inputCls: string;
+}) {
   const [term, setTerm] = useState("");
   const [opts, setOpts] = useState<SkuOption[]>([]);
   const [searching, setSearching] = useState(false);
   const [open, setOpen] = useState(false);
+  // ⭐⭐ 存「整個 SkuOption」而不是只存 id —— 這是「換搜尋字不會弄丟勾選」能成立的關鍵：
+  //   加入商品要寫 sku_code / 品名進快照欄位，只留 id 的話，不在目前搜尋結果裡的那幾樣
+  //   根本補不出這些值 → 最後只好「只加看得到的」，就又變回 PR #744 那個靜默丟失。
+  const [selected, setSelected] = useState<Map<number, SkuOption>>(new Map());
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  // 點外面才收起下拉。⛔ 不可以用 onMouseLeave（原本的寫法）：
+  //   現在列上有勾選框，滑鼠一滑出去就關掉的話根本勾不完。寫法同 restock/new 的 MemberField。
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
 
   // 與 restock/new 的搜尋幾乎相同，只有一處刻意不一樣：spinner 改在 debounce 之後才打開，
   // 讓 effect body 沒有同步 setState（react-hooks/set-state-in-effect）。
@@ -805,46 +885,210 @@ function AddSkuBox({ onPick, inputCls }: { onPick: (o: SkuOption) => Promise<voi
     };
   }, [term, open]);
 
+  // 目前搜尋結果裡「還可以勾」的（已在草稿的不給勾，避免重複加）
+  const selectable = opts.filter((o) => !inDraft.has(o.id));
+  const chips = Array.from(selected.values());
+
+  function toggle(o: SkuOption) {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      if (next.has(o.id)) next.delete(o.id);
+      else next.set(o.id, o);
+      return next;
+    });
+  }
+  // 「全選」= 把目前搜尋結果**聯集**進勾選清單。
+  // ⛔ 不是「取代」—— 取代會把先前搜別的關鍵字勾的那些洗掉。
+  //   （語意刻意對齊派貨工作台的 addAllVisiblePicks，wms/picking/page.tsx。）
+  function selectAllVisible() {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      for (const o of selectable) next.set(o.id, o);
+      return next;
+    });
+  }
+  // 「取消全選」只取消**目前搜尋結果**這幾筆（與「全選」對稱）。
+  // 要全部清掉有下面那顆「清空勾選」—— 兩件事分開，才不會一鍵把 30 樣勾選誤清光。
+  function clearVisible() {
+    setSelected((prev) => {
+      const next = new Map(prev);
+      for (const o of opts) next.delete(o.id);
+      return next;
+    });
+  }
+
+  async function addSelected() {
+    const submitted = chips.map((o) => o.id);
+    const keep = await onAdd(chips);
+    // ⭐ 只把「這次送出去、而且真的處理完了」的那幾樣拿掉（成功 or 本來就在草稿裡）。
+    // ⛔ 不可以無條件 setSelected(new Map())：失敗的被清掉，老闆就得重挑一次，
+    //   而且訊息一關就再也不知道是哪幾樣 —— 那是靜默丟失的另一種長相。
+    // ⛔ 也不可以「從 keep 重建一個新 Map」：加入 7 樣要跑好幾秒，
+    //   老闆在等的時候完全可以再勾第 8 樣。重建會把那一樣一起洗掉 ——
+    //   同樣是「畫面零提示地弄丟勾選」，只是換個時間點發生。
+    //   所以這裡是**減法**（只刪這次處理掉的），不是重建。
+    const failedSet = new Set(keep);
+    setSelected((prev) => {
+      const next = new Map(prev);
+      for (const id of submitted) if (!failedSet.has(id)) next.delete(id);
+      return next;
+    });
+    setOpen(false);
+    // 全部都進去了才清搜尋字；還有失敗的就留著，讓他看得到原本在找什麼
+    if (keep.length === 0) setTerm("");
+  }
+
+  const toolBtnCls =
+    "min-h-[44px] rounded-md border border-zinc-300 px-3 text-sm hover:bg-zinc-50 disabled:opacity-40 dark:border-zinc-700 dark:hover:bg-zinc-800";
+
   return (
-    <div className="relative flex flex-col gap-1 sm:max-w-lg">
-      <span className="text-xs font-medium text-zinc-500">加入商品（搜尋名稱 / 品號）</span>
-      <div className="relative">
-        <input
-          value={term}
-          onFocus={() => setOpen(true)}
-          onChange={(e) => {
-            setTerm(e.target.value);
-            setOpen(true);
-          }}
-          placeholder="打商品名稱或品號…"
-          aria-label="搜尋商品名稱或品號"
-          className={`${inputCls} w-full pr-8`}
-        />
-        <SearchSpinner active={searching} />
-      </div>
-      {open && opts.length > 0 && (
-        <div
-          className="absolute left-0 top-full z-20 mt-1 max-h-72 w-full overflow-y-auto rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800"
-          onMouseLeave={() => setOpen(false)}
-        >
-          {opts.map((o) => (
+    <div ref={wrapRef} className="flex flex-col gap-2 sm:max-w-xl">
+      {/* ⭐ 已勾選清單放在搜尋框**上面**：下拉是絕對定位、會蓋住下方的東西，
+          放下面就等於「打開下拉時看不到自己勾了什麼」。放上面才真的「隨時看得到」。 */}
+      {chips.length > 0 && (
+        <div className="flex flex-col gap-2 rounded-md border border-blue-300 bg-blue-50 p-2 dark:border-blue-900 dark:bg-blue-950/30">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold text-blue-900 dark:text-blue-200">
+              已勾選 {chips.length} 樣
+            </span>
             <SpinButton
-              key={o.id}
               type="button"
-              onClick={async () => {
-                await onPick(o);
-                setTerm("");
-                setOpen(false);
-              }}
-              className="block w-full px-3 py-2 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-700"
+              onClick={addSelected}
+              className="min-h-[44px] rounded-md bg-blue-600 px-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-40"
             >
-              <span className="font-medium">{o.product_name}</span>
-              {o.variant_name && <span className="ml-1 text-zinc-500">/ {o.variant_name}</span>}
-              <span className="ml-2 font-mono text-xs text-zinc-400">{o.sku_code}</span>
+              ＋ 加入選取的 {chips.length} 樣
             </SpinButton>
-          ))}
+            <button type="button" onClick={() => setSelected(new Map())} className={toolBtnCls}>
+              清空勾選
+            </button>
+          </div>
+          <ul className="flex flex-wrap gap-1">
+            {chips.map((o) => {
+              const already = inDraft.has(o.id);
+              return (
+                <li
+                  key={o.id}
+                  className="flex items-center gap-1 rounded-full border border-blue-300 bg-white py-0.5 pl-2 pr-0.5 text-xs dark:border-blue-800 dark:bg-zinc-900"
+                >
+                  <span className="max-w-[16rem] truncate">
+                    {o.product_name}
+                    {o.variant_name && <span className="text-zinc-500"> / {o.variant_name}</span>}
+                  </span>
+                  <span className="font-mono text-[10px] text-zinc-400">{o.sku_code}</span>
+                  {already && (
+                    <span className="rounded bg-zinc-200 px-1 text-[10px] text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300">
+                      已在草稿
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSelected((prev) => {
+                        const next = new Map(prev);
+                        next.delete(o.id);
+                        return next;
+                      })
+                    }
+                    aria-label={`取消勾選 ${o.product_name}`}
+                    className="flex min-h-[32px] min-w-[32px] items-center justify-center rounded-full text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                  >
+                    ✕
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
         </div>
       )}
+
+      <div className="relative flex flex-col gap-1">
+        <span className="text-xs font-medium text-zinc-500">加入商品（搜尋名稱 / 品號）</span>
+        <div className="relative">
+          <input
+            value={term}
+            onFocus={() => setOpen(true)}
+            onChange={(e) => {
+              setTerm(e.target.value);
+              setOpen(true);
+            }}
+            placeholder="打商品名稱或品號…（同系列多個口味可以勾起來一次加）"
+            aria-label="搜尋商品名稱或品號"
+            className={`${inputCls} w-full pr-8`}
+          />
+          <SearchSpinner active={searching} />
+        </div>
+        {open && opts.length > 0 && (
+          <div className="absolute left-0 top-full z-20 mt-1 flex max-h-[70vh] w-full flex-col overflow-hidden rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800">
+            <div className="flex flex-wrap items-center gap-2 border-b border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-700 dark:bg-zinc-900">
+              <button
+                type="button"
+                onClick={selectAllVisible}
+                disabled={selectable.length === 0}
+                className={toolBtnCls}
+              >
+                全選（這 {selectable.length} 筆）
+              </button>
+              <button
+                type="button"
+                onClick={clearVisible}
+                disabled={!opts.some((o) => selected.has(o.id))}
+                className={toolBtnCls}
+              >
+                取消全選
+              </button>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="ml-auto min-h-[44px] px-3 text-sm text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+              >
+                收起
+              </button>
+            </div>
+            <ul className="divide-y divide-zinc-100 overflow-y-auto dark:divide-zinc-700">
+              {opts.map((o) => {
+                const already = inDraft.has(o.id);
+                const checked = selected.has(o.id);
+                return (
+                  <li
+                    key={o.id}
+                    className={`flex items-center gap-2 px-2 ${
+                      checked && !already ? "bg-blue-50/60 dark:bg-blue-950/20" : ""
+                    }`}
+                  >
+                    {/* 觸控目標 ≥ 44px：樓下是用 iPad 單手點的 */}
+                    <label
+                      className={`flex min-h-[44px] min-w-[44px] items-center justify-center ${
+                        already ? "cursor-not-allowed" : "cursor-pointer"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="h-5 w-5 accent-blue-600"
+                        checked={checked && !already}
+                        disabled={already}
+                        onChange={() => toggle(o)}
+                        aria-label={`勾選 ${o.product_name}`}
+                      />
+                    </label>
+                    <div className="min-w-0 flex-1 py-2 text-sm">
+                      <span className="font-medium">{o.product_name}</span>
+                      {o.variant_name && <span className="ml-1 text-zinc-500">/ {o.variant_name}</span>}
+                      <span className="ml-2 font-mono text-xs text-zinc-400">{o.sku_code}</span>
+                    </div>
+                    {already && (
+                      // 已經加過的照樣列出來、但標明白 —— ⛔ 不從搜尋結果裡藏掉，
+                      // 不然老闆會以為「怎麼搜不到這一樣」。
+                      <span className="shrink-0 rounded bg-zinc-200 px-2 py-1 text-xs text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300">
+                        ✓ 已在草稿中
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

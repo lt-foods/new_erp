@@ -501,6 +501,117 @@ export function classifyAddOutcome(demandTotal: number, giveTotal: number): AddO
 }
 
 /**
+ * 一次勾好幾樣加入時，**逐樣**記錄結果。
+ *
+ * ⛔ 這個型別存在的唯一理由：不准出現「整批成功／整批失敗」這種粗糙的回報。
+ *   勾 7 樣＝7 次「查需求 + 寫入」的往返，其中兩樣壞掉是完全正常的事。
+ *   把三種結局拆成三個欄位，措辭那一支就**沒有辦法**把失敗的那幾樣講漏 ——
+ *   靠型別逼出來，不是靠自律（同 DraftSkuRecount 的作法）。
+ */
+export type AddBatchReport = {
+  /** 真的寫進去了 */
+  added: { name: string; demandTotal: number; giveTotal: number; available: number }[];
+  /** 本來就在這張草稿裡 → 這次略過。不重複插入，也**不算失敗** */
+  skipped: string[];
+  /** 讀需求或寫入失敗 → **沒有**加進去。⛔ 一定要逐樣講得出名字 */
+  failed: { name: string; reason: string }[];
+};
+
+/**
+ * 一次加入多樣之後要對老闆說什麼。
+ *
+ * ⭐ 規則（每一條都是為了「不准靜默」）：
+ *   1. 失敗的**逐樣列出名字**放紅框（error），一眼看得出是哪幾樣沒進去
+ *   2. 成功／略過放藍框（notice），成功的也逐樣列出來
+ *   3. 兩個框可以同時出現 —— 部分成功就講成部分成功。
+ *      ⛔ 不可以因為有幾樣失敗就整批說失敗，也不可以因為大部分成功就不提失敗的
+ *   4. 只加一樣時，措辭**原封不動**沿用單樣那四句（addOutcomeMessage）——
+ *      不要因為內部改走批次，就讓老闆看到的字跟著變樣
+ *
+ * ⓘ 措辭放這支 lib 而不是頁面裡：與 addOutcomeMessage / deleteDraftConfirmMessage
+ *   同一個理由 —— 老闆會讀到的字集中一處維護。
+ * ⓘ 這裡刻意不寫 `**粗體**`：這幾段字是丟進 <div>{msg}</div> 純文字渲染的，
+ *   星號會原封不動印在畫面上。要強調就用「」。
+ */
+export function addBatchMessage(r: AddBatchReport): { notice: string | null; error: string | null } {
+  // ---- 剛好一樣：完全沿用原本那幾句已經驗過的文案 ----
+  if (r.added.length === 1 && r.skipped.length === 0 && r.failed.length === 0) {
+    const a = r.added[0];
+    return {
+      notice: addOutcomeMessage({
+        kind: classifyAddOutcome(a.demandTotal, a.giveTotal),
+        productName: a.name,
+        demandTotal: a.demandTotal,
+        giveTotal: a.giveTotal,
+        available: a.available,
+      }),
+      error: null,
+    };
+  }
+  if (r.added.length === 0 && r.skipped.length === 0 && r.failed.length === 1) {
+    return {
+      notice: null,
+      error: addOutcomeMessage({
+        kind: "failed",
+        productName: r.failed[0].name,
+        reason: r.failed[0].reason,
+      }),
+    };
+  }
+
+  // ---- 多樣 ----
+  const parts: string[] = [];
+  if (r.added.length > 0) {
+    const give = r.added.reduce((s, a) => s + a.giveTotal, 0);
+    parts.push(
+      `已加入 ${r.added.length} 樣，帶出各店未派需求共 ${give} 件：` +
+        `${r.added.map((a) => a.name).join("、")}。`,
+    );
+    // 「查詢正常但沒有需求」一定要單獨講：它在畫面上跟「讀取失敗」一樣是一排空格，
+    // 不講的話老闆分不出這兩件事 —— 本專案反覆踩過的靜默偽裝。
+    const none = r.added.filter((a) => a.demandTotal === 0).map((a) => a.name);
+    if (none.length > 0) {
+      parts.push(
+        `其中 ${none.length} 樣查詢正常、但目前沒有任何未派需求（各店數量請自己填）：${none.join("、")}。`,
+      );
+    }
+    const clamped = r.added.filter((a) => a.demandTotal > 0 && a.giveTotal < a.demandTotal);
+    if (clamped.length > 0) {
+      parts.push(
+        `其中 ${clamped.length} 樣的需求超過可分配量、帶出的量已被夾住（差額要等貨到才派得出去）：` +
+          clamped
+            .map((a) => `${a.name}（要 ${a.demandTotal}、可分配 ${a.available}、只帶 ${a.giveTotal}）`)
+            .join("、") +
+          "。",
+      );
+    }
+  }
+  if (r.skipped.length > 0) {
+    parts.push(
+      `${r.skipped.length} 樣本來就在這張草稿裡，這次略過（原本填好的數量沒有被動到）：` +
+        `${r.skipped.join("、")}。`,
+    );
+  }
+
+  let error: string | null = null;
+  if (r.failed.length > 0) {
+    // 原因通常一樣（同一次連線壞掉）→ 一樣就只講一次，不一樣才逐樣附上。
+    // ⛔ 但名字**一律逐樣列出**，不可以只說「有 N 樣失敗」。
+    const reasons = Array.from(new Set(r.failed.map((f) => f.reason)));
+    const detail =
+      reasons.length === 1
+        ? `${r.failed.map((f) => f.name).join("、")}。原因：${reasons[0]}`
+        : r.failed.map((f) => `${f.name}（${f.reason}）`).join("；");
+    error =
+      `⚠ 這 ${r.failed.length} 樣「沒有」加入草稿：${detail} ` +
+      `這是系統讀取／寫入出錯，不是這些商品沒有需求。` +
+      `它們還留在上面的勾選清單裡，直接再按一次「加入選取的」就可以重試。`;
+  }
+
+  return { notice: parts.length > 0 ? parts.join(" ") : null, error };
+}
+
+/**
  * 「加入商品之後才補出來的那一格」要寫什麼快照。
  *
  * ⭐ 一定要有 snapshot_at 與 snapshot_source：
