@@ -824,6 +824,11 @@ function AddSkuBox({
   const [opts, setOpts] = useState<SkuOption[]>([]);
   const [searching, setSearching] = useState(false);
   const [open, setOpen] = useState(false);
+  // 搜尋查詢失敗的原因。null = 沒失敗。
+  // ⛔ 一定要跟「查詢正常、但真的沒有這樣商品」分開：兩者都是「下拉沒東西可挑」，
+  //   混在一起的話，老闆打「花蓮阿咘」剛好查詢壞掉，他會直接以為系統裡沒有這個商品。
+  //   —— 這是本專案反覆踩過的「系統異常偽裝成資料狀態」。
+  const [searchError, setSearchError] = useState<string | null>(null);
   // ⭐⭐ 存「整個 SkuOption」而不是只存 id —— 這是「換搜尋字不會弄丟勾選」能成立的關鍵：
   //   加入商品要寫 sku_code / 品名進快照欄位，只留 id 的話，不在目前搜尋結果裡的那幾樣
   //   根本補不出這些值 → 最後只好「只加看得到的」，就又變回 PR #744 那個靜默丟失。
@@ -859,9 +864,14 @@ function AddSkuBox({
           .limit(15);
         const safe = term.replace(/[%,()]/g, " ").trim();
         if (safe) q = q.or(`sku_code.ilike.%${safe}%,product_name.ilike.%${safe}%,variant_name.ilike.%${safe}%`);
-        const { data } = await q;
-        // 已經換字 / 關掉下拉了就丟掉這批結果，避免慢的舊查詢蓋掉新的
+        // ⛔ error 一定要接住。舊版只取 data，查詢失敗時 data 是 null →
+        //   下拉變成空的 → 跟「這個關鍵字真的沒有商品」長得一模一樣。
+        const { data, error } = await q;
+        // 已經換字 / 關掉下拉了就丟掉這批結果，避免慢的舊查詢蓋掉新的。
+        // ⚠ 這一關要擋在錯誤處理**前面**：使用者早就換字了的那批舊錯誤不該跳出來嚇人。
         if (cancelled) return;
+        if (error) throw error;
+        setSearchError(null);
         setOpts(
           ((data ?? []) as unknown as Array<{
             id: number;
@@ -875,6 +885,16 @@ function AddSkuBox({
             product_name: s.products.name,
           })),
         );
+      } catch (e) {
+        // 舊版只有 try/finally 沒有 catch：連線層丟出來的錯（例如整個 fetch 失敗）
+        // 會變成 unhandled rejection，而且畫面**留著上一次的搜尋結果** ——
+        // 老闆會對著一批跟目前關鍵字無關的商品打勾。
+        if (cancelled) return;
+        setSearchError(describeDraftDbError(e));
+        // 清掉結果：留著舊的比空的更危險（那些是別的關鍵字查出來的東西）。
+        // ⓘ 這不會動到已經勾選的東西 —— 勾選存在獨立的 selected 裡，
+        //   正是為了「搜尋出什麼事都不影響先前勾好的」。
+        setOpts([]);
       } finally {
         setSearching(false);
       }
@@ -1017,7 +1037,19 @@ function AddSkuBox({
           />
           <SearchSpinner active={searching} />
         </div>
-        {open && opts.length > 0 && (
+        {/* ⭐ 查詢失敗要長得跟「真的沒有這樣商品」完全不一樣：
+            這裡是紅框、明講「不是沒有這樣商品」；真的沒有時維持原本的行為（不跳下拉）。
+            ⛔ 不可以兩種都靜靜地不顯示東西 —— 老闆會把系統壞掉當成商品不存在。 */}
+        {open && searchError && (
+          <div className="absolute left-0 top-full z-20 mt-1 w-full rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 shadow-lg dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+            ⚠ 搜尋商品失敗：{searchError}
+            <div className="mt-1 text-xs">
+              這是系統查詢出錯，<strong>不代表沒有這樣商品</strong> —— 請改一下關鍵字或稍後再打一次。
+              （已經勾選的商品都還在，不受影響。）
+            </div>
+          </div>
+        )}
+        {open && !searchError && opts.length > 0 && (
           <div className="absolute left-0 top-full z-20 mt-1 flex max-h-[70vh] w-full flex-col overflow-hidden rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800">
             <div className="flex flex-wrap items-center gap-2 border-b border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-700 dark:bg-zinc-900">
               <button
