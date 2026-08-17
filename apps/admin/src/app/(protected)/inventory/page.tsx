@@ -11,6 +11,7 @@ import { maskLineUserId } from "@/lib/maskLineUserId";
 import { useRole, canSeeCost } from "@/lib/role";
 import { AddStockModal } from "@/components/AddStockModal";
 import { SpotSaleModal } from "@/components/SpotSaleModal";
+import { translateRpcError } from "@/lib/rpcError";
 
 type Loc = { id: number; code: string; name: string; type: string };
 type StoreRow = { id: number; name: string; location_id: number | null };
@@ -45,6 +46,11 @@ type Movement = {
   reason: string | null;
   notes: string | null;
   created_at: string;
+  reverses: number | null; // 這筆沖銷了哪一筆（只有 reversal 列有值）
+  // ★ 前端反查出來的，不是 DB 欄位：這筆已經被別的沖銷列撤掉了。
+  //   不能用 stock_movements.reversed_by —— 那欄永遠是 NULL，因為
+  //   trg_no_update_mov（20260422120003:266）無條件擋掉所有 UPDATE。
+  reversed: boolean;
 };
 
 const PAGE_SIZE = 50;
@@ -84,6 +90,15 @@ function fmtCost(v: number): string {
 function fmtDateTime(s: string | null): string {
   if (!s) return "—";
   return new Date(s).toLocaleString("zh-TW", { hour12: false });
+}
+// 「↩ 撤銷」只出現在庫存總覽自己補進來的那種：手動調整、正數、沒有來源單據。
+// 判定與 rpc_reverse_stock_adjust 的守衛 4/5/9 對齊 —— 但真正的關卡在後端，
+// 這裡只是不要讓使用者按下去才被擋。
+// （後端還多兩道：帶成本的不給撤、分店只能撤自己店。前者這裡看不到 unit_cost
+//   —— 成本不給分店角色看，不撈進 payload；現行寫入者只有 rpc_add_stock_by_product
+//   會產生「沒有來源單據」的手動調整，而它一律不帶成本。）
+function canReverse(m: Movement): boolean {
+  return m.movement_type === "manual_adjust" && m.quantity > 0 && m.source_doc_type == null;
 }
 function sanitizeSearch(q: string): string {
   // PostgREST or() 語法用 , ( ) 當分隔；% 是 ilike wildcard — 全部移除避免破壞 filter
@@ -367,6 +382,38 @@ export default function InventoryOverviewPage() {
     return storeByLoc.get(id) ?? l.name;
   };
 
+  // 撈某個（倉別, SKU）的近 50 筆異動，並反查哪幾筆已經被撤銷過。
+  // 一律重新撈 —— 撤銷完要馬上看到「已撤銷」與新的沖銷列；要不要跳過由呼叫端決定。
+  async function loadMovements(key: string, loc: number, sku: number) {
+    setMoveLoading(true);
+    try {
+      const sb = getSupabase();
+      const { data } = await sb
+        .from("stock_movements")
+        .select("id, quantity, movement_type, source_doc_type, source_doc_id, batch_no, expiry_date, reason, notes, created_at, reverses")
+        .eq("location_id", loc)
+        .eq("sku_id", sku)
+        .order("created_at", { ascending: false })
+        .limit(50);
+      const list = ((data as Movement[]) ?? []).map((m) => ({
+        ...m,
+        quantity: num(m.quantity),
+        reversed: false,
+      }));
+      // 「這筆撤過了沒」只能用 reverses 反查（reversed_by 永遠寫不進去，見 Movement 型別註解）。
+      // 另外查一次而不是從上面 50 筆裡找 —— 沖銷列很可能落在 50 筆視窗之外。
+      const ids = list.map((m) => m.id);
+      if (ids.length > 0) {
+        const { data: rev } = await sb.from("stock_movements").select("reverses").in("reverses", ids);
+        const done = new Set(((rev as { reverses: number | null }[]) ?? []).map((r) => r.reverses));
+        for (const m of list) if (done.has(m.id)) m.reversed = true;
+      }
+      setMoveCache((c) => new Map(c).set(key, list));
+    } finally {
+      setMoveLoading(false);
+    }
+  }
+
   async function toggleExpand(key: string, loc: number, sku: number) {
     if (expanded === key) {
       setExpanded(null);
@@ -374,19 +421,37 @@ export default function InventoryOverviewPage() {
     }
     setExpanded(key);
     if (moveCache.has(key)) return;
-    setMoveLoading(true);
+    await loadMovements(key, loc, sku);
+  }
+
+  // 撤銷「＋ 新增庫存」補錯的那一筆：開一筆反向分錄（rpc_reverse_stock_adjust）。
+  // 原本那筆不會消失 —— stock_movements 是 append-only，帳留痕。
+  async function reverseAdjust(m: Movement, key: string, loc: number, sku: number, label: string) {
+    if (
+      !confirm(
+        `撤銷這筆手動新增庫存？\n\n${label}\n${fmtDateTime(m.created_at)}　+${fmtQty(m.quantity)}\n\n` +
+          `會開一筆反向分錄（−${fmtQty(m.quantity)}），庫存扣回去。\n` +
+          `原本那筆不會消失，兩筆都留在異動紀錄裡（帳留痕）。`,
+      )
+    )
+      return;
     try {
-      const { data } = await getSupabase()
-        .from("stock_movements")
-        .select("id, quantity, movement_type, source_doc_type, source_doc_id, batch_no, expiry_date, reason, notes, created_at")
-        .eq("location_id", loc)
-        .eq("sku_id", sku)
-        .order("created_at", { ascending: false })
-        .limit(50);
-      const list = ((data as Movement[]) ?? []).map((m) => ({ ...m, quantity: num(m.quantity) }));
-      setMoveCache((c) => new Map(c).set(key, list));
-    } finally {
-      setMoveLoading(false);
+      const sb = getSupabase();
+      const { data: sess } = await sb.auth.getSession();
+      const operator = sess.session?.user?.id;
+      if (!operator) throw new Error("尚未登入");
+      const { data: res, error: e } = await sb.rpc("rpc_reverse_stock_adjust", {
+        p_movement_id: m.id,
+        p_operator: operator,
+        p_reason: null,
+      });
+      if (e) throw new Error(translateRpcError(e));
+      const r = (res ?? {}) as { on_hand?: number };
+      alert(`✅ 已撤銷 ${fmtQty(m.quantity)} 件。${label} 目前在庫 ${fmtQty(num(r.on_hand))} 件。`);
+      await loadMovements(key, loc, sku); // 異動清單 + 「已撤銷」標示
+      setReloadTick((n) => n + 1); // 上面那排在庫/可分配數字
+    } catch (err) {
+      alert(`❌ ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -638,15 +703,22 @@ export default function InventoryOverviewPage() {
                                 <th className="px-2 py-1 text-left">來源單據</th>
                                 <th className="px-2 py-1 text-left">批號 / 效期</th>
                                 <th className="px-2 py-1 text-left">原因 / 備註</th>
+                                <th className="px-2 py-1 text-right">操作</th>
                               </tr>
                             </thead>
                             <tbody>
                               {moves.map((m) => (
                                 <tr key={m.id} className="border-t border-zinc-200 dark:border-zinc-800">
                                   <td className="px-2 py-1 text-zinc-500">{fmtDateTime(m.created_at)}</td>
-                                  <td className="px-2 py-1">{MOVE_LABEL[m.movement_type] ?? m.movement_type}</td>
+                                  <td className="px-2 py-1">
+                                    {MOVE_LABEL[m.movement_type] ?? m.movement_type}
+                                    {/* 沖銷列指回它撤掉的那一筆，兩邊對得起來 */}
+                                    {m.reverses != null && (
+                                      <span className="ml-1 text-[10px] text-zinc-400">← 撤 #{m.reverses}</span>
+                                    )}
+                                  </td>
                                   <td
-                                    className={`px-2 py-1 text-right font-mono ${m.quantity < 0 ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"}`}
+                                    className={`px-2 py-1 text-right font-mono ${m.quantity < 0 ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"} ${m.reversed ? "line-through opacity-60" : ""}`}
                                   >
                                     {m.quantity > 0 ? "+" : ""}
                                     {fmtQty(m.quantity)}
@@ -661,6 +733,33 @@ export default function InventoryOverviewPage() {
                                   <td className="px-2 py-1 text-zinc-500">
                                     {maskFreeText(m.reason) || "—"}
                                     {m.notes ? <span className="text-zinc-400"> · {maskFreeText(m.notes)}</span> : null}
+                                  </td>
+                                  <td className="px-2 py-1 text-right whitespace-nowrap">
+                                    {m.reversed ? (
+                                      <span
+                                        className="text-zinc-400"
+                                        title="這筆已經被撤銷了（下面/上面有一筆對應的沖銷紀錄）"
+                                      >
+                                        已撤銷
+                                      </span>
+                                    ) : canReverse(m) ? (
+                                      <SpinButton
+                                        onClick={() =>
+                                          reverseAdjust(
+                                            m,
+                                            key,
+                                            r.location_id,
+                                            r.sku_id,
+                                            `${sku?.product_name ?? ""}${sku?.variant_name ? ` / ${sku.variant_name}` : ""}`.trim() ||
+                                              `sku#${r.sku_id}`,
+                                          )
+                                        }
+                                        className="rounded border border-zinc-300 px-2 py-0.5 text-[11px] hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                                        title="補錯了要撤掉這一筆：會開一筆反向分錄把庫存扣回去。原本那筆不會消失（帳留痕）。"
+                                      >
+                                        ↩ 撤銷
+                                      </SpinButton>
+                                    ) : null}
                                   </td>
                                 </tr>
                               ))}
@@ -704,6 +803,13 @@ export default function InventoryOverviewPage() {
           onSaved={() => {
             // 重載當前列表 + 清掉展開列的異動快取（新異動要看得到）
             setMoveCache(new Map());
+            // 展開中的那一列要直接重撈：只清快取不重撈的話，畫面會停在
+            // 「無異動紀錄」（toggleExpand 已經跑過了不會再觸發），
+            // 剛補完的那筆反而看不到，也就按不到它的「↩ 撤銷」。
+            if (expanded) {
+              const [loc, sku] = expanded.split("-").map(Number);
+              if (Number.isFinite(loc) && Number.isFinite(sku)) void loadMovements(expanded, loc, sku);
+            }
             setReloadTick((n) => n + 1);
           }}
         />
