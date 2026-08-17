@@ -48,3 +48,27 @@ body {
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
+
+/* 派貨工作台矩陣：點進某一格數量時，整欄（欄身 + 表頭那一格店名）一起亮起來。
+   17 間分店的欄位長得一模一樣，不亮的話改中間某一格要靠數欄位才知道是哪一家 —— 數錯＝貨配給錯的店。
+   欄身的底色掛在 <col> 上：CSS 表格的背景層順序是 表格 < 欄 < 列 < 格，格子本身透明就會透出欄的底色，
+   所以整欄只要碰 1 個節點（矩陣可到 180 列 × 17 欄，逐格加 class 會跟列數成正比）。
+   表頭那一格自己有底色（黏住的表頭必須不透明），會蓋掉欄的底色，所以另外給。
+   「明顯」靠的是表頭底下那條粗線，不是把底色加深：底色再深一階，表頭裡的店號（text-zinc-400）
+   對比會掉到 1.3:1 幾乎看不見 —— 高亮的那一欄反而變成最難讀的一欄，本末倒置。
+   inset box-shadow 不佔版面，不會讓欄寬跳動。
+   放在 tailwind 的 @layer 之外 → 不靠特異度就穩定蓋過 th 上的 bg-zinc-50 / dark:bg-zinc-900。 */
+col.is-col-focus {
+  background-color: #dbeafe; /* blue-100 */
+}
+th.is-col-focus {
+  background-color: #bfdbfe; /* blue-200 */
+  box-shadow: inset 0 -3px 0 0 #2563eb; /* blue-600 */
+}
+.dark col.is-col-focus {
+  background-color: #1e3a8a; /* blue-900 */
+}
+.dark th.is-col-focus {
+  background-color: #1e40af; /* blue-800 */
+  box-shadow: inset 0 -3px 0 0 #60a5fa; /* blue-400 */
+}

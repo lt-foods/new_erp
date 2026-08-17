@@ -1144,6 +1144,33 @@ export default function PickingWorkstationPage() {
       (sku.storeDemand.get(storeId) ?? 0) - (sku.storeWave.get(storeId) ?? 0),
     );
   }
+  // ===== 整欄高亮：點進某一格數量時，那一欄（含表頭店名）一起亮起來 =====
+  // 表頭固定之後店名一直在，但 17 間店的欄位長得都一樣，眼睛還是要在「格子」和「表頭」之間
+  // 數欄位 —— 第 11 欄看成第 12 欄，貨就配給錯的店。亮起整欄是為了不用數。
+  //
+  // ⚠ 刻意「不」放進 React state：矩陣可到 180 列 × 17 欄 ≈ 3000 格，focusedStoreId 進 state
+  //   會讓整張表每次點格子都重繪。這一頁本來就慢，拖慢的後果不只是頓 —— 還會延後身分綁定，
+  //   加劇「按了加入卻沒進已挑清單」那個既有的間歇性 bug。
+  // 這裡只碰 2 個節點（該欄的 <col> ＋ 表頭那一格 <th>），而且查詢範圍鎖在 colgroup / 表頭
+  // 那一列（各約 20 個子節點），與列數完全無關：180 列跟 1 列一樣快。
+  // 底色靠 <col> 帶（CSS 表格背景層：欄在列/格之下），所以不必逐格加 class。
+  const colGroupRef = useRef<HTMLTableColElement>(null);
+  const headRowRef = useRef<HTMLTableRowElement>(null);
+  function highlightStoreCol(storeId: number | null) {
+    const roots = [colGroupRef.current, headRowRef.current];
+    // 先清乾淨再上色：不記錄上一次是哪一欄，換店別欄／切「顯示全部分店」而 DOM 節點被重用時
+    // 才不會留下殘影（清除範圍同樣只有那 ~20 個子節點）。
+    for (const root of roots) {
+      for (const el of root?.querySelectorAll<HTMLElement>(".is-col-focus") ?? []) {
+        el.classList.remove("is-col-focus");
+      }
+    }
+    if (storeId === null) return;
+    for (const root of roots) {
+      root?.querySelector<HTMLElement>(`[data-store-col="${storeId}"]`)?.classList.add("is-col-focus");
+    }
+  }
+
   // 「⚖ 平均」自動分配:把 totalAvailable 平均分到「未派需求 > 0」的店,cap 在各店未派需求。
   // 若有店需求不足分到的份額,剩餘量會在下一輪重新平均。
   function autoDistribute(sku: SkuRow) {
@@ -1916,13 +1943,22 @@ export default function PickingWorkstationPage() {
                 : "目前的篩選條件下沒有待派品項 — 回步驟 1 挑商品,或換個開團 / 時間、清除篩選。"}
           </div>
         ) : (
-          // 只保留水平(左右)捲軸:拿掉高度上限,表格整高展開、跟著整頁一起垂直捲動,
-          // 容器只在「店別欄超出寬度」時出現左右 scrollbar(overflow-x-auto),不再有內框垂直捲軸。
-          // sticky 左欄在橫向捲動時固定品項欄。
-          <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+          // 捲動容器:左右 + 上下都在這一層(overflow-auto),表頭與品項欄的 sticky 都相對它定位。
+          // ⚠ 高度上限不能拿掉 —— 舊版只寫 overflow-x-auto 而沒有 max-h:overflow-x 一旦不是
+          //   visible,overflow-y 的 visible 就會被算成 auto,這個 div 因此仍是捲動容器,但高度
+          //   等於內容高度、永遠捲不動 → thead 的 sticky top-0 黏在框頂,框卻跟著整頁捲走,
+          //   等於固定表頭寫了等於沒寫(改中間某一格數字要拉回最上面才知道是哪一店)。
+          // 高度取 100dvh − 7rem:捲到底時矩陣正好停在上方控制列(建立撿貨單鈕)底下、表頭落在
+          //   可視範圍內。算式是 容器頂端(捲到底) = 視窗高 − 容器高 − 容器下方內容高,與上方內容
+          //   多高無關;下方只剩 p-6 的 24px,所以扣 112px 會留約 90px 給控制列。
+          //   用 dvh 不用 vh:平板瀏覽器工具列收合時 vh 會比實際可視高度大,表頭會被切掉(同 Modal.tsx)。
+          // max-h 不是 h:品項少的時候框仍然只有內容高度,大螢幕不會變成一條扁框。
+          // print: 兩個 —— 列印時把高度上限拿掉,否則直接對這一頁 Ctrl+P 只會印出一個螢幕的列
+          //   (加高度上限之前不會)。正規列印走 /picking/print-pick-list,這只是別讓它變壞。
+          <div className="max-h-[calc(100dvh-7rem)] overflow-auto rounded-md border border-zinc-200 bg-white print:max-h-none print:overflow-visible dark:border-zinc-800 dark:bg-zinc-900">
             {/* table-fixed + 明確總寬：auto layout 把 <col> 寬度當建議值,店一多就把店別欄
                 壓窄、數量輸入框跟著縮,兩位數以上直接被裁掉。fixed layout 嚴格吃 <col> 寬度,
-                超出容器交給外層 overflow-x-auto 出捲軸;容器比較寬時 min-w-full 照舊撐滿。
+                超出容器交給外層的 overflow-auto 出捲軸;容器比較寬時 min-w-full 照舊撐滿。
                 平板優化:訂購/已到/在途/短少/已派 收斂進品項欄的統計列,只留
                 可分配 + 擬分合計 兩個數字欄;店別欄放大到 96px 裝大號觸控輸入框。
                 總寬 = 品項 230 + 可分配 80(w-20) + 擬分 64(w-16) + 店別 n×96(w-24),
@@ -1931,20 +1967,24 @@ export default function PickingWorkstationPage() {
               className="min-w-full table-fixed divide-y divide-zinc-200 text-sm dark:divide-zinc-800"
               style={{ width: 230 + 80 + 64 + visibleStores.length * 96 }}
             >
-              <colgroup>
+              {/* data-store-col:整欄高亮認的就是這個屬性(見 highlightStoreCol) */}
+              <colgroup ref={colGroupRef}>
                 <col className="w-[230px]" />
                 <col className="w-20" />
                 <col className="w-16" />
-                {visibleStores.map((st) => <col key={st.store_id} className="w-24" />)}
+                {visibleStores.map((st) => <col key={st.store_id} className="w-24" data-store-col={st.store_id} />)}
               </colgroup>
-              <thead className="sticky top-0 z-10 bg-zinc-50 dark:bg-zinc-900">
-                <tr>
+              {/* 底線用 shadow 不用 border:divide-y 的那條線掛在 tbody 上,thead 黏住時線會留在原地。
+                  底色一定要逐格(th)給,不能只給 thead:border-collapse 下 thead 的背景在部分瀏覽器
+                  不會畫出來,黏住的表頭會變透明、被底下的列穿過去。兩點都比照 orders/pivot 的寬表。 */}
+              <thead className="sticky top-0 z-10 bg-zinc-50 shadow-[0_1px_0_0_rgb(228_228_231)] dark:bg-zinc-900 dark:shadow-[0_1px_0_0_rgb(39_39_42)]">
+                <tr ref={headRowRef}>
                   {/* 勾選欄拿掉：選哪些品項改在步驟 1 決定（舊版勾選會被「目前清單」交集吃掉） */}
                   <Th className="sticky left-0 z-20 bg-zinc-50 py-2 dark:bg-zinc-900">品項 / 來源</Th>
-                  <Th className="py-2 text-center" title="可分配剩餘 = 總倉已到貨 − 已派 − 本次擬分">可分配</Th>
-                  <Th className="py-2 text-center" title="本次擬分合計(含被隱藏的分店欄)">擬分</Th>
+                  <Th className="bg-zinc-50 py-2 text-center dark:bg-zinc-900" title="可分配剩餘 = 總倉已到貨 − 已派 − 本次擬分">可分配</Th>
+                  <Th className="bg-zinc-50 py-2 text-center dark:bg-zinc-900" title="本次擬分合計(含被隱藏的分店欄)">擬分</Th>
                   {visibleStores.map((st) => (
-                    <Th key={st.store_id} className="py-2 text-center">
+                    <Th key={st.store_id} storeCol={st.store_id} className="bg-zinc-50 py-2 text-center dark:bg-zinc-900">
                       <div className="text-xs font-semibold normal-case text-zinc-700 dark:text-zinc-200">{st.store_name}</div>
                       <div className="font-mono text-[10px] font-normal text-zinc-400">{st.store_code}</div>
                     </Th>
@@ -2038,7 +2078,10 @@ export default function PickingWorkstationPage() {
                               inputMode="numeric"
                               value={value}
                               onChange={(e) => setAllocCapped(sk.sku_id, st.store_id, Number(e.target.value), sk.totalAvailable)}
-                              onFocus={(e) => e.currentTarget.select()}
+                              // 觸發點是 focus 不是 hover：現場用 iPad,觸控沒有 hover 這回事。
+                              // 只加不改：select() 照舊(點進去整數反白、直接打字就覆蓋),onChange 一個字沒動。
+                              onFocus={(e) => { e.currentTarget.select(); highlightStoreCol(st.store_id); }}
+                              onBlur={() => highlightStoreCol(null)}
                               min={0}
                               max={maxForCell}
                               step={1}
@@ -2473,8 +2516,19 @@ function StepBtn({ active, onClick, children }: { active: boolean; onClick: () =
   );
 }
 
-function Th({ children, className = "", title }: { children: React.ReactNode; className?: string; title?: string }) {
-  return <th title={title} className={`px-2 py-1.5 text-left text-[11px] font-medium uppercase tracking-wide text-zinc-500 ${className}`}>{children}</th>;
+function Th({
+  children,
+  className = "",
+  title,
+  storeCol,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  title?: string;
+  /** 這一格屬於哪一間分店 — 整欄高亮用來認欄位(不給就不輸出屬性,其他表照舊)。 */
+  storeCol?: number;
+}) {
+  return <th title={title} data-store-col={storeCol} className={`px-2 py-1.5 text-left text-[11px] font-medium uppercase tracking-wide text-zinc-500 ${className}`}>{children}</th>;
 }
 
 function KpiCard({ label, value, accent = "text-zinc-900 dark:text-zinc-100", hint }: { label: string; value: number; accent?: string; hint?: string }) {
