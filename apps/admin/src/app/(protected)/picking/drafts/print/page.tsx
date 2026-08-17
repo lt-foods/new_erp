@@ -171,12 +171,16 @@ function Body() {
     return m;
   }, [cells]);
 
-  // 整張草稿都沒有結單日資料 = 多半是「結單日功能上線前」建的那幾張。
-  // ⚠ 這句話要跟「查詢失敗」明顯不同 —— 不可以讓老闆以為系統壞了。
-  const legacyDraft = useMemo(
-    () => skuRows.length > 0 && skuRows.every((r) => closeDateBySku.get(r.sku_id)?.kind === "legacy"),
+  // 有沒有商品是「結單日」功能上線前加進來的（那幾列沒有 snapshot_source）。
+  // ⚠ 一定要 some()、不可以用 every()：同一張草稿會是**混合**的 —— 老闆手上既有的草稿
+  //   整批都是舊列，他再加幾樣新商品進去就變混合。every() 在混合時是 false，
+  //   說明整段不顯示、紙上只剩沒人看得懂的琥珀色「—」（＝又把正常狀況演成系統壞掉）。
+  const anyLegacy = useMemo(
+    () => skuRows.some((r) => closeDateBySku.get(r.sku_id)?.kind === "legacy"),
     [skuRows, closeDateBySku],
   );
+  // ⭐ 三段說明裡**只有這一段**是真的異常（要找工程師）；legacy / none 都是正常狀況。
+  //   文案要讓老闆一眼分得出來，不可以讓他以為「—」或「無」是系統壞了。
   const anyLookupFailed = useMemo(
     () => skuRows.some((r) => closeDateBySku.get(r.sku_id)?.kind === "failed"),
     [skuRows, closeDateBySku],
@@ -269,23 +273,24 @@ function Body() {
             ・列印 {new Date().toLocaleString("sv-SE").slice(0, 16)}
             ・共 {skuRows.length} 樣・總計 {grandTotal} 件
           </p>
-          {legacyDraft && (
+          {anyLegacy && (
             <p className="mt-1 text-xs text-zinc-700">
-              ※ 這張草稿沒有結單日資料 —— 它建立於「結單日」功能上線前。
-              <strong>不是系統故障</strong>；重建一張新草稿就會有結單日。
+              ※ 結單日標「—」的商品：是在「結單日」功能上線前就加進這張草稿的，當時系統還沒有記結單日。
+              <strong>這是正常的，不是系統故障</strong>；數量沒有受影響，只是那幾樣分不出是哪一次開團的貨。
             </p>
           )}
           {anyLookupFailed && (
             <p className="mt-1 text-xs text-amber-800">
-              ※ 有商品的結單日在<strong>加入當下查詢失敗</strong>（表格內標「查詢失敗」）——
-              那幾樣的結單日沒有記到，不是「沒有結單日」。
+              ※ 結單日標「查詢失敗」的商品：加入草稿當下查結單日出錯，結單日
+              <strong>沒有記到</strong>（不是「沒有結單日」）。
+              <strong>這一種要找工程師查</strong>。
             </p>
           )}
           {anyNoCloseDate && (
             <p className="mt-1 text-xs text-zinc-700">
-              ※ 結單日標「無」的商品：<strong>加入草稿當下就沒有任何未派需求</strong>
-              （貨還沒到、需求已派完，或是臨時插進來的商品），所以本來就沒有結單日可記、
-              數量是手動填的。<strong>這是正常狀況，不是系統故障</strong>，也不是查詢失敗。
+              ※ 結單日標「無」的商品：加入草稿當下就<strong>沒有任何未派需求</strong>
+              （貨還沒到、需求已派完，或是臨時插進來的商品），本來就沒有結單日可記、數量是手動填的。
+              <strong>這是正常的，不是系統故障</strong>。
             </p>
           )}
         </header>
