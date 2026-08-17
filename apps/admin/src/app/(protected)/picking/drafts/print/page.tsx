@@ -181,6 +181,12 @@ function Body() {
     () => skuRows.some((r) => closeDateBySku.get(r.sku_id)?.kind === "failed"),
     [skuRows, closeDateBySku],
   );
+  // 「無」＝ 加入當下就沒有未派需求 → **正常狀況**，但那一格跟「查詢失敗」一樣是
+  // 底色標示的異常欄，光看一個「無」字分不出是正常還是壞掉 → 一定要有一句話說明。
+  const anyNoCloseDate = useMemo(
+    () => skuRows.some((r) => closeDateBySku.get(r.sku_id)?.kind === "none"),
+    [skuRows, closeDateBySku],
+  );
   const grandTotal = useMemo(() => cells.reduce((s, c) => s + Number(c.qty), 0), [cells]);
 
   // 匯出 CSV：欄位與紙本完全一致（結單日 / 品名 / 品號 / 合計 / 各分店），
@@ -273,6 +279,13 @@ function Body() {
             <p className="mt-1 text-xs text-amber-800">
               ※ 有商品的結單日在<strong>加入當下查詢失敗</strong>（表格內標「查詢失敗」）——
               那幾樣的結單日沒有記到，不是「沒有結單日」。
+            </p>
+          )}
+          {anyNoCloseDate && (
+            <p className="mt-1 text-xs text-zinc-700">
+              ※ 結單日標「無」的商品：<strong>加入草稿當下就沒有任何未派需求</strong>
+              （貨還沒到、需求已派完，或是臨時插進來的商品），所以本來就沒有結單日可記、
+              數量是手動填的。<strong>這是正常狀況，不是系統故障</strong>，也不是查詢失敗。
             </p>
           )}
         </header>

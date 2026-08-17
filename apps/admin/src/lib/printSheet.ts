@@ -76,11 +76,6 @@ export function csvCell(v: string | number | null | undefined): string {
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-/** 文字欄位專用：先擋 Excel 破壞，再做 RFC4180 跳脫 */
-export function csvTextCell(v: string | number | null | undefined): string {
-  return csvCell(excelSafeText(v));
-}
-
 export function toCsv(rows: (string | number | null | undefined)[][]): string {
   // 用 CRLF：Excel 對 CRLF 最保險
   return UTF8_BOM + rows.map((r) => r.map(csvCell).join(",")).join("\r\n") + "\r\n";
