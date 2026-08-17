@@ -37,7 +37,6 @@ type StoreSheet = {
     sku: SkuRow;
     qty: number;
     pickedQty: number;
-    waveCodes: string[];
     unitPrice: number | null; // 分店價(prices scope='branch' 現行價)；查無 = null
     subtotal: number | null;
   }[];
@@ -186,18 +185,17 @@ export default function PrintSignPage() {
   const sheets: StoreSheet[] = useMemo(() => {
     if (!waves || items.length === 0) return [];
     const skuMap = new Map(skus.map((s) => [s.id, s]));
-    const waveCodeMap = new Map(waves.map((w) => [w.id, w.wave_code]));
     const waveDateMap = new Map(waves.map((w) => [w.id, w.wave_date]));
     // 撿貨單建立日 → 表頭「訂單日」（wave_date 是配送/出貨日，兩者常差一天）
     const orderDateMap = new Map(
       waves.map((w) => [w.id, new Date(w.created_at).toLocaleDateString("sv-SE")])
     );
 
-    // (store_id) -> (sku_id) -> { qty, picked_qty, waveCodes Set, waveDates Set }
+    // (store_id) -> (sku_id) -> { qty, picked_qty }，另加該店的 waveDates / orderDates Set
     const byStore = new Map<
       number,
       {
-        skus: Map<number, { qty: number; pickedQty: number; waveCodes: Set<string> }>;
+        skus: Map<number, { qty: number; pickedQty: number }>;
         waveDates: Set<string>;
         orderDates: Set<string>;
       }
@@ -206,19 +204,13 @@ export default function PrintSignPage() {
       if (!byStore.has(it.store_id))
         byStore.set(it.store_id, { skus: new Map(), waveDates: new Set(), orderDates: new Set() });
       const slot = byStore.get(it.store_id)!;
-      const cur = slot.skus.get(it.sku_id) ?? {
-        qty: 0,
-        pickedQty: 0,
-        waveCodes: new Set<string>(),
-      };
+      const cur = slot.skus.get(it.sku_id) ?? { qty: 0, pickedQty: 0 };
       cur.qty += it.qty;
       // picked_qty 為 NULL = 該波尚未做「撿貨確認」(rpc_confirm_picked 還沒 backfill)。
       // 這種情況下 fallback 顯示派貨計畫量 qty,讓「撿貨前先列印簽收單給司機」也印得出數量;
       // 撿貨確認後 picked_qty 會被寫成實撿量,短撿差異仍靠下方 (派 {qty}) 標註呈現。
       // 注意:明確被設成 0(短撿到 0)不是 NULL,會照實顯示 0,不走 fallback。
       cur.pickedQty += it.picked_qty == null ? it.qty : it.picked_qty;
-      const wc = waveCodeMap.get(it.wave_id);
-      if (wc) cur.waveCodes.add(wc);
       const wd = waveDateMap.get(it.wave_id);
       if (wd) slot.waveDates.add(wd);
       const od = orderDateMap.get(it.wave_id);
@@ -237,7 +229,6 @@ export default function PrintSignPage() {
             sku: skuMap.get(skuId) ?? { id: skuId, sku_code: null, product_name: null, variant_name: null },
             qty: v.qty,
             pickedQty: v.pickedQty,
-            waveCodes: Array.from(v.waveCodes).sort(),
             unitPrice,
             // 小計照「實際配發量」算 — 短撿時分店只該被收到的貨算錢
             subtotal: unitPrice == null ? null : unitPrice * v.pickedQty,
@@ -418,43 +409,37 @@ export default function PrintSignPage() {
             key={sheet.store.id}
             className="sheet mx-auto my-6 max-w-[210mm] border border-zinc-300 bg-white p-8 print:my-0 print:border-0 print:p-0"
           >
-            {/* 表頭 — 公司抬頭置中，底下左右兩欄的單頭欄位（單號/訂單日 ‧ 店家/出貨日）*/}
+            {/* 表頭 — 公司抬頭置中，底下一排三格單頭欄位（店家 ‧ 訂單日 ‧ 出貨日）*/}
             <div className="mb-3 text-center">
               {tenantName && <div className="text-lg font-bold tracking-wide">{tenantName}</div>}
               <div className="text-xs text-zinc-500">分店進貨單</div>
             </div>
 
-            <div className="mb-2 text-sm">
-              {/* 三個短欄位並排；放不下就自己換行,不去擠壓彼此 */}
-              <div className="flex flex-wrap gap-x-8">
-                <div className="flex">
-                  <span className="w-16 shrink-0 text-zinc-500">店家</span>
-                  <span className="font-semibold">
-                    {sheet.store.name}
-                    {sheet.store.code && (
-                      <span className="ml-2 font-mono text-xs text-zinc-500">({sheet.store.code})</span>
-                    )}
-                  </span>
-                </div>
-                <div className="flex">
-                  <span className="w-16 shrink-0 text-zinc-500">訂單日</span>
-                  <span className="font-mono">{sheet.orderDates.join("、") || "—"}</span>
-                </div>
-                <div className="flex">
-                  <span className="w-16 shrink-0 text-zinc-500">出貨日</span>
-                  <span className="font-mono">{sheet.waveDates.join("、") || date}</span>
-                </div>
-              </div>
-              {/* ⚠ 單號一定要自己獨佔一整行。
-                  原本它跟上面三欄同在一個 grid-cols-2 裡,只分到半頁寬(約 85mm),
-                  而一張簽收單常涵蓋十幾張撿貨單,單號串起來就被折成好幾行,吃掉整個紙頭。
-                  單號本身一個都不能省(老闆 2026-08-17 明確:「我沒有要把單號拿掉」),
-                  所以解法是給它整行寬度,不是縮字或縮寫。 */}
+            {/* ⛔ 這一區原本有第四格「單號」(撿貨單號 wave_code)。2026-08-17 老闆指示整格刪掉:
+                wave_code 全站只出現在總部／倉庫端的頁面(總倉收件匣 / 派貨工作台 / 採購收貨 / 進貨待辦),
+                分店端一個頁面都查不到它 —— 紙上那串字分店拿去系統裡對照不到任何東西。
+                而且它是「本張簽收單涵蓋的所有撿貨單」,不是逐商品對應,定位能力接近零。
+                分店要定位改看「店家＋訂單日＋出貨日」:同一天、同一家店就是這一張。
+                ⚠ 連帶收掉了「單號獨佔一整行」那一圈外層 div —— 那圈是上一版為了讓單號不被折行
+                  才加的,單號沒了就沒有存在意義,留著只會多一層空殼。
+                三個短欄位並排;放不下就自己換行,不去擠壓彼此。 */}
+            <div className="mb-2 flex flex-wrap gap-x-8 text-sm">
               <div className="flex">
-                <span className="w-16 shrink-0 text-zinc-500">單號</span>
-                <span className="font-mono font-semibold">
-                  {Array.from(new Set(sheet.rows.flatMap((r) => r.waveCodes))).join("、") || "—"}
+                <span className="w-16 shrink-0 text-zinc-500">店家</span>
+                <span className="font-semibold">
+                  {sheet.store.name}
+                  {sheet.store.code && (
+                    <span className="ml-2 font-mono text-xs text-zinc-500">({sheet.store.code})</span>
+                  )}
                 </span>
+              </div>
+              <div className="flex">
+                <span className="w-16 shrink-0 text-zinc-500">訂單日</span>
+                <span className="font-mono">{sheet.orderDates.join("、") || "—"}</span>
+              </div>
+              <div className="flex">
+                <span className="w-16 shrink-0 text-zinc-500">出貨日</span>
+                <span className="font-mono">{sheet.waveDates.join("、") || date}</span>
               </div>
             </div>
 
