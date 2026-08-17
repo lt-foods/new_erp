@@ -1022,7 +1022,14 @@ export default function PickingWorkstationPage() {
       }
       grouped.get(r.store_id)!.rows.push(r);
     }
-    return Array.from(grouped.values()).sort((a, b) => (a.storeCode ?? "").localeCompare(b.storeCode ?? ""));
+    // ⭐ 與上面矩陣視角的 allStores **用同一份順序**（lib/storeOrder，老闆 2026-08-17 指定）。
+    //   這兩個是同一頁的兩個分頁（viewMode: matrix ↔ by_store），只改其中一邊的話，
+    //   老闆切個分頁分店順序就變了 —— 他會當成 bug。
+    //   ⚠ 這裡的欄位名是 storeCode / storeName（矩陣那邊是 store_code / store_name），別抄錯。
+    //   ⛔ 只排序，一家都不會少（.sort 不會改變長度）。
+    return Array.from(grouped.values()).sort((a, b) =>
+      compareStoreOrder(a.storeCode, a.storeName, b.storeCode, b.storeName),
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fullDemand, poItemCampaigns, skuSoldCampaigns, effFilterCampaign, skuQueryNorm, filterTime, timeCutoff, campaignsById]);
 
