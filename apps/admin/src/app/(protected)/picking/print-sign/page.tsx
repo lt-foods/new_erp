@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
+import { excelSafeText, toCsv } from "@/lib/printSheet";
 
 type WaveItem = {
   id: number;
@@ -249,6 +250,47 @@ export default function PrintSignPage() {
     return result;
   }, [waves, items, stores, skus, prices]);
 
+  // 匯出 CSV — 全部分店合在同一個檔，靠第一欄「店家」分辨（老闆 2026-08-17 定案：
+  // 不要一間店一個檔）。欄位跟紙本對得起來，才能拿檔案核簽回來的那疊紙。
+  function exportCsv() {
+    // ⚠ 文字欄一律過 excelSafeText：擋公式注入，也擋 Excel 把 `G00351-01` 這種碼
+    //   自作主張改成日期／科學記號。數量與金額維持純數字，Excel 才加得了總。
+    // ⚠ 金額先 Math.round 再輸出 —— 紙上的 money() 印的就是四捨五入後的整數，
+    //   CSV 若給沒進位的小數，老闆兩邊會對不起來。這裡不做任何別的算術。
+    const header = ["店家", "編號", "商品名稱", "數量", "訂購量", "單價", "小計"];
+    const body = sheets.flatMap((sheet) =>
+      sheet.rows.map((r) => [
+        excelSafeText(
+          sheet.store.code ? `${sheet.store.name}(${sheet.store.code})` : sheet.store.name
+        ),
+        excelSafeText(r.sku.sku_code ?? "—"),
+        excelSafeText(
+          r.sku.variant_name
+            ? `${r.sku.product_name ?? "—"} / ${r.sku.variant_name}`
+            : r.sku.product_name ?? "—"
+        ),
+        // 數量＝實配量（跟紙上那格一樣）；訂購量在紙上是括號註記，CSV 拆成獨立欄好對帳
+        r.pickedQty,
+        r.qty,
+        r.unitPrice == null ? "" : Math.round(r.unitPrice),
+        r.subtotal == null ? "" : Math.round(r.subtotal),
+      ])
+    );
+    const csv = toCsv([header, ...body]);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    // ⛔ 檔名的日期只取自資料庫的 wave_date（查無就用今天），**不用網址上的 ?date=** ——
+    //    那是使用者可控字串，直接接進 a.download 等於讓網址決定檔名。
+    const fileDate =
+      Array.from(new Set(sheets.flatMap((s) => s.waveDates))).sort()[0] ??
+      new Date().toLocaleDateString("sv-SE");
+    a.href = url;
+    a.download = `分店簽收單_${fileDate}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   if (!date && !waveIds) {
     return <div className="p-6 text-sm text-zinc-500">載入中…</div>;
   }
@@ -307,9 +349,16 @@ export default function PrintSignPage() {
               : `${sheets.length} 間分店、${waves.length} 張撿貨單`}
           </span>
           <SpinButton
+            onClick={exportCsv}
+            disabled={sheets.length === 0}
+            className="ml-auto rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+          >
+            ⬇ 匯出 CSV
+          </SpinButton>
+          <SpinButton
             onClick={() => window.print()}
             disabled={sheets.length === 0}
-            className="ml-auto rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+            className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
           >
             🖨️ 列印
           </SpinButton>
@@ -328,71 +377,9 @@ export default function PrintSignPage() {
           </div>
         )}
 
-        {/* 出車總覽 — 列在最前面、依店分 group、底下列商品 */}
-        {sheets.length > 0 && (
-          <div className="sheet mx-auto my-6 max-w-[210mm] border border-zinc-300 bg-white p-8 print:my-0 print:border-0 print:p-0">
-            <div className="mb-4 flex items-start justify-between border-b-2 border-zinc-900 pb-2">
-              <div>
-                <div className="text-xl font-bold">出車總覽</div>
-                {tenantName && (
-                  <div className="mt-0.5 text-xs text-zinc-500">{tenantName}</div>
-                )}
-              </div>
-              <div className="text-right text-sm">
-                <div>
-                  配送日:
-                  <span className="ml-1 font-mono font-semibold">
-                    {Array.from(new Set(sheets.flatMap((s) => s.waveDates))).sort().join("、") || date}
-                  </span>
-                </div>
-                <div className="mt-0.5 text-xs text-zinc-600">
-                  {sheets.length} 間分店 · {sheets.reduce((s, sh) => s + sh.totalPicked, 0)} 件 ·{" "}
-                  <span className="font-mono">
-                    {money(sheets.reduce((s, sh) => s + sh.totalAmount, 0))}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex flex-col divide-y divide-zinc-300">
-              {sheets.map((sheet) => (
-                <div key={`overview-${sheet.store.id}`} className="py-2">
-                  <div className="mb-1 flex items-baseline justify-between">
-                    <div className="text-base font-semibold">
-                      {sheet.store.name}
-                      {sheet.store.code && (
-                        <span className="ml-2 font-mono text-xs text-zinc-500">
-                          ({sheet.store.code})
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-xs text-zinc-600">
-                      {sheet.rows.length} 樣 · {sheet.totalPicked} 件 ·{" "}
-                      <span className="font-mono">{money(sheet.totalAmount)}</span>
-                      {sheet.hasMissingPrice && <span className="ml-1 text-zinc-400">(部分未定價)</span>}
-                    </div>
-                  </div>
-                  <ul className="ml-2 grid grid-cols-2 gap-x-6 gap-y-0.5 text-sm">
-                    {sheet.rows.map((r) => (
-                      <li key={`overview-${sheet.store.id}-${r.sku.id}`} className="flex justify-between">
-                        <span className="truncate">
-                          <span className="font-mono text-[11px] text-zinc-500 mr-1">
-                            {r.sku.sku_code ?? "—"}
-                          </span>
-                          {r.sku.product_name ?? "—"}
-                          {r.sku.variant_name && (
-                            <span className="ml-1 text-xs text-zinc-500">/ {r.sku.variant_name}</span>
-                          )}
-                        </span>
-                        <span className="font-mono">× {r.pickedQty}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        {/* ⛔ 這裡原本有一張「出車總覽」（依店 group、底下再列一次商品）。
+            2026-08-17 老闆指示移除：它自己就是一張 A4（`sheet` 有 page-break-after），
+            內容又跟後面每一張簽收單完全重複 —— 每次列印白白多印一整張紙。 */}
 
         {sheets.map((sheet) => (
           <div
@@ -405,29 +392,37 @@ export default function PrintSignPage() {
               <div className="text-xs text-zinc-500">分店進貨單</div>
             </div>
 
-            <div className="mb-2 grid grid-cols-2 gap-x-8 text-sm">
+            <div className="mb-2 text-sm">
+              {/* 三個短欄位並排；放不下就自己換行,不去擠壓彼此 */}
+              <div className="flex flex-wrap gap-x-8">
+                <div className="flex">
+                  <span className="w-16 shrink-0 text-zinc-500">店家</span>
+                  <span className="font-semibold">
+                    {sheet.store.name}
+                    {sheet.store.code && (
+                      <span className="ml-2 font-mono text-xs text-zinc-500">({sheet.store.code})</span>
+                    )}
+                  </span>
+                </div>
+                <div className="flex">
+                  <span className="w-16 shrink-0 text-zinc-500">訂單日</span>
+                  <span className="font-mono">{sheet.orderDates.join("、") || "—"}</span>
+                </div>
+                <div className="flex">
+                  <span className="w-16 shrink-0 text-zinc-500">出貨日</span>
+                  <span className="font-mono">{sheet.waveDates.join("、") || date}</span>
+                </div>
+              </div>
+              {/* ⚠ 單號一定要自己獨佔一整行。
+                  原本它跟上面三欄同在一個 grid-cols-2 裡,只分到半頁寬(約 85mm),
+                  而一張簽收單常涵蓋十幾張撿貨單,單號串起來就被折成好幾行,吃掉整個紙頭。
+                  單號本身一個都不能省(老闆 2026-08-17 明確:「我沒有要把單號拿掉」),
+                  所以解法是給它整行寬度,不是縮字或縮寫。 */}
               <div className="flex">
                 <span className="w-16 shrink-0 text-zinc-500">單號</span>
                 <span className="font-mono font-semibold">
                   {Array.from(new Set(sheet.rows.flatMap((r) => r.waveCodes))).join("、") || "—"}
                 </span>
-              </div>
-              <div className="flex">
-                <span className="w-16 shrink-0 text-zinc-500">店家</span>
-                <span className="font-semibold">
-                  {sheet.store.name}
-                  {sheet.store.code && (
-                    <span className="ml-2 font-mono text-xs text-zinc-500">({sheet.store.code})</span>
-                  )}
-                </span>
-              </div>
-              <div className="flex">
-                <span className="w-16 shrink-0 text-zinc-500">訂單日</span>
-                <span className="font-mono">{sheet.orderDates.join("、") || "—"}</span>
-              </div>
-              <div className="flex">
-                <span className="w-16 shrink-0 text-zinc-500">出貨日</span>
-                <span className="font-mono">{sheet.waveDates.join("、") || date}</span>
               </div>
             </div>
 
@@ -435,12 +430,19 @@ export default function PrintSignPage() {
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr className="bg-zinc-100">
-                  <th className="border border-zinc-400 px-2 py-1.5 text-left text-xs font-semibold">編號</th>
-                  <th className="border border-zinc-400 px-2 py-1.5 text-left text-xs font-semibold">商品名稱</th>
-                  <th className="w-16 border border-zinc-400 px-2 py-1.5 text-right text-xs font-semibold">數量</th>
-                  <th className="w-20 border border-zinc-400 px-2 py-1.5 text-right text-xs font-semibold">單價</th>
-                  <th className="w-24 border border-zinc-400 px-2 py-1.5 text-right text-xs font-semibold">小計</th>
-                  <th className="w-12 whitespace-nowrap border border-zinc-400 px-2 py-1.5 text-center text-xs font-semibold">
+                  {/* ⚠ 編號欄一定要 whitespace-nowrap。
+                      不是「沒給寬度」那麼單純:`G00351-01` 裡的連字號是合法斷行點,
+                      所以這一欄的 min-content 只有 `G00351-` 那麼寬 —— 表格一被長品名擠,
+                      瀏覽器就名正言順把它縮到 7 個字寬、把碼折成兩行。
+                      給固定寬度沒有用(table-layout: auto 底下 width 只是建議值,min-content 仍會贏),
+                      要 nowrap 把 min-content 撐成整串碼,這一欄才縮不下去。
+                      作法比照既有的 finance/receivables/print。 */}
+                  <th className="whitespace-nowrap border border-zinc-400 px-2 py-1 text-left text-xs font-semibold">編號</th>
+                  <th className="border border-zinc-400 px-2 py-1 text-left text-xs font-semibold">商品名稱</th>
+                  <th className="w-16 border border-zinc-400 px-2 py-1 text-right text-xs font-semibold">數量</th>
+                  <th className="w-20 border border-zinc-400 px-2 py-1 text-right text-xs font-semibold">單價</th>
+                  <th className="w-24 border border-zinc-400 px-2 py-1 text-right text-xs font-semibold">小計</th>
+                  <th className="w-12 whitespace-nowrap border border-zinc-400 px-2 py-1 text-center text-xs font-semibold">
                     點收
                   </th>
                 </tr>
@@ -448,57 +450,59 @@ export default function PrintSignPage() {
               <tbody>
                 {sheet.rows.map((r) => (
                   <tr key={r.sku.id}>
-                    <td className="border border-zinc-400 px-2 py-1 font-mono text-xs">
+                    <td className="whitespace-nowrap border border-zinc-400 px-2 py-0.5 font-mono text-xs">
                       {r.sku.sku_code ?? "—"}
                     </td>
-                    <td className="border border-zinc-400 px-2 py-1">
+                    <td className="border border-zinc-400 px-2 py-0.5">
                       {r.sku.product_name ?? "—"}
                       {r.sku.variant_name && (
                         <span className="ml-1 text-xs text-zinc-500">/ {r.sku.variant_name}</span>
                       )}
                     </td>
-                    {/* 數量 = 實際配發量；短撿時在旁邊補註訂購量，分店才對得出少了什麼 */}
-                    <td className="border border-zinc-400 px-2 py-1 text-right font-mono">
+                    {/* 數量 = 實際配發量；短撿時在旁邊補註訂購量，分店才對得出少了什麼。
+                        nowrap 是預防性的：目前的量級（個位/十位數）在 w-16 裡本來就排得下，
+                        但數量一多（例如以克計價的品項）「(訂 N)」就會掉到第二行、整列變高。 */}
+                    <td className="whitespace-nowrap border border-zinc-400 px-2 py-0.5 text-right font-mono">
                       <span className={r.pickedQty < r.qty ? "text-rose-600" : ""}>{r.pickedQty}</span>
                       {r.pickedQty < r.qty && (
                         <span className="ml-1 text-[10px] text-zinc-500">(訂 {r.qty})</span>
                       )}
                     </td>
-                    <td className="border border-zinc-400 px-2 py-1 text-right font-mono">
+                    <td className="whitespace-nowrap border border-zinc-400 px-2 py-0.5 text-right font-mono">
                       {r.unitPrice == null ? "—" : money(r.unitPrice)}
                     </td>
-                    <td className="border border-zinc-400 px-2 py-1 text-right font-mono">
+                    <td className="whitespace-nowrap border border-zinc-400 px-2 py-0.5 text-right font-mono">
                       {r.subtotal == null ? "—" : money(r.subtotal)}
                     </td>
-                    <td className="border border-zinc-400 px-2 py-1 text-center">
+                    <td className="border border-zinc-400 px-2 py-0.5 text-center">
                       <span className="text-zinc-300">□</span>
                     </td>
                   </tr>
                 ))}
-                {/* 補空行讓表格美觀 */}
+                {/* 補空行讓表格美觀（品項很少時才會出現，手寫補品項也用得上） */}
                 {Array.from({ length: Math.max(0, 5 - sheet.rows.length) }).map((_, i) => (
                   <tr key={`empty-${i}`}>
-                    <td className="border border-zinc-400 px-2 py-3"></td>
-                    <td className="border border-zinc-400 px-2 py-3"></td>
-                    <td className="border border-zinc-400 px-2 py-3"></td>
-                    <td className="border border-zinc-400 px-2 py-3"></td>
-                    <td className="border border-zinc-400 px-2 py-3"></td>
-                    <td className="border border-zinc-400 px-2 py-3"></td>
+                    <td className="border border-zinc-400 px-2 py-2"></td>
+                    <td className="border border-zinc-400 px-2 py-2"></td>
+                    <td className="border border-zinc-400 px-2 py-2"></td>
+                    <td className="border border-zinc-400 px-2 py-2"></td>
+                    <td className="border border-zinc-400 px-2 py-2"></td>
+                    <td className="border border-zinc-400 px-2 py-2"></td>
                   </tr>
                 ))}
                 {/* 合計列 — 件數 + 金額，對齊紙本單 */}
                 <tr className="bg-zinc-100 font-semibold">
-                  <td colSpan={2} className="border border-zinc-400 px-2 py-1.5 text-right">
+                  <td colSpan={2} className="border border-zinc-400 px-2 py-1 text-right">
                     合計
                   </td>
-                  <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono">
+                  <td className="whitespace-nowrap border border-zinc-400 px-2 py-1 text-right font-mono">
                     {sheet.totalPicked} 件
                   </td>
-                  <td className="border border-zinc-400 px-2 py-1.5"></td>
-                  <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono">
+                  <td className="border border-zinc-400 px-2 py-1"></td>
+                  <td className="whitespace-nowrap border border-zinc-400 px-2 py-1 text-right font-mono">
                     {money(sheet.totalAmount)}
                   </td>
-                  <td className="border border-zinc-400 px-2 py-1.5"></td>
+                  <td className="border border-zinc-400 px-2 py-1"></td>
                 </tr>
               </tbody>
             </table>
