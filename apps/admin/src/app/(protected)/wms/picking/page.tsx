@@ -1948,10 +1948,27 @@ export default function PickingWorkstationPage() {
           //   visible,overflow-y 的 visible 就會被算成 auto,這個 div 因此仍是捲動容器,但高度
           //   等於內容高度、永遠捲不動 → thead 的 sticky top-0 黏在框頂,框卻跟著整頁捲走,
           //   等於固定表頭寫了等於沒寫(改中間某一格數字要拉回最上面才知道是哪一店)。
-          // 高度取 100dvh − 7rem:捲到底時矩陣正好停在上方控制列(建立撿貨單鈕)底下、表頭落在
-          //   可視範圍內。算式是 容器頂端(捲到底) = 視窗高 − 容器高 − 容器下方內容高,與上方內容
-          //   多高無關;下方只剩 p-6 的 24px,所以扣 112px 會留約 90px 給控制列。
+          // 高度取 100dvh − 7rem:捲到底時矩陣停在上方控制列(建立撿貨單鈕)底下、表頭落在可視範圍內。
+          //   算式是 容器頂端(捲到底) = 視窗高 − 容器高 − 容器下方內容高,與上方內容多高無關。
           //   用 dvh 不用 vh:平板瀏覽器工具列收合時 vh 會比實際可視高度大,表頭會被切掉(同 Modal.tsx)。
+          //
+          // ⚠️⚠️ 這個 7rem 只在「矩陣下方沒有東西」時才成立,而下方其實有東西:
+          //   本檔 :2214 的『📦 補貨申請(無 PO 來源)』section 排在矩陣後面,不受 viewMode/pickStep
+          //   控制,有待處理的補貨申請時就會一起出現。上面那條算式代進去:下方一多,容器頂端就變負的,
+          //   thead 的 sticky top-0 只黏在容器頂端 → 表頭被推到畫面外,固定表頭在那個當下失效。
+          //   實測(180 列 × 17 欄真 Chrome,以 25px 為步進掃過整段頁面捲動範圍;
+          //   判定「出事」=矩陣還看得到 100px 以上(還在改數字)但表頭不在畫面內):
+          //     視窗          出事的捲動範圍   最糟時螢幕上有多少數字格卻看不到任何店名
+          //     1180×670      42%             550px
+          //     1280×720      47%             600px
+          //     768×950       53%             833px
+          //     820×1030      53%             913px
+          //     1536×960      56%             845px
+          //   同一支程式、同樣的視窗,把補貨申請拿掉 → 0%。(改這支之前的舊版:96% / 670px,
+          //   所以現在這版仍然遠好過舊版,只是沒修乾淨。)
+          //   ⛔ 還沒修:能修的做法都會動到老闆看得到的東西(把補貨申請搬到矩陣上面、或把矩陣改成
+          //   釘住讓補貨申請蓋過去),要老闆挑,不由工程師代決。overscroll-contain 實測無效
+          //   (同樣 42%,一模一樣的區間)—— 它只擋捲動接力,不改頁面捲動範圍。
           // max-h 不是 h:品項少的時候框仍然只有內容高度,大螢幕不會變成一條扁框。
           // print: 兩個 —— 列印時把高度上限拿掉,否則直接對這一頁 Ctrl+P 只會印出一個螢幕的列
           //   (加高度上限之前不會)。正規列印走 /picking/print-pick-list,這只是別讓它變壞。
@@ -1986,7 +2003,9 @@ export default function PickingWorkstationPage() {
                   {visibleStores.map((st) => (
                     <Th key={st.store_id} storeCol={st.store_id} className="bg-zinc-50 py-2 text-center dark:bg-zinc-900">
                       <div className="text-xs font-semibold normal-case text-zinc-700 dark:text-zinc-200">{st.store_name}</div>
-                      <div className="font-mono text-[10px] font-normal text-zinc-400">{st.store_code}</div>
+                      {/* store-code 是給 CSS 認的鉤子：高亮那一欄時要一起把店號調深/調亮，
+                          不然「為了看清楚是哪一店而高亮，高亮後店號反而最難讀」(見 globals.css)。 */}
+                      <div className="store-code font-mono text-[10px] font-normal text-zinc-400">{st.store_code}</div>
                     </Th>
                   ))}
                 </tr>
