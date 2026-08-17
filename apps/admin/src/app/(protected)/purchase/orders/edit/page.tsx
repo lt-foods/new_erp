@@ -92,7 +92,7 @@ function PageContent() {
   // 這裡的 catch 只 setError 不 rethrow，所以呼叫端的 await 永遠不會炸；
   // 若 RPC 已存進去、但接著這支查詢失敗，items 還停在舊值，這時清掉編輯值
   // 會讓畫面「乾淨地顯示舊數字」＝謊報沒存到。
-  // 既有呼叫點（useEffect / 斷貨 / 回復 / 刪除 / SendPOModal）忽略回傳值，行為不變。
+  // 既有呼叫點（useEffect / 斷貨 / 回復 / SendPOModal）忽略回傳值，行為不變。
   async function reload(): Promise<boolean> {
     if (!id) return false;
     setLoading(true);
@@ -347,6 +347,32 @@ function PageContent() {
     try {
       const supabase = getSupabase();
       const { data: userData } = await supabase.auth.getUser();
+
+      // 送出前的即時確認（preflight）。只比對 items 不夠：items 只有本頁真的跑過 reload
+      // 才會更新，而「打開單子慢慢填 12 格、中途一筆都沒存」就完全不會觸發 reload
+      // —— 那時 items 停在剛載入的舊值，base 跟它相等會被判「沒過期」直接放行。
+      const base = recvEdits[r.id]?.base ?? r.qty_received;
+      const { data: freshRow, error: preErr } = await supabase
+        .from("purchase_order_items")
+        .select("qty_received")
+        .eq("id", r.id)
+        .maybeSingle();
+      // ⚠️ 查不到／查詢失敗一律擋下，不可以當成「沒過期」照送 —— 那等於在最需要保護的時候關掉防線。
+      if (preErr || !freshRow) {
+        setRecvErrs((prev) => ({
+          ...prev,
+          [r.id]: `無法確認這一列有沒有被別人改過（${preErr?.message ?? "查不到這個品項"}），為了安全沒有送出。請重新整理後再試。`,
+        }));
+        return;
+      }
+      const freshQty = Number(freshRow.qty_received);
+      if (freshQty !== base) {
+        // 把真實值寫回這一列，既有的 recvStaleBase → 紅框／紅字／「改用最新值」就會自己接手，
+        // 不必另外做一套過期狀態。
+        setItems((prev) => prev.map((x) => (x.id === r.id ? { ...x, qty_received: freshQty } : x)));
+        return;
+      }
+
       const { error: rpcErr } = await supabase.rpc("rpc_adjust_po_item_received", {
         p_po_item_id: r.id,
         p_new_qty: num,
@@ -392,12 +418,48 @@ function PageContent() {
     try {
       const supabase = getSupabase();
       const { data: userData } = await supabase.auth.getUser();
+
+      // 送出前的即時確認（preflight）：一個 in 查詢一次拿完所有要送的列，不是每列查一次。
+      // 理由同單筆 —— items 只有本頁跑過 reload 才會更新，慢慢填一整張單的話它是舊的。
+      const { data: freshRows, error: preErr } = await supabase
+        .from("purchase_order_items")
+        .select("id, qty_received")
+        .in("id", targets.map((t) => t.id));
+      const freshMap = new Map<number, number>();
+      for (const fr of (freshRows as { id: number; qty_received: number }[] | null) ?? []) {
+        freshMap.set(Number(fr.id), Number(fr.qty_received));
+      }
+      // 查到的真實值寫回 items，既有的 recvStaleBase → 紅框／紅字／「改用最新值」自己接手。
+      if (!preErr && freshMap.size > 0) {
+        setItems((prev) =>
+          prev.map((x) => {
+            const fq = freshMap.get(x.id);
+            return fq === undefined ? x : { ...x, qty_received: fq };
+          }),
+        );
+      }
+
       for (const r of targets) {
         const label = r.product_name + (r.variant_name ? `-${r.variant_name}` : "");
         // 過期的那幾列擋掉就好，其他列照存 —— 本來就沒有整批 rollback，
         // 為了一列全擋反而讓人更難收拾。
         if (recvStaleBase(r) !== undefined) {
           const msg = recvStaleMsg(r);
+          errs[r.id] = msg;
+          failed.push({ label, msg });
+          continue;
+        }
+        // ⚠️ 查不到／查詢失敗一律擋下這一筆，不可以當成「沒過期」照送。
+        const base = recvEdits[r.id]?.base ?? r.qty_received;
+        const fresh = freshMap.get(r.id);
+        if (preErr || fresh === undefined) {
+          const msg = `無法確認有沒有被別人改過（${preErr?.message ?? "查不到這個品項"}），為了安全沒有送出`;
+          errs[r.id] = msg;
+          failed.push({ label, msg });
+          continue;
+        }
+        if (fresh !== base) {
+          const msg = `已被別人改成 ${fresh}（你是看著 ${base} 輸入的），沒有送出`;
           errs[r.id] = msg;
           failed.push({ label, msg });
           continue;
