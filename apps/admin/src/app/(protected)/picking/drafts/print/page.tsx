@@ -269,84 +269,91 @@ function Body() {
 
         {error && <div className="no-print mb-3 rounded border border-red-300 bg-red-50 p-2 text-sm text-red-800">{error}</div>}
 
-        <header className="mb-2">
-          <h1 className="text-lg font-semibold">
-            {getTenantName()}・撿貨草稿：{draft.name}
-          </h1>
-          <p className="text-xs text-zinc-600">
-            草稿 #{draft.id}・建立 {String(draft.created_at).slice(0, 16).replace("T", " ")}
-            ・列印 {new Date().toLocaleString("sv-SE").slice(0, 16)}
-            ・共 {skuRows.length} 樣・總計 {grandTotal} 件
-          </p>
-          {anyLegacy && (
-            <p className="mt-1 text-xs text-zinc-700">
-              ※ 結單日標「—」的商品：是在「結單日」功能上線前就加進這張草稿的，當時系統還沒有記結單日。
-              <strong>這是正常的，不是系統故障</strong>；數量沒有受影響，只是那幾樣分不出是哪一次開團的貨。
+        {/* ⭐ 白紙區：頁首＋表格**永遠白底深字**，不跟著 app 的深色模式走（樣式見 PRINT_SHEET_CSS）。
+            這是一份「紙的預覽」，螢幕上看到的就是印出來的。
+            ⛔ 操作列與錯誤框留在這個 div 外面 —— 那些是介面、要跟著深色模式，而且列印時本來就會被隱藏。 */}
+        <div className="print-sheet">
+          <header className="mb-2">
+            <h1 className="text-lg font-semibold">
+              {getTenantName()}・撿貨草稿：{draft.name}
+            </h1>
+            <p className="text-xs text-zinc-600">
+              草稿 #{draft.id}・建立 {String(draft.created_at).slice(0, 16).replace("T", " ")}
+              ・列印 {new Date().toLocaleString("sv-SE").slice(0, 16)}
+              ・共 {skuRows.length} 樣・總計 {grandTotal} 件
             </p>
-          )}
-          {anyLookupFailed && (
-            <p className="mt-1 text-xs text-amber-800">
-              ※ 結單日標「查詢失敗」的商品：加入草稿當下查結單日出錯，結單日
-              <strong>沒有記到</strong>（不是「沒有結單日」）。
-              <strong>這一種要找工程師查</strong>。
-            </p>
-          )}
-          {anyNoCloseDate && (
-            <p className="mt-1 text-xs text-zinc-700">
-              ※ 結單日標「無」的商品：加入草稿當下就<strong>沒有任何未派需求</strong>
-              （貨還沒到、需求已派完，或是臨時插進來的商品），本來就沒有結單日可記、數量是手動填的。
-              <strong>這是正常的，不是系統故障</strong>。
-            </p>
-          )}
-        </header>
+            {anyLegacy && (
+              <p className="mt-1 text-xs text-zinc-700">
+                ※ 結單日標「—」的商品：是在「結單日」功能上線前就加進這張草稿的，當時系統還沒有記結單日。
+                <strong>這是正常的，不是系統故障</strong>；數量沒有受影響，只是那幾樣分不出是哪一次開團的貨。
+              </p>
+            )}
+            {anyLookupFailed && (
+              <p className="mt-1 text-xs text-amber-800">
+                ※ 結單日標「查詢失敗」的商品：加入草稿當下查結單日出錯，結單日
+                <strong>沒有記到</strong>（不是「沒有結單日」）。
+                <strong>這一種要找工程師查</strong>。
+              </p>
+            )}
+            {anyNoCloseDate && (
+              <p className="mt-1 text-xs text-zinc-700">
+                ※ 結單日標「無」的商品：加入草稿當下就<strong>沒有任何未派需求</strong>
+                （貨還沒到、需求已派完，或是臨時插進來的商品），本來就沒有結單日可記、數量是手動填的。
+                <strong>這是正常的，不是系統故障</strong>。
+              </p>
+            )}
+          </header>
 
-        {skuRows.length === 0 ? (
-          <p className="text-sm text-zinc-500">這張草稿還沒有任何商品。</p>
-        ) : (
-          <table className="pick-table">
-            <thead>
-              <tr>
-                <th className="frozen-col">結單日</th>
-                <th className="sku-cell frozen-col">品名 / 品號</th>
-                <th className="frozen-col">合計</th>
-                {storeCols.map((st) => (
-                  <th key={st.id} className={st.state === "active" ? "store-col" : "store-col odd-col"}>
-                    {st.name}
-                    {st.state !== "active" && <span className="note">{STORE_STATE_LABEL[st.state]}</span>}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {skuRows.map((row) => {
-                const cd = closeDateBySku.get(row.sku_id);
-                return (
-                  <tr key={row.sku_id}>
-                    <td className={`num-cell ${cd?.kind === "dates" ? "" : "odd-col"}`}>{cd?.text ?? "無"}</td>
-                    <td className="sku-cell">
-                      {row.label}
-                      <span className="note" style={{ color: "#64748b" }}>{row.code}</span>
-                      {row.state === "missing" && <span className="note">⚠ 商品主檔已查不到（顯示加入當下的名稱）</span>}
-                      {row.state === "unknown" && <span className="note">⚠ 無法確認商品是否還在主檔</span>}
-                    </td>
-                    <td className="num-cell frozen-col">{rowTotal(cells, row.sku_id)}</td>
-                    {storeCols.map((st) => {
-                      const q = byKey.get(`${row.sku_id}:${st.id}`) ?? 0;
-                      return (
-                        <td
-                          key={st.id}
-                          className={`num-cell ${st.state === "active" ? "store-col" : "store-col odd-col"} ${q === 0 ? "zero" : ""}`}
-                        >
-                          {q === 0 ? "－" : q}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
+          {skuRows.length === 0 ? (
+            <p className="text-sm text-zinc-500">這張草稿還沒有任何商品。</p>
+          ) : (
+            <table className="pick-table">
+              <thead>
+                <tr>
+                  <th className="frozen-col">結單日</th>
+                  <th className="sku-cell frozen-col">品名 / 品號</th>
+                  <th className="frozen-col">合計</th>
+                  {storeCols.map((st) => (
+                    <th key={st.id} className={st.state === "active" ? "store-col" : "store-col odd-col"}>
+                      {st.name}
+                      {st.state !== "active" && <span className="note">{STORE_STATE_LABEL[st.state]}</span>}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {skuRows.map((row) => {
+                  const cd = closeDateBySku.get(row.sku_id);
+                  return (
+                    <tr key={row.sku_id}>
+                      <td className={`num-cell ${cd?.kind === "dates" ? "" : "odd-col"}`}>{cd?.text ?? "無"}</td>
+                      <td className="sku-cell">
+                        {row.label}
+                        {/* 品號用灰字跟品名分開。⚠ 這裡蓋掉 .note 的琥珀色是刻意的（品號不是警告），
+                            但一樣要過 4.5:1：#475569 對隔行灰底 7.24:1（舊值 #64748b 只有 4.55:1，9px 幾乎沒餘裕）。 */}
+                        <span className="note" style={{ color: "#475569" }}>{row.code}</span>
+                        {row.state === "missing" && <span className="note">⚠ 商品主檔已查不到（顯示加入當下的名稱）</span>}
+                        {row.state === "unknown" && <span className="note">⚠ 無法確認商品是否還在主檔</span>}
+                      </td>
+                      <td className="num-cell frozen-col">{rowTotal(cells, row.sku_id)}</td>
+                      {storeCols.map((st) => {
+                        const q = byKey.get(`${row.sku_id}:${st.id}`) ?? 0;
+                        return (
+                          <td
+                            key={st.id}
+                            className={`num-cell ${st.state === "active" ? "store-col" : "store-col odd-col"} ${q === 0 ? "zero" : ""}`}
+                          >
+                            {q === 0 ? "－" : q}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
     </>
   );

@@ -13,16 +13,32 @@ export const PRINT_SHEET_CSS = `
     @page { size: A4 landscape; margin: 8mm; }
     .no-print { display: none !important; }
     body { background: white !important; }
+    /* ⭐ 底色一定要印出來：瀏覽器預設會把背景色「省略」再印，
+       但琥珀色是給樓下的安全標示（已停用／已刪除／無法確認、合計欄），
+       被省掉就等於那張紙沒有警告。 */
+    .print-sheet {
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+      padding: 0;
+    }
     .pick-table { font-size: 10px; }
     /* 一列不要被切到跨頁 —— 樓下對著紙撿貨，斷行等於漏撿 */
     .pick-table tr { break-inside: avoid; }
     .pick-table thead { display: table-header-group; }
   }
-  .pick-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  /* ⭐ 這是「一張紙的預覽」，不是操作介面 → 白底深字，**不跟著 app 的深色模式走**。
+     由來：深色模式下 body 是 color:#e4e4e7（globals.css 的 --foreground），
+     表格只設了底色沒設文字色 → 淺字印在淺底上，螢幕看不到、紙上更是白字白紙。
+     ⛔ 不要改成「深色模式給深色版表格」：這頁螢幕上長什麼樣，紙上就要長什麼樣。 */
+  .print-sheet { background: #ffffff; color: #0f172a; padding: 10px; }
+  .print-sheet h1 { color: #0f172a; }
+  .pick-table { border-collapse: collapse; width: 100%; font-size: 12px; background: #ffffff; }
   .pick-table th, .pick-table td {
     border: 1px solid #cbd5e1;
     padding: 4px 6px;
     text-align: center;
+    /* ⛔ 不可以省略、不可以靠繼承：一繼承就會拿到深色主題的淺字（對比 1.14:1） */
+    color: #0f172a;
   }
   .pick-table thead { background: #f1f5f9; }
   .pick-table .sku-cell { text-align: left; }
@@ -31,11 +47,16 @@ export const PRINT_SHEET_CSS = `
   .pick-table .store-col { background: #ffffff; }
   .pick-table tbody tr:nth-child(even) td.store-col { background: #f8fafc; }
   .pick-table tbody tr:nth-child(even) td.sku-cell { background: #f8fafc; }
-  .pick-table .zero { color: #cbd5e1; }
+  /* 「－」（沒填的格子）刻意做淡，讓真的數字跳出來 —— 但**淡到印不出來就沒意義**。
+     ⚠ 舊值 #cbd5e1 對白底只有 1.48:1、對合計欄的琥珀底 1.33:1＝紙上根本不見。
+     這個值對最暗的底色（#fef3c7）仍有 3.51:1，四種底色全部過 3:1。 */
+  .pick-table .zero { color: #748296; }
   /* 異常欄位／列（已停用、已刪除、無法確認、商品查不到）— 紙本也要看得出來 */
   .pick-table .odd-col { background: #fffbeb; }
   .pick-table tbody tr:nth-child(even) td.odd-col { background: #fef3c7; }
-  .pick-table .note { display: block; font-size: 9px; font-weight: 400; color: #b45309; }
+  /* 9px 小字＝一般正文標準（要 4.5:1）。舊值 #b45309 壓在琥珀底上只有 4.51:1、
+     幾乎沒有餘裕；#92400e 同樣是琥珀色系但最差也有 6.37:1。 */
+  .pick-table .note { display: block; font-size: 9px; font-weight: 400; color: #92400e; }
 `;
 
 // ============================================================
