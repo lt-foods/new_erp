@@ -246,6 +246,31 @@ PERFORM public._close_orders_all_items_settled(v_order_ids, p_operator, NOW());
 
 `items[]` jsonb **不要**濾 —— 前端要繼續把那一列畫出來（紅標「斷貨」/ 刪除線）。
 
+### 取消轉入單只還單頭，「部分轉出」被扣掉的來源品項不會自己長回來
+
+兩條轉單路徑對**來源品項**的處理完全不同，而 `rpc_cancel_aid_order` 只認得其中一條：
+
+| 路徑 | 來源品項 | 來源單頭 |
+|---|---|---|
+| `rpc_transfer_order_to_store`（整單轉出） | **原封不動** | `transferred_out` |
+| `rpc_transfer_order_partial`（部分轉出、**互助認領走這支**） | 等量→整列 `cancelled`、部分→`qty` 遞減 | 只有全轉光才 `transferred_out` |
+
+取消時的復原段（20260713000000 起）只有 `UPDATE customer_orders`，一行都沒動
+`customer_order_items` —— 對整單轉出剛好正確，對部分轉出就是**貨在來源單上憑空消失**。
+2026-08-18 GRP-20260730-001-TF0002（三峽←南平，經總倉互助）就是這樣，取消後那 1 件
+兩張單都沒有。而 `rpc_restore_cancelled_order`（20260818000000）守衛 3 又直接把
+「取消時貨已經還給來源單」當事實、擋掉轉入單的復原 → 兩邊都救不回來。
+
+已修：`_restore_transfer_source_items`（20260818000030），在單頭退回**之前**呼叫。
+分辨兩條路徑的判準是「來源單 `status='transferred_out'` 且該 (campaign_item, sku)
+還有 active 列 → 整單轉出，跳過」；其餘照轉出時的動作反向還原（加回 qty / 復活
+cancelled 列 / 補列），並把轉入單的品項標 `cancelled`，避免兩張單掛同一批貨。
+來源單 notes 蓋回補標記 → 重跑不會加倍。
+
+**互助板的認領量不會自動還**（`rpc_cancel_aid_order` / `rpc_return_aid_order` 都刻意
+不動 `mutual_aid_board`）。取消互助認領之後，`qty_remaining` 要人工加回去，
+否則那則貼文卡在 `exhausted`、釋出店再也放不出來。
+
 ### 搬品項的 SQL 一律只挑 active（`pending`/`reserved`/`ready`）
 
 `customer_order_items` 的 `cancelled` 列**不會被刪掉**，永遠留在原單上。所以任何
