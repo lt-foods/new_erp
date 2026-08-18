@@ -29,11 +29,20 @@ type Candidate = {
   adopted_supplier_name: string | null;
   adopted_cost: number | null;
   adopted_sale_price: number | null;
-  // v_community_product_candidates 補的三欄（來源 → 品牌，NULL = 尚未對應 = 找貨群）
+  // v_community_product_candidates 補的欄位（來源 → 品牌，NULL = 尚未對應 = 找貨群）
   source_brand_id: number | null;
   source_brand_code: string | null;
   source_brand_name: string | null;
+  // 該候選的商品是否已經有團（非 cancelled）。降級讀本表時一律填 false。
+  has_campaign: boolean;
 };
+
+// 本表就有的欄位（view 掛掉時的降級查詢用）
+const CANDIDATE_COLS =
+  "id, product_name_hint, raw_text, source_user_id, source_user_name, source_channel, system_status, owner_action, scheduled_open_at, scheduled_sort_order, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price";
+// view 才有的額外欄位
+const CANDIDATE_COLS_VIEW =
+  `${CANDIDATE_COLS}, source_brand_id, source_brand_code, source_brand_name, has_campaign`;
 
 // 候選池來源清單（rpc_community_channel_summary）
 type ChannelRow = {
@@ -112,6 +121,8 @@ export default function CommunityCandidatesPage() {
   const [piaopiaoBrandId, setPiaopiaoBrandId] = useState<number | null>(null);
   const [channels, setChannels] = useState<ChannelRow[] | null>(null);
   const [showChannels, setShowChannels] = useState(false);
+  // true ＝ 讀不到 v_community_product_candidates（DB 更新還沒套）→ 全頁降級成改動前的樣子
+  const [viewMissing, setViewMissing] = useState(false);
 
   // ── 一鍵建商品＋開團 ─────────────────────────────────────────────────────
   const [openPanel, setOpenPanel] = useState(false);
@@ -123,7 +134,24 @@ export default function CommunityCandidatesPage() {
 
   const highlightRowRef = useRef<HTMLElement | null>(null);
 
-  const isSelectable = (r: Candidate) => r.owner_action !== "scheduled";
+  // ⚠️ 兩顆批次鈕的可選條件「分開判斷」，不可以共用一個 isSelectable：
+  //   「批次排日期」只負責建商品 → 已排程的沒有意義，維持排除。
+  //   「建商品＋開團」→ 老闆很可能先按了「批次排日期」把商品建起來（候選變成
+  //     scheduled），之後才決定要開團。共用同一個條件的話那些候選在這一頁
+  //     永遠選不到、也看不出為什麼，只能繞去商品編輯頁手動開團 ——
+  //     而那條舊路徑沒有本 PR 新加的「售價 > 0」守衛，等於繞過安全網。
+  //   所以這裡只排除「已經有團的」。
+  const canSchedule = (r: Candidate) => r.owner_action !== "scheduled";
+  // viewMissing（DB 還沒套 migration）時一律不可開團 —— 讓降級後的行為與改動前完全一致
+  const canOpen = (r: Candidate) => !viewMissing && !r.has_campaign;
+  const isSelectable = (r: Candidate) => canSchedule(r) || canOpen(r);
+
+  const selectHint = (r: Candidate) => {
+    if (canSchedule(r) && canOpen(r)) return "選取";
+    if (canOpen(r)) return "已排程，仍可補開團";
+    if (canSchedule(r)) return "選取（已開過團，不能再開）";
+    return "已排程且已開團";
+  };
 
   // 還沒被歸類的來源數（＝老闆的待辦：新群第一次進來、或機器人這次帶的是 groupId）
   const unmappedChannels = (channels ?? []).filter((c) => c.brand_id === null).length;
@@ -176,18 +204,23 @@ export default function CommunityCandidatesPage() {
   };
 
   useEffect(() => {
-    loadPiaopiaoBrand();
-    loadChannels();
+    // setState 放在 async callback 裡而不是 effect 本體（react-hooks/set-state-in-effect），
+    // 順便用 alive 旗標避免元件卸載後才回來的 setState。
+    let alive = true;
+    (async () => {
+      if (!alive) return;
+      await loadPiaopiaoBrand();
+      if (!alive) return;
+      await loadChannels();
+    })();
+    return () => { alive = false; };
   }, []);
 
-  const reload = async () => {
-    // 讀 view 而不是本表：多了 source_brand_id / code / name
-    // （view 是 LEFT JOIN、來源對應表有 UNIQUE，筆數與本表完全一致）
+  // 依 tab / 搜尋字串組查詢；useView=false 時退回本表、不帶來源欄位也不做來源篩選
+  const buildCandidateQuery = (useView: boolean) => {
     let q = getSupabase()
-      .from("v_community_product_candidates")
-      .select(
-        "id, product_name_hint, raw_text, source_user_id, source_user_name, source_channel, system_status, owner_action, scheduled_open_at, scheduled_sort_order, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price, source_brand_id, source_brand_code, source_brand_name"
-      )
+      .from(useView ? "v_community_product_candidates" : "community_product_candidates")
+      .select(useView ? CANDIDATE_COLS_VIEW : CANDIDATE_COLS)
       .order("created_at", { ascending: false })
       .limit(200);
 
@@ -197,18 +230,11 @@ export default function CommunityCandidatesPage() {
     else if (tab === "ignored") q = q.eq("owner_action", "ignored");
     else if (tab === "adopted") q = q.eq("owner_action", "adopted");
 
-    // 來源維度：與上面的狀態分頁互不影響
-    if (sourceFilter === "unassigned") {
+    // 來源維度：與上面的狀態分頁互不影響（本表沒有這些欄位，降級時整段跳過）
+    if (useView && sourceFilter === "unassigned") {
       // 尚未對應到任何品牌 —— 包含既有 source_channel 為 NULL 的舊資料
       q = q.is("source_brand_id", null);
-    } else if (sourceFilter === "piaopiao") {
-      if (piaopiaoBrandId === null) {
-        // 品牌還沒建（migration 未套）→ 明講，⛔ 不要靜默退回「全部」讓老闆以為沒資料
-        setRows([]);
-        setError("找不到「漂漂館」品牌，資料庫 migration 可能還沒套用（20260818000100）");
-        setSearching(false);
-        return;
-      }
+    } else if (useView && sourceFilter === "piaopiao" && piaopiaoBrandId !== null) {
       q = q.eq("source_brand_id", piaopiaoBrandId);
     }
 
@@ -216,14 +242,48 @@ export default function CommunityCandidatesPage() {
       const safe = query.replace(/[%,()]/g, " ").trim();
       q = q.or(`product_name_hint.ilike.%${safe}%,raw_text.ilike.%${safe}%`);
     }
+    return q;
+  };
 
+  const reload = async () => {
     try {
-      const { data, error: err } = await q;
-      if (err) setError(err.message);
-      else {
-        setError(null);
-        setRows((data as Candidate[]) ?? []);
+      // 「漂漂館」篩選需要品牌 id，沒有就明講（⛔ 不要靜默退回全部讓老闆以為沒資料）
+      if (!viewMissing && sourceFilter === "piaopiao" && piaopiaoBrandId === null) {
+        setRows([]);
+        setError("找不到「漂漂館」品牌，資料庫更新可能還沒套用（20260818000100）");
+        return;
       }
+
+      // ⚠️⚠️ 降級：DB 更新還沒套（或 view 讀不到）時，⛔ 不可以整頁掛掉。
+      //   既有 6 個分頁與 2495 筆舊資料要照常顯示，只有「來源分線 / 一鍵開團」停用。
+      //   判定法刻意不去猜 PostgREST 的錯誤碼：view 讀失敗就改讀本表，
+      //   本表讀得到 → 確定是 view 的問題 → 降級；本表也讀不到 → 回報真正的錯誤。
+      if (!viewMissing) {
+        const { data, error: err } = await buildCandidateQuery(true);
+        if (!err) {
+          setError(null);
+          setRows((data as unknown as Candidate[]) ?? []);
+          return;
+        }
+      }
+
+      const { data: baseData, error: baseErr } = await buildCandidateQuery(false);
+      if (baseErr) {
+        setError(baseErr.message);
+        return;
+      }
+      if (!viewMissing) setViewMissing(true);
+      setError(null);
+      // 本表沒有 view 的欄位 → 補成「未對應品牌 / 未開團」，語意等同改動前
+      setRows(
+        ((baseData as unknown as Candidate[]) ?? []).map((r) => ({
+          ...r,
+          source_brand_id: null,
+          source_brand_code: null,
+          source_brand_name: null,
+          has_campaign: false,
+        }))
+      );
     } finally {
       setSearching(false);
     }
@@ -271,6 +331,19 @@ export default function CommunityCandidatesPage() {
     return max + 1;
   };
 
+  // ⚠️ 只有真的要標品牌時才帶 p_brand_id。
+  //   DB 更新還沒套時線上仍是 3 參數版的 rpc_schedule_candidate，多傳一個參數
+  //   PostgREST 會直接說找不到函式 —— 那會把「批次排日期」這顆既有按鈕一起弄壞。
+  const scheduleArgs = (id: number, dateStr: string, productName: string, brandId: number | null) => {
+    const args: Record<string, unknown> = {
+      p_candidate_id: id,
+      p_scheduled_date: dateStr,
+      p_product_name: productName,
+    };
+    if (brandId !== null && brandId !== undefined) args.p_brand_id = brandId;
+    return args;
+  };
+
   const deriveProductName = (row: Candidate): string => {
     const hint = (row.product_name_hint ?? "").trim();
     if (hint) return hint.slice(0, 60);
@@ -292,13 +365,11 @@ export default function CommunityCandidatesPage() {
       const sb = getSupabase();
       // 呼叫 rpc_schedule_candidate：建 draft product + sku + 標 candidate scheduled
       // （不再自動建開團；開團改由商品編輯頁「建立新開團」按鈕觸發）
-      const { error: rpcErr } = await sb.rpc("rpc_schedule_candidate", {
-        p_candidate_id: id,
-        p_scheduled_date: dateStr,
-        p_product_name: productName,
-        // 來源已對應到品牌就一起標上（沒對應＝NULL＝與改動前行為相同）
-        p_brand_id: row.source_brand_id ?? null,
-      });
+      // 來源已對應到品牌就一起標上（沒對應＝不帶參數＝與改動前行為相同）
+      const { error: rpcErr } = await sb.rpc(
+        "rpc_schedule_candidate",
+        scheduleArgs(id, dateStr, productName, row.source_brand_id)
+      );
       if (rpcErr) throw rpcErr;
 
       // RPC 不負責 scheduled_sort_order（行事曆排序遺留欄位），補一下
@@ -354,14 +425,15 @@ export default function CommunityCandidatesPage() {
     if (!dateStr || selected.size === 0) return;
     const ids = [...selected].filter((id) => {
       const r = rows?.find((x) => x.id === id);
-      return r && isSelectable(r);
+      return r && canSchedule(r);
     });
+    const skipped = selected.size - ids.length;
     if (ids.length === 0) {
-      setError("沒有可排程的候選（已排程的會略過）");
+      setError("選取的候選都已經排程過了，這顆鈕沒有可做的事（要開團請按「建商品 ＋ 開團」）");
       return;
     }
     setBusy(true);
-    setError(null);
+    setError(skipped > 0 ? `已排程的 ${skipped} 筆會略過，只處理其餘 ${ids.length} 筆` : null);
     try {
       const sb = getSupabase();
       // 順序執行：每一筆建 product/sku 再補 sort_order，避免 sort 撞號（不建開團）
@@ -369,12 +441,10 @@ export default function CommunityCandidatesPage() {
         const row = rows?.find((r) => r.id === id);
         if (!row) continue;
         const productName = deriveProductName(row);
-        const { error: rpcErr } = await sb.rpc("rpc_schedule_candidate", {
-          p_candidate_id: id,
-          p_scheduled_date: dateStr,
-          p_product_name: productName,
-          p_brand_id: row.source_brand_id ?? null,
-        });
+        const { error: rpcErr } = await sb.rpc(
+          "rpc_schedule_candidate",
+          scheduleArgs(id, dateStr, productName, row.source_brand_id)
+        );
         if (rpcErr) throw rpcErr;
         const nextOrder = await nextSortOrderForDay(dateStr);
         await sb
@@ -415,6 +485,11 @@ export default function CommunityCandidatesPage() {
   // 每一筆各自是一個 RPC ＝ 一個交易：失敗的整筆回滾、成功的照樣留著連結。
   const handleBulkOpenCampaign = async () => {
     if (busy || selected.size === 0) return;
+    // 降級模式下 rpc_open_campaign_from_candidate 根本不存在，不要送出去換一個看不懂的錯
+    if (viewMissing) {
+      setError("「一鍵建商品＋開團」尚未啟用（資料庫更新還沒套用）");
+      return;
+    }
 
     // ⛔ 收單時間／取貨截止日一律由老闆指定，這裡不編任何預設值
     if (!openEndAt) { setError("請先指定收單時間"); return; }
@@ -424,17 +499,19 @@ export default function CommunityCandidatesPage() {
     if (!openPickupDeadline) { setError("請先指定取貨截止日"); return; }
     if (openPickupDeadline < formatLocalDate(endDate)) { setError("取貨截止日不可早於收單日"); return; }
 
+    // ⚠️ 這裡用 canOpen 不是 canSchedule：「已排程但還沒開團」的候選要能補開團
     const ids = [...selected].filter((id) => {
       const r = rows?.find((x) => x.id === id);
-      return r && isSelectable(r);
+      return r && canOpen(r);
     });
+    const skipped = selected.size - ids.length;
     if (ids.length === 0) {
-      setError("沒有可開團的候選（已排程的會略過）");
+      setError("選取的候選都已經開過團了，不會重複開");
       return;
     }
 
     setBusy(true);
-    setError(null);
+    setError(skipped > 0 ? `已開過團的 ${skipped} 筆會略過，只處理其餘 ${ids.length} 筆` : null);
     setOpenResults(null);
 
     // 團是「現在」就開（RPC 內 status='open'、start_at=NOW()），
@@ -818,7 +895,18 @@ export default function CommunityCandidatesPage() {
         ))}
       </div>
 
+      {/* DB 更新還沒套用時的降級提示：頁面其餘部分（6 個分頁、既有資料、批次排日期）照常運作 */}
+      {viewMissing && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-2.5 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
+          「漂漂館分線」與「一鍵建商品＋開團」尚未啟用（資料庫更新還沒套用）。
+          <span className="text-amber-700 dark:text-amber-300">
+            　候選池的其他功能一切正常，可以照常使用。
+          </span>
+        </div>
+      )}
+
       {/* 來源切換（與上面的狀態分頁正交：漂漂館的候選一樣會有未處理／已排程） */}
+      {!viewMissing && (
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-zinc-500 dark:text-zinc-400">來源</span>
         {SOURCE_FILTERS.map(({ key, label }) => (
@@ -846,11 +934,12 @@ export default function CommunityCandidatesPage() {
           )}
         </SpinButton>
       </div>
+      )}
 
       {/* 來源設定：哪個 LINE 來源算漂漂館
           ⚠️ Bot 拿不到群名時會改帶 groupId（而且有 10 分鐘負快取），
              所以同一個群可能以兩個不同字串出現 —— 兩個都設一次就會歸到同一邊。 */}
-      {showChannels && (
+      {!viewMissing && showChannels && (
         <div className="rounded-md border border-zinc-200 p-3 text-sm dark:border-zinc-800">
           <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">
             候選是從哪個 LINE 來源進來的。把屬於漂漂館的來源標起來，上面的「漂漂館」才篩得到、
@@ -976,13 +1065,16 @@ export default function CommunityCandidatesPage() {
           >
             {busy ? "排程中…" : "📅 批次排日期"}
           </SpinButton>
-          <SpinButton
-            onClick={() => setOpenPanel((v) => !v)}
-            disabled={busy}
-            className="min-h-[44px] rounded-md bg-pink-600 px-3 text-xs font-semibold text-white hover:bg-pink-700 disabled:opacity-50"
-          >
-            🚀 建商品 ＋ 開團
-          </SpinButton>
+          {/* DB 更新沒套時整顆藏起來：留著會讓老闆按了得到「都已經開過團了」這種誤導訊息 */}
+          {!viewMissing && (
+            <SpinButton
+              onClick={() => setOpenPanel((v) => !v)}
+              disabled={busy}
+              className="min-h-[44px] rounded-md bg-pink-600 px-3 text-xs font-semibold text-white hover:bg-pink-700 disabled:opacity-50"
+            >
+              🚀 建商品 ＋ 開團
+            </SpinButton>
+          )}
           <SpinButton
             onClick={clearSelected}
             disabled={busy}
@@ -1164,7 +1256,7 @@ export default function CommunityCandidatesPage() {
                       disabled={!isSelectable(r)}
                       onChange={() => toggleOne(r.id)}
                       className="h-4 w-4 cursor-pointer disabled:cursor-not-allowed disabled:opacity-30"
-                      title={isSelectable(r) ? "選取" : "已排程,不可重複排程"}
+                      title={selectHint(r)}
                     />
                   </td>
                   <td className="whitespace-nowrap px-3 py-3 text-zinc-500">{fmt(r.created_at)}</td>
@@ -1255,7 +1347,7 @@ export default function CommunityCandidatesPage() {
                   ) : (
                     <span
                       className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${ACTION_COLOR[r.owner_action] ?? ACTION_COLOR.none}`}
-                      title="已排程，不可重複排程"
+                      title={selectHint(r)}
                     >
                       {ACTION_LABEL[r.owner_action] ?? r.owner_action}
                     </span>

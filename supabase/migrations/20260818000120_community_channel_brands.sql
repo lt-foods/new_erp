@@ -118,7 +118,20 @@ SELECT
   c.*,
   m.brand_id AS source_brand_id,
   b.code     AS source_brand_code,
-  b.name     AS source_brand_name
+  b.name     AS source_brand_name,
+  -- 這個候選對應的商品「已經有團了沒有」。
+  -- 用途：候選池要分辨「已排程但還沒開團」（可以補開團）與「已經開過團」（不要重複開）。
+  -- ⚠️ group_buy_campaigns.product_id 沒有唯一鍵（一個商品可以開很多次團），
+  --    所以只能用 EXISTS 判斷，不能靠約束。
+  -- ⚠️ 排除 cancelled：取消掉的團不應該擋住重開。
+  -- adopted_product_id 為 NULL 時 g.product_id = NULL → EXISTS 為 false，正確。
+  EXISTS (
+    SELECT 1
+      FROM public.group_buy_campaigns g
+     WHERE g.tenant_id  = c.tenant_id
+       AND g.product_id = c.adopted_product_id
+       AND g.status <> 'cancelled'
+  ) AS has_campaign
 FROM public.community_product_candidates c
 LEFT JOIN public.community_channel_brands m
        ON m.tenant_id = c.tenant_id
@@ -128,8 +141,8 @@ LEFT JOIN public.brands b
       AND b.tenant_id = m.tenant_id;
 
 COMMENT ON VIEW public.v_community_product_candidates IS
-  '候選池 + 來源所屬品牌。source_brand_id IS NULL ＝ 尚未對應到任何品牌（畫面上的「找貨群」）。'
-  '寫入請走 community_product_candidates 本表，本 view 只供讀取與篩選。';
+  '候選池 + 來源所屬品牌 + 是否已開團。source_brand_id IS NULL ＝ 尚未對應到任何品牌（畫面上的「找貨群」）；'
+  'has_campaign ＝ 該候選的商品已有非 cancelled 的團。寫入請走 community_product_candidates 本表，本 view 只供讀取與篩選。';
 
 GRANT SELECT ON public.v_community_product_candidates TO authenticated;
 
@@ -214,13 +227,29 @@ DECLARE
   v_tenant UUID := public._current_tenant_id();
   v_user   UUID := auth.uid();
   v_role   TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
-  v_ch     TEXT := NULLIF(btrim(COALESCE(p_source_channel, '')), '');
+  -- ⚠️⚠️ 存「原值」，不做 btrim 正規化。
+  --   口徑必須跟比對端一致 —— v_community_product_candidates 與
+  --   rpc_community_channel_summary 都是逐字比對 m.source_channel = c.source_channel。
+  --   若這裡 btrim 後才存，遇到頭尾帶空白的 LINE 群名／暱稱就會「存得進去、
+  --   但永遠比對不上」：畫面一直顯示未分類，老闆完全看不出原因（靜默失敗）。
+  --
+  --   為什麼選「兩邊都不 trim」而不是「兩邊都 trim」：
+  --     1. 實際寫入路徑只有畫面上的「來源設定」，它帶回來的值是
+  --        rpc_community_channel_summary 原封不動吐出來的 source_channel
+  --        → 存原值保證 byte 級來回一致，一定對得上。
+  --     2. 若改成 join 時 btrim(c.source_channel)，就用不到
+  --        UNIQUE (tenant_id, source_channel) 這個索引，而且 summary 會把
+  --        「A」與「 A」列成兩列卻都顯示已對應，更難懂。
+  --     3. 萬一有人手動帶了多餘空白進來，那筆對應會在 summary 裡以
+  --        「0 筆」出現（見該函式的 mapped CTE）→ 看得見，不是靜默壞掉。
+  v_ch     TEXT := p_source_channel;
 BEGIN
   IF v_role NOT IN ('owner','admin','hq_manager','assistant','') THEN
     RAISE EXCEPTION 'permission denied: role % cannot set candidate source brand', v_role;
   END IF;
 
-  IF v_ch IS NULL THEN
+  -- 只用 btrim 做「是不是空白」的驗證，⛔ 不拿它的結果當要存的值
+  IF NULLIF(btrim(COALESCE(p_source_channel, '')), '') IS NULL THEN
     RAISE EXCEPTION 'source_channel must not be blank';
   END IF;
 

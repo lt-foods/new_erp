@@ -93,7 +93,11 @@ BEGIN
   IF p_end_at <= NOW() THEN
     RAISE EXCEPTION '收單時間必須晚於現在';
   END IF;
-  IF p_pickup_deadline IS NOT NULL AND p_pickup_deadline < p_end_at::DATE THEN
+  -- ⚠️ 一定要指定 Asia/Taipei：裸的 p_end_at::DATE 吃 session 時區（線上是 UTC），
+  --    台北凌晨 00:00–07:59 收單的團會被算成前一天，這道守衛就會鬆掉一天。
+  --    全 repo 對 group_buy_campaigns.end_at 一律用這個寫法（65 支 migration / 90 處），照抄不自創。
+  IF p_pickup_deadline IS NOT NULL
+     AND p_pickup_deadline < DATE(p_end_at AT TIME ZONE 'Asia/Taipei') THEN
     RAISE EXCEPTION '取貨截止日不可早於收單日';
   END IF;
 
@@ -147,9 +151,26 @@ BEGIN
     );
   END IF;
 
+  -- ⚠️⚠️ 只啟用「這次候選關聯到的那一個 SKU」，⛔ 不是整個商品底下所有 draft 規格。
+  --   候選可以接到既有商品（見上面 rpc_schedule_candidate 的 adopted_product_id 分支），
+  --   而既有商品很可能有老闆「故意留著沒上架」的 draft 規格（某口味還沒進貨、某規格還沒定價）。
+  --   整批啟用會讓它們變成可販售、被 rpc_create_campaign_from_product 塞進團
+  --   → 客人買得到但實際上沒貨。
+  --   v_sku_id 來自 rpc_schedule_candidate 的回傳：
+  --     新建商品 → 就是剛建的那一個 SKU
+  --     既有商品 → 該商品 id 最小的那一個 SKU（該函式自己選的，這裡沿用同一個對象）
+  --   已經是 active 的其他規格照舊會被塞進團 —— 那是既有行為，不動。
   UPDATE skus
      SET status = 'active', updated_by = v_user, updated_at = NOW()
-   WHERE product_id = v_product_id AND tenant_id = v_tenant AND status = 'draft';
+   WHERE id = v_sku_id AND tenant_id = v_tenant AND status = 'draft';
+
+  IF FOUND THEN
+    PERFORM public._log_product_audit(
+      v_tenant, 'sku', v_sku_id, 'status_change',
+      jsonb_build_object('status','draft'), jsonb_build_object('status','active'),
+      'open campaign from candidate #' || p_candidate_id::TEXT
+    );
+  END IF;
 
   -- ── 3. 守衛 A：一定要有 active SKU ───────────────────────────────────────
   --    ⚠️ 這就是本檔存在的理由：少了這道，rpc_create_campaign_from_product
