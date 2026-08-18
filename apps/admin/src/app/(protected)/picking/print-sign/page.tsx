@@ -509,9 +509,19 @@ export default function PrintSignPage() {
                   <th className="w-16 border border-zinc-400 px-2 py-1 text-right text-xs font-semibold">數量</th>
                   <th className="w-20 border border-zinc-400 px-2 py-1 text-right text-xs font-semibold">單價</th>
                   <th className="w-24 border border-zinc-400 px-2 py-1 text-right text-xs font-semibold">小計</th>
-                  <th className="w-12 whitespace-nowrap border border-zinc-400 px-2 py-1 text-center text-xs font-semibold">
-                    點收
-                  </th>
+                  {/* 點收欄 —— 2026-08-18 老闆指示：**框線留著、格子裡的東西刪掉**。
+                      「點收」兩個字與底下每一格的「□」都拿掉，只留一個空的窄格子讓人手寫打勾。
+                      ⛔ th / td 本身絕對不能刪：刪了整張表就變 5 欄，老闆要的是「窄一半」不是「不見」。
+                      寬度 w-12(48px) → w-6(24px)，就是老闆講的「窄一半」；實測就是 24px 沒被打折。
+                      ⚠ px-2 刻意**不動**。這一欄左右內距共 16px，table-layout:auto 底下欄寬會被
+                        min-content 頂住，所以內距是有底線的 —— 但 16px < 24px，還沒頂到，
+                        w-6 拿得到完整的 24px（px-2 / px-1 / px-0 三種實測都是 24px）。
+                        ⛔ 真正會頂到的是更窄的設定：老闆若之後要「8pt」(10.67px)，
+                          光內距就比整欄寬，那時**才**必須連 px 一起縮，不然寫了也縮不下去
+                          （只改寬度實測停在 17px；對照與量測見 v7 那份三種寬度對照頁）。
+                      ⚠ 拿掉 whitespace-nowrap / text-center / text-xs / font-semibold：
+                        那四個都只作用在文字上，格子空了就是死 class。 */}
+                  <th className="w-6 border border-zinc-400 px-2 py-1" />
                 </tr>
               </thead>
               <tbody>
@@ -541,9 +551,10 @@ export default function PrintSignPage() {
                     <td className="whitespace-nowrap border border-zinc-400 px-2 py-0.5 text-right font-mono">
                       {r.subtotal == null ? "—" : money(r.subtotal)}
                     </td>
-                    <td className="border border-zinc-400 px-2 py-0.5 text-center">
-                      <span className="text-zinc-300">□</span>
-                    </td>
+                    {/* 點收欄：空格子（見表頭那段說明）。px-2 py-0.5 照舊 —— 這一欄不決定列高，
+                        同列的商品名稱那格才決定，所以清空不會讓每一列變矮、表格總高不變（實測列高
+                        before / after 都是 25px）。 */}
+                    <td className="border border-zinc-400 px-2 py-0.5" />
                   </tr>
                 ))}
                 {/* 補空行讓表格美觀（品項很少時才會出現，手寫補品項也用得上） */}
@@ -580,25 +591,14 @@ export default function PrintSignPage() {
               </div>
             )}
 
-            {/* 簽名區 */}
-            <div className="mt-8 grid grid-cols-2 gap-8 text-sm">
-              <div>
-                <div className="text-xs text-zinc-500">收貨人簽名 / 日期</div>
-                <div className="mt-12 border-t border-zinc-900 pt-1 text-xs text-zinc-500">
-                  簽名 ＿＿＿＿＿＿＿＿　日期 ＿＿＿＿＿＿
-                </div>
-              </div>
-              <div>
-                <div className="text-xs text-zinc-500">送貨人</div>
-                <div className="mt-12 border-t border-zinc-900 pt-1 text-xs text-zinc-500">
-                  簽名 ＿＿＿＿＿＿＿＿　日期 ＿＿＿＿＿＿
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-6 text-[10px] text-zinc-500">
-              ※ 收到請逐項點收，數量不符請於收貨人簽名旁註明短少 / 多到項目與數量。
-            </div>
+            {/* ⛔ 這裡原本有整個簽名區（收貨人簽名 / 日期、送貨人，兩組「簽名＿＿ 日期＿＿」底線），
+                以及最後一行「※ 收到請逐項點收…」的說明。2026-08-18 老闆指示通通刪掉。
+                那一區是純靜態版面（沒有綁任何資料），拿掉不影響任何一格數字；
+                它佔掉的高度是死的（mt-8 ＋ 兩行 mt-12 的留白 ＋ mt-6 的說明），每張簽收單都白吃一段：
+                實測 41.2mm ≈ 6.2 列，A4 第一頁放得下的品項從 30 列變成 36 列，
+                30～35 樣的店因此從印兩張變成印一張。
+                ⛔ 只有版面被刪掉，`sheet.hasMissingPrice` 那句缺價提示要留著 ——
+                  它跟金額有關（哪些品項沒被算進合計），不是簽名區的一部分。 */}
           </div>
         ))}
       </div>
