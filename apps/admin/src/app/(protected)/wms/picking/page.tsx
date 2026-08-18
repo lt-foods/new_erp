@@ -216,9 +216,14 @@ function alivePickableSkuIds(demand: DemandRow[]): Set<number> {
     const poSkuKey = `${r.po_id}:${r.sku_id}`;
     if (poSkuSeen.has(poSkuKey)) continue;
     poSkuSeen.add(poSkuKey);
+    // ⚠ key 一律 Number() 正規化（阿審 2026-08-18 P0-2）：回傳的集合要拿去跟「已挑清單」
+    //   比對，而那一側保證是 number（readStoredPicked 有 .map(Number)）。BIGINT 經過
+    //   PostgREST 可能是字串（#751 踩過）—— 真的發生時每一個已挑品項都會被判成「已無可
+    //   分配量」而**整批自動移除**，畫面只留一句黃色提示，已挑清單當場清空。
+    const skuId = Number(r.sku_id);
     avail.set(
-      r.sku_id,
-      (avail.get(r.sku_id) ?? 0) + Number(r.gr_qty) - Number(r.po_sku_already_wave ?? 0),
+      skuId,
+      (avail.get(skuId) ?? 0) + Number(r.gr_qty) - Number(r.po_sku_already_wave ?? 0),
     );
   }
   const alive = new Set<number>();
@@ -977,12 +982,23 @@ function Body() {
   // 已挑的列。⚠️ 比對基準是「未經任何篩選」的 skuRows，不是 filteredSkuRows ——
   // 拿目前搜尋結果去交集，正是老闆遇到的「選了 30 樣、按建單只剩 1 樣」的根因。
   const pickedRows = useMemo(
-    () => skuRows.filter((sk) => pickedSkus.has(sk.sku_id)),
+    // ⚠⚠ Number() 正規化（阿審 2026-08-18 P0-2）：pickedSkus 保證是 number
+    //   （readStoredPicked 有 .map(Number)），而 sk.sku_id 直接來自 PostgREST。
+    //   型別對不上時 pickedRows 會變成 0 → hasPicked=false → 建單範圍**退回篩選範圍內全部**。
+    //   這是最壞的一種失效：畫面說匯入成功，實際上會派出整個工作台。
+    //   ⛔ 刻意只在這個「skuRows ↔ 已挑清單」的接縫上正規化，**不動 skuRows 本身的 sku_id**：
+    //     skuSoldCampaigns / priceFlags / hqOnHand 三張表都是用 PostgREST 原值當 key
+    //     （分別來自 campaign_items / sku_prices / stock_balances 三支查詢），
+    //     只把 skuRows 那一側轉成 number，字串情境下反而會讓那三個查表全部失準。
+    () => skuRows.filter((sk) => pickedSkus.has(Number(sk.sku_id))),
     [skuRows, pickedSkus],
   );
   const hasPicked = pickedRows.length > 0;
 
-  function togglePick(skuId: number) {
+  function togglePick(rawSkuId: number) {
+    // ⚠ 同 pickedRows：已挑清單一律存 number。不正規化的話，字串 id 會讓 includes() 找不到
+    //   → 再點一次不是取消而是**又加一筆**（清單裡同時有 123 與 "123"）。
+    const skuId = Number(rawSkuId);
     setPickedSkuIds(
       pickedIds.includes(skuId) ? pickedIds.filter((id) => id !== skuId) : [...pickedIds, skuId],
       pickedEpoch,
@@ -991,7 +1007,7 @@ function Body() {
   // 「全部加入」= 把目前搜尋結果一次丟進已挑清單（是聯集，不會蓋掉先前挑的）
   function addAllVisiblePicks() {
     const next = new Set(pickedIds);
-    for (const sk of visiblePickRows) next.add(sk.sku_id);
+    for (const sk of visiblePickRows) next.add(Number(sk.sku_id)); // 同 togglePick：清單一律存 number
     setPickedSkuIds(Array.from(next), pickedEpoch);
   }
 
@@ -1009,6 +1025,18 @@ function Body() {
   //   已挑清單是本檔的 module store，setPickedSkuIds 有「身分世代」防線（見 :140）。
   //   從外面繞過去寫＝拆掉跨使用者資料污染的那道牆。草稿頁只負責導頁。
   const [draftImport, setDraftImport] = useState<DraftImport | null>(null);
+  // ⭐⭐ 「這一趟是從草稿匯入的」（阿審 2026-08-18 P0-3 / P0-4）。
+  //
+  // 為什麼需要它：:1112 的 `effectiveSkuRows = hasPicked ? pickedRows : filteredSkuRows`
+  //   把「已挑 0 樣」一律當成「使用者沒挑 → 那就派篩選範圍內全部」。匯入之後這個預設是**錯的**：
+  //   使用者心裡在派的是那張草稿，被清成 0 樣時他要的是「什麼都不要派」，不是「派全部」。
+  //   兩條路都會走到 0 樣：① 他自己按「清空」或逐一取消　② 失效清理 effect 把被派完的清掉。
+  //   → 旗標為 true 且已挑 0 樣時，⛔ 擋住建單（見 draftScopeEmpty）。
+  //
+  // ⛔ 刻意只放 React state，**不進 localStorage、不進 module store**：
+  //   重新整理就是要讓它自然消失，那正是回到平常「不挑＝派全部」的逃生門。
+  // ⛔ 沒有 ?fromDraft= 進來的一般使用情境，這裡永遠是 false，行為與改動前一模一樣。
+  const [draftImported, setDraftImported] = useState(false);
   // ⚠ 整個 mount 只跑一次。ref 在 await **之前**就設 true —— 這個 effect 的依賴
   //   （demand / skuRows / searchParams）在載入過程中會變好幾次，沒有這道閘門，
   //   撈到一半又觸發第二輪，兩輪的 setPickedSkuIds 會互相覆蓋。
@@ -1022,6 +1050,14 @@ function Body() {
     //   pickedStorageKey === null → 身分還沒到位，這時寫進去不會落地（見 setPickedSkuIds）
     if (!demand || !pickedStorageKey) return;
     draftImportRan.current = true;
+    // ⛔⛔ 世代一定要在**進 async 之前**、與前置條件同一個同步時刻取（阿審 2026-08-18 P0-1）。
+    //   expectedEpoch 的語意是「**我讀到這批資料時**的世代」，不是「我寫入時的世代」。
+    //   在寫入當下才呼叫 getPickedEpoch()，等於永遠拿最新世代去寫 → 世代防線完全失效：
+    //   下面撈草稿明細的 await 期間，iPad 換人／換 tenant 會讓 epoch +1、清單清空，
+    //   回來時取到的是**新世代**、寫入照樣成功 → 把 A 的草稿商品寫進 B 的已挑清單。
+    //   :313-341 那個失效清理 effect 之所以安全，正是因為它 getPickedSkuIds() 與
+    //   getPickedEpoch() 在同一個同步時刻取、中間沒有任何 await。
+    const importEpoch = getPickedEpoch();
     void (async () => {
       try {
         const sb = getSupabase();
@@ -1040,7 +1076,13 @@ function Body() {
           ),
         ]);
         if (headRes.error) throw headRes.error;
-        const draftName = (headRes.data as { name: string } | null)?.name ?? `#${draftId}`;
+        // ⛔⛔ 查不到單頭要當**錯誤**，不可以退成 `#id` 繼續走（阿審 2026-08-18 P1-1）。
+        //   草稿被刪 / RLS 看不到 / 網址打錯，明細也會是空的 →
+        //   畫面就會說成「這張草稿的商品都沒有可分配量」，那是一句不是事實的話。
+        //   系統異常偽裝成資料狀態是本專案犯過四次的老病，⛔ 一個都不准漏。
+        const head = headRes.data as { name: string } | null;
+        if (!head) throw new Error("找不到這張草稿（可能已被刪除，或這個帳號看不到）");
+        const draftName = head.name;
 
         // sku_id 去重。⚠ 一律 Number() 正規化：BIGINT 經過 PostgREST 可能是字串
         //   （#751 踩過），不正規化的話與 skuRows 取交集會整批對不上、變成「一樣都帶不過去」。
@@ -1073,13 +1115,10 @@ function Body() {
           return;
         }
 
-        // ⛔ 一定要用 live snapshot 的世代，不可以用 closure 裡的 pickedEpoch：
-        //   同一輪 passive effects 裡，上面的「換人重置 / 綁新 key」effect 可能已經換掉
-        //   store 的歸屬，但 React 不會替這個 effect 更新 closure —— 阿審在
-        //   「失效清理 effect」（:313-341）抓到的 P0 就是同一條。
+        // 用進 async 之前捕捉的 importEpoch（⛔ 不是這一刻的 getPickedEpoch()，見上面 P0-1）。
         // ⛔ 整個換掉，不是聯集：⛔ 不可以抄 addAllVisiblePicks 那種寫法，
         //   否則前一天挑剩沒清掉的東西會跟著今天這批一起被派出去。
-        const ok = setPickedSkuIds(sendable.map((s) => s.sku_id), getPickedEpoch());
+        const ok = setPickedSkuIds(sendable.map((s) => s.sku_id), importEpoch);
         if (!ok) {
           // 世代對不上＝中途換了帳號／換了租戶，這批是「上一個人的」→ 整批被拒。
           // ⛔ 不可以當成成功：畫面會顯示帶了 N 樣，實際上一樣都沒挑中，
@@ -1091,6 +1130,9 @@ function Body() {
           return;
         }
         setDraftImport({ kind: "ok", draftName, picked: sendable.length, blocked });
+        // ⭐⭐ 立旗標：從這一刻起，「已挑 0 樣」的意思從「我沒挑，那就派全部」
+        //   變成「我本來在派這張草稿，現在被清光了」—— 見 draftImported 的宣告處。
+        setDraftImported(true);
         setPickStep("select"); // 就是老闆說的「第一步：挑選商品」
         // ⭐ 成功才把網址參數拿掉：留著的話，老闆手動取消幾樣之後按 F5，
         //   整批又會被灌回來（他不會知道自己剛取消的又回來了）。
@@ -1110,6 +1152,16 @@ function Body() {
   // 本次建單納入的品項：有挑 → 只取挑中的（⚠️ 從 skuRows 取，不與 filteredSkuRows 交集）；
   // 沒挑 → 維持現行「篩選範圍內全部」語意，行為不變。
   const effectiveSkuRows = hasPicked ? pickedRows : filteredSkuRows;
+
+  // ⭐⭐ 「從草稿匯入過，但現在已挑清單是空的」（阿審 2026-08-18 P0-3 / P0-4）。
+  //
+  // 上面那個三元把「已挑 0 樣」當成「沒挑 → 派篩選範圍內全部」。匯入之後這個預設會害人：
+  //   使用者以為自己在派那張草稿，實際上會把整個工作台派出去。
+  // 兩條路都會走到這裡：① 他自己按「清空」或逐一取消　② 失效清理 effect 把被派完的清掉。
+  // ⛔ 所以這種情況要**擋住建單**（不是默默改成空範圍，那樣按了沒反應更難懂）。
+  // ⓘ 只擋建單，⛔ 不擋【下一步】—— 讓他照樣看得到現況（哪些沒了、剩什麼），
+  //   要回到平常「不挑＝派全部」的模式，重新整理這一頁就好（旗標只在 React state）。
+  const draftScopeEmpty = draftImported && !hasPicked;
 
   // 平板塞不下 17 欄 → 預設只顯示「本次建單範圍內還有未派需求、或已填擬分量」的分店欄。
   // 注意：分配上限（getSkuAllocTotal）永遠算全部分店，隱藏欄的擬分量照樣計入。
@@ -1997,7 +2049,9 @@ function Body() {
               effectiveSkuRows.length > 0 && (
                 <SpinButton
                   onClick={() => submitAll(effectiveSkuRows)}
-                  disabled={submitting || totalAllocSum === 0}
+                  // ⛔⛔ draftScopeEmpty 一定要擋在這裡：從草稿匯入後被清成 0 樣時，
+                  //   effectiveSkuRows 已經退回「篩選範圍內全部」，按下去就是派整個工作台。
+                  disabled={submitting || totalAllocSum === 0 || draftScopeEmpty}
                   className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
                 >
                   {submitting
@@ -2016,6 +2070,28 @@ function Body() {
           是老闆待會要自己判斷的（要不要等貨、要不要走補貨申請），看漏了就白撿一趟。 */}
       {draftImport && (
         <DraftImportBanner result={draftImport} onClose={() => setDraftImport(null)} />
+      )}
+
+      {/* ⛔⛔ 從草稿匯入之後已挑清單被清成 0 樣（阿審 2026-08-18 P0-3 / P0-4）。
+          ⛔ 這一則刻意**不給關**：它不是一則通知，是「建單鈕現在為什麼是灰的」的說明，
+            而且它會在挑回東西的當下自己消失。給了關閉鈕＝可以把唯一的解釋關掉，剩下一顆
+            按不動的灰鈕。 */}
+      {draftScopeEmpty && (
+        <div className="rounded-md border-2 border-red-400 bg-red-50 p-3 text-sm text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-200">
+          <p className="font-bold leading-relaxed">
+            ⛔ 這一趟是<strong>從撿貨草稿帶進來的</strong>，但「已挑選」現在是<strong>空的</strong>
+            （被你取消掉，或是這批商品剛剛被別人派完了）。
+          </p>
+          <p className="mt-1">
+            所以<strong>「🧾 建立撿貨單」先擋住了</strong> ——
+            平常沒挑東西時系統會當成「派畫面上全部」，但你現在在派的是那張草稿，
+            <strong>這裡不會幫你派全部</strong>。
+          </p>
+          <p className="mt-1">
+            要繼續：回「① 挑選商品」把要撿的挑起來。
+            要回到平常「不挑就是派全部」的用法：<strong>重新整理這一頁</strong>。
+          </p>
+        </div>
       )}
 
       {/* 已挑清單失效提示（驗收 #5：自動移除且要明示，不得靜默） */}
@@ -2123,7 +2199,7 @@ function Body() {
             ) : (
               <ul className="divide-y divide-zinc-200 rounded-md border border-zinc-200 bg-white dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-900">
                 {visiblePickRows.map((sk) => {
-                  const picked = pickedSkus.has(sk.sku_id);
+                  const picked = pickedSkus.has(Number(sk.sku_id)); // 同 pickedRows，見該處註解
                   const poLines = pickRowPoLines(sk);
                   return (
                     <li
@@ -2679,11 +2755,19 @@ function DraftImportBanner({ result, onClose }: { result: DraftImport; onClose: 
   if (result.kind === "failed") {
     return (
       <div className="flex items-start justify-between gap-3 rounded-md border-2 border-red-400 bg-red-50 p-3 text-sm text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-200">
-        <p className="font-bold leading-relaxed">
-          ❌ 草稿的商品沒有帶進來（<strong>不是</strong>草稿沒有商品，是這次讀取失敗）：{result.reason}
-          <br />
-          已挑清單完全沒有被動到 —— 重新整理這一頁可以再試一次。
-        </p>
+        <div>
+          <p className="font-bold leading-relaxed">
+            ❌ 草稿的商品沒有帶進來（<strong>不是</strong>草稿沒有商品，是這次讀取失敗）：{result.reason}
+          </p>
+          <p className="mt-1">已挑清單完全沒有被動到 —— 重新整理這一頁可以再試一次。</p>
+          {/* ⚠ 阿審 2026-08-18 P1-2：網址上的 ?fromDraft= 是刻意留著的（才重試得了），
+              但那代表 F5 成功時會**整個取代**現在的已挑清單。⛔ 一定要先講，不能讓他
+              自己先挑了 10 樣、按了 F5 才發現全被換掉。 */}
+          <p className="mt-1 font-semibold">
+            ⚠ 重新整理如果這次成功了，會用草稿的商品清單<strong>整個取代</strong>目前「已挑選」裡的東西
+            —— 如果你已經自己挑了一些，先把它們記下來，或改成手動挑、不要重新整理。
+          </p>
+        </div>
         {closeBtn}
       </div>
     );
