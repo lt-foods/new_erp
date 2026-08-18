@@ -1500,18 +1500,20 @@ export function OrderDetail({
                   {aidRouteLabel(o.is_air_transfer)}・{aidStageLabel(o.status, o.is_air_transfer)}
                 </span>
                 <span className="text-zinc-500">{fmtDt(o.created_at)}</span>
-                {isAidInFlight(o.status) && (
-                  <SpinButton
-                    onClick={() => printViaIframe(withBasePath(`/transfers/print-aid?order_id=${o.id}`))}
-                    className="ml-auto rounded-md border border-fuchsia-300 px-2 py-1 text-[11px] font-medium text-fuchsia-700 hover:bg-fuchsia-50 dark:border-fuchsia-800 dark:text-fuchsia-300 dark:hover:bg-fuchsia-950"
-                    title={
-                      `列印互助出貨單（${o.order_no}）：隨貨聯夾在箱子上，` +
-                      `${o.is_air_transfer ? "" : "總倉、"}${o.store_name}照單點收簽名`
-                    }
-                  >
-                    🖨 出貨單
-                  </SpinButton>
-                )}
+                {/* 每一筆都能印（含已收貨 / 已取消的舊單）—— 事後補一張歸檔、對帳
+                    是店家的日常，不要只給還在路上的那幾張 */}
+                <SpinButton
+                  onClick={() => printViaIframe(withBasePath(`/transfers/print-aid?order_id=${o.id}`))}
+                  className="ml-auto rounded-md border border-fuchsia-300 px-2 py-1 text-[11px] font-medium text-fuchsia-700 hover:bg-fuchsia-50 dark:border-fuchsia-800 dark:text-fuchsia-300 dark:hover:bg-fuchsia-950"
+                  title={
+                    isAidInFlight(o.status)
+                      ? `列印互助出貨單（${o.order_no}）：隨貨聯夾在箱子上，` +
+                        `${o.is_air_transfer ? "" : "總倉、"}${o.store_name}照單點收簽名`
+                      : `補印互助出貨單（${o.order_no}・${o.store_name}）`
+                  }
+                >
+                  🖨 出貨單
+                </SpinButton>
               </li>
             ))}
           </ul>

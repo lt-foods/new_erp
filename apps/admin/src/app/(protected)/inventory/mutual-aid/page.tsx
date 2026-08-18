@@ -220,7 +220,7 @@ export default function MutualAidPage() {
           <SpinButton
             type="button"
             onClick={() => printViaIframe(withBasePath(`/inventory/mutual-aid/print?type=${filter}`))}
-            title="列印目前這個分頁的貼文清單（A4 橫式）"
+            title="列印目前這個分頁的整份貼文清單（A4 橫式）；單獨一則請按該列右邊的 🖨️"
             className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
           >
             🖨️ 列印
@@ -281,11 +281,11 @@ export default function MutualAidPage() {
       ) : (
         <ul className="space-y-2">
           {posts.map((p) => (
-            <li key={p.id}>
+            <li key={p.id} className="flex items-start gap-2 rounded-md border border-zinc-200 bg-white p-3 transition hover:border-zinc-400 hover:shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-600">
               <SpinButton
                 type="button"
                 onClick={() => setThreadPost(p)}
-                className="block w-full rounded-md border border-zinc-200 bg-white p-3 text-left transition hover:border-zinc-400 hover:shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-600"
+                className="block min-w-0 flex-1 text-left"
               >
                 <div className="mb-1 flex flex-wrap items-center gap-2">
                   <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${TYPE_COLOR[p.post_type]}`}>
@@ -329,6 +329,16 @@ export default function MutualAidPage() {
                   )}
                   {p.note && <span className="text-zinc-700 dark:text-zinc-300">「{p.note}」</span>}
                 </div>
+              </SpinButton>
+              {/* 每一則都要能單獨印（不論狀態）—— 板上的貨常常是靠紙本在店裡流動，
+                  已認領 / 已過期的也要印得回來歸檔、對帳 */}
+              <SpinButton
+                type="button"
+                onClick={() => printViaIframe(withBasePath(`/inventory/mutual-aid/print?id=${p.id}`))}
+                title="列印這一則（A4 直式：內容 + 留言 + 認領簽收欄）"
+                className="shrink-0 rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              >
+                🖨️
               </SpinButton>
             </li>
           ))}
@@ -1498,6 +1508,14 @@ function ThreadModal({
                 App 標題：{savedSpotTitle}
               </span>
             )}
+            <SpinButton
+              type="button"
+              onClick={() => printViaIframe(withBasePath(`/inventory/mutual-aid/print?id=${post.id}`))}
+              title="列印這一則（A4 直式：內容 + 留言 + 認領簽收欄）"
+              className="ml-auto shrink-0 rounded-md border border-zinc-300 px-2 py-0.5 text-[11px] text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            >
+              🖨️ 列印
+            </SpinButton>
           </div>
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-zinc-500">
             <span>

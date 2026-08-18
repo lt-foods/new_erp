@@ -1,18 +1,23 @@
 "use client";
 
-// 儀表板提醒：本店有互助的貨要交出去，提醒店家把出貨單印出來給司機。
+// 儀表板提醒：本店名下**還在路上的互助轉移**，轉出（要交出去）與轉入（在等的貨）
+// 兩個方向都列出來，每一筆都能就地列印互助出貨單。
 //
-// 為什麼要主動提醒：互助的貨是「別人來拿」，出貨動作不像取貨那樣有客人站在櫃檯催。
-// 店家不知道自己名下有貨等著被載走，就不會去印單 —— 司機來了拿了貨、紙上什麼都沒有，
-// 中途少一箱沒人說得清（2026-08-15 店家回報）。
+// 為什麼要主動提醒：互助的貨是「別人來拿 / 別人送來」，不像顧客取貨有人站在櫃檯催。
+// 轉出店不知道自己名下有貨等著被載走，就不會去印單 —— 司機來了拿了貨、紙上什麼都沒有，
+// 中途少一箱沒人說得清（2026-08-15 店家回報）。轉入店同理：不知道有貨在路上，
+// 箱子到了也不會去「收貨」頁收單，訂單就一直卡著。
 //
-// 判定：轉入單（互助單）還沒被收貨店收掉（pending / confirmed / shipping），
-// 而它的來源單是本店。
+// 判定：轉入單（互助單）還沒被收貨店收掉（pending / confirmed / shipping）。
 //   - pending   = 剛轉出、總倉還沒收到（**經總倉的轉入單一開始就是這個狀態**，
 //                 見 rpc_transfer_order_to_store / _partial：跨店非空中轉建成 pending）
 //   - confirmed = 總倉已收、還沒派貨；空中轉的話是自動出貨上線前卡住的舊單
 //   - shipping  = 已建 AT- 轉移單，但收貨店還沒收 → 貨可能還在店裡等司機
-//   收貨店收掉就變 ready，提醒自動消失。
+//   收貨店收掉就變 ready，兩邊的提醒都自動消失。
+//
+// 方向：轉出＝來源單的 pickup_store 是本店；轉入＝這張轉入單的 pickup_store 是本店。
+// 同店轉單（只是換客人）貨沒離開本店，兩邊都不算。
+// 儀表板選「全部門市」（HQ）時不分方向，一份清單看全站在途的互助。
 //
 // ⚠ pending 不可以漏（2026-08-18 南平→三峽）：原本只撈 confirmed/shipping，而
 // 經總倉的單要等總倉「收到貨」才被推 confirmed —— 也就是箱子早就離開店裡了提醒才出現。
@@ -27,7 +32,7 @@ import { printViaIframe } from "@/lib/printIframe";
 import { withBasePath } from "@/lib/basePath";
 import { AID_IN_FLIGHT_STATUSES, aidRouteLabel, aidStageLabel } from "@/lib/aidTransfer";
 
-type PendingShip = {
+type AidShipment = {
   id: number;
   order_no: string;
   status: string;
@@ -35,6 +40,7 @@ type PendingShip = {
   dest_store: string;
   dest_store_id: number | null;
   source_store: string;
+  source_store_id: number | null;
   qty: number;
 };
 
@@ -51,7 +57,7 @@ function loadPrinted(): Set<number> {
 }
 
 export default function AidShipmentReminder({ storeId }: { storeId: number | null }) {
-  const [rows, setRows] = useState<PendingShip[] | null>(null);
+  const [rows, setRows] = useState<AidShipment[] | null>(null);
   // rows 還沒載完（含 SSR）時整個元件回 null，所以這裡讀 localStorage 不會有 hydration 落差
   const [printed, setPrinted] = useState<Set<number>>(
     () => (typeof window === "undefined" ? new Set<number>() : loadPrinted()),
@@ -102,14 +108,12 @@ export default function AidShipmentReminder({ storeId }: { storeId: number | nul
           ((srcData ?? []) as unknown as SrcRaw[]).map((s) => [s.id, s]),
         );
 
-        const list = raw.flatMap((r): PendingShip[] => {
+        const list = raw.flatMap((r): AidShipment[] => {
           const src = srcMap.get(r.transferred_from_order_id);
           if (!src) return [];
-          // 同店轉單（只是換客人）貨沒離開本店，不用出貨也不用印
+          // 同店轉單（只是換客人）貨沒離開本店，不用出貨也不用收貨
           if (src.pickup_store_id === r.pickup_store_id) return [];
-          // 儀表板選了門市（分店帳號一律鎖自己那家）→ 只提醒「要出貨的是本店」
-          if (storeId != null && src.pickup_store_id !== storeId) return [];
-          // 品項全被取消掉的單沒有實體貨要交，別再叫人去印一張空白單
+          // 品項全被取消掉的單沒有實體貨在走，別再叫人去印一張空白單
           const qty = (r.items ?? [])
             .filter((it) => !["cancelled", "expired"].includes(it.status))
             .reduce((s, it) => s + Number(it.qty), 0);
@@ -122,6 +126,7 @@ export default function AidShipmentReminder({ storeId }: { storeId: number | nul
             dest_store: nameOf(r.store),
             dest_store_id: r.pickup_store_id,
             source_store: nameOf(src.store),
+            source_store_id: src.pickup_store_id,
             qty,
           }];
         });
@@ -132,7 +137,8 @@ export default function AidShipmentReminder({ storeId }: { storeId: number | nul
       }
     })();
     return () => { cancelled = true; };
-  }, [storeId]);
+    // 查詢是全 tenant 的，方向與門市過濾都在 render 時做 —— 換門市不需要重打
+  }, []);
 
   const markPrinted = useCallback((id: number) => {
     setPrinted((prev) => {
@@ -145,24 +151,108 @@ export default function AidShipmentReminder({ storeId }: { storeId: number | nul
 
   if (!rows || rows.length === 0) return null;
 
-  const todo = rows.filter((r) => !printed.has(r.id)).length;
+  // 選了門市（分店帳號一律鎖自己那家）→ 拆成轉出 / 轉入兩區；
+  // 全部門市（HQ）→ 不分方向，一份在途清單
+  const outgoing = storeId == null ? [] : rows.filter((r) => r.source_store_id === storeId);
+  const incoming = storeId == null ? [] : rows.filter((r) => r.dest_store_id === storeId);
+  const both = storeId == null ? rows : [];
+  if (outgoing.length === 0 && incoming.length === 0 && both.length === 0) return null;
 
   return (
-    <section className="rounded-md border border-fuchsia-300 bg-fuchsia-50 p-4 dark:border-fuchsia-800 dark:bg-fuchsia-950/40">
+    <div className="space-y-3">
+      {both.length > 0 && (
+        <AidSection
+          tone="all"
+          title={`🤝 全站有 ${both.length} 筆互助的貨在路上`}
+          hint="收貨店收貨後就會從這裡消失"
+          rows={both}
+          printed={printed}
+          showPrinted={false}
+          onPrinted={markPrinted}
+        />
+      )}
+      {outgoing.length > 0 && (
+        <AidSection
+          tone="out"
+          title={`🤝 有 ${outgoing.length} 筆互助的貨要交出去`}
+          subtitle={(() => {
+            const todo = outgoing.filter((r) => !printed.has(r.id)).length;
+            return todo > 0 ? `（${todo} 筆還沒列印）` : undefined;
+          })()}
+          hint="印出來夾在箱子上交給司機；收貨店收貨後這裡就會消失"
+          rows={outgoing}
+          printed={printed}
+          showPrinted
+          onPrinted={markPrinted}
+        />
+      )}
+      {incoming.length > 0 && (
+        <AidSection
+          tone="in"
+          title={`📥 有 ${incoming.length} 筆互助的貨要進來`}
+          hint="貨到了請到「收貨」頁收單；印一張對照著點收，數量不對當場就看得出來"
+          rows={incoming}
+          printed={printed}
+          showPrinted={false}
+          onPrinted={markPrinted}
+        />
+      )}
+    </div>
+  );
+}
+
+const TONE = {
+  out: {
+    section: "border-fuchsia-300 bg-fuchsia-50 dark:border-fuchsia-800 dark:bg-fuchsia-950/40",
+    heading: "text-fuchsia-900 dark:text-fuchsia-200",
+    hint: "text-fuchsia-700 dark:text-fuchsia-300",
+    item: "border-fuchsia-200 dark:border-fuchsia-900",
+    button: "border-fuchsia-400 text-fuchsia-700 hover:bg-fuchsia-50 dark:border-fuchsia-700 dark:text-fuchsia-300 dark:hover:bg-fuchsia-950",
+  },
+  in: {
+    section: "border-sky-300 bg-sky-50 dark:border-sky-800 dark:bg-sky-950/40",
+    heading: "text-sky-900 dark:text-sky-200",
+    hint: "text-sky-700 dark:text-sky-300",
+    item: "border-sky-200 dark:border-sky-900",
+    button: "border-sky-400 text-sky-700 hover:bg-sky-50 dark:border-sky-700 dark:text-sky-300 dark:hover:bg-sky-950",
+  },
+  all: {
+    section: "border-zinc-300 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900",
+    heading: "text-zinc-900 dark:text-zinc-100",
+    hint: "text-zinc-600 dark:text-zinc-400",
+    item: "border-zinc-200 dark:border-zinc-800",
+    button: "border-zinc-400 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800",
+  },
+} as const;
+
+function AidSection({
+  tone, title, subtitle, hint, rows, printed, showPrinted, onPrinted,
+}: {
+  tone: keyof typeof TONE;
+  title: string;
+  subtitle?: string;
+  hint: string;
+  rows: AidShipment[];
+  printed: Set<number>;
+  // 「✓ 已列印」只對轉出方有意義（該印的人是他）；轉入方印的是核對聯，不要標
+  showPrinted: boolean;
+  onPrinted: (id: number) => void;
+}) {
+  const t = TONE[tone];
+  return (
+    <section className={`rounded-md border p-4 ${t.section}`}>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="text-sm font-semibold text-fuchsia-900 dark:text-fuchsia-200">
-          🤝 有 {rows.length} 筆互助的貨要交出去
-          {todo > 0 && <span className="ml-2 font-normal">（{todo} 筆還沒列印）</span>}
+        <h2 className={`text-sm font-semibold ${t.heading}`}>
+          {title}
+          {subtitle && <span className="ml-2 font-normal">{subtitle}</span>}
         </h2>
-        <span className="text-xs text-fuchsia-700 dark:text-fuchsia-300">
-          印出來夾在箱子上交給司機；收貨店收貨後這裡就會消失
-        </span>
+        <span className={`text-xs ${t.hint}`}>{hint}</span>
       </div>
       <ul className="mt-3 space-y-2">
         {rows.map((r) => (
           <li
             key={r.id}
-            className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-fuchsia-200 bg-white px-3 py-2 text-sm dark:border-fuchsia-900 dark:bg-zinc-900"
+            className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded border bg-white px-3 py-2 text-sm dark:bg-zinc-900 ${t.item}`}
           >
             <span className="font-mono text-xs">{r.order_no}</span>
             <span className="font-medium">
@@ -174,10 +264,18 @@ export default function AidShipmentReminder({ storeId }: { storeId: number | nul
             <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
               {aidRouteLabel(r.is_air_transfer)}・{aidStageLabel(r.status, r.is_air_transfer)}
             </span>
-            {printed.has(r.id) && (
+            {showPrinted && printed.has(r.id) && (
               <span className="text-[11px] text-emerald-600 dark:text-emerald-400">✓ 已列印</span>
             )}
             <div className="ml-auto flex items-center gap-2">
+              {tone === "in" && (
+                <Link
+                  href="/wms/inbound"
+                  className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                >
+                  去收貨
+                </Link>
+              )}
               <Link
                 // 一定要帶 storeId=收貨店：訂單列表的門市篩選對分店帳號會預設帶回自家店，
                 // 而這張轉入單掛在收貨店名下 —— 不帶就會搜出 0 筆（看起來像貨消失了）
@@ -191,10 +289,10 @@ export default function AidShipmentReminder({ storeId }: { storeId: number | nul
               </Link>
               <SpinButton
                 onClick={async () => {
-                  markPrinted(r.id);
+                  onPrinted(r.id);
                   await printViaIframe(withBasePath(`/transfers/print-aid?order_id=${r.id}`));
                 }}
-                className="rounded-md border border-fuchsia-400 bg-white px-3 py-1 text-xs font-medium text-fuchsia-700 hover:bg-fuchsia-50 dark:border-fuchsia-700 dark:bg-zinc-900 dark:text-fuchsia-300 dark:hover:bg-fuchsia-950"
+                className={`rounded-md border bg-white px-3 py-1 text-xs font-medium dark:bg-zinc-900 ${t.button}`}
                 title="列印互助出貨單（司機聯 + 店家存根聯），格式跟內部調撥的轉貨單一樣"
               >
                 🖨 列印出貨單
