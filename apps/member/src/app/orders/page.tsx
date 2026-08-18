@@ -14,8 +14,8 @@ import OrderCard, {
   type OrderPhase,
   type OrderRow,
 } from "@/components/OrderCard";
-import PickupVisitHeader from "@/components/PickupVisitHeader";
-import { buildDoneNodes, countOrderNodes, takeOrderNodes } from "@/lib/pickups";
+import PickupVisitGroup from "@/components/PickupVisitGroup";
+import { buildDoneGroups, countGroupOrders, takeGroupOrders } from "@/lib/pickups";
 
 // 蝦皮式分頁。我們取貨時付現金，所以沒有「待付款」；「待收貨」＝到店「待取貨」。
 // 分桶跟卡片右上角的狀態字共用 orderPhase()，兩邊永遠一致。
@@ -149,13 +149,13 @@ export default function OrdersPage() {
   // 現金，平鋪的訂單列表拼不回那一次到底拿了什麼（見 lib/pickups.ts）。
   // 一張單分兩次取完會拆成兩張卡，所以這一頁的卡片數 ≠ bucket.length，
   // 分頁要照節點自己算。
-  const doneNodes = useMemo(() => buildDoneNodes(buckets.done), [buckets.done]);
+  const doneGroups = useMemo(() => buildDoneGroups(buckets.done), [buckets.done]);
 
   const bucket = buckets[tab];
   const isDone = tab === "done";
   const display = isDone ? [] : bucket.slice(0, visible);
-  const displayNodes = isDone ? takeOrderNodes(doneNodes, visible) : [];
-  const cardCount = isDone ? countOrderNodes(doneNodes) : bucket.length;
+  const displayGroups = isDone ? takeGroupOrders(doneGroups, visible) : [];
+  const cardCount = isDone ? countGroupOrders(doneGroups) : bucket.length;
   const hasMore = cardCount > visible;
   // 總金額卡只在「待到貨」「待取貨」出現（理由見 sumOrders 註解），照整個分頁算
   const showTotals = tab === "waiting" || tab === "pickup";
@@ -239,19 +239,35 @@ export default function OrdersPage() {
           </div>
         )}
 
-        {/* 已完成：一次到店結單的標題 + 這次拿走的訂單卡；沒有取貨紀錄的卡片
-            （舊資料 / liff-api 還沒補上 pickups）就是沒有標題的一張卡，維持原樣。 */}
+        {/* 已完成：一次到店結單包成一個外框，裡面是那一次拿走的訂單卡。
+            對不到取貨紀錄的（舊資料 / liff-api 還沒補上 pickups）visit 是 null，
+            不畫外框、維持原本平鋪的樣子。 */}
         {isDone &&
-          displayNodes.map((node, i) => (
+          displayGroups.map((g, i) => (
             <div
-              key={node.key}
-              className={`animate-in ${node.kind === "visit" && i > 0 ? "pt-2" : ""}`}
-              style={{ animationDelay: `${Math.min(i % (PAGE_SIZE * 2), 8) * 50}ms` }}
+              key={g.key}
+              className="animate-in"
+              style={{ animationDelay: `${Math.min(i, 8) * 50}ms` }}
             >
-              {node.kind === "visit" ? (
-                <PickupVisitHeader visit={node.visit} />
+              {g.visit ? (
+                <PickupVisitGroup visit={g.visit}>
+                  {/* 同一張單在同一次結單裡可能有兩片（店員分兩下結同一張單），
+                      key 不能只用 order.id */}
+                  {g.orders.map((o) => (
+                    <OrderCard
+                      key={`${o.id}:${o.items[0]?.id ?? 0}`}
+                      order={o}
+                      viewPhase="done"
+                      inGroup
+                    />
+                  ))}
+                </PickupVisitGroup>
               ) : (
-                <OrderCard order={node.order} viewPhase="done" />
+                <div className="space-y-3">
+                  {g.orders.map((o) => (
+                    <OrderCard key={`${o.id}:${o.items[0]?.id ?? 0}`} order={o} viewPhase="done" />
+                  ))}
+                </div>
               )}
             </div>
           ))}

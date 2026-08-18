@@ -28,7 +28,7 @@ import { getSupabase } from "@/lib/supabase";
 import { orderCardTitle } from "@/lib/orderTitle";
 import { fetchReprintableEvents } from "@/lib/pickupReceipt";
 import {
-  buildDoneNodes,
+  buildDoneGroups,
   formatVisitWhen,
   visibleTotals,
   type PickupVisit,
@@ -313,7 +313,7 @@ export function MemberOrdersAppView({
   // 「已完成」依「那一次到店結單」分組（= 會員 app 的同一支演算法）：客人一趟
   // 拿走好幾個團的貨、當場付一次現金，平鋪的訂單列表拼不回那一次拿了什麼。
   // 一張單分兩次取完會拆成兩張卡，各自掛在自己那一次底下。
-  const doneNodes = useMemo(() => buildDoneNodes(buckets.done), [buckets.done]);
+  const doneGroups = useMemo(() => buildDoneGroups(buckets.done), [buckets.done]);
 
   const bucket = buckets[tab];
   // = 會員 app orders/page.tsx：應付總金額只在待到貨 / 待取貨顯示
@@ -377,16 +377,32 @@ export function MemberOrdersAppView({
       {!loading && (
         <div className="max-h-[560px] space-y-3 overflow-auto pr-1">
           {tab === "done"
-            ? doneNodes.map((node) =>
-                node.kind === "visit" ? (
-                  <PickupVisitHeader key={node.key} visit={node.visit} />
+            ? doneGroups.map((g) =>
+                g.visit ? (
+                  <PickupVisitGroup key={g.key} visit={g.visit}>
+                    {/* 同一張單在同一次結單裡可能有兩片（店員分兩下結同一張單），
+                        key 不能只用 order.id */}
+                    {g.orders.map((o, i) => (
+                      <AppOrderCard
+                        key={`${o.id}:${(o.items ?? [])[0]?.id ?? i}`}
+                        order={o}
+                        viewPhase="done"
+                        inGroup
+                        onClick={() => onOpenOrder(o.id, o.order_no)}
+                      />
+                    ))}
+                  </PickupVisitGroup>
                 ) : (
-                  <AppOrderCard
-                    key={node.key}
-                    order={node.order}
-                    viewPhase="done"
-                    onClick={() => onOpenOrder(node.order.id, node.order.order_no)}
-                  />
+                  <div key={g.key} className="space-y-3">
+                    {g.orders.map((o, i) => (
+                      <AppOrderCard
+                        key={`${o.id}:${(o.items ?? [])[0]?.id ?? i}`}
+                        order={o}
+                        viewPhase="done"
+                        onClick={() => onOpenOrder(o.id, o.order_no)}
+                      />
+                    ))}
+                  </div>
                 ),
               )
             : bucket.map((o, i) => (
@@ -410,27 +426,39 @@ export function MemberOrdersAppView({
   );
 }
 
-// 一次到店結單的標題（= 會員 app 的 PickupVisitHeader）。
+// 一次到店結單的外框（= 會員 app 的 PickupVisitGroup）：標題 + 把那一次拿走的
+// 訂單卡整個包起來。第一版只有一張標題卡、跟訂單卡同樣粉底同樣圓角，一路捲下去
+// 就是一排長得一樣的卡片，看不出哪幾張屬於同一次（2026-08-18 回報）。
 // 措辭避開「結單」兩個字：卡片上的「結單日」是開團收單日，兩種意思擺一起會誤讀。
-function PickupVisitHeader({ visit }: { visit: PickupVisit }) {
+function PickupVisitGroup({
+  visit,
+  children,
+}: {
+  visit: PickupVisit;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50/60 px-4 py-2.5 dark:border-rose-900 dark:bg-rose-950/30">
-      <div className="min-w-0">
-        <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-          🧾 {formatVisitWhen(visit.pickedAt)} 取貨
+    <section className="rounded-xl border border-rose-300 bg-rose-50/70 p-1.5 dark:border-rose-900 dark:bg-rose-950/40">
+      <header className="flex items-start justify-between gap-3 px-2.5 pt-1 pb-2">
+        <div className="min-w-0">
+          <div className="text-sm font-bold text-rose-700 dark:text-rose-300">
+            🧾 {formatVisitWhen(visit.pickedAt)} 取貨
+          </div>
+          <div className="text-xs text-zinc-500">
+            {visit.storeName && <>{visit.storeName} · </>}
+            {visit.orderCount} 筆訂單 · {visit.qty} 件
+          </div>
         </div>
-        <div className="text-xs text-zinc-500">
-          {visit.storeName && <>{visit.storeName} · </>}
-          {visit.orderCount} 筆訂單 · {visit.qty} 件
+        <div className="flex-shrink-0 text-right">
+          <div className="text-[11px] text-zinc-500">本次取貨金額</div>
+          <div className="text-lg font-bold leading-tight tabular-nums text-rose-700 dark:text-rose-300">
+            ${fmtAmount(visit.amount)}
+          </div>
         </div>
-      </div>
-      <div className="flex-shrink-0 text-right">
-        <div className="text-[11px] text-zinc-500">本次取貨金額</div>
-        <div className="text-lg font-semibold tabular-nums text-rose-700 dark:text-rose-400">
-          ${fmtAmount(visit.amount)}
-        </div>
-      </div>
-    </div>
+      </header>
+      {/* 裡面的卡片是白底（AppOrderCard 的 inGroup），跟這層淡粉底對比出界線 */}
+      <div className="space-y-1.5">{children}</div>
+    </section>
   );
 }
 
@@ -448,10 +476,17 @@ function AppOrderCard({
    * 畫面）。不傳（「全部」分頁）就照舊顯示整張單。= 會員 app OrderCard 同一套。
    */
   viewPhase,
+  /**
+   * 這張卡被包在「一次取貨結單」的外框裡（PickupVisitGroup）。外框已經寫了門市
+   * 與那一次的總金額，卡片自己再粉底一次、再大字寫一次金額，整組就糊成一片看不出
+   * 界線（2026-08-18 回報）。所以在組裡：表頭不上底色、不重複印門市、單張金額降權。
+   */
+  inGroup = false,
 }: {
   order: AppOrderRow;
   onClick: () => void;
   viewPhase?: Phase;
+  inGroup?: boolean;
 }) {
   const phase = viewPhase ? { ...orderPhase(order), ...PHASE_LABEL[viewPhase] } : orderPhase(order);
   // 分身卡實際列出來的貨值（斷貨 / 取消的行不算，跟件數同一套）
@@ -492,7 +527,7 @@ function AppOrderCard({
       title={`點此查看訂單明細 ${order.order_no}`}
       className="cursor-pointer overflow-hidden rounded-xl border border-zinc-200 bg-white transition-shadow hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900"
     >
-      <header className="bg-rose-50/60 px-4 pb-2.5 pt-3 dark:bg-rose-950/20">
+      <header className={`px-4 pb-2.5 pt-3 ${inGroup ? "" : "bg-rose-50/60 dark:bg-rose-950/20"}`}>
         <div className="flex items-center justify-between gap-2">
           <h4 className="min-w-0 truncate text-[15px] font-bold text-zinc-900 dark:text-zinc-100">
             {title}
@@ -506,7 +541,10 @@ function AppOrderCard({
         )}
         <p className="mt-0.5 text-xs text-zinc-500">
           {fmtDate(order.created_at)}
-          {order.store_name && <span className="ml-1.5">· 取貨：{order.store_name}</span>}
+          {/* 在結單外框裡不重複印門市 —— 外框標題已經寫了 */}
+          {order.store_name && !inGroup && (
+            <span className="ml-1.5">· 取貨：{order.store_name}</span>
+          )}
           {order.campaign_cutoff_date && <span className="ml-1.5">· 結單日 {order.campaign_cutoff_date}</span>}
         </p>
       </header>
@@ -565,13 +603,13 @@ function AppOrderCard({
           </div>
         )}
         <div className="flex items-baseline justify-between pt-1">
-          <span className="text-zinc-800 dark:text-zinc-200">
-            {partlyPaid ? "訂單金額" : "應付金額"}
+          <span className={inGroup ? "text-xs text-zinc-500" : "text-zinc-800 dark:text-zinc-200"}>
+            {inGroup ? "本單金額" : partlyPaid ? "訂單金額" : "應付金額"}
           </span>
           <span
             className={
-              partlyPaid
-                ? "text-sm tabular-nums text-zinc-500"
+              inGroup || partlyPaid
+                ? "text-sm font-medium tabular-nums text-zinc-500"
                 : "text-lg font-semibold tabular-nums text-rose-700 dark:text-rose-400"
             }
           >

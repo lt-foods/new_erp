@@ -209,9 +209,17 @@ export default function OrderCard({
    * 而不是整張單的。不傳（「全部」分頁）就照舊顯示整張單的狀態。
    */
   viewPhase,
+  /**
+   * 這張卡被包在「一次取貨結單」的外框裡（PickupVisitGroup）。外框已經寫了
+   * 門市與那一次的總金額，卡片自己再粉底一次、再大字寫一次金額，整組就糊成
+   * 一片看不出界線（2026-08-18 回報）。所以在組裡：表頭不上底色（跟外框的淡粉
+   * 對比出界線）、不重複印門市、單張金額降權讓「本次取貨金額」當主角。
+   */
+  inGroup = false,
 }: {
   order: OrderRow;
   viewPhase?: OrderPhase;
+  inGroup?: boolean;
 }) {
   // 斷貨 / 已取消的品項照樣列出來（畫成刪除線 + 「斷貨」標），但不算件數 —
   // items_total / payable_amount 從 20260808000010 起就不含這些行了，
@@ -271,7 +279,7 @@ export default function OrderCard({
 
   return (
     <article className="card overflow-hidden">
-      <header className="bg-[var(--brand-soft)]/35 px-4 pt-4 pb-3">
+      <header className={`px-4 pt-4 pb-3 ${inGroup ? "" : "bg-[var(--brand-soft)]/35"}`}>
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">
             <h3 className="min-w-0 truncate text-[18px] font-bold text-[var(--foreground)]">{title}</h3>
@@ -291,7 +299,8 @@ export default function OrderCard({
         )}
         <p className="mt-0.5 text-[14px] text-[var(--secondary-label)]">
           {fmtDate(order.created_at)}
-          {order.store_name && (
+          {/* 在結單外框裡不重複印門市 —— 外框標題已經寫了 */}
+          {order.store_name && !inGroup && (
             <>
               <span className="mx-1.5 text-[var(--tertiary-label)]">·</span>
               取貨：{order.store_name}
@@ -394,13 +403,19 @@ export default function OrderCard({
           </div>
         )}
         <div className="flex items-baseline justify-between pt-2">
-          <span className="text-[16px] text-[var(--foreground)]">
-            {partlyPaid ? "訂單金額" : "應付金額"}
+          <span
+            className={
+              inGroup
+                ? "text-[14px] text-[var(--secondary-label)]"
+                : "text-[16px] text-[var(--foreground)]"
+            }
+          >
+            {inGroup ? "本單金額" : partlyPaid ? "訂單金額" : "應付金額"}
           </span>
           <span
             className={
-              partlyPaid
-                ? "text-[16px] tabular-nums text-[var(--secondary-label)]"
+              inGroup || partlyPaid
+                ? "text-[16px] font-medium tabular-nums text-[var(--secondary-label)]"
                 : "text-[24px] font-semibold tabular-nums text-[var(--brand-strong)]"
             }
           >

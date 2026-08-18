@@ -43,12 +43,15 @@ export type PickupVisit = {
 };
 
 /**
- * 「已完成」分頁的渲染節點：結單標題，或標題底下的一張訂單卡。
- * 沒有取貨紀錄的卡片（舊資料 / liff-api 還沒部署）就是沒有標題的 order 節點。
+ * 「已完成」分頁的一組：一次到店結單 + 那一次拿走的訂單卡。
+ * visit 是 null 代表「對不到取貨紀錄」的那一落（舊資料 / liff-api 還沒部署），
+ * 不畫外框、維持原本平鋪的樣子。
  */
-export type DoneNode =
-  | { kind: "visit"; key: string; visit: PickupVisit }
-  | { kind: "order"; key: string; order: OrderRow };
+export type PickupGroup = {
+  key: string;
+  visit: PickupVisit | null;
+  orders: OrderRow[];
+};
 
 /** 這張卡片實際列出來的貨值 / 件數（＝ OrderCard 的 visibleItemsTotal / totalQty） */
 function cardTotals(items: OrderItem[]): { qty: number; amount: number } {
@@ -74,9 +77,9 @@ type Slice = {
  * 然後把時間相近的併成一次結單。
  *
  * 一張單分兩次取完 → 拆成兩張卡，各自掛在自己那一次結單底下（這正是要看的東西）。
- * 對不到任何事件的品項 → 收在最後，維持原本的平鋪樣子。
+ * 對不到任何事件的品項 → 收在最後那一組（visit = null），維持原本的平鋪樣子。
  */
-export function buildDoneNodes(doneOrders: OrderRow[]): DoneNode[] {
+export function buildDoneGroups(doneOrders: OrderRow[]): PickupGroup[] {
   const slices: Slice[] = [];
   const orphans: OrderRow[] = [];
 
@@ -102,7 +105,7 @@ export function buildDoneNodes(doneOrders: OrderRow[]): DoneNode[] {
   // 新的結單排前面（「已完成」看的是「我最近拿了什麼」，不是「我最早訂了什麼」）
   slices.sort((a, b) => new Date(b.pickedAt).getTime() - new Date(a.pickedAt).getTime());
 
-  const nodes: DoneNode[] = [];
+  const groups: PickupGroup[] = [];
   let group: Slice[] = [];
 
   const flush = () => {
@@ -117,8 +120,7 @@ export function buildDoneNodes(doneOrders: OrderRow[]): DoneNode[] {
     // group 已依時間新→舊，第一筆就是這次結單的最後一個動作
     const head = group[0];
     const key = `v:${head.pickedAt}:${head.order.id}`;
-    nodes.push({
-      kind: "visit",
+    groups.push({
       key,
       visit: {
         key,
@@ -128,16 +130,10 @@ export function buildDoneNodes(doneOrders: OrderRow[]): DoneNode[] {
         qty,
         amount,
       },
+      // 標題用最後一個動作的時間（＝結單完成），底下的卡片照櫃台實際結的順序
+      // 由舊到新排 —— 一路往下讀就是那一次結單的過程，像一張收據。
+      orders: [...group].reverse().map((s) => s.order),
     });
-    // 標題用最後一個動作的時間（＝結單完成），底下的卡片照櫃台實際結的順序
-    // 由舊到新排 —— 一路往下讀就是那一次結單的過程，像一張收據。
-    for (const s of [...group].reverse()) {
-      nodes.push({
-        kind: "order",
-        key: `${key}:${s.order.id}:${s.order.items[0]?.id ?? 0}`,
-        order: s.order,
-      });
-    }
     group = [];
   };
 
@@ -152,31 +148,35 @@ export function buildDoneNodes(doneOrders: OrderRow[]): DoneNode[] {
   }
   flush();
 
-  for (const o of orphans) {
-    nodes.push({ kind: "order", key: `o:${o.id}:${o.items[0]?.id ?? 0}`, order: o });
-  }
-  return nodes;
+  if (orphans.length > 0) groups.push({ key: "no-visit", visit: null, orders: orphans });
+  return groups;
 }
 
-/** 節點列表裡的訂單卡數量（分頁用；結單標題不算一筆） */
-export function countOrderNodes(nodes: DoneNode[]): number {
-  return nodes.reduce((n, x) => (x.kind === "order" ? n + 1 : n), 0);
+/** 所有組別加起來的訂單卡數量（分頁用；結單標題不算一筆） */
+export function countGroupOrders(groups: PickupGroup[]): number {
+  return groups.reduce((n, g) => n + g.orders.length, 0);
 }
 
-/**
- * 只取前 n 張訂單卡（結單標題跟著它的卡片走）。
- * 標題落在切點上、底下一張卡都沒有時要丟掉，不然會出現孤兒標題。
- */
-export function takeOrderNodes(nodes: DoneNode[], n: number): DoneNode[] {
-  const out: DoneNode[] = [];
-  let count = 0;
-  for (const node of nodes) {
-    if (node.kind === "order") {
-      if (count >= n) break;
-      count += 1;
-    }
-    out.push(node);
+/** 只取前 n 張訂單卡（整組被切到剩 0 張時整組不畫，不要留一個空外框） */
+export function takeGroupOrders(groups: PickupGroup[], n: number): PickupGroup[] {
+  const out: PickupGroup[] = [];
+  let left = n;
+  for (const g of groups) {
+    if (left <= 0) break;
+    out.push(g.orders.length <= left ? g : { ...g, orders: g.orders.slice(0, left) });
+    left -= g.orders.length;
   }
-  while (out.length > 0 && out[out.length - 1].kind === "visit") out.pop();
   return out;
+}
+
+const WEEKDAY = ["日", "一", "二", "三", "四", "五", "六"];
+
+/** 結單標題的時間字樣：`8/12（三）15:32`（今年不印年份，一行塞得下） */
+export function formatVisitWhen(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const y = d.getFullYear() === new Date().getFullYear() ? "" : `${d.getFullYear()}/`;
+  return `${y}${d.getMonth() + 1}/${d.getDate()}（${WEEKDAY[d.getDay()]}）${hh}:${mm}`;
 }

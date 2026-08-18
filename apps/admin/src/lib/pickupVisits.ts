@@ -47,10 +47,16 @@ export type PickupVisit = {
   amount: number;
 };
 
-/** 「已完成」的渲染節點：結單標題，或標題底下的一張訂單卡 */
-export type DoneNode<T> =
-  | { kind: "visit"; key: string; visit: PickupVisit }
-  | { kind: "order"; key: string; order: T };
+/**
+ * 「已完成」的一組：一次到店結單 + 那一次拿走的訂單卡。
+ * visit 是 null 代表「對不到取貨紀錄」的那一落（撤銷取貨、舊資料），
+ * 不畫外框、維持原本平鋪的樣子。
+ */
+export type PickupGroup<T> = {
+  key: string;
+  visit: PickupVisit | null;
+  orders: T[];
+};
 
 /** 這張卡片實際列出來的貨值 / 件數（斷貨 / 取消的行不算，跟卡片上的件數同一套） */
 export function visibleTotals(items: VisitItemLike[]): { qty: number; amount: number } {
@@ -68,9 +74,9 @@ export function visibleTotals(items: VisitItemLike[]): { qty: number; amount: nu
  * 把訂單依取貨事件拆片，再把時間相近的併成一次結單。
  *
  * 一張單分兩次取完 → 拆成兩張卡，各自掛在自己那一次結單底下（這正是要看的東西）。
- * 對不到任何事件的品項（撤銷取貨、舊資料）→ 收在最後，維持原本的平鋪樣子。
+ * 對不到任何事件的品項（撤銷取貨、舊資料）→ 收在最後那一組（visit = null）。
  */
-export function buildDoneNodes<T extends VisitOrderLike>(doneOrders: T[]): DoneNode<T>[] {
+export function buildDoneGroups<T extends VisitOrderLike>(doneOrders: T[]): PickupGroup<T>[] {
   type Slice = { order: T; pickedAt: string; storeKey: string };
   const slices: Slice[] = [];
   const orphans: T[] = [];
@@ -98,7 +104,7 @@ export function buildDoneNodes<T extends VisitOrderLike>(doneOrders: T[]): DoneN
   // 新的結單排前面（「已完成」看的是「最近拿了什麼」，不是「最早訂了什麼」）
   slices.sort((a, b) => new Date(b.pickedAt).getTime() - new Date(a.pickedAt).getTime());
 
-  const nodes: DoneNode<T>[] = [];
+  const groups: PickupGroup<T>[] = [];
   let group: Slice[] = [];
 
   const flush = () => {
@@ -113,8 +119,7 @@ export function buildDoneNodes<T extends VisitOrderLike>(doneOrders: T[]): DoneN
     // group 已依時間新→舊，第一筆就是這次結單的最後一個動作
     const head = group[0];
     const key = `v:${head.pickedAt}:${head.order.id}`;
-    nodes.push({
-      kind: "visit",
+    groups.push({
       key,
       visit: {
         key,
@@ -124,16 +129,10 @@ export function buildDoneNodes<T extends VisitOrderLike>(doneOrders: T[]): DoneN
         qty,
         amount,
       },
+      // 標題用最後一個動作的時間（＝結單完成），底下的卡片照櫃台實際結的順序
+      // 由舊到新排 —— 一路往下讀就是那一次結單的過程，像一張收據。
+      orders: [...group].reverse().map((s) => s.order),
     });
-    // 標題用最後一個動作的時間（＝結單完成），底下的卡片照櫃台實際結的順序
-    // 由舊到新排 —— 一路往下讀就是那一次結單的過程，像一張收據。
-    for (const s of [...group].reverse()) {
-      nodes.push({
-        kind: "order",
-        key: `${key}:${s.order.id}:${(s.order.items ?? [])[0]?.id ?? 0}`,
-        order: s.order,
-      });
-    }
     group = [];
   };
 
@@ -148,10 +147,8 @@ export function buildDoneNodes<T extends VisitOrderLike>(doneOrders: T[]): DoneN
   }
   flush();
 
-  for (const o of orphans) {
-    nodes.push({ kind: "order", key: `o:${o.id}:${(o.items ?? [])[0]?.id ?? 0}`, order: o });
-  }
-  return nodes;
+  if (orphans.length > 0) groups.push({ key: "no-visit", visit: null, orders: orphans });
+  return groups;
 }
 
 const WEEKDAY = ["日", "一", "二", "三", "四", "五", "六"];
