@@ -9,31 +9,6 @@
 
 /** A4 橫式 + 隱藏 .no-print + 矩陣表格。`.pick-table` 等 class 名稱與既有列印頁一致。 */
 export const PRINT_SHEET_CSS = `
-  @media print {
-    @page { size: A4 landscape; margin: 8mm; }
-    .no-print { display: none !important; }
-    body { background: white !important; }
-    /* ⭐ 底色一定要印出來：瀏覽器預設會把背景色「省略」再印，
-       但琥珀色是給樓下的安全標示（已停用／已刪除／無法確認、合計欄），
-       被省掉就等於那張紙沒有警告。 */
-    .print-sheet {
-      -webkit-print-color-adjust: exact;
-      print-color-adjust: exact;
-      padding: 0;
-    }
-    /* ⭐ 紙上要看得清楚 —— 樓下是站著對著紙撿貨，不是坐在桌前看螢幕。
-       老闆 2026-08-18：「現在的數字太小了，列印字體變 14pt」。
-       空間是從**刪掉品號 + 表頭店名去掉「店」字**換來的（見 drafts/print/page.tsx）：
-       每列少一行、表頭少折一行，省下的垂直空間拿去換字級。
-       ⚠ 14pt 比原本的 10px(≈7.5pt) 大約寬 1.87 倍，欄位會跟著變寬 ——
-       分店欄多的時候有機會橫向超出 A4 橫式（Chrome 列印是**裁掉**不是自動縮放，
-       被裁掉的分店欄＝樓下漏撿）。真的印不下時的調整順序：
-       ① padding（4px 6px 是純空白，先砍）② 品名欄寬 ③ 最後才考慮降字級。 */
-    .pick-table { font-size: 14pt; }
-    /* 一列不要被切到跨頁 —— 樓下對著紙撿貨，斷行等於漏撿 */
-    .pick-table tr { break-inside: avoid; }
-    .pick-table thead { display: table-header-group; }
-  }
   /* ⭐ 這是「一張紙的預覽」，不是操作介面 → 白底深字，**不跟著 app 的深色模式走**。
      由來：深色模式下 body 是 color:#e4e4e7（globals.css 的 --foreground），
      表格只設了底色沒設文字色 → 淺字印在淺底上，螢幕看不到、紙上更是白字白紙。
@@ -43,7 +18,13 @@ export const PRINT_SHEET_CSS = `
   .pick-table { border-collapse: collapse; width: 100%; font-size: 12px; background: #ffffff; }
   .pick-table th, .pick-table td {
     border: 1px solid #cbd5e1;
-    padding: 4px 6px;
+    /* 左右只留 2px：純空白，砍掉不影響可讀性，省下的寬度全部進品名欄（見上面的實測數字）。
+       ⚠ 這條規則**螢幕與列印共用**，但螢幕不會因此變擠：表格是 width:100% 的 auto layout，
+       padding 讓出來的寬度會被重新分配回欄位本身 → 實測相鄰兩欄數字之間的空白只從
+       15.4px 縮到 12.7px（1280px 視窗、17 家分店的最緊情況），品名欄反而從 21 字寬到 26 字。
+       ⛔ 不要改成只在 @media print 裡覆寫：這頁的用途是「螢幕上看到的就是紙上印出來的」，
+       兩邊 padding 不一致，螢幕預覽的折行位置就會跟紙本對不起來。 */
+    padding: 4px 2px;
     text-align: center;
     /* ⛔ 不可以省略、不可以靠繼承：一繼承就會拿到深色主題的淺字（對比 1.14:1） */
     color: #0f172a;
@@ -65,6 +46,47 @@ export const PRINT_SHEET_CSS = `
   /* 9px 小字＝一般正文標準（要 4.5:1）。舊值 #b45309 壓在琥珀底上只有 4.51:1、
      幾乎沒有餘裕；#92400e 同樣是琥珀色系但最差也有 6.37:1。 */
   .pick-table .note { display: block; font-size: 9px; font-weight: 400; color: #92400e; }
+
+  /* ⛔⛔ 這一塊**必須留在整份樣式的最後面**，不可以搬回最前面。
+     由來（2026-08-18 實測抓到）：媒體查詢**不會增加 specificity**。原本這塊放在最前面，
+     底下的 .print-sheet / .pick-table 基本規則同樣是 (0,1,0)、又寫在後面 → 後面的贏。
+     結果是這塊裡「同一個屬性又被下面重寫一次」的兩條**從來沒有生效過**：
+       .pick-table  font-size → 被後面的 font-size: 12px 蓋掉（#775 想要的 14pt 根本沒印出來，
+                                紙上一直是 12px≈9pt，這就是老闆說「字還是小」的真正原因）
+       .print-sheet padding   → 被後面的 padding: 10px 蓋掉（紙上白白少掉左右各 10px 可用寬）
+     用 Chrome DevTools Protocol 的 Emulation.setEmulatedMedia({media:"print"}) 讀 computed style 驗過：
+       搬移前 print 下 .pick-table = 12px(9pt)、.print-sheet padding = 10px
+       搬移後 print 下 .pick-table = 16px(12pt)、.print-sheet padding = 0   ← 才是本來就想要的
+     ⚠ 之後要再加任何「只有列印才套用」的覆寫，一律加在這塊裡面，並確認你要蓋的屬性
+       沒有在這塊後面又被寫一次；否則它會安靜地不生效（沒有錯誤訊息、螢幕上也看不出來）。 */
+  @media print {
+    @page { size: A4 landscape; margin: 8mm; }
+    .no-print { display: none !important; }
+    body { background: white !important; }
+    /* ⭐ 底色一定要印出來：瀏覽器預設會把背景色「省略」再印，
+       但琥珀色是給樓下的安全標示（已停用／已刪除／無法確認、合計欄），
+       被省掉就等於那張紙沒有警告。 */
+    .print-sheet {
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+      padding: 0;
+    }
+    /* ⭐ 紙上要看得清楚 —— 樓下是站著對著紙撿貨，不是坐在桌前看螢幕。
+       空間是從**刪掉品號 + 表頭店名去掉「店」字**換來的（見 drafts/print/page.tsx）。
+       #775 想放大到 14pt，但那條被上面說的 cascade 問題吃掉了；老闆實印後回
+       「字不用到 14pt，其實 12pt 也行」→ 這裡收 12pt，**並且這次是真的會生效**。
+
+       ⚠ 字級不是「越大越清楚」：這張表 width:100% 且沒有設 table-layout:fixed（＝auto layout），
+       中文又可以逐字斷行 → 欄位不夠時瀏覽器不會讓表格超出紙，而是**一路把品名欄壓窄再折行**。
+       「印得下」不等於「看得懂」。實測（A4 橫式 8mm 邊界、扣掉 .print-sheet padding 後可用寬 281mm）：
+         14pt → 14 家分店時品名欄每行 12 字，25 字的品名折 2 行；17 家分店時剩 4 字/行、一頁只印 6 列
+         12pt → 14 家分店時品名欄每行 26 字，同樣的品名**一行就放得下**；17 家分店也還有 22 字/行
+       ⛔ 不要以「大就是清楚」為由改成 14pt —— 品名被壓窄折行，樓下反而分不出是哪一樣貨。 */
+    .pick-table { font-size: 12pt; }
+    /* 一列不要被切到跨頁 —— 樓下對著紙撿貨，斷行等於漏撿 */
+    .pick-table tr { break-inside: avoid; }
+    .pick-table thead { display: table-header-group; }
+  }
 `;
 
 // ============================================================
