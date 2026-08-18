@@ -93,8 +93,9 @@ function PickupPageContent() {
   // 部分到貨的 shipping 單靠這個讓「已到的品項」可先取。
   const [itemReady, setItemReady] = useState<Map<number, boolean>>(new Map());
   // item.id → 「這組到過貨，但量不夠分到這一行」（v_order_item_pickup_ready.qty_short）。
-  // 短收時（總倉派 2、分店只收 1）多出來的那幾行就是這種。要跟「少發配貨沒配到」
-  // 分開講：這種等下一批貨到就會自己放行，不需要人工配貨。
+  // 兩種來源：① 總倉短收（派 2、分店只收 1）多出來的那幾行；② 貨到過但已經被別團 /
+  // 現貨配單 / 池子轉單先領走，店裡帳上庫存不夠了（20260818000010 的實體庫存守衛）。
+  // 要跟「少發配貨沒配到」分開講：這兩種等下一批貨到就會自己放行，不需要人工配貨。
   const [itemQtyShort, setItemQtyShort] = useState<Map<number, boolean>>(new Map());
   // item.id → 未取退貨量（return_to_hq transfer 依 SKU 聚合後分攤到各品項行，
   // 與 PickupDialog 同構）。退回總倉的量店裡沒有、不可再取。
@@ -209,7 +210,7 @@ function PickupPageContent() {
     if (order.payment_status === "paid") return 0;
     return Math.max(0, payableOf(order, items) - Number(order.wallet_paid_amount ?? 0));
   }
-  // 該品項是否為「這組到過貨但量不夠分到這一行」（短收 / 這批只到一部分）。
+  // 該品項是否為「這組到過貨但量不夠分到這一行」（總倉短收 / 貨已被別團或現貨配走）。
   // 等下一批貨收進來就會自己放行，不需要人工配貨 —— 所以不可以標成「待補貨」。
   function isQtyShort(it: OpenOrder["items"][number]): boolean {
     return itemQtyShort.get(it.id) === true;
@@ -1280,7 +1281,7 @@ function PickupPageContent() {
                                       (partialArrival || isQtyShort(it)) && remainingQty(it) > 0 && !pickableIds.has(it.id) && (
                                         <span
                                           className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-                                          title={isQtyShort(it) ? "這批到貨量不夠，這筆還沒到；下一批收進來就會自動放行" : undefined}
+                                          title={isQtyShort(it) ? "這批到貨量不夠分到這一筆（總倉短少，或貨已經被別團／現貨配單先領走）；下一批收進來就會自動放行" : undefined}
                                         >
                                           ⏳ 未到貨
                                         </span>
@@ -1328,13 +1329,14 @@ function PickupPageContent() {
                                 ) : fullyReturned ? (
                                   <span className="ml-2 font-semibold text-orange-700 dark:text-orange-400">↩ 已全數退回總倉，無可取貨項目</span>
                                 ) : shortQty > 0 ? (
-                                  // 「分店尚未收貨」在這裡是錯的 —— 分店收過了，只是這批少收。
+                                  // 「分店尚未收貨」在這裡是錯的 —— 分店收過了，只是現在手上的量不夠
+                                  //（總倉少收，或貨已經被別團／現貨配單領走）。
                                   // 講清楚才不會讓店員以為系統壞了、跑去改走轉單（那會開新單變重複單）。
                                   <span
                                     className="ml-2 text-amber-600 dark:text-amber-400"
-                                    title="總倉派的量分店沒有全收到（收貨時已標短少）。等下一批補進來就會自動放行；要現在就發，請開庫存減抵單。"
+                                    title="店裡目前的量不夠分到這幾筆 —— 可能是總倉派的沒有全收到（收貨時已標短少），也可能是貨到過但已經被別團／現貨配單／池子轉單先領走。等下一批補進來就會自動放行；貨其實在架上（帳沒入）要現在就發，請開庫存減抵單。"
                                   >
-                                    ⏳ 尚有 {shortQty} 件未到貨，無法取貨
+                                    ⏳ 尚有 {shortQty} 件店裡沒貨，無法取貨
                                   </span>
                                 ) : (
                                   <span className="ml-2 text-amber-600 dark:text-amber-400">⏳ 分店尚未收貨，無法取貨</span>
