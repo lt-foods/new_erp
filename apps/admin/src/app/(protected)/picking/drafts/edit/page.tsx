@@ -19,11 +19,12 @@
 
 import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
 import {
   addBatchMessage,
+  availableBySku,
   buildSkuRows,
   buildStoreColumns,
   checkedAtLabel,
@@ -42,6 +43,7 @@ import {
   type DraftPrecheck,
   type PrefillResult,
   type PreviewTone,
+  type PrecheckSkuRef,
   type SkuExistence,
   type SkuPreviewBatch,
   type SkuPreviewCell,
@@ -57,6 +59,9 @@ type Draft = {
   status: "draft" | "done";
   created_at: string;
   updated_at: string;
+  /** 送到派貨工作台的時間；null = 還沒送過。⛔ 送過就永不清空（含按「重新開啟」），見 20260818000000 */
+  dispatched_at: string | null;
+  dispatched_by: string | null;
 };
 
 type DraftItem = {
@@ -96,6 +101,37 @@ const skuDisplayName = (o: SkuOption) =>
 
 const STORE_STATE_LABEL = { inactive: "已停用", missing: "已刪除", unknown: "無法確認" } as const;
 
+/**
+ * 「已於 08/18 14:20 送出」的那個 08/18 14:20。
+ *
+ * ⛔ 不用 toLocaleString：各環境格式不一、測不起來（理由與 lib 的 checkedAtLabel 同一條）。
+ * ⓘ 只顯示到分：這個時間是給老闆辨識「是不是我剛剛按的那次」，不是稽核用的精度。
+ */
+function dispatchedAtLabel(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso; // 讀到怪值就原樣印出來，⛔ 不要印 NaN/NaN 讓人以為壞了
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/**
+ * 【📤 送到派貨工作台】按下去、老闆還沒確定之前的那份待確認清單。
+ *
+ * ⭐ 與 DraftPrecheck 一樣做成 union，理由也一樣：**查詢失敗絕對不可以長得像「沒東西可送」**。
+ *   兩者在畫面上都是「一樣都帶不過去」，但一個是系統壞了、一個是貨真的派完了 ——
+ *   混在一起的話，老闆會以為今天的貨全被別人派走，然後去追一件根本沒發生的事。
+ */
+type DispatchPlan =
+  | { kind: "failed"; reason: string }
+  | {
+      kind: "ready";
+      at: string;
+      /** 派貨工作台現在還有可分配量 → 帶得過去 */
+      sendable: PrecheckSkuRef[];
+      /** 工作台上已經沒有可分配量（被派完 / 還沒到貨）→ 帶不過去，⛔ 一定要逐項列出 */
+      blocked: PrecheckSkuRef[];
+    };
+
 export default function PickingDraftEditPage() {
   return (
     <Suspense fallback={<div className="p-6 text-sm text-zinc-500">載入中…</div>}>
@@ -105,6 +141,7 @@ export default function PickingDraftEditPage() {
 }
 
 function Body() {
+  const router = useRouter();
   const draftId = Number(useSearchParams().get("id"));
   const validId = Number.isFinite(draftId) && draftId > 0;
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -135,6 +172,10 @@ function Body() {
   //   畫面卻還掛著改之前的結論，等於系統對他說謊。
   //   ⚠ 也刻意**不直接清掉**：那樣結果會無聲消失，他會以為自己按到了什麼。
   const [precheckStale, setPrecheckStale] = useState(false);
+  // 【📤 送到派貨工作台】按下去之後的待確認清單。null = 沒有待確認的送出。
+  // ⛔ 按第一下**不會動任何資料**：先算給老闆看（帶得過去幾樣 / 哪幾樣帶不過去），
+  //   他按【確定送過去】才真的標記 + 導頁。
+  const [dispatchPlan, setDispatchPlan] = useState<DispatchPlan | null>(null);
 
   // ⚠ 第一件事就 await，不在 effect body 同步 setState（react-hooks/set-state-in-effect）
   const load = useCallback(async () => {
@@ -144,7 +185,7 @@ function Body() {
       const [{ data: head, error: headErr }, storeRes, hqLoc] = await Promise.all([
         sb
           .from("picking_drafts")
-          .select("id, name, status, created_at, updated_at")
+          .select("id, name, status, created_at, updated_at, dispatched_at, dispatched_by")
           .eq("id", draftId)
           .maybeSingle(),
         // ⭐ 這裡撈的是 stores **全表（含停用）**，「哪些欄位要顯示」由 buildStoreColumns 決定
@@ -255,6 +296,8 @@ function Body() {
       // ⛔ 不可以留著：它是對「上一份資料」下的結論。
       setPrecheck(null);
       setPrecheckStale(false);
+      // 同理：待確認的送出清單是對「上一份資料」算的，重新載入就作廢，要重按一次。
+      setDispatchPlan(null);
     } catch (e) {
       setError(describeDraftDbError(e));
     } finally {
@@ -299,6 +342,17 @@ function Body() {
   }, [stores, storeCols]);
 
   const readOnly = draft?.status === "done";
+  // 送出過了沒 —— 判準**只有** dispatched_at，⛔ 刻意不看 status：
+  //   按「重新開啟」把 status 轉回 draft 之後照樣不能再送（老闆 2026-08-18「不能重複轉」）。
+  //   null = 沒送過。
+  const dispatchedLabel = draft?.dispatched_at ? dispatchedAtLabel(draft.dispatched_at) : null;
+  // 徽章要三態分得出來：⭐「送出過」與「只是收起來」在紙上、在流程上是完全不同的兩件事，
+  //   老闆原話：「轉出跟標記完成意思太相同會讓人搞混」。
+  const statusBadge = dispatchedLabel
+    ? { text: `已送出 ${dispatchedLabel}`, cls: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300" }
+    : readOnly
+      ? { text: "已收起", cls: "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200" }
+      : { text: "進行中", cls: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" };
 
   async function sessionInfo() {
     const { data } = await getSupabase().auth.getSession();
@@ -386,6 +440,9 @@ function Body() {
       }
       // 數字真的改了 → 先前那份檢查結果不算數了
       setPrecheckStale(true);
+      // ⓘ 這裡刻意**不動** dispatchPlan：送出只帶商品、完全不看數量（老闆 2026-08-18），
+      //   改一格數字不會讓「哪幾樣帶得過去」變成別的答案。⛔ 不要為了對稱把它加上來。
+      //   （改數量也不會多出一樣商品：這一格所屬的那列本來就在草稿裡才點得到。）
       clearEdit();
     } catch (e) {
       setError(describeDraftDbError(e));
@@ -491,6 +548,10 @@ function Body() {
         setItems((arr) => [...arr, ...((data ?? []) as DraftItem[])]);
         // 草稿內容變了 → 先前那份檢查結果不算數了（新加的這樣商品根本沒被檢查過）
         setPrecheckStale(true);
+        // 商品清單變了 → 待確認的送出清單就是錯的（新加的這樣沒被算進去）。
+        // ⛔ 這裡是**關掉**不是標 stale：那份清單是一個「要不要送」的確認步驟，不是一份結論，
+        //   底下已經不是同一批商品了就沒有東西好確認，請他重按一次拿到新的。
+        setDispatchPlan(null);
         // ⭐⭐ existingSkuIds 原本只在 load() 算一次，加完商品只更新了 items、沒更新它
         //   → 新加的商品必然不在那個舊集合裡，於是每一樣剛加進去的都被標成
         //   「⚠ 此商品已不存在」。這樣商品是剛從 skus 搜出來的，存在性無庸置疑
@@ -549,6 +610,8 @@ function Body() {
       setItems((arr) => arr.filter((it) => it.sku_id !== skuId));
       // 少了一樣商品 → 先前那份檢查結果不算數了
       setPrecheckStale(true);
+      // 同 addSkus：商品清單變了，待確認的送出清單就沒有東西好確認了
+      setDispatchPlan(null);
     } catch (e) {
       setError(describeDraftDbError(e));
     }
@@ -573,6 +636,94 @@ function Body() {
     }
     // ⚠ 成功或失敗都要把 stale 清掉：這份結果（含「失敗」）就是對「現在」講的。
     setPrecheckStale(false);
+  }
+
+  // ---- 送到派貨工作台 ①：算給老闆看（⛔ 純唯讀，這一步不動任何資料、不導頁）----
+  //
+  // 老闆 2026-08-18 原話：
+  //   「草稿只需要帶商品過去，**所有的數字店家通通不用帶**啊…派貨工作台的第一步是選擇商品，
+  //     那我只要草稿選的商品帶過去，派貨工作台裡的商品應該是什麼數字就什麼數字」
+  //
+  // ⛔⛔ 因此這裡**完全不看 qty**：草稿上出現過的商品一律帶，包含整列都是 0 的。
+  //   CEO 曾提案「整列都是 0 就不帶」，老闆當場駁回 —— 他本來就會在派貨工作台的
+  //   步驟 2 逐格看過才建單，數量不是步驟 1 的判斷依據。⛔ 不要把那條加回來。
+  //   （skuRows 來自 buildSkuRows(items)，本來就是「草稿裡的每一樣商品」，沒有任何數量條件。）
+  //
+  // ⭐ 唯一會少帶的情況不是選擇、是物理限制：那樣商品在派貨工作台上已經沒有可分配量，
+  //   整列根本不存在（skuRows 的 .filter(totalAvailable > 0)）→ 勾不到，所以逐項列出來。
+  //
+  // ⚠ 一定要**當場重撈**，⛔ 不可以吃畫面上那份可能已經 stale 的「🔍 檢查」結果：
+  //   老闆可能十分鐘前按過檢查，中間別人已經把貨派掉了。
+  async function prepareDispatch() {
+    const at = checkedAtLabel(new Date());
+    try {
+      // ⛔ 與 runPrecheck 同一支查詢、同一組條件（都是 loadPrecheckDemand），
+      //   兩顆鈕對「工作台上還有什麼」的答案保證一致。
+      //   ⛔ 刻意不 catch 成空陣列 —— 那會算出「一樣都帶不過去」這種最像真的假訊息。
+      const demandRows = await loadPrecheckDemand({ db: getSupabase(), fetchAll: fetchAllRows });
+      // ⛔ 不准自己重寫這個判定：availableBySku 是逐行照抄派貨工作台 skuRows 的
+      //   （含 store_id === null 要跳過、id 要 Number() 正規化兩個坑），見該函式的註解。
+      const avail = availableBySku(demandRows);
+      const sendable = skuRows.filter((r) => avail.has(r.sku_id));
+      const blocked = skuRows.filter((r) => !avail.has(r.sku_id));
+      setDispatchPlan({ kind: "ready", at, sendable, blocked });
+    } catch (e) {
+      setDispatchPlan({ kind: "failed", reason: describeDraftDbError(e) });
+    }
+  }
+
+  // ---- 送到派貨工作台 ②：老闆按了【確定送過去】才走到這裡 ----
+  //
+  // ⛔ 這一頁**不碰派貨工作台的任何狀態**：只標記自己 + 導頁，
+  //   已挑清單由工作台自己讀 ?fromDraft= 再撈一次草稿明細去設定。
+  //   理由：已挑清單是工作台的 module store，setPickedSkuIds 有「身分世代」防線
+  //   （換帳號就整批拒絕），從外面直接寫 localStorage 等於繞過跨使用者污染的防線。
+  async function confirmDispatch(sendable: PrecheckSkuRef[]) {
+    // UI 上帶得過去 0 樣時根本不給按，這裡再擋一次：0 樣還導頁的話，工作台會變成
+    // 「有 ?fromDraft= 但一樣都沒挑中」，而沒挑中的建單範圍是「篩選範圍內全部」。
+    if (sendable.length === 0) return;
+    setError(null);
+    try {
+      const sb = getSupabase();
+      const { uid } = await sessionInfo();
+      const { data, error: err } = await sb
+        .from("picking_drafts")
+        .update({
+          status: "done",
+          // ⓘ 用前端時鐘：本案紅線是「不新增任何 RPC」，PostgREST 直寫的 payload
+          //   沒辦法叫 DB 算 NOW()。這個值只拿來顯示「已於 X 送出」與判斷 NULL/NOT NULL，
+          //   擋重送的條件是 `.is("dispatched_at", null)`（DB 端），不受時鐘誤差影響。
+          dispatched_at: new Date().toISOString(),
+          dispatched_by: uid,
+          updated_by: uid,
+        })
+        .eq("id", draftId)
+        // ⭐⭐ 這兩行是「不能送第二次」的**全部**防線，⛔ 不可以拿掉任何一行：
+        //   .is(...)     → 條件寫在 UPDATE 語句本身。另一台 iPad 幾秒前剛送出時，
+        //                  這裡會是「一列都更新不到」而不是照樣再送一次
+        //                  （前端的 disabled 擋不住，畫面是幾秒前的快照）。
+        //                  作法抄草稿列表頁刪除鈕的 .eq("status","draft")。
+        //   .select("id")→ 為了知道「到底更新到幾列」。沒有它，0 列與 1 列都算成功，
+        //                  老闆會看到系統若無其事地把同一張草稿送第二次。
+        .is("dispatched_at", null)
+        .select("id");
+      if (err) throw err;
+      if (!data || data.length === 0) {
+        setDispatchPlan(null);
+        setError(
+          "這張草稿已經送過了，不能再送一次 —— 可能是另一台 iPad 剛剛送出的。" +
+            "下面重新載入後會顯示送出時間；要再挑一次貨請另開一張新草稿。",
+        );
+        // 重新載入才看得到真正的送出時間與送出人，⛔ 不要讓畫面停在「還沒送過」的樣子
+        await load();
+        return;
+      }
+      // ⚠ 一定要用 router.push（或 <Link>）：它們會自動補上 basePath（線上是 /new_erp）。
+      //   ⛔ 不可以用 window.open —— 那個不補，線上會開成 /wms/picking 直接 404（PR #752 踩過）。
+      router.push(`/wms/picking?fromDraft=${draftId}`);
+    } catch (e) {
+      setError(describeDraftDbError(e));
+    }
   }
 
   async function saveName() {
@@ -648,20 +799,17 @@ function Body() {
             aria-label="草稿名稱"
             className={`${inputCls} min-w-60 flex-1 text-base font-semibold disabled:opacity-60`}
           />
-          <span
-            className={
-              readOnly
-                ? "rounded-full bg-zinc-200 px-2.5 py-1 text-xs text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200"
-                : "rounded-full bg-emerald-100 px-2.5 py-1 text-xs text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-            }
-          >
-            {readOnly ? "已完成" : "進行中"}
+          <span className={`rounded-full px-2.5 py-1 text-xs ${statusBadge.cls}`}>
+            {statusBadge.text}
           </span>
           <SpinButton
             onClick={() => setStatus(readOnly ? "draft" : "done")}
             className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
-            {readOnly ? "重新開啟" : "標記完成"}
+            {/* ⚠ 原本叫「標記完成」，與新的【📤 送到派貨工作台】太像 ——
+                老闆 2026-08-18：「轉出跟標記完成意思太相同會讓人搞混」。
+                ⛔ 兩顆鈕的字不可以再互相打架：這顆的重點是「不送工作台」。 */}
+            {readOnly ? "重新開啟" : "🔒 收起草稿（不送工作台）"}
           </SpinButton>
           <SpinButton
             onClick={runPrecheck}
@@ -683,6 +831,19 @@ function Body() {
           >
             🖨 列印 / 匯出
           </SpinButton>
+          {/* ⭐ 這一頁的主要動作（藍色實心），位置刻意排在「列印」後面 ——
+              實際流程就是這個順序：改數量 → 檢查 → 印給樓下 → 樓下撿完 → 送到工作台。
+              ⓘ 沿用這一列既有的 px-3 py-2 尺寸，⛔ 不特別加大：整列高度一致才不會看起來歪掉
+                （這一列是總部在桌機/平板上按的，樓下 iPad 逐格改數量的是下面的矩陣）。
+              ⚠ disabled 只看 dispatched_at：草稿被「收起」（status=done）時照樣可以送，
+                老闆可能先收起來、隔天才決定要不要送。 */}
+          <SpinButton
+            onClick={prepareDispatch}
+            disabled={!!dispatchedLabel}
+            className="rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-40"
+          >
+            📤 送到派貨工作台
+          </SpinButton>
           <SpinButton
             onClick={load}
             className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
@@ -694,6 +855,15 @@ function Body() {
           改這裡<strong className="text-zinc-700 dark:text-zinc-300">不會動到派貨工作台的數字、也不會扣任何庫存</strong>。
           每一格離開輸入框就自動存檔；另一台 iPad 按「重新整理」看得到。
         </p>
+        {dispatchedLabel && (
+          // ⛔ 這句一定要**看得見**，不可以只放在按鈕的 title：iPad 上根本沒有 tooltip
+          //   （見機制索引七之五）。按鈕變灰而畫面上沒有任何說明＝老闆只會覺得系統壞了。
+          <p className="rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
+            📤 這張草稿已於 <strong>{dispatchedLabel}</strong> 送到派貨工作台，
+            <strong>不能再送一次</strong>（就算按「重新開啟」繼續改也一樣）。
+            要再帶一批商品過去，請另外開一張新草稿。
+          </p>
+        )}
       </header>
 
       {error && (
@@ -740,6 +910,15 @@ function Body() {
             setPrecheck(null);
             setPrecheckStale(false);
           }}
+        />
+      )}
+
+      {dispatchPlan && (
+        <DispatchPanel
+          plan={dispatchPlan}
+          draftName={draft.name}
+          onConfirm={confirmDispatch}
+          onCancel={() => setDispatchPlan(null)}
         />
       )}
 
@@ -872,13 +1051,16 @@ function Body() {
         {orphanStoreCount > 0 && `（其中 ${orphanStoreCount} 個已停用／已刪除／無法確認）`}。
         {hiddenInactiveCount > 0 &&
           `另有 ${hiddenInactiveCount} 家已停用的分店沒有顯示（這張草稿裡它們的數量都是 0，已經收掉的店不用再撿）。`}
-        {/* ⚠ 這一句原本寫「『對照現況』『列印』『送到派貨工作台』是後續切片，這一版還沒有」——
-            列印早就做好了，檢查是這一版做的，而「送到派貨工作台」老闆 2026-08-17 已裁示**不做**
-            （改成拿紙本去工作台人工建單，理由見實作計畫第二節「六條會多派出去的路徑」）。
-            ⛔ 留著那句話會讓老闆以為系統還會長出一顆自動轉出鈕，一直在等。 */}
-        數字改好之後按「檢查」，看拿去派貨工作台會不會卡住；接著「列印 / 匯出」印出來，
-        拿紙本到派貨工作台挑商品、填數字、建單。<strong className="text-zinc-700 dark:text-zinc-300">
-        這一頁不會自動把草稿送過去</strong>，建單一律在派貨工作台上手動完成。
+        {/* ⚠⚠ 這一段被改過兩次，兩次都是因為**它變成了假路標**：
+            第一版寫「送到派貨工作台是後續切片」；第二版寫「老闆 2026-08-17 已裁示不做」、
+            「這一頁不會自動把草稿送過去」—— 老闆 2026-08-18 改了主意，那句今天起就是錯的
+            （只帶商品、不帶數量，把當初放棄的理由整個消掉了）。
+            ⛔ 以後再改這顆鈕的行為，這一段要跟著改：過期的說明比沒有說明更害人。 */}
+        數字改好之後按「檢查」，看拿去派貨工作台會不會卡住；接著「列印 / 匯出」印出來給樓下撿。
+        撿完按「📤 送到派貨工作台」，<strong className="text-zinc-700 dark:text-zinc-300">
+        會把這張草稿的商品帶到派貨工作台的步驟 1（挑選商品）</strong>，
+        數量由派貨工作台自己算、跟草稿無關；建單一律還是在派貨工作台上手動完成。
+        每張草稿只能送一次。
       </p>
     </div>
   );
@@ -1030,6 +1212,122 @@ function PrecheckPanel({
         。現況隨時會變（樓下、別人都可能同時在動）—— 真的要去派貨工作台建單之前，最好再按一次「檢查」。
       </p>
     </div>
+  );
+}
+
+// 【📤 送到派貨工作台】按下去之後的確認面板。
+//
+// ⛔⛔ 與 PrecheckPanel 同一條不可以做錯的事：**查詢失敗絕對不能長得像「沒東西可送」**。
+//   所以 failed 走一條完全獨立的分支，型別上根本拿不到 sendable / blocked。
+//
+// ⭐ 為什麼要「先看再確定」而不是按一下就送：送出是**不可逆的**（dispatched_at 永不清空）。
+//   老闆按下去之前一定要先看到「帶得過去幾樣、哪幾樣帶不過去」——
+//   尤其是隔夜的草稿，中間別人可能已經把貨派掉了。
+function DispatchPanel({
+  plan,
+  draftName,
+  onConfirm,
+  onCancel,
+}: {
+  plan: DispatchPlan;
+  draftName: string;
+  onConfirm: (sendable: PrecheckSkuRef[]) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const cancelBtn = (
+    <button
+      type="button"
+      onClick={onCancel}
+      className="min-h-[44px] shrink-0 rounded-md border border-current px-3 text-sm opacity-70 hover:opacity-100"
+    >
+      取消
+    </button>
+  );
+
+  if (plan.kind === "failed") {
+    return (
+      <div className="flex items-start justify-between gap-3 rounded-md border-2 border-red-400 bg-red-50 p-3 text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-200">
+        {/* ⛔ 一個字都不可以讓人以為「是貨派完了」：那會害老闆去追一件根本沒發生的事 */}
+        <p className="text-base font-bold leading-relaxed">
+          問不到派貨工作台現在有什麼貨，所以這次沒有送出（草稿完全沒有被動到，可以再按一次）：{plan.reason}
+        </p>
+        {cancelBtn}
+      </div>
+    );
+  }
+
+  const { sendable, blocked } = plan;
+
+  // 一樣都帶不過去 → ⛔ 不給【確定送過去】、不導頁、不標記。
+  //   （導過去的話，工作台會是「有 ?fromDraft= 但一樣都沒挑中」，
+  //     而沒挑中的建單範圍是「篩選範圍內全部」—— 會靜默多派整個工作台。）
+  if (sendable.length === 0) {
+    return (
+      <div className="flex flex-col gap-3 rounded-md border-2 border-amber-400 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-200">
+        <p className="text-base font-bold">
+          這張草稿的 {blocked.length} 樣商品，派貨工作台現在<strong>一樣都沒有可分配量</strong>，
+          所以沒有送出（草稿沒有被動到，等貨到了再按一次）。
+        </p>
+        <p>可能是已經被別人派掉了，或是這批貨還沒到。</p>
+        <SkuRefList items={blocked} />
+        <div className="flex flex-wrap gap-2">{cancelBtn}</div>
+        <p className="text-xs opacity-80">查於 {plan.at}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded-md border-2 border-blue-400 bg-blue-50 p-3 text-sm text-blue-900 dark:border-blue-700 dark:bg-blue-950/50 dark:text-blue-200">
+      <p className="text-base font-bold">
+        要把「{draftName}」的 {sendable.length} 樣商品帶到派貨工作台的步驟 1 嗎？
+      </p>
+
+      {blocked.length > 0 && (
+        // ⛔ 逐項列出品號 + 品名，不可以只說「有 N 樣沒帶過去」：
+        //   同一系列常常只差規格名（花蓮阿咘 7 個口味），沒有品號品名等於沒講。
+        <section>
+          <h3 className="font-semibold">
+            ⚠ 以下 {blocked.length} 樣在派貨工作台已經沒有可分配量，<strong>不會</strong>帶過去
+          </h3>
+          <p className="mt-0.5">可能已經被派掉了，或是這批貨還沒到。</p>
+          <SkuRefList items={blocked} />
+        </section>
+      )}
+
+      {/* ⭐ 一句就好，⛔ 不要寫成大塊警告 —— 老闆的模型本來就是這樣（他原話：
+          「派貨工作台的商品拉出來的數量是多少就多少，跟草稿無關」），警告只是噪音。 */}
+      <p>
+        只帶<strong>商品</strong>過去，數量由派貨工作台自己算，跟草稿上的數字無關。
+        帶過去之後還是要自己在步驟 2 確認數量、按「建立撿貨單」。
+      </p>
+      <p className="font-semibold">⚠ 送出之後這張草稿就不能再送第二次了。</p>
+
+      <div className="flex flex-wrap gap-2">
+        <SpinButton
+          onClick={() => onConfirm(sendable)}
+          className="min-h-[44px] rounded-md bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700"
+        >
+          確定送過去（{sendable.length} 樣）
+        </SpinButton>
+        {cancelBtn}
+      </div>
+      <p className="text-xs opacity-80">
+        查於 {plan.at}　·　現況隨時會變（樓下、別人都可能同時在動）—— 真正帶過去的是按下「確定」當下工作台上還有的那些。
+      </p>
+    </div>
+  );
+}
+
+/** 品號 + 品名的清單。措辭與排版只有這一支，⛔ 不要在兩個分支各寫一份（會有一天只改到一邊） */
+function SkuRefList({ items }: { items: PrecheckSkuRef[] }) {
+  return (
+    <ul className="mt-1 flex flex-col gap-0.5">
+      {items.map((s) => (
+        <li key={s.sku_id}>
+          「{s.label}」<span className="font-mono text-xs opacity-70">{s.code}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 

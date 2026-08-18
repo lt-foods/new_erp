@@ -10,8 +10,8 @@
 //   不動 v_picking_demand_by_po（CREATE OR REPLACE VIEW 欄位順序限制多、風險高）。
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
 import { compareStoreOrder } from "@/lib/storeOrder";
@@ -255,8 +255,33 @@ function narrowToSoldCampaigns(
   return hit.length > 0 ? hit : all;
 }
 
+// 撿貨草稿帶進來的商品清單（?fromDraft=<id> 的結果）。
+//
+// ⭐ 做成 union 的理由與草稿頁的 DraftPrecheck 一樣：
+//   **查詢失敗絕對不可以長得像「這張草稿沒有商品」**。兩者在畫面上都是「一樣都沒帶進來」，
+//   但一個是系統壞了、一個是貨真的派完了 —— #757 就是搜尋失敗偽裝成「沒這個商品」，
+//   本專案已經犯過四次這種靜默偽裝。
+type DraftImportSkuRef = { sku_id: number; code: string; label: string };
+type DraftImport =
+  | { kind: "failed"; reason: string }
+  /** 草稿有商品，但工作台上一樣都沒有可分配量 → ⛔ 這種情況絕不呼叫 setPickedSkuIds，見 effect */
+  | { kind: "none"; draftName: string; blocked: DraftImportSkuRef[] }
+  | { kind: "ok"; draftName: string; picked: number; blocked: DraftImportSkuRef[] };
+
+// ⚠ 這一層 Suspense 是**必要的**，不是排版：本站是 output:"export"（next.config.ts），
+//   useSearchParams 在靜態匯出時沒有 Suspense 邊界會直接**建置失敗**。
+//   寫法抄 picking/drafts/edit/page.tsx 的既有作法。
 export default function PickingWorkstationPage() {
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-zinc-500">載入中…</div>}>
+      <Body />
+    </Suspense>
+  );
+}
+
+function Body() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   // 矩陣視角只撈「還有庫存可分配」的列（has_stock_left），避免整張 view（線上上萬列）全撈。
   const [demand, setDemand] = useState<DemandRow[] | null>(null);
   // 依分店檢視要看「缺貨待到」的品項 → lazy 撈完整 view（切到該分頁才撈一次）。
@@ -969,6 +994,118 @@ export default function PickingWorkstationPage() {
     for (const sk of visiblePickRows) next.add(sk.sku_id);
     setPickedSkuIds(Array.from(next), pickedEpoch);
   }
+
+  // ===== 從撿貨草稿帶商品進來（?fromDraft=<id>）=====
+  //
+  // 老闆 2026-08-18：「我主要是草稿撿的商品可以一鍵帶回，到第一步的挑選商品」。
+  // 痛點是草稿已經挑好 40 幾樣，拿紙過來還要一樣一樣重新找。
+  //
+  // ⛔⛔ 只帶商品，**一個數字都不帶**（老闆原話：「所有的數字店家通通不用帶」）——
+  //   所以下面撈 picking_draft_items 時連 qty 都不 select：不撈就不可能誤用。
+  //   草稿上出現過的商品一律帶，⛔ 包含整列都是 0 的（老闆當場駁回過「0 就不帶」的提案，
+  //   理由是他本來就會在步驟 2 逐格看過才建單）。
+  //
+  // ⛔ 為什麼是工作台自己來撈，而不是草稿頁直接寫 localStorage：
+  //   已挑清單是本檔的 module store，setPickedSkuIds 有「身分世代」防線（見 :140）。
+  //   從外面繞過去寫＝拆掉跨使用者資料污染的那道牆。草稿頁只負責導頁。
+  const [draftImport, setDraftImport] = useState<DraftImport | null>(null);
+  // ⚠ 整個 mount 只跑一次。ref 在 await **之前**就設 true —— 這個 effect 的依賴
+  //   （demand / skuRows / searchParams）在載入過程中會變好幾次，沒有這道閘門，
+  //   撈到一半又觸發第二輪，兩輪的 setPickedSkuIds 會互相覆蓋。
+  const draftImportRan = useRef(false);
+  useEffect(() => {
+    if (draftImportRan.current) return;
+    const draftId = Number(searchParams.get("fromDraft"));
+    if (!Number.isFinite(draftId) || draftId <= 0) return;
+    // 前置條件，兩個都不能少：
+    //   demand === null → skuRows 還是空陣列，會把「還沒載完」誤判成「工作台上什麼都沒有」
+    //   pickedStorageKey === null → 身分還沒到位，這時寫進去不會落地（見 setPickedSkuIds）
+    if (!demand || !pickedStorageKey) return;
+    draftImportRan.current = true;
+    void (async () => {
+      try {
+        const sb = getSupabase();
+        const [headRes, itemRows] = await Promise.all([
+          sb.from("picking_drafts").select("name").eq("id", draftId).maybeSingle(),
+          // ⛔ 不撈 qty（見上面）。走 fetchAllRows 分頁：明細是 SKU×分店 一格一列，
+          //    50 樣 × 十幾家店就破千，不分頁會被 PostgREST 靜默截在 1000 列 ——
+          //    後面的商品會變成「工作台上沒有」，剛好是最像真的那種假訊息。
+          fetchAllRows<{ sku_id: number; snapshot_sku_code: string | null; snapshot_sku_label: string | null }>(
+            () =>
+              sb
+                .from("picking_draft_items")
+                .select("sku_id, snapshot_sku_code, snapshot_sku_label")
+                .eq("draft_id", draftId)
+                .order("id", { ascending: true }),
+          ),
+        ]);
+        if (headRes.error) throw headRes.error;
+        const draftName = (headRes.data as { name: string } | null)?.name ?? `#${draftId}`;
+
+        // sku_id 去重。⚠ 一律 Number() 正規化：BIGINT 經過 PostgREST 可能是字串
+        //   （#751 踩過），不正規化的話與 skuRows 取交集會整批對不上、變成「一樣都帶不過去」。
+        const seen = new Set<number>();
+        const draftSkus: DraftImportSkuRef[] = [];
+        for (const r of itemRows) {
+          const id = Number(r.sku_id);
+          if (!Number.isFinite(id) || seen.has(id)) continue;
+          seen.add(id);
+          draftSkus.push({
+            sku_id: id,
+            code: r.snapshot_sku_code ?? "",
+            label: r.snapshot_sku_label ?? `（商品 #${id}，沒有留下品名）`,
+          });
+        }
+
+        // 「工作台上還有沒有這樣商品」直接拿現成的 skuRows 判斷 ——
+        // 它本身已經 filter(totalAvailable > 0) 過了（:810），⛔ 不必也不要再算一次。
+        const alive = new Set(skuRows.map((sk) => Number(sk.sku_id)));
+        const sendable = draftSkus.filter((s) => alive.has(s.sku_id));
+        const blocked = draftSkus.filter((s) => !alive.has(s.sku_id));
+
+        if (sendable.length === 0) {
+          // 🔴 一樣都帶不過去 → ⛔⛔ **絕對不可以呼叫 setPickedSkuIds**。
+          //   挑中 0 樣時 effectiveSkuRows 會退回 filteredSkuRows（:975 那個三元），
+          //   建單範圍就變成「篩選範圍內全部」＝ 靜默多派整個工作台。
+          //   ⛔ 也不清掉網址上的 ?fromDraft=：貨晚點到了，重新整理還能再帶一次。
+          setDraftImport({ kind: "none", draftName, blocked });
+          setPickStep("select");
+          return;
+        }
+
+        // ⛔ 一定要用 live snapshot 的世代，不可以用 closure 裡的 pickedEpoch：
+        //   同一輪 passive effects 裡，上面的「換人重置 / 綁新 key」effect 可能已經換掉
+        //   store 的歸屬，但 React 不會替這個 effect 更新 closure —— 阿審在
+        //   「失效清理 effect」（:313-341）抓到的 P0 就是同一條。
+        // ⛔ 整個換掉，不是聯集：⛔ 不可以抄 addAllVisiblePicks 那種寫法，
+        //   否則前一天挑剩沒清掉的東西會跟著今天這批一起被派出去。
+        const ok = setPickedSkuIds(sendable.map((s) => s.sku_id), getPickedEpoch());
+        if (!ok) {
+          // 世代對不上＝中途換了帳號／換了租戶，這批是「上一個人的」→ 整批被拒。
+          // ⛔ 不可以當成成功：畫面會顯示帶了 N 樣，實際上一樣都沒挑中，
+          //   而挑中 0 樣的建單範圍是「篩選範圍內全部」。
+          setDraftImport({
+            kind: "failed",
+            reason: "帶入的當下帳號或租戶換掉了，這批商品已經整批作廢（不會混到別人的清單）。請重新整理這一頁再試一次。",
+          });
+          return;
+        }
+        setDraftImport({ kind: "ok", draftName, picked: sendable.length, blocked });
+        setPickStep("select"); // 就是老闆說的「第一步：挑選商品」
+        // ⭐ 成功才把網址參數拿掉：留著的話，老闆手動取消幾樣之後按 F5，
+        //   整批又會被灌回來（他不會知道自己剛取消的又回來了）。
+        //   ⚠ 用 router.replace，⛔ 不要用 location.href —— router 會自動補 basePath。
+        router.replace("/wms/picking");
+      } catch (e) {
+        // ⛔⛔ 絕不偽裝成「這張草稿沒有商品」（#757 的教訓）。
+        //   ⛔ 也不清掉網址參數：重新整理才能重試 —— 草稿那頭已經標記送出過、按不了第二次了。
+        setDraftImport({
+          kind: "failed",
+          reason: e instanceof Error ? e.message : String(e),
+        });
+      }
+    })();
+  }, [searchParams, demand, pickedStorageKey, skuRows, router]);
 
   // 本次建單納入的品項：有挑 → 只取挑中的（⚠️ 從 skuRows 取，不與 filteredSkuRows 交集）；
   // 沒挑 → 維持現行「篩選範圍內全部」語意，行為不變。
@@ -1875,6 +2012,12 @@ export default function PickingWorkstationPage() {
         )}
       </div>
 
+      {/* 從撿貨草稿帶商品進來的結果（?fromDraft=）。可關，但⛔ 不自動消失 —— 帶不過去的那幾樣
+          是老闆待會要自己判斷的（要不要等貨、要不要走補貨申請），看漏了就白撿一趟。 */}
+      {draftImport && (
+        <DraftImportBanner result={draftImport} onClose={() => setDraftImport(null)} />
+      )}
+
       {/* 已挑清單失效提示（驗收 #5：自動移除且要明示，不得靜默） */}
       {prunedNotice && (
         <div className="flex items-start justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
@@ -2513,6 +2656,92 @@ function CampaignCombobox({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// 從撿貨草稿帶商品進來的結果橫幅。
+//
+// ⛔⛔ 這個元件唯一不可以做錯的事：**「匯入失敗」不可以長得像「草稿沒有商品」**
+//   （型別上也拿不到 draftName / blocked，失敗是完全獨立的分支）。
+function DraftImportBanner({ result, onClose }: { result: DraftImport; onClose: () => void }) {
+  const closeBtn = (
+    <button
+      type="button"
+      onClick={onClose}
+      aria-label="關閉這則訊息"
+      className="shrink-0 rounded px-2 text-current opacity-70 hover:opacity-100"
+    >
+      知道了
+    </button>
+  );
+
+  if (result.kind === "failed") {
+    return (
+      <div className="flex items-start justify-between gap-3 rounded-md border-2 border-red-400 bg-red-50 p-3 text-sm text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-200">
+        <p className="font-bold leading-relaxed">
+          ❌ 草稿的商品沒有帶進來（<strong>不是</strong>草稿沒有商品，是這次讀取失敗）：{result.reason}
+          <br />
+          已挑清單完全沒有被動到 —— 重新整理這一頁可以再試一次。
+        </p>
+        {closeBtn}
+      </div>
+    );
+  }
+
+  // 帶不過去的那幾樣，⛔ 一定要逐項列出品號 + 品名：同一系列常常只差規格名
+  // （花蓮阿咘 7 個口味），只說「有 3 樣沒帶過去」等於沒講。
+  const blockedList = result.blocked.length > 0 && (
+    <section className="mt-1.5">
+      <h3 className="font-semibold">
+        ⚠ 以下 {result.blocked.length} 樣在派貨工作台已經沒有可分配量，沒有帶過去：
+      </h3>
+      <ul className="mt-0.5 flex flex-col gap-0.5">
+        {result.blocked.map((s) => (
+          <li key={s.sku_id}>
+            「{s.label}」<span className="font-mono text-xs opacity-70">{s.code}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-0.5">可能已經被派掉了，或是這批貨還沒到。</p>
+    </section>
+  );
+
+  if (result.kind === "none") {
+    return (
+      <div className="flex items-start justify-between gap-3 rounded-md border-2 border-red-400 bg-red-50 p-3 text-sm text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-200">
+        <div>
+          {/* ⛔⛔ 這一句是 A 防線的最後一道：一樣都沒挑中時建單範圍是「篩選範圍內全部」，
+              老闆若沒看到這句就直接按下一步，會把整個工作台派出去。 */}
+          <p className="font-bold leading-relaxed">
+            ❌ 草稿「{result.draftName}」的商品，派貨工作台現在一樣都沒有可分配量，
+            所以<strong>沒有帶進任何商品</strong>。
+          </p>
+          <p className="mt-1 font-semibold">
+            ⚠ 現在的建單範圍會是畫面上<strong>全部</strong>品項，請先自己挑要撿的商品再往下一步。
+          </p>
+          {blockedList}
+        </div>
+        {closeBtn}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-md border border-blue-300 bg-blue-50 p-3 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-200">
+      <div>
+        <p className="font-semibold">
+          📤 已從草稿「{result.draftName}」帶入 {result.picked} 樣商品到「已挑選」。
+        </p>
+        {blockedList}
+        {/* ⭐ 一句就好，⛔ 不要寫成大塊警告 —— 老闆的模型本來就是這樣
+            （他原話：「派貨工作台裡的商品應該是什麼數字就什麼數字」），警告只是噪音。 */}
+        <p className="mt-1.5">
+          數量是派貨工作台自己算的，跟草稿無關。只影響上面的開團區塊，
+          <strong>補貨申請那一區完全沒動</strong>。
+        </p>
+      </div>
+      {closeBtn}
     </div>
   );
 }
