@@ -27,6 +27,15 @@
     "react-dom": "19.2.4",
     "xlsx": "0.18.5"
   },
+  "browserslist": [
+    "safari >= 13.1",
+    "ios_saf >= 13.4",
+    "chrome >= 84",
+    "edge >= 84",
+    "firefox >= 78",
+    "and_chr >= 84",
+    "samsung >= 14"
+  ],
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",

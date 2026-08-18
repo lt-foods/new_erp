@@ -708,3 +708,59 @@ LINE 會**依網址快取預覽**，改完 og tag 後舊訊息裡的卡片不會
 ```bash
 curl -sS <url> | grep -o '<meta property="og[^>]*>'
 ```
+
+---
+
+## 前端建置（apps/admin, apps/member）
+
+### Next.js 16 預設編到 `safari 16.4` —— 舊 iPhone 上整個 app 不動，而且不會有錯誤畫面
+
+`node_modules/next/dist/shared/lib/modern-browserslist-target.js` 寫死
+`['chrome 111','edge 111','firefox 111','safari 16.4']`，沒設 browserslist 就用它
+（`build/get-supported-browsers.js`：**有設就以設定為準**，所以修法就是去設）。
+而 iPhone 7 / 6s / iPad Air 2 的天花板是 iOS 15.8＝**Safari 15.6**，差這一階
+SWC 就會吐出 ES2022 的 class static block（Next 自家的 error boundary 就有，
+每一頁都載得到），舊機一個 SyntaxError 整包 chunk 陣亡。
+
+**症狀完全不像壞掉**：會員端每頁都是 client component，SSR 吐的是 `loading=true`
+的骨架，所以 hydration 沒發生時畫面就**停在轉圈那一格** —— 沒有紅字、沒有 console
+（手機上也看不到）、`client_error_logs` 一筆都沒有，因為 ErrorLogger 自己也在那包
+死掉的 bundle 裡。2026-08-18 忠順 992831 回報「點新系統就一直轉圈」就是這個，
+從畫面上跟「網路慢」分不出來。看到「某幾支手機轉圈、其他人都正常」先想這條。
+
+- 兩個 app 的 `package.json` 都設了 `browserslist`（下限 Safari 13.1 / iOS 13.4）。
+  **不要拿掉**，也不要以為 Next 之後會自己變寬。
+- **browserslist 管不到 `node_modules` 裡已經編好的 dist**（Next 預設不轉譯），
+  所以真正的下限是相依套件給什麼算什麼 —— 目前實測是 Safari 14.1
+  （`@serwist` 的 class fields）。只能事後檢查：
+
+  ```bash
+  cd apps/member && npx next build --webpack     # 要先 build
+  node scripts/check-bundle-browser-support.mjs apps/member   # 或 apps/admin
+  ```
+
+  它用 AST（不是 grep）揪 class static block / lookbehind / regexp `d`,`v` flag。
+  **升 next / react / @serwist 之後跑一次**，不然又是等店家拍照才發現。
+- 語法過了不代表跑得動：`Object.hasOwn`、`structuredClone`（都是 Safari 15.4）
+  這種**執行期 API** 不會被 browserslist 降級，而 Next 的 polyfill chunk 掛的是
+  `noModule`，Safari 15 支援 module 所以**根本不會載**。現在 app router 路徑上
+  沒有裸呼叫（Next 自己在 chunk 內附了 `Object.hasOwn` 的 fallback），要自己用
+  這類 API 時記得先 feature detect。
+
+### 會員端有「開機守門員」，它必須是 ES5
+
+`apps/member/src/lib/bootGuard.ts` 內嵌在 layout 的 `<body>` 第一個 —— 它**不屬於
+任何 chunk**，所以 bundle 全滅時照樣會跑：等不到 hydration 就把轉圈換成看得懂的
+訊息，並回報一筆 `source='boot_no_hydration'` 到 `client_error_logs`。上面那次
+災情之所以只能靠照片，就是因為當時沒有這層。
+
+- **它自己只能用 ES5**（沒有箭頭函式 / let / 樣板字串 / `fetch` / `Promise`）。
+  用了新語法它會跟要救的那包一起 SyntaxError，而且**不會有任何人發現**（畫面上
+  什麼都不會發生）。改完一定要跑 `node scripts/check-boot-guard-es5.mjs`。
+- 存活訊號是 `ErrorLogger` 在 useEffect 裡設的 `window.__memberBootOk`
+  （常數 `BOOT_OK_FLAG`）。兩邊要一致，改名記得一起改。
+- 它**不靠 error 事件**判斷：框架 chunk 是釘在 `<head>` 最前面的 async script，
+  插不進它們前面（`next/script` 的 `beforeInteractive` 在 Next 16 也是排到
+  `<body>` 開頭，實測沒用），誰先跑是條件競爭。所以放棄時會把 chunk 抓回來用
+  `new Function` **只解析不執行**，穩定拿到真正的錯誤，順便分辨要跟使用者說
+  「手機太舊」還是「網路不通」。
