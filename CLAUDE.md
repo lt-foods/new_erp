@@ -326,10 +326,52 @@ confirmed**，變成重複單（線上已抓到 5 位客人中獎，其中 3 位
 - `rpc_record_pickup` 寫 `sale` movement **沒有任何庫存檢查**（不走 `rpc_outbound`），
   所以閘門是唯一的防線；閘門放行 = 直接把 `on_hand` 扣成負的。
 
-唯一的人工放行出口是**庫存減抵單**（Path D，兩道守衛都豁免）——
-貨真的在架上只是帳沒入的時候用它。注意 Path D **不比數量**：一張 qty=1 的 DN
-就讓該 (團,店,SKU) 整組跳過守衛，而 `rpc_create_offset_sale` 每做一次現貨配單
-就會在真團底下開一張 → 那些團等於沒有守衛，這個洞還在。
+**兩道守衛的豁免範圍不一樣，這是刻意的：**
+
+- campaign-local：Path A / D / D' 全豁免（維持 20260814060000 的行為）。現貨配單的貨
+  本來就不是總倉發的，記帳側算不到它，硬要它過這道會把正常現貨配單整批擋死。
+- 實體庫存：**只**豁免容器單（`store_internal`）、offset 單本身、沒綁倉別的店。
+  Path A / D / D' **不**豁免。
+
+理由：Path A / D / D' 答的是「這批貨算不算到過店」（到貨問題），實體守衛問的是
+「現在還在不在架上」（當下問題）。一張一個月前的減抵單不能證明貨今天還在。
+
+**「帳面不足但貨在架上」的正解是到庫存總覽補庫存（＋新增庫存 / 盤點），不是開減抵單。**
+`rpc_create_inventory_deduction` 自己就強制 `on_hand - reserved >= qty`，錯誤訊息寫著
+「請先到『庫存總覽』對該商品新增庫存，再開減抵單」—— 帳早就被要求先補正了，
+所以拿 DN 豁免 on_hand 檢查等於讓同一批貨無限次交付。
+
+### 查「為什麼這張還可以取貨」時，先看 Path D，不要先看 supplied / available
+
+2026-08-18 松山那件事我第一次診斷判錯：看到 `_pickup_group_supplied` 沒有依 campaign
+切分（跨團共用同一批實收），就認定是跨團重複計算。實際跑線上資料才發現該組
+`supplied = 0`、`available = -4` —— campaign-local 守衛**本來就擋得住**，真正放行的是
+**Path D 的無條件豁免**（3 張 qty=1 的 DN，`reason='加單頁現貨配單'`）。
+
+所以順序是：先問「有沒有 DN / offset 單」，再問數量。一支診斷查詢就夠：
+
+```sql
+SELECT public.is_order_item_pickup_ready(coi.id) AS gate,
+       public._pickup_group_supplied (co.tenant_id, co.campaign_id, co.pickup_store_id, coi.sku_id) AS supplied,
+       public._pickup_group_available(co.tenant_id, co.campaign_id, co.pickup_store_id, coi.sku_id) AS available,
+       sb.on_hand,
+       EXISTS (SELECT 1 FROM inventory_deduction_notes n
+                WHERE n.campaign_id=co.campaign_id AND n.store_id=co.pickup_store_id
+                  AND n.sku_id=coi.sku_id AND n.cancelled_at IS NULL) AS path_d
+  FROM ...
+```
+
+`gate=true` 但 `available` 是負的 → 一定是某條豁免在作用，不是算術問題。
+
+另外：**評估影響範圍時母體不要只抓 `ready`/`shipping`**。松山那兩張的單頭是
+`confirmed`，第一版評估因此回報「只有 22 筆、而且全部豁免」，看起來像沒事 ——
+實際涵蓋 confirmed / pending 之後是 78 筆 / 110 件 / 71 張單 / 10 家店。
+取貨頁的 `ACTIVE_STATUSES` 是 `pending, confirmed, reserved, ready, partially_ready,
+partially_completed, shipping`，評估閘門影響時要照這一套。
+
+閘門很貴（~5ms/次），母體上萬筆一定 timeout。先用視窗函數算累計、
+再用「這家店收過這個 SKU 沒有」預篩，最後只對倖存者跑閘門
+（同 20260813020000 的教訓：planner 不會照你的子句順序跑，要 `MATERIALIZED`）。
 
 ### 把貨配給客人之後，【內部】xx 店的現貨池要跟著扣
 

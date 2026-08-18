@@ -25,8 +25,23 @@
 --      池子轉單給客人、自由轉貨轉出、盤點調整 —— 這些都會壓低 on_hand，但因為
 --      它們掛在別的 campaign_id（或根本不是訂單），一律不會扣到本團的 available。
 --
---   換句話說：舊守衛只擋得住「總倉少發」（同團同批的短收），擋不住「貨到了、
---   但被別團 / 別通路領走」。松山這張就是後者。
+--   ③ 而且上面兩道漏洞其實還輪不到 —— **實際放行松山那兩張的是 Path D 的無條件
+--      豁免**。線上實測（2026-08-18，campaign 3613 / 松山店 / sku 1981）：
+--        _pickup_group_supplied  = 0
+--        _pickup_group_available = -4   ← campaign-local 守衛本來擋得住
+--        on_hand                 = 0
+--        is_order_item_pickup_ready = true
+--      因為該組有 3 張 qty=1 的減抵單（DN2608100025/26/27，reason「加單頁現貨配單」），
+--      而 Path D 只比對 (tenant, campaign, store, sku) **完全不看數量也不看時間**，
+--      一張就讓整組跳過到貨判斷與數量守衛。該組已經取走 4 件、on_hand 歸零，
+--      剩下的 2 張（GRP-20260809-001-0028 黃淑芳、-TF0001 Peggy）照樣亮「已到貨」。
+--      回報那位客人（M034663 黃惠美）的 GRP-20260809-001-0024 已經被改走轉單
+--      （status = transferred_out）—— 就是 CLAUDE.md 記過的「發不出貨只好轉單 →
+--      重複單」那條繞路。
+--
+--   換句話說：舊守衛擋得住「總倉少發」（同團同批的短收），擋不住「貨到了但被別團 /
+--   別通路領走」，更擋不住「有減抵單就無限放行」。松山這張是第三種。
+--   ⇒ 所以本守衛**不沿用 Path A / D / D' 的豁免**，理由見下方取捨 1。
 --
 -- 修法：在既有守衛之後**再加一道**以 stock_balances.on_hand 為準的實體庫存守衛。
 --   兩道都要過才放行（只會變嚴、不會變鬆），既有 Path A~D' 與 campaign-local
@@ -59,11 +74,15 @@
 --
 -- 刻意的設計取捨：
 --
---   1. **豁免與既有守衛完全同一套**（Path A 自己的 transfer 收貨 / Path D 庫存減抵單 /
---      Path D' offset 抵減單）。那三條是「這一組明確被宣告覆蓋」的路徑，量由那些
---      單據自己管。→ HQ 想放行一組帳面不足的貨，開一張**庫存減抵單**仍然是既有
---      正解，不必回頭改閘門。這也是本次唯一需要人工介入的出口，務必留著。
---   2. **另外豁免容器單與 offset 單本身**（store_internal 會員 / order_kind='offset'）。
+--   1. **Path A / D / D' 在這道守衛「不」豁免** —— 與 20260814060000 那道刻意不同。
+--      那三條回答的是「這批貨算不算到過店」（到貨問題），本守衛問的是「現在還在
+--      不在架上」（當下問題）。一張一個月前的減抵單不能證明貨今天還在。
+--      減抵單尤其不能豁免：rpc_create_inventory_deduction 開單時就強制
+--      `on_hand - reserved >= v_total`，錯誤訊息是「請先到『庫存總覽』對該商品新增
+--      庫存，再開減抵單」——「貨在架上但帳沒入」根本不是它的使用情境。
+--      → 帳面不足但貨真的在架上的正解改成**到庫存總覽補庫存**（＋新增庫存 / 盤點），
+--        跟開減抵單本來就要求的前置動作是同一件事，不是新增的負擔。
+--   2. **豁免容器單與 offset 單本身**（store_internal 會員 / order_kind='offset'）。
 --      它們被排除在「已承諾」母體之外，若又要它們自己過守衛就會被 on_hand 擋掉，
 --      而池子單的「轉單給客人」「短收收尾」都不該被取貨閘門影響。
 --   3. **沒綁倉別（或沒有取貨店）的店不套守衛**。算不出 on_hand 就維持舊行為，
@@ -94,12 +113,13 @@
 --     所以不會重演「105 張單全卡 confirmed」。
 --
 -- 已知殘留（本支**沒有**修掉的，寫下來免得下次以為蓋全了）：
---   * Path A / D / D' 的豁免依然「不比數量」。尤其 Path D：一張 qty=1 的庫存減抵單
---     就讓該 (團,店,SKU) 的**所有**未取行整組跳過兩道守衛，而 rpc_create_offset_sale
---     每做一次現貨配單就會在**真團**底下開一張 DN（20260805000230）→ 那些團等於
---     沒有守衛。不動它是因為 DN 是唯一的人工放行出口（取貨頁的提示也是這樣寫的），
---     拿掉會讓「貨真的在架上但帳沒入」的店完全沒救。要收這個洞得讓 DN 帶數量，
---     那是另一個題目。
+--   * Path A / D / D' 在 **20260814060000 那道 campaign-local 守衛裡依然完全豁免、
+--     依然不比數量**（本支不動它）。也就是說減抵單仍然能讓一組貨跳過「開團後實收 −
+--     已取」那本帳；只是現在跳不過實體庫存那一關了。這樣的分工是刻意的：
+--     現貨配單（rpc_create_offset_sale）的貨本來就不是總倉發的，記帳側算不到它，
+--     硬要它過 campaign-local 守衛會把正常的現貨配單整批擋死。
+--   * 減抵單的 qty 仍然沒有被任何一道守衛讀取。要讓「這張 DN 只蓋 3 件」真正生效，
+--     得把 qty 接進 campaign-local 那本帳的供給側，那是另一個題目。
 --   * 母體只算「已承諾」（ready / partially_completed / shipping），所以兩張都還沒被
 --     推上來的 confirmed / pending 單彼此不佔預算 —— on_hand = 1 而有兩張 confirmed
 --     時可能同時放行。刻意如此：把 confirmed 算進母體會讓「舊的等貨單」擋掉
@@ -349,37 +369,21 @@ AS $function$
             WHERE m.id = co.member_id
               AND COALESCE(m.member_type, '') = 'store_internal'
          )
-         -- Path A：這張單有自己的 transfer 被收貨（含 aid 跨店分支）
-         OR EXISTS (
-           SELECT 1 FROM transfers t
-            WHERE t.customer_order_id = co.id
-              AND t.tenant_id = co.tenant_id
-              AND t.status IN ('received','closed')
-         )
-         -- Path D：庫存減抵單（HQ 明確宣告用店內現貨吸收 → 唯一的人工出口）
-         OR EXISTS (
-           SELECT 1 FROM inventory_deduction_notes n
-            WHERE n.tenant_id   = co.tenant_id
-              AND n.campaign_id = co.campaign_id
-              AND n.store_id    = co.pickup_store_id
-              AND n.sku_id      = coi.sku_id
-              AND n.cancelled_at IS NULL
-         )
-         -- Path D'：offset 抵減單
-         OR EXISTS (
-           SELECT 1
-             FROM customer_orders oo
-             JOIN customer_order_items oi
-               ON oi.order_id = oo.id
-              AND oi.sku_id   = coi.sku_id
-              AND oi.qty < 0
-              AND oi.status NOT IN ('cancelled','expired')
-            WHERE oo.tenant_id       = co.tenant_id
-              AND oo.campaign_id     = co.campaign_id
-              AND oo.pickup_store_id = co.pickup_store_id
-              AND oo.order_kind      = 'offset'
-              AND oo.status NOT IN ('cancelled','expired','transferred_out')
-         )
+         -- ⚠ Path A / D / D' **刻意不在這裡豁免**（與上面那道守衛不同）。
+         --   那三條回答的是「這批貨算不算到過店」，屬於**到貨**問題；本守衛問的是
+         --   「現在還在不在架上」，是**當下**的問題 —— 任何單據都不能宣告一批
+         --   已經被領走的貨還在。
+         --   減抵單尤其不行：rpc_create_inventory_deduction 開單時就強制
+         --   `on_hand - reserved >= qty`，錯誤訊息還寫「請先到『庫存總覽』對該商品
+         --   新增庫存，再開減抵單」——「貨在架上但帳沒入」根本不是它的使用情境，
+         --   帳早就被要求先補正了。拿它豁免 on_hand 檢查等於讓同一批貨無限次交付。
+         --   線上實證（2026-08-18 松山 GRP-20260809-001 / sku 1981）：3 張 qty=1 的
+         --   減抵單（「加單頁現貨配單」）→ 該組已取 4 件、on_hand 0，還有 2 張單
+         --   因為 Path D 豁免而一路亮著「已到貨」。那就是本次回報的災情本體。
+         --
+         -- 帳面不足但貨真的在架上時的正解 = **到庫存總覽把庫存補上**（＋新增庫存 /
+         -- 盤點），不是開減抵單繞過去 —— 減抵單自己也是這樣要求的。
+         --
          -- 實體守衛本體：跨團累計承諾 ≤ on_hand
          OR (
            SELECT COALESCE(SUM(y.qty), 0)
@@ -428,9 +432,11 @@ COMMENT ON FUNCTION public.is_order_item_pickup_ready(bigint) IS
   '2026-08-18 實體庫存守衛：跨團依同一套排序累加「已承諾未取」（單頭 ready / '
   'partially_completed / shipping，排除容器單 / offset / 待補貨），'
   '累計量超過該店該 SKU 的 stock_balances.on_hand 的行回 false '
-  '（擋「貨到了但被別團或現貨直配領走」）。'
-  'Path A / D / D''、容器單、offset 單、未綁倉別的店跳過守衛 —— '
-  'HQ 要放行帳面不足的組請開庫存減抵單。';
+  '（擋「貨到了但被別團／現貨配單領走」與「有減抵單就無限放行」）。'
+  '這道守衛**不**豁免 Path A / D / D'' —— 那三條答的是「到過店沒」，這道問的是'
+  '「現在還在不在架上」；減抵單開單時本來就要求 on_hand 先夠（rpc_create_inventory_'
+  'deduction），不能拿來繞過 on_hand。只豁免容器單（store_internal）、offset 單本身、'
+  '未綁倉別的店。帳面不足但貨在架上 → 到庫存總覽補庫存，不是開減抵單。';
 
 -- ============================================================
 -- 2. 上線前後要跑的驗證（不放進 migration 交易，手動跑）
