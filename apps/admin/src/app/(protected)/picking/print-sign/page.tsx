@@ -496,6 +496,44 @@ export default function PrintSignPage() {
             {/* 商品表 — 編號 / 商品名稱 / 數量 / 單價 / 小計（＋點收框）*/}
             <table className="w-full border-collapse text-sm">
               <thead>
+                {/* 店名列 —— 2026-08-18 老闆指示新增。解決的是「一次列印很多家店，某家店品項多到
+                    印成兩張紙時，第二張紙上完全看不出是哪一間分店」：樓下拿到那疊紙分不出來。
+                    ⭐ 為什麼放在 thead 裡（這是本列存在的全部理由，搬走就失效）：
+                      列印分頁時瀏覽器會把 thead 的每一列**在每一頁重新印一次**。
+                      底下「編號 / 商品名稱 / …」那一列本來就靠這個機制在第二頁重現，
+                      把店名塞進同一個 thead，它就跟著一起被重複。
+                      ⛔ 所以絕對不可以搬到 <table> 外面、或搬進 tbody —— 那樣就只有第一頁看得到，
+                        等於這個功能沒做。
+                    ⛔ 刻意**不做頁碼**（老闆 2026-08-18 明確否決）：頁碼只講「第 2 頁」不講是誰的
+                      第 2 頁，分不出分店；而且自製頁碼在使用者調列印縮放時會印出說謊的數字。
+                    ⚠ colSpan 必須等於本表欄數（目前 6：編號 / 商品名稱 / 數量 / 單價 / 小計 / 點收）。
+                      日後增減欄位這裡要一起改，否則表格會錯位 —— 錯位的後果是金額印到別欄。
+                    ⚠ 第一頁會同時看到這一列和上面表頭區的「店家」那一格，是老闆看過版面後
+                      裁示「先留著兩個」（改動最小、不動他熟悉的版面），不是漏刪。
+                    ⚠ 字級 text-sm 只作用在這一列（新增的元素）；上面表頭區與底下欄位名稱列
+                      一個字級都沒有動。
+                    ⭐ `leading-4 py-0` 是量出來的，不是隨手寫的 —— 老闆非常在意浪費紙：
+                      吃掉高度的其實是**行高**，不是字級。text-sm 預設行高 20px，
+                      壓成 16px（＝text-xs 的預設行高）再把上下內距歸零之後，
+                      這一列剛好塞得進原本的空隙：A4 第一頁仍然放得下 35 樣品項，
+                      跟 origin/main **一模一樣**，一張紙都沒有多花。
+                      ⛔ 別「順手」把 leading-4 拿掉或把 py 加回來：實測 text-sm+py-0.5、
+                        text-xs+py-0.5、text-base 等版本都會讓第一頁少放 1 樣，
+                        剛好 35 樣的店就會從 1 張變回 2 張 —— 那正是老闆上一輪
+                        刪簽名區才換來的。（八種寫法的逐格頁數見 v8_字級取捨量測報告.txt） */}
+                <tr className="bg-zinc-100">
+                  <th
+                    colSpan={6}
+                    className="border border-zinc-400 px-2 py-0 text-left text-sm font-bold leading-4"
+                  >
+                    {sheet.store.name}
+                    {sheet.store.code && (
+                      <span className="ml-2 break-all font-mono text-xs font-normal text-zinc-500">
+                        ({sheet.store.code})
+                      </span>
+                    )}
+                  </th>
+                </tr>
                 <tr className="bg-zinc-100">
                   {/* ⚠ 編號欄一定要 whitespace-nowrap。
                       不是「沒給寬度」那麼單純:`G00351-01` 裡的連字號是合法斷行點,
