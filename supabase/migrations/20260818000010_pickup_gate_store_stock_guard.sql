@@ -438,19 +438,4 @@ COMMENT ON FUNCTION public.is_order_item_pickup_ready(bigint) IS
   'deduction），不能拿來繞過 on_hand。只豁免容器單（store_internal）、offset 單本身、'
   '未綁倉別的店。帳面不足但貨在架上 → 到庫存總覽補庫存，不是開減抵單。';
 
--- ============================================================
--- 2. 上線前後要跑的驗證（不放進 migration 交易，手動跑）
---
---   影響範圍 / 驗收：scripts/verify-pickup-stock-guard-impact.sql
---     套用前 → 完整的超賣清單（＝本支要擋掉的量）；
---     套用後 → 應該只剩 exempt_reason 非 NULL 的列（Path A / D / D' / 容器單 /
---     offset / 沒綁倉別的店，都是刻意豁免）。還有 exempt_reason IS NULL 的列
---     就是守衛沒生效，回頭查。
---
---   誤擋檢查：scripts/verify-pickup-stock-guard-regression.sql
---     店裡帳上有貨（on_hand > 0）卻被擋的行，依 backorder / stock_guard / other
---     分類。重點看 first_in_line_but_blocked —— 前面沒人排隊卻被擋，代表 on_hand
---     低於實際（到貨沒入帳 / 重複扣帳），該補收貨或盤點，不是守衛寫錯。
---
---   ⚠ 兩支檔案裡的 cum 算式與本檔守衛逐字對齊。改守衛時要一起改，否則對不上。
--- ============================================================
+-- =====================================================-- ============================================================

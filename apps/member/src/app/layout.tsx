@@ -2,9 +2,12 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
 import ErrorLogger from "@/components/ErrorLogger";
+import { bootGuardScript } from "@/lib/bootGuard";
 import { SITE_NAME, SITE_OG_IMAGE, SITE_URL } from "@/lib/site";
 
 const DESCRIPTION = "包子媽生鮮小舖 — LINE 團購會員 App";
+
+const BOOT_GUARD = bootGuardScript(process.env.NEXT_PUBLIC_SUPABASE_URL);
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -57,6 +60,18 @@ export default function RootLayout({
   return (
     <html lang="zh-Hant" className="h-full antialiased">
       <body className="min-h-full flex flex-col">
+        {/* 開機守門員：內嵌、不屬於任何 chunk，所以 bundle 整包掛掉時它照樣會跑。
+            沒等到 hydration 就把「永遠轉圈的骨架」換成看得懂的訊息並回報一筆
+            client_error_logs（見 lib/bootGuard.ts —— 那是 2026-08-18 iPhone 7
+            事件的產物：舊 iOS 上 JS 全滅，畫面跟「還在載入」一模一樣）。
+
+            放 <body> 第一個而不是 <head>：Next 把框架 chunk 的 <script> 釘在 head
+            最前面，插不進它們前面（自己開一層 <head> 只會多出第二個 head，實測
+            腳本還是排在後面；`next/script` 的 beforeInteractive 也一樣排到這裡）。
+            所以「誰先跑」是條件競爭，error 事件本來就可能漏接 —— bootGuard 因此
+            不靠它判斷，另外備了兩條路：load 之後還沒 hydration 就放棄，
+            並事後把 chunk 抓回來重新解析拿現場。 */}
+        <script dangerouslySetInnerHTML={{ __html: BOOT_GUARD }} />
         <ErrorLogger />
         <ServiceWorkerRegister />
         {children}
