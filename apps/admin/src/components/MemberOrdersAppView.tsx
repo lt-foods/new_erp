@@ -16,6 +16,8 @@
  *     = apps/member/src/app/orders/page.tsx（2026-08-11 起「全部」不顯示金額）
  *   - 卡片標題 orderCardTitle（內部 sentinel 團改印品項名）
  *     = apps/member/src/lib/orderTitle.ts 的副本 lib/orderTitle.ts
+ *   - 「已完成」依「那一次到店結單」分組（order_pickup_events）
+ *     = apps/member/src/lib/pickups.ts 的副本 lib/pickupVisits.ts
  *
  * 後台加值：點卡片可直接開訂單明細（會員 app 沒有這個）。
  */
@@ -23,6 +25,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { orderCardTitle } from "@/lib/orderTitle";
+import { fetchReprintableEvents } from "@/lib/pickupReceipt";
+import {
+  buildDoneNodes,
+  formatVisitWhen,
+  visibleTotals,
+  type PickupVisit,
+} from "@/lib/pickupVisits";
 
 type AppOrderItem = {
   id: number;
@@ -53,6 +62,8 @@ export type AppOrderRow = {
   campaign_name: string | null;
   campaign_cutoff_date: string | null;
   store_name: string | null;
+  /** 這張單的取貨紀錄（order_pickup_events；撤銷掉的那幾次已濾除）—— 「已完成」分組用 */
+  pickups?: { id: number; picked_at: string; item_ids: number[] }[];
 };
 
 type Phase = "waiting" | "pickup" | "done" | "void" | "transferred";
@@ -150,6 +161,19 @@ export function useMemberAppOrders(memberId: number, reloadTick = 0) {
       ]
         .filter((o) => orderPhase(o).phase !== "transferred")
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+      // 取貨紀錄 —— 「已完成」要依「客人那一次到店結單」分組（= 會員 app）。
+      // 拿不到就只是少了分組（卡片照列），不要讓整個視圖掛掉。
+      const eventsByOrder = await fetchReprintableEvents(rows.map((o) => o.id));
+      if (cancelled) return;
+      for (const o of rows) {
+        o.pickups = (eventsByOrder.get(o.id) ?? []).map((ev) => ({
+          id: ev.id,
+          picked_at: ev.created_at,
+          item_ids: ev.item_ids,
+        }));
+      }
+
       setOrders(rows);
       setLoading(false);
     })();
@@ -201,6 +225,11 @@ export function MemberOrdersAppView({
 }) {
   const { buckets, loading, err } = data;
   const [tab, setTab] = useState<Tab>("waiting");
+
+  // 「已完成」依「那一次到店結單」分組（= 會員 app 的同一支演算法）：客人一趟
+  // 拿走好幾個團的貨、當場付一次現金，平鋪的訂單列表拼不回那一次拿了什麼。
+  // 一張單分兩次取完會拆成兩張卡，各自掛在自己那一次底下。
+  const doneNodes = useMemo(() => buildDoneNodes(buckets.done), [buckets.done]);
 
   const bucket = buckets[tab];
   // = 會員 app orders/page.tsx：應付總金額只在待到貨 / 待取貨顯示
@@ -263,15 +292,53 @@ export function MemberOrdersAppView({
 
       {!loading && (
         <div className="max-h-[560px] space-y-3 overflow-auto pr-1">
-          {bucket.map((o) => (
-            <AppOrderCard key={o.id} order={o} onClick={() => onOpenOrder(o.id, o.order_no)} />
-          ))}
+          {tab === "done"
+            ? doneNodes.map((node) =>
+                node.kind === "visit" ? (
+                  <PickupVisitHeader key={node.key} visit={node.visit} />
+                ) : (
+                  <AppOrderCard
+                    key={node.key}
+                    order={node.order}
+                    visitSlice
+                    onClick={() => onOpenOrder(node.order.id, node.order.order_no)}
+                  />
+                ),
+              )
+            : bucket.map((o) => (
+                <AppOrderCard key={o.id} order={o} onClick={() => onOpenOrder(o.id, o.order_no)} />
+              ))}
         </div>
       )}
 
       <p className="text-[11px] text-zinc-400">
-        與會員 app「我的訂單」同一套資料與口徑（半年內、每類最多 100 筆）；點卡片可開後台訂單明細。
+        與會員 app「我的訂單」同一套資料與口徑（半年內、每類最多 100 筆）；「已完成」依客人
+        到店結單的那一次分組；點卡片可開後台訂單明細。
       </p>
+    </div>
+  );
+}
+
+// 一次到店結單的標題（= 會員 app 的 PickupVisitHeader）。
+// 措辭避開「結單」兩個字：卡片上的「結單日」是開團收單日，兩種意思擺一起會誤讀。
+function PickupVisitHeader({ visit }: { visit: PickupVisit }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50/60 px-4 py-2.5 dark:border-rose-900 dark:bg-rose-950/30">
+      <div className="min-w-0">
+        <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+          🧾 {formatVisitWhen(visit.pickedAt)} 取貨
+        </div>
+        <div className="text-xs text-zinc-500">
+          {visit.storeName && <>{visit.storeName} · </>}
+          {visit.orderCount} 筆訂單 · {visit.qty} 件
+        </div>
+      </div>
+      <div className="flex-shrink-0 text-right">
+        <div className="text-[11px] text-zinc-500">本次取貨金額</div>
+        <div className="text-lg font-semibold tabular-nums text-rose-700 dark:text-rose-400">
+          ${fmtAmount(visit.amount)}
+        </div>
+      </div>
     </div>
   );
 }
@@ -280,8 +347,22 @@ export function MemberOrdersAppView({
 const ACTIVE_ITEM_STATUSES = ["pending", "reserved", "ready"];
 
 // = apps/member/src/components/OrderCard.tsx 的卡片內容（後台配色 + 可點擊）
-function AppOrderCard({ order, onClick }: { order: AppOrderRow; onClick: () => void }) {
+function AppOrderCard({
+  order,
+  onClick,
+  /**
+   * 這張卡是「某一次結單的分片」（只帶那一次取走的品項）—— 金額要照卡片上真的
+   * 列出來的行算，掛整張單的 items_total / payable_amount 會出現「1 件 $278」
+   * 這種對不起來的畫面。= 會員 app OrderCard 的 viewPhase 分身卡同一套。
+   */
+  visitSlice = false,
+}: {
+  order: AppOrderRow;
+  onClick: () => void;
+  visitSlice?: boolean;
+}) {
   const phase = orderPhase(order);
+  const visible = visibleTotals(order.items ?? []);
   // 內部 sentinel 團（店內現貨轉手單）印品項名，其餘印開團名稱 —— 見 lib/orderTitle
   const title = orderCardTitle(order);
   const totalQty = (order.items ?? []).reduce(
@@ -369,7 +450,9 @@ function AppOrderCard({ order, onClick }: { order: AppOrderRow; onClick: () => v
       <div className="space-y-1 border-t border-zinc-100 px-4 py-2.5 text-sm dark:border-zinc-800">
         <div className="flex justify-between text-xs text-zinc-500">
           <span>商品（{totalQty} 件）</span>
-          <span className="tabular-nums">{fmtAmount(order.items_total)}</span>
+          <span className="tabular-nums">
+            {fmtAmount(visitSlice ? visible.amount : order.items_total)}
+          </span>
         </div>
         {Number(order.shipping_fee) > 0 && (
           <div className="flex justify-between text-xs text-zinc-500">
@@ -394,7 +477,7 @@ function AppOrderCard({ order, onClick }: { order: AppOrderRow; onClick: () => v
                 : "text-lg font-semibold tabular-nums text-rose-700 dark:text-rose-400"
             }
           >
-            ${fmtAmount(order.payable_amount)}
+            ${fmtAmount(visitSlice ? visible.amount : order.payable_amount)}
           </span>
         </div>
         {partlyPaid && (

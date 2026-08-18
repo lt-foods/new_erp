@@ -330,6 +330,56 @@ async function getOverview(sb: any, tenantId: string, storeId: number, memberId:
   return json({ store: storeRow, receivable_amount: receivable, active_orders_count: activeCount ?? 0 });
 }
 
+/**
+ * 取貨事件（order_pickup_events，append-only）→ 依訂單分組。
+ *
+ * 會員端「已完成」分頁靠它把品項還原成「客人那一次到店結單拿走的組合」：
+ * 一次櫃台結單 = 每張訂單各一筆事件（/pickup 的「一次全取」是逐張呼叫
+ * rpc_record_pickup），所以事件本身就是那一次拿走的品項清單。
+ *
+ * 撤銷取貨（rpc_undo_pickup，20260704000010）不刪原事件 —— 該表禁改禁刪 ——
+ * 而是補一筆 pickup_undone、notes 固定 `撤銷取貨事件 #<id>`。被撤銷的那一次
+ * 不能再算數，判法與後台 apps/admin/src/lib/pickupReceipt.ts 的
+ * undonePickupEventIds 同一套（改一邊記得改另一邊）。
+ *
+ * notes 不外露：那是店員的內部備註（「一次全取（儲值金 $500）」之類）。
+ */
+async function fetchPickupEventsByOrder(
+  sb: any,
+  orderIds: number[],
+): Promise<Map<number, { id: number; event_type: string; picked_at: string; item_ids: number[] }[]>> {
+  const out = new Map<number, { id: number; event_type: string; picked_at: string; item_ids: number[] }[]>();
+  if (orderIds.length === 0) return out;
+  const { data, error } = await sb
+    .from("order_pickup_events")
+    .select("id, order_id, event_type, item_ids, notes, created_at")
+    .in("order_id", orderIds)
+    .in("event_type", ["picked_up", "partial_pickup", "pickup_undone"])
+    .order("id", { ascending: true });
+  // 取貨紀錄拿不到只是少了分組，訂單本身照列 —— 不要讓整頁掛掉
+  if (error) { console.error("fetchPickupEventsByOrder:", error.message); return out; }
+
+  const rows = (data ?? []) as any[];
+  const undone = new Set<number>();
+  for (const r of rows) {
+    if (r.event_type !== "pickup_undone") continue;
+    const m = /撤銷取貨事件 #(\d+)/.exec(String(r.notes ?? ""));
+    if (m) undone.add(Number(m[1]));
+  }
+  for (const r of rows) {
+    if (r.event_type === "pickup_undone" || undone.has(Number(r.id))) continue;
+    const list = out.get(Number(r.order_id)) ?? [];
+    list.push({
+      id: Number(r.id),
+      event_type: String(r.event_type),
+      picked_at: String(r.created_at),
+      item_ids: Array.isArray(r.item_ids) ? r.item_ids.map(Number).filter(Number.isFinite) : [],
+    });
+    out.set(Number(r.order_id), list);
+  }
+  return out;
+}
+
 async function listMyOrders(sb: any, tenantId: string, _storeId: number, memberId: number, tab: string) {
   const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
   // 不依 store_id 過濾：同一 line_user 可能綁多店 OA，但 member_id 是 tenant 級；
@@ -345,6 +395,11 @@ async function listMyOrders(sb: any, tenantId: string, _storeId: number, memberI
     ? (data ?? []).filter((o: any) => o.status !== "cancelled" || o.stockout_at)
     : (data ?? []);
 
+  // 每張單掛上自己的取貨事件 —— 會員端「已完成」分頁要能把品項還原成
+  // 「客人那一次到店結單的組合」（同一次結單常橫跨好幾張單）。
+  // 多一次查詢就好，不要每張單各查一次。
+  const pickupsByOrder = await fetchPickupEventsByOrder(sb, rows.map((o: any) => Number(o.id)));
+
   // 把 items.image_url + campaign_cover_url 轉成 storage public URL
   const supabaseUrl = requireEnv("SUPABASE_URL");
   const orders = rows.map((o: any) => ({
@@ -354,6 +409,7 @@ async function listMyOrders(sb: any, tenantId: string, _storeId: number, memberI
       ...it,
       image_url: toPublicUrl(supabaseUrl, "products", it.image_url),
     })),
+    pickups: pickupsByOrder.get(Number(o.id)) ?? [],
   }));
   return json({ orders });
 }

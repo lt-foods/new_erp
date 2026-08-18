@@ -28,6 +28,25 @@ export type OrderItem = {
   arrived?: boolean | null;
 };
 
+/**
+ * 一次取貨事件（order_pickup_events，append-only）。liff-api 的 list_my_orders
+ * 把它掛在訂單上（撤銷掉的那幾次伺服端已經濾掉）。
+ *
+ * 這就是「客人該次到店結單拿走的組合」的權威來源 —— 一次櫃台結單常橫跨好幾張
+ * 訂單（/pickup 的「一次全取」逐張呼叫 rpc_record_pickup），每張各留一筆事件。
+ *
+ * 舊版 liff-api 還沒部署時整個欄位會是 undefined，前端要當「沒有取貨紀錄」處理
+ * （lib/pickups.ts 會退回原本的平鋪列表，不能整頁壞掉）。
+ */
+export type PickupEvent = {
+  id: number;
+  /** picked_up（整張取完）/ partial_pickup（還有品項沒取） */
+  event_type: string;
+  picked_at: string;
+  /** 這一次取走的 customer_order_items.id（部分數量取貨會拆行，帶的是拆出來那一行） */
+  item_ids: number[];
+};
+
 export type OrderRow = {
   id: number;
   order_no: string;
@@ -62,6 +81,8 @@ export type OrderRow = {
   campaign_cutoff_date: string | null;
   store_name: string | null;
   settlement_no: string;
+  /** 這張單的取貨紀錄（liff-api list_my_orders @2026-08-18）；舊版沒有這欄 */
+  pickups?: PickupEvent[];
 };
 
 /**

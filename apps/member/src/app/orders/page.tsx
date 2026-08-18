@@ -14,6 +14,8 @@ import OrderCard, {
   type OrderPhase,
   type OrderRow,
 } from "@/components/OrderCard";
+import PickupVisitHeader from "@/components/PickupVisitHeader";
+import { buildDoneNodes, countOrderNodes, takeOrderNodes } from "@/lib/pickups";
 
 // 蝦皮式分頁。我們取貨時付現金，所以沒有「待付款」；「待收貨」＝到店「待取貨」。
 // 分桶跟卡片右上角的狀態字共用 orderPhase()，兩邊永遠一致。
@@ -143,9 +145,18 @@ export default function OrdersPage() {
 
   const [visible, setVisible] = useState(PAGE_SIZE);
 
+  // 「已完成」改依「那一次到店結單」分組 —— 客人一趟拿走好幾個團的貨、當場付一次
+  // 現金，平鋪的訂單列表拼不回那一次到底拿了什麼（見 lib/pickups.ts）。
+  // 一張單分兩次取完會拆成兩張卡，所以這一頁的卡片數 ≠ bucket.length，
+  // 分頁要照節點自己算。
+  const doneNodes = useMemo(() => buildDoneNodes(buckets.done), [buckets.done]);
+
   const bucket = buckets[tab];
-  const display = bucket.slice(0, visible);
-  const hasMore = bucket.length > visible;
+  const isDone = tab === "done";
+  const display = isDone ? [] : bucket.slice(0, visible);
+  const displayNodes = isDone ? takeOrderNodes(doneNodes, visible) : [];
+  const cardCount = isDone ? countOrderNodes(doneNodes) : bucket.length;
+  const hasMore = cardCount > visible;
   // 總金額卡只在「待到貨」「待取貨」出現（理由見 sumOrders 註解），照整個分頁算
   const showTotals = tab === "waiting" || tab === "pickup";
   const totals = sumOrders(bucket);
@@ -214,7 +225,7 @@ export default function OrdersPage() {
           </div>
         )}
 
-        {!loading && !err && display.length === 0 && (
+        {!loading && !err && cardCount === 0 && (
           <div className="flex flex-col items-center py-20 text-center">
             <div
               className="flex h-24 w-24 items-center justify-center rounded-full text-5xl"
@@ -228,25 +239,43 @@ export default function OrdersPage() {
           </div>
         )}
 
-        {display.map((o, i) => (
-          <div
-            key={o.id}
-            className="animate-in"
-            style={{ animationDelay: `${Math.min(i % PAGE_SIZE, 8) * 50}ms` }}
-          >
-            {/* 分身卡的右上角狀態字要講「這一頁」的語意；「全部」不拆頁，維持整張單的狀態 */}
-            <OrderCard order={o} viewPhase={tab === "all" ? undefined : (tab as OrderPhase)} />
-          </div>
-        ))}
+        {/* 已完成：一次到店結單的標題 + 這次拿走的訂單卡；沒有取貨紀錄的卡片
+            （舊資料 / liff-api 還沒補上 pickups）就是沒有標題的一張卡，維持原樣。 */}
+        {isDone &&
+          displayNodes.map((node, i) => (
+            <div
+              key={node.key}
+              className={`animate-in ${node.kind === "visit" && i > 0 ? "pt-2" : ""}`}
+              style={{ animationDelay: `${Math.min(i % (PAGE_SIZE * 2), 8) * 50}ms` }}
+            >
+              {node.kind === "visit" ? (
+                <PickupVisitHeader visit={node.visit} />
+              ) : (
+                <OrderCard order={node.order} viewPhase="done" />
+              )}
+            </div>
+          ))}
+
+        {!isDone &&
+          display.map((o, i) => (
+            <div
+              key={o.id}
+              className="animate-in"
+              style={{ animationDelay: `${Math.min(i % PAGE_SIZE, 8) * 50}ms` }}
+            >
+              {/* 分身卡的右上角狀態字要講「這一頁」的語意；「全部」不拆頁，維持整張單的狀態 */}
+              <OrderCard order={o} viewPhase={tab === "all" ? undefined : (tab as OrderPhase)} />
+            </div>
+          ))}
 
         {!loading && hasMore && (
           <div ref={sentinelRef} className="py-4 text-center text-[13px] text-[var(--ios-gray)]">
             載入更多…
           </div>
         )}
-        {!loading && !hasMore && bucket.length > PAGE_SIZE && (
+        {!loading && !hasMore && cardCount > PAGE_SIZE && (
           <div className="py-4 text-center text-[13px] text-[var(--tertiary-label)]">
-            已顯示全部 {bucket.length} 筆
+            已顯示全部 {cardCount} 筆
           </div>
         )}
       </div>

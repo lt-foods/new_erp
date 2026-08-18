@@ -11,6 +11,8 @@ export type PickupEventRow = {
   event_type: string;      // picked_up | partial_pickup | pickup_undone
   created_at: string;
   notes: string | null;
+  /** 這一次取走的 customer_order_items.id（部分數量取貨會拆行，帶的是拆出來那一行） */
+  item_ids: number[];
 };
 
 // 撤銷取貨不刪原事件（表禁改禁刪），而是補一筆 pickup_undone，
@@ -35,11 +37,15 @@ export async function fetchReprintableEvents(
   if (orderIds.length === 0) return out;
   const { data } = await getSupabase()
     .from("order_pickup_events")
-    .select("id, order_id, event_type, created_at, notes")
+    .select("id, order_id, event_type, created_at, notes, item_ids")
     .in("order_id", orderIds)
     .in("event_type", ["picked_up", "partial_pickup", "pickup_undone"])
     .order("id", { ascending: true });
-  const rows = (data ?? []) as unknown as PickupEventRow[];
+  const rows = ((data ?? []) as unknown as PickupEventRow[]).map((r) => ({
+    ...r,
+    // item_ids 是 jsonb，缺值 / 型別歪掉都當空陣列（收據頁只用 id，分組才用得到它）
+    item_ids: Array.isArray(r.item_ids) ? r.item_ids.map(Number).filter(Number.isFinite) : [],
+  }));
   const undone = undonePickupEventIds(rows);
   for (const r of rows) {
     if (r.event_type === "pickup_undone" || undone.has(r.id)) continue;
