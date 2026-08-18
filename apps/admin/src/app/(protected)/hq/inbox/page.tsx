@@ -240,7 +240,9 @@ const AID_STATUS_BY_STAGE: Record<Stage, AidStatus[]> = {
   standby: [],
   in_transit: ["shipping"],
   done: ["ready", "completed", "partially_completed"],
-  rejected: ["cancelled"],
+  // view 的 stage CASE 是 ELSE 'rejected',所以 cancelled 以外的終態也要列進來,
+  // 否則 badge 數字(rpc_inbox_counts 走 view)會比列表多
+  rejected: ["cancelled", "expired", "transferred_out"],
 };
 const PICKING_STATUS_BY_STAGE: Record<Stage, string[]> = {
   pending: ["draft", "picking", "picked"],
@@ -794,17 +796,25 @@ async function fetchTransferRowsByIds(sb: SBClient, ids: number[]): Promise<Row[
 }
 
 // airMode: "aid" 排除空中轉 / "air" 只留空中轉(tag 用,決定 row.source 與 key 前綴)
-async function fetchAidRowsByIds(sb: SBClient, ids: number[], airMode: "aid" | "air" = "aid"): Promise<Row[]> {
+// v_hq_inbox 的 aid 分支不分空中轉(row_key 一律 aid-<id>),所以這裡**不能**濾
+// is_air_transfer —— 濾掉的話那幾列在「全部」分頁會被 detailMap 查不到而靜靜消失,
+// 但 total 仍然把它們算進去(筆數對不上列數)。列的 source 改成逐列判定。
+async function fetchAidRowsByIds(sb: SBClient, ids: number[]): Promise<Row[]> {
   if (ids.length === 0) return [];
-  let q = sb
+  const { data, error } = await sb
     .from("v_hq_inbox_aid")
     .select(AID_SELECT)
     .in("id", ids);
-  // view 的 is_air_transfer 已 COALESCE 成 false,不會有 null
-  q = q.eq("is_air_transfer", airMode === "air");
-  const { data, error } = await q;
   if (error) throw new Error("aid: " + error.message);
-  return toAidRows(sb, (data ?? []) as unknown as AidQueryRow[], airMode);
+  const rows = (data ?? []) as unknown as AidQueryRow[];
+  const built = await Promise.all(
+    rows.map(async (r) => {
+      const [row] = await toAidRows(sb, [r], r.is_air_transfer ? "air" : "aid");
+      // key 要對回 v_hq_inbox 的 row_key(aid-<id>),空中轉才不會落空
+      return { ...row, key: `aid-${r.id}` };
+    }),
+  );
+  return built;
 }
 
 async function fetchShortageRowsByIds(sb: SBClient, ids: number[]): Promise<Row[]> {
@@ -2688,9 +2698,9 @@ function MailRow({
 // 互助 / 空中轉列的標題：貨「從哪一家店 → 到哪一家店」。
 // 原本標的是「開團 → 取貨店」——取貨店只是收貨的那一頭，總倉看不出要跟誰收貨，
 // 而經總倉的互助正是總倉要親手轉交的（Leg-1 來源店 → 總倉、Leg-2 總倉 → 收貨店，
-// 20260510000004）。另外全站 375 張互助轉入單裡有 359 張其實是同店轉單
-// （只是換客人、貨沒離開本店，rpc_ship_aid_order 也會擋下派貨），標出來才不會
-// 跟真的要中轉的混在一起。
+// 20260510000004）。同店轉單（只是換客人、貨沒離開本店）在「待處理 / 在途」已經
+// 被 v_hq_inbox_aid 濾掉（20260818000040），但已完成 / 已取消的歷史還看得到，
+// 所以這個標記留著 —— 全站 375 張轉入單裡有 359 張是這種。
 function AidRouteTitle({ a }: { a: AidRaw }) {
   const dest = a.store_name ?? "—";
   const sameStore = a.from_store_id != null && a.from_store_id === a.pickup_store_id;

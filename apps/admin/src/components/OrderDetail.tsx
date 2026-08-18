@@ -696,7 +696,13 @@ export function OrderDetail({
   // 一般顧客訂單退回總倉（rpc_create_order_return）— 互助單不走這條（貨應退回原 source 店）
   const canReturn = !isAidOrder && ["shipping", "ready", "partially_completed", "completed", "expired"].includes(head.status);
   // 互助單已收貨未取貨（status=ready）退單：退回原 source 店（rpc_return_aid_order，#234）
-  const canAidReturn = isAidOrder && head.status === "ready";
+  // 同店轉單（換客人）不給按：貨沒離開本店、從來不會有 AT- 轉移單，
+  // rpc_return_aid_order 兩道守衛（no received transfer / source and dest share
+  // location_id）一定擋下 —— 線上 85 張同店 ready 單全部按了只會拿到錯誤訊息。
+  // 要換回原客人請走「訂單轉給別人」。
+  const isSameStoreTransfer =
+    transferSource?.store_id != null && transferSource.store_id === head.pickup_store_id;
+  const canAidReturn = isAidOrder && head.status === "ready" && !isSameStoreTransfer;
   const isTransferredOut = head.status === "transferred_out";
   // 復原取消（rpc_restore_cancelled_order）。伺服端還有一輪守衛，這裡先把三種
   // 一定會被擋的單藏起來，免得店員按了只拿到錯誤訊息：
