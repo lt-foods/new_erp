@@ -829,6 +829,18 @@ SWC 就會吐出 ES2022 的 class static block（Next 自家的 error boundary �
 
 - 兩個 app 的 `package.json` 都設了 `browserslist`（下限 Safari 13.1 / iOS 13.4）。
   **不要拿掉**，也不要以為 Next 之後會自己變寬。
+- ⚠️ **設了 browserslist 不代表線上真的變了 —— webpack 的 cache 會把它吃掉。**
+  Next 沒有把編譯目標算進 filesystem cache 的 key，所以改了 browserslist，
+  `.next/cache` 裡已經編好的模組會被原封不動拿來用。本機通常看不出來（多半會先
+  `rm -rf .next`），但 **Vercel 每次部署都會還原 `.next/cache`**，於是修改在線上
+  等於沒發生。2026-08-18 的 iPhone 7 修法就是這樣白做一次：PR 合併部署後，線上
+  `239-*.js` 的雜湊跟修之前**一模一樣**、static block 還在，舊手機照樣開不了。
+  已修：`apps/member/next.config.ts` 的 `pinCacheToBrowserslist()` 把 browserslist
+  折進 `cache.version`（不要改用 `buildDependencies` —— 那個只對「上一次 build
+  就已經在追蹤」的檔案有效，第一次加上去的那一次還是會吃到舊 cache，也就是救不了
+  已經壞掉的那次部署）。apps/admin 走 Turbopack，實測沒有這個問題，不用加。
+- 檢查已經接進兩個 app 的 `npm run build`（member 的 `vercel.json` 也改成
+  `npm run build`），語法不合格就讓部署**紅掉**，不會再靜悄悄上線。
 - **browserslist 管不到 `node_modules` 裡已經編好的 dist**（Next 預設不轉譯），
   所以真正的下限是相依套件給什麼算什麼 —— 目前實測是 Safari 14.1
   （`@serwist` 的 class fields）。只能事後檢查：
@@ -839,7 +851,9 @@ SWC 就會吐出 ES2022 的 class static block（Next 自家的 error boundary �
   ```
 
   它用 AST（不是 grep）揪 class static block / lookbehind / regexp `d`,`v` flag。
-  **升 next / react / @serwist 之後跑一次**，不然又是等店家拍照才發現。
+  平常靠 build 自動跑；要驗**線上**到底出了什麼，就把線上 `/orders` HTML 裡的
+  chunk 全抓下來放進某個 `<dir>/.next/static/chunks/`，再對 `<dir>` 跑同一支。
+  **不要只信本機 build** —— 上面那個 cache 坑就是本機綠、線上紅。
 - 語法過了不代表跑得動：`Object.hasOwn`、`structuredClone`（都是 Safari 15.4）
   這種**執行期 API** 不會被 browserslist 降級，而 Next 的 polyfill chunk 掛的是
   `noModule`，Safari 15 支援 module 所以**根本不會載**。現在 app router 路徑上

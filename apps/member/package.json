@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3001",
-    "build": "next build --webpack",
+    "build": "next build --webpack && node ../../scripts/check-bundle-browser-support.mjs .",
     "start": "next start -p 3001",
     "lint": "eslint"
   },
