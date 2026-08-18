@@ -311,11 +311,17 @@ function Body() {
               <thead>
                 <tr>
                   <th className="frozen-col">結單日</th>
-                  <th className="sku-cell frozen-col">品名 / 品號</th>
+                  {/* 品號已不印在紙上（見下面 sku-cell 的說明），表頭跟著只留「品名」 */}
+                  <th className="sku-cell frozen-col">品名</th>
                   <th className="frozen-col">合計</th>
                   {storeCols.map((st) => (
                     <th key={st.id} className={st.state === "active" ? "store-col" : "store-col odd-col"}>
-                      {st.name}
+                      {/* ⭐ 表頭只留店名的「名」：「三峽店」→「三峽」（老闆 2026-08-18 要省紙）。
+                          三個字的店名在窄欄位會被折成兩行，整個表頭就跟著變兩行高。
+                          ⛔ 只去掉**結尾**的「店」，不可以用全域 replace —— 店名中間有「店」字的會被誤刪。
+                          「全民」這種本來就沒有「店」字的，正規表示式不會動到它。
+                          ⚠ 只改紙上的顯示：st.name 本身、CSV 匯出（exportCsv 的 header）都維持完整店名。 */}
+                      {st.name.replace(/店$/, "")}
                       {st.state !== "active" && <span className="note">{STORE_STATE_LABEL[st.state]}</span>}
                     </th>
                   ))}
@@ -329,9 +335,11 @@ function Body() {
                       <td className={`num-cell ${cd?.kind === "dates" ? "" : "odd-col"}`}>{cd?.text ?? "無"}</td>
                       <td className="sku-cell">
                         {row.label}
-                        {/* 品號用灰字跟品名分開。⚠ 這裡蓋掉 .note 的琥珀色是刻意的（品號不是警告），
-                            但一樣要過 4.5:1：#475569 對隔行灰底 7.24:1（舊值 #64748b 只有 4.55:1，9px 幾乎沒餘裕）。 */}
-                        <span className="note" style={{ color: "#475569" }}>{row.code}</span>
+                        {/* ⛔ 紙本**不印品號**（老闆 2026-08-18 要省紙）：品號是 .note 的 display:block，
+                            自己佔掉一整行 × 每一樣商品，省下來的垂直空間拿去放大字級。
+                            ⚠ 只有紙不印 —— **CSV 匯出的品號欄要留著**（那是給 Excel 對帳用的，不佔紙），
+                            見 exportCsv() 的 header/body 都還有 row.code。
+                            ⛔ 下面兩個 .note 是**警告**不是品號，不可以一起刪掉。 */}
                         {row.state === "missing" && <span className="note">⚠ 商品主檔已查不到（顯示加入當下的名稱）</span>}
                         {row.state === "unknown" && <span className="note">⚠ 無法確認商品是否還在主檔</span>}
                       </td>

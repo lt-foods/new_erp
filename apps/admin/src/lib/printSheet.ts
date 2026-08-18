@@ -21,7 +21,15 @@ export const PRINT_SHEET_CSS = `
       print-color-adjust: exact;
       padding: 0;
     }
-    .pick-table { font-size: 10px; }
+    /* ⭐ 紙上要看得清楚 —— 樓下是站著對著紙撿貨，不是坐在桌前看螢幕。
+       老闆 2026-08-18：「現在的數字太小了，列印字體變 14pt」。
+       空間是從**刪掉品號 + 表頭店名去掉「店」字**換來的（見 drafts/print/page.tsx）：
+       每列少一行、表頭少折一行，省下的垂直空間拿去換字級。
+       ⚠ 14pt 比原本的 10px(≈7.5pt) 大約寬 1.87 倍，欄位會跟著變寬 ——
+       分店欄多的時候有機會橫向超出 A4 橫式（Chrome 列印是**裁掉**不是自動縮放，
+       被裁掉的分店欄＝樓下漏撿）。真的印不下時的調整順序：
+       ① padding（4px 6px 是純空白，先砍）② 品名欄寬 ③ 最後才考慮降字級。 */
+    .pick-table { font-size: 14pt; }
     /* 一列不要被切到跨頁 —— 樓下對著紙撿貨，斷行等於漏撿 */
     .pick-table tr { break-inside: avoid; }
     .pick-table thead { display: table-header-group; }
