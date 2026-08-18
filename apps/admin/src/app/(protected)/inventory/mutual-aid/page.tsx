@@ -1482,7 +1482,7 @@ function ThreadModal({
   }
 
   return (
-    <Modal open={true} onClose={onClose} title="互助貼文 #" maxWidth="max-w-2xl">
+    <Modal open={true} onClose={onClose} title={`互助貼文 #${post.id}`} maxWidth="max-w-2xl">
       <div className="flex flex-col gap-3 text-sm">
         {/* Post header */}
         <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs dark:border-zinc-800 dark:bg-zinc-950">
