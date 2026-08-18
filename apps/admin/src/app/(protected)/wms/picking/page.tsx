@@ -2116,7 +2116,12 @@ function Body() {
       {/* 從撿貨草稿帶商品進來的結果（?fromDraft=）。可關，但⛔ 不自動消失 —— 帶不過去的那幾樣
           是老闆待會要自己判斷的（要不要等貨、要不要走補貨申請），看漏了就白撿一趟。 */}
       {draftImport && (
-        <DraftImportBanner result={draftImport} onClose={() => setDraftImport(null)} />
+        <DraftImportBanner
+          result={draftImport}
+          // 與畫面上「✅ 已挑選 · N 樣」同一個來源，⛔ 不要另外算一份（會有一天對不起來）
+          pickedCount={pickedRows.length}
+          onClose={() => setDraftImport(null)}
+        />
       )}
 
       {/* ⛔⛔ 從草稿匯入之後已挑清單被清成 0 樣（阿審 2026-08-18 P0-3 / P0-4）。
@@ -2797,7 +2802,20 @@ function CampaignCombobox({
 //
 // ⛔⛔ 這個元件唯一不可以做錯的事：**「匯入失敗」不可以長得像「草稿沒有商品」**
 //   （型別上也拿不到 draftName / blocked，失敗是完全獨立的分支）。
-function DraftImportBanner({ result, onClose }: { result: DraftImport; onClose: () => void }) {
+function DraftImportBanner({
+  result,
+  pickedCount,
+  onClose,
+}: {
+  result: DraftImport;
+  /**
+   * 目前「已挑選」裡有幾樣（＝畫面上那個計數，來源同為 pickedRows）。
+   * 只有 failed 那條用得到：匯入失敗時清單裡若還有東西，那些是**使用者之前挑的**，
+   * 不是這張草稿的商品 —— 一定要把數字講出來，光說「沒有被動到」他掃一眼還是會誤會。
+   */
+  pickedCount: number;
+  onClose: () => void;
+}) {
   const closeBtn = (
     <button
       type="button"
@@ -2816,14 +2834,27 @@ function DraftImportBanner({ result, onClose }: { result: DraftImport; onClose: 
           <p className="font-bold leading-relaxed">
             ❌ 草稿的商品沒有帶進來（<strong>不是</strong>草稿沒有商品，是這次讀取失敗）：{result.reason}
           </p>
-          <p className="mt-1">已挑清單完全沒有被動到 —— 重新整理這一頁可以再試一次。</p>
-          {/* ⚠ 阿審 2026-08-18 P1-2：網址上的 ?fromDraft= 是刻意留著的（才重試得了），
-              但那代表 F5 成功時會**整個取代**現在的已挑清單。⛔ 一定要先講，不能讓他
-              自己先挑了 10 樣、按了 F5 才發現全被換掉。 */}
-          <p className="mt-1 font-semibold">
-            ⚠ 重新整理如果這次成功了，會用草稿的商品清單<strong>整個取代</strong>目前「已挑選」裡的東西
-            —— 如果你已經自己挑了一些，先把它們記下來，或改成手動挑、不要重新整理。
-          </p>
+          {/* ⚠ 阿審 2026-08-18 P1-2 ＋ CEO 的追加：網址上的 ?fromDraft= 是刻意留著的（才重試得了），
+              但那代表 F5 成功時會**整個取代**現在的已挑清單 —— 一定要先講，不能讓他自己先挑了
+              10 樣、按了 F5 才發現全被換掉。
+              ⭐ 而且要**講出實際數字**：只說「已挑清單沒有被動到」雖然是對的，但使用者掃一眼看到
+                步驟 1 有一堆商品，很容易以為草稿已經進來了。
+              ⛔ N === 0 時整段收掉：「你之前挑的 0 樣」是句怪話，也沒有東西會被取代。 */}
+          {pickedCount > 0 ? (
+            <>
+              <p className="mt-1 font-semibold">
+                ⚠️ 下面已挑的 {pickedCount} 樣是你<strong>之前</strong>挑的，
+                <strong>不是這張草稿的商品</strong>。
+              </p>
+              <p className="mt-1">
+                重新整理這一頁可以重試；成功的話會用草稿的清單
+                <strong>整個取代</strong>目前已挑的 {pickedCount} 樣
+                —— 想留著的話先記下來，或改成手動挑、不要重新整理。
+              </p>
+            </>
+          ) : (
+            <p className="mt-1">已挑清單是空的、也完全沒有被動到 —— 重新整理這一頁可以再試一次。</p>
+          )}
         </div>
         {closeBtn}
       </div>
