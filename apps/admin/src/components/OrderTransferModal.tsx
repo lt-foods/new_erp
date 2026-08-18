@@ -26,6 +26,15 @@ type MemberHit = {
   admin_note: string | null;
 };
 
+// 轉出結果 —— 呼叫端要知道貨有沒有離開本店（跨店才需要印隨貨的互助出貨單）
+export type TransferResult = {
+  newOrderId: number;
+  toStoreId: number;
+  toStoreName: string;
+  isAir: boolean;
+  crossStore: boolean;
+};
+
 function itemLabel(it: TransferItem): string {
   const base = it.product_name ?? `SKU #${it.sku_id}`;
   return it.variant_name ? `${base} / ${it.variant_name}` : base;
@@ -51,7 +60,7 @@ export function OrderTransferModal({
   items: TransferItem[];
   open: boolean;
   onClose: () => void;
-  onSubmitted: (newOrderId: number) => void;
+  onSubmitted: (result: TransferResult) => void;
   // 貨還沒到店（status != 'ready'）只能同店換客人：接收店鎖定原店
   // (跟 DB rpc_transfer_order_* 20260807000000 的 gate 一致)
   sameStoreOnly?: boolean;
@@ -226,7 +235,13 @@ export function OrderTransferModal({
         if (e) throw new Error(e.message);
         newId = data as number;
       }
-      onSubmitted(newId);
+      onSubmitted({
+        newOrderId: newId,
+        toStoreId: Number(toStore),
+        toStoreName: stores.find((s) => s.id === Number(toStore))?.name ?? "接收店",
+        isAir: airFlag,
+        crossStore: toStore !== currentPickupStoreId,
+      });
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {

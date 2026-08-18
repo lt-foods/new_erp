@@ -497,6 +497,36 @@ Leg-2 總倉 → 收貨店（`customer_order_id` = 轉入單）。所以**只看
   `customer_order_id IS NULL` 就往 `next_transfer_id` 追一段再拿訂單。
 - 空中轉（`is_air_transfer`）只有一段、直送收貨店，沒有這個問題。
 
+### 經總倉的轉入單一開始是 `pending`，不是 `confirmed` —— 轉出店的畫面別漏掉這一段
+
+`rpc_transfer_order_to_store` / `rpc_transfer_order_partial` 建轉入單時的 status：
+同店 mirror 原單、**跨店空中轉 `confirmed`**（尾端 helper 立刻推 shipping）、
+**跨店經總倉 `pending`**（維持總倉確認 gate）。而 `pending → confirmed` 的語意是
+「總倉收到貨了」（`AidOrderStatusActions` + 訂單進度條的「總倉收到」），
+也就是**箱子已經離開分店之後**才會發生。
+
+所以「轉出店還要為這批貨做事」的狀態集合是 `pending / confirmed / shipping`
+（`apps/admin/src/lib/aidTransfer.ts` 的 `AID_IN_FLIGHT_STATUSES`），
+漏掉 `pending` = 貨還在店裡、最需要印隨貨單的那一整段畫面上什麼都沒有。
+2026-08-18 南平→三峽就是這樣：儀表板的互助出貨提醒只撈 `confirmed/shipping`，
+店家原話「三峽可以看見，南平自己看不到轉給三峽的資料，找不到轉貨單可印」。
+
+連帶兩個一定要一起做的：
+
+- **轉入單掛在收貨店名下，轉出店的訂單列表一列都撈不到。** 來源單上要自己把
+  「轉出記錄」寫出來（`OrderDetail` 反查 `transferred_from_order_id = 本單`，
+  **不要用 `transferred_to_order_id`** —— 部分轉出不寫那一欄），
+  否則貨從店裡出去 = 系統上查無此事。
+- **連到 `/orders` 的連結一定要帶 `&storeId=<收貨店>`。** 門市篩選對分店帳號會
+  預設帶回自家店（`useDefaultStoreFromUser`，只在 storeId 為空時套），
+  不帶就是搜出 0 筆，看起來像貨憑空消失。
+
+⚠ 已知還沒補的洞：**「追加轉入（併入既有單）」那條分支不寫 `transferred_from_order_id`**
+（兩支 RPC 的 `v_appended` 分支都只加一行 notes）。同一團第二次轉到同一家店的
+同一個收件人時就會走到它 —— 反查撈不到，上面兩個畫面又會一起變成「查無此事」，
+而且既有單身上那一欄還指著更早的來源單、數量也是整張單的 aid 品項總和（會重複算）。
+真的要修得靠一張 order↔order 的連結表（一張轉入單可能有多個來源），不是補寫一欄就好。
+
 ### 自由轉貨（rpc_create_free_transfer）：停用過一次，2026-08-16 又打開
 
 時間軸：8/14 停用（`/wms/transfers` 的「+ 建自由轉貨」與 `/transfers/free`

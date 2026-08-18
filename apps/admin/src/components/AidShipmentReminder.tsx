@@ -6,10 +6,18 @@
 // 店家不知道自己名下有貨等著被載走，就不會去印單 —— 司機來了拿了貨、紙上什麼都沒有，
 // 中途少一箱沒人說得清（2026-08-15 店家回報）。
 //
-// 判定：轉入單（互助單）還沒被收貨店收掉（confirmed / shipping），而它的來源單是本店。
-//   - confirmed = 還沒派貨（經總倉的互助等總倉派）
+// 判定：轉入單（互助單）還沒被收貨店收掉（pending / confirmed / shipping），
+// 而它的來源單是本店。
+//   - pending   = 剛轉出、總倉還沒收到（**經總倉的轉入單一開始就是這個狀態**，
+//                 見 rpc_transfer_order_to_store / _partial：跨店非空中轉建成 pending）
+//   - confirmed = 總倉已收、還沒派貨；空中轉的話是自動出貨上線前卡住的舊單
 //   - shipping  = 已建 AT- 轉移單，但收貨店還沒收 → 貨可能還在店裡等司機
 //   收貨店收掉就變 ready，提醒自動消失。
+//
+// ⚠ pending 不可以漏（2026-08-18 南平→三峽）：原本只撈 confirmed/shipping，而
+// 經總倉的單要等總倉「收到貨」才被推 confirmed —— 也就是箱子早就離開店裡了提醒才出現。
+// 轉出店在最需要印隨貨單的那一段（貨還在自己手上）畫面上什麼都沒有，
+// 店家的原話是「南平自己看不到轉給三峽的資料，找不到轉貨單可印」。
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
@@ -17,6 +25,7 @@ import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { printViaIframe } from "@/lib/printIframe";
 import { withBasePath } from "@/lib/basePath";
+import { AID_IN_FLIGHT_STATUSES, aidRouteLabel, aidStageLabel } from "@/lib/aidTransfer";
 
 type PendingShip = {
   id: number;
@@ -24,6 +33,7 @@ type PendingShip = {
   status: string;
   is_air_transfer: boolean;
   dest_store: string;
+  dest_store_id: number | null;
   source_store: string;
   qty: number;
 };
@@ -61,7 +71,7 @@ export default function AidShipmentReminder({ storeId }: { storeId: number | nul
               "items:customer_order_items!inner(qty, status, source)",
           )
           .eq("items.source", "aid_transfer")
-          .in("status", ["confirmed", "shipping"])
+          .in("status", [...AID_IN_FLIGHT_STATUSES])
           .not("transferred_from_order_id", "is", null)
           .order("created_at", { ascending: true })
           .limit(200);
@@ -99,16 +109,20 @@ export default function AidShipmentReminder({ storeId }: { storeId: number | nul
           if (src.pickup_store_id === r.pickup_store_id) return [];
           // 儀表板選了門市（分店帳號一律鎖自己那家）→ 只提醒「要出貨的是本店」
           if (storeId != null && src.pickup_store_id !== storeId) return [];
+          // 品項全被取消掉的單沒有實體貨要交，別再叫人去印一張空白單
+          const qty = (r.items ?? [])
+            .filter((it) => !["cancelled", "expired"].includes(it.status))
+            .reduce((s, it) => s + Number(it.qty), 0);
+          if (qty <= 0) return [];
           return [{
             id: r.id,
             order_no: r.order_no,
             status: r.status,
             is_air_transfer: r.is_air_transfer === true,
             dest_store: nameOf(r.store),
+            dest_store_id: r.pickup_store_id,
             source_store: nameOf(src.store),
-            qty: (r.items ?? [])
-              .filter((it) => !["cancelled", "expired"].includes(it.status))
-              .reduce((s, it) => s + Number(it.qty), 0),
+            qty,
           }];
         });
         setRows(list);
@@ -158,15 +172,19 @@ export default function AidShipmentReminder({ storeId }: { storeId: number | nul
             </span>
             <span className="text-xs text-zinc-500">{r.qty} 件</span>
             <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-              {r.is_air_transfer ? "✈ 空中轉直送" : "🏬 經總倉"}
-              {r.status === "confirmed" ? "・等派貨" : "・已出貨待收"}
+              {aidRouteLabel(r.is_air_transfer)}・{aidStageLabel(r.status, r.is_air_transfer)}
             </span>
             {printed.has(r.id) && (
               <span className="text-[11px] text-emerald-600 dark:text-emerald-400">✓ 已列印</span>
             )}
             <div className="ml-auto flex items-center gap-2">
               <Link
-                href={`/orders?q=${encodeURIComponent(r.order_no)}`}
+                // 一定要帶 storeId=收貨店：訂單列表的門市篩選對分店帳號會預設帶回自家店，
+                // 而這張轉入單掛在收貨店名下 —— 不帶就會搜出 0 筆（看起來像貨消失了）
+                href={
+                  `/orders?q=${encodeURIComponent(r.order_no)}` +
+                  (r.dest_store_id != null ? `&storeId=${r.dest_store_id}` : "")
+                }
                 className="text-xs text-blue-600 hover:underline dark:text-blue-400"
               >
                 查看訂單
