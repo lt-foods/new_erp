@@ -57,7 +57,7 @@ export function describeDraftDbError(err: unknown): string {
     (/picking_draft/i.test(raw) && /(does not exist|schema cache)/i.test(raw));
   if (tableMissing) {
     return (
-      "「派貨草稿」的資料表還沒建立 —— 這個功能的 migration 還沒套到資料庫。" +
+      "「撿貨草稿」的資料表還沒建立 —— 這個功能的 migration 還沒套到資料庫。" +
       "請通知工程師套用 20260817000000_picking_drafts.sql，套好之後這一頁就會正常。" +
       "（這不是資料壞掉，也完全不影響其他頁面。）"
     );
@@ -65,7 +65,7 @@ export function describeDraftDbError(err: unknown): string {
 
   // 42501 = insufficient_privilege；RLS 只開給總部角色（見 migration 的 RLS 段）
   if (code === "42501" || /row-level security/i.test(raw)) {
-    return `這個帳號沒有「派貨草稿」的存取權限（草稿只開給總部角色）。原始訊息：${raw}`;
+    return `這個帳號沒有「撿貨草稿」的存取權限（草稿只開給總部角色）。原始訊息：${raw}`;
   }
 
   return raw;

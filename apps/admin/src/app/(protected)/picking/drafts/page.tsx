@@ -1,6 +1,6 @@
 "use client";
 
-// 派貨草稿 — 列表（切片 A）
+// 撿貨草稿 — 列表（切片 A）
 //
 // 這一頁在解什麼（老闆 2026-08-16）：
 //   「樓下今天要撿 50 樣商品，如果包子媽突然要插商品進來、或是車子載不下不送了，
@@ -261,7 +261,7 @@ export default function PickingDraftsPage() {
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header>
-        <h1 className="text-xl font-semibold">派貨草稿</h1>
+        <h1 className="text-xl font-semibold">撿貨草稿</h1>
         <p className="text-sm text-zinc-500">
           樓下撿貨前的清單，隨時可以加商品、刪商品、改數量。
           <strong className="text-zinc-700 dark:text-zinc-300">草稿完全不扣庫存、也不會建立任何撿貨單</strong>
