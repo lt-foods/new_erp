@@ -81,6 +81,7 @@ DECLARE
   v_campaign_id  BIGINT;
   v_campaign_no  TEXT;
   v_existing_no  TEXT;
+  v_existing_st  TEXT;
 BEGIN
   -- ── 權限：與 rpc_schedule_candidate / ccp_hq_all 同一份名單 ───────────────
   IF v_role NOT IN ('owner','admin','hq_manager','assistant','') THEN
@@ -157,8 +158,21 @@ BEGIN
    WHERE id = v_product_id AND tenant_id = v_tenant
      FOR UPDATE;
 
-  SELECT g.campaign_no
-    INTO v_existing_no
+  SELECT g.campaign_no,
+         -- 中文對照與前端 apps/admin/src/lib/campaignStatus.ts 的
+         -- CAMPAIGN_STATUS_LABEL 一致（那支是全站 single source of truth）
+         CASE g.status
+           WHEN 'draft'     THEN '草稿'
+           WHEN 'open'      THEN '開團中'
+           WHEN 'closed'    THEN '已收單'
+           WHEN 'locked'    THEN '已鎖定'
+           WHEN 'ordered'   THEN '已下訂'
+           WHEN 'receiving' THEN '到貨中'
+           WHEN 'ready'     THEN '可取貨'
+           WHEN 'completed' THEN '已完成'
+           ELSE g.status
+         END
+    INTO v_existing_no, v_existing_st
     FROM group_buy_campaigns g
    WHERE g.tenant_id  = v_tenant
      AND g.product_id = v_product_id
@@ -167,7 +181,17 @@ BEGIN
    LIMIT 1;
 
   IF v_existing_no IS NOT NULL THEN
-    RAISE EXCEPTION '這個商品已經有一個進行中的團（團號 %），不會重複開。要重開請先取消原本那個團。', v_existing_no;
+    -- ⚠️ 逃生門刻意「不是」叫老闆去取消原本那個團：
+    --   能把團設成 cancelled 的只有 rpc_bulk_set_campaign_status，而它的合法轉換表
+    --   只允許 draft / open / closed → cancelled；rpc_finalize_campaign 是單向 → completed；
+    --   前端 CampaignForm 的下拉也不含 ordered / receiving / ready / completed。
+    --   → 被擋住的若是這幾種下游狀態，老闆會照著訊息去找一顆根本不存在的取消鈕。
+    --   真正一直走得通的是商品頁的「建立新開團」（rpc_create_campaign_from_product，
+    --   不經過本函式、不受這道守衛影響）。
+    RAISE EXCEPTION
+      '這個商品已經有一個團了（團號 %，狀態：%），一鍵開團不會重複開。'
+      '真的要再開一團的話，請到「商品」頁面找到這個商品（%），用裡面的「建立新開團」。',
+      v_existing_no, v_existing_st, v_product_code;
   END IF;
 
   -- ── 3. 啟用：draft → active ─────────────────────────────────────────────
