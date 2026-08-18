@@ -273,6 +273,15 @@ type DraftImport =
   | { kind: "none"; draftName: string; blocked: DraftImportSkuRef[] }
   | { kind: "ok"; draftName: string; picked: number; blocked: DraftImportSkuRef[] };
 
+/**
+ * 世代被拒（中途換帳號／換租戶）時的說明。
+ *
+ * ⓘ 措辭只有這一份：匯入路徑有**兩個**寫入點（帶得過去、以及一樣都帶不過去要清空），
+ *   兩邊被拒的原因與後果完全一樣，寫成兩份只會有一天改到一半。
+ */
+const DRAFT_IMPORT_EPOCH_REJECTED =
+  "帶入的當下帳號或租戶換掉了，這批商品已經整批作廢（不會混到別人的清單）。請重新整理這一頁再試一次。";
+
 // ⚠ 這一層 Suspense 是**必要的**，不是排版：本站是 output:"export"（next.config.ts），
 //   useSearchParams 在靜態匯出時沒有 Suspense 邊界會直接**建置失敗**。
 //   寫法抄 picking/drafts/edit/page.tsx 的既有作法。
@@ -1113,15 +1122,29 @@ function Body() {
         const blocked = draftSkus.filter((s) => !alive.has(s.sku_id));
 
         if (sendable.length === 0) {
-          // 🔴 一樣都帶不過去 → ⛔⛔ **絕對不可以呼叫 setPickedSkuIds**。
-          //   挑中 0 樣時 effectiveSkuRows 會退回 filteredSkuRows（:975 那個三元），
-          //   建單範圍就變成「篩選範圍內全部」＝ 靜默多派整個工作台。
-          //   ⛔ 也不清掉網址上的 ?fromDraft=：貨晚點到了，重新整理還能再帶一次。
+          // 🔴 一樣都帶不過去。這裡**要把已挑清單清成空的**（阿審複審 P0）。
+          //
+          // ⚠️ 這一段的註解原本寫著「⛔ 絕對不可以呼叫 setPickedSkuIds」，理由是
+          //   「挑中 0 樣時 effectiveSkuRows 會退回 filteredSkuRows ＝ 派全部」。
+          //   **那個理由在 draftScopeEmpty 出現之後已經不成立了**，而照舊不清空反而開了一個洞：
+          //     localStorage 還留著昨天挑剩的 20 樣 → 今天送一張「商品全都沒可分配量」的草稿進來
+          //     → 不清空 → hasPicked 仍是 true → draftScopeEmpty 是 false → 建單鈕沒被擋
+          //     → 使用者以為在派今天這張草稿，實際派出去的是**昨天挑剩的東西**。
+          //   現在敢清空，正是因為 draftScopeEmpty 會接住：清成 0 樣 → hasPicked false
+          //   → draftScopeEmpty true → 建單被擋（與「匯入後被清成 0 樣」完全同一條路）。
+          //   ⛔ 不要因為看到「0 樣」就把這裡改回不清空 —— 那是把洞挖回來。
+          //
+          // ⛔ 用進 async 之前捕捉的 importEpoch，不是這一刻重取（同 P0-1）。
+          const cleared = setPickedSkuIds([], importEpoch);
+          if (!cleared) {
+            // 世代被拒＝中途換人／換租戶，這批本來就該作廢。
+            // ⛔ 這種情況不可以宣稱「已經從草稿匯入」：清單根本沒被動到，
+            //   設成 none 等於對使用者說了一件沒發生的事（而且 draftScopeEmpty 會誤判）。
+            setDraftImport({ kind: "failed", reason: DRAFT_IMPORT_EPOCH_REJECTED });
+            return;
+          }
+          // ⛔ 不清掉網址上的 ?fromDraft=：貨晚點到了，重新整理還能再帶一次。
           setDraftImport({ kind: "none", draftName, blocked });
-          // ⭐⭐ 這裡**一樣要立旗標**（CEO 2026-08-18 裁示）：危險與「匯入後被清成 0 樣」
-          //   一模一樣 —— 使用者以為自己在派這張草稿，但 hasPicked 是 false，
-          //   建單範圍就是畫面上全部。差別只在「一開始就空」還是「後來變空」。
-          //   ⛔ 但仍然**不呼叫 setPickedSkuIds**：一樣都帶不過去，沒有東西可以挑。
           setDraftImported("none");
           setPickStep("select");
           return;
@@ -1135,10 +1158,7 @@ function Body() {
           // 世代對不上＝中途換了帳號／換了租戶，這批是「上一個人的」→ 整批被拒。
           // ⛔ 不可以當成成功：畫面會顯示帶了 N 樣，實際上一樣都沒挑中，
           //   而挑中 0 樣的建單範圍是「篩選範圍內全部」。
-          setDraftImport({
-            kind: "failed",
-            reason: "帶入的當下帳號或租戶換掉了，這批商品已經整批作廢（不會混到別人的清單）。請重新整理這一頁再試一次。",
-          });
+          setDraftImport({ kind: "failed", reason: DRAFT_IMPORT_EPOCH_REJECTED });
           return;
         }
         setDraftImport({ kind: "ok", draftName, picked: sendable.length, blocked });
