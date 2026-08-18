@@ -269,7 +269,16 @@ function narrowToSoldCampaigns(
 type DraftImportSkuRef = { sku_id: number; code: string; label: string };
 type DraftImport =
   | { kind: "failed"; reason: string }
-  /** 草稿有商品，但工作台上一樣都沒有可分配量 → ⛔ 這種情況絕不呼叫 setPickedSkuIds，見 effect */
+  /**
+   * 草稿有商品，但工作台上一樣都沒有可分配量。
+   *
+   * ⚠️ 這一行原本寫「⛔ 這種情況絕不呼叫 setPickedSkuIds」——**那是舊實作，已經不成立**。
+   *   現在會先把已挑清單**清空**（`setPickedSkuIds([], importEpoch)`），清空成功才會進到 none，
+   *   再由 `draftScopeEmpty` 擋住建單。
+   *   ⛔ 不要照舊註解改回「不清空」：不清空的話，localStorage 裡昨天挑剩的東西會留著 →
+   *   `hasPicked` 仍是 true → `draftScopeEmpty` 不啟動 → 使用者以為在派這張草稿，
+   *   實際把昨天挑剩的派出去（複審抓到的 P0 就是這個）。理由詳見匯入 effect 內的註解。
+   */
   | { kind: "none"; draftName: string; blocked: DraftImportSkuRef[] }
   | { kind: "ok"; draftName: string; picked: number; blocked: DraftImportSkuRef[] };
 
