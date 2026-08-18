@@ -109,6 +109,16 @@ type OutgoingAidOrder = {
   is_air_transfer: boolean;
 };
 
+// 本單是「轉入單」時的來源（貨從哪一家店、哪一張單轉過來的）。
+// 互助 / 空中轉 / 同店換客人都走 transferred_from_order_id，
+// 差別只在兩邊的取貨店是不是同一家（同店＝貨沒有移動）。
+type TransferSource = {
+  id: number;
+  order_no: string;
+  store_id: number | null;
+  store_name: string;
+};
+
 // 品項狀態標籤（部分取貨會把一行拆成「已取」+「待取」兩行，標籤讓兩者一眼可分）
 function itemStatusBadge(status: string, stockout = false): { label: string; cls: string } | null {
   // 斷貨取消（stockout_at 有值）與一般取消區分顯示
@@ -207,6 +217,8 @@ export function OrderDetail({
   const [outgoingAid, setOutgoingAid] = useState<OutgoingAidOrder[]>([]);
   // 本單自己是空中轉轉入單且還在等出貨時，轉出店店名（給接收店看「在等誰」）
   const [awaitingAirFrom, setAwaitingAirFrom] = useState<string | null>(null);
+  // 本單是轉入單時的來源單／轉出店（單頭「轉移路徑」欄用）
+  const [transferSource, setTransferSource] = useState<TransferSource | null>(null);
   // sku_id → 現行分店價（prices scope=branch, effective_to IS NULL）
   const [branchPrices, setBranchPrices] = useState<Map<number, number>>(new Map());
   const [error, setError] = useState<string | null>(null);
@@ -350,22 +362,37 @@ export function OrderDetail({
           })),
       );
 
-      // 本單自己就是等出貨的空中轉轉入單 → 讓接收店看得到在等哪一家出貨
-      if (headData.is_air_transfer && headData.status === "confirmed" && headData.transferred_from_order_id) {
+      // ========== 本單是轉入單 → 貨是從哪一家店轉過來的 ==========
+      // 單頭只寫得出「取貨店」（＝收貨的那一端），看不出貨的來處；經總倉的互助更
+      // 是三方（轉出店 → 總倉 → 收貨店），總倉在收件匣點進來只看到「→ 三峽店」，
+      // 不知道要跟誰收貨。所以一律把來源查出來，單頭補一欄「轉移路徑」。
+      if (headData.transferred_from_order_id) {
         const { data: srcRow } = await sb
           .from("customer_orders")
-          .select("pickup_store_id, store:stores!customer_orders_pickup_store_id_fkey(name)")
+          .select("id, order_no, pickup_store_id, store:stores!customer_orders_pickup_store_id_fkey(name)")
           .eq("id", headData.transferred_from_order_id)
           .maybeSingle();
+        if (cancelled) return;
         const src = srcRow as unknown as
-          { pickup_store_id: number | null; store: { name: string } | { name: string }[] | null } | null;
+          {
+            id: number; order_no: string; pickup_store_id: number | null;
+            store: { name: string } | { name: string }[] | null;
+          } | null;
         const st = src?.store;
+        const srcStoreName = (Array.isArray(st) ? st[0]?.name : st?.name) ?? "轉出店";
+        setTransferSource(
+          src
+            ? { id: src.id, order_no: src.order_no, store_id: src.pickup_store_id, store_name: srcStoreName }
+            : null,
+        );
+        // 本單自己就是等出貨的空中轉轉入單 → 讓接收店看得到在等哪一家出貨。
         // 同店不需要出貨（rpc_ship_aid_order 也會擋），不掛「等出貨」
         const sameStore = src?.pickup_store_id === headData.pickup_store_id;
-        if (!cancelled) {
-          setAwaitingAirFrom(sameStore ? null : (Array.isArray(st) ? st[0]?.name : st?.name) ?? "轉出店");
-        }
+        setAwaitingAirFrom(
+          headData.is_air_transfer && headData.status === "confirmed" && !sameStore ? srcStoreName : null,
+        );
       } else if (!cancelled) {
+        setTransferSource(null);
         setAwaitingAirFrom(null);
       }
 
@@ -1136,6 +1163,15 @@ export function OrderDetail({
           );
         })()}
         <Field label="取貨店" value={head.store?.name ?? "—"} />
+        {head.transferred_from_order_id != null && (
+          <TransferRouteField
+            source={transferSource}
+            destName={head.store?.name ?? "—"}
+            destStoreId={head.pickup_store_id}
+            isAir={head.is_air_transfer === true}
+            onNavigate={onNavigate}
+          />
+        )}
         <Field
           label="下單來源"
           value={
@@ -1866,6 +1902,75 @@ function Timeline({ steps }: { steps: TimelineStep[] | null }) {
         ))}
       </ol>
     </div>
+  );
+}
+
+// 轉入單的「貨從哪一家店來、要到哪一家店」。
+// 經總倉的互助中間還會過總倉一手（20260510000004 拆成 Leg-1 / Leg-2），
+// 那一段對總倉自己最重要 —— 他們要照單把貨轉交出去，所以整條路徑都寫出來。
+function TransferRouteField({
+  source,
+  destName,
+  destStoreId,
+  isAir,
+  onNavigate,
+}: {
+  source: TransferSource | null;
+  destName: string;
+  destStoreId: number | null;
+  isAir: boolean;
+  onNavigate?: (orderId: number, orderNo: string) => void;
+}) {
+  // 同店轉單（換客人／併單）貨沒有離開本店，畫成「A → A」會被當成要出貨
+  const sameStore = source != null && source.store_id != null && source.store_id === destStoreId;
+  const srcLabel = `來源訂單 ${source?.order_no ?? ""}`;
+  return (
+    <Field
+      label="轉移路徑"
+      value={
+        <div>
+          {sameStore ? (
+            <span>
+              {destName}
+              <span className="ml-1 text-xs text-zinc-500">（同店轉單・貨沒有移動）</span>
+            </span>
+          ) : (
+            <span className="inline-flex flex-wrap items-baseline gap-x-1">
+              <span className="font-medium">{source?.store_name ?? "—"}</span>
+              <span className="text-zinc-400">→</span>
+              {!isAir && (
+                <>
+                  <span className="text-zinc-500">總倉</span>
+                  <span className="text-zinc-400">→</span>
+                </>
+              )}
+              <span className="font-medium">{destName}</span>
+              <span className="text-xs text-zinc-500">{isAir ? "（✈ 空中轉直送）" : "（經總倉）"}</span>
+            </span>
+          )}
+          {source && (
+            <div className="text-xs">
+              {onNavigate ? (
+                <button
+                  type="button"
+                  onClick={() => onNavigate(source.id, source.order_no)}
+                  className="font-mono text-blue-600 hover:underline dark:text-blue-400"
+                >
+                  {srcLabel}
+                </button>
+              ) : (
+                <a
+                  href={withBasePath(`/orders?id=${source.id}`)}
+                  className="font-mono text-blue-600 hover:underline dark:text-blue-400"
+                >
+                  {srcLabel}
+                </a>
+              )}
+            </div>
+          )}
+        </div>
+      }
+    />
   );
 }
 

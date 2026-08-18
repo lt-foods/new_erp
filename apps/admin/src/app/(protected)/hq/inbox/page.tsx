@@ -122,6 +122,12 @@ type AidRaw = {
   updated_at: string;
   line_count: number;
   items_summary: string;
+  // 來源（轉出）端 —— 轉入單本身只寫得出取貨店＝收貨的那一頭，
+  // 總倉光看「→ 三峽店」不知道要跟誰收貨、也不知道經不經自己的手。
+  transferred_from_order_id: number | null;
+  from_order_no: string | null;
+  from_store_id: number | null;
+  from_store_name: string | null;
 };
 
 type ShortageRaw = {
@@ -488,6 +494,87 @@ async function fetchTransferRows(
   return { rows, total: count ?? 0 };
 }
 
+const AID_SELECT = `id, order_no, status, is_air_transfer, pickup_store_id, transferred_from_order_id, updated_at,
+       campaign:group_buy_campaigns(id, campaign_no, name),
+       store:stores!customer_orders_pickup_store_id_fkey(id, name),
+       items:customer_order_items!inner(id, source)`;
+
+type AidQueryRow = {
+  id: number;
+  order_no: string;
+  status: AidStatus;
+  is_air_transfer: boolean | null;
+  pickup_store_id: number | null;
+  transferred_from_order_id: number | null;
+  updated_at: string;
+  campaign?: { id: number; campaign_no: string; name: string } | null;
+  store?: { id: number; name: string } | null;
+  items?: { id: number }[];
+};
+
+// 來源單 → 轉出店。查失敗不擋收件匣(路徑欄退回「—」而已),所以不 throw。
+async function fetchAidSourceMap(
+  sb: SBClient,
+  srcIds: number[],
+): Promise<Map<number, { order_no: string; store_id: number | null; store_name: string | null }>> {
+  const map = new Map<number, { order_no: string; store_id: number | null; store_name: string | null }>();
+  const ids = Array.from(new Set(srcIds));
+  if (ids.length === 0) return map;
+  const { data } = await sb
+    .from("customer_orders")
+    .select("id, order_no, pickup_store_id, store:stores!customer_orders_pickup_store_id_fkey(name)")
+    .in("id", ids);
+  const rows = (data ?? []) as unknown as Array<{
+    id: number;
+    order_no: string;
+    pickup_store_id: number | null;
+    store: { name: string } | { name: string }[] | null;
+  }>;
+  for (const r of rows) {
+    map.set(r.id, {
+      order_no: r.order_no,
+      store_id: r.pickup_store_id,
+      store_name: (Array.isArray(r.store) ? r.store[0]?.name : r.store?.name) ?? null,
+    });
+  }
+  return map;
+}
+
+async function toAidRows(sb: SBClient, aidRows: AidQueryRow[], airMode: "aid" | "air"): Promise<Row[]> {
+  const [itemsMap, srcMap] = await Promise.all([
+    fetchItemsSummaryMap(sb, "customer_order_items", "order_id", aidRows.map((a) => a.id), "qty"),
+    fetchAidSourceMap(
+      sb,
+      aidRows.map((a) => a.transferred_from_order_id).filter((x): x is number => x != null),
+    ),
+  ]);
+  return aidRows.map((a) => {
+    const src = a.transferred_from_order_id != null ? srcMap.get(a.transferred_from_order_id) : undefined;
+    return {
+      key: `${airMode}-${a.id}`,
+      source: airMode,
+      ts: new Date(a.updated_at).getTime(),
+      stage: classifyAid(a.status),
+      raw: {
+        id: a.id,
+        order_no: a.order_no,
+        status: a.status,
+        is_air_transfer: a.is_air_transfer,
+        pickup_store_id: a.pickup_store_id,
+        store_name: a.store?.name ?? null,
+        campaign_no: a.campaign?.campaign_no ?? null,
+        updated_at: a.updated_at,
+        line_count: a.items?.length ?? 0,
+        items_summary: itemsMap.get(a.id) ?? "",
+        transferred_from_order_id: a.transferred_from_order_id,
+        from_order_no: src?.order_no ?? null,
+        from_store_id: src?.store_id ?? null,
+        from_store_name: src?.store_name ?? null,
+      },
+    };
+  });
+}
+
 // airMode: "aid" = 互助訂單(排除空中轉,只 is_air_transfer 為 null/false)
 //          "air" = 空中轉(只 is_air_transfer=true)
 async function fetchAidRows(
@@ -502,13 +589,7 @@ async function fetchAidRows(
   if (stage === "standby") return { rows: [], total: 0 }; // 只有 restock 有候補
   let q = sb
     .from("customer_orders")
-    .select(
-      `id, order_no, status, is_air_transfer, pickup_store_id, updated_at,
-       campaign:group_buy_campaigns(id, campaign_no, name),
-       store:stores!customer_orders_pickup_store_id_fkey(id, name),
-       items:customer_order_items!inner(id, source)`,
-      { count: "exact" },
-    )
+    .select(AID_SELECT, { count: "exact" })
     .eq("items.source", "aid_transfer")
     .order("updated_at", { ascending: false });
   if (stage) q = q.in("status", AID_STATUS_BY_STAGE[stage] as string[]);
@@ -522,39 +603,7 @@ async function fetchAidRows(
   const { data, count, error } = await q;
   if (error) throw new Error("aid: " + error.message);
 
-  const aidRows = (data ?? []) as unknown as Array<{
-    id: number;
-    order_no: string;
-    status: AidStatus;
-    is_air_transfer: boolean | null;
-    pickup_store_id: number | null;
-    updated_at: string;
-    campaign?: { id: number; campaign_no: string; name: string } | null;
-    store?: { id: number; name: string } | null;
-    items?: { id: number }[];
-  }>;
-
-  const aidIds = aidRows.map((a) => a.id);
-  const itemsMap = await fetchItemsSummaryMap(sb, "customer_order_items", "order_id", aidIds, "qty");
-
-  const rows: Row[] = aidRows.map((a) => ({
-    key: `${airMode}-${a.id}`,
-    source: airMode,
-    ts: new Date(a.updated_at).getTime(),
-    stage: classifyAid(a.status),
-    raw: {
-      id: a.id,
-      order_no: a.order_no,
-      status: a.status,
-      is_air_transfer: a.is_air_transfer,
-      pickup_store_id: a.pickup_store_id,
-      store_name: a.store?.name ?? null,
-      campaign_no: a.campaign?.campaign_no ?? null,
-      updated_at: a.updated_at,
-      line_count: a.items?.length ?? 0,
-      items_summary: itemsMap.get(a.id) ?? "",
-    },
-  }));
+  const rows = await toAidRows(sb, (data ?? []) as unknown as AidQueryRow[], airMode);
   return { rows, total: count ?? 0 };
 }
 
@@ -781,48 +830,14 @@ async function fetchAidRowsByIds(sb: SBClient, ids: number[], airMode: "aid" | "
   if (ids.length === 0) return [];
   let q = sb
     .from("customer_orders")
-    .select(
-      `id, order_no, status, is_air_transfer, pickup_store_id, updated_at,
-       campaign:group_buy_campaigns(id, campaign_no, name),
-       store:stores!customer_orders_pickup_store_id_fkey(id, name),
-       items:customer_order_items!inner(id, source)`,
-    )
+    .select(AID_SELECT)
     .eq("items.source", "aid_transfer")
     .in("id", ids);
   if (airMode === "air") q = q.eq("is_air_transfer", true);
   else q = q.or("is_air_transfer.is.null,is_air_transfer.eq.false");
   const { data, error } = await q;
   if (error) throw new Error("aid: " + error.message);
-  const aidRows = (data ?? []) as unknown as Array<{
-    id: number;
-    order_no: string;
-    status: AidStatus;
-    is_air_transfer: boolean | null;
-    pickup_store_id: number | null;
-    updated_at: string;
-    campaign?: { id: number; campaign_no: string; name: string } | null;
-    store?: { id: number; name: string } | null;
-    items?: { id: number }[];
-  }>;
-  const itemsMap = await fetchItemsSummaryMap(sb, "customer_order_items", "order_id", aidRows.map((a) => a.id), "qty");
-  return aidRows.map((a) => ({
-    key: `${airMode}-${a.id}`,
-    source: airMode,
-    ts: new Date(a.updated_at).getTime(),
-    stage: classifyAid(a.status),
-    raw: {
-      id: a.id,
-      order_no: a.order_no,
-      status: a.status,
-      is_air_transfer: a.is_air_transfer,
-      pickup_store_id: a.pickup_store_id,
-      store_name: a.store?.name ?? null,
-      campaign_no: a.campaign?.campaign_no ?? null,
-      updated_at: a.updated_at,
-      line_count: a.items?.length ?? 0,
-      items_summary: itemsMap.get(a.id) ?? "",
-    },
-  }));
+  return toAidRows(sb, (data ?? []) as unknown as AidQueryRow[], airMode);
 }
 
 async function fetchShortageRowsByIds(sb: SBClient, ids: number[]): Promise<Row[]> {
@@ -1188,7 +1203,9 @@ function HqInboxContent() {
           .filter((x): x is string => !!x).some((x) => x.toLowerCase().includes(q));
       }
       const a = r.raw;
-      return [a.order_no, a.store_name, a.campaign_no].filter((x): x is string => !!x).some((x) => x.toLowerCase().includes(q));
+      // 轉出店 / 來源單號也要搜得到 —— 列上顯示的就是「轉出店 → 收貨店」
+      return [a.order_no, a.store_name, a.campaign_no, a.from_store_name, a.from_order_no]
+        .filter((x): x is string => !!x).some((x) => x.toLowerCase().includes(q));
     });
   }, [rows, search]);
 
@@ -2582,7 +2599,7 @@ function MailRow({
     // (之前做成純唯讀 + 分店看不到 /hq/inbox,結果全站沒人有入口,線上卡了 5 張)。
     const a = row.raw;
     idText = a.order_no;
-    title = <>{a.campaign_no ?? "—"} <span className="text-zinc-400 mx-1">→</span> {a.store_name ?? "—"}</>;
+    title = <AidRouteTitle a={a} />;
     subtitle = (
       <>
         {a.line_count} 項
@@ -2601,7 +2618,7 @@ function MailRow({
   } else {
     const a = row.raw;
     idText = a.order_no;
-    title = <>{a.campaign_no ?? "—"} <span className="text-zinc-400 mx-1">→</span> {a.store_name ?? "—"}</>;
+    title = <AidRouteTitle a={a} />;
     subtitle = (
       <>
         {a.line_count} 項
@@ -2699,6 +2716,30 @@ function MailRow({
         <span className="text-[11px] text-zinc-400 sm:text-right">{time}</span>
       </div>
     </div>
+  );
+}
+
+// 互助 / 空中轉列的標題：貨「從哪一家店 → 到哪一家店」。
+// 原本標的是「開團 → 取貨店」——取貨店只是收貨的那一頭，總倉看不出要跟誰收貨，
+// 而經總倉的互助正是總倉要親手轉交的（Leg-1 來源店 → 總倉、Leg-2 總倉 → 收貨店，
+// 20260510000004）。另外全站 375 張互助轉入單裡有 359 張其實是同店轉單
+// （只是換客人、貨沒離開本店，rpc_ship_aid_order 也會擋下派貨），標出來才不會
+// 跟真的要中轉的混在一起。
+function AidRouteTitle({ a }: { a: AidRaw }) {
+  const dest = a.store_name ?? "—";
+  const sameStore = a.from_store_id != null && a.from_store_id === a.pickup_store_id;
+  if (sameStore) {
+    return (
+      <>
+        {dest}
+        <span className="ml-1 text-xs font-normal text-zinc-500">（同店轉單・貨沒有移動）</span>
+      </>
+    );
+  }
+  return (
+    <>
+      {a.from_store_name ?? "—"} <span className="text-zinc-400 mx-1">→</span> {dest}
+    </>
   );
 }
 
