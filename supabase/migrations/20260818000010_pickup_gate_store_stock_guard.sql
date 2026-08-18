@@ -7,7 +7,7 @@
 --   店員原話：「我庫存檢底的都給完客人了，但是它還可以取貨，但我庫存已經沒了」。
 --   —— 貨確實到過店、也確實已經全部交給別的客人，畫面卻還在對這位客人承諾。
 --
--- 根因：20260814000060 的數量守衛帳本是**campaign-local**，而實體庫存是**店共用**的。
+-- 根因：20260814060000 的數量守衛帳本是**campaign-local**，而實體庫存是**店共用**的。
 --   兩邊的母體不一樣，於是同一批貨會被重複承諾：
 --
 --     供給 _pickup_group_supplied(團,店,SKU)
@@ -120,7 +120,7 @@
 --   重跑 20260814060000 內的 CREATE OR REPLACE FUNCTION public.is_order_item_pickup_ready
 --   即退回只有 campaign-local 守衛的版本（本支沒有新增任何函式或欄位）。
 --
--- 上線前後要跑的驗證 SQL 見檔尾 §2 / §3。
+-- 上線前後要跑的驗證見檔尾 §2（兩支 scripts/verify-pickup-stock-guard-*.sql）。
 -- ============================================================
 
 -- ----------------------------------------------------------------
@@ -433,86 +433,18 @@ COMMENT ON FUNCTION public.is_order_item_pickup_ready(bigint) IS
   'HQ 要放行帳面不足的組請開庫存減抵單。';
 
 -- ============================================================
--- 2. 上線前先量影響範圍（不放進 migration 交易，手動跑）
+-- 2. 上線前後要跑的驗證（不放進 migration 交易，手動跑）
 --
---    列出「舊閘門回 true、加了實體守衛會變 false」的品項 —— 也就是現在按下去
---    一定是負庫存 + 客人撲空的那些。跑完再套 §1，數字要對得起來。
+--   影響範圍 / 驗收：scripts/verify-pickup-stock-guard-impact.sql
+--     套用前 → 完整的超賣清單（＝本支要擋掉的量）；
+--     套用後 → 應該只剩 exempt_reason 非 NULL 的列（Path A / D / D' / 容器單 /
+--     offset / 沒綁倉別的店，都是刻意豁免）。還有 exempt_reason IS NULL 的列
+--     就是守衛沒生效，回頭查。
 --
--- WITH cand AS (
---   SELECT coi.id AS item_id, coi.order_id, coi.sku_id, coi.qty,
---          co.order_no, co.pickup_store_id, co.campaign_id, co.created_at
---     FROM customer_order_items coi
---     JOIN customer_orders co ON co.id = coi.order_id
---    WHERE coi.status IN ('pending','reserved','ready')
---      AND coi.backorder_at IS NULL
---      AND co.status IN ('ready','partially_completed','shipping')
---      AND public.is_order_item_pickup_ready(coi.id)      -- 舊閘門（套用前跑）
--- ), promised AS (
---   SELECT c.item_id,
---          (SELECT COALESCE(SUM(y.qty), 0)
---             FROM customer_order_items y
---             JOIN customer_orders yo ON yo.id = y.order_id
---             LEFT JOIN members ym ON ym.id = yo.member_id
---            WHERE yo.pickup_store_id = c.pickup_store_id
---              AND y.sku_id           = c.sku_id
---              AND y.status IN ('pending','reserved','ready')
---              AND y.qty > 0 AND y.backorder_at IS NULL
---              AND yo.status IN ('ready','partially_completed','shipping')
---              AND COALESCE(ym.member_type,'') <> 'store_internal'
---              AND COALESCE(yo.order_kind,'normal') <> 'offset'
---              AND (yo.created_at, yo.order_no, y.id) <= (c.created_at, c.order_no, c.item_id)
---          ) AS cum
---     FROM cand c
--- )
--- SELECT s.name AS store, c.order_no, c.sku_id, c.qty, p.cum, sb.on_hand
---   FROM cand c
---   JOIN promised p ON p.item_id = c.item_id
---   JOIN stores s   ON s.id = c.pickup_store_id
---   LEFT JOIN stock_balances sb
---          ON sb.location_id = s.location_id AND sb.sku_id = c.sku_id
---  WHERE p.cum > COALESCE(sb.on_hand, 0)
---  ORDER BY s.name, c.sku_id, c.created_at;
+--   誤擋檢查：scripts/verify-pickup-stock-guard-regression.sql
+--     店裡帳上有貨（on_hand > 0）卻被擋的行，依 backorder / stock_guard / other
+--     分類。重點看 first_in_line_but_blocked —— 前面沒人排隊卻被擋，代表 on_hand
+--     低於實際（到貨沒入帳 / 重複扣帳），該補收貨或盤點，不是守衛寫錯。
 --
--- ============================================================
--- 3. 套用後的回歸檢查（預期回 0 列）
---
---    (a) 每個 (店, SKU) 現在可取的量不可以超過 on_hand ——
---        這就是本次要保證的不變量：
---
--- SELECT s.name AS store, coi.sku_id,
---        SUM(coi.qty) AS pickable_qty, MAX(sb.on_hand) AS on_hand
---   FROM customer_order_items coi
---   JOIN customer_orders co ON co.id = coi.order_id
---   JOIN stores s ON s.id = co.pickup_store_id
---   LEFT JOIN members m ON m.id = co.member_id
---   LEFT JOIN stock_balances sb
---          ON sb.location_id = s.location_id AND sb.sku_id = coi.sku_id
---  WHERE coi.status IN ('pending','reserved','ready')
---    AND COALESCE(m.member_type,'') <> 'store_internal'
---    AND COALESCE(co.order_kind,'normal') <> 'offset'
---    AND public.is_order_item_pickup_ready(coi.id)
---    -- 走 Path A / D / D' 的單本來就豁免（貨由那些單據自己管），不列入
---    AND NOT EXISTS (SELECT 1 FROM transfers t
---                     WHERE t.customer_order_id = co.id AND t.status IN ('received','closed'))
---    AND NOT EXISTS (SELECT 1 FROM inventory_deduction_notes n
---                     WHERE n.campaign_id = co.campaign_id AND n.store_id = co.pickup_store_id
---                       AND n.sku_id = coi.sku_id AND n.cancelled_at IS NULL)
---  GROUP BY 1, 2
--- HAVING SUM(coi.qty) > COALESCE(MAX(sb.on_hand), 0);
---
---    (b) 反向：店裡有貨、卻整組都不可取的 (店, SKU) —— 應該只剩下
---        「單頭還是 confirmed 沒被推上來」那種，不該有 ready 單被誤擋：
---
--- SELECT s.name AS store, coi.sku_id, sb.on_hand, COUNT(*) AS blocked_lines
---   FROM customer_order_items coi
---   JOIN customer_orders co ON co.id = coi.order_id
---   JOIN stores s ON s.id = co.pickup_store_id
---   JOIN stock_balances sb
---     ON sb.location_id = s.location_id AND sb.sku_id = coi.sku_id AND sb.on_hand > 0
---  WHERE coi.status IN ('pending','reserved','ready')
---    AND coi.backorder_at IS NULL
---    AND co.status IN ('ready','partially_completed')
---    AND NOT public.is_order_item_pickup_ready(coi.id)
---  GROUP BY 1, 2, 3
---  ORDER BY blocked_lines DESC;
+--   ⚠ 兩支檔案裡的 cum 算式與本檔守衛逐字對齊。改守衛時要一起改，否則對不上。
 -- ============================================================
