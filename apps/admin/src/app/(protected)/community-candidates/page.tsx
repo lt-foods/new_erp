@@ -187,20 +187,28 @@ export default function CommunityCandidatesPage() {
     }
   }, [highlightId, rows]);
 
-  // 漂漂館品牌 id（以 code 反查，⛔ 不寫死 id）
-  const loadPiaopiaoBrand = async () => {
+  // ⚠️ fetch 與 setState 分開：這樣 mount effect 可以把「所有」setState 收在
+  //   alive 檢查之後（只在兩個 await 之間檢查是不到位的 —— 函式自己內部
+  //   await 完之後的 setState 一樣會發生在卸載之後）。
+  const fetchPiaopiaoBrandId = async (): Promise<number | null> => {
     const { data } = await getSupabase()
       .from("brands")
       .select("id")
       .eq("code", PIAOPIAO_BRAND_CODE)
       .maybeSingle();
-    setPiaopiaoBrandId(data ? Number((data as { id: number }).id) : null);
+    return data ? Number((data as { id: number }).id) : null;
   };
 
-  // 來源清單（哪些 source_channel 進來過、各自對到哪個品牌）
-  const loadChannels = async () => {
+  // 來源清單（哪些 source_channel 進來過、各自對到哪個品牌）；讀不到回 null
+  const fetchChannels = async (): Promise<ChannelRow[] | null> => {
     const { data, error: err } = await getSupabase().rpc("rpc_community_channel_summary");
-    if (!err) setChannels((data as ChannelRow[]) ?? []);
+    return err ? null : ((data as ChannelRow[]) ?? []);
+  };
+
+  // 設定完來源歸屬後的重新整理（由事件處理器呼叫，不在 effect 裡）
+  const loadChannels = async () => {
+    const ch = await fetchChannels();
+    if (ch) setChannels(ch);
   };
 
   useEffect(() => {
@@ -208,10 +216,10 @@ export default function CommunityCandidatesPage() {
     // 順便用 alive 旗標避免元件卸載後才回來的 setState。
     let alive = true;
     (async () => {
-      if (!alive) return;
-      await loadPiaopiaoBrand();
-      if (!alive) return;
-      await loadChannels();
+      const [brandId, ch] = await Promise.all([fetchPiaopiaoBrandId(), fetchChannels()]);
+      if (!alive) return;              // ← 所有 setState 都在這道檢查之後
+      setPiaopiaoBrandId(brandId);
+      if (ch) setChannels(ch);
     })();
     return () => { alive = false; };
   }, []);
@@ -1084,10 +1092,13 @@ export default function CommunityCandidatesPage() {
           </SpinButton>
 
           {/* 一鍵開團：收單時間／取貨截止日都要老闆自己填，⛔ 不給預設值 */}
-          {openPanel && (
+          {/* viewMissing 時連面板一起收：否則會同時出現「尚未啟用」提示和一個還能填的表單 */}
+          {!viewMissing && openPanel && (
             <div className="w-full rounded-md border border-pink-300 bg-white p-3 dark:border-pink-800 dark:bg-zinc-900">
               <p className="mb-2 text-xs text-zinc-600 dark:text-zinc-300">
                 會對已選的 {selected.size} 筆各自做：建商品＋規格＋售價 → 啟用 → 開團 → 產生客人連結。
+                <br />
+                <strong>已經開過團的會自動略過</strong>（不會重複開），跑完會明講實際處理了幾筆。
                 <br />
                 來源已標成漂漂館的，商品品牌會自動標上；其餘不標。
                 <span className="ml-1 text-zinc-400">（候選的「預計開團日」會記成今天，因為團現在就開）</span>
@@ -1221,7 +1232,7 @@ export default function CommunityCandidatesPage() {
                             clearSelected();
                           }
                         }}
-                        title="全選可排程的候選"
+                        title="全選可處理的候選（可排程、或已排程但還沒開團）"
                         className="h-4 w-4 cursor-pointer"
                       />
                     );

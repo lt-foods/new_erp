@@ -80,6 +80,7 @@ DECLARE
   v_missing      TEXT;
   v_campaign_id  BIGINT;
   v_campaign_no  TEXT;
+  v_existing_no  TEXT;
 BEGIN
   -- ── 權限：與 rpc_schedule_candidate / ccp_hq_all 同一份名單 ───────────────
   IF v_role NOT IN ('owner','admin','hq_manager','assistant','') THEN
@@ -136,7 +137,40 @@ BEGIN
     RAISE EXCEPTION '排程沒有回傳商品 id，無法開團（候選 #%）', p_candidate_id;
   END IF;
 
-  -- ── 2. 啟用：draft → active ─────────────────────────────────────────────
+  -- ── 2. 防重：這個商品已經有團，就不要再開第二個 ──────────────────────────
+  --   ⚠️⚠️ 這道守衛「必須」在 DB 裡，不能只靠畫面。
+  --     view 的 has_campaign + 前端的 canOpen 只做到「看不到就選不到」——
+  --     開兩個分頁、或畫面沒重新整理就連按兩次，同一個商品照樣會被開出第二個團。
+  --     這正是機制索引 §七.3 記過的老坑：「驗證寫在前端 ＝ 每開一個新入口就開一個新洞」
+  --     （請購單價格驗證只寫在 React 的 submitForReview()，換個入口就穿透）。
+  --
+  --   判定條件與 v_community_product_candidates.has_campaign 逐字相同
+  --   （同 tenant + 同 product_id + status <> 'cancelled'），
+  --   ⛔ 不要在這裡另外發明一套，否則畫面與後端會漂移。
+  --
+  --   先鎖商品列再檢查：READ COMMITTED 下光做 EXISTS 擋不住並行——
+  --   兩個交易都看不到對方尚未 commit 的團。鎖住 products 這一列之後，
+  --   同一個商品的第二個呼叫會等第一個 commit 完才往下走，那時就看得到那個團了。
+  --   鎖的順序固定是「候選列（rpc_schedule_candidate 內的 FOR UPDATE）→ 商品列」，
+  --   所有呼叫端一致，不會形成循環等待。
+  PERFORM 1 FROM products
+   WHERE id = v_product_id AND tenant_id = v_tenant
+     FOR UPDATE;
+
+  SELECT g.campaign_no
+    INTO v_existing_no
+    FROM group_buy_campaigns g
+   WHERE g.tenant_id  = v_tenant
+     AND g.product_id = v_product_id
+     AND g.status <> 'cancelled'
+   ORDER BY g.id DESC
+   LIMIT 1;
+
+  IF v_existing_no IS NOT NULL THEN
+    RAISE EXCEPTION '這個商品已經有一個進行中的團（團號 %），不會重複開。要重開請先取消原本那個團。', v_existing_no;
+  END IF;
+
+  -- ── 3. 啟用：draft → active ─────────────────────────────────────────────
   --    ⚠️ 只升 'draft'。inactive / discontinued 是有人刻意下架的，
   --      ⛔ 不可以被候選池悄悄復活 —— 那種情況會落到下面的守衛、明確報錯給老闆看。
   UPDATE products
@@ -172,7 +206,7 @@ BEGIN
     );
   END IF;
 
-  -- ── 3. 守衛 A：一定要有 active SKU ───────────────────────────────────────
+  -- ── 4. 守衛 A：一定要有 active SKU ───────────────────────────────────────
   --    ⚠️ 這就是本檔存在的理由：少了這道，rpc_create_campaign_from_product
   --      會靜默建出一個沒有任何 campaign_items 的空團。
   SELECT COUNT(*) INTO v_active_skus
@@ -183,7 +217,7 @@ BEGIN
     RAISE EXCEPTION '無法開團：商品 % 沒有任何可販售的規格（可能已被下架或停產）', v_product_code;
   END IF;
 
-  -- ── 4. 守衛 B：每個 active SKU 都要有「現行零售價且大於 0」───────────────
+  -- ── 5. 守衛 B：每個 active SKU 都要有「現行零售價且大於 0」───────────────
   --    比 rpc_create_campaign_from_product 的守衛多了「> 0」：
   --    它只檢查價格「有沒有這一列」，而 rpc_set_retail_price 不擋 0，
   --    候選的 adopted_sale_price 填 0 也存得進去
@@ -212,7 +246,7 @@ BEGIN
     RAISE EXCEPTION '無法開團：請先在候選池「補資料」填好售價（需大於 0）→ %', v_missing;
   END IF;
 
-  -- ── 5. 開團（沿用既有 RPC，團號／文案／塞明細都由它負責）─────────────────
+  -- ── 6. 開團（沿用既有 RPC，團號／文案／塞明細都由它負責）─────────────────
   v_campaign_id := public.rpc_create_campaign_from_product(
     p_name            => p_product_name,
     p_end_at          => p_end_at,
@@ -225,7 +259,7 @@ BEGIN
     FROM group_buy_campaigns g
    WHERE g.id = v_campaign_id AND g.tenant_id = v_tenant;
 
-  -- ── 6. 收尾自檢：真的有明細才算成功 ─────────────────────────────────────
+  -- ── 7. 收尾自檢：真的有明細才算成功 ─────────────────────────────────────
   --    守衛 A/B 都過了理論上不會走到這裡；留著是因為「空團」是本案最貴的失敗模式，
   --    寧可整筆回滾也不要交一個打得開但買不了的連結給老闆。
   IF NOT EXISTS (
