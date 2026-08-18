@@ -32,7 +32,9 @@
 --   'WAVE-1' 後面緊接 '-S'）。線上 11,765 張轉移單裡 11,488 張是 WAVE- 開頭，
 --   全部嚴格符合 `^WAVE-\d+-S\d+$`，0 個例外。
 --
--- 驗證（transaction 內建新 view、對拍後 ROLLBACK）：
+-- 驗證（transaction 內建新 view、對拍後 ROLLBACK；一定要開
+--   `ISOLATION LEVEL REPEATABLE READ`，否則正式庫同時間的寫入會被算成假差異，
+--   理由見同批的 20260818000020 檔頭）：
 --   v_picking_demand_by_po：兩側各 24,600 列，EXCEPT ALL 雙向都是 **0 筆**差異。
 --     速度 4,188ms → 1,204ms（3.5 倍；上面那個 7 秒是帶 RLS 的數字，
 --     搭配同批的 20260818000020 會再降）。
