@@ -52,7 +52,7 @@ export const PRINT_SHEET_CSS = `
      底下的 .print-sheet / .pick-table 基本規則同樣是 (0,1,0)、又寫在後面 → 後面的贏。
      結果是這塊裡「同一個屬性又被下面重寫一次」的兩條**從來沒有生效過**：
        .pick-table  font-size → 被後面的 font-size: 12px 蓋掉（#775 想要的 14pt 根本沒印出來，
-                                紙上一直是 12px≈9pt，這就是老闆說「字還是小」的真正原因）
+                                紙上從頭到尾都是 12px≈9pt）
        .print-sheet padding   → 被後面的 padding: 10px 蓋掉（紙上白白少掉左右各 10px 可用寬）
      用 Chrome DevTools Protocol 的 Emulation.setEmulatedMedia({media:"print"}) 讀 computed style 驗過：
        搬移前 print 下 .pick-table = 12px(9pt)、.print-sheet padding = 10px
