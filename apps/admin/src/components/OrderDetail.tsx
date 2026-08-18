@@ -646,6 +646,15 @@ export function OrderDetail({
   // 互助單已收貨未取貨（status=ready）退單：退回原 source 店（rpc_return_aid_order，#234）
   const canAidReturn = isAidOrder && head.status === "ready";
   const isTransferredOut = head.status === "transferred_out";
+  // 復原取消（rpc_restore_cancelled_order）。伺服端還有一輪守衛，這裡先把三種
+  // 一定會被擋的單藏起來，免得店員按了只拿到錯誤訊息：
+  //   斷貨取消 → 要去採購單按「回復斷貨」；轉入單 → 貨已還給來源單，回那邊重轉；
+  //   SP- 現貨直配 → 取消＝退回可分配，要再配就重開一張。
+  const canRestoreCancel =
+    head.status === "cancelled" &&
+    !head.stockout_at &&
+    head.transferred_from_order_id == null &&
+    !isSpotSale;
 
   async function cancelOrder() {
     if (!head) return;
@@ -677,6 +686,44 @@ export function OrderDetail({
       : isSpotSale
         ? "✅ 已退回庫存，這些貨變回「可分配」了"
         : "已取消");
+    setReloadTick((n) => n + 1);
+  }
+
+  // 復原取消（rpc_restore_cancelled_order）：誤按取消、或客人取消後又反悔。
+  // 單頭回到取消前的狀態；貨其實已經到店的話伺服端會直接推到「可取貨」。
+  async function restoreCancelledOrder() {
+    if (!head) return;
+    const walletPaid = Number(head.wallet_paid_amount ?? 0);
+    const walletNote = walletPaid > 0
+      ? `\n\n⚠️ 此訂單取消時退了 $${walletPaid} 儲值金，復原會重新從會員餘額扣回（餘額不足會復原失敗）。`
+      : "";
+    const reason = prompt(
+      `復原取消：${head.order_no}\n` +
+      `訂單會回到取消前的狀態，名額與可分配量也會重新算給這張單。\n` +
+      `※ 取消時釋放掉的庫存減抵單覆蓋不會自動長回來，需要的話請重開減抵單。${walletNote}\n\n` +
+      `請輸入復原原因：`,
+    );
+    if (reason === null) return;
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id ?? null;
+    if (!operator) { alert("尚未登入"); return; }
+    const { data, error: rpcErr } = await sb.rpc("rpc_restore_cancelled_order", {
+      p_order_id: head.id,
+      p_operator: operator,
+      p_reason: reason.trim() === "" ? null : reason.trim(),
+    });
+    if (rpcErr) { alert(`復原失敗：${translateRpcError(rpcErr)}`); return; }
+    const r = (data ?? {}) as {
+      status?: string; items_restored?: number;
+      needs_redispatch?: boolean; wallet_recharged?: number;
+    };
+    alert(
+      `✅ 已復原，訂單狀態：${statusLabel(r.status ?? "")}` +
+      (Number(r.items_restored ?? 0) > 0 ? `\n一併還原 ${Number(r.items_restored)} 項品項` : "") +
+      (Number(r.wallet_recharged ?? 0) > 0 ? `\n已重新扣回 $${Number(r.wallet_recharged)} 儲值金` : "") +
+      (r.needs_redispatch ? "\n\n⚠️ 這張單原本派貨中，取消時派貨單已被回收、貨退回轉出端，請重新派貨。" : ""),
+    );
     setReloadTick((n) => n + 1);
   }
 
@@ -846,7 +893,7 @@ export function OrderDetail({
           </SpinButton>
         </div>
       )}
-      {(canPrintSlip || canReprintReceipt || canTransfer || canPickup || canUndoPickup || canCancel || canReturn || canAidReturn || isTransferredOut || pendingAirOut.length > 0 || outgoingAid.length > 0 || awaitingAirFrom) && (
+      {(canPrintSlip || canReprintReceipt || canTransfer || canPickup || canUndoPickup || canCancel || canRestoreCancel || canReturn || canAidReturn || isTransferredOut || pendingAirOut.length > 0 || outgoingAid.length > 0 || awaitingAirFrom) && (
         <div className="flex flex-wrap items-center justify-end gap-2">
           {awaitingAirFrom && (
             <span className="text-xs text-amber-700 dark:text-amber-400">
@@ -983,6 +1030,15 @@ export function OrderDetail({
               {Number(head.wallet_paid_amount ?? 0) > 0 && (
                 <span className="ml-1 text-[10px] font-normal text-zinc-500">(將退 ${Number(head.wallet_paid_amount)})</span>
               )}
+            </SpinButton>
+          )}
+          {canRestoreCancel && (
+            <SpinButton
+              onClick={restoreCancelledOrder}
+              className="rounded-md border border-emerald-300 px-3 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950"
+              title="誤按取消 / 客人反悔：把訂單救回取消前的狀態（貨已到店會直接變成可取貨）"
+            >
+              ⎌ 復原取消
             </SpinButton>
           )}
           {isTransferredOut && (

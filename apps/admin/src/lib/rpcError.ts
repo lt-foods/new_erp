@@ -400,6 +400,13 @@ const RULES: Rule[] = [
       `這張訂單不屬於你的店（你的帳號是 ${m[1]}，可操作：${m[2] || "未設定"}），無法修改。`
       + `請由該店的帳號操作，或請總部處理。`,
   },
+  {
+    // _check_order_edit_qty_perm 的拒絕訊息（改數量 / 刪品項 / 復原取消都走它）
+    pattern: /permission denied: role=(\S+) stores=\{([^}]*)\} cannot edit qty of order/i,
+    render: (m) =>
+      `這張訂單不屬於你的店（你的帳號是 ${m[1]}，可操作：${m[2] || "未設定"}），無法操作。`
+      + `請由該店的帳號操作，或請總部處理。`,
+  },
   // ===== 店家守衛（rpc_record_pickup / rpc_bind_store_line_follower） =====
   {
     // 訊息本體已是中文（如「此訂單的取貨店是「三峽店」…」），只把機器前綴拿掉

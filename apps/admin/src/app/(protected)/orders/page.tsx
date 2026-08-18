@@ -808,6 +808,36 @@ function OrdersListContent() {
     setReloadOrders((n) => n + 1);
   }
 
+  // 復原取消（rpc_restore_cancelled_order）：誤按取消 / 客人反悔把單救回來。
+  // 這裡拿不到 stockout_at（v_admin_orders_list 沒有這欄），斷貨取消的單交給
+  // 伺服端擋 —— 它會直接告訴店員去採購單按「回復斷貨」。
+  async function restoreCancelledOrder(orderId: number, orderNo: string) {
+    const reason = prompt(
+      `復原取消：${orderNo}\n` +
+      `訂單會回到取消前的狀態，名額與可分配量也會重新算給這張單。\n` +
+      `※ 取消時釋放掉的庫存減抵單覆蓋不會自動長回來，需要的話請重開減抵單。\n\n` +
+      `請輸入復原原因：`,
+    );
+    if (reason === null) return;
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id ?? null;
+    if (!operator) { alert("尚未登入"); return; }
+    const { data, error: rpcErr } = await sb.rpc("rpc_restore_cancelled_order", {
+      p_order_id: orderId,
+      p_operator: operator,
+      p_reason: reason.trim() === "" ? null : reason.trim(),
+    });
+    if (rpcErr) { alert(`復原失敗：${translateRpcError(rpcErr)}`); return; }
+    const r = (data ?? {}) as { status?: string; items_restored?: number; needs_redispatch?: boolean };
+    alert(
+      `✅ 已復原，訂單狀態：${STATUS_LABEL[(r.status ?? "") as OrderStatus] ?? r.status}` +
+      (Number(r.items_restored ?? 0) > 0 ? `\n一併還原 ${Number(r.items_restored)} 項品項` : "") +
+      (r.needs_redispatch ? "\n\n⚠️ 這張單原本派貨中，取消時派貨單已被回收、貨退回轉出端，請重新派貨。" : ""),
+    );
+    setReloadOrders((n) => n + 1);
+  }
+
   // 互助單已收貨(ready)退回原店：反向退回原調出店並還原來源單（rpc_return_aid_order）
   async function returnAidToSource(orderId: number, orderNo: string) {
     const reason = prompt(
@@ -893,13 +923,25 @@ function OrdersListContent() {
         </SpinButton>
       )}
       {r.status === "cancelled" && (
-        <SpinButton
-          disabled
-          title="此訂單已取消"
-          className="rounded-md bg-red-200 px-2 py-1 text-[11px] font-medium text-red-700 cursor-not-allowed dark:bg-red-950 dark:text-red-300"
-        >
-          已取消
-        </SpinButton>
+        // 轉入單復原會讓來源單與這張單同時掛著同一批貨 → 不給入口（要回來源單重轉）；
+        // SP- 現貨直配取消＝退回可分配，要再配就重開一張。其餘交給伺服端守衛。
+        r.transferred_from_order_id == null && !r.order_no.startsWith("SP-") ? (
+          <SpinButton
+            onClick={() => restoreCancelledOrder(r.id, r.order_no)}
+            title="誤按取消 / 客人反悔：把訂單救回取消前的狀態（貨已到店會直接變成可取貨）"
+            className="rounded-md border border-emerald-300 px-2 py-1 text-[11px] font-medium text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950"
+          >
+            ⎌ 復原取消
+          </SpinButton>
+        ) : (
+          <SpinButton
+            disabled
+            title="此訂單已取消"
+            className="rounded-md bg-red-200 px-2 py-1 text-[11px] font-medium text-red-700 cursor-not-allowed dark:bg-red-950 dark:text-red-300"
+          >
+            已取消
+          </SpinButton>
+        )
       )}
       {r.status === "expired" && (
         <SpinButton
