@@ -1030,13 +1030,20 @@ function Body() {
   // 為什麼需要它：:1112 的 `effectiveSkuRows = hasPicked ? pickedRows : filteredSkuRows`
   //   把「已挑 0 樣」一律當成「使用者沒挑 → 那就派篩選範圍內全部」。匯入之後這個預設是**錯的**：
   //   使用者心裡在派的是那張草稿，被清成 0 樣時他要的是「什麼都不要派」，不是「派全部」。
-  //   兩條路都會走到 0 樣：① 他自己按「清空」或逐一取消　② 失效清理 effect 把被派完的清掉。
-  //   → 旗標為 true 且已挑 0 樣時，⛔ 擋住建單（見 draftScopeEmpty）。
+  //   三條路都會走到 0 樣：① 他自己按「清空」或逐一取消　② 失效清理 effect 把被派完的清掉
+  //   ③ 一進來就一樣都帶不過去（草稿的商品在工作台全都沒有可分配量了）。
+  //   → 旗標非 null 且已挑 0 樣時，⛔ 擋住建單（見 draftScopeEmpty）。
+  //
+  // ⭐ 為什麼存的是「哪一種匯入」而不是一個 boolean：紅字要說得出**為什麼是空的**，
+  //   而那句話不能只靠 draftImport 那則橫幅 —— 橫幅是可以關掉的（關掉後 draftImport 變 null），
+  //   關掉之後紅字還是得講對。所以原因存在這裡，跟橫幅的生命週期脫鉤。
+  //     "ok"   ＝ 帶進來過，是後來才被清成 0 樣的
+  //     "none" ＝ 一進來就一樣都沒帶進來
   //
   // ⛔ 刻意只放 React state，**不進 localStorage、不進 module store**：
   //   重新整理就是要讓它自然消失，那正是回到平常「不挑＝派全部」的逃生門。
-  // ⛔ 沒有 ?fromDraft= 進來的一般使用情境，這裡永遠是 false，行為與改動前一模一樣。
-  const [draftImported, setDraftImported] = useState(false);
+  // ⛔ 沒有 ?fromDraft= 進來的一般使用情境，這裡永遠是 null，行為與改動前一模一樣。
+  const [draftImported, setDraftImported] = useState<"ok" | "none" | null>(null);
   // ⚠ 整個 mount 只跑一次。ref 在 await **之前**就設 true —— 這個 effect 的依賴
   //   （demand / skuRows / searchParams）在載入過程中會變好幾次，沒有這道閘門，
   //   撈到一半又觸發第二輪，兩輪的 setPickedSkuIds 會互相覆蓋。
@@ -1111,6 +1118,11 @@ function Body() {
           //   建單範圍就變成「篩選範圍內全部」＝ 靜默多派整個工作台。
           //   ⛔ 也不清掉網址上的 ?fromDraft=：貨晚點到了，重新整理還能再帶一次。
           setDraftImport({ kind: "none", draftName, blocked });
+          // ⭐⭐ 這裡**一樣要立旗標**（CEO 2026-08-18 裁示）：危險與「匯入後被清成 0 樣」
+          //   一模一樣 —— 使用者以為自己在派這張草稿，但 hasPicked 是 false，
+          //   建單範圍就是畫面上全部。差別只在「一開始就空」還是「後來變空」。
+          //   ⛔ 但仍然**不呼叫 setPickedSkuIds**：一樣都帶不過去，沒有東西可以挑。
+          setDraftImported("none");
           setPickStep("select");
           return;
         }
@@ -1132,7 +1144,7 @@ function Body() {
         setDraftImport({ kind: "ok", draftName, picked: sendable.length, blocked });
         // ⭐⭐ 立旗標：從這一刻起，「已挑 0 樣」的意思從「我沒挑，那就派全部」
         //   變成「我本來在派這張草稿，現在被清光了」—— 見 draftImported 的宣告處。
-        setDraftImported(true);
+        setDraftImported("ok");
         setPickStep("select"); // 就是老闆說的「第一步：挑選商品」
         // ⭐ 成功才把網址參數拿掉：留著的話，老闆手動取消幾樣之後按 F5，
         //   整批又會被灌回來（他不會知道自己剛取消的又回來了）。
@@ -1161,7 +1173,7 @@ function Body() {
   // ⛔ 所以這種情況要**擋住建單**（不是默默改成空範圍，那樣按了沒反應更難懂）。
   // ⓘ 只擋建單，⛔ 不擋【下一步】—— 讓他照樣看得到現況（哪些沒了、剩什麼），
   //   要回到平常「不挑＝派全部」的模式，重新整理這一頁就好（旗標只在 React state）。
-  const draftScopeEmpty = draftImported && !hasPicked;
+  const draftScopeEmpty = draftImported !== null && !hasPicked;
 
   // 平板塞不下 17 欄 → 預設只顯示「本次建單範圍內還有未派需求、或已填擬分量」的分店欄。
   // 注意：分配上限（getSkuAllocTotal）永遠算全部分店，隱藏欄的擬分量照樣計入。
@@ -1498,6 +1510,21 @@ function Body() {
   // scopeRows = 本次要納入建單的品項；勾選了部分品項時只傳選取的，未勾選時傳全部。
   async function submitAll(scopeRows: SkuRow[] = skuRows) {
     if (!demand) return;
+    // ⛔⛔ 結構防線，不是重複的檢查（CEO 2026-08-18 裁示）。
+    //   從草稿匯入後已挑清單被清成 0 樣時，scopeRows 傳進來的是 effectiveSkuRows，
+    //   而它這時已經退回「篩選範圍內全部」—— 真的送出去就是**把整個工作台派掉**。
+    //   畫面上那顆鈕已經 disabled，但這一頁天天有人在改：disabled 被拿掉、
+    //   或有人加第二個呼叫點，那道防線就沒了，而**失效方式是多派貨、要等分店收到才會發現**。
+    //   本專案的哲學就是這條（20260817000000 檔頭）：能結構保證的就不要靠信任。
+    // ⛔ 用 setError + return，不要 throw：throw 會被下面的 catch 包成別的訊息。
+    if (draftScopeEmpty) {
+      setError(
+        "這一趟是從撿貨草稿帶進來的，但「已挑選」現在是空的 —— 建單已中止。\n" +
+          "（沒有擋的話，這裡會照「篩選範圍內全部品項」建單，等於把整個工作台派出去。）\n" +
+          "請回「① 挑選商品」把要撿的挑起來；要回到平常「不挑就是派全部」的用法，請重新整理這一頁。",
+      );
+      return;
+    }
     setError(null);
     setSubmitting(true);
     try {
@@ -2078,10 +2105,20 @@ function Body() {
             按不動的灰鈕。 */}
       {draftScopeEmpty && (
         <div className="rounded-md border-2 border-red-400 bg-red-50 p-3 text-sm text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-200">
-          <p className="font-bold leading-relaxed">
-            ⛔ 這一趟是<strong>從撿貨草稿帶進來的</strong>，但「已挑選」現在是<strong>空的</strong>
-            （被你取消掉，或是這批商品剛剛被別人派完了）。
-          </p>
+          {/* ⛔ 兩種情況的「為什麼是空的」必須各講各的（CEO 2026-08-18 裁示，⛔ 不要共用同一句）：
+              一個是草稿的貨已經沒了，一個是帶進來之後才被清掉 —— 老闆要採取的行動不一樣。
+              ⓘ 底下「怎麼辦」那兩句刻意共用：兩種情況的解法一模一樣，寫成兩份只會有一天改到一半。 */}
+          {draftImported === "none" ? (
+            <p className="font-bold leading-relaxed">
+              ⛔ 這一趟是<strong>從撿貨草稿帶進來的</strong>，但草稿上的商品在派貨工作台
+              <strong>一樣都沒有可分配量</strong>，所以一開始就沒有帶進任何商品。
+            </p>
+          ) : (
+            <p className="font-bold leading-relaxed">
+              ⛔ 這一趟是<strong>從撿貨草稿帶進來的</strong>，帶進來的商品現在
+              <strong>已經被清空了</strong>（被你取消掉，或是這批商品剛剛被別人派完了）。
+            </p>
+          )}
           <p className="mt-1">
             所以<strong>「🧾 建立撿貨單」先擋住了</strong> ——
             平常沒挑東西時系統會當成「派畫面上全部」，但你現在在派的是那張草稿，
@@ -2795,15 +2832,13 @@ function DraftImportBanner({ result, onClose }: { result: DraftImport; onClose: 
     return (
       <div className="flex items-start justify-between gap-3 rounded-md border-2 border-red-400 bg-red-50 p-3 text-sm text-red-900 dark:border-red-700 dark:bg-red-950 dark:text-red-200">
         <div>
-          {/* ⛔⛔ 這一句是 A 防線的最後一道：一樣都沒挑中時建單範圍是「篩選範圍內全部」，
-              老闆若沒看到這句就直接按下一步，會把整個工作台派出去。 */}
           <p className="font-bold leading-relaxed">
             ❌ 草稿「{result.draftName}」的商品，派貨工作台現在一樣都沒有可分配量，
             所以<strong>沒有帶進任何商品</strong>。
           </p>
-          <p className="mt-1 font-semibold">
-            ⚠ 現在的建單範圍會是畫面上<strong>全部</strong>品項，請先自己挑要撿的商品再往下一步。
-          </p>
+          {/* ⚠ 原本這裡寫「現在的建單範圍會是畫面上全部品項，請先自己挑」——
+              自從 draftScopeEmpty 會把建單擋下來之後，那句就變成假的了。
+              「建單被擋住了、怎麼辦」統一由下面那塊紅字負責講，⛔ 這裡不要再講第二遍。 */}
           {blockedList}
         </div>
         {closeBtn}
