@@ -35,11 +35,31 @@
 --
 --   為什麼 B 不能省（A 看起來也擋得住重試）：A 只認得「同一次送出」。
 --   兩台 iPad 是兩次不同的送出、兩個不同的 UUID，A 完全看不出來。
---   為什麼 A 不能省（B 其實也擋得住重試，因為重試時現值已經變了）：
+--   為什麼 A 不能省（B 在重試時現值已經變了，看起來也擋得住）：
 --   B 擋下來的樣子是**一句錯誤訊息**。樓下站在貨旁邊看到紅字，
 --   合理反應是再按一次或叫人來，而事實上貨早就收進去了。
 --   A 讓那個情境變成「這批貨先前已經收過了，進貨單 GR-xxxx」的成功畫面。
---   → A 管「講清楚」，B 管「不可能算兩次」。B 是帳的底線，A 是現場的底線。
+--   → A 管「講清楚」，B 管「送進來的品項不可能算兩次」。
+--
+-- ⚠️⚠️ A 與 B 共同的天花板（2026-08-20 複審抓到，⛔ 改本檔前必須知道）：
+--   **這兩道都只看得到「這一次 payload 裡有的品項」。**
+--   A 是整批比對 client_request_id；B 是 `FOR i IN 0..jsonb_array_length(p_arrivals)-1`
+--   逐項比對 base（本檔第 4b 段）。**沒送進來的品項，兩道都不會檢查。**
+--   ⇒ 本檔早期版本在檔頭寫過「內容一樣→A 擋、內容不同→B 擋，兩條路都是吵的，
+--     沒有一條靜默」——**那句話是錯的，已刪除**。反例：
+--       ① 第一次送 A 品項 5 個，後端 commit 了、HTTP 回應斷在路上
+--       ② 前端判定失敗，樓下以為整批沒送出
+--       ③ 他不確定 A 品項有沒有問題，把 A 清成 0、改填 B 品項再送
+--       ④ 第二次 payload 裡**根本沒有 A** → A 不在 A/B 兩道的檢查範圍內
+--       ⑤ B 品項成功入庫、畫面顯示成功，而 A 品項早在①就已經入過一次帳
+--     → 兩批貨都真的收了，使用者的認知跟系統的真實狀態對不上，而且沒有任何錯誤。
+--   ⇒ 補的是第三道 **C（純前端）**：`apps/admin/src/lib/receivingSubmission.ts`
+--     的 decideSubmission() —— 送出失敗後只要內容改過，就**不換新鍵、直接擋下**，
+--     逼使用者走「重新載入這張單、看最新已收量」這條唯一安全的路。
+--   ⛔ 所以：**C 目前是這條路上唯一的防線，而它在前端。**
+--     任何直接打 RPC 的呼叫端（本函式是 SECURITY DEFINER + GRANT TO authenticated）
+--     都繞得過它。要在 DB 層封死，得讓呼叫端送「全品項的 base 快照」而不只是
+--     這次要收的那幾項 —— 那會改動 p_arrivals 的契約，屬獨立議題，不在本檔範圍。
 --
 -- ⛔ 為什麼不改 rpc_confirm_gr（那裡才是真正 += 的地方）：
 --   它有 7 個呼叫點（5 支 arrive 歷代版本、20260729000020:135、
@@ -106,14 +126,25 @@
 -- 這裡每一條都是「下面某一句 DDL 會靜默做錯事」的前提檢查：
 --   0a → 下面的 DROP 寫死了舊簽章，簽章不符時 `IF EXISTS` 會**靜默跳過**，
 --        接著 CREATE 出第二支 → 多載 → 辦公室收貨頁 function is not unique。
---   0b → 下面的 CREATE UNIQUE INDEX **IF NOT EXISTS 只看名字**，
+--   0b → 已經是 6 參數（重跑本檔）時，`CREATE OR REPLACE` **改不了 input 參數的名字**，
+--        名字不同會在下面 CREATE 那一行才爆 —— 那時 ALTER TABLE / CREATE INDEX 已經提交。
+--   0c → 下面的 CREATE UNIQUE INDEX **IF NOT EXISTS 只看名字**，
 --        同名但定義不對時會靜默跳過 → 冪等防重整個不成立、而且看起來一切正常。
 -- 這一節失敗時**還沒有動過任何東西**，直接照訊息處理即可，不需要 rollback。
+--
+-- ⚠️ 這一節的每一條錯誤訊息都要**把現況原樣印出來**：老闆是「開檔複製貼上到
+--    Supabase SQL Editor」套這支的，訊息就是他手上唯一的線索。
+--    ⛔ 也因此，這裡的比對寧可**寬到語意等價為止**也不要多擋 ——
+--    誤擋會直接卡住部署（見 0c 的改法說明）。
 -- ----------------------------------------------------------------------------
 DO $$
 DECLARE
-  v_sigs   TEXT[];
-  v_idxdef TEXT;
+  v_sigs     TEXT[];
+  v_argnames TEXT[];
+  v_idx_oid  OID;
+  v_idx_kind "char";
+  v_idxdef   TEXT;
+  v_idx_ok   BOOLEAN;
 BEGIN
   -- 0a. 正式庫上現在到底有幾支 rpc_arrive_and_distribute、簽章是什麼？
   --     ⚠️ 用 oidvectortypes（只有型別）而不是 pg_get_function_identity_arguments
@@ -142,18 +173,88 @@ BEGIN
       v_sigs[1];
   END IF;
 
-  -- 0b. 同名索引若已存在，定義必須正確（IF NOT EXISTS 只看名字，驗不到定義）
-  SELECT pg_get_indexdef(c.oid)
-    INTO v_idxdef
+  -- 0b. 已經是 6 參數（＝本檔套過了、現在是重跑）→ 參數名必須完全相符。
+  --     PostgreSQL 的 CREATE OR REPLACE FUNCTION **不能改 input parameter 的名字**
+  --     （官方 CREATE FUNCTION 文件明講，本機 PG18 實測錯誤訊息是
+  --      `cannot change name of input parameter "..."`）。
+  --     名字不同的話，下面那句 CREATE OR REPLACE 會失敗 —— 而那時第 1 節的
+  --     ALTER TABLE / CREATE INDEX 已經各自提交（我們這條部署路徑沒有交易包覆）。
+  --     結果不會壞資料（函式維持舊的），但畫面上是一個看不懂的錯誤，
+  --     不如在這裡先把話講清楚。
+  --   ⓘ 5 參數那條路不必檢查名字：那支是被 DROP 掉再重建的，名字無所謂。
+  --     所以這條只在「已是 6 參數」時才成立，⛔ 不要順手套用到 5 參數，會誤擋。
+  IF v_sigs[1] = 'bigint, jsonb, uuid, text, text, text' THEN
+    SELECT p.proargnames
+      INTO v_argnames
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'public'
+       AND p.proname = 'rpc_arrive_and_distribute';
+
+    IF v_argnames IS DISTINCT FROM ARRAY['p_po_id','p_arrivals','p_operator',
+                                         'p_invoice_no','p_notes','p_client_request_id'] THEN
+      RAISE EXCEPTION '套用中止（尚未變更任何東西）：public.rpc_arrive_and_distribute 已經是 6 參數版，但參數名稱是「%」，不是本檔的 (p_po_id, p_arrivals, p_operator, p_invoice_no, p_notes, p_client_request_id)。CREATE OR REPLACE 改不掉既有函式的參數名，硬套下去會在中途失敗。請先確認正式庫上這一支是誰改的、要不要保留；要換掉的話請先 DROP FUNCTION public.rpc_arrive_and_distribute(BIGINT,JSONB,UUID,TEXT,TEXT,TEXT); 再重跑本檔。',
+        COALESCE(array_to_string(v_argnames, ', '), '(沒有參數名)');
+    END IF;
+  END IF;
+
+  -- 0c. 同名索引若已存在，語意必須正確（IF NOT EXISTS 只看名字，驗不到定義）
+  --
+  --   ⚠️ 2026-08-20 改法（原本比對 pg_get_indexdef 的完整字串 LIKE）：
+  --     文字比對會把**語意正確但輸出文字不同**的索引也擋掉，例如
+  --       · 沒有 WHERE 條件的 unique index —— 其實**等價**：unique index 裡
+  --         NULL 彼此不相等，所以整表 unique(tenant_id, client_request_id)
+  --         對「client_request_id IS NULL 的那些列」一樣不設限
+  --         （本機 PG18 實測：同 tenant 連插兩列 NULL 都成功）。
+  --       · 帶 WITH (fillfactor=...)、tablespace、INCLUDE 欄位、非預設 collation…
+  --     這些一律擋下的結果就是**老闆貼 SQL 時卡在這裡**，而索引其實好好的。
+  --   ⇒ 改成查 pg_index 的語意欄位。真正非擋不可的只有四件事：
+  --       ① 這個名字確實是索引，而且掛在 public.goods_receipts 上
+  --       ② unique，而且 valid / ready（CONCURRENTLY 失敗會留下 invalid 索引，
+  --          它**不會**強制唯一性 → 冪等防重形同虛設，這是真的要擋）
+  --       ③ 前兩個 key 欄位就是 (tenant_id, client_request_id)，順序一樣
+  --       ④ NULLS NOT DISTINCT 沒有被打開（打開的話 NULL 會互相碰撞，
+  --          辦公室那條不帶 client_request_id 的路會開始撞唯一鍵）
+  --     predicate 則放寬到「沒有」或「就是我們那一條」兩種。
+  --   ⓘ indnullsnotdistinct 用 to_jsonb 取而不直接寫欄位名：那個欄位 PG15 才有，
+  --     直接寫的話在更舊的版本上會變成「欄位不存在」而整段爆掉。
+  SELECT c.oid, c.relkind
+    INTO v_idx_oid, v_idx_kind
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
    WHERE n.nspname = 'public'
      AND c.relname = 'idx_gr_client_request';
 
-  IF v_idxdef IS NOT NULL AND v_idxdef NOT LIKE
-       'CREATE UNIQUE INDEX % ON public.goods_receipts USING btree (tenant_id, client_request_id) WHERE (client_request_id IS NOT NULL)' THEN
-    RAISE EXCEPTION '套用中止（尚未變更任何東西）：已經有一個叫 idx_gr_client_request 的索引，但定義不是預期的「goods_receipts (tenant_id, client_request_id) WHERE client_request_id IS NOT NULL」。下面那句 CREATE UNIQUE INDEX IF NOT EXISTS 只看名字，會靜默跳過，收貨冪等防重就形同虛設。現存定義：%',
-      v_idxdef;
+  IF v_idx_oid IS NOT NULL THEN
+    v_idxdef := CASE WHEN v_idx_kind = 'i' THEN pg_get_indexdef(v_idx_oid) END;
+
+    SELECT i.indrelid = to_regclass('public.goods_receipts')
+       AND i.indisunique
+       AND i.indisvalid
+       AND i.indisready
+       AND COALESCE(to_jsonb(i) ->> 'indnullsnotdistinct', 'false') = 'false'
+       AND i.indnkeyatts = 2
+       AND (SELECT string_agg(a.attname, ',' ORDER BY k.ord)
+              FROM unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)
+              JOIN pg_attribute a
+                ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+             WHERE k.ord <= i.indnkeyatts) = 'tenant_id,client_request_id'
+       AND (i.indpred IS NULL
+            OR pg_get_expr(i.indpred, i.indrelid) = '(client_request_id IS NOT NULL)')
+      INTO v_idx_ok
+      FROM pg_index i
+     WHERE i.indexrelid = v_idx_oid;
+
+    IF NOT COALESCE(v_idx_ok, FALSE) THEN
+      RAISE EXCEPTION '套用中止（尚未變更任何東西）：已經有一個叫 idx_gr_client_request 的東西，但它不是「goods_receipts 上、unique 且有效、前兩個欄位是 (tenant_id, client_request_id)、NULLS DISTINCT」的索引。下面那句 CREATE UNIQUE INDEX IF NOT EXISTS 只看名字，會靜默跳過，收貨冪等防重就形同虛設。現況：%',
+        -- ⚠️ v_idx_kind 是 "char" 型別，⛔ 不可以直接接 || ——
+        --    Postgres 會在**解析階段**就報 `operator is not unique: unknown || "char"`，
+        --    連 COALESCE 走不走到第二個參數都不管。一定要明寫 ::TEXT。
+        --    （沒有 ::TEXT 時，這裡會用一句看不懂的型別錯誤蓋掉上面整段說明。）
+        COALESCE(v_idxdef,
+                 'public.idx_gr_client_request 不是索引（pg_class.relkind = '
+                   || v_idx_kind::TEXT || '），這個名字被別的物件占用了');
+    END IF;
   END IF;
 END $$;
 
@@ -388,6 +489,12 @@ BEGIN
     --   這是 P0-2 的正解。⛔ 不要改成「不可超過訂購量」那種上限檢查 ——
     --   本系統允許超收（供應商多送），上限會擋掉正常情境；
     --   而且兩台各收一半、加起來剛好不超量時，上限根本擋不到。
+    --
+    --   ⚠️⚠️ 這道防線的**範圍**：它跟著外層的 `FOR i IN 0..長度-1` 跑，
+    --   所以**只檢查這一次 p_arrivals 裡面有的品項**。
+    --   ⛔ 不要因為這裡擋得住就推論「重複入庫已經不可能」——
+    --     呼叫端只要把上一次送過的品項從 payload 裡拿掉，這裡就完全看不到它。
+    --     那條路目前是前端 decideSubmission() 在擋（檔頭「A 與 B 共同的天花板」）。
     IF v_base IS NOT NULL THEN
       -- 帶了 base 卻沒帶 po_item_id：沒有東西可以比對，等於樂觀鎖被靜默關掉。
       -- 上面 4a 只有 po_item_id 不為 NULL 時才查，所以這裡要自己擋。
@@ -472,6 +579,7 @@ DO $$
 DECLARE
   v_n    INT;
   v_sigs TEXT;
+  v_fix  TEXT;
 BEGIN
   SELECT COUNT(*), string_agg(oidvectortypes(p.proargtypes), ' ｜ ')
     INTO v_n, v_sigs
@@ -481,9 +589,23 @@ BEGIN
      AND p.proname = 'rpc_arrive_and_distribute';
 
   IF v_n <> 1 THEN
+    -- ⭐ 補救指令直接組成可以整段複製貼上的 SQL。
+    --    原本寫「DROP FUNCTION ...(<不該留的那組簽章>);」，那不是能貼的東西 ——
+    --    而本公司就是用「開檔複製貼上」在套 SQL 的，還要人自己代換就等於沒給。
+    SELECT string_agg(
+             'DROP FUNCTION public.rpc_arrive_and_distribute(' ||
+               oidvectortypes(p.proargtypes) || ');', E'\n')
+      INTO v_fix
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'public'
+       AND p.proname = 'rpc_arrive_and_distribute'
+       AND oidvectortypes(p.proargtypes) <> 'bigint, jsonb, uuid, text, text, text';
+
     RAISE EXCEPTION
-      '⚠️ 收尾檢查失敗（變更可能已經生效，請照下面處理）：public.rpc_arrive_and_distribute 現在有 % 支（應該只有 1 支）。現存簽章：%。多載會讓辦公室收貨頁的 5 參數呼叫變成 function is not unique。補救：DROP FUNCTION public.rpc_arrive_and_distribute(<不該留的那組簽章>); 留下 (bigint, jsonb, uuid, text, text, text) 這一支即可。',
-      v_n, v_sigs;
+      '⚠️ 收尾檢查失敗（變更可能已經生效，請照下面處理）：public.rpc_arrive_and_distribute 現在有 % 支（應該只有 1 支）。現存簽章：%。多載會讓辦公室收貨頁的 5 參數呼叫變成 function is not unique。留下 (bigint, jsonb, uuid, text, text, text) 這一支即可，補救指令（可直接整段複製執行）：%',
+      v_n, v_sigs, COALESCE(E'\n' || v_fix,
+        '（沒有多餘的簽章可刪 —— 表示 6 參數那支反而不見了，請把本檔第 2 節重跑一次）');
   END IF;
 
   IF NOT has_function_privilege('authenticated',

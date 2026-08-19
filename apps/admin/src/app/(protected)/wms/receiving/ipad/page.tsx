@@ -34,13 +34,19 @@
 //        現行兩頁一樣沒有頁面層守衛）—— 那是獨立議題，不在這一片處理。
 //   7. 數量與成本：非法輸入一律明講並擋住，⛔ 不做任何靜默轉換或猜值
 //      （見 parseQty / costOk 的註解）。
-//   8. 防「同一批貨算兩次」有**兩道，缺一不可**（20260820000000 那支 migration）：
+//   8. 防「同一批貨算兩次」有**三道，缺一不可**（前兩道在 20260820000000 那支
+//      migration，第三道在 @/lib/receivingSubmission）：
 //      · 冪等鍵 p_client_request_id —— 防「網路斷掉、其實成功了、樓下再按一次」
 //        （見 submissionRef 的生命週期註解）
 //      · 樂觀鎖 qty_received_base —— 防「兩台 iPad 各拿過期數字按全到」
 //        （見 submit() 組 arrivals 的地方）
+//      · decideSubmission() —— 防「送出失敗後就地改內容再送」。
+//        ⚠️ 這道是 2026-08-20 複審補的，因為前兩道**都只看得到這次送進來的品項**：
+//        第二次若把第一次已收的品項清成 0，那些品項不在 payload 裡，
+//        兩道後端防線都不會檢查它 → 靜默重複入庫（見該模組檔頭的完整推導）。
 //      ⛔ 不要以為其中一個能取代另一個：冪等鍵只認得同一次送出（兩台是兩個
-//        不同的值），樂觀鎖擋得住但吐的是紅字（樓下會以為失敗而再按）。
+//        不同的值），樂觀鎖擋得住但吐的是紅字（樓下會以為失敗而再按），
+//        而兩者都對「這次沒送進來的品項」視而不見。
 //      ⛔ 也不要把它們改成「加一把鎖就好」：RPC 第一步的 FOR UPDATE 本來就
 //        讓同一張單排隊了，排隊不會讓第二台手上的數字變新。
 
@@ -48,6 +54,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
+import {
+  decideSubmission,
+  SUBMISSION_BLOCKED_MESSAGE,
+  type Submission,
+} from "@/lib/receivingSubmission";
 import { publicProductUrl } from "@/lib/campaignCover";
 import { useAuth } from "@/components/AuthProvider";
 import SpinButton from "@/components/SpinButton";
@@ -218,25 +229,31 @@ export default function IpadReceivingPage() {
   const submitLock = useRef(false);
 
   // 這一次送出的冪等鍵 ＋ 當時送出的內容。生命週期是整個修法的重點，
-  // ⛔ 改之前先讀完這五條：
+  // ⛔ 改之前先讀完這五條（判斷邏輯本身在 @/lib/receivingSubmission，那裡有完整推導）：
   //   1. **送出時才產**（不是開單時）：沒送出過就沒有東西要防重。
   //   2. **失敗不換**：重試要帶同一個值，後端才認得出「這是同一次送出」。
   //      ⭐ 只有「交易真的 commit 了」那個值才會被後端記住 —— 沒寫進去的失敗
   //      （成本擋、找不到品項…）重試會被當成全新的一次，正確。
-  //   3. **但內容改了就要換新的**（2026-08-20 補；完整理由寫在 submit() 裡）：
-  //      「失敗後就地改數量再按一次」若沿用同一把鍵，會拿到第一次的結果，
-  //      這次改的數字靜默不生效。→ 所以 id 與 payload 綁在同一個 ref 裡，
-  //      **一起存、一起清**，避免只換一半。
+  //   3. **內容改了就整個擋下來**（2026-08-20 複審 P0 改法；前一版是「換新鍵」，
+  //      那是錯的 —— 換新鍵之後，第二次沒送進來的品項不會被任何防線檢查）。
+  //      id 與 payload 綁在同一個 ref 裡，**一起存、一起清**，避免只換一半。
   //   4. **成功就清掉**：下一次送出是全新的一次。
-  //   5. **openPO() 也清掉**（⭐ 這條是刻意的，不是順手寫的）：
-  //      能重複用同一個值的情境只有「人還站在核對畫面上、看著紅字再按一次」。
-  //      一旦退回去重新點單，openPO 會重撈最新的 qty_received，
-  //      這時再沿用舊的值反而危險 —— 若上一次其實成功了、而樓下這回是要收
-  //      **今天到的第二批**，就會被誤判成重試而**靜默不收**（比重複收更難發現）。
-  //      清掉之後那條路改由「樂觀鎖 + 卡片上的『之前已收 N』」把關。
+  //   5. **openPO() 重撈成功時才清**（⭐ 這條是刻意的，順序也是刻意的）：
+  //      能沿用同一個值的情境只有「人還站在核對畫面上、看著紅字再按一次」。
+  //      一旦重新載入這張單、拿到最新的 qty_received，舊的值就該丟 —— 否則
+  //      若上一次其實成功了、而樓下這回是要收**今天到的第二批**，
+  //      會被誤判成重試而**靜默不收**（比重複收更難發現）。
+  //      ⚠️ 但一定要**等重撈成功之後**才清：重撈失敗時畫面上還是舊資料，
+  //         這時把 ref 與 mustReopen 清掉，等於讓人拿著過期的 base 重新送一次。
   //   ⓘ 萬一將來有人漏了第 5 條，後端還有一道：同一個值用到別張採購單會直接報錯
   //      （不是靜默放行），失敗方式是吵的、不是安靜的。
-  const submissionRef = useRef<{ id: string; payload: string } | null>(null);
+  const submissionRef = useRef<Submission | null>(null);
+
+  // 送出失敗、而且使用者把內容改掉了 → 這張單只剩「重新載入」一條安全的路。
+  // ⚠️ 這是 state 不是 ref：它要讓底部把「確認收貨」換成「重新載入這張單」，
+  //    必須觸發 render。真正擋住送出的是 submit() 裡的 decideSubmission()，
+  //    這個旗標只負責把唯一安全的出口做成一顆按鈕（⛔ 不可以反過來只靠 UI 擋）。
+  const [mustReopen, setMustReopen] = useState(false);
 
   const loadWorkbench = useCallback(async () => {
     const sb = getSupabase();
@@ -353,10 +370,12 @@ export default function IpadReceivingPage() {
   const openPO = useCallback(async (target: WorkbenchPO) => {
     setLoadingItems(true);
     setError(null);
-    // ⭐ 進單就丟掉舊的冪等鍵（理由見 submissionRef 宣告處第 5 條）。
-    //    下面會重撈這張單最新的 qty_received，帶著舊的值進來會讓「今天到的第二批」
-    //    被誤判成重試而靜默不收。
-    submissionRef.current = null;
+    // ⛔ 舊的冪等鍵與 mustReopen **不在這裡清**（2026-08-20 改）。
+    //    要等下面真的重撈到最新的 qty_received、setItems 成功之後才清。
+    //    原本清在這一行，配上新的「重新載入這張單」按鈕會開一個洞：
+    //    重撈失敗時畫面上留著舊的 items（＝過期的 qty_already），
+    //    ref 卻已經被清空、mustReopen 也被關掉 → 使用者可以拿過期的 base
+    //    重新送一次，正好繞過本次要修的那條靜默重複入庫路徑。
     try {
       const sb = getSupabase();
       const { data: raw, error: e1 } = await sb
@@ -444,6 +463,11 @@ export default function IpadReceivingPage() {
       setItems(forms);
       setShowDone(false);
       setStep("items");
+      // ⭐ 到這裡才代表「畫面上的已收量是剛剛從資料庫讀回來的」，
+      //    舊的冪等鍵與「必須重新載入」的旗標到這一刻才可以丟
+      //    （理由見 submissionRef 宣告處第 5 條）。
+      submissionRef.current = null;
+      setMustReopen(false);
     } catch (e) {
       setError(translateRpcError(e));
     } finally {
@@ -596,30 +620,34 @@ export default function IpadReceivingPage() {
       const operator = userRes?.user?.id;
       if (!operator) throw new Error("未登入");
 
-      // 冪等鍵。規則只有一條：**同一份內容重送才算重試**。
+      // 冪等鍵。完整推導在 @/lib/receivingSubmission 的檔頭，這裡只講結論：
       //
-      // ⚠️ 2026-08-20 修正（原本只看「有沒有 id」、不看內容，是個靜默壞帳路徑）：
-      //   送出失敗後樓下**不一定會退出畫面**，很可能就地改個數量或原因再按一次。
-      //   若沿用同一把鍵，而第一次其實已經 commit 了（P0-1 那個「回應斷在路上」的情境），
-      //   後端會認出是重試、直接回傳第一次那張 GR ——
-      //   **這次改的數字完全不會生效，畫面卻是成功的**。靜默錯誤比報錯危險得多。
+      //   ⇒ 沒送過       → 新的一把鍵，正常送
+      //   ⇒ 內容一模一樣 → 沿用同一把鍵（後端回既有 GR，明講「先前已經收過了」）
+      //   ⇒ 內容改過了   → **擋下**，只給「重新載入這張單」一條路
       //
-      // 所以：內容有變 → 換一把新的鍵，後端當成全新的一次。
-      // ⭐ 換新鍵**不會**變成「同一批貨收兩次」，因為第二道防線接手了：
-      //   每一筆 arrival 都帶 qty_received_base（＝畫面上看到的已收量）。
-      //   第一次若真的 commit 了，qty_received 已經變了、base 對不上
-      //   → 後端樂觀鎖擋下，並叫人退出去重新點這張單看最新數量。
-      //   ⇒ 內容一樣 → 冪等鍵擋（回既有 GR，明講「先前已經收過了」）
-      //   ⇒ 內容不同 → 樂觀鎖擋（明講數量在核對期間被別人改過）
-      //   兩條路都擋得住，而且**都是吵的**，沒有一條是靜默吞掉。
+      // ⚠️⚠️ 2026-08-20 複審 P0：第三條原本是「換一把新的鍵」，理由寫的是
+      //   「換新鍵不會重複收貨，因為 base 對不上、樂觀鎖會擋」。**那句話是錯的。**
+      //   上面的 arrivals 是 `filter(received > 0)` 現算的，只包含這次有填數量的品項；
+      //   後端樂觀鎖也只逐項比對有送進來的品項。
+      //   ⇒ 第一次送 A=5 已 commit、回應斷掉 → 樓下把 A 清成 0、改填 B 再送
+      //     → 第二次 payload 裡沒有 A → **沒有任何一道防線會檢查 A**
+      //     → B 收成功、畫面顯示成功，而 A 早就悄悄入過一次帳。
+      //   關鍵認知：**送出失敗之後，畫面上那份數字已經不可信**（可能成功、可能沒有，
+      //   前端分不出來）。讓他改內容再送本質上是在猜；唯一安全的動作是重讀現況。
       //
       // ⓘ payload 直接存 JSON 字串、不做 hash：這裡只需要「一不一樣」，
       //   不需要抗碰撞；長度也就幾百 bytes。arrivals 的欄位順序是固定的
       //   （上面只有一個 object literal 產生它），所以同樣內容的字串一定相同。
       const payload = JSON.stringify({ po: po.id, arrivals });
-      if (!submissionRef.current || submissionRef.current.payload !== payload) {
-        submissionRef.current = { id: newRequestId(), payload };
+      const decision = decideSubmission(submissionRef.current, payload, newRequestId);
+      if (decision.kind === "blocked") {
+        // ⛔ 這裡只設旗標、不清 submissionRef：清掉的話下一次按就變成「全新的一次」，
+        //    洞會原封不動回來。只有 openPO 重撈成功才有資格清。
+        setMustReopen(true);
+        throw new Error(SUBMISSION_BLOCKED_MESSAGE);
       }
+      submissionRef.current = { id: decision.id, payload };
 
       const { data, error: rpcErr } = await getSupabase().rpc("rpc_arrive_and_distribute", {
         p_po_id: po.id,
@@ -670,6 +698,7 @@ export default function IpadReceivingPage() {
     setRows(null);
     submitLock.current = false;
     submissionRef.current = null; // 保險：submit 成功時已經清過
+    setMustReopen(false);
     try {
       setRows(await loadWorkbench());
     } catch (e) {
@@ -789,42 +818,68 @@ export default function IpadReceivingPage() {
                 )}
               </div>
             </div>
-            <SpinButton
-              type="button"
-              onClick={submit}
-              disabled={
-                summary.lines === 0 ||
-                summary.missing > 0 ||
-                summary.invalid > 0 ||
-                summary.badCost.length > 0 ||
-                submitting
-              }
-              className={`${BTN_BASE} min-w-[160px] bg-emerald-600 text-lg text-white active:bg-emerald-700 disabled:bg-zinc-300 dark:disabled:bg-zinc-700`}
-            >
-              {submitting ? "送出中…" : "✅ 確認收貨"}
-            </SpinButton>
+            {/* 送出失敗又改過內容 → 只給「重新載入」這一條路。
+                ⚠ 這裡是把唯一安全的動作做成一顆按鈕，不是安全機制本身：
+                  真正擋住送出的是 submit() 裡的 decideSubmission()。 */}
+            {mustReopen && po ? (
+              <SpinButton
+                type="button"
+                onClick={() => openPO(po)}
+                disabled={loadingItems}
+                className={`${BTN_BASE} min-w-[160px] bg-amber-600 text-lg text-white active:bg-amber-700 disabled:bg-zinc-300 dark:disabled:bg-zinc-700`}
+              >
+                {loadingItems ? "載入中…" : "🔄 重新載入這張單"}
+              </SpinButton>
+            ) : (
+              <SpinButton
+                type="button"
+                onClick={submit}
+                disabled={
+                  summary.lines === 0 ||
+                  summary.missing > 0 ||
+                  summary.invalid > 0 ||
+                  summary.badCost.length > 0 ||
+                  submitting
+                }
+                className={`${BTN_BASE} min-w-[160px] bg-emerald-600 text-lg text-white active:bg-emerald-700 disabled:bg-zinc-300 dark:disabled:bg-zinc-700`}
+              >
+                {submitting ? "送出中…" : "✅ 確認收貨"}
+              </SpinButton>
+            )}
           </div>
           {/* ⛔ 停用原因一定要看得見，不可以只放 title：iPad 上沒有 tooltip */}
-          {summary.badCost.length > 0 && (
-            <p className="mt-2 text-sm font-bold text-rose-600 dark:text-rose-400">
-              有 {summary.badCost.length} 項的成本不正常收不進去，請通知辦公室。
-              把那幾項的數量清成 0，就可以先收其他品項。
+          {mustReopen ? (
+            // ⚠️ mustReopen 時**只留這一句**。下面那四句全部是在教人「改數量」，
+            //    而改數量正是這個狀態下被擋住的動作 —— 兩種提示並排會互相打架，
+            //    樓下照著紅字改了半天還是送不出去。
+            <p className="mt-2 text-sm font-bold text-amber-700 dark:text-amber-400">
+              重新載入會把數量清空、重新讀一次「之前已收」——
+              請照最新的數字重新點一次貨再收。
             </p>
-          )}
-          {summary.invalid > 0 && (
-            <p className="mt-2 text-sm font-medium text-rose-600 dark:text-rose-400">
-              有 {summary.invalid} 項的數量不是有效數字，請改成數字（例：12）。
-            </p>
-          )}
-          {summary.lines === 0 && summary.invalid === 0 && summary.badCost.length === 0 && (
-            <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-              還沒有任何一項填數量。點商品卡上的「全到」，或用 ＋／− 調數量。
-            </p>
-          )}
-          {summary.missing > 0 && (
-            <p className="mt-2 text-sm font-medium text-rose-600 dark:text-rose-400">
-              有 {summary.missing} 項數量跟應到不一樣，要先選一個原因才能送出。
-            </p>
+          ) : (
+            <>
+              {summary.badCost.length > 0 && (
+                <p className="mt-2 text-sm font-bold text-rose-600 dark:text-rose-400">
+                  有 {summary.badCost.length} 項的成本不正常收不進去，請通知辦公室。
+                  把那幾項的數量清成 0，就可以先收其他品項。
+                </p>
+              )}
+              {summary.invalid > 0 && (
+                <p className="mt-2 text-sm font-medium text-rose-600 dark:text-rose-400">
+                  有 {summary.invalid} 項的數量不是有效數字，請改成數字（例：12）。
+                </p>
+              )}
+              {summary.lines === 0 && summary.invalid === 0 && summary.badCost.length === 0 && (
+                <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+                  還沒有任何一項填數量。點商品卡上的「全到」，或用 ＋／− 調數量。
+                </p>
+              )}
+              {summary.missing > 0 && (
+                <p className="mt-2 text-sm font-medium text-rose-600 dark:text-rose-400">
+                  有 {summary.missing} 項數量跟應到不一樣，要先選一個原因才能送出。
+                </p>
+              )}
+            </>
           )}
         </footer>
       )}
