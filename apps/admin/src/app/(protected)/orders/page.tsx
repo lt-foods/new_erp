@@ -439,6 +439,7 @@ function OrdersListContent() {
   // 批量列印用的勾選（跨分頁累加；換 tab / 改篩選會清空，避免印到看不見的單）
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkPrintErr, setBulkPrintErr] = useState<string | null>(null);
+  const [bulkGiftMsg, setBulkGiftMsg] = useState<string | null>(null);
 
   // KPI trend (當月 1 號 ~ 今天 每日 + 本月累計、套 filter 開團+店家、排除 transferred_out)
   const [trend, setTrend] = useState<TrendData | null>(null);
@@ -1041,6 +1042,41 @@ function OrdersListContent() {
     }
   }
 
+  // 批次標贈品 —— 促銷活動的正規流程：篩「只看 $0」＋開團／門市 → 選取 → 一次標完。
+  // 贈品是掛在訂單上的（同一個 SKU 有人買、有人是送的），所以入口在訂單這邊，
+  // 不是開團商品那邊（那個一標就把所有人的單價歸零，買的那幾張也跟著變 $0）。
+  // 逐張走 _check_order_edit_notes_perm：選到別人家的單會整批擋下並指名是哪一張。
+  async function bulkMarkGift() {
+    setBulkGiftMsg(null);
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    const reason = prompt(
+      `把選取的 ${ids.length} 張訂單裡「還沒取貨、單價 $0」的品項全部標成贈品。\n` +
+      `這些品項會以 $0 交給客人（不收錢），每一列都會寫進異動紀錄。\n\n` +
+      `請輸入原因（例：週年慶滿額贈 / 買二送一）：`,
+    );
+    if (reason === null) return;
+    if (!reason.trim()) { setBulkGiftMsg("請填寫贈品原因（會寫進異動紀錄）"); return; }
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id ?? null;
+    if (!operator) { setBulkGiftMsg("尚未登入"); return; }
+    const { data, error: rpcErr } = await sb.rpc("rpc_mark_zero_price_items_gift", {
+      p_order_ids: ids,
+      p_operator: operator,
+      p_reason: reason.trim(),
+    });
+    if (rpcErr) { setBulkGiftMsg(translateRpcError(rpcErr)); return; }
+    const r = (data ?? null) as { orders: number; items: number; skipped_internal: number } | null;
+    setBulkGiftMsg(
+      `已把 ${r?.items ?? 0} 個品項（${r?.orders ?? 0} 張訂單）標成贈品，取貨不再被擋`
+      + ((r?.skipped_internal ?? 0) > 0 ? `；略過 ${r?.skipped_internal} 張【內部】容器單` : "")
+      + ((r?.items ?? 0) === 0 ? "（選取的訂單沒有未取貨的 $0 品項）" : ""),
+    );
+    setSelected(new Set());
+    setReloadOrders((n) => n + 1);
+  }
+
   async function bulkPrint(kind: "receipt" | "slip") {
     setBulkPrintErr(null);
     const ids = Array.from(selected);
@@ -1456,7 +1492,7 @@ function OrdersListContent() {
           </span>
           {selected.size > 0 && (
             <SpinButton
-              onClick={() => { setSelected(new Set()); setBulkPrintErr(null); }}
+              onClick={() => { setSelected(new Set()); setBulkPrintErr(null); setBulkGiftMsg(null); }}
               className="text-zinc-500 underline-offset-2 hover:underline"
             >
               清除
@@ -1472,6 +1508,14 @@ function OrdersListContent() {
               🖨️ 補印收據
             </SpinButton>
             <SpinButton
+              onClick={bulkMarkGift}
+              disabled={selected.size === 0}
+              title="把選取訂單裡「還沒取貨、單價 $0」的品項全部標成贈品（不收錢就交給客人）。會要求填原因，每一列都寫入異動紀錄。"
+              className="rounded-md border border-amber-400 px-2 py-1 font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-40 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950"
+            >
+              🎁 標為贈品
+            </SpinButton>
+            <SpinButton
               onClick={() => bulkPrint("slip")}
               disabled={selected.size === 0}
               title="列印小白單（取貨清單，只列還沒取的品項）— 同一會員的多張單合印一張"
@@ -1482,6 +1526,9 @@ function OrdersListContent() {
           </div>
           {bulkPrintErr && (
             <div className="w-full text-amber-700 dark:text-amber-400">{bulkPrintErr}</div>
+          )}
+          {bulkGiftMsg && (
+            <div className="w-full text-amber-700 dark:text-amber-400">{bulkGiftMsg}</div>
           )}
         </div>
       )}

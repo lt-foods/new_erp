@@ -513,6 +513,13 @@ export function OrderDetail({
   // 與 v_customer_order_summary.items_total / rpc_wallet_pay_order 同一套過濾
   //（migration 20260808000010）。
   const activeItems = items.filter((i) => !["cancelled", "expired"].includes(i.status));
+  // 取貨會被零元守衛擋下的品項：還沒取貨、單價 $0、也還沒被標成贈品。
+  // 用 itemEffective（含未存檔的草稿改價），避免「已經改好價還在叫你標贈品」。
+  const zeroPriceItems = items.filter(
+    (i) => ["pending", "reserved", "ready"].includes(i.status)
+      && Number(itemEffective(i).unit_price) === 0
+      && !isGiftLine(i),
+  );
 
   const totalQty = activeItems.reduce((s, i) => s + Number(itemEffective(i).qty), 0);
   const grossTotal = activeItems.reduce((s, i) => {
@@ -850,6 +857,34 @@ export function OrderDetail({
       p_reason: reason?.trim() ?? null,
     });
     if (rpcErr) { alert(`${turningOn ? "標記" : "取消"}贈品失敗：${translateRpcError(rpcErr)}`); return; }
+    setReloadTick((n) => n + 1);
+  }
+
+  // 整張單的 $0 品項一次標成贈品 —— 促銷活動送的東西通常整張單好幾項，
+  // 一列一列點太慢。批次版與逐列版同一套守衛（未取貨 + $0 + 理由必填 + 逐列 audit）。
+  async function markAllZeroGift() {
+    if (!head) return;
+    const targets = zeroPriceItems;
+    if (targets.length === 0) return;
+    const reason = prompt(
+      `把這張單的 ${targets.length} 個 $0 品項全部標成贈品（${head.order_no}）\n` +
+      `這些品項會以 $0 交給客人（不收錢），每一列都會寫進異動紀錄。\n\n` +
+      `請輸入原因（例：週年慶滿額贈 / 買二送一）：`,
+    );
+    if (reason === null) return;
+    if (!reason.trim()) { alert("請填寫贈品原因（會寫進異動紀錄）"); return; }
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id ?? null;
+    if (!operator) { alert("尚未登入"); return; }
+    const { data, error: rpcErr } = await sb.rpc("rpc_mark_zero_price_items_gift", {
+      p_order_ids: [head.id],
+      p_operator: operator,
+      p_reason: reason.trim(),
+    });
+    if (rpcErr) { alert(`標記贈品失敗：${translateRpcError(rpcErr)}`); return; }
+    const r = (data ?? null) as { items: number } | null;
+    alert(`已把 ${r?.items ?? 0} 個品項標成贈品，取貨不再被擋`);
     setReloadTick((n) => n + 1);
   }
 
@@ -1332,6 +1367,23 @@ export function OrderDetail({
             })()}
           </div>
         </div>
+        {/* $0 品項提示 —— 取貨會被擋（rpc_record_pickup 零元守衛）。兩條路：
+            漏填金額就改單價，刻意送的（促銷 / 補償）就標贈品。促銷走這顆一鍵標。*/}
+        {zeroPriceItems.length > 0 && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+            <span className="font-semibold">⚠️ 有 {zeroPriceItems.length} 個品項的單價是 $0</span>
+            <span>取貨會被擋下。漏填金額就改單價；刻意送的就標成贈品。</span>
+            {canEditNotes && (
+              <SpinButton
+                onClick={markAllZeroGift}
+                title="把這張單所有未取貨的 $0 品項一次標成贈品（會要求填原因，每一列都寫入異動紀錄）"
+                className="ml-auto shrink-0 rounded-md border border-amber-400 bg-white px-2.5 py-1 font-medium text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:bg-transparent dark:text-amber-300 dark:hover:bg-amber-950"
+              >
+                🎁 整單標成贈品
+              </SpinButton>
+            )}
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-zinc-200 text-xs dark:divide-zinc-800">
             <thead className="bg-zinc-50 dark:bg-zinc-900">

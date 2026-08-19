@@ -102,32 +102,28 @@ export function CampaignItemsTable({
 
   useEffect(() => { reload(); }, [campaignId]);
 
-  // 把開團商品標成／取消標成贈品。標下去＝單價設 0 + 該團所有 $0 訂單品項
-  // （既有與未來）免除取貨零元守衛 —— 促銷活動不用一張一張標。
+  // 把開團商品標成／取消標成贈品。**只適用「這一項所有人都是送的」**：
+  // 標下去單價會設成 0，之後新建的訂單那一項全部是 $0。
+  // 買二送一那種「有人買、有人送」要從訂單那邊標（訂單明細 / 訂單列表批次），
+  // 後端也會擋（該商品還有有金額的未取貨品項就 raise campaign_gift）。
   const toggleGift = async (r: Row) => {
     const label = r.variant_name || r.product_name || r.sku_code;
     let reason: string | null = null;
     if (!r.is_gift) {
       reason = prompt(
-        `標記為贈品：${label}
-
-` +
-        `• 這個開團商品的單價會設為 $0（不收錢）
-` +
-        `• 本團所有 $0 的訂單品項（含已建立的）取貨時不再被擋
-` +
-        `• 「重新同步商品/價格」不會再把它改回零售價
-
-` +
-        `請輸入原因（例：週年慶滿額贈）：`,
+        `標記為贈品：${label}\n\n`
+        + `⚠️ 只適用「這一項所有人都是送的」：\n`
+        + `• 這個開團商品的單價會設為 $0，之後建立的訂單那一項全部不收錢\n`
+        + `• 本團所有 $0 的訂單品項（含已建立的）取貨時不再被擋\n`
+        + `• 「重新同步商品/價格」不會再把它改回零售價\n\n`
+        + `只有部分客人要送（買二送一）→ 改到訂單那邊標，不要用這個。\n\n`
+        + `請輸入原因（例：週年慶滿額贈）：`,
       );
       if (reason === null) return;
       if (!reason.trim()) { setError("請填寫贈品原因"); return; }
     } else if (!confirm(
-      `取消贈品設定：${label}
-
-單價會維持 $0（要恢復售價請按「重新同步商品/價格」），` +
-      `但這些 $0 品項取貨時會重新被零元守衛擋下。確定嗎？`,
+      `取消贈品設定：${label}\n\n單價會維持 $0（要恢復售價請按「重新同步商品/價格」），`
+      + `但這些 $0 品項取貨時會重新被零元守衛擋下。確定嗎？`,
     )) {
       return;
     }
@@ -277,7 +273,7 @@ export function CampaignItemsTable({
                       onClick={() => toggleGift(r)}
                       title={r.is_gift
                         ? "取消贈品設定（單價維持 $0，但取貨會重新被零元守衛擋下）"
-                        : "促銷活動送的東西：標成贈品後單價設為 $0，本團所有 $0 訂單品項取貨都不再被擋"}
+                        : "只適用「這一項所有人都是送的」：單價會設成 $0，之後的訂單那一項全部不收錢。買二送一那種請到訂單那邊標贈品。"}
                       className={r.is_gift
                         ? "rounded-md bg-amber-500 px-2 py-1 text-[11px] font-medium text-white hover:bg-amber-600"
                         : "rounded-md border border-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"}
