@@ -328,7 +328,8 @@ export default function ReceivingWorkbenchPage() {
           <SpinButton
             key={f}
             onClick={() => setFilter(f)}
-            className={`rounded-full border px-3 py-1 text-xs ${
+            /* 觸控目標 ≥ 44px + touch-manipulation：比照上方檢視切換鈕，兩排藥丸鈕大小一致 */
+            className={`inline-flex min-h-[44px] items-center rounded-full border px-4 text-xs touch-manipulation ${
               filter === f
                 ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
                 : "border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
@@ -467,7 +468,10 @@ export default function ReceivingWorkbenchPage() {
                       onClick={() =>
                         setExpandedSup((prev) => ({ ...prev, [g.supplier_id]: !open }))
                       }
-                      className="flex w-full flex-wrap items-baseline justify-between gap-2 bg-zinc-50 px-3 py-2 text-left hover:bg-zinc-100 dark:bg-zinc-900 dark:hover:bg-zinc-800"
+                      /* 觸控目標 ≥ 44px + touch-manipulation：這顆是本檢視最常按的鈕。
+                         items-baseline 改 items-center，是為了讓 min-h 多出來的高度上下平均，
+                         不然內容會黏在頂端、底下空一塊。 */
+                      className="flex w-full min-h-[44px] flex-wrap items-center justify-between gap-2 bg-zinc-50 px-3 py-2 text-left touch-manipulation hover:bg-zinc-100 dark:bg-zinc-900 dark:hover:bg-zinc-800"
                     >
                       <span className="text-sm font-semibold">
                         <span className="mr-1.5 inline-block text-zinc-400">{open ? "▾" : "▸"}</span>
