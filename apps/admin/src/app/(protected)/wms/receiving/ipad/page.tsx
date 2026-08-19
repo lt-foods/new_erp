@@ -25,12 +25,22 @@
 //      （picking/drafts/edit/page.tsx:859 有同樣的教訓註解）。
 //   5. 側欄：不改全站 layout.tsx（會炸到所有頁面所有使用者），改用本頁自己
 //      fixed 全屏蓋掉。用 z-40：Modal 與 layout 手機抽屜都是 z-50，不會被遮住。
+//   6. 權限：這一頁多開了一個入口，所以**不可以比舊入口寬**。舊入口
+//      /wms/receiving 在 layout 的 BRANCH_HIDDEN_HREFS 裡對分店帳號隱藏，
+//      本頁照同一條判定（isBranchAccount）擋掉分店帳號並給返回出口。
+//      ⚠ 刻意**不**再加 role.ts 的 isHqRole()：它的 HQ_ROLES 不含 assistant，
+//        舊入口不擋 assistant，加了會比舊入口窄、可能把樓下倉管整個鎖在外面。
+//      ⚠ 真正的守衛應該在 RPC（GRANT ... TO authenticated 是既有的洞，
+//        現行兩頁一樣沒有頁面層守衛）—— 那是獨立議題，不在這一片處理。
+//   7. 數量與成本：非法輸入一律明講並擋住，⛔ 不做任何靜默轉換或猜值
+//      （見 parseQty / costOk 的註解）。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import { publicProductUrl } from "@/lib/campaignCover";
+import { useAuth } from "@/components/AuthProvider";
 import SpinButton from "@/components/SpinButton";
 
 // ---------------------------------------------------------------- types
@@ -89,17 +99,50 @@ function productImageUrl(images: unknown): string | null {
   return publicProductUrl(path);
 }
 
-/** 只留數字與一個小數點（採購數量是 numeric(18,3)，不能寫死成整數） */
-function sanitizeQty(v: string): string {
-  const cleaned = v.replace(/[^\d.]/g, "");
-  const firstDot = cleaned.indexOf(".");
-  if (firstDot === -1) return cleaned;
-  return cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, "");
+// 採購數量是 numeric(18,3)，所以允許小數，但只允許「數字[.數字]」這一種寫法。
+const QTY_RE = /^\d+\.?\d*$/;
+
+/**
+ * 實到數量：**驗證**，不是清洗。
+ *
+ * ⛔ 這裡曾經是 `replace(/[^\d.]/g, "")` 的清洗式寫法，那是錯的：
+ *    "-5" 會被洗成 "5"、"1e3" 會被洗成 "13" —— 把非法輸入靜默換成
+ *    「另一個合法但錯誤的數字」，樓下完全看不出自己打的 -5 變成了 5。
+ * ⛔ 也不能指望 RPC 兜底：`20260512000002_arrive_no_auto_wave.sql` 只擋
+ *    `qty_received IS NULL OR <= 0`，它收到的 5 是合法的 5，擋不了。
+ * → 非法輸入一律回 invalid，由畫面明講並擋住送出。
+ */
+function parseQty(raw: string): { qty: number; invalid: boolean } {
+  const t = raw.trim();
+  if (t === "") return { qty: 0, invalid: false }; // 空 = 這項還沒核對，不送出
+  if (!QTY_RE.test(t)) return { qty: 0, invalid: true };
+  const n = Number(t);
+  if (!Number.isFinite(n) || n < 0) return { qty: 0, invalid: true };
+  return { qty: n, invalid: false };
 }
 
-function num(v: string): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
+/**
+ * 成本必須是正數才可以入庫。
+ *
+ * NEW-ERP 的 `purchase_order_items.unit_cost` 是 NUMERIC(18,4) **NOT NULL**
+ * （20260422120004_purchase_schema.sql:102，之後沒有 migration 改過），
+ * 所以 NULL 的情境不存在；**但它沒有 CHECK (> 0)，0 是合法值**。
+ * 採購單填 0 或漏填時，這一頁會用 0 成本入庫，而樓下看不到單價、
+ * 錯了永遠不會發現（辦公室現行收貨頁至少看得到也改得掉）。
+ * → 這是本頁特有的風險，一律擋整張單，請辦公室先修採購單。
+ */
+function costOk(cost: number): boolean {
+  return Number.isFinite(cost) && cost > 0;
+}
+
+/** 分店帳號判定 —— 與 (protected)/layout.tsx:134 的 isBranchUser() 等價。
+ *  ⚠ 那支住在全站 layout（禁改），這裡照抄一份；改那邊要記得改這邊。
+ *  ⚠ layout 的 BRANCH_HIDDEN_HREFS 是精確字串比對（Set.has），
+ *    /wms/receiving/ipad 不會自動繼承「進貨待辦」對分店的隱藏，故本頁自己擋。 */
+function isBranchAccount(user: { app_metadata?: Record<string, unknown> } | null | undefined): boolean {
+  const stores = user?.app_metadata?.stores;
+  if (!Array.isArray(stores) || stores.length === 0) return false;
+  return !stores.includes("總倉");
 }
 
 /** 商品名一律帶 variant_name：product_name 常常是上層品名，只印它現場會抓錯貨 */
@@ -119,6 +162,9 @@ const BTN_GHOST = `${BTN_BASE} border border-zinc-300 bg-white text-zinc-800 act
 // ---------------------------------------------------------------- page
 
 export default function IpadReceivingPage() {
+  const { user, loading: authLoading } = useAuth();
+  const branchBlocked = !authLoading && isBranchAccount(user);
+
   const [step, setStep] = useState<Step>("supplier");
   const [rows, setRows] = useState<WorkbenchPO[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -128,6 +174,7 @@ export default function IpadReceivingPage() {
   const [po, setPO] = useState<WorkbenchPO | null>(null);
   const [items, setItems] = useState<ItemForm[] | null>(null);
   const [loadingItems, setLoadingItems] = useState(false);
+  const [missingSkuCount, setMissingSkuCount] = useState(0); // 商品資料沒撈回來的品項數
   const [showDone, setShowDone] = useState(false); // 是否顯示「已收齊」的品項
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<{ gr_no: string; po_no: string; qty: number; lines: number } | null>(null);
@@ -140,7 +187,7 @@ export default function IpadReceivingPage() {
     const sb = getSupabase();
     const { data, error: e } = await sb.rpc("rpc_receiving_workbench");
     if (e) throw new Error(e.message);
-    return ((data ?? []) as Array<Record<string, unknown>>)
+    const list = ((data ?? []) as Array<Record<string, unknown>>)
       .map((r) => ({
         id: Number(r.id),
         po_no: String(r.po_no),
@@ -159,9 +206,40 @@ export default function IpadReceivingPage() {
       // 只留還能收的單。rpc_arrive_and_distribute 本身也擋
       // （PO must be sent/partially_received），這裡先濾掉才不會讓樓下點了才吃錯誤。
       .filter((r) => r.status === "sent" || r.status === "partially_received");
+
+    if (list.length === 0) return list;
+
+    // 全部品項都已斷貨的 PO 不列出來 —— 點進去會是空的，樓下白跑一趟。
+    //
+    // ⚠ 方向刻意選「數斷貨的列」而不是「數還活著的列」：
+    //   rpc_receiving_workbench 沒回斷貨資訊，只能另外查一次。斷貨列很少，
+    //   遠低於 PostgREST 預設 1000 列上限；萬一真的被截斷，結果是**少算**
+    //   斷貨數 → 少排除幾張單（多顯示），而不是把還有貨要收的單藏起來。
+    //   反過來查「還活著的列」被截斷就會讓真的要收的單消失，那是更糟的 bug。
+    // ⚠ 查詢失敗一律 fail-open（不排除任何單），不讓這個附屬功能擋住收貨。
+    try {
+      const { data: so, error: soErr } = await sb
+        .from("purchase_order_items")
+        .select("po_id")
+        .in("po_id", list.map((r) => r.id))
+        .not("stockout_at", "is", null);
+      if (soErr) return list;
+      const stockoutCount = new Map<number, number>();
+      for (const row of (so as Array<{ po_id: number }> | null) ?? []) {
+        const k = Number(row.po_id);
+        stockoutCount.set(k, (stockoutCount.get(k) ?? 0) + 1);
+      }
+      // line_count 是該 PO 的**全部**品項數（RPC 的 poi CTE 沒有濾斷貨），
+      // 所以「斷貨數 === line_count」就代表整張單沒有東西可收。
+      return list.filter((r) => (stockoutCount.get(r.id) ?? 0) < r.line_count);
+    } catch {
+      return list;
+    }
   }, []);
 
   useEffect(() => {
+    // 身分還沒確定、或已判定是分店帳號 → 不要去撈資料
+    if (authLoading || branchBlocked) return;
     let cancelled = false;
     (async () => {
       try {
@@ -177,7 +255,7 @@ export default function IpadReceivingPage() {
     return () => {
       cancelled = true;
     };
-  }, [loadWorkbench]);
+  }, [loadWorkbench, authLoading, branchBlocked]);
 
   // 依廠商分組；搜尋同時比對廠商名 / 代碼 / 該廠商所有待收商品名
   const groups = useMemo<SupplierGroup[]>(() => {
@@ -287,6 +365,9 @@ export default function IpadReceivingPage() {
         };
       });
 
+      // 商品資料沒撈回來 → 樓下靠圖片與品名辨貨，缺漏時不能無聲
+      // （`.in("id", skuIds)` 吃 PostgREST 的列數上限，與現行收貨頁同風險）
+      setMissingSkuCount(Math.max(0, skuIds.length - skuMap.size));
       setPO(target);
       setItems(forms);
       setShowDone(false);
@@ -321,12 +402,14 @@ export default function IpadReceivingPage() {
   const checks = useMemo(() => {
     if (!items) return null;
     return items.map((f) => {
-      const received = num(f.qty);
+      const { qty: received, invalid } = parseQty(f.qty);
       const isOver = received > f.remaining;
       const isShort = received > 0 && received < f.remaining;
       const requiresReason = received > 0 && (isOver || isShort);
       return {
         received,
+        invalid,
+        badCost: !costOk(f.unit_cost),
         isOver,
         isShort,
         requiresReason,
@@ -340,15 +423,20 @@ export default function IpadReceivingPage() {
     let lines = 0;
     let qty = 0;
     let missing = 0;
+    let invalid = 0;
     items.forEach((f, i) => {
       const c = checks[i];
+      if (c.invalid) invalid += 1;
       if (c.received > 0) {
         lines += 1;
         qty += c.received;
         if (c.reasonMissing) missing += 1;
       }
     });
-    return { lines, qty, missing, total: items.length };
+    // 成本異常一律擋整張單（不是跳過該品項）。樓下看不到單價，
+    // 用 0 成本入庫錯了永遠不會被發現 → 請辦公室先修採購單。
+    const badCost = items.filter((f) => !costOk(f.unit_cost));
+    return { lines, qty, missing, invalid, badCost, total: items.length };
   }, [items, checks]);
 
   // 已收齊的品項預設收起來；但只要有人在裡面填了數字就強制顯示，
@@ -365,6 +453,27 @@ export default function IpadReceivingPage() {
     setError(null);
     setSubmitting(true);
     try {
+      // ── 送出前的三道硬擋，順序＝從「最該先修好」往下 ──────────────
+      // ⛔ 全部都是擋整張單，不是跳過該品項：靜默少收一項，樓下不會發現。
+
+      // 1. 非法數量（"-5"、"1e3"、"abc"…）。RPC 只擋 qty <= 0，
+      //    擋不住「前端把 -5 變成 5」，所以一定要在這裡攔。
+      const invalidCount = checks.filter((c) => c.invalid).length;
+      if (invalidCount > 0) {
+        throw new Error(`有 ${invalidCount} 項的數量不是有效數字，請改成數字（例：12）再送出。`);
+      }
+
+      // 2. 成本異常（unit_cost 沒有 CHECK > 0，0 是合法值 → 會用 0 成本入庫）
+      const badCost = items.filter((f) => !costOk(f.unit_cost));
+      if (badCost.length > 0) {
+        throw new Error(
+          `這張單有 ${badCost.length} 個品項的成本不正常，請辦公室先修正採購單再收貨。（${badCost
+            .slice(0, 3)
+            .map(itemTitle)
+            .join("、")}${badCost.length > 3 ? " 等" : ""}）`,
+        );
+      }
+
       const arrivals = items
         .map((f, i) => ({ f, c: checks[i] }))
         .filter(({ c }) => c.received > 0)
@@ -374,8 +483,9 @@ export default function IpadReceivingPage() {
           qty_received: c.received,
           // 樓下畫面上沒有「瑕疵」欄位 —— 瑕疵歸辦公室在既有收貨頁處理
           qty_damaged: 0,
-          // 帶採購單原本的成本。⛔ 不可送 0 或 null：unit_cost > 0 才會重算
-          // 加權平均成本（apply_movement_to_balance），送 0 會把成本洗掉。
+          // 帶採購單原本的成本（上面第 2 道已保證 > 0）。
+          // ⛔ 不可送 0 或 null，也⛔不可以自己猜一個成本：unit_cost > 0 才會
+          // 重算加權平均成本（apply_movement_to_balance），送 0 會把成本洗掉。
           unit_cost: f.unit_cost,
           batch_no: null,
           expiry_date: null,
@@ -428,6 +538,7 @@ export default function IpadReceivingPage() {
     setError(null);
     setSearch("");
     setSupplier(null);
+    setMissingSkuCount(0);
     setStep("supplier");
     setRows(null);
     submitLock.current = false;
@@ -440,6 +551,34 @@ export default function IpadReceivingPage() {
   }
 
   // ------------------------------------------------------------ render
+
+  // 分店帳號：明確擋下並給出口。⛔ 不可以白畫面、不可以無聲失敗。
+  if (authLoading || branchBlocked) {
+    return (
+      <div className="fixed inset-x-0 top-0 z-40 flex h-[100dvh] flex-col items-center justify-center gap-5 bg-zinc-100 px-6 text-center dark:bg-zinc-950">
+        {authLoading ? (
+          <p className="text-lg text-zinc-500">載入中…</p>
+        ) : (
+          <>
+            <div className="text-5xl">🔒</div>
+            <div className="text-2xl font-bold">這個功能限總部使用</div>
+            <p className="max-w-md text-base text-zinc-600 dark:text-zinc-400">
+              收貨是把貨收進總倉，分店帳號不能用這一頁。
+              分店的收貨請走「進貨入庫」。
+            </p>
+            <div className="flex flex-wrap justify-center gap-3">
+              <Link href="/wms/inbound" className={`${BTN_PRIMARY} text-lg`}>
+                去進貨入庫
+              </Link>
+              <Link href="/" className={`${BTN_GHOST} text-lg`}>
+                回首頁
+              </Link>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
 
   return (
     // 蓋掉桌機側欄：不改全站 layout.tsx，改用本頁自己全屏。
@@ -455,6 +594,7 @@ export default function IpadReceivingPage() {
           if (step === "items") {
             setItems(null);
             setPO(null);
+            setMissingSkuCount(0);
             setStep("po");
           } else if (step === "po") {
             setSupplier(null);
@@ -493,6 +633,8 @@ export default function IpadReceivingPage() {
             checks={checks}
             doneVisible={doneVisible}
             forcedOpen={hiddenHasQty}
+            missingSkuCount={missingSkuCount}
+            badCost={summary?.badCost ?? []}
             onToggleDone={() => setShowDone((v) => !v)}
             onPatch={patchItem}
             onFillAll={fillAllArrived}
@@ -522,14 +664,31 @@ export default function IpadReceivingPage() {
             <SpinButton
               type="button"
               onClick={submit}
-              disabled={summary.lines === 0 || summary.missing > 0 || submitting}
+              disabled={
+                summary.lines === 0 ||
+                summary.missing > 0 ||
+                summary.invalid > 0 ||
+                summary.badCost.length > 0 ||
+                submitting
+              }
               className={`${BTN_BASE} min-w-[160px] bg-emerald-600 text-lg text-white active:bg-emerald-700 disabled:bg-zinc-300 dark:disabled:bg-zinc-700`}
             >
               {submitting ? "送出中…" : "✅ 確認收貨"}
             </SpinButton>
           </div>
           {/* ⛔ 停用原因一定要看得見，不可以只放 title：iPad 上沒有 tooltip */}
-          {summary.lines === 0 && (
+          {summary.badCost.length > 0 && (
+            <p className="mt-2 text-sm font-bold text-rose-600 dark:text-rose-400">
+              這張單有 {summary.badCost.length} 個品項的成本不正常，整張單都不能收，
+              請辦公室先修正採購單。
+            </p>
+          )}
+          {summary.invalid > 0 && (
+            <p className="mt-2 text-sm font-medium text-rose-600 dark:text-rose-400">
+              有 {summary.invalid} 項的數量不是有效數字，請改成數字（例：12）。
+            </p>
+          )}
+          {summary.lines === 0 && summary.invalid === 0 && summary.badCost.length === 0 && (
             <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
               還沒有任何一項填數量。點商品卡上的「全到」，或用 ＋／− 調數量。
             </p>
@@ -697,6 +856,10 @@ function POStep({
 
 type Check = {
   received: number;
+  /** 打了非數字（"-5"、"1e3"、"abc"…）→ 明確擋下，⛔ 不靜默轉換 */
+  invalid: boolean;
+  /** 採購單成本 <= 0 或不是數字 → 這張單整張不能收 */
+  badCost: boolean;
   isOver: boolean;
   isShort: boolean;
   requiresReason: boolean;
@@ -708,6 +871,8 @@ function ItemsStep({
   checks,
   doneVisible,
   forcedOpen,
+  missingSkuCount,
+  badCost,
   onToggleDone,
   onPatch,
   onFillAll,
@@ -718,6 +883,10 @@ function ItemsStep({
   doneVisible: boolean;
   /** 已收齊區塊裡有人填了數字 → 強制攤開，收不起來（收起來會讓送出的東西看不到） */
   forcedOpen: boolean;
+  /** 商品資料沒撈回來的品項數（樓下靠圖片與品名辨貨，缺漏不能無聲） */
+  missingSkuCount: number;
+  /** 成本不正常的品項 */
+  badCost: ItemForm[];
   onToggleDone: () => void;
   onPatch: (idx: number, patch: Partial<ItemForm>) => void;
   onFillAll: () => void;
@@ -728,6 +897,29 @@ function ItemsStep({
 
   return (
     <div className="flex flex-col gap-4">
+      {badCost.length > 0 && (
+        <div className="rounded-xl border-2 border-rose-400 bg-rose-50 p-4 dark:border-rose-700 dark:bg-rose-950/50">
+          <div className="text-lg font-bold text-rose-800 dark:text-rose-200">
+            ⛔ 這張單不能收
+          </div>
+          <p className="mt-1 text-base text-rose-800 dark:text-rose-200">
+            有 {badCost.length} 個品項的成本不正常，請辦公室先修正採購單再收貨。
+          </p>
+          <ul className="mt-2 list-disc pl-5 text-base text-rose-800 dark:text-rose-200">
+            {badCost.slice(0, 5).map((f) => (
+              <li key={f.po_item_id}>{itemTitle(f)}</li>
+            ))}
+            {badCost.length > 5 && <li>…等 {badCost.length} 項</li>}
+          </ul>
+        </div>
+      )}
+
+      {missingSkuCount > 0 && (
+        <div className="rounded-xl border-2 border-amber-400 bg-amber-50 p-4 text-base font-medium text-amber-900 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-200">
+          ⚠ 有 {missingSkuCount} 項的商品資料沒載入（可能沒有圖片和品名），請通知辦公室。
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-2">
         <SpinButton type="button" onClick={onFillAll} className={BTN_GHOST}>
           全部都到齊
@@ -785,16 +977,18 @@ function ItemCard({
   check: Check;
   onPatch: (patch: Partial<ItemForm>) => void;
 }) {
-  const exact = check.received > 0 && !check.isOver && !check.isShort;
-  const cardCls = check.reasonMissing
-    ? "border-rose-400 bg-rose-50 dark:border-rose-700 dark:bg-rose-950/40"
-    : exact
-      ? "border-emerald-400 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950/30"
-      : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-900";
+  const exact = check.received > 0 && !check.invalid && !check.isOver && !check.isShort;
+  const cardCls =
+    check.badCost || check.invalid || check.reasonMissing
+      ? "border-rose-400 bg-rose-50 dark:border-rose-700 dark:bg-rose-950/40"
+      : exact
+        ? "border-emerald-400 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950/30"
+        : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-900";
 
+  // ⛔ 非法輸入時不做加減：那等於把打錯的字悄悄換成一個數字。
   function step(delta: number) {
-    const next = Math.max(0, num(item.qty) + delta);
-    onPatch({ qty: String(next) });
+    if (check.invalid) return;
+    onPatch({ qty: String(Math.max(0, check.received + delta)) });
   }
 
   return (
@@ -837,24 +1031,31 @@ function ItemCard({
         <SpinButton
           type="button"
           onClick={() => step(-1)}
-          disabled={num(item.qty) <= 0}
+          disabled={check.invalid || check.received <= 0}
           className={`${BTN_GHOST} text-2xl`}
           aria-label="減一"
         >
           −
         </SpinButton>
-        {/* text-2xl 遠大於 16px：低於 16px 的輸入框一 focus，iOS 會把整頁放大 */}
+        {/* text-2xl 遠大於 16px：低於 16px 的輸入框一 focus，iOS 會把整頁放大。
+            ⛔ onChange 不做任何清洗，原字照存 —— 打錯就要看得到自己打錯了。 */}
         <input
           inputMode="decimal"
           value={item.qty}
-          onChange={(e) => onPatch({ qty: sanitizeQty(e.target.value) })}
+          onChange={(e) => onPatch({ qty: e.target.value })}
           placeholder="0"
           aria-label="實到數量"
-          className="min-h-[56px] w-28 rounded-xl border-2 border-zinc-300 bg-white px-3 text-center font-mono text-2xl font-bold dark:border-zinc-600 dark:bg-zinc-800"
+          aria-invalid={check.invalid}
+          className={`min-h-[56px] w-28 rounded-xl border-2 bg-white px-3 text-center font-mono text-2xl font-bold dark:bg-zinc-800 ${
+            check.invalid
+              ? "border-rose-500 text-rose-700 dark:border-rose-600 dark:text-rose-300"
+              : "border-zinc-300 dark:border-zinc-600"
+          }`}
         />
         <SpinButton
           type="button"
           onClick={() => step(1)}
+          disabled={check.invalid}
           className={`${BTN_GHOST} text-2xl`}
           aria-label="加一"
         >
@@ -868,6 +1069,19 @@ function ItemCard({
           {exact ? "✓ 全到" : "全到"}
         </SpinButton>
       </div>
+
+      {/* ⛔ 提示要看得見，不可以只放 title：iPad 上沒有 tooltip */}
+      {check.invalid && (
+        <p className="mt-2 text-base font-bold text-rose-700 dark:text-rose-300">
+          ⚠ 「{item.qty}」不是有效數字，請只填數字（例：12）。這一項現在不會被送出。
+        </p>
+      )}
+
+      {check.badCost && (
+        <p className="mt-2 text-base font-bold text-rose-700 dark:text-rose-300">
+          ⛔ 這個品項的成本不正常，整張單都不能收，請辦公室先修正採購單。
+        </p>
+      )}
 
       {check.requiresReason && (
         <div className="mt-4 rounded-xl border-2 border-amber-400 bg-amber-50 p-3 dark:border-amber-700 dark:bg-amber-950/50">
