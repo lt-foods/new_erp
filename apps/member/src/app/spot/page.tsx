@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { consumeFragmentToSession, getSession, loginPath } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
@@ -22,16 +22,33 @@ type Resp = {
  * 資料來源是互助交流板的「我有庫存可提供」貼文（post_type='offer'）——
  * 店家把手上多的現貨釋出，這裡就看得到。金額只在「自己所在店家」釋出時顯示，
  * 跨店的金額後端不回（見 liff-api listSpotProducts）。
+ *
+ * ⚠️ 本體是 SpotPageContent，外面包了一層 Suspense（見檔尾）——
+ * 用 useSearchParams() 的頁面沒包 Suspense，`next build` 會直接失敗：
+ * 「useSearchParams() should be wrapped in a suspense boundary at page "/spot"」。
  */
-export default function SpotPage() {
+function SpotPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [items, setItems] = useState<SpotProduct[]>([]);
   const [myStoreName, setMyStoreName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  // 預設停在自己的店 —— 那些才看得到金額、才真的拿得到貨；
-  // 想看別店的再自己切到「全部」。
-  const [tab, setTab] = useState<"all" | "mine">("mine");
+
+  // 分頁狀態以「網址」為準，不放 useState。
+  // 客人點進商品再返回時，PageShell 的 router.back() 只會回到 `/spot`，這個元件
+  // 會重新掛載 —— 狀態存在 useState 就一定掉回預設值，等於每看一個商品都要重新
+  // 點分頁、重新往下滑。寫進網址，back() 才帶得回原本那一頁。
+  //
+  // 預設仍停在自己的店 —— 那些才看得到金額、才真的拿得到貨；想看別店的再自己
+  // 切到「全部」。所以 `?tab=` 讀不到或值不合法（?tab=xxx）一律回退 mine，
+  // 不能讓亂填的網址弄出空白畫面。
+  const tab: "all" | "mine" = searchParams.get("tab") === "all" ? "all" : "mine";
+  const setTab = (v: "all" | "mine") => {
+    // replace 不是 push：切分頁不該堆進上一頁歷史，否則客人要按很多次返回才離得開。
+    // scroll:false：切分頁不要把畫面捲回頂端。
+    router.replace(`/spot?tab=${v}`, { scroll: false });
+  };
 
   const load = async () => {
     const s = getSession();
@@ -137,5 +154,21 @@ export default function SpotPage() {
         </div>
       </PullToRefresh>
     </PageShell>
+  );
+}
+
+export default function SpotPage() {
+  return (
+    // fallback 用跟頁面自己載入時同一個樣子（大標題 + spinner），
+    // 才不會在預先渲染那一瞬間閃一片空白。
+    <Suspense
+      fallback={
+        <PageShell title="現貨專區">
+          <LoadingScreen />
+        </PageShell>
+      }
+    >
+      <SpotPageContent />
+    </Suspense>
   );
 }
