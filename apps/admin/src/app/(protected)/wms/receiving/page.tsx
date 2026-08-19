@@ -48,9 +48,26 @@ type PORow = {
 
 type Filter = "today" | "this_week" | "all";
 type ReceiveTab = "unreceived" | "received";
+// 檢視：清單(現況,預設) / 依廠商分組
+type ViewMode = "list" | "supplier";
+
+// 分組檢視下,一張單先只顯示幾個商品名（其餘用「＋還有 N 項」展開,不把版面撐爆）
+const PRODUCT_NAME_PREVIEW = 8;
 
 // 已收 = 全收；未收 = sent + 部分收
 const isReceived = (r: PORow) => r.status === "fully_received";
+
+// 廠商分組：一組 = 一個供應商,底下掛該廠商的每張 PO
+// 註：RPC 只帶回每張 PO 的商品名字串陣列,沒有品項層數量,
+//     所以這裡只聚合到「廠商 → 單 → 商品名」,數量只有單層與廠商合計。
+type SupplierGroup = {
+  supplier_id: number;
+  supplier_name: string;
+  supplier_code: string | null;
+  pos: PORow[];
+  total_qty_ordered: number;
+  total_qty_received: number;
+};
 
 export default function ReceivingWorkbenchPage() {
   const [rows, setRows] = useState<PORow[] | null>(null);
@@ -59,6 +76,10 @@ export default function ReceivingWorkbenchPage() {
   const [search, setSearch] = useState("");
   // 分頁：未收(sent+部分收) / 已收(全收)，預設未收
   const [tab, setTab] = useState<ReceiveTab>("unreceived");
+  // 檢視：預設清單（辦公室現在的操作習慣不變）
+  const [viewMode, setViewMode] = useState<ViewMode>("list");
+  // 分組檢視的展開狀態；沒被手動點過的廠商，搜尋中一律預設展開（搜到了就直接看得到）
+  const [expandedSup, setExpandedSup] = useState<Record<number, boolean>>({});
   const [detailPoId, setDetailPoId] = useState<number | null>(null);
   const [detailPoNo, setDetailPoNo] = useState<string>("");
 
@@ -143,6 +164,43 @@ export default function ReceivingWorkbenchPage() {
     [periodFiltered, tab],
   );
 
+  // 廠商分組：直接吃 filtered（期間 + 搜尋 + 未收/已收 都已套用），
+  // 分組只是換一種呈現，不另外做一套過濾邏輯。
+  // 比照 purchase/orders 的 pivotGroups：Map 聚合 → Array.from().sort()。
+  const supplierGroups: SupplierGroup[] = useMemo(() => {
+    const bySup = new Map<number, SupplierGroup>();
+    for (const r of filtered) {
+      let g = bySup.get(r.supplier_id);
+      if (!g) {
+        g = {
+          supplier_id: r.supplier_id,
+          supplier_name: r.supplier_name,
+          supplier_code: r.supplier_code,
+          pos: [],
+          total_qty_ordered: 0,
+          total_qty_received: 0,
+        };
+        bySup.set(r.supplier_id, g);
+      }
+      g.pos.push(r);
+      g.total_qty_ordered += r.total_qty_ordered;
+      g.total_qty_received += r.total_qty_received;
+    }
+    return Array.from(bySup.values()).sort((a, b) =>
+      a.supplier_name.localeCompare(b.supplier_name, "zh-Hant"),
+    );
+  }, [filtered]);
+
+  const searchQuery = search.trim().toLowerCase();
+  // 沒手動點過的廠商：搜尋中預設展開，沒搜尋時預設收合
+  const isSupOpen = (supplierId: number) => expandedSup[supplierId] ?? searchQuery !== "";
+
+  function changeSearch(value: string) {
+    setSearch(value);
+    // 換搜尋條件就把手動展開/收合清掉，讓新命中的廠商自動展開
+    setExpandedSup({});
+  }
+
   const counts = useMemo(() => {
     if (!rows) return { sent: 0, partial: 0, full: 0, restock: 0 };
     return rows.reduce(
@@ -217,10 +275,31 @@ export default function ReceivingWorkbenchPage() {
       {/* 搜尋 */}
       <input
         value={search}
-        onChange={(e) => setSearch(e.target.value)}
+        onChange={(e) => changeSearch(e.target.value)}
         placeholder="🔍 搜尋 單號 / 供應商 / 商品"
         className="w-full min-w-[180px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
       />
+
+      {/* 檢視切換：清單(預設) / 依廠商 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-zinc-500">檢視:</span>
+        {([
+          { value: "list", label: "清單" },
+          { value: "supplier", label: "依廠商" },
+        ] as const).map((v) => (
+          <SpinButton
+            key={v.value}
+            onClick={() => setViewMode(v.value)}
+            className={`rounded-full border px-3 py-1 text-xs ${
+              viewMode === v.value
+                ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+                : "border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+            }`}
+          >
+            {v.label}
+          </SpinButton>
+        ))}
+      </div>
 
       {/* Filter */}
       <div className="flex flex-wrap items-center gap-2">
@@ -247,6 +326,7 @@ export default function ReceivingWorkbenchPage() {
       )}
 
       {/* List */}
+      {viewMode === "list" && (
       <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
@@ -330,6 +410,121 @@ export default function ReceivingWorkbenchPage() {
           </tbody>
         </table>
       </div>
+      )}
+
+      {/* 依廠商分組 */}
+      {viewMode === "supplier" && (
+        <div className="flex flex-col gap-3">
+          {rows === null ? (
+            <div className="rounded-md border border-zinc-200 p-6 text-center text-sm text-zinc-500 dark:border-zinc-800">
+              載入中…
+            </div>
+          ) : supplierGroups.length === 0 ? (
+            <div className="rounded-md border border-zinc-200 p-6 text-center text-sm text-zinc-500 dark:border-zinc-800">
+              目前沒有資料
+            </div>
+          ) : (
+            <>
+              <div className="text-xs text-zinc-500">
+                {supplierGroups.length} 家廠商 · {filtered.length} 張 PO
+              </div>
+              {supplierGroups.map((g) => {
+                const open = isSupOpen(g.supplier_id);
+                const outstanding = g.total_qty_ordered - g.total_qty_received;
+                return (
+                  <div
+                    key={g.supplier_id}
+                    className="overflow-hidden rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"
+                  >
+                    <SpinButton
+                      type="button"
+                      onClick={() =>
+                        setExpandedSup((prev) => ({ ...prev, [g.supplier_id]: !open }))
+                      }
+                      className="flex w-full flex-wrap items-baseline justify-between gap-2 bg-zinc-50 px-3 py-2 text-left hover:bg-zinc-100 dark:bg-zinc-900 dark:hover:bg-zinc-800"
+                    >
+                      <span className="text-sm font-semibold">
+                        <span className="mr-1.5 inline-block text-zinc-400">{open ? "▾" : "▸"}</span>
+                        {g.supplier_name}
+                        {g.supplier_code && (
+                          <span className="ml-2 font-mono text-[10px] font-normal text-zinc-400">
+                            {g.supplier_code}
+                          </span>
+                        )}
+                        <span className="ml-2 text-xs font-normal text-zinc-500">
+                          {g.pos.length} 張單
+                        </span>
+                      </span>
+                      <span className="text-xs text-zinc-500">
+                        訂購 {g.total_qty_ordered} · 已到 {g.total_qty_received} ·{" "}
+                        <span className={outstanding > 0 ? "text-amber-600 dark:text-amber-400" : ""}>
+                          未到 {outstanding}
+                        </span>
+                      </span>
+                    </SpinButton>
+
+                    {open && (
+                      <ul className="divide-y divide-zinc-100 dark:divide-zinc-800/60">
+                        {g.pos.map((r) => {
+                          const diff = r.total_qty_ordered - r.total_qty_received;
+                          return (
+                            <li key={r.id} className="px-3 py-2">
+                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                                <SpinButton
+                                  type="button"
+                                  onClick={() => { setDetailPoId(r.id); setDetailPoNo(r.po_no); }}
+                                  className="font-mono text-xs text-blue-600 hover:underline dark:text-blue-400"
+                                >
+                                  {r.po_no}
+                                </SpinButton>
+                                {r.is_restock && <span className="inline-block rounded bg-indigo-100 px-1 py-0.5 text-[10px] text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300" title="此 PO 來自補貨申請,到貨後可從派貨工作台或 HQ Inbox 派出">🔁 補貨</span>}
+                                <span className="text-xs text-zinc-500">
+                                  {r.sent_at ? new Date(r.sent_at).toLocaleDateString("zh-TW") : "—"}
+                                </span>
+                                <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[r.status]}`}>{STATUS_LABEL[r.status]}</span>
+                                <span className="font-mono text-xs text-zinc-500">
+                                  訂購 {r.total_qty_ordered} · 已到{" "}
+                                  <span className="font-semibold text-zinc-800 dark:text-zinc-200">{r.total_qty_received}</span>
+                                  {" · "}
+                                  <span className={diff > 0 && r.status === "fully_received" ? "font-bold text-rose-600" : diff > 0 ? "text-amber-600" : "text-zinc-400"}>
+                                    未到 {diff > 0 ? `${diff}${r.status === "fully_received" ? " ⚠" : ""}` : "—"}
+                                  </span>
+                                </span>
+                                <span className="ml-auto">
+                                  {r.status !== "fully_received" ? (
+                                    <Link
+                                      href={`/purchase/orders/receive?po=${r.id}`}
+                                      className="rounded bg-blue-600 px-2 py-1 text-xs font-semibold text-white hover:bg-blue-700"
+                                    >
+                                      收貨
+                                    </Link>
+                                  ) : (
+                                    <Link
+                                      href={`/purchase/orders/edit?id=${r.id}`}
+                                      className="rounded border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                                    >
+                                      明細
+                                    </Link>
+                                  )}
+                                </span>
+                              </div>
+                              <ProductNames
+                                key={`${r.id}:${searchQuery}`}
+                                names={r.product_names}
+                                query={searchQuery}
+                              />
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </div>
+      )}
 
       <Modal
         open={detailPoId !== null}
@@ -339,6 +534,48 @@ export default function ReceivingWorkbenchPage() {
       >
         {detailPoId !== null && <POReceiptTimeline poId={detailPoId} />}
       </Modal>
+    </div>
+  );
+}
+
+// 分組檢視下顯示一張 PO 的商品名。
+// 太多時只先出 PRODUCT_NAME_PREVIEW 個,其餘用「＋還有 N 項」按鈕展開（不是藏起來）。
+// 搜尋中會把命中的商品名排到最前面,免得員工搜到的那個剛好被截斷。
+function ProductNames({ names, query }: { names: string[]; query: string }) {
+  const [showAll, setShowAll] = useState(false);
+
+  if (names.length === 0) {
+    return <div className="mt-1 text-[11px] text-zinc-400">（此單無商品資料）</div>;
+  }
+
+  const ordered = query
+    ? [...names].sort(
+        (a, b) =>
+          (a.toLowerCase().includes(query) ? 0 : 1) - (b.toLowerCase().includes(query) ? 0 : 1),
+      )
+    : names;
+  const shown = showAll ? ordered : ordered.slice(0, PRODUCT_NAME_PREVIEW);
+  const rest = ordered.length - shown.length;
+
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1">
+      {shown.map((n, i) => (
+        <span
+          key={`${n}#${i}`}
+          className="rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+        >
+          {n}
+        </span>
+      ))}
+      {(rest > 0 || showAll) && (
+        <SpinButton
+          type="button"
+          onClick={() => setShowAll((v) => !v)}
+          className="px-1 py-0.5 text-[11px] text-blue-600 hover:underline dark:text-blue-400"
+        >
+          {showAll ? "收合" : `＋還有 ${rest} 項`}
+        </SpinButton>
+      )}
     </div>
   );
 }
