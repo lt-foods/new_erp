@@ -18,6 +18,7 @@ type Candidate = {
   id: number;
   product_name_hint: string | null;
   raw_text: string;
+  raw: Record<string, unknown> | null;
   source_user_id: string | null;
   source_user_name: string | null;
   source_channel: string | null;
@@ -39,7 +40,7 @@ type Candidate = {
 
 // 本表就有的欄位（view 掛掉時的降級查詢用）
 const CANDIDATE_COLS =
-  "id, product_name_hint, raw_text, source_user_id, source_user_name, source_channel, system_status, owner_action, scheduled_open_at, scheduled_sort_order, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price";
+  "id, product_name_hint, raw_text, raw, source_user_id, source_user_name, source_channel, system_status, owner_action, scheduled_open_at, scheduled_sort_order, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price";
 // view 才有的額外欄位
 const CANDIDATE_COLS_VIEW =
   `${CANDIDATE_COLS}, source_brand_id, source_brand_code, source_brand_name, has_campaign`;
@@ -81,6 +82,13 @@ const SOURCE_FILTERS: { key: SourceFilter; label: string }[] = [
   { key: "unassigned", label: "找貨群" },
   { key: "piaopiao", label: "漂漂館" },
 ];
+
+const calloutLaneLabel = (raw: Candidate["raw"]) => {
+  const lane = raw?.calloutLane ?? raw?.callout_lane;
+  if (lane === "piaopiao_tong") return "漂漂彤";
+  if (lane === "piaopiao_chao") return "漂漂潮";
+  return null;
+};
 
 const ACTION_LABEL: Record<string, string> = {
   none: "未處理",
@@ -1296,6 +1304,13 @@ export default function CommunityCandidatesPage() {
                   </td>
                   <td className="px-3 py-3 text-zinc-500">
                     {r.source_user_name ?? r.source_user_id ?? "—"}
+                    {calloutLaneLabel(r.raw) && (
+                      <div className="mt-1">
+                        <span className="inline-flex rounded-full bg-fuchsia-100 px-1.5 py-0.5 text-[10px] font-medium text-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-300">
+                          {calloutLaneLabel(r.raw)}
+                        </span>
+                      </div>
+                    )}
                     {r.source_channel && (
                       <div className="text-xs text-zinc-400">{r.source_channel}</div>
                     )}
@@ -1397,6 +1412,11 @@ export default function CommunityCandidatesPage() {
 
                 <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-zinc-500">
                   <span>來源：{r.source_user_name ?? r.source_user_id ?? "—"}</span>
+                  {calloutLaneLabel(r.raw) && (
+                    <span className="inline-flex rounded-full bg-fuchsia-100 px-1.5 py-0.5 text-[10px] font-medium text-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-300">
+                      {calloutLaneLabel(r.raw)}
+                    </span>
+                  )}
                   {r.source_channel && <span className="text-zinc-400">{r.source_channel}</span>}
                   {renderSourceBucket(r)}
                   {r.scheduled_open_at && <span>排程日：{r.scheduled_open_at}</span>}

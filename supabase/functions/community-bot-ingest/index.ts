@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Edge Function: community-bot-ingest
 //
-// 接收 LINE 群組 #選品 機器人 (透過 Apps Script Web App 轉發) 的候選商品。
+// 接收 LINE 群組 #漂漂彤／#漂漂潮 機器人 (透過 Apps Script Web App 轉發) 的候選商品。
 // 寫入 community_product_candidates 表。
 //
 // 流程：
@@ -35,6 +35,11 @@ interface IngestPayload {
 
   // 機器人猜的商品名 (對應 Apps Script payload.productName)
   product_name?: string;               // → product_name_hint
+
+  // 漂漂館喊話分線：只存進 raw JSONB，候選池畫面據此顯示標籤。
+  // ⛔ 不借 source_channel（那是實際 LINE 群來源），也不借 source_user_name（那是發話者名稱）。
+  callout_lane?: "piaopiao_tong" | "piaopiao_chao";
+  calloutLane?: "piaopiao_tong" | "piaopiao_chao";
 
   // 其他不認的欄位也接受、不報錯 (forward compatibility)
   // 完整 payload 會原樣存進 raw JSONB 欄位
@@ -80,6 +85,22 @@ Deno.serve(async (req) => {
         { error: "text (raw_text) is required and must be non-empty string" },
         400,
       );
+    }
+
+    const hasSnakeLane = Object.hasOwn(payload, "callout_lane");
+    const hasCamelLane = Object.hasOwn(payload, "calloutLane");
+    const snakeLane = payload.callout_lane;
+    const camelLane = payload.calloutLane;
+    if (hasSnakeLane && hasCamelLane && snakeLane !== camelLane) {
+      return json({ error: "conflicting callout_lane" }, 400);
+    }
+    const calloutLane = hasSnakeLane ? snakeLane : camelLane;
+    if (
+      (hasSnakeLane || hasCamelLane) &&
+      calloutLane !== "piaopiao_tong" &&
+      calloutLane !== "piaopiao_chao"
+    ) {
+      return json({ error: "invalid callout_lane" }, 400);
     }
 
     // ── 4. INSERT 到 community_product_candidates ──────────────
