@@ -42,6 +42,8 @@ type PORow = {
   total_qty_received: number;
   line_count: number;
   is_restock: boolean;
+  // 該 PO 所有品項的商品名（供搜尋用；RPC 已 DISTINCT 且濾掉 NULL）
+  product_names: string[];
 };
 
 type Filter = "today" | "this_week" | "all";
@@ -82,6 +84,9 @@ export default function ReceivingWorkbenchPage() {
             total_qty_received: Number(r.total_qty_received),
             line_count: Number(r.line_count),
             is_restock: Boolean(r.is_restock),
+            product_names: Array.isArray(r.product_names)
+              ? (r.product_names as unknown[]).map((n) => String(n))
+              : [],
           })));
           setError(null);
         }
@@ -112,7 +117,7 @@ export default function ReceivingWorkbenchPage() {
         if (!dateRef || dateRef < weekAgoStr) return false;
       }
       if (q) {
-        const haystack = [r.po_no, r.supplier_name, r.supplier_code ?? ""]
+        const haystack = [r.po_no, r.supplier_name, r.supplier_code ?? "", r.product_names.join(" ")]
           .join(" ")
           .toLowerCase();
         if (!haystack.includes(q)) return false;
@@ -213,7 +218,7 @@ export default function ReceivingWorkbenchPage() {
       <input
         value={search}
         onChange={(e) => setSearch(e.target.value)}
-        placeholder="🔍 搜尋 PO 編號 / 供應商"
+        placeholder="🔍 搜尋 單號 / 供應商 / 商品"
         className="w-full min-w-[180px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
       />
 
