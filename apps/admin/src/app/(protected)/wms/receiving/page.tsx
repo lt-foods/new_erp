@@ -54,6 +54,10 @@ type ViewMode = "list" | "supplier";
 // 分組檢視下,一張單先只顯示幾個商品名（其餘用「＋還有 N 項」展開,不把版面撐爆）
 const PRODUCT_NAME_PREVIEW = 8;
 
+// 搜尋命中的廠商在這個數量以內就全部自動展開,超過就全部收合。
+// 不做「只展開前 N 家」——那會讓人以為只有那幾家有貨,比全收合更糟。
+const AUTO_EXPAND_MAX_SUPPLIERS = 3;
+
 // 已收 = 全收；未收 = sent + 部分收
 const isReceived = (r: PORow) => r.status === "fully_received";
 
@@ -67,6 +71,11 @@ type SupplierGroup = {
   pos: PORow[];
   total_qty_ordered: number;
   total_qty_received: number;
+  // 「還沒到」與「已全收但短少」是兩件事,不能加在一起叫「未到」：
+  // 前者貨還會來,後者貨不會來了。比照單列既有的 diff 判定（琥珀 vs 紅字 ⚠）。
+  // 兩者都逐單 clamp 到 0,所以某張單超收不會去抵消別張單的短少,也不會出現負數。
+  qty_pending: number;
+  qty_short: number;
 };
 
 export default function ReceivingWorkbenchPage() {
@@ -179,12 +188,17 @@ export default function ReceivingWorkbenchPage() {
           pos: [],
           total_qty_ordered: 0,
           total_qty_received: 0,
+          qty_pending: 0,
+          qty_short: 0,
         };
         bySup.set(r.supplier_id, g);
       }
       g.pos.push(r);
       g.total_qty_ordered += r.total_qty_ordered;
       g.total_qty_received += r.total_qty_received;
+      const diff = Math.max(0, r.total_qty_ordered - r.total_qty_received);
+      if (isReceived(r)) g.qty_short += diff;
+      else g.qty_pending += diff;
     }
     return Array.from(bySup.values()).sort((a, b) =>
       a.supplier_name.localeCompare(b.supplier_name, "zh-Hant"),
@@ -192,8 +206,11 @@ export default function ReceivingWorkbenchPage() {
   }, [filtered]);
 
   const searchQuery = search.trim().toLowerCase();
-  // 沒手動點過的廠商：搜尋中預設展開，沒搜尋時預設收合
-  const isSupOpen = (supplierId: number) => expandedSup[supplierId] ?? searchQuery !== "";
+  // 沒手動點過的廠商用這個預設值：搜尋命中家數少(≤3)才自動全展開。
+  // 命中一大票時（例如打「肉」）全展開會把 iPad 整頁撐爆，一律收合，
+  // 由組頭的「命中 N 張單」讓人自己決定點哪家。
+  const autoExpand = searchQuery !== "" && supplierGroups.length <= AUTO_EXPAND_MAX_SUPPLIERS;
+  const isSupOpen = (supplierId: number) => expandedSup[supplierId] ?? autoExpand;
 
   function changeSearch(value: string) {
     setSearch(value);
@@ -290,7 +307,10 @@ export default function ReceivingWorkbenchPage() {
           <SpinButton
             key={v.value}
             onClick={() => setViewMode(v.value)}
-            className={`rounded-full border px-3 py-1 text-xs ${
+            /* 觸控目標 ≥ 44px：樓下是用 iPad 單手點的。
+               touch-manipulation = touch-action: manipulation，關掉 double-tap-to-zoom
+               在這顆鈕上造成的 ~350ms click 延遲（iOS 會先等第二下）。 */
+            className={`inline-flex min-h-[44px] items-center rounded-full border px-4 text-xs touch-manipulation ${
               viewMode === v.value
                 ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
                 : "border-zinc-300 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
@@ -428,9 +448,15 @@ export default function ReceivingWorkbenchPage() {
               <div className="text-xs text-zinc-500">
                 {supplierGroups.length} 家廠商 · {filtered.length} 張 PO
               </div>
+              {/* 🔁 補貨 badge 的意思寫在畫面上（不是只有 tooltip —— iPad 沒有 hover）。
+                  只在這批結果真的有補貨單時才出現，免得每次都佔一行。 */}
+              {filtered.some((r) => r.is_restock) && (
+                <div className="text-[11px] text-zinc-500">
+                  🔁 補貨 = 這張單來自補貨申請，到貨後可從派貨工作台或 HQ Inbox 派出
+                </div>
+              )}
               {supplierGroups.map((g) => {
                 const open = isSupOpen(g.supplier_id);
-                const outstanding = g.total_qty_ordered - g.total_qty_received;
                 return (
                   <div
                     key={g.supplier_id}
@@ -452,14 +478,19 @@ export default function ReceivingWorkbenchPage() {
                           </span>
                         )}
                         <span className="ml-2 text-xs font-normal text-zinc-500">
-                          {g.pos.length} 張單
+                          {searchQuery ? "命中 " : ""}{g.pos.length} 張單
                         </span>
                       </span>
                       <span className="text-xs text-zinc-500">
                         訂購 {g.total_qty_ordered} · 已到 {g.total_qty_received} ·{" "}
-                        <span className={outstanding > 0 ? "text-amber-600 dark:text-amber-400" : ""}>
-                          未到 {outstanding}
+                        <span className={g.qty_pending > 0 ? "text-amber-600 dark:text-amber-400" : ""}>
+                          未到 {g.qty_pending}
                         </span>
+                        {g.qty_short > 0 && (
+                          <span className="ml-2 font-bold text-rose-600">
+                            已全收但差 {g.qty_short} ⚠
+                          </span>
+                        )}
                       </span>
                     </SpinButton>
 
@@ -571,7 +602,9 @@ function ProductNames({ names, query }: { names: string[]; query: string }) {
         <SpinButton
           type="button"
           onClick={() => setShowAll((v) => !v)}
-          className="px-1 py-0.5 text-[11px] text-blue-600 hover:underline dark:text-blue-400"
+          /* 觸控目標 ≥ 44px：這顆是 iPad 上看完整商品名的關鍵按鈕。
+             touch-manipulation 關掉 double-tap-to-zoom 造成的 ~350ms click 延遲。 */
+          className="inline-flex min-h-[44px] items-center px-2 text-[11px] text-blue-600 touch-manipulation hover:underline dark:text-blue-400"
         >
           {showAll ? "收合" : `＋還有 ${rest} 項`}
         </SpinButton>
