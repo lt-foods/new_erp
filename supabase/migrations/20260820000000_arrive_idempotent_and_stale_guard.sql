@@ -59,14 +59,29 @@
 --     - qty_received_base 為 NULL → 樂觀鎖跳過
 --   其餘每一行（含錯誤訊息文字與其先後順序）都是 20260512000002 逐字搬過來的。
 --
--- ⚠️ 為什麼是 DROP + CREATE 而不是 CREATE OR REPLACE：
---   加參數會**產生多載**而不是取代舊的。舊 5 參數版與新 6 參數版（第 6 個有預設）
---   同時存在時，PostgREST 用 5 個具名參數呼叫會兩支都符合 → PostgreSQL 直接回
---   「function ... is not unique」→ **辦公室收貨頁當場壞掉**。
+-- ⚠️ 為什麼是 DROP 舊 5 參數 + CREATE OR REPLACE 新 6 參數：
+--   單純 CREATE OR REPLACE 換不掉舊的：**加參數會產生多載而不是取代**。
+--   舊 5 參數版與新 6 參數版（第 6 個有預設）同時存在時，PostgREST 用 5 個具名參數
+--   呼叫會兩支都符合 → PostgreSQL 直接回「function ... is not unique」
+--   → **辦公室收貨頁當場壞掉**。
 --   房規前例：20260613000050_member_import_drop_old_overloads.sql 就是在收拾同一種爛攤子。
---   ⚠️ 因此本檔**必須整支一次執行**（DROP 與 CREATE 同一個交易），
---      中途只跑一半會讓兩個收貨頁都失效。
+--   → 所以「DROP 掉 5 參數那支」是必要的；而新的 6 參數那支用 OR REPLACE，
+--     是為了讓整支檔案**可以重跑**（見下面「部署方式」為什麼這件事很重要）。
 --   ⚠️ DROP 會一併丟掉舊函式的 ACL，所以下面把 20260430120000:216 那句 GRANT 原樣補回。
+--
+-- ⚠️⚠️ 部署方式（決定了下面第 0 節為什麼存在）—— ⛔ 改本檔前必讀：
+--   本公司**實際的套用方式是「開檔、全選複製、貼進 Supabase SQL Editor 執行」**，
+--   不是 `supabase db push`。這條路**不保證有交易包覆**。
+--   ⇒ 因此「檔尾放個自我檢查、失敗就整支 rollback」這個假設 **對我們不成立**。
+--     最壞情況是 DROP／CREATE／GRANT 各自已經提交、檢查才失敗：
+--     畫面上看到「套用中止」，但多載其實已經留在正式庫上，
+--     **隔天早上辦公室收不了貨**。（本檔 24ad46b 版本就是犯這個錯，2026-08-20 修正。）
+--   ⇒ 正解是 **fail fast**：把所有「這台資料庫長得對不對」的檢查放在
+--     **第 0 節、所有 DDL 之前**。沒動任何東西之前先吵，就不必依賴 rollback。
+--   ⇒ 檔尾第 3 節保留一個「事後檢查」，但它的定位不同：它驗的是**結果**
+--     （做完之後真的只剩一支、GRANT 真的還在），失敗時直接把補救指令印在錯誤訊息裡。
+--   ⇒ 若改用 psql 手動套，請用：psql -v ON_ERROR_STOP=1 -1 -f <本檔>
+--     （`-1` 才是整支一個交易，`ON_ERROR_STOP=1` 才會在第一個錯誤就停）。
 --
 -- ⚠️ 刻意**沒有**加的東西（不是忘記）：
 --   - `SET search_path = public`：新函式都有寫，但這一支沒有，鏈上的
@@ -83,6 +98,64 @@
 --   DROP INDEX IF EXISTS idx_gr_client_request;
 --   ALTER TABLE goods_receipts DROP COLUMN IF EXISTS client_request_id;
 -- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- 0. 前置檢查 —— ⚠️ 必須排在所有 DDL 之前（理由見檔頭「部署方式」）
+--
+-- 防的是這個 repo 的頭號病灶：**repo ≠ 正式庫**（migration 全人工套）。
+-- 這裡每一條都是「下面某一句 DDL 會靜默做錯事」的前提檢查：
+--   0a → 下面的 DROP 寫死了舊簽章，簽章不符時 `IF EXISTS` 會**靜默跳過**，
+--        接著 CREATE 出第二支 → 多載 → 辦公室收貨頁 function is not unique。
+--   0b → 下面的 CREATE UNIQUE INDEX **IF NOT EXISTS 只看名字**，
+--        同名但定義不對時會靜默跳過 → 冪等防重整個不成立、而且看起來一切正常。
+-- 這一節失敗時**還沒有動過任何東西**，直接照訊息處理即可，不需要 rollback。
+-- ----------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_sigs   TEXT[];
+  v_idxdef TEXT;
+BEGIN
+  -- 0a. 正式庫上現在到底有幾支 rpc_arrive_and_distribute、簽章是什麼？
+  --     ⚠️ 用 oidvectortypes（只有型別）而不是 pg_get_function_identity_arguments
+  --        （那個**會帶參數名**，例如 'p_po_id bigint, ...'），
+  --        參數名被改過就會誤判成「簽章不符」而擋掉正常的套用。
+  SELECT array_agg(oidvectortypes(p.proargtypes) ORDER BY 1)
+    INTO v_sigs
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+   WHERE n.nspname = 'public'
+     AND p.proname = 'rpc_arrive_and_distribute';
+
+  IF v_sigs IS NULL THEN
+    RAISE EXCEPTION '套用中止（尚未變更任何東西）：這台資料庫上找不到 public.rpc_arrive_and_distribute。本檔是「改既有函式」，不是從零建立；請先確認連對資料庫、以及 20260512000002 是否套過。';
+  END IF;
+
+  IF array_length(v_sigs, 1) <> 1 THEN
+    RAISE EXCEPTION '套用中止（尚未變更任何東西）：public.rpc_arrive_and_distribute 現在有 % 支（應該只有 1 支）。現存簽章：%。本檔只 DROP 得掉 (bigint, jsonb, uuid, text, text) 那一支，其餘會留下來變成多載，辦公室收貨頁的 5 參數呼叫會 function is not unique。請先人工確認這些多載哪些該留。',
+      array_length(v_sigs, 1), array_to_string(v_sigs, ' ｜ ');
+  END IF;
+
+  -- 允許兩種狀態：① 還沒套過（舊 5 參數） ② 已經套過了（新 6 參數，重跑本檔）
+  IF v_sigs[1] NOT IN ('bigint, jsonb, uuid, text, text',
+                       'bigint, jsonb, uuid, text, text, text') THEN
+    RAISE EXCEPTION '套用中止（尚未變更任何東西）：public.rpc_arrive_and_distribute 目前的簽章是「%」，不是本檔預期的 (bigint, jsonb, uuid, text, text)。表示正式庫上跑的不是 20260512000002 那一版（有人手動改過、或漏套／多套了某支 migration）。硬套下去會留下多載並讓辦公室收貨頁壞掉，請先查明現況。',
+      v_sigs[1];
+  END IF;
+
+  -- 0b. 同名索引若已存在，定義必須正確（IF NOT EXISTS 只看名字，驗不到定義）
+  SELECT pg_get_indexdef(c.oid)
+    INTO v_idxdef
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = 'public'
+     AND c.relname = 'idx_gr_client_request';
+
+  IF v_idxdef IS NOT NULL AND v_idxdef NOT LIKE
+       'CREATE UNIQUE INDEX % ON public.goods_receipts USING btree (tenant_id, client_request_id) WHERE (client_request_id IS NOT NULL)' THEN
+    RAISE EXCEPTION '套用中止（尚未變更任何東西）：已經有一個叫 idx_gr_client_request 的索引，但定義不是預期的「goods_receipts (tenant_id, client_request_id) WHERE client_request_id IS NOT NULL」。下面那句 CREATE UNIQUE INDEX IF NOT EXISTS 只看名字，會靜默跳過，收貨冪等防重就形同虛設。現存定義：%',
+      v_idxdef;
+  END IF;
+END $$;
 
 -- ----------------------------------------------------------------------------
 -- 1. 冪等鍵欄位（加在既有表上，不新建表）
@@ -108,7 +181,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_gr_client_request
 
 DROP FUNCTION IF EXISTS public.rpc_arrive_and_distribute(BIGINT, JSONB, UUID, TEXT, TEXT);
 
-CREATE FUNCTION public.rpc_arrive_and_distribute(
+-- OR REPLACE 是為了「整支檔案可以重跑」（第 0 節已擋掉真正危險的簽章狀況）。
+-- 不加的話，套到一半失敗後再貼一次會卡在 function already exists。
+CREATE OR REPLACE FUNCTION public.rpc_arrive_and_distribute(
   p_po_id             BIGINT,
   p_arrivals          JSONB,
   p_operator          UUID,
@@ -131,7 +206,6 @@ DECLARE
   v_unit_cost       NUMERIC(18,4);
   -- 以下為 20260820000000 新增
   v_dup             RECORD;
-  v_item_found      BOOLEAN;
   v_item_ordered    NUMERIC(18,3);
   v_item_received   NUMERIC(18,3);
   v_item_cost       NUMERIC(18,4);
@@ -277,7 +351,21 @@ BEGIN
     --     鎖的**順序**也沒變（一樣是 purchase_orders 在前、purchase_order_items 在後）。
     --   ⚠️ 三個變數每圈都要先清空：po_item_id 為 NULL 時下面的 SELECT 不會執行，
     --     不清空就會沿用上一圈的值（qty_expected 會寫錯到別的品項頭上）。
-    v_item_found    := FALSE;
+    --
+    --   ⭐⭐ `AND poi.po_id = p_po_id` 是 2026-08-20 補的資料完整性守衛。
+    --     **這個洞舊版就有**（20260512000002:98-105 的 inline 子查詢一樣只用 id 查），
+    --     不是本次改壞的；但既然整支要重建，補一個條件幾乎零成本，一起修掉。
+    --     沒有它會怎樣：呼叫端傳一個「屬於別張採購單 B」的 po_item_id，
+    --       - GR header 建在 A（用 p_po_id）
+    --       - rpc_confirm_gr 卻把 **B 的品項** qty_received += 上去
+    --         （20260422120004:328-331，它只認 po_item_id，不檢查屬於誰）
+    --       - 而重算「是否全部到貨」的只有 A（_refresh_po_status(v_gr.po_id)）
+    --     → 兩張單的已收量與狀態同時失真，**而且完全沒有錯誤訊息**。
+    --     ⛔ 不可以只靠「畫面上選不出跨單的 po_item_id」來心安：這支是
+    --        SECURITY DEFINER 且 GRANT TO authenticated，任何登入帳號都能直接打 RPC
+    --        繞過前端（機制索引「七、慣性坑 #3」：守衛要放 DB，不是放前端）。
+    --   ⚠️ 找不到時**一律報錯**（不分有沒有帶 qty_received_base）：
+    --     靜默跳過等於把「收到別張單頭上」變成看不見的壞帳。
     v_item_ordered  := NULL;
     v_item_received := NULL;
     v_item_cost     := NULL;
@@ -286,8 +374,13 @@ BEGIN
         INTO v_item_ordered, v_item_received, v_item_cost
         FROM purchase_order_items poi
        WHERE poi.id = v_po_item_id
+         AND poi.po_id = p_po_id
        FOR UPDATE;
-      v_item_found := FOUND;
+
+      IF NOT FOUND THEN
+        RAISE EXCEPTION '收貨資料有誤:品項 #% 不屬於採購單 #%(或已不存在),不能收在這張單底下。',
+          v_po_item_id, p_po_id;
+      END IF;
     END IF;
 
     -- 4b. 樂觀鎖：呼叫端說「我看到的已收量是 X」，現值不是 X 就擋下。
@@ -296,8 +389,11 @@ BEGIN
     --   本系統允許超收（供應商多送），上限會擋掉正常情境；
     --   而且兩台各收一半、加起來剛好不超量時，上限根本擋不到。
     IF v_base IS NOT NULL THEN
-      IF NOT v_item_found THEN
-        RAISE EXCEPTION '收貨資料有誤:找不到採購單品項 #%', v_po_item_id;
+      -- 帶了 base 卻沒帶 po_item_id：沒有東西可以比對，等於樂觀鎖被靜默關掉。
+      -- 上面 4a 只有 po_item_id 不為 NULL 時才查，所以這裡要自己擋。
+      -- （辦公室那條路不帶 base，走不到這裡。）
+      IF v_po_item_id IS NULL THEN
+        RAISE EXCEPTION '收貨資料有誤:帶了 qty_received_base 就必須一併帶 po_item_id,否則無從比對已收量。';
       END IF;
 
       IF COALESCE(v_item_received, 0) <> v_base THEN
@@ -363,22 +459,21 @@ GRANT EXECUTE ON FUNCTION
   TO authenticated;
 
 -- ----------------------------------------------------------------------------
--- 3. 套用後自我檢查 —— 這一步失敗會讓整支 rollback，⛔ 好過留下一個壞掉的線上系統
+-- 3. 套用後結果檢查
 --
--- 防的是這個 repo 的頭號病灶：**repo ≠ 正式庫**（migration 全人工套）。
--- 上面那句 DROP 寫死了舊簽章 (BIGINT, JSONB, UUID, TEXT, TEXT)。
--- 萬一正式庫上跑的其實是別的簽章（有人手動改過、或漏套過某支 migration），
--- `IF EXISTS` 會**靜默跳過**、什麼都不刪，然後下面 CREATE 出第二支
--- → 變成多載 → 辦公室收貨頁的 5 參數具名呼叫直接 function is not unique。
--- 那是「套完當下看起來成功、隔天早上辦公室收不了貨」的失敗方式，最難查。
--- 這個 DO block 讓它在套用當下就吵出來。
+-- ⚠️⚠️ 這一節**不保證會 rollback**，⛔ 不要再把它當安全網來寫。
+--   真正的守衛在第 0 節（DDL 之前就擋）。這裡驗的是**做完之後的結果**：
+--   東西真的變成該有的樣子了嗎（只剩一支？GRANT 還在？索引真的建出來了？）。
+--   本公司實際部署是「複製貼上到 Supabase SQL Editor」，那條路不保證有交易包覆
+--   → 這一節若失敗，上面的變更**可能已經落在正式庫上了**，
+--     所以錯誤訊息裡直接附補救指令，不要求任何人自己想。
 -- ----------------------------------------------------------------------------
 DO $$
 DECLARE
   v_n    INT;
   v_sigs TEXT;
 BEGIN
-  SELECT COUNT(*), string_agg(pg_get_function_identity_arguments(p.oid), ' ｜ ')
+  SELECT COUNT(*), string_agg(oidvectortypes(p.proargtypes), ' ｜ ')
     INTO v_n, v_sigs
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -387,13 +482,20 @@ BEGIN
 
   IF v_n <> 1 THEN
     RAISE EXCEPTION
-      '套用中止：public.rpc_arrive_and_distribute 現在有 % 支（應該只有 1 支）。現存簽章：%。多載會讓辦公室收貨頁的 5 參數呼叫變成 function is not unique。請先確認正式庫上原本的簽章是不是 (BIGINT, JSONB, UUID, TEXT, TEXT)。',
+      '⚠️ 收尾檢查失敗（變更可能已經生效，請照下面處理）：public.rpc_arrive_and_distribute 現在有 % 支（應該只有 1 支）。現存簽章：%。多載會讓辦公室收貨頁的 5 參數呼叫變成 function is not unique。補救：DROP FUNCTION public.rpc_arrive_and_distribute(<不該留的那組簽章>); 留下 (bigint, jsonb, uuid, text, text, text) 這一支即可。',
       v_n, v_sigs;
   END IF;
 
   IF NOT has_function_privilege('authenticated',
         'public.rpc_arrive_and_distribute(BIGINT,JSONB,UUID,TEXT,TEXT,TEXT)', 'EXECUTE') THEN
-    RAISE EXCEPTION '套用中止：authenticated 沒有 EXECUTE 權限，兩個收貨頁都會壞掉。';
+    RAISE EXCEPTION '⚠️ 收尾檢查失敗（變更可能已經生效，請照下面處理）：authenticated 沒有 EXECUTE 權限，兩個收貨頁都會壞掉。補救：GRANT EXECUTE ON FUNCTION public.rpc_arrive_and_distribute(BIGINT,JSONB,UUID,TEXT,TEXT,TEXT) TO authenticated;';
+  END IF;
+
+  -- 冪等防重整個機制的地基。沒建起來的話，重複收貨會靜默通過。
+  IF NOT EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public' AND c.relname = 'idx_gr_client_request') THEN
+    RAISE EXCEPTION '⚠️ 收尾檢查失敗（變更可能已經生效，請照下面處理）：idx_gr_client_request 不存在，收貨冪等防重形同虛設。補救：CREATE UNIQUE INDEX idx_gr_client_request ON goods_receipts (tenant_id, client_request_id) WHERE client_request_id IS NOT NULL;';
   END IF;
 END $$;
 

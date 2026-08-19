@@ -36,7 +36,7 @@
 //      （見 parseQty / costOk 的註解）。
 //   8. 防「同一批貨算兩次」有**兩道，缺一不可**（20260820000000 那支 migration）：
 //      · 冪等鍵 p_client_request_id —— 防「網路斷掉、其實成功了、樓下再按一次」
-//        （見 requestIdRef 的生命週期註解）
+//        （見 submissionRef 的生命週期註解）
 //      · 樂觀鎖 qty_received_base —— 防「兩台 iPad 各拿過期數字按全到」
 //        （見 submit() 組 arrivals 的地方）
 //      ⛔ 不要以為其中一個能取代另一個：冪等鍵只認得同一次送出（兩台是兩個
@@ -217,21 +217,26 @@ export default function IpadReceivingPage() {
   // （比照 purchase/orders/receive/page.tsx:104）
   const submitLock = useRef(false);
 
-  // 這一次送出的冪等鍵。生命週期是整個修法的重點，⛔ 改之前先讀完這四條：
+  // 這一次送出的冪等鍵 ＋ 當時送出的內容。生命週期是整個修法的重點，
+  // ⛔ 改之前先讀完這五條：
   //   1. **送出時才產**（不是開單時）：沒送出過就沒有東西要防重。
   //   2. **失敗不換**：重試要帶同一個值，後端才認得出「這是同一次送出」。
   //      ⭐ 只有「交易真的 commit 了」那個值才會被後端記住 —— 沒寫進去的失敗
   //      （成本擋、找不到品項…）重試會被當成全新的一次，正確。
-  //   3. **成功就清掉**：下一次送出是全新的一次。
-  //   4. **openPO() 也清掉**（⭐ 這條是刻意的，不是順手寫的）：
+  //   3. **但內容改了就要換新的**（2026-08-20 補；完整理由寫在 submit() 裡）：
+  //      「失敗後就地改數量再按一次」若沿用同一把鍵，會拿到第一次的結果，
+  //      這次改的數字靜默不生效。→ 所以 id 與 payload 綁在同一個 ref 裡，
+  //      **一起存、一起清**，避免只換一半。
+  //   4. **成功就清掉**：下一次送出是全新的一次。
+  //   5. **openPO() 也清掉**（⭐ 這條是刻意的，不是順手寫的）：
   //      能重複用同一個值的情境只有「人還站在核對畫面上、看著紅字再按一次」。
   //      一旦退回去重新點單，openPO 會重撈最新的 qty_received，
   //      這時再沿用舊的值反而危險 —— 若上一次其實成功了、而樓下這回是要收
   //      **今天到的第二批**，就會被誤判成重試而**靜默不收**（比重複收更難發現）。
   //      清掉之後那條路改由「樂觀鎖 + 卡片上的『之前已收 N』」把關。
-  //   ⓘ 萬一將來有人漏了第 4 條，後端還有一道：同一個值用到別張採購單會直接報錯
+  //   ⓘ 萬一將來有人漏了第 5 條，後端還有一道：同一個值用到別張採購單會直接報錯
   //      （不是靜默放行），失敗方式是吵的、不是安靜的。
-  const requestIdRef = useRef<string | null>(null);
+  const submissionRef = useRef<{ id: string; payload: string } | null>(null);
 
   const loadWorkbench = useCallback(async () => {
     const sb = getSupabase();
@@ -348,10 +353,10 @@ export default function IpadReceivingPage() {
   const openPO = useCallback(async (target: WorkbenchPO) => {
     setLoadingItems(true);
     setError(null);
-    // ⭐ 進單就換一把新的冪等鍵（理由見 requestIdRef 宣告處第 4 條）。
+    // ⭐ 進單就丟掉舊的冪等鍵（理由見 submissionRef 宣告處第 5 條）。
     //    下面會重撈這張單最新的 qty_received，帶著舊的值進來會讓「今天到的第二批」
     //    被誤判成重試而靜默不收。
-    requestIdRef.current = null;
+    submissionRef.current = null;
     try {
       const sb = getSupabase();
       const { data: raw, error: e1 } = await sb
@@ -401,6 +406,19 @@ export default function IpadReceivingPage() {
         const s = skuMap.get(r.sku_id);
         const ordered = Number(r.qty_ordered);
         const already = Number(r.qty_received ?? 0);
+        // ⚠️ 這兩個值不能是 NaN/Infinity，⛔ 尤其 already ——
+        //   它會被當成 qty_received_base 送給後端做樂觀鎖比對，
+        //   而 JSON.stringify(NaN) 是 **null** → 後端讀成 SQL NULL
+        //   → `IF v_base IS NOT NULL` 不成立 → **樂觀鎖被靜默跳過**。
+        //   防重複收貨的那道防線就這樣無聲消失了，畫面上完全看不出來。
+        //   正常 Postgres numeric 不會給出這種值，所以這裡是「壞了就不准收」，
+        //   不是猜一個值頂替（猜錯會變成錯的庫存，比收不了貨嚴重）。
+        if (!Number.isFinite(ordered) || !Number.isFinite(already)) {
+          throw new Error(
+            `採購單品項 #${r.id} 的數量資料異常（訂購 ${String(r.qty_ordered)}、已收 ${String(r.qty_received)}），` +
+              `這張單先不要收，請通知辦公室檢查。`,
+          );
+        }
         return {
           po_item_id: r.id,
           sku_id: r.sku_id,
@@ -578,8 +596,30 @@ export default function IpadReceivingPage() {
       const operator = userRes?.user?.id;
       if (!operator) throw new Error("未登入");
 
-      // 冪等鍵：沒有就產一個；已經有（＝這是同一張單上的重試）就沿用同一個。
-      if (!requestIdRef.current) requestIdRef.current = newRequestId();
+      // 冪等鍵。規則只有一條：**同一份內容重送才算重試**。
+      //
+      // ⚠️ 2026-08-20 修正（原本只看「有沒有 id」、不看內容，是個靜默壞帳路徑）：
+      //   送出失敗後樓下**不一定會退出畫面**，很可能就地改個數量或原因再按一次。
+      //   若沿用同一把鍵，而第一次其實已經 commit 了（P0-1 那個「回應斷在路上」的情境），
+      //   後端會認出是重試、直接回傳第一次那張 GR ——
+      //   **這次改的數字完全不會生效，畫面卻是成功的**。靜默錯誤比報錯危險得多。
+      //
+      // 所以：內容有變 → 換一把新的鍵，後端當成全新的一次。
+      // ⭐ 換新鍵**不會**變成「同一批貨收兩次」，因為第二道防線接手了：
+      //   每一筆 arrival 都帶 qty_received_base（＝畫面上看到的已收量）。
+      //   第一次若真的 commit 了，qty_received 已經變了、base 對不上
+      //   → 後端樂觀鎖擋下，並叫人退出去重新點這張單看最新數量。
+      //   ⇒ 內容一樣 → 冪等鍵擋（回既有 GR，明講「先前已經收過了」）
+      //   ⇒ 內容不同 → 樂觀鎖擋（明講數量在核對期間被別人改過）
+      //   兩條路都擋得住，而且**都是吵的**，沒有一條是靜默吞掉。
+      //
+      // ⓘ payload 直接存 JSON 字串、不做 hash：這裡只需要「一不一樣」，
+      //   不需要抗碰撞；長度也就幾百 bytes。arrivals 的欄位順序是固定的
+      //   （上面只有一個 object literal 產生它），所以同樣內容的字串一定相同。
+      const payload = JSON.stringify({ po: po.id, arrivals });
+      if (!submissionRef.current || submissionRef.current.payload !== payload) {
+        submissionRef.current = { id: newRequestId(), payload };
+      }
 
       const { data, error: rpcErr } = await getSupabase().rpc("rpc_arrive_and_distribute", {
         p_po_id: po.id,
@@ -588,7 +628,7 @@ export default function IpadReceivingPage() {
         // 樓下不填發票號與備註
         p_invoice_no: null,
         p_notes: null,
-        p_client_request_id: requestIdRef.current,
+        p_client_request_id: submissionRef.current.id,
       });
       if (rpcErr) throw new Error(translateRpcError(rpcErr));
 
@@ -604,9 +644,9 @@ export default function IpadReceivingPage() {
         lines: arrivals.length,
         duplicate: isDup,
       });
-      // 這一次（不管是新收還是被認出來的重試）都已經落地 → 換新的冪等鍵，
+      // 這一次（不管是新收還是被認出來的重試）都已經落地 → 清掉冪等鍵，
       // 下一次送出才不會被誤判成重試。
-      requestIdRef.current = null;
+      submissionRef.current = null;
       // ⛔ 成功後**不釋放** submitLock，並且切到成功畫面（那一頁沒有送出鈕）。
       //    要再收下一張單一定得走 startNext()，那裡才會解鎖。
       setItems(null);
@@ -629,7 +669,7 @@ export default function IpadReceivingPage() {
     setStep("supplier");
     setRows(null);
     submitLock.current = false;
-    requestIdRef.current = null; // 保險：submit 成功時已經清過
+    submissionRef.current = null; // 保險：submit 成功時已經清過
     try {
       setRows(await loadWorkbench());
     } catch (e) {
