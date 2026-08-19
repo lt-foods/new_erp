@@ -34,6 +34,15 @@
 //        現行兩頁一樣沒有頁面層守衛）—— 那是獨立議題，不在這一片處理。
 //   7. 數量與成本：非法輸入一律明講並擋住，⛔ 不做任何靜默轉換或猜值
 //      （見 parseQty / costOk 的註解）。
+//   8. 防「同一批貨算兩次」有**兩道，缺一不可**（20260820000000 那支 migration）：
+//      · 冪等鍵 p_client_request_id —— 防「網路斷掉、其實成功了、樓下再按一次」
+//        （見 requestIdRef 的生命週期註解）
+//      · 樂觀鎖 qty_received_base —— 防「兩台 iPad 各拿過期數字按全到」
+//        （見 submit() 組 arrivals 的地方）
+//      ⛔ 不要以為其中一個能取代另一個：冪等鍵只認得同一次送出（兩台是兩個
+//        不同的值），樂觀鎖擋得住但吐的是紅字（樓下會以為失敗而再按）。
+//      ⛔ 也不要把它們改成「加一把鎖就好」：RPC 第一步的 FOR UPDATE 本來就
+//        讓同一張單排隊了，排隊不會讓第二台手上的數字變新。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
@@ -152,6 +161,22 @@ function isBranchAccount(user: { app_metadata?: Record<string, unknown> } | null
   return !stores.includes("總倉");
 }
 
+/**
+ * 這一次送出的識別碼（冪等鍵）。
+ *
+ * 為什麼要有它：iPad 現場的網路會斷。後端已經入庫、但 HTTP 回應在路上掉了，
+ * 前端只看得到「失敗」，樓下照畫面指示再按一次 → 同一批貨被算兩次
+ * （rpc_arrive_and_distribute 是累加語意，每按一次建一張 GR）。
+ * 帶著同一個識別碼重試，後端就認得出「這是同一次送出」，回傳原本那張 GR。
+ *
+ * 寫法比照 members/import/page.tsx:103-105（randomUUID 在很舊的 iOS Safari 沒有）。
+ */
+function newRequestId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `r_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+}
+
 /** 商品名一律帶 variant_name：product_name 常常是上層品名，只印它現場會抓錯貨 */
 function itemTitle(it: ItemForm): string {
   const main = it.product_name?.trim() || it.sku_code || `#${it.sku_id}`;
@@ -184,11 +209,29 @@ export default function IpadReceivingPage() {
   const [missingSkuCount, setMissingSkuCount] = useState(0); // 商品資料沒撈回來的品項數
   const [showDone, setShowDone] = useState(false); // 是否顯示「已收齊」的品項
   const [submitting, setSubmitting] = useState(false);
-  const [result, setResult] = useState<{ gr_no: string; po_no: string; qty: number; lines: number } | null>(null);
+  const [result, setResult] = useState<
+    { gr_no: string; po_no: string; qty: number; lines: number; duplicate: boolean } | null
+  >(null);
 
   // 同步防重入鎖：React state 是非同步的，擋不住同一 tick 連點
   // （比照 purchase/orders/receive/page.tsx:104）
   const submitLock = useRef(false);
+
+  // 這一次送出的冪等鍵。生命週期是整個修法的重點，⛔ 改之前先讀完這四條：
+  //   1. **送出時才產**（不是開單時）：沒送出過就沒有東西要防重。
+  //   2. **失敗不換**：重試要帶同一個值，後端才認得出「這是同一次送出」。
+  //      ⭐ 只有「交易真的 commit 了」那個值才會被後端記住 —— 沒寫進去的失敗
+  //      （成本擋、找不到品項…）重試會被當成全新的一次，正確。
+  //   3. **成功就清掉**：下一次送出是全新的一次。
+  //   4. **openPO() 也清掉**（⭐ 這條是刻意的，不是順手寫的）：
+  //      能重複用同一個值的情境只有「人還站在核對畫面上、看著紅字再按一次」。
+  //      一旦退回去重新點單，openPO 會重撈最新的 qty_received，
+  //      這時再沿用舊的值反而危險 —— 若上一次其實成功了、而樓下這回是要收
+  //      **今天到的第二批**，就會被誤判成重試而**靜默不收**（比重複收更難發現）。
+  //      清掉之後那條路改由「樂觀鎖 + 卡片上的『之前已收 N』」把關。
+  //   ⓘ 萬一將來有人漏了第 4 條，後端還有一道：同一個值用到別張採購單會直接報錯
+  //      （不是靜默放行），失敗方式是吵的、不是安靜的。
+  const requestIdRef = useRef<string | null>(null);
 
   const loadWorkbench = useCallback(async () => {
     const sb = getSupabase();
@@ -305,6 +348,10 @@ export default function IpadReceivingPage() {
   const openPO = useCallback(async (target: WorkbenchPO) => {
     setLoadingItems(true);
     setError(null);
+    // ⭐ 進單就換一把新的冪等鍵（理由見 requestIdRef 宣告處第 4 條）。
+    //    下面會重撈這張單最新的 qty_received，帶著舊的值進來會讓「今天到的第二批」
+    //    被誤判成重試而靜默不收。
+    requestIdRef.current = null;
     try {
       const sb = getSupabase();
       const { data: raw, error: e1 } = await sb
@@ -506,6 +553,18 @@ export default function IpadReceivingPage() {
           batch_no: null,
           expiry_date: null,
           variance_reason: f.variance_reason.trim() || null,
+          // 樂觀鎖：把「我畫面上看到的已收量」一起送上去，後端在同一把列鎖之下
+          // 比對現值，不一樣就整批擋下並叫人重新整理。
+          //
+          // 為什麼需要：樓下是共用帳號、多台 iPad。兩台各自開同一張單、
+          // 各自看著自己那份（可能已經過期的）剩餘量按「全到」，兩邊都會通過，
+          // qty_received 被連續累加兩次 → 庫存翻倍、成本算兩次、應付廠商多算，
+          // 而且畫面上完全不會報錯。
+          // ⛔ 這件事**不是**靠「排隊」能解的：rpc_arrive_and_distribute 第一步
+          //   就對 purchase_orders 下了 FOR UPDATE，同一張單本來就會排隊；
+          //   但排隊只保證後跑，不會讓第二台手上的數字變新。
+          //   只有把「當時看到的值」送上去比對才擋得住。
+          qty_received_base: f.qty_already,
           // 分店分配一律留給派貨工作台
           allocations: [] as Array<{ store_id: number; qty: number }>,
         }));
@@ -519,6 +578,9 @@ export default function IpadReceivingPage() {
       const operator = userRes?.user?.id;
       if (!operator) throw new Error("未登入");
 
+      // 冪等鍵：沒有就產一個；已經有（＝這是同一張單上的重試）就沿用同一個。
+      if (!requestIdRef.current) requestIdRef.current = newRequestId();
+
       const { data, error: rpcErr } = await getSupabase().rpc("rpc_arrive_and_distribute", {
         p_po_id: po.id,
         p_arrivals: arrivals,
@@ -526,16 +588,25 @@ export default function IpadReceivingPage() {
         // 樓下不填發票號與備註
         p_invoice_no: null,
         p_notes: null,
+        p_client_request_id: requestIdRef.current,
       });
       if (rpcErr) throw new Error(translateRpcError(rpcErr));
 
-      const gr = (data as { gr_no?: string } | null)?.gr_no ?? "";
+      const out = (data as { gr_no?: string; duplicate?: boolean } | null) ?? {};
+      const isDup = out.duplicate === true;
       setResult({
-        gr_no: gr,
+        gr_no: out.gr_no ?? "",
         po_no: po.po_no,
+        // ⚠ 重試被認出來時，這次填的數字**不是**實際收進去的數字
+        //   （後端回的是先前那張 GR，不會照這次的數量再收一次）。
+        //   所以 duplicate 時不可以拿本地數字當結果講，成功畫面另外處理。
         qty: arrivals.reduce((s, a) => s + a.qty_received, 0),
         lines: arrivals.length,
+        duplicate: isDup,
       });
+      // 這一次（不管是新收還是被認出來的重試）都已經落地 → 換新的冪等鍵，
+      // 下一次送出才不會被誤判成重試。
+      requestIdRef.current = null;
       // ⛔ 成功後**不釋放** submitLock，並且切到成功畫面（那一頁沒有送出鈕）。
       //    要再收下一張單一定得走 startNext()，那裡才會解鎖。
       setItems(null);
@@ -558,6 +629,7 @@ export default function IpadReceivingPage() {
     setStep("supplier");
     setRows(null);
     submitLock.current = false;
+    requestIdRef.current = null; // 保險：submit 成功時已經清過
     try {
       setRows(await loadWorkbench());
     } catch (e) {
@@ -1148,18 +1220,30 @@ function DoneStep({
   result,
   onNext,
 }: {
-  result: { gr_no: string; po_no: string; qty: number; lines: number };
+  result: { gr_no: string; po_no: string; qty: number; lines: number; duplicate: boolean };
   onNext: () => Promise<void>;
 }) {
+  // duplicate ＝ 這次送出被後端認出是「同一次送出的重試」，貨先前就已經收進去了。
+  // ⛔ 這種時候不可以顯示本次填的件數：後端回的是先前那張進貨單，
+  //    數字不見得一樣，講出來會讓人以為又收了一批。
+  const dup = result.duplicate;
   return (
     <div className="mx-auto flex max-w-lg flex-col items-center gap-5 py-10 text-center">
-      <div className="text-6xl">✅</div>
-      <div className="text-2xl font-bold">收貨完成</div>
-      <div className="rounded-2xl border-2 border-emerald-300 bg-emerald-50 px-6 py-4 text-lg dark:border-emerald-800 dark:bg-emerald-950/40">
+      <div className="text-6xl">{dup ? "☑️" : "✅"}</div>
+      <div className="text-2xl font-bold">{dup ? "這批貨先前已經收過了" : "收貨完成"}</div>
+      <div
+        className={
+          dup
+            ? "rounded-2xl border-2 border-sky-300 bg-sky-50 px-6 py-4 text-lg dark:border-sky-800 dark:bg-sky-950/40"
+            : "rounded-2xl border-2 border-emerald-300 bg-emerald-50 px-6 py-4 text-lg dark:border-emerald-800 dark:bg-emerald-950/40"
+        }
+      >
         <div className="font-mono font-bold">{result.po_no}</div>
-        <div className="mt-1">
-          {result.lines} 項 · 共 <span className="font-mono font-bold">{result.qty}</span> 件
-        </div>
+        {!dup && (
+          <div className="mt-1">
+            {result.lines} 項 · 共 <span className="font-mono font-bold">{result.qty}</span> 件
+          </div>
+        )}
         {result.gr_no && (
           <div className="mt-1 font-mono text-sm text-zinc-600 dark:text-zinc-400">
             進貨單 {result.gr_no}
@@ -1167,7 +1251,9 @@ function DoneStep({
         )}
       </div>
       <p className="text-base text-zinc-600 dark:text-zinc-400">
-        這批貨已經進總倉。分店要分多少，辦公室會在派貨工作台處理。
+        {dup
+          ? "剛剛那一次其實已經送出成功了（可能是網路斷掉才顯示失敗）。系統沒有再收一次，庫存不會多算。要確認實際收了多少，看上面那張進貨單。"
+          : "這批貨已經進總倉。分店要分多少，辦公室會在派貨工作台處理。"}
       </p>
       <div className="flex flex-wrap justify-center gap-3">
         <SpinButton type="button" onClick={onNext} className={`${BTN_PRIMARY} text-lg`}>
