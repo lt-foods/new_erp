@@ -16,35 +16,59 @@ type Resp = {
   my_store_name: string | null;
 };
 
+type Tab = "all" | "mine";
+
+/** 網址上的 `?tab=` → 分頁。認不得的值（?tab=xxx、空字串）一律回退 mine
+ *  —— 預設停在自己的店是刻意的，不能讓亂填的網址弄出空白畫面。 */
+function tabFromParam(v: string | null): Tab {
+  return v === "all" ? "all" : "mine";
+}
+
+/**
+ * 只做一件事：把網址上的 `?tab=` 回報給上層，自己不畫任何東西。
+ *
+ * ⚠️ 這支獨立出來、而且**只有它**被 Suspense 包住，是有原因的，別合併回去：
+ * `useSearchParams()` 一定要有 Suspense boundary（沒有的話 `next build` 直接失敗：
+ * 「useSearchParams() should be wrapped in a suspense boundary at page "/spot"」），
+ * 但如果把整頁都包進 boundary，`next dev` 開 /spot 會永遠轉圈——
+ * boundary 底下有 <PullToRefresh> 時 hydration 不會完成，useEffect 一次都不跑、
+ * 資料完全載不進來（2026-08-19 二分法實測，production build 不受影響）。
+ * 把 boundary 縮到這支「不畫東西」的元件上，PullToRefresh 就留在 boundary 外面，
+ * dev 與 production 都正常。
+ */
+function TabFromUrl({ onTab }: { onTab: (t: Tab) => void }) {
+  const urlTab = tabFromParam(useSearchParams().get("tab"));
+  useEffect(() => {
+    onTab(urlTab);
+  }, [urlTab, onTab]);
+  return null;
+}
+
 /**
  * 現貨專區（底部 tab bar 正中間的一級入口）。
  *
  * 資料來源是互助交流板的「我有庫存可提供」貼文（post_type='offer'）——
  * 店家把手上多的現貨釋出，這裡就看得到。金額只在「自己所在店家」釋出時顯示，
  * 跨店的金額後端不回（見 liff-api listSpotProducts）。
- *
- * ⚠️ 本體是 SpotPageContent，外面包了一層 Suspense（見檔尾）——
- * 用 useSearchParams() 的頁面沒包 Suspense，`next build` 會直接失敗：
- * 「useSearchParams() should be wrapped in a suspense boundary at page "/spot"」。
  */
-function SpotPageContent() {
+export default function SpotPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const [items, setItems] = useState<SpotProduct[]>([]);
   const [myStoreName, setMyStoreName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // 分頁狀態以「網址」為準，不放 useState。
+  // 分頁的真相在**網址**上，這個 state 只是網址的鏡子（由 TabFromUrl 回寫）。
   // 客人點進商品再返回時，PageShell 的 router.back() 只會回到 `/spot`，這個元件
-  // 會重新掛載 —— 狀態存在 useState 就一定掉回預設值，等於每看一個商品都要重新
-  // 點分頁、重新往下滑。寫進網址，back() 才帶得回原本那一頁。
+  // 會重新掛載 —— 分頁只存在 useState 就一定掉回預設值，等於每看一個商品都要
+  // 重新點分頁、重新往下滑。寫進網址，back() 才帶得回原本那一頁。
   //
-  // 預設仍停在自己的店 —— 那些才看得到金額、才真的拿得到貨；想看別店的再自己
-  // 切到「全部」。所以 `?tab=` 讀不到或值不合法（?tab=xxx）一律回退 mine，
-  // 不能讓亂填的網址弄出空白畫面。
-  const tab: "all" | "mine" = searchParams.get("tab") === "all" ? "all" : "mine";
-  const setTab = (v: "all" | "mine") => {
+  // 初始值給 mine：預設停在自己的店 —— 那些才看得到金額、才真的拿得到貨；
+  // 想看別店的再自己切到「全部」。
+  const [tab, setTab] = useState<Tab>("mine");
+
+  // 切分頁只改網址，state 等 TabFromUrl 從網址回寫，避免兩邊各自為政。
+  const selectTab = (v: Tab) => {
     // replace 不是 push：切分頁不該堆進上一頁歷史，否則客人要按很多次返回才離得開。
     // scroll:false：切分頁不要把畫面捲回頂端。
     router.replace(`/spot?tab=${v}`, { scroll: false });
@@ -81,10 +105,15 @@ function SpotPageContent() {
 
   return (
     <PageShell title="現貨專區">
+      {/* ⛔ 這層 Suspense 只包 TabFromUrl，不要往外擴到 PullToRefresh
+          —— 原因見 TabFromUrl 的註解（會害 next dev 整頁卡住） */}
+      <Suspense fallback={null}>
+        <TabFromUrl onTab={setTab} />
+      </Suspense>
       <PullToRefresh onRefresh={load}>
         <SubTabs
           value={tab}
-          onChange={(v) => setTab(v as "all" | "mine")}
+          onChange={(v) => selectTab(v as Tab)}
           // 本店排左邊、也是預設選中的那格 —— 主要動線放前面，「全部」是次要
           options={[
             { value: "mine", label: myStoreName ?? "我的店", count: mine.length },
@@ -135,7 +164,7 @@ function SpotPageContent() {
               {tab === "mine" && items.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => setTab("all")}
+                  onClick={() => selectTab("all")}
                   className="mt-4 rounded-full bg-[var(--brand-soft)] px-4 py-2 text-[14px] font-semibold text-[var(--brand-strong)] active:scale-95"
                 >
                   看看其他分店的現貨（{items.length}）
@@ -154,21 +183,5 @@ function SpotPageContent() {
         </div>
       </PullToRefresh>
     </PageShell>
-  );
-}
-
-export default function SpotPage() {
-  return (
-    // fallback 用跟頁面自己載入時同一個樣子（大標題 + spinner），
-    // 才不會在預先渲染那一瞬間閃一片空白。
-    <Suspense
-      fallback={
-        <PageShell title="現貨專區">
-          <LoadingScreen />
-        </PageShell>
-      }
-    >
-      <SpotPageContent />
-    </Suspense>
   );
 }
