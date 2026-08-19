@@ -22,6 +22,10 @@ type Row = {
   notes: string | null;
   locked_at: string | null;
   stockout_at: string | null;
+  // 贈品（20260819000000）：促銷活動送的東西，單價 0 是刻意的 →
+  // 該團所有 $0 訂單品項免除取貨零元守衛，且不會被「重新同步商品/價格」蓋回零售價
+  is_gift: boolean;
+  gift_reason: string | null;
 };
 
 type ResyncPreview = {
@@ -54,6 +58,9 @@ export function CampaignItemsTable({
   const role = useRole();
   // 僅管理員（owner/admin）可重新同步：對齊 RPC server-side gate
   const canResync = (status === "draft" || status === "open") && isAdmin(role);
+  // 贈品設定不看開團狀態：促銷團結單之後才開始取貨，被零元守衛擋下時多半已經
+  // closed/ordered —— 只放行 draft/open 等於這個功能在最需要的時候用不了。
+  const canSetGift = isAdmin(role);
   // 店長/店員不能跳轉到商品編輯頁
   const isStoreLevel = role === "store_manager" || role === "store_staff";
 
@@ -63,7 +70,7 @@ export function CampaignItemsTable({
     // open / closed 留 row 不破壞訂單，但 UI 不顯示）
     const { data, error: err } = await getSupabase()
       .from("campaign_items")
-      .select("id, sku_id, unit_price, cap_qty, sort_order, notes, locked_at, stockout_at, skus!inner(id, sku_code, status, product_id, variant_name, products!inner(id, name))")
+      .select("id, sku_id, unit_price, cap_qty, sort_order, notes, locked_at, stockout_at, is_gift, gift_reason, skus!inner(id, sku_code, status, product_id, variant_name, products!inner(id, name))")
       .eq("campaign_id", campaignId)
       .order("sort_order");
     if (err) { setError(err.message); return; }
@@ -71,7 +78,7 @@ export function CampaignItemsTable({
       (data as unknown as Array<{
         id: number; sku_id: number; unit_price: number; cap_qty: number | null;
         sort_order: number; notes: string | null; locked_at: string | null;
-        stockout_at: string | null;
+        stockout_at: string | null; is_gift: boolean | null; gift_reason: string | null;
         skus: { id: number; sku_code: string; status: string; product_id: number; variant_name: string | null;
           products: { id: number; name: string };
         };
@@ -88,11 +95,52 @@ export function CampaignItemsTable({
           unit_price: Number(r.unit_price), cap_qty: r.cap_qty != null ? Number(r.cap_qty) : null,
           sort_order: r.sort_order, notes: r.notes, locked_at: r.locked_at,
           stockout_at: r.stockout_at,
+          is_gift: !!r.is_gift, gift_reason: r.gift_reason,
         }))
     );
   };
 
   useEffect(() => { reload(); }, [campaignId]);
+
+  // 把開團商品標成／取消標成贈品。標下去＝單價設 0 + 該團所有 $0 訂單品項
+  // （既有與未來）免除取貨零元守衛 —— 促銷活動不用一張一張標。
+  const toggleGift = async (r: Row) => {
+    const label = r.variant_name || r.product_name || r.sku_code;
+    let reason: string | null = null;
+    if (!r.is_gift) {
+      reason = prompt(
+        `標記為贈品：${label}
+
+` +
+        `• 這個開團商品的單價會設為 $0（不收錢）
+` +
+        `• 本團所有 $0 的訂單品項（含已建立的）取貨時不再被擋
+` +
+        `• 「重新同步商品/價格」不會再把它改回零售價
+
+` +
+        `請輸入原因（例：週年慶滿額贈）：`,
+      );
+      if (reason === null) return;
+      if (!reason.trim()) { setError("請填寫贈品原因"); return; }
+    } else if (!confirm(
+      `取消贈品設定：${label}
+
+單價會維持 $0（要恢復售價請按「重新同步商品/價格」），` +
+      `但這些 $0 品項取貨時會重新被零元守衛擋下。確定嗎？`,
+    )) {
+      return;
+    }
+    setError(null);
+    const { error: err } = await getSupabase().rpc("rpc_set_campaign_item_gift", {
+      p_campaign_item_id: r.id,
+      p_is_gift: !r.is_gift,
+      p_reason: reason?.trim() ?? null,
+    });
+    if (err) { setError(translateRpcError(err)); return; }
+    await reload();
+    onResynced?.();
+  };
 
   const runPreview = async () => {
     setResyncErr(null);
@@ -169,14 +217,14 @@ export function CampaignItemsTable({
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
-              <Th>規格</Th><Th>名稱</Th><Th className="text-right">單價</Th><Th className="text-right">量上限</Th><Th>鎖定時間</Th>
+              <Th>規格</Th><Th>名稱</Th><Th className="text-right">單價</Th><Th className="text-right">量上限</Th><Th>鎖定時間</Th><Th>贈品</Th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={5} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={6} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={5} className="p-6 text-center text-zinc-500">尚無商品</td></tr>
+              <tr><td colSpan={6} className="p-6 text-center text-zinc-500">尚無商品</td></tr>
             ) : rows.map((r) => (
               <tr key={r.id}>
                 <Td className="font-mono">
@@ -208,12 +256,37 @@ export function CampaignItemsTable({
                         ⛔ 斷貨
                       </span>
                     )}
+                    {r.is_gift && (
+                      <span
+                        title={r.gift_reason ? `贈品：${r.gift_reason}` : "贈品（單價 $0，取貨不受零元守衛限制）"}
+                        className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                      >
+                        🎁 贈品
+                      </span>
+                    )}
                   </div>
                 </Td>
                 <Td className="text-right font-mono">${r.unit_price}</Td>
                 <Td className="text-right text-xs text-zinc-500">{r.cap_qty ?? "—"}</Td>
                 <Td className="text-xs text-zinc-500">
                   {r.locked_at ? new Date(r.locked_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" }) : "—"}
+                </Td>
+                <Td className="text-xs">
+                  {canSetGift ? (
+                    <SpinButton
+                      onClick={() => toggleGift(r)}
+                      title={r.is_gift
+                        ? "取消贈品設定（單價維持 $0，但取貨會重新被零元守衛擋下）"
+                        : "促銷活動送的東西：標成贈品後單價設為 $0，本團所有 $0 訂單品項取貨都不再被擋"}
+                      className={r.is_gift
+                        ? "rounded-md bg-amber-500 px-2 py-1 text-[11px] font-medium text-white hover:bg-amber-600"
+                        : "rounded-md border border-zinc-300 px-2 py-1 text-[11px] font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"}
+                    >
+                      {r.is_gift ? "🎁 贈品" : "設為贈品"}
+                    </SpinButton>
+                  ) : (
+                    <span className="text-zinc-400">{r.is_gift ? "🎁" : "—"}</span>
+                  )}
                 </Td>
               </tr>
             ))}

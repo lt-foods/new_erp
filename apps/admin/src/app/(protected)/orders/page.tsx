@@ -37,7 +37,10 @@ type Row = {
   // 漏填金額 —— 取貨時 rpc_record_pickup 的零元守衛會擋下整張單。
   // 【內部】xx 店 / RR- / OV- 容器單（member_type='store_internal'）恆為 0：
   // 池子單價本來就可能是 0，不是漏填。
+  // 20260819000000 起排除已標記的贈品（刻意送的不算漏填）。
   zero_price_lines: number | null;
+  // 贈品行數（開團設定的促銷贈品 + 這張單標的）。跟 $0 提示互斥，純顯示用。
+  gift_lines: number | null;
 };
 
 type Campaign = { id: number; campaign_no: string; name: string; cover_image_url: string | null; start_at: string | null };
@@ -331,6 +334,21 @@ function ZeroPriceBadge({ lines }: { lines: number | null }) {
   );
 }
 
+// 「這張單有贈品」🎁 標 — gift_lines 同樣來自 v_admin_orders_list（20260819000000）。
+// 贈品是刻意送的（促銷 / 補償），不是漏填，所以不紅標；但要看得到，
+// 免得「$0 卻沒被擋」看起來像守衛壞了。
+function GiftBadge({ lines }: { lines: number | null }) {
+  if (!lines || lines <= 0) return null;
+  return (
+    <span
+      title="這張單有被標記為贈品的品項（開團設定的促銷贈品，或這張單標記的）。贈品不受取貨零元守衛限制。"
+      className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+    >
+      🎁 贈品 ×{lines}
+    </span>
+  );
+}
+
 export default function OrdersListPage() {
   return (
     <Suspense fallback={<LoadingBlock />}>
@@ -604,7 +622,7 @@ function OrdersListContent() {
         const base = getSupabase()
           .from("v_admin_orders_list")
           .select(
-            "id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, transferred_from_order_id, created_at, updated_at, zero_price_lines"
+            "id, order_no, campaign_id, member_id, nickname_snapshot, pickup_store_id, pickup_deadline, status, transferred_from_order_id, created_at, updated_at, zero_price_lines, gift_lines"
               + (activeSkuId ? ITEM_EMBED : ""),
             { count: "exact" },
           )
@@ -1168,7 +1186,8 @@ function OrdersListContent() {
       {/* ⚠ 漏填金額提示 — 目前 tab + 篩選底下有幾張訂單含 $0 品項。
           $0 幾乎都是開團 / 代 key 時漏填單價（線上抽查 notes 全為 NULL，沒有一筆是
           刻意的贈品），取貨那一刻就是收錢的時候 → 不補金額等於把貨白送。
-          取貨頁與 rpc_record_pickup 會擋下這種單，所以這裡要讓人一眼看到、點得進去。*/}
+          取貨頁與 rpc_record_pickup 會擋下這種單，所以這裡要讓人一眼看到、點得進去。
+          刻意送的贈品（開團設定的促銷贈品 / 訂單上標的）不算在這裡（20260819000000）。*/}
       {(zeroOnly || (zeroCount ?? 0) > 0) && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
           <span className="font-semibold">
@@ -1176,6 +1195,7 @@ function OrdersListContent() {
           </span>
           <span className="text-xs">
             可能是開團時漏填金額。這些單在取貨頁會被擋下，請先補上金額（點訂單開明細改單價，或在取貨頁該品項旁直接補填）。
+            促銷贈品請改在開團商品或該品項標「🎁 贈品」，標了就不會再擋。
           </span>
           <SpinButton
             type="button"
@@ -1567,6 +1587,7 @@ function OrdersListContent() {
                 <span>共 {sum?.totalQty ?? 0} 件</span>
                 <span className="font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100">${sum?.totalAmount ?? 0}</span>
                 <ZeroPriceBadge lines={r.zero_price_lines} />
+                <GiftBadge lines={r.gift_lines} />
                 <span
                   className="ml-auto"
                   title={`訂單日：${new Date(r.created_at).toLocaleString("zh-TW", { hour12: false })}\n更新日：${new Date(r.updated_at).toLocaleString("zh-TW", { hour12: false })}`}
@@ -1699,6 +1720,11 @@ function OrdersListContent() {
                     {(r.zero_price_lines ?? 0) > 0 && (
                       <div className="mt-0.5">
                         <ZeroPriceBadge lines={r.zero_price_lines} />
+                      </div>
+                    )}
+                    {(r.gift_lines ?? 0) > 0 && (
+                      <div className="mt-0.5">
+                        <GiftBadge lines={r.gift_lines} />
                       </div>
                     )}
                   </Td>

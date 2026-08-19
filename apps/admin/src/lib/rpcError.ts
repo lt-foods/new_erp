@@ -392,6 +392,12 @@ const RULES: Rule[] = [
     pattern: /^zero_price(?:_fill)?:\s*([\s\S]+)$/i,
     render: (m) => m[1],
   },
+  // ===== 贈品標記（rpc_mark_order_item_gift / rpc_set_campaign_item_gift） =====
+  {
+    // 訊息本體已是中文，一樣只把機器前綴拿掉
+    pattern: /^(?:gift_mark|campaign_gift):\s*([\s\S]+)$/i,
+    render: (m) => m[1],
+  },
   {
     // _check_order_edit_notes_perm 的拒絕訊息（補填金額沿用它做權限判斷，
     // 所以字面上會寫「edit notes」）— 對店員講清楚是「不是你們店的單」

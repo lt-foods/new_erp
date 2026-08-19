@@ -18,6 +18,7 @@ import { publicProductUrl } from "@/lib/campaignCover";
 import { parseReturnNote } from "@/lib/returnNote";
 import { fetchReprintableEvents, pickupEventLabel, type PickupEventRow } from "@/lib/pickupReceipt";
 import { itemDisplayName } from "@/lib/skuLabel";
+import { GIFT_ITEM_SELECT, giftTitle, isCampaignGiftLine, isGiftLine } from "@/lib/orderGift";
 import { CutoffChip } from "@/components/CampaignCutoff";
 
 type Member = {
@@ -53,6 +54,10 @@ type OpenOrder = {
     qty: number;
     unit_price: number;
     status: string;
+    // 贈品標記（20260819000000）：品項自己標的 + 開團層級的，判定走 lib/orderGift
+    is_gift: boolean | null;
+    gift_reason: string | null;
+    campaign_item: { is_gift: boolean | null; gift_reason: string | null } | null;
     sku: {
       variant_name: string | null;
       product_name: string | null;
@@ -107,6 +112,7 @@ function PickupPageContent() {
   // item.id → 櫃台補填金額的輸入值 / 正在送出的那一筆
   const [zeroFillDraft, setZeroFillDraft] = useState<Map<number, string>>(new Map());
   const [zeroFilling, setZeroFilling] = useState<number | null>(null);
+  const [giftMarking, setGiftMarking] = useState<number | null>(null);
   // member.id → 儲值金餘額（wallet_balances）。取貨頁的「儲值金結帳」用；
   // 查無資料＝沒儲值過，視為 0。
   const [walletBalances, setWalletBalances] = useState<Map<number, number>>(new Map());
@@ -183,9 +189,11 @@ function PickupPageContent() {
   // 所以整張擋下、要求先補金額。rpc_record_pickup 有同款守衛（zero_price:），
   // 這裡是為了讓店員在按下去之前就看到、而且當場補得了。
   // 【內部】xx 店 / RR- / OV- 現貨池容器單的 0 是掛帳用的，不擋。
+  // 刻意送的贈品（開團設定的促銷贈品、或這張單當場標的）也不擋 —— 判定與
+  // rpc_record_pickup 同一套（lib/orderGift），不要在這裡另外寫一份。
   function zeroPriceItems(order: OpenOrder & { member_id?: number }) {
     if (order.member_id != null && internalMemberIds.has(order.member_id)) return [];
-    return pickableItems(order).filter((it) => Number(it.unit_price) === 0);
+    return pickableItems(order).filter((it) => Number(it.unit_price) === 0 && !isGiftLine(it));
   }
   function hasZeroPrice(order: OpenOrder): boolean {
     return zeroPriceItems(order).length > 0;
@@ -321,7 +329,7 @@ function PickupPageContent() {
           `id, order_no, status, pickup_deadline, pickup_store_id, discount_amount, discount_percent, wallet_paid_amount, payment_status, ready_at, transferred_from_order_id, last_notify_pickup_at, notify_pickup_count, member_id,
            campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date),
            store:stores!customer_orders_pickup_store_id_fkey(id, name),
-           items:customer_order_items(id, sku_id, qty, unit_price, status, sku:skus(variant_name, product_name, product:products(images)))`,
+           items:customer_order_items(id, sku_id, qty, unit_price, status, ${GIFT_ITEM_SELECT}, sku:skus(variant_name, product_name, product:products(images)))`,
         )
         .in("member_id", list.map((m) => m.id));
       const { data: ords, error: e2 } = await (
@@ -725,6 +733,37 @@ function PickupPageContent() {
       setReloadTick((n) => n + 1);
     } finally {
       setZeroFilling(null);
+    }
+  }
+
+  // 「這是贈品」—— $0 但刻意送的（促銷贈品 / 客訴補償）。標了就免除零元守衛。
+  // 這是全站唯一「貨不收錢就出去」的入口，所以理由必填、寫 gift_marked_by/at + audit log
+  // （後端 rpc_mark_order_item_gift 有同款檢查）。權限跟補填金額同一套（HQ / 總倉 / 自店）：
+  // 不開到櫃台的話，促銷期間店員一樣只剩「亂填一個金額」或「轉單開新單」兩條爛路。
+  async function markGift(order: OpenOrder, itemId: number) {
+    const reason = prompt(
+      `標記為贈品：${order.order_no}\n這個品項會以 $0 交給客人（不收錢）。\n請輸入原因（例：促銷買二送一 / 客訴補償）：`,
+    );
+    if (reason === null) return;
+    if (!reason.trim()) { setError("請填寫贈品原因（會寫進異動紀錄）"); return; }
+    const sb = getSupabase();
+    const { data: sess } = await sb.auth.getSession();
+    const operator = sess.session?.user?.id;
+    if (!operator) { setError("尚未登入"); return; }
+    setGiftMarking(itemId);
+    setError(null);
+    try {
+      const { error: e } = await sb.rpc("rpc_mark_order_item_gift", {
+        p_order_id: order.id,
+        p_item_id: itemId,
+        p_is_gift: true,
+        p_operator: operator,
+        p_reason: reason.trim(),
+      });
+      if (e) { setError(`${order.order_no} 標記贈品失敗：${translateRpcError(e)}`); return; }
+      setReloadTick((n) => n + 1);
+    } finally {
+      setGiftMarking(null);
     }
   }
 
@@ -1233,7 +1272,7 @@ function PickupPageContent() {
                                       <span className="flex items-center gap-1">
                                         <span
                                           className="rounded bg-red-100 px-1 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-950 dark:text-red-300"
-                                          title="這個品項的單價是 $0，可能是開團時漏填金額。補上金額才能取貨。"
+                                          title="這個品項的單價是 $0，可能是開團時漏填金額。補上金額才能取貨；若是刻意送的贈品，改按右邊的「🎁 這是贈品」。"
                                         >
                                           ⚠️ 未填金額
                                         </span>
@@ -1262,6 +1301,24 @@ function PickupPageContent() {
                                         >
                                           {zeroFilling === it.id ? "…" : "補填"}
                                         </SpinButton>
+                                        {/* 不是漏填、是真的要送 → 標成贈品就放行（理由必填、會留痕） */}
+                                        <SpinButton
+                                          onClick={() => markGift(o, it.id)}
+                                          disabled={giftMarking === it.id}
+                                          title="這個品項是刻意送的贈品（促銷 / 補償），標記後不用補金額就能取貨。會要求填原因並寫入異動紀錄。"
+                                          className="rounded border border-amber-400 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950"
+                                        >
+                                          {giftMarking === it.id ? "…" : "🎁 這是贈品"}
+                                        </SpinButton>
+                                      </span>
+                                    )}
+                                    {/* 已標記的贈品：直接放行，畫面要看得出來這件是送的 */}
+                                    {isGiftLine(it) && (
+                                      <span
+                                        className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                                        title={giftTitle(it)}
+                                      >
+                                        🎁 贈品{isCampaignGiftLine(it) ? "（開團設定）" : ""}
                                       </span>
                                     )}
                                     {returnedOf(it) > 0 && (
@@ -1362,7 +1419,7 @@ function PickupPageContent() {
                               onClick={() => quickPickup(o)}
                               disabled={!canPickup}
                               title={zeroItems.length > 0
-                                ? "有品項的單價是 $0（可能漏填金額），補上金額才能取貨"
+                                ? "有品項的單價是 $0（可能漏填金額），補上金額才能取貨；若是刻意送的贈品，按該品項旁的「🎁 這是贈品」"
                                 : "一鍵取走已到貨品項並列印（不開明細視窗）"}
                               className="rounded-md bg-emerald-600 px-3 py-2 text-xs font-medium text-white transition hover:bg-emerald-700 disabled:opacity-50"
                             >

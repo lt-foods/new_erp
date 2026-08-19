@@ -12,6 +12,7 @@ import { orderItemStatusLabel } from "@/lib/orderStatus";
 import { parseReturnNote } from "@/lib/returnNote";
 import { itemDisplayName } from "@/lib/skuLabel";
 import { isHqRole, useMyStores, useRole } from "@/lib/role";
+import { GIFT_ITEM_SELECT, giftTitle, isCampaignGiftLine, isGiftLine } from "@/lib/orderGift";
 import { useHasStaffPerm } from "@/lib/staffPerms";
 
 type PickableItem = {
@@ -21,6 +22,10 @@ type PickableItem = {
   discount_amount: number;
   discount_percent: number;
   status: string;
+  // 贈品標記（20260819000000）：品項自己標的 + 開團層級的促銷贈品，判定走 lib/orderGift
+  is_gift: boolean | null;
+  gift_reason: string | null;
+  campaign_item: { is_gift: boolean | null; gift_reason: string | null } | null;
   sku: { id: number; sku_code: string; product_name: string | null; variant_name: string | null } | null;
 };
 
@@ -107,7 +112,7 @@ export function PickupDialog({
       const sb = getSupabase();
       const [iRes, hRes, rRes, arvRes] = await Promise.all([
         sb.from("customer_order_items")
-          .select("id, qty, unit_price, discount_amount, discount_percent, status, sku:skus(id, sku_code, product_name, variant_name)")
+          .select(`id, qty, unit_price, discount_amount, discount_percent, status, ${GIFT_ITEM_SELECT}, sku:skus(id, sku_code, product_name, variant_name)`)
           .eq("order_id", orderId)
           .in("status", ["pending", "reserved", "ready"])
           .order("id"),
@@ -135,7 +140,7 @@ export function PickupDialog({
       const headMember = Array.isArray(hRes.data?.member) ? hRes.data?.member[0] : hRes.data?.member;
       const internalPool = headMember?.member_type === "store_internal";
       setIsInternalPool(internalPool);
-      const zeroPriced = (it: PickableItem) => !internalPool && Number(it.unit_price) === 0;
+      const zeroPriced = (it: PickableItem) => !internalPool && Number(it.unit_price) === 0 && !isGiftLine(it);
 
       // ----- 退貨量依 SKU 聚合，再分攤到各 pending 品項行（list 已 order by id，分攤穩定）-----
       // 只算「未取退貨」：取貨後退回（|取貨後退回）的是客戶已取走的貨，不扣未取品項的可取量
@@ -234,8 +239,9 @@ export function PickupDialog({
   // 該品項是否漏填金額（單價 $0）。取貨＝收錢，$0 收不到錢 → 鎖住不可勾，
   // 後端 rpc_record_pickup 的零元守衛也會擋（migration 20260815000000）。
   // 現貨池容器單（store_internal）的 0 是掛帳用的，不算。
+  // 已標記的贈品（開團設定 / 這張單標的）也不算 —— 那是刻意送的（20260819000000）。
   function zeroPrice(it: PickableItem): boolean {
-    return !isInternalPool && Number(it.unit_price) === 0;
+    return !isInternalPool && Number(it.unit_price) === 0 && !isGiftLine(it);
   }
   function pickableOf(it: PickableItem): number {
     return Math.max(0, Number(it.qty) - returnedOf(it));
@@ -404,7 +410,7 @@ export function PickupDialog({
             <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
               ⚠️ 有 {items.filter((it) => zeroPrice(it)).length} 個品項的單價是 $0（可能是開團時漏填金額），
               已鎖住不能取貨。請到取貨頁該品項旁「補填」金額，或到訂單明細改單價；
-              其餘有價格的品項可以先取。
+              若是刻意送的贈品，改按取貨頁的「🎁 這是贈品」標記；其餘有價格的品項可以先取。
             </div>
           )}
           <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
@@ -454,6 +460,15 @@ export function PickupDialog({
                         {returned > 0 && (
                           <span className="ml-2 rounded bg-orange-100 px-1.5 py-0.5 text-[10px] font-medium text-orange-800 dark:bg-orange-950 dark:text-orange-300">
                             ↩ 已退 {returned}
+                          </span>
+                        )}
+                        {/* 贈品：$0 但刻意送的，可正常勾取，畫面要標出來（收據上也才看得懂） */}
+                        {isGiftLine(it) && (
+                          <span
+                            className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                            title={giftTitle(it)}
+                          >
+                            🎁 贈品{isCampaignGiftLine(it) ? "（開團設定）" : ""}
                           </span>
                         )}
                       </td>
