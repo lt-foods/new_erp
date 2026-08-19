@@ -362,7 +362,46 @@ GRANT EXECUTE ON FUNCTION
   public.rpc_arrive_and_distribute(BIGINT, JSONB, UUID, TEXT, TEXT, TEXT)
   TO authenticated;
 
-COMMENT ON FUNCTION public.rpc_arrive_and_distribute IS
+-- ----------------------------------------------------------------------------
+-- 3. 套用後自我檢查 —— 這一步失敗會讓整支 rollback，⛔ 好過留下一個壞掉的線上系統
+--
+-- 防的是這個 repo 的頭號病灶：**repo ≠ 正式庫**（migration 全人工套）。
+-- 上面那句 DROP 寫死了舊簽章 (BIGINT, JSONB, UUID, TEXT, TEXT)。
+-- 萬一正式庫上跑的其實是別的簽章（有人手動改過、或漏套過某支 migration），
+-- `IF EXISTS` 會**靜默跳過**、什麼都不刪，然後下面 CREATE 出第二支
+-- → 變成多載 → 辦公室收貨頁的 5 參數具名呼叫直接 function is not unique。
+-- 那是「套完當下看起來成功、隔天早上辦公室收不了貨」的失敗方式，最難查。
+-- 這個 DO block 讓它在套用當下就吵出來。
+-- ----------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_n    INT;
+  v_sigs TEXT;
+BEGIN
+  SELECT COUNT(*), string_agg(pg_get_function_identity_arguments(p.oid), ' ｜ ')
+    INTO v_n, v_sigs
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+   WHERE n.nspname = 'public'
+     AND p.proname = 'rpc_arrive_and_distribute';
+
+  IF v_n <> 1 THEN
+    RAISE EXCEPTION
+      '套用中止：public.rpc_arrive_and_distribute 現在有 % 支（應該只有 1 支）。現存簽章：%。多載會讓辦公室收貨頁的 5 參數呼叫變成 function is not unique。請先確認正式庫上原本的簽章是不是 (BIGINT, JSONB, UUID, TEXT, TEXT)。',
+      v_n, v_sigs;
+  END IF;
+
+  IF NOT has_function_privilege('authenticated',
+        'public.rpc_arrive_and_distribute(BIGINT,JSONB,UUID,TEXT,TEXT,TEXT)', 'EXECUTE') THEN
+    RAISE EXCEPTION '套用中止：authenticated 沒有 EXECUTE 權限，兩個收貨頁都會壞掉。';
+  END IF;
+END $$;
+
+-- ⚠️ 這裡的參數列表不可以省（原版 20260512000002 省了，因為當時只有一支）：
+--    真的出現多載時，不帶參數的 COMMENT ON FUNCTION 會先報
+--    「function name is not unique」，把上面那個講得清楚的錯誤訊息蓋掉。
+COMMENT ON FUNCTION
+  public.rpc_arrive_and_distribute(BIGINT, JSONB, UUID, TEXT, TEXT, TEXT) IS
   '進貨確認：GR 入倉（不再自動建 picking_wave；撿貨改由工作站手動建立）。'
   'p_client_request_id 帶了就冪等（重試回既有 GR）；'
   'p_arrivals[i].qty_received_base 帶了就比對現值（擋多台裝置用過期數字重複收貨）。'
