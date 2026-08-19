@@ -6,12 +6,30 @@
 --   行數），一個商品名字都沒有，前端只能比對 po_no / supplier_name /
 --   supplier_code。
 --
--- 修法：在最終 jsonb 組裝那一段掛一個 LEFT JOIN LATERAL，把該 PO 所有
---   品項的 products.name 聚成 text[]（DISTINCT、濾掉 NULL、無資料給空
---   陣列），比照 rpc_po_list 既有寫法（20260812000000 Part 5 的
+-- 修法：新增一個 names CTE，從 v1 就有的 poi CTE 一次 GROUP BY 聚出每張
+--   PO 的商品名 text[]（DISTINCT、濾掉 NULL、無資料給空陣列），聚合寫法
+--   比照 rpc_po_list（20260812000000 Part 5 的
 --   `array_agg(DISTINCT pd.name) FILTER (WHERE pd.name IS NOT NULL)`）。
---   lateral 只跑在已收斂的 200 列上，PO 不會因為商品名被拆成多列。
+--   poi 只多 SELECT 一個 sku_id（無 DISTINCT / GROUP BY，列數不變，
+--   sku_id 又是 NOT NULL）→ agg 的 SUM / COUNT / bool_or 結果與 v1 相同。
 --   期間 / 狀態 / 搜尋 filter 仍由前端對回傳列做（與 v1 相同）。
+--
+-- ⚠ 為什麼不用 LEFT JOIN LATERAL（rpc_po_list 的原寫法）：
+--   `purchase_order_items` **沒有 po_id 索引** —— 建表（20260422120004:95-110）
+--   只有 id 主鍵，po_id 是 FK 而 Postgres 不替 FK 自動建索引，全 repo 也沒有
+--   任何 CREATE INDEX / UNIQUE 約束會隱式補上。lateral 掛在 200 列上 =
+--   對這張表做 200 次掃描；而本 RPC 存在的理由就是效能（見 v1 檔頭），
+--   那是明確退步。rpc_po_list 的 lateral 只跑在單頁 ~50 列上，情境不同。
+--
+-- ⚠ 為什麼不補索引解決：老闆本案明定不動資料庫結構；且正式庫上非
+--   CONCURRENTLY 的 CREATE INDEX 會鎖表，這是已上線營運系統。改用一次性
+--   聚合就不依賴索引存不存在。
+--
+-- 掃描次數與 v1 相同（零退步）：poi 在 v1 已被 received / agg 引用兩次，
+--   多次引用的 CTE 不會被 inline（PG12+ 只 inline 單次引用者）→ 它是
+--   materialize 的，names 是第三個引用者，讀的是同一份已物化結果，
+--   `purchase_order_items` 全程仍只掃一次。新增的成本只有 skus / products
+--   的主鍵查（與前端各頁既有作法同級）。
 --
 -- 未變動（與 20260708000020 逐字一致）：
 --   * 取 status IN (sent, partially_received, fully_received)，sent_at desc，上限 200
@@ -38,7 +56,8 @@ AS $$
     LIMIT 200
   ),
   poi AS (
-    SELECT i.id, i.po_id, i.qty_ordered
+    -- v2 只多 SELECT 一個 sku_id 給 names 用；無 DISTINCT / GROUP BY，列數不變
+    SELECT i.id, i.po_id, i.qty_ordered, i.sku_id
     FROM purchase_order_items i
     JOIN po ON po.id = i.po_id
   ),
@@ -57,6 +76,15 @@ AS $$
     FROM purchase_request_items pri
     JOIN restock_requests rr ON rr.linked_pr_id = pri.pr_id
     WHERE pri.po_item_id IS NOT NULL
+  ),
+  names AS (
+    -- 搜尋用：每張 PO 的商品名，一次 GROUP BY 聚完（不逐 PO 掃表）
+    SELECT p2.po_id,
+           array_agg(DISTINCT pd.name) FILTER (WHERE pd.name IS NOT NULL) AS product_names
+    FROM poi p2
+    LEFT JOIN skus     sk ON sk.id = p2.sku_id
+    LEFT JOIN products pd ON pd.id = sk.product_id
+    GROUP BY p2.po_id
   ),
   agg AS (
     SELECT
@@ -93,20 +121,14 @@ AS $$
         'line_count', line_count,
         'is_restock', COALESCE(is_restock, false),
         -- 搜尋用：該 PO 所有品項的商品名（前端 haystack）
-        'product_names', to_jsonb(COALESCE(pn.product_names, ARRAY[]::text[]))
+        'product_names', to_jsonb(COALESCE(n.product_names, ARRAY[]::text[]))
       )
       ORDER BY sent_at DESC NULLS LAST
     ),
     '[]'::jsonb
   )
   FROM agg
-  LEFT JOIN LATERAL (
-    SELECT array_agg(DISTINCT pd.name) FILTER (WHERE pd.name IS NOT NULL) AS product_names
-    FROM purchase_order_items i
-    LEFT JOIN skus sk     ON sk.id = i.sku_id
-    LEFT JOIN products pd ON pd.id = sk.product_id
-    WHERE i.po_id = agg.id
-  ) pn ON true;
+  LEFT JOIN names n ON n.po_id = agg.id;
 $$;
 
 GRANT EXECUTE ON FUNCTION rpc_receiving_workbench() TO authenticated;
