@@ -129,7 +129,14 @@ function parseQty(raw: string): { qty: number; invalid: boolean } {
  * 所以 NULL 的情境不存在；**但它沒有 CHECK (> 0)，0 是合法值**。
  * 採購單填 0 或漏填時，這一頁會用 0 成本入庫，而樓下看不到單價、
  * 錯了永遠不會發現（辦公室現行收貨頁至少看得到也改得掉）。
- * → 這是本頁特有的風險，一律擋整張單，請辦公室先修採購單。
+ * → 這是本頁特有的風險，成本不正常的品項一律收不進去。
+ *
+ * ⚠ 擋的範圍：**只擋「這次真的要收」（qty > 0）的那幾項**，不是整張單。
+ *   兩種擋法對帳的保護完全等價（成本異常的品項兩者都收不進去），
+ *   差別只在猜錯時的代價：擋整張單會讓樓下站在貨旁邊什麼都收不了，
+ *   只擋該項則其他品項照收。安全性相同時取卡死範圍小的那個。
+ * ⛔ 但絕不可以放行：「擋錯了」的代價是一通電話，「放過了」的代價是
+ *   0 成本入庫拉低加權平均、靜默壞帳而且畫面上看不出來。
  */
 function costOk(cost: number): boolean {
   return Number.isFinite(cost) && cost > 0;
@@ -409,6 +416,8 @@ export default function IpadReceivingPage() {
       return {
         received,
         invalid,
+        // 卡片層：只要成本不正常就標，讓樓下點貨前就知道
+        // （擋送出的範圍另外算，只算 received > 0 的 —— 見 summary）
         badCost: !costOk(f.unit_cost),
         isOver,
         isShort,
@@ -433,9 +442,10 @@ export default function IpadReceivingPage() {
         if (c.reasonMissing) missing += 1;
       }
     });
-    // 成本異常一律擋整張單（不是跳過該品項）。樓下看不到單價，
-    // 用 0 成本入庫錯了永遠不會被發現 → 請辦公室先修採購單。
-    const badCost = items.filter((f) => !costOk(f.unit_cost));
+    // 成本異常 → 只擋「這次真的要收」的那幾項（見 costOk 檔頭）。
+    // ⛔ 不可以靜默跳過：擋住的品項一定要在畫面上講出來，
+    //    樓下看不到單價，全靠這個提示才知道有東西沒收到。
+    const badCost = items.filter((f, i) => checks[i].received > 0 && !costOk(f.unit_cost));
     return { lines, qty, missing, invalid, badCost, total: items.length };
   }, [items, checks]);
 
@@ -464,13 +474,15 @@ export default function IpadReceivingPage() {
       }
 
       // 2. 成本異常（unit_cost 沒有 CHECK > 0，0 是合法值 → 會用 0 成本入庫）
-      const badCost = items.filter((f) => !costOk(f.unit_cost));
+      //    只擋這次要收的那幾項；其他品項照收（見 costOk 檔頭）。
+      const badCost = items.filter((f, i) => checks[i].received > 0 && !costOk(f.unit_cost));
       if (badCost.length > 0) {
         throw new Error(
-          `這張單有 ${badCost.length} 個品項的成本不正常，請辦公室先修正採購單再收貨。（${badCost
-            .slice(0, 3)
-            .map(itemTitle)
-            .join("、")}${badCost.length > 3 ? " 等" : ""}）`,
+          `有 ${badCost.length} 個品項的成本不正常，收不進去，請通知辦公室修正採購單。` +
+            `把這幾項的數量清成 0 就可以先收其他品項。（${badCost
+              .slice(0, 3)
+              .map(itemTitle)
+              .join("、")}${badCost.length > 3 ? " 等" : ""}）`,
         );
       }
 
@@ -679,8 +691,8 @@ export default function IpadReceivingPage() {
           {/* ⛔ 停用原因一定要看得見，不可以只放 title：iPad 上沒有 tooltip */}
           {summary.badCost.length > 0 && (
             <p className="mt-2 text-sm font-bold text-rose-600 dark:text-rose-400">
-              這張單有 {summary.badCost.length} 個品項的成本不正常，整張單都不能收，
-              請辦公室先修正採購單。
+              有 {summary.badCost.length} 項的成本不正常收不進去，請通知辦公室。
+              把那幾項的數量清成 0，就可以先收其他品項。
             </p>
           )}
           {summary.invalid > 0 && (
@@ -858,7 +870,8 @@ type Check = {
   received: number;
   /** 打了非數字（"-5"、"1e3"、"abc"…）→ 明確擋下，⛔ 不靜默轉換 */
   invalid: boolean;
-  /** 採購單成本 <= 0 或不是數字 → 這張單整張不能收 */
+  /** 採購單成本 <= 0 或不是數字 → 這一項收不進去（卡片一律標示；
+   *  但只有 received > 0 時才擋住送出，其他品項照收 —— 見 summary.badCost） */
   badCost: boolean;
   isOver: boolean;
   isShort: boolean;
@@ -885,7 +898,7 @@ function ItemsStep({
   forcedOpen: boolean;
   /** 商品資料沒撈回來的品項數（樓下靠圖片與品名辨貨，缺漏不能無聲） */
   missingSkuCount: number;
-  /** 成本不正常的品項 */
+  /** 這次真正被擋住的品項（有填數量 且 成本不正常）。⛔ 不是全部成本異常的品項 */
   badCost: ItemForm[];
   onToggleDone: () => void;
   onPatch: (idx: number, patch: Partial<ItemForm>) => void;
@@ -900,10 +913,11 @@ function ItemsStep({
       {badCost.length > 0 && (
         <div className="rounded-xl border-2 border-rose-400 bg-rose-50 p-4 dark:border-rose-700 dark:bg-rose-950/50">
           <div className="text-lg font-bold text-rose-800 dark:text-rose-200">
-            ⛔ 這張單不能收
+            ⛔ 這 {badCost.length} 項收不進去
           </div>
           <p className="mt-1 text-base text-rose-800 dark:text-rose-200">
-            有 {badCost.length} 個品項的成本不正常，請辦公室先修正採購單再收貨。
+            成本不正常，請通知辦公室修正採購單。
+            <strong>把這幾項的數量清成 0，就可以先收這張單的其他品項。</strong>
           </p>
           <ul className="mt-2 list-disc pl-5 text-base text-rose-800 dark:text-rose-200">
             {badCost.slice(0, 5).map((f) => (
@@ -1077,9 +1091,11 @@ function ItemCard({
         </p>
       )}
 
+      {/* 卡片一律標紅（不等填了數字才講）：讓樓下在點貨前就知道這項收不進去。
+          只有「這次真的要收」的才會擋住送出，其他品項照收。 */}
       {check.badCost && (
         <p className="mt-2 text-base font-bold text-rose-700 dark:text-rose-300">
-          ⛔ 這個品項的成本不正常，整張單都不能收，請辦公室先修正採購單。
+          ⛔ 這一項的成本不正常，這次不會被收，請通知辦公室。這張單的其他品項可以照收。
         </p>
       )}
 
