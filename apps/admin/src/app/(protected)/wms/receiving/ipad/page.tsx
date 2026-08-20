@@ -1,49 +1,63 @@
 "use client";
 
-// 📦 樓下收貨（iPad 專用頁）
+// 📦 樓下收貨（iPad 專用頁）—— 搜尋驅動 + 批次收貨
 //
-// 為什麼要有這一頁：收貨現在只能辦公室用電腦按，樓下拿 iPad 做不了
+// 為什麼要有這一頁：收貨原本只能辦公室用電腦按，樓下拿 iPad 做不了
 //   —— 桌機側欄吃掉寬度、9 欄表格要左右拉、按鈕比手指小。
-//   這一頁讓樓下倉管站在貨旁邊就能收完。
 //
-// ⛔ 這一頁是「新增」，現有 /wms/receiving 與 /purchase/orders/receive 一行不改。
-//    辦公室維持用電腦開既有收貨頁處理單價／批號／效期／發票號／分店分配。
+// ⭐ 2026-08-20 改版（老闆實際用過之後）：原本是「選廠商 → 選採購單 → 核對品項」
+//   三層選擇，老闆原話：「我搜尋馬卡龍竟然是出現廠商，然後點進去滿滿的 PO 單號，
+//   我要一個一個找。天啊!!一天要進快一百樣耶。」「樓下是戰區 時間就是金錢。」
+//   → 樓下的心智模型是「**我手上這箱是馬卡龍，我要收它**」，
+//     舊流程卻要他先想「這是誰送的、在哪張單」——方向完全相反。
+//   → 改成：搜尋框常駐最上面，搜尋結果**直接就是品項清單**（一列 = 商品 × 採購單），
+//     每列可勾選，勾好一次送出。廠商與單號降成小字備註。
+//   ⛔ 改回「先選廠商」之前請先想清楚：一天 100 樣 × 三層 = 不可能用。
+//
+// ⛔ 這一頁只碰自己。現有 /wms/receiving（進貨待辦）與
+//    /purchase/orders/receive（辦公室收貨頁）一行不改；後端 RPC 一行不改。
 //
 // 設計約束（都有出處，改之前先看）：
-//   1. 走 rpc_arrive_and_distribute（最新版 20260512000002_arrive_no_auto_wave.sql:20）。
+//   1. 走 rpc_arrive_and_distribute（最新版 20260820000000_arrive_idempotent_and_stale_guard.sql）。
 //      ⛔ 不可以改用 rpc_adjust_po_item_received —— 那支是「絕對值覆蓋」語意
 //      （20260729000020_po_adjust_received_creates_gr.sql:9-14 檔頭寫明），
 //      樓下多台 iPad 同時收同一張單會互相蓋掉（A 填 5、B 填 3 → 結果是 3 不是 8）。
 //      arrive 是累加語意（每次收貨建一張 GR），符合分批到貨的現實，也才有 variance_reason。
-//   2. 樓下畫面不出現：單價 / 批號 / 效期 / 瑕疵數 / 供應商發票號 / 備註 / 分店分配。
+//   2. ⭐⭐ **這支 RPC 是 per-PO 的**，而搜尋結果會跨採購單
+//      ⇒ 送出時一定要**按採購單分組、逐張呼叫**（分組邏輯在 @/lib/receivingBatch）。
+//      由此衍生三件事，⛔ 缺一不可：
+//        · 每張單**各自一把冪等鍵**（共用會被後端 20260820000000:349-352 擋掉，
+//          一批 5 張只有第一張收得進去）
+//        · 每一列**各自帶 qty_received_base**（樂觀鎖是逐項比對的）
+//        · **成敗逐張顯示**（3 成功 1 失敗只講一句話，樓下會以為全收了或全沒收，
+//          兩種誤會都讓盤點對不起來）
+//   3. 樓下畫面不出現：單價 / 批號 / 效期 / 瑕疵數 / 供應商發票號 / 備註 / 分店分配。
 //      unit_cost 仍照 purchase_order_items.unit_cost 原值帶給 RPC（不可送 0 或 null，
 //      成本會影響加權平均成本）；分店分配一律留給派貨工作台。
-//   3. 觸控：所有可點元素 min-h-[44px] min-w-[44px] + touch-manipulation
+//   4. 觸控：所有可點元素 min-h-[44px] min-w-[44px] + touch-manipulation
 //      （機制索引七之五；touch-manipulation 消掉 iOS ~350ms 的 double-tap 等待）。
 //      輸入框 ≥16px，否則 iOS 一 focus 就把整頁放大。
-//   4. ⛔ 重要資訊不可以只放在 title tooltip —— iPad 上根本沒有 tooltip
+//   5. ⛔ 重要資訊不可以只放在 title tooltip —— iPad 上根本沒有 tooltip
 //      （picking/drafts/edit/page.tsx:859 有同樣的教訓註解）。
-//   5. 側欄：不改全站 layout.tsx（會炸到所有頁面所有使用者），改用本頁自己
+//   6. 側欄：不改全站 layout.tsx（會炸到所有頁面所有使用者），改用本頁自己
 //      fixed 全屏蓋掉。用 z-40：Modal 與 layout 手機抽屜都是 z-50，不會被遮住。
-//   6. 權限：這一頁多開了一個入口，所以**不可以比舊入口寬**。舊入口
+//      本頁自己的確認視窗用 z-50，蓋得住自己這一層。
+//   7. 權限：這一頁多開了一個入口，所以**不可以比舊入口寬**。舊入口
 //      /wms/receiving 在 layout 的 BRANCH_HIDDEN_HREFS 裡對分店帳號隱藏，
 //      本頁照同一條判定（isBranchAccount）擋掉分店帳號並給返回出口。
 //      ⚠ 刻意**不**再加 role.ts 的 isHqRole()：它的 HQ_ROLES 不含 assistant，
 //        舊入口不擋 assistant，加了會比舊入口窄、可能把樓下倉管整個鎖在外面。
 //      ⚠ 真正的守衛應該在 RPC（GRANT ... TO authenticated 是既有的洞，
 //        現行兩頁一樣沒有頁面層守衛）—— 那是獨立議題，不在這一片處理。
-//   7. 數量與成本：非法輸入一律明講並擋住，⛔ 不做任何靜默轉換或猜值
+//   8. 數量與成本：非法輸入一律明講並擋住，⛔ 不做任何靜默轉換或猜值
 //      （見 parseQty / costOk 的註解）。
-//   8. 防「同一批貨算兩次」有**三道，缺一不可**（前兩道在 20260820000000 那支
+//   9. 防「同一批貨算兩次」有**三道，缺一不可**（前兩道在 20260820000000 那支
 //      migration，第三道在 @/lib/receivingSubmission）：
 //      · 冪等鍵 p_client_request_id —— 防「網路斷掉、其實成功了、樓下再按一次」
-//        （見 submissionRef 的生命週期註解）
 //      · 樂觀鎖 qty_received_base —— 防「兩台 iPad 各拿過期數字按全到」
-//        （見 submit() 組 arrivals 的地方）
-//      · decideSubmission() —— 防「送出失敗後就地改內容再送」。
-//        ⚠️ 這道是 2026-08-20 複審補的，因為前兩道**都只看得到這次送進來的品項**：
-//        第二次若把第一次已收的品項清成 0，那些品項不在 payload 裡，
-//        兩道後端防線都不會檢查它 → 靜默重複入庫（見該模組檔頭的完整推導）。
+//      · decideSubmission() —— 防「送出失敗後就地改內容再送」
+//      ⭐ 批次化之後這三道**沒有被拿掉，而是每張採購單各自跑一份**
+//        （subsRef 是 Map<po_id, Submission>，見它的宣告處）。
 //      ⛔ 不要以為其中一個能取代另一個：冪等鍵只認得同一次送出（兩台是兩個
 //        不同的值），樂觀鎖擋得住但吐的是紅字（樓下會以為失敗而再按），
 //        而兩者都對「這次沒送進來的品項」視而不見。
@@ -53,12 +67,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
+import { fetchAllRows } from "@/lib/fetchAllRows";
 import { translateRpcError } from "@/lib/rpcError";
+import { type Submission } from "@/lib/receivingSubmission";
 import {
-  decideSubmission,
-  SUBMISSION_BLOCKED_MESSAGE,
-  type Submission,
-} from "@/lib/receivingSubmission";
+  buildHaystack,
+  groupArrivalsByPo,
+  matchesQuery,
+  runBatchSubmit,
+  tokenizeQuery,
+  type BatchItem,
+} from "@/lib/receivingBatch";
 import { publicProductUrl } from "@/lib/campaignCover";
 import { useAuth } from "@/components/AuthProvider";
 import SpinButton from "@/components/SpinButton";
@@ -70,25 +89,19 @@ type WorkbenchPO = {
   po_no: string;
   status: string;
   sent_at: string | null;
-  supplier_id: number;
   supplier_name: string;
   supplier_code: string | null;
-  total_qty_ordered: number;
-  total_qty_received: number;
   line_count: number;
-  product_names: string[];
 };
 
-type SupplierGroup = {
-  supplier_id: number;
-  supplier_name: string;
-  supplier_code: string | null;
-  pos: WorkbenchPO[];
-  remaining: number;
-};
-
-type ItemForm = {
+/** 一列 ＝ 一個商品 × 一張採購單。這一頁的主角。 */
+type Row = {
   po_item_id: number;
+  po_id: number;
+  po_no: string;
+  supplier_name: string;
+  /** 送單日期。同一個商品開了好幾張單時，這是樓下唯一分得出來的線索。 */
+  sent_at: string | null;
   sku_id: number;
   sku_code: string | null;
   product_name: string | null;
@@ -96,18 +109,57 @@ type ItemForm = {
   image_url: string | null;
   qty_ordered: number;
   qty_already: number;
+  /** 應到 ＝ 訂購 − 之前已收。「全到」填的就是這個數字（不是訂購量）。 */
   remaining: number;
   /** 採購單原本的成本。樓下看不到、不能改，但一定要原值帶給 RPC。 */
   unit_cost: number;
-  /** 實到；字串是為了讓輸入框可以是空的（空 = 這項還沒核對，不會送出） */
-  qty: string;
-  variance_reason: string;
+  /** 搜尋用（已小寫）：品名 / 規格 / 商品編號 / 廠商 / 單號 */
+  haystack: string;
 };
 
-type Step = "supplier" | "po" | "items" | "done";
+/** 使用者對某一列輸入的東西。**這個 map 裡有 key ＝ 這一列被勾選了。** */
+type Entry = { qty: string; reason: string };
+
+/** 一張採購單的送出結果。⛔ 一定要逐張留著，不可以只留一個總結。 */
+type PoOutcome = {
+  po_id: number;
+  po_no: string;
+  supplier_name: string;
+  lines: number;
+  qty: number;
+  kind: "ok" | "duplicate" | "error";
+  gr_no?: string;
+  message?: string;
+};
 
 // 數量不符時的常用原因（一鍵填進既有 variance_reason 欄位，不新增資料表）
 const REASON_PRESETS = ["缺貨", "破損", "送錯", "多送"] as const;
+
+// 一次抓 purchase_order_items 的分頁大小與頁數上限。
+//
+// ⚠️ PostgREST 預設單次最多回 1000 列（見 @/lib/fetchAllRows 檔頭）。
+//   本頁一開始就把「所有待收採購單的所有品項」拉下來，是為了讓搜尋**零延遲**
+//   （樓下一天要搜近百次，每次都等一趟 round-trip 是不能用的）。
+// ⚠️ 頁數上限 8 ＝ 最多 8000 列。超過就截斷，而截斷**一定要講出來**：
+//   搜不到的東西看起來像「系統沒這筆」，那是最糟的失敗方式。
+//   偵測方式見 fetchRowsFor()：workbench 的 line_count 是精確的品項列數，
+//   拿它跟實際抓回來的列數比對即可，⛔ 不必猜。
+const ITEM_PAGE_SIZE = 1000;
+const ITEM_MAX_PAGES = 8;
+
+// skus 用 .in("id", …) 撈，分批送。
+// ⚠️ 兩個上限同時要顧：單批 < 1000 列（PostgREST 截斷）、URL 不能太長（414）。
+//   300 個 id ≈ 2KB query string，兩邊都安全。
+const SKU_CHUNK = 300;
+
+// 一次最多畫幾張卡片。
+//
+// ⚠️ 這不是美觀問題，是**會不會當機**的問題：搜尋框空白時符合條件的就是全部
+//   待收品項（可能好幾千項），每張卡片都有一張圖，iPad 一次畫幾千張會直接卡死。
+// ⚠️ 被截掉的部分**一定要講**，而且「全選」只能作用在**畫出來的這幾項**上
+//   （見 toggleSelectAll）—— 讓人按一個「全選 500 項」卻只有 200 項看得到，
+//   正是本頁最危險的失敗方式（送出的東西畫面上看不到）。
+const RENDER_LIMIT = 200;
 
 // ---------------------------------------------------------------- helpers
 
@@ -128,13 +180,13 @@ const QTY_RE = /^\d+\.?\d*$/;
  * ⛔ 這裡曾經是 `replace(/[^\d.]/g, "")` 的清洗式寫法，那是錯的：
  *    "-5" 會被洗成 "5"、"1e3" 會被洗成 "13" —— 把非法輸入靜默換成
  *    「另一個合法但錯誤的數字」，樓下完全看不出自己打的 -5 變成了 5。
- * ⛔ 也不能指望 RPC 兜底：`20260512000002_arrive_no_auto_wave.sql` 只擋
+ * ⛔ 也不能指望 RPC 兜底：`20260820000000` 只擋
  *    `qty_received IS NULL OR <= 0`，它收到的 5 是合法的 5，擋不了。
  * → 非法輸入一律回 invalid，由畫面明講並擋住送出。
  */
 function parseQty(raw: string): { qty: number; invalid: boolean } {
   const t = raw.trim();
-  if (t === "") return { qty: 0, invalid: false }; // 空 = 這項還沒核對，不送出
+  if (t === "") return { qty: 0, invalid: false }; // 空 = 還沒填，另外用 empty 判定
   if (!QTY_RE.test(t)) return { qty: 0, invalid: true };
   const n = Number(t);
   if (!Number.isFinite(n) || n < 0) return { qty: 0, invalid: true };
@@ -151,10 +203,9 @@ function parseQty(raw: string): { qty: number; invalid: boolean } {
  * 錯了永遠不會發現（辦公室現行收貨頁至少看得到也改得掉）。
  * → 這是本頁特有的風險，成本不正常的品項一律收不進去。
  *
- * ⚠ 擋的範圍：**只擋「這次真的要收」（qty > 0）的那幾項**，不是整張單。
+ * ⚠ 擋的範圍：**只擋「這次真的要收」的那幾列**，不是整批。
  *   兩種擋法對帳的保護完全等價（成本異常的品項兩者都收不進去），
- *   差別只在猜錯時的代價：擋整張單會讓樓下站在貨旁邊什麼都收不了，
- *   只擋該項則其他品項照收。安全性相同時取卡死範圍小的那個。
+ *   差別只在猜錯時的代價：擋整批會讓樓下站在貨旁邊什麼都收不了。
  * ⛔ 但絕不可以放行：「擋錯了」的代價是一通電話，「放過了」的代價是
  *   0 成本入庫拉低加權平均、靜默壞帳而且畫面上看不出來。
  */
@@ -188,11 +239,29 @@ function newRequestId(): string {
     : `r_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
 
-/** 商品名一律帶 variant_name：product_name 常常是上層品名，只印它現場會抓錯貨 */
-function itemTitle(it: ItemForm): string {
-  const main = it.product_name?.trim() || it.sku_code || `#${it.sku_id}`;
-  const sub = it.variant_name?.trim();
+/** 商品名一律帶 variant_name：product_name 常常是上層品名，只印它現場會抓錯貨
+ *  （機制索引：G00213-01 的 product_name 是「台南日曬手工麵」，
+ *   真正的東西「(A)關廟刀削麵」在 variant_name）。 */
+function rowTitle(r: {
+  product_name: string | null;
+  variant_name: string | null;
+  sku_code: string | null;
+  sku_id: number;
+}): string {
+  const main = r.product_name?.trim() || r.sku_code || `#${r.sku_id}`;
+  const sub = r.variant_name?.trim();
   return sub ? `${main} / ${sub}` : main;
+}
+
+/** 數量顯示：整數就不要拖著 .000（numeric(18,3) 的浮點尾巴很難看） */
+function fmtQty(n: number): string {
+  return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(3)));
+}
+
+function chunk<T>(list: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
 }
 
 // 觸控目標統一寫法（機制索引七之五：用 min-h 撐高、不要加 py）
@@ -201,6 +270,249 @@ const BTN_BASE =
   "min-h-[56px] min-w-[56px] px-4 text-base disabled:cursor-not-allowed disabled:opacity-40";
 const BTN_PRIMARY = `${BTN_BASE} bg-blue-600 text-white active:bg-blue-700`;
 const BTN_GHOST = `${BTN_BASE} border border-zinc-300 bg-white text-zinc-800 active:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:active:bg-zinc-800`;
+const BTN_SMALL =
+  "inline-flex items-center justify-center gap-1 rounded-lg font-semibold touch-manipulation " +
+  "min-h-[44px] px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40";
+
+// ---------------------------------------------------------------- 資料載入
+
+type RawItem = {
+  id: number;
+  po_id: number;
+  sku_id: number;
+  qty_ordered: number;
+  qty_received: number | null;
+  unit_cost: number;
+  stockout_at: string | null;
+};
+
+type RawSku = {
+  id: number;
+  sku_code: string | null;
+  product_name: string | null;
+  variant_name: string | null;
+  product: { images: unknown } | { images: unknown }[] | null;
+};
+
+type FetchResult = {
+  rows: Row[];
+  /** 商品資料沒撈回來的品項數（樓下靠圖片與品名辨貨，缺漏不能無聲） */
+  missingSku: number;
+  /** 數量資料異常、被排除掉的列（見下方 badData 的說明） */
+  badData: string[];
+  /** 被 PostgREST 列數上限截斷時 = 缺了幾列；沒截斷就是 0 */
+  truncated: number;
+};
+
+/**
+ * 把「這些採購單的所有待收品項」攤平成 Row[]。
+ *
+ * ⚠️ 為什麼一次撈全部而不是逐張單撈：本頁的核心是**搜尋要即時**。
+ *   逐張撈的話，使用者每打一次字就要等一趟網路，那正是老闆嫌慢的原因。
+ *
+ * ⚠️ 掃描成本：`purchase_order_items.po_id` **沒有索引**（機制索引四之七），
+ *   所以 `.in("po_id", …)` 是全表掃描。但**改版前這一頁就已經有一次同樣的掃描**
+ *   （舊版拿它數斷貨列數），這裡是把那一次擴充成「順便把欄位帶回來」，
+ *   ⇒ 掃描次數不增反減（舊版之後還要逐張單再各掃一次）。
+ *   ⛔ 不要為了省事改成 LEFT JOIN LATERAL 或逐 PO 查詢，那才是真的退步。
+ *
+ * ⚠️ skus 沒辦法用 PostgREST 內嵌一起撈：`purchase_order_items.sku_id`
+ *   **沒有 FOREIGN KEY 指向 skus**（20260422120004_purchase_schema.sql:96 是
+ *   純 BIGINT NOT NULL），PostgREST 找不到關聯。所以照舊分兩段查。
+ */
+async function fetchRowsFor(pos: WorkbenchPO[]): Promise<FetchResult> {
+  if (pos.length === 0) return { rows: [], missingSku: 0, badData: [], truncated: 0 };
+
+  const sb = getSupabase();
+  const poIds = pos.map((p) => p.id);
+  // line_count 是 rpc_receiving_workbench 精確算出來的品項列數
+  //（20260819000000:100 的 COUNT(poi.id)）→ 拿它當「應該抓到幾列」的基準，
+  // 就能明確判斷有沒有被列數上限截掉，⛔ 不必用「剛好 8000 列」這種猜法。
+  const expected = pos.reduce((s, p) => s + p.line_count, 0);
+
+  const raw = await fetchAllRows<RawItem>(
+    () =>
+      sb
+        .from("purchase_order_items")
+        .select("id, po_id, sku_id, qty_ordered, qty_received, unit_cost, stockout_at")
+        .in("po_id", poIds)
+        // 分頁一定要有穩定的 total order，否則跨頁會漏列／重複列
+        // （@/lib/fetchAllRows 檔頭的要求）。id 是 PRIMARY KEY，唯一且穩定。
+        .order("id"),
+    ITEM_PAGE_SIZE,
+    ITEM_MAX_PAGES,
+  );
+
+  const truncated = Math.max(0, expected - raw.length);
+
+  // 已斷貨的品項不列出來（比照現有收貨頁 receive/page.tsx:197-199）
+  const live = raw.filter((r) => !r.stockout_at);
+
+  const skuMap = new Map<
+    number,
+    { code: string | null; product: string | null; variant: string | null; img: string | null }
+  >();
+  const skuIds = Array.from(new Set(live.map((r) => r.sku_id)));
+  for (const ids of chunk(skuIds, SKU_CHUNK)) {
+    const { data: skus, error } = await sb
+      .from("skus")
+      .select("id, sku_code, product_name, variant_name, product:products(images)")
+      .in("id", ids);
+    if (error) throw new Error(error.message);
+    for (const s of (skus as RawSku[] | null) ?? []) {
+      const prod = Array.isArray(s.product) ? s.product[0] ?? null : s.product;
+      skuMap.set(s.id, {
+        code: s.sku_code,
+        product: s.product_name,
+        variant: s.variant_name,
+        img: productImageUrl(prod?.images),
+      });
+    }
+  }
+
+  const poMap = new Map(pos.map((p) => [p.id, p]));
+  const rows: Row[] = [];
+  const badData: string[] = [];
+
+  for (const r of live) {
+    const po = poMap.get(r.po_id);
+    if (!po) continue; // 撈回來的單不在清單裡（理論上不會發生）→ 略過，不要憑空生一列
+    const s = skuMap.get(r.sku_id);
+    const ordered = Number(r.qty_ordered);
+    const already = Number(r.qty_received ?? 0);
+
+    // ⚠️ 這兩個值不能是 NaN/Infinity，⛔ 尤其 already ——
+    //   它會被當成 qty_received_base 送給後端做樂觀鎖比對，
+    //   而 JSON.stringify(NaN) 是 **null** → 後端讀成 SQL NULL
+    //   → `IF v_base IS NOT NULL` 不成立 → **樂觀鎖被靜默跳過**。
+    //   防重複收貨的那道防線就這樣無聲消失了，畫面上完全看不出來。
+    //   正常 Postgres numeric 不會給出這種值，所以這裡是「壞了就不准收」，
+    //   不是猜一個值頂替（猜錯會變成錯的庫存，比收不了貨嚴重）。
+    // ⚠️ 改版後的做法是**排除這一列並把它列出來**，不是像舊版那樣整批不給收：
+    //   舊版一次只開一張單，整張擋住還算合理；現在一次是全部待收品項，
+    //   一列壞掉就讓樓下什麼都收不了，代價差太多。
+    //   ⛔ 但一定要**吵**：badData 會在畫面最上面用紅框列出來，不是靜默跳過。
+    if (!Number.isFinite(ordered) || !Number.isFinite(already)) {
+      const label = rowTitle({
+        product_name: s?.product ?? null,
+        variant_name: s?.variant ?? null,
+        sku_code: s?.code ?? null,
+        sku_id: r.sku_id,
+      });
+      badData.push(`${po.po_no}／${label}`);
+      continue;
+    }
+
+    rows.push({
+      po_item_id: r.id,
+      po_id: r.po_id,
+      po_no: po.po_no,
+      supplier_name: po.supplier_name,
+      sent_at: po.sent_at,
+      sku_id: r.sku_id,
+      sku_code: s?.code ?? null,
+      product_name: s?.product ?? null,
+      variant_name: s?.variant ?? null,
+      image_url: s?.img ?? null,
+      qty_ordered: ordered,
+      qty_already: already,
+      remaining: Math.max(0, ordered - already),
+      unit_cost: Number(r.unit_cost),
+      haystack: buildHaystack([
+        s?.product,
+        s?.variant,
+        s?.code,
+        po.supplier_name,
+        po.supplier_code,
+        po.po_no,
+      ]),
+    });
+  }
+
+  // 同一個商品的不同採購單排在一起 —— 老闆的原話是「同規格下有很多，
+  // 要有核取方塊可以全選」，排在一起才勾得動。
+  rows.sort(
+    (a, b) =>
+      rowTitle(a).localeCompare(rowTitle(b), "zh-Hant") ||
+      a.supplier_name.localeCompare(b.supplier_name, "zh-Hant") ||
+      a.po_no.localeCompare(b.po_no) ||
+      a.po_item_id - b.po_item_id,
+  );
+
+  return { rows, missingSku: Math.max(0, skuIds.length - skuMap.size), badData, truncated };
+}
+
+/** 只留還能收的單。rpc_arrive_and_distribute 本身也擋（PO must be
+ *  sent/partially_received），這裡先濾掉才不會讓樓下看到了才吃錯誤。 */
+async function fetchWorkbenchPOs(): Promise<WorkbenchPO[]> {
+  const sb = getSupabase();
+  const { data, error } = await sb.rpc("rpc_receiving_workbench");
+  if (error) throw new Error(error.message);
+  return ((data ?? []) as Array<Record<string, unknown>>)
+    .map((r) => ({
+      id: Number(r.id),
+      po_no: String(r.po_no),
+      status: String(r.status),
+      sent_at: (r.sent_at as string | null) ?? null,
+      supplier_name: String(r.supplier_name),
+      supplier_code: (r.supplier_code as string | null) ?? null,
+      line_count: Number(r.line_count),
+    }))
+    .filter((r) => r.status === "sent" || r.status === "partially_received");
+}
+
+// ---------------------------------------------------------------- 逐列判定
+
+type RowCheck = {
+  selected: boolean;
+  received: number;
+  /** 打了非數字（"-5"、"1e3"、"abc"…）→ 明確擋下，⛔ 不靜默轉換 */
+  invalid: boolean;
+  /** 勾了但數量欄是空的 → 擋下。⛔ 不可以靜默當作 0 跳過，少收一項樓下不會發現 */
+  empty: boolean;
+  /** 採購單成本 <= 0 或不是數字 → 這一列收不進去 */
+  badCost: boolean;
+  isOver: boolean;
+  isShort: boolean;
+  requiresReason: boolean;
+  reasonMissing: boolean;
+};
+
+/** 每一列的判定：實到 ≠ 應到（且實到 > 0）就要填原因
+ *  —— 與現有收貨頁 receive/page.tsx:321-324 同一條規則，
+ *     不照做的話前端校驗會跟辦公室那頁不一致。 */
+function checkRow(row: Row, entry: Entry | undefined): RowCheck {
+  const badCost = !costOk(row.unit_cost);
+  if (!entry) {
+    return {
+      selected: false,
+      received: 0,
+      invalid: false,
+      empty: false,
+      badCost,
+      isOver: false,
+      isShort: false,
+      requiresReason: false,
+      reasonMissing: false,
+    };
+  }
+  const { qty: received, invalid } = parseQty(entry.qty);
+  const empty = entry.qty.trim() === "";
+  const isOver = received > row.remaining;
+  const isShort = received > 0 && received < row.remaining;
+  const requiresReason = received > 0 && (isOver || isShort);
+  return {
+    selected: true,
+    received,
+    invalid,
+    empty,
+    badCost,
+    isOver,
+    isShort,
+    requiresReason,
+    reasonMissing: requiresReason && !entry.reason.trim(),
+  };
+}
 
 // ---------------------------------------------------------------- page
 
@@ -208,104 +520,114 @@ export default function IpadReceivingPage() {
   const { user, loading: authLoading } = useAuth();
   const branchBlocked = !authLoading && isBranchAccount(user);
 
-  const [step, setStep] = useState<Step>("supplier");
-  const [rows, setRows] = useState<WorkbenchPO[] | null>(null);
+  const [pos, setPos] = useState<WorkbenchPO[] | null>(null);
+  const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
 
-  const [supplier, setSupplier] = useState<SupplierGroup | null>(null);
-  const [po, setPO] = useState<WorkbenchPO | null>(null);
-  const [items, setItems] = useState<ItemForm[] | null>(null);
-  const [loadingItems, setLoadingItems] = useState(false);
-  const [missingSkuCount, setMissingSkuCount] = useState(0); // 商品資料沒撈回來的品項數
-  const [showDone, setShowDone] = useState(false); // 是否顯示「已收齊」的品項
+  const [missingSkuCount, setMissingSkuCount] = useState(0);
+  const [badData, setBadData] = useState<string[]>([]);
+  const [truncated, setTruncated] = useState(0);
+
+  const [search, setSearch] = useState("");
+  const [showSelectedOnly, setShowSelectedOnly] = useState(false);
+  const [showDone, setShowDone] = useState(false);
+
+  // 有 key ＝ 這一列被勾選。**跨搜尋保留**（見 onSearch 附近的說明）。
+  const [entries, setEntries] = useState<Record<number, Entry>>({});
+
   const [submitting, setSubmitting] = useState(false);
-  const [result, setResult] = useState<
-    { gr_no: string; po_no: string; qty: number; lines: number; duplicate: boolean } | null
-  >(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [outcomes, setOutcomes] = useState<PoOutcome[] | null>(null);
+  /** 送出後重撈失敗 → 畫面上的「之前已收」可能過期。要講出來但不必卡死
+   *  （樂觀鎖會擋，失敗方式是吵的）。 */
+  const [staleWarning, setStaleWarning] = useState<string | null>(null);
+  const [reloadingPo, setReloadingPo] = useState<number | null>(null);
 
   // 同步防重入鎖：React state 是非同步的，擋不住同一 tick 連點
   // （比照 purchase/orders/receive/page.tsx:104）
   const submitLock = useRef(false);
+  /** 清單正在重撈。與 submitLock 互相排斥，⛔ 兩件事不可以同時跑
+   *  （loadAll 會清 entries 與 subsRef，跑在送出中途等於把冪等鍵抽掉）。 */
+  const loadingRef = useRef(false);
 
-  // 這一次送出的冪等鍵 ＋ 當時送出的內容。生命週期是整個修法的重點，
-  // ⛔ 改之前先讀完這五條（判斷邏輯本身在 @/lib/receivingSubmission，那裡有完整推導）：
-  //   1. **送出時才產**（不是開單時）：沒送出過就沒有東西要防重。
-  //   2. **失敗不換**：重試要帶同一個值，後端才認得出「這是同一次送出」。
-  //      ⭐ 只有「交易真的 commit 了」那個值才會被後端記住 —— 沒寫進去的失敗
-  //      （成本擋、找不到品項…）重試會被當成全新的一次，正確。
-  //   3. **內容改了就整個擋下來**（2026-08-20 複審 P0 改法；前一版是「換新鍵」，
-  //      那是錯的 —— 換新鍵之後，第二次沒送進來的品項不會被任何防線檢查）。
-  //      id 與 payload 綁在同一個 ref 裡，**一起存、一起清**，避免只換一半。
-  //   4. **成功就清掉**：下一次送出是全新的一次。
-  //   5. **openPO() 重撈成功時才清**（⭐ 這條是刻意的，順序也是刻意的）：
-  //      能沿用同一個值的情境只有「人還站在核對畫面上、看著紅字再按一次」。
-  //      一旦重新載入這張單、拿到最新的 qty_received，舊的值就該丟 —— 否則
-  //      若上一次其實成功了、而樓下這回是要收**今天到的第二批**，
-  //      會被誤判成重試而**靜默不收**（比重複收更難發現）。
-  //      ⚠️ 但一定要**等重撈成功之後**才清：重撈失敗時畫面上還是舊資料，
-  //         這時把 ref 與 mustReopen 清掉，等於讓人拿著過期的 base 重新送一次。
-  //   ⓘ 萬一將來有人漏了第 5 條，後端還有一道：同一個值用到別張採購單會直接報錯
-  //      （不是靜默放行），失敗方式是吵的、不是安靜的。
-  const submissionRef = useRef<Submission | null>(null);
+  /**
+   * 每一張採購單自己的冪等鍵 ＋ 當時送出的內容。
+   *
+   * ⭐⭐ 批次化最重要的一行就是這裡的 **Map<po_id, …>**：
+   *   舊版一次只收一張單，所以是單一個 ref；現在一次會跨多張，
+   *   ⛔ **絕對不可以退回成共用一把**——後端 20260820000000:349-352 明文擋
+   *   「同一個識別碼跑到別張採購單」，共用的結果是第一張收得進去、
+   *   其餘每一張都吐「收貨識別碼 xxx 先前已用在採購單 #A」這種天書。
+   *
+   * 生命週期跟舊版逐字相同，只是「每張單各跑一份」
+   * （判斷邏輯本身在 @/lib/receivingSubmission，那裡有完整推導）：
+   *   1. **送出時才產**（不是勾選時）：沒送出過就沒有東西要防重。
+   *   2. **失敗不換**：重試要帶同一個值，後端才認得出「這是同一次送出」。
+   *      ⭐ 只有「交易真的 commit 了」那個值才會被後端記住 —— 沒寫進去的失敗
+   *      （成本擋、找不到品項…）重試會被當成全新的一次，正確。
+   *   3. **內容改了就整個擋下來**（2026-08-20 複審 P0 改法；前一版是「換新鍵」，
+   *      那是錯的 —— 換新鍵之後，第二次沒送進來的品項不會被任何防線檢查）。
+   *      id 與 payload 綁在同一個物件裡，**一起存、一起清**，避免只換一半。
+   *   4. **那張單成功就清掉它那一格**：下一次送出是全新的一次。
+   *   5. **重撈成功時才清**（⭐ 這條是刻意的，順序也是刻意的）：
+   *      能沿用同一把鍵的情境只有「人還站在畫面上、看著紅字再按一次」。
+   *      一旦重新讀到最新的 qty_received，舊的值就該丟 —— 否則
+   *      若上一次其實成功了、而樓下這回是要收**今天到的第二批**，
+   *      會被誤判成重試而**靜默不收**（比重複收更難發現）。
+   *      ⚠️ 但一定要**等重撈成功之後**才清：重撈失敗時畫面上還是舊資料，
+   *         這時把它清掉，等於讓人拿著過期的 base 重新送一次。
+   *   ⓘ 萬一將來有人漏了第 5 條，後端還有一道：同一個值用到別張採購單會直接報錯
+   *      （不是靜默放行），失敗方式是吵的、不是安靜的。
+   */
+  const subsRef = useRef<Map<number, Submission>>(new Map());
 
-  // 送出失敗、而且使用者把內容改掉了 → 這張單只剩「重新載入」一條安全的路。
-  // ⚠️ 這是 state 不是 ref：它要讓底部把「確認收貨」換成「重新載入這張單」，
-  //    必須觸發 render。真正擋住送出的是 submit() 裡的 decideSubmission()，
-  //    這個旗標只負責把唯一安全的出口做成一顆按鈕（⛔ 不可以反過來只靠 UI 擋）。
-  const [mustReopen, setMustReopen] = useState(false);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const mainRef = useRef<HTMLElement | null>(null);
 
-  const loadWorkbench = useCallback(async () => {
-    const sb = getSupabase();
-    const { data, error: e } = await sb.rpc("rpc_receiving_workbench");
-    if (e) throw new Error(e.message);
-    const list = ((data ?? []) as Array<Record<string, unknown>>)
-      .map((r) => ({
-        id: Number(r.id),
-        po_no: String(r.po_no),
-        status: String(r.status),
-        sent_at: (r.sent_at as string | null) ?? null,
-        supplier_id: Number(r.supplier_id),
-        supplier_name: String(r.supplier_name),
-        supplier_code: (r.supplier_code as string | null) ?? null,
-        total_qty_ordered: Number(r.total_qty_ordered),
-        total_qty_received: Number(r.total_qty_received),
-        line_count: Number(r.line_count),
-        product_names: Array.isArray(r.product_names)
-          ? (r.product_names as unknown[]).map((n) => String(n))
-          : [],
-      }))
-      // 只留還能收的單。rpc_arrive_and_distribute 本身也擋
-      // （PO must be sent/partially_received），這裡先濾掉才不會讓樓下點了才吃錯誤。
-      .filter((r) => r.status === "sent" || r.status === "partially_received");
+  // rows 的即時鏡像。⚠️ 送出是一連串 await，中途 rows 會被 reloadPos 換掉；
+  // 直接用 render 當下閉包裡的 rows 會拿到過期的清單（清錯 entries）。
+  // ⛔ 不要改成把 rows 放進 useCallback 依賴 —— 那只會讓函式重建，
+  //    已經開跑的那一次 async 流程手上還是舊的那份。
+  const rowsRef = useRef<Row[]>([]);
+  useEffect(() => {
+    rowsRef.current = rows ?? [];
+  }, [rows]);
 
-    if (list.length === 0) return list;
+  // ------------------------------------------------------------ 載入
 
-    // 全部品項都已斷貨的 PO 不列出來 —— 點進去會是空的，樓下白跑一趟。
-    //
-    // ⚠ 方向刻意選「數斷貨的列」而不是「數還活著的列」：
-    //   rpc_receiving_workbench 沒回斷貨資訊，只能另外查一次。斷貨列很少，
-    //   遠低於 PostgREST 預設 1000 列上限；萬一真的被截斷，結果是**少算**
-    //   斷貨數 → 少排除幾張單（多顯示），而不是把還有貨要收的單藏起來。
-    //   反過來查「還活著的列」被截斷就會讓真的要收的單消失，那是更糟的 bug。
-    // ⚠ 查詢失敗一律 fail-open（不排除任何單），不讓這個附屬功能擋住收貨。
+  // ⚠ 第一件事就 await，不在 effect body 同步 setState
+  //   （react-hooks/set-state-in-effect；repo 既有寫法見
+  //    picking/drafts/edit/page.tsx:180）。
+  //   「正在載入」的視覺回饋不靠 state：第一次是 rows === null，
+  //   按 🔄 那次由 SpinButton 自己顯示 spinner。
+  // ⛔ 併發守衛用 ref 不用 state：送出是一連串 await，中途若讓 loadAll 跑起來，
+  //   它會把 entries 與 subsRef 清掉 —— 那正是「冪等鍵被中途清掉」的洞。
+  const loadAll = useCallback(async () => {
+    if (loadingRef.current || submitLock.current) return;
+    loadingRef.current = true;
     try {
-      const { data: so, error: soErr } = await sb
-        .from("purchase_order_items")
-        .select("po_id")
-        .in("po_id", list.map((r) => r.id))
-        .not("stockout_at", "is", null);
-      if (soErr) return list;
-      const stockoutCount = new Map<number, number>();
-      for (const row of (so as Array<{ po_id: number }> | null) ?? []) {
-        const k = Number(row.po_id);
-        stockoutCount.set(k, (stockoutCount.get(k) ?? 0) + 1);
-      }
-      // line_count 是該 PO 的**全部**品項數（RPC 的 poi CTE 沒有濾斷貨），
-      // 所以「斷貨數 === line_count」就代表整張單沒有東西可收。
-      return list.filter((r) => (stockoutCount.get(r.id) ?? 0) < r.line_count);
-    } catch {
-      return list;
+      const list = await fetchWorkbenchPOs();
+      const res = await fetchRowsFor(list);
+      setError(null);
+      setPos(list);
+      setRows(res.rows);
+      setMissingSkuCount(res.missingSku);
+      setBadData(res.badData);
+      setTruncated(res.truncated);
+      // ⭐ 到這裡才代表「畫面上的已收量是剛剛從資料庫讀回來的」，
+      //    舊的冪等鍵與使用者填的數字到這一刻才可以丟（理由見 subsRef 第 5 條）。
+      subsRef.current = new Map();
+      setEntries({});
+      setStaleWarning(null);
+      setOutcomes(null);
+    } catch (e) {
+      setError(translateRpcError(e));
+      // ⛔ 失敗時**不要**把 rows 清成 []：那會讓畫面看起來像「今天沒有待收的貨」，
+      //    而事實是「沒載到」。維持原狀 + 紅字，樓下才知道要重試。
+      // ⛔ 也不要清 subsRef／entries：那兩個只有在**重撈成功**之後才可以丟
+      //    （見 subsRef 第 5 條）。
+    } finally {
+      loadingRef.current = false;
     }
   }, []);
 
@@ -313,398 +635,338 @@ export default function IpadReceivingPage() {
     // 身分還沒確定、或已判定是分店帳號 → 不要去撈資料
     if (authLoading || branchBlocked) return;
     let cancelled = false;
-    (async () => {
-      try {
-        const list = await loadWorkbench();
-        if (!cancelled) {
-          setRows(list);
-          setError(null);
-        }
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      }
+    void (async () => {
+      // ⚠ 先讓出一個 microtask 再呼叫 loadAll()。
+      //   loadAll 的第一個 await 之前雖然沒有 setState，但它的 catch 有 ——
+      //   而 getSupabase() 這種同步例外會讓那個 catch 在 effect body 的**同一個 tick**
+      //   跑到，就是 react-hooks/set-state-in-effect 講的連鎖 render。
+      //   ⛔ 不要改成 eslint-disable：那條規則講的事情是真的。
+      await Promise.resolve();
+      if (!cancelled) await loadAll();
     })();
     return () => {
       cancelled = true;
     };
-  }, [loadWorkbench, authLoading, branchBlocked]);
+  }, [loadAll, authLoading, branchBlocked]);
 
-  // 依廠商分組；搜尋同時比對廠商名 / 代碼 / 該廠商所有待收商品名
-  const groups = useMemo<SupplierGroup[]>(() => {
+  /**
+   * 只重撈某幾張採購單的品項，換掉 rows 裡對應的列。
+   *
+   * ⚠️ 成功之後才可以清掉那幾張單的冪等鍵與使用者輸入（subsRef 第 5 條）。
+   *    失敗就整支 throw，由呼叫端決定要不要卡住。
+   */
+  const reloadPos = useCallback(
+    async (poIds: number[]) => {
+      if (poIds.length === 0) return;
+      // ⛔ 找不到要重撈的單就**丟出錯誤**，不可以靜默 return：
+      //   呼叫端會把「沒有丟錯」當成重撈成功，接著清掉冪等鍵 ——
+      //   而畫面上其實還是舊資料，等於讓人拿過期的 base 再送一次。
+      const targets = (pos ?? []).filter((p) => poIds.includes(p.id));
+      if (targets.length !== poIds.length) {
+        throw new Error("待收清單已經變動，找不到要重新載入的採購單。請按最上面的 🔄 重新整理。");
+      }
+      const res = await fetchRowsFor(targets);
+      const touched = new Set(poIds);
+      setRows((cur) => {
+        const kept = (cur ?? []).filter((r) => !touched.has(r.po_id));
+        const merged = [...kept, ...res.rows];
+        merged.sort(
+          (a, b) =>
+            rowTitle(a).localeCompare(rowTitle(b), "zh-Hant") ||
+            a.supplier_name.localeCompare(b.supplier_name, "zh-Hant") ||
+            a.po_no.localeCompare(b.po_no) ||
+            a.po_item_id - b.po_item_id,
+        );
+        return merged;
+      });
+      // 「這幾項資料異常、收不了」的清單也要跟著換掉那幾張單的部分，
+      // ⛔ 不可以放著不管：那幾列會從清單裡消失，只剩一張過期的紅框在講別的事。
+      // （badData 的字串一律是 `${po_no}／品名`，所以用單號前綴就換得掉。）
+      setBadData((cur) => {
+        const prefixes = targets.map((p) => `${p.po_no}／`);
+        return [...cur.filter((t) => !prefixes.some((pre) => t.startsWith(pre))), ...res.badData];
+      });
+      // ⚠️ missingSkuCount 是整頁的一個總數，沒辦法只換這幾張單的部分 ——
+      //    部分重撈之後它可能偏舊。它只是「有東西沒圖沒名字，去問辦公室」的提示，
+      //    偏舊不會讓人收錯貨；要精確就得按 🔄 重新整理。
+
+      // 重撈成功 → 這幾張單的冪等鍵與使用者輸入都可以丟了（subsRef 第 5 條）
+      for (const id of poIds) subsRef.current.delete(id);
+      setEntries((cur) => {
+        const next = { ...cur };
+        // ⚠️ 用 rowsRef（重撈前的那份）來找出要清掉的 key：重撈之後某些
+        //   po_item_id 可能已經不在清單裡（收齊了、或被斷貨），
+        //   拿新的那份去清會留下清不掉的孤兒 entry。
+        for (const r of rowsRef.current) if (touched.has(r.po_id)) delete next[r.po_item_id];
+        return next;
+      });
+    },
+    [pos],
+  );
+
+  // ------------------------------------------------------------ 搜尋 / 篩選
+
+  const tokens = useMemo(() => tokenizeQuery(search), [search]);
+
+  const visible = useMemo(() => {
     if (!rows) return [];
-    const q = search.trim().toLowerCase();
-    const map = new Map<number, SupplierGroup>();
-    for (const r of rows) {
-      let g = map.get(r.supplier_id);
-      if (!g) {
-        g = {
-          supplier_id: r.supplier_id,
-          supplier_name: r.supplier_name,
-          supplier_code: r.supplier_code,
-          pos: [],
-          remaining: 0,
-        };
-        map.set(r.supplier_id, g);
+    if (showSelectedOnly) return rows.filter((r) => entries[r.po_item_id]);
+    return rows.filter((r) => matchesQuery(r.haystack, tokens));
+  }, [rows, tokens, showSelectedOnly, entries]);
+
+  const pendingAll = useMemo(() => visible.filter((r) => r.remaining > 0), [visible]);
+  const finishedAll = useMemo(() => visible.filter((r) => r.remaining <= 0), [visible]);
+
+  // ⚠️ 只畫前 RENDER_LIMIT 項（理由見該常數）。以下所有「全選 / 這 N 項」
+  //    一律以**畫出來的這幾項**為準，⛔ 不可以用 pendingAll ——
+  //    勾到看不見的東西是本頁最危險的失敗方式。
+  const pending = useMemo(() => pendingAll.slice(0, RENDER_LIMIT), [pendingAll]);
+  const finished = useMemo(() => finishedAll.slice(0, RENDER_LIMIT), [finishedAll]);
+  const overflow = pendingAll.length - pending.length + (finishedAll.length - finished.length);
+
+  const selectedRows = useMemo(
+    () => (rows ?? []).filter((r) => entries[r.po_item_id]),
+    [rows, entries],
+  );
+
+  /** 已勾但**畫面上真的看不到**的列。
+   *  ⚠️ 基準是「真正畫出來的那幾張卡片」，不是 visible ——
+   *     visible 還包含被 RENDER_LIMIT 截掉、沒畫出來的部分。
+   *  ⛔ 這個數字一定要顯示出來：「送出的東西畫面上看不到」是本頁最危險的失敗方式。 */
+  const hiddenSelected = useMemo(() => {
+    const shown = new Set([...pending, ...finished].map((r) => r.po_item_id));
+    return selectedRows.filter((r) => !shown.has(r.po_item_id));
+  }, [pending, finished, selectedRows]);
+
+  // 已收齊的列預設收起來；但只要裡面有勾選的就強制攤開，
+  // 免得「要送出的東西畫面上看不到」。
+  const finishedHasSelected = useMemo(
+    () => finished.some((r) => entries[r.po_item_id]),
+    [finished, entries],
+  );
+  const doneVisible = showDone || finishedHasSelected;
+
+  const summary = useMemo(() => {
+    let qty = 0;
+    let invalid = 0;
+    let empty = 0;
+    let reasonMissing = 0;
+    const badCost: Row[] = [];
+    const poIds = new Set<number>();
+    for (const r of selectedRows) {
+      const c = checkRow(r, entries[r.po_item_id]);
+      poIds.add(r.po_id);
+      if (c.invalid) invalid += 1;
+      if (c.empty) empty += 1;
+      if (c.reasonMissing) reasonMissing += 1;
+      if (c.received > 0 && c.badCost) badCost.push(r);
+      qty += c.received;
+    }
+    return {
+      lines: selectedRows.length,
+      qty,
+      invalid,
+      empty,
+      reasonMissing,
+      badCost,
+      poCount: poIds.size,
+    };
+  }, [selectedRows, entries]);
+
+  const blockReason = useMemo(() => {
+    if (summary.lines === 0) return "請先勾選要收的品項。";
+    if (summary.invalid > 0)
+      return `有 ${summary.invalid} 項的數量不是有效數字，請改成數字（例：12）。`;
+    if (summary.empty > 0) return `有 ${summary.empty} 項還沒填數量，請填數字或取消勾選。`;
+    if (summary.badCost.length > 0)
+      return `有 ${summary.badCost.length} 項的成本不正常收不進去，請通知辦公室，並先取消勾選這幾項。`;
+    if (summary.reasonMissing > 0)
+      return `有 ${summary.reasonMissing} 項數量跟應到不一樣，要先選一個原因才能送出。`;
+    return null;
+  }, [summary]);
+
+  // ------------------------------------------------------------ 勾選
+
+  function toggleRow(row: Row) {
+    setEntries((cur) => {
+      if (cur[row.po_item_id]) {
+        const next = { ...cur };
+        delete next[row.po_item_id];
+        return next;
       }
-      g.pos.push(r);
-      g.remaining += Math.max(0, r.total_qty_ordered - r.total_qty_received);
-    }
-    let list = Array.from(map.values());
-    if (q) {
-      list = list.filter((g) => {
-        const haystack = [
-          g.supplier_name,
-          g.supplier_code ?? "",
-          ...g.pos.map((p) => p.po_no),
-          ...g.pos.flatMap((p) => p.product_names),
-        ]
-          .join(" ")
-          .toLowerCase();
-        return haystack.includes(q);
-      });
-    }
-    return list.sort((a, b) => a.supplier_name.localeCompare(b.supplier_name, "zh-Hant"));
-  }, [rows, search]);
-
-  // 進到某張單：撈品項明細（已斷貨不列入，比照現有收貨頁 receive/page.tsx:197-199）
-  const openPO = useCallback(async (target: WorkbenchPO) => {
-    setLoadingItems(true);
-    setError(null);
-    // ⛔ 舊的冪等鍵與 mustReopen **不在這裡清**（2026-08-20 改）。
-    //    要等下面真的重撈到最新的 qty_received、setItems 成功之後才清。
-    //    原本清在這一行，配上新的「重新載入這張單」按鈕會開一個洞：
-    //    重撈失敗時畫面上留著舊的 items（＝過期的 qty_already），
-    //    ref 卻已經被清空、mustReopen 也被關掉 → 使用者可以拿過期的 base
-    //    重新送一次，正好繞過本次要修的那條靜默重複入庫路徑。
-    try {
-      const sb = getSupabase();
-      const { data: raw, error: e1 } = await sb
-        .from("purchase_order_items")
-        .select("id, sku_id, qty_ordered, qty_received, unit_cost, stockout_at")
-        .eq("po_id", target.id)
-        .order("id");
-      if (e1) throw new Error(e1.message);
-
-      type RawItem = {
-        id: number;
-        sku_id: number;
-        qty_ordered: number;
-        qty_received: number | null;
-        unit_cost: number;
-        stockout_at: string | null;
+      // ⭐ 勾起來就直接把「應到」填進數量欄，而且是**看得見地填**。
+      //   老闆要的是「勾一勾 → 一次全到＋確認」，所以填這件事必須發生在勾的當下，
+      //   ⛔ 不可以藏在送出按鈕裡偷偷補 —— 那樣樓下永遠不知道自己送了什麼數字。
+      //   已收齊的列（應到 0）留空，逼他自己填（那是超收，本來就該想一下）。
+      return {
+        ...cur,
+        [row.po_item_id]: { qty: row.remaining > 0 ? fmtQty(row.remaining) : "", reason: "" },
       };
-      const live = ((raw as RawItem[] | null) ?? []).filter((r) => !r.stockout_at);
+    });
+  }
 
-      type RawSku = {
-        id: number;
-        sku_code: string | null;
-        product_name: string | null;
-        variant_name: string | null;
-        product: { images: unknown } | { images: unknown }[] | null;
-      };
-      const skuMap = new Map<number, { code: string | null; product: string | null; variant: string | null; img: string | null }>();
-      const skuIds = Array.from(new Set(live.map((r) => r.sku_id)));
-      if (skuIds.length > 0) {
-        const { data: skus, error: e2 } = await sb
-          .from("skus")
-          .select("id, sku_code, product_name, variant_name, product:products(images)")
-          .in("id", skuIds);
-        if (e2) throw new Error(e2.message);
-        for (const s of (skus as RawSku[] | null) ?? []) {
-          const prod = Array.isArray(s.product) ? s.product[0] ?? null : s.product;
-          skuMap.set(s.id, {
-            code: s.sku_code,
-            product: s.product_name,
-            variant: s.variant_name,
-            img: productImageUrl(prod?.images),
-          });
+  function patchEntry(rowId: number, patch: Partial<Entry>) {
+    setEntries((cur) => {
+      // 直接在數量欄打字 = 也算勾選（不然打了字卻不會送出，最難發現的那種錯）
+      const prev: Entry = cur[rowId] ?? { qty: "", reason: "" };
+      return { ...cur, [rowId]: { ...prev, ...patch } };
+    });
+  }
+
+  /** 全選 / 取消全選 —— **只作用在目前看得到的結果上**，不是整個資料庫。
+   *  已收齊的列（應到 0）不納入全選：它們是超收情境，要人自己想一下才勾。 */
+  const allPendingSelected = pending.length > 0 && pending.every((r) => entries[r.po_item_id]);
+  function toggleSelectAll() {
+    setEntries((cur) => {
+      const next = { ...cur };
+      if (allPendingSelected) {
+        for (const r of pending) delete next[r.po_item_id];
+      } else {
+        for (const r of pending) {
+          if (!next[r.po_item_id]) next[r.po_item_id] = { qty: fmtQty(r.remaining), reason: "" };
         }
       }
-
-      const forms: ItemForm[] = live.map((r) => {
-        const s = skuMap.get(r.sku_id);
-        const ordered = Number(r.qty_ordered);
-        const already = Number(r.qty_received ?? 0);
-        // ⚠️ 這兩個值不能是 NaN/Infinity，⛔ 尤其 already ——
-        //   它會被當成 qty_received_base 送給後端做樂觀鎖比對，
-        //   而 JSON.stringify(NaN) 是 **null** → 後端讀成 SQL NULL
-        //   → `IF v_base IS NOT NULL` 不成立 → **樂觀鎖被靜默跳過**。
-        //   防重複收貨的那道防線就這樣無聲消失了，畫面上完全看不出來。
-        //   正常 Postgres numeric 不會給出這種值，所以這裡是「壞了就不准收」，
-        //   不是猜一個值頂替（猜錯會變成錯的庫存，比收不了貨嚴重）。
-        if (!Number.isFinite(ordered) || !Number.isFinite(already)) {
-          throw new Error(
-            `採購單品項 #${r.id} 的數量資料異常（訂購 ${String(r.qty_ordered)}、已收 ${String(r.qty_received)}），` +
-              `這張單先不要收，請通知辦公室檢查。`,
-          );
-        }
-        return {
-          po_item_id: r.id,
-          sku_id: r.sku_id,
-          sku_code: s?.code ?? null,
-          product_name: s?.product ?? null,
-          variant_name: s?.variant ?? null,
-          image_url: s?.img ?? null,
-          qty_ordered: ordered,
-          qty_already: already,
-          remaining: Math.max(0, ordered - already),
-          unit_cost: Number(r.unit_cost),
-          // ⛔ 預設留空，不預先填滿：這一頁的用途是「核對」，
-          //    預填等於鼓勵不看貨就送出，錯的庫存比漏收難救。
-          qty: "",
-          variance_reason: "",
-        };
-      });
-
-      // 商品資料沒撈回來 → 樓下靠圖片與品名辨貨，缺漏時不能無聲
-      // （`.in("id", skuIds)` 吃 PostgREST 的列數上限，與現行收貨頁同風險）
-      setMissingSkuCount(Math.max(0, skuIds.length - skuMap.size));
-      setPO(target);
-      setItems(forms);
-      setShowDone(false);
-      setStep("items");
-      // ⭐ 到這裡才代表「畫面上的已收量是剛剛從資料庫讀回來的」，
-      //    舊的冪等鍵與「必須重新載入」的旗標到這一刻才可以丟
-      //    （理由見 submissionRef 宣告處第 5 條）。
-      submissionRef.current = null;
-      setMustReopen(false);
-    } catch (e) {
-      setError(translateRpcError(e));
-    } finally {
-      setLoadingItems(false);
-    }
-  }, []);
-
-  function patchItem(idx: number, patch: Partial<ItemForm>) {
-    setItems((cur) => {
-      if (!cur) return cur;
-      const next = [...cur];
-      next[idx] = { ...next[idx], ...patch };
       return next;
     });
   }
 
-  function fillAllArrived() {
-    setItems((cur) => (cur ? cur.map((f) => (f.remaining > 0 ? { ...f, qty: String(f.remaining) } : f)) : cur));
+  function clearSelection() {
+    setEntries({});
+    setShowSelectedOnly(false);
   }
 
-  function clearAll() {
-    setItems((cur) => (cur ? cur.map((f) => ({ ...f, qty: "", variance_reason: "" })) : cur));
-  }
+  // ------------------------------------------------------------ 送出
 
-  // 每一項的判定：實到 ≠ 應到（且實到 > 0）就要填原因
-  // —— 與現有收貨頁 receive/page.tsx:321-324 同一條規則，
-  //    不照做的話 RPC 送出前的前端校驗會不一致。
-  const checks = useMemo(() => {
-    if (!items) return null;
-    return items.map((f) => {
-      const { qty: received, invalid } = parseQty(f.qty);
-      const isOver = received > f.remaining;
-      const isShort = received > 0 && received < f.remaining;
-      const requiresReason = received > 0 && (isOver || isShort);
-      return {
-        received,
-        invalid,
-        // 卡片層：只要成本不正常就標，讓樓下點貨前就知道
-        // （擋送出的範圍另外算，只算 received > 0 的 —— 見 summary）
-        badCost: !costOk(f.unit_cost),
-        isOver,
-        isShort,
-        requiresReason,
-        reasonMissing: requiresReason && !f.variance_reason.trim(),
-      };
-    });
-  }, [items]);
-
-  const summary = useMemo(() => {
-    if (!items || !checks) return null;
-    let lines = 0;
-    let qty = 0;
-    let missing = 0;
-    let invalid = 0;
-    items.forEach((f, i) => {
-      const c = checks[i];
-      if (c.invalid) invalid += 1;
-      if (c.received > 0) {
-        lines += 1;
-        qty += c.received;
-        if (c.reasonMissing) missing += 1;
-      }
-    });
-    // 成本異常 → 只擋「這次真的要收」的那幾項（見 costOk 檔頭）。
-    // ⛔ 不可以靜默跳過：擋住的品項一定要在畫面上講出來，
-    //    樓下看不到單價，全靠這個提示才知道有東西沒收到。
-    const badCost = items.filter((f, i) => checks[i].received > 0 && !costOk(f.unit_cost));
-    return { lines, qty, missing, invalid, badCost, total: items.length };
-  }, [items, checks]);
-
-  // 已收齊的品項預設收起來；但只要有人在裡面填了數字就強制顯示，
-  // 免得「送出去的東西畫面上看不到」。
-  const hiddenHasQty = useMemo(() => {
-    if (!items || !checks) return false;
-    return items.some((f, i) => f.remaining <= 0 && checks[i].received > 0);
-  }, [items, checks]);
-  const doneVisible = showDone || hiddenHasQty;
-
-  async function submit() {
-    if (!items || !checks || !po || submitLock.current) return;
+  async function runSubmit() {
+    if (submitLock.current) return;
+    // 清單正在重撈時不准送：重撈完會把 entries 清掉，兩件事交錯會送出對不上的內容
+    if (loadingRef.current) {
+      setError("清單正在重新整理，請等一下再按「確認收貨」。");
+      return;
+    }
+    if (blockReason) {
+      setError(blockReason);
+      return;
+    }
     submitLock.current = true;
-    setError(null);
     setSubmitting(true);
+    setError(null);
+    setStaleWarning(null);
+
     try {
-      // ── 送出前的三道硬擋，順序＝從「最該先修好」往下 ──────────────
-      // ⛔ 三道都是「整批不送」，不是靜默把有問題的那一項跳過送其他的 ——
-      //    少收一項樓下不會發現，那才是真正會壞帳的失敗模式。
-      // ⚠ 但第 2 道的**觸發範圍**只看「這次真的要收」（qty > 0）的品項：
-      //    沒填數量的品項就算成本異常，也不會擋住你收這張單的其他品項
-      //    （2026-08-19 從「擋整張單」改成這樣，理由見 costOk 檔頭）。
-
-      // 1. 非法數量（"-5"、"1e3"、"abc"…）。RPC 只擋 qty <= 0，
-      //    擋不住「前端把 -5 變成 5」，所以一定要在這裡攔。
-      const invalidCount = checks.filter((c) => c.invalid).length;
-      if (invalidCount > 0) {
-        throw new Error(`有 ${invalidCount} 項的數量不是有效數字，請改成數字（例：12）再送出。`);
-      }
-
-      // 2. 成本異常（unit_cost 沒有 CHECK > 0，0 是合法值 → 會用 0 成本入庫）
-      //    只擋這次要收的那幾項；其他品項照收（見 costOk 檔頭）。
-      const badCost = items.filter((f, i) => checks[i].received > 0 && !costOk(f.unit_cost));
-      if (badCost.length > 0) {
-        throw new Error(
-          `有 ${badCost.length} 個品項的成本不正常，收不進去，請通知辦公室修正採購單。` +
-            `把這幾項的數量清成 0 就可以先收其他品項。（${badCost
-              .slice(0, 3)
-              .map(itemTitle)
-              .join("、")}${badCost.length > 3 ? " 等" : ""}）`,
-        );
-      }
-
-      const arrivals = items
-        .map((f, i) => ({ f, c: checks[i] }))
-        .filter(({ c }) => c.received > 0)
-        .map(({ f, c }) => ({
-          po_item_id: f.po_item_id,
-          sku_id: f.sku_id,
-          qty_received: c.received,
-          // 樓下畫面上沒有「瑕疵」欄位 —— 瑕疵歸辦公室在既有收貨頁處理
-          qty_damaged: 0,
-          // 帶採購單原本的成本（上面第 2 道已保證 > 0）。
-          // ⛔ 不可送 0 或 null，也⛔不可以自己猜一個成本：unit_cost > 0 才會
-          // 重算加權平均成本（apply_movement_to_balance），送 0 會把成本洗掉。
-          unit_cost: f.unit_cost,
-          batch_no: null,
-          expiry_date: null,
-          variance_reason: f.variance_reason.trim() || null,
-          // 樂觀鎖：把「我畫面上看到的已收量」一起送上去，後端在同一把列鎖之下
-          // 比對現值，不一樣就整批擋下並叫人重新整理。
-          //
-          // 為什麼需要：樓下是共用帳號、多台 iPad。兩台各自開同一張單、
-          // 各自看著自己那份（可能已經過期的）剩餘量按「全到」，兩邊都會通過，
-          // qty_received 被連續累加兩次 → 庫存翻倍、成本算兩次、應付廠商多算，
-          // 而且畫面上完全不會報錯。
-          // ⛔ 這件事**不是**靠「排隊」能解的：rpc_arrive_and_distribute 第一步
-          //   就對 purchase_orders 下了 FOR UPDATE，同一張單本來就會排隊；
-          //   但排隊只保證後跑，不會讓第二台手上的數字變新。
-          //   只有把「當時看到的值」送上去比對才擋得住。
-          qty_received_base: f.qty_already,
-          // 分店分配一律留給派貨工作台
-          allocations: [] as Array<{ store_id: number; qty: number }>,
-        }));
-
-      if (arrivals.length === 0) throw new Error("請至少填一項實到數量");
-
-      const missing = checks.filter((c) => c.reasonMissing).length;
-      if (missing > 0) throw new Error(`有 ${missing} 項數量跟應到不一樣，要先選原因才能送出。`);
-
       const { data: userRes } = await getSupabase().auth.getUser();
       const operator = userRes?.user?.id;
       if (!operator) throw new Error("未登入");
 
-      // 冪等鍵。完整推導在 @/lib/receivingSubmission 的檔頭，這裡只講結論：
-      //
-      //   ⇒ 沒送過       → 新的一把鍵，正常送
-      //   ⇒ 內容一模一樣 → 沿用同一把鍵（後端回既有 GR，明講「先前已經收過了」）
-      //   ⇒ 內容改過了   → **擋下**，只給「重新載入這張單」一條路
-      //
-      // ⚠️⚠️ 2026-08-20 複審 P0：第三條原本是「換一把新的鍵」，理由寫的是
-      //   「換新鍵不會重複收貨，因為 base 對不上、樂觀鎖會擋」。**那句話是錯的。**
-      //   上面的 arrivals 是 `filter(received > 0)` 現算的，只包含這次有填數量的品項；
-      //   後端樂觀鎖也只逐項比對有送進來的品項。
-      //   ⇒ 第一次送 A=5 已 commit、回應斷掉 → 樓下把 A 清成 0、改填 B 再送
-      //     → 第二次 payload 裡沒有 A → **沒有任何一道防線會檢查 A**
-      //     → B 收成功、畫面顯示成功，而 A 早就悄悄入過一次帳。
-      //   關鍵認知：**送出失敗之後，畫面上那份數字已經不可信**（可能成功、可能沒有，
-      //   前端分不出來）。讓他改內容再送本質上是在猜；唯一安全的動作是重讀現況。
-      //
-      // ⓘ payload 直接存 JSON 字串、不做 hash：這裡只需要「一不一樣」，
-      //   不需要抗碰撞；長度也就幾百 bytes。arrivals 的欄位順序是固定的
-      //   （上面只有一個 object literal 產生它），所以同樣內容的字串一定相同。
-      const payload = JSON.stringify({ po: po.id, arrivals });
-      const decision = decideSubmission(submissionRef.current, payload, newRequestId);
-      if (decision.kind === "blocked") {
-        // ⛔ 這裡只設旗標、不清 submissionRef：清掉的話下一次按就變成「全新的一次」，
-        //    洞會原封不動回來。只有 openPO 重撈成功才有資格清。
-        setMustReopen(true);
-        throw new Error(SUBMISSION_BLOCKED_MESSAGE);
+      const items: BatchItem[] = selectedRows.map((r) => {
+        const e = entries[r.po_item_id];
+        const c = checkRow(r, e);
+        return {
+          po_item_id: r.po_item_id,
+          po_id: r.po_id,
+          sku_id: r.sku_id,
+          unit_cost: r.unit_cost,
+          qty_already: r.qty_already,
+          qty: c.received,
+          variance_reason: e?.reason.trim() ? e.reason.trim() : null,
+        };
+      });
+
+      const batches = groupArrivalsByPo(items);
+      const poMeta = new Map(rowsRef.current.map((r) => [r.po_id, r]));
+
+      // ⭐ 逐張送出的規則（每張各自的冪等鍵、失敗保留鍵、一張失敗不中斷其餘）
+      //   全部在 runBatchSubmit 裡，那裡有完整推導，而且可以離線驗證。
+      //   ⛔ 不要把那段邏輯搬回這裡：它每一種錯法都是「安靜的」。
+      const raw = await runBatchSubmit({
+        batches,
+        subs: subsRef.current,
+        newId: newRequestId,
+        toMessage: translateRpcError,
+        callRpc: async (poId, arrivals, requestId) => {
+          const { data, error: rpcErr } = await getSupabase().rpc("rpc_arrive_and_distribute", {
+            p_po_id: poId,
+            p_arrivals: arrivals,
+            p_operator: operator,
+            // 樓下不填發票號與備註
+            p_invoice_no: null,
+            p_notes: null,
+            p_client_request_id: requestId,
+          });
+          if (rpcErr) throw rpcErr;
+          return data as { gr_no?: string; duplicate?: boolean } | null;
+        },
+      });
+
+      const results: PoOutcome[] = raw.map((o) => {
+        const meta = poMeta.get(o.po_id);
+        return {
+          ...o,
+          po_no: meta?.po_no ?? `#${o.po_id}`,
+          supplier_name: meta?.supplier_name ?? "",
+        };
+      });
+      const donedPoIds = raw.filter((o) => o.kind !== "error").map((o) => o.po_id);
+
+      // 成功的那幾張：清掉使用者輸入（貨已經收了，留著只會被誤按第二次），
+      // 並重撈它們的最新已收量。
+      // ⚠️ 失敗的那幾張**刻意不動**：保留原樣才能「原內容再按一次」＝ 帶同一把鍵重試。
+      if (donedPoIds.length > 0) {
+        const done = new Set(donedPoIds);
+        setEntries((cur) => {
+          const next = { ...cur };
+          for (const r of rowsRef.current) if (done.has(r.po_id)) delete next[r.po_item_id];
+          return next;
+        });
+        try {
+          await reloadPos(donedPoIds);
+        } catch (e) {
+          // 重撈失敗不卡死：這幾張的冪等鍵在送出成功時就清掉了（與舊版同一條規則），
+          // 而畫面上的「之前已收」可能過期 —— 拿過期的 base 再送會被**樂觀鎖擋下**，
+          // 失敗方式是吵的紅字，不是靜默壞帳。所以這裡只要講清楚就好。
+          setStaleWarning(
+            `剛剛收的單重新載入失敗（${translateRpcError(e)}）。` +
+              `畫面上的「之前已收」可能不是最新的 —— 要再收同一張採購單之前，` +
+              `請先按最上面搜尋框旁邊的 🔄 重新整理。`,
+          );
+        }
       }
-      submissionRef.current = { id: decision.id, payload };
 
-      const { data, error: rpcErr } = await getSupabase().rpc("rpc_arrive_and_distribute", {
-        p_po_id: po.id,
-        p_arrivals: arrivals,
-        p_operator: operator,
-        // 樓下不填發票號與備註
-        p_invoice_no: null,
-        p_notes: null,
-        p_client_request_id: submissionRef.current.id,
-      });
-      if (rpcErr) throw new Error(translateRpcError(rpcErr));
-
-      const out = (data as { gr_no?: string; duplicate?: boolean } | null) ?? {};
-      const isDup = out.duplicate === true;
-      setResult({
-        gr_no: out.gr_no ?? "",
-        po_no: po.po_no,
-        // ⚠ 重試被認出來時，這次填的數字**不是**實際收進去的數字
-        //   （後端回的是先前那張 GR，不會照這次的數量再收一次）。
-        //   所以 duplicate 時不可以拿本地數字當結果講，成功畫面另外處理。
-        qty: arrivals.reduce((s, a) => s + a.qty_received, 0),
-        lines: arrivals.length,
-        duplicate: isDup,
-      });
-      // 這一次（不管是新收還是被認出來的重試）都已經落地 → 清掉冪等鍵，
-      // 下一次送出才不會被誤判成重試。
-      submissionRef.current = null;
-      // ⛔ 成功後**不釋放** submitLock，並且切到成功畫面（那一頁沒有送出鈕）。
-      //    要再收下一張單一定得走 startNext()，那裡才會解鎖。
-      setItems(null);
-      setPO(null);
-      setStep("done");
+      setOutcomes(results);
+      setShowSelectedOnly(false);
+      // 收完自動回到搜尋框，準備收下一樣
+      // ⚠️ select() 而不是清空：同一批貨常常要連收好幾樣，字留著他可以直接接著看；
+      //   要換關鍵字時直接打字就會整段取代掉。
+      // ⚠️ 用 setTimeout 不用 requestAnimationFrame：rAF 在頁面不可見時**完全不會觸發**
+      //   （實測 document.visibilityState === "hidden" 時 600ms 內一次都沒跑）。
+      //   iPad 螢幕鎖住、或樓下切去別的 App 再切回來，焦點就永遠回不到搜尋框。
+      //   延遲 0 只是為了排在這一次 render 之後。
+      // ⓘ iOS 上「非使用者手勢中的 focus()」不見得會把鍵盤叫出來（送出是一串 await，
+      //   手勢早就結束了）。游標一定會回到搜尋框，鍵盤則看系統臉色 —— 這是已知限制。
+      setTimeout(() => {
+        mainRef.current?.scrollTo({ top: 0 });
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      }, 0);
     } catch (e) {
       setError(translateRpcError(e));
-      submitLock.current = false; // 失敗才解鎖，讓人修正後重試
     } finally {
+      submitLock.current = false;
       setSubmitting(false);
     }
   }
 
-  async function startNext() {
-    setResult(null);
-    setError(null);
-    setSearch("");
-    setSupplier(null);
-    setMissingSkuCount(0);
-    setStep("supplier");
-    setRows(null);
-    submitLock.current = false;
-    submissionRef.current = null; // 保險：submit 成功時已經清過
-    setMustReopen(false);
-    try {
-      setRows(await loadWorkbench());
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setRows([]);
+  /** 按下「確認收貨」。已勾但畫面上看不到的列 → 先攤開讓他看過再送。 */
+  function onSubmitClick() {
+    if (blockReason) {
+      setError(blockReason);
+      return;
     }
+    if (hiddenSelected.length > 0) {
+      setConfirmOpen(true);
+      return;
+    }
+    void runSubmit();
   }
 
   // ------------------------------------------------------------ render
@@ -738,535 +1000,670 @@ export default function IpadReceivingPage() {
   }
 
   return (
-    // 蓋掉桌機側欄：不改全站 layout.tsx，改用本頁自己全屏。
+    // 蓋掉桌機側欄：不改全站 layout.tsx（會炸到所有頁面所有使用者），改用本頁自己全屏。
     // z-40 → Modal / 手機抽屜（都是 z-50）仍蓋得住這一頁。
     // 高度用 dvh 不用 vh：iPad 工具列收合時 vh 會比實際可視高度大，底部按鈕會被切掉。
     <div className="fixed inset-x-0 top-0 z-40 flex h-[100dvh] flex-col bg-zinc-100 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
-      <Header
-        step={step}
-        supplier={supplier}
-        po={po}
-        onBack={() => {
-          setError(null);
-          if (step === "items") {
-            setItems(null);
-            setPO(null);
-            setMissingSkuCount(0);
-            setStep("po");
-          } else if (step === "po") {
-            setSupplier(null);
-            setStep("supplier");
-          }
-        }}
-      />
+      {/* ⭐ 搜尋列放在 header（flex 容器的固定列，不參與捲動）—— 老闆原話：
+          「搜尋框就不能固定最上面嗎 不管動作到那一頁就直接搜」。
+          ⛔ 不要把它移進下面的 <main>，那裡會捲走。 */}
+      <header className="shrink-0 border-b border-zinc-300 bg-white px-4 py-3 dark:border-zinc-700 dark:bg-zinc-900">
+        <div className="flex items-center gap-3">
+          <div className="relative min-w-0 flex-1">
+            {/* 字級 ≥16px：低於 16px 的輸入框一 focus，iOS 就把整頁放大 */}
+            <input
+              ref={searchRef}
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                // 打字就代表要看搜尋結果了，自動退出「只看已勾選」
+                setShowSelectedOnly(false);
+              }}
+              // ⛔ 不用 type="search"：iOS 會自己加一個小小的原生 ✕，
+              //    跟右邊那顆 44px 的清除鈕重疊，而原生那顆戴手套按不到。
+              type="text"
+              enterKeyHint="search"
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+              placeholder="🔍 打商品名或廠商名"
+              aria-label="搜尋商品或廠商"
+              className="min-h-[56px] w-full rounded-xl border-2 border-zinc-300 bg-white px-4 pr-14 text-lg dark:border-zinc-600 dark:bg-zinc-950"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearch("");
+                  searchRef.current?.focus();
+                }}
+                aria-label="清除搜尋"
+                className="absolute right-1 top-1/2 min-h-[44px] min-w-[44px] -translate-y-1/2 touch-manipulation rounded-lg text-2xl text-zinc-400 active:bg-zinc-100 dark:active:bg-zinc-800"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+          <SpinButton
+            type="button"
+            onClick={loadAll}
+            disabled={submitting}
+            className={`${BTN_GHOST} shrink-0`}
+            aria-label="重新整理"
+          >
+            {/* SpinButton 會自己在 promise 未完成時顯示 spinner，不必另外接 loading state */}
+            🔄
+          </SpinButton>
+          {/* 出口：不然樓下會被困在這一頁出不去 */}
+          <Link href="/wms/receiving" className={`${BTN_GHOST} shrink-0`}>
+            離開
+          </Link>
+        </div>
 
-      <main className="flex-1 overflow-y-auto overscroll-contain px-4 pb-6 pt-4">
+        {/* 已勾選的狀態列。⛔ 一定要常駐：勾了什麼、有幾樣不在畫面上，
+            都必須看得見（「送出的東西畫面上看不到」是本頁最危險的失敗方式）。 */}
+        {summary.lines > 0 && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-base">
+            <span className="font-bold">
+              已勾 {summary.lines} 項 · {fmtQty(summary.qty)} 件
+              {summary.poCount > 1 && (
+                <span className="ml-1 font-normal text-zinc-600 dark:text-zinc-400">
+                  （跨 {summary.poCount} 張採購單）
+                </span>
+              )}
+            </span>
+            {hiddenSelected.length > 0 && !showSelectedOnly && (
+              <span className="rounded-lg bg-amber-100 px-2 py-1 text-sm font-bold text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                其中 {hiddenSelected.length} 項不在這次搜尋結果裡
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => setShowSelectedOnly((v) => !v)}
+              className={`${BTN_SMALL} ${
+                showSelectedOnly
+                  ? "bg-blue-600 text-white active:bg-blue-700"
+                  : "border border-zinc-300 bg-white text-zinc-800 active:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+              }`}
+            >
+              {showSelectedOnly ? "← 回搜尋結果" : "只看已勾選"}
+            </button>
+            <button
+              type="button"
+              onClick={clearSelection}
+              className={`${BTN_SMALL} border border-zinc-300 bg-white text-zinc-800 active:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100`}
+            >
+              清除勾選
+            </button>
+          </div>
+        )}
+      </header>
+
+      <main ref={mainRef} className="flex-1 overflow-y-auto overscroll-contain px-4 pb-6 pt-4">
         {error && (
           <div className="mb-4 rounded-xl border border-red-300 bg-red-50 p-4 text-base font-medium text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
             ⚠ {error}
           </div>
         )}
 
-        {step === "supplier" && (
-          <SupplierStep
-            rows={rows}
-            groups={groups}
-            search={search}
-            onSearch={setSearch}
-            onPick={(g) => {
-              setSupplier(g);
-              setStep("po");
+        {/* ⭐ 逐張採購單的結果。⛔ 不可以只顯示一個「成功」或一個「失敗」：
+            3 張成功 1 張被擋下時，樓下會以為全收了或全沒收，兩種誤會都會讓盤點對不起來。 */}
+        {outcomes && outcomes.length > 0 && (
+          <OutcomePanel
+            outcomes={outcomes}
+            busyPo={reloadingPo}
+            onDismiss={() => setOutcomes(null)}
+            onReloadPo={async (poId) => {
+              setReloadingPo(poId);
+              setError(null);
+              try {
+                await reloadPos([poId]);
+                setOutcomes((cur) => (cur ? cur.filter((o) => o.po_id !== poId) : cur));
+              } catch (e) {
+                setError(translateRpcError(e));
+              } finally {
+                setReloadingPo(null);
+              }
             }}
           />
         )}
 
-        {step === "po" && supplier && (
-          <POStep supplier={supplier} busy={loadingItems} onPick={openPO} />
+        {staleWarning && (
+          <div className="mb-4 rounded-xl border-2 border-amber-400 bg-amber-50 p-4 text-base font-medium text-amber-900 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-200">
+            ⚠ {staleWarning}
+          </div>
         )}
 
-        {step === "items" && items && checks && (
-          <ItemsStep
-            items={items}
-            checks={checks}
-            doneVisible={doneVisible}
-            forcedOpen={hiddenHasQty}
-            missingSkuCount={missingSkuCount}
-            badCost={summary?.badCost ?? []}
-            onToggleDone={() => setShowDone((v) => !v)}
-            onPatch={patchItem}
-            onFillAll={fillAllArrived}
-            onClearAll={clearAll}
-          />
+        {truncated > 0 && (
+          <div className="mb-4 rounded-xl border-2 border-rose-400 bg-rose-50 p-4 text-base font-bold text-rose-800 dark:border-rose-700 dark:bg-rose-950/50 dark:text-rose-200">
+            ⛔ 待收品項太多，這次少載了 {truncated} 項（上限 {ITEM_PAGE_SIZE * ITEM_MAX_PAGES} 項）。
+            <span className="font-normal">
+              {" "}
+              搜不到的東西不代表沒有這筆貨，請通知辦公室先把收完／不會再到的採購單結掉。
+            </span>
+          </div>
         )}
 
-        {step === "done" && result && <DoneStep result={result} onNext={startNext} />}
-      </main>
-
-      {step === "items" && summary && (
-        <footer className="border-t border-zinc-300 bg-white px-4 py-3 dark:border-zinc-700 dark:bg-zinc-900">
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-base">
-              <div className="font-semibold">
-                已核對 {summary.lines} / {summary.total} 項
-              </div>
-              <div className="text-sm text-zinc-600 dark:text-zinc-400">
-                合計 <span className="font-mono font-bold">{summary.qty}</span> 件
-                {summary.missing > 0 && (
-                  <span className="ml-2 font-semibold text-rose-600 dark:text-rose-400">
-                    · {summary.missing} 項還沒選原因
-                  </span>
-                )}
-              </div>
+        {badData.length > 0 && (
+          <div className="mb-4 rounded-xl border-2 border-rose-400 bg-rose-50 p-4 dark:border-rose-700 dark:bg-rose-950/50">
+            <div className="text-lg font-bold text-rose-800 dark:text-rose-200">
+              ⛔ 這 {badData.length} 項的數量資料異常，沒有列出來，這一頁收不了
             </div>
-            {/* 送出失敗又改過內容 → 只給「重新載入」這一條路。
-                ⚠ 這裡是把唯一安全的動作做成一顆按鈕，不是安全機制本身：
-                  真正擋住送出的是 submit() 裡的 decideSubmission()。 */}
-            {mustReopen && po ? (
-              <SpinButton
-                type="button"
-                onClick={() => openPO(po)}
-                disabled={loadingItems}
-                className={`${BTN_BASE} min-w-[160px] bg-amber-600 text-lg text-white active:bg-amber-700 disabled:bg-zinc-300 dark:disabled:bg-zinc-700`}
-              >
-                {loadingItems ? "載入中…" : "🔄 重新載入這張單"}
-              </SpinButton>
-            ) : (
-              <SpinButton
-                type="button"
-                onClick={submit}
-                disabled={
-                  summary.lines === 0 ||
-                  summary.missing > 0 ||
-                  summary.invalid > 0 ||
-                  summary.badCost.length > 0 ||
-                  submitting
-                }
-                className={`${BTN_BASE} min-w-[160px] bg-emerald-600 text-lg text-white active:bg-emerald-700 disabled:bg-zinc-300 dark:disabled:bg-zinc-700`}
-              >
-                {submitting ? "送出中…" : "✅ 確認收貨"}
-              </SpinButton>
-            )}
-          </div>
-          {/* ⛔ 停用原因一定要看得見，不可以只放 title：iPad 上沒有 tooltip */}
-          {mustReopen ? (
-            // ⚠️ mustReopen 時**只留這一句**。下面那四句全部是在教人「改數量」，
-            //    而改數量正是這個狀態下被擋住的動作 —— 兩種提示並排會互相打架，
-            //    樓下照著紅字改了半天還是送不出去。
-            <p className="mt-2 text-sm font-bold text-amber-700 dark:text-amber-400">
-              重新載入會把數量清空、重新讀一次「之前已收」——
-              請照最新的數字重新點一次貨再收。
+            <p className="mt-1 text-base text-rose-800 dark:text-rose-200">
+              請通知辦公室檢查採購單。其他品項可以照收。
             </p>
-          ) : (
-            <>
-              {summary.badCost.length > 0 && (
-                <p className="mt-2 text-sm font-bold text-rose-600 dark:text-rose-400">
-                  有 {summary.badCost.length} 項的成本不正常收不進去，請通知辦公室。
-                  把那幾項的數量清成 0，就可以先收其他品項。
-                </p>
-              )}
-              {summary.invalid > 0 && (
-                <p className="mt-2 text-sm font-medium text-rose-600 dark:text-rose-400">
-                  有 {summary.invalid} 項的數量不是有效數字，請改成數字（例：12）。
-                </p>
-              )}
-              {summary.lines === 0 && summary.invalid === 0 && summary.badCost.length === 0 && (
-                <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-                  還沒有任何一項填數量。點商品卡上的「全到」，或用 ＋／− 調數量。
-                </p>
-              )}
-              {summary.missing > 0 && (
-                <p className="mt-2 text-sm font-medium text-rose-600 dark:text-rose-400">
-                  有 {summary.missing} 項數量跟應到不一樣，要先選一個原因才能送出。
-                </p>
-              )}
-            </>
-          )}
-        </footer>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------- header
-
-function Header({
-  step,
-  supplier,
-  po,
-  onBack,
-}: {
-  step: Step;
-  supplier: SupplierGroup | null;
-  po: WorkbenchPO | null;
-  onBack: () => void;
-}) {
-  const canBack = step === "po" || step === "items";
-  return (
-    <header className="flex items-center gap-3 border-b border-zinc-300 bg-white px-4 py-3 dark:border-zinc-700 dark:bg-zinc-900">
-      {canBack ? (
-        <SpinButton type="button" onClick={onBack} className={`${BTN_GHOST} shrink-0`}>
-          ← 返回
-        </SpinButton>
-      ) : null}
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-lg font-bold">
-          {step === "supplier" && "📦 樓下收貨 · ① 選廠商"}
-          {step === "po" && `② 選採購單 · ${supplier?.supplier_name ?? ""}`}
-          {step === "items" && `③ 核對數量 · ${po?.po_no ?? ""}`}
-          {step === "done" && "✅ 收貨完成"}
-        </div>
-        {step === "items" && po && (
-          <div className="truncate text-sm text-zinc-600 dark:text-zinc-400">{po.supplier_name}</div>
+            <ul className="mt-2 list-disc pl-5 text-base text-rose-800 dark:text-rose-200">
+              {badData.slice(0, 5).map((t) => (
+                <li key={t}>{t}</li>
+              ))}
+              {badData.length > 5 && <li>…等 {badData.length} 項</li>}
+            </ul>
+          </div>
         )}
-      </div>
-      {/* 出口：不然樓下會被困在這一頁出不去 */}
-      <Link href="/wms/receiving" className={`${BTN_GHOST} shrink-0`}>
-        離開
-      </Link>
-    </header>
-  );
-}
 
-// ---------------------------------------------------------------- ① 選廠商
-
-function SupplierStep({
-  rows,
-  groups,
-  search,
-  onSearch,
-  onPick,
-}: {
-  rows: WorkbenchPO[] | null;
-  groups: SupplierGroup[];
-  search: string;
-  onSearch: (v: string) => void;
-  onPick: (g: SupplierGroup) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-4">
-      {/* 字級 ≥16px：低於 16px 的輸入框一 focus，iOS 就把整頁放大 */}
-      <input
-        value={search}
-        onChange={(e) => onSearch(e.target.value)}
-        placeholder="🔍 搜廠商或商品名"
-        className="min-h-[56px] w-full rounded-xl border border-zinc-300 bg-white px-4 text-base dark:border-zinc-700 dark:bg-zinc-900"
-      />
-
-      {rows === null ? (
-        <p className="p-6 text-center text-base text-zinc-500">載入中…</p>
-      ) : groups.length === 0 ? (
-        <p className="p-6 text-center text-base text-zinc-500">
-          {rows.length === 0 ? "目前沒有待收的貨" : "沒有符合的廠商或商品"}
-        </p>
-      ) : (
-        <ul className="flex flex-col gap-3">
-          {groups.map((g) => (
-            <li key={g.supplier_id}>
-              <SpinButton
-                type="button"
-                onClick={() => onPick(g)}
-                className={`${BTN_GHOST} w-full justify-between py-3 text-left`}
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-xl font-bold">{g.supplier_name}</span>
-                  <span className="block text-sm font-normal text-zinc-600 dark:text-zinc-400">
-                    {g.pos.length} 張單 · 還沒到 {g.remaining} 件
-                  </span>
-                </span>
-                <span className="shrink-0 text-2xl text-zinc-400">›</span>
-              </SpinButton>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------- ② 選採購單
-
-function POStep({
-  supplier,
-  busy,
-  onPick,
-}: {
-  supplier: SupplierGroup;
-  busy: boolean;
-  onPick: (p: WorkbenchPO) => Promise<void>;
-}) {
-  return (
-    <ul className="flex flex-col gap-3">
-      {supplier.pos.map((p) => {
-        const left = Math.max(0, p.total_qty_ordered - p.total_qty_received);
-        const preview = p.product_names.slice(0, 4).join("、");
-        return (
-          <li key={p.id}>
-            <SpinButton
-              type="button"
-              disabled={busy}
-              onClick={() => onPick(p)}
-              className={`${BTN_GHOST} w-full flex-col items-start gap-1 py-3 text-left`}
-            >
-              <span className="flex w-full items-baseline justify-between gap-2">
-                <span className="font-mono text-lg font-bold">{p.po_no}</span>
-                <span className="shrink-0 text-sm font-normal text-zinc-600 dark:text-zinc-400">
-                  {p.sent_at ? new Date(p.sent_at).toLocaleDateString("zh-TW") : "—"}
-                </span>
-              </span>
-              <span className="text-sm font-normal text-zinc-600 dark:text-zinc-400">
-                {p.line_count} 項 · 還沒到 {left} 件
-                {p.status === "partially_received" && (
-                  <span className="ml-2 rounded bg-amber-100 px-2 py-0.5 font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                    收過一部分
-                  </span>
-                )}
-              </span>
-              {preview && (
-                <span className="w-full truncate text-sm font-normal text-zinc-500">
-                  {preview}
-                  {p.product_names.length > 4 ? " …" : ""}
-                </span>
-              )}
-            </SpinButton>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-// ---------------------------------------------------------------- ③ 核對數量
-
-type Check = {
-  received: number;
-  /** 打了非數字（"-5"、"1e3"、"abc"…）→ 明確擋下，⛔ 不靜默轉換 */
-  invalid: boolean;
-  /** 採購單成本 <= 0 或不是數字 → 這一項收不進去（卡片一律標示；
-   *  但只有 received > 0 時才擋住送出，其他品項照收 —— 見 summary.badCost） */
-  badCost: boolean;
-  isOver: boolean;
-  isShort: boolean;
-  requiresReason: boolean;
-  reasonMissing: boolean;
-};
-
-function ItemsStep({
-  items,
-  checks,
-  doneVisible,
-  forcedOpen,
-  missingSkuCount,
-  badCost,
-  onToggleDone,
-  onPatch,
-  onFillAll,
-  onClearAll,
-}: {
-  items: ItemForm[];
-  checks: Check[];
-  doneVisible: boolean;
-  /** 已收齊區塊裡有人填了數字 → 強制攤開，收不起來（收起來會讓送出的東西看不到） */
-  forcedOpen: boolean;
-  /** 商品資料沒撈回來的品項數（樓下靠圖片與品名辨貨，缺漏不能無聲） */
-  missingSkuCount: number;
-  /** 這次真正被擋住的品項（有填數量 且 成本不正常）。⛔ 不是全部成本異常的品項 */
-  badCost: ItemForm[];
-  onToggleDone: () => void;
-  onPatch: (idx: number, patch: Partial<ItemForm>) => void;
-  onFillAll: () => void;
-  onClearAll: () => void;
-}) {
-  const pending = items.map((f, i) => ({ f, c: checks[i], i })).filter(({ f }) => f.remaining > 0);
-  const finished = items.map((f, i) => ({ f, c: checks[i], i })).filter(({ f }) => f.remaining <= 0);
-
-  return (
-    <div className="flex flex-col gap-4">
-      {badCost.length > 0 && (
-        <div className="rounded-xl border-2 border-rose-400 bg-rose-50 p-4 dark:border-rose-700 dark:bg-rose-950/50">
-          <div className="text-lg font-bold text-rose-800 dark:text-rose-200">
-            ⛔ 這 {badCost.length} 項收不進去
+        {missingSkuCount > 0 && (
+          <div className="mb-4 rounded-xl border-2 border-amber-400 bg-amber-50 p-4 text-base font-medium text-amber-900 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-200">
+            ⚠ 有 {missingSkuCount} 項的商品資料沒載入（可能沒有圖片和品名），請通知辦公室。
           </div>
-          <p className="mt-1 text-base text-rose-800 dark:text-rose-200">
-            成本不正常，請通知辦公室修正採購單。
-            <strong>把這幾項的數量清成 0，就可以先收這張單的其他品項。</strong>
-          </p>
-          <ul className="mt-2 list-disc pl-5 text-base text-rose-800 dark:text-rose-200">
-            {badCost.slice(0, 5).map((f) => (
-              <li key={f.po_item_id}>{itemTitle(f)}</li>
-            ))}
-            {badCost.length > 5 && <li>…等 {badCost.length} 項</li>}
-          </ul>
-        </div>
-      )}
+        )}
 
-      {missingSkuCount > 0 && (
-        <div className="rounded-xl border-2 border-amber-400 bg-amber-50 p-4 text-base font-medium text-amber-900 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-200">
-          ⚠ 有 {missingSkuCount} 項的商品資料沒載入（可能沒有圖片和品名），請通知辦公室。
-        </div>
-      )}
-
-      <div className="flex flex-wrap gap-2">
-        <SpinButton type="button" onClick={onFillAll} className={BTN_GHOST}>
-          全部都到齊
-        </SpinButton>
-        <SpinButton type="button" onClick={onClearAll} className={BTN_GHOST}>
-          全部清空
-        </SpinButton>
-      </div>
-
-      {pending.length === 0 && finished.length === 0 && (
-        <p className="p-6 text-center text-base text-zinc-500">這張單沒有可收的品項</p>
-      )}
-
-      <ul className="flex flex-col gap-4">
-        {pending.map(({ f, c, i }) => (
-          <ItemCard key={f.po_item_id} item={f} check={c} onPatch={(p) => onPatch(i, p)} />
-        ))}
-      </ul>
-
-      {finished.length > 0 && (
-        <>
-          <SpinButton
-            type="button"
-            onClick={onToggleDone}
-            disabled={forcedOpen}
-            className={BTN_GHOST}
-          >
-            {doneVisible ? "▲ 收起已收齊的" : `▼ 顯示已收齊的 ${finished.length} 項`}
-          </SpinButton>
-          {/* ⛔ 停用原因要看得見，不可以只放 title：iPad 上沒有 tooltip */}
-          {forcedOpen && (
-            <p className="-mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-              下面「已收齊」的品項裡有填了數字的，先攤開著不收起來，免得要送出的東西畫面上看不到。
+        {summary.badCost.length > 0 && (
+          <div className="mb-4 rounded-xl border-2 border-rose-400 bg-rose-50 p-4 dark:border-rose-700 dark:bg-rose-950/50">
+            <div className="text-lg font-bold text-rose-800 dark:text-rose-200">
+              ⛔ 勾選的品項裡有 {summary.badCost.length} 項收不進去
+            </div>
+            <p className="mt-1 text-base text-rose-800 dark:text-rose-200">
+              成本不正常，請通知辦公室修正採購單。
+              <strong>取消勾選這幾項，就可以先收其他的。</strong>
             </p>
-          )}
-          {doneVisible && (
+            <ul className="mt-2 list-disc pl-5 text-base text-rose-800 dark:text-rose-200">
+              {summary.badCost.slice(0, 5).map((r) => (
+                <li key={r.po_item_id}>
+                  {rowTitle(r)}（{r.po_no}）
+                </li>
+              ))}
+              {summary.badCost.length > 5 && <li>…等 {summary.badCost.length} 項</li>}
+            </ul>
+          </div>
+        )}
+
+        {rows === null ? (
+          <p className="p-6 text-center text-base text-zinc-500">載入中…</p>
+        ) : (
+          <>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-base text-zinc-600 dark:text-zinc-400">
+                {showSelectedOnly
+                  ? `已勾選 ${visible.length} 項`
+                  : tokens.length > 0
+                    ? `找到 ${visible.length} 項`
+                    : `待收 ${visible.length} 項`}
+              </div>
+              {pending.length > 0 && (
+                <SpinButton type="button" onClick={toggleSelectAll} className={BTN_GHOST}>
+                  {allPendingSelected ? "取消全選" : `全選這 ${pending.length} 項`}
+                </SpinButton>
+              )}
+            </div>
+
+            {/* ⛔ 沒畫完一定要講：不然「全選這 200 項」看起來像全選了 500 筆結果 */}
+            {overflow > 0 && (
+              <div className="mb-3 rounded-xl border-2 border-amber-400 bg-amber-50 p-3 text-base font-medium text-amber-900 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-200">
+                ⚠ 符合的有 {visible.length} 項，畫面上只列出前 {pending.length + finished.length} 項
+                （還有 {overflow} 項沒列出來）。上面的「全選」只會勾到列出來的這些。
+                <strong> 請打更完整的商品名或廠商名縮小範圍。</strong>
+              </div>
+            )}
+
+            {visible.length === 0 && (
+              <p className="p-6 text-center text-base text-zinc-500">
+                {rows.length === 0
+                  ? "目前沒有待收的貨"
+                  : showSelectedOnly
+                    ? "還沒勾選任何品項"
+                    : `找不到「${search.trim()}」。可以試商品名、規格、商品編號或廠商名。`}
+              </p>
+            )}
+
             <ul className="flex flex-col gap-4">
-              {finished.map(({ f, c, i }) => (
-                <ItemCard key={f.po_item_id} item={f} check={c} onPatch={(p) => onPatch(i, p)} />
+              {pending.map((r) => (
+                <ItemCard
+                  key={r.po_item_id}
+                  row={r}
+                  entry={entries[r.po_item_id]}
+                  onToggle={() => toggleRow(r)}
+                  onPatch={(p) => patchEntry(r.po_item_id, p)}
+                />
               ))}
             </ul>
-          )}
-        </>
+
+            {finished.length > 0 && (
+              <>
+                <SpinButton
+                  type="button"
+                  onClick={() => setShowDone((v) => !v)}
+                  disabled={finishedHasSelected}
+                  className={`${BTN_GHOST} mt-4`}
+                >
+                  {doneVisible ? "▲ 收起已收齊的" : `▼ 顯示已收齊的 ${finished.length} 項`}
+                </SpinButton>
+                {/* ⛔ 停用原因要看得見，不可以只放 title：iPad 上沒有 tooltip */}
+                {finishedHasSelected && (
+                  <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+                    下面「已收齊」的品項裡有勾選的，先攤開著不收起來，免得要送出的東西畫面上看不到。
+                  </p>
+                )}
+                {doneVisible && (
+                  <ul className="mt-4 flex flex-col gap-4">
+                    {finished.map((r) => (
+                      <ItemCard
+                        key={r.po_item_id}
+                        row={r}
+                        entry={entries[r.po_item_id]}
+                        onToggle={() => toggleRow(r)}
+                        onPatch={(p) => patchEntry(r.po_item_id, p)}
+                      />
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </main>
+
+      <footer className="shrink-0 border-t border-zinc-300 bg-white px-4 py-3 dark:border-zinc-700 dark:bg-zinc-900">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 text-base">
+            <div className="font-semibold">
+              已勾 {summary.lines} 項 · {fmtQty(summary.qty)} 件
+            </div>
+            <div className="truncate text-sm text-zinc-600 dark:text-zinc-400">
+              {summary.poCount > 1
+                ? `會分成 ${summary.poCount} 張採購單各送一次，成敗會一張一張顯示`
+                : "勾好按右邊確認就入庫"}
+            </div>
+          </div>
+          <SpinButton
+            type="button"
+            onClick={onSubmitClick}
+            disabled={!!blockReason || submitting}
+            className={`${BTN_BASE} min-w-[170px] bg-emerald-600 text-lg text-white active:bg-emerald-700 disabled:bg-zinc-300 dark:disabled:bg-zinc-700`}
+          >
+            {submitting ? "送出中…" : `✅ 確認收貨${summary.lines > 0 ? ` (${summary.lines})` : ""}`}
+          </SpinButton>
+        </div>
+        {/* ⛔ 停用原因一定要看得見，不可以只放 title：iPad 上沒有 tooltip */}
+        {blockReason && (
+          <p className="mt-2 text-sm font-medium text-rose-600 dark:text-rose-400">{blockReason}</p>
+        )}
+      </footer>
+
+      {confirmOpen && (
+        <ConfirmSheet
+          rows={selectedRows}
+          entries={entries}
+          hiddenCount={hiddenSelected.length}
+          onCancel={() => {
+            setConfirmOpen(false);
+            setShowSelectedOnly(true);
+          }}
+          onConfirm={async () => {
+            setConfirmOpen(false);
+            await runSubmit();
+          }}
+        />
       )}
     </div>
   );
 }
 
+// ---------------------------------------------------------------- 逐張結果
+
+function OutcomePanel({
+  outcomes,
+  busyPo,
+  onDismiss,
+  onReloadPo,
+}: {
+  outcomes: PoOutcome[];
+  busyPo: number | null;
+  onDismiss: () => void;
+  onReloadPo: (poId: number) => Promise<void>;
+}) {
+  const ok = outcomes.filter((o) => o.kind !== "error").length;
+  const bad = outcomes.length - ok;
+  return (
+    <div className="mb-4 rounded-2xl border-2 border-zinc-300 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-900">
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-lg font-bold">
+          {bad === 0
+            ? `✅ ${ok} 張採購單都收好了`
+            : ok === 0
+              ? `⛔ ${bad} 張都沒收成功`
+              : `⚠️ ${ok} 張成功、${bad} 張沒成功`}
+        </div>
+        <SpinButton type="button" onClick={onDismiss} className={BTN_SMALL}>
+          知道了
+        </SpinButton>
+      </div>
+
+      {/* ⛔ 上面那一行**永遠只是摘要**，下面這份逐張清單才是重點，不可以省略。 */}
+      <ul className="mt-3 flex flex-col gap-3">
+        {outcomes.map((o) => (
+          <li
+            key={o.po_id}
+            className={`rounded-xl border-2 p-3 ${
+              o.kind === "error"
+                ? "border-rose-400 bg-rose-50 dark:border-rose-700 dark:bg-rose-950/40"
+                : o.kind === "duplicate"
+                  ? "border-sky-300 bg-sky-50 dark:border-sky-800 dark:bg-sky-950/40"
+                  : "border-emerald-400 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950/30"
+            }`}
+          >
+            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <span className="text-xl">
+                {o.kind === "error" ? "⛔" : o.kind === "duplicate" ? "☑️" : "✅"}
+              </span>
+              <span className="font-mono text-lg font-bold">{o.po_no}</span>
+              <span className="text-sm text-zinc-600 dark:text-zinc-400">{o.supplier_name}</span>
+            </div>
+
+            {o.kind === "ok" && (
+              <div className="mt-1 text-base">
+                收了 {o.lines} 項 · {fmtQty(o.qty)} 件
+                {o.gr_no && (
+                  <span className="ml-2 font-mono text-sm text-zinc-600 dark:text-zinc-400">
+                    進貨單 {o.gr_no}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* ⛔ duplicate 時不可以顯示這次填的件數：後端回的是先前那張進貨單，
+                數字不見得一樣，講出來會讓人以為又收了一批。 */}
+            {o.kind === "duplicate" && (
+              <div className="mt-1 text-base">
+                這張先前就收過了，系統沒有再收一次（庫存不會多算）。
+                {o.gr_no && (
+                  <span className="ml-1 font-mono text-sm text-zinc-600 dark:text-zinc-400">
+                    進貨單 {o.gr_no}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {o.kind === "error" && (
+              <>
+                <div className="mt-1 text-base font-medium text-rose-800 dark:text-rose-200">
+                  沒收進去（這張的 {o.lines} 項 · {fmtQty(o.qty)} 件都沒入庫）：{o.message}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <SpinButton
+                    type="button"
+                    disabled={busyPo === o.po_id}
+                    onClick={() => onReloadPo(o.po_id)}
+                    className={`${BTN_SMALL} bg-amber-600 text-white active:bg-amber-700`}
+                  >
+                    {busyPo === o.po_id ? "載入中…" : "🔄 重新載入這張單"}
+                  </SpinButton>
+                  <span className="text-sm text-zinc-600 dark:text-zinc-400">
+                    重新載入會把這張單的勾選清掉、重讀一次「之前已收」，再照最新的數字重收。
+                  </span>
+                </div>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- 送出前確認
+
+/**
+ * 已勾但不在目前搜尋結果裡的列 → 送出前攤開來讓他看過。
+ *
+ * 為什麼需要：勾選是**跨搜尋保留**的（打「馬卡龍」勾兩樣、再打「布丁」勾三樣，
+ * 最後一次送出 —— 這正是一天要收一百樣時最省事的用法）。
+ * 代價是「畫面上看不到的東西也會被送出去」，所以送出前一定要有一次確認。
+ * ⚠️ 只在**真的有看不到的列**時才擋一下：單純搜一次、勾一勾、送出的常見情境
+ *    不應該多一次點擊（老闆原話：樓下是戰區，時間就是金錢）。
+ */
+function ConfirmSheet({
+  rows,
+  entries,
+  hiddenCount,
+  onCancel,
+  onConfirm,
+}: {
+  rows: Row[];
+  entries: Record<number, Entry>;
+  hiddenCount: number;
+  onCancel: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const groups = useMemo(() => {
+    const map = new Map<number, { po_no: string; supplier_name: string; rows: Row[] }>();
+    for (const r of rows) {
+      const g = map.get(r.po_id);
+      if (g) g.rows.push(r);
+      else map.set(r.po_id, { po_no: r.po_no, supplier_name: r.supplier_name, rows: [r] });
+    }
+    return Array.from(map.values());
+  }, [rows]);
+
+  return (
+    // z-50：蓋得住本頁自己的 z-40 全屏層（機制索引四之八的慣例）
+    <div className="fixed inset-0 z-50 flex flex-col bg-black/50 p-4">
+      <div className="mx-auto flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white dark:bg-zinc-900">
+        <div className="shrink-0 border-b border-zinc-300 p-4 dark:border-zinc-700">
+          <div className="text-xl font-bold">確認要收這些嗎？</div>
+          <p className="mt-1 text-base text-amber-800 dark:text-amber-300">
+            有 {hiddenCount} 項是之前搜尋時勾的，現在畫面上看不到 —— 一起列在下面。
+          </p>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          {groups.map((g) => (
+            <div key={g.po_no} className="mb-4">
+              <div className="text-base font-bold">
+                <span className="font-mono">{g.po_no}</span>
+                <span className="ml-2 font-normal text-zinc-600 dark:text-zinc-400">
+                  {g.supplier_name}
+                </span>
+              </div>
+              <ul className="mt-1 flex flex-col gap-1">
+                {g.rows.map((r) => (
+                  <li key={r.po_item_id} className="flex items-baseline justify-between gap-3 text-base">
+                    <span className="min-w-0 flex-1 truncate">{rowTitle(r)}</span>
+                    <span className="shrink-0 font-mono font-bold">
+                      {entries[r.po_item_id]?.qty || "0"} 件
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex shrink-0 flex-wrap justify-end gap-3 border-t border-zinc-300 p-4 dark:border-zinc-700">
+          <SpinButton type="button" onClick={onCancel} className={BTN_GHOST}>
+            先看一下
+          </SpinButton>
+          <SpinButton
+            type="button"
+            onClick={onConfirm}
+            className={`${BTN_BASE} bg-emerald-600 text-lg text-white active:bg-emerald-700`}
+          >
+            ✅ 全部收貨
+          </SpinButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- 品項卡
+
 function ItemCard({
-  item,
-  check,
+  row,
+  entry,
+  onToggle,
   onPatch,
 }: {
-  item: ItemForm;
-  check: Check;
-  onPatch: (patch: Partial<ItemForm>) => void;
+  row: Row;
+  entry: Entry | undefined;
+  onToggle: () => void;
+  onPatch: (patch: Partial<Entry>) => void;
 }) {
-  const exact = check.received > 0 && !check.invalid && !check.isOver && !check.isShort;
+  const check = checkRow(row, entry);
+  const exact =
+    check.selected && check.received > 0 && !check.invalid && !check.isOver && !check.isShort;
   const cardCls =
-    check.badCost || check.invalid || check.reasonMissing
+    check.badCost || check.invalid || check.reasonMissing || check.empty
       ? "border-rose-400 bg-rose-50 dark:border-rose-700 dark:bg-rose-950/40"
       : exact
         ? "border-emerald-400 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950/30"
-        : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-900";
+        : check.selected
+          ? "border-blue-400 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/30"
+          : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-900";
 
   // ⛔ 非法輸入時不做加減：那等於把打錯的字悄悄換成一個數字。
   function step(delta: number) {
     if (check.invalid) return;
-    onPatch({ qty: String(Math.max(0, check.received + delta)) });
+    onPatch({ qty: fmtQty(Math.max(0, check.received + delta)) });
   }
 
   return (
     <li className={`rounded-2xl border-2 p-4 ${cardCls}`}>
-      <div className="flex items-start gap-4">
-        {item.image_url ? (
+      <div className="flex items-start gap-3">
+        {/* 核取方塊做成大方塊，⚠️ 不是 12px 的原生小方框：戴手套的手指按不到。
+            整塊（含圖與品名）都可點，勾錯的成本比按不到低。 */}
+        <button
+          type="button"
+          onClick={onToggle}
+          role="checkbox"
+          aria-checked={check.selected}
+          aria-label={`選取 ${rowTitle(row)}`}
+          className={`flex min-h-[56px] min-w-[56px] shrink-0 touch-manipulation items-center justify-center rounded-xl border-2 text-3xl ${
+            check.selected
+              ? "border-blue-600 bg-blue-600 text-white"
+              : "border-zinc-400 bg-white text-transparent dark:bg-zinc-800"
+          }`}
+        >
+          ✓
+        </button>
+
+        {row.image_url ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={item.image_url}
-            alt={itemTitle(item)}
+            src={row.image_url}
+            alt={rowTitle(row)}
             loading="lazy"
-            className="h-24 w-24 shrink-0 rounded-xl border border-zinc-200 object-cover dark:border-zinc-800"
+            onClick={onToggle}
+            className="h-24 w-24 shrink-0 touch-manipulation rounded-xl border border-zinc-200 object-cover dark:border-zinc-800"
           />
         ) : (
           // 無圖佔位：尺寸與有圖時一致，卡片不會破版
-          <div className="flex h-24 w-24 shrink-0 items-center justify-center rounded-xl border border-zinc-200 bg-zinc-50 text-zinc-300 dark:border-zinc-800 dark:bg-zinc-950">
+          <div
+            onClick={onToggle}
+            className="flex h-24 w-24 shrink-0 touch-manipulation items-center justify-center rounded-xl border border-zinc-200 bg-zinc-50 text-zinc-300 dark:border-zinc-800 dark:bg-zinc-950"
+          >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="h-10 w-10">
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 8h14l-1 11a2 2 0 0 1-2 1.8H8A2 2 0 0 1 6 19L5 8Z" />
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 8V6.5a3 3 0 0 1 6 0V8" />
             </svg>
           </div>
         )}
-        <div className="min-w-0 flex-1">
-          <div className="text-xl font-bold leading-snug">{itemTitle(item)}</div>
-          {item.sku_code && (
-            <div className="mt-0.5 font-mono text-sm text-zinc-500">{item.sku_code}</div>
-          )}
-          <div className="mt-2 text-lg">
-            應到 <span className="font-mono text-3xl font-bold">{item.remaining}</span> 件
+
+        <div className="min-w-0 flex-1" onClick={onToggle}>
+          <div className="text-xl font-bold leading-snug">{rowTitle(row)}</div>
+          <div className="mt-1 text-lg">
+            應到 <span className="font-mono text-3xl font-bold">{fmtQty(row.remaining)}</span> 件
+            {row.qty_already > 0 && (
+              <span className="ml-2 text-sm text-zinc-600 dark:text-zinc-400">
+                （訂 {fmtQty(row.qty_ordered)} · 之前已收 {fmtQty(row.qty_already)}）
+              </span>
+            )}
           </div>
-          {item.qty_already > 0 && (
-            <div className="text-sm text-zinc-600 dark:text-zinc-400">
-              訂 {item.qty_ordered} · 之前已收 {item.qty_already}
-            </div>
-          )}
+          {/* ⭐ 廠商與單號降成小字備註 —— 它們不再是「要先選的東西」。
+              但**不可以拿掉**：一列 = 商品 × 採購單，同一個商品會出現好幾列，
+              沒有單號就分不出自己在收哪一張。 */}
+          <div className="mt-1 truncate text-sm text-zinc-500">
+            {row.supplier_name} · <span className="font-mono">{row.po_no}</span>
+            {row.sent_at && (
+              <span className="ml-2">{new Date(row.sent_at).toLocaleDateString("zh-TW")} 送單</span>
+            )}
+            {row.sku_code && <span className="ml-2 font-mono">{row.sku_code}</span>}
+          </div>
         </div>
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <SpinButton
-          type="button"
-          onClick={() => step(-1)}
-          disabled={check.invalid || check.received <= 0}
-          className={`${BTN_GHOST} text-2xl`}
-          aria-label="減一"
-        >
-          −
-        </SpinButton>
-        {/* text-2xl 遠大於 16px：低於 16px 的輸入框一 focus，iOS 會把整頁放大。
-            ⛔ onChange 不做任何清洗，原字照存 —— 打錯就要看得到自己打錯了。 */}
-        <input
-          inputMode="decimal"
-          value={item.qty}
-          onChange={(e) => onPatch({ qty: e.target.value })}
-          placeholder="0"
-          aria-label="實到數量"
-          aria-invalid={check.invalid}
-          className={`min-h-[56px] w-28 rounded-xl border-2 bg-white px-3 text-center font-mono text-2xl font-bold dark:bg-zinc-800 ${
-            check.invalid
-              ? "border-rose-500 text-rose-700 dark:border-rose-600 dark:text-rose-300"
-              : "border-zinc-300 dark:border-zinc-600"
-          }`}
-        />
-        <SpinButton
-          type="button"
-          onClick={() => step(1)}
-          disabled={check.invalid}
-          className={`${BTN_GHOST} text-2xl`}
-          aria-label="加一"
-        >
-          ＋
-        </SpinButton>
-        <SpinButton
-          type="button"
-          onClick={() => onPatch({ qty: String(item.remaining) })}
-          className={`${exact ? `${BTN_BASE} bg-emerald-600 text-white active:bg-emerald-700` : BTN_PRIMARY} ml-auto min-w-[110px] text-lg`}
-        >
-          {exact ? "✓ 全到" : "全到"}
-        </SpinButton>
-      </div>
+      {/* 數量列只在勾選之後出現：沒勾的列保持乾淨，一頁塞得下更多樣東西。 */}
+      {check.selected && (
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <SpinButton
+            type="button"
+            onClick={() => step(-1)}
+            disabled={check.invalid || check.received <= 0}
+            className={`${BTN_GHOST} text-2xl`}
+            aria-label="減一"
+          >
+            −
+          </SpinButton>
+          {/* text-2xl 遠大於 16px：低於 16px 的輸入框一 focus，iOS 會把整頁放大。
+              ⛔ onChange 不做任何清洗，原字照存 —— 打錯就要看得到自己打錯了。 */}
+          <input
+            inputMode="decimal"
+            value={entry?.qty ?? ""}
+            onChange={(e) => onPatch({ qty: e.target.value })}
+            placeholder="0"
+            aria-label="實到數量"
+            aria-invalid={check.invalid}
+            className={`min-h-[56px] w-28 rounded-xl border-2 bg-white px-3 text-center font-mono text-2xl font-bold dark:bg-zinc-800 ${
+              check.invalid || check.empty
+                ? "border-rose-500 text-rose-700 dark:border-rose-600 dark:text-rose-300"
+                : "border-zinc-300 dark:border-zinc-600"
+            }`}
+          />
+          <SpinButton
+            type="button"
+            onClick={() => step(1)}
+            disabled={check.invalid}
+            className={`${BTN_GHOST} text-2xl`}
+            aria-label="加一"
+          >
+            ＋
+          </SpinButton>
+          <SpinButton
+            type="button"
+            onClick={() => onPatch({ qty: fmtQty(row.remaining) })}
+            className={`${exact ? `${BTN_BASE} bg-emerald-600 text-white active:bg-emerald-700` : BTN_PRIMARY} ml-auto min-w-[110px] text-lg`}
+          >
+            {exact ? "✓ 全到" : "全到"}
+          </SpinButton>
+        </div>
+      )}
 
       {/* ⛔ 提示要看得見，不可以只放 title：iPad 上沒有 tooltip */}
-      {check.invalid && (
+      {check.empty && (
         <p className="mt-2 text-base font-bold text-rose-700 dark:text-rose-300">
-          ⚠ 「{item.qty}」不是有效數字，請只填數字（例：12）。這一項現在不會被送出。
+          ⚠ 勾了但還沒填數量。按「全到」，或用 ＋／− 填一個數字；不收的話請取消勾選。
         </p>
       )}
 
-      {/* 卡片一律標紅（不等填了數字才講）：讓樓下在點貨前就知道這項收不進去。
-          只有「這次真的要收」的才會擋住送出，其他品項照收。 */}
+      {check.invalid && (
+        <p className="mt-2 text-base font-bold text-rose-700 dark:text-rose-300">
+          ⚠ 「{entry?.qty}」不是有效數字，請只填數字（例：12）。
+        </p>
+      )}
+
+      {/* 卡片一律標紅（不等勾選才講）：讓樓下在點貨前就知道這項收不進去。 */}
       {check.badCost && (
         <p className="mt-2 text-base font-bold text-rose-700 dark:text-rose-300">
-          ⛔ 這一項的成本不正常，這次不會被收，請通知辦公室。這張單的其他品項可以照收。
+          ⛔ 這一項的成本不正常，收不進去，請通知辦公室。其他品項可以照收。
         </p>
       )}
 
@@ -1274,17 +1671,17 @@ function ItemCard({
         <div className="mt-4 rounded-xl border-2 border-amber-400 bg-amber-50 p-3 dark:border-amber-700 dark:bg-amber-950/50">
           <div className="text-base font-bold text-amber-900 dark:text-amber-200">
             {check.isOver
-              ? `⚠ 比應到多了 ${check.received - item.remaining} 件 —— 選一個原因`
-              : `⚠ 比應到少了 ${item.remaining - check.received} 件 —— 選一個原因`}
+              ? `⚠ 比應到多了 ${fmtQty(check.received - row.remaining)} 件 —— 選一個原因`
+              : `⚠ 比應到少了 ${fmtQty(row.remaining - check.received)} 件 —— 選一個原因`}
           </div>
           <div className="mt-2 flex flex-wrap gap-2">
             {REASON_PRESETS.map((r) => {
-              const on = item.variance_reason.trim() === r;
+              const on = (entry?.reason ?? "").trim() === r;
               return (
                 <SpinButton
                   key={r}
                   type="button"
-                  onClick={() => onPatch({ variance_reason: on ? "" : r })}
+                  onClick={() => onPatch({ reason: on ? "" : r })}
                   className={
                     on
                       ? `${BTN_BASE} bg-amber-600 text-white active:bg-amber-700`
@@ -1297,8 +1694,8 @@ function ItemCard({
             })}
           </div>
           <input
-            value={item.variance_reason}
-            onChange={(e) => onPatch({ variance_reason: e.target.value })}
+            value={entry?.reason ?? ""}
+            onChange={(e) => onPatch({ reason: e.target.value })}
             placeholder="或自己打（例：司機說明天補）"
             aria-label="差異原因"
             className="mt-2 min-h-[56px] w-full rounded-xl border border-amber-400 bg-white px-3 text-base dark:border-amber-700 dark:bg-zinc-900"
@@ -1306,58 +1703,5 @@ function ItemCard({
         </div>
       )}
     </li>
-  );
-}
-
-// ---------------------------------------------------------------- ④ 完成
-
-function DoneStep({
-  result,
-  onNext,
-}: {
-  result: { gr_no: string; po_no: string; qty: number; lines: number; duplicate: boolean };
-  onNext: () => Promise<void>;
-}) {
-  // duplicate ＝ 這次送出被後端認出是「同一次送出的重試」，貨先前就已經收進去了。
-  // ⛔ 這種時候不可以顯示本次填的件數：後端回的是先前那張進貨單，
-  //    數字不見得一樣，講出來會讓人以為又收了一批。
-  const dup = result.duplicate;
-  return (
-    <div className="mx-auto flex max-w-lg flex-col items-center gap-5 py-10 text-center">
-      <div className="text-6xl">{dup ? "☑️" : "✅"}</div>
-      <div className="text-2xl font-bold">{dup ? "這批貨先前已經收過了" : "收貨完成"}</div>
-      <div
-        className={
-          dup
-            ? "rounded-2xl border-2 border-sky-300 bg-sky-50 px-6 py-4 text-lg dark:border-sky-800 dark:bg-sky-950/40"
-            : "rounded-2xl border-2 border-emerald-300 bg-emerald-50 px-6 py-4 text-lg dark:border-emerald-800 dark:bg-emerald-950/40"
-        }
-      >
-        <div className="font-mono font-bold">{result.po_no}</div>
-        {!dup && (
-          <div className="mt-1">
-            {result.lines} 項 · 共 <span className="font-mono font-bold">{result.qty}</span> 件
-          </div>
-        )}
-        {result.gr_no && (
-          <div className="mt-1 font-mono text-sm text-zinc-600 dark:text-zinc-400">
-            進貨單 {result.gr_no}
-          </div>
-        )}
-      </div>
-      <p className="text-base text-zinc-600 dark:text-zinc-400">
-        {dup
-          ? "剛剛那一次其實已經送出成功了（可能是網路斷掉才顯示失敗）。系統沒有再收一次，庫存不會多算。要確認實際收了多少，看上面那張進貨單。"
-          : "這批貨已經進總倉。分店要分多少，辦公室會在派貨工作台處理。"}
-      </p>
-      <div className="flex flex-wrap justify-center gap-3">
-        <SpinButton type="button" onClick={onNext} className={`${BTN_PRIMARY} text-lg`}>
-          收下一張單
-        </SpinButton>
-        <Link href="/wms/receiving" className={`${BTN_GHOST} text-lg`}>
-          離開
-        </Link>
-      </div>
-    </div>
   );
 }
