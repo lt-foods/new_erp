@@ -109,6 +109,7 @@ export function TransferShortageResolveModal({
 }) {
   const [resolution, setResolution] = useState<Resolution | null>(null);
   const [notes, setNotes] = useState("");
+  const [result, setResult] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [affected, setAffected] = useState<AffectedOrder[] | null>(null);
@@ -164,10 +165,11 @@ export function TransferShortageResolveModal({
       const { data: sess } = await sb.auth.getSession();
       const operator = sess.session?.user?.id;
       if (!operator) throw new Error("尚未登入");
-      const { error: e } = await sb.rpc("rpc_resolve_transfer_item_shortage", {
+      const { error: e } = await sb.rpc("rpc_resolve_transfer_shortage_with_history", {
         p_transfer_item_id: ctx.transfer_item_id,
         p_resolution: resolution,
         p_notes: notes || null,
+        p_result: result,
         p_operator: operator,
       });
       if (e) throw new Error(translateRpcError(e));
@@ -310,6 +312,17 @@ export function TransferShortageResolveModal({
         />
       </label>
 
+      <label className="mt-4 block text-xs">
+        <span className="block font-semibold text-zinc-700 dark:text-zinc-300">最後結果（結案必填）</span>
+        <textarea
+          value={result}
+          onChange={(e) => setResult(e.target.value)}
+          placeholder="例如：已沖回總倉並建立重派撿貨單 / 物流承認遺失，已登記求償"
+          rows={2}
+          className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+        />
+      </label>
+
       {error && (
         <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
           {error}
@@ -325,10 +338,10 @@ export function TransferShortageResolveModal({
         </SpinButton>
         <SpinButton
           onClick={submit}
-          disabled={!resolution || submitting}
+          disabled={!resolution || !result.trim() || submitting}
           className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-zinc-300 dark:disabled:bg-zinc-700"
         >
-          {submitting ? "處理中…" : "✓ 標記已處理"}
+          {submitting ? "處理中…" : "✓ 完成動作並結案"}
         </SpinButton>
       </div>
     </Modal>
