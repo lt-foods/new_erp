@@ -1,5 +1,8 @@
 -- 漂漂館獨立入口：外觀/上架入口分開，但訂單、取貨、帳務仍共用既有系統。
 -- 不沿用手機快速開團：那條是 fast/limited/food_train，且會顯示在主商城。
+-- 全檔要嘛完整成立、要嘛全部退回；SQL Editor 中途報錯不可留下半套欄位／函式。
+
+BEGIN;
 
 ALTER TABLE public.group_buy_campaigns
   ADD COLUMN IF NOT EXISTS sales_channel TEXT NOT NULL DEFAULT 'main'
@@ -381,3 +384,5 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.rpc_piaopiao_publisher_overview() TO authenticated;
+
+COMMIT;
