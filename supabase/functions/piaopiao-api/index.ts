@@ -1,16 +1,15 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 import { corsHeaders } from "../_shared/cors.ts";
-import { verifyJwtHs256 } from "../_shared/jwt.ts";
 
-type Session = { tenant_id: string; publisher_id: number; line_user_id: string; lane: "tong" | "chao" };
+type Session = { tenant_id: string; publisher_id: number; auth_user_id: string; lane: "tong" | "chao" };
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
   try {
-    const body = await req.json() as Record<string, unknown>;
-    const session = await sessionFrom(req);
     const sb = createClient(mustEnv("SUPABASE_URL"), mustEnv("SUPABASE_SERVICE_ROLE_KEY"), { auth: { persistSession: false } });
+    const body = await req.json() as Record<string, unknown>;
+    const session = await sessionFrom(sb, req);
     const action = String(body.action ?? "");
     if (action === "bootstrap") return await bootstrap(sb, session);
     if (action === "upload_image") return await uploadImage(sb, session, body);
@@ -22,24 +21,24 @@ Deno.serve(async (req) => {
   }
 });
 
-async function sessionFrom(req: Request): Promise<Session> {
+async function sessionFrom(sb: any, req: Request): Promise<Session> {
   const raw = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-  if (!raw) throw new Error("請先用 LINE 登入");
-  const claims = await verifyJwtHs256(raw, mustEnv("PIAOPIAO_SESSION_SECRET"));
-  if (claims.purpose !== "piaopiao-publisher-session") throw new Error("登入身分不適用");
-  const tenant_id = String(claims.tenant_id ?? "");
-  const publisher_id = Number(claims.publisher_id ?? 0);
-  const line_user_id = String(claims.line_user_id ?? "");
-  const lane = claims.lane === "chao" ? "chao" : claims.lane === "tong" ? "tong" : null;
-  if (!tenant_id || !publisher_id || !line_user_id || !lane) throw new Error("登入資料不完整");
-  return { tenant_id, publisher_id, line_user_id, lane };
+  if (!raw) throw new Error("請先用漂漂館帳號登入");
+  const { data: { user }, error: authError } = await sb.auth.getUser(raw);
+  if (authError || !user) throw new Error("登入已失效，請重新登入");
+  const { data: publisher, error } = await sb.from("piaopiao_publishers")
+    .select("id, tenant_id, lane, is_active").eq("auth_user_id", user.id).maybeSingle();
+  if (error || !publisher?.is_active) throw new Error("你的上架資格已停用，請聯絡總部");
+  const lane = publisher.lane === "chao" ? "chao" : publisher.lane === "tong" ? "tong" : null;
+  if (!publisher.tenant_id || !publisher.id || !lane) throw new Error("登入資料不完整");
+  return { tenant_id: publisher.tenant_id, publisher_id: publisher.id, auth_user_id: user.id, lane };
 }
 
 async function bootstrap(sb: any, session: Session) {
   const { data: publisher, error } = await sb.from("piaopiao_publishers")
     .select("id, display_name, lane, is_active")
     .eq("id", session.publisher_id).eq("tenant_id", session.tenant_id)
-    .eq("line_user_id", session.line_user_id).maybeSingle();
+    .eq("auth_user_id", session.auth_user_id).maybeSingle();
   if (error || !publisher?.is_active) throw new Error("你的上架資格已停用，請聯絡總部");
   const { data: suppliers, error: suppliersError } = await sb.from("suppliers")
     .select("id, name").eq("tenant_id", session.tenant_id).eq("is_active", true).order("name");
@@ -70,7 +69,7 @@ async function publish(sb: any, session: Session, body: Record<string, unknown>)
     p_tenant_id: session.tenant_id,
     p_publisher_id: session.publisher_id,
     p_request_id: requestId,
-    p_operator_id: mustEnv("PIAOPIAO_AUDIT_USER_ID"),
+    p_operator_id: session.auth_user_id,
     p_end_at: body.end_at,
     p_pickup_deadline: body.pickup_deadline,
     p_items: body.items,

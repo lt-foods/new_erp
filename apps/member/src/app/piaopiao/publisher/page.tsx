@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { campaignShareUrl, sharePage } from "@/lib/shareLink";
+import { getPiaopiaoAuth, piaopiaoLoginEmail } from "@/lib/piaopiaoAuth";
 
 type Variant = { name: string; cost_price: string; branch_price: string; retail_price: string };
 type Product = { name: string; description: string; images: File[]; variants: Variant[]; supplier_id: string; supplier_name: string };
@@ -14,11 +15,12 @@ const emptyProduct = (): Product => ({
   variants: [{ name: "單一規格", cost_price: "", branch_price: "", retail_price: "" }],
   supplier_id: "", supplier_name: "",
 });
-const TOKEN_KEY = "piaopiao_publisher_token";
 const REQUEST_KEY = "piaopiao_pending_request_id";
 
 export default function PiaopiaoPublisherPage() {
   const [token, setToken] = useState("");
+  const [loginId, setLoginId] = useState("");
+  const [password, setPassword] = useState("");
   const [lane, setLane] = useState<"tong" | "chao" | null>(null);
   const [supplierList, setSupplierList] = useState<Supplier[]>([]);
   const [products, setProducts] = useState<Product[]>([emptyProduct()]);
@@ -30,14 +32,10 @@ export default function PiaopiaoPublisherPage() {
   const [results, setResults] = useState<PublishedResult[]>([]);
 
   useEffect(() => {
-    const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-    const fromLine = fragment.get("token");
-    const saved = fromLine || localStorage.getItem(TOKEN_KEY) || "";
-    if (fromLine) {
-      localStorage.setItem(TOKEN_KEY, fromLine);
-      window.history.replaceState(null, "", window.location.pathname);
-    }
-    setToken(saved);
+    const auth = getPiaopiaoAuth();
+    void auth.auth.getSession().then(({ data }) => setToken(data.session?.access_token ?? ""));
+    const { data } = auth.auth.onAuthStateChange((_event, session) => setToken(session?.access_token ?? ""));
+    return () => data.subscription.unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -46,7 +44,6 @@ export default function PiaopiaoPublisherPage() {
       setLane(r.publisher.lane);
       setSupplierList(r.suppliers ?? []);
     }).catch((e) => {
-      localStorage.removeItem(TOKEN_KEY);
       setToken("");
       setError(e instanceof Error ? e.message : "登入已失效");
     });
@@ -143,9 +140,16 @@ export default function PiaopiaoPublisherPage() {
     }
   }
 
-  if (!token) return <main className="mx-auto flex min-h-[100dvh] max-w-md items-center px-6"><div className="w-full rounded-3xl bg-white p-7 text-center shadow-xl"><div className="text-5xl">🛍️</div><h1 className="mt-4 text-2xl font-bold">漂漂館上架後台</h1><p className="mt-3 leading-7 text-zinc-600">使用 LINE 身分登入。沒有 ERP 帳號也能操作，但需先由總部開通。</p>{error && <p className="mt-4 text-sm text-red-600">{error}</p>}<button onClick={() => { const base = process.env.NEXT_PUBLIC_SUPABASE_URL; if (base) window.location.href = `${base}/functions/v1/piaopiao-auth-start`; }} className="mt-6 min-h-11 w-full rounded-xl bg-[#06C755] px-4 text-base font-semibold text-white">用 LINE 登入</button></div></main>;
+  async function login() {
+    setError("");
+    if (!loginId.trim() || !password) return setError("請輸入上架帳號與密碼");
+    const { error: loginError } = await getPiaopiaoAuth().auth.signInWithPassword({ email: piaopiaoLoginEmail(loginId), password });
+    if (loginError) setError("帳號或密碼不正確，或此帳號已停用");
+  }
 
-  return <main className="mx-auto min-h-[100dvh] max-w-3xl bg-zinc-50 px-4 py-6 text-zinc-900"><header className="mb-5 rounded-3xl bg-gradient-to-br from-rose-500 to-rose-700 px-6 py-6 text-white shadow-lg"><p className="text-sm opacity-90">漂漂館專屬・不會上到主商城首頁</p><h1 className="mt-1 text-3xl font-bold">{heading}</h1><p className="mt-2 text-sm leading-6 opacity-90">一次建立 1～5 樣商品；每樣都是獨立下單連結。建立後由你自己按分享、自己選 LINE 群組。</p></header>
+  if (!token) return <main className="mx-auto flex min-h-[100dvh] max-w-md items-center px-6"><div className="w-full rounded-3xl bg-white p-7 text-center shadow-xl"><div className="text-5xl">🛍️</div><h1 className="mt-4 text-2xl font-bold">漂漂館上架後台</h1><p className="mt-3 leading-7 text-zinc-600">使用總部發給你的漂漂館上架帳號。這不是 ERP 帳號，也不綁私人 LINE。</p>{error && <p className="mt-4 text-sm text-red-600">{error}</p>}<input className="input mt-5" autoComplete="username" placeholder="上架帳號，例如 piao.tong" value={loginId} onChange={(e) => setLoginId(e.target.value)} /><input className="input mt-3" autoComplete="current-password" type="password" placeholder="密碼" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void login(); }} /><button onClick={() => void login()} className="mt-4 min-h-11 w-full rounded-xl bg-rose-600 px-4 text-base font-semibold text-white">登入上架後台</button></div></main>;
+
+  return <main className="mx-auto min-h-[100dvh] max-w-3xl bg-zinc-50 px-4 py-6 text-zinc-900"><header className="mb-5 rounded-3xl bg-gradient-to-br from-rose-500 to-rose-700 px-6 py-6 text-white shadow-lg"><div className="flex items-start justify-between gap-3"><div><p className="text-sm opacity-90">漂漂館專屬・不會上到主商城首頁</p><h1 className="mt-1 text-3xl font-bold">{heading}</h1><p className="mt-2 text-sm leading-6 opacity-90">一次建立 1～5 樣商品；每樣都是獨立下單連結。建立後由你自己按分享、自己選 LINE 群組。</p></div><button onClick={() => void getPiaopiaoAuth().auth.signOut()} className="min-h-11 shrink-0 rounded-lg border border-white/50 px-3 text-sm font-semibold">登出</button></div></header>
     {error && <p className="mb-4 rounded-xl bg-red-50 p-3 text-red-700">{error}</p>}{shareNotice && <p className="mb-4 rounded-xl bg-emerald-50 p-3 text-emerald-800">{shareNotice}</p>}
     {results.length > 0 ? <section className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="text-xl font-bold">建立完成，請逐一分享</h2><p className="mt-2 text-sm text-zinc-600">按每一樣商品的分享鈕，再由 LINE 選群組。支援的手機／電腦會帶入商品圖和連結。</p><div className="mt-4 space-y-3">{results.map((result) => <div key={result.campaign_id} className="rounded-2xl border p-4"><p className="font-semibold">{result.name}</p><a className="mt-1 block break-all text-rose-700 underline" href={result.url} target="_blank" rel="noreferrer">{result.url}</a><button onClick={() => void share(result)} className="mt-3 min-h-11 rounded-lg bg-[#06C755] px-4 text-sm font-semibold text-white">分享至 LINE 群組</button></div>)}</div><button onClick={() => { setResults([]); setProducts([emptyProduct()]); }} className="mt-5 min-h-11 rounded-xl bg-rose-600 px-4 font-semibold text-white">再建立一批</button></section> : <>
       <section className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="text-lg font-bold">共同資料</h2><div className="mt-4 grid gap-4 sm:grid-cols-2"><Field label="收單時間"><input className="input" type="datetime-local" value={endAt} onChange={(e) => setEndAt(e.target.value)} /></Field><Field label="取貨日"><input className="input" type="date" value={pickupDeadline} onChange={(e) => setPickupDeadline(e.target.value)} /></Field></div></section>

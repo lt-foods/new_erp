@@ -15,7 +15,8 @@ CREATE INDEX IF NOT EXISTS idx_campaigns_piaopiao_shop
 CREATE TABLE IF NOT EXISTS public.piaopiao_publishers (
   id BIGSERIAL PRIMARY KEY,
   tenant_id UUID NOT NULL,
-  line_user_id TEXT NOT NULL,
+  auth_user_id UUID NOT NULL,
+  login_id TEXT NOT NULL,
   display_name TEXT NOT NULL,
   lane TEXT NOT NULL CHECK (lane IN ('tong', 'chao')),
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -23,23 +24,12 @@ CREATE TABLE IF NOT EXISTS public.piaopiao_publishers (
   updated_by UUID,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (tenant_id, line_user_id)
+  UNIQUE (tenant_id, auth_user_id),
+  UNIQUE (tenant_id, login_id)
 );
 
 COMMENT ON TABLE public.piaopiao_publishers IS
-  '漂漂館外部上架員的 LINE 身分白名單；不是 ERP 員工帳號。';
-
-CREATE TABLE IF NOT EXISTS public.piaopiao_publisher_requests (
-  id BIGSERIAL PRIMARY KEY,
-  tenant_id UUID NOT NULL,
-  line_user_id TEXT NOT NULL,
-  display_name TEXT,
-  picture_url TEXT,
-  requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  reviewed_at TIMESTAMPTZ,
-  reviewed_by UUID,
-  UNIQUE (tenant_id, line_user_id)
-);
+  '漂漂館專用登入帳號的上架資格；不是 ERP 員工帳號，也不綁個人 LINE。';
 
 CREATE TABLE IF NOT EXISTS public.piaopiao_publish_batches (
   id BIGSERIAL PRIMARY KEY,
@@ -65,9 +55,8 @@ COMMENT ON TABLE public.piaopiao_batch_campaigns IS
   '漂漂館一次送出的批次與每個商品團的對照；供防連點重複建團使用。分享由上架員自行選擇 LINE 群組。';
 
 -- 外部上架員與批次對照一律只能經過受控 RPC／Edge Function 進出。
--- 不開任何直接讀寫政策，避免登入會員或外部上架員看到彼此的 LINE 身分。
+-- 不開任何直接讀寫政策，避免登入會員或外部上架員看到彼此的帳號資料。
 ALTER TABLE public.piaopiao_publishers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.piaopiao_publisher_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.piaopiao_publish_batches ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.piaopiao_batch_campaigns ENABLE ROW LEVEL SECURITY;
 
@@ -133,6 +122,9 @@ BEGIN
    FOR UPDATE;
   IF NOT FOUND THEN
     RAISE EXCEPTION '上架資格不存在或已停用';
+  END IF;
+  IF v_publisher.auth_user_id IS DISTINCT FROM p_operator_id THEN
+    RAISE EXCEPTION '上架帳號與操作員不符';
   END IF;
 
   -- 防止連點送出：同一個 request_id 永遠回同一批團，絕不重複建。
@@ -319,10 +311,6 @@ BEGIN
     RAISE EXCEPTION 'permission denied';
   END IF;
   RETURN jsonb_build_object(
-    'requests', COALESCE((SELECT jsonb_agg(to_jsonb(r) ORDER BY r.requested_at DESC)
-      FROM public.piaopiao_publisher_requests r
-     WHERE r.tenant_id = v_tenant
-       AND NOT EXISTS (SELECT 1 FROM public.piaopiao_publishers p WHERE p.tenant_id = r.tenant_id AND p.line_user_id = r.line_user_id)), '[]'::jsonb),
     'publishers', COALESCE((SELECT jsonb_agg(to_jsonb(p) ORDER BY p.lane, p.display_name)
       FROM public.piaopiao_publishers p WHERE p.tenant_id = v_tenant), '[]'::jsonb),
     'chao_supplier_ready', EXISTS (SELECT 1 FROM public.suppliers s WHERE s.tenant_id = v_tenant AND s.is_active AND btrim(s.name) = '潮包子')
@@ -330,54 +318,4 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION public.rpc_approve_piaopiao_publisher(
-  p_request_id BIGINT,
-  p_display_name TEXT,
-  p_lane TEXT
-) RETURNS BIGINT
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-  v_tenant UUID := public._current_tenant_id();
-  v_role TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
-  v_request public.piaopiao_publisher_requests%ROWTYPE;
-  v_id BIGINT;
-BEGIN
-  IF v_role NOT IN ('owner', 'admin') THEN RAISE EXCEPTION 'permission denied'; END IF;
-  IF p_lane NOT IN ('tong', 'chao') OR NULLIF(btrim(p_display_name), '') IS NULL THEN
-    RAISE EXCEPTION '請指定顯示名稱與漂漂彤／漂漂潮';
-  END IF;
-  SELECT * INTO v_request FROM public.piaopiao_publisher_requests
-   WHERE id = p_request_id AND tenant_id = v_tenant FOR UPDATE;
-  IF NOT FOUND THEN RAISE EXCEPTION '找不到這筆 LINE 開通申請'; END IF;
-  INSERT INTO public.piaopiao_publishers (tenant_id, line_user_id, display_name, lane, is_active, created_by, updated_by)
-  VALUES (v_tenant, v_request.line_user_id, btrim(p_display_name), p_lane, TRUE, auth.uid(), auth.uid())
-  ON CONFLICT (tenant_id, line_user_id) DO UPDATE SET display_name = EXCLUDED.display_name, lane = EXCLUDED.lane, is_active = TRUE, updated_by = auth.uid(), updated_at = NOW()
-  RETURNING id INTO v_id;
-  UPDATE public.piaopiao_publisher_requests SET reviewed_at = NOW(), reviewed_by = auth.uid() WHERE id = p_request_id;
-  RETURN v_id;
-END;
-$$;
-
-CREATE OR REPLACE FUNCTION public.rpc_set_piaopiao_publisher_active(p_publisher_id BIGINT, p_is_active BOOLEAN)
-RETURNS VOID
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-  v_tenant UUID := public._current_tenant_id();
-  v_role TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
-BEGIN
-  IF v_role NOT IN ('owner', 'admin') THEN RAISE EXCEPTION 'permission denied'; END IF;
-  UPDATE public.piaopiao_publishers SET is_active = p_is_active, updated_by = auth.uid(), updated_at = NOW()
-   WHERE id = p_publisher_id AND tenant_id = v_tenant;
-  IF NOT FOUND THEN RAISE EXCEPTION '找不到上架員'; END IF;
-END;
-$$;
-
 GRANT EXECUTE ON FUNCTION public.rpc_piaopiao_publisher_overview() TO authenticated;
-GRANT EXECUTE ON FUNCTION public.rpc_approve_piaopiao_publisher(BIGINT, TEXT, TEXT) TO authenticated;
-GRANT EXECUTE ON FUNCTION public.rpc_set_piaopiao_publisher_active(BIGINT, BOOLEAN) TO authenticated;

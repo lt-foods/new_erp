@@ -446,13 +446,9 @@ verify_jwt = false
 [functions.line-webhook]
 verify_jwt = false
 
-# 漂漂館上架員不是 Supabase 帳號；三支入口都自行驗 LINE OAuth state／專用 session。
-# 若保留平台預設 JWT 驗證，外部人員會在到達我們的驗證邏輯前就被擋住。
-[functions.piaopiao-auth-start]
-verify_jwt = false
-
-[functions.piaopiao-auth-callback]
-verify_jwt = false
-
+# 漂漂館帳號由函式內驗證，再逐筆核對上架資格；gateway 要讓 CORS preflight 通過。
 [functions.piaopiao-api]
+verify_jwt = false
+
+[functions.piaopiao-publisher-admin]
 verify_jwt = false
