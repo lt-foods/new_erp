@@ -42,6 +42,15 @@ type Member = {
 type Tier = { id: number; name: string };
 type Store = { id: number; code: string; name: string };
 
+/** 各店 OA 名冊上的 LINE 身分（line-webhook 抓 profile 存的） */
+type LineFollowerRow = {
+  store_id: number;
+  display_name: string | null;
+  picture_url: string | null;
+  followed: boolean;
+  last_event_at: string | null;
+};
+
 type MergedFrom = {
   merge_id: number;
   merged_at: string;
@@ -141,6 +150,8 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
   const [lineMsgOpen, setLineMsgOpen] = useState(false);
   /** 該會員在所屬分店的 OA 名冊有沒有已配對的身分（推播真正靠的是這個） */
   const [hasStoreLineBinding, setHasStoreLineBinding] = useState(false);
+  /** OA 名冊上的 LINE 顯示名稱／頭像 —— U 開頭的 ID 反查不到人，看得懂的是這個 */
+  const [lineProfile, setLineProfile] = useState<LineFollowerRow | null>(null);
   const [mergedFrom, setMergedFrom] = useState<MergedFrom[]>([]);
   /** 正在復原的那筆合併 id（一次只讓按一筆） */
   const [unmerging, setUnmerging] = useState<number | null>(null);
@@ -335,15 +346,22 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
       // 推播用的身分在 store_line_followers（該店 OA provider 的 ID），
       // 不是 members.line_user_id。線上 370 位松山店會員有 339 位沒有舊欄位，
       // 只看舊欄位的話這些人綁好了按鈕也不會出現。
-      if (m.home_store_id) {
-        const { data: fol } = await sb
+      // 不限定取貨店：顯示名稱／頭像在任何一家店的名冊配對到都拿得到，
+      // 推播資格（hasStoreLineBinding）仍維持「取貨店已配對且 followed」。
+      {
+        const { data: fols } = await sb
           .from("store_line_followers")
-          .select("line_user_id")
-          .eq("store_id", m.home_store_id)
+          .select("store_id, display_name, picture_url, followed, last_event_at")
           .eq("member_id", m.id)
-          .eq("followed", true)
-          .maybeSingle();
-        if (!cancelled) setHasStoreLineBinding(!!fol);
+          .order("last_event_at", { ascending: false, nullsFirst: false });
+        if (!cancelled) {
+          const rows = (fols ?? []) as LineFollowerRow[];
+          setHasStoreLineBinding(
+            !!m.home_store_id && rows.some((r) => r.store_id === m.home_store_id && r.followed)
+          );
+          const named = rows.filter((r) => r.display_name);
+          setLineProfile(named.find((r) => r.store_id === m.home_store_id) ?? named[0] ?? null);
+        }
       }
       type MergeMemberRow = { id: number; member_no: string; name: string | null; phone: string | null; avatar_url: string | null; joined_at: string };
       type MergeRow = {
@@ -836,9 +854,35 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
             <Card label="生日">{member.birthday ?? "—"}</Card>
             <Card label="加入時間">{new Date(member.joined_at).toLocaleString("zh-TW")}</Card>
             <Card label="最後消費">{member.last_visit_at ? new Date(member.last_visit_at).toLocaleString("zh-TW") : "—"}</Card>
-            {member.line_user_id && (
-              <Card label="LINE User ID">
-                <span className="font-mono text-xs" title="完整 ID 已隱藏">{maskLineUserId(member.line_user_id)}</span>
+            {(lineProfile || member.line_user_id) && (
+              <Card label="LINE 帳號">
+                {lineProfile ? (
+                  <div className="flex items-center gap-2.5">
+                    {lineProfile.picture_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={lineProfile.picture_url} alt="" className="h-9 w-9 rounded-full object-cover" />
+                    ) : (
+                      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-zinc-200 text-sm text-zinc-500 dark:bg-zinc-700">
+                        {lineProfile.display_name?.[0] ?? "?"}
+                      </div>
+                    )}
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium" title="LINE 顯示名稱（官方帳號好友名冊）">
+                        {lineProfile.display_name}
+                      </div>
+                      <div className="text-xs text-zinc-500">
+                        {stores.find((s) => s.id === lineProfile.store_id)?.name ?? `#${lineProfile.store_id}`} OA 好友
+                        {member.line_user_id && (
+                          <span className="ml-1.5 font-mono" title="完整 ID 已隱藏">{maskLineUserId(member.line_user_id)}</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <span className="font-mono text-xs" title="完整 ID 已隱藏；尚未配對到任何一家店的官方帳號名冊，看不到顯示名稱">
+                    {maskLineUserId(member.line_user_id!)}
+                  </span>
+                )}
               </Card>
             )}
             {member.notes && (
