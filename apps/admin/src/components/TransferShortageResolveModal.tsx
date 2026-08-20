@@ -23,6 +23,16 @@
 //   ＋補貨 transfer 的 ti.qty_requested 加總 —— 兩個來源都是「當初打算派多少」,
 //   既不看實收、也不看沖回 ⇒ 系統永遠認為那批貨已經派掉,沒有人能再派它,
 //   8 位客人 pending 兩個月。⇒ 還有客人在等就要選 redispatch。
+//
+// ⚠️⚠️⚠️ 為什麼這幾段警語要做成擋眼的色底、不是灰色小字
+//   2026-08-21 正式庫唯讀實測(hq_to_store、已收貨、實收<派出、已處理過的分組):
+//     restock_hq  85 筆 / 230 件（2026-08-14 ~ 08-20）
+//     accept      31 筆 /  89 件（2026-08-07 ~ 08-20）  ← 只打標記,貨不回總倉
+//     redispatch  23 筆 / 155 件（2026-08-14 ~ 08-20）
+//   ⇒ restock_hq 被按的次數是 redispatch 的 3.7 倍(85:23),而「還有客人在等」時
+//     正解是 redispatch ⇒ 現場正在大量製造不可逆的古華。
+//   ⇒ 這幾段字是本檔存在的主要理由,⛔ 不要為了版面清爽把它改回小灰字。
+//   (數字是當時快照、會過期;⛔ 刻意不放進畫面文案,免得變成一句過期的謊)
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -54,8 +64,12 @@ const RESOLUTION_OPTIONS: Array<{
   icon: string;
   title: string;
   desc: string;
-  // 按下去會發生什麼「回不去」的事 / 這顆的關鍵限制(顯示在說明下面一行,紅字)
+  // 按下去會發生什麼「回不去」的事 / 這顆的關鍵限制。顯示在說明下方的色底方塊裡,
+  // 一律顯示(不是選中才出現)—— 要在按之前就看到才有用。
   warn?: string;
+  // warn 的色調:danger = 最容易按錯又不可逆(restock_hq)、caution = 單行道且貨不回總倉、
+  // info = 正確選項的補充、good = 唯一會留在清單上的那顆
+  warnTone?: "danger" | "caution" | "info" | "good";
   cta?: { label: string; href: string; hint: string };
 }> = [
   {
@@ -63,6 +77,7 @@ const RESOLUTION_OPTIONS: Array<{
     icon: "🔁",
     title: "拒絕短收 — 沖回總倉並自動重派",
     desc: "貨仍在總倉(漏裝/揀貨少拿):短少數量沖回總倉庫存,並自動開一張撿貨單重派回原店、接回原訂單(出貨/收貨後訂單自動推進)。重派撿貨單會出現在總倉收件匣的撿貨單匣。真的遺失請勿選(帳會多)。",
+    warnTone: "info",
     warn: "還有客人在等這批貨 → 選這顆。按完這一筆會從「收貨短少」清單消失,但貨已沖回總倉、撿貨單也開好了,樓下撿完就會再送一次。",
   },
   {
@@ -70,6 +85,7 @@ const RESOLUTION_OPTIONS: Array<{
     icon: "🏭",
     title: "貨仍在總倉（只沖回庫存,不重派）",
     desc: "把短少數量以原出庫成本記回總倉庫存,之後再自行決定怎麼派。要自動重派回原店請選上面的「拒絕短收」。真的遺失請勿選(帳會多)。",
+    warnTone: "danger",
     warn: "⚠️ 單行道,按下去回不來:這一筆會從「收貨短少」清單消失,之後不能再改選上面的「🔁 拒絕短收(自動重派)」。而且系統仍算這批貨已經派掉了 → 沒有人能再派它。還有客人在等,請改選「🔁 拒絕短收」。",
   },
   {
@@ -77,6 +93,7 @@ const RESOLUTION_OPTIONS: Array<{
     icon: "📦",
     title: "補出貨",
     desc: "從 HQ 庫存或他店再派一筆貨給該店補上短少。",
+    warnTone: "good",
     warn: "✓ 只有這一顆會留在清單上:標了之後這筆會繼續顯示「已標補出貨,尚未補到」,直到該店真的收到補的貨才自動消失。不確定要選哪顆時,這顆最安全。",
     cta: {
       // CTA 指補貨申請（總倉派貨）：自由轉貨的表單只給店↔店、選不到總倉，
@@ -92,6 +109,7 @@ const RESOLUTION_OPTIONS: Array<{
     icon: "❌",
     title: "取消客戶訂單",
     desc: "通知顧客貨拿不到,在客戶端取消訂單 / 退款。",
+    warnTone: "caution",
     warn: "⚠️ 單行道:這一筆會從清單消失、不能再改選別的。而且這顆只打標記 —— 短少的貨不會回到總倉庫存,帳上就是少了這些。貨其實還在總倉的話請改選上面兩顆。",
     cta: {
       // 收件匣「異常 → 訂單短少」分頁已於 2026-08-11 移除,改導去訂單管理頁處理
@@ -105,6 +123,7 @@ const RESOLUTION_OPTIONS: Array<{
     icon: "🚚",
     title: "供應商 / 物流求償",
     desc: "判定為運送途中遺失或上游短裝,跟物流/供應商求償。",
+    warnTone: "caution",
     warn: "⚠️ 單行道:這一筆會從清單消失、不能再改選別的。這顆只打標記 —— 短少的貨不會回到總倉庫存(貨真的不見了才選這顆)。",
   },
   {
@@ -112,9 +131,20 @@ const RESOLUTION_OPTIONS: Array<{
     icon: "✓",
     title: "接受短少 (認賠)",
     desc: "短少不追究,直接結案。庫存以實收為準。",
+    warnTone: "caution",
     warn: "⚠️ 單行道:這一筆會從清單消失、不能再改選別的。這顆只打標記 —— 短少的貨不會回到總倉庫存,等於認賠這些貨。貨其實還在總倉的話⛔不要選這顆。",
   },
 ];
+
+// warn 方塊的色底 —— 刻意用「擋眼」的實心底色,不是灰色小字(理由見檔頭的實測數字)
+const WARN_TONE_CLASS: Record<"danger" | "caution" | "info" | "good", string> = {
+  danger:
+    "border-rose-400 bg-rose-100 font-semibold text-rose-900 dark:border-rose-600 dark:bg-rose-950 dark:text-rose-200",
+  caution:
+    "border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200",
+  info: "border-blue-200 bg-blue-50 text-blue-900 dark:border-blue-800 dark:bg-blue-950/60 dark:text-blue-200",
+  good: "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
+};
 
 type AffectedOrder = {
   id: number;
@@ -304,14 +334,17 @@ export function TransferShortageResolveModal({
               (這兩顆<span className="font-semibold">不會</span>把貨補回總倉庫存)。
             </li>
           </ul>
-          <div className="mt-2 rounded bg-white/70 p-2 text-[11px] leading-relaxed text-rose-800 dark:bg-zinc-900/60 dark:text-rose-300">
-            <span className="font-semibold">⚠️ 按下去就回不來:</span>
-            除了「📦 補出貨」,其他五顆按完之後這一筆就會從「收貨短少」清單消失,
-            <span className="font-semibold">之後不能再改選別的</span>。
-            <br />
-            實際發生過:古華有一筆按了「🏭 貨仍在總倉」,貨帳雖然回到總倉,但系統仍然算這批貨已經派掉了,
-            <span className="font-semibold">結果沒有任何人能再派它</span> → 8 位客人等了兩個月。
-            <span className="font-semibold">還有客人在等,就選「🔁 拒絕短收」。</span>
+          <div className="mt-2 rounded border-2 border-rose-400 bg-rose-100 p-2 text-[11px] leading-relaxed text-rose-900 dark:border-rose-600 dark:bg-rose-950 dark:text-rose-200">
+            <div className="font-bold">⚠️ 按下去就回不來,先想清楚再按</div>
+            <div className="mt-0.5">
+              除了「📦 補出貨」,其他五顆按完之後這一筆就會從「收貨短少」清單消失,
+              <span className="font-bold">之後不能再改選別的</span>。
+            </div>
+            <div className="mt-1">
+              實際發生過:古華有一筆按了「🏭 貨仍在總倉」,貨帳雖然回到總倉,但系統仍然算這批貨
+              已經派掉了,<span className="font-bold">結果沒有任何人能再派它</span> → 8 位客人等了兩個月。
+            </div>
+            <div className="mt-1 font-bold">⇒ 還有客人在等,就選「🔁 拒絕短收」,不要選「🏭 貨仍在總倉」。</div>
           </div>
         </div>
 
@@ -341,13 +374,12 @@ export function TransferShortageResolveModal({
                 </div>
                 <div className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{opt.desc}</div>
                 {/* 「按下去會發生什麼回不去的事」一律顯示,不只在選中時才出現 ——
-                    要在按之前就看到才有用。replenish 那條是好消息(綠字),其餘是警告(紅字)。 */}
+                    要在按之前就看到才有用。⛔ 不可以改回無底色的小灰字:2026-08-21 實測
+                    restock_hq 被誤按的次數是 redispatch 的 3.7 倍(理由見檔頭)。 */}
                 {opt.warn && (
                   <div
-                    className={`mt-1 text-[11px] leading-relaxed ${
-                      opt.value === "replenish"
-                        ? "text-emerald-700 dark:text-emerald-400"
-                        : "text-rose-700 dark:text-rose-400"
+                    className={`mt-1.5 rounded border px-2 py-1.5 text-[11px] leading-relaxed ${
+                      WARN_TONE_CLASS[opt.warnTone ?? "caution"]
                     }`}
                   >
                     {opt.warn}
