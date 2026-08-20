@@ -278,6 +278,7 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
       title={cleanCampaignText(displayName) || "商品"}
       hideTabs={salesChannel === "piaopiao"}
       fallbackHref={salesChannel === "piaopiao" ? "/piaopiao" : "/shop"}
+      world={salesChannel === "piaopiao" ? "piaopiao" : "main"}
     >
       {/* 唯讀模式沒有常駐下單列，底部不用留它的位置 */}
       <div className={`space-y-4 px-0 ${readOnly ? "pb-10" : "pb-[160px]"}`}>

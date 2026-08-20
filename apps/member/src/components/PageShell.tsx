@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import MemberTabBar from "./MemberTabBar";
 
@@ -19,16 +20,28 @@ export default function PageShell({
   children,
   hideTabs = false,
   fallbackHref = "/shop",
+  headerContent,
+  world = "main",
 }: {
   title?: string;
   rightAction?: React.ReactNode;
   children: React.ReactNode;
   hideTabs?: boolean;
   fallbackHref?: string;
+  /** 取代大標題那一列的自訂內容（例：商城的搜尋列＋世界分頁） */
+  headerContent?: React.ReactNode;
+  /** 世界主題：piaopiao 會把整站品牌變數切成漂漂館紫（見 globals.css） */
+  world?: "main" | "piaopiao";
 }) {
   const router = useRouter();
   const pathname = usePathname() ?? "";
   const showBack = !TOP_LEVEL_PATHS.has(pathname);
+
+  // 每頁掛載時宣告自己屬於哪個世界。掛在 <html> 上（不能只包一層 div）——
+  // 頁面背景漸層在 body::before/::after，包在 div 裡的變數蓋不到它。
+  useEffect(() => {
+    document.documentElement.setAttribute("data-world", world);
+  }, [world]);
 
   // 點回上一頁: 有 history 就 back, 沒有 (深連結 / LINE 開新分頁) fallback 到 /shop
   const handleBack = () => {
@@ -50,7 +63,7 @@ export default function PageShell({
       }}
     >
       <main className="relative mx-auto w-full max-w-md">
-        {title !== undefined && (
+        {(title !== undefined || headerContent !== undefined) && (
           <header
             className="sticky top-0 z-20 overflow-hidden px-5 pb-2.5 backdrop-blur-xl"
             style={{ paddingTop: "calc(env(safe-area-inset-top) + 16px)" }}
@@ -69,6 +82,9 @@ export default function PageShell({
               style={{ background: "radial-gradient(circle, var(--brand-soft) 0%, transparent 70%)" }}
               aria-hidden
             />
+            {headerContent !== undefined ? (
+              <div className="relative">{headerContent}</div>
+            ) : (
             <div className="relative flex items-end justify-between gap-3">
               <div className="flex items-center gap-2.5">
                 {showBack ? (
@@ -97,6 +113,7 @@ export default function PageShell({
               </div>
               {rightAction && <div className="pb-1.5">{rightAction}</div>}
             </div>
+            )}
           </header>
         )}
         {children}

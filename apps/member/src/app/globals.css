@@ -29,6 +29,27 @@
     0 6px 18px -8px rgba(158, 47, 80, 0.12);
   --shadow-card-lg: 0 2px 6px rgba(158, 47, 80, 0.06),
     0 16px 36px -12px rgba(158, 47, 80, 0.18);
+  /* 品牌色光暈（chip / CTA 的浮起陰影用；跟著世界切換） */
+  --brand-glow: rgba(158, 47, 80, 0.6);
+}
+
+/* ── 漂漂館世界（data-world="piaopiao"）───────────────────────
+   整站品牌色都走上面的變數，所以切這組變數＝整個世界換色：
+   暖玫瑰（包子媽）→ 夢幻紫（漂漂館）。頁面背景的交界動畫在
+   body::after 那層做 crossfade。 */
+:root[data-world="piaopiao"] {
+  --background: #f3f2f8;          /* 冷調薰衣草灰 */
+  --brand: #8b78f0;               /* 紫羅蘭 — accent */
+  --brand-strong: #6553dd;        /* 深紫 — CTA、金額強調 */
+  --brand-deep: #4936b8;          /* 漸層深端 */
+  --brand-soft: #eae6fd;          /* 極淺紫 — 選中 pill / chip 底 */
+  --brand-tint: #efecfb;          /* 頁面冷染 */
+  --brand-gradient: linear-gradient(135deg, #9a86f7 0%, #6553dd 55%, #4936b8 100%);
+  --shadow-card: 0 1px 2px rgba(73, 54, 184, 0.05),
+    0 6px 18px -8px rgba(73, 54, 184, 0.14);
+  --shadow-card-lg: 0 2px 6px rgba(73, 54, 184, 0.06),
+    0 16px 36px -12px rgba(73, 54, 184, 0.2);
+  --brand-glow: rgba(73, 54, 184, 0.55);
 }
 
 @theme inline {
@@ -69,13 +90,37 @@ body::before {
   inset: 0;
   z-index: -1;
   pointer-events: none;
+  /* 這層固定寫死「主商城暖玫瑰」的值（不吃變數）——漂漂館世界的紫色
+     漸層疊在 body::after，用 opacity 過場，才做得出兩個世界 crossfade；
+     兩層都吃變數的話切換瞬間一起跳色，沒有過場。 */
   background:
     radial-gradient(
       120% 50% at 50% 0%,
-      var(--brand-tint) 0%,
+      #fbf0f2 0%,
       rgba(251, 240, 242, 0) 60%
     ),
-    linear-gradient(180deg, var(--brand-tint) 0%, var(--background) 38%);
+    linear-gradient(180deg, #fbf0f2 0%, #f6f3f4 38%);
+}
+
+/* 漂漂館世界的頁面漸層：平常隱形，data-world 切換時淡入蓋過玫瑰層 */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.55s ease;
+  background:
+    radial-gradient(
+      120% 50% at 50% 0%,
+      #efecfb 0%,
+      rgba(239, 236, 251, 0) 60%
+    ),
+    linear-gradient(180deg, #efecfb 0%, #f3f2f8 38%);
+}
+:root[data-world="piaopiao"] body::after {
+  opacity: 1;
 }
 
 /* iOS-style 點擊高亮（取代瀏覽器藍框） */

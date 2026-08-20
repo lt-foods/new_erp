@@ -14,6 +14,18 @@ import { cleanCampaignText } from "@/lib/text";
 import { setCampaignHints } from "@/lib/campaignHints";
 
 type SortKey = "new" | "hot" | "recent";
+/** 商城的兩個世界：一般團購（暖玫瑰）/ 漂漂館（夢幻紫）。 */
+type WorldKey = "group" | "piaopiao";
+
+/** 漂漂館公開清單（piaopiao-api list_public_campaigns，免登入）回的欄位 */
+type PiaoCampaign = {
+  id: number;
+  name: string;
+  cover_image_url: string | null;
+  end_at: string | null;
+  min_price: number;
+  max_price: number;
+};
 
 /**
  * 模組層快取：client 端 SPA 導航（/shop ↔ /shop/c/[id]）期間都存活，
@@ -26,11 +38,14 @@ type SortKey = "new" | "hot" | "recent";
 type ShopCache = {
   campaigns: CampaignSummary[];
   sortBy: SortKey;
+  world: WorldKey;
   scrollY: number;
   pendingPickupCount: number;
   ts: number;
 };
 let shopCache: ShopCache | null = null;
+// 漂漂館清單另一份快取（免登入公開 API，第一次切到該分頁才抓）
+let piaoCache: { items: PiaoCampaign[]; ts: number } | null = null;
 // 返回時若資料已超過這個毫秒數，背景靜默重抓（不擋畫面、不動捲動）。
 const SHOP_REVALIDATE_MS = 60_000;
 
@@ -55,6 +70,13 @@ export default function ShopPage() {
   const [sortBy, setSortBy] = useState<SortKey>(
     () => shopCache?.sortBy ?? "new",
   );
+  const [world, setWorld] = useState<WorldKey>(() => shopCache?.world ?? "group");
+  const [query, setQuery] = useState("");
+  const [piaoItems, setPiaoItems] = useState<PiaoCampaign[]>(
+    () => piaoCache?.items ?? [],
+  );
+  const [piaoLoading, setPiaoLoading] = useState(false);
+  const [piaoErr, setPiaoErr] = useState<string | null>(null);
 
   const fetchCampaigns = useCallback(
     async (silent = false) => {
@@ -76,6 +98,7 @@ export default function ShopPage() {
         shopCache = {
           campaigns: d.campaigns,
           sortBy: shopCache?.sortBy ?? "new",
+          world: shopCache?.world ?? "group",
           scrollY: shopCache?.scrollY ?? 0,
           pendingPickupCount: pickupCount,
           ts: Date.now(),
@@ -87,6 +110,42 @@ export default function ShopPage() {
     },
     [router],
   );
+
+  // 漂漂館清單：免登入公開 API（同 /piaopiao 獨立入口那支）
+  const fetchPiao = useCallback(async (silent = false) => {
+    const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    if (!base) {
+      setPiaoErr("系統尚未設定連線");
+      return;
+    }
+    if (!silent) setPiaoErr(null);
+    try {
+      const res = await fetch(`${base}/functions/v1/piaopiao-api`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "list_public_campaigns" }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error((body as { error?: string }).error || "讀取失敗");
+      const items = (body as { campaigns: PiaoCampaign[] }).campaigns;
+      setPiaoItems(items);
+      piaoCache = { items, ts: Date.now() };
+    } catch (e) {
+      if (!silent) setPiaoErr(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  // 切到漂漂館世界才抓（首次顯示 skeleton；快取偏舊就背景靜默更新）
+  useEffect(() => {
+    if (shopCache) shopCache.world = world;
+    if (world !== "piaopiao") return;
+    if (piaoCache == null) {
+      setPiaoLoading(true);
+      void fetchPiao().finally(() => setPiaoLoading(false));
+    } else if (Date.now() - piaoCache.ts > SHOP_REVALIDATE_MS) {
+      void fetchPiao(true);
+    }
+  }, [world, fetchPiao]);
 
   // 首次進站才抓 + 顯示 skeleton；從詳情返回時用快取瞬間還原，
   // 只有資料偏舊才背景靜默更新。
@@ -148,10 +207,110 @@ export default function ShopPage() {
     return b.id - a.id;
   });
 
+  // 搜尋：對當前世界的清單做前端過濾（清單本來就整批在手上，不用打 API）
+  const q = query.trim().toLowerCase();
+  const searching = q !== "";
+  const matchName = (name: string) =>
+    !searching
+    || cleanCampaignText(name).toLowerCase().includes(q)
+    || name.toLowerCase().includes(q);
+  const shown = sorted.filter((c) => matchName(c.name));
+  const shownPiao = piaoItems.filter((c) => matchName(c.name));
+
+  const headerContent = (
+    <div className="space-y-2.5">
+      {/* 搜尋列（取代原本的「商品」大標題，momo 式頂欄） */}
+      <div className="flex items-center gap-2.5">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/brand/logo.jpg"
+          alt=""
+          aria-hidden
+          className="h-9 w-9 shrink-0 rounded-full object-cover shadow-[0_2px_8px_-2px_var(--brand-glow)] ring-1 ring-white/70"
+        />
+        <div className="relative flex-1">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2.2}
+            className="pointer-events-none absolute left-3.5 top-1/2 h-[17px] w-[17px] -translate-y-1/2 text-[var(--brand)]"
+            aria-hidden
+          >
+            <circle cx="11" cy="11" r="7" />
+            <path strokeLinecap="round" d="m20 20-3.2-3.2" />
+          </svg>
+          {/* text-[16px]：iPhone 點輸入框不觸發自動縮放的下限 */}
+          <input
+            type="text"
+            inputMode="search"
+            enterKeyHint="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={world === "piaopiao" ? "搜尋漂漂館商品" : "搜尋團購商品"}
+            className="h-10 w-full appearance-none rounded-full border border-[color-mix(in_srgb,var(--brand)_35%,transparent)] bg-white/90 pl-10 pr-9 text-[16px] text-[var(--foreground)] shadow-[0_2px_10px_-4px_var(--brand-glow)] outline-none transition-colors placeholder:text-[var(--tertiary-label)] focus:border-[var(--brand)]"
+          />
+          {query !== "" && (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              aria-label="清除搜尋"
+              className="absolute right-2.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full bg-[var(--ios-gray)]/70 text-[12px] font-bold text-white"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      </div>
+      {/* 世界分頁：切換整站配色跟著換（data-world → globals.css 變數組） */}
+      <div className="flex items-end gap-6 px-1">
+        {([
+          ["group", "團購商品", "💕"],
+          ["piaopiao", "漂漂館", "🫧"],
+        ] as const).map(([key, label, emoji]) => {
+          const active = world === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setWorld(key)}
+              className={`relative pb-1.5 transition-all duration-200 ${
+                active
+                  ? "text-[19px] font-bold text-[var(--brand-strong)]"
+                  : "text-[17px] font-medium text-[var(--secondary-label)]"
+              }`}
+            >
+              {label} {emoji}
+              <span
+                className={`absolute inset-x-1 bottom-0 h-[3px] rounded-full brand-gradient transition-opacity duration-200 ${
+                  active ? "opacity-100" : "opacity-0"
+                }`}
+                aria-hidden
+              />
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+
   return (
-    <PageShell title="商品">
-      <PullToRefresh onRefresh={fetchCampaigns}>
+    <PageShell
+      world={world === "piaopiao" ? "piaopiao" : "main"}
+      headerContent={headerContent}
+    >
+      <PullToRefresh onRefresh={world === "piaopiao" ? fetchPiao : fetchCampaigns}>
       <div className="space-y-5 px-4 pt-3 pb-6">
+        {world === "piaopiao" ? (
+          <PiaoWorld
+            loading={piaoLoading}
+            err={piaoErr}
+            items={shownPiao}
+            searching={searching}
+            query={query.trim()}
+          />
+        ) : (
+        <>
         {loading && (
           <div className="space-y-5">
             <div className="aspect-[16/8] w-full animate-pulse rounded-2xl bg-[var(--brand-soft)]/60" />
@@ -195,8 +354,8 @@ export default function ShopPage() {
           </div>
         )}
 
-        {/* 取貨提醒條 — 該會員有 status='ready' 的訂單時才出現 */}
-        {pendingPickupCount > 0 && (
+        {/* 取貨提醒條 — 該會員有 status='ready' 的訂單時才出現（搜尋中讓位給結果） */}
+        {!searching && pendingPickupCount > 0 && (
           <Link
             href="/orders"
             className="flex items-center gap-3 rounded-2xl bg-amber-50 px-4 py-3 text-amber-900 shadow-[0_2px_8px_-4px_rgba(245,158,11,0.4)] active:opacity-80 dark:bg-amber-950 dark:text-amber-100"
@@ -210,6 +369,7 @@ export default function ShopPage() {
         )}
 
         {/* 主題 banner 跑馬燈 — 兩類同時有就群組總覽, 只有一類就攤平每團一張, auto-play 4s */}
+        {!searching && (
         <ShopBannerCarousel
           banners={
             groupMode
@@ -234,56 +394,243 @@ export default function ShopPage() {
                   }))
           }
         />
+        )}
 
-        {/* 團購商品 + 排序 */}
+        {/* 團購商品 + 排序（分頁標籤已經寫著「團購商品」，這裡只留排序＋數量） */}
         {visible.length > 0 && (
           <section>
-            <div className="flex items-baseline justify-between px-1 pb-2.5">
-              <h2 className="text-[22px] font-bold tracking-tight text-[var(--foreground)]">
-                團購商品 💕
-              </h2>
-              <span className="text-[13px] font-medium text-[var(--secondary-label)]">
-                {visible.length} 團
+            <div className="flex items-center justify-between gap-2 px-1 pb-3">
+              <div className="flex gap-2">
+                {([
+                  ["new", "最新"],
+                  ["hot", "最熱銷"],
+                  ["recent", "近期售出"],
+                ] as const).map(([v, label]) => {
+                  const active = sortBy === v;
+                  return (
+                    <button
+                      key={v}
+                      onClick={() => setSortBy(v)}
+                      className={`rounded-full px-4 py-1.5 text-[14px] transition-colors ${
+                        active
+                          ? "brand-gradient font-bold text-white shadow-[0_6px_14px_-6px_var(--brand-glow)]"
+                          : "border border-[var(--separator)] bg-[var(--card-bg)] font-medium text-[var(--secondary-label)] active:bg-[var(--brand-soft)]/40"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+              <span className="shrink-0 text-[13px] font-medium text-[var(--secondary-label)]">
+                {shown.length} 團
               </span>
             </div>
-            <div className="flex gap-2 px-1 pb-3">
-              {([
-                ["new", "最新"],
-                ["hot", "最熱銷"],
-                ["recent", "近期售出"],
-              ] as const).map(([v, label]) => {
-                const active = sortBy === v;
-                return (
-                  <button
-                    key={v}
-                    onClick={() => setSortBy(v)}
-                    className={`rounded-full px-4 py-1.5 text-[14px] transition-colors ${
-                      active
-                        ? "brand-gradient font-bold text-white shadow-[0_6px_14px_-6px_rgba(158,47,80,0.6)]"
-                        : "border border-[var(--separator)] bg-[var(--card-bg)] font-medium text-[var(--secondary-label)] active:bg-[var(--brand-soft)]/40"
-                    }`}
+            {searching && shown.length === 0 ? (
+              <SearchEmpty query={query.trim()} />
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                {shown.map((c, i) => (
+                  <div
+                    key={c.id}
+                    className="animate-in"
+                    style={{ animationDelay: `${Math.min(i, 8) * 55}ms` }}
                   >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              {sorted.map((c, i) => (
-                <div
-                  key={c.id}
-                  className="animate-in"
-                  style={{ animationDelay: `${Math.min(i, 8) * 55}ms` }}
-                >
-                  <CampaignCard campaign={c} />
-                </div>
-              ))}
-            </div>
+                    <CampaignCard campaign={c} />
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
+        )}
+        </>
         )}
       </div>
       </PullToRefresh>
     </PageShell>
+  );
+}
+
+/** 搜尋無結果（兩個世界共用；顏色吃當下世界的變數） */
+function SearchEmpty({ query }: { query: string }) {
+  return (
+    <div className="flex flex-col items-center py-16 text-center">
+      <div
+        className="flex h-20 w-20 items-center justify-center rounded-full text-4xl"
+        style={{
+          background:
+            "linear-gradient(135deg, var(--brand-soft) 0%, var(--card-bg) 100%)",
+        }}
+      >
+        🔍
+      </div>
+      <p className="mt-4 text-[17px] font-semibold text-[var(--foreground)]">
+        找不到「{query}」相關商品
+      </p>
+      <p className="mt-1 text-[14px] text-[var(--secondary-label)]">
+        換個關鍵字試試看
+      </p>
+    </div>
+  );
+}
+
+/** 漂漂館世界的內容區（清單卡連到 /piaopiao/c/[id]，沿用既有詳情頁） */
+function PiaoWorld({
+  loading,
+  err,
+  items,
+  searching,
+  query,
+}: {
+  loading: boolean;
+  err: string | null;
+  items: PiaoCampaign[];
+  searching: boolean;
+  query: string;
+}) {
+  return (
+    <>
+      {/* 世界門面 hero — 紫色漸層，強化「換了一個世界」的第一眼 */}
+      {!searching && (
+        <div className="animate-in relative overflow-hidden rounded-2xl brand-gradient p-5 text-white shadow-[0_10px_28px_-10px_var(--brand-glow)]">
+          <div
+            className="pointer-events-none absolute -right-8 -top-10 h-32 w-32 rounded-full bg-white/20 blur-2xl"
+            aria-hidden
+          />
+          <div
+            className="pointer-events-none absolute bottom-1 right-4 text-[46px] opacity-35"
+            aria-hidden
+          >
+            🫧
+          </div>
+          <div className="text-[13px] font-medium text-white/85">獨立選物專區</div>
+          <div className="mt-0.5 text-[26px] font-bold tracking-wide">漂漂館 ✨</div>
+          <div className="mt-1 text-[13px] text-white/85">
+            商品由漂漂館嚴選上架・訂單與取貨照原系統處理
+          </div>
+        </div>
+      )}
+
+      {loading && (
+        <div className="grid grid-cols-2 gap-3">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="card overflow-hidden">
+              <div className="aspect-square w-full animate-pulse bg-[var(--brand-soft)]/50" />
+              <div className="space-y-2 p-3">
+                <div className="h-3.5 w-4/5 animate-pulse rounded bg-black/5" />
+                <div className="h-5 w-1/2 animate-pulse rounded bg-black/5" />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {err && (
+        <div className="rounded-2xl bg-[var(--ios-red)]/10 p-3 text-[15px] text-[#c4271d]">
+          {err}
+        </div>
+      )}
+
+      {!loading && !err && items.length === 0 && (
+        searching ? (
+          <SearchEmpty query={query} />
+        ) : (
+          <div className="flex flex-col items-center py-16 text-center">
+            <div
+              className="flex h-24 w-24 items-center justify-center rounded-full text-5xl"
+              style={{
+                background:
+                  "linear-gradient(135deg, var(--brand-soft) 0%, var(--card-bg) 100%)",
+              }}
+            >
+              🫧
+            </div>
+            <p className="mt-4 text-[17px] font-semibold text-[var(--foreground)]">
+              目前沒有進行中的漂漂館商品
+            </p>
+            <p className="mt-1 text-[14px] text-[var(--secondary-label)]">
+              下拉重新整理，新商品上架會在這裡出現
+            </p>
+          </div>
+        )
+      )}
+
+      {items.length > 0 && (
+        <section>
+          <div className="flex items-baseline justify-between px-1 pb-2.5">
+            <h2 className="text-[17px] font-bold text-[var(--foreground)]">
+              {searching ? "搜尋結果" : "漂漂館商品"}
+            </h2>
+            <span className="text-[13px] font-medium text-[var(--secondary-label)]">
+              {items.length} 檔
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {items.map((c, i) => (
+              <div
+                key={c.id}
+                className="animate-in"
+                style={{ animationDelay: `${Math.min(i, 8) * 55}ms` }}
+              >
+                <PiaoCard item={c} />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </>
+  );
+}
+
+/** 漂漂館商品卡：欄位比團購卡少（公開 API 只回名稱/圖/價/結單），
+ *  視覺對齊 CampaignCard 的 grid 卡，價格吃世界漸層（紫）。 */
+function PiaoCard({ item }: { item: PiaoCampaign }) {
+  const priceText = item.min_price > 0
+    ? `$${item.min_price.toLocaleString()}${item.max_price > item.min_price ? " 起" : ""}`
+    : "—";
+  return (
+    <Link
+      href={`/piaopiao/c/${item.id}`}
+      className="card block overflow-hidden transition-transform duration-200 active:scale-[0.97]"
+    >
+      <div className="relative aspect-square w-full">
+        {item.cover_image_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={item.cover_image_url}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+        ) : (
+          <div
+            className="absolute inset-0 flex items-center justify-center text-4xl"
+            style={{
+              background:
+                "linear-gradient(135deg, var(--brand-soft) 0%, var(--card-bg) 100%)",
+            }}
+          >
+            🫧
+          </div>
+        )}
+      </div>
+      <div className="space-y-1 px-3 py-2.5">
+        <h3 className="line-clamp-2 min-h-[2.6em] text-[16px] font-semibold leading-tight text-[var(--foreground)]">
+          {cleanCampaignText(item.name)}
+        </h3>
+        <div className="brand-gradient-text text-[24px] font-extrabold tabular-nums leading-none">
+          {priceText}
+        </div>
+        {item.end_at && (
+          <div className="inline-flex items-center gap-1 rounded-md bg-[var(--brand-soft)] px-1.5 py-0.5 text-[12px] font-semibold tabular-nums text-[var(--brand-strong)]">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} className="h-3 w-3 shrink-0">
+              <circle cx="12" cy="12" r="9" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 7.5V12l3 2" />
+            </svg>
+            <Countdown target={item.end_at} compact />
+          </div>
+        )}
+      </div>
+    </Link>
   );
 }
 
