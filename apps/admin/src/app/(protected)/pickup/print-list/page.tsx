@@ -7,6 +7,7 @@ import { stripTransferNotes, stripItemNotes } from "@/lib/orderNotes";
 import { internalOrderSource } from "@/lib/orderTitle";
 import { parseReturnNote } from "@/lib/returnNote";
 import { itemDisplayName } from "@/lib/skuLabel";
+import { GIFT_ITEM_SELECT, isGiftLine } from "@/lib/orderGift";
 import SpinButton from "@/components/SpinButton";
 import { CutoffText } from "@/components/CampaignCutoff";
 
@@ -27,6 +28,9 @@ type Order = {
     sku_id: number;
     qty: number;
     unit_price: number;
+    is_gift: boolean | null;
+    gift_reason: string | null;
+    campaign_item: { is_gift: boolean | null; gift_reason: string | null } | null;
     discount_amount: number;
     discount_percent: number;
     notes: string | null;
@@ -90,7 +94,7 @@ function Body() {
              member:members(id, member_no, name, phone),
              campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date),
              store:stores!customer_orders_pickup_store_id_fkey(id, name),
-             items:customer_order_items(id, sku_id, qty, unit_price, discount_amount, discount_percent, notes, status, sku:skus(variant_name, product_name))`,
+             items:customer_order_items(id, sku_id, qty, unit_price, discount_amount, discount_percent, notes, status, ${GIFT_ITEM_SELECT}, sku:skus(variant_name, product_name))`,
           )
           .in("id", ids),
         sb.from("transfers")
@@ -264,6 +268,10 @@ function Body() {
                         </span>
                         <span className="whitespace-nowrap text-[15px]">
                           × {qty}
+                          {/* 贈品：$0 是刻意的，小白單上要標，店員才知道那件不用收錢 */}
+                          {isGiftLine(it) && (
+                            <span className="ml-1.5 text-[15px] font-bold">🎁 贈品</span>
+                          )}
                           {discounted ? (
                             <>
                               <span className="ml-1.5 text-[13px] line-through">${gross}</span>

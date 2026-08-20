@@ -14,6 +14,7 @@ import { stripTransferNotes } from "@/lib/orderNotes";
 import { itemDisplayName } from "@/lib/skuLabel";
 import SpinButton from "@/components/SpinButton";
 import { CutoffText } from "@/components/CampaignCutoff";
+import { GIFT_ITEM_SELECT, isGiftLine } from "@/lib/orderGift";
 
 type Item = {
   id: number;
@@ -24,6 +25,9 @@ type Item = {
   discount_percent: number;
   status: string;
   notes: string | null;
+  is_gift: boolean | null;
+  gift_reason: string | null;
+  campaign_item: { is_gift: boolean | null; gift_reason: string | null } | null;
   sku: { product_name: string | null; variant_name: string | null } | null;
 };
 
@@ -71,7 +75,7 @@ function Body() {
       const sb = getSupabase();
       const { data: itms, error: e1 } = await sb
         .from("customer_order_items")
-        .select("id, order_id, qty, unit_price, discount_amount, discount_percent, status, notes, sku:skus(product_name, variant_name)")
+        .select(`id, order_id, qty, unit_price, discount_amount, discount_percent, status, notes, ${GIFT_ITEM_SELECT}, sku:skus(product_name, variant_name)`)
         .in("id", ids)
         .order("id", { ascending: true });
       if (cancelled) return;
@@ -179,6 +183,8 @@ function Body() {
                       </span>
                       <span className="whitespace-nowrap text-[15px]">
                         × {Number(it.qty)}
+                        {/* 贈品：$0 是刻意的，不標會被當成漏打價格 */}
+                        {isGiftLine(it) && <span className="ml-1 font-bold">🎁 贈品</span>}
                         {hasLineDisc(it) ? (
                           <>
                             <span className="ml-1 line-through text-zinc-500">${lineGross(it)}</span>

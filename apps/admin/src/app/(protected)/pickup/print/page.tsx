@@ -6,6 +6,7 @@ import { getSupabase } from "@/lib/supabase";
 import { stripTransferNotes, stripItemNotes } from "@/lib/orderNotes";
 import { internalOrderSource } from "@/lib/orderTitle";
 import { itemDisplayName } from "@/lib/skuLabel";
+import { GIFT_ITEM_SELECT, isGiftLine } from "@/lib/orderGift";
 import SpinButton from "@/components/SpinButton";
 import { CutoffText } from "@/components/CampaignCutoff";
 
@@ -42,6 +43,9 @@ type Item = {
   discount_percent: number;
   notes: string | null;
   status: string;
+  is_gift: boolean | null;
+  gift_reason: string | null;
+  campaign_item: { is_gift: boolean | null; gift_reason: string | null } | null;
   sku: { sku_code: string; product_name: string | null; variant_name: string | null } | null;
 };
 
@@ -92,7 +96,7 @@ function Body() {
           .select("id, order_no, status, pickup_store_id, discount_amount, discount_percent, wallet_paid_amount, payment_status, notes, member:members(id, member_no, name, phone), campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
           .in("id", orderIds),
         allItemIds.length > 0
-          ? sb.from("customer_order_items").select("id, qty, unit_price, discount_amount, discount_percent, notes, status, sku:skus(sku_code, product_name, variant_name)").in("id", allItemIds)
+          ? sb.from("customer_order_items").select(`id, qty, unit_price, discount_amount, discount_percent, notes, status, ${GIFT_ITEM_SELECT}, sku:skus(sku_code, product_name, variant_name)`).in("id", allItemIds)
           : Promise.resolve({ data: [] }),
       ]);
       const ordMap = new Map<number, Order>();
@@ -211,6 +215,10 @@ function Body() {
                         </span>
                         <span className="whitespace-nowrap text-[15px]">
                           × {Number(it.qty)}
+                          {/* 贈品：$0 是刻意的。收據上不標的話，客人與店員都會以為是漏打價格 */}
+                          {isGiftLine(it) && (
+                            <span className="ml-1.5 text-[15px] font-bold">🎁 贈品</span>
+                          )}
                           {discounted ? (
                             <>
                               <span className="ml-1.5 text-[13px] line-through">${gross}</span>
