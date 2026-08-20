@@ -52,30 +52,24 @@ CREATE TABLE IF NOT EXISTS public.piaopiao_publish_batches (
   UNIQUE (tenant_id, publisher_id, request_id)
 );
 
-CREATE TABLE IF NOT EXISTS public.piaopiao_campaign_shares (
+CREATE TABLE IF NOT EXISTS public.piaopiao_batch_campaigns (
   id BIGSERIAL PRIMARY KEY,
   tenant_id UUID NOT NULL,
   batch_id BIGINT NOT NULL REFERENCES public.piaopiao_publish_batches(id) ON DELETE CASCADE,
   campaign_id BIGINT NOT NULL REFERENCES public.group_buy_campaigns(id) ON DELETE CASCADE,
-  line_retry_key UUID NOT NULL DEFAULT gen_random_uuid(),
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
-  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
-  last_error TEXT,
-  sent_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (campaign_id)
 );
 
-COMMENT ON TABLE public.piaopiao_campaign_shares IS
-  '漂漂館每個團送到固定 LINE 群的結果。LINE 失敗可安全重送，不把「已建團」謊稱成「已分享」。';
+COMMENT ON TABLE public.piaopiao_batch_campaigns IS
+  '漂漂館一次送出的批次與每個商品團的對照；供防連點重複建團使用。分享由上架員自行選擇 LINE 群組。';
 
--- 外部上架員與分享紀錄一律只能經過受控 RPC／Edge Function 進出。
--- 不開任何直接讀寫政策，避免登入會員或外部上架員看到彼此的 LINE 身分與分享狀態。
+-- 外部上架員與批次對照一律只能經過受控 RPC／Edge Function 進出。
+-- 不開任何直接讀寫政策，避免登入會員或外部上架員看到彼此的 LINE 身分。
 ALTER TABLE public.piaopiao_publishers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.piaopiao_publisher_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.piaopiao_publish_batches ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.piaopiao_campaign_shares ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.piaopiao_batch_campaigns ENABLE ROW LEVEL SECURITY;
 
 -- 外部上架入口專用：1~5 個商品，每商品一團。任何一樣失敗，整批都不建立。
 CREATE OR REPLACE FUNCTION public.rpc_piaopiao_publish_batch(
@@ -153,11 +147,10 @@ BEGIN
       'campaign_id', s.campaign_id,
       'campaign_no', c.campaign_no,
       'name', c.name,
-      'share_id', s.id,
-      'share_status', s.status
+      'cover_image_path', c.cover_image_url
     ) ORDER BY s.id), '[]'::jsonb)
       INTO v_existing
-      FROM public.piaopiao_campaign_shares s
+      FROM public.piaopiao_batch_campaigns s
       JOIN public.group_buy_campaigns c ON c.id = s.campaign_id
      WHERE s.batch_id = v_batch_id;
     RETURN jsonb_build_object('batch_id', v_batch_id, 'campaigns', v_existing, 'reused', TRUE);
@@ -297,10 +290,11 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM public.campaign_items WHERE campaign_id = v_campaign_id) THEN
       RAISE EXCEPTION '第 % 樣商品無可販售規格，整批已取消', v_i;
     END IF;
-    INSERT INTO public.piaopiao_campaign_shares (tenant_id, batch_id, campaign_id)
+    INSERT INTO public.piaopiao_batch_campaigns (tenant_id, batch_id, campaign_id)
     VALUES (p_tenant_id, v_batch_id, v_campaign_id);
     v_result := v_result || jsonb_build_array(jsonb_build_object(
-      'campaign_id', v_campaign_id, 'campaign_no', v_campaign_no, 'name', v_name
+      'campaign_id', v_campaign_id, 'campaign_no', v_campaign_no, 'name', v_name,
+      'cover_image_path', v_images ->> 0
     ));
   END LOOP;
 

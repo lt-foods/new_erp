@@ -1,7 +1,6 @@
 // 把站內的頁面分享出去（目前用於團購商品頁）。
 //
-// 分享的價值全在那張預覽卡：連結的 og tag 由 server 端的 generateMetadata 產生
-// （見 app/shop/c/[id]/page.tsx），所以這裡只負責「把網址交出去」。
+// 一般商品分享的價值全在那張預覽卡；漂漂館上架頁另會交一張實體圖片給原生分享面板。
 //
 // 主線是**手機自帶的分享面板**（Web Share API）—— iOS / Android 都是使用者最熟的
 // 那張表，LINE、訊息、AirDrop、複製都在裡面，我們不用替他決定要分享到哪。
@@ -14,6 +13,8 @@ import { SITE_URL } from "@/lib/site";
 import { logCaught } from "@/lib/clientLog";
 
 export type ShareResult =
+  /** 叫出了手機自帶的分享面板，並帶上圖片 */
+  | "shared_native_with_file"
   /** 叫出了手機自帶的分享面板 */
   | "shared_native"
   /** 退到 LIFF 的分享目標選擇器並送出成功 */
@@ -69,6 +70,8 @@ export async function sharePage(opts: {
   title?: string;
   /** 附在連結前面的一行字。LINE 會另外自己抓 og 預覽卡。 */
   text?: string;
+  /** 有支援時，跟網址一起交給手機／電腦的原生分享面板。 */
+  files?: File[];
 }): Promise<ShareResult> {
   const title = opts.title?.trim() || undefined;
   const text = opts.text?.trim() ?? "";
@@ -76,7 +79,13 @@ export async function sharePage(opts: {
   // 1. 手機自帶的分享面板
   if (typeof navigator !== "undefined" && typeof navigator.share === "function") {
     try {
-      await navigator.share({ title, text: text || undefined, url: opts.url });
+      const nativeData = { title, text: text || undefined, url: opts.url };
+      if (opts.files?.length && typeof navigator.canShare === "function"
+        && navigator.canShare({ ...nativeData, files: opts.files })) {
+        await navigator.share({ ...nativeData, files: opts.files });
+        return "shared_native_with_file";
+      }
+      await navigator.share(nativeData);
       return "shared_native";
     } catch (e) {
       if (isAbort(e)) return "cancelled";

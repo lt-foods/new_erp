@@ -15,7 +15,6 @@ Deno.serve(async (req) => {
     if (action === "bootstrap") return await bootstrap(sb, session);
     if (action === "upload_image") return await uploadImage(sb, session, body);
     if (action === "publish") return await publish(sb, session, body);
-    if (action === "retry_share") return await retryShare(sb, session, Number(body.share_id));
     return json({ error: "unknown action" }, 400);
   } catch (e) {
     console.error("piaopiao-api", e);
@@ -77,103 +76,7 @@ async function publish(sb: any, session: Session, body: Record<string, unknown>)
     p_items: body.items,
   });
   if (error) throw new Error(error.message);
-  const batchId = Number(data?.batch_id);
-  if (!batchId) throw new Error("建立結果不完整");
-  const shares = await sharesForBatch(sb, session, batchId);
-  const results = [];
-  for (const share of shares) results.push(await sendShare(sb, share));
-  return json({ ...data, shares: results });
-}
-
-async function retryShare(sb: any, session: Session, shareId: number) {
-  if (!Number.isInteger(shareId) || shareId <= 0) throw new Error("分享資料錯誤");
-  const shares = await sharesForBatch(sb, session, null, shareId);
-  if (shares.length !== 1) throw new Error("找不到可重送的商品");
-  const share = shares[0];
-  if (share.status === "sent") return json({ share_id: share.id, status: "sent" });
-  if (Date.now() - new Date(share.created_at).getTime() > 23 * 60 * 60 * 1000) {
-    throw new Error("這則訊息超過 23 小時，為避免重複發送，請交由總部確認後再另行分享");
-  }
-  return json(await sendShare(sb, share));
-}
-
-async function sharesForBatch(sb: any, session: Session, batchId: number | null, shareId?: number) {
-  // service_role 會略過 RLS，不能把巢狀 relation filter 當成權限判斷。
-  // 先鎖定「這位上架員自己的批次」，再讀該批的分享紀錄，避免重送到別人的團。
-  let effectiveBatchId = batchId;
-  if (shareId != null) {
-    const { data: share, error: shareError } = await sb.from("piaopiao_campaign_shares")
-      .select("batch_id").eq("id", shareId).eq("tenant_id", session.tenant_id).maybeSingle();
-    if (shareError) throw shareError;
-    effectiveBatchId = Number(share?.batch_id ?? 0);
-  }
-  if (!effectiveBatchId) return [];
-  const { data: ownBatch, error: batchError } = await sb.from("piaopiao_publish_batches")
-    .select("id").eq("id", effectiveBatchId).eq("tenant_id", session.tenant_id)
-    .eq("publisher_id", session.publisher_id).maybeSingle();
-  if (batchError) throw batchError;
-  if (!ownBatch) return [];
-  let query = sb.from("piaopiao_campaign_shares").select(
-    "id,created_at,line_retry_key,status,attempts,campaign_id,campaign:group_buy_campaigns!inner(id,name,description,cover_image_url)",
-  ).eq("tenant_id", session.tenant_id).eq("batch_id", effectiveBatchId);
-  if (shareId != null) query = query.eq("id", shareId);
-  const { data, error } = await query.order("id");
-  if (error) throw error;
-  return (data ?? []) as Array<any>;
-}
-
-async function sendShare(sb: any, share: any) {
-  const campaign = Array.isArray(share.campaign) ? share.campaign[0] : share.campaign;
-  if (!campaign) throw new Error("團資料不存在");
-  const front = mustEnv("PIAOPIAO_FRONT_BASE_URL").replace(/\/$/, "");
-  const url = `${front}/piaopiao/c/${campaign.id}`;
-  const image = publicProductUrl(campaign.cover_image_url);
-  const message = {
-    type: "flex",
-    altText: `${String(campaign.name).slice(0, 300)}｜立即下單`,
-    contents: {
-      type: "bubble",
-      hero: image ? { type: "image", url: image, size: "full", aspectRatio: "1:1", aspectMode: "cover", action: { type: "uri", uri: url } } : undefined,
-      body: { type: "box", layout: "vertical", contents: [
-        { type: "text", text: String(campaign.name).slice(0, 40), weight: "bold", size: "lg", wrap: true },
-        { type: "text", text: "漂漂館・點我立即下單", size: "sm", color: "#777777", margin: "md" },
-      ] },
-      footer: { type: "box", layout: "vertical", spacing: "sm", contents: [
-        { type: "button", style: "primary", action: { type: "uri", label: "立即下單", uri: url }, color: "#E26B89" },
-      ] },
-    },
-  };
-  try {
-    const response = await fetch("https://api.line.me/v2/bot/message/push", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${mustEnv("PIAOPIAO_LINE_CHANNEL_ACCESS_TOKEN")}`,
-        "X-Line-Retry-Key": String(share.line_retry_key),
-      },
-      body: JSON.stringify({ to: mustEnv("PIAOPIAO_SHARE_TARGET_ID"), messages: [message] }),
-    });
-    // 409 代表同一 retry key 先前已被 LINE 接收，視為已送，避免重複訊息。
-    if (response.ok || response.status === 409) {
-      await sb.from("piaopiao_campaign_shares").update({ status: "sent", attempts: Number(share.attempts ?? 0) + 1, last_error: null, sent_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", share.id);
-      return { share_id: share.id, campaign_id: campaign.id, status: "sent", url };
-    }
-    const detail = (await response.text()).slice(0, 500);
-    return await markShareFailed(sb, share, campaign.id, `LINE ${response.status}: ${detail}`);
-  } catch (e) {
-    return await markShareFailed(sb, share, campaign.id, e instanceof Error ? e.message : String(e));
-  }
-}
-
-async function markShareFailed(sb: any, share: any, campaignId: number, detail: string) {
-  await sb.from("piaopiao_campaign_shares").update({ status: "failed", attempts: Number(share.attempts ?? 0) + 1, last_error: detail.slice(0, 500), updated_at: new Date().toISOString() }).eq("id", share.id);
-  return { share_id: share.id, campaign_id: campaignId, status: "failed", error: "LINE 尚未分享，可在 23 小時內重送" };
-}
-
-function publicProductUrl(path: unknown) {
-  if (typeof path !== "string" || !path) return null;
-  if (/^https:\/\//.test(path)) return path;
-  return `${mustEnv("SUPABASE_URL")}/storage/v1/object/public/products/${path.split("/").map(encodeURIComponent).join("/")}`;
+  return json(data);
 }
 function base64Bytes(value: string) {
   const binary = atob(value);
