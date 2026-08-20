@@ -35,7 +35,7 @@ async function createPublisher(sb: any, caller: { userId: string; tenantId: stri
   const password = typeof body.password === "string" ? body.password : "";
   const lane = body.lane === "tong" || body.lane === "chao" ? body.lane : null;
   if (!loginId || !displayName || !lane) throw new Error("請填帳號、顯示名稱與分線");
-  if (password.length < 10) throw new Error("密碼至少 10 碼");
+  if (password.length < 6) throw new Error("密碼至少 6 碼");
   const { data: created, error: createError } = await sb.auth.admin.createUser({
     email: piaopiaoLoginEmail(loginId), password, email_confirm: true,
     user_metadata: { display_name: displayName },
@@ -57,7 +57,7 @@ async function createPublisher(sb: any, caller: { userId: string; tenantId: stri
 async function resetPassword(sb: any, caller: { tenantId: string }, body: Record<string, unknown>) {
   const publisherId = Number(body.publisher_id);
   const password = typeof body.password === "string" ? body.password : "";
-  if (!Number.isInteger(publisherId) || publisherId <= 0 || password.length < 10) throw new Error("請輸入至少 10 碼的新密碼");
+  if (!Number.isInteger(publisherId) || publisherId <= 0 || password.length < 6) throw new Error("請輸入至少 6 碼的新密碼");
   const { data: publisher, error } = await sb.from("piaopiao_publishers")
     .select("auth_user_id").eq("id", publisherId).eq("tenant_id", caller.tenantId).maybeSingle();
   if (error || !publisher) throw new Error("找不到上架帳號");
