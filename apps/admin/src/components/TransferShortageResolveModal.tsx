@@ -11,14 +11,17 @@
 //   異常清單的 transfer_short 分支條件是
 //     ti.shortage_resolution IS NULL
 //     OR (shortage_resolution = 'replenish' AND 該店該品項還沒收到補的貨)
-//   (最新版 20260811020010_hq_exceptions_drop_customer_shortage.sql:145-160)
+//   (最新版 20260811020010_hq_exceptions_drop_customer_shortage.sql:144-160)
 //   而 rpc_resolve_transfer_item_shortage 對「六個 resolution 一律」寫入
 //   shortage_resolution(20260811020000:262-270,沒有任何例外)
 //   ⇒ 除了 replenish,其餘 5 顆按完這一筆就從清單消失、之後無法改選別的。
 //   其中 cancel_orders / vendor_claim / accept 是「僅打標記」(RPC 的 COMMENT 原話),
 //   短少的貨不會回到總倉庫存。
-//   實際案例:古華有一筆按了 restock_hq,貨帳回到總倉,但「已派量」只看
-//   picking_wave_items(20260818000030:174-194)、不看沖回 → 沒有人能再派它,
+//   實際案例:古華有一筆按了 restock_hq,貨帳確實回到總倉,但派貨工作台的「已派量」
+//   (v_picking_demand_by_po 的 po_sku_already_wave,最新版
+//   20260818000030_wave_transfer_join_by_id.sql:174-194)是拿 picking_wave_items.qty
+//   ＋補貨 transfer 的 ti.qty_requested 加總 —— 兩個來源都是「當初打算派多少」,
+//   既不看實收、也不看沖回 ⇒ 系統永遠認為那批貨已經派掉,沒有人能再派它,
 //   8 位客人 pending 兩個月。⇒ 還有客人在等就要選 redispatch。
 
 import { useEffect, useState } from "react";
