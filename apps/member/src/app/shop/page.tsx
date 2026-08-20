@@ -490,27 +490,6 @@ function PiaoWorld({
 }) {
   return (
     <>
-      {/* 世界門面 hero — 紫色漸層，強化「換了一個世界」的第一眼 */}
-      {!searching && (
-        <div className="animate-in relative overflow-hidden rounded-2xl brand-gradient p-5 text-white shadow-[0_10px_28px_-10px_var(--brand-glow)]">
-          <div
-            className="pointer-events-none absolute -right-8 -top-10 h-32 w-32 rounded-full bg-white/20 blur-2xl"
-            aria-hidden
-          />
-          <div
-            className="pointer-events-none absolute bottom-1 right-4 text-[46px] opacity-35"
-            aria-hidden
-          >
-            🫧
-          </div>
-          <div className="text-[13px] font-medium text-white/85">獨立選物專區</div>
-          <div className="mt-0.5 text-[26px] font-bold tracking-wide">漂漂館 ✨</div>
-          <div className="mt-1 text-[13px] text-white/85">
-            商品由漂漂館嚴選上架・訂單與取貨照原系統處理
-          </div>
-        </div>
-      )}
-
       {loading && (
         <div className="grid grid-cols-2 gap-3">
           {[0, 1, 2, 3].map((i) => (
