@@ -50,7 +50,7 @@
 //      ⚠ 真正的守衛應該在 RPC（GRANT ... TO authenticated 是既有的洞，
 //        現行兩頁一樣沒有頁面層守衛）—— 那是獨立議題，不在這一片處理。
 //   8. 數量與成本：非法輸入一律明講並擋住，⛔ 不做任何靜默轉換或猜值
-//      （見 parseQty / costOk 的註解）。
+//      （見 @/lib/receivingBatch 的 classifyQty / blockReasonFor 與本檔 costOk 的註解）。
 //   9. 防「同一批貨算兩次」有**三道，缺一不可**（前兩道在 20260820000000 那支
 //      migration，第三道在 @/lib/receivingSubmission）：
 //      · 冪等鍵 p_client_request_id —— 防「網路斷掉、其實成功了、樓下再按一次」
@@ -71,12 +71,19 @@ import { fetchAllRows } from "@/lib/fetchAllRows";
 import { translateRpcError } from "@/lib/rpcError";
 import { type Submission } from "@/lib/receivingSubmission";
 import {
+  blockReasonFor,
   buildHaystack,
+  classifyQty,
   groupArrivalsByPo,
   matchesQuery,
+  normalizeWorkbenchPOs,
   runBatchSubmit,
+  runExclusive,
   tokenizeQuery,
+  WORKBENCH_PO_LIMIT,
   type BatchItem,
+  type BusyKind,
+  type WorkbenchPO,
 } from "@/lib/receivingBatch";
 import { publicProductUrl } from "@/lib/campaignCover";
 import { useAuth } from "@/components/AuthProvider";
@@ -84,15 +91,7 @@ import SpinButton from "@/components/SpinButton";
 
 // ---------------------------------------------------------------- types
 
-type WorkbenchPO = {
-  id: number;
-  po_no: string;
-  status: string;
-  sent_at: string | null;
-  supplier_name: string;
-  supplier_code: string | null;
-  line_count: number;
-};
+// ⓘ WorkbenchPO 與它的整理／截斷判定都在 @/lib/receivingBatch（那裡才驗得到）。
 
 /** 一列 ＝ 一個商品 × 一張採購單。這一頁的主角。 */
 type Row = {
@@ -171,27 +170,8 @@ function productImageUrl(images: unknown): string | null {
   return publicProductUrl(path);
 }
 
-// 採購數量是 numeric(18,3)，所以允許小數，但只允許「數字[.數字]」這一種寫法。
-const QTY_RE = /^\d+\.?\d*$/;
-
-/**
- * 實到數量：**驗證**，不是清洗。
- *
- * ⛔ 這裡曾經是 `replace(/[^\d.]/g, "")` 的清洗式寫法，那是錯的：
- *    "-5" 會被洗成 "5"、"1e3" 會被洗成 "13" —— 把非法輸入靜默換成
- *    「另一個合法但錯誤的數字」，樓下完全看不出自己打的 -5 變成了 5。
- * ⛔ 也不能指望 RPC 兜底：`20260820000000` 只擋
- *    `qty_received IS NULL OR <= 0`，它收到的 5 是合法的 5，擋不了。
- * → 非法輸入一律回 invalid，由畫面明講並擋住送出。
- */
-function parseQty(raw: string): { qty: number; invalid: boolean } {
-  const t = raw.trim();
-  if (t === "") return { qty: 0, invalid: false }; // 空 = 還沒填，另外用 empty 判定
-  if (!QTY_RE.test(t)) return { qty: 0, invalid: true };
-  const n = Number(t);
-  if (!Number.isFinite(n) || n < 0) return { qty: 0, invalid: true };
-  return { qty: n, invalid: false };
-}
+// ⓘ 實到數量的驗證在 @/lib/receivingBatch 的 classifyQty()
+//   （四種結果 ok / empty / invalid / zero，那裡有完整推導，而且驗得到）。
 
 /**
  * 成本必須是正數才可以入庫。
@@ -442,23 +422,21 @@ async function fetchRowsFor(pos: WorkbenchPO[]): Promise<FetchResult> {
   return { rows, missingSku: Math.max(0, skuIds.length - skuMap.size), badData, truncated };
 }
 
-/** 只留還能收的單。rpc_arrive_and_distribute 本身也擋（PO must be
- *  sent/partially_received），這裡先濾掉才不會讓樓下看到了才吃錯誤。 */
-async function fetchWorkbenchPOs(): Promise<WorkbenchPO[]> {
+/**
+ * 待收採購單清單。整理與「可能被截斷」的判定都在 normalizeWorkbenchPOs()。
+ *
+ * ⚠️⚠️ 這支 RPC 自己有 `LIMIT 200`，我們**改不了**（後端不在這一片的範圍）。
+ *   所以這裡拿得到的永遠是「最多 200 張」，而且 fully_received 也佔名額。
+ *   ⇒ 只能偵測 + 喊出來（止血），根治見 normalizeWorkbenchPOs 的檔內說明。
+ */
+async function fetchWorkbenchPOs(): Promise<{
+  pos: WorkbenchPO[];
+  listMaybeTruncated: boolean;
+}> {
   const sb = getSupabase();
   const { data, error } = await sb.rpc("rpc_receiving_workbench");
   if (error) throw new Error(error.message);
-  return ((data ?? []) as Array<Record<string, unknown>>)
-    .map((r) => ({
-      id: Number(r.id),
-      po_no: String(r.po_no),
-      status: String(r.status),
-      sent_at: (r.sent_at as string | null) ?? null,
-      supplier_name: String(r.supplier_name),
-      supplier_code: (r.supplier_code as string | null) ?? null,
-      line_count: Number(r.line_count),
-    }))
-    .filter((r) => r.status === "sent" || r.status === "partially_received");
+  return normalizeWorkbenchPOs((data ?? []) as Array<Record<string, unknown>>);
 }
 
 // ---------------------------------------------------------------- 逐列判定
@@ -470,6 +448,10 @@ type RowCheck = {
   invalid: boolean;
   /** 勾了但數量欄是空的 → 擋下。⛔ 不可以靜默當作 0 跳過，少收一項樓下不會發現 */
   empty: boolean;
+  /** 勾了但數量填 0（用「−」按到底也會走到這裡）→ 擋下。
+   *  ⛔ 不可以放行讓後端擋：後端是**整張採購單一起炸**，同批其他正常品項會被連坐，
+   *     而且訊息是未中文化的 `arrival sku_id X has invalid qty_received`。 */
+  zero: boolean;
   /** 採購單成本 <= 0 或不是數字 → 這一列收不進去 */
   badCost: boolean;
   isOver: boolean;
@@ -489,6 +471,7 @@ function checkRow(row: Row, entry: Entry | undefined): RowCheck {
       received: 0,
       invalid: false,
       empty: false,
+      zero: false,
       badCost,
       isOver: false,
       isShort: false,
@@ -496,8 +479,12 @@ function checkRow(row: Row, entry: Entry | undefined): RowCheck {
       reasonMissing: false,
     };
   }
-  const { qty: received, invalid } = parseQty(entry.qty);
-  const empty = entry.qty.trim() === "";
+  const { verdict, qty: received } = classifyQty(entry.qty);
+  const invalid = verdict === "invalid";
+  const empty = verdict === "empty";
+  const zero = verdict === "zero";
+  // ⚠️ 「多／少了幾件要填原因」一律以 received > 0 為前提：填 0 是「不收」，
+  //   不是「少收」—— 它由 zero 直接擋掉，不該再叫人去選一個差異原因。
   const isOver = received > row.remaining;
   const isShort = received > 0 && received < row.remaining;
   const requiresReason = received > 0 && (isOver || isShort);
@@ -506,6 +493,7 @@ function checkRow(row: Row, entry: Entry | undefined): RowCheck {
     received,
     invalid,
     empty,
+    zero,
     badCost,
     isOver,
     isShort,
@@ -527,6 +515,9 @@ export default function IpadReceivingPage() {
   const [missingSkuCount, setMissingSkuCount] = useState(0);
   const [badData, setBadData] = useState<string[]>([]);
   const [truncated, setTruncated] = useState(0);
+  /** 採購單清單可能被後端 RPC 的 LIMIT 截掉了（止血用的猜測性偵測，
+   *  推導見 @/lib/receivingBatch 的 normalizeWorkbenchPOs）。 */
+  const [poListMaybeTruncated, setPoListMaybeTruncated] = useState(false);
 
   const [search, setSearch] = useState("");
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
@@ -535,7 +526,6 @@ export default function IpadReceivingPage() {
   // 有 key ＝ 這一列被勾選。**跨搜尋保留**（見 onSearch 附近的說明）。
   const [entries, setEntries] = useState<Record<number, Entry>>({});
 
-  const [submitting, setSubmitting] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [outcomes, setOutcomes] = useState<PoOutcome[] | null>(null);
   /** 送出後重撈失敗 → 畫面上的「之前已收」可能過期。要講出來但不必卡死
@@ -543,12 +533,23 @@ export default function IpadReceivingPage() {
   const [staleWarning, setStaleWarning] = useState<string | null>(null);
   const [reloadingPo, setReloadingPo] = useState<number | null>(null);
 
-  // 同步防重入鎖：React state 是非同步的，擋不住同一 tick 連點
-  // （比照 purchase/orders/receive/page.tsx:104）
-  const submitLock = useRef(false);
-  /** 清單正在重撈。與 submitLock 互相排斥，⛔ 兩件事不可以同時跑
-   *  （loadAll 會清 entries 與 subsRef，跑在送出中途等於把冪等鍵抽掉）。 */
-  const loadingRef = useRef(false);
+  /**
+   * ⭐ 全頁**只有一把鎖**：整頁重撈 / 單張重撈 / 送出，三者互斥。
+   *   規則本身在 @/lib/receivingBatch 的 runExclusive()（那裡有完整推導，
+   *   而且驗得到）。這裡只有兩份存放處：
+   *     · busyRef —— 真正的鎖。⛔ 一定要用 ref，state 擋不住同一 tick 連點
+   *       （比照 purchase/orders/receive/page.tsx:104）。
+   *     · busy    —— 給畫面用的鏡像。按鈕變灰、而且**要看得出來為什麼**
+   *       （iPad 沒有 tooltip，停用原因只能寫在畫面上）。
+   *
+   * ⚠️ 為什麼三者非互斥不可：重撈會清掉那幾張單的 entries 與 subsRef（冪等鍵），
+   *   跑在送出中途等於把防重複的鍵抽掉；反過來送出中途重撈，畫面上的
+   *   「之前已收」會在送出的一連串 await 中間被換掉。
+   *   帳本身有後端的樂觀鎖兜著（失敗是吵的），但畫面會變得沒辦法判讀。
+   */
+  const busyRef = useRef<BusyKind | null>(null);
+  const [busy, setBusy] = useState<BusyKind | null>(null);
+  const submitting = busy === "submit";
 
   /**
    * 每一張採購單自己的冪等鍵 ＋ 當時送出的內容。
@@ -600,35 +601,37 @@ export default function IpadReceivingPage() {
   //    picking/drafts/edit/page.tsx:180）。
   //   「正在載入」的視覺回饋不靠 state：第一次是 rows === null，
   //   按 🔄 那次由 SpinButton 自己顯示 spinner。
-  // ⛔ 併發守衛用 ref 不用 state：送出是一連串 await，中途若讓 loadAll 跑起來，
-  //   它會把 entries 與 subsRef 清掉 —— 那正是「冪等鍵被中途清掉」的洞。
+  // ⛔ 併發守衛走 runExclusive（ref，不是 state）：送出是一連串 await，
+  //   中途若讓 loadAll 跑起來，它會把 entries 與 subsRef 清掉 ——
+  //   那正是「冪等鍵被中途清掉」的洞。
   const loadAll = useCallback(async () => {
-    if (loadingRef.current || submitLock.current) return;
-    loadingRef.current = true;
-    try {
-      const list = await fetchWorkbenchPOs();
-      const res = await fetchRowsFor(list);
-      setError(null);
-      setPos(list);
-      setRows(res.rows);
-      setMissingSkuCount(res.missingSku);
-      setBadData(res.badData);
-      setTruncated(res.truncated);
-      // ⭐ 到這裡才代表「畫面上的已收量是剛剛從資料庫讀回來的」，
-      //    舊的冪等鍵與使用者填的數字到這一刻才可以丟（理由見 subsRef 第 5 條）。
-      subsRef.current = new Map();
-      setEntries({});
-      setStaleWarning(null);
-      setOutcomes(null);
-    } catch (e) {
-      setError(translateRpcError(e));
-      // ⛔ 失敗時**不要**把 rows 清成 []：那會讓畫面看起來像「今天沒有待收的貨」，
-      //    而事實是「沒載到」。維持原狀 + 紅字，樓下才知道要重試。
-      // ⛔ 也不要清 subsRef／entries：那兩個只有在**重撈成功**之後才可以丟
-      //    （見 subsRef 第 5 條）。
-    } finally {
-      loadingRef.current = false;
-    }
+    await runExclusive(busyRef, "load", setBusy, async () => {
+      try {
+        const { pos: list, listMaybeTruncated } = await fetchWorkbenchPOs();
+        const res = await fetchRowsFor(list);
+        setError(null);
+        setPos(list);
+        setPoListMaybeTruncated(listMaybeTruncated);
+        setRows(res.rows);
+        setMissingSkuCount(res.missingSku);
+        setBadData(res.badData);
+        setTruncated(res.truncated);
+        // ⭐ 到這裡才代表「畫面上的已收量是剛剛從資料庫讀回來的」，
+        //    舊的冪等鍵與使用者填的數字到這一刻才可以丟（理由見 subsRef 第 5 條）。
+        subsRef.current = new Map();
+        setEntries({});
+        setStaleWarning(null);
+        setOutcomes(null);
+      } catch (e) {
+        setError(translateRpcError(e));
+        // ⛔ 失敗時**不要**把 rows 清成 []：那會讓畫面看起來像「今天沒有待收的貨」，
+        //    而事實是「沒載到」。維持原狀 + 紅字，樓下才知道要重試。
+        // ⛔ 也不要清 subsRef／entries：那兩個只有在**重撈成功**之後才可以丟
+        //    （見 subsRef 第 5 條）。
+        // ⛔ poListMaybeTruncated 也不要清成 false：載入失敗時畫面上還是上一次
+        //    那份清單，上一次的判定仍然成立。清掉等於把警告偷偷關掉。
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -654,6 +657,12 @@ export default function IpadReceivingPage() {
    *
    * ⚠️ 成功之後才可以清掉那幾張單的冪等鍵與使用者輸入（subsRef 第 5 條）。
    *    失敗就整支 throw，由呼叫端決定要不要卡住。
+   *
+   * ⛔⛔ 這一支**故意不自己取互斥鎖**，鎖在呼叫端取：
+   *    runSubmit() 成功之後自己就會呼叫它（那時鎖已經在自己手上），
+   *    塞在這裡不是自我封鎖就是被自己擋掉。
+   *    ⇒ 使用者按得到的入口（OutcomePanel 的「🔄 重新載入這張單」）
+   *      **一定要包在 runExclusive 裡**，否則就是複審抓到的那條 P1。
    */
   const reloadPos = useCallback(
     async (poIds: number[]) => {
@@ -750,6 +759,7 @@ export default function IpadReceivingPage() {
     let qty = 0;
     let invalid = 0;
     let empty = 0;
+    let zero = 0;
     let reasonMissing = 0;
     const badCost: Row[] = [];
     const poIds = new Set<number>();
@@ -758,6 +768,7 @@ export default function IpadReceivingPage() {
       poIds.add(r.po_id);
       if (c.invalid) invalid += 1;
       if (c.empty) empty += 1;
+      if (c.zero) zero += 1;
       if (c.reasonMissing) reasonMissing += 1;
       if (c.received > 0 && c.badCost) badCost.push(r);
       qty += c.received;
@@ -767,23 +778,26 @@ export default function IpadReceivingPage() {
       qty,
       invalid,
       empty,
+      zero,
       reasonMissing,
       badCost,
       poCount: poIds.size,
     };
   }, [selectedRows, entries]);
 
-  const blockReason = useMemo(() => {
-    if (summary.lines === 0) return "請先勾選要收的品項。";
-    if (summary.invalid > 0)
-      return `有 ${summary.invalid} 項的數量不是有效數字，請改成數字（例：12）。`;
-    if (summary.empty > 0) return `有 ${summary.empty} 項還沒填數量，請填數字或取消勾選。`;
-    if (summary.badCost.length > 0)
-      return `有 ${summary.badCost.length} 項的成本不正常收不進去，請通知辦公室，並先取消勾選這幾項。`;
-    if (summary.reasonMissing > 0)
-      return `有 ${summary.reasonMissing} 項數量跟應到不一樣，要先選一個原因才能送出。`;
-    return null;
-  }, [summary]);
+  // 擋下的規則與文案在 @/lib/receivingBatch 的 blockReasonFor()（驗得到）。
+  const blockReason = useMemo(
+    () =>
+      blockReasonFor({
+        lines: summary.lines,
+        invalid: summary.invalid,
+        empty: summary.empty,
+        zero: summary.zero,
+        badCost: summary.badCost.length,
+        reasonMissing: summary.reasonMissing,
+      }),
+    [summary],
+  );
 
   // ------------------------------------------------------------ 勾選
 
@@ -838,18 +852,22 @@ export default function IpadReceivingPage() {
   // ------------------------------------------------------------ 送出
 
   async function runSubmit() {
-    if (submitLock.current) return;
-    // 清單正在重撈時不准送：重撈完會把 entries 清掉，兩件事交錯會送出對不上的內容
-    if (loadingRef.current) {
-      setError("清單正在重新整理，請等一下再按「確認收貨」。");
-      return;
-    }
     if (blockReason) {
       setError(blockReason);
       return;
     }
-    submitLock.current = true;
-    setSubmitting(true);
+    // ⚠️ 清單正在重撈（整頁或單張）時不准送：重撈會把那幾張單的 entries 與
+    //   冪等鍵清掉，兩件事交錯會送出跟畫面對不上的內容。
+    //   按鈕本來就會變灰，這裡是同一 tick 連點的第二道（見 busyRef 的說明）。
+    const held = await runExclusive(busyRef, "submit", setBusy, async () => {
+      await doSubmit();
+    });
+    if (held === "load") {
+      setError("清單正在重新載入，等它跑完再按「確認收貨」。");
+    }
+  }
+
+  async function doSubmit() {
     setError(null);
     setStaleWarning(null);
 
@@ -950,10 +968,8 @@ export default function IpadReceivingPage() {
       }, 0);
     } catch (e) {
       setError(translateRpcError(e));
-    } finally {
-      submitLock.current = false;
-      setSubmitting(false);
     }
+    // ⓘ 鎖的釋放在 runExclusive 的 finally，⛔ 不要在這裡再放一次。
   }
 
   /** 按下「確認收貨」。已勾但畫面上看不到的列 → 先攤開讓他看過再送。 */
@@ -1047,7 +1063,9 @@ export default function IpadReceivingPage() {
           <SpinButton
             type="button"
             onClick={loadAll}
-            disabled={submitting}
+            // ⛔ 送出中或已經有一次重撈在跑時要變灰：runExclusive 會靜默擋掉，
+            //   按了沒反應比按不下去更難懂。
+            disabled={busy !== null}
             className={`${BTN_GHOST} shrink-0`}
             aria-label="重新整理"
           >
@@ -1100,6 +1118,31 @@ export default function IpadReceivingPage() {
       </header>
 
       <main ref={mainRef} className="flex-1 overflow-y-auto overscroll-contain px-4 pb-6 pt-4">
+        {/* ⚠️⚠️ 採購單清單可能被截斷 —— **止血，不是根治**。
+            後端 rpc_receiving_workbench() 自己有 LIMIT 200（而且 fully_received
+            也佔名額），這一頁改不了它，只能偵測「回傳筆數剛好頂到上限」並喊出來。
+            推導與根治方向見 @/lib/receivingBatch 的 normalizeWorkbenchPOs()。
+            ⛔ 這條**不給關**（沒有「知道了」按鈕）：關掉的那一刻就等於沒做。
+            ⛔ 文案一律講「可能」—— 剛好 200 張不代表真的被截，但寧可多提醒不要漏。
+            ⚠️ 放在 main 的最上面而不是 header：header 要留給搜尋框（這一頁的全部）。
+              真正致命的那一刻是「搜不到」，所以下面 visible.length === 0 的空狀態
+              **也印一次**，⛔ 兩處不可以只留一處。 */}
+        {poListMaybeTruncated && (
+          <div className="mb-4 rounded-xl border-2 border-amber-500 bg-amber-50 p-4 dark:border-amber-600 dark:bg-amber-950/50">
+            <div className="text-lg font-bold text-amber-900 dark:text-amber-200">
+              ⚠️ 採購單太多，比較舊的單可能沒有顯示
+            </div>
+            <p className="mt-1 text-base text-amber-900 dark:text-amber-200">
+              系統一次最多只讀得到 {WORKBENCH_PO_LIMIT} 張採購單。
+              <strong>搜不到你手上這批貨的話，不要當成沒有</strong>
+              —— 請找辦公室用電腦查那張單。
+            </p>
+            <p className="mt-1 text-sm text-amber-800 dark:text-amber-300">
+              也請辦公室把收完、不會再到的採購單結掉，這條提醒才會消失。
+            </p>
+          </div>
+        )}
+
         {error && (
           <div className="mb-4 rounded-xl border border-red-300 bg-red-50 p-4 text-base font-medium text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
             ⚠ {error}
@@ -1112,18 +1155,25 @@ export default function IpadReceivingPage() {
           <OutcomePanel
             outcomes={outcomes}
             busyPo={reloadingPo}
+            // ⛔ 送出中、或別張單正在重撈時，這幾顆全部要變灰
+            //   （不是只灰掉自己那一顆）—— 見 busyRef 的說明。
+            locked={busy !== null}
             onDismiss={() => setOutcomes(null)}
+            // ⭐ 2026-08-20 複審 P1：這條路徑以前**沒有取互斥鎖**，
+            //   重撈跑到一半還按得下「確認收貨」。現在跟整頁重撈走同一把鎖。
             onReloadPo={async (poId) => {
-              setReloadingPo(poId);
-              setError(null);
-              try {
-                await reloadPos([poId]);
-                setOutcomes((cur) => (cur ? cur.filter((o) => o.po_id !== poId) : cur));
-              } catch (e) {
-                setError(translateRpcError(e));
-              } finally {
-                setReloadingPo(null);
-              }
+              await runExclusive(busyRef, "load", setBusy, async () => {
+                setReloadingPo(poId);
+                setError(null);
+                try {
+                  await reloadPos([poId]);
+                  setOutcomes((cur) => (cur ? cur.filter((o) => o.po_id !== poId) : cur));
+                } catch (e) {
+                  setError(translateRpcError(e));
+                } finally {
+                  setReloadingPo(null);
+                }
+              });
             }}
           />
         )}
@@ -1216,13 +1266,24 @@ export default function IpadReceivingPage() {
             )}
 
             {visible.length === 0 && (
-              <p className="p-6 text-center text-base text-zinc-500">
-                {rows.length === 0
-                  ? "目前沒有待收的貨"
-                  : showSelectedOnly
-                    ? "還沒勾選任何品項"
-                    : `找不到「${search.trim()}」。可以試商品名、規格、商品編號或廠商名。`}
-              </p>
+              <div className="p-6 text-center">
+                <p className="text-base text-zinc-500">
+                  {rows.length === 0
+                    ? "目前沒有待收的貨"
+                    : showSelectedOnly
+                      ? "還沒勾選任何品項"
+                      : `找不到「${search.trim()}」。可以試商品名、規格、商品編號或廠商名。`}
+                </p>
+                {/* ⭐⭐ 這裡是採購單清單被截斷時**真正致命的那一刻**：
+                    「搜不到」會被當成「系統沒這批貨」，然後貨就這樣沒收。
+                    ⛔ 所以上面那條常駐警告之外，這裡一定要再講一次。 */}
+                {poListMaybeTruncated && !showSelectedOnly && (
+                  <p className="mx-auto mt-3 max-w-xl rounded-xl border-2 border-amber-500 bg-amber-50 p-3 text-base font-bold text-amber-900 dark:border-amber-600 dark:bg-amber-950/50 dark:text-amber-200">
+                    ⚠️ 搜不到不代表沒有這批貨！採購單太多的時候，比較舊的單不會顯示在這一頁。
+                    請找辦公室用電腦查。
+                  </p>
+                )}
+              </div>
             )}
 
             <ul className="flex flex-col gap-4">
@@ -1287,16 +1348,26 @@ export default function IpadReceivingPage() {
           <SpinButton
             type="button"
             onClick={onSubmitClick}
-            disabled={!!blockReason || submitting}
+            // ⭐ 2026-08-20 複審 P1：busy 涵蓋「整頁重撈」與「單張重撈」，
+            //   ⛔ 不可以退回成只看 submitting —— 那就是重撈與送出交錯的那條路。
+            disabled={!!blockReason || busy !== null}
             className={`${BTN_BASE} min-w-[170px] bg-emerald-600 text-lg text-white active:bg-emerald-700 disabled:bg-zinc-300 dark:disabled:bg-zinc-700`}
           >
-            {submitting ? "送出中…" : `✅ 確認收貨${summary.lines > 0 ? ` (${summary.lines})` : ""}`}
+            {submitting
+              ? "送出中…"
+              : busy === "load"
+                ? "重新載入中…"
+                : `✅ 確認收貨${summary.lines > 0 ? ` (${summary.lines})` : ""}`}
           </SpinButton>
         </div>
         {/* ⛔ 停用原因一定要看得見，不可以只放 title：iPad 上沒有 tooltip */}
-        {blockReason && (
+        {blockReason ? (
           <p className="mt-2 text-sm font-medium text-rose-600 dark:text-rose-400">{blockReason}</p>
-        )}
+        ) : busy === "load" ? (
+          <p className="mt-2 text-sm font-medium text-amber-700 dark:text-amber-300">
+            清單正在重新載入，等它跑完才能送出（免得送出的內容跟畫面上看到的對不起來）。
+          </p>
+        ) : null}
       </footer>
 
       {confirmOpen && (
@@ -1323,11 +1394,15 @@ export default function IpadReceivingPage() {
 function OutcomePanel({
   outcomes,
   busyPo,
+  locked,
   onDismiss,
   onReloadPo,
 }: {
   outcomes: PoOutcome[];
+  /** 正在重撈的那一張（顯示「載入中…」用） */
   busyPo: number | null;
+  /** 全頁有別的非同步流程在跑（送出／別張重撈）→ 這裡的按鈕全部要停用 */
+  locked: boolean;
   onDismiss: () => void;
   onReloadPo: (poId: number) => Promise<void>;
 }) {
@@ -1401,14 +1476,17 @@ function OutcomePanel({
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <SpinButton
                     type="button"
-                    disabled={busyPo === o.po_id}
+                    disabled={locked}
                     onClick={() => onReloadPo(o.po_id)}
                     className={`${BTN_SMALL} bg-amber-600 text-white active:bg-amber-700`}
                   >
                     {busyPo === o.po_id ? "載入中…" : "🔄 重新載入這張單"}
                   </SpinButton>
                   <span className="text-sm text-zinc-600 dark:text-zinc-400">
-                    重新載入會把這張單的勾選清掉、重讀一次「之前已收」，再照最新的數字重收。
+                    {/* ⛔ 停用原因要看得見，不可以只放 title：iPad 上沒有 tooltip */}
+                    {locked && busyPo !== o.po_id
+                      ? "現在有別的動作在跑，等它跑完再按這裡。"
+                      : "重新載入會把這張單的勾選清掉、重讀一次「之前已收」，再照最新的數字重收。"}
                   </span>
                 </div>
               </>
@@ -1522,7 +1600,7 @@ function ItemCard({
   const exact =
     check.selected && check.received > 0 && !check.invalid && !check.isOver && !check.isShort;
   const cardCls =
-    check.badCost || check.invalid || check.reasonMissing || check.empty
+    check.badCost || check.invalid || check.reasonMissing || check.empty || check.zero
       ? "border-rose-400 bg-rose-50 dark:border-rose-700 dark:bg-rose-950/40"
       : exact
         ? "border-emerald-400 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950/30"
@@ -1623,7 +1701,7 @@ function ItemCard({
             aria-label="實到數量"
             aria-invalid={check.invalid}
             className={`min-h-[56px] w-28 rounded-xl border-2 bg-white px-3 text-center font-mono text-2xl font-bold dark:bg-zinc-800 ${
-              check.invalid || check.empty
+              check.invalid || check.empty || check.zero
                 ? "border-rose-500 text-rose-700 dark:border-rose-600 dark:text-rose-300"
                 : "border-zinc-300 dark:border-zinc-600"
             }`}
@@ -1657,6 +1735,17 @@ function ItemCard({
       {check.invalid && (
         <p className="mt-2 text-base font-bold text-rose-700 dark:text-rose-300">
           ⚠ 「{entry?.qty}」不是有效數字，請只填數字（例：12）。
+        </p>
+      )}
+
+      {/* ⭐ 2026-08-20 複審 P1：填 0 以前前端不擋，會送到後端才炸，
+          而且是**整張採購單一起失敗**（同批其他正常品項被連坐），
+          訊息還是未中文化的 `arrival sku_id X has invalid qty_received`。
+          ⛔ 樓下看不懂、也不知道是哪一項害的 ⇒ 在這裡就講清楚怎麼辦。 */}
+      {check.zero && (
+        <p className="mt-2 text-base font-bold text-rose-700 dark:text-rose-300">
+          ⚠ 填 0 等於什麼都沒收，這樣送不出去。這一項如果不收，請按左邊的大方塊
+          <strong>取消勾選</strong>；有收到就把件數填上去。
         </p>
       )}
 

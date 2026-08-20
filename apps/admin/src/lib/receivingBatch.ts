@@ -250,3 +250,200 @@ export function matchesQuery(haystack: string, tokens: string[]): boolean {
   if (tokens.length === 0) return true;
   return tokens.every((t) => haystack.includes(t));
 }
+
+// ---------------------------------------------------------------- 採購單清單
+
+/** rpc_receiving_workbench 回傳的一張採購單（只留本頁用得到的欄位）。 */
+export type WorkbenchPO = {
+  id: number;
+  po_no: string;
+  status: string;
+  sent_at: string | null;
+  supplier_name: string;
+  supplier_code: string | null;
+  line_count: number;
+};
+
+/**
+ * `rpc_receiving_workbench()` 自己的 `LIMIT 200`
+ * （20260819000000_receiving_workbench_product_names.sql:51-57）。
+ *
+ * ⛔⛔ 這個常數存在的唯一理由是**偵測**，不是設定 —— 改它不會讓 RPC 多回幾張單。
+ *    要真的多回，得改那支 RPC，而那是**別的案子**（見 poListMaybeTruncated 的說明）。
+ *    ⇒ 哪天 RPC 的 LIMIT 改了，這裡要跟著改，否則警告會從此不再亮。
+ */
+export const WORKBENCH_PO_LIMIT = 200;
+
+/**
+ * 把 RPC 回來的原始列整理成 WorkbenchPO[]，順便判斷「清單可能被截斷了」。
+ *
+ * ── ⚠️⚠️ 這是「止血」，不是根治 ────────────────────────────────────────────
+ * 真正的問題在後端：`rpc_receiving_workbench()` 對採購單下了 `LIMIT 200`，
+ * 而且 `sent / partially_received / fully_received` 是**混在一起**算的、依
+ * `sent_at DESC` 排序。⇒ 近期送出的單（含**已經收完的**）一多，
+ * 較舊、還沒收完的單會整張從這一頁消失。
+ *
+ * 而這一頁**偵測不到自己被截斷**：品項數的截斷警告（fetchRowsFor 的 `expected`）
+ * 是拿 `line_count` 加總當基準的，而 `line_count` 本身就只來自這被截斷的 200 張，
+ * 兩邊剛好對得起來 → 那道警告永遠不會亮。
+ * 對樓下而言就是「搜尋不到 ＝ 系統沒這批貨」，而這一頁的賣點正是「什麼都搜得到」。
+ *
+ * ⇒ 本函式只做一件事：**回傳筆數剛好頂到上限時，喊出來。**
+ *   · 這是**猜測性偵測** —— 剛好 200 張不代表真的被截（可能剛好就是 200 張）。
+ *     所以文案一律講「可能」，⛔ 不可以講死。寧可多提醒也不要漏。
+ *   · ⛔ 不可以只寫 console：樓下不會開 devtools。
+ *
+ * ── 根治要怎麼做（獨立議題，⛔ 不在這一片處理） ──────────────────────────
+ *   （a）改 RPC：先排除 fully_received，再給 total_count / truncated 旗標或分頁；或
+ *   （b）這一頁不要用這支受限 RPC 當全集來源，自己查 purchase_orders。
+ *   兩條都要動到本片的禁區（後端 / 資料來源），所以留給下一案。
+ *
+ * ⚠️ 判定一定要用**還沒過濾的原始列數**：頁面之後會把 fully_received 濾掉，
+ *    拿濾完的長度去比 200 永遠不會成立 —— 那正是這個 bug 的形狀（用被截斷的
+ *    結果當作「應該有幾筆」的基準）。所以過濾在**算完旗標之後**才做。
+ */
+export function normalizeWorkbenchPOs(raw: Array<Record<string, unknown>>): {
+  pos: WorkbenchPO[];
+  /** 清單可能被 RPC 的 LIMIT 截掉了（猜測性，不是確定） */
+  listMaybeTruncated: boolean;
+} {
+  // ⭐ 先用原始長度判定，⛔ 不可以搬到 filter 之後
+  const listMaybeTruncated = raw.length >= WORKBENCH_PO_LIMIT;
+
+  const pos = raw
+    .map((r) => ({
+      id: Number(r.id),
+      po_no: String(r.po_no),
+      status: String(r.status),
+      sent_at: (r.sent_at as string | null) ?? null,
+      supplier_name: String(r.supplier_name),
+      supplier_code: (r.supplier_code as string | null) ?? null,
+      line_count: Number(r.line_count),
+    }))
+    // 只留還能收的單。rpc_arrive_and_distribute 本身也擋（PO must be
+    // sent/partially_received），這裡先濾掉才不會讓樓下看到了才吃錯誤。
+    .filter((r) => r.status === "sent" || r.status === "partially_received");
+
+  return { pos, listMaybeTruncated };
+}
+
+// ---------------------------------------------------------------- 數量欄判定
+
+/**
+ * 實到數量欄的判定：**驗證**，不是清洗。
+ *
+ * ⛔ 這裡曾經是 `replace(/[^\d.]/g, "")` 的清洗式寫法，那是錯的：
+ *    "-5" 會被洗成 "5"、"1e3" 會被洗成 "13" —— 把非法輸入靜默換成
+ *    「另一個合法但錯誤的數字」，樓下完全看不出自己打的 -5 變成了 5。
+ * ⛔ 也不能指望 RPC 兜底：`20260820000000` 只擋
+ *    `qty_received IS NULL OR <= 0`，它收到的 5 是合法的 5，擋不了。
+ *
+ * 四種結果，每一種畫面上都要有對應的講法：
+ *   · `ok`      —— 合法且 > 0，可以送
+ *   · `empty`   —— 勾了但沒填。⛔ 不可以靜默當 0 跳過，少收一項樓下不會發現
+ *   · `invalid` —— 打了非數字（"-5"、"1e3"、"abc"…）
+ *   · `zero`    —— 填的是 0（用「−」按到底、或直接打 0 都會走到這裡）。
+ *     ⭐ 這一項是 2026-08-20 複審 P1 補的。後端會擋 `qty_received <= 0`
+ *       （20260820000000:440-442），但它是**整張採購單一起炸**：同一批勾的
+ *       其他正常品項會被連坐，而且吐的是未中文化的
+ *       `arrival sku_id X has invalid qty_received`。
+ *       樓下站在貨旁邊看不懂、也不知道是哪一項害的。⇒ 前端先擋。
+ */
+export type QtyVerdict = "ok" | "empty" | "invalid" | "zero";
+
+// 採購數量是 numeric(18,3)，所以允許小數，但只允許「數字[.數字]」這一種寫法。
+const QTY_RE = /^\d+\.?\d*$/;
+
+export function classifyQty(raw: string): { verdict: QtyVerdict; qty: number } {
+  const t = raw.trim();
+  if (t === "") return { verdict: "empty", qty: 0 };
+  if (!QTY_RE.test(t)) return { verdict: "invalid", qty: 0 };
+  const n = Number(t);
+  if (!Number.isFinite(n) || n < 0) return { verdict: "invalid", qty: 0 };
+  if (n === 0) return { verdict: "zero", qty: 0 };
+  return { verdict: "ok", qty: n };
+}
+
+// ---------------------------------------------------------------- 送出前擋下
+
+/** blockReasonFor() 要看的計數。全部以「已勾選的那幾列」為母體。 */
+export type SelectionCounts = {
+  lines: number;
+  invalid: number;
+  empty: number;
+  zero: number;
+  badCost: number;
+  reasonMissing: number;
+};
+
+/**
+ * 整批擋下的理由；null ＝ 可以送。
+ *
+ * ⚠️ 這裡是「**人填錯**」的處理方式：擋住送出、講清楚怎麼改。
+ *   和「**資料壞**」（fetchRowsFor 的 badData：DB 裡的 qty 是 NaN/Infinity）
+ *   刻意不同 —— 那種列是**整列排除掉 + 紅框列出**，其他品項照收。
+ *   兩者不衝突，分野是「樓下當場改不改得掉」：
+ *     · 資料壞 → 樓下改不掉（要辦公室去修採購單）。擋整批只會讓他站在貨旁邊
+ *       什麼都收不了，所以排除該列、其餘照收。
+ *     · 人填錯 → 樓下當場就改得掉（改數字或取消勾選）。擋住才逼得出正確的送出；
+ *       偷偷略過那一列的話，少收的那項沒有人會發現。
+ *   ⛔ 不要把其中一邊改成另一邊的做法，那會讓對應的失敗方式變成靜默的。
+ *
+ * ⚠️ 順序是刻意的：先講「數字本身不對」（invalid → empty → zero，都是同一個欄位、
+ *   最好改），再講「這項根本收不進去」（badCost，要打電話），最後才是差異原因。
+ */
+export function blockReasonFor(c: SelectionCounts): string | null {
+  if (c.lines === 0) return "請先勾選要收的品項。";
+  if (c.invalid > 0) return `有 ${c.invalid} 項的數量不是有效數字，請改成數字（例：12）。`;
+  if (c.empty > 0) return `有 ${c.empty} 項還沒填數量，請填數字或取消勾選。`;
+  if (c.zero > 0)
+    return `有 ${c.zero} 項填的數量是 0。要收 0 個的話，請直接取消勾選那幾項。`;
+  if (c.badCost > 0)
+    return `有 ${c.badCost} 項的成本不正常收不進去，請通知辦公室，並先取消勾選這幾項。`;
+  if (c.reasonMissing > 0)
+    return `有 ${c.reasonMissing} 項數量跟應到不一樣，要先選一個原因才能送出。`;
+  return null;
+}
+
+// ---------------------------------------------------------------- 互斥鎖
+
+/**
+ * 全頁共用的一把鎖：**整頁重撈 / 單張重撈 / 送出，三者不可以同時跑。**
+ *
+ * ⭐ 2026-08-20 複審 P1：原本只有「整頁重撈」與「送出」互斥，
+ *   失敗採購單那顆「🔄 重新載入這張單」沒有納入 ⇒ 重撈跑到一半還可以按
+ *   「確認收貨」，兩條非同步流程交錯。
+ *   後端的樂觀鎖與冪等鍵兜得住帳（失敗方式是吵的紅字，不是靜默壞帳），
+ *   但**畫面狀態會變得沒辦法判讀** —— 樓下是戰區，看不懂畫面就會亂按。
+ *
+ * ⛔ 一定要用 ref 不可以用 state：React 的 setState 是非同步的，
+ *   同一個 tick 連按兩下時 state 還沒更新，擋不住第二下。
+ *   （state 那份只是給畫面用的鏡像，用來把按鈕變灰、講出為什麼。）
+ *
+ * ⛔ 只在**使用者按下去的那一層**取鎖，不要塞進 reloadPos() 那種底層函式：
+ *   送出流程成功之後自己就會呼叫它，塞在裡面不是自我封鎖就是被自己擋掉。
+ *
+ * @returns 取不到鎖 → 回傳「目前是誰佔著」（呼叫端可據此給訊息）；
+ *          取得到並跑完 → 回傳 null。⚠️ fn 丟出來的例外會原樣往外拋，
+ *          但鎖一定會在 finally 放掉（⛔ 不可以改成吞掉例外）。
+ */
+export type BusyKind = "load" | "submit";
+
+export async function runExclusive(
+  ref: { current: BusyKind | null },
+  kind: BusyKind,
+  onChange: (k: BusyKind | null) => void,
+  fn: () => Promise<void>,
+): Promise<BusyKind | null> {
+  const held = ref.current;
+  if (held) return held;
+  ref.current = kind;
+  onChange(kind);
+  try {
+    await fn();
+    return null;
+  } finally {
+    ref.current = null;
+    onChange(null);
+  }
+}
