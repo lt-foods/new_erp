@@ -92,6 +92,19 @@ button, a {
   scrollbar-width: none;
 }
 
+/* 漂漂館外部上架表單：iPhone 點輸入框不縮放，桌機與手機共用。 */
+.input {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid rgb(212 212 216);
+  border-radius: 0.75rem;
+  background: white;
+  padding: 0.5rem 0.75rem;
+  font-size: 16px;
+  line-height: 1.5;
+}
+.input:focus { outline: 2px solid #fb7185; outline-offset: 1px; }
+
 /* ── 共用視覺元件 ─────────────────────────────────────────── */
 
 /* 標準白卡：暖陰影 + 髮絲邊，全站一致 */

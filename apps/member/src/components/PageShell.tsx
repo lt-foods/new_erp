@@ -17,10 +17,14 @@ export default function PageShell({
   title,
   rightAction,
   children,
+  hideTabs = false,
+  fallbackHref = "/shop",
 }: {
   title?: string;
   rightAction?: React.ReactNode;
   children: React.ReactNode;
+  hideTabs?: boolean;
+  fallbackHref?: string;
 }) {
   const router = useRouter();
   const pathname = usePathname() ?? "";
@@ -31,7 +35,7 @@ export default function PageShell({
     if (typeof window !== "undefined" && window.history.length > 1) {
       router.back();
     } else {
-      router.push("/shop");
+      router.push(fallbackHref);
     }
   };
 
@@ -42,7 +46,7 @@ export default function PageShell({
         // tab bar 一律顯示(含 LINE LIFF),固定保留其高度。
         // 104 而非 92：中間「現貨專區」是凸起圓鈕，會往上多佔約 14px，
         // 留少了會蓋住頁尾最後一列內容。
-        paddingBottom: "calc(104px + env(safe-area-inset-bottom))",
+        paddingBottom: hideTabs ? "calc(16px + env(safe-area-inset-bottom))" : "calc(104px + env(safe-area-inset-bottom))",
       }}
     >
       <main className="relative mx-auto w-full max-w-md">
@@ -97,7 +101,7 @@ export default function PageShell({
         )}
         {children}
       </main>
-      <MemberTabBar />
+      {!hideTabs && <MemberTabBar />}
     </div>
   );
 }

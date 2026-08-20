@@ -89,6 +89,7 @@ const NAV: NavGroup[] = [
   {
     title: "設定",
     items: [
+      { href: "/piaopiao-publishers", label: "漂漂館上架員", match: /^\/piaopiao-publishers/ },
       { href: "/staff", label: "員工管理", match: /^\/staff/ },
       { href: "/stores", label: "門市", match: /^\/stores/ },
       { href: "/fb-pages", label: "FB 粉絲團", match: /^\/fb-pages/ },

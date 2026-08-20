@@ -55,6 +55,7 @@ type Row = {
   end_at: string | null;
   pickup_deadline: string | null;
   updated_at: string;
+  sales_channel: string | null;
   cover_image_url: string | null;
   campaign_items: CampaignCoverItem[] | null;
 };
@@ -86,7 +87,12 @@ type CalRow = {
   status: Status;
   close_type: CloseType;
   start_at: string | null;
+  sales_channel: string | null;
 };
+
+function PiaopiaoBadge({ salesChannel }: { salesChannel: string | null | undefined }) {
+  return salesChannel === "piaopiao" ? <span className="inline-block rounded bg-rose-100 px-1.5 py-0.5 text-[11px] font-medium text-rose-800 dark:bg-rose-950 dark:text-rose-200">漂漂館</span> : null;
+}
 
 // 模組層快取：client 端 SPA 導航期間都活著（加單 / 訂單 / 從商品開團 等子頁
 // 進去再返回時瞬間還原列表 — 資料 + 篩選 + 分頁 + 捲動位置），不 remount 重抓、
@@ -289,6 +295,7 @@ export default function CampaignsListPage() {
         sb.from("group_buy_campaigns")
           .select("id, campaign_no, name, description, end_at")
           .neq("campaign_no", "__INTERNAL_RESTOCK__")
+          .eq("sales_channel", "main")
           .neq("status", "cancelled")
           .gte("start_at", from)
           .lte("start_at", to)
@@ -503,7 +510,7 @@ export default function CampaignsListPage() {
       try {
         let q = getSupabase()
           .from("group_buy_campaigns")
-          .select("id, campaign_no, name, status, close_type, start_at, end_at, pickup_deadline, updated_at, cover_image_url, campaign_items(sort_order, sku:skus(product:products(images)))", { count: "exact" })
+          .select("id, campaign_no, name, status, close_type, start_at, end_at, pickup_deadline, updated_at, sales_channel, cover_image_url, campaign_items(sort_order, sku:skus(product:products(images)))", { count: "exact" })
           .neq("campaign_no", "__INTERNAL_RESTOCK__")
           .order("start_at", { ascending: false, nullsFirst: false })
           .order("id", { ascending: false })
@@ -638,7 +645,7 @@ export default function CampaignsListPage() {
       }
       const { data, error } = await getSupabase()
         .from("group_buy_campaigns")
-        .select("id, campaign_no, name, status, close_type, start_at, display_order")
+        .select("id, campaign_no, name, status, close_type, start_at, sales_channel, display_order")
         .neq("campaign_no", "__INTERNAL_RESTOCK__")
         .gte("start_at", from.toISOString())
         .lt("start_at", to.toISOString())
@@ -981,6 +988,7 @@ export default function CampaignsListPage() {
                 <div className="break-words text-base font-bold text-zinc-900 dark:text-zinc-100">{r.name}</div>
                 <div className="mt-1 flex flex-wrap items-center gap-1.5">
                   <StatusBadge s={r.status} />
+                  <PiaopiaoBadge salesChannel={r.sales_channel} />
                   <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${CLOSE_TYPE_BADGE[r.close_type]}`}>
                     {CLOSE_TYPE_LABEL[r.close_type]}
                   </span>
@@ -1067,7 +1075,7 @@ export default function CampaignsListPage() {
                 <Td className="w-20">
                   <CampaignThumb url={campaignCoverUrl(r.cover_image_url, r.campaign_items)} name={r.name} />
                 </Td>
-                <Td className="min-w-[14rem]">{r.name}</Td>
+                <Td className="min-w-[14rem]"><span>{r.name}</span> <PiaopiaoBadge salesChannel={r.sales_channel} /></Td>
                 <Td className="whitespace-nowrap"><StatusBadge s={r.status} /></Td>
                 <Td>
                   <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${CLOSE_TYPE_BADGE[r.close_type]}`}>
@@ -1803,7 +1811,7 @@ function CampaignCard({
         className={`block w-full truncate rounded px-1.5 py-0.5 text-left text-[10px] ${compactBg[r.status]} hover:opacity-80`}
         title={`${r.campaign_no}｜${r.name}｜${STATUS_LABEL[r.status]}｜${itemCount} 商品｜下單 ${orderCount} 件${offsetCount !== 0 ? `｜抵減 ${offsetCount} 件` : ""}`}
       >
-        <span className="font-medium">{r.name || r.campaign_no}</span>
+        <span className="font-medium">{r.name || r.campaign_no}</span><PiaopiaoBadge salesChannel={r.sales_channel} />
       </SpinButton>
     );
   }
@@ -1822,6 +1830,7 @@ function CampaignCard({
         <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${statusBadgeColor[r.status]}`}>
           {STATUS_LABEL[r.status]}
         </span>
+        <PiaopiaoBadge salesChannel={r.sales_channel} />
       </div>
 
       {/* 收單類型 + 團號 */}

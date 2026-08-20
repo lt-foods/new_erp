@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { consumeFragmentToSession } from "@/lib/session";
+import { consumeFragmentToSession, takePostLoginReturn } from "@/lib/session";
 import { AUTH_CODE_INTENT_KEY, clearSessionFlag, sessionFlag } from "@/lib/lineAuth";
 
 export default function AuthSuccessPage() {
@@ -33,7 +33,7 @@ export default function AuthSuccessPage() {
     // 那組碼毫無意義，而他要的商品在哪完全沒講，等於推廣流量走到一半斷掉。
     const wantsCode = sessionFlag(AUTH_CODE_INTENT_KEY);
     if (session && session.memberId && !isPaired && !wantsCode) {
-      window.location.replace("/shop");
+      window.location.replace(takePostLoginReturn() ?? "/shop");
       return;
     }
     // 取碼意圖只用這一次，用完就清掉，否則同一個分頁之後每次登入都會卡在取碼頁
