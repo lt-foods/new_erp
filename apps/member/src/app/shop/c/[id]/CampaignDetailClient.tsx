@@ -150,6 +150,7 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
         const r = await callLiffApi<{ view_count: number }>(s.token, {
           action: "track_campaign_view",
           campaign_id: id,
+          sales_channel: salesChannel === "piaopiao" ? "piaopiao" : "main",
         });
         if (typeof r.view_count === "number") setViewCount(r.view_count);
       } catch (e) {

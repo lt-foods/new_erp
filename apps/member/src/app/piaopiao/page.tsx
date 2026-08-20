@@ -2,25 +2,21 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { consumeFragmentToSession, getSession, loginPath, setPostLoginReturn } from "@/lib/session";
-import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 
 type Campaign = { id: number; name: string; cover_image_url: string | null; end_at: string | null; min_price: number; max_price: number };
 
 export default function PiaopiaoShopPage() {
-  const router = useRouter();
   const [items, setItems] = useState<Campaign[]>([]);
   const [error, setError] = useState("");
   useEffect(() => {
-    consumeFragmentToSession();
-    const session = getSession();
-    if (!session?.memberId) { setPostLoginReturn("/piaopiao"); router.replace(loginPath()); return; }
-    void callLiffApi<{ campaigns: Campaign[] }>(session.token, { action: "list_active_campaigns", sales_channel: "piaopiao" })
+    const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    if (!base) { setError("系統尚未設定連線"); return; }
+    void fetch(`${base}/functions/v1/piaopiao-api`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "list_public_campaigns" }) })
+      .then(async (response) => { const body = await response.json(); if (!response.ok) throw new Error(body.error || "讀取失敗"); return body as { campaigns: Campaign[] }; })
       .then((r) => setItems(r.campaigns))
       .catch((e) => setError(e instanceof Error ? e.message : "讀取失敗"));
-  }, [router]);
+  }, []);
   return (
     <PageShell title="漂漂館" hideTabs fallbackHref="/piaopiao">
       <div className="space-y-4 px-4 pb-8 pt-3">

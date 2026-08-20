@@ -51,6 +51,16 @@ CREATE TABLE IF NOT EXISTS public.piaopiao_batch_campaigns (
   UNIQUE (campaign_id)
 );
 
+CREATE TABLE IF NOT EXISTS public.piaopiao_publisher_upload_days (
+  tenant_id UUID NOT NULL,
+  publisher_id BIGINT NOT NULL REFERENCES public.piaopiao_publishers(id),
+  upload_date DATE NOT NULL,
+  used_count SMALLINT NOT NULL DEFAULT 0 CHECK (used_count BETWEEN 0 AND 25),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (tenant_id, publisher_id, upload_date)
+);
+
 COMMENT ON TABLE public.piaopiao_batch_campaigns IS
   '漂漂館一次送出的批次與每個商品團的對照；供防連點重複建團使用。分享由上架員自行選擇 LINE 群組。';
 
@@ -59,6 +69,7 @@ COMMENT ON TABLE public.piaopiao_batch_campaigns IS
 ALTER TABLE public.piaopiao_publishers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.piaopiao_publish_batches ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.piaopiao_batch_campaigns ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.piaopiao_publisher_upload_days ENABLE ROW LEVEL SECURITY;
 
 -- 外部上架入口專用：1~5 個商品，每商品一團。任何一樣失敗，整批都不建立。
 CREATE OR REPLACE FUNCTION public.rpc_piaopiao_publish_batch(
@@ -189,6 +200,9 @@ BEGIN
       RAISE EXCEPTION '第 % 樣商品至少要有一個規格', v_i;
     END IF;
 
+    IF v_item ? 'supplier_id' THEN
+      RAISE EXCEPTION '第 % 樣商品不可指定既有供應商', v_i;
+    END IF;
     IF v_publisher.lane = 'chao' THEN
       SELECT id INTO v_supplier_id FROM public.suppliers
        WHERE tenant_id = p_tenant_id AND is_active IS TRUE AND btrim(name) = '潮包子'
@@ -197,23 +211,21 @@ BEGIN
         RAISE EXCEPTION '漂漂潮固定供應商「潮包子」尚未設定，請先由總部設定';
       END IF;
     ELSE
-      v_supplier_id := NULLIF(v_item ->> 'supplier_id', '')::BIGINT;
-      IF v_supplier_id IS NOT NULL THEN
-        PERFORM 1 FROM public.suppliers WHERE id = v_supplier_id AND tenant_id = p_tenant_id AND is_active IS TRUE;
-        IF NOT FOUND THEN RAISE EXCEPTION '第 % 樣商品的供應商不可用', v_i; END IF;
-      ELSE
-        v_supplier_name := NULLIF(btrim(v_item ->> 'supplier_name'), '');
-        IF v_supplier_name IS NULL THEN RAISE EXCEPTION '第 % 樣商品必須選擇或新增供應商', v_i; END IF;
-        SELECT id INTO v_supplier_id FROM public.suppliers
-         WHERE tenant_id = p_tenant_id AND lower(btrim(name)) = lower(v_supplier_name)
-         ORDER BY id LIMIT 1;
-        IF v_supplier_id IS NULL THEN
-          INSERT INTO public.suppliers (tenant_id, code, name, is_active, notes)
-          VALUES (p_tenant_id,
-            'PIAOPIAO-' || to_char(NOW() AT TIME ZONE 'Asia/Taipei', 'YYYYMMDD') || '-' || lpad(v_i::TEXT, 2, '0') || '-' || substring(md5(p_request_id::TEXT) FROM 1 FOR 6),
-            v_supplier_name, TRUE, '由漂漂彤外部上架入口新增')
-          RETURNING id INTO v_supplier_id;
-        END IF;
+      v_supplier_name := NULLIF(btrim(v_item ->> 'supplier_name'), '');
+      IF v_supplier_name IS NULL THEN RAISE EXCEPTION '第 % 樣商品必須填供應商', v_i; END IF;
+      SELECT id INTO v_supplier_id FROM public.suppliers
+       WHERE tenant_id = p_tenant_id
+         AND is_active IS TRUE
+         AND created_by = p_operator_id
+         AND notes = '由漂漂彤外部上架入口新增'
+         AND lower(btrim(name)) = lower(v_supplier_name)
+       ORDER BY id LIMIT 1;
+      IF v_supplier_id IS NULL THEN
+        INSERT INTO public.suppliers (tenant_id, code, name, is_active, notes, created_by, updated_by)
+        VALUES (p_tenant_id,
+          'PIAOPIAO-' || to_char(NOW() AT TIME ZONE 'Asia/Taipei', 'YYYYMMDD') || '-' || lpad(v_i::TEXT, 2, '0') || '-' || substring(md5(p_request_id::TEXT) FROM 1 FOR 6),
+          v_supplier_name, TRUE, '由漂漂彤外部上架入口新增', p_operator_id, p_operator_id)
+        RETURNING id INTO v_supplier_id;
       END IF;
     END IF;
 
@@ -296,6 +308,56 @@ $$;
 
 REVOKE ALL ON FUNCTION public.rpc_piaopiao_publish_batch(UUID, BIGINT, UUID, UUID, TIMESTAMPTZ, DATE, JSONB) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.rpc_piaopiao_publish_batch(UUID, BIGINT, UUID, UUID, TIMESTAMPTZ, DATE, JSONB) TO service_role;
+
+-- 每張圖片先保留一格；衝突更新的 WHERE 讓第 26 張沒有 RETURNING，不能被平行請求穿透。
+CREATE OR REPLACE FUNCTION public.rpc_piaopiao_reserve_upload_slot(
+  p_tenant_id UUID,
+  p_publisher_id BIGINT,
+  p_operator_id UUID
+) RETURNS DATE
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_upload_date DATE := (NOW() AT TIME ZONE 'Asia/Taipei')::DATE;
+  v_used_count SMALLINT;
+BEGIN
+  IF auth.role() <> 'service_role' THEN
+    RAISE EXCEPTION 'piaopiao upload reserve is service-only';
+  END IF;
+  IF p_tenant_id IS NULL OR p_publisher_id IS NULL OR p_operator_id IS NULL THEN
+    RAISE EXCEPTION 'publisher and audit operator are required';
+  END IF;
+  PERFORM 1
+    FROM public.piaopiao_publishers
+   WHERE id = p_publisher_id
+     AND tenant_id = p_tenant_id
+     AND auth_user_id = p_operator_id
+     AND is_active IS TRUE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION '上架資格不存在或已停用';
+  END IF;
+
+  INSERT INTO public.piaopiao_publisher_upload_days AS d (
+    tenant_id, publisher_id, upload_date, used_count
+  ) VALUES (
+    p_tenant_id, p_publisher_id, v_upload_date, 1
+  ) ON CONFLICT (tenant_id, publisher_id, upload_date) DO UPDATE
+    SET used_count = d.used_count + 1,
+        updated_at = NOW()
+    WHERE d.used_count < 25
+  RETURNING used_count INTO v_used_count;
+
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
+  RETURN v_upload_date;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.rpc_piaopiao_reserve_upload_slot(UUID, BIGINT, UUID) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.rpc_piaopiao_reserve_upload_slot(UUID, BIGINT, UUID) TO service_role;
 
 CREATE OR REPLACE FUNCTION public.rpc_piaopiao_publisher_overview()
 RETURNS JSONB

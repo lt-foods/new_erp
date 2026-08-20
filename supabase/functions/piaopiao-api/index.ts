@@ -9,8 +9,9 @@ Deno.serve(async (req) => {
   try {
     const sb = createClient(mustEnv("SUPABASE_URL"), mustEnv("SUPABASE_SERVICE_ROLE_KEY"), { auth: { persistSession: false } });
     const body = await req.json() as Record<string, unknown>;
-    const session = await sessionFrom(sb, req);
     const action = String(body.action ?? "");
+    if (action === "list_public_campaigns") return await listPublicCampaigns(sb);
+    const session = await sessionFrom(sb, req);
     if (action === "bootstrap") return await bootstrap(sb, session);
     if (action === "upload_image") return await uploadImage(sb, session, body);
     if (action === "publish") return await publish(sb, session, body);
@@ -20,6 +21,24 @@ Deno.serve(async (req) => {
     return json({ error: e instanceof Error ? e.message : String(e) }, 400);
   }
 });
+
+async function listPublicCampaigns(sb: any) {
+  const { data, error } = await sb.from("group_buy_campaigns")
+    .select("id, name, cover_image_url, end_at, campaign_items(unit_price, sort_order, sku:skus(product:products(images)))")
+    .eq("tenant_id", mustEnv("DEFAULT_TENANT_ID"))
+    .eq("status", "open").eq("is_for_shop", true).eq("sales_channel", "piaopiao")
+    .neq("campaign_no", "__INTERNAL_RESTOCK__")
+    .or(`end_at.is.null,end_at.gt.${new Date().toISOString()}`)
+    .order("end_at", { ascending: true, nullsFirst: false });
+  if (error) throw new Error(error.message);
+  const base = mustEnv("SUPABASE_URL");
+  return json({ campaigns: (data ?? []).map((c: any) => {
+    const items = [...(c.campaign_items ?? [])].sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+    const prices = items.map((i: any) => Number(i.unit_price)).filter(Number.isFinite);
+    const image = c.cover_image_url ?? items[0]?.sku?.product?.images?.[0]?.url ?? items[0]?.sku?.product?.images?.[0] ?? null;
+    return { id: c.id, name: c.name, end_at: c.end_at, cover_image_url: image ? `${base}/storage/v1/object/public/products/${String(image).split("/").map(encodeURIComponent).join("/")}` : null, min_price: prices.length ? Math.min(...prices) : 0, max_price: prices.length ? Math.max(...prices) : 0 };
+  }) });
+}
 
 async function sessionFrom(sb: any, req: Request): Promise<Session> {
   const raw = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
@@ -40,10 +59,7 @@ async function bootstrap(sb: any, session: Session) {
     .eq("id", session.publisher_id).eq("tenant_id", session.tenant_id)
     .eq("auth_user_id", session.auth_user_id).maybeSingle();
   if (error || !publisher?.is_active) throw new Error("你的上架資格已停用，請聯絡總部");
-  const { data: suppliers, error: suppliersError } = await sb.from("suppliers")
-    .select("id, name").eq("tenant_id", session.tenant_id).eq("is_active", true).order("name");
-  if (suppliersError) throw suppliersError;
-  return json({ publisher: { name: publisher.display_name, lane: publisher.lane }, suppliers: suppliers ?? [] });
+  return json({ publisher: { name: publisher.display_name, lane: publisher.lane } });
 }
 
 async function uploadImage(sb: any, session: Session, body: Record<string, unknown>) {
@@ -53,8 +69,16 @@ async function uploadImage(sb: any, session: Session, body: Record<string, unkno
   if (!encoded) throw new Error("沒有收到圖片");
   const bytes = base64Bytes(encoded);
   if (bytes.byteLength === 0 || bytes.byteLength > 5 * 1024 * 1024) throw new Error("每張圖片需小於 5MB");
+  const { data: uploadDate, error: reserveError } = await sb.rpc("rpc_piaopiao_reserve_upload_slot", {
+    p_tenant_id: session.tenant_id,
+    p_publisher_id: session.publisher_id,
+    p_operator_id: session.auth_user_id,
+  });
+  if (reserveError) throw new Error(`無法保留今日圖片額度：${reserveError.message}`);
+  if (!uploadDate) throw new Error("今天已上傳 25 張圖片；請明天再試。即使這次建立失敗，已上傳的圖片仍會占用今天額度。");
+  const dayPrefix = `piaopiao/${session.publisher_id}/${uploadDate}`;
   const ext = mime === "image/jpeg" ? "jpg" : mime === "image/png" ? "png" : "webp";
-  const path = `piaopiao/${session.publisher_id}/${crypto.randomUUID()}.${ext}`;
+  const path = `${dayPrefix}/${crypto.randomUUID()}.${ext}`;
   const { error } = await sb.storage.from("products").upload(path, bytes, { contentType: mime, upsert: false });
   if (error) throw new Error(`圖片上傳失敗：${error.message}`);
   return json({ path });

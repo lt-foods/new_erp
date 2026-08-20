@@ -5,15 +5,14 @@ import { campaignShareUrl, sharePage } from "@/lib/shareLink";
 import { getPiaopiaoAuth, piaopiaoLoginEmail } from "@/lib/piaopiaoAuth";
 
 type Variant = { name: string; cost_price: string; branch_price: string; retail_price: string };
-type Product = { name: string; description: string; images: File[]; variants: Variant[]; supplier_id: string; supplier_name: string };
-type Supplier = { id: number; name: string };
+type Product = { name: string; description: string; images: File[]; variants: Variant[]; supplier_name: string };
 type Result = { campaign_id: number; campaign_no: string; name: string; cover_image_path?: string };
 type PublishedResult = Result & { url: string; image?: File };
 
 const emptyProduct = (): Product => ({
   name: "", description: "", images: [],
   variants: [{ name: "單一規格", cost_price: "", branch_price: "", retail_price: "" }],
-  supplier_id: "", supplier_name: "",
+  supplier_name: "",
 });
 const REQUEST_KEY = "piaopiao_pending_request_id";
 
@@ -22,7 +21,6 @@ export default function PiaopiaoPublisherPage() {
   const [loginId, setLoginId] = useState("");
   const [password, setPassword] = useState("");
   const [lane, setLane] = useState<"tong" | "chao" | null>(null);
-  const [supplierList, setSupplierList] = useState<Supplier[]>([]);
   const [products, setProducts] = useState<Product[]>([emptyProduct()]);
   const [endAt, setEndAt] = useState("");
   const [pickupDeadline, setPickupDeadline] = useState("");
@@ -42,7 +40,6 @@ export default function PiaopiaoPublisherPage() {
     if (!token) return;
     void api(token, { action: "bootstrap" }).then((r) => {
       setLane(r.publisher.lane);
-      setSupplierList(r.suppliers ?? []);
     }).catch((e) => {
       setToken("");
       setError(e instanceof Error ? e.message : "登入已失效");
@@ -82,7 +79,7 @@ export default function PiaopiaoPublisherPage() {
     if (pickupDeadline < endAt.slice(0, 10)) return setError("取貨日不可早於收單日");
     for (const [i, product] of products.entries()) {
       if (!product.name.trim() || !product.description.trim() || product.images.length === 0) return setError(`第 ${i + 1} 樣商品請填名稱、介紹並至少上傳一張圖`);
-      if (lane === "tong" && !product.supplier_id && !product.supplier_name.trim()) return setError(`第 ${i + 1} 樣商品請選擇或填寫供應商`);
+      if (lane === "tong" && !product.supplier_name.trim()) return setError(`第 ${i + 1} 樣商品請填供應商`);
       if (product.variants.length === 0 || product.variants.some((v) => !validVariant(v))) return setError(`第 ${i + 1} 樣商品的每個規格都要填成本、分店價、售價，且成本 ≤ 分店價 < 售價`);
     }
     setBusy(true);
@@ -97,7 +94,7 @@ export default function PiaopiaoPublisherPage() {
         uploaded.push({
           name: product.name.trim(), description: product.description.trim(), images,
           variants: product.variants.map((v) => ({ ...v, name: v.name.trim() })),
-          ...(lane === "tong" ? (product.supplier_id ? { supplier_id: product.supplier_id } : { supplier_name: product.supplier_name.trim() }) : {}),
+          ...(lane === "tong" ? { supplier_name: product.supplier_name.trim() } : {}),
         });
       }
       const requestId = localStorage.getItem(REQUEST_KEY) || crypto.randomUUID();
@@ -153,7 +150,7 @@ export default function PiaopiaoPublisherPage() {
     {error && <p className="mb-4 rounded-xl bg-red-50 p-3 text-red-700">{error}</p>}{shareNotice && <p className="mb-4 rounded-xl bg-emerald-50 p-3 text-emerald-800">{shareNotice}</p>}
     {results.length > 0 ? <section className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="text-xl font-bold">建立完成，請逐一分享</h2><p className="mt-2 text-sm text-zinc-600">按每一樣商品的分享鈕，再由 LINE 選群組。支援的手機／電腦會帶入商品圖和連結。</p><div className="mt-4 space-y-3">{results.map((result) => <div key={result.campaign_id} className="rounded-2xl border p-4"><p className="font-semibold">{result.name}</p><a className="mt-1 block break-all text-rose-700 underline" href={result.url} target="_blank" rel="noreferrer">{result.url}</a><button onClick={() => void share(result)} className="mt-3 min-h-11 rounded-lg bg-[#06C755] px-4 text-sm font-semibold text-white">分享至 LINE 群組</button></div>)}</div><button onClick={() => { setResults([]); setProducts([emptyProduct()]); }} className="mt-5 min-h-11 rounded-xl bg-rose-600 px-4 font-semibold text-white">再建立一批</button></section> : <>
       <section className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="text-lg font-bold">共同資料</h2><div className="mt-4 grid gap-4 sm:grid-cols-2"><Field label="收單時間"><input className="input" type="datetime-local" value={endAt} onChange={(e) => setEndAt(e.target.value)} /></Field><Field label="取貨日"><input className="input" type="date" value={pickupDeadline} onChange={(e) => setPickupDeadline(e.target.value)} /></Field></div></section>
-      <div className="mt-4 space-y-4">{products.map((product, index) => <section key={index} className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="text-lg font-bold">商品 {index + 1}</h2>{products.length > 1 && <button onClick={() => setProducts((all) => all.filter((_, i) => i !== index))} className="min-h-11 text-sm text-red-600">移除此商品</button>}</div><div className="mt-4 grid gap-4"><Field label="商品名稱"><input className="input" value={product.name} onChange={(e) => updateProduct(index, { name: e.target.value })} /></Field><Field label="商品介紹"><textarea className="input min-h-28" value={product.description} onChange={(e) => updateProduct(index, { description: e.target.value })} /></Field><Field label="商品圖片（至少一張）"><input className="block min-h-11 w-full text-base" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(e) => updateProduct(index, { images: Array.from(e.target.files ?? []) })} />{product.images.length > 0 && <p className="text-sm text-emerald-700">已選 {product.images.length} 張圖片</p>}</Field>{lane === "tong" && <Field label="供應商"><select className="input" value={product.supplier_id} onChange={(e) => updateProduct(index, { supplier_id: e.target.value })}><option value="">新增供應商（填在下一格）</option>{supplierList.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select>{!product.supplier_id && <input className="input mt-2" placeholder="新供應商名稱" value={product.supplier_name} onChange={(e) => updateProduct(index, { supplier_name: e.target.value })} />}</Field>}{lane === "chao" && <p className="rounded-xl bg-zinc-100 p-3 text-sm">供應商固定：潮包子</p>}</div><h3 className="mt-6 font-bold">規格與價格</h3><div className="mt-2 space-y-3">{product.variants.map((variant, variantIndex) => <div key={variantIndex} className="rounded-2xl bg-zinc-50 p-3"><div className="grid gap-2 sm:grid-cols-4"><input className="input" placeholder="規格名，例如 黑色 M" value={variant.name} onChange={(e) => updateVariant(index, variantIndex, { name: e.target.value })} /><input className="input" inputMode="decimal" placeholder="成本價" value={variant.cost_price} onChange={(e) => updateVariant(index, variantIndex, { cost_price: e.target.value })} /><input className="input" inputMode="decimal" placeholder="分店價" value={variant.branch_price} onChange={(e) => updateVariant(index, variantIndex, { branch_price: e.target.value })} /><input className="input" inputMode="decimal" placeholder="售價" value={variant.retail_price} onChange={(e) => updateVariant(index, variantIndex, { retail_price: e.target.value })} /></div>{product.variants.length > 1 && <button onClick={() => removeVariant(index, variantIndex)} className="mt-2 text-sm text-red-600">刪除此規格</button>}</div>)}</div><button onClick={() => addVariant(index)} className="mt-3 min-h-11 rounded-xl border px-3 text-sm font-semibold">＋ 新增規格</button></section>)}</div>
+      <div className="mt-4 space-y-4">{products.map((product, index) => <section key={index} className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="text-lg font-bold">商品 {index + 1}</h2>{products.length > 1 && <button onClick={() => setProducts((all) => all.filter((_, i) => i !== index))} className="min-h-11 text-sm text-red-600">移除此商品</button>}</div><div className="mt-4 grid gap-4"><Field label="商品名稱"><input className="input" value={product.name} onChange={(e) => updateProduct(index, { name: e.target.value })} /></Field><Field label="商品介紹"><textarea className="input min-h-28" value={product.description} onChange={(e) => updateProduct(index, { description: e.target.value })} /></Field><Field label="商品圖片（至少一張）"><input className="block min-h-11 w-full text-base" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(e) => updateProduct(index, { images: Array.from(e.target.files ?? []) })} />{product.images.length > 0 && <p className="text-sm text-emerald-700">已選 {product.images.length} 張圖片</p>}</Field>{lane === "tong" && <Field label="供應商"><input className="input" placeholder="供應商名稱" value={product.supplier_name} onChange={(e) => updateProduct(index, { supplier_name: e.target.value })} /></Field>}{lane === "chao" && <p className="rounded-xl bg-zinc-100 p-3 text-sm">供應商固定：潮包子</p>}</div><h3 className="mt-6 font-bold">規格與價格</h3><div className="mt-2 space-y-3">{product.variants.map((variant, variantIndex) => <div key={variantIndex} className="rounded-2xl bg-zinc-50 p-3"><div className="grid gap-2 sm:grid-cols-4"><input className="input" placeholder="規格名，例如 黑色 M" value={variant.name} onChange={(e) => updateVariant(index, variantIndex, { name: e.target.value })} /><input className="input" inputMode="decimal" placeholder="成本價" value={variant.cost_price} onChange={(e) => updateVariant(index, variantIndex, { cost_price: e.target.value })} /><input className="input" inputMode="decimal" placeholder="分店價" value={variant.branch_price} onChange={(e) => updateVariant(index, variantIndex, { branch_price: e.target.value })} /><input className="input" inputMode="decimal" placeholder="售價" value={variant.retail_price} onChange={(e) => updateVariant(index, variantIndex, { retail_price: e.target.value })} /></div>{product.variants.length > 1 && <button onClick={() => removeVariant(index, variantIndex)} className="mt-2 text-sm text-red-600">刪除此規格</button>}</div>)}</div><button onClick={() => addVariant(index)} className="mt-3 min-h-11 rounded-xl border px-3 text-sm font-semibold">＋ 新增規格</button></section>)}</div>
       {canAdd && <button onClick={() => setProducts((all) => [...all, emptyProduct()])} className="mt-4 min-h-11 rounded-xl border border-rose-300 bg-white px-4 font-semibold text-rose-700">＋ 再加一樣商品（最多 5 樣）</button>}<button disabled={busy} onClick={() => void submit()} className="mt-6 min-h-14 w-full rounded-2xl bg-rose-600 px-5 text-lg font-bold text-white disabled:opacity-50">{busy ? "正在建立，請不要關閉…" : publishLabel}</button>
     </>}</main>;
 }
