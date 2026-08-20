@@ -32,6 +32,10 @@ type AuthState = {
 
 const AuthContext = createContext<AuthState | null>(null);
 
+function isPiaopiaoPublisher(session: Session | null): boolean {
+  return session?.user.app_metadata?.role === "piaopiao_publisher";
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   // 記住「這份 tenant 是替哪個 user 抓的」，登出/換帳號時自然失效，不必同步清空
@@ -44,12 +48,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
-      setSession(data.session);
+      if (isPiaopiaoPublisher(data.session)) {
+        void supabase.auth.signOut();
+        setSession(null);
+      } else {
+        setSession(data.session);
+      }
       setLoading(false);
     });
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
-      setSession(s);
+      if (isPiaopiaoPublisher(s)) {
+        void supabase.auth.signOut();
+        setSession(null);
+      } else {
+        setSession(s);
+      }
     });
 
     return () => {
@@ -77,7 +91,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const tenant = userId && tenantState?.forUser === userId ? tenantState.info : null;
 
   const signIn = useCallback(async (email: string, password: string) => {
-    const { error } = await getSupabase().auth.signInWithPassword({ email, password });
+    const sb = getSupabase();
+    const { data, error } = await sb.auth.signInWithPassword({ email, password });
+    if (!error && isPiaopiaoPublisher(data.session)) {
+      await sb.auth.signOut();
+      return { error: "此帳號只能登入漂漂館上架後台" };
+    }
     return { error: error?.message ?? null };
   }, []);
 
