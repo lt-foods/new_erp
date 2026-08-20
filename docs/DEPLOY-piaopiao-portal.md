@@ -6,16 +6,16 @@
 
 1. 在 Supabase SQL Editor 整份執行：
    `supabase/migrations/20260820000100_piaopiao_independent_portal.sql`
-   
+
    若有任何錯誤：立刻停止，不要重貼、不要跳下一步。
 
 2. 在同一處整份執行唯讀驗收：
    `scripts/verify-piaopiao-portal-migration.sql`
-   
+
    只有結果第一句是 ✅ 才能下一步；任何 ❌ 都停止。
 
 3. 重載資料庫對外欄位快取：
-   
+
    ```sql
    NOTIFY pgrst, 'reload schema';
    ```
