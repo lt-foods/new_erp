@@ -274,19 +274,24 @@ export default function ShopPage() {
               key={key}
               type="button"
               onClick={() => setWorld(key)}
-              className={`relative pb-1.5 transition-all duration-200 ${
+              className={`transition-all duration-200 ${
                 active
                   ? "text-[19px] font-bold text-[var(--brand-strong)]"
                   : "text-[17px] font-medium text-[var(--secondary-label)]"
               }`}
             >
-              {label} {emoji}
-              <span
-                className={`absolute inset-x-1 bottom-0 h-[3px] rounded-full brand-gradient transition-opacity duration-200 ${
-                  active ? "opacity-100" : "opacity-0"
-                }`}
-                aria-hidden
-              />
+              {/* 底線只掛在文字上，emoji 排除在外 —— 掛整顆按鈕會延伸到
+                  emoji 底下，看起來跟字沒對齊 */}
+              <span className="relative inline-block pb-1.5">
+                {label}
+                <span
+                  className={`absolute inset-x-0 bottom-0 h-[3px] rounded-full brand-gradient transition-opacity duration-200 ${
+                    active ? "opacity-100" : "opacity-0"
+                  }`}
+                  aria-hidden
+                />
+              </span>
+              <span className="pl-1.5" aria-hidden>{emoji}</span>
             </button>
           );
         })}
