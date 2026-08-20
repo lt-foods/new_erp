@@ -144,6 +144,18 @@ export function TransferReceiveModal({
     }, 0);
   }, [items, edits, readOnly]);
   const variance = totalReceived - totalShipped;
+  // 有格子被清成空白＝還沒填完。此時 `Number("")` 會讓合計/差異算成 0，看起來像
+  // 「真的收 0 件」→ 合計那一列與該行的差異改成顯示「—」，並提示要填數字。
+  // （送出端的硬擋在 buildLines()）
+  const hasBlankQty = useMemo(() => {
+    if (readOnly || !items) return false;
+    return items.some((r) => {
+      const e = edits.get(r.id);
+      return e !== undefined && e.trim() === "";
+    });
+  }, [items, edits, readOnly]);
+  // 短收警語的件數；有空白格時先不算（那時的 variance 是假的）
+  const shortQty = !readOnly && !hasBlankQty && variance < 0 ? -variance : 0;
 
   function setQty(itemId: number, val: string) {
     setEdits((cur) => {
@@ -153,18 +165,32 @@ export function TransferReceiveModal({
     });
   }
 
+  // 錯誤訊息要讓店員看得懂是哪一列 → 用畫面上的商品名，不要用內部 id
+  function itemLabel(it: TransferItem): string {
+    if (it.description) return it.description;
+    const sku = skus.get(it.sku_id);
+    return sku?.product_name ?? sku?.sku_code ?? `品項 #${it.id}`;
+  }
+
   // 依畫面上的編輯組出 p_lines（只送有改動的行；數量不合法直接 throw）
   function buildLines(): Array<{ transfer_item_id: number; qty_received: number }> {
     const lines: Array<{ transfer_item_id: number; qty_received: number }> = [];
     for (const it of items ?? []) {
       const e = edits.get(it.id);
       if (e === undefined) continue;
+      // ⚠️ 空白格一定要擋下來：`Number("") === 0`，既不是 NaN 也不 < 0，會一路
+      // 通過下面的檢查、被記成「收 0 件」，而畫面完全不報錯（店員把數字刪掉
+      // 想重打、還沒打就按送出就中招）。
+      // ⛔ 也不可以當成「沒編輯」直接 continue —— 那會靜默改成全收，一樣是騙人。
+      if (e.trim() === "") {
+        throw new Error(`「${itemLabel(it)}」的實收還沒填。請填數字（真的沒收到請填 0）。`);
+      }
       const v = Number(e);
       if (Number.isNaN(v) || v < 0) {
-        throw new Error(`item ${it.id}: 數量無效`);
+        throw new Error(`「${itemLabel(it)}」的實收「${e}」不是有效數量。請填 0 或正整數。`);
       }
       if (v > it.qty_shipped) {
-        throw new Error(`item ${it.id}: 收貨量不可大於出貨量 ${it.qty_shipped}`);
+        throw new Error(`「${itemLabel(it)}」的實收不可大於出貨量 ${it.qty_shipped}。`);
       }
       if (v !== it.qty_shipped) {
         lines.push({ transfer_item_id: it.id, qty_received: v });
@@ -352,6 +378,26 @@ export function TransferReceiveModal({
           </div>
         )}
 
+        {/* 空白格提示 — 放在不會被捲走的區塊，商品多的時候也看得到 */}
+        {hasBlankQty && (
+          <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+            有「實收」欄位是空白的，送出前請填數字（真的沒收到請填 0）。
+          </div>
+        )}
+
+        {/* 短收警語 — 店家常以為「填少＝把多的退回總倉」，實際上是從帳上扣掉。
+            ⛔ 不可以寫「系統會自動補回總倉」：那要總倉在收件匣的「收貨短少」按一顆鈕，
+               不是自動的（rpc_resolve_transfer_item_shortage，只有總部角色能按）。 */}
+        {shortQty > 0 && (
+          <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+            <div className="font-semibold">⚠️ 少收 {shortQty} 件：這 {shortQty} 件會先從帳上扣掉。</div>
+            <div className="mt-0.5">
+              如果是「總倉多給、貨還在總倉」，請在下面備註寫清楚，總倉才處理得到
+              —— <span className="font-semibold">填少不等於把貨退回去</span>。
+            </div>
+          </div>
+        )}
+
         <div className="overflow-auto p-3">
           {items === null ? (
             <div className="p-6 text-center text-sm text-zinc-500">載入中…</div>
@@ -378,6 +424,8 @@ export function TransferReceiveModal({
                     const numCur = Number(cur);
                     const diff = !Number.isNaN(numCur) ? numCur - it.qty_shipped : 0;
                     const overflowing = !readOnly && numCur > it.qty_shipped;
+                    // 這一行被清成空白＝還沒填完，不是「收 0 件」→ 差異顯示「—」、框線標紅
+                    const blank = !readOnly && editVal !== undefined && editVal.trim() === "";
                     return (
                       <tr key={it.id}>
                         <td className="px-3 py-2">
@@ -408,7 +456,7 @@ export function TransferReceiveModal({
                             disabled={readOnly}
                             onChange={(e) => setQty(it.id, e.target.value)}
                             className={`w-20 rounded-md border px-2 py-0.5 text-right font-mono text-sm font-semibold ${
-                              overflowing
+                              overflowing || blank
                                 ? "border-red-400 bg-red-50 dark:bg-red-950"
                                 : editVal !== undefined
                                 ? "border-amber-400 bg-amber-50 dark:bg-amber-950"
@@ -418,14 +466,14 @@ export function TransferReceiveModal({
                         </td>
                         <td
                           className={`px-3 py-2 text-right font-mono text-xs ${
-                            diff === 0
+                            blank || diff === 0
                               ? "text-zinc-400"
                               : diff < 0
                               ? "text-red-600 dark:text-red-400"
                               : "text-purple-600 dark:text-purple-400"
                           }`}
                         >
-                          {diff === 0 ? "—" : diff > 0 ? `+${diff}` : `${diff}`}
+                          {blank || diff === 0 ? "—" : diff > 0 ? `+${diff}` : `${diff}`}
                         </td>
                       </tr>
                     );
@@ -435,17 +483,22 @@ export function TransferReceiveModal({
                   <tr>
                     <td className="px-3 py-2 text-right text-xs font-semibold text-zinc-500">合計</td>
                     <td className="px-3 py-2 text-right font-mono font-semibold">{totalShipped}</td>
-                    <td className="px-3 py-2 text-right font-mono font-semibold">{totalReceived}</td>
+                    {/* 有空白格時合計是假的（`Number("")===0`）→ 顯示「—」，不要讓人以為真的收那麼少 */}
+                    <td className="px-3 py-2 text-right font-mono font-semibold">
+                      {hasBlankQty ? "—" : totalReceived}
+                    </td>
                     <td
                       className={`px-3 py-2 text-right font-mono text-xs font-semibold ${
-                        variance === 0
+                        hasBlankQty
+                          ? "text-zinc-400"
+                          : variance === 0
                           ? "text-emerald-600 dark:text-emerald-400"
                           : variance < 0
                           ? "text-red-600 dark:text-red-400"
                           : "text-purple-600 dark:text-purple-400"
                       }`}
                     >
-                      {variance === 0 ? "✓" : variance > 0 ? `+${variance}` : `${variance}`}
+                      {hasBlankQty ? "—" : variance === 0 ? "✓" : variance > 0 ? `+${variance}` : `${variance}`}
                     </td>
                   </tr>
                 </tfoot>
@@ -459,7 +512,7 @@ export function TransferReceiveModal({
                     onChange={(e) => setNote(e.target.value)}
                     rows={2}
                     className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
-                    placeholder="例：途中破損 2 件"
+                    placeholder="例：途中破損 2 件 ／ 總倉多給 2，貨還在總倉"
                   />
                 </div>
               )}

@@ -4,7 +4,22 @@
 // 顯示:
 //   - transfer 短少詳情(品項、缺多少)
 //   - 影響的客戶訂單(同店該品項 pending orders)
-//   - 4 個處理選項 + 備註
+//   - 「該選哪一顆」的適用情境 + 單行道警語
+//   - 6 個處理選項 + 備註
+//
+// ⚠️⚠️ 按下去幾乎都回不來(2026-08-21 查證,只改文案沒改行為):
+//   異常清單的 transfer_short 分支條件是
+//     ti.shortage_resolution IS NULL
+//     OR (shortage_resolution = 'replenish' AND 該店該品項還沒收到補的貨)
+//   (最新版 20260811020010_hq_exceptions_drop_customer_shortage.sql:145-160)
+//   而 rpc_resolve_transfer_item_shortage 對「六個 resolution 一律」寫入
+//   shortage_resolution(20260811020000:262-270,沒有任何例外)
+//   ⇒ 除了 replenish,其餘 5 顆按完這一筆就從清單消失、之後無法改選別的。
+//   其中 cancel_orders / vendor_claim / accept 是「僅打標記」(RPC 的 COMMENT 原話),
+//   短少的貨不會回到總倉庫存。
+//   實際案例:古華有一筆按了 restock_hq,貨帳回到總倉,但「已派量」只看
+//   picking_wave_items(20260818000030:174-194)、不看沖回 → 沒有人能再派它,
+//   8 位客人 pending 兩個月。⇒ 還有客人在等就要選 redispatch。
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -36,6 +51,8 @@ const RESOLUTION_OPTIONS: Array<{
   icon: string;
   title: string;
   desc: string;
+  // 按下去會發生什麼「回不去」的事 / 這顆的關鍵限制(顯示在說明下面一行,紅字)
+  warn?: string;
   cta?: { label: string; href: string; hint: string };
 }> = [
   {
@@ -43,18 +60,21 @@ const RESOLUTION_OPTIONS: Array<{
     icon: "🔁",
     title: "拒絕短收 — 沖回總倉並自動重派",
     desc: "貨仍在總倉(漏裝/揀貨少拿):短少數量沖回總倉庫存,並自動開一張撿貨單重派回原店、接回原訂單(出貨/收貨後訂單自動推進)。重派撿貨單會出現在總倉收件匣的撿貨單匣。真的遺失請勿選(帳會多)。",
+    warn: "還有客人在等這批貨 → 選這顆。按完這一筆會從「收貨短少」清單消失,但貨已沖回總倉、撿貨單也開好了,樓下撿完就會再送一次。",
   },
   {
     value: "restock_hq",
     icon: "🏭",
     title: "貨仍在總倉（只沖回庫存,不重派）",
     desc: "把短少數量以原出庫成本記回總倉庫存,之後再自行決定怎麼派。要自動重派回原店請選上面的「拒絕短收」。真的遺失請勿選(帳會多)。",
+    warn: "⚠️ 單行道,按下去回不來:這一筆會從「收貨短少」清單消失,之後不能再改選上面的「🔁 拒絕短收(自動重派)」。而且系統仍算這批貨已經派掉了 → 沒有人能再派它。還有客人在等,請改選「🔁 拒絕短收」。",
   },
   {
     value: "replenish",
     icon: "📦",
     title: "補出貨",
     desc: "從 HQ 庫存或他店再派一筆貨給該店補上短少。",
+    warn: "✓ 只有這一顆會留在清單上:標了之後這筆會繼續顯示「已標補出貨,尚未補到」,直到該店真的收到補的貨才自動消失。不確定要選哪顆時,這顆最安全。",
     cta: {
       // CTA 指補貨申請（總倉派貨）：自由轉貨的表單只給店↔店、選不到總倉，
       // 而短少多半是總倉再補一次。要從別店調貨走 /wms/transfers 的「+ 建自由轉貨」
@@ -69,6 +89,7 @@ const RESOLUTION_OPTIONS: Array<{
     icon: "❌",
     title: "取消客戶訂單",
     desc: "通知顧客貨拿不到,在客戶端取消訂單 / 退款。",
+    warn: "⚠️ 單行道:這一筆會從清單消失、不能再改選別的。而且這顆只打標記 —— 短少的貨不會回到總倉庫存,帳上就是少了這些。貨其實還在總倉的話請改選上面兩顆。",
     cta: {
       // 收件匣「異常 → 訂單短少」分頁已於 2026-08-11 移除,改導去訂單管理頁處理
       label: "前往訂單管理",
@@ -81,12 +102,14 @@ const RESOLUTION_OPTIONS: Array<{
     icon: "🚚",
     title: "供應商 / 物流求償",
     desc: "判定為運送途中遺失或上游短裝,跟物流/供應商求償。",
+    warn: "⚠️ 單行道:這一筆會從清單消失、不能再改選別的。這顆只打標記 —— 短少的貨不會回到總倉庫存(貨真的不見了才選這顆)。",
   },
   {
     value: "accept",
     icon: "✓",
     title: "接受短少 (認賠)",
     desc: "短少不追究,直接結案。庫存以實收為準。",
+    warn: "⚠️ 單行道:這一筆會從清單消失、不能再改選別的。這顆只打標記 —— 短少的貨不會回到總倉庫存,等於認賠這些貨。貨其實還在總倉的話⛔不要選這顆。",
   },
 ];
 
@@ -255,6 +278,40 @@ export function TransferShortageResolveModal({
       {/* 處理選項 */}
       <div className="mt-4 space-y-2">
         <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">選擇處理方式 *</div>
+
+        {/* 先講「該選哪一顆」,不要讓人自己從六段說明去推理 —— 按錯不可逆(見檔頭註解) */}
+        <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-xs dark:border-blue-800 dark:bg-blue-950/40">
+          <div className="font-semibold text-blue-900 dark:text-blue-200">先看這個:該選哪一顆?</div>
+          <ul className="mt-1 space-y-1 text-blue-900 dark:text-blue-200">
+            <li>
+              <span className="font-semibold">還有客人在等這批貨</span>(上面那張表有列到訂單)
+              → 選 <span className="font-semibold">🔁 拒絕短收</span>:貨沖回總倉,並自動開撿貨單重派回原店。
+            </li>
+            <li>
+              <span className="font-semibold">沒有客人在等</span>,只是想先把貨收回總倉
+              → 選 <span className="font-semibold">🏭 貨仍在總倉</span>。
+            </li>
+            <li>
+              <span className="font-semibold">還不確定 / 要另外補一批給店家</span>
+              → 選 <span className="font-semibold">📦 補出貨</span>(唯一會留在清單上的一顆)。
+            </li>
+            <li>
+              <span className="font-semibold">貨真的遺失或破損了</span>
+              → 選 <span className="font-semibold">🚚 求償</span> 或 <span className="font-semibold">✓ 接受短少</span>
+              (這兩顆<span className="font-semibold">不會</span>把貨補回總倉庫存)。
+            </li>
+          </ul>
+          <div className="mt-2 rounded bg-white/70 p-2 text-[11px] leading-relaxed text-rose-800 dark:bg-zinc-900/60 dark:text-rose-300">
+            <span className="font-semibold">⚠️ 按下去就回不來:</span>
+            除了「📦 補出貨」,其他五顆按完之後這一筆就會從「收貨短少」清單消失,
+            <span className="font-semibold">之後不能再改選別的</span>。
+            <br />
+            實際發生過:古華有一筆按了「🏭 貨仍在總倉」,貨帳雖然回到總倉,但系統仍然算這批貨已經派掉了,
+            <span className="font-semibold">結果沒有任何人能再派它</span> → 8 位客人等了兩個月。
+            <span className="font-semibold">還有客人在等,就選「🔁 拒絕短收」。</span>
+          </div>
+        </div>
+
         {RESOLUTION_OPTIONS.map((opt) => {
           const active = resolution === opt.value;
           return (
@@ -280,6 +337,19 @@ export function TransferShortageResolveModal({
                   <span className="font-medium">{opt.title}</span>
                 </div>
                 <div className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{opt.desc}</div>
+                {/* 「按下去會發生什麼回不去的事」一律顯示,不只在選中時才出現 ——
+                    要在按之前就看到才有用。replenish 那條是好消息(綠字),其餘是警告(紅字)。 */}
+                {opt.warn && (
+                  <div
+                    className={`mt-1 text-[11px] leading-relaxed ${
+                      opt.value === "replenish"
+                        ? "text-emerald-700 dark:text-emerald-400"
+                        : "text-rose-700 dark:text-rose-400"
+                    }`}
+                  >
+                    {opt.warn}
+                  </div>
+                )}
                 {active && opt.cta && (
                   <div className="mt-2 rounded bg-amber-50 p-2 text-xs dark:bg-amber-950/30">
                     <Link
