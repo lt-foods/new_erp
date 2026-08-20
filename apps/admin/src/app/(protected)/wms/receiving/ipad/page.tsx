@@ -425,9 +425,10 @@ async function fetchRowsFor(pos: WorkbenchPO[]): Promise<FetchResult> {
 /**
  * 待收採購單清單。整理與「可能被截斷」的判定都在 normalizeWorkbenchPOs()。
  *
- * ⚠️⚠️ 這支 RPC 自己有 `LIMIT 200`，我們**改不了**（後端不在這一片的範圍）。
- *   所以這裡拿得到的永遠是「最多 200 張」，而且 fully_received 也佔名額。
- *   ⇒ 只能偵測 + 喊出來（止血），根治見 normalizeWorkbenchPOs 的檔內說明。
+ * ⭐ 這支 RPC 從 #798（20260820000200）起，`sent / partially_received`
+ *   **全取、不設上限** ⇒ 這一頁要收的貨不會再被截掉。
+ *   `fully_received` 那半仍限 200 張，但下面 normalizeWorkbenchPOs 本來就把它濾掉。
+ *   ⇒ listMaybeTruncated 現在是「RPC 被回退成舊版」的絆線，不是常態警告。
  */
 async function fetchWorkbenchPOs(): Promise<{
   pos: WorkbenchPO[];
@@ -515,8 +516,9 @@ export default function IpadReceivingPage() {
   const [missingSkuCount, setMissingSkuCount] = useState(0);
   const [badData, setBadData] = useState<string[]>([]);
   const [truncated, setTruncated] = useState(0);
-  /** 採購單清單可能被後端 RPC 的 LIMIT 截掉了（止血用的猜測性偵測，
-   *  推導見 @/lib/receivingBatch 的 normalizeWorkbenchPOs）。 */
+  /** 採購單清單可能被後端 RPC 的 LIMIT 截掉了。
+   *  ⭐ #798 之後這在正常情況下**恆為 false**，是「RPC 被回退成舊版」的絆線
+   *    （判定與推導見 @/lib/receivingBatch 的 normalizeWorkbenchPOs）。 */
   const [poListMaybeTruncated, setPoListMaybeTruncated] = useState(false);
 
   const [search, setSearch] = useState("");
@@ -1118,10 +1120,10 @@ export default function IpadReceivingPage() {
       </header>
 
       <main ref={mainRef} className="flex-1 overflow-y-auto overscroll-contain px-4 pb-6 pt-4">
-        {/* ⚠️⚠️ 採購單清單可能被截斷 —— **止血，不是根治**。
-            後端 rpc_receiving_workbench() 自己有 LIMIT 200（而且 fully_received
-            也佔名額），這一頁改不了它，只能偵測「回傳筆數剛好頂到上限」並喊出來。
-            推導與根治方向見 @/lib/receivingBatch 的 normalizeWorkbenchPOs()。
+        {/* ⚠️⚠️ 採購單清單可能被截斷 —— **絆線，正常情況下不會出現**。
+            #798（20260820000200）之後，未收完的單全取、不再被截
+            ⇒ 這條只在「RPC 被回退成舊版」時才會亮（判定與推導見
+            @/lib/receivingBatch 的 normalizeWorkbenchPOs()）。
             ⛔ 這條**不給關**（沒有「知道了」按鈕）：關掉的那一刻就等於沒做。
             ⛔ 文案一律講「可能」—— 剛好 200 張不代表真的被截，但寧可多提醒不要漏。
             ⚠️ 放在 main 的最上面而不是 header：header 要留給搜尋框（這一頁的全部）。
@@ -1137,8 +1139,11 @@ export default function IpadReceivingPage() {
               <strong>搜不到你手上這批貨的話，不要當成沒有</strong>
               —— 請找辦公室用電腦查那張單。
             </p>
+            {/* ⭐ 這條亮起來＝後端取單方式被換回舊版了，樓下自己修不了。
+                所以這裡給的是「要轉達什麼給誰」，不是叫樓下想辦法。 */}
             <p className="mt-1 text-sm text-amber-800 dark:text-amber-300">
-              也請辦公室把收完、不會再到的採購單結掉，這條提醒才會消失。
+              這條提醒正常不會出現。看到它請告訴辦公室：
+              「進貨待辦的取單方式被改回舊版了，要 20260820000200 那一版。」
             </p>
           </div>
         )}
@@ -1276,7 +1281,11 @@ export default function IpadReceivingPage() {
                 </p>
                 {/* ⭐⭐ 這裡是採購單清單被截斷時**真正致命的那一刻**：
                     「搜不到」會被當成「系統沒這批貨」，然後貨就這樣沒收。
-                    ⛔ 所以上面那條常駐警告之外，這裡一定要再講一次。 */}
+                    ⛔ 所以上面那條警告之外，這裡一定要再講一次。
+                    ⚠️ 但**一定要跟著 poListMaybeTruncated 一起關**：#798 之後未收完的
+                      單全取，「搜不到」就真的等於沒有 —— 這時候還印這句，等於教樓下
+                      不要相信搜尋結果，反而會把人推去做多餘的電話查詢。
+                      ⇒ 這句的正確與否，完全綁在那條絆線上。 */}
                 {poListMaybeTruncated && !showSelectedOnly && (
                   <p className="mx-auto mt-3 max-w-xl rounded-xl border-2 border-amber-500 bg-amber-50 p-3 text-base font-bold text-amber-900 dark:border-amber-600 dark:bg-amber-950/50 dark:text-amber-200">
                     ⚠️ 搜不到不代表沒有這批貨！採購單太多的時候，比較舊的單不會顯示在這一頁。
