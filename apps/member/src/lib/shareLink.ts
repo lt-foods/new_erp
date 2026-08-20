@@ -31,8 +31,8 @@ export type ShareResult =
  *  一律用 SITE_URL 重組，不要拿 `window.location.href` ——
  *  現場的網址可能帶著登入用的 fragment / query（`consumeFragmentToSession`
  *  吃的那些），把它分享出去等於把 session token 貼到群組裡。 */
-export function campaignShareUrl(campaignId: number): string {
-  return `${SITE_URL}/shop/c/${campaignId}`;
+export function campaignShareUrl(campaignId: number, path = "/shop/c"): string {
+  return `${SITE_URL}${path}/${campaignId}`;
 }
 
 /** LINE 官方的網頁分享頁：手機會轉交給 LINE app，桌機開網頁版 LINE */

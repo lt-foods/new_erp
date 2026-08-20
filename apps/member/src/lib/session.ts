@@ -7,6 +7,7 @@ const MEMBER_KEY   = "member_id";
 const LINE_UID_KEY = "line_user_id";
 const LINE_NAME_KEY    = "line_name";
 const LINE_PIC_KEY     = "line_picture";
+const POST_LOGIN_RETURN_KEY = "member_post_login_return";
 
 const AUTH_CHANNEL_NAME = "member_auth_sync";
 
@@ -204,6 +205,20 @@ export function loginPath(): string {
   }
   const qs = keep.toString();
   return qs ? `/?${qs}` : "/";
+}
+
+/** 記住登入前要去的安全站內頁；OAuth 回來後才不會掉回主商城。 */
+export function setPostLoginReturn(path: string): void {
+  if (typeof window === "undefined" || !path.startsWith("/piaopiao")) return;
+  localStorage.setItem(POST_LOGIN_RETURN_KEY, path);
+}
+
+/** 只接受漂漂館站內路徑，避免登入後被帶到外部網址。 */
+export function takePostLoginReturn(): string | null {
+  if (typeof window === "undefined") return null;
+  const path = localStorage.getItem(POST_LOGIN_RETURN_KEY);
+  localStorage.removeItem(POST_LOGIN_RETURN_KEY);
+  return path?.startsWith("/piaopiao") ? path : null;
 }
 
 /** 監聽來自其他視窗的登入成功的訊息 (用於 PWA 視窗感應瀏覽器視窗的登入) */

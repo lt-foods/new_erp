@@ -719,7 +719,7 @@ async function getSpotProduct(
   });
 }
 
-async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string | null, memberId?: number | null) {
+async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string | null, memberId?: number | null, salesChannel?: string | null) {
   // end_at IS NULL 表示「無到期日」(管理員未設),也算進行中,要保留
   let q = sb
     .from("group_buy_campaigns")
@@ -731,6 +731,9 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
     // 排除內部 sentinel 活動(補貨申請),不應出現在顧客商店
     .neq("campaign_no", "__INTERNAL_RESTOCK__")
     .or(`end_at.is.null,end_at.gt.${new Date().toISOString()}`);
+  // 店面邊界必須在後端擋：只藏前端，知道 main 團號的人照樣能從漂漂館下單。
+  if (salesChannel === "piaopiao") q = q.eq("sales_channel", "piaopiao");
+  else q = q.eq("sales_channel", "main");
   if (closeType && closeType !== "sale_limit") q = q.eq("close_type", closeType);
   // 不加 limit：曾經 .limit(50) 在 open 團數超過 50 時把最晚結單的整批截掉
   // （end_at ASC NULLS LAST + 截 50），顧客端整個團就消失。PostgREST 仍有
@@ -865,13 +868,14 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
  * 自己也擋 status / is_for_shop / end_at（20260813000000），
  * 寫入端的閘門跟這裡的讀取端閘門是同一套條件。
  */
-async function getCampaignDetail(sb: any, tenantId: string, campaignId: number, memberId: number | null) {
-  const { data: c, error: cErr } = await sb
+async function getCampaignDetail(sb: any, tenantId: string, campaignId: number, memberId: number | null, salesChannel?: string | null) {
+  let campaignQuery = sb
     .from("group_buy_campaigns")
     .select("id, campaign_no, name, description, cover_image_url, status, close_type, end_at, pickup_deadline, total_cap_qty, is_for_shop")
     .eq("tenant_id", tenantId)
-    .eq("id", campaignId)
-    .single();
+    .eq("id", campaignId);
+  campaignQuery = campaignQuery.eq("sales_channel", salesChannel === "piaopiao" ? "piaopiao" : "main");
+  const { data: c, error: cErr } = await campaignQuery.single();
   if (cErr || !c) return json({ error: "campaign not found" }, 404);
   const available = c.status === "open"
     && !!c.is_for_shop
@@ -997,17 +1001,18 @@ async function getCampaignDetail(sb: any, tenantId: string, campaignId: number, 
  * 比退回一張店家 logo 的通用卡有用（頁面本身還是會擋下單）。
  * 只擋掉「本來就不該出現在賣場」的：非 is_for_shop、內部補貨 sentinel。
  */
-async function getCampaignPreview(sb: any, tenantId: string, campaignId: number) {
+async function getCampaignPreview(sb: any, tenantId: string, campaignId: number, salesChannel?: string | null) {
   if (!campaignId) return json({ error: "campaign_id required" }, 400);
 
-  const { data: c, error } = await sb
+  let previewQuery = sb
     .from("group_buy_campaigns")
     .select(
       "id, campaign_no, name, description, cover_image_url, status, is_for_shop, end_at, campaign_items(unit_price, sort_order, sku:skus(product:products(images)))",
     )
     .eq("tenant_id", tenantId)
-    .eq("id", campaignId)
-    .maybeSingle();
+    .eq("id", campaignId);
+  previewQuery = previewQuery.eq("sales_channel", salesChannel === "piaopiao" ? "piaopiao" : "main");
+  const { data: c, error } = await previewQuery.maybeSingle();
   if (error) return json({ error: error.message }, 500);
   if (!c || !c.is_for_shop || c.campaign_no === "__INTERNAL_RESTOCK__") {
     return json({ error: "campaign not found" }, 404);
@@ -1112,6 +1117,15 @@ async function placeMemberOrder(
 
   if (!campaignId) return json({ error: "campaign_id required" }, 400);
   if (items.length === 0) return json({ error: "items required" }, 400);
+  const requiredSalesChannel = p.sales_channel === "piaopiao" ? "piaopiao" : "main";
+  const { data: campaign, error: campaignErr } = await sb
+    .from("group_buy_campaigns")
+    .select("id")
+    .eq("tenant_id", tenantId)
+    .eq("id", campaignId)
+    .eq("sales_channel", requiredSalesChannel)
+    .maybeSingle();
+  if (campaignErr || !campaign) return json({ error: "campaign not available" }, 404);
 
   // 取得 member + home_store
   const { data: member, error: mErr } = await sb
@@ -1455,7 +1469,7 @@ Deno.serve(async (req) => {
     if (action === "list_stores") return await listStores(sb, requireEnv("DEFAULT_TENANT_ID"));
     // 分享連結的 OG 預覽：呼叫的是 LINE / FB 的爬蟲（沒有會員 token），必須免驗
     if (action === "get_campaign_preview") {
-      return await getCampaignPreview(sb, requireEnv("DEFAULT_TENANT_ID"), Number(body.campaign_id ?? 0));
+      return await getCampaignPreview(sb, requireEnv("DEFAULT_TENANT_ID"), Number(body.campaign_id ?? 0), typeof body.sales_channel === "string" ? body.sales_channel : null);
     }
     if (action === "log_client_error" || action === "report_client_logs") {
       // 有帶 token 就順便解出來補會員資訊；解不開不算錯（登入前的錯誤本來就沒 token）
@@ -1507,8 +1521,8 @@ Deno.serve(async (req) => {
         case "get_my_unread_notification_count": if (!memberId) return json({ error: "no member_id" }, 401); return await getMyUnreadNotificationCount(sb, tenantId, memberId);
         case "mark_notification_read": if (!memberId) return json({ error: "no member_id" }, 401); return await markNotificationRead(sb, tenantId, memberId, body);
         case "generate_pwa_auth_code": if (!memberId) return json({ error: "no member_id" }, 401); return await generatePwaAuthCode(sb, tenantId, memberId, claims, token, body);
-        case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId, typeof body.close_type === "string" ? body.close_type : null, memberId);
-        case "get_campaign_detail": return await getCampaignDetail(sb, tenantId, Number(body.campaign_id ?? 0), memberId);
+        case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId, typeof body.close_type === "string" ? body.close_type : null, memberId, typeof body.sales_channel === "string" ? body.sales_channel : null);
+        case "get_campaign_detail": return await getCampaignDetail(sb, tenantId, Number(body.campaign_id ?? 0), memberId, typeof body.sales_channel === "string" ? body.sales_channel : null);
         case "track_campaign_view": if (!memberId) return json({ error: "no member_id" }, 401); return await trackCampaignView(sb, tenantId, memberId, Number(body.campaign_id ?? 0));
         case "list_spot_products": return await listSpotProducts(sb, tenantId, storeId, memberId);
         case "get_spot_product": return await getSpotProduct(sb, tenantId, storeId, memberId, Number(body.id ?? 0));

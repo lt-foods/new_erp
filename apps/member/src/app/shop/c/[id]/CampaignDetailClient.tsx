@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useParams, useRouter } from "next/navigation";
-import { consumeFragmentToSession, getSession, loginPath } from "@/lib/session";
+import { consumeFragmentToSession, getSession, loginPath, setPostLoginReturn } from "@/lib/session";
 import { callLiffApi } from "@/lib/supabase";
 import PageShell from "@/components/PageShell";
 import Spinner from "@/components/Spinner";
@@ -70,7 +70,7 @@ function itemOrderMax(item: Item, campaignRemaining: number | null, currentQty: 
   return Math.max(0, Math.min(itemMax, campaignMax));
 }
 
-export default function CampaignDetailClient() {
+export default function CampaignDetailClient({ salesChannel }: { salesChannel?: "piaopiao" }) {
   const router = useRouter();
   const params = useParams();
   const id = Number(params?.id);
@@ -105,6 +105,7 @@ export default function CampaignDetailClient() {
     consumeFragmentToSession();
     const s = getSession();
     if (!s || !s.memberId) {
+      if (salesChannel === "piaopiao" && Number.isInteger(id)) setPostLoginReturn(`/piaopiao/c/${id}`);
       router.replace(loginPath());
       return;
     }
@@ -118,6 +119,7 @@ export default function CampaignDetailClient() {
         }>(s.token, {
           action: "get_campaign_detail",
           campaign_id: id,
+          sales_channel: salesChannel,
         });
         setCampaign(d.campaign);
         setItems(d.items);
@@ -211,6 +213,7 @@ export default function CampaignDetailClient() {
         // 下單通路 → customer_order_items.source（後台折線圖分 App / 商城兩條線）。
         // 在這裡取而不是進 callLiffApi：只有「下單」這個動作要記通路。
         client: detectClientChannel(),
+        sales_channel: salesChannel,
       });
       setDoneOrderNo(r.order_no);
     } catch (e) {
@@ -262,7 +265,7 @@ export default function CampaignDetailClient() {
   // 分享用的網址與文案。網址一律重組（不能用 location.href，那上面可能還掛著
   // 登入用的 fragment），文案給團名 + 起跳價，其餘（縮圖 / 說明）由連結自己的
   // og tag 補完，見 page.tsx 的 generateMetadata。
-  const shareUrl = campaignShareUrl(id);
+  const shareUrl = campaignShareUrl(id, salesChannel === "piaopiao" ? "/piaopiao/c" : "/shop/c");
   const shareTitle = cleanCampaignText(displayName);
   const shareText = [
     shareTitle,
@@ -270,7 +273,11 @@ export default function CampaignDetailClient() {
   ].filter(Boolean).join("｜");
 
   return (
-    <PageShell title={cleanCampaignText(displayName) || "商品"}>
+    <PageShell
+      title={cleanCampaignText(displayName) || "商品"}
+      hideTabs={salesChannel === "piaopiao"}
+      fallbackHref={salesChannel === "piaopiao" ? "/piaopiao" : "/shop"}
+    >
       {/* 唯讀模式沒有常駐下單列，底部不用留它的位置 */}
       <div className={`space-y-4 px-0 ${readOnly ? "pb-10" : "pb-[160px]"}`}>
         {err && (
@@ -505,7 +512,7 @@ export default function CampaignDetailClient() {
                 查看訂單
               </button>
               <button
-                onClick={() => router.push("/shop")}
+                onClick={() => router.push(salesChannel === "piaopiao" ? "/piaopiao" : "/shop")}
                 className="flex-1 rounded-xl bg-[var(--ios-blue)] py-3 text-[16px] font-semibold text-white active:opacity-80"
               >
                 繼續逛
