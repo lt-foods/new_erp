@@ -15,7 +15,8 @@
 -- ⚠ 執行方式：一次收貨實測約 8.5 秒（邏輯 E 要掃中和整本訂單），
 --   Management API 單一交易撐不住整批（50 張直接 timeout 回滾）→
 --   每次套用只收 5 張（LIMIT 5），**重複套用直到選不到單為止**
---   （2026-08-17 由迴圈逐批套用中，跑完會在 PR 回報最終對帳）。
+--   （2026-08-20 已由迴圈 87 輪跑完全部 434 張、qty_received 2,182 全數
+--   入帳、0 錯誤；當日 721 張客人訂單被自動配單推進到可取貨）。
 --   冪等：只撈 dest_location=8 AND status='shipped'，收過的不會再被撈到。
 -- rollback：rpc_unreceive_transfer 逐張退回；改派回四號店倉
 --   UPDATE dest_location=8（憑 hq_notes 記號找得到這批單）。
