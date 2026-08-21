@@ -563,7 +563,7 @@ export default function ExceptionsContent({
               <li>
                 按到「<span className="font-bold">同意退回-不補貨</span>」→ 少收的數量已經記回原本送貨出去的那一邊，
                 系統<span className="font-bold">不會</span>自動再送給那家店。要補給那家店得另外開單
-                （常見做法：請那家店開一張補貨申請，總倉核准後再派）。
+                （常見做法：請那家店開一張補貨申請 —— 總倉<span className="font-bold">同意之後，還要當下總倉真的有貨</span>才派得出去）。
               </li>
               <li>
                 ⚠️ 不管哪一種，<span className="font-bold">這一頁的紀錄都不會變回「未處理」</span>。
@@ -586,9 +586,17 @@ export default function ExceptionsContent({
                建撿貨單在 IF p_resolution = 'redispatch' 底下(:166 起)。
                ⛔ 刻意寫「原本送貨出去的那一邊」不寫「總倉」:那一支沒有總倉守衛
                (redispatch 才有 :173-177),店對店的單貨是回到原本那家店。
-            ④ 「請那家店開一張補貨申請」→ 路 2 rpc_create_wave_from_restock(最新 20260715000020),
-               機制索引「派貨工作台算錯量」節。⛔ 這句只講「有這條路」,不承諾「一定派得到」
-               ——可配量讀的是當下總倉 on_hand(v_picking_demand_no_po 20260612000040:60-78)。
+            ④ 「請那家店開一張補貨申請」→ 路 2 rpc_create_wave_from_restock(最新 20260715000020,
+               查法 git grep -lnE "FUNCTION (public\.)?rpc_create_wave_from_restock"),
+               機制索引「派貨工作台算錯量」節。
+               ⛔⛔ 「同意之後,還要當下總倉真的有貨才派得出去」這半句**不是保守措辭,是硬守衛**
+               (2026-08-22 阿審 P2-2:原本寫「總倉核准後再派」會被讀成「核准＝一定派得到」):
+                 ⓐ 工作台看到的可配量直接讀總倉 stock_balances.on_hand
+                    (v_picking_demand_no_po 最新版 20260612000040:73-78 的 hq_supply CTE;
+                     該檔是這個 view 的最後一版,20260612000030 是前一版)
+                 ⓑ 真的送出時 RPC 還會再擋一次:分配量 > 總倉 on_hand 就
+                    RAISE「SKU「% %」分配 % 超過總倉庫存 %」(20260715000020:589-602)
+               ⛔ 所以這句話**不可以**簡化回「核准後再派」——那是一句會害人空等的假保證。
             ⑤ 「不會變回未處理 / 不會再回來」→ UPDATE 無條件寫 shortage_resolution
                (20260811020000:262-270),而清單條件只放行 IS NULL 或 replenish 且還沒補到
                (v_hq_exceptions 最新版 20260811020010:147-160)⇒ replenish 是唯一例外,
