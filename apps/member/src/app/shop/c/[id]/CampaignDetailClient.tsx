@@ -70,6 +70,41 @@ function itemOrderMax(item: Item, campaignRemaining: number | null, currentQty: 
   return Math.max(0, Math.min(itemMax, campaignMax));
 }
 
+type ColorSizeItem = Item & { color: string; size: string };
+type ColorSizeMatrix = { colors: string[]; byColor: Record<string, ColorSizeItem[]> };
+
+function splitColorSize(value: string | null): { color: string; size: string } | null {
+  const parts = String(value ?? "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return null;
+  const size = parts.pop() ?? "";
+  const color = parts.join(" ");
+  return color && size ? { color, size } : null;
+}
+
+function isClothingSize(value: string) {
+  return /^(?:XS|S|M|L|XL|XXL|XXXL|[2-9]XL|F|FREE|均碼|小碼|中碼|大碼|加大|特大)$/i.test(value.trim());
+}
+
+function buildColorSizeMatrix(items: Item[]): ColorSizeMatrix | null {
+  const colors: string[] = [];
+  const byColor: Record<string, ColorSizeItem[]> = {};
+  const seen = new Set<string>();
+  for (const item of items) {
+    const parsed = splitColorSize(item.variant_name);
+    if (!parsed) return null;
+    if (!isClothingSize(parsed.size)) return null;
+    const key = `${parsed.color}\u0000${parsed.size}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    if (!byColor[parsed.color]) {
+      byColor[parsed.color] = [];
+      colors.push(parsed.color);
+    }
+    byColor[parsed.color].push({ ...item, ...parsed });
+  }
+  return colors.length > 0 ? { colors, byColor } : null;
+}
+
 export default function CampaignDetailClient({ salesChannel }: { salesChannel?: "piaopiao" }) {
   const router = useRouter();
   const params = useParams();
@@ -471,6 +506,7 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
         <BuySheet
           campaignName={cleanCampaignText(campaign?.name)}
           items={items}
+          variantMode={salesChannel === "piaopiao" ? "piaopiao" : undefined}
           qtyMap={qtyMap}
           onQty={setQty}
           totalQty={totalQty}
@@ -721,10 +757,106 @@ function Stepper({
   );
 }
 
+function ColorSizePicker({
+  matrix,
+  qtyMap,
+  campaignRemaining,
+  onQty,
+}: {
+  matrix: ColorSizeMatrix;
+  qtyMap: Record<number, number>;
+  campaignRemaining: number | null;
+  onQty: (ciId: number, q: number, cap: number | null, orderedQty?: number) => void;
+}) {
+  const [color, setColor] = useState(matrix.colors[0] ?? "");
+  const activeColor = matrix.colors.includes(color) ? color : matrix.colors[0] ?? "";
+  const sizes = matrix.byColor[activeColor] ?? [];
+  const [size, setSize] = useState(sizes[0]?.size ?? "");
+  const activeSize = sizes.some((item) => item.size === size) ? size : sizes[0]?.size ?? "";
+
+  const selected = sizes.find((item) => item.size === activeSize) ?? sizes[0];
+  const selectedQty = selected ? qtyMap[selected.campaign_item_id] ?? 0 : 0;
+  const selectedMax = selected ? itemOrderMax(selected, campaignRemaining, selectedQty) : 0;
+  const selectedRemaining = selected ? itemRemaining(selected) : null;
+
+  return (
+    <div className="space-y-4 px-4 py-4">
+      <div>
+        <div className="text-[13px] font-semibold text-[var(--secondary-label)]">顏色</div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {matrix.colors.map((itemColor) => (
+            <button
+              key={itemColor}
+              type="button"
+              onClick={() => {
+                setColor(itemColor);
+                setSize(matrix.byColor[itemColor]?.[0]?.size ?? "");
+              }}
+              className={`rounded-full border px-3 py-2 text-[15px] font-semibold ${
+                itemColor === activeColor
+                  ? "border-[var(--brand-strong)] bg-[var(--brand-soft)] text-[var(--brand-strong)]"
+                  : "border-[var(--separator)] bg-white text-[var(--foreground)]"
+              }`}
+            >
+              {itemColor}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div>
+        <div className="text-[13px] font-semibold text-[var(--secondary-label)]">尺寸</div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {sizes.map((item) => {
+            const qty = qtyMap[item.campaign_item_id] ?? 0;
+            const max = itemOrderMax(item, campaignRemaining, qty);
+            const soldOut = max <= 0 && qty === 0;
+            return (
+              <button
+                key={item.campaign_item_id}
+                type="button"
+                disabled={soldOut}
+                onClick={() => setSize(item.size)}
+                className={`rounded-full border px-3 py-2 text-[15px] font-semibold ${
+                  item.size === activeSize
+                    ? "border-[var(--brand-strong)] bg-[var(--brand-soft)] text-[var(--brand-strong)]"
+                    : "border-[var(--separator)] bg-white text-[var(--foreground)]"
+                } ${soldOut ? "opacity-40" : ""}`}
+              >
+                {item.size}{qty > 0 ? ` ×${qty}` : ""}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {selected && (
+        <div className="flex items-center justify-between gap-3 rounded-2xl bg-zinc-50 p-3">
+          <div className="min-w-0">
+            <div className="text-[15px] font-semibold text-[var(--foreground)]">{selected.color} {selected.size}</div>
+            <div className="mt-1 text-[20px] font-bold text-[var(--brand-strong)]">
+              ${Number(selected.unit_price).toLocaleString()}
+            </div>
+            {selectedRemaining !== null && (
+              <div className={`mt-1 text-[12px] font-semibold ${selectedRemaining > 0 ? "text-[#c4271d]" : "text-zinc-500"}`}>
+                {selectedRemaining > 0 ? `剩 ${selectedRemaining} 份` : "此規格已售完"}
+              </div>
+            )}
+          </div>
+          <Stepper
+            qty={selectedQty}
+            onChange={(nextQty) => onQty(selected.campaign_item_id, nextQty, selected.cap_qty, selected.ordered_qty)}
+            max={selectedMax}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** 蝦皮式選購 sheet：規格(SKU)逐項選數量 + 備註 + 底部大鈕送出，全在這個彈窗。 */
 function BuySheet({
   campaignName,
   items,
+  variantMode,
   qtyMap,
   onQty,
   totalQty,
@@ -738,6 +870,7 @@ function BuySheet({
 }: {
   campaignName: string;
   items: Item[];
+  variantMode?: "piaopiao";
   qtyMap: Record<number, number>;
   onQty: (ciId: number, q: number, cap: number | null, orderedQty?: number) => void;
   totalQty: number;
@@ -749,6 +882,10 @@ function BuySheet({
   onSubmit: () => void;
   submitting: boolean;
 }) {
+  const colorSizeMatrix = useMemo(
+    () => variantMode === "piaopiao" ? buildColorSizeMatrix(items) : null,
+    [items, variantMode],
+  );
   return (
     <div
       className="fixed inset-0 z-50 flex flex-col justify-end bg-black/40"
@@ -788,6 +925,13 @@ function BuySheet({
               <div className="px-4 py-8 text-center text-[15px] text-[var(--tertiary-label)]">
                 尚無商品
               </div>
+            ) : colorSizeMatrix ? (
+              <ColorSizePicker
+                matrix={colorSizeMatrix}
+                qtyMap={qtyMap}
+                campaignRemaining={campaignRemaining}
+                onQty={onQty}
+              />
             ) : (
               items.map((it, idx) => {
                 const q = qtyMap[it.campaign_item_id] ?? 0;

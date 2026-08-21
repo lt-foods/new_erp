@@ -9,6 +9,9 @@ type VariantBatch = { colors: string; sizes: string; cost_price: string; branch_
 type Product = { name: string; description: string; images: File[]; variants: Variant[]; supplier_name: string; variant_batch: VariantBatch };
 type Result = { campaign_id: number; campaign_no: string; name: string; cover_image_path?: string };
 type PublishedResult = Result & { url: string; description: string; image?: File };
+type BootstrapResponse = { publisher: { lane: "tong" | "chao" } };
+type UploadImageResponse = { path: string };
+type PublishResponse = { campaigns?: Result[]; reused?: boolean };
 
 const emptyProduct = (): Product => ({
   name: "", description: "", images: [],
@@ -41,7 +44,7 @@ export default function PiaopiaoPublisherPage() {
 
   useEffect(() => {
     if (!token) return;
-    void api(token, { action: "bootstrap" }).then((r) => {
+    void api<BootstrapResponse>(token, { action: "bootstrap" }).then((r) => {
       setLane(r.publisher.lane);
     }).catch((e) => {
       setToken("");
@@ -55,6 +58,16 @@ export default function PiaopiaoPublisherPage() {
 
   function updateProduct(index: number, patch: Partial<Product>) {
     setProducts((all) => all.map((item, i) => i === index ? { ...item, ...patch } : item));
+  }
+  function moveProductImage(productIndex: number, imageIndex: number, direction: -1 | 1) {
+    setProducts((all) => all.map((product, i) => {
+      if (i !== productIndex) return product;
+      const nextIndex = imageIndex + direction;
+      if (nextIndex < 0 || nextIndex >= product.images.length) return product;
+      const images = [...product.images];
+      [images[imageIndex], images[nextIndex]] = [images[nextIndex], images[imageIndex]];
+      return { ...product, images };
+    }));
   }
   function updateVariant(productIndex: number, variantIndex: number, patch: Partial<Variant>) {
     setProducts((all) => all.map((product, i) => i !== productIndex ? product : {
@@ -119,7 +132,7 @@ export default function PiaopiaoPublisherPage() {
       for (const product of products) {
         const images: string[] = [];
         for (const file of product.images) {
-          const uploadedImage = await api(token, { action: "upload_image", mime: file.type, base64: await fileToBase64(file) });
+          const uploadedImage = await api<UploadImageResponse>(token, { action: "upload_image", mime: file.type, base64: await fileToBase64(file) });
           images.push(uploadedImage.path);
         }
         uploaded.push({
@@ -130,7 +143,7 @@ export default function PiaopiaoPublisherPage() {
       }
       const requestId = localStorage.getItem(REQUEST_KEY) || crypto.randomUUID();
       localStorage.setItem(REQUEST_KEY, requestId);
-      const response = await api(token, {
+      const response = await api<PublishResponse>(token, {
         action: "publish", request_id: requestId,
         end_at: new Date(endAt).toISOString(), pickup_deadline: pickupDeadline, items: uploaded,
       });
@@ -182,12 +195,13 @@ export default function PiaopiaoPublisherPage() {
     {error && <p className="mb-4 rounded-xl bg-red-50 p-3 text-red-700">{error}</p>}{shareNotice && <p className="mb-4 rounded-xl bg-emerald-50 p-3 text-emerald-800">{shareNotice}</p>}
     {results.length > 0 ? <section className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="text-xl font-bold">建立完成，請逐一分享</h2><p className="mt-2 text-sm text-zinc-600">按每一樣商品的分享鈕，再由 LINE 選群組。支援的手機／電腦會帶入商品圖、文案和連結。</p><div className="mt-4 space-y-3">{results.map((result) => <div key={result.campaign_id} className="rounded-2xl border p-4"><p className="font-semibold">{result.name}</p><a className="mt-1 block break-all text-rose-700 underline" href={result.url} target="_blank" rel="noreferrer">{result.url}</a><button onClick={() => void share(result)} className="mt-3 min-h-11 rounded-lg bg-[#06C755] px-4 text-sm font-semibold text-white">分享至 LINE 群組</button></div>)}</div><button onClick={() => { setResults([]); setProducts([emptyProduct()]); }} className="mt-5 min-h-11 rounded-xl bg-rose-600 px-4 font-semibold text-white">再建立一批</button></section> : <>
       <section className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="text-lg font-bold">共同資料</h2><div className="mt-4 grid gap-4 sm:grid-cols-2"><Field label="收單時間"><input className="input" type="datetime-local" value={endAt} onChange={(e) => setEndAt(e.target.value)} /></Field><Field label="取貨日"><input className="input" type="date" value={pickupDeadline} onChange={(e) => setPickupDeadline(e.target.value)} /></Field></div></section>
-      <div className="mt-4 space-y-4">{products.map((product, index) => <section key={index} className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="text-lg font-bold">商品 {index + 1}</h2>{products.length > 1 && <button onClick={() => setProducts((all) => all.filter((_, i) => i !== index))} className="min-h-11 text-sm text-red-600">移除此商品</button>}</div><div className="mt-4 grid gap-4"><Field label="商品名稱"><input className="input" value={product.name} onChange={(e) => updateProduct(index, { name: e.target.value })} /></Field><Field label="商品介紹"><textarea className="input min-h-28" value={product.description} onChange={(e) => updateProduct(index, { description: e.target.value })} /></Field><Field label="商品圖片（至少一張）"><input className="block min-h-11 w-full text-base" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(e) => updateProduct(index, { images: Array.from(e.target.files ?? []) })} />{product.images.length > 0 && <p className="text-sm text-emerald-700">已選 {product.images.length} 張圖片</p>}</Field>{lane === "tong" && <Field label="供應商"><input className="input" placeholder="供應商名稱" value={product.supplier_name} onChange={(e) => updateProduct(index, { supplier_name: e.target.value })} /></Field>}{lane === "chao" && <p className="rounded-xl bg-zinc-100 p-3 text-sm">供應商固定：潮包子</p>}</div><VariantFields product={product} onUpdateVariant={(variantIndex, patch) => updateVariant(index, variantIndex, patch)} onAddVariant={() => addVariant(index)} onRemoveVariant={(variantIndex) => removeVariant(index, variantIndex)} onUpdateBatch={(patch) => updateVariantBatch(index, patch)} onCreateBatch={() => createVariantBatch(index)} /></section>)}</div>
+      <div className="mt-4 space-y-4">{products.map((product, index) => <section key={index} className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="text-lg font-bold">商品 {index + 1}</h2>{products.length > 1 && <button onClick={() => setProducts((all) => all.filter((_, i) => i !== index))} className="min-h-11 text-sm text-red-600">移除此商品</button>}</div><div className="mt-4 grid gap-4"><Field label="商品名稱"><input className="input" value={product.name} onChange={(e) => updateProduct(index, { name: e.target.value })} /></Field><Field label="商品介紹"><textarea className="input min-h-28" value={product.description} onChange={(e) => updateProduct(index, { description: e.target.value })} /></Field><ProductImagesField images={product.images} onChange={(images) => updateProduct(index, { images })} onMove={(imageIndex, direction) => moveProductImage(index, imageIndex, direction)} />{lane === "tong" && <Field label="供應商"><input className="input" placeholder="供應商名稱" value={product.supplier_name} onChange={(e) => updateProduct(index, { supplier_name: e.target.value })} /></Field>}{lane === "chao" && <p className="rounded-xl bg-zinc-100 p-3 text-sm">供應商固定：潮包子</p>}</div><VariantFields product={product} onUpdateVariant={(variantIndex, patch) => updateVariant(index, variantIndex, patch)} onAddVariant={() => addVariant(index)} onRemoveVariant={(variantIndex) => removeVariant(index, variantIndex)} onUpdateBatch={(patch) => updateVariantBatch(index, patch)} onCreateBatch={() => createVariantBatch(index)} /></section>)}</div>
       {canAdd && <button onClick={() => setProducts((all) => [...all, emptyProduct()])} className="mt-4 min-h-11 rounded-xl border border-rose-300 bg-white px-4 font-semibold text-rose-700">＋ 再加一樣商品（最多 5 樣）</button>}<button disabled={busy} onClick={() => void submit()} className="mt-6 min-h-14 w-full rounded-2xl bg-rose-600 px-5 text-lg font-bold text-white disabled:opacity-50">{busy ? "正在建立，請不要關閉…" : publishLabel}</button>
     </>}</main>;
 }
 
 function VariantFields({ product, onUpdateVariant, onAddVariant, onRemoveVariant, onUpdateBatch, onCreateBatch }: { product: Product; onUpdateVariant: (variantIndex: number, patch: Partial<Variant>) => void; onAddVariant: () => void; onRemoveVariant: (variantIndex: number) => void; onUpdateBatch: (patch: Partial<VariantBatch>) => void; onCreateBatch: () => void }) {
+  const [showDetails, setShowDetails] = useState(false);
   const knownNames = new Set(product.variants.filter((variant) => variant.name !== "單一規格" || variant.cost_price || variant.branch_price || variant.retail_price).map((variant) => variantNameKey(variant.name)));
   const batchCount = splitVariantTokens(product.variant_batch.colors).flatMap((color) => splitVariantTokens(product.variant_batch.sizes).map((size) => `${color} ${size}`)).filter((name) => {
     const key = variantNameKey(name);
@@ -195,13 +209,40 @@ function VariantFields({ product, onUpdateVariant, onAddVariant, onRemoveVariant
     knownNames.add(key);
     return true;
   }).length;
-  return <><h3 className="mt-6 font-bold">規格與價格</h3><section className="mt-2 rounded-2xl border border-rose-200 bg-rose-50 p-4"><div className="flex items-baseline justify-between gap-3"><div><h4 className="font-semibold text-rose-900">衣服一次建立多個規格</h4><p className="mt-1 text-sm leading-6 text-rose-900/80">顏色和尺寸各填一次，價格也只填一次。建立後仍可在下方改個別規格；一次最多 {MAX_BATCH_VARIANTS} 個。</p></div>{batchCount > 0 && <span className="shrink-0 rounded-full bg-white px-2.5 py-1 text-sm font-semibold text-rose-700">會建立 {batchCount} 個</span>}</div><div className="mt-4 grid gap-3 sm:grid-cols-2"><Field label="顏色（逗號或換行分開）"><textarea className="input min-h-20" placeholder={"黑色\n白色\n卡其"} value={product.variant_batch.colors} onChange={(e) => onUpdateBatch({ colors: e.target.value })} /></Field><Field label="尺寸（逗號或換行分開）"><textarea className="input min-h-20" placeholder={"S\nM\nL\nXL"} value={product.variant_batch.sizes} onChange={(e) => onUpdateBatch({ sizes: e.target.value })} /></Field></div><div className="mt-3 grid gap-2 sm:grid-cols-3"><input className="input" inputMode="decimal" placeholder="成本價（只填一次）" value={product.variant_batch.cost_price} onChange={(e) => onUpdateBatch({ cost_price: e.target.value })} /><input className="input" inputMode="decimal" placeholder="分店價（只填一次）" value={product.variant_batch.branch_price} onChange={(e) => onUpdateBatch({ branch_price: e.target.value })} /><input className="input" inputMode="decimal" placeholder="售價（只填一次）" value={product.variant_batch.retail_price} onChange={(e) => onUpdateBatch({ retail_price: e.target.value })} /></div><button type="button" onClick={onCreateBatch} className="mt-4 min-h-11 rounded-xl bg-rose-600 px-4 text-sm font-semibold text-white">{batchCount > 0 ? `產生 ${batchCount} 個規格` : "產生批次規格"}</button></section><div className="mt-3 space-y-3">{product.variants.map((variant, variantIndex) => <div key={variantIndex} className="rounded-2xl bg-zinc-50 p-3"><div className="grid gap-2 sm:grid-cols-4"><input className="input" placeholder="規格名，例如 黑色 M" value={variant.name} onChange={(e) => onUpdateVariant(variantIndex, { name: e.target.value })} /><input className="input" inputMode="decimal" placeholder="成本價" value={variant.cost_price} onChange={(e) => onUpdateVariant(variantIndex, { cost_price: e.target.value })} /><input className="input" inputMode="decimal" placeholder="分店價" value={variant.branch_price} onChange={(e) => onUpdateVariant(variantIndex, { branch_price: e.target.value })} /><input className="input" inputMode="decimal" placeholder="售價" value={variant.retail_price} onChange={(e) => onUpdateVariant(variantIndex, { retail_price: e.target.value })} /></div>{product.variants.length > 1 && <button type="button" onClick={() => onRemoveVariant(variantIndex)} className="mt-2 text-sm text-red-600">刪除此規格</button>}</div>)}</div><button type="button" onClick={onAddVariant} className="mt-3 min-h-11 rounded-xl border px-3 text-sm font-semibold">＋ 新增規格</button></>;
+  const collapsed = product.variants.length > 8 && !showDetails;
+  return <>
+    <h3 className="mt-6 font-bold">規格與價格</h3>
+    <section className="mt-2 rounded-2xl border border-rose-200 bg-rose-50 p-4">
+      <div className="flex items-baseline justify-between gap-3"><div><h4 className="font-semibold text-rose-900">衣服一次建立多個規格</h4><p className="mt-1 text-sm leading-6 text-rose-900/80">顏色和尺寸各填一次，價格也只填一次。客人會先選顏色、再選尺寸；一次最多 {MAX_BATCH_VARIANTS} 個。</p></div>{batchCount > 0 && <span className="shrink-0 rounded-full bg-white px-2.5 py-1 text-sm font-semibold text-rose-700">會建立 {batchCount} 個</span>}</div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2"><Field label="顏色（逗號或換行分開）"><textarea className="input min-h-20" placeholder={"黑色\n白色\n卡其"} value={product.variant_batch.colors} onChange={(e) => onUpdateBatch({ colors: e.target.value })} /></Field><Field label="尺寸（逗號或換行分開）"><textarea className="input min-h-20" placeholder={"S\nM\nL\nXL"} value={product.variant_batch.sizes} onChange={(e) => onUpdateBatch({ sizes: e.target.value })} /></Field></div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-3"><input className="input" inputMode="decimal" placeholder="成本價（只填一次）" value={product.variant_batch.cost_price} onChange={(e) => onUpdateBatch({ cost_price: e.target.value })} /><input className="input" inputMode="decimal" placeholder="分店價（只填一次）" value={product.variant_batch.branch_price} onChange={(e) => onUpdateBatch({ branch_price: e.target.value })} /><input className="input" inputMode="decimal" placeholder="售價（只填一次）" value={product.variant_batch.retail_price} onChange={(e) => onUpdateBatch({ retail_price: e.target.value })} /></div>
+      <button type="button" onClick={onCreateBatch} className="mt-4 min-h-11 rounded-xl bg-rose-600 px-4 text-sm font-semibold text-white">{batchCount > 0 ? `產生 ${batchCount} 個規格` : "產生批次規格"}</button>
+    </section>
+    {product.variants.length > 0 && <div className="mt-3 rounded-2xl bg-zinc-50 p-3 text-sm text-zinc-700"><div className="flex flex-wrap items-center justify-between gap-2"><span>已建立 {product.variants.length} 個規格；共同價格已套用，不用逐格重打。</span>{product.variants.length > 8 && <button type="button" onClick={() => setShowDetails((value) => !value)} className="min-h-10 rounded-lg border bg-white px-3 font-semibold text-zinc-900">{showDetails ? "收起明細" : "展開修改"}</button>}</div>{collapsed && <div className="mt-2 line-clamp-2 text-xs text-zinc-500">{product.variants.map((variant) => variant.name).join("、")}</div>}</div>}
+    {!collapsed && <div className="mt-3 space-y-3">{product.variants.map((variant, variantIndex) => <div key={variantIndex} className="rounded-2xl bg-zinc-50 p-3"><div className="grid gap-2 sm:grid-cols-4"><input className="input" placeholder="規格名，例如 黑色 M" value={variant.name} onChange={(e) => onUpdateVariant(variantIndex, { name: e.target.value })} /><input className="input" inputMode="decimal" placeholder="成本價" value={variant.cost_price} onChange={(e) => onUpdateVariant(variantIndex, { cost_price: e.target.value })} /><input className="input" inputMode="decimal" placeholder="分店價" value={variant.branch_price} onChange={(e) => onUpdateVariant(variantIndex, { branch_price: e.target.value })} /><input className="input" inputMode="decimal" placeholder="售價" value={variant.retail_price} onChange={(e) => onUpdateVariant(variantIndex, { retail_price: e.target.value })} /></div>{product.variants.length > 1 && <button type="button" onClick={() => onRemoveVariant(variantIndex)} className="mt-2 text-sm text-red-600">刪除此規格</button>}</div>)}</div>}
+    <button type="button" onClick={() => { setShowDetails(true); onAddVariant(); }} className="mt-3 min-h-11 rounded-xl border px-3 text-sm font-semibold">＋ 新增規格</button>
+  </>;
+}
+
+function ProductImagesField({ images, onChange, onMove }: { images: File[]; onChange: (images: File[]) => void; onMove: (imageIndex: number, direction: -1 | 1) => void }) {
+  const previews = useMemo(() => images.map((file) => ({ file, url: URL.createObjectURL(file) })), [images]);
+  useEffect(() => () => previews.forEach((item) => URL.revokeObjectURL(item.url)), [previews]);
+
+  return <Field label="商品圖片（至少一張）">
+    <input className="block min-h-11 w-full text-base" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(e) => onChange(Array.from(e.target.files ?? []))} />
+    {images.length > 0 && <div className="mt-3 space-y-2">{previews.map((item, imageIndex) => <div key={`${item.file.name}-${imageIndex}`} className="flex items-center gap-3 rounded-2xl bg-zinc-50 p-2">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={item.url} alt="" className="h-14 w-14 rounded-xl object-cover" />
+      <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{imageIndex === 0 ? "封面／分享圖" : `第 ${imageIndex + 1} 張`}</p><p className="truncate text-xs text-zinc-500">{item.file.name}</p></div>
+      <div className="flex gap-1"><button type="button" disabled={imageIndex === 0} onClick={() => onMove(imageIndex, -1)} className="min-h-10 rounded-lg border px-2 text-sm disabled:opacity-30">上移</button><button type="button" disabled={imageIndex === images.length - 1} onClick={() => onMove(imageIndex, 1)} className="min-h-10 rounded-lg border px-2 text-sm disabled:opacity-30">下移</button></div>
+    </div>)}</div>}
+  </Field>;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block text-sm font-semibold">{label}<div className="mt-1.5">{children}</div></label>; }
 function variantNameKey(value: string) { return value.trim().replace(/\s+/g, " ").toLocaleLowerCase(); }
 function splitVariantTokens(value: string) { const seen = new Set<string>(); return value.split(/[\n,、]+/).map((item) => item.trim()).filter((item) => { const key = variantNameKey(item); if (!key || seen.has(key)) return false; seen.add(key); return true; }); }
 function validVariant(variant: Variant) { const cost = Number(variant.cost_price); const branch = Number(variant.branch_price); const retail = Number(variant.retail_price); return !!variant.name.trim() && Number.isFinite(cost) && Number.isFinite(branch) && Number.isFinite(retail) && cost >= 0 && branch > 0 && retail > 0 && cost <= branch && branch < retail; }
-async function api(token: string, body: Record<string, unknown>): Promise<any> { const base = process.env.NEXT_PUBLIC_SUPABASE_URL; if (!base) throw new Error("系統尚未設定連線"); const response = await fetch(`${base}/functions/v1/piaopiao-api`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body) }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || `系統錯誤 ${response.status}`); return data; }
+async function api<T>(token: string, body: Record<string, unknown>): Promise<T> { const base = process.env.NEXT_PUBLIC_SUPABASE_URL; if (!base) throw new Error("系統尚未設定連線"); const response = await fetch(`${base}/functions/v1/piaopiao-api`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body) }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || `系統錯誤 ${response.status}`); return data as T; }
 async function fileToBase64(file: File) { const buffer = await file.arrayBuffer(); let binary = ""; for (const value of new Uint8Array(buffer)) binary += String.fromCharCode(value); return btoa(binary); }
 async function imageFromPath(path?: string): Promise<File | undefined> { try { if (!path) return undefined; const base = process.env.NEXT_PUBLIC_SUPABASE_URL; if (!base) return undefined; const url = `${base}/storage/v1/object/public/products/${path.split("/").map(encodeURIComponent).join("/")}`; const response = await fetch(url); if (!response.ok) return undefined; const blob = await response.blob(); return new File([blob], "piaopiao-product-image", { type: blob.type || "image/jpeg" }); } catch { return undefined; } }
