@@ -21,6 +21,7 @@ const emptyProduct = (): Product => ({
 });
 const REQUEST_KEY = "piaopiao_pending_request_id";
 const MAX_BATCH_VARIANTS = 100;
+const SUPPLIER_OPTIONS = ["包子媽", "山瀾商行"];
 
 export default function PiaopiaoPublisherPage() {
   const [token, setToken] = useState("");
@@ -123,7 +124,7 @@ export default function PiaopiaoPublisherPage() {
     if (pickupDeadline < endAt.slice(0, 10)) return setError("取貨日不可早於收單日");
     for (const [i, product] of products.entries()) {
       if (!product.name.trim() || !product.description.trim() || product.images.length === 0) return setError(`第 ${i + 1} 樣商品請填名稱、介紹並至少上傳一張圖`);
-      if (lane === "tong" && !product.supplier_name.trim()) return setError(`第 ${i + 1} 樣商品請填供應商`);
+      if (lane === "tong" && !product.supplier_name.trim()) return setError(`第 ${i + 1} 樣商品請填廠商`);
       if (product.variants.length === 0 || product.variants.some((v) => !validVariant(v))) return setError(`第 ${i + 1} 樣商品的每個規格都要填成本、分店價、售價，且成本 ≤ 分店價 < 售價`);
     }
     setBusy(true);
@@ -195,7 +196,7 @@ export default function PiaopiaoPublisherPage() {
     {error && <p className="mb-4 rounded-xl bg-red-50 p-3 text-red-700">{error}</p>}{shareNotice && <p className="mb-4 rounded-xl bg-emerald-50 p-3 text-emerald-800">{shareNotice}</p>}
     {results.length > 0 ? <section className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="text-xl font-bold">建立完成，請逐一分享</h2><p className="mt-2 text-sm text-zinc-600">按每一樣商品的分享鈕，再由 LINE 選群組。支援的手機／電腦會帶入商品圖、文案和連結。</p><div className="mt-4 space-y-3">{results.map((result) => <div key={result.campaign_id} className="rounded-2xl border p-4"><p className="font-semibold">{result.name}</p><a className="mt-1 block break-all text-rose-700 underline" href={result.url} target="_blank" rel="noreferrer">{result.url}</a><button onClick={() => void share(result)} className="mt-3 min-h-11 rounded-lg bg-[#06C755] px-4 text-sm font-semibold text-white">分享至 LINE 群組</button></div>)}</div><button onClick={() => { setResults([]); setProducts([emptyProduct()]); }} className="mt-5 min-h-11 rounded-xl bg-rose-600 px-4 font-semibold text-white">再建立一批</button></section> : <>
       <section className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="text-lg font-bold">共同資料</h2><div className="mt-4 grid gap-4 sm:grid-cols-2"><Field label="收單時間"><input className="input" type="datetime-local" value={endAt} onChange={(e) => setEndAt(e.target.value)} /></Field><Field label="取貨日"><input className="input" type="date" value={pickupDeadline} onChange={(e) => setPickupDeadline(e.target.value)} /></Field></div></section>
-      <div className="mt-4 space-y-4">{products.map((product, index) => <section key={index} className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="text-lg font-bold">商品 {index + 1}</h2>{products.length > 1 && <button onClick={() => setProducts((all) => all.filter((_, i) => i !== index))} className="min-h-11 text-sm text-red-600">移除此商品</button>}</div><div className="mt-4 grid gap-4"><Field label="商品名稱"><input className="input" value={product.name} onChange={(e) => updateProduct(index, { name: e.target.value })} /></Field><Field label="商品介紹"><textarea className="input min-h-28" value={product.description} onChange={(e) => updateProduct(index, { description: e.target.value })} /></Field><ProductImagesField images={product.images} onChange={(images) => updateProduct(index, { images })} onMove={(imageIndex, direction) => moveProductImage(index, imageIndex, direction)} />{lane === "tong" && <Field label="供應商"><input className="input" placeholder="供應商名稱" value={product.supplier_name} onChange={(e) => updateProduct(index, { supplier_name: e.target.value })} /></Field>}{lane === "chao" && <p className="rounded-xl bg-zinc-100 p-3 text-sm">供應商固定：潮包子</p>}</div><VariantFields product={product} onUpdateVariant={(variantIndex, patch) => updateVariant(index, variantIndex, patch)} onAddVariant={() => addVariant(index)} onRemoveVariant={(variantIndex) => removeVariant(index, variantIndex)} onUpdateBatch={(patch) => updateVariantBatch(index, patch)} onCreateBatch={() => createVariantBatch(index)} /></section>)}</div>
+      <div className="mt-4 space-y-4">{products.map((product, index) => <section key={index} className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="text-lg font-bold">商品 {index + 1}</h2>{products.length > 1 && <button onClick={() => setProducts((all) => all.filter((_, i) => i !== index))} className="min-h-11 text-sm text-red-600">移除此商品</button>}</div><div className="mt-4 grid gap-4"><Field label="商品名稱"><input className="input" value={product.name} onChange={(e) => updateProduct(index, { name: e.target.value })} /></Field><Field label="商品介紹"><textarea className="input min-h-28" value={product.description} onChange={(e) => updateProduct(index, { description: e.target.value })} /></Field><ProductImagesField images={product.images} onChange={(images) => updateProduct(index, { images })} onMove={(imageIndex, direction) => moveProductImage(index, imageIndex, direction)} />{lane === "tong" && <SupplierField value={product.supplier_name} onChange={(supplier_name) => updateProduct(index, { supplier_name })} />}{lane === "chao" && <p className="rounded-xl bg-zinc-100 p-3 text-sm">廠商固定：潮包子</p>}</div><VariantFields product={product} onUpdateVariant={(variantIndex, patch) => updateVariant(index, variantIndex, patch)} onAddVariant={() => addVariant(index)} onRemoveVariant={(variantIndex) => removeVariant(index, variantIndex)} onUpdateBatch={(patch) => updateVariantBatch(index, patch)} onCreateBatch={() => createVariantBatch(index)} /></section>)}</div>
       {canAdd && <button onClick={() => setProducts((all) => [...all, emptyProduct()])} className="mt-4 min-h-11 rounded-xl border border-rose-300 bg-white px-4 font-semibold text-rose-700">＋ 再加一樣商品（最多 5 樣）</button>}<button disabled={busy} onClick={() => void submit()} className="mt-6 min-h-14 w-full rounded-2xl bg-rose-600 px-5 text-lg font-bold text-white disabled:opacity-50">{busy ? "正在建立，請不要關閉…" : publishLabel}</button>
     </>}</main>;
 }
@@ -222,6 +223,27 @@ function VariantFields({ product, onUpdateVariant, onAddVariant, onRemoveVariant
     {!collapsed && <div className="mt-3 space-y-3">{product.variants.map((variant, variantIndex) => <div key={variantIndex} className="rounded-2xl bg-zinc-50 p-3"><div className="grid gap-2 sm:grid-cols-4"><input className="input" placeholder="規格名，例如 黑色 M" value={variant.name} onChange={(e) => onUpdateVariant(variantIndex, { name: e.target.value })} /><input className="input" inputMode="decimal" placeholder="成本價" value={variant.cost_price} onChange={(e) => onUpdateVariant(variantIndex, { cost_price: e.target.value })} /><input className="input" inputMode="decimal" placeholder="分店價" value={variant.branch_price} onChange={(e) => onUpdateVariant(variantIndex, { branch_price: e.target.value })} /><input className="input" inputMode="decimal" placeholder="售價" value={variant.retail_price} onChange={(e) => onUpdateVariant(variantIndex, { retail_price: e.target.value })} /></div>{product.variants.length > 1 && <button type="button" onClick={() => onRemoveVariant(variantIndex)} className="mt-2 text-sm text-red-600">刪除此規格</button>}</div>)}</div>}
     <button type="button" onClick={() => { setShowDetails(true); onAddVariant(); }} className="mt-3 min-h-11 rounded-xl border px-3 text-sm font-semibold">＋ 新增規格</button>
   </>;
+}
+
+function SupplierField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const isPreset = SUPPLIER_OPTIONS.includes(value);
+  const [custom, setCustom] = useState(Boolean(value) && !isPreset);
+  return <Field label="廠商">
+    <select className="input" value={custom ? "__custom" : isPreset ? value : ""} onChange={(e) => {
+      if (e.target.value === "__custom") {
+        setCustom(true);
+        onChange("");
+        return;
+      }
+      setCustom(false);
+      onChange(e.target.value);
+    }}>
+      <option value="">請選擇廠商</option>
+      {SUPPLIER_OPTIONS.map((supplier) => <option key={supplier} value={supplier}>{supplier}</option>)}
+      <option value="__custom">自訂</option>
+    </select>
+    {custom && <input className="input mt-2" placeholder="自訂廠商名稱" value={value} onChange={(e) => onChange(e.target.value)} />}
+  </Field>;
 }
 
 function ProductImagesField({ images, onChange, onMove }: { images: File[]; onChange: (images: File[]) => void; onMove: (imageIndex: number, direction: -1 | 1) => void }) {
