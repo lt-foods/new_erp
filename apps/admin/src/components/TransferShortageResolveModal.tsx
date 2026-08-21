@@ -28,6 +28,19 @@
 //   ⛔ 以後要在畫面加任何一句「系統會怎樣」,先問自己:
 //     「這句話在什麼情況下會不成立?」答得出來就不要那樣寫。
 //
+// ⭐⭐⭐ 2026-08-21 三審又抓到兩顆,兩顆都在**同一句綠字**「✅ 目前沒有客人在等這一項」上。
+//   這句是全畫面最危險的一句 —— 它會讓人放心去按「不補」/「不接受退回」,
+//   而那兩顆按下去不可逆、這一筆直接從清單消失、事後查不出漏了哪一單。
+//   ① (三審 P0,Codex 抓到) 抓滿 CAP 時第 CAP+1 張以後沒查,手上剛好被前端那一刀砍成 0,
+//      畫面照樣講「沒有客人在等」⇒ 已拆成兩格,truncated 的 0 改講「不能確定」。
+//   ② (施工時自查抓到,Codex 與 CEO 都沒列) 訂單狀態用**白名單**列舉「還在等」的狀態,
+//      漏掉了 partially_completed ⇒ 客人領走同一張單的別樣東西、正在等這一樣,
+//      畫面卻說「沒有客人在等」。已改成排除終態的黑名單(見 NOT_WAITING_ORDER_STATUSES)。
+//   ⇒ 學到的:**同一句斷言可以有好幾個成因,修掉被指出來的那個不等於那句話變真了。**
+//     要修一句畫面斷言時,先把「這句話會變假的所有路徑」列完(資料來源的條件、
+//     limit、前端過濾、狀態值域全部算),再一次修完。
+//   ⛔ 特別檢查所有「綠色的 / 肯定的 / 叫人放心」的文字,它們才是會害人按下不可逆鈕的那些。
+//
 // ⚠️ 三顆都是單行道(按下去回不來):
 //   異常清單的 transfer_short 分支要求 ti.shortage_resolution IS NULL
 //   (或 replenish 且還沒補到)才會列出來
@@ -56,7 +69,12 @@ import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
 import { Modal } from "@/components/Modal";
-import { ORDER_STATUS_LABEL, type OrderStatus } from "@/lib/orderStatus";
+import {
+  ORDER_STATUS_LABEL,
+  ORDER_STATUSES,
+  isTerminalStatus,
+  type OrderStatus,
+} from "@/lib/orderStatus";
 
 export type ShortageContext = {
   transfer_item_id: number;
@@ -170,6 +188,43 @@ type AffectedOrder = {
 //   多抓 1 列的成本 ≈ 0,而且不用多一次 round-trip。
 const AFFECTED_CAP = 50;
 
+// 「還有客人在等」的訂單狀態 —— ⭐ 刻意用「排除終態」的黑名單,不是白名單。
+//
+// 2026-08-21 三審自查抓到:舊版寫死白名單 .in("status", [pending,confirmed,shipping,ready]),
+//   漏掉了 partially_completed(部分取貨)。而 partially_completed 的定義,照
+//   rpc_record_pickup 最新版(20260512000008_order_pickup_ready_function.sql:148-156;
+//   同樣邏輯最早見於 20260509000008:68-76)是:
+//     取貨後數 status IN ('pending','reserved','ready') 的明細還剩幾筆,
+//     剩 0 → 'completed';剩 >0 → 'partially_completed'
+//   ⇒ partially_completed 的字面意思就是「這張單還有品項沒取走」
+//   ⇒ 漏掉它 = 客人領走了同一張單的別樣東西、正在等這一樣,畫面卻說「沒有客人在等」。
+//   團購一張單本來就常訂好幾樣,短收又正好代表有東西沒到 ⇒ 這是最常見的情境,不是邊界。
+//
+// ⭐ 為什麼是黑名單:這個畫面的錯誤代價**兩邊完全不對稱**。
+//     少報(漏一個「還在等」的狀態)→ 畫面說「沒人在等」→ 有人去按不可逆的「不補」⇒ 客人拿不到貨
+//     多報(誤收一個終態)          → 畫面說「有人在等」→ 有人去按「補一批」    ⇒ 多送一趟
+//   ⇒ 漏的時候必須往「多報」倒。白名單漏了往少報倒,黑名單漏了往多報倒 ⇒ 用黑名單。
+//   (⚠️ 這跟 2026-08-19 陸貨管理那次「黑名單改白名單」的裁示方向相反,不是打架 ——
+//    判準是同一條「漏的時候往哪邊倒」,只是這個畫面的安全方向剛好在另一邊。)
+//
+// ⭐ 而且不自己抄一份清單:直接拿 orderStatus.ts 的 ORDER_STATUSES 過 isTerminalStatus 算出來
+//   ⇒ 那邊是 single source of truth(它自己的檔頭這樣宣告,且 DB CHECK 最新版
+//     20260606000021_customer_orders_status_check_add_partial.sql:11-15 的 9 個值與它逐字相同),
+//     以後那邊加狀態,這裡自動跟著對,不會再長出第二份會過期的清單。
+//   ⚠️ 萬一 DB 出現一個 ORDER_STATUSES 沒有的新值 → 它不在黑名單裡 → 會被抓回來(多報)⇒ 安全方向。
+const NOT_WAITING_ORDER_STATUSES = ORDER_STATUSES.filter(isTerminalStatus);
+
+// 明細層「已經拿走了」的狀態 —— 這些不算在等。
+// ⚠️ 只排 picked_up,刻意**不排** partially_picked_up:後者是「只取走一部分」,
+//   剩下那部分客人還在等,排掉會變成少報(危險方向)。
+//   (而且它目前是 dead value:全 repo 只有 view 在讀它
+//    〔如 20260805000160_allocation_candidates_picked_items.sql:73〕,
+//    沒有任何 RPC 會寫入它,orderStatus.ts 的 ORDER_ITEM_STATUS_LABEL 也沒收它
+//    ⇒ 現在留不留都不影響畫面,但留著才是日後啟用時安全的那一邊。)
+// 出處:排除 picked_up 是既有慣例 —— 互助板同形狀查詢
+//   inventory/mutual-aid/page.tsx:2010 濾的就是 (cancelled,expired,picked_up)。
+const PICKED_UP_ITEM_STATUSES = ["cancelled", "expired", "picked_up"];
+
 export function TransferShortageResolveModal({
   ctx,
   onClose,
@@ -211,7 +266,8 @@ export function TransferShortageResolveModal({
           .select(`id, order_no, status, member_id,
                    items:customer_order_items!inner(qty, status, sku_id)`)
           .eq("pickup_store_id", ctx.dest_store_id)
-          .in("status", ["pending", "confirmed", "shipping", "ready"])
+          // 排除終態,而不是列舉「還在等」的狀態(理由見 NOT_WAITING_ORDER_STATUSES)
+          .not("status", "in", `(${NOT_WAITING_ORDER_STATUSES.join(",")})`)
           .eq("items.sku_id", ctx.sku_id)
           .is("transferred_from_order_id", null)
           // 多抓 1 張只為了判斷「有沒有抓滿」(理由見 AFFECTED_CAP 的註解)
@@ -227,10 +283,26 @@ export function TransferShortageResolveModal({
         }>;
         // 抓回 CAP+1 張 ⇒ 確定還有沒抓到的。第 CAP+1 張只當旗標用,不進清單。
         const truncated = raw.length > AFFECTED_CAP;
+        // ⭐⭐ 這一刀「砍完可能變空」,而 truncated 時第 51 張以後根本沒查 ⇒
+        //   rows.length === 0 在 truncated 時**不等於**「沒有客人在等」。
+        //   render 那邊因此必須把這兩種 0 分開講(見 affected.length === 0 的分支)。
+        //   ⛔ 不要以為「SQL 已經濾過了所以這一刀砍不到東西」就把 render 的判斷省掉 ——
+        //     那正是三審 P0 的成因。這一刀在什麼情況下會砍到東西,見下面兩行的說明。
+        // ⛔ 為什麼不把整刀搬進 SQL(PostgREST 內嵌篩選)一勞永逸:見檔尾「甲案為什麼沒做」。
         const rows = raw.slice(0, AFFECTED_CAP).map((o) => {
-          const matchingItems = o.items.filter((i) => i.sku_id === ctx.sku_id && !["cancelled", "expired"].includes(i.status));
+          // ⚠️ 這裡的 sku_id 比對與 status 排除,跟上面 SQL 的內嵌條件是**重複**的 ——
+          //   重複是刻意的:PostgREST 內嵌篩選在本專案沒有被實測過(既有同形狀查詢
+          //   inventory/mutual-aid/page.tsx:2029-2030 前端也照樣再濾一次),
+          //   萬一內嵌條件只作用在 items 陣列、沒把整張單濾掉,這一刀是唯一防線。
+          const matchingItems = o.items.filter(
+            (i) => i.sku_id === ctx.sku_id && !PICKED_UP_ITEM_STATUSES.includes(i.status),
+          );
           const pending = matchingItems.reduce((s, i) => s + Number(i.qty), 0);
           return { id: o.id, order_no: o.order_no, member_id: o.member_id, pending_qty: pending, status: o.status };
+        // qty 有 DB CHECK 保證恆為正(customer_order_items 建表
+        // 20260423120000_stores_order_schema.sql:208「qty NUMERIC(18,3) NOT NULL CHECK (qty > 0)」)
+        // ⇒ pending_qty === 0 只可能是 matchingItems 全空,也就是
+        //   「這張單的這個品項全被取消/過期/已經領走了」⇒ 這張單確實不在等。
         }).filter((x) => x.pending_qty > 0);
         setAffected(rows);
         setAffectedTruncated(truncated);
@@ -363,11 +435,29 @@ export function TransferShortageResolveModal({
           <div className="rounded-md border-l-4 border-amber-400 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">
             ⚠️ 查不到這一項的客人訂單，請自行確認有沒有人在等。
           </div>
+        ) : affected.length === 0 && affectedTruncated ? (
+          /* ⭐⭐⭐ 三審 P0 就是這一格漏掉了。
+             affectedTruncated 代表「抓滿 CAP 了、第 CAP+1 張以後沒查」,
+             而手上這 CAP 張又剛好被上面那一刀全砍掉(該品項全取消/過期/已領走)
+             ⇒ 手上是 0,但**沒查完的那一段完全未知** ⇒ 絕對不可以講「沒有客人在等」。
+             ⛔ 這一格必須跟下面那格的綠字分開:綠字會讓人放心去按「不補」「不接受退回」,
+                而那兩顆按下去不可逆、這一筆直接從清單消失、事後查不出漏了哪一單。
+             ⭐ 用琥珀色不是綠色 —— 它跟上面「查不到」是同一種話:**我不知道**。 */
+          <div className="rounded-md border-l-4 border-amber-400 bg-amber-50 p-3 text-sm font-semibold text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+            ⚠️ 不能確定有沒有客人在等，請自行確認
+            <div className="mt-0.5 text-[11px] font-normal opacity-80">
+              前 {AFFECTED_CAP} 張裡沒有人在等這一項，但這家店這個品項的相關訂單超過 {AFFECTED_CAP} 張，
+              第 {AFFECTED_CAP + 1} 張以後這裡沒有查。
+            </div>
+          </div>
         ) : affected.length === 0 ? (
+          /* 走到這裡保證 affectedTruncated === false(上一格已經攔掉 true)
+             ⇒ 手上的 0 就是全部的 0 ⇒ 這句綠字才敢講死。
+             ⛔ 誰要動上面那一格的條件,先回來確認這句話還成不成立。 */
           <div className="rounded-md border-l-4 border-emerald-400 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200">
             ✅ 目前沒有客人在等這一項
             <div className="mt-0.5 text-[11px] font-normal opacity-80">
-              （只算這家店、這個品項、還沒取消也還沒取走的訂單）
+              （只算這家店、這個品項、還沒取消也還沒領走的訂單）
             </div>
           </div>
         ) : (
@@ -383,8 +473,12 @@ export function TransferShortageResolveModal({
                 ? `🔴 這一項至少還有 ${affected.length} 張客人訂單在等（合計至少 ${totalAffectedQty} 件）`
                 : `🔴 這一項還有 ${affected.length} 張客人訂單在等（合計 ${totalAffectedQty} 件）`}
               <div className="mt-0.5 text-[11px] font-normal opacity-80">
+                {/* ⛔ 這裡原本寫「實際張數會更多」—— 那是斷言,而且不保證成立:
+                       抓滿只代表「後面還有單沒查」,沒查的那些**可能全是已取消的**,
+                       那時在等的張數就不會更多。改成只講「還有沒查到的」,這句永遠為真。
+                       (2026-08-21 三審後自查抓到,與那句綠字是同一個病:把「我不知道」寫成「我確定」) */}
                 {affectedTruncated
-                  ? `一次只查前 ${AFFECTED_CAP} 張，實際張數會更多 → 少收 ${ctx.shortage_qty} 件，可能有一部分客人拿不到`
+                  ? `一次只查前 ${AFFECTED_CAP} 張，後面還有沒查到的 → 少收 ${ctx.shortage_qty} 件，可能有一部分客人拿不到`
                   : totalAffectedQty <= ctx.shortage_qty
                     ? "少收的量比客人要的還多 → 這些訂單可能全部拿不到貨"
                     : `少收 ${ctx.shortage_qty} 件 / 客人要 ${totalAffectedQty} 件 → 可能有一部分拿不到`}
@@ -550,3 +644,40 @@ export function TransferShortageResolveModal({
     </Modal>
   );
 }
+
+// ============================================================
+// 甲案(把前端那一刀搬進 SQL)為什麼沒做 —— 2026-08-21 三審時評估過,結論是「不做」
+//
+// 甲案長這樣:在查詢裡直接寫 .not("items.status","in","(cancelled,expired,picked_up)"),
+// 靠 customer_order_items!inner 把「該品項已全數失效」的整張單濾掉,
+// 讓 limit 直接作用在「已經過濾好的訂單」上 ⇒ 前端不用再砍一刀 ⇒
+// 「抓滿 + 砍完變空」這一格自然消失。
+//
+// 兩個前提,一個成立、一個驗不了:
+//   ✅ 前提二(合計 > 0 搬得進去嗎):搬得進去。qty 有 CHECK (qty > 0)
+//      (20260423120000_stores_order_schema.sql:208)⇒ 只要留下任一筆匹配明細,合計必然為正
+//      ⇒ 不需要 SQL 端做 HAVING(PostgREST 本來也做不到 HAVING)。
+//   ❌ 前提一(PostgREST 的內嵌篩選在 !inner 下,真的會把整張 top-level 單濾掉嗎):
+//      **本輪驗不了。** 本機沒有 docker、沒有 psql(只有 supabase CLI,而它要 docker
+//      才起得了本地庫)⇒ 起不了乾淨的 PostgREST 來實測;
+//      ⛔ 而唯一連得到的庫是正式庫,不能拿去試。
+//      repo 裡雖然有一模一樣的既有寫法(inventory/mutual-aid/page.tsx:2009-2010),
+//      但它 :2029-2030 前端又濾了一次一樣的條件 ⇒ 那段程式的正確性不依賴這個前提
+//      ⇒ 它證明不了這個前提在本專案成立,只證明「有人這樣寫過」。
+//
+// ⭐ 決定性的理由不是「驗不了」,是**它失敗的方式是無聲的**:
+//   若前提一不成立,那張單照樣被回傳(items 是空陣列)、照樣佔掉 limit 一個名額,
+//   前端還是得砍那一刀、還是可能砍成空 ⇒ 洞原封不動,
+//   但我會以為修好了、下一輪審查也會以為這條關閉了。
+//   ⇒ 「用一個我不能驗證的前提去換掉一道能驗證的防線」= 又一次把「我不知道」畫成「我確定」,
+//     正是本檔頭第一鐵則禁止的那件事,只是這次搬到程式碼層。
+//
+// ⇒ 採乙案:SQL 端照樣加條件(讓 limit 盡量花在有效訂單上,這部分不必驗證也只賺不賠),
+//   前端那一刀**保留**當防線,並在 render 把「查完的 0」和「沒查完的 0」分成兩句話講。
+//   這條路的正確性完全不依賴 PostgREST 的內嵌篩選行為 ⇒ 讀碼就能驗證。
+//
+// 📌 什麼情況下值得回頭做甲案:有了可拋棄的測試庫(staging / 本地 docker)、
+//   並且實測「內嵌篩選會讓 top-level 單消失」為真之後。
+//   ⚠️ 即使那時做了,也**不要**移除 render 那一格 —— limit 還在,
+//     「抓滿」這件事本身不會消失,truncated 的文案永遠有存在意義。
+// ============================================================
