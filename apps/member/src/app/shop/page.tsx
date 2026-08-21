@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { consumeFragmentToSession, getSession, loginPath } from "@/lib/session";
@@ -222,6 +222,38 @@ export default function ShopPage() {
   const shown = sorted.filter((c) => matchName(c.name));
   const shownPiao = piaoItems.filter((c) => matchName(c.name));
 
+  // 左右滑切換世界（momo 式）。只在手指放開時看位移向量：水平位移夠大、
+  // 且明顯大於垂直位移才算數 —— 直向捲動與下拉刷新（純垂直）都不受影響。
+  // 起點落在可橫向捲動的元素（banner 輪播）內就不接手，讓它自己捲。
+  const swipeRef = useRef<{ x: number; y: number; skip: boolean } | null>(null);
+  const onSwipeStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    const t = e.touches[0];
+    let el = e.target as HTMLElement | null;
+    let skip = false;
+    while (el && el !== e.currentTarget) {
+      if (el.scrollWidth > el.clientWidth + 1) {
+        const ox = getComputedStyle(el).overflowX;
+        if (ox === "auto" || ox === "scroll") {
+          skip = true;
+          break;
+        }
+      }
+      el = el.parentElement;
+    }
+    swipeRef.current = { x: t.clientX, y: t.clientY, skip };
+  };
+  const onSwipeEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    const start = swipeRef.current;
+    swipeRef.current = null;
+    if (!start || start.skip) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    if (Math.abs(dx) < 56 || Math.abs(dx) < Math.abs(dy) * 1.4) return;
+    // 往左滑 → 右邊那頁（漂漂館）；往右滑 → 回團購
+    setWorld(dx < 0 ? "piaopiao" : "group");
+  };
+
   const headerContent = (
     <div className="space-y-2.5">
       {/* 搜尋列（取代原本的「商品」大標題，momo 式頂欄） */}
@@ -310,7 +342,12 @@ export default function ShopPage() {
       headerContent={headerContent}
     >
       <PullToRefresh onRefresh={world === "piaopiao" ? fetchPiao : fetchCampaigns}>
-      <div className="space-y-5 px-4 pt-3 pb-6">
+      {/* min-h：內容很短（漂漂館空清單）時，下方空白也要吃得到左右滑 */}
+      <div
+        className="min-h-[70dvh] space-y-5 px-4 pt-3 pb-6"
+        onTouchStart={onSwipeStart}
+        onTouchEnd={onSwipeEnd}
+      >
         {world === "piaopiao" ? (
           <PiaoWorld
             loading={piaoLoading}
