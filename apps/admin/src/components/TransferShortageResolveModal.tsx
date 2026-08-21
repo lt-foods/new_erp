@@ -120,17 +120,26 @@ const RESOLUTION_OPTIONS: Array<{
     icon: "🔁",
     // ⛔ 標題是老闆 2026-08-21 逐字定的字樣(對店家講的話),不要改寫、不要加系統講法。
     title: "同意退回-補貨",
-    desc:
-      "少收的數量以原出庫成本記回「原本送貨出去的那一邊」，並自動開一張撿貨單給該店 —— " +
-      "撿貨單會出現在收件匣的「📋 撿貨單」，樓下撿完再送一次。",
+    // ⚠️⚠️ 2026-08-21 五審 P1-2:這句原本還寫「並自動開一張撿貨單給該店 —— 撿貨單會出現在
+    //   收件匣的「📋 撿貨單」,樓下撿完再送一次」。那句話**只有出貨端是總倉時才成立**:
+    //   非總倉的單,rpc 在建撿貨單之前就先 RAISE 了
+    //   (20260811020000:173-177,SELECT locations.type → <> 'central_warehouse' 就丟例外)
+    //   ⇒ 什麼都不會發生,更不會有撿貨單。
+    //   而 srcIsHq 還在查(null)的那幾百毫秒,琥珀警告還沒出現、送出鈕已經能按
+    //   ⇒ 畫面在那段時間對非總倉的單是在說謊。
+    //   ⇒ 修法照本檔既有的那條通則:**預設文案只留「不管出貨端是誰都成立」的部分**,
+    //     撿貨單那一段搬到下面 srcIsHq === true 才顯示的那一塊去講。
+    //   ⛔ 不要改成「若這張是總倉派貨,會…」——那是把條件句塞進預設文案,
+    //     使用者仍得自己判斷這張單是不是總倉派的,等於沒解決。
+    desc: "少收的數量以原出庫成本記回「原本送貨出去的那一邊」，並安排再送一批給這家店。",
     warnTone: "info",
-    // 出處:記回原出貨端 20260811020000:188-206
-    //      (rpc_inbound 的 p_location_id => v_transfer.source_location,不是寫死總倉);
-    //      自動開 draft 撿貨單 20260811020000:222-245;
-    //      draft 在收件匣撿貨單匣算待處理 hq/inbox/page.tsx 的 classifyPicking。
+    // 出處:記回原出貨端 20260811020000:194-204
+    //      (rpc_inbound 的 p_location_id => v_transfer.source_location,不是寫死總倉)。
     // ⛔ 刻意不寫「客人訂單會自動推進」:那要再走 rpc_mark_orders_shipping_for_wave
     //    (20260614000050 最新版)且要 campaign 對得上,本檔沒有實測過 ⇒ 不寫進畫面。
-    warn: "要再送一批給這家店 → 選這顆。按完這一筆會從清單消失，但貨已經記回去、撿貨單也開好了。",
+    // ⛔ warn 也不再寫「貨已經記回去、撿貨單也開好了」——那是**過去式的斷言**,
+    //    非總倉的單按下去是整支 RPC 失敗,兩件事一件都沒發生。
+    warn: "要再送一批給這家店 → 選這顆。送出成功後這一筆會從「異常」清單消失，不能再改選別的。",
   },
   {
     value: "restock_hq",
@@ -139,16 +148,16 @@ const RESOLUTION_OPTIONS: Array<{
     title: "同意退回-不補貨",
     desc: "少收的數量以原出庫成本記回「原本送貨出去的那一邊」，不會自動再送給店家。",
     warnTone: "caution",
-    // 出處:記回原出貨端 20260811020000:140-163
+    // 出處:記回原出貨端 20260811020000:152-162
     //      (同樣是 p_location_id => v_transfer.source_location;
-    //       ⚠️ restock_hq 這一支「沒有」總倉守衛 —— redispatch 有 :172-177 擋非總倉,
+    //       ⚠️ restock_hq 這一支「沒有」總倉守衛 —— redispatch 有 :173-177 擋非總倉,
     //       restock_hq 沒有 ⇒ 店對店的單按這顆,貨是回到原本那家店,不是總倉)。
     // ⛔ 這裡刻意不寫「開補貨申請就派得出去」:那條路的可配量 hq_supply 讀的是
     //    「總倉的」stock_balances.on_hand(v_picking_demand_no_po 最新版
     //    20260612000040:60-78)⇒ 只有貨真的回到總倉才成立。
     //    它被移到下面 srcIsHq === true 才顯示的那一塊。
     warn:
-      "按下去回不來，這一筆會從清單消失，而且系統不會自動再送貨給這家店 —— " +
+      "送出成功後回不來，這一筆會從「異常」清單消失，而且系統不會自動再送貨給這家店 —— " +
       "之後要補給這家店，得另外開單。",
   },
 ];
@@ -180,17 +189,28 @@ export function TransferShortageResolveModal({
 
   // 出貨端是不是總倉 —— 純粹為了「多講一句」而查(不是拿來更正上面的文案):
   //   ① 兩顆的「記回原本送貨出去的那一邊」實際是 rpc_inbound 到 transfers.source_location
-  //      (20260811020000:152-160 / :188-206)。查到是總倉就直接把話講明,使用者不用自己推。
+  //      (20260811020000:152-162 / :194-204)。查到是總倉就直接把話講明,使用者不用自己推。
   //   ② 「再補一批」對非總倉出貨的單會被 RPC 直接擋下
-  //      (20260811020000:172-177 RAISE「出貨端不是總倉，無法自動重派」)⇒ 值得先講。
+  //      (20260811020000:173-177 RAISE「出貨端不是總倉，無法自動重派」)⇒ 值得先講。
   // ⛔⛔ 查不到一律維持 null(什麼都不顯示),絕對不可以讓「查不到」掉進 false 那一邊 ——
   //   false 會渲染出「這張單不是總倉派出去的」這句**斷言**,而我們其實只是沒讀到資料。
   //   (2026-08-21 自審抓到:原本寫 `(l?.type ?? "") === "central_warehouse"`,
   //    locations 那一列讀不到(查無此列 / 被 RLS 擋)時 l 是 null → 算出 false,
   //    於是「我沒查到」被畫成「我確定不是」—— 正是本檔頭第一鐵則禁止的那件事。)
+  // ⚠️⚠️ 2026-08-21 五審 P2:ctx 換到另一張單時,srcIsHq 會**留著上一張單的答案**,
+  //   直到新的查詢回來為止 ⇒ 那段時間畫面上「這張單是總倉派出去的」/「不是總倉派出去的」
+  //   講的其實是**別張單**。那正是本檔頭第一鐵則禁止的:把不知道的講成知道。
+  // ⇒ 兩個修法擇一,這裡選「effect 起手先歸 null」,**不是** key remount:
+  //   key remount 要改的是掛載處 ExceptionsContent.tsx:339,而那支檔**不在本 PR 的
+  //   施工範圍**(本 PR 只動 hq/inbox/page.tsx、TransferReceiveModal、本檔三支);
+  //   歸 null 只動本檔、效果一樣(null = 兩個框都不顯示),而且不依賴呼叫端寫對 key。
+  // ⛔ setSrcIsHq(null) 必須寫在 async 裡、不能寫在 effect body:
+  //   effect body 同步 setState 會被 react-hooks/set-state-in-effect 擋下(本 repo 是 error 級)。
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      // 換單先清掉上一張單的答案 —— 在任何 await 之前做,不留空窗
+      setSrcIsHq(null);
       try {
         const sb = getSupabase();
         const { data: t, error: e1 } = await sb
@@ -285,7 +305,7 @@ export function TransferShortageResolveModal({
         <div className="rounded border-2 border-rose-400 bg-rose-100 p-2 text-[11px] leading-relaxed text-rose-900 dark:border-rose-600 dark:bg-rose-950 dark:text-rose-200">
           <div className="font-bold">⚠️ 兩顆都是按下去就回不來，先想清楚再按</div>
           <div className="mt-0.5">
-            按完之後這一筆就會從「異常」清單消失，<span className="font-bold">不能再改選別的</span>。
+            <span className="font-bold">送出成功後</span>這一筆就會從「異常」清單消失，<span className="font-bold">不能再改選別的</span>。
           </div>
         </div>
 
@@ -299,12 +319,25 @@ export function TransferShortageResolveModal({
         {srcIsHq === true && (
           <div className="rounded border border-zinc-300 bg-zinc-50 p-2 text-[11px] leading-relaxed text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
             這張單是<span className="font-bold">總倉</span>派出去的 →
-            上面說的「原本送貨出去的那一邊」就是總倉。
-            貨記回總倉之後就算進總倉的可配量 —— 要再補給這家店，請該店開一張補貨申請，
-            總倉核准後就能直接派，不用再進一次貨（要是這批貨先被別的單配走了，就得等下一批）。
+            下面兩顆說的「原本送貨出去的那一邊」就是總倉。
+            <div className="mt-0.5">
+              選「<span className="font-bold">同意退回-補貨</span>」會自動開一張撿貨單給這家店，
+              出現在收件匣的「📋 撿貨單」，樓下撿完再送一次。
+            </div>
+            <div className="mt-0.5">
+              選「<span className="font-bold">同意退回-不補貨</span>」的話，貨記回總倉之後就算進總倉的可配量 ——
+              之後要補給這家店，請該店開一張補貨申請，總倉核准後就能直接派，不用再進一次貨
+              （要是這批貨先被別的單配走了，就得等下一批）。
+            </div>
           </div>
         )}
-        {/* 出處:可配量 hq_supply 直接讀總倉 stock_balances.on_hand
+        {/* ⚠️⚠️ 五審 P1-2 的落點就在這裡:「會自動開一張撿貨單」這句從第一顆的預設說明
+            **搬到這一塊**,因為它只有出貨端是總倉時才成立(非總倉在建單之前就被
+            20260811020000:173-177 RAISE 掉了)。這一塊只在 srcIsHq === true 時渲染
+            ⇒ 查詢還沒回來 / 查不到的時候,畫面上不會有這句話,自然不會說謊。
+            出處:自動開 draft 撿貨單 20260811020000:221-243(wave_code → picking_waves →
+            picking_wave_items);draft 在收件匣撿貨單匣算待處理 = hq/inbox/page.tsx 的 classifyPicking(:208-212,draft/picking/picked 都算 pending)。
+            出處:可配量 hq_supply 直接讀總倉 stock_balances.on_hand
             (v_picking_demand_no_po 最新版 20260612000040:60-78),不需要採購單、不需要進貨單。
             ⚠️ 最後那個括號不是廢話:hq_supply 讀的是「當下的」on_hand,回總倉的貨並沒有被
             這家店保留住,別的需求先配走就沒了 ⇒ 不加這句就會變成一句「一定派得到」的保證。 */}
@@ -322,8 +355,8 @@ export function TransferShortageResolveModal({
             而且「<span className="font-bold">同意退回-補貨</span>」按下去會被系統擋掉 —— 只有總倉派出去的單能自動補。
           </div>
         )}
-        {/* 出處:redispatch 對非總倉出貨會 RAISE(20260811020000:172-177);
-            restock_hq 沒有這道守衛,照樣把貨記回 v_transfer.source_location(:152-160)。 */}
+        {/* 出處:redispatch 對非總倉出貨會 RAISE(20260811020000:173-177);
+            restock_hq 沒有這道守衛,照樣把貨記回 v_transfer.source_location(:152-162)。 */}
 
         {RESOLUTION_OPTIONS.map((opt) => {
           const active = resolution === opt.value;
@@ -352,7 +385,7 @@ export function TransferShortageResolveModal({
                 <div className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{opt.desc}</div>
                 {/* 「按下去會發生什麼回不去的事」一律顯示,不只在選中時才出現 ——
                     要在按之前就看到才有用。⛔ 不可以改回無底色的小灰字:2026-08-21 實測
-                    「不補」被誤按的次數是「補一批」的 3.7 倍(理由見檔頭)。 */}
+                    「同意退回-不補貨」被按的次數是「同意退回-補貨」的 3.7 倍(理由見檔頭)。 */}
                 <div
                   className={`mt-1.5 rounded border px-2 py-1.5 text-[11px] leading-relaxed ${
                     WARN_TONE_CLASS[opt.warnTone]
@@ -382,8 +415,8 @@ export function TransferShortageResolveModal({
         <div className="rounded border border-zinc-300 bg-zinc-50 p-2 text-[11px] leading-relaxed text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
           🚧 要跟店家收錢（不同意退貨）的功能還在施工，這種先不要按、這筆會留在清單。
           <div className="mt-0.5 opacity-80">
-            （月結是按店家<span className="font-bold">實際收到</span>的數量算錢，
-            所以上面兩顆按完，少收的這幾件都不會算進店家的月結單。）
+            （月結單是按店家<span className="font-bold">實際收到</span>的數量算錢的，
+            而這兩顆都不會改動實收數量。）
           </div>
         </div>
       </div>
