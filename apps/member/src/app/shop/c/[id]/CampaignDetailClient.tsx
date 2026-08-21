@@ -105,6 +105,29 @@ function buildColorSizeMatrix(items: Item[]): ColorSizeMatrix | null {
   return colors.length > 0 ? { colors, byColor } : null;
 }
 
+/** 品項列的名稱區。有規格時「規格當主行（大）、品名當副行（小）」——
+ *  一團多規格的服飾類每一列品名都一模一樣（跟頁面標題也一樣），
+ *  真正在區分各列的是規格，不能讓它縮在 13px 小灰字。沒規格維持品名當主行。 */
+function ItemTitle({ name, variant }: { name: string; variant: string | null }) {
+  if (!variant) {
+    return (
+      <div className="line-clamp-2 text-[16px] font-medium leading-tight text-[var(--foreground)]">
+        {name}
+      </div>
+    );
+  }
+  return (
+    <>
+      <div className="text-[17px] font-semibold leading-tight text-[var(--foreground)]">
+        {variant}
+      </div>
+      <div className="mt-0.5 line-clamp-1 text-[12px] text-[var(--secondary-label)]">
+        {name}
+      </div>
+    </>
+  );
+}
+
 export default function CampaignDetailClient({ salesChannel }: { salesChannel?: "piaopiao" }) {
   const router = useRouter();
   const params = useParams();
@@ -427,12 +450,10 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
                       >
                         <SkuThumb url={it.image_url} />
                         <div className="min-w-0 flex-1">
-                          <div className="line-clamp-2 text-[16px] font-medium leading-tight text-[var(--foreground)]">
-                            {it.product_name ?? `品項#${it.sku_id}`}
-                          </div>
-                          {it.variant_name && (
-                            <div className="text-[13px] text-[var(--secondary-label)]">{it.variant_name}</div>
-                          )}
+                          <ItemTitle
+                            name={it.product_name ?? `品項#${it.sku_id}`}
+                            variant={it.variant_name}
+                          />
                           <div className="mt-1 flex items-baseline gap-2">
                             <div className="text-[18px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
                               ${Number(it.unit_price).toLocaleString()}
@@ -947,14 +968,10 @@ function BuySheet({
                   >
                     <SkuThumb url={it.image_url} />
                     <div className="min-w-0 flex-1">
-                      <div className="line-clamp-2 text-[15px] font-medium leading-tight text-[var(--foreground)]">
-                        {it.product_name ?? `品項#${it.sku_id}`}
-                      </div>
-                      {it.variant_name && (
-                        <div className="text-[13px] text-[var(--secondary-label)]">
-                          {it.variant_name}
-                        </div>
-                      )}
+                      <ItemTitle
+                        name={it.product_name ?? `品項#${it.sku_id}`}
+                        variant={it.variant_name}
+                      />
                       <div className="mt-1 flex items-baseline gap-2">
                         <div className="text-[18px] font-bold tabular-nums text-[var(--brand-strong)] leading-none">
                           ${Number(it.unit_price).toLocaleString()}
