@@ -8,7 +8,7 @@ type Variant = { name: string; cost_price: string; branch_price: string; retail_
 type VariantBatch = { colors: string; sizes: string; cost_price: string; branch_price: string; retail_price: string };
 type Product = { name: string; description: string; images: File[]; variants: Variant[]; supplier_name: string; variant_batch: VariantBatch };
 type Result = { campaign_id: number; campaign_no: string; name: string; cover_image_path?: string };
-type PublishedResult = Result & { url: string; image?: File };
+type PublishedResult = Result & { url: string; description: string; image?: File };
 
 const emptyProduct = (): Product => ({
   name: "", description: "", images: [],
@@ -137,6 +137,7 @@ export default function PiaopiaoPublisherPage() {
       setResults((response.campaigns ?? []).map((campaign: Result, index: number) => ({
         ...campaign,
         url: campaignShareUrl(Number(campaign.campaign_id), "/piaopiao/c"),
+        description: products[index]?.description.trim() ?? "",
         image: response.reused ? undefined : products[index]?.images[0],
       })));
       localStorage.removeItem(REQUEST_KEY);
@@ -152,15 +153,15 @@ export default function PiaopiaoPublisherPage() {
     const image = result.image ?? await imageFromPath(result.cover_image_path);
     const outcome = await sharePage({
       title: result.name,
-      text: `${result.name}｜漂漂館・立即下單`,
+      text: [result.name, result.description].filter(Boolean).join("\n\n"),
       url: result.url,
       files: image ? [image] : undefined,
     });
     if (outcome === "cancelled") return;
     if (outcome === "shared_native_with_file") {
-      setShareNotice("已開啟分享；請在 LINE 選要分享的群組，商品圖和下單連結會一起帶入。");
+      setShareNotice("已開啟分享；請在 LINE 選要分享的群組，商品圖、文案和下單連結會一起帶入。");
     } else if (["shared_native", "shared_in_line", "opened_line"].includes(outcome)) {
-      setShareNotice("已開啟 LINE 分享；請自行選群組。此裝置不支援自動帶圖時，請在 LINE 補選第一張商品圖。");
+      setShareNotice("已開啟 LINE 分享；請自行選群組。文案和下單連結會帶入；此裝置不支援自動帶圖時，請在 LINE 補選第一張商品圖。");
     } else if (outcome === "copied") {
       setShareNotice("連結已複製，請自行貼到 LINE 群組；此裝置不支援自動帶圖。");
     } else {
@@ -179,7 +180,7 @@ export default function PiaopiaoPublisherPage() {
 
   return <main className="mx-auto min-h-[100dvh] max-w-3xl bg-zinc-50 px-4 py-6 text-zinc-900"><header className="mb-5 rounded-3xl bg-gradient-to-br from-rose-500 to-rose-700 px-6 py-6 text-white shadow-lg"><div className="flex items-start justify-between gap-3"><div><p className="text-sm opacity-90">漂漂館專屬・不會上到主商城首頁</p><h1 className="mt-1 text-3xl font-bold">{heading}</h1><p className="mt-2 text-sm leading-6 opacity-90">一次建立 1～5 樣商品；每樣都是獨立下單連結。建立後由你自己按分享、自己選 LINE 群組。</p></div><button onClick={() => void getPiaopiaoAuth().auth.signOut()} className="min-h-11 shrink-0 rounded-lg border border-white/50 px-3 text-sm font-semibold">登出</button></div></header>
     {error && <p className="mb-4 rounded-xl bg-red-50 p-3 text-red-700">{error}</p>}{shareNotice && <p className="mb-4 rounded-xl bg-emerald-50 p-3 text-emerald-800">{shareNotice}</p>}
-    {results.length > 0 ? <section className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="text-xl font-bold">建立完成，請逐一分享</h2><p className="mt-2 text-sm text-zinc-600">按每一樣商品的分享鈕，再由 LINE 選群組。支援的手機／電腦會帶入商品圖和連結。</p><div className="mt-4 space-y-3">{results.map((result) => <div key={result.campaign_id} className="rounded-2xl border p-4"><p className="font-semibold">{result.name}</p><a className="mt-1 block break-all text-rose-700 underline" href={result.url} target="_blank" rel="noreferrer">{result.url}</a><button onClick={() => void share(result)} className="mt-3 min-h-11 rounded-lg bg-[#06C755] px-4 text-sm font-semibold text-white">分享至 LINE 群組</button></div>)}</div><button onClick={() => { setResults([]); setProducts([emptyProduct()]); }} className="mt-5 min-h-11 rounded-xl bg-rose-600 px-4 font-semibold text-white">再建立一批</button></section> : <>
+    {results.length > 0 ? <section className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="text-xl font-bold">建立完成，請逐一分享</h2><p className="mt-2 text-sm text-zinc-600">按每一樣商品的分享鈕，再由 LINE 選群組。支援的手機／電腦會帶入商品圖、文案和連結。</p><div className="mt-4 space-y-3">{results.map((result) => <div key={result.campaign_id} className="rounded-2xl border p-4"><p className="font-semibold">{result.name}</p><a className="mt-1 block break-all text-rose-700 underline" href={result.url} target="_blank" rel="noreferrer">{result.url}</a><button onClick={() => void share(result)} className="mt-3 min-h-11 rounded-lg bg-[#06C755] px-4 text-sm font-semibold text-white">分享至 LINE 群組</button></div>)}</div><button onClick={() => { setResults([]); setProducts([emptyProduct()]); }} className="mt-5 min-h-11 rounded-xl bg-rose-600 px-4 font-semibold text-white">再建立一批</button></section> : <>
       <section className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="text-lg font-bold">共同資料</h2><div className="mt-4 grid gap-4 sm:grid-cols-2"><Field label="收單時間"><input className="input" type="datetime-local" value={endAt} onChange={(e) => setEndAt(e.target.value)} /></Field><Field label="取貨日"><input className="input" type="date" value={pickupDeadline} onChange={(e) => setPickupDeadline(e.target.value)} /></Field></div></section>
       <div className="mt-4 space-y-4">{products.map((product, index) => <section key={index} className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="text-lg font-bold">商品 {index + 1}</h2>{products.length > 1 && <button onClick={() => setProducts((all) => all.filter((_, i) => i !== index))} className="min-h-11 text-sm text-red-600">移除此商品</button>}</div><div className="mt-4 grid gap-4"><Field label="商品名稱"><input className="input" value={product.name} onChange={(e) => updateProduct(index, { name: e.target.value })} /></Field><Field label="商品介紹"><textarea className="input min-h-28" value={product.description} onChange={(e) => updateProduct(index, { description: e.target.value })} /></Field><Field label="商品圖片（至少一張）"><input className="block min-h-11 w-full text-base" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(e) => updateProduct(index, { images: Array.from(e.target.files ?? []) })} />{product.images.length > 0 && <p className="text-sm text-emerald-700">已選 {product.images.length} 張圖片</p>}</Field>{lane === "tong" && <Field label="供應商"><input className="input" placeholder="供應商名稱" value={product.supplier_name} onChange={(e) => updateProduct(index, { supplier_name: e.target.value })} /></Field>}{lane === "chao" && <p className="rounded-xl bg-zinc-100 p-3 text-sm">供應商固定：潮包子</p>}</div><VariantFields product={product} onUpdateVariant={(variantIndex, patch) => updateVariant(index, variantIndex, patch)} onAddVariant={() => addVariant(index)} onRemoveVariant={(variantIndex) => removeVariant(index, variantIndex)} onUpdateBatch={(patch) => updateVariantBatch(index, patch)} onCreateBatch={() => createVariantBatch(index)} /></section>)}</div>
       {canAdd && <button onClick={() => setProducts((all) => [...all, emptyProduct()])} className="mt-4 min-h-11 rounded-xl border border-rose-300 bg-white px-4 font-semibold text-rose-700">＋ 再加一樣商品（最多 5 樣）</button>}<button disabled={busy} onClick={() => void submit()} className="mt-6 min-h-14 w-full rounded-2xl bg-rose-600 px-5 text-lg font-bold text-white disabled:opacity-50">{busy ? "正在建立，請不要關閉…" : publishLabel}</button>
