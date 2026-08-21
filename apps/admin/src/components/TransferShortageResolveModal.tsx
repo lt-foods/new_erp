@@ -173,11 +173,15 @@ type AffectedOrder = {
 
 // 客人訂單一次最多抓幾張。
 // ⚠️ 這個上限一定會反映到畫面文字上:抓滿了就代表「還有沒抓到的」,
-//    那時候畫面只能講「至少 N 張」,不能講「N 張」(2026-08-21 複審 P0:
-//    舊版有 .limit(50) 卻把 affected.length 當精確總數寫成「還有 50 張」)。
+//    那時候畫面不能把 affected.length 當精確總數(2026-08-21 複審 P0:
+//    舊版有 .limit(50) 卻寫成「還有 50 張」)。
 // 實作上刻意多抓 1 張(limit = CAP + 1):
-//   拿回 CAP+1 張 ⇒ 確定超過 CAP ⇒ 文案改「至少」;
-//   拿回 ≤ CAP 張 ⇒ 就是全部,文案照舊講精確數字。
+//   拿回 CAP+1 張 ⇒ 確定超過 CAP ⇒ 畫面多一行「後面還有沒查到的」;
+//   拿回 ≤ CAP 張 ⇒ 就是全部,那一行不出現。
+// ⚠️⚠️ 2026-08-21 四審更正:這裡原本寫「文案改『至少 N 張』」—— 現在**不是**這樣了。
+//   四審 P1 發現另一個反方向的誤差(已退回總倉的沒扣掉 ⇒ 可能更少),
+//   兩個誤差一夾,「至少」會變成假話 ⇒ 畫面已改成「查到 N 張 + 兩行誤差說明」。
+//   詳細推導見 render 紅字那一段的註解。⛔ 不要照這裡的舊說法把「至少」加回去。
 // ⛔ 為什麼不用 { count: 'exact', head: true } 另外抓一次精確筆數:
 //   ① 那個 count 數的是「SQL 過濾完」的 customer_orders 筆數,但畫面顯示的清單
 //      還要再被下面的前端過濾砍一刀(items 是 cancelled/expired 的不算、
@@ -192,11 +196,27 @@ const AFFECTED_CAP = 50;
 //
 // 2026-08-21 三審自查抓到:舊版寫死白名單 .in("status", [pending,confirmed,shipping,ready]),
 //   漏掉了 partially_completed(部分取貨)。而 partially_completed 的定義,照
-//   rpc_record_pickup 最新版(20260512000008_order_pickup_ready_function.sql:148-156;
-//   同樣邏輯最早見於 20260509000008:68-76)是:
-//     取貨後數 status IN ('pending','reserved','ready') 的明細還剩幾筆,
+//   rpc_record_pickup 最新版(20260815000000_zero_price_order_guard.sql:365-402)是:
+//     取貨後數 status IN ('pending','reserved','ready') 的明細還剩幾筆
+//     (並且扣掉「量已被未取退貨蓋掉」的 SKU,見 :369-396 那段 LEFT JOIN),
 //     剩 0 → 'completed';剩 >0 → 'partially_completed'
 //   ⇒ partially_completed 的字面意思就是「這張單還有品項沒取走」
+//
+// ⚠️⚠️ 2026-08-21 四審更正:上面這個引用原本寫「最新版 = 20260512000008:148-156」,那是錯的。
+//   20260512000008 之後還有 **7 支** migration 改過同一支函式:
+//     20260614000030 / 20260630000010 / 20260704000000 /
+//     20260731000000_return_deduct_payable_and_pickup_guard /
+//     20260801000000_full_return_closes_order / 20260813000000 / 20260815000000
+//   結論(partially_completed = 還有品項沒取走)剛好沒變,但引用是過期的。
+//   ⛔ 抄這種「最新版是 XXX」之前一定要跑一次標準查法,兩個坑都要避開:
+//     ① 早期版本沒有 public. 前綴 ⇒ 只 grep "FUNCTION public.<名>" 會漏掉前 5 支,要寫成:
+//        git grep -ln -E "FUNCTION (public\.)?rpc_record_pickup" origin/main -- supabase/migrations | sort
+//     ② 光排序時間戳分不出誰後跑 —— 本 repo 有 37 組同時間戳的檔
+//        (例:20260801000000 有 5 支、20260731000000 有 2 支)⇒ 要逐一開檔看哪支真的動了那支函式。
+//   (本檔其餘 4 處「最新版」四審時一併重驗過,都是對的:
+//    v_picking_demand_no_po→20260612000040、v_hq_exceptions→20260811020010、
+//    rpc_resolve_transfer_item_shortage→20260811020000、rpc_mark_orders_shipping_for_wave→20260614000050、
+//    customer_orders_status_check→20260606000021。)
 //   ⇒ 漏掉它 = 客人領走了同一張單的別樣東西、正在等這一樣,畫面卻說「沒有客人在等」。
 //   團購一張單本來就常訂好幾樣,短收又正好代表有東西沒到 ⇒ 這是最常見的情境,不是邊界。
 //
@@ -225,6 +245,43 @@ const NOT_WAITING_ORDER_STATUSES = ORDER_STATUSES.filter(isTerminalStatus);
 //   inventory/mutual-aid/page.tsx:2010 濾的就是 (cancelled,expired,picked_up)。
 const PICKED_UP_ITEM_STATUSES = ["cancelled", "expired", "picked_up"];
 
+// ⚠️⚠️⚠️ 已知限制(2026-08-21 四審 P1,刻意不修,理由在下面):
+//   這個查詢**沒有扣掉「已經退回總倉」的量** ⇒ 算出來的張數/件數是**上限**,不是精確值。
+//
+// 為什麼會這樣(不是漏寫,是 DB 那邊刻意的):
+//   rpc_create_order_return 對「部分退貨」**刻意不動品項行狀態**(保持 active),
+//   原話見 20260801000000_full_return_closes_order.sql:20-23 與 :283-284 ——
+//   因為 v_customer_order_summary / rpc_wallet_pay_order 的退貨扣減(20260731000000)
+//   是把退貨量分攤到「非 cancelled/expired」的品項行,
+//   **若把行改 cancelled,扣減會歸零、應收會跳回全額**。
+//   ⇒ 部分退貨的單:order 仍是 ready/partially_completed、品項行仍是 active
+//     ⇒ 本查詢照樣抓得到 ⇒ 算成「還在等」。
+//   (全數退貨不受影響:那時 order 會被收尾成 cancelled/completed,:285-330 ⇒ 黑名單擋掉了。)
+//
+// ⭐ 方向是安全的:這是**多報**,不是少報。
+//     多報 → 畫面說「可能有人在等」→ 去按「補一批」⇒ 多送一趟
+//     少報 → 畫面說「沒人在等」  → 去按不可逆的「不補」⇒ 客人拿不到貨
+//   ⇒ 跟 NOT_WAITING_ORDER_STATUSES 用黑名單是同一條判準「漏的時候往哪邊倒」。
+//
+// ⛔ 為什麼不真的去扣(甲案):**它失敗的方向是「少報」,而且我這輪驗不了。**
+//   要扣就得在前端重寫一份 DB 的規則:transfer_type='return_to_hq'
+//   ＋ status IN ('shipped','received') ＋ 用 regex 剖 notes header
+//   (`^\[order return([^\]:]*)` 不含「取貨後退回」)＋ 按 SKU 聚合後相減
+//   —— 逐字抄自 20260815000000:369-396。這份抄寫有三個問題:
+//     ① 抄錯任一個條件就變成**多扣** ⇒ 少報 ⇒ 正是會害客人拿不到貨的那個方向。
+//        最容易錯的是那個 regex:「取貨後退回」的退貨**不可以扣**
+//        (那些品項行已經是 picked_up、上面那一刀早就排掉了)⇒ 誤扣就是重複扣。
+//     ② 沒有可拋棄的測試庫可以驗(沒 docker、沒 psql,唯一連得到的是正式庫,不能拿去試)
+//        ⇒ 跟檔尾「甲案為什麼沒做」是同一個困境:用一個驗不了的東西換掉一個已經安全的行為。
+//     ③ 那份規則放在 DB,以後 DB 改了(它 3 週內已經改過 2 次:20260731000000→20260801000000)
+//        前端這份抄本不會跟著動,而且**它壞掉的時候是無聲的**(數字只會少,畫面看不出來)。
+//   ⇒ 換到的好處只是「少送一趟貨」,賠掉的風險是「客人拿不到貨」⇒ 不值得,採乙案。
+//   📌 什麼時候值得回頭做甲案:有測試庫能實測、而且改成「由 DB 出一支 view/RPC 回報未取量」
+//     (讓規則只有一份、留在 DB)之後 —— 不要在前端養第二份抄本。
+//
+// ⇒ 乙案的落地方式:**不去算退貨量,改成把畫面的話講到永遠成立**
+//   (紅字一律講「可能」+ 明講「沒扣掉退回總倉的」,見 render 那一段)。
+
 export function TransferShortageResolveModal({
   ctx,
   onClose,
@@ -242,7 +299,8 @@ export function TransferShortageResolveModal({
   // 查不到(沒有分店 id / 查詢失敗)。⛔ 不可以跟「查到 0 張」混在一起顯示成
   // 「沒有客人在等」—— 那是把「我沒查到」講成「確定沒有」,正是本檔要根絕的那種假話。
   const [affectedFailed, setAffectedFailed] = useState(false);
-  // 抓滿 AFFECTED_CAP 了(＝還有沒抓到的)。true 時畫面上的張數/件數一律加「至少」。
+  // 抓滿 AFFECTED_CAP 了(＝還有沒抓到的)。true 時畫面會多一行「後面還有沒查到的 → 也可能比這多」。
+  // (四審前這裡寫「一律加『至少』」,已不成立 —— 理由見 render 紅字那段。)
   const [affectedTruncated, setAffectedTruncated] = useState(false);
   // 這張單的出貨端是不是總倉。null = 還在查 / 查不到 → 這一塊什麼都不顯示。
   // ⭐ 三顆按鈕的文案本身已經不管出貨端是誰都成立,所以 null 不會造成任何錯誤斷言;
@@ -290,10 +348,21 @@ export function TransferShortageResolveModal({
         //     那正是三審 P0 的成因。這一刀在什麼情況下會砍到東西,見下面兩行的說明。
         // ⛔ 為什麼不把整刀搬進 SQL(PostgREST 內嵌篩選)一勞永逸:見檔尾「甲案為什麼沒做」。
         const rows = raw.slice(0, AFFECTED_CAP).map((o) => {
-          // ⚠️ 這裡的 sku_id 比對與 status 排除,跟上面 SQL 的內嵌條件是**重複**的 ——
+          // ⚠️ 這裡的 sku_id 比對跟上面 SQL 的 .eq("items.sku_id") 是**重複**的 ——
           //   重複是刻意的:PostgREST 內嵌篩選在本專案沒有被實測過(既有同形狀查詢
           //   inventory/mutual-aid/page.tsx:2029-2030 前端也照樣再濾一次),
           //   萬一內嵌條件只作用在 items 陣列、沒把整張單濾掉,這一刀是唯一防線。
+          //
+          // ⚠️⚠️ 2026-08-21 四審更正(P2):這一行原本寫「sku_id 比對**與 status 排除**…是重複的」,
+          //   後半是錯的 —— **明細層的 status 排除在 SQL 端根本不存在**,只有這裡有。
+          //   三審的存檔訊息與檔尾註解都寫「SQL 端照樣加了條件」,那句話只兌現了一半:
+          //     ✅ 真的加了的是**訂單層**:.not("status","in",NOT_WAITING_ORDER_STATUSES)(上面那支查詢)
+          //     ❌ 當時講的是**明細層**(items.status)的條件,而它**從來沒加進 SQL**,只在前端這一刀做
+          //   ⇒ 所以 PICKED_UP_ITEM_STATUSES 這一刀是明細層的**唯一防線**,不是備援。
+          //     ⛔ 不可以因為「SQL 應該已經濾過了」就把它刪掉 —— SQL 沒濾。
+          //   (存檔訊息已經推出去、不 rewrite history,所以更正只能寫在這裡。
+          //    ⭐ 教訓:回報與存檔訊息裡每一句「我做了 X」都要跟磁碟對得上。
+          //    這個案子五輪抓到的病一直是同一個 ——「說的跟做的不一樣」,連存檔訊息也算。)
           const matchingItems = o.items.filter(
             (i) => i.sku_id === ctx.sku_id && !PICKED_UP_ITEM_STATUSES.includes(i.status),
           );
@@ -462,26 +531,40 @@ export function TransferShortageResolveModal({
           </div>
         ) : (
           <div>
-            {/* ⭐ 這兩行的每個數字都必須「不管有沒有抓滿都成立」:
-                  抓滿了(affectedTruncated)⇒ 手上的張數/件數只是下限 ⇒ 一律加「至少」,
-                  而且不可以再拿它去跟少收量比大小(下限比出來的結論會反過來)。
+            {/* ⭐ 這幾行的每個數字都必須「不管什麼情況都成立」。而這個數字有**兩個方向相反**的誤差:
+                  ① 抓滿了(affectedTruncated)⇒ 第 CAP+1 張以後沒查 ⇒ 真正在等的可能**更多**
+                  ② 已經退回總倉的沒扣掉(理由見 PICKED_UP_ITEM_STATUSES 下面那段「已知限制」)
+                     ⇒ 真正在等的可能**更少**
+                ⛔⛔ 所以它**既不是上限、也不是下限**,任何「至少 N」「最多 N」都會在某一格變假:
+                  「至少 N 張」在 ①+② 同時發生時假掉 —— 手上 50 張裡有 10 張已退回,
+                    真正在等的是 40,講「至少 50」就是說謊;
+                  「最多 N 張」在 ① 發生時假掉 —— 第 51 張以後可能還有一堆在等。
+                  ⇒ 唯一永遠成立的講法:**標題只講「可能」、並講明 N 是「查到的」,
+                    再把兩個方向的誤差各自寫成一行小字。**
+                  (2026-08-21 四審 P1。三審寫「至少」是只想到 ① 沒想到 ② ——
+                   跟那句綠字、跟「實際張數會更多」都是同一個病:把不知道的講成知道。)
                 ⭐ 「拿不到」一律留「可能」:這裡只查了「這家店這個品項的待處理客人訂單」,
                   沒有扣掉這家店自己既有的庫存、也沒算其他還沒到的貨
-                  ⇒ 少收 N 件不等於真的有 N 件客人拿不到。上下兩個分支語氣要一致。 */}
+                  ⇒ 少收 N 件不等於真的有 N 件客人拿不到。 */}
             <div className="rounded-md border-l-4 border-rose-500 bg-rose-50 p-3 text-sm font-bold text-rose-900 dark:bg-rose-950 dark:text-rose-200">
-              {affectedTruncated
-                ? `🔴 這一項至少還有 ${affected.length} 張客人訂單在等（合計至少 ${totalAffectedQty} 件）`
-                : `🔴 這一項還有 ${affected.length} 張客人訂單在等（合計 ${totalAffectedQty} 件）`}
-              <div className="mt-0.5 text-[11px] font-normal opacity-80">
-                {/* ⛔ 這裡原本寫「實際張數會更多」—— 那是斷言,而且不保證成立:
-                       抓滿只代表「後面還有單沒查」,沒查的那些**可能全是已取消的**,
-                       那時在等的張數就不會更多。改成只講「還有沒查到的」,這句永遠為真。
-                       (2026-08-21 三審後自查抓到,與那句綠字是同一個病:把「我不知道」寫成「我確定」) */}
-                {affectedTruncated
-                  ? `一次只查前 ${AFFECTED_CAP} 張，後面還有沒查到的 → 少收 ${ctx.shortage_qty} 件，可能有一部分客人拿不到`
-                  : totalAffectedQty <= ctx.shortage_qty
-                    ? "少收的量比客人要的還多 → 這些訂單可能全部拿不到貨"
-                    : `少收 ${ctx.shortage_qty} 件 / 客人要 ${totalAffectedQty} 件 → 可能有一部分拿不到`}
+              {`🔴 這一項可能還有客人在等 —— 查到 ${affected.length} 張客人訂單（合計 ${totalAffectedQty} 件）`}
+              <div className="mt-0.5 space-y-0.5 text-[11px] font-normal opacity-80">
+                {/* 比大小的結論一律綁定在「查到的這些訂單」上,不講成全店的實情 ——
+                    ① 會讓「全部」以外還有沒查到的,② 會讓查到的其實沒那麼多。 */}
+                <div>
+                  {totalAffectedQty <= ctx.shortage_qty
+                    ? `少收 ${ctx.shortage_qty} 件 ≥ 查到的 ${totalAffectedQty} 件 → 查到的這些訂單可能全部拿不到貨`
+                    : `少收 ${ctx.shortage_qty} 件 / 查到 ${totalAffectedQty} 件 → 可能有一部分拿不到`}
+                </div>
+                {/* ⛔ 下面這兩行是「N 不精確」的唯一告知處,不可以刪 ——
+                       刪掉任一行,上面那個 N 就從「可能」變回「確定」,
+                       而使用者是拿它去按不可逆的按鈕的。 */}
+                <div>⚠️ 已經退回總倉的沒有扣掉 → 實際在等的可能比這少。</div>
+                {affectedTruncated && (
+                  <div>
+                    ⚠️ 一次只查前 {AFFECTED_CAP} 張，第 {AFFECTED_CAP + 1} 張以後沒查 → 也可能比這多。
+                  </div>
+                )}
               </div>
             </div>
             <ul className="max-h-32 space-y-0.5 overflow-y-auto px-3 py-2 text-xs">
@@ -672,9 +755,17 @@ export function TransferShortageResolveModal({
 //   ⇒ 「用一個我不能驗證的前提去換掉一道能驗證的防線」= 又一次把「我不知道」畫成「我確定」,
 //     正是本檔頭第一鐵則禁止的那件事,只是這次搬到程式碼層。
 //
-// ⇒ 採乙案:SQL 端照樣加條件(讓 limit 盡量花在有效訂單上,這部分不必驗證也只賺不賠),
-//   前端那一刀**保留**當防線,並在 render 把「查完的 0」和「沒查完的 0」分成兩句話講。
+// ⇒ 採乙案:前端那一刀**保留**當防線,並在 render 把「查完的 0」和「沒查完的 0」分成兩句話講。
 //   這條路的正確性完全不依賴 PostgREST 的內嵌篩選行為 ⇒ 讀碼就能驗證。
+//
+// ⚠️⚠️ 2026-08-21 四審更正(P2):這一段原本寫「採乙案:**SQL 端照樣加條件**(讓 limit 盡量
+//   花在有效訂單上)」—— 那句話沒有兌現,磁碟上不存在這個條件:
+//     ✅ SQL 端有的是**訂單層**狀態條件 .not("status","in",NOT_WAITING_ORDER_STATUSES)
+//        —— 那是本輪為了修「漏掉 partially_completed」新加的,跟甲案/乙案無關。
+//     ❌ 這一段在講的**明細層** .not("items.status","in",…) **從來沒有加**。
+//   ⇒ 實際採的是「明細層完全交給前端那一刀」,不是「兩邊都加」。
+//     結果上不影響安全(前端那道防線在,見上面 rows 那一段),但敘述與程式不一致本身
+//     就是本檔頭第一鐵則要根絕的病 ⇒ 在這裡改正,不留著騙下一個人。
 //
 // 📌 什麼情況下值得回頭做甲案:有了可拋棄的測試庫(staging / 本地 docker)、
 //   並且實測「內嵌篩選會讓 top-level 單消失」為真之後。
