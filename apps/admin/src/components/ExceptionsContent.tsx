@@ -20,6 +20,8 @@ import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "./SpinButton";
 import { TransferShortageResolveModal, type ShortageContext } from "./TransferShortageResolveModal";
+import { ExceptionHistoryModal, type ExceptionCase, type ExceptionSubject } from "./ExceptionHistoryModal";
+import { useRole } from "@/lib/role";
 
 type Tab = "all" | "po_shortage" | "po_damage" | "po_over" | "transfer_short";
 
@@ -102,12 +104,19 @@ export default function ExceptionsContent({
   showHeader?: boolean;
   onCountChange?: (count: number) => void;
 }) {
+  const role = useRole();
+  const canManageHistory = role === "owner" || role === "admin" || role === "hq_manager";
   const [rows, setRows] = useState<ExceptionRow[] | null>(null);
   const [counts, setCounts] = useState<ExceptionCounts | null>(null);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("all");
   const [resolveCtx, setResolveCtx] = useState<ShortageContext | null>(null);
+  const [historyCases, setHistoryCases] = useState<ExceptionCase[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historySubject, setHistorySubject] = useState<ExceptionSubject | null>(null);
+  const [historyCase, setHistoryCase] = useState<ExceptionCase | undefined>(undefined);
+  const [showResolved, setShowResolved] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
   const [page, setPage] = useState(1);
   const [prevTab, setPrevTab] = useState<Tab>(tab);
@@ -117,6 +126,19 @@ export default function ExceptionsContent({
     setPrevTab(tab);
     setPage(1);
   }
+
+  // 處理歷程與 live 異常分開抓：已結案後 live row 消失，歷程仍必須找得到。
+  useEffect(() => {
+    if (!canManageHistory) { setHistoryCases([]); setHistoryError(null); return; }
+    let cancelled = false;
+    getSupabase().rpc("rpc_hq_exception_cases", { p_status: "all" }).then(({ data, error: err }) => {
+      if (cancelled) return;
+      if (err) { setHistoryError(err.message); return; }
+      setHistoryCases((data ?? []) as ExceptionCase[]);
+      setHistoryError(null);
+    });
+    return () => { cancelled = true; };
+  }, [canManageHistory, reloadTick]);
 
   // server-side 抓當前 tab + page(rpc_hq_exceptions 一次回 total / 各 tab counts / 當頁 rows)
   useEffect(() => {
@@ -186,8 +208,6 @@ export default function ExceptionsContent({
         setTotal(resp.total ?? 0);
         setCounts(cnts);
         setError(null);
-        if (onCountChange) onCountChange(cnts.all);
-
         // 處理掉項目後列表縮短 → 修正超出範圍的頁碼(在 async 內、非 effect body,不觸發 set-state-in-effect)
         if (mapped.length === 0 && page > 1 && (resp.total ?? 0) > 0) {
           setPage(Math.max(1, Math.ceil((resp.total ?? 0) / PAGE_SIZE)));
@@ -204,6 +224,24 @@ export default function ExceptionsContent({
   const c = counts ?? EMPTY_COUNTS;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
+  const reopenedOnly = historyCases.filter((item) => item.status === "open" && !item.is_live);
+  const resolvedCases = historyCases.filter((item) => item.status === "resolved");
+  const caseFor = (rowKey: string) => historyCases.find((item) => item.row_key === rowKey);
+  const subjectFor = (row: ExceptionRow): ExceptionSubject => ({
+    rowKey: row.key, type: row.type, docNo: row.doc_no, skuCode: row.sku_code,
+    skuLabel: row.sku_label, warehouseName: row.warehouse_name,
+    expected: row.expected, actual: row.actual, diff: row.diff,
+  });
+  const subjectForCase = (item: ExceptionCase): ExceptionSubject => ({
+    rowKey: item.row_key, type: item.type, docNo: item.snapshot.doc_no ?? "—",
+    skuCode: item.snapshot.sku_code ?? null, skuLabel: item.snapshot.sku_label ?? "—",
+    warehouseName: item.snapshot.warehouse_name ?? null, expected: Number(item.snapshot.expected ?? 0),
+    actual: Number(item.snapshot.actual ?? 0), diff: Number(item.snapshot.diff ?? 0),
+  });
+
+  useEffect(() => {
+    onCountChange?.((counts?.all ?? 0) + reopenedOnly.length);
+  }, [counts, onCountChange, reopenedOnly.length]);
 
   // 分頁控制列 — server-side(rpc_hq_exceptions),表格上、下各放一份
   // (手機不用滑過整頁 20 列才能換頁),樣式對齊 /hq/inbox 其他來源
@@ -238,7 +276,7 @@ export default function ExceptionsContent({
         <header>
           <h1 className="text-xl font-semibold">⚠️ 異常處理</h1>
           <p className="text-sm text-zinc-500">
-            {counts === null ? "載入中…" : `共 ${c.all} 筆異常 · 進貨短少 ${c.po_shortage} / 進貨破損 ${c.po_damage} / 過量 ${c.po_over} / 收貨短少 ${c.transfer_short}`}
+            {showResolved ? `已結案 ${resolvedCases.length} 筆（仍保留處理經過）` : counts === null ? "載入中…" : `待處理 ${c.all + reopenedOnly.length} 筆 · 進貨短少 ${c.po_shortage} / 進貨破損 ${c.po_damage} / 過量 ${c.po_over} / 收貨短少 ${c.transfer_short}`}
           </p>
         </header>
       )}
@@ -248,6 +286,24 @@ export default function ExceptionsContent({
           {error}
         </div>
       )}
+      {historyError && (
+        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+          處理歷程載入失敗：{historyError}
+        </div>
+      )}
+
+      {canManageHistory && <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
+        <SpinButton onClick={() => setShowResolved(false)} className={`-mb-px border-b-2 px-3 py-2 text-sm ${!showResolved ? "border-blue-600 font-semibold text-blue-700 dark:text-blue-300" : "border-transparent text-zinc-500"}`}>待處理</SpinButton>
+        <SpinButton onClick={() => setShowResolved(true)} className={`-mb-px border-b-2 px-3 py-2 text-sm ${showResolved ? "border-blue-600 font-semibold text-blue-700 dark:text-blue-300" : "border-transparent text-zinc-500"}`}>已結案歷程 <span className="ml-1 text-xs text-zinc-400">{resolvedCases.length}</span></SpinButton>
+      </div>}
+
+      {canManageHistory && showResolved ? (
+        <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+          <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800"><thead className="bg-zinc-50 dark:bg-zinc-900"><tr className="text-left text-xs uppercase tracking-wide text-zinc-500"><th className="px-3 py-2">單號 / 品項</th><th className="px-3 py-2">最後結果</th><th className="px-3 py-2">結案時間</th><th className="px-3 py-2"></th></tr></thead>
+            <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">{resolvedCases.length === 0 ? <tr><td colSpan={4} className="p-6 text-center text-zinc-500">尚無已結案異常</td></tr> : resolvedCases.map((item) => <tr key={item.id}><td className="px-3 py-2"><div className="font-mono text-xs">{item.snapshot.doc_no ?? "—"}</div><div className="text-xs">{item.snapshot.sku_label ?? "—"}</div></td><td className="px-3 py-2 text-xs">{item.result}</td><td className="px-3 py-2 text-xs text-zinc-500">{item.resolved_at ? new Date(item.resolved_at).toLocaleString("zh-TW") : "—"}</td><td className="px-3 py-2"><SpinButton onClick={() => { setHistorySubject(subjectForCase(item)); setHistoryCase(item); }} className="min-h-[44px] rounded-md border border-zinc-300 px-3 text-xs dark:border-zinc-700">看歷程 / 重開</SpinButton></td></tr>)}</tbody>
+          </table>
+        </div>
+      ) : <>
 
       <div className="flex flex-wrap gap-1 border-b border-zinc-200 dark:border-zinc-800">
         {(["all", "po_shortage", "po_damage", "po_over", "transfer_short"] as const).map((t) => {
@@ -267,6 +323,13 @@ export default function ExceptionsContent({
           );
         })}
       </div>
+
+      {canManageHistory && reopenedOnly.length > 0 && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/30">
+          <div className="text-sm font-semibold text-amber-900 dark:text-amber-200">重新開啟追蹤（原本的異常已不在即時清單）</div>
+          <div className="mt-2 flex flex-wrap gap-2">{reopenedOnly.map((item) => <SpinButton key={item.id} onClick={() => { setHistorySubject(subjectForCase(item)); setHistoryCase(item); }} className="min-h-[44px] rounded-md border border-amber-300 bg-white px-3 text-xs dark:border-amber-700 dark:bg-zinc-900">{item.snapshot.doc_no ?? "—"} · {item.snapshot.sku_label ?? "—"} → 繼續處理</SpinButton>)}</div>
+        </div>
+      )}
 
       {/* 分頁 — 表格上方(手機優先看得到) */}
       {paginationBar}
@@ -315,6 +378,7 @@ export default function ExceptionsContent({
                   <div className="whitespace-nowrap">{r.extra}</div>
                 </td>
                 <td className="px-3 py-2 text-xs whitespace-nowrap">
+                  <div className="flex items-center gap-2">
                   {r.type === "transfer_short" && r.shortage_ctx ? (
                     <SpinButton
                       onClick={() => setResolveCtx(r.shortage_ctx ?? null)}
@@ -325,6 +389,8 @@ export default function ExceptionsContent({
                   ) : (
                     <Link href={r.doc_link} className="text-blue-600 hover:underline dark:text-blue-400">前往 →</Link>
                   )}
+                    {canManageHistory && <SpinButton onClick={() => { setHistorySubject(subjectFor(r)); setHistoryCase(caseFor(r.key)); }} className="min-h-[44px] rounded-md border border-zinc-300 px-2 text-xs dark:border-zinc-700">處理歷程</SpinButton>}
+                  </div>
                 </td>
               </tr>
             ))}
@@ -345,6 +411,10 @@ export default function ExceptionsContent({
           }}
         />
       )}
+      {canManageHistory && historySubject && (
+        <ExceptionHistoryModal subject={historySubject} caseRecord={historyCases.find((item) => item.id === historyCase?.id) ?? historyCase} onClose={() => { setHistorySubject(null); setHistoryCase(undefined); }} onChanged={() => setReloadTick((tick) => tick + 1)} />
+      )}
+      </>}
     </div>
   );
 }
