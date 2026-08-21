@@ -204,6 +204,13 @@ export function TransferShortageResolveModal({
   //   ⇒ 三態:srcIsHq === true / false ＝ 查到了;srcCheckFailed ＝ 查不到(解鎖);
   //     兩者都不是 ＝ 還在查(鎖住)。
   const [srcCheckFailed, setSrcCheckFailed] = useState(false);
+  // 送出成功後停在這個視窗、把「你剛剛按了哪顆」講出來,按「完成」才收掉。
+  // ⭐ 2026-08-22 員工回報:「處理後的狀態有辦法顯示在另一頁嗎,不然不知道是否按錯」——
+  //   兩顆都不可逆、按完那筆立刻從清單消失,原本連個回執都沒有。
+  //   ⛔ 這裡只能寫「已經記下來了」這種**確定為真**的話(UPDATE 是無條件寫入,
+  //     20260811020000:262-270),不要在這裡重述 RPC 做了什麼帳務動作 ——
+  //     那些話的真假條件已經寫在上面兩顆的說明裡了。
+  const [doneTitle, setDoneTitle] = useState<string | null>(null);
 
   // 出貨端是不是總倉 —— 查它有兩個用途(2026-08-21 六審後從「只是多講一句」升級):
   //   ① 兩顆的「記回原本送貨出去的那一邊」實際是 rpc_inbound 到 transfers.source_location
@@ -299,12 +306,37 @@ export function TransferShortageResolveModal({
         p_operator: operator,
       });
       if (e) throw new Error(translateRpcError(e));
-      onSubmitted();
+      // ⛔ 不直接 onSubmitted()(那會立刻關掉視窗)—— 先給回執,按「完成」才關。
+      setDoneTitle(RESOLUTION_OPTIONS.find((o) => o.value === resolution)?.title ?? resolution);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setSubmitting(false);
     }
+  }
+
+  // 送出成功的回執 —— ⛔ 右上角 ✕ 也要走 onSubmitted,否則清單不會重抓、
+  //   使用者會看到那一筆還躺在「收貨短少」裡(其實已經處理掉了)。
+  if (doneTitle) {
+    return (
+      <Modal open onClose={onSubmitted} title="處理店家少收的貨" maxWidth="max-w-3xl">
+        <div className="rounded-md border-2 border-emerald-400 bg-emerald-50 p-4 text-sm text-emerald-900 dark:border-emerald-600 dark:bg-emerald-950 dark:text-emerald-200">
+          <div className="text-base font-bold">✓ 已記錄：{doneTitle}</div>
+          <div className="mt-1 leading-relaxed">
+            這筆的處理紀錄（誰按的、按了哪顆、什麼時候、備註）可以到
+            「<span className="font-bold">異常 → 已處理</span>」分頁查看。
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end">
+          <SpinButton
+            onClick={onSubmitted}
+            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+          >
+            完成
+          </SpinButton>
+        </div>
+      </Modal>
+    );
   }
 
   return (
