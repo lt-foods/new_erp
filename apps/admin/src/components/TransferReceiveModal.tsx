@@ -385,15 +385,31 @@ export function TransferReceiveModal({
           </div>
         )}
 
-        {/* 短收警語 — 店家常以為「填少＝把多的退回總倉」，實際上是從帳上扣掉。
-            ⛔ 不可以寫「系統會自動補回總倉」：那要總倉在收件匣的「收貨短少」按一顆鈕，
-               不是自動的（rpc_resolve_transfer_item_shortage，只有總部角色能按）。 */}
+        {/* 短收警語 — 每一句都要能指出出處，⛔ 不要寫查不到根據的推論（2026-08-21 教訓）
+            ① 「這等於向總倉提出退回」：收貨後 qty_received < qty_shipped 的明細會自動出現在
+               總倉收件匣的「⚠️ 異常 → 收貨短少」等總倉決定
+               （v_hq_exceptions 最新版 20260811020010:141-162，條件 t.status='received'
+                 AND ti.qty_received < ti.qty_shipped AND shortage_resolution IS NULL）。
+            ② 「這 N 件會先從帳上扣掉」：收貨只把「實收量」入庫到分店，差額沒有任何補償動作
+               （rpc_receive_transfer 最新版
+                 20260814010000_receive_surplus_to_internal_pool.sql:1192-1211）。
+            ③ 「備註總倉看得到」：view 直接把 transfers.notes 串成「店家收貨備註：…」顯示
+               （20260811020010:114-115）。
+            ⛔ 不可以寫「系統會自動補回總倉」：那要總倉在收件匣按一顆鈕
+               （rpc_resolve_transfer_item_shortage，只有 owner/admin/hq_manager 能按，
+                 20260811020000:109-111），不是自動的。
+            ⛔ 不可以寫「填少不等於把貨退回去」：老闆的模型裡店家填少就是在提出退回，
+               只是總倉還沒決定接不接受 —— 舊文案的框架是錯的。 */}
         {shortQty > 0 && (
           <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-            <div className="font-semibold">⚠️ 少收 {shortQty} 件：這 {shortQty} 件會先從帳上扣掉。</div>
+            <div className="font-semibold">
+              ⚠️ 少收 {shortQty} 件：這等於向總倉提出退回 {shortQty} 件。
+            </div>
             <div className="mt-0.5">
-              如果是「總倉多給、貨還在總倉」，請在下面備註寫清楚，總倉才處理得到
-              —— <span className="font-semibold">填少不等於把貨退回去</span>。
+              這 {shortQty} 件會先從帳上扣掉，<span className="font-semibold">總倉會在收件匣決定接不接受</span>。
+            </div>
+            <div className="mt-0.5">
+              請在下面備註寫清楚原因（例：總倉多給 2、破損 2），總倉看得到這段備註。
             </div>
           </div>
         )}

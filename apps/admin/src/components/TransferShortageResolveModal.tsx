@@ -1,41 +1,44 @@
 "use client";
 
-// 收貨短少處理 Modal
+// 店家少收的貨 — 總倉處理視窗
 // 顯示:
-//   - transfer 短少詳情(品項、缺多少)
-//   - 影響的客戶訂單(同店該品項 pending orders)
-//   - 「該選哪一顆」的適用情境 + 單行道警語
-//   - 6 個處理選項 + 備註
+//   - 這一筆的派出 / 實收 / 少收
+//   - 這家店這個品項還有沒有客人在等(一句話講完,明細在下面)
+//   - 三顆處理鈕 + 備註
 //
-// ⚠️⚠️ 按下去幾乎都回不來(2026-08-21 查證,只改文案沒改行為):
-//   異常清單的 transfer_short 分支條件是
-//     ti.shortage_resolution IS NULL
-//     OR (shortage_resolution = 'replenish' AND 該店該品項還沒收到補的貨)
-//   (最新版 20260811020010_hq_exceptions_drop_customer_shortage.sql:144-160)
-//   而 rpc_resolve_transfer_item_shortage 對「六個 resolution 一律」寫入
-//   shortage_resolution(20260811020000:262-270,沒有任何例外)
-//   ⇒ 除了 replenish,其餘 5 顆按完這一筆就從清單消失、之後無法改選別的。
-//   其中 cancel_orders / vendor_claim / accept 是「僅打標記」(RPC 的 COMMENT 原話),
-//   短少的貨不會回到總倉庫存。
-//   實際案例:古華有一筆按了 restock_hq,貨帳確實回到總倉,但派貨工作台的「已派量」
-//   (v_picking_demand_by_po 的 po_sku_already_wave,最新版
-//   20260818000030_wave_transfer_join_by_id.sql:174-194)是拿 picking_wave_items.qty
-//   ＋補貨 transfer 的 ti.qty_requested 加總 —— 兩個來源都是「當初打算派多少」,
-//   既不看實收、也不看沖回 ⇒ 系統永遠認為那批貨已經派掉,沒有人能再派它,
-//   8 位客人 pending 兩個月。⇒ 還有客人在等就要選 redispatch。
+// ⭐⭐⭐ 這支檔案的第一鐵則:畫面上每一句「系統會怎樣」的話,都要能指出出處。
+//   2026-08-21 上一版在紅框裡寫了一句沒查證的推論(「古華那筆沒有任何人能再派它」),
+//   Codex 審的是「程式對不對」,抓不到「畫面上寫的話是不是真的」⇒ 整輪審過了還是錯的。
+//   ⛔ 查不到出處的話寧可少講一句。⛔ 不要寫「永遠」「沒有任何人」這種絕對句。
+//   (那句話錯在只查了派貨工作台的路 1。路 2 補貨申請的可配量直接讀總倉真實庫存
+//    stock_balances.on_hand —— v_picking_demand_no_po 最新版
+//    20260612000040_approve_restock_via_picking_workstation.sql:73-78 的 hq_supply CTE
+//    ⇒ 貨記回總倉之後,開一張補貨申請就派得出去。古華等兩個月的真因是沒人知道要開申請。)
 //
-// ⚠️⚠️⚠️ 為什麼這幾段警語要做成擋眼的色底、不是灰色小字
+// ⚠️ 三顆都是單行道(按下去回不來):
+//   異常清單的 transfer_short 分支要求 ti.shortage_resolution IS NULL
+//   (或 replenish 且還沒補到)才會列出來
+//   (v_hq_exceptions 最新版 20260811020010_hq_exceptions_drop_customer_shortage.sql:141-162),
+//   而 rpc_resolve_transfer_item_shortage 對所有 resolution 一律寫入 shortage_resolution
+//   (最新版 20260811020000_transfer_shortage_redispatch.sql:262-270,沒有任何例外)
+//   ⇒ 按完這一筆就從清單消失,之後不能再改選別的。
+//   ⛔ 也因此不可以做批次 / 全選 / 一鍵處理(2026-08-21 老闆裁示)。
+//
+// ⚠️⚠️ 為什麼警語要做成擋眼的色底、不是灰色小字
 //   2026-08-21 正式庫唯讀實測(hq_to_store、已收貨、實收<派出、已處理過的分組):
-//     restock_hq  85 筆 / 230 件（2026-08-14 ~ 08-20）
-//     accept      31 筆 /  89 件（2026-08-07 ~ 08-20）  ← 只打標記,貨不回總倉
-//     redispatch  23 筆 / 155 件（2026-08-14 ~ 08-20）
-//   ⇒ restock_hq 被按的次數是 redispatch 的 3.7 倍(85:23),而「還有客人在等」時
-//     正解是 redispatch ⇒ 現場正在大量製造不可逆的古華。
-//   ⇒ 這幾段字是本檔存在的主要理由,⛔ 不要為了版面清爽把它改回小灰字。
+//     restock_hq  85 筆 / 230 件   accept 31 筆 / 89 件   redispatch 23 筆 / 155 件
+//   ⇒ 「不補」被按的次數是「補一批」的 3.7 倍(85:23),而還有客人在等時正解是「補一批」。
+//   ⛔ 不要為了版面清爽把它改回小灰字。
 //   (數字是當時快照、會過期;⛔ 刻意不放進畫面文案,免得變成一句過期的謊)
+//
+// ⚠️ 畫面上只留三顆,但 DB 的允許值仍是六種
+//   (20260811020000:69 的 CHECK 含 replenish/cancel_orders/vendor_claim)。
+//   歷史資料還會有那三種值 —— 本檔只負責「新的選擇」,不負責顯示舊值;
+//   舊值的顯示字串是 DB view 自己組的(20260811020010:118「· 已標補出貨,尚未補到」),
+//   前端沒有任何 resolution → 文字的對照表 ⇒ 移除選項不會讓舊資料顯示成 undefined。
+//   ⛔ 只動畫面,零 RPC 變更、零 migration。
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
@@ -57,93 +60,71 @@ export type ShortageContext = {
   dest_store_name: string;
 };
 
-type Resolution = "redispatch" | "restock_hq" | "replenish" | "cancel_orders" | "vendor_claim" | "accept";
+// 畫面上只給這三顆。老闆的模型:總倉只有兩個決定 —— 貨要不要退回總倉、店家的帳要不要扣。
+//   退 + 扣 → redispatch(補一批) / restock_hq(不補)
+//   不退 + 扣 → accept
+//   不退 + 不扣(把貨算回給店家)→ 系統目前做不到,要另開案 ⇒ 畫面上不放。
+type Resolution = "redispatch" | "restock_hq" | "accept";
 
 const RESOLUTION_OPTIONS: Array<{
   value: Resolution;
   icon: string;
   title: string;
   desc: string;
-  // 按下去會發生什麼「回不去」的事 / 這顆的關鍵限制。顯示在說明下方的色底方塊裡,
-  // 一律顯示(不是選中才出現)—— 要在按之前就看到才有用。
-  warn?: string;
-  // warn 的色調:danger = 最容易按錯又不可逆(restock_hq)、caution = 單行道且貨不回總倉、
-  // info = 正確選項的補充、good = 唯一會留在清單上的那顆
-  warnTone?: "danger" | "caution" | "info" | "good";
-  cta?: { label: string; href: string; hint: string };
+  // 按下去會發生什麼「回不去」的事。一律顯示(不是選中才出現)—— 要在按之前就看到才有用。
+  warn: string;
+  warnTone: "danger" | "caution" | "info";
 }> = [
   {
     value: "redispatch",
     icon: "🔁",
-    title: "拒絕短收 — 沖回總倉並自動重派",
-    desc: "貨仍在總倉(漏裝/揀貨少拿):短少數量沖回總倉庫存,並自動開一張撿貨單重派回原店、接回原訂單(出貨/收貨後訂單自動推進)。重派撿貨單會出現在總倉收件匣的撿貨單匣。真的遺失請勿選(帳會多)。",
+    title: "接受退回 — 貨回總倉，補一批給店家",
+    desc:
+      "少收的數量以原出庫成本記回總倉庫存，並自動開一張撿貨單給該店 —— " +
+      "撿貨單會出現在收件匣的「📋 撿貨單」，樓下撿完再送一次。",
     warnTone: "info",
-    warn: "還有客人在等這批貨 → 選這顆。按完這一筆會從「收貨短少」清單消失,但貨已沖回總倉、撿貨單也開好了,樓下撿完就會再送一次。",
+    // 出處:記回總倉 20260811020000:188-206(rpc_inbound 到 transfers.source_location);
+    //      自動開 draft 撿貨單 20260811020000:222-245;
+    //      draft 在收件匣撿貨單匣算待處理 hq/inbox/page.tsx 的 classifyPicking。
+    // ⛔ 刻意不寫「客人訂單會自動推進」:那要再走 rpc_mark_orders_shipping_for_wave
+    //    (20260614000050 最新版)且要 campaign 對得上,本檔沒有實測過 ⇒ 不寫進畫面。
+    warn: "還有客人在等這批貨 → 選這顆。按完這一筆會從清單消失，但貨已經回到總倉、撿貨單也開好了。",
   },
   {
     value: "restock_hq",
     icon: "🏭",
-    title: "貨仍在總倉（只沖回庫存,不重派）",
-    desc: "把短少數量以原出庫成本記回總倉庫存,之後再自行決定怎麼派。要自動重派回原店請選上面的「拒絕短收」。真的遺失請勿選(帳會多)。",
-    warnTone: "danger",
-    warn: "⚠️ 單行道,按下去回不來:這一筆會從「收貨短少」清單消失,之後不能再改選上面的「🔁 拒絕短收(自動重派)」。而且系統仍算這批貨已經派掉了 → 沒有人能再派它。還有客人在等,請改選「🔁 拒絕短收」。",
-  },
-  {
-    value: "replenish",
-    icon: "📦",
-    title: "補出貨",
-    desc: "從 HQ 庫存或他店再派一筆貨給該店補上短少。",
-    warnTone: "good",
-    warn: "✓ 只有這一顆會留在清單上:標了之後這筆會繼續顯示「已標補出貨,尚未補到」,直到該店真的收到補的貨才自動消失。不確定要選哪顆時,這顆最安全。",
-    cta: {
-      // CTA 指補貨申請（總倉派貨）：自由轉貨的表單只給店↔店、選不到總倉，
-      // 而短少多半是總倉再補一次。要從別店調貨走 /wms/transfers 的「+ 建自由轉貨」
-      // （2026-08-16 重新開放，20260816000040），有掛顧客訂單的貨走「轉給別人 + 空中轉」。
-      label: "前往補貨申請建單",
-      href: "/restock/new",
-      hint: "建單後回來標記為「已處理」；要從別店調貨改用內部調撥的「+ 建自由轉貨」",
-    },
-  },
-  {
-    value: "cancel_orders",
-    icon: "❌",
-    title: "取消客戶訂單",
-    desc: "通知顧客貨拿不到,在客戶端取消訂單 / 退款。",
+    title: "接受退回 — 貨回總倉，不補",
+    desc: "少收的數量以原出庫成本記回總倉庫存，不會自動再送給店家。",
     warnTone: "caution",
-    warn: "⚠️ 單行道:這一筆會從清單消失、不能再改選別的。而且這顆只打標記 —— 短少的貨不會回到總倉庫存,帳上就是少了這些。貨其實還在總倉的話請改選上面兩顆。",
-    cta: {
-      // 收件匣「異常 → 訂單短少」分頁已於 2026-08-11 移除,改導去訂單管理頁處理
-      label: "前往訂單管理",
-      href: "/orders",
-      hint: "取消該店該品項的顧客訂單後,回來標記為「已處理」",
-    },
-  },
-  {
-    value: "vendor_claim",
-    icon: "🚚",
-    title: "供應商 / 物流求償",
-    desc: "判定為運送途中遺失或上游短裝,跟物流/供應商求償。",
-    warnTone: "caution",
-    warn: "⚠️ 單行道:這一筆會從清單消失、不能再改選別的。這顆只打標記 —— 短少的貨不會回到總倉庫存(貨真的不見了才選這顆)。",
+    // 出處:記回總倉 20260811020000:140-163;
+    //      「開補貨申請就派得出去」= v_picking_demand_no_po 最新版 20260612000040:60-78
+    //      (需求來自 restock_requests 且 status='approved_transfer';
+    //       可配量 hq_supply 直接讀 stock_balances.on_hand,不需要採購單、不需要進貨單)。
+    warn:
+      "按下去回不來，這一筆會從清單消失。之後要再補給這家店：請該店開一張補貨申請，" +
+      "總倉核准後就能從補貨申請直接派 —— 貨已經在總倉帳上，不用再進一次貨。",
   },
   {
     value: "accept",
-    icon: "✓",
-    title: "接受短少 (認賠)",
-    desc: "短少不追究,直接結案。庫存以實收為準。",
-    warnTone: "caution",
-    warn: "⚠️ 單行道:這一筆會從清單消失、不能再改選別的。這顆只打標記 —— 短少的貨不會回到總倉庫存,等於認賠這些貨。貨其實還在總倉的話⛔不要選這顆。",
+    icon: "✋",
+    title: "不接受退回",
+    desc: "貨不回總倉，店家的帳照扣。",
+    warnTone: "danger",
+    // 出處:accept 在 RPC 裡沒有任何分支,只會走到最後那段 UPDATE
+    //      (20260811020000:112-270,只有 restock_hq / redispatch 有 rpc_inbound);
+    //      函式 COMMENT 原話「其餘 resolution 僅打標記」(20260811020000:281)。
+    warn:
+      "⚠️ 系統目前還不會把貨算回給店家，這筆損失公司會吃掉。請在下面寫清楚不接受的原因（會留在紀錄上）。",
   },
 ];
 
 // warn 方塊的色底 —— 刻意用「擋眼」的實心底色,不是灰色小字(理由見檔頭的實測數字)
-const WARN_TONE_CLASS: Record<"danger" | "caution" | "info" | "good", string> = {
+const WARN_TONE_CLASS: Record<"danger" | "caution" | "info", string> = {
   danger:
     "border-rose-400 bg-rose-100 font-semibold text-rose-900 dark:border-rose-600 dark:bg-rose-950 dark:text-rose-200",
   caution:
     "border-amber-300 bg-amber-100 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200",
   info: "border-blue-200 bg-blue-50 text-blue-900 dark:border-blue-800 dark:bg-blue-950/60 dark:text-blue-200",
-  good: "border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
 };
 
 type AffectedOrder = {
@@ -168,11 +149,24 @@ export function TransferShortageResolveModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [affected, setAffected] = useState<AffectedOrder[] | null>(null);
+  // 查不到(沒有分店 id / 查詢失敗)。⛔ 不可以跟「查到 0 張」混在一起顯示成
+  // 「沒有客人在等」—— 那是把「我沒查到」講成「確定沒有」,正是本檔要根絕的那種假話。
+  const [affectedFailed, setAffectedFailed] = useState(false);
+  // 這張單的出貨端是不是總倉。null = 還在查 / 查不到 → 什麼都不多講(按鈕文案照預設)。
+  // false = 確定不是總倉(店對店、店退回總倉)→ 上面兩顆的「貨回總倉」對這張單不成立,
+  // 要明講,否則畫面就在說謊。
+  const [srcIsHq, setSrcIsHq] = useState<boolean | null>(null);
 
   useEffect(() => {
-    if (!ctx.dest_store_id) { setAffected([]); return; }
     let cancelled = false;
     (async () => {
+      // 沒有分店 id ＝ 這張單的收貨端不是分店(例如店退回總倉)→ 查不出客人訂單。
+      // ⛔ 放在 async 裡而不是 effect body:effect body 同步 setState 會被
+      //    react-hooks/set-state-in-effect 擋(原版就在這一行被標紅)。
+      if (!ctx.dest_store_id) {
+        if (!cancelled) { setAffected([]); setAffectedFailed(true); }
+        return;
+      }
       try {
         const sb = getSupabase();
         const { data, error: e } = await sb
@@ -198,19 +192,64 @@ export function TransferShortageResolveModal({
           return { id: o.id, order_no: o.order_no, member_id: o.member_id, pending_qty: pending, status: o.status };
         }).filter((x) => x.pending_qty > 0);
         setAffected(rows);
+        setAffectedFailed(false);
       } catch (e) {
         if (!cancelled) {
-          setError(e instanceof Error ? e.message : String(e));
+          // ⛔ 不要塞進 error 那個紅框:那個框是「送出失敗」用的,會讓人以為按鈕壞了。
+          console.warn("查客人訂單失敗:", e);
           setAffected([]);
+          setAffectedFailed(true);
         }
       }
     })();
     return () => { cancelled = true; };
   }, [ctx.dest_store_id, ctx.sku_id]);
 
+  // 出貨端是不是總倉 —— 只為了「畫面別說謊」而查:
+  //   ① 兩顆「貨回總倉」實際是把貨記回 transfers.source_location(20260811020000:155/193),
+  //      店對店的單記回去的是「原本那家店」,不是總倉。
+  //   ② 「補一批」對非總倉出貨的單會被 RPC 直接擋下
+  //      (20260811020000:172-177 RAISE「出貨端不是總倉，無法自動重派」)。
+  // 查不到就不顯示(維持預設文案),不要拿「查不到」當「確定不是」。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const sb = getSupabase();
+        const { data: t, error: e1 } = await sb
+          .from("transfers")
+          .select("source_location")
+          .eq("id", ctx.transfer_id)
+          .maybeSingle();
+        if (e1) throw new Error(e1.message);
+        const locId = (t as { source_location: number | null } | null)?.source_location;
+        if (locId == null) return;
+        const { data: l, error: e2 } = await sb
+          .from("locations")
+          .select("type")
+          .eq("id", locId)
+          .maybeSingle();
+        if (e2) throw new Error(e2.message);
+        if (cancelled) return;
+        setSrcIsHq(((l as { type: string | null } | null)?.type ?? "") === "central_warehouse");
+      } catch (e) {
+        if (!cancelled) console.warn("查出貨端失敗:", e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [ctx.transfer_id]);
+
+  // 「不接受退回」＝公司吃掉這筆損失,一定要留下原因(老闆 2026-08-21 指定必填)
+  const reasonRequired = resolution === "accept";
+  const reasonMissing = reasonRequired && notes.trim() === "";
+
   async function submit() {
     if (!resolution) {
-      setError("請選擇處理方式");
+      setError("請選擇怎麼處理");
+      return;
+    }
+    if (reasonMissing) {
+      setError("選「不接受退回」一定要寫原因。");
       return;
     }
     setSubmitting(true);
@@ -238,8 +277,8 @@ export function TransferShortageResolveModal({
   const totalAffectedQty = affected?.reduce((s, o) => s + o.pending_qty, 0) ?? 0;
 
   return (
-    <Modal open onClose={onClose} title="處理收貨短少" maxWidth="max-w-3xl">
-      {/* 短少詳情 */}
+    <Modal open onClose={onClose} title="處理店家少收的貨" maxWidth="max-w-3xl">
+      {/* 這一筆的數字 */}
       <div className="rounded-md border border-rose-200 bg-rose-50 p-3 dark:border-rose-900 dark:bg-rose-950/40">
         <div className="flex flex-wrap items-baseline gap-2">
           <span className="font-mono text-sm">{ctx.transfer_no}</span>
@@ -251,45 +290,47 @@ export function TransferShortageResolveModal({
         </div>
         <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
           <div className="rounded border border-zinc-200 bg-white p-2 dark:border-zinc-800 dark:bg-zinc-900">
-            <div className="text-zinc-500">應收(派出)</div>
+            <div className="text-zinc-500">派出</div>
             <div className="font-mono text-base font-semibold">{ctx.qty_shipped}</div>
           </div>
           <div className="rounded border border-zinc-200 bg-white p-2 dark:border-zinc-800 dark:bg-zinc-900">
-            <div className="text-zinc-500">實收</div>
+            <div className="text-zinc-500">店家實收</div>
             <div className="font-mono text-base font-semibold">{ctx.qty_received}</div>
           </div>
           <div className="rounded border border-rose-300 bg-rose-100 p-2 dark:border-rose-700 dark:bg-rose-900/40">
-            <div className="text-rose-700 dark:text-rose-300">短少</div>
+            <div className="text-rose-700 dark:text-rose-300">少收</div>
             <div className="font-mono text-base font-bold text-rose-700 dark:text-rose-300">{ctx.shortage_qty}</div>
           </div>
         </div>
       </div>
 
-      {/* 影響的客戶訂單 */}
+      {/* 有沒有客人在等 —— 第一眼就要看懂,這是決定按哪一顆的唯一依據。
+          ⛔ 舊版標題寫「📊 該店該品項待處理客戶訂單分析」,老闆看不懂(2026-08-21 退件)。 */}
       <div className="mt-4 rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="border-b border-zinc-200 px-3 py-2 text-xs font-semibold text-zinc-700 dark:border-zinc-800 dark:text-zinc-300">
-          📊 該店該品項待處理客戶訂單分析
-        </div>
         {affected === null ? (
-          <div className="p-3 text-xs text-zinc-500">分析中…</div>
+          <div className="p-3 text-xs text-zinc-500">查詢中…</div>
+        ) : affectedFailed ? (
+          <div className="rounded-md border-l-4 border-amber-400 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+            ⚠️ 查不到這一項的客人訂單，請自行確認有沒有人在等。
+          </div>
         ) : affected.length === 0 ? (
-          <div className="p-3 text-xs text-zinc-500">沒有待處理客戶訂單(可能該品項顧客已取消或已取貨)。</div>
-        ) : (
-          <div className="px-3 py-2">
-            <div className="mb-2 flex flex-wrap items-baseline gap-2 text-xs">
-              <span className="text-zinc-500">{affected.length} 張訂單,合計需求</span>
-              <span className="font-mono text-base font-semibold">{totalAffectedQty}</span>
-              {totalAffectedQty <= ctx.shortage_qty ? (
-                <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-medium text-rose-700 dark:bg-rose-950 dark:text-rose-300">
-                  ⚠ 全部訂單可能受影響
-                </span>
-              ) : (
-                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-300">
-                  部分訂單可能受影響(短少 {ctx.shortage_qty} / 需求 {totalAffectedQty})
-                </span>
-              )}
+          <div className="rounded-md border-l-4 border-emerald-400 bg-emerald-50 p-3 text-sm font-semibold text-emerald-900 dark:bg-emerald-950 dark:text-emerald-200">
+            ✅ 目前沒有客人在等這一項
+            <div className="mt-0.5 text-[11px] font-normal opacity-80">
+              （只算這家店、這個品項、還沒取消也還沒取走的訂單）
             </div>
-            <ul className="max-h-32 space-y-0.5 overflow-y-auto text-xs">
+          </div>
+        ) : (
+          <div>
+            <div className="rounded-md border-l-4 border-rose-500 bg-rose-50 p-3 text-sm font-bold text-rose-900 dark:bg-rose-950 dark:text-rose-200">
+              🔴 這一項還有 {affected.length} 張客人訂單在等（合計 {totalAffectedQty} 件）
+              <div className="mt-0.5 text-[11px] font-normal opacity-80">
+                {totalAffectedQty <= ctx.shortage_qty
+                  ? "少收的量比客人要的還多 → 這些訂單可能全部拿不到貨"
+                  : `少收 ${ctx.shortage_qty} 件 / 客人要 ${totalAffectedQty} 件 → 有一部分拿不到`}
+              </div>
+            </div>
+            <ul className="max-h-32 space-y-0.5 overflow-y-auto px-3 py-2 text-xs">
               {affected.slice(0, 10).map((o) => (
                 <li key={o.id} className="flex items-baseline gap-2">
                   <span className="font-mono text-zinc-700 dark:text-zinc-300">{o.order_no}</span>
@@ -308,45 +349,25 @@ export function TransferShortageResolveModal({
         )}
       </div>
 
-      {/* 處理選項 */}
+      {/* 三顆處理鈕 */}
       <div className="mt-4 space-y-2">
-        <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">選擇處理方式 *</div>
+        <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">要怎麼處理？ *</div>
 
-        {/* 先講「該選哪一顆」,不要讓人自己從六段說明去推理 —— 按錯不可逆(見檔頭註解) */}
-        <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-xs dark:border-blue-800 dark:bg-blue-950/40">
-          <div className="font-semibold text-blue-900 dark:text-blue-200">先看這個:該選哪一顆?</div>
-          <ul className="mt-1 space-y-1 text-blue-900 dark:text-blue-200">
-            <li>
-              <span className="font-semibold">還有客人在等這批貨</span>(上面那張表有列到訂單)
-              → 選 <span className="font-semibold">🔁 拒絕短收</span>:貨沖回總倉,並自動開撿貨單重派回原店。
-            </li>
-            <li>
-              <span className="font-semibold">沒有客人在等</span>,只是想先把貨收回總倉
-              → 選 <span className="font-semibold">🏭 貨仍在總倉</span>。
-            </li>
-            <li>
-              <span className="font-semibold">還不確定 / 要另外補一批給店家</span>
-              → 選 <span className="font-semibold">📦 補出貨</span>(唯一會留在清單上的一顆)。
-            </li>
-            <li>
-              <span className="font-semibold">貨真的遺失或破損了</span>
-              → 選 <span className="font-semibold">🚚 求償</span> 或 <span className="font-semibold">✓ 接受短少</span>
-              (這兩顆<span className="font-semibold">不會</span>把貨補回總倉庫存)。
-            </li>
-          </ul>
-          <div className="mt-2 rounded border-2 border-rose-400 bg-rose-100 p-2 text-[11px] leading-relaxed text-rose-900 dark:border-rose-600 dark:bg-rose-950 dark:text-rose-200">
-            <div className="font-bold">⚠️ 按下去就回不來,先想清楚再按</div>
-            <div className="mt-0.5">
-              除了「📦 補出貨」,其他五顆按完之後這一筆就會從「收貨短少」清單消失,
-              <span className="font-bold">之後不能再改選別的</span>。
-            </div>
-            <div className="mt-1">
-              實際發生過:古華有一筆按了「🏭 貨仍在總倉」,貨帳雖然回到總倉,但系統仍然算這批貨
-              已經派掉了,<span className="font-bold">結果沒有任何人能再派它</span> → 8 位客人等了兩個月。
-            </div>
-            <div className="mt-1 font-bold">⇒ 還有客人在等,就選「🔁 拒絕短收」,不要選「🏭 貨仍在總倉」。</div>
+        <div className="rounded border-2 border-rose-400 bg-rose-100 p-2 text-[11px] leading-relaxed text-rose-900 dark:border-rose-600 dark:bg-rose-950 dark:text-rose-200">
+          <div className="font-bold">⚠️ 三顆都是按下去就回不來，先想清楚再按</div>
+          <div className="mt-0.5">
+            按完之後這一筆就會從「異常」清單消失，<span className="font-bold">不能再改選別的</span>。
           </div>
         </div>
+
+        {/* 只在「確定出貨端不是總倉」時才出現:這種單上面兩顆的「回總倉」不成立。 */}
+        {srcIsHq === false && (
+          <div className="rounded border-2 border-amber-400 bg-amber-100 p-2 text-[11px] leading-relaxed text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200">
+            <span className="font-bold">這張單不是總倉派出去的。</span>
+            貨會退回<span className="font-bold">原本出貨的那個地方</span>（不是總倉），
+            而且第一顆「補一批給店家」會被系統擋下來。
+          </div>
+        )}
 
         {RESOLUTION_OPTIONS.map((opt) => {
           const active = resolution === opt.value;
@@ -375,44 +396,45 @@ export function TransferShortageResolveModal({
                 <div className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{opt.desc}</div>
                 {/* 「按下去會發生什麼回不去的事」一律顯示,不只在選中時才出現 ——
                     要在按之前就看到才有用。⛔ 不可以改回無底色的小灰字:2026-08-21 實測
-                    restock_hq 被誤按的次數是 redispatch 的 3.7 倍(理由見檔頭)。 */}
-                {opt.warn && (
-                  <div
-                    className={`mt-1.5 rounded border px-2 py-1.5 text-[11px] leading-relaxed ${
-                      WARN_TONE_CLASS[opt.warnTone ?? "caution"]
-                    }`}
-                  >
-                    {opt.warn}
-                  </div>
-                )}
-                {active && opt.cta && (
-                  <div className="mt-2 rounded bg-amber-50 p-2 text-xs dark:bg-amber-950/30">
-                    <Link
-                      href={opt.cta.href}
-                      target="_blank"
-                      className="font-medium text-blue-600 hover:underline dark:text-blue-400"
-                    >
-                      → {opt.cta.label}(新分頁)
-                    </Link>
-                    <div className="mt-0.5 text-[11px] text-zinc-500">{opt.cta.hint}</div>
-                  </div>
-                )}
+                    「不補」被誤按的次數是「補一批」的 3.7 倍(理由見檔頭)。 */}
+                <div
+                  className={`mt-1.5 rounded border px-2 py-1.5 text-[11px] leading-relaxed ${
+                    WARN_TONE_CLASS[opt.warnTone]
+                  }`}
+                >
+                  {opt.warn}
+                </div>
               </div>
             </label>
           );
         })}
       </div>
 
-      {/* 備註 */}
+      {/* 備註 —— 選「不接受退回」時必填 */}
       <label className="mt-4 block text-xs">
-        <span className="block font-semibold text-zinc-700 dark:text-zinc-300">處理備註(選填)</span>
+        <span className="block font-semibold text-zinc-700 dark:text-zinc-300">
+          {reasonRequired ? "不接受的原因（必填）*" : "備註（選填）"}
+        </span>
         <textarea
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
-          placeholder="例如:已通知司機張先生補送 / 物流單號 XXX-XX / 顧客同意延期至下批貨..."
+          placeholder={
+            reasonRequired
+              ? "例如：店家自己弄丟的 / 已跟店長談過由店家自行吸收 / 送達時清點無誤"
+              : "例如：已通知司機張先生補送 / 物流單號 XXX-XX / 顧客同意延期至下批貨"
+          }
           rows={2}
-          className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+          className={`mt-1 w-full rounded-md border bg-white px-2 py-1 text-sm dark:bg-zinc-800 ${
+            reasonMissing
+              ? "border-rose-400 dark:border-rose-600"
+              : "border-zinc-300 dark:border-zinc-700"
+          }`}
         />
+        {reasonMissing && (
+          <span className="mt-1 block text-[11px] font-semibold text-rose-600 dark:text-rose-400">
+            這筆損失公司會吃掉，請先寫清楚原因才能送出。
+          </span>
+        )}
       </label>
 
       {error && (
@@ -430,10 +452,10 @@ export function TransferShortageResolveModal({
         </SpinButton>
         <SpinButton
           onClick={submit}
-          disabled={!resolution || submitting}
+          disabled={!resolution || reasonMissing || submitting}
           className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-zinc-300 dark:disabled:bg-zinc-700"
         >
-          {submitting ? "處理中…" : "✓ 標記已處理"}
+          {submitting ? "處理中…" : "✓ 送出"}
         </SpinButton>
       </div>
     </Modal>

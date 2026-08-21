@@ -945,23 +945,30 @@ function HqInboxContent() {
 
   // server-side counts: per source × per stage(badge / tab 用)
   const [counts, setCounts] = useState<Record<SourceTag, Record<Stage, number>> | null>(null);
-  // 異常 chip count = 「收貨短少」筆數(rpc_hq_exceptions 的 counts.transfer_short)
+  // 異常 chip count = 異常「四類全算」(rpc_hq_exceptions 的 counts.all)
   //
-  // 為什麼只算這一類:chip 標籤寫「⚠️ 異常」,但異常 view 有 4 類(進貨短少 / 進貨破損 /
-  // 過量進貨 / 收貨短少)。只有「收貨短少」是「貨的帳不見了、要總倉去按一顆鈕才回得來」的
-  // 待辦(rpc_resolve_transfer_item_shortage);其餘 3 類是進貨端的紀錄性差異,沒有對應動作。
-  // 2026-08-21 線上實測 844 件 / $60,321 的短收之所以躺著沒人處理,就是因為這個數字
-  // 在收件匣上一直是 0(舊版只有 <ExceptionsContent /> 掛載時才會被填 → 要先點進異常分頁)。
+  // 口徑由老闆 2026-08-21 裁示:chip 標籤寫「⚠️ 異常」,點進去的清單預設也是「全部」分頁,
+  // 徽章就該等於那個「全部」的數字。
   //
-  // ⚠️ 一律讀 counts.transfer_short:counts.all 會把其餘 3 類、以及 DB view 若尚未套
-  // 20260811020010 時的已廢棄 customer_shortage 一起算進來(同款防禦見 ExceptionsContent.tsx
-  // 的 rows filter)。counts 在 RPC 內是 FROM ex(未依 p_type 過濾)算的,所以帶哪個
-  // p_type 都拿得到同一份 counts。
+  // 為什麼 counts.all 是安全的(2026-08-21 老闆截圖實證):
+  //   進貨短少 3 ＋ 進貨破損 2 ＋ 過量進貨 78 ＋ 收貨短少 109 = 192 = 全部分頁的數字
+  //   → 四類加總剛好等於 all ⇒ 正式庫的 v_hq_exceptions 已是套過
+  //     20260811020010_hq_exceptions_drop_customer_shortage 的版本,
+  //     沒有已廢棄的 customer_shortage 殘留在 all 裡面
+  //     (ExceptionsContent.tsx 的 rows filter 仍留著當防線,不要拿掉)。
+  // 而且 <ExceptionsContent> 透過 onCountChange 回報的就是 cnts.all
+  //   (ExceptionsContent.tsx:189)⇒ 兩邊同口徑,點進去前後不會跳動。
+  //
+  // counts 在 RPC 內是 FROM ex(整個 view、未依 p_type 過濾)算的
+  //   (20260704000020_hq_exceptions_view_and_pagination.sql:273-283),
+  //   所以帶哪個 p_type 都拿得到同一份 counts;這裡帶 'all' 只是讓意圖跟讀的欄位一致。
+  //
+  // 這個數字必須在收件匣就先抓好:2026-08-21 線上實測 844 件的短收躺著沒人處理,
+  // 就是因為它一直顯示 0(舊版只有 <ExceptionsContent /> 掛載時才會被填 → 要先點進異常分頁)。
   const [exceptionCount, setExceptionCount] = useState<number>(0);
-  // 點進異常分頁後 <ExceptionsContent /> 每抓完一次都會回報筆數,但它回報的是 counts.all
-  // (4 類總和)、跟上面的口徑不同 → 不能直接把它的數字填進徽章(會從「收貨短少」跳成
-  // 「4 類總和」,總倉看到數字對不上就不會再信它)。改成只當「清單有變動」的訊號用,
-  // 由下面那個 effect 重抓一次收貨短少的數(處理掉一筆後徽章才會跟著少)。
+  // 點進異常分頁後 <ExceptionsContent /> 每抓完一次都會回報筆數(cnts.all,與徽章同口徑)。
+  // 這裡只把它當「清單有變動」的訊號用,由下面那個 effect 自己重抓一次
+  // (處理掉一筆後徽章才會跟著少),不直接把回報值塞進徽章 —— 少一條資料來源少一種不一致。
   const [exceptionTick, setExceptionTick] = useState(0);
   // server-side total: 當前 (source, stage) 篩選的總數
   const [total, setTotal] = useState(0);
@@ -1076,7 +1083,7 @@ function HqInboxContent() {
     setExceptionTick((t) => t + 1);
   }, []);
 
-  // 異常 chip 的「收貨短少」筆數 — 不等使用者點進異常分頁就先抓好
+  // 異常 chip 的筆數(四類全算)— 不等使用者點進異常分頁就先抓好
   //
   // ⚠️ 故意獨立成一個 effect、不併進上面那個 Promise.all:rpc_hq_exceptions 內部是
   // WITH ex AS MATERIALIZED (SELECT * FROM v_hq_exceptions),每次都把整個 view 算完
@@ -1088,12 +1095,13 @@ function HqInboxContent() {
       try {
         const sb = getSupabase();
         const { data, error: err } = await sb.rpc("rpc_hq_exceptions", {
-          p_type: "transfer_short",
+          p_type: "all",
           p_page: 1,
           p_page_size: 1, // 只要 counts,不要 rows
         });
         if (cancelled || err) return;
-        const n = (data as { counts?: Record<string, number> } | null)?.counts?.transfer_short;
+        // counts.all = 四類總和(口徑理由見 exceptionCount 宣告處)
+        const n = (data as { counts?: Record<string, number> } | null)?.counts?.all;
         // 抓不到就維持前一個值,不歸零(歸零等於又回到「永遠顯示 0」的老問題);
         // 真的是 0 筆時 n === 0,不會被這一行擋掉。
         if (n == null) return;
@@ -1886,8 +1894,8 @@ function HqInboxContent() {
             exception: "⚠️ 異常",
           } as const)[s];
           // chip 顯示「該來源」的待處理數(從 cached counts 算,固定值,跟 stage 切換無關)
-          // exception 走自己的 exceptionCount = 「收貨短少」筆數(理由見宣告處註解),
-          //   不是 4 類異常的總和
+          // exception 走自己的 exceptionCount = 異常四類總和(counts.all,理由見宣告處註解),
+          //   跟點進去看到的「全部」分頁同一個數字
           // air 顯示「在途」數(空中轉自動出貨,貨在飛=in_transit),非 pending
           const count = s === "exception"
             ? exceptionCount
