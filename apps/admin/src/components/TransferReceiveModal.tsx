@@ -388,7 +388,7 @@ export function TransferReceiveModal({
         {/* 短收警語 — 每一句都要能指出出處，⛔ 不要寫查不到根據的推論（2026-08-21 教訓）
             ① 「這等於向總倉提出退回」：收貨後 qty_received < qty_shipped 的明細會自動出現在
                總倉收件匣的「⚠️ 異常 → 收貨短少」等總倉決定
-               （v_hq_exceptions 最新版 20260811020010:141-162，條件 t.status='received'
+               （v_hq_exceptions 最新版 20260811020010:141-161，條件 t.status='received'
                  AND ti.qty_received < ti.qty_shipped AND shortage_resolution IS NULL）。
             ② 「這 N 件會先從帳上扣掉」：收貨只把「實收量」入庫到分店，差額沒有任何補償動作
                （rpc_receive_transfer 最新版

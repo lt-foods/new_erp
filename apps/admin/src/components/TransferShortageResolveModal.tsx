@@ -18,7 +18,7 @@
 // ⚠️ 三顆都是單行道(按下去回不來):
 //   異常清單的 transfer_short 分支要求 ti.shortage_resolution IS NULL
 //   (或 replenish 且還沒補到)才會列出來
-//   (v_hq_exceptions 最新版 20260811020010_hq_exceptions_drop_customer_shortage.sql:141-162),
+//   (v_hq_exceptions 最新版 20260811020010_hq_exceptions_drop_customer_shortage.sql:141-161),
 //   而 rpc_resolve_transfer_item_shortage 對所有 resolution 一律寫入 shortage_resolution
 //   (最新版 20260811020000_transfer_shortage_redispatch.sql:262-270,沒有任何例外)
 //   ⇒ 按完這一筆就從清單消失,之後不能再改選別的。
