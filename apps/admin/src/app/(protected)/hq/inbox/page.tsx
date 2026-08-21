@@ -1089,6 +1089,27 @@ function HqInboxContent() {
     setExceptionTick((t) => t + 1);
   }, []);
 
+  // 「異常 → 已處理」列上的補派撿貨單號被點到 → 切到「📋 撿貨單」那一匣。
+  // 同樣必須是穩定的 function(它是 <ExceptionsContent> 的 prop)。
+  //
+  // ⚠️ 為什麼要順手把日期框到「那張單建立的那天」:撿貨單那一匣的搜尋是 client-side、
+  //   而且**只搜當前這一頁**(:1228 的註解原話「client-side 只做 search(限當前頁)」),
+  //   不縮日期的話那張單很可能根本不在第 1 頁,搜尋等於白搜、看起來像單子不見了。
+  // ⚠️ stage 也要切「全部」:補派單被派貨出倉之後 stage 會變 done
+  //   (classifyPicking :208-212 只把 draft/picking/picked 算 pending),停在「待處理」就看不到它。
+  // ⚠️ 查不到建立日就不動日期 —— 寧可讓人自己找,也不要把日期設成錯的一天。
+  // ⛔ 不用自己 setPage(1):sourceFilter / stage / 日期一動,既有的那支 effect
+  //   (:1312-1315「任何 server 端篩選變動 → 回到第 1 頁」)已經會做。
+  const gotoPickingWave = useCallback((waveCode: string, createdDate: string | null) => {
+    setSourceFilter("picking");
+    setStage("all");
+    if (createdDate) {
+      setDateFrom(createdDate);
+      setDateTo(createdDate);
+    }
+    setSearch(waveCode);
+  }, []);
+
   // 異常 chip 的筆數(四類全算)— 不等使用者點進異常分頁就先抓好
   //
   // ⚠️ 故意獨立成一個 effect、不併進上面那個 Promise.all:rpc_hq_exceptions 內部是
@@ -2011,7 +2032,11 @@ function HqInboxContent() {
       {/* === 主區 === */}
       <div className="flex flex-1 flex-col gap-3 min-w-0">
         {sourceFilter === "exception" ? (
-          <ExceptionsContent showHeader={false} onCountChange={handleExceptionListChanged} />
+          <ExceptionsContent
+            showHeader={false}
+            onCountChange={handleExceptionListChanged}
+            onGotoPicking={gotoPickingWave}
+          />
         ) : (
           <>
 
