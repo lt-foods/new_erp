@@ -619,6 +619,18 @@ export default function ExceptionsContent({
             <span className="text-xs text-zinc-500">（依處理時間，預設最近 30 天）</span>
           </div>
 
+          {/* 筆數 —— 20 筆以內不會有分頁列,不放這行就完全看不到自己在看幾筆。
+              ⛔ 措辭刻意用「目前顯示」不用「共」:破 RESOLVED_CAP 時上面那個琥珀框
+              講的「共 N 筆」是 DB 端真實筆數,兩個數字會不一樣,都寫「共」會互相打臉。 */}
+          {resolvedRows !== null && (
+            <div className="text-xs text-zinc-500">
+              目前顯示 {filteredResolved.length} 筆
+              {search.trim() && resolvedRows.length !== filteredResolved.length
+                ? `（這段日期抓回 ${resolvedRows.length} 筆，搜尋後剩這些）`
+                : ""}
+            </div>
+          )}
+
           {/* 上限到了要明講,不可以靜靜截斷 */}
           {resolvedTotal > RESOLVED_CAP && (
             <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
