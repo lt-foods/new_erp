@@ -131,7 +131,17 @@ const RESOLUTION_OPTIONS: Array<{
     //     撿貨單那一段搬到下面 srcIsHq === true 才顯示的那一塊去講。
     //   ⛔ 不要改成「若這張是總倉派貨,會…」——那是把條件句塞進預設文案,
     //     使用者仍得自己判斷這張單是不是總倉派的,等於沒解決。
-    desc: "少收的數量以原出庫成本記回「原本送貨出去的那一邊」，並安排再送一批給這家店。",
+    // ⚠️⚠️⚠️ 2026-08-21 六審 P1:上一輪只搬走「自動開一張撿貨單」,卻留下**同義的**
+    //   「並安排再送一批給這家店」—— 那句話的真假條件跟撿貨單那句一模一樣
+    //   (非總倉在 :173-177 就被 RAISE,記回庫存 :194-204 與建 wave :226-243 都不會跑),
+    //   等於漏搬了一半。⇒ 預設說明現在**只剩不管出貨端是誰都成立的那一句**。
+    //   ⭐ 教訓(跟本檔一路踩的是同一個病):修一句畫面斷言時,要把**所有同義句**一起找出來,
+    //     不是只改被指名的那一句。查法:grep「再送」「補派」「重派」「撿貨單」「補一批」,
+    //     每一句都問「非總倉時還成立嗎」。
+    //   ⚠️ 兩顆的 desc 因此變得很像 —— 差別靠標題(補貨/不補貨)、
+    //     靠 srcIsHq === true 那塊講清楚,而 srcIsHq 還在查的時候送出鈕是鎖住的
+    //     (見下面 srcChecking),所以那段時間看不懂也按不下去。
+    desc: "少收的數量以原出庫成本記回「原本送貨出去的那一邊」。",
     warnTone: "info",
     // 出處:記回原出貨端 20260811020000:194-204
     //      (rpc_inbound 的 p_location_id => v_transfer.source_location,不是寫死總倉)。
@@ -139,7 +149,9 @@ const RESOLUTION_OPTIONS: Array<{
     //    (20260614000050 最新版)且要 campaign 對得上,本檔沒有實測過 ⇒ 不寫進畫面。
     // ⛔ warn 也不再寫「貨已經記回去、撿貨單也開好了」——那是**過去式的斷言**,
     //    非總倉的單按下去是整支 RPC 失敗,兩件事一件都沒發生。
-    warn: "要再送一批給這家店 → 選這顆。送出成功後這一筆會從「異常」清單消失，不能再改選別的。",
+    // ⛔ 六審一併清掉:原本開頭寫「要再送一批給這家店 → 選這顆」——那也是一句隱含的承諾
+    //   (「選這顆＝會再送一批」),對非總倉的單同樣不成立。要選哪顆看標題就好。
+    warn: "送出成功後這一筆會從「異常」清單消失，不能再改選別的。",
   },
   {
     value: "restock_hq",
@@ -182,17 +194,24 @@ export function TransferShortageResolveModal({
   const [notes, setNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // 這張單的出貨端是不是總倉。null = 還在查 / 查不到 → 這一塊什麼都不顯示。
+  // 這張單的出貨端是不是總倉。查到才是 true / false,沒查到一律留 null。
   // ⭐ 兩顆按鈕的文案本身已經不管出貨端是誰都成立,所以 null 不會造成任何錯誤斷言;
   //    查到 true / false 只是「多講一句」讓人更好判斷,不是在更正上面的字。
   const [srcIsHq, setSrcIsHq] = useState<boolean | null>(null);
+  // ⭐⭐ 2026-08-21 六審:必須把「還在查」跟「查不到」分開,不能都用 null 表示。
+  //   因為下面要「還在查就鎖住送出鈕」,而查詢失敗時 srcIsHq **永遠**停在 null
+  //   ⇒ 只看 null 就鎖 = 一旦查詢失敗這張單就再也送不出去(六審點名的鎖死坑)。
+  //   ⇒ 三態:srcIsHq === true / false ＝ 查到了;srcCheckFailed ＝ 查不到(解鎖);
+  //     兩者都不是 ＝ 還在查(鎖住)。
+  const [srcCheckFailed, setSrcCheckFailed] = useState(false);
 
-  // 出貨端是不是總倉 —— 純粹為了「多講一句」而查(不是拿來更正上面的文案):
+  // 出貨端是不是總倉 —— 查它有兩個用途(2026-08-21 六審後從「只是多講一句」升級):
   //   ① 兩顆的「記回原本送貨出去的那一邊」實際是 rpc_inbound 到 transfers.source_location
   //      (20260811020000:152-162 / :194-204)。查到是總倉就直接把話講明,使用者不用自己推。
-  //   ② 「再補一批」對非總倉出貨的單會被 RPC 直接擋下
-  //      (20260811020000:173-177 RAISE「出貨端不是總倉，無法自動重派」)⇒ 值得先講。
-  // ⛔⛔ 查不到一律維持 null(什麼都不顯示),絕對不可以讓「查不到」掉進 false 那一邊 ——
+  //   ② 「再補一批 / 開撿貨單」對非總倉出貨的單會被 RPC 直接擋下
+  //      (20260811020000:173-177 RAISE「出貨端不是總倉，無法自動重派」)
+  //      ⇒ 這一整類承諾**只在 srcIsHq === true 的區塊講**,而且**查完之前不讓送出**。
+  // ⛔⛔ 查不到絕對不可以讓它掉進 false 那一邊 ——
   //   false 會渲染出「這張單不是總倉派出去的」這句**斷言**,而我們其實只是沒讀到資料。
   //   (2026-08-21 自審抓到:原本寫 `(l?.type ?? "") === "central_warehouse"`,
   //    locations 那一列讀不到(查無此列 / 被 RLS 擋)時 l 是 null → 算出 false,
@@ -211,6 +230,7 @@ export function TransferShortageResolveModal({
     (async () => {
       // 換單先清掉上一張單的答案 —— 在任何 await 之前做,不留空窗
       setSrcIsHq(null);
+      setSrcCheckFailed(false);
       try {
         const sb = getSupabase();
         const { data: t, error: e1 } = await sb
@@ -218,26 +238,43 @@ export function TransferShortageResolveModal({
           .select("source_location")
           .eq("id", ctx.transfer_id)
           .maybeSingle();
+        // ⛔ cancelled 檢查要在每個 await 之後、任何 setState 之前 ——
+        //   否則這一輪的結果會蓋掉「換單之後那一輪」剛設好的狀態。
+        if (cancelled) return;
         if (e1) throw new Error(e1.message);
         const locId = (t as { source_location: number | null } | null)?.source_location;
-        if (locId == null) return;
+        // 讀不到 source_location ＝ **查不出來**,不是「不是總倉」⇒ 走「查不到」那條
+        if (locId == null) { setSrcCheckFailed(true); return; }
         const { data: l, error: e2 } = await sb
           .from("locations")
           .select("type")
           .eq("id", locId)
           .maybeSingle();
-        if (e2) throw new Error(e2.message);
         if (cancelled) return;
+        if (e2) throw new Error(e2.message);
         const srcType = (l as { type: string | null } | null)?.type;
-        // 沒讀到那一列 / type 是空的 → 維持 null,不要掉進 false(理由見上面的註解)
-        if (srcType == null) return;
+        // 沒讀到那一列 / type 是空的 → 也是「查不到」。
+        // ⛔ 絕對不可以掉進 false(理由見上面的註解),但**也不可以停在 null 不動** ——
+        //   停在 null 會被下面的 srcChecking 當成「還在查」,送出鈕就鎖死了。
+        if (srcType == null) { setSrcCheckFailed(true); return; }
         setSrcIsHq(srcType === "central_warehouse");
       } catch (e) {
-        if (!cancelled) console.warn("查出貨端失敗:", e);
+        if (!cancelled) {
+          console.warn("查出貨端失敗:", e);
+          // ⛔⛔ 這一行是「鎖死坑」的唯一出口:沒有它,查詢一失敗 srcIsHq 就停在 null,
+          //   srcChecking 恆為 true ⇒ 送出鈕永遠是灰的,使用者完全沒有救濟路徑。
+          setSrcCheckFailed(true);
+        }
       }
     })();
     return () => { cancelled = true; };
   }, [ctx.transfer_id]);
+
+  // 三態的判讀(只在這裡算一次,畫面各處都用它,免得各自寫出不一樣的判斷):
+  //   srcIsHq === true / false → 查到了
+  //   srcCheckFailed           → 查不到(⇒ 解鎖,並顯示中性提示)
+  //   兩者都不是               → 還在查(⇒ 鎖住送出鈕)
+  const srcChecking = srcIsHq === null && !srcCheckFailed;
 
   // ⛔ 這裡原本有「原因必填」(reasonRequired / reasonMissing),那是舊 accept 專用的 ——
   //   accept 移除後整段一起刪乾淨,不留死碼(2026-08-21 老闆定稿)。
@@ -358,6 +395,19 @@ export function TransferShortageResolveModal({
         {/* 出處:redispatch 對非總倉出貨會 RAISE(20260811020000:173-177);
             restock_hq 沒有這道守衛,照樣把貨記回 v_transfer.source_location(:152-162)。 */}
 
+        {/* 查不到出貨端 —— ⛔ 這一格**不是**上面兩格的其中一種,它是第三種狀態。
+            ⭐ 它存在的理由是「解鎖」:查不到時送出鈕要放行(不能因為我們沒讀到資料就
+              讓這張單永遠處理不了),但放行的同時得把「我不知道」講出來,
+              並給一條使用者自己能走的路。
+            ⛔ 措辭刻意用條件句「若不是總倉派的」,不寫成斷言 —— 我們真的不知道它是不是。 */}
+        {srcCheckFailed && (
+          <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[11px] leading-relaxed text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
+            ⚠️ 查不到這張單是不是總倉派的。
+            若不是總倉派的，「<span className="font-bold">同意退回-補貨</span>」會被系統擋下 ——
+            那時請改選「<span className="font-bold">同意退回-不補貨</span>」。
+          </div>
+        )}
+
         {RESOLUTION_OPTIONS.map((opt) => {
           const active = resolution === opt.value;
           return (
@@ -439,7 +489,19 @@ export function TransferShortageResolveModal({
         </div>
       )}
 
-      <div className="mt-4 flex justify-end gap-2">
+      {/* ⭐ 六審要求:查詢空窗期把送出鈕鎖住,免得使用者在「還不知道這張單是不是總倉派的」
+          時候就把 redispatch 送出去(非總倉會被 20260811020000:173-177 擋掉)。
+          ⛔ 鎖的條件是 srcChecking,**不是** srcIsHq === null ——
+            查詢失敗時 srcIsHq 也是 null,用 null 當條件會把鈕鎖死(見 srcCheckFailed 的註解)。
+          ⚠️ 這裡是連「同意退回-不補貨」一起鎖(不是只鎖第一顆):兩顆都是不可逆的,
+            而這個等待只是兩支 maybeSingle 查詢的時間;寧可讓人多等一下,
+            也不要做出「有時候能按有時候不能按」的按鈕。 */}
+      <div className="mt-4 flex items-center justify-end gap-2">
+        {srcChecking && (
+          <span className="mr-auto text-[11px] text-zinc-500 dark:text-zinc-400">
+            正在確認這張單是不是總倉派的…
+          </span>
+        )}
         <SpinButton
           onClick={onClose}
           className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
@@ -448,7 +510,7 @@ export function TransferShortageResolveModal({
         </SpinButton>
         <SpinButton
           onClick={submit}
-          disabled={!resolution || submitting}
+          disabled={!resolution || submitting || srcChecking}
           className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-zinc-300 dark:disabled:bg-zinc-700"
         >
           {submitting ? "處理中…" : "✓ 送出"}
