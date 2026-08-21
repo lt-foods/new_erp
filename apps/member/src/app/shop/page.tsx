@@ -9,6 +9,8 @@ import PageShell from "@/components/PageShell";
 import PullToRefresh from "@/components/PullToRefresh";
 import CampaignCard, { type CampaignSummary } from "@/components/CampaignCard";
 import Countdown from "@/components/Countdown";
+import OrderedCount from "@/components/OrderedCount";
+import ViewCount from "@/components/ViewCount";
 import ShopBannerCarousel from "@/components/ShopBannerCarousel";
 import { cleanCampaignText } from "@/lib/text";
 import { setCampaignHints } from "@/lib/campaignHints";
@@ -25,6 +27,9 @@ type PiaoCampaign = {
   end_at: string | null;
   min_price: number;
   max_price: number;
+  /** 已訂購件數 / 瀏覽數。piaopiao-api 舊版沒有這兩欄（當 0 處理、不顯示）。 */
+  ordered_qty?: number;
+  view_count?: number;
 };
 
 /**
@@ -601,8 +606,17 @@ function PiaoCard({ item }: { item: PiaoCampaign }) {
         <h3 className="line-clamp-2 min-h-[2.6em] text-[16px] font-semibold leading-tight text-[var(--foreground)]">
           {cleanCampaignText(item.name)}
         </h3>
-        <div className="brand-gradient-text text-[24px] font-extrabold tabular-nums leading-none">
-          {priceText}
+        {/* 已訂購 / 瀏覽數直向堆疊在價格右邊，排版比照 CampaignCard grid 卡。
+            flex-wrap + 價格 nowrap：窄卡擠不下時統計整組掉到下一行靠右，
+            價格「$199 起」不會被折成兩行。 */}
+        <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
+          <div className="brand-gradient-text whitespace-nowrap text-[24px] font-extrabold tabular-nums leading-none">
+            {priceText}
+          </div>
+          <div className="ml-auto flex shrink-0 flex-col items-end gap-1">
+            <OrderedCount count={item.ordered_qty} size="sm" />
+            <ViewCount count={item.view_count} />
+          </div>
         </div>
         {item.end_at && (
           <div className="inline-flex items-center gap-1 rounded-md bg-[var(--brand-soft)] px-1.5 py-0.5 text-[12px] font-semibold tabular-nums text-[var(--brand-strong)]">

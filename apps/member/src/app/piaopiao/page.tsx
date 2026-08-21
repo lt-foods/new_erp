@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import PageShell from "@/components/PageShell";
+import OrderedCount from "@/components/OrderedCount";
+import ViewCount from "@/components/ViewCount";
 
-type Campaign = { id: number; name: string; cover_image_url: string | null; end_at: string | null; min_price: number; max_price: number };
+type Campaign = { id: number; name: string; cover_image_url: string | null; end_at: string | null; min_price: number; max_price: number; ordered_qty?: number; view_count?: number };
 
 export default function PiaopiaoShopPage() {
   const [items, setItems] = useState<Campaign[]>([]);
@@ -31,7 +33,13 @@ export default function PiaopiaoShopPage() {
               </div>
               <div className="space-y-1 p-3">
                 <p className="line-clamp-2 min-h-10 text-[15px] font-semibold leading-5">{item.name}</p>
-                <p className="font-bold text-[var(--brand-strong)]">${item.min_price.toLocaleString()}{item.max_price > item.min_price ? " 起" : ""}</p>
+                <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
+                  <p className="whitespace-nowrap font-bold text-[var(--brand-strong)]">${item.min_price.toLocaleString()}{item.max_price > item.min_price ? " 起" : ""}</p>
+                  <div className="ml-auto flex shrink-0 flex-col items-end gap-1">
+                    <OrderedCount count={item.ordered_qty} size="sm" />
+                    <ViewCount count={item.view_count} />
+                  </div>
+                </div>
               </div>
             </Link>
           ))}

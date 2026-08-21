@@ -23,20 +23,39 @@ Deno.serve(async (req) => {
 });
 
 async function listPublicCampaigns(sb: any) {
+  const tenantId = mustEnv("DEFAULT_TENANT_ID");
   const { data, error } = await sb.from("group_buy_campaigns")
     .select("id, name, cover_image_url, end_at, campaign_items(unit_price, sort_order, sku:skus(product:products(images)))")
-    .eq("tenant_id", mustEnv("DEFAULT_TENANT_ID"))
+    .eq("tenant_id", tenantId)
     .eq("status", "open").eq("is_for_shop", true).eq("sales_channel", "piaopiao")
     .neq("campaign_no", "__INTERNAL_RESTOCK__")
     .or(`end_at.is.null,end_at.gt.${new Date().toISOString()}`)
     .order("end_at", { ascending: true, nullsFirst: false });
   if (error) throw new Error(error.message);
+
+  // 瀏覽數 / 已訂購件數：跟 liff-api list_active_campaigns 同一套 RPC
+  // （不要退回撈訂單在 JS 加總 —— PostgREST 1000 列靜默截斷 + 轉單重複計算，
+  // 兩個坑都收在 RPC 裡）。RPC 失敗當 0，不影響列表本體。
+  const ids = (data ?? []).map((c: any) => c.id);
+  const viewMap = new Map<number, number>();
+  const orderedMap = new Map<number, number>();
+  if (ids.length > 0) {
+    const [viewsRes, aggRes] = await Promise.all([
+      sb.rpc("rpc_campaign_view_counts", { p_tenant: tenantId, p_campaign_ids: ids }),
+      sb.rpc("rpc_member_campaign_aggregates", { p_tenant: tenantId, p_recent_days: 7, p_campaign_ids: ids }),
+    ]);
+    if (viewsRes.error) console.error("[list_public_campaigns] view counts rpc failed", viewsRes.error);
+    for (const r of viewsRes.data ?? []) viewMap.set(Number(r.campaign_id), Number(r.view_count ?? 0));
+    if (aggRes.error) console.error("[list_public_campaigns] aggregates rpc failed", aggRes.error);
+    for (const r of aggRes.data ?? []) orderedMap.set(Number(r.campaign_id), Number(r.ordered_qty ?? 0));
+  }
+
   const base = mustEnv("SUPABASE_URL");
   return json({ campaigns: (data ?? []).map((c: any) => {
     const items = [...(c.campaign_items ?? [])].sort((a: any, b: any) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
     const prices = items.map((i: any) => Number(i.unit_price)).filter(Number.isFinite);
     const image = c.cover_image_url ?? items[0]?.sku?.product?.images?.[0]?.url ?? items[0]?.sku?.product?.images?.[0] ?? null;
-    return { id: c.id, name: c.name, end_at: c.end_at, cover_image_url: image ? `${base}/storage/v1/object/public/products/${String(image).split("/").map(encodeURIComponent).join("/")}` : null, min_price: prices.length ? Math.min(...prices) : 0, max_price: prices.length ? Math.max(...prices) : 0 };
+    return { id: c.id, name: c.name, end_at: c.end_at, cover_image_url: image ? `${base}/storage/v1/object/public/products/${String(image).split("/").map(encodeURIComponent).join("/")}` : null, min_price: prices.length ? Math.min(...prices) : 0, max_price: prices.length ? Math.max(...prices) : 0, ordered_qty: orderedMap.get(Number(c.id)) ?? 0, view_count: viewMap.get(Number(c.id)) ?? 0 };
   }) });
 }
 
