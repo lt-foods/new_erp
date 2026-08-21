@@ -248,12 +248,16 @@ export function TransferShortageResolveModal({
     return () => { cancelled = true; };
   }, [ctx.dest_store_id, ctx.sku_id]);
 
-  // 出貨端是不是總倉 —— 只為了「畫面別說謊」而查:
-  //   ① 兩顆「貨回總倉」實際是把貨記回 transfers.source_location(20260811020000:155/193),
-  //      店對店的單記回去的是「原本那家店」,不是總倉。
-  //   ② 「補一批」對非總倉出貨的單會被 RPC 直接擋下
-  //      (20260811020000:172-177 RAISE「出貨端不是總倉，無法自動重派」)。
-  // 查不到就不顯示(維持預設文案),不要拿「查不到」當「確定不是」。
+  // 出貨端是不是總倉 —— 純粹為了「多講一句」而查(不是拿來更正上面的文案):
+  //   ① 兩顆的「記回原本送貨出去的那一邊」實際是 rpc_inbound 到 transfers.source_location
+  //      (20260811020000:152-160 / :188-206)。查到是總倉就直接把話講明,使用者不用自己推。
+  //   ② 「再補一批」對非總倉出貨的單會被 RPC 直接擋下
+  //      (20260811020000:172-177 RAISE「出貨端不是總倉，無法自動重派」)⇒ 值得先講。
+  // ⛔⛔ 查不到一律維持 null(什麼都不顯示),絕對不可以讓「查不到」掉進 false 那一邊 ——
+  //   false 會渲染出「這張單不是總倉派出去的」這句**斷言**,而我們其實只是沒讀到資料。
+  //   (2026-08-21 自審抓到:原本寫 `(l?.type ?? "") === "central_warehouse"`,
+  //    locations 那一列讀不到(查無此列 / 被 RLS 擋)時 l 是 null → 算出 false,
+  //    於是「我沒查到」被畫成「我確定不是」—— 正是本檔頭第一鐵則禁止的那件事。)
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -274,7 +278,10 @@ export function TransferShortageResolveModal({
           .maybeSingle();
         if (e2) throw new Error(e2.message);
         if (cancelled) return;
-        setSrcIsHq(((l as { type: string | null } | null)?.type ?? "") === "central_warehouse");
+        const srcType = (l as { type: string | null } | null)?.type;
+        // 沒讀到那一列 / type 是空的 → 維持 null,不要掉進 false(理由見上面的註解)
+        if (srcType == null) return;
+        setSrcIsHq(srcType === "central_warehouse");
       } catch (e) {
         if (!cancelled) console.warn("查出貨端失敗:", e);
       }
@@ -426,16 +433,25 @@ export function TransferShortageResolveModal({
           <div className="rounded border border-zinc-300 bg-zinc-50 p-2 text-[11px] leading-relaxed text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
             這張單是<span className="font-bold">總倉</span>派出去的 →
             上面說的「原本送貨出去的那一邊」就是總倉。
-            貨記回總倉之後，這家店開一張補貨申請、總倉核准，這批貨就能從補貨申請派出去，不用再進一次貨。
+            貨記回總倉之後就算進總倉的可配量 —— 要再補給這家店，請該店開一張補貨申請，
+            總倉核准後就能直接派，不用再進一次貨（要是這批貨先被別的單配走了，就得等下一批）。
           </div>
         )}
         {/* 出處:可配量 hq_supply 直接讀總倉 stock_balances.on_hand
-            (v_picking_demand_no_po 最新版 20260612000040:60-78),不需要採購單、不需要進貨單。 */}
+            (v_picking_demand_no_po 最新版 20260612000040:60-78),不需要採購單、不需要進貨單。
+            ⚠️ 最後那個括號不是廢話:hq_supply 讀的是「當下的」on_hand,回總倉的貨並沒有被
+            這家店保留住,別的需求先配走就沒了 ⇒ 不加這句就會變成一句「一定派得到」的保證。 */}
 
+        {/* ⛔ 這裡刻意不寫「退回原本那家店」,而是沿用上面三顆的同一個講法。
+            locations.type 現在的 CHECK 只有 'central_warehouse' / 'store' 兩種
+            (20260805000010_rpc_upsert_store_auto_location.sql:13 的原話),
+            所以今天「不是總倉 ⇒ 就是店」剛好成立 —— 但那是靠一條「現在只有兩種值」的
+            schema 假設撐著的,以後多一種 type 這句話就變假。
+            用「原本送貨出去的那一邊」不依賴任何假設,而且跟三顆按鈕的用字一致。 */}
         {srcIsHq === false && (
           <div className="rounded border-2 border-amber-400 bg-amber-100 p-2 text-[11px] leading-relaxed text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200">
             <span className="font-bold">這張單不是總倉派出去的。</span>
-            貨會退回<span className="font-bold">原本出貨的那家店</span>（不是總倉），
+            貨會退回<span className="font-bold">原本送貨出去的那一邊</span>（不是總倉），
             而且第一顆「再補一批給店家」按下去會被系統擋掉 —— 只有總倉派出去的單能自動補。
           </div>
         )}
