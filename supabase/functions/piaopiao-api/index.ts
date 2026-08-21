@@ -13,7 +13,7 @@ Deno.serve(async (req) => {
     if (action === "list_public_campaigns") return await listPublicCampaigns(sb);
     const session = await sessionFrom(sb, req);
     if (action === "bootstrap") return await bootstrap(sb, session);
-    if (action === "upload_image") return await uploadImage(sb, session, body);
+    if (action === "upload_image") return await uploadImage(session, body);
     if (action === "publish") return await publish(sb, session, body);
     return json({ error: "unknown action" }, 400);
   } catch (e) {
@@ -62,20 +62,14 @@ async function bootstrap(sb: any, session: Session) {
   return json({ publisher: { name: publisher.display_name, lane: publisher.lane } });
 }
 
-async function uploadImage(sb: any, session: Session, body: Record<string, unknown>) {
+async function uploadImage(session: Session, body: Record<string, unknown>) {
   const mime = String(body.mime ?? "");
   const encoded = String(body.base64 ?? "").replace(/^data:[^;]+;base64,/, "");
   if (!new Set(["image/jpeg", "image/png", "image/webp"]).has(mime)) throw new Error("只接受 JPG、PNG 或 WEBP 圖片");
   if (!encoded) throw new Error("沒有收到圖片");
   const bytes = base64Bytes(encoded);
   if (bytes.byteLength === 0 || bytes.byteLength > 5 * 1024 * 1024) throw new Error("每張圖片需小於 5MB");
-  const { data: uploadDate, error: reserveError } = await sb.rpc("rpc_piaopiao_reserve_upload_slot", {
-    p_tenant_id: session.tenant_id,
-    p_publisher_id: session.publisher_id,
-    p_operator_id: session.auth_user_id,
-  });
-  if (reserveError) throw new Error(`無法保留今日圖片額度：${reserveError.message}`);
-  if (!uploadDate) throw new Error("今天已上傳 25 張圖片；請明天再試。即使這次建立失敗，已上傳的圖片仍會占用今天額度。");
+  const uploadDate = taipeiDate();
   const dayPrefix = `piaopiao/${session.publisher_id}/${uploadDate}`;
   const ext = mime === "image/jpeg" ? "jpg" : mime === "image/png" ? "png" : "webp";
   const path = `${dayPrefix}/${crypto.randomUUID()}.${ext}`;
@@ -106,6 +100,16 @@ function base64Bytes(value: string) {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
+}
+function taipeiDate() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Taipei",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
 }
 function mustEnv(name: string) {
   const value = Deno.env.get(name);
