@@ -13,11 +13,21 @@ const watchedPaths = [
   ".env.example",
 ];
 
+// 基準一律用「共同祖先」（merge-base），不要拿 base 分支的最新版硬比：
+// 分支落後 main 時，兩點 diff 會把「main 後來刪掉的東西」當成這條分支新加的 → 假警報。
+// （2026-08-21 實測：這支守門拿自己當 PR 檢查，誤報了一個 main 已改掉的 process.env。）
+let from = base;
+try {
+  from = git(["merge-base", base, head]).trim() || base;
+} catch {
+  from = base;
+}
+
 const diff = git([
   "diff",
   "--unified=0",
   "--no-ext-diff",
-  base,
+  from,
   head,
   "--",
   ...watchedPaths,
@@ -96,7 +106,10 @@ function stripComments(value) {
 
 function hasPrReview(body) {
   if (!body) return false;
-  const hasCheckedSensitiveItem = /[-*]\s*\[[xX]\]\s+.*(?:敏感設定|門禁|環境|verify_jwt)/.test(body);
-  const hasRiskWords = /(?:做了|不做|rollback|回退|退回|危險|影響)/.test(body);
+  // 只認「有新增或修改」那一格；勾「沒有碰」那格不算（2026-08-21 實測：原本勾錯格也會放行）。
+  const hasCheckedSensitiveItem = /[-*]\s*\[[xX]\]\s+(?!.*沒有)(?=.*(?:敏感設定|門禁|環境|verify_jwt))/m.test(body);
+  // 危險欄位要真的有寫字：「做了：」「不做：」「回退：」後面至少一欄非空。
+  // 範本標題本身就含這些字，所以不能只看「有沒有出現」。
+  const hasRiskWords = /(?:做了|不做|回退|rollback|危險|風險|影響)[ \t]*[:：][ \t]*\S/.test(body);
   return hasCheckedSensitiveItem && hasRiskWords;
 }
