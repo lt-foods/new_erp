@@ -965,7 +965,13 @@ function HqInboxContent() {
   //
   // 這個數字必須在收件匣就先抓好:2026-08-21 線上實測 844 件的短收躺著沒人處理,
   // 就是因為它一直顯示 0(舊版只有 <ExceptionsContent /> 掛載時才會被填 → 要先點進異常分頁)。
-  const [exceptionCount, setExceptionCount] = useState<number>(0);
+  // null = 「還沒成功抓到過」(還在查,或第一次就失敗)⇒ 徽章顯示「—」,不顯示 0。
+  //   ⛔ 不可以用 0 當初值:0 在這裡有兩種完全相反的意思 ——
+  //      「查過了,真的沒有異常」vs「根本沒查到」,而徽章的規則是 0 就不畫
+  //      ⇒ 兩種情況長得一模一樣,正是這個切片一開始要解決的「一直顯示 0」的變形。
+  //      (2026-08-21 複審 P1)
+  // 第一次成功之後才進入數字狀態;之後再失敗維持前一個值(見下面那個 effect)。
+  const [exceptionCount, setExceptionCount] = useState<number | null>(null);
   // 點進異常分頁後 <ExceptionsContent /> 每抓完一次都會回報筆數(cnts.all,與徽章同口徑)。
   // 這裡只把它當「清單有變動」的訊號用,由下面那個 effect 自己重抓一次
   // (處理掉一筆後徽章才會跟著少),不直接把回報值塞進徽章 —— 少一條資料來源少一種不一致。
@@ -1104,6 +1110,7 @@ function HqInboxContent() {
         const n = (data as { counts?: Record<string, number> } | null)?.counts?.all;
         // 抓不到就維持前一個值,不歸零(歸零等於又回到「永遠顯示 0」的老問題);
         // 真的是 0 筆時 n === 0,不會被這一行擋掉。
+        // 第一次就抓不到 ⇒ 維持初值 null ⇒ 徽章顯示「—」,不會假裝成 0。
         if (n == null) return;
         setExceptionCount(Number(n));
       } catch {
@@ -1897,7 +1904,8 @@ function HqInboxContent() {
           // exception 走自己的 exceptionCount = 異常四類總和(counts.all,理由見宣告處註解),
           //   跟點進去看到的「全部」分頁同一個數字
           // air 顯示「在途」數(空中轉自動出貨,貨在飛=in_transit),非 pending
-          const count = s === "exception"
+          // null ＝ 還沒成功抓到過(只有異常那顆會是 null,理由見 exceptionCount 宣告處)
+          const count: number | null = s === "exception"
             ? exceptionCount
             : s === "air"
               ? (!counts ? 0 : counts.air.in_transit)
@@ -1919,13 +1927,25 @@ function HqInboxContent() {
               }`}
             >
               <span>{label}</span>
-              {count > 0 && (
+              {/* 還沒成功抓到數字 → 畫「—」而不是 0,也不是什麼都不畫:
+                  「什麼都不畫」在這裡已經被拿來表示「真的是 0 筆」了(見下面那個分支),
+                  兩者長一樣的話,抓失敗會被看成「沒有異常」⇒ 又變成沒人去處理。 */}
+              {count === null ? (
+                <span
+                  title="還在查這個數字，先不顯示（不代表沒有）"
+                  className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                    active ? "bg-white/20 text-white dark:bg-zinc-900/20 dark:text-zinc-900" : "bg-zinc-300 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300"
+                  }`}
+                >
+                  —
+                </span>
+              ) : count > 0 ? (
                 <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
                   active ? "bg-white/20 text-white dark:bg-zinc-900/20 dark:text-zinc-900" : "bg-blue-600 text-white"
                 }`}>
                   {count}
                 </span>
-              )}
+              ) : null}
             </SpinButton>
           );
         })}

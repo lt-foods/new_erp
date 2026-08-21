@@ -15,6 +15,19 @@
 //    20260612000040_approve_restock_via_picking_workstation.sql:73-78 的 hq_supply CTE
 //    ⇒ 貨記回總倉之後,開一張補貨申請就派得出去。古華等兩個月的真因是沒人知道要開申請。)
 //
+// ⭐⭐ 2026-08-21 複審再抓到三顆 P0,三顆都是同一個病:
+//   「畫面上先寫一句只在某些情況成立的話,再靠另一個查詢/另一個框去更正它」。
+//   ① 兩顆的說明寫死「記回總倉庫存」,但 SQL 是 rpc_inbound 到 v_transfer.source_location
+//      (20260811020000:152-160 / :188-206)—— 店對店的單是回原本那家店,不是總倉。
+//      而且更正用的黃框只在查完才出現、送出鈕在查完前就能按 ⇒ 有一段時間畫面在說謊。
+//   ② 客人訂單查詢有 .limit(50),畫面卻把 affected.length 當精確總數講。
+//   ③ 「有一部分拿不到」講得比上一個分支(有「可能」)還篤定,而且沒扣既有庫存。
+//   ⇒ 修法統一成一條:**先把預設文案改成「不管情況怎樣都成立」**,
+//     額外的查詢只拿來「多講一句」,不拿來救錯字。
+//     這樣「還在查」「查失敗」「使用者搶先按送出」三種情況自然都不會出事。
+//   ⛔ 以後要在畫面加任何一句「系統會怎樣」,先問自己:
+//     「這句話在什麼情況下會不成立?」答得出來就不要那樣寫。
+//
 // ⚠️ 三顆都是單行道(按下去回不來):
 //   異常清單的 transfer_short 分支要求 ti.shortage_resolution IS NULL
 //   (或 replenish 且還沒補到)才會列出來
@@ -78,37 +91,42 @@ const RESOLUTION_OPTIONS: Array<{
   {
     value: "redispatch",
     icon: "🔁",
-    title: "接受退回 — 貨回總倉，補一批給店家",
+    title: "接受退回 — 貨退回去，再補一批給店家",
     desc:
-      "少收的數量以原出庫成本記回總倉庫存，並自動開一張撿貨單給該店 —— " +
+      "少收的數量以原出庫成本記回「原本送貨出去的那一邊」，並自動開一張撿貨單給該店 —— " +
       "撿貨單會出現在收件匣的「📋 撿貨單」，樓下撿完再送一次。",
     warnTone: "info",
-    // 出處:記回總倉 20260811020000:188-206(rpc_inbound 到 transfers.source_location);
+    // 出處:記回原出貨端 20260811020000:188-206
+    //      (rpc_inbound 的 p_location_id => v_transfer.source_location,不是寫死總倉);
     //      自動開 draft 撿貨單 20260811020000:222-245;
     //      draft 在收件匣撿貨單匣算待處理 hq/inbox/page.tsx 的 classifyPicking。
     // ⛔ 刻意不寫「客人訂單會自動推進」:那要再走 rpc_mark_orders_shipping_for_wave
     //    (20260614000050 最新版)且要 campaign 對得上,本檔沒有實測過 ⇒ 不寫進畫面。
-    warn: "還有客人在等這批貨 → 選這顆。按完這一筆會從清單消失，但貨已經回到總倉、撿貨單也開好了。",
+    warn: "還有客人在等這批貨 → 選這顆。按完這一筆會從清單消失，但貨已經記回去、撿貨單也開好了。",
   },
   {
     value: "restock_hq",
     icon: "🏭",
-    title: "接受退回 — 貨回總倉，不補",
-    desc: "少收的數量以原出庫成本記回總倉庫存，不會自動再送給店家。",
+    title: "接受退回 — 貨退回去，不補",
+    desc: "少收的數量以原出庫成本記回「原本送貨出去的那一邊」，不會自動再送給店家。",
     warnTone: "caution",
-    // 出處:記回總倉 20260811020000:140-163;
-    //      「開補貨申請就派得出去」= v_picking_demand_no_po 最新版 20260612000040:60-78
-    //      (需求來自 restock_requests 且 status='approved_transfer';
-    //       可配量 hq_supply 直接讀 stock_balances.on_hand,不需要採購單、不需要進貨單)。
+    // 出處:記回原出貨端 20260811020000:140-163
+    //      (同樣是 p_location_id => v_transfer.source_location;
+    //       ⚠️ restock_hq 這一支「沒有」總倉守衛 —— redispatch 有 :172-177 擋非總倉,
+    //       restock_hq 沒有 ⇒ 店對店的單按這顆,貨是回到原本那家店,不是總倉)。
+    // ⛔ 這裡刻意不寫「開補貨申請就派得出去」:那條路的可配量 hq_supply 讀的是
+    //    「總倉的」stock_balances.on_hand(v_picking_demand_no_po 最新版
+    //    20260612000040:60-78)⇒ 只有貨真的回到總倉才成立。
+    //    它被移到下面 srcIsHq === true 才顯示的那一塊。
     warn:
-      "按下去回不來，這一筆會從清單消失。之後要再補給這家店：請該店開一張補貨申請，" +
-      "總倉核准後就能從補貨申請直接派 —— 貨已經在總倉帳上，不用再進一次貨。",
+      "按下去回不來，這一筆會從清單消失，而且系統不會自動再送貨給這家店 —— " +
+      "之後要補給這家店，得另外開單。",
   },
   {
     value: "accept",
     icon: "✋",
     title: "不接受退回",
-    desc: "貨不回總倉，店家的帳照扣。",
+    desc: "貨不退回去，店家的帳照扣。",
     warnTone: "danger",
     // 出處:accept 在 RPC 裡沒有任何分支,只會走到最後那段 UPDATE
     //      (20260811020000:112-270,只有 restock_hq / redispatch 有 rpc_inbound);
@@ -135,6 +153,23 @@ type AffectedOrder = {
   status: string;
 };
 
+// 客人訂單一次最多抓幾張。
+// ⚠️ 這個上限一定會反映到畫面文字上:抓滿了就代表「還有沒抓到的」,
+//    那時候畫面只能講「至少 N 張」,不能講「N 張」(2026-08-21 複審 P0:
+//    舊版有 .limit(50) 卻把 affected.length 當精確總數寫成「還有 50 張」)。
+// 實作上刻意多抓 1 張(limit = CAP + 1):
+//   拿回 CAP+1 張 ⇒ 確定超過 CAP ⇒ 文案改「至少」;
+//   拿回 ≤ CAP 張 ⇒ 就是全部,文案照舊講精確數字。
+// ⛔ 為什麼不用 { count: 'exact', head: true } 另外抓一次精確筆數:
+//   ① 那個 count 數的是「SQL 過濾完」的 customer_orders 筆數,但畫面顯示的清單
+//      還要再被下面的前端過濾砍一刀(items 是 cancelled/expired 的不算、
+//      pending_qty 合計為 0 的不算)⇒ count 會比清單多,兩個數字對不起來,
+//      等於把一種假話換成另一種假話。
+//   ② 就算把那兩個條件搬到 SQL 去,「合計 N 件」的件數還是加不出來
+//      (要嘛再開第三支 aggregate,要嘛還是得把全部列拉回來)⇒ 件數仍會被低估。
+//   多抓 1 列的成本 ≈ 0,而且不用多一次 round-trip。
+const AFFECTED_CAP = 50;
+
 export function TransferShortageResolveModal({
   ctx,
   onClose,
@@ -152,9 +187,11 @@ export function TransferShortageResolveModal({
   // 查不到(沒有分店 id / 查詢失敗)。⛔ 不可以跟「查到 0 張」混在一起顯示成
   // 「沒有客人在等」—— 那是把「我沒查到」講成「確定沒有」,正是本檔要根絕的那種假話。
   const [affectedFailed, setAffectedFailed] = useState(false);
-  // 這張單的出貨端是不是總倉。null = 還在查 / 查不到 → 什麼都不多講(按鈕文案照預設)。
-  // false = 確定不是總倉(店對店、店退回總倉)→ 上面兩顆的「貨回總倉」對這張單不成立,
-  // 要明講,否則畫面就在說謊。
+  // 抓滿 AFFECTED_CAP 了(＝還有沒抓到的)。true 時畫面上的張數/件數一律加「至少」。
+  const [affectedTruncated, setAffectedTruncated] = useState(false);
+  // 這張單的出貨端是不是總倉。null = 還在查 / 查不到 → 這一塊什麼都不顯示。
+  // ⭐ 三顆按鈕的文案本身已經不管出貨端是誰都成立,所以 null 不會造成任何錯誤斷言;
+  //    查到 true / false 只是「多講一句」讓人更好判斷,不是在更正上面的字。
   const [srcIsHq, setSrcIsHq] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -164,7 +201,7 @@ export function TransferShortageResolveModal({
       // ⛔ 放在 async 裡而不是 effect body:effect body 同步 setState 會被
       //    react-hooks/set-state-in-effect 擋(原版就在這一行被標紅)。
       if (!ctx.dest_store_id) {
-        if (!cancelled) { setAffected([]); setAffectedFailed(true); }
+        if (!cancelled) { setAffected([]); setAffectedTruncated(false); setAffectedFailed(true); }
         return;
       }
       try {
@@ -177,27 +214,33 @@ export function TransferShortageResolveModal({
           .in("status", ["pending", "confirmed", "shipping", "ready"])
           .eq("items.sku_id", ctx.sku_id)
           .is("transferred_from_order_id", null)
-          .limit(50);
+          // 多抓 1 張只為了判斷「有沒有抓滿」(理由見 AFFECTED_CAP 的註解)
+          .limit(AFFECTED_CAP + 1);
         if (e) throw new Error(e.message);
         if (cancelled) return;
-        const rows = ((data ?? []) as Array<{
+        const raw = (data ?? []) as Array<{
           id: number;
           order_no: string;
           status: string;
           member_id: number | null;
           items: Array<{ qty: number; status: string; sku_id: number }>;
-        }>).map((o) => {
+        }>;
+        // 抓回 CAP+1 張 ⇒ 確定還有沒抓到的。第 CAP+1 張只當旗標用,不進清單。
+        const truncated = raw.length > AFFECTED_CAP;
+        const rows = raw.slice(0, AFFECTED_CAP).map((o) => {
           const matchingItems = o.items.filter((i) => i.sku_id === ctx.sku_id && !["cancelled", "expired"].includes(i.status));
           const pending = matchingItems.reduce((s, i) => s + Number(i.qty), 0);
           return { id: o.id, order_no: o.order_no, member_id: o.member_id, pending_qty: pending, status: o.status };
         }).filter((x) => x.pending_qty > 0);
         setAffected(rows);
+        setAffectedTruncated(truncated);
         setAffectedFailed(false);
       } catch (e) {
         if (!cancelled) {
           // ⛔ 不要塞進 error 那個紅框:那個框是「送出失敗」用的,會讓人以為按鈕壞了。
           console.warn("查客人訂單失敗:", e);
           setAffected([]);
+          setAffectedTruncated(false);
           setAffectedFailed(true);
         }
       }
@@ -322,12 +365,22 @@ export function TransferShortageResolveModal({
           </div>
         ) : (
           <div>
+            {/* ⭐ 這兩行的每個數字都必須「不管有沒有抓滿都成立」:
+                  抓滿了(affectedTruncated)⇒ 手上的張數/件數只是下限 ⇒ 一律加「至少」,
+                  而且不可以再拿它去跟少收量比大小(下限比出來的結論會反過來)。
+                ⭐ 「拿不到」一律留「可能」:這裡只查了「這家店這個品項的待處理客人訂單」,
+                  沒有扣掉這家店自己既有的庫存、也沒算其他還沒到的貨
+                  ⇒ 少收 N 件不等於真的有 N 件客人拿不到。上下兩個分支語氣要一致。 */}
             <div className="rounded-md border-l-4 border-rose-500 bg-rose-50 p-3 text-sm font-bold text-rose-900 dark:bg-rose-950 dark:text-rose-200">
-              🔴 這一項還有 {affected.length} 張客人訂單在等（合計 {totalAffectedQty} 件）
+              {affectedTruncated
+                ? `🔴 這一項至少還有 ${affected.length} 張客人訂單在等（合計至少 ${totalAffectedQty} 件）`
+                : `🔴 這一項還有 ${affected.length} 張客人訂單在等（合計 ${totalAffectedQty} 件）`}
               <div className="mt-0.5 text-[11px] font-normal opacity-80">
-                {totalAffectedQty <= ctx.shortage_qty
-                  ? "少收的量比客人要的還多 → 這些訂單可能全部拿不到貨"
-                  : `少收 ${ctx.shortage_qty} 件 / 客人要 ${totalAffectedQty} 件 → 有一部分拿不到`}
+                {affectedTruncated
+                  ? `一次只查前 ${AFFECTED_CAP} 張，實際張數會更多 → 少收 ${ctx.shortage_qty} 件，可能有一部分客人拿不到`
+                  : totalAffectedQty <= ctx.shortage_qty
+                    ? "少收的量比客人要的還多 → 這些訂單可能全部拿不到貨"
+                    : `少收 ${ctx.shortage_qty} 件 / 客人要 ${totalAffectedQty} 件 → 可能有一部分拿不到`}
               </div>
             </div>
             <ul className="max-h-32 space-y-0.5 overflow-y-auto px-3 py-2 text-xs">
@@ -342,7 +395,9 @@ export function TransferShortageResolveModal({
                 </li>
               ))}
               {affected.length > 10 && (
-                <li className="text-[11px] text-zinc-400">… 還有 {affected.length - 10} 張</li>
+                <li className="text-[11px] text-zinc-400">
+                  … 還有 {affected.length - 10} 張{affectedTruncated ? "以上" : ""}
+                </li>
               )}
             </ul>
           </div>
@@ -360,14 +415,32 @@ export function TransferShortageResolveModal({
           </div>
         </div>
 
-        {/* 只在「確定出貨端不是總倉」時才出現:這種單上面兩顆的「回總倉」不成立。 */}
+        {/* 這張單是誰派出去的 —— 只在「查到答案」時才多講一句。
+            ⭐ 上面三顆的文案本身已經不管出貨端是誰都成立(不再寫死「總倉」),
+            所以這一塊純粹是「多給資訊」,不是拿來補救錯字 ⇒
+            還在查 / 查不到而什麼都沒顯示時,畫面上也不會有任何一句是錯的,
+            使用者搶在查完之前按下送出也不會被騙。
+            (2026-08-21 上一版的做法相反:預設文案寫死「總倉」,靠這一塊去更正,
+             於是查詢還沒回來的那幾百毫秒裡畫面就在說謊 ⇒ 被複審判 P0。) */}
+        {srcIsHq === true && (
+          <div className="rounded border border-zinc-300 bg-zinc-50 p-2 text-[11px] leading-relaxed text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+            這張單是<span className="font-bold">總倉</span>派出去的 →
+            上面說的「原本送貨出去的那一邊」就是總倉。
+            貨記回總倉之後，這家店開一張補貨申請、總倉核准，這批貨就能從補貨申請派出去，不用再進一次貨。
+          </div>
+        )}
+        {/* 出處:可配量 hq_supply 直接讀總倉 stock_balances.on_hand
+            (v_picking_demand_no_po 最新版 20260612000040:60-78),不需要採購單、不需要進貨單。 */}
+
         {srcIsHq === false && (
           <div className="rounded border-2 border-amber-400 bg-amber-100 p-2 text-[11px] leading-relaxed text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200">
             <span className="font-bold">這張單不是總倉派出去的。</span>
-            貨會退回<span className="font-bold">原本出貨的那個地方</span>（不是總倉），
-            而且第一顆「補一批給店家」會被系統擋下來。
+            貨會退回<span className="font-bold">原本出貨的那家店</span>（不是總倉），
+            而且第一顆「再補一批給店家」按下去會被系統擋掉 —— 只有總倉派出去的單能自動補。
           </div>
         )}
+        {/* 出處:redispatch 對非總倉出貨會 RAISE(20260811020000:172-177);
+            restock_hq 沒有這道守衛,照樣把貨記回 v_transfer.source_location(:152-160)。 */}
 
         {RESOLUTION_OPTIONS.map((opt) => {
           const active = resolution === opt.value;
