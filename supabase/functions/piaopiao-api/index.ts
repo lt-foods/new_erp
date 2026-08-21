@@ -13,7 +13,7 @@ Deno.serve(async (req) => {
     if (action === "list_public_campaigns") return await listPublicCampaigns(sb);
     const session = await sessionFrom(sb, req);
     if (action === "bootstrap") return await bootstrap(sb, session);
-    if (action === "upload_image") return await uploadImage(session, body);
+    if (action === "upload_image") return await uploadImage(sb, session, body);
     if (action === "publish") return await publish(sb, session, body);
     return json({ error: "unknown action" }, 400);
   } catch (e) {
@@ -81,7 +81,9 @@ async function bootstrap(sb: any, session: Session) {
   return json({ publisher: { name: publisher.display_name, lane: publisher.lane } });
 }
 
-async function uploadImage(session: Session, body: Record<string, unknown>) {
+// 第一參數 sb 不能拿掉：函式內 sb.storage 上傳要用（#809 移除每日上限時
+// 誤刪過一次，部署後上架傳圖直接 ReferenceError）。
+async function uploadImage(sb: any, session: Session, body: Record<string, unknown>) {
   const mime = String(body.mime ?? "");
   const encoded = String(body.base64 ?? "").replace(/^data:[^;]+;base64,/, "");
   if (!new Set(["image/jpeg", "image/png", "image/webp"]).has(mime)) throw new Error("只接受 JPG、PNG 或 WEBP 圖片");
