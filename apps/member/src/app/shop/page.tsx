@@ -51,6 +51,34 @@ type ShopCache = {
 let shopCache: ShopCache | null = null;
 // 漂漂館清單另一份快取（免登入公開 API，第一次切到該分頁才抓）
 let piaoCache: { items: PiaoCampaign[]; ts: number } | null = null;
+
+// 進場動畫（卡片逐張淡入）只在本次 session「第一次看到該世界的清單」時播。
+// 不記的話，進詳情頁再返回會整組重播一次 —— 資料明明有快取沒重抓，
+// 畫面看起來卻像重載閃一下。
+const animatedWorlds = new Set<WorldKey>();
+
+/** 漂漂館清單 → 詳情頁預填 hint（詳情頁只用 名稱/封面/結單/價格/瀏覽數，
+ *  其餘欄位補中性值即可）。沒餵的話從漂漂館進詳情永遠是整頁轉圈。 */
+function setPiaoHints(items: PiaoCampaign[]) {
+  setCampaignHints(items.map((c) => ({
+    id: c.id,
+    campaign_no: "",
+    name: c.name,
+    description: null,
+    cover_image_url: c.cover_image_url,
+    close_type: "regular",
+    total_cap_qty: null,
+    ordered_qty: c.ordered_qty ?? 0,
+    order_count: 0,
+    recent_order_count: 0,
+    view_count: c.view_count,
+    end_at: c.end_at,
+    pickup_deadline: null,
+    item_count: 0,
+    min_price: c.min_price,
+    max_price: c.max_price,
+  })));
+}
 // 返回時若資料已超過這個毫秒數，背景靜默重抓（不擋畫面、不動捲動）。
 const SHOP_REVALIDATE_MS = 60_000;
 
@@ -77,9 +105,12 @@ export default function ShopPage() {
   );
   const [world, setWorld] = useState<WorldKey>(() => shopCache?.world ?? "group");
   const [query, setQuery] = useState("");
-  const [piaoItems, setPiaoItems] = useState<PiaoCampaign[]>(
-    () => piaoCache?.items ?? [],
-  );
+  const [piaoItems, setPiaoItems] = useState<PiaoCampaign[]>(() => {
+    const cached = piaoCache?.items ?? [];
+    // 從快取還原時 hint 也要塞回去（同 campaigns 的做法）
+    if (cached.length > 0) setPiaoHints(cached);
+    return cached;
+  });
   const [piaoLoading, setPiaoLoading] = useState(false);
   const [piaoErr, setPiaoErr] = useState<string | null>(null);
 
@@ -134,11 +165,19 @@ export default function ShopPage() {
       if (!res.ok) throw new Error((body as { error?: string }).error || "讀取失敗");
       const items = (body as { campaigns: PiaoCampaign[] }).campaigns;
       setPiaoItems(items);
+      setPiaoHints(items);
       piaoCache = { items, ts: Date.now() };
     } catch (e) {
       if (!silent) setPiaoErr(e instanceof Error ? e.message : String(e));
     }
   }, []);
+
+  // 該世界的清單這一輪要不要播進場動畫（第一次看到才播，之後返回/切回不重播）
+  const animateCards = !animatedWorlds.has(world);
+  useEffect(() => {
+    if (world === "group" && campaigns.length > 0) animatedWorlds.add("group");
+    if (world === "piaopiao" && piaoItems.length > 0) animatedWorlds.add("piaopiao");
+  }, [world, campaigns.length, piaoItems.length]);
 
   // 切到漂漂館世界才抓（首次顯示 skeleton；快取偏舊就背景靜默更新）
   useEffect(() => {
@@ -355,6 +394,7 @@ export default function ShopPage() {
             items={shownPiao}
             searching={searching}
             query={query.trim()}
+            animate={animateCards}
           />
         ) : (
         <>
@@ -480,8 +520,8 @@ export default function ShopPage() {
                 {shown.map((c, i) => (
                   <div
                     key={c.id}
-                    className="animate-in"
-                    style={{ animationDelay: `${Math.min(i, 8) * 55}ms` }}
+                    className={animateCards ? "animate-in" : undefined}
+                    style={animateCards ? { animationDelay: `${Math.min(i, 8) * 55}ms` } : undefined}
                   >
                     <CampaignCard campaign={c} />
                   </div>
@@ -528,12 +568,15 @@ function PiaoWorld({
   items,
   searching,
   query,
+  animate,
 }: {
   loading: boolean;
   err: string | null;
   items: PiaoCampaign[];
   searching: boolean;
   query: string;
+  /** false = 返回列表 / 再切回來的重繪，不重播進場動畫 */
+  animate: boolean;
 }) {
   return (
     <>
@@ -595,8 +638,8 @@ function PiaoWorld({
             {items.map((c, i) => (
               <div
                 key={c.id}
-                className="animate-in"
-                style={{ animationDelay: `${Math.min(i, 8) * 55}ms` }}
+                className={animate ? "animate-in" : undefined}
+                style={animate ? { animationDelay: `${Math.min(i, 8) * 55}ms` } : undefined}
               >
                 <PiaoCard item={c} />
               </div>
