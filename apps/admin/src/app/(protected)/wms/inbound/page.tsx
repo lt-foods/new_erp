@@ -307,19 +307,8 @@ export default function TransfersInboxPage() {
         ]);
         if (e1) throw new Error(e1.message);
         if (e2) throw new Error(e2.message);
-        if (!cancelled) {
-          setDoneTotal(doneCount ?? 0);
-          // 實際回幾筆要在這裡量：doneData 是「已收」那一發查詢自己的結果，
-          // 還沒被下面的搜尋補查(extraQ)混進來。回的比要求的少 ＝ 撞到後端
-          // max-rows，下面「還載得動嗎」就靠這個判斷（見 DONE_MAX）。
-          setDoneFetched({
-            limit: doneLimit,
-            rows: doneData?.length ?? 0,
-            from: doneFrom,
-            to: doneTo,
-            branch: branchLocationId,
-          });
-        }
+        // ⛔ doneTotal / doneFetched 刻意【不】在這裡 setState —— 它們要跟
+        //    setTransfers(rows) 同一批更新，理由見下面那個區塊。
         const rows = ([...(pendingData ?? []), ...(doneData ?? [])] as Transfer[]);
 
         // 搜尋補查：老單被 doneLimit 擠出載入範圍時，用單號直接查後端合併進來
@@ -506,6 +495,28 @@ export default function TransfersInboxPage() {
         }
 
         if (!cancelled) {
+          // ⚠⚠ 這三個一定要在同一個 if (!cancelled) 區塊裡一起更新（阿審 2026-08-22
+          //    四審 P2）。原本 setDoneTotal / setDoneFetched 是在上面那發 Promise.all
+          //    之後就先設掉的，但它和這裡中間隔了 10 個 await（locations / waves /
+          //    transfer_items / skus / 三支 RPC / stores）＝ 好幾秒的空窗。
+          //    那段期間 doneFetched 已經是新的 → doneSettled 成立 → 頁尾會畫出來，
+          //    但 transfers 還是舊的 → 走「總部挑單一分店」那條路的頁尾與 KPI 用的是
+          //    summaries.done（算自 transfers）→ 畫面會拿【舊的】筆數配【新的】
+          //    已定案判斷，講出與當下條件不符的數字。
+          //    放在一起之後：要嘛整批舊、要嘛整批新，不會有混搭的中間態。
+          //    ⭐ 順帶把錯誤路徑也修對了 —— 中途任何一發查詢 throw 時，這三個
+          //      一個都不會被更新（以前 doneTotal 會先被改掉，然後配著舊清單留在畫面上）。
+          // 已收實際回幾筆要用 doneData 量：那是「已收」那一發查詢自己的結果，
+          // 沒有被搜尋補查(extraQ)混進來。回的比要求的少 ＝ 撞到後端 max-rows，
+          // 「還載得動嗎」就靠這個判斷（見 DONE_MAX）。
+          setDoneTotal(doneCount ?? 0);
+          setDoneFetched({
+            limit: doneLimit,
+            rows: doneData?.length ?? 0,
+            from: doneFrom,
+            to: doneTo,
+            branch: branchLocationId,
+          });
           setTransfers(rows);
           setLocations(locMap);
           setWaves(waveMap);
@@ -875,8 +886,14 @@ export default function TransfersInboxPage() {
   //
   //   只有「總部手動挑了某一家店」時範圍不同，而 locationFilter 不在抓資料的
   //   effect deps 裡（純前端篩選、不重查）⇒ 那種情況真的拿不到該店的總數。
-  //   ⇒ 照本輪原則：算不出精確值就不要假裝精確 —— 那種情況直接標明「已載入」，
+  //   ⇒ 照本輪原則：手上沒有精確值就不要假裝精確 —— 那種情況直接標明「已載入」，
   //     講的就是它本來的東西。
+  //   ⚠⚠ 措辭要小心（阿審 2026-08-22 四審 P1）：這裡是「本頁目前沒有另查」，
+  //      【不是】「算不出來」。locationFilter 就是該分店的 dest_location，
+  //      doneQ 已經在用 count:"exact"，多一發 count-only 查詢、或把這個條件併進
+  //      doneQ，就拿得到該店總數。是 CEO 判定「總部挑單一分店是次要情境，
+  //      不值得為它多一支查詢拖慢主路徑」才不做的 —— 那是取捨，不是限制。
+  //      ⛔ 不要把「我沒做」寫成「做不到」，畫面上尤其不行。
   //
   // ⛔ 這裡刻意【不】用「N+」（至少 N 筆）那種下界寫法，雖然按鈕那邊用的是上界。
   //    理由：下界在這裡不成立。搜尋補查（extraQ，:270 附近）會刻意把日期範圍外
@@ -902,7 +919,7 @@ export default function TransfersInboxPage() {
   const doneKpiHeader = doneScopeNote ? `已收（${doneScopeNote} ${doneKpiNum}）` : `已收 ${doneKpiNum}`;
   const doneKpiHint = doneTotalIsExact
     ? `status = received 的總數${doneFrom || doneTo ? "（限這段收貨日期）" : ""}，不是目前載入的筆數`
-    : "目前載入的 status = received 筆數；總部挑了單一分店時算不出該店總數，不另外查以免拖慢頁面";
+    : "目前載入的 status = received 筆數。總部挑單一分店是次要情境，本頁【目前未另查】該店的已收總數，以免為它多打一支查詢拖慢主路徑 —— 不是查不到。";
 
   function selectAllPending() {
     setSelected(new Set(pendingIds));
@@ -1263,7 +1280,8 @@ export default function TransfersInboxPage() {
       {/* KPI cards — 點任一張就 filter list,再點一次取消
           ⚠ 這四張卡的數字來源【不對稱】，改的時候不要以為它們是同一回事：
             ・「✓ 已收」＝ 真實總數（doneQ 的 count:"exact"）；總部挑了單一分店
-              那一種情況算不出總數，卡片標題會自己改成「已收（已載入）」
+              那一種情況本頁目前未另查該店總數（是取捨不是做不到，見 doneKpiHint），
+              卡片標題會自己改成「已收（已載入）」
               —— 見上方 doneKpiNum / doneKpiCardLabel
             ・前三張待收的 ＝ 目前載入的筆數（summaries.*，數 transfers 陣列）
           待收那三張今天看起來是準的，因為 pendingQ（:207 附近）沒有套 .limit()，
