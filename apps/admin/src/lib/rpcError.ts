@@ -18,7 +18,9 @@ const tStatus = (s: string) => TRANSFER_STATUS_ZH[s] ?? s;
 
 const RESTOCK_STATUS_ZH: Record<string, string> = {
   pending: "待處理",
-  approved_transfer: "已派貨",
+  // ⚠ 與 restock 各頁的狀態字對齊：這個狀態貨還沒動，只是排進派貨工作台
+  //   （rpc_approve_restock_to_transfer 最新版 20260714000040:260-270）。
+  approved_transfer: "已派至工作台",
   approved_pr: "已轉採購",
   shipped: "已出貨",
   received: "已收貨",

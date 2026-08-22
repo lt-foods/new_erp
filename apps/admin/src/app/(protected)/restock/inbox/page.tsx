@@ -37,7 +37,10 @@ type Row = {
 
 const STATUS_LABEL: Record<Status, string> = {
   pending: "待處理",
-  approved_transfer: "已派貨",
+  // ⚠ 2026-06-12 起這個狀態不再建 transfer、貨也不會動（rpc_approve_restock_to_transfer
+  //   最新版 20260714000040:260-270 只 UPDATE status、linked_transfer_id=NULL），
+  //   原本寫「已派貨」會讓分店以為貨在路上。⛔ 不要改回去。
+  approved_transfer: "已派至工作台",
   approved_pr: "已下單",
   shipped: "已出貨",
   received: "已收貨",
@@ -122,7 +125,13 @@ export default function RestockInboxPage() {
   }, [reload]);
 
   async function approveToTransfer(id: number) {
-    if (!confirm("確定派庫存出貨？此動作會建一張 transfer 單。")) return;
+    // ⚠ 舊文案「此動作會建一張 transfer 單」是 2026-06-12 以前的行為，現在不成立。見 hq/inbox 同名函式註解。
+    if (!confirm(
+      "確定核准這張補貨申請？\n\n" +
+      "這一步只是核准：總倉的貨不會動，也不會產生出貨單。\n" +
+      "接著要到「派貨工作台」挑貨、建撿貨單，\n" +
+      "最後按「派貨出倉」，貨才會真的離開總倉。"
+    )) return;
     setBusy(id);
     try {
       const { error: err } = await getSupabase().rpc("rpc_approve_restock_to_transfer", { p_request_id: id });
@@ -197,14 +206,17 @@ export default function RestockInboxPage() {
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header>
         <h1 className="text-xl font-semibold">補貨申請 - HQ Inbox</h1>
-        <p className="text-sm text-zinc-500">處理分店補貨申請：派庫存出貨 / 下訂單 / 拒絕</p>
+        <p className="text-sm text-zinc-500">處理分店補貨申請：派至工作台 / 下訂單 / 拒絕</p>
       </header>
 
       {error && <div className="rounded-md bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">{error}</div>}
 
       <div className="grid gap-3 sm:grid-cols-4">
         <Stat label="待處理" value={stats.pending} accent="text-amber-700 dark:text-amber-400" />
-        <Stat label="已派貨 / 出貨中" value={stats.shipped} accent="text-blue-700 dark:text-blue-400" />
+        {/* ⚠ 這格數的是 approved_transfer + shipped + received 三種狀態（見上面 stats）。
+            舊標題「已派貨 / 出貨中」兩邊都不對：approved_transfer 根本還沒出貨，received 也不是「出貨中」。
+            改成把三個狀態名逐字列出來，標題描述的範圍＝實際數到的範圍。 */}
+        <Stat label="已派至工作台 / 已出貨 / 已收貨" value={stats.shipped} accent="text-blue-700 dark:text-blue-400" />
         <Stat label="已下單" value={stats.toPr} accent="text-indigo-700 dark:text-indigo-400" />
         <Stat label="已拒絕" value={stats.rejected} accent="text-red-700 dark:text-red-400" />
       </div>
@@ -272,7 +284,7 @@ export default function RestockInboxPage() {
                     <div className="flex flex-col gap-1">
                       <div className="flex flex-wrap gap-1">
                         {r.pr_line_count === 0 && (
-                          <SpinButton onClick={() => approveToTransfer(r.id)} disabled={busy === r.id} className="rounded border border-blue-400 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300">派貨</SpinButton>
+                          <SpinButton onClick={() => approveToTransfer(r.id)} disabled={busy === r.id} className="rounded border border-blue-400 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300" title="只核可、貨不會動；核可後到「派貨工作台」挑貨">派至工作台</SpinButton>
                         )}
                         <SpinButton onClick={() => setPrModalId(r.id)} disabled={busy === r.id} className="rounded border border-indigo-400 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50 dark:border-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">下訂單</SpinButton>
                         {r.standby_at ? (

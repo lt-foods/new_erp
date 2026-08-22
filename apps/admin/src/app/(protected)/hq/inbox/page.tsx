@@ -1355,7 +1355,15 @@ function HqInboxContent() {
   }, [paginatedRows, groupBy]);
 
   async function approveToTransfer(id: number) {
-    if (!confirm("確定派庫存出貨？此動作會建一張 transfer 單。")) return;
+    // ⚠ 這裡的文案 2026-08-22 之前寫「此動作會建一張 transfer 單」——那是 2026-06-12 以前的行為。
+    //   rpc_approve_restock_to_transfer 最新版（20260714000040:260-270）只 UPDATE status='approved_transfer'
+    //   並把 linked_transfer_id 設成 NULL：不動庫存、不建 transfer。⛔ 不可以再說「會出貨」。
+    if (!confirm(
+      "確定核准這張補貨申請？\n\n" +
+      "這一步只是核准：總倉的貨不會動，也不會產生出貨單。\n" +
+      "接著要到「派貨工作台」挑貨、建撿貨單，\n" +
+      "最後按「派貨出倉」，貨才會真的離開總倉。"
+    )) return;
     setBusy(`restock-${id}-tx`);
     try {
       const { error: err } = await getSupabase().rpc("rpc_approve_restock_to_transfer", { p_request_id: id });
@@ -1504,6 +1512,16 @@ function HqInboxContent() {
     if (action === "退訂單取消") {
       reason = prompt(`取消原因(必填、會留 audit log，將套用到全部 ${items.length} 筆)：`);
       if (!reason || !reason.trim()) return;
+    } else if (sourceFilter === "restock" && action === "派貨") {
+      // ⚠ 畫面上這顆鈕叫「派至工作台」；"派貨" 只是動作路由鍵（validStages 與下面的 RPC 分支都拿它比對），
+      //   ⛔ 不可改字串，否則按鈕會失效。所以確認框不能沿用通用那句（會冒出人看不懂的「派貨」）。
+      //   走的是 rpc_approve_restock_to_transfer（20260714000040:260-270）＝只改狀態，貨不動、不建 transfer。
+      if (!confirm(
+        `確定核准這 ${items.length} 筆補貨申請？\n\n` +
+        "這一步只是核准：總倉的貨不會動，也不會產生出貨單。\n" +
+        "接著要到「派貨工作台」挑貨、建撿貨單，\n" +
+        "最後按「派貨出倉」，貨才會真的離開總倉。"
+      )) return;
     } else {
       if (!confirm(`確認對選中的 ${items.length} 筆執行「${action}」?`)) return;
     }
@@ -2138,7 +2156,11 @@ function HqInboxContent() {
                 <div className="ml-auto flex flex-wrap gap-1">
                   {sourceFilter === "restock" && (
                     <>
-                      <RowAction variant="success" onClick={() => batchAction("派貨")} disabled={batchBusy}>派貨 ({selected.size})</RowAction>
+                      {/* ⚠ 顯示字改成「派至工作台」（這條路只改狀態、貨不動）；
+                          batchAction("派貨") 的 "派貨" 是動作路由鍵，⛔ 不可改。
+                          ⚠ 下面 sourceFilter === "aid" 也有一顆長得一樣的「派貨」，那顆走 rpc_ship_aid_order
+                          ＝真的出庫，⛔ 不要一起改。 */}
+                      <RowAction variant="success" onClick={() => batchAction("派貨")} disabled={batchBusy}>派至工作台 ({selected.size})</RowAction>
                       <RowAction variant="indigo" onClick={() => batchAction("下訂單")} disabled={batchBusy}>下訂單 ({selected.size})</RowAction>
                       {effectiveStage === "pending" && (
                         <RowAction variant="warning" onClick={() => batchAction("轉候補")} disabled={batchBusy}>⏳ 轉候補 ({selected.size})</RowAction>
@@ -2501,7 +2523,9 @@ function MailRow({
       const inStandby = s.standby_at !== null;
       actions = (
         <>
-          <RowAction variant="success" onClick={() => onApproveTransfer(s.id)} disabled={isBusy}>派貨</RowAction>
+          {/* 「派至工作台」＝ rpc_approve_restock_to_transfer（20260714000040:260-270）只改狀態，
+              貨不動、不建 transfer；真正出倉要到派貨工作台建撿貨單再按「派貨出倉」。 */}
+          <RowAction variant="success" onClick={() => onApproveTransfer(s.id)} disabled={isBusy} title="只核可、貨不會動；核可後到「派貨工作台」挑貨">派至工作台</RowAction>
           <RowAction variant="indigo" onClick={() => onApprovePr(s.id)} disabled={isBusy}>下訂單</RowAction>
           {inStandby ? (
             <RowAction variant="neutral" onClick={() => onSetStandby(s.id, false)} disabled={isBusy} title="移回「待處理」">

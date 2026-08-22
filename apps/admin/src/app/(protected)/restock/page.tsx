@@ -38,7 +38,10 @@ type Row = {
 
 const STATUS_LABEL: Record<Status, string> = {
   pending: "待處理",
-  approved_transfer: "已派貨",
+  // ⚠ 這頁是分店在看的。2026-06-12 起 approved_transfer 不再建 transfer、貨也不會動
+  //   （rpc_approve_restock_to_transfer 最新版 20260714000040:260-270），
+  //   寫「已派貨」會讓分店以為貨已經在路上、白等。⛔ 不要改回去。
+  approved_transfer: "已派至工作台",
   approved_pr: "已轉採購",
   shipped: "已出貨",
   received: "已收貨",

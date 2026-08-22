@@ -46,7 +46,9 @@ type Line = {
 
 const STATUS_LABEL: Record<string, string> = {
   pending: "待處理",
-  approved_transfer: "已派庫存",
+  // ⚠ 「已派庫存」是 2026-06-12 以前的行為。現在這個狀態只代表「核可、排進派貨工作台」，
+  //   庫存沒有動（rpc_approve_restock_to_transfer 最新版 20260714000040:260-270）。⛔ 不要改回去。
+  approved_transfer: "已派至工作台",
   approved_pr: "已下訂",
   shipped: "已出貨",
   received: "已收貨",
