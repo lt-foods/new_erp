@@ -70,6 +70,33 @@ type Group = {
   backorderQty: number;    // 這組還有幾件掛著待補貨（少發配貨沒配到）
 };
 
+// 「已收」分頁單次查詢的筆數天花板。
+//
+// 1000 不是隨手挑的：PostgREST/Supabase 單次 select 的 max-rows 就是 1000
+// （supabase/config.toml:18 `max_rows = 1000`；lib/fetchAllRows.ts:3-6 有實測），
+// `.limit(12244)` 送出去也只會回 1000 筆，而且不會報錯 —— 這正是本頁舊的
+// 「載入全部」在騙人的地方（正式庫 status='received' 共 12,244 張、單店最多
+// 1,437 張，兩種視角都超過 1000）。
+//
+// ⛔ 那為什麼不乾脆用 lib/fetchAllRows 撈到底？因為問題不在這一發查詢，在下游：
+//    本頁拿到 transfer 之後還要用 .in(...) 撈 transfer_items / picking_waves，
+//    並把同一份 id 陣列丟進三支 RPC。id 一多會同時撞兩堵牆 ——
+//    ① 網址長度：postgrest-js 的 .in() 走 query string，一個 5 位數 id 編碼後
+//       佔 8 字元（逗號變 %2C）→ 1,041 張 ≈ 8.3 KB（現況），12,244 張 ≈ 95.8 KB。
+//       本 repo 其他頁早就為了這件事把 .in() 切成 150~500 一批
+//       （campaigns/page.tsx:305 註解「避免 .in() 把 URL 塞爆」），本頁沒切。
+//    ② statement_timeout：authenticated 是 8 秒，而 rpc_get_campaigns_for_transfers
+//       2026-07-13 就因為這一頁 timeout 過 14 次（20260720000040 migration 檔頭：
+//       1809 次呼叫、平均 1976ms、最大 7995ms）。該檔修好後的實測基準是
+//       336 張 = 141ms；12,244 張是那個母體的 36 倍（時間不必然線性放大，
+//       但這是目前唯一有實測數字的基準，而 8 秒的牆就在那裡）。
+//
+// ⇒ 要回頭查更早的貨，正解是用「收貨日期」把範圍縮小（PR #819 已上線），
+//   不是一次撈全部。這個常數只是把「後端本來就會做的截斷」搬到看得見的地方：
+//   後端上限若真是 1000，單次載入量與改動前一模一樣（舊的「載入全部」也只拿得到
+//   1000 筆）；若後端上限其實更高，改動後會停在 1000 —— 那反而是避開上面兩堵牆。
+const DONE_MAX = 1000;
+
 export default function TransfersInboxPage() {
   const [transfers, setTransfers] = useState<Transfer[] | null>(null);
   const [stores, setStores] = useState<StoreRow[]>([]);
@@ -102,6 +129,14 @@ export default function TransfersInboxPage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [doneLimit, setDoneLimit] = useState(50);
   const [doneTotal, setDoneTotal] = useState(0);
+  // 上一次「已收」查詢：要求幾筆(limit) / 後端實際回幾筆(rows)。
+  // 兩個值刻意綁在同一個 state 一起更新 —— 分開存的話，使用者按下「載入更多」
+  // 到新資料回來之前，會拿「新的 limit」配「舊的 rows」算出「載不動了」的錯誤結論，
+  // 畫面就會閃一下不實的提示。
+  const [doneFetched, setDoneFetched] = useState<{ limit: number; rows: number }>({
+    limit: 0,
+    rows: 0,
+  });
   // 撿貨單號（wave）分頁：一次顯示 20 個 wave，滑到底自動載入下一批（+20）
   const [groupLimit, setGroupLimit] = useState(20);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -167,7 +202,9 @@ export default function TransfersInboxPage() {
   // 所以預設一個字都不改、載入量與現在完全相同。
   // 選了範圍之後 limit 照舊套 doneLimit（不是撈全部）——只是把「最近 50 筆」換成
   // 「這個範圍內最近 50 筆」，單次查詢的筆數上限不變，不會有一次撈爆的問題。
-  // count:"exact" 也會跟著範圍縮小，下方「載入更多 / 載入全部」自動變成範圍內的總數。
+  // count:"exact" 也會跟著範圍縮小，下方「載入更多」的分母自動變成範圍內的總數。
+  // ⭐ 這個日期範圍就是「看更早的貨」的正解 —— 單次查詢有 DONE_MAX 的天花板，
+  //   撈不完的時候畫面會直接請使用者回來縮這裡。
   const [doneFrom, setDoneFrom] = useState("");
   const [doneTo, setDoneTo] = useState("");
 
@@ -259,7 +296,13 @@ export default function TransfersInboxPage() {
         ]);
         if (e1) throw new Error(e1.message);
         if (e2) throw new Error(e2.message);
-        if (!cancelled) setDoneTotal(doneCount ?? 0);
+        if (!cancelled) {
+          setDoneTotal(doneCount ?? 0);
+          // 實際回幾筆要在這裡量：doneData 是「已收」那一發查詢自己的結果，
+          // 還沒被下面的搜尋補查(extraQ)混進來。回的比要求的少 ＝ 撞到後端
+          // max-rows，下面「還載得動嗎」就靠這個判斷（見 DONE_MAX）。
+          setDoneFetched({ limit: doneLimit, rows: doneData?.length ?? 0 });
+        }
         const rows = ([...(pendingData ?? []), ...(doneData ?? [])] as Transfer[]);
 
         // 搜尋補查：老單被 doneLimit 擠出載入範圍時，用單號直接查後端合併進來
@@ -638,9 +681,9 @@ export default function TransfersInboxPage() {
     setExpanded(auto);
   }
 
-  // 換「已收日期範圍」時把 doneLimit 收回第一頁：使用者若先按過「載入全部」，
-  // doneLimit 會是好幾千，沿用它去查新範圍等於又撈一次大的。兩個 setState 放在
-  // 同一個事件 handler 裡，React 會併成一次 render → 只打一發查詢。
+  // 換「已收日期範圍」時把 doneLimit 收回第一頁：使用者若先按過「載入更多」，
+  // doneLimit 會停在最多 DONE_MAX，沿用它去查新範圍等於又撈一次大的。兩個
+  // setState 放在同一個事件 handler 裡，React 會併成一次 render → 只打一發查詢。
   function applyDoneRange(from: string, to: string) {
     setDoneFrom(from);
     setDoneTo(to);
@@ -656,6 +699,20 @@ export default function TransfersInboxPage() {
   }
 
   const visibleGroups = useMemo(() => groups.slice(0, groupLimit), [groups, groupLimit]);
+
+  // 「已收」歷史：實際載進來幾筆（不是要求幾筆 —— 要求 12,244 後端只會給 1000）
+  const doneLoaded = doneFetched.rows;
+  // 「還載得動嗎」＝ 再按一次拿不拿得到更多。兩種情況都算載到頂：
+  //   ① 上一次就是照天花板 DONE_MAX 去要的；
+  //   ② 上一次要求 N 筆、後端只回不到 N 筆 → 撞到後端 max-rows（自我校準：
+  //      就算哪天正式庫的上限不是 1000，這個判斷仍然成立，不必改程式）。
+  // ⚠ 兩個條件都只讀 doneFetched，刻意不摻當下的 doneLimit —— 混用會在
+  //   「按下去到資料回來」的空窗期用舊結果配新要求，講出不實的結論。
+  const doneAtMax = doneFetched.limit >= DONE_MAX || doneFetched.rows < doneFetched.limit;
+  // 上一次查詢是不是就是照現在這個 doneLimit 查的。按下「載入更多」之後、新資料
+  // 回來之前這兩個會對不上 —— 那段空窗期整塊先不畫。少畫一塊沒人受傷，
+  // 拿舊數字硬講「載到這裡為止」就是在騙人（本案要修的就是這種話）。
+  const doneSettled = doneFetched.limit === doneLimit;
 
   // 滑到底自動載入下一批撿貨單號（+20），不用手動按。sentinel 進入視窗就 +20；
   // effect 依 groupLimit/groups.length 重建 observer，若 sentinel 仍在視窗內會連續補到看不見為止。
@@ -1670,22 +1727,36 @@ export default function TransfersInboxPage() {
         </div>
       )}
 
-      {/* 已收歷史分頁:目前 doneLimit 比 doneTotal 少時顯示（僅已收分頁） */}
-      {tab === "received" && doneLimit < doneTotal && (
-        <div className="flex items-center justify-center gap-3 py-2 text-xs text-zinc-500">
-          <span>已顯示 {Math.min(doneLimit, doneTotal)} / {doneTotal} 筆已收歷史</span>
-          <SpinButton
-            onClick={() => setDoneLimit((n) => n + 50)}
-            className="rounded-md border border-zinc-300 px-3 py-1.5 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-          >
-            載入更多 (+50)
-          </SpinButton>
-          <SpinButton
-            onClick={() => setDoneLimit(doneTotal)}
-            className="rounded-md border border-zinc-300 px-3 py-1.5 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-          >
-            載入全部
-          </SpinButton>
+      {/* 已收歷史分頁:實際載進來的比範圍內總數少時顯示（僅已收分頁）。
+          ⚠ 條件用「實際載到幾筆」而不是「要求載幾筆」是刻意的：這裡本來寫
+          `doneLimit < doneTotal`，而舊的「載入全部」把 doneLimit 設成 doneTotal，
+          於是這一整塊就消失了 —— 畫面等於說「都在這了」。但那一發查詢送的是
+          `.limit(12244)`，PostgREST 只回 1000 筆且不報錯（見上方 DONE_MAX），
+          總部視角實際少看 11,000 多張、單店最多也少看 400 多張，正好是月結對帳
+          回頭查最需要看到的那一段。 */}
+      {tab === "received" && doneSettled && doneLoaded < doneTotal && (
+        <div className="flex flex-wrap items-center justify-center gap-3 py-2 text-xs text-zinc-500">
+          <span>已載入 {doneLoaded} / {doneTotal} 筆已收歷史</span>
+          {doneAtMax ? (
+            // 載到頂了才換成這句：再給按鈕也拿不到更多（後端會截掉），
+            // 留著只會讓人一直按。出口是上面的「收貨日期」（PR #819）。
+            <span>單次查詢載到這裡為止，要看更早的貨請用上面的「收貨日期」縮小範圍。</span>
+          ) : (
+            <>
+              <SpinButton
+                onClick={() => setDoneLimit((n) => Math.min(n + 50, DONE_MAX))}
+                className="rounded-md border border-zinc-300 px-3 py-1.5 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                載入更多 (+50)
+              </SpinButton>
+              <SpinButton
+                onClick={() => setDoneLimit((n) => Math.min(n + 500, DONE_MAX))}
+                className="rounded-md border border-zinc-300 px-3 py-1.5 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                載入更多 (+500)
+              </SpinButton>
+            </>
+          )}
         </div>
       )}
 
