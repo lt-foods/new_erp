@@ -102,6 +102,16 @@ export default function TransfersInboxPage() {
   const [stores, setStores] = useState<StoreRow[]>([]);
   const [locations, setLocations] = useState<Map<number, string>>(new Map());
   const [waves, setWaves] = useState<Map<number, Wave>>(new Map());
+  // picking_waves 那發（配送日 / 撿貨單號的來源）失敗時的狀況，null = 正常。
+  // ⛔ 它不走上面那個 error（紅色橫幅 + 整份清單不更新）—— 配送日只是標籤，
+  //    清單與收貨按鈕不依賴它，整頁擋掉是修 A 壞 B。這裡只用來把
+  //    「算不出來的那兩個 KPI 數字」標成「—」並掛一條說明（見畫面上的 waveError 區塊）。
+  // chunksOk / chunksTotal：這次切了幾批、成功幾批。畫面要照實把它講出來 ——
+  //   失敗時 waveMap 會被整個清空（連撈到的那幾批也不用），那是【取捨】，
+  //   所以不能演成「什麼都沒撈到」。⛔ 不要為了讓文案好寫就把這兩個數字藏起來。
+  const [waveError, setWaveError] = useState<
+    { message: string; chunksOk: number; chunksTotal: number } | null
+  >(null);
   const [itemSummary, setItemSummary] = useState<Map<number, ItemSummary>>(new Map());
   const [locationToStore, setLocationToStore] = useState<Map<number, number>>(new Map());
   const [transferCampaigns, setTransferCampaigns] = useState<Map<number, number[]>>(new Map());
@@ -348,13 +358,76 @@ export default function TransfersInboxPage() {
           new Set(rows.map((r) => parseWaveId(r.transfer_no)).filter((x): x is number => x !== null)),
         );
         const waveMap = new Map<number, Wave>();
-        if (waveIds.length > 0) {
-          const { data: ws } = await sb
+        // 配送日 / 撿貨單號的來源。這一發要防兩件事：
+        //
+        // ① 靜默截斷。舊寫法一次 .in() 全部 id、不分批 —— 而 waveIds 的規模
+        //    【分店帳號與總部差一個數量級】，之前的註解只算了總部那一種：
+        //      transfer_no 的格式是 'WAVE-{wave_id}-S{store_id}'
+        //      （20260717000000_restock_wave_status_sync.sql:213，是本函式最新一版；
+        //       parseWaveId 只認這個格式），而 transfers 有
+        //      UNIQUE (tenant_id, transfer_no)（20260422120003_inventory_schema.sql:103）
+        //      ⇒ 一個 wave 對一家店【最多只會有一張單】。
+        //      ・總部（看全部 18 家店）：一個 wave 攤成多張單 → waveIds 遠小於載入筆數。
+        //      ・分店帳號（doneQ/pendingQ 都鎖 dest_location）：一張單 ＝ 一個 wave，
+        //        【1:1】。#821 把「載入全部」放寬到 1000 筆之後，
+        //        單店已收最多 1,437 張（見 DONE_MAX）⇒ waveIds 會逼近甚至超過
+        //        PostgREST 的 max_rows = 1000（supabase/config.toml:18）→ 直接被截掉。
+        //    ⇒ 切 500 一批（沿用本 repo 慣例：campaigns/page.tsx 搜「避免 .in() 把
+        //      URL 塞爆」切 500、picking/drafts/print 切 200），順手把網址長度也壓住。
+        //    ⭐ 切 500 之後截斷變成【結構上不可能】：id 是 picking_waves 主鍵、
+        //      waveIds 已 Set 去重 ⇒ 500 個 id 最多回 500 列，碰不到 1000 那道牆。
+        //      ⇒ 這裡【不必】走 fetchAllRows。隔壁 transfer_items 需要，是因為那是
+        //        子表（N 張單展開成遠多於 N 列，切 id 擋不住列數）；這裡是拿主鍵撈父表，
+        //        兩者要的防護本來就不同種。
+        //      ⚠ 若日後有人把 500 調到 ≥ 1000，上面那個保證就沒了 → 那時要改 fetchAllRows。
+        //
+        // ② error 被丟掉。舊寫法只解構 data，查詢失敗完全無聲，而失敗的後果是
+        //    畫面【開始說謊】而不是畫面壞掉：
+        //      ・清單的「配送日 / 撿貨單號」變空白 ＝ 在說「這張單沒有配送日」
+        //      ・群組的「逾期 / 今天到貨」紅字不會亮 ＝ 在說「沒有該收沒收的」
+        //      ・KPI「🚚 明天到貨」「⏳ 今日及更早」雙雙變 0 ＝ 在說「沒有逾期的貨」
+        //    真相都是「我沒查到」。⇒ 記下錯誤，交給畫面自己講（見 waveError）。
+        //    ⛔ 但不能直接 throw 把整頁擋掉：配送日只是標籤，待收清單與收貨按鈕
+        //      都不依賴它 —— 為了一個標籤讓店家收不了貨是修 A 壞 B。
+        //      ⇒ 失敗就停下這一發（不再送剩下的批次，省 statement_timeout 預算），
+        //        其餘照跑，頁面該能用的部分全部留著。
+        //
+        // ③ 【部分成功】要當成失敗處理（阿審 2026-08-22 P1，成立）。
+        //    切批之後多了一個舊寫法沒有的狀態：第 1 批成功、第 2 批失敗。
+        //    這時 waveMap 裡有一半的 wave —— 若照發，畫面會變成
+        //    「警告條說不知道，但半數單子照樣顯示配送日和逾期紅字」。
+        //    ⛔ 那比全空更糟，而且糟在一個不明顯的地方：
+        //      這一頁的用途是「哪些貨該收、哪些逾期」。一份【有一半日期缺席】的
+        //      逾期清單，外觀與完整清單一模一樣 ⇒ 店家會把看到的紅字讀成
+        //      「全部的逾期單就這些」。空清單會讓人去重新整理，半殘清單不會。
+        //    ⇒ 失敗就把 waveMap 清空，讓 8 個讀取點【一次全部】回到同一個事實。
+        //      ⭐ 清空是【單點保證】：waveMap 的唯一下游就是 setWaves，
+        //        所以這一行就涵蓋 filtered / groups / summaries / 列 / 彈窗全部，
+        //        日後新增讀取點也自動涵蓋。
+        //        （阿審另給的方向是「讓 filtered/groups 別用 waves」——不採用：
+        //          那要逐處改 5 個地方、漏一個就破功，而且搜尋 haystack 與
+        //          TransferReceiveModal 那兩個最容易被忘掉。）
+        //    ⛔ 丟掉已撈到的那幾批是【刻意的取捨，不是做不到】——
+        //      畫面必須照實說「撈到了但不採用」，不可以演成「什麼都沒撈到」
+        //      （見說明條裡的批次數）。使用者在這個狀態下唯一的正確動作是
+        //      重新整理，保留半套資料對那個動作沒有任何幫助。
+        let waveErr: string | null = null;
+        const waveChunks = Math.ceil(waveIds.length / 500);
+        let waveChunksOk = 0;
+        for (let i = 0; i < waveIds.length; i += 500) {
+          const { data: ws, error: eW } = await sb
             .from("picking_waves")
             .select("id, wave_code, wave_date, created_at")
-            .in("id", waveIds);
+            .in("id", waveIds.slice(i, i + 500));
+          if (eW) {
+            waveErr = eW.message;
+            break;
+          }
           for (const w of (ws as Wave[] | null) ?? []) waveMap.set(w.id, w);
+          waveChunksOk += 1;
         }
+        // 見上面 ③：部分成功一律當全失敗，不讓半套資料上畫面。
+        if (waveErr) waveMap.clear();
 
         // 抓 transfer_items + skus 用於顯示「商品/數量」
         const summary = new Map<number, ItemSummary>();
@@ -520,6 +593,11 @@ export default function TransfersInboxPage() {
           setTransfers(rows);
           setLocations(locMap);
           setWaves(waveMap);
+          // 跟 setWaves 綁在一起更新：waveMap 與「它完不完整」必須是同一批，
+          // 不然會出現「舊的錯誤訊息配新的 waveMap」這種混搭態（理由同上面那段註解）。
+          setWaveError(
+            waveErr ? { message: waveErr, chunksOk: waveChunksOk, chunksTotal: waveChunks } : null,
+          );
           setItemSummary(summary);
           setLocationToStore(locStoreMap);
           setTransferCampaigns(tcMap);
@@ -1203,7 +1281,18 @@ export default function TransfersInboxPage() {
         })}
       </div>
 
-      {/* 搜尋 + 檢視模式（合併同商品 / 依撿貨單）+ 細節開關 */}
+      {/* 搜尋 + 檢視模式（合併同商品 / 依撿貨單）+ 細節開關
+
+          ⚠ 底下兩句 tooltip 在 waveError（配送日沒撈到）的狀態下會失準
+            —— 這是【刻意接受的取捨，不是漏掉的】（2026-08-22 阿審四審提出、CEO 裁定不改）：
+            ・搜尋框寫「可搜尋 撿貨單號…」→ waveError 下 wave_code 不在比對字串裡，搜不到
+              （搜尋 haystack 那段：filtered 的 matchSearch）
+            ・「合併同商品」寫「同分店、同配送日、同品項」→ waveError 下 wave_date 取不到，
+              群組 key 的日期段變空字串 ⇒ 不同配送日的單會被併成一組
+          ⇒ ⛔ 不要為了那個罕見狀態去改這兩句常態文案：它們在 99% 的時間是對的，
+            改了等於拿 99% 的清楚換 1% 的精確。
+            那個狀態已經由 waveError 說明條的涵蓋句
+            （「凡是跟配送日 / 撿貨單有關的顯示，現在通通不準」）一句管掉了。 */}
       <div className="flex flex-wrap items-center gap-2">
         <input
           value={search}
@@ -1277,6 +1366,57 @@ export default function TransfersInboxPage() {
         </div>
       )}
 
+      {/* 配送日撈不到時的說明條。
+          ⛔ 這條【不是】「頁面壞了」，所以用琥珀色警告而不是上面那個紅色 error：
+            紅色那個代表整份清單沒更新；這條代表【資料是好的】—— 單子與件數都查到了，
+            缺的只有配送日 / 撿貨單那一類欄位。
+            ⚠ 注意措辭：是「資料是好的」不是「清單是好的」。若當下 dateFilter 停在
+              明天／今日及更早，畫面上的清單會被篩成空 —— 說「清單沒問題」就變成假話。
+              （這正是本輪 P1 的第 4 條：絕對句寫下去就會跟自己前面講的矛盾。）
+          ─────────────────────────────────────────────────────────────
+          ⭐⭐ 這段文字【刻意不逐條列舉哪一格會怎樣】，寫法是「畫一條線」。
+          由來（2026-08-22，兩輪教訓）：前兩版都用「逐點列舉」寫，第一版有 2 句假話、
+          第二版有 4 句 —— 問題不在寫得不夠仔細，在做法本身：影響面有 7 個以上讀取點，
+          每個讀取點在不同篩選／檢視模式下行為又不同 ⇒ 窮舉不完，而且【講越多錯越多】，
+          每多一條就多一個未來會過期的斷言。
+          ⇒ 改成一句涵蓋性陳述 ＋ 一個明確動作。錯誤面小一個數量級。
+          ⭐ 而且那句涵蓋句是【型別層級】保證，不是我歸納的：
+            Wave 型別只有 4 個欄位（TransferReceiveModal.tsx 搜「export type Wave」），
+            其中會上畫面的只有 wave_code（撿貨單號）、wave_date（配送日）、
+            created_at（撿貨單建立時間，彈窗時間軸用）—— id 只拿來當 map key。
+            ⇒ 畫面上任何受這發查詢影響的東西，必然屬於「配送日 / 撿貨單」這個範圍。
+            ⚠ 若哪天有人往 Wave 型別加欄位，要回來確認這句話還涵不涵蓋得住。
+          ⛔ 不要因為「講清楚一點比較好」就把具體列舉加回來。對店員而言唯一有價值的
+            資訊是「現在畫面不可信、去重新整理」，不是「哪一格會空白」。 */}
+      {waveError && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+          <div className="font-medium">⚠ 配送日這次沒撈到</div>
+          {/* ⛔ 「刻意整批不採用」這個取捨要講出來，不可以拿掉：
+              失敗時已撈到的批次會被丟掉，不講的話畫面等於在演「什麼都沒撈到」。
+              ⚠ 只在 chunksOk > 0 時顯示 —— 第一批就失敗時根本沒有「前面撈到的」，
+                照顯示就變成假話。 */}
+          {waveError.chunksOk > 0 && (
+            <div className="mt-1 text-xs">
+              分 {waveError.chunksTotal} 批查，第 {waveError.chunksOk + 1} 批失敗；
+              前 {waveError.chunksOk} 批雖然撈到了也<b>一併不採用</b> ——
+              只顯示一部分的話，這一頁看起來會跟完整的一模一樣。
+            </div>
+          )}
+          <div className="mt-1.5">
+            這一頁凡是跟<b>「配送日 / 撿貨單」</b>有關的顯示，現在通通不準。
+            <br />
+            ⚠ 特別是：<b>不要用這一頁判斷「有沒有逾期該收的貨」</b>，該提醒的它現在提醒不了。
+          </div>
+          <div className="mt-1.5 text-xs">
+            待收 / 已收的<b>單子本身和件數</b>是另外查的，那些數字沒有跟著壞。
+          </div>
+          <div className="mt-1.5 font-medium">👉 請重新整理頁面。<span className="font-normal text-xs">（重新整理也會一併清掉上面的日期篩選）</span></div>
+          <div className="mt-1.5 text-xs">
+            一直失敗就把這行給工程師：<span className="font-mono">{waveError.message}</span>
+          </div>
+        </div>
+      )}
+
       {/* KPI cards — 點任一張就 filter list,再點一次取消
           ⚠ 這四張卡的數字來源【不對稱】，改的時候不要以為它們是同一回事：
             ・「✓ 已收」＝ 真實總數（doneQ 的 count:"exact"）；總部挑了單一分店
@@ -1284,46 +1424,64 @@ export default function TransfersInboxPage() {
               卡片標題會自己改成「已收（已載入）」
               —— 見上方 doneKpiNum / doneKpiCardLabel
             ・前三張待收的 ＝ 目前載入的筆數（summaries.*，數 transfers 陣列）
-          待收那三張今天看起來是準的，因為 pendingQ（:207 附近）沒有套 .limit()，
-          後端會把 status='shipped' 給回來（老闆 2026-08-22 實測待收 41 張）。
-          ⚠⚠ 但「準」是有前提的，而且前提沒有被任何程式保證住 —— 阿審 2026-08-22
-             三審對這件事提了保留，原話照收，因為它是對的：
+          待收那三張今天看起來是準的，因為 pendingQ（搜「拆兩個 query 防止」那段）
+          沒有套 .limit()，後端會把 status='shipped' 給回來（老闆 2026-08-22 實測待收 41 張）。
+          ⚠⚠ 但「準」是有前提的 —— 阿審 2026-08-22 三審對這件事提了保留，原話照收：
              ・「pendingQ 沒有 .limit()」只證明【前端】沒有設上限，
                它仍然受 PostgREST max-rows 節制 → 待收哪天超過那個上限，
-               這三張會【少報而且畫面上看不出來】。
-             ・「🚚 明天到貨 / ⏳ 今日及更早」還多依賴 :363 那發 picking_waves
-               查詢，而【那發沒有分頁、也沒有處理 error】（回傳只解構 data，
-               error 被丟掉）→ 它被截斷或失敗時，有 wave_date 的單會被當成
-               沒有日期，這兩張同樣少報。
-          ⇒ 這兩件事今天不會觸發（一張 wave 對到多張 transfer，waveIds 遠小於
-            載入筆數），所以本輪【刻意不動程式行為】；但它們是這三個數字準不準的
-            前提，不是可以省略的細節。要處理時，優先改文字（標成「已載入」）
-            而不是加查詢。 */}
+               這三張會【少報而且畫面上看不出來】。（這條【還沒解】。）
+             ・「🚚 明天到貨 / ⏳ 今日及更早」還多依賴 picking_waves 那發查詢
+               （搜「配送日 / 撿貨單號的來源」）。
+               ✅ 這條 2026-08-22 已解：那發現在切 500 一批（截斷變成結構上不可能）、
+                 error 也不再被丟掉，失敗時這兩張改顯示「—」並停用點擊，
+                 上面那條琥珀色說明會講清楚發生什麼事。
+                 ⭐ 而且【部分批次成功也算失敗】：waveMap 會被整個清空，
+                   所以不會出現「這兩張說不知道、下面清單卻有一半在顯示配送日」
+                   的混搭態。要改這裡之前先讀查詢那段的 ③。
+          ⛔ 舊註解在這裡寫過「這兩件事今天不會觸發（一張 wave 對到多張 transfer，
+            waveIds 遠小於載入筆數）」—— 那句話【是錯的，不要再寫回去】。
+            它只算了總部的視角。分店帳號的查詢整條鎖 dest_location，而
+            transfer_no = 'WAVE-{wave_id}-S{store_id}' 且 transfers 有
+            UNIQUE (tenant_id, transfer_no) ⇒ 對單一分店來說 waveIds 與載入筆數
+            是【1:1】，#821 把「載入全部」放寬到 1000 筆之後就會頂到 max_rows。
+            ⇒ 這是「我沒查分店那一種情況」，不是「不會發生」。 */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {/* 這兩張是唯一吃 waves 的卡（summaries.tomorrow / todayOrEarlier 用 wave_date）。
+            配送日撈不到時：
+              ・數字改「—」＝「不知道」；顯示 0 會變成「沒有逾期的貨」這句假話。
+              ・onClick 拿掉（KpiCard 會自動改渲染成 div、不再有 hover 手勢）：
+                還能點的話，點下去只會得到一份空清單 —— 那是另一句假話。
+            ⇒ 另外兩張（📋 全部待收 / ✓ 已收）不吃 waves，維持原樣，不要一起改。 */}
         <KpiCard
           label="🚚 明天到貨"
-          hint="wave_date = 明天 的待收"
+          hint={waveError ? "配送日這次沒撈到，算不出來（不是 0）" : "wave_date = 明天 的待收"}
           showHint={showDetail}
-          value={summaries.tomorrow}
+          value={waveError ? "—" : summaries.tomorrow}
           accent="text-blue-700 dark:text-blue-400"
           active={tab === "unreceived" && dateFilter === "tomorrow"}
-          onClick={() =>
-            tab === "unreceived" && dateFilter === "tomorrow"
-              ? setDateFilter(null)
-              : (setTab("unreceived"), setDateFilter("tomorrow"))
+          onClick={
+            waveError
+              ? undefined
+              : () =>
+                  tab === "unreceived" && dateFilter === "tomorrow"
+                    ? setDateFilter(null)
+                    : (setTab("unreceived"), setDateFilter("tomorrow"))
           }
         />
         <KpiCard
           label="⏳ 今日及更早"
-          hint="wave_date ≤ 今天、還沒收"
+          hint={waveError ? "配送日這次沒撈到，算不出來（不是 0）" : "wave_date ≤ 今天、還沒收"}
           showHint={showDetail}
-          value={summaries.todayOrEarlier}
+          value={waveError ? "—" : summaries.todayOrEarlier}
           accent="text-amber-700 dark:text-amber-400"
           active={tab === "unreceived" && dateFilter === "today_or_earlier"}
-          onClick={() =>
-            tab === "unreceived" && dateFilter === "today_or_earlier"
-              ? setDateFilter(null)
-              : (setTab("unreceived"), setDateFilter("today_or_earlier"))
+          onClick={
+            waveError
+              ? undefined
+              : () =>
+                  tab === "unreceived" && dateFilter === "today_or_earlier"
+                    ? setDateFilter(null)
+                    : (setTab("unreceived"), setDateFilter("today_or_earlier"))
           }
         />
         <KpiCard
@@ -1885,9 +2043,11 @@ export default function TransfersInboxPage() {
       {tab === "received" && doneSettled && doneLoaded < doneTotal && (
         <div className="flex flex-wrap items-center justify-center gap-3 py-2 text-xs text-zinc-500">
           {/* ⚠ 總部在右上角挑了單一分店時，這裡【不能】顯示 doneLoaded / doneTotal ——
-              doneQ 只套 branchLocationId（:273），沒有套 locationFilter，所以那兩個
+              doneQ 只套 branchLocationId、沒有套 locationFilter，所以那兩個
               數字是「全部分店」的；而整頁的清單已經被 locationFilter 篩到那一家店
-              （filtered :568 / summaries :846 / pendingIds :830 都有套）。
+              （filtered / summaries / pendingIds 三個 useMemo 都有套）。
+              ⛔ 這裡刻意只寫識別字不寫行號：行號會被上面任何一次插入推移，
+                 而識別字本身就是可以直接 grep 的錨點（同 lib/rpcError.ts 的做法）。
               兩者放在一起，使用者會把「/ 12244」讀成那家分店的已收歷史筆數。
               ⛔ 這正是上一輪 KPI 沒改乾淨的同一格：doneTotalIsExact 已經承認
                  「單一分店時 doneTotal 不適用」，KPI/頁首/分頁都分流了，只有這裡沒跟上。
