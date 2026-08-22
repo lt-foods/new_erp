@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
+import { LineFollowerPicker } from "@/components/LineFollowerPicker";
 import SpinButton from "@/components/SpinButton";
 import { renderPickupImage, type PickupOrder } from "@/lib/pickupImage";
 
@@ -37,37 +38,8 @@ type Quota = { limit: number | null; used: number };
 // chatMode "bot" = 後台把「聊天」關掉了、只走 webhook，連過去也不能回。
 type Chat = { url: string | null; mode: string | null };
 
-/**
- * 該店 OA 好友名冊裡「還沒配對到會員」的人。
- *
- * webhook 只收得到 LINE 使用者，收不到「他是哪位會員」—— 官方的 account link
- * 是自動化正解但要碰顧客端，還沒做。在那之前讓店員自己挑：他們本來就認得
- * 顧客的 LINE 名稱與頭像，這是最直覺的補救。
- */
-type Follower = { line_user_id: string; display_name: string | null; picture_url: string | null };
-
-/**
- * 抓該店「還沒配對到會員」的好友名冊，**最近有動靜的排最前面**。
- *
- * 排序不能省：之前沒排序就 `limit(50)`，PostgREST 回的是最舊的 50 筆 ——
- * 名冊一超過 50 人，「剛加好友的顧客」（正是店員此刻要配對的人）反而
- * 永遠不在選單裡。2026-08-13 三峽店實際踩到：名冊 104 人，會員當天加好友
- * 加入會員，選單裡卻找不到她，變成「綁定了但不能發 LINE」的死路。
- */
-async function fetchUnpairedFollowers(storeId: number) {
-  return await getSupabase()
-    .from("store_line_followers")
-    .select("line_user_id, display_name, picture_url")
-    .eq("store_id", storeId)
-    .is("member_id", null)
-    .eq("followed", true)
-    .order("last_event_at", { ascending: false, nullsFirst: false })
-    .order("created_at", { ascending: false })
-    .limit(200);
-}
-
-/** 選單一次最多畫幾顆（超過的用搜尋縮小範圍，不然是一面牆的頭像） */
-const FOLLOWER_RENDER_MAX = 50;
+// 配對選單（該店 OA 名冊裡還沒對應到會員的人）抽到 LineFollowerPicker，
+// 跟會員詳細頁的「店家 LINE 綁定」卡片共用同一份。
 
 // 訊息樣板。連結由後端 links action 給（來自 MEMBER_FRONT_BASE_URL），
 // 不在這裡寫死網址 —— 換網域時只要改 secret，不用重新部署前端。
@@ -141,9 +113,6 @@ export function LineMessageModal({
   const [quota, setQuota] = useState<Quota | null>(null);
   const [chat, setChat] = useState<Chat | null>(null);
   const [ordersUrl, setOrdersUrl] = useState<string | null>(null);
-  const [followers, setFollowers] = useState<Follower[]>([]);
-  const [followerFilter, setFollowerFilter] = useState("");
-  const [binding, setBinding] = useState(false);
   const [buildingImage, setBuildingImage] = useState(false);
   const [text, setText] = useState("");
   const [image, setImage] = useState<File | null>(null);
@@ -185,16 +154,6 @@ export function LineMessageModal({
         if (!cancelled && result.ok) setQuota({ limit: result.limit ?? null, used: result.used ?? 0 });
       } catch { /* 額度顯示是輔助資訊，抓不到就算了 */ }
     })();
-    // 該店還沒配對的 OA 好友：推不到時要讓店員手動挑
-    (async () => {
-      if (homeStoreId == null) return;
-      const { data, error: fErr } = await fetchUnpairedFollowers(homeStoreId);
-      if (cancelled) return;
-      // 不能吞掉錯誤：查詢失敗時清單會是空的，選單就整個不見，
-      // 畫面上卻什麼都沒說 —— 店員只會覺得「這功能壞了」而無從回報。
-      if (fErr) { setError(`讀取本店 LINE 名冊失敗：${fErr.message}`); return; }
-      setFollowers((data as Follower[]) ?? []);
-    })();
     // 樣板用的會員站連結（不需要 LINE token，所以 token 沒設也拿得到）
     (async () => {
       try {
@@ -226,23 +185,6 @@ export function LineMessageModal({
   useEffect(() => {
     return () => { if (imagePreview) URL.revokeObjectURL(imagePreview); };
   }, [imagePreview]);
-
-  // 配對選單的顯示清單：關鍵字過濾 + 「LINE 名稱出現在會員姓名裡」的排最前。
-  // 這個租戶的會員名慣例是「LINE名稱＋電話末碼-店」（例：珍珠貝（Fang Cheng)922278-三峽），
-  // 所以名稱包含是很強的「疑似本人」訊號 —— 但只拿來排序加星，綁定仍要店員確認，
-  // 自動綁過會綁錯人（2026-08-10 平鎮兩筆）。
-  const visibleFollowers = useMemo(() => {
-    const kw = followerFilter.trim().toLowerCase();
-    const memberName = (member.name ?? "").toLowerCase();
-    return followers
-      .filter((f) => !kw || (f.display_name ?? "").toLowerCase().includes(kw))
-      .map((f) => {
-        const n = (f.display_name ?? "").trim().toLowerCase();
-        return { ...f, suggested: n.length >= 2 && memberName.includes(n) };
-      })
-      // sort 是穩定排序：同組之間維持後端給的「最近有動靜優先」順序
-      .sort((a, b) => Number(b.suggested) - Number(a.suggested));
-  }, [followers, followerFilter, member.name]);
 
   /**
    * 把該會員的可取貨品項畫成一張圖，直接放進附圖欄。
@@ -398,14 +340,11 @@ export function LineMessageModal({
                 const { error: uErr } = await getSupabase().rpc("rpc_unbind_store_line_follower", { p_member_id: member.id });
                 if (uErr) { setError(uErr.message); return; }
                 // 解除後重新預檢，畫面翻回「推不到 + 配對選單」
+                // （配對選單由 LineFollowerPicker 在條件成立時掛載並自抓名冊）
                 setReachable({ state: "checking" });
                 const { result } = await callFn({ action: "check", member_id: member.id });
                 if (result.ok && result.reachable) setReachable({ state: "ok", displayName: result.display_name ?? null });
                 else setReachable({ state: "unreachable", message: result.message ?? "尚未綁定" });
-                if (homeStoreId != null) {
-                  const { data } = await fetchUnpairedFollowers(homeStoreId);
-                  setFollowers((data as Follower[]) ?? []);
-                }
               }}
               title="配對錯人時，解除後可重新從名冊挑選"
               className="shrink-0 rounded border border-emerald-300 px-2 py-0.5 text-[11px] text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-900"
@@ -438,74 +377,23 @@ export function LineMessageModal({
           )
         )}
 
-        {/* 推不到 + 該店名冊有人 → 讓店員手動配對 */}
+        {/* 推不到 → 讓店員手動配對（選單抽在 LineFollowerPicker，綁完重新預檢） */}
         {(reachable.state === "unreachable" || reachable.state === "error")
-          && followers.length > 0 && (
-          <div className="rounded-md border border-sky-200 bg-sky-50 p-2 dark:border-sky-900 dark:bg-sky-950/40">
-            <div className="mb-1 text-xs font-medium text-sky-900 dark:text-sky-200">
-              這位會員在本店官方帳號是哪一個？
-            </div>
-            <p className="mb-2 text-[11px] text-sky-800/80 dark:text-sky-300/80">
-              以下是已加入本店官方帳號、但還沒對應到會員的人（最近有動靜的排前面，⭐ = LINE 名稱與會員姓名相符）。選對之後就能發送。
-            </p>
-            {followers.length > 10 && (
-              <input
-                value={followerFilter}
-                onChange={(e) => setFollowerFilter(e.target.value)}
-                placeholder={`搜尋 LINE 名稱（共 ${followers.length} 人）…`}
-                className="mb-2 w-full rounded-md border border-sky-300 bg-white px-2 py-1 text-xs dark:border-sky-800 dark:bg-zinc-900"
-              />
-            )}
-            <div className="flex flex-wrap gap-2">
-              {visibleFollowers.slice(0, FOLLOWER_RENDER_MAX).map((f) => (
-                <SpinButton
-                  key={f.line_user_id}
-                  disabled={binding}
-                  onClick={async () => {
-                    // 人工配對點錯過（2026-08-10 平鎮兩筆）— 綁定前把兩個名字並列確認
-                    if (!window.confirm(`把 LINE「${f.display_name ?? f.line_user_id.slice(0, 8)}」綁定為會員「${member.name ?? member.member_no}」？`)) return;
-                    setBinding(true);
-                    try {
-                      const { error } = await getSupabase().rpc("rpc_bind_store_line_follower", {
-                        p_member_id: member.id,
-                        p_line_user_id: f.line_user_id,
-                      });
-                      if (error) { setError(error.message); return; }
-                      // 綁完重新預檢，畫面才會從「推不到」翻成「可發送」
-                      setReachable({ state: "checking" });
-                      const { result } = await callFn({ action: "check", member_id: member.id });
-                      if (result.ok && result.reachable) {
-                        setReachable({ state: "ok", displayName: result.display_name ?? null });
-                        setFollowers([]);
-                      } else {
-                        setReachable({ state: "unreachable", message: result.message ?? "仍然推不到" });
-                      }
-                    } finally {
-                      setBinding(false);
-                    }
-                  }}
-                  className="flex items-center gap-2 rounded-md border border-sky-300 bg-white px-2 py-1 text-xs hover:bg-sky-100 disabled:opacity-50 dark:border-sky-800 dark:bg-zinc-900 dark:hover:bg-sky-950"
-                >
-                  {f.picture_url && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={f.picture_url} alt="" className="h-5 w-5 rounded-full object-cover" />
-                  )}
-                  {f.suggested && <span title="LINE 名稱與會員姓名相符，疑似本人">⭐</span>}
-                  {f.display_name ?? f.line_user_id.slice(0, 8) + "…"}
-                </SpinButton>
-              ))}
-            </div>
-            {visibleFollowers.length === 0 && (
-              <p className="text-[11px] text-sky-800/80 dark:text-sky-300/80">
-                沒有符合「{followerFilter.trim()}」的人 —— 顧客的 LINE 名稱可能跟會員姓名不同，清空搜尋看看全部。
-              </p>
-            )}
-            {visibleFollowers.length > FOLLOWER_RENDER_MAX && (
-              <p className="mt-2 text-[11px] text-sky-800/80 dark:text-sky-300/80">
-                還有 {visibleFollowers.length - FOLLOWER_RENDER_MAX} 人未顯示，請輸入名稱縮小範圍。
-              </p>
-            )}
-          </div>
+          && homeStoreId != null && (
+          <LineFollowerPicker
+            storeId={homeStoreId}
+            member={member}
+            onBound={async () => {
+              // 綁完重新預檢，畫面才會從「推不到」翻成「可發送」
+              setReachable({ state: "checking" });
+              const { result } = await callFn({ action: "check", member_id: member.id });
+              if (result.ok && result.reachable) {
+                setReachable({ state: "ok", displayName: result.display_name ?? null });
+              } else {
+                setReachable({ state: "unreachable", message: result.message ?? "仍然推不到" });
+              }
+            }}
+          />
         )}
 
         {/* 免額度替代路徑：OA 後台 1:1 聊天室。額度用完時這條仍然能發。 */}

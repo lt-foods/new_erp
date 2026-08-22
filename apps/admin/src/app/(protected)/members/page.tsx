@@ -100,6 +100,11 @@ function MembersListBody() {
   // 有 web push 訂閱（=已安裝 PWA + 開啟通知）的 member id；走 SECURITY DEFINER RPC，
   // 因 push_subscriptions RLS 對 admin（role 非 hq）會靜默回 0 列。
   const [pushSet, setPushSet] = useState<Set<number>>(new Set());
+  // 有「店家 LINE 訊息綁定」的 member id（store_line_followers.member_id 已配對）。
+  // 這是到貨通知推播 / 限量下單閘門認的那本名冊 —— 跟 line_user_id（登入綁定）
+  // 是兩回事，兩個徽章分開畫。分店角色的 RLS 只看得到自己店的列，
+  // 所以他們的徽章只反映自己店的綁定（正是他們該關心的範圍）。
+  const [msgBindSet, setMsgBindSet] = useState<Set<number>>(new Set());
   const [reloadTick, setReloadTick] = useState(0);
   const role = useRole();
   const canBulkDelete = isAdmin(role);
@@ -244,13 +249,18 @@ function MembersListBody() {
 
         const ids = resolved.map((r) => r.id);
         if (ids.length) {
-          const [ord, wal, push] = await Promise.all([
+          const [ord, wal, push, slf] = await Promise.all([
             getSupabase()
               .from("customer_orders")
               .select("id, member_id, status")
               .in("member_id", ids),
             getSupabase().from("wallet_balances").select("member_id, balance").in("member_id", ids),
             getSupabase().rpc("rpc_members_with_push", { p_member_ids: ids }),
+            getSupabase()
+              .from("store_line_followers")
+              .select("member_id")
+              .in("member_id", ids)
+              .eq("followed", true),
           ]);
           // 訂單數量 不計取消/過期/轉出（視為 void）
           const VOID_STATUSES = new Set<string>(["cancelled", "expired", "transferred_out"]);
@@ -289,13 +299,19 @@ function MembersListBody() {
           for (const row of (push.data ?? []) as { member_id: number }[]) {
             if (row?.member_id != null) ps.add(Number(row.member_id));
           }
+          const ms = new Set<number>();
+          for (const row of (slf.data ?? []) as { member_id: number | null }[]) {
+            if (row?.member_id != null) ms.add(Number(row.member_id));
+          }
           if (!cancelled) {
             setBalances(m);
             setPushSet(ps);
+            setMsgBindSet(ms);
           }
         } else {
           setBalances(new Map());
           setPushSet(new Set());
+          setMsgBindSet(new Set());
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -492,10 +508,18 @@ function MembersListBody() {
                       <span className="flex w-12 shrink-0 flex-col items-end gap-0.5">
                         {r.line_user_id && (
                           <span
-                            title="已綁定 LINE"
+                            title="已綁定 LINE 登入"
                             className="whitespace-nowrap rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-normal text-green-700 dark:bg-green-950 dark:text-green-300"
                           >
                             LINE
+                          </span>
+                        )}
+                        {msgBindSet.has(r.id) && (
+                          <span
+                            title="已綁定店家 LINE 官方帳號 — 可接收訊息推播（到貨通知），限量商品下單免再綁定"
+                            className="whitespace-nowrap rounded bg-teal-100 px-1.5 py-0.5 text-[10px] font-normal text-teal-700 dark:bg-teal-950 dark:text-teal-300"
+                          >
+                            訊息
                           </span>
                         )}
                         {pushSet.has(r.id) && (

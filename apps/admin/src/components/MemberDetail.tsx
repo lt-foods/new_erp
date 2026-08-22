@@ -6,6 +6,7 @@ import { getSupabase } from "@/lib/supabase";
 import { MemberMergeModal } from "@/components/MemberMergeModal";
 import { MemberDeleteModal } from "@/components/MemberDeleteModal";
 import { LineMessageModal } from "@/components/LineMessageModal";
+import { MemberLineBindingCard } from "@/components/MemberLineBindingCard";
 import { WalletActionModal, type WalletActionMode } from "@/components/WalletActionModal";
 import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
@@ -583,6 +584,17 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
           會員仍有未取貨訂單時，後端會擋下改店動作（保護既有訂單的取貨地點）。
         </p>
       </div>
+
+      {/* 店家 LINE 訊息綁定 — 獨立卡片，一眼看到綁了沒、當場能綁能解。
+          （以前只藏在「發送 LINE 訊息」彈窗、推不到才出現配對選單） */}
+      {!isMerged && !isDeleted && (
+        <MemberLineBindingCard
+          member={{ id: member.id, name: member.name, member_no: member.member_no }}
+          homeStoreId={member.home_store_id}
+          storeName={memberStoreName}
+          onChanged={() => setReloadTick((n) => n + 1)}
+        />
+      )}
 
       <div className="grid gap-3 sm:grid-cols-3">
         <Card label="等級">{tier?.name ?? "—"}</Card>
