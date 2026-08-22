@@ -226,6 +226,13 @@ export default function TransfersInboxPage() {
         }
         // 已收「回頭查」：把 doneQ 的視窗從「最近 N 筆」改成「這個日期範圍內最近 N 筆」。
         //
+        // ✅ 不需要為這個查詢加索引（阿審 2026-08-22 建議補 (tenant_id,status,received_at
+        //    DESC)，老闆同日跑正式庫 EXPLAIN (ANALYZE, BUFFERS) 推翻）：拿單子最多的那家
+        //    店（1,437 張已收）測最壞情況 → Execution Time 8.273 ms、走
+        //    idx_transfers_dest_status 做 Bitmap Index Scan（不是全表掃）、
+        //    Buffers: shared hit=877 全記憶體命中、零磁碟讀取。母體 12,244 張已收、18 家店。
+        //    ⇒ 現有索引夠用。要再提加索引，先拿新的 EXPLAIN 數字來，不要憑推論。
+        //
         // 明寫 +08:00：received_at 是 timestamptz，不帶時區的字串會用資料庫時區
         // （Supabase 預設 UTC）解讀 → 店家選 8/19 實際查到的是台灣時間 8/19 08:00 起，
         // 早上收的貨落到前一天去，正好又變成「查不到」。後端對這個欄位本來就是用
@@ -234,13 +241,16 @@ export default function TransfersInboxPage() {
         // ⚠ 隔壁 hq/inbox:365 與 ExceptionsContent:348 用的是不帶時區的寫法（有同樣的
         //   8 小時偏移），這裡刻意不照抄。
         //
-        // ⚠ received_at 為 NULL 的單，選了日期範圍就會被濾掉（NULL 不滿足 gte/lte）。
-        //   正常走 rpc_receive_transfer 收的一定有值（同上檔 :1227 寫 NOW()），但舊資料
-        //   確實有 NULL：schema 允許（20260422120003:97 無 NOT NULL），而
-        //   20260607000030_backfill_seed_shipped_at.sql:4 說早期 SEED 資料直接寫
-        //   status='received'，:17 的 `COALESCE(received_at, created_at)` 更是直接承認
-        //   received_at 可能為 NULL —— 且那支只補 shipped_at、沒有回填 received_at。
-        //   清除日期範圍即可回到原本「最近 N 筆」的視窗看到它們（畫面上已寫明）。
+        // ⚠ received_at 為 NULL 的單，選了日期範圍會被濾掉（NULL 不滿足 gte/lte）。
+        //   schema 允許 NULL（20260422120003:97 無 NOT NULL），所以理論上有這個風險。
+        //   ✅ 但老闆 2026-08-22 跑正式庫實測 `status='received' AND received_at IS NULL`
+        //      ＝ **0 筆**，線上一張都沒有 → 刻意不在畫面上加警語（見下方 UI 註解）。
+        //   正常走 rpc_receive_transfer 收的一定會寫 NOW()（同上檔 :1227），只有繞過
+        //   RPC 直接 UPDATE status 才可能留 NULL。若哪天真的塞了這種資料進來，症狀是
+        //   「選了日期就看不到那幾張」，清除日期範圍即可在原本「最近 N 筆」的視窗看到。
+        //   ⚠ 20260607000030_backfill_seed_shipped_at.sql:17 的 COALESCE(received_at,
+        //     created_at) 只證明「當年的作者防了這個可能」，**不證明線上今天有這種資料**
+        //     —— 我上一輪就是拿它當「線上確實有」的證據，被實測推翻。別再重蹈。
         if (doneFrom) doneQ = doneQ.gte("received_at", `${doneFrom}T00:00:00+08:00`);
         if (doneTo) doneQ = doneQ.lte("received_at", `${doneTo}T23:59:59.999+08:00`);
         const [{ data: pendingData, error: e1 }, { data: doneData, error: e2, count: doneCount }] = await Promise.all([
@@ -1171,21 +1181,22 @@ export default function TransfersInboxPage() {
               清除
             </SpinButton>
           )}
-          {/* ⚠ 這兩句話的邊界（阿審 2026-08-22 P1-1／P1-2 指出，逐條查證後成立）：
-              ① 日期範圍只套在 doneQ（:241-242）。單號補查 extraQ（:254-262）刻意不套 —
-                 打了明確單號＝最精確的查詢意圖，本來就該壓過日期範圍，而且那發查詢
-                 存在的理由就是「老單被 doneLimit 擠出去時用單號撈回來」（:252 註解）。
-                 合併回來的單不會再被 filtered 濾掉（:497 對 received 只判 status）→
-                 畫面確實會出現範圍外的單，所以要講出來，不是改掉行為。
-              ② received_at 為 NULL 的單不滿足 gte/lte，選了日期就會被濾掉。schema
-                 允許 NULL（20260422120003:97），而 20260607000030_backfill_seed_shipped_at.sql
-                 證實線上真的有：:4 說早期 SEED 資料直接寫 status='received'，:8-9 與
-                 :17 的 `COALESCE(received_at, created_at)` 更直接承認 received_at 可能是
-                 NULL —— 且該支只補 shipped_at、**沒有回填 received_at**（:16-19），所以
-                 那些 NULL 到今天還在。使用者要看得到這件事，只寫在程式註解裡等於沒講。 */}
+          {/* ⚠ 「用調撥單號搜尋時不受日期限制」這句是必要的，不是贅字（阿審 2026-08-22
+              P1-1，逐條查證後成立）：日期範圍只套在 doneQ（:241-242），單號補查 extraQ
+              （:254-262）刻意不套 —— 打了明確單號＝最精確的查詢意圖，本來就該壓過日期
+              範圍，而且那發查詢存在的理由就是「老單被 doneLimit 擠出去時用單號撈回來」
+              （:252 註解）。合併回來的單不會再被 filtered 濾掉（:497 對 received 只判
+              status）→ 畫面確實會出現範圍外的單，所以要講出來，不是改掉行為。
+
+              ⛔ 不要在這裡加「不含收貨時間空白的舊單」那類提示。received_at 允許 NULL
+              （schema 20260422120003:97），選了日期確實會濾掉它們，阿審也開過這條 ——
+              但老闆 2026-08-22 跑正式庫實測：
+                  SELECT COUNT(*) FROM transfers WHERE status='received' AND received_at IS NULL
+              → **0 筆**。線上一張都沒有（正常收貨一定寫 NOW()，見 20260814010000:1227），
+              放一句線上遇不到的警語只是雜訊。風險記在程式註解就夠（見 :237-243）。 */}
           <span className="text-xs text-zinc-500">
             {doneFrom || doneTo
-              ? "顯示這段期間收的貨（不含收貨時間空白的舊單，清除日期可看到）。用調撥單號搜尋時不受日期限制。"
+              ? "顯示這段期間收的貨。用調撥單號搜尋時不受日期限制。"
               : "不選日期時只載入最近收的幾筆；要用商品名查更早的貨，請先選日期"}
           </span>
         </div>
