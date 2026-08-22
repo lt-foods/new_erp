@@ -87,6 +87,19 @@ export default function PiaopiaoPublisherPage() {
       ...product, variants: product.variants.filter((_, j) => j !== variantIndex),
     } : product));
   }
+  function removeProduct(productIndex: number) {
+    const product = products[productIndex];
+    const title = product?.name.trim() || `商品 ${productIndex + 1}`;
+    if (!window.confirm(products.length > 1 ? `確定刪除「${title}」？` : "確定清空這個商品？")) return;
+    setError("");
+    setProducts((all) => all.length > 1 ? all.filter((_, i) => i !== productIndex) : [emptyProduct()]);
+  }
+  function removeProductImage(productIndex: number, imageIndex: number) {
+    setProducts((all) => all.map((product, i) => i === productIndex ? {
+      ...product,
+      images: product.images.filter((_, j) => j !== imageIndex),
+    } : product));
+  }
   function updateVariantBatch(productIndex: number, patch: Partial<VariantBatch>) {
     const product = products[productIndex];
     if (!product) return;
@@ -196,7 +209,7 @@ export default function PiaopiaoPublisherPage() {
     {error && <p className="mb-4 rounded-xl bg-red-50 p-3 text-red-700">{error}</p>}{shareNotice && <p className="mb-4 rounded-xl bg-emerald-50 p-3 text-emerald-800">{shareNotice}</p>}
     {results.length > 0 ? <section className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="text-xl font-bold">建立完成，請逐一分享</h2><p className="mt-2 text-sm text-zinc-600">按每一樣商品的分享鈕，再由 LINE 選群組。支援的手機／電腦會帶入商品圖、文案和連結。</p><div className="mt-4 space-y-3">{results.map((result) => <div key={result.campaign_id} className="rounded-2xl border p-4"><p className="font-semibold">{result.name}</p><a className="mt-1 block break-all text-rose-700 underline" href={result.url} target="_blank" rel="noreferrer">{result.url}</a><button onClick={() => void share(result)} className="mt-3 min-h-11 rounded-lg bg-[#06C755] px-4 text-sm font-semibold text-white">分享至 LINE 群組</button></div>)}</div><button onClick={() => { setResults([]); setProducts([emptyProduct()]); }} className="mt-5 min-h-11 rounded-xl bg-rose-600 px-4 font-semibold text-white">再建立一批</button></section> : <>
       <section className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="text-lg font-bold">共同資料</h2><div className="mt-4 grid gap-4 sm:grid-cols-2"><Field label="收單時間"><input className="input" type="datetime-local" value={endAt} onChange={(e) => setEndAt(e.target.value)} /></Field><Field label="取貨日"><input className="input" type="date" value={pickupDeadline} onChange={(e) => setPickupDeadline(e.target.value)} /></Field></div></section>
-      <div className="mt-4 space-y-4">{products.map((product, index) => <section key={index} className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="text-lg font-bold">商品 {index + 1}</h2>{products.length > 1 && <button onClick={() => setProducts((all) => all.filter((_, i) => i !== index))} className="min-h-11 text-sm text-red-600">移除此商品</button>}</div><div className="mt-4 grid gap-4"><Field label="商品名稱"><input className="input" value={product.name} onChange={(e) => updateProduct(index, { name: e.target.value })} /></Field><Field label="商品介紹"><textarea className="input min-h-28" value={product.description} onChange={(e) => updateProduct(index, { description: e.target.value })} /></Field><ProductImagesField images={product.images} onChange={(images) => updateProduct(index, { images })} onMove={(imageIndex, direction) => moveProductImage(index, imageIndex, direction)} />{lane === "tong" && <SupplierField value={product.supplier_name} onChange={(supplier_name) => updateProduct(index, { supplier_name })} />}{lane === "chao" && <p className="rounded-xl bg-zinc-100 p-3 text-sm">廠商固定：潮包子</p>}</div><VariantFields product={product} onUpdateVariant={(variantIndex, patch) => updateVariant(index, variantIndex, patch)} onAddVariant={() => addVariant(index)} onRemoveVariant={(variantIndex) => removeVariant(index, variantIndex)} onUpdateBatch={(patch) => updateVariantBatch(index, patch)} onCreateBatch={() => createVariantBatch(index)} /></section>)}</div>
+      <div className="mt-4 space-y-4">{products.map((product, index) => <section key={index} className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="text-lg font-bold">商品 {index + 1}</h2><button type="button" onClick={() => removeProduct(index)} className="min-h-11 text-sm text-red-600">{products.length > 1 ? "刪除此商品" : "清空此商品"}</button></div><div className="mt-4 grid gap-4"><Field label="商品名稱"><input className="input" value={product.name} onChange={(e) => updateProduct(index, { name: e.target.value })} /></Field><Field label="商品介紹"><textarea className="input min-h-28" value={product.description} onChange={(e) => updateProduct(index, { description: e.target.value })} /></Field><ProductImagesField images={product.images} onChange={(images) => updateProduct(index, { images })} onMove={(imageIndex, direction) => moveProductImage(index, imageIndex, direction)} onRemove={(imageIndex) => removeProductImage(index, imageIndex)} />{lane === "tong" && <SupplierField value={product.supplier_name} onChange={(supplier_name) => updateProduct(index, { supplier_name })} />}{lane === "chao" && <p className="rounded-xl bg-zinc-100 p-3 text-sm">廠商固定：潮包子</p>}</div><VariantFields product={product} onUpdateVariant={(variantIndex, patch) => updateVariant(index, variantIndex, patch)} onAddVariant={() => addVariant(index)} onRemoveVariant={(variantIndex) => removeVariant(index, variantIndex)} onUpdateBatch={(patch) => updateVariantBatch(index, patch)} onCreateBatch={() => createVariantBatch(index)} /></section>)}</div>
       {canAdd && <button onClick={() => setProducts((all) => [...all, emptyProduct()])} className="mt-4 min-h-11 rounded-xl border border-rose-300 bg-white px-4 font-semibold text-rose-700">＋ 再加一樣商品（最多 5 樣）</button>}<button disabled={busy} onClick={() => void submit()} className="mt-6 min-h-14 w-full rounded-2xl bg-rose-600 px-5 text-lg font-bold text-white disabled:opacity-50">{busy ? "正在建立，請不要關閉…" : publishLabel}</button>
     </>}</main>;
 }
@@ -246,7 +259,7 @@ function SupplierField({ value, onChange }: { value: string; onChange: (value: s
   </Field>;
 }
 
-function ProductImagesField({ images, onChange, onMove }: { images: File[]; onChange: (images: File[]) => void; onMove: (imageIndex: number, direction: -1 | 1) => void }) {
+function ProductImagesField({ images, onChange, onMove, onRemove }: { images: File[]; onChange: (images: File[]) => void; onMove: (imageIndex: number, direction: -1 | 1) => void; onRemove: (imageIndex: number) => void }) {
   const previews = useMemo(() => images.map((file) => ({ file, url: URL.createObjectURL(file) })), [images]);
   useEffect(() => () => previews.forEach((item) => URL.revokeObjectURL(item.url)), [previews]);
 
@@ -256,7 +269,7 @@ function ProductImagesField({ images, onChange, onMove }: { images: File[]; onCh
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={item.url} alt="" className="h-14 w-14 rounded-xl object-cover" />
       <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{imageIndex === 0 ? "封面／分享圖" : `第 ${imageIndex + 1} 張`}</p><p className="truncate text-xs text-zinc-500">{item.file.name}</p></div>
-      <div className="flex gap-1"><button type="button" disabled={imageIndex === 0} onClick={() => onMove(imageIndex, -1)} className="min-h-10 rounded-lg border px-2 text-sm disabled:opacity-30">上移</button><button type="button" disabled={imageIndex === images.length - 1} onClick={() => onMove(imageIndex, 1)} className="min-h-10 rounded-lg border px-2 text-sm disabled:opacity-30">下移</button></div>
+      <div className="flex flex-wrap justify-end gap-1"><button type="button" disabled={imageIndex === 0} onClick={() => onMove(imageIndex, -1)} className="min-h-10 rounded-lg border px-2 text-sm disabled:opacity-30">上移</button><button type="button" disabled={imageIndex === images.length - 1} onClick={() => onMove(imageIndex, 1)} className="min-h-10 rounded-lg border px-2 text-sm disabled:opacity-30">下移</button><button type="button" onClick={() => onRemove(imageIndex)} className="min-h-10 rounded-lg border border-red-200 px-2 text-sm font-semibold text-red-600">刪除</button></div>
     </div>)}</div>}
   </Field>;
 }
