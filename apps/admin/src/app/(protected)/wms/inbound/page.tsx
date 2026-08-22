@@ -234,10 +234,13 @@ export default function TransfersInboxPage() {
         // ⚠ 隔壁 hq/inbox:365 與 ExceptionsContent:348 用的是不帶時區的寫法（有同樣的
         //   8 小時偏移），這裡刻意不照抄。
         //
-        // ⚠ 已知邊緣情況：received_at 可為 NULL（schema 20260422120003:97 沒有 NOT NULL）。
-        //   正常走 rpc_receive_transfer 收的一定有值（同上檔 :1227 寫 NOW()），但若有
-        //   歷史資料是直接 UPDATE status 進來的，選了日期範圍就會被濾掉（NULL 不滿足
-        //   gte/lte）。清除日期範圍即可回到原本「最近 N 筆」的視窗看到它們。
+        // ⚠ received_at 為 NULL 的單，選了日期範圍就會被濾掉（NULL 不滿足 gte/lte）。
+        //   正常走 rpc_receive_transfer 收的一定有值（同上檔 :1227 寫 NOW()），但舊資料
+        //   確實有 NULL：schema 允許（20260422120003:97 無 NOT NULL），而
+        //   20260607000030_backfill_seed_shipped_at.sql:4 說早期 SEED 資料直接寫
+        //   status='received'，:17 的 `COALESCE(received_at, created_at)` 更是直接承認
+        //   received_at 可能為 NULL —— 且那支只補 shipped_at、沒有回填 received_at。
+        //   清除日期範圍即可回到原本「最近 N 筆」的視窗看到它們（畫面上已寫明）。
         if (doneFrom) doneQ = doneQ.gte("received_at", `${doneFrom}T00:00:00+08:00`);
         if (doneTo) doneQ = doneQ.lte("received_at", `${doneTo}T23:59:59.999+08:00`);
         const [{ data: pendingData, error: e1 }, { data: doneData, error: e2, count: doneCount }] = await Promise.all([
@@ -1012,7 +1015,7 @@ export default function TransfersInboxPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="🔍 搜尋 商品 / 單號 / 分店"
-          title="可搜尋 撿貨單號 / 調撥單號 / 分店 / 商品名 / 商品編號 / 品項編號。調撥單號會直接查後端；其餘只在目前列出的單裡比對 — 要找更早的貨，請先用「已收」分頁的收貨日期把那幾天撈出來"
+          title="可搜尋 撿貨單號 / 調撥單號 / 分店 / 商品名 / 商品編號 / 品項編號。調撥單號會直接查後端、不受日期範圍限制；其餘只在目前列出的單裡比對 — 要用商品名找更早的貨，請先用「已收」分頁的收貨日期把那幾天撈出來"
           className="w-full min-w-[180px] flex-1 basis-[240px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
         />
         <div className="flex shrink-0 items-center rounded-md border border-zinc-300 p-0.5 text-xs dark:border-zinc-700">
@@ -1168,10 +1171,22 @@ export default function TransfersInboxPage() {
               清除
             </SpinButton>
           )}
+          {/* ⚠ 這兩句話的邊界（阿審 2026-08-22 P1-1／P1-2 指出，逐條查證後成立）：
+              ① 日期範圍只套在 doneQ（:241-242）。單號補查 extraQ（:254-262）刻意不套 —
+                 打了明確單號＝最精確的查詢意圖，本來就該壓過日期範圍，而且那發查詢
+                 存在的理由就是「老單被 doneLimit 擠出去時用單號撈回來」（:252 註解）。
+                 合併回來的單不會再被 filtered 濾掉（:497 對 received 只判 status）→
+                 畫面確實會出現範圍外的單，所以要講出來，不是改掉行為。
+              ② received_at 為 NULL 的單不滿足 gte/lte，選了日期就會被濾掉。schema
+                 允許 NULL（20260422120003:97），而 20260607000030_backfill_seed_shipped_at.sql
+                 證實線上真的有：:4 說早期 SEED 資料直接寫 status='received'，:8-9 與
+                 :17 的 `COALESCE(received_at, created_at)` 更直接承認 received_at 可能是
+                 NULL —— 且該支只補 shipped_at、**沒有回填 received_at**（:16-19），所以
+                 那些 NULL 到今天還在。使用者要看得到這件事，只寫在程式註解裡等於沒講。 */}
           <span className="text-xs text-zinc-500">
             {doneFrom || doneTo
-              ? "只顯示這段期間收的貨"
-              : "不選日期時只載入最近收的幾筆；要查更早的貨請選日期"}
+              ? "顯示這段期間收的貨（不含收貨時間空白的舊單，清除日期可看到）。用調撥單號搜尋時不受日期限制。"
+              : "不選日期時只載入最近收的幾筆；要用商品名查更早的貨，請先選日期"}
           </span>
         </div>
       )}
