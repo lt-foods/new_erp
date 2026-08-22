@@ -735,14 +735,44 @@ export default function TransfersInboxPage() {
     doneFetched.to === doneTo &&
     doneFetched.branch === branchLocationId;
 
-  // 按鈕上的數字要是「這一下真的會多載幾筆」。夾到天花板時 +500 其實只會 +450，
-  // 寫死 500 就又是一句畫面上的假話（阿審 2026-08-22 P1-2，實際走得到：
-  // 50 →(+500)→ 550 →(+500)→ 夾成 1000，只多了 450）。
-  // 按鈕只在 doneSettled && !doneAtMax 時才畫，那時 doneLimit 必定 < DONE_MAX，
-  // 所以 doneRoom 至少是 1，不會出現「+0」的按鈕。
-  const doneRoom = DONE_MAX - doneLimit;
-  const doneStepSmall = Math.min(50, doneRoom);
-  const doneStepLarge = Math.min(500, doneRoom);
+  // ─────────────────────────────────────────────────────────────────
+  // 按鈕上那個數字：到底有幾個東西會限制「按下去實際會多載到幾筆」
+  //
+  // 2026-08-22 這一類問題連續踩了三輪，每一輪都是「漏算了一個限制」：
+  //   第一輪 只算「要求幾筆」，漏了「後端實際回幾筆」
+  //   第二輪 只算「距離天花板」，漏了「距離總筆數」
+  // 所以這裡一次窮舉完，不要再補第三次。
+  //
+  //   實際增加量 ＝ min(新的要求, ①, ②, ④) − 目前已載入
+  //
+  //   ① DONE_MAX      本頁天花板        1000              ✅ 事前算得出（:98）
+  //   ② doneTotal     這組條件的總筆數  count:"exact"     ✅ 事前算得出（:311）
+  //   ③ doneLoaded    起算點            上次實際回傳量    ✅ 事前算得出（:315）
+  //   ④ 後端 max_rows 真正的截斷點      推定 1000         ❌ 事前不知道，只能
+  //                                                          事後由「回的比要的
+  //                                                          少」觀察到
+  //   ⑤ 兩次查詢之間資料變了（別人收了貨／退回收貨）→ 總筆數會變 ❌ 本質不可知
+  //
+  // ⇒ ④⑤ 事前算不出來，所以 ⛔ 按鈕上不可以再寫「保證會多載 N 筆」這種話。
+  //   改成寫【上界】：新的要求本身就被夾在「目前 + N」以內，
+  //   實際增加量必定 ≤ N ⇒「最多 +N」在 ①~⑤ 的任何組合下都成立。
+  //   真正發生了什麼由下面那行「已載入 X / Y」負責講，那個永遠是實際值。
+  //
+  // ⚠ 篩選條件（日期／分店）改變刻意不列進這張表：那不是「這一下能載幾筆」的
+  //   限制，而是「現在還算不算得準」的問題，已經由 doneSettled（:732）擋掉 ——
+  //   條件對不上時整塊不畫，不會拿舊的 doneTotal 去算新的步進。
+  // ⚠ 「doneLoaded ≠ doneLimit 的中間態」也不列，因為那個狀態畫不出按鈕：
+  //   按鈕要 !doneAtMax，而 doneAtMax 已經排除 doneLoaded < doneLimit；
+  //   加上 doneLoaded ≤ doneLimit 恆成立（要 N 筆最多回 N 筆）
+  //   ⇒ 按鈕畫得出來的時候，doneLoaded 必定剛好等於 doneLimit。
+  //
+  // 兩個差距都 ≥ 1（整塊要顯示就表示 doneLoaded < doneTotal；有按鈕就表示
+  // doneLimit < DONE_MAX），所以不會出現「最多 +0」的按鈕。
+  // ─────────────────────────────────────────────────────────────────
+  const doneRoom = DONE_MAX - doneLimit;          // 距離本頁天花板
+  const doneRemaining = doneTotal - doneLoaded;   // 距離這組條件的總筆數
+  const doneStepSmall = Math.min(50, doneRoom, doneRemaining);
+  const doneStepLarge = Math.min(500, doneRoom, doneRemaining);
 
   // 滑到底自動載入下一批撿貨單號（+20），不用手動按。sentinel 進入視窗就 +20；
   // effect 依 groupLimit/groups.length 重建 observer，若 sentinel 仍在視窗內會連續補到看不見為止。
@@ -1777,17 +1807,17 @@ export default function TransfersInboxPage() {
                 onClick={() => setDoneLimit((n) => Math.min(n + doneStepSmall, DONE_MAX))}
                 className="rounded-md border border-zinc-300 px-3 py-1.5 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
               >
-                載入更多 (+{doneStepSmall})
+                載入更多 (最多 +{doneStepSmall})
               </SpinButton>
-              {/* 大步只在「真的比小步多」時才出現 —— 快到天花板時兩顆會夾成一樣的
-                  數字（例：只剩 10 筆時兩顆都是 +10），並排兩顆一模一樣的鈕很怪，
-                  而且第二顆等於沒有作用。 */}
+              {/* 大步只在「真的比小步多」時才出現 —— 快到上限時兩顆會夾成一樣的
+                  數字（例：只差 10 筆就載完時兩顆都是 +10），並排兩顆一模一樣的
+                  鈕很怪，而且第二顆等於沒有作用。 */}
               {doneStepLarge > doneStepSmall && (
                 <SpinButton
                   onClick={() => setDoneLimit((n) => Math.min(n + doneStepLarge, DONE_MAX))}
                   className="rounded-md border border-zinc-300 px-3 py-1.5 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
                 >
-                  載入更多 (+{doneStepLarge})
+                  載入更多 (最多 +{doneStepLarge})
                 </SpinButton>
               )}
             </>
