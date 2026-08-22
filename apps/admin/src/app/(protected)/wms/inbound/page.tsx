@@ -129,14 +129,25 @@ export default function TransfersInboxPage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [doneLimit, setDoneLimit] = useState(50);
   const [doneTotal, setDoneTotal] = useState(0);
-  // 上一次「已收」查詢：要求幾筆(limit) / 後端實際回幾筆(rows)。
-  // 兩個值刻意綁在同一個 state 一起更新 —— 分開存的話，使用者按下「載入更多」
-  // 到新資料回來之前，會拿「新的 limit」配「舊的 rows」算出「載不動了」的錯誤結論，
-  // 畫面就會閃一下不實的提示。
-  const [doneFetched, setDoneFetched] = useState<{ limit: number; rows: number }>({
-    limit: 0,
-    rows: 0,
-  });
+  // 上一次「已收」查詢的【查詢條件】與【結果】，綁在同一個 state 一起更新。
+  // 分開存的話，會在「按下去到新資料回來」的空窗期拿新條件配舊結果，
+  // 講出不實的數字。
+  //
+  // ⚠ 條件要把 doneQ 實際會變動的四個東西全帶上（筆數上限 / 分店 / 日期起訖）。
+  //   只帶 limit 是不夠的 —— 阿審 2026-08-22 P1-1 抓到：applyDoneRange() 雖然會
+  //   setDoneLimit(50)，但使用者本來就停在 50 時那是設同一個值、React 直接跳過，
+  //   而 doneFrom/doneTo 有變會照樣觸發重查（effect deps 含這兩個）。
+  //   於是空窗期 limit 仍然對得上 → footer 繼續顯示【上一個日期範圍】的
+  //   「已載入 N / M」。少帶任一個條件就會留下這種空窗。
+  // ⚠ 刻意不帶 serverSearch 與 reloadTick：doneQ 沒有用到它們（搜尋補查是另一發
+  //   extraQ，見下方 :270 附近），帶了只會讓這塊在每次打字／收完貨重載時無謂閃掉。
+  const [doneFetched, setDoneFetched] = useState<{
+    limit: number;
+    rows: number;
+    from: string;
+    to: string;
+    branch: number | null;
+  }>({ limit: -1, rows: 0, from: "", to: "", branch: null });
   // 撿貨單號（wave）分頁：一次顯示 20 個 wave，滑到底自動載入下一批（+20）
   const [groupLimit, setGroupLimit] = useState(20);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -301,7 +312,13 @@ export default function TransfersInboxPage() {
           // 實際回幾筆要在這裡量：doneData 是「已收」那一發查詢自己的結果，
           // 還沒被下面的搜尋補查(extraQ)混進來。回的比要求的少 ＝ 撞到後端
           // max-rows，下面「還載得動嗎」就靠這個判斷（見 DONE_MAX）。
-          setDoneFetched({ limit: doneLimit, rows: doneData?.length ?? 0 });
+          setDoneFetched({
+            limit: doneLimit,
+            rows: doneData?.length ?? 0,
+            from: doneFrom,
+            to: doneTo,
+            branch: branchLocationId,
+          });
         }
         const rows = ([...(pendingData ?? []), ...(doneData ?? [])] as Transfer[]);
 
@@ -709,10 +726,23 @@ export default function TransfersInboxPage() {
   // ⚠ 兩個條件都只讀 doneFetched，刻意不摻當下的 doneLimit —— 混用會在
   //   「按下去到資料回來」的空窗期用舊結果配新要求，講出不實的結論。
   const doneAtMax = doneFetched.limit >= DONE_MAX || doneFetched.rows < doneFetched.limit;
-  // 上一次查詢是不是就是照現在這個 doneLimit 查的。按下「載入更多」之後、新資料
-  // 回來之前這兩個會對不上 —— 那段空窗期整塊先不畫。少畫一塊沒人受傷，
-  // 拿舊數字硬講「載到這裡為止」就是在騙人（本案要修的就是這種話）。
-  const doneSettled = doneFetched.limit === doneLimit;
+  // 上一次查詢是不是就是照【現在這組條件】查的。按下「載入更多」或換日期範圍
+  // 之後、新資料回來之前會對不上 —— 那段空窗期整塊先不畫。少畫一塊沒人受傷，
+  // 拿舊數字硬講「已載入 N / M」就是在騙人（本案要修的就是這種話）。
+  const doneSettled =
+    doneFetched.limit === doneLimit &&
+    doneFetched.from === doneFrom &&
+    doneFetched.to === doneTo &&
+    doneFetched.branch === branchLocationId;
+
+  // 按鈕上的數字要是「這一下真的會多載幾筆」。夾到天花板時 +500 其實只會 +450，
+  // 寫死 500 就又是一句畫面上的假話（阿審 2026-08-22 P1-2，實際走得到：
+  // 50 →(+500)→ 550 →(+500)→ 夾成 1000，只多了 450）。
+  // 按鈕只在 doneSettled && !doneAtMax 時才畫，那時 doneLimit 必定 < DONE_MAX，
+  // 所以 doneRoom 至少是 1，不會出現「+0」的按鈕。
+  const doneRoom = DONE_MAX - doneLimit;
+  const doneStepSmall = Math.min(50, doneRoom);
+  const doneStepLarge = Math.min(500, doneRoom);
 
   // 滑到底自動載入下一批撿貨單號（+20），不用手動按。sentinel 進入視窗就 +20；
   // effect 依 groupLimit/groups.length 重建 observer，若 sentinel 仍在視窗內會連續補到看不見為止。
@@ -1744,17 +1774,22 @@ export default function TransfersInboxPage() {
           ) : (
             <>
               <SpinButton
-                onClick={() => setDoneLimit((n) => Math.min(n + 50, DONE_MAX))}
+                onClick={() => setDoneLimit((n) => Math.min(n + doneStepSmall, DONE_MAX))}
                 className="rounded-md border border-zinc-300 px-3 py-1.5 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
               >
-                載入更多 (+50)
+                載入更多 (+{doneStepSmall})
               </SpinButton>
-              <SpinButton
-                onClick={() => setDoneLimit((n) => Math.min(n + 500, DONE_MAX))}
-                className="rounded-md border border-zinc-300 px-3 py-1.5 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-              >
-                載入更多 (+500)
-              </SpinButton>
+              {/* 大步只在「真的比小步多」時才出現 —— 快到天花板時兩顆會夾成一樣的
+                  數字（例：只剩 10 筆時兩顆都是 +10），並排兩顆一模一樣的鈕很怪，
+                  而且第二顆等於沒有作用。 */}
+              {doneStepLarge > doneStepSmall && (
+                <SpinButton
+                  onClick={() => setDoneLimit((n) => Math.min(n + doneStepLarge, DONE_MAX))}
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  載入更多 (+{doneStepLarge})
+                </SpinButton>
+              )}
             </>
           )}
         </div>
