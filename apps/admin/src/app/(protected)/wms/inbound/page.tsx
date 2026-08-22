@@ -856,6 +856,46 @@ export default function TransfersInboxPage() {
     return acc;
   }, [transfers, waves, locationFilter]);
 
+  // ─────────────────────────────────────────────────────────────────
+  // 「已收」那個數字（頁首、分頁標籤、KPI 卡三處共用同一個值）
+  //
+  // ⛔ summaries.done 數的是「目前載入了幾筆已收」，不是「總共有幾筆已收」。
+  //    預設 doneLimit=50 → 畫面寫「已收 50」，正式庫實際 12,244 張。
+  //    跟本案要修的「載入全部」是同一種謊，而且 KPI 卡比按鈕更顯眼。
+  //
+  // 真實總數直接用 doneQ 已經帶回來的 count:"exact"（doneTotal），
+  // ⛔ 不為了這個數字另外多打一支查詢（那會拖慢每次開頁）。
+  //
+  // ⚠ 但兩者的範圍不完全一樣，只有一致時才能換：
+  //     doneTotal      的範圍 ＝ branchLocationId ＋ 已收日期範圍
+  //     summaries.done 的範圍 ＝ 上面那些 ＋ 總部右上角的分店下拉 locationFilter
+  //   分店帳號看不到那個下拉（:1089 要 branchLocationId == null 才畫），而全檔
+  //   唯一的 setLocationFilter 就在那個下拉裡（:1095）⇒ 分店帳號恆為 "all"。
+  //   總部選「全部」時也是 "all"。這兩種情況範圍一致，doneTotal 就是真實總數。
+  //
+  //   只有「總部手動挑了某一家店」時範圍不同，而 locationFilter 不在抓資料的
+  //   effect deps 裡（純前端篩選、不重查）⇒ 那種情況真的拿不到該店的總數。
+  //   ⇒ 照本輪原則：算不出精確值就不要假裝精確 —— 那種情況直接標明「已載入」，
+  //     講的就是它本來的東西。
+  //
+  // ⛔ 這裡刻意【不】用「N+」（至少 N 筆）那種下界寫法，雖然按鈕那邊用的是上界。
+  //    理由：下界在這裡不成立。搜尋補查（extraQ，:270 附近）會刻意把日期範圍外
+  //    的已收單也合併進 transfers，那些單一樣會被 summaries.done 數到 ⇒
+  //    「總部挑某店 ＋ 有日期範圍 ＋ 搜尋撈到該店範圍外的舊單」時，
+  //    summaries.done 會【超過】該店範圍內的真實總數，「N+」就變成假話。
+  //    「已載入 N」不必依賴任何界的推論 —— 它就是畫面上真的有幾筆，恆真。
+  // ─────────────────────────────────────────────────────────────────
+  const doneTotalIsExact = locationFilter === "all";
+  const doneKpiNum = doneTotalIsExact ? doneTotal : summaries.done;
+  // 三處的講法分開寫（不硬湊成同一個字串）：同一個數字，但要在各自的版面裡
+  // 都把「這到底是不是總數」講清楚
+  const doneKpiCardLabel = doneTotalIsExact ? "✓ 已收" : "✓ 已收（已載入）";
+  const doneKpiTabCount = doneTotalIsExact ? String(doneKpiNum) : `已載入 ${doneKpiNum}`;
+  const doneKpiHeader = doneTotalIsExact ? `已收 ${doneKpiNum}` : `已收（已載入 ${doneKpiNum}）`;
+  const doneKpiHint = doneTotalIsExact
+    ? `status = received 的總數${doneFrom || doneTo ? "（限這段收貨日期）" : ""}，不是目前載入的筆數`
+    : "目前載入的 status = received 筆數；總部挑了單一分店時算不出該店總數，不另外查以免拖慢頁面";
+
   function selectAllPending() {
     setSelected(new Set(pendingIds));
   }
@@ -1082,7 +1122,7 @@ export default function TransfersInboxPage() {
             {transfers === null ? (
               <Spinner size={14} className="inline-block align-[-2px]" />
             ) : (
-              `待收 ${summaries.allPending} · 已收 ${summaries.done}`
+              `待收 ${summaries.allPending} · ${doneKpiHeader}`
             )}
           </p>
         </div>
@@ -1110,8 +1150,10 @@ export default function TransfersInboxPage() {
       {/* 分頁：未收 / 已收（預設未收） */}
       <div className="flex items-center gap-1 border-b border-zinc-200 dark:border-zinc-800">
         {([
-          { value: "unreceived", label: "未收", count: summaries.allPending },
-          { value: "received", label: "已收", count: summaries.done },
+          // 已收那格拿得到真實總數時就顯示總數；拿不到時會是「已載入 N」
+          // （見上方 doneKpiTabCount）→ 兩個都當字串處理
+          { value: "unreceived", label: "未收", count: String(summaries.allPending) },
+          { value: "received", label: "已收", count: doneKpiTabCount },
         ] as const).map((tb) => {
           const active = tab === tb.value;
           return (
@@ -1210,7 +1252,21 @@ export default function TransfersInboxPage() {
         </div>
       )}
 
-      {/* KPI cards — 點任一張就 filter list,再點一次取消 */}
+      {/* KPI cards — 點任一張就 filter list,再點一次取消
+          ⚠ 這四張卡的數字來源【不對稱】，改的時候不要以為它們是同一回事：
+            ・「✓ 已收」＝ 真實總數（doneQ 的 count:"exact"）；總部挑了單一分店
+              那一種情況算不出總數，卡片標題會自己改成「已收（已載入）」
+              —— 見上方 doneKpiNum / doneKpiCardLabel
+            ・前三張待收的 ＝ 目前載入的筆數（summaries.*，數 transfers 陣列）
+          待收那三張今天是準的，因為 pendingQ（:207 附近）沒有套 .limit()，
+          後端會把 status='shipped' 全部給回來（老闆 2026-08-22 實測待收 41 張）。
+          ⚠ 但它仍受後端 max-rows 節制：哪天待收超過那個上限，這三張會【少報而且
+            看不出來】。要修的話優先改文字（標成「已載入」）而不是加查詢。
+          ⚠ 另外「🚚 明天到貨 / ⏳ 今日及更早」還多依賴一個東西：waves（:346-351
+            那發 picking_waves 查詢）。那發沒有分頁、沒有切塊，而且 error 被解構
+            丟掉 —— 它要是被截斷或失敗，有 wave_date 的單會被當成沒有日期，
+            這兩張就會少報。今天不會發生（一張 wave 對多張 transfer，waveIds
+            遠小於載入筆數），但這是它們準不準的前提，不是可以忽略的細節。 */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <KpiCard
           label="🚚 明天到貨"
@@ -1252,10 +1308,10 @@ export default function TransfersInboxPage() {
           }
         />
         <KpiCard
-          label="✓ 已收"
-          hint="status = received"
+          label={doneKpiCardLabel}
+          hint={doneKpiHint}
           showHint={showDetail}
-          value={summaries.done}
+          value={doneKpiNum}
           accent="text-emerald-700 dark:text-emerald-400"
           active={tab === "received"}
           onClick={() => { setTab("received"); setDateFilter(null); setSelected(new Set()); }}
