@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { useRole, isHqRole } from "@/lib/role";
 import { translateRpcError } from "@/lib/rpcError";
+import { restockStatusLabel } from "@/lib/restockStatus";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import RestockDetailModal from "@/components/RestockDetailModal";
@@ -297,7 +298,9 @@ export default function RestockListPage() {
                             </span>
                           ) : (
                             <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[r.status]}`}>
-                              {STATUS_LABEL[r.status]}
+                              {/* approved_transfer 分新舊：舊流程直派過的單（linked_transfer_id 有值）
+                                  貨是真的出去了，講「已派至工作台」對它反而不準。見 lib/restockStatus.ts */}
+                              {restockStatusLabel(r.status, r.linked_transfer_id, STATUS_LABEL)}
                             </span>
                           )}
                         </Td>

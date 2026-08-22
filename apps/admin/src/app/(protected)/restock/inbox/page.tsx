@@ -7,6 +7,7 @@ import SpinButton from "@/components/SpinButton";
 import RestockToPrModal from "@/components/RestockToPrModal";
 import { PR_TERM_ZH } from "@/lib/prStatus";
 import { translateRpcError } from "@/lib/rpcError";
+import { restockStatusLabel } from "@/lib/restockStatus";
 
 type Status = "pending" | "approved_transfer" | "approved_pr" | "shipped" | "received" | "rejected" | "cancelled";
 
@@ -275,7 +276,8 @@ export default function RestockInboxPage() {
                       ⏳ 候補中
                     </span>
                   ) : (
-                    <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[r.status]}`}>{STATUS_LABEL[r.status]}</span>
+                    // approved_transfer 分新舊，判準是 linked_transfer_id（見 lib/restockStatus.ts）
+                    <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${STATUS_COLOR[r.status]}`}>{restockStatusLabel(r.status, r.linked_transfer_id, STATUS_LABEL)}</span>
                   )}
                 </td>
                 <td className="max-w-xs px-3 py-3 text-xs text-zinc-500">{r.notes ?? "—"}</td>

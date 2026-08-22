@@ -121,7 +121,10 @@ export default function RestockNewPage() {
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header>
         <h1 className="text-xl font-semibold">補貨申請</h1>
-        <p className="text-sm text-zinc-500">針對既有上架商品向 HQ 叫貨；HQ 會選擇派庫存或進貨</p>
+        {/* ⚠ 原本寫「HQ 會選擇派庫存或進貨」，會讓分店以為 HQ 一按就出貨。
+            2026-06-12 起「派」那條只是排進派貨工作台（rpc_approve_restock_to_transfer
+            最新版 20260714000040:260-270 只改狀態、貨不動），所以要講明核可 ≠ 已出貨。 */}
+        <p className="text-sm text-zinc-500">針對既有上架商品向 HQ 叫貨；HQ 核可後，會用總倉庫存派貨或另外向供應商訂貨 —— 核可不等於已出貨</p>
       </header>
 
       {error && (

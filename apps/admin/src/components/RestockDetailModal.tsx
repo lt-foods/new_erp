@@ -6,6 +6,7 @@ import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
 import { PR_TERM_ZH, prStatusLabel } from "@/lib/prStatus";
 import { transferStatusLabel } from "@/lib/transferStatus";
+import { restockStatusLabel } from "@/lib/restockStatus";
 
 type RestockRow = {
   id: number;
@@ -211,7 +212,8 @@ export default function RestockDetailModal({
               value={
                 hd.status === "pending" && hd.standby_at
                   ? `待處理（⏳ 候補中，${new Date(hd.standby_at).toLocaleString("zh-TW", { dateStyle: "short", timeStyle: "short" })} 轉入）`
-                  : STATUS_LABEL[hd.status] ?? hd.status
+                  // approved_transfer 分新舊，判準是 linked_transfer_id（見 lib/restockStatus.ts）
+                  : restockStatusLabel(hd.status, hd.linked_transfer_id, STATUS_LABEL)
               }
             />
             <Field label="申請時間" value={new Date(hd.requested_at).toLocaleString("zh-TW")} />

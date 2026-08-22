@@ -1744,7 +1744,12 @@ function Body() {
         p_allocations: allocations,
         p_operator: operator,
       });
-      if (e) throw new Error(e.message);
+      // ⚠ rpc_create_wave_from_restock 的守衛訊息把舊按鈕名寫死在 SQL 裡
+      //   （最新版 20260715000020:516「補貨申請狀態為「%」、不可建撿貨單(需先在總倉收件匣點「派貨」)」）。
+      //   2026-08-22 那顆鈕已改名「派至工作台」，訊息會指向一顆不存在的鈕。
+      //   ⛔ 不動 migration，改在這裡把名字換掉再顯示；字串對不上就原樣丟出（＝維持原行為），
+      //   不會把錯誤吞掉、也不會蓋掉其他訊息。
+      if (e) throw new Error(e.message.replace("總倉收件匣點「派貨」", "總倉收件匣點「派至工作台」"));
       const r = data as { wave_id: number; wave_code: string };
       alert(`✅ 已建立撿貨單 ${r.wave_code}`);
       setReloadKey((k) => k + 1);
