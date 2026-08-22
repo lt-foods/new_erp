@@ -73,6 +73,8 @@ export async function callLiffApi<T = unknown>(
 
     const err = new Error(msg);
     (err as Error & { detail?: unknown }).detail = (data as { detail?: unknown }).detail;
+    // 機器可判別的錯誤代碼（例：line_binding_required），讓呼叫端不用 parse 中文訊息
+    (err as Error & { code?: unknown }).code = (data as { code?: unknown }).code;
     throw err;
   }
 

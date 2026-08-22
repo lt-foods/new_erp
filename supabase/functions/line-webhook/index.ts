@@ -15,6 +15,7 @@
 //   驗簽（HMAC-SHA256 + channel secret），驗不過一律 403。
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
+import { extractBindCode } from "../_shared/lineBinding.ts";
 
 const LINE_PROFILE_URL = "https://api.line.me/v2/bot/profile";
 const LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply";
@@ -71,6 +72,20 @@ async function inviteAccountLink(
   } catch (e) {
     console.error("inviteAccountLink error:", String(e));
     return false;
+  }
+}
+
+/** 用 replyToken 回一則純文字（免推播額度）。失敗吞掉 —— 不影響 webhook 回 200 */
+async function replyText(accessToken: string, replyToken: string, text: string): Promise<void> {
+  try {
+    const resp = await fetch(LINE_REPLY_URL, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ replyToken, messages: [{ type: "text", text }] }),
+    });
+    if (!resp.ok) console.error("replyText failed:", resp.status, await resp.text());
+  } catch (e) {
+    console.error("replyText error:", String(e));
   }
 }
 
@@ -250,6 +265,52 @@ Deno.serve(async (req) => {
         .from("store_line_followers")
         .upsert(row, { onConflict: "store_id,line_user_id", ignoreDuplicates: false });
       if (upErr) console.error("binding upsert failed:", upErr.message);
+
+      // ── 綁定碼（限量商品下單前的一鍵綁定）────────────────────────────────
+      // 商城端（liff-api start_line_binding）發碼並預填在訊息裡，會員按送出
+      // 就會走到這裡：核銷綁定碼、把這個 OA provider 的 line_user_id 連上會員。
+      // 效果等同 account link，但不用經過 LINE 的 accountLink 對話框。
+      // 一定要放在上面的名冊 upsert 之後（那段順手補 display_name），
+      // 並在 account link 邀請之前 —— 綁定訊息不該再收到「查看我的訂單」邀請。
+      const msgText = type === "message" && (ev.message as Record<string, unknown> | undefined)?.type === "text"
+        ? String((ev.message as Record<string, unknown>).text ?? "")
+        : "";
+      const bindCode = msgText ? extractBindCode(msgText) : null;
+      if (bindCode) {
+        const { data: codeRow } = await sb
+          .from("line_binding_codes")
+          .select("id, member_id, expires_at")
+          .eq("code", bindCode)
+          .eq("store_id", cred.store_id)
+          .is("used_at", null)
+          .maybeSingle();
+        const valid = !!codeRow && Date.parse(codeRow.expires_at) > Date.now();
+        if (valid) {
+          const { error: bindErr } = await sb.from("store_line_followers").upsert({
+            tenant_id: cred.tenant_id,
+            store_id: cred.store_id,
+            line_user_id: lineUserId,
+            member_id: codeRow.member_id,
+            followed: true,
+            linked_at: at,
+            last_event_at: at,
+          }, { onConflict: "store_id,line_user_id" });
+          if (bindErr) console.error("bind-code link failed:", bindErr.message);
+          else {
+            await sb.from("line_binding_codes")
+              .update({ used_at: new Date().toISOString(), line_user_id: lineUserId })
+              .eq("id", codeRow.id);
+          }
+        }
+        // 回覆是加值，不是綁定成立的條件：沒 token / reply 失敗，App 端輪詢照樣看得到結果
+        const bindReplyToken = ev.replyToken as string | undefined;
+        if (bindReplyToken && cred.access_token) {
+          await replyText(cred.access_token, bindReplyToken, valid
+            ? "✅ 綁定完成！請回到商城，繼續完成下單。"
+            : "這個綁定碼已過期或無效，請回到商城重新按一次「送出訂單」取得新的綁定訊息。");
+        }
+        continue;
+      }
 
       // 還不知道他是哪位會員 → 回一則帶 account link 的「查看我的訂單」。
       // 只在有 replyToken 時做（reply 免額度，且 linkToken 只有 10 分鐘效期，

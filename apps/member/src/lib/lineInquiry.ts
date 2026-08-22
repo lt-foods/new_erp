@@ -54,6 +54,26 @@ export function buildLineOaMessageUrl(basicId: string, text: string): string {
   return `https://line.me/R/oaMessage/${encodeURIComponent(id)}/?${encodeURIComponent(text)}`;
 }
 
+/**
+ * 開啟與指定 LINE@ 的對話並預填文字（universal link）。
+ * LIFF 內要用 openWindow(external) 跳出內建瀏覽器；其餘用導頁而不是
+ * window.open —— 非同步之後才開新視窗會被彈出視窗阻擋器擋掉（不算 user
+ * gesture）。universal link 用導頁一樣會交棒給 LINE app，PWA 本身留在原地。
+ */
+export async function openLineOaChat(basicId: string, text: string): Promise<void> {
+  const url = buildLineOaMessageUrl(basicId, text);
+  try {
+    const liff = await initLiff();
+    if (liff?.isInClient() && typeof liff.openWindow === "function") {
+      liff.openWindow({ url, external: true });
+      return;
+    }
+  } catch {
+    // 落到一般導頁
+  }
+  window.location.href = url;
+}
+
 export type SendResult = "sent_in_liff" | "opened_line" | "copied" | "failed";
 
 /**
@@ -103,21 +123,7 @@ export async function sendLineInquiry(
       return "failed";
     }
   }
-  const url = buildLineOaMessageUrl(oa, text);
-  try {
-    const liff = await initLiff();
-    // LIFF 內要用 openWindow(external) 才會跳出 LINE 內建瀏覽器開對話
-    if (liff?.isInClient() && typeof liff.openWindow === "function") {
-      liff.openWindow({ url, external: true });
-      return "opened_line";
-    }
-  } catch {
-    // 落到一般 window.open
-  }
-  // 用 location 導頁而不是 window.open：非同步之後才開新視窗會被彈出視窗
-  // 阻擋器擋掉（已經不算 user gesture）。universal link 用導頁一樣會交棒給
-  // LINE app，PWA 本身留在原地。
-  window.location.href = url;
+  await openLineOaChat(oa, text);
   return "opened_line";
 }
 

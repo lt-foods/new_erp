@@ -3,6 +3,7 @@ import { corsHeaders } from "../_shared/cors.ts";
 import { verifyJwtHs256, type JwtClaims } from "../_shared/jwt.ts";
 import { renewSessionTokenIfNeeded } from "../_shared/session.ts";
 import { isMissingSalesChannelColumn } from "../_shared/salesChannelGuard.ts";
+import { BIND_CODE_TTL_MIN, buildBindMessage, generateBindCode } from "../_shared/lineBinding.ts";
 import webpush from "https://esm.sh/web-push@3.6.7";
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -103,6 +104,125 @@ async function createAccountLinkNonce(
   });
   if (error) return json({ error: error.message }, 500);
   return json({ nonce });
+}
+
+// ─── 限量商品下單前的「店家 LINE 綁定」 ──────────────────────────────────────
+//
+// 「綁定」= store_line_followers 有這位會員（member_id 已填、followed=true）。
+// 那張表的 line_user_id 是**該店 OA provider** 的 ID，店家用它推「到貨通知」、
+// 棄單時也聯絡得到人 —— 這正是限量商品要求先綁定的原因。
+//
+// 寫入端有兩條路，都在 line-webhook：
+//   1. 綁定碼（本次新增）：start_line_binding 發碼 → 前端開 OA 對話預填
+//      「綁定碼：XXXXXX」→ 會員按送出 → webhook 核銷 + 綁定。一則訊息完成。
+//   2. account link（既有）：會員隨便傳訊息 → webhook 回「查看我的訂單」連結。
+// 這裡只負責發碼與回報狀態，不寫 store_line_followers。
+
+/** 取貨店的綁定目標：OA basic id + 是否具備完成綁定的條件（憑證齊全才有 webhook） */
+async function resolveLineBindTarget(sb: any, tenantId: string, storeId: number) {
+  const { data: store } = await sb
+    .from("stores")
+    .select("id, name, line_oa_basic_id")
+    .eq("tenant_id", tenantId)
+    .eq("id", storeId)
+    .maybeSingle();
+  const oaId = String(store?.line_oa_basic_id ?? "").trim() || null;
+  let hasCreds = false;
+  if (oaId) {
+    // 憑證（channel secret）沒設就收不到 webhook，綁定永遠完不成 → 視為不可綁
+    const { data: cred } = await sb
+      .from("store_line_oa_credentials")
+      .select("store_id")
+      .eq("store_id", storeId)
+      .maybeSingle();
+    hasCreds = !!cred;
+  }
+  return {
+    storeName: (store?.name as string | undefined) ?? null,
+    oaId,
+    bindable: !!oaId && hasCreds,
+  };
+}
+
+async function memberBoundToStore(sb: any, storeId: number, memberId: number): Promise<boolean> {
+  const { data } = await sb
+    .from("store_line_followers")
+    .select("id")
+    .eq("store_id", storeId)
+    .eq("member_id", memberId)
+    .eq("followed", true)
+    .limit(1)
+    .maybeSingle();
+  return !!data;
+}
+
+/** 前端輪詢用：這位會員對這家店綁好了沒 */
+async function getLineBindState(sb: any, tenantId: string, memberId: number, storeId: number) {
+  if (!storeId) return json({ error: "store_id required" }, 400);
+  const target = await resolveLineBindTarget(sb, tenantId, storeId);
+  const bound = target.bindable ? await memberBoundToStore(sb, storeId, memberId) : false;
+  return json({
+    store_id: storeId,
+    store_name: target.storeName,
+    oa_id: target.oaId,
+    bindable: target.bindable,
+    bound,
+  });
+}
+
+/**
+ * 發（或重用）綁定碼。回傳前端開 OA 對話要用的一切：oa_id + 預填訊息。
+ * 同會員同店還有活著的碼就直接重用 —— 會員反覆按下單不會把表灌爆，
+ * 也不會讓「已經開著的 LINE 對話框」裡那組碼突然失效。
+ */
+async function startLineBinding(sb: any, tenantId: string, memberId: number, storeId: number) {
+  if (!storeId) return json({ error: "store_id required" }, 400);
+  const target = await resolveLineBindTarget(sb, tenantId, storeId);
+  if (!target.bindable) return json({ error: "此店家尚未啟用 LINE 綁定" }, 400);
+  if (await memberBoundToStore(sb, storeId, memberId)) {
+    return json({ bound: true });
+  }
+
+  // 重用還有 5 分鐘以上效期的碼；快過期就發新的，免得會員送出時剛好失效
+  const { data: existing } = await sb
+    .from("line_binding_codes")
+    .select("code, expires_at")
+    .eq("member_id", memberId)
+    .eq("store_id", storeId)
+    .is("used_at", null)
+    .gt("expires_at", new Date(Date.now() + 5 * 60_000).toISOString())
+    .order("id", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  let code = existing?.code as string | undefined;
+  if (!code) {
+    const expiresAt = new Date(Date.now() + BIND_CODE_TTL_MIN * 60_000).toISOString();
+    // 活著的碼全域唯一（partial unique index）；撞號就重生，最多試 3 次
+    for (let i = 0; i < 3 && !code; i++) {
+      const candidate = generateBindCode();
+      const { error } = await sb.from("line_binding_codes").insert({
+        tenant_id: tenantId,
+        member_id: memberId,
+        store_id: storeId,
+        code: candidate,
+        expires_at: expiresAt,
+      });
+      if (!error) code = candidate;
+      else if (!String(error.message ?? "").includes("duplicate")) {
+        return json({ error: error.message }, 500);
+      }
+    }
+    if (!code) return json({ error: "無法產生綁定碼，請稍後再試" }, 500);
+  }
+
+  return json({
+    bound: false,
+    code,
+    oa_id: target.oaId,
+    store_name: target.storeName,
+    message_text: buildBindMessage(code),
+  });
 }
 
 async function listStores(sb: any, tenantId: string) {
@@ -1132,7 +1252,7 @@ async function placeMemberOrder(
   const requiredSalesChannel = p.sales_channel === "piaopiao" ? "piaopiao" : "main";
   const { data: campaign, error: campaignErr } = await sb
     .from("group_buy_campaigns")
-    .select("id")
+    .select("id, close_type, total_cap_qty, campaign_items(cap_qty)")
     .eq("tenant_id", tenantId)
     .eq("id", campaignId)
     .eq("sales_channel", requiredSalesChannel)
@@ -1155,6 +1275,37 @@ async function placeMemberOrder(
 
   const pickupStoreId = Number(p.pickup_store_id ?? member.home_store_id ?? 0);
   if (!pickupStoreId) return json({ error: "pickup_store_id required" }, 400);
+
+  // ── 限量團閘門：先綁定取貨店的 LINE 官方帳號才能下單 ──────────────────────
+  // 「限量」判準與商城「限量搶購」分頁同一套（listActiveCampaigns 的 sale_limit）：
+  // fast / limited、或非 food_train 而設了總量 / 單品上限。要求綁定的原因：
+  // 限量品搶到就是承諾，棄單店家要聯絡得到人（同一條綁定也餵「到貨通知」推播）。
+  // 店家沒設 OA / 憑證不擋 —— 擋了也沒有任何路可以完成綁定。
+  // 閘門查詢失敗一律放行：這是商業規則不是安全邊界，不能因基礎設施出錯全面擋單。
+  const closeType = String(campaign.close_type ?? "");
+  const isLimitedSale = closeType === "fast" || closeType === "limited" || (
+    closeType !== "food_train" && (
+      Number(campaign.total_cap_qty ?? 0) > 0
+      || (campaign.campaign_items ?? []).some((i: any) => Number(i.cap_qty ?? 0) > 0)
+    )
+  );
+  if (isLimitedSale) {
+    try {
+      const target = await resolveLineBindTarget(sb, tenantId, pickupStoreId);
+      if (target.bindable && !(await memberBoundToStore(sb, pickupStoreId, memberId))) {
+        // error 字串是舊版前端唯一看得到的東西（alert 原文照噴），要能照著做：
+        // 加好友 → 傳一則訊息 → webhook 會回 account link 連結完成綁定。
+        // 新版前端認 code 欄位，改走綁定碼彈窗（一鍵完成），不會看到這段字。
+        return json({
+          error: `此為限量商品，請先加入${target.storeName ?? "店家"}的 LINE 官方帳號（${target.oaId}）並傳一則訊息完成綁定，再回來下單`,
+          code: "line_binding_required",
+          detail: { store_id: pickupStoreId, store_name: target.storeName, oa_id: target.oaId },
+        }, 403);
+      }
+    } catch (e) {
+      console.error("[place_member_order] line bind gate check failed, allowing order:", e);
+    }
+  }
 
   const requested = new Map<number, number>();
   for (const it of items) {
@@ -1540,6 +1691,8 @@ Deno.serve(async (req) => {
         case "get_spot_product": return await getSpotProduct(sb, tenantId, storeId, memberId, Number(body.id ?? 0));
         case "track_spot_view": if (!memberId) return json({ error: "no member_id" }, 401); return await trackSpotView(sb, tenantId, memberId, Number(body.id ?? 0));
         case "place_member_order": if (!memberId) return json({ error: "no member_id" }, 401); return await placeMemberOrder(sb, tenantId, memberId, body);
+        case "get_line_bind_state": if (!memberId) return json({ error: "no member_id" }, 401); return await getLineBindState(sb, tenantId, memberId, Number(body.store_id ?? 0) || storeId);
+        case "start_line_binding": if (!memberId) return json({ error: "no member_id" }, 401); return await startLineBinding(sb, tenantId, memberId, Number(body.store_id ?? 0) || storeId);
         default: return json({ error: `unknown action: ${action}` }, 400);
       }
     })();

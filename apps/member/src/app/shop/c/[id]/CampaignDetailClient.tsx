@@ -17,6 +17,7 @@ import { cleanCampaignText } from "@/lib/text";
 import { getCampaignHint } from "@/lib/campaignHints";
 import { logCaught } from "@/lib/clientLog";
 import { detectClientChannel } from "@/lib/clientChannel";
+import LineBindGate from "@/components/LineBindGate";
 
 /** 把 children 渲染到 document.body（保證 fixed 相對 viewport）。 */
 function Portal({ enabled, children }: { enabled: boolean; children: React.ReactNode }) {
@@ -128,6 +129,9 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
   const [notes, setNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [doneOrderNo, setDoneOrderNo] = useState<string | null>(null);
+  // 限量團的 LINE 綁定閘門：下單被 line_binding_required 擋下時記下取貨店，
+  // 彈出綁定視窗；綁完自動重送同一張訂單（qtyMap / notes 都還在）。
+  const [bindStoreId, setBindStoreId] = useState<number | null>(null);
   // 把常駐下單列 / sheet portal 到 body，確保一定釘在 viewport（不受任何祖先
   // transform / filter 形成的 containing block 影響、不用滑到底才看得到）
   const [mounted, setMounted] = useState(false);
@@ -253,6 +257,15 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
       });
       setDoneOrderNo(r.order_no);
     } catch (e) {
+      // 限量團要求先綁定店家 LINE：不 alert，改開綁定彈窗（綁完自動重送）
+      if ((e as { code?: unknown })?.code === "line_binding_required") {
+        const d = (e as { detail?: { store_id?: number } }).detail;
+        const sid = Number(d?.store_id ?? 0);
+        if (sid > 0) {
+          setBindStoreId(sid);
+          return;
+        }
+      }
       const message = e instanceof Error ? e.message : String(e);
       const soldOut = message.includes("sold out");
       // 售完是熱團的正常結果不記；其餘下單失敗會員只看得到 alert，一定要留 log
@@ -518,6 +531,20 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
           onSubmit={submit}
           submitting={submitting}
         />
+      </Portal>
+
+      {/* 限量團的 LINE 綁定閘門（z-[70]，蓋過 BuySheet z-50） */}
+      <Portal enabled={mounted && bindStoreId != null}>
+        {bindStoreId != null && (
+          <LineBindGate
+            storeId={bindStoreId}
+            onBound={() => {
+              setBindStoreId(null);
+              void submit();
+            }}
+            onClose={() => setBindStoreId(null)}
+          />
+        )}
       </Portal>
 
       {/* Done sheet */}
