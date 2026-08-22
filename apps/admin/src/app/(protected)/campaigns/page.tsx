@@ -76,6 +76,16 @@ const CLOSE_TYPE_BADGE: Record<CloseType, string> = {
   food_train: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
 };
 
+function campaignTypeLabel(row: { close_type: CloseType; sales_channel: string | null }) {
+  return row.sales_channel === "piaopiao" ? "漂漂館" : CLOSE_TYPE_LABEL[row.close_type];
+}
+
+function campaignTypeBadge(row: { close_type: CloseType; sales_channel: string | null }) {
+  return row.sales_channel === "piaopiao"
+    ? "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200"
+    : CLOSE_TYPE_BADGE[row.close_type];
+}
+
 const PAGE_SIZE = 20;
 
 type View = "list" | "week" | "month";
@@ -521,9 +531,13 @@ export default function CampaignsListPage() {
           q = q.or(`name.ilike.%${safe}%,campaign_no.ilike.%${safe}%`);
         }
         if (status) q = q.eq("status", status);
-        // 「漂漂館」不是 close_type，是 sales_channel（與編輯 modal 的下拉同一套語意）
+        // 預設的「全部」只看一般商城，避免漂漂館商品洗掉總部日常開團列表。
+        // 要查漂漂館時，仍可手動選「漂漂館」篩選出來。
         if (closeTypeFilter === "piaopiao") q = q.eq("sales_channel", "piaopiao");
-        else if (closeTypeFilter) q = q.eq("close_type", closeTypeFilter);
+        else {
+          q = q.eq("sales_channel", "main");
+          if (closeTypeFilter) q = q.eq("close_type", closeTypeFilter);
+        }
 
         const { data, count, error } = await q;
         if (cancelled) return;
@@ -650,6 +664,7 @@ export default function CampaignsListPage() {
         .from("group_buy_campaigns")
         .select("id, campaign_no, name, status, close_type, start_at, sales_channel, display_order")
         .neq("campaign_no", "__INTERNAL_RESTOCK__")
+        .eq("sales_channel", "main")
         .gte("start_at", from.toISOString())
         .lt("start_at", to.toISOString())
         .order("start_at", { ascending: true })
@@ -993,8 +1008,8 @@ export default function CampaignsListPage() {
                 <div className="mt-1 flex flex-wrap items-center gap-1.5">
                   <StatusBadge s={r.status} />
                   <PiaopiaoBadge salesChannel={r.sales_channel} />
-                  <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${CLOSE_TYPE_BADGE[r.close_type]}`}>
-                    {CLOSE_TYPE_LABEL[r.close_type]}
+                  <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${campaignTypeBadge(r)}`}>
+                    {campaignTypeLabel(r)}
                   </span>
                 </div>
               </div>
@@ -1082,8 +1097,8 @@ export default function CampaignsListPage() {
                 <Td className="min-w-[14rem]"><span>{r.name}</span> <PiaopiaoBadge salesChannel={r.sales_channel} /></Td>
                 <Td className="whitespace-nowrap"><StatusBadge s={r.status} /></Td>
                 <Td>
-                  <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${CLOSE_TYPE_BADGE[r.close_type]}`}>
-                    {CLOSE_TYPE_LABEL[r.close_type]}
+                  <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${campaignTypeBadge(r)}`}>
+                    {campaignTypeLabel(r)}
                   </span>
                 </Td>
                 <Td className="whitespace-nowrap text-xs text-zinc-500">
@@ -1839,8 +1854,8 @@ function CampaignCard({
 
       {/* 收單類型 + 團號 */}
       <div className="mb-2 flex items-center gap-1.5">
-        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${CLOSE_TYPE_BADGE[r.close_type]}`}>
-          {CLOSE_TYPE_LABEL[r.close_type]}
+        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${campaignTypeBadge(r)}`}>
+          {campaignTypeLabel(r)}
         </span>
         <SpinButton
           onClick={() => onPick(r.id)}

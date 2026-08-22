@@ -75,6 +75,7 @@ export function CampaignForm({
   const [v, setV] = useState<CampaignFormValues>(initial ?? emptyCampaignValues);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isPiaopiaoLocked = initial?.sales_channel === "piaopiao";
 
   function update<K extends keyof CampaignFormValues>(k: K, val: CampaignFormValues[K]) {
     setV((prev) => ({ ...prev, [k]: val }));
@@ -189,6 +190,7 @@ export function CampaignForm({
 
         <Field label="收單類型">
           <select
+            disabled={isPiaopiaoLocked}
             value={v.sales_channel === "piaopiao" ? "piaopiao" : v.close_type}
             onChange={(e) => {
               const val = e.target.value;
@@ -198,7 +200,7 @@ export function CampaignForm({
                 setV((prev) => ({ ...prev, close_type: val as CloseType, sales_channel: "main" }));
               }
             }}
-            className={inputCls}
+            className={`${inputCls} ${isPiaopiaoLocked ? "cursor-not-allowed bg-zinc-50 text-zinc-500 dark:bg-zinc-900" : ""}`}
           >
             <option value="regular">常規</option>
             <option value="fast">快團</option>
@@ -208,7 +210,7 @@ export function CampaignForm({
           </select>
           {v.sales_channel === "piaopiao" && (
             <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-              漂漂館的團只出現在漂漂館專區，不會出現在主商城。
+              漂漂館的收單類型固定為「漂漂館」，只出現在漂漂館專區，不會出現在主商城。
             </p>
           )}
           {v.close_type === "food_train" && v.status === "open" && (initial?.status ?? null) !== "open" && (

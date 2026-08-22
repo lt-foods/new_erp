@@ -319,6 +319,7 @@ export default function QuickCampaignControlPage() {
       const { data, error: campaignErr } = await sb
         .from("group_buy_campaigns")
         .select("id, campaign_no, name, status, close_type, end_at, total_cap_qty, updated_at, cover_image_url, campaign_items(cap_qty, sort_order, sku:skus(product:products(images)))")
+        .eq("sales_channel", "main")
         .in("status", ["draft", "open", "closed", "locked"])
         .order("updated_at", { ascending: false })
         .limit(160);
