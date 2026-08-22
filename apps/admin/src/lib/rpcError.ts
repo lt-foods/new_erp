@@ -18,9 +18,21 @@ const tStatus = (s: string) => TRANSFER_STATUS_ZH[s] ?? s;
 
 const RESTOCK_STATUS_ZH: Record<string, string> = {
   pending: "待處理",
-  // ⚠ 與 restock 各頁的狀態字對齊：這個狀態貨還沒動，只是排進派貨工作台
-  //   （rpc_approve_restock_to_transfer 最新版 20260714000040:260-270）。
-  approved_transfer: "已派至工作台",
+  // ⚠⚠ 這裡刻意跟清單頁不一樣，⛔ 不要「順手統一」成「已派至工作台」——會把說謊改回來。
+  //
+  //   approved_transfer 有新舊兩種意思，判準是 linked_transfer_id（見 lib/restockStatus.ts）：
+  //     有值＝2026-06-12 前的舊流程，貨真的直派出去了
+  //     NULL＝新流程，貨還在總倉、等派貨工作台挑
+  //   但這張表只拿得到 status 字串（來源是下面 rpc_delete_restock_request 那條規則的 regex
+  //   擷取，搜「只有「待處理」可以刪除」），分不出新舊。
+  //   ⇒ 寫死任何一邊，對另一邊都是假的。
+  //
+  //   正解不是退讓，是**抽象層級本來就不同**：
+  //     清單頁要回答「貨走到哪了」→ 必須分新舊。
+  //     這句話的情境是「這張單不能刪，因為它已經不是待處理了」，
+  //     要回答的是「還能不能刪」，重點在「已經被處理過」，不在「派到哪去」。
+  //   ⇒ 用上位詞「已核可」對新舊兩批單都成立，而且在這個情境下本來就更貼切。
+  approved_transfer: "已核可",
   approved_pr: "已轉採購",
   shipped: "已出貨",
   received: "已收貨",
