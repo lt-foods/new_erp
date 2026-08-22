@@ -156,11 +156,20 @@ export default function TransfersInboxPage() {
   const [search, setSearch] = useState("");
   // 已收貨只載入最近 doneLimit 筆，客端搜尋會漏掉更早的單（例：月結對帳回頭查
   // 上個月的 WAVE-xx）→ 搜尋字像單號時另外打一發後端 ilike 補查合併進列表。
+  // ⚠ 這發補查只比對 transfer_no，**用商品名是搜不到更早的單的** → 那條路由
+  //   下面的「已收日期範圍」處理（店家記得的是「前天收的水餃」，不是 TR- 單號）。
   const [serverSearch, setServerSearch] = useState("");
   useEffect(() => {
     const t = setTimeout(() => setServerSearch(search.trim()), 400);
     return () => clearTimeout(t);
   }, [search]);
+  // 已收「回頭查」日期範圍（比對 received_at）。空＝維持原本「最近 doneLimit 筆」，
+  // 所以預設一個字都不改、載入量與現在完全相同。
+  // 選了範圍之後 limit 照舊套 doneLimit（不是撈全部）——只是把「最近 50 筆」換成
+  // 「這個範圍內最近 50 筆」，單次查詢的筆數上限不變，不會有一次撈爆的問題。
+  // count:"exact" 也會跟著範圍縮小，下方「載入更多 / 載入全部」自動變成範圍內的總數。
+  const [doneFrom, setDoneFrom] = useState("");
+  const [doneTo, setDoneTo] = useState("");
 
   // 分店帳號鎖定：把 store.name 比對 user.app_metadata.stores，回該分店的 location_id。
   // 分店帳號只能看自己分店（dest_location = 該 location_id）；HQ/總倉回 null = 看全部。
@@ -215,6 +224,22 @@ export default function TransfersInboxPage() {
           pendingQ = pendingQ.eq("dest_location", branchLocationId);
           doneQ = doneQ.eq("dest_location", branchLocationId);
         }
+        // 已收「回頭查」：把 doneQ 的視窗從「最近 N 筆」改成「這個日期範圍內最近 N 筆」。
+        //
+        // 明寫 +08:00：received_at 是 timestamptz，不帶時區的字串會用資料庫時區
+        // （Supabase 預設 UTC）解讀 → 店家選 8/19 實際查到的是台灣時間 8/19 08:00 起，
+        // 早上收的貨落到前一天去，正好又變成「查不到」。後端對這個欄位本來就是用
+        // 台北時區比對的（20260814010000_receive_surplus_to_internal_pool.sql:1521
+        // 寫 `t.received_at >= TIMESTAMPTZ '2026-08-13 00:00:00+08'`），這裡對齊它。
+        // ⚠ 隔壁 hq/inbox:365 與 ExceptionsContent:348 用的是不帶時區的寫法（有同樣的
+        //   8 小時偏移），這裡刻意不照抄。
+        //
+        // ⚠ 已知邊緣情況：received_at 可為 NULL（schema 20260422120003:97 沒有 NOT NULL）。
+        //   正常走 rpc_receive_transfer 收的一定有值（同上檔 :1227 寫 NOW()），但若有
+        //   歷史資料是直接 UPDATE status 進來的，選了日期範圍就會被濾掉（NULL 不滿足
+        //   gte/lte）。清除日期範圍即可回到原本「最近 N 筆」的視窗看到它們。
+        if (doneFrom) doneQ = doneQ.gte("received_at", `${doneFrom}T00:00:00+08:00`);
+        if (doneTo) doneQ = doneQ.lte("received_at", `${doneTo}T23:59:59.999+08:00`);
         const [{ data: pendingData, error: e1 }, { data: doneData, error: e2, count: doneCount }] = await Promise.all([
           pendingQ,
           doneQ,
@@ -433,7 +458,7 @@ export default function TransfersInboxPage() {
     return () => {
       cancelled = true;
     };
-  }, [reloadTick, doneLimit, branchLocationId, serverSearch]);
+  }, [reloadTick, doneLimit, branchLocationId, serverSearch, doneFrom, doneTo]);
 
   const destOptions = useMemo(() => {
     const set = new Map<number, string>();
@@ -580,7 +605,7 @@ export default function TransfersInboxPage() {
   // 切分頁 / 篩選 / 搜尋 / 檢視模式時，群組分頁歸零回第一頁（20 筆）
   useEffect(() => {
     setGroupLimit(20);
-  }, [tab, dateFilter, locationFilter, search, groupMode]);
+  }, [tab, dateFilter, locationFilter, search, groupMode, doneFrom, doneTo]);
 
   // 切到「依撿貨單」時把待收的撿貨單展開（沿用舊行為 — 收起來只剩單號，看不到品名）；
   // 切回「合併同商品」則全部收起，標題本身就寫著品名與總數。
@@ -598,6 +623,23 @@ export default function TransfersInboxPage() {
       auto.add(wid !== null ? `wave-${wid}` : "other");
     }
     setExpanded(auto);
+  }
+
+  // 換「已收日期範圍」時把 doneLimit 收回第一頁：使用者若先按過「載入全部」，
+  // doneLimit 會是好幾千，沿用它去查新範圍等於又撈一次大的。兩個 setState 放在
+  // 同一個事件 handler 裡，React 會併成一次 render → 只打一發查詢。
+  function applyDoneRange(from: string, to: string) {
+    setDoneFrom(from);
+    setDoneTo(to);
+    setDoneLimit(50);
+  }
+  // 「近 N 天」快捷：含今天往前數 N 天（近 7 天 = 今天 + 前 6 天）。
+  // 日期字串用本地時區（sv-SE ＝ YYYY-MM-DD），與上方 todayStr 同一個慣例。
+  function applyRecentDays(days: number) {
+    const to = new Date();
+    const from = new Date();
+    from.setDate(to.getDate() - (days - 1));
+    applyDoneRange(from.toLocaleDateString("sv-SE"), to.toLocaleDateString("sv-SE"));
   }
 
   const visibleGroups = useMemo(() => groups.slice(0, groupLimit), [groups, groupLimit]);
@@ -970,7 +1012,7 @@ export default function TransfersInboxPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="🔍 搜尋 商品 / 單號 / 分店"
-          title="可搜尋 撿貨單號 / 調撥單號 / 分店 / 商品名 / 商品編號 / 品項編號"
+          title="可搜尋 撿貨單號 / 調撥單號 / 分店 / 商品名 / 商品編號 / 品項編號。調撥單號會直接查後端；其餘只在目前列出的單裡比對 — 要找更早的貨，請先用「已收」分頁的收貨日期把那幾天撈出來"
           className="w-full min-w-[180px] flex-1 basis-[240px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
         />
         <div className="flex shrink-0 items-center rounded-md border border-zinc-300 p-0.5 text-xs dark:border-zinc-700">
@@ -1089,6 +1131,50 @@ export default function TransfersInboxPage() {
           onClick={() => { setTab("received"); setDateFilter(null); setSelected(new Set()); }}
         />
       </div>
+
+      {/* 已收「回頭查」日期範圍（僅已收分頁，對稱於未收分頁的批次工具列）。
+          不填＝維持原本「最近 doneLimit 筆」；填了才把查詢視窗換成這段期間。
+          搜尋框的商品名比對是在「已載入的單」上做的 → 要找幾天前的貨，
+          先用這裡把那幾天撈進來，再搜商品名才找得到。 */}
+      {tab === "received" && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <span className="shrink-0 text-xs text-zinc-500">收貨日期</span>
+          <input
+            type="date"
+            value={doneFrom}
+            max={doneTo || undefined}
+            onChange={(e) => applyDoneRange(e.target.value, doneTo)}
+            className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+          />
+          <span className="text-xs text-zinc-500">～</span>
+          <input
+            type="date"
+            value={doneTo}
+            min={doneFrom || undefined}
+            onChange={(e) => applyDoneRange(doneFrom, e.target.value)}
+            className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+          />
+          <SpinButton
+            onClick={() => applyRecentDays(7)}
+            className="shrink-0 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs hover:bg-white dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            近 7 天
+          </SpinButton>
+          {(doneFrom || doneTo) && (
+            <SpinButton
+              onClick={() => applyDoneRange("", "")}
+              className="shrink-0 rounded-md border border-zinc-300 px-2.5 py-1.5 text-xs hover:bg-white dark:border-zinc-700 dark:hover:bg-zinc-800"
+            >
+              清除
+            </SpinButton>
+          )}
+          <span className="text-xs text-zinc-500">
+            {doneFrom || doneTo
+              ? "只顯示這段期間收的貨"
+              : "不選日期時只載入最近收的幾筆；要查更早的貨請選日期"}
+          </span>
+        </div>
+      )}
 
       {/* 批次工具列（僅未收分頁） */}
       {tab === "unreceived" && pendingIds.length > 0 && (

@@ -201,6 +201,33 @@ function NavBadge({ count }: { count: number }) {
   );
 }
 
+// 分店未收貨提醒橫幅（比照 TrialBanner 的樣式）。
+//
+// 為什麼側欄那顆 NavBadge 不夠：它只是一個數字，① 不講後果 ② 手機版要先點漢堡
+// 開抽屜才看得到（見下方 mobile drawer）③ 桌機把「分店業務」那組收合起來也看不到。
+// 這條橫幅每一頁都在，並且把「不按收貨會怎樣」寫出來。
+//
+// 數字沿用側欄 badge 的 inboundCount（rpc_inbound_pending_count）＝自己店為
+// dest_location、status='shipped' 的調撥單張數 — 不另外查一次。
+// 收貨頁本身不顯示（人已經在那頁了，重複提醒沒有意義）。
+function InboundReminderBanner({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <Link
+      href="/wms/inbound"
+      className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 border-b border-amber-200 bg-amber-50 px-4 py-1.5 text-center text-xs text-amber-800 transition hover:bg-amber-100 print:hidden dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-900"
+    >
+      <span>
+        ⚠️ 你有 <span className="font-semibold">{count}</span> 張貨還沒按收貨
+      </span>
+      <span className="opacity-80">
+        按收貨，貨才會進你店的庫存；庫存不夠時客人可能取不到。
+      </span>
+      <span className="font-medium underline underline-offset-2">去收貨 →</span>
+    </Link>
+  );
+}
+
 export default function ProtectedLayout({ children }: { children: ReactNode }) {
   const { session, loading, user, signOut, tenant } = useAuth();
   const router = useRouter();
@@ -485,6 +512,9 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
       {/* min-w-0：允許 main 在 flex row 內收縮，寬表才會在自己的 overflow-x-auto 容器內出現水平捲軸，而非把整頁撐爆 */}
       <main className="flex min-w-0 flex-1 flex-col">
         {tenant?.status === "trial" && <TrialBanner tenant={tenant} />}
+        {branchUser && !(pathname ?? "").startsWith("/wms/inbound") && (
+          <InboundReminderBanner count={inboundCount} />
+        )}
         {children}
       </main>
     </div>
