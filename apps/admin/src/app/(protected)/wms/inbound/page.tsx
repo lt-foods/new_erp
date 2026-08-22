@@ -102,11 +102,16 @@ export default function TransfersInboxPage() {
   const [stores, setStores] = useState<StoreRow[]>([]);
   const [locations, setLocations] = useState<Map<number, string>>(new Map());
   const [waves, setWaves] = useState<Map<number, Wave>>(new Map());
-  // picking_waves 那發（配送日 / 撿貨單號的來源）失敗時的錯誤訊息，null = 正常。
+  // picking_waves 那發（配送日 / 撿貨單號的來源）失敗時的狀況，null = 正常。
   // ⛔ 它不走上面那個 error（紅色橫幅 + 整份清單不更新）—— 配送日只是標籤，
   //    清單與收貨按鈕不依賴它，整頁擋掉是修 A 壞 B。這裡只用來把
   //    「算不出來的那兩個 KPI 數字」標成「—」並掛一條說明（見畫面上的 waveError 區塊）。
-  const [waveError, setWaveError] = useState<string | null>(null);
+  // chunksOk / chunksTotal：這次切了幾批、成功幾批。畫面要照實把它講出來 ——
+  //   失敗時 waveMap 會被整個清空（連撈到的那幾批也不用），那是【取捨】，
+  //   所以不能演成「什麼都沒撈到」。⛔ 不要為了讓文案好寫就把這兩個數字藏起來。
+  const [waveError, setWaveError] = useState<
+    { message: string; chunksOk: number; chunksTotal: number } | null
+  >(null);
   const [itemSummary, setItemSummary] = useState<Map<number, ItemSummary>>(new Map());
   const [locationToStore, setLocationToStore] = useState<Map<number, number>>(new Map());
   const [transferCampaigns, setTransferCampaigns] = useState<Map<number, number[]>>(new Map());
@@ -386,7 +391,29 @@ export default function TransfersInboxPage() {
         //      都不依賴它 —— 為了一個標籤讓店家收不了貨是修 A 壞 B。
         //      ⇒ 失敗就停下這一發（不再送剩下的批次，省 statement_timeout 預算），
         //        其餘照跑，頁面該能用的部分全部留著。
+        //
+        // ③ 【部分成功】要當成失敗處理（阿審 2026-08-22 P1，成立）。
+        //    切批之後多了一個舊寫法沒有的狀態：第 1 批成功、第 2 批失敗。
+        //    這時 waveMap 裡有一半的 wave —— 若照發，畫面會變成
+        //    「警告條說不知道，但半數單子照樣顯示配送日和逾期紅字」。
+        //    ⛔ 那比全空更糟，而且糟在一個不明顯的地方：
+        //      這一頁的用途是「哪些貨該收、哪些逾期」。一份【有一半日期缺席】的
+        //      逾期清單，外觀與完整清單一模一樣 ⇒ 店家會把看到的紅字讀成
+        //      「全部的逾期單就這些」。空清單會讓人去重新整理，半殘清單不會。
+        //    ⇒ 失敗就把 waveMap 清空，讓 8 個讀取點【一次全部】回到同一個事實。
+        //      ⭐ 清空是【單點保證】：waveMap 的唯一下游就是 setWaves，
+        //        所以這一行就涵蓋 filtered / groups / summaries / 列 / 彈窗全部，
+        //        日後新增讀取點也自動涵蓋。
+        //        （阿審另給的方向是「讓 filtered/groups 別用 waves」——不採用：
+        //          那要逐處改 5 個地方、漏一個就破功，而且搜尋 haystack 與
+        //          TransferReceiveModal 那兩個最容易被忘掉。）
+        //    ⛔ 丟掉已撈到的那幾批是【刻意的取捨，不是做不到】——
+        //      畫面必須照實說「撈到了但不採用」，不可以演成「什麼都沒撈到」
+        //      （見說明條裡的批次數）。使用者在這個狀態下唯一的正確動作是
+        //      重新整理，保留半套資料對那個動作沒有任何幫助。
         let waveErr: string | null = null;
+        const waveChunks = Math.ceil(waveIds.length / 500);
+        let waveChunksOk = 0;
         for (let i = 0; i < waveIds.length; i += 500) {
           const { data: ws, error: eW } = await sb
             .from("picking_waves")
@@ -397,7 +424,10 @@ export default function TransfersInboxPage() {
             break;
           }
           for (const w of (ws as Wave[] | null) ?? []) waveMap.set(w.id, w);
+          waveChunksOk += 1;
         }
+        // 見上面 ③：部分成功一律當全失敗，不讓半套資料上畫面。
+        if (waveErr) waveMap.clear();
 
         // 抓 transfer_items + skus 用於顯示「商品/數量」
         const summary = new Map<number, ItemSummary>();
@@ -565,7 +595,9 @@ export default function TransfersInboxPage() {
           setWaves(waveMap);
           // 跟 setWaves 綁在一起更新：waveMap 與「它完不完整」必須是同一批，
           // 不然會出現「舊的錯誤訊息配新的 waveMap」這種混搭態（理由同上面那段註解）。
-          setWaveError(waveErr);
+          setWaveError(
+            waveErr ? { message: waveErr, chunksOk: waveChunksOk, chunksTotal: waveChunks } : null,
+          );
           setItemSummary(summary);
           setLocationToStore(locStoreMap);
           setTransferCampaigns(tcMap);
@@ -1329,15 +1361,35 @@ export default function TransfersInboxPage() {
           兩件事都要講，缺一邊等於沒講：壞掉的是什麼、還能用的是什麼。 */}
       {waveError && (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-          <div className="font-medium">⚠ 配送日這次沒撈到，有幾個地方現在是「不知道」而不是「沒有」</div>
+          <div className="font-medium">⚠ 配送日這次沒撈完，有幾個地方現在是「不知道」而不是「沒有」</div>
+          {/* ⭐ 這幾句每一條都對應一個 waves.get() 讀取點，逐點走過才寫的
+              （2026-08-22：第一版把「撿貨單號會空白」寫錯了 —— 程式其實是退回顯示
+               內部單號，不是空白。畫面上的斷言要跟程式對得起來，不能憑印象寫）。 */}
           <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs">
             <li>「🚚 明天到貨」「⏳ 今日及更早」顯示「—」：不寫 0，因為 0 會變成在說「沒有逾期的貨」。</li>
-            <li>清單裡的「配送日 / 撿貨單號」會空白，群組上的「逾期 / 今天到貨」紅字也不會亮。</li>
+            <li>群組上的「配送日」不顯示，「逾期 / 今天到貨」紅字也不會亮 —— 不是沒逾期，是不知道。</li>
+            <li>撿貨單號會退成內部單號（<span className="font-mono">WAVE-123</span> 這種），不是平常看到的那組編號。</li>
             <li>若你剛才是點著那兩張卡在看，清單會是空的 —— 那是篩不出來，不是真的沒有單。</li>
           </ul>
+          <div className="mt-1.5 text-xs text-amber-700 dark:text-amber-400">
+            還有三個小地方也會怪怪的：用撿貨單號<b>搜尋會搜不到</b>（改用調撥單號或商品名可以）、
+            「合併同商品」檢視會把<b>不同配送日的貨併成一組</b>、
+            點開單子後時間軸的「撿貨單建立」會顯示成<b>未完成</b>（它其實早就建立了）。
+          </div>
+          {/* ⛔ 這一句是本輪 P1 的重點，不可以拿掉：失敗時已撈到的批次會被【刻意丟掉】。
+              不講的話，畫面等於在演「什麼都沒撈到」，那是另一種說謊。 */}
+          {waveError.chunksOk > 0 && (
+            <div className="mt-1.5 text-xs">
+              📊 這次分 {waveError.chunksTotal} 批查，第 {waveError.chunksOk + 1} 批失敗。
+              前 {waveError.chunksOk} 批其實有撈到，但<b>刻意整批不採用</b> ——
+              只顯示一部分的話，這份逾期清單看起來會跟完整的一模一樣，
+              你會把畫面上的紅字當成「全部的逾期單就這些」。寧可全部說「不知道」。
+            </div>
+          )}
           <div className="mt-1.5 text-xs">
             ✅ 待收 / 已收清單本身、件數與收貨按鈕都不受影響，貨照樣收得了。
-            請重新整理頁面；一直失敗就把這行給工程師：<span className="font-mono">{waveError}</span>
+            請重新整理頁面；一直失敗就把這行給工程師：
+            <span className="font-mono">{waveError.message}</span>
           </div>
         </div>
       )}
@@ -1360,6 +1412,9 @@ export default function TransfersInboxPage() {
                ✅ 這條 2026-08-22 已解：那發現在切 500 一批（截斷變成結構上不可能）、
                  error 也不再被丟掉，失敗時這兩張改顯示「—」並停用點擊，
                  上面那條琥珀色說明會講清楚發生什麼事。
+                 ⭐ 而且【部分批次成功也算失敗】：waveMap 會被整個清空，
+                   所以不會出現「這兩張說不知道、下面清單卻有一半在顯示配送日」
+                   的混搭態。要改這裡之前先讀查詢那段的 ③。
           ⛔ 舊註解在這裡寫過「這兩件事今天不會觸發（一張 wave 對到多張 transfer，
             waveIds 遠小於載入筆數）」—— 那句話【是錯的，不要再寫回去】。
             它只算了總部的視角。分店帳號的查詢整條鎖 dest_location，而
