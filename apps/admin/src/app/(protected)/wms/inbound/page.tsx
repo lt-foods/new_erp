@@ -887,11 +887,19 @@ export default function TransfersInboxPage() {
   // ─────────────────────────────────────────────────────────────────
   const doneTotalIsExact = locationFilter === "all";
   const doneKpiNum = doneTotalIsExact ? doneTotal : summaries.done;
+  // ⭐ 判斷「這個數字誠不誠實」的規則（2026-08-22 第四輪定下來的，前三輪都是憑感覺
+  //    逐處補，所以每一輪都還有漏）：
+  //      一個數字是誠實的，若且唯若「標題所描述的範圍」＝「它實際量到的範圍」。
+  //    ⇒ 範圍只要偏離預設，標題就要自己把那件事講出來，不能靠 tooltip 補。
+  //      ・總部挑了單一分店 → 量到的是「載入的筆數」而不是總數 → 標「已載入」
+  //      ・有已收日期範圍   → 量到的是「這段期間的總數」而不是全部 → 標「這段日期」
+  //    （分店帳號不必標：它的查詢本來就整條鎖在自己店，範圍與標題一致。）
+  const doneScopeNote = !doneTotalIsExact ? "已載入" : doneFrom || doneTo ? "這段日期" : "";
   // 三處的講法分開寫（不硬湊成同一個字串）：同一個數字，但要在各自的版面裡
-  // 都把「這到底是不是總數」講清楚
-  const doneKpiCardLabel = doneTotalIsExact ? "✓ 已收" : "✓ 已收（已載入）";
-  const doneKpiTabCount = doneTotalIsExact ? String(doneKpiNum) : `已載入 ${doneKpiNum}`;
-  const doneKpiHeader = doneTotalIsExact ? `已收 ${doneKpiNum}` : `已收（已載入 ${doneKpiNum}）`;
+  // 都把「這到底量的是什麼」講清楚
+  const doneKpiCardLabel = doneScopeNote ? `✓ 已收（${doneScopeNote}）` : "✓ 已收";
+  const doneKpiTabCount = doneScopeNote ? `${doneScopeNote} ${doneKpiNum}` : String(doneKpiNum);
+  const doneKpiHeader = doneScopeNote ? `已收（${doneScopeNote} ${doneKpiNum}）` : `已收 ${doneKpiNum}`;
   const doneKpiHint = doneTotalIsExact
     ? `status = received 的總數${doneFrom || doneTo ? "（限這段收貨日期）" : ""}，不是目前載入的筆數`
     : "目前載入的 status = received 筆數；總部挑了單一分店時算不出該店總數，不另外查以免拖慢頁面";
@@ -1258,15 +1266,21 @@ export default function TransfersInboxPage() {
               那一種情況算不出總數，卡片標題會自己改成「已收（已載入）」
               —— 見上方 doneKpiNum / doneKpiCardLabel
             ・前三張待收的 ＝ 目前載入的筆數（summaries.*，數 transfers 陣列）
-          待收那三張今天是準的，因為 pendingQ（:207 附近）沒有套 .limit()，
-          後端會把 status='shipped' 全部給回來（老闆 2026-08-22 實測待收 41 張）。
-          ⚠ 但它仍受後端 max-rows 節制：哪天待收超過那個上限，這三張會【少報而且
-            看不出來】。要修的話優先改文字（標成「已載入」）而不是加查詢。
-          ⚠ 另外「🚚 明天到貨 / ⏳ 今日及更早」還多依賴一個東西：waves（:346-351
-            那發 picking_waves 查詢）。那發沒有分頁、沒有切塊，而且 error 被解構
-            丟掉 —— 它要是被截斷或失敗，有 wave_date 的單會被當成沒有日期，
-            這兩張就會少報。今天不會發生（一張 wave 對多張 transfer，waveIds
-            遠小於載入筆數），但這是它們準不準的前提，不是可以忽略的細節。 */}
+          待收那三張今天看起來是準的，因為 pendingQ（:207 附近）沒有套 .limit()，
+          後端會把 status='shipped' 給回來（老闆 2026-08-22 實測待收 41 張）。
+          ⚠⚠ 但「準」是有前提的，而且前提沒有被任何程式保證住 —— 阿審 2026-08-22
+             三審對這件事提了保留，原話照收，因為它是對的：
+             ・「pendingQ 沒有 .limit()」只證明【前端】沒有設上限，
+               它仍然受 PostgREST max-rows 節制 → 待收哪天超過那個上限，
+               這三張會【少報而且畫面上看不出來】。
+             ・「🚚 明天到貨 / ⏳ 今日及更早」還多依賴 :363 那發 picking_waves
+               查詢，而【那發沒有分頁、也沒有處理 error】（回傳只解構 data，
+               error 被丟掉）→ 它被截斷或失敗時，有 wave_date 的單會被當成
+               沒有日期，這兩張同樣少報。
+          ⇒ 這兩件事今天不會觸發（一張 wave 對到多張 transfer，waveIds 遠小於
+            載入筆數），所以本輪【刻意不動程式行為】；但它們是這三個數字準不準的
+            前提，不是可以省略的細節。要處理時，優先改文字（標成「已載入」）
+            而不是加查詢。 */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <KpiCard
           label="🚚 明天到貨"
@@ -1852,7 +1866,26 @@ export default function TransfersInboxPage() {
           回頭查最需要看到的那一段。 */}
       {tab === "received" && doneSettled && doneLoaded < doneTotal && (
         <div className="flex flex-wrap items-center justify-center gap-3 py-2 text-xs text-zinc-500">
-          <span>已載入 {doneLoaded} / {doneTotal} 筆已收歷史</span>
+          {/* ⚠ 總部在右上角挑了單一分店時，這裡【不能】顯示 doneLoaded / doneTotal ——
+              doneQ 只套 branchLocationId（:273），沒有套 locationFilter，所以那兩個
+              數字是「全部分店」的；而整頁的清單已經被 locationFilter 篩到那一家店
+              （filtered :568 / summaries :846 / pendingIds :830 都有套）。
+              兩者放在一起，使用者會把「/ 12244」讀成那家分店的已收歷史筆數。
+              ⛔ 這正是上一輪 KPI 沒改乾淨的同一格：doneTotalIsExact 已經承認
+                 「單一分店時 doneTotal 不適用」，KPI/頁首/分頁都分流了，只有這裡沒跟上。
+              該情況下改講「這家分店已載入 N 筆」（summaries.done，有套 locationFilter），
+              ⛔ 不顯示全分店的分母，也不另外查該店總數（會多打一支查詢拖慢頁面）。 */}
+          <span
+            title={
+              doneTotalIsExact
+                ? undefined
+                : "分母是全部分店的已收總數，跟目前篩選的分店對不起來，所以這裡只講這家分店已經載入幾筆。按「載入更多」是再撈全部分店的單，這家分店不一定會增加。"
+            }
+          >
+            {doneTotalIsExact
+              ? `已載入 ${doneLoaded} / ${doneTotal} 筆已收歷史`
+              : `這家分店已載入 ${summaries.done} 筆已收歷史`}
+          </span>
           {doneAtMax ? (
             // 載到頂了才換成這句：再給按鈕也拿不到更多（後端會截掉），
             // 留著只會讓人一直按。出口是上面的「收貨日期」（PR #819）。
