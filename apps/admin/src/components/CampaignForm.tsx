@@ -9,6 +9,9 @@ import { CAMPAIGN_STATUS_LABEL, type CampaignStatus } from "@/lib/campaignStatus
 
 export type { CampaignStatus };
 export type CloseType = "regular" | "fast" | "limited" | "food_train";
+// 漂漂館不是 close_type（DB 欄位註解明寫），是 sales_channel='piaopiao'。
+// UI 上併進「收單類型」下拉：選「漂漂館」= close_type='regular' + sales_channel='piaopiao'。
+export type SalesChannel = "main" | "piaopiao";
 
 export type CampaignFormValues = {
   id: number | null;
@@ -17,6 +20,7 @@ export type CampaignFormValues = {
   description: string | null;
   status: CampaignStatus;
   close_type: CloseType;
+  sales_channel: SalesChannel;
   start_at: string | null;
   end_at: string | null;
   pickup_deadline: string | null;
@@ -33,6 +37,7 @@ export const emptyCampaignValues: CampaignFormValues = {
   description: null,
   status: "draft",
   close_type: "regular",
+  sales_channel: "main",
   start_at: null,
   end_at: null,
   pickup_deadline: null,
@@ -125,6 +130,7 @@ export function CampaignForm({
         p_total_cap_qty: v.total_cap_qty,
         p_notes: v.notes,
         p_is_for_shop: v.is_for_shop,
+        p_sales_channel: v.sales_channel,
       });
       if (err) throw err;
       const newId = Number(data);
@@ -182,12 +188,29 @@ export function CampaignForm({
         </Field>
 
         <Field label="收單類型">
-          <select value={v.close_type} onChange={(e) => update("close_type", e.target.value as CloseType)} className={inputCls}>
+          <select
+            value={v.sales_channel === "piaopiao" ? "piaopiao" : v.close_type}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val === "piaopiao") {
+                setV((prev) => ({ ...prev, close_type: "regular", sales_channel: "piaopiao" }));
+              } else {
+                setV((prev) => ({ ...prev, close_type: val as CloseType, sales_channel: "main" }));
+              }
+            }}
+            className={inputCls}
+          >
             <option value="regular">常規</option>
             <option value="fast">快團</option>
             <option value="limited">限量</option>
             <option value="food_train">美食列車</option>
+            <option value="piaopiao">漂漂館</option>
           </select>
+          {v.sales_channel === "piaopiao" && (
+            <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+              漂漂館的團只出現在漂漂館專區，不會出現在主商城。
+            </p>
+          )}
           {v.close_type === "food_train" && v.status === "open" && (initial?.status ?? null) !== "open" && (
             <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
               儲存後將推播給所有未取消通知的顧客。

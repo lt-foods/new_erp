@@ -444,7 +444,7 @@ export default function CampaignsListPage() {
   async function openEdit(id: number) {
     const { data, error: err } = await getSupabase()
       .from("group_buy_campaigns")
-      .select("id, campaign_no, name, description, status, close_type, start_at, end_at, pickup_deadline, pickup_days, total_cap_qty, notes, is_for_shop")
+      .select("id, campaign_no, name, description, status, close_type, start_at, end_at, pickup_deadline, pickup_days, total_cap_qty, notes, is_for_shop, sales_channel")
       .eq("id", id).maybeSingle();
     if (err || !data) { setError(err?.message ?? "找不到開團"); return; }
     setModal({
@@ -456,6 +456,7 @@ export default function CampaignsListPage() {
         description: data.description,
         status: data.status as CampaignFormValues["status"],
         close_type: data.close_type as CampaignFormValues["close_type"],
+        sales_channel: data.sales_channel === "piaopiao" ? "piaopiao" : "main",
         start_at: data.start_at,
         end_at: data.end_at,
         pickup_deadline: data.pickup_deadline,
@@ -520,7 +521,9 @@ export default function CampaignsListPage() {
           q = q.or(`name.ilike.%${safe}%,campaign_no.ilike.%${safe}%`);
         }
         if (status) q = q.eq("status", status);
-        if (closeTypeFilter) q = q.eq("close_type", closeTypeFilter);
+        // 「漂漂館」不是 close_type，是 sales_channel（與編輯 modal 的下拉同一套語意）
+        if (closeTypeFilter === "piaopiao") q = q.eq("sales_channel", "piaopiao");
+        else if (closeTypeFilter) q = q.eq("close_type", closeTypeFilter);
 
         const { data, count, error } = await q;
         if (cancelled) return;
@@ -852,6 +855,7 @@ export default function CampaignsListPage() {
             <option value="fast">快團</option>
             <option value="limited">限量</option>
             <option value="food_train">美食列車</option>
+            <option value="piaopiao">漂漂館</option>
           </select>
         </div>
       )}
