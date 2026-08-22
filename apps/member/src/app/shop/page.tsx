@@ -871,20 +871,22 @@ function FoodTrainItemBanner({ campaign }: { campaign: CampaignSummary }) {
               <span className="text-[14px] font-bold text-white">美食列車</span>
             </span>
           </div>
-          <div className="flex items-end justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <div className="line-clamp-1 text-[17px] font-bold text-white drop-shadow">
-                {cleanCampaignText(campaign.name)}
-              </div>
+          <div className="space-y-1">
+            {/* 標題獨占整行 —— 跟倒數膠囊同列的話，左欄會被膠囊寬度
+                （帶「天」約 150px）壓到只剩幾個字，文案被擋住。 */}
+            <div className="line-clamp-2 text-[17px] font-bold leading-snug text-white drop-shadow">
+              {cleanCampaignText(campaign.name)}
+            </div>
+            <div className="flex items-center justify-between gap-3">
               <div className="text-[24px] font-extrabold tabular-nums text-white drop-shadow">
                 {priceText(campaign)}
               </div>
+              {campaign.end_at && (
+                <div className="shrink-0 rounded-full bg-black/35 px-2.5 py-1 text-[13px] font-semibold tabular-nums text-white backdrop-blur">
+                  <Countdown target={campaign.end_at} compact />
+                </div>
+              )}
             </div>
-            {campaign.end_at && (
-              <div className="shrink-0 rounded-full bg-black/35 px-2.5 py-1 text-[13px] font-semibold tabular-nums text-white backdrop-blur">
-                <Countdown target={campaign.end_at} compact />
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -915,20 +917,21 @@ function FlashItemBanner({ campaign }: { campaign: CampaignSummary }) {
               <span className="text-[14px] font-bold text-white">限時</span>
             </span>
           </div>
-          <div className="flex items-end justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <div className="line-clamp-1 text-[17px] font-bold text-white drop-shadow">
-                {cleanCampaignText(campaign.name)}
-              </div>
+          <div className="space-y-1">
+            {/* 標題獨占整行（理由同 FoodTrainItemBanner：跟倒數膠囊同列會被壓爛） */}
+            <div className="line-clamp-2 text-[17px] font-bold leading-snug text-white drop-shadow">
+              {cleanCampaignText(campaign.name)}
+            </div>
+            <div className="flex items-center justify-between gap-3">
               <div className="text-[24px] font-extrabold tabular-nums text-white drop-shadow">
                 {priceText(campaign)}
               </div>
+              {campaign.end_at && (
+                <div className="shrink-0 rounded-full bg-black/35 px-2.5 py-1 text-[13px] font-semibold tabular-nums text-white backdrop-blur">
+                  <Countdown target={campaign.end_at} compact />
+                </div>
+              )}
             </div>
-            {campaign.end_at && (
-              <div className="shrink-0 rounded-full bg-black/35 px-2.5 py-1 text-[13px] font-semibold tabular-nums text-white backdrop-blur">
-                <Countdown target={campaign.end_at} compact />
-              </div>
-            )}
           </div>
         </div>
       </div>
