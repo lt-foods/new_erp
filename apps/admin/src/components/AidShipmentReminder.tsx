@@ -30,9 +30,15 @@ import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { printViaIframe } from "@/lib/printIframe";
 import { withBasePath } from "@/lib/basePath";
-import { AID_IN_FLIGHT_STATUSES, aidRouteLabel, aidStageLabel } from "@/lib/aidTransfer";
+import {
+  AID_IN_FLIGHT_STATUSES, TRANSFER_LINK_SELECT, type TransferLink,
+  activeQty, aidRouteLabel, aidStageLabel, linkItems,
+} from "@/lib/aidTransfer";
 
 type AidShipment = {
+  // 一列 = 一次轉移（一條 link），不是一張轉入單：追加分支會把多家店的貨併進
+  // 同一張轉入單，每家店只該看到自己那一趟。key 用 link id。
+  linkId: number;
   id: number;
   order_no: string;
   status: string;
@@ -68,63 +74,56 @@ export default function AidShipmentReminder({ storeId }: { storeId: number | nul
     (async () => {
       try {
         const sb = getSupabase();
-        // 還沒被收貨店收掉的互助轉入單（全 tenant，數量很少）
+        // 從連結表出發（不是從轉入單），一趟轉移一列 —— 追加轉入把多家店的貨
+        // 併進同一張轉入單時，每家店都要看得到自己那一趟（見 lib/aidTransfer 的說明）
         const { data } = await sb
-          .from("customer_orders")
+          .from("customer_order_transfer_links")
           .select(
-            "id, order_no, status, is_air_transfer, pickup_store_id, transferred_from_order_id, created_at, " +
+            TRANSFER_LINK_SELECT + ", " +
+              "src:customer_orders!customer_order_transfer_links_source_order_id_fkey(" +
+              "pickup_store_id, store:stores!customer_orders_pickup_store_id_fkey(name)), " +
+              // !inner + dest.status 篩選要在**伺服端**做：連結表只增不減
+              // （567 筆起跳、每次轉單再加一列），拉回來才在前端濾會愈來愈慢，
+              // 而且一旦超過 limit 就會靜默漏掉最舊的那幾筆 —— 提醒漏掉＝貨沒人送
+              "dest:customer_orders!customer_order_transfer_links_dest_order_id_fkey!inner(" +
+              "id, order_no, status, pickup_store_id, " +
               "store:stores!customer_orders_pickup_store_id_fkey(name), " +
-              "items:customer_order_items!inner(qty, status, source)",
+              "items:customer_order_items(id, qty, status, source))",
           )
-          .eq("items.source", "aid_transfer")
-          .in("status", [...AID_IN_FLIGHT_STATUSES])
-          .not("transferred_from_order_id", "is", null)
-          .order("created_at", { ascending: true })
-          .limit(200);
+          .in("dest.status", [...AID_IN_FLIGHT_STATUSES])
+          .order("transferred_at", { ascending: true })
+          .limit(500);
         if (cancelled) return;
-        type Raw = {
-          id: number; order_no: string; status: string; is_air_transfer: boolean | null;
-          pickup_store_id: number | null; transferred_from_order_id: number;
-          store: { name: string } | { name: string }[] | null;
-          items: { qty: number; status: string; source: string | null }[] | null;
+        type StoreRef = { name: string } | { name: string }[] | null;
+        type Raw = TransferLink & {
+          src: { pickup_store_id: number | null; store: StoreRef } | null;
+          dest: {
+            id: number; order_no: string; status: string; pickup_store_id: number | null;
+            store: StoreRef;
+            items: { id: number; qty: number; status: string; source: string | null }[] | null;
+          } | null;
         };
         const raw = (data ?? []) as unknown as Raw[];
-        if (raw.length === 0) { setRows([]); return; }
-
-        // 來源單 → 出貨店（貨從誰手上出去）
-        const srcIds = Array.from(new Set(raw.map((r) => r.transferred_from_order_id)));
-        const { data: srcData } = await sb
-          .from("customer_orders")
-          .select("id, pickup_store_id, store:stores!customer_orders_pickup_store_id_fkey(name)")
-          .in("id", srcIds);
-        if (cancelled) return;
-        type SrcRaw = {
-          id: number; pickup_store_id: number | null;
-          store: { name: string } | { name: string }[] | null;
-        };
-        const nameOf = (s: { name: string } | { name: string }[] | null) =>
-          (Array.isArray(s) ? s[0]?.name : s?.name) ?? "—";
-        const srcMap = new Map<number, SrcRaw>(
-          ((srcData ?? []) as unknown as SrcRaw[]).map((s) => [s.id, s]),
-        );
+        const nameOf = (s: StoreRef) => (Array.isArray(s) ? s[0]?.name : s?.name) ?? "—";
 
         const list = raw.flatMap((r): AidShipment[] => {
-          const src = srcMap.get(r.transferred_from_order_id);
-          if (!src) return [];
+          const src = r.src, dest = r.dest;
+          if (!src || !dest) return [];
+          // 收貨店收掉（ready 之後）就沒人需要為它做事了
+          if (!(AID_IN_FLIGHT_STATUSES as readonly string[]).includes(dest.status)) return [];
           // 同店轉單（只是換客人）貨沒離開本店，不用出貨也不用收貨
-          if (src.pickup_store_id === r.pickup_store_id) return [];
+          if (src.pickup_store_id === dest.pickup_store_id) return [];
           // 品項全被取消掉的單沒有實體貨在走，別再叫人去印一張空白單
-          const qty = (r.items ?? [])
-            .filter((it) => !["cancelled", "expired"].includes(it.status))
-            .reduce((s, it) => s + Number(it.qty), 0);
+          const qty = activeQty(linkItems(r, dest.items ?? []));
           if (qty <= 0) return [];
           return [{
-            id: r.id,
-            order_no: r.order_no,
-            status: r.status,
+            linkId: r.id,
+            id: dest.id,
+            order_no: dest.order_no,
+            status: dest.status,
             is_air_transfer: r.is_air_transfer === true,
-            dest_store: nameOf(r.store),
-            dest_store_id: r.pickup_store_id,
+            dest_store: nameOf(dest.store),
+            dest_store_id: dest.pickup_store_id,
             source_store: nameOf(src.store),
             source_store_id: src.pickup_store_id,
             qty,
@@ -251,7 +250,7 @@ function AidSection({
       <ul className="mt-3 space-y-2">
         {rows.map((r) => (
           <li
-            key={r.id}
+            key={r.linkId}
             className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded border bg-white px-3 py-2 text-sm dark:bg-zinc-900 ${t.item}`}
           >
             <span className="font-mono text-xs">{r.order_no}</span>
@@ -264,7 +263,7 @@ function AidSection({
             <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
               {aidRouteLabel(r.is_air_transfer)}・{aidStageLabel(r.status, r.is_air_transfer)}
             </span>
-            {showPrinted && printed.has(r.id) && (
+            {showPrinted && printed.has(r.linkId) && (
               <span className="text-[11px] text-emerald-600 dark:text-emerald-400">✓ 已列印</span>
             )}
             <div className="ml-auto flex items-center gap-2">
@@ -289,8 +288,12 @@ function AidSection({
               </Link>
               <SpinButton
                 onClick={async () => {
-                  onPrinted(r.id);
-                  await printViaIframe(withBasePath(`/transfers/print-aid?order_id=${r.id}`));
+                  onPrinted(r.linkId);
+                  // 一定要帶 link：同一張轉入單可能併了好幾家店的貨，
+                  // 只帶 order_id 會把別家店的品項也印進這張隨貨單
+                  await printViaIframe(
+                    withBasePath(`/transfers/print-aid?order_id=${r.id}&link=${r.linkId}`),
+                  );
                 }}
                 className={`rounded-md border bg-white px-3 py-1 text-xs font-medium dark:bg-zinc-900 ${t.button}`}
                 title="列印互助出貨單（司機聯 + 店家存根聯），格式跟內部調撥的轉貨單一樣"

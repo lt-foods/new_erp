@@ -22,6 +22,7 @@ import { getSupabase } from "@/lib/supabase";
 import { getTenantName } from "@/lib/tenant";
 import { useAuth } from "@/components/AuthProvider";
 import SpinButton from "@/components/SpinButton";
+import { TRANSFER_LINK_SELECT, type TransferLink, linkItems } from "@/lib/aidTransfer";
 
 type SkuRef = { sku_code: string | null; product_name: string | null; variant_name: string | null };
 
@@ -91,6 +92,9 @@ export default function AidTransferPrintPage() {
 function Body() {
   const sp = useSearchParams();
   const orderId = Number(sp.get("order_id"));
+  // 這一趟轉移（customer_order_transfer_links.id）。追加轉入會把好幾家店的貨
+  // 併進同一張轉入單，不指定就會把別家店的品項也印進來、來源店也標成別人。
+  const linkId = Number(sp.get("link")) || null;
   const copiesParam = sp.get("copies") ?? "driver,stub";
   const copies: CopyKind[] = useMemo(() => {
     const raw = copiesParam.split(",").map((s) => s.trim()).filter(Boolean);
@@ -139,10 +143,39 @@ function Body() {
       // 互助品項一律是 source='aid_transfer'；混到別的來源（同一張單後來又加了團購品項）
       // 時只印互助那些 —— 出貨店裝箱時不該把不屬於這次互助的貨也寄出去。
       const aidItems = active.filter((it) => it.source === "aid_transfer");
-      setItems(aidItems.length > 0 ? aidItems : active);
+
+      // 指定了 link → 只印那一趟搬過去的品項，來源店也從那條連結拿。
+      // 沒指定（舊連結／手動開網址）→ 沿用整張單的舊行為。
+      let link: TransferLink | null = null;
+      let linkSourceStore: string | null = null;
+      if (linkId != null) {
+        const { data: lRow } = await sb
+          .from("customer_order_transfer_links")
+          .select(
+            TRANSFER_LINK_SELECT +
+              ", src:customer_orders!customer_order_transfer_links_source_order_id_fkey(" +
+              "store:stores!customer_orders_pickup_store_id_fkey(name))",
+          )
+          .eq("id", linkId)
+          .eq("dest_order_id", orderId)
+          .maybeSingle();
+        if (cancelled) return;
+        const l = lRow as unknown as
+          (TransferLink & { src: { store: { name: string } | { name: string }[] | null } | null }) | null;
+        if (l) {
+          link = l;
+          const st = l.src?.store;
+          linkSourceStore = (Array.isArray(st) ? st[0]?.name : st?.name) ?? null;
+        }
+      }
+
+      const scoped = link ? linkItems(link, active) : [];
+      setItems(scoped.length > 0 ? scoped : aidItems.length > 0 ? aidItems : active);
 
       // 來源店（貨從哪一家出去）
-      if (h.transferred_from_order_id != null) {
+      if (linkSourceStore != null) {
+        setSourceStore(linkSourceStore);
+      } else if (h.transferred_from_order_id != null) {
         const { data: srcRow } = await sb
           .from("customer_orders")
           .select("store:stores!customer_orders_pickup_store_id_fkey(name)")
@@ -207,7 +240,7 @@ function Body() {
       }
     })();
     return () => { cancelled = true; };
-  }, [orderId, paramError]);
+  }, [orderId, linkId, paramError]);
 
   // PDF 存檔 / 列印對話框預設檔名 → 用訂單號
   useEffect(() => {

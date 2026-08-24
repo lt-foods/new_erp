@@ -13,7 +13,7 @@ export default function FreeTransferPage() {
         <h1 className="text-xl font-semibold">自由轉貨</h1>
       </header>
       <FreeTransferCreateForm
-        onCreated={(id) => router.push(`/hq/inbox?source=transfer&id=${id}`)}
+        onCreated={(id) => router.push(`/wms/transfers?open=${id}`)}
         onCancel={() => router.back()}
       />
     </div>
