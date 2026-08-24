@@ -2086,16 +2086,6 @@ export default function TransfersInboxPage() {
           notifyMembers={notifyMembers}
           onClose={() => setAllocModal(null)}
           onSaved={() => reloadAndRefreshBadge()}
-          onAdjustShortage={(skuId, skuName) => {
-            // 跳去「⚖️ 配貨」逐筆調整配貨數量 — 該彈窗一次只認一張 transfer，
-            // 只有單張收貨（mode.transferIds.length === 1）才會出現這顆按鈕。
-            if (allocModal.mode.kind !== "receive" || allocModal.mode.transferIds.length !== 1) {
-              return;
-            }
-            const transferId = allocModal.mode.transferIds[0];
-            setAllocModal(null);
-            setAllocFor({ transferId, skuId, skuName });
-          }}
         />
       )}
 
