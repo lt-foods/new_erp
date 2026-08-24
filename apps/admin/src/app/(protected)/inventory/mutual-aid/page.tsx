@@ -251,18 +251,9 @@ export default function MutualAidPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          {/* 「我提供出去的」列的是轉移紀錄不是貼文，整份清單列印不適用；
-              那一頁每一列有自己的隨貨單列印鈕（走 /transfers/print-aid 兩聯） */}
-          {view !== "provided" && (
-            <SpinButton
-              type="button"
-              onClick={() => printViaIframe(withBasePath(`/inventory/mutual-aid/print?type=${filter}&view=${view}`))}
-              title="列印目前這個分頁的整份貼文清單（A4 橫式）；單獨一則請按該列右邊的 🖨️"
-              className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-            >
-              🖨️ 列印
-            </SpinButton>
-          )}
+          {/* 整份清單的「🖨️ 列印」2026-08-24 拿掉（老闆交代）。單則列印留在
+              每一列右邊；print 頁的 ?type= 清單模式因此沒有入口，但頁面留著
+              （?id= 單則模式還在用） */}
           <SpinButton
             type="button"
             onClick={() => setRequestModalOpen(true)}
