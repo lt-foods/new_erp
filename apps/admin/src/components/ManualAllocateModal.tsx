@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Modal } from "@/components/Modal";
 import Spinner from "@/components/Spinner";
@@ -37,6 +37,36 @@ import {
 // 的話等於把不存在的貨許給客人。
 
 export type ReceiveLine = { transfer_item_id: number; qty_received: number };
+
+// 本批調撥的品項行（實收編輯用；20260824 起實收直接在配單視窗改，
+// 預設 = WV 派出量、可少收也可多收，另開的「✎ 調整」彈窗已從分店流程移除）
+type TransferItemLine = {
+  id: number;
+  transfer_id: number;
+  sku_id: number;
+  qty_shipped: number;
+  description: string | null;
+};
+
+// 依下單時間由早到晚勾滿為止（伺服端已排好序）——「數量正確」時等於全選
+function greedyByTime(
+  orders: CandidateOrder[],
+  caps: Map<number, number>,
+  onlyWithin?: Set<number>,
+): Set<number> {
+  const used = new Map<number, number>();
+  const next = new Set<number>();
+  for (const o of orders) {
+    if (onlyWithin && !onlyWithin.has(o.order_id)) continue;
+    const ok = o.items.every(
+      (it) => it.qty <= (caps.get(it.sku_id) ?? 0) - (used.get(it.sku_id) ?? 0),
+    );
+    if (!ok) continue;
+    next.add(o.order_id);
+    for (const it of o.items) used.set(it.sku_id, (used.get(it.sku_id) ?? 0) + it.qty);
+  }
+  return next;
+}
 
 export type AllocModalMode =
   | { kind: "store"; storeId: number }
@@ -101,6 +131,8 @@ type ManualReceiveResult = {
   allocation?: AllocResult | null;
   // 多給的量（沒有訂單主人）掛進【內部】店現貨池的結果（20260814010000）
   surplus?: Array<{ sku_id: number; qty: number }> | null;
+  // 沒勾的候選訂單標「待補貨」的張數（20260824010000）
+  backordered?: number;
 };
 
 const SKIP_REASON_LABEL: Record<string, string> = {
@@ -146,36 +178,42 @@ export function ManualAllocateModal({
   const [notify, setNotify] = useState(notifyMembers);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // receive 模式：本批品項行 + 實收編輯（item id → 輸入字串；預設 = 派出量）
+  const [items, setItems] = useState<TransferItemLine[] | null>(null);
+  const [qtyEdits, setQtyEdits] = useState<Map<number, string>>(new Map());
+  // 使用者動過勾選後，實收改動只「修剪裝不下的」，不再整組重勾
+  const touchedRef = useRef(false);
 
-  const load = useCallback(async () => {
-    const sb = getSupabase();
-    if (mode.kind === "store") {
-      const { data: d, error: e } = await sb.rpc("rpc_get_manual_allocation_candidates", {
-        p_store_id: mode.storeId,
-      });
-      if (e) throw new Error(e.message);
-      const raw = d as {
-        budget: Array<{ sku_id: number; sku_code: string | null; name: string; available: number }>;
-        orders: CandidateOrder[];
-        waiting_count: number;
-      };
-      setData({
-        budget: (raw.budget ?? []).map((b) => ({ ...b, cap: Number(b.available), pool: 0 })),
-        incoming: [],
-        orders: (raw.orders ?? []).map((o) => ({
-          ...o,
-          // store 模式候選 = confirmed 且閘門已過（伺服端定義），標籤固定「待取貨」
-          status: "confirmed",
-          arrived: true,
-          items: (o.items ?? []).map((i) => ({ sku_id: i.sku_id, qty: Number(i.qty) })),
-        })),
-        waiting_count: Number(raw.waiting_count) || 0,
-      });
-      setSelected(new Set());
-    } else {
+  // 依實收編輯組出 p_lines（只送 ≠ 派出量的行）。空白/負數回 invalid，
+  // 由呼叫端決定要擋送出還是先不打 preview。多收（> 派出量）是合法的。
+  const buildLines = useCallback(
+    (
+      list: TransferItemLine[],
+      edits: Map<number, string>,
+    ): { lines: ReceiveLine[]; invalid: boolean } => {
+      const lines: ReceiveLine[] = [];
+      for (const it of list) {
+        const raw = edits.get(it.id);
+        if (raw === undefined) continue;
+        if (raw.trim() === "") return { lines: [], invalid: true };
+        const v = Number(raw);
+        if (Number.isNaN(v) || v < 0) return { lines: [], invalid: true };
+        if (v !== it.qty_shipped) lines.push({ transfer_item_id: it.id, qty_received: v });
+      }
+      return { lines, invalid: false };
+    },
+    [],
+  );
+
+  // receive 模式：抓 preview（實收以 lines 為準）→ 更新額度與候選、重算勾選。
+  // 沒動過勾選 → 依訂單時間勾滿（數量正確時＝全選）；動過 → 只把裝不下的修掉。
+  const loadPreview = useCallback(
+    async (lines: ReceiveLine[] | null) => {
+      if (mode.kind !== "receive") return;
+      const sb = getSupabase();
       const { data: d, error: e } = await sb.rpc("rpc_get_transfer_allocation_preview", {
         p_transfer_ids: mode.transferIds,
-        p_lines: mode.lines && mode.lines.length > 0 ? mode.lines : null,
+        p_lines: lines && lines.length > 0 ? lines : null,
       });
       if (e) throw new Error(e.message);
       const raw = d as {
@@ -209,31 +247,48 @@ export function ManualAllocateModal({
       }));
       setData({ budget: budgetRows, incoming, orders, waiting_count: 0 });
 
-      // 派貨中的單＝這批貨出貨時就配給他的，預設勾選；取消勾選＝拉回讓貨。
-      // 貨不夠分時**只勾到額度用完為止**（依訂單時間由早到晚，orders 已由
-      // 伺服端 ORDER BY created_at, order_no 排好）—— 全部勾起來就是把不存在
-      // 的貨許給客人，勾不下的確認時會被拉回「已確認」等下一批。
-      const capOf = new Map(budgetRows.map((b) => [b.sku_id, b.cap]));
-      const used = new Map<number, number>();
-      const pre = new Set<number>();
-      for (const o of orders) {
-        if (o.status !== "shipping") continue;
-        const ok = o.items.every(
-          (it) => it.qty <= (capOf.get(it.sku_id) ?? 0) - (used.get(it.sku_id) ?? 0),
-        );
-        if (!ok) continue;
-        pre.add(o.order_id);
-        for (const it of o.items) used.set(it.sku_id, (used.get(it.sku_id) ?? 0) + it.qty);
-      }
-      setSelected(pre);
-    }
+      const caps = new Map(budgetRows.map((b) => [b.sku_id, b.cap]));
+      setSelected((cur) =>
+        touchedRef.current ? greedyByTime(orders, caps, cur) : greedyByTime(orders, caps),
+      );
+    },
+    [mode],
+  );
+
+  // store 模式：載入（貨已在店，沒有實收可調）
+  const loadStore = useCallback(async () => {
+    if (mode.kind !== "store") return;
+    const sb = getSupabase();
+    const { data: d, error: e } = await sb.rpc("rpc_get_manual_allocation_candidates", {
+      p_store_id: mode.storeId,
+    });
+    if (e) throw new Error(e.message);
+    const raw = d as {
+      budget: Array<{ sku_id: number; sku_code: string | null; name: string; available: number }>;
+      orders: CandidateOrder[];
+      waiting_count: number;
+    };
+    setData({
+      budget: (raw.budget ?? []).map((b) => ({ ...b, cap: Number(b.available), pool: 0 })),
+      incoming: [],
+      orders: (raw.orders ?? []).map((o) => ({
+        ...o,
+        // store 模式候選 = confirmed 且閘門已過（伺服端定義），標籤固定「待取貨」
+        status: "confirmed",
+        arrived: true,
+        items: (o.items ?? []).map((i) => ({ sku_id: i.sku_id, qty: Number(i.qty) })),
+      })),
+      waiting_count: Number(raw.waiting_count) || 0,
+    });
+    setSelected(new Set());
   }, [mode]);
 
   useEffect(() => {
+    if (mode.kind !== "store") return;
     let cancelled = false;
     (async () => {
       try {
-        await load();
+        await loadStore();
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       }
@@ -241,7 +296,64 @@ export function ManualAllocateModal({
     return () => {
       cancelled = true;
     };
-  }, [load]);
+  }, [mode.kind, loadStore]);
+
+  // receive 模式：先抓本批品項行、種入實收預設（WV 派出量；調整彈窗轉來的
+  // lines 蓋上去 — 舊入口相容），preview 交給下面的 debounce effect
+  useEffect(() => {
+    if (mode.kind !== "receive") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const sb = getSupabase();
+        const { data: rows, error: e } = await sb
+          .from("transfer_items")
+          .select("id, transfer_id, sku_id, qty_shipped, description")
+          .in("transfer_id", mode.transferIds)
+          .order("id");
+        if (e) throw new Error(e.message);
+        if (cancelled) return;
+        const list = ((rows as TransferItemLine[] | null) ?? []).map((r) => ({
+          ...r,
+          qty_shipped: Number(r.qty_shipped),
+        }));
+        const seed = new Map<number, string>();
+        for (const it of list) seed.set(it.id, String(it.qty_shipped));
+        for (const l of mode.lines ?? []) seed.set(l.transfer_item_id, String(l.qty_received));
+        setItems(list);
+        setQtyEdits(seed);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // mode 是穩定的 modal 參數，transferIds 不會中途變
+  }, [mode]);
+
+  // 實收一改（含初次載入）→ debounce 後重抓 preview；有空白/非法值先不打
+  const editsKey = useMemo(
+    () => (items ? items.map((it) => `${it.id}:${qtyEdits.get(it.id) ?? ""}`).join("|") : ""),
+    [items, qtyEdits],
+  );
+  useEffect(() => {
+    if (mode.kind !== "receive" || items === null) return;
+    const { lines, invalid } = buildLines(items, qtyEdits);
+    if (invalid) return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      loadPreview(lines).catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      });
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+    // editsKey 涵蓋 items + qtyEdits 的內容變化
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode.kind, items, editsKey, buildLines, loadPreview]);
 
   const budgetMap = useMemo(() => {
     const m = new Map<number, BudgetRow>();
@@ -271,6 +383,7 @@ export function ManualAllocateModal({
   );
 
   function toggle(o: CandidateOrder) {
+    touchedRef.current = true;
     setSelected((cur) => {
       const next = new Set(cur);
       if (next.has(o.order_id)) next.delete(o.order_id);
@@ -281,20 +394,13 @@ export function ManualAllocateModal({
     });
   }
 
-  // 依訂單時間由早到晚勾滿為止 —— 跟自動配單同一套結果，店家可再手動增減
+  // 依訂單時間由早到晚勾滿為止 —— 跟自動配單同一套結果，店家可再手動增減。
+  // 按了＝回到「未手動調整」狀態：之後改實收會重新整組勾滿。
   function presetByTime() {
     if (!data) return;
-    const used = new Map<number, number>();
-    const next = new Set<number>();
-    for (const o of data.orders) {
-      const ok = o.items.every(
-        (it) => it.qty <= (budgetMap.get(it.sku_id)?.cap ?? 0) - (used.get(it.sku_id) ?? 0),
-      );
-      if (!ok) continue;
-      next.add(o.order_id);
-      for (const it of o.items) used.set(it.sku_id, (used.get(it.sku_id) ?? 0) + it.qty);
-    }
-    setSelected(next);
+    touchedRef.current = false;
+    const caps = new Map((data.budget ?? []).map((b) => [b.sku_id, b.cap]));
+    setSelected(greedyByTime(data.orders, caps));
   }
 
   // 每個 SKU 的全部候選訂單總需求（跟有沒有勾選無關）—— 用來判斷「假設實收數字
@@ -369,31 +475,67 @@ export function ManualAllocateModal({
     if (!data || busy) return;
     if (!isReceive && selectedCount === 0) return;
 
+    // 實收（含使用者調整）：空白/非法值直接擋在這裡
+    let recvLines: ReceiveLine[] = [];
+    if (isReceive) {
+      if (items === null) return;
+      const built = buildLines(items, qtyEdits);
+      if (built.invalid) {
+        setError("有「實收」欄位是空白或不是有效數量 — 請填 0 或正整數（多收也可以填）。");
+        return;
+      }
+      recvLines = built.lines;
+    }
+    // 對 WV 派出量的差異 → 確認訊息要講清楚會回報總倉
+    const shortTotal = isReceive
+      ? (items ?? []).reduce((s, it) => {
+          const v = Number(qtyEdits.get(it.id) ?? it.qty_shipped);
+          return s + Math.max(0, it.qty_shipped - v);
+        }, 0)
+      : 0;
+    const overTotal = isReceive
+      ? (items ?? []).reduce((s, it) => {
+          const v = Number(qtyEdits.get(it.id) ?? it.qty_shipped);
+          return s + Math.max(0, v - it.qty_shipped);
+        }, 0)
+      : 0;
+
     // 沒勾的「派貨中」訂單＝拉回：這批貨不配給他，單頭退回「已確認」
     const pullbackIds = isReceive
       ? data.orders
           .filter((o) => o.status === "shipping" && !selected.has(o.order_id))
           .map((o) => o.order_id)
       : [];
+    // 沒勾的候選（含拉回的）＝這批不配給他 → 伺服端標「待補貨」，取貨頁
+    // 一律擋住、客人畫面顯示「待到貨」；下一批貨收進來時自動重算解除。
+    // （20260824010000：光退回「已確認」擋不住 —— 取貨閘門不看配單勾了誰，
+    // 只看有沒有到貨＋數量排不排得到他。）
+    const backorderIds = isReceive
+      ? data.orders.filter((o) => !selected.has(o.order_id)).map((o) => o.order_id)
+      : [];
 
     const notifyLine = notify
       ? "📩 完成後會推播「商品到貨」給可取貨的客人。"
       : "🔕 不會推播通知，請自行聯繫客人。";
-    const pullbackLine =
-      pullbackIds.length > 0
-        ? `⤺ 沒勾的 ${pullbackIds.length} 張「運送中」訂單會退回「已確認」，這批貨不配給他們` +
-          `（客人畫面變回「待到貨」，下一批貨到時可再配）。\n`
+    const backorderLine =
+      backorderIds.length > 0
+        ? `⤺ 沒勾的 ${backorderIds.length} 張訂單這批不配給他們：客人畫面顯示「待到貨」、` +
+          `取貨頁不會放行，下一批貨到時可再配。\n`
         : "";
     const surplusLine =
       surplusTotal > 0
         ? `🏬 多給的 ${surplusTotal} 件沒有訂單主人，會掛進【內部】${storeName} 現貨池（可轉單給客人）。\n`
         : "";
+    const varianceLine =
+      (shortTotal > 0 ? `⚠ 少收 ${shortTotal} 件：等於向總倉提出退回，總倉會在收件匣決定。\n` : "") +
+      (overTotal > 0 ? `💜 多收 ${overTotal} 件：照實入庫，並回報總倉收件匣。\n` : "");
     const msg = isReceive
       ? `確認收貨並配單？\n\n` +
         (selectedCount > 0
-          ? `勾選的 ${selectedCount} 張訂單會標成「可取貨」，沒勾的維持原狀（下一批貨到時可再配）。\n`
-          : `沒有勾選訂單 — 只收貨不配單，之後可從「✋ 手動配單」再配。\n`) +
-        pullbackLine +
+          ? `勾選的 ${selectedCount} 張訂單會標成「可取貨」。\n`
+          : `沒有勾選訂單 — 只收貨不配單。\n`) +
+        backorderLine +
+        varianceLine +
         surplusLine +
         notifyLine
       : `確認把勾選的 ${selectedCount} 張訂單標成「可取貨」？\n\n沒勾的訂單維持原狀，下一批貨到時可再配。\n` +
@@ -415,8 +557,9 @@ export function ManualAllocateModal({
           p_operator: operator,
           p_order_ids: selectedCount > 0 ? Array.from(selected) : null,
           p_notes: mode.note ?? null,
-          p_lines: mode.lines && mode.lines.length > 0 ? mode.lines : null,
+          p_lines: recvLines.length > 0 ? recvLines : null,
           p_pullback_order_ids: pullbackIds.length > 0 ? pullbackIds : null,
+          p_backorder_order_ids: backorderIds.length > 0 ? backorderIds : null,
         });
         if (e) throw new Error(translateRpcError(e));
         const r = (res ?? {}) as ManualReceiveResult;
@@ -436,7 +579,7 @@ export function ManualAllocateModal({
         alert(
           `✅ 收貨完成：${r.transfers_received ?? mode.transferIds.length} 單` +
             (advancedTotal > 0 ? `，配單 ${advancedTotal} 張訂單已可取貨` : "，未配單") +
-            ((r.pulled_back ?? 0) > 0 ? `，${r.pulled_back} 張退回「已確認」等下批` : "") +
+            ((r.backordered ?? 0) > 0 ? `，${r.backordered} 張沒配到轉「待到貨」等下批` : "") +
             (surplusBooked > 0
               ? `\n🏬 多給 ${surplusBooked} 件已掛進【內部】${storeName} 現貨池`
               : "") +
@@ -475,7 +618,7 @@ export function ManualAllocateModal({
       onSaved();
       if (skipped.length > 0) {
         // 有跳過的單就留在彈窗讓店家重看（額度已變，重載）
-        await load();
+        await loadStore();
       } else {
         onClose();
       }
@@ -508,18 +651,67 @@ export function ManualAllocateModal({
 
         {data && (
           <>
-            {isReceive && data.incoming.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2 rounded-md border border-blue-200 bg-blue-50/60 px-3 py-2 text-sm dark:border-blue-900 dark:bg-blue-950/30">
-                <span className="font-medium text-blue-800 dark:text-blue-300">📦 本次到貨</span>
-                {data.incoming.map((r) => (
-                  <span
-                    key={r.sku_id}
-                    className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-white px-2 py-0.5 text-xs dark:border-blue-800 dark:bg-zinc-900"
-                    title={r.sku_code ?? undefined}
-                  >
-                    {r.name} <b className="tabular-nums">× {r.qty}</b>
+            {/* 本次到貨：實收直接在這裡改（預設 = WV 派出量）。少收＝向總倉
+                提出退回；多收也可以填，照實入庫並回報總倉。改了額度會即時重算。 */}
+            {isReceive && items !== null && items.length > 0 && (
+              <div className="space-y-1.5 rounded-md border border-blue-200 bg-blue-50/60 px-3 py-2 text-sm dark:border-blue-900 dark:bg-blue-950/30">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-blue-800 dark:text-blue-300">📦 本次到貨</span>
+                  <span className="text-[11px] text-zinc-500">
+                    實收預設＝派出量，可直接修改（少收＝向總倉提出退回；多收照實入庫並回報總倉）
                   </span>
-                ))}
+                </div>
+                {items.map((it) => {
+                  const raw = qtyEdits.get(it.id) ?? String(it.qty_shipped);
+                  const num = Number(raw);
+                  const blank = raw.trim() === "";
+                  const bad = blank || Number.isNaN(num) || num < 0;
+                  const diff = bad ? 0 : num - it.qty_shipped;
+                  const name =
+                    it.description?.trim() ||
+                    budgetMap.get(it.sku_id)?.name ||
+                    data.incoming.find((r) => r.sku_id === it.sku_id)?.name ||
+                    `#${it.sku_id}`;
+                  return (
+                    <div key={it.id} className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="min-w-[180px]">{name}</span>
+                      <span className="text-zinc-500">
+                        派出 <b className="tabular-nums">{it.qty_shipped}</b>
+                      </span>
+                      <span className="text-zinc-500">實收</span>
+                      <input
+                        inputMode="decimal"
+                        value={raw}
+                        disabled={busy}
+                        onChange={(e) =>
+                          setQtyEdits((cur) => new Map(cur).set(it.id, e.target.value))
+                        }
+                        className={`w-16 rounded-md border px-1.5 py-0.5 text-right font-mono text-sm font-semibold ${
+                          bad
+                            ? "border-red-400 bg-red-50 dark:bg-red-950"
+                            : diff !== 0
+                            ? "border-amber-400 bg-amber-50 dark:bg-amber-950"
+                            : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-800"
+                        }`}
+                      />
+                      {!bad && diff < 0 && (
+                        <span className="font-medium text-rose-600 dark:text-rose-400">
+                          少收 {-diff} → 向總倉提出退回
+                        </span>
+                      )}
+                      {!bad && diff > 0 && (
+                        <span className="font-medium text-purple-600 dark:text-purple-400">
+                          多收 {diff} → 照實入庫、回報總倉
+                        </span>
+                      )}
+                      {bad && (
+                        <span className="font-medium text-red-600 dark:text-red-400">
+                          請填 0 或正整數
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
 
@@ -534,7 +726,7 @@ export function ManualAllocateModal({
             {shortShipping > 0 && (
               <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
                 ⚠️ 這批貨不夠分：有 <b>{shortShipping}</b> 張「運送中」的訂單勾不起來。
-                確認收貨後它們會退回「已確認」（客人畫面變回「待到貨」），下一批貨到時可再配。
+                確認收貨後它們會轉「待到貨」（取貨頁不會放行），下一批貨到時可再配。
                 要優先配給其中某一張，先取消勾別張、額度空出來就勾得起來了。
               </div>
             )}
@@ -768,7 +960,7 @@ export function ManualAllocateModal({
               {isReceive
                 ? "按「確認收貨」會一次完成入庫與配單（同一筆交易，失敗即整筆取消、不會收到一半）。" +
                   "配好的訂單會標成「可取貨」，並從【內部】店現貨池扣掉相應數量；" +
-                  "沒勾的「運送中」訂單退回「已確認」，下一批貨到時可再配。" +
+                  "沒勾的訂單一律轉「待到貨」（取貨頁不會放行），下一批貨到時可再配。" +
                   "多給的量（沒有訂單主人）會自動掛進【內部】店現貨池，之後可轉單給客人。" +
                   "伺服端會再驗一次可配量，裝不下的單會被跳過並告知，不會硬配。"
                 : "配好的訂單會標成「可取貨」，取貨頁就能發貨；同時會從【內部】店現貨池" +

@@ -108,6 +108,8 @@ export default function TransfersInboxPage() {
   // 每張單的來源：campaign=開團派貨（背後有顧客訂單）/ restock=補貨 / free=自由轉貨・互助
   // 補貨與自由轉貨本來就沒有顧客訂單，畫面要講清楚，不然點開只看到「查不到訂單」會以為壞了
   const [sourceKinds, setSourceKinds] = useState<Map<number, string>>(new Map());
+  // AT- 空中轉／互助單的來源店名（transfer id → 店名，從訂單鏈反查；見載入處註解）
+  const [aidFrom, setAidFrom] = useState<Map<number, string>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const [opening, setOpening] = useState<Transfer | null>(null);
@@ -255,14 +257,14 @@ export default function TransfersInboxPage() {
         let pendingQ = sb
           .from("transfers")
           .select(
-            "id, transfer_no, source_location, dest_location, status, transfer_type, shipped_at, received_at, notes",
+            "id, transfer_no, source_location, dest_location, status, transfer_type, shipped_at, received_at, notes, customer_order_id",
           )
           .eq("status", "shipped")
           .order("shipped_at", { ascending: false, nullsFirst: false });
         let doneQ = sb
           .from("transfers")
           .select(
-            "id, transfer_no, source_location, dest_location, status, transfer_type, shipped_at, received_at, notes",
+            "id, transfer_no, source_location, dest_location, status, transfer_type, shipped_at, received_at, notes, customer_order_id",
             { count: "exact" },
           )
           .eq("status", "received")
@@ -316,7 +318,7 @@ export default function TransfersInboxPage() {
           let extraQ = sb
             .from("transfers")
             .select(
-              "id, transfer_no, source_location, dest_location, status, transfer_type, shipped_at, received_at, notes",
+              "id, transfer_no, source_location, dest_location, status, transfer_type, shipped_at, received_at, notes, customer_order_id",
             )
             .ilike("transfer_no", `%${serverSearch}%`)
             .in("status", ["shipped", "received"])
@@ -494,6 +496,48 @@ export default function TransfersInboxPage() {
           }
         }
 
+        // 空中轉／互助的 AT- 單：收貨店要看得到「是哪家店轉來的」。
+        // ⛔ 不能只拿 source_location — 經總倉的互助 Leg-2 的 source 是總倉，
+        //    紙上永遠看不出原本是哪家店（CLAUDE.md「Leg-1 身上沒有訂單」那條）。
+        //    正解是從訂單反查：本單掛的轉入訂單 transferred_from_order_id →
+        //    那張來源單的 pickup_store_id。查不到鏈（追加轉入不寫該欄的已知洞）
+        //    時，畫面端 fallback 用 source_location 名稱。
+        const aidFromMap = new Map<number, string>();
+        const aidRows = rows.filter((r) => r.customer_order_id != null);
+        if (aidRows.length > 0) {
+          const { data: inOrds } = await sb
+            .from("customer_orders")
+            .select("id, transferred_from_order_id")
+            .in("id", aidRows.map((r) => r.customer_order_id as number));
+          const fromByOrder = new Map<number, number>();
+          for (const o of ((inOrds ?? []) as { id: number; transferred_from_order_id: number | null }[])) {
+            if (o.transferred_from_order_id != null) fromByOrder.set(o.id, o.transferred_from_order_id);
+          }
+          const srcOrderIds = Array.from(new Set(fromByOrder.values()));
+          const storeByOrder = new Map<number, number>();
+          if (srcOrderIds.length > 0) {
+            const { data: srcOrds } = await sb
+              .from("customer_orders")
+              .select("id, pickup_store_id")
+              .in("id", srcOrderIds);
+            for (const o of ((srcOrds ?? []) as { id: number; pickup_store_id: number | null }[])) {
+              if (o.pickup_store_id != null) storeByOrder.set(o.id, o.pickup_store_id);
+            }
+          }
+          const srcStoreIds = Array.from(new Set(storeByOrder.values()));
+          const srcStoreName = new Map<number, string>();
+          if (srcStoreIds.length > 0) {
+            const { data: sts } = await sb.from("stores").select("id, name").in("id", srcStoreIds);
+            for (const s of ((sts ?? []) as { id: number; name: string }[])) srcStoreName.set(s.id, s.name);
+          }
+          for (const r of aidRows) {
+            const srcOrder = fromByOrder.get(r.customer_order_id as number);
+            const sid = srcOrder != null ? storeByOrder.get(srcOrder) : undefined;
+            const nm = sid != null ? srcStoreName.get(sid) : undefined;
+            if (nm) aidFromMap.set(r.id, nm);
+          }
+        }
+
         if (!cancelled) {
           // ⚠⚠ 這三個一定要在同一個 if (!cancelled) 區塊裡一起更新（阿審 2026-08-22
           //    四審 P2）。原本 setDoneTotal / setDoneFetched 是在上面那發 Promise.all
@@ -524,6 +568,7 @@ export default function TransfersInboxPage() {
           setLocationToStore(locStoreMap);
           setTransferCampaigns(tcMap);
           setSourceKinds(kindMap);
+          setAidFrom(aidFromMap);
           setError(null);
           const auto = new Set<string>();
           for (const r of rows) {
@@ -1029,9 +1074,10 @@ export default function TransfersInboxPage() {
     const dest = locations.get(t.dest_location) ?? `#${t.dest_location}`;
     if (
       !confirm(
-        `退回收貨 ${t.transfer_no}(送到 ${dest})?\n\n` +
-        `會沖銷本次入庫的庫存、並把此調撥單改回「待收」。\n` +
-        `若該批貨已被取貨/售出將無法退回。`,
+        `返回收貨配單 ${t.transfer_no}(送到 ${dest})?\n\n` +
+        `會沖銷本次入庫的庫存、把此調撥單改回「待收」，並還原當時的配單決策\n` +
+        `（配到的單退回、沒配到的「待到貨」解除、拉回的派貨中單還原）— 可整個重來。\n` +
+        `若該批貨已被取貨/售出將無法返回。`,
       )
     )
       return;
@@ -1741,7 +1787,13 @@ export default function TransfersInboxPage() {
                                     className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-950 dark:text-sky-300"
                                     title="別店空中轉／互助過來的訂單轉移單（AT-xxx）：收貨後該筆訂單就變可取貨；點數量可看是哪一筆訂單"
                                   >
-                                    ✈ 空中轉
+                                    {/* 來源店：訂單鏈反查優先（經總倉互助的 source_location 是總倉），
+                                        查不到鏈才退回 source_location 名稱 */}
+                                    ✈ 空中轉{(() => {
+                                      const from =
+                                        aidFrom.get(t.id) ?? locations.get(t.source_location);
+                                      return from ? ` · 來自 ${from}` : "";
+                                    })()}
                                   </span>
                                 )}
                                 {srcKind === "free" && (
@@ -1859,17 +1911,21 @@ export default function TransfersInboxPage() {
                                         ? "rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
                                         : "rounded-md border border-emerald-600 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
                                     }
-                                    title="先跳出這張單對到的訂單勾選要配給誰,按「確認收貨」才完成收貨(取消=不收貨)"
+                                    title="勾選要配給誰、實收數量也在同一個視窗調,按「確認收貨」才完成收貨(取消=不收貨)"
                                   >
                                     ✋ 配單
                                   </SpinButton>
-                                  <SpinButton
-                                    onClick={() => setOpening(t)}
-                                    className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                                    title="調整數量 / 標記破損 / 短收"
-                                  >
-                                    ✎ 調整
-                                  </SpinButton>
+                                  {/* 「✎ 調整」只留給總倉調撥(沒有配單視窗可用)；
+                                      分店的實收調整已併進配單視窗 */}
+                                  {!storeForLocation(t.dest_location) && (
+                                    <SpinButton
+                                      onClick={() => setOpening(t)}
+                                      className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                                      title="調整數量 / 標記破損 / 短收"
+                                    >
+                                      ✎ 調整
+                                    </SpinButton>
+                                  )}
                                 </div>
                               ) : (
                                 <div className="flex justify-end gap-1">
@@ -1883,9 +1939,9 @@ export default function TransfersInboxPage() {
                                     onClick={() => unreceive(t)}
                                     disabled={batchBusy}
                                     className="rounded-md border border-amber-300 px-2 py-1 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950"
-                                    title="退回收貨：沖銷入庫、改回待收"
+                                    title="一鍵返回：沖銷入庫、改回待收，配單決策（配到的/沒配到的/拉回的）一併還原，可整個重來"
                                   >
-                                    ↩ 退回
+                                    ↩ 返回收貨配單
                                   </SpinButton>
                                 </div>
                               )}
