@@ -128,6 +128,7 @@ export function ManualAllocateModal({
   notifyMembers,
   onClose,
   onSaved,
+  onAdjustShortage,
 }: {
   mode: AllocModalMode;
   storeName: string;
@@ -135,6 +136,10 @@ export function ManualAllocateModal({
   notifyMembers: boolean;
   onClose: () => void;
   onSaved: () => void;
+  // 到貨量（假設實收數字沒錯）不夠分給這個 SKU 的候選訂單時，
+  // 讓店家跳去「⚖️ 配貨」逐筆調整配貨數量（沒配到的標待補貨）——
+  // 只有單張收貨（mode.transferIds 只有一張）才有意義，該彈窗一次只認一張 transfer。
+  onAdjustShortage?: (skuId: number, skuName: string) => void;
 }) {
   const [data, setData] = useState<Data | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -292,15 +297,35 @@ export function ManualAllocateModal({
     setSelected(next);
   }
 
+  // 每個 SKU 的全部候選訂單總需求（跟有沒有勾選無關）—— 用來判斷「假設實收數字
+  // 沒錯，這批到貨真的不夠分」，不是「使用者剛好勾到額度用完」。
+  const totalNeedMap = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const o of data?.orders ?? [])
+      for (const it of o.items) m.set(it.sku_id, (m.get(it.sku_id) ?? 0) + it.qty);
+    return m;
+  }, [data]);
+
+  // 真的不夠分的 SKU：全部候選需求 > 可配上限。只有單張收貨才給「調整數量」
+  // 入口 —— ⚖️ 配貨（ShortageAllocateModal）一次只認一張 transfer。
+  const shortSkuIds = useMemo(() => {
+    if (mode.kind !== "receive" || mode.transferIds.length !== 1) {
+      return new Set<number>();
+    }
+    const out = new Set<number>();
+    for (const [skuId, need] of totalNeedMap) {
+      if (need > (budgetMap.get(skuId)?.cap ?? 0)) out.add(skuId);
+    }
+    return out;
+  }, [mode, totalNeedMap, budgetMap]);
+
   // 多給的量（沒有訂單主人）＝確認收貨後會掛進【內部】店現貨池的預估。
   // 逐 SKU：min(本次到貨 − 已勾選需求, 可配上限 − 全部候選需求 − 池子既有掛帳)，
   // 夾 0 —— 與伺服端 _grow_internal_pool 同一套帳（沒勾的候選單還在等貨，
   // 他們下一批要領的量不掛進池子）。實際掛帳以確認當下伺服端重算為準。
   const surplusRows = useMemo(() => {
     if (mode.kind !== "receive" || !data) return [] as Array<{ sku_id: number; qty: number }>;
-    const allNeed = new Map<number, number>();
-    for (const o of data.orders)
-      for (const it of o.items) allNeed.set(it.sku_id, (allNeed.get(it.sku_id) ?? 0) + it.qty);
+    const allNeed = totalNeedMap;
     const out: Array<{ sku_id: number; qty: number }> = [];
     for (const inc of data.incoming) {
       const b = budgetMap.get(inc.sku_id);
@@ -312,7 +337,7 @@ export function ManualAllocateModal({
       if (est > 0) out.push({ sku_id: inc.sku_id, qty: est });
     }
     return out;
-  }, [mode.kind, data, budgetMap, usedMap]);
+  }, [mode.kind, data, budgetMap, usedMap, totalNeedMap]);
   const surplusTotal = useMemo(
     () => surplusRows.reduce((s, r) => s + r.qty, 0),
     [surplusRows],
@@ -514,11 +539,14 @@ export function ManualAllocateModal({
               </div>
             )}
 
-            {/* 各 SKU 剩餘可配量 */}
+            {/* 各 SKU 剩餘可配量 —— 假設實收數字沒錯，全部候選需求還是大於可配上限
+                （shortSkuIds）就是真的不夠分，不是「剛好勾到額度用完」；
+                這種才給「調整數量」跳去 ⚖️ 配貨（逐筆調整、沒配到的標待補貨）。 */}
             {visibleBudget.length > 0 && (
               <div className="flex flex-wrap gap-2 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-900/60">
                 {visibleBudget.map((b) => {
                   const rem = b.cap - (usedMap.get(b.sku_id) ?? 0);
+                  const short = shortSkuIds.has(b.sku_id);
                   return (
                     <span
                       key={b.sku_id}
@@ -533,6 +561,16 @@ export function ManualAllocateModal({
                       >
                         剩 {Math.max(0, rem)}
                       </b>
+                      {short && onAdjustShortage && (
+                        <button
+                          type="button"
+                          onClick={() => onAdjustShortage(b.sku_id, b.name)}
+                          className="rounded border border-rose-300 px-1 py-0.5 text-[10px] font-medium text-rose-700 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
+                          title="這批到貨不夠分給這個品項的全部訂單 — 跳去「⚖️ 配貨」逐筆調整配貨數量，沒配到的標待補貨"
+                        >
+                          數量不夠，調整？
+                        </button>
+                      )}
                     </span>
                   );
                 })}
