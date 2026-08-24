@@ -490,7 +490,7 @@ export function ManualAllocateModal({
     <Modal
       open
       onClose={onClose}
-      title={isReceive ? `✋ 收貨·手動配 — ${storeName}` : `✋ 手動配單 — ${storeName}`}
+      title={isReceive ? `✋ 配單 — ${storeName}` : `✋ 手動配單 — ${storeName}`}
       maxWidth="max-w-4xl"
     >
       <div className="space-y-3">

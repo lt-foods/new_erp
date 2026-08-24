@@ -350,7 +350,7 @@ export function TransferReceiveModal({
                         : "rounded-md border border-emerald-600 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
                     }
                   >
-                    ✋ 收貨·手動配
+                    ✋ 配單
                   </SpinButton>
                 )}
                 {isWaveDispatch ? (

@@ -1481,7 +1481,7 @@ export default function TransfersInboxPage() {
             title="先跳出這批單對到的訂單勾選要配給誰,按「確認收貨」才完成收貨(限同一家分店)"
             className={`rounded-md border border-emerald-600 px-4 py-1.5 text-sm font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-zinc-300 disabled:text-zinc-400 dark:text-emerald-400 dark:hover:bg-emerald-950 dark:disabled:border-zinc-700 dark:disabled:text-zinc-500 ${selectedStore ? "ml-auto" : ""}`}
           >
-            {`✋ 批次收貨·手動配${selected.size > 0 ? ` (${selected.size})` : ""}`}
+            {`✋ 批次配單${selected.size > 0 ? ` (${selected.size})` : ""}`}
           </SpinButton>
         </div>
       )}
@@ -1604,7 +1604,7 @@ export default function TransfersInboxPage() {
                       }
                       title="先跳出這批單對到的訂單勾選要配給誰,按「確認收貨」才完成收貨(取消=不收貨)"
                     >
-                      ✋ 收貨·手動配{pendingCount > 1 ? ` ${pendingCount} 單` : ""}
+                      ✋ 配單{pendingCount > 1 ? ` ${pendingCount} 單` : ""}
                     </SpinButton>
                   </div>
                 )}
@@ -1861,7 +1861,7 @@ export default function TransfersInboxPage() {
                                     }
                                     title="先跳出這張單對到的訂單勾選要配給誰,按「確認收貨」才完成收貨(取消=不收貨)"
                                   >
-                                    ✋ 手動配
+                                    ✋ 配單
                                   </SpinButton>
                                   <SpinButton
                                     onClick={() => setOpening(t)}
