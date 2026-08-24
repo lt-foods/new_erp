@@ -101,6 +101,8 @@ type ManualReceiveResult = {
   allocation?: AllocResult | null;
   // 多給的量（沒有訂單主人）掛進【內部】店現貨池的結果（20260814010000）
   surplus?: Array<{ sku_id: number; qty: number }> | null;
+  // 沒勾的候選訂單標「待補貨」的張數（20260824010000）
+  backordered?: number;
 };
 
 const SKIP_REASON_LABEL: Record<string, string> = {
@@ -375,14 +377,21 @@ export function ManualAllocateModal({
           .filter((o) => o.status === "shipping" && !selected.has(o.order_id))
           .map((o) => o.order_id)
       : [];
+    // 沒勾的候選（含拉回的）＝這批不配給他 → 伺服端標「待補貨」，取貨頁
+    // 一律擋住、客人畫面顯示「待到貨」；下一批貨收進來時自動重算解除。
+    // （20260824010000：光退回「已確認」擋不住 —— 取貨閘門不看配單勾了誰，
+    // 只看有沒有到貨＋數量排不排得到他。）
+    const backorderIds = isReceive
+      ? data.orders.filter((o) => !selected.has(o.order_id)).map((o) => o.order_id)
+      : [];
 
     const notifyLine = notify
       ? "📩 完成後會推播「商品到貨」給可取貨的客人。"
       : "🔕 不會推播通知，請自行聯繫客人。";
-    const pullbackLine =
-      pullbackIds.length > 0
-        ? `⤺ 沒勾的 ${pullbackIds.length} 張「運送中」訂單會退回「已確認」，這批貨不配給他們` +
-          `（客人畫面變回「待到貨」，下一批貨到時可再配）。\n`
+    const backorderLine =
+      backorderIds.length > 0
+        ? `⤺ 沒勾的 ${backorderIds.length} 張訂單這批不配給他們：客人畫面顯示「待到貨」、` +
+          `取貨頁不會放行，下一批貨到時可再配。\n`
         : "";
     const surplusLine =
       surplusTotal > 0
@@ -391,9 +400,9 @@ export function ManualAllocateModal({
     const msg = isReceive
       ? `確認收貨並配單？\n\n` +
         (selectedCount > 0
-          ? `勾選的 ${selectedCount} 張訂單會標成「可取貨」，沒勾的維持原狀（下一批貨到時可再配）。\n`
-          : `沒有勾選訂單 — 只收貨不配單，之後可從「✋ 手動配單」再配。\n`) +
-        pullbackLine +
+          ? `勾選的 ${selectedCount} 張訂單會標成「可取貨」。\n`
+          : `沒有勾選訂單 — 只收貨不配單。\n`) +
+        backorderLine +
         surplusLine +
         notifyLine
       : `確認把勾選的 ${selectedCount} 張訂單標成「可取貨」？\n\n沒勾的訂單維持原狀，下一批貨到時可再配。\n` +
@@ -417,6 +426,7 @@ export function ManualAllocateModal({
           p_notes: mode.note ?? null,
           p_lines: mode.lines && mode.lines.length > 0 ? mode.lines : null,
           p_pullback_order_ids: pullbackIds.length > 0 ? pullbackIds : null,
+          p_backorder_order_ids: backorderIds.length > 0 ? backorderIds : null,
         });
         if (e) throw new Error(translateRpcError(e));
         const r = (res ?? {}) as ManualReceiveResult;
@@ -436,7 +446,7 @@ export function ManualAllocateModal({
         alert(
           `✅ 收貨完成：${r.transfers_received ?? mode.transferIds.length} 單` +
             (advancedTotal > 0 ? `，配單 ${advancedTotal} 張訂單已可取貨` : "，未配單") +
-            ((r.pulled_back ?? 0) > 0 ? `，${r.pulled_back} 張退回「已確認」等下批` : "") +
+            ((r.backordered ?? 0) > 0 ? `，${r.backordered} 張沒配到轉「待到貨」等下批` : "") +
             (surplusBooked > 0
               ? `\n🏬 多給 ${surplusBooked} 件已掛進【內部】${storeName} 現貨池`
               : "") +
@@ -534,7 +544,7 @@ export function ManualAllocateModal({
             {shortShipping > 0 && (
               <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
                 ⚠️ 這批貨不夠分：有 <b>{shortShipping}</b> 張「運送中」的訂單勾不起來。
-                確認收貨後它們會退回「已確認」（客人畫面變回「待到貨」），下一批貨到時可再配。
+                確認收貨後它們會轉「待到貨」（取貨頁不會放行），下一批貨到時可再配。
                 要優先配給其中某一張，先取消勾別張、額度空出來就勾得起來了。
               </div>
             )}
@@ -768,7 +778,7 @@ export function ManualAllocateModal({
               {isReceive
                 ? "按「確認收貨」會一次完成入庫與配單（同一筆交易，失敗即整筆取消、不會收到一半）。" +
                   "配好的訂單會標成「可取貨」，並從【內部】店現貨池扣掉相應數量；" +
-                  "沒勾的「運送中」訂單退回「已確認」，下一批貨到時可再配。" +
+                  "沒勾的訂單一律轉「待到貨」（取貨頁不會放行），下一批貨到時可再配。" +
                   "多給的量（沒有訂單主人）會自動掛進【內部】店現貨池，之後可轉單給客人。" +
                   "伺服端會再驗一次可配量，裝不下的單會被跳過並告知，不會硬配。"
                 : "配好的訂單會標成「可取貨」，取貨頁就能發貨；同時會從【內部】店現貨池" +
