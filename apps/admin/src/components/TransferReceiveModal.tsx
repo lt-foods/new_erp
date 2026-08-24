@@ -60,6 +60,7 @@ export function TransferReceiveModal({
   dstName,
   wave,
   notifyMembers = true,
+  hideAutoAllocate = false,
   onClose,
   onSubmitted,
   onManualReceive,
@@ -70,6 +71,9 @@ export function TransferReceiveModal({
   wave: Wave | null;
   // 收貨完成後是否整批推播「到貨」給受影響會員（收貨待辦頁的開關）
   notifyMembers?: boolean;
+  // 目的地是分店（手動配用得到）就藏「✓ 收貨·自動配」，只留手動配；
+  // 總倉調撥（沒有分店、沒有顧客訂單可配）手動配用不了，這顆是唯一入口，不能藏。
+  hideAutoAllocate?: boolean;
   onClose: () => void;
   onSubmitted: () => void;
   // 「✋ 收貨·手動配」：不在這裡收貨 — 把改好的實收數量與備註交回收貨待辦頁，
@@ -325,22 +329,28 @@ export function TransferReceiveModal({
               </span>
             ) : (
               <>
-                <SpinButton
-                  onClick={submit}
-                  disabled={submitting || !items}
-                  title="收貨後依下單時間由早到晚自動配給訂單"
-                  className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
-                >
-                  {submitting ? "送出中…" : "✓ 收貨·自動配"}
-                </SpinButton>
+                {!hideAutoAllocate && (
+                  <SpinButton
+                    onClick={submit}
+                    disabled={submitting || !items}
+                    title="收貨後依下單時間由早到晚自動配給訂單"
+                    className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    {submitting ? "送出中…" : "✓ 收貨·自動配"}
+                  </SpinButton>
+                )}
                 {onManualReceive && (
                   <SpinButton
                     onClick={handOffManual}
                     disabled={submitting || !items}
                     title="先跳出這張單對到的訂單勾選要配給誰，按「確認收貨」才完成收貨（會帶著這裡調整的實收數量）"
-                    className="rounded-md border border-emerald-600 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
+                    className={
+                      hideAutoAllocate
+                        ? "rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                        : "rounded-md border border-emerald-600 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
+                    }
                   >
-                    ✋ 收貨·手動配
+                    ✋ 配單
                   </SpinButton>
                 )}
                 {isWaveDispatch ? (

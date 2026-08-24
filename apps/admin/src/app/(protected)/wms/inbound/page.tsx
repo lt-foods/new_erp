@@ -947,6 +947,17 @@ export default function TransfersInboxPage() {
     return { storeId: sid, storeName: locations.get(loc) ?? `#${loc}` };
   };
 
+  // 「這批單能不能手動配」＝全部同一個目的地、而且是分店（有顧客訂單可配）。
+  // 只有這種情況才藏「自動配」——總倉調撥（沒有分店）或跨分店批次
+  // 手動配本來就處理不了（openManualReceive 會直接 alert 擋下），
+  // 這兩種情況「自動配」還是唯一能收貨的路，不能藏。
+  const singleStoreOf = (list: Transfer[]): { storeId: number; storeName: string } | null => {
+    if (list.length === 0) return null;
+    const dests = new Set(list.map((t) => t.dest_location));
+    if (dests.size !== 1) return null;
+    return storeForLocation(list[0].dest_location);
+  };
+
   // 「✋ 收貨·手動配」入口：不先收貨，直接開「這批單對到的訂單」勾選視窗，
   // 按「確認收貨」才一次完成收貨＋配單。多張限同一間店。
   const openManualReceive = (
@@ -1137,6 +1148,9 @@ export default function TransfersInboxPage() {
       setBatchBusy(false);
     }
   }
+
+  // 目前勾選的批次是不是同一家分店 —— 是的話藏「自動配」，只留手動配。
+  const selectedStore = singleStoreOf((transfers ?? []).filter((t) => selected.has(t.id)));
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
@@ -1445,16 +1459,19 @@ export default function TransfersInboxPage() {
             />
             {notifyMembers ? "📩 收貨後通知會員" : "🔕 收貨後不通知會員"}
           </label>
-          {/* 批次收貨兩顆:自動配(原行為) / 手動配(先勾這批對到的訂單,確認才收貨) */}
-          <SpinButton
-            type="button"
-            onClick={batchReceive}
-            disabled={selected.size === 0 || batchBusy}
-            title="收貨後依下單時間由早到晚自動配給訂單"
-            className="ml-auto rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-zinc-300 dark:disabled:bg-zinc-700"
-          >
-            {batchBusy ? "處理中…" : `✓ 批次收貨·自動配${selected.size > 0 ? ` (${selected.size})` : ""}`}
-          </SpinButton>
+          {/* 批次收貨:勾選的是同一家分店就只留手動配(藏自動配)；
+              跨分店或目的地不是分店(總倉調撥)時手動配用不了,保留自動配當唯一入口。 */}
+          {!selectedStore && (
+            <SpinButton
+              type="button"
+              onClick={batchReceive}
+              disabled={selected.size === 0 || batchBusy}
+              title="收貨後依下單時間由早到晚自動配給訂單"
+              className="ml-auto rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-zinc-300 dark:disabled:bg-zinc-700"
+            >
+              {batchBusy ? "處理中…" : `✓ 批次收貨·自動配${selected.size > 0 ? ` (${selected.size})` : ""}`}
+            </SpinButton>
+          )}
           <SpinButton
             type="button"
             onClick={() =>
@@ -1462,9 +1479,9 @@ export default function TransfersInboxPage() {
             }
             disabled={selected.size === 0 || batchBusy}
             title="先跳出這批單對到的訂單勾選要配給誰,按「確認收貨」才完成收貨(限同一家分店)"
-            className="rounded-md border border-emerald-600 px-4 py-1.5 text-sm font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-zinc-300 disabled:text-zinc-400 dark:text-emerald-400 dark:hover:bg-emerald-950 dark:disabled:border-zinc-700 dark:disabled:text-zinc-500"
+            className={`rounded-md border border-emerald-600 px-4 py-1.5 text-sm font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-zinc-300 disabled:text-zinc-400 dark:text-emerald-400 dark:hover:bg-emerald-950 dark:disabled:border-zinc-700 dark:disabled:text-zinc-500 ${selectedStore ? "ml-auto" : ""}`}
           >
-            {`✋ 批次收貨·手動配${selected.size > 0 ? ` (${selected.size})` : ""}`}
+            {`✋ 批次配單${selected.size > 0 ? ` (${selected.size})` : ""}`}
           </SpinButton>
         </div>
       )}
@@ -1483,6 +1500,7 @@ export default function TransfersInboxPage() {
           const pendingCount = pendingList.length;
           const doneCount = g.transfers.length - pendingCount;
           const allSelected = pendingCount > 0 && pendingList.every((t) => selected.has(t.id));
+          const gStore = singleStoreOf(pendingList);
           // 該收沒收的用紅字標出來 — 店家最常漏的就是前幾天沒收完的那批
           const dueTag =
             pendingCount > 0 && g.waveDate
@@ -1559,26 +1577,34 @@ export default function TransfersInboxPage() {
 
                 {pendingCount > 0 && (
                   <div className="flex shrink-0 flex-col items-stretch gap-1">
-                    <SpinButton
-                      onClick={() => receiveGroup(g)}
-                      disabled={batchBusy}
-                      className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
-                      title={
-                        (pendingCount > 1
-                          ? `一次收掉這組 ${pendingCount} 筆(全收:實收 = 派出量)。`
-                          : "直接全收(實收 = 派出量,無破損)。") +
-                        "收貨後依下單時間由早到晚自動配給訂單"
-                      }
-                    >
-                      ✓ 收貨·自動配{pendingCount > 1 ? ` ${pendingCount} 單` : ""}
-                    </SpinButton>
+                    {/* 這組全是同一家分店 → 藏自動配、只留手動配；
+                        總倉調撥或跨分店(手動配用不了)才留自動配。 */}
+                    {!gStore && (
+                      <SpinButton
+                        onClick={() => receiveGroup(g)}
+                        disabled={batchBusy}
+                        className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                        title={
+                          (pendingCount > 1
+                            ? `一次收掉這組 ${pendingCount} 筆(全收:實收 = 派出量)。`
+                            : "直接全收(實收 = 派出量,無破損)。") +
+                          "收貨後依下單時間由早到晚自動配給訂單"
+                        }
+                      >
+                        ✓ 收貨·自動配{pendingCount > 1 ? ` ${pendingCount} 單` : ""}
+                      </SpinButton>
+                    )}
                     <SpinButton
                       onClick={() => openManualReceive(g.transfers)}
                       disabled={batchBusy}
-                      className="rounded-md border border-emerald-600 px-4 py-1.5 text-sm font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
+                      className={
+                        gStore
+                          ? "rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                          : "rounded-md border border-emerald-600 px-4 py-1.5 text-sm font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
+                      }
                       title="先跳出這批單對到的訂單勾選要配給誰,按「確認收貨」才完成收貨(取消=不收貨)"
                     >
-                      ✋ 收貨·手動配{pendingCount > 1 ? ` ${pendingCount} 單` : ""}
+                      ✋ 配單{pendingCount > 1 ? ` ${pendingCount} 單` : ""}
                     </SpinButton>
                   </div>
                 )}
@@ -1813,21 +1839,29 @@ export default function TransfersInboxPage() {
                             <td className="whitespace-nowrap px-3 py-2 text-right align-top">
                               {isShipped ? (
                                 <div className="flex justify-end gap-1">
-                                  <SpinButton
-                                    onClick={() => quickReceive(t)}
-                                    disabled={batchBusy}
-                                    className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
-                                    title="直接全收(實收 = 派出量,無破損),收貨後依下單時間由早到晚自動配給訂單"
-                                  >
-                                    收貨·自動配
-                                  </SpinButton>
+                                  {/* 目的地是分店 → 藏自動配、只留手動配；
+                                      總倉調撥(沒有分店、手動配用不了)才留自動配。 */}
+                                  {!storeForLocation(t.dest_location) && (
+                                    <SpinButton
+                                      onClick={() => quickReceive(t)}
+                                      disabled={batchBusy}
+                                      className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                                      title="直接全收(實收 = 派出量,無破損),收貨後依下單時間由早到晚自動配給訂單"
+                                    >
+                                      收貨·自動配
+                                    </SpinButton>
+                                  )}
                                   <SpinButton
                                     onClick={() => openManualReceive([t])}
                                     disabled={batchBusy}
-                                    className="rounded-md border border-emerald-600 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
+                                    className={
+                                      storeForLocation(t.dest_location)
+                                        ? "rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                                        : "rounded-md border border-emerald-600 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
+                                    }
                                     title="先跳出這張單對到的訂單勾選要配給誰,按「確認收貨」才完成收貨(取消=不收貨)"
                                   >
-                                    ✋ 手動配
+                                    ✋ 配單
                                   </SpinButton>
                                   <SpinButton
                                     onClick={() => setOpening(t)}
@@ -1949,6 +1983,16 @@ export default function TransfersInboxPage() {
           notifyMembers={notifyMembers}
           onClose={() => setAllocModal(null)}
           onSaved={() => reloadAndRefreshBadge()}
+          onAdjustShortage={(skuId, skuName) => {
+            // 跳去「⚖️ 配貨」逐筆調整配貨數量 — 該彈窗一次只認一張 transfer，
+            // 只有單張收貨（mode.transferIds.length === 1）才會出現這顆按鈕。
+            if (allocModal.mode.kind !== "receive" || allocModal.mode.transferIds.length !== 1) {
+              return;
+            }
+            const transferId = allocModal.mode.transferIds[0];
+            setAllocModal(null);
+            setAllocFor({ transferId, skuId, skuName });
+          }}
         />
       )}
 
@@ -1971,6 +2015,7 @@ export default function TransfersInboxPage() {
             return wid !== null ? waves.get(wid) ?? null : null;
           })()}
           notifyMembers={notifyMembers}
+          hideAutoAllocate={!!storeForLocation(opening.dest_location)}
           onClose={() => setOpening(null)}
           onSubmitted={() => {
             setOpening(null);
