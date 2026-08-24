@@ -11,6 +11,7 @@ import { printViaIframe } from "@/lib/printIframe";
 import { withBasePath } from "@/lib/basePath";
 import { useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 import { shortOrderNo } from "@/lib/orderTitle";
+import { translateRpcError } from "@/lib/rpcError";
 import {
   TRANSFER_LINK_SELECT, type TransferLink,
   activeQty, aidRouteLabel, aidStageLabel, isAidInFlight, linkItems,
@@ -68,7 +69,7 @@ type PendingOrder = {
   }[];
 };
 
-/** 「我提供出去的」一列 = 一趟轉移（customer_order_transfer_links 一列） */
+/** 「我提供出去的／我收到的」一列 = 一趟轉移（customer_order_transfer_links 一列） */
 type ProvidedRow = {
   linkId: number;
   transferred_at: string;
@@ -77,6 +78,7 @@ type ProvidedRow = {
   board_id: number | null;
   reason: string | null;
   source_store: string;
+  source_store_id: number | null;
   source_order_no: string;
   dest_store: string;
   dest_store_id: number | null;
@@ -85,6 +87,9 @@ type ProvidedRow = {
   dest_status: string;
   qty: number;
   labels: string[];
+  /** 這張轉入單身上總共有幾趟轉移。>1 = 舊的併入單（多店混一張），
+   *  取消整張會把別家店的貨一起取消掉 → 不出取消鈕 */
+  link_count: number;
 };
 
 type Reply = {
@@ -141,7 +146,7 @@ const TYPE_COLOR: Record<PostType, string> = {
 export default function MutualAidPage() {
   const [posts, setPosts] = useState<Post[] | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
-  const [view, setView] = useState<"active" | "history" | "provided">("active");
+  const [view, setView] = useState<"active" | "history" | "provided" | "received">("active");
   const [filter, setFilter] = useState<"all" | "request" | "offer">("all");
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
@@ -283,7 +288,7 @@ export default function MutualAidPage() {
       </header>
 
       <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
-        {(["active", "history", "provided"] as const).map((v) => (
+        {(["active", "history", "provided", "received"] as const).map((v) => (
           <SpinButton
             key={v}
             type="button"
@@ -294,13 +299,13 @@ export default function MutualAidPage() {
                 : "px-4 py-2 text-sm text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
             }
           >
-            {v === "active" ? "進行中" : v === "history" ? "歷史" : "我提供出去的"}
+            {v === "active" ? "進行中" : v === "history" ? "歷史" : v === "provided" ? "我提供出去的" : "我收到的"}
           </SpinButton>
         ))}
       </div>
 
-      {view === "provided" ? (
-        <ProvidedList stores={stores} />
+      {view === "provided" || view === "received" ? (
+        <ProvidedList stores={stores} direction={view === "provided" ? "out" : "in"} />
       ) : (
       <>
       <div className="inline-flex w-fit overflow-hidden rounded-md border border-zinc-300 text-xs dark:border-zinc-700">
@@ -533,7 +538,10 @@ function AidClaimLog({ post }: { post: Post }) {
           const src = r.src, dest = r.dest;
           if (!src || !dest) return [];
           const mine = linkItems(r, dest.items ?? []);
-          const qty = activeQty(mine);
+          const active = mine.filter((it) => !["cancelled", "expired"].includes(it.status));
+          // 這趟被取消（品項全滅）也要顯示原本搬過什麼，不能只寫「共 0」——
+          // 狀態徽章會講「已取消」，內容退回全品項
+          const shown = active.length > 0 ? active : mine;
           return [{
             linkId: r.id,
             transferred_at: r.transferred_at,
@@ -541,21 +549,21 @@ function AidClaimLog({ post }: { post: Post }) {
             board_id: post.id,
             reason: r.reason,
             source_store: nameOf(src.store),
+            source_store_id: src.pickup_store_id,
             source_order_no: src.order_no,
             dest_store: nameOf(dest.store),
             dest_store_id: dest.pickup_store_id,
             dest_order_id: dest.id,
             dest_order_no: dest.order_no,
             dest_status: dest.status,
-            qty,
-            labels: mine
-              .filter((it) => !["cancelled", "expired"].includes(it.status))
-              .map((it) => {
-                const sku = Array.isArray(it.sku) ? it.sku[0] : it.sku;
-                return sku
-                  ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} ×${Number(it.qty)}`
-                  : `品項 ×${Number(it.qty)}`;
-              }),
+            qty: activeQty(mine),
+            labels: shown.map((it) => {
+              const sku = Array.isArray(it.sku) ? it.sku[0] : it.sku;
+              return sku
+                ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} ×${Number(it.qty)}`
+                : `品項 ×${Number(it.qty)}`;
+            }),
+            link_count: 1,
           }];
         });
         setRows(list);
@@ -658,11 +666,13 @@ function AidClaimLog({ post }: { post: Post }) {
 // 母體＝跨店的轉出（同店轉單只是換客人，貨沒離開本店，不算互助）。
 // 分店帳號鎖自己店；總倉／未綁店看全站。
 // ============================================================
-function ProvidedList({ stores }: { stores: Store[] }) {
+function ProvidedList({ stores, direction }: { stores: Store[]; direction: "out" | "in" }) {
   const myStoreId = useUserBranchStoreId(stores);
   const [rows, setRows] = useState<ProvidedRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(false);
+  const [busyLink, setBusyLink] = useState<number | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -702,16 +712,30 @@ function ProvidedList({ stores }: { stores: Store[] }) {
           } | null;
         };
         const nameOf = (s: StoreRef) => (Array.isArray(s) ? s[0]?.name : s?.name) ?? "—";
-        const list = ((data ?? []) as unknown as Raw[]).flatMap((r): ProvidedRow[] => {
+        const raws = (data ?? []) as unknown as Raw[];
+        // 同一張轉入單有幾趟：舊的併入單（多店混一張）取消整張會殃及別家店的貨，
+        // 要在列上把取消鈕關掉。要在「店別過濾之前」算 —— 別家店那幾趟不在
+        // 過濾後的清單裡，但它們的貨還是掛在同一張單上。
+        const linkCountByDest = new Map<number, number>();
+        for (const r of raws) {
+          if (r.dest) linkCountByDest.set(r.dest.id, (linkCountByDest.get(r.dest.id) ?? 0) + 1);
+        }
+        const list = raws.flatMap((r): ProvidedRow[] => {
           const src = r.src, dest = r.dest;
           if (!src || !dest) return [];
           // 同店轉單貨沒離開本店
           if (src.pickup_store_id === dest.pickup_store_id) return [];
-          // 分店帳號只看自己轉出去的；HQ 看全站
-          if (myStoreId != null && src.pickup_store_id !== myStoreId) return [];
+          // 分店帳號：out 看自己轉出去的、in 看轉進自己店的；HQ 看全站
+          if (myStoreId != null) {
+            const mineStore = direction === "out" ? src.pickup_store_id : dest.pickup_store_id;
+            if (mineStore !== myStoreId) return [];
+          }
           const mine = linkItems(r, dest.items ?? []);
+          const active = mine.filter((it) => !["cancelled", "expired"].includes(it.status));
           const qty = activeQty(mine);
-          if (qty <= 0) return [];
+          // 這趟被取消（品項全滅）也要留在列表上 —— 不然取消完那一列就人間蒸發，
+          // 兩邊都以為沒發生過；顯示退回全品項並讓狀態徽章講「已取消」
+          const shown = active.length > 0 ? active : mine;
           return [{
             linkId: r.id,
             transferred_at: r.transferred_at,
@@ -719,6 +743,7 @@ function ProvidedList({ stores }: { stores: Store[] }) {
             board_id: Number(/互助板[^#]*#(\d+)/.exec(r.reason ?? "")?.[1]) || null,
             reason: r.reason,
             source_store: nameOf(src.store),
+            source_store_id: src.pickup_store_id,
             source_order_no: src.order_no,
             dest_store: nameOf(dest.store),
             dest_store_id: dest.pickup_store_id,
@@ -726,14 +751,13 @@ function ProvidedList({ stores }: { stores: Store[] }) {
             dest_order_no: dest.order_no,
             dest_status: dest.status,
             qty,
-            labels: mine
-              .filter((it) => !["cancelled", "expired"].includes(it.status))
-              .map((it) => {
-                const sku = Array.isArray(it.sku) ? it.sku[0] : it.sku;
-                return sku
-                  ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} ×${Number(it.qty)}`
-                  : `品項 ×${Number(it.qty)}`;
-              }),
+            labels: shown.map((it) => {
+              const sku = Array.isArray(it.sku) ? it.sku[0] : it.sku;
+              return sku
+                ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} ×${Number(it.qty)}`
+                : `品項 ×${Number(it.qty)}`;
+            }),
+            link_count: linkCountByDest.get(dest.id) ?? 1,
           }];
         });
         setRows(list);
@@ -742,7 +766,33 @@ function ProvidedList({ stores }: { stores: Store[] }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [myStoreId]);
+  }, [myStoreId, direction, reloadTick]);
+
+  // 取消這一趟：未到貨（pending/confirmed/shipping）走 rpc_cancel_aid_order，
+  // 已到貨（ready）由收貨方走 rpc_return_aid_order 退回原店。
+  // 兩支 RPC 取消後都會把數量還給互助板貼文（20260824080000）。
+  async function cancelLeg(r: ProvidedRow, kind: "cancel" | "return") {
+    if (busyLink != null) return;
+    const what = kind === "cancel"
+      ? `取消這趟提供（${r.labels.join("、") || `共 ${r.qty}`}）？\n貨會回到來源單、互助板貼文的數量會還回去。`
+      : `把這批貨退回 ${r.source_store}？\n會建一張反向調撥、來源單還原、貼文數量還回去。`;
+    if (!confirm(what)) return;
+    setBusyLink(r.linkId);
+    try {
+      const sb = getSupabase();
+      const { data: { user } } = await sb.auth.getUser();
+      if (!user?.id) { alert("尚未登入"); return; }
+      const { error: e } = await sb.rpc(
+        kind === "cancel" ? "rpc_cancel_aid_order" : "rpc_return_aid_order",
+        { p_order_id: r.dest_order_id, p_reason: `互助板${direction === "out" ? "提供方" : "收貨方"}${kind === "cancel" ? "取消" : "退回"}`, p_operator: user.id },
+      );
+      if (e) { alert(translateRpcError(e)); return; }
+      setReloadTick((n) => n + 1);
+      window.dispatchEvent(new Event("aid-badge-refresh"));
+    } finally {
+      setBusyLink(null);
+    }
+  }
 
   if (error) {
     return (
@@ -772,20 +822,29 @@ function ProvidedList({ stores }: { stores: Store[] }) {
                   : "bg-white text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
               }`}
             >
-              {v ? `已完成 (${done.length})` : `在跑的 (${inFlight.length})`}
+              {/* ⚠ 不要叫「已完成」：這一格說的是**這趟貨**收到了，
+                  不是來源單完成了。來源單（OV-/AB-/RR- 現貨池）通常還掛著
+                  一堆沒動過的品項，2026-08-24 就被誤讀成「OV-2-0001 變已完成」。 */}
+              {v
+                ? `${direction === "out" ? "對方已收" : "已收貨"} (${done.length})`
+                : `還在路上 (${inFlight.length})`}
             </SpinButton>
           ))}
         </div>
         <span className="text-xs text-zinc-500">
           {myStoreId == null
-            ? "全站的店對店轉出（總倉視角）"
-            : "本店轉出去的貨。收貨店收掉之後就會移到「已完成」"}
+            ? `全站的店對店${direction === "out" ? "轉出" : "轉入"}（總倉視角）`
+            : direction === "out"
+              ? "本店轉出去的貨。狀態說的是「這一趟」走到哪，不是來源單的狀態"
+              : "別店轉給本店的貨。未到貨可「取消這批」；已到貨可「退回原店」"}
         </span>
       </div>
 
       {shown.length === 0 ? (
         <div className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500 dark:border-zinc-700">
-          {showDone ? "沒有已完成的轉出紀錄" : "目前沒有在路上的轉出"}
+          {showDone
+            ? `沒有${direction === "out" ? "對方已收的轉出" : "已收貨的轉入"}紀錄`
+            : `目前沒有在路上的${direction === "out" ? "轉出" : "轉入"}`}
         </div>
       ) : (
         <ul className="space-y-2">
@@ -797,11 +856,14 @@ function ProvidedList({ stores }: { stores: Store[] }) {
               <div className="min-w-0 flex-1">
                 <div className="mb-1 flex flex-wrap items-center gap-2">
                   <span className="rounded bg-pink-100 px-1.5 py-0.5 text-[10px] font-semibold text-pink-800 dark:bg-pink-950 dark:text-pink-300">
-                    給 {r.dest_store}
+                    {direction === "out" ? `給 ${r.dest_store}` : `來自 ${r.source_store}`}
                   </span>
                   <span className="text-[10px] text-zinc-500">{aidRouteLabel(r.is_air_transfer)}</span>
-                  <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
-                    {aidStageLabel(r.dest_status, r.is_air_transfer)}
+                  <span
+                    className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+                    title="這一趟貨走到哪了（不是來源單的狀態）"
+                  >
+                    這趟：{aidStageLabel(r.dest_status, r.is_air_transfer)}
                   </span>
                   {r.board_id != null && (
                     <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] text-blue-800 dark:bg-blue-950 dark:text-blue-300">
@@ -809,7 +871,9 @@ function ProvidedList({ stores }: { stores: Store[] }) {
                     </span>
                   )}
                   {myStoreId == null && (
-                    <span className="text-[10px] text-zinc-500">從 {r.source_store}</span>
+                    <span className="text-[10px] text-zinc-500">
+                      {direction === "out" ? `從 ${r.source_store}` : `到 ${r.dest_store}`}
+                    </span>
                   )}
                   <span className="ml-auto text-xs text-zinc-500">{fmtDt(r.transferred_at)}</span>
                 </div>
@@ -829,20 +893,74 @@ function ProvidedList({ stores }: { stores: Store[] }) {
                   )}
                 </div>
               </div>
-              {/* 隨貨單走 /transfers/print-aid（兩聯：司機聯 + 存查聯），
-                  帶 link 才只印這一趟的貨、來源店也才標得對 */}
-              <SpinButton
-                type="button"
-                onClick={() =>
-                  printViaIframe(
-                    withBasePath(`/transfers/print-aid?order_id=${r.dest_order_id}&link=${r.linkId}`),
+              <div className="flex shrink-0 flex-col items-stretch gap-1.5">
+                {/* 隨貨單走 /transfers/print-aid（兩聯：司機聯 + 存查聯），
+                    帶 link 才只印這一趟的貨、來源店也才標得對 */}
+                <SpinButton
+                  type="button"
+                  onClick={() =>
+                    printViaIframe(
+                      withBasePath(`/transfers/print-aid?order_id=${r.dest_order_id}&link=${r.linkId}`),
+                    )
+                  }
+                  title="列印這一趟的互助出貨單（兩聯：司機聯 + 存查聯）"
+                  className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                >
+                  🖨️
+                </SpinButton>
+                {/* 取消規則：分界線是「貨到收貨店了沒」。
+                    未到（pending/confirmed/shipping）→ 兩邊都能取消（rpc_cancel_aid_order）；
+                    已到（ready）→ 只有收貨方能退回原店（rpc_return_aid_order，貨在他們架上）；
+                    completed/cancelled → 沒有動作。
+                    舊的併入單（link_count > 1）整張取消會殃及別家店的貨 → 導去訂單頁。 */}
+                {isAidInFlight(r.dest_status) && (
+                  r.link_count === 1 ? (
+                    <SpinButton
+                      type="button"
+                      disabled={busyLink != null}
+                      onClick={() => cancelLeg(r, "cancel")}
+                      className="rounded-md border border-red-300 px-2 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                    >
+                      {busyLink === r.linkId ? "處理中…" : direction === "out" ? "取消提供" : "取消這批"}
+                    </SpinButton>
+                  ) : (
+                    <span
+                      className="rounded-md border border-dashed border-zinc-300 px-2 py-1.5 text-center text-[10px] text-zinc-400 dark:border-zinc-700"
+                      title="這張轉入單上還混有其他店的貨（舊資料），整張取消會把別人的一起取消掉；請到轉入單的訂單頁處理"
+                    >
+                      多趟併單
+                    </span>
                   )
-                }
-                title="列印這一趟的互助出貨單（兩聯：司機聯 + 存查聯）"
-                className="shrink-0 rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-              >
-                🖨️
-              </SpinButton>
+                )}
+                {r.dest_status === "ready" && (
+                  direction === "in" ? (
+                    r.link_count === 1 ? (
+                      <SpinButton
+                        type="button"
+                        disabled={busyLink != null}
+                        onClick={() => cancelLeg(r, "return")}
+                        className="rounded-md border border-red-300 px-2 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                      >
+                        {busyLink === r.linkId ? "處理中…" : "退回原店"}
+                      </SpinButton>
+                    ) : (
+                      <span
+                        className="rounded-md border border-dashed border-zinc-300 px-2 py-1.5 text-center text-[10px] text-zinc-400 dark:border-zinc-700"
+                        title="這張轉入單上還混有其他趟的貨（舊資料），請到轉入單的訂單頁處理"
+                      >
+                        多趟併單
+                      </span>
+                    )
+                  ) : (
+                    <span
+                      className="rounded-md border border-dashed border-zinc-300 px-2 py-1.5 text-center text-[10px] text-zinc-400 dark:border-zinc-700"
+                      title="貨已經在對方店裡，要由收貨店按「退回原店」"
+                    >
+                      需對方退回
+                    </span>
+                  )
+                )}
+              </div>
             </li>
           ))}
         </ul>

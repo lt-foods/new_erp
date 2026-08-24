@@ -288,9 +288,13 @@ PERFORM public._close_orders_all_items_settled(v_order_ids, p_operator, NOW());
 cancelled 列 / 補列），並把轉入單的品項標 `cancelled`，避免兩張單掛同一批貨。
 來源單 notes 蓋回補標記 → 重跑不會加倍。
 
-**互助板的認領量不會自動還**（`rpc_cancel_aid_order` / `rpc_return_aid_order` 都刻意
-不動 `mutual_aid_board`）。取消互助認領之後，`qty_remaining` 要人工加回去，
-否則那則貼文卡在 `exhausted`、釋出店再也放不出來。
+**互助板的認領量 20260824080000 起會自動還**：`rpc_cancel_aid_order` /
+`rpc_return_aid_order` 逐 link 把該趟數量還給 `mutual_aid_board`
+（`_restore_aid_board_qty`，上限夾 `qty_available`，`exhausted` 未過期 → 回
+`active`）。認貼文靠 `customer_order_transfer_links.aid_board_id` /
+`customer_orders.aid_board_id`（20260824060000）——**兩邊都沒蓋章的舊單取消
+還是不會還**，那種要人工加回去。新增任何取消／退回互助單的路徑，記得一樣
+接 `_restore_aid_board_qty`，而且要在品項被標 `cancelled` **之前**算量。
 
 ### 搬品項的 SQL 一律只挑 active（`pending`/`reserved`/`ready`）
 

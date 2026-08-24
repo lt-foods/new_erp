@@ -472,13 +472,15 @@ COMMENT ON FUNCTION public.rpc_transfer_order_partial(
 -- ------------------------------------------------------------
 -- 4. rpc_claim_manual_spot：透傳 board id（簽名不變，直接 REPLACE）
 -- ------------------------------------------------------------
+-- ⚠ 參數預設值要跟線上一字不差，少寫會被擋：
+--   ERROR 42P13: cannot remove parameter defaults from existing function
 CREATE OR REPLACE FUNCTION public.rpc_claim_manual_spot(
   p_board_id bigint,
   p_to_store_id bigint,
   p_qty numeric,
   p_operator uuid,
-  p_reason text,
-  p_is_air_transfer boolean)
+  p_reason text DEFAULT NULL::text,
+  p_is_air_transfer boolean DEFAULT false)
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
