@@ -48,8 +48,10 @@ type TransferItemLine = {
   description: string | null;
 };
 
-// 依下單時間由早到晚勾滿為止（伺服端已排好序）——「數量正確」時等於全選
-function greedyByTime(
+// 依下單時間由早到晚、逐「品項」勾滿為止（伺服端已排好單序）。
+// 品項層級（20260824050000）：多品項單裝不下全部時，裝得下的那幾項照給、
+// 其餘轉待到貨 —— 不再整張鎖死。回傳的是 item_id 集合。
+function greedyItemsByTime(
   orders: CandidateOrder[],
   caps: Map<number, number>,
   onlyWithin?: Set<number>,
@@ -57,13 +59,14 @@ function greedyByTime(
   const used = new Map<number, number>();
   const next = new Set<number>();
   for (const o of orders) {
-    if (onlyWithin && !onlyWithin.has(o.order_id)) continue;
-    const ok = o.items.every(
-      (it) => it.qty <= (caps.get(it.sku_id) ?? 0) - (used.get(it.sku_id) ?? 0),
-    );
-    if (!ok) continue;
-    next.add(o.order_id);
-    for (const it of o.items) used.set(it.sku_id, (used.get(it.sku_id) ?? 0) + it.qty);
+    for (const it of o.items) {
+      if (it.item_id == null) continue;
+      if (onlyWithin && !onlyWithin.has(it.item_id)) continue;
+      if (it.qty <= (caps.get(it.sku_id) ?? 0) - (used.get(it.sku_id) ?? 0)) {
+        next.add(it.item_id);
+        used.set(it.sku_id, (used.get(it.sku_id) ?? 0) + it.qty);
+      }
+    }
   }
   return next;
 }
@@ -98,7 +101,8 @@ type CandidateOrder = {
   // 單頭狀態（receive 模式伺服端回傳；store 模式候選必為 confirmed 且閘門已過）
   status: string;
   arrived: boolean;
-  items: Array<{ sku_id: number; qty: number }>;
+  // receive 模式逐品項（有 item_id，品項層級配貨用）；store 模式仍是 SKU 加總（無 item_id）
+  items: Array<{ item_id?: number; sku_id: number; qty: number; backordered?: boolean }>;
 };
 
 // 「客人看到」欄：判定對齊會員端 apps/member OrderCard.orderPhase ——
@@ -229,7 +233,12 @@ export function ManualAllocateModal({
         ...o,
         status: o.status ?? "confirmed",
         arrived: Boolean(o.arrived),
-        items: (o.items ?? []).map((i) => ({ sku_id: i.sku_id, qty: Number(i.qty) })),
+        items: (o.items ?? []).map((i) => ({
+          item_id: i.item_id,
+          sku_id: i.sku_id,
+          qty: Number(i.qty),
+          backordered: Boolean(i.backordered),
+        })),
       }));
       // 可配上限 = 既有可配（可能為負；伺服端已把畫面上的派貨中單從「已承諾」
       // 排除）+ 本次到貨 —— 跟確認收貨後伺服端算出的預算一致
@@ -244,7 +253,9 @@ export function ManualAllocateModal({
 
       const caps = new Map(budgetRows.map((b) => [b.sku_id, b.cap]));
       setSelected((cur) =>
-        touchedRef.current ? greedyByTime(orders, caps, cur) : greedyByTime(orders, caps),
+        touchedRef.current
+          ? greedyItemsByTime(orders, caps, cur)
+          : greedyItemsByTime(orders, caps),
       );
     },
     [mode],
@@ -356,35 +367,93 @@ export function ManualAllocateModal({
     return m;
   }, [data]);
 
-  // 已勾選訂單佔掉的量（sku_id → qty）
+  // 已勾選佔掉的量（sku_id → qty）。receive＝逐品項（selected 放 item_id）；
+  // store＝整張單（selected 放 order_id，該模式的配單 RPC 只吃整張）。
   const usedMap = useMemo(() => {
     const m = new Map<number, number>();
     for (const o of data?.orders ?? []) {
-      if (!selected.has(o.order_id)) continue;
-      for (const it of o.items) m.set(it.sku_id, (m.get(it.sku_id) ?? 0) + it.qty);
+      for (const it of o.items) {
+        const on =
+          mode.kind === "receive"
+            ? it.item_id != null && selected.has(it.item_id)
+            : selected.has(o.order_id);
+        if (on) m.set(it.sku_id, (m.get(it.sku_id) ?? 0) + it.qty);
+      }
     }
     return m;
-  }, [data, selected]);
+  }, [data, selected, mode.kind]);
 
   const remaining = useCallback(
     (skuId: number) => (budgetMap.get(skuId)?.cap ?? 0) - (usedMap.get(skuId) ?? 0),
     [budgetMap, usedMap],
   );
 
-  // 沒勾的單還裝不裝得下（整單每個品項都要在剩餘額度內，與伺服端同規則）
-  const fits = useCallback(
+  // 這張單「至少有一個品項」被勾 / 「全部品項」被勾（receive 品項層級用）
+  const orderPicked = useCallback(
+    (o: CandidateOrder) =>
+      mode.kind === "receive"
+        ? o.items.some((it) => it.item_id != null && selected.has(it.item_id))
+        : selected.has(o.order_id),
+    [mode.kind, selected],
+  );
+  const orderFullyPicked = useCallback(
+    (o: CandidateOrder) =>
+      mode.kind === "receive"
+        ? o.items.length > 0 &&
+          o.items.every((it) => it.item_id != null && selected.has(it.item_id))
+        : selected.has(o.order_id),
+    [mode.kind, selected],
+  );
+
+  // store 模式：沒勾的單還裝不裝得下（整單每個品項都要在剩餘額度內）
+  const fitsOrder = useCallback(
     (o: CandidateOrder) => o.items.every((it) => it.qty <= remaining(it.sku_id)),
     [remaining],
   );
+  // receive 模式：單一品項裝不裝得下
+  const fitsItem = useCallback(
+    (it: { sku_id: number; qty: number }) => it.qty <= remaining(it.sku_id),
+    [remaining],
+  );
 
+  // 點整列：已有勾的 → 全部取消；沒勾的 → 把裝得下的品項通通勾起來
+  //（多品項單裝不下全部時只勾裝得下的那幾項 —— 其餘確認時轉待到貨）。
   function toggle(o: CandidateOrder) {
     touchedRef.current = true;
     setSelected((cur) => {
       const next = new Set(cur);
-      if (next.has(o.order_id)) next.delete(o.order_id);
-      // 派貨中的單也受額度擋：貨不夠分時不能全部勾（會許出不存在的貨）。
-      // 要改配給別人 → 先取消勾別張，額度空出來才勾得起來。
-      else if (fits(o)) next.add(o.order_id);
+      if (mode.kind !== "receive") {
+        if (next.has(o.order_id)) next.delete(o.order_id);
+        else if (fitsOrder(o)) next.add(o.order_id);
+        return next;
+      }
+      const anyOn = o.items.some((it) => it.item_id != null && next.has(it.item_id));
+      if (anyOn) {
+        for (const it of o.items) if (it.item_id != null) next.delete(it.item_id);
+        return next;
+      }
+      // 逐項試裝（照剩餘額度即時扣）
+      const used = new Map<number, number>();
+      for (const it of o.items) {
+        if (it.item_id == null) continue;
+        const rem = remaining(it.sku_id) - (used.get(it.sku_id) ?? 0);
+        if (it.qty <= rem) {
+          next.add(it.item_id);
+          used.set(it.sku_id, (used.get(it.sku_id) ?? 0) + it.qty);
+        }
+      }
+      return next;
+    });
+  }
+
+  // 點單一品項（receive）：這一項給／不給
+  function toggleItem(it: { item_id?: number; sku_id: number; qty: number }) {
+    if (mode.kind !== "receive" || it.item_id == null) return;
+    touchedRef.current = true;
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (next.has(it.item_id as number)) next.delete(it.item_id as number);
+      else if (fitsItem(it)) next.add(it.item_id as number);
       return next;
     });
   }
@@ -395,7 +464,21 @@ export function ManualAllocateModal({
     if (!data) return;
     touchedRef.current = false;
     const caps = new Map((data.budget ?? []).map((b) => [b.sku_id, b.cap]));
-    setSelected(greedyByTime(data.orders, caps));
+    if (mode.kind === "receive") {
+      setSelected(greedyItemsByTime(data.orders, caps));
+    } else {
+      const used = new Map<number, number>();
+      const next = new Set<number>();
+      for (const o of data.orders) {
+        const ok = o.items.every(
+          (it) => it.qty <= (caps.get(it.sku_id) ?? 0) - (used.get(it.sku_id) ?? 0),
+        );
+        if (!ok) continue;
+        next.add(o.order_id);
+        for (const it of o.items) used.set(it.sku_id, (used.get(it.sku_id) ?? 0) + it.qty);
+      }
+      setSelected(next);
+    }
   }
 
   // 每個 SKU 的全部候選訂單總需求（跟有沒有勾選無關）—— surplus 預估用
@@ -438,18 +521,21 @@ export function ManualAllocateModal({
     return data.budget.filter((b) => refd.has(b.sku_id));
   }, [data]);
 
-  const selectedCount = selected.size;
   const isReceive = mode.kind === "receive";
+  // 「配單張數」＝至少有一個品項被勾的單數（store 模式＝勾選單數）
+  const selectedCount = useMemo(
+    () => (data?.orders ?? []).filter((o) => orderPicked(o)).length,
+    [data, orderPicked],
+  );
 
-  // 貨不夠分 → 有幾張「運送中」的單勾不起來（確認時會被拉回「已確認」）。
+  // 貨不夠分 → 有幾張「運送中」的單一項都配不到（確認時會被拉回「已確認」）。
   // 只是把 checkbox 變灰的話店員會以為是壞掉，這裡明講會發生什麼事。
   const shortShipping = useMemo(
     () =>
       isReceive
-        ? data?.orders.filter((o) => o.status === "shipping" && !selected.has(o.order_id)).length ??
-          0
+        ? data?.orders.filter((o) => o.status === "shipping" && !orderPicked(o)).length ?? 0
         : 0,
-    [isReceive, data, selected],
+    [isReceive, data, orderPicked],
   );
 
   async function save() {
@@ -481,27 +567,40 @@ export function ManualAllocateModal({
         }, 0)
       : 0;
 
-    // 沒勾的「派貨中」訂單＝拉回：這批貨不配給他，單頭退回「已確認」
+    // 品項層級（20260824050000）：
+    //   fullOrderIds  = 全部品項都勾的單 → 推單頭（shipping→ready / confirmed 走配單 RPC）
+    //   allocateItemIds = 勾到的品項（逐項清待補貨旗標，閘門開）
+    //   backorderItemIds = 沒勾的品項（逐項標待補貨，閘門關；部分給的單其餘品項也在內）
+    //   pullbackIds = 一項都沒配到的派貨中單 → 拉回「已確認」
+    const fullOrderIds = isReceive
+      ? data.orders.filter((o) => orderFullyPicked(o)).map((o) => o.order_id)
+      : [];
+    const allocateItemIds = isReceive ? Array.from(selected) : [];
+    const backorderItemIds = isReceive
+      ? data.orders.flatMap((o) =>
+          o.items
+            .filter((it) => it.item_id != null && !selected.has(it.item_id))
+            .map((it) => it.item_id as number),
+        )
+      : [];
     const pullbackIds = isReceive
       ? data.orders
-          .filter((o) => o.status === "shipping" && !selected.has(o.order_id))
+          .filter((o) => o.status === "shipping" && !orderPicked(o))
           .map((o) => o.order_id)
       : [];
-    // 沒勾的候選（含拉回的）＝這批不配給他 → 伺服端標「待補貨」，取貨頁
-    // 一律擋住、客人畫面顯示「待到貨」；下一批貨收進來時自動重算解除。
-    // （20260824010000：光退回「已確認」擋不住 —— 取貨閘門不看配單勾了誰，
-    // 只看有沒有到貨＋數量排不排得到他。）
-    const backorderIds = isReceive
-      ? data.orders.filter((o) => !selected.has(o.order_id)).map((o) => o.order_id)
-      : [];
+    const partialCount = isReceive
+      ? data.orders.filter((o) => orderPicked(o) && !orderFullyPicked(o)).length
+      : 0;
 
     const notifyLine = notify
       ? "📩 完成後會推播「商品到貨」給可取貨的客人。"
       : "🔕 不會推播通知，請自行聯繫客人。";
     const backorderLine =
-      backorderIds.length > 0
-        ? `⤺ 沒勾的 ${backorderIds.length} 張訂單這批不配給他們：客人畫面顯示「待到貨」、` +
-          `取貨頁不會放行，下一批貨到時可再配。\n`
+      backorderItemIds.length > 0
+        ? `⤺ 沒配到的 ${backorderItemIds.length} 個品項這批不給：客人那幾項顯示「待到貨」、` +
+          `取貨頁不會放行，下一批貨到時可再配` +
+          (partialCount > 0 ? `（含 ${partialCount} 張只給部分品項的單）` : "") +
+          `。\n`
         : "";
     const surplusLine =
       surplusTotal > 0
@@ -513,8 +612,10 @@ export function ManualAllocateModal({
     const msg = isReceive
       ? `確認收貨並配單？\n\n` +
         (selectedCount > 0
-          ? `勾選的 ${selectedCount} 張訂單會標成「可取貨」。\n`
-          : `沒有勾選訂單 — 只收貨不配單。\n`) +
+          ? `配貨給 ${selectedCount} 張訂單` +
+            (partialCount > 0 ? `（${partialCount} 張只給部分品項）` : "") +
+            `，配到的品項即可取貨。\n`
+          : `沒有勾選 — 只收貨不配單。\n`) +
         backorderLine +
         varianceLine +
         surplusLine +
@@ -536,11 +637,13 @@ export function ManualAllocateModal({
         const { data: res, error: e } = await sb.rpc("rpc_receive_transfer_manual", {
           p_transfer_ids: mode.transferIds,
           p_operator: operator,
-          p_order_ids: selectedCount > 0 ? Array.from(selected) : null,
+          // 單頭只推「整張全給」的單；部分給的單頭不動，靠品項旗標控閘門
+          p_order_ids: fullOrderIds.length > 0 ? fullOrderIds : null,
           p_notes: mode.note ?? null,
           p_lines: recvLines.length > 0 ? recvLines : null,
           p_pullback_order_ids: pullbackIds.length > 0 ? pullbackIds : null,
-          p_backorder_order_ids: backorderIds.length > 0 ? backorderIds : null,
+          p_allocate_item_ids: allocateItemIds.length > 0 ? allocateItemIds : null,
+          p_backorder_item_ids: backorderItemIds.length > 0 ? backorderItemIds : null,
         });
         if (e) throw new Error(translateRpcError(e));
         const r = (res ?? {}) as ManualReceiveResult;
@@ -789,14 +892,22 @@ export function ManualAllocateModal({
                 </thead>
                 <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
                   {data.orders.map((o) => {
-                    const checked = selected.has(o.order_id);
-                    const canCheck = checked || fits(o);
+                    const anyOn = orderPicked(o);
+                    const allOn = orderFullyPicked(o);
+                    // 還有沒有「再多勾一項」的空間（receive 品項層級；store 整張）
+                    const canAdd = isReceive
+                      ? o.items.some(
+                          (it) =>
+                            it.item_id != null && !selected.has(it.item_id) && fitsItem(it),
+                        )
+                      : fitsOrder(o);
+                    const canCheck = anyOn || canAdd;
                     return (
                       <tr
                         key={o.order_id}
                         onClick={() => canCheck && !busy && toggle(o)}
                         className={
-                          checked
+                          anyOn
                             ? "cursor-pointer bg-emerald-50/70 dark:bg-emerald-950/20"
                             : canCheck
                             ? "cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-950"
@@ -808,13 +919,17 @@ export function ManualAllocateModal({
                             : o.status === "shipping"
                             ? "這批貨不夠分到這張單 — 確認收貨時會退回「已確認」等下一批。" +
                               "要優先配給他就先取消勾別張，額度空出來才勾得起來。"
-                            : "剩餘可配量不夠整張單，先取消別張才能勾"
+                            : "剩餘可配量一項都裝不下，先取消別張才能勾"
                         }
                       >
                         <td className="px-3 py-2">
                           <input
                             type="checkbox"
-                            checked={checked}
+                            checked={allOn}
+                            ref={(el) => {
+                              // 部分品項勾選 → checkbox 顯示半勾（indeterminate）
+                              if (el) el.indeterminate = anyOn && !allOn;
+                            }}
                             disabled={!canCheck || busy}
                             onChange={() => toggle(o)}
                             onClick={(e) => e.stopPropagation()}
@@ -862,12 +977,52 @@ export function ManualAllocateModal({
                           </span>
                         </td>
                         <td className="px-3 py-2 text-xs">
-                          {o.items.map((it) => (
-                            <div key={it.sku_id} className="whitespace-nowrap">
-                              {budgetMap.get(it.sku_id)?.name ?? `#${it.sku_id}`}{" "}
-                              <b className="tabular-nums">× {it.qty}</b>
-                            </div>
-                          ))}
+                          {o.items.map((it, idx) => {
+                            // receive 品項層級：每一項自己有 給/待到貨 狀態，點文字可單獨切換
+                            const itOn =
+                              isReceive && it.item_id != null && selected.has(it.item_id);
+                            const itCan = itOn || (isReceive && fitsItem(it));
+                            return (
+                              <div
+                                key={it.item_id ?? `${it.sku_id}-${idx}`}
+                                className={
+                                  "whitespace-nowrap" +
+                                  (isReceive && it.item_id != null
+                                    ? " cursor-pointer select-none"
+                                    : "")
+                                }
+                                onClick={(e) => {
+                                  if (!isReceive || it.item_id == null || busy) return;
+                                  e.stopPropagation();
+                                  if (itCan) toggleItem(it);
+                                }}
+                                title={
+                                  !isReceive || it.item_id == null
+                                    ? undefined
+                                    : itOn
+                                    ? "這一項這批給他 — 點一下改成不給（轉待到貨）"
+                                    : itCan
+                                    ? "點一下把這一項配給他"
+                                    : "剩餘可配量不夠這一項"
+                                }
+                              >
+                                {budgetMap.get(it.sku_id)?.name ?? `#${it.sku_id}`}{" "}
+                                <b className="tabular-nums">× {it.qty}</b>
+                                {isReceive && it.item_id != null && (
+                                  <span
+                                    className={
+                                      "ml-1.5 rounded px-1 py-0.5 text-[10px] font-medium " +
+                                      (itOn
+                                        ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                                        : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300")
+                                    }
+                                  >
+                                    {itOn ? "✓ 給這批" : "⏳ 待到貨"}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
                         </td>
                         <td className="whitespace-nowrap px-3 py-2 text-xs text-zinc-500">
                           {new Date(o.created_at).toLocaleString("zh-TW", {
