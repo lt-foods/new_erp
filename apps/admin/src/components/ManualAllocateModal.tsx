@@ -54,17 +54,20 @@ type TransferItemLine = {
 function greedyItemsByTime(
   orders: CandidateOrder[],
   caps: Map<number, number>,
-  onlyWithin?: Set<number>,
+  opts?: { onlyWithin?: Set<number>; selectableOnly?: boolean },
 ): Set<number> {
   const used = new Map<number, number>();
   const next = new Set<number>();
   for (const o of orders) {
     for (const it of o.items) {
       if (it.item_id == null) continue;
-      if (onlyWithin && !onlyWithin.has(it.item_id)) continue;
-      if (it.qty <= (caps.get(it.sku_id) ?? 0) - (used.get(it.sku_id) ?? 0)) {
+      if (opts?.onlyWithin && !opts.onlyWithin.has(it.item_id)) continue;
+      // store 模式（selectableOnly）：只有「閘門已過」或「掛待補貨」的品項可配；
+      // 閘門已過的本來就可取，不受額度限制（維持現狀不是新承諾）。
+      if (opts?.selectableOnly && !it.arrived && !it.backordered) continue;
+      if (it.arrived || it.qty <= (caps.get(it.sku_id) ?? 0) - (used.get(it.sku_id) ?? 0)) {
         next.add(it.item_id);
-        used.set(it.sku_id, (used.get(it.sku_id) ?? 0) + it.qty);
+        if (!it.arrived) used.set(it.sku_id, (used.get(it.sku_id) ?? 0) + it.qty);
       }
     }
   }
@@ -101,8 +104,9 @@ type CandidateOrder = {
   // 單頭狀態（receive 模式伺服端回傳；store 模式候選必為 confirmed 且閘門已過）
   status: string;
   arrived: boolean;
-  // receive 模式逐品項（有 item_id，品項層級配貨用）；store 模式仍是 SKU 加總（無 item_id）
-  items: Array<{ item_id?: number; sku_id: number; qty: number; backordered?: boolean }>;
+  // 逐品項（20260824060000 起兩種模式都是）。arrived＝閘門已過（store 模式
+  // 伺服端回傳；receive 模式收貨前皆 false）；backordered＝掛待補貨。
+  items: Array<{ item_id?: number; sku_id: number; qty: number; backordered?: boolean; arrived?: boolean }>;
 };
 
 // 「客人看到」欄：判定對齊會員端 apps/member OrderCard.orderPhase ——
@@ -254,7 +258,7 @@ export function ManualAllocateModal({
       const caps = new Map(budgetRows.map((b) => [b.sku_id, b.cap]));
       setSelected((cur) =>
         touchedRef.current
-          ? greedyItemsByTime(orders, caps, cur)
+          ? greedyItemsByTime(orders, caps, { onlyWithin: cur })
           : greedyItemsByTime(orders, caps),
       );
     },
@@ -274,19 +278,36 @@ export function ManualAllocateModal({
       orders: CandidateOrder[];
       waiting_count: number;
     };
+    const orders = (raw.orders ?? []).map((o) => ({
+      ...o,
+      status: "confirmed",
+      arrived: (o.items ?? []).some((i) => Boolean(i.arrived)),
+      items: (o.items ?? []).map((i) => ({
+        item_id: i.item_id,
+        sku_id: i.sku_id,
+        qty: Number(i.qty),
+        arrived: Boolean(i.arrived),
+        backordered: Boolean(i.backordered),
+      })),
+    }));
     setData({
       budget: (raw.budget ?? []).map((b) => ({ ...b, cap: Number(b.available), pool: 0 })),
       incoming: [],
-      orders: (raw.orders ?? []).map((o) => ({
-        ...o,
-        // store 模式候選 = confirmed 且閘門已過（伺服端定義），標籤固定「待取貨」
-        status: "confirmed",
-        arrived: true,
-        items: (o.items ?? []).map((i) => ({ sku_id: i.sku_id, qty: Number(i.qty) })),
-      })),
+      orders,
       waiting_count: Number(raw.waiting_count) || 0,
     });
-    setSelected(new Set());
+    // 預設勾「現在就可取」的品項（閘門已過）——取消勾選＝撤回（轉待到貨）；
+    // 掛待補貨的品項預設不勾，店家要配再勾（受額度擋）。
+    touchedRef.current = false;
+    setSelected(
+      new Set(
+        orders.flatMap((o) =>
+          o.items
+            .filter((i) => i.item_id != null && i.arrived && !i.backordered)
+            .map((i) => i.item_id as number),
+        ),
+      ),
+    );
   }, [mode]);
 
   useEffect(() => {
@@ -367,88 +388,78 @@ export function ManualAllocateModal({
     return m;
   }, [data]);
 
-  // 已勾選佔掉的量（sku_id → qty）。receive＝逐品項（selected 放 item_id）；
-  // store＝整張單（selected 放 order_id，該模式的配單 RPC 只吃整張）。
+  // 已勾選佔掉的量（sku_id → qty）。兩種模式都是品項層級（selected 放 item_id）。
+  // store 模式「閘門已過」的品項不佔額度 —— 它本來就可取，勾著只是維持現狀。
   const usedMap = useMemo(() => {
     const m = new Map<number, number>();
     for (const o of data?.orders ?? []) {
       for (const it of o.items) {
-        const on =
-          mode.kind === "receive"
-            ? it.item_id != null && selected.has(it.item_id)
-            : selected.has(o.order_id);
-        if (on) m.set(it.sku_id, (m.get(it.sku_id) ?? 0) + it.qty);
+        if (it.item_id == null || !selected.has(it.item_id)) continue;
+        if (it.arrived) continue;
+        m.set(it.sku_id, (m.get(it.sku_id) ?? 0) + it.qty);
       }
     }
     return m;
-  }, [data, selected, mode.kind]);
+  }, [data, selected]);
 
   const remaining = useCallback(
     (skuId: number) => (budgetMap.get(skuId)?.cap ?? 0) - (usedMap.get(skuId) ?? 0),
     [budgetMap, usedMap],
   );
 
-  // 這張單「至少有一個品項」被勾 / 「全部品項」被勾（receive 品項層級用）
+  // 這張單「至少有一個品項」被勾 / 「全部品項」被勾（兩種模式皆品項層級）
   const orderPicked = useCallback(
-    (o: CandidateOrder) =>
-      mode.kind === "receive"
-        ? o.items.some((it) => it.item_id != null && selected.has(it.item_id))
-        : selected.has(o.order_id),
-    [mode.kind, selected],
+    (o: CandidateOrder) => o.items.some((it) => it.item_id != null && selected.has(it.item_id)),
+    [selected],
   );
   const orderFullyPicked = useCallback(
     (o: CandidateOrder) =>
-      mode.kind === "receive"
-        ? o.items.length > 0 &&
-          o.items.every((it) => it.item_id != null && selected.has(it.item_id))
-        : selected.has(o.order_id),
-    [mode.kind, selected],
+      o.items.length > 0 && o.items.every((it) => it.item_id != null && selected.has(it.item_id)),
+    [selected],
   );
 
-  // store 模式：沒勾的單還裝不裝得下（整單每個品項都要在剩餘額度內）
-  const fitsOrder = useCallback(
-    (o: CandidateOrder) => o.items.every((it) => it.qty <= remaining(it.sku_id)),
-    [remaining],
+  // 這個品項能不能被配：receive＝本批 SKU 都可（受額度擋）；
+  // store＝只有「閘門已過」（可撤回/維持）或「掛待補貨」（可解）的品項。
+  const itemSelectable = useCallback(
+    (it: { item_id?: number; arrived?: boolean; backordered?: boolean }) =>
+      it.item_id != null && (mode.kind === "receive" || Boolean(it.arrived) || Boolean(it.backordered)),
+    [mode.kind],
   );
-  // receive 模式：單一品項裝不裝得下
+  // 單一品項裝不裝得下（閘門已過的不受額度限制 —— 維持現狀不是新承諾）
   const fitsItem = useCallback(
-    (it: { sku_id: number; qty: number }) => it.qty <= remaining(it.sku_id),
+    (it: { sku_id: number; qty: number; arrived?: boolean }) =>
+      Boolean(it.arrived) || it.qty <= remaining(it.sku_id),
     [remaining],
   );
 
-  // 點整列：已有勾的 → 全部取消；沒勾的 → 把裝得下的品項通通勾起來
+  // 點整列：已有勾的 → 全部取消；沒勾的 → 把可配且裝得下的品項通通勾起來
   //（多品項單裝不下全部時只勾裝得下的那幾項 —— 其餘確認時轉待到貨）。
   function toggle(o: CandidateOrder) {
     touchedRef.current = true;
     setSelected((cur) => {
       const next = new Set(cur);
-      if (mode.kind !== "receive") {
-        if (next.has(o.order_id)) next.delete(o.order_id);
-        else if (fitsOrder(o)) next.add(o.order_id);
-        return next;
-      }
       const anyOn = o.items.some((it) => it.item_id != null && next.has(it.item_id));
       if (anyOn) {
         for (const it of o.items) if (it.item_id != null) next.delete(it.item_id);
         return next;
       }
-      // 逐項試裝（照剩餘額度即時扣）
+      // 逐項試裝（照剩餘額度即時扣；閘門已過的不佔額度）
       const used = new Map<number, number>();
       for (const it of o.items) {
-        if (it.item_id == null) continue;
+        if (!itemSelectable(it)) continue;
         const rem = remaining(it.sku_id) - (used.get(it.sku_id) ?? 0);
-        if (it.qty <= rem) {
-          next.add(it.item_id);
-          used.set(it.sku_id, (used.get(it.sku_id) ?? 0) + it.qty);
+        if (it.arrived || it.qty <= rem) {
+          next.add(it.item_id as number);
+          if (!it.arrived) used.set(it.sku_id, (used.get(it.sku_id) ?? 0) + it.qty);
         }
       }
       return next;
     });
   }
 
-  // 點單一品項（receive）：這一項給／不給
-  function toggleItem(it: { item_id?: number; sku_id: number; qty: number }) {
-    if (mode.kind !== "receive" || it.item_id == null) return;
+  // 點單一品項：這一項給／不給
+  function toggleItem(it: { item_id?: number; sku_id: number; qty: number; arrived?: boolean; backordered?: boolean }) {
+    if (!itemSelectable(it)) return;
     touchedRef.current = true;
     setSelected((cur) => {
       const next = new Set(cur);
@@ -464,21 +475,11 @@ export function ManualAllocateModal({
     if (!data) return;
     touchedRef.current = false;
     const caps = new Map((data.budget ?? []).map((b) => [b.sku_id, b.cap]));
-    if (mode.kind === "receive") {
-      setSelected(greedyItemsByTime(data.orders, caps));
-    } else {
-      const used = new Map<number, number>();
-      const next = new Set<number>();
-      for (const o of data.orders) {
-        const ok = o.items.every(
-          (it) => it.qty <= (caps.get(it.sku_id) ?? 0) - (used.get(it.sku_id) ?? 0),
-        );
-        if (!ok) continue;
-        next.add(o.order_id);
-        for (const it of o.items) used.set(it.sku_id, (used.get(it.sku_id) ?? 0) + it.qty);
-      }
-      setSelected(next);
-    }
+    setSelected(
+      greedyItemsByTime(data.orders, caps, {
+        selectableOnly: mode.kind === "store",
+      }),
+    );
   }
 
   // 每個 SKU 的全部候選訂單總需求（跟有沒有勾選無關）—— surplus 預估用
@@ -540,7 +541,6 @@ export function ManualAllocateModal({
 
   async function save() {
     if (!data || busy) return;
-    if (!isReceive && selectedCount === 0) return;
 
     // 實收（含使用者調整）：空白/非法值直接擋在這裡
     let recvLines: ReceiveLine[] = [];
@@ -567,30 +567,38 @@ export function ManualAllocateModal({
         }, 0)
       : 0;
 
-    // 品項層級（20260824050000）：
+    // 品項層級（20260824050000 / 20260824060000）：
     //   fullOrderIds  = 全部品項都勾的單 → 推單頭（shipping→ready / confirmed 走配單 RPC）
     //   allocateItemIds = 勾到的品項（逐項清待補貨旗標，閘門開）
-    //   backorderItemIds = 沒勾的品項（逐項標待補貨，閘門關；部分給的單其餘品項也在內）
-    //   pullbackIds = 一項都沒配到的派貨中單 → 拉回「已確認」
-    const fullOrderIds = isReceive
-      ? data.orders.filter((o) => orderFullyPicked(o)).map((o) => o.order_id)
-      : [];
-    const allocateItemIds = isReceive ? Array.from(selected) : [];
-    const backorderItemIds = isReceive
-      ? data.orders.flatMap((o) =>
-          o.items
-            .filter((it) => it.item_id != null && !selected.has(it.item_id))
-            .map((it) => it.item_id as number),
+    //   backorderItemIds = 沒勾的品項（逐項標待補貨，閘門關；部分給的單其餘品項也在內。
+    //     store 模式只標「可選」的品項 —— 等貨中的不動，那是供給問題不是配貨決策）
+    //   pullbackIds = 一項都沒配到的派貨中單 → 拉回「已確認」（receive 才有）
+    const fullOrderIds = data.orders
+      .filter((o) => orderFullyPicked(o))
+      .map((o) => o.order_id);
+    const allocateItemIds = Array.from(selected);
+    const backorderItemIds = data.orders.flatMap((o) =>
+      o.items
+        .filter(
+          (it) =>
+            it.item_id != null &&
+            !selected.has(it.item_id) &&
+            (isReceive || itemSelectable(it)),
         )
-      : [];
+        .map((it) => it.item_id as number),
+    );
     const pullbackIds = isReceive
       ? data.orders
           .filter((o) => o.status === "shipping" && !orderPicked(o))
           .map((o) => o.order_id)
       : [];
-    const partialCount = isReceive
-      ? data.orders.filter((o) => orderPicked(o) && !orderFullyPicked(o)).length
-      : 0;
+    const partialCount = data.orders.filter(
+      (o) => orderPicked(o) && !orderFullyPicked(o),
+    ).length;
+    // store 模式：完全沒有任何配貨/撤回動作就不用打
+    if (!isReceive && allocateItemIds.length === 0 && backorderItemIds.length === 0) {
+      return;
+    }
 
     const notifyLine = notify
       ? "📩 完成後會推播「商品到貨」給可取貨的客人。"
@@ -620,7 +628,13 @@ export function ManualAllocateModal({
         varianceLine +
         surplusLine +
         notifyLine
-      : `確認把勾選的 ${selectedCount} 張訂單標成「可取貨」？\n\n沒勾的訂單維持原狀，下一批貨到時可再配。\n` +
+      : `確認配單？\n\n` +
+        (selectedCount > 0
+          ? `配貨給 ${selectedCount} 張訂單` +
+            (partialCount > 0 ? `（${partialCount} 張只給部分品項）` : "") +
+            `，配到的品項即可取貨。\n`
+          : `沒有勾選任何品項。\n`) +
+        backorderLine +
         notifyLine;
     if (!confirm(msg)) return;
 
@@ -679,12 +693,15 @@ export function ManualAllocateModal({
         return;
       }
 
-      // store 模式：純配單（貨已在店）
+      // store 模式：純配單（貨已在店）。品項層級（20260824060000）：
+      // 整張全給的推單頭；部分給的只動品項旗標；沒勾的可選品項標待補貨。
       if (mode.kind !== "store") return;
       const { data: res, error: e } = await sb.rpc("rpc_manual_allocate_confirmed_orders", {
         p_store_id: mode.storeId,
-        p_order_ids: Array.from(selected),
+        p_order_ids: fullOrderIds.length > 0 ? fullOrderIds : null,
         p_operator: operator,
+        p_allocate_item_ids: allocateItemIds.length > 0 ? allocateItemIds : null,
+        p_backorder_item_ids: backorderItemIds.length > 0 ? backorderItemIds : null,
       });
       if (e) throw new Error(translateRpcError(e));
       const r = (res ?? {}) as AllocResult;
@@ -698,7 +715,12 @@ export function ManualAllocateModal({
         if (pushed > 0) pushNote = `\n📩 已推播 ${pushed} 位顧客`;
       }
       const skipped = r.skipped ?? [];
-      alert(`✅ 配單完成：${r.advanced ?? 0} 張訂單已可取貨${pushNote}${skipNoteOf(skipped)}`);
+      alert(
+        `✅ 配單完成：${r.advanced ?? 0} 張整單可取貨` +
+          (partialCount > 0 ? `、${partialCount} 張部分品項可取` : "") +
+          pushNote +
+          skipNoteOf(skipped),
+      );
       onSaved();
       if (skipped.length > 0) {
         // 有跳過的單就留在彈窗讓店家重看（額度已變，重載）
@@ -894,13 +916,14 @@ export function ManualAllocateModal({
                   {data.orders.map((o) => {
                     const anyOn = orderPicked(o);
                     const allOn = orderFullyPicked(o);
-                    // 還有沒有「再多勾一項」的空間（receive 品項層級；store 整張）
-                    const canAdd = isReceive
-                      ? o.items.some(
-                          (it) =>
-                            it.item_id != null && !selected.has(it.item_id) && fitsItem(it),
-                        )
-                      : fitsOrder(o);
+                    // 還有沒有「再多勾一項」的空間（兩種模式皆品項層級）
+                    const canAdd = o.items.some(
+                      (it) =>
+                        itemSelectable(it) &&
+                        it.item_id != null &&
+                        !selected.has(it.item_id) &&
+                        fitsItem(it),
+                    );
                     const canCheck = anyOn || canAdd;
                     return (
                       <tr
@@ -978,29 +1001,31 @@ export function ManualAllocateModal({
                         </td>
                         <td className="px-3 py-2 text-xs">
                           {o.items.map((it, idx) => {
-                            // receive 品項層級：每一項自己有 給/待到貨 狀態，點文字可單獨切換
+                            // 品項層級：每一項自己有 給/待到貨 狀態，點文字可單獨切換。
+                            // store 模式的「等貨中」品項（沒到貨也沒掛待補）只顯示不可點。
+                            const selectable = itemSelectable(it);
                             const itOn =
-                              isReceive && it.item_id != null && selected.has(it.item_id);
-                            const itCan = itOn || (isReceive && fitsItem(it));
+                              it.item_id != null && selected.has(it.item_id);
+                            const itCan = itOn || (selectable && fitsItem(it));
                             return (
                               <div
                                 key={it.item_id ?? `${it.sku_id}-${idx}`}
                                 className={
                                   "whitespace-nowrap" +
-                                  (isReceive && it.item_id != null
-                                    ? " cursor-pointer select-none"
-                                    : "")
+                                  (selectable ? " cursor-pointer select-none" : "")
                                 }
                                 onClick={(e) => {
-                                  if (!isReceive || it.item_id == null || busy) return;
+                                  if (!selectable || busy) return;
                                   e.stopPropagation();
                                   if (itCan) toggleItem(it);
                                 }}
                                 title={
-                                  !isReceive || it.item_id == null
-                                    ? undefined
+                                  !selectable
+                                    ? it.item_id == null
+                                      ? undefined
+                                      : "這一項的貨還沒到，等下一批"
                                     : itOn
-                                    ? "這一項這批給他 — 點一下改成不給（轉待到貨）"
+                                    ? "這一項配給他 — 點一下改成不給（轉待到貨）"
                                     : itCan
                                     ? "點一下把這一項配給他"
                                     : "剩餘可配量不夠這一項"
@@ -1008,16 +1033,18 @@ export function ManualAllocateModal({
                               >
                                 {budgetMap.get(it.sku_id)?.name ?? `#${it.sku_id}`}{" "}
                                 <b className="tabular-nums">× {it.qty}</b>
-                                {isReceive && it.item_id != null && (
+                                {it.item_id != null && (
                                   <span
                                     className={
                                       "ml-1.5 rounded px-1 py-0.5 text-[10px] font-medium " +
                                       (itOn
                                         ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-                                        : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300")
+                                        : selectable
+                                        ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                                        : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400")
                                     }
                                   >
-                                    {itOn ? "✓ 給這批" : "⏳ 待到貨"}
+                                    {itOn ? (isReceive ? "✓ 給這批" : "✓ 可取貨") : selectable ? "⏳ 待到貨" : "⌛ 等貨中"}
                                   </span>
                                 )}
                               </div>
@@ -1088,7 +1115,7 @@ export function ManualAllocateModal({
             <div className="flex flex-wrap items-center gap-3">
               <SpinButton
                 onClick={save}
-                disabled={busy || (!isReceive && selectedCount === 0)}
+                disabled={busy || (!isReceive && (data?.orders.length ?? 0) === 0)}
                 className="ml-auto rounded-md bg-emerald-600 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-zinc-300 dark:disabled:bg-zinc-700"
               >
                 {busy
