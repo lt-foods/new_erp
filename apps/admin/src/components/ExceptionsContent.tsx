@@ -31,7 +31,7 @@ import { TransferShortageResolveModal, type ShortageContext } from "./TransferSh
 
 // 上面 5 個「還沒處理」的分頁 —— 這個型別同時被下面的 row type guard 用來擋掉
 // DB view 可能回傳的已廢棄 type,所以**不可以**把 "resolved" 併進來。
-type ExceptionTab = "all" | "po_shortage" | "po_damage" | "po_over" | "transfer_short";
+type ExceptionTab = "all" | "po_shortage" | "po_damage" | "po_over" | "transfer_short" | "transfer_over";
 type Tab = ExceptionTab | "resolved";
 
 const TAB_LABEL: Record<ExceptionTab, string> = {
@@ -40,6 +40,7 @@ const TAB_LABEL: Record<ExceptionTab, string> = {
   po_damage: "進貨破損",
   po_over: "過量進貨",
   transfer_short: "收貨短少",
+  transfer_over: "收貨多收",
 };
 
 // 分頁列用(含「已處理」)。TAB_LABEL 本身要保持只有 5 個 —— 它兼任 type guard。
@@ -48,7 +49,7 @@ const TAB_BAR_LABEL: Record<Tab, string> = { ...TAB_LABEL, resolved: "已處理"
 // 與 /hq/inbox 其他來源一致的每頁筆數
 const PAGE_SIZE = 20;
 
-type ExceptionType = "po_shortage" | "po_damage" | "po_over" | "transfer_short";
+type ExceptionType = "po_shortage" | "po_damage" | "po_over" | "transfer_short" | "transfer_over";
 
 type ExceptionRow = {
   key: string;
@@ -66,6 +67,8 @@ type ExceptionRow = {
   // 該筆異常的地點:PO/GR 收貨倉、收貨分店、取貨店(v_hq_exceptions.warehouse_name)
   warehouse_name: string | null;
   shortage_ctx?: ShortageContext;
+  // transfer_over：按「知道了」要用的 transfer_item_id
+  over_item_id?: number;
 };
 
 // rpc_hq_exceptions 回傳的單列(= v_hq_exceptions 扁平欄位)
@@ -102,11 +105,11 @@ type ViewRow = {
 type ExceptionCounts = Record<ExceptionTab, number>;
 
 const EMPTY_COUNTS: ExceptionCounts = {
-  all: 0, po_shortage: 0, po_damage: 0, po_over: 0, transfer_short: 0,
+  all: 0, po_shortage: 0, po_damage: 0, po_over: 0, transfer_short: 0, transfer_over: 0,
 };
 
 function docLinkFor(r: ViewRow): string {
-  if (r.type === "transfer_short") return `/wms/inbound`;
+  if (r.type === "transfer_short" || r.type === "transfer_over") return `/wms/inbound`;
   return `/wms/receiving`;
 }
 
@@ -224,6 +227,25 @@ export default function ExceptionsContent({
     setPage(1);
   }
 
+  // 收貨多收「知道了」：標 over_ack，該列從收件匣移除（多收的量早已照實入分店帳）
+  async function ackOver(transferItemId: number, docNo: string) {
+    if (!confirm(`確認已知悉 ${docNo} 的多收？\n\n多收的量已照實入分店帳，這列會從收件匣移除。`)) return;
+    try {
+      const sb = getSupabase();
+      const { data: sess } = await sb.auth.getSession();
+      const operator = sess.session?.user?.id;
+      if (!operator) throw new Error("尚未登入");
+      const { error: e } = await sb.rpc("rpc_ack_transfer_over", {
+        p_transfer_item_id: transferItemId,
+        p_operator: operator,
+      });
+      if (e) throw new Error(e.message);
+      setReloadTick((t) => t + 1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   // server-side 抓當前 tab + page(rpc_hq_exceptions 一次回 total / 各 tab counts / 當頁 rows)
   // ⛔ tab === "resolved" 時整支跳過:那一頁不是 rpc_hq_exceptions 的資料,
   //   跑下去只會拿錯的 total/rows 覆蓋掉;onCountChange 也就不會被錯的口徑呼叫。
@@ -281,6 +303,10 @@ export default function ExceptionsContent({
                   dest_store_name: r.dest_store_name ?? `位置 #${r.dest_location ?? "?"}`,
                 }
               : undefined,
+          over_item_id:
+            r.type === "transfer_over" && r.transfer_item_id != null
+              ? r.transfer_item_id
+              : undefined,
         }));
 
         const cnts: ExceptionCounts = {
@@ -289,6 +315,7 @@ export default function ExceptionsContent({
           po_damage: resp.counts?.po_damage ?? 0,
           po_over: resp.counts?.po_over ?? 0,
           transfer_short: resp.counts?.transfer_short ?? 0,
+          transfer_over: resp.counts?.transfer_over ?? 0,
         };
 
         setRows(mapped);
@@ -515,7 +542,7 @@ export default function ExceptionsContent({
         <header>
           <h1 className="text-xl font-semibold">⚠️ 異常處理</h1>
           <p className="text-sm text-zinc-500">
-            {counts === null ? "載入中…" : `共 ${c.all} 筆異常 · 進貨短少 ${c.po_shortage} / 進貨破損 ${c.po_damage} / 過量 ${c.po_over} / 收貨短少 ${c.transfer_short}`}
+            {counts === null ? "載入中…" : `共 ${c.all} 筆異常 · 進貨短少 ${c.po_shortage} / 進貨破損 ${c.po_damage} / 過量 ${c.po_over} / 收貨短少 ${c.transfer_short} / 收貨多收 ${c.transfer_over}`}
           </p>
         </header>
       )}
@@ -527,7 +554,7 @@ export default function ExceptionsContent({
       )}
 
       <div className="flex flex-wrap gap-1 border-b border-zinc-200 dark:border-zinc-800">
-        {(["all", "po_shortage", "po_damage", "po_over", "transfer_short", "resolved"] as const).map((t) => {
+        {(["all", "po_shortage", "po_damage", "po_over", "transfer_short", "transfer_over", "resolved"] as const).map((t) => {
           const active = tab === t;
           return (
             <SpinButton
@@ -761,6 +788,7 @@ export default function ExceptionsContent({
                     r.type === "po_shortage" ? "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300" :
                     r.type === "po_damage" ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300" :
                     r.type === "po_over" ? "bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300" :
+                    r.type === "transfer_over" ? "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-300" :
                     "bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300"
                   }`}>{TAB_LABEL[r.type]}</span>
                 </td>
@@ -784,6 +812,14 @@ export default function ExceptionsContent({
                       className="rounded-md bg-blue-600 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-700"
                     >
                       處理
+                    </SpinButton>
+                  ) : r.type === "transfer_over" && r.over_item_id != null ? (
+                    <SpinButton
+                      onClick={() => ackOver(r.over_item_id as number, r.doc_no)}
+                      className="rounded-md bg-violet-600 px-3 py-1 text-xs font-semibold text-white hover:bg-violet-700"
+                      title="標記已知悉：分店多收的量已照實入分店帳，這列從收件匣移除"
+                    >
+                      知道了
                     </SpinButton>
                   ) : (
                     <Link href={r.doc_link} className="text-blue-600 hover:underline dark:text-blue-400">前往 →</Link>

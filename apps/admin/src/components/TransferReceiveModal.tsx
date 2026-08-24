@@ -196,9 +196,7 @@ export function TransferReceiveModal({
       if (Number.isNaN(v) || v < 0) {
         throw new Error(`「${itemLabel(it)}」的實收「${e}」不是有效數量。請填 0 或正整數。`);
       }
-      if (v > it.qty_shipped) {
-        throw new Error(`「${itemLabel(it)}」的實收不可大於出貨量 ${it.qty_shipped}。`);
-      }
+      // 20260824020000：多收（實收 > 派出）放行 — 照實入庫，差異回報總倉收件匣
       if (v !== it.qty_shipped) {
         lines.push({ transfer_item_id: it.id, qty_received: v });
       }
@@ -459,7 +457,8 @@ export function TransferReceiveModal({
                       : String(it.qty_shipped);
                     const numCur = Number(cur);
                     const diff = !Number.isNaN(numCur) ? numCur - it.qty_shipped : 0;
-                    const overflowing = !readOnly && numCur > it.qty_shipped;
+                    // 20260824020000：多收放行 — 不再標紅擋輸入，跟少收一樣算差異回報
+                    const overflowing = false;
                     // 這一行被清成空白＝還沒填完，不是「收 0 件」→ 差異顯示「—」、框線標紅
                     const blank = !readOnly && editVal !== undefined && editVal.trim() === "";
                     return (

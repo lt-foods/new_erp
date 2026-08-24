@@ -1074,9 +1074,10 @@ export default function TransfersInboxPage() {
     const dest = locations.get(t.dest_location) ?? `#${t.dest_location}`;
     if (
       !confirm(
-        `退回收貨 ${t.transfer_no}(送到 ${dest})?\n\n` +
-        `會沖銷本次入庫的庫存、並把此調撥單改回「待收」。\n` +
-        `若該批貨已被取貨/售出將無法退回。`,
+        `返回收貨配單 ${t.transfer_no}(送到 ${dest})?\n\n` +
+        `會沖銷本次入庫的庫存、把此調撥單改回「待收」，並還原當時的配單決策\n` +
+        `（配到的單退回、沒配到的「待到貨」解除、拉回的派貨中單還原）— 可整個重來。\n` +
+        `若該批貨已被取貨/售出將無法返回。`,
       )
     )
       return;
@@ -1910,17 +1911,21 @@ export default function TransfersInboxPage() {
                                         ? "rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
                                         : "rounded-md border border-emerald-600 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
                                     }
-                                    title="先跳出這張單對到的訂單勾選要配給誰,按「確認收貨」才完成收貨(取消=不收貨)"
+                                    title="勾選要配給誰、實收數量也在同一個視窗調,按「確認收貨」才完成收貨(取消=不收貨)"
                                   >
                                     ✋ 配單
                                   </SpinButton>
-                                  <SpinButton
-                                    onClick={() => setOpening(t)}
-                                    className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                                    title="調整數量 / 標記破損 / 短收"
-                                  >
-                                    ✎ 調整
-                                  </SpinButton>
+                                  {/* 「✎ 調整」只留給總倉調撥(沒有配單視窗可用)；
+                                      分店的實收調整已併進配單視窗 */}
+                                  {!storeForLocation(t.dest_location) && (
+                                    <SpinButton
+                                      onClick={() => setOpening(t)}
+                                      className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                                      title="調整數量 / 標記破損 / 短收"
+                                    >
+                                      ✎ 調整
+                                    </SpinButton>
+                                  )}
                                 </div>
                               ) : (
                                 <div className="flex justify-end gap-1">
@@ -1934,9 +1939,9 @@ export default function TransfersInboxPage() {
                                     onClick={() => unreceive(t)}
                                     disabled={batchBusy}
                                     className="rounded-md border border-amber-300 px-2 py-1 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950"
-                                    title="退回收貨：沖銷入庫、改回待收"
+                                    title="一鍵返回：沖銷入庫、改回待收，配單決策（配到的/沒配到的/拉回的）一併還原，可整個重來"
                                   >
-                                    ↩ 退回
+                                    ↩ 返回收貨配單
                                   </SpinButton>
                                 </div>
                               )}
