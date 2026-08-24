@@ -114,8 +114,14 @@ export function ShortageAllocateModal({
         payload.items.map((r) => [r.item_id, r.backorder ? 0 : r.qty] as [number, number]),
       ),
     );
-    // 減抵輸入預設帶「目前待補貨」總量（減抵單只能交待補貨的品項）
-    setDeductQty(payload.items.reduce((s, r) => s + (r.backorder ? r.qty : 0), 0));
+    // 減抵輸入預設帶 min(待補貨總量, 店倉可用現貨) —— 帳上只有 1 件就不能選超過 1
+    //（Alex 2026-08-24）。伺服端 rpc_create_inventory_deduction 還會再驗一次。
+    setDeductQty(
+      Math.min(
+        payload.items.reduce((s, r) => s + (r.backorder ? r.qty : 0), 0),
+        Math.max(0, Math.floor(payload.store_on_hand)),
+      ),
+    );
     return payload;
   }, [transferId, skuId]);
 
@@ -151,6 +157,11 @@ export function ShortageAllocateModal({
   const backorderedDb = useMemo(
     () => (data?.items ?? []).reduce((s, r) => s + (r.backorder ? r.qty : 0), 0),
     [data],
+  );
+  // 現貨交貨的上限 = min(待補貨, 店倉帳上可用) —— 帳上 1 件就不能選超過 1
+  const deductCap = useMemo(
+    () => Math.min(backorderedDb, Math.max(0, Math.floor(data?.store_on_hand ?? 0))),
+    [backorderedDb, data],
   );
 
   // 依訂單時間配貨：候選已由後端依 created_at, order_no 排好，
@@ -395,12 +406,12 @@ export function ShortageAllocateModal({
                         <input
                           type="number"
                           min={1}
-                          max={backorderedDb}
+                          max={deductCap}
                           value={deductQty}
                           onChange={(e) => {
                             const v = Math.floor(Number(e.target.value));
                             setDeductQty(
-                              Number.isFinite(v) ? Math.max(0, Math.min(v, backorderedDb)) : 0,
+                              Number.isFinite(v) ? Math.max(0, Math.min(v, deductCap)) : 0,
                             );
                           }}
                           className="w-16 rounded-md border border-zinc-300 px-1.5 py-1 text-right text-sm tabular-nums dark:border-zinc-700 dark:bg-zinc-800"
@@ -408,7 +419,7 @@ export function ShortageAllocateModal({
                         <span className="text-xs text-zinc-500">件</span>
                         <SpinButton
                           onClick={createDeduction}
-                          disabled={busy || deductQty <= 0}
+                          disabled={busy || deductQty <= 0 || deductCap <= 0}
                           className="rounded-md bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
                           title="依下單時間由早到晚交貨。開單當下扣店庫存、訂單結案（與到店取貨同一套帳）。"
                         >
@@ -416,9 +427,9 @@ export function ShortageAllocateModal({
                         </SpinButton>
                       </div>
                     </div>
-                    {deductQty > data.store_on_hand && (
+                    {deductCap < backorderedDb && (
                       <div className="text-xs text-amber-700 dark:text-amber-400">
-                        ⚠ 店倉帳上現貨不夠交 {deductQty} 件 — 請先到
+                        ⚠ 店倉帳上只夠交 {deductCap} 件（待補 {backorderedDb} 件）— 要交更多請先到
                         <Link href="/inventory" target="_blank" className="mx-1 underline">
                           庫存總覽
                         </Link>

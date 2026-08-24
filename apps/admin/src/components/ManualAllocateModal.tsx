@@ -160,7 +160,6 @@ export function ManualAllocateModal({
   notifyMembers,
   onClose,
   onSaved,
-  onAdjustShortage,
 }: {
   mode: AllocModalMode;
   storeName: string;
@@ -168,10 +167,6 @@ export function ManualAllocateModal({
   notifyMembers: boolean;
   onClose: () => void;
   onSaved: () => void;
-  // 到貨量（假設實收數字沒錯）不夠分給這個 SKU 的候選訂單時，
-  // 讓店家跳去「⚖️ 配貨」逐筆調整配貨數量（沒配到的標待補貨）——
-  // 只有單張收貨（mode.transferIds 只有一張）才有意義，該彈窗一次只認一張 transfer。
-  onAdjustShortage?: (skuId: number, skuName: string) => void;
 }) {
   const [data, setData] = useState<Data | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -403,27 +398,13 @@ export function ManualAllocateModal({
     setSelected(greedyByTime(data.orders, caps));
   }
 
-  // 每個 SKU 的全部候選訂單總需求（跟有沒有勾選無關）—— 用來判斷「假設實收數字
-  // 沒錯，這批到貨真的不夠分」，不是「使用者剛好勾到額度用完」。
+  // 每個 SKU 的全部候選訂單總需求（跟有沒有勾選無關）—— surplus 預估用
   const totalNeedMap = useMemo(() => {
     const m = new Map<number, number>();
     for (const o of data?.orders ?? [])
       for (const it of o.items) m.set(it.sku_id, (m.get(it.sku_id) ?? 0) + it.qty);
     return m;
   }, [data]);
-
-  // 真的不夠分的 SKU：全部候選需求 > 可配上限。只有單張收貨才給「調整數量」
-  // 入口 —— ⚖️ 配貨（ShortageAllocateModal）一次只認一張 transfer。
-  const shortSkuIds = useMemo(() => {
-    if (mode.kind !== "receive" || mode.transferIds.length !== 1) {
-      return new Set<number>();
-    }
-    const out = new Set<number>();
-    for (const [skuId, need] of totalNeedMap) {
-      if (need > (budgetMap.get(skuId)?.cap ?? 0)) out.add(skuId);
-    }
-    return out;
-  }, [mode, totalNeedMap, budgetMap]);
 
   // 多給的量（沒有訂單主人）＝確認收貨後會掛進【內部】店現貨池的預估。
   // 逐 SKU：min(本次到貨 − 已勾選需求, 可配上限 − 全部候選需求 − 池子既有掛帳)，
@@ -651,6 +632,36 @@ export function ManualAllocateModal({
 
         {data && (
           <>
+            {/* 通知開關：放最上面（Alex 2026-08-24），switch 樣式 */}
+            <div className="flex items-center justify-end">
+              <label
+                className="flex cursor-pointer items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300"
+                title="開啟：完成後推播「您的商品到貨」給可取貨的客人（不通知名單會自動排除）。"
+              >
+                {notify ? "📩 完成後通知客人到貨" : "🔕 完成後不通知客人"}
+                <span
+                  className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+                    notify ? "bg-emerald-500" : "bg-zinc-300 dark:bg-zinc-600"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    checked={notify}
+                    onChange={(e) => setNotify(e.target.checked)}
+                    className="peer sr-only"
+                  />
+                  <span
+                    aria-hidden
+                    className={`absolute h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                      notify ? "translate-x-[18px]" : "translate-x-0.5"
+                    }`}
+                  />
+                  <span className="absolute inset-0 rounded-full ring-emerald-600 peer-focus-visible:ring-2" />
+                </span>
+              </label>
+            </div>
+
             {/* 本次到貨：實收直接在這裡改（預設 = WV 派出量）。少收＝向總倉
                 提出退回；多收也可以填，照實入庫並回報總倉。改了額度會即時重算。 */}
             {isReceive && items !== null && items.length > 0 && (
@@ -731,14 +742,12 @@ export function ManualAllocateModal({
               </div>
             )}
 
-            {/* 各 SKU 剩餘可配量 —— 假設實收數字沒錯，全部候選需求還是大於可配上限
-                （shortSkuIds）就是真的不夠分，不是「剛好勾到額度用完」；
-                這種才給「調整數量」跳去 ⚖️ 配貨（逐筆調整、沒配到的標待補貨）。 */}
+            {/* 各 SKU 剩餘可配量。不夠分不用跳別頁 —— 沒勾到的一律轉「待到貨」，
+                下一批到貨再配（20260824 拿掉「⚖️ 配貨」跳轉入口，Alex 定案）。 */}
             {visibleBudget.length > 0 && (
               <div className="flex flex-wrap gap-2 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-900/60">
                 {visibleBudget.map((b) => {
                   const rem = b.cap - (usedMap.get(b.sku_id) ?? 0);
-                  const short = shortSkuIds.has(b.sku_id);
                   return (
                     <span
                       key={b.sku_id}
@@ -753,16 +762,6 @@ export function ManualAllocateModal({
                       >
                         剩 {Math.max(0, rem)}
                       </b>
-                      {short && onAdjustShortage && (
-                        <button
-                          type="button"
-                          onClick={() => onAdjustShortage(b.sku_id, b.name)}
-                          className="rounded border border-rose-300 px-1 py-0.5 text-[10px] font-medium text-rose-700 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
-                          title="這批到貨不夠分給這個品項的全部訂單 — 跳去「⚖️ 配貨」逐筆調整配貨數量，沒配到的標待補貨"
-                        >
-                          數量不夠，調整？
-                        </button>
-                      )}
                     </span>
                   );
                 })}
@@ -932,18 +931,6 @@ export function ManualAllocateModal({
             )}
 
             <div className="flex flex-wrap items-center gap-3">
-              <label
-                className="flex cursor-pointer items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-300"
-                title="開啟：完成後推播「您的商品到貨」給可取貨的客人（不通知名單會自動排除）。"
-              >
-                <input
-                  type="checkbox"
-                  checked={notify}
-                  onChange={(e) => setNotify(e.target.checked)}
-                  className="cursor-pointer"
-                />
-                {notify ? "📩 完成後通知客人到貨" : "🔕 完成後不通知客人"}
-              </label>
               <SpinButton
                 onClick={save}
                 disabled={busy || (!isReceive && selectedCount === 0)}
