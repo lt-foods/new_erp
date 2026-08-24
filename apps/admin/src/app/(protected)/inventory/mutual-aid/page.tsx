@@ -468,24 +468,45 @@ function AidClaimLog({ post }: { post: Post }) {
     (async () => {
       try {
         const sb = getSupabase();
-        const { data, error } = await sb
-          .from("customer_order_transfer_links")
-          .select(
-            TRANSFER_LINK_SELECT + ", reason, " +
-              "src:customer_orders!customer_order_transfer_links_source_order_id_fkey(" +
-              "id, order_no, pickup_store_id, store:stores!customer_orders_pickup_store_id_fkey(name)), " +
-              "dest:customer_orders!customer_order_transfer_links_dest_order_id_fkey(" +
-              "id, order_no, status, pickup_store_id, " +
-              "store:stores!customer_orders_pickup_store_id_fkey(name), " +
-              "items:customer_order_items(id, qty, status, source, " +
-              "sku:skus(sku_code, product_name, variant_name)))",
-          )
-          .ilike("reason", `%#${post.id}%`)
-          .order("transferred_at", { ascending: true })
-          .limit(50);
+        const SEL =
+          TRANSFER_LINK_SELECT + ", reason, " +
+          "src:customer_orders!customer_order_transfer_links_source_order_id_fkey(" +
+          "id, order_no, pickup_store_id, store:stores!customer_orders_pickup_store_id_fkey(name)), " +
+          "dest:customer_orders!customer_order_transfer_links_dest_order_id_fkey(" +
+          "id, order_no, status, pickup_store_id, " +
+          "store:stores!customer_orders_pickup_store_id_fkey(name), " +
+          "items:customer_order_items(id, qty, status, source, " +
+          "sku:skus(sku_code, product_name, variant_name)))";
+
+        // 兩條路一起撈，因為單靠 reason 只找得到新資料：
+        //   (1) reason 帶貼文編號 —— 兩個對話框的預設值都是「互助板提供／認領 #N」。
+        //   (2) 載體單反查 —— 手動現貨認領時 rpc_claim_manual_spot 會在載體單
+        //       （AB-xx-000n）的品項 notes 蓋「[互助板認領 #N]」，而那張載體單
+        //       只為這一次認領而生 → 從它轉出去的那一趟就是這次認領。
+        //       線上 4 筆歷史認領（#119/#206/#207/#208）全靠這條才查得到是古華店；
+        //       它們的 reason 在連結表回填時已經被換成「[回填] …」了。
+        const [reasonRes, carrierRes] = await Promise.all([
+          sb.from("customer_order_transfer_links").select(SEL)
+            .ilike("reason", `%#${post.id}%`)
+            .order("transferred_at", { ascending: true }).limit(50),
+          sb.from("customer_order_items").select("order_id")
+            .ilike("notes", `%互助板認領 #${post.id}%`).limit(50),
+        ]);
         if (cancelled) return;
-        if (error) { setRows([]); return; }
-        // 「互助板提供 #249」/「互助板認領 #249」；#2490 不能算進來
+
+        const carrierIds = Array.from(
+          new Set(((carrierRes.data ?? []) as { order_id: number }[]).map((r) => r.order_id)),
+        );
+        const byCarrier = carrierIds.length > 0
+          ? await sb.from("customer_order_transfer_links").select(SEL)
+              .in("source_order_id", carrierIds)
+              .order("transferred_at", { ascending: true }).limit(50)
+          : { data: [], error: null };
+        if (cancelled) return;
+        if (reasonRes.error && carrierRes.error) { setRows([]); return; }
+
+        // 「互助板提供 #249」/「互助板認領 #249」；#2490 不能算進來。
+        // 只用來濾 (1) —— (2) 是從載體單直接反查的，本身就精準。
         const exact = new RegExp(`互助板[^#]*#${post.id}(?!\\d)`);
         type StoreRef = { name: string } | { name: string }[] | null;
         type RawSku = { sku_code: string; product_name: string; variant_name: string | null };
@@ -499,8 +520,16 @@ function AidClaimLog({ post }: { post: Post }) {
           } | null;
         };
         const nameOf = (s: StoreRef) => (Array.isArray(s) ? s[0]?.name : s?.name) ?? "—";
-        const list = ((data ?? []) as unknown as Raw[]).flatMap((r): ProvidedRow[] => {
-          if (!exact.test(r.reason ?? "")) return [];
+        // 一趟轉移可能兩條路都撈到（新資料的 reason 有編號、又剛好是手動現貨），
+        // 以 link id 去重
+        const merged = new Map<number, Raw>();
+        for (const r of (reasonRes.data ?? []) as unknown as Raw[]) {
+          if (exact.test(r.reason ?? "")) merged.set(r.id, r);
+        }
+        for (const r of (byCarrier.data ?? []) as unknown as Raw[]) merged.set(r.id, r);
+        const list = [...merged.values()]
+          .sort((a, b) => a.transferred_at.localeCompare(b.transferred_at))
+          .flatMap((r): ProvidedRow[] => {
           const src = r.src, dest = r.dest;
           if (!src || !dest) return [];
           const mine = linkItems(r, dest.items ?? []);
@@ -537,17 +566,40 @@ function AidClaimLog({ post }: { post: Post }) {
     return () => { cancelled = true; };
   }, [post.id]);
 
-  if (rows === null) return <div className="text-xs text-zinc-500">載入提供紀錄…</div>;
-  if (rows.length === 0) return null;
-
   // 需求貼文＝別人「提供」給貼文店；釋出貼文＝別人「認領」走
   const verb = post.post_type === "request" ? "提供" : "認領";
 
+  if (rows === null) {
+    return <div className="text-xs text-zinc-500">載入{verb}紀錄…</div>;
+  }
+
+  // 貼文自己記的已成交量 vs 查得到明細的量。
+  // 兩者對不起來只有一個原因：那些轉移發生在 customer_order_transfer_links
+  // （20260824000100）之前，回填時原始 reason 已經遺失、認不出屬於哪一則貼文。
+  // 這種時候要明講「有人接走但查不到是誰」—— 直接不顯示會被當成沒人認領。
+  const settled = Number(post.qty_available) - Number(post.qty_remaining);
+  const logged = rows.reduce((s, r) => s + r.qty, 0);
+  const untraced = Math.max(0, settled - logged);
+
   return (
     <div className="rounded-md border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-800 dark:bg-zinc-950">
-      <div className="mb-1.5 text-[11px] font-semibold text-zinc-600 dark:text-zinc-400">
-        {verb}紀錄（{rows.length} 筆）
+      <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold text-zinc-600 dark:text-zinc-400">
+        <span>{verb}紀錄</span>
+        {rows.length > 0 && <span className="font-normal text-zinc-500">{rows.length} 筆</span>}
       </div>
+
+      {rows.length === 0 && untraced === 0 && (
+        <div className="text-xs text-zinc-500">
+          尚無人{verb}。{post.post_type === "request" ? "別家店按「🤝 我可以提供」後會出現在這裡。" : "別家店按「✋ 我要認領」後會出現在這裡。"}
+        </div>
+      )}
+
+      {untraced > 0 && (
+        <div className="rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+          另有 {untraced} 件已被{verb}，但這批轉移早於系統開始記錄明細，查不到是哪一家店。
+        </div>
+      )}
+
       <div className="flex flex-col gap-1.5">
         {rows.map((r) => (
           <div
