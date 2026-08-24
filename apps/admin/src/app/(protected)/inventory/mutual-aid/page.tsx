@@ -772,20 +772,23 @@ function ProvidedList({ stores }: { stores: Store[] }) {
                   : "bg-white text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
               }`}
             >
-              {v ? `已完成 (${done.length})` : `在跑的 (${inFlight.length})`}
+              {/* ⚠ 不要叫「已完成」：這一格說的是**這趟貨**對方收到了，
+                  不是來源單完成了。來源單（OV-/AB-/RR- 現貨池）通常還掛著
+                  一堆沒動過的品項，2026-08-24 就被誤讀成「OV-2-0001 變已完成」。 */}
+              {v ? `對方已收 (${done.length})` : `還在路上 (${inFlight.length})`}
             </SpinButton>
           ))}
         </div>
         <span className="text-xs text-zinc-500">
           {myStoreId == null
             ? "全站的店對店轉出（總倉視角）"
-            : "本店轉出去的貨。收貨店收掉之後就會移到「已完成」"}
+            : "本店轉出去的貨。狀態說的是「這一趟」走到哪，不是來源單的狀態"}
         </span>
       </div>
 
       {shown.length === 0 ? (
         <div className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500 dark:border-zinc-700">
-          {showDone ? "沒有已完成的轉出紀錄" : "目前沒有在路上的轉出"}
+          {showDone ? "沒有對方已收的轉出紀錄" : "目前沒有在路上的轉出"}
         </div>
       ) : (
         <ul className="space-y-2">
@@ -800,8 +803,11 @@ function ProvidedList({ stores }: { stores: Store[] }) {
                     給 {r.dest_store}
                   </span>
                   <span className="text-[10px] text-zinc-500">{aidRouteLabel(r.is_air_transfer)}</span>
-                  <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
-                    {aidStageLabel(r.dest_status, r.is_air_transfer)}
+                  <span
+                    className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+                    title="這一趟貨走到哪了（不是來源單的狀態）"
+                  >
+                    這趟：{aidStageLabel(r.dest_status, r.is_air_transfer)}
                   </span>
                   {r.board_id != null && (
                     <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] text-blue-800 dark:bg-blue-950 dark:text-blue-300">
