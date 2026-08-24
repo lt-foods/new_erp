@@ -115,6 +115,7 @@ const TYPE_COLOR: Record<PostType, string> = {
 export default function MutualAidPage() {
   const [posts, setPosts] = useState<Post[] | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
+  const [view, setView] = useState<"active" | "history">("active");
   const [filter, setFilter] = useState<"all" | "request" | "offer">("all");
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
@@ -149,10 +150,11 @@ export default function MutualAidPage() {
         const sb = getSupabase();
         let q = sb
           .from("mutual_aid_board")
-          .select("id, post_type, offering_store_id, sku_id, qty_available, qty_remaining, expires_at, note, status, source_customer_order_id, spot_price, spot_description, spot_title, spot_unit, spot_images, spot_visible_to_other_stores, created_at, created_by")
-          .eq("status", "active")
-          .order("created_at", { ascending: false })
-          .limit(200);
+          .select("id, post_type, offering_store_id, sku_id, qty_available, qty_remaining, expires_at, note, status, source_customer_order_id, spot_price, spot_description, spot_title, spot_unit, spot_images, spot_visible_to_other_stores, created_at, created_by");
+        // 歷史 = 已結束（已認領／已過期／已取消），對齊 rpc_purge_expired_aid_board
+        // 20260824000000 起到期不再刪除，這三種狀態才查得到完整歷史
+        q = view === "active" ? q.eq("status", "active") : q.neq("status", "active");
+        q = q.order("created_at", { ascending: false }).limit(200);
         if (filter !== "all") q = q.eq("post_type", filter);
         const { data, error: e } = await q;
         if (e) throw new Error(e.message);
@@ -205,7 +207,7 @@ export default function MutualAidPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [filter, reloadTick]);
+  }, [view, filter, reloadTick]);
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
@@ -219,7 +221,7 @@ export default function MutualAidPage() {
         <div className="flex gap-2">
           <SpinButton
             type="button"
-            onClick={() => printViaIframe(withBasePath(`/inventory/mutual-aid/print?type=${filter}`))}
+            onClick={() => printViaIframe(withBasePath(`/inventory/mutual-aid/print?type=${filter}&view=${view}`))}
             title="列印目前這個分頁的整份貼文清單（A4 橫式）；單獨一則請按該列右邊的 🖨️"
             className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
           >
@@ -249,6 +251,23 @@ export default function MutualAidPage() {
         </div>
       </header>
 
+      <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
+        {(["active", "history"] as const).map((v) => (
+          <SpinButton
+            key={v}
+            type="button"
+            onClick={() => setView(v)}
+            className={
+              view === v
+                ? "border-b-2 border-zinc-900 px-4 py-2 text-sm font-medium text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
+                : "px-4 py-2 text-sm text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+            }
+          >
+            {v === "active" ? "進行中" : "歷史"}
+          </SpinButton>
+        ))}
+      </div>
+
       <div className="inline-flex w-fit overflow-hidden rounded-md border border-zinc-300 text-xs dark:border-zinc-700">
         {(["all", "request", "offer"] as const).map((opt) => (
           <SpinButton
@@ -276,7 +295,8 @@ export default function MutualAidPage() {
         <div className="text-sm text-zinc-500">載入中…</div>
       ) : posts.length === 0 ? (
         <div className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500 dark:border-zinc-700">
-          目前沒有進行中的{filter === "request" ? "需求" : filter === "offer" ? "釋出" : ""}貼文
+          {view === "active" ? "目前沒有進行中的" : "沒有已結束的"}
+          {filter === "request" ? "需求" : filter === "offer" ? "釋出" : ""}貼文
         </div>
       ) : (
         <ul className="space-y-2">

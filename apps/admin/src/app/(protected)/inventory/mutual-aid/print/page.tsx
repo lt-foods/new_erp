@@ -4,7 +4,9 @@
 //
 //   ?type=all|request|offer  → 清單模式（A4 橫式表格）。由 /inventory/mutual-aid 的
 //                              「🖨️ 列印」用隱藏 iframe 載入，查詢條件完全對齊列表頁
-//                              （status = active、created_at desc、limit 200）。
+//                              （created_at desc、limit 200）。
+//   &view=active|history     → 搭配清單模式：active（預設）= status=active，
+//                              history = status<>active（已認領／已過期／已取消）。
 //   ?id=<board_id>           → 單則模式（A4 直式單張）。板上每一則貼文自己的列印鈕，
 //                              **不濾 status** —— 已認領 / 已過期的也要印得出來，
 //                              店家常常是事後要補一張紙歸檔或跟對方對帳。
@@ -103,6 +105,7 @@ function Body() {
   const typeParam = sp.get("type");
   const filter: "all" | "request" | "offer" =
     typeParam === "request" || typeParam === "offer" ? typeParam : "all";
+  const view: "active" | "history" = sp.get("view") === "history" ? "history" : "active";
 
   const [rows, setRows] = useState<Row[] | null>(null);
   const [replies, setReplies] = useState<Reply[]>([]);
@@ -121,7 +124,8 @@ function Body() {
           // 單則：不濾 status（已認領 / 已過期也要印得出來）
           q = q.eq("id", singleId);
         } else {
-          q = q.eq("status", "active").order("created_at", { ascending: false }).limit(200);
+          q = view === "active" ? q.eq("status", "active") : q.neq("status", "active");
+          q = q.order("created_at", { ascending: false }).limit(200);
           if (filter !== "all") q = q.eq("post_type", filter);
         }
         const { data, error: e } = await q;
@@ -197,7 +201,7 @@ function Body() {
     return () => {
       cancelled = true;
     };
-  }, [filter, singleId]);
+  }, [filter, view, singleId]);
 
   // 載入完自動觸發列印（沒資料也印，讓「今天板上是空的」也留得下紙本）
   useEffect(() => {
@@ -232,17 +236,20 @@ function Body() {
       <PrintBar />
 
       <header className="mb-3">
-        <h1 className="text-xl font-bold">互助交流板 — {FILTER_LABEL[filter]}</h1>
+        <h1 className="text-xl font-bold">
+          互助交流板 — {FILTER_LABEL[filter]}・{view === "active" ? "進行中" : "歷史"}
+        </h1>
         <div className="mt-1 flex flex-wrap gap-x-4 text-xs text-zinc-600">
           <span>列印時間 {printedAt}</span>
           <span>共 {rows.length} 則（需求 {requestCount}・釋出 {offerCount}）</span>
-          <span>僅列出進行中的貼文</span>
+          <span>{view === "active" ? "僅列出進行中的貼文" : "僅列出已結束（已認領／已過期／已取消）的貼文"}</span>
         </div>
       </header>
 
       {rows.length === 0 ? (
         <div className="border border-dashed border-zinc-400 p-8 text-center text-sm text-zinc-500">
-          目前沒有進行中的{filter === "request" ? "需求" : filter === "offer" ? "釋出" : ""}貼文
+          {view === "active" ? "目前沒有進行中的" : "沒有已結束的"}
+          {filter === "request" ? "需求" : filter === "offer" ? "釋出" : ""}貼文
         </div>
       ) : (
         <table className="w-full border-collapse text-sm">
@@ -250,6 +257,7 @@ function Body() {
             <tr className="border-b border-zinc-500 bg-zinc-100 text-xs">
               <Th className="w-8">#</Th>
               <Th className="w-12">類型</Th>
+              {view === "history" && <Th className="w-14">狀態</Th>}
               <Th className="w-24">店別</Th>
               <Th>商品 / 品項</Th>
               <Th className="w-20 text-right">數量</Th>
@@ -267,6 +275,7 @@ function Body() {
                 <tr key={r.id} className="border-b border-zinc-300 align-top">
                   <Td>{idx + 1}</Td>
                   <Td className="font-medium">{TYPE_LABEL[r.post_type]}</Td>
+                  {view === "history" && <Td>{STATUS_LABEL[r.status]}</Td>}
                   <Td>{r.store_name}</Td>
                   <Td>
                     {r.sku_label}
