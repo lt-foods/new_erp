@@ -9,6 +9,7 @@ import { PickupDialog } from "@/components/PickupDialog";
 import { AidOrderTimeline } from "@/components/AidOrderTimeline";
 import { OrderAuditDrawer } from "@/components/OrderAuditDrawer";
 import { WalletPayOrderModal } from "@/components/WalletPayOrderModal";
+import { AssignStockModal } from "@/components/AssignStockModal";
 import { EditableNumber, EditableText } from "@/components/EditableCell";
 import { EditableDiscount, deriveDiscount, type DiscountValue } from "@/components/EditableDiscount";
 import { useAuth } from "@/components/AuthProvider";
@@ -231,6 +232,8 @@ export function OrderDetail({
   // item.id → 是否已到貨可取（v_order_item_pickup_ready）。shipping 單部分到貨時，已到品項可先取
   const [itemReady, setItemReady] = useState<Map<number, boolean>>(new Map());
   const [returnDetailId, setReturnDetailId] = useState<number | null>(null);
+  // 「📦 從庫存配貨」目標品項（把取貨門市的現貨指派給這一行）
+  const [assignTarget, setAssignTarget] = useState<{ itemId: number; skuLabel: string } | null>(null);
   // 該訂單的取貨事件（append-only）— 取貨後補印收據用，見 /pickup/print?event_ids=
   const [pickupEvents, setPickupEvents] = useState<PickupEventRow[]>([]);
   const [timeline, setTimeline] = useState<TimelineStep[] | null>(null);
@@ -296,6 +299,13 @@ export function OrderDetail({
 
   // qty 只有 pending 訂單可改;一旦被 PR 鎖定變 confirmed 就唯讀
   const canEditQty = (canEdit || isStoreOfThisOrder) && head?.status === "pending";
+
+  // 「📦 從庫存配貨」：把取貨門市的現貨指派給這一行（開 DN、不扣庫存不結案）。
+  // 跟 qty 編輯不同，這個在 confirmed / 等貨中的單上才最有用，所以不綁 pending。
+  // 伺服端 rpc_assign_stock_to_order_item 另有分店只能配自己店的守衛。
+  const canAssignStock = (canEdit || isStoreOfThisOrder)
+    && !!head
+    && !["cancelled", "expired", "transferred_out", "completed"].includes(head.status);
 
   // 備註（單頭/品項）：店長店員也可編自店訂單，對齊 _check_order_edit_notes_perm
   const canEditNotes = canEdit || isStoreOfThisOrder;
@@ -1419,12 +1429,14 @@ export function OrderDetail({
                 <th className="px-3 py-2 text-left font-medium text-zinc-500">備註</th>
                 <th className="px-3 py-2 text-left font-medium text-zinc-500">第一次加</th>
                 <th className="px-3 py-2 text-left font-medium text-zinc-500">最後更新</th>
-                {canEditQty && <th className="px-3 py-2 text-right font-medium text-zinc-500">操作</th>}
+                {(canEditQty || canAssignStock) && (
+                  <th className="px-3 py-2 text-right font-medium text-zinc-500">操作</th>
+                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
               {items.length === 0 ? (
-                <tr><td colSpan={canEditQty ? 10 : 9} className="p-4 text-center text-zinc-500">尚無明細</td></tr>
+                <tr><td colSpan={canEditQty || canAssignStock ? 10 : 9} className="p-4 text-center text-zinc-500">尚無明細</td></tr>
               ) : items.map((it) => {
                 const eff = itemEffective(it);
                 const sub = computeLineSubtotal(Number(eff.qty), eff.unit_price, eff.discount);
@@ -1536,17 +1548,47 @@ export function OrderDetail({
                       {fmtDt(it.updated_at)}<br />
                       <span className="text-[10px]">by {staffLabel(it.updated_by, staffNames)}</span>
                     </td>
-                    {canEditQty && (
+                    {(canEditQty || canAssignStock) && (
                       <td className="px-3 py-2 text-right">
-                        {!["cancelled", "expired"].includes(it.status) && !isPicked ? (
-                          <SpinButton
-                            onClick={() => deleteItem(it)}
-                            title="刪除此品項（待確認訂單，刪到最後一項會自動取消整單）"
-                            className="rounded-md border border-red-300 px-2 py-1 text-[11px] font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
-                          >
-                            刪除
-                          </SpinButton>
-                        ) : null}
+                        <div className="flex items-center justify-end gap-1.5">
+                          {/* 從庫存配貨：把取貨門市的現貨指派給這一行 → 品項變「可取貨」。
+                              不扣庫存、不結案（客人到店在取貨頁交貨才扣帳）。
+                              草稿沒存的時候先擋下：這一顆會動到 qty（配不滿會拆行），
+                              和未儲存的數量草稿混在一起會互蓋。 */}
+                          {canAssignStock
+                            && !isPicked
+                            && !["cancelled", "expired"].includes(it.status) && (
+                            <SpinButton
+                              onClick={() => {
+                                if (draftCount > 0) {
+                                  alert("請先儲存或放棄未儲存的修改，再從庫存配貨。");
+                                  return;
+                                }
+                                setAssignTarget({
+                                  itemId: it.id,
+                                  skuLabel: it.sku
+                                    ? `${it.sku.product_name ?? ""}${it.sku.variant_name ? ` / ${it.sku.variant_name}` : ""}`.trim()
+                                    : `#${it.id}`,
+                                });
+                              }}
+                              title="把取貨門市的店內現貨指派給這一行 —— 品項會變成「已到貨・可取貨」，取貨時才扣庫存收款"
+                              className="rounded-md border border-violet-300 px-2 py-1 text-[11px] font-medium text-violet-700 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-300 dark:hover:bg-violet-950"
+                            >
+                              📦 從庫存配貨
+                            </SpinButton>
+                          )}
+                          {canEditQty
+                            && !["cancelled", "expired"].includes(it.status)
+                            && !isPicked && (
+                            <SpinButton
+                              onClick={() => deleteItem(it)}
+                              title="刪除此品項（待確認訂單，刪到最後一項會自動取消整單）"
+                              className="rounded-md border border-red-300 px-2 py-1 text-[11px] font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
+                            >
+                              刪除
+                            </SpinButton>
+                          )}
+                        </div>
                       </td>
                     )}
                   </tr>
@@ -1776,6 +1818,14 @@ export function OrderDetail({
           memberId={head.member.id}
           memberName={head.member.name}
           balanceDue={Math.max(0, payableAmount - Number(head.wallet_paid_amount ?? 0))}
+        />
+      )}
+      {assignTarget && (
+        <AssignStockModal
+          itemId={assignTarget.itemId}
+          skuLabel={assignTarget.skuLabel}
+          onClose={() => setAssignTarget(null)}
+          onSaved={() => setReloadTick((n) => n + 1)}
         />
       )}
     </div>
