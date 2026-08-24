@@ -50,6 +50,10 @@ type ItemSummary = {
   coveredQty: number;
   prefilledQty: number;
   backorderQty: number;
+  // 每 SKU 的 短少/待補 件數（20260824040000 rpc 回 by_sku）— 品項行標「待補 N」用
+  bySku: Record<string, { short: number; backorder: number }>;
+  // 總倉對短少/多收的處理回覆（含重派補單 wave）— 店家連回去追蹤用
+  hqReplies: Array<{ sku_id: number; resolution: string | null; wave_code: string | null; wave_status: string | null }>;
 };
 
 // 列表上的一個可收合群組（product 模式＝同品相，wave 模式＝同撿貨單號）
@@ -411,7 +415,7 @@ export default function TransfersInboxPage() {
               if (code) skuCodeMap.set(s.id, code);
             }
           }
-          const emptySummary = (): ItemSummary => ({ lines: 0, totalQty: 0, names: [], codes: [], items: [], extraQty: 0, shortQty: 0, coveredQty: 0, prefilledQty: 0, backorderQty: 0 });
+          const emptySummary = (): ItemSummary => ({ lines: 0, totalQty: 0, names: [], codes: [], items: [], extraQty: 0, shortQty: 0, coveredQty: 0, prefilledQty: 0, backorderQty: 0, bySku: {}, hqReplies: [] });
           for (const tid of transferIds) summary.set(tid, emptySummary());
           for (const it of items) {
             const cur = summary.get(it.transfer_id) ?? emptySummary();
@@ -444,7 +448,7 @@ export default function TransfersInboxPage() {
             p_transfer_ids: transferIds,
           });
           const diffs =
-            (diffData as Record<string, { over?: number; short?: number; covered?: number; prefilled?: number; backorder?: number }> | null) ?? {};
+            (diffData as Record<string, { over?: number; short?: number; covered?: number; prefilled?: number; backorder?: number; by_sku?: Record<string, { short?: number; backorder?: number }>; hq?: Array<{ sku_id: number; resolution: string | null; wave_code: string | null; wave_status: string | null }> }> | null) ?? {};
           for (const [tid, d] of Object.entries(diffs)) {
             const cur = summary.get(Number(tid));
             if (!cur) continue;
@@ -453,6 +457,13 @@ export default function TransfersInboxPage() {
             cur.coveredQty = Number(d?.covered) || 0;
             cur.prefilledQty = Number(d?.prefilled) || 0;
             cur.backorderQty = Number(d?.backorder) || 0;
+            cur.bySku = Object.fromEntries(
+              Object.entries(d?.by_sku ?? {}).map(([k, v]) => [
+                k,
+                { short: Number(v?.short) || 0, backorder: Number(v?.backorder) || 0 },
+              ]),
+            );
+            cur.hqReplies = d?.hq ?? [];
           }
         }
 
@@ -1764,6 +1775,41 @@ export default function TransfersInboxPage() {
                                           ⚖️ 配貨
                                         </SpinButton>
                                       )}
+                                      {/* 這個 SKU 自己的待補件數（群組加總看不出是哪個規格在等） */}
+                                      {(() => {
+                                        const bo = Number(
+                                          summary.bySku?.[String(it.skuId)]?.backorder ?? 0,
+                                        );
+                                        return bo > 0 ? (
+                                          <span
+                                            className="ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                                            title="這個品項還有客人在等補貨（取貨頁不會放行），下一批到貨會自動重算"
+                                          >
+                                            ⏳ 待補 {bo}
+                                          </span>
+                                        ) : null;
+                                      })()}
+                                      {/* 總倉開了重派補單 → 給店家連回去追（點了用補單號搜尋本頁） */}
+                                      {summary.hqReplies
+                                        .filter((h) => h.sku_id === it.skuId && h.wave_code)
+                                        .map((h) => (
+                                          <SpinButton
+                                            key={h.wave_code}
+                                            onClick={() => setSearch(h.wave_code as string)}
+                                            className="ml-1.5 rounded border border-sky-300 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 hover:bg-sky-50 dark:border-sky-800 dark:text-sky-400 dark:hover:bg-sky-950"
+                                            title={
+                                              h.wave_status === "draft"
+                                                ? "總倉已開補單，還在準備中 — 點了用補單號搜尋本頁"
+                                                : h.wave_status === "cancelled"
+                                                ? "總倉開過補單但已取消"
+                                                : "總倉已開補單 — 點了用補單號搜尋本頁（派出後會出現在未收）"
+                                            }
+                                          >
+                                            🚚 補單 {h.wave_code}
+                                            {h.wave_status === "draft" ? "・準備中" : ""}
+                                            {h.wave_status === "cancelled" ? "・已取消" : ""}
+                                          </SpinButton>
+                                        ))}
                                     </li>
                                   ))}
                                 </ul>
