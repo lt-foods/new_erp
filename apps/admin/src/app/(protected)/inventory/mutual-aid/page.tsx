@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
@@ -8,6 +9,12 @@ import SearchSpinner from "@/components/SearchSpinner";
 import { ProductImagesField } from "@/components/ProductImagesField";
 import { printViaIframe } from "@/lib/printIframe";
 import { withBasePath } from "@/lib/basePath";
+import { useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
+import { shortOrderNo } from "@/lib/orderTitle";
+import {
+  TRANSFER_LINK_SELECT, type TransferLink,
+  activeQty, aidRouteLabel, aidStageLabel, isAidInFlight, linkItems,
+} from "@/lib/aidTransfer";
 
 type Store = { id: number; code: string; name: string };
 type SkuOption = { id: number; sku_code: string; product_name: string; variant_name: string | null };
@@ -59,6 +66,25 @@ type PendingOrder = {
     unit_price: number | null;
     product_description: string | null;
   }[];
+};
+
+/** 「我提供出去的」一列 = 一趟轉移（customer_order_transfer_links 一列） */
+type ProvidedRow = {
+  linkId: number;
+  transferred_at: string;
+  is_air_transfer: boolean;
+  /** 這趟是哪一則互助貼文促成的；舊資料（連結表回填出來的）認不出來就是 null */
+  board_id: number | null;
+  reason: string | null;
+  source_store: string;
+  source_order_no: string;
+  dest_store: string;
+  dest_store_id: number | null;
+  dest_order_id: number;
+  dest_order_no: string;
+  dest_status: string;
+  qty: number;
+  labels: string[];
 };
 
 type Reply = {
@@ -115,7 +141,7 @@ const TYPE_COLOR: Record<PostType, string> = {
 export default function MutualAidPage() {
   const [posts, setPosts] = useState<Post[] | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
-  const [view, setView] = useState<"active" | "history">("active");
+  const [view, setView] = useState<"active" | "history" | "provided">("active");
   const [filter, setFilter] = useState<"all" | "request" | "offer">("all");
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
@@ -142,8 +168,9 @@ export default function MutualAidPage() {
     return () => { cancelled = true; };
   }, []);
 
-  // 載入 posts
+  // 載入 posts（「我提供出去的」是另一份資料來源，由 ProvidedList 自己撈）
   useEffect(() => {
+    if (view === "provided") return;
     let cancelled = false;
     (async () => {
       try {
@@ -219,14 +246,18 @@ export default function MutualAidPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <SpinButton
-            type="button"
-            onClick={() => printViaIframe(withBasePath(`/inventory/mutual-aid/print?type=${filter}&view=${view}`))}
-            title="列印目前這個分頁的整份貼文清單（A4 橫式）；單獨一則請按該列右邊的 🖨️"
-            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-          >
-            🖨️ 列印
-          </SpinButton>
+          {/* 「我提供出去的」列的是轉移紀錄不是貼文，整份清單列印不適用；
+              那一頁每一列有自己的隨貨單列印鈕（走 /transfers/print-aid 兩聯） */}
+          {view !== "provided" && (
+            <SpinButton
+              type="button"
+              onClick={() => printViaIframe(withBasePath(`/inventory/mutual-aid/print?type=${filter}&view=${view}`))}
+              title="列印目前這個分頁的整份貼文清單（A4 橫式）；單獨一則請按該列右邊的 🖨️"
+              className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            >
+              🖨️ 列印
+            </SpinButton>
+          )}
           <SpinButton
             type="button"
             onClick={() => setRequestModalOpen(true)}
@@ -252,7 +283,7 @@ export default function MutualAidPage() {
       </header>
 
       <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
-        {(["active", "history"] as const).map((v) => (
+        {(["active", "history", "provided"] as const).map((v) => (
           <SpinButton
             key={v}
             type="button"
@@ -263,11 +294,15 @@ export default function MutualAidPage() {
                 : "px-4 py-2 text-sm text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
             }
           >
-            {v === "active" ? "進行中" : "歷史"}
+            {v === "active" ? "進行中" : v === "history" ? "歷史" : "我提供出去的"}
           </SpinButton>
         ))}
       </div>
 
+      {view === "provided" ? (
+        <ProvidedList stores={stores} />
+      ) : (
+      <>
       <div className="inline-flex w-fit overflow-hidden rounded-md border border-zinc-300 text-xs dark:border-zinc-700">
         {(["all", "request", "offer"] as const).map((opt) => (
           <SpinButton
@@ -364,6 +399,8 @@ export default function MutualAidPage() {
           ))}
         </ul>
       )}
+      </>
+      )}
 
       <RequestModal
         open={requestModalOpen}
@@ -406,6 +443,409 @@ export default function MutualAidPage() {
             reloadAndRefreshBadge();
           }}
         />
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// 提供紀錄 —— 這則貼文被哪幾家店接走 / 補上了
+//
+// 點開貼文只看得到留言、看不到「誰真的出了貨」（2026-08-24 回報）。
+// 認領／提供的本體是訂單轉移，所以紀錄在 customer_order_transfer_links，
+// 不在 mutual_aid_board 也不在留言。
+//
+// ⚠ 這裡用 reason 認貼文，不是用 aid_board_id：那一欄是 20260824060000 才加的，
+// SQL 有沒有先套上正式庫不是前端控制得了的（#827 就發生過「PR 合併了、
+// migration 沒套」）。撈不存在的欄位整段會 400。伺服端先用 `#<id>` 收窄，
+// 再在前端用嚴格的 regex 濾掉 #2490 這種誤中。
+// ============================================================
+function AidClaimLog({ post }: { post: Post }) {
+  const [rows, setRows] = useState<ProvidedRow[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const sb = getSupabase();
+        const SEL =
+          TRANSFER_LINK_SELECT + ", reason, " +
+          "src:customer_orders!customer_order_transfer_links_source_order_id_fkey(" +
+          "id, order_no, pickup_store_id, store:stores!customer_orders_pickup_store_id_fkey(name)), " +
+          "dest:customer_orders!customer_order_transfer_links_dest_order_id_fkey(" +
+          "id, order_no, status, pickup_store_id, " +
+          "store:stores!customer_orders_pickup_store_id_fkey(name), " +
+          "items:customer_order_items(id, qty, status, source, " +
+          "sku:skus(sku_code, product_name, variant_name)))";
+
+        // 兩條路一起撈，因為單靠 reason 只找得到新資料：
+        //   (1) reason 帶貼文編號 —— 兩個對話框的預設值都是「互助板提供／認領 #N」。
+        //   (2) 載體單反查 —— 手動現貨認領時 rpc_claim_manual_spot 會在載體單
+        //       （AB-xx-000n）的品項 notes 蓋「[互助板認領 #N]」，而那張載體單
+        //       只為這一次認領而生 → 從它轉出去的那一趟就是這次認領。
+        //       線上 4 筆歷史認領（#119/#206/#207/#208）全靠這條才查得到是古華店；
+        //       它們的 reason 在連結表回填時已經被換成「[回填] …」了。
+        const [reasonRes, carrierRes] = await Promise.all([
+          sb.from("customer_order_transfer_links").select(SEL)
+            .ilike("reason", `%#${post.id}%`)
+            .order("transferred_at", { ascending: true }).limit(50),
+          sb.from("customer_order_items").select("order_id")
+            .ilike("notes", `%互助板認領 #${post.id}%`).limit(50),
+        ]);
+        if (cancelled) return;
+
+        const carrierIds = Array.from(
+          new Set(((carrierRes.data ?? []) as { order_id: number }[]).map((r) => r.order_id)),
+        );
+        const byCarrier = carrierIds.length > 0
+          ? await sb.from("customer_order_transfer_links").select(SEL)
+              .in("source_order_id", carrierIds)
+              .order("transferred_at", { ascending: true }).limit(50)
+          : { data: [], error: null };
+        if (cancelled) return;
+        if (reasonRes.error && carrierRes.error) { setRows([]); return; }
+
+        // 「互助板提供 #249」/「互助板認領 #249」；#2490 不能算進來。
+        // 只用來濾 (1) —— (2) 是從載體單直接反查的，本身就精準。
+        const exact = new RegExp(`互助板[^#]*#${post.id}(?!\\d)`);
+        type StoreRef = { name: string } | { name: string }[] | null;
+        type RawSku = { sku_code: string; product_name: string; variant_name: string | null };
+        type Raw = TransferLink & {
+          reason: string | null;
+          src: { id: number; order_no: string; pickup_store_id: number | null; store: StoreRef } | null;
+          dest: {
+            id: number; order_no: string; status: string; pickup_store_id: number | null;
+            store: StoreRef;
+            items: { id: number; qty: number; status: string; source: string | null; sku: RawSku | RawSku[] | null }[] | null;
+          } | null;
+        };
+        const nameOf = (s: StoreRef) => (Array.isArray(s) ? s[0]?.name : s?.name) ?? "—";
+        // 一趟轉移可能兩條路都撈到（新資料的 reason 有編號、又剛好是手動現貨），
+        // 以 link id 去重
+        const merged = new Map<number, Raw>();
+        for (const r of (reasonRes.data ?? []) as unknown as Raw[]) {
+          if (exact.test(r.reason ?? "")) merged.set(r.id, r);
+        }
+        for (const r of (byCarrier.data ?? []) as unknown as Raw[]) merged.set(r.id, r);
+        const list = [...merged.values()]
+          .sort((a, b) => a.transferred_at.localeCompare(b.transferred_at))
+          .flatMap((r): ProvidedRow[] => {
+          const src = r.src, dest = r.dest;
+          if (!src || !dest) return [];
+          const mine = linkItems(r, dest.items ?? []);
+          const qty = activeQty(mine);
+          return [{
+            linkId: r.id,
+            transferred_at: r.transferred_at,
+            is_air_transfer: r.is_air_transfer === true,
+            board_id: post.id,
+            reason: r.reason,
+            source_store: nameOf(src.store),
+            source_order_no: src.order_no,
+            dest_store: nameOf(dest.store),
+            dest_store_id: dest.pickup_store_id,
+            dest_order_id: dest.id,
+            dest_order_no: dest.order_no,
+            dest_status: dest.status,
+            qty,
+            labels: mine
+              .filter((it) => !["cancelled", "expired"].includes(it.status))
+              .map((it) => {
+                const sku = Array.isArray(it.sku) ? it.sku[0] : it.sku;
+                return sku
+                  ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} ×${Number(it.qty)}`
+                  : `品項 ×${Number(it.qty)}`;
+              }),
+          }];
+        });
+        setRows(list);
+      } catch {
+        if (!cancelled) setRows([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [post.id]);
+
+  // 需求貼文＝別人「提供」給貼文店；釋出貼文＝別人「認領」走
+  const verb = post.post_type === "request" ? "提供" : "認領";
+
+  if (rows === null) {
+    return <div className="text-xs text-zinc-500">載入{verb}紀錄…</div>;
+  }
+
+  // 貼文自己記的已成交量 vs 查得到明細的量。
+  // 兩者對不起來只有一個原因：那些轉移發生在 customer_order_transfer_links
+  // （20260824000100）之前，回填時原始 reason 已經遺失、認不出屬於哪一則貼文。
+  // 這種時候要明講「有人接走但查不到是誰」—— 直接不顯示會被當成沒人認領。
+  const settled = Number(post.qty_available) - Number(post.qty_remaining);
+  const logged = rows.reduce((s, r) => s + r.qty, 0);
+  const untraced = Math.max(0, settled - logged);
+
+  return (
+    <div className="rounded-md border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold text-zinc-600 dark:text-zinc-400">
+        <span>{verb}紀錄</span>
+        {rows.length > 0 && <span className="font-normal text-zinc-500">{rows.length} 筆</span>}
+      </div>
+
+      {rows.length === 0 && untraced === 0 && (
+        <div className="text-xs text-zinc-500">
+          尚無人{verb}。{post.post_type === "request" ? "別家店按「🤝 我可以提供」後會出現在這裡。" : "別家店按「✋ 我要認領」後會出現在這裡。"}
+        </div>
+      )}
+
+      {untraced > 0 && (
+        <div className="rounded border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+          另有 {untraced} 件已被{verb}，但這批轉移早於系統開始記錄明細，查不到是哪一家店。
+        </div>
+      )}
+
+      <div className="flex flex-col gap-1.5">
+        {rows.map((r) => (
+          <div
+            key={r.linkId}
+            className="rounded border border-zinc-200 bg-white p-2 text-xs dark:border-zinc-800 dark:bg-zinc-900"
+          >
+            <div className="mb-1 flex flex-wrap items-center gap-1.5">
+              <span className="rounded bg-pink-100 px-1.5 py-0.5 text-[10px] font-semibold text-pink-800 dark:bg-pink-950 dark:text-pink-300">
+                {post.post_type === "request" ? r.source_store : r.dest_store}
+              </span>
+              <span className="text-[10px] text-zinc-500">{aidRouteLabel(r.is_air_transfer)}</span>
+              <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                {aidStageLabel(r.dest_status, r.is_air_transfer)}
+              </span>
+              <span className="ml-auto text-[10px] text-zinc-500">{fmtDt(r.transferred_at)}</span>
+            </div>
+            <div className="text-zinc-700 dark:text-zinc-300">{r.labels.join("、") || `共 ${r.qty}`}</div>
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-zinc-500">
+              <span>
+                {post.post_type === "request" ? "送到" : "送給"}{" "}
+                <span className="text-zinc-700 dark:text-zinc-300">{r.dest_store}</span>
+              </span>
+              <span>
+                單號 <span className="font-mono text-zinc-700 dark:text-zinc-300">{shortOrderNo(r.dest_order_no)}</span>
+              </span>
+              <SpinButton
+                type="button"
+                onClick={() =>
+                  printViaIframe(
+                    withBasePath(`/transfers/print-aid?order_id=${r.dest_order_id}&link=${r.linkId}`),
+                  )
+                }
+                title="列印這一趟的互助出貨單（兩聯：司機聯 + 存查聯）"
+                className="ml-auto rounded border border-zinc-300 px-1.5 py-0.5 text-[10px] text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              >
+                🖨️ 隨貨單
+              </SpinButton>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// 我提供出去的 —— 本店轉出去的互助，一趟轉移一列
+//
+// 為什麼不是查訂單而是查 customer_order_transfer_links：
+// 轉入單掛在**收貨店**名下，轉出店的訂單列表一列都撈不到；而且一張轉入單可以
+// 有多個來源（追加轉入把好幾家店的貨併進同一張，線上 TF0486 有 3 家店的 5 個
+// 品項），拿訂單當單位就會把別家店的貨也算成自己的。連結表才是 1:1 的「一趟」。
+// 2026-08-24 起互助轉單一律開新單（20260824060000），但舊資料還是併在一起的，
+// 所以這裡一律用 linkItems() 只取這一趟真正搬過去的品項。
+//
+// 母體＝跨店的轉出（同店轉單只是換客人，貨沒離開本店，不算互助）。
+// 分店帳號鎖自己店；總倉／未綁店看全站。
+// ============================================================
+function ProvidedList({ stores }: { stores: Store[] }) {
+  const myStoreId = useUserBranchStoreId(stores);
+  const [rows, setRows] = useState<ProvidedRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showDone, setShowDone] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const sb = getSupabase();
+        const { data, error: e } = await sb
+          .from("customer_order_transfer_links")
+          // ⚠ 這裡刻意**不撈** customer_order_transfer_links.aid_board_id：
+          // 那一欄是 20260824060000 才加的，而 SQL 有沒有先套上正式庫不是這支
+          // 前端控制得了的（#827 就發生過「PR 合併了、migration 沒套」）。
+          // 撈一個還不存在的欄位會讓整個查詢 400、整頁掛掉；貼文編號只是徽章，
+          // 從 reason 認就夠（RPC 寫的預設是「互助板提供 #N」/「互助板認領 #N」）。
+          .select(
+            TRANSFER_LINK_SELECT + ", reason, " +
+              "src:customer_orders!customer_order_transfer_links_source_order_id_fkey(" +
+              "id, order_no, pickup_store_id, store:stores!customer_orders_pickup_store_id_fkey(name)), " +
+              "dest:customer_orders!customer_order_transfer_links_dest_order_id_fkey(" +
+              "id, order_no, status, pickup_store_id, " +
+              "store:stores!customer_orders_pickup_store_id_fkey(name), " +
+              "items:customer_order_items(id, qty, status, source, " +
+              "sku:skus(sku_code, product_name, variant_name)))",
+          )
+          .order("transferred_at", { ascending: false })
+          .limit(300);
+        if (cancelled) return;
+        if (e) throw new Error(e.message);
+        type StoreRef = { name: string } | { name: string }[] | null;
+        type RawSku = { sku_code: string; product_name: string; variant_name: string | null };
+        type Raw = TransferLink & {
+          reason: string | null;
+          src: { id: number; order_no: string; pickup_store_id: number | null; store: StoreRef } | null;
+          dest: {
+            id: number; order_no: string; status: string; pickup_store_id: number | null;
+            store: StoreRef;
+            items: { id: number; qty: number; status: string; source: string | null; sku: RawSku | RawSku[] | null }[] | null;
+          } | null;
+        };
+        const nameOf = (s: StoreRef) => (Array.isArray(s) ? s[0]?.name : s?.name) ?? "—";
+        const list = ((data ?? []) as unknown as Raw[]).flatMap((r): ProvidedRow[] => {
+          const src = r.src, dest = r.dest;
+          if (!src || !dest) return [];
+          // 同店轉單貨沒離開本店
+          if (src.pickup_store_id === dest.pickup_store_id) return [];
+          // 分店帳號只看自己轉出去的；HQ 看全站
+          if (myStoreId != null && src.pickup_store_id !== myStoreId) return [];
+          const mine = linkItems(r, dest.items ?? []);
+          const qty = activeQty(mine);
+          if (qty <= 0) return [];
+          return [{
+            linkId: r.id,
+            transferred_at: r.transferred_at,
+            is_air_transfer: r.is_air_transfer === true,
+            board_id: Number(/互助板[^#]*#(\d+)/.exec(r.reason ?? "")?.[1]) || null,
+            reason: r.reason,
+            source_store: nameOf(src.store),
+            source_order_no: src.order_no,
+            dest_store: nameOf(dest.store),
+            dest_store_id: dest.pickup_store_id,
+            dest_order_id: dest.id,
+            dest_order_no: dest.order_no,
+            dest_status: dest.status,
+            qty,
+            labels: mine
+              .filter((it) => !["cancelled", "expired"].includes(it.status))
+              .map((it) => {
+                const sku = Array.isArray(it.sku) ? it.sku[0] : it.sku;
+                return sku
+                  ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} ×${Number(it.qty)}`
+                  : `品項 ×${Number(it.qty)}`;
+              }),
+          }];
+        });
+        setRows(list);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [myStoreId]);
+
+  if (error) {
+    return (
+      <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+        {error}
+      </div>
+    );
+  }
+  if (rows === null) return <div className="text-sm text-zinc-500">載入中…</div>;
+
+  const inFlight = rows.filter((r) => isAidInFlight(r.dest_status));
+  const done = rows.filter((r) => !isAidInFlight(r.dest_status));
+  const shown = showDone ? done : inFlight;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="inline-flex w-fit overflow-hidden rounded-md border border-zinc-300 text-xs dark:border-zinc-700">
+          {([false, true] as const).map((v) => (
+            <SpinButton
+              key={String(v)}
+              type="button"
+              onClick={() => setShowDone(v)}
+              className={`px-3 py-1.5 ${
+                showDone === v
+                  ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                  : "bg-white text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              }`}
+            >
+              {v ? `已完成 (${done.length})` : `在跑的 (${inFlight.length})`}
+            </SpinButton>
+          ))}
+        </div>
+        <span className="text-xs text-zinc-500">
+          {myStoreId == null
+            ? "全站的店對店轉出（總倉視角）"
+            : "本店轉出去的貨。收貨店收掉之後就會移到「已完成」"}
+        </span>
+      </div>
+
+      {shown.length === 0 ? (
+        <div className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500 dark:border-zinc-700">
+          {showDone ? "沒有已完成的轉出紀錄" : "目前沒有在路上的轉出"}
+        </div>
+      ) : (
+        <ul className="space-y-2">
+          {shown.map((r) => (
+            <li
+              key={r.linkId}
+              className="flex items-start gap-2 rounded-md border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                  <span className="rounded bg-pink-100 px-1.5 py-0.5 text-[10px] font-semibold text-pink-800 dark:bg-pink-950 dark:text-pink-300">
+                    給 {r.dest_store}
+                  </span>
+                  <span className="text-[10px] text-zinc-500">{aidRouteLabel(r.is_air_transfer)}</span>
+                  <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                    {aidStageLabel(r.dest_status, r.is_air_transfer)}
+                  </span>
+                  {r.board_id != null && (
+                    <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[10px] text-blue-800 dark:bg-blue-950 dark:text-blue-300">
+                      互助板 #{r.board_id}
+                    </span>
+                  )}
+                  {myStoreId == null && (
+                    <span className="text-[10px] text-zinc-500">從 {r.source_store}</span>
+                  )}
+                  <span className="ml-auto text-xs text-zinc-500">{fmtDt(r.transferred_at)}</span>
+                </div>
+                <div className="text-sm">{r.labels.join("、") || `共 ${r.qty}`}</div>
+                <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
+                  <span>來源單 <span className="font-mono text-zinc-700 dark:text-zinc-300">{r.source_order_no}</span></span>
+                  {/* 轉入單掛在收貨店名下 —— 連結一定要帶 storeId，否則分店帳號的
+                      門市篩選會預設帶回自己店、搜出 0 筆（看起來像貨憑空消失） */}
+                  <Link
+                    className="text-blue-600 underline dark:text-blue-400"
+                    href={`/orders?q=${encodeURIComponent(r.dest_order_no)}${r.dest_store_id != null ? `&storeId=${r.dest_store_id}` : ""}`}
+                  >
+                    轉入單 {shortOrderNo(r.dest_order_no)}
+                  </Link>
+                  {r.reason && !r.reason.startsWith("[回填]") && (
+                    <span className="text-zinc-700 dark:text-zinc-300">「{r.reason}」</span>
+                  )}
+                </div>
+              </div>
+              {/* 隨貨單走 /transfers/print-aid（兩聯：司機聯 + 存查聯），
+                  帶 link 才只印這一趟的貨、來源店也才標得對 */}
+              <SpinButton
+                type="button"
+                onClick={() =>
+                  printViaIframe(
+                    withBasePath(`/transfers/print-aid?order_id=${r.dest_order_id}&link=${r.linkId}`),
+                  )
+                }
+                title="列印這一趟的互助出貨單（兩聯：司機聯 + 存查聯）"
+                className="shrink-0 rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              >
+                🖨️
+              </SpinButton>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
@@ -1701,6 +2141,9 @@ function ThreadModal({
           </div>
         )}
 
+        {/* 提供紀錄：這則貼文被哪幾家店接走 / 補上了 */}
+        <AidClaimLog post={post} />
+
         {/* Replies thread */}
         <div className="flex flex-col gap-2 max-h-80 overflow-y-auto pr-1">
           {replies === null ? (
@@ -1902,6 +2345,8 @@ function ClaimOfferDialog({
         p_reason: reason || null,
         p_items: [{ sku_id: post.sku_id, qty: qtyN }],
         p_is_air_transfer: isAir,
+        // 互助的轉單一律開自己的新單，不併進收貨店既有的容器單（20260824060000）
+        p_aid_board_id: post.id,
       });
       if (e1) { setErr(e1.message); return; }
       // 統一走 consume RPC：reach 0 自動 exhausted、>0 保持 active 可分批
@@ -2087,6 +2532,8 @@ function FulfillRequestDialog({
         p_reason: reason || null,
         p_items: [{ sku_id: post.sku_id, qty: qtyN }],
         p_is_air_transfer: isAir,
+        // 互助的轉單一律開自己的新單，不併進求助店既有的容器單（20260824060000）
+        p_aid_board_id: post.id,
       });
       if (e1) { setErr(e1.message); return; }
       const { error: e2 } = await sb.rpc("rpc_consume_aid_board", {

@@ -85,6 +85,23 @@ export function internalOrderSource(orderNo: string | null | undefined): Interna
   return null;
 }
 
+/**
+ * 單號的「給人看」版本。
+ *
+ * 內部共用假團底下的單號長這樣：`__INTERNAL_RESTOCK__-TF0497`。前綴是帳本代號，
+ * 店員看不懂也不該看到（2026-08-24 回報：互助板上印出來整串沒人知道是什麼），
+ * 但尾碼 TF0497 是店裡真的會拿來對帳的號 —— 所以只砍前綴、留尾碼並補上中文。
+ * 一般單號（GRP-…、RR-…、AB-…）原樣回傳。
+ */
+export function shortOrderNo(orderNo: string | null | undefined): string {
+  const no = (orderNo ?? "").trim();
+  if (!no) return "—";
+  const m = /^__[A-Z_]+__-(.+)$/.exec(no);
+  if (!m) return no;
+  const tail = m[1];
+  return /^TF\d+$/i.test(tail) ? `轉單 ${tail}` : tail;
+}
+
 export function orderCardTitle(order: TitleOrderLike): string {
   const campaign = cleanCampaignText(order.campaign_name);
   if (!isInternalCampaign(order)) return campaign || "訂單";
