@@ -30,10 +30,14 @@ type Reorder = { location_id: number; sku_id: number; safety_stock: number; reor
 type Commitment = {
   location_id: number;
   sku_id: number;
-  promised: number; // 已承諾未取（客人單 ready/部分取貨/shipping）
-  waiting: number;  // confirmed 還在等貨的需求
-  pool: number;     // 【內部】店現貨池（要賣走「轉單給客人」）
-  free: number;     // 可分配＝在庫 − 上面三項（下限 0）
+  promised: number;     // 已承諾未取（客人單 ready/部分取貨/shipping）
+  waiting: number;      // confirmed 還在等貨的需求
+  pool: number;         // 【內部】店現貨池（含還在路上的 RR-）
+  pool_arrived: number; // 其中已到店的部分 —— 現貨直配配得掉，配掉時自動扣池子
+  free: number;         // 純自由量＝在庫 − 上面三項（下限 0）
+  // 可分配（畫面上那一欄）＝在庫 − 待客取 − 等貨 − 在途池子（下限 0）。
+  // 已到貨的池子算可分配：20260824060000 起現貨直配會在同一個交易扣池子。
+  free_with_pool: number;
 };
 type Movement = {
   id: number;
@@ -120,8 +124,11 @@ export default function InventoryOverviewPage() {
   const [searchInput, setSearchInput] = useState<string>("");
   const [onlyLow, setOnlyLow] = useState<boolean>(false);
   // 只看「可分配 > 0」的列：店員想知道「現在有哪些貨可以直接配給客人」。
-  // 候選集合由 rpc_list_allocatable_pairs 給（全站 507 組，很小），
-  // 再照 onlyLow 的既有作法撈 stock_balances、前端分頁。
+  // 候選集合由 rpc_list_allocatable_pairs 給（很小），再照 onlyLow 的既有作法
+  // 撈 stock_balances、前端分頁。
+  // 20260824060000 起「可分配」含已到貨的內部現貨池 —— 那支 RPC 與這一欄、
+  // 與配單彈窗的上限全部同一套算法（_sku_free_qty_with_pool），
+  // 不然又會出現「列表寫得出數字、按鈕按不下去」。
   const [onlyFree, setOnlyFree] = useState<boolean>(false);
   const [page, setPage] = useState(1);
 
@@ -339,7 +346,9 @@ export default function InventoryOverviewPage() {
               promised: num(c.promised),
               waiting: num(c.waiting),
               pool: num(c.pool),
+              pool_arrived: num(c.pool_arrived),
               free: num(c.free),
+              free_with_pool: num(c.free_with_pool),
             });
           }
           setSkuMap(sm);
@@ -564,6 +573,10 @@ export default function InventoryOverviewPage() {
               形式掛在「在庫」旁邊（見下方 rows 渲染）。 */}
           <Th align="right">待客取</Th>
           <Th align="right">內部單</Th>
+          {/* 可分配含「已到店的內部現貨池」：那些貨在架上、配得掉，配的當下
+              rpc_create_spot_sale 會把池子扣掉（20260824060000）。
+              只算純自由量的話線上四間店有 800+ 件永遠顯示 0，店員補了帳
+              還是 0（回報：「調整庫存完不能把庫存再轉出去」）。 */}
           <Th align="right">可分配</Th>
           <Th align="right">在途</Th>
           {showCost && <Th align="right">均成本</Th>}
@@ -623,7 +636,7 @@ export default function InventoryOverviewPage() {
                       </span>
                     )}
                   </Td>
-                  <Td align="right" className="font-mono text-zinc-500" title="掛在【內部】xx 店名下的貨（RR- / OV- 單）：要賣請走訂單頁的「轉單給客人」，內部單的數量才會跟著扣">
+                  <Td align="right" className="font-mono text-zinc-500" title="掛在【內部】xx 店名下的貨（RR- / OV- / AB- 單）。已到店的部分「🤝 配給客人」配得掉，配掉時會自動從池子扣">
                     {commit ? fmtQty(commit.pool) : "—"}
                   </Td>
                   <Td
@@ -631,13 +644,23 @@ export default function InventoryOverviewPage() {
                     className={`font-mono font-semibold ${
                       commit == null
                         ? "text-zinc-400"
-                        : commit.free > 0
+                        : commit.free_with_pool > 0
                           ? "text-emerald-700 dark:text-emerald-400"
                           : "text-zinc-400"
                     }`}
-                    title="可分配＝在庫 − 待客取 − 等貨 − 內部單。這才是能直接配給客人的量"
+                    title="可分配＝在庫 − 待客取 − 等貨 − 還在路上的內部單。這才是能直接配給客人的量（已到店的內部現貨池算在內，配掉時會自動扣池子）"
                   >
-                    {commit ? fmtQty(commit.free) : "—"}
+                    {commit ? fmtQty(commit.free_with_pool) : "—"}
+                    {/* 有多少是要從池子扣的，先講清楚 —— 配掉之後店家看到的
+                        內部單數量會跟著少，沒有提示就像貨憑空消失 */}
+                    {commit != null && commit.free_with_pool > commit.free && (
+                      <span
+                        className="ml-1 text-[10px] font-normal text-zinc-400"
+                        title="其中這些件數掛在【內部】店現貨池，配給客人時會自動從池子扣"
+                      >
+                        含{fmtQty(commit.free_with_pool - commit.free)}池
+                      </span>
+                    )}
                   </Td>
                   <Td align="right" className="font-mono text-zinc-500">{fmtQty(r.in_transit_in)}</Td>
                   {showCost && <Td align="right" className="font-mono text-zinc-500">{fmtCost(r.avg_cost)}</Td>}
@@ -656,9 +679,9 @@ export default function InventoryOverviewPage() {
                 out.push(
                   <tr key={`${key}-detail`} className="bg-zinc-50 dark:bg-zinc-900/50">
                     <td colSpan={colCount} className="px-4 py-3">
-                      {/* 現貨直配入口：把沒有訂單掛著的自由庫存直接配給客人。
-                          可配量（自由量）由 modal 自己去 rpc_get_spot_availability 拿 ——
-                          這裡不預先撈，免得展開每一列都多打一次 RPC。 */}
+                      {/* 現貨直配入口：把店內現貨（自由庫存 ＋ 已到貨的內部現貨池）
+                          直接配給客人。可配量由 modal 自己去 rpc_get_spot_availability
+                          拿 —— 這裡不預先撈，免得展開每一列都多打一次 RPC。 */}
                       {(() => {
                         const st = storeObjByLoc.get(r.location_id);
                         if (!st) return null; // 總倉等沒有對應分店的倉別不出這顆
@@ -666,6 +689,12 @@ export default function InventoryOverviewPage() {
                           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 pb-2 dark:border-zinc-800">
                             <span className="text-xs text-zinc-500">
                               店內現貨可以直接配給客人（不用先開團）—— 配單＝待取，取貨時才扣庫存收款。
+                              {commit != null && commit.free_with_pool > commit.free && (
+                                <>
+                                  <br />
+                                  {`其中 ${fmtQty(commit.free_with_pool - commit.free)} 件掛在【內部】${st.name}現貨池，配掉時會自動從池子扣。`}
+                                </>
+                              )}
                             </span>
                             <SpinButton
                               onClick={() =>

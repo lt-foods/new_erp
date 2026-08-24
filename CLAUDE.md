@@ -457,6 +457,33 @@ trim = LEAST(本次配出量, GREATEST(池子未取量 − (on_hand − 已承�
 不要直接改 `qty` 了事 —— cancelled 列前端會畫刪除線，店家才看得到「那 8 包去哪了」。
 收尾一樣要接 `_close_orders_all_items_settled`。
 
+實際扣行的動作在 `_consume_internal_pool`（20260824060000 從 `_trim_internal_pool`
+抽出來共用，標記字串由參數帶）。新的「把池子的貨配掉」路徑一律呼叫它，不要再抄
+一份拆行邏輯。
+
+### 「可分配」一定要含已到貨的內部現貨池，否則店家補了帳還是配不出去
+
+`_sku_free_qty`（＝ on_hand − promised − waiting − **pool_claimed**）當現貨直配的
+上限，實務上等於把功能關掉：線上四間店 672 組有庫存的 (店,SKU) 裡，**在庫多於
+待客取**的 127 組有 100 組配不出去，其中 82 組的擋路者就是池子（平鎮 607 件、
+松山 105 件），而池子裡真正在途的只有 32 件 —— 擋住的幾乎全是**已經在架上**的貨。
+店員的體感是：庫存總覽寫著有貨、按「配給客人」說可配 0、提示叫他去「新增庫存」、
+補完帳還是 0（2026-08-24 回報原話：「調整庫存完不能把庫存再轉出去」；
+平鎮店 8/21 08:10 新增 +4、08:38 自己撤銷，就是這樣放棄的）。
+
+所以配單類的上限一律用 `_sku_free_qty_with_pool`
+（＝ on_hand − promised − waiting − **在途**池子量），並且**配掉的當下就要扣池子**
+（`rpc_create_spot_sale` 尾端呼叫 `_consume_internal_pool`，標 `[已配給客人 SP-x-xxxx]`）：
+池子 −N、對客人的承諾 +N，承諾總量不變，取貨閘門的實體庫存守衛才不會擋到後面的客人。
+
+- **在途的池子量不放**（`pool_claimed − pool_arrived`）：RR- 單在補貨到店之前就存在，
+  拿架上的貨去沖它就是 20260811000040 修過的錯。
+- `_grow_internal_pool` **維持用 `_sku_free_qty`** —— 它是「還有幾件沒有主人」，
+  拿含池子的量去長池子會自己餵自己。
+- 列表欄位（`rpc_get_stock_commitment_bulk.free_with_pool`）、篩選
+  （`rpc_list_allocatable_pairs`）、彈窗上限三邊一定要同一套算法。
+  之前「列表寫可用 3、配單視窗寫自由量 0」就是各算各的。
+
 ### 「這批貨到店了沒」要看單頭 status，不要用 is_order_item_pickup_ready 當判準
 
 閘門是 **qty-blind** 的（Path C 只問「本店有沒有收過這個 SKU」），所以同一個 SKU

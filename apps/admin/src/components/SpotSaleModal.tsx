@@ -6,13 +6,19 @@ import SpinButton from "@/components/SpinButton";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 
-// 現貨直配：把店內「自由庫存」直接配給客人，不需要先開團。
+// 現貨直配：把店內現貨直接配給客人，不需要先開團。
 // 配單＝待取 —— 當下不扣庫存、不收款，客人到店取貨時才寫 sale 並結案
 // （與到店取貨同一套帳，不會重複扣）。見 20260816000010 migration。
 //
-// 可配量上限是**自由量**（on_hand − 承諾 − 等貨 − 池子），不是「可用」欄位：
-// 別的客人正在等的貨、以及已掛進【內部】店現貨池的貨都不能從這裡賣掉
-// （池子的貨要走訂單頁的「轉單給客人」，池子帳才會跟著動）。
+// 可配量上限是 **free_with_pool**（在庫 − 待客取 − 等貨 − 在途池子），
+// 也就是「自由量 ＋ 已到貨的【內部】店現貨池」：
+//   - 別的客人正在等的貨（待客取 / 等貨中）不能從這裡賣掉。
+//   - 已到貨的池子（RR- / OV- / AB- 容器單）**可以**：送出時 RPC 會在同一個
+//     交易裡把池子扣掉（20260824060000），池子帳跟著動，不會有兩份承諾。
+//     ⛔ 不要把上限改回 free —— 線上四間店有 800+ 件貨卡在池子裡配不出去，
+//     店員只看到「可配 0」＋「請先新增庫存」，補了帳也還是 0（回報原話：
+//     「調整庫存完不能把庫存再轉出去」）。
+//   - 還在路上的池子量（在途 RR-）維持保留，那批貨還沒到店。
 
 type MemberHit = {
   id: number;
@@ -27,8 +33,10 @@ type Availability = {
   on_hand: number;
   promised: number;
   waiting: number;
-  pool: number;
-  free: number;
+  pool: number;            // 內部現貨池總量（含在途）
+  pool_arrived: number;    // 其中已到店的部分 —— 這些配得掉
+  free: number;            // 純自由量（沒有任何單掛著）
+  free_with_pool: number;  // 可配上限＝自由量 ＋ 已到貨池子
   suggest_price: number;
 };
 
@@ -81,11 +89,13 @@ export function SpotSaleModal({
         promised: num(a.promised),
         waiting: num(a.waiting),
         pool: num(a.pool),
+        pool_arrived: num(a.pool_arrived),
         free: num(a.free),
+        free_with_pool: num(a.free_with_pool),
         suggest_price: num(a.suggest_price),
       };
       setAvail(parsed);
-      setQty((q) => Math.max(1, Math.min(q, parsed.free)));
+      setQty((q) => Math.max(1, Math.min(q, parsed.free_with_pool)));
       // 建議售價為 0（沒設過價）時留空，逼店員自己填 —— 0 元會在取貨時被擋
       setPrice(parsed.suggest_price > 0 ? parsed.suggest_price : "");
     })();
@@ -122,9 +132,12 @@ export function SpotSaleModal({
   // 有輸入且還沒選人時才畫下拉（取代在 effect 裡清 hits）
   const showHits = term.trim().length > 0 && !member;
   const free = avail?.free ?? 0;
+  const cap = avail?.free_with_pool ?? 0; // 可配上限（含已到貨池子）
+  // 這次配單會從池子扣掉幾件（超出純自由量的部分）
+  const fromPool = Math.max(0, Math.min(qty, cap) - free);
   const priceNum = typeof price === "number" ? price : 0;
   const amount = qty * priceNum;
-  const canSubmit = !busy && !!member && qty > 0 && qty <= free && priceNum > 0;
+  const canSubmit = !busy && !!member && qty > 0 && qty <= cap && priceNum > 0;
 
   async function save() {
     if (!canSubmit || !member) return;
@@ -132,6 +145,9 @@ export function SpotSaleModal({
       !confirm(
         `把「${skuLabel}」×${qty}（$${priceNum}/件）配給 ${member.name}？\n\n` +
           `訂單為「待取」，客人到店取貨時才扣庫存、收款 $${amount}。\n` +
+          (fromPool > 0
+            ? `其中 ${fromPool} 件來自【內部】${storeName}現貨池，送出後會自動從池子扣掉。\n`
+            : "") +
           `配錯可在訂單頁取消品項。`,
       )
     )
@@ -152,13 +168,18 @@ export function SpotSaleModal({
         p_operator: operator,
         p_nickname: null,
         p_reason: reason.trim() || null,
+        // 已到貨的【內部】店現貨池也算可配量，超出自由量的部分由 RPC 同步扣池子
+        // （20260824060000）。不帶這個旗標＝退回舊行為，池子的貨一件都配不出去。
+        p_use_pool: true,
       });
       if (e) throw new Error(translateRpcError(e));
       // 20260816000060 起一次配單一張單（不再併進既有單），所以不用再分兩種訊息
-      const r = (res ?? {}) as { order_no?: string; amount?: number };
+      const r = (res ?? {}) as { order_no?: string; amount?: number; from_pool?: number };
+      const usedPool = num(r.from_pool);
       alert(
         `✅ 已配給 ${member.name}：${skuLabel} ×${qty}（$${num(r.amount) || amount}）\n\n` +
           `訂單 ${r.order_no ?? ""} · 狀態：待取。\n` +
+          (usedPool > 0 ? `已從【內部】${storeName}現貨池扣掉 ${usedPool} 件。\n` : "") +
           `客人到店後在「取貨」頁完成交貨（每次配貨各一張單，可分別取貨）。`,
       );
       onSaved();
@@ -188,11 +209,16 @@ export function SpotSaleModal({
               "載入可配量…"
             ) : (
               <>
-                自由量{" "}
-                <b className={free > 0 ? "text-emerald-700 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}>
-                  {free}
+                可配{" "}
+                <b className={cap > 0 ? "text-emerald-700 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}>
+                  {cap}
                 </b>{" "}
                 件
+                {cap > free && (
+                  <span className="ml-1 text-zinc-400">
+                    （自由量 {free} ＋ 內部現貨池 {cap - free}）
+                  </span>
+                )}
               </>
             )}
           </div>
@@ -200,12 +226,32 @@ export function SpotSaleModal({
             <div className="mt-1 text-[11px] text-zinc-400">
               在庫 {avail.on_hand} − 待客取 {avail.promised} − 等貨中 {avail.waiting} − 內部單{" "}
               {avail.pool}
+              {avail.pool > avail.pool_arrived && (
+                <span>（其中在途 {avail.pool - avail.pool_arrived} 件不可配）</span>
+              )}
             </div>
           )}
-          {avail && free <= 0 && (
+          {/* 會動到池子時一定要講：店家看的可轉出量會跟著少，不講就是憑空消失 */}
+          {avail && fromPool > 0 && (
             <div className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">
-              沒有可配的自由庫存。架上實際有貨 → 先用「＋ 新增庫存」入帳；
-              貨掛在內部單上 → 走訂單頁的「轉單給客人」。
+              其中 <b>{fromPool}</b> 件掛在【內部】{storeName}現貨池，送出後會自動從池子扣掉
+              （池子會留一列刪除線紀錄）。
+            </div>
+          )}
+          {avail && cap <= 0 && (
+            <div className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+              {avail.promised + avail.waiting + avail.pool > avail.on_hand ? (
+                <>
+                  帳上已超額 {avail.promised + avail.waiting + avail.pool - avail.on_hand} 件
+                  （承諾多於在庫）：要用「＋ 新增庫存」補的話得補超過這個數才會有可配量，
+                  數量對不上請改走「庫存盤點」重盤一次。
+                </>
+              ) : (
+                <>
+                  這批貨都被別的客人佔著（待客取 / 等貨中）。架上實際有更多貨 →
+                  先用「＋ 新增庫存」把現貨入帳。
+                </>
+              )}
             </div>
           )}
         </div>
@@ -278,15 +324,18 @@ export function SpotSaleModal({
             <input
               type="number"
               min={1}
-              max={free || 1}
+              max={cap || 1}
               value={qty}
               onChange={(e) => {
                 const v = Math.floor(Number(e.target.value));
-                setQty(Number.isFinite(v) ? Math.max(0, Math.min(v, free)) : 0);
+                setQty(Number.isFinite(v) ? Math.max(0, Math.min(v, cap)) : 0);
               }}
               className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-right tabular-nums dark:border-zinc-700 dark:bg-zinc-800"
             />
-            <span className="mt-1 block text-[11px] text-zinc-400">上限 {free}（自由量）</span>
+            <span className="mt-1 block text-[11px] text-zinc-400">
+              上限 {cap}
+              {cap > free ? `（自由量 ${free} ＋ 池子 ${cap - free}）` : "（自由量）"}
+            </span>
           </label>
           <label className="block">
             <span className="mb-1 block text-xs text-zinc-500">單價</span>
