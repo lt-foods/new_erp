@@ -10,6 +10,7 @@ import { ProductImagesField } from "@/components/ProductImagesField";
 import { printViaIframe } from "@/lib/printIframe";
 import { withBasePath } from "@/lib/basePath";
 import { useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
+import { shortOrderNo } from "@/lib/orderTitle";
 import {
   TRANSFER_LINK_SELECT, type TransferLink,
   activeQty, aidRouteLabel, aidStageLabel, isAidInFlight, linkItems,
@@ -448,6 +449,151 @@ export default function MutualAidPage() {
 }
 
 // ============================================================
+// 提供紀錄 —— 這則貼文被哪幾家店接走 / 補上了
+//
+// 點開貼文只看得到留言、看不到「誰真的出了貨」（2026-08-24 回報）。
+// 認領／提供的本體是訂單轉移，所以紀錄在 customer_order_transfer_links，
+// 不在 mutual_aid_board 也不在留言。
+//
+// ⚠ 這裡用 reason 認貼文，不是用 aid_board_id：那一欄是 20260824060000 才加的，
+// SQL 有沒有先套上正式庫不是前端控制得了的（#827 就發生過「PR 合併了、
+// migration 沒套」）。撈不存在的欄位整段會 400。伺服端先用 `#<id>` 收窄，
+// 再在前端用嚴格的 regex 濾掉 #2490 這種誤中。
+// ============================================================
+function AidClaimLog({ post }: { post: Post }) {
+  const [rows, setRows] = useState<ProvidedRow[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const sb = getSupabase();
+        const { data, error } = await sb
+          .from("customer_order_transfer_links")
+          .select(
+            TRANSFER_LINK_SELECT + ", reason, " +
+              "src:customer_orders!customer_order_transfer_links_source_order_id_fkey(" +
+              "id, order_no, pickup_store_id, store:stores!customer_orders_pickup_store_id_fkey(name)), " +
+              "dest:customer_orders!customer_order_transfer_links_dest_order_id_fkey(" +
+              "id, order_no, status, pickup_store_id, " +
+              "store:stores!customer_orders_pickup_store_id_fkey(name), " +
+              "items:customer_order_items(id, qty, status, source, " +
+              "sku:skus(sku_code, product_name, variant_name)))",
+          )
+          .ilike("reason", `%#${post.id}%`)
+          .order("transferred_at", { ascending: true })
+          .limit(50);
+        if (cancelled) return;
+        if (error) { setRows([]); return; }
+        // 「互助板提供 #249」/「互助板認領 #249」；#2490 不能算進來
+        const exact = new RegExp(`互助板[^#]*#${post.id}(?!\\d)`);
+        type StoreRef = { name: string } | { name: string }[] | null;
+        type RawSku = { sku_code: string; product_name: string; variant_name: string | null };
+        type Raw = TransferLink & {
+          reason: string | null;
+          src: { id: number; order_no: string; pickup_store_id: number | null; store: StoreRef } | null;
+          dest: {
+            id: number; order_no: string; status: string; pickup_store_id: number | null;
+            store: StoreRef;
+            items: { id: number; qty: number; status: string; source: string | null; sku: RawSku | RawSku[] | null }[] | null;
+          } | null;
+        };
+        const nameOf = (s: StoreRef) => (Array.isArray(s) ? s[0]?.name : s?.name) ?? "—";
+        const list = ((data ?? []) as unknown as Raw[]).flatMap((r): ProvidedRow[] => {
+          if (!exact.test(r.reason ?? "")) return [];
+          const src = r.src, dest = r.dest;
+          if (!src || !dest) return [];
+          const mine = linkItems(r, dest.items ?? []);
+          const qty = activeQty(mine);
+          return [{
+            linkId: r.id,
+            transferred_at: r.transferred_at,
+            is_air_transfer: r.is_air_transfer === true,
+            board_id: post.id,
+            reason: r.reason,
+            source_store: nameOf(src.store),
+            source_order_no: src.order_no,
+            dest_store: nameOf(dest.store),
+            dest_store_id: dest.pickup_store_id,
+            dest_order_id: dest.id,
+            dest_order_no: dest.order_no,
+            dest_status: dest.status,
+            qty,
+            labels: mine
+              .filter((it) => !["cancelled", "expired"].includes(it.status))
+              .map((it) => {
+                const sku = Array.isArray(it.sku) ? it.sku[0] : it.sku;
+                return sku
+                  ? `${sku.product_name}${sku.variant_name ? ` / ${sku.variant_name}` : ""} ×${Number(it.qty)}`
+                  : `品項 ×${Number(it.qty)}`;
+              }),
+          }];
+        });
+        setRows(list);
+      } catch {
+        if (!cancelled) setRows([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [post.id]);
+
+  if (rows === null) return <div className="text-xs text-zinc-500">載入提供紀錄…</div>;
+  if (rows.length === 0) return null;
+
+  // 需求貼文＝別人「提供」給貼文店；釋出貼文＝別人「認領」走
+  const verb = post.post_type === "request" ? "提供" : "認領";
+
+  return (
+    <div className="rounded-md border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="mb-1.5 text-[11px] font-semibold text-zinc-600 dark:text-zinc-400">
+        {verb}紀錄（{rows.length} 筆）
+      </div>
+      <div className="flex flex-col gap-1.5">
+        {rows.map((r) => (
+          <div
+            key={r.linkId}
+            className="rounded border border-zinc-200 bg-white p-2 text-xs dark:border-zinc-800 dark:bg-zinc-900"
+          >
+            <div className="mb-1 flex flex-wrap items-center gap-1.5">
+              <span className="rounded bg-pink-100 px-1.5 py-0.5 text-[10px] font-semibold text-pink-800 dark:bg-pink-950 dark:text-pink-300">
+                {post.post_type === "request" ? r.source_store : r.dest_store}
+              </span>
+              <span className="text-[10px] text-zinc-500">{aidRouteLabel(r.is_air_transfer)}</span>
+              <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                {aidStageLabel(r.dest_status, r.is_air_transfer)}
+              </span>
+              <span className="ml-auto text-[10px] text-zinc-500">{fmtDt(r.transferred_at)}</span>
+            </div>
+            <div className="text-zinc-700 dark:text-zinc-300">{r.labels.join("、") || `共 ${r.qty}`}</div>
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-zinc-500">
+              <span>
+                {post.post_type === "request" ? "送到" : "送給"}{" "}
+                <span className="text-zinc-700 dark:text-zinc-300">{r.dest_store}</span>
+              </span>
+              <span>
+                單號 <span className="font-mono text-zinc-700 dark:text-zinc-300">{shortOrderNo(r.dest_order_no)}</span>
+              </span>
+              <SpinButton
+                type="button"
+                onClick={() =>
+                  printViaIframe(
+                    withBasePath(`/transfers/print-aid?order_id=${r.dest_order_id}&link=${r.linkId}`),
+                  )
+                }
+                title="列印這一趟的互助出貨單（兩聯：司機聯 + 存查聯）"
+                className="ml-auto rounded border border-zinc-300 px-1.5 py-0.5 text-[10px] text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              >
+                🖨️ 隨貨單
+              </SpinButton>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // 我提供出去的 —— 本店轉出去的互助，一趟轉移一列
 //
 // 為什麼不是查訂單而是查 customer_order_transfer_links：
@@ -624,7 +770,7 @@ function ProvidedList({ stores }: { stores: Store[] }) {
                     className="text-blue-600 underline dark:text-blue-400"
                     href={`/orders?q=${encodeURIComponent(r.dest_order_no)}${r.dest_store_id != null ? `&storeId=${r.dest_store_id}` : ""}`}
                   >
-                    轉入單 {r.dest_order_no}
+                    轉入單 {shortOrderNo(r.dest_order_no)}
                   </Link>
                   {r.reason && !r.reason.startsWith("[回填]") && (
                     <span className="text-zinc-700 dark:text-zinc-300">「{r.reason}」</span>
@@ -1942,6 +2088,9 @@ function ThreadModal({
             </div>
           </div>
         )}
+
+        {/* 提供紀錄：這則貼文被哪幾家店接走 / 補上了 */}
+        <AidClaimLog post={post} />
 
         {/* Replies thread */}
         <div className="flex flex-col gap-2 max-h-80 overflow-y-auto pr-1">
