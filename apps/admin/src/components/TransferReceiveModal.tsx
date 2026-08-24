@@ -16,6 +16,9 @@ export type Transfer = {
   shipped_at: string | null;
   received_at: string | null;
   notes: string | null;
+  // 空中轉／互助的 AT- 單掛的轉入訂單；收貨頁用它反查「是哪家店轉來的」。
+  // 選填：不是每個取用 Transfer 的畫面都有 select 這一欄。
+  customer_order_id?: number | null;
 };
 
 export type Wave = {
