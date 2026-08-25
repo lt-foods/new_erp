@@ -326,7 +326,7 @@ export default function MutualAidPage() {
           <SpinButton
             key={v}
             type="button"
-            onClick={() => { setView(v); setHistoryLimit(HISTORY_PAGE); }}
+            onClick={() => { setView(v); setHistoryLimit(HISTORY_PAGE); setPosts(null); }}
             className={
               view === v
                 ? "shrink-0 whitespace-nowrap border-b-2 border-zinc-900 px-4 py-2 text-sm font-medium text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
@@ -344,6 +344,8 @@ export default function MutualAidPage() {
 
       {view === "provided" || view === "received" || view === "same_store" ? (
         <ProvidedList
+          // key：切分頁時重新掛載，rows 回到 null 才會轉 spinner（不然會停在舊分頁的資料）
+          key={view}
           stores={stores}
           // 總倉沒有轉出／轉入之分，一律走同一份全站清單
           direction={view === "same_store" ? "same" : isHq ? "out" : view === "provided" ? "out" : "in"}
@@ -355,7 +357,7 @@ export default function MutualAidPage() {
           <SpinButton
             key={opt}
             type="button"
-            onClick={() => { setFilter(opt); setHistoryLimit(HISTORY_PAGE); }}
+            onClick={() => { setFilter(opt); setHistoryLimit(HISTORY_PAGE); setPosts(null); }}
             className={`px-3 py-1.5 ${
               filter === opt
                 ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
@@ -381,70 +383,95 @@ export default function MutualAidPage() {
           {filter === "request" ? "需求" : filter === "offer" ? "釋出" : ""}貼文
         </div>
       ) : (
-        <ul className="space-y-2">
-          {posts.map((p) => (
-            <li key={p.id} className="flex items-start gap-2 rounded-md border border-zinc-200 bg-white p-3 transition hover:border-zinc-400 hover:shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-600">
-              <SpinButton
-                type="button"
-                onClick={() => setThreadPost(p)}
-                className="block min-w-0 flex-1 text-left"
-              >
-                <div className="mb-1 flex flex-wrap items-center gap-2">
-                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${TYPE_COLOR[p.post_type]}`}>
+        <Table>
+          <THead>
+            <Th className="whitespace-nowrap">類型</Th>
+            <Th className="whitespace-nowrap">狀態</Th>
+            <Th className="whitespace-nowrap">分店</Th>
+            <Th className="min-w-[16rem]">商品</Th>
+            <Th className="whitespace-nowrap" align="right">數量</Th>
+            <Th className="whitespace-nowrap" align="right">到期</Th>
+            <Th className="whitespace-nowrap" align="right">留言</Th>
+            <Th className="sticky right-0 z-10 whitespace-nowrap bg-zinc-50 dark:bg-zinc-900" align="right">操作</Th>
+          </THead>
+          <TBody>
+            {posts.map((p) => (
+              // 點整列開貼文討論串（原本是整張卡片可點）
+              <Tr key={p.id} onClick={() => setThreadPost(p)}>
+                <Td className="whitespace-nowrap align-top">
+                  <span className={`rounded px-1.5 py-0.5 text-[11px] font-semibold ${TYPE_COLOR[p.post_type]}`}>
                     {TYPE_LABEL[p.post_type]}
                   </span>
-                  <span className={`rounded px-1.5 py-0.5 text-[10px] ${STATUS_COLOR[p.status]}`}>
+                </Td>
+                <Td className="whitespace-nowrap align-top">
+                  <span className={`rounded px-1.5 py-0.5 text-[11px] ${STATUS_COLOR[p.status]}`}>
                     {STATUS_LABEL[p.status]}
                   </span>
-                  <span className="text-sm font-medium">{p.store_name}</span>
-                  <span className="text-sm">{p.sku_label}</span>
-                  {p.post_type === "offer" && p.source_customer_order_id == null && (
-                    <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
-                      手動
-                    </span>
-                  )}
-                  {/* 沒選商品的手動現貨別店認領不了 —— 在列表就標出來，
-                      不用點進去才發現（20260816000000） */}
-                  {p.post_type === "offer" && p.sku_id == null && (
-                    <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300" title="沒有選商品，別的分店無法認領；請點進貼文用「✏️ 修改內容」補選">
-                      待補商品
-                    </span>
-                  )}
-                  {p.post_type === "offer" && !p.spot_visible_to_other_stores && (
-                    <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                      🔒 限本店會員
-                    </span>
-                  )}
-                  <span className="ml-auto text-xs text-zinc-500">💬 {p.replies_count} 留言</span>
-                </div>
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
-                  <span>
-                    {p.post_type === "request" ? "需要" : "釋出"}{" "}
-                    <span className="font-mono text-zinc-700 dark:text-zinc-300">{p.qty_remaining}</span>
-                    {p.qty_remaining !== p.qty_available && (
-                      <span className="ml-1 text-[10px] text-zinc-400">/ 原 {p.qty_available}</span>
+                </Td>
+                <Td className="whitespace-nowrap align-top font-medium">{p.store_name}</Td>
+                <Td className="align-top">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span>{p.sku_label}</span>
+                    {p.post_type === "offer" && p.source_customer_order_id == null && (
+                      <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                        手動
+                      </span>
                     )}
-                  </span>
-                  <span>到期 <span className="text-zinc-700 dark:text-zinc-300">{fmtDt(p.expires_at)}</span></span>
-                  {p.source_order_no && (
-                    <span>源訂單 <span className="font-mono text-zinc-700 dark:text-zinc-300">{p.source_order_no}</span></span>
+                    {/* 沒選商品的手動現貨別店認領不了 —— 在列表就標出來，
+                        不用點進去才發現（20260816000000） */}
+                    {p.post_type === "offer" && p.sku_id == null && (
+                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300" title="沒有選商品，別的分店無法認領；請點進貼文用「✏️ 修改內容」補選">
+                        待補商品
+                      </span>
+                    )}
+                    {p.post_type === "offer" && !p.spot_visible_to_other_stores && (
+                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                        🔒 限本店會員
+                      </span>
+                    )}
+                  </div>
+                  {(p.source_order_no || p.note) && (
+                    <div className="mt-0.5 flex flex-wrap gap-x-3 text-xs text-zinc-500">
+                      {p.source_order_no && (
+                        <span>源訂單 <span className="font-mono text-zinc-700 dark:text-zinc-300">{p.source_order_no}</span></span>
+                      )}
+                      {p.note && <span className="text-zinc-700 dark:text-zinc-300">「{p.note}」</span>}
+                    </div>
                   )}
-                  {p.note && <span className="text-zinc-700 dark:text-zinc-300">「{p.note}」</span>}
-                </div>
-              </SpinButton>
-              {/* 每一則都要能單獨印（不論狀態）—— 板上的貨常常是靠紙本在店裡流動，
-                  已認領 / 已過期的也要印得回來歸檔、對帳 */}
-              <SpinButton
-                type="button"
-                onClick={() => printViaIframe(withBasePath(`/inventory/mutual-aid/print?id=${p.id}`))}
-                title="列印這一則（A4 直式：內容 + 留言 + 認領簽收欄）"
-                className="shrink-0 rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-              >
-                🖨️
-              </SpinButton>
-            </li>
-          ))}
-        </ul>
+                </Td>
+                <Td className="whitespace-nowrap align-top tabular-nums" align="right">
+                  {p.qty_remaining}
+                  {p.qty_remaining !== p.qty_available && (
+                    <span className="ml-1 text-[10px] text-zinc-400">/ 原 {p.qty_available}</span>
+                  )}
+                </Td>
+                <Td className="whitespace-nowrap align-top text-xs text-zinc-500" align="right"
+                    title={fmtDt(p.expires_at)}>
+                  {fmtDt(p.expires_at).slice(5)}
+                </Td>
+                <Td className="whitespace-nowrap align-top text-xs text-zinc-500" align="right">
+                  💬 {p.replies_count}
+                </Td>
+                <Td className="sticky right-0 z-10 whitespace-nowrap bg-white align-top dark:bg-zinc-900" align="right">
+                  {/* 每一則都要能單獨印（不論狀態）—— 板上的貨常常是靠紙本在店裡流動，
+                      已認領 / 已過期的也要印得回來歸檔、對帳。
+                      stopPropagation：不要順便觸發整列的「開討論串」 */}
+                  <SpinButton
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      printViaIframe(withBasePath(`/inventory/mutual-aid/print?id=${p.id}`));
+                    }}
+                    title="列印這一則（A4 直式：內容 + 留言 + 認領簽收欄）"
+                    className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                  >
+                    🖨️
+                  </SpinButton>
+                </Td>
+              </Tr>
+            ))}
+          </TBody>
+        </Table>
       )}
 
       {/* 歷史的「載入更多」：回的筆數 < 要求的筆數 ＝ 已經到底，就不畫按鈕
@@ -452,7 +479,7 @@ export default function MutualAidPage() {
       {view === "history" && posts !== null && historyFetched >= historyLimit && (
         <SpinButton
           type="button"
-          onClick={() => setHistoryLimit((n) => n + HISTORY_PAGE)}
+          onClick={() => { setHistoryLimit((n) => n + HISTORY_PAGE); setPosts(null); }}
           className="mx-auto rounded-md border border-zinc-300 px-4 py-1.5 text-sm text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
         >
           載入更多（目前 {posts.length} 筆）
@@ -1024,7 +1051,7 @@ function ProvidedList({ stores, direction }: {
             <Th className="whitespace-nowrap">單號</Th>
             <Th className="whitespace-nowrap" align="right">日期</Th>
             <Th className="whitespace-nowrap">狀態</Th>
-            <Th className="whitespace-nowrap" align="right">操作</Th>
+            <Th className="sticky right-0 z-10 whitespace-nowrap bg-zinc-50 dark:bg-zinc-900" align="right">操作</Th>
           </THead>
           <TBody>
             {shown.map((r) => (
@@ -1088,33 +1115,34 @@ function ProvidedList({ stores, direction }: {
                     </Chip>
                   )}
                 </Td>
-                <Td className="align-top" align="right">
-                  <div className="flex justify-end">
+                <Td className="sticky right-0 z-10 bg-white align-top dark:bg-zinc-900" align="right">
+                  <div className="flex justify-end gap-1">
                   {/* 同店變更取貨人：貨沒出門 → 沒有隨貨單、也沒有「退回原店」，
                       但要能撤銷（把商品掛回原客人的單，20260825050000 放行 ready）。
                       已取走的單（partially_completed/completed）RPC 會擋，所以不出鈕。 */}
                   {r.same_store ? (
-                    <div className="flex flex-row flex-wrap gap-1.5 sm:shrink-0 sm:flex-col sm:items-stretch">
+                    <div className="flex flex-row items-center gap-1">
                       {r.link_count === 1 && ["pending", "confirmed", "shipping", "ready"].includes(r.dest_status) ? (
                         <SpinButton
                           type="button"
                           disabled={busyLink != null}
                           onClick={() => cancelLeg(r, "cancel")}
-                          className="whitespace-nowrap rounded-md border border-red-300 px-2 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                          title="撤銷變更：把商品掛回原客人的訂單"
+                          className="h-8 w-8 shrink-0 rounded-md border text-sm leading-none disabled:opacity-50 flex items-center justify-center border-red-300 text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
                         >
-                          {busyLink === r.linkId ? "處理中…" : "撤銷變更"}
+                          {busyLink === r.linkId ? "…" : "⎌"}
                         </SpinButton>
                       ) : r.link_count !== 1 ? (
                         <span
-                          className="whitespace-nowrap rounded-md border border-dashed border-zinc-300 px-2 py-1.5 text-center text-[10px] text-zinc-400 dark:border-zinc-700"
+                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-dashed border-zinc-300 text-xs text-zinc-400 dark:border-zinc-700"
                           title="此轉入單併有其他筆轉移（舊資料），整張撤銷會一併影響；請至轉入單的訂單頁個別處理"
                         >
-                          多筆併單
+                          ⚠
                         </span>
                       ) : null}
                     </div>
                   ) : (
-                  <div className="flex flex-row flex-wrap gap-1.5 sm:shrink-0 sm:flex-col sm:items-stretch">
+                  <div className="flex flex-row items-center gap-1">
                     {/* 隨貨單走 /transfers/print-aid（兩聯：司機聯 + 存查聯），
                         帶 link 才只印這一趟的貨、來源店也才標得對 */}
                     <SpinButton
@@ -1125,7 +1153,7 @@ function ProvidedList({ stores, direction }: {
                         )
                       }
                       title="列印這一趟的互助出貨單（兩聯：司機聯 + 存查聯）"
-                      className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                      className="h-8 w-8 shrink-0 rounded-md border text-sm leading-none disabled:opacity-50 flex items-center justify-center border-zinc-300 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                     >
                       🖨️
                     </SpinButton>
@@ -1140,16 +1168,17 @@ function ProvidedList({ stores, direction }: {
                           type="button"
                           disabled={busyLink != null}
                           onClick={() => cancelLeg(r, "cancel")}
-                          className="rounded-md border border-red-300 px-2 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                          title={direction === "out" ? "取消提供（商品退回來源訂單）" : "取消轉入（商品退回來源訂單）"}
+                          className="h-8 w-8 shrink-0 rounded-md border text-sm leading-none disabled:opacity-50 flex items-center justify-center border-red-300 text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
                         >
-                          {busyLink === r.linkId ? "處理中…" : direction === "out" ? "取消提供" : "取消轉入"}
+                          {busyLink === r.linkId ? "…" : "✕"}
                         </SpinButton>
                       ) : (
                         <span
-                          className="rounded-md border border-dashed border-zinc-300 px-2 py-1.5 text-center text-[10px] text-zinc-400 dark:border-zinc-700"
+                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-dashed border-zinc-300 text-xs text-zinc-400 dark:border-zinc-700"
                           title="此轉入單併有其他分店的商品（舊資料），整張取消會一併取消他店商品；請至轉入單的訂單頁個別處理"
                         >
-                          多筆併單
+                          ⚠
                         </span>
                       )
                     )}
@@ -1168,16 +1197,16 @@ function ProvidedList({ stores, direction }: {
                               ? "把這批貨送回原店（建反向調撥、來源單還原、貼文數量還回去）"
                               : "貨已經在對方店裡：按下去會從對方店出庫、送回本店。請先跟對方講一聲"
                           }
-                          className="rounded-md border border-red-300 px-2 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                          className="h-8 w-8 shrink-0 rounded-md border text-sm leading-none disabled:opacity-50 flex items-center justify-center border-red-300 text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
                         >
-                          {busyLink === r.linkId ? "處理中…" : direction === "in" ? "退回原店" : "要求退回"}
+                          {busyLink === r.linkId ? "…" : "↩"}
                         </SpinButton>
                       ) : (
                         <span
-                          className="rounded-md border border-dashed border-zinc-300 px-2 py-1.5 text-center text-[10px] text-zinc-400 dark:border-zinc-700"
+                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-dashed border-zinc-300 text-xs text-zinc-400 dark:border-zinc-700"
                           title="此轉入單併有其他分店的商品（舊資料），整張退回會一併退回他店商品；請至轉入單的訂單頁個別處理"
                         >
-                          多筆併單
+                          ⚠
                         </span>
                       )
                     )}
