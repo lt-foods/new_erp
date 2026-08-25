@@ -26,6 +26,16 @@ export function isAidInFlight(status: string): boolean {
   return (AID_IN_FLIGHT_STATUSES as readonly string[]).includes(status);
 }
 
+// 這一趟沒走成（取消提供 / 取消轉入 / 退回原店 / 逾期）。
+// 互助板的分頁用它把「已取消」從「已簽收」裡拆出來 —— 兩者混在一起時，
+// 看起來像一堆已送達的紀錄，實際上大半是取消掉的（2026-08-25 回報：
+// 「對方已簽收 (8)」裡有 5 筆是已取消）。
+export const AID_DEAD_STATUSES = ["cancelled", "expired"] as const;
+
+export function isAidDead(status: string): boolean {
+  return (AID_DEAD_STATUSES as readonly string[]).includes(status);
+}
+
 // ---- 訂單轉移連結（customer_order_transfer_links） ----
 
 export const TRANSFER_LINK_SELECT =
