@@ -510,42 +510,73 @@ export default function TransfersInboxPage() {
         // 空中轉／互助的 AT- 單：收貨店要看得到「是哪家店轉來的」。
         // ⛔ 不能只拿 source_location — 經總倉的互助 Leg-2 的 source 是總倉，
         //    紙上永遠看不出原本是哪家店（CLAUDE.md「Leg-1 身上沒有訂單」那條）。
-        //    正解是從訂單反查：本單掛的轉入訂單 transferred_from_order_id →
-        //    那張來源單的 pickup_store_id。查不到鏈（追加轉入不寫該欄的已知洞）
-        //    時，畫面端 fallback 用 source_location 名稱。
+        // ⛔ 也不能拿轉入單的 transferred_from_order_id — 追加轉入會把多趟
+        //    （多家店）併進同一張單，而那一欄只指得到第一趟：同單第二趟起全被
+        //    標成第一家店（2026-08-25 平鎮 TF0497：古華店／經國店轉來的兩趟
+        //    都被寫成文山店，被冤枉的店會被念）。
+        // 正解：customer_order_transfer_links.transfer_id（20260825000000）——
+        // 一趟一列，每張 AT- 單對回自己那一趟的來源單 → pickup_store_id，
+        // 與 /transfers/print-aid 同一套。連結表對不上的（回填前的極舊資料）
+        // 退回訂單鏈反查，再由畫面端 fallback 到 source_location 名稱。
         const aidFromMap = new Map<number, string>();
         const aidRows = rows.filter((r) => r.customer_order_id != null);
         if (aidRows.length > 0) {
-          const { data: inOrds } = await sb
-            .from("customer_orders")
-            .select("id, transferred_from_order_id")
-            .in("id", aidRows.map((r) => r.customer_order_id as number));
-          const fromByOrder = new Map<number, number>();
-          for (const o of ((inOrds ?? []) as { id: number; transferred_from_order_id: number | null }[])) {
-            if (o.transferred_from_order_id != null) fromByOrder.set(o.id, o.transferred_from_order_id);
+          type LinkSrcRow = {
+            transfer_id: number | null;
+            src: { store: { name: string } | { name: string }[] | null } | null;
+          };
+          const { data: linkRows } = await sb
+            .from("customer_order_transfer_links")
+            .select(
+              "transfer_id, src:customer_orders!customer_order_transfer_links_source_order_id_fkey(" +
+                "store:stores!customer_orders_pickup_store_id_fkey(name))",
+            )
+            .in("transfer_id", aidRows.map((r) => r.id));
+          for (const l of (linkRows ?? []) as unknown as LinkSrcRow[]) {
+            if (l.transfer_id == null) continue;
+            const st = l.src?.store;
+            const nm = (Array.isArray(st) ? st[0]?.name : st?.name) ?? null;
+            if (!nm) continue;
+            const prev = aidFromMap.get(l.transfer_id);
+            // 後備派貨（rpc_ship_aid_order）的 Leg-2 可能一箱載舊資料的多趟
+            // → 多條 link 指同一張單，店名併列
+            if (!prev) aidFromMap.set(l.transfer_id, nm);
+            else if (!prev.split("、").includes(nm)) aidFromMap.set(l.transfer_id, `${prev}、${nm}`);
           }
-          const srcOrderIds = Array.from(new Set(fromByOrder.values()));
-          const storeByOrder = new Map<number, number>();
-          if (srcOrderIds.length > 0) {
-            const { data: srcOrds } = await sb
+          // 連結表對不上的老單：退回原本的訂單鏈反查（transferred_from_order_id）
+          const chainRows = aidRows.filter((r) => !aidFromMap.has(r.id));
+          if (chainRows.length > 0) {
+            const { data: inOrds } = await sb
               .from("customer_orders")
-              .select("id, pickup_store_id")
-              .in("id", srcOrderIds);
-            for (const o of ((srcOrds ?? []) as { id: number; pickup_store_id: number | null }[])) {
-              if (o.pickup_store_id != null) storeByOrder.set(o.id, o.pickup_store_id);
+              .select("id, transferred_from_order_id")
+              .in("id", chainRows.map((r) => r.customer_order_id as number));
+            const fromByOrder = new Map<number, number>();
+            for (const o of ((inOrds ?? []) as { id: number; transferred_from_order_id: number | null }[])) {
+              if (o.transferred_from_order_id != null) fromByOrder.set(o.id, o.transferred_from_order_id);
             }
-          }
-          const srcStoreIds = Array.from(new Set(storeByOrder.values()));
-          const srcStoreName = new Map<number, string>();
-          if (srcStoreIds.length > 0) {
-            const { data: sts } = await sb.from("stores").select("id, name").in("id", srcStoreIds);
-            for (const s of ((sts ?? []) as { id: number; name: string }[])) srcStoreName.set(s.id, s.name);
-          }
-          for (const r of aidRows) {
-            const srcOrder = fromByOrder.get(r.customer_order_id as number);
-            const sid = srcOrder != null ? storeByOrder.get(srcOrder) : undefined;
-            const nm = sid != null ? srcStoreName.get(sid) : undefined;
-            if (nm) aidFromMap.set(r.id, nm);
+            const srcOrderIds = Array.from(new Set(fromByOrder.values()));
+            const storeByOrder = new Map<number, number>();
+            if (srcOrderIds.length > 0) {
+              const { data: srcOrds } = await sb
+                .from("customer_orders")
+                .select("id, pickup_store_id")
+                .in("id", srcOrderIds);
+              for (const o of ((srcOrds ?? []) as { id: number; pickup_store_id: number | null }[])) {
+                if (o.pickup_store_id != null) storeByOrder.set(o.id, o.pickup_store_id);
+              }
+            }
+            const srcStoreIds = Array.from(new Set(storeByOrder.values()));
+            const srcStoreName = new Map<number, string>();
+            if (srcStoreIds.length > 0) {
+              const { data: sts } = await sb.from("stores").select("id, name").in("id", srcStoreIds);
+              for (const s of ((sts ?? []) as { id: number; name: string }[])) srcStoreName.set(s.id, s.name);
+            }
+            for (const r of chainRows) {
+              const srcOrder = fromByOrder.get(r.customer_order_id as number);
+              const sid = srcOrder != null ? storeByOrder.get(srcOrder) : undefined;
+              const nm = sid != null ? srcStoreName.get(sid) : undefined;
+              if (nm) aidFromMap.set(r.id, nm);
+            }
           }
         }
 
@@ -1834,8 +1865,8 @@ export default function TransfersInboxPage() {
                                     className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-950 dark:text-sky-300"
                                     title="別店空中轉／互助過來的訂單轉移單（AT-xxx）：收貨後該筆訂單就變可取貨；點數量可看是哪一筆訂單"
                                   >
-                                    {/* 來源店：訂單鏈反查優先（經總倉互助的 source_location 是總倉），
-                                        查不到鏈才退回 source_location 名稱 */}
+                                    {/* 來源店：連結表（transfer_id → 那一趟的來源單）優先，
+                                        對不上才退訂單鏈反查、再退 source_location 名稱 */}
                                     ✈ 空中轉{(() => {
                                       const from =
                                         aidFrom.get(t.id) ?? locations.get(t.source_location);
