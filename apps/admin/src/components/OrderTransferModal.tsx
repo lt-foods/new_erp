@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
@@ -27,10 +26,13 @@ type MemberHit = {
   admin_note: string | null;
 };
 
-// 轉出結果。20260825010000 起轉單只做同店換客人（跨店一律走互助交流板），
-// 貨不會離開本店 → 呼叫端不再需要 crossStore / isAir 決定要不要印隨貨單。
+// 轉出結果 —— 呼叫端要知道貨有沒有離開本店（跨店才需要印隨貨的互助出貨單）
 export type TransferResult = {
   newOrderId: number;
+  toStoreId: number;
+  toStoreName: string;
+  isAir: boolean;
+  crossStore: boolean;
 };
 
 function itemLabel(it: TransferItem): string {
@@ -47,6 +49,7 @@ export function OrderTransferModal({
   open,
   onClose,
   onSubmitted,
+  sameStoreOnly = false,
   partialOnly = false,
   canReturnToHq = false,
 }: {
@@ -58,6 +61,9 @@ export function OrderTransferModal({
   open: boolean;
   onClose: () => void;
   onSubmitted: (result: TransferResult) => void;
+  // 貨還沒到店（status != 'ready'）只能同店換客人：接收店鎖定原店
+  // (跟 DB rpc_transfer_order_* 20260807000000 的 gate 一致)
+  sameStoreOnly?: boolean;
   // 部分取貨（partially_completed）的單：整單轉出會把已取走品項的營收標成
   // transferred_out 整張歸零，所以「全選全量」也強制走部分轉出 RPC
   // （剩餘 active 全轉走後原單由 _close_orders_all_items_settled 收尾成 completed）
@@ -77,6 +83,8 @@ export function OrderTransferModal({
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchWrapRef = useRef<HTMLDivElement | null>(null);
   const [reason, setReason] = useState("");
+  // 空中轉：直接店對店、不經總倉；不勾 = 經總倉中轉（總倉需確認到貨再配送）
+  const [isAir, setIsAir] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // 每個品項的轉移勾選 + 數量（預設全選、全量 = 整單轉出）
@@ -89,8 +97,9 @@ export function OrderTransferModal({
     const next: Record<number, { checked: boolean; qty: string }> = {};
     for (const it of items) next[it.id] = { checked: true, qty: String(it.qty) };
     setPicks(next);
-    // 接收店一律鎖定＝原店（20260825010000：轉單只做同店換客人，跨店走互助板）
-    if (currentPickupStoreId != null) setToStore(currentPickupStoreId);
+    setIsAir(false);
+    // 同店限定時直接鎖定接收店＝原店（select 也會 disabled）
+    if (sameStoreOnly && currentPickupStoreId != null) setToStore(currentPickupStoreId);
   }
 
   useEffect(() => {
@@ -150,9 +159,8 @@ export function OrderTransferModal({
       setErr("請選擇接收店");
       return;
     }
-    if (toStore !== currentPickupStoreId) {
-      // 理論上到不了（select 已鎖定原店），留著擋 state 出意外；DB 端同款守衛
-      setErr("轉單僅限同店換客人；要把貨轉到別家店，請到「互助交流板」釋出，由對方認領");
+    if (sameStoreOnly && toStore !== currentPickupStoreId) {
+      setErr("貨還沒到店：僅可同店換客人，不可轉到別店");
       return;
     }
 
@@ -184,6 +192,11 @@ export function OrderTransferModal({
       chosen.length === items.length &&
       chosen.every((c) => c.qty === c.item.qty);
 
+    if (toStore === currentPickupStoreId) {
+      if (!confirm("接收店與原店相同（同店換客人）。確定繼續？")) return;
+    }
+    // 空中轉僅對跨店有意義；同店換客人沒有物理配送、一律非空中轉
+    const airFlag = isAir && toStore !== currentPickupStoreId;
     setBusy(true);
     setErr(null);
     try {
@@ -198,7 +211,7 @@ export function OrderTransferModal({
           p_to_channel_id: null,
           p_operator: user?.id,
           p_reason: reason || null,
-          p_is_air_transfer: false,
+          p_is_air_transfer: airFlag,
         });
         if (e) throw new Error(e.message);
         newId = data as number;
@@ -217,12 +230,18 @@ export function OrderTransferModal({
           p_operator: user?.id,
           p_reason: reason || null,
           p_items: pItems,
-          p_is_air_transfer: false,
+          p_is_air_transfer: airFlag,
         });
         if (e) throw new Error(e.message);
         newId = data as number;
       }
-      onSubmitted({ newOrderId: newId });
+      onSubmitted({
+        newOrderId: newId,
+        toStoreId: Number(toStore),
+        toStoreName: stores.find((s) => s.id === Number(toStore))?.name ?? "接收店",
+        isAir: airFlag,
+        crossStore: toStore !== currentPickupStoreId,
+      });
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -253,20 +272,18 @@ export function OrderTransferModal({
           {stores.find((s) => s.id === currentPickupStoreId)?.name ?? `#${currentPickupStoreId}`}）
         </div>
 
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
-          轉單只做<span className="font-medium">同店換客人</span>（把這張單改掛給本店另一位客人）。
-          要把貨轉到別家店：請到「
-          <Link href="/inventory/mutual-aid" target="_blank" className="font-medium underline">
-            互助交流板
-          </Link>
-          」釋出，由對方認領。
-        </div>
+        {sameStoreOnly && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+            貨還沒到店：目前僅可<span className="font-medium">同店換客人</span>
+            （轉給本店其他會員，不影響總倉派貨）。要轉到別店請等分店收貨後再轉。
+          </div>
+        )}
 
         <label className="flex flex-col gap-1">
           <span className="text-zinc-500">接收店</span>
           <select
             value={toStore}
-            disabled
+            disabled={sameStoreOnly}
             onChange={(e) => {
               const v = e.target.value;
               setToStore(v === "" ? "" : Number(v));
@@ -279,7 +296,7 @@ export function OrderTransferModal({
             className="rounded-md border border-zinc-300 bg-white px-2 py-1 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-800"
           >
             <option value="">— 請選擇 —</option>
-            {stores.filter((s) => s.id === currentPickupStoreId).map((s) => (
+            {(sameStoreOnly ? stores.filter((s) => s.id === currentPickupStoreId) : stores).map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name} ({s.code})
               </option>
@@ -290,7 +307,16 @@ export function OrderTransferModal({
         {/* 接收店只從 stores 撈，總倉是 locations 的 central_warehouse、根本不在這個清單裡。
             店員想「退回總倉」時會挑到同名的分店，結果把客人的單轉進該店內部帳號、客人的訂單就消失了 */}
         <p className="text-xs text-amber-700 dark:text-amber-400">
-          接收店固定為本店，<span className="font-medium">選不到別店、也選不到總倉</span>。{hqExitHint}
+          {sameStoreOnly ? (
+            <>
+              貨還沒到店，這裡只能<span className="font-medium">同店換客人</span>（換另一位客人來拿）
+            </>
+          ) : (
+            <>
+              這裡只能轉給<span className="font-medium">分店</span>：換一位客人拿，或轉給其他店
+            </>
+          )}
+          ，<span className="font-medium">選不到總倉</span>。{hqExitHint}
         </p>
 
         {toStore !== "" && (
@@ -476,6 +502,26 @@ export function OrderTransferModal({
               : "預設全選全量 = 整單轉出；取消勾選或減少數量 = 部分轉出（原單保留剩餘）"}
           </span>
         </div>
+
+        {toStore !== "" && toStore !== currentPickupStoreId && (
+          <div className="flex flex-col gap-1">
+            <label className="flex items-start gap-2 rounded-md border border-zinc-200 p-2 dark:border-zinc-700">
+              <input
+                type="checkbox"
+                checked={isAir}
+                onChange={(e) => setIsAir(e.target.checked)}
+                className="mt-0.5 h-4 w-4"
+              />
+              <span className="min-w-0 flex-1">
+                <span className="font-medium">空中轉（直接店對店、不經總倉）</span>
+                <span className="mt-0.5 block text-[11px] text-zinc-400">
+                  勾選 = 送出時就從本店出庫、建好轉移單，接收店在「收貨」頁收掉即可（不用總倉派貨），
+                  月結自動一加一扣；不勾 = 經總倉中轉，總倉需確認到貨再配送
+                </span>
+              </span>
+            </label>
+          </div>
+        )}
 
         <label className="flex flex-col gap-1">
           <span className="text-zinc-500">轉出原因</span>

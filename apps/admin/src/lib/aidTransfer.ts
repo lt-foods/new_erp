@@ -29,7 +29,7 @@ export function isAidInFlight(status: string): boolean {
 // ---- 訂單轉移連結（customer_order_transfer_links） ----
 
 export const TRANSFER_LINK_SELECT =
-  "id, source_order_id, dest_order_id, dest_item_ids, is_air_transfer, appended, transferred_at, transfer_id";
+  "id, source_order_id, dest_order_id, dest_item_ids, is_air_transfer, appended, transferred_at";
 
 export type TransferLink = {
   id: number;
@@ -39,9 +39,6 @@ export type TransferLink = {
   is_air_transfer: boolean | null;
   appended: boolean | null;
   transferred_at: string;
-  // 這一趟的貨走的那張 AT- 調撥單（20260825000000）；NULL = 沒有調撥單
-  // （經總倉未派貨、同店換客人）或回填對不上的舊資料
-  transfer_id: number | null;
 };
 
 /** 這一趟轉移真正搬過去的品項。
@@ -81,19 +78,19 @@ export function aidRouteLabel(isAir: boolean): string {
 export function aidStageLabel(status: string, isAir: boolean): string {
   switch (status) {
     case "pending":
-      return isAir ? "等出貨" : "等總倉收貨";
+      return isAir ? "待出貨" : "待總倉簽收";
     case "confirmed":
-      return isAir ? "等出貨" : "總倉已收・等派貨";
+      return isAir ? "待出貨" : "總倉已簽收・待派送";
     case "reserved":
       return "已保留";
     case "shipping":
-      return isAir ? "已出貨・等收貨店收" : "總倉已派貨・等收貨店收";
+      return isAir ? "已出貨・待收貨店簽收" : "總倉已派送・待收貨店簽收";
     case "ready":
-      return "收貨店已收貨";
+      return "收貨店已簽收";
     case "partially_completed":
-      return "收貨店部分取貨";
+      return "收貨店已部分取貨";
     case "completed":
-      return "收貨店已取貨";
+      return "收貨店已取貨完成";
     case "cancelled":
       return "已取消";
     case "expired":
