@@ -6,6 +6,8 @@ import { Modal } from "@/components/Modal";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
+import Spinner, { LoadingBlock } from "@/components/Spinner";
+import { Table, THead, TBody, Tr, Th, Td } from "@/components/DataTable";
 import { ProductImagesField } from "@/components/ProductImagesField";
 import { printViaIframe } from "@/lib/printIframe";
 import { withBasePath } from "@/lib/basePath";
@@ -171,6 +173,14 @@ export default function MutualAidPage() {
   const [offerModalOpen, setOfferModalOpen] = useState(false);
   const [manualModalOpen, setManualModalOpen] = useState(false);
   const [threadPost, setThreadPost] = useState<Post | null>(null);
+  // 歷史是回頭查的，一次只讀 20 筆，滑到底再按「載入更多」（老闆 2026-08-25）。
+  // 進行中維持一次撈完 —— 那是每天要看的工作清單，分頁只會礙事。
+  const HISTORY_PAGE = 20;
+  const [historyLimit, setHistoryLimit] = useState(HISTORY_PAGE);
+  // 這次查詢實際回了幾筆：回的比要的少 ＝ 沒有更多了（不必另外查 count）
+  const [historyFetched, setHistoryFetched] = useState(0);
+  // 切分頁／換篩選時把歷史收回第一頁（在 handler 裡重設，不用 effect ——
+  // effect 裡同步 setState 會觸發 cascading render 的 lint 規則）
 
   // 貼文數變動（發文/關貼/認領）後重載列表，並通知側欄「互助交流板」badge 重抓
   // (見 layout AID_BADGE_REFRESH_EVENT)
@@ -203,11 +213,14 @@ export default function MutualAidPage() {
         // 歷史 = 已結束（已認領／已過期／已取消），對齊 rpc_purge_expired_aid_board
         // 20260824000000 起到期不再刪除，這三種狀態才查得到完整歷史
         q = view === "active" ? q.eq("status", "active") : q.neq("status", "active");
-        q = q.order("created_at", { ascending: false }).limit(200);
+        // 歷史分頁讀 historyLimit 筆；進行中維持一次撈完（上限 200）
+        q = q.order("created_at", { ascending: false })
+             .limit(view === "history" ? historyLimit : 200);
         if (filter !== "all") q = q.eq("post_type", filter);
         const { data, error: e } = await q;
         if (e) throw new Error(e.message);
         const rows = ((data as Post[] | null) ?? []);
+        if (!cancelled && view === "history") setHistoryFetched(rows.length);
         if (rows.length === 0) {
           if (!cancelled) setPosts([]);
           return;
@@ -256,7 +269,7 @@ export default function MutualAidPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [view, filter, reloadTick]);
+  }, [view, filter, reloadTick, historyLimit]);
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
@@ -305,14 +318,15 @@ export default function MutualAidPage() {
       </header>
 
       <div className="flex gap-1 overflow-x-auto border-b border-zinc-200 dark:border-zinc-800">
+        {/* 歷史擺最後：它是回頭查的，不該卡在每天要看的分頁中間（老闆 2026-08-25） */}
         {(isHq
-            ? (["active", "history", "provided", "same_store"] as const)
-            : (["active", "history", "provided", "received", "same_store"] as const)
+            ? (["active", "provided", "same_store", "history"] as const)
+            : (["active", "provided", "received", "same_store", "history"] as const)
           ).map((v) => (
           <SpinButton
             key={v}
             type="button"
-            onClick={() => setView(v)}
+            onClick={() => { setView(v); setHistoryLimit(HISTORY_PAGE); }}
             className={
               view === v
                 ? "shrink-0 whitespace-nowrap border-b-2 border-zinc-900 px-4 py-2 text-sm font-medium text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
@@ -341,7 +355,7 @@ export default function MutualAidPage() {
           <SpinButton
             key={opt}
             type="button"
-            onClick={() => setFilter(opt)}
+            onClick={() => { setFilter(opt); setHistoryLimit(HISTORY_PAGE); }}
             className={`px-3 py-1.5 ${
               filter === opt
                 ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
@@ -360,7 +374,7 @@ export default function MutualAidPage() {
       )}
 
       {posts === null ? (
-        <div className="text-sm text-zinc-500">載入中…</div>
+        <LoadingBlock />
       ) : posts.length === 0 ? (
         <div className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500 dark:border-zinc-700">
           {view === "active" ? "目前沒有進行中的" : "沒有已結束的"}
@@ -431,6 +445,18 @@ export default function MutualAidPage() {
             </li>
           ))}
         </ul>
+      )}
+
+      {/* 歷史的「載入更多」：回的筆數 < 要求的筆數 ＝ 已經到底，就不畫按鈕
+          （不必為了這顆鈕多打一發 count 查詢） */}
+      {view === "history" && posts !== null && historyFetched >= historyLimit && (
+        <SpinButton
+          type="button"
+          onClick={() => setHistoryLimit((n) => n + HISTORY_PAGE)}
+          className="mx-auto rounded-md border border-zinc-300 px-4 py-1.5 text-sm text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+        >
+          載入更多（目前 {posts.length} 筆）
+        </SpinButton>
       )}
       </>
       )}
@@ -611,7 +637,11 @@ function AidClaimLog({ post }: { post: Post }) {
   const verb = post.post_type === "request" ? "提供" : "認領";
 
   if (rows === null) {
-    return <div className="text-xs text-zinc-500">載入{verb}紀錄…</div>;
+    return (
+      <div className="flex items-center gap-2 text-xs text-zinc-500">
+        <Spinner size={14} /> 載入{verb}紀錄…
+      </div>
+    );
   }
 
   // 貼文自己記的已成交量 vs 查得到明細的量。
@@ -803,10 +833,15 @@ function ProvidedList({ stores, direction }: {
           }) | null;
         };
         const nameOf = (s: StoreRef) => (Array.isArray(s) ? s[0]?.name : s?.name) ?? "—";
-        // 同店互轉的「對面那位客人」：訂單暱稱優先、退會員名（內部單＝【內部】xx店）
+        // 同店變更取貨人的「這張單掛在誰名下」：一律以**會員**為準。
+        // ⛔ 不要用 nickname_snapshot —— 轉單 RPC 建轉入單時是把來源單的
+        //    nickname_snapshot 原封複製過去（v_orig.nickname_snapshot），
+        //    所以接收人那一側會顯示成原客人的名字（2026-08-25 回報「Peggy → Peggy」，
+        //    實際是 Peggy → Alex Chen）。暱稱只在查無會員名時當後備。
         const nickOf = (o: RawOrder) =>
+          ((Array.isArray(o.member) ? o.member[0]?.name : o.member?.name) ?? null) ||
           o.nickname_snapshot?.trim() ||
-          ((Array.isArray(o.member) ? o.member[0]?.name : o.member?.name) ?? null);
+          null;
         const raws = (data ?? []) as unknown as Raw[];
         // 同一張轉入單有幾趟：舊的併入單（多店混一張）取消整張會殃及別家店的貨，
         // 要在列上把取消鈕關掉。要在「店別過濾之前」算 —— 別家店那幾趟不在
@@ -878,7 +913,10 @@ function ProvidedList({ stores, direction }: {
   async function cancelLeg(r: ProvidedRow, kind: "cancel" | "return") {
     if (busyLink != null) return;
     const items = r.labels.join("、") || `共 ${r.qty}`;
-    const what = kind === "cancel"
+    const what = r.same_store
+      // 同店變更取貨人：貨沒離開本店，撤銷＝把商品掛回原客人的單
+      ? `撤銷本次變更（${items}）？\n商品將掛回原客人 ${r.from_party ?? ""} 的訂單。`
+      : kind === "cancel"
       ? `取消本次轉出（${items}）？\n商品將退回來源訂單，互助板貼文的數量也會一併還原。`
       : direction === "in"
         // 收貨方退回：貨在自己架上，按下去就是把它送回去
@@ -896,7 +934,13 @@ function ProvidedList({ stores, direction }: {
       if (!user?.id) { alert("尚未登入"); return; }
       const { error: e } = await sb.rpc(
         kind === "cancel" ? "rpc_cancel_aid_order" : "rpc_return_aid_order",
-        { p_order_id: r.dest_order_id, p_reason: `互助板${direction === "out" ? "提供方" : "收貨方"}${kind === "cancel" ? "取消" : "退回"}`, p_operator: user.id },
+        {
+          p_order_id: r.dest_order_id,
+          p_reason: r.same_store
+            ? "撤銷同店變更取貨人"
+            : `互助板${direction === "out" ? "提供方" : "收貨方"}${kind === "cancel" ? "取消" : "退回"}`,
+          p_operator: user.id,
+        },
       );
       if (e) { alert(translateRpcError(e)); return; }
       setReloadTick((n) => n + 1);
@@ -913,7 +957,7 @@ function ProvidedList({ stores, direction }: {
       </div>
     );
   }
-  if (rows === null) return <div className="text-sm text-zinc-500">載入中…</div>;
+  if (rows === null) return <LoadingBlock />;
 
   const inFlight = rows.filter((r) => isAidInFlight(r.dest_status));
   const done = rows.filter((r) => !isAidInFlight(r.dest_status));
@@ -970,34 +1014,56 @@ function ProvidedList({ stores, direction }: {
                   : `目前無運送中的${direction === "out" ? "轉出" : "轉入"}`)}
         </div>
       ) : (
-        <ul className="space-y-2">
-          {shown.map((r) => (
-            <li
-              key={r.linkId}
-              className="flex flex-col gap-2 rounded-md border border-zinc-200 bg-white p-3 sm:flex-row sm:items-start sm:gap-4 dark:border-zinc-800 dark:bg-zinc-900"
-            >
-              {/* 左：這一趟是誰給誰、什麼東西、對應哪兩張單 */}
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                  <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-                    {myStoreId == null
-                      ? (r.same_store
-                          ? `${r.source_store}：${r.from_party ?? "原客人"} → ${r.to_party ?? "新客人"}`
-                          : `${r.source_store} → ${r.dest_store}`)
-                      : r.same_store
-                        ? `${r.from_party ?? "原客人"} → ${r.to_party ?? "新客人"}`
-                        : `${direction === "out" ? "轉予" : "來自"} ${direction === "out" ? r.dest_store : r.source_store}`}
-                  </span>
-                  <span className="shrink-0 text-xs text-zinc-400">{fmtDt(r.transferred_at)}</span>
-                </div>
-                <div className="mt-1 text-sm text-zinc-800 dark:text-zinc-100">
-                  {r.labels.join("、") || `共 ${r.qty}`}
-                </div>
-                <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-500">
-                  <span>
-                    來源單 <span className="font-mono text-zinc-700 dark:text-zinc-300">{r.source_order_no}</span>
-                  </span>
-                  <span aria-hidden className="text-zinc-300 dark:text-zinc-600">→</span>
+<Table>
+          <THead>
+            <Th className="min-w-[12rem]">商品</Th>
+            <Th className="whitespace-nowrap">{direction === "same" ? "原客人 → 新客人" : "轉出 → 轉入"}</Th>
+            <Th className="whitespace-nowrap">種類</Th>
+            <Th className="whitespace-nowrap">來源</Th>
+            <Th className="whitespace-nowrap" align="right">數量</Th>
+            <Th className="whitespace-nowrap">單號</Th>
+            <Th className="whitespace-nowrap" align="right">日期</Th>
+            <Th className="whitespace-nowrap">狀態</Th>
+            <Th className="whitespace-nowrap" align="right">操作</Th>
+          </THead>
+          <TBody>
+            {shown.map((r) => (
+              <Tr key={r.linkId}>
+                <Td className="align-top">
+                  <div className="text-zinc-800 dark:text-zinc-100">
+                    {r.labels.join("、") || `共 ${r.qty}`}
+                  </div>
+                  {r.reason && !r.reason.startsWith("[回填]") && (
+                    <div className="mt-0.5 text-xs text-zinc-500">「{r.reason}」</div>
+                  )}
+                </Td>
+                <Td className="whitespace-nowrap align-top font-medium">
+                  {/* 一律把兩端都寫出來（老闆 2026-08-25：「直接寫松山店 → 南平店，
+                      不要給予」）—— 分店帳號原本只顯示對面那一家，看不出方向 */}
+                  {r.same_store
+                    ? `${r.from_party ?? "原客人"} → ${r.to_party ?? "新客人"}`
+                    : `${r.source_store} → ${r.dest_store}`}
+                  {r.same_store && myStoreId == null && (
+                    <div className="text-xs font-normal text-zinc-500">{r.source_store}（店內）</div>
+                  )}
+                </Td>
+                <Td className="align-top">
+                  {r.same_store ? (
+                    <Chip tone="violet" title="同店變更取貨人：商品未離開本店，只是把訂單改掛給另一位客人">
+                      🔁 同店
+                    </Chip>
+                  ) : (
+                    <Chip tone={r.is_air_transfer ? "sky" : "amber"}
+                          title={r.is_air_transfer ? "店對店直送，不經總倉" : "先送到總倉，再由總倉派送到收貨店"}>
+                      {aidRouteLabel(r.is_air_transfer)}
+                    </Chip>
+                  )}
+                </Td>
+                <Td className="align-top">{originChip(r.origin, r.board_id)}</Td>
+                <Td className="whitespace-nowrap align-top tabular-nums" align="right">{r.qty}</Td>
+                <Td className="whitespace-nowrap align-top text-xs text-zinc-500">
+                  <span className="font-mono" title={r.source_order_no}>{shortOrderNo(r.source_order_no)}</span>
+                  <span aria-hidden className="mx-1 text-zinc-300 dark:text-zinc-600">→</span>
                   {/* 轉入單掛在收貨店名下 —— 連結一定要帶 storeId，否則分店帳號的
                       門市篩選會預設帶回自己店、搜出 0 筆（看起來像貨憑空消失） */}
                   <Link
@@ -1006,112 +1072,123 @@ function ProvidedList({ stores, direction }: {
                   >
                     {shortOrderNo(r.dest_order_no)}
                   </Link>
-                  {r.reason && !r.reason.startsWith("[回填]") && (
-                    <span className="text-zinc-700 dark:text-zinc-300">「{r.reason}」</span>
+                </Td>
+                <Td className="whitespace-nowrap align-top text-xs text-zinc-500" align="right"
+                    title={fmtDt(r.transferred_at)}>
+                  {fmtDt(r.transferred_at).slice(5)}
+                </Td>
+                <Td className="align-top">
+                  {r.same_store ? (
+                    <Chip tone={stageTone(r.dest_status)} title="轉入單目前的狀態（同店變更取貨人無配送階段）">
+                      {orderStatusLabel(r.dest_status)}
+                    </Chip>
+                  ) : (
+                    <Chip tone={stageTone(r.dest_status)} title="本次轉移的進度（非來源訂單的狀態）">
+                      {aidStageLabel(r.dest_status, r.is_air_transfer)}
+                    </Chip>
                   )}
-                </div>
-              </div>
-
-              {/* 中：標籤靠右橫排 —— 種類（空中轉／經總倉）→ 來源 → 狀態，
-                  三種語意三個顏色。順序是老闆 2026-08-25 指定的。 */}
-              <div className="flex flex-wrap items-center gap-1.5 sm:w-[15rem] sm:shrink-0 sm:justify-end">
-                {r.same_store ? (
-                  <Chip tone="violet" title="商品未離開本店，只是把訂單改掛給另一位客人">
-                    🔁 同店變更取貨人
-                  </Chip>
-                ) : (
-                  <Chip tone={r.is_air_transfer ? "sky" : "amber"}
-                        title={r.is_air_transfer ? "店對店直送，不經總倉" : "先送到總倉，再由總倉派送到收貨店"}>
-                    {aidRouteLabel(r.is_air_transfer)}
-                  </Chip>
-                )}
-                {originChip(r.origin, r.board_id)}
-                {r.same_store ? (
-                  <Chip tone={stageTone(r.dest_status)} title="轉入單目前的狀態（同店變更取貨人無配送階段）">
-                    {orderStatusLabel(r.dest_status)}
-                  </Chip>
-                ) : (
-                  <Chip tone={stageTone(r.dest_status)} title="本次轉移的進度（非來源訂單的狀態）">
-                    {aidStageLabel(r.dest_status, r.is_air_transfer)}
-                  </Chip>
-                )}
-              </div>
-
-              {/* 同店互轉：沒有隨貨單（貨沒出門）、也不走互助的取消／退回 RPC
-                  （要反悔就到轉入單用「轉給別人」轉回來）→ 整欄不出 */}
-              {!r.same_store && (
-              <div className="flex flex-row flex-wrap gap-1.5 sm:shrink-0 sm:flex-col sm:items-stretch">
-                {/* 隨貨單走 /transfers/print-aid（兩聯：司機聯 + 存查聯），
-                    帶 link 才只印這一趟的貨、來源店也才標得對 */}
-                <SpinButton
-                  type="button"
-                  onClick={() =>
-                    printViaIframe(
-                      withBasePath(`/transfers/print-aid?order_id=${r.dest_order_id}&link=${r.linkId}`),
-                    )
-                  }
-                  title="列印這一趟的互助出貨單（兩聯：司機聯 + 存查聯）"
-                  className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                >
-                  🖨️
-                </SpinButton>
-                {/* 取消規則：分界線是「貨到收貨店了沒」。
-                    未到（pending/confirmed/shipping）→ 兩邊都能取消（rpc_cancel_aid_order）；
-                    已到（ready）→ 只有收貨方能退回原店（rpc_return_aid_order，貨在他們架上）；
-                    completed/cancelled → 沒有動作。
-                    舊的併入單（link_count > 1）整張取消會殃及別家店的貨 → 導去訂單頁。 */}
-                {isAidInFlight(r.dest_status) && (
-                  r.link_count === 1 ? (
-                    <SpinButton
-                      type="button"
-                      disabled={busyLink != null}
-                      onClick={() => cancelLeg(r, "cancel")}
-                      className="rounded-md border border-red-300 px-2 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
-                    >
-                      {busyLink === r.linkId ? "處理中…" : direction === "out" ? "取消提供" : "取消轉入"}
-                    </SpinButton>
+                </Td>
+                <Td className="align-top" align="right">
+                  <div className="flex justify-end">
+                  {/* 同店變更取貨人：貨沒出門 → 沒有隨貨單、也沒有「退回原店」，
+                      但要能撤銷（把商品掛回原客人的單，20260825050000 放行 ready）。
+                      已取走的單（partially_completed/completed）RPC 會擋，所以不出鈕。 */}
+                  {r.same_store ? (
+                    <div className="flex flex-row flex-wrap gap-1.5 sm:shrink-0 sm:flex-col sm:items-stretch">
+                      {r.link_count === 1 && ["pending", "confirmed", "shipping", "ready"].includes(r.dest_status) ? (
+                        <SpinButton
+                          type="button"
+                          disabled={busyLink != null}
+                          onClick={() => cancelLeg(r, "cancel")}
+                          className="whitespace-nowrap rounded-md border border-red-300 px-2 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                        >
+                          {busyLink === r.linkId ? "處理中…" : "撤銷變更"}
+                        </SpinButton>
+                      ) : r.link_count !== 1 ? (
+                        <span
+                          className="whitespace-nowrap rounded-md border border-dashed border-zinc-300 px-2 py-1.5 text-center text-[10px] text-zinc-400 dark:border-zinc-700"
+                          title="此轉入單併有其他筆轉移（舊資料），整張撤銷會一併影響；請至轉入單的訂單頁個別處理"
+                        >
+                          多筆併單
+                        </span>
+                      ) : null}
+                    </div>
                   ) : (
-                    <span
-                      className="rounded-md border border-dashed border-zinc-300 px-2 py-1.5 text-center text-[10px] text-zinc-400 dark:border-zinc-700"
-                      title="此轉入單併有其他分店的商品（舊資料），整張取消會一併取消他店商品；請至轉入單的訂單頁個別處理"
-                    >
-                      多筆併單
-                    </span>
-                  )
-                )}
-                {/* 已到貨（ready）→ 兩邊都能退回（老闆 2026-08-25）。
-                    收貨方＝貨在自己架上，直接送回；轉出方＝要求對方退回，
-                    同一支 rpc_return_aid_order（它沒有「限收貨店」的守衛），
-                    會從對方店出庫、建反向調撥。文案在 cancelLeg 裡分開講。 */}
-                {r.dest_status === "ready" && (
-                  r.link_count === 1 ? (
+                  <div className="flex flex-row flex-wrap gap-1.5 sm:shrink-0 sm:flex-col sm:items-stretch">
+                    {/* 隨貨單走 /transfers/print-aid（兩聯：司機聯 + 存查聯），
+                        帶 link 才只印這一趟的貨、來源店也才標得對 */}
                     <SpinButton
                       type="button"
-                      disabled={busyLink != null}
-                      onClick={() => cancelLeg(r, "return")}
-                      title={
-                        direction === "in"
-                          ? "把這批貨送回原店（建反向調撥、來源單還原、貼文數量還回去）"
-                          : "貨已經在對方店裡：按下去會從對方店出庫、送回本店。請先跟對方講一聲"
+                      onClick={() =>
+                        printViaIframe(
+                          withBasePath(`/transfers/print-aid?order_id=${r.dest_order_id}&link=${r.linkId}`),
+                        )
                       }
-                      className="rounded-md border border-red-300 px-2 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                      title="列印這一趟的互助出貨單（兩聯：司機聯 + 存查聯）"
+                      className="rounded-md border border-zinc-300 px-2 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
                     >
-                      {busyLink === r.linkId ? "處理中…" : direction === "in" ? "退回原店" : "要求退回"}
+                      🖨️
                     </SpinButton>
-                  ) : (
-                    <span
-                      className="rounded-md border border-dashed border-zinc-300 px-2 py-1.5 text-center text-[10px] text-zinc-400 dark:border-zinc-700"
-                      title="此轉入單併有其他分店的商品（舊資料），整張退回會一併退回他店商品；請至轉入單的訂單頁個別處理"
-                    >
-                      多筆併單
-                    </span>
-                  )
-                )}
-              </div>
-              )}
-            </li>
-          ))}
-        </ul>
+                    {/* 取消規則：分界線是「貨到收貨店了沒」。
+                        未到（pending/confirmed/shipping）→ 兩邊都能取消（rpc_cancel_aid_order）；
+                        已到（ready）→ 只有收貨方能退回原店（rpc_return_aid_order，貨在他們架上）；
+                        completed/cancelled → 沒有動作。
+                        舊的併入單（link_count > 1）整張取消會殃及別家店的貨 → 導去訂單頁。 */}
+                    {isAidInFlight(r.dest_status) && (
+                      r.link_count === 1 ? (
+                        <SpinButton
+                          type="button"
+                          disabled={busyLink != null}
+                          onClick={() => cancelLeg(r, "cancel")}
+                          className="rounded-md border border-red-300 px-2 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                        >
+                          {busyLink === r.linkId ? "處理中…" : direction === "out" ? "取消提供" : "取消轉入"}
+                        </SpinButton>
+                      ) : (
+                        <span
+                          className="rounded-md border border-dashed border-zinc-300 px-2 py-1.5 text-center text-[10px] text-zinc-400 dark:border-zinc-700"
+                          title="此轉入單併有其他分店的商品（舊資料），整張取消會一併取消他店商品；請至轉入單的訂單頁個別處理"
+                        >
+                          多筆併單
+                        </span>
+                      )
+                    )}
+                    {/* 已到貨（ready）→ 兩邊都能退回（老闆 2026-08-25）。
+                        收貨方＝貨在自己架上，直接送回；轉出方＝要求對方退回，
+                        同一支 rpc_return_aid_order（它沒有「限收貨店」的守衛），
+                        會從對方店出庫、建反向調撥。文案在 cancelLeg 裡分開講。 */}
+                    {r.dest_status === "ready" && (
+                      r.link_count === 1 ? (
+                        <SpinButton
+                          type="button"
+                          disabled={busyLink != null}
+                          onClick={() => cancelLeg(r, "return")}
+                          title={
+                            direction === "in"
+                              ? "把這批貨送回原店（建反向調撥、來源單還原、貼文數量還回去）"
+                              : "貨已經在對方店裡：按下去會從對方店出庫、送回本店。請先跟對方講一聲"
+                          }
+                          className="rounded-md border border-red-300 px-2 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                        >
+                          {busyLink === r.linkId ? "處理中…" : direction === "in" ? "退回原店" : "要求退回"}
+                        </SpinButton>
+                      ) : (
+                        <span
+                          className="rounded-md border border-dashed border-zinc-300 px-2 py-1.5 text-center text-[10px] text-zinc-400 dark:border-zinc-700"
+                          title="此轉入單併有其他分店的商品（舊資料），整張退回會一併退回他店商品；請至轉入單的訂單頁個別處理"
+                        >
+                          多筆併單
+                        </span>
+                      )
+                    )}
+                  </div>
+                  )}
+                  </div>
+                </Td>
+              </Tr>
+            ))}
+          </TBody>
+        </Table>
       )}
     </div>
   );
