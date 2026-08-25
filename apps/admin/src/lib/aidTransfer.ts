@@ -78,19 +78,19 @@ export function aidRouteLabel(isAir: boolean): string {
 export function aidStageLabel(status: string, isAir: boolean): string {
   switch (status) {
     case "pending":
-      return isAir ? "等出貨" : "等總倉收貨";
+      return isAir ? "待出貨" : "待總倉簽收";
     case "confirmed":
-      return isAir ? "等出貨" : "總倉已收・等派貨";
+      return isAir ? "待出貨" : "總倉已簽收・待派送";
     case "reserved":
       return "已保留";
     case "shipping":
-      return isAir ? "已出貨・等收貨店收" : "總倉已派貨・等收貨店收";
+      return isAir ? "已出貨・待收貨店簽收" : "總倉已派送・待收貨店簽收";
     case "ready":
-      return "收貨店已收貨";
+      return "收貨店已簽收";
     case "partially_completed":
-      return "收貨店部分取貨";
+      return "收貨店已部分取貨";
     case "completed":
-      return "收貨店已取貨";
+      return "收貨店已取貨完成";
     case "cancelled":
       return "已取消";
     case "expired":
