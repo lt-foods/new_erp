@@ -16,7 +16,7 @@ import { shortOrderNo } from "@/lib/orderTitle";
 import { translateRpcError } from "@/lib/rpcError";
 import {
   TRANSFER_LINK_SELECT, type TransferLink,
-  activeQty, aidRouteLabel, aidStageLabel, isAidInFlight, linkItems,
+  activeQty, aidRouteLabel, aidStageLabel, isAidDead, isAidInFlight, linkItems,
 } from "@/lib/aidTransfer";
 import { orderStatusLabel } from "@/lib/orderStatus";
 
@@ -787,8 +787,10 @@ function ProvidedList({ stores, direction }: {
   const myStoreId = useUserBranchStoreId(stores);
   const [rows, setRows] = useState<ProvidedRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // 只有跨店才分階段：transit=運送中（預設）、done=已簽收。同店沒有配送階段。
-  const [bucket, setBucket] = useState<"transit" | "done">("transit");
+  // 只有跨店才分階段：transit=運送中（預設）、done=已簽收、dead=已取消。
+  // 已取消要自成一格：混在「已簽收」裡會讓人以為那些貨都送到了
+  // （2026-08-25 回報：「對方已簽收 (8)」其實有 5 筆是已取消）。同店沒有配送階段。
+  const [bucket, setBucket] = useState<"transit" | "done" | "dead">("transit");
   const [busyLink, setBusyLink] = useState<number | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
 
@@ -960,16 +962,19 @@ function ProvidedList({ stores, direction }: {
   if (rows === null) return <LoadingBlock />;
 
   const inFlight = rows.filter((r) => isAidInFlight(r.dest_status));
-  const done = rows.filter((r) => !isAidInFlight(r.dest_status));
+  const dead = rows.filter((r) => isAidDead(r.dest_status));
+  const done = rows.filter((r) => !isAidInFlight(r.dest_status) && !isAidDead(r.dest_status));
   // 同店沒有配送階段（商品未離開本店）→ 不分籤，整份一起看
-  const shown = direction === "same" ? rows : bucket === "done" ? done : inFlight;
+  const shown = direction === "same"
+    ? rows
+    : bucket === "done" ? done : bucket === "dead" ? dead : inFlight;
 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         {direction !== "same" && (
           <div className="inline-flex w-fit overflow-hidden rounded-md border border-zinc-300 text-xs dark:border-zinc-700">
-            {(["transit", "done"] as const).map((v) => (
+            {(["transit", "done", "dead"] as const).map((v) => (
               <SpinButton
                 key={v}
                 type="button"
@@ -985,7 +990,9 @@ function ProvidedList({ stores, direction }: {
                     一堆沒動過的品項，2026-08-24 就被誤讀成「OV-2-0001 變已完成」。 */}
                 {v === "transit"
                   ? `運送中 (${inFlight.length})`
-                  : `${myStoreId != null && direction === "out" ? "對方已簽收" : "已簽收"} (${done.length})`}
+                  : v === "dead"
+                    ? `已取消 (${dead.length})`
+                    : `${myStoreId != null && direction === "out" ? "對方已簽收" : "已簽收"} (${done.length})`}
               </SpinButton>
             ))}
           </div>
@@ -1009,9 +1016,11 @@ function ProvidedList({ stores, direction }: {
               ? (myStoreId == null
                   ? "無已簽收的轉移紀錄"
                   : `無${direction === "out" ? "對方已簽收的轉出" : "已簽收的轉入"}紀錄`)
-              : (myStoreId == null
-                  ? "目前無運送中的轉移"
-                  : `目前無運送中的${direction === "out" ? "轉出" : "轉入"}`)}
+              : bucket === "dead"
+                ? `無已取消的${direction === "out" ? "轉出" : "轉入"}紀錄`
+                : (myStoreId == null
+                    ? "目前無運送中的轉移"
+                    : `目前無運送中的${direction === "out" ? "轉出" : "轉入"}`)}
         </div>
       ) : (
 <Table>
