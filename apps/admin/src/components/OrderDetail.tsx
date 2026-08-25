@@ -10,6 +10,7 @@ import { AidOrderTimeline } from "@/components/AidOrderTimeline";
 import { OrderAuditDrawer } from "@/components/OrderAuditDrawer";
 import { WalletPayOrderModal } from "@/components/WalletPayOrderModal";
 import { AssignStockModal } from "@/components/AssignStockModal";
+import { UnassignStockModal } from "@/components/UnassignStockModal";
 import { EditableNumber, EditableText } from "@/components/EditableCell";
 import { EditableDiscount, deriveDiscount, type DiscountValue } from "@/components/EditableDiscount";
 import { useAuth } from "@/components/AuthProvider";
@@ -234,6 +235,13 @@ export function OrderDetail({
   const [returnDetailId, setReturnDetailId] = useState<number | null>(null);
   // 「📦 從庫存配貨」目標品項（把取貨門市的現貨指派給這一行）
   const [assignTarget, setAssignTarget] = useState<{ itemId: number; skuLabel: string } | null>(null);
+  // item.id → 這一行從庫存配過幾件（rpc_get_order_stock_assignments，20260825020000）。
+  // 有配過才出「↩️ 取消配貨」，數字也一起顯示在品項列上。
+  const [assigned, setAssigned] = useState<Map<number, { qty: number; fromPool: number }>>(new Map());
+  // 「↩️ 取消配貨」目標品項（把配出去的現貨收回庫存）
+  const [unassignTarget, setUnassignTarget] = useState<
+    { itemId: number; skuLabel: string; assigned: number; fromPool: number } | null
+  >(null);
   // 該訂單的取貨事件（append-only）— 取貨後補印收據用，見 /pickup/print?event_ids=
   const [pickupEvents, setPickupEvents] = useState<PickupEventRow[]>([]);
   const [timeline, setTimeline] = useState<TimelineStep[] | null>(null);
@@ -365,6 +373,20 @@ export function OrderDetail({
         arrivedMap.set(r.item_id, !!r.pickup_ready);
       }
       setItemReady(arrivedMap);
+
+      // 這張單哪幾行從庫存配過貨（＝身上還有有效的減抵覆蓋）。
+      // 有配過才出「↩️ 取消配貨」；訂單取消/逾期時覆蓋會自動釋放，這裡就撈不到了。
+      const { data: asgRes } = await sb.rpc("rpc_get_order_stock_assignments", {
+        p_order_id: orderId,
+      });
+      if (cancelled) return;
+      const asgMap = new Map<number, { qty: number; fromPool: number }>();
+      for (const [k, v] of Object.entries((asgRes ?? {}) as Record<string, unknown>)) {
+        const info = (v ?? {}) as { assigned?: unknown; from_pool?: unknown };
+        const qty = Number(info.assigned ?? 0);
+        if (qty > 0) asgMap.set(Number(k), { qty, fromPool: Number(info.from_pool ?? 0) });
+      }
+      setAssigned(asgMap);
 
       setPickupEvents(pevRes.get(orderId) ?? []);
 
@@ -1550,7 +1572,8 @@ export function OrderDetail({
                     </td>
                     {(canEditQty || canAssignStock) && (
                       <td className="px-3 py-2 text-right">
-                        <div className="flex items-center justify-end gap-1.5">
+                        {/* 三顆按鈕擠不下時整顆換行，不要讓文字自己斷在字中間 */}
+                        <div className="flex flex-wrap items-center justify-end gap-1.5">
                           {/* 從庫存配貨：把取貨門市的現貨指派給這一行 → 品項變「可取貨」。
                               不扣庫存、不結案（客人到店在取貨頁交貨才扣帳）。
                               草稿沒存的時候先擋下：這一顆會動到 qty（配不滿會拆行），
@@ -1572,9 +1595,39 @@ export function OrderDetail({
                                 });
                               }}
                               title="把取貨門市的店內現貨指派給這一行 —— 品項會變成「已到貨・可取貨」，取貨時才扣庫存收款"
-                              className="rounded-md border border-violet-300 px-2 py-1 text-[11px] font-medium text-violet-700 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-300 dark:hover:bg-violet-950"
+                              className="rounded-md border border-violet-300 px-2 py-1 text-[11px] font-medium text-violet-700 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-300 dark:hover:bg-violet-950 whitespace-nowrap"
                             >
                               📦 從庫存配貨
+                            </SpinButton>
+                          )}
+                          {/* 取消配貨：把配給這一行的現貨收回可配量（不動庫存數量）。
+                              只有身上還有有效減抵覆蓋的行才出現；已取貨的行不給收
+                              （貨真的交出去了，那是退貨的職責）。 */}
+                          {canAssignStock
+                            && !isPicked
+                            && !["cancelled", "expired"].includes(it.status)
+                            && (assigned.get(it.id)?.qty ?? 0) > 0 && (
+                            <SpinButton
+                              onClick={() => {
+                                if (draftCount > 0) {
+                                  alert("請先儲存或放棄未儲存的修改，再取消配貨。");
+                                  return;
+                                }
+                                const a = assigned.get(it.id);
+                                if (!a) return;
+                                setUnassignTarget({
+                                  itemId: it.id,
+                                  skuLabel: it.sku
+                                    ? `${it.sku.product_name ?? ""}${it.sku.variant_name ? ` / ${it.sku.variant_name}` : ""}`.trim()
+                                    : `#${it.id}`,
+                                  assigned: a.qty,
+                                  fromPool: a.fromPool,
+                                });
+                              }}
+                              title="把配給這一行的店內現貨收回 —— 那幾件會回到可配量、可以配給別的客人（庫存數量不變）"
+                              className="rounded-md border border-amber-300 px-2 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950 whitespace-nowrap"
+                            >
+                              ↩️ 取消配貨 {assigned.get(it.id)?.qty}
                             </SpinButton>
                           )}
                           {canEditQty
@@ -1583,7 +1636,7 @@ export function OrderDetail({
                             <SpinButton
                               onClick={() => deleteItem(it)}
                               title="刪除此品項（待確認訂單，刪到最後一項會自動取消整單）"
-                              className="rounded-md border border-red-300 px-2 py-1 text-[11px] font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
+                              className="rounded-md border border-red-300 px-2 py-1 text-[11px] font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950 whitespace-nowrap"
                             >
                               刪除
                             </SpinButton>
@@ -1813,6 +1866,16 @@ export function OrderDetail({
           itemId={assignTarget.itemId}
           skuLabel={assignTarget.skuLabel}
           onClose={() => setAssignTarget(null)}
+          onSaved={() => setReloadTick((n) => n + 1)}
+        />
+      )}
+      {unassignTarget && (
+        <UnassignStockModal
+          itemId={unassignTarget.itemId}
+          skuLabel={unassignTarget.skuLabel}
+          assigned={unassignTarget.assigned}
+          fromPool={unassignTarget.fromPool}
+          onClose={() => setUnassignTarget(null)}
           onSaved={() => setReloadTick((n) => n + 1)}
         />
       )}
