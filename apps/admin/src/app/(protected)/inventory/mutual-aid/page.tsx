@@ -261,7 +261,7 @@ export default function MutualAidPage() {
             分店貼出需求或可釋出的商品，其他分店認領後由系統自動完成訂單轉移。
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {/* 「我轉出／我接收」列的是轉移紀錄不是貼文，整份清單列印不適用；
               那兩頁每一列有自己的隨貨單列印鈕（走 /transfers/print-aid 兩聯） */}
           {view !== "provided" && view !== "received" && view !== "same_store" && (
@@ -277,28 +277,28 @@ export default function MutualAidPage() {
           <SpinButton
             type="button"
             onClick={() => setRequestModalOpen(true)}
-            className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
+            className="whitespace-nowrap rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700"
           >
             📢 我要求助
           </SpinButton>
           <SpinButton
             type="button"
             onClick={() => setOfferModalOpen(true)}
-            className="rounded-md bg-pink-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-pink-700"
+            className="whitespace-nowrap rounded-md bg-pink-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-pink-700"
           >
             📦 我有庫存可提供
           </SpinButton>
           <SpinButton
             type="button"
             onClick={() => setManualModalOpen(true)}
-            className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700"
+            className="whitespace-nowrap rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700"
           >
             ➕ 手動新增現貨
           </SpinButton>
         </div>
       </header>
 
-      <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
+      <div className="flex gap-1 overflow-x-auto border-b border-zinc-200 dark:border-zinc-800">
         {(["active", "history", "provided", "received", "same_store"] as const).map((v) => (
           <SpinButton
             key={v}
@@ -306,8 +306,8 @@ export default function MutualAidPage() {
             onClick={() => setView(v)}
             className={
               view === v
-                ? "border-b-2 border-zinc-900 px-4 py-2 text-sm font-medium text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
-                : "px-4 py-2 text-sm text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+                ? "shrink-0 whitespace-nowrap border-b-2 border-zinc-900 px-4 py-2 text-sm font-medium text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
+                : "shrink-0 whitespace-nowrap px-4 py-2 text-sm text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
             }
           >
             {v === "active" ? "進行中"
@@ -923,7 +923,7 @@ function ProvidedList({ stores, direction }: {
                 key={v}
                 type="button"
                 onClick={() => setBucket(v)}
-                className={`px-3 py-1.5 ${
+                className={`shrink-0 whitespace-nowrap px-3 py-1.5 ${
                   bucket === v
                     ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
                     : "bg-white text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
@@ -963,12 +963,12 @@ function ProvidedList({ stores, direction }: {
           {shown.map((r) => (
             <li
               key={r.linkId}
-              className="flex items-start gap-2 rounded-md border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900"
+              className="flex flex-col gap-2 rounded-md border border-zinc-200 bg-white p-3 sm:flex-row sm:items-start sm:gap-4 dark:border-zinc-800 dark:bg-zinc-900"
             >
               {/* 左：這一趟是誰給誰、什麼東西、對應哪兩張單 */}
               <div className="min-w-0 flex-1">
-                <div className="flex items-baseline gap-2">
-                  <span className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                  <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
                     {myStoreId == null
                       ? (r.same_store
                           ? `${r.source_store}：${r.from_party ?? "原客人"} → ${r.to_party ?? "新客人"}`
@@ -1002,7 +1002,7 @@ function ProvidedList({ stores, direction }: {
               </div>
 
               {/* 中：標籤靠右橫排 —— 路徑／狀態／來源，三種語意三個顏色 */}
-              <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 sm:w-[15rem]">
+              <div className="flex flex-wrap items-center gap-1.5 sm:w-[15rem] sm:shrink-0 sm:justify-end">
                 {r.same_store ? (
                   <Chip tone="violet" title="商品未離開本店，只是把訂單改掛給另一位客人">
                     🔁 同店變更取貨人
@@ -1028,7 +1028,7 @@ function ProvidedList({ stores, direction }: {
               {/* 同店互轉：沒有隨貨單（貨沒出門）、也不走互助的取消／退回 RPC
                   （要反悔就到轉入單用「轉給別人」轉回來）→ 整欄不出 */}
               {!r.same_store && (
-              <div className="flex shrink-0 flex-col items-stretch gap-1.5">
+              <div className="flex flex-row flex-wrap gap-1.5 sm:shrink-0 sm:flex-col sm:items-stretch">
                 {/* 隨貨單走 /transfers/print-aid（兩聯：司機聯 + 存查聯），
                     帶 link 才只印這一趟的貨、來源店也才標得對 */}
                 <SpinButton
