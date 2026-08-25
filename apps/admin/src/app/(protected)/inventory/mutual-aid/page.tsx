@@ -794,9 +794,17 @@ function ProvidedList({ stores, direction }: { stores: Store[]; direction: "out"
   // 兩支 RPC 取消後都會把數量還給互助板貼文（20260824080000）。
   async function cancelLeg(r: ProvidedRow, kind: "cancel" | "return") {
     if (busyLink != null) return;
+    const items = r.labels.join("、") || `共 ${r.qty}`;
     const what = kind === "cancel"
-      ? `取消這趟提供（${r.labels.join("、") || `共 ${r.qty}`}）？\n貨會回到來源單、互助板貼文的數量會還回去。`
-      : `把這批貨退回 ${r.source_store}？\n會建一張反向調撥、來源單還原、貼文數量還回去。`;
+      ? `取消這趟提供（${items}）？\n貨會回到來源單、互助板貼文的數量會還回去。`
+      : direction === "in"
+        // 收貨方退回：貨在自己架上，按下去就是把它送回去
+        ? `把這批貨退回 ${r.source_store}？\n會建一張反向調撥、來源單還原、貼文數量還回去。`
+        // 轉出方要求退回：貨在對方店裡，按下去會從**對方**店出庫、送回本店。
+        // 對方沒有按鈕可擋，所以話要講白（老闆 2026-08-25：兩邊都要能退回）。
+        : `要求 ${r.dest_store} 把這批貨退回本店（${items}）？\n` +
+          `會立刻建一張反向調撥、從 ${r.dest_store} 出庫送回本店，來源單還原、貼文數量還回去。\n` +
+          `貨還在對方架上，請先跟對方講一聲再按。`;
     if (!confirm(what)) return;
     setBusyLink(r.linkId);
     try {
@@ -862,7 +870,7 @@ function ProvidedList({ stores, direction }: { stores: Store[]; direction: "out"
             : myStoreId == null
               ? `全站的店對店${direction === "out" ? "轉出" : "轉入"}（總倉視角），互助認領與訂單轉單都列`
               : direction === "out"
-                ? "本店轉出去的貨（互助認領＋訂單轉單）。狀態說的是「這一趟」走到哪，不是來源單的狀態"
+                ? "本店轉出去的貨（互助認領＋訂單轉單）。未到貨可「取消提供」；已到貨可「要求退回」"
                 : "別店轉給本店的貨（互助認領＋訂單轉單）。未到貨可「取消這批」；已到貨可「退回原店」"}
         </span>
       </div>
@@ -983,31 +991,31 @@ function ProvidedList({ stores, direction }: { stores: Store[]; direction: "out"
                     </span>
                   )
                 )}
+                {/* 已到貨（ready）→ 兩邊都能退回（老闆 2026-08-25）。
+                    收貨方＝貨在自己架上，直接送回；轉出方＝要求對方退回，
+                    同一支 rpc_return_aid_order（它沒有「限收貨店」的守衛），
+                    會從對方店出庫、建反向調撥。文案在 cancelLeg 裡分開講。 */}
                 {r.dest_status === "ready" && (
-                  direction === "in" ? (
-                    r.link_count === 1 ? (
-                      <SpinButton
-                        type="button"
-                        disabled={busyLink != null}
-                        onClick={() => cancelLeg(r, "return")}
-                        className="rounded-md border border-red-300 px-2 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
-                      >
-                        {busyLink === r.linkId ? "處理中…" : "退回原店"}
-                      </SpinButton>
-                    ) : (
-                      <span
-                        className="rounded-md border border-dashed border-zinc-300 px-2 py-1.5 text-center text-[10px] text-zinc-400 dark:border-zinc-700"
-                        title="這張轉入單上還混有其他趟的貨（舊資料），請到轉入單的訂單頁處理"
-                      >
-                        多趟併單
-                      </span>
-                    )
+                  r.link_count === 1 ? (
+                    <SpinButton
+                      type="button"
+                      disabled={busyLink != null}
+                      onClick={() => cancelLeg(r, "return")}
+                      title={
+                        direction === "in"
+                          ? "把這批貨送回原店（建反向調撥、來源單還原、貼文數量還回去）"
+                          : "貨已經在對方店裡：按下去會從對方店出庫、送回本店。請先跟對方講一聲"
+                      }
+                      className="rounded-md border border-red-300 px-2 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                    >
+                      {busyLink === r.linkId ? "處理中…" : direction === "in" ? "退回原店" : "要求退回"}
+                    </SpinButton>
                   ) : (
                     <span
                       className="rounded-md border border-dashed border-zinc-300 px-2 py-1.5 text-center text-[10px] text-zinc-400 dark:border-zinc-700"
-                      title="貨已經在對方店裡，要由收貨店按「退回原店」"
+                      title="這張轉入單上還混有其他趟的貨（舊資料），整張退回會殃及別家店的貨；請到轉入單的訂單頁處理"
                     >
-                      需對方退回
+                      多趟併單
                     </span>
                   )
                 )}
@@ -2578,9 +2586,17 @@ function ClaimOfferDialog({
             <div className="mt-1 text-[10px] text-zinc-500">剩餘可認 {post.qty_remaining}{post.qty_remaining !== post.qty_available && `（原 ${post.qty_available}）`}</div>
           </label>
         </div>
-        <label className="mb-3 flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={isAir} onChange={(e) => setIsAir(e.target.checked)} className="h-4 w-4" />
-          <span>空中轉（店對店直送、不經總倉）</span>
+        {/* 空中轉的差別要在按下去之前就講清楚 —— 線上實際的互助幾乎都沒勾，
+            結果貨要多繞總倉一趟、還得等總倉收了才派得動（2026-08-25 老闆指示） */}
+        <label className="mb-3 flex items-start gap-2 rounded-md border border-zinc-200 p-2 text-sm dark:border-zinc-700">
+          <input type="checkbox" checked={isAir} onChange={(e) => setIsAir(e.target.checked)} className="mt-0.5 h-4 w-4" />
+          <span className="min-w-0 flex-1">
+            <span className="font-medium">空中轉（店對店直送、不經總倉）</span>
+            <span className="mt-0.5 block text-[11px] text-zinc-500">
+              勾選 = 送出當下就從轉出店出庫，<span className="font-medium">直接進接收店的「收貨」頁</span>，
+              月結自動一加一扣；不勾 = 經總倉中轉，要等總倉收到貨再派給接收店。
+            </span>
+          </span>
         </label>
         <label className="mb-3 block text-sm">
           <span className="mb-1 block text-xs text-zinc-500">原因（選填）</span>
@@ -2779,9 +2795,17 @@ function FulfillRequestDialog({
           />
           <div className="mt-1 text-[10px] text-zinc-500">剩餘需求 {post.qty_remaining}（≤ 此值；不足部分維持需求中）</div>
         </label>
-        <label className="mb-3 flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={isAir} onChange={(e) => setIsAir(e.target.checked)} className="h-4 w-4" />
-          <span>空中轉（店對店直送、不經總倉）</span>
+        {/* 空中轉的差別要在按下去之前就講清楚 —— 線上實際的互助幾乎都沒勾，
+            結果貨要多繞總倉一趟、還得等總倉收了才派得動（2026-08-25 老闆指示） */}
+        <label className="mb-3 flex items-start gap-2 rounded-md border border-zinc-200 p-2 text-sm dark:border-zinc-700">
+          <input type="checkbox" checked={isAir} onChange={(e) => setIsAir(e.target.checked)} className="mt-0.5 h-4 w-4" />
+          <span className="min-w-0 flex-1">
+            <span className="font-medium">空中轉（店對店直送、不經總倉）</span>
+            <span className="mt-0.5 block text-[11px] text-zinc-500">
+              勾選 = 送出當下就從轉出店出庫，<span className="font-medium">直接進接收店的「收貨」頁</span>，
+              月結自動一加一扣；不勾 = 經總倉中轉，要等總倉收到貨再派給接收店。
+            </span>
+          </span>
         </label>
         <label className="mb-3 block text-sm">
           <span className="mb-1 block text-xs text-zinc-500">原因（選填）</span>
