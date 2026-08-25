@@ -29,7 +29,7 @@ export function isAidInFlight(status: string): boolean {
 // ---- 訂單轉移連結（customer_order_transfer_links） ----
 
 export const TRANSFER_LINK_SELECT =
-  "id, source_order_id, dest_order_id, dest_item_ids, is_air_transfer, appended, transferred_at";
+  "id, source_order_id, dest_order_id, dest_item_ids, is_air_transfer, appended, transferred_at, transfer_id";
 
 export type TransferLink = {
   id: number;
@@ -39,6 +39,9 @@ export type TransferLink = {
   is_air_transfer: boolean | null;
   appended: boolean | null;
   transferred_at: string;
+  // 這一趟的貨走的那張 AT- 調撥單（20260825000000）；NULL = 沒有調撥單
+  // （經總倉未派貨、同店換客人）或回填對不上的舊資料
+  transfer_id: number | null;
 };
 
 /** 這一趟轉移真正搬過去的品項。
