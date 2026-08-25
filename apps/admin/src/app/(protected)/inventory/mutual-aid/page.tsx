@@ -93,9 +93,11 @@ type ProvidedRow = {
   link_count: number;
   /** 同店互轉（變更取貨人）：商品未離開本店，無配送階段、不出取消／退回／隨貨單鈕 */
   same_store: boolean;
-  /** 這一趟是怎麼來的：aid=互助板認領、order=訂單轉單、unknown=連結表上線前的舊資料
-   *  （2026-08-24 之前的轉移由回填補建，原始 reason 已遺失，判不出來就不要猜） */
-  origin: "aid" | "order" | "unknown";
+  /** 這一趟是怎麼來的：aid=互助板認領、order=訂單轉單。
+   *  舊資料的原始 reason 曾被回填蓋掉，20260825040000 已從轉入單 notes 救回
+   *  貼文編號；救不回但確實有互助痕跡的會蓋「互助（貼文編號不明）」，
+   *  其餘（線上 593 筆，三個訊號全查過都沒有互助痕跡）就是訂單轉單。 */
+  origin: "aid" | "order";
   /** 同店互轉的兩位客人（原客人 → 新客人）；跨店列不用 */
   from_party: string | null;
   to_party: string | null;
@@ -158,6 +160,10 @@ export default function MutualAidPage() {
   // same_store 是獨立分頁：同店變更取貨人的轉出店＝接收店，掛在「我轉出／我接收」
   // 底下會變成同一筆出現兩次（2026-08-25 回報）→ 拉到與「進行中」同層。
   const [view, setView] = useState<"active" | "history" | "provided" | "received" | "same_store">("active");
+  // 總倉／未綁分店的帳號沒有「自己這一側」→ 我轉出與我接收會列出一模一樣的
+  // 全站清單（2026-08-25 回報）。這種帳號只給一個「店對店轉移」分頁。
+  const myStoreId = useUserBranchStoreId(stores);
+  const isHq = myStoreId == null;
   const [filter, setFilter] = useState<"all" | "request" | "offer">("all");
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
@@ -299,7 +305,10 @@ export default function MutualAidPage() {
       </header>
 
       <div className="flex gap-1 overflow-x-auto border-b border-zinc-200 dark:border-zinc-800">
-        {(["active", "history", "provided", "received", "same_store"] as const).map((v) => (
+        {(isHq
+            ? (["active", "history", "provided", "same_store"] as const)
+            : (["active", "history", "provided", "received", "same_store"] as const)
+          ).map((v) => (
           <SpinButton
             key={v}
             type="button"
@@ -312,7 +321,7 @@ export default function MutualAidPage() {
           >
             {v === "active" ? "進行中"
               : v === "history" ? "歷史"
-              : v === "provided" ? "我轉出"
+              : v === "provided" ? (isHq ? "店對店轉移" : "我轉出")
               : v === "received" ? "我接收"
               : "同店變更取貨人"}
           </SpinButton>
@@ -322,7 +331,8 @@ export default function MutualAidPage() {
       {view === "provided" || view === "received" || view === "same_store" ? (
         <ProvidedList
           stores={stores}
-          direction={view === "provided" ? "out" : view === "received" ? "in" : "same"}
+          // 總倉沒有轉出／轉入之分，一律走同一份全站清單
+          direction={view === "same_store" ? "same" : isHq ? "out" : view === "provided" ? "out" : "in"}
         />
       ) : (
       <>
@@ -726,15 +736,15 @@ function stageTone(status: string): keyof typeof CHIP_TONE {
 
 /** 來源標籤：這一趟是怎麼發生的。 */
 function originChip(origin: ProvidedRow["origin"], boardId: number | null) {
-  if (origin === "aid") {
-    return <Chip tone="blue" title="由互助交流板的貼文認領而來">互助板 #{boardId}</Chip>;
-  }
-  if (origin === "order") {
+  if (origin !== "aid") {
     return <Chip tone="teal" title="由訂單頁的「轉給別人」直接轉移">訂單轉單</Chip>;
   }
+  if (boardId != null) {
+    return <Chip tone="blue" title="由互助交流板的貼文認領而來">互助板 #{boardId}</Chip>;
+  }
   return (
-    <Chip tone="faint" title="2026-08-24 轉移連結表上線前的舊資料，當時未記錄來源，無法判定">
-      來源未記錄
+    <Chip tone="faint" title="確定是互助轉移，但這張轉入單併了多筆轉移、對不出是哪一則貼文（連結表上線前的舊資料）">
+      互助板（編號不明）
     </Chip>
   );
 }
@@ -829,12 +839,9 @@ function ProvidedList({ stores, direction }: {
             transferred_at: r.transferred_at,
             is_air_transfer: r.is_air_transfer === true,
             board_id: r.aid_board_id ?? (Number(/互助板[^#]*#(\d+)/.exec(r.reason ?? "")?.[1]) || null),
-            // 判來源：有貼文編號＝互助；reason 空＝轉單 RPC 當下寫的（互助對話框
-            // 一定會預填「互助板認領 #N」，所以空的只可能是訂單頁轉單）；
-            // 「[回填]」是連結表上線前補建的舊資料，原始 reason 已遺失 → 不猜。
-            origin: (r.aid_board_id ?? (Number(/互助板[^#]*#(\d+)/.exec(r.reason ?? "")?.[1]) || null)) != null
-              ? "aid"
-              : r.reason == null ? "order" : "unknown",
+            // 判來源：有貼文編號、或 reason 提到互助（20260825040000 對舊資料蓋的
+            // 「互助（貼文編號不明）」）＝互助；其餘都是訂單頁轉單。
+            origin: (r.aid_board_id != null || /互助/.test(r.reason ?? "")) ? "aid" : "order",
             reason: r.reason,
             source_store: nameOf(src.store),
             source_store_id: src.pickup_store_id,
@@ -934,7 +941,7 @@ function ProvidedList({ stores, direction }: {
                     一堆沒動過的品項，2026-08-24 就被誤讀成「OV-2-0001 變已完成」。 */}
                 {v === "transit"
                   ? `運送中 (${inFlight.length})`
-                  : `${direction === "out" ? "對方已簽收" : "已簽收"} (${done.length})`}
+                  : `${myStoreId != null && direction === "out" ? "對方已簽收" : "已簽收"} (${done.length})`}
               </SpinButton>
             ))}
           </div>
@@ -943,7 +950,7 @@ function ProvidedList({ stores, direction }: {
           {direction === "same"
             ? "商品未離開本店，僅將訂單改掛至另一位客人；如需還原請至轉入單再次轉移"
             : myStoreId == null
-              ? `全站店對店${direction === "out" ? "轉出" : "轉入"}（總倉視角），含互助認領與訂單轉單`
+              ? "全站店對店轉移（總倉視角），含互助認領與訂單轉單"
               : direction === "out"
                 ? "本店轉出的商品（互助認領＋訂單轉單）。未送達可「取消提供」，已送達可「要求退回」"
                 : "其他分店轉入本店的商品（互助認領＋訂單轉單）。未送達可「取消轉入」，已送達可「退回原店」"}
@@ -955,8 +962,12 @@ function ProvidedList({ stores, direction }: {
           {direction === "same"
             ? "本店沒有同店變更取貨人的紀錄"
             : bucket === "done"
-              ? `無${direction === "out" ? "對方已簽收的轉出" : "已簽收的轉入"}紀錄`
-              : `目前無運送中的${direction === "out" ? "轉出" : "轉入"}`}
+              ? (myStoreId == null
+                  ? "無已簽收的轉移紀錄"
+                  : `無${direction === "out" ? "對方已簽收的轉出" : "已簽收的轉入"}紀錄`)
+              : (myStoreId == null
+                  ? "目前無運送中的轉移"
+                  : `目前無運送中的${direction === "out" ? "轉出" : "轉入"}`)}
         </div>
       ) : (
         <ul className="space-y-2">
@@ -1001,7 +1012,8 @@ function ProvidedList({ stores, direction }: {
                 </div>
               </div>
 
-              {/* 中：標籤靠右橫排 —— 路徑／狀態／來源，三種語意三個顏色 */}
+              {/* 中：標籤靠右橫排 —— 種類（空中轉／經總倉）→ 來源 → 狀態，
+                  三種語意三個顏色。順序是老闆 2026-08-25 指定的。 */}
               <div className="flex flex-wrap items-center gap-1.5 sm:w-[15rem] sm:shrink-0 sm:justify-end">
                 {r.same_store ? (
                   <Chip tone="violet" title="商品未離開本店，只是把訂單改掛給另一位客人">
@@ -1013,6 +1025,7 @@ function ProvidedList({ stores, direction }: {
                     {aidRouteLabel(r.is_air_transfer)}
                   </Chip>
                 )}
+                {originChip(r.origin, r.board_id)}
                 {r.same_store ? (
                   <Chip tone={stageTone(r.dest_status)} title="轉入單目前的狀態（同店變更取貨人無配送階段）">
                     {orderStatusLabel(r.dest_status)}
@@ -1022,7 +1035,6 @@ function ProvidedList({ stores, direction }: {
                     {aidStageLabel(r.dest_status, r.is_air_transfer)}
                   </Chip>
                 )}
-                {originChip(r.origin, r.board_id)}
               </div>
 
               {/* 同店互轉：沒有隨貨單（貨沒出門）、也不走互助的取消／退回 RPC
