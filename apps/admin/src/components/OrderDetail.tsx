@@ -1148,7 +1148,7 @@ export function OrderDetail({
             <SpinButton
               onClick={() => setTransferOpen(true)}
               className="rounded-md border border-blue-300 px-3 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950"
-              title="貨留在店裡不動，只把這張單改掛給另一位客人（客人棄單、改給朋友、轉到其他店店長、互助接手都用這個）"
+              title="貨留在店裡不動，只把這張單改掛給本店另一位客人（客人棄單、改給朋友都用這個）；要把貨轉到別家店請到「互助交流板」釋出"
             >
               ↗ 轉給別人
             </SpinButton>
@@ -1754,7 +1754,6 @@ export function OrderDetail({
         onClose={() => setTransferOpen(false)}
         orderId={head.id}
         orderNo={head.order_no}
-        sameStoreOnly={!["ready", "partially_completed"].includes(head.status)}
         partialOnly={head.status === "partially_completed"}
         canReturnToHq={canReturn}
         currentPickupStoreId={head.pickup_store_id}
@@ -1772,19 +1771,8 @@ export function OrderDetail({
         onSubmitted={(r) => {
           setTransferOpen(false);
           setReloadTick((n) => n + 1);
-          if (!r.crossStore) {
-            // 同店換客人：貨沒離開本店，沒有隨貨單要印
-            alert(`轉出完成 → 訂單 #${r.newOrderId}（部分轉出時原單保留未轉出品項）`);
-            return;
-          }
-          // 跨店＝貨要離開本店，裝箱當下就該把隨貨單印出來夾在箱子上。
-          // 事後才想到要印的話，本單下方的「↗ 轉出記錄」還可以再印一次。
-          const ok = confirm(
-            `轉出完成 → ${r.toStoreName}（部分轉出時原單保留未轉出品項）\n\n` +
-            `要現在列印互助出貨單嗎？\n` +
-            `隨貨聯夾在箱子上，${r.isAir ? "" : "總倉、"}${r.toStoreName} 照單點收簽名。`,
-          );
-          if (ok) void printViaIframe(withBasePath(`/transfers/print-aid?order_id=${r.newOrderId}`));
+          // 只剩同店換客人（跨店已改走互助板）：貨沒離開本店，沒有隨貨單要印
+          alert(`轉出完成 → 訂單 #${r.newOrderId}（部分轉出時原單保留未轉出品項）`);
         }}
       />
       <PickupDialog
