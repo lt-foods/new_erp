@@ -1012,7 +1012,8 @@ function ProvidedList({ stores, direction }: {
                 </div>
               </div>
 
-              {/* 中：標籤靠右橫排 —— 路徑／狀態／來源，三種語意三個顏色 */}
+              {/* 中：標籤靠右橫排 —— 種類（空中轉／經總倉）→ 來源 → 狀態，
+                  三種語意三個顏色。順序是老闆 2026-08-25 指定的。 */}
               <div className="flex flex-wrap items-center gap-1.5 sm:w-[15rem] sm:shrink-0 sm:justify-end">
                 {r.same_store ? (
                   <Chip tone="violet" title="商品未離開本店，只是把訂單改掛給另一位客人">
@@ -1024,6 +1025,7 @@ function ProvidedList({ stores, direction }: {
                     {aidRouteLabel(r.is_air_transfer)}
                   </Chip>
                 )}
+                {originChip(r.origin, r.board_id)}
                 {r.same_store ? (
                   <Chip tone={stageTone(r.dest_status)} title="轉入單目前的狀態（同店變更取貨人無配送階段）">
                     {orderStatusLabel(r.dest_status)}
@@ -1033,7 +1035,6 @@ function ProvidedList({ stores, direction }: {
                     {aidStageLabel(r.dest_status, r.is_air_transfer)}
                   </Chip>
                 )}
-                {originChip(r.origin, r.board_id)}
               </div>
 
               {/* 同店互轉：沒有隨貨單（貨沒出門）、也不走互助的取消／退回 RPC
