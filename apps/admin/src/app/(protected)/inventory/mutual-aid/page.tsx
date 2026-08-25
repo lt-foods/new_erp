@@ -945,14 +945,8 @@ function ProvidedList({ stores, direction }: {
       ? `撤銷本次變更（${items}）？\n商品將掛回原客人 ${r.from_party ?? ""} 的訂單。`
       : kind === "cancel"
       ? `取消本次轉出（${items}）？\n商品將退回來源訂單，互助板貼文的數量也會一併還原。`
-      : direction === "in"
-        // 收貨方退回：貨在自己架上，按下去就是把它送回去
-        ? `將本批商品退回 ${r.source_store}？\n系統將建立反向調撥單，來源訂單與貼文數量一併還原。`
-        // 轉出方要求退回：貨在對方店裡，按下去會從**對方**店出庫、送回本店。
-        // 對方沒有按鈕可擋，所以話要講白（老闆 2026-08-25：兩邊都要能退回）。
-        : `要求 ${r.dest_store} 將本批商品退回本店（${items}）？\n` +
-          `系統將立即建立反向調撥單，自 ${r.dest_store} 出庫送回本店，來源訂單與貼文數量一併還原。\n` +
-          `商品目前仍在對方店內，請先與對方確認後再執行。`;
+      // 退回只由收貨方發動（貨在自己架上）—— 已簽收之後轉出方不再有退回鈕
+      : `將本批商品退回 ${r.source_store}？\n系統將建立反向調撥單，來源訂單與貼文數量一併還原。`;
     if (!confirm(what)) return;
     setBusyLink(r.linkId);
     try {
@@ -1023,8 +1017,8 @@ function ProvidedList({ stores, direction }: {
             : myStoreId == null
               ? "全站店對店轉移（總倉視角），含互助認領與訂單轉單"
               : direction === "out"
-                ? "本店轉出的商品（互助認領＋訂單轉單）。未送達可「取消提供」，已送達可「要求退回」"
-                : "其他分店轉入本店的商品（互助認領＋訂單轉單）。未送達可「取消轉入」，已送達可「退回原店」"}
+                ? "本店轉出的商品（互助認領＋訂單轉單）。未簽收可「取消提供」；對方簽收後就不能再撤銷，需由對方退回"
+                : "其他分店轉入本店的商品（互助認領＋訂單轉單）。未簽收可「取消轉入」，已簽收可「退回原店」"}
         </span>
       </div>
 
@@ -1130,7 +1124,8 @@ function ProvidedList({ stores, direction }: {
                           title="撤銷變更：把商品掛回原客人的訂單"
                           className="h-8 w-8 shrink-0 rounded-md border text-sm leading-none disabled:opacity-50 flex items-center justify-center border-red-300 text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
                         >
-                          {busyLink === r.linkId ? "…" : "⎌"}
+                          {/* ⎌ (U+238C) 多數字型沒有字，會變成豆腐方框 → 用 ↩ */}
+                          {busyLink === r.linkId ? "…" : "↩"}
                         </SpinButton>
                       ) : r.link_count !== 1 ? (
                         <span
@@ -1182,21 +1177,17 @@ function ProvidedList({ stores, direction }: {
                         </span>
                       )
                     )}
-                    {/* 已到貨（ready）→ 兩邊都能退回（老闆 2026-08-25）。
-                        收貨方＝貨在自己架上，直接送回；轉出方＝要求對方退回，
-                        同一支 rpc_return_aid_order（它沒有「限收貨店」的守衛），
-                        會從對方店出庫、建反向調撥。文案在 cancelLeg 裡分開講。 */}
-                    {r.dest_status === "ready" && (
+                    {/* 已簽收（ready）→ **只有收貨方**能退回（老闆 2026-08-25：
+                        「收貨店已簽收 不能再撤銷了」）。貨已經點收進對方店裡，
+                        這一趟就成立了；要退只能由手上有貨的收貨店自己送回，
+                        轉出方不再出「要求退回」。未簽收前兩邊都還能取消（上一段）。 */}
+                    {r.dest_status === "ready" && direction === "in" && (
                       r.link_count === 1 ? (
                         <SpinButton
                           type="button"
                           disabled={busyLink != null}
                           onClick={() => cancelLeg(r, "return")}
-                          title={
-                            direction === "in"
-                              ? "把這批貨送回原店（建反向調撥、來源單還原、貼文數量還回去）"
-                              : "貨已經在對方店裡：按下去會從對方店出庫、送回本店。請先跟對方講一聲"
-                          }
+                          title="把這批貨送回原店（建反向調撥、來源單還原、貼文數量還回去）"
                           className="h-8 w-8 shrink-0 rounded-md border text-sm leading-none disabled:opacity-50 flex items-center justify-center border-red-300 text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
                         >
                           {busyLink === r.linkId ? "…" : "↩"}
