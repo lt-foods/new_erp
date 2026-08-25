@@ -1577,9 +1577,13 @@ export function OrderDetail({
                           {/* 從庫存配貨：把取貨門市的現貨指派給這一行 → 品項變「可取貨」。
                               不扣庫存、不結案（客人到店在取貨頁交貨才扣帳）。
                               草稿沒存的時候先擋下：這一顆會動到 qty（配不滿會拆行），
-                              和未儲存的數量草稿混在一起會互蓋。 */}
+                              和未儲存的數量草稿混在一起會互蓋。
+                              ⚠ 貨已經到店、這一行本來就可以交貨（取貨閘門放行）時不要出這顆 ——
+                              按了也不會有任何改變（閘門已經是 true），店員只會誤以為
+                              「還要再配一次才發得出去」。2026-08-25 松山回報。 */}
                           {canAssignStock
                             && !isPicked
+                            && itemReady.get(it.id) !== true
                             && !["cancelled", "expired"].includes(it.status) && (
                             <SpinButton
                               onClick={() => {
