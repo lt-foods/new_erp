@@ -419,7 +419,7 @@ export default function MutualAidPage() {
                     )}
                     {/* 沒選商品的手動現貨別店認領不了 —— 在列表就標出來，
                         不用點進去才發現（20260816000000） */}
-                    {p.post_type === "offer" && p.sku_id == null && (
+                    {p.post_type === "offer" && p.status === "active" && p.sku_id == null && (
                       <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300" title="沒有選商品，別的分店無法認領；請點進貼文用「✏️ 修改內容」補選">
                         待補商品
                       </span>
@@ -1526,9 +1526,11 @@ function ManualSpotModal({
     setErr(null);
     if (!storeId) { setErr("請選釋出店"); return; }
     const titleTrim = title.trim();
-    // 商品必選：別店認領＝把這個 SKU 轉單過去，沒 SKU 就沒東西可以轉
-    // （20260816000000；主檔沒有的商品請先去「商品」頁建一筆）
-    if (!picked) { setErr("請從商品庫選商品 —— 沒選商品的話別的分店無法認領"); return; }
+    // 商品選填：主檔有的就挑 SKU（挑了才能被別店認領、才配得給客人）；
+    // 店裡自製 / 臨時進的貨主檔根本沒有，允許純手打，那種貼文只能當公告。
+    // 沒 SKU 時標題是會員端唯一顯示得出來的東西 → 必填
+    // （DB 的 chk_aid_board_displayable 也會擋，這裡先講人話）
+    if (!picked && titleTrim === "") { setErr("沒有從商品庫選商品時，商品標題必填"); return; }
     const qtyN = Number(qty);
     if (!Number.isFinite(qtyN) || qtyN <= 0) { setErr("數量需 > 0"); return; }
     let priceN: number | null = null;
@@ -1580,8 +1582,9 @@ function ManualSpotModal({
         <p className="rounded-md border border-emerald-200 bg-emerald-50/50 p-2 text-xs text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">
           直接上架店裡現有的東西，不需要來源訂單。名稱 / 說明 / 圖片都可以自己改寫。
           <br />
-          <strong>商品要從商品庫選</strong>：別店認領＝把這個商品轉單過去，沒選就沒東西可以轉
-          （主檔還沒有的商品，請先到「商品」頁建一筆）。
+          <strong>商品庫有的請盡量選</strong>：選了才能被別店認領、才配得給客人（會走訂單、扣庫存、進月結）。
+          店裡自製、臨時進的貨主檔沒有，可以不選、直接手打標題 —— 但那種貼文只能當公告，
+          之後要認領或開單得先用「✏️ 修改內容」補選商品。
         </p>
 
         <label>
@@ -1598,11 +1601,11 @@ function ManualSpotModal({
 
         <div>
           <span className="mb-1 block text-xs text-zinc-500">
-            從商品庫選商品 <span className="text-red-500">*</span>
-            <span className="ml-1 text-zinc-400">（帶出名稱與圖片；別店要認領一定要有它）</span>
+            從商品庫選商品
+            <span className="ml-1 text-zinc-400">（帶出名稱與圖片；別店要認領、要配給客人一定要有它）</span>
           </span>
           <SkuSearchInput value={picked} onChange={pickSku} />
-          {picked && (
+          {picked ? (
             <SpinButton
               type="button"
               onClick={() => setPicked(null)}
@@ -1610,6 +1613,10 @@ function ManualSpotModal({
             >
               清除選擇，重新搜尋
             </SpinButton>
+          ) : (
+            <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+              不選也可以上架（純公告）：會員看得到、可以用 LINE 問，但別店認領不了、也不能配給客人。
+            </p>
           )}
         </div>
 
@@ -2577,7 +2584,7 @@ function ThreadModal({
                     ✋ 我要認領
                   </SpinButton>
                 )}
-                {post.post_type === "offer" && !canClaim && (
+                {post.post_type === "offer" && post.status === "active" && isManual && savedSkuId == null && (
                   <span className="self-center text-[11px] text-amber-600 dark:text-amber-400">
                     這則還沒選商品 → 別店認領不了，請按「✏️ 修改內容」補選商品
                   </span>
