@@ -7,6 +7,7 @@ import { stripTransferNotes, stripItemNotes } from "@/lib/orderNotes";
 import { internalOrderSource } from "@/lib/orderTitle";
 import { parseReturnNote } from "@/lib/returnNote";
 import { itemDisplayName } from "@/lib/skuLabel";
+import { settlementNo } from "@/lib/settlementNo";
 import { GIFT_ITEM_SELECT, isGiftLine } from "@/lib/orderGift";
 import SpinButton from "@/components/SpinButton";
 import { CutoffText } from "@/components/CampaignCutoff";
@@ -22,7 +23,7 @@ type Order = {
   notes: string | null;
   member: { id: number; member_no: string; name: string | null; phone: string | null } | null;
   campaign: { id: number; campaign_no: string; name: string; cutoff_date: string | null } | null;
-  store: { id: number; name: string } | null;
+  store: { id: number; name: string; store_short_code: string | null } | null;
   items: {
     id: number;
     sku_id: number;
@@ -93,7 +94,7 @@ function Body() {
             `id, order_no, status, discount_amount, discount_percent, wallet_paid_amount, payment_status, notes,
              member:members(id, member_no, name, phone),
              campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date),
-             store:stores!customer_orders_pickup_store_id_fkey(id, name),
+             store:stores!customer_orders_pickup_store_id_fkey(id, name, store_short_code),
              items:customer_order_items(id, sku_id, qty, unit_price, discount_amount, discount_percent, notes, status, ${GIFT_ITEM_SELECT}, sku:skus(variant_name, product_name))`,
           )
           .in("id", ids),
@@ -251,9 +252,13 @@ function Body() {
                     : o.campaign?.name ?? "(未知活動)"}
                   <CutoffText date={o.campaign?.cutoff_date} />
                 </div>
+                <div className="text-[13px]">
+                  結單編號: {settlementNo(o.id, o.store?.store_short_code)}
+                </div>
                 {orderNotes && (
                   <div className="text-[13px] italic">📝 {orderNotes}</div>
                 )}
+                <div className="divide-y divide-dashed divide-zinc-300">
                 {active.map((it) => {
                   const returned = returnedOf(o, it.id);
                   const qty = effQty(o, it);
@@ -261,24 +266,24 @@ function Body() {
                   const gross = lineGross(it, qty);
                   const discounted = hasLineDisc(it);
                   return (
-                    <div key={it.id}>
+                    <div key={it.id} className="py-1">
                       <div className="flex items-baseline justify-between gap-2">
                         <span className="min-w-0 flex-1 break-words text-[16px] font-bold">
                           {itemDisplayName(it.sku, o.campaign?.name)}
                         </span>
                         <span className="whitespace-nowrap text-[15px]">
-                          × {qty}
                           {/* 贈品：$0 是刻意的，小白單上要標，店員才知道那件不用收錢 */}
                           {isGiftLine(it) && (
-                            <span className="ml-1.5 text-[15px] font-bold">🎁 贈品</span>
+                            <span className="mr-1.5 text-[15px] font-bold">🎁 贈品</span>
                           )}
+                          {qty} × ${Number(it.unit_price)} =
                           {discounted ? (
                             <>
-                              <span className="ml-1.5 text-[13px] line-through">${gross}</span>
+                              <span className="ml-1 text-[13px] line-through">${gross}</span>
                               <span className="ml-1 text-[15px] font-bold">${subtotal}</span>
                             </>
                           ) : (
-                            <span className="ml-1.5 text-[15px]">${subtotal}</span>
+                            <span className="ml-1 text-[15px] font-bold">${subtotal}</span>
                           )}
                         </span>
                       </div>
@@ -298,6 +303,7 @@ function Body() {
                     </div>
                   );
                 })}
+                </div>
                 {pct > 0 && (
                   <div className="text-right text-[13px]">
                     <span className="text-zinc-600">本單{pct}%折扣 </span>
@@ -316,21 +322,18 @@ function Body() {
         </div>
 
         <div className="mt-2 border-t-2 border-black pt-1.5 text-right text-[14px]">
-          <div>小計 $ {grandSubtotal.toLocaleString()}</div>
-          {totalOrderDisc > 0 && <div>− 整單折扣 $ {totalOrderDisc.toLocaleString()}</div>}
-          <div className="text-[20px] font-bold">合計 {totalQty} 項　$ {grandTotal.toLocaleString()}</div>
-          {grandWalletPaidDb > 0 && (
-            <div className="mt-1">− 已用儲值金 $ {grandWalletPaidDb.toLocaleString()}</div>
-          )}
+          <div className="text-[16px] font-bold">總數量：{totalQty}</div>
+          <div className="mt-1 text-[20px] font-bold">
+            {grandWalletPaid > 0 && grandBalanceDue === 0
+              ? "✅ 已付清"
+              : <>應付 {grandBalanceDue.toLocaleString()} 元</>}
+          </div>
+          <div className="text-[13px]">
+            (總金額: {grandSubtotal.toLocaleString()}元, 折扣抵: {totalOrderDisc.toLocaleString()}元,
+            錢包抵: {grandWalletPaid.toLocaleString()}元)
+          </div>
           {previewCapped > 0 && (
-            <div>− 本次抵扣儲值金 $ {previewCapped.toLocaleString()}</div>
-          )}
-          {grandWalletPaid > 0 && (
-            <div className="text-[17px] font-bold">
-              {grandBalanceDue === 0
-                ? "✅ 已付清"
-                : <>應收現金 $ {grandBalanceDue.toLocaleString()}</>}
-            </div>
+            <div className="text-[13px]">↳ 錢包抵含本次將扣 {previewCapped.toLocaleString()}元（尚未扣款）</div>
           )}
         </div>
 

@@ -6,6 +6,7 @@ import { getSupabase } from "@/lib/supabase";
 import { stripTransferNotes, stripItemNotes } from "@/lib/orderNotes";
 import { internalOrderSource } from "@/lib/orderTitle";
 import { itemDisplayName } from "@/lib/skuLabel";
+import { settlementNo } from "@/lib/settlementNo";
 import { GIFT_ITEM_SELECT, isGiftLine } from "@/lib/orderGift";
 import SpinButton from "@/components/SpinButton";
 import { CutoffText } from "@/components/CampaignCutoff";
@@ -32,7 +33,7 @@ type Order = {
   notes: string | null;
   member: { id: number; member_no: string; name: string | null; phone: string | null } | null;
   campaign: { id: number; campaign_no: string; name: string; cutoff_date: string | null } | null;
-  store: { id: number; name: string } | null;
+  store: { id: number; name: string; store_short_code: string | null } | null;
 };
 
 type Item = {
@@ -93,7 +94,7 @@ function Body() {
       const allItemIds = events.flatMap((e) => e.item_ids ?? []);
       const [{ data: ords }, { data: itms }] = await Promise.all([
         sb.from("customer_orders")
-          .select("id, order_no, status, pickup_store_id, discount_amount, discount_percent, wallet_paid_amount, payment_status, notes, member:members(id, member_no, name, phone), campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
+          .select("id, order_no, status, pickup_store_id, discount_amount, discount_percent, wallet_paid_amount, payment_status, notes, member:members(id, member_no, name, phone), campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date), store:stores!customer_orders_pickup_store_id_fkey(id, name, store_short_code)")
           .in("id", orderIds),
         allItemIds.length > 0
           ? sb.from("customer_order_items").select(`id, qty, unit_price, discount_amount, discount_percent, notes, status, ${GIFT_ITEM_SELECT}, sku:skus(sku_code, product_name, variant_name)`).in("id", allItemIds)
@@ -200,32 +201,36 @@ function Body() {
                     : r.order?.campaign?.name ?? "(未知活動)"}
                   <CutoffText date={r.order?.campaign?.cutoff_date} />
                 </div>
+                <div className="text-[13px]">
+                  結單編號: {settlementNo(r.order?.id ?? r.event.order_id, r.order?.store?.store_short_code)}
+                </div>
                 {orderNotes && (
                   <div className="text-[13px] italic">📝 {orderNotes}</div>
                 )}
+                <div className="divide-y divide-dashed divide-zinc-300">
                 {r.items.map((it) => {
                   const subtotal = lineSub(it);
                   const gross = lineGross(it);
                   const discounted = hasLineDisc(it);
                   return (
-                    <div key={it.id}>
+                    <div key={it.id} className="py-1">
                       <div className="flex items-baseline justify-between gap-2">
                         <span className="min-w-0 flex-1 break-words text-[16px] font-bold">
                           {itemDisplayName(it.sku, r.order?.campaign?.name)}
                         </span>
                         <span className="whitespace-nowrap text-[15px]">
-                          × {Number(it.qty)}
                           {/* 贈品：$0 是刻意的。收據上不標的話，客人與店員都會以為是漏打價格 */}
                           {isGiftLine(it) && (
-                            <span className="ml-1.5 text-[15px] font-bold">🎁 贈品</span>
+                            <span className="mr-1.5 text-[15px] font-bold">🎁 贈品</span>
                           )}
+                          {Number(it.qty)} × ${Number(it.unit_price)} =
                           {discounted ? (
                             <>
-                              <span className="ml-1.5 text-[13px] line-through">${gross}</span>
+                              <span className="ml-1 text-[13px] line-through">${gross}</span>
                               <span className="ml-1 text-[15px] font-bold">${subtotal}</span>
                             </>
                           ) : (
-                            <span className="ml-1.5 text-[15px]">${subtotal}</span>
+                            <span className="ml-1 text-[15px] font-bold">${subtotal}</span>
                           )}
                         </span>
                       </div>
@@ -242,6 +247,7 @@ function Body() {
                     </div>
                   );
                 })}
+                </div>
                 {pct > 0 && (
                   <div className="text-right text-[13px]">
                     <span className="text-zinc-600">本單{pct}%折扣 </span>
@@ -263,19 +269,16 @@ function Body() {
         </div>
 
         <div className="mt-2 border-t-2 border-black pt-1.5 text-right text-[14px]">
-          <div>小計 $ {grandSubtotal.toLocaleString()}</div>
-          {totalOrderDisc > 0 && <div>− 整單折扣 $ {totalOrderDisc.toLocaleString()}</div>}
-          <div className="text-[20px] font-bold">合計 {totalQty} 項　$ {grandTotal.toLocaleString()}</div>
-          {grandWalletPaid > 0 && (
-            <>
-              <div className="mt-1">− 已用儲值金 $ {grandWalletPaid.toLocaleString()}</div>
-              <div className="text-[17px] font-bold">
-                {grandBalanceDue === 0
-                  ? "✅ 已付清"
-                  : <>應收現金 $ {grandBalanceDue.toLocaleString()}</>}
-              </div>
-            </>
-          )}
+          <div className="text-[16px] font-bold">總數量：{totalQty}</div>
+          <div className="mt-1 text-[20px] font-bold">
+            {grandWalletPaid > 0 && grandBalanceDue === 0
+              ? "✅ 已付清"
+              : <>應付 {grandBalanceDue.toLocaleString()} 元</>}
+          </div>
+          <div className="text-[13px]">
+            (總金額: {grandSubtotal.toLocaleString()}元, 折扣抵: {totalOrderDisc.toLocaleString()}元,
+            錢包抵: {grandWalletPaid.toLocaleString()}元)
+          </div>
         </div>
       </div>
     </>
