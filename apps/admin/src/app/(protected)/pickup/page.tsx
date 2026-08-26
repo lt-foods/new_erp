@@ -331,7 +331,12 @@ function PickupPageContent() {
            store:stores!customer_orders_pickup_store_id_fkey(id, name),
            items:customer_order_items(id, sku_id, qty, unit_price, status, ${GIFT_ITEM_SELECT}, sku:skus(variant_name, product_name, product:products(images)))`,
         )
-        .in("member_id", list.map((m) => m.id));
+        .in("member_id", list.map((m) => m.id))
+        // OFF 抵減單（order_kind='offset'）是純帳務單：整張都是負數行、$0。
+        // 畫進取貨頁後 remainingQty 全歸 0，會長成「↩ 已全數退回總倉，無可取貨項目」
+        // 的假訊息（2026-08-26 平鎮 GRP-20260730-014-OFF0001，店家以為系統退了貨）。
+        // RR- / OV- 等現貨池容器單不在此列，照舊顯示。
+        .or("order_kind.is.null,order_kind.neq.offset");
       const { data: ords, error: e2 } = await (
         activeMode === "picked"
           // 已取貨：最近取的排前面（completed_at 由 rpc_record_pickup 寫入、撤銷取貨時清空）
