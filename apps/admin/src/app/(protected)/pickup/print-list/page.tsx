@@ -7,6 +7,7 @@ import { stripTransferNotes, stripItemNotes } from "@/lib/orderNotes";
 import { internalOrderSource } from "@/lib/orderTitle";
 import { parseReturnNote } from "@/lib/returnNote";
 import { itemDisplayName } from "@/lib/skuLabel";
+import { settlementNo } from "@/lib/settlementNo";
 import { GIFT_ITEM_SELECT, isGiftLine } from "@/lib/orderGift";
 import SpinButton from "@/components/SpinButton";
 import { CutoffText } from "@/components/CampaignCutoff";
@@ -22,7 +23,7 @@ type Order = {
   notes: string | null;
   member: { id: number; member_no: string; name: string | null; phone: string | null } | null;
   campaign: { id: number; campaign_no: string; name: string; cutoff_date: string | null } | null;
-  store: { id: number; name: string } | null;
+  store: { id: number; name: string; store_short_code: string | null } | null;
   items: {
     id: number;
     sku_id: number;
@@ -93,7 +94,7 @@ function Body() {
             `id, order_no, status, discount_amount, discount_percent, wallet_paid_amount, payment_status, notes,
              member:members(id, member_no, name, phone),
              campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date),
-             store:stores!customer_orders_pickup_store_id_fkey(id, name),
+             store:stores!customer_orders_pickup_store_id_fkey(id, name, store_short_code),
              items:customer_order_items(id, sku_id, qty, unit_price, discount_amount, discount_percent, notes, status, ${GIFT_ITEM_SELECT}, sku:skus(variant_name, product_name))`,
           )
           .in("id", ids),
@@ -250,6 +251,9 @@ function Body() {
                     ? internalOrderSource(o.order_no)?.label ?? "店內現貨"
                     : o.campaign?.name ?? "(未知活動)"}
                   <CutoffText date={o.campaign?.cutoff_date} />
+                </div>
+                <div className="text-[13px]">
+                  結單編號: {settlementNo(o.id, o.store?.store_short_code)}
                 </div>
                 {orderNotes && (
                   <div className="text-[13px] italic">📝 {orderNotes}</div>
