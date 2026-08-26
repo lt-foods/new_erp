@@ -58,6 +58,9 @@ type Payload = {
   store_id: number;
   campaign_id: number;
   supplied: number;
+  // 已出貨還沒收貨的在途量 —— 也算進可配額度，收貨前就能先配
+  //（配貨只標記誰待補，取貨閘門另有數量守衛擋著，見 20260826010000）
+  in_transit: number;
   covered: number;
   picked: number;
   available: number;
@@ -99,6 +102,7 @@ export function ShortageAllocateModal({
     const payload: Payload = {
       ...raw,
       supplied: Number(raw.supplied),
+      in_transit: Number(raw.in_transit) || 0,
       covered: Number(raw.covered) || 0,
       picked: Number(raw.picked),
       available: Number(raw.available),
@@ -352,6 +356,15 @@ export function ShortageAllocateModal({
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-900/60">
               <span>
                 到貨 <b>{data.supplied}</b> 件
+                {data.in_transit > 0 && (
+                  <span
+                    className="text-sky-700 dark:text-sky-400"
+                    title="已出貨、還沒收貨的量 — 可以先配貨決定誰先拿誰待補；客人取貨前這批仍要收貨"
+                  >
+                    {" "}
+                    ＋在途 <b>{data.in_transit}</b>
+                  </span>
+                )}
                 {data.covered > 0 && (
                   <span
                     className="text-violet-700 dark:text-violet-400"
@@ -384,6 +397,13 @@ export function ShortageAllocateModal({
             {over > 0 && (
               <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-300">
                 已配 {allocatedQty} 件超過可配的 {data.available} 件，請減掉 {over} 件。
+              </div>
+            )}
+
+            {data.in_transit > 0 && (
+              <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-800 dark:border-sky-900 dark:bg-sky-950 dark:text-sky-300">
+                🚚 這批還有 {data.in_transit} 件在途（已出貨、尚未收貨）。現在配貨＝先決定誰先拿、
+                誰待補；收貨完成前取貨頁仍不會放行，實收短少時再回這裡把數字改小即可。
               </div>
             )}
 
