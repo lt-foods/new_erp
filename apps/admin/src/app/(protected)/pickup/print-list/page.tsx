@@ -254,6 +254,7 @@ function Body() {
                 {orderNotes && (
                   <div className="text-[13px] italic">📝 {orderNotes}</div>
                 )}
+                <div className="divide-y divide-dashed divide-zinc-300">
                 {active.map((it) => {
                   const returned = returnedOf(o, it.id);
                   const qty = effQty(o, it);
@@ -261,7 +262,7 @@ function Body() {
                   const gross = lineGross(it, qty);
                   const discounted = hasLineDisc(it);
                   return (
-                    <div key={it.id}>
+                    <div key={it.id} className="py-1">
                       <div className="flex items-baseline justify-between gap-2">
                         <span className="min-w-0 flex-1 break-words text-[16px] font-bold">
                           {itemDisplayName(it.sku, o.campaign?.name)}
@@ -298,6 +299,7 @@ function Body() {
                     </div>
                   );
                 })}
+                </div>
                 {pct > 0 && (
                   <div className="text-right text-[13px]">
                     <span className="text-zinc-600">本單{pct}%折扣 </span>
