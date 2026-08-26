@@ -267,18 +267,18 @@ function Body() {
                           {itemDisplayName(it.sku, o.campaign?.name)}
                         </span>
                         <span className="whitespace-nowrap text-[15px]">
-                          × {qty}
                           {/* 贈品：$0 是刻意的，小白單上要標，店員才知道那件不用收錢 */}
                           {isGiftLine(it) && (
-                            <span className="ml-1.5 text-[15px] font-bold">🎁 贈品</span>
+                            <span className="mr-1.5 text-[15px] font-bold">🎁 贈品</span>
                           )}
+                          {qty} × ${Number(it.unit_price)} =
                           {discounted ? (
                             <>
-                              <span className="ml-1.5 text-[13px] line-through">${gross}</span>
+                              <span className="ml-1 text-[13px] line-through">${gross}</span>
                               <span className="ml-1 text-[15px] font-bold">${subtotal}</span>
                             </>
                           ) : (
-                            <span className="ml-1.5 text-[15px]">${subtotal}</span>
+                            <span className="ml-1 text-[15px] font-bold">${subtotal}</span>
                           )}
                         </span>
                       </div>
@@ -316,21 +316,18 @@ function Body() {
         </div>
 
         <div className="mt-2 border-t-2 border-black pt-1.5 text-right text-[14px]">
-          <div>小計 $ {grandSubtotal.toLocaleString()}</div>
-          {totalOrderDisc > 0 && <div>− 整單折扣 $ {totalOrderDisc.toLocaleString()}</div>}
-          <div className="text-[20px] font-bold">合計 {totalQty} 項　$ {grandTotal.toLocaleString()}</div>
-          {grandWalletPaidDb > 0 && (
-            <div className="mt-1">− 已用儲值金 $ {grandWalletPaidDb.toLocaleString()}</div>
-          )}
+          <div className="text-[16px] font-bold">總數量：{totalQty}</div>
+          <div className="mt-1 text-[20px] font-bold">
+            {grandWalletPaid > 0 && grandBalanceDue === 0
+              ? "✅ 已付清"
+              : <>應付 {grandBalanceDue.toLocaleString()} 元</>}
+          </div>
+          <div className="text-[13px]">
+            (總金額: {grandSubtotal.toLocaleString()}元, 折扣抵: {totalOrderDisc.toLocaleString()}元,
+            錢包抵: {grandWalletPaid.toLocaleString()}元)
+          </div>
           {previewCapped > 0 && (
-            <div>− 本次抵扣儲值金 $ {previewCapped.toLocaleString()}</div>
-          )}
-          {grandWalletPaid > 0 && (
-            <div className="text-[17px] font-bold">
-              {grandBalanceDue === 0
-                ? "✅ 已付清"
-                : <>應收現金 $ {grandBalanceDue.toLocaleString()}</>}
-            </div>
+            <div className="text-[13px]">↳ 錢包抵含本次將扣 {previewCapped.toLocaleString()}元（尚未扣款）</div>
           )}
         </div>
 
