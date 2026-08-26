@@ -67,6 +67,7 @@ const NAV: NavGroup[] = [
   {
     title: "財務",
     items: [
+      { href: "/finance/daily", label: "日結報表", match: /^\/finance\/daily/ },
       { href: "/finance/receivables", label: "HQ 應收", match: /^\/finance\/receivables(?!\/print)/ },
       { href: "/transfers/settlement", label: "月結算", match: /^\/transfers\/settlement/ },
     ],

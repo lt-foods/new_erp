@@ -9,7 +9,7 @@ export type MenuKey =
   | "orders" | "pickup" | "inbound" | "members" | "transfers" | "restock" | "mutual-aid"
   | "pr" | "po" | "inventory" | "reorder-rules" | "stocktake"
   | "hq-inbox" | "receiving" | "picking"
-  | "receivables" | "settlement"
+  | "daily-report" | "receivables" | "settlement"
   | "candidates" | "calendar"
   | "staff" | "stores" | "fb-pages"
   | "general";
@@ -61,6 +61,7 @@ export const MENU_GROUPS: MenuGroup[] = [
   {
     group: "財務",
     items: [
+      { key: "daily-report", label: "日結報表" },
       { key: "receivables", label: "HQ 應收" },
       { key: "settlement", label: "月結算" },
     ],
