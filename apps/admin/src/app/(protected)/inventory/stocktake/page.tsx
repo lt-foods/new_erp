@@ -186,6 +186,7 @@ export default function StocktakeListPage() {
         open={createOpen}
         locs={locs}
         storeByLoc={storeByLoc}
+        lockedLocationId={branchLocationId}
         defaultLocationId={locationId ? Number(locationId) : null}
         onClose={() => setCreateOpen(false)}
         onCreated={(id) => { setCreateOpen(false); setReloadTick((n) => n + 1); router.push(`/inventory/stocktake/session?id=${id}`); }}
@@ -195,11 +196,12 @@ export default function StocktakeListPage() {
 }
 
 function CreateStocktakeModal({
-  open, locs, storeByLoc, defaultLocationId, onClose, onCreated,
+  open, locs, storeByLoc, lockedLocationId, defaultLocationId, onClose, onCreated,
 }: {
   open: boolean;
   locs: Loc[];
   storeByLoc: Map<number, string>;
+  lockedLocationId: number | null; // 分店帳號鎖自己店（server 側 wrong_store 守衛同步擋）
   defaultLocationId: number | null;
   onClose: () => void;
   onCreated: (id: number) => void;
@@ -214,8 +216,8 @@ function CreateStocktakeModal({
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    if (open) { setLocationId(defaultLocationId); setType("full"); setPicked([]); setSkuQuery(""); setSkuResults([]); setErr(null); }
-  }, [open, defaultLocationId]);
+    if (open) { setLocationId(lockedLocationId ?? defaultLocationId); setType("full"); setPicked([]); setSkuQuery(""); setSkuResults([]); setErr(null); }
+  }, [open, lockedLocationId, defaultLocationId]);
 
   useEffect(() => {
     const q = skuQuery.replace(/[,()%*]/g, " ").trim();
@@ -262,12 +264,19 @@ function CreateStocktakeModal({
         {err && <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">{err}</div>}
         <label className="flex flex-col gap-1 text-sm">
           <span className="text-zinc-600 dark:text-zinc-400">倉別 *</span>
-          <select value={locationId ?? ""} onChange={(e) => setLocationId(Number(e.target.value) || null)} className={inputCls}>
-            <option value="">— 請選 —</option>
-            {locs.map((l) => (
-              <option key={l.id} value={l.id}>{storeByLoc.get(l.id) ?? l.name}{l.type === "central_warehouse" ? "（總倉）" : ""}</option>
-            ))}
-          </select>
+          {lockedLocationId != null ? (
+            <div className="flex items-center rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+              🏬 {storeByLoc.get(lockedLocationId) ?? locs.find((l) => l.id === lockedLocationId)?.name ?? `#${lockedLocationId}`}
+              <span className="ml-2 text-xs text-zinc-500">(僅本店)</span>
+            </div>
+          ) : (
+            <select value={locationId ?? ""} onChange={(e) => setLocationId(Number(e.target.value) || null)} className={inputCls}>
+              <option value="">— 請選 —</option>
+              {locs.map((l) => (
+                <option key={l.id} value={l.id}>{storeByLoc.get(l.id) ?? l.name}{l.type === "central_warehouse" ? "（總倉）" : ""}</option>
+              ))}
+            </select>
+          )}
         </label>
 
         <div className="flex flex-col gap-1.5 text-sm">
