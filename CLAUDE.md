@@ -711,6 +711,20 @@ EXECUTE 還被 REVOKE 著 = 使用者按下去拿到 `permission denied for func
   扣量、`qty_available`/`qty_remaining` 一起覆寫」的假設就不成立了 ——
   改總量要保留已認領量（`remaining = 新 available − 已認領`）。
 
+### 手動新增現貨的「商品」是**選填**，不要再改回必填
+
+20260816000000 的前端把它改成必填（不選就沒人能認領），2026-08-26 依老闆指示
+改回選填（要能隨意手打，也能從商品庫選）。看到那支 migration 檔頭寫「商品改必填」
+不要照著改回去 —— DB 從頭到尾都收 `sku_id IS NULL`（`rpc_post_manual_spot`
+的 `p_sku_id` 可為 NULL，只要求有 `spot_title`），擋著的一直只是前端那行檢查。
+
+沒選 SKU 的貼文＝**純公告**：`rpc_claim_manual_spot` 直接擋（沒訂單可轉），
+`customer_order_items.sku_id` 又是 NOT NULL → 也開不了單、配不給客人，
+因此不進庫存 / 月結 / 銷售報表，只能靠會員按「用 LINE 詢問店家」線下處理。
+要救就用「✏️ 修改內容」補選商品（`p_sku_id`，NULL = 不動、不是清除）。
+⚠ 補選時挑錯 SKU 會扣錯商品的庫存：認領走 `_air_ship_order_items`，
+`p_allow_negative => TRUE`，扣成負的也不會擋。
+
 ### 新開 order_no 前綴之前，先查線上有沒有人用了
 
 `SP-` 已經被「現貨直配」(`rpc_create_spot_sale`) 用掉了，而**那支 RPC 在
