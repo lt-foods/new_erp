@@ -2677,7 +2677,17 @@ function ClaimOfferDialog({
   onCancel: () => void;
   onDone: () => void;
 }) {
-  const [toStore, setToStore] = useState<number | "">("");
+  // 分店帳號只能認到自己店（2026-08-26 指示）；總倉／未綁分店的帳號照舊全列。
+  // 自己店就是釋出店時選項會是空的 —— 本來就不該認自己的釋出。
+  // Dialog 點了才掛載、stores / user 都已就緒 → 直接當初始值帶入，不走 effect
+  //（effect 裡同步 setState 會觸發 cascading render 的 lint 規則）。
+  const myStoreId = useUserBranchStoreId(stores);
+  const storeOptions = stores.filter(
+    (s) => s.id !== post.offering_store_id && (myStoreId == null || s.id === myStoreId),
+  );
+  const [toStore, setToStore] = useState<number | "">(
+    myStoreId != null && myStoreId !== post.offering_store_id ? myStoreId : "",
+  );
   const [qty, setQty] = useState(String(post.qty_remaining));
   const [isAir, setIsAir] = useState(false);
   const [reason, setReason] = useState(`互助板認領 #${post.id}`);
@@ -2771,7 +2781,7 @@ function ClaimOfferDialog({
               className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
             >
               <option value="">— 選店 —</option>
-              {stores.filter((s) => s.id !== post.offering_store_id).map((s) => (
+              {storeOptions.map((s) => (
                 <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
               ))}
             </select>
@@ -2834,7 +2844,17 @@ function FulfillRequestDialog({
   onCancel: () => void;
   onDone: () => void;
 }) {
-  const [myStore, setMyStore] = useState<number | "">("");
+  // 分店帳號的「提供店」只能是自己的店（2026-08-26 指示）；總倉照舊全列。
+  // 自己店就是求助店時選項會是空的 —— 本來就不該自己供自己的需求。
+  // Dialog 點了才掛載、stores / user 都已就緒 → 直接當初始值帶入，不走 effect
+  //（effect 裡同步 setState 會觸發 cascading render 的 lint 規則）。
+  const myStoreId = useUserBranchStoreId(stores);
+  const storeOptions = stores.filter(
+    (s) => s.id !== post.offering_store_id && (myStoreId == null || s.id === myStoreId),
+  );
+  const [myStore, setMyStore] = useState<number | "">(
+    myStoreId != null && myStoreId !== post.offering_store_id ? myStoreId : "",
+  );
   const [orders, setOrders] = useState<PendingOrder[] | null>(null);
   const [pickedOrderId, setPickedOrderId] = useState<number | null>(null);
   const [qty, setQty] = useState(String(post.qty_remaining));
@@ -2956,7 +2976,7 @@ function FulfillRequestDialog({
             className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 dark:border-zinc-700 dark:bg-zinc-800"
           >
             <option value="">— 選店 —</option>
-            {stores.filter((s) => s.id !== post.offering_store_id).map((s) => (
+            {storeOptions.map((s) => (
               <option key={s.id} value={s.id}>{s.name} ({s.code})</option>
             ))}
           </select>
