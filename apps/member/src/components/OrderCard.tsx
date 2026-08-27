@@ -154,6 +154,14 @@ export function itemPhase(order: Pick<OrderRow, "status">, item: OrderItem): Ord
       return "void";
     case "transferred_out":
       return "transferred";
+    // 單頭已完成＝這張單不會再有任何交貨。此時仍掛 active 的行是「量被未取退貨
+    // 覆蓋」的殘留（訂 5 退 2 取 3；行刻意不改 cancelled，見 20260801000000 檔頭），
+    // 不能落進待到貨／待取貨 —— 貨已退回總倉，掛在那裡等於騙客人還有東西會來
+    //（2026-08-27 掃到 2 張線上實例）。整行歸進已完成卡，跟著單頭走。
+    case "completed":
+      return item.status === "picked_up" || ACTIVE_ITEM_STATUSES.includes(item.status)
+        ? "done"
+        : "void";
   }
   if (item.status === "picked_up") return "done";
   if (["cancelled", "expired"].includes(item.status)) return "void";

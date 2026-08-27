@@ -9,9 +9,9 @@
  * 客服看到的數字 = 團友手機上的數字，一眼就能對。
  *
  * 「一樣」是硬需求，四個地方要跟會員端同步（改那邊記得改這邊）：
- *   - 資料管線 = liff-api listMyOrders：v_customer_order_summary、半年內
- *     **逐頁撈到見底**（不能 limit(100) 砍最新 100 筆 —— 重度團友半年 200+ 張
- *     「已完成」，砍尾巴會讓舊單在兩邊一起「消失」；同 PR #858）、
+ *   - 資料管線 = liff-api listMyOrders：v_customer_order_summary、不設時間下限
+ *     **逐頁撈到見底**（不能 limit(100) 砍最新 100 筆、也不能加時間 cutoff ——
+ *     任何截斷都會讓清單／金額跟現場對不上；同 PR #858 + 2026-08-27 拿掉半年線）、
  *     一般取消不顯示但斷貨取消要顯示、已轉讓隱藏
  *   - orderPhase / itemPhase 分桶（**依品項行**拆分身，2026-08-14 起）
  *     = apps/member/src/components/OrderCard.tsx
@@ -136,6 +136,14 @@ function itemPhase(order: Pick<AppOrderRow, "status">, item: AppOrderItem): Phas
       return "void";
     case "transferred_out":
       return "transferred";
+    // 單頭已完成＝不會再交貨。仍掛 active 的行是「量被未取退貨覆蓋」的殘留
+    //（行刻意不改 cancelled，見 20260801000000），不能落進待到貨／待取貨。
+    // = 會員 app OrderCard.itemPhase 的同名分支，兩邊要一起動。
+    case "completed":
+      return item.status === "picked_up" ||
+        ["pending", "reserved", "ready"].includes(item.status)
+        ? "done"
+        : "void";
   }
   if (item.status === "picked_up") return "done";
   if (["cancelled", "expired"].includes(item.status)) return "void";
@@ -189,24 +197,22 @@ export function useMemberAppOrders(memberId: number, reloadTick = 0) {
       setLoading(true);
       setErr(null);
       const sb = getSupabase();
-      const cutoff = new Date();
-      cutoff.setMonth(cutoff.getMonth() - 6);
       const base = () =>
         sb
           .from("v_customer_order_summary")
           .select("*")
           .eq("member_id", memberId)
-          .gte("created_at", cutoff.toISOString())
           .order("created_at", { ascending: false })
           .order("id", { ascending: false });
       // = liff-api listMyOrders 的兩個 tab（active / history）。跟那邊一樣
-      // 逐頁 100 筆撈到見底（半年 cutoff 天然有界、2000 筆 runaway 保險），
+      // 逐頁 100 筆撈到見底、**不設時間下限**（2026-08-27 拿掉半年 cutoff：
+      // 清單跟金額的母體必須一模一樣，5000 筆只是 runaway 保險），
       // id tiebreaker 避免同秒建單跨頁漏抓或重複。
       const fetchAll = async (
         applyFilter: (q: ReturnType<typeof base>) => ReturnType<typeof base>,
       ): Promise<{ data?: AppOrderRow[]; error?: { message: string } }> => {
         const PAGE = 100;
-        const MAX_ROWS = 2000;
+        const MAX_ROWS = 5000;
         const all: AppOrderRow[] = [];
         for (let from = 0; from < MAX_ROWS; from += PAGE) {
           const { data, error } = await applyFilter(base().range(from, from + PAGE - 1));
@@ -306,10 +312,11 @@ export function outstandingTotals(list: AppOrderRow[]) {
   const active = list.filter((o) => !["cancelled", "expired"].includes(String(o.status ?? "")));
   return {
     count: active.length,
-    amount: active.reduce(
+    // 有折扣／儲值金的單分攤後有小數，最後才捨入（逐張捨入會對不回整張單）
+    amount: Math.round(active.reduce(
       (s, o) => s + Number(o.outstanding_amount ?? o.payable_amount ?? 0),
       0,
-    ),
+    )),
     hasPicked: active.some(
       (o) => Number(o.outstanding_amount ?? o.payable_amount ?? 0) < Number(o.payable_amount ?? 0),
     ),
@@ -388,7 +395,7 @@ export function MemberOrdersAppView({
 
       {!loading && bucket.length === 0 && (
         <div className="p-8 text-center text-sm text-zinc-500">
-          {tab === "all" ? "半年內沒有訂單" : `目前沒有「${TAB_LABEL[tab]}」的訂單`}
+          {tab === "all" ? "沒有訂單" : `目前沒有「${TAB_LABEL[tab]}」的訂單`}
         </div>
       )}
 
@@ -437,8 +444,8 @@ export function MemberOrdersAppView({
       )}
 
       <p className="text-[11px] text-zinc-400">
-        與會員 app「我的訂單」同一套資料與口徑（半年內全部）；「已完成」依客人
-        到店結單的那一次分組；點卡片可開後台訂單明細。
+        與會員 app「我的訂單」同一套資料與口徑（不限時間、全部撈齊）；「已完成」
+        依客人到店結單的那一次分組；點卡片可開後台訂單明細。
       </p>
     </div>
   );
