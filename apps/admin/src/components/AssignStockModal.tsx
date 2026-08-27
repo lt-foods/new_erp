@@ -21,7 +21,10 @@ import { translateRpcError } from "@/lib/rpcError";
 // 配掉時 RPC 會同步從池子扣。
 
 type Budget = {
+  order_no: string;
   store_name: string;
+  location_id: number | null;
+  sku_id: number | null;
   sku_label: string;
   item_qty: number;
   assigned: number;
@@ -54,6 +57,8 @@ export function AssignStockModal({
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // 上限不夠時「架上其實有貨、只是沒入帳」→ 送出前先幫忙新增庫存，不用跳去庫存總覽
+  const [topUp, setTopUp] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,7 +73,10 @@ export function AssignStockModal({
       }
       const a = (data ?? {}) as Record<string, unknown>;
       const parsed: Budget = {
+        order_no: String(a.order_no ?? ""),
         store_name: String(a.store_name ?? ""),
+        location_id: a.location_id == null ? null : Number(a.location_id),
+        sku_id: a.sku_id == null ? null : Number(a.sku_id),
         sku_label: String(a.sku_label ?? ""),
         item_qty: num(a.item_qty),
         assigned: num(a.assigned),
@@ -94,16 +102,24 @@ export function AssignStockModal({
   const cap = b?.assignable_with_pool ?? 0;
   const free = b?.assignable ?? 0;
   const room = b ? Math.max(b.item_qty - b.assigned, 0) : 0;
+  // 開了「一鍵新增庫存」就不受 cap 限制，只受這一行剩餘數量限制
+  const effectiveCap = topUp ? room : Math.min(cap, room);
   const fromPool = Math.max(0, Math.min(qty, cap) - free);
-  // 配不滿整行 → 伺服端會拆行，餘量掛待補貨
+  const shortfall = topUp ? Math.max(qty - Math.max(cap, 0), 0) : 0;
+  // 配不滿整行 → 伺服端會拆行，餘量掛待補貨（開了 topUp 之後不會發生，量會補到剛好夠）
   const splitQty = b ? Math.max(room - qty, 0) : 0;
-  const canSubmit = !busy && !!b && qty > 0 && qty <= cap && qty <= room;
+  const canSubmit = !busy && !!b && qty > 0 && qty <= effectiveCap && qty <= room;
 
   async function save() {
     if (!canSubmit || !b) return;
     if (
       !confirm(
-        `把「${skuLabel}」×${qty} 從「${b.store_name}」的庫存配給這張單？\n\n` +
+        (shortfall > 0
+          ? `店內庫存不足，會先在「${b.store_name}」幫這個商品新增庫存 +${shortfall} 件`
+            + `（手動調整，寫進去就無法刪除／修改，只能之後盤點更正）。\n`
+            + `請先確認架上真的有這批貨再送出！\n\n`
+          : "") +
+          `把「${skuLabel}」×${qty} 從「${b.store_name}」的庫存配給這張單？\n\n` +
           `品項會變成「已到貨・可取貨」，現在不扣庫存、不收款；\n` +
           `客人到店在「取貨」頁完成交貨時才扣庫存收款。\n` +
           (fromPool > 0 ? `其中 ${fromPool} 件來自【內部】${b.store_name}現貨池，會自動從池子扣。\n` : "") +
@@ -118,6 +134,19 @@ export function AssignStockModal({
       const { data: sess } = await sb.auth.getSession();
       const operator = sess.session?.user?.id;
       if (!operator) throw new Error("尚未登入");
+      if (shortfall > 0) {
+        if (b.location_id == null || b.sku_id == null) {
+          throw new Error("這張單的取貨門市沒有綁定倉別，無法新增庫存");
+        }
+        const { error: e0 } = await sb.rpc("rpc_add_stock_by_product", {
+          p_location_id: b.location_id,
+          p_sku_id: b.sku_id,
+          p_qty: shortfall,
+          p_reason: reason.trim() || `訂單頁強制配貨・一鍵新增庫存（${b.order_no ?? ""}）`,
+          p_operator: operator,
+        });
+        if (e0) throw new Error(translateRpcError(e0));
+      }
       const { data: res, error: e } = await sb.rpc("rpc_assign_stock_to_order_item", {
         p_item_id: itemId,
         p_qty: qty,
@@ -133,6 +162,7 @@ export function AssignStockModal({
       };
       alert(
         `✅ 已配 ${qty} 件給這張單（減抵單 ${r.note_no ?? ""}）。\n` +
+          (shortfall > 0 ? `其中已先新增庫存 +${shortfall} 件。\n` : "") +
           (num(r.from_pool) > 0 ? `其中 ${num(r.from_pool)} 件從【內部】${b.store_name}現貨池扣掉。\n` : "") +
           (num(r.split_qty) > 0 ? `沒配到的 ${num(r.split_qty)} 件已拆成一行、標成「待補貨」。\n` : "") +
           (r.advanced ? "整張單都到齊了，狀態已推到「已到貨」。\n" : "") +
@@ -192,13 +222,40 @@ export function AssignStockModal({
               沒配到的 <b>{splitQty}</b> 件會拆成一行、標成「待補貨」（下一批貨到店時會自動解除）。
             </div>
           )}
-          {b && cap <= 0 && (
+          {b && cap <= 0 && !topUp && (
             <div className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">
               {b.on_hand <= 0 ? (
-                <>店倉帳上這個商品是 0 件。架上實際有貨 → 先到「庫存總覽」用「＋ 新增庫存」入帳。</>
+                <>店倉帳上這個商品是 0 件。架上實際有貨 → 先到「庫存總覽」用「＋ 新增庫存」入帳，</>
               ) : (
-                <>在庫 {b.on_hand} 件已經被別的單佔走 {b.committed} 件（已承諾未取 ＋ 已配過的單）。</>
+                <>在庫 {b.on_hand} 件已經被別的單佔走 {b.committed} 件（已承諾未取 ＋ 已配過的單），</>
               )}
+              或
+              <SpinButton
+                onClick={() => {
+                  setTopUp(true);
+                  setQty(Math.max(1, room));
+                }}
+                className="ml-1 font-medium text-amber-900 underline dark:text-amber-200"
+              >
+                架上其實有貨、一鍵新增庫存再配貨
+              </SpinButton>
+              。
+            </div>
+          )}
+          {b && topUp && (
+            <div className="mt-1.5 rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              已開啟「一鍵新增庫存」：送出時會先幫「{b.store_name}」把這個商品的庫存補到
+              {" "}{shortfall > 0 ? `+${shortfall}` : "夠"}，再配給這張單。
+              新增庫存<b>無法刪除／修改</b>，請先確認架上真的有貨。{" "}
+              <SpinButton
+                onClick={() => {
+                  setTopUp(false);
+                  setQty((q) => Math.min(q, Math.max(Math.min(cap, room), 1)));
+                }}
+                className="underline"
+              >
+                取消
+              </SpinButton>
             </div>
           )}
         </div>
@@ -208,17 +265,18 @@ export function AssignStockModal({
           <input
             type="number"
             min={1}
-            max={Math.max(Math.min(cap, room), 1)}
+            max={Math.max(effectiveCap, 1)}
             value={qty}
             onChange={(e) => {
               const v = Math.floor(Number(e.target.value));
-              setQty(Number.isFinite(v) ? Math.max(0, Math.min(v, Math.min(cap, room))) : 0);
+              setQty(Number.isFinite(v) ? Math.max(0, Math.min(v, effectiveCap)) : 0);
             }}
             className="w-28 rounded-md border border-zinc-300 bg-white px-3 py-2 text-right tabular-nums dark:border-zinc-700 dark:bg-zinc-800"
           />
           <span className="ml-2 text-[11px] text-zinc-400">
-            上限 {Math.min(cap, room)}
-            {cap > free ? `（自由量 ${free} ＋ 池子 ${cap - free}）` : ""}
+            上限 {effectiveCap}
+            {!topUp && cap > free ? `（自由量 ${free} ＋ 池子 ${cap - free}）` : ""}
+            {topUp && shortfall > 0 ? `（含一鍵新增 ${shortfall} 件）` : ""}
           </span>
         </label>
 
