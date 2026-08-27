@@ -11,6 +11,7 @@ import { OrderAuditDrawer } from "@/components/OrderAuditDrawer";
 import { WalletPayOrderModal } from "@/components/WalletPayOrderModal";
 import { AssignStockModal } from "@/components/AssignStockModal";
 import { UnassignStockModal } from "@/components/UnassignStockModal";
+import { CancelAllocationModal } from "@/components/CancelAllocationModal";
 import { EditableNumber, EditableText } from "@/components/EditableCell";
 import { EditableDiscount, deriveDiscount, type DiscountValue } from "@/components/EditableDiscount";
 import { useAuth } from "@/components/AuthProvider";
@@ -242,6 +243,10 @@ export function OrderDetail({
   const [unassignTarget, setUnassignTarget] = useState<
     { itemId: number; skuLabel: string; assigned: number; fromPool: number } | null
   >(null);
+  // 「↩️ 取消配單」目標品項（波次到貨自動配單配到的行 —— 閘門放行、沒有 DN）
+  const [unallocTarget, setUnallocTarget] = useState<
+    { itemId: number; skuLabel: string; qty: number } | null
+  >(null);
   // 該訂單的取貨事件（append-only）— 取貨後補印收據用，見 /pickup/print?event_ids=
   const [pickupEvents, setPickupEvents] = useState<PickupEventRow[]>([]);
   const [timeline, setTimeline] = useState<TimelineStep[] | null>(null);
@@ -314,6 +319,14 @@ export function OrderDetail({
   const canAssignStock = (canEdit || isStoreOfThisOrder)
     && !!head
     && !["cancelled", "expired", "transferred_out", "completed"].includes(head.status);
+
+  // 「↩️ 取消配單」：波次到貨自動配單推上去的行（閘門放行、身上沒有 DN 覆蓋）。
+  // SP-（現貨直配）整張單就是配單、RR-/AB-/OV- 是容器單，都不出這顆
+  // （伺服端 rpc_unallocate_order_item 也擋）。shipping 單貨還在路上，也不出。
+  const canUnallocate = canAssignStock
+    && !!head
+    && ["confirmed", "ready", "partially_completed"].includes(head.status)
+    && !/^(SP|RR|AB|OV)-/.test(head.order_no);
 
   // 備註（單頭/品項）：店長店員也可編自店訂單，對齊 _check_order_edit_notes_perm
   const canEditNotes = canEdit || isStoreOfThisOrder;
@@ -1634,6 +1647,35 @@ export function OrderDetail({
                               ↩️ 取消配貨 {assigned.get(it.id)?.qty}
                             </SpinButton>
                           )}
+                          {/* 取消配單：波次到貨自動配單配到的行（閘門放行、沒有 DN 覆蓋）。
+                              標成待補貨 → 取貨閘門關掉、貨回到別張單的可配量；
+                              重新配走「📦 從庫存配貨」或等下一批收貨自動重配。
+                              見 20260827010000 migration。 */}
+                          {canUnallocate
+                            && !isPicked
+                            && !["cancelled", "expired"].includes(it.status)
+                            && itemReady.get(it.id) === true
+                            && (assigned.get(it.id)?.qty ?? 0) === 0 && (
+                            <SpinButton
+                              onClick={() => {
+                                if (draftCount > 0) {
+                                  alert("請先儲存或放棄未儲存的修改，再取消配單。");
+                                  return;
+                                }
+                                setUnallocTarget({
+                                  itemId: it.id,
+                                  skuLabel: it.sku
+                                    ? `${it.sku.product_name ?? ""}${it.sku.variant_name ? ` / ${it.sku.variant_name}` : ""}`.trim()
+                                    : `#${it.id}`,
+                                  qty: Number(it.qty),
+                                });
+                              }}
+                              title="把到貨自動配單配給這一行的貨收回 —— 這一行退回「等貨中」、那幾件回到可配量（庫存數量不變）"
+                              className="rounded-md border border-amber-300 px-2 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950 whitespace-nowrap"
+                            >
+                              ↩️ 取消配單
+                            </SpinButton>
+                          )}
                           {canEditQty
                             && !["cancelled", "expired"].includes(it.status)
                             && !isPicked && (
@@ -1892,6 +1934,15 @@ export function OrderDetail({
           assigned={unassignTarget.assigned}
           fromPool={unassignTarget.fromPool}
           onClose={() => setUnassignTarget(null)}
+          onSaved={() => setReloadTick((n) => n + 1)}
+        />
+      )}
+      {unallocTarget && (
+        <CancelAllocationModal
+          itemId={unallocTarget.itemId}
+          skuLabel={unallocTarget.skuLabel}
+          qty={unallocTarget.qty}
+          onClose={() => setUnallocTarget(null)}
           onSaved={() => setReloadTick((n) => n + 1)}
         />
       )}
