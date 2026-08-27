@@ -5,6 +5,7 @@ import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
+import { useRole, canSeeBranch } from "@/lib/role";
 
 // 現貨直配：把店內現貨直接配給客人，不需要先開團。
 // 配單＝待取 —— 當下不扣庫存、不收款，客人到店取貨時才寫 sale 並結案
@@ -37,10 +38,14 @@ type Availability = {
   pool_arrived: number;    // 其中已到店的部分 —— 這些配得掉
   free: number;            // 純自由量（沒有任何單掛著）
   free_with_pool: number;  // 可配上限＝自由量 ＋ 已到貨池子
+  // 零售價優先（20260827020000 起；之前是分店價優先）。賣給終端客人收零售價。
   suggest_price: number;
+  retail_price: number | null;  // 沒設價 = null（跟 0 元區分開）
+  branch_price: number | null;
 };
 
 const num = (v: unknown) => (v == null ? 0 : Number(v));
+const numOrNull = (v: unknown) => (v == null ? null : Number(v));
 
 export function SpotSaleModal({
   storeId,
@@ -59,6 +64,9 @@ export function SpotSaleModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  // 分店價只給 canSeeBranch 的角色看（跟商品編輯頁同一套收斂）
+  const role = useRole();
+  const showBranchPrice = canSeeBranch(role);
   const [avail, setAvail] = useState<Availability | null>(null);
   const [term, setTerm] = useState("");
   const [hits, setHits] = useState<MemberHit[]>([]);
@@ -93,6 +101,8 @@ export function SpotSaleModal({
         free: num(a.free),
         free_with_pool: num(a.free_with_pool),
         suggest_price: num(a.suggest_price),
+        retail_price: numOrNull(a.retail_price),
+        branch_price: numOrNull(a.branch_price),
       };
       setAvail(parsed);
       setQty((q) => Math.max(1, Math.min(q, parsed.free_with_pool)));
@@ -231,6 +241,21 @@ export function SpotSaleModal({
               )}
             </div>
           )}
+          {/* 零售/分店價並列：預填的是零售價，店員要看得出另一個是多少 */}
+          {avail && (avail.retail_price != null || avail.branch_price != null) && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+              {avail.retail_price != null && (
+                <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-bold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                  零售 ${avail.retail_price}
+                </span>
+              )}
+              {showBranchPrice && avail.branch_price != null && (
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                  分店 ${avail.branch_price}
+                </span>
+              )}
+            </div>
+          )}
           {/* 會動到池子時一定要講：店家看的可轉出量會跟著少，不講就是憑空消失 */}
           {avail && fromPool > 0 && (
             <div className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">
@@ -350,7 +375,11 @@ export function SpotSaleModal({
               className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-right tabular-nums dark:border-zinc-700 dark:bg-zinc-800"
             />
             <span className="mt-1 block text-[11px] text-zinc-400">
-              {priceNum > 0 ? "預填現售價，可改" : "必填，不可為 0"}
+              {priceNum <= 0
+                ? "必填，不可為 0"
+                : avail?.retail_price != null
+                  ? "預填零售價，可改"
+                  : "未設零售價，預填分店價，可改"}
             </span>
           </label>
         </div>
