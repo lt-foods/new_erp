@@ -501,15 +501,47 @@ async function fetchPickupEventsByOrder(
   return out;
 }
 
+/**
+ * 半年內符合條件的單要**全部**撈回來，不能只撈最新 100 筆。
+ * 重度團友半年 200+ 張「已完成」很常見（2026-08-27 盤點：22 位會員超過 100、
+ * 最多 273），.limit(100) 砍尾巴的結果就是「訂單明明已完成，APP 上卻找不到」
+ * （古華 老爹的 6/5 檸檬鴨單前面有 173 張更新的 completed）。進行中被砍更糟：
+ * 「應付總金額」跟著少算。逐頁 100 筆撈到見底；6 個月 cutoff 天然有界，
+ * 2000 筆只是 runaway 保險。排序掛 id 當 tiebreaker，created_at 同秒的單
+ * 跨頁才不會被跳過或重複。
+ */
+async function fetchAllOrderSummaries(
+  sb: any,
+  tenantId: string,
+  memberId: number,
+  cutoffIso: string,
+  applyFilter: (q: any) => any,
+): Promise<{ data?: any[]; error?: { message: string } }> {
+  const PAGE = 100, MAX_ROWS = 2000;
+  const all: any[] = [];
+  for (let from = 0; from < MAX_ROWS; from += PAGE) {
+    const q = applyFilter(
+      sb.from("v_customer_order_summary").select("*")
+        .eq("tenant_id", tenantId).eq("member_id", memberId)
+        .gte("created_at", cutoffIso)
+        .order("created_at", { ascending: false }).order("id", { ascending: false })
+        .range(from, from + PAGE - 1),
+    );
+    const { data, error } = await q;
+    if (error) return { error };
+    all.push(...(data ?? []));
+    if ((data ?? []).length < PAGE) break;
+  }
+  return { data: all };
+}
+
 async function listMyOrders(sb: any, tenantId: string, _storeId: number, memberId: number, tab: string) {
   const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
   // 不依 store_id 過濾：同一 line_user 可能綁多店 OA，但 member_id 是 tenant 級；
   // 「我的訂單」呈現該 member 在所有店的訂單，OrderCard 會顯示 store_name 區別。
-  let q = sb.from("v_customer_order_summary").select("*").eq("tenant_id", tenantId).eq("member_id", memberId).gte("created_at", cutoff.toISOString()).order("created_at", { ascending: false }).limit(100);
   // active: 一般取消的訂單不顯示，但「斷貨取消」(stockout_at 有值) 要讓顧客看得到
-  if (tab === "active") q = q.not("status", "in", "(completed,expired)");
-  else q = q.eq("status", "completed");
-  const { data, error } = await q;
+  const { data, error } = await fetchAllOrderSummaries(sb, tenantId, memberId, cutoff.toISOString(), (q) =>
+    tab === "active" ? q.not("status", "in", "(completed,expired)") : q.eq("status", "completed"));
   if (error) return json({ error: error.message }, 500);
 
   const rows = tab === "active"
@@ -537,13 +569,12 @@ async function listMyOrders(sb: any, tenantId: string, _storeId: number, memberI
 
 async function listMySettlements(sb: any, tenantId: string, _storeId: number, memberId: number, tab: string) {
   const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
-  // 同 listMyOrders：跨店訂單都納入（OrderCard 顯示 store_name）。
-  let q = sb.from("v_customer_order_summary").select("*").eq("tenant_id", tenantId).eq("member_id", memberId).gte("created_at", cutoff.toISOString()).order("created_at", { ascending: false }).limit(100);
+  // 同 listMyOrders：跨店訂單都納入（OrderCard 顯示 store_name），
+  // 且撈到見底、不能砍最新 100 筆（理由見 fetchAllOrderSummaries）。
   // 「待付款」＝ 還有沒領走的貨（同 getOverview 的口徑，@20260810000000）。
   // 同樣不能用 payment_status='unpaid'：那會把所有已取貨的舊單一起列出來。
-  if (tab === "unpaid") q = q.gt("outstanding_amount", 0);
-  else q = q.in("status", ["shipping", "completed"]);
-  const { data, error } = await q;
+  const { data, error } = await fetchAllOrderSummaries(sb, tenantId, memberId, cutoff.toISOString(), (q) =>
+    tab === "unpaid" ? q.gt("outstanding_amount", 0) : q.in("status", ["shipping", "completed"]));
   if (error) return json({ error: error.message }, 500);
   return json({ settlements: data ?? [] });
 }

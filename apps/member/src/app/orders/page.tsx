@@ -37,7 +37,8 @@ const TAB_LABEL: Record<Tab, string> = {
 
 const HIDDEN_PHASES = new Set(["transferred"]);
 
-// 一頁 10 筆，捲到底自動再顯示 10 筆。資料（半年內、每個 tab 最多 100 筆）
+// 一頁 10 筆，捲到底自動再顯示 10 筆。資料（半年內全部；liff-api 逐頁撈到見底，
+// 不再砍最新 100 筆 —— 重度團友半年 200+ 張，砍尾巴會讓已完成的舊單「消失」）
 // 一開始就整批在手上，這裡分頁的是「渲染」—— 一次畫 100 張 OrderCard 才是卡頓的來源。
 const PAGE_SIZE = 10;
 
