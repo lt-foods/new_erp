@@ -10,6 +10,7 @@ import { TrialBanner, TrialExpiredScreen } from "@/components/TrialGate";
 import { getTenantName } from "@/lib/tenant";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import PresenceBeacon from "@/components/PresenceBeacon";
 
 type NavItem = { href: string; label: string; match: RegExp };
 type NavGroup = { title?: string; items: NavItem[] };
@@ -324,6 +325,7 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
 
   return (
     <ReleaseNotesProvider>
+    <PresenceBeacon />
     <div className="flex min-h-full flex-1 flex-col md:flex-row">
       <aside className="hidden w-52 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 md:flex print:hidden dark:border-zinc-800 dark:bg-zinc-950">
         <div className="border-b border-zinc-200 px-4 py-4 dark:border-zinc-800">

@@ -1725,6 +1725,18 @@ Deno.serve(async (req) => {
     if (action === "get_campaign_preview") {
       return await getCampaignPreview(sb, requireEnv("DEFAULT_TENANT_ID"), Number(body.campaign_id ?? 0), typeof body.sales_channel === "string" ? body.sales_channel : null);
     }
+    if (action === "guest_heartbeat") {
+      // 商城訪客心跳（未登入逛 /shop 的人也要算進在線統計）：免 token。
+      // anon id 由前端 localStorage 產生；UUID 格式檢查與灌水守衛（新列
+      // 速率上限）都在 rpc_guest_heartbeat 裡，這裡照單轉交即可。
+      const { error: ghErr } = await sb.rpc("rpc_guest_heartbeat", {
+        p_tenant: requireEnv("DEFAULT_TENANT_ID"),
+        p_anon_id: String(body.anon_id ?? ""),
+        p_store_id: Number(body.store_id ?? 0) > 0 ? Number(body.store_id) : null,
+      });
+      if (ghErr) console.error("guest_heartbeat failed:", ghErr);
+      return json({ ok: true });
+    }
     if (action === "log_client_error" || action === "report_client_logs") {
       // 有帶 token 就順便解出來補會員資訊；解不開不算錯（登入前的錯誤本來就沒 token）
       let logClaims: Record<string, unknown> | null = null;
@@ -1781,6 +1793,13 @@ Deno.serve(async (req) => {
         case "list_spot_products": return await listSpotProducts(sb, tenantId, storeId, memberId);
         case "get_spot_product": return await getSpotProduct(sb, tenantId, storeId, memberId, Number(body.id ?? 0));
         case "track_spot_view": if (!memberId) return json({ error: "no member_id" }, 401); return await trackSpotView(sb, tenantId, memberId, Number(body.id ?? 0));
+        case "heartbeat": {
+          // 在線心跳（admin 儀表板「同時在線 / DAU」）。身分一律取自驗過的 JWT。
+          if (!memberId) return json({ error: "no member_id" }, 401);
+          const { error: hbErr } = await sb.rpc("rpc_member_heartbeat", { p_tenant: tenantId, p_member_id: memberId, p_store_id: storeId || null });
+          if (hbErr) { console.error("heartbeat failed:", hbErr); return json({ ok: false }, 500); }
+          return json({ ok: true });
+        }
         case "place_member_order": if (!memberId) return json({ error: "no member_id" }, 401); return await placeMemberOrder(sb, tenantId, memberId, body);
         case "get_line_bind_state": if (!memberId) return json({ error: "no member_id" }, 401); return await getLineBindState(sb, tenantId, memberId, Number(body.store_id ?? 0) || storeId);
         case "start_line_binding": if (!memberId) return json({ error: "no member_id" }, 401); return await startLineBinding(sb, tenantId, memberId, Number(body.store_id ?? 0) || storeId);
