@@ -43,6 +43,36 @@ Content-Type: application/json
 
 自檢（唯一算數的）：對線上跑完 SQL 後，`git log origin/main -- supabase/migrations/<檔名>` 查得到那支才算收工。
 
+### 反方向也會脫鉤：進了 main 不等於套上線上
+
+上一條的鏡像。8/18 效能批次兩支（`20260818000020` RLS initplan wrap、
+`20260818000030` wave join 改等值）merge 進 main 後**從來沒套上正式庫**，
+而且檔頭都寫著「已實測 N 倍」——那是作者在 transaction 裡對拍後 ROLLBACK 的數字，
+不代表套用過。結果全站每列重複解析 JWT、撿貨需求 view 帶著 1,700 萬次字串比對
+跑了 9 天，8/24 功能改版一疊上去就把 Micro(1GB) 壓到 OOM 當機（8/27 全站進不去，
+兩次），才在事故調查時發現。8/27 已補套。
+
+- migration 檔頭的「實測」「已驗證」字樣**不是**已部署的證據。唯一算數的是
+  對線上問：view 用 `pg_get_viewdef()` 找特徵字串、function 比 `pg_get_functiondef()`、
+  policy 查 `pg_policies`。
+- 懷疑「repo 有、線上沒有」時，優先檢查同一批次裡**純效能／純重構**的那幾支 ——
+  功能支沒套使用者會叫，效能支沒套只會慢，沒人發現。
+
+### 昂貴函式當 WHERE 條件時，IN (子查詢) 前濾等於沒濾
+
+`rpc_receive_transfer` 邏輯 C 想用「訂單含本批 SKU」把 236 張 shipping 單濾成 4 張
+再跑 `is_order_item_pickup_ready`（~8ms/張），寫成同一句
+`AND co.id IN (SELECT ...) AND public.is_order_pickup_ready(co.id)` 實測**完全沒變快**
+（2.4s）：planner 把函式下推到 customer_orders 掃描層、先於 semi-join 執行，
+全店掃描照跑函式。MATERIALIZED CTE 也擋不住 —— 函式仍是掃描層 filter。
+
+正解是**兩步走**（20260827000000）：先 `SELECT ARRAY_AGG(...) INTO v_candidates`
+收斂母體，第二句才 `WHERE co.id = ANY (v_candidates) AND 昂貴函式(...)`。
+跨語句 planner 沒有重排空間。實測 2,046ms → 89ms。
+量函式內部哪段慢：pg_temp 函式 + temp table 插樁 + 整包 ROLLBACK
+（Management API 對「最後一句是 ROLLBACK」的 payload 會回倒數第二句的結果集，
+可以安全地在正式庫上做執行→量時→回滾）。
+
 ### 部署 Edge Function 走 curl + Management API，不要用 supabase CLI
 
 `supabase functions deploy`（不論加不加 `--use-api`）在這個環境的 outbound proxy 下**一定失敗**，回 `{"code":"UnknownError","message":"failed to deploy function: TransportError"}`。原因是 CLI 的 Go HTTP client 過 proxy 做 streaming multipart POST 會炸（同一支 CLI 的 GET 正常，只有帶 body 的上傳掛掉）。別再花時間試 CLI / 裝 Docker / 調 `SSL_CERT_FILE`，都沒用。
