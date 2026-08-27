@@ -17,6 +17,8 @@ import { useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 import { publicProductUrl } from "@/lib/campaignCover";
 import { parseReturnNote } from "@/lib/returnNote";
 import { fetchReprintableEvents, pickupEventLabel, type PickupEventRow } from "@/lib/pickupReceipt";
+import { buildDoneGroups, formatVisitWhen } from "@/lib/pickupVisits";
+import { settlementNo } from "@/lib/settlementNo";
 import { itemDisplayName } from "@/lib/skuLabel";
 import { GIFT_ITEM_SELECT, giftTitle, isCampaignGiftLine, isGiftLine } from "@/lib/orderGift";
 import { CutoffChip } from "@/components/CampaignCutoff";
@@ -47,7 +49,7 @@ type OpenOrder = {
   last_notify_pickup_at: string | null;
   notify_pickup_count: number;
   campaign: { id: number; campaign_no: string; name: string; cutoff_date: string | null } | null;
-  store: { id: number; name: string } | null;
+  store: { id: number; name: string; store_short_code: string | null } | null;
   items: {
     id: number;
     sku_id: number | null;
@@ -328,7 +330,7 @@ function PickupPageContent() {
         .select(
           `id, order_no, status, pickup_deadline, pickup_store_id, discount_amount, discount_percent, wallet_paid_amount, payment_status, ready_at, transferred_from_order_id, last_notify_pickup_at, notify_pickup_count, member_id,
            campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date),
-           store:stores!customer_orders_pickup_store_id_fkey(id, name),
+           store:stores!customer_orders_pickup_store_id_fkey(id, name, store_short_code),
            items:customer_order_items(id, sku_id, qty, unit_price, status, ${GIFT_ITEM_SELECT}, sku:skus(variant_name, product_name, product:products(images)))`,
         )
         .in("member_id", list.map((m) => m.id))
@@ -454,10 +456,13 @@ function PickupPageContent() {
     return order.items.filter((it) => it.status === "picked_up");
   }
   function orderSelState(order: OpenOrder): "all" | "some" | "none" {
-    const its = pickedItemsOf(order);
-    if (its.length === 0) return "none";
-    const n = its.filter((it) => selectedItems.has(it.id)).length;
-    return n === 0 ? "none" : n === its.length ? "all" : "some";
+    return itemsSelState(pickedItemsOf(order));
+  }
+  // 任意一批已取品項的勾選狀態／整批加減（整張訂單、取貨場次整批共用同一個集合）
+  function itemsSelState(items: OpenOrder["items"]): "all" | "some" | "none" {
+    if (items.length === 0) return "none";
+    const n = items.filter((it) => selectedItems.has(it.id)).length;
+    return n === 0 ? "none" : n === items.length ? "all" : "some";
   }
   function toggleItem(itemId: number) {
     setSelectedItems((s) => {
@@ -466,13 +471,11 @@ function PickupPageContent() {
       return next;
     });
   }
-  // 整張的勾選框＝該張所有已取品項一起加/減
-  function toggleOrderItems(order: OpenOrder) {
-    const its = pickedItemsOf(order);
-    const all = orderSelState(order) === "all";
+  function toggleItems(items: OpenOrder["items"]) {
+    const all = itemsSelState(items) === "all";
     setSelectedItems((s) => {
       const next = new Set(s);
-      for (const it of its) { if (all) next.delete(it.id); else next.add(it.id); }
+      for (const it of items) { if (all) next.delete(it.id); else next.add(it.id); }
       return next;
     });
   }
@@ -524,6 +527,101 @@ function PickupPageContent() {
       if (next.has(orderId)) next.delete(orderId); else next.add(orderId);
       return next;
     });
+  }
+
+  // 已取貨模式的訂單卡 — 取貨場次分組與「對不到取貨紀錄」區共用。
+  // items / evs 都是「這一次取貨」範圍內的：同一張單分兩次取時會出現在兩個場次，
+  // 各自只列那一次取走的品項、補印那一次的收據。
+  function pickedOrderCard(o: OpenOrder, items: OpenOrder["items"], evs: PickupEventRow[]) {
+    const amount = items.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0);
+    const canReprint = evs.length > 0;
+    const selState = itemsSelState(items);
+    return (
+      <li
+        key={`${o.id}:${evs[0]?.id ?? "none"}`}
+        className={`flex flex-col gap-3 rounded-md border p-3 sm:flex-row sm:items-center ${
+          selState !== "none"
+            ? "border-emerald-400 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950"
+            : "border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"
+        }`}
+      >
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <input
+            type="checkbox"
+            checked={selState === "all"}
+            ref={(el) => { if (el) el.indeterminate = selState === "some"; }}
+            onChange={() => toggleItems(items)}
+            disabled={items.length === 0}
+            title={items.length === 0 ? "此單沒有已取品項" : "整張勾選（也可只勾下面個別品項）"}
+            className="mt-1 h-4 w-4 shrink-0"
+          />
+          <OrderThumb order={o} />
+          <div className="min-w-0 flex-1 text-sm">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span>{o.campaign?.name ?? "(未知活動)"}</span>
+              <CutoffChip date={o.campaign?.cutoff_date} />
+              {/* 結單編號 — 會員 app「結單」頁與收據上顯示的同一組，方便對著客人手機核對 */}
+              <span className="font-mono text-xs text-zinc-500" title="結單編號（會員 app 上顯示的同一組編號）">
+                {settlementNo(o.id, o.store?.store_short_code)}
+              </span>
+              {o.status === "partially_completed" && (
+                <span className="rounded bg-teal-100 px-2 py-0.5 text-[10px] font-medium text-teal-800 dark:bg-teal-950 dark:text-teal-300">
+                  部分已取
+                </span>
+              )}
+            </div>
+            {/* 品項層級勾選 — 客人這批只要 A/B/D 不要 C 時就挑這裡 */}
+            <ul className="mt-0.5 space-y-0.5 text-xs text-zinc-700 dark:text-zinc-300">
+              {items.map((it) => (
+                <li key={it.id}>
+                  <label className="flex cursor-pointer items-baseline gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={selectedItems.has(it.id)}
+                      onChange={() => toggleItem(it.id)}
+                      className="h-3.5 w-3.5 shrink-0 translate-y-0.5"
+                    />
+                    <span className="font-bold">{itemDisplayName(it.sku, o.campaign?.name)}</span>
+                    <span className="font-mono text-zinc-500">× {Number(it.qty)}</span>
+                    <span className="font-mono text-zinc-400">${Number(it.qty) * Number(it.unit_price)}</span>
+                  </label>
+                </li>
+              ))}
+              {items.length === 0 && <li className="text-zinc-400">（無已取品項）</li>}
+            </ul>
+            <div className="mt-1 text-xs text-zinc-500">
+              取貨店：{o.store?.name ?? "—"}
+              <span className="ml-2 font-mono font-semibold text-zinc-700 dark:text-zinc-200">${amount}</span>
+              {canReprint ? (
+                <span
+                  className="ml-2 font-semibold text-emerald-700 dark:text-emerald-400"
+                  title={evs.map((e) => pickupEventLabel(e)).join("\n")}
+                >
+                  ✅ {pickupEventLabel(evs[evs.length - 1])}
+                  {evs.length > 1 && `（共 ${evs.length} 次）`}
+                </span>
+              ) : (
+                <span className="ml-2 text-amber-600 dark:text-amber-400">⚠️ 無取貨紀錄可補印（取貨已撤銷？）</span>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2 sm:shrink-0">
+          <SpinButton
+            onClick={() =>
+              printViaIframe(
+                withBasePath(`/pickup/print?event_ids=${evs.map((e) => e.id).join(",")}`),
+              )
+            }
+            disabled={!canReprint}
+            title="只補印這一張（這一次取貨的收據）"
+            className="rounded-md border border-zinc-300 px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          >
+            🖨️ 補印
+          </SpinButton>
+        </div>
+      </li>
+    );
   }
 
   // ── 全選 ────────────────────────────────────────────────────────────
@@ -1121,99 +1219,90 @@ function PickupPageContent() {
                   {mode === "picked" ? (
                     memberOrders.length === 0 ? (
                       <p className="text-xs text-zinc-500">{branchLocked ? "本店無已取訂單。" : "無已取訂單。"}</p>
-                    ) : (
-                      <ul className="space-y-2">
-                        {memberOrders.map((o) => {
-                          const evs = pickedEvents.get(o.id) ?? [];
-                          const picked = pickedItemsOf(o);
-                          const amount = picked.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0);
-                          const canReprint = evs.length > 0;
-                          const selState = orderSelState(o);
-                          return (
-                            <li
-                              key={o.id}
-                              className={`flex flex-col gap-3 rounded-md border p-3 sm:flex-row sm:items-center ${
-                                selState !== "none"
-                                  ? "border-emerald-400 bg-emerald-50 dark:border-emerald-700 dark:bg-emerald-950"
-                                  : "border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950"
-                              }`}
-                            >
-                              <div className="flex min-w-0 flex-1 items-start gap-3">
-                                <input
-                                  type="checkbox"
-                                  checked={selState === "all"}
-                                  ref={(el) => { if (el) el.indeterminate = selState === "some"; }}
-                                  onChange={() => toggleOrderItems(o)}
-                                  disabled={picked.length === 0}
-                                  title={picked.length === 0 ? "此單沒有已取品項" : "整張勾選（也可只勾下面個別品項）"}
-                                  className="mt-1 h-4 w-4 shrink-0"
-                                />
-                                <OrderThumb order={o} />
-                                <div className="min-w-0 flex-1 text-sm">
-                                  <div className="flex flex-wrap items-baseline gap-2">
-                                    <span>{o.campaign?.name ?? "(未知活動)"}</span>
-                                    <CutoffChip date={o.campaign?.cutoff_date} />
-                                    {o.status === "partially_completed" && (
-                                      <span className="rounded bg-teal-100 px-2 py-0.5 text-[10px] font-medium text-teal-800 dark:bg-teal-950 dark:text-teal-300">
-                                        部分已取
-                                      </span>
-                                    )}
+                    ) : (() => {
+                      // 依「一次到店取貨」分組 —— 分組邏輯與會員 app 的「已完成」分頁
+                      // 完全同一套（lib/pickupVisits ＝ member lib/pickups 的共用副本），
+                      // 店員看到的批次才會跟客人手機上的一樣。一批可整批勾選、整批補印。
+                      const visitOrders = memberOrders.map((o) => ({
+                        id: o.id,
+                        store_name: o.store?.name ?? null,
+                        items: pickedItemsOf(o).map((it) => ({ ...it, subtotal: Number(it.qty) * Number(it.unit_price) })),
+                        pickups: (pickedEvents.get(o.id) ?? []).map((e) => ({ id: e.id, picked_at: e.created_at, item_ids: e.item_ids })),
+                        src: o,
+                      }));
+                      const groups = buildDoneGroups(visitOrders);
+                      // 每張卡對應的取貨事件：分片後一張卡＝一筆事件（用品項交集反查）；
+                      // 對不到紀錄的孤兒卡會是空陣列 → 卡上的補印自然停用。
+                      const cardEvs = (vo: (typeof visitOrders)[number]) => {
+                        const idSet = new Set(vo.items.map((it) => it.id));
+                        return (pickedEvents.get(vo.id) ?? []).filter((e) => e.item_ids.some((id) => idSet.has(id)));
+                      };
+                      return (
+                        <div className="space-y-3">
+                          {groups.map((g) => {
+                            if (!g.visit) {
+                              return (
+                                <section key={g.key} className="overflow-hidden rounded-md border border-amber-200 dark:border-amber-900">
+                                  <div className="border-b border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+                                    ⚠️ 對不到取貨紀錄（{g.orders.length} 張）— 取貨可能已被撤銷，無法補印當時收據
                                   </div>
-                                  {/* 品項層級勾選 — 客人這批只要 A/B/D 不要 C 時就挑這裡 */}
-                                  <ul className="mt-0.5 space-y-0.5 text-xs text-zinc-700 dark:text-zinc-300">
-                                    {picked.map((it) => (
-                                      <li key={it.id}>
-                                        <label className="flex cursor-pointer items-baseline gap-1.5">
-                                          <input
-                                            type="checkbox"
-                                            checked={selectedItems.has(it.id)}
-                                            onChange={() => toggleItem(it.id)}
-                                            className="h-3.5 w-3.5 shrink-0 translate-y-0.5"
-                                          />
-                                          <span className="font-bold">{itemDisplayName(it.sku, o.campaign?.name)}</span>
-                                          <span className="font-mono text-zinc-500">× {Number(it.qty)}</span>
-                                          <span className="font-mono text-zinc-400">${Number(it.qty) * Number(it.unit_price)}</span>
-                                        </label>
-                                      </li>
-                                    ))}
-                                    {picked.length === 0 && <li className="text-zinc-400">（無已取品項）</li>}
+                                  <ul className="space-y-2 p-2">
+                                    {g.orders.map((vo) => pickedOrderCard(vo.src, vo.items, []))}
                                   </ul>
-                                  <div className="mt-1 text-xs text-zinc-500">
-                                    取貨店：{o.store?.name ?? "—"}
-                                    <span className="ml-2 font-mono font-semibold text-zinc-700 dark:text-zinc-200">${amount}</span>
-                                    {canReprint ? (
-                                      <span
-                                        className="ml-2 font-semibold text-emerald-700 dark:text-emerald-400"
-                                        title={evs.map((e) => pickupEventLabel(e)).join("\n")}
-                                      >
-                                        ✅ {pickupEventLabel(evs[evs.length - 1])}
-                                        {evs.length > 1 && `（共 ${evs.length} 次）`}
-                                      </span>
-                                    ) : (
-                                      <span className="ml-2 text-amber-600 dark:text-amber-400">⚠️ 無取貨紀錄可補印（取貨已撤銷？）</span>
-                                    )}
-                                  </div>
+                                </section>
+                              );
+                            }
+                            const groupItems = g.orders.flatMap((vo) => vo.items);
+                            const eventIds = g.orders.flatMap((vo) => cardEvs(vo).map((e) => e.id)).sort((a, b) => a - b);
+                            const gState = itemsSelState(groupItems);
+                            return (
+                              <section key={g.key} className="overflow-hidden rounded-md border border-emerald-200 dark:border-emerald-900">
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-emerald-200 bg-emerald-50 px-3 py-2 dark:border-emerald-900 dark:bg-emerald-950/40">
+                                  <label className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-emerald-900 dark:text-emerald-200" title="一次勾起／取消這一批一起取走的品項">
+                                    <input
+                                      type="checkbox"
+                                      checked={gState === "all"}
+                                      ref={(el) => { if (el) el.indeterminate = gState === "some"; }}
+                                      onChange={() => toggleItems(groupItems)}
+                                      className="h-4 w-4"
+                                    />
+                                    🧾 {formatVisitWhen(g.visit.pickedAt)} 取貨
+                                  </label>
+                                  <span className="text-xs text-emerald-800/80 dark:text-emerald-300/80">
+                                    {g.visit.storeName && `${g.visit.storeName} · `}
+                                    {g.visit.orderCount} 筆訂單 · {g.visit.qty} 件
+                                  </span>
+                                  <span className="ml-auto text-xs text-emerald-800/80 dark:text-emerald-300/80">
+                                    本次取貨金額 <b className="font-mono text-sm text-emerald-900 dark:text-emerald-200">${g.visit.amount}</b>
+                                  </span>
+                                  <SpinButton
+                                    onClick={() => printViaIframe(withBasePath(`/pickup/print?event_ids=${eventIds.join(",")}`))}
+                                    disabled={eventIds.length === 0}
+                                    title="補印這一批的取貨收據（依當時取貨紀錄，多張合併成一份）"
+                                    className="rounded-md border border-emerald-300 bg-white px-2.5 py-1 text-xs font-medium text-emerald-800 hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-800 dark:bg-zinc-900 dark:text-emerald-300 dark:hover:bg-emerald-950"
+                                  >
+                                    🖨️ 補印這批
+                                  </SpinButton>
                                 </div>
-                              </div>
-                              <div className="flex flex-wrap gap-2 sm:shrink-0">
-                                <SpinButton
-                                  onClick={() =>
-                                    printViaIframe(
-                                      withBasePath(`/pickup/print?event_ids=${evs.map((e) => e.id).join(",")}`),
-                                    )
-                                  }
-                                  disabled={!canReprint}
-                                  title="只補印這一張"
-                                  className="rounded-md border border-zinc-300 px-3 py-2 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                                >
-                                  🖨️ 補印
-                                </SpinButton>
-                              </div>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )
+                                <ul className="space-y-2 p-2">
+                                  {g.orders.map((vo) => pickedOrderCard(vo.src, vo.items, cardEvs(vo)))}
+                                </ul>
+                              </section>
+                            );
+                          })}
+                          {(() => {
+                            // 一件都沒取走的單（例：取貨全撤銷）不會進任何分組，補在最後
+                            const empties = memberOrders.filter((o) => pickedItemsOf(o).length === 0);
+                            if (empties.length === 0) return null;
+                            return (
+                              <ul className="space-y-2">
+                                {empties.map((o) => pickedOrderCard(o, [], []))}
+                              </ul>
+                            );
+                          })()}
+                        </div>
+                      );
+                    })()
                   ) : memberOrders.length === 0 ? (
                     <p className="text-xs text-zinc-500">{branchLocked ? "本店無未取訂單。" : "無未取訂單。"}</p>
                   ) : (
