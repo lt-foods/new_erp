@@ -9,8 +9,10 @@
  * 客服看到的數字 = 團友手機上的數字，一眼就能對。
  *
  * 「一樣」是硬需求，四個地方要跟會員端同步（改那邊記得改這邊）：
- *   - 資料管線 = liff-api listMyOrders：v_customer_order_summary、半年內、
- *     active / history 各最多 100 筆、一般取消不顯示但斷貨取消要顯示、已轉讓隱藏
+ *   - 資料管線 = liff-api listMyOrders：v_customer_order_summary、半年內
+ *     **逐頁撈到見底**（不能 limit(100) 砍最新 100 筆 —— 重度團友半年 200+ 張
+ *     「已完成」，砍尾巴會讓舊單在兩邊一起「消失」；同 PR #858）、
+ *     一般取消不顯示但斷貨取消要顯示、已轉讓隱藏
  *   - orderPhase / itemPhase 分桶（**依品項行**拆分身，2026-08-14 起）
  *     = apps/member/src/components/OrderCard.tsx
  *   - 應付總金額只在「待到貨」「待取貨」顯示、用 outstanding_amount
@@ -196,11 +198,27 @@ export function useMemberAppOrders(memberId: number, reloadTick = 0) {
           .eq("member_id", memberId)
           .gte("created_at", cutoff.toISOString())
           .order("created_at", { ascending: false })
-          .limit(100);
-      // = liff-api listMyOrders 的兩個 tab（active / history），各自 limit 100
+          .order("id", { ascending: false });
+      // = liff-api listMyOrders 的兩個 tab（active / history）。跟那邊一樣
+      // 逐頁 100 筆撈到見底（半年 cutoff 天然有界、2000 筆 runaway 保險），
+      // id tiebreaker 避免同秒建單跨頁漏抓或重複。
+      const fetchAll = async (
+        applyFilter: (q: ReturnType<typeof base>) => ReturnType<typeof base>,
+      ): Promise<{ data?: AppOrderRow[]; error?: { message: string } }> => {
+        const PAGE = 100;
+        const MAX_ROWS = 2000;
+        const all: AppOrderRow[] = [];
+        for (let from = 0; from < MAX_ROWS; from += PAGE) {
+          const { data, error } = await applyFilter(base().range(from, from + PAGE - 1));
+          if (error) return { error };
+          all.push(...((data ?? []) as AppOrderRow[]));
+          if ((data ?? []).length < PAGE) break;
+        }
+        return { data: all };
+      };
       const [activeQ, historyQ] = await Promise.all([
-        base().not("status", "in", "(completed,expired)"),
-        base().eq("status", "completed"),
+        fetchAll((q) => q.not("status", "in", "(completed,expired)")),
+        fetchAll((q) => q.eq("status", "completed")),
       ]);
       if (cancelled) return;
       const qErr = activeQ.error ?? historyQ.error;
@@ -419,7 +437,7 @@ export function MemberOrdersAppView({
       )}
 
       <p className="text-[11px] text-zinc-400">
-        與會員 app「我的訂單」同一套資料與口徑（半年內、每類最多 100 筆）；「已完成」依客人
+        與會員 app「我的訂單」同一套資料與口徑（半年內全部）；「已完成」依客人
         到店結單的那一次分組；點卡片可開後台訂單明細。
       </p>
     </div>
