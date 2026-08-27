@@ -6,6 +6,7 @@ import { getSupabase } from "@/lib/supabase";
 import AidShipmentReminder from "@/components/AidShipmentReminder";
 import StoreHeatMap from "@/components/StoreHeatMap";
 import RegionPreferenceSummary from "@/components/RegionPreferenceSummary";
+import OnlineStatsCard from "@/components/OnlineStatsCard";
 import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
 
 type Counts = {
@@ -204,6 +205,8 @@ export default function Dashboard() {
           <StatCard href="/suppliers" label="供應商（啟用）" value={counts?.suppliers} accent="text-purple-600 dark:text-purple-400" />
           <StatCard href="/campaigns" label="全部開團" value={counts?.campaigns} accent="text-zinc-600 dark:text-zinc-400" />
         </section>
+
+        <OnlineStatsCard />
 
         <StoreHeatMap focusStoreId={storeId ? Number(storeId) : null} />
 

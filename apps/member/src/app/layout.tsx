@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
 import ErrorLogger from "@/components/ErrorLogger";
+import PresenceHeartbeat from "@/components/PresenceHeartbeat";
 import { bootGuardScript } from "@/lib/bootGuard";
 import { SITE_NAME, SITE_OG_IMAGE, SITE_URL } from "@/lib/site";
 
@@ -74,6 +75,7 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: BOOT_GUARD }} />
         <ErrorLogger />
         <ServiceWorkerRegister />
+        <PresenceHeartbeat />
         {children}
       </body>
     </html>
