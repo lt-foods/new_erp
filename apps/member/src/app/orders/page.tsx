@@ -47,39 +47,26 @@ function fmtAmount(n: number): string {
 }
 
 /**
- * 一個分頁的金額加總。**只有「待到貨」「待取貨」會顯示這張卡**（見 showTotals）：
- * 「全部」混著幾十張早就取貨付清的已完成單，掛一個「應付總金額」會讓團友以為
- * 還欠那麼多（2026-08-11 會員 109814 的回報：$13,845 裡有 $9,959 是歷史已完成單，
- * 真正沒領的只有 $3,886）；「已完成」則根本沒有應付。與其在「全部」
- * 解釋口徑，不如不顯示 —— 應付金額只出現在真的還有貨要領的分頁。
+ * 「應付總金額」卡的數字**由 liff-api 後端算完直接給**（list_my_orders active tab
+ * 回的 totals），前端不做列表加總（2026-08-27 Alex 指示）—— 前端自己加總的口徑
+ * 跟著分桶 / 過濾 / 截斷走，任何一邊改了數字就歪。分桶與分攤規則見 liff-api 的
+ * computePayableTotals（跟這頁的 splitOrderByPhase 分攤同一套，改哪邊都要同步）。
  *
- * 「應付」一律用 outstanding_amount（＝還沒領走的貨），**不可以用 payable_amount**。
- * 取貨當下就收現金，已取貨的單早就付清了，payable_amount 是「這張單本身多少錢」，
- * 不是「還欠多少」（2026-08-11 團友 528204 的災情，20260810000000 有完整脈絡）。
- *
- * 排除 cancelled / expired 是保險：待到貨 / 待取貨兩個分桶本來就不含它們，
- * 但口徑寫在這裡，之後誰把這張卡開到別的分頁也不會把不用付錢的單算進去。
+ * 只有「待到貨」「待取貨」會顯示這張卡（見 showTotals）：「全部」混著幾十張
+ * 早就取貨付清的已完成單，掛一個「應付總金額」會讓團友以為還欠那麼多
+ * （2026-08-11 會員 109814：$13,845 裡有 $9,959 是歷史已完成單，真正沒領的
+ * 只有 $1,110 → $3,886）；「已完成」則根本沒有應付。
+ * 「應付」一律是 outstanding_amount 口徑（＝還沒領走的貨），不是 payable_amount
+ * （2026-08-11 團友 528204 的災情，20260810000000 有完整脈絡）。
  */
-function sumOrders(list: OrderRow[]) {
-  const active = list.filter((o) => !["cancelled", "expired"].includes(String(o.status ?? "")));
-  return {
-    count: active.length,
-    amount: active.reduce(
-      (s, o) => s + Number(o.outstanding_amount ?? o.payable_amount ?? 0),
-      0,
-    ),
-    // 這個分頁裡有沒有「已經領走一部分」的單 —— 有的話總金額不等於
-    // 各卡的應付金額相加，要在副標講清楚，不然團友手動加總又會對不上。
-    hasPicked: active.some(
-      (o) => Number(o.outstanding_amount ?? o.payable_amount ?? 0) < Number(o.payable_amount ?? 0),
-    ),
-  };
-}
+type TabTotals = { count: number; amount: number; has_picked: boolean };
+type PayableTotals = { waiting: TabTotals; pickup: TabTotals };
 
 export default function OrdersPage() {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("waiting");
   const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [payableTotals, setPayableTotals] = useState<PayableTotals | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
@@ -95,9 +82,13 @@ export default function OrdersPage() {
       setErr(null);
       try {
         const [active, history] = await Promise.all([
-          callLiffApi<{ orders: OrderRow[] }>(s.token, { action: "list_my_orders", tab: "active" }),
+          callLiffApi<{ orders: OrderRow[]; totals?: PayableTotals }>(s.token, {
+            action: "list_my_orders",
+            tab: "active",
+          }),
           callLiffApi<{ orders: OrderRow[] }>(s.token, { action: "list_my_orders", tab: "history" }),
         ]);
+        setPayableTotals(active.totals ?? null);
         // 「全部」要照時間混排，不是先進行中再歷史；隱藏的階段在這裡就過濾掉
         setOrders(
           [...active.orders, ...history.orders]
@@ -158,9 +149,10 @@ export default function OrdersPage() {
   const displayGroups = isDone ? takeGroupOrders(doneGroups, visible) : [];
   const cardCount = isDone ? countGroupOrders(doneGroups) : bucket.length;
   const hasMore = cardCount > visible;
-  // 總金額卡只在「待到貨」「待取貨」出現（理由見 sumOrders 註解），照整個分頁算
+  // 總金額卡只在「待到貨」「待取貨」出現（理由見 PayableTotals 註解）；
+  // 數字直接用後端回的，舊版函式沒回 totals 時整張卡不畫（不退回前端加總）
   const showTotals = tab === "waiting" || tab === "pickup";
-  const totals = sumOrders(bucket);
+  const totals = showTotals ? payableTotals?.[tab as "waiting" | "pickup"] : undefined;
 
   // 捲到底自動載入下一頁（sentinel 進到視窗下方 300px 內就先載，捲起來無縫）
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -199,14 +191,14 @@ export default function OrdersPage() {
         {loading && <LoadingScreen />}
 
         {/* 這個分頁的應付總金額 — 客人最常問的就是「這些加起來多少錢」。
-            只在待到貨 / 待取貨出現：其他分頁掛金額只會誤導（見 sumOrders） */}
-        {!loading && !err && showTotals && totals.count > 0 && (
+            只在待到貨 / 待取貨出現：其他分頁掛金額只會誤導（見 PayableTotals） */}
+        {!loading && !err && totals && totals.count > 0 && (
           <div className="card flex items-center justify-between gap-3 px-4 py-3">
             <div className="min-w-0">
               <div className="text-[16px] text-[var(--foreground)]">應付總金額</div>
               <div className="mt-0.5 text-[13px] text-[var(--secondary-label)]">
                 共 {totals.count} 筆訂單
-                {totals.hasPicked && (
+                {totals.has_picked && (
                   <>
                     <span className="mx-1.5 text-[var(--tertiary-label)]">·</span>
                     已取貨的不計（取貨時付現）

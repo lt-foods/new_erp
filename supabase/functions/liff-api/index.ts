@@ -535,6 +535,47 @@ async function fetchAllOrderSummaries(
   return { data: all };
 }
 
+/**
+ * 「待到貨」「待取貨」的應付總金額 —— **後端算完直接回，前端不准再從列表加總**
+ * （2026-08-27 Alex 指示）。前端自己加總的問題：口徑跟著前端的分桶 / 過濾走，
+ * 任何一邊改了（隱藏分頁、截斷、拆分身）數字就跟著歪，客訴對帳只能猜。
+ *
+ * 分桶與分攤規則**逐字對齊**會員端（改這裡記得改那邊，反之亦然）：
+ *   - itemPhase：apps/member/src/components/OrderCard.tsx —— 單頭 cancelled/expired/
+ *     transferred_out 整張跳過；行 picked_up → 已完成、cancelled/expired → 不成立；
+ *     其餘 arrived===true → 待取貨、否則待到貨（缺值當沒到，寧可少報）。
+ *   - 金額分攤：apps/member/src/app/orders/page.tsx —— 單頭 outstanding_amount 依
+ *     「該分身未取貨值 / 整張單未取貨值」等比分攤，兩個分頁相加 = 整張單未結金額，
+ *     不會把同一張單算兩次。
+ *   - has_picked：分身分攤額 < 整張單 payable_amount → 副標「已取貨的不計」。
+ * 後台複製品 apps/admin/src/components/MemberOrdersAppView.tsx 的 outstandingTotals
+ * 也是同一套，四份要一起動。
+ */
+function computePayableTotals(rows: any[]) {
+  const totals = {
+    waiting: { count: 0, amount: 0, has_picked: false },
+    pickup: { count: 0, amount: 0, has_picked: false },
+  };
+  for (const o of rows) {
+    if (["cancelled", "expired", "transferred_out"].includes(String(o.status ?? ""))) continue;
+    const items = Array.isArray(o.items) ? o.items : [];
+    const active = items.filter((it: any) => !["cancelled", "expired", "picked_up"].includes(String(it.status ?? "")));
+    const wholeUnpicked = active.reduce((s: number, it: any) => s + Number(it.subtotal ?? 0), 0);
+    const outstanding = Number(o.outstanding_amount ?? o.payable_amount ?? 0);
+    const payable = Number(o.payable_amount ?? 0);
+    for (const phase of ["waiting", "pickup"] as const) {
+      const part = active.filter((it: any) => (it.arrived === true) === (phase === "pickup"));
+      if (part.length === 0) continue;
+      const partSubtotal = part.reduce((s: number, it: any) => s + Number(it.subtotal ?? 0), 0);
+      const partAmount = wholeUnpicked > 0 ? (outstanding * partSubtotal) / wholeUnpicked : 0;
+      totals[phase].count += 1;
+      totals[phase].amount += partAmount;
+      if (partAmount < payable) totals[phase].has_picked = true;
+    }
+  }
+  return totals;
+}
+
 async function listMyOrders(sb: any, tenantId: string, _storeId: number, memberId: number, tab: string) {
   const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
   // 不依 store_id 過濾：同一 line_user 可能綁多店 OA，但 member_id 是 tenant 級；
@@ -564,6 +605,9 @@ async function listMyOrders(sb: any, tenantId: string, _storeId: number, memberI
     })),
     pickups: pickupsByOrder.get(Number(o.id)) ?? [],
   }));
+  // 應付總金額只跟 active 分頁的單有關（completed 的行全是已取 / 取消，
+  // 不會落在待到貨 / 待取貨），history 就不用多付一次計算
+  if (tab === "active") return json({ orders, totals: computePayableTotals(rows) });
   return json({ orders });
 }
 
