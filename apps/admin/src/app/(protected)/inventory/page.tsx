@@ -8,7 +8,7 @@ import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
 import { useUserBranchStoreId, useDefaultStoreFromUser } from "@/lib/useDefaultStoreFromUser";
 import { maskLineUserId } from "@/lib/maskLineUserId";
-import { useRole, canSeeCost } from "@/lib/role";
+import { useRole, canSeeCost, canSeeBranch } from "@/lib/role";
 import { AddStockModal } from "@/components/AddStockModal";
 import { SpotSaleModal } from "@/components/SpotSaleModal";
 import { translateRpcError } from "@/lib/rpcError";
@@ -25,6 +25,8 @@ type Balance = {
   last_movement_at: string | null;
 };
 type Sku = { id: number; sku_code: string; product_name: string | null; variant_name: string | null; base_unit: string };
+// 每個 SKU 的現行售價（effective_to IS NULL 的那筆；同 scope 多筆取 effective_from 最新）
+type SkuPrices = { retail?: number; branch?: number };
 type Reorder = { location_id: number; sku_id: number; safety_stock: number; reorder_point: number };
 // rpc_get_stock_commitment_bulk 的一列：這個 (倉別, SKU) 的貨被誰佔著、還剩幾件能配
 type Commitment = {
@@ -113,6 +115,8 @@ export default function InventoryOverviewPage() {
   // 成本只給總倉層級看（分店 store_manager / store_staff 一律遮掉）
   const role = useRole();
   const showCost = canSeeCost(role);
+  // 分店價只給 canSeeBranch 的角色看（store_staff 只看零售價）
+  const showBranchPrice = canSeeBranch(role);
   // 商品/倉別/在庫/待客取/內部單/可分配/在途/(均成本)/最後異動/展開箭頭
   const colCount = showCost ? 10 : 9;
 
@@ -139,6 +143,9 @@ export default function InventoryOverviewPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [skuMap, setSkuMap] = useState<Map<number, Sku>>(new Map());
+  // 零售價／分店價（老闆 2026-08-27：庫存頁要看得到兩個價；分店價照 canSeeBranch 收斂，
+  // RLS 那層對 store_staff 本來就不回 branch 列，這裡只是雙保險）
+  const [priceMap, setPriceMap] = useState<Map<number, SkuPrices>>(new Map());
   const [reorderMap, setReorderMap] = useState<Map<string, Reorder>>(new Map());
   const [truncated, setTruncated] = useState(false);
 
@@ -326,17 +333,33 @@ export default function InventoryOverviewPage() {
         // 補 sku + reorder_rules + 承諾量拆解（僅本頁可見列）
         const skuIds = Array.from(new Set(pageRows.map((r) => r.sku_id)));
         if (skuIds.length > 0) {
-          const [sk, rr, cm] = await Promise.all([
+          const [sk, rr, cm, pr] = await Promise.all([
             sb.from("skus").select("id, sku_code, product_name, variant_name, base_unit").in("id", skuIds),
             sb.from("reorder_rules").select("location_id, sku_id, safety_stock, reorder_point").in("sku_id", skuIds),
             // 一頁一次，不要每列各打一次
             sb.rpc("rpc_get_stock_commitment_bulk", {
               p_pairs: pageRows.map((r) => ({ location_id: r.location_id, sku_id: r.sku_id })),
             }),
+            // 現行售價（RLS 依 role × scope 過濾：store_staff 拿不到 branch）
+            sb
+              .from("prices")
+              .select("sku_id, scope, price, effective_from")
+              .in("sku_id", skuIds)
+              .in("scope", ["retail", "branch"])
+              .is("effective_to", null)
+              .order("effective_from", { ascending: false }),
           ]);
           if (cancelled) return;
           const sm = new Map<number, Sku>();
           for (const s of (sk.data as Sku[]) ?? []) sm.set(s.id, s);
+          const pm = new Map<number, SkuPrices>();
+          for (const p of (pr.data as { sku_id: number; scope: string; price: number }[]) ?? []) {
+            const slot = pm.get(p.sku_id) ?? {};
+            // 已依 effective_from 倒序 → 同 scope 只收第一筆（最新生效的）
+            if (p.scope === "retail" && slot.retail === undefined) slot.retail = Number(p.price);
+            if (p.scope === "branch" && slot.branch === undefined) slot.branch = Number(p.price);
+            pm.set(p.sku_id, slot);
+          }
           const rm = new Map<string, Reorder>();
           for (const r of (rr.data as Reorder[]) ?? []) rm.set(`${r.location_id}-${r.sku_id}`, r);
           const cmap = new Map<string, Commitment>();
@@ -352,10 +375,12 @@ export default function InventoryOverviewPage() {
             });
           }
           setSkuMap(sm);
+          setPriceMap(pm);
           setReorderMap(rm);
           setCommitMap(cmap);
         } else {
           setSkuMap(new Map());
+          setPriceMap(new Map());
           setReorderMap(new Map());
           setCommitMap(new Map());
         }
@@ -592,6 +617,7 @@ export default function InventoryOverviewPage() {
             rows.flatMap((r) => {
               const key = `${r.location_id}-${r.sku_id}`;
               const sku = skuMap.get(r.sku_id);
+              const prices = priceMap.get(r.sku_id);
               const rule = reorderMap.get(key);
               const commit = commitMap.get(key) ?? null;
               const isLow = rule != null && r.on_hand <= num(rule.reorder_point);
@@ -608,6 +634,21 @@ export default function InventoryOverviewPage() {
                       {sku?.variant_name ? <span className="ml-1 text-zinc-500">/ {sku.variant_name}</span> : null}
                     </div>
                     <div className="font-mono text-xs text-zinc-500">{sku?.sku_code ?? `sku#${r.sku_id}`}</div>
+                    {/* 零售/分店價（老闆 2026-08-27）：配給客人用零售價，這裡先看得到 */}
+                    {(prices?.retail !== undefined || (showBranchPrice && prices?.branch !== undefined)) && (
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px]">
+                        {prices?.retail !== undefined && (
+                          <span className="rounded bg-emerald-100 px-1 py-0.5 font-bold text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                            零售 ${prices.retail}
+                          </span>
+                        )}
+                        {showBranchPrice && prices?.branch !== undefined && (
+                          <span className="rounded bg-amber-100 px-1 py-0.5 font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                            分店 ${prices.branch}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </Td>
                   <Td className="text-xs">{locLabel(r.location_id)}</Td>
                   <Td align="right" className="font-mono">
