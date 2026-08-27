@@ -441,13 +441,12 @@ async function getOverview(sb: any, tenantId: string, storeId: number, memberId:
   // 不可以用 payment_status='unpaid' 當條件 —— 那個欄位全站從來沒被寫成 'paid'
   // （取貨收現金，rpc_record_pickup 不碰它），等於沒過濾，會把早就取走的訂單
   // 一路累加上去（回報案例：顯示 $3,072、實際未領只有 $1,110）。
-  // 只看最近 6 個月，跟 listMyOrders 的 cutoff 同一套 —— 團友會拿「進行中訂單」
-  // 逐張加總來對這個數字，兩邊的時間範圍不一致就又會被回報對不上。
-  const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
-  const { data: unpaidRows } = await sb.from("v_customer_order_summary").select("outstanding_amount").eq("tenant_id", tenantId).eq("member_id", memberId).gt("outstanding_amount", 0).gte("created_at", cutoff.toISOString());
+  // 不設時間下限，跟 listMyOrders 同一套母體（2026-08-27 拿掉 6 個月 cutoff）——
+  // 團友會拿「進行中訂單」逐張加總來對這個數字，兩邊的範圍不一致就又會被回報對不上。
+  const { data: unpaidRows } = await sb.from("v_customer_order_summary").select("outstanding_amount").eq("tenant_id", tenantId).eq("member_id", memberId).gt("outstanding_amount", 0);
   const receivable = (unpaidRows ?? []).reduce((s: number, r: any) => s + Number(r.outstanding_amount ?? 0), 0);
   // transferred_out（轉手給別人）的品項仍留在原單且維持 pending，貨已經在新單上 → 不算進行中。
-  const { count: activeCount } = await sb.from("v_customer_order_summary").select("*", { count: "exact", head: true }).eq("tenant_id", tenantId).eq("member_id", memberId).not("status", "in", "(completed,cancelled,expired,transferred_out)").gte("created_at", cutoff.toISOString());
+  const { count: activeCount } = await sb.from("v_customer_order_summary").select("*", { count: "exact", head: true }).eq("tenant_id", tenantId).eq("member_id", memberId).not("status", "in", "(completed,cancelled,expired,transferred_out)");
   return json({ store: storeRow, receivable_amount: receivable, active_orders_count: activeCount ?? 0 });
 }
 
@@ -471,16 +470,27 @@ async function fetchPickupEventsByOrder(
 ): Promise<Map<number, { id: number; event_type: string; picked_at: string; item_ids: number[] }[]>> {
   const out = new Map<number, { id: number; event_type: string; picked_at: string; item_ids: number[] }[]>();
   if (orderIds.length === 0) return out;
-  const { data, error } = await sb
-    .from("order_pickup_events")
-    .select("id, order_id, event_type, item_ids, notes, created_at")
-    .in("order_id", orderIds)
-    .in("event_type", ["picked_up", "partial_pickup", "pickup_undone"])
-    .order("id", { ascending: true });
-  // 取貨紀錄拿不到只是少了分組，訂單本身照列 —— 不要讓整頁掛掉
-  if (error) { console.error("fetchPickupEventsByOrder:", error.message); return out; }
-
-  const rows = (data ?? []) as any[];
+  // 逐頁撈到見底：PostgREST 有 max-rows 上限（超過會**靜默截斷**，不是報錯），
+  // 重度團友的事件數會一路長，被截斷的訂單會掉出「那一次結單」分組、
+  // 該次的取貨金額也跟著少算。keyset（id >）分頁，一頁 1000。
+  const rows: any[] = [];
+  let lastId = 0;
+  for (let page = 0; page < 50; page++) {
+    const { data, error } = await sb
+      .from("order_pickup_events")
+      .select("id, order_id, event_type, item_ids, notes, created_at")
+      .in("order_id", orderIds)
+      .in("event_type", ["picked_up", "partial_pickup", "pickup_undone"])
+      .gt("id", lastId)
+      .order("id", { ascending: true })
+      .limit(1000);
+    // 取貨紀錄拿不到只是少了分組，訂單本身照列 —— 不要讓整頁掛掉
+    if (error) { console.error("fetchPickupEventsByOrder:", error.message); return out; }
+    const batch = (data ?? []) as any[];
+    rows.push(...batch);
+    if (batch.length < 1000) break;
+    lastId = Number(batch[batch.length - 1].id);
+  }
   const undone = new Set<number>();
   for (const r of rows) {
     if (r.event_type !== "pickup_undone") continue;
@@ -502,28 +512,29 @@ async function fetchPickupEventsByOrder(
 }
 
 /**
- * 半年內符合條件的單要**全部**撈回來，不能只撈最新 100 筆。
+ * 符合條件的單要**全部**撈回來，不能只撈最新 100 筆、也不設時間下限。
  * 重度團友半年 200+ 張「已完成」很常見（2026-08-27 盤點：22 位會員超過 100、
  * 最多 273），.limit(100) 砍尾巴的結果就是「訂單明明已完成，APP 上卻找不到」
  * （古華 老爹的 6/5 檸檬鴨單前面有 173 張更新的 completed）。進行中被砍更糟：
- * 「應付總金額」跟著少算。逐頁 100 筆撈到見底；6 個月 cutoff 天然有界，
- * 2000 筆只是 runaway 保險。排序掛 id 當 tiebreaker，created_at 同秒的單
- * 跨頁才不會被跳過或重複。
+ * 「應付總金額」跟著少算 —— 2026-08-27 松山 M20260805101217525 就是這樣：
+ * APP 顯示待取貨 10 筆 $1,255，現場實取 18 筆 $2,593，被砍掉的 8 張全是 7 月舊單。
+ * 原本還有 6 個月 cutoff，同日 Alex 拍板拿掉：**清單跟金額的母體必須一模一樣**，
+ * 任何一邊多一層時間過濾，客人逐張加總就對不上。
+ * 逐頁 100 筆撈到見底；5000 筆只是 runaway 保險（目前最重會員 422 張）。
+ * 排序掛 id 當 tiebreaker，created_at 同秒的單跨頁才不會被跳過或重複。
  */
 async function fetchAllOrderSummaries(
   sb: any,
   tenantId: string,
   memberId: number,
-  cutoffIso: string,
   applyFilter: (q: any) => any,
 ): Promise<{ data?: any[]; error?: { message: string } }> {
-  const PAGE = 100, MAX_ROWS = 2000;
+  const PAGE = 100, MAX_ROWS = 5000;
   const all: any[] = [];
   for (let from = 0; from < MAX_ROWS; from += PAGE) {
     const q = applyFilter(
       sb.from("v_customer_order_summary").select("*")
         .eq("tenant_id", tenantId).eq("member_id", memberId)
-        .gte("created_at", cutoffIso)
         .order("created_at", { ascending: false }).order("id", { ascending: false })
         .range(from, from + PAGE - 1),
     );
@@ -557,7 +568,10 @@ function computePayableTotals(rows: any[]) {
     pickup: { count: 0, amount: 0, has_picked: false },
   };
   for (const o of rows) {
-    if (["cancelled", "expired", "transferred_out"].includes(String(o.status ?? ""))) continue;
+    // completed 也要跳過（與 itemPhase 的 completed 分支對齊）：單頭完成後仍掛
+    // active 的行是「量被未取退貨覆蓋」的殘留，不屬於待到貨／待取貨。
+    // active tab 本來就不含 completed，這裡是防守（口徑四份同步，見檔頭）。
+    if (["cancelled", "expired", "transferred_out", "completed"].includes(String(o.status ?? ""))) continue;
     const items = Array.isArray(o.items) ? o.items : [];
     const active = items.filter((it: any) => !["cancelled", "expired", "picked_up"].includes(String(it.status ?? "")));
     const wholeUnpicked = active.reduce((s: number, it: any) => s + Number(it.subtotal ?? 0), 0);
@@ -573,15 +587,18 @@ function computePayableTotals(rows: any[]) {
       if (partAmount < payable) totals[phase].has_picked = true;
     }
   }
+  // 有折扣／儲值金的單分攤後會出現小數，畫面不能出現 $1,255.4 —— 最後才捨入，
+  // 逐張捨入會讓兩頁相加對不回整張單的未結金額。
+  totals.waiting.amount = Math.round(totals.waiting.amount);
+  totals.pickup.amount = Math.round(totals.pickup.amount);
   return totals;
 }
 
 async function listMyOrders(sb: any, tenantId: string, _storeId: number, memberId: number, tab: string) {
-  const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
   // 不依 store_id 過濾：同一 line_user 可能綁多店 OA，但 member_id 是 tenant 級；
   // 「我的訂單」呈現該 member 在所有店的訂單，OrderCard 會顯示 store_name 區別。
   // active: 一般取消的訂單不顯示，但「斷貨取消」(stockout_at 有值) 要讓顧客看得到
-  const { data, error } = await fetchAllOrderSummaries(sb, tenantId, memberId, cutoff.toISOString(), (q) =>
+  const { data, error } = await fetchAllOrderSummaries(sb, tenantId, memberId, (q) =>
     tab === "active" ? q.not("status", "in", "(completed,expired)") : q.eq("status", "completed"));
   if (error) return json({ error: error.message }, 500);
 
@@ -612,12 +629,11 @@ async function listMyOrders(sb: any, tenantId: string, _storeId: number, memberI
 }
 
 async function listMySettlements(sb: any, tenantId: string, _storeId: number, memberId: number, tab: string) {
-  const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 6);
   // 同 listMyOrders：跨店訂單都納入（OrderCard 顯示 store_name），
   // 且撈到見底、不能砍最新 100 筆（理由見 fetchAllOrderSummaries）。
   // 「待付款」＝ 還有沒領走的貨（同 getOverview 的口徑，@20260810000000）。
   // 同樣不能用 payment_status='unpaid'：那會把所有已取貨的舊單一起列出來。
-  const { data, error } = await fetchAllOrderSummaries(sb, tenantId, memberId, cutoff.toISOString(), (q) =>
+  const { data, error } = await fetchAllOrderSummaries(sb, tenantId, memberId, (q) =>
     tab === "unpaid" ? q.gt("outstanding_amount", 0) : q.in("status", ["shipping", "completed"]));
   if (error) return json({ error: error.message }, 500);
   return json({ settlements: data ?? [] });

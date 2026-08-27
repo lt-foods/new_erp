@@ -374,10 +374,14 @@ function PickupPageContent() {
       const readyMap = new Map<number, boolean>();
       const shortMap = new Map<number, boolean>();
       if (orderIds.length > 0) {
-        const { data: irs } = await sb
+        const { data: irs, error: irErr } = await sb
           .from("v_order_item_pickup_ready")
           .select("item_id, pickup_ready, qty_short")
           .in("order_id", orderIds);
+        // 這個查詢失敗不能靜默吞掉：readyMap 空著往下走，ready / partially_completed
+        // 單的品項會因「查無資料 fallback」整批變可勾（!== false），等於閘門全開 ——
+        // 沒到的貨照樣發得出去、金額也跟會員端對不上。寧可整頁報錯讓店員重試。
+        if (irErr) { setError(`讀取品項到貨狀態失敗：${irErr.message}（請重新整理再試）`); return; }
         for (const r of (irs ?? []) as { item_id: number; pickup_ready: boolean; qty_short: boolean }[]) {
           readyMap.set(r.item_id, !!r.pickup_ready);
           shortMap.set(r.item_id, !!r.qty_short);
@@ -391,12 +395,14 @@ function PickupPageContent() {
       // 「取貨後退回」(|取貨後退回) 是客戶已取走的貨，不佔未取品項的可取量。
       const retMap = new Map<number, number>();
       if (orderIds.length > 0) {
-        const { data: rts } = await sb
+        const { data: rts, error: rtErr } = await sb
           .from("transfers")
           .select("customer_order_id, notes, transfer_items(sku_id, qty_shipped)")
           .in("customer_order_id", orderIds)
           .eq("transfer_type", "return_to_hq")
           .in("status", ["shipped", "received"]);
+        // 同上：失敗時 retMap 空著會把「已退回總倉」的量當可取，多收客人錢
+        if (rtErr) { setError(`讀取未取退貨資料失敗：${rtErr.message}（請重新整理再試）`); return; }
         const retBySku = new Map<number, Map<number, number>>(); // orderId → skuId → 已退量
         for (const t of (rts ?? []) as { customer_order_id: number; notes: string | null; transfer_items: { sku_id: number | null; qty_shipped: number | null }[] | null }[]) {
           if (parseReturnNote(t.notes).isRestock) continue;
