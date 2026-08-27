@@ -1670,7 +1670,7 @@ export function OrderDetail({
                                   qty: Number(it.qty),
                                 });
                               }}
-                              title="把到貨自動配單配給這一行的貨收回 —— 這一行變「待補貨」、那幾件回到可配量（庫存數量不變）"
+                              title="把到貨自動配單配給這一行的貨收回 —— 這一行退回「等貨中」、那幾件回到可配量（庫存數量不變）"
                               className="rounded-md border border-amber-300 px-2 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950 whitespace-nowrap"
                             >
                               ↩️ 取消配單

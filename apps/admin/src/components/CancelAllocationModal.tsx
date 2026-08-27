@@ -38,7 +38,7 @@ export function CancelAllocationModal({
     if (
       !confirm(
         `取消「${skuLabel}」${qty} 件的配單？\n\n` +
-          `這一行會變成「待補貨」（取貨頁就勾不到了），那 ${qty} 件回到可配量、` +
+          `這一行會退回「等貨中」（取貨頁就勾不到了），那 ${qty} 件回到可配量、` +
           `可以配給別的客人。\n` +
           `庫存數量不會變動（配單本來就沒扣庫存）。\n`,
       )
@@ -60,7 +60,7 @@ export function CancelAllocationModal({
       const r = (res ?? {}) as { qty?: number; reverted?: boolean };
       alert(
         `✅ 已取消配單（${Number(r.qty ?? qty)} 件），這些貨回到可配量了。\n` +
-          `這一行變成「待補貨」，要重新配就按「📦 從庫存配貨」，` +
+          `這一行退回「等貨中」，要重新配就按「📦 從庫存配貨」，` +
           `下一批貨收進來時數量夠也會自動重配。\n` +
           (r.reverted ? "整張單退回「已確認（等貨中）」。\n" : "") +
           `⚠️ 客人若已收過「到貨通知」，請記得自行知會。`,
@@ -105,7 +105,7 @@ export function CancelAllocationModal({
           <b>庫存數量不會變</b> —— 配單本來就沒扣庫存，取消只是把「這批貨有主人」的
           標記拿掉，那幾件馬上回到可配量、可以配給別的客人。
           <br />
-          這一行會變成「待補貨」、整張單退回「已確認」；客人若已收過到貨通知請自行知會。
+          這一行會退回「等貨中」（系統標記為待補貨）、整張單退回「已確認」；客人若已收過到貨通知請自行知會。
         </div>
 
         <div className="flex items-center justify-end gap-2 pt-1">
