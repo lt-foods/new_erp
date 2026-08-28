@@ -708,7 +708,6 @@ function PickupPageContent() {
       let okCount = 0;
       const errors: string[] = [];
       const eventIds: number[] = [];
-      const okOrderIds: number[] = [];
       // 餘額只有一份，逐張扣、扣到沒有為止（試算與這裡同一套分配法）
       let walletLeft = useWallet ? (walletBalances.get(memberId) ?? 0) : 0;
       let walletUsedTotal = 0;
@@ -753,17 +752,16 @@ function PickupPageContent() {
         if (e) errors.push(`${o.order_no}: ${e.message}`);
         else {
           okCount++;
-          okOrderIds.push(o.id);
           const ev = data as { event_id: number };
           if (ev?.event_id) eventIds.push(ev.event_id);
         }
       }
       if (errors.length > 0) setError(errors.join("\n"));
       if (eventIds.length > 0) {
-        // 自動列印 — 大張取貨單 + 熱感應小白單（隱藏 iframe,不跳新分頁;依序印）
+        // 自動列印只出一張取貨單（隱藏 iframe,不跳新分頁）。留底／剩餘未取
+        // 品項改去「已取貨」分頁補印或按「列印小白單」，不再自動加印第二張。
         // 只印真的取成功的那幾張（扣款失敗／取貨失敗的單不該出單）
         printViaIframe(withBasePath(`/pickup/print?event_ids=${eventIds.join(",")}`));
-        printViaIframe(withBasePath(`/pickup/print-list?order_ids=${okOrderIds.join(",")}`));
       }
       alert(
         `完成 ${okCount}/${memberOrders.length} 張取貨`
@@ -803,11 +801,8 @@ function PickupPageContent() {
     if (e) { setError(`${order.order_no}：${translateRpcError(e)}`); return; }
     const ev = data as { event_id: number; active_remaining: number };
     if (ev?.event_id) {
-      // 取貨單一定印；還有未取品項(部分到貨) → 追加取貨清單提醒剩下未取的
+      // 只印一張取貨單。剩下未取的品項留在取貨頁看得到，要單子就按「列印小白單」。
       printViaIframe(withBasePath(`/pickup/print?event_ids=${ev.event_id}`));
-      if (ev.active_remaining > 0) {
-        printViaIframe(withBasePath(`/pickup/print-list?order_ids=${order.id}`));
-      }
     }
     setReloadTick((n) => n + 1);
   }
