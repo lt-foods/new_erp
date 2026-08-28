@@ -349,12 +349,9 @@ export function PickupDialog({
       });
       if (error) { setErr(error.message); return; }
       const result = data as { event_id: number; new_order_status: string; picked_count: number; active_remaining: number };
-      // 取貨單一定印（收據）— 隱藏 iframe,不跳新分頁
+      // 只印一張取貨單（收據）— 隱藏 iframe,不跳新分頁。
+      // 剩餘未取品項不再自動加印小白單：要單子按「🖨️ 列印小白單」，留底去「已取貨」分頁補印。
       printViaIframe(withBasePath(`/pickup/print?event_ids=${result.event_id}`));
-      // 取貨清單只在「部分取貨」時印（提醒客人剩下未取的 items）；全取完省略
-      if (result.active_remaining > 0) {
-        printViaIframe(withBasePath(`/pickup/print-list?order_ids=${orderId}`));
-      }
       onPickedUp(result);
     } finally {
       setBusy(false);
