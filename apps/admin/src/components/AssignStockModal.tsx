@@ -223,23 +223,23 @@ export function AssignStockModal({
             </div>
           )}
           {b && cap <= 0 && !topUp && (
-            <div className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">
-              {b.on_hand <= 0 ? (
-                <>店倉帳上這個商品是 0 件。架上實際有貨 → 先到「庫存總覽」用「＋ 新增庫存」入帳，</>
-              ) : (
-                <>在庫 {b.on_hand} 件已經被別的單佔走 {b.committed} 件（已承諾未取 ＋ 已配過的單），</>
-              )}
-              或
+            <div className="mt-1.5">
+              <div className="text-[11px] text-amber-700 dark:text-amber-400">
+                {b.on_hand <= 0 ? (
+                  <>店倉帳上這個商品是 0 件。架上實際有貨的話：</>
+                ) : (
+                  <>在庫 {b.on_hand} 件已經被別的單佔走 {b.committed} 件（已承諾未取 ＋ 已配過的單）。架上實際有更多貨的話：</>
+                )}
+              </div>
               <SpinButton
                 onClick={() => {
                   setTopUp(true);
                   setQty(Math.max(1, room));
                 }}
-                className="ml-1 font-medium text-amber-900 underline dark:text-amber-200"
+                className="mt-1.5 w-full rounded-md border border-amber-400 bg-amber-100 px-3 py-2 text-center text-xs font-semibold text-amber-900 hover:bg-amber-200 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200 dark:hover:bg-amber-900"
               >
-                架上其實有貨、一鍵新增庫存再配貨
+                🏗 架上其實有貨、一鍵新增庫存再配貨
               </SpinButton>
-              。
             </div>
           )}
           {b && topUp && (
