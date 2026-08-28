@@ -313,6 +313,13 @@ export function OrderDetail({
   // qty 只有 pending 訂單可改;一旦被 PR 鎖定變 confirmed 就唯讀
   const canEditQty = (canEdit || isStoreOfThisOrder) && head?.status === "pending";
 
+  // 「刪除」品項：pending／ready／partially_completed 都能刪（20260827040000
+  // 起放寬，原本只有 pending）。已取貨的品項另外在按鈕層擋（走退貨流程）。
+  // 與資料庫閘門 rpc_delete_order_item 對齊。
+  const canDeleteItem = (canEdit || isStoreOfThisOrder)
+    && !!head
+    && ["pending", "ready", "partially_completed"].includes(head.status);
+
   // 「📦 從庫存配貨」：把取貨門市的現貨指派給這一行（開 DN、不扣庫存不結案）。
   // 跟 qty 編輯不同，這個在 confirmed / 等貨中的單上才最有用，所以不綁 pending。
   // 伺服端 rpc_assign_stock_to_order_item 另有分店只能配自己店的守衛。
@@ -862,17 +869,28 @@ export function OrderDetail({
     setReloadTick((n) => n + 1);
   }
 
-  // 刪除 pending 訂單裡的單一品項（rpc_delete_order_item：軟刪 status->cancelled）。
-  // 權限/狀態閘與「改數量」一致（canEditQty）；刪到最後一項會自動取消整單。
+  // 刪除訂單裡的單一品項（rpc_delete_order_item：軟刪 status->cancelled）。
+  // 權限/狀態閘見 canDeleteItem（pending／ready／partially_completed）；
+  // 已取貨的品項不給刪（按鈕本身就不會出現，DB 也擋）。
+  // 有從庫存配過貨的行，RPC 會先把 DN 覆蓋還回庫存/現貨池才刪。
+  // 刪到最後一個待取品項：取過貨 → 訂單標記為完成；沒取過且未收款 → 整單取消。
   async function deleteItem(it: ItemRow) {
     if (!head) return;
     const label = it.sku
       ? `${it.sku.product_name ?? it.sku.sku_code}${it.sku.variant_name ? ` / ${it.sku.variant_name}` : ""}`
       : `#${it.id}`;
-    const onlyActive = (items ?? []).filter((x) => !["cancelled", "expired"].includes(x.status)).length <= 1;
+    const otherPendingCount = (items ?? []).filter(
+      (x) => x.id !== it.id && ["pending", "reserved", "ready"].includes(x.status),
+    ).length;
+    const isLastPending = otherPendingCount === 0;
+    const hasPicked = (items ?? []).some((x) => x.status === "picked_up");
     const reason = prompt(
       `刪除品項：${label}（${head.order_no}）` +
-        (onlyActive ? "\n\n⚠️ 這是訂單最後一個品項，刪除後整單會一併取消。" : "") +
+        (isLastPending
+          ? hasPicked
+            ? "\n\n⚠️ 這是最後一個待取品項，刪除後訂單會標記為已完成。"
+            : "\n\n⚠️ 這是訂單最後一個品項，刪除後整單會一併取消。"
+          : "") +
         "\n請輸入刪除原因：",
     );
     if (reason === null) return;
@@ -887,8 +905,14 @@ export function OrderDetail({
       p_reason: reason.trim() === "" ? null : reason.trim(),
     });
     if (rpcErr) { alert(`刪除失敗：${translateRpcError(rpcErr)}`); return; }
-    const cancelled = !!(data as { order_cancelled?: boolean } | null)?.order_cancelled;
-    alert(cancelled ? "已刪除品項，整單已一併取消" : "已刪除品項");
+    const r = data as { order_cancelled?: boolean; order_completed?: boolean; stock_released?: { qty?: number } } | null;
+    const releasedQty = Number(r?.stock_released?.qty ?? 0);
+    const headline = r?.order_cancelled
+      ? "已刪除品項，整單已一併取消"
+      : r?.order_completed
+        ? "已刪除品項，訂單已標記為完成"
+        : "已刪除品項";
+    alert(headline + (releasedQty > 0 ? `\n已收回 ${releasedQty} 件配貨回庫存` : ""));
     setReloadTick((n) => n + 1);
   }
 
@@ -1676,12 +1700,12 @@ export function OrderDetail({
                               ↩️ 取消配單
                             </SpinButton>
                           )}
-                          {canEditQty
+                          {canDeleteItem
                             && !["cancelled", "expired"].includes(it.status)
                             && !isPicked && (
                             <SpinButton
                               onClick={() => deleteItem(it)}
-                              title="刪除此品項（待確認訂單，刪到最後一項會自動取消整單）"
+                              title="刪除此品項（已取貨品項不能刪，請走退貨流程；已配過的庫存會先還回去；刪到最後一項會自動取消或標記完成整單）"
                               className="rounded-md border border-red-300 px-2 py-1 text-[11px] font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950 whitespace-nowrap"
                             >
                               刪除
