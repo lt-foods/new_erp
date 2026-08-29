@@ -538,7 +538,7 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
         )}
       </div>
 
-      {/* 取貨店 — admin 可改；改店守衛在 RPC 內檢查未取貨訂單 */}
+      {/* 取貨店 — admin 可改；改店守衛在 RPC 內只擋「還在別家店」的未取貨訂單 */}
       <div className="rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
         <div className="mb-2 flex items-center justify-between">
           <div className="text-xs font-medium text-zinc-500">取貨店（會員預設取貨店）</div>
@@ -581,7 +581,8 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
           )}
         </div>
         <p className="mt-1 text-xs text-zinc-500">
-          會員仍有未取貨訂單時，後端會擋下改店動作（保護既有訂單的取貨地點）。
+          會員在<b>別家店</b>還有未取貨訂單時，後端會擋下改店動作（保護既有訂單的取貨地點）；
+          未取貨訂單本來就在要改成的那家店，就可以直接改。
         </p>
       </div>
 
