@@ -83,39 +83,51 @@ const DEFAULT_INCLUDED: OrderStatus[] = ORDER_STATUSES.filter(
 );
 const LS_KEY = "new_erp-orders-pivot-filters";
 
-function fmtMonthInput(d: Date): string {
+// 以「當地日」格式化成 <input type="date"> 吃的 YYYY-MM-DD
+function fmtDateInput(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
-  return `${y}-${m}`;
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
 }
 
-// 預設: 當月 ~ 當月 (1 個月範圍, 想看更多月使用者自己拉)
-function defaultMonthRange(): { from: string; to: string } {
+// 預設: 當月 1 日 ~ 當月最後一日（想看更多天使用者自己拉）
+function defaultDateRange(): { from: string; to: string } {
   const today = new Date();
-  const cur = fmtMonthInput(today);
-  return { from: cur, to: cur };
+  const y = today.getFullYear();
+  const m = today.getMonth();
+  return {
+    from: fmtDateInput(new Date(y, m, 1)),
+    to: fmtDateInput(new Date(y, m + 1, 0)), // 下個月的第 0 天 = 本月最後一天
+  };
 }
 
-// 把 LS 舊版的 YYYY-MM-DD 截成 YYYY-MM
-function normalizeMonth(v: string | undefined | null): string | null {
+// LS / URL 可能殘留月選單時代的 "YYYY-MM"（2026-08-29 之前）→ 展開成該月
+// 第一天（from）/ 最後一天（to），使用者原本的範圍語意才不會被截掉。
+function normalizeDate(
+  v: string | undefined | null,
+  edge: "start" | "end",
+): string | null {
   if (!v) return null;
-  if (/^\d{4}-\d{2}$/.test(v)) return v;
-  if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 7);
+  if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
+  const m = /^(\d{4})-(\d{2})$/.exec(v);
+  if (m) {
+    if (edge === "start") return `${m[1]}-${m[2]}-01`;
+    // new Date(y, 月份 1-based, 0) = 該月最後一天
+    return fmtDateInput(new Date(Number(m[1]), Number(m[2]), 0));
+  }
   return null;
 }
 
-// "2026-05" → "2026-05-01" (含當月 1 日 00:00)
-function monthStartDate(ym: string): string {
-  return `${ym}-01`;
-}
-
-// "2026-05" → "2026-06-01" (下個月 1 日 00:00, 用 < 比較)
-function nextMonthStartDate(ym: string): string {
-  const [y, m] = ym.split("-").map(Number);
-  const next = new Date(Date.UTC(y, m, 1)); // m: 1-based 過了一個月 → 0-based 即下個月
+// "2026-08-20" → "2026-08-21"（下一天 00:00）。RPC 的上界是 `<`，要送下一天
+// 才含得到使用者選的那一天整天。用 UTC 進位，不受瀏覽器時區影響。
+function nextDayDate(ymd: string): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const next = new Date(Date.UTC(y, m - 1, d + 1));
   const ny = next.getUTCFullYear();
   const nm = String(next.getUTCMonth() + 1).padStart(2, "0");
-  return `${ny}-${nm}-01`;
+  const nd = String(next.getUTCDate()).padStart(2, "0");
+  return `${ny}-${nm}-${nd}`;
 }
 
 function fmtMD(iso: string | null): string {
@@ -141,7 +153,7 @@ export default function OrdersPivotPage() {
 
 function PivotContent() {
   const searchParams = useSearchParams();
-  const def = useMemo(defaultMonthRange, []);
+  const def = useMemo(defaultDateRange, []);
 
   const initialCampaignIds = ((): string[] => {
     const multi = searchParams.get("campaignIds");
@@ -154,9 +166,11 @@ function PivotContent() {
     normalizeViewBy(searchParams.get("viewBy")) ?? "campaign",
   );
   const [dateFrom, setDateFrom] = useState(
-    normalizeMonth(searchParams.get("from")) ?? def.from,
+    normalizeDate(searchParams.get("from"), "start") ?? def.from,
   );
-  const [dateTo, setDateTo] = useState(normalizeMonth(searchParams.get("to")) ?? def.to);
+  const [dateTo, setDateTo] = useState(
+    normalizeDate(searchParams.get("to"), "end") ?? def.to,
+  );
   const [statusSet, setStatusSet] = useState<Set<OrderStatus>>(new Set(DEFAULT_INCLUDED));
   const [storeId, setStoreId] = useState(searchParams.get("storeId") ?? "");
   const [metric, setMetric] = useState<Metric>(
@@ -224,11 +238,11 @@ function PivotContent() {
           if (v) setViewBy(v);
         }
         if (!searchParams.get("from")) {
-          const m = normalizeMonth(saved.dateFrom);
+          const m = normalizeDate(saved.dateFrom, "start");
           if (m) setDateFrom(m);
         }
         if (!searchParams.get("to")) {
-          const m = normalizeMonth(saved.dateTo);
+          const m = normalizeDate(saved.dateTo, "end");
           if (m) setDateTo(m);
         }
         if (Array.isArray(saved.status) && saved.status.length > 0) {
@@ -379,8 +393,10 @@ function PivotContent() {
           setLoading(false);
           return;
         }
-        const fromBoundary = dateFrom ? monthStartDate(dateFrom) : null;
-        const toBoundary = dateTo ? nextMonthStartDate(dateTo) : null;
+        // p_date_to 是排他上界（RPC 用 `<`）→ 送使用者選的日子 +1 天，
+        // 才會含到那一天整天。
+        const fromBoundary = dateFrom || null;
+        const toBoundary = dateTo ? nextDayDate(dateTo) : null;
         const { data, error: rpcErr } = await sb.rpc("rpc_orders_pivot", {
           p_view_by: viewBy,
           p_date_from: fromBoundary,
@@ -707,17 +723,17 @@ function PivotContent() {
           <option value="campaign">分組：開團（收單期間）</option>
         </select>
 
-        {/* Month range — 以月為單位、可跨多月 */}
+        {/* Date range — 以日為單位、可跨多月；預設當月 1 日 ~ 當月最後一日 */}
         <div
           className="flex items-center gap-1 rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
           title={
             viewBy === "campaign"
-              ? "依開團模式：套用至 campaign 收單月份 (end_at)"
-              : "依訂單日：套用至訂單 created_at 月份"
+              ? "依開團模式：套用至 campaign 收單日 (end_at)，起訖日都含在內"
+              : "依訂單日：套用至訂單 created_at 日期，起訖日都含在內"
           }
         >
           <input
-            type="month"
+            type="date"
             value={dateFrom}
             max={dateTo || undefined}
             onChange={(e) => setDateFrom(e.target.value)}
@@ -725,7 +741,7 @@ function PivotContent() {
           />
           <span className="text-zinc-400">~</span>
           <input
-            type="month"
+            type="date"
             value={dateTo}
             min={dateFrom || undefined}
             onChange={(e) => setDateTo(e.target.value)}
