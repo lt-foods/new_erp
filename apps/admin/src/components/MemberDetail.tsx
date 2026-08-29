@@ -43,6 +43,34 @@ type Member = {
 type Tier = { id: number; name: string };
 type Store = { id: number; code: string; name: string };
 
+/** rpc_preview_member_store_move 的回傳（改取貨店會連動搬走哪些單） */
+type MovePlan = {
+  member_id: number;
+  from_store_id: number | null;
+  from_store: string | null;
+  to_store_id: number | null;
+  to_store: string | null;
+  /** 貨還沒出總倉 → 只改取貨店；wave_lines = 順帶改派的總倉派貨列數 */
+  repoint: { order_no: string; status: string; wave_lines: number }[];
+  /** 貨已經在原店 → 開空中轉搬過去 */
+  air: { order_no: string; status: string; items: number }[];
+  /** 搬不動，附原因 */
+  blocked: { order_no: string; status: string; reason: string }[];
+  wave_lines: number;
+  needs_line_rebind: boolean;
+};
+
+/** rpc_move_member_to_store 的回傳 */
+type MoveResult = {
+  ok: boolean;
+  repointed: { order_no: string }[];
+  air_shipped: { order_no: string; transfer_no: string | null }[];
+  blocked: { order_no: string; status: string; reason: string }[];
+  wave_lines_moved: number;
+  wave_qty_moved: number;
+  needs_line_rebind: boolean;
+};
+
 type MergedFrom = {
   merge_id: number;
   merged_at: string;
@@ -151,6 +179,9 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
   const [draftNoNewOrder, setDraftNoNewOrder] = useState(false);
   const [draftHomeStoreId, setDraftHomeStoreId] = useState<string>("");
   const [savingStore, setSavingStore] = useState(false);
+  const [movePlan, setMovePlan] = useState<MovePlan | null>(null);
+  const [moveResult, setMoveResult] = useState<MoveResult | null>(null);
+  const [moving, setMoving] = useState(false);
   const [tenantId, setTenantId] = useState<string | null>(null);
   const [walletAction, setWalletAction] = useState<{ mode: WalletActionMode; reverseTarget?: WalletEntry } | null>(null);
   const role = useRole();
@@ -233,14 +264,58 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
     try {
       const sb = getSupabase();
       const newId = draftHomeStoreId === "" ? null : Number(draftHomeStoreId);
-      const { error: e } = await sb.rpc("rpc_set_member_home_store", {
+
+      // 清成「未指定」沒有「把單搬去哪」的語意 → 走原本那支（它自己有守衛）
+      if (newId === null) {
+        const { error: e } = await sb.rpc("rpc_set_member_home_store", {
+          p_member_id: member.id,
+          p_home_store_id: null,
+        });
+        if (e) { alert(`儲存失敗：${translateRpcError(e)}`); return; }
+        setReloadTick((n) => n + 1);
+        return;
+      }
+
+      const { data, error: e } = await sb.rpc("rpc_preview_member_store_move", {
         p_member_id: member.id,
-        p_home_store_id: newId,
+        p_to_store_id: newId,
       });
-      if (e) { alert(`儲存失敗：${translateRpcError(e)}`); return; }
-      setReloadTick((n) => n + 1);
+      if (e) { alert(`預覽失敗：${translateRpcError(e)}`); return; }
+      const plan = data as MovePlan;
+
+      // 沒有任何未取貨訂單要搬 → 不用打擾人，直接改
+      if (plan.repoint.length === 0 && plan.air.length === 0 && plan.blocked.length === 0) {
+        const { error: e2 } = await sb.rpc("rpc_set_member_home_store", {
+          p_member_id: member.id,
+          p_home_store_id: newId,
+        });
+        if (e2) { alert(`儲存失敗：${translateRpcError(e2)}`); return; }
+        setReloadTick((n) => n + 1);
+        return;
+      }
+
+      setMoveResult(null);
+      setMovePlan(plan);
     } finally {
       setSavingStore(false);
+    }
+  }
+
+  /** 預覽確認後才真的搬 —— 這一步會動到總倉派貨與實體出庫 */
+  async function confirmMove() {
+    if (!member || !movePlan?.to_store_id) return;
+    setMoving(true);
+    try {
+      const sb = getSupabase();
+      const { data, error: e } = await sb.rpc("rpc_move_member_to_store", {
+        p_member_id: member.id,
+        p_to_store_id: movePlan.to_store_id,
+      });
+      if (e) { alert(`搬移失敗：${translateRpcError(e)}`); return; }
+      setMoveResult(data as MoveResult);
+      setReloadTick((n) => n + 1);
+    } finally {
+      setMoving(false);
     }
   }
 
@@ -538,7 +613,8 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
         )}
       </div>
 
-      {/* 取貨店 — admin 可改；改店守衛在 RPC 內只擋「還在別家店」的未取貨訂單 */}
+      {/* 取貨店 — admin 可改。按儲存先跑 rpc_preview_member_store_move 預覽，
+          確認後才 rpc_move_member_to_store（訂單 + 總倉待出倉需求一起搬）。 */}
       <div className="rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
         <div className="mb-2 flex items-center justify-between">
           <div className="text-xs font-medium text-zinc-500">取貨店（會員預設取貨店）</div>
@@ -581,8 +657,8 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
           )}
         </div>
         <p className="mt-1 text-xs text-zinc-500">
-          會員在<b>別家店</b>還有未取貨訂單時，後端會擋下改店動作（保護既有訂單的取貨地點）；
-          未取貨訂單本來就在要改成的那家店，就可以直接改。
+          改店會一併把<b>未取貨訂單</b>搬到新店：貨還沒出總倉的，連同總倉待出倉的派貨需求一起改派；
+          貨已經在原店的，開空中轉搬過去（原店要出貨）。按「儲存」會先列出影響範圍讓你確認。
         </p>
       </div>
 
@@ -636,6 +712,120 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
           storeName={stores.find((st) => st.id === member.home_store_id)?.name ?? null}
         />
       )}
+
+      {/* 改取貨店 — 先預覽會連動搬走什麼，確認後才執行（會動到總倉派貨與實體出庫） */}
+      <Modal
+        open={movePlan !== null}
+        onClose={() => { setMovePlan(null); setMoveResult(null); }}
+        title={moveResult
+          ? "改取貨店：已完成"
+          : `改取貨店：${movePlan?.from_store ?? "未指定"} → ${movePlan?.to_store ?? ""}`}
+        maxWidth="max-w-2xl"
+      >
+        {movePlan && !moveResult && (
+          <div className="space-y-4 text-sm">
+            <p className="text-zinc-600 dark:text-zinc-400">
+              這位會員還有未取貨訂單。按下「確認搬移」後，系統會照下面的分類一次處理完：
+            </p>
+
+            {movePlan.repoint.length > 0 && (
+              <MoveSection
+                title={`直接改到新店（${movePlan.repoint.length} 張）`}
+                tone="emerald"
+                note={movePlan.wave_lines > 0
+                  ? `貨還沒出總倉，連同總倉 ${movePlan.wave_lines} 列待出倉需求一起改派到新店。`
+                  : "貨還沒出總倉，只改取貨地點。"}
+                rows={movePlan.repoint.map((o) => ({ key: o.order_no, main: o.order_no, sub: orderStatusLabel(o.status) }))}
+              />
+            )}
+
+            {movePlan.air.length > 0 && (
+              <MoveSection
+                title={`開空中轉搬貨（${movePlan.air.length} 張）`}
+                tone="amber"
+                note="貨已經在原店，會建立 AT- 轉貨單並從原店出庫；新店在「收貨」頁收掉之後才會變成可取貨。原店要真的把貨寄出去。"
+                rows={movePlan.air.map((o) => ({ key: o.order_no, main: o.order_no, sub: `${o.items} 項` }))}
+              />
+            )}
+
+            {movePlan.blocked.length > 0 && (
+              <MoveSection
+                title={`這次搬不動（${movePlan.blocked.length} 張）`}
+                tone="rose"
+                note="這些單留在原店、取貨地點不變，要另外處理。"
+                rows={movePlan.blocked.map((o) => ({ key: o.order_no, main: o.order_no, sub: o.reason }))}
+              />
+            )}
+
+            {movePlan.needs_line_rebind && (
+              <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                ⚠️ 這位會員還沒綁定新店的 LINE，到貨通知推不到。搬完請引導他綁定新店官方帳號。
+              </p>
+            )}
+
+            <div className="flex justify-end gap-2 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+              <SpinButton
+                onClick={() => { setMovePlan(null); setDraftHomeStoreId(member.home_store_id ? String(member.home_store_id) : ""); }}
+                disabled={moving}
+                className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                取消
+              </SpinButton>
+              <SpinButton
+                onClick={confirmMove}
+                disabled={moving}
+                className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {moving ? "搬移中…" : "確認搬移"}
+              </SpinButton>
+            </div>
+          </div>
+        )}
+
+        {moveResult && (
+          <div className="space-y-4 text-sm">
+            <p className="rounded-md bg-emerald-50 px-3 py-2 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
+              已改到 <b>{movePlan?.to_store}</b>：改指 {moveResult.repointed.length} 張、
+              空中轉 {moveResult.air_shipped.length} 張
+              {moveResult.wave_lines_moved > 0 && <>、總倉改派 {moveResult.wave_lines_moved} 列（{moveResult.wave_qty_moved} 件）</>}
+              {moveResult.blocked.length > 0 && <>、{moveResult.blocked.length} 張未搬</>}。
+            </p>
+
+            {moveResult.air_shipped.length > 0 && (
+              <MoveSection
+                title="已建立的轉貨單（原店要出貨）"
+                tone="amber"
+                note="請原店把貨寄到新店，新店在「收貨」頁收掉之後訂單才會變成可取貨。"
+                rows={moveResult.air_shipped.map((o) => ({ key: o.order_no, main: o.order_no, sub: o.transfer_no ?? "—" }))}
+              />
+            )}
+
+            {moveResult.blocked.length > 0 && (
+              <MoveSection
+                title="沒有搬走、留在原店"
+                tone="rose"
+                note="要另外處理。"
+                rows={moveResult.blocked.map((o) => ({ key: o.order_no, main: o.order_no, sub: o.reason }))}
+              />
+            )}
+
+            {moveResult.needs_line_rebind && (
+              <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                ⚠️ 還沒綁定新店的 LINE，到貨通知推不到，請引導會員綁定新店官方帳號。
+              </p>
+            )}
+
+            <div className="flex justify-end border-t border-zinc-200 pt-3 dark:border-zinc-800">
+              <SpinButton
+                onClick={() => { setMovePlan(null); setMoveResult(null); }}
+                className="rounded-md bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 dark:bg-zinc-200 dark:text-zinc-900 dark:hover:bg-zinc-300"
+              >
+                關閉
+              </SpinButton>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* 訂單明細 — 點訂單分頁的列開啟；關閉時 reload，取貨/取消後餘額與訂單狀態才會同步 */}
       <Modal
@@ -1064,6 +1254,36 @@ function AvatarStack({
           +{extra}
         </span>
       )}
+    </div>
+  );
+}
+
+/** 改取貨店預覽／結果裡的一段分類清單 */
+function MoveSection({
+  title, note, tone, rows,
+}: {
+  title: string;
+  note: string;
+  tone: "emerald" | "amber" | "rose";
+  rows: { key: string; main: string; sub: string }[];
+}) {
+  const toneCls = {
+    emerald: "border-emerald-300 dark:border-emerald-900",
+    amber:   "border-amber-300 dark:border-amber-900",
+    rose:    "border-rose-300 dark:border-rose-900",
+  }[tone];
+  return (
+    <div className={`rounded-md border ${toneCls} p-3`}>
+      <div className="text-xs font-semibold">{title}</div>
+      <p className="mt-0.5 text-xs text-zinc-500">{note}</p>
+      <ul className="mt-2 max-h-48 space-y-1 overflow-y-auto">
+        {rows.map((r) => (
+          <li key={r.key} className="flex items-baseline justify-between gap-3 text-xs">
+            <span className="font-mono">{r.main}</span>
+            <span className="shrink-0 text-zinc-500">{r.sub}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
