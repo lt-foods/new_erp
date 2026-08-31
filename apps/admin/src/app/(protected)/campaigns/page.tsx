@@ -212,6 +212,7 @@ export default function CampaignsListPage() {
   const [fbPublishId, setFbPublishId] = useState<number | null>(null);
   const [bulkFbOpen, setBulkFbOpen] = useState(false);
   const [closingId, setClosingId] = useState<number | null>(null);
+  const [cloningId, setCloningId] = useState<number | null>(null);
   const [finalizingId, setFinalizingId] = useState<number | null>(null);
 
   // 多選 + 批次操作
@@ -410,8 +411,12 @@ export default function CampaignsListPage() {
     });
   }
 
-  async function closeCampaign(id: number, name: string) {
-    if (!confirm(`確定結單「${name}」？結單後可從${PR_TERM_ZH}頁面「帶入該日商品」產生 PR。`)) return;
+  async function closeCampaign(id: number, name: string, isStore = false) {
+    // 自開團不經總倉，講 PR 只會讓店長困惑
+    const msg = isStore
+      ? `確定關團（結單）「${name}」？訂單會立刻變成「已確認」，這團會出現在「收貨」等你收貨。`
+      : `確定結單「${name}」？結單後可從${PR_TERM_ZH}頁面「帶入該日商品」產生 PR。`;
+    if (!confirm(msg)) return;
     setClosingId(id);
     try {
       const { error: rpcErr } = await getSupabase().rpc("rpc_close_campaign", {
@@ -424,6 +429,40 @@ export default function CampaignsListPage() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setClosingId(null);
+    }
+  }
+
+  /** 常態團的下一輪：一律複製成**新的一團**，不會有「把已結單的團退回開團中」
+   *  這個選項 —— 同一團跑兩輪的話，上一輪收的貨會被算成這一輪的供給
+   *  （收貨頁與取貨閘門的帳都會歪），訂單也會兩輪混在一起分不開。 */
+  async function cloneStoreCampaign(id: number, name: string) {
+    const end = prompt(
+      `再開一團「${name}」：新的結單時間（YYYY-MM-DD HH:mm，可留空）`,
+      "",
+    );
+    if (end === null) return;
+    let endAt: string | null = null;
+    if (end.trim()) {
+      const d = new Date(end.trim().replace(" ", "T"));
+      if (Number.isNaN(d.getTime())) { setError("結單時間格式看不懂，請用 YYYY-MM-DD HH:mm"); return; }
+      endAt = d.toISOString();
+    }
+    setCloningId(id);
+    try {
+      const { data, error: rpcErr } = await getSupabase().rpc("rpc_clone_store_campaign", {
+        p_campaign_id: id,
+        p_name: null,
+        p_end_at: endAt,
+        p_pickup_deadline: null,
+        p_status: "open",
+      });
+      if (rpcErr) throw new Error(translateRpcError(rpcErr.message));
+      setReloadTick((t) => t + 1);
+      if (data) openEdit(Number(data));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCloningId(null);
     }
   }
 
@@ -767,9 +806,16 @@ export default function CampaignsListPage() {
     ) : null;
 
   // 操作鈕（編輯 / 結單 / 發 FB / 結算 / 刪除）— 桌機表格與手機卡片共用，單一維護點
-  const campaignActions = (r: Row) => (
+  //
+  // 店家自開團是店長自己的團：編輯 / 開關團 / 再開一團都要讓他自己按，
+  // 不能跟總倉團一樣鎖在 isAdmin 後面（否則店長開得了團卻結不了單）。
+  // 真正的權限在 DB：那幾支 RPC 都過 _assert_own_store，分店只能動自己店的。
+  const campaignActions = (r: Row) => {
+    const isStore = r.owner_store_id != null;
+    const canAct = showAdminActions || isStore;
+    return (
     <>
-      {showAdminActions && (
+      {canAct && (
         <SpinButton
           onClick={() => openEdit(r.id)}
           className="text-xs text-blue-600 hover:underline dark:text-blue-400"
@@ -777,13 +823,23 @@ export default function CampaignsListPage() {
           編輯
         </SpinButton>
       )}
-      {showAdminActions && r.status === "open" && (
+      {canAct && r.status === "open" && (
         <SpinButton
-          onClick={() => closeCampaign(r.id, r.name)}
+          onClick={() => closeCampaign(r.id, r.name, isStore)}
           disabled={closingId === r.id}
           className="text-xs text-amber-600 hover:underline disabled:opacity-50 dark:text-amber-400"
         >
-          {closingId === r.id ? "結單中…" : "結單"}
+          {closingId === r.id ? "結單中…" : isStore ? "關團結單" : "結單"}
+        </SpinButton>
+      )}
+      {/* 常態團（豆漿那種）的下一輪：複製成新的一團 */}
+      {isStore && (
+        <SpinButton
+          onClick={() => cloneStoreCampaign(r.id, r.name)}
+          disabled={cloningId === r.id}
+          className="text-xs text-indigo-600 hover:underline disabled:opacity-50 dark:text-indigo-400"
+        >
+          {cloningId === r.id ? "複製中…" : "再開一團"}
         </SpinButton>
       )}
       {showAdminActions && (["open", "closed", "locked", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
@@ -812,7 +868,8 @@ export default function CampaignsListPage() {
         </SpinButton>
       )}
     </>
-  );
+    );
+  };
 
   // 開團視窗要選門市；分店帳號只留自己那幾家
   useEffect(() => {
