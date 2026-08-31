@@ -29,7 +29,7 @@
 --
 -- 基底版本：
 --   rpc_close_campaign               = 20260831000010（＝ 20260512000001 + 店家分支）
---   rpc_upsert_campaign              = 20260831000050
+--   rpc_upsert_campaign              = 20260831000055
 --   rpc_bulk_set_campaign_status     = 20260831000030
 --   rpc_auto_close_expired_campaigns = 20260831000030
 -- Rollback：
@@ -324,7 +324,7 @@ COMMENT ON FUNCTION public.rpc_close_campaign(BIGINT, UUID) IS
 
 -- ----------------------------------------------------------------------------
 -- 4. rpc_upsert_campaign — 編輯視窗切「已收單」改成直接呼叫 _close_store_campaign
---    基底 20260831000050，只把 rpc_close_campaign 換成 _close_store_campaign。
+--    基底 20260831000055，只把 rpc_close_campaign 換成 _close_store_campaign。
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.rpc_upsert_campaign(
   p_id               BIGINT,
@@ -437,7 +437,7 @@ GRANT EXECUTE ON FUNCTION public.rpc_upsert_campaign TO authenticated;
 COMMENT ON FUNCTION public.rpc_upsert_campaign IS
   '建立／更新開團。p_owner_store_id 非 NULL = 店家自開團（只在建立時生效，'
   '更新不接受換主辦店）。自開團的 open→closed 交給 _close_store_campaign，'
-  '且不允許把 receiving/ready 退回 closed。基底 20260831000050。';
+  '且不允許把 receiving/ready 退回 closed。基底 20260831000055。';
 
 -- ----------------------------------------------------------------------------
 -- 5. 另外兩個結單入口也改成直接呼叫 _close_store_campaign
