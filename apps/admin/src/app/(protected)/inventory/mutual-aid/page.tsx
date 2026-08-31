@@ -18,6 +18,9 @@ import {
   TRANSFER_LINK_SELECT, type TransferLink,
   activeQty, aidRouteLabel, aidStageLabel, isAidDead, isAidInFlight, linkItems,
 } from "@/lib/aidTransfer";
+import {
+  AID_SEARCH_SKU_LIMIT, aidBoardFilterParams, applyAidBoardFilters, safeAidKeyword,
+} from "@/lib/aidBoardFilter";
 import { orderStatusLabel } from "@/lib/orderStatus";
 
 type Store = { id: number; code: string; name: string };
@@ -156,6 +159,10 @@ const TYPE_COLOR: Record<PostType, string> = {
   request: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
 };
 
+/** 搜尋框停手多久才真的去查。放在模組層而不是元件裡：它是固定值，
+ *  擺進元件會變成 useEffect 相依陣列要不要收它的無謂爭議。 */
+const KEYWORD_DEBOUNCE_MS = 300;
+
 export default function MutualAidPage() {
   const [posts, setPosts] = useState<Post[] | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
@@ -167,6 +174,19 @@ export default function MutualAidPage() {
   const myStoreId = useUserBranchStoreId(stores);
   const isHq = myStoreId == null;
   const [filter, setFilter] = useState<"all" | "request" | "offer">("all");
+  // 搜尋框：keywordInput 是使用者當下打的字，keyword 是 debounce 過後真正送去查的。
+  // 分成兩個 state 才不會每按一個鍵就打一次資料庫。
+  const [keywordInput, setKeywordInput] = useState("");
+  const [keyword, setKeyword] = useState("");
+  // 分店篩選（offering_store_id）。
+  // ⛔ 這裡故意**不用** lib/useDefaultStoreFromUser 的 useDefaultStoreFromUser ——
+  //    那支的用途是「把分店篩選下拉預設選中自己的店」，放在這一頁會直接把功能關掉：
+  //    互助交流板存在的意義就是看**別家店**貼了什麼，預設只剩自己店等於一片空白。
+  //    分店帳號登入時一樣停在「全部門市」，跟改動前的行為一致。
+  const [storeFilter, setStoreFilter] = useState<number | "all">("all");
+  // 關鍵字命中的商品超過上限、清單被截掉了 → 結果可能不完整。
+  // 這種事一定要講出來：搜尋結果少了幾筆，畫面上跟「本來就沒有」長得一模一樣。
+  const [skuTruncated, setSkuTruncated] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const [requestModalOpen, setRequestModalOpen] = useState(false);
@@ -200,6 +220,21 @@ export default function MutualAidPage() {
     return () => { cancelled = true; };
   }, []);
 
+  // 搜尋框 debounce：打完字停 300ms 才真的去查，不然每個鍵都是一發查詢。
+  // 早退的那一行不能省 —— 沒有它，掛載當下（兩邊都是空字串）也會排一次 timer，
+  // 白白多打一發查詢並把清單閃成 loading。
+  useEffect(() => {
+    if (keywordInput === keyword) return;
+    const t = setTimeout(() => {
+      setKeyword(keywordInput);
+      // 換了關鍵字＝換了一份母體，歷史要收回第一頁（照分頁鈕 / 類型鈕的既有做法）。
+      // setState 寫在 timeout 裡不是 render 期間的同步 setState，不會踩 cascading render。
+      setHistoryLimit(HISTORY_PAGE);
+      setPosts(null);
+    }, KEYWORD_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [keywordInput, keyword]);
+
   // 載入 posts（「我提供出去的」是另一份資料來源，由 ProvidedList 自己撈）
   useEffect(() => {
     if (view === "provided" || view === "received" || view === "same_store") return;
@@ -217,7 +252,16 @@ export default function MutualAidPage() {
         q = q.order("created_at", { ascending: false })
              .limit(view === "history" ? historyLimit : 200);
         if (filter !== "all") q = q.eq("post_type", filter);
-        const { data, error: e } = await q;
+        // 搜尋關鍵字與分店一律**送後端**篩，不在前端 filter：歷史一次只讀
+        // historyLimit（20）筆，在已載入的那 20 筆裡篩會讓有 500 筆歷史的店
+        // 看起來一筆都沒有。列印頁走同一支，兩邊才不會篩出不一樣的東西。
+        const filtered = await applyAidBoardFilters(sb, q, {
+          storeId: storeFilter === "all" ? null : storeFilter,
+          keyword,
+        });
+        if (cancelled) return;
+        setSkuTruncated(filtered.skuTruncated);
+        const { data, error: e } = await filtered.q;
         if (e) throw new Error(e.message);
         const rows = ((data as Post[] | null) ?? []);
         if (!cancelled && view === "history") setHistoryFetched(rows.length);
@@ -269,7 +313,16 @@ export default function MutualAidPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [view, filter, reloadTick, historyLimit]);
+  }, [view, filter, reloadTick, historyLimit, keyword, storeFilter]);
+
+  // 搜尋框的轉圈圈要涵蓋「還在等 debounce」＋「查詢在路上」兩段。
+  // 只涵蓋其中一段的話，圈圈會先停下來、清單卻還是舊的那一份，看起來像沒反應。
+  const searching = keywordInput !== keyword || posts === null;
+
+  // 畫面上講「有在篩什麼」時，一律講**實際送出去的**那一份，不要講使用者原本打的字。
+  // 只打了 `%%%` 或 `()` 的話清洗完是空字串、後端根本沒加條件，照原字顯示就會變成
+  // 畫面說「有篩選」但其實沒篩 —— 畫面自己騙人。
+  const effectiveKeyword = safeAidKeyword(keyword);
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
@@ -286,8 +339,13 @@ export default function MutualAidPage() {
           {view !== "provided" && view !== "received" && view !== "same_store" && (
             <SpinButton
               type="button"
-              onClick={() => printViaIframe(withBasePath(`/inventory/mutual-aid/print?type=${filter}&view=${view}`))}
-              title="列印目前這個分頁的整份貼文清單（A4 橫式）；單獨一則請按該列右邊的 🖨️"
+              // 搜尋 / 分店也要一起帶過去。少帶一個，畫面上篩到剩 3 筆、
+              // 印出來卻是全部 —— 紙拿在手上看不出來被騙了，比沒有篩選更糟。
+              onClick={() => printViaIframe(withBasePath(
+                `/inventory/mutual-aid/print?type=${filter}&view=${view}`
+                + aidBoardFilterParams({ storeId: storeFilter === "all" ? null : storeFilter, keyword }),
+              ))}
+              title="列印目前這個分頁的整份貼文清單（A4 橫式，含目前的搜尋與分店篩選）；單獨一則請按該列右邊的 🖨️"
               className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
             >
               🖨️ 列印
@@ -352,22 +410,63 @@ export default function MutualAidPage() {
         />
       ) : (
       <>
-      <div className="inline-flex w-fit overflow-hidden rounded-md border border-zinc-300 text-xs dark:border-zinc-700">
-        {(["all", "request", "offer"] as const).map((opt) => (
-          <SpinButton
-            key={opt}
-            type="button"
-            onClick={() => { setFilter(opt); setHistoryLimit(HISTORY_PAGE); setPosts(null); }}
-            className={`px-3 py-1.5 ${
-              filter === opt
-                ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                : "bg-white text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
-            }`}
-          >
-            {opt === "all" ? "全部" : opt === "request" ? "需求中" : "釋出中"}
-          </SpinButton>
-        ))}
+      {/* 三個篩選可以疊加：類型（下面這排鈕）× 關鍵字 × 分店，全部一起送後端 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="inline-flex w-fit overflow-hidden rounded-md border border-zinc-300 text-xs dark:border-zinc-700">
+          {(["all", "request", "offer"] as const).map((opt) => (
+            <SpinButton
+              key={opt}
+              type="button"
+              onClick={() => { setFilter(opt); setHistoryLimit(HISTORY_PAGE); setPosts(null); }}
+              className={`px-3 py-1.5 ${
+                filter === opt
+                  ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                  : "bg-white text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              }`}
+            >
+              {opt === "all" ? "全部" : opt === "request" ? "需求中" : "釋出中"}
+            </SpinButton>
+          ))}
+        </div>
+
+        {/* 打字搜尋：比對 商品名 / 商品編號 / 手打現貨的標題 / 備註。
+            怎麼比對、為什麼要兩段式，全部在 lib/aidBoardFilter 裡（列印頁共用同一支）。 */}
+        <div className="relative">
+          <input
+            value={keywordInput}
+            onChange={(e) => setKeywordInput(e.target.value)}
+            placeholder="搜尋商品 / 編號 / 備註"
+            aria-label="搜尋貼文"
+            className="w-52 rounded-md border border-zinc-300 bg-white px-2 py-1.5 pr-7 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+          />
+          <SearchSpinner active={searching} className="right-1" />
+        </div>
+
+        {/* 分店：用畫面上已經載好的 stores（:193-201），⛔ 不要為了這個下拉另外發查詢 */}
+        <select
+          value={storeFilter}
+          onChange={(e) => {
+            setStoreFilter(e.target.value === "all" ? "all" : Number(e.target.value));
+            setHistoryLimit(HISTORY_PAGE);
+            setPosts(null);
+          }}
+          aria-label="依分店篩選"
+          className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+        >
+          <option value="all">全部門市</option>
+          {stores.map((s) => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+        </select>
       </div>
+
+      {/* 命中的商品破 500 上限被截掉時一定要講。少了幾筆的搜尋結果，
+          畫面上跟「本來就沒有這筆」長得一模一樣 —— 不講就是在騙人。 */}
+      {skuTruncated && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+          符合「{effectiveKeyword}」的商品超過 {AID_SEARCH_SKU_LIMIT} 項，結果可能不完整。請打得更完整一點（例如加上口味或規格）。
+        </div>
+      )}
 
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
@@ -381,6 +480,18 @@ export default function MutualAidPage() {
         <div className="rounded-md border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500 dark:border-zinc-700">
           {view === "active" ? "目前沒有進行中的" : "沒有已結束的"}
           {filter === "request" ? "需求" : filter === "offer" ? "釋出" : ""}貼文
+          {/* 有篩選卻是空的，一定要講「是篩掉了」——不然跟「板上真的沒東西」
+              長得一模一樣，人會直接下錯結論走人 */}
+          {(effectiveKeyword !== "" || storeFilter !== "all") && (
+            <div className="mt-1 text-xs">
+              （目前有篩選：
+              {effectiveKeyword !== "" && `關鍵字「${effectiveKeyword}」`}
+              {effectiveKeyword !== "" && storeFilter !== "all" && "、"}
+              {storeFilter !== "all" &&
+                `分店「${stores.find((s) => s.id === storeFilter)?.name ?? `#${storeFilter}`}」`}
+              ）
+            </div>
+          )}
         </div>
       ) : (
         <Table>

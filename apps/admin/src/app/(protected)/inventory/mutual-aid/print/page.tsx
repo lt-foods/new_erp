@@ -7,9 +7,15 @@
 //                              （created_at desc、limit 200）。
 //   &view=active|history     → 搭配清單模式：active（預設）= status=active，
 //                              history = status<>active（已認領／已過期／已取消）。
+//   &store=<store_id>&kw=…   → 搭配清單模式：列表頁上的分店篩選與打字搜尋。
+//                              ⚠ 這兩個**一定要跟列表頁吃同一份條件**（兩邊都走
+//                              lib/aidBoardFilter），否則會出現「畫面上剩 3 筆、
+//                              印出來是全部」——紙已經拿在手上，看不出來被騙了。
 //   ?id=<board_id>           → 單則模式（A4 直式單張）。板上每一則貼文自己的列印鈕，
 //                              **不濾 status** —— 已認領 / 已過期的也要印得出來，
 //                              店家常常是事後要補一張紙歸檔或跟對方對帳。
+//                              單則模式**不吃** store / kw：那是「印這一則」，
+//                              不是「印篩選結果」。
 //
 // 兩種都自己抓資料、抓完自動 window.print()。
 
@@ -17,6 +23,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import { AID_SEARCH_SKU_LIMIT, applyAidBoardFilters, parseAidBoardFilters } from "@/lib/aidBoardFilter";
 
 type PostType = "offer" | "request";
 type PostStatus = "active" | "exhausted" | "expired" | "cancelled";
@@ -58,6 +65,16 @@ const SELECT_COLS =
   "id, post_type, status, offering_store_id, sku_id, qty_available, qty_remaining, expires_at, note, " +
   "source_customer_order_id, spot_price, spot_title, spot_unit, spot_description, " +
   "spot_visible_to_other_stores, created_at";
+
+/**
+ * 清單模式一次印幾則（進行中與已結束都用這個數字，對齊列表頁「進行中」的上限）。
+ *
+ * ⚠ 已結束分頁的畫面一次只顯示 20 則（列表頁 HISTORY_PAGE，按「載入更多」才加），
+ *   所以**印出來會比畫面多**。老闆 2026-08-31 裁示維持現狀（印多比印少安全，
+ *   列印歷史多半是為了留存），代價是紙上必須寫明「本清單為最近 200 筆」。
+ *   ⇒ 下面頁首那一行小字是這個裁示的配套，⛔ 不要把它跟數字拆開改。
+ */
+const LIST_PRINT_LIMIT = 200;
 
 const TYPE_LABEL: Record<PostType, string> = { offer: "釋出", request: "需求" };
 
@@ -106,11 +123,20 @@ function Body() {
   const filter: "all" | "request" | "offer" =
     typeParam === "request" || typeParam === "offer" ? typeParam : "all";
   const view: "active" | "history" = sp.get("view") === "history" ? "history" : "active";
+  // 列表頁帶過來的分店 / 關鍵字。拆成兩個原始值才放得進 useEffect 的相依陣列
+  // （物件每次 render 都是新的，放進去會變成每次都重查）。
+  const { storeId: filterStoreId, keyword: filterKeyword } = parseAidBoardFilters((k) => sp.get(k));
 
   const [rows, setRows] = useState<Row[] | null>(null);
   const [replies, setReplies] = useState<Reply[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [printedAt, setPrintedAt] = useState<string>("");
+  // 紙上要寫出「這份是哪一家店的」。不能等 rows 來拿店名 —— 篩到 0 筆時
+  // 一筆列都沒有，那正是最需要在紙上講清楚篩了什麼的時候。
+  const [filterStoreName, setFilterStoreName] = useState<string | null>(null);
+  // 關鍵字命中的商品破上限被截掉了。列表頁會跳黃字，紙上更要印 ——
+  // 螢幕還能重按一次，紙拿在手上完全沒有第二個管道能發現資料不完整。
+  const [skuTruncated, setSkuTruncated] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -125,8 +151,24 @@ function Body() {
           q = q.eq("id", singleId);
         } else {
           q = view === "active" ? q.eq("status", "active") : q.neq("status", "active");
-          q = q.order("created_at", { ascending: false }).limit(200);
+          q = q.order("created_at", { ascending: false }).limit(LIST_PRINT_LIMIT);
           if (filter !== "all") q = q.eq("post_type", filter);
+          // ⭐ 分店 / 關鍵字走與列表頁**同一支** lib/aidBoardFilter，
+          //    兩邊才不可能篩出不一樣的東西（見本檔檔頭）。
+          const applied = await applyAidBoardFilters(sb, q, {
+            storeId: filterStoreId,
+            keyword: filterKeyword,
+          });
+          q = applied.q;
+          // ⛔ 這個旗標不可以丟掉：丟掉就等於印一張不完整、又沒說自己不完整的紙。
+          if (!cancelled) setSkuTruncated(applied.skuTruncated);
+          if (filterStoreId != null) {
+            const { data: st } = await sb
+              .from("stores").select("name").eq("id", filterStoreId).maybeSingle();
+            if (!cancelled) {
+              setFilterStoreName(((st as { name: string } | null)?.name) ?? `#${filterStoreId}`);
+            }
+          }
         }
         const { data, error: e } = await q;
         if (e) throw new Error(e.message);
@@ -201,7 +243,7 @@ function Body() {
     return () => {
       cancelled = true;
     };
-  }, [filter, view, singleId]);
+  }, [filter, view, singleId, filterStoreId, filterKeyword]);
 
   // 載入完自動觸發列印（沒資料也印，讓「今天板上是空的」也留得下紙本）
   useEffect(() => {
@@ -243,13 +285,31 @@ function Body() {
           <span>列印時間 {printedAt}</span>
           <span>共 {rows.length} 則（需求 {requestCount}・釋出 {offerCount}）</span>
           <span>{view === "active" ? "僅列出進行中的貼文" : "僅列出已結束（已認領／已過期／已取消）的貼文"}</span>
+          {/* 篩過的紙一定要在紙上寫明篩了什麼。少了這一行，這張紙看起來就是
+              「全部」，而拿紙的人沒有第二個管道可以發現它其實只是一部分。 */}
+          {filterStoreId != null && <span>僅限分店：{filterStoreName ?? `#${filterStoreId}`}</span>}
+          {filterKeyword !== "" && <span>搜尋關鍵字：「{filterKeyword}」</span>}
+          {/* 老闆 2026-08-31 裁示的配套：已結束分頁畫面一次 20 則、這裡印 200 則，
+              紙比畫面多是刻意的，但一定要寫出來。進行中分頁不顯示（它本來就一次撈完）。 */}
+          {view === "history" && <span>本清單為最近 {LIST_PRINT_LIMIT} 筆</span>}
         </div>
+        {/* 命中的商品破上限 → 這張紙是不完整的，而且紙沒辦法「重按一次看看」。
+            用整行紅字，不要混在上面那排灰色小字裡被滑過去。 */}
+        {skuTruncated && (
+          <div className="mt-1 border border-red-600 px-2 py-1 text-xs font-semibold text-red-700">
+            ⚠ 符合「{filterKeyword}」的商品超過 {AID_SEARCH_SKU_LIMIT} 項，本清單可能不完整；
+            請回系統把關鍵字打得更完整後重印。
+          </div>
+        )}
       </header>
 
       {rows.length === 0 ? (
         <div className="border border-dashed border-zinc-400 p-8 text-center text-sm text-zinc-500">
           {view === "active" ? "目前沒有進行中的" : "沒有已結束的"}
           {filter === "request" ? "需求" : filter === "offer" ? "釋出" : ""}貼文
+          {(filterStoreId != null || filterKeyword !== "") && (
+            <div className="mt-1 text-xs">（這份有篩選，不代表整個板上是空的）</div>
+          )}
         </div>
       ) : (
         <table className="w-full border-collapse text-sm">
