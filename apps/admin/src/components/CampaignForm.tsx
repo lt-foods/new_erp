@@ -28,6 +28,8 @@ export type CampaignFormValues = {
   total_cap_qty: number | null;
   notes: string | null;
   is_for_shop: boolean;
+  /** 店家自開團的主辦店；非 null = 這團不經總倉（唯讀，開團後不能換店）。 */
+  owner_store_id?: number | null;
 };
 
 export const emptyCampaignValues: CampaignFormValues = {
@@ -45,6 +47,7 @@ export const emptyCampaignValues: CampaignFormValues = {
   total_cap_qty: null,
   notes: null,
   is_for_shop: true,
+  owner_store_id: null,
 };
 
 // 使用者可手動切換的狀態僅 3 個；ordered / receiving / ready / completed / cancelled
@@ -186,6 +189,20 @@ export function CampaignForm({
               </option>
             )}
           </select>
+          {/* 店家自開團切「已收單」＝結單，後果跟總倉團完全不同，講清楚再讓他按：
+              訂單會當場變已確認、團會跑到「收貨」，而且狀態會顯示成「到貨中」——
+              沒有這行字，店長選完會以為沒生效（2026-08-31 松山實際踩到）。 */}
+          {v.owner_store_id != null && v.status === "open" && (
+            <p className="mt-1 text-xs text-indigo-700 dark:text-indigo-300">
+              選「已收單」＝結單：這團的訂單會立刻變成「已確認」，團會出現在「收貨」等你收貨，
+              狀態顯示為「到貨中」。不經總倉、不會產生請購單。
+            </p>
+          )}
+          {v.owner_store_id != null && (v.status === "receiving" || v.status === "ready") && (
+            <p className="mt-1 text-xs text-zinc-500">
+              已結單，貨到請到「收貨」對這個團收貨；收完訂單就會變成可取貨。
+            </p>
+          )}
         </Field>
 
         <Field label="收單類型">
