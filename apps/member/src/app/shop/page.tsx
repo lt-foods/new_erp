@@ -231,17 +231,33 @@ export default function ShopPage() {
   const visible = campaigns.filter((c) => !c.campaign_no.startsWith("__"));
 
   // 置頂 banner 分組規則：
-  // - 兩個類別同時有 → 群組顯示（每類一張總覽 banner，連到該專區）
-  // - 只有一個類別有  → 攤平該類別（每團一張 banner，連到該團）
+  // - 有兩類以上同時有 → 群組顯示（每類一張總覽 banner，連到該專區）
+  // - 只有一個類別有   → 攤平該類別（每團一張 banner，連到該團）
   // ShopBannerCarousel 已內建 4s 輪詢。
-  const foodTrains = visible.filter((c) => c.close_type === "food_train");
-  const flashes = visible.filter((c) =>
-    c.close_type === "fast"
-    || c.close_type === "limited"
-    || (Number(c.total_cap_qty ?? 0) > 0 && c.close_type !== "food_train")
-    || (c.has_item_cap === true && c.close_type !== "food_train"),
+  //
+  // 門市自開團排在最前面：那是「你家門市自己開的」，只有這家店的會員看得到，
+  // 相關度天然高於全站的主題團。它一定要先從其他兩桶裡剔除 ——
+  // flashes 的判準是「非 food_train 且有數量上限」，門市團只要設了限量
+  // 就會同時掉進限時專區，同一個團出現兩張 banner。
+  const storeSelfs = visible.filter((c) => c.owner_store_id != null);
+  const foodTrains = visible.filter(
+    (c) => c.owner_store_id == null && c.close_type === "food_train",
   );
-  const groupMode = foodTrains.length > 0 && flashes.length > 0;
+  const flashes = visible.filter((c) =>
+    c.owner_store_id == null
+    && (
+      c.close_type === "fast"
+      || c.close_type === "limited"
+      || (Number(c.total_cap_qty ?? 0) > 0 && c.close_type !== "food_train")
+      || (c.has_item_cap === true && c.close_type !== "food_train")
+    ),
+  );
+  const bannerGroups = [
+    { key: "store_self", campaigns: storeSelfs },
+    { key: "food_train", campaigns: foodTrains },
+    { key: "flash", campaigns: flashes },
+  ].filter((g) => g.campaigns.length > 0);
+  const groupMode = bannerGroups.length > 1;
 
   // 排序：最新(id 大→小，無 created_at 用 id 近似) / 最熱銷(全分店訂單數)
   // / 近期售出(近 7 天訂單數)。tie-break 回退 id desc 保持穩定。
@@ -460,25 +476,22 @@ export default function ShopPage() {
         <ShopBannerCarousel
           banners={
             groupMode
-              ? [
-                  {
-                    key: "food_train_stack",
-                    node: <FoodTrainStackBanner campaigns={foodTrains} />,
-                  },
-                  {
-                    key: "flash_group",
-                    node: <FlashGroupBanner hero={flashes[0]} />,
-                  },
-                ]
-              : foodTrains.length > 0
-                ? foodTrains.map((c) => ({
-                    key: `food_train_${c.id}`,
-                    node: <FoodTrainItemBanner campaign={c} />,
-                  }))
-                : flashes.map((c) => ({
-                    key: `flash_${c.id}`,
-                    node: <FlashItemBanner campaign={c} />,
-                  }))
+              ? bannerGroups.map((g) => ({
+                  key: `${g.key}_group`,
+                  node: g.key === "store_self"
+                    ? <StoreCampaignStackBanner campaigns={g.campaigns} />
+                    : g.key === "food_train"
+                      ? <FoodTrainStackBanner campaigns={g.campaigns} />
+                      : <FlashGroupBanner hero={g.campaigns[0]} />,
+                }))
+              : (bannerGroups[0]?.campaigns ?? []).map((c) => ({
+                  key: `${bannerGroups[0].key}_${c.id}`,
+                  node: bannerGroups[0].key === "store_self"
+                    ? <StoreCampaignItemBanner campaign={c} />
+                    : bannerGroups[0].key === "food_train"
+                      ? <FoodTrainItemBanner campaign={c} />
+                      : <FlashItemBanner campaign={c} />,
+                }))
           }
         />
         )}
@@ -724,6 +737,139 @@ function priceText(c: CampaignSummary): string {
  *
  * 只有 1 團時不開輪詢, 也不畫 dots, 退化成靜態 banner。
  */
+/** 門市自開團的總覽 banner（多團時輪播，連到 /shop/store 專區）。
+ *  配色刻意用靛藍 —— 綠色是美食列車、玫紅是限時專區，第三類要一眼分得開。 */
+function StoreCampaignStackBanner({ campaigns }: { campaigns: CampaignSummary[] }) {
+  const [idx, setIdx] = useState(0);
+
+  useEffect(() => {
+    if (campaigns.length <= 1) return;
+    const id = setInterval(() => {
+      setIdx((i) => (i + 1) % campaigns.length);
+    }, 3500);
+    return () => clearInterval(id);
+  }, [campaigns.length]);
+
+  const safeIdx = Math.min(idx, campaigns.length - 1);
+  const current = campaigns[safeIdx];
+  if (!current) return null;
+
+  return (
+    <Link
+      href="/shop/store"
+      className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(79,70,229,0.5)] transition-transform duration-200 active:scale-[0.985]"
+    >
+      <div className="relative aspect-[16/8] w-full bg-gradient-to-br from-indigo-500 via-indigo-600 to-violet-700">
+        {campaigns.map((c, i) =>
+          c.cover_image_url ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              key={c.id}
+              src={c.cover_image_url}
+              alt=""
+              className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-700 ${
+                i === safeIdx ? "opacity-55" : "opacity-0"
+              }`}
+            />
+          ) : null,
+        )}
+
+        <div className="absolute inset-0 bg-gradient-to-t from-indigo-950/70 via-indigo-900/15 to-transparent" />
+        <div className="absolute inset-0 bg-[radial-gradient(120%_80%_at_100%_0%,rgba(255,255,255,0.3)_0%,transparent_55%)]" />
+
+        <div className="absolute inset-0 flex flex-col justify-between p-4">
+          <div className="flex items-start justify-between gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-700/55 px-3 py-1 shadow-sm backdrop-blur">
+              <span className="text-[15px]">🏪</span>
+              <span className="text-[14px] font-bold text-white">門市限定</span>
+            </span>
+            {current.end_at && (
+              <span className="rounded-full bg-black/45 px-2.5 py-1 text-[12px] font-semibold tabular-nums text-white backdrop-blur">
+                <Countdown target={current.end_at} compact />
+              </span>
+            )}
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-[12px] font-medium text-white/85">
+              {campaigns.length > 1
+                ? `你的門市自己開的團 · ${campaigns.length} 團進行中`
+                : "你的門市自己開的團"}
+            </div>
+            <div className="line-clamp-1 text-[18px] font-bold text-white drop-shadow">
+              {cleanCampaignText(current.name)}
+            </div>
+            <div className="flex items-end justify-between gap-2">
+              <div className="text-[24px] font-extrabold tabular-nums text-white drop-shadow leading-none">
+                {priceText(current)}
+              </div>
+              {campaigns.length > 1 && (
+                <div className="flex items-center gap-1.5 pb-1">
+                  {campaigns.map((c, i) => (
+                    <span
+                      key={c.id}
+                      aria-hidden
+                      className={`h-1.5 rounded-full transition-all duration-300 ${
+                        i === safeIdx ? "w-5 bg-white" : "w-1.5 bg-white/55"
+                      }`}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </Link>
+  );
+}
+
+/** 只有門市團這一類時，每團一張、直接連到該團 */
+function StoreCampaignItemBanner({ campaign }: { campaign: CampaignSummary }) {
+  return (
+    <Link
+      href={`/shop/c/${campaign.id}`}
+      className="block overflow-hidden rounded-2xl shadow-[0_10px_28px_-10px_rgba(79,70,229,0.5)] transition-transform duration-200 active:scale-[0.985]"
+    >
+      <div className="relative aspect-[16/8] w-full bg-gradient-to-br from-indigo-500 via-indigo-600 to-violet-600">
+        {campaign.cover_image_url && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={campaign.cover_image_url}
+            alt=""
+            className="absolute inset-0 h-full w-full object-cover opacity-55"
+          />
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-indigo-950/75 via-indigo-900/15 to-transparent" />
+        <div className="absolute inset-0 flex flex-col justify-between p-4">
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-600/85 px-3 py-1 shadow-sm backdrop-blur">
+              <span className="text-[15px]">🏪</span>
+              <span className="text-[14px] font-bold text-white">門市限定</span>
+            </span>
+          </div>
+          <div className="space-y-1">
+            {/* 標題獨占整行（理由同 FoodTrainItemBanner：跟倒數膠囊同列會被壓爛） */}
+            <div className="line-clamp-2 text-[17px] font-bold leading-snug text-white drop-shadow">
+              {cleanCampaignText(campaign.name)}
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-[24px] font-extrabold tabular-nums text-white drop-shadow">
+                {priceText(campaign)}
+              </div>
+              {campaign.end_at && (
+                <div className="shrink-0 rounded-full bg-black/35 px-2.5 py-1 text-[13px] font-semibold tabular-nums text-white backdrop-blur">
+                  <Countdown target={campaign.end_at} compact />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </Link>
+  );
+}
+
 function FoodTrainStackBanner({ campaigns }: { campaigns: CampaignSummary[] }) {
   const [idx, setIdx] = useState(0);
 

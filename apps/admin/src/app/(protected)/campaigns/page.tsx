@@ -25,7 +25,8 @@ import { campaignCoverUrl, type CampaignCoverItem } from "@/lib/campaignCover";
 import { exportLeleXls, type LeleCampaign, type LeleTruncation, type LeleSkip } from "@/lib/exportLeleXls";
 import FbPublishModal from "@/components/FbPublishModal";
 import FbBulkPublishModal from "@/components/FbBulkPublishModal";
-import { useRole, isAdmin } from "@/lib/role";
+import { useRole, isAdmin, useMyStores } from "@/lib/role";
+import StoreCampaignCreateModal from "@/components/StoreCampaignCreateModal";
 
 // 共用: chunked fetch — bypass PostgREST max-rows 1000 cap
 // builder: 回 fresh query builder 的 factory (因為 .range() 後不能 reuse)
@@ -56,6 +57,9 @@ type Row = {
   pickup_deadline: string | null;
   updated_at: string;
   sales_channel: string | null;
+  /** 店家自開團的主辦店；非 null = 這團只有該店看得到、貨也由該店自己備。
+   *  migration 未套用前 PostgREST 不會回這欄，一律當 null（＝總倉團）。 */
+  owner_store_id: number | null;
   cover_image_url: string | null;
   campaign_items: CampaignCoverItem[] | null;
 };
@@ -76,11 +80,17 @@ const CLOSE_TYPE_BADGE: Record<CloseType, string> = {
   food_train: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
 };
 
-function campaignTypeLabel(row: { close_type: CloseType; sales_channel: string | null }) {
+// 店家自開團優先蓋掉收單類型：那是「誰開的、貨誰負責」，比「怎麼結單」
+// 更能解釋這一列為什麼不進請購、也不進月結算。
+function campaignTypeLabel(row: { close_type: CloseType; sales_channel: string | null; owner_store_id?: number | null }) {
+  if (row.owner_store_id != null) return "門市團";
   return row.sales_channel === "piaopiao" ? "漂漂館" : CLOSE_TYPE_LABEL[row.close_type];
 }
 
-function campaignTypeBadge(row: { close_type: CloseType; sales_channel: string | null }) {
+function campaignTypeBadge(row: { close_type: CloseType; sales_channel: string | null; owner_store_id?: number | null }) {
+  if (row.owner_store_id != null) {
+    return "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-200";
+  }
   return row.sales_channel === "piaopiao"
     ? "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200"
     : CLOSE_TYPE_BADGE[row.close_type];
@@ -98,6 +108,7 @@ type CalRow = {
   close_type: CloseType;
   start_at: string | null;
   sales_channel: string | null;
+  owner_store_id: number | null;
 };
 
 function PiaopiaoBadge({ salesChannel }: { salesChannel: string | null | undefined }) {
@@ -166,6 +177,16 @@ function fmtDateTime(iso: string | null): string {
 export default function CampaignsListPage() {
   const role = useRole();
   const showAdminActions = isAdmin(role);
+  // 店家自開團：分店角色（app_metadata.stores 非空且不含總倉）只能開自己的店，
+  // 其餘（總倉 / legacy admin）可以替任何一家店開。判準與 DB 的
+  // _is_branch_scoped_user / _assert_own_store 同一套，兩邊不一致就會出現
+  // 「畫面讓你選、送出被擋」。
+  const myStoreNames = useMyStores();
+  const isBranchScoped = (role === "store_manager" || role === "store_staff")
+    && myStoreNames.length > 0
+    && !myStoreNames.includes("總倉");
+  const [storeOpts, setStoreOpts] = useState<{ id: number; name: string }[]>([]);
+  const [showStoreCreate, setShowStoreCreate] = useState(false);
   // 命中 cache 時用快取資料瞬間還原；沒命中（首次進站或 hard reload 後）才從 null 起跳。
   const [rows, setRows] = useState<Row[] | null>(() => campaignsCache?.rows ?? null);
   const [total, setTotal] = useState(() => campaignsCache?.total ?? 0);
@@ -521,7 +542,7 @@ export default function CampaignsListPage() {
       try {
         let q = getSupabase()
           .from("group_buy_campaigns")
-          .select("id, campaign_no, name, status, close_type, start_at, end_at, pickup_deadline, updated_at, sales_channel, cover_image_url, campaign_items(sort_order, sku:skus(product:products(images)))", { count: "exact" })
+          .select("id, campaign_no, name, status, close_type, start_at, end_at, pickup_deadline, updated_at, sales_channel, owner_store_id, cover_image_url, campaign_items(sort_order, sku:skus(product:products(images)))", { count: "exact" })
           .neq("campaign_no", "__INTERNAL_RESTOCK__")
           .order("start_at", { ascending: false, nullsFirst: false })
           .order("id", { ascending: false })
@@ -534,7 +555,11 @@ export default function CampaignsListPage() {
         // 預設的「全部」只看一般商城，避免漂漂館商品洗掉總部日常開團列表。
         // 要查漂漂館時，仍可手動選「漂漂館」篩選出來。
         if (closeTypeFilter === "piaopiao") q = q.eq("sales_channel", "piaopiao");
-        else {
+        else if (closeTypeFilter === "store_self") {
+          // 門市團的判準是「誰開的」（owner_store_id），不是收單方式，
+          // 所以不能跟 close_type 一起濾。
+          q = q.eq("sales_channel", "main").not("owner_store_id", "is", null);
+        } else {
           q = q.eq("sales_channel", "main");
           if (closeTypeFilter) q = q.eq("close_type", closeTypeFilter);
         }
@@ -662,7 +687,7 @@ export default function CampaignsListPage() {
       }
       const { data, error } = await getSupabase()
         .from("group_buy_campaigns")
-        .select("id, campaign_no, name, status, close_type, start_at, sales_channel, display_order")
+        .select("id, campaign_no, name, status, close_type, start_at, sales_channel, owner_store_id, display_order")
         .neq("campaign_no", "__INTERNAL_RESTOCK__")
         .eq("sales_channel", "main")
         .gte("start_at", from.toISOString())
@@ -789,6 +814,22 @@ export default function CampaignsListPage() {
     </>
   );
 
+  // 開團視窗要選門市；分店帳號只留自己那幾家
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await getSupabase()
+        .from("stores")
+        .select("id, name")
+        .eq("is_active", true)
+        .order("name", { ascending: true });
+      if (cancelled) return;
+      const all = (data ?? []) as { id: number; name: string }[];
+      setStoreOpts(isBranchScoped ? all.filter((s) => myStoreNames.includes(s.name)) : all);
+    })();
+    return () => { cancelled = true; };
+  }, [isBranchScoped, myStoreNames]);
+
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header className="flex items-center justify-between">
@@ -804,8 +845,17 @@ export default function CampaignsListPage() {
             )}
           </p>
         </div>
+        <div className="flex flex-wrap justify-end gap-2">
+          {storeOpts.length > 0 && (
+            <SpinButton
+              onClick={() => setShowStoreCreate(true)}
+              className="rounded-md border border-indigo-300 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-800 hover:bg-indigo-100 dark:border-indigo-900 dark:bg-indigo-950 dark:text-indigo-200"
+            >
+              🏪 開自己店的團
+            </SpinButton>
+          )}
         {showAdminActions && (
-          <div className="flex flex-wrap justify-end gap-2">
+          <>
             <Link
               href="/campaigns/quick-control"
               className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800 hover:bg-emerald-100 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-200"
@@ -828,8 +878,9 @@ export default function CampaignsListPage() {
             <Link href="/products?mode=campaign" className="rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200">
               + 從商品開團
             </Link>
-          </div>
+          </>
         )}
+        </div>
       </header>
 
       <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
@@ -870,6 +921,7 @@ export default function CampaignsListPage() {
             <option value="fast">快團</option>
             <option value="limited">限量</option>
             <option value="food_train">美食列車</option>
+            <option value="store_self">門市團</option>
             <option value="piaopiao">漂漂館</option>
           </select>
         </div>
@@ -1146,6 +1198,16 @@ export default function CampaignsListPage() {
       </Table>
       </div>
       </>
+      )}
+
+      {showStoreCreate && (
+        <StoreCampaignCreateModal
+          stores={storeOpts}
+          defaultStoreId={isBranchScoped ? (storeOpts[0]?.id ?? null) : null}
+          lockStore={isBranchScoped && storeOpts.length <= 1}
+          onClose={() => setShowStoreCreate(false)}
+          onCreated={() => { setShowStoreCreate(false); setReloadTick((t) => t + 1); }}
+        />
       )}
 
       <Modal

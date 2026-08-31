@@ -27,6 +27,30 @@ import {
 type Location = { id: number; name: string };
 type StoreLite = { id: number; location_id: number | null };
 type StoreRow = { id: number; name: string; location_id: number | null };
+// 店家自開團待收貨（rpc_store_campaign_inbound / rpc_receive_store_campaign，20260831000010）。
+// 這種團的貨由店家自己叫、不經總倉，**全程不產生任何單據**（不請購、不採購、不撿貨、
+// 不開調撥單）→ 下面那份 transfers 清單裡永遠不會有它，只能直接對「團」收貨。
+type StoreCampaignItem = {
+  sku_id: number;
+  sku_code: string | null;
+  label: string | null;
+  unit: string | null;
+  demand: number;    // 這個團這個 SKU 的訂單需求（active 品項）
+  received: number;  // 已經收進來的量（掛在該團的入庫異動）
+  remaining: number; // 未收 = max(demand − received, 0)
+};
+type StoreCampaign = {
+  campaign_id: number;
+  campaign_no: string;
+  name: string;
+  store_id: number;
+  store_name: string;
+  end_at: string | null;
+  closed_at: string | null;
+  total_demand: number;
+  total_received: number;
+  items: StoreCampaignItem[];
+};
 // codes：本張 transfer 涵蓋的品項編號(sku_code) / 商品編號(product_code)，僅供搜尋比對用
 // items：拆開的品項行（key = 合併同品相用的識別；自由轉貨掛虛擬 SKU，要用 description 當 key）
 // product = 只有商品名（不含規格），給群組標題用；name = 商品名 / 規格，明細表用
@@ -104,6 +128,8 @@ const DONE_MAX = 1000;
 export default function TransfersInboxPage() {
   const [transfers, setTransfers] = useState<Transfer[] | null>(null);
   const [stores, setStores] = useState<StoreRow[]>([]);
+  // 分店清單查完了沒（不論有沒有資料）— 自開團那發查詢要等它才知道 branchStoreId
+  const [storesLoaded, setStoresLoaded] = useState(false);
   const [locations, setLocations] = useState<Map<number, string>>(new Map());
   const [waves, setWaves] = useState<Map<number, Wave>>(new Map());
   const [itemSummary, setItemSummary] = useState<Map<number, ItemSummary>>(new Map());
@@ -114,6 +140,14 @@ export default function TransfersInboxPage() {
   const [sourceKinds, setSourceKinds] = useState<Map<number, string>>(new Map());
   // AT- 空中轉／互助單的來源店名（transfer id → 店名，從訂單鏈反查；見載入處註解）
   const [aidFrom, setAidFrom] = useState<Map<number, string>>(new Map());
+  // 店家自開團待收貨（本頁最上面那一段，與下面的調撥單完全是兩套東西）
+  const [storeCampaigns, setStoreCampaigns] = useState<StoreCampaign[]>([]);
+  // 每列「實收」輸入框的值，key = `${campaign_id}:${sku_id}`，預設帶未收量
+  const [campQty, setCampQty] = useState<Record<string, string>>({});
+  // 正在收貨的團 id（一次只讓一團在跑，避免同店同 SKU 併發入庫）
+  const [campBusy, setCampBusy] = useState<number | null>(null);
+  // 這一段自己的錯誤：跟下面調撥單那包分開，任一邊掛掉不要把另一邊一起弄不見
+  const [campError, setCampError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   const [opening, setOpening] = useState<Transfer | null>(null);
@@ -235,6 +269,10 @@ export default function TransfersInboxPage() {
     [stores],
   );
   const branchLocationId = useUserBranchStoreId(storeLocOptions);
+  // ⚠ 自開團那兩支 RPC 收的是 **store id**，不是上面那個 location_id ——
+  //   同一支 hook 換一份對照表（比照 /pickup:147 的 useUserBranchStoreId(storeList)）。
+  //   HQ / 總倉回 null → 看得到所有店的自開團（RPC 自己也會再依 JWT 鎖一次）。
+  const branchStoreId = useUserBranchStoreId(stores);
 
   // 先載入分店清單（含 name + location_id），供分店帳號鎖定用。獨立 effect 只跑一次。
   useEffect(() => {
@@ -246,10 +284,63 @@ export default function TransfersInboxPage() {
         .select("id, name, location_id")
         .eq("is_active", true)
         .order("name");
-      if (!cancelled) setStores((data as StoreRow[]) ?? []);
+      if (!cancelled) {
+        setStores((data as StoreRow[]) ?? []);
+        // 查完就標記（不管有沒有資料）—— 下面那發自開團查詢要等這個，
+        // 用「stores 有沒有東西」當條件的話，分店清單真的空掉時整段就永遠不出現。
+        setStoresLoaded(true);
+      }
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // 店家自開團待收貨：獨立一發查詢，刻意不併進下面那個大 effect ——
+  // 兩者的資料來源、失敗模式完全不同，混在一起時任何一邊 throw 都會把另一邊一起清掉。
+  // 收完貨走 reloadAndRefreshBadge() → reloadTick +1 → 這裡跟著重抓。
+  useEffect(() => {
+    // 等分店清單回來再查：branchStoreId 是從 stores 比對出來的，早一步查會先用
+    // p_store_id=null 打一發、stores 一到又打第二發（同樣的結果、白花一趟）。
+    if (!storesLoaded) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const sb = getSupabase();
+        const { data, error: e } = await sb.rpc("rpc_store_campaign_inbound", {
+          p_store_id: branchStoreId,
+        });
+        if (cancelled) return;
+        if (e) throw new Error(translateRpcError(e));
+        // JSONB 的 numeric 過 JSON 後可能是字串，一律 Number() 收斂，
+        // 不然畫面上會出現 "5" + 1 = "51" 這種加總
+        const rows = ((data as StoreCampaign[] | null) ?? []).map((c) => ({
+          ...c,
+          total_demand: Number(c.total_demand) || 0,
+          total_received: Number(c.total_received) || 0,
+          items: (c.items ?? []).map((it) => ({
+            ...it,
+            demand: Number(it.demand) || 0,
+            received: Number(it.received) || 0,
+            remaining: Number(it.remaining) || 0,
+          })),
+        }));
+        setStoreCampaigns(rows);
+        setCampError(null);
+        // 實收欄預設 = 未收量。每次重載都重帶：收過一批之後未收量會變，
+        // 留著上一輪的數字會讓店家把同一批貨再收一次。
+        const next: Record<string, string> = {};
+        for (const c of rows) {
+          for (const it of c.items) next[`${c.campaign_id}:${it.sku_id}`] = String(it.remaining);
+        }
+        setCampQty(next);
+      } catch (err) {
+        if (!cancelled) {
+          setStoreCampaigns([]);
+          setCampError(err instanceof Error ? err.message : String(err));
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [reloadTick, branchStoreId, storesLoaded]);
 
   useEffect(() => {
     let cancelled = false;
@@ -815,6 +906,15 @@ export default function TransfersInboxPage() {
 
   const visibleGroups = useMemo(() => groups.slice(0, groupLimit), [groups, groupLimit]);
 
+  // 總部在右上角挑了分店時，自開團那一段也跟著只看那家店。
+  // 下拉給的是 location_id、自開團身上是 store_id → 用 stores 換算；
+  // 換不到（該倉別沒有對應分店）就不濾 —— 寧可多顯示，也不要整段憑空消失。
+  const visibleStoreCampaigns = useMemo(() => {
+    if (locationFilter === "all") return storeCampaigns;
+    const sid = stores.find((s) => s.location_id === locationFilter)?.id;
+    return sid == null ? storeCampaigns : storeCampaigns.filter((c) => c.store_id === sid);
+  }, [storeCampaigns, locationFilter, stores]);
+
   // 「已收」歷史：實際載進來幾筆（不是要求幾筆 —— 要求 12,244 後端只會給 1000）
   const doneLoaded = doneFetched.rows;
   // 「還載得動嗎」＝ 再按一次拿不拿得到更多。兩種情況都算載到頂：
@@ -1111,6 +1211,75 @@ export default function TransfersInboxPage() {
     }
   }
 
+  // 店家自開團收貨（rpc_receive_store_campaign）— 不建任何單據，只寫入庫異動；
+  // 後端收完會把該團 confirmed 的訂單推 ready，全數收齊就把團切 ready(從清單消失)。
+  //   mode="all"   → p_lines = null,後端依未收量全收
+  //   mode="lines" → 送畫面上編輯過的實收,qty <= 0 的略過(＝這次沒收到)
+  async function receiveStoreCampaign(c: StoreCampaign, mode: "all" | "lines") {
+    const remaining = Math.max(c.total_demand - c.total_received, 0);
+    let lines: { sku_id: number; qty: number }[] | null = null;
+    if (mode === "lines") {
+      lines = c.items
+        .map((it) => ({
+          sku_id: it.sku_id,
+          qty: Number(campQty[`${c.campaign_id}:${it.sku_id}`] ?? ""),
+        }))
+        .filter((l) => Number.isFinite(l.qty) && l.qty > 0);
+      if (lines.length === 0) {
+        alert("請至少填一個大於 0 的實收數量,或改按「全部收貨」。");
+        return;
+      }
+    }
+    const qty = lines ? lines.reduce((s, l) => s + l.qty, 0) : remaining;
+    if (
+      !confirm(
+        `確認收貨「${c.name}」(${c.campaign_no})?\n\n` +
+        (mode === "all"
+          ? `以「全收」(實收 = 未收量 ${remaining} 件)處理。要調整數量請改填每列的「實收」再按「確認收貨」。`
+          : `本次入庫 ${qty} 件(共 ${lines?.length} 項)。`) +
+        `\n貨會直接進「${c.store_name}」的庫存,收齊後這個團就不會再出現在這裡。`,
+      )
+    )
+      return;
+    setCampBusy(c.campaign_id);
+    try {
+      const sb = getSupabase();
+      const { data: sess } = await sb.auth.getSession();
+      const operator = sess.session?.user?.id;
+      if (!operator) throw new Error("尚未登入");
+      const { data, error: e } = await sb.rpc("rpc_receive_store_campaign", {
+        p_campaign_id: c.campaign_id,
+        p_lines: lines,
+        p_operator: operator,
+        p_notes: null,
+      });
+      if (e) throw new Error(translateRpcError(e));
+      const r = (data ?? {}) as {
+        received_qty?: number;
+        orders_advanced?: number;
+        remaining_qty?: number;
+        campaign_status?: string;
+      };
+      const got = Number(r.received_qty) || 0;
+      const advanced = Number(r.orders_advanced) || 0;
+      const left = Number(r.remaining_qty) || 0;
+      // ⛔ 這裡【不能】接 fanoutPickupNotifications：那支只吃 transfer id
+      //   （rpc_get_members_to_notify_for_transfer），而自開團**刻意不產生任何調撥單**，
+      //   沒有 id 可傳。要通知客人請到「取貨」頁按該筆訂單的通知鈕 —— 那條路才有
+      //   黑名單(no_notify_pickup)與「上次通知時間」的把關。
+      alert(
+        `✅ 已收貨:${got} 件\n` +
+        (advanced > 0 ? `📦 ${advanced} 張訂單變成可取貨(請到「取貨」頁通知顧客)\n` : "") +
+        (left > 0 ? `⏳ 這個團還有 ${left} 件沒收` : "🎉 這個團已全數收齊"),
+      );
+      reloadAndRefreshBadge();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCampBusy(null);
+    }
+  }
+
   // 退回收貨 — 把已收(received)的 transfer 退回待收(shipped)，沖銷入庫並還原訂單
   async function unreceive(t: Transfer) {
     const dest = locations.get(t.dest_location) ?? `#${t.dest_location}`;
@@ -1250,7 +1419,12 @@ export default function TransfersInboxPage() {
             {transfers === null ? (
               <Spinner size={14} className="inline-block align-[-2px]" />
             ) : (
-              `待收 ${summaries.allPending} · ${doneKpiHeader}`
+              // 自開團沒有調撥單 → 不在 summaries.allPending 裡，要自己講一份出來，
+              // 不然店家看到「待收 0」會以為沒事做（那幾團的貨還在等他按收貨）
+              `待收 ${summaries.allPending} · ${doneKpiHeader}` +
+              (visibleStoreCampaigns.length > 0
+                ? ` · 自開團待收 ${visibleStoreCampaigns.length} 團`
+                : "")
             )}
           </p>
         </div>
@@ -1572,6 +1746,171 @@ export default function TransfersInboxPage() {
           >
             {`✋ 批次配單${selected.size > 0 ? ` (${selected.size})` : ""}`}
           </SpinButton>
+        </div>
+      )}
+
+      {/* ── 店家自開團待收貨（放在調撥單列表【上面】）─────────────────────
+          自己開的團：貨由店家自己叫、不經總倉，全程不產生任何單據 → 下面那份
+          調撥單清單裡永遠不會有它，只能直接對「團」收貨（20260831000010）。
+          只在「未收」分頁出現（已收分頁講的是調撥歷史），而且沒有待收的團就
+          整段不畫 —— 不留空框給總倉／沒開團的店看。 */}
+      {tab === "unreceived" && (campError !== null || visibleStoreCampaigns.length > 0) && (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            <h2 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+              🛒 店家自開團待收貨
+              {visibleStoreCampaigns.length > 0 && (
+                <span className="ml-1.5 font-normal text-zinc-500">
+                  ({visibleStoreCampaigns.length} 團)
+                </span>
+              )}
+            </h2>
+            <span className="text-xs text-zinc-500">
+              自己開的團,貨到店後在這裡按收貨 — 貨才會進庫存、客人才取得到（不經總倉,沒有調撥單）
+            </span>
+          </div>
+          {campError && (
+            <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+              自開團待收貨載入失敗:{campError}
+            </div>
+          )}
+          {visibleStoreCampaigns.map((c) => {
+            const remaining = Math.max(c.total_demand - c.total_received, 0);
+            const busy = campBusy !== null || batchBusy;
+            return (
+              <section
+                key={c.campaign_id}
+                className="overflow-hidden rounded-md border border-indigo-200 bg-white dark:border-indigo-900 dark:bg-zinc-900"
+              >
+                {/* 卡片標題：團名 + 資訊膠囊（團號 / 店名 / 結單時間 / 件數）+ 收貨按鈕 */}
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-zinc-200 bg-indigo-50 px-3 py-2.5 dark:border-zinc-800 dark:bg-indigo-950/30">
+                  <div className="min-w-0 flex-1">
+                    <span className="block break-words text-base font-bold text-zinc-900 dark:text-zinc-100">
+                      {c.name}
+                    </span>
+                    <span className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                      <Chip>🧾 {c.campaign_no}</Chip>
+                      {/* 分店帳號只看得到自己店的團,標了也是廢話 → 只有總部顯示 */}
+                      {branchStoreId == null && <Chip>🏬 {c.store_name}</Chip>}
+                      {c.closed_at && (
+                        <Chip>
+                          📅 結單{" "}
+                          {new Date(c.closed_at).toLocaleString("zh-TW", {
+                            dateStyle: "short",
+                            timeStyle: "short",
+                          })}
+                        </Chip>
+                      )}
+                      <Chip>📦 共 {c.total_demand} 件</Chip>
+                      <Chip>✅ 已收 {c.total_received} 件</Chip>
+                    </span>
+                  </div>
+
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                    {remaining > 0 ? (
+                      <Pill tone="amber">待收 {remaining} 件</Pill>
+                    ) : (
+                      <Pill tone="emerald">✓ 已收齊</Pill>
+                    )}
+                  </div>
+
+                  <div className="flex shrink-0 flex-col items-stretch gap-1">
+                    <SpinButton
+                      onClick={() => receiveStoreCampaign(c, "all")}
+                      disabled={busy || remaining <= 0}
+                      title="貨全到齊了就按這顆:一次把未收的量全部入庫,收完自動把訂單推成可取貨"
+                      className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      ✓ 全部收貨
+                    </SpinButton>
+                    <SpinButton
+                      onClick={() => receiveStoreCampaign(c, "lines")}
+                      disabled={busy}
+                      title="只收下面填的數量(分批到貨 / 有短少時用);填 0 的品項這次不收"
+                      className="rounded-md border border-emerald-600 px-4 py-1.5 text-sm font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
+                    >
+                      ✎ 確認收貨
+                    </SpinButton>
+                  </div>
+                </div>
+
+                {/* 明細表：商品 / 需求 / 已收 / 未收 / 實收（可改） */}
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[560px] text-sm">
+                    <thead>
+                      <tr className="border-b border-zinc-200 bg-white text-[11px] text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
+                        <th className="px-3 py-2 text-left font-medium">商品</th>
+                        <th className="px-3 py-2 text-right font-medium">需求</th>
+                        <th className="px-3 py-2 text-right font-medium">已收</th>
+                        <th className="px-3 py-2 text-right font-medium">未收</th>
+                        <th className="px-3 py-2 text-right font-medium">實收</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                      {c.items.map((it) => {
+                        const key = `${c.campaign_id}:${it.sku_id}`;
+                        const val = campQty[key] ?? String(it.remaining);
+                        const num = Number(val);
+                        // 空白＝還沒填完（不是收 0 件），跟負數／非數字一樣標紅提醒
+                        const bad = val.trim() === "" || !Number.isFinite(num) || num < 0;
+                        return (
+                          <tr
+                            key={it.sku_id}
+                            className="transition hover:bg-zinc-50 dark:hover:bg-zinc-950"
+                          >
+                            <td className="px-3 py-2 align-top">
+                              {it.sku_code && (
+                                <span className="mr-1.5 font-mono text-[10px] text-zinc-400">
+                                  {it.sku_code}
+                                </span>
+                              )}
+                              <span className="break-words text-zinc-900 dark:text-zinc-100">
+                                {it.label || `#${it.sku_id}`}
+                              </span>
+                              {it.unit && (
+                                <span className="ml-1 text-[11px] text-zinc-400">({it.unit})</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-right align-top font-mono text-zinc-600 dark:text-zinc-300">
+                              {it.demand}
+                            </td>
+                            <td className="px-3 py-2 text-right align-top font-mono text-zinc-500">
+                              {it.received}
+                            </td>
+                            <td
+                              className={`px-3 py-2 text-right align-top font-mono font-semibold ${
+                                it.remaining > 0
+                                  ? "text-amber-700 dark:text-amber-400"
+                                  : "text-zinc-400"
+                              }`}
+                            >
+                              {it.remaining}
+                            </td>
+                            <td className="px-3 py-2 text-right align-top">
+                              <input
+                                inputMode="decimal"
+                                value={val}
+                                disabled={campBusy !== null}
+                                onChange={(e) =>
+                                  setCampQty((cur) => ({ ...cur, [key]: e.target.value }))
+                                }
+                                title="這次實際收到幾件(預設帶未收量);按「確認收貨」才會送出"
+                                className={`w-20 rounded-md border px-2 py-0.5 text-right font-mono text-sm font-semibold ${
+                                  bad
+                                    ? "border-red-400 bg-red-50 dark:bg-red-950"
+                                    : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-800"
+                                } disabled:opacity-60`}
+                              />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            );
+          })}
         </div>
       )}
 

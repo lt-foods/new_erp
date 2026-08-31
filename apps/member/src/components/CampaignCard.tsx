@@ -13,6 +13,9 @@ export type CampaignSummary = {
   description: string | null;
   cover_image_url: string | null;
   close_type: "regular" | "fast" | "limited" | "food_train" | string;
+  /** 店家自開團的主辦店；非 null = 這團只有該店的會員看得到。
+   *  後端未部署前可能沒有這個欄位（當 null 處理 = 一般團）。 */
+  owner_store_id?: number | null;
   total_cap_qty: number | null;
   has_item_cap?: boolean;
   ordered_qty: number;
@@ -29,12 +32,19 @@ export type CampaignSummary = {
   max_price: number;
 };
 
+/** 這團是不是門市自己開的（只有該店會員看得到，貨由門市自己備）。 */
+export function isStoreCampaign(c: CampaignSummary): boolean {
+  return c.owner_store_id != null;
+}
+
 /** 依 close_type + total_cap_qty 算出短標籤。
  *  「限時」只給真正的快閃團（close_type='fast'，即限時專區那種）。
  *  一般團幾乎都有結單日(end_at)，有結單日 ≠ 限時，否則每張卡都被貼標、
  *  標籤就失去意義（卡片本來就會單獨顯示倒數）。 */
 export function campaignBadgeLabel(c: CampaignSummary): string | null {
   const hasCap = (c.total_cap_qty ?? 0) > 0 || c.has_item_cap === true;
+  // 門市自開團優先：那是「誰開的」，比「怎麼結單」更能解釋這張卡為什麼只有你看得到
+  if (isStoreCampaign(c)) return "門市限定";
   if (c.close_type === "food_train") return "美食列車";
   if (c.close_type === "fast" && hasCap) return "限時限量";
   if (c.close_type === "fast") return "限時";
@@ -125,12 +135,14 @@ export default function CampaignCard({
             const remaining = campaignRemaining(campaign);
             const soldOut = campaignSoldOut(campaign);
             if (!label && !campaign.end_at) return null;
-            const isLimited = label?.includes("限量");
+            const isStore = isStoreCampaign(campaign);
+            const isLimited = !isStore && label?.includes("限量");
             const isFoodTrain = campaign.close_type === "food_train";
             return (
               <div
                 className={`absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[14px] font-semibold text-white shadow-sm backdrop-blur ${
                   soldOut ? "bg-zinc-700/85"
+                  : isStore ? "bg-indigo-600/90"
                   : isFoodTrain ? "bg-emerald-600/95"
                   : isLimited ? "bg-[var(--ios-red)]/90"
                   : "bg-black/55"
@@ -201,12 +213,14 @@ export default function CampaignCard({
             );
           }
           if (!label) return null;
-          const isLimited = label?.includes("限量");
+          const isStore = isStoreCampaign(campaign);
+          const isLimited = !isStore && label?.includes("限量");
           const isFoodTrain = campaign.close_type === "food_train";
           return (
             <span
               className={`absolute left-2 top-2 rounded-full px-2 py-0.5 text-[11px] font-semibold text-white shadow-sm backdrop-blur ${
-                isFoodTrain ? "bg-emerald-600/95"
+                isStore ? "bg-indigo-600/90"
+                : isFoodTrain ? "bg-emerald-600/95"
                 : isLimited ? "bg-[var(--ios-red)]/90"
                 : "bg-[var(--ios-orange)]/90"
               }`}
