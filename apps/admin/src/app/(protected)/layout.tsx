@@ -194,6 +194,41 @@ function useNavBadgeCount(
   return count;
 }
 
+// 店家自開團待收貨的團數，加進「收貨」badge 一起顯示。
+// ⛔ 不能塞進上面那支 useNavBadgeCount：rpc_inbound_pending_count 只數調撥單
+//    （自開團刻意不產生任何單據，那支永遠數不到），而 rpc_store_campaign_inbound
+//    回的是 JSONB 陣列不是數字。少了這一段，店家把調撥單收完 badge 就歸零，
+//    但自己開的團的貨還躺在那裡等收（收貨頁最上面那一段）。
+// 共用 INBOUND_BADGE_REFRESH_EVENT：收貨頁收完任一種都會 dispatch 它。
+function useStoreCampaignInboundCount(enabled: boolean, pathname: string | null): number {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        // 不帶 p_store_id：函式自己會依 JWT 把分店帳號鎖在自己店
+        const { data } = await getSupabase().rpc("rpc_store_campaign_inbound");
+        if (!cancelled) setCount(Array.isArray(data) ? data.length : 0);
+      } catch {
+        /* badge 失敗不影響操作 */
+      }
+    };
+    void load();
+    const onRefresh = () => { void load(); };
+    window.addEventListener("focus", onRefresh);
+    window.addEventListener(INBOUND_BADGE_REFRESH_EVENT, onRefresh);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", onRefresh);
+      window.removeEventListener(INBOUND_BADGE_REFRESH_EVENT, onRefresh);
+    };
+  }, [enabled, pathname]);
+
+  return count;
+}
+
 function NavBadge({ count }: { count: number }) {
   if (count <= 0) return null;
   return (
@@ -209,8 +244,10 @@ function NavBadge({ count }: { count: number }) {
 // 開抽屜才看得到（見下方 mobile drawer）③ 桌機把「分店業務」那組收合起來也看不到。
 // 這條橫幅每一頁都在，並且把「不按收貨會怎樣」寫出來。
 //
-// 數字沿用側欄 badge 的 inboundCount（rpc_inbound_pending_count）＝自己店為
-// dest_location、status='shipped' 的調撥單張數 — 不另外查一次。
+// 數字沿用側欄 badge 的 inboundCount — 不另外查一次。它是兩種東西的和：
+//   ① rpc_inbound_pending_count ＝自己店為 dest_location、status='shipped' 的調撥單張數
+//   ② rpc_store_campaign_inbound ＝自己店還沒收齊的自開團團數（那種團沒有任何單據）
+// 兩者都在 /wms/inbound 收，所以合成一個數字沒問題；措辭因此用「筆」不用「張」。
 // 收貨頁本身不顯示（人已經在那頁了，重複提醒沒有意義）。
 function InboundReminderBanner({ count }: { count: number }) {
   if (count <= 0) return null;
@@ -220,7 +257,7 @@ function InboundReminderBanner({ count }: { count: number }) {
       className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 border-b border-amber-200 bg-amber-50 px-4 py-1.5 text-center text-xs text-amber-800 transition hover:bg-amber-100 print:hidden dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300 dark:hover:bg-amber-900"
     >
       <span>
-        ⚠️ 你有 <span className="font-semibold">{count}</span> 張貨還沒按收貨
+        ⚠️ 你有 <span className="font-semibold">{count}</span> 筆貨還沒按收貨
       </span>
       <span className="opacity-80">
         按收貨，貨才會進你店的庫存；庫存不夠時客人可能取不到。
@@ -242,9 +279,12 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
     !!session, pathname, "rpc_settlement_action_count", SETTLEMENT_BADGE_REFRESH_EVENT,
   );
   // 收貨 badge 只服務分店帳號；HQ 在 /wms/inbound 看的是全分店監控，不掛通知
-  const inboundCount = useNavBadgeCount(
+  // ＝ 待收調撥單張數 ＋ 待收貨的店家自開團團數（兩者都在 /wms/inbound 收）
+  const inboundTransferCount = useNavBadgeCount(
     !!session && branchUser, pathname, "rpc_inbound_pending_count", INBOUND_BADGE_REFRESH_EVENT,
   );
+  const storeCampaignInboundCount = useStoreCampaignInboundCount(!!session && branchUser, pathname);
+  const inboundCount = inboundTransferCount + storeCampaignInboundCount;
   // 互助交流板 badge：分店帳號看到全 tenant 進行中貼文數（跨店佈告欄）
   const aidCount = useNavBadgeCount(
     !!session && branchUser, pathname, "rpc_aid_board_active_count", AID_BADGE_REFRESH_EVENT,

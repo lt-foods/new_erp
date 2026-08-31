@@ -2,7 +2,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 import { corsHeaders } from "../_shared/cors.ts";
 import { verifyJwtHs256, type JwtClaims } from "../_shared/jwt.ts";
 import { renewSessionTokenIfNeeded } from "../_shared/session.ts";
-import { isMissingSalesChannelColumn } from "../_shared/salesChannelGuard.ts";
+import { isMissingOwnerStoreColumn, isMissingSalesChannelColumn } from "../_shared/salesChannelGuard.ts";
 import { BIND_CODE_TTL_MIN, buildBindMessage, generateBindCode } from "../_shared/lineBinding.ts";
 import webpush from "https://esm.sh/web-push@3.6.7";
 
@@ -931,12 +931,27 @@ async function getSpotProduct(
   });
 }
 
-async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string | null, memberId?: number | null) {
+async function listActiveCampaigns(
+  sb: any,
+  tenantId: string,
+  closeType?: string | null,
+  memberId?: number | null,
+  jwtStoreId?: number,
+) {
+  // 店家自開團（owner_store_id 非 NULL）只給該店的會員看。
+  // 一定要在**這裡**濾 —— 前端藏卡片沒用，raw response 還是會外流
+  // （理由同 listSpotProducts 的 spot_visible_to_other_stores）。
+  const myStoreId = await resolveMemberStoreId(sb, tenantId, Number(jwtStoreId ?? 0), memberId ?? null);
+
   // end_at IS NULL 表示「無到期日」(管理員未設),也算進行中,要保留
-  const campaignQuery = (withMainChannel: boolean) => {
+  const campaignQuery = (withMainChannel: boolean, withStoreScope: boolean) => {
     let q = sb
       .from("group_buy_campaigns")
-      .select("id, campaign_no, name, description, cover_image_url, close_type, total_cap_qty, end_at, pickup_deadline, campaign_items(unit_price, cap_qty, sort_order, sku:skus(product:products(images)))")
+      .select(
+        withStoreScope
+          ? "id, campaign_no, name, description, cover_image_url, close_type, total_cap_qty, end_at, pickup_deadline, owner_store_id, campaign_items(unit_price, cap_qty, sort_order, sku:skus(product:products(images)))"
+          : "id, campaign_no, name, description, cover_image_url, close_type, total_cap_qty, end_at, pickup_deadline, campaign_items(unit_price, cap_qty, sort_order, sku:skus(product:products(images)))",
+      )
       .eq("tenant_id", tenantId)
       .eq("status", "open")
       .eq("is_for_shop", true)
@@ -944,15 +959,23 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
       .or(`end_at.is.null,end_at.gt.${new Date().toISOString()}`);
     // 一般商城永遠只讀 main；漂漂館走獨立 piaopiao-api。
     if (withMainChannel) q = q.eq("sales_channel", "main");
+    // 店家自開團只給主辦店的會員；查不出會員所屬店（未綁定又沒有 JWT store）
+    // 就只回總倉團，寧可少給也不要外流別店的團。
+    if (withStoreScope) {
+      q = myStoreId > 0
+        ? q.or(`owner_store_id.is.null,owner_store_id.eq.${myStoreId}`)
+        : q.is("owner_store_id", null);
+    }
     if (closeType && closeType !== "sale_limit") q = q.eq("close_type", closeType);
     return q.order("end_at", { ascending: true, nullsFirst: false });
   };
   // 不加 limit：曾經 .limit(50) 在 open 團數超過 50 時把最晚結單的整批截掉
   // （end_at ASC NULLS LAST + 截 50），顧客端整個團就消失。PostgREST 仍有
   // db-max-rows=1000 兜底，55 個團也才一頁。
-  let { data, error } = await campaignQuery(true);
-  // 只有 migration 尚未套用時才可退舊查法；此時不可能已有漂漂團。
-  if (isMissingSalesChannelColumn(error)) ({ data, error } = await campaignQuery(false));
+  let { data, error } = await campaignQuery(true, true);
+  // 只有 migration 尚未套用時才可退舊查法；此時不可能已有漂漂團 / 店家自開團。
+  if (isMissingOwnerStoreColumn(error)) ({ data, error } = await campaignQuery(true, false));
+  if (isMissingSalesChannelColumn(error)) ({ data, error } = await campaignQuery(false, false));
 
   const sourceCampaigns = closeType === "sale_limit"
     ? (data ?? []).filter((c: any) =>
@@ -1037,6 +1060,8 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
       description: c.description,
       cover_image_url: cover,
       close_type: c.close_type,
+      // 店家自開團：非 NULL = 這團是該店自己開的（前端置頂區塊 + 標籤用）
+      owner_store_id: c.owner_store_id ?? null,
       total_cap_qty: c.total_cap_qty,
       has_item_cap: items.some((i: any) => Number(i.cap_qty ?? 0) > 0),
       ordered_qty: orderedMap.get(Number(c.id)) ?? 0,
@@ -1081,15 +1106,29 @@ async function listActiveCampaigns(sb: any, tenantId: string, closeType?: string
  * 自己也擋 status / is_for_shop / end_at（20260813000000），
  * 寫入端的閘門跟這裡的讀取端閘門是同一套條件。
  */
-async function getCampaignDetail(sb: any, tenantId: string, campaignId: number, memberId: number | null, salesChannel?: string | null) {
-  let campaignQuery = sb
-    .from("group_buy_campaigns")
-    .select("id, campaign_no, name, description, cover_image_url, status, close_type, end_at, pickup_deadline, total_cap_qty, is_for_shop")
-    .eq("tenant_id", tenantId)
-    .eq("id", campaignId);
-  campaignQuery = campaignQuery.eq("sales_channel", salesChannel === "piaopiao" ? "piaopiao" : "main");
-  const { data: c, error: cErr } = await campaignQuery.single();
+async function getCampaignDetail(sb: any, tenantId: string, campaignId: number, memberId: number | null, salesChannel?: string | null, jwtStoreId?: number) {
+  const cols = "id, campaign_no, name, description, cover_image_url, status, close_type, end_at, pickup_deadline, total_cap_qty, is_for_shop";
+  const runCampaignQuery = (withStoreScope: boolean) =>
+    sb
+      .from("group_buy_campaigns")
+      .select(withStoreScope ? `${cols}, owner_store_id` : cols)
+      .eq("tenant_id", tenantId)
+      .eq("id", campaignId)
+      .eq("sales_channel", salesChannel === "piaopiao" ? "piaopiao" : "main")
+      .single();
+  let { data: c, error: cErr } = await runCampaignQuery(true);
+  if (isMissingOwnerStoreColumn(cErr)) ({ data: c, error: cErr } = await runCampaignQuery(false));
   if (cErr || !c) return json({ error: "campaign not found" }, 404);
+
+  // 店家自開團只有主辦店的會員能看 —— 連結被轉貼給別店的客人時當作不存在。
+  // 列表已經濾過，這裡是直接開網址（/shop/c/<id>）那條路的防線。
+  if (c.owner_store_id) {
+    const myStoreId = await resolveMemberStoreId(sb, tenantId, Number(jwtStoreId ?? 0), memberId);
+    if (Number(c.owner_store_id) !== myStoreId) {
+      return json({ error: "campaign not found" }, 404);
+    }
+  }
+
   const available = c.status === "open"
     && !!c.is_for_shop
     && !(c.end_at && new Date(c.end_at).getTime() <= Date.now());
@@ -1341,13 +1380,17 @@ async function placeMemberOrder(
   if (!campaignId) return json({ error: "campaign_id required" }, 400);
   if (items.length === 0) return json({ error: "items required" }, 400);
   const requiredSalesChannel = p.sales_channel === "piaopiao" ? "piaopiao" : "main";
-  const { data: campaign, error: campaignErr } = await sb
-    .from("group_buy_campaigns")
-    .select("id, close_type, total_cap_qty, campaign_items(cap_qty)")
-    .eq("tenant_id", tenantId)
-    .eq("id", campaignId)
-    .eq("sales_channel", requiredSalesChannel)
-    .maybeSingle();
+  const campaignCols = "id, close_type, total_cap_qty, campaign_items(cap_qty)";
+  const runCampaign = (withStoreScope: boolean) =>
+    sb
+      .from("group_buy_campaigns")
+      .select(withStoreScope ? `${campaignCols}, owner_store_id` : campaignCols)
+      .eq("tenant_id", tenantId)
+      .eq("id", campaignId)
+      .eq("sales_channel", requiredSalesChannel)
+      .maybeSingle();
+  let { data: campaign, error: campaignErr } = await runCampaign(true);
+  if (isMissingOwnerStoreColumn(campaignErr)) ({ data: campaign, error: campaignErr } = await runCampaign(false));
   if (campaignErr || !campaign) return json({ error: "campaign not available" }, 404);
 
   // 取得 member + home_store
@@ -1366,6 +1409,13 @@ async function placeMemberOrder(
 
   const pickupStoreId = Number(p.pickup_store_id ?? member.home_store_id ?? 0);
   if (!pickupStoreId) return json({ error: "pickup_store_id required" }, 400);
+
+  // 店家自開團：只有主辦店的客人能下單，而且一定在主辦店取貨。
+  // 這團的貨是該店自己買的、只由該店負責出（rpc_receive_store_campaign 收貨時
+  // 也只推 pickup_store = 主辦店 的訂單），別店的單根本沒有人會去配貨。
+  if (campaign.owner_store_id && Number(campaign.owner_store_id) !== pickupStoreId) {
+    return json({ error: "這個團只開放給該分店的會員，請確認你的取貨門市", code: "store_campaign_other_store" }, 403);
+  }
 
   // ── 限量團閘門：先綁定取貨店的 LINE 官方帳號才能下單 ──────────────────────
   // 「限量」判準與商城「限量搶購」分頁同一套（listActiveCampaigns 的 sale_limit）：
@@ -1787,8 +1837,8 @@ Deno.serve(async (req) => {
         case "get_my_unread_notification_count": if (!memberId) return json({ error: "no member_id" }, 401); return await getMyUnreadNotificationCount(sb, tenantId, memberId);
         case "mark_notification_read": if (!memberId) return json({ error: "no member_id" }, 401); return await markNotificationRead(sb, tenantId, memberId, body);
         case "generate_pwa_auth_code": if (!memberId) return json({ error: "no member_id" }, 401); return await generatePwaAuthCode(sb, tenantId, memberId, claims, token, body);
-        case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId, typeof body.close_type === "string" ? body.close_type : null, memberId);
-        case "get_campaign_detail": return await getCampaignDetail(sb, tenantId, Number(body.campaign_id ?? 0), memberId, typeof body.sales_channel === "string" ? body.sales_channel : null);
+        case "list_active_campaigns": return await listActiveCampaigns(sb, tenantId, typeof body.close_type === "string" ? body.close_type : null, memberId, storeId);
+        case "get_campaign_detail": return await getCampaignDetail(sb, tenantId, Number(body.campaign_id ?? 0), memberId, typeof body.sales_channel === "string" ? body.sales_channel : null, storeId);
         case "track_campaign_view": if (!memberId) return json({ error: "no member_id" }, 401); return await trackCampaignView(sb, tenantId, memberId, Number(body.campaign_id ?? 0), typeof body.sales_channel === "string" ? body.sales_channel : null);
         case "list_spot_products": return await listSpotProducts(sb, tenantId, storeId, memberId);
         case "get_spot_product": return await getSpotProduct(sb, tenantId, storeId, memberId, Number(body.id ?? 0));
