@@ -484,18 +484,25 @@ export default function CampaignsListPage() {
   }
 
   // 刪除開團（非開團中且無訂單；實體硬刪除，連帶 campaign_items/channels/audit）
-  async function deleteCampaign(id: number, name: string) {
-    if (
-      !confirm(
-        `確定刪除開團「${name}」？\n\n` +
-          `將一併刪除其商品明細、頻道設定與相關上傳紀錄，此操作無法復原。\n` +
-          `（「開團中」或已有顧客訂單的開團無法刪除）`
-      )
-    )
-      return;
+  async function deleteCampaign(id: number, name: string, isStore = false) {
+    // 自開團走專用的刪除：它連同顧客訂單一起刪，守衛換成「有沒有真的動到貨與錢」
+    // （收過貨 / 取過貨 / 轉過單 → DB 端擋下）。總倉團維持原本那支與原本的條件。
+    const msg = isStore
+      ? `確定刪除門市團「${name}」？\n\n` +
+        `會連同這團的顧客訂單、商品明細一起刪掉，無法復原。\n` +
+        `（已收過貨或已交過貨的團刪不掉，請改用「結算」收尾）`
+      : `確定刪除開團「${name}」？\n\n` +
+        `將一併刪除其商品明細、頻道設定與相關上傳紀錄，此操作無法復原。\n` +
+        `（「開團中」或已有顧客訂單的開團無法刪除）`;
+    if (!confirm(msg)) return;
     setError(null);
     try {
-      const { error: rpcErr } = await getSupabase().rpc("rpc_delete_campaign", {
+      const { error: rpcErr } = isStore
+        ? await getSupabase().rpc("rpc_delete_store_campaign", {
+            p_campaign_id: id,
+            p_operator: (await getSupabase().auth.getUser()).data.user?.id,
+          })
+        : await getSupabase().rpc("rpc_delete_campaign", {
         p_campaign_id: id,
         p_operator: (await getSupabase().auth.getUser()).data.user?.id,
       });
@@ -859,9 +866,11 @@ export default function CampaignsListPage() {
           {finalizingId === r.id ? "結算中…" : "結算"}
         </SpinButton>
       )}
-      {(["draft", "closed", "cancelled"] as Status[]).includes(r.status) && (
+      {/* 自開團：admin 與該店店長隨時刪得掉自己的團（含訂單）；
+          總倉團維持原本的條件（draft/closed/cancelled 且沒有訂單）。 */}
+      {(isStore || (["draft", "closed", "cancelled"] as Status[]).includes(r.status)) && (
         <SpinButton
-          onClick={() => deleteCampaign(r.id, r.name)}
+          onClick={() => deleteCampaign(r.id, r.name, isStore)}
           className="text-xs text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
         >
           刪除
