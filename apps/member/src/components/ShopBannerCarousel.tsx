@@ -15,7 +15,14 @@ type Banner = {
  * - 1 張 → 單張顯示, 不啟用 scroll/auto-play/dots
  * - 2+ 張 → horizontal scroll-snap, auto-play 4s, 觸碰暫停 8s
  *
- * scroll-snap-x mandatory + 每張寬 88% 露出右邊一點點提示可滑。
+ * scroll-snap-x mandatory，每張**整框寬**（w-full）：一次只看得到一張，
+ * 在同一個框裡換頁。可滑的提示交給下面的 dots，不要靠露出下一張的邊
+ * —— 露邊會把 banner 裡的標題／價格／倒數切一半，看起來像壞掉的版。
+ *
+ * ⚠ slideWidth 的算式（offsetWidth + 12）跟這裡的 gap-3 綁在一起，
+ *   改 gap 要三處一起改（scroll 同步、auto-play、dots 點擊）。
+ *   snapAlign 用 center：左右 padding 對稱時 scrollLeft 剛好 = i × slideWidth，
+ *   跟那三處的算法對得上。
  */
 export default function ShopBannerCarousel({ banners }: { banners: Banner[] }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -87,7 +94,7 @@ export default function ShopBannerCarousel({ banners }: { banners: Banner[] }) {
           <div
             key={b.key}
             data-slide
-            className="w-[88%] shrink-0"
+            className="w-full shrink-0"
             style={{ scrollSnapAlign: "center" }}
           >
             {b.node}
