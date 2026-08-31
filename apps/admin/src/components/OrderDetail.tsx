@@ -57,7 +57,7 @@ type OrderHead = {
   paid_at: string | null;
   notes: string | null;
   member: { id: number; name: string | null; phone: string | null; member_no: string } | null;
-  campaign: { id: number; campaign_no: string; name: string } | null;
+  campaign: { id: number; campaign_no: string; name: string; owner_store_id: number | null } | null;
   store: { id: number; name: string } | null;
 };
 
@@ -313,12 +313,18 @@ export function OrderDetail({
   // qty 只有 pending 訂單可改;一旦被 PR 鎖定變 confirmed 就唯讀
   const canEditQty = (canEdit || isStoreOfThisOrder) && head?.status === "pending";
 
+  // 門市團（店家自開團）的訂單。轉出被擋掉、刪除放寬，兩處都吃這個旗標。
+  const isStoreCampaignOrder = head?.campaign?.owner_store_id != null;
+
   // 「刪除」品項：pending／ready／partially_completed 都能刪（20260827040000
   // 起放寬，原本只有 pending）。已取貨的品項另外在按鈕層擋（走退貨流程）。
-  // 與資料庫閘門 rpc_delete_order_item 對齊。
+  // 門市團的 confirmed 也放行 —— 它不進請購單（沒有「被 PR 鎖定」這回事），
+  // 結單後正好停在 confirmed，不放行就一項也刪不掉，而轉單又已經擋掉了。
+  // 與資料庫閘門 rpc_delete_order_item 對齊（20260831000090）。
   const canDeleteItem = (canEdit || isStoreOfThisOrder)
     && !!head
-    && ["pending", "ready", "partially_completed"].includes(head.status);
+    && (["pending", "ready", "partially_completed"].includes(head.status)
+        || (head.status === "confirmed" && isStoreCampaignOrder));
 
   // 「📦 從庫存配貨」：把取貨門市的現貨指派給這一行（開 DN、不扣庫存不結案）。
   // 跟 qty 編輯不同，這個在 confirmed / 等貨中的單上才最有用，所以不綁 pending。
@@ -344,7 +350,7 @@ export function OrderDetail({
       const sb = getSupabase();
       const [hRes, iRes, rRes, arvRes, pevRes, airRes] = await Promise.all([
         sb.from("customer_orders")
-          .select("id, order_no, status, stockout_at, pickup_deadline, nickname_snapshot, created_at, updated_at, pickup_store_id, campaign_id, transferred_from_order_id, is_air_transfer, discount_amount, discount_percent, wallet_paid_amount, payment_status, paid_at, notes, member:members(id, name, phone, member_no), campaign:group_buy_campaigns(id, campaign_no, name), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
+          .select("id, order_no, status, stockout_at, pickup_deadline, nickname_snapshot, created_at, updated_at, pickup_store_id, campaign_id, transferred_from_order_id, is_air_transfer, discount_amount, discount_percent, wallet_paid_amount, payment_status, paid_at, notes, member:members(id, name, phone, member_no), campaign:group_buy_campaigns(id, campaign_no, name, owner_store_id), store:stores!customer_orders_pickup_store_id_fkey(id, name)")
           .eq("id", orderId).maybeSingle(),
         sb.from("customer_order_items")
           .select(`id, qty, unit_price, status, stockout_at, source, notes, discount_amount, discount_percent, created_at, updated_at, created_by, updated_by, ${GIFT_ITEM_SELECT}, sku:skus(id, sku_code, product_name, variant_name)`)
@@ -763,7 +769,12 @@ export function OrderDetail({
   const transferAfterPartialPickup =
     head.status === "partially_completed" &&
     items.some((it) => ["pending", "reserved", "ready"].includes(it.status));
-  const canTransfer = head.status === "ready" || transferBeforeArrival || transferAfterPartialPickup;
+  // 門市團（店家自開團）的單一律不能轉出：轉出去的那張單過不了取貨閘門
+  // （Path S 要求 gc.owner_store_id = co.pickup_store_id），貨在店裡客人卻領不到。
+  // DB 端 rpc_transfer_order_* 也擋著（20260831000090），這裡只是不要給死按鈕。
+  // 客人不要的話走「取消訂單」或逐項「刪除」。
+  const canTransfer = !isStoreCampaignOrder
+    && (head.status === "ready" || transferBeforeArrival || transferAfterPartialPickup);
   // 現貨直配（SP-）單一建立就是 'ready'，但還沒扣庫存 → 取消是安全的，
   // 只是把可分配量放回去（20260816000070 放寬了伺服端守衛）。
   // 不放寬一般 ready 單：那代表貨已配到客人頭上，取消的連動完全不同。
