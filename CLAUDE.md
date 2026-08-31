@@ -838,6 +838,30 @@ HQ 要在 /wms/exceptions 用 `restock_hq`（沖回總倉庫存，20260810000010
 
 ---
 
+## 會員 (members)
+
+### 唯一索引的母體要跟「有沒有人用了」那些查詢的母體一致
+
+`uniq_members_tenant_phone_hash_partial` 只排除 `phone_hash IS NULL`，但全站每一支
+「這支號碼被誰用了」的查詢都另外排除 `merged` / `deleted`
+（liff-api `lookupByPhone` / `registerAndBind`、`rpc_search_members`、`rpc_resolve_member`…）。
+於是被合併掉的舊帳號繼續佔著號碼，而**佔號的那筆誰也查不到** —— 店員在後台輸入手機
+一律跳「資料重複衝突(uniq_members_tenant_phone_hash_partial)」，搜尋卻說沒人用，完全無解
+（2026-08-31 林口店：83 筆 merged 殘骸各佔一支，其中 24 支的活人本尊根本沒有手機）。
+
+已修（20260831000050）：`rpc_merge_member` 標 merged 的同時清 `phone_hash`
+（`phone` 原文留著備查／供 `rpc_unmerge_member` 還原）、本尊沒手機就把號碼交棒過去；
+`rpc_upsert_member` 撞號時先查對手是誰，死號就地讓號、活人則吐出點得出名字的錯誤；
+並加 `CHECK (status <> 'merged' OR phone_hash IS NULL)` 讓下次寫回去的路徑當場炸掉。
+
+- 新增任何「軟刪除 / 停用 / 併掉」的狀態時，一起問：**它身上有沒有唯一欄位還佔著**？
+  有的話不是清掉（GDPR 那支用 `phone_hash = 'DELETED_' || id` 哨兵值讓號）就是交棒。
+- 「查得到的人都說沒人用、存下去卻一定撞」＝ 索引母體 ≠ 查詢母體，先去比這兩個集合。
+- 交換唯一值（來源讓號、目標接手）**要拆成兩句 UPDATE**。unique index 是逐句即時檢查，
+  寫在同一句會撞在自己身上；backfill 也因此得逐筆迴圈，不能一句 UPDATE 掃完。
+
+---
+
 ## LINE / LIFF
 
 ### 在 LINE 內建瀏覽器裡，絕對不要把使用者導去 `access.line.me`
