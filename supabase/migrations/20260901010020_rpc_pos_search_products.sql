@@ -135,7 +135,7 @@ $$;
 COMMENT ON FUNCTION public.rpc_pos_search_products(BIGINT, TEXT, INT) IS
   '現場銷售結帳頁的商品搜尋：回該店的在庫 / 承諾拆解 / 可賣量（free_with_pool）'
   '與建議售價（零售價優先）。候選收斂後只呼叫一次 _sku_commitment（吃陣列），'
-  '不做 per-row LATERAL。20260901000020。';
+  '不做 per-row LATERAL。20260901010020。';
 
 REVOKE ALL ON FUNCTION public.rpc_pos_search_products(BIGINT, TEXT, INT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.rpc_pos_search_products(BIGINT, TEXT, INT) TO authenticated;

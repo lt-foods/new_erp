@@ -15,6 +15,13 @@
 --   `customer_id` 指的還是空的 customers 表（全站其實用 members）。
 --   rpc_complete_pos_sale 也從沒被呼叫過。看到它不要以為那是正主。
 --
+-- ⚠ 2026-09-01 改過號：原本是 20260901000000，與同日 PR #884 的
+--   20260901000000_settlement_dispatch_basis.sql 撞號（同批四支有三支撞）。
+--   兩批都已進 main 且已套上正式庫，照 CLAUDE.md 的規矩改名 —— 這個 repo 一律走
+--   Management API 直接跑 SQL，不會寫 supabase_migrations.schema_migrations，
+--   所以改名安全；「從零重跑」時的順序才不會變成由檔名字串隨機決定。
+--   同批的 010010 / 010020 / 010030 一起改，內文引用也一併更新。
+--
 -- 本檔內容：
 --   1. customer_orders_trio_kind_active_uniq：predicate 加排除 'WS-%'。
 --   2. customer_order_items.source：CHECK 加 'walk_in'。
@@ -68,7 +75,7 @@ CREATE UNIQUE INDEX customer_orders_trio_kind_active_uniq
 COMMENT ON INDEX public.customer_orders_trio_kind_active_uniq IS
   '一會員一活動一張 active 單（真團的核心不變量，rpc_create_customer_orders 靠它合併）。'
   'restock（RR- 補貨容器單）、SP-（現貨直配，20260816000060）、'
-  'WS-（現場銷售，20260901000000）、互助認領單（aid_board_id）除外 —— '
+  'WS-（現場銷售，20260901010000）、互助認領單（aid_board_id）除外 —— '
   '那些是「一次動作一張單」的語意，不該被合併。';
 
 -- ----------------------------------------------------------------------------
@@ -145,7 +152,7 @@ BEGIN
     tenant_id, member_no, name, member_type, home_store_id, status, notes
   ) VALUES (
     p_tenant, v_no, '現場客（' || v_store.name || '）', 'guest', p_store_id, 'active',
-    '門市現場銷售的共用收件人（20260901000000）。真正的客人名字存在該筆訂單的 '
+    '門市現場銷售的共用收件人（20260901010000）。真正的客人名字存在該筆訂單的 '
     'nickname_snapshot；不要拿它當真的會員做行銷 / 通知 / 合併。'
   )
   ON CONFLICT (tenant_id, member_no) DO NOTHING

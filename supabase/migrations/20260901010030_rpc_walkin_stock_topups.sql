@@ -128,7 +128,7 @@ $$;
 COMMENT ON FUNCTION public.rpc_walkin_stock_topups(BIGINT, DATE, DATE) IS
   '現場銷售「結帳時補庫存」稽核報表：manual_adjust + reason 以「現場銷售即時入帳」'
   '開頭的異動，依 日期 × 分店 聚合＋明細（含單號）。常態性補帳＝帳跟實體長期'
-  '脫節，該排盤點。20260901000030。';
+  '脫節，該排盤點。20260901010030。';
 
 REVOKE ALL ON FUNCTION public.rpc_walkin_stock_topups(BIGINT, DATE, DATE) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.rpc_walkin_stock_topups(BIGINT, DATE, DATE) TO authenticated;
