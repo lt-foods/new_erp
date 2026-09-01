@@ -1,6 +1,6 @@
 # PLAN — 現場銷售（門市 POS：沒有訂單的現場客，當場結帳當場扣庫存）
 
-> 狀態：**規劃中，尚未施工**。需求人：Alex（2026-09-01）。
+> 狀態：**規劃已定案（Alex 2026-09-01 回覆四個問題 + 追加訂單頁需求），施工中**。需求人：Alex。
 > 需求原文：「有店家想要賣現場客，但是沒有訂單，然後又想要維護庫存，
 > 可以做一個現場銷售的功能，像是一般超商那樣，可以依照人名跟商品庫存來產生一筆訂單，
 > 並且扣掉庫存，然後銷售當下有可能很多商品沒有庫存，可以在同一個地方假如沒庫存就自動增加一筆記錄到庫存」。
@@ -77,6 +77,8 @@
 
 1. **有會員** → 用既有 `rpc_search_members` 選（跟 `SpotSaleModal` 同一套），訂單掛在他名下，會員中心 / LINE 通知照常。
 2. **純現場客** → 掛在**每店一筆**的「現場客」假會員（`member_type='guest'`、`member_no` 例如 `WALKIN-<store_id>`），**人名存 `nickname_snapshot`**。
+3. **現場客要留下來** → 結帳畫面上一顆「☐ 建立為會員」，勾了就用輸入的名字（＋選填手機）開一筆正式會員，訂單直接掛他名下。
+   **預設不勾**（Alex 決議）。手機有填就會走 `rpc_upsert_member` 的撞號路徑 —— 那支 20260831000050 之後會把死號讓出來、活人吐出點得出名字的錯誤，不要自己另外寫一套。
 
 為什麼不替每個現場客開一筆會員：
 
@@ -105,7 +107,7 @@ CLAUDE.md 已經記過：`payment_status` 全站永遠是 `unpaid`，`WHERE paym
 
 現場銷售如果開始寫 `'paid'`，這些地方的行為會突然改變（而且是靜默的）。
 「收到錢了」用既有語意表達就好：**品項 `picked_up`** → `v_customer_order_summary.outstanding_amount` 自動是 0。
-要分現金 / 轉帳做日結分項，用 `payment_method` 欄位（目前沒人寫）+ 日結報表多一個 group by。
+**付款方式做成可選、預設現金**（Alex 決議）：選項來源 `stores.allowed_payment_methods`（預設 `["cash"]`），寫進 `payment_method` 欄位（目前全站沒人寫），日結報表多一個 group by。
 
 ---
 
@@ -162,7 +164,7 @@ rpc_create_walkin_sale(
 
 1. **成本要帶**：`manual_adjust` 不帶成本時，若該倉 `avg_cost` 是 0，後面那筆 `sale` 的 COGS 就是 0、毛利虛高。
    補帳時帶 `_current_cost_price(tenant, sku)` 當 fallback（同 `_air_ship_order_items` 的做法）。
-2. **權限**：預設只有 `store_manager` 以上可以用；`store_staff` 看得到缺貨提示但按不下去（前端擋 + RPC 再擋一次，
+2. **權限（Alex 決議：店長）**：只有 `store_manager` 以上可以用；`store_staff` 看得到缺貨提示但按不下去（前端擋 + RPC 再擋一次，
    「按鈕拿掉但 EXECUTE 還通等於沒停」—— 自由轉貨那次的教訓）。
 3. **單頭留痕**：notes 寫「本單有 N 件是現場補帳（未經收貨）」，`/orders` 明細看得到。
 4. **報表**：新增一張「現場銷售補庫存」清單（依店 / 日期 / 操作人 / SKU / 數量），
@@ -205,7 +207,7 @@ rpc_create_walkin_sale(
 - 單價 0 要擋（零元守衛的同一個理由：$0 = 把貨白送出去）。
 - 缺貨列一律顯示拆解「在庫 X、待客取 Y、等貨中 Z」，不要只寫「可賣 0」——
   那正是 8/24「調整庫存完不能把庫存再轉出去」那次店員繞不出來的原因。
-- 結帳完直接出小票（可重用 `/pickup/print` 的版型）。
+- **結帳完直接出小票（Alex 決議：要）** —— 列為 P0，不是 P1。版型重用 `/pickup/print`，走 `/pos/receipt?order=<id>`：店名、單號、日期、人名、逐列品項 / 數量 / 單價 / 小計、折扣、合計、付款方式、操作人。
 
 ---
 
@@ -240,9 +242,11 @@ rpc_create_walkin_sale(
 |---|---|---|
 | 1 | migration A：唯一索引 predicate 加 `order_no !~~ 'WS-%'`；每店建立「現場客」guest 會員的 helper `_walkin_member(store)` | SQL |
 | 2 | migration B：`rpc_create_walkin_sale`（含店家守衛、free_with_pool 閘門、缺貨補帳、扣池、pickup event） | SQL |
-| 3 | migration C：`rpc_get_stock_commitment_bulk` 擴充建議售價欄位（一次撈，不要 per-row LATERAL） | SQL |
-| 4 | 前端 `/pos` 頁 + 側欄入口 + 小票 | TSX |
-| 5 | 日結分項 + 補庫存報表 | SQL + TSX |
+| 3 | migration C：`customer_order_items.source` CHECK 加 `walk_in`；`rpc_get_stock_commitment_bulk` 擴充建議售價欄位（一次撈，不要 per-row LATERAL） | SQL |
+| 4 | 前端 `/pos` 頁 + 側欄入口 | TSX |
+| 5 | 小票 `/pos/receipt`（P0，決議 4） | TSX |
+| 6 | 訂單頁調整：`internalOrderSource()` 加 `WS-`（admin + member 兩份）、`walk_in` badge、`/orders` 快篩 | TSX |
+| 7 | 日結分項（付款方式）+ 補庫存報表 | SQL + TSX |
 
 每支 migration 送出前：
 
@@ -269,9 +273,54 @@ git fetch origin main -q && git ls-tree --name-only origin/main supabase/migrati
 
 ---
 
-## 11. 要 Alex 決定的四件事
+## 11. 決議（Alex 2026-09-01）
 
-1. **現場客要不要留成會員？** 建議：預設不留（只存名字），要留就在同一個畫面選「建立會員」。
-2. **缺貨補庫存誰能按？** 建議：店長以上；店員只看得到提示。
-3. **付款方式要分嗎？** 建議：現金 / 轉帳兩個，日結分項。
-4. **要印小票嗎？** 建議 P1（版型可重用取貨單）。
+| # | 問題 | 決議 |
+|---|---|---|
+| 1 | 現場客要不要留成會員？ | **預設不留，但畫面上要能選擇留**（勾「建立為會員」）→ §3.2 第 3 點 |
+| 2 | 缺貨補庫存誰能按？ | **店長（`store_manager` 以上）** → §5.2 |
+| 3 | 付款方式要分嗎？ | **做成選項、預設現金** → §3.3 |
+| 4 | 要印小票嗎？ | **要**，列入 P0 → §6 |
+| 5 | （追加）訂單頁 | 現場銷售**要產生訂單**，但**不跟著任何團** → 見 §12 |
+
+---
+
+## 12. 訂單頁的調整（Alex 追加）
+
+現場銷售會產生一張真的顧客訂單，但它不屬於任何團。系統裡**已經有這條路**：
+現貨直配 / 補貨 / 轉單的單一律掛在共用假團 `__INTERNAL_RESTOCK__`「【內部】補貨申請」底下，
+而訂單列表與明細早就會把那個名字換掉、改標「實際來源」（2026-08-16 回報後做的）。
+現場銷售**接上同一套**就好，不要另外發明。
+
+### 12.1 已經現成、只要接上去的
+
+| 位置 | 現成機制 | 要做的事 |
+|---|---|---|
+| `/orders` 列表的「開團」欄 | `CampaignOrSource`：`campaign_no` 以 `__` 開頭 → 改印 `internalOrderSource(order_no)` | 在 `internalOrderSource()` 加 `WS-` → **「🛒 現場銷售」**／hint「門市現場結帳，當場扣庫存收款」 |
+| 訂單明細的「開團」欄 | `OrderDetail` 同一段判斷 | 同上，一改兩處都生效 |
+| 會員 App 的訂單卡標題 | `orderCardTitle()`：內部團改印品項名 | 自動生效（`WS-` 掛 sentinel 團）。⚠ `lib/orderTitle.ts` 在 admin 與 member **各有一份副本**，改一定要兩邊一起改 |
+| 手機卡片的品項名 | `itemLabel()`：開團名 ≠ 商品名時補上商品名 | 自動生效 |
+
+### 12.2 要新增的
+
+1. **品項來源新增 `walk_in`**（`customer_order_items.source`）。
+   照 `lib/orderSource.ts` 檔頭寫好的三步驟做：
+   (a) 加進 `ORDER_ITEM_SOURCES` + `ORDER_SOURCE_META`（label「現場銷售」/ short「現場」/ icon 🛒）；
+   (b) migration 改 CHECK constraint（現行 `20260808000020_order_item_source_pwa.sql`）；
+   (c) **不要**加進 `SOURCE_TREND_SERIES` —— 那張折線圖只畫「人是怎麼下這張單的」三個通路（App / 商城 / 小幫手），
+   現場銷售不是線上通路，混進去會讓通路消長的圖說謊。
+2. **`/orders` 加一個「現場銷售」快篩**（單號前綴 `WS-`），店長對帳時要能一眼把今天的現場單撈出來。
+3. **訂單明細對 `WS-` 單要收掉不適用的動作**：轉單給別人、標到貨、少發配貨、催取貨通知 ——
+   單頭出生就是 `completed`，多數按鈕本來就不會出現，但要逐一確認（尤其「轉單給客人」，
+   貨已經交出去了還能轉會生出幽靈品項，那正是 20260810010000 修過的那類 bug）。
+   留著的只有：撤銷取貨、退貨、改備註。
+4. **明細上要標「本單有 N 件是現場補帳」**（§5.3），並列出那幾筆 `manual_adjust`。
+
+### 12.3 明確不做
+
+- **不新開 sentinel 團給現場銷售用。** 共用 `__INTERNAL_RESTOCK__` 是刻意的：全站 10+ 處濾網
+  （`campaigns`、`purchase/requests`、`ProductCampaignsPanel`、`/shop`…）都寫死排除它，
+  另開一個新 sentinel 只要漏掉一處，現場銷售的假團就會外顯給客人看到。
+- **不新增 `order_kind`。** 理由同 §3.1。
+- **不改 `v_admin_orders_list` 的口徑。** 現場銷售是 `order_kind='normal'` 的正常單，
+  本來就該進訂單數 / 金額 / 營收；要區分靠來源 badge 與快篩，不是靠把它從母體挖掉。
