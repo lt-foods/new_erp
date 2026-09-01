@@ -47,8 +47,11 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/purchase/requests", label: "請購單", match: /^\/purchase\/requests/ },
       { href: "/purchase/orders", label: "採購單", match: /^\/purchase\/orders/ },
-      { href: "/inventory", label: "庫存總覽", match: /^\/inventory(?!\/mutual-aid|\/reorder-rules|\/stocktake|\/deductions)/ },
+      // ⚠ 新增 /inventory/xxx 子頁時，這條的 (?!…) 也要加一段，否則站在子頁時
+      //   側欄會把「庫存總覽」點亮（它的 match 是 /^\/inventory/ 開頭）。
+      { href: "/inventory", label: "庫存總覽", match: /^\/inventory(?!\/mutual-aid|\/reorder-rules|\/stocktake|\/deductions|\/negative-stock)/ },
       { href: "/inventory/deductions", label: "庫存減抵單", match: /^\/inventory\/deductions/ },
+      { href: "/inventory/negative-stock", label: "負庫存報表", match: /^\/inventory\/negative-stock/ },
       { href: "/inventory/reorder-rules", label: "補貨規則", match: /^\/inventory\/reorder-rules/ },
       { href: "/inventory/stocktake", label: "盤點", match: /^\/inventory\/stocktake/ },
     ],
@@ -124,6 +127,7 @@ const BRANCH_HIDDEN_HREFS = new Set([
   "/wms/receiving",       // 進貨待辦 (HQ)
   "/picking/drafts",      // 撿貨草稿 (HQ；比照派貨工作台，RLS 也只開給總部角色)
   "/wms/picking",         // 派貨工作台
+  "/inventory/negative-stock", // 負庫存報表 (跨店彙總,比照「分析」group 不給加盟店看別家)
   // /wms/inbound 跟 /wms/transfers 不在這裡 — 分店要用,屬於分店業務
   "/finance/receivables", // HQ 應收
   "/stores",              // 門市設定 (HQ 管理)
