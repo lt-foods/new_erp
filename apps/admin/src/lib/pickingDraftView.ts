@@ -343,6 +343,191 @@ export function computePrefill(rows: DemandRow[]): Prefill {
 }
 
 /**
+ * 平均版分配：把 `available` **平均**分到「還有未派需求」的店，各店 cap 在自己的 demandLeft。
+ * 某店的需求不足以吃下它那一份時，剩下的量下一輪重新平均（最多 10 輪）。
+ *
+ * ⛔⛔ 這支是「**多給一個選項**」，⛔ 不是 computePrefill 的替代品。
+ *   老闆 2026-08-17 拍板：加入商品的自動預填**維持**「先來後到、前面吃滿後面掛 0」，
+ *   理由是「貨不夠時讓一家真的能開賣，好過五家都缺貨賣不動」。
+ *   → computePrefill **一個字都不能改**，這支只在草稿頁那顆「⚖ 平均」鈕按下去時才跑。
+ *
+ * ⭐ 演算法**逐行對齊**派貨工作台的 `autoDistribute()`（wms/picking/page.tsx:1406-1451），
+ *   ⛔ 不要自己重新發明。兩邊要一起改，否則同一顆「⚖ 平均」在兩頁會給出不同的數字。
+ *   對照表（工作台 → 這裡）：
+ *     sku.totalAvailable            → pre.available
+ *     allStores                     → pre.byStore 的 key（＝ demand 裡出現過的店）
+ *     storeDemandLeft(sku, storeId) → pre.byStore.get(storeId).demandLeft
+ *   連「eligible 已保證 cur < d、裡面那個 `if (cur < d)` 其實是多餘的」都照抄 ——
+ *   逐行一樣才看得出兩邊有沒有漂移。
+ *
+ * ⭐⭐ `orderedStoreIds` 是**必填**，不是可選的（阿審 2026-09-01 P1-1）：
+ *   「餘數只夠給幾家、而那幾家還缺的量一樣多」時，要給誰就由這個順序決定。
+ *   工作台的 `allStores` 是先經 `compareStoreOrder` 排過的（wms/picking/page.tsx:874-878），
+ *   所以它平手時吃的是**老闆指定的店序**。
+ *   ⛔ 這裡如果沿用 `pre.byStore` 的插入順序（＝ loadPrefill 的 `po_item_id, store_id`），
+ *   同一樣商品在兩頁按同一顆鈕，平手時會給到不同的店 —— 我一開始判成「無法避免」是錯的：
+ *   草稿頁本來就有排好序的 `storeCols`（buildStoreColumns 用的是同一支 compareStoreOrder），
+ *   把它傳進來就對齊了。
+ *   做成必填參數而不是可選，是為了讓「有沒有想過順序」變成**型別逼出來的問題**，
+ *   不是靠下一個人自律（同本檔 DraftSkuRecount / DraftPrecheck 的作法）。
+ *   ⓘ 不在這份順序裡的店排到最後面，彼此維持傳進來的順序 —— 照樣分得到，⛔ 只是排後面。
+ *     （會發生在「停用、本草稿數量 0 所以沒有欄位、但還有未派需求」這種極端情況：
+ *       那種店在工作台上有欄位、在草稿頁上沒有，兩頁本來就不是同一組店。）
+ *
+ * ⭐ 為什麼吃 `Prefill` 而不是像規格書寫的吃 `DemandRow[]`：
+ *   `available` 與 `demandLeft` 的前處理有四個很容易寫錯的坑（見 computePrefill 上面那段），
+ *   而算這兩個數字的**唯一**入口是 loadPrefill（它內部就是呼叫 computePrefill）。
+ *   吃 rows 的話，呼叫端得自己再下一次一模一樣的查詢 —— 多一次往返，還多一份會漂移的複製品。
+ *   吃 Prefill 就保證「先來後到版」與「平均版」的前處理是**同一次計算的結果**，
+ *   不可能出現兩支對「可分配量 / 還缺多少」給不同答案。
+ *
+ * @param pre             computePrefill()／loadPrefill() 算出來的結果（available 與各店 demandLeft）
+ * @param orderedStoreIds 平手時的先後順序（草稿頁傳 storeCols 的 id，＝老闆指定的店序）
+ * @returns 同樣的 available 與 demandLeft，只有 give 換成平均版；byStore 依 orderedStoreIds 排好
+ */
+export function computePrefillEven(pre: Prefill, orderedStoreIds: number[]): Prefill {
+  // 先把各店照指定的店序排好，之後整支都吃這個順序 ——
+  // ⭐ 主迴圈其實不在意順序（每家各自 min(each, 還缺多少)，互不影響），
+  //   會用到順序的只有下面 each === 0 那個「一家給 1」的分支。排在最前面做，
+  //   是為了讓「這支到底照什麼順序」只有一個答案、不必在兩個地方各想一次。
+  const rank = new Map<number, number>();
+  // id 一律 Number() 正規化（BIGINT 經過 PostgREST 可能是字串，#751 踩過）；
+  // 重複的 id 以第一次出現的位置為準
+  orderedStoreIds.forEach((sid, i) => {
+    const n = Number(sid);
+    if (!rank.has(n)) rank.set(n, i);
+  });
+  const last = Number.MAX_SAFE_INTEGER;
+  const src: [number, { demandLeft: number; give: number }][] = [...pre.byStore.entries()]
+    .map(([sid, v]) => [Number(sid), v] as [number, { demandLeft: number; give: number }])
+    // ⚠ .sort 是穩定排序（ES2019 起是規格保證，browserslist 的最低版本都有）：
+    //   不在店序裡的（rank 都是 last）維持傳進來的順序，結果仍然是唯一的。
+    .sort((a, b) => (rank.get(a[0]) ?? last) - (rank.get(b[0]) ?? last));
+
+  const give = new Map<number, number>();
+  for (const [sid] of src) give.set(sid, 0);
+
+  let pool = pre.available;
+  for (let iter = 0; iter < 10 && pool > 0; iter += 1) {
+    const eligible = src.filter(([sid, v]) => (give.get(sid) ?? 0) < v.demandLeft);
+    if (eligible.length === 0) break;
+
+    const each = Math.floor(pool / eligible.length);
+    if (each === 0) {
+      // 剩下的比「還有需求的店數」還少 → 依「還缺多少」由大到小，一家給 1，給完為止。
+      // ⭐ 缺一樣多時（＝平手）落到 eligible 的順序，也就是上面排好的 orderedStoreIds 店序
+      //   —— 這正是與工作台對齊的那一段（.sort 穩定，不會把平手的順序打亂）。
+      const sorted = [...eligible].sort((a, b) => b[1].demandLeft - a[1].demandLeft);
+      for (let i = 0; i < pool && i < sorted.length; i += 1) {
+        const [sid, v] = sorted[i];
+        const cur = give.get(sid) ?? 0;
+        if (cur < v.demandLeft) give.set(sid, cur + 1);
+      }
+      pool = 0;
+      break;
+    }
+
+    let givenThisRound = 0;
+    for (const [sid, v] of eligible) {
+      const cur = give.get(sid) ?? 0;
+      const add = Math.min(each, v.demandLeft - cur);
+      give.set(sid, cur + add);
+      givenThisRound += add;
+    }
+    pool -= givenThisRound;
+    // 一輪下來一件都沒分出去 → 再跑也不會有進展，直接收工（⛔ 不要靠 10 輪上限硬撐）
+    if (givenThisRound === 0) break;
+  }
+
+  const byStore = new Map<number, { demandLeft: number; give: number }>();
+  for (const [sid, v] of src) byStore.set(sid, { demandLeft: v.demandLeft, give: give.get(sid) ?? 0 });
+  return { available: pre.available, byStore };
+}
+
+/**
+ * 「⚖ 平均」按下去之後，這一列每一格要變成多少、以及該用哪一種寫法寫回去。
+ *
+ * ⛔ 純計算：不碰資料庫。抽出來的理由與本檔開頭那段一樣 ——
+ *   **散在 JSX 裡就驗不起來**，而這支決定的是「會不會把老闆填好的數字洗掉」。
+ *
+ * ⭐ 三條規則，每一條都有非它不可的理由：
+ *   1. **既有的格子只改 qty**，⛔ 不可以用 upsert 把整包欄位（含快照）蓋上去。
+ *      snapshot_demand_qty / snapshot_available_qty 記的是「加入商品那一刻」的值，
+ *      切片 B 的「對照現況」拿它當基準算落差；被重拍成現在的值，落差就永遠是 0。
+ *      （commitCell 改既有格子時也只寫 qty + updated_by，這裡是同一條規則。）
+ *   2. **沒有列、又不用給的格子不建**：為了寫一個 0 多插一列，畫面（留白）與合計（+0）
+ *      完全一樣，只是多一列垃圾。
+ *   3. **數量沒變的格子不寫**：與 commitCell 的短路同一條，少一次往返也少一個出錯面。
+ *
+ * ⭐ 「這一列有哪些格子」＝ 畫面上的欄 ∪ 已經有的格子 ∪ 需求裡出現過的店，三者缺一不可：
+ *   欄     —— 老闆看得到的每一格都要有明確的新數字，否則橫加起來對不上合計
+ *   已有格 —— 含被藏起來的停用分店（現在是 0，設 0 是 no-op；漏掉卻可能留著舊數字）
+ *   需求店 —— ⛔ 少了它，某家店分到的量會被**靜靜丟掉**，合計就對不上可分配量
+ *
+ * @param even        computePrefillEven() 的結果
+ * @param columnIds   畫面上有欄位的分店 id（storeCols）
+ * @param cells       **這樣商品**目前的格子（呼叫端先濾好）
+ */
+export function planEvenWrite<T extends { id: number; store_id: number; qty: number }>(
+  even: Prefill,
+  columnIds: number[],
+  cells: T[],
+): {
+  /** store_id → 這一格最後應該是多少（含 0）。合計欄 = 這些值的和 */
+  targets: Map<number, number>;
+  /** 還沒有列、且要給 > 0 → 要新增（呼叫端負責帶快照欄位） */
+  insert: { storeId: number; qty: number }[];
+  /** 同一個目標數量的既有列併成一組 → 一組一次 UPDATE（平均分配下大多是同一個數字） */
+  update: { qty: number; rows: T[] }[];
+  /** 會被蓋掉、目前不是 0 的格子數（呼叫端用它決定要不要先問過老闆） */
+  overwriting: number;
+  /** targets 的合計 ＝ 這次總共會分出去多少件 */
+  giveTotal: number;
+} {
+  // id 一律 Number() 正規化：BIGINT 經過 PostgREST 可能是字串（#751 踩過），
+  // 不正規化的話 Map.get() 對不上，每一家都會被算成「沒有需求 → 0」。
+  const give = new Map<number, number>();
+  for (const [sid, v] of even.byStore) give.set(Number(sid), v.give);
+
+  const storeIds = new Set<number>(columnIds.map((v) => Number(v)));
+  for (const c of cells) storeIds.add(Number(c.store_id));
+  for (const sid of give.keys()) storeIds.add(sid);
+
+  const byStore = new Map<number, T>();
+  for (const c of cells) byStore.set(Number(c.store_id), c);
+
+  const targets = new Map<number, number>();
+  const insert: { storeId: number; qty: number }[] = [];
+  const grouped = new Map<number, T[]>();
+  let overwriting = 0;
+  let giveTotal = 0;
+
+  for (const storeId of storeIds) {
+    const qty = give.get(storeId) ?? 0;
+    targets.set(storeId, qty);
+    giveTotal += qty;
+    const cur = byStore.get(storeId);
+    if (!cur) {
+      if (qty > 0) insert.push({ storeId, qty });
+      continue;
+    }
+    if (Number(cur.qty) === qty) continue;
+    if (Number(cur.qty) > 0) overwriting += 1;
+    const bag = grouped.get(qty) ?? [];
+    bag.push(cur);
+    grouped.set(qty, bag);
+  }
+
+  return {
+    targets,
+    insert,
+    update: [...grouped.entries()].map(([qty, rows]) => ({ qty, rows })),
+    overwriting,
+    giveTotal,
+  };
+}
+
+/**
  * 一樣商品的合計。
  * ⚠ 直接從 cells 加總，**不是**加總畫面上看得到的欄位 ——
  *   萬一哪天欄位漏了一欄，合計也還是對的（寧可欄位與合計對不起來被發現，
