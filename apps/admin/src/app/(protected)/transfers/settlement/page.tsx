@@ -132,8 +132,14 @@ export default function SettlementPage() {
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">月結算</h1>
+          {/* ⚠️ 2026-09-01 改寫：原本寫「依 hq_to_store **已收貨** transfers 計算貨款」，
+              那句從 2026-09-01 起是假的 —— 口徑已改成「總倉派車當下、MAX(派出量,實收量)」
+              (20260901000000_settlement_dispatch_basis.sql:148-149 金額、:358-391 明細)。
+              ⛔ 這是給總倉看「錢怎麼算出來的」的唯一一句說明，寫錯就是對帳吵架的起點。 */}
           <p className="text-sm text-zinc-500">
-            總倉對各分店：賣斷制、依 hq_to_store 已收貨 transfers 計算貨款（含空中轉調整）。
+            總倉對各分店：賣斷制。<span className="font-medium">2026-09-01 起，貨款算在總倉派車出貨的那一天</span>，
+            數量取「派出量」與「實際收到量」之中較大的那個（店家超收照實收算、少收先照派出算，
+            總倉在異常同意退回後會自動扣掉）。含空中轉調整。
             應付金額以分店價口徑計；成本口徑另計、供總倉毛利參考。
             流程：產生 → 送店家核對 → （爭議處理）→ 雙方同意鎖定 → 店家匯款 → 收款結案。
           </p>
