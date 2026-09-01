@@ -398,6 +398,15 @@ export function TransferShortageResolveModal({
               之後要補給這家店，請該店開一張補貨申請，總倉核准後就能直接派，不用再進一次貨
               （要是這批貨先被別的單配走了，就得等下一批）。
             </div>
+            {/* ⚠️ 錢的話只放在這一塊,不放預設文案 —— 沖帳單只對「總倉派給店家」的單產生
+                (20260901000010_shortage_return_booking.sql:296-300 的四道條件),
+                而 restock_hq 沒有總倉守衛、店↔店的單也按得下去。
+                ⛔ 措辭不寫「一定會退到多少錢」:金額是月結重算時才算出來的,
+                  而且分店價改過版的商品會有差額(見該檔檔頭的⚠️那段)。 */}
+            <div className="mt-0.5">
+              兩顆都會把少收的數量<span className="font-bold">記一筆退回</span>，
+              月結重算時就會從這家店的帳上扣掉，不用另外開人工調整。
+            </div>
           </div>
         )}
         {/* ⚠️⚠️ 五審 P1-2 的落點就在這裡:「會自動開一張撿貨單」這句從第一顆的預設說明
@@ -483,22 +492,36 @@ export function TransferShortageResolveModal({
         {/* 第三個答案「不同意退貨」(＝要跟店家收錢)還沒做 —— ⛔ 刻意做成「說明文字」不是按鈕。
             老闆 2026-08-21 逐字定的話,原因是總倉真的按不出這個結果。
             ⭐ 括號那句是這裡唯一一句「系統會怎樣」的話,出處:
-              月結明細與金額都是按 ti.qty_received 算的
-              (rpc_generate_hq_to_store_settlement 最新版
-               20260807000000_settlement_taipei_month_boundary.sql:103-115 金額、:276-297 明細,
-               兩處都帶 AND ti.qty_received > 0),
-              而 rpc_resolve_transfer_item_shortage 只寫 shortage_* 欄位、
-              **不會動到 qty_received**(20260811020000:262-270 的 UPDATE 欄位清單)
-              ⇒ 上面兩顆按完,少收的那幾件都不會進月結單。
-            ⛔ 這句只描述月結是怎麼算出來的,不寫「一定不會被收錢」——
-              月結另有人工調整那條路(20260801000000_settlement_manual_adjustment),不歸這個視窗管。
-            ⛔⛔ 這一段查到最新版用的是標準查法(帶 public. 選擇性前綴),
-              rpc_generate_hq_to_store_settlement 共 8 版,20260807000000 是最後一支。 */}
+              ⚠️⚠️ 2026-09-01 改寫:這句話原本寫的是「月結單是按店家**實際收到**的數量算錢的,
+              而這兩顆都不會改動實收數量」——**那句話從 2026-09-01 起是假的**,
+              而且是在對總倉講錢怎麼算,錯得最貴。
+              新口徑:hq_inbound 改成 MAX(派出量,實收量) × 分店價、時點是派車日
+              (20260901000000_settlement_dispatch_basis.sql:148-149 金額、:358-391 明細)。
+              ⇒ 現在這句只留**無條件為真**的部分:月結是按送出去的數量算的。
+              (店↔店那一段 2026-08-25 起也已經是按轉出量,所以「按送出去的數量」
+               對這個視窗會遇到的兩種單都成立,不需要條件句。)
+            ⛔⛔ 2026-09-01 二審再修:上一版寫的是「按**總倉**送出去的數量」,
+              那個「總倉」兩個字對店↔店的單不成立 ——
+              v_hq_exceptions 的 transfer_short 分支
+              (20260824020000:1456-1499)WHERE 只有
+              `t.status='received' AND ti.qty_received < ti.qty_shipped`,
+              **沒有限定 transfer_type='hq_to_store'** ⇒ 店↔店短收一樣會進這個視窗。
+              ⇒ 「總倉」只能出現在 srcIsHq === true 那一塊。
+              ⭐ 這是同一個檔案上第七次因為「預設文案講了有條件的話」被抓 ——
+                寫這裡的每一句之前先問:**這句話對店↔店的單成立嗎?**
+            ⛔ 「少收的會自動扣掉」這句**沒有**寫在這裡,因為它有條件:
+              沖帳單只對 hq_to_store 產生(20260901000010_shortage_return_booking.sql:296-300 的四道條件),
+              而 restock_hq 沒有總倉守衛、店↔店的單也按得下去。
+              ⇒ 依本檔既有規矩,有條件的承諾一律只放在 srcIsHq === true 那一塊。
+            ⛔ 不寫「一定不會被收錢」——月結另有人工調整那條路
+              (20260801000000_settlement_manual_adjustment),不歸這個視窗管。
+            ⛔⛔ 查最新版用標準查法(帶 public. 選擇性前綴):
+              rpc_generate_hq_to_store_settlement 共 10 版,20260901000000 是最後一支。 */}
         <div className="rounded border border-zinc-300 bg-zinc-50 p-2 text-[11px] leading-relaxed text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
           🚧 要跟店家收錢（不同意退貨）的功能還在施工，這種先不要按、這筆會留在清單。
           <div className="mt-0.5 opacity-80">
-            （月結單是按店家<span className="font-bold">實際收到</span>的數量算錢的，
-            而這兩顆都不會改動實收數量。）
+            （2026-09-01 起，月結是按<span className="font-bold">送出去</span>的數量算錢的，
+            不再是按實際收到的數量。）
           </div>
         </div>
       </div>
