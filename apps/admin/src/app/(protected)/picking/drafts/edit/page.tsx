@@ -29,12 +29,14 @@ import {
   buildStoreColumns,
   checkedAtLabel,
   computeDraftPrecheck,
+  computePrefillEven,
   describeDraftDbError,
   lateCellSnapshot,
   loadHqLocationId,
   loadPrecheckDemand,
   loadPrefill,
   loadSkuPreviewBatch,
+  planEvenWrite,
   precheckHeadline,
   rowTotal,
   skuPreviewCell,
@@ -47,6 +49,7 @@ import {
   type SkuExistence,
   type SkuPreviewBatch,
   type SkuPreviewCell,
+  type SkuRow,
   type StoreRow,
 } from "@/lib/pickingDraftView";
 import SpinButton from "@/components/SpinButton";
@@ -447,6 +450,287 @@ function Body() {
     } catch (e) {
       setError(describeDraftDbError(e));
       clearEdit();
+    }
+  }
+
+  // ---- 「⚖ 平均」：把這樣商品的可分配量平均分到還有需求的店 ----
+  //
+  // ⭐ 這是**多一個選項**，不是換掉原本的行為。老闆 2026-08-17 拍板：
+  //   「加入商品」的自動預填維持「先來後到、前面吃滿後面掛 0」（貨不夠時讓一家真的能開賣，
+  //   好過五家都缺貨賣不動）→ ⛔ computePrefill 一個字都沒動，這顆鈕走另一支 computePrefillEven。
+  //
+  // ⛔ 全程只寫 picking_draft_items 這一張表，與這一頁其他動作一樣：
+  //   不碰派貨工作台、不扣庫存、不建任何單。讀的那一次（loadPrefill）也是純 SELECT。
+  //
+  // ⚠ 與派貨工作台那顆同名鈕最大的差別：**這裡的數字是存在資料庫的**。
+  //   工作台按下去只改前端 state（送出時才寫），這一頁一按就是十幾格落地、而且沒有復原 ——
+  //   所以（一）會蓋掉已填數字時要先問過，（二）分不出東西時**一格都不寫**，
+  //   （三）寫失敗要逐格講出是哪幾家店。
+  async function evenDistribute(row: SkuRow) {
+    setError(null);
+    setNotice(null);
+
+    // ---- ⛔ 這一列還有格子正在編輯／還沒存好 → 先擋下來（阿審 2026-09-01 P1-2）----
+    //
+    // 情境：老闆在某一格打字，還沒點別的地方，就順手按同一列的「⚖ 平均」。
+    //   滑鼠按下去會先讓輸入框 blur → `void commitCell(...)` 開始一條**沒有人在等**的寫入，
+    //   而 SpinButton 只等自己的 onClick（components/SpinButton.tsx:36-42）。
+    //   兩條路同時寫同一格 → 誰後到誰算數（平均寫完又被單格蓋回去），
+    //   或兩邊都判斷「這格沒有列」而各插一次 → 撞 UNIQUE (draft_id, sku_id, store_id)。
+    //
+    // ⭐ 判斷來源用**既有的** `edits`（正在輸入、還沒 commit 的格子；commitCell 存完會清掉，
+    //   成功、沒變、失敗三條路都會清），⛔ 不另外發明一套 pending 狀態，也 ⛔ 不用 setTimeout 猜時序。
+    // ⓘ key 是 `${sku_id}:${store_id}`，帶冒號比對 → 商品 12 不會誤判成商品 123 的格子。
+    const rowPrefix = `${row.sku_id}:`;
+    const pendingStores = [...edits.keys()]
+      .filter((k) => k.startsWith(rowPrefix))
+      .map((k) => Number(k.slice(rowPrefix.length)));
+    if (pendingStores.length > 0) {
+      const names = pendingStores
+        .map((sid) => storeCols.find((c) => c.id === sid)?.name ?? `分店 #${sid}`)
+        .join("、");
+      // ⓘ 措辭要能**指出下一步**：按鈕本身已經讓那幾格失焦、開始存檔了，
+      //   所以正確的下一步就是「再按一次」，⛔ 不要叫他去點別的地方（他會不知道要點哪裡）。
+      setError(
+        `⚠「${row.label}」這一列有 ${pendingStores.length} 格剛改過、正在存檔（${names}）——` +
+          `這次一格都沒有動到。剛才按下去的同時它們已經開始存檔了，` +
+          `再按一次「⚖ 平均」就可以了。` +
+          `（兩邊同時寫同一格會互相蓋掉，所以先擋下來。）`,
+      );
+      return;
+    }
+
+    const sb = getSupabase();
+    // ⛔ loadPrefill 是刻意不 catch 的（見該函式）—— 錯誤要在這裡被接住並且**明講失敗**。
+    //   ⛔ 不可以吞掉退回空需求：那會把整列平均成 0 寫進 DB，
+    //   畫面跟「這樣商品真的沒人要」一模一樣，老闆分不出是壞了還是真的沒有。
+    let pre: PrefillResult;
+    try {
+      pre = await loadPrefill({ db: sb, fetchAll: fetchAllRows }, row.sku_id);
+    } catch (e) {
+      // ⓘ 這段字是丟進 <div>{error}</div> 純文字渲染的，⛔ 不要寫 `**粗體**`（會原樣印出星號）。
+      //   要強調就用「」—— 與 lib 的 addBatchMessage 同一條規矩。
+      setError(
+        `⚠ 讀取「${row.label}」各分店需求失敗，這次「沒有」改動任何數量 —— 請再按一次重試。` +
+          `（這是系統讀取出錯，不是這樣商品沒有需求。原因：${describeDraftDbError(e)}）`,
+      );
+      return;
+    }
+
+    // ⛔ 可分配量 0 → **一格都不寫**（工作台是把鈕變灰，這一頁是按下去什麼都不做，
+    //   結果一樣：什麼都不會發生）。照算的話整列會被平均成 0，
+    //   等於把老闆填好的數字洗掉，而且沒有復原。
+    if (pre.available === 0) {
+      // ⚠ 措辭刻意**不指定原因**：可分配量 0 可能是貨還沒到、已經派完，也可能是各店需求
+      //   都派掉了（那種情況 view 連列都不會回）—— 從這一次查詢分不出來是哪一種。
+      //   ⛔ 挑一個講，就是替系統下了一個它沒資格下的判斷。
+      setNotice(
+        `⚖「${row.label}」目前在派貨工作台上沒有可以分配的量` +
+          `（貨還沒到、已經派完，或各店的需求都已經派掉了）—— 這次沒有改動任何數量。`,
+      );
+      return;
+    }
+
+    // 這一列每一格要變成多少、以及要用新增還是改數量寫回去（純計算，見 planEvenWrite）
+    // ⭐ 兩支都吃 `storeCols` 的順序 —— 那是 buildStoreColumns 用 compareStoreOrder 排的，
+    //   與派貨工作台的 allStores 同一份店序（wms/picking/page.tsx:874-878）。
+    //   ⛔ 不可以省掉：平手時「餘數那幾件給誰」就是靠它跟工作台對齊的（阿審 P1-1）。
+    const orderedStoreIds = storeCols.map((c) => c.id);
+    const even = computePrefillEven(pre, orderedStoreIds);
+    const plan = planEvenWrite(
+      even,
+      orderedStoreIds,
+      items.filter((it) => Number(it.sku_id) === row.sku_id),
+    );
+    const { giveTotal } = plan;
+    // 各店「還缺多少」的合計 —— 成功訊息要拿它跟分出去的量對照，
+    // ⛔ 不可以直接斷言「剩下的都是因為各店已經分滿了」（見下面那段）。
+    const demandTotal = [...even.byStore.values()].reduce((s, v) => s + v.demandLeft, 0);
+
+    // 可分配量有、但一家都沒有未派需求 → 一樣**一格都不寫**（否則整列被洗成 0）
+    if (giveTotal === 0) {
+      setNotice(
+        `⚖「${row.label}」可分配 ${pre.available} 件，但目前沒有任何分店還有未派需求 ——` +
+          `平均分下去每一家都會是 0，所以這次沒有改動任何數量。要多給某幾家請直接填。`,
+      );
+      return;
+    }
+    if (plan.insert.length === 0 && plan.update.length === 0) {
+      setNotice(
+        `⚖「${row.label}」現在的數字已經就是平均分配的結果` +
+          `（可分配 ${pre.available}、分出 ${giveTotal}），沒有東西要改。`,
+      );
+      return;
+    }
+
+    // ---- 會蓋掉已經填好的數字 → 先問過 ----
+    // ⛔ 這一頁的數字是直接落地的，蓋掉就沒有復原（同 removeSku 為什麼要 confirm 的理由）。
+    //   ⓘ 只有「真的有非 0 的格子會被改成別的數字」才問；整列本來就空的不問，不要沒事多一關。
+    if (
+      plan.overwriting > 0 &&
+      !confirm(
+        `「${row.label}」這一列有 ${plan.overwriting} 格已經填了數字，按「平均」會整列改成平均分配的結果。\n\n` +
+          `原本填的數字會被覆蓋掉，而且沒有復原。\n\n` +
+          `（只動這張草稿：不會動到任何庫存、訂單，也不影響派貨工作台。）`,
+      )
+    ) {
+      return;
+    }
+
+    let tenantId: string;
+    let uid: string | null;
+    try {
+      ({ tenantId, uid } = await sessionInfo());
+    } catch (e) {
+      setError(`${describeDraftDbError(e)}（一格都沒有改到。）`);
+      return;
+    }
+
+    // ---- 真的寫 ----
+    // ⚠ 效能（數字經阿審 2026-09-01 重算）：一次按鈕 = 2 次讀（loadPrefill 內含 demand 與
+    //   結單日兩次）+ 0~1 次新增 + 「每個不同目標數量各 1 次」修改。
+    //   平均分配下大多數店拿到同一個數字 → **單一商品常見 3~6 次往返**；
+    //   17 家店各卡在不同的上限時，理論上限是 2 讀 + 17 寫 = **19 次**。
+    //   ⚠⚠ 但這是**單一商品**的數字：老闆對 10 樣商品各按一次平均是 30~60 次往返，
+    //   **會高於**一次「加入選取的 10 樣」（約 30 次）。⛔ 不要拿單顆的數字去說整批也很省。
+    //   ⛔ 不可以退回逐格 commitCell：那是十幾次往返，而且中途壞掉會留下半列平均、半列舊值。
+    const storeLabel = (sid: number) =>
+      storeCols.find((c) => c.id === sid)?.name ??
+      items.find((it) => Number(it.store_id) === sid)?.snapshot_store_name ??
+      `分店 #${sid}`;
+    const inserted: DraftItem[] = [];
+    const updated = new Map<number, number>(); // picking_draft_items.id → 新數量
+    const failed: { store: string; reason: string }[] = [];
+
+    if (plan.insert.length > 0) {
+      // 這幾格還沒有列：加入這樣商品之後才啟用（或才被撈出來）的分店。
+      // 快照欄位的規則**逐項比照 commitCell 的新增分支**（本檔 :407-431）：
+      // 品號品名沿用同商品其他列、分店名取「現在這一欄」、數量快照當下重拍一次。
+      // ⓘ 這裡不必再查一次需求：pre 就是剛剛讀回來的那一份。
+      const now = new Date().toISOString();
+      const sibling = items.find((it) => it.sku_id === row.sku_id);
+      try {
+        const { data, error: err } = await sb
+          .from("picking_draft_items")
+          .insert(
+            plan.insert.map(({ storeId, qty }) => {
+              const col = storeCols.find((c) => c.id === storeId);
+              return {
+                tenant_id: tenantId,
+                draft_id: draftId,
+                sku_id: row.sku_id,
+                store_id: storeId,
+                qty,
+                snapshot_sku_code: sibling?.snapshot_sku_code ?? null,
+                snapshot_sku_label: sibling?.snapshot_sku_label ?? null,
+                snapshot_store_code: col?.code ?? null,
+                snapshot_store_name: col?.name ?? null,
+                ...lateCellSnapshot(pre, storeId, now),
+                created_by: uid,
+                updated_by: uid,
+              };
+            }),
+          )
+          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name");
+        if (err) throw err;
+        inserted.push(...((data ?? []) as DraftItem[]));
+      } catch (e) {
+        const reason = describeDraftDbError(e);
+        for (const { storeId } of plan.insert) failed.push({ store: storeLabel(storeId), reason });
+      }
+    }
+
+    for (const { qty, rows: rowsToSet } of plan.update) {
+      const ids = rowsToSet.map((it) => it.id);
+      try {
+        const { data, error: err } = await sb
+          .from("picking_draft_items")
+          .update({ qty, updated_by: uid })
+          .in("id", ids)
+          // ⓘ 多綁一個 draft_id：這是本檔唯一一次「一口氣依 id 改很多列」的寫入，
+          //   把影響範圍鎖死在這張草稿，不靠「items 一定只裝這張草稿的列」這個信任。
+          .eq("draft_id", draftId)
+          // ⛔ .select() 不是裝飾：沒有它，「一列都沒改到」與「全部改好」都算成功。
+          //   RLS 擋掉、或另一台 iPad 剛把這幾格刪掉時，畫面會若無其事地顯示新數字。
+          .select("id");
+        if (err) throw err;
+        const okIds = new Set(((data ?? []) as { id: number }[]).map((r) => Number(r.id)));
+        for (const it of rowsToSet) {
+          if (okIds.has(Number(it.id))) updated.set(it.id, qty);
+          else
+            failed.push({
+              store: storeLabel(Number(it.store_id)),
+              reason: "這一格沒有更新到（可能剛被另一台 iPad 刪掉，或這個帳號沒有權限）",
+            });
+        }
+      } catch (e) {
+        const reason = describeDraftDbError(e);
+        for (const it of rowsToSet) failed.push({ store: storeLabel(Number(it.store_id)), reason });
+      }
+    }
+
+    // ---- 畫面只反映「DB 真的認了」的那些格子 ----
+    // ⛔ 不做樂觀更新：寫失敗的格子要留著舊數字，老闆才看得出來哪幾家沒進去。
+    if (inserted.length > 0 || updated.size > 0) {
+      setItems((arr) => [
+        ...arr.map((it) => (updated.has(it.id) ? { ...it, qty: updated.get(it.id) as number } : it)),
+        ...inserted,
+      ]);
+      // 正在輸入、還沒 blur 的格子要清掉，否則畫面會蓋著老闆剛打的字、看不到新數量
+      setEdits((m) => {
+        const next = new Map(m);
+        for (const storeId of plan.targets.keys()) next.delete(cellKey(row.sku_id, storeId));
+        return next;
+      });
+      // 數字改了 → 先前那份檢查結果不算數了。
+      // ⓘ 與 commitCell 一樣**不動** dispatchPlan：送出只帶商品、不看數量（老闆 2026-08-18）。
+      setPrecheckStale(true);
+    }
+
+    const okCount = inserted.length + updated.size;
+    if (failed.length > 0) {
+      // ⛔ 一定要逐格講出是哪幾家店：只說「有 N 格失敗」等於沒講。
+      const reasons = Array.from(new Set(failed.map((f) => f.reason)));
+      const detail =
+        reasons.length === 1
+          ? `${failed.map((f) => f.store).join("、")}。原因：${reasons[0]}`
+          : failed.map((f) => `${f.store}（${f.reason}）`).join("；");
+      setError(
+        `⚠「${row.label}」有 ${failed.length} 格沒有寫進去：${detail} ` +
+          (okCount > 0
+            ? // ⭐⭐ 這一句是本功能最重要的一行字：部分失敗＝這一列現在**半新半舊**，
+              //   橫加起來不等於任何一個說得出口的數字。老闆會把草稿印給樓下去撿，
+              //   不講的話他印出來的就是一張自己也不知道錯在哪的單子。
+              `這幾格畫面上還是舊的數字，另外 ${okCount} 格已經改成平均分配的量 ——` +
+              // ⚠ 「可能不是」不是客氣，是精確（阿審 2026-09-01 P2）：失敗那幾格的舊值
+              //   有可能剛好等於目標值、或彼此抵銷，橫加仍然湊得出 giveTotal。
+              //   ⛔ 話說滿就是又一個沒查證的畫面斷言。
+              `這一列現在是「一半平均、一半舊值」，橫加起來可能不是 ${giveTotal} 件，` +
+              `先不要印給樓下，請重試或重新整理確認。`
+            : `這一列一格都沒有改到（還是原本的數字）。`) +
+          `請再按一次「⚖ 平均」重試（已經改好的格子不會被重複寫）。`,
+      );
+    } else if (okCount > 0) {
+      const short = pre.available - giveTotal;
+      const unmet = demandTotal - giveTotal;
+      // ⚠⚠ 這一句刻意**由實際數字判斷**，⛔ 不直接斷言「剩下的都是因為各店已經分滿了」。
+      //   分不完的量通常真的是「各店加起來只缺這麼多」，但分配迴圈有一個 10 輪上限
+      //   （照抄派貨工作台 autoDistribute，⛔ 不是我加的、也不該只改單邊），
+      //   理論上可能在還有人缺貨時就收工。實測 50 萬組（含刻意構造的等差／幾何級數需求）
+      //   一次都沒發生，但「沒找到反例」不等於「不會發生」——
+      //   一旦發生，寫死那句話就是對老闆說了一件不是事實的事（本專案最忌諱的那種畫面斷言）。
+      const tail =
+        short <= 0
+          ? ""
+          : unmet <= 0
+            ? `剩下的 ${short} 件沒有分出去 —— 各店加起來只缺 ${giveTotal} 件，已經分滿了。`
+            : `剩下的 ${short} 件這次沒有分出去，而各店加起來還缺 ${unmet} 件 ——` +
+              `這是平均分配除不盡的餘數，差額請自己填。`;
+      setNotice(
+        `⚖ 已把「${row.label}」的可分配 ${pre.available} 件平均分下去，共分出 ${giveTotal} 件（改了 ${okCount} 格）。` +
+          `每一家都不會超過它還缺的量；沒有未派需求的店是 0。` +
+          tail,
+      );
     }
   }
 
@@ -972,8 +1256,26 @@ function Body() {
               {skuRows.map((row) => (
                 <tr key={row.sku_id}>
                   <th className="sticky left-0 z-10 border-r border-zinc-200 bg-white px-3 py-2 text-left font-normal dark:border-zinc-800 dark:bg-zinc-950">
-                    <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{row.label}</div>
-                    <div className="font-mono text-xs text-zinc-400">{row.code}</div>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">{row.label}</div>
+                        <div className="font-mono text-xs text-zinc-400">{row.code}</div>
+                      </div>
+                      {!readOnly && (
+                        // 位置比照派貨工作台：跟商品名同一格（wms/picking/page.tsx:2494-2502）。
+                        // ⭐ 這一格是 sticky left-0 —— 17 家店的表格要橫捲，鈕放在這裡才一直按得到。
+                        // ⓘ 措辭刻意只講它真的會做的事。⛔ 不寫「公平分配」「自動最佳化」：
+                        //   它就是平均分、cap 在各店還缺的量，沒有別的智慧（承諾做不到的事＝騙人）。
+                        <SpinButton
+                          type="button"
+                          onClick={() => evenDistribute(row)}
+                          title="把這樣商品目前的可分配量平均分到還有需求的店（每家不超過它還缺的量）。會覆蓋這一列已經填的數字。"
+                          className="shrink-0 self-center rounded-md border border-blue-300 bg-blue-50 px-2 py-1.5 text-[11px] font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-40 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300 dark:hover:bg-blue-900"
+                        >
+                          ⚖ 平均
+                        </SpinButton>
+                      )}
+                    </div>
                     {row.state !== "active" && (
                       // 商品在 skus 裡查不到（草稿不綁外鍵，見 migration 檔頭）。
                       // 照樣顯示快照名稱＋明講狀況，⛔ 不靜默跳過這一列。
