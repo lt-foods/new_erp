@@ -44,6 +44,11 @@ type Product = {
   pool_arrived: number;
   free: number;
   free_with_pool: number;
+  /** 現場銷售真正能賣的量（＝在庫 − 待客取 − 在途內部單，**不扣等貨中**）。
+   *  ⛔ 不要改用 free_with_pool 當可賣量 —— 那個有扣 waiting，會讓「團購客人
+   *  還在等貨（貨根本還沒到）」擋掉架上真的有的貨。2026-09-01 松山一口馬可披薩
+   *  就是這樣：等貨中 8 件把架上 2 件擋死，提示還叫店員補 6 件庫存。 */
+  walkin_qty: number;
   retail_price: number | null;
   branch_price: number | null;
   suggest_price: number;
@@ -62,6 +67,7 @@ type CartLine = {
   on_hand: number;
   promised: number;
   waiting: number;
+  poolInTransit: number;
 };
 
 type MemberHit = {
@@ -196,6 +202,7 @@ export default function PosPage() {
             pool_arrived: num(r.pool_arrived),
             free: num(r.free),
             free_with_pool: num(r.free_with_pool),
+            walkin_qty: num(r.walkin_qty),
             retail_price: numOrNull(r.retail_price),
             branch_price: numOrNull(r.branch_price),
             suggest_price: num(r.suggest_price),
@@ -269,10 +276,11 @@ export default function PosPage() {
           qty: 1,
           unit_price: p.suggest_price,
           addStock: 0,
-          sellable: p.free_with_pool,
+          sellable: p.walkin_qty,
           on_hand: p.on_hand,
           promised: p.promised,
           waiting: p.waiting,
+          poolInTransit: Math.max(0, p.pool_claimed - p.pool_arrived),
         },
       ];
     });
@@ -496,7 +504,7 @@ export default function PosPage() {
                 ) : (
                   <ul className="divide-y divide-zinc-100 dark:divide-zinc-800">
                     {products.map((p) => {
-                      const sellable = p.free_with_pool;
+                      const sellable = p.walkin_qty;
                       const inCart = cart.find((l) => l.sku_id === p.sku_id);
                       return (
                         <li key={p.sku_id}>
@@ -531,9 +539,15 @@ export default function PosPage() {
                               <span className="text-zinc-500 dark:text-zinc-400">
                                 在庫 {p.on_hand}
                                 {p.promised > 0 && ` · 待客取 ${p.promised}`}
-                                {p.waiting > 0 && ` · 等貨中 ${p.waiting}`}
                                 {p.pool_claimed > 0 && ` · 內部單 ${p.pool_claimed}`}
                               </span>
+                              {/* 等貨中的團購需求**不擋**現場銷售（貨還沒到店），
+                                  所以只當附註，不要跟在庫／待客取並列成「被佔走」的樣子 */}
+                              {p.waiting > 0 && (
+                                <span className="text-zinc-400">
+                                  另有 {p.waiting} 件團購在等貨
+                                </span>
+                              )}
                               {showBranchPrice && p.branch_price != null && (
                                 <span className="rounded bg-amber-100 px-2 py-0.5 font-semibold text-amber-900 dark:bg-amber-900/60 dark:text-amber-200">
                                   分店 ${p.branch_price}
@@ -734,10 +748,17 @@ export default function PosPage() {
                           {short > 0 && (
                             <div className="mt-2 rounded-lg border-l-4 border-amber-400 bg-amber-50 px-3 py-2.5 text-[14px] leading-relaxed text-amber-900 dark:bg-amber-950/60 dark:text-amber-200">
                               <div>
-                                可賣 <b>{l.sellable}</b> 件（在庫 {l.on_hand}
-                                {l.promised > 0 && `、待客取 ${l.promised}`}
-                                {l.waiting > 0 && `、等貨中 ${l.waiting}`}），這一列要 {l.qty} 件。
+                                現在能賣 <b>{l.sellable}</b> 件（在庫 {l.on_hand}
+                                {l.promised > 0 && `、其中待客取 ${l.promised}`}
+                                {l.poolInTransit > 0 && `、在途補貨 ${l.poolInTransit}`}），
+                                這一列要 {l.qty} 件。
                               </div>
+                              {/* 等貨中的團購需求不影響現在能賣多少，但店員會想知道 */}
+                              {l.waiting > 0 && (
+                                <div className="mt-0.5 text-amber-700/80 dark:text-amber-300/80">
+                                  另有 {l.waiting} 件是團購客人在等貨（貨還沒到），不影響這筆。
+                                </div>
+                              )}
                               {canAddStock ? (
                                 <label className="mt-2 flex min-h-11 flex-wrap items-center gap-2 font-medium">
                                   <input

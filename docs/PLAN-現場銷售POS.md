@@ -148,7 +148,8 @@ rpc_create_walkin_sale(
    ⚠ 一律用 `app_metadata.stores`（**店名陣列**），不可以用 `store_id`（線上 33 個分店帳號沒有任何一個有 store_id）。
    角色一律讀 `auth.jwt() -> 'app_metadata' ->> 'role'`，不要用頂層 `role`（那永遠是 `authenticated`）。
 2. 每個 (店, SKU) 各取一次 `pg_advisory_xact_lock`（同現貨直配），併發結帳序列化。
-3. **可賣量閘門**：上限是 **`_sku_free_qty_with_pool(store, sku)`**，不是 `on_hand`。
+3. **可賣量閘門**：上限是 **`_sku_walkin_qty(store, sku)`**（20260901020000），不是 `on_hand`。
+   `walkin = on_hand − promised − (pool_claimed − pool_arrived)`。
    別的客人在等的貨（待客取 / 等貨中 / 在途池子）不可以被現場客買走 —— 那正是取貨閘門實體庫存守衛（20260818000010）在擋的事，
    而現場銷售**直接寫 sale、不經過取貨閘門**，所以這裡是唯一防線。
 4. **缺貨補帳**（見 §5）：`add_stock_qty > 0` 的列先寫 `manual_adjust(+N)`，再回到步驟 3 重算。
