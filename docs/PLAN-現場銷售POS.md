@@ -199,7 +199,7 @@ rpc_create_walkin_sale(
 
 ```
 ┌──────────────────────────┬─────────────────────────┐
-│ 商品搜尋（名稱 / SKU code）  │ 客人：[🔍 搜會員] 或 [打名字]  │
+│ 商品搜尋（名稱 / SKU code）  │ 客人：[打名字＝同時搜會員]     │
 │  ─ 商品 A  可賣 5  $109    │ ─────────────────────── │
 │  ─ 商品 B  可賣 0  $85 ⚠   │ 商品 A  ×2  $109   $218  │
 │  ─ 商品 C  可賣 12 $60     │ 商品 B  ×1  $85    $85   │
@@ -212,8 +212,18 @@ rpc_create_walkin_sale(
 └──────────────────────────┴─────────────────────────┘
 ```
 
+**這頁是櫃台平板在用，一律照觸控介面做**（2026-09-01 Alex：「元件要大一點比較好操作」
+「要符合觸碰介面」）：所有可點元件 **≥44px**（Apple HIG 最小觸控目標），主要動作再放大 ——
+輸入框 48px、付款方式 48px、結帳鈕 **64px**；數量用 **−／＋ 大按鈕**（44×44）而不是叫店員
+去點小小的數字框；商品**整列都是按鈕**，手指點哪裡都會加入購物車。
+尺寸常數收在檔案上方的 `INPUT` / `BTN_SM` / `ICON_BTN` —— 改樣式時不要縮回桌機尺寸。
+驗證方式：Playwright 掃全頁 `button/input/select/a`，量不到 44px 就是回歸。
+
 要點：
 
+- **客人輸入框本身就是會員搜尋框**（2026-09-01 Alex：「客人的輸入框直接就要可以搜尋」）：
+  打字 → 下面跳出符合的會員，點一下就綁成他的訂單；不點就直接結帳，那串字是現場客的名字
+  （`nickname_snapshot`）。**不做「選會員」彈窗** —— 櫃台前最不需要的就是多一次點擊。
 - 可賣量、建議售價一次撈：擴充既有 `rpc_get_stock_commitment_bulk`（它已經回 `free_with_pool`），
   **不要**每列各打一次 `rpc_get_spot_availability`（那是 `ARRAY[單一變數]` 那個坑，一頁 50 列就是掃 50 遍，
   文山店實測 3.8 秒 → 收斂後 60ms）。
@@ -222,7 +232,16 @@ rpc_create_walkin_sale(
 - 單價 0 要擋（零元守衛的同一個理由：$0 = 把貨白送出去）。
 - 缺貨列一律顯示拆解「在庫 X、待客取 Y、等貨中 Z」，不要只寫「可賣 0」——
   那正是 8/24「調整庫存完不能把庫存再轉出去」那次店員繞不出來的原因。
-- **結帳完直接出小票（Alex 決議：要）** —— 列為 P0，不是 P1。版型重用 `/pickup/print`，走 `/pos/receipt?order=<id>`：店名、單號、日期、人名、逐列品項 / 數量 / 單價 / 小計、折扣、合計、付款方式、操作人。
+- **結帳完直接出小票（Alex 決議：要）** —— 列為 P0。版型比照 `/pickup/print-list` 的取貨小白單
+  （80mm、等寬字、虛線分隔）：店名、單號、時間、人名、逐列品項／數量／單價／小計、
+  折扣、應收、付款方式。
+
+  ⚠ **在同一個畫面就地列印，不要另開分頁**（2026-09-01 Alex：「我只需要同一個畫面跳出小白單列印」）。
+  原本開新分頁到 `/pos/receipt?order=<id>` 有兩個問題：admin 是 `output: "export"` ＋
+  `trailingSlash: true` 的靜態站，**少了尾斜線就 404**；就算補了，新分頁還會被瀏覽器的
+  彈窗阻擋擋掉。現在的做法是頁面上掛一個 `hidden print:block` 的小白單（資料就是購物車 ＋
+  RPC 回的單號，不用再查一次 DB），結完帳 `window.print()`，`.pos-noprint` 讓收銀畫面在
+  列印時消失。版型收在 `components/PosReceipt.tsx`，**只有一份**。
 
 ---
 
@@ -255,12 +274,12 @@ rpc_create_walkin_sale(
 
 | # | 內容 | 檔案 | 狀態 |
 |---|---|---|---|
-| 1 | 唯一索引 predicate 加 `order_no NOT LIKE 'WS-%'`、`source` CHECK 加 `walk_in`、`_walkin_member(tenant, store)` | `20260901000000_walkin_sale_schema.sql` | ✅ |
-| 2 | `rpc_create_walkin_sale`（店家守衛、free_with_pool 閘門、缺貨補帳、扣池、pickup event） | `20260901000010_rpc_create_walkin_sale.sql` | ✅ |
-| 3 | `rpc_pos_search_products`（結帳頁商品搜尋，一次撈可賣量＋售價） | `20260901000020_rpc_pos_search_products.sql` | ✅ |
-| 4 | 補庫存稽核報表 `rpc_walkin_stock_topups` | `20260901000030_rpc_walkin_stock_topups.sql` | ✅ |
+| 1 | 唯一索引 predicate 加 `order_no NOT LIKE 'WS-%'`、`source` CHECK 加 `walk_in`、`_walkin_member(tenant, store)` | `20260901010000_walkin_sale_schema.sql` | ✅ |
+| 2 | `rpc_create_walkin_sale`（店家守衛、free_with_pool 閘門、缺貨補帳、扣池、pickup event） | `20260901010010_rpc_create_walkin_sale.sql` | ✅ |
+| 3 | `rpc_pos_search_products`（結帳頁商品搜尋，一次撈可賣量＋售價） | `20260901010020_rpc_pos_search_products.sql` | ✅ |
+| 4 | 補庫存稽核報表 `rpc_walkin_stock_topups` | `20260901010030_rpc_walkin_stock_topups.sql` | ✅ |
 | 5 | 結帳頁 + 側欄入口 | `app/(protected)/pos/page.tsx`、`layout.tsx` | ✅ |
-| 6 | 小票（80mm，決議 4） | `app/(protected)/pos/receipt/page.tsx` | ✅ |
+| 6 | 小票（80mm，決議 4）—— 結帳頁就地列印，版型單一來源 | `components/PosReceipt.tsx` | ✅ |
 | 7 | 補庫存紀錄頁（§5 配套 4） | `app/(protected)/pos/topups/page.tsx` | ✅ |
 | 8 | 訂單頁：`internalOrderSource()` 加 `WS-`、`walk_in` badge、`/orders` 快篩 | `lib/orderTitle.ts`、`lib/orderSource.ts`、`orders/page.tsx` | ✅ |
 | 9 | 日結報表依付款方式分項 | `rpc_daily_pickup_settlement` | ⏳ **還沒做**，見下 |

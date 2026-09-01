@@ -42,7 +42,7 @@
 --   p_customer_name → nickname_snapshot（＝需求說的「依照人名產生訂單」）。
 --
 -- 基底版本：無（新函式）。用到的既有零件全部照原樣呼叫，沒有複製任何一份邏輯：
---   _walkin_member(20260901000000) / _restock_sentinel_*(20260612000020) /
+--   _walkin_member(20260901010000) / _restock_sentinel_*(20260612000020) /
 --   _sku_free_qty + _sku_commitment(20260816000000) /
 --   _sku_free_qty_with_pool + _consume_internal_pool(20260824060000) /
 --   _current_cost_price(20260705000000)
@@ -405,7 +405,7 @@ COMMENT ON FUNCTION public.rpc_create_walkin_sale(BIGINT, JSONB, UUID, BIGINT, T
   '（單頭 completed、品項 picked_up、每列一筆 sale movement）。'
   '可賣量閘門用 _sku_free_qty_with_pool（不是 on_hand），成交後扣內部現貨池；'
   '缺貨可在同一交易補 manual_adjust（限 store_manager 以上，帶成本、留 reason）。'
-  '20260901000010。';
+  '20260901010010。';
 
 REVOKE ALL ON FUNCTION public.rpc_create_walkin_sale(BIGINT, JSONB, UUID, BIGINT, TEXT, TEXT, NUMERIC, TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.rpc_create_walkin_sale(BIGINT, JSONB, UUID, BIGINT, TEXT, TEXT, NUMERIC, TEXT) TO authenticated;
