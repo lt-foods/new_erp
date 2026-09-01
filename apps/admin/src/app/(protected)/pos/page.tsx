@@ -296,9 +296,9 @@ export default function PosPage() {
   const itemsTotal = cart.reduce((s, l) => s + l.qty * l.unit_price, 0);
   const discNum = typeof discount === "number" ? discount : 0;
   const total = Math.max(0, itemsTotal - discNum);
-  const shortLines = cart.filter((l) => l.qty > l.sellable + l.addStock);
+  const shortLines = cart.filter((l) => l.qty > l.sellable && l.addStock <= 0);
   const zeroPriceLines = cart.filter((l) => l.unit_price <= 0);
-  const addTotal = cart.reduce((s, l) => s + l.addStock, 0);
+  const addTotal = cart.reduce((s, l) => s + (l.addStock > 0 ? Math.max(0, l.qty - l.sellable) : 0), 0);
   const canCheckout =
     !busy &&
     !!storeId &&
@@ -355,7 +355,8 @@ export default function PosPage() {
           sku_id: l.sku_id,
           qty: l.qty,
           unit_price: l.unit_price,
-          add_stock_qty: l.addStock,
+          // 勾了就補「當下缺的量」；addStock 只當旗標用（改過數量後它會過期）
+          add_stock_qty: l.addStock > 0 ? Math.max(0, l.qty - l.sellable) : 0,
         })),
         p_operator: operator,
         p_member_id: memberId,
@@ -680,7 +681,9 @@ export default function PosPage() {
                   <ul className="max-h-[40vh] divide-y divide-zinc-100 overflow-y-auto dark:divide-zinc-800">
                     {cart.map((l) => {
                       const short = Math.max(0, l.qty - l.sellable);
-                      const stillShort = Math.max(0, l.qty - l.sellable - l.addStock);
+                      // 勾了補庫存之後又改數量：補的量永遠等於當下缺的量
+                      // （RPC 那邊也會再夾一次，這裡只是讓畫面上的數字誠實）
+                      const stillShort = l.addStock > 0 ? 0 : short;
                       return (
                         <li key={l.sku_id} className="px-3 py-3">
                           <div className="flex items-start gap-2">
@@ -760,6 +763,11 @@ export default function PosPage() {
                                 </div>
                               )}
                               {canAddStock ? (
+                                /* 補的量不讓店員自己填：補多少就當場賣掉多少，一件都不留
+                                   （RPC 也會夾成 need − 可賣量，20260901030000）。
+                                   給一個可填的數字只會讓人補多，多的就變成沒有來源的
+                                   幽靈庫存 —— 那正是這個功能最該防的事。
+                                   真要把架上整批入帳，走「庫存總覽 → 新增庫存」或盤點。 */
                                 <label className="mt-2 flex min-h-11 flex-wrap items-center gap-2 font-medium">
                                   <input
                                     type="checkbox"
@@ -769,21 +777,7 @@ export default function PosPage() {
                                       patchLine(l.sku_id, { addStock: e.target.checked ? short : 0 })
                                     }
                                   />
-                                  架上有貨 → 先補
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    value={l.addStock}
-                                    aria-label="補庫存數量"
-                                    onChange={(e) => {
-                                      const v = Math.floor(Number(e.target.value));
-                                      patchLine(l.sku_id, {
-                                        addStock: Number.isFinite(v) ? Math.max(0, v) : 0,
-                                      });
-                                    }}
-                                    className="h-11 w-16 rounded-lg border border-amber-400 bg-white text-center text-lg font-semibold tabular-nums dark:bg-zinc-800"
-                                  />
-                                  件庫存
+                                  架上有貨 → 補 {short} 件並立刻賣掉（庫存淨變化 0，只留一筆紀錄）
                                 </label>
                               ) : (
                                 <div className="mt-1.5">
