@@ -67,6 +67,9 @@ export type InternalOrderSource = { label: string; hint: string };
 export function internalOrderSource(orderNo: string | null | undefined): InternalOrderSource | null {
   const no = (orderNo ?? "").trim();
   if (!no) return null;
+  if (no.startsWith("WS-")) {
+    return { label: "🛒 現場銷售", hint: "門市臨櫃結帳，當場交貨扣庫存（開單即完成）" };
+  }
   if (no.startsWith("SP-")) {
     return { label: "🤝 現貨直配", hint: "店內現貨直接配給客人（待取，取貨時才扣庫存收款）" };
   }

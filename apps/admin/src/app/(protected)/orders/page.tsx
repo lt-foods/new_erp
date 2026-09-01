@@ -1388,6 +1388,22 @@ function OrdersListContent() {
               ✕
             </SpinButton>
           )}
+          {/* 現場銷售快篩：WS- 單一律是 completed（開單即交貨），所以連 tab 一起切，
+              不然停在「未取貨」會搜出 0 筆，看起來像功能壞了。
+              走 keyword 而不是新開一個篩選維度 —— buildKeywordOr 已經涵蓋
+              order_no.ilike，新維度要同時改 applyOrderFilters / URL state /
+              計數查詢 / 「選取全部符合」四處，漏一處就會各說各話。 */}
+          <SpinButton
+            type="button"
+            onClick={() => { setTab("completed"); setKwInput("WS-"); setKeyword("WS-"); }}
+            title="只看門市現場銷售的單（WS-，臨櫃結帳、當場扣庫存）"
+            className={keyword === "WS-"
+              ? "shrink-0 rounded-md border border-sky-400 bg-sky-100 px-3 py-2 text-sm font-medium text-sky-900 dark:border-sky-700 dark:bg-sky-950 dark:text-sky-300"
+              : "shrink-0 rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            }
+          >
+            🛒 現場銷售
+          </SpinButton>
           {internalKeyword && (
             <SpinButton
               type="button"

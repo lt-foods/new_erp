@@ -35,6 +35,10 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/orders", label: "訂單", match: /^\/orders/ },
       { href: "/pickup", label: "取貨", match: /^\/pickup/ },
+      // 現場銷售（門市 POS）：賣給沒有訂單的現場客，送出即扣庫存結案。
+      // ⚠ match 要排除 /pos/receipt 以外沒有子頁，維持 ^\/pos 即可；
+      //   分店要用，所以**不要**放進 BRANCH_HIDDEN_HREFS。
+      { href: "/pos", label: "現場銷售", match: /^\/pos/ },
       { href: "/wms/inbound", label: "收貨", match: /^\/wms\/inbound|^\/transfers\/inbox/ },
       { href: "/members", label: "會員", match: /^\/members/ },
       { href: "/wms/transfers", label: "內部調撥", match: /^\/wms\/transfers|^\/transfers\/free|^\/transfers\/dispatch|^\/transfers$|^\/transfers\/?$/ },
