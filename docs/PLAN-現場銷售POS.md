@@ -1,6 +1,7 @@
 # PLAN — 現場銷售（門市 POS：沒有訂單的現場客，當場結帳當場扣庫存）
 
-> 狀態：**規劃已定案（Alex 2026-09-01 回覆四個問題 + 追加訂單頁需求），施工中**。需求人：Alex。
+> 狀態：**P0 已施工完成，尚未部署正式庫**（2026-09-01）。分支 `claude/point-of-sale-feature-plan-ezpz4x`。
+> 需求人：Alex。決議見 §11、施工結果見 §9。
 > 需求原文：「有店家想要賣現場客，但是沒有訂單，然後又想要維護庫存，
 > 可以做一個現場銷售的功能，像是一般超商那樣，可以依照人名跟商品庫存來產生一筆訂單，
 > 並且扣掉庫存，然後銷售當下有可能很多商品沒有庫存，可以在同一個地方假如沒庫存就自動增加一筆記錄到庫存」。
@@ -53,6 +54,20 @@
 | 成本 / 均成本 | `stock_movements('sale')` | 毛利算不出來 |
 
 **結論：現場銷售就是一張顧客訂單，只是它出生的時候就已經取完貨了。**
+
+### ⚠ 不要用 day-1 留下來的 `pos_sales`
+
+線上**真的有**一組 `pos_sales` / `pos_sale_items` 表，還有一支 `rpc_complete_pos_sale`
+（`20260422120005_sales_schema.sql`，通用 ERP 骨架）。看起來像正主，但它是死的：
+
+| 檢查 | 結果 |
+|---|---|
+| `pos_sales` 資料 | **0 筆** |
+| `pos_sale_items` 資料 | **0 筆** |
+| 前端引用 | **完全沒有**（`grep -rn "pos_sale" apps/` 沒有命中） |
+| `pos_sales.customer_id` 指向 | `customers` 表 —— 也是 **0 筆**，全站其實用 `members` |
+
+它跟現在這套系統（會員、團購、取貨、日結）沒有任何接點。用它等於重蓋一套平行帳。
 
 ---
 
@@ -238,15 +253,29 @@ rpc_create_walkin_sale(
 
 ## 9. 施工順序
 
-| # | 內容 | 產出 |
-|---|---|---|
-| 1 | migration A：唯一索引 predicate 加 `order_no !~~ 'WS-%'`；每店建立「現場客」guest 會員的 helper `_walkin_member(store)` | SQL |
-| 2 | migration B：`rpc_create_walkin_sale`（含店家守衛、free_with_pool 閘門、缺貨補帳、扣池、pickup event） | SQL |
-| 3 | migration C：`customer_order_items.source` CHECK 加 `walk_in`；`rpc_get_stock_commitment_bulk` 擴充建議售價欄位（一次撈，不要 per-row LATERAL） | SQL |
-| 4 | 前端 `/pos` 頁 + 側欄入口 | TSX |
-| 5 | 小票 `/pos/receipt`（P0，決議 4） | TSX |
-| 6 | 訂單頁調整：`internalOrderSource()` 加 `WS-`（admin + member 兩份）、`walk_in` badge、`/orders` 快篩 | TSX |
-| 7 | 日結分項（付款方式）+ 補庫存報表 | SQL + TSX |
+| # | 內容 | 檔案 | 狀態 |
+|---|---|---|---|
+| 1 | 唯一索引 predicate 加 `order_no NOT LIKE 'WS-%'`、`source` CHECK 加 `walk_in`、`_walkin_member(tenant, store)` | `20260901000000_walkin_sale_schema.sql` | ✅ |
+| 2 | `rpc_create_walkin_sale`（店家守衛、free_with_pool 閘門、缺貨補帳、扣池、pickup event） | `20260901000010_rpc_create_walkin_sale.sql` | ✅ |
+| 3 | `rpc_pos_search_products`（結帳頁商品搜尋，一次撈可賣量＋售價） | `20260901000020_rpc_pos_search_products.sql` | ✅ |
+| 4 | 補庫存稽核報表 `rpc_walkin_stock_topups` | `20260901000030_rpc_walkin_stock_topups.sql` | ✅ |
+| 5 | 結帳頁 + 側欄入口 | `app/(protected)/pos/page.tsx`、`layout.tsx` | ✅ |
+| 6 | 小票（80mm，決議 4） | `app/(protected)/pos/receipt/page.tsx` | ✅ |
+| 7 | 補庫存紀錄頁（§5 配套 4） | `app/(protected)/pos/topups/page.tsx` | ✅ |
+| 8 | 訂單頁：`internalOrderSource()` 加 `WS-`、`walk_in` badge、`/orders` 快篩 | `lib/orderTitle.ts`、`lib/orderSource.ts`、`orders/page.tsx` | ✅ |
+| 9 | 日結報表依付款方式分項 | `rpc_daily_pickup_settlement` | ⏳ **還沒做**，見下 |
+
+### ⏳ 還沒做：日結依付款方式分項
+
+現場銷售**已經**會進日結（§10 情境 6 實測過），只是還沒有「現金 / 轉帳」的拆分。
+沒有一起做的原因：`rpc_daily_pickup_settlement` 最新版是 `20260831000040`（245 行、
+兩支函式，而且兩支的 `picked` 母體必須逐字一致），為了加一個分項欄位去整支重寫
+是這個 PR 裡風險最高、價值最低的一段。等現場銷售真的跑起來、確定要拆的維度之後
+再單獨做一支 migration 比較安全。
+
+要做的時候：基底是 `20260831000040`，`days[]` 比照 `store_campaign_*` 那組的做法
+多回 `cash_amount` / `other_amount_by_method`，**既有欄位一個都不要動**
+（前端沒改也不會壞，那是該檔自己立的規矩）。
 
 每支 migration 送出前：
 
@@ -259,17 +288,25 @@ git fetch origin main -q && git ls-tree --name-only origin/main supabase/migrati
 
 ---
 
-## 10. 驗收情境
+## 10. 驗收情境（✅ = 已對正式庫實測，執行後 ROLLBACK）
 
-1. 現場客買 3 樣（其中 1 樣缺 1 件 → 勾補庫存）→ 一張 `WS-` 單、`completed`、3 列 `picked_up`、
-   3 筆 `sale` + 1 筆 `manual_adjust`，`on_hand` 正確。
-2. 同一家店連開 5 張現場銷售單 → 不撞唯一索引。
-3. 某 SKU 在庫 5、其中 5 件是別的客人的待取 → 現場銷售可賣量顯示 **0**，硬打 RPC 也被擋。
-4. 某 SKU 的貨掛在【內部】店現貨池（已到貨）→ 賣得掉，且池子跟著少（留一列刪除線）。
-5. 分店帳號打別店的 `p_store_id` → `wrong_store`。
-6. 賣完當天開日結 → 金額對得上，且分得出現金 / 轉帳。
-7. 按錯 → 撤銷取貨 → `on_hand` 回來、日結金額跟著回去。
-8. 補庫存報表查得到那 1 件，且點得進盤點。
+
+| # | 情境 | 實測結果 |
+|---|---|---|
+| 1 | 買 3 樣、其中 1 樣缺 2 件勾補庫存 | ✅ `WS-1-0001`、3 列 `picked_up`、3 筆 `sale` + 1 筆 `manual_adjust(+2, cost 2.2)` |
+| 2 | 同店連開多張 | ✅ `WS-1-0001` / `0002` / `0003`，沒撞唯一索引 |
+| 3 | 超過可賣量 | ✅ 擋下，訊息帶「在庫 3 / 待客取 0 / 等貨中 0」＋下一步 |
+| 4 | 池子有貨（on_hand 6、free 1、cap 5）賣 4 件 | ✅ `from_pool=3`，池子 4→1（OV- 單留一列刪除線 `[已現場售出 WS-1-0001]`），on_hand 6→2 |
+| 5 | 分店帳號打別店 | ✅ `wrong_store` |
+| 6 | 賣完當天開日結 | ✅ 平鎮店 746 → 996（+250），`/orders` 列表 `source_summary='walk_in'` |
+| 7 | 按錯 → `rpc_undo_pickup` | ✅ 兩筆 `reversal`、品項回 `pending`、`on_hand` 完全復原 |
+| 8 | 補庫存報表 | ✅ 對得回 `WS-1-0001`，summary/明細都出得來 |
+| 9 | `store_staff` 勾補庫存 | ✅ `permission denied`（不勾則正常結帳） |
+| 10 | 單價 0 / 空購物車 / 賣給【內部】店帳號 | ✅ 三個都擋下 |
+
+前端（Playwright + fixture，`apps/admin:verify`）：結帳頁缺貨列出現補庫存勾選、
+勾了才給結帳、付款方式吃 `stores.allowed_payment_methods`、小票金額與折扣正確
+且不印出 `WALKIN-` 帳號、`/orders` 快篩按下去 keyword 變 `WS-`、側欄出現「現場銷售」。
 
 ---
 

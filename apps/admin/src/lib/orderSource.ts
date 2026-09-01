@@ -35,6 +35,7 @@ export const ORDER_ITEM_SOURCES = [
   "rollover",
   "store_internal",
   "aid_transfer",
+  "walk_in",
 ] as const;
 
 export type OrderItemSource = (typeof ORDER_ITEM_SOURCES)[number];
@@ -58,10 +59,13 @@ export const ORDER_SOURCE_META: Record<OrderItemSource, SourceMeta> = {
   rollover:         { label: "缺貨遞轉", short: "遞轉",   icon: "↪️", cls: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300" },
   store_internal:   { label: "店長叫貨", short: "店叫",   icon: "🏬", cls: "bg-teal-100 text-teal-800 dark:bg-teal-950 dark:text-teal-300" },
   aid_transfer:     { label: "互助轉手", short: "互助",   icon: "🤝", cls: "bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300" },
+  walk_in:          { label: "現場銷售", short: "現場",   icon: "🛒", cls: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300" },
 };
 
 // 訂單頁「下單來源」折線圖 KPI 的線 —— 只放「人是怎麼下這張單的」三個通路，
 // 系統流程（遞轉/互助/匯入…）不畫線，它們不是通路消長的一部分。
+// ⚠ walk_in（現場銷售）刻意不放：那是臨櫃結帳，不是線上通路，
+//   混進來會讓「App / 商城 / 小幫手」的消長圖說謊。
 // color 直接寫死 rgb：SVG stroke 吃不到 Tailwind class，且深/淺色模式共用同一組
 // （這三個色相在兩種底色上都夠對比）。順序＝圖例順序。
 export const SOURCE_TREND_SERIES: { source: OrderItemSource; label: string; color: string }[] = [
