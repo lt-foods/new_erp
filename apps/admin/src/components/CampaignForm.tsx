@@ -76,6 +76,12 @@ export function CampaignForm({
   const role = useRole();
   const admin = isAdmin(role);
   const [v, setV] = useState<CampaignFormValues>(initial ?? emptyCampaignValues);
+  // 店家自開團＝店長自己的團，「儲存」不能鎖在 isAdmin 後面：店長把狀態選成
+  // 「已收單」卻沒有鈕可以按，畫面只寫「僅管理員可儲存開團」（2026-09-01 回報）。
+  // 真正的權限在 DB —— rpc_upsert_campaign 對自開團會過 _assert_own_store，
+  // 分店只改得動自己店的（20260901050000）。新建團仍限管理員：店長開團走
+  // StoreCampaignCreateModal，那條路自己會帶 owner_store_id。
+  const canSave = admin || v.owner_store_id != null;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isPiaopiaoLocked = initial?.sales_channel === "piaopiao";
@@ -344,12 +350,12 @@ export function CampaignForm({
       )}
 
       <div className="flex items-center gap-3">
-        {admin && (
+        {canSave && (
           <SpinButton type="submit" disabled={saving} className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200">
             {saving ? "儲存中…" : submitLabel ?? (v.id ? "儲存" : "建立開團")}
           </SpinButton>
         )}
-        {role !== null && !admin && (
+        {role !== null && !canSave && (
           <span className="text-xs text-zinc-500">僅管理員可儲存開團</span>
         )}
         <SpinButton type="button" onClick={() => onCancel ? onCancel() : router.push("/campaigns")} className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800">取消</SpinButton>
