@@ -10,9 +10,10 @@
 // 三個一定要記得的規矩（改這頁前先看 docs/PLAN-現場銷售POS.md）：
 //   1. 可賣量是 **free_with_pool**（在庫 − 待客取 − 等貨中 − 在途池子），
 //      不是 on_hand。別的客人正在等的貨不可以被現場客買走。
-//   2. 缺貨可以在同一列勾「補庫存」，但那是**憑空生貨的入口** ——
-//      只有店長以上按得動（RPC 也會再擋一次），而且每一筆都留 manual_adjust
-//      紀錄（reason 以「現場銷售即時入帳」開頭）供事後稽核 / 導向盤點。
+//   2. **數量不擋結帳**：帳上不夠的部分，RPC 會自動補 manual_adjust 再賣掉
+//      （+N / −N，on_hand 淨變化 0，20260901040000）。客人就站在櫃台前、貨一定
+//      會出去，擋下來只會讓帳跟現實脫節。畫面要把「會自動補 N 件」講清楚，
+//      而 /pos/topups 是唯一在看這個口的地方 —— 別把那支報表拿掉。
 //   3. 商品清單一定要走 rpc_pos_search_products（一次撈），不要每列各打一次
 //      rpc_get_spot_availability —— 那支是 per-SKU 的，一頁 30 列 = 掃 30 遍。
 
@@ -44,6 +45,11 @@ type Product = {
   pool_arrived: number;
   free: number;
   free_with_pool: number;
+  /** 現場銷售真正能賣的量（＝在庫 − 待客取 − 在途內部單，**不扣等貨中**）。
+   *  ⛔ 不要改用 free_with_pool 當可賣量 —— 那個有扣 waiting，會讓「團購客人
+   *  還在等貨（貨根本還沒到）」擋掉架上真的有的貨。2026-09-01 松山一口馬可披薩
+   *  就是這樣：等貨中 8 件把架上 2 件擋死，提示還叫店員補 6 件庫存。 */
+  walkin_qty: number;
   retail_price: number | null;
   branch_price: number | null;
   suggest_price: number;
@@ -55,13 +61,13 @@ type CartLine = {
   sku_code: string | null;
   qty: number;
   unit_price: number;
-  /** 這一列要在結帳當下補幾件庫存（0 = 不補） */
-  addStock: number;
-  /** 下架商品時的可賣量快照，用來畫「超賣」警告 */
+  /** 加入購物車當下「不用補帳就賣得掉」的量。低於數量時畫提示，
+   *  但**不擋結帳** —— 缺的部分由 RPC 自動補（20260901040000）。 */
   sellable: number;
   on_hand: number;
   promised: number;
   waiting: number;
+  poolInTransit: number;
 };
 
 type MemberHit = {
@@ -107,10 +113,6 @@ const ICON_BTN = "grid size-11 shrink-0 place-items-center rounded-lg border bor
 export default function PosPage() {
   const role = useRole();
   const showBranchPrice = canSeeBranch(role);
-  // 補庫存是憑空生貨的入口 —— 角色清單對齊 rpc_create_walkin_sale 的 gate
-  // （'' 是沒有顯式 role 的 legacy / dev admin，漏掉會把舊帳號全擋在外面）。
-  const canAddStock =
-    role !== null && ["owner", "admin", "hq_manager", "store_manager", ""].includes(role);
 
   const [stores, setStores] = useState<StoreRow[]>([]);
   const [pickedStoreId, setPickedStoreId] = useState<string>("");
@@ -196,6 +198,7 @@ export default function PosPage() {
             pool_arrived: num(r.pool_arrived),
             free: num(r.free),
             free_with_pool: num(r.free_with_pool),
+            walkin_qty: num(r.walkin_qty),
             retail_price: numOrNull(r.retail_price),
             branch_price: numOrNull(r.branch_price),
             suggest_price: num(r.suggest_price),
@@ -268,11 +271,11 @@ export default function PosPage() {
           sku_code: p.sku_code,
           qty: 1,
           unit_price: p.suggest_price,
-          addStock: 0,
-          sellable: p.free_with_pool,
+          sellable: p.walkin_qty,
           on_hand: p.on_hand,
           promised: p.promised,
           waiting: p.waiting,
+          poolInTransit: Math.max(0, p.pool_claimed - p.pool_arrived),
         },
       ];
     });
@@ -288,14 +291,13 @@ export default function PosPage() {
   const itemsTotal = cart.reduce((s, l) => s + l.qty * l.unit_price, 0);
   const discNum = typeof discount === "number" ? discount : 0;
   const total = Math.max(0, itemsTotal - discNum);
-  const shortLines = cart.filter((l) => l.qty > l.sellable + l.addStock);
   const zeroPriceLines = cart.filter((l) => l.unit_price <= 0);
-  const addTotal = cart.reduce((s, l) => s + l.addStock, 0);
+  // 帳上不夠的量：結帳時 RPC 會自動補帳再賣（**不擋結帳**，只是要讓店員看到）
+  const addTotal = cart.reduce((s, l) => s + Math.max(0, l.qty - l.sellable), 0);
   const canCheckout =
     !busy &&
     !!storeId &&
     cart.length > 0 &&
-    shortLines.length === 0 &&
     zeroPriceLines.length === 0 &&
     (member != null || customerName.trim().length > 0);
 
@@ -306,7 +308,9 @@ export default function PosPage() {
       !confirm(
         `向「${who}」收 $${total}（${cart.length} 項 / ${cart.reduce((s, l) => s + l.qty, 0)} 件）？\n\n` +
           `送出後**立刻扣庫存並結案**（不是待取）。\n` +
-          (addTotal > 0 ? `其中會先補 ${addTotal} 件庫存進帳。\n` : "") +
+          (addTotal > 0
+            ? `⚠ 其中 ${addTotal} 件帳上沒有，系統會自動補帳再賣（庫存淨變化 0，會留紀錄）。\n`
+            : "") +
           `打錯可在訂單頁「撤銷取貨」還原。`,
       )
     )
@@ -347,7 +351,7 @@ export default function PosPage() {
           sku_id: l.sku_id,
           qty: l.qty,
           unit_price: l.unit_price,
-          add_stock_qty: l.addStock,
+          // 缺多少由 RPC 自己算並自動補帳（20260901040000），前端不再送這個數字
         })),
         p_operator: operator,
         p_member_id: memberId,
@@ -496,7 +500,7 @@ export default function PosPage() {
                 ) : (
                   <ul className="divide-y divide-zinc-100 dark:divide-zinc-800">
                     {products.map((p) => {
-                      const sellable = p.free_with_pool;
+                      const sellable = p.walkin_qty;
                       const inCart = cart.find((l) => l.sku_id === p.sku_id);
                       return (
                         <li key={p.sku_id}>
@@ -531,9 +535,15 @@ export default function PosPage() {
                               <span className="text-zinc-500 dark:text-zinc-400">
                                 在庫 {p.on_hand}
                                 {p.promised > 0 && ` · 待客取 ${p.promised}`}
-                                {p.waiting > 0 && ` · 等貨中 ${p.waiting}`}
                                 {p.pool_claimed > 0 && ` · 內部單 ${p.pool_claimed}`}
                               </span>
+                              {/* 等貨中的團購需求**不擋**現場銷售（貨還沒到店），
+                                  所以只當附註，不要跟在庫／待客取並列成「被佔走」的樣子 */}
+                              {p.waiting > 0 && (
+                                <span className="text-zinc-400">
+                                  另有 {p.waiting} 件團購在等貨
+                                </span>
+                              )}
                               {showBranchPrice && p.branch_price != null && (
                                 <span className="rounded bg-amber-100 px-2 py-0.5 font-semibold text-amber-900 dark:bg-amber-900/60 dark:text-amber-200">
                                   分店 ${p.branch_price}
@@ -666,7 +676,6 @@ export default function PosPage() {
                   <ul className="max-h-[40vh] divide-y divide-zinc-100 overflow-y-auto dark:divide-zinc-800">
                     {cart.map((l) => {
                       const short = Math.max(0, l.qty - l.sellable);
-                      const stillShort = Math.max(0, l.qty - l.sellable - l.addStock);
                       return (
                         <li key={l.sku_id} className="px-3 py-3">
                           <div className="flex items-start gap-2">
@@ -731,47 +740,23 @@ export default function PosPage() {
                               單價不可為 0（$0 的貨等於白送）
                             </div>
                           )}
+                          {/* 帳上不夠：只是告知，**不擋結帳** —— 缺的部分結帳時
+                              系統自動補帳再賣（庫存淨變化 0，留一筆紀錄）。客人就在櫃台前、
+                              貨一定會出去，擋下來只會讓帳跟現實脫節（同空中轉出庫的理由）。 */}
                           {short > 0 && (
                             <div className="mt-2 rounded-lg border-l-4 border-amber-400 bg-amber-50 px-3 py-2.5 text-[14px] leading-relaxed text-amber-900 dark:bg-amber-950/60 dark:text-amber-200">
                               <div>
-                                可賣 <b>{l.sellable}</b> 件（在庫 {l.on_hand}
-                                {l.promised > 0 && `、待客取 ${l.promised}`}
-                                {l.waiting > 0 && `、等貨中 ${l.waiting}`}），這一列要 {l.qty} 件。
+                                帳上只有 <b>{l.sellable}</b> 件（在庫 {l.on_hand}
+                                {l.promised > 0 && `、其中待客取 ${l.promised}`}
+                                {l.poolInTransit > 0 && `、在途補貨 ${l.poolInTransit}`}），
+                                這一列要 {l.qty} 件。
                               </div>
-                              {canAddStock ? (
-                                <label className="mt-2 flex min-h-11 flex-wrap items-center gap-2 font-medium">
-                                  <input
-                                    type="checkbox"
-                                    className="size-5"
-                                    checked={l.addStock > 0}
-                                    onChange={(e) =>
-                                      patchLine(l.sku_id, { addStock: e.target.checked ? short : 0 })
-                                    }
-                                  />
-                                  架上有貨 → 先補
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    value={l.addStock}
-                                    aria-label="補庫存數量"
-                                    onChange={(e) => {
-                                      const v = Math.floor(Number(e.target.value));
-                                      patchLine(l.sku_id, {
-                                        addStock: Number.isFinite(v) ? Math.max(0, v) : 0,
-                                      });
-                                    }}
-                                    className="h-11 w-16 rounded-lg border border-amber-400 bg-white text-center text-lg font-semibold tabular-nums dark:bg-zinc-800"
-                                  />
-                                  件庫存
-                                </label>
-                              ) : (
-                                <div className="mt-1.5">
-                                  架上真的有貨請找店長補庫存，或先到「庫存總覽」入帳。
-                                </div>
-                              )}
-                              {stillShort > 0 && (
-                                <div className="mt-1.5 font-bold text-rose-700 dark:text-rose-300">
-                                  還差 {stillShort} 件，結不了帳。
+                              <div className="mt-1 font-semibold">
+                                結帳時系統會自動補 {short} 件庫存再賣掉（庫存淨變化 0，會留紀錄）。
+                              </div>
+                              {l.waiting > 0 && (
+                                <div className="mt-0.5 font-normal text-amber-700/80 dark:text-amber-300/80">
+                                  另有 {l.waiting} 件是團購客人在等貨（貨還沒到），不影響這筆。
                                 </div>
                               )}
                             </div>
@@ -843,8 +828,9 @@ export default function PosPage() {
 
                 {addTotal > 0 && (
                   <div className="rounded-lg border-l-4 border-amber-400 bg-amber-50 px-3 py-2.5 text-[14px] leading-relaxed text-amber-900 dark:bg-amber-950/60 dark:text-amber-200">
-                    這筆會先補 <b>{addTotal}</b> 件庫存進帳（留下「現場銷售即時入帳」紀錄）。
-                    常常要補代表帳跟實體長期對不上，記得排一次盤點。
+                    這筆有 <b>{addTotal}</b> 件帳上沒有，結帳時系統會自動補帳再賣掉
+                    （庫存淨變化 0，留一筆「現場銷售即時入帳」紀錄）。
+                    常常出現代表帳跟實體長期對不上，記得排一次盤點。
                   </div>
                 )}
 
