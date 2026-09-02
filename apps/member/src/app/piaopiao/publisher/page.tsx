@@ -21,7 +21,7 @@ const emptyProduct = (): Product => ({
 });
 const REQUEST_KEY = "piaopiao_pending_request_id";
 const MAX_BATCH_VARIANTS = 100;
-const SUPPLIER_OPTIONS = ["包子媽", "山瀾商行"];
+const SUPPLIER_OPTIONS = ["包子媽", "山瀾商行", "NO21", "精品", "599", "Diz.o", "芭斯特", "祥美", "亞諾"];
 
 export default function PiaopiaoPublisherPage() {
   const [token, setToken] = useState("");
