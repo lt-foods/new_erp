@@ -103,9 +103,12 @@ export type ShortageContext = {
 //   不是「總倉內部怎麼處理這批貨」。老闆原話:
 //   「這區塊是在處理店家的異常,是要回覆店家的話。接受退貨、不接受退貨而已,
 //     接受退貨就是不跟店家收錢,不接受退貨就是要跟店家收錢,然後接受退貨要不要補貨這樣而已。」
-//   ⇒ 同意退回-補貨   → redispatch
-//     同意退回-不補貨 → restock_hq
-//     不同意退貨(＝要跟店家收錢)→ 系統今天做不到 ⇒ ⛔ 不做按鈕,只在下面寫一行說明。
+//   ⇒ 同意退 ＋ 補貨   → redispatch
+//     同意退 ＋ 不補貨 → restock_hq
+//     不同意退           → reject_return
+//   ⚠️ 2026-09-03 更正:這三行原本寫「不同意退貨→系統今天做不到⇒不做按鈕」,
+//     Alex 9/03 已經把它做出來了(20260903000020 + 000200),那句話已經是假的。
+//     ⚠️ 字樣改成兩步的講法是老闆 9/02 §刀2 的定案(舊的連字號字樣禁用)。
 //
 // ⛔⛔ 舊的第三顆 accept(原「不接受退回」「公司吃掉這筆損失」)**已整顆移除**,連同它的
 //   「原因必填」一起。老闆 2026-08-21 原話:
@@ -120,24 +123,47 @@ export type ShortageContext = {
 //   短收本來就照派出量收錢；「同意退回」是靠 20260901000010 額外產一張沖帳單才少收的。
 //   ⇒ 不產沖帳單 ＝ 照收。⛔ 所以這顆**不可以**寫成「系統會去跟店家收錢」——
 //     沒有任何程式去加錢，是「不做那件會扣錢的事」。
+// 送給後端的值（⛔ 三個都是 Alex 已上線的值，一個字都不能改：
+//   redispatch / restock_hq 是既有的，reject_return 是他 20260903000020 加的、
+//   線上已有 2 列資料、老闆已經在用）。
 type Resolution = "redispatch" | "restock_hq" | "reject_return";
 
-const RESOLUTION_OPTIONS: Array<{
-  value: Resolution;
+// ⭐⭐ 2026-09-03（收件匣減法案 v2 · 刀 2）：老闆 9/02 定案要**兩步**——
+//   第 1 步 同意退 / 不同意退 → 第 2 步（只有同意才出現）補貨 / 不補貨。
+//   出處：需求暨計畫_收件匣減法案_2026-09-02.md §刀2。
+//
+// ⚠️ Alex 9/03 已經把**第三個答案**（reject_return）做出來了，而且比我們原本的設計多做一步
+//   「把實收補回派出量」（老闆 9/03 原話「不同意退貨原本收貨的要加回來」）＋可撤銷。
+//   ⇒ 我們這一輪**只做他沒做的兩件**：①分成兩步 ②拿掉舊字樣。
+//   ⛔ 他的三個值、三段說明文字的**資訊內容**逐字保留（下面 REPLY_OPTIONS 的
+//     「不同意退」那顆，desc/warn 就是他的原文），⛔ 零行為變動。
+type Reply = "agree" | "reject";
+
+type OptionDef<V extends string> = {
+  value: V;
   icon: string;
   title: string;
   desc: string;
   // 按下去會發生什麼「回不去」的事。一律顯示(不是選中才出現)—— 要在按之前就看到才有用。
   warn: string;
-  // ⛔ 只剩 caution / info 兩種。原本還有 danger,那是舊 accept 專用的紅底,
-  //   accept 移除後一起拿掉,不留沒有人用的樣式(2026-08-21)。
   warnTone: "caution" | "info";
-}> = [
+};
+
+// ── 第 2 步：同意退之後，要不要補貨 ────────────────────────────────────
+// ⭐ 這兩顆的 desc / warn 是 Alex 9/03 更新過的版本（他把「按下去就回不來」
+//   改成「可以撤銷但有前提」）—— **逐字保留**，只改了 title（老闆 9/02 禁令）。
+// ⭐ **兩處要一致**：這裡的 title 與 ExceptionsContent.tsx 的 RESOLUTION_LABEL
+//   （錨點 `redispatch: "同意退・補貨"`）—— 改一邊要改兩邊。
+const RESOLUTION_OPTIONS: Array<OptionDef<"redispatch" | "restock_hq">> = [
   {
     value: "redispatch",
     icon: "🔁",
-    // ⛔ 標題是老闆 2026-08-21 逐字定的字樣(對店家講的話),不要改寫、不要加系統講法。
-    title: "同意退回-補貨",
+    // ⭐ 這裡是**第 2 步**（第 1 步已經回答過「同意退」了）⇒ 只需要回答「要不要補貨」。
+    // ⛔⛔ 老闆 2026-09-02 §刀2 明定「不再出現舊的『同意退回』連字號開頭那種誤導字樣」，
+    //   **9/02 的新定案優先於 8/21 的舊定案**（舊字樣是為當時的單層平鋪選單定的）。
+    //   ⛔ 不要因為看到「老闆逐字定的」就改回去 —— 那句話講的是 8/21 那一版。
+    //   ⚠️ 本檔刻意連註解都不寫出那個舊字串，這樣 grep 自證才會真的是 0。
+    title: "補貨",
     // ⚠️⚠️ 2026-08-21 五審 P1-2:這句原本還寫「並自動開一張撿貨單給該店 —— 撿貨單會出現在
     //   收件匣的「📋 撿貨單」,樓下撿完再送一次」。那句話**只有出貨端是總倉時才成立**:
     //   非總倉的單,rpc 在建撿貨單之前就先 RAISE 了
@@ -176,8 +202,8 @@ const RESOLUTION_OPTIONS: Array<{
   {
     value: "restock_hq",
     icon: "🏭",
-    // ⛔ 同上,老闆逐字定的字樣。
-    title: "同意退回-不補貨",
+    // ⛔ 同上（老闆 2026-09-02 §刀2 的新定案）。
+    title: "不補貨",
     desc: "少收的數量以原出庫成本記回「原本送貨出去的那一邊」，不會自動再送給店家。",
     warnTone: "caution",
     // 出處:記回原出貨端 20260811020000:152-162
@@ -193,11 +219,33 @@ const RESOLUTION_OPTIONS: Array<{
       "之後要補給這家店，得另外開單。按錯了可以到「異常 → 已處理」按「撤銷」，" +
       "但記回去的貨已經被派出去的話就撤不掉了。",
   },
+];
+
+// ── 第 1 步：要不要同意這筆退（2026-09-03 · 刀 2 v2）─────────────────────
+//
+// ⭐ 「不同意退」那顆的 desc / warn ＝ **Alex 20260903 的原文逐字搬過來**，
+//   連他的出處註解一起搬（他查得比我們原本的設計完整：多了「補回實收」與「可撤銷」）。
+//   ⛔ 一個字都沒改，也沒有動任何行為 —— 只是把它從「平鋪第三顆」變成「第 1 步第二顆」。
+// ⭐ 「同意退」那顆是新寫的，照本檔第一鐵則**只留無條件為真的話**：
+//   restock_hq 與 redispatch 都是 rpc_inbound 到 v_transfer.source_location
+//   ⇒「少收的數量記回原本送貨出去的那一邊」與出貨端是誰無關。
+//   ⛔ 錢的差別**不寫在這裡**（對店↔店不成立），只在下面 srcIsHq 那幾塊講。
+const REPLY_OPTIONS: Array<OptionDef<Reply>> = [
   {
-    value: "reject_return",
+    value: "agree",
+    icon: "✅",
+    title: "同意退",
+    desc: "少收的數量記回「原本送貨出去的那一邊」。選了之後再決定要不要補貨給這家店。",
+    warnTone: "info",
+    warn: "選「同意退」還要再選一次「補貨」或「不補貨」，才會真的送出。",
+  },
+  {
+    value: "reject",
     icon: "💰",
-    // ⛔ 老闆 2026-08-21 的字樣（「不接受退貨就是要跟店家收錢」）＋ 2026-09-03 補做這顆。
-    title: "不同意退貨-跟店家收錢",
+    // ⚠️ 標題改用老闆 9/02 為兩步定的「不同意退」；
+    //   Alex 原本平鋪時的字樣是「不同意退貨-跟店家收錢」，那句話的**資訊**
+    //   （照送出去的數量算錢）已經完整保留在下面 desc 第一句裡，沒有掉東西。
+    title: "不同意退",
     // 出處（三句都無條件為真，對 hq_to_store 與店↔店都成立）：
     //   ① 「照送出去的數量算錢」＝ 20260901000000 派車制 GREATEST(派出, 實收)；
     //      店↔店的 air_in/air_out 自 20260825030000 起兩邊都吃 qty_shipped。
@@ -228,6 +276,46 @@ const WARN_TONE_CLASS: Record<"caution" | "info", string> = {
   info: "border-blue-200 bg-blue-50 text-blue-900 dark:border-blue-800 dark:bg-blue-950/60 dark:text-blue-200",
 };
 
+// 兩步共用同一種卡片外觀 —— 抽出來的唯一理由是「兩步長得一樣」。
+// ⛔ 抽出來之後 warn 那一塊仍然是**一律顯示**，不是選中才出現（理由見檔頭實測數字）。
+function OptionCard<V extends string>({
+  opt, groupName, checked, onSelect,
+}: {
+  opt: OptionDef<V>;
+  groupName: string;
+  checked: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <label
+      className={`flex cursor-pointer items-start gap-3 rounded-md border p-3 transition ${
+        checked
+          ? "border-blue-400 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/30"
+          : "border-zinc-200 bg-white hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-950"
+      }`}
+    >
+      <input
+        type="radio"
+        name={groupName}
+        value={opt.value}
+        checked={checked}
+        onChange={onSelect}
+        className="mt-1"
+      />
+      <div className="flex-1">
+        <div className="flex items-baseline gap-2">
+          <span className="text-base">{opt.icon}</span>
+          <span className="font-medium">{opt.title}</span>
+        </div>
+        <div className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{opt.desc}</div>
+        <div className={`mt-1.5 rounded border px-2 py-1.5 text-[11px] leading-relaxed ${WARN_TONE_CLASS[opt.warnTone]}`}>
+          {opt.warn}
+        </div>
+      </div>
+    </label>
+  );
+}
+
 export function TransferShortageResolveModal({
   ctx,
   onClose,
@@ -237,7 +325,14 @@ export function TransferShortageResolveModal({
   onClose: () => void;
   onSubmitted: () => void;
 }) {
-  const [resolution, setResolution] = useState<Resolution | null>(null);
+  // 刀 2 v2：兩步。第 1 步選同意/不同意，第 2 步（只有同意才出現）選補貨/不補貨。
+  const [reply, setReply] = useState<Reply | null>(null);
+  const [restock, setRestock] = useState<"redispatch" | "restock_hq" | null>(null);
+  // 真正送給後端的值。⭐ 由兩步推出來，不另存一份 state ——
+  //   存兩份就會有「改了第 1 步、第 2 步舊答案還留著」的漂移。
+  // ⛔ 「不同意退」對到的是 **Alex 的 reject_return**（他已上線的值）。
+  const resolution: Resolution | null =
+    reply === "reject" ? "reject_return" : reply === "agree" ? restock : null;
   const [notes, setNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -336,7 +431,8 @@ export function TransferShortageResolveModal({
 
   async function submit() {
     if (!resolution) {
-      setError("請選擇怎麼處理");
+      // 兩步各自給自己的提示，不要籠統講「請選擇怎麼處理」讓人不知道少了哪一步
+      setError(reply === "agree" ? "還要再選「補貨」或「不補貨」" : "請先選「同意退」或「不同意退」");
       return;
     }
     setSubmitting(true);
@@ -354,7 +450,11 @@ export function TransferShortageResolveModal({
       });
       if (e) throw new Error(translateRpcError(e));
       // ⛔ 不直接 onSubmitted()(那會立刻關掉視窗)—— 先給回執,按「完成」才關。
-      setDoneTitle(RESOLUTION_OPTIONS.find((o) => o.value === resolution)?.title ?? resolution);
+      setDoneTitle(
+        resolution === "reject_return"
+          ? "不同意退"
+          : `同意退・${RESOLUTION_OPTIONS.find((o) => o.value === resolution)?.title ?? resolution}`,
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -416,9 +516,11 @@ export function TransferShortageResolveModal({
         </div>
       </div>
 
-      {/* 兩顆處理鈕 —— 這是「回覆店家」的兩個答案 */}
+      {/* 第 1 步 —— 「回覆店家」的兩個答案（刀 2 v2：2026-09-03 改成兩步） */}
       <div className="mt-4 space-y-2">
-        <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">要怎麼回覆店家？ *</div>
+        <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+          第 1 步：要同意這筆退嗎？ *
+        </div>
 
         {/* ⚠️ 2026-09-03：這個框原本寫「兩顆都是按下去就回不來」——
             撤銷做上去之後那句話變假了（rpc_undo_transfer_item_shortage，20260903000200）。
@@ -435,6 +537,82 @@ export function TransferShortageResolveModal({
           </div>
         </div>
 
+        {/* ⚠️⚠️ 錢的差別必須在選同意/不同意「之前」就看到 ⇒ 這三態框放在第 1 步。
+            ⭐ 為什麼要按「這張單是誰派的」分開講（這是阿審 2026-09-02 判我 P0 的那一條）：
+              「同意退＝把少收的錢沖掉」**只對總倉派給店家的單成立** ——
+              沖帳單的產生條件含 `transfer_type = 'hq_to_store'`
+              （Alex 自己的 v6 也是這樣，20260903000200 錨點 `v_transfer.transfer_type = 'hq_to_store'`）。
+              店↔店那一段 8/25 起兩邊都吃 qty_shipped，20260825030000 檔頭逐字：
+              「短收／拒收不會自動調帳…那是兩家店之間要處理的差異，需要時用
+                store_settlement_adjustments 人工調整」
+              ⇒ 對店↔店，兩個選項**對錢沒有差別**。
+            ⛔⛔ 不可以寫成「兩邊金額鏡像一致所以沒有人被多收」——
+              鏡像一致講的是「兩張帳單對得起來」，不是「沒有人被多收」（派 10 收 8
+              時收貨店照樣被算 10）。這正是被判 P0 的那個推理錯誤，⛔ 不要復發。 */}
+        {srcIsHq === true && (
+          <div className="rounded border border-zinc-300 bg-zinc-50 p-2 text-[11px] leading-relaxed text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
+            這張單是<span className="font-bold">總倉</span>派出去的。
+            <div className="mt-0.5">
+              選「<span className="font-bold">同意退</span>」→ 系統會把少收的數量<span className="font-bold">記一筆退回</span>，
+              月結重算時就會從這家店的帳上扣掉，不用另外開人工調整。
+            </div>
+            <div className="mt-0.5">
+              選「<span className="font-bold">不同意退</span>」→ 不記那筆退回，月結就照派出去的數量跟這家店收。
+            </div>
+          </div>
+        )}
+
+        {srcIsHq === false && (
+          <div className="rounded border-2 border-amber-400 bg-amber-100 p-2 text-[11px] leading-relaxed text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200">
+            <span className="font-bold">這張單不是總倉派出去的（店對店）。</span>
+            <div className="mt-0.5">
+              ⚠️ <span className="font-bold">兩家店之間的差額不會自動調帳</span> ——
+              不管選「同意退」還是「不同意退」，月結都照<span className="font-bold">轉出</span>的數量算，
+              <span className="font-bold">錢的部分兩個選項沒有差別</span>。
+              要調帳得請總倉另外開人工調整。
+            </div>
+            <div className="mt-0.5">
+              這兩個選項對這張單的差別只在<span className="font-bold">貨</span>：
+              「同意退」會把少收的數量記回原本送貨出去的那一家店，「不同意退」不記
+              （但會把帳面實收改成派出量）。
+            </div>
+          </div>
+        )}
+
+        {srcCheckFailed && (
+          <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[11px] leading-relaxed text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
+            ⚠️ 查不到這張單是不是總倉派的，所以<span className="font-bold">錢會怎麼算這裡先不講</span>。
+            若是總倉派的，「同意退」會把少收的錢從這家店帳上扣掉；
+            若是店對店的，兩家店之間的差額<span className="font-bold">不會自動調帳</span>（要人工調整）。
+          </div>
+        )}
+        {/* ⛔ 措辭刻意用條件句，不寫成斷言 —— 我們真的不知道它是哪一種。
+            ⭐ 這一格同時是「解鎖」：查不到時送出鈕要放行（不能因為我們沒讀到資料
+              就讓這張單永遠處理不了），但放行的同時得把「我不知道」講出來。 */}
+
+        {REPLY_OPTIONS.map((opt) => (
+          <OptionCard
+            key={opt.value}
+            opt={opt}
+            groupName="shortage-reply"
+            checked={reply === opt.value}
+            onSelect={() => {
+              setReply(opt.value);
+              // 改選「不同意退」時把第 2 步的舊答案清掉 —— 不清的話，
+              // 使用者改回「同意退」會看到上次選的還亮著（漂移）。
+              if (opt.value === "reject") setRestock(null);
+            }}
+          />
+        ))}
+      </div>
+
+      {/* 第 2 步 —— 只有「同意退」才出現 */}
+      {reply === "agree" && (
+      <div className="mt-4 space-y-2">
+        <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+          第 2 步：要補貨給這家店嗎？ *
+        </div>
+
         {/* 這張單是誰派出去的 —— 只在「查到答案」時才多講一句。
             ⭐ 上面兩顆的文案本身已經不管出貨端是誰都成立(不再寫死「總倉」),
             所以這一塊純粹是「多給資訊」,不是拿來補救錯字 ⇒
@@ -447,11 +625,11 @@ export function TransferShortageResolveModal({
             這張單是<span className="font-bold">總倉</span>派出去的 →
             下面兩顆說的「原本送貨出去的那一邊」就是總倉。
             <div className="mt-0.5">
-              選「<span className="font-bold">同意退回-補貨</span>」會自動開一張撿貨單給這家店，
+              選「<span className="font-bold">補貨</span>」會自動開一張撿貨單給這家店，
               出現在收件匣的「📋 撿貨單」，樓下撿完再送一次。
             </div>
             <div className="mt-0.5">
-              選「<span className="font-bold">同意退回-不補貨</span>」的話，貨記回總倉之後就算進總倉的可配量 ——
+              選「<span className="font-bold">不補貨</span>」的話，貨記回總倉之後就算進總倉的可配量 ——
               之後要補給這家店，請該店開一張補貨申請，總倉核准後就能直接派，不用再進一次貨
               （要是這批貨先被別的單配走了，就得等下一批）。
             </div>
@@ -487,7 +665,7 @@ export function TransferShortageResolveModal({
           <div className="rounded border-2 border-amber-400 bg-amber-100 p-2 text-[11px] leading-relaxed text-amber-900 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-200">
             <span className="font-bold">這張單不是總倉派出去的。</span>
             貨會退回<span className="font-bold">原本送貨出去的那一邊</span>（不是總倉），
-            而且「<span className="font-bold">同意退回-補貨</span>」按下去會被系統擋掉 —— 只有總倉派出去的單能自動補。
+            而且「<span className="font-bold">補貨</span>」按下去會被系統擋掉 —— 只有總倉派出去的單能自動補。
           </div>
         )}
         {/* 出處:redispatch 對非總倉出貨會 RAISE(20260811020000:173-177);
@@ -501,50 +679,26 @@ export function TransferShortageResolveModal({
         {srcCheckFailed && (
           <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[11px] leading-relaxed text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
             ⚠️ 查不到這張單是不是總倉派的。
-            若不是總倉派的，「<span className="font-bold">同意退回-補貨</span>」會被系統擋下 ——
-            那時請改選「<span className="font-bold">同意退回-不補貨</span>」。
+            若不是總倉派的，「<span className="font-bold">補貨</span>」會被系統擋下 ——
+            那時請改選「<span className="font-bold">不補貨</span>」。
           </div>
         )}
 
-        {RESOLUTION_OPTIONS.map((opt) => {
-          const active = resolution === opt.value;
-          return (
-            <label
-              key={opt.value}
-              className={`flex cursor-pointer items-start gap-3 rounded-md border p-3 transition ${
-                active
-                  ? "border-blue-400 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/30"
-                  : "border-zinc-200 bg-white hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-950"
-              }`}
-            >
-              <input
-                type="radio"
-                name="resolution"
-                value={opt.value}
-                checked={active}
-                onChange={() => setResolution(opt.value)}
-                className="mt-1"
-              />
-              <div className="flex-1">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-base">{opt.icon}</span>
-                  <span className="font-medium">{opt.title}</span>
-                </div>
-                <div className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{opt.desc}</div>
-                {/* 「按下去會發生什麼回不去的事」一律顯示,不只在選中時才出現 ——
-                    要在按之前就看到才有用。⛔ 不可以改回無底色的小灰字:2026-08-21 實測
-                    「同意退回-不補貨」被按的次數是「同意退回-補貨」的 3.7 倍(理由見檔頭)。 */}
-                <div
-                  className={`mt-1.5 rounded border px-2 py-1.5 text-[11px] leading-relaxed ${
-                    WARN_TONE_CLASS[opt.warnTone]
-                  }`}
-                >
-                  {opt.warn}
-                </div>
-              </div>
-            </label>
-          );
-        })}
+        {/* 「按下去會發生什麼回不去的事」一律顯示,不只在選中時才出現 ——
+            要在按之前就看到才有用。⛔ 不可以改回無底色的小灰字:2026-08-21 實測
+            「不補貨」被按的次數是「補貨」的 3.7 倍(理由見檔頭)。
+            (這條規則現在住在 OptionCard 裡,兩步共用。) */}
+        {RESOLUTION_OPTIONS.map((opt) => (
+          <OptionCard
+            key={opt.value}
+            opt={opt}
+            groupName="shortage-restock"
+            checked={restock === opt.value}
+            onSelect={() => setRestock(opt.value)}
+          />
+        ))}
+      </div>
+      )}
 
         {/* 第三個答案「不同意退貨」(＝要跟店家收錢)還沒做 —— ⛔ 刻意做成「說明文字」不是按鈕。
             老闆 2026-08-21 逐字定的話,原因是總倉真的按不出這個結果。
@@ -577,12 +731,20 @@ export function TransferShortageResolveModal({
         {/* 2026-09-03：第三顆已經做上去了（20260903000020），原本那句
             「🚧 要跟店家收錢的功能還在施工」整段移除。這裡改成留下**唯一無條件為真**
             的那句算錢口徑，讓三顆的差別看得懂。 */}
+        {/* ⚠️⚠️ 2026-09-03（減法案 v2）：這一句原本還有後半段
+            「所以『同意退回』＝把少收的那幾件從帳上沖掉，『不同意退貨』＝不沖，
+              照送出去的數量收」——**前半句對店↔店是假的**。
+            事實：沖帳單的產生條件含 `transfer_type = 'hq_to_store'`
+            （20260903000200 的 v6，錨點 `v_transfer.transfer_type = 'hq_to_store'`）
+            ⇒ 店↔店按「同意退」不會有任何沖帳，兩個選項對錢沒有差別。
+            ⇒ 這個**一律顯示**的區塊只留無條件為真的那一句；
+              兩個選項的差別已經按單據來源分開講在第 1 步的三態框裡。
+            ⛔ 不要把後半段加回這個區塊。
+            📌 這是我們改到 Alex 文案的**唯一一處**，只改字、零行為變動（見施工回報偏離清單）。 */}
         <div className="rounded border border-zinc-300 bg-zinc-50 p-2 text-[11px] leading-relaxed text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
           （2026-09-01 起，月結是按<span className="font-bold">送出去</span>的數量算錢的，
-          不再是按實際收到的數量。所以「同意退回」＝把少收的那幾件從帳上沖掉，
-          「不同意退貨」＝不沖，照送出去的數量收。）
+          不再是按實際收到的數量。兩個選項對錢的差別，看上面「這張單是誰派出去的」那一格。）
         </div>
-      </div>
 
       {/* 備註 —— 兩顆都是選填(舊的「不接受的原因（必填）」隨 accept 一起移除) */}
       <label className="mt-4 block text-xs">
@@ -606,7 +768,7 @@ export function TransferShortageResolveModal({
           時候就把 redispatch 送出去(非總倉會被 20260811020000:173-177 擋掉)。
           ⛔ 鎖的條件是 srcChecking,**不是** srcIsHq === null ——
             查詢失敗時 srcIsHq 也是 null,用 null 當條件會把鈕鎖死(見 srcCheckFailed 的註解)。
-          ⚠️ 這裡是連「同意退回-不補貨」一起鎖(不是只鎖第一顆):兩顆都是不可逆的,
+          ⚠️ 這裡是連「不補貨」一起鎖(不是只鎖第一顆):兩顆送出後都要走撤銷才回得來,
             而這個等待只是兩支 maybeSingle 查詢的時間;寧可讓人多等一下,
             也不要做出「有時候能按有時候不能按」的按鈕。 */}
       <div className="mt-4 flex items-center justify-end gap-2">

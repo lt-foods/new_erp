@@ -274,11 +274,28 @@ async function fetchItemsSummaryMap(
   ids: number[],
   qtyCol: string,
   includeFreeFormCols = false,
+  // 刀 5（2026-09-02）：還沒出貨的單，摘要改讀「申報數量」。
+  //   病灶：qty_shipped 是**出貨時才寫**的欄位（DEFAULT 0，
+  //   20260422120003_inventory_schema.sql 的 transfer_items 宣告），
+  //   而建單時只寫 qty_requested（自由轉貨 20260515000002:99-101 的欄位清單裡沒有
+  //   qty_shipped；互助 Leg-2 更是把它硬寫成 0，20260825000000:349）
+  //   ⇒ **所有還沒出貨的草稿一律顯示 ×0**，看起來像廢單，就更沒人想按。
+  //
+  //   ⛔ 刻意**不用**「qty 是 0 就退回 requested」這種寫法：
+  //      真的出貨了、但某一項出 0 件的明細，會被顯示成申報量 ＝ 另一種騙人。
+  //      判準必須是「**這張單出貨了沒**」，所以由呼叫端把「還沒出貨的單號」傳進來。
+  //   ⚠️ 純顯示，不動任何寫入。
+  requestedQtyFor?: Set<number>,
 ): Promise<Map<number, string>> {
   if (ids.length === 0) return new Map();
-  const cols = includeFreeFormCols
-    ? `${idCol}, sku_id, ${qtyCol}, description, estimated_amount`
-    : `${idCol}, sku_id, ${qtyCol}`;
+  const wantRequested = requestedQtyFor != null && requestedQtyFor.size > 0;
+  const cols = [
+    idCol,
+    "sku_id",
+    qtyCol,
+    ...(wantRequested ? ["qty_requested"] : []),
+    ...(includeFreeFormCols ? ["description", "estimated_amount"] : []),
+  ].join(", ");
   const { data } = await sb.from(table).select(cols).in(idCol, ids);
   type Line = Record<string, number | string | null>;
   const lines = (data ?? []) as unknown as Line[];
@@ -318,7 +335,10 @@ async function fetchItemsSummaryMap(
   const partsMap = new Map<number, string[]>();
   for (const l of lines) {
     const id = Number(l[idCol]);
-    const qty = Number(l[qtyCol] ?? 0);
+    // 刀 5：這張單還沒出貨 → 顯示申報數量（出貨後仍顯示實出量）
+    const qty = wantRequested && requestedQtyFor!.has(id)
+      ? Number(l.qty_requested ?? l[qtyCol] ?? 0)
+      : Number(l[qtyCol] ?? 0);
     if (!Number.isFinite(id)) continue;
     let label: string;
     let suffix = "";
@@ -478,7 +498,13 @@ async function fetchTransferRows(
     }
   }
 
-  const itemsMap = await fetchItemsSummaryMap(sb, "transfer_items", "transfer_id", tIds, "qty_shipped", true);
+  // 刀 5：draft / confirmed ＝ 還沒出貨，qty_shipped 還沒被寫過（恆 0）→ 摘要改讀申報量
+  const notShippedIds = new Set(
+    trs.filter((t) => t.status === "draft" || t.status === "confirmed").map((t) => t.id),
+  );
+  const itemsMap = await fetchItemsSummaryMap(
+    sb, "transfer_items", "transfer_id", tIds, "qty_shipped", true, notShippedIds,
+  );
 
   const rows: Row[] = trs.map((t) => ({
     key: `transfer-${t.id}`,
@@ -779,7 +805,13 @@ async function fetchTransferRowsByIds(sb: SBClient, ids: number[]): Promise<Row[
       tLineMap.set(it.transfer_id, (tLineMap.get(it.transfer_id) ?? 0) + 1);
     }
   }
-  const itemsMap = await fetchItemsSummaryMap(sb, "transfer_items", "transfer_id", trs.map((t) => t.id), "qty_shipped", true);
+  // 刀 5：同上一處，draft / confirmed 的摘要改讀申報量
+  const notShippedIds2 = new Set(
+    trs.filter((t) => t.status === "draft" || t.status === "confirmed").map((t) => t.id),
+  );
+  const itemsMap = await fetchItemsSummaryMap(
+    sb, "transfer_items", "transfer_id", trs.map((t) => t.id), "qty_shipped", true, notShippedIds2,
+  );
   return trs.map((t) => ({
     key: `transfer-${t.id}`,
     source: "transfer" as const,
@@ -945,8 +977,17 @@ function HqInboxContent() {
 
   // server-side counts: per source × per stage(badge / tab 用)
   const [counts, setCounts] = useState<Record<SourceTag, Record<Stage, number>> | null>(null);
-  // 異常 chip count = 異常「四類全算」(rpc_hq_exceptions 的 counts.all)
+  // 異常 chip count
   //
+  // ⚠️⚠️ 2026-09-02（刀 6，老闆裁示）：口徑改了 —— chip **不再等於「全部」分頁的數字**。
+  //   現在 chip = rpc_hq_exceptions 的 **counts.badge**（排除「總倉進貨過量」），
+  //   因為過量是純紀錄、不用動手，算進紅字只會讓人麻痺。
+  //   ⇒ 下面那段 2026-08-21 的口徑說明**已被取代**，保留是為了讓下一個人知道
+  //     「為什麼以前是 counts.all」，⛔ 不要照它改回去。
+  //   ⇒ 兩個數字不一樣這件事，ExceptionsContent 會在分頁列上方主動講出來
+  //     （錨點 `紅色數字是`），不靠使用者自己猜。
+  //
+  // ── 以下是 2026-08-21 的舊口徑說明（已被 9/02 取代）──
   // 口徑由老闆 2026-08-21 裁示:chip 標籤寫「⚠️ 異常」,點進去的清單預設也是「全部」分頁,
   // 徽章就該等於那個「全部」的數字。
   //
@@ -1089,7 +1130,8 @@ function HqInboxContent() {
     setExceptionTick((t) => t + 1);
   }, []);
 
-  // 「異常 → 已處理」列上的補派撿貨單號被點到 → 切到「📋 撿貨單」那一匣。
+  // 異常的「📜 看紀錄」列上，補派撿貨單號被點到 → 切到「📋 撿貨單」那一匣。
+  // ⚠️ 刀 7（2026-09-02）：那一頁以前是「已處理」分頁籤，現在改成右上角的「📜 看紀錄」。
   // 同樣必須是穩定的 function(它是 <ExceptionsContent> 的 prop)。
   //
   // ⚠️ 為什麼要順手把日期框到「那張單建立的那天」:撿貨單那一匣的搜尋是 client-side、
@@ -1127,8 +1169,16 @@ function HqInboxContent() {
           p_page_size: 1, // 只要 counts,不要 rows
         });
         if (cancelled || err) return;
-        // counts.all = 四類總和(口徑理由見 exceptionCount 宣告處)
-        const n = (data as { counts?: Record<string, number> } | null)?.counts?.all;
+        // ⬅ 刀 6（阿審 P0-4）：改讀 counts.badge（排除「總倉進貨過量」），
+        //   口徑理由見 exceptionCount 宣告處。
+        //   ⛔ 不可以 `?? counts.all` 當後備 —— 那會在 DB 還沒套 20260903010000 時
+        //     悄悄回到舊口徑，畫面數字跟 <ExceptionsContent> 回報的對不上、還看不出來。
+        //   ⇒ 後端沒給 badge 就用「四個要動手的分類自己加」，跟 ExceptionsContent 同一套算法。
+        const cnt = (data as { counts?: Record<string, number> } | null)?.counts;
+        const n = cnt == null
+          ? undefined
+          : cnt.badge ?? ((cnt.po_shortage ?? 0) + (cnt.po_damage ?? 0)
+                        + (cnt.transfer_short ?? 0) + (cnt.transfer_over ?? 0));
         // 抓不到就維持前一個值,不歸零(歸零等於又回到「永遠顯示 0」的老問題);
         // 真的是 0 筆時 n === 0,不會被這一行擋掉。
         // 第一次就抓不到 ⇒ 維持初值 null ⇒ 徽章顯示「—」,不會假裝成 0。
@@ -1280,6 +1330,29 @@ function HqInboxContent() {
 
   // server-side 已分頁,paginatedRows 直接 = filtered(當前頁的 rows 經過 search 過濾)
   const paginatedRows = filtered;
+
+  // 刀 3（第三輪／阿審 P1）：畫面上看得到那兩顆鈕，就要看得到 48 小時的警語。
+  //
+  // ⚠️ 第一版只在 transferKindFilter === "return_to_hq" 時顯示，但**停在「全部」
+  //   一樣列得出退貨單、一樣按得了「同意收回／不同意退貨」** ⇒ 那個情況下
+  //   使用者完全不知道有一個 48 小時的時鐘在跑。
+  //
+  // ⭐ 判準**逐字照抄那兩顆鈕的出現條件**（TransferActions 的
+  //   `transfer.status === "shipped" && isHqDest`，加上 isOrderReturnTransfer）——
+  //   ⛔ 不可以放寬成「清單裡有任何 return_to_hq 就顯示」：已收/已取消的退貨單
+  //   既沒有那兩顆鈕、cron 也掃不到它（母體要 status='shipped'），
+  //   對那種列講「超過 48 小時會自動收回」是一句假話。
+  //   ⇒ 警語出現的範圍 ＝ 鈕出現的範圍 ＝ cron 動得到的範圍，三個一致。
+  const hasReturnAwaitingHq = paginatedRows.some((r) => {
+    if (r.source !== "transfer") return false;
+    const t = r.raw as TransferRaw;
+    return (
+      isOrderReturnTransfer(t.notes) &&
+      t.status === "shipped" &&
+      hqLocId !== null &&
+      t.dest_location === hqLocId
+    );
+  });
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   // 分頁控制列 — 列表上、下各放一份(手機不用滑到底才能換頁)
@@ -1476,6 +1549,16 @@ function HqInboxContent() {
     setSelected(new Set());
   }
 
+  // 刀 3（2026-09-02）：退貨單那兩個動作老闆重新定名了，但 "確認入倉" / "退訂單取消"
+  //   是**動作路由鍵**（validStages、下面的分支、RPC 選擇全靠它比對）
+  //   ⇒ ⛔ 不可以改字串（同 :1548 對「派貨」那顆已有的警告）。
+  //   只把「人看得到的字」對應過去；沒列到的動作就照原字顯示。
+  const ACTION_LABEL: Record<string, string> = {
+    "確認入倉": "同意收回",
+    "退訂單取消": "不同意退貨",
+  };
+  const actionLabel = (a: string) => ACTION_LABEL[a] ?? a;
+
   // 批次動作 — 依 sourceFilter 跑對應 RPC
   async function batchAction(action: string) {
     // transfer source 可以批次的 row 含 pending 與 in_transit;其他 source 只 pending
@@ -1507,10 +1590,10 @@ function HqInboxContent() {
     }
     if (items.length === 0) return;
 
-    // 「退訂單取消」要先輸入原因（與單筆 reject 對齊、走 audit log）
+    // 「不同意退貨」要先輸入原因（與單筆 reject 對齊、走 audit log）
     let reason: string | null = null;
     if (action === "退訂單取消") {
-      reason = prompt(`取消原因(必填、會留 audit log，將套用到全部 ${items.length} 筆)：`);
+      reason = prompt(`不同意退貨的原因(必填、會記在單據上，將套用到全部 ${items.length} 筆)：`);
       if (!reason || !reason.trim()) return;
     } else if (sourceFilter === "restock" && action === "派貨") {
       // ⚠ 畫面上這顆鈕叫「派至工作台」；"派貨" 只是動作路由鍵（validStages 與下面的 RPC 分支都拿它比對），
@@ -1523,7 +1606,7 @@ function HqInboxContent() {
         "最後按「派貨出倉」，貨才會真的離開總倉。"
       )) return;
     } else {
-      if (!confirm(`確認對選中的 ${items.length} 筆執行「${action}」?`)) return;
+      if (!confirm(`確認對選中的 ${items.length} 筆執行「${actionLabel(action)}」?`)) return;
     }
     setBatchBusy(true);
     try {
@@ -1561,7 +1644,7 @@ function HqInboxContent() {
             }
           });
           if (fails.length === 0) {
-            alert(`✅ 取消 ${ok} 筆退貨回總倉單`);
+            alert(`✅ 已對 ${ok} 筆退貨按「不同意退貨」，貨帳退回原本寄出的那家店`);
           } else {
             const lines = fails.slice(0, 5).map((f) => `  #${f.id}: ${f.reason}`);
             alert(
@@ -1723,14 +1806,15 @@ function HqInboxContent() {
   async function handleTransferAction(transferId: number, action: "ship" | "arrive_at_hq" | "delete" | "reject" | "unreject") {
     const labels: Record<typeof action, string> = {
       ship: "從 HQ 出貨(扣庫存、推到「已出貨」)",
-      arrive_at_hq: "確認到倉(全收、入 HQ 庫存)",
+      // 刀 3：這句同時服務「到倉」與退貨單的「同意收回」，措辭要兩邊都成立
+      arrive_at_hq: "收進總倉(全收、入總倉庫存)",
       delete: "刪除草稿",
-      reject: "取消(拒收、將貨退回 source location)",
+      reject: "不同意退貨(貨帳退回原本寄出的那家店)",
       unreject: "恢復在途(沖銷拒收回流、單據回到店端待收)",
     };
     let reason: string | null = null;
     if (action === "reject") {
-      reason = prompt(`取消原因(必填,會留 audit log):`);
+      reason = prompt(`不同意退貨的原因(必填,會記在單據上):`);
       if (!reason || !reason.trim()) return;
     } else {
       if (!confirm(`確定:${labels[action]}?`)) return;
@@ -1940,8 +2024,10 @@ function HqInboxContent() {
             exception: "⚠️ 異常",
           } as const)[s];
           // chip 顯示「該來源」的待處理數(從 cached counts 算,固定值,跟 stage 切換無關)
-          // exception 走自己的 exceptionCount = 異常四類總和(counts.all,理由見宣告處註解),
-          //   跟點進去看到的「全部」分頁同一個數字
+          // exception 走自己的 exceptionCount = **counts.badge**(排除「總倉進貨過量」,
+          //   刀 6／阿審 P0-4,理由見宣告處註解)。
+          //   ⚠️ 它**不等於**點進去看到的「全部」分頁那個數字（那個含過量）——
+          //   差在哪由 ExceptionsContent 在分頁列上方主動講出來（錨點 `紅色數字是`）。
           // air 顯示「在途」數(空中轉自動出貨,貨在飛=in_transit),非 pending
           // null ＝ 還沒成功抓到過(只有異常那顆會是 null,理由見 exceptionCount 宣告處)
           const count: number | null = s === "exception"
@@ -2044,6 +2130,53 @@ function HqInboxContent() {
               </SpinButton>
             );
           })}
+        </div>
+      )}
+
+      {/* 刀 3（2026-09-02）：48 小時自動同意收回 —— 有一個時鐘在跑，畫面上一定要講。
+          ⭐ 每一句的出處（⛔ 改字前先確認出處還成立）：
+          ① 48 小時、每 30 分鐘掃一次 → migration 20260903010020 的 c_hours 與 cron 排程
+          ② 「全部收進總倉庫存」→ 該檔呼叫 rpc_receive_transfer(id, NULL, …)，
+             p_lines=NULL ＝ 照 qty_shipped 全收（20260827000000:110 起那段迴圈）
+          ③ 「48 小時內都還可以按不同意退貨」→ 母體條件含
+             COALESCE(shipped_at, created_at) < NOW() - 48h，時間沒到就掃不到
+          ⛔ 刻意不寫「一定不會出錯」「系統會確認貨真的到了」這類話 ——
+             它不查貨在不在，就是照單全收。
+
+          ⚠️ 顯示條件（第三輪／阿審 P1 放寬過，判準見 hasReturnAwaitingHq 的註解）：
+             選了「↩ 退貨回總倉」子分類時一律顯示；**停在「全部」也會顯示** ——
+             只要這一頁列得出「等總倉處理的退貨單」（＝那兩顆鈕會出現的那種列）。
+             ⛔ 不要改回「只在 return_to_hq 子分類顯示」：停在「全部」照樣按得到那兩顆鈕，
+               看不到警語 ＝ 使用者不知道有一個 48 小時的時鐘在跑。 */}
+      {sourceFilter === "transfer" &&
+        (transferKindFilter === "return_to_hq" || hasReturnAwaitingHq) && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
+          ⏳ <span className="font-bold">超過 48 小時沒有處理的退貨，系統會自動當成「同意收回」</span>
+          ，把整張單的貨收進總倉庫存（每 30 分鐘檢查一次）。
+          <span className="font-bold">48 小時之內都還可以按「不同意退貨」。</span>
+          <br />
+          自動收的單會在單據備註寫上「自動同意收回」，「看紀錄」那一頁也查得到。
+          <span className="text-amber-700 dark:text-amber-300">
+            　⚠️ 系統不會去確認貨是不是真的送到總倉了 —— 它就是照單全收。
+          </span>
+          {/* ⚠️⚠️ 阿審 P1-6：這個連帶行為原本只寫在 migration 檔頭與施工回報裡，
+              **畫面上沒有** —— 使用者看不到的地方寫再多都不算揭露。
+              出處：rpc_receive_transfer 最新版 20260827000000_receive_gate_only_batch_sku_orders.sql
+              的邏輯 B（錨點 `aid 單 FK 直接推 customer_order → ready`）：
+                IF v_customer_order_id IS NOT NULL THEN
+                  UPDATE customer_orders SET status='ready' … WHERE status='shipping'
+              —— 那段**不看 transfer_type**，而退貨單身上有 customer_order_id
+              （rpc_create_order_return 建單時就寫，20260801000000_full_return_closes_order）。
+              ⛔ 狀態的中文要照 lib/orderStatus.ts 的 ORDER_STATUS_LABEL
+                （shipping＝「派貨中」、ready＝「可取貨」），⛔ 不要自己另外翻。
+              ⚠️ 措辭用「如果…就會」的條件句：只有原訂單當下是「派貨中」才會被推，
+                其他狀態不動 —— 寫成無條件會是另一種說謊。 */}
+          <div className="mt-1 border-t border-amber-300 pt-1 dark:border-amber-700">
+            ⚠️ <span className="font-bold">還有一個連帶影響</span>：自動收回的時候，
+            如果那張客人的原訂單當下是「<span className="font-bold">派貨中</span>」，
+            系統會把它變成「<span className="font-bold">可取貨</span>」。
+            （這是收貨本來就有的行為，不是這次新加的；但以前要有人按才會發生，現在沒人管也會發生。）
+          </div>
         </div>
       )}
 
@@ -2233,8 +2366,9 @@ function HqInboxContent() {
                         )}
                         {allPendingReturn && (
                           <>
-                            <RowAction variant="primary" onClick={() => batchAction("確認入倉")} disabled={batchBusy}>確認入倉 ({selected.size})</RowAction>
-                            <RowAction variant="danger" onClick={() => batchAction("退訂單取消")} disabled={batchBusy}>取消 ({selected.size})</RowAction>
+                            {/* ⛔ batchAction() 裡那兩個字串是路由鍵、不可改；顯示名走 actionLabel（刀 3） */}
+                            <RowAction variant="primary" onClick={() => batchAction("確認入倉")} disabled={batchBusy}>{actionLabel("確認入倉")} ({selected.size})</RowAction>
+                            <RowAction variant="danger" onClick={() => batchAction("退訂單取消")} disabled={batchBusy}>{actionLabel("退訂單取消")} ({selected.size})</RowAction>
                           </>
                         )}
                         {allPending && !allPendingReturn && !allPendingNormal && (
@@ -2934,7 +3068,12 @@ function TransferActions({
     );
   }
 
-  // shipped + dest=HQ → 到倉(退訂單多加一個「取消」、label 改成「確認入倉」)
+  // shipped + dest=HQ → 到倉(退訂單多加一個「不同意退貨」、label 改成「同意收回」)
+  //
+  // 刀 3（2026-09-02 老闆逐字定名）：「確認入倉」→「同意收回」／「取消」→「不同意退貨」。
+  // ⛔ 兩顆的 title 只寫查證過的事實，⛔ 一個字都不提「客人退款」——
+  //    系統從頭到尾不碰退款（rpc_reject_transfer 全文無任何退款動作），
+  //    老闆的「客人退款是店家的事」＝系統本來就不管，寫上去反而變成假保證。
   if (transfer.status === "shipped" && isHqDest) {
     if (isOrderReturn) {
       buttons.push(
@@ -2943,9 +3082,12 @@ function TransferActions({
           variant="danger"
           onClick={() => onAction(transfer.id, "reject")}
           disabled={isBusy}
-          title="拒收、將貨退回原寄出 location"
+          // 出處：rpc_reject_transfer 最新版 20260827020000 ——
+          //   :92-107 貨以 transfer_reject 記回 source_location（＝寄出的那家店）；
+          //   :157    transfer_type='return_to_hq' 走 ELSE，原客人訂單不取消。
+          title="不收這批退貨：貨帳退回原本寄出的那家店，原客人訂單不會被取消"
         >
-          取消
+          不同意退貨
         </RowAction>,
       );
     }
@@ -2955,8 +3097,9 @@ function TransferActions({
         variant="primary"
         onClick={() => onAction(transfer.id, "arrive_at_hq")}
         disabled={isBusy}
+        title={isOrderReturn ? "把這批退貨全收進總倉庫存" : undefined}
       >
-        {isOrderReturn ? "確認入倉" : "到倉"}
+        {isOrderReturn ? "同意收回" : "到倉"}
       </RowAction>,
     );
   }
