@@ -146,6 +146,43 @@ ls supabase/migrations/ | tail -5
 （2026-08-16 實測：追蹤表停在 `20260812021000`／248 筆，repo 已有 514 支）。
 改名記得把其他 migration 檔頭引用它當「基底版本」的地方一起改，否則追溯線會斷。
 
+### 對已經被前端 embed 的表加第二支 FK，會當場打爛那些查詢
+
+PostgREST 的 `select=A(...)` 靠「A 與本表之間只有一條 FK」自動解析。同一對表出現
+第二條 FK 的當下，**所有沒帶 hint 的 embed 全部變成 400** `PGRST201`
+（`Could not embed because more than one relationship was found`）——
+不需要重新部署前端，線上既有的頁面立刻壞。
+
+2026-09-01 `20260901000010_shortage_return_booking.sql` 給 `transfer_items` 加了
+`shortage_return_transfer_id → transfers(id)`（純冪等旗標），於是 `transfers` embed
+`transfer_items` 的 5 支查詢全掛：取貨頁 / 取貨彈窗 / 小白單 / 訂單明細的退貨紀錄 /
+建立退貨彈窗，店員看到「讀取未取退貨資料失敗」而且**整頁擋住不能取貨**。
+9/2 已修（`transfer_items!transfer_items_transfer_id_fkey(...)`）。
+
+- 加 FK 欄位之前一律先 `grep -rn "<被指到的表>(" apps/` 數一數有幾個 embed 點，
+  同一個 PR 就把 hint 補上；沒有 hint 的 embed 一支都不能留。
+- 反過來說，**hint 是免費的保險**：新寫 embed 時如果那張表身上已經有多條 FK
+  指向同一張表，直接寫 constraint name（既有例：`stores!customer_orders_pickup_store_id_fkey`）。
+- 驗證不用等使用者回報，一支 curl 就知道（service_role key 走
+  `GET /v1/projects/$REF/api-keys?reveal=true` 拿，env 裡那把 `sb_secret_xx…` 是假的）：
+
+  ```bash
+  curl -sS "$SUPABASE_URL/rest/v1/transfers?select=transfer_items(sku_id)&limit=1" \
+    -H "apikey: $K" -H "Authorization: Bearer $K"
+  ```
+
+  回 `PGRST201` 的 `details` 會直接列出候選 constraint name，照抄即可。
+- 全站盤一次哪些對表已經有歧義：
+
+  ```sql
+  SELECT t.relname child, f.relname parent, string_agg(c.conname, ' | ')
+    FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
+                         JOIN pg_class f ON f.oid=c.confrelid
+                         JOIN pg_namespace n ON n.oid=t.relnamespace
+   WHERE c.contype='f' AND n.nspname='public'
+   GROUP BY 1,2 HAVING count(*) > 1;
+  ```
+
 ### 套 SQL 前先用 pg-query-emscripten 離線驗語法
 
 `scripts/check-sql-syntax.cjs`（用 repo 既有的 `pg-query-emscripten`）不連 DB 就能

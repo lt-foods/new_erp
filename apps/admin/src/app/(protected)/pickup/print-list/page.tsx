@@ -99,7 +99,8 @@ function Body() {
           )
           .in("id", ids),
         sb.from("transfers")
-          .select("customer_order_id, notes, transfer_items(sku_id, qty_shipped)")
+          // transfer_items 有兩條 FK 指向 transfers（另一條是 shortage_return_transfer_id），embed 一定要帶 hint，否則 PGRST201
+          .select("customer_order_id, notes, transfer_items!transfer_items_transfer_id_fkey(sku_id, qty_shipped)")
           .in("customer_order_id", ids)
           .eq("transfer_type", "return_to_hq")
           .in("status", ["shipped", "received"]),

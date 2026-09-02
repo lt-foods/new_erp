@@ -123,7 +123,8 @@ export function PickupDialog({
         // 已退回總倉量（return_to_hq transfer）— 退掉的貨店裡沒有、不可再取。
         // notes 供分辨「取貨後退回」（那批是已取走的貨，不佔未取品項的可取量）
         sb.from("transfers")
-          .select("notes, transfer_items(sku_id, qty_shipped)")
+          // transfer_items 有兩條 FK 指向 transfers（另一條是 shortage_return_transfer_id），embed 一定要帶 hint，否則 PGRST201
+          .select("notes, transfer_items!transfer_items_transfer_id_fkey(sku_id, qty_shipped)")
           .eq("customer_order_id", orderId)
           .eq("transfer_type", "return_to_hq")
           .in("status", ["shipped", "received"]),
