@@ -86,6 +86,13 @@ import {
   type WorkbenchPO,
 } from "@/lib/receivingBatch";
 import { publicProductUrl } from "@/lib/campaignCover";
+import { describeDraftDbError } from "@/lib/pickingDraftView";
+import {
+  handoffMessage,
+  handoffToDraft,
+  type HandoffSku,
+  type HandoffSource,
+} from "@/lib/pickingDraftHandoff";
 import { useAuth } from "@/components/AuthProvider";
 import SpinButton from "@/components/SpinButton";
 
@@ -129,6 +136,30 @@ type PoOutcome = {
   kind: "ok" | "duplicate" | "error";
   gr_no?: string;
   message?: string;
+};
+
+/**
+ * 「這一批真的收進去了什麼」—— 送出成功那一刻拍下來，給「📋 傳到撿貨草稿」用。
+ *
+ * ⛔⛔ 一定要在 doSubmit 當下就拍：送出成功之後那幾張單的勾選會被清掉
+ *   （setEntries）、rows 會被 reloadPos 換成最新的 —— 事後**再也拼不回**
+ *   這一批是哪些東西、各幾件。
+ *
+ * ⭐ 只收 `kind === "ok"` 的採購單：
+ *   · `error` ＝ 根本沒入庫，帶進草稿就是叫樓下去撿不存在的貨。
+ *   · `duplicate` ＝ 後端回的是**先前那張**進貨單，這次填的件數不見得一樣
+ *     （本頁 OutcomePanel 已經立好這條規則：「duplicate 時不可以顯示這次填的件數」）
+ *     ⇒ 一樣不帶，改成在訊息裡明講有幾張是這種情況。
+ */
+type HandoffPayload = {
+  /** 同一樣商品跨多張採購單會先合併（qty 相加）＝ 這次實收的量 */
+  skus: HandoffSku[];
+  source: HandoffSource;
+  /** 這次有幾張是「先前就收過了」→ 沒帶進草稿，要在訊息裡講 */
+  duplicatePos: number;
+  /** 已經按過一次「傳到撿貨草稿」（改按鈕字樣用；⛔ 不用來擋第二次按，
+   *  部分失敗時本來就要能原封不動再按一次重試） */
+  sent: boolean;
 };
 
 // 數量不符時的常用原因（一鍵填進既有 variance_reason 欄位，不新增資料表）
@@ -535,8 +566,18 @@ export default function IpadReceivingPage() {
   const [staleWarning, setStaleWarning] = useState<string | null>(null);
   const [reloadingPo, setReloadingPo] = useState<number | null>(null);
 
+  /** 這一批收好了什麼（給「📋 傳到撿貨草稿」用）。null ＝ 這次沒有任何真的收進去的單。 */
+  const [handoff, setHandoff] = useState<HandoffPayload | null>(null);
+  /** 傳草稿的結果。⛔ 與收貨本身的 error / staleWarning **分開放**：
+   *  草稿沒傳成功 ≠ 貨沒收到，兩件事混在同一個紅框會讓樓下以為貨也沒收進去。 */
+  const [draftNotice, setDraftNotice] = useState<string | null>(null);
+  const [draftError, setDraftError] = useState<string | null>(null);
+  /** 傳草稿的進度（已處理/總數）。⛔ 不是裝飾：逐樣往返 30 樣要等十秒上下，
+   *  只寫「傳送中…」樓下會以為當掉。null ＝ 現在沒在傳。 */
+  const [draftProgress, setDraftProgress] = useState<{ done: number; total: number } | null>(null);
+
   /**
-   * ⭐ 全頁**只有一把鎖**：整頁重撈 / 單張重撈 / 送出，三者互斥。
+   * ⭐ 全頁**只有一把鎖**：整頁重撈 / 單張重撈 / 送出 / 傳草稿，四者互斥。
    *   規則本身在 @/lib/receivingBatch 的 runExclusive()（那裡有完整推導，
    *   而且驗得到）。這裡只有兩份存放處：
    *     · busyRef —— 真正的鎖。⛔ 一定要用 ref，state 擋不住同一 tick 連點
@@ -544,14 +585,18 @@ export default function IpadReceivingPage() {
    *     · busy    —— 給畫面用的鏡像。按鈕變灰、而且**要看得出來為什麼**
    *       （iPad 沒有 tooltip，停用原因只能寫在畫面上）。
    *
-   * ⚠️ 為什麼三者非互斥不可：重撈會清掉那幾張單的 entries 與 subsRef（冪等鍵），
+   * ⚠️ 為什麼非互斥不可：重撈會清掉那幾張單的 entries 與 subsRef（冪等鍵），
    *   跑在送出中途等於把防重複的鍵抽掉；反過來送出中途重撈，畫面上的
    *   「之前已收」會在送出的一連串 await 中間被換掉。
    *   帳本身有後端的樂觀鎖兜著（失敗是吵的），但畫面會變得沒辦法判讀。
+   * ⚠️ 「傳草稿」也納進同一把鎖：它要逐樣讀需求再寫入（好幾趟往返），
+   *   跑到一半如果還按得動「🔄 重新載入這張單」，結果面板會被抽掉、
+   *   而草稿還在寫 —— 樓下會完全不知道現在到底傳完了沒。
    */
   const busyRef = useRef<BusyKind | null>(null);
   const [busy, setBusy] = useState<BusyKind | null>(null);
   const submitting = busy === "submit";
+  const draftSending = busy === "draft";
 
   /**
    * 每一張採購單自己的冪等鍵 ＋ 當時送出的內容。
@@ -866,12 +911,18 @@ export default function IpadReceivingPage() {
     });
     if (held === "load") {
       setError("清單正在重新載入，等它跑完再按「確認收貨」。");
+    } else if (held === "draft") {
+      setError("正在把上一批傳到撿貨草稿，等它跑完再按「確認收貨」。");
     }
   }
 
   async function doSubmit() {
     setError(null);
     setStaleWarning(null);
+    // 上一批的草稿訊息講的是上一批，留著會跟這次的結果對不上
+    setDraftNotice(null);
+    setDraftError(null);
+    setHandoff(null);
 
     try {
       const { data: userRes } = await getSupabase().auth.getUser();
@@ -928,6 +979,49 @@ export default function IpadReceivingPage() {
       });
       const donedPoIds = raw.filter((o) => o.kind !== "error").map((o) => o.po_id);
 
+      // ⭐ 拍下「這一批真的收進去了什麼」給「📋 傳到撿貨草稿」用。
+      //   ⛔ 一定要在這裡拍（見 HandoffPayload 的說明）：下面幾行就會把成功那幾張的
+      //     勾選清掉、把 rows 重撈成最新的，之後再也拼不回這一批。
+      //   ⭐ 同一樣商品跨多張採購單要**合併相加**：老闆要的是「這樣商品這次收了幾件」，
+      //     分成兩列傳過去只會撞上草稿的 UNIQUE(draft_id, sku_id, store_id)。
+      {
+        const okPoIds = new Set(raw.filter((o) => o.kind === "ok").map((o) => o.po_id));
+        const rowByItemId = new Map(selectedRows.map((r) => [r.po_item_id, r]));
+        const bySku = new Map<number, HandoffSku>();
+        for (const it of items) {
+          if (!okPoIds.has(it.po_id)) continue;
+          const r = rowByItemId.get(it.po_item_id);
+          // ⓘ items 就是從 selectedRows 攤出來的，理論上一定找得到；
+          //   找不到就跳過而不是硬填 —— 沒有品名的列在草稿上是查不回來的孤兒。
+          if (!r) continue;
+          const cur = bySku.get(it.sku_id);
+          if (cur) cur.qty += it.qty;
+          else
+            bySku.set(it.sku_id, {
+              sku_id: it.sku_id,
+              sku_code: r.sku_code,
+              label: rowTitle(r),
+              qty: it.qty,
+            });
+        }
+        const okOutcomes = results.filter((o) => o.kind === "ok");
+        const source: HandoffSource = {
+          po_nos: okOutcomes.map((o) => o.po_no),
+          gr_nos: okOutcomes.map((o) => o.gr_no).filter((v): v is string => !!v),
+          at: new Date().toISOString(),
+        };
+        setHandoff(
+          bySku.size > 0
+            ? {
+                skus: Array.from(bySku.values()),
+                source,
+                duplicatePos: raw.filter((o) => o.kind === "duplicate").length,
+                sent: false,
+              }
+            : null,
+        );
+      }
+
       // 成功的那幾張：清掉使用者輸入（貨已經收了，留著只會被誤按第二次），
       // 並重撈它們的最新已收量。
       // ⚠️ 失敗的那幾張**刻意不動**：保留原樣才能「原內容再按一次」＝ 帶同一把鍵重試。
@@ -972,6 +1066,93 @@ export default function IpadReceivingPage() {
       setError(translateRpcError(e));
     }
     // ⓘ 鎖的釋放在 runExclusive 的 finally，⛔ 不要在這裡再放一次。
+  }
+
+  // ------------------------------------------------------------ 傳到撿貨草稿
+
+  /**
+   * 把剛收好的這批商品傳進「今天的撿貨草稿」。
+   *
+   * ⛔ 這條路**完全不碰庫存、不建任何單**：只寫 picking_drafts /
+   *   picking_draft_items 兩張草稿自己的表（規則與推導在 @/lib/pickingDraftHandoff）。
+   *   收貨已經在上一步完成了 —— 這裡失敗只代表「草稿沒加到」，**貨還是收進來了**，
+   *   所以訊息與收貨的紅框刻意分開放。
+   *
+   * ⭐ 可以重複按：已經在草稿裡的商品會被略過（不重複加、也不動原本的數量），
+   *   所以部分失敗時「原封不動再按一次」就是正確的重試方式。
+   */
+  async function runHandoff() {
+    const payload = handoff;
+    if (!payload) return;
+    const held = await runExclusive(busyRef, "draft", setBusy, async () => {
+      setDraftNotice(null);
+      setDraftError(null);
+      setDraftProgress({ done: 0, total: payload.skus.length });
+      const sb = getSupabase();
+      try {
+        const report = await handoffToDraft(
+          {
+            db: sb,
+            fetchAll: fetchAllRows,
+            describeError: describeDraftDbError,
+            onProgress: (done, total) => setDraftProgress({ done, total }),
+            session: async () => {
+              // ⚠️ 與草稿頁的 sessionInfo()（picking/drafts/edit/page.tsx:361-367）
+              //   逐字同一套：tenant_id 拿不到就 throw，⛔ 不可以退回空值硬寫
+              //   （RLS 會擋，但擋出來的錯誤是天書）。
+              const { data } = await sb.auth.getSession();
+              const tenantId = (
+                data.session?.user?.app_metadata as Record<string, unknown> | undefined
+              )?.tenant_id as string | undefined;
+              if (!tenantId) throw new Error("JWT 缺 tenant_id claim、無法寫入撿貨草稿");
+              return { tenantId, uid: data.session?.user?.id ?? null };
+            },
+          },
+          {
+            skus: payload.skus,
+            source: payload.source,
+            duplicatePos: payload.duplicatePos,
+            // ⭐ 這一頁餵的是「剛剛那一次送出真的收進來的量」。
+            //   ⛔ 採購單查看頁餵的是**累計實收**，兩邊的措辭必須不一樣
+            //   （阿審 2026-09-02 P1）。
+            qtyBasis: "this_receipt",
+          },
+        );
+        const msg = handoffMessage(report);
+        setDraftNotice(msg.notice);
+        setDraftError(msg.error);
+        // ⭐ 只要有東西真的進去（或本來就在裡面／被別台搶先加）就記成「傳過了」——
+        //   按鈕字樣改成「再傳一次」，讓樓下看得出這批已經處理過。
+        //   ⛔ 但不停用：部分失敗要能再按一次重試。
+        if (report.added.length > 0 || report.skipped.length > 0 || report.raced.length > 0) {
+          setHandoff((cur) => (cur ? { ...cur, sent: true } : cur));
+        }
+      } catch (e) {
+        // handoffToDraft 自己會把預期內的失敗收進 report，走到這裡代表**預期外**
+        // （例如連 supabase client 都拿不到）。⛔ 不可以讓它變成 unhandled rejection：
+        //   那樣畫面只會靜靜地回到原樣，樓下會以為傳成功了。
+        setDraftError(
+          `傳到撿貨草稿時發生預期外的錯誤：${describeDraftDbError(e)}` +
+            `（貨已經收進來了，這只是撿貨草稿沒加到。）`,
+        );
+      } finally {
+        // ⛔ 一定要放在 finally：中途丟例外時進度若留在「12 / 30」，
+        //   畫面會永遠停在一個看起來還在跑、其實早就停了的數字。
+        setDraftProgress(null);
+      }
+    });
+    // ⛔ 三種佔用都要各講各的（阿審 2026-09-02 P2）：原本只分 "submit" 與「其他」，
+    //   同一 tick 連點兩下時 runExclusive 回的是 "draft"，卻會被說成
+    //   「清單正在重新載入」—— 那是一句不成立的話，而且會叫他去等一件根本沒在跑的事。
+    if (held) {
+      setDraftError(
+        held === "submit"
+          ? "正在送出收貨，等它跑完再按「傳到撿貨草稿」。"
+          : held === "draft"
+            ? "已經在傳到撿貨草稿了，等它跑完（不用再按一次，不會漏掉）。"
+            : "清單正在重新載入，等它跑完再按「傳到撿貨草稿」。",
+      );
+    }
   }
 
   /** 按下「確認收貨」。已勾但畫面上看不到的列 → 先攤開讓他看過再送。 */
@@ -1074,6 +1255,15 @@ export default function IpadReceivingPage() {
             {/* SpinButton 會自己在 promise 未完成時顯示 spinner，不必另外接 loading state */}
             🔄
           </SpinButton>
+          {/* 採購單查看（老闆 2026-08-31 ⑦「補貨申請跟採購單，我想要有 ipad 版本」，
+              9-01 補充「採購單做查看」）。唯讀，不能在那邊收貨。 */}
+          <Link
+            href="/wms/receiving/ipad/po"
+            className={`${BTN_GHOST} shrink-0`}
+            aria-label="查看採購單"
+          >
+            📄 採購單
+          </Link>
           {/* 出口：不然樓下會被困在這一頁出不去 */}
           <Link href="/wms/receiving" className={`${BTN_GHOST} shrink-0`}>
             離開
@@ -1163,7 +1353,29 @@ export default function IpadReceivingPage() {
             // ⛔ 送出中、或別張單正在重撈時，這幾顆全部要變灰
             //   （不是只灰掉自己那一顆）—— 見 busyRef 的說明。
             locked={busy !== null}
-            onDismiss={() => setOutcomes(null)}
+            handoff={handoff}
+            draftSending={draftSending}
+            draftProgress={draftProgress}
+            draftNotice={draftNotice}
+            draftError={draftError}
+            onHandoff={runHandoff}
+            onDismiss={() => {
+              // ⚠️ 面板收掉之後，「📋 傳到撿貨草稿」就再也按不到了（payload 只活在這一批）。
+              //   還沒傳過就先問一聲 —— ⛔ 不可以靜默丟掉：樓下按「知道了」是想關掉提示，
+              //   不是想放棄傳草稿，而且關掉之後畫面上完全看不出來少做了一件事。
+              //   （貨已經收進來了，所以這裡只是少一個便利入口，不是資料遺失。）
+              if (handoff && !handoff.sent) {
+                const ok = confirm(
+                  `這批還沒有傳到撿貨草稿（${handoff.skus.length} 樣）。` +
+                    `關掉之後就要自己到撿貨草稿頁一樣一樣加。\n\n確定要關掉嗎？`,
+                );
+                if (!ok) return;
+              }
+              setOutcomes(null);
+              setHandoff(null);
+              setDraftNotice(null);
+              setDraftError(null);
+            }}
             // ⭐ 2026-08-20 複審 P1：這條路徑以前**沒有取互斥鎖**，
             //   重撈跑到一半還按得下「確認收貨」。現在跟整頁重撈走同一把鎖。
             onReloadPo={async (poId) => {
@@ -1366,15 +1578,22 @@ export default function IpadReceivingPage() {
               ? "送出中…"
               : busy === "load"
                 ? "重新載入中…"
-                : `✅ 確認收貨${summary.lines > 0 ? ` (${summary.lines})` : ""}`}
+                : draftSending
+                  ? "傳草稿中…"
+                  : `✅ 確認收貨${summary.lines > 0 ? ` (${summary.lines})` : ""}`}
           </SpinButton>
         </div>
-        {/* ⛔ 停用原因一定要看得見，不可以只放 title：iPad 上沒有 tooltip */}
+        {/* ⛔ 停用原因一定要看得見，不可以只放 title：iPad 上沒有 tooltip。
+            ⚠️ busy 每多一種就要在這裡補一句 —— 少補就是「按鈕變灰但沒說為什麼」。 */}
         {blockReason ? (
           <p className="mt-2 text-sm font-medium text-rose-600 dark:text-rose-400">{blockReason}</p>
         ) : busy === "load" ? (
           <p className="mt-2 text-sm font-medium text-amber-700 dark:text-amber-300">
             清單正在重新載入，等它跑完才能送出（免得送出的內容跟畫面上看到的對不起來）。
+          </p>
+        ) : draftSending ? (
+          <p className="mt-2 text-sm font-medium text-amber-700 dark:text-amber-300">
+            正在把上一批傳到撿貨草稿，等它跑完才能再收下一批。
           </p>
         ) : null}
       </footer>
@@ -1404,19 +1623,34 @@ function OutcomePanel({
   outcomes,
   busyPo,
   locked,
+  handoff,
+  draftSending,
+  draftProgress,
+  draftNotice,
+  draftError,
+  onHandoff,
   onDismiss,
   onReloadPo,
 }: {
   outcomes: PoOutcome[];
   /** 正在重撈的那一張（顯示「載入中…」用） */
   busyPo: number | null;
-  /** 全頁有別的非同步流程在跑（送出／別張重撈）→ 這裡的按鈕全部要停用 */
+  /** 全頁有別的非同步流程在跑（送出／別張重撈／傳草稿）→ 這裡的按鈕全部要停用 */
   locked: boolean;
+  /** 這批真的收進去的商品；null ＝ 沒有任何一張是「新收進來的」，那就不出現草稿區塊 */
+  handoff: HandoffPayload | null;
+  draftSending: boolean;
+  /** 傳送進度（已處理/總數）。null ＝ 現在沒在傳 */
+  draftProgress: { done: number; total: number } | null;
+  draftNotice: string | null;
+  draftError: string | null;
+  onHandoff: () => Promise<void>;
   onDismiss: () => void;
   onReloadPo: (poId: number) => Promise<void>;
 }) {
   const ok = outcomes.filter((o) => o.kind !== "error").length;
   const bad = outcomes.length - ok;
+  const handoffQty = handoff ? handoff.skus.reduce((s, k) => s + k.qty, 0) : 0;
   return (
     <div className="mb-4 rounded-2xl border-2 border-zinc-300 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-900">
       <div className="flex items-start justify-between gap-3">
@@ -1503,6 +1737,85 @@ function OutcomePanel({
           </li>
         ))}
       </ul>
+
+      {/* ---- 傳到撿貨草稿（老闆 2026-08-31 ②）----
+          ⛔ 只有「真的新收進來」的貨才會出現這一區（handoff 為 null 就整個不畫）：
+             全部失敗、或全部是「先前就收過了」時，這裡沒有東西可以傳。 */}
+      {handoff && (
+        <div className="mt-4 rounded-xl border-2 border-indigo-300 bg-indigo-50 p-3 dark:border-indigo-800 dark:bg-indigo-950/40">
+          <div className="flex flex-wrap items-center gap-3">
+            <SpinButton
+              type="button"
+              disabled={locked && !draftSending}
+              onClick={onHandoff}
+              className={`${BTN_BASE} bg-indigo-600 text-base text-white active:bg-indigo-700 disabled:bg-zinc-300 dark:disabled:bg-zinc-700`}
+            >
+              {/* ⭐ 進度要數得出來：逐樣往返，30 樣要等十秒上下。
+                  只寫「傳送中…」樓下會以為當掉而去戳別的東西。 */}
+              {draftSending
+                ? draftProgress
+                  ? `傳送中… ${draftProgress.done} / ${draftProgress.total}`
+                  : "傳送中…"
+                : handoff.sent
+                  ? "📋 再傳一次"
+                  : `📋 傳到撿貨草稿 (${handoff.skus.length})`}
+            </SpinButton>
+            <div className="min-w-0 flex-1 text-sm text-zinc-700 dark:text-zinc-300">
+              {/* ⭐ 畫面上的每一句都要是查得到出處的事實：
+                  · 「N 樣 · M 件」＝ 這次送出成功（kind === "ok"）那幾張單的品項合計
+                  · 「今天的撿貨草稿」＝ findOrCreateTodayDraft 的判定（台北時區今天、
+                    狀態還是進行中、最新建立的那一張；沒有就開一張）
+                  ⛔ 不寫「一定會…」「絕對不會…」這種絕對句。 */}
+              把這次收好的 {handoff.skus.length} 樣 · {fmtQty(handoffQty)} 件送進
+              <span className="font-semibold">今天的撿貨草稿</span>
+              （沒有就開一張新的）。各店數量會依「還沒派的需求」自動帶出來，
+              合計不超過這次收的量；不會動到庫存，也不會建任何出貨單。
+              {handoff.duplicatePos > 0 && (
+                <>
+                  {" "}
+                  <span className="text-amber-800 dark:text-amber-300">
+                    （另外 {handoff.duplicatePos} 張是「先前就收過了」，沒有算在裡面。）
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* 停用原因要看得見（iPad 沒有 tooltip） */}
+          {locked && !draftSending && (
+            <p className="mt-2 text-sm font-medium text-amber-700 dark:text-amber-300">
+              現在有別的動作在跑，等它跑完再按這裡。
+            </p>
+          )}
+
+          {draftNotice && (
+            <p className="mt-3 rounded-lg bg-white/70 p-3 text-sm text-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-200">
+              {draftNotice}
+            </p>
+          )}
+          {/* ⛔ 草稿失敗與收貨失敗**分開講**：貨已經收進來了，
+              混在一起會讓樓下以為要重收一次貨。 */}
+          {draftError && (
+            <p className="mt-3 rounded-lg border border-rose-300 bg-rose-50 p-3 text-sm font-medium text-rose-800 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-200">
+              {draftError}
+              <span className="mt-1 block font-normal">
+                （貨已經收進來了，這只是撿貨草稿沒加到。）
+              </span>
+            </p>
+          )}
+
+          {handoff.sent && (
+            <p className="mt-3 text-sm">
+              <Link
+                href="/picking/drafts"
+                className="font-semibold text-indigo-700 underline dark:text-indigo-300"
+              >
+                去撿貨草稿頁分各店 →
+              </Link>
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
