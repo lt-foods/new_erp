@@ -84,6 +84,12 @@ export function ShortageAllocateModal({
   onSaved: () => void;
 }) {
   const [data, setData] = useState<Payload | null>(null);
+  // 20260902030000：這幾筆的待補貨是「總倉已向廠商確認不會到」標的，不是這批不夠分。
+  // ⭐ 為什麼另外查一次，而不是叫 rpc_get_allocation_candidates 多回一個欄位：
+  //   那支是配貨引擎的一部分（Alex 8/24～8/26 的地盤），為了一個顯示用的旗標
+  //   去改它不划算也不安全。這裡是純顯示，讀 customer_order_items 一個欄位就夠。
+  // ⚠️ 只影響「畫面上怎麼寫」——配貨行為一個字都沒改（見檔尾說明）。
+  const [hqConfirmed, setHqConfirmed] = useState<Set<number>>(new Set());
   // item_id → 配到的數量（可小於該行的量＝拆行：部分可取、部分待補）
   const [alloc, setAlloc] = useState<Map<number, number>>(new Map());
   const [error, setError] = useState<string | null>(null);
@@ -126,6 +132,21 @@ export function ShortageAllocateModal({
         Math.max(0, Math.floor(payload.store_on_hand)),
       ),
     );
+
+    // 哪幾筆待補貨是「總倉確認不會到」的（20260902030000）。
+    // ⛔ 查失敗不擋整個視窗：這只是文案的差別，配貨照樣要做得下去。
+    //   失敗時就退回原本的講法（「待補貨」），⛔ 不會反過來謊報成「確認不會到」。
+    const boIds = payload.items.filter((r) => r.backorder).map((r) => r.item_id);
+    if (boIds.length > 0) {
+      const { data: srcRows } = await sb
+        .from("customer_order_items")
+        .select("id")
+        .in("id", boIds)
+        .eq("backorder_source", "confirmed_shortfall");
+      setHqConfirmed(new Set(((srcRows ?? []) as { id: number }[]).map((x) => Number(x.id))));
+    } else {
+      setHqConfirmed(new Set());
+    }
     return payload;
   }, [transferId, skuId]);
 
@@ -299,6 +320,10 @@ export function ShortageAllocateModal({
         `把目前 ${ids.length} 筆「待補貨」直接取消？\n\n` +
           `會把這些品項標成斷貨取消，若整張訂單品項都沒了且沒收過錢，訂單也會一併取消；\n` +
           `已取走一部分的訂單則直接結單（不會再卡在「部分取貨」）。\n` +
+          // 20260902030000（G1）：這條路以前是靜默取消，現在會發通知 —— 一定要先講。
+          // ⚠️ 只講規則不講人數：這個視窗手上沒有「誰綁了會員」的資料，
+          //    ⛔ 不編一個數字出來；實際發出幾則，取消完的結果會照實報。
+          `\n📩 綁了會員的客人會收到「商品斷貨通知」；沒綁會員的收不到，要請店家自己聯繫。\n` +
           `此動作不可復原。`,
       )
     )
@@ -319,11 +344,15 @@ export function ShortageAllocateModal({
         items_cancelled?: number;
         orders_cancelled?: number;
         orders_completed?: number;
+        notified?: number;
       };
       alert(
         `已取消 ${r.items_cancelled ?? 0} 個品項、${r.orders_cancelled ?? 0} 張訂單` +
           // 已取走一部分的單不會被取消，剩下的取消掉就結單（20260808000000）
-          (r.orders_completed ? `，${r.orders_completed} 張已取完的訂單結單` : ""),
+          (r.orders_completed ? `，${r.orders_completed} 張已取完的訂單結單` : "") +
+          // 20260902030000：實際發出幾則由後端回報（一位會員一則，不是品項數）。
+          // 取消筆數 ≠ 通知則數，兩個數字不一樣是正常的（沒綁會員的收不到）。
+          `。\n📩 已發出 ${r.notified ?? 0} 則通知（一位會員一則；沒綁會員的收不到）。`,
       );
       await load();
       onSaved();
@@ -543,9 +572,29 @@ export function ShortageAllocateModal({
                           })}
                         </td>
                         <td className="px-3 py-2 text-right font-semibold tabular-nums">{r.qty}</td>
+                        {/* 20260902030000（G2）：兩種「待補貨」長得不一樣。
+                            ⛔ 只有文字不同 —— 配貨的行為完全沒改（見表格下方說明）。
+                            ⚠️ 旗標講的是**資料庫現況**（誰標的），give/short 講的是
+                              **畫面上還沒存的打算**，兩者刻意分開顯示，不要混成一句。 */}
                         <td className="whitespace-nowrap px-3 py-2 text-right text-xs">
                           {short <= 0 ? (
-                            <span className="text-zinc-500">{orderStatusLabel(r.order_status)}</span>
+                            hqConfirmed.has(r.item_id) ? (
+                              <span
+                                className="font-medium text-rose-700 dark:text-rose-400"
+                                title="總倉已向廠商確認這幾件不會到，才把它標成待補貨。你現在填了數量，按「儲存配貨」會解除待補貨、把貨給這位客人 —— 總倉的判斷會被蓋掉。確定店裡真的有貨再存。"
+                              >
+                                ⚠ 要覆蓋總倉判斷
+                              </span>
+                            ) : (
+                              <span className="text-zinc-500">{orderStatusLabel(r.order_status)}</span>
+                            )
+                          ) : hqConfirmed.has(r.item_id) ? (
+                            <span
+                              className="font-medium text-rose-700 dark:text-rose-400"
+                              title="總倉已向廠商確認這幾件不會到（不是「這批不夠分」）。要通知並取消這幾位客人，請到採購單那一列按「✕ 取消並通知」。"
+                            >
+                              ⛔ 總倉確認不會到{give > 0 ? `（本次仍待補 ${short}）` : ""}
+                            </span>
                           ) : give > 0 ? (
                             <span className="font-medium text-amber-700 dark:text-amber-400">
                               部分待補 {short}
@@ -622,9 +671,9 @@ export function ShortageAllocateModal({
                   onClick={cancelBackorders}
                   disabled={busy}
                   className="rounded-md border border-rose-300 px-3 py-1.5 text-xs text-rose-700 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
-                  title="確定補不到貨時，把待補貨的品項直接標成斷貨取消"
+                  title="確定補不到貨時，把待補貨的品項直接標成斷貨取消。20260902030000 起會通知客人 —— 但只有綁了會員的收得到。"
                 >
-                  ✕ 補不到了，把待補貨轉取消
+                  ✕ 補不到了，取消並通知
                 </SpinButton>
               )}
               <SpinButton
@@ -635,12 +684,25 @@ export function ShortageAllocateModal({
                 {busy ? "處理中…" : "儲存配貨"}
               </SpinButton>
             </div>
+            {/* ⚠️ 20260902030000：這一段以前寫「不會發通知給客人」，但那是在講「儲存配貨」。
+                同一組按鈕裡的「補不到了，把待補貨轉取消」現在**會**發通知，
+                所以措辭要指名道姓說是哪一顆，⛔ 不可以再用一句話蓋全部。 */}
             <p className="text-[11px] text-zinc-500">
               沒配到的量會標成「待補貨」，在補到貨之前取貨頁不會讓它取走。部分配到的訂單會拆成
-              「可取」與「待補」兩行，客人可以先領到手的部分。不會發通知給客人；下一批到貨時再開
-              這個視窗把數量補上去就會解除。店內有現貨的話可開「減抵單」把待補貨直接交貨結案
-              （會扣店庫存，與到店取貨同一套帳）。
+              「可取」與「待補」兩行，客人可以先領到手的部分。<b>「儲存配貨」不會發通知給客人</b>；
+              下一批到貨時再開這個視窗把數量補上去就會解除。店內有現貨的話可開「減抵單」把待補貨
+              直接交貨結案（會扣店庫存，與到店取貨同一套帳）。
             </p>
+            {hqConfirmed.size > 0 && (
+              // G2：只做顯示區分。⛔ 這裡刻意**不擋**店家覆蓋 ——
+              //   老闆的判準一向是「店裡實際有沒有貨由店家判」，擋住等於又多一關。
+              //   但要讓他知道自己正在推翻誰的判斷（先前是完全看不出來的）。
+              <p className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-800 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-300">
+                ⛔ 這裡有 {hqConfirmed.size} 筆是<b>總倉已向廠商確認「不會到」</b>才標的待補貨，
+                跟「這批不夠分」不一樣。系統<b>不會擋</b>你把貨配給他們 —— 但那等於推翻總倉的判斷，
+                請先確認店裡真的有貨。要通知並取消這幾位客人，請到<b>採購單</b>那一列按「✕ 取消並通知」。
+              </p>
+            )}
           </>
         )}
       </div>

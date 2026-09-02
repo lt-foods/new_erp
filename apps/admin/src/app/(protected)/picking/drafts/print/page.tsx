@@ -30,6 +30,7 @@ import {
   buildStoreColumns,
   describeDraftDbError,
   formatCloseDates,
+  rowShortfall,
   rowTotal,
   type DraftCell,
   type SkuExistence,
@@ -92,7 +93,7 @@ function Body() {
         sb
           .from("picking_draft_items")
           .select(
-            "sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name, snapshot_close_date, snapshot_extra",
+            "sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name, snapshot_close_date, snapshot_extra, snapshot_at, snapshot_demand_qty, snapshot_available_qty",
           )
           .eq("draft_id", draftId)
           .order("id", { ascending: true }),
@@ -342,6 +343,17 @@ function Body() {
                             ⛔ 下面兩個 .note 是**警告**不是品號，不可以一起刪掉。 */}
                         {row.state === "missing" && <span className="note">⚠ 商品主檔已查不到（顯示加入當下的名稱）</span>}
                         {row.state === "unknown" && <span className="note">⚠ 無法確認商品是否還在主檔</span>}
+                        {/* 20260902：客人要的比貨多 —— 樓下照這張紙撿，撿不到那幾件不是他的錯。
+                            ⚠ 只在真的有缺口時才印（多一行 × 每樣商品是紙），
+                              而且措辭一定要有「加入時」：這是快照，不是列印當下的數字。 */}
+                        {(() => {
+                          const sf = rowShortfall(cells, row.sku_id);
+                          return sf ? (
+                            <span className="note">
+                              ⚠ 加入時：未派需求 {sf.demandLeft}／可分配 {sf.available}，缺 {sf.short}
+                            </span>
+                          ) : null;
+                        })()}
                       </td>
                       <td className="num-cell frozen-col">{rowTotal(cells, row.sku_id)}</td>
                       {storeCols.map((st) => {
