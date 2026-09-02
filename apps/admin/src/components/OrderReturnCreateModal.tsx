@@ -253,7 +253,8 @@ export default function OrderReturnCreateModal({
       // 已退量（先前的 return_to_hq transfer 累加），依 notes |取貨後退回 tag 分兩池
       const { data: returnedRows } = await sb
         .from("transfers")
-        .select("id, transfer_type, status, source_location, notes, transfer_items(sku_id, qty_shipped)")
+        // transfer_items 有兩條 FK 指向 transfers（另一條是 shortage_return_transfer_id），embed 一定要帶 hint，否則 PGRST201
+        .select("id, transfer_type, status, source_location, notes, transfer_items!transfer_items_transfer_id_fkey(sku_id, qty_shipped)")
         .eq("customer_order_id", orderId)
         .eq("transfer_type", "return_to_hq")
         .in("status", ["shipped", "received"])

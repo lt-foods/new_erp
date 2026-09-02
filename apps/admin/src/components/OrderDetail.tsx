@@ -357,7 +357,8 @@ export function OrderDetail({
           .eq("order_id", orderId)
           .order("created_at", { ascending: true }),
         sb.from("transfers")
-          .select("id, transfer_no, status, notes, shipped_at, received_at, shipped_by, transfer_items(sku_id, qty_shipped, notes)")
+          // transfer_items 有兩條 FK 指向 transfers（另一條是 shortage_return_transfer_id），embed 一定要帶 hint，否則 PGRST201
+          .select("id, transfer_no, status, notes, shipped_at, received_at, shipped_by, transfer_items!transfer_items_transfer_id_fkey(sku_id, qty_shipped, notes)")
           .eq("customer_order_id", orderId)
           .eq("transfer_type", "return_to_hq")
           .in("status", ["shipped", "received"])
