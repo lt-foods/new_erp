@@ -1040,11 +1040,12 @@ export function OrderDetail({
     setReloadTick((n) => n + 1);
   }
 
-  // 撤銷最近一次取貨（誤點取貨用）：庫存反向沖回、品項還原待取、訂單狀態重算。金流不動。
+  // 撤銷最近一次取貨（誤點取貨用）：庫存反向沖回、品項還原待取、訂單狀態重算，
+  // 這趟收的儲值金退回會員餘額（20260902040000）。
   async function undoPickup() {
     if (!head) return;
     const reason = prompt(
-      `撤銷取貨：${head.order_no}\n會把最近一次取貨的品項還原為「待取」並沖回門市庫存。\n請輸入原因：`,
+      `撤銷取貨：${head.order_no}\n會把最近一次取貨的品項還原為「待取」、沖回門市庫存，這趟收的儲值金也會退回會員餘額。\n請輸入原因：`,
     );
     if (reason === null) return;
     const sb = getSupabase();
@@ -1057,11 +1058,22 @@ export function OrderDetail({
       p_reason: reason || null,
     });
     if (rpcErr) { alert(`撤銷失敗：${translateRpcError(rpcErr)}`); return; }
-    const r = data as { items_restored: number; new_status: string; wallet_paid_amount: number };
-    const walletNote = Number(r.wallet_paid_amount ?? 0) > 0
-      ? `\n⚠️ 此單已收儲值金 $${Number(r.wallet_paid_amount)}，仍保留在訂單上（之後取貨不需再付；要退款請走取消流程）。`
-      : "";
-    alert(`已撤銷取貨（${r.items_restored} 項還原為待取）\n訂單狀態：${statusLabel(r.new_status)}${walletNote}`);
+    const r = data as {
+      items_restored: number;
+      new_status: string;
+      wallet_refunded?: number;
+      wallet_paid_amount?: number;
+      wallet_note?: string | null;
+    };
+    const refunded = Number(r.wallet_refunded ?? 0);
+    const stillOnOrder = Number(r.wallet_paid_amount ?? 0);
+    const walletLines = [
+      refunded > 0 ? `\n已退回儲值金 $${refunded} 到會員餘額。` : "",
+      // 多次取貨的單：別趟收的錢還掛在單上，之後那趟取貨不用再付
+      stillOnOrder > 0 ? `\n此單仍有 $${stillOnOrder} 儲值金（別趟取貨收的），保留在訂單上。` : "",
+      r.wallet_note ? `\n⚠️ ${r.wallet_note}` : "",
+    ].join("");
+    alert(`已撤銷取貨（${r.items_restored} 項還原為待取）\n訂單狀態：${statusLabel(r.new_status)}${walletLines}`);
     setReloadTick((n) => n + 1);
   }
   const pickableItems = items.filter((it) => ["pending", "reserved", "ready"].includes(it.status));

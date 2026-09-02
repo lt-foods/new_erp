@@ -8,7 +8,7 @@ type AuditRow = {
   id: number;
   entity_type: "order" | "item";
   entity_id: number | null;
-  field: "unit_price" | "item_notes" | "item_discount_amount" | "item_discount_percent" | "discount_amount" | "discount_percent" | "order_notes" | "status";
+  field: "unit_price" | "item_notes" | "item_discount_amount" | "item_discount_percent" | "discount_amount" | "discount_percent" | "order_notes" | "qty" | "status" | "is_gift" | "wallet_paid_amount";
   before_value: unknown;
   after_value: unknown;
   edit_reason: string | null;
@@ -24,7 +24,10 @@ const FIELD_LABEL: Record<string, string> = {
   discount_amount: "整單折扣 $",
   discount_percent: "整單折扣 %",
   order_notes: "單頭備註",
+  qty: "數量",
   status: "狀態",
+  is_gift: "贈品",
+  wallet_paid_amount: "已收儲值金",
 };
 
 const STATUS_LABEL: Record<string, string> = {
