@@ -680,10 +680,44 @@ function PageContent() {
                   {header.sent_at && new Date(header.sent_at).toLocaleString("zh-TW")}
                 </div>
               )}
+              {/* 斷貨說明。⛔ 每一句都必須是程式真的會做的事 —— 這一段的逐句出處：
+                  · 「還沒收過貨才會取消客人」：_stockout_po_items 只把 qty_received = 0 的品項
+                    納入下游連動（20260812000000:288-294），已收到一部分的不進 v_stockout_skus。
+                  · 「取消還在等的客人訂單品項」：同檔 :321-336，只動 coi.status = 'pending' 的列，
+                    而且範圍限在 :297-301 撈出來的 v_campaign_ids（＝本單品項來源請購單掛的那幾團）
+                    ⛔ 不可以寫成「取消所有等這項貨的客人」—— 別團的同商品訂單不會被動到。
+                  · 「有綁會員的會收到通知」：同檔 :380-396，INSERT notifications 有
+                    `WHERE co.member_id IS NOT NULL` —— 沒綁會員的訂單發不出去，⛔ 不可以寫成
+                    「會通知客人」。
+                  · 「拆成斷貨單 / 什麼時候不拆」：_split_stockout_po_items 20260812000000:131-145
+                    （要 qty_received = 0 且沒掛未取消的進貨單）與 :151-152（整張全斷不拆）。
+                  · 「⚖️ 配貨在收貨待辦」：wms/inbound/page.tsx:1417 的頁標題 +:2132-2145 的按鈕。
+                  · 「自動標全部到貨、貨留在派貨工作台」：20260902000000 / 20260902000010 把斷貨
+                    結案由 closed 改成 fully_received；fully_received 在派貨需求 view 的白名單裡
+                    （20260818000030:77）。
+                    ⚠️⚠️ 工作台是**雙條件**：`.eq("has_stock_left", true).eq("has_demand_left", true)`
+                    （wms/picking/page.tsx:430-431；草稿預填 lib/pickingDraftView.ts:406-407 /
+                     1042-1043 / 1162-1163 也是兩條都要）。
+                    ⛔ 不可以寫成「貨就會回到派貨工作台」—— 需求歸零（客人取消、已從別處出貨、
+                     補貨帶囤貨）時 has_demand_left = false，那批貨留在總倉當庫存、工作台看不到。
+                     這一句的但書是 2026-09-02 阿審 P1 抓出來的，⛔ 不要拿掉。
+                    ⚠️ 這一句要等那兩支 migration 上了正式庫才成立。 */}
               {canStockout && (
                 <p className="rounded-md border border-zinc-200 bg-zinc-50 p-2 text-xs leading-relaxed text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800/60 dark:text-zinc-400">
-                  ⛔ 供應商斷貨請在右側明細列逐品項標記；沒到過貨的品項會自動拆成一張「斷貨單」，
-                  其餘品項照常收貨、到齊後本單自動結掉。
+                  ⛔ <strong>斷貨 ＝ 這個商品廠商完全給不了</strong>，請在右側明細列逐品項標記。
+                  <br />
+                  ・這項<strong>還沒收過貨</strong>：按下去會把<strong>這張單要供貨的那幾團裡、還在等這一項的客人訂單品項全部取消</strong>
+                  （有綁會員的會收到系統通知），並把它拆到一張「斷貨單」
+                  （整張單都斷貨、或這一列還掛著沒確認的進貨單時就不拆）。
+                  <br />
+                  ・這項<strong>已經收到一部分</strong>：按下去只是停止等剩下的量，不會動到客人的訂單。
+                  <br />
+                  ⚠️ <strong>只是這次少送幾件，請不要按斷貨</strong>——照實際收到的數量收貨就好，
+                  不夠分的時候到「收貨待辦」用 ⚖️ 配貨 決定先給誰。
+                  <br />
+                  其餘品項照常收貨；全部收滿後本單自動標成「全部到貨」。
+                  已收到、還沒派出的貨<strong>（仍有客人或補貨需求在等的部分）</strong>
+                  會出現在派貨工作台；已經沒有人在等的，就留在總倉當庫存。
                 </p>
               )}
               {canRestore && (
