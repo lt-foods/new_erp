@@ -79,6 +79,11 @@ export type DraftCell = {
   snapshot_sku_label: string | null;
   snapshot_store_code: string | null;
   snapshot_store_name: string | null;
+  // 加入商品那一刻的「這家店還沒派的需求」與「這樣商品的可分配量」。
+  // 20260902：rowShortfall 拿它算商品列的紅字。舊草稿（欄位上線前建的）是 null。
+  snapshot_at?: string | null;
+  snapshot_demand_qty?: number | null;
+  snapshot_available_qty?: number | null;
 };
 
 export type StoreRef = { id: number; code: string; name: string };
@@ -540,6 +545,59 @@ export function rowTotal(cells: DraftCell[], skuId: number): number {
   let sum = 0;
   for (const c of cells) if (c.sku_id === skuId) sum += Number(c.qty);
   return sum;
+}
+
+/** 商品列的缺口：客人要的比貨多多少。null ＝ 不顯示（沒缺口，或算不出來） */
+export type RowShortfall = { demandLeft: number; available: number; short: number };
+
+/**
+ * 「這樣商品的未派需求 > 可分配量」時，缺多少。
+ *
+ * ⛔⛔ 這是**加入商品那一刻**的數字，不是現在的 —— 呼叫端的措辭一定要寫「加入時」。
+ *   （資料來自 picking_draft_items 的快照欄位，零查詢。要現在的數字得重打
+ *     loadPrefill，一張草稿三、五十樣商品 ＝ 60~100 次往返，那頁自己在
+ *     evenDistribute 的註解裡已經算過這筆帳。）
+ *
+ * ⭐ 只取「加入那一批」的格子（同一次 insert 的 snapshot_at 相同）。三個理由：
+ *   1. 加入商品時**每一家分店都會建一格**（edit/page.tsx 的 stores.map），
+ *      所以那一批的 demand 加總就是當時的全店未派需求，**不會漏店**。
+ *   2. 後來才補的格子（cell_created_later）是**另一個時刻**拍的快照。
+ *      混在一起加＝把兩個時刻的數字相加，那種數字沒有任何一個時刻是對的。
+ *   3. available 是「這樣商品」層級的值，同一批的每一格都一樣；
+ *      取同一批才保證 X 與 Y 是同一刻量出來的。
+ *
+ * ⛔ 快照缺一格就整列不顯示（回 null），⛔ 不可以把 null 當 0：
+ *   舊草稿的欄位是 NULL，當 0 算會憑空生出「缺 N」——
+ *   而這張紙是要拿去給樓下撿貨的，寧可不講也不能講錯。
+ */
+export function rowShortfall(cells: DraftCell[], skuId: number): RowShortfall | null {
+  const mine = cells.filter((c) => Number(c.sku_id) === skuId);
+  if (mine.length === 0) return null;
+
+  // 加入那一刻 = 最早的 snapshot_at。沒有 snapshot_at 的（舊草稿）一律不顯示。
+  let earliest: string | null = null;
+  for (const c of mine) {
+    const at = c.snapshot_at ?? null;
+    if (!at) continue;
+    if (earliest === null || at < earliest) earliest = at;
+  }
+  if (earliest === null) return null;
+
+  const batch = mine.filter((c) => (c.snapshot_at ?? null) === earliest);
+  let demandLeft = 0;
+  let available: number | null = null;
+  for (const c of batch) {
+    if (c.snapshot_demand_qty == null || c.snapshot_available_qty == null) return null;
+    demandLeft += Number(c.snapshot_demand_qty);
+    const a = Number(c.snapshot_available_qty);
+    // 同一批理應都一樣；真的不一樣就取最小（不高估手上的貨）
+    available = available === null ? a : Math.min(available, a);
+  }
+  if (available === null) return null;
+  if (!Number.isFinite(demandLeft) || !Number.isFinite(available)) return null;
+
+  const short = demandLeft - available;
+  return short > 0 ? { demandLeft, available, short } : null;
 }
 
 

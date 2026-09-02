@@ -61,6 +61,10 @@ type Item = {
   notes: string | null;
   stockout_at: string | null;
   stockout_reason: string | null;
+  // 20260902030000：確定短少 —— 廠商說「這幾件不會到」，但其餘照到、照派。
+  // ⛔ 與斷貨的分工：斷貨＝整項供不了（會取消該團所有客人）；這裡＝只少幾件。
+  confirmed_shortfall: number | null;
+  confirmed_shortfall_at: string | null;
 };
 
 const STATUS_LABEL = poStatusLabel;
@@ -108,7 +112,7 @@ function PageContent() {
           .maybeSingle(),
         supabase
           .from("purchase_order_items")
-          .select("id, sku_id, qty_ordered, qty_received, qty_returned, unit_cost, line_subtotal, notes, stockout_at, stockout_reason")
+          .select("id, sku_id, qty_ordered, qty_received, qty_returned, unit_cost, line_subtotal, notes, stockout_at, stockout_reason, confirmed_shortfall, confirmed_shortfall_at")
           .eq("po_id", id)
           .order("id"),
       ]);
@@ -197,6 +201,10 @@ function PageContent() {
           notes: r.notes,
           stockout_at: r.stockout_at ?? null,
           stockout_reason: r.stockout_reason ?? null,
+          // null 與 0 都當「沒填」（RPC 那邊也是 NULLIF(COALESCE(p_qty,0),0)）
+          confirmed_shortfall:
+            r.confirmed_shortfall == null ? null : Number(r.confirmed_shortfall) || null,
+          confirmed_shortfall_at: r.confirmed_shortfall_at ?? null,
         };
       });
       setItems(merged);
@@ -536,6 +544,210 @@ function PageContent() {
     }
   }
 
+  // ── 確定短少（20260902030000）────────────────────────────────────────────
+  // 廠商說「這幾件確定不會到」，但其餘照到、照派 —— 跟「斷貨」是兩件事：
+  //   斷貨   ＝ 整個品項供應商完全給不了 → 取消該團**所有**訂這個商品的客人
+  //   確定短少 ＝ 只少幾件 → 只把**最晚下單的 N 件**標待補貨，其他人不受影響
+  //
+  // ⛔ 這顆只「標記」：不動庫存、不建任何單、**不通知客人**。
+  //   要通知走下面那顆「取消待補貨並通知」。兩步分開是刻意的 ——
+  //   標記之後還有反悔窗（廠商又生出貨來就把數字清掉，貨到會自動解除）。
+  async function setConfirmedShortfall(item: Item) {
+    const label = item.product_name + (item.variant_name ? `-${item.variant_name}` : "");
+    const outstanding = item.qty_ordered - item.qty_received;
+    const unit = item.unit_uom ?? "件";
+    // 貨補齊了／單子不在收貨中／**這個品項被按了斷貨** → 只剩「清除」這條路可走。
+    // ⛔ 這時不可以還把畫面寫成「要填幾件」，那是一個一按就會被後端擋掉的指令。
+    //    （三種情況後端擋的守衛不同，但對操作的人來說都是同一句話：只能清、不能改。）
+    const clearOnly =
+      !!item.stockout_at || !(canStockout && item.qty_received < item.qty_ordered);
+    if (clearOnly) {
+      const why = item.stockout_at
+        ? "這個品項已經被標記斷貨"
+        : "這張單已經不在收貨中（或貨已補齊）";
+      // 「已取消 X 件救不回來」的 X **一定要是真數**。
+      // ⛔ 這句話的重點就是那個數字；寫死 0 或省略掉，等於把最該讓人猶豫的
+      //   資訊藏起來（客人已經收到取消通知了，清除救不回）。
+      // ⚠️ 查不到就照實說「查不到」，⛔ 不可以退回 0 —— 0 看起來像「沒有人被取消」，
+      //   那是一句可能不是事實的話。
+      let settledLine: string;
+      try {
+        const { data: pre, error: preErr } = await getSupabase().rpc(
+          "rpc_get_confirmed_shortfall_items",
+          { p_po_item_id: item.id },
+        );
+        if (preErr) throw new Error(preErr.message);
+        const already = Number((pre as { cancelled_qty?: number } | null)?.cancelled_qty ?? 0);
+        settledLine =
+          already > 0
+            ? `　· ⚠ 先前已經「取消並通知」的 ${already}${unit} **收不回來**（客人已經收到通知了）`
+            : `　· 目前沒有因為這筆短少而取消掉的訂單`;
+      } catch {
+        settledLine = `　· ⚠ 查不到「已經取消並通知幾件」（查詢失敗）—— 已取消的一律收不回來`;
+      }
+      if (
+        !window.confirm(
+          `「${label}」目前記著「確定短少 ${item.confirmed_shortfall}${unit}」，` +
+            `但${why}，**不能再改數字**。\n\n` +
+            `要清除這個標記嗎？\n` +
+            `　· 會把因為它而待補貨的客人品項收回（那些人恢復正常等貨／可取貨）\n` +
+            `${settledLine}`,
+        )
+      )
+        return;
+    }
+    const input = clearOnly ? "0" : window.prompt(
+      `「${label}」廠商確定不會到幾${unit}？\n\n` +
+        `訂購 ${item.qty_ordered}、已收 ${item.qty_received}、未到 ${outstanding}${unit}。\n` +
+        `填了之後，系統會把這一團**最晚下單的 N ${unit}**標成「待補貨」：\n` +
+        // ⛔ 措辭只講「結果的狀態」不講「從 X 移到 Y」：貨還沒到的時候客人本來就
+        //    在「待到貨」，寫成搬移會讓人以為畫面上看得到變化，其實多半沒有。
+        `　· 這幾件會歸在客人訂單頁的「待到貨」，取貨頁不會放行\n` +
+        `　· 這一步**不會通知客人、也不會取消任何訂單**\n` +
+        `　· 廠商後來又生出貨來：把這個數字清掉就會立刻收回這些待補貨標記\n` +
+        `　· 沒清掉也沒關係 —— 貨收進店裡而且量夠的時候，系統會自動解除\n\n` +
+        `留空或填 0 ＝ 清除（把先前標的待補貨收回來）。`,
+      item.confirmed_shortfall != null ? String(item.confirmed_shortfall) : "",
+    );
+    if (input === null) return;
+    const qty = input.trim() === "" ? 0 : Number(input);
+    // 阿審 P2：件數就是整數，前後端都擋（後端 RPC 也有 trunc 檢查）
+    if (!Number.isFinite(qty) || qty < 0 || !Number.isInteger(qty)) {
+      alert("請填 0 或正整數（件數不接受小數）。");
+      return;
+    }
+    if (qty > outstanding) {
+      alert(`確定短少 ${qty} 超過未到量 ${outstanding}${unit}。\n若整項都不會到，請改按「斷貨」。`);
+      return;
+    }
+    try {
+      const supabase = getSupabase();
+      // ⛔ 不再傳 p_operator：後端一律用 auth.uid()，杜絕冒名（阿審 P0-1）
+      const { data: res, error: rpcErr } = await supabase.rpc("rpc_set_confirmed_shortfall", {
+        p_po_item_id: item.id,
+        p_qty: qty === 0 ? null : qty,
+      });
+      if (rpcErr) throw new Error(rpcErr.message);
+      const r = (res ?? {}) as Record<string, number | null>;
+      const marked = Number(r.marked ?? 0);
+      const cleared = Number(r.cleared ?? 0);
+      const merged = Number(r.merged ?? 0);
+      const settled = Number(r.settled ?? 0);
+      const unmet = Number(r.unmet ?? 0);
+      if (qty === 0) {
+        alert(
+          `已清除「${label}」的確定短少${cleared > 0 ? `，收回 ${cleared} 筆待補貨` : ""}。` +
+            (merged > 0 ? `\n其中 ${merged} 筆是先前拆出來的行，已併回原訂單列。` : "") +
+            // 已取消的不收回，也不假裝收回了
+            (settled > 0
+              ? `\n\n⚠ 先前已經「取消並通知」的 ${settled}${unit} **不會**被收回（客人已經收到通知了）。`
+              : ""),
+        );
+      } else {
+        alert(
+          `已記錄「${label}」確定短少 ${qty}${unit}。\n` +
+            (settled > 0 ? `其中 ${settled}${unit} 先前已取消並通知過，這次不重複處理。\n` : "") +
+            `這次標成待補貨：${marked} 筆` +
+            (Number(r.split ?? 0) > 0 ? `（其中 ${Number(r.split)} 筆是拆行：同一張訂單一部分可取、一部分待補）` : "") +
+            (cleared > 0
+              ? `\n先前標的 ${cleared} 筆已先收回重算${merged > 0 ? `（${merged} 筆併回原訂單列）` : ""}。`
+              : "") +
+            // ⛔ 標不滿要照實講：等貨的客人不夠多時 unmet > 0，
+            //   不可以讓畫面看起來像「3 件都處理掉了」。
+            (unmet > 0
+              ? `\n\n⚠ 還有 ${unmet}${unit} 沒有標到 —— 目前在等這樣商品的客人不夠多（或剩下的都已經可取貨了）。`
+              : "") +
+            `\n\n要通知這些客人請按同一列的「✕ 取消並通知」。`,
+        );
+      }
+      await reload();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // 取消因「確定短少」被標成待補貨的客人品項，並通知（20260902030000 / G1、G3）
+  // ⚠️ item ids **按下當下重查**，不沿用標記時回傳的 —— 中間客人可能自己取消、
+  //    或補到貨被 _settle_arrived_backorders 自動解除（見該 RPC 的 COMMENT）。
+  async function cancelShortfallBackorders(item: Item) {
+    const label = item.product_name + (item.variant_name ? `-${item.variant_name}` : "");
+    const unit = item.unit_uom ?? "件";
+    try {
+      const supabase = getSupabase();
+      const { data: listed, error: listErr } = await supabase.rpc(
+        "rpc_get_confirmed_shortfall_items",
+        { p_po_item_id: item.id },
+      );
+      if (listErr) throw new Error(listErr.message);
+      const info = (listed ?? {}) as {
+        items?: {
+          item_id: number;
+          order_no: string;
+          store_name: string | null;
+          qty: number;
+          notifiable: boolean;
+          created_at: string;
+        }[];
+        marked_qty?: number;
+        cancelled_qty?: number;
+        notifiable?: number;
+        unnotifiable?: number;
+      };
+      const rows = info.items ?? [];
+      const ids = rows.map((x) => Number(x.item_id));
+      if (ids.length === 0) {
+        alert(`「${label}」目前沒有因確定短少而待補貨的品項（可能已補到貨自動解除，或已經取消過了）。`);
+        await reload();
+        return;
+      }
+      const notifiable = Number(info.notifiable ?? 0);
+      const unnotifiable = Number(info.unnotifiable ?? 0);
+      // 阿審 P1-6：取消前要先看得到名單。⛔ 不可以只給一個數字就叫人按不可復原的鈕。
+      // ⚠️ 太多筆時截斷，但**要講出截斷了**（⛔ 不可以讓人以為看到的就是全部）。
+      const LIST_CAP = 25;
+      const shown = rows.slice(0, LIST_CAP);
+      const listText =
+        shown
+          .map(
+            (x) =>
+              `　${x.order_no}｜${x.store_name ?? "（未知分店）"}｜${x.qty} ${unit}` +
+              `｜${x.notifiable ? "會收到通知" : "⚠ 沒綁會員，收不到"}`,
+          )
+          .join("\n") +
+        (rows.length > LIST_CAP ? `\n　…以上只列出前 ${LIST_CAP} 筆，實際會取消 ${rows.length} 筆` : "");
+      if (
+        !window.confirm(
+          `取消「${label}」這 ${ids.length} 筆待補貨（共 ${Number(info.marked_qty ?? 0)} ${unit}）並通知客人？\n\n` +
+            `${listText}\n\n` +
+            // 兩個數字都是後端現查的，不是估的（rpc_get_confirmed_shortfall_items）
+            `　· ${notifiable} 筆綁了會員 → 會收到「商品斷貨通知」\n` +
+            `　· ${unnotifiable} 筆沒綁會員 → 收不到通知，要請店家自己聯繫\n` +
+            (Number(info.cancelled_qty ?? 0) > 0
+              ? `　· 另有 ${Number(info.cancelled_qty)} ${unit}先前已經取消過，不重複處理\n`
+              : "") +
+            `\n品項會標成斷貨取消；整張訂單品項都沒了且沒收過錢的，訂單也會一併取消。\n` +
+            `此動作不可復原。`,
+        )
+      )
+        return;
+      const { data: userData } = await supabase.auth.getUser();
+      const { data: res, error: rpcErr } = await supabase.rpc("rpc_cancel_backorder_items", {
+        p_item_ids: ids,
+        p_operator: userData.user?.id,
+      });
+      if (rpcErr) throw new Error(rpcErr.message);
+      const r = (res ?? {}) as Record<string, number>;
+      alert(
+        `已取消 ${r.items_cancelled ?? 0} 個品項、${r.orders_cancelled ?? 0} 張訂單` +
+          (r.orders_completed ? `，${r.orders_completed} 張已取完的訂單結單` : "") +
+          `。\n已發出 ${r.notified ?? 0} 則通知（一位會員一則）。`,
+      );
+      await reload();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function restorePO() {
     if (!header) return;
     if (
@@ -860,13 +1072,14 @@ function PageContent() {
                   <Th className="text-right">已出</Th>
                   <Th className="text-right">成本</Th>
                   <Th className="text-right">小計</Th>
+                  <Th className="text-center">確定短少</Th>
                   <Th className="text-center">斷貨</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
                 {items.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="p-6 text-center text-zinc-500">無品項</td>
+                    <td colSpan={11} className="p-6 text-center text-zinc-500">無品項</td>
                   </tr>
                 ) : (
                   items.map((r, idx) => (
@@ -913,6 +1126,61 @@ function PageContent() {
                       </Td>
                       <Td className="text-right font-medium text-amber-600 dark:text-amber-400">${r.unit_cost.toFixed(0)}</Td>
                       <Td className="text-right font-mono">${(r.qty_ordered * r.unit_cost).toFixed(0)}</Td>
+                      {/* 確定短少（20260902030000）：只少幾件用這欄，整項供不了才按右邊的「斷貨」。
+                          顯示條件與斷貨鈕一致（canStockout ＝ 已發送 / 部分到貨），
+                          再加「還有未到量」—— 全到了就沒有短少可言（RPC 也會擋）。 */}
+                      <Td className="text-center">
+                        {/* ⚠️ 顯示條件分兩種（阿審 P1-4 的畫面那一半）：
+                            ①「能不能**填**新的短少」＝ 未斷貨 × 單子還在收 × 還有未到量
+                            ②「能不能**清掉舊的**」＝ 只要這一列真的掛著標記就一定要能按
+                            ⛔ 兩個不可以合成一個條件：貨後來補齊了（已收 ≥ 訂購）之後
+                              鈕會消失，掛著的標記就永遠拿不掉，客人卡在待補貨沒人救得了。
+                            （後端 RPC 也已經放行清除路徑，兩層要一致，否則又是
+                              「DB 允許、畫面按不到」那種落差。）
+                            🔴 第三輪修正：`!r.stockout_at` 原本掛在**整個**條件外面，
+                              於是這個品項一旦被按了（跟本功能無關的）「斷貨」鈕，
+                              連清除入口都一起消失 —— 跟上面那個病一模一樣，只是換一個觸發方式。
+                              ⇒ 斷貨只擋「填新的」，不擋「清舊的」。
+                            ⭐ 為什麼給**真按鈕**而不是「唯讀說明講去哪清」：
+                              全站沒有第二個地方可以清這個標記，說明只能寫成
+                              「去別的地方清」而那個地方不存在 ＝ 又一句畫面上的假話。 */}
+                        {(!r.stockout_at && canStockout && r.qty_received < r.qty_ordered) ||
+                        !!r.confirmed_shortfall ? (
+                          <div className="flex flex-col items-center gap-1">
+                            <SpinButton
+                              onClick={() => setConfirmedShortfall(r)}
+                              className={
+                                "min-h-[44px] touch-manipulation rounded-md border px-2 text-sm font-medium " +
+                                (r.confirmed_shortfall
+                                  ? "border-rose-400 bg-rose-50 text-rose-700 hover:bg-rose-100 dark:border-rose-700 dark:bg-rose-950 dark:text-rose-300 dark:hover:bg-rose-900"
+                                  : "border-zinc-300 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800")
+                              }
+                              title={
+                                r.confirmed_shortfall
+                                  ? `廠商確定不會到 ${r.confirmed_shortfall}${r.unit_uom ?? "件"}` +
+                                    (r.confirmed_shortfall_at
+                                      ? `（${new Date(r.confirmed_shortfall_at).toLocaleString("zh-TW")}）`
+                                      : "") +
+                                    "\n點一下可改數字或清除"
+                                  : "廠商說「有幾件確定不會到」時填這裡：會把最晚下單的那幾件標成待補貨。不會通知客人。"
+                              }
+                            >
+                              {r.confirmed_shortfall ? `⚠ 短少 ${r.confirmed_shortfall}` : "＋ 標短少"}
+                            </SpinButton>
+                            {r.confirmed_shortfall ? (
+                              <SpinButton
+                                onClick={() => cancelShortfallBackorders(r)}
+                                className="min-h-[44px] touch-manipulation rounded-md border border-rose-300 px-2 text-xs text-rose-700 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
+                                title="把因為這筆短少而待補貨的客人品項取消掉，並通知綁了會員的那幾位"
+                              >
+                                ✕ 取消並通知
+                              </SpinButton>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <span className="text-zinc-400">—</span>
+                        )}
+                      </Td>
                       <Td className="text-center">
                         {r.stockout_at ? (
                           <span

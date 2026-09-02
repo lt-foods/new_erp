@@ -38,6 +38,7 @@ import {
   loadSkuPreviewBatch,
   planEvenWrite,
   precheckHeadline,
+  rowShortfall,
   rowTotal,
   skuPreviewCell,
   SKU_PREVIEW_ALL_FAILED,
@@ -214,7 +215,7 @@ function Body() {
       const cells = await fetchAllRows<DraftItem>(() =>
         sb
           .from("picking_draft_items")
-          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name")
+          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name, snapshot_at, snapshot_demand_qty, snapshot_available_qty")
           .eq("draft_id", draftId)
           .order("id", { ascending: true }),
       );
@@ -436,7 +437,7 @@ function Body() {
             created_by: uid,
             updated_by: uid,
           })
-          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name")
+          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name, snapshot_at, snapshot_demand_qty, snapshot_available_qty")
           .single();
         if (err) throw err;
         setItems((arr) => [...arr, data as DraftItem]);
@@ -631,7 +632,7 @@ function Body() {
               };
             }),
           )
-          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name");
+          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name, snapshot_at, snapshot_demand_qty, snapshot_available_qty");
         if (err) throw err;
         inserted.push(...((data ?? []) as DraftItem[]));
       } catch (e) {
@@ -825,7 +826,7 @@ function Body() {
               };
             }),
           )
-          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name");
+          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name, snapshot_at, snapshot_demand_qty, snapshot_available_qty");
         if (err) throw err;
         // ⭐ 每成功一樣就立刻進畫面（functional updater，不怕批次更新交錯）——
         //   第 3 樣掛掉時，前兩樣已經看得到，不會整批一起消失。
@@ -1276,6 +1277,26 @@ function Body() {
                         </SpinButton>
                       )}
                     </div>
+                    {/* 20260902：客人要的比貨多時講出來。
+                        ⛔ 措辭三個地方不可以改鬆：
+                        ①「加入時」—— 這是快照，不是現在的數字（要現在的得重打 loadPrefill，
+                           一張草稿三五十樣＝60~100 次往返，見 evenDistribute 的效能註解）
+                        ②「未派需求」不是「訂單量」—— 快照存的是 demand − wave，
+                           已經派掉的那部分不在裡面（用詞與 addOutcomeMessage 的 clamped 一致）
+                        ③ 只講事實，⛔ 不寫「請改小」之類的指示：老闆 2026-08-17 明確
+                           不要這一頁挑他填的數字的毛病（見 pickingDraftView.ts 檢查段的註解）。
+                           這一條講的是「貨不夠」不是「你給太多」，兩件事。 */}
+                    {(() => {
+                      const sf = rowShortfall(items, row.sku_id);
+                      return sf ? (
+                        <div
+                          className="mt-0.5 text-xs font-medium text-red-600 dark:text-red-400"
+                          title="加入這樣商品那一刻的數字（快照）。之後貨可能又到了，以派貨工作台的現況為準。"
+                        >
+                          ⚠ 加入時：未派需求 {sf.demandLeft}／可分配 {sf.available}，缺 {sf.short}
+                        </div>
+                      ) : null;
+                    })()}
                     {row.state !== "active" && (
                       // 商品在 skus 裡查不到（草稿不綁外鍵，見 migration 檔頭）。
                       // 照樣顯示快照名稱＋明講狀況，⛔ 不靜默跳過這一列。
