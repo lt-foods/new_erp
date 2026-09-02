@@ -152,7 +152,20 @@ function PickupPageContent() {
   // 分店帳號看到的該會員訂單（其他店的單以摘要提示呈現，不進這份清單）
   function visibleOrdersOf(memberId: number): OpenOrder[] {
     const all = orders.get(memberId) ?? [];
-    return branchLocked ? all.filter(isOwnStoreOrder) : all;
+    const vis = branchLocked ? all.filter(isOwnStoreOrder) : all;
+    if (mode !== "open") return vis;
+    // 未取貨模式：有可取品項的單一律排最前面。search() 那層只看單頭
+    // status='ready' / ready_at，但 pending / confirmed / shipping 單可以靠取貨閘門
+    // 逐品項放行（現貨配單、補貨 ride-along、部分到貨…）—— 單頭沒動、ready_at 是 NULL，
+    // 就被當成未到貨混在中間（2026-09-02 松山：畫著「✅ 已到貨・4 項可取」卻夾在
+    // 三張未到貨的單之間）。閘門結果在 itemReady state 裡、search() 排序時還拿不到，
+    // 所以在這裡（render 時）再排一次；sort 是穩定的，同組內沿用原本 ready_at 順序。
+    return vis.slice().sort((a, b) => {
+      const ap = pickableItems(a).length > 0;
+      const bp = pickableItems(b).length > 0;
+      if (ap !== bp) return ap ? -1 : 1;
+      return 0;
+    });
   }
 
   // 該品項未取退貨量 / 扣掉已退後仍可取量
