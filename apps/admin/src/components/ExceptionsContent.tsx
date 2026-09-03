@@ -1192,10 +1192,16 @@ export default function ExceptionsContent({
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
+              {/* ⚠️ 下面兩處的 colSpan 要等於上面表頭的 th 數量（目前 11：含最右邊那個
+                  空的撤銷欄）。舊值是 10 —— 刀 7 加了「哪一類」那一欄之後就少一格，
+                  載入中／空清單那一列會沒鋪滿、右邊塌一塊。
+                  ⛔ 以後表頭增減欄位，這兩處要跟著改。
+                  ⛔ 這段註解要放在三元運算式**外面** —— 放進分支裡是語法錯誤
+                    （分支只能是單一運算式），我第一次就是這樣寫壞的。 */}
               {resolvedRows === null ? (
-                <tr><td colSpan={10} className="p-6 text-center text-zinc-500">載入中…</td></tr>
+                <tr><td colSpan={11} className="p-6 text-center text-zinc-500">載入中…</td></tr>
               ) : resolvedPageRows.length === 0 ? (
-                <tr><td colSpan={10} className="p-6 text-center text-zinc-500">
+                <tr><td colSpan={11} className="p-6 text-center text-zinc-500">
                   這段日期沒有處理紀錄{search.trim() ? "（或沒有符合搜尋的）" : ""}
                 </td></tr>
               ) : resolvedPageRows.map((r) => (
