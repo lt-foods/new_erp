@@ -229,11 +229,18 @@ async function listStores(sb: any, tenantId: string) {
   // line_liff_id：每家店在自己 Provider 底下的 LIFF ID。會員必須用「所屬分店」
   // 那支 LIFF 登入，拿到的 line_user_id 才跟該店官方帳號同 provider、推得動。
   // 不是密鑰（本來就明碼在會員端 bundle），可以隨門市清單一起公開。
+  //
+  // is_visible_to_customers（@20260902020000）：門市可以「照常營運但客人看不到」。
+  // 這支走 service_role（見 main 的 createClient），RLS 完全繞過 —— 這一行就是
+  // 唯一的防線，沒有別的地方會再擋一次。不要拿掉。
+  // ⚠ 只管「選單列不列」：門市也能從網址參數 / localStorage 指定
+  // （useLineLogin.ts:189-196、:224-229），已經選過該店的客人不受影響（刻意的）。
   const { data, error } = await sb
     .from("stores")
     .select("id, code, name, line_liff_id")
     .eq("tenant_id", tenantId)
     .eq("is_active", true)
+    .eq("is_visible_to_customers", true)
     .order("code", { ascending: true });
   if (error) return json({ error: error.message }, 500);
   return json({ stores: data ?? [] });
