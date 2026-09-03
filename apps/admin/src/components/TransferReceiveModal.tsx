@@ -64,6 +64,7 @@ export function TransferReceiveModal({
   wave,
   notifyMembers = true,
   hideAutoAllocate = false,
+  allowAdjust = true,
   onClose,
   onSubmitted,
   onManualReceive,
@@ -77,6 +78,9 @@ export function TransferReceiveModal({
   // 目的地是分店（手動配用得到）就藏「✓ 收貨·自動配」，只留手動配；
   // 總倉調撥（沒有分店、沒有顧客訂單可配）手動配用不了，這顆是唯一入口，不能藏。
   hideAutoAllocate?: boolean;
+  // 已收貨的單是否給「✎ 修改實收」（走 rpc_adjust_received_transfer）。
+  // 預設開；沒有理由關掉時不要傳。
+  allowAdjust?: boolean;
   onClose: () => void;
   onSubmitted: () => void;
   // 「✋ 收貨·手動配」：不在這裡收貨 — 把改好的實收數量與備註交回收貨待辦頁，
@@ -93,7 +97,13 @@ export function TransferReceiveModal({
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const readOnly = transfer.status !== "shipped";
+  // 已收貨的單按「✎ 修改實收」進入調整模式：格子重新可編輯，基準線改成「目前實收」，
+  // 送出走 rpc_adjust_received_transfer（20260903000000）—— 不是再收一次貨。
+  const [adjusting, setAdjusting] = useState(false);
+  const isReceived = transfer.status === "received";
+  const readOnly = transfer.status !== "shipped" && !adjusting;
+  // 每一列的「基準量」：收貨時是派出量（預設全收），調整時是目前實收量（預設不動）。
+  const baseQty = (it: TransferItem) => (adjusting ? it.qty_received : it.qty_shipped);
   // 撿貨波次派貨單：背後掛著多張顧客訂單，店端拒收會讓訂單卡在派貨中、
   // 庫存虛回總倉（2026-07-30 湖口誤拒收事故）。不給拒收，RPC 端也有同款守衛。
   const isWaveDispatch = wave !== null || parseWaveId(transfer.transfer_no) !== null;
@@ -146,10 +156,10 @@ export function TransferReceiveModal({
     return items.reduce((s, r) => {
       if (readOnly) return s + r.qty_received;
       const e = edits.get(r.id);
-      const v = e !== undefined ? Number(e) : r.qty_shipped;
+      const v = e !== undefined ? Number(e) : adjusting ? r.qty_received : r.qty_shipped;
       return s + (Number.isNaN(v) ? 0 : v);
     }, 0);
-  }, [items, edits, readOnly]);
+  }, [items, edits, readOnly, adjusting]);
   const variance = totalReceived - totalShipped;
   // 有格子被清成空白＝還沒填完。此時 `Number("")` 會讓合計/差異算成 0，看起來像
   // 「真的收 0 件」→ 合計那一列與該行的差異改成顯示「—」，並提示要填數字。
@@ -197,7 +207,8 @@ export function TransferReceiveModal({
         throw new Error(`「${itemLabel(it)}」的實收「${e}」不是有效數量。請填 0 或正整數。`);
       }
       // 20260824020000：多收（實收 > 派出）放行 — 照實入庫，差異回報總倉收件匣
-      if (v !== it.qty_shipped) {
+      // 基準量：收貨時是派出量，調整已收時是目前實收量（只送真的被改動的行）
+      if (v !== baseQty(it)) {
         lines.push({ transfer_item_id: it.id, qty_received: v });
       }
     }
@@ -213,6 +224,55 @@ export function TransferReceiveModal({
       onManualReceive(lines.length === 0 ? null : lines, note.trim() === "" ? null : note.trim());
     } catch (e) {
       setError(translateRpcError(e));
+    }
+  }
+
+  // 「💾 儲存實收」：已收貨的單改數量 —— 走 rpc_adjust_received_transfer
+  // （20260903000000）。只改 qty_received 與庫存差額，不動單頭狀態、不重跑配單；
+  // 改小之後那一列會自己回到總倉收件匣的「收貨短少」，跟收貨當下填少同一條路。
+  async function submitAdjust() {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const sb = getSupabase();
+      const { data: userRes } = await sb.auth.getUser();
+      const operator = userRes?.user?.id;
+      if (!operator) throw new Error("未登入");
+
+      const lines = buildLines();
+      if (lines.length === 0) throw new Error("沒有任何數量被改動。");
+
+      const { data, error: e } = await sb.rpc("rpc_adjust_received_transfer", {
+        p_transfer_id: transfer.id,
+        p_lines: lines,
+        p_operator: operator,
+        p_notes: note.trim() === "" ? null : note.trim(),
+      });
+      if (e) throw new Error(translateRpcError(e));
+
+      const r = data as
+        | {
+            items_changed: number;
+            qty_delta: number;
+            total_received: number;
+            short_lines: number;
+            over_lines: number;
+          }
+        | null;
+      const delta = Number(r?.qty_delta ?? 0);
+      const deltaNote = delta === 0 ? "" : delta > 0 ? `（庫存 +${delta}）` : `（庫存 ${delta}）`;
+      const shortNote =
+        Number(r?.short_lines ?? 0) > 0
+          ? `\n⚠ 有 ${r?.short_lines} 項少收，已列入總倉收件匣等總倉決定`
+          : "";
+      alert(
+        `實收已更新：${r?.items_changed ?? 0} 項，實收合計 ${r?.total_received ?? 0}${deltaNote}${shortNote}`,
+      );
+      onSubmitted();
+    } catch (e) {
+      setError(translateRpcError(e));
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -325,9 +385,50 @@ export function TransferReceiveModal({
           </div>
           <div className="flex gap-2">
             {readOnly ? (
-              <span className="self-center rounded bg-emerald-100 px-2 py-1 text-xs text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
-                ✓ 已收貨
-              </span>
+              <>
+                <span className="self-center rounded bg-emerald-100 px-2 py-1 text-xs text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
+                  ✓ 已收貨
+                </span>
+                {/* 已收貨也要能改數量（老闆 2026-09-03）：收貨當下打錯不必再整張
+                    「返回收貨配單」把配單決策全退掉重來。 */}
+                {isReceived && allowAdjust && (
+                  <SpinButton
+                    onClick={() => {
+                      setError(null);
+                      setEdits(new Map());
+                      setNote("");
+                      setAdjusting(true);
+                    }}
+                    className="rounded-md border border-amber-500 px-3 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950"
+                    title="修改這張單的實收數量：庫存跟著加減、月結數量跟著走；改少的部分等同向總倉提出退回"
+                  >
+                    ✎ 修改實收
+                  </SpinButton>
+                )}
+              </>
+            ) : adjusting ? (
+              <>
+                <SpinButton
+                  onClick={submitAdjust}
+                  disabled={submitting || !items}
+                  title="只改實收數量與庫存，不會重跑配單；改少的部分會回到總倉收件匣等總倉決定"
+                  className="rounded-md bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
+                >
+                  {submitting ? "儲存中…" : "💾 儲存實收"}
+                </SpinButton>
+                <SpinButton
+                  onClick={() => {
+                    setAdjusting(false);
+                    setEdits(new Map());
+                    setNote("");
+                    setError(null);
+                  }}
+                  disabled={submitting}
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  取消修改
+                </SpinButton>
+              </>
             ) : (
               <>
                 {!hideAutoAllocate && (
@@ -386,6 +487,25 @@ export function TransferReceiveModal({
         {error && (
           <div className="border-b border-red-200 bg-red-50 p-2 text-xs text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
             {error}
+          </div>
+        )}
+
+        {/* 調整已收模式的說明 —— 每一句都要對得上程式：
+            ① 「庫存跟著加減」：rpc_adjust_received_transfer 先沖銷原入庫、再照新數量
+               重新入庫（20260903000000），差額就是庫存的增減。
+            ② 「月結數量跟著走」：月結 hq_to_store 的量是 GREATEST(派出, 實收)
+               （20260901000000 派車制）→ 改大就跟著大；改小維持派出量，
+               那一段錢要總倉在收件匣按「同意退回」才沖掉（20260901000010）。
+               ⛔ 不可以寫成「改小月結就會變少」——那是錯的。
+            ③ 「不會重跑配單」：這支刻意不碰配單／待補貨旗標（見 migration 檔頭）。 */}
+        {adjusting && (
+          <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+            <div className="font-semibold">✎ 修改實收數量</div>
+            <div className="mt-0.5">
+              改完按「💾 儲存實收」：庫存會跟著加減，月結數量也跟著這裡的實收走。
+              <span className="font-semibold">配單不會重跑</span>
+              —— 多出來的貨要配給客人請用收貨頁的「⚖️ 配貨」。
+            </div>
           </div>
         )}
 
@@ -454,7 +574,7 @@ export function TransferReceiveModal({
                       ? String(it.qty_received)
                       : editVal !== undefined
                       ? editVal
-                      : String(it.qty_shipped);
+                      : String(baseQty(it));
                     const numCur = Number(cur);
                     const diff = !Number.isNaN(numCur) ? numCur - it.qty_shipped : 0;
                     // 20260824020000：多收放行 — 不再標紅擋輸入，跟少收一樣算差異回報
@@ -498,6 +618,11 @@ export function TransferReceiveModal({
                                 : "border-zinc-300 bg-white dark:border-zinc-700 dark:bg-zinc-800"
                             } disabled:bg-zinc-100 disabled:opacity-70 dark:disabled:bg-zinc-800`}
                           />
+                          {adjusting && (
+                            <div className="mt-0.5 text-[10px] text-zinc-400">
+                              原實收 {it.qty_received}
+                            </div>
+                          )}
                         </td>
                         <td
                           className={`px-3 py-2 text-right font-mono text-xs ${
@@ -541,7 +666,9 @@ export function TransferReceiveModal({
 
               {!readOnly && (
                 <div className="mt-4">
-                  <label className="block text-xs text-zinc-500">備註（短收 / 異常說明）</label>
+                  <label className="block text-xs text-zinc-500">
+                    {adjusting ? "備註（調整原因，總倉看得到）" : "備註（短收 / 異常說明）"}
+                  </label>
                   <textarea
                     value={note}
                     onChange={(e) => setNote(e.target.value)}
