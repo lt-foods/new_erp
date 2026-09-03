@@ -98,7 +98,7 @@ export function TransferReceiveModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // 已收貨的單按「✎ 修改實收」進入調整模式：格子重新可編輯，基準線改成「目前實收」，
-  // 送出走 rpc_adjust_received_transfer（20260903000000）—— 不是再收一次貨。
+  // 送出走 rpc_adjust_received_transfer（20260903000005）—— 不是再收一次貨。
   const [adjusting, setAdjusting] = useState(false);
   const isReceived = transfer.status === "received";
   const readOnly = transfer.status !== "shipped" && !adjusting;
@@ -228,7 +228,8 @@ export function TransferReceiveModal({
   }
 
   // 「💾 儲存實收」：已收貨的單改數量 —— 走 rpc_adjust_received_transfer
-  // （20260903000000）。只改 qty_received 與庫存差額，不動單頭狀態、不重跑配單；
+  // （20260903000005）。**純紀錄**：只改 qty_received，不寫庫存、不動單頭狀態、
+  // 不碰訂單／取貨／配單（老闆 2026-09-03：跟會員端脫鉤）。
   // 改小之後那一列會自己回到總倉收件匣的「收貨短少」，跟收貨當下填少同一條路。
   async function submitAdjust() {
     setSubmitting(true);
@@ -259,14 +260,15 @@ export function TransferReceiveModal({
             over_lines: number;
           }
         | null;
-      const delta = Number(r?.qty_delta ?? 0);
-      const deltaNote = delta === 0 ? "" : delta > 0 ? `（庫存 +${delta}）` : `（庫存 ${delta}）`;
       const shortNote =
         Number(r?.short_lines ?? 0) > 0
           ? `\n⚠ 有 ${r?.short_lines} 項少收，已列入總倉收件匣等總倉決定`
           : "";
+      const overNote =
+        Number(r?.over_lines ?? 0) > 0 ? `\n🎁 有 ${r?.over_lines} 項多收，已回報總倉` : "";
       alert(
-        `實收已更新：${r?.items_changed ?? 0} 項，實收合計 ${r?.total_received ?? 0}${deltaNote}${shortNote}`,
+        `實收紀錄已更新：${r?.items_changed ?? 0} 項，實收合計 ${r?.total_received ?? 0}` +
+          `${shortNote}${overNote}\n（庫存沒有變動；架上數量對不上請到庫存總覽盤點）`,
       );
       onSubmitted();
     } catch (e) {
@@ -400,7 +402,7 @@ export function TransferReceiveModal({
                       setAdjusting(true);
                     }}
                     className="rounded-md border border-amber-500 px-3 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950"
-                    title="修改這張單的實收數量：庫存跟著加減、月結數量跟著走；改少的部分等同向總倉提出退回"
+                    title="更正這張單的實收數量（給總倉的紀錄）：月結數量跟著走、少收／多收進總倉收件匣；庫存與客人取貨不受影響"
                   >
                     ✎ 修改實收
                   </SpinButton>
@@ -411,7 +413,7 @@ export function TransferReceiveModal({
                 <SpinButton
                   onClick={submitAdjust}
                   disabled={submitting || !items}
-                  title="只改實收數量與庫存，不會重跑配單；改少的部分會回到總倉收件匣等總倉決定"
+                  title="只改實收數量的紀錄，不動庫存、不重跑配單；改少的部分會回到總倉收件匣等總倉決定"
                   className="rounded-md bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
                 >
                   {submitting ? "儲存中…" : "💾 儲存實收"}
@@ -490,21 +492,25 @@ export function TransferReceiveModal({
           </div>
         )}
 
-        {/* 調整已收模式的說明 —— 每一句都要對得上程式：
-            ① 「庫存跟著加減」：rpc_adjust_received_transfer 先沖銷原入庫、再照新數量
-               重新入庫（20260903000000），差額就是庫存的增減。
+        {/* 調整已收模式的說明 —— 每一句都要對得上程式（本檔第一鐵則）：
+            ① 「這是給總倉的紀錄」：rpc_adjust_received_transfer（20260903000005）
+               只 UPDATE qty_received，一筆 stock_movements 都不寫。
             ② 「月結數量跟著走」：月結 hq_to_store 的量是 GREATEST(派出, 實收)
                （20260901000000 派車制）→ 改大就跟著大；改小維持派出量，
                那一段錢要總倉在收件匣按「同意退回」才沖掉（20260901000010）。
                ⛔ 不可以寫成「改小月結就會變少」——那是錯的。
-            ③ 「不會重跑配單」：這支刻意不碰配單／待補貨旗標（見 migration 檔頭）。 */}
+            ③ 「庫存不會跟著改」＋「客人不受影響」：老闆 2026-09-03 要求跟會員端脫鉤，
+               函式因此不碰庫存／訂單／取貨閘門／配單。 */}
         {adjusting && (
           <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-            <div className="font-semibold">✎ 修改實收數量</div>
+            <div className="font-semibold">✎ 修改實收數量（給總倉的紀錄）</div>
             <div className="mt-0.5">
-              改完按「💾 儲存實收」：庫存會跟著加減，月結數量也跟著這裡的實收走。
-              <span className="font-semibold">配單不會重跑</span>
-              —— 多出來的貨要配給客人請用收貨頁的「⚖️ 配貨」。
+              用途是回頭跟總倉更正「這批到底來了幾件」：月結數量跟著這裡的實收走，
+              少收／多收會出現在總倉的收件匣。
+            </div>
+            <div className="mt-0.5">
+              <span className="font-semibold">庫存不會跟著改，客人的訂單與取貨也不受影響。</span>
+              架上數量對不上請到「庫存總覽」新增庫存／盤點。
             </div>
           </div>
         )}
@@ -543,8 +549,17 @@ export function TransferReceiveModal({
               ⚠️ 少收 {shortQty} 件：這等於向總倉提出退回 {shortQty} 件。
             </div>
             <div className="mt-0.5">
-              這 {shortQty} 件<span className="font-semibold">不會進到你們店的庫存</span>，
-              <span className="font-semibold">總倉會在收件匣決定接不接受</span>。
+              {adjusting ? (
+                <>
+                  <span className="font-semibold">總倉會在收件匣決定接不接受</span>；
+                  這裡只改紀錄，<span className="font-semibold">庫存不會跟著扣</span>。
+                </>
+              ) : (
+                <>
+                  這 {shortQty} 件<span className="font-semibold">不會進到你們店的庫存</span>，
+                  <span className="font-semibold">總倉會在收件匣決定接不接受</span>。
+                </>
+              )}
             </div>
             <div className="mt-0.5">
               請在下面備註寫清楚原因（例：總倉多給 2、破損 2），總倉看得到這段備註。
