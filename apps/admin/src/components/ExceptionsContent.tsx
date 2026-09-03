@@ -123,6 +123,8 @@ function docLinkFor(r: ViewRow): string {
 const RESOLUTION_LABEL: Record<string, string> = {
   redispatch: "同意退回-補貨",
   restock_hq: "同意退回-不補貨",
+  // 2026-09-03 補上的第三顆（TransferShortageResolveModal.tsx 的字樣，改一邊要改兩邊）
+  reject_return: "不同意退貨-跟店家收錢",
   accept: "當作沒了（舊）",
   vendor_claim: "供應商求償（舊）",
   cancel_orders: "取消客戶訂單（舊）",

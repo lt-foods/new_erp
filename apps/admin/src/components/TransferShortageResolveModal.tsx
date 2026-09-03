@@ -102,7 +102,14 @@ export type ShortageContext = {
 //   ⇒「貨不回帳上」這種選項不該存在。⛔ 不要因為 DB 還收 accept 就把它加回畫面。
 //   ⛔ 遺失/毀損/向進貨商求償＝貨回到帳上之後總倉自己另一道手續,**不在這個視窗提**。
 //   ⛔ 視窗內不准再出現「不接受退回」「當作沒了」「公司吃」「認賠」這些字。
-type Resolution = "redispatch" | "restock_hq";
+//
+// ⭐ 2026-09-03 老闆：「還是把總倉拒絕的功能做上」⇒ 第三顆 reject_return 補上了
+//   （20260903000020）。它的實作是「什麼都不做，只打處理標記」——
+//   因為 2026-09-01 起月結是派車制（GREATEST(派出, 實收)；店↔店兩邊吃 qty_shipped），
+//   短收本來就照派出量收錢；「同意退回」是靠 20260901000010 額外產一張沖帳單才少收的。
+//   ⇒ 不產沖帳單 ＝ 照收。⛔ 所以這顆**不可以**寫成「系統會去跟店家收錢」——
+//     沒有任何程式去加錢，是「不做那件會扣錢的事」。
+type Resolution = "redispatch" | "restock_hq" | "reject_return";
 
 const RESOLUTION_OPTIONS: Array<{
   value: Resolution;
@@ -171,6 +178,22 @@ const RESOLUTION_OPTIONS: Array<{
     warn:
       "送出成功後回不來，這一筆會從「異常」清單消失，而且系統不會自動再送貨給這家店 —— " +
       "之後要補給這家店，得另外開單。",
+  },
+  {
+    value: "reject_return",
+    icon: "💰",
+    // ⛔ 老闆 2026-08-21 的字樣（「不接受退貨就是要跟店家收錢」）＋ 2026-09-03 補做這顆。
+    title: "不同意退貨-跟店家收錢",
+    // 出處（兩句都無條件為真，對 hq_to_store 與店↔店都成立）：
+    //   ① 「照送出去的數量算錢」＝ 20260901000000 派車制 GREATEST(派出, 實收)；
+    //      店↔店的 air_in/air_out 自 20260825030000 起兩邊都吃 qty_shipped。
+    //   ② 「不會把貨記回出貨端」＝ 20260903000020 的 reject_return 不進
+    //      restock_hq 那段 rpc_inbound（也不進 redispatch、不產沖帳單）。
+    // ⛔ 不要寫「系統會去跟店家收錢」——沒有任何程式在加錢，
+    //    差別只在「沒有產生那張會扣錢的沖帳單」。
+    desc: "這一批照送出去的數量跟店家算錢，少收的部分不沖帳、也不會把貨記回出貨端。",
+    warnTone: "caution",
+    warn: "送出成功後回不來，這一筆會從「異常」清單消失，不能再改選別的。",
   },
 ];
 
@@ -517,12 +540,13 @@ export function TransferShortageResolveModal({
               (20260801000000_settlement_manual_adjustment),不歸這個視窗管。
             ⛔⛔ 查最新版用標準查法(帶 public. 選擇性前綴):
               rpc_generate_hq_to_store_settlement 共 10 版,20260901000000 是最後一支。 */}
+        {/* 2026-09-03：第三顆已經做上去了（20260903000020），原本那句
+            「🚧 要跟店家收錢的功能還在施工」整段移除。這裡改成留下**唯一無條件為真**
+            的那句算錢口徑，讓三顆的差別看得懂。 */}
         <div className="rounded border border-zinc-300 bg-zinc-50 p-2 text-[11px] leading-relaxed text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
-          🚧 要跟店家收錢（不同意退貨）的功能還在施工，這種先不要按、這筆會留在清單。
-          <div className="mt-0.5 opacity-80">
-            （2026-09-01 起，月結是按<span className="font-bold">送出去</span>的數量算錢的，
-            不再是按實際收到的數量。）
-          </div>
+          （2026-09-01 起，月結是按<span className="font-bold">送出去</span>的數量算錢的，
+          不再是按實際收到的數量。所以「同意退回」＝把少收的那幾件從帳上沖掉，
+          「不同意退貨」＝不沖，照送出去的數量收。）
         </div>
       </div>
 

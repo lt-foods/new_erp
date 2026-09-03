@@ -2349,7 +2349,7 @@ export default function TransfersInboxPage() {
                                   <SpinButton
                                     onClick={() => setOpening(t)}
                                     className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-                                    title="看這張單的明細；要改實收數量在裡面按「✎ 修改實收」（庫存與月結數量跟著改，少收走總倉收件匣同一條流程）"
+                                    title="看這張單的明細；要更正實收數量在裡面按「✎ 修改實收」（純紀錄：月結數量跟著改、少收走總倉收件匣同一條流程，庫存與客人取貨不受影響）"
                                   >
                                     明細 / 改實收
                                   </SpinButton>

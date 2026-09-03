@@ -229,6 +229,23 @@ export function PickupDialog({
     });
   }
 
+  // 表頭「取」的全選（老闆 2026-09-03）。
+  // ⚠️ 母體只有「勾得動」的品項 —— 未到貨 / 已全數退回 / 單價 $0 的那幾列本來就
+  //    disabled，全選不可以把它們一起勾起來（那三種是刻意鎖住的閘門，見 blockedOf）。
+  // 判斷用的 blockedOf 跟每一列 render 用的是同一支，避免兩邊各算各的。
+  function blockedOf(it: PickableItem): boolean {
+    return pickableOf(it) <= 0 || notArrived(it) || zeroPrice(it);
+  }
+  const selectableIds = (items ?? []).filter((it) => !blockedOf(it)).map((it) => it.id);
+  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => picked.has(id));
+  function toggleAll() {
+    setPicked((s) => {
+      // 已經全勾 → 全部取消；否則把可勾的全部勾起來（保留原本已勾的，不會少勾）
+      if (selectableIds.length > 0 && selectableIds.every((id) => s.has(id))) return new Set<number>();
+      return new Set<number>(selectableIds);
+    });
+  }
+
   // 該品項已退回總倉量 / 仍可取量（= 訂購量 − 已退量）
   function returnedOf(it: PickableItem): number {
     return returnedByItem.get(it.id) ?? 0;
@@ -415,7 +432,18 @@ export function PickupDialog({
             <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
               <thead className="bg-zinc-50 dark:bg-zinc-900">
                 <tr>
-                  <th className="px-3 py-2 text-left text-xs">取</th>
+                  <th className="px-3 py-2 text-left text-xs">
+                    <label className="flex items-center gap-1" title="全選 / 全不選（未到貨、已退回、單價 $0 的品項不會被勾）">
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        onChange={toggleAll}
+                        disabled={selectableIds.length === 0}
+                        className="h-4 w-4 disabled:opacity-40"
+                      />
+                      <span>取</span>
+                    </label>
+                  </th>
                   <th className="px-3 py-2 text-left text-xs">商品</th>
                   <th className="px-3 py-2 text-right text-xs">數量</th>
                   <th className="px-3 py-2 text-right text-xs">單價</th>
@@ -428,7 +456,7 @@ export function PickupDialog({
                   const returned = returnedOf(it);
                   const pickable = pickableOf(it);
                   const fullyReturned = pickable <= 0;
-                  const blocked = fullyReturned || notArrived(it) || zeroPrice(it);
+                  const blocked = blockedOf(it);
                   const take = effQty(it);
                   const sub = lineSubQty(it, take);
                   const partial = take < pickable;
