@@ -37,13 +37,24 @@
 //     以及四審 P1「要不要扣掉已退回總倉的量」那整段討論)**全部刪除**,不留死碼。
 //   ⛔ 不要再加回來。這兩顆按鈕要不要按,跟客人在不在等無關 —— 總倉沒貨就是沒貨。
 //
-// ⚠️ 兩顆都是單行道(按下去回不來):
+// ⭐⭐ 2026-09-03 起**不再是單行道**:老闆「要可以撤銷」⇒
+//   「收件匣 → 異常 → 已處理」每一列多一顆「↩ 撤銷」
+//   (rpc_undo_transfer_item_shortage,20260903000200_shortage_resolution_undo.sql)——
+//   沖銷記回出貨端的入庫、取消 draft 重派撿貨單、作廢短收沖帳單、
+//   還原「不同意退貨」補上去的實收,然後清掉標記 ⇒ 那一列回到本清單。
+//   ⚠️ 但**不是每一筆都撤得掉**,那支 RPC 有三道會擋:補派撿貨單已離開 draft、
+//     沖回的貨已被派出去(出貨端 on_hand 不夠沖銷)、沖帳落在已鎖定的對帳單月份;
+//     舊值 cancel_orders 也不給撤(客人已經收到取消通知)。
+//   ⇒ 畫面上只能寫「按錯了可以到『已處理』撤銷」這種**不保證成功**的講法,
+//     ⛔ 不可以寫「隨時可以撤銷」「撤銷就會回復原狀」——那是本檔頭第一鐵則禁止的絕對句。
+//
+// ⚠️ 三顆按完都會從這個清單消失(在這個視窗裡是單行道):
 //   異常清單的 transfer_short 分支要求 ti.shortage_resolution IS NULL
 //   (或 replenish 且還沒補到)才會列出來
 //   (v_hq_exceptions 最新版 20260811020010_hq_exceptions_drop_customer_shortage.sql:141-161),
 //   而 rpc_resolve_transfer_item_shortage 對所有 resolution 一律寫入 shortage_resolution
 //   (最新版 20260811020000_transfer_shortage_redispatch.sql:262-270,沒有任何例外)
-//   ⇒ 按完這一筆就從清單消失,之後不能再改選別的。
+//   ⇒ 按完這一筆就從清單消失,不能在這個視窗改選別的(要改先去「已處理」撤銷)。
 //   ⛔ 也因此不可以做批次 / 全選 / 一鍵處理(2026-08-21 老闆裁示)。
 //
 // ⚠️⚠️ 為什麼警語要做成擋眼的色底、不是灰色小字
@@ -158,7 +169,9 @@ const RESOLUTION_OPTIONS: Array<{
     //    非總倉的單按下去是整支 RPC 失敗,兩件事一件都沒發生。
     // ⛔ 六審一併清掉:原本開頭寫「要再送一批給這家店 → 選這顆」——那也是一句隱含的承諾
     //   (「選這顆＝會再送一批」),對非總倉的單同樣不成立。要選哪顆看標題就好。
-    warn: "送出成功後這一筆會從「異常」清單消失，不能再改選別的。",
+    warn:
+      "送出後這一筆會從「異常」清單消失。按錯了可以到「異常 → 已處理」按「撤銷」，" +
+      "但補派的撿貨單一旦「派貨出倉」就撤不掉了。",
   },
   {
     value: "restock_hq",
@@ -176,24 +189,35 @@ const RESOLUTION_OPTIONS: Array<{
     //    20260612000040:60-78)⇒ 只有貨真的回到總倉才成立。
     //    它被移到下面 srcIsHq === true 才顯示的那一塊。
     warn:
-      "送出成功後回不來，這一筆會從「異常」清單消失，而且系統不會自動再送貨給這家店 —— " +
-      "之後要補給這家店，得另外開單。",
+      "送出後這一筆會從「異常」清單消失，而且系統不會自動再送貨給這家店 —— " +
+      "之後要補給這家店，得另外開單。按錯了可以到「異常 → 已處理」按「撤銷」，" +
+      "但記回去的貨已經被派出去的話就撤不掉了。",
   },
   {
     value: "reject_return",
     icon: "💰",
     // ⛔ 老闆 2026-08-21 的字樣（「不接受退貨就是要跟店家收錢」）＋ 2026-09-03 補做這顆。
     title: "不同意退貨-跟店家收錢",
-    // 出處（兩句都無條件為真，對 hq_to_store 與店↔店都成立）：
+    // 出處（三句都無條件為真，對 hq_to_store 與店↔店都成立）：
     //   ① 「照送出去的數量算錢」＝ 20260901000000 派車制 GREATEST(派出, 實收)；
     //      店↔店的 air_in/air_out 自 20260825030000 起兩邊都吃 qty_shipped。
-    //   ② 「不會把貨記回出貨端」＝ 20260903000020 的 reject_return 不進
-    //      restock_hq 那段 rpc_inbound（也不進 redispatch、不產沖帳單）。
+    //   ② 「不會把貨記回出貨端」＝ reject_return 不進 restock_hq 那段 rpc_inbound
+    //      （也不進 redispatch、不產沖帳單）—— 20260903000020 起就是這樣。
+    //   ③ 「實收會被改成派出量」＝ 20260903000200 新增的那一段：
+    //      qty_received := qty_shipped，舊值存進 shortage_prev_qty_received。
+    //      老闆 2026-09-03 原話：「不同意退貨原本收貨的要加回來」。
+    //      ⛔ 它是**純紀錄**：那一段一筆 stock_movements 都不寫
+    //        （同 20260903000005 的定位）⇒ 畫面上不可以寫成「貨會補進店裡的庫存」。
     // ⛔ 不要寫「系統會去跟店家收錢」——沒有任何程式在加錢，
     //    差別只在「沒有產生那張會扣錢的沖帳單」。
-    desc: "這一批照送出去的數量跟店家算錢，少收的部分不沖帳、也不會把貨記回出貨端。",
+    desc:
+      "這一批照送出去的數量跟店家算錢：少收的部分不沖帳、不會把貨記回出貨端，" +
+      "而且店家的實收會被改成派出量（＝帳上不再是少收）。",
     warnTone: "caution",
-    warn: "送出成功後回不來，這一筆會從「異常」清單消失，不能再改選別的。",
+    // ⚠️ 「改實收」只改數字不改庫存 —— 這句一定要留著，不然會被讀成「架上的貨變多了」。
+    warn:
+      "送出後這一筆會從「異常」清單消失，實收也會被改成派出量（只改數字，不會動庫存）。" +
+      "按錯了可以到「異常 → 已處理」按「撤銷」，實收會改回原本的數字。",
   },
 ];
 
@@ -347,7 +371,9 @@ export function TransferShortageResolveModal({
           <div className="text-base font-bold">✓ 已記錄：{doneTitle}</div>
           <div className="mt-1 leading-relaxed">
             這筆的處理紀錄（誰按的、按了哪顆、什麼時候、備註）可以到
-            「<span className="font-bold">異常 → 已處理</span>」分頁查看。
+            「<span className="font-bold">異常 → 已處理</span>」分頁查看，
+            按錯了也是在那一頁按「<span className="font-bold">↩ 撤銷</span>」
+            （貨已經動了會被系統擋下來，訊息會寫在畫面上）。
           </div>
         </div>
         <div className="mt-4 flex justify-end">
@@ -394,10 +420,18 @@ export function TransferShortageResolveModal({
       <div className="mt-4 space-y-2">
         <div className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">要怎麼回覆店家？ *</div>
 
+        {/* ⚠️ 2026-09-03：這個框原本寫「兩顆都是按下去就回不來」——
+            撤銷做上去之後那句話變假了（rpc_undo_transfer_item_shortage，20260903000200）。
+            ⛔ 但也不可以反過來寫成「都可以撤銷」：那支 RPC 有三道會擋
+            （補派撿貨單已離開 draft / 沖回的貨已被派走 / 沖帳月份已鎖定）
+            ⇒ 只寫「有機會撤銷、但有前提」，前提逐條寫在「已處理」那一頁的說明框裡。 */}
         <div className="rounded border-2 border-rose-400 bg-rose-100 p-2 text-[11px] leading-relaxed text-rose-900 dark:border-rose-600 dark:bg-rose-950 dark:text-rose-200">
-          <div className="font-bold">⚠️ 兩顆都是按下去就回不來，先想清楚再按</div>
+          <div className="font-bold">⚠️ 先想清楚再按 —— 撤銷不一定來得及</div>
           <div className="mt-0.5">
-            <span className="font-bold">送出成功後</span>這一筆就會從「異常」清單消失，<span className="font-bold">不能再改選別的</span>。
+            <span className="font-bold">送出後</span>這一筆就會從「異常」清單消失，
+            這個視窗不能再改選別的。按錯了要到「<span className="font-bold">異常 → 已處理</span>」按「撤銷」，
+            而且<span className="font-bold">貨已經動了就撤不掉</span>
+            （補派的撿貨單已派貨出倉、記回去的貨已被派出去、沖帳月份已鎖定 —— 系統會擋下來）。
           </div>
         </div>
 
