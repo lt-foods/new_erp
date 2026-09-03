@@ -643,6 +643,34 @@ RR- ride-along 單在補貨到店**之前**就存在（單頭 `pending`/`confirm
 所以 RPC 另外回一個 `backorder`（這組還掛著幾件待補貨），讓還有人在等的組別一定
 看得到入口。改這支的顯示條件時記得三個一起看。
 
+### 「不同意退貨」會改掉 `qty_received` —— 算「少收幾件」要用 `shortage_prev_qty_received`
+
+`reject_return`（總倉不同意退貨、照派出量跟店家收錢）從 20260903000200 起會把那一列的
+`qty_received` **補回 `qty_shipped`**（老闆原話：「不同意退貨原本收貨的要加回來」），
+舊值存進 `transfer_items.shortage_prev_qty_received`。所以處理過之後
+`qty_shipped - qty_received` 是 **0**，不是當初的少收量 —— 任何「這一列少收幾件」的
+顯示／報表拿現值去減就會靜靜算出 0（已處理那一頁就是這樣修的）。
+
+- 補回是**純紀錄**，一筆 `stock_movements` 都不寫（同 20260903000005 的定位）。
+  架上真的少一件走庫存總覽的新增庫存／盤點，別想用這支生貨。
+- 錢不會動：`hq_to_store` 的月結量是 `GREATEST(派出, 實收)`，實收本來就 < 派出
+  ⇒ 補到派出量 GREATEST 不變。但**自由轉貨／`return_to_hq` 會動**
+  （`free_in`/`free_out`/`return_out` 三段的母體有 `ti.qty_received > 0`）⇒ 那兩種要問月份鎖沒鎖。
+- `shortage_prev_qty_received` **只在 `shortage_resolution = 'reject_return'` 的列上有意義**，
+  其他 resolution 一律被寫成 NULL；不要拿它算別的東西。
+
+### 撤銷單筆短少處理走 `rpc_undo_transfer_item_shortage`，不要為了撤一筆去取消整張收貨
+
+`rpc_unreceive_transfer` 的反向邏輯 H 早就會逐項撤回總倉的短少處理，但它連帶動庫存、
+訂單、RR- 單 —— 為了撤一筆而整張退回 shipped 是拿大砲打小鳥。單筆入口是
+`rpc_undo_transfer_item_shortage`（20260903000200，掛在「收件匣 → 異常 → 已處理」每一列）：
+沖銷記回出貨端的入庫、取消 draft 重派撿貨單、作廢短收沖帳單、還原補回的實收，清標記。
+
+- **兩支的判定要同步改**：邏輯 H 與這支是同一套語意（cancel_orders 不給撤、重派單離開
+  draft 就擋、沖帳月份鎖定就擋、on_hand 不夠沖銷就擋）。改一邊記得看另一邊。
+- 撤銷會把「已處理」那一頁的紀錄**刪掉**（那頁讀 `transfer_items` 現值，不是歷史表），
+  所以 RPC 一定要往 `transfers.notes` 追加一行軌跡。新增任何清 `shortage_*` 的路徑照做。
+
 ### 把某個角色的動作按鈕拿掉之前，先確認狀態機還有別人推得動
 
 「這一頁不該由總倉操作」是對的判斷，但把按鈕拿掉**不等於**別人就長出入口。

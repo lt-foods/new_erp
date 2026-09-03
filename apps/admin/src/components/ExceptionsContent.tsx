@@ -19,7 +19,14 @@
 //   上面 5 個 = 還沒處理的(rpc_hq_exceptions / v_hq_exceptions);
 //   「已處理」= transfer_items.shortage_resolution IS NOT NULL(PostgREST 直查,零 RPC 零 migration)。
 // 起因:短收處理視窗兩顆都不可逆,按完那筆就從清單消失,員工不知道自己按了哪顆
-//   (2026-08-22 員工回報)。⇒ 這一頁只回答「我按了什麼」,**不提供任何撤銷 / 反悔動作**。
+//   (2026-08-22 員工回報)。⇒ 這一頁回答「我按了什麼」。
+// 2026-09-03 老闆:「要可以撤銷」⇒ 每一列多一顆「撤銷」
+//   (rpc_undo_transfer_item_shortage,20260903000200)。它做的事等同
+//   rpc_unreceive_transfer 的反向邏輯 H,但只針對單筆:沖銷記回出貨端的入庫、
+//   取消 draft 重派撿貨單、作廢短收沖帳單、還原「不同意退貨」補上去的實收,
+//   然後清掉 shortage_* 欄位 ⇒ 那一列回到收件匣。
+//   ⚠️ 撤銷成功後這一頁的那一列會**消失**(這頁讀的是 transfer_items 現值,不是歷史表)。
+//   軌跡由 RPC 往 transfers.notes 追加一行「撤銷處理(MM/DD HH:MI)：…」保存。
 // ⛔ 「已處理」不計入徽章:onCountChange 只在上面 5 個分頁的 effect 裡呼叫,口徑仍是
 //   rpc_hq_exceptions 的 counts.all(見 hq/inbox/page.tsx:952-972 對這個口徑的說明)。
 
@@ -125,6 +132,9 @@ const RESOLUTION_LABEL: Record<string, string> = {
   restock_hq: "同意退回-不補貨",
   // 2026-09-03 補上的第三顆（TransferShortageResolveModal.tsx 的字樣，改一邊要改兩邊）
   reject_return: "不同意退貨-跟店家收錢",
+  // 收貨多收的「知道了」(rpc_ack_transfer_over,20260824020000)也寫在同一欄
+  // ⇒ 這一頁本來就撈得到它,沒有字樣會直接顯示 "over_ack"。
+  over_ack: "多收知道了",
   accept: "當作沒了（舊）",
   vendor_claim: "供應商求償（舊）",
   cancel_orders: "取消客戶訂單（舊）",
@@ -173,6 +183,14 @@ type ResolvedRow = {
   sku_code: string | null;
   sku_label: string;
   shortage_qty: number;
+  /** 派出量 —— 撤銷確認框要講「實收會改回幾件」時用 */
+  qty_shipped: number;
+  /**
+   * 「不同意退貨」把實收補回派出量之前的實收量(transfer_items.shortage_prev_qty_received,
+   * 20260903000200)。⚠️ 只有 resolution === "reject_return" 的列上才有意義 ——
+   * 其他 resolution 的列 DB 一律寫 NULL,不要拿它算別的東西。
+   */
+  prev_qty: number | null;
   resolution: string;
   notes: string | null;
   wave_code: string | null;
@@ -245,6 +263,54 @@ export default function ExceptionsContent({
       setReloadTick((t) => t + 1);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // 「已處理」列的撤銷（2026-09-03 老闆：「要可以撤銷」）
+  //   走 rpc_undo_transfer_item_shortage(20260903000200)—— 一支 RPC 裡把該撤的都撤掉：
+  //   沖銷記回出貨端的入庫、取消 draft 重派撿貨單、作廢短收沖帳單、
+  //   還原「不同意退貨」補上去的實收，最後清掉處理標記 ⇒ 那一列回到收件匣。
+  // ⚠️ 確認框只講**這一列真的會發生**的事（依 resolution 分支），不要三種混在一起講：
+  //   同一句話對別的 resolution 就是假的（本檔隔壁 TransferShortageResolveModal 的第一鐵則）。
+  // ⛔ 擋下來的三種情況由 RPC 判斷並回中文訊息（撿貨單已派貨出倉 / 沖回的貨已被派走 /
+  //   沖帳月份已鎖定），前端不預先猜 —— 猜錯會變成「畫面說可以、按下去被擋」。
+  async function undoResolution(r: ResolvedRow) {
+    const label = RESOLUTION_LABEL[r.resolution] ?? r.resolution;
+    const detail =
+      r.resolution === "reject_return"
+        ? `・實收會改回 ${r.prev_qty ?? "原本"} 件（現在是 ${r.qty_shipped} 件）\n・這一筆會回到「收貨短少」清單重新等處理`
+        : r.resolution === "over_ack"
+          ? "・這一筆會回到「收貨多收」清單"
+          : r.resolution === "redispatch"
+            ? "・記回出貨端的那幾件會被沖銷（貨已經被派出去的話會擋下來）\n・補派的撿貨單會被取消（已派貨出倉的話會擋下來）\n・短收沖帳單會作廢（月結重算時那筆退款就沒了）\n・這一筆會回到「收貨短少」清單重新等處理"
+            : r.resolution === "restock_hq"
+              ? "・記回出貨端的那幾件會被沖銷（貨已經被派出去的話會擋下來）\n・短收沖帳單會作廢（月結重算時那筆退款就沒了）\n・這一筆會回到「收貨短少」清單重新等處理"
+              : "・這一筆的處理標記會清掉，回到收件匣重新等處理";
+    if (
+      !confirm(
+        `要撤銷 ${r.transfer_no}／${r.sku_label} 的「${label}」嗎？\n\n${detail}\n\n（撤銷紀錄會寫進那張派貨單的備註，總倉收件匣看得到）`,
+      )
+    ) {
+      return;
+    }
+    try {
+      setResolvedError(null);
+      const sb = getSupabase();
+      const { data: sess } = await sb.auth.getSession();
+      const operator = sess.session?.user?.id;
+      if (!operator) throw new Error("尚未登入");
+      const { error: e } = await sb.rpc("rpc_undo_transfer_item_shortage", {
+        p_transfer_item_id: r.id,
+        p_operator: operator,
+        p_notes: null,
+      });
+      if (e) throw new Error(e.message);
+      // 撤掉之後這一列就不再是「已處理」→ 重抓這一頁。
+      // ⚠️ 上面 5 個分頁的徽章數字**這一刻不會動**：那支 effect 在 tab === "resolved"
+      //   時整支跳過（:255）。切回去的時候才重抓，那時就會看到它回到「收貨短少」。
+      setReloadTick((t) => t + 1);
+    } catch (e) {
+      setResolvedError(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -366,7 +432,7 @@ export default function ExceptionsContent({
         let q = sb
           .from("transfer_items")
           .select(
-            "id, transfer_id, sku_id, qty_shipped, qty_received, shortage_resolution, shortage_resolution_at, shortage_resolution_by, shortage_resolution_notes, shortage_redispatch_wave_id",
+            "id, transfer_id, sku_id, qty_shipped, qty_received, shortage_prev_qty_received, shortage_resolution, shortage_resolution_at, shortage_resolution_by, shortage_resolution_notes, shortage_redispatch_wave_id",
             { count: "exact" },
           )
           .not("shortage_resolution", "is", null)
@@ -386,6 +452,7 @@ export default function ExceptionsContent({
           sku_id: number | null;
           qty_shipped: number | string | null;
           qty_received: number | string | null;
+          shortage_prev_qty_received: number | string | null;
           shortage_resolution: string;
           shortage_resolution_at: string | null;
           shortage_resolution_by: string | null;
@@ -456,6 +523,13 @@ export default function ExceptionsContent({
           const w = i.shortage_redispatch_wave_id != null ? waveMap.get(i.shortage_redispatch_wave_id) : undefined;
           const loc = t?.dest_location ?? null;
           const label = `${s?.product_name ?? ""}${s?.variant_name ? ` / ${s.variant_name}` : ""}`.trim();
+          // 「少幾件」= 派出 − 實收。⚠️ reject_return 從 20260903000200 起會把實收補回
+          //   派出量(純紀錄),那一列現值算出來是 0 ⇒ 要用補回前的數字才是當初的少收量。
+          //   ⛔ 不要對所有 resolution 都套 prev:DB 只在 reject_return 的列上寫它。
+          const baseRecv =
+            i.shortage_resolution === "reject_return" && i.shortage_prev_qty_received != null
+              ? Number(i.shortage_prev_qty_received)
+              : Number(i.qty_received ?? 0);
           return {
             id: i.id,
             at: i.shortage_resolution_at,
@@ -467,7 +541,10 @@ export default function ExceptionsContent({
               `位置 #${loc ?? "?"}`,
             sku_code: s?.sku_code ?? null,
             sku_label: label || `品項#${i.sku_id ?? "?"}`,
-            shortage_qty: Number(i.qty_shipped ?? 0) - Number(i.qty_received ?? 0),
+            shortage_qty: Number(i.qty_shipped ?? 0) - baseRecv,
+            qty_shipped: Number(i.qty_shipped ?? 0),
+            prev_qty:
+              i.shortage_prev_qty_received != null ? Number(i.shortage_prev_qty_received) : null,
             resolution: i.shortage_resolution,
             notes: i.shortage_resolution_notes,
             wave_code: w?.wave_code ?? null,
@@ -581,55 +658,82 @@ export default function ExceptionsContent({
         <>
           {/* 這一頁在回答什麼 —— ⭐ 每一句都要指得出出處(見下方註解),⛔ 不寫絕對句 */}
           <div className="rounded-md border border-zinc-300 bg-zinc-50 p-3 text-xs leading-relaxed text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
-            <div className="font-semibold">這一頁只是「看」處理紀錄，按不了任何東西。</div>
-            <div className="mt-1 font-semibold">按錯了怎麼辦？</div>
+            <div className="font-semibold">這一頁是處理紀錄，按錯了可以用最右邊的「↩ 撤銷」收回。</div>
+            <div className="mt-1 font-semibold">「↩ 撤銷」會做什麼？</div>
             <ul className="mt-0.5 list-disc space-y-1 pl-4">
               <li>
-                按到「<span className="font-bold">同意退回-補貨</span>」→ 系統會另外開一張補派的撿貨單（單號在最右邊那欄）。
-                那張單<span className="font-bold">還沒「派貨出倉」之前</span>，可以到「📋 撿貨單」那一列按「取消」；
-                已經派貨出倉的按不到，按了系統也會擋下來。
+                <span className="font-bold">共同的：</span>那一筆的處理標記會清掉，
+                <span className="font-bold">回到「收貨短少」/「收貨多收」清單</span>重新等處理，
+                店家的實收也就改得動了。撤銷紀錄會寫進那張派貨單的備註。
               </li>
               <li>
-                按到「<span className="font-bold">同意退回-不補貨</span>」→ 少收的數量已經記回原本送貨出去的那一邊，
-                系統<span className="font-bold">不會</span>自動再送給那家店。要補給那家店得另外開單
-                （常見做法：請那家店開一張補貨申請 —— 總倉<span className="font-bold">同意之後，還要當下總倉真的有貨</span>才派得出去）。
+                撤銷「<span className="font-bold">同意退回</span>」兩顆 → 記回原本送貨出去那一邊的數量會被
+                <span className="font-bold">沖銷</span>、短收沖帳單會<span className="font-bold">作廢</span>
+                （月結重算時那筆退款就沒了）；「補貨」那顆另外開的補派撿貨單會一起取消。
               </li>
               <li>
-                ⚠️ 不管哪一種，<span className="font-bold">這一頁的紀錄都不會變回「未處理」</span>。
-                除了舊的「補出貨」之外，其他選項按完那一筆就從「收貨短少」清單消失、不會再回來。
+                撤銷「<span className="font-bold">不同意退貨</span>」→ 按下去時被補回派出量的
+                <span className="font-bold">實收會改回原本的數字</span>（「少幾件」那一欄顯示的就是原本少收多少）。
+              </li>
+              <li>
+                ⚠️ <span className="font-bold">這三種情況系統會擋下來</span>，訊息會直接寫在畫面上：
+                補派的撿貨單<span className="font-bold">已經派貨出倉</span>（請先到「📋 撿貨單」把它取消）、
+                記回去的貨<span className="font-bold">已經被派出去了</span>（出貨端庫存不夠沖銷）、
+                沖帳落在<span className="font-bold">已經鎖定的對帳單月份</span>。
+                另外舊值「取消客戶訂單」不給撤（客人已經收到取消通知）。
+              </li>
+              <li>
+                ⚠️ 撤銷成功後<span className="font-bold">這一頁就查不到那一筆了</span> ——
+                這一頁顯示的是「現在的處理狀態」，不是歷史帳。要看軌跡請看那張派貨單的備註。
               </li>
             </ul>
           </div>
           {/*
-            上面每一句的出處(⛔ 改文字前先確認出處還成立):
-            ① 補貨會另外開一張撿貨單 → 20260811020000:221-243(建 picking_waves + items);
-               單號寫回 transfer_items.shortage_redispatch_wave_id → 同檔 :262-270
-            ② 「還沒派貨出倉之前可以取消」→ rpc_cancel_picking_wave 只有一版
-               (20260609000002,查法 git grep -lnE "FUNCTION (public\.)?rpc_cancel_picking_wave"),
-               守衛只擋 cancelled(:38-40) 與 shipped(:42-44) ⇒ draft/picking/picked 一律放行;
-               「取消」鈕只在 stage==='pending' 的列出現(hq/inbox/page.tsx:2619,2634),
-               而 pending = draft/picking/picked(同檔 classifyPicking :208-212)
-               ⇒ 已派貨出倉(shipped→done)那一列沒有取消鈕,直接打 RPC 也會被 :42-44 擋。
-            ③ 「不補貨不會自動再送」→ restock_hq 分支只做 rpc_inbound 記回
-               v_transfer.source_location(20260811020000:152-162),整段沒有建撿貨單的程式碼;
-               建撿貨單在 IF p_resolution = 'redispatch' 底下(:166 起)。
-               ⛔ 刻意寫「原本送貨出去的那一邊」不寫「總倉」:那一支沒有總倉守衛
-               (redispatch 才有 :173-177),店對店的單貨是回到原本那家店。
-            ④ 「請那家店開一張補貨申請」→ 路 2 rpc_create_wave_from_restock(最新 20260715000020,
-               查法 git grep -lnE "FUNCTION (public\.)?rpc_create_wave_from_restock"),
-               機制索引「派貨工作台算錯量」節。
-               ⛔⛔ 「同意之後,還要當下總倉真的有貨才派得出去」這半句**不是保守措辭,是硬守衛**
-               (2026-08-22 阿審 P2-2:原本寫「總倉核准後再派」會被讀成「核准＝一定派得到」):
-                 ⓐ 工作台看到的可配量直接讀總倉 stock_balances.on_hand
-                    (v_picking_demand_no_po 最新版 20260612000040:73-78 的 hq_supply CTE;
-                     該檔是這個 view 的最後一版,20260612000030 是前一版)
-                 ⓑ 真的送出時 RPC 還會再擋一次:分配量 > 總倉 on_hand 就
-                    RAISE「SKU「% %」分配 % 超過總倉庫存 %」(20260715000020:589-602)
-               ⛔ 所以這句話**不可以**簡化回「核准後再派」——那是一句會害人空等的假保證。
-            ⑤ 「不會變回未處理 / 不會再回來」→ UPDATE 無條件寫 shortage_resolution
-               (20260811020000:262-270),而清單條件只放行 IS NULL 或 replenish 且還沒補到
-               (v_hq_exceptions 最新版 20260811020010:147-160)⇒ replenish 是唯一例外,
-               所以上面那句話一定要帶著「除了舊的『補出貨』之外」,不可以簡化掉。
+            上面每一句的出處(⛔ 改文字前先確認出處還成立)。
+            ⚠️ 2026-09-03 整段換過:上一版的出處對應的是「這一頁按不了任何東西 /
+              紀錄不會變回未處理」那組句子,撤銷做上去之後那些句子已經全部改寫。
+
+            ① 「處理標記會清掉、回到清單」→ rpc_undo_transfer_item_shortage 尾段那個 UPDATE
+               把 shortage_resolution / _at / _by / _notes / _restock_movement_id /
+               _redispatch_wave_id / _return_transfer_id / _prev_qty_received 八個欄位寫成 NULL
+               (20260903000200 的邏輯 e);而 v_hq_exceptions 兩個分支都要求
+               shortage_resolution IS NULL 才列出來
+               (v_hq_exceptions 最新版 20260824020000_receive_allocate_rework.sql:
+                transfer_short 的 WHERE 在 :1497-1499、transfer_over 在 :1557-1558;
+                查法 git grep -ln "CREATE OR REPLACE VIEW public.v_hq_exceptions",
+                共 3 版、20260824020000 是最後一支)⇒ 清掉就會自己回到清單。
+            ② 「店家的實收也就改得動了」→ rpc_adjust_received_transfer 守衛 B 擋的條件就是
+               shortage_resolution IS NOT NULL(且不是 over_ack)
+               —— 20260903000005 定的,20260903000200 只改它的錯誤訊息、判定一字未改。
+            ③ 「撤銷紀錄會寫進那張派貨單的備註」→ 同一支 RPC 最後 UPDATE transfers.notes
+               追加一行「撤銷處理(MM/DD HH:MI)：…」;而 v_hq_exceptions 的 reason 欄就是
+               「店家收貨備註：」|| t.notes(20260824020000:1467 transfer_short、
+               :1529 transfer_over,兩段那個 CASE 都只有這一個 WHEN ⇒ 無條件成立;
+               2026-09-03 已對線上 pg_get_viewdef 再確認一次),
+               前端把 reason 畫成「⚠ …」那一行 ⇒ 總倉收件匣真的看得到。
+            ④ 「同意退回兩顆:沖銷 / 沖帳單作廢 / 撿貨單一起取消」→ 同一支 RPC 的
+               邏輯 a(對 shortage_restock_movement_id 寫一筆 reversal)、
+               邏輯 c(shortage_return_transfer_id 那張 return_to_hq 改 status='cancelled';
+               月結 F 段白名單只吃 received/closed ⇒ 一改就不再沖帳)、
+               邏輯 b(shortage_redispatch_wave_id 且 status='draft' → cancelled + 稽核紀錄)。
+               ⛔ 刻意寫「原本送貨出去的那一邊」不寫「總倉」:沖回的目的地是
+               transfers.source_location,restock_hq 沒有總倉守衛(redispatch 才有),
+               店對店的單貨是回到原本那家店。
+            ⑤ 「不同意退貨:實收會改回原本的數字」→ reject_return 在 20260903000200 起會把
+               qty_received 補回 qty_shipped、舊值存進 shortage_prev_qty_received,
+               撤銷時由邏輯 d 拿它還原。「少幾件」那一欄顯示的也是用它算的(見上面 baseRecv)。
+            ⑥ 「這三種情況系統會擋下來」→ 同一支 RPC 的守衛 B(picking_waves.status
+               NOT IN ('draft','cancelled') → RAISE)、邏輯 a 的實體守衛
+               (stock_balances.on_hand < 要沖銷的量 → RAISE)、守衛 C
+               (沖帳單所在月份的 store_monthly_settlements.status IN
+                ('confirmed','settled','remitted') → RAISE);
+               「取消客戶訂單不給撤」→ 守衛 A(shortage_resolution='cancel_orders' → RAISE),
+               前端那一列因此不畫按鈕、只寫「不給撤銷」。
+               ⛔ 這幾句一定要寫成「會擋下來」而不是「不能按」——按得下去,是 RPC 回錯誤,
+                 錯誤訊息會出現在畫面上方那個紅框(setResolvedError)。
+            ⑦ 「撤銷成功後這一頁就查不到那一筆」→ 這一頁的主查詢是
+               .not("shortage_resolution","is",null)(見上面那支 effect)⇒ 清掉標記就撈不到。
+               ⛔ 這句要留著:員工會以為撤銷後還能在這裡看到「我撤過」的紀錄。
           */}
 
           {/* 篩選 — 日期(打 DB)+ 搜尋(前端,母體是整段日期範圍) */}
@@ -695,13 +799,14 @@ export default function ExceptionsContent({
                 <th className="px-3 py-2">按了哪顆</th>
                 <th className="px-3 py-2">補派的撿貨單</th>
                 <th className="px-3 py-2">備註</th>
+                <th className="px-3 py-2"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
               {resolvedRows === null ? (
-                <tr><td colSpan={9} className="p-6 text-center text-zinc-500">載入中…</td></tr>
+                <tr><td colSpan={10} className="p-6 text-center text-zinc-500">載入中…</td></tr>
               ) : resolvedPageRows.length === 0 ? (
-                <tr><td colSpan={9} className="p-6 text-center text-zinc-500">
+                <tr><td colSpan={10} className="p-6 text-center text-zinc-500">
                   這段日期沒有處理紀錄{search.trim() ? "（或沒有符合搜尋的）" : ""}
                 </td></tr>
               ) : resolvedPageRows.map((r) => (
@@ -757,6 +862,25 @@ export default function ExceptionsContent({
                     )}
                   </td>
                   <td className="px-3 py-2 text-xs text-zinc-500 min-w-[160px]">{r.notes ?? "—"}</td>
+                  <td className="px-3 py-2 text-xs whitespace-nowrap">
+                    {/* 「取消客戶訂單」是舊值且不給撤（客人已收到取消通知，RPC 也會擋）
+                        ⇒ 不畫按鈕，直接把理由寫出來，不要做一顆按下去一定失敗的鈕。
+                        其餘一律給按 —— 會不會擋得住由 RPC 判斷（撿貨單已派貨出倉 /
+                        沖回的貨已被派走 / 月份已鎖定），前端不預先猜。 */}
+                    {r.resolution === "cancel_orders" ? (
+                      <span className="text-[10px] text-zinc-400" title="客人已經收到取消通知，不能一鍵撤銷">
+                        不給撤銷
+                      </span>
+                    ) : (
+                      <SpinButton
+                        onClick={() => undoResolution(r)}
+                        className="rounded-md border border-zinc-300 px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                        title="撤銷這一筆處理：回到收件匣重新等處理（詳細後果看上面的說明）"
+                      >
+                        ↩ 撤銷
+                      </SpinButton>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
