@@ -429,7 +429,7 @@ export function blockReasonFor(c: SelectionCounts): string | null {
 // ---------------------------------------------------------------- 互斥鎖
 
 /**
- * 全頁共用的一把鎖：**整頁重撈 / 單張重撈 / 送出，三者不可以同時跑。**
+ * 全頁共用的一把鎖：**整頁重撈 / 單張重撈 / 送出 / 傳到撿貨草稿，四者不可以同時跑。**
  *
  * ⭐ 2026-08-20 複審 P1：原本只有「整頁重撈」與「送出」互斥，
  *   失敗採購單那顆「🔄 重新載入這張單」沒有納入 ⇒ 重撈跑到一半還可以按
@@ -448,7 +448,22 @@ export function blockReasonFor(c: SelectionCounts): string | null {
  *          取得到並跑完 → 回傳 null。⚠️ fn 丟出來的例外會原樣往外拋，
  *          但鎖一定會在 finally 放掉（⛔ 不可以改成吞掉例外）。
  */
-export type BusyKind = "load" | "submit";
+// ⭐ "draft" ＝ 送出成功後那顆「📋 傳到撿貨草稿」（2026-09-02 加）。
+//   它跟送出／重撈用**同一把鎖**，理由與上面那條複審 P1 一樣：
+//   傳草稿要逐樣 loadPrefill + insert（好幾趟往返），跑到一半如果還按得動
+//   「🔄 重新載入這張單」，畫面上的結果面板會被抽掉，而草稿還在寫。
+// ⚠ 新增一個成員就要回頭看**所有讀 busy 的地方**有沒有漏講原因：
+//   本 repo 的規則是「按鈕變灰一定要看得出為什麼」（iPad 上沒有 tooltip）。
+//   2026-09-02 盤點：**用到這個型別的檔案只有兩支**，兩支都只做等值比較
+//   （`busy !== null` / `=== "submit"` / `=== "load"` / `=== "draft"`），
+//   ⛔ 沒有任何 switch 需要補 case：
+//     · wms/receiving/ipad/page.tsx（收貨頁）
+//     · wms/receiving/ipad/po/page.tsx（採購單查看頁）
+//   查法：git grep -l "BusyKind" -- apps/admin/src
+//   ⚠ ⛔ 不要改用 `git grep "busy ==="` 去盤：hq/inbox、purchase/requests/edit、
+//     restock/inbox 各自有**同名但不同型別**的區域 busy state（字串 id / 自己的 union），
+//     跟這個型別無關，混進來只會讓人以為漏改了一堆地方。
+export type BusyKind = "load" | "submit" | "draft";
 
 export async function runExclusive(
   ref: { current: BusyKind | null },
