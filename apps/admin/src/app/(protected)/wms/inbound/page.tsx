@@ -766,10 +766,17 @@ export default function TransfersInboxPage() {
     return (transfers ?? []).filter((t) => {
       if (locationFilter !== "all" && t.dest_location !== locationFilter) return false;
       if (!matchSearch(t)) return false;
-      // 分頁為主篩選：多收／少收皆只看已收貨，並以「實收 vs 派出」判斷。
+      // 分頁為主篩選：現場把「派出 vs 訂單需求」和「實收 vs 派出」都視為收貨差異。
+      // 例如總倉派 2、訂單只需 1，門市照單實收 2：實收沒有偏離派出，但仍是多收 1。
       if (tab === "received") return t.status === "received";
-      if (tab === "over") return t.status === "received" && (itemSummary.get(t.id)?.receiveOverQty ?? 0) > 0;
-      if (tab === "short") return t.status === "received" && (itemSummary.get(t.id)?.receiveShortQty ?? 0) > 0;
+      if (tab === "over") {
+        const s = itemSummary.get(t.id);
+        return t.status === "received" && ((s?.receiveOverQty ?? 0) > 0 || (s?.extraQty ?? 0) > 0);
+      }
+      if (tab === "short") {
+        const s = itemSummary.get(t.id);
+        return t.status === "received" && ((s?.receiveShortQty ?? 0) > 0 || (s?.shortQty ?? 0) > 0);
+      }
       if (t.status !== "shipped") return false;
       if (dateFilter === null || dateFilter === "all_pending") return true;
       const wid = parseWaveId(t.transfer_no);
@@ -1065,8 +1072,8 @@ export default function TransfersInboxPage() {
       if (t.status === "received") {
         acc.done += 1;
         const s = itemSummary.get(t.id);
-        if ((s?.receiveOverQty ?? 0) > 0) acc.over += 1;
-        if ((s?.receiveShortQty ?? 0) > 0) acc.short += 1;
+        if ((s?.receiveOverQty ?? 0) > 0 || (s?.extraQty ?? 0) > 0) acc.over += 1;
+        if ((s?.receiveShortQty ?? 0) > 0 || (s?.shortQty ?? 0) > 0) acc.short += 1;
         continue;
       }
       if (t.status !== "shipped") continue;
@@ -2386,9 +2393,12 @@ export default function TransfersInboxPage() {
                                 </div>
                               ) : (
                                 <div className="flex justify-end gap-1">
-                                  {(summary?.receiveOverQty ?? 0) > 0 || (summary?.receiveShortQty ?? 0) > 0 ? (
+                                  {(summary?.receiveOverQty ?? 0) > 0 ||
+                                  (summary?.receiveShortQty ?? 0) > 0 ||
+                                  (summary?.extraQty ?? 0) > 0 ||
+                                  (summary?.shortQty ?? 0) > 0 ? (
                                     <Link
-                                      href={`/transfers/print?transfer_id=${t.id}&copies=driver&receipt=1`}
+                                      href={`/transfers/print?transfer_id=${t.id}&copies=driver&receipt=1&demand_over=${summary?.extraQty ?? 0}&demand_short=${summary?.shortQty ?? 0}`}
                                       target="_blank"
                                       className="rounded-md border border-blue-300 px-2 py-1 text-xs text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 dark:hover:bg-blue-950"
                                       title="列印收貨差異單，交由司機帶回總倉"
