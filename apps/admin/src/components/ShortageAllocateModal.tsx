@@ -317,7 +317,7 @@ export function ShortageAllocateModal({
     if (ids.length === 0) return;
     if (
       !confirm(
-        `把目前 ${ids.length} 筆「待補貨」直接取消？\n\n` +
+        `對目前 ${ids.length} 筆「待補貨」確定斷貨並通知客人？\n\n` +
           `會把這些品項標成斷貨取消，若整張訂單品項都沒了且沒收過錢，訂單也會一併取消；\n` +
           `已取走一部分的訂單則直接結單（不會再卡在「部分取貨」）。\n` +
           // 20260902030000（G1）：這條路以前是靜默取消，現在會發通知 —— 一定要先講。
@@ -347,7 +347,11 @@ export function ShortageAllocateModal({
         notified?: number;
       };
       alert(
-        `已取消 ${r.items_cancelled ?? 0} 個品項、${r.orders_cancelled ?? 0} 張訂單` +
+        // ⛔「訂單」那個數字講的是真的被取消掉的整張訂單（orders_cancelled），
+        //    不可以一起改寫成「確定斷貨」—— 那會把兩種不同的結果混成一句話。
+        //    ⚠️ 採購單頁那顆「✕ 確定斷貨並通知」呼叫同一支 RPC、用同一套措辭，
+        //    改字要兩邊一起看（搜 `鈕名不要改回` 找得到改名理由）。
+        `已確定斷貨 ${r.items_cancelled ?? 0} 個品項、連帶取消 ${r.orders_cancelled ?? 0} 張訂單` +
           // 已取走一部分的單不會被取消，剩下的取消掉就結單（20260808000000）
           (r.orders_completed ? `，${r.orders_completed} 張已取完的訂單結單` : "") +
           // 20260902030000：實際發出幾則由後端回報（一位會員一則，不是品項數）。
@@ -591,7 +595,7 @@ export function ShortageAllocateModal({
                           ) : hqConfirmed.has(r.item_id) ? (
                             <span
                               className="font-medium text-rose-700 dark:text-rose-400"
-                              title="總倉已向廠商確認這幾件不會到（不是「這批不夠分」）。要通知並取消這幾位客人，請到採購單那一列按「✕ 取消並通知」。"
+                              title="總倉已向廠商確認這幾件不會到（不是「這批不夠分」）。要通知並取消這幾位客人，請到採購單那一列按「✕ 確定斷貨並通知」。"
                             >
                               ⛔ 總倉確認不會到{give > 0 ? `（本次仍待補 ${short}）` : ""}
                             </span>
@@ -673,7 +677,7 @@ export function ShortageAllocateModal({
                   className="rounded-md border border-rose-300 px-3 py-1.5 text-xs text-rose-700 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
                   title="確定補不到貨時，把待補貨的品項直接標成斷貨取消。20260902030000 起會通知客人 —— 但只有綁了會員的收得到。"
                 >
-                  ✕ 補不到了，取消並通知
+                  ✕ 補不到了，確定斷貨並通知
                 </SpinButton>
               )}
               <SpinButton
@@ -700,7 +704,7 @@ export function ShortageAllocateModal({
               <p className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] text-rose-800 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-300">
                 ⛔ 這裡有 {hqConfirmed.size} 筆是<b>總倉已向廠商確認「不會到」</b>才標的待補貨，
                 跟「這批不夠分」不一樣。系統<b>不會擋</b>你把貨配給他們 —— 但那等於推翻總倉的判斷，
-                請先確認店裡真的有貨。要通知並取消這幾位客人，請到<b>採購單</b>那一列按「✕ 取消並通知」。
+                請先確認店裡真的有貨。要通知並取消這幾位客人，請到<b>採購單</b>那一列按「✕ 確定斷貨並通知」。
               </p>
             )}
           </>
