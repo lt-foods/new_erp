@@ -704,7 +704,10 @@ export default function ExceptionsContent({
                 共 3 版、20260824020000 是最後一支)⇒ 清掉就會自己回到清單。
             ② 「店家的實收也就改得動了」→ rpc_adjust_received_transfer 守衛 B 擋的條件就是
                shortage_resolution IS NOT NULL(且不是 over_ack)
-               —— 20260903000005 定的,20260903000200 只改它的錯誤訊息、判定一字未改。
+               —— 20260903000005 定的,20260903000200 只改它的錯誤訊息、
+               20260904010000 只在同一支加了庫存連動,兩次判定都一字未改。
+               ⚠️ 20260904010000 起這道守衛更重要:放行不再只是帳對不上,
+               而是「總倉已把短少的貨記回出貨端、店家又把它補進自己的庫存」＝貨變兩份。
             ③ 「撤銷紀錄會寫進那張派貨單的備註」→ 同一支 RPC 最後 UPDATE transfers.notes
                追加一行「撤銷處理(MM/DD HH:MI)：…」;而 v_hq_exceptions 的 reason 欄就是
                「店家收貨備註：」|| t.notes(20260824020000:1467 transfer_short、
