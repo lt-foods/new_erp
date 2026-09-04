@@ -21,6 +21,9 @@ const emptyProduct = (): Product => ({
 });
 const REQUEST_KEY = "piaopiao_pending_request_id";
 const MAX_BATCH_VARIANTS = 100;
+const MAX_IMAGES_PER_PRODUCT = 50;
+const MAX_UPLOAD_IMAGE_BYTES = 4.5 * 1024 * 1024;
+const MAX_IMAGE_SIDE = 1800;
 const SUPPLIER_OPTIONS = ["包子媽", "山瀾商行", "NO21", "精品", "599", "Diz.o", "芭斯特", "祥美", "亞諾"];
 
 export default function PiaopiaoPublisherPage() {
@@ -34,6 +37,7 @@ export default function PiaopiaoPublisherPage() {
   const [error, setError] = useState("");
   const [shareNotice, setShareNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [imageBusy, setImageBusy] = useState(false);
   const [results, setResults] = useState<PublishedResult[]>([]);
 
   useEffect(() => {
@@ -100,6 +104,21 @@ export default function PiaopiaoPublisherPage() {
       images: product.images.filter((_, j) => j !== imageIndex),
     } : product));
   }
+  async function selectProductImages(productIndex: number, files: File[]) {
+    setError("");
+    if (files.length === 0) return updateProduct(productIndex, { images: [] });
+    if (files.length > MAX_IMAGES_PER_PRODUCT) return setError(`每樣商品最多上傳 ${MAX_IMAGES_PER_PRODUCT} 張圖片；請先刪掉多的照片`);
+    setImageBusy(true);
+    try {
+      const images: File[] = [];
+      for (const file of files) images.push(await prepareUploadImage(file));
+      updateProduct(productIndex, { images });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "圖片壓縮失敗，請換一張照片再試");
+    } finally {
+      setImageBusy(false);
+    }
+  }
   function updateVariantBatch(productIndex: number, patch: Partial<VariantBatch>) {
     const product = products[productIndex];
     if (!product) return;
@@ -131,7 +150,7 @@ export default function PiaopiaoPublisherPage() {
 
   async function submit() {
     setError(""); setShareNotice("");
-    if (!token || !lane || busy) return;
+    if (!token || !lane || busy || imageBusy) return;
     if (!endAt || !pickupDeadline) return setError("請先填收單時間與取貨日");
     if (new Date(endAt).getTime() <= Date.now()) return setError("收單時間必須晚於現在");
     if (pickupDeadline < endAt.slice(0, 10)) return setError("取貨日不可早於收單日");
@@ -210,8 +229,8 @@ export default function PiaopiaoPublisherPage() {
     <p className="mb-4 rounded-2xl border border-rose-200 bg-white p-3 text-sm font-semibold text-rose-700">團型／收單類型：漂漂館專區（固定，不可修改，不會上到主商城首頁）</p>
     {results.length > 0 ? <section className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="text-xl font-bold">建立完成，請逐一分享</h2><p className="mt-2 text-sm text-zinc-600">按每一樣商品的分享鈕，再由 LINE 選群組。支援的手機／電腦會帶入商品圖、文案和連結。</p><div className="mt-4 space-y-3">{results.map((result) => <div key={result.campaign_id} className="rounded-2xl border p-4"><p className="font-semibold">{result.name}</p><a className="mt-1 block break-all text-rose-700 underline" href={result.url} target="_blank" rel="noreferrer">{result.url}</a><button onClick={() => void share(result)} className="mt-3 min-h-11 rounded-lg bg-[#06C755] px-4 text-sm font-semibold text-white">分享至 LINE 群組</button></div>)}</div><button onClick={() => { setResults([]); setProducts([emptyProduct()]); }} className="mt-5 min-h-11 rounded-xl bg-rose-600 px-4 font-semibold text-white">再建立一批</button></section> : <>
       <section className="rounded-3xl bg-white p-5 shadow-sm"><h2 className="text-lg font-bold">共同資料</h2><div className="mt-4 grid gap-4 sm:grid-cols-2"><Field label="收單時間"><input className="input" type="datetime-local" value={endAt} onChange={(e) => setEndAt(e.target.value)} /></Field><Field label="取貨日"><input className="input" type="date" value={pickupDeadline} onChange={(e) => setPickupDeadline(e.target.value)} /></Field></div></section>
-      <div className="mt-4 space-y-4">{products.map((product, index) => <section key={index} className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="text-lg font-bold">商品 {index + 1}</h2><button type="button" onClick={() => removeProduct(index)} className="min-h-11 text-sm text-red-600">{products.length > 1 ? "刪除此商品" : "清空此商品"}</button></div><div className="mt-4 grid gap-4"><Field label="商品名稱"><input className="input" value={product.name} onChange={(e) => updateProduct(index, { name: e.target.value })} /></Field><Field label="商品介紹"><textarea className="input min-h-28" value={product.description} onChange={(e) => updateProduct(index, { description: e.target.value })} /></Field><ProductImagesField images={product.images} onChange={(images) => updateProduct(index, { images })} onMove={(imageIndex, direction) => moveProductImage(index, imageIndex, direction)} onRemove={(imageIndex) => removeProductImage(index, imageIndex)} />{lane === "tong" && <SupplierField value={product.supplier_name} onChange={(supplier_name) => updateProduct(index, { supplier_name })} />}{lane === "chao" && <p className="rounded-xl bg-zinc-100 p-3 text-sm">廠商固定：潮包子</p>}</div><VariantFields product={product} onUpdateVariant={(variantIndex, patch) => updateVariant(index, variantIndex, patch)} onAddVariant={() => addVariant(index)} onRemoveVariant={(variantIndex) => removeVariant(index, variantIndex)} onUpdateBatch={(patch) => updateVariantBatch(index, patch)} onCreateBatch={() => createVariantBatch(index)} /></section>)}</div>
-      {canAdd && <button onClick={() => setProducts((all) => [...all, emptyProduct()])} className="mt-4 min-h-11 rounded-xl border border-rose-300 bg-white px-4 font-semibold text-rose-700">＋ 再加一樣商品（最多 5 樣）</button>}<button disabled={busy} onClick={() => void submit()} className="mt-6 min-h-14 w-full rounded-2xl bg-rose-600 px-5 text-lg font-bold text-white disabled:opacity-50">{busy ? "正在建立，請不要關閉…" : publishLabel}</button>
+      <div className="mt-4 space-y-4">{products.map((product, index) => <section key={index} className="rounded-3xl bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><h2 className="text-lg font-bold">商品 {index + 1}</h2><button type="button" onClick={() => removeProduct(index)} className="min-h-11 text-sm text-red-600">{products.length > 1 ? "刪除此商品" : "清空此商品"}</button></div><div className="mt-4 grid gap-4"><Field label="商品名稱"><input className="input" value={product.name} onChange={(e) => updateProduct(index, { name: e.target.value })} /></Field><Field label="商品介紹"><textarea className="input min-h-28" value={product.description} onChange={(e) => updateProduct(index, { description: e.target.value })} /></Field><ProductImagesField images={product.images} busy={imageBusy} onChange={(images) => void selectProductImages(index, images)} onMove={(imageIndex, direction) => moveProductImage(index, imageIndex, direction)} onRemove={(imageIndex) => removeProductImage(index, imageIndex)} />{lane === "tong" && <SupplierField value={product.supplier_name} onChange={(supplier_name) => updateProduct(index, { supplier_name })} />}{lane === "chao" && <p className="rounded-xl bg-zinc-100 p-3 text-sm">廠商固定：潮包子</p>}</div><VariantFields product={product} onUpdateVariant={(variantIndex, patch) => updateVariant(index, variantIndex, patch)} onAddVariant={() => addVariant(index)} onRemoveVariant={(variantIndex) => removeVariant(index, variantIndex)} onUpdateBatch={(patch) => updateVariantBatch(index, patch)} onCreateBatch={() => createVariantBatch(index)} /></section>)}</div>
+      {canAdd && <button onClick={() => setProducts((all) => [...all, emptyProduct()])} className="mt-4 min-h-11 rounded-xl border border-rose-300 bg-white px-4 font-semibold text-rose-700">＋ 再加一樣商品（最多 5 樣）</button>}<button disabled={busy || imageBusy} onClick={() => void submit()} className="mt-6 min-h-14 w-full rounded-2xl bg-rose-600 px-5 text-lg font-bold text-white disabled:opacity-50">{imageBusy ? "正在壓縮圖片，請稍等…" : busy ? "正在建立，請不要關閉…" : publishLabel}</button>
     </>}</main>;
 }
 
@@ -260,12 +279,13 @@ function SupplierField({ value, onChange }: { value: string; onChange: (value: s
   </Field>;
 }
 
-function ProductImagesField({ images, onChange, onMove, onRemove }: { images: File[]; onChange: (images: File[]) => void; onMove: (imageIndex: number, direction: -1 | 1) => void; onRemove: (imageIndex: number) => void }) {
+function ProductImagesField({ images, busy, onChange, onMove, onRemove }: { images: File[]; busy: boolean; onChange: (images: File[]) => void; onMove: (imageIndex: number, direction: -1 | 1) => void; onRemove: (imageIndex: number) => void }) {
   const previews = useMemo(() => images.map((file) => ({ file, url: URL.createObjectURL(file) })), [images]);
   useEffect(() => () => previews.forEach((item) => URL.revokeObjectURL(item.url)), [previews]);
 
   return <Field label="商品圖片（至少一張）">
-    <input className="block min-h-11 w-full text-base" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(e) => onChange(Array.from(e.target.files ?? []))} />
+    <input className="block min-h-11 w-full text-base" type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={busy} onChange={(e) => { onChange(Array.from(e.target.files ?? [])); e.currentTarget.value = ""; }} />
+    <p className="mt-1 text-xs text-zinc-500">{busy ? "正在壓縮圖片，請不要關閉頁面…" : `每樣商品最多 ${MAX_IMAGES_PER_PRODUCT} 張；手機原圖會先自動壓縮再上傳。`}</p>
     {images.length > 0 && <div className="mt-3 space-y-2">{previews.map((item, imageIndex) => <div key={`${item.file.name}-${imageIndex}`} className="flex items-center gap-3 rounded-2xl bg-zinc-50 p-2">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={item.url} alt="" className="h-14 w-14 rounded-xl object-cover" />
@@ -282,3 +302,44 @@ function validVariant(variant: Variant) { const cost = Number(variant.cost_price
 async function api<T>(token: string, body: Record<string, unknown>): Promise<T> { const base = process.env.NEXT_PUBLIC_SUPABASE_URL; if (!base) throw new Error("系統尚未設定連線"); const response = await fetch(`${base}/functions/v1/piaopiao-api`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body) }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || `系統錯誤 ${response.status}`); return data as T; }
 async function fileToBase64(file: File) { const buffer = await file.arrayBuffer(); let binary = ""; for (const value of new Uint8Array(buffer)) binary += String.fromCharCode(value); return btoa(binary); }
 async function imageFromPath(path?: string): Promise<File | undefined> { try { if (!path) return undefined; const base = process.env.NEXT_PUBLIC_SUPABASE_URL; if (!base) return undefined; const url = `${base}/storage/v1/object/public/products/${path.split("/").map(encodeURIComponent).join("/")}`; const response = await fetch(url); if (!response.ok) return undefined; const blob = await response.blob(); return new File([blob], "piaopiao-product-image", { type: blob.type || "image/jpeg" }); } catch { return undefined; } }
+async function prepareUploadImage(file: File): Promise<File> {
+  if (!new Set(["image/jpeg", "image/png", "image/webp"]).has(file.type)) throw new Error("只接受 JPG、PNG 或 WEBP 圖片");
+  if (file.size <= MAX_UPLOAD_IMAGE_BYTES) return file;
+  const { image, url } = await imageElementFromFile(file);
+  const scale = Math.min(1, MAX_IMAGE_SIDE / Math.max(image.naturalWidth, image.naturalHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    URL.revokeObjectURL(url);
+    throw new Error("這台裝置無法處理圖片；請換一張照片再試");
+  }
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+  URL.revokeObjectURL(url);
+  let quality = 0.82;
+  let blob = await canvasToBlob(canvas, quality);
+  while (blob.size > MAX_UPLOAD_IMAGE_BYTES && quality > 0.55) {
+    quality -= 0.08;
+    blob = await canvasToBlob(canvas, quality);
+  }
+  if (blob.size > 5 * 1024 * 1024) throw new Error("這張圖片壓縮後仍太大；請先裁切或換一張照片");
+  return new File([blob], file.name.replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg", lastModified: Date.now() });
+}
+function canvasToBlob(canvas: HTMLCanvasElement, quality: number) {
+  return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("圖片壓縮失敗")), "image/jpeg", quality));
+}
+function imageElementFromFile(file: File) {
+  return new Promise<{ image: HTMLImageElement; url: string }>((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => resolve({ image, url });
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("圖片讀取失敗，請換一張照片再試"));
+    };
+    image.src = url;
+  });
+}
