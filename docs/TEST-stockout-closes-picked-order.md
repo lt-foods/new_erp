@@ -48,7 +48,7 @@
 
 前置：訂單 Z 有 A、B 兩品項，A 已取貨，B 在「少發配貨」被標成待補貨（backorder_at）。
 
-- [ ] **B.1** ⚖️ 少發配貨視窗按「確定補不到 → 取消待補貨」（`rpc_cancel_backorder_items`）
+- [ ] **B.1** ⚖️ 少發配貨視窗按「✕ 補不到了，確定斷貨並通知」（`rpc_cancel_backorder_items`）
 - [ ] **B.2** alert 顯示「…，1 張已取完的訂單結單」
 - [ ] **B.3** 訂單 Z status → 已完成
 

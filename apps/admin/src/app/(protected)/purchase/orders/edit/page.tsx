@@ -550,7 +550,7 @@ function PageContent() {
   //   確定短少 ＝ 只少幾件 → 只把**最晚下單的 N 件**標待補貨，其他人不受影響
   //
   // ⛔ 這顆只「標記」：不動庫存、不建任何單、**不通知客人**。
-  //   要通知走下面那顆「取消待補貨並通知」。兩步分開是刻意的 ——
+  //   要通知走下面那顆「確定斷貨並通知」。兩步分開是刻意的 ——
   //   標記之後還有反悔窗（廠商又生出貨來就把數字清掉，貨到會自動解除）。
   async function setConfirmedShortfall(item: Item) {
     const label = item.product_name + (item.variant_name ? `-${item.variant_name}` : "");
@@ -580,10 +580,10 @@ function PageContent() {
         const already = Number((pre as { cancelled_qty?: number } | null)?.cancelled_qty ?? 0);
         settledLine =
           already > 0
-            ? `　· ⚠ 先前已經「取消並通知」的 ${already}${unit} **收不回來**（客人已經收到通知了）`
+            ? `　· ⚠ 先前已經「確定斷貨並通知」的 ${already}${unit} **收不回來**（客人已經收到通知了）`
             : `　· 目前沒有因為這筆短少而取消掉的訂單`;
       } catch {
-        settledLine = `　· ⚠ 查不到「已經取消並通知幾件」（查詢失敗）—— 已取消的一律收不回來`;
+        settledLine = `　· ⚠ 查不到「已經確定斷貨並通知幾件」（查詢失敗）—— 已確定斷貨的一律收不回來`;
       }
       if (
         !window.confirm(
@@ -640,13 +640,13 @@ function PageContent() {
             (merged > 0 ? `\n其中 ${merged} 筆是先前拆出來的行，已併回原訂單列。` : "") +
             // 已取消的不收回，也不假裝收回了
             (settled > 0
-              ? `\n\n⚠ 先前已經「取消並通知」的 ${settled}${unit} **不會**被收回（客人已經收到通知了）。`
+              ? `\n\n⚠ 先前已經「確定斷貨並通知」的 ${settled}${unit} **不會**被收回（客人已經收到通知了）。`
               : ""),
         );
       } else {
         alert(
           `已記錄「${label}」確定短少 ${qty}${unit}。\n` +
-            (settled > 0 ? `其中 ${settled}${unit} 先前已取消並通知過，這次不重複處理。\n` : "") +
+            (settled > 0 ? `其中 ${settled}${unit} 先前已確定斷貨並通知過，這次不重複處理。\n` : "") +
             `這次標成待補貨：${marked} 筆` +
             (Number(r.split ?? 0) > 0 ? `（其中 ${Number(r.split)} 筆是拆行：同一張訂單一部分可取、一部分待補）` : "") +
             (cleared > 0
@@ -657,7 +657,7 @@ function PageContent() {
             (unmet > 0
               ? `\n\n⚠ 還有 ${unmet}${unit} 沒有標到 —— 目前在等這樣商品的客人不夠多（或剩下的都已經可取貨了）。`
               : "") +
-            `\n\n要通知這些客人請按同一列的「✕ 取消並通知」。`,
+            `\n\n要通知這些客人請按同一列的「✕ 確定斷貨並通知」。`,
         );
       }
       await reload();
@@ -666,7 +666,9 @@ function PageContent() {
     }
   }
 
-  // 取消因「確定短少」被標成待補貨的客人品項，並通知（20260902030000 / G1、G3）
+  // 對因「確定短少」被標成待補貨的客人品項確定斷貨，並通知（20260902030000 / G1、G3）
+  // ⛔ 這條鏈上的文案不要改回「取消／取消並通知」—— 2026-09-04 老闆原話
+  //   「你的取消 我根本不知道取消什麼」。改名理由寫在畫面那顆鈕上面（搜「鈕名不要改回」）。
   // ⚠️ item ids **按下當下重查**，不沿用標記時回傳的 —— 中間客人可能自己取消、
   //    或補到貨被 _settle_arrived_backorders 自動解除（見該 RPC 的 COMMENT）。
   async function cancelShortfallBackorders(item: Item) {
@@ -696,7 +698,7 @@ function PageContent() {
       const rows = info.items ?? [];
       const ids = rows.map((x) => Number(x.item_id));
       if (ids.length === 0) {
-        alert(`「${label}」目前沒有因確定短少而待補貨的品項（可能已補到貨自動解除，或已經取消過了）。`);
+        alert(`「${label}」目前沒有因確定短少而待補貨的品項（可能已補到貨自動解除，或已經確定斷貨過了）。`);
         await reload();
         return;
       }
@@ -717,13 +719,16 @@ function PageContent() {
         (rows.length > LIST_CAP ? `\n　…以上只列出前 ${LIST_CAP} 筆，實際會取消 ${rows.length} 筆` : "");
       if (
         !window.confirm(
-          `取消「${label}」這 ${ids.length} 筆待補貨（共 ${Number(info.marked_qty ?? 0)} ${unit}）並通知客人？\n\n` +
+          `對「${label}」這 ${ids.length} 筆待補貨（共 ${Number(info.marked_qty ?? 0)} ${unit}）確定斷貨並通知客人？\n\n` +
+            // 老闆 2026-09-04：「你的取消 我根本不知道取消什麼」→ 名單前面要有一句
+            // 明講「這張名單就是會被處理掉的東西」，不要讓人自己猜。
+            `將對以下客人品項確定斷貨：\n` +
             `${listText}\n\n` +
             // 兩個數字都是後端現查的，不是估的（rpc_get_confirmed_shortfall_items）
             `　· ${notifiable} 筆綁了會員 → 會收到「商品斷貨通知」\n` +
             `　· ${unnotifiable} 筆沒綁會員 → 收不到通知，要請店家自己聯繫\n` +
             (Number(info.cancelled_qty ?? 0) > 0
-              ? `　· 另有 ${Number(info.cancelled_qty)} ${unit}先前已經取消過，不重複處理\n`
+              ? `　· 另有 ${Number(info.cancelled_qty)} ${unit}先前已經確定斷貨過，不重複處理\n`
               : "") +
             `\n品項會標成斷貨取消；整張訂單品項都沒了且沒收過錢的，訂單也會一併取消。\n` +
             `此動作不可復原。`,
@@ -737,8 +742,10 @@ function PageContent() {
       });
       if (rpcErr) throw new Error(rpcErr.message);
       const r = (res ?? {}) as Record<string, number>;
+      // ⛔「訂單」那個數字講的是真的被取消掉的整張訂單（orders_cancelled），
+      //    不可以一起改寫成「確定斷貨」—— 那會把兩種不同的結果混成一句話。
       alert(
-        `已取消 ${r.items_cancelled ?? 0} 個品項、${r.orders_cancelled ?? 0} 張訂單` +
+        `已確定斷貨 ${r.items_cancelled ?? 0} 個品項、連帶取消 ${r.orders_cancelled ?? 0} 張訂單` +
           (r.orders_completed ? `，${r.orders_completed} 張已取完的訂單結單` : "") +
           `。\n已發出 ${r.notified ?? 0} 則通知（一位會員一則）。`,
       );
@@ -1202,12 +1209,23 @@ function PageContent() {
                               {r.confirmed_shortfall ? `⚠ 短少 ${r.confirmed_shortfall}` : "＋ 標短少"}
                             </SpinButton>
                             {r.confirmed_shortfall ? (
+                              /* ⛔ 鈕名不要改回「取消並通知」。2026-09-04 老闆看畫面時的原話：
+                                   「你的取消 我根本不知道取消什麼」
+                                 —— 舊名只講「動作」不講「對什麼東西」，而這一頁同一列右邊
+                                 就是另一顆「⛔ 斷貨」，兩顆都在講取消，操作的人分不出差別。
+                                 新名字「確定斷貨並通知」講的是結果，且與系統對客人發出的
+                                 「商品斷貨通知」及品項標記「斷貨取消」同一套語彙
+                                 （兩句都在本檔 cancelShortfallBackorders 的確認框裡，
+                                  ⛔ 這裡刻意不寫行號 —— 行號會被後續改動推移變成假資訊）。
+                                 ⚠️ 這顆與右欄「⛔ 斷貨」是兩件事，改字時務必連 title 一起看：
+                                   這顆 ＝ 只對這筆短少牽連到的那幾位客人（不可復原）
+                                   ⛔ 斷貨 ＝ 整個品項廠商完全給不了（會拆斷貨單、可一鍵回復） */
                               <SpinButton
                                 onClick={() => cancelShortfallBackorders(r)}
                                 className="min-h-[44px] touch-manipulation rounded-md border border-rose-300 px-2 text-xs text-rose-700 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
-                                title="把因為這筆短少而待補貨的客人品項取消掉，並通知綁了會員的那幾位"
+                                title="對因為這筆短少而待補貨的客人品項確定斷貨（訂單品項會取消），並通知綁了會員的那幾位。⛔ 只影響這幾筆；整個品項廠商都給不了，請按右邊的「⛔ 斷貨」。"
                               >
-                                ✕ 取消並通知
+                                ✕ 確定斷貨並通知
                               </SpinButton>
                             ) : null}
                           </div>
