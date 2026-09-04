@@ -5,6 +5,7 @@
 //   transfer_id: 轉貨單 id (必填)
 //   copies: 逗號分隔; 預設 "driver,stub"。可傳 "driver" 只印一份。
 //   receipt=1: 收貨差異單，列出派出／實收／差異，供司機帶回總倉。
+//   demand_over / demand_short: 派出量相對訂單需求的多給／少給件數。
 
 import { Fragment, Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -91,6 +92,8 @@ function Body() {
   const transferId = Number(sp.get("transfer_id"));
   const copiesParam = sp.get("copies") ?? "driver,stub";
   const receiptMode = sp.get("receipt") === "1";
+  const demandOver = Math.max(0, Number(sp.get("demand_over")) || 0);
+  const demandShort = Math.max(0, Number(sp.get("demand_short")) || 0);
   const copies: CopyKind[] = useMemo(() => {
     const raw = copiesParam.split(",").map((s) => s.trim()).filter(Boolean);
     const valid = raw.filter((k): k is CopyKind => k === "driver" || k === "stub");
@@ -285,15 +288,30 @@ function Body() {
         </div>
 
         {copies.map((kind, idx) => (
-          <Slip key={`${kind}-${idx}`} kind={kind} tx={tx} items={items} linkedOrder={linkedOrder} receiptMode={receiptMode} />
+          <Slip
+            key={`${kind}-${idx}`}
+            kind={kind}
+            tx={tx}
+            items={items}
+            linkedOrder={linkedOrder}
+            receiptMode={receiptMode}
+            demandOver={demandOver}
+            demandShort={demandShort}
+          />
         ))}
       </div>
     </>
   );
 }
 
-function Slip({ kind, tx, items, linkedOrder, receiptMode }: {
-  kind: CopyKind; tx: Transfer; items: Item[]; linkedOrder: LinkedOrder | null; receiptMode: boolean;
+function Slip({ kind, tx, items, linkedOrder, receiptMode, demandOver, demandShort }: {
+  kind: CopyKind;
+  tx: Transfer;
+  items: Item[];
+  linkedOrder: LinkedOrder | null;
+  receiptMode: boolean;
+  demandOver: number;
+  demandShort: number;
 }) {
   const { tenant } = useAuth();
   const tenantName = tenant?.name ?? getTenantName();
@@ -417,6 +435,15 @@ function Slip({ kind, tx, items, linkedOrder, receiptMode }: {
           )}
         </tfoot>
       </table>
+
+      {receiptMode && (demandOver > 0 || demandShort > 0) && (
+        <div className="mt-1.5 border-2 border-black p-1.5 text-[13px] font-bold">
+          配單差異：
+          {demandOver > 0 && <span> 總倉多給 {demandOver} 件（超過訂單需求）</span>}
+          {demandOver > 0 && demandShort > 0 && <span>；</span>}
+          {demandShort > 0 && <span> 總倉少給 {demandShort} 件（低於訂單需求）</span>}
+        </div>
+      )}
 
       {tx.notes && (
         <div className="mt-1.5 border border-black p-1.5 text-[12px]">
