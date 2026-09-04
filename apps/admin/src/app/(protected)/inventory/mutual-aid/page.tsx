@@ -1084,6 +1084,53 @@ function ProvidedList({ stores, direction }: {
     }
   }
 
+  // 刀 4（2026-09-02）：店家自己確認自己的單。
+  //
+  // ⭐ 為什麼要加：「→ 已確認」這一步**全站原本只有總倉收件匣有**
+  //   （grep rpc_advance_order_status 只有兩個呼叫點：hq/inbox 與 AidOrderStatusActions），
+  //   而 /hq/inbox 對分店是隱藏的 ⇒ 經總倉的互助單卡在 pending 時，
+  //   店家看得到卻推不動、也催不了。
+  //
+  // ⚠️⚠️ 阿審 P0-3（我第一版寫錯，這裡更正）：
+  //   rpc_advance_order_status 是 SECURITY DEFINER、**零角色/tenant/店家範圍檢查**
+  //   （20260623000000，COMMENT 自己寫「bypass RLS」），且 GRANT 給 authenticated。
+  //   我第一版直接打它，並在回報寫「不會放大這個洞」——**那句話是錯的**：
+  //   店家端原本一個入口都沒有，加了之後就有了 ＝ 等於裸開一個窗。
+  //   ⇒ 改打**有守衛的店家專用 RPC** rpc_store_confirm_aid_order（20260903010030）：
+  //     tenant／只允許 pending→confirmed／必須是轉單的轉入單／分店只能確認自己那一趟。
+  //   ⛔ 那支 migration **一行都沒有動** rpc_advance_order_status
+  //     （總倉合法地要能推任何店的單），只是薄包一層。
+  //
+  // ⛔ 這顆**不會**讓貨動。它只把訂單狀態 pending → confirmed
+  //   （最終仍是呼叫 rpc_advance_order_status，那支全文只有一個 UPDATE customer_orders）。
+  //   下一步「派貨」仍然只有總倉按得到（AidOrderStatusActions 的 isShipAction），
+  //   所以畫面上⛔ 不可以寫成「按了就會出貨」。
+  async function confirmLeg(r: ProvidedRow) {
+    if (busyLink != null) return;
+    const items = r.labels.join("、") || `共 ${r.qty}`;
+    if (!confirm(
+      `確認這一趟（${items}）？\n\n` +
+      "這一步只是把單子推到「已確認」，貨完全不會動。\n" +
+      "確認之後還要等總倉按「派貨」，貨才會從提供店出來。\n" +
+      "（在總倉派貨之前，兩邊都還可以取消。）"
+    )) return;
+    setBusyLink(r.linkId);
+    try {
+      const sb = getSupabase();
+      const { data: { user } } = await sb.auth.getUser();
+      if (!user?.id) { alert("尚未登入"); return; }
+      const { error: e } = await sb.rpc("rpc_store_confirm_aid_order", {
+        p_order_id: r.dest_order_id,
+        p_operator: user.id,
+      });
+      if (e) { alert(translateRpcError(e)); return; }
+      setReloadTick((n) => n + 1);
+      window.dispatchEvent(new Event("aid-badge-refresh"));
+    } finally {
+      setBusyLink(null);
+    }
+  }
+
   if (error) {
     return (
       <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
@@ -1272,6 +1319,25 @@ function ProvidedList({ stores, direction }: {
                     >
                       🖨️
                     </SpinButton>
+                    {/* 刀 4（2026-09-02）：「確認」入口 —— 只在還卡在「待確認」時出現。
+                        ⭐ 為什麼 pending 這個條件剛好對：勾了空中轉的單建出來就是 confirmed
+                        並當場自動出貨（20260814030000_air_transfer_ship_on_transfer.sql 檔頭），
+                        ⇒ 停在 pending 的**只可能是經總倉那一種**，正是會卡住的那一批。
+                        ⭐ 兩個方向都給（跟旁邊的「取消」一致）：這一步不動貨，
+                        誰先看到誰按都不會出錯；總倉收件匣那顆保留當救援（老闆要求）。
+                        ⛔ 不加 link_count === 1 的限制：這顆只改訂單狀態、不碰任何一趟的貨，
+                        併單與否結果一樣（總倉那顆也沒有這個限制）。 */}
+                    {r.dest_status === "pending" && (
+                      <SpinButton
+                        type="button"
+                        disabled={busyLink != null}
+                        onClick={() => confirmLeg(r)}
+                        title="確認這一趟（只推狀態、貨不動；之後還要等總倉派貨）"
+                        className="h-8 shrink-0 rounded-md border px-2 text-xs leading-none disabled:opacity-50 flex items-center justify-center border-blue-300 text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 dark:hover:bg-blue-950"
+                      >
+                        {busyLink === r.linkId ? "…" : "確認"}
+                      </SpinButton>
+                    )}
                     {/* 取消規則：分界線是「貨到收貨店了沒」。
                         未到（pending/confirmed/shipping）→ 兩邊都能取消（rpc_cancel_aid_order）；
                         已到（ready）→ 只有收貨方能退回原店（rpc_return_aid_order，貨在他們架上）；
