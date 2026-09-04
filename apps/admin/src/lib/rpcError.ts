@@ -406,6 +406,13 @@ const RULES: Rule[] = [
     pattern: /^zero_price(?:_fill)?:\s*([\s\S]+)$/i,
     render: (m) => m[1],
   },
+  // ===== 實體庫存守衛（rpc_record_pickup，20260904010010） =====
+  {
+    // 取貨扣庫存前鎖住餘額列後重驗，不夠就擋。訊息本體已是中文
+    //（「這次要取「X」5 件，但「三峽店」現在架上只剩 2 件…」），只把機器前綴拿掉。
+    pattern: /^stock_short:\s*([\s\S]+)$/i,
+    render: (m) => m[1],
+  },
   // ===== 贈品標記（rpc_mark_order_item_gift / rpc_set_campaign_item_gift） =====
   {
     // 訊息本體已是中文，一樣只把機器前綴拿掉

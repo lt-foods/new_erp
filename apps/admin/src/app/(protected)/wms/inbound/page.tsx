@@ -2346,10 +2346,13 @@ export default function TransfersInboxPage() {
                                 </div>
                               ) : (
                                 <div className="flex justify-end gap-1">
+                                  {/* ⛔ 舊 title 寫「純紀錄…庫存與客人取貨不受影響」，
+                                      20260904010000 起實收調整會連動店家庫存（沖舊立新、
+                                      扣不動就擋下來），那句話已經是錯的，不要改回去。 */}
                                   <SpinButton
                                     onClick={() => setOpening(t)}
                                     className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-                                    title="看這張單的明細；要更正實收數量在裡面按「✎ 修改實收」（純紀錄：月結數量跟著改、少收走總倉收件匣同一條流程，庫存與客人取貨不受影響）"
+                                    title="看這張單的明細；要更正實收數量在裡面按「✎ 修改實收」（月結數量跟著改、少收走總倉收件匣同一條流程；改大會把差額補進店裡庫存、改小會扣回來，扣不動會擋下來）"
                                   >
                                     明細 / 改實收
                                   </SpinButton>
