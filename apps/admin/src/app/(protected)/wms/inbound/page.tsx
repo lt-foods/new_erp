@@ -54,7 +54,7 @@ type StoreCampaign = {
 // codes：本張 transfer 涵蓋的品項編號(sku_code) / 商品編號(product_code)，僅供搜尋比對用
 // items：拆開的品項行（key = 合併同品相用的識別；自由轉貨掛虛擬 SKU，要用 description 當 key）
 // product = 只有商品名（不含規格），給群組標題用；name = 商品名 / 規格，明細表用
-type ItemLine = { key: string; skuId: number | null; product: string; name: string; skuCode: string | null; qty: number };
+type ItemLine = { key: string; skuId: number | null; product: string; name: string; skuCode: string | null; qty: number; receivedQty: number };
 // extraQty / shortQty：這張單的派出量 vs 訂單需求量差額（見下方查詢註解）
 //   extraQty = 多給、沒有訂單對應；shortQty = 不夠分，會有客人領不到
 //   coveredQty = 缺口中已用「店內現貨減抵單」吸收的件數（shortQty 已淨掉這部分）
@@ -78,6 +78,9 @@ type ItemSummary = {
   bySku: Record<string, { short: number; backorder: number }>;
   // 總倉對短少/多收的處理回覆（含重派補單 wave）— 店家連回去追蹤用
   hqReplies: Array<{ sku_id: number; resolution: string | null; wave_code: string | null; wave_status: string | null }>;
+  // 店家實際點收 vs 總倉派出。這才是收貨差異；不要和上面的「派出 vs 訂單需求」混用。
+  receiveOverQty: number;
+  receiveShortQty: number;
 };
 
 // 列表上的一個可收合群組（product 模式＝同品相，wave 模式＝同撿貨單號）
@@ -96,6 +99,8 @@ type Group = {
   coveredQty: number;      // 這組用店內現貨減抵掉幾件
   prefilledQty: number;    // 這組有幾件是補回店家先墊的現貨
   backorderQty: number;    // 這組還有幾件掛著待補貨（少發配貨沒配到）
+  receiveOverQty: number;  // 已收貨後，實收比派出多
+  receiveShortQty: number; // 已收貨後，實收比派出少
 };
 
 // 「已收」分頁單次查詢的筆數天花板。
@@ -236,7 +241,7 @@ export default function TransfersInboxPage() {
   type DateFilter = "tomorrow" | "today_or_earlier" | "all_pending" | null;
   const [dateFilter, setDateFilter] = useState<DateFilter>(null);
   // 分頁：未收(shipped) / 已收(received)，預設未收
-  type InboxTab = "unreceived" | "received";
+  type InboxTab = "unreceived" | "received" | "over" | "short";
   const [tab, setTab] = useState<InboxTab>("unreceived");
   // 搜尋：撿貨單號(wave_code) / 調撥單號 / 分店 / 商品名 / 商品編號(product_code) / 品項編號(sku_code)
   const [search, setSearch] = useState("");
@@ -466,12 +471,13 @@ export default function TransfersInboxPage() {
             transfer_id: number;
             sku_id: number;
             qty_shipped: number;
+            qty_received: number;
             description: string | null;
           }>(
             () =>
               sb
                 .from("transfer_items")
-                .select("transfer_id, sku_id, qty_shipped, description")
+                .select("transfer_id, sku_id, qty_shipped, qty_received, description")
                 .in("transfer_id", transferIds)
                 .order("id"),
           );
@@ -506,13 +512,16 @@ export default function TransfersInboxPage() {
               if (code) skuCodeMap.set(s.id, code);
             }
           }
-          const emptySummary = (): ItemSummary => ({ lines: 0, totalQty: 0, names: [], codes: [], items: [], extraQty: 0, shortQty: 0, coveredQty: 0, prefilledQty: 0, backorderQty: 0, bySku: {}, hqReplies: [] });
+          const emptySummary = (): ItemSummary => ({ lines: 0, totalQty: 0, names: [], codes: [], items: [], extraQty: 0, shortQty: 0, coveredQty: 0, prefilledQty: 0, backorderQty: 0, bySku: {}, hqReplies: [], receiveOverQty: 0, receiveShortQty: 0 });
           for (const tid of transferIds) summary.set(tid, emptySummary());
           for (const it of items) {
             const cur = summary.get(it.transfer_id) ?? emptySummary();
             cur.lines += 1;
             const qty = Number(it.qty_shipped);
+            const receivedQty = Number(it.qty_received);
             cur.totalQty += qty;
+            cur.receiveOverQty += Math.max(0, receivedQty - qty);
+            cur.receiveShortQty += Math.max(0, qty - receivedQty);
             const desc = it.description?.trim();
             const name = desc || (skuNameMap.get(it.sku_id) ?? `#${it.sku_id}`);
             cur.names.push(`${name} × ${qty}`);
@@ -524,6 +533,7 @@ export default function TransfersInboxPage() {
               name,
               skuCode: desc ? null : skuOnlyCodeMap.get(it.sku_id) ?? null,
               qty,
+              receivedQty,
             });
             const code = skuCodeMap.get(it.sku_id);
             if (code) cur.codes.push(code);
@@ -756,8 +766,10 @@ export default function TransfersInboxPage() {
     return (transfers ?? []).filter((t) => {
       if (locationFilter !== "all" && t.dest_location !== locationFilter) return false;
       if (!matchSearch(t)) return false;
-      // 分頁為主篩選：已收 = received；未收 = shipped（再套待收子篩選）
+      // 分頁為主篩選：多收／少收皆只看已收貨，並以「實收 vs 派出」判斷。
       if (tab === "received") return t.status === "received";
+      if (tab === "over") return t.status === "received" && (itemSummary.get(t.id)?.receiveOverQty ?? 0) > 0;
+      if (tab === "short") return t.status === "received" && (itemSummary.get(t.id)?.receiveShortQty ?? 0) > 0;
       if (t.status !== "shipped") return false;
       if (dateFilter === null || dateFilter === "all_pending") return true;
       const wid = parseWaveId(t.transfer_no);
@@ -794,6 +806,8 @@ export default function TransfersInboxPage() {
             coveredQty: 0,
             prefilledQty: 0,
             backorderQty: 0,
+            receiveOverQty: 0,
+            receiveShortQty: 0,
           };
           map.set(key, entry);
         }
@@ -804,6 +818,8 @@ export default function TransfersInboxPage() {
         entry.coveredQty += itemSummary.get(t.id)?.coveredQty ?? 0;
         entry.prefilledQty += itemSummary.get(t.id)?.prefilledQty ?? 0;
         entry.backorderQty += itemSummary.get(t.id)?.backorderQty ?? 0;
+        entry.receiveOverQty += itemSummary.get(t.id)?.receiveOverQty ?? 0;
+        entry.receiveShortQty += itemSummary.get(t.id)?.receiveShortQty ?? 0;
       }
       return Array.from(map.values()).sort((a, b) => {
         // 「其他調撥」永遠墊底，其餘依撿貨單號遞減
@@ -847,6 +863,8 @@ export default function TransfersInboxPage() {
           coveredQty: 0,
           prefilledQty: 0,
           backorderQty: 0,
+          receiveOverQty: 0,
+          receiveShortQty: 0,
         };
         map.set(key, entry);
       }
@@ -857,6 +875,8 @@ export default function TransfersInboxPage() {
       entry.coveredQty += s?.coveredQty ?? 0;
       entry.prefilledQty += s?.prefilledQty ?? 0;
       entry.backorderQty += s?.backorderQty ?? 0;
+      entry.receiveOverQty += s?.receiveOverQty ?? 0;
+      entry.receiveShortQty += s?.receiveShortQty ?? 0;
     }
     const asc = tab === "unreceived";
     return Array.from(map.values()).sort((a, b) =>
@@ -1032,7 +1052,7 @@ export default function TransfersInboxPage() {
 
   // KPI summaries: 4 個分類,點 KPI card 就 filter list
   const summaries = useMemo(() => {
-    const empty = { tomorrow: 0, todayOrEarlier: 0, allPending: 0, done: 0 };
+    const empty = { tomorrow: 0, todayOrEarlier: 0, allPending: 0, done: 0, over: 0, short: 0 };
     if (!transfers) return empty;
     const today = new Date();
     const tomorrow = new Date();
@@ -1042,7 +1062,13 @@ export default function TransfersInboxPage() {
     const acc = { ...empty };
     for (const t of transfers) {
       if (locationFilter !== "all" && t.dest_location !== locationFilter) continue;
-      if (t.status === "received") { acc.done += 1; continue; }
+      if (t.status === "received") {
+        acc.done += 1;
+        const s = itemSummary.get(t.id);
+        if ((s?.receiveOverQty ?? 0) > 0) acc.over += 1;
+        if ((s?.receiveShortQty ?? 0) > 0) acc.short += 1;
+        continue;
+      }
       if (t.status !== "shipped") continue;
       acc.allPending += 1;
       const wid = parseWaveId(t.transfer_no);
@@ -1052,7 +1078,7 @@ export default function TransfersInboxPage() {
       else if (w.wave_date <= todayStr) acc.todayOrEarlier += 1;
     }
     return acc;
-  }, [transfers, waves, locationFilter]);
+  }, [transfers, waves, locationFilter, itemSummary]);
 
   // ─────────────────────────────────────────────────────────────────
   // 「已收」那個數字（頁首、分頁標籤、KPI 卡三處共用同一個值）
@@ -1449,13 +1475,15 @@ export default function TransfersInboxPage() {
         )}
       </header>
 
-      {/* 分頁：未收 / 已收（預設未收） */}
+      {/* 分頁：多收／少收是已收歷史的差異子集，數字是目前載入範圍。 */}
       <div className="flex items-center gap-1 border-b border-zinc-200 dark:border-zinc-800">
         {([
           // 已收那格拿得到真實總數時就顯示總數；拿不到時會是「已載入 N」
           // （見上方 doneKpiTabCount）→ 兩個都當字串處理
           { value: "unreceived", label: "未收", count: String(summaries.allPending) },
           { value: "received", label: "已收", count: doneKpiTabCount },
+          { value: "over", label: "多收", count: `已載入 ${summaries.over}` },
+          { value: "short", label: "少收", count: `已載入 ${summaries.short}` },
         ] as const).map((tb) => {
           const active = tab === tb.value;
           return (
@@ -1631,7 +1659,7 @@ export default function TransfersInboxPage() {
           不填＝維持原本「最近 doneLimit 筆」；填了才把查詢視窗換成這段期間。
           搜尋框的商品名比對是在「已載入的單」上做的 → 要找幾天前的貨，
           先用這裡把那幾天撈進來，再搜商品名才找得到。 */}
-      {tab === "received" && (
+      {tab !== "unreceived" && (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm dark:border-zinc-800 dark:bg-zinc-900">
           <span className="shrink-0 text-xs text-zinc-500">收貨日期</span>
           <input
@@ -2001,6 +2029,8 @@ export default function TransfersInboxPage() {
                     <Pill tone="violet">🔄 補回先墊 {g.prefilledQty} 件</Pill>
                   )}
                   {g.extraQty > 0 && <Pill tone="blue">🎁 總倉多給 {g.extraQty} 件</Pill>}
+                  {g.receiveOverQty > 0 && <Pill tone="blue">＋ 實收多 {g.receiveOverQty} 件</Pill>}
+                  {g.receiveShortQty > 0 && <Pill tone="rose">− 實收少 {g.receiveShortQty} 件</Pill>}
                 </div>
 
                 {pendingCount > 0 && (
@@ -2304,6 +2334,16 @@ export default function TransfersInboxPage() {
                                   🎁 多給 {summary.extraQty}
                                 </div>
                               )}
+                              {summary && summary.receiveOverQty > 0 && (
+                                <div className="text-[10px] font-bold text-blue-700 dark:text-blue-400">
+                                  ＋ 實收多 {summary.receiveOverQty}
+                                </div>
+                              )}
+                              {summary && summary.receiveShortQty > 0 && (
+                                <div className="text-[10px] font-bold text-rose-700 dark:text-rose-400">
+                                  − 實收少 {summary.receiveShortQty}
+                                </div>
+                              )}
                             </td>
                             <td className="whitespace-nowrap px-3 py-2 text-right align-top">
                               {isShipped ? (
@@ -2346,6 +2386,16 @@ export default function TransfersInboxPage() {
                                 </div>
                               ) : (
                                 <div className="flex justify-end gap-1">
+                                  {(summary?.receiveOverQty ?? 0) > 0 || (summary?.receiveShortQty ?? 0) > 0 ? (
+                                    <Link
+                                      href={`/transfers/print?transfer_id=${t.id}&copies=driver&receipt=1`}
+                                      target="_blank"
+                                      className="rounded-md border border-blue-300 px-2 py-1 text-xs text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-400 dark:hover:bg-blue-950"
+                                      title="列印收貨差異單，交由司機帶回總倉"
+                                    >
+                                      🖨 列印差異單
+                                    </Link>
+                                  ) : null}
                                   {/* ⛔ 舊 title 寫「純紀錄…庫存與客人取貨不受影響」，
                                       20260904010000 起實收調整會連動店家庫存（沖舊立新、
                                       扣不動就擋下來），那句話已經是錯的，不要改回去。 */}
@@ -2393,7 +2443,7 @@ export default function TransfersInboxPage() {
           `.limit(12244)`，PostgREST 只回 1000 筆且不報錯（見上方 DONE_MAX），
           總部視角實際少看 11,000 多張、單店最多也少看 400 多張，正好是月結對帳
           回頭查最需要看到的那一段。 */}
-      {tab === "received" && doneSettled && doneLoaded < doneTotal && (
+      {tab !== "unreceived" && doneSettled && doneLoaded < doneTotal && (
         <div className="flex flex-wrap items-center justify-center gap-3 py-2 text-xs text-zinc-500">
           {/* ⚠ 總部在右上角挑了單一分店時，這裡【不能】顯示 doneLoaded / doneTotal ——
               doneQ 只套 branchLocationId（:273），沒有套 locationFilter，所以那兩個

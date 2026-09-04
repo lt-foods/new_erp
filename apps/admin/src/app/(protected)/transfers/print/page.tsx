@@ -4,6 +4,7 @@
 // query params:
 //   transfer_id: 轉貨單 id (必填)
 //   copies: 逗號分隔; 預設 "driver,stub"。可傳 "driver" 只印一份。
+//   receipt=1: 收貨差異單，列出派出／實收／差異，供司機帶回總倉。
 
 import { Fragment, Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -46,6 +47,7 @@ type Item = {
   id: number;
   qty_requested: number;
   qty_shipped: number;
+  qty_received: number;
   description: string | null;
   estimated_amount: number | null;
   sku_code: string | null;
@@ -88,6 +90,7 @@ function Body() {
   const sp = useSearchParams();
   const transferId = Number(sp.get("transfer_id"));
   const copiesParam = sp.get("copies") ?? "driver,stub";
+  const receiptMode = sp.get("receipt") === "1";
   const copies: CopyKind[] = useMemo(() => {
     const raw = copiesParam.split(",").map((s) => s.trim()).filter(Boolean);
     const valid = raw.filter((k): k is CopyKind => k === "driver" || k === "stub");
@@ -122,7 +125,7 @@ function Body() {
         sb.from("locations").select("id, name").in("id", [t.source_location, t.dest_location]),
         sb
           .from("transfer_items")
-          .select("id, sku_id, qty_requested, qty_shipped, description, estimated_amount, notes")
+          .select("id, sku_id, qty_requested, qty_shipped, qty_received, description, estimated_amount, notes")
           .eq("transfer_id", transferId)
           .order("id"),
       ]);
@@ -135,6 +138,7 @@ function Body() {
         sku_id: number | null;
         qty_requested: number | null;
         qty_shipped: number | null;
+        qty_received: number | null;
         description: string | null;
         estimated_amount: number | null;
         notes: string | null;
@@ -173,6 +177,7 @@ function Body() {
           id: r.id,
           qty_requested: Number(r.qty_requested ?? 0),
           qty_shipped: Number(r.qty_shipped ?? 0),
+          qty_received: Number(r.qty_received ?? 0),
           description: r.description,
           estimated_amount: r.estimated_amount == null ? null : Number(r.estimated_amount),
           sku_code: sku?.code ?? null,
@@ -231,9 +236,9 @@ function Body() {
   useEffect(() => {
     if (!tx) return;
     const original = document.title;
-    document.title = tx.transfer_no;
+    document.title = receiptMode ? `${tx.transfer_no}-收貨差異單` : tx.transfer_no;
     return () => { document.title = original; };
-  }, [tx]);
+  }, [tx, receiptMode]);
 
   // 資料載入完成 → 自動跳列印
   useEffect(() => {
@@ -280,28 +285,29 @@ function Body() {
         </div>
 
         {copies.map((kind, idx) => (
-          <Slip key={`${kind}-${idx}`} kind={kind} tx={tx} items={items} linkedOrder={linkedOrder} />
+          <Slip key={`${kind}-${idx}`} kind={kind} tx={tx} items={items} linkedOrder={linkedOrder} receiptMode={receiptMode} />
         ))}
       </div>
     </>
   );
 }
 
-function Slip({ kind, tx, items, linkedOrder }: {
-  kind: CopyKind; tx: Transfer; items: Item[]; linkedOrder: LinkedOrder | null;
+function Slip({ kind, tx, items, linkedOrder, receiptMode }: {
+  kind: CopyKind; tx: Transfer; items: Item[]; linkedOrder: LinkedOrder | null; receiptMode: boolean;
 }) {
   const { tenant } = useAuth();
   const tenantName = tenant?.name ?? getTenantName();
   const typeLabel = TYPE_LABEL[tx.transfer_type] ?? tx.transfer_type;
   const tempLabel = tx.shipping_temp ? (TEMP_LABEL[tx.shipping_temp] ?? tx.shipping_temp) : "—";
   const totalQty = items.reduce((s, it) => s + it.qty_shipped, 0);
+  const totalReceived = items.reduce((s, it) => s + it.qty_received, 0);
   const totalEst = items.reduce((s, it) => s + (it.estimated_amount ?? 0), 0);
 
   return (
     <div className="copy-page bg-white p-2 font-mono text-[13px] leading-tight text-black shadow print:shadow-none">
       <div className="border-b-2 border-black pb-1 text-center">
         <div className="text-[14px] font-bold">{tenantName}</div>
-        <div className="text-[20px] font-bold">{typeLabel}出貨單</div>
+        <div className="text-[20px] font-bold">{receiptMode ? "收貨差異單" : `${typeLabel}出貨單`}</div>
         <div className="mt-0.5 flex items-center justify-center gap-2">
           <span className="inline-block rounded border-2 border-black px-1.5 py-0.5 text-[13px] font-bold">
             {COPY_LABEL[kind]}
@@ -323,6 +329,11 @@ function Slip({ kind, tx, items, linkedOrder }: {
         {tx.shipped_at && (
           <div className="text-[12px]">
             出貨 {new Date(tx.shipped_at).toLocaleString("zh-TW", { hour12: false })}
+          </div>
+        )}
+        {receiptMode && tx.received_at && (
+          <div className="text-[12px] font-bold">
+            收貨 {new Date(tx.received_at).toLocaleString("zh-TW", { hour12: false })}
           </div>
         )}
         {linkedOrder ? (
@@ -348,9 +359,9 @@ function Slip({ kind, tx, items, linkedOrder }: {
           <tr className="border-b border-black text-[12px]">
             <th className="w-5 py-1 text-left">#</th>
             <th className="py-1 text-left">品名 / 描述</th>
-            <th className="w-9 py-1 text-right">應出</th>
-            <th className="w-9 py-1 text-right">實出</th>
-            <th className="w-8 py-1 text-center">點收</th>
+            <th className="w-9 py-1 text-right">{receiptMode ? "派出" : "應出"}</th>
+            <th className="w-9 py-1 text-right">{receiptMode ? "實收" : "實出"}</th>
+            <th className="w-8 py-1 text-center">{receiptMode ? "差異" : "點收"}</th>
           </tr>
         </thead>
         <tbody>
@@ -377,9 +388,13 @@ function Slip({ kind, tx, items, linkedOrder }: {
                       <div className="text-[11px] italic">↳ {it.notes}</div>
                     )}
                   </td>
-                  <td className="py-1 text-right align-top">{it.qty_requested}</td>
-                  <td className="py-1 text-right align-top font-bold">{it.qty_shipped}</td>
-                  <td className="py-1 text-center align-top text-[15px]">☐</td>
+                  <td className="py-1 text-right align-top">{receiptMode ? it.qty_shipped : it.qty_requested}</td>
+                  <td className="py-1 text-right align-top font-bold">{receiptMode ? it.qty_received : it.qty_shipped}</td>
+                  <td className={`py-1 text-center align-top font-bold ${receiptMode && it.qty_received !== it.qty_shipped ? "text-[14px]" : "text-[15px]"}`}>
+                    {receiptMode
+                      ? `${it.qty_received - it.qty_shipped > 0 ? "+" : ""}${it.qty_received - it.qty_shipped}`
+                      : "☐"}
+                  </td>
                 </tr>
               </Fragment>
             ))
@@ -388,9 +403,11 @@ function Slip({ kind, tx, items, linkedOrder }: {
         <tfoot>
           <tr className="border-t-2 border-black font-bold">
             <td colSpan={2} className="py-1 text-right">合計</td>
-            <td className="py-1 text-right">{items.reduce((s, it) => s + it.qty_requested, 0)}</td>
-            <td className="py-1 text-right">{totalQty}</td>
-            <td className="py-1 text-center text-[11px]">{items.length} 項</td>
+            <td className="py-1 text-right">{receiptMode ? totalQty : items.reduce((s, it) => s + it.qty_requested, 0)}</td>
+            <td className="py-1 text-right">{receiptMode ? totalReceived : totalQty}</td>
+            <td className="py-1 text-center text-[11px]">
+              {receiptMode ? `${totalReceived - totalQty > 0 ? "+" : ""}${totalReceived - totalQty}` : `${items.length} 項`}
+            </td>
           </tr>
           {totalEst > 0 && (
             <tr>
@@ -405,6 +422,13 @@ function Slip({ kind, tx, items, linkedOrder }: {
         <div className="mt-1.5 border border-black p-1.5 text-[12px]">
           <span className="font-bold">備註：</span>
           {tx.notes}
+        </div>
+      )}
+
+      {receiptMode && (
+        <div className="mt-3 grid grid-cols-2 gap-3 text-[12px]">
+          <div className="border-t border-black pt-1">門市確認：</div>
+          <div className="border-t border-black pt-1">司機簽收：</div>
         </div>
       )}
 
