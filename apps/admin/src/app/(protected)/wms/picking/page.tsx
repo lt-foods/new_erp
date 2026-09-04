@@ -47,6 +47,20 @@ type DemandRow = {
 
 type Supplier = { id: number; code: string; name: string };
 type AllocKey = string; // `${sku_id}:${store_id}`
+// 【J】跨團借調明細的索引，跟 AllocKey 同一組維度（同商品同店 ⇒ 同一格）。
+// 另立一個名字是為了讓「借調」的查表點一眼認得出來，不會跟擬分量的 Map 混用。
+type BorrowKey = string; // `${sku_id}:${store_id}`
+const borrowKey = (skuId: number, storeId: number): BorrowKey => `${skuId}:${storeId}`;
+// 【J】借調文案：老闆 2026-08-22 原話是「其中 X 件是從 PO-xxx 借的」。
+// ⚠️ 語氣刻意改成「若按建單，預計…」而不是照抄原話 —— 這個數字是**跟著輸入框即時變動的
+//   試算值**（規劃器算的是「如果現在按下建單會怎麼切」），還沒有任何一件貨真的被借走。
+//   寫成完成式會讓店長以為已經借了。數字本身與老闆要的那個 X 一模一樣。
+// 借到多張 PO 時把每張各借幾件列出來（總數仍是他要的那個 X）。
+function borrowText(b: { qty: number; fromPos: { po_no: string; qty: number }[] }): string {
+  return b.fromPos.length === 1
+    ? `若按建單，預計其中 ${b.qty} 件會從 ${b.fromPos[0].po_no} 借`
+    : `若按建單，預計其中 ${b.qty} 件會用借的 — ${b.fromPos.map((p) => `${p.po_no} ${p.qty} 件`).join("、")}`;
+}
 type ViewMode = "matrix" | "by_store";
 // 現行成本價 / 分店價是否已設定（出貨守衛 _missing_dispatch_prices 的前端預警）
 type PriceFlags = { cost: boolean; branch: boolean };
@@ -1451,7 +1465,7 @@ function Body() {
   }
 
   // ===== FIFO 規劃器：把每個 (sku, store) 的擬分量切分到含此 sku 的多張 PO =====
-  // submitAll 與 involvedPosFor 共用（20260816 借調上線前兩處各養一份、已經開始漂移）。
+  // submitAll 與 wavePlan（預估張數＋【J】借調標示）共用（20260816 借調上線前兩處各養一份、已經開始漂移）。
   // 第一輪（既有跨團守衛，原樣保留）：只倒給「該店在此 PO 確實有需求」的 PO ——
   //   view 只在某店對某 PO 對應的開團 / 補貨有需求時才產生該 (po,sku,store) 列，
   //   「有列 = 有需求」，避免把別團需求倒給最舊的 PO。
@@ -1460,13 +1474,19 @@ function Body() {
   //   餘量 = 該 PO 剩餘容量 − max(0, 該 PO 自己的未派需求 − 第一輪已派給它的量)：
   //   借調永遠不吃來源 PO 自己團的客人還沒拿到的貨。DB 端步驟 4.5 是同一套算法的守衛，
   //   wave item 會被 RPC 標成「實際被服務的那一團」，訂單推進不會卡。
+  // 【J】borrowed：第二輪借到的量順手記一份給畫面用（老闆 2026-08-22「要顯示」）。
+  //   ⛔ 純記錄，不參與任何判斷 —— 分配結果(perPoAllocs)與 insufficient 一個字都沒動。
+  //   借調量算不出「這一格天生有幾件是借的」：它是**填了數量、第一輪吃不完**才產生的，
+  //   所以只能跟著規劃器走、不能從 view 的欄位讀（view 也沒有這個欄，見 20260818000030:169-196）。
   function planWaveAllocations(scopeRows: SkuRow[]): {
     perPoAllocs: Map<number, Array<{ sku_id: number; store_id: number; qty: number }>>;
     insufficient: string[];
+    borrowed: Map<BorrowKey, { qty: number; fromPos: { po_no: string; qty: number }[] }>;
   } {
     const perPoAllocs = new Map<number, Array<{ sku_id: number; store_id: number; qty: number }>>();
     const insufficient: string[] = [];
-    if (!demand) return { perPoAllocs, insufficient };
+    const borrowed = new Map<BorrowKey, { qty: number; fromPos: { po_no: string; qty: number }[] }>();
+    if (!demand) return { perPoAllocs, insufficient, borrowed };
 
     const demandPoSkuStore = new Set<string>();
     // 該 PO 該 SKU「自己的未派需求」Σ max(0, demand − wave)，口徑同 view 的 demand_left
@@ -1525,6 +1545,12 @@ function Body() {
             perPoAllocs.set(po.po_id, slot);
             perPoSkuLeft.set(k, left - take);
             remaining -= take;
+            // 【J】只有這一輪拿到的量才是「借的」；第一輪(有需求的 PO)不算。
+            const bk = borrowKey(sk.sku_id, st.store_id);
+            const b = borrowed.get(bk) ?? { qty: 0, fromPos: [] };
+            b.qty += take;
+            b.fromPos.push({ po_no: po.po_no, qty: take });
+            borrowed.set(bk, b);
           }
         }
         if (remaining > 0) {
@@ -1532,7 +1558,7 @@ function Body() {
         }
       }
     }
-    return { perPoAllocs, insufficient };
+    return { perPoAllocs, insufficient, borrowed };
   }
 
   // FIFO 提交：規劃（planWaveAllocations）後對每張 PO 各別發 RPC。
@@ -1647,15 +1673,34 @@ function Body() {
     return s;
   }, [effectiveSkuRows, allStores, allocs]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 預估會切出幾張 wave（與 submitAll 同 FIFO 邏輯），可限定品項範圍
-  function involvedPosFor(scopeRows: SkuRow[]): number {
-    // 與 submitAll 完全同一支規劃器（含借調第二輪），預估的張數不會再跟實際切的漂移
-    return planWaveAllocations(scopeRows).perPoAllocs.size;
-  }
-  const involvedPos = useMemo(
-    () => involvedPosFor(effectiveSkuRows),
+  // 本次建單範圍的規劃結果 — 與 submitAll 完全同一支規劃器（含借調第二輪），
+  // 預估的張數不會跟實際切的漂移。
+  // ⚠️ 一次算、兩處用（預計張數 ＋【J】借調標示）：這張表可以到 180 品項 × 17 店，
+  //    借調標示絕不另外再跑一次規劃器。deps 與改版前的 involvedPos 一字不差。
+  const wavePlan = useMemo(
+    () => planWaveAllocations(effectiveSkuRows),
     [effectiveSkuRows, allStores, demand, allocs], // eslint-disable-line react-hooks/exhaustive-deps
   );
+  const involvedPos = wavePlan.perPoAllocs.size;
+
+  // 【J】跨團借調摘要：格子只畫得出「可見的店」，被隱藏的分店欄借了多少
+  //   只有這裡看得到 ⇒ 摘要一律用規劃器的全量結果（planner 跑的是 allStores）。
+  const borrowSummary = useMemo(() => {
+    const rows: { key: string; skuLabel: string; storeName: string; qty: number; text: string }[] = [];
+    let totalQty = 0;
+    for (const [key, b] of wavePlan.borrowed) {
+      const [skuIdStr, storeIdStr] = key.split(":");
+      const sk = effectiveSkuRows.find((s) => s.sku_id === Number(skuIdStr));
+      const st = allStores.find((s) => s.store_id === Number(storeIdStr));
+      // 找不到就跳過而不是硬印：規劃器跑的是「本次建單範圍」，理論上一定找得到；
+      // 真的對不上時寧可少一列，也不要在畫面上印出無法追查的殘缺列。
+      if (!sk || !st) continue;
+      rows.push({ key, skuLabel: sk.sku_label, storeName: st.store_name, qty: b.qty, text: borrowText(b) });
+      totalQty += b.qty;
+    }
+    rows.sort((a, b) => b.qty - a.qty);
+    return { rows, totalQty };
+  }, [wavePlan, effectiveSkuRows, allStores]);
 
   // 本次建單範圍內缺成本/分店價的品項數（派貨時會被 DB 守衛 _missing_dispatch_prices 擋下）
   const missingPriceCount = useMemo(() => {
@@ -2077,6 +2122,25 @@ function Body() {
           <span className="text-xs font-medium text-rose-700 dark:text-rose-400">
             缺價 {missingPriceCount} 品項 — 補價前派貨會被擋
           </span>
+        )}
+        {/* 【J】跨團借調摘要。⛔ 純顯示，不改任何行為。兩個理由不能只靠格子裡的徽章：
+            ① 格子的 title 在 iPad 上摸不到，「從哪張單借」讀不到；
+            ② 借調也可能落在被隱藏的分店欄（矩陣只畫 visibleStores，規劃器跑的是 allStores）
+               ⇒ 那幾件只有這裡看得見。
+            用 <details> 收起來：沒借調時整條不出現，有借調也只佔一行，不擠掉建單鈕。 */}
+        {viewMode === "matrix" && pickStep === "confirm" && borrowSummary.totalQty > 0 && (
+          <details className="text-xs">
+            <summary className="cursor-pointer font-medium text-violet-700 dark:text-violet-400">
+              🔁 若建單，預計有 {borrowSummary.totalQty} 件跨團借調（{borrowSummary.rows.length} 格）— 點開看從哪張單借
+            </summary>
+            <ul className="mt-1 space-y-0.5 text-zinc-600 dark:text-zinc-400">
+              {borrowSummary.rows.map((r) => (
+                <li key={r.key}>
+                  {r.storeName} · {r.skuLabel}：{r.text}
+                </li>
+              ))}
+            </ul>
+          </details>
         )}
 
         {viewMode === "matrix" && (
@@ -2525,6 +2589,8 @@ function Body() {
                         const demandQty = sk.storeDemand.get(st.store_id) ?? 0;
                         const demandLeft = storeDemandLeft(sk, st.store_id);
                         const maxForCell = value + Math.max(0, sk.totalAvailable - allocSum);
+                        // 【J】這一格本次要派的量裡，有幾件是從別團的採購單借來的
+                        const borrow = wavePlan.borrowed.get(borrowKey(sk.sku_id, st.store_id));
                         return (
                           <td key={st.store_id} className="px-1.5 py-2 text-center align-top">
                             <input
@@ -2561,6 +2627,19 @@ function Body() {
                               <div className="mt-1 py-1 text-[11px] text-emerald-600 dark:text-emerald-500">✓ 已派</div>
                             ) : (
                               <div className="mt-1 py-1 text-[11px] text-zinc-300 dark:text-zinc-600">—</div>
+                            )}
+                            {/* 【J】跨團借調標示（老闆 2026-08-22「要顯示」）。⛔ 純顯示：
+                                借調怎麼算、借多少、派給誰，一個字都沒動 —— 這裡只是把規劃器
+                                第二輪已經算出來的數字寫到畫面上。
+                                ⚠️ 現場用 iPad(見上面 onFocus 那段)、觸控沒有 hover ⇒ title 摸不到，
+                                所以「從哪張 PO 借」在控制列的借調摘要裡另列一份，兩邊同一份資料。 */}
+                            {borrow && borrow.qty > 0 && (
+                              <div
+                                title={`${borrowText(borrow)}（這一團的貨不夠，向同商品其他採購單調；不會動到那張單自己客人要的貨）`}
+                                className="mt-1 rounded bg-violet-100 px-1 py-0.5 text-[10px] font-medium tabular-nums text-violet-800 dark:bg-violet-950 dark:text-violet-300"
+                              >
+                                🔁 預計借 {borrow.qty}
+                              </div>
                             )}
                           </td>
                         );
