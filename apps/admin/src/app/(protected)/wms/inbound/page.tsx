@@ -1744,7 +1744,12 @@ export default function TransfersInboxPage() {
             title="先跳出這批單對到的訂單勾選要配給誰,按「確認收貨」才完成收貨(限同一家分店)"
             className={`rounded-md border border-emerald-600 px-4 py-1.5 text-sm font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:border-zinc-300 disabled:text-zinc-400 dark:text-emerald-400 dark:hover:bg-emerald-950 dark:disabled:border-zinc-700 dark:disabled:text-zinc-500 ${selectedStore ? "ml-auto" : ""}`}
           >
-            {`✋ 批次配單${selected.size > 0 ? ` (${selected.size})` : ""}`}
+            {/* ⛔ 字樣分兩邊,不要改成單一字串:分店只有這一顆(自動配已被上面
+                !selectedStore 藏掉),對店家來說它就是「收貨」(老闆 2026-08-22:
+                「合併成一顆,就寫收貨兩個字」);總倉同時看得到「✓ 批次收貨·自動配」,
+                兩顆都叫收貨會分不出來按哪顆 → 總倉端維持「✋ 批次配單」。
+                判準沿用同一顆自動配在用的 selectedStore,沒有新增任何邏輯。 */}
+            {`${selectedStore ? "收貨" : "✋ 批次配單"}${selected.size > 0 ? ` (${selected.size})` : ""}`}
           </SpinButton>
         </div>
       )}
@@ -2032,7 +2037,10 @@ export default function TransfersInboxPage() {
                       }
                       title="先跳出這批單對到的訂單勾選要配給誰,按「確認收貨」才完成收貨(取消=不收貨)"
                     >
-                      ✋ 配單{pendingCount > 1 ? ` ${pendingCount} 單` : ""}
+                      {/* ⛔ 同批次區:分店端這是唯一一顆 → 寫「收貨」;總倉端上面還有
+                          「✓ 收貨·自動配」→ 維持「✋ 配單」以免兩顆同名。
+                          判準用 gStore(上面藏自動配、下面切按鈕顏色都在用它)。 */}
+                      {`${gStore ? "收貨" : "✋ 配單"}${pendingCount > 1 ? ` ${pendingCount} 單` : ""}`}
                     </SpinButton>
                   </div>
                 )}
@@ -2330,7 +2338,10 @@ export default function TransfersInboxPage() {
                                     }
                                     title="勾選要配給誰、實收數量也在同一個視窗調,按「確認收貨」才完成收貨(取消=不收貨)"
                                   >
-                                    ✋ 配單
+                                    {/* ⛔ 同上:分店端只有這一顆(左邊自動配、右邊「✎ 調整」
+                                        都被 !storeForLocation 藏掉)→ 寫「收貨」;
+                                        總倉端三顆並排,維持「✋ 配單」才分得出來。 */}
+                                    {storeForLocation(t.dest_location) ? "收貨" : "✋ 配單"}
                                   </SpinButton>
                                   {/* 「✎ 調整」只留給總倉調撥(沒有配單視窗可用)；
                                       分店的實收調整已併進配單視窗 */}

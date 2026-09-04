@@ -496,7 +496,14 @@ export function TransferReceiveModal({
                         : "rounded-md border border-emerald-600 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:hover:bg-emerald-950"
                     }
                   >
-                    ✋ 配單
+                    {/* 跟 inbound 三顆入口鈕同一套字樣規則(分店=收貨、總倉=配單)。
+                        hideAutoAllocate 就是呼叫端的 !!storeForLocation(dest),全庫
+                        只有 wms/inbound 一個呼叫點,所以它 = 「目的地是分店」。
+                        ⚠️ 誠實標註:這一段目前分店碰不到 —— 開這個彈窗的「✎ 調整」
+                        本身就被 !storeForLocation 藏起來(只有總倉看得到),
+                        所以實際跑起來這裡永遠走 false 分支。留條件式是為了
+                        以後真的開放分店進來時字樣自動對,不是現在會變的畫面。 */}
+                    {hideAutoAllocate ? "收貨" : "✋ 配單"}
                   </SpinButton>
                 )}
                 {isWaveDispatch ? (

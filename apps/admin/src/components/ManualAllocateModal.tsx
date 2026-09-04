@@ -717,7 +717,14 @@ export function ManualAllocateModal({
     <Modal
       open
       onClose={onClose}
-      title={isReceive ? `✋ 配單 — ${storeName}` : `✋ 手動配單 — ${storeName}`}
+      title={
+        // ⛔ receive 分支寫「收貨」是對的,不要改回「配單」:receive 模式的唯一入口
+        // 是 inbound 的 openManualReceive,它在建 modal 前就先擋掉「目的地不是分店」
+        // (「這批單的目的地不是分店…」那句 alert)→ 進得來這裡的一定是分店,
+        // 而分店那顆入口鈕現在就寫「收貨」,標題跟著才不會按鈕寫收貨、點進去寫配單。
+        // store 分支(收完貨之後的「✋ 手動配單」常駐入口)總倉分店都用得到,維持原字。
+        isReceive ? `收貨 — ${storeName}` : `✋ 手動配單 — ${storeName}`
+      }
       maxWidth="max-w-4xl"
     >
       <div className="space-y-3">

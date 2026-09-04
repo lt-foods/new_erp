@@ -40,6 +40,10 @@ const NAV: NavGroup[] = [
       //   分店要用，所以**不要**放進 BRANCH_HIDDEN_HREFS。
       { href: "/pos", label: "現場銷售", match: /^\/pos/ },
       { href: "/wms/inbound", label: "收貨", match: /^\/wms\/inbound|^\/transfers\/inbox/ },
+      // 退貨（2026-09-04）：店家要退回總倉的貨從這裡送出，總倉回覆與收貨差額進度也在這一頁。
+      // ⚠ match 不可以寫成 /^\/wms\/re/ 之類 —— 那會連 /wms/receiving（進貨待辦）一起點亮。
+      // ⚠ 刻意**不放**進 BRANCH_HIDDEN_HREFS：這一頁就是給分店用的。
+      { href: "/wms/returns", label: "退貨", match: /^\/wms\/returns/ },
       { href: "/members", label: "會員", match: /^\/members/ },
       { href: "/wms/transfers", label: "內部調撥", match: /^\/wms\/transfers|^\/transfers\/free|^\/transfers\/dispatch|^\/transfers$|^\/transfers\/?$/ },
       { href: "/restock", label: "補貨申請", match: /^\/restock(?!\/inbox)/ },
