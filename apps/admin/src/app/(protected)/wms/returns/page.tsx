@@ -74,18 +74,21 @@ function isOrderReturn(notes: string | null): boolean {
   return !!notes && notes.startsWith("[order return");
 }
 
-// 老闆逐字定的三種狀態字樣（需求暨計畫_店家退貨頁_2026-09-04.md:23）
+// 老闆逐字定的三種狀態字樣。
+// 2026-09-06 老闆覆改字樣：舊版「已入倉」被問「入誰的倉？同不同意？扣不扣店家？」
+//   故改為自解釋寫法（原 2026-09-04 版出處：需求暨計畫_店家退貨頁_2026-09-04.md:23）。
+// ⛔ label 逐字照老闆定的，不要潤飾；cls 一律不動。
 const STATUS_VIEW: Record<string, { label: string; cls: string }> = {
   shipped: {
-    label: "🚚 等總倉",
+    label: "🚚 等總倉回覆",
     cls: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
   },
   received: {
-    label: "✅ 已入倉",
+    label: "✅ 同意退・已入總倉",
     cls: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   },
   cancelled: {
-    label: "❌ 不同意 · 自己收回",
+    label: "❌ 不同意退・貨留店家",
     cls: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
   },
 };
@@ -498,6 +501,24 @@ export default function StoreReturnsPage() {
           {/* ── ② 進度列表 ── */}
           <section className="flex flex-col gap-2">
             <h2 className="text-base font-semibold">我送出的退貨</h2>
+            {/* 錢的語意：上畫面之前逐字查證過月結引擎**最新版**
+                （supabase/migrations/20260901000000_settlement_dispatch_basis.sql:74，
+                  用定義鏈查法 git grep -nE "CREATE (OR REPLACE )?FUNCTION (public\.)?rpc_generate_hq_to_store_settlement"
+                  自排確認它是最後一支重建本函式的，⛔ 不是靠檔名日期判斷的）：
+                  :249-263  F) return_out —— transfer_type='return_to_hq'
+                            AND status IN ('received','closed') AND source_location = 本店
+                            ⇒ 計入 v_return_out_b（分店價口徑）
+                  :275      v_branch_total := … − v_return_out_b     ← 減號，沖回
+                  :277      v_payable      := v_branch_total + v_adjust  ← 店家要付的錢
+                ⇒ ✅（status='received'）＝從這家店的月結扣掉。
+                  ❌ 走 rpc_reject_transfer（最新版 20260904020020:88，:169-170 寫 status='cancelled'，
+                  全檔沒碰 received_at／qty_received）⇒ 不在上面那個白名單裡 ⇒ 一毛都不沖，原本那筆貨款照收。
+                ⚠️ 沖回的時點是 received_at（總倉同意日），原本入帳是 shipped_at（派車日，:166）
+                  ⇒ 跨月才同意的話，沖回會落在「同意的那個月」的帳單。這一行刻意不寫月份，
+                  就是為了不把跨月的情形講死。 */}
+            <p className="text-xs text-zinc-500">
+              ✅＝總倉同意收回：貨進總倉、你的庫存已扣、這筆月結不跟你收。❌＝不同意退：貨留店家、月結照收。
+            </p>
             <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
               <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
                 <thead className="bg-zinc-50 dark:bg-zinc-900">
