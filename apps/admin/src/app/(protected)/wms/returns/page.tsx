@@ -521,13 +521,12 @@ export default function StoreReturnsPage() {
                   ❌ 走 rpc_reject_transfer（最新版 20260904020020:88，:169-170 寫 status='cancelled'，
                   全檔沒碰 received_at／qty_received）⇒ 不在上面那個白名單裡 ⇒ 一毛都不沖，原本那筆貨款照收。
                 ⚠️ 沖回的時點是 received_at（總倉同意日），原本入帳是 shipped_at（派車日，:166）
-                  ⇒ 跨月才同意的話，沖回會落在「同意的那個月」的帳單。這一行刻意不寫月份，
-                  就是為了不把跨月的情形講死。
+                  ⇒ 跨月才同意的話，沖回會落在「同意的那個月」的帳單。
                 🔴 而且不只「落在哪個月」不同——**計價的時點也不同**（同檔逐字驗過）：
                   :166  出貨入帳用 _branch_price_at(v_tenant, ti.sku_id, t.shipped_at)   ← 派車那天的分店價
                   :252  退貨沖回用 _branch_price_at(v_tenant, ti.sku_id, t.received_at)  ← 總倉同意那天的分店價
                   ⇒ 這兩個日期之間只要分店價改過，沖回金額就**不保證等於**當初收的金額。
-                    畫面那句括號「（依總倉同意當天的分店價）」就是為了這件事存在的，
+                    畫面那句括號「（依同意當天的分店價）」就是為了這件事存在的，
                     ⛔ 不要拿掉——拿掉店家會拿帳單來問「當初收我 100，怎麼只扣回 80」。
                 ⚠️ 已知風險（月結引擎既有行為，非本 PR 造成，這裡只記錄不處理）：
                   _branch_price_at 現行版在
@@ -536,10 +535,8 @@ export default function StoreReturnsPage() {
                   ⇒ 該商品的分店價若已被關閉（沒有 effective_to IS NULL 的價）會回 NULL，
                   被 :252 的 COALESCE 當成 0 ⇒ 這筆退貨沖回 0 元。
                   已另備唯讀查詢，待老闆確認真實資料有沒有受害的單。
-                ⭐ 2026-09-06 補寫月份（本刀）：這句原本沒寫「哪一個月」，上面 :524-525 還寫著
-                  「這一行刻意不寫月份，就是為了不把跨月的情形講死」——⛔ 那個前提已經作廢，
-                  ⛔ 不要照它把月份再拿掉（那兩行留著只是因為不刪既有註解，不是還成立）。
-                  作廢的理由：跨月不是例外，是每個月底必然發生的——
+                ⛔ 主句一定要寫明「哪一個月」的帳單，不要刪回只寫「月結帳單」——
+                  跨月不是例外，是每個月底必然發生的：
                   :261-262  沖回用 received_at（總倉同意那天）切月
                   :166      出貨收錢用 shipped_at（派車那天）切月
                   ⇒ 9/29 店家送退貨、10/1 總倉才同意 ⇒ 沖回落在**十月**帳單，
@@ -550,14 +547,14 @@ export default function StoreReturnsPage() {
                   全 supabase/migrations 沒有任何一支真的執行 cron.unschedule
                   （:56 / :72 / :113 / :214 那四處都只是註解或 COMMENT 字串，不是可執行語句）
                   ⇒ 滿 48 小時系統自己同意，跨不跨月店家和總倉都控制不了。
-                ⚠️ 這句話有一個已知例外，寫在這裡留給後人（本刀不修，已登記待老闆裁示）：
+                ⚠️ 這句話有一個已知例外——**主句下面那行小字就是在講它**，⛔ 不要拿掉：
                   若「總倉同意的那個月」的月結已經被鎖定
                   （status IN ('confirmed','settled','remitted','cancelled')），
                   生成器 20260901000000:146-155 會直接 CONTINUE 跳過這家店、整個不重算，
                   而下個月的時窗（:261 received_at >= 下月一日）也撈不到它（它的 received_at 在上個月）
                   ⇒ 這筆沖回**不會出現在任何一個月的帳單**，只能人工開調整單補。
                   且解鎖 RPC rpc_revoke_settlement_send（20260805000020:55-57）明文只放行
-                  status='sent'，confirmed 之後救不回來 ⇒ 畫面這句在這個情形下會變成空頭支票。
+                  status='sent'，confirmed 之後救不回來 ⇒ 少了那行小字，主句在這個情形下就是空頭支票。
                 ⚠️ 對照組（自己 grep／node 直讀驗過，不是聽來的）：同家族的
                   20260904010000_adjust_received_syncs_stock.sql:379-397 有「守衛 C」——
                   改到已鎖定月份的金額時直接 RAISE EXCEPTION 擋下、不讓它默默失蹤；
@@ -566,6 +563,9 @@ export default function StoreReturnsPage() {
                   ⇒「同意收回」這條路缺同一款守衛，所以上面那個例外目前真的擋不住。 */}
             <p className="text-xs text-zinc-500">
               ✅＝總倉同意收回：貨進總倉、你的庫存已扣，這筆貨款會從總倉同意當月的月結帳單沖回（依同意當天的分店價）。❌＝不同意退貨：貨留店家、月結照收。
+            </p>
+            <p className="text-[11px] text-zinc-400">
+              ※ 例外：如果總倉同意的那個月份，月結帳單已經結案了，系統不會自動重算——這筆沖回不會自己出現，要請總倉開人工調整單補上。
             </p>
             <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
               <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
