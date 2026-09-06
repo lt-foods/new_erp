@@ -522,9 +522,22 @@ export default function StoreReturnsPage() {
                   全檔沒碰 received_at／qty_received）⇒ 不在上面那個白名單裡 ⇒ 一毛都不沖，原本那筆貨款照收。
                 ⚠️ 沖回的時點是 received_at（總倉同意日），原本入帳是 shipped_at（派車日，:166）
                   ⇒ 跨月才同意的話，沖回會落在「同意的那個月」的帳單。這一行刻意不寫月份，
-                  就是為了不把跨月的情形講死。 */}
+                  就是為了不把跨月的情形講死。
+                🔴 而且不只「落在哪個月」不同——**計價的時點也不同**（同檔逐字驗過）：
+                  :166  出貨入帳用 _branch_price_at(v_tenant, ti.sku_id, t.shipped_at)   ← 派車那天的分店價
+                  :252  退貨沖回用 _branch_price_at(v_tenant, ti.sku_id, t.received_at)  ← 總倉同意那天的分店價
+                  ⇒ 這兩個日期之間只要分店價改過，沖回金額就**不保證等於**當初收的金額。
+                    畫面那句括號「（依總倉同意當天的分店價）」就是為了這件事存在的，
+                    ⛔ 不要拿掉——拿掉店家會拿帳單來問「當初收我 100，怎麼只扣回 80」。
+                ⚠️ 已知風險（月結引擎既有行為，非本 PR 造成，這裡只記錄不處理）：
+                  _branch_price_at 現行版在
+                  supabase/migrations/20260715000000_settlement_dual_price_basis.sql:83，
+                  查不到 p_at 時點的價會 fallback 現行價，但 fallback 那段要求 effective_to IS NULL（:111）
+                  ⇒ 該商品的分店價若已被關閉（沒有 effective_to IS NULL 的價）會回 NULL，
+                  被 :252 的 COALESCE 當成 0 ⇒ 這筆退貨沖回 0 元。
+                  已另備唯讀查詢，待老闆確認真實資料有沒有受害的單。 */}
             <p className="text-xs text-zinc-500">
-              ✅＝總倉同意收回：貨進總倉、你的庫存已扣、這筆錢會從月結帳單扣回。❌＝不同意退貨：貨留店家、月結照收。
+              ✅＝總倉同意收回：貨進總倉、你的庫存已扣，這筆貨款會從月結帳單沖回（依總倉同意當天的分店價）。❌＝不同意退貨：貨留店家、月結照收。
             </p>
             <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
               <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
