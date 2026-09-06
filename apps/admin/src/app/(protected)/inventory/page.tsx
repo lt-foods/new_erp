@@ -154,6 +154,10 @@ export default function InventoryOverviewPage() {
   // 算式留在伺服端（rpc_get_stock_commitment_bulk）—— 前端只顯示，不重算，
   // 否則等於把自由量公式又抄一份到前端。
   const [commitMap, setCommitMap] = useState<Map<string, Commitment>>(new Map());
+  // 「退貨中 N」（2026-09-04 老闆裁示 2，乙案）：店家已經送出退貨、總倉還沒回覆，
+  // 而且**還沒扣過庫存**的件數。key = `${location_id}-${sku_id}`。
+  // 資料來源 v_store_pending_returns（20260904020000，母體定義寫在那支檔頭）。
+  const [returningMap, setReturningMap] = useState<Map<string, number>>(new Map());
   const [moveCache, setMoveCache] = useState<Map<string, Movement[]>>(new Map());
   const [moveLoading, setMoveLoading] = useState(false);
   // 依商品新增庫存（manual_adjust +N）— 開庫存減抵單前把帳外現貨補進帳用
@@ -252,7 +256,7 @@ export default function InventoryOverviewPage() {
           if (apErr) throw apErr;
           const pairs = (ap as { location_id: number; sku_id: number }[]) ?? [];
           if (pairs.length === 0) {
-            if (!cancelled) { setRows([]); setTotal(0); setTruncated(false); setCommitMap(new Map()); }
+            if (!cancelled) { setRows([]); setTotal(0); setTruncated(false); setCommitMap(new Map()); setReturningMap(new Map()); }
             return;
           }
           allocSet = new Set(pairs.map((p) => `${p.location_id}-${p.sku_id}`));
@@ -333,7 +337,7 @@ export default function InventoryOverviewPage() {
         // 補 sku + reorder_rules + 承諾量拆解（僅本頁可見列）
         const skuIds = Array.from(new Set(pageRows.map((r) => r.sku_id)));
         if (skuIds.length > 0) {
-          const [sk, rr, cm, pr] = await Promise.all([
+          const [sk, rr, cm, pr, ret] = await Promise.all([
             sb.from("skus").select("id, sku_code, product_name, variant_name, base_unit").in("id", skuIds),
             sb.from("reorder_rules").select("location_id, sku_id, safety_stock, reorder_point").in("sku_id", skuIds),
             // 一頁一次，不要每列各打一次
@@ -348,6 +352,21 @@ export default function InventoryOverviewPage() {
               .in("scope", ["retail", "branch"])
               .is("effective_to", null)
               .order("effective_from", { ascending: false }),
+            // 退貨中（2026-09-04 乙案）：只撈本頁看得到的 SKU，跟上面四支同一個節奏。
+            // ⚠ 這個 view 只收「還沒扣過庫存」的退貨單（out_movement_id IS NULL）——
+            //   舊路徑（內部調撥 → ↩ 退貨回總倉）建單當下就扣掉了，不該再提醒一次。
+            // ⚠ 有選倉別就一起帶上去：stock_balances 對分店帳號是**只讀自己那家**
+            //   （store_read_own，20260707000070:65），但這支 view 沒有那道 RLS
+            //   （比照 v_hq_exceptions 的既有寫法，不加 security_invoker）。
+            //   不帶條件的話分店帳號會白拿到別家店的列 —— 畫面上不會顯示（key 對不上），
+            //   但沒必要送過來。
+            (() => {
+              const q = sb
+                .from("v_store_pending_returns")
+                .select("location_id, sku_id, pending_qty")
+                .in("sku_id", skuIds);
+              return locationId ? q.eq("location_id", Number(locationId)) : q;
+            })(),
           ]);
           if (cancelled) return;
           const sm = new Map<number, Sku>();
@@ -374,15 +393,21 @@ export default function InventoryOverviewPage() {
               free_with_pool: num(c.free_with_pool),
             });
           }
+          const retm = new Map<string, number>();
+          for (const x of (ret.data as { location_id: number; sku_id: number; pending_qty: number }[]) ?? []) {
+            retm.set(`${x.location_id}-${x.sku_id}`, num(x.pending_qty));
+          }
           setSkuMap(sm);
           setPriceMap(pm);
           setReorderMap(rm);
           setCommitMap(cmap);
+          setReturningMap(retm);
         } else {
           setSkuMap(new Map());
           setPriceMap(new Map());
           setReorderMap(new Map());
           setCommitMap(new Map());
+          setReturningMap(new Map());
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -620,6 +645,7 @@ export default function InventoryOverviewPage() {
               const prices = priceMap.get(r.sku_id);
               const rule = reorderMap.get(key);
               const commit = commitMap.get(key) ?? null;
+              const returningQty = returningMap.get(key) ?? 0;
               const isLow = rule != null && r.on_hand <= num(rule.reorder_point);
               const open = expanded === key;
               const out: React.ReactNode[] = [
@@ -661,6 +687,29 @@ export default function InventoryOverviewPage() {
                         title={`其中 ${fmtQty(r.reserved)} 件被 stock_balances.reserved 鎖住`}
                       >
                         (保留 {fmtQty(r.reserved)})
+                      </span>
+                    )}
+                    {/* 退貨中（2026-09-04 老闆裁示 2 乙案）：
+                        「先不扣 → 帳上還是 10，旁邊標『退貨中 3』讓人看得到」。
+                        ⚠ 這個數字**已經算在左邊的在庫裡**（乙案就是還沒扣），
+                          不是額外的、也不是被鎖住的 —— title 要把這件事講白，
+                          不然店員會以為在庫 10 只剩 7 能賣。
+                        ⚠ 大於在庫時轉紅：那代表總倉按同意時會扣不動而失敗
+                          （20260904020010 會擋下來），要讓人在庫存頁就看得到。 */}
+                    {returningQty > 0 && (
+                      <span
+                        className={`ml-1 text-[10px] ${
+                          returningQty > r.on_hand
+                            ? "font-semibold text-red-600 dark:text-red-400"
+                            : "text-amber-700 dark:text-amber-400"
+                        }`}
+                        title={
+                          returningQty > r.on_hand
+                            ? `已送出 ${fmtQty(returningQty)} 件退貨在等總倉回覆，但店裡帳上只剩 ${fmtQty(r.on_hand)} 件 —— 總倉按「同意收回」時會扣不動而失敗，請先確認貨還在。`
+                            : `已送出 ${fmtQty(returningQty)} 件退貨、還在等總倉回覆。這些件數還算在左邊的「在庫」裡（總倉同意的那一刻才會扣掉）。`
+                        }
+                      >
+                        (退貨中 {fmtQty(returningQty)})
                       </span>
                     )}
                     {isLow && (
