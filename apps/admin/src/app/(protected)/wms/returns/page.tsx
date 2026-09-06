@@ -78,17 +78,24 @@ function isOrderReturn(notes: string | null): boolean {
 // 2026-09-06 老闆覆改字樣：舊版「已入倉」被問「入誰的倉？同不同意？扣不扣店家？」
 //   故改為自解釋寫法（原 2026-09-04 版出處：需求暨計畫_店家退貨頁_2026-09-04.md:23）。
 // ⛔ label 逐字照老闆定的，不要潤飾；cls 一律不動。
+//
+// ⭐⭐ received／cancelled 這兩個字樣，必須跟**總倉那個人按下去的那顆鈕**逐字相同：
+//   ExceptionsContent.tsx:231-232 的 return_accepted「同意收回」／return_rejected「不同意退貨」
+//   （也就是 hq/inbox/page.tsx:3102,:3090 那兩顆鈕上面的字）。
+//   2026-09-06 老闆問「是不是對照我的異常處理」之後補正的：第一輪寫成「同意退／不同意退」，
+//   跟總倉端差了字 ⇒ 同一個動作在兩個畫面上出現兩種講法，店家跟總倉會以為在講不同的事。
+//   ⛔ 要改就兩邊一起改，不要各改各的。
 const STATUS_VIEW: Record<string, { label: string; cls: string }> = {
   shipped: {
     label: "🚚 等總倉回覆",
     cls: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
   },
   received: {
-    label: "✅ 同意退・已入總倉",
+    label: "✅ 同意收回・已入總倉",
     cls: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   },
   cancelled: {
-    label: "❌ 不同意退・貨留店家",
+    label: "❌ 不同意退貨・貨留店家",
     cls: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
   },
 };
@@ -517,7 +524,7 @@ export default function StoreReturnsPage() {
                   ⇒ 跨月才同意的話，沖回會落在「同意的那個月」的帳單。這一行刻意不寫月份，
                   就是為了不把跨月的情形講死。 */}
             <p className="text-xs text-zinc-500">
-              ✅＝總倉同意收回：貨進總倉、你的庫存已扣、這筆月結不跟你收。❌＝不同意退：貨留店家、月結照收。
+              ✅＝總倉同意收回：貨進總倉、你的庫存已扣、這筆錢會從月結帳單扣回。❌＝不同意退貨：貨留店家、月結照收。
             </p>
             <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
               <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
