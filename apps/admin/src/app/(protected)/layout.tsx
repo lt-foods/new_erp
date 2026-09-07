@@ -69,7 +69,7 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/hq/inbox", label: "總倉收件匣", match: /^\/hq\/inbox/ },
       // 總倉退回貨待處理（2026-09-07）：店退/短少回到總倉的批次在這裡分配好/破/失。
-      // ⚠ 僅 HQ 角色（owner/admin/hq_manager），分店不看 → 要加進 BRANCH_HIDDEN_HREFS。
+      // ⚠ 僅 owner/admin/hq_manager；由 filterNavForRole 精確過濾，不靠門市欄位猜權限。
       { href: "/wms/return-disposition", label: "退回貨處理", match: /^\/wms\/return-disposition/ },
       { href: "/wms/receiving", label: "進貨待辦", match: /^\/wms\/receiving/ },
       // 選單順序＝工作流程順序：先在草稿上挑好給樓下撿，撿完確定了才到工作台建正式單。
@@ -121,9 +121,21 @@ function canManageStaff(user: { app_metadata?: Record<string, unknown> } | null 
   return r === "owner" || r === "admin";
 }
 
+function canDisposeHqReturn(user: { app_metadata?: Record<string, unknown> } | null | undefined): boolean {
+  const role = user?.app_metadata?.role;
+  return role === "owner" || role === "admin" || role === "hq_manager";
+}
+
 function filterNavForRole(nav: NavGroup[], user: { app_metadata?: Record<string, unknown> } | null | undefined): NavGroup[] {
-  if (canManageStaff(user)) return nav;
-  return nav.filter((g) => !g.title || !ADMIN_ONLY_GROUPS.has(g.title));
+  return nav
+    .filter((group) => canManageStaff(user) || !group.title || !ADMIN_ONLY_GROUPS.has(group.title))
+    .map((group) => ({
+      ...group,
+      items: group.items.filter(
+        (item) => item.href !== "/wms/return-disposition" || canDisposeHqReturn(user),
+      ),
+    }))
+    .filter((group) => group.items.length > 0);
 }
 
 const NAV_COLLAPSE_KEY = "new_erp-nav-collapsed";
@@ -131,7 +143,6 @@ const NAV_COLLAPSE_KEY = "new_erp-nav-collapsed";
 // 分店帳號 (app_metadata.stores 有值且不含「總倉」) 隱藏的項目
 const BRANCH_HIDDEN_HREFS = new Set([
   "/hq/inbox",            // 總倉收件匣
-  "/wms/return-disposition", // 退回貨處理 (HQ)
   "/products",            // 商品主檔 (HQ 管理)
   "/suppliers",           // 供應商 (HQ 管理)
   "/purchase/requests",   // 請購單 (PR)

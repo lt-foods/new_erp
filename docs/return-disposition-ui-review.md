@@ -189,3 +189,68 @@ CEO 已回報全站 `tsc` exit 0；本審查未重跑全站 tsc。
 E 初版 UI 目前 P0 = 0、P1 = 8、P2 = 4。  
 
 不建議在未退修前交給現場使用。最大問題不是畫面風格，而是：短少店名會顯示錯方、原單號沒列出、角色放行不一致、Safari request id 可能送不出去、未知送達後換新 request id 可能重複處理、小數輸入會靜默改數、200 筆後批次不可達，外加 lint 會卡收工。
+
+---
+
+## E 修版正式複審（2026-09-07，Codex GPT-5.5 阿審）
+
+結論：E 修版目前未見阻擋 page/layout 放行給下一段整包驗收的 P0/P1/P2。首審 8 個 P1、4 個 P2 已逐條補足；但這不是正式瀏覽器驗收，也不是後端 SQL 驗收。
+
+### 本輪範圍
+
+- `apps/admin/src/app/(protected)/wms/return-disposition/page.tsx`
+- `apps/admin/src/app/(protected)/layout.tsx`
+- `tests/return-disposition-review/ui-input-runtime.cjs`
+- `tests/return-disposition-review/ui-submit-runtime.cjs`
+
+已讀派工稿：`D:\1人公司\_本機工地\return-disposition-tools\writer-front-e-fix.md`，但以下判定以本機實碼與測試為準，不照抄作者說法。
+
+### P0
+
+- 0。
+
+### P1
+
+- 0。
+
+首審 P1 結案狀態：
+
+1. 角色放行已收窄：頁面 `canDisposeReturn` 只允許 `owner/admin/hq_manager`，位置 `page.tsx:106-108`；layout 入口同樣用 `canDisposeHqReturn` 過濾，位置 `layout.tsx:124-136`。
+2. 短少店名已分流：`source_kind === "shortage"` 用原單 `dest_location`，店退才用 `source_location`，位置 `page.tsx:431-433`、`:951-954`。
+3. 原單號已顯示：列表與詳情都有「原單 + 明細 #」，位置 `page.tsx:989-990`、`:1083-1084`。
+4. Safari fallback UUID 已改成 `crypto.getRandomValues` 產生 RFC4122 v4，不用 `Math.random`，位置 `page.tsx:153-166`；`ui-input-runtime.cjs` 已實跑通過。
+5. 未知送達已鎖原包：待確認包存入 localStorage，綁 tenant/operator/batch/request/payload，位置 `page.tsx:188-242`、`:778-788`；未知時表單/切批鎖住，重送只送原 payload，位置 `:645-669`、`:817`、`:886-901`；`ui-submit-runtime.cjs` 已用真元件跑過未知送達、重送、關頁重開、切批。
+6. 小數輸入不再靜默改值：`clampDecimal` 編輯中直接保留原字串，位置 `page.tsx:168-171`；送出才用 `toThousandths` 驗完整字串、非負、最多 3 位小數與總額，位置 `:177-185`、`:706-735`；runtime 已驗 `1e3`、`-1`、`1.0001`、`11` 不送 RPC，`0.125` 可送。
+7. 200 筆後不可達已補分頁：清單用 `.range(from, from + PAGE_SIZE)` 多抓 1 筆判斷下一頁，位置 `page.tsx:360`、`:1034-1065`；歷史切換/翻頁會清 selected 與表單，避免拿舊批次送出。
+8. 單頁 lint 已過：本輪實跑 `npm run lint --workspace apps/admin -- 'src/app/(protected)/wms/return-disposition/page.tsx'`，exit 0。layout 原有 effect lint 兩條不是本次 E 新增，本輪未把它算成 E 缺陷。
+
+### P2
+
+- 0。
+
+首審 P2 結案狀態：
+
+1. 表格選批已改成真正 `<button type="button">`，含 `aria-pressed` 與 disabled 狀態，位置 `page.tsx:966-975`。
+2. 錢的文案已改成「本頁不會再自動向店家收款或退款；責任歸屬另依老闆規則處理」，位置 `page.tsx:828`。
+3. 事件列表改用 `fetchAllRows<EventRow>`，位置 `page.tsx:504-512`。
+4. 查詢錯誤有往 `listError/eventsError` 或畫面警示走；locations/staff 錯誤不再安靜吞掉，相關位置 `page.tsx:354-442`、`:504-535`、`:862-878`、`:1131`。
+
+### 本機實跑
+
+```powershell
+node --check tests\return-disposition-review\ui-input-runtime.cjs
+node --check tests\return-disposition-review\ui-submit-runtime.cjs
+node tests\return-disposition-review\ui-input-runtime.cjs
+node tests\return-disposition-review\ui-submit-runtime.cjs
+npm run lint --workspace apps/admin -- 'src/app/(protected)/wms/return-disposition/page.tsx'
+```
+
+結果全部 exit 0。
+
+`ui-submit-runtime.cjs` 這輪不是只 grep：它用 jsdom + ReactDOM 真渲染頁面，stub AuthProvider、Supabase、Next Link、SpinButton，再點真 button、填真 input、看實際送出的 `rpc_dispose_hq_return` payload。
+
+### 未覆蓋 / 仍需整包驗收
+
+- 未啟動真 Next 瀏覽器，所以沒有人工驗 Safari/iPad 實機輸入法。
+- 沒連 Supabase；列表、事件、staff、RLS 的真資料權限由 SQL/flow 測試負責。
+- C 撤回／原單更正、F 一般退貨四位小數 P1 不在 E 範圍；不能把 E 綠燈視為整包完成。

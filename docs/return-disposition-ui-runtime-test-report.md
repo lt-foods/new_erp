@@ -143,3 +143,56 @@ P2：無新增。這次問題是會造成重複處理的流程風險，不是單
 - 此測試沒有啟動 Next 整站，沒有打真 Supabase；所有網路/DB 都是 stub。
 - 此測試證明的是目前頁面狀態流和送出 payload，可作為 Claude 修版回歸保護；它不驗後端 `rpc_dispose_hq_return` 本身的冪等與扣帳 SQL。
 - 為避免綁死實作，測試接受「未知後沒有第二次 RPC」或「第二次 RPC 使用原 request id + 原完整 payload」。原碼 regex 只列 `OBSERVE`，不計入 PASS/FAIL。
+
+---
+
+## E 修版複跑（2026-09-07，Codex GPT-5.5 阿審）
+
+本輪只修測試接點，不改功能頁。原因是 E 修版已把數量欄從 `type="number"` 改成 `type="text" inputMode="decimal"`，並新增 `useAuth()`；舊測試仍找 `input[type="number"]` 且沒 stub AuthProvider，會誤報。
+
+### 實跑命令
+
+```powershell
+node --check tests\return-disposition-review\ui-input-runtime.cjs
+node --check tests\return-disposition-review\ui-submit-runtime.cjs
+node tests\return-disposition-review\ui-input-runtime.cjs
+node tests\return-disposition-review\ui-submit-runtime.cjs
+```
+
+結果：
+
+- `ui-input-runtime.cjs`：exit 0。
+- `ui-submit-runtime.cjs`：exit 0。
+
+### 本輪新增/保留的真元件斷言
+
+- 小數輸入編輯中保留原字串，不靜默吃前綴、不截斷、不因超上限改成別的值。
+- UUID fallback 產生 PostgreSQL 可收的 RFC4122 v4，且使用 `crypto.getRandomValues`，不使用 `Math.random`。
+- 未知送達後，數量欄鎖住；沒有可按的「重新產生 Request ID」。
+- 未知送達後若按「重新傳送原資料」，必須用原 request id + 原完整 payload。
+- 未知送達時不能切到另一批。
+- 關頁重開後會恢復同一筆待確認包；若重送，仍用原 request id + 原完整 payload。
+- 本機儲存失敗時不打 `rpc_dispose_hq_return`。
+- 不同租戶/使用者不會恢復別人的待確認包；若畫面資料 tenant 與目前登入 tenant 不符，前端會在送 RPC 前擋下。
+- 合法三位小數 `0.125` 可送；非法格式、負數、四位小數、超過尚待量不送 RPC。
+
+### 修版觀察
+
+```text
+extracted newRequestId:L153, clampDecimal:L168 from apps/admin/src/app/(protected)/wms/return-disposition/page.tsx
+ok - return-disposition UI input runtime checks
+
+rendered apps/admin/src/app/(protected)/wms/return-disposition/page.tsx
+OBSERVE - 未知錯誤後數量欄位啟用數
+  actual:   0 enabled decimal input(s)
+OBSERVE - 原碼觀察：待確認包恢復機制
+  actual:   durableStorage=true; eventLookupByRequestId=true; memoryRequestRef=false (request ref L?)
+OBSERVE - 原碼觀察：切批是否會重設 request
+  actual:   handleSelectCallsReset=false (L558); resetRegeneratesRequest=false (L545)
+ok - return-disposition submit retry runtime checks
+```
+
+### 限制
+
+- 這仍是 jsdom + stub 的元件層離線測試，不是瀏覽器人工操作，也不是正式 Supabase 實測。
+- 測試驗的是 E 頁對未知送達與輸入的保護；後端真正冪等、扣帳與 RLS 已由核心 SQL 測試另驗。
