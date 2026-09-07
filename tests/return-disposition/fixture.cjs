@@ -36,6 +36,7 @@ function getDbName() {
 }
 
 const WITH_CORE = process.argv.includes('--with-core');
+const WITH_ALL  = process.argv.includes('--with-all');
 
 // ============================================================
 // Migration 根目錄
@@ -95,6 +96,14 @@ const FUNCTION_SOURCES = [
   { file: '20260715000020_restock_dispatch_dedup_guards.sql',
     desc: 'rpc_create_wave_from_restock',
     pick: ['rpc_create_wave_from_restock'] },
+  // --- _current_tenant_id 真版（tenant status 守門） ---
+  { file: '20260707000020_trial_expiry_enforcement.sql',
+    desc: '_current_tenant_id (tenant status gate)',
+    pick: ['_current_tenant_id'] },
+  // --- _next_transfer_no 真版 ---
+  { file: '20260515000002_rpc_store_self_service.sql',
+    desc: '_next_transfer_no (real, from store self-service)',
+    pick: ['_next_transfer_no'] },
   // --- 安全 helpers（真實定義） ---
   { file: '20260707000070_jwt_store_scope_helpers_and_stock_rls.sql',
     desc: '_jwt_store_ids + _jwt_store_location_ids (真實定義)',
@@ -390,24 +399,9 @@ CREATE TABLE IF NOT EXISTS tenants (
 //   🔧 真實輕量（trim_scale 等）
 // ============================================================
 const HELPER_STUBS_SQL = `
--- _next_transfer_no: real logic (lightweight, no external deps)
+-- sequences referenced by real functions
 CREATE SEQUENCE IF NOT EXISTS transfer_no_seq;
-CREATE OR REPLACE FUNCTION public._next_transfer_no()
-RETURNS TEXT
-LANGUAGE plpgsql AS $$
-BEGIN
-  RETURN 'TR' || to_char(NOW(), 'YYMMDD') || lpad(nextval('transfer_no_seq')::TEXT, 4, '0');
-END;
-$$;
-
--- picking_wave_code_seq
 CREATE SEQUENCE IF NOT EXISTS public.picking_wave_code_seq;
-
--- trim_scale: 真實輕量 helper
-CREATE OR REPLACE FUNCTION public.trim_scale(p NUMERIC)
-RETURNS TEXT LANGUAGE sql IMMUTABLE AS $$
-  SELECT regexp_replace(p::TEXT, '\\.?0+$', '')
-$$;
 
 -- ensure_store_supplier: 真實邏輯太簡單可 stub
 CREATE OR REPLACE FUNCTION public.ensure_store_supplier(p_store_id BIGINT)
@@ -424,10 +418,12 @@ LANGUAGE plpgsql AS $$ BEGIN
   RETURN QUERY SELECT FALSE, FALSE;
 END; $$;
 
--- ✅ 配單通知類 no-op（rpc_mark_orders_shipping_for_wave 只推通知）
+-- ⛔ rpc_mark_orders_shipping_for_wave 會改訂單狀態為 shipping，不可假成功
 CREATE OR REPLACE FUNCTION public.rpc_mark_orders_shipping_for_wave(
   p_wave_id BIGINT, p_operator UUID
-) RETURNS VOID LANGUAGE plpgsql AS $$ BEGIN NULL; END; $$;
+) RETURNS VOID LANGUAGE plpgsql AS $$ BEGIN
+  RAISE EXCEPTION 'fixture 未實作 rpc_mark_orders_shipping_for_wave — 會動訂單狀態';
+END; $$;
 
 -- ⛔ 會動庫存/訂單/帳的 helper — RAISE 讓測試 fail，不假成功
 CREATE OR REPLACE FUNCTION public._settle_arrived_backorders(
@@ -806,7 +802,7 @@ async function main() {
     }
 
     // 2g. --with-core: load HQ return disposition migrations (明確檔名)
-    if (WITH_CORE) {
+    if (WITH_CORE && !WITH_ALL) {
       const coreFiles = [
         '20260907010000_hq_return_disposition_core.sql',      // A: 資料與處理
         '20260907020000_hq_return_disposition_sources.sql',   // B: 來源函式
@@ -821,6 +817,43 @@ async function main() {
         const coreSql = fs.readFileSync(cfPath, 'utf8');
         await client.query(coreSql);
         console.log(`    ✓ Core migration applied`);
+      }
+    }
+
+    // 2g'. --with-all: A + B + C + F（缺檔即 fail）
+    if (WITH_ALL) {
+      // F 依賴 v_picking_demand_no_po — 先從真 migration 載入
+      const allPrereqs = [
+        { file: '20260612000030_v_picking_demand_no_po.sql', desc: 'v_picking_demand_no_po (F prerequisite)' },
+      ];
+      for (const pr of allPrereqs) {
+        const prPath = path.join(MIGRATIONS_DIR, pr.file);
+        if (!fs.existsSync(prPath)) {
+          console.error(`  ✗ --with-all prerequisite: ${pr.file} not found`);
+          process.exit(1);
+        }
+        console.log(`  Loading prerequisite: ${pr.desc}`);
+        const prSql = fs.readFileSync(prPath, 'utf8');
+        await client.query(prSql);
+        console.log(`    ✓ Prerequisite applied`);
+      }
+
+      const allFiles = [
+        '20260907010000_hq_return_disposition_core.sql',        // A
+        '20260907020000_hq_return_disposition_sources.sql',     // B
+        '20260907030000_hq_return_disposition_reversals.sql',   // C
+        '20260907040000_hq_return_disposition_available.sql',   // F
+      ];
+      for (const af of allFiles) {
+        const afPath = path.join(MIGRATIONS_DIR, af);
+        if (!fs.existsSync(afPath)) {
+          console.error(`  ✗ --with-all: ${af} not found. Has it been generated?`);
+          process.exit(1);
+        }
+        console.log(`  Loading migration: ${af}`);
+        const allSql = fs.readFileSync(afPath, 'utf8');
+        await client.query(allSql);
+        console.log(`    ✓ Migration applied`);
       }
     }
 

@@ -11,6 +11,9 @@ node tests/return-disposition/fixture.cjs --db-name return_disposition_test_run1
 
 # 載入阿寫核心 migration（若已生成）
 node tests/return-disposition/fixture.cjs --with-core
+
+# 載入全部 migration（A+B+C+F，缺檔即 fail）
+node tests/return-disposition/fixture.cjs --with-all
 ```
 
 ## 連線設定（硬鎖，不讀 .env）
@@ -50,6 +53,7 @@ node tests/return-disposition/fixture.cjs --with-core
 ## 真實定義載入的安全 helpers
 
 - `_current_tenant_id` — 從 20260707000020 載真版（查 tenants 表）
+- `_next_transfer_no` — 從 20260515000002 載真版（transfer_no_seq）
 - `_jwt_store_ids` / `_jwt_store_location_ids` — 從 20260707000070 載真版
 - `_is_branch_scoped_user` — 從 20260831000000 載真版
 - `rpc_inbound` — 從 20260903000100 載最新版（虛擬商品守衛）
@@ -59,10 +63,10 @@ node tests/return-disposition/fixture.cjs --with-core
 **✅ 可 no-op（通知/查詢，不動資料）：**
 - `is_order_pickup_ready` — 回 FALSE
 - `_restock_wave_progress` — 回 (FALSE, FALSE)
-- `rpc_mark_orders_shipping_for_wave` — 空
 - `ensure_store_supplier` — 回 1
 
 **⛔ RAISE（會動庫存/訂單/帳，假成功會掩蓋錯誤）：**
+- `rpc_mark_orders_shipping_for_wave` — 會改訂單狀態為 shipping
 - `_settle_arrived_backorders`
 - `_advance_arrived_confirmed_orders`
 - `_settle_restock_ride_along`
@@ -75,9 +79,17 @@ node tests/return-disposition/fixture.cjs --with-core
 **注意**：`rpc_adjust_received_transfer` 從 **20260904010000** 載入（庫存連動版），
 不是 20260903000200 的舊版（那份裡的 adjust 只改了守衛 B 訊息）。
 
-## --with-core 載入的檔案
+## --with-core / --with-all 載入的檔案
 
-- A: `20260907010000_hq_return_disposition_core.sql`（資料表 + movement_type 擴充）
-- B: `20260907020000_hq_return_disposition_sources.sql`（來源函式）
+`--with-core`（A+B）：
+- A: `20260907010000_hq_return_disposition_core.sql`
+- B: `20260907020000_hq_return_disposition_sources.sql`
 
-兩支都必須本地存在才會載入。不掃 pattern、不載其他 case 的 migration。
+`--with-all`（A+B+C+F，缺檔即 fail）：
+- A + B（同上）
+- C: `20260907030000_hq_return_disposition_reversals.sql`
+- F: `20260907040000_hq_return_disposition_available.sql`
+- prerequisite: `v_picking_demand_no_po`（從 20260612000030 載真版）
+
+所有檔案必須本地存在才載入。不掃 pattern、不載其他 case 的 migration。
+以上只驗證「可載入」，不等於完整業務驗收。
