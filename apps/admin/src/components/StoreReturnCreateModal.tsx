@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
+import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 
@@ -151,11 +152,14 @@ export default function StoreReturnCreateModal({
   }
 
   const totalQty = useMemo(() => lines.reduce((a, l) => a + l.qty, 0), [lines]);
-  const canSubmit = !busy && reason !== "" && lines.length > 0 && lines.every((l) => l.qty > 0);
+  // ⛔ 「少收」不可以從這裡送出通用退貨（會跟收貨差額重複），canSubmit 直接擋掉。
+  const canSubmit =
+    !busy && reason !== "" && reason !== "少收" && lines.length > 0 && lines.every((l) => l.qty > 0);
 
-  async function submit() {
-    // canSubmit 裡已經有 reason !== ""，TypeScript 會沿著它把型別收斂掉，
-    // 這裡再寫一次 reason === "" 會被判成永遠不成立的比較（TS2367）。
+ async function submit() {
+    // 雙重防衛：即使按鈕 disabled 被繞過，少收也絕對不能走通用退貨。先擋少收再查 canSubmit，
+    // 避免 canSubmit 把 reason 窄化後 TypeScript 判定 reason === "少收" 永假（TS2367）。
+    if (reason === "少收") return;
     if (!canSubmit) return;
     const summary = lines.map((l) => `　・${skuLabel(l)} × ${l.qty}`).join("\n");
     if (
@@ -331,10 +335,29 @@ export default function StoreReturnCreateModal({
             </p>
           )}
           {reason === "少收" && (
-            <p className="mt-1 rounded-md border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-              ⚠ 如果是<strong>某一張調撥單收到的數量不對</strong>，請直接在「收貨」頁把實收數字改對 ——
-              那條路總倉會看到差額、錢也會自動跟著算。這裡送出的是「把貨退回總倉」，兩邊都做會重複。
-            </p>
+            <div className="mt-1 rounded-md border border-amber-300 bg-amber-50 p-3 text-[11px] text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              <p className="font-semibold">⛔ 少收不能從這裡送出退貨。</p>
+             <p className="mt-1">
+                已收過的派貨單，請{" "}
+                <Link
+                  href="/wms/inbound"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-semibold text-amber-800 underline hover:text-amber-600 dark:text-amber-200 dark:hover:text-amber-100"
+                >
+                  另開收貨頁處理少收
+                </Link>
+                ，切到「已收」分頁，挑原本那張派貨單，按「明細 / 改實收」把數字改對。差額會送到總倉處理，後續依總倉回覆與月結規則算帳。
+                尚未收貨的，選原單核對實收即可。
+                從這裡送退貨的話，兩邊都做會重複。
+              </p>
+              {lines.length > 0 && (
+                <p className="mt-1.5 rounded border border-amber-400/50 bg-amber-100/50 px-2 py-1 dark:border-amber-700 dark:bg-amber-900/50">
+                  ⚠ 你已經選了 {lines.length} 項商品，選「少收」不會送出這些品項。
+                  如果要退破損／過期／客人退的貨，請改選其他原因。
+                </p>
+              )}
+            </div>
           )}
         </div>
 
