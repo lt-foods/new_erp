@@ -206,3 +206,65 @@ reserved = reserved - v_this_total
 2. 再修 P0-2：讓負異動 guard 在併發下也看得到待處理量。
 3. 接著修 P1-1 / P1-2：權限與冪等。
 4. 最後修 P1-3 / P1-4 / P1-5：數字、reserved、movement_type 瘦身。
+
+---
+
+## 2026-09-07 Codex GPT-5.5 阿審正式複審（A 修版，靜態）
+
+範圍：只複審 A 段 `supabase/migrations/20260907010000_hq_return_disposition_core.sql` 與 `docs/return-disposition-core-contract.md`。未審 B/F/E/C 作者包；未連 GitHub / Supabase / 正式資料；未讀 `.env`；未改功能碼；本段尚未在 `return_disposition_test_core_a_fix` 跑 runtime。
+
+### 複審結論
+
+靜態看 A 修版，首審列的 A 自身 P0/P1 已有對應修補；目前未新增 A 自身 P0/P1。這只代表 SQL 邏輯文字審查通過到「可交假庫 runtime 驗」這一步，不是正式功能驗收。
+
+P0：0
+
+P1：0
+
+P2：0
+
+runtime：新假庫 `return_disposition_test_core_a_fix` 已由阿審獨立執行 16 群，16/16 PASS、exit 0。C 的撤回/更正/月鎖不在 A 範圍，不能因 A 通過就視為整包已完成。
+
+A 載入 SHA256：`3B007711260B8D255F9B7574BD38865B25644534BB9F722BB709265C93CC4FC7`
+
+B 載入 SHA256：`3D0FE235F04913DE67088495DAF28A8EED02A2F28F0B5C2E98A1C55EFA681042`
+
+### 已核對的 A 邊界
+
+- 來源防偽已收緊：`_hq_hold_return` 現在要求 `p_source_transfer_item_id` 必填，並檢查 movement tenant / location / sku / qty / source_doc 與 transfer item、父單位置、來源種類一致，見 `supabase/migrations/20260907010000_hq_return_disposition_core.sql:233-384`。其中 `source_doc_line_id` 可為 NULL；有值時才要求等於 item id，見 `:354-360`，符合真收貨既有路徑。
+- 真收貨不因父單當下仍是 `shipped` 被 A 擋：A 的 store_return 驗證看 `transfer_type='return_to_hq'`、dest/source location、`in_movement_id`、`qty_received`、movement type，見 `:362-370`，沒有要求父單已改成 received。B 的 operator 取值時序若仍誤標 system，是 B 缺陷，不列 A。
+- hold 冪等已改成鎖 balance 後重讀既有 batch，且比對 tenant、location、sku、source item、source_kind、source_reason、total_qty、unit_cost、auto_flag、created_by，見 `:386-415`。同 source movement 不同 payload 不會靜默當重試。
+- 權限已補到表與 view：表 RLS 限同 tenant 且 role 為 owner/admin/hq_manager，見 `:164-178`；底表有 `GRANT SELECT`，見 `:180-182`；view 用 `security_invoker` 並 grant 給 authenticated，見 `:858-885`。前端處理 RPC 也要求 `auth.uid()` 與同三個 HQ 角色，見 `:500-508`。
+- request_id 冪等已改成同 tenant/request advisory lock，且完整比對 batch、三個數量、兩個原因、goods_confirmed、notes；重播回第一次 event 的原 `new_status`，見 `:572-603`。
+- 數字已逐欄拒絕 NULL、NaN、Infinity、負數、超界、超過 3 位小數，見 `:517-545`；hold 量也同樣逐項檢查，見 `:246-257`。
+- reserved / pending 一致性已補：dispose 先鎖 balance 再鎖 batch，鎖後重讀本批 pending、同 SKU 全部 pending，並要求 `reserved >= total_pending`，見 `:606-665`。這可擋先前人為破壞 reserved 後仍處理的缺口。
+- 破損/遺失 movement 已瘦身回既有類型：破損用 `damage`，遺失用 `manual_adjust` 搭配 `source_doc_type='hq_return_batch'`，見 `:697-722`；A 修版沒有再新增 `hq_return_damage` / `hq_return_loss` 全域 movement type。
+- 負異動 guard 已改為先建立/鎖同一筆 balance，再重讀全部 pending，見 `:797-817`；`pending=0` 的放行點已移到鎖後，見 `:819-822`，方向符合首審要求。
+
+### runtime 證據
+
+命令：
+
+```powershell
+node tests/return-disposition-review/core-runtime.cjs --db-name return_disposition_test_core_a_fix --case all
+```
+
+結果：exit 0，16/16 PASS。
+
+補驗包含：
+
+- 原 13 群：NULL line 正向來源、source_validation 四個單點負例、reserved_corruption、race_same_request、race_hold_negative。
+- 新增 3 群：同 UUID 跨 tenant 不干擾、hold 同來源完整 payload 重送、同 SKU 多批 pending 的 reserved/available 總額保護。
+
+本輪 race 留存：
+
+- `race_same_request` tenant：`dbfd3cb1-43ca-4af6-9881-9afe7560322d`
+- `race_hold_negative` tenant：`8e57b58e-c946-4a7d-b8ef-94812560ab8c`
+
+連線收尾：`other_open_connections=0`。
+
+### 仍未覆蓋
+
+- C：原單更正 / 撤回 / 月鎖。
+- E/F：前端與可派量包。
+- 正式資料庫：本輪只跑本機假庫，不代表正式資料已驗收。

@@ -17,7 +17,7 @@
 - 固定 user `returnlocal`
 - 不讀 password / `.env`
 - DB 名稱不符合 `^return_disposition_test_[A-Za-z0-9_]+$` 直接拒絕
-- 預設跑全部 13 組；也可用 `--case` 指定單組或 `--case all`
+- 預設跑全部 16 組；也可用 `--case` 指定單組或 `--case all`
 
 用法：
 
@@ -31,7 +31,7 @@ node tests/return-disposition-review/core-runtime.cjs --db-name return_dispositi
 node tests/return-disposition-review/core-runtime.cjs --db-name return_disposition_test_core_initial --case list
 ```
 
-目前 case：`dispose_split`、`source_validation`、`source_line_null_positive`、`idempotency`、`idempotency_replay_after_complete`、`idempotency_payload_fields`、`bad_numbers`、`reserved_corruption`、`pending_guard`、`role_edges`、`rls_roles`、`race_same_request`、`race_hold_negative`。
+目前 case：`dispose_split`、`source_validation`、`source_line_null_positive`、`idempotency`、`idempotency_replay_after_complete`、`idempotency_payload_fields`、`request_id_tenant_scoped`、`hold_full_payload_replay`、`bad_numbers`、`multi_batch_reserved_total`、`reserved_corruption`、`pending_guard`、`role_edges`、`rls_roles`、`race_same_request`、`race_hold_negative`。
 
 ## 最小檢查
 
@@ -43,9 +43,9 @@ node --check tests/return-disposition-review/core-runtime.cjs
 
 結果：exit 0。這只代表測試器語法可解析，不代表資料庫整合已通過。
 
-## 20:46 後實跑結果（核心初版假庫）
+## 20:46 後實跑結果（核心初版假庫，保留紅燈歷史）
 
-### 1. 全 13 組
+### 1. 當時全 13 組
 
 命令：
 
@@ -53,7 +53,7 @@ node --check tests/return-disposition-review/core-runtime.cjs
 node tests/return-disposition-review/core-runtime.cjs --db-name return_disposition_test_core_initial --case all
 ```
 
-結果：exit 1。13 組中 4 組 PASS、9 組 FAIL。這是初版 A/B 的紅燈結果，不是修版驗收。
+結果：exit 1。當時 13 組中 4 組 PASS、9 組 FAIL。這是初版 A/B 的紅燈結果，不是修版驗收；本段保留歷史，不用它覆蓋 A 修版結果。
 
 逐組結果：
 
@@ -122,6 +122,49 @@ node -e 'const {Client}=require("pg");(async()=>{const c=new Client({host:"127.0
 
 結果：`other_open_connections=0`，測試器沒有留下開著的連線。
 
+## A 修版實跑結果（新假庫）
+
+DB：`return_disposition_test_core_a_fix`
+
+A 載入 SHA256：`3B007711260B8D255F9B7574BD38865B25644534BB9F722BB709265C93CC4FC7`
+
+B 載入 SHA256：`3D0FE235F04913DE67088495DAF28A8EED02A2F28F0B5C2E98A1C55EFA681042`
+
+阿審獨立實跑：
+
+```powershell
+node tests/return-disposition-review/core-runtime.cjs --db-name return_disposition_test_core_a_fix --case all
+```
+
+結果：exit 0。16/16 PASS。
+
+新增 3 組補驗：
+
+```powershell
+node tests/return-disposition-review/core-runtime.cjs --db-name return_disposition_test_core_a_fix --case request_id_tenant_scoped,hold_full_payload_replay,multi_batch_reserved_total
+```
+
+結果：exit 0。3/3 PASS。
+
+新增補驗重點：
+
+- `request_id_tenant_scoped`：同一個 UUID 在不同 tenant 各自可成立，且各自重送只回自己的事件。
+- `hold_full_payload_replay`：同來源 movement 重送完整 payload 一致才回既有批次；改 reason / auto_flag / operator 會拒絕且無副作用。
+- `multi_batch_reserved_total`：同 SKU 兩批 pending 共 12 時，既有好貨 20 可出；多出到只剩 11 會被 guard 擋。
+
+本輪 race 留存：
+
+- `race_same_request` tenant：`dbfd3cb1-43ca-4af6-9881-9afe7560322d`
+- `race_hold_negative` tenant：`8e57b58e-c946-4a7d-b8ef-94812560ab8c`
+
+連線收尾確認：
+
+```powershell
+node -e 'const {Client}=require("pg");(async()=>{const c=new Client({host:"127.0.0.1",port:56427,user:"returnlocal",database:"return_disposition_test_core_a_fix"});await c.connect();const r=await c.query("select count(*)::int as n from pg_stat_activity where datname=$1 and pid<>pg_backend_pid()",["return_disposition_test_core_a_fix"]);console.log("other_open_connections="+r.rows[0].n);await c.end();})().catch(e=>{console.error(e.stack||e.message);process.exit(1);})'
+```
+
+結果：`other_open_connections=0`。
+
 ## 覆蓋重點
 
 這支測試器目前抓以下幾類：
@@ -130,17 +173,20 @@ node -e 'const {Client}=require("pg");(async()=>{const c=new Client({host:"127.0
 2. 來源防偽：來源數量、地點、品項、原單行不符必須拒絕。這組現在備料時先掛好合法來源指標，並有合法來源正向 control，避免只測到「未掛來源」或既有 batch 早退。
 3. 真收貨相容：movement 的 `source_doc_line_id` 可為 NULL；此時必須靠 `transfer_items.in_movement_id` / `shortage_restock_movement_id` 反向指標、原單、位置、品項、數量來驗，不可把真收貨擋死。
 4. 重複提交：同 request 同 payload 要冪等；第一包 partial 後續被重送時要回第一包原結果；同 request 不同 goods_confirmed / reason / notes 要拒絕。
-5. 壞數字：`NULL`、`NaN`、`Infinity`、超過 3 位小數不能默默收下。
-6. 待確認保護：正常資料下既有好貨可派，但不能派到吃掉待確認量；另外故意破壞 reserved 小於 pending 時，dispose 必須拒絕。
-7. `p_allow_negative=true` 與直接寫負庫存都不能繞過待確認保護。
-8. 權限：HQ manager 應能讀；同 tenant 店家、跨 tenant、匿名、`hq_accountant`、空 role、缺 `auth.uid()` 不能讀或處理總倉批次。
-9. 兩連線併發：
+5. 同 UUID 跨 tenant 不互相干擾。
+6. hold 同來源完整 payload 重送才冪等；payload 不同要拒絕。
+7. 壞數字：`NULL`、`NaN`、`Infinity`、超過 3 位小數不能默默收下。
+8. 待確認保護：正常資料下既有好貨可派，但不能派到吃掉待確認量；另外故意破壞 reserved 小於 pending 時，dispose 必須拒絕。
+9. 同 SKU 多批 pending 要用總額保護 available。
+10. `p_allow_negative=true` 與直接寫負庫存都不能繞過待確認保護。
+11. 權限：HQ manager 應能讀；同 tenant 店家、跨 tenant、匿名、`hq_accountant`、空 role、缺 `auth.uid()` 不能讀或處理總倉批次。
+12. 兩連線併發：
    - 同 request 同時送，不可多扣或變成 `already completed`。
    - hold 建立中遇到直接負異動，不可因為先查 pending 後鎖 balance 而吃掉待確認量。
 
 ## 覆蓋限制
 
-- 目前只在 `return_disposition_test_core_initial` 初版假庫跑過；還沒在 D 最終 fixture / A 修版上完整跑完，不能當成「已驗收通過」。
+- 初版紅燈歷史只代表 `return_disposition_test_core_initial`；A 修版綠燈代表 `return_disposition_test_core_a_fix` 本機假庫，不代表正式資料庫。
 - 一般案例用交易 `ROLLBACK` 清假資料；兩連線 race 因為兩個連線必須互相看得到資料，使用專屬 tenant 造資料並保留 tenant id 供追查，不關 trigger、不硬刪 append-only 表、不自稱已清乾淨。
 - 錯誤檢查不是「任意 error 算過」：每個負案例都有指定錯誤訊息關鍵字，並比對狀態快照。
 - RLS 讀取不是「看不到就算安全」：測試器先驗 HQ 角色確實讀得到 view，再驗店家/跨租戶/匿名讀不到或被 42501 權限錯擋。
@@ -148,7 +194,7 @@ node -e 'const {Client}=require("pg");(async()=>{const c=new Client({host:"127.0
 - RLS/GRANT 使用 `SET LOCAL ROLE authenticated/anon` 與 fixture 的 `request.jwt.*` stub；若 D fixture 改 auth stub 名稱，需同步調整 `setAuth()`。
 - 本支不測瀏覽器畫面、不測 C 撤回/更正完整流程、不測月鎖結帳金額；那些要等 B/C/D 全包完成後另跑整合驗收。
 
-## 目前判斷
+## 初版判斷（保留歷史）
 
 P0：3 類
 
@@ -166,4 +212,12 @@ P2：0
 
 已通過但仍需修版後重跑確認：分次 7/2/1、真收貨 NULL line 但 item 反向指標正確時可建待處理、正常資料下既有好貨可派且 pending 不可被一般出庫 / allow_negative / 直接負 movement 吃掉、`hq_accountant` / 空 role / 缺 auth.uid 的越權處理被拒絕。
 
-交付前置條件：等 D fixture 修版與 A 修版載入後，重新執行本測試器；若測試失敗，再依錯誤回報 A/B/C 實際缺口。
+## A 修版目前判斷
+
+P0：0
+
+P1：0
+
+P2：0
+
+A 修版已通過本機假庫 16 群 runtime。仍未覆蓋 C：原單更正 / 撤回 / 月鎖；也未代表 E/F 前端或可派量包已通過。

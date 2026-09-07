@@ -215,12 +215,51 @@ async function hold(c, s, qty = 10, sourceMovementId = s.sourceMovement, item = 
   return row.id;
 }
 
+async function holdEx(c, s, opts = {}) {
+  const row = await q1(c, `
+    select public._hq_hold_return($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) as id
+  `, [
+    opts.tenant || s.tenant,
+    opts.loc || s.hq,
+    opts.sku || s.sku,
+    opts.sourceMovement || s.sourceMovement,
+    opts.item || s.item,
+    opts.kind || 'store_return',
+    opts.reason ?? 'review fixture',
+    opts.qty ?? 10,
+    opts.operator || s.operator,
+    opts.auto || 'manual',
+  ]);
+  return row.id;
+}
+
 async function seedHeldBatch(c, qty = 10) {
   const s = await seedBasic(c, { qty });
   s.sourceMovement = await inboundMovement(c, s, qty);
   const existing = await q1(c, 'select id from hq_return_batches where source_movement_id = $1', [s.sourceMovement]);
   s.batch = existing?.id || await hold(c, s, qty);
   return s;
+}
+
+async function addSameSkuHeldBatch(c, s, qty) {
+  const transfer = (await q1(c, `
+    insert into transfers (tenant_id, transfer_no, source_location, dest_location, transfer_type, status, requested_by, created_by, notes)
+    values ($1,$2,$3,$4,'return_to_hq','shipped',$5,$5,$6) returning id
+  `, [s.tenant, `${code()}_tr2`, s.store, s.hq, s.operator, `${s.suffix} return_to_hq second`])).id;
+  const item = (await q1(c, `
+    insert into transfer_items (transfer_id, sku_id, qty_requested, qty_shipped, qty_received, created_by)
+    values ($1,$2,$3,$3,$3,$4) returning id
+  `, [transfer, s.sku, qty, s.operator])).id;
+  const row = await q1(c, `
+    insert into stock_movements
+      (tenant_id, location_id, sku_id, quantity, unit_cost, movement_type, source_doc_type, source_doc_id, operator_id, notes)
+    values ($1,$2,$3,$4,12.3456,'transfer_in','transfer',$5,$6,$7)
+    returning id
+  `, [s.tenant, s.hq, s.sku, qty, transfer, s.operator, `${s.suffix} second inbound`]);
+  await c.query('update transfer_items set in_movement_id = $1 where id = $2', [row.id, item]);
+  const batch = (await q1(c, 'select id from hq_return_batches where source_movement_id = $1', [row.id]))?.id;
+  assert.ok(batch, '第二批同 SKU 應由 B trigger 自動建待處理批次');
+  return { transfer, item, sourceMovement: row.id, batch };
 }
 
 async function snapshot(c, batchId) {
@@ -473,6 +512,47 @@ async function testIdempotencyPayloadFields(c) {
   });
 }
 
+async function testRequestIdTenantScoped(c) {
+  await tx(c, '同 UUID 在不同 tenant 不互相干擾', async () => {
+    const req = id();
+    const a = await seedHeldBatch(c, 2);
+    const b = await seedHeldBatch(c, 2);
+
+    await setAuth(c, a.tenant, a.operator, 'hq_manager');
+    const ra = await dispose(c, a.batch, req, 2, 0, 0, null, null, true, 'same uuid tenant a');
+    assert.equal(ra.idempotent, false);
+    assert.equal(ra.new_status, 'completed');
+
+    await resetRole(c);
+    await setAuth(c, b.tenant, b.operator, 'hq_manager');
+    const rb = await dispose(c, b.batch, req, 2, 0, 0, null, null, true, 'same uuid tenant b');
+    assert.equal(rb.idempotent, false);
+    assert.equal(rb.new_status, 'completed');
+    assert.notEqual(rb.event_id, ra.event_id);
+
+    const replay = await dispose(c, b.batch, req, 2, 0, 0, null, null, true, 'same uuid tenant b');
+    assert.equal(replay.idempotent, true);
+    assert.equal(replay.event_id, rb.event_id);
+  });
+}
+
+async function testHoldFullPayloadReplay(c) {
+  await tx(c, 'hold 同 source 重送必須完整 payload 一致才回既有批次', async () => {
+    const s = await seedBasic(c, { qty: 10 });
+    s.sourceMovement = await linkedRawInboundMovement(c, s, 10);
+    const first = await holdEx(c, s, { qty: 10, reason: '原原因', auto: 'manual' });
+    const snap = await snapshot(c, first);
+    const replay = await holdEx(c, s, { qty: 10, reason: '原原因', auto: 'manual' });
+    assert.equal(replay, first);
+    assert.deepEqual(await snapshot(c, first), snap);
+
+    const before = () => snapshot(c, first);
+    await expectReject(c, 'hold 同 source 改 reason 應拒絕', before, () => holdEx(c, s, { qty: 10, reason: '改原因', auto: 'manual' }), /different|payload|already held|reason/i);
+    await expectReject(c, 'hold 同 source 改 auto_flag 應拒絕', before, () => holdEx(c, s, { qty: 10, reason: '原原因', auto: 'system' }), /different|payload|already held|auto/i);
+    await expectReject(c, 'hold 同 source 改 operator 應拒絕', before, () => holdEx(c, s, { qty: 10, reason: '原原因', auto: 'manual', operator: id() }), /different|payload|already held|operator/i);
+  });
+}
+
 async function testBadNumbers(c) {
   await tx(c, 'NULL/NaN/Infinity/四位小數', async () => {
     const s2 = await seedHeldBatch(c, 10);
@@ -496,6 +576,35 @@ async function testBadNumbers(c) {
       select public.rpc_dispose_hq_return($1,$2,'Infinity'::numeric,0,0,null,null,true,'inf')
     `, [s2.batch, id()]), /numeric|Infinity|invalid|finite|數字/i);
     if (failures.length > 0) throw new Error(failures.join(' | '));
+  });
+}
+
+async function testMultiBatchReservedTotal(c) {
+  await tx(c, '同 SKU 多批 pending 要用總額保護 reserved / available', async () => {
+    const s = await seedHeldBatch(c, 5);
+    const second = await addSameSkuHeldBatch(c, s, 7);
+    assert.ok(second.batch);
+    await c.query(`
+      insert into stock_movements (tenant_id, location_id, sku_id, quantity, unit_cost, movement_type, operator_id, notes)
+      values ($1,$2,$3,20,12.3456,'manual_adjust',$4,'既有好貨')
+    `, [s.tenant, s.hq, s.sku, s.operator]);
+
+    const bal = await q1(c, 'select on_hand::text, reserved::text from stock_balances where tenant_id=$1 and location_id=$2 and sku_id=$3', [s.tenant, s.hq, s.sku]);
+    assert.equal(bal.on_hand, '32.000');
+    assert.equal(bal.reserved, '12.000');
+
+    await c.query('savepoint multi_batch_available');
+    await c.query(`
+      insert into stock_movements (tenant_id, location_id, sku_id, quantity, unit_cost, movement_type, operator_id, notes)
+      values ($1,$2,$3,-20,12.3456,'manual_adjust',$4,'multi batch allowed')
+    `, [s.tenant, s.hq, s.sku, s.operator]);
+    await c.query('rollback to savepoint multi_batch_available');
+    await c.query('release savepoint multi_batch_available');
+
+    await expectReject(c, '同 SKU 兩批 pending 共 12，不可出到只剩 11', () => snapshot(c, s.batch), () => c.query(`
+      insert into stock_movements (tenant_id, location_id, sku_id, quantity, unit_cost, movement_type, operator_id, notes)
+      values ($1,$2,$3,-21,12.3456,'manual_adjust',$4,'multi batch blocked')
+    `, [s.tenant, s.hq, s.sku, s.operator]), /pending|guard|退回|待處理|reserved/i);
   });
 }
 
@@ -731,7 +840,10 @@ const CASES = [
   { name: 'idempotency', fn: testIdempotency, race: false },
   { name: 'idempotency_replay_after_complete', fn: testIdempotencyReplayAfterComplete, race: false },
   { name: 'idempotency_payload_fields', fn: testIdempotencyPayloadFields, race: false },
+  { name: 'request_id_tenant_scoped', fn: testRequestIdTenantScoped, race: false },
+  { name: 'hold_full_payload_replay', fn: testHoldFullPayloadReplay, race: false },
   { name: 'bad_numbers', fn: testBadNumbers, race: false },
+  { name: 'multi_batch_reserved_total', fn: testMultiBatchReservedTotal, race: false },
   { name: 'reserved_corruption', fn: testReservedCorruption, race: false },
   { name: 'pending_guard', fn: testPendingGuardAndGoodStock, race: false },
   { name: 'role_edges', fn: testRoleEdges, race: false },

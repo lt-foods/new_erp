@@ -3,39 +3,10 @@
 -- 20260907010000_hq_return_disposition_core.sql
 --
 -- 依賴：20260422120003（stock_movements / stock_balances / locations / transfers / transfer_items）
---       20260713000000（movement_type CHECK 最新清單）
 --       20260424120000（_current_tenant_id helper）
 --
--- 本檔 append-only，不改任何既有表結構（movement_type CHECK 除外：新增兩值）。
+-- 本檔 append-only，不改任何既有表結構。
 -- ============================================================
-
--- ============================================================
--- 0. movement_type 擴充：hq_return_damage / hq_return_loss
---    基底＝20260713000000 的清單，僅新增，其餘原封不動。
--- ============================================================
-ALTER TABLE public.stock_movements
-  DROP CONSTRAINT IF EXISTS stock_movements_movement_type_check;
-
-ALTER TABLE public.stock_movements
-  ADD CONSTRAINT stock_movements_movement_type_check CHECK (
-    movement_type = ANY (ARRAY[
-      'purchase_receipt',
-      'return_to_supplier',
-      'sale',
-      'customer_return',
-      'transfer_out',
-      'transfer_in',
-      'transfer_reject',
-      'transfer_cancel',
-      'stocktake_gain',
-      'stocktake_loss',
-      'damage',
-      'manual_adjust',
-      'reversal',
-      'hq_return_damage',
-      'hq_return_loss'
-    ])
-  );
 
 -- ============================================================
 -- 1. hq_return_batches — 總倉退回貨批次
@@ -53,11 +24,12 @@ CREATE TABLE public.hq_return_batches (
   source_kind          TEXT        NOT NULL CHECK (source_kind IN ('store_return','shortage')),
   source_reason        TEXT,
   total_qty            NUMERIC(18,3) NOT NULL CHECK (total_qty > 0),
-  unit_cost            NUMERIC(18,4) NOT NULL DEFAULT 0
-                       CHECK (unit_cost >= 0
+  unit_cost            NUMERIC(18,4)
+                       CHECK (unit_cost IS NULL OR (
+                              unit_cost >= 0
                               AND unit_cost != 'NaN'::NUMERIC
                               AND unit_cost != 'Infinity'::NUMERIC
-                              AND unit_cost != '-Infinity'::NUMERIC),
+                              AND unit_cost != '-Infinity'::NUMERIC)),
   qty_good             NUMERIC(18,3) NOT NULL DEFAULT 0 CHECK (qty_good >= 0),
   qty_damaged          NUMERIC(18,3) NOT NULL DEFAULT 0 CHECK (qty_damaged >= 0),
   qty_lost             NUMERIC(18,3) NOT NULL DEFAULT 0 CHECK (qty_lost >= 0),
@@ -98,7 +70,7 @@ CREATE TABLE public.hq_return_batches (
 );
 
 COMMENT ON TABLE public.hq_return_batches IS '總倉退回貨批次：每筆來源 movement 唯一，追蹤好/破/失/撤/pending';
-COMMENT ON COLUMN public.hq_return_batches.unit_cost IS '來源成本依據（來自 movement.unit_cost 或 0 表示未知），不從售價猜';
+COMMENT ON COLUMN public.hq_return_batches.unit_cost IS '逐字保存來源 movement.unit_cost；NULL 代表來源未記成本，不猜值';
 COMMENT ON COLUMN public.hq_return_batches.source_kind IS 'store_return＝門市退貨, shortage＝短少';
 
 CREATE INDEX idx_hq_return_batches_tenant_status
@@ -129,10 +101,11 @@ CREATE TABLE public.hq_return_events (
   loss_movement_id     BIGINT      REFERENCES public.stock_movements(id),
   notes                TEXT,
   operator_id          UUID        NOT NULL,
+  new_status           TEXT        NOT NULL CHECK (new_status IN ('partial','completed')),
   created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-  -- 同 request_id 不可二建
-  CONSTRAINT uq_hq_return_event_request UNIQUE (request_id),
+  -- 每個 tenant 內同 request_id 不可二建
+  CONSTRAINT uq_hq_return_event_request UNIQUE (tenant_id, request_id),
 
   -- 不能全 0
   CONSTRAINT chk_hq_return_event_nonzero CHECK (qty_good + qty_damaged + qty_lost > 0),
@@ -153,12 +126,10 @@ CREATE TABLE public.hq_return_events (
 COMMENT ON TABLE public.hq_return_events IS '總倉退回貨處理事件：append-only，每次處理一筆';
 COMMENT ON COLUMN public.hq_return_events.request_id IS '前端冪等 UUID：重試回原結果，payload 不同拒絕';
 COMMENT ON COLUMN public.hq_return_events.goods_confirmed IS '好貨實物已到確認（前端必傳 true 才計入 qty_good）';
+COMMENT ON COLUMN public.hq_return_events.new_status IS '本次事件完成當下的批次狀態；冪等重播不得用後來狀態重算';
 
 CREATE INDEX idx_hq_return_events_batch
   ON public.hq_return_events (batch_id, created_at);
-
-CREATE INDEX idx_hq_return_events_request
-  ON public.hq_return_events (request_id);
 
 -- 禁止 UPDATE / DELETE（append-only）
 CREATE OR REPLACE FUNCTION public._forbid_hq_return_event_mutation()
@@ -176,24 +147,39 @@ CREATE TRIGGER trg_no_delete_hq_return_events
   BEFORE DELETE ON public.hq_return_events
   FOR EACH ROW EXECUTE FUNCTION public._forbid_hq_return_event_mutation();
 
+REVOKE ALL ON FUNCTION public._forbid_hq_return_event_mutation() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public._forbid_hq_return_event_mutation() FROM anon;
+REVOKE ALL ON FUNCTION public._forbid_hq_return_event_mutation() FROM authenticated;
+
 -- ============================================================
 -- 3. RLS
 --
--- 兩表都開 RLS。authenticated 只讀同 tenant，INSERT/UPDATE/DELETE 全封。
+-- 兩表都開 RLS。authenticated 中只有同 tenant 的 owner/admin/hq_manager 可讀，
+-- INSERT/UPDATE/DELETE 全封。
 -- 資料寫入只透過 SECURITY DEFINER 函式。
 -- ============================================================
 ALTER TABLE public.hq_return_batches ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.hq_return_events  ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY hq_return_batches_tenant_read ON public.hq_return_batches
+CREATE POLICY hq_return_batches_hq_read ON public.hq_return_batches
   FOR SELECT TO authenticated
-  USING (tenant_id = public._current_tenant_id());
+  USING (
+    tenant_id = public._current_tenant_id()
+    AND COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '')
+        IN ('owner','admin','hq_manager')
+  );
 
-CREATE POLICY hq_return_events_tenant_read ON public.hq_return_events
+CREATE POLICY hq_return_events_hq_read ON public.hq_return_events
   FOR SELECT TO authenticated
-  USING (tenant_id = public._current_tenant_id());
+  USING (
+    tenant_id = public._current_tenant_id()
+    AND COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '')
+        IN ('owner','admin','hq_manager')
+  );
 
 -- 明確不給 INSERT/UPDATE/DELETE policy → authenticated 直接寫會被 RLS 擋
+REVOKE ALL ON TABLE public.hq_return_batches, public.hq_return_events FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON TABLE public.hq_return_batches, public.hq_return_events TO authenticated;
 
 -- ============================================================
 -- 4. _hq_hold_return — 內部 helper：建批次＋同步 reserved
@@ -203,18 +189,18 @@ CREATE POLICY hq_return_events_tenant_read ON public.hq_return_events
 --   p_location_id         BIGINT   — 總倉 location（必須 type='central_warehouse'）
 --   p_sku_id              BIGINT   — SKU
 --   p_source_movement_id  BIGINT   — 正向入庫 movement（quantity > 0，同 tenant）
---   p_source_transfer_item_id BIGINT — 可選，對應 transfer_item
+--   p_source_transfer_item_id BIGINT — 簽名保留預設，但實際必填且須反向指回 movement
 --   p_source_kind         TEXT     — 'store_return' 或 'shortage'
 --   p_source_reason       TEXT     — 原因文字
---   p_qty                 NUMERIC  — 回帳量（正數）
+--   p_qty                 NUMERIC  — 回帳量（必填，正數，須等於 movement 與 item 來源量）
 --   p_operator_id         UUID     — 操作者
 --   p_auto_flag           TEXT     — 'system' 或 'manual'
 --
 -- 行為：
---   1. 驗證 movement 存在、quantity > 0、同 tenant、SKU 匹配
---   2. 驗證 location type = central_warehouse
---   3. 若同 source_movement_id 已有批次 → 回傳既有 batch_id（冪等，不二建）
---   4. 建批次，同步 stock_balances.reserved += p_qty
+--   1. 驗證 movement、item、父 transfer 的 tenant/location/SKU/種類/數量/單據鏈
+--   2. movement.source_doc_line_id 可 NULL；有值時須等於 item id
+--   3. 先鎖 balance；若同 source_movement_id 已有批次，完整 payload 一致才回既有 id
+--   4. 建批次，來源成本原值保存，同步 stock_balances.reserved += p_qty
 --   5. 回傳 batch_id
 --
 -- ⛔ REVOKE PUBLIC / anon / authenticated — 不作前端 RPC，僅供後端安全呼叫。
@@ -235,15 +221,48 @@ LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  v_mov         RECORD;
-  v_loc_type    TEXT;
-  v_existing_id BIGINT;
-  v_batch_id    BIGINT;
-  v_hold_qty    NUMERIC(18,3);
-  v_unit_cost   NUMERIC(18,4);
+  v_mov            RECORD;
+  v_source         RECORD;
+  v_loc_type       TEXT;
+  v_existing       RECORD;
+  v_batch_id       BIGINT;
+  v_hold_qty       NUMERIC;
+  v_operator_id    UUID;
+  v_source_reason  TEXT;
 BEGIN
+  IF p_tenant_id IS NULL OR p_location_id IS NULL OR p_sku_id IS NULL
+  OR p_source_movement_id IS NULL OR p_source_transfer_item_id IS NULL THEN
+    RAISE EXCEPTION '_hq_hold_return: tenant, location, sku, source movement and source transfer item are required';
+  END IF;
+
+  IF p_source_kind IS NULL OR p_source_kind NOT IN ('store_return','shortage') THEN
+    RAISE EXCEPTION '_hq_hold_return: invalid source_kind %', p_source_kind;
+  END IF;
+
+  IF p_auto_flag IS NULL OR p_auto_flag NOT IN ('system','manual') THEN
+    RAISE EXCEPTION '_hq_hold_return: invalid auto_flag %', p_auto_flag;
+  END IF;
+
+  IF p_qty IS NULL THEN
+    RAISE EXCEPTION '_hq_hold_return: hold quantity is required';
+  END IF;
+  IF p_qty = 'NaN'::NUMERIC OR p_qty = 'Infinity'::NUMERIC OR p_qty = '-Infinity'::NUMERIC THEN
+    RAISE EXCEPTION '_hq_hold_return: hold quantity must be finite';
+  END IF;
+  IF p_qty <= 0 OR p_qty > 999999999999999.999::NUMERIC THEN
+    RAISE EXCEPTION '_hq_hold_return: hold quantity out of range: %', p_qty;
+  END IF;
+  IF p_qty != ROUND(p_qty, 3) THEN
+    RAISE EXCEPTION '_hq_hold_return: hold quantity must have at most 3 decimal places';
+  END IF;
+
+  v_hold_qty := p_qty;
+  v_operator_id := COALESCE(p_operator_id, '00000000-0000-0000-0000-000000000000'::UUID);
+  v_source_reason := NULLIF(BTRIM(p_source_reason), '');
+
   -- 1. 驗證來源 movement
-  SELECT id, tenant_id, location_id, sku_id, quantity, unit_cost
+  SELECT id, tenant_id, location_id, sku_id, quantity, unit_cost,
+         movement_type, source_doc_type, source_doc_id, source_doc_line_id
     INTO v_mov
     FROM stock_movements
    WHERE id = p_source_movement_id;
@@ -252,19 +271,40 @@ BEGIN
     RAISE EXCEPTION '_hq_hold_return: source movement % not found', p_source_movement_id;
   END IF;
 
-  IF v_mov.tenant_id != p_tenant_id THEN
+  IF v_mov.tenant_id IS DISTINCT FROM p_tenant_id THEN
     RAISE EXCEPTION '_hq_hold_return: movement % belongs to different tenant', p_source_movement_id;
   END IF;
 
-  IF v_mov.quantity <= 0 THEN
+  IF v_mov.quantity <= 0
+  OR v_mov.quantity = 'NaN'::NUMERIC
+  OR v_mov.quantity = 'Infinity'::NUMERIC
+  OR v_mov.quantity = '-Infinity'::NUMERIC THEN
     RAISE EXCEPTION '_hq_hold_return: movement % quantity must be positive (got %)', p_source_movement_id, v_mov.quantity;
   END IF;
 
-  IF v_mov.sku_id != p_sku_id THEN
+  IF v_mov.sku_id IS DISTINCT FROM p_sku_id THEN
     RAISE EXCEPTION '_hq_hold_return: movement % sku_id=% does not match p_sku_id=%', p_source_movement_id, v_mov.sku_id, p_sku_id;
   END IF;
 
-  -- 2. 驗證 location type
+  IF v_mov.location_id IS DISTINCT FROM p_location_id THEN
+    RAISE EXCEPTION '_hq_hold_return: movement % location=% does not match p_location_id=%',
+      p_source_movement_id, v_mov.location_id, p_location_id;
+  END IF;
+
+  IF v_mov.quantity IS DISTINCT FROM v_hold_qty THEN
+    RAISE EXCEPTION '_hq_hold_return: hold qty % does not match source movement quantity %',
+      v_hold_qty, v_mov.quantity;
+  END IF;
+
+  IF v_mov.unit_cost IS NOT NULL AND (
+       v_mov.unit_cost = 'NaN'::NUMERIC
+    OR v_mov.unit_cost = 'Infinity'::NUMERIC
+    OR v_mov.unit_cost = '-Infinity'::NUMERIC
+  ) THEN
+    RAISE EXCEPTION '_hq_hold_return: source movement % unit_cost must be finite', p_source_movement_id;
+  END IF;
+
+  -- 2. 驗證 location 與 transfer item / 父單 / movement 單據鏈
   SELECT type INTO v_loc_type
     FROM locations
    WHERE id = p_location_id AND tenant_id = p_tenant_id;
@@ -277,21 +317,102 @@ BEGIN
     RAISE EXCEPTION '_hq_hold_return: location % type=% is not central_warehouse', p_location_id, v_loc_type;
   END IF;
 
-  -- 3. 冪等：同 source_movement_id 已有批次 → 回傳既有 id
-  SELECT id INTO v_existing_id
-    FROM hq_return_batches
-   WHERE source_movement_id = p_source_movement_id;
-
-  IF FOUND THEN
-    RETURN v_existing_id;
+  IF NOT EXISTS (
+    SELECT 1 FROM skus WHERE id = p_sku_id AND tenant_id = p_tenant_id
+  ) THEN
+    RAISE EXCEPTION '_hq_hold_return: sku % not found for tenant', p_sku_id;
   END IF;
 
-  -- 4. 決定凍結量與成本
-  v_hold_qty  := COALESCE(p_qty, v_mov.quantity);
-  v_unit_cost := COALESCE(v_mov.unit_cost, 0);
+  SELECT ti.id AS item_id, ti.transfer_id, ti.sku_id AS item_sku_id,
+         ti.qty_received, ti.qty_shipped,
+         ti.in_movement_id, ti.shortage_restock_movement_id,
+         t.tenant_id AS transfer_tenant_id, t.transfer_type,
+         t.source_location, t.dest_location,
+         src.tenant_id AS source_location_tenant, src.type AS source_location_type,
+         dst.tenant_id AS dest_location_tenant, dst.type AS dest_location_type
+    INTO v_source
+    FROM transfer_items ti
+    JOIN transfers t ON t.id = ti.transfer_id
+    JOIN locations src ON src.id = t.source_location
+    JOIN locations dst ON dst.id = t.dest_location
+   WHERE ti.id = p_source_transfer_item_id;
 
-  IF v_hold_qty <= 0 THEN
-    RAISE EXCEPTION '_hq_hold_return: hold qty must be positive, got %', v_hold_qty;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION '_hq_hold_return: source transfer item % not found', p_source_transfer_item_id;
+  END IF;
+
+  IF v_source.transfer_tenant_id IS DISTINCT FROM p_tenant_id THEN
+    RAISE EXCEPTION '_hq_hold_return: source transfer item % belongs to different tenant', p_source_transfer_item_id;
+  END IF;
+  IF v_source.source_location_tenant IS DISTINCT FROM p_tenant_id
+  OR v_source.dest_location_tenant IS DISTINCT FROM p_tenant_id THEN
+    RAISE EXCEPTION '_hq_hold_return: source transfer item % parent locations belong to different tenant', p_source_transfer_item_id;
+  END IF;
+  IF v_source.item_sku_id IS DISTINCT FROM p_sku_id THEN
+    RAISE EXCEPTION '_hq_hold_return: source transfer item % sku does not match source movement', p_source_transfer_item_id;
+  END IF;
+  IF v_mov.source_doc_type IS DISTINCT FROM 'transfer'
+  OR v_mov.source_doc_id IS DISTINCT FROM v_source.transfer_id
+  OR (v_mov.source_doc_line_id IS NOT NULL
+      AND v_mov.source_doc_line_id IS DISTINCT FROM p_source_transfer_item_id) THEN
+    RAISE EXCEPTION '_hq_hold_return: source movement % does not match transfer item % document chain',
+      p_source_movement_id, p_source_transfer_item_id;
+  END IF;
+
+  IF p_source_kind = 'store_return' THEN
+    IF v_source.transfer_type IS DISTINCT FROM 'return_to_hq'
+    OR v_source.dest_location IS DISTINCT FROM p_location_id
+    OR v_source.source_location_type IS DISTINCT FROM 'store'
+    OR v_source.dest_location_type IS DISTINCT FROM 'central_warehouse'
+    OR v_source.in_movement_id IS DISTINCT FROM p_source_movement_id
+    OR v_source.qty_received IS DISTINCT FROM v_hold_qty
+    OR v_mov.movement_type IS DISTINCT FROM 'transfer_in' THEN
+      RAISE EXCEPTION '_hq_hold_return: source movement % is not the matching store-return receipt for item %',
+        p_source_movement_id, p_source_transfer_item_id;
+    END IF;
+  ELSE
+    IF v_source.transfer_type IS DISTINCT FROM 'hq_to_store'
+    OR v_source.source_location IS DISTINCT FROM p_location_id
+    OR v_source.source_location_type IS DISTINCT FROM 'central_warehouse'
+    OR v_source.dest_location_type IS DISTINCT FROM 'store'
+    OR v_source.shortage_restock_movement_id IS DISTINCT FROM p_source_movement_id
+    OR (v_source.qty_shipped - v_source.qty_received) IS DISTINCT FROM v_hold_qty
+    OR v_mov.movement_type IS DISTINCT FROM 'transfer_cancel' THEN
+      RAISE EXCEPTION '_hq_hold_return: source movement % is not the matching shortage return for item %',
+        p_source_movement_id, p_source_transfer_item_id;
+    END IF;
+  END IF;
+
+  -- 3. 所有同 (tenant, location, sku) 寫入一律先鎖 balance。
+  --    guard、hold、dispose 共用 balance → batch 鎖序，避免競態與死鎖。
+  INSERT INTO stock_balances (tenant_id, location_id, sku_id)
+  VALUES (p_tenant_id, p_location_id, p_sku_id)
+  ON CONFLICT (tenant_id, location_id, sku_id) DO NOTHING;
+
+  PERFORM 1 FROM stock_balances
+   WHERE tenant_id = p_tenant_id AND location_id = p_location_id AND sku_id = p_sku_id
+   FOR UPDATE;
+
+  -- 4. 冪等：鎖後核對完整 payload，不能把錯誤來源靜默當重試。
+  SELECT * INTO v_existing
+    FROM hq_return_batches
+   WHERE source_movement_id = p_source_movement_id
+   FOR UPDATE;
+
+  IF FOUND THEN
+    IF v_existing.tenant_id IS DISTINCT FROM p_tenant_id
+    OR v_existing.location_id IS DISTINCT FROM p_location_id
+    OR v_existing.sku_id IS DISTINCT FROM p_sku_id
+    OR v_existing.source_transfer_item_id IS DISTINCT FROM p_source_transfer_item_id
+    OR v_existing.source_kind IS DISTINCT FROM p_source_kind
+    OR v_existing.source_reason IS DISTINCT FROM v_source_reason
+    OR v_existing.total_qty IS DISTINCT FROM v_hold_qty
+    OR v_existing.unit_cost IS DISTINCT FROM v_mov.unit_cost
+    OR v_existing.auto_flag IS DISTINCT FROM p_auto_flag
+    OR v_existing.created_by IS DISTINCT FROM v_operator_id THEN
+      RAISE EXCEPTION '_hq_hold_return: source movement % already held with different payload', p_source_movement_id;
+    END IF;
+    RETURN v_existing.id;
   END IF;
 
   -- 5. 建批次
@@ -304,17 +425,15 @@ BEGIN
   ) VALUES (
     p_tenant_id, p_location_id, p_sku_id,
     p_source_movement_id, p_source_transfer_item_id,
-    p_source_kind, p_source_reason,
-    v_hold_qty, v_unit_cost,
-    p_auto_flag, COALESCE(p_operator_id, '00000000-0000-0000-0000-000000000000'::UUID)
+    p_source_kind, v_source_reason,
+    v_hold_qty, v_mov.unit_cost,
+    p_auto_flag, v_operator_id
   ) RETURNING id INTO v_batch_id;
 
-  -- 6. 同步 reserved（鎖 balance 列）
-  INSERT INTO stock_balances (tenant_id, location_id, sku_id, reserved)
-  VALUES (p_tenant_id, p_location_id, p_sku_id, v_hold_qty)
-  ON CONFLICT (tenant_id, location_id, sku_id) DO UPDATE
-    SET reserved   = stock_balances.reserved + v_hold_qty,
-        updated_at = NOW();
+  -- 6. 同步 reserved（balance 已鎖）
+  UPDATE stock_balances
+     SET reserved = reserved + v_hold_qty, updated_at = NOW()
+   WHERE tenant_id = p_tenant_id AND location_id = p_location_id AND sku_id = p_sku_id;
 
   RETURN v_batch_id;
 END;
@@ -343,7 +462,7 @@ COMMENT ON FUNCTION public._hq_hold_return IS
 --   p_goods_confirmed BOOLEAN — 好貨實物已到確認（好貨 > 0 時必須 true）
 --   p_notes          TEXT     — 備註
 --
--- 鎖順序：hq_return_batches(id) FOR UPDATE → stock_balances(tenant, location, sku) FOR UPDATE
+-- 鎖順序：未鎖讀 batch 定位鍵 → stock_balances FOR UPDATE → hq_return_batches FOR UPDATE
 -- ============================================================
 CREATE OR REPLACE FUNCTION public.rpc_dispose_hq_return(
   p_batch_id        BIGINT,
@@ -360,17 +479,23 @@ LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  v_user          UUID := auth.uid();
-  v_tenant        UUID := public._current_tenant_id();
-  v_role          TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
-  v_batch         RECORD;
-  v_pending       NUMERIC(18,3);
-  v_this_total    NUMERIC(18,3);
-  v_existing      RECORD;
-  v_damage_mov_id BIGINT;
-  v_loss_mov_id   BIGINT;
-  v_event_id      BIGINT;
-  v_new_status    TEXT;
+  v_user           UUID := auth.uid();
+  v_tenant         UUID := public._current_tenant_id();
+  v_role           TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
+  v_batch_key      RECORD;
+  v_batch          RECORD;
+  v_balance        RECORD;
+  v_pending        NUMERIC;
+  v_total_pending  NUMERIC;
+  v_this_total     NUMERIC;
+  v_existing       RECORD;
+  v_damage_reason  TEXT := NULLIF(BTRIM(p_damage_reason), '');
+  v_loss_reason    TEXT := NULLIF(BTRIM(p_loss_reason), '');
+  v_notes          TEXT := NULLIF(BTRIM(p_notes), '');
+  v_damage_mov_id  BIGINT;
+  v_loss_mov_id    BIGINT;
+  v_event_id       BIGINT;
+  v_new_status     TEXT;
 BEGIN
   -- 0. auth 必須有值
   IF v_user IS NULL THEN
@@ -382,11 +507,41 @@ BEGIN
     RAISE EXCEPTION 'rpc_dispose_hq_return: permission denied for role %', v_role;
   END IF;
 
-  -- 2. 數量基本檢查
-  IF p_qty_good    IS NULL OR p_qty_good    < 0
-  OR p_qty_damaged IS NULL OR p_qty_damaged < 0
-  OR p_qty_lost    IS NULL OR p_qty_lost    < 0 THEN
+  IF p_request_id IS NULL THEN
+    RAISE EXCEPTION 'rpc_dispose_hq_return: request_id is required';
+  END IF;
+  IF p_batch_id IS NULL THEN
+    RAISE EXCEPTION 'rpc_dispose_hq_return: batch_id is required';
+  END IF;
+
+  -- 2. 數量逐欄驗證；不可先塞入 NUMERIC(18,3) 讓資料庫四捨五入。
+  IF p_qty_good IS NULL OR p_qty_damaged IS NULL OR p_qty_lost IS NULL THEN
+    RAISE EXCEPTION 'rpc_dispose_hq_return: quantity values cannot be NULL';
+  END IF;
+  IF p_goods_confirmed IS NULL THEN
+    RAISE EXCEPTION 'rpc_dispose_hq_return: goods_confirmed cannot be NULL';
+  END IF;
+
+  IF p_qty_good IN ('NaN'::NUMERIC, 'Infinity'::NUMERIC, '-Infinity'::NUMERIC)
+  OR p_qty_damaged IN ('NaN'::NUMERIC, 'Infinity'::NUMERIC, '-Infinity'::NUMERIC)
+  OR p_qty_lost IN ('NaN'::NUMERIC, 'Infinity'::NUMERIC, '-Infinity'::NUMERIC) THEN
+    RAISE EXCEPTION 'rpc_dispose_hq_return: quantity values must be finite numeric values';
+  END IF;
+
+  IF p_qty_good < 0 OR p_qty_damaged < 0 OR p_qty_lost < 0 THEN
     RAISE EXCEPTION 'rpc_dispose_hq_return: quantities must be non-negative';
+  END IF;
+
+  IF p_qty_good > 999999999999999.999::NUMERIC
+  OR p_qty_damaged > 999999999999999.999::NUMERIC
+  OR p_qty_lost > 999999999999999.999::NUMERIC THEN
+    RAISE EXCEPTION 'rpc_dispose_hq_return: quantity value exceeds NUMERIC(18,3) range';
+  END IF;
+
+  IF p_qty_good != ROUND(p_qty_good, 3)
+  OR p_qty_damaged != ROUND(p_qty_damaged, 3)
+  OR p_qty_lost != ROUND(p_qty_lost, 3) THEN
+    RAISE EXCEPTION 'rpc_dispose_hq_return: quantities must have at most 3 decimal places';
   END IF;
 
   v_this_total := p_qty_good + p_qty_damaged + p_qty_lost;
@@ -395,18 +550,17 @@ BEGIN
     RAISE EXCEPTION 'rpc_dispose_hq_return: total disposition quantity must be > 0';
   END IF;
 
-  -- NaN / Infinity 防護
-  IF v_this_total = 'NaN'::NUMERIC OR v_this_total = 'Infinity'::NUMERIC OR v_this_total = '-Infinity'::NUMERIC THEN
-    RAISE EXCEPTION 'rpc_dispose_hq_return: invalid numeric value in quantities';
+  IF v_this_total > 999999999999999.999::NUMERIC THEN
+    RAISE EXCEPTION 'rpc_dispose_hq_return: total quantity exceeds NUMERIC(18,3) range';
   END IF;
 
   -- 破損需原因
-  IF p_qty_damaged > 0 AND (p_damage_reason IS NULL OR TRIM(p_damage_reason) = '') THEN
+  IF p_qty_damaged > 0 AND v_damage_reason IS NULL THEN
     RAISE EXCEPTION 'rpc_dispose_hq_return: damage_reason required when qty_damaged > 0';
   END IF;
 
   -- 遺失需原因
-  IF p_qty_lost > 0 AND (p_loss_reason IS NULL OR TRIM(p_loss_reason) = '') THEN
+  IF p_qty_lost > 0 AND v_loss_reason IS NULL THEN
     RAISE EXCEPTION 'rpc_dispose_hq_return: loss_reason required when qty_lost > 0';
   END IF;
 
@@ -415,46 +569,81 @@ BEGIN
     RAISE EXCEPTION 'rpc_dispose_hq_return: goods_confirmed must be true when qty_good > 0';
   END IF;
 
-  -- 3. 冪等：同 request_id 已存在 → 驗 payload 一致後回傳原結果
+  -- 3. 同 tenant + request_id 序列化。第二個請求等第一個完成後重讀事件。
+  PERFORM pg_advisory_xact_lock(hashtext(v_tenant::TEXT), hashtext(p_request_id::TEXT));
+
+  -- 冪等：核對完整標準化 payload，並回傳第一次的完整原結果。
   SELECT * INTO v_existing
     FROM hq_return_events
-   WHERE request_id = p_request_id;
+   WHERE tenant_id = v_tenant
+     AND request_id = p_request_id;
 
   IF FOUND THEN
-    -- payload 驗證：batch_id + 三個數量必須一致
-    IF v_existing.batch_id    != p_batch_id
-    OR v_existing.qty_good    != p_qty_good
-    OR v_existing.qty_damaged != p_qty_damaged
-    OR v_existing.qty_lost    != p_qty_lost THEN
+    IF v_existing.batch_id IS DISTINCT FROM p_batch_id
+    OR v_existing.qty_good IS DISTINCT FROM p_qty_good
+    OR v_existing.qty_damaged IS DISTINCT FROM p_qty_damaged
+    OR v_existing.qty_lost IS DISTINCT FROM p_qty_lost
+    OR v_existing.damage_reason IS DISTINCT FROM v_damage_reason
+    OR v_existing.loss_reason IS DISTINCT FROM v_loss_reason
+    OR v_existing.goods_confirmed IS DISTINCT FROM p_goods_confirmed
+    OR v_existing.notes IS DISTINCT FROM v_notes THEN
       RAISE EXCEPTION 'rpc_dispose_hq_return: request_id % already used with different payload', p_request_id;
     END IF;
 
     RETURN jsonb_build_object(
-      'event_id',    v_existing.id,
-      'batch_id',    v_existing.batch_id,
-      'idempotent',  TRUE
+      'event_id',           v_existing.id,
+      'batch_id',           v_existing.batch_id,
+      'idempotent',         TRUE,
+      'qty_good',           v_existing.qty_good,
+      'qty_damaged',        v_existing.qty_damaged,
+      'qty_lost',           v_existing.qty_lost,
+      'damage_movement_id', v_existing.damage_movement_id,
+      'loss_movement_id',   v_existing.loss_movement_id,
+      'new_status',         v_existing.new_status
     );
   END IF;
 
-  -- 4. 鎖批次（鎖順序第一：batch）
-  SELECT * INTO v_batch
+  -- 4. 未鎖查定位鍵，接著一律 balance → batch；鎖後重新讀完整批次。
+  SELECT tenant_id, location_id, sku_id INTO v_batch_key
     FROM hq_return_batches
-   WHERE id = p_batch_id
-   FOR UPDATE;
+   WHERE id = p_batch_id;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'rpc_dispose_hq_return: batch % not found', p_batch_id;
   END IF;
 
-  IF v_batch.tenant_id != v_tenant THEN
+  IF v_batch_key.tenant_id IS DISTINCT FROM v_tenant THEN
     RAISE EXCEPTION 'rpc_dispose_hq_return: batch % belongs to different tenant', p_batch_id;
+  END IF;
+
+  INSERT INTO stock_balances (tenant_id, location_id, sku_id)
+  VALUES (v_tenant, v_batch_key.location_id, v_batch_key.sku_id)
+  ON CONFLICT (tenant_id, location_id, sku_id) DO NOTHING;
+
+  SELECT * INTO v_balance
+    FROM stock_balances
+   WHERE tenant_id = v_tenant
+     AND location_id = v_batch_key.location_id
+     AND sku_id = v_batch_key.sku_id
+   FOR UPDATE;
+
+  SELECT * INTO v_batch
+    FROM hq_return_batches
+   WHERE id = p_batch_id
+     AND tenant_id = v_tenant
+   FOR UPDATE;
+
+  IF NOT FOUND
+  OR v_batch.location_id IS DISTINCT FROM v_batch_key.location_id
+  OR v_batch.sku_id IS DISTINCT FROM v_batch_key.sku_id THEN
+    RAISE EXCEPTION 'rpc_dispose_hq_return: batch % changed while locking', p_batch_id;
   END IF;
 
   IF v_batch.status IN ('completed','revoked') THEN
     RAISE EXCEPTION 'rpc_dispose_hq_return: batch % already %', p_batch_id, v_batch.status;
   END IF;
 
-  -- 5. pending 剩餘量檢查
+  -- 5. 鎖後檢查本批 pending、同 SKU 全部 pending、reserved 與實際庫存。
   v_pending := v_batch.total_qty - v_batch.qty_good - v_batch.qty_damaged - v_batch.qty_lost - v_batch.qty_revoked;
 
   IF v_this_total > v_pending THEN
@@ -462,15 +651,25 @@ BEGIN
       v_this_total, v_pending, p_batch_id;
   END IF;
 
-  -- 6. 鎖 balance（鎖順序第二：balance）
-  PERFORM 1
-    FROM stock_balances
-   WHERE tenant_id   = v_batch.tenant_id
+  SELECT COALESCE(SUM(total_qty - qty_good - qty_damaged - qty_lost - qty_revoked), 0)
+    INTO v_total_pending
+    FROM hq_return_batches
+   WHERE tenant_id = v_batch.tenant_id
      AND location_id = v_batch.location_id
-     AND sku_id      = v_batch.sku_id
-   FOR UPDATE;
+     AND sku_id = v_batch.sku_id
+     AND status IN ('pending','partial');
 
-  -- 7. 先減 pending/reserved（在寫負 movement 之前，避免被 guard trigger 擋）
+  IF v_balance.reserved < v_total_pending THEN
+    RAISE EXCEPTION 'rpc_dispose_hq_return: reserved (%) is below total pending (%) for sku %',
+      v_balance.reserved, v_total_pending, v_batch.sku_id;
+  END IF;
+
+  IF v_balance.on_hand < p_qty_damaged + p_qty_lost THEN
+    RAISE EXCEPTION 'rpc_dispose_hq_return: on_hand (%) is below damaged/lost deduction (%) for sku %',
+      v_balance.on_hand, p_qty_damaged + p_qty_lost, v_batch.sku_id;
+  END IF;
+
+  -- 6. 先減 pending/reserved（在寫負 movement 之前，避免被 guard trigger 擋）
   --    reserved 減去破損＋遺失＋好貨（好貨釋回 available，不再凍結）
   UPDATE stock_balances
      SET reserved   = reserved - v_this_total,
@@ -479,7 +678,7 @@ BEGIN
      AND location_id = v_batch.location_id
      AND sku_id      = v_batch.sku_id;
 
-  -- 8. 更新批次累積
+  -- 7. 更新批次累積
   v_new_status := CASE
     WHEN (v_batch.qty_good + p_qty_good) + (v_batch.qty_damaged + p_qty_damaged)
        + (v_batch.qty_lost + p_qty_lost) + v_batch.qty_revoked = v_batch.total_qty
@@ -495,7 +694,7 @@ BEGIN
          updated_at  = NOW()
    WHERE id = p_batch_id;
 
-  -- 9. 破損 → 寫負 movement（hq_return_damage）
+  -- 8. 破損 → 沿用既有 damage
   IF p_qty_damaged > 0 THEN
     INSERT INTO stock_movements (
       tenant_id, location_id, sku_id, quantity, unit_cost,
@@ -504,12 +703,12 @@ BEGIN
     ) VALUES (
       v_batch.tenant_id, v_batch.location_id, v_batch.sku_id,
       -p_qty_damaged, v_batch.unit_cost,
-      'hq_return_damage', 'hq_return_batch', p_batch_id,
-      p_damage_reason, v_user, p_notes
+      'damage', 'hq_return_batch', p_batch_id,
+      v_damage_reason, v_user, v_notes
     ) RETURNING id INTO v_damage_mov_id;
   END IF;
 
-  -- 10. 遺失 → 寫負 movement（hq_return_loss）
+  -- 9. 遺失 → 沿用既有 manual_adjust，單據鏈與原因明確標示本案
   IF p_qty_lost > 0 THEN
     INSERT INTO stock_movements (
       tenant_id, location_id, sku_id, quantity, unit_cost,
@@ -518,29 +717,29 @@ BEGIN
     ) VALUES (
       v_batch.tenant_id, v_batch.location_id, v_batch.sku_id,
       -p_qty_lost, v_batch.unit_cost,
-      'hq_return_loss', 'hq_return_batch', p_batch_id,
-      p_loss_reason, v_user, p_notes
+      'manual_adjust', 'hq_return_batch', p_batch_id,
+      '退回總倉遺失：' || v_loss_reason, v_user, v_notes
     ) RETURNING id INTO v_loss_mov_id;
   END IF;
 
-  -- 11. 好貨：不寫 movement（已經在 on_hand 上，只是從 reserved 釋放回 available）
+  -- 10. 好貨：不寫 movement（已經在 on_hand 上，只是從 reserved 釋放回 available）
   --     on_hand 不變，reserved 已在步驟 7 減掉了
 
-  -- 12. 建事件
+  -- 11. 建 append-only 事件，保存本次當時結果供日後重播。
   INSERT INTO hq_return_events (
     batch_id, tenant_id, request_id,
     qty_good, qty_damaged, qty_lost,
     damage_reason, loss_reason,
     goods_confirmed,
     damage_movement_id, loss_movement_id,
-    notes, operator_id
+    notes, operator_id, new_status
   ) VALUES (
     p_batch_id, v_tenant, p_request_id,
     p_qty_good, p_qty_damaged, p_qty_lost,
-    p_damage_reason, p_loss_reason,
+    v_damage_reason, v_loss_reason,
     p_goods_confirmed,
     v_damage_mov_id, v_loss_mov_id,
-    p_notes, v_user
+    v_notes, v_user, v_new_status
   ) RETURNING id INTO v_event_id;
 
   RETURN jsonb_build_object(
@@ -557,13 +756,16 @@ BEGIN
 END;
 $$;
 
+REVOKE ALL ON FUNCTION public.rpc_dispose_hq_return(BIGINT, UUID, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, BOOLEAN, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.rpc_dispose_hq_return(BIGINT, UUID, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, BOOLEAN, TEXT) FROM anon;
+REVOKE ALL ON FUNCTION public.rpc_dispose_hq_return(BIGINT, UUID, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, BOOLEAN, TEXT) FROM authenticated;
 GRANT EXECUTE ON FUNCTION public.rpc_dispose_hq_return(BIGINT, UUID, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, BOOLEAN, TEXT) TO authenticated;
 
 COMMENT ON FUNCTION public.rpc_dispose_hq_return IS
   '總倉退回貨處理 RPC：分配好/破/失數量，寫負 movement 扣庫存（破/失），'
   '好貨釋放 reserved。request_id 冪等，payload 不同拒絕。'
   'role 白名單 owner/admin/hq_manager，auth.uid 操作者不可冒名。'
-  '鎖順序：batch FOR UPDATE → balance FOR UPDATE。';
+  '鎖順序：balance FOR UPDATE → batch FOR UPDATE。';
 
 -- ============================================================
 -- 6. trg_guard_hq_pending — 核心負異動 guard
@@ -579,7 +781,10 @@ COMMENT ON FUNCTION public.rpc_dispose_hq_return IS
 -- 沒有本案 pending 的 SKU 不受影響；店鋪也不受影響。
 -- ============================================================
 CREATE OR REPLACE FUNCTION public._guard_hq_pending_stock()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
 DECLARE
   v_total_pending NUMERIC;
   v_balance_after NUMERIC;
@@ -589,7 +794,19 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  -- 查這個 (tenant, location, sku) 有沒有 pending/partial 批次
+  -- 先建立並鎖 balance；即使起初 pending=0，也要等同 SKU 正在建立的 hold。
+  INSERT INTO stock_balances (tenant_id, location_id, sku_id)
+  VALUES (NEW.tenant_id, NEW.location_id, NEW.sku_id)
+  ON CONFLICT (tenant_id, location_id, sku_id) DO NOTHING;
+
+  SELECT on_hand INTO v_balance_after
+    FROM stock_balances
+   WHERE tenant_id   = NEW.tenant_id
+     AND location_id = NEW.location_id
+     AND sku_id      = NEW.sku_id
+   FOR UPDATE;
+
+  -- 鎖到 balance 後才重讀全部 pending。
   SELECT COALESCE(SUM(
     total_qty - qty_good - qty_damaged - qty_lost - qty_revoked
   ), 0) INTO v_total_pending
@@ -599,22 +816,14 @@ BEGIN
      AND sku_id      = NEW.sku_id
      AND status IN ('pending','partial');
 
-  -- 沒有 pending → 不干預（不改原系統負庫存政策）
+  -- 鎖後仍沒有 pending → 不干預（不改原系統負庫存政策）
   IF v_total_pending <= 0 THEN
     RETURN NEW;
   END IF;
 
-  -- 有 pending → 鎖 balance 後算帳
   -- 注意：apply_movement_to_balance (AFTER INSERT) 還沒跑，
   --       所以 on_hand 還是「加上這筆 movement 之前」的值。
   --       加上 NEW.quantity（負數）之後的 on_hand 不能低於 pending。
-  SELECT COALESCE(on_hand, 0) INTO v_balance_after
-    FROM stock_balances
-   WHERE tenant_id   = NEW.tenant_id
-     AND location_id = NEW.location_id
-     AND sku_id      = NEW.sku_id
-   FOR UPDATE;
-
   v_balance_after := COALESCE(v_balance_after, 0) + NEW.quantity;  -- NEW.quantity is negative
 
   IF v_balance_after < v_total_pending THEN
@@ -624,7 +833,11 @@ BEGIN
 
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
+
+REVOKE ALL ON FUNCTION public._guard_hq_pending_stock() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public._guard_hq_pending_stock() FROM anon;
+REVOKE ALL ON FUNCTION public._guard_hq_pending_stock() FROM authenticated;
 
 -- BEFORE INSERT：在 apply_movement_to_balance (AFTER INSERT) 之前檢查
 CREATE TRIGGER trg_guard_hq_pending
@@ -667,6 +880,9 @@ SELECT
   b.created_at,
   b.updated_at
 FROM public.hq_return_batches b;
+
+REVOKE ALL ON TABLE public.v_hq_return_batches_list FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON TABLE public.v_hq_return_batches_list TO authenticated;
 
 COMMENT ON VIEW public.v_hq_return_batches_list IS
   '總倉退回貨批次列表（security_invoker）：同 tenant 總倉角色可讀，'
