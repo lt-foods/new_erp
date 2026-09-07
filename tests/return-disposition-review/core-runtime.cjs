@@ -141,6 +141,10 @@ async function seedBasic(c, opts = {}) {
     insert into locations (tenant_id, code, name, type, created_by)
     values ($1,$2,$3,'central_warehouse',$4) returning id
   `, [otherTenant, `${suffix}_other_hq`, `${suffix} 別租戶總倉`, operator])).id;
+  const sameTenantOtherHq = (await q1(c, `
+    insert into locations (tenant_id, code, name, type, created_by)
+    values ($1,$2,$3,'central_warehouse',$4) returning id
+  `, [tenant, `${suffix}_same_tenant_hq`, `${suffix} 同租戶別總倉`, operator])).id;
   const product = (await q1(c, `
     insert into products (tenant_id, product_code, name, status, created_by)
     values ($1,$2,$3,'active',$4) returning id
@@ -158,7 +162,7 @@ async function seedBasic(c, opts = {}) {
     values ($1,$2,$3,$3,$3,$4) returning id
   `, [transfer, sku, opts.qty || 10, operator])).id;
 
-  return { suffix, tenant, otherTenant, operator, hq, store, otherHq, product, sku, transfer, item };
+  return { suffix, tenant, otherTenant, operator, hq, store, otherHq, sameTenantOtherHq, product, sku, transfer, item };
 }
 
 async function inboundMovement(c, s, qty, loc = s.hq, sku = s.sku, item = s.item, type = 'transfer_in') {
@@ -179,6 +183,28 @@ async function rawInboundMovement(c, s, qty, loc = s.hq, sku = s.sku, item = s.i
     values ($1,$2,$3,$4,12.3456,$5,'transfer',$6,$7,$8,$9)
     returning id
   `, [s.tenant, loc, sku, qty, type, s.transfer, item, s.operator, `${s.suffix} inbound raw`]);
+  return row.id;
+}
+
+async function linkedRawInboundMovement(c, s, qty) {
+  const movementId = await rawInboundMovement(c, s, qty);
+  await c.query('alter table public.transfer_items disable trigger trg_hq_return_source');
+  try {
+    await c.query('update transfer_items set in_movement_id = $1 where id = $2', [movementId, s.item]);
+  } finally {
+    await c.query('alter table public.transfer_items enable trigger trg_hq_return_source');
+  }
+  return movementId;
+}
+
+async function inboundMovementWithoutLine(c, s, qty) {
+  const row = await q1(c, `
+    insert into stock_movements
+      (tenant_id, location_id, sku_id, quantity, unit_cost, movement_type, source_doc_type, source_doc_id, operator_id, notes)
+    values ($1,$2,$3,$4,12.3456,'transfer_in','transfer',$5,$6,$7)
+    returning id
+  `, [s.tenant, s.hq, s.sku, qty, s.transfer, s.operator, `${s.suffix} inbound without line id`]);
+  await c.query('update transfer_items set in_movement_id = $1 where id = $2', [row.id, s.item]);
   return row.id;
 }
 
@@ -321,7 +347,7 @@ async function testDisposeHappyAndSplit(c) {
 async function testSourceValidation(c) {
   await tx(c, '來源數量、地點、品項、原單行不符要拒絕', async () => {
     const s = await seedBasic(c, { qty: 10 });
-    s.sourceMovement = await inboundMovement(c, s, 10);
+    s.sourceMovement = await linkedRawInboundMovement(c, s, 10);
     const before = () => q1(c, 'select count(*)::int as batches from hq_return_batches');
     const failures = [];
     const check = async (label, fn, re) => {
@@ -332,8 +358,14 @@ async function testSourceValidation(c) {
       }
     };
 
+    await c.query('savepoint source_control');
+    const control = await hold(c, s, 10);
+    assert.ok(control, '合法來源 control 應可建立待處理批次');
+    await c.query('rollback to savepoint source_control');
+    await c.query('release savepoint source_control');
+
     await check('hold qty 大於來源 movement', () => hold(c, s, 11), /qty|quantity|source|exceed|來源|數量/i);
-    await check('hold location 不等於來源 movement location', () => hold(c, s, 10, s.sourceMovement, s.item, s.otherHq), /location|source|movement|地點/i);
+    await check('hold location 不等於來源 movement location', () => hold(c, s, 10, s.sourceMovement, s.item, s.sameTenantOtherHq), /location|source|movement|地點/i);
 
     const product2 = (await q1(c, `
       insert into products (tenant_id, product_code, name, status, created_by)
@@ -354,6 +386,29 @@ async function testSourceValidation(c) {
   });
 }
 
+async function testSourceLineNullPositive(c) {
+  await tx(c, '真收貨 movement 無 source_doc_line_id 但 item 指回 movement 時 B 自動建批要成功', async () => {
+    const s = await seedBasic(c, { qty: 10 });
+    s.sourceMovement = await inboundMovementWithoutLine(c, s, 10);
+    s.batch = (await q1(c, 'select id from hq_return_batches where source_movement_id = $1', [s.sourceMovement]))?.id;
+    assert.ok(s.batch, 'B trigger 應依 transfer_items.in_movement_id 自動建待處理批次');
+    const row = await q1(c, `
+      select b.total_qty::text, b.unit_cost::text, m.unit_cost::text as source_unit_cost, b.source_transfer_item_id,
+             sb.on_hand::text, sb.reserved::text
+      from hq_return_batches b
+      join stock_movements m on m.id = b.source_movement_id
+      join stock_balances sb
+        on sb.tenant_id=b.tenant_id and sb.location_id=b.location_id and sb.sku_id=b.sku_id
+      where b.id = $1
+    `, [s.batch]);
+    assert.equal(row.source_transfer_item_id, s.item);
+    assert.equal(row.total_qty, '10.000');
+    assert.equal(row.unit_cost, row.source_unit_cost);
+    assert.equal(row.on_hand, '10.000');
+    assert.equal(row.reserved, '10.000');
+  });
+}
+
 async function testIdempotency(c) {
   await tx(c, '重送與同 request 不同 payload', async () => {
     const s = await seedHeldBatch(c, 10);
@@ -365,6 +420,56 @@ async function testIdempotency(c) {
     assert.equal(second.idempotent, true);
     assert.deepEqual(await ownerSnapshot(c, s.batch, { tenant: s.tenant, user: s.operator, appRole: 'hq_manager' }), snap);
     await expectReject(c, '同 request_id 不同 reason/notes 不能算同一包', () => ownerSnapshot(c, s.batch, { tenant: s.tenant, user: s.operator, appRole: 'hq_manager' }), () => dispose(c, s.batch, req, 7, 2, 1, '另一個破損原因', '遺失', true, 'changed'), /request_id|payload|different|reason|notes/i);
+  });
+}
+
+async function testIdempotencyReplayAfterComplete(c) {
+  await tx(c, '第一請求 partial，第二請求結案後重送第一請求仍回第一請求原結果', async () => {
+    const s = await seedHeldBatch(c, 10);
+    await setAuth(c, s.tenant, s.operator, 'hq_manager');
+    const req1 = id();
+    const first = await dispose(c, s.batch, req1, 4, 0, 0, null, null, true, 'first partial');
+    assert.equal(first.idempotent, false);
+    assert.equal(first.new_status, 'partial');
+    const firstEvent = first.event_id;
+
+    const req2 = id();
+    const second = await dispose(c, s.batch, req2, 6, 0, 0, null, null, true, 'complete later');
+    assert.equal(second.new_status, 'completed');
+    const completedSnap = await ownerSnapshot(c, s.batch, { tenant: s.tenant, user: s.operator, appRole: 'hq_manager' });
+
+    const replay = await dispose(c, s.batch, req1, 4, 0, 0, null, null, true, 'first partial');
+    assert.equal(replay.idempotent, true);
+    assert.equal(replay.event_id, firstEvent);
+    assert.equal(replay.new_status, 'partial', '重送第一請求應回第一請求當時結果，不可回後來 completed 狀態或省略狀態');
+    assert.deepEqual(await ownerSnapshot(c, s.batch, { tenant: s.tenant, user: s.operator, appRole: 'hq_manager' }), completedSnap);
+  });
+}
+
+async function testIdempotencyPayloadFields(c) {
+  await tx(c, '同 request id 變 goods_confirmed/notes/原因逐項拒絕且無副作用', async () => {
+    const s = await seedHeldBatch(c, 10);
+    await setAuth(c, s.tenant, s.operator, 'hq_manager');
+    const req = id();
+    await dispose(c, s.batch, req, 1, 1, 1, '破損A', '遺失A', true, 'notes A');
+    const snap = await ownerSnapshot(c, s.batch, { tenant: s.tenant, user: s.operator, appRole: 'hq_manager' });
+    assert.equal(snap.status, 'partial');
+    assert.equal(String(Number(snap.total_qty) - Number(snap.qty_good) - Number(snap.qty_damaged) - Number(snap.qty_lost) - Number(snap.qty_revoked)), '7');
+
+    const before = () => ownerSnapshot(c, s.batch, { tenant: s.tenant, user: s.operator, appRole: 'hq_manager' });
+    const failures = [];
+    const check = async (label, fn) => {
+      try {
+        await expectReject(c, label, before, fn, /request_id|payload|different|goods_confirmed|reason|notes/i);
+      } catch (e) {
+        failures.push(`${label}: ${e.message}`);
+      }
+    };
+    await check('同 request id 變 goods_confirmed 應拒絕', () => dispose(c, s.batch, req, 1, 1, 1, '破損A', '遺失A', false, 'notes A'));
+    await check('同 request id 變 notes 應拒絕', () => dispose(c, s.batch, req, 1, 1, 1, '破損A', '遺失A', true, 'notes B'));
+    await check('同 request id 變 damage_reason 應拒絕', () => dispose(c, s.batch, req, 1, 1, 1, '破損B', '遺失A', true, 'notes A'));
+    await check('同 request id 變 loss_reason 應拒絕', () => dispose(c, s.batch, req, 1, 1, 1, '破損A', '遺失B', true, 'notes A'));
+    if (failures.length > 0) throw new Error(failures.join(' | '));
   });
 }
 
@@ -391,6 +496,25 @@ async function testBadNumbers(c) {
       select public.rpc_dispose_hq_return($1,$2,'Infinity'::numeric,0,0,null,null,true,'inf')
     `, [s2.batch, id()]), /numeric|Infinity|invalid|finite|數字/i);
     if (failures.length > 0) throw new Error(failures.join(' | '));
+  });
+}
+
+async function testReservedCorruption(c) {
+  await tx(c, 'reserved 被人為破壞小於 pending 時 dispose 必須拒絕且無副作用', async () => {
+    const s = await seedHeldBatch(c, 10);
+    await c.query(`
+      update stock_balances
+         set reserved = 5
+       where tenant_id = $1 and location_id = $2 and sku_id = $3
+    `, [s.tenant, s.hq, s.sku]);
+    await setAuth(c, s.tenant, s.operator, 'hq_manager');
+    await expectReject(
+      c,
+      'reserved 小於 pending 時不可處理',
+      () => ownerSnapshot(c, s.batch, { tenant: s.tenant, user: s.operator, appRole: 'hq_manager' }),
+      () => dispose(c, s.batch, id(), 1, 0, 0, null, null, true, 'reserved corrupt'),
+      /reserved|pending|inconsistent|保留|待處理/i,
+    );
   });
 }
 
@@ -422,6 +546,32 @@ async function testPendingGuardAndGoodStock(c) {
       insert into stock_movements (tenant_id, location_id, sku_id, quantity, unit_cost, movement_type, operator_id, notes)
       values ($1,$2,$3,-21,12.3456,'manual_adjust',$4,'direct negative bypass')
     `, [s.tenant, s.hq, s.sku, s.operator]), /pending|guard|退回|待處理|reserved/i);
+  });
+}
+
+async function testRoleEdges(c) {
+  await tx(c, '越權 hq_accountant、空 role、缺 auth.uid 都要拒絕', async () => {
+    const s = await seedHeldBatch(c, 3);
+    const failures = [];
+    const check = async (label, tenant, user, appRole) => {
+      await resetRole(c);
+      await setAuth(c, tenant, user, appRole);
+      try {
+        await expectReject(
+          c,
+          label,
+          () => ownerSnapshot(c, s.batch, { tenant, user, appRole }),
+          () => dispose(c, s.batch, id(), 1, 0, 0, null, null, true, label),
+          /auth|permission|role|denied|權限|登入/i,
+        );
+      } catch (e) {
+        failures.push(`${label}: ${e.message}`);
+      }
+    };
+    await check('hq_accountant 不可處理', s.tenant, id(), 'hq_accountant');
+    await check('空 role 不可處理', s.tenant, id(), '');
+    await check('缺 auth.uid 不可處理', s.tenant, null, 'hq_manager');
+    if (failures.length > 0) throw new Error(failures.join(' | '));
   });
 }
 
@@ -577,9 +727,14 @@ async function testRaceHoldVsNegative(dbName) {
 const CASES = [
   { name: 'dispose_split', fn: testDisposeHappyAndSplit, race: false },
   { name: 'source_validation', fn: testSourceValidation, race: false },
+  { name: 'source_line_null_positive', fn: testSourceLineNullPositive, race: false },
   { name: 'idempotency', fn: testIdempotency, race: false },
+  { name: 'idempotency_replay_after_complete', fn: testIdempotencyReplayAfterComplete, race: false },
+  { name: 'idempotency_payload_fields', fn: testIdempotencyPayloadFields, race: false },
   { name: 'bad_numbers', fn: testBadNumbers, race: false },
+  { name: 'reserved_corruption', fn: testReservedCorruption, race: false },
   { name: 'pending_guard', fn: testPendingGuardAndGoodStock, race: false },
+  { name: 'role_edges', fn: testRoleEdges, race: false },
   { name: 'rls_roles', fn: testTenantRoleAndAnon, race: false },
   { name: 'race_same_request', fn: testRaceSameRequest, race: true },
   { name: 'race_hold_negative', fn: testRaceHoldVsNegative, race: true },
