@@ -1,7 +1,8 @@
 # 總倉退回貨處理 — UI 輸入執行期回歸測試報告
 
-日期：2026-09-07  
-角色：阿審（獨立測試）  
+日期：2026-09-07
+
+角色：阿審（獨立測試）
 範圍：只新增離線測試 `tests/return-disposition-review/ui-input-runtime.cjs`；未修改功能頁、SQL、既有 core 測試或 UI 審查報告；未連 GitHub / Supabase；未讀 env / 密鑰；未啟動真 app。
 
 ## 測試方式
@@ -21,6 +22,8 @@ node tests/return-disposition-review/ui-input-runtime.cjs
 ```
 
 結果：exit 1，7 個 FAIL。這是目前 E 初版的預期結果，代表測試已抓到既有缺陷；不是修版已完成。
+
+CEO 已複跑同一命令，得到相同 7 項失敗；`node --check` exit 0。本輪沒有修改功能碼，僅把已發現的錯誤變成可重跑的檢查。
 
 ```text
 extracted newRequestId:L118, clampDecimal:L125 from apps/admin/src/app/(protected)/wms/return-disposition/page.tsx

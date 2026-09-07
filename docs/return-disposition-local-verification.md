@@ -14,8 +14,10 @@
 | E 待處理畫面初版 | 完整 tsc exit 0；新增頁 lint 有 2 項 set-state-in-effect 錯誤；阿審訂正版 P0=0／P1=8／P2=4 | 輸入、重送、權限、來源等問題未修，未放行 |
 | D 測試載入器第二版 | 新假庫 d2 真載入基底 DDL 44／29／43／21／13／9 statements，seed 成功，exit 0 | `_current_tenant_id` 仍漏載，不是整合驗收通過 |
 | 初版 A/B 實際載入假庫 | 真 PostgreSQL 成功套入 core_initial；匿名 auth.uid() 回 NULL | 只是安裝測試，不是業務／安全驗收 |
-| 阿審 runtime 驗收器，CEO 複跑 | 第1組 10件分次成7好／2破／1失通過；第2組來源數量不一致反例失敗，整支 exit 1 | 初版接受同來源10件卻送11件的請求，尚未通過；後面權限／並行等案例未跑到 |
+| 下午 runtime 驗收器，CEO 複跑 | 第1組 10件分次成7好／2破／1失通過；第2組來源數量不一致反例失敗，整支 exit 1 | 初版接受同來源10件卻送11件的請求，尚未通過；當時後面權限／並行等案例未跑到 |
 | E 實碼小數輸入抽驗 | 從 TS AST 取實際 clampDecimal 執行：`1.`→`1`，`1e3`→`1`，上限0.75時`1`→`0`，`0.0009`→`0.000` | 會靜默改輸入值，不是合格的小數驗證；阿審已更正初審的可接受判斷，列 P1 |
+| E 阿審離線回歸測試，CEO 複跑 | 真實函式 AST 抽取後執行，4 項小數檢查＋3 項 UUID fallback 檢查均失敗，exit 1；測試檔語法 exit 0 | 7 項斷言失敗不是 7 個獨立漏洞；只證明輸入及識別碼問題，尚未驗到完整畫面重送流程 |
+| 晚間 core 全 8 群，CEO 複跑 | 2 PASS（分次7/2/1、一般出庫保護）；6 FAIL（來源、重送、小數、HQ讀取、並行同請求、並行凍結／負異動），exit 1 | 實際是未退修 A/B 初版；拆開收集錯誤不等於已修正，不能交付現場 |
 
 完整指令均只在本機執行：
 
@@ -27,6 +29,8 @@ node scripts/check-sql-syntax.cjs supabase/migrations/20260907010000_hq_return_d
 node tests/return-disposition/fixture.cjs --db-name return_disposition_test_d2
 node D:\1人公司\_本機工地\return-disposition-tools\probe-initial-core.cjs
 node tests/return-disposition-review/core-runtime.cjs --db-name return_disposition_test_core_initial
+node tests/return-disposition-review/core-runtime.cjs --db-name return_disposition_test_core_initial --case all
+node tests/return-disposition-review/ui-input-runtime.cjs
 ```
 
 其中 D1 初版失敗：用 regex 判斷含前置註解的 SQL，必要表全被略過且吞掉 missing-object 錯誤，最後失敗。D2 改 AST 判斷後能載入，但真查 `_current_tenant_id` 仍報不存在；摘要說有載不能當證據。
@@ -49,4 +53,14 @@ Claude 交件原始紀錄在 `D:\1人公司\_本機工地\return-disposition-too
 
 本檔記錄已執行證據，不替代主需求單第九節；不得因本機存檔就宣稱本案完成或 WV260831002454 已救回。
 
-收尾：本案專用 PostgreSQL 已用已核對的 `return-disposition-tools/pgdata` 路徑正常停止，原啟動會話也已結束；假庫／測試檔保留，沒有刪資料。所有 Claude 本案派工程序均已結束。恢復施工需先啟動同一個本機假庫，不能改用真正系統來補驗。
+下午收尾：本案專用 PostgreSQL 已用已核對的 `return-disposition-tools/pgdata` 路徑正常停止，原啟動會話也已結束；假庫／測試檔保留，沒有刪資料。當時所有 Claude 本案派工程序均已結束。
+
+## 晚間續工的實際阻擋（2026-09-07，20:46 後）
+
+已過先前顯示的額度恢復時間，依老闆「繼續啊」實際重派 A/D，兩筆皆 `is_error=true`，回覆 `Your organization does not have access to Claude. Please login again or contact your administrator.`，沒有可套用修版。原始結果保存在工具資料夾 `writer-core-a-resume-result.jsonl` 與 `writer-fixture-d-resume-result.jsonl`。停止其餘派工，不換帳號／購買額度／重試權限拒絕。
+
+唯讀登入查核顯示 loggedIn=true、claude.ai／firstParty／max，exit 0；只代表本機登入狀態，不能用來否定服務端拒絕。沒有重新登入或讀取憑證。須使用者處理原 Claude 帳號登入／權限後才可恢復阿寫施工，不能再說只是等 20:10。
+
+本案專用假庫曾重新啟動並確認 127.0.0.1:56427 接受本機連線。阿審完成本輪獨立測群與 UI 實碼回歸檢查，CEO 複跑結果相同；功能候選仍是未退修初版，不得將測試新增等同修好。UI 測試存檔 `89aaa0d6`，完整結果見 `return-disposition-ui-runtime-test-report.md` 與 `return-disposition-core-runtime-test-report.md`。
+
+21:00 收尾：CEO 查核心假庫其他連線為 0 後，正常停止專用 PostgreSQL（exit 0），確認 127.0.0.1:56427 無回應。一般案例交易回滾，並行測試用的專屬假資料保留供追查，未刪除任何資料。所有阿審工作與本輪 Claude 程序均已結束；沒有背景施工或自動續跑。阿寫仍須原帳號登入／權限恢復，GitHub／Supabase／真帳禁令不變。

@@ -9,10 +9,9 @@ const DB_RE = /^return_disposition_test_[A-Za-z0-9_]+$/;
 const HOST = '127.0.0.1';
 const PORT = 56427;
 const USER = 'returnlocal';
-const OWNER = '00000000-0000-0000-0000-000000000000';
 
 function usage() {
-  console.error('usage: node tests/return-disposition-review/core-runtime.cjs --db-name return_disposition_test_<name>');
+  console.error('usage: node tests/return-disposition-review/core-runtime.cjs --db-name return_disposition_test_<name> [--case name[,name...]]');
   process.exit(2);
 }
 
@@ -20,6 +19,10 @@ function parseArgs(argv) {
   const out = {};
   for (let i = 2; i < argv.length; i += 1) {
     if (argv[i] === '--db-name') out.dbName = argv[++i];
+    else if (argv[i] === '--case') {
+      if (!argv[i + 1] || argv[i + 1].startsWith('--')) usage();
+      out.caseNames = argv[++i];
+    }
     else usage();
   }
   if (!out.dbName || !DB_RE.test(out.dbName)) {
@@ -235,12 +238,40 @@ async function expectReject(c, label, beforeFn, fn, messageRe) {
   } catch (e) {
     err = e;
   }
-  assert.ok(err, `${label} 應該拒絕，但實際成功`);
-  assert.match(String(err.message), messageRe, `${label} 錯誤訊息不符合預期`);
+  if (!err) {
+    await c.query(`rollback to savepoint ${name}`);
+    await c.query(`release savepoint ${name}`);
+    assert.fail(`${label} 應該拒絕，但實際成功`);
+  }
+  if (!messageRe.test(String(err.message))) {
+    await c.query(`rollback to savepoint ${name}`);
+    await c.query(`release savepoint ${name}`);
+    assert.match(String(err.message), messageRe, `${label} 錯誤訊息不符合預期，實際訊息：${err.message}`);
+  }
   await c.query(`rollback to savepoint ${name}`);
   const after = await beforeFn();
   assert.deepEqual(after, before, `${label} 失敗後狀態不應改變`);
   await c.query(`release savepoint ${name}`);
+}
+
+async function expectRows(c, label, sql, params, expectedRows) {
+  const name = `sp_${sp += 1}`;
+  await c.query(`savepoint ${name}`);
+  let result;
+  let err;
+  try {
+    result = await c.query(sql, params);
+  } catch (e) {
+    err = e;
+  }
+  if (err) {
+    await c.query(`rollback to savepoint ${name}`);
+    await c.query(`release savepoint ${name}`);
+    throw err;
+  }
+  assert.equal(result.rows.length, expectedRows, label);
+  await c.query(`release savepoint ${name}`);
+  return result.rows;
 }
 
 async function expectNoRowsOrPermission(c, label, sql, params = []) {
@@ -292,9 +323,17 @@ async function testSourceValidation(c) {
     const s = await seedBasic(c, { qty: 10 });
     s.sourceMovement = await inboundMovement(c, s, 10);
     const before = () => q1(c, 'select count(*)::int as batches from hq_return_batches');
+    const failures = [];
+    const check = async (label, fn, re) => {
+      try {
+        await expectReject(c, label, before, fn, re);
+      } catch (e) {
+        failures.push(`${label}: ${e.message}`);
+      }
+    };
 
-    await expectReject(c, 'hold qty 大於來源 movement', before, () => hold(c, s, 11), /qty|quantity|source|exceed|來源|數量/i);
-    await expectReject(c, 'hold location 不等於來源 movement location', before, () => hold(c, s, 10, s.sourceMovement, s.item, s.otherHq), /location|source|movement|地點/i);
+    await check('hold qty 大於來源 movement', () => hold(c, s, 11), /qty|quantity|source|exceed|來源|數量/i);
+    await check('hold location 不等於來源 movement location', () => hold(c, s, 10, s.sourceMovement, s.item, s.otherHq), /location|source|movement|地點/i);
 
     const product2 = (await q1(c, `
       insert into products (tenant_id, product_code, name, status, created_by)
@@ -304,39 +343,54 @@ async function testSourceValidation(c) {
       insert into skus (tenant_id, product_id, sku_code, status, product_name, created_by)
       values ($1,$2,$3,'active',$4,$5) returning id
     `, [s.tenant, product2, `${s.suffix}_sku2`, `${s.suffix} 商品2`, s.operator])).id;
-    await expectReject(c, 'hold sku 不等於來源 movement sku', before, () => hold(c, s, 10, s.sourceMovement, s.item, s.hq, sku2), /sku|source|movement|品項/i);
+    await check('hold sku 不等於來源 movement sku', () => hold(c, s, 10, s.sourceMovement, s.item, s.hq, sku2), /sku|source|movement|品項/i);
 
     const wrongItem = (await q1(c, `
       insert into transfer_items (transfer_id, sku_id, qty_requested, qty_shipped, qty_received, created_by)
       values ($1,$2,10,10,10,$3) returning id
     `, [s.transfer, s.sku, s.operator])).id;
-    await expectReject(c, 'hold transfer_item 不等於來源 movement source_doc_line_id', before, () => hold(c, s, 10, s.sourceMovement, wrongItem), /item|line|source|transfer|原單/i);
+    await check('hold transfer_item 不等於來源 movement source_doc_line_id', () => hold(c, s, 10, s.sourceMovement, wrongItem), /item|line|source|transfer|原單/i);
+    if (failures.length > 0) throw new Error(failures.join(' | '));
   });
 }
 
-async function testIdempotencyAndBadNumbers(c) {
-  await tx(c, '重送、不同 payload、NULL/NaN/Infinity/四位小數', async () => {
+async function testIdempotency(c) {
+  await tx(c, '重送與同 request 不同 payload', async () => {
     const s = await seedHeldBatch(c, 10);
     await setAuth(c, s.tenant, s.operator, 'hq_manager');
     const req = id();
-    const first = await dispose(c, s.batch, req, 7, 2, 1, '破損', '遺失', true, 'same');
+    await dispose(c, s.batch, req, 7, 2, 1, '破損', '遺失', true, 'same');
     const snap = await ownerSnapshot(c, s.batch, { tenant: s.tenant, user: s.operator, appRole: 'hq_manager' });
     const second = await dispose(c, s.batch, req, 7, 2, 1, '破損', '遺失', true, 'same');
     assert.equal(second.idempotent, true);
     assert.deepEqual(await ownerSnapshot(c, s.batch, { tenant: s.tenant, user: s.operator, appRole: 'hq_manager' }), snap);
     await expectReject(c, '同 request_id 不同 reason/notes 不能算同一包', () => ownerSnapshot(c, s.batch, { tenant: s.tenant, user: s.operator, appRole: 'hq_manager' }), () => dispose(c, s.batch, req, 7, 2, 1, '另一個破損原因', '遺失', true, 'changed'), /request_id|payload|different|reason|notes/i);
+  });
+}
 
-    await resetRole(c);
+async function testBadNumbers(c) {
+  await tx(c, 'NULL/NaN/Infinity/四位小數', async () => {
     const s2 = await seedHeldBatch(c, 10);
     await setAuth(c, s2.tenant, s2.operator, 'hq_manager');
-    await expectReject(c, 'NULL 數量拒絕', () => ownerSnapshot(c, s2.batch, { tenant: s2.tenant, user: s2.operator, appRole: 'hq_manager' }), () => dispose(c, s2.batch, id(), null, 0, 0, null, null, true, 'null'), /quantity|數量|null|non-negative/i);
-    await expectReject(c, '四位小數拒絕', () => ownerSnapshot(c, s2.batch, { tenant: s2.tenant, user: s2.operator, appRole: 'hq_manager' }), () => dispose(c, s2.batch, id(), 0.0001, 0, 0, null, null, true, 'scale'), /scale|precision|小數|3/i);
-    await expectReject(c, 'NaN 拒絕', () => ownerSnapshot(c, s2.batch, { tenant: s2.tenant, user: s2.operator, appRole: 'hq_manager' }), () => c.query(`
+    const failures = [];
+    const check = async (label, fn, re) => {
+      try {
+        await expectReject(c, label, () => ownerSnapshot(c, s2.batch, { tenant: s2.tenant, user: s2.operator, appRole: 'hq_manager' }), fn, re);
+      } catch (e) {
+        failures.push(`${label}: ${e.message}`);
+      }
+    };
+    await check('NULL 完好數量拒絕', () => dispose(c, s2.batch, id(), null, 1, 0, '破損', null, false, 'null good'), /quantity|數量|null|non-negative/i);
+    await check('NULL 破損數量拒絕', () => dispose(c, s2.batch, id(), 1, null, 0, null, null, true, 'null damaged'), /quantity|數量|null|non-negative/i);
+    await check('NULL 遺失數量拒絕', () => dispose(c, s2.batch, id(), 1, 0, null, null, null, true, 'null lost'), /quantity|數量|null|non-negative/i);
+    await check('四位小數拒絕', () => dispose(c, s2.batch, id(), 1.0001, 0, 0, null, null, true, 'scale'), /scale|precision|小數|3/i);
+    await check('NaN 拒絕', () => c.query(`
       select public.rpc_dispose_hq_return($1,$2,'NaN'::numeric,0,0,null,null,true,'nan')
     `, [s2.batch, id()]), /numeric|NaN|invalid|finite|數字/i);
-    await expectReject(c, 'Infinity 拒絕', () => ownerSnapshot(c, s2.batch, { tenant: s2.tenant, user: s2.operator, appRole: 'hq_manager' }), () => c.query(`
+    await check('Infinity 拒絕', () => c.query(`
       select public.rpc_dispose_hq_return($1,$2,'Infinity'::numeric,0,0,null,null,true,'inf')
     `, [s2.batch, id()]), /numeric|Infinity|invalid|finite|數字/i);
+    if (failures.length > 0) throw new Error(failures.join(' | '));
   });
 }
 
@@ -378,24 +432,41 @@ async function testTenantRoleAndAnon(c) {
     const storeUser = id();
     const crossUser = id();
 
+    const failures = [];
     await setAuth(c, s.tenant, hqUser, 'hq_manager');
-    const hqVisible = await c.query('select id from v_hq_return_batches_list where id = $1', [s.batch]);
-    assert.equal(hqVisible.rows.length, 1, 'HQ 角色應該讀得到同 tenant 待處理批次；否則不能把「看不到」當成安全');
+    try {
+      await expectRows(c, 'HQ 角色應該讀得到同 tenant 待處理批次；否則不能把「看不到」當成安全', 'select id from v_hq_return_batches_list where id = $1', [s.batch], 1);
+    } catch (e) {
+      failures.push(`HQ view 正向讀取: ${e.message}`);
+    }
 
     await resetRole(c);
     await setAuth(c, s.tenant, storeUser, 'store_manager');
-    await expectNoRowsOrPermission(c, '店家角色不應讀到總倉待處理批次', 'select id from v_hq_return_batches_list where id = $1', [s.batch]);
-    await expectReject(c, '店家角色不能處理', () => ownerSnapshot(c, s.batch, { tenant: s.tenant, user: storeUser, appRole: 'store_manager' }), () => dispose(c, s.batch, id(), 1, 0, 0, null, null, true, 'store'), /permission|role|denied|權限/i);
+    try {
+      await expectNoRowsOrPermission(c, '店家角色不應讀到總倉待處理批次', 'select id from v_hq_return_batches_list where id = $1', [s.batch]);
+      await expectReject(c, '店家角色不能處理', () => ownerSnapshot(c, s.batch, { tenant: s.tenant, user: storeUser, appRole: 'store_manager' }), () => dispose(c, s.batch, id(), 1, 0, 0, null, null, true, 'store'), /permission|role|denied|權限/i);
+    } catch (e) {
+      failures.push(`店家角色限制: ${e.message}`);
+    }
 
     await resetRole(c);
     await setAuth(c, s.otherTenant, crossUser, 'hq_manager');
-    await expectNoRowsOrPermission(c, '跨租戶不應讀到別人的批次', 'select id from v_hq_return_batches_list where id = $1', [s.batch]);
-    await expectReject(c, '跨租戶不能處理', () => ownerSnapshot(c, s.batch, { tenant: s.otherTenant, user: crossUser, appRole: 'hq_manager' }), () => dispose(c, s.batch, id(), 1, 0, 0, null, null, true, 'cross'), /tenant|not found|permission|different|租戶|權限/i);
+    try {
+      await expectNoRowsOrPermission(c, '跨租戶不應讀到別人的批次', 'select id from v_hq_return_batches_list where id = $1', [s.batch]);
+      await expectReject(c, '跨租戶不能處理', () => ownerSnapshot(c, s.batch, { tenant: s.otherTenant, user: crossUser, appRole: 'hq_manager' }), () => dispose(c, s.batch, id(), 1, 0, 0, null, null, true, 'cross'), /tenant|not found|permission|different|租戶|權限/i);
+    } catch (e) {
+      failures.push(`跨租戶限制: ${e.message}`);
+    }
 
     await resetRole(c);
     await setAuth(c, s.tenant, null, '', 'anon');
-    await expectNoRowsOrPermission(c, '匿名不應讀到批次', 'select id from v_hq_return_batches_list where id = $1', [s.batch]);
-    await expectReject(c, '匿名不能處理', () => ownerSnapshot(c, s.batch, { tenant: s.tenant, user: null, appRole: '', pgRole: 'anon' }), () => dispose(c, s.batch, id(), 1, 0, 0, null, null, true, 'anon'), /auth|permission|role|JWT|登入|權限/i);
+    try {
+      await expectNoRowsOrPermission(c, '匿名不應讀到批次', 'select id from v_hq_return_batches_list where id = $1', [s.batch]);
+      await expectReject(c, '匿名不能處理', () => ownerSnapshot(c, s.batch, { tenant: s.tenant, user: null, appRole: '', pgRole: 'anon' }), () => dispose(c, s.batch, id(), 1, 0, 0, null, null, true, 'anon'), /auth|permission|role|JWT|登入|權限/i);
+    } catch (e) {
+      failures.push(`匿名限制: ${e.message}`);
+    }
+    if (failures.length > 0) throw new Error(failures.join(' | '));
   });
 }
 
@@ -503,22 +574,67 @@ async function testRaceHoldVsNegative(dbName) {
   }
 }
 
-async function main() {
-  const { dbName } = parseArgs(process.argv);
+const CASES = [
+  { name: 'dispose_split', fn: testDisposeHappyAndSplit, race: false },
+  { name: 'source_validation', fn: testSourceValidation, race: false },
+  { name: 'idempotency', fn: testIdempotency, race: false },
+  { name: 'bad_numbers', fn: testBadNumbers, race: false },
+  { name: 'pending_guard', fn: testPendingGuardAndGoodStock, race: false },
+  { name: 'rls_roles', fn: testTenantRoleAndAnon, race: false },
+  { name: 'race_same_request', fn: testRaceSameRequest, race: true },
+  { name: 'race_hold_negative', fn: testRaceHoldVsNegative, race: true },
+];
+
+function selectedCases(caseNames) {
+  if (!caseNames) return CASES;
+  const names = caseNames.split(',').map((s) => s.trim()).filter(Boolean);
+  if (names.length === 0) throw new Error('--case 不可為空');
+  if (names.includes('list')) {
+    console.log(CASES.map((c) => `${c.name}${c.race ? ' (race)' : ''}`).join('\n'));
+    process.exit(0);
+  }
+  if (names.includes('all')) return CASES;
+  const wanted = new Set(names);
+  const picked = CASES.filter((c) => wanted.has(c.name));
+  const missing = names.filter((n) => n !== 'all' && !CASES.some((c) => c.name === n));
+  if (missing.length > 0) throw new Error(`未知 --case：${missing.join(', ')}`);
+  if (picked.length === 0) throw new Error('--case 沒有選到任何測試組');
+  return picked;
+}
+
+async function runOne(dbName, testCase) {
+  if (testCase.race) {
+    await testCase.fn(dbName);
+    return;
+  }
   const c = await connect(dbName);
   try {
     await preflight(c);
-    await testDisposeHappyAndSplit(c);
-    await testSourceValidation(c);
-    await testIdempotencyAndBadNumbers(c);
-    await testPendingGuardAndGoodStock(c);
-    await testTenantRoleAndAnon(c);
+    await testCase.fn(c);
   } finally {
     await c.end();
   }
-  await testRaceSameRequest(dbName);
-  await testRaceHoldVsNegative(dbName);
-  console.log('core_runtime_ok');
+}
+
+async function main() {
+  const { dbName, caseNames } = parseArgs(process.argv);
+  const picked = selectedCases(caseNames);
+  const results = [];
+  for (const testCase of picked) {
+    try {
+      await runOne(dbName, testCase);
+      results.push({ name: testCase.name, ok: true });
+      console.log(`PASS ${testCase.name}`);
+    } catch (e) {
+      results.push({ name: testCase.name, ok: false, message: e.message });
+      console.error(`FAIL ${testCase.name}: ${e.message}`);
+    }
+  }
+  console.log('core_runtime_summary');
+  for (const r of results) {
+    console.log(`${r.ok ? 'PASS' : 'FAIL'} ${r.name}${r.ok ? '' : ` :: ${r.message}`}`);
+  }
+  if (results.some((r) => !r.ok)) process.exit(1);
 }
 
 main().catch((e) => {
