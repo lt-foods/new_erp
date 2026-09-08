@@ -17,7 +17,18 @@ test("parseNoteComment", () => {
   assert.deepEqual(r.orders.map((o) => [o.code, o.qty]), [["A", 1], ["B", 2]]);
   const single = parseNoteComment("654321 +3");
   assert.deepEqual(single.orders.map((o) => [o.code, o.qty]), [[null, 3]]);
-  assert.deepEqual(parseNoteComment("請問還有嗎"), { memberNo: null, orders: [] });
+  assert.deepEqual(parseNoteComment("請問還有嗎"), { memberNo: null, memberNoSource: null, orders: [] });
+});
+
+test("member no from commenter name", () => {
+  assert.equal(parseNoteComment("A+1", "涂003886").memberNo, "003886");
+  assert.equal(parseNoteComment("A+1", "Sherry061016/松山").memberNo, "061016");
+  assert.equal(parseNoteComment("A+1", "Ting/616582松山").memberNo, "616582");
+  assert.equal(parseNoteComment("A+1", "Ting/616582松山").memberNoSource, "name");
+  // 內文有 6 碼優先於暱稱
+  assert.equal(parseNoteComment("123456 A+1", "Ting/616582松山").memberNo, "123456");
+  assert.equal(parseNoteComment("A+1", "小明").memberNo, null);
+  assert.equal(parseNoteComment("A+1", "0912345678").memberNo, null);
 });
 
 const one = (text) => parseOrderLines(text).map(({ code, qty, cancel }) => ({ code, qty, cancel }));
@@ -58,6 +69,31 @@ test("multi-line and separators", () => {
     { code: "A", qty: 1, cancel: false },
     { code: "B", qty: 2, cancel: false },
     { code: "C", qty: 3, cancel: false },
+  ]);
+});
+
+test("multiple items on one line", () => {
+  assert.deepEqual(one("A+1 B+5"), [
+    { code: "A", qty: 1, cancel: false },
+    { code: "B", qty: 5, cancel: false },
+  ]);
+  assert.deepEqual(one("A+1, B+5"), [
+    { code: "A", qty: 1, cancel: false },
+    { code: "B", qty: 5, cancel: false },
+  ]);
+  assert.deepEqual(one("a +1  b +2 c+3"), [
+    { code: "A", qty: 1, cancel: false },
+    { code: "B", qty: 2, cancel: false },
+    { code: "C", qty: 3, cancel: false },
+  ]);
+  assert.deepEqual(one("+1 A +2 B"), [
+    { code: "A", qty: 1, cancel: false },
+    { code: "B", qty: 2, cancel: false },
+  ]);
+  assert.deepEqual(one("A/B+1"), [{ code: "B", qty: 1, cancel: false }]); // 「/」當分隔：A 沒數量
+  assert.deepEqual(one("A-1 B+2"), [
+    { code: "A", qty: 1, cancel: true },
+    { code: "B", qty: 2, cancel: false },
   ]);
 });
 

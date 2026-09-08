@@ -79,6 +79,8 @@ CREATE TABLE line_note_communities (
   listen_enabled     BOOLEAN NOT NULL DEFAULT FALSE,
   read_times         TEXT[] NOT NULL DEFAULT ARRAY['12:00'],  -- 台北時間 HH:MM，可多個
   auto_post_on_open  BOOLEAN NOT NULL DEFAULT TRUE,
+  read_days          INT NOT NULL DEFAULT 3 CHECK (read_days BETWEEN 1 AND 30),
+                                       -- 讀留言／認貼文的範圍：最近 N 天的貼文
   post_template      TEXT,             -- NULL → worker 用預設模板
   last_read_at       TIMESTAMPTZ,
   last_error         TEXT,
@@ -155,11 +157,15 @@ CREATE TABLE line_note_comments (
   member_no_hint     TEXT,             -- 留言裡抓到的 6 碼
   parsed             JSONB NOT NULL DEFAULT '[]'::jsonb,
   status             TEXT NOT NULL DEFAULT 'pending'
-                       CHECK (status IN ('pending','ordered','unmatched','no_order','error','ignored')),
+                       CHECK (status IN ('pending','ordered','unmatched','no_order','error','ignored','resolved')),
+                       -- unmatched：找不到會員；error：品項對不上／加單失敗；resolved：小幫手手動處理完
   member_id          BIGINT REFERENCES members(id),
   customer_order_id  BIGINT,
-  error              TEXT,
+  error              TEXT,             -- 為什麼沒自動加單（保留當紀錄，不清）
   processed_at       TIMESTAMPTZ,
+  resolved_at        TIMESTAMPTZ,
+  resolved_by        UUID,
+  resolution_note    TEXT,
   created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (post_id, line_comment_id)
@@ -275,7 +281,8 @@ CREATE OR REPLACE FUNCTION public.rpc_line_note_community_upsert(
   p_listen_enabled    BOOLEAN,
   p_read_times        TEXT[],
   p_auto_post_on_open BOOLEAN,
-  p_post_template     TEXT
+  p_post_template     TEXT,
+  p_read_days         INT DEFAULT 3
 ) RETURNS BIGINT
 LANGUAGE plpgsql SECURITY DEFINER
 AS $$
@@ -298,7 +305,7 @@ BEGIN
   IF p_id IS NULL THEN
     INSERT INTO line_note_communities
       (tenant_id, account_id, channel_id, home_id, home_name, home_kind,
-       listen_enabled, read_times, auto_post_on_open, post_template, created_by, updated_by)
+       listen_enabled, read_times, auto_post_on_open, post_template, read_days, created_by, updated_by)
     VALUES
       (v_tenant, p_account_id, p_channel_id, TRIM(p_home_id), p_home_name,
        COALESCE(p_home_kind, 'square_chat'),
@@ -306,6 +313,7 @@ BEGIN
        COALESCE(NULLIF(p_read_times, ARRAY[]::TEXT[]), ARRAY['12:00']),
        COALESCE(p_auto_post_on_open, TRUE),
        NULLIF(TRIM(COALESCE(p_post_template, '')), ''),
+       COALESCE(p_read_days, 3),
        auth.uid(), auth.uid())
     RETURNING id INTO v_id;
   ELSE
@@ -319,6 +327,7 @@ BEGIN
            read_times        = COALESCE(NULLIF(p_read_times, ARRAY[]::TEXT[]), read_times),
            auto_post_on_open = COALESCE(p_auto_post_on_open, auto_post_on_open),
            post_template     = NULLIF(TRIM(COALESCE(p_post_template, '')), ''),
+           read_days         = COALESCE(p_read_days, read_days),
            updated_by        = auth.uid()
      WHERE id = p_id AND tenant_id = v_tenant
     RETURNING id INTO v_id;
@@ -328,7 +337,7 @@ BEGIN
 END;
 $$;
 GRANT EXECUTE ON FUNCTION public.rpc_line_note_community_upsert(
-  BIGINT, BIGINT, BIGINT, TEXT, TEXT, TEXT, BOOLEAN, TEXT[], BOOLEAN, TEXT) TO authenticated;
+  BIGINT, BIGINT, BIGINT, TEXT, TEXT, TEXT, BOOLEAN, TEXT[], BOOLEAN, TEXT, INT) TO authenticated;
 
 CREATE OR REPLACE FUNCTION public.rpc_line_note_community_delete(p_id BIGINT)
 RETURNS VOID
@@ -432,15 +441,17 @@ GRANT EXECUTE ON FUNCTION public.rpc_line_note_queue_post(BIGINT, BIGINT) TO aut
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public._line_note_item_codes(p_campaign_id BIGINT)
 RETURNS TABLE (code TEXT, campaign_item_id BIGINT, sku_id BIGINT,
-               item_name TEXT, unit_price NUMERIC, cap_qty NUMERIC)
+               item_name TEXT, unit_price NUMERIC, cap_qty NUMERIC, images JSONB)
 LANGUAGE sql STABLE SECURITY DEFINER
 AS $$
   SELECT chr(64 + (ROW_NUMBER() OVER (ORDER BY ci.sort_order, ci.id))::int) AS code,
          ci.id, ci.sku_id,
          TRIM(COALESCE(s.product_name, '') || CASE WHEN COALESCE(s.variant_name, '') <> '' THEN ' ' || s.variant_name ELSE '' END),
-         ci.unit_price, ci.cap_qty
+         ci.unit_price, ci.cap_qty,
+         COALESCE(p.images, '[]'::jsonb)   -- 商品圖（storage 相對路徑或完整網址），worker 發文時附上
     FROM campaign_items ci
     JOIN skus s ON s.id = ci.sku_id
+    LEFT JOIN products p ON p.id = s.product_id
    WHERE ci.campaign_id = p_campaign_id
      AND COALESCE(ci.is_gift, FALSE) = FALSE
    ORDER BY ci.sort_order, ci.id
@@ -461,10 +472,12 @@ AS $$
     'campaign', jsonb_build_object(
        'id', g.id, 'campaign_no', g.campaign_no, 'name', g.name,
        'description', g.description, 'status', g.status,
+       'cover_image_url', g.cover_image_url,
        'start_at', g.start_at, 'end_at', g.end_at, 'pickup_deadline', g.pickup_deadline),
     'items', COALESCE((SELECT jsonb_agg(jsonb_build_object(
                 'code', ic.code, 'campaign_item_id', ic.campaign_item_id,
-                'name', ic.item_name, 'unit_price', ic.unit_price, 'cap_qty', ic.cap_qty)
+                'name', ic.item_name, 'unit_price', ic.unit_price, 'cap_qty', ic.cap_qty,
+                'images', ic.images)
                 ORDER BY ic.code)
                FROM public._line_note_item_codes(g.id) ic), '[]'::jsonb)
   )
@@ -519,7 +532,7 @@ BEGIN
       TRUE);
   END IF;
 
-  IF v_c.status IN ('ordered','ignored') THEN
+  IF v_c.status IN ('ordered','ignored','resolved') THEN
     RETURN QUERY SELECT v_c.status, v_c.customer_order_id, v_c.error; RETURN;
   END IF;
 

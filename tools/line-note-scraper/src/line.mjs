@@ -332,7 +332,7 @@ export async function listComments(client, homeId, postId, { verbose = false, on
  * 圖片先上傳到 obs（myhome/h）拿 objId 再掛進 contents.media。
  * @param {object} opts
  * @param {string} opts.text
- * @param {string[]} [opts.images]  JPEG 檔路徑（上傳時 content-type 固定 image/jpeg）
+ * @param {(string|Buffer)[]} [opts.images]  JPEG 檔路徑或 Buffer（上傳時 content-type 固定 image/jpeg）
  */
 export async function createNotePost(client, homeId, { text, images = [], sourceType, verbose = false } = {}) {
   if (!text && images.length === 0) throw new Error("貼文至少要有文字或圖片");
@@ -340,7 +340,7 @@ export async function createNotePost(client, homeId, { text, images = [], source
   const mediaObjectIds = [];
   const mediaObjectTypes = [];
   for (const file of images) {
-    const buf = fs.readFileSync(file);
+    const buf = Buffer.isBuffer(file) ? file : fs.readFileSync(file);
     const { objId } = await tl.uploadNoteMedia("image", new Blob([buf], { type: "image/jpeg" }));
     log(verbose, `uploaded ${file} → ${objId}`);
     mediaObjectIds.push(objId);
