@@ -170,20 +170,29 @@ function baseHeaders(client, token) {
 const routeCache = new Map();
 
 /**
- * 對記事本 REST 打一次 GET。回 { code, message, result }。
- * 會依序試 host × prefix × channel，直到有一組回 code 0。
+ * 對記事本 REST 打一次請求。回 { code, message, result }。
+ * 會依序試 host × prefix × channel，直到有一組回 code 0，然後記住那組。
+ *
+ * ⚠ 不要改用 linejs 內建的 timeline.createPost/listPost —— 它把網址寫死成
+ * `https://${client.request.endpoint}/…`，而 endpoint 預設是 legy.line-apps.com
+ * （LEGY 加密閘道，不吃這種純 HTTPS JSON），直接丟 `fetch failed`。
  */
-export async function noteGet(client, homeId, path, params, verbose = false) {
-  const qs = new URLSearchParams(Object.fromEntries(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "")));
+export async function noteRequest(client, homeId, path, params, { method = "GET", body, verbose = false } = {}) {
+  const qs = new URLSearchParams(Object.fromEntries(Object.entries(params ?? {}).filter(([, v]) => v !== undefined && v !== null && v !== "")));
   const tryOne = async (host, prefix, channelId) => {
     const token = await channelToken(client, channelId, verbose);
     const url = `https://${host}${prefix}${path}?${qs}`;
-    const res = await client.base.fetch(url, { method: "GET", headers: baseHeaders(client, token) });
+    const res = await client.base.fetch(url, {
+      method,
+      headers: { ...baseHeaders(client, token), "x-lhm": method },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
     const text = await res.text();
-    let body;
-    try { body = JSON.parse(text); } catch { body = { code: res.status, message: text.slice(0, 200), result: null }; }
-    log(verbose, `${res.status} ${url} ch=${channelId} → code=${body?.code} ${body?.message ?? ""}`);
-    return { httpStatus: res.status, body };
+    // ⚠ 不要叫 body —— 外層參數就叫 body，同一個 scope 會 TDZ 炸掉
+    let json;
+    try { json = JSON.parse(text); } catch { json = { code: res.status, message: text.slice(0, 200), result: null }; }
+    log(verbose, `${res.status} ${url} ch=${channelId} → code=${json?.code} ${json?.message ?? ""}`);
+    return { httpStatus: res.status, body: json };
   };
 
   const cached = routeCache.get(homeId);
@@ -210,6 +219,11 @@ export async function noteGet(client, homeId, path, params, verbose = false) {
     }
   }
   throw new Error(`記事本 API 全部打不通（homeId=${homeId}）。把下面這段貼回來：\n` + attempts.join("\n"));
+}
+
+/** GET 版（大部分呼叫點用這支） */
+export async function noteGet(client, homeId, path, params, verbose = false) {
+  return await noteRequest(client, homeId, path, params, { method: "GET", verbose });
 }
 
 // ── 回應解析（結構沒 wire trace，寫成寬鬆版；raw 一律保留） ──────────────
@@ -336,23 +350,45 @@ export async function listComments(client, homeId, postId, { verbose = false, on
  */
 export async function createNotePost(client, homeId, { text, images = [], sourceType, verbose = false } = {}) {
   if (!text && images.length === 0) throw new Error("貼文至少要有文字或圖片");
-  const tl = client.base.timeline;
-  const mediaObjectIds = [];
-  const mediaObjectTypes = [];
+
+  // 圖片上傳走 obs.line-apps.com（linejs 的 uploadNoteMedia），失敗就只發文字，
+  // 不要讓整篇貼文因為一張圖掛掉。
+  const media = [];
   for (const file of images) {
-    const buf = Buffer.isBuffer(file) ? file : fs.readFileSync(file);
-    const { objId } = await tl.uploadNoteMedia("image", new Blob([buf], { type: "image/jpeg" }));
-    log(verbose, `uploaded ${file} → ${objId}`);
-    mediaObjectIds.push(objId);
-    mediaObjectTypes.push("PHOTO");
+    try {
+      const buf = Buffer.isBuffer(file) ? file : fs.readFileSync(file);
+      const { objId } = await client.base.timeline.uploadNoteMedia("image", new Blob([buf], { type: "image/jpeg" }));
+      media.push({ objectId: objId, type: "PHOTO", obsFace: "[]" });
+      log(verbose, `uploaded ${Buffer.isBuffer(file) ? "<buffer>" : file} → ${objId}`);
+    } catch (e) {
+      log(true, `圖片上傳失敗，這張跳過：${e?.message ?? e}`);
+    }
   }
-  const res = await tl.createPost({
-    homeId,
-    text,
-    mediaObjectIds,
-    mediaObjectTypes,
-    ...(sourceType ? { sourceType } : {}),
-  });
+
+  // 先打一次 list 把路由（host/prefix/channel）探出來並記住，create 才不會在探路
+  // 的過程中對不同前綴各發一篇（重複貼文）。
+  try {
+    await noteGet(client, homeId, "/api/v57/post/list.json",
+      { homeId, sourceType: sourceType ?? "TALKROOM", likeLimit: "0", commentLimit: "0" }, verbose);
+  } catch (e) {
+    log(verbose, "探路用的 list 失敗（照樣試發文）:", e?.message ?? e);
+  }
+
+  const body = {
+    postInfo: { readPermission: { type: "ALL", gids: [] } },
+    contents: {
+      contentsStyle: {
+        textStyle: { textSizeMode: "AUTO", backgroundColor: "", textAnimation: "NONE" },
+        mediaStyle: { displayType: "GRID_1_A" },
+      },
+      stickers: [],
+      locations: [],
+      media,
+      ...(text ? { text } : {}),
+    },
+  };
+  const res = await noteRequest(client, homeId, "/api/v57/post/create.json",
+    { homeId, sourceType: sourceType ?? "TALKROOM" }, { method: "POST", body, verbose });
   log(verbose, "createPost →", JSON.stringify(res).slice(0, 500));
   if (!res || res.code !== 0) {
     throw new Error(`發文失敗：code=${res?.code} ${res?.message ?? ""}\n${JSON.stringify(res).slice(0, 800)}`);
