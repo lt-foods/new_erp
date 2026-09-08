@@ -31,7 +31,7 @@ type Post = {
 type Comment = {
   id: number; line_comment_id: string; commenter_id: string | null; commenter_name: string | null; text: string;
   commented_at: string | null; member_no_hint: string | null; parsed: { code: string | null; qty: number; cancel: boolean }[];
-  status: "pending" | "ordered" | "unmatched" | "no_order" | "error" | "ignored" | "resolved";
+  status: "pending" | "ordered" | "unmatched" | "no_order" | "error" | "ignored" | "resolved" | "duplicate";
   member_id: number | null; customer_order_id: number | null; error: string | null;
   resolved_at: string | null; resolution_note: string | null;
 };
@@ -44,7 +44,7 @@ const ACCOUNT_STATUS: Record<Account["status"], string> = {
 };
 const POST_STATUS: Record<Post["status"], string> = { queued: "排隊中", posted: "已發文", failed: "失敗", closed: "已結束" };
 const COMMENT_STATUS: Record<Comment["status"], string> = {
-  pending: "待處理", ordered: "已加單", unmatched: "找不到會員", no_order: "非下單", error: "錯誤", ignored: "忽略", resolved: "已解決",
+  pending: "待處理", ordered: "已加單", unmatched: "找不到會員", no_order: "非下單", error: "錯誤", ignored: "忽略", resolved: "已解決", duplicate: "已有訂單",
 };
 const KIND_LABEL: Record<string, string> = { group: "群組", square: "社群", square_chat: "社群聊天室" };
 
@@ -536,19 +536,19 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
   const summary = useMemo(() => {
     if (!comments) return null;
     const n = (s: Comment["status"]) => comments.filter((c) => c.status === s).length;
-    return { ordered: n("ordered"), pending: n("pending"), unmatched: n("unmatched"), error: n("error"), no_order: n("no_order"), ignored: n("ignored"), resolved: n("resolved") };
+    return { ordered: n("ordered"), pending: n("pending"), unmatched: n("unmatched"), error: n("error"), no_order: n("no_order"), ignored: n("ignored"), resolved: n("resolved"), duplicate: n("duplicate") };
   }, [comments]);
 
   const todoActions = (c: Comment) => (
     <div className="flex justify-end gap-1">
-      {!["ordered", "ignored", "resolved"].includes(c.status) && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => retry(c)}>重試</SpinButton>}
-      {!["ordered", "ignored", "resolved"].includes(c.status) && <SpinButton type="button" className={`${btn} text-emerald-700`} loading={busy === c.id} onClick={() => setStatus(c, "resolved")}>已解決</SpinButton>}
-      {!["ordered", "ignored", "resolved"].includes(c.status) && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "ignored")}>忽略</SpinButton>}
+      {!["ordered", "ignored", "resolved", "duplicate"].includes(c.status) && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => retry(c)}>重試</SpinButton>}
+      {!["ordered", "ignored", "resolved", "duplicate"].includes(c.status) && <SpinButton type="button" className={`${btn} text-emerald-700`} loading={busy === c.id} onClick={() => setStatus(c, "resolved")}>已解決</SpinButton>}
+      {!["ordered", "ignored", "resolved", "duplicate"].includes(c.status) && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "ignored")}>忽略</SpinButton>}
       {(c.status === "ignored" || c.status === "resolved") && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "pending")}>退回待處理</SpinButton>}
     </div>
   );
   const commentTone = (s: Comment["status"]) =>
-    s === "ordered" || s === "resolved" ? "green" : s === "pending" ? "amber" : s === "unmatched" || s === "error" ? "red" : "gray";
+    s === "ordered" || s === "resolved" ? "green" : s === "pending" ? "amber" : s === "unmatched" || s === "error" ? "red" : s === "duplicate" ? "blue" : "gray";
 
   return (
     <div className="space-y-3">
@@ -627,6 +627,7 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
                 <Badge tone="gray">非下單 {summary.no_order}</Badge>
                 <Badge tone="gray">忽略 {summary.ignored}</Badge>
                 <Badge tone="green">已解決 {summary.resolved}</Badge>
+                <Badge tone="blue">已有訂單 {summary.duplicate}</Badge>
               </div>
             )}
           </div>
@@ -643,7 +644,7 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
                   <Td className="font-mono text-xs">{(c.parsed ?? []).map((o, i) => <div key={i}>{o.cancel ? "取消 " : ""}{o.code ?? "(單品)"} ×{o.qty}</div>)}</Td>
                   <Td>
                     <Badge tone={commentTone(c.status)}>{COMMENT_STATUS[c.status]}</Badge>
-                    {c.error && <div className="max-w-xs text-xs text-red-600">{c.error}</div>}
+                    {c.error && <div className={`max-w-xs text-xs ${c.status === "duplicate" ? "text-zinc-500" : "text-red-600"}`}>{c.error}</div>}
                     {c.resolution_note && <div className="max-w-xs text-xs text-zinc-500">處理：{c.resolution_note}</div>}
                     {c.customer_order_id && <div className="text-xs text-zinc-500">訂單 #{c.customer_order_id}</div>}
                   </Td>
