@@ -1,0 +1,25 @@
+{
+  "name": "line-note-scraper",
+  "private": true,
+  "version": "0.1.0",
+  "description": "LINE 群組／社群記事本貼文留言爬蟲（+1 收單用）。用一般 LINE 帳號登入，非官方 API，請用備用帳號。",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "line-notes": "./src/cli.mjs"
+  },
+  "scripts": {
+    "login": "node src/cli.mjs login",
+    "groups": "node src/cli.mjs groups",
+    "posts": "node src/cli.mjs posts",
+    "comments": "node src/cli.mjs comments",
+    "scrape": "node src/cli.mjs scrape",
+    "test": "node --test src/parse.test.mjs"
+  },
+  "dependencies": {
+    "@evex/linejs": "npm:@jsr/evex__linejs@^3.4.2",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
