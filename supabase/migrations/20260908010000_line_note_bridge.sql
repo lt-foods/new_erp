@@ -441,15 +441,17 @@ GRANT EXECUTE ON FUNCTION public.rpc_line_note_queue_post(BIGINT, BIGINT) TO aut
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public._line_note_item_codes(p_campaign_id BIGINT)
 RETURNS TABLE (code TEXT, campaign_item_id BIGINT, sku_id BIGINT,
-               item_name TEXT, unit_price NUMERIC, cap_qty NUMERIC)
+               item_name TEXT, unit_price NUMERIC, cap_qty NUMERIC, images JSONB)
 LANGUAGE sql STABLE SECURITY DEFINER
 AS $$
   SELECT chr(64 + (ROW_NUMBER() OVER (ORDER BY ci.sort_order, ci.id))::int) AS code,
          ci.id, ci.sku_id,
          TRIM(COALESCE(s.product_name, '') || CASE WHEN COALESCE(s.variant_name, '') <> '' THEN ' ' || s.variant_name ELSE '' END),
-         ci.unit_price, ci.cap_qty
+         ci.unit_price, ci.cap_qty,
+         COALESCE(p.images, '[]'::jsonb)   -- 商品圖（storage 相對路徑或完整網址），worker 發文時附上
     FROM campaign_items ci
     JOIN skus s ON s.id = ci.sku_id
+    LEFT JOIN products p ON p.id = s.product_id
    WHERE ci.campaign_id = p_campaign_id
      AND COALESCE(ci.is_gift, FALSE) = FALSE
    ORDER BY ci.sort_order, ci.id
@@ -474,7 +476,8 @@ AS $$
        'start_at', g.start_at, 'end_at', g.end_at, 'pickup_deadline', g.pickup_deadline),
     'items', COALESCE((SELECT jsonb_agg(jsonb_build_object(
                 'code', ic.code, 'campaign_item_id', ic.campaign_item_id,
-                'name', ic.item_name, 'unit_price', ic.unit_price, 'cap_qty', ic.cap_qty)
+                'name', ic.item_name, 'unit_price', ic.unit_price, 'cap_qty', ic.cap_qty,
+                'images', ic.images)
                 ORDER BY ic.code)
                FROM public._line_note_item_codes(g.id) ic), '[]'::jsonb)
   )

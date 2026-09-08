@@ -163,6 +163,51 @@ export function renderTemplate(template, payload) {
     .trim();
 }
 
+
+// ── 發文附圖：開團封面 + 每個品項的商品圖，全部轉成 JPEG ──────────────────
+// 圖片來源：group_buy_campaigns.cover_image_url、products.images[]（storage 相對路徑或完整網址）。
+// LINE 記事本上傳固定 image/jpeg，所以 PNG/WebP 用 sharp 轉；sharp 沒裝就只收原本就是 JPEG 的。
+const MAX_POST_IMAGES = Number(process.env.LINE_POST_MAX_IMAGES || 10);
+const PRODUCTS_BUCKET = process.env.PRODUCTS_BUCKET || "products";
+
+function resolveImageUrl(p) {
+  if (!p || typeof p !== "string") return null;
+  if (/^https?:\/\//i.test(p)) return p;
+  return `${SUPABASE_URL}/storage/v1/object/public/${PRODUCTS_BUCKET}/${p.replace(/^\/+/, "")}`;
+}
+
+let sharpMod;
+async function toJpeg(buf, contentType) {
+  if (!sharpMod) {
+    try { sharpMod = (await import("sharp")).default; } catch { sharpMod = null; }
+  }
+  if (sharpMod) {
+    return await sharpMod(buf).rotate().jpeg({ quality: 88 }).toBuffer();
+  }
+  if (/image\/jpe?g/i.test(contentType)) return buf;
+  throw new Error(`不是 JPEG（${contentType}）且沒裝 sharp，無法轉檔`);
+}
+
+async function collectPostImages(payload) {
+  if (process.env.LINE_POST_NO_IMAGE) return [];
+  const urls = [];
+  const push = (u) => { const r = resolveImageUrl(u); if (r && !urls.includes(r)) urls.push(r); };
+  push(payload.campaign?.cover_image_url);
+  for (const it of payload.items ?? []) for (const img of it.images ?? []) push(img);
+  const out = [];
+  for (const url of urls.slice(0, MAX_POST_IMAGES)) {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const ct = r.headers.get("content-type") ?? "";
+      out.push(await toJpeg(Buffer.from(await r.arrayBuffer()), ct));
+    } catch (e) {
+      log(`圖片略過 ${url}：${e?.message ?? e}`);
+    }
+  }
+  return out;
+}
+
 async function jobPost(job) {
   const cur = await rest(`line_note_posts?id=eq.${job.post_id}&select=status,line_post_id`);
   if (cur?.[0]?.status === "posted") return { skipped: "already posted", postId: cur[0].line_post_id };
@@ -171,19 +216,7 @@ async function jobPost(job) {
   const account = await loadAccount(payload.account_id);
   const client = await clientFor(account);
   const text = renderTemplate(payload.post_template, payload);
-  // 開團封面圖（group_buy_campaigns.cover_image_url）一起貼；只收 JPEG（LINE 上傳固定 image/jpeg）
-  const images = [];
-  const cover = payload.campaign?.cover_image_url;
-  if (cover && !process.env.LINE_POST_NO_IMAGE) {
-    try {
-      const r = await fetch(cover);
-      const ct = r.headers.get("content-type") ?? "";
-      if (r.ok && (/image\/jpe?g/i.test(ct) || /\.jpe?g(\?|$)/i.test(cover))) images.push(Buffer.from(await r.arrayBuffer()));
-      else log(`封面不是 JPEG（${ct}），這篇不帶圖：${cover}`);
-    } catch (e) {
-      log("封面下載失敗，這篇不帶圖:", e?.message ?? e);
-    }
-  }
+  const images = await collectPostImages(payload);
   try {
     const post = await createNotePost(client, payload.home_id, { text, images, verbose: VERBOSE });
     await patch("line_note_posts", `id=eq.${job.post_id}`, {
