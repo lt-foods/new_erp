@@ -16,6 +16,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { loginWithAuthToken, loginWithQR } from "@evex/linejs";
 import { FileStorage } from "@evex/linejs/storage";
 import { createNotePost, listComments, listHomes, listPosts, whoami } from "./line.mjs";
@@ -395,6 +396,9 @@ async function main() {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === new URL(import.meta.url).pathname) {
+// ⚠ 不要拿 `new URL(import.meta.url).pathname` 跟 process.argv[1] 比：Windows 上前者是
+// "/D:/project/.../worker.mjs"、後者是 "D:\project\...\worker.mjs"，永遠不相等 →
+// main() 不會被呼叫，程式什麼都不印就結束（看起來像「跑一下就停了」）。fileURLToPath 才是對的。
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
   main().catch((e) => { console.error(e); process.exit(1); });
 }
