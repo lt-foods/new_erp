@@ -74,18 +74,28 @@ function isOrderReturn(notes: string | null): boolean {
   return !!notes && notes.startsWith("[order return");
 }
 
-// 老闆逐字定的三種狀態字樣（需求暨計畫_店家退貨頁_2026-09-04.md:23）
+// 老闆逐字定的三種狀態字樣。
+// 2026-09-06 老闆覆改字樣：舊版「已入倉」被問「入誰的倉？同不同意？扣不扣店家？」
+//   故改為自解釋寫法（原 2026-09-04 版出處：需求暨計畫_店家退貨頁_2026-09-04.md:23）。
+// ⛔ label 逐字照老闆定的，不要潤飾；cls 一律不動。
+//
+// ⭐⭐ received／cancelled 這兩個字樣，必須跟**總倉那個人按下去的那顆鈕**逐字相同：
+//   ExceptionsContent.tsx:231-232 的 return_accepted「同意收回」／return_rejected「不同意退貨」
+//   （也就是 hq/inbox/page.tsx:3102,:3090 那兩顆鈕上面的字）。
+//   2026-09-06 老闆問「是不是對照我的異常處理」之後補正的：第一輪寫成「同意退／不同意退」，
+//   跟總倉端差了字 ⇒ 同一個動作在兩個畫面上出現兩種講法，店家跟總倉會以為在講不同的事。
+//   ⛔ 要改就兩邊一起改，不要各改各的。
 const STATUS_VIEW: Record<string, { label: string; cls: string }> = {
   shipped: {
-    label: "🚚 等總倉",
+    label: "🚚 等總倉回覆",
     cls: "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300",
   },
   received: {
-    label: "✅ 已入倉",
+    label: "✅ 同意收回・已入總倉",
     cls: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   },
   cancelled: {
-    label: "❌ 不同意 · 自己收回",
+    label: "❌ 不同意退貨・貨留店家",
     cls: "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300",
   },
 };
@@ -498,6 +508,65 @@ export default function StoreReturnsPage() {
           {/* ── ② 進度列表 ── */}
           <section className="flex flex-col gap-2">
             <h2 className="text-base font-semibold">我送出的退貨</h2>
+            {/* 錢的語意：上畫面之前逐字查證過月結引擎**最新版**
+                （supabase/migrations/20260901000000_settlement_dispatch_basis.sql:74，
+                  用定義鏈查法 git grep -nE "CREATE (OR REPLACE )?FUNCTION (public\.)?rpc_generate_hq_to_store_settlement"
+                  自排確認它是最後一支重建本函式的，⛔ 不是靠檔名日期判斷的）：
+                  :249-263  F) return_out —— transfer_type='return_to_hq'
+                            AND status IN ('received','closed') AND source_location = 本店
+                            ⇒ 計入 v_return_out_b（分店價口徑）
+                  :275      v_branch_total := … − v_return_out_b     ← 減號，沖回
+                  :277      v_payable      := v_branch_total + v_adjust  ← 店家要付的錢
+                ⇒ ✅（status='received'）＝從這家店的月結扣掉。
+                  ❌ 走 rpc_reject_transfer（最新版 20260904020020:88，:169-170 寫 status='cancelled'，
+                  全檔沒碰 received_at／qty_received）⇒ 不在上面那個白名單裡 ⇒ 一毛都不沖，原本那筆貨款照收。
+                ⚠️ 沖回的時點是 received_at（總倉同意日），原本入帳是 shipped_at（派車日，:166）
+                  ⇒ 跨月才同意的話，沖回會落在「同意的那個月」的帳單。
+                🔴 而且不只「落在哪個月」不同——**計價的時點也不同**（同檔逐字驗過）：
+                  :166  出貨入帳用 _branch_price_at(v_tenant, ti.sku_id, t.shipped_at)   ← 派車那天的分店價
+                  :252  退貨沖回用 _branch_price_at(v_tenant, ti.sku_id, t.received_at)  ← 總倉同意那天的分店價
+                  ⇒ 這兩個日期之間只要分店價改過，沖回金額就**不保證等於**當初收的金額。
+                    畫面那句括號「（依同意當天的分店價）」就是為了這件事存在的，
+                    ⛔ 不要拿掉——拿掉店家會拿帳單來問「當初收我 100，怎麼只扣回 80」。
+                ⚠️ 已知風險（月結引擎既有行為，非本 PR 造成，這裡只記錄不處理）：
+                  _branch_price_at 現行版在
+                  supabase/migrations/20260715000000_settlement_dual_price_basis.sql:83，
+                  查不到 p_at 時點的價會 fallback 現行價，但 fallback 那段要求 effective_to IS NULL（:111）
+                  ⇒ 該商品的分店價若已被關閉（沒有 effective_to IS NULL 的價）會回 NULL，
+                  被 :252 的 COALESCE 當成 0 ⇒ 這筆退貨沖回 0 元。
+                  已另備唯讀查詢，待老闆確認真實資料有沒有受害的單。
+                ⛔ 主句一定要寫明「哪一個月」的帳單，不要刪回只寫「月結帳單」——
+                  跨月不是例外，是每個月底必然發生的：
+                  :261-262  沖回用 received_at（總倉同意那天）切月
+                  :166      出貨收錢用 shipped_at（派車那天）切月
+                  ⇒ 9/29 店家送退貨、10/1 總倉才同意 ⇒ 沖回落在**十月**帳單，
+                    店家十月初拿到九月帳單會發現一毛都沒扣，而畫面卻跟他保證「會從月結帳單沖回」。
+                  而且「同意的時點」不是人能控制的：20260903010020:219-223 無條件排了
+                  cron.schedule('hq-auto-accept-overdue-returns', 每 30 分鐘一次)
+                  （cron 字串逐字在 :221，這裡不照抄是因為它含有會提早關掉本註解的字元組合），
+                  全 supabase/migrations 沒有任何一支真的執行 cron.unschedule
+                  （:56 / :72 / :113 / :214 那四處都只是註解或 COMMENT 字串，不是可執行語句）
+                  ⇒ 滿 48 小時系統自己同意，跨不跨月店家和總倉都控制不了。
+                ⚠️ 這句話有一個已知例外——**主句下面那行小字就是在講它**，⛔ 不要拿掉：
+                  若「總倉同意的那個月」的月結已經被鎖定
+                  （status IN ('confirmed','settled','remitted','cancelled')），
+                  生成器 20260901000000:146-155 會直接 CONTINUE 跳過這家店、整個不重算，
+                  而下個月的時窗（:261 received_at >= 下月一日）也撈不到它（它的 received_at 在上個月）
+                  ⇒ 這筆沖回**不會出現在任何一個月的帳單**，只能人工開調整單補。
+                  且解鎖 RPC rpc_revoke_settlement_send（20260805000020:55-57）明文只放行
+                  status='sent'，confirmed 之後救不回來 ⇒ 少了那行小字，主句在這個情形下就是空頭支票。
+                ⚠️ 對照組（自己 grep／node 直讀驗過，不是聽來的）：同家族的
+                  20260904010000_adjust_received_syncs_stock.sql:379-397 有「守衛 C」——
+                  改到已鎖定月份的金額時直接 RAISE EXCEPTION 擋下、不讓它默默失蹤；
+                  而 20260904020010_accept_store_return_deducts_stock.sql 全檔 682 行，
+                  'settlement' 一次都沒出現（出現次數 = 0）
+                  ⇒「同意收回」這條路缺同一款守衛，所以上面那個例外目前真的擋不住。 */}
+            <p className="text-xs text-zinc-500">
+              ✅＝總倉同意收回：貨進總倉、你的庫存已扣，這筆貨款會從總倉同意當月的月結帳單沖回（依同意當天的分店價）。❌＝不同意退貨：貨留店家、月結照收。
+            </p>
+            <p className="text-[11px] text-zinc-400">
+              ※ 例外：如果總倉同意的那個月份，月結帳單已經結案了，系統不會自動重算——這筆沖回不會自己出現，要請總倉開人工調整單補上。
+            </p>
             <div className="overflow-x-auto rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
               <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
                 <thead className="bg-zinc-50 dark:bg-zinc-900">
