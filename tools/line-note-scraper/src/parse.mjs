@@ -73,6 +73,25 @@ export function parseOrderLines(text) {
   return out;
 }
 
+/**
+ * 從留言抓「6 碼會員編號」（members.member_no = 'M' + 6 碼）。
+ * 只認獨立的 6 位數（前後不是數字），所以手機號碼（10 碼）、A1 這種品號都不會誤抓；
+ * 允許寫成 M123456。回 { hint, rest }，rest 是把編號拿掉後的文字（拿去解析 +1）。
+ */
+export function extractMemberNo(text) {
+  const norm = normalize(text);
+  const m = norm.match(/(?<![0-9A-Za-z])[Mm]?([0-9]{6})(?![0-9])/);
+  if (!m) return { hint: null, rest: norm };
+  const rest = (norm.slice(0, m.index) + " " + norm.slice(m.index + m[0].length)).trim();
+  return { hint: m[1], rest };
+}
+
+/** 留言 → { memberNo, orders[] }，給 worker 落地用 */
+export function parseNoteComment(text) {
+  const { hint, rest } = extractMemberNo(text);
+  return { memberNo: hint, orders: parseOrderLines(rest) };
+}
+
 /** 貼文標題：取第一個非空白行，最多 60 字 */
 export function postTitle(text) {
   const first = String(text ?? "").split(/\r?\n/).map((s) => s.trim()).find(Boolean) ?? "";

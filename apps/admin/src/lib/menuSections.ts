@@ -11,7 +11,7 @@ export type MenuKey =
   | "hq-inbox" | "receiving" | "picking"
   | "daily-report" | "receivables" | "settlement"
   | "candidates" | "calendar"
-  | "staff" | "stores" | "fb-pages"
+  | "staff" | "stores" | "fb-pages" | "line-notes"
   | "general";
 
 export type MenuItem = { key: MenuKey; label: string };
@@ -87,6 +87,7 @@ export const MENU_GROUPS: MenuGroup[] = [
       { key: "staff", label: "員工管理" },
       { key: "stores", label: "門市" },
       { key: "fb-pages", label: "FB 粉絲團" },
+      { key: "line-notes", label: "LINE 記事本" },
     ],
   },
   {

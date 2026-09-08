@@ -16,10 +16,12 @@
     "posts": "node src/cli.mjs posts",
     "comments": "node src/cli.mjs comments",
     "scrape": "node src/cli.mjs scrape",
+    "worker": "node --env-file-if-exists=.env src/worker.mjs",
     "test": "node --test src/parse.test.mjs"
   },
   "dependencies": {
     "@evex/linejs": "npm:@jsr/evex__linejs@^3.4.2",
+    "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0"
   }
 }

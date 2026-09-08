@@ -324,6 +324,42 @@ export async function listComments(client, homeId, postId, { verbose = false, on
   return out;
 }
 
+// ── 發文 ───────────────────────────────────────────────────────────────────
+
+/**
+ * 在記事本發一篇貼文（文字 + 可選圖片）。走 linejs 內建的 createPost：
+ * 群組 → /mh/api/v57/post/create.json、社群（s…）→ /sn/…，
+ * 圖片先上傳到 obs（myhome/h）拿 objId 再掛進 contents.media。
+ * @param {object} opts
+ * @param {string} opts.text
+ * @param {string[]} [opts.images]  JPEG 檔路徑（上傳時 content-type 固定 image/jpeg）
+ */
+export async function createNotePost(client, homeId, { text, images = [], sourceType, verbose = false } = {}) {
+  if (!text && images.length === 0) throw new Error("貼文至少要有文字或圖片");
+  const tl = client.base.timeline;
+  const mediaObjectIds = [];
+  const mediaObjectTypes = [];
+  for (const file of images) {
+    const buf = fs.readFileSync(file);
+    const { objId } = await tl.uploadNoteMedia("image", new Blob([buf], { type: "image/jpeg" }));
+    log(verbose, `uploaded ${file} → ${objId}`);
+    mediaObjectIds.push(objId);
+    mediaObjectTypes.push("PHOTO");
+  }
+  const res = await tl.createPost({
+    homeId,
+    text,
+    mediaObjectIds,
+    mediaObjectTypes,
+    ...(sourceType ? { sourceType } : {}),
+  });
+  log(verbose, "createPost →", JSON.stringify(res).slice(0, 500));
+  if (!res || res.code !== 0) {
+    throw new Error(`發文失敗：code=${res?.code} ${res?.message ?? ""}\n${JSON.stringify(res).slice(0, 800)}`);
+  }
+  return normalizePost(res.result?.post ?? res.result, homeId);
+}
+
 export function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
   return dir;
