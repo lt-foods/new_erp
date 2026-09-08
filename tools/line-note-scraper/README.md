@@ -9,9 +9,13 @@
 
 ```bash
 cd tools/line-note-scraper
-npx jsr add @evex/linejs      # 會寫 .npmrc（@jsr registry）並補 package.json 相依
 npm install
 ```
+
+`.npmrc`（`@jsr:registry`）已經 commit 進來了，直接 `npm install` 就好。
+**不要再跑 `npx jsr add @evex/linejs`** —— 這個 repo 根目錄有 package.json，
+jsr 會把 `.npmrc` 寫到 **repo 根目錄**而不是這個資料夾，而 npm 只讀 cwd 的 `.npmrc`
+（不會往上層找），於是 `@jsr/evex__linejs` 照樣去打 registry.npmjs.org、回 404 Not Found。
 
 ## 使用
 
