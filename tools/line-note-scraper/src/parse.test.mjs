@@ -1,6 +1,24 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseOrderLines, postTitle, normalize } from "./parse.mjs";
+import { parseOrderLines, postTitle, normalize, extractMemberNo, parseNoteComment } from "./parse.mjs";
+
+test("extractMemberNo", () => {
+  assert.deepEqual(extractMemberNo("123456 A+1"), { hint: "123456", rest: "A+1" });
+  assert.deepEqual(extractMemberNo("A+1 M123456"), { hint: "123456", rest: "A+1" });
+  assert.deepEqual(extractMemberNo("１２３４５６ +2"), { hint: "123456", rest: "+2" });
+  assert.equal(extractMemberNo("0912345678 +1").hint, null);   // 手機 10 碼不算
+  assert.equal(extractMemberNo("A1+1").hint, null);
+  assert.equal(extractMemberNo("+1").hint, null);
+});
+
+test("parseNoteComment", () => {
+  const r = parseNoteComment("123456\nA+1\nB+2");
+  assert.equal(r.memberNo, "123456");
+  assert.deepEqual(r.orders.map((o) => [o.code, o.qty]), [["A", 1], ["B", 2]]);
+  const single = parseNoteComment("654321 +3");
+  assert.deepEqual(single.orders.map((o) => [o.code, o.qty]), [[null, 3]]);
+  assert.deepEqual(parseNoteComment("請問還有嗎"), { memberNo: null, orders: [] });
+});
 
 const one = (text) => parseOrderLines(text).map(({ code, qty, cancel }) => ({ code, qty, cancel }));
 

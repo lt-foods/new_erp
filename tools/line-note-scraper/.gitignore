@@ -1,4 +1,6 @@
 node_modules/
 storage.json
+storage/
+.env
 out/
 *.log

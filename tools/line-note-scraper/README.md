@@ -45,6 +45,26 @@ node src/cli.mjs post <homeId> --file post.txt --image 1.jpg --image 2.jpg   # �
 +1 的寫法支援 `+1`、`＋２`、`A+1`、`B-2 +1`、`+1 A`、`A x2`、`A 2份`、`2份`、`-1` / `取消 A+1`（負數）。
 規則在 `src/parse.mjs`，測試 `npm test`。純數字、`A2` 這種分不清品號還是數量的**不猜**，留給人看 `comments.csv`。
 
+## 接後台（worker 模式）
+
+後台「設定 → LINE 記事本」頁面負責帳號登入、社群設定、看留言結果；真的跟 LINE 講話的是這支 worker，
+跑在你自己的電腦或 VPS 上，用 service_role 輪詢 `line_note_jobs`。
+
+```bash
+cp .env.example .env      # 填 SUPABASE_URL、SUPABASE_SERVICE_ROLE_KEY
+npm run worker
+```
+
+流程：
+
+1. 後台 → 帳號 → 新增 → 登入：worker 把 QR 寫進 DB，後台顯示，備用帳號手機掃、輸入 PIN。
+2. 後台 → 社群設定 → 新增：選帳號、按「從帳號載入清單」挑社群（m…）、選渠道（決定取貨店）、讀留言時間、開團自動發文。
+3. 開團：團的狀態變成「開團中」且有勾到該渠道 → 自動排一篇貼文（套模板，A/B/C 依開團品項順序）。
+4. 到讀留言時間（或按「立即讀取」）：worker 讀留言 → 抓「會員編號 6 碼 + A+1」→ `rpc_line_note_apply_comment` 用既有加單 RPC 建單。
+5. 後台 → 貼文與留言：看每則留言的結果，「找不到會員」「錯誤」可重試或忽略。
+
+worker 一次只跑一支，多個帳號各自有 `storage/account-<id>.json`。登出會清 token。
+
 ## 打不通的時候
 
 第一次一定加 `--verbose`：

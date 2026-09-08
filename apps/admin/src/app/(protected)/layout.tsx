@@ -106,6 +106,7 @@ const NAV: NavGroup[] = [
       { href: "/staff", label: "員工管理", match: /^\/staff/ },
       { href: "/stores", label: "門市", match: /^\/stores/ },
       { href: "/fb-pages", label: "FB 粉絲團", match: /^\/fb-pages/ },
+      { href: "/line-notes", label: "LINE 記事本", match: /^\/line-notes/ },
     ],
   },
 ];
@@ -140,6 +141,7 @@ const BRANCH_HIDDEN_HREFS = new Set([
   "/finance/receivables", // HQ 應收
   "/stores",              // 門市設定 (HQ 管理)
   "/fb-pages",            // 粉絲團設定 (HQ 管理)
+  "/line-notes",          // LINE 記事本 (HQ 管理；帳號登入 token 在這)
 ]);
 const BRANCH_HIDDEN_GROUPS = new Set([
   "社群選品", // 整個 group 隱藏
