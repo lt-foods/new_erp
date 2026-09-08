@@ -18,7 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { loginWithAuthToken, loginWithQR } from "@evex/linejs";
 import { FileStorage } from "@evex/linejs/storage";
-import { createNotePost, listComments, listHomes, whoami } from "./line.mjs";
+import { createNotePost, listComments, listHomes, listPosts, whoami } from "./line.mjs";
 import { parseNoteComment, postTitle } from "./parse.mjs";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -164,6 +164,8 @@ export function renderTemplate(template, payload) {
 }
 
 async function jobPost(job) {
+  const cur = await rest(`line_note_posts?id=eq.${job.post_id}&select=status,line_post_id`);
+  if (cur?.[0]?.status === "posted") return { skipped: "already posted", postId: cur[0].line_post_id };
   const payload = await rpc("rpc_line_note_post_payload", { p_post_id: job.post_id });
   if (!payload) throw new Error(`post ${job.post_id} not found`);
   const account = await loadAccount(payload.account_id);
@@ -185,7 +187,7 @@ async function readPost(client, post) {
   const comments = await listComments(client, post.home_id, post.line_post_id, { verbose: VERBOSE });
   if (comments.length) {
     const rows = comments.map((c) => {
-      const parsed = parseNoteComment(c.text);
+      const parsed = parseNoteComment(c.text, c.authorName ?? "");
       return {
         tenant_id: post.tenant_id, post_id: post.id, line_comment_id: String(c.commentId ?? ""),
         commenter_id: c.authorMid ?? null, commenter_name: c.authorName ?? null, text: c.text ?? "",
@@ -213,8 +215,48 @@ async function readPost(client, post) {
   return { comments: comments.length, pending: pending?.length ?? 0, ordered, other };
 }
 
+// 認貼文：小幫手自己手動貼到記事本的團（不是系統發的），最近 read_days 天內的貼文
+// 只要文字裡有「開團中／已收單」的團名或團號，就綁進 line_note_posts，留言一樣會讀。
+async function discoverPosts(client, community) {
+  const since = new Date(Date.now() - community.read_days * 86400_000).toISOString();
+  const notes = await listPosts(client, community.home_id, { limit: 100, since, verbose: VERBOSE });
+  if (notes.length === 0) return 0;
+  const known = await rest(`line_note_posts?community_id=eq.${community.id}&select=id,status,line_post_id,campaign_id`);
+  const knownByLineId = new Map((known ?? []).filter((p) => p.line_post_id).map((p) => [p.line_post_id, p]));
+  const campaigns = await rest(`group_buy_campaigns?tenant_id=eq.${community.tenant_id}&status=in.(open,closed)&select=id,name,campaign_no&order=id.desc&limit=200`);
+  let linked = 0;
+  for (const n of notes) {
+    if (!n.postId || knownByLineId.has(String(n.postId))) continue;
+    const text = String(n.text ?? "");
+    const hit = (campaigns ?? []).find((c) => (c.name && text.includes(c.name)) || (c.campaign_no && text.includes(c.campaign_no)));
+    if (!hit) continue;
+    const existing = (known ?? []).find((p) => p.campaign_id === hit.id);
+    const row = { status: "posted", line_post_id: String(n.postId), text, posted_at: n.createdAt ?? new Date().toISOString(), last_error: null };
+    if (existing) {
+      if (existing.status === "posted") continue;      // 同一團已經有另一篇，不重綁
+      await patch("line_note_posts", `id=eq.${existing.id}`, row);
+    } else {
+      await rest("line_note_posts", { method: "POST", body: { tenant_id: community.tenant_id, community_id: community.id, campaign_id: hit.id, ...row }, prefer: "return=minimal" });
+    }
+    linked++;
+    log(`🔗 認到貼文 ${n.postId} → 團 ${hit.campaign_no} ${hit.name}`);
+  }
+  return linked;
+}
+
 async function jobRead(job) {
-  const filter = job.post_id ? `id=eq.${job.post_id}` : `community_id=eq.${job.community_id}`;
+  let discovered = 0;
+  let sinceFilter = "";
+  if (!job.post_id && job.community_id) {
+    const c = (await rest(`line_note_communities?id=eq.${job.community_id}&select=id,tenant_id,home_id,account_id,read_days`))?.[0];
+    if (c) {
+      const account = await loadAccount(c.account_id);
+      const client = await clientFor(account);
+      try { discovered = await discoverPosts(client, c); } catch (e) { log("認貼文失敗（略過）:", e?.message ?? e); }
+      sinceFilter = `&posted_at=gte.${new Date(Date.now() - c.read_days * 86400_000).toISOString()}`;
+    }
+  }
+  const filter = job.post_id ? `id=eq.${job.post_id}` : `community_id=eq.${job.community_id}${sinceFilter}`;
   const posts = await rest(`line_note_posts?${filter}&status=eq.posted&select=id,tenant_id,line_post_id,community_id,group_buy_campaigns(status),line_note_communities(home_id,account_id)`);
   const out = [];
   for (const p of posts ?? []) {
@@ -236,7 +278,7 @@ async function jobRead(job) {
   if (job.community_id) {
     await patch("line_note_communities", `id=eq.${job.community_id}`, { last_read_at: new Date().toISOString(), last_error: null });
   }
-  return { posts: out };
+  return { discovered, posts: out };
 }
 
 const HANDLERS = { login: jobLogin, logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead };

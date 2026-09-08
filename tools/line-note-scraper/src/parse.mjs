@@ -29,6 +29,11 @@ const UNIT = "(?:份|個|组|組|包|盒|箱|瓶|罐|袋|條|片|支|入|件|套
 const CODE = "([A-Za-z][A-Za-z0-9-]{0,7})";
 const CANCEL_WORDS = /(取消|退|刪|删|不要了|改為0|改成0)/;
 
+const MULTI_CODE_FIRST = /^\s*(?:[A-Za-z][A-Za-z0-9-]{0,7}\s*[+-]\s*\d{1,3}\s*){2,}$/;
+const MULTI_QTY_FIRST = /^\s*(?:[+-]\s*\d{1,3}\s*[A-Za-z][A-Za-z0-9-]{0,7}\s*){2,}$/;
+const TOKEN_CODE_FIRST = /[A-Za-z][A-Za-z0-9-]{0,7}\s*[+-]\s*\d{1,3}/g;
+const TOKEN_QTY_FIRST = /[+-]\s*\d{1,3}\s*[A-Za-z][A-Za-z0-9-]{0,7}/g;
+
 const PATTERNS = [
   // A+1 / A +2 / B-2+1 / 取消 A-1
   { re: new RegExp(`^\\s*${CODE}\\s*([+-])\\s*(\\d{1,3})${UNIT}\\s*$`), map: (m) => ({ code: m[1], sign: m[2], qty: m[3] }) },
@@ -49,7 +54,15 @@ const PATTERNS = [
 export function parseOrderLines(text) {
   const out = [];
   const norm = normalize(text);
-  for (const rawLine of norm.split(/\r?\n|[,，;；、]/)) {
+  const segments = [];
+  for (const rawLine of norm.split(/\r?\n|[,，;；、/]/)) {
+    // 同一行寫多筆：整行都是「代碼+號+數」重複（A+1 B+5）或「號+數+代碼」重複（+1 A +2 B）才拆，
+    // 其他（B-2 +1 這種代碼帶連字號的）交給下面的單筆規則
+    if (MULTI_CODE_FIRST.test(rawLine)) segments.push(...(rawLine.match(TOKEN_CODE_FIRST) ?? []));
+    else if (MULTI_QTY_FIRST.test(rawLine)) segments.push(...(rawLine.match(TOKEN_QTY_FIRST) ?? []));
+    else segments.push(rawLine);
+  }
+  for (const rawLine of segments) {
     const line = rawLine.trim();
     if (!line) continue;
     const cancelWord = CANCEL_WORDS.test(line);
@@ -80,16 +93,22 @@ export function parseOrderLines(text) {
  */
 export function extractMemberNo(text) {
   const norm = normalize(text);
-  const m = norm.match(/(?<![0-9A-Za-z])[Mm]?([0-9]{6})(?![0-9])/);
+  const m = norm.match(/(?<![0-9])[Mm]?([0-9]{6})(?![0-9])/);
   if (!m) return { hint: null, rest: norm };
   const rest = (norm.slice(0, m.index) + " " + norm.slice(m.index + m[0].length)).trim();
   return { hint: m[1], rest };
 }
 
-/** 留言 → { memberNo, orders[] }，給 worker 落地用 */
-export function parseNoteComment(text) {
+/**
+ * 留言 → { memberNo, memberNoSource, orders[] }，給 worker 落地用。
+ * 6 碼先從留言內文找；沒有就看留言者的暱稱（很多社群規定暱稱要帶會員編號：
+ * 「涂003886」「Sherry061016/松山」「Ting/616582松山」）。
+ */
+export function parseNoteComment(text, authorName = "") {
   const { hint, rest } = extractMemberNo(text);
-  return { memberNo: hint, orders: parseOrderLines(rest) };
+  if (hint) return { memberNo: hint, memberNoSource: "text", orders: parseOrderLines(rest) };
+  const fromName = extractMemberNo(authorName).hint;
+  return { memberNo: fromName, memberNoSource: fromName ? "name" : null, orders: parseOrderLines(rest) };
 }
 
 /** 貼文標題：取第一個非空白行，最多 60 字 */

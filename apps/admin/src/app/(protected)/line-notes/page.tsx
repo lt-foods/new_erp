@@ -20,7 +20,7 @@ type Channel = { id: number; code: string; name: string; channel_type: string; h
 type Community = {
   id: number; account_id: number; channel_id: number; home_id: string; home_name: string | null;
   home_kind: "group" | "square" | "square_chat"; listen_enabled: boolean; read_times: string[];
-  auto_post_on_open: boolean; post_template: string | null; last_read_at: string | null; last_error: string | null;
+  auto_post_on_open: boolean; post_template: string | null; read_days: number; last_read_at: string | null; last_error: string | null;
 };
 type Post = {
   id: number; community_id: number; campaign_id: number; line_post_id: string | null; text: string | null;
@@ -31,9 +31,11 @@ type Post = {
 type Comment = {
   id: number; line_comment_id: string; commenter_id: string | null; commenter_name: string | null; text: string;
   commented_at: string | null; member_no_hint: string | null; parsed: { code: string | null; qty: number; cancel: boolean }[];
-  status: "pending" | "ordered" | "unmatched" | "no_order" | "error" | "ignored";
+  status: "pending" | "ordered" | "unmatched" | "no_order" | "error" | "ignored" | "resolved";
   member_id: number | null; customer_order_id: number | null; error: string | null;
+  resolved_at: string | null; resolution_note: string | null;
 };
+type Todo = Comment & { line_note_posts: { community_id: number; campaign_id: number; group_buy_campaigns: { name: string; campaign_no: string } | null } | null };
 type Home = { kind: string; homeId: string; name: string };
 type Campaign = { id: number; campaign_no: string; name: string; status: string };
 
@@ -42,7 +44,7 @@ const ACCOUNT_STATUS: Record<Account["status"], string> = {
 };
 const POST_STATUS: Record<Post["status"], string> = { queued: "排隊中", posted: "已發文", failed: "失敗", closed: "已結束" };
 const COMMENT_STATUS: Record<Comment["status"], string> = {
-  pending: "待處理", ordered: "已加單", unmatched: "找不到會員", no_order: "非下單", error: "錯誤", ignored: "忽略",
+  pending: "待處理", ordered: "已加單", unmatched: "找不到會員", no_order: "非下單", error: "錯誤", ignored: "忽略", resolved: "已解決",
 };
 const KIND_LABEL: Record<string, string> = { group: "群組", square: "社群", square_chat: "社群聊天室" };
 
@@ -201,7 +203,7 @@ function AccountsTab({ accounts, reload, notify, fail }: {
         <SpinButton type="button" className={btnPrimary} loading={busy === "new"} onClick={addAccount}>＋ 新增帳號</SpinButton>
       </div>
       <Table>
-        <THead><Tr><Th>名稱</Th><Th>狀態</Th><Th>LINE 顯示名稱</Th><Th>最後活動</Th><Th>錯誤</Th><Th align="right">操作</Th></Tr></THead>
+        <THead><Th>名稱</Th><Th>狀態</Th><Th>LINE 顯示名稱</Th><Th>最後活動</Th><Th>錯誤</Th><Th align="right">操作</Th></THead>
         <TBody>
           {accounts === null ? <LoadingRow colSpan={6} /> : accounts.length === 0 ? <EmptyRow colSpan={6}>還沒有帳號</EmptyRow> : accounts.map((a) => (
             <Tr key={a.id}>
@@ -256,11 +258,11 @@ function AccountsTab({ accounts, reload, notify, fail }: {
 // ── 社群設定 ─────────────────────────────────────────────────────────────────
 type CommunityForm = {
   id: number | null; account_id: number | ""; channel_id: number | ""; home_id: string; home_name: string;
-  listen_enabled: boolean; read_times: string; auto_post_on_open: boolean; post_template: string;
+  listen_enabled: boolean; read_times: string; auto_post_on_open: boolean; post_template: string; read_days: number;
 };
 const EMPTY_FORM: CommunityForm = {
   id: null, account_id: "", channel_id: "", home_id: "", home_name: "",
-  listen_enabled: true, read_times: "12:00", auto_post_on_open: true, post_template: "",
+  listen_enabled: true, read_times: "12:00", auto_post_on_open: true, post_template: "", read_days: 3,
 };
 
 function CommunitiesTab({ communities, accounts, channels, accountById, channelById, reload, reloadPosts, notify, fail }: {
@@ -277,7 +279,7 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
   const openEdit = (c: Community) => {
     setHomes(null);
     setForm({ id: c.id, account_id: c.account_id, channel_id: c.channel_id, home_id: c.home_id, home_name: c.home_name ?? "",
-      listen_enabled: c.listen_enabled, read_times: c.read_times.join(", "), auto_post_on_open: c.auto_post_on_open, post_template: c.post_template ?? "" });
+      listen_enabled: c.listen_enabled, read_times: c.read_times.join(", "), auto_post_on_open: c.auto_post_on_open, post_template: c.post_template ?? "", read_days: c.read_days ?? 3 });
   };
 
   const loadHomes = async () => {
@@ -306,6 +308,7 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
       p_listen_enabled: form.listen_enabled,
       p_read_times: form.read_times.split(/[,\s，、]+/).map((s) => s.trim()).filter(Boolean),
       p_auto_post_on_open: form.auto_post_on_open, p_post_template: form.post_template || null,
+      p_read_days: Math.min(30, Math.max(1, Math.round(form.read_days || 3))),
     });
     setBusy(null);
     if (error) return fail(error);
@@ -338,7 +341,7 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
         <button type="button" className={btnPrimary} onClick={openNew} disabled={accounts.length === 0}>＋ 新增社群</button>
       </div>
       <Table>
-        <THead><Tr><Th>社群</Th><Th>帳號</Th><Th>渠道 / 取貨店</Th><Th>監聽</Th><Th>讀取時間</Th><Th>開團自動發文</Th><Th>最後讀取</Th><Th align="right">操作</Th></Tr></THead>
+        <THead><Th>社群</Th><Th>帳號</Th><Th>渠道 / 取貨店</Th><Th>監聽</Th><Th>讀取時間</Th><Th>開團自動發文</Th><Th>最後讀取</Th><Th align="right">操作</Th></THead>
         <TBody>
           {communities === null ? <LoadingRow colSpan={8} /> : communities.length === 0 ? <EmptyRow colSpan={8}>還沒有社群</EmptyRow> : communities.map((c) => {
             const a = accountById.get(c.account_id);
@@ -352,7 +355,7 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
                 <Td>{a ? <>{a.label} <Badge tone={a.status === "active" ? "green" : "red"}>{ACCOUNT_STATUS[a.status]}</Badge></> : "—"}</Td>
                 <Td>{channelById.get(c.channel_id)?.name ?? c.channel_id}</Td>
                 <Td><Badge tone={c.listen_enabled ? "green" : "gray"}>{c.listen_enabled ? "監聽中" : "停用"}</Badge></Td>
-                <Td className="font-mono text-xs">{c.read_times.join(" ")}</Td>
+                <Td className="font-mono text-xs">{c.read_times.join(" ")}<div className="text-zinc-400">近 {c.read_days} 天</div></Td>
                 <Td>{c.auto_post_on_open ? "是" : "否"}</Td>
                 <Td>{fmt(c.last_read_at)}</Td>
                 <Td align="right">
@@ -401,6 +404,9 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
             </div>
             <label className="text-sm">顯示名稱
               <input className={input} value={form.home_name} onChange={(e) => setForm({ ...form, home_name: e.target.value })} />
+            </label>
+            <label className="text-sm">讀取範圍（最近幾天的貼文；也用來認小幫手手貼的團）
+              <input type="number" min={1} max={30} className={input} value={form.read_days} onChange={(e) => setForm({ ...form, read_days: Number(e.target.value) })} />
             </label>
             <label className="text-sm">讀留言時間（台北，HH:MM，逗號分隔）
               <input className={`${input} font-mono`} value={form.read_times} onChange={(e) => setForm({ ...form, read_times: e.target.value })} placeholder="09:00, 12:00, 18:00" />
@@ -472,7 +478,18 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
 }) {
   const [selected, setSelected] = useState<Post | null>(null);
   const [comments, setComments] = useState<Comment[] | null>(null);
+  const [todos, setTodos] = useState<Todo[] | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
+
+  // 待人工處理：找不到會員 / 品項對不上 / 加單失敗 / 有會員編號卻沒數量
+  const loadTodos = useCallback(async () => {
+    const { data, error } = await getSupabase().from("line_note_comments")
+      .select("*,line_note_posts(community_id,campaign_id,group_buy_campaigns(name,campaign_no))")
+      .or("status.in.(unmatched,error),and(status.eq.no_order,member_no_hint.not.is.null)")
+      .order("commented_at", { ascending: false }).limit(200);
+    if (error) fail(error); else setTodos((data ?? []) as Todo[]);
+  }, [fail]);
+  useEffect(() => { void loadTodos(); }, [loadTodos]);
 
   const loadComments = useCallback(async (post: Post) => {
     const { data, error } = await getSupabase().from("line_note_comments").select("*").eq("post_id", post.id).order("commented_at", { ascending: true }).order("id");
@@ -488,13 +505,23 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
     const r = (Array.isArray(data) ? data[0] : data) as { out_status?: string; out_error?: string } | null;
     notify(r?.out_status === "ordered" ? "已加單" : `結果：${COMMENT_STATUS[(r?.out_status ?? "error") as Comment["status"]] ?? r?.out_status}${r?.out_error ? "：" + r.out_error : ""}`);
     if (selected) await loadComments(selected);
+    await loadTodos();
   };
   const setStatus = async (c: Comment, status: Comment["status"]) => {
+    let note: string | null = null;
+    if (status === "resolved") {
+      note = window.prompt("怎麼處理的？（選填，例：已用小幫手加單 / 客人說不要了）", c.resolution_note ?? "");
+      if (note === null) return;
+    }
     setBusy(c.id);
-    const { error } = await getSupabase().from("line_note_comments").update({ status, error: null }).eq("id", c.id);
+    const body = status === "resolved"
+      ? { status, resolved_at: new Date().toISOString(), resolution_note: note || null }
+      : { status };
+    const { error } = await getSupabase().from("line_note_comments").update(body).eq("id", c.id);
     setBusy(null);
     if (error) return fail(error);
     if (selected) await loadComments(selected);
+    await loadTodos();
   };
   const readNow = async (p: Post) => {
     const c = communityById.get(p.community_id);
@@ -509,17 +536,56 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
   const summary = useMemo(() => {
     if (!comments) return null;
     const n = (s: Comment["status"]) => comments.filter((c) => c.status === s).length;
-    return { ordered: n("ordered"), pending: n("pending"), unmatched: n("unmatched"), error: n("error"), no_order: n("no_order"), ignored: n("ignored") };
+    return { ordered: n("ordered"), pending: n("pending"), unmatched: n("unmatched"), error: n("error"), no_order: n("no_order"), ignored: n("ignored"), resolved: n("resolved") };
   }, [comments]);
+
+  const todoActions = (c: Comment) => (
+    <div className="flex justify-end gap-1">
+      {!["ordered", "ignored", "resolved"].includes(c.status) && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => retry(c)}>重試</SpinButton>}
+      {!["ordered", "ignored", "resolved"].includes(c.status) && <SpinButton type="button" className={`${btn} text-emerald-700`} loading={busy === c.id} onClick={() => setStatus(c, "resolved")}>已解決</SpinButton>}
+      {!["ordered", "ignored", "resolved"].includes(c.status) && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "ignored")}>忽略</SpinButton>}
+      {(c.status === "ignored" || c.status === "resolved") && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "pending")}>退回待處理</SpinButton>}
+    </div>
+  );
+  const commentTone = (s: Comment["status"]) =>
+    s === "ordered" || s === "resolved" ? "green" : s === "pending" ? "amber" : s === "unmatched" || s === "error" ? "red" : "gray";
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-zinc-500">點一篇貼文看底下留言與加單結果。「找不到會員」「錯誤」可以修正後按「重試」，或標「忽略」。</p>
-        <button type="button" className={btn} onClick={() => void reload()}>重新整理</button>
+        <p className="text-sm text-zinc-500">點一篇貼文看底下留言與加單結果。「找不到會員」「錯誤」可以修正後按「重試」，小幫手手動加完單按「已解決」，紀錄會留著。</p>
+        <button type="button" className={btn} onClick={() => { void reload(); void loadTodos(); }}>重新整理</button>
       </div>
+
+      <section className="rounded border border-amber-300 bg-amber-50/60 p-3 dark:border-amber-800 dark:bg-amber-950/30">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="font-medium">⚠️ 待小幫手處理 {todos ? `（${todos.length}）` : ""}</h2>
+          <span className="text-xs text-zinc-500">系統拆不出來或對不到的留言。加完單後按「已解決」。</span>
+        </div>
+        <Table>
+          <THead><Th>時間</Th><Th>團</Th><Th>留言者</Th><Th>留言</Th><Th>原因</Th><Th align="right">操作</Th></THead>
+          <TBody>
+            {todos === null ? <LoadingRow colSpan={6} /> : todos.length === 0 ? <EmptyRow colSpan={6}>目前沒有要人工處理的留言 🎉</EmptyRow> : todos.map((c) => (
+              <Tr key={c.id}>
+                <Td className="whitespace-nowrap text-xs">{fmt(c.commented_at)}</Td>
+                <Td className="text-sm">
+                  <div>{c.line_note_posts?.group_buy_campaigns?.name ?? "—"}</div>
+                  <div className="text-xs text-zinc-500">{c.line_note_posts?.group_buy_campaigns?.campaign_no} · {communityById.get(c.line_note_posts?.community_id ?? -1)?.home_name ?? ""}</div>
+                </Td>
+                <Td>{c.commenter_name ?? "—"}</Td>
+                <Td className="max-w-sm whitespace-pre-wrap text-sm">{c.text}</Td>
+                <Td className="text-xs">
+                  <Badge tone={commentTone(c.status)}>{COMMENT_STATUS[c.status]}</Badge>
+                  <div className="text-red-600">{c.error ?? (c.status === "no_order" ? "有會員編號但看不出數量" : "")}</div>
+                </Td>
+                <Td align="right">{todoActions(c)}</Td>
+              </Tr>
+            ))}
+          </TBody>
+        </Table>
+      </section>
       <Table>
-        <THead><Tr><Th>團</Th><Th>社群</Th><Th>狀態</Th><Th>發文時間</Th><Th>最後讀取</Th><Th align="right">留言數</Th><Th align="right">操作</Th></Tr></THead>
+        <THead><Th>團</Th><Th>社群</Th><Th>狀態</Th><Th>發文時間</Th><Th>最後讀取</Th><Th align="right">留言數</Th><Th align="right">操作</Th></THead>
         <TBody>
           {posts === null ? <LoadingRow colSpan={7} /> : posts.length === 0 ? <EmptyRow colSpan={7}>還沒有貼文</EmptyRow> : posts.map((p) => {
             const c = communityById.get(p.community_id);
@@ -560,12 +626,13 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
                 <Badge tone="red">錯誤 {summary.error}</Badge>
                 <Badge tone="gray">非下單 {summary.no_order}</Badge>
                 <Badge tone="gray">忽略 {summary.ignored}</Badge>
+                <Badge tone="green">已解決 {summary.resolved}</Badge>
               </div>
             )}
           </div>
           {selected.text && <details className="text-xs text-zinc-500"><summary>貼文內容</summary><pre className="whitespace-pre-wrap">{selected.text}</pre></details>}
           <Table>
-            <THead><Tr><Th>時間</Th><Th>留言者</Th><Th>留言</Th><Th>會員編號</Th><Th>解析</Th><Th>狀態</Th><Th align="right">操作</Th></Tr></THead>
+            <THead><Th>時間</Th><Th>留言者</Th><Th>留言</Th><Th>會員編號</Th><Th>解析</Th><Th>狀態</Th><Th align="right">操作</Th></THead>
             <TBody>
               {comments === null ? <LoadingRow colSpan={7} /> : comments.length === 0 ? <EmptyRow colSpan={7}>還沒讀到留言</EmptyRow> : comments.map((c) => (
                 <Tr key={c.id}>
@@ -575,17 +642,12 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
                   <Td className="font-mono">{c.member_no_hint ?? "—"}</Td>
                   <Td className="font-mono text-xs">{(c.parsed ?? []).map((o, i) => <div key={i}>{o.cancel ? "取消 " : ""}{o.code ?? "(單品)"} ×{o.qty}</div>)}</Td>
                   <Td>
-                    <Badge tone={c.status === "ordered" ? "green" : c.status === "pending" ? "amber" : c.status === "unmatched" || c.status === "error" ? "red" : "gray"}>{COMMENT_STATUS[c.status]}</Badge>
+                    <Badge tone={commentTone(c.status)}>{COMMENT_STATUS[c.status]}</Badge>
                     {c.error && <div className="max-w-xs text-xs text-red-600">{c.error}</div>}
+                    {c.resolution_note && <div className="max-w-xs text-xs text-zinc-500">處理：{c.resolution_note}</div>}
                     {c.customer_order_id && <div className="text-xs text-zinc-500">訂單 #{c.customer_order_id}</div>}
                   </Td>
-                  <Td align="right">
-                    <div className="flex justify-end gap-1">
-                      {c.status !== "ordered" && c.status !== "ignored" && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => retry(c)}>重試</SpinButton>}
-                      {c.status !== "ordered" && c.status !== "ignored" && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "ignored")}>忽略</SpinButton>}
-                      {c.status === "ignored" && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "pending")}>取消忽略</SpinButton>}
-                    </div>
-                  </Td>
+                  <Td align="right">{todoActions(c)}</Td>
                 </Tr>
               ))}
             </TBody>
