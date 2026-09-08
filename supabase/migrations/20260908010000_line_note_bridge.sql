@@ -470,6 +470,7 @@ AS $$
     'campaign', jsonb_build_object(
        'id', g.id, 'campaign_no', g.campaign_no, 'name', g.name,
        'description', g.description, 'status', g.status,
+       'cover_image_url', g.cover_image_url,
        'start_at', g.start_at, 'end_at', g.end_at, 'pickup_deadline', g.pickup_deadline),
     'items', COALESCE((SELECT jsonb_agg(jsonb_build_object(
                 'code', ic.code, 'campaign_item_id', ic.campaign_item_id,

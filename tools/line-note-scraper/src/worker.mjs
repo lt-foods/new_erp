@@ -171,8 +171,21 @@ async function jobPost(job) {
   const account = await loadAccount(payload.account_id);
   const client = await clientFor(account);
   const text = renderTemplate(payload.post_template, payload);
+  // 開團封面圖（group_buy_campaigns.cover_image_url）一起貼；只收 JPEG（LINE 上傳固定 image/jpeg）
+  const images = [];
+  const cover = payload.campaign?.cover_image_url;
+  if (cover && !process.env.LINE_POST_NO_IMAGE) {
+    try {
+      const r = await fetch(cover);
+      const ct = r.headers.get("content-type") ?? "";
+      if (r.ok && (/image\/jpe?g/i.test(ct) || /\.jpe?g(\?|$)/i.test(cover))) images.push(Buffer.from(await r.arrayBuffer()));
+      else log(`封面不是 JPEG（${ct}），這篇不帶圖：${cover}`);
+    } catch (e) {
+      log("封面下載失敗，這篇不帶圖:", e?.message ?? e);
+    }
+  }
   try {
-    const post = await createNotePost(client, payload.home_id, { text, verbose: VERBOSE });
+    const post = await createNotePost(client, payload.home_id, { text, images, verbose: VERBOSE });
     await patch("line_note_posts", `id=eq.${job.post_id}`, {
       status: "posted", line_post_id: post.postId ?? null, text, posted_at: new Date().toISOString(), last_error: null,
     });
