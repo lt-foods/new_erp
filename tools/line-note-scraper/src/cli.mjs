@@ -6,25 +6,29 @@
 //   node src/cli.mjs posts <homeId> [--limit 20] [--since 2026-09-01]
 //   node src/cli.mjs comments <homeId> <postId>
 //   node src/cli.mjs scrape <homeId> [--since …] [--limit …] [--out out] [--raw]
+//   node src/cli.mjs post <homeId> --text "…" | --file post.txt [--image a.jpg …]
 //
 // 共用選項：--verbose（把每次 API 嘗試印到 stderr）、--json（posts/groups 以 JSON 輸出）
 
 import fs from "node:fs";
 import path from "node:path";
 import {
-  ensureDir, getClient, listComments, listHomes, listPosts, whoami,
+  createNotePost, ensureDir, getClient, listComments, listHomes, listPosts, whoami,
 } from "./line.mjs";
 import { parseOrderLines, postTitle } from "./parse.mjs";
 
 function parseArgs(argv) {
-  const args = { _: [], flags: {} };
+  const args = { _: [], flags: {}, multi: {} };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith("--")) {
       const key = a.slice(2);
       const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith("--")) { args.flags[key] = next; i++; }
-      else args.flags[key] = true;
+      if (next !== undefined && !next.startsWith("--")) {
+        args.flags[key] = next;
+        (args.multi[key] ??= []).push(next); // 同一個旗標重複給（--image a --image b）
+        i++;
+      } else args.flags[key] = true;
     } else args._.push(a);
   }
   return args;
@@ -51,7 +55,7 @@ function printTable(rows, columns) {
 }
 
 async function main() {
-  const { _: [cmd, ...rest], flags } = parseArgs(process.argv.slice(2));
+  const { _: [cmd, ...rest], flags, multi } = parseArgs(process.argv.slice(2));
   const verbose = !!flags.verbose;
 
   if (!cmd || cmd === "help" || flags.help) {
@@ -89,6 +93,15 @@ async function main() {
     const posts = await listPosts(client, homeId, { limit, since, verbose });
     if (flags.json) console.log(JSON.stringify(posts.map(({ raw, ...p }) => p), null, 2));
     else printTable(posts.map((p) => ({ postId: p.postId, createdAt: p.createdAt ?? "", author: p.authorName ?? p.authorMid ?? "", comments: p.commentCount, title: postTitle(p.text) })), ["postId", "createdAt", "author", "comments", "title"]);
+    process.exit(0);
+  }
+
+  if (cmd === "post") {
+    const text = flags.file ? fs.readFileSync(String(flags.file), "utf8") : (typeof flags.text === "string" ? flags.text : "");
+    const images = multi.image ?? [];
+    for (const f of images) if (!fs.existsSync(f)) throw new Error(`找不到圖片：${f}`);
+    const post = await createNotePost(client, homeId, { text, images, sourceType: flags["source-type"], verbose });
+    console.log(`已發文：postId=${post.postId ?? "?"}  ${postTitle(post.text) || "(無文字)"}  圖片 ${images.length} 張`);
     process.exit(0);
   }
 

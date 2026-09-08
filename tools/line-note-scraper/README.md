@@ -23,6 +23,16 @@ npm run comments -- <homeId> <postId>
 npm run scrape -- <homeId> --since 2026-09-01     # 全部貼文 + 留言 → out/<homeId>/<時間>/
 ```
 
+發文到記事本（文字＋圖片）：
+
+```bash
+node src/cli.mjs post <homeId> --text "🍓 草莓開團
+A 大盒 250
+B 小盒 150
+留言 A+1 / B+2"
+node src/cli.mjs post <homeId> --file post.txt --image 1.jpg --image 2.jpg   # 圖片要 JPEG
+```
+
 輸出檔：
 
 | 檔案 | 內容 |
