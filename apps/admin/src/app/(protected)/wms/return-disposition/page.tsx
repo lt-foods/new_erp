@@ -31,7 +31,7 @@ type BatchRow = {
   source_kind: string;
   source_reason: string | null;
   total_qty: number;
-  unit_cost: number;
+  unit_cost: number | null;
   qty_good: number;
   qty_damaged: number;
   qty_lost: number;
@@ -101,6 +101,12 @@ type PendingRequest = {
 function num(v: unknown): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+function fmtUnitCost(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "未提供成本";
+  const n = Number(v);
+  return Number.isFinite(n) ? `$${n.toFixed(2)}` : "未提供成本";
 }
 
 function canDisposeReturn(role: Role | null): boolean {
@@ -1008,7 +1014,7 @@ function ReturnDispositionWorkspace({
                       </td>
                       {showCost && (
                         <td className="px-3 py-2 text-right tabular-nums text-xs text-zinc-500">
-                          ${num(b.unit_cost).toFixed(2)}
+                          {fmtUnitCost(b.unit_cost)}
                         </td>
                       )}
                       <td className="px-3 py-2">
@@ -1107,7 +1113,7 @@ function ReturnDispositionWorkspace({
               </div>
               {showCost && (
                 <div className="mt-0.5 text-xs text-zinc-400">
-                  來源入庫紀錄單價 ${num(selected.unit_cost).toFixed(2)}（不是售價，也不是最後認列的損失）
+                  來源入庫紀錄單價 {fmtUnitCost(selected.unit_cost)}（不是售價，也不是最後認列的損失）
                 </div>
               )}
             </div>
@@ -1174,7 +1180,7 @@ function ReturnDispositionWorkspace({
                         </td>
                         {showCost && (
                           <td className="px-2 py-1 text-right tabular-nums text-zinc-400">
-                            ${num(selected.unit_cost).toFixed(2)}
+                            {fmtUnitCost(selected.unit_cost)}
                           </td>
                         )}
                         <td className="px-2 py-1 text-zinc-500">

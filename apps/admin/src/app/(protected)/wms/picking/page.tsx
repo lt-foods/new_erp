@@ -85,7 +85,7 @@ type RestockRow = {
   sku_code: string | null;
   sku_label: string;
   demand_qty: number;
-  gr_qty: number;        // HQ on_hand
+  gr_qty: number;        // HQ 可派（on_hand - reserved，下限 0）
   wave_qty: number;      // 已撿
 };
 
@@ -1277,7 +1277,7 @@ function Body() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fullDemand, poItemCampaigns, skuSoldCampaigns, effFilterCampaign, skuQueryNorm, filterTime, timeCutoff, campaignsById]);
 
-  // 補貨申請預設分配 = min(申請量 - 已撿, HQ 庫存) per (rr, sku)
+  // 補貨申請預設分配 = min(申請量 - 已撿, HQ 可派) per (rr, sku)
   useEffect(() => {
     if (!restockDemand) return;
     setRestockAllocs((prev) => {
@@ -2005,7 +2005,7 @@ function Body() {
                       <tr>
                         <Th>品項</Th>
                         <Th className="text-center">申請量</Th>
-                        <Th className="text-center" title="HQ 即時庫存 (on_hand)">HQ 庫存</Th>
+                        <Th className="text-center" title="總倉帳上扣除凍結後，目前能派的數量">HQ 可派</Th>
                         <Th className="text-center">已撿</Th>
                         <Th className="text-center">本次撿</Th>
                       </tr>
@@ -2056,7 +2056,7 @@ function Body() {
                                   )
                                 }
                                 onFocus={(e) => e.currentTarget.select()}
-                                title={`最多可撿 ${maxForLine}(申請 ${ln.demand_qty}、庫存 ${ln.gr_qty}、已撿 ${ln.wave_qty})`}
+                                title={`最多可撿 ${maxForLine}（申請 ${ln.demand_qty}、可派 ${ln.gr_qty}、已撿 ${ln.wave_qty}）`}
                                 className={`h-10 w-full max-w-[96px] rounded-md border px-1 text-center font-mono text-base font-semibold tabular-nums dark:bg-zinc-800 ${
                                   value === 0
                                     ? "border-zinc-200 text-zinc-300 dark:border-zinc-700"

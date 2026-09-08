@@ -40,8 +40,8 @@ type Item = {
   transfer_item_id: number;
   sku_id: number;
   qty_received: number;
-  unit_cost: number;
-  line_amount: number;
+  unit_cost: number | null;
+  line_amount: number | null;
   unit_branch_price: number;
   branch_amount: number;
   received_at: string;
@@ -103,6 +103,18 @@ const ENTRY_TYPE_COLOR: Record<Item["entry_type"], string> = {
   free_out: "bg-violet-100 text-violet-800 dark:bg-violet-950 dark:text-violet-300",
   return_out: "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
 };
+
+function fmtCost(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "未提供成本";
+  const n = Number(v);
+  return Number.isFinite(n) ? `$${n.toFixed(2)}` : "未提供成本";
+}
+
+function fmtAmount(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "未提供成本";
+  const n = Number(v);
+  return Number.isFinite(n) ? `$${n.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}` : "未提供成本";
+}
 
 const STATUS_LABEL: Record<SettlementStatus, string> = {
   draft: "草稿",
@@ -788,10 +800,10 @@ export default function HqSettlementDetailPage() {
                     </Td>
                     <Td className="text-right font-mono">{Number(it.qty_received).toLocaleString()}</Td>
                     <Td className="whitespace-nowrap text-right font-mono text-zinc-500">
-                      {isFree ? "—" : `$${Number(it.unit_cost).toFixed(2)}`}
+                      {isFree ? "—" : fmtCost(it.unit_cost)}
                     </Td>
                     <Td className={`whitespace-nowrap text-right font-mono ${isNeg ? "text-amber-600" : ""}`}>
-                      ${Number(it.line_amount).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                      {fmtAmount(it.line_amount)}
                     </Td>
                     <Td className="whitespace-nowrap text-right font-mono text-zinc-500">
                       {isFree ? "—" : `$${Number(it.unit_branch_price ?? 0).toFixed(2)}`}
@@ -805,7 +817,7 @@ export default function HqSettlementDetailPage() {
                           <SpinButton
                             onClick={() => {
                               setEditItem(it);
-                              setEditAmount(String(Math.abs(Number(it.line_amount))));
+                              setEditAmount(String(Math.abs(Number(it.line_amount ?? 0))));
                               setEditReason("");
                               setErr(null);
                             }}
@@ -825,7 +837,7 @@ export default function HqSettlementDetailPage() {
                 <tr>
                   <td colSpan={6} className="px-3 py-2 text-right text-xs text-zinc-500">合計</td>
                   <td className="px-3 py-2 text-right font-mono font-medium text-zinc-500">
-                    ${items.reduce((sum, it) => sum + Number(it.line_amount), 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                    ${items.reduce((sum, it) => sum + Number(it.line_amount ?? 0), 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                   </td>
                   <td></td>
                   <td className="px-3 py-2 text-right font-mono font-medium text-sky-700 dark:text-sky-400">

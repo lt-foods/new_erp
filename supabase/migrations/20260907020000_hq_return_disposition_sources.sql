@@ -46,8 +46,7 @@ BEGIN
   AND (TG_OP = 'INSERT' OR OLD.in_movement_id IS DISTINCT FROM NEW.in_movement_id)
   THEN
     -- 取父調撥單
-    SELECT t.tenant_id, t.transfer_type, t.dest_location, t.notes,
-           t.received_by
+    SELECT t.tenant_id, t.transfer_type, t.dest_location, t.notes
       INTO v_transfer
       FROM transfers t
      WHERE t.id = NEW.transfer_id;
@@ -57,7 +56,7 @@ BEGIN
 
       -- 驗證 movement 存在且為正向入庫
       SELECT m.id, m.tenant_id, m.location_id, m.sku_id, m.quantity,
-             m.movement_type
+             m.movement_type, m.source_doc_type, m.source_doc_id, m.operator_id
         INTO v_mov
         FROM stock_movements m
        WHERE m.id = NEW.in_movement_id;
@@ -106,15 +105,22 @@ BEGIN
           NEW.in_movement_id, v_mov.movement_type;
       END IF;
 
-      -- operator / auto_flag：全零 sentinel → system，其餘 → manual
-      v_operator_id := COALESCE(v_transfer.received_by,
-                                '00000000-0000-0000-0000-000000000000'::UUID);
+      -- movement 必須真的屬於這張 transfer；NULL 也要擋，不可當成通過
+      IF v_mov.source_doc_type IS DISTINCT FROM 'transfer'
+      OR v_mov.source_doc_id IS DISTINCT FROM NEW.transfer_id
+      THEN
+        RAISE EXCEPTION '_hq_return_source: movement % source=%/% expected transfer/%',
+          NEW.in_movement_id, v_mov.source_doc_type, v_mov.source_doc_id, NEW.transfer_id;
+      END IF;
+
+      -- transfer_items 觸發時 parent.received_by 尚未更新；操作者以來源 movement 為準
+      v_operator_id := v_mov.operator_id;
       v_auto_flag := CASE
         WHEN v_operator_id = '00000000-0000-0000-0000-000000000000'::UUID
         THEN 'system' ELSE 'manual'
       END;
 
-      -- 原因：從 transfer notes 取（[order return: 少收] 等）
+      -- 原因：只快照觸發當下父單已有 notes；不含本次收貨 p_notes
       v_source_reason := LEFT(v_transfer.notes, 200);
 
       -- 呼叫 A helper 建批次（冪等：同 source_movement_id 回傳既有 id）
@@ -147,7 +153,7 @@ BEGIN
 
     -- 驗證 movement
     SELECT m.id, m.tenant_id, m.location_id, m.sku_id, m.quantity,
-           m.movement_type
+           m.movement_type, m.source_doc_type, m.source_doc_id, m.operator_id
       INTO v_mov
       FROM stock_movements m
      WHERE m.id = NEW.shortage_restock_movement_id;
@@ -191,6 +197,15 @@ BEGIN
     IF v_mov.movement_type != 'transfer_cancel' THEN
       RAISE EXCEPTION '_hq_return_source: shortage movement % type=% expected transfer_cancel',
         NEW.shortage_restock_movement_id, v_mov.movement_type;
+    END IF;
+
+    -- movement 必須真的屬於這張 transfer；NULL 也要擋，不可當成通過
+    IF v_mov.source_doc_type IS DISTINCT FROM 'transfer'
+    OR v_mov.source_doc_id IS DISTINCT FROM NEW.transfer_id
+    THEN
+      RAISE EXCEPTION '_hq_return_source: shortage movement % source=%/% expected transfer/%',
+        NEW.shortage_restock_movement_id,
+        v_mov.source_doc_type, v_mov.source_doc_id, NEW.transfer_id;
     END IF;
 
     -- shortage 的 operator：取 rpc_resolve 傳入的 p_operator（存在 shortage_resolution_by）

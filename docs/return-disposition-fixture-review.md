@@ -88,3 +88,63 @@ node -e 'const {Client}=require("pg"); const c=new Client({host:"127.0.0.1",port
 
 - 我沒有重跑 `node tests/return-disposition/fixture.cjs --db-name ...`，因為那會建立新假 DB；本輪只做靜態 review、語法檢查、diff whitespace 檢查，以及對既有 `return_disposition_test_d3` 的只讀查詢。
 - 本 loader 是最小測試載入器，不含完整 ERP。C/F 未交件、以及業務 helper 仍 fail-closed，不算 D 小修自己的 P1；若未來宣稱支援某條完整路徑，就要載入該路徑真 helper 或補明確測試。
+
+## 2026-09-07 D3 / 040 view / 真月結前置複審
+
+範圍：只審 `tests/return-disposition/fixture.cjs`、`tests/return-disposition/README.md`、以及 CEO 後補的 `tests/return-disposition-review/README.md` 說明；未改功能碼、未連外、未碰正式資料。
+
+### 結論
+
+D3 小修目前可作為本案假庫載入器使用；未發現 D 自身 P0/P1/P2。
+
+它已把 `--with-all` 從「只湊到能載 C/F」推進到「能讓 C 內重建的真月結產生器實際跑完、且 draft 明細可重建」。但這仍是本案有界 fixture，不是完整 ERP 載入器，也不是全 ERP 權限驗收。
+
+### 本輪新增核對
+
+已實跑：
+
+```powershell
+node --check tests\return-disposition\fixture.cjs
+node tests\return-disposition\fixture.cjs --db-name return_disposition_test_d3_review_20260907 --with-all
+```
+
+結果：exit 0。`return_disposition_test_d3_review_20260907` 是本輪新建假庫；loader 若同名 DB 已存在會直接拒絕，沒有 drop 或覆蓋既有假庫。
+
+已確認 `--with-all`：
+
+- F 的 `v_picking_demand_no_po` 只從 `20260612000040_approve_restock_via_picking_workstation.sql` 用 AST 抽真正 view，不整支載入 040，避免把新版 `rpc_create_wave_from_restock` 蓋回舊版。
+- 真月結前置只從明確檔名、明確 AST selector 抽指定物件；每個 selector 必須剛好一筆，找不到或多筆都 fail。
+- 前置包含：`entry_type`、draft 可重建 trigger、六種月結明細 CHECK 與 `description`、雙口徑欄位與真 `_branch_price_at`、真 `store_settlement_adjustments`、真 `v_store_aid_transfer_legs`。
+- README 已說明：基底 schema 抽取會跳過 RLS/POLICY/GRANT/COMMENT；但 A/B/C/F 候選 migration 是原樣全載，包含本案自己的 policy/grant。不能把這句擴大解讀成「全 ERP 權限都驗過」。
+- `tests/return-disposition-review/README.md` 已把舊 `review_assertions.sql` 標成歷史草稿；該檔用名字猜表、不含 `hq_return_batches`，不應再當現行驗收依據。
+
+真月結正向 control：
+
+```powershell
+node -e 'const {Client}=require("pg");(async()=>{const c=new Client({host:"127.0.0.1",port:56427,user:"returnlocal",database:"return_disposition_test_d3_review_20260907"});await c.connect();await c.query("begin");try{await c.query("update prices set effective_from = now() - make_interval(days => 30)");const r1=await c.query("select public.rpc_generate_hq_to_store_settlement($1::date,$2::uuid) as result",["2026-09-01","22222222-2222-2222-2222-222222222222"]);const n1=await c.query("select count(*)::int n from store_monthly_settlement_items");const r2=await c.query("select public.rpc_generate_hq_to_store_settlement($1::date,$2::uuid) as result",["2026-09-01","22222222-2222-2222-2222-222222222222"]);const n2=await c.query("select count(*)::int n from store_monthly_settlement_items");console.log(JSON.stringify({first:r1.rows[0].result,itemsAfterFirst:n1.rows[0].n,second:r2.rows[0].result,itemsAfterSecond:n2.rows[0].n}));}finally{await c.query("rollback");await c.end();}})().catch(e=>{console.error(e.stack||e.message);process.exit(1);});'
+```
+
+結果：
+
+```json
+{"first":{"month":"2026-09","stores_count":1,"total_amount":750,"total_adjustment":0,"total_cost_amount":500,"total_branch_amount":750},"itemsAfterFirst":1,"second":{"month":"2026-09","stores_count":1,"total_amount":750,"total_adjustment":0,"total_cost_amount":500,"total_branch_amount":750},"itemsAfterSecond":1}
+```
+
+這個 control 有在交易內把假 prices 的 `effective_from` 前移 30 天，避免因 fixture 價格日期晚於假派車日而查不到分店價。這不是改財務算法，也不是 stub `_branch_price_at`；只是讓假資料具備可核對的有效價格。
+
+### P0
+
+- 0。
+
+### P1
+
+- 0。
+
+### P2
+
+- 0。首輪 P2-1（040 view 不是最新版）已關閉：現在抽 `20260612000040` 的真正 view。首輪 P2-2（README/註解殘留 trim_scale 輕量 stub 說法）已關閉：README 與程式註解已改成不提供 `trim_scale` stub。
+
+### 邊界
+
+- D3 fixture 只保證本案 A/B/C/F 與指定真前置可載入、可支撐本案 runtime；不代表完整 ERP 所有 migration、所有 RLS/GRANT、所有月結送出／確認／收款流程都已驗。
+- 本輪沒有 drop 任何既有假庫；新建 `return_disposition_test_d3_review_20260907` 只供本地驗證保留。

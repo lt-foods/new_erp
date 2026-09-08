@@ -238,6 +238,90 @@ async function extractSchemaStatements(filePath) {
   return results;
 }
 
+// --with-all 的月結前置只准從指定 migration 挑出指定 AST statement。
+// 每個 selector 必須剛好命中一筆；找不到或重複都 fail，避免誤載同檔舊版財務 RPC。
+async function extractSelectedStatements(filePath, selectors) {
+  const sql = fs.readFileSync(filePath, 'utf8');
+  const buf = Buffer.from(sql, 'utf8');
+  const PgQuery = await newParser();
+  const res = PgQuery.parse(sql);
+  if (res.error) {
+    throw new Error(`Parse error in ${filePath}: ${res.error.message}`);
+  }
+  const stmts = (res.parse_tree?.stmts ?? []).map((s) => ({
+    nodeType: stmtNodeType(s),
+    name: getObjectName(s),
+    text: sliceStmt(buf, s.stmt_location, s.stmt_len).trim(),
+  }));
+
+  return selectors.map((selector) => {
+    const matches = stmts.filter((stmt) =>
+      stmt.nodeType === selector.nodeType
+      && (!selector.name || stmt.name?.toLowerCase() === selector.name.toLowerCase())
+      && (!selector.match || selector.match.test(stmt.text))
+    );
+    if (matches.length !== 1) {
+      throw new Error(
+        `Expected exactly one ${selector.desc} in ${path.basename(filePath)}, found ${matches.length}`,
+      );
+    }
+    return matches[0];
+  });
+}
+
+const SETTLEMENT_PREREQ_SOURCES = [
+  {
+    file: '20260512000012_settlement_air_transfer_adjustment.sql',
+    desc: 'settlement items entry_type 基底欄位',
+    selectors: [
+      { nodeType: 'AlterTableStmt', match: /ADD COLUMN IF NOT EXISTS entry_type\s+TEXT NOT NULL DEFAULT 'hq_inbound'/i, desc: 'entry_type column DDL' },
+    ],
+  },
+  {
+    file: '20260512000013_settlement_items_trigger_allow_draft.sql',
+    desc: 'draft 月結明細可重建 trigger',
+    selectors: [
+      { nodeType: 'DropStmt', match: /DROP TRIGGER IF EXISTS trg_no_mut_smsi/i, desc: 'old immutable trigger drop' },
+      { nodeType: 'CreateFunctionStmt', name: 'forbid_smsi_mutation_when_locked', desc: 'draft-aware item mutation function' },
+      { nodeType: 'CreateTrigStmt', match: /CREATE TRIGGER trg_smsi_immutable_when_locked/i, desc: 'draft-aware item mutation trigger' },
+    ],
+  },
+  {
+    file: '20260714000100_settlement_free_transfer_and_return.sql',
+    desc: '六種月結明細類型與描述欄',
+    selectors: [
+      { nodeType: 'AlterTableStmt', match: /DROP CONSTRAINT IF EXISTS store_monthly_settlement_items_entry_type_check/i, desc: 'old entry_type check drop' },
+      { nodeType: 'AlterTableStmt', match: /DROP CONSTRAINT IF EXISTS smsi_entry_type_check_v2/i, desc: 'v2 entry_type check drop' },
+      { nodeType: 'AlterTableStmt', match: /ADD CONSTRAINT smsi_entry_type_check_v2[\s\S]*'return_out'/i, desc: 'six-way entry_type check' },
+      { nodeType: 'AlterTableStmt', match: /ADD COLUMN IF NOT EXISTS description TEXT/i, desc: 'settlement item description column' },
+    ],
+  },
+  {
+    file: '20260715000000_settlement_dual_price_basis.sql',
+    desc: '月結雙口徑欄位與分店價 helper',
+    selectors: [
+      { nodeType: 'AlterTableStmt', match: /ADD COLUMN IF NOT EXISTS cost_amount[\s\S]*ADD COLUMN IF NOT EXISTS branch_amount/i, desc: 'settlement dual total columns' },
+      { nodeType: 'AlterTableStmt', match: /ADD COLUMN IF NOT EXISTS unit_branch_price[\s\S]*ADD COLUMN IF NOT EXISTS branch_amount/i, desc: 'settlement item branch columns' },
+      { nodeType: 'CreateFunctionStmt', name: '_branch_price_at', desc: '_branch_price_at function' },
+    ],
+  },
+  {
+    file: '20260801000000_settlement_manual_adjustment.sql',
+    desc: '人工調整總額欄與真資料表',
+    selectors: [
+      { nodeType: 'AlterTableStmt', match: /ADD COLUMN IF NOT EXISTS adjustment_amount/i, desc: 'settlement adjustment total column' },
+      { nodeType: 'CreateStmt', match: /CREATE TABLE IF NOT EXISTS public\.store_settlement_adjustments/i, desc: 'store_settlement_adjustments table' },
+    ],
+  },
+  {
+    file: '20260825030000_settlement_ship_time_matching.sql',
+    desc: '店間轉貨真記帳 view',
+    selectors: [
+      { nodeType: 'ViewStmt', name: 'v_store_aid_transfer_legs', desc: 'v_store_aid_transfer_legs view' },
+    ],
+  },
+];
+
 // ============================================================
 // Auth stub SQL — sub 缺值回 NULL，不冒充全零 user
 // ============================================================
@@ -393,10 +477,10 @@ CREATE TABLE IF NOT EXISTS tenants (
 
 // ============================================================
 // Helper stubs：被函式引用但本測不需要真實邏輯的 helpers
-// 分三類：
+// 分兩類：
 //   ✅ 可 no-op（通知類、配單查詢類）
 //   ⛔ RAISE（會動庫存/訂單/帳，不可假成功）
-//   🔧 真實輕量（trim_scale 等）
+// trim_scale 是本機 PostgreSQL 18 內建函式，不由 fixture stub。
 // ============================================================
 const HELPER_STUBS_SQL = `
 -- sequences referenced by real functions
@@ -652,6 +736,26 @@ const COLUMN_ADDITIONS = [
   { sql: "ALTER TABLE picking_waves ADD COLUMN IF NOT EXISTS source_po_id BIGINT" },
   // picking_waves.source_restock_request_id
   { sql: "ALTER TABLE picking_waves ADD COLUMN IF NOT EXISTS source_restock_request_id BIGINT" },
+  // customer_orders.order_kind 型別/default 原樣取自 20260516000000，CHECK 取最新 20260612000020
+  { sql: `ALTER TABLE customer_orders
+    ADD COLUMN IF NOT EXISTS order_kind TEXT NOT NULL DEFAULT 'normal'
+      CHECK (order_kind IN ('normal', 'offset'))` },
+  { sql: "ALTER TABLE public.customer_orders DROP CONSTRAINT IF EXISTS customer_orders_order_kind_check" },
+  { sql: `ALTER TABLE public.customer_orders ADD CONSTRAINT customer_orders_order_kind_check
+    CHECK (order_kind = ANY (ARRAY['normal'::text, 'offset'::text, 'restock'::text]))` },
+  // approved_transfer 走 wave 時 linked_transfer_id 可為 NULL；原樣取自 20260612000060
+  { sql: "ALTER TABLE public.restock_requests DROP CONSTRAINT IF EXISTS restock_requests_check" },
+  { sql: `ALTER TABLE public.restock_requests
+    ADD CONSTRAINT restock_requests_check CHECK (
+      (status <> 'approved_pr' OR linked_pr_id IS NOT NULL) AND
+      (status <> 'rejected'    OR rejected_reason IS NOT NULL)
+    )` },
+  // 月結狀態最新 CHECK；原樣取自 20260715000120
+  { sql: "ALTER TABLE public.store_monthly_settlements DROP CONSTRAINT IF EXISTS store_monthly_settlements_status_check" },
+  { sql: "ALTER TABLE public.store_monthly_settlements DROP CONSTRAINT IF EXISTS sms_status_check_v2" },
+  { sql: `ALTER TABLE public.store_monthly_settlements
+    ADD CONSTRAINT sms_status_check_v2
+      CHECK (status IN ('draft','sent','disputed','confirmed','remitted','settled','cancelled'))` },
   // restock_request_lines.cancelled_at (referenced by rpc_receive_transfer D2 logic)
   { sql: "ALTER TABLE restock_request_lines ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ" },
   // customer_orders extra columns
@@ -822,9 +926,14 @@ async function main() {
 
     // 2g'. --with-all: A + B + C + F（缺檔即 fail）
     if (WITH_ALL) {
-      // F 依賴 v_picking_demand_no_po — 先從真 migration 載入
+      // F 依賴 v_picking_demand_no_po：只從 F 前的現行定義用 AST 抽 view，
+      // 不整支載入 040，避免它把 FUNCTION_SOURCES 載入的新版補貨 RPC 蓋回舊版。
       const allPrereqs = [
-        { file: '20260612000030_v_picking_demand_no_po.sql', desc: 'v_picking_demand_no_po (F prerequisite)' },
+        {
+          file: '20260612000040_approve_restock_via_picking_workstation.sql',
+          desc: 'v_picking_demand_no_po (F prerequisite view only)',
+          views: ['v_picking_demand_no_po'],
+        },
       ];
       for (const pr of allPrereqs) {
         const prPath = path.join(MIGRATIONS_DIR, pr.file);
@@ -833,9 +942,33 @@ async function main() {
           process.exit(1);
         }
         console.log(`  Loading prerequisite: ${pr.desc}`);
-        const prSql = fs.readFileSync(prPath, 'utf8');
-        await client.query(prSql);
-        console.log(`    ✓ Prerequisite applied`);
+        const extracted = await extractStatements(prPath, [], { alsoViews: pr.views });
+        const foundNames = new Set(extracted.map(item => item.name.toLowerCase()));
+        const missing = pr.views.filter(name => !foundNames.has(name.toLowerCase()));
+        if (missing.length > 0) {
+          console.error(`    ✗ Missing prerequisite views in ${pr.file}: ${missing.join(', ')}`);
+          process.exit(1);
+        }
+        for (const item of extracted) {
+          await client.query(item.sql);
+          console.log(`    ✓ ${item.type}: ${item.name}`);
+        }
+      }
+
+      // C 會載入「真月結產生器函式體 + 同月同步鎖」。在 C 之前只補該函式
+      // 完整跑兩次所需的真 schema/helper/view，不載任何來源檔裡的舊 generator。
+      for (const prereq of SETTLEMENT_PREREQ_SOURCES) {
+        const prereqPath = path.join(MIGRATIONS_DIR, prereq.file);
+        if (!fs.existsSync(prereqPath)) {
+          console.error(`  ✗ --with-all settlement prerequisite: ${prereq.file} not found`);
+          process.exit(1);
+        }
+        console.log(`  Loading settlement prerequisite: ${prereq.desc}`);
+        const selected = await extractSelectedStatements(prereqPath, prereq.selectors);
+        for (const item of selected) {
+          await client.query(item.text);
+          console.log(`    ✓ ${item.nodeType}: ${item.name ?? prereq.desc}`);
+        }
       }
 
       const allFiles = [

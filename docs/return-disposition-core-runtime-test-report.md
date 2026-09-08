@@ -221,3 +221,34 @@ P1：0
 P2：0
 
 A 修版已通過本機假庫 16 群 runtime。仍未覆蓋 C：原單更正 / 撤回 / 月鎖；也未代表 E/F 前端或可派量包已通過。
+
+## 2026-09-07 full_v1：deferred 準備資料適配
+
+背景：full_v1 加入 C 後，`source_validation` 與 `hold_full_payload_replay` 的測試準備階段會暫停 B 的 `trg_hq_return_source`，手動掛好 `transfer_items.in_movement_id`。原測試在 `ALTER TABLE ... DISABLE TRIGGER` 前後沒有先排空合法 deferred trigger queue，導致 PostgreSQL 以 `55006` 擋住 ALTER；這是測試準備順序問題，不是 A/B/C 功能結論。
+
+本輪只改測試碼：
+
+- 在 `tests/return-disposition-review/core-runtime.cjs` 新增 `flushDeferredConstraints()`。
+- `linkedRawInboundMovement()` 在關 B trigger 前、手動掛來源後、恢復 trigger 後，都先 `SET CONSTRAINTS ALL IMMEDIATE` 再回 `DEFERRED`。
+- 沒有關 C trigger，沒有放寬任何 assert，也沒有把錯碼行為改成 expected。
+
+實跑：
+
+```powershell
+node --check tests\return-disposition-review\core-runtime.cjs
+node tests\return-disposition-review\core-runtime.cjs --db-name return_disposition_test_full_v1 --case source_validation,hold_full_payload_replay
+node tests\return-disposition-review\core-runtime.cjs --db-name return_disposition_test_core_initial --case source_validation,hold_full_payload_replay
+node tests\return-disposition-review\core-runtime.cjs --db-name return_disposition_test_full_v1 --case all
+```
+
+結果：
+
+- `node --check`：exit 0。
+- `full_v1` 指定 2 群：2/2 PASS。
+- `core_initial` 指定 2 群：exit 1，仍抓到舊 A 的來源防偽與 hold payload 缺口；表示這次沒有把測試改軟。
+- `full_v1 --case all`：16/16 PASS。
+
+`full_v1 --case all` 本輪 race 留存：
+
+- `race_same_request` tenant：`2a0a36bc-42ec-4e98-8d63-7da3a23a6cc1`
+- `race_hold_negative` tenant：`33b8e5eb-23c9-40f4-a11a-d12e6343d041`

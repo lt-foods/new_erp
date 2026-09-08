@@ -23,8 +23,8 @@ type SettlementItem = {
   transfer_id: number;
   sku_id: number;
   qty_received: number;
-  unit_cost: number;
-  line_amount: number;
+  unit_cost: number | null;
+  line_amount: number | null;
   unit_branch_price: number;
   branch_amount: number;
   received_at: string;
@@ -52,6 +52,18 @@ const ENTRY_TYPE_LABEL: Record<SettlementItem["entry_type"], string> = {
   free_out: "自由轉出",
   return_out: "退貨沖回",
 };
+
+function fmtCost(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "未提供成本";
+  const n = Number(v);
+  return Number.isFinite(n) ? `$${n.toFixed(2)}` : "未提供成本";
+}
+
+function fmtAmount(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "未提供成本";
+  const n = Number(v);
+  return Number.isFinite(n) ? `$${n.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}` : "未提供成本";
+}
 
 // 分店版（預設）：給店家的對帳單，只列分店價，不露總倉成本。
 // 內部版：加列成本單價/成本小計與口徑差額（總部毛利），總部對帳用。
@@ -168,7 +180,7 @@ export default function PrintSettlementPage() {
   }
 
   const monthLabel = settlement.settlement_month?.slice(0, 7);
-  const totalCost = items.reduce((s, it) => s + Number(it.line_amount), 0);
+  const totalCost = items.reduce((s, it) => s + Number(it.line_amount ?? 0), 0);
   const totalBranch = items.reduce((s, it) => s + Number(it.branch_amount ?? 0), 0);
   const adjTotal = adjustments.reduce((s, a) => s + Number(a.amount), 0);
   const today = new Date().toLocaleDateString("zh-TW");
@@ -315,10 +327,10 @@ export default function PrintSettlementPage() {
                     {internal && (
                       <>
                         <td className="border border-zinc-400 px-2 py-1 text-right font-mono whitespace-nowrap">
-                          {isFree ? "—" : `$${Number(it.unit_cost).toFixed(2)}`}
+                          {isFree ? "—" : fmtCost(it.unit_cost)}
                         </td>
                         <td className={`border border-zinc-400 px-2 py-1 text-right font-mono whitespace-nowrap ${Number(it.line_amount) < 0 ? "text-amber-600" : ""}`}>
-                          ${Number(it.line_amount).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                          {fmtAmount(it.line_amount)}
                         </td>
                       </>
                     )}

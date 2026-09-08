@@ -11,8 +11,10 @@ const pageRel = 'apps/admin/src/app/(protected)/wms/return-disposition/page.tsx'
 const pageFile = path.join(repoRoot, pageRel);
 const source = fs.readFileSync(pageFile, 'utf8');
 const sourceFile = ts.createSourceFile(pageRel, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const detailRel = 'apps/admin/src/app/(protected)/transfers/settlement/detail/page.tsx';
+const printRel = 'apps/admin/src/app/(protected)/finance/receivables/print/page.tsx';
 
-function findFunction(name) {
+function findFunction(name, sf = sourceFile, src = source) {
   let found = null;
   function visit(node) {
     if (ts.isFunctionDeclaration(node) && node.name && node.name.text === name) {
@@ -21,22 +23,22 @@ function findFunction(name) {
     }
     ts.forEachChild(node, visit);
   }
-  visit(sourceFile);
+  visit(sf);
   if (!found) {
     throw new Error(`找不到 ${name}，測試不能跳過`);
   }
-  const pos = sourceFile.getLineAndCharacterOfPosition(found.getStart(sourceFile));
+  const pos = sf.getLineAndCharacterOfPosition(found.getStart(sf));
   return {
     name,
     line: pos.line + 1,
-    text: source.slice(found.getStart(sourceFile), found.end),
+    text: src.slice(found.getStart(sf), found.end),
   };
 }
 
 function loadHelpers(runtimeGlobals = {}) {
-  const helpers = [findFunction('newRequestId'), findFunction('clampDecimal')];
+  const helpers = [findFunction('newRequestId'), findFunction('clampDecimal'), findFunction('fmtUnitCost')];
   const js = ts.transpileModule(
-    helpers.map((h) => h.text).join('\n\n') + '\n\nmodule.exports = { newRequestId, clampDecimal };',
+    helpers.map((h) => h.text).join('\n\n') + '\n\nmodule.exports = { newRequestId, clampDecimal, fmtUnitCost };',
     {
       compilerOptions: {
         module: ts.ModuleKind.CommonJS,
@@ -54,6 +56,27 @@ function loadHelpers(runtimeGlobals = {}) {
   vm.createContext(sandbox);
   vm.runInContext(js, sandbox, { filename: 'return-disposition-page-helpers.js' });
   return { helpers: sandbox.module.exports, locations: helpers };
+}
+
+function loadSingleHelper(rel, name) {
+  const file = path.join(repoRoot, rel);
+  const src = fs.readFileSync(file, 'utf8');
+  const sf = ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const helper = findFunction(name, sf, src);
+  const js = ts.transpileModule(
+    `${helper.text}\n\nmodule.exports = { ${name} };`,
+    {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2020,
+      },
+      fileName: rel,
+    },
+  ).outputText;
+  const sandbox = { module: { exports: {} }, exports: {} };
+  vm.createContext(sandbox);
+  vm.runInContext(js, sandbox, { filename: `${rel}-${name}.js` });
+  return { helper: sandbox.module.exports[name], location: { ...helper, rel } };
 }
 
 function inspect(value) {
@@ -75,6 +98,8 @@ function ok(name, pass, actual, expected) {
 }
 
 const { helpers, locations } = loadHelpers();
+const detailFmtCost = loadSingleHelper(detailRel, 'fmtCost');
+const printFmtCost = loadSingleHelper(printRel, 'fmtCost');
 
 const clampCases = [
   {
@@ -144,7 +169,18 @@ ok(
 );
 equal('newRequestId fallback 不可使用 Math.random', mathRandomCalls, 0);
 
+equal('fmtUnitCost NULL 不可顯示成 0 元', helpers.fmtUnitCost(null), '未提供成本');
+equal('fmtUnitCost 空字串不可顯示成 0 元', helpers.fmtUnitCost(''), '未提供成本');
+equal('fmtUnitCost 非數字不可顯示成 0 元', helpers.fmtUnitCost('not-a-number'), '未提供成本');
+equal('fmtUnitCost 真 0 才顯示 0 元', helpers.fmtUnitCost(0), '$0.00');
+equal('settlement detail NULL 成本不可顯示成 0 元', detailFmtCost.helper(null), '未提供成本');
+equal('settlement detail 真 0 才顯示 0 元', detailFmtCost.helper(0), '$0.00');
+equal('settlement print NULL 成本不可顯示成 0 元', printFmtCost.helper(null), '未提供成本');
+equal('settlement print 真 0 才顯示 0 元', printFmtCost.helper(0), '$0.00');
+
 console.log(`extracted ${locations.map((h) => `${h.name}:L${h.line}`).join(', ')} from ${pageRel}`);
+console.log(`extracted fmtCost:L${detailFmtCost.location.line} from ${detailRel}`);
+console.log(`extracted fmtCost:L${printFmtCost.location.line} from ${printRel}`);
 
 if (failures.length === 0) {
   console.log('ok - return-disposition UI input runtime checks');

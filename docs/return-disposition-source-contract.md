@@ -29,6 +29,12 @@ Migration: `20260907020000_hq_return_disposition_sources.sql`
     └─ 同上觸發
 ```
 
+`store_return` 的操作者以來源 `stock_movements.operator_id` 為準。觸發器執行時，
+父單 `transfers.received_by` 還沒有被 `rpc_receive_transfer` 更新，不能拿它判斷人工／系統收回。
+
+`store_return.source_reason` 是觸發當下父單已有 `notes` 的快照，不含
+`rpc_receive_transfer` 本次收貨才傳入的 `p_notes`；本次 `p_notes` 之後才會合併回父單。
+
 ## 核心匹配條件
 
 | 條件 | store_return | shortage |
@@ -37,6 +43,7 @@ Migration: `20260907020000_hq_return_disposition_sources.sql`
 | transfer_type | `return_to_hq` | 任意（靠 location type 過濾） |
 | movement_type | `transfer_in` | `transfer_cancel` |
 | movement.quantity | > 0 | > 0 |
+| movement source | `transfer` + 當前 `transfer_id` | 同左 |
 | location type | dest = `central_warehouse` | source = `central_warehouse` |
 | tenant 一致 | movement.tenant = transfer.tenant | 同左 |
 | SKU 一致 | movement.sku = item.sku | 同左 |
@@ -66,3 +73,8 @@ C 段（原單更正/撤回）需處理以下情境：
 
 入口建議：C 在 hq_return_batches 上提供 `_hq_revoke_return(p_source_movement_id)` 函式，
 B 的 trigger 不負責減量/撤回（B 只建不拆）。
+
+## 整合前提
+
+- A 的 `_hq_hold_return` 必須保留現有公開 signature 與 B 所傳的必要欄位；B 不依賴 A 其他新欄位。
+- A helper 的來源防偽與 C 的撤回／改實收必須另行整合驗收；B 單獨完成不等於整包可放行。

@@ -33,10 +33,12 @@ node tests/return-disposition/fixture.cjs --with-all
    - 跳過 RLS / POLICY / GRANT / COMMENT ON
    - relation 不存在 → **fail**（不吞錯誤），只有 `already exists` 允許跳過
 5. Column additions（ALTER TABLE ADD COLUMN IF NOT EXISTS）
-6. Helper stubs（分三類：通知類 no-op / 庫存類 RAISE / 真實輕量）
+6. Helper stubs（通知／查詢類 no-op；會動庫存、訂單或帳的 helper 一律 RAISE）
+   - `trim_scale` 使用本機 PostgreSQL 18 內建函式，不由 fixture 提供 stub
 7. 真函式載入（AST 按名稱 pick，**逐一驗證** found = pick count）
 8. `--with-core`：明確載入 A（20260907010000）、B（20260907020000）
-9. Fixture 假資料 + setval sequences
+9. `--with-all`：在 C 前以 AST 精確載入真月結產生器完成兩次所需的有界前置
+10. Fixture 假資料 + setval sequences
 
 以上只驗證「可載入」，不等於功能驗收。
 
@@ -44,8 +46,8 @@ node tests/return-disposition/fixture.cjs --with-all
 
 以下只建空殼 DDL 或完全跳過，不載入真實邏輯：
 - `auth.uid()` / `auth.jwt()` — session variable 模擬（sub 缺值回 NULL）
-- RLS policies、GRANT/REVOKE — 全跳
-- COMMENT ON — 全跳（非必要）
+- 基底來源 migration 的 RLS policies、GRANT/REVOKE — 抽 schema 時跳過；**A/B/C/F 候選仍原樣完整執行，包含本案政策與授權**，不是全案跳過權限
+- 基底 COMMENT ON — 抽 schema 時跳過（候選 migration 的註解仍原樣執行）
 - cron / http / pg_net — 不載
 - 通知模組細節 — line_channels 等只建 FK 參照
 - 外部匯入 / POS — 不載
@@ -89,7 +91,32 @@ node tests/return-disposition/fixture.cjs --with-all
 - A + B（同上）
 - C: `20260907030000_hq_return_disposition_reversals.sql`
 - F: `20260907040000_hq_return_disposition_available.sql`
-- prerequisite: `v_picking_demand_no_po`（從 20260612000030 載真版）
+- prerequisite: `v_picking_demand_no_po`（從 20260612000040 以 AST 只抽該 view）
+
+`--with-all` 不會整支載入 20260612000040，避免其中舊版
+`rpc_create_wave_from_restock` 蓋掉 fixture 前面已載入的新版函式。這仍是 F 所需的
+有界前置，不代表 fixture 載入完整 ERP。
+
+為了讓 C 內的真 `rpc_generate_hq_to_store_settlement` 不只等鎖、而是能完整跑完並再次
+重建草稿明細，`--with-all` 會在 C 前從下列來源以 AST 精確抽取必要 statement：
+
+- `20260512000012`：明細 `entry_type` 欄位
+- `20260512000013`：草稿可重建、鎖定後不可改的真明細 trigger
+- `20260714000100`：六種明細類型 CHECK 與 `description`
+- `20260715000000`：雙口徑總額／明細欄位及真 `_branch_price_at`
+- `20260801000000`：`adjustment_amount` 與真 `store_settlement_adjustments` 表
+- `20260825030000`：真 `v_store_aid_transfer_legs` view
+
+每個指定物件或 DDL 必須剛好找到一筆，否則 fixture 直接失敗；這些 migration 內的舊版
+月結產生器與其他財務 RPC 都不會載入。本 fixture 仍不是完整 ERP，也沒有載入完整的
+送單、畫押、確認收款流程；若那些流程需要應收模組，須另列測試範圍與真前置，不能把
+本 fixture 的月結產生成功當成它們已通過。
+
+另外，fixture 會依來源 migration 原樣補齊三組必要 schema 前置：
+
+- `customer_orders.order_kind`：`TEXT NOT NULL DEFAULT 'normal'`，最新允許 `normal/offset/restock`
+- `restock_requests_check`：`approved_transfer` 不再強制已有 `linked_transfer_id`
+- `store_monthly_settlements.status`：允許 `draft/sent/disputed/confirmed/remitted/settled/cancelled`
 
 所有檔案必須本地存在才載入。不掃 pattern、不載其他 case 的 migration。
 以上只驗證「可載入」，不等於完整業務驗收。

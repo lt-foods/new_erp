@@ -183,3 +183,53 @@ B 的大方向正確：用 `transfer_items.in_movement_id` 接「退回總倉真
 2. B 再補 source_doc 防偽：兩條來源都核 `source_doc_type/source_doc_id`。
 3. source contract 補 return notes 時序與 A 前置條件。
 4. C 採 reversal hook + transfer_items 清 ID 守門，不重抄三支大 RPC。
+
+---
+
+## 修版複審（2026-09-07，Codex GPT-5.5 阿審）
+
+結論：B 最新版本輪沒有 P0/P1/P2 阻擋。首審兩個 P1 已補上，P2 文件邊界也已在 contract 說清楚。這只代表 B 來源建批這一段可交下一段整包驗收；不代表 C 撤回／原單更正已完成，也不代表正式系統驗收。
+
+### 本輪範圍
+
+- 檔案：`supabase/migrations/20260907020000_hq_return_disposition_sources.sql`
+- 契約：`docs/return-disposition-source-contract.md`
+- 對照原始路徑：
+  - `rpc_receive_transfer` 最新定義：`supabase/migrations/20260904020010_accept_store_return_deducts_stock.sql:101`，入庫 movement 與 `transfer_items.in_movement_id` 先寫，父單 `received_by` 後寫。
+  - `rpc_resolve_transfer_item_shortage` 最新定義：`supabase/migrations/20260903000200_shortage_resolution_undo.sql:111`，少收回總倉與 redispatch 回帳 movement 都用 `source_doc_type='transfer'`、`source_doc_id=transfer_id`。
+
+### P0
+
+- 0。
+
+### P1
+
+- 0。
+
+首審 P1-1 已修：return 路現在從 `stock_movements.operator_id` 取操作者，位置 `supabase/migrations/20260907020000_hq_return_disposition_sources.sql:59`、`:117-124`，不再在 trigger 時讀尚未更新的父單 `received_by`。
+
+首審 P1-2 已修：return 與 shortage 都補核 `source_doc_type='transfer'`、`source_doc_id=NEW.transfer_id`，位置 `:109-113`、`:203-208`。白話講，就是待處理批次只能由「這張原單自己的回帳異動」建立，不能把同品項同倉但別張單的異動接進來。
+
+### P2
+
+- 0。
+
+首審 P2-1 已收斂：contract 已寫明 return 的 `source_reason` 取觸發當下父單既有 notes，不承諾包含收貨當下新輸入的 `p_notes`。實碼位置 `:124`。
+
+### 本機實跑
+
+命令：
+
+```powershell
+node tests\return-disposition-review\source-available-runtime.cjs --db-name return_disposition_test_core_a_fix --case b_store_return,b_shortage
+```
+
+結果：exit 0。
+
+- `b_store_return` PASS：退貨回總倉只建一批；人工 operator 記 manual；全零 operator 記 system；錯 source_doc 原單會拒絕。
+- `b_shortage` PASS：少收 `restock_hq` 回帳只建一批；重複更新不重建；錯 source_doc 原單會拒絕。
+
+### 交付前置條件（不算 B 自身缺陷）
+
+- C 撤回／原單更正仍要接上。B 只負責「來源正確時建批」，不負責「原收貨撤回、改實收、撤銷少收時把舊批撤掉」。
+- 整包最後仍要在包含 A/B/C/F 的同一假庫跑 flow 與核心回歸；本段不是正式系統驗收。

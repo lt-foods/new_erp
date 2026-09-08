@@ -186,14 +186,22 @@ async function rawInboundMovement(c, s, qty, loc = s.hq, sku = s.sku, item = s.i
   return row.id;
 }
 
+async function flushDeferredConstraints(c) {
+  await c.query('set constraints all immediate');
+  await c.query('set constraints all deferred');
+}
+
 async function linkedRawInboundMovement(c, s, qty) {
   const movementId = await rawInboundMovement(c, s, qty);
+  await flushDeferredConstraints(c);
   await c.query('alter table public.transfer_items disable trigger trg_hq_return_source');
   try {
     await c.query('update transfer_items set in_movement_id = $1 where id = $2', [movementId, s.item]);
+    await flushDeferredConstraints(c);
   } finally {
     await c.query('alter table public.transfer_items enable trigger trg_hq_return_source');
   }
+  await flushDeferredConstraints(c);
   return movementId;
 }
 
