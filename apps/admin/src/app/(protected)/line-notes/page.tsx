@@ -4,12 +4,14 @@
 // 真正跟 LINE 講話的是地端 worker（tools/line-note-scraper/src/worker.mjs），
 // 這頁只做設定、丟工作（line_note_jobs）、看結果。
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import { translateRpcError } from "@/lib/rpcError";
 import { campaignStatusBadge, campaignStatusLabel } from "@/lib/campaignStatus";
+import { Modal as SharedModal } from "@/components/Modal";
+import { OrderDetail } from "@/components/OrderDetail";
 
 type Account = {
   id: number; label: string; status: "logged_out" | "pending_qr" | "active" | "error";
@@ -75,8 +77,25 @@ const btn = "rounded border border-zinc-300 px-2.5 py-1 text-sm hover:bg-zinc-10
 const btnPrimary = "rounded bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900";
 const input = "w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 
+// 點訂單號開的明細彈窗（整頁共用一個；比照 CampaignOrdersPanel / MemberDetail 的用法）
+type OrderPopup = { id: number; no: string };
+const OrderPopupContext = createContext<((o: OrderPopup) => void) | null>(null);
+function useOpenOrder() { return useContext(OrderPopupContext); }
+
+/** 訂單號連結：點了開明細彈窗 */
+function OrderLink({ id, no }: { id: number; no: string }) {
+  const open = useOpenOrder();
+  return (
+    <button type="button" className="font-mono text-sky-700 underline hover:text-sky-900 dark:text-sky-400 dark:hover:text-sky-200"
+      onClick={(e) => { e.stopPropagation(); open?.({ id, no }); }}>
+      {no}
+    </button>
+  );
+}
+
 export default function LineNotesPage() {
   const [tab, setTab] = useState<"accounts" | "communities" | "comments" | "posts">("accounts");
+  const [orderPopup, setOrderPopup] = useState<OrderPopup | null>(null);
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
   const [communities, setCommunities] = useState<Community[] | null>(null);
@@ -122,6 +141,7 @@ export default function LineNotesPage() {
   const communityById = useMemo(() => new Map((communities ?? []).map((c) => [c.id, c])), [communities]);
 
   return (
+    <OrderPopupContext.Provider value={setOrderPopup}>
     <div className="flex flex-1 flex-col gap-4 p-6">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
@@ -165,7 +185,19 @@ export default function LineNotesPage() {
       {tab === "posts" && (
         <PostsTab posts={posts} communityById={communityById} reload={loadPosts} notify={notify} fail={fail} />
       )}
+
+      <SharedModal
+        open={orderPopup !== null}
+        onClose={() => setOrderPopup(null)}
+        title={`訂單明細 ${orderPopup?.no ?? ""}`}
+        maxWidth="max-w-4xl"
+      >
+        {orderPopup && (
+          <OrderDetail orderId={orderPopup.id} onNavigate={(id, no) => setOrderPopup({ id, no })} />
+        )}
+      </SharedModal>
     </div>
+    </OrderPopupContext.Provider>
   );
 }
 
@@ -565,10 +597,12 @@ function CommentsTab({ communityById, notify, fail }: {
   // 結果欄：一個徽章 + 一句話
   const result = (c: Comment) => {
     const o = c.customer_order_id ? orders.get(c.customer_order_id) : null;
-    const orderText = o ? `${o.store_name ?? "？店"}　${o.order_no}` : c.customer_order_id ? `訂單 #${c.customer_order_id}` : "";
+    const orderCell = o
+      ? <><span className="text-zinc-600 dark:text-zinc-300">{o.store_name ?? "？店"}</span>{" "}<OrderLink id={o.id} no={o.order_no} /></>
+      : c.customer_order_id ? <span>訂單 #{c.customer_order_id}</span> : null;
     switch (c.status) {
-      case "ordered":   return <><Badge tone="green">已加單</Badge><span>{orderText}</span></>;
-      case "duplicate": return <><Badge tone="blue">已有訂單</Badge><span>{orderText}</span></>;
+      case "ordered":   return <><Badge tone="green">已加單</Badge>{orderCell}</>;
+      case "duplicate": return <><Badge tone="blue">已有訂單</Badge>{orderCell}</>;
       case "resolved":  return <><Badge tone="green">已解決</Badge><span className="text-zinc-500">{c.resolution_note ?? ""}</span></>;
       case "ignored":   return <Badge tone="gray">忽略</Badge>;
       case "pending":   return <Badge tone="amber">等 worker 處理</Badge>;
@@ -638,6 +672,7 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
   const [open, setOpen] = useState<number | null>(null);
   // 展開過的貼文留言（快取，收合再展開不用重抓）
   const [detail, setDetail] = useState<Map<number, Comment[]>>(new Map());
+  const [orderNos, setOrderNos] = useState<Map<number, string>>(new Map());
   const [loadingId, setLoadingId] = useState<number | null>(null);
 
   const toggle = async (p: Post) => {
@@ -649,7 +684,17 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
       .eq("post_id", p.id).order("commented_at", { ascending: true }).order("id");
     setLoadingId(null);
     if (error) return fail(error);
-    setDetail((m) => new Map(m).set(p.id, (data ?? []) as Comment[]));
+    const cs = (data ?? []) as Comment[];
+    setDetail((m) => new Map(m).set(p.id, cs));
+    // 有加到單的補查單號，才能做成連結
+    const ids = [...new Set(cs.map((c) => c.customer_order_id).filter((x): x is number => !!x))];
+    if (ids.length === 0) return;
+    const { data: od } = await getSupabase().from("customer_orders").select("id,order_no").in("id", ids);
+    setOrderNos((m) => {
+      const n = new Map(m);
+      for (const o of (od ?? []) as { id: number; order_no: string }[]) n.set(o.id, o.order_no);
+      return n;
+    });
   };
 
   const readNow = async (p: Post) => {
@@ -729,6 +774,9 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
                                 <span className="w-24 shrink-0 text-xs text-zinc-500">{fmt(cm.commented_at)}</span>
                                 <span className="w-40 shrink-0 truncate font-medium">{cm.commenter_name ?? "—"}</span>
                                 <span className="min-w-0 flex-1 truncate">{cm.text}</span>
+                                {cm.customer_order_id && orderNos.has(cm.customer_order_id) && (
+                                  <OrderLink id={cm.customer_order_id} no={orderNos.get(cm.customer_order_id)!} />
+                                )}
                                 <Badge tone={cm.status === "ordered" || cm.status === "resolved" ? "green"
                                   : cm.status === "duplicate" ? "blue"
                                   : cm.status === "pending" ? "amber"
