@@ -27,7 +27,7 @@ import { corsHeaders } from "../_shared/cors.ts";
 import {
   clientFromToken, createNotePost, listComments, listHomes, listPosts, loginByQr, whoami,
 } from "../_shared/lineNote.ts";
-import { parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
+import { matchCampaign, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
 
 const SUPABASE_URL = requireEnv("SUPABASE_URL");
 const SERVICE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
@@ -245,20 +245,20 @@ async function readPost(client: any, post: any) {
   return { comments: comments.length, pending: pending?.length ?? 0, ordered, other };
 }
 
-// 認貼文：小幫手手貼的團（內文含開團中／已收單的團名或團號）也綁進來
+// 認貼文：小幫手手貼的團也綁進來（比對規則見 matchCampaign）
 async function discoverPosts(client: any, community: any) {
   const since = new Date(Date.now() - community.read_days * 86400_000).toISOString();
   const notes = await listPosts(client, community.home_id, { limit: 100, since, verbose: VERBOSE });
   if (notes.length === 0) return 0;
   const known = await rest(`line_note_posts?community_id=eq.${community.id}&select=id,status,line_post_id,campaign_id`);
   const knownByLineId = new Map((known ?? []).filter((p: any) => p.line_post_id).map((p: any) => [p.line_post_id, p]));
-  const campaigns = await rest(`group_buy_campaigns?tenant_id=eq.${community.tenant_id}&status=in.(open,closed)&select=id,name,campaign_no&order=id.desc&limit=200`);
+  const campaigns = await rest(`group_buy_campaigns?tenant_id=eq.${community.tenant_id}&status=in.(open,closed)&select=id,name,campaign_no,campaign_items(skus(product_name))&order=id.desc&limit=300`);
   let linked = 0;
   for (const n of notes) {
     if (!n.postId || knownByLineId.has(String(n.postId))) continue;
     const text = String(n.text ?? "");
-    const hit = (campaigns ?? []).find((c: any) => (c.name && text.includes(c.name)) || (c.campaign_no && text.includes(c.campaign_no)));
-    if (!hit) continue;
+    const hit = matchCampaign(text, campaigns ?? []);
+    if (!hit) { log(`認不出貼文 ${n.postId}：${postTitle(text)}`); continue; }
     const existing = (known ?? []).find((p: any) => p.campaign_id === hit.id);
     const row = { status: "posted", line_post_id: String(n.postId), text, posted_at: n.createdAt ?? new Date().toISOString(), last_error: null };
     if (existing) {
