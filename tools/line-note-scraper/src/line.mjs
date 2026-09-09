@@ -352,6 +352,25 @@ export async function listComments(client, homeId, postId, { verbose = false, on
  * @param {string} opts.text
  * @param {(string|Buffer)[]} [opts.images]  JPEG 檔路徑或 Buffer（上傳時 content-type 固定 image/jpeg）
  */
+/**
+ * 在某則留言上按表情（笑臉）。likeType 1003 = 笑
+ * （1001 讚 / 1002 愛心 / 1003 笑 / 1004 驚 / 1005 哭 / 1006 怒）。
+ * contentId 放**留言 id**；actorId 是自己的 mid。走跟讀留言同一套 host/prefix/channel 探測。
+ */
+export async function likeComment(client, homeId, commentId, { likeType = "1003", sourceType = "TIMELINE", verbose = false } = {}) {
+  const res = await noteRequest(client, homeId, "/api/v57/like/create.json",
+    { homeId, sourceType },
+    {
+      method: "POST",
+      body: { contentId: String(commentId), actorId: client.base.profile?.mid ?? "", likeType: String(likeType), sharable: false },
+      verbose,
+    });
+  if (!res || res.code !== 0) {
+    throw new Error(`按表情失敗：code=${res?.code} ${res?.message ?? ""}`);
+  }
+  return res;
+}
+
 export async function createNotePost(client, homeId, { text, images = [], sourceType, verbose = false } = {}) {
   if (!text && images.length === 0) throw new Error("貼文至少要有文字或圖片");
 

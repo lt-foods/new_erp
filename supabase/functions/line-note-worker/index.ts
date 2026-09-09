@@ -25,7 +25,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 import QRCode from "npm:qrcode@1.5.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import {
-  clientFromToken, createNotePost, listComments, listHomes, listPosts, loginByQr, whoami,
+  clientFromToken, createNotePost, likeComment, listComments, listHomes, listPosts, loginByQr, whoami,
 } from "../_shared/lineNote.ts";
 import { matchCampaign, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
 
@@ -241,8 +241,37 @@ async function readPost(client: any, post: any) {
       await patch("line_note_comments", `id=eq.${c.id}`, { status: "error", error: String((e as any)?.message ?? e).slice(0, 1000) }).catch(() => {});
     }
   }
+  const reacted = await reactToConfirmed(client, post);
   await patch("line_note_posts", `id=eq.${post.id}`, { last_read_at: new Date().toISOString(), comment_count: comments.length, last_error: null });
-  return { comments: comments.length, pending: pending?.length ?? 0, ordered, other };
+  return { comments: comments.length, pending: pending?.length ?? 0, ordered, other, reacted };
+}
+
+const REACT_BATCH = 40;                                  // 每則貼文一次最多按幾則
+const REACT_DEADLINE = Date.now() + 100_000;             // 本次呼叫按表情的總預算（idle timeout 150s）
+
+// 收到單的留言回按一個笑臉，讓客人知道「你的 +1 我收到了」。
+// 只按 ordered / duplicate / resolved —— unmatched、error 還沒處理完，按了會讓客人以為收到了。
+// 按過的記 reacted_at，下次讀留言不會重按。單一則失敗不影響其他則，也不影響讀留言本身。
+async function reactToConfirmed(client: any, post: any): Promise<number> {
+  if (post.react_on_confirm === false) return 0;
+  const rows = await rest(
+    `line_note_comments?post_id=eq.${post.id}&reacted_at=is.null` +
+    `&status=in.(ordered,duplicate,resolved)&select=id,line_comment_id&limit=${REACT_BATCH}`);
+  let n = 0;
+  for (const c of rows ?? []) {
+    if (!c.line_comment_id) continue;
+    // Edge Function 有 150 秒 idle timeout，按表情一則約 1 秒。
+    // 超過預算就留給下一次讀留言接手（reacted_at 是 NULL 的還在，不會漏）。
+    if (Date.now() > REACT_DEADLINE) { log("按表情時間到，剩下的留到下次讀留言"); break; }
+    try {
+      await likeComment(client, post.home_id, c.line_comment_id, { verbose: VERBOSE });
+      await patch("line_note_comments", `id=eq.${c.id}`, { reacted_at: new Date().toISOString() });
+      n++;
+    } catch (e) {
+      log(`留言 ${c.line_comment_id} 按表情失敗（略過）：${(e as any)?.message ?? e}`);
+    }
+  }
+  return n;
 }
 
 // 認貼文：小幫手手貼的團也綁進來（比對規則見 matchCampaign）
@@ -285,14 +314,17 @@ async function jobRead(job: any) {
     }
   }
   const filter = job.post_id ? `id=eq.${job.post_id}` : `community_id=eq.${job.community_id}${sinceFilter}`;
-  const posts = await rest(`line_note_posts?${filter}&status=eq.posted&select=id,tenant_id,line_post_id,community_id,group_buy_campaigns(status),line_note_communities(home_id,account_id)`);
+  const posts = await rest(`line_note_posts?${filter}&status=eq.posted&select=id,tenant_id,line_post_id,community_id,group_buy_campaigns(status),line_note_communities(home_id,account_id,react_on_confirm)`);
   const out: any[] = [];
   for (const p of posts ?? []) {
     const cst = p.group_buy_campaigns?.status;
     if (cst && !["open", "closed"].includes(cst)) { await patch("line_note_posts", `id=eq.${p.id}`, { status: "closed" }); continue; }
     const client = await clientFor(await loadAccount(p.line_note_communities.account_id));
     try {
-      out.push({ post_id: p.id, ...(await readPost(client, { ...p, home_id: p.line_note_communities.home_id })) });
+      out.push({ post_id: p.id, ...(await readPost(client, {
+        ...p, home_id: p.line_note_communities.home_id,
+        react_on_confirm: p.line_note_communities.react_on_confirm,
+      })) });
     } catch (e) {
       await patch("line_note_posts", `id=eq.${p.id}`, { last_error: String((e as any)?.message ?? e).slice(0, 1000) });
       out.push({ post_id: p.id, error: String((e as any)?.message ?? e) });
