@@ -529,7 +529,7 @@ function PostCampaignModal({ community, onClose, notify, fail, reloadPosts }: {
 }
 
 // ── 貼文與留言 ───────────────────────────────────────────────────────────────
-type Filter = "todo" | "ordered" | "all";
+type Filter = "todo" | "ordered" | "ignored" | "all";
 const TODO_STATUSES: Comment["status"][] = ["pending", "unmatched", "error"];
 const isTodo = (c: Comment) => TODO_STATUSES.includes(c.status) || (c.status === "no_order" && !!c.member_no_hint);
 
@@ -566,7 +566,7 @@ function CommentsTab({ communityById, notify, fail }: {
 
   const retry = async (c: Comment) => {
     setBusy(c.id);
-    const { data, error } = await getSupabase().rpc("rpc_line_note_apply_comment", { p_comment_id: c.id });
+    const { data, error } = await getSupabase().rpc("rpc_line_note_apply_comment", { p_comment_id: c.id, p_force: true });
     setBusy(null);
     if (error) return fail(error);
     const r = (Array.isArray(data) ? data[0] : data) as { out_status?: string; out_error?: string } | null;
@@ -591,9 +591,11 @@ function CommentsTab({ communityById, notify, fail }: {
     if (!rows) return null;
     if (filter === "todo") return rows.filter(isTodo);
     if (filter === "ordered") return rows.filter((c) => c.status === "ordered" || c.status === "duplicate");
+    if (filter === "ignored") return rows.filter((c) => c.status === "ignored" || c.status === "resolved");
     return rows;
   }, [rows, filter]);
   const todoCount = rows?.filter(isTodo).length ?? 0;
+  const ignoredCount = rows?.filter((c) => c.status === "ignored" || c.status === "resolved").length ?? 0;
 
   // 結果欄：一個徽章 + 一句話
   const result = (c: Comment) => {
@@ -614,9 +616,17 @@ function CommentsTab({ communityById, notify, fail }: {
     }
   };
   const actions = (c: Comment) => {
-    if (c.status === "ordered" || c.status === "duplicate") return null;
-    if (c.status === "ignored" || c.status === "resolved") {
-      return <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "pending")}>退回</SpinButton>;
+    if (c.status === "ordered") return null;   // 已經加成單，重跑會變重複單
+    // 忽略／已解決／已有訂單也還能重跑（RPC 帶 p_force）：當初對不到人、或先前那張單已經取消
+    if (c.status === "ignored" || c.status === "resolved" || c.status === "duplicate") {
+      return (
+        <div className="flex justify-end gap-1">
+          <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => retry(c)}>重試</SpinButton>
+          {c.status !== "duplicate" && (
+            <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "pending")}>退回</SpinButton>
+          )}
+        </div>
+      );
     }
     return (
       <div className="flex justify-end gap-1">
@@ -629,9 +639,13 @@ function CommentsTab({ communityById, notify, fail }: {
 
   return (
     <div className="space-y-3">
+      <p className="text-sm text-zinc-500">
+        「找不到會員」「錯誤」修正後按「重試」；小幫手自己加完單按「已解決」。
+        標成忽略／已解決的之後還是可以按「重試」重跑。
+      </p>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
-          {([["todo", `待處理 ${todoCount}`], ["ordered", "已加單"], ["all", "全部"]] as const).map(([k, l]) => (
+          {([["todo", `待處理 ${todoCount}`], ["ordered", "已加單"], ["ignored", `忽略 ${ignoredCount}`], ["all", "全部"]] as const).map(([k, l]) => (
             <button key={k} type="button" onClick={() => setFilter(k)}
               className={`rounded-md px-3 py-1 text-sm ${filter === k ? "bg-white shadow dark:bg-zinc-900" : "text-zinc-600 dark:text-zinc-300"}`}>
               {l}
