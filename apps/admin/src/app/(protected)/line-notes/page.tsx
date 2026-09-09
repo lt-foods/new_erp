@@ -327,11 +327,16 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
   const [form, setForm] = useState<CommunityForm | null>(null);
   const [busy, setBusy] = useState<number | "save" | "homes" | null>(null);
   const [homes, setHomes] = useState<Home[] | null>(null);
+  // 新增時可以一次勾好幾個社群／群組，共用同一份設定（編輯時只認一個，所以不用）
+  const [picked, setPicked] = useState<Home[]>([]);
   const [postFor, setPostFor] = useState<Community | null>(null);
 
-  const openNew = () => { setHomes(null); setForm({ ...EMPTY_FORM, account_id: accounts[0]?.id ?? "" }); };
+  // 新增模式下勾了社群 = 批次建立；編輯模式永遠是單一社群
+  const multi = form?.id === null && picked.length > 0;
+
+  const openNew = () => { setHomes(null); setPicked([]); setForm({ ...EMPTY_FORM, account_id: accounts[0]?.id ?? "" }); };
   const openEdit = (c: Community) => {
-    setHomes(null);
+    setHomes(null); setPicked([]);
     setForm({ id: c.id, account_id: c.account_id, store_id: c.store_id ?? "", home_id: c.home_id, home_name: c.home_name ?? "",
       listen_enabled: c.listen_enabled, read_times: c.read_times.join(", "), auto_post_on_open: c.auto_post_on_open, post_template: c.post_template ?? "", read_days: c.read_days ?? 3, react_on_confirm: c.react_on_confirm ?? true });
   };
@@ -354,23 +359,39 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
     } catch (e) { fail(e); } finally { setBusy(null); }
   };
 
+  // 勾了好幾個社群就一個一個建（同一份設定）。一個失敗不影響其他個，
+  // 最後把失敗的社群名字一起講清楚，不要只說「儲存失敗」讓人不知道是哪一個。
   const save = async () => {
     if (!form) return;
+    const targets = multi
+      ? picked.map((h) => ({ home_id: h.homeId, home_name: h.name }))
+      : [{ home_id: form.home_id.trim(), home_name: form.home_name.trim() || null }];
+    if (targets.some((t) => !t.home_id)) return fail(new Error("請選擇社群"));
+
     setBusy("save");
-    const { error } = await getSupabase().rpc("rpc_line_note_community_upsert", {
-      p_id: form.id, p_account_id: form.account_id || null, p_store_id: form.store_id || null,
-      p_home_id: form.home_id.trim(), p_home_name: form.home_name.trim() || null, p_home_kind: kindOf(form.home_id.trim()),
+    const sb = getSupabase();
+    const shared = {
+      p_account_id: form.account_id || null, p_store_id: form.store_id || null,
       p_listen_enabled: form.listen_enabled,
       p_read_times: form.read_times.split(/[,\s，、]+/).map((s) => s.trim()).filter(Boolean),
       p_auto_post_on_open: form.auto_post_on_open, p_post_template: form.post_template || null,
       p_read_days: Math.min(30, Math.max(1, Math.round(form.read_days || 3))),
       p_react_on_confirm: form.react_on_confirm,
-    });
+    };
+    const failed: string[] = [];
+    for (const t of targets) {
+      const { error } = await sb.rpc("rpc_line_note_community_upsert", {
+        ...shared, p_id: multi ? null : form.id,
+        p_home_id: t.home_id, p_home_name: t.home_name, p_home_kind: kindOf(t.home_id),
+      });
+      if (error) failed.push(`${t.home_name || t.home_id}：${translateRpcError(error)}`);
+    }
     setBusy(null);
-    if (error) return fail(error);
-    notify("已儲存");
-    setForm(null);
     await reload();
+    if (failed.length) return fail(new Error(failed.join("\n")));
+    notify(targets.length > 1 ? `已儲存 ${targets.length} 個社群` : "已儲存");
+    setForm(null);
+    setPicked([]);
   };
   const remove = async (c: Community) => {
     if (!window.confirm(`刪除社群「${c.home_name || c.home_id}」的設定？`)) return;
@@ -430,7 +451,8 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       </Table>
 
       {form && (
-        <Modal title={form.id ? "編輯社群" : "新增社群"} onClose={() => setForm(null)} wide>
+        <Modal title={form.id ? "編輯社群" : picked.length > 1 ? `新增 ${picked.length} 個社群` : "新增社群"}
+          onClose={() => setForm(null)} wide>
           <div className="grid gap-3 md:grid-cols-2">
             <label className="text-sm">帳號
               <select className={input} value={form.account_id} onChange={(e) => setForm({ ...form, account_id: Number(e.target.value) })}>
@@ -447,22 +469,62 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
             <div className="text-sm md:col-span-2">
               <div className="flex items-end gap-2">
                 <label className="flex-1">社群 homeId
-                  <input className={`${input} font-mono`} value={form.home_id} placeholder="m… / c… / s…"
+                  <input className={`${input} font-mono`} value={multi ? `已勾選 ${picked.length} 個` : form.home_id}
+                    placeholder="m… / c… / s…" disabled={multi}
                     onChange={(e) => setForm({ ...form, home_id: e.target.value })} />
                 </label>
                 <SpinButton type="button" className={btn} loading={busy === "homes"} onClick={loadHomes}>從帳號載入清單</SpinButton>
               </div>
-              {homes && (
+              {homes && homes.length === 0 && (
+                <p className="mt-2 text-sm text-zinc-500">這個帳號沒有加入任何群組／社群</p>
+              )}
+              {homes && homes.length > 0 && form.id === null && (
+                <>
+                  <div className="mt-2 flex items-center justify-between text-xs text-zinc-500">
+                    <span>勾幾個就建幾個，下面的設定會一起套用（已設定過的會被覆蓋成這裡的設定）</span>
+                    <button type="button" className={btn}
+                      onClick={() => setPicked(picked.length === homes.length ? [] : homes)}>
+                      {picked.length === homes.length ? "全部取消" : "全選"}
+                    </button>
+                  </div>
+                  <ul className="mt-1 max-h-60 divide-y divide-zinc-200 overflow-auto rounded border border-zinc-300 dark:divide-zinc-800 dark:border-zinc-700">
+                    {homes.map((h) => {
+                      const done = (communities ?? []).some((c) => c.home_id === h.homeId);
+                      return (
+                        <li key={h.homeId}>
+                          <label className="flex cursor-pointer items-center gap-2 px-2 py-1.5 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800">
+                            <input type="checkbox" checked={picked.some((x) => x.homeId === h.homeId)}
+                              onChange={(e) => setPicked(e.target.checked
+                                ? [...picked, h]
+                                : picked.filter((x) => x.homeId !== h.homeId))} />
+                            <span className="shrink-0 text-xs text-zinc-500">[{KIND_LABEL[h.kind] ?? h.kind}]</span>
+                            <span className="min-w-0 flex-1 truncate">{h.name}</span>
+                            {done && <Badge tone="gray">已設定</Badge>}
+                          </label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </>
+              )}
+              {homes && homes.length > 0 && form.id !== null && (
                 <select className={`${input} mt-2`} size={Math.min(8, Math.max(2, homes.length))}
-                  onChange={(e) => { const h = homes.find((x) => x.homeId === e.target.value); if (h) setForm({ ...form, home_id: h.homeId, home_name: h.name }); }}>
-                  {homes.length === 0 && <option disabled>這個帳號沒有加入任何群組／社群</option>}
-                  {homes.map((h) => <option key={h.homeId} value={h.homeId}>[{KIND_LABEL[h.kind] ?? h.kind}] {h.name} — {h.homeId}</option>)}
+                  onChange={(e) => {
+                    const h = homes.find((x) => x.homeId === e.target.value);
+                    if (h) setForm({ ...form, home_id: h.homeId, home_name: h.name });
+                  }}>
+                  {homes.map((h) => (
+                    <option key={h.homeId} value={h.homeId}>
+                      [{KIND_LABEL[h.kind] ?? h.kind}] {h.name} — {h.homeId}
+                    </option>
+                  ))}
                 </select>
               )}
               <p className="mt-1 text-xs text-zinc-500">社群記事本先選「社群聊天室」（m…）；不行再試「社群」（s…）。群組用 c…。</p>
             </div>
             <label className="text-sm">顯示名稱
-              <input className={input} value={form.home_name} onChange={(e) => setForm({ ...form, home_name: e.target.value })} />
+              <input className={input} disabled={multi} value={multi ? "各自沿用社群名稱" : form.home_name}
+                onChange={(e) => setForm({ ...form, home_name: e.target.value })} />
             </label>
             <label className="text-sm">讀取範圍（最近幾天的貼文；也用來認小幫手手貼的團）
               <input type="number" min={1} max={30} className={input} value={form.read_days} onChange={(e) => setForm({ ...form, read_days: Number(e.target.value) })} />
