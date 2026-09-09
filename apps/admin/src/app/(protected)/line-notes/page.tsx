@@ -23,7 +23,8 @@ type Store = { id: number; code: string; name: string };
 type Community = {
   id: number; account_id: number; store_id: number | null; home_id: string; home_name: string | null;
   home_kind: "group" | "square" | "square_chat"; listen_enabled: boolean; read_times: string[];
-  auto_post_on_open: boolean; post_template: string | null; read_days: number; last_read_at: string | null; last_error: string | null;
+  auto_post_on_open: boolean; post_template: string | null; read_days: number; react_on_confirm: boolean;
+  last_read_at: string | null; last_error: string | null;
 };
 type Post = {
   id: number; community_id: number; campaign_id: number; line_post_id: string | null; text: string | null;
@@ -35,7 +36,7 @@ type Comment = {
   id: number; line_comment_id: string; commenter_id: string | null; commenter_name: string | null; text: string;
   commented_at: string | null; member_no_hint: string | null; parsed: { code: string | null; qty: number; cancel: boolean }[];
   status: "pending" | "ordered" | "unmatched" | "no_order" | "error" | "ignored" | "resolved" | "duplicate";
-  member_id: number | null; customer_order_id: number | null; error: string | null;
+  member_id: number | null; customer_order_id: number | null; error: string | null; reacted_at: string | null;
   resolved_at: string | null; resolution_note: string | null;
 };
 type Row = Comment & { line_note_posts: { community_id: number; campaign_id: number; group_buy_campaigns: { name: string; campaign_no: string } | null } | null };
@@ -310,10 +311,12 @@ function AccountsTab({ accounts, reload, notify, fail }: {
 type CommunityForm = {
   id: number | null; account_id: number | ""; store_id: number | ""; home_id: string; home_name: string;
   listen_enabled: boolean; read_times: string; auto_post_on_open: boolean; post_template: string; read_days: number;
+  react_on_confirm: boolean;
 };
 const EMPTY_FORM: CommunityForm = {
   id: null, account_id: "", store_id: "", home_id: "", home_name: "",
   listen_enabled: true, read_times: "12:00", auto_post_on_open: true, post_template: "", read_days: 3,
+  react_on_confirm: true,
 };
 
 function CommunitiesTab({ communities, accounts, stores, accountById, storeById, reload, reloadPosts, notify, fail }: {
@@ -330,7 +333,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
   const openEdit = (c: Community) => {
     setHomes(null);
     setForm({ id: c.id, account_id: c.account_id, store_id: c.store_id ?? "", home_id: c.home_id, home_name: c.home_name ?? "",
-      listen_enabled: c.listen_enabled, read_times: c.read_times.join(", "), auto_post_on_open: c.auto_post_on_open, post_template: c.post_template ?? "", read_days: c.read_days ?? 3 });
+      listen_enabled: c.listen_enabled, read_times: c.read_times.join(", "), auto_post_on_open: c.auto_post_on_open, post_template: c.post_template ?? "", read_days: c.read_days ?? 3, react_on_confirm: c.react_on_confirm ?? true });
   };
 
   const loadHomes = async () => {
@@ -361,6 +364,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       p_read_times: form.read_times.split(/[,\s，、]+/).map((s) => s.trim()).filter(Boolean),
       p_auto_post_on_open: form.auto_post_on_open, p_post_template: form.post_template || null,
       p_read_days: Math.min(30, Math.max(1, Math.round(form.read_days || 3))),
+      p_react_on_confirm: form.react_on_confirm,
     });
     setBusy(null);
     if (error) return fail(error);
@@ -471,6 +475,9 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
             </label>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.auto_post_on_open} onChange={(e) => setForm({ ...form, auto_post_on_open: e.target.checked })} /> 開團（狀態變「開團中」）時自動發文
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={form.react_on_confirm} onChange={(e) => setForm({ ...form, react_on_confirm: e.target.checked })} /> 收到單後在客人留言上按 😄，讓他知道收到了
             </label>
             <label className="text-sm md:col-span-2">發文模板（留空用預設；可用 {"{{name}} {{description}} {{items}} {{end_at}} {{pickup_deadline}}"}）
               <textarea className={`${input} h-40 font-mono text-xs`} value={form.post_template} onChange={(e) => setForm({ ...form, post_template: e.target.value })}
@@ -605,6 +612,10 @@ function CommentsTab({ communityById, notify, fail }: {
   const todoCount = rows?.filter(isTodo).length ?? 0;
   const ignoredCount = rows?.filter((c) => c.status === "ignored" || c.status === "resolved").length ?? 0;
 
+  // 已經在 LINE 那則留言上按過笑臉的標一下，沒按到的看得出來
+  const reacted = (c: Comment) =>
+    c.reacted_at ? <span title={`已在 LINE 留言上按 😄（${fmt(c.reacted_at)}）`}>😄</span> : null;
+
   // 結果欄：一個徽章 + 一句話
   const result = (c: Comment) => {
     const o = c.customer_order_id ? orders.get(c.customer_order_id) : null;
@@ -612,8 +623,8 @@ function CommentsTab({ communityById, notify, fail }: {
       ? <><span className="text-zinc-600 dark:text-zinc-300">{o.store_name ?? "？店"}</span>{" "}<OrderLink id={o.id} no={o.order_no} /></>
       : c.customer_order_id ? <span>訂單 #{c.customer_order_id}</span> : null;
     switch (c.status) {
-      case "ordered":   return <><Badge tone="green">已加單</Badge>{orderCell}</>;
-      case "duplicate": return <><Badge tone="blue">已有訂單</Badge>{orderCell}</>;
+      case "ordered":   return <><Badge tone="green">已加單</Badge>{orderCell}{reacted(c)}</>;
+      case "duplicate": return <><Badge tone="blue">已有訂單</Badge>{orderCell}{reacted(c)}</>;
       case "resolved":  return <><Badge tone="green">已解決</Badge><span className="text-zinc-500">{c.resolution_note ?? ""}</span></>;
       case "ignored":   return <Badge tone="gray">忽略</Badge>;
       case "pending":   return <Badge tone="amber">等 worker 處理</Badge>;
