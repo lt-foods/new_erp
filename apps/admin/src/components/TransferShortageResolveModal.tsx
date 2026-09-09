@@ -18,10 +18,8 @@
 //   2026-08-21 上一版在紅框裡寫了一句沒查證的推論(「古華那筆沒有任何人能再派它」),
 //   Codex 審的是「程式對不對」,抓不到「畫面上寫的話是不是真的」⇒ 整輪審過了還是錯的。
 //   ⛔ 查不到出處的話寧可少講一句。⛔ 不要寫「永遠」「沒有任何人」這種絕對句。
-//   (那句話錯在只查了派貨工作台的路 1。路 2 補貨申請的可配量直接讀總倉真實庫存
-//    stock_balances.on_hand —— v_picking_demand_no_po 最新版
-//    20260612000040_approve_restock_via_picking_workstation.sql:73-78 的 hq_supply CTE
-//    ⇒ 貨記回總倉之後,開一張補貨申請就派得出去。古華等兩個月的真因是沒人知道要開申請。)
+//   (2026-09-07 起補貨工作台只把「帳上扣掉凍結」算成可派量；短少記回總倉後會先凍結，
+//    必須完成貨況確認才可能再派，不能把記回帳上直接說成貨已經可用。)
 //
 // ⭐⭐ 2026-08-21 複審抓到的病(留著當通則,原始情境已隨「客人在等」那一塊移除):
 //   「畫面上先寫一句只在某些情況成立的話,再靠另一個查詢/另一個框去更正它」。
@@ -80,8 +78,10 @@
 //   ⛔ 只動畫面,零 RPC 變更、零 migration。
 //   📌 那 31 筆要不要把貨沖回總倉＝**另一個案子**(老闆已裁示要做),不在本檔。
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { useRole } from "@/lib/role";
 import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
 import { Modal } from "@/components/Modal";
@@ -191,7 +191,7 @@ const RESOLUTION_OPTIONS: Array<OptionDef<"redispatch" | "restock_hq">> = [
     //   ⚠️ 兩顆的 desc 因此變得很像 —— 差別靠標題(補貨/不補貨)、
     //     靠 srcIsHq === true 那塊講清楚,而 srcIsHq 還在查的時候送出鈕是鎖住的
     //     (見下面 srcChecking),所以那段時間看不懂也按不下去。
-    desc: "少收的數量以原出庫成本記回「原本送貨出去的那一邊」。",
+    desc: "少收的數量會先記回原本送貨出去那一邊的帳；補派會另外開單，不代表這批貨已經找到或驗完。",
     warnTone: "info",
     // 出處:記回原出貨端 20260811020000:194-204
     //      (rpc_inbound 的 p_location_id => v_transfer.source_location,不是寫死總倉)。
@@ -202,7 +202,8 @@ const RESOLUTION_OPTIONS: Array<OptionDef<"redispatch" | "restock_hq">> = [
     // ⛔ 六審一併清掉:原本開頭寫「要再送一批給這家店 → 選這顆」——那也是一句隱含的承諾
     //   (「選這顆＝會再送一批」),對非總倉的單同樣不成立。要選哪顆看標題就好。
     warn:
-      "送出後這一筆會從「異常」清單消失。按錯了可以到「異常 → 已處理」按「撤銷」，" +
+      "若來源是總倉，這次記回的數量會先凍結等貨況確認，不能直接拿來補派。送出後這一筆會從「異常」清單消失。" +
+      "按錯了可以到「異常 → 已處理」按「撤銷」，" +
       "但補派的撿貨單一旦「派貨出倉」就撤不掉了。",
   },
   {
@@ -210,16 +211,13 @@ const RESOLUTION_OPTIONS: Array<OptionDef<"redispatch" | "restock_hq">> = [
     icon: "🏭",
     // ⛔ 同上（老闆 2026-09-02 §刀2 的新定案）。
     title: "不補貨",
-    desc: "少收的數量以原出庫成本記回「原本送貨出去的那一邊」，不會自動再送給店家。",
+    desc: "少收的數量會先記回原本送貨出去那一邊的帳，不代表實物已經退回，也不會自動再送給店家。",
     warnTone: "caution",
     // 出處:記回原出貨端 20260811020000:152-162
     //      (同樣是 p_location_id => v_transfer.source_location;
     //       ⚠️ restock_hq 這一支「沒有」總倉守衛 —— redispatch 有 :173-177 擋非總倉,
     //       restock_hq 沒有 ⇒ 店對店的單按這顆,貨是回到原本那家店,不是總倉)。
-    // ⛔ 這裡刻意不寫「開補貨申請就派得出去」:那條路的可配量 hq_supply 讀的是
-    //    「總倉的」stock_balances.on_hand(v_picking_demand_no_po 最新版
-    //    20260612000040:60-78)⇒ 只有貨真的回到總倉才成立。
-    //    它被移到下面 srcIsHq === true 才顯示的那一塊。
+    // 2026-09-07 起，總倉短少記回會先凍結；貨況確認完好前不會算進補貨工作台的可派量。
     warn:
       "送出後這一筆會從「異常」清單消失，而且系統不會自動再送貨給這家店 —— " +
       "之後要補給這家店，得另外開單。按錯了可以到「異常 → 已處理」按「撤銷」，" +
@@ -241,7 +239,7 @@ const REPLY_OPTIONS: Array<OptionDef<Reply>> = [
     value: "agree",
     icon: "✅",
     title: "同意退",
-    desc: "少收的數量記回「原本送貨出去的那一邊」。選了之後再決定要不要補貨給這家店。",
+    desc: "少收的數量會先記回「原本送貨出去的那一邊」的帳，不代表實物已經退回。選了之後再決定要不要補貨給這家店。",
     warnTone: "info",
     warn: "選「同意退」還要再選一次「補貨」或「不補貨」，才會真的送出。",
   },
@@ -331,6 +329,8 @@ export function TransferShortageResolveModal({
   onClose: () => void;
   onSubmitted: () => void;
 }) {
+  const role = useRole();
+  const canOpenDisposition = role === "owner" || role === "admin" || role === "hq_manager";
   // 刀 2 v2：兩步。第 1 步選同意/不同意，第 2 步（只有同意才出現）選補貨/不補貨。
   const [reply, setReply] = useState<Reply | null>(null);
   const [restock, setRestock] = useState<"redispatch" | "restock_hq" | null>(null);
@@ -563,7 +563,7 @@ export function TransferShortageResolveModal({
           <div className="rounded border border-zinc-300 bg-zinc-50 p-2 text-[11px] leading-relaxed text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
             這張單是<span className="font-bold">總倉</span>派出去的。
             <div className="mt-0.5">
-              選「<span className="font-bold">同意退</span>」→ 系統會把少收的數量<span className="font-bold">記一筆退回</span>，
+              選「<span className="font-bold">同意退</span>」→ 系統會把少收的數量<span className="font-bold">記一筆帳務退回</span>，
               月結重算時就會從這家店的帳上扣掉，不用另外開人工調整。
             </div>
             <div className="mt-0.5">
@@ -635,13 +635,22 @@ export function TransferShortageResolveModal({
             這張單是<span className="font-bold">總倉</span>派出去的 →
             下面兩顆說的「原本送貨出去的那一邊」就是總倉。
             <div className="mt-0.5">
-              選「<span className="font-bold">補貨</span>」會自動開一張撿貨單給這家店，
-              出現在收件匣的「📋 撿貨單」，樓下撿完再送一次。
+              選「<span className="font-bold">補貨</span>」會另外開一張補派撿貨單。
+              出貨時只能拿<span className="font-bold">其他已確認可派的好貨</span>；
+              這次記回的數量會先凍結等貨況確認，不能直接拿來補派。
+              其他可派貨不夠時，剩下的需求會保留，等有可派貨再處理。
             </div>
             <div className="mt-0.5">
-              選「<span className="font-bold">不補貨</span>」的話，貨記回總倉之後就算進總倉的可配量 ——
-              之後要補給這家店，請該店開一張補貨申請，總倉核准後就能直接派，不用再進一次貨
-              （要是這批貨先被別的單配走了，就得等下一批）。
+              選「<span className="font-bold">不補貨</span>」會先把數量記回總倉帳上並凍結。
+              總倉確認貨況完好後，這批才會變成可派；帳回不表示實物已到或已驗完。
+              {canOpenDisposition && (
+                <>
+                  {" "}
+                  <Link href="/wms/return-disposition" className="font-semibold text-blue-700 underline underline-offset-2 dark:text-blue-300">
+                    前往退回貨處理
+                  </Link>
+                </>
+              )}
             </div>
             {/* ⚠️ 錢的話只放在這一塊,不放預設文案 —— 沖帳單只對「總倉派給店家」的單產生
                 (20260901000010_shortage_return_booking.sql:296-300 的四道條件),
@@ -649,8 +658,9 @@ export function TransferShortageResolveModal({
                 ⛔ 措辭不寫「一定會退到多少錢」:金額是月結重算時才算出來的,
                   而且分店價改過版的商品會有差額(見該檔檔頭的⚠️那段)。 */}
             <div className="mt-0.5">
-              兩顆都會把少收的數量<span className="font-bold">記一筆退回</span>，
+              兩顆都會把少收的數量<span className="font-bold">記一筆帳務退回</span>，
               月結重算時就會從這家店的帳上扣掉，不用另外開人工調整。
+              若處理當下的分店價和原本派車時不同，退回金額可能會有價差，請核對月結明細。
             </div>
           </div>
         )}
@@ -660,10 +670,8 @@ export function TransferShortageResolveModal({
             ⇒ 查詢還沒回來 / 查不到的時候,畫面上不會有這句話,自然不會說謊。
             出處:自動開 draft 撿貨單 20260811020000:221-243(wave_code → picking_waves →
             picking_wave_items);draft 在收件匣撿貨單匣算待處理 = hq/inbox/page.tsx 的 classifyPicking(:208-212,draft/picking/picked 都算 pending)。
-            出處:可配量 hq_supply 直接讀總倉 stock_balances.on_hand
-            (v_picking_demand_no_po 最新版 20260612000040:60-78),不需要採購單、不需要進貨單。
-            ⚠️ 最後那個括號不是廢話:hq_supply 讀的是「當下的」on_hand,回總倉的貨並沒有被
-            這家店保留住,別的需求先配走就沒了 ⇒ 不加這句就會變成一句「一定派得到」的保證。 */}
+            2026-09-07 新口徑：補派單可以建立，但實際出貨只能用總倉當下未凍結的可派量；
+            本次短少記回的量會先凍結，貨況確認完好前不能拿來補派。 */}
 
         {/* ⛔ 這裡刻意不寫「退回原本那家店」,而是沿用上面兩顆的同一個講法。
             locations.type 現在的 CHECK 只有 'central_warehouse' / 'store' 兩種

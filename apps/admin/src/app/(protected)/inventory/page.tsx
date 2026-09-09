@@ -117,7 +117,7 @@ export default function InventoryOverviewPage() {
   const showCost = canSeeCost(role);
   // 分店價只給 canSeeBranch 的角色看（store_staff 只看零售價）
   const showBranchPrice = canSeeBranch(role);
-  // 商品/倉別/在庫/待客取/內部單/可分配/在途/(均成本)/最後異動/展開箭頭
+  // 商品/倉別/帳面庫存/待客取/內部單/可分配/在途/(均成本)/最後異動/展開箭頭
   const colCount = showCost ? 10 : 9;
 
   const [locs, setLocs] = useState<Loc[]>([]);
@@ -428,6 +428,10 @@ export default function InventoryOverviewPage() {
     for (const s of stores) if (s.location_id != null) m.set(s.location_id, s.name);
     return m;
   }, [stores]);
+  const locTypeById = useMemo(
+    () => new Map(locs.map((l) => [l.id, l.type])),
+    [locs],
+  );
   // 現貨直配要的是 store_id（承諾量/訂單都掛在店上，不是倉別上）；
   // 總倉這類沒有對應分店的倉別查不到 → 不出「配給客人」按鈕。
   const storeObjByLoc = useMemo(() => {
@@ -614,13 +618,9 @@ export default function InventoryOverviewPage() {
         <THead>
           <Th>商品 / SKU</Th>
           <Th>倉別</Th>
-          <Th align="right">在庫</Th>
-          {/* 「保留 / 可用」拿掉了：stock_balances.reserved 全站沒在維護
-              （2026-08-16 實測 7,712 筆有庫存的列，reserved<>0 的是 0 筆）
-              → 可用 恆等於 在庫，是一欄假數字，而且會跟「可分配」互相打臉
-              （截圖回報：列表寫可用 3、配單視窗寫自由量 0）。
-              換成真的有意義的三欄。reserved 若哪天真的開始用，會以標記
-              形式掛在「在庫」旁邊（見下方 rows 渲染）。 */}
+          <Th align="right" title="帳面數量；總倉列會另外列出凍結與目前可派量，不代表樓下已完成實物檢查">
+            帳面庫存
+          </Th>
           <Th align="right">待客取</Th>
           <Th align="right">內部單</Th>
           {/* 可分配含「已到店的內部現貨池」：那些貨在架上、配得掉，配的當下
@@ -646,6 +646,8 @@ export default function InventoryOverviewPage() {
               const rule = reorderMap.get(key);
               const commit = commitMap.get(key) ?? null;
               const returningQty = returningMap.get(key) ?? 0;
+              const isHq = locTypeById.get(r.location_id) === "central_warehouse";
+              const hqAvailable = Math.max(r.on_hand - r.reserved, 0);
               const isLow = rule != null && r.on_hand <= num(rule.reorder_point);
               const open = expanded === key;
               const out: React.ReactNode[] = [
@@ -678,16 +680,27 @@ export default function InventoryOverviewPage() {
                   </Td>
                   <Td className="text-xs">{locLabel(r.location_id)}</Td>
                   <Td align="right" className="font-mono">
-                    {fmtQty(r.on_hand)}
-                    {/* reserved 目前全站恆為 0，所以不給一整欄；真的開始用的話
-                        這個標記會自己冒出來，不會靜靜地被吃掉 */}
-                    {r.reserved !== 0 && (
-                      <span
-                        className="ml-1 text-[10px] text-zinc-400"
-                        title={`其中 ${fmtQty(r.reserved)} 件被 stock_balances.reserved 鎖住`}
+                    {isHq ? (
+                      <div
+                        className="flex flex-col items-end gap-0.5 text-[11px] leading-tight"
+                        title="凍結包含各種尚未可派的貨；可派＝帳上扣掉凍結，下限為 0。這些都是帳面數量，不代表實物已驗完。"
                       >
-                        (保留 {fmtQty(r.reserved)})
-                      </span>
+                        <span>帳上 <strong className="text-zinc-800 dark:text-zinc-200">{fmtQty(r.on_hand)}</strong></span>
+                        <span className="text-amber-700 dark:text-amber-400">凍結 {fmtQty(r.reserved)}</span>
+                        <span className="font-semibold text-emerald-700 dark:text-emerald-400">可派 {fmtQty(hqAvailable)}</span>
+                      </div>
+                    ) : (
+                      <>
+                        {fmtQty(r.on_hand)}
+                        {r.reserved !== 0 && (
+                          <span
+                            className="ml-1 text-[10px] text-zinc-400"
+                            title={`其中 ${fmtQty(r.reserved)} 件目前凍結，不算在可使用數量內`}
+                          >
+                            (凍結 {fmtQty(r.reserved)})
+                          </span>
+                        )}
+                      </>
                     )}
                     {/* 退貨中（2026-09-04 老闆裁示 2 乙案）：
                         「先不扣 → 帳上還是 10，旁邊標『退貨中 3』讓人看得到」。
