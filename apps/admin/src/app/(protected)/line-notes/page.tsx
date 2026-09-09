@@ -66,6 +66,11 @@ function Badge({ tone, children }: { tone: "gray" | "green" | "amber" | "red" | 
   return <span className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${cls}`}>{children}</span>;
 }
 
+// Edge Function line-note-worker：排程每分鐘會自己跑；按了按鈕就順手叫一下，不用等下一分鐘
+function kickWorker(body: Record<string, unknown> = { action: "run" }) {
+  void getSupabase().functions.invoke("line-note-worker", { body }).catch(() => {});
+}
+
 const btn = "rounded border border-zinc-300 px-2.5 py-1 text-sm hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800";
 const btnPrimary = "rounded bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900";
 const input = "w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900";
@@ -123,7 +128,7 @@ export default function LineNotesPage() {
           <h1 className="text-xl font-semibold">LINE 記事本</h1>
           <p className="text-sm text-zinc-500">
             備用 LINE 帳號登入 → 綁社群 → 開團自動發文 → 定時讀留言，留言裡的「會員編號 6 碼 ＋ A+1」自動加單。
-            要有地端 worker 在跑（<code>tools/line-note-scraper</code>：<code>npm run worker</code>）。
+            排程每分鐘自動跑（Supabase），不用另外開程式。
           </p>
         </div>
         <nav className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
@@ -184,11 +189,19 @@ function AccountsTab({ accounts, reload, notify, fail }: {
   };
   const enqueue = async (a: Account, kind: "login" | "logout") => {
     setBusy(a.id);
+    if (kind === "login") {
+      // 登入要等人掃 QR，直接叫 Edge Function 跑（它會把 QR 寫進 DB，這邊輪詢帳號列顯示）
+      kickWorker({ action: "login", account_id: a.id });
+      setBusy(null);
+      setLoginId(a.id);
+      await reload();
+      return;
+    }
     const { error } = await getSupabase().rpc("rpc_line_note_enqueue", { p_kind: kind, p_account_id: a.id });
     setBusy(null);
     if (error) return fail(error);
-    if (kind === "login") setLoginId(a.id);
-    else notify("已送出登出");
+    kickWorker();
+    notify("已送出登出");
     await reload();
   };
   const remove = async (a: Account) => {
@@ -241,7 +254,7 @@ function AccountsTab({ accounts, reload, notify, fail }: {
           ) : loginAccount.status === "error" ? (
             <p className="whitespace-pre-wrap text-red-600">登入失敗：{loginAccount.last_error}</p>
           ) : !loginAccount.qr_image && !loginAccount.qr_url ? (
-            <p className="text-zinc-500">等待 worker 產生 QR…（worker 沒在跑的話會一直停在這裡）</p>
+            <p className="text-zinc-500">正在產生 QR…（約 5 秒）。QR 出現後 2 分鐘內要掃完，逾時再按一次登入。</p>
           ) : (
             <div className="space-y-3 text-center">
               {loginAccount.qr_image
@@ -294,13 +307,14 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
       const sb = getSupabase();
       const { data: jobId, error } = await sb.rpc("rpc_line_note_enqueue", { p_kind: "list_homes", p_account_id: form.account_id });
       if (error) throw error;
+      kickWorker();
       for (let i = 0; i < 40; i++) {
         await new Promise((r) => setTimeout(r, 1500));
         const { data } = await sb.from("line_note_jobs").select("status,result,error").eq("id", jobId).single();
         if (data?.status === "done") { setHomes(((data.result as { homes?: Home[] })?.homes) ?? []); return; }
         if (data?.status === "failed") throw new Error(data.error ?? "worker 回報失敗");
       }
-      throw new Error("等太久沒回應：worker 有在跑嗎？帳號登入了嗎？");
+      throw new Error("等太久沒回應：帳號登入了嗎？");
     } catch (e) { fail(e); } finally { setBusy(null); }
   };
 
@@ -334,7 +348,8 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
     const { error } = await getSupabase().rpc("rpc_line_note_enqueue", { p_kind: "read", p_account_id: c.account_id, p_community_id: c.id });
     setBusy(null);
     if (error) return fail(error);
-    notify("已排立即讀取，worker 跑完後到「貼文與留言」看");
+    kickWorker();
+    notify("已開始讀取，幾秒後到「留言加單」看");
   };
 
   return (
@@ -458,7 +473,8 @@ function PostCampaignModal({ community, onClose, notify, fail, reloadPosts }: {
     const { error } = await getSupabase().rpc("rpc_line_note_queue_post", { p_community_id: community.id, p_campaign_id: campaignId });
     setBusy(false);
     if (error) return fail(error);
-    notify("已排發文，worker 跑完後到「貼文與留言」看");
+    kickWorker();
+    notify("已開始發文，幾秒後到「貼文」看");
     onClose();
     await reloadPosts();
   };
@@ -625,7 +641,8 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
     const { error } = await getSupabase().rpc("rpc_line_note_enqueue", { p_kind: "read", p_account_id: c.account_id, p_community_id: c.id, p_post_id: p.id });
     setBusy(null);
     if (error) return fail(error);
-    notify("已排讀取，留言幾秒後會出現在「留言加單」");
+    kickWorker();
+    notify("已開始讀取，留言幾秒後會出現在「留言加單」");
   };
   return (
     <div className="space-y-3">
