@@ -9,6 +9,7 @@ import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import { translateRpcError } from "@/lib/rpcError";
+import { campaignStatusBadge, campaignStatusLabel } from "@/lib/campaignStatus";
 
 type Account = {
   id: number; label: string; status: "logged_out" | "pending_qr" | "active" | "error";
@@ -16,9 +17,9 @@ type Account = {
   qr_image: string | null; qr_url: string | null; pin_code: string | null;
   last_error: string | null; last_seen_at: string | null;
 };
-type Channel = { id: number; code: string; name: string; channel_type: string; home_store_id: number };
+type Store = { id: number; code: string; name: string };
 type Community = {
-  id: number; account_id: number; channel_id: number; home_id: string; home_name: string | null;
+  id: number; account_id: number; store_id: number | null; home_id: string; home_name: string | null;
   home_kind: "group" | "square" | "square_chat"; listen_enabled: boolean; read_times: string[];
   auto_post_on_open: boolean; post_template: string | null; read_days: number; last_read_at: string | null; last_error: string | null;
 };
@@ -35,7 +36,8 @@ type Comment = {
   member_id: number | null; customer_order_id: number | null; error: string | null;
   resolved_at: string | null; resolution_note: string | null;
 };
-type Todo = Comment & { line_note_posts: { community_id: number; campaign_id: number; group_buy_campaigns: { name: string; campaign_no: string } | null } | null };
+type Row = Comment & { line_note_posts: { community_id: number; campaign_id: number; group_buy_campaigns: { name: string; campaign_no: string } | null } | null };
+type OrderInfo = { id: number; order_no: string; store_name: string | null };
 type Home = { kind: string; homeId: string; name: string };
 type Campaign = { id: number; campaign_no: string; name: string; status: string };
 
@@ -64,14 +66,19 @@ function Badge({ tone, children }: { tone: "gray" | "green" | "amber" | "red" | 
   return <span className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${cls}`}>{children}</span>;
 }
 
+// Edge Function line-note-worker：排程每分鐘會自己跑；按了按鈕就順手叫一下，不用等下一分鐘
+function kickWorker(body: Record<string, unknown> = { action: "run" }) {
+  void getSupabase().functions.invoke("line-note-worker", { body }).catch(() => {});
+}
+
 const btn = "rounded border border-zinc-300 px-2.5 py-1 text-sm hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800";
 const btnPrimary = "rounded bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900";
 const input = "w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 
 export default function LineNotesPage() {
-  const [tab, setTab] = useState<"accounts" | "communities" | "posts">("accounts");
+  const [tab, setTab] = useState<"accounts" | "communities" | "comments" | "posts">("accounts");
   const [accounts, setAccounts] = useState<Account[] | null>(null);
-  const [channels, setChannels] = useState<Channel[]>([]);
+  const [stores, setStores] = useState<Store[]>([]);
   const [communities, setCommunities] = useState<Community[] | null>(null);
   const [posts, setPosts] = useState<Post[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -88,10 +95,10 @@ export default function LineNotesPage() {
     const sb = getSupabase();
     const [c, ch] = await Promise.all([
       sb.from("line_note_communities").select("*").order("id"),
-      sb.from("line_channels").select("id,code,name,channel_type,home_store_id").eq("is_active", true).order("name"),
+      sb.from("stores").select("id,code,name").eq("is_active", true).order("name"),
     ]);
     if (c.error) fail(c.error); else setCommunities((c.data ?? []) as Community[]);
-    if (!ch.error) setChannels((ch.data ?? []) as Channel[]);
+    if (!ch.error) setStores((ch.data ?? []) as Store[]);
   }, [fail]);
   const loadPosts = useCallback(async () => {
     const { data, error } = await getSupabase()
@@ -111,7 +118,7 @@ export default function LineNotesPage() {
   }, [loadAccounts]);
 
   const accountById = useMemo(() => new Map((accounts ?? []).map((a) => [a.id, a])), [accounts]);
-  const channelById = useMemo(() => new Map(channels.map((c) => [c.id, c])), [channels]);
+  const storeById = useMemo(() => new Map(stores.map((s) => [s.id, s])), [stores]);
   const communityById = useMemo(() => new Map((communities ?? []).map((c) => [c.id, c])), [communities]);
 
   return (
@@ -121,11 +128,11 @@ export default function LineNotesPage() {
           <h1 className="text-xl font-semibold">LINE 記事本</h1>
           <p className="text-sm text-zinc-500">
             備用 LINE 帳號登入 → 綁社群 → 開團自動發文 → 定時讀留言，留言裡的「會員編號 6 碼 ＋ A+1」自動加單。
-            要有地端 worker 在跑（<code>tools/line-note-scraper</code>：<code>npm run worker</code>）。
+            排程每分鐘自動跑（Supabase），不用另外開程式。
           </p>
         </div>
         <nav className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
-          {([["accounts", "帳號"], ["communities", "社群設定"], ["posts", "貼文與留言"]] as const).map(([k, l]) => (
+          {([["accounts", "帳號"], ["communities", "社群設定"], ["comments", "留言加單"], ["posts", "貼文"]] as const).map(([k, l]) => (
             <button key={k} type="button" onClick={() => setTab(k)}
               className={`rounded-md px-3 py-1 text-sm ${tab === k ? "bg-white shadow dark:bg-zinc-900" : "text-zinc-600 dark:text-zinc-300"}`}>
               {l}
@@ -147,10 +154,13 @@ export default function LineNotesPage() {
       )}
       {tab === "communities" && (
         <CommunitiesTab
-          communities={communities} accounts={accounts ?? []} channels={channels}
-          accountById={accountById} channelById={channelById}
+          communities={communities} accounts={accounts ?? []} stores={stores}
+          accountById={accountById} storeById={storeById}
           reload={loadCommunities} reloadPosts={loadPosts} notify={notify} fail={fail}
         />
+      )}
+      {tab === "comments" && (
+        <CommentsTab communityById={communityById} notify={notify} fail={fail} />
       )}
       {tab === "posts" && (
         <PostsTab posts={posts} communityById={communityById} reload={loadPosts} notify={notify} fail={fail} />
@@ -179,11 +189,19 @@ function AccountsTab({ accounts, reload, notify, fail }: {
   };
   const enqueue = async (a: Account, kind: "login" | "logout") => {
     setBusy(a.id);
+    if (kind === "login") {
+      // 登入要等人掃 QR，直接叫 Edge Function 跑（它會把 QR 寫進 DB，這邊輪詢帳號列顯示）
+      kickWorker({ action: "login", account_id: a.id });
+      setBusy(null);
+      setLoginId(a.id);
+      await reload();
+      return;
+    }
     const { error } = await getSupabase().rpc("rpc_line_note_enqueue", { p_kind: kind, p_account_id: a.id });
     setBusy(null);
     if (error) return fail(error);
-    if (kind === "login") setLoginId(a.id);
-    else notify("已送出登出");
+    kickWorker();
+    notify("已送出登出");
     await reload();
   };
   const remove = async (a: Account) => {
@@ -236,7 +254,7 @@ function AccountsTab({ accounts, reload, notify, fail }: {
           ) : loginAccount.status === "error" ? (
             <p className="whitespace-pre-wrap text-red-600">登入失敗：{loginAccount.last_error}</p>
           ) : !loginAccount.qr_image && !loginAccount.qr_url ? (
-            <p className="text-zinc-500">等待 worker 產生 QR…（worker 沒在跑的話會一直停在這裡）</p>
+            <p className="text-zinc-500">正在產生 QR…（約 5 秒）。QR 出現後 2 分鐘內要掃完，逾時再按一次登入。</p>
           ) : (
             <div className="space-y-3 text-center">
               {loginAccount.qr_image
@@ -257,17 +275,17 @@ function AccountsTab({ accounts, reload, notify, fail }: {
 
 // ── 社群設定 ─────────────────────────────────────────────────────────────────
 type CommunityForm = {
-  id: number | null; account_id: number | ""; channel_id: number | ""; home_id: string; home_name: string;
+  id: number | null; account_id: number | ""; store_id: number | ""; home_id: string; home_name: string;
   listen_enabled: boolean; read_times: string; auto_post_on_open: boolean; post_template: string; read_days: number;
 };
 const EMPTY_FORM: CommunityForm = {
-  id: null, account_id: "", channel_id: "", home_id: "", home_name: "",
+  id: null, account_id: "", store_id: "", home_id: "", home_name: "",
   listen_enabled: true, read_times: "12:00", auto_post_on_open: true, post_template: "", read_days: 3,
 };
 
-function CommunitiesTab({ communities, accounts, channels, accountById, channelById, reload, reloadPosts, notify, fail }: {
-  communities: Community[] | null; accounts: Account[]; channels: Channel[];
-  accountById: Map<number, Account>; channelById: Map<number, Channel>;
+function CommunitiesTab({ communities, accounts, stores, accountById, storeById, reload, reloadPosts, notify, fail }: {
+  communities: Community[] | null; accounts: Account[]; stores: Store[];
+  accountById: Map<number, Account>; storeById: Map<number, Store>;
   reload: () => Promise<void>; reloadPosts: () => Promise<void>; notify: (m: string) => void; fail: (e: unknown) => void;
 }) {
   const [form, setForm] = useState<CommunityForm | null>(null);
@@ -275,10 +293,10 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
   const [homes, setHomes] = useState<Home[] | null>(null);
   const [postFor, setPostFor] = useState<Community | null>(null);
 
-  const openNew = () => { setHomes(null); setForm({ ...EMPTY_FORM, account_id: accounts[0]?.id ?? "", channel_id: channels[0]?.id ?? "" }); };
+  const openNew = () => { setHomes(null); setForm({ ...EMPTY_FORM, account_id: accounts[0]?.id ?? "" }); };
   const openEdit = (c: Community) => {
     setHomes(null);
-    setForm({ id: c.id, account_id: c.account_id, channel_id: c.channel_id, home_id: c.home_id, home_name: c.home_name ?? "",
+    setForm({ id: c.id, account_id: c.account_id, store_id: c.store_id ?? "", home_id: c.home_id, home_name: c.home_name ?? "",
       listen_enabled: c.listen_enabled, read_times: c.read_times.join(", "), auto_post_on_open: c.auto_post_on_open, post_template: c.post_template ?? "", read_days: c.read_days ?? 3 });
   };
 
@@ -289,13 +307,14 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
       const sb = getSupabase();
       const { data: jobId, error } = await sb.rpc("rpc_line_note_enqueue", { p_kind: "list_homes", p_account_id: form.account_id });
       if (error) throw error;
+      kickWorker();
       for (let i = 0; i < 40; i++) {
         await new Promise((r) => setTimeout(r, 1500));
         const { data } = await sb.from("line_note_jobs").select("status,result,error").eq("id", jobId).single();
         if (data?.status === "done") { setHomes(((data.result as { homes?: Home[] })?.homes) ?? []); return; }
         if (data?.status === "failed") throw new Error(data.error ?? "worker 回報失敗");
       }
-      throw new Error("等太久沒回應：worker 有在跑嗎？帳號登入了嗎？");
+      throw new Error("等太久沒回應：帳號登入了嗎？");
     } catch (e) { fail(e); } finally { setBusy(null); }
   };
 
@@ -303,7 +322,7 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
     if (!form) return;
     setBusy("save");
     const { error } = await getSupabase().rpc("rpc_line_note_community_upsert", {
-      p_id: form.id, p_account_id: form.account_id || null, p_channel_id: form.channel_id || null,
+      p_id: form.id, p_account_id: form.account_id || null, p_store_id: form.store_id || null,
       p_home_id: form.home_id.trim(), p_home_name: form.home_name.trim() || null, p_home_kind: kindOf(form.home_id.trim()),
       p_listen_enabled: form.listen_enabled,
       p_read_times: form.read_times.split(/[,\s，、]+/).map((s) => s.trim()).filter(Boolean),
@@ -329,19 +348,20 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
     const { error } = await getSupabase().rpc("rpc_line_note_enqueue", { p_kind: "read", p_account_id: c.account_id, p_community_id: c.id });
     setBusy(null);
     if (error) return fail(error);
-    notify("已排立即讀取，worker 跑完後到「貼文與留言」看");
+    kickWorker();
+    notify("已開始讀取，幾秒後到「留言加單」看");
   };
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <p className="text-sm text-zinc-500">
-          「取貨門市」跟開團的 LINE 渠道共用（line_channels）：開團時有勾到這個渠道，才會自動發到這個社群；加單的取貨店也用渠道的主店。
+          總部開的團會發到所有開自動發文的社群；店家自開的團只發到標了那家店的社群。加單的取貨店一律跟會員自己設定的店。
         </p>
         <button type="button" className={btnPrimary} onClick={openNew} disabled={accounts.length === 0}>＋ 新增社群</button>
       </div>
       <Table>
-        <THead><Th>社群</Th><Th>帳號</Th><Th>渠道 / 取貨店</Th><Th>監聽</Th><Th>讀取時間</Th><Th>開團自動發文</Th><Th>最後讀取</Th><Th align="right">操作</Th></THead>
+        <THead><Th>社群</Th><Th>帳號</Th><Th>店家</Th><Th>監聽</Th><Th>讀取時間</Th><Th>開團自動發文</Th><Th>最後讀取</Th><Th align="right">操作</Th></THead>
         <TBody>
           {communities === null ? <LoadingRow colSpan={8} /> : communities.length === 0 ? <EmptyRow colSpan={8}>還沒有社群</EmptyRow> : communities.map((c) => {
             const a = accountById.get(c.account_id);
@@ -353,7 +373,7 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
                   {c.last_error && <div className="text-xs text-red-600">{c.last_error}</div>}
                 </Td>
                 <Td>{a ? <>{a.label} <Badge tone={a.status === "active" ? "green" : "red"}>{ACCOUNT_STATUS[a.status]}</Badge></> : "—"}</Td>
-                <Td>{channelById.get(c.channel_id)?.name ?? c.channel_id}</Td>
+                <Td>{c.store_id ? (storeById.get(c.store_id)?.name ?? c.store_id) : <span className="text-zinc-400">總部（全部）</span>}</Td>
                 <Td><Badge tone={c.listen_enabled ? "green" : "gray"}>{c.listen_enabled ? "監聽中" : "停用"}</Badge></Td>
                 <Td className="font-mono text-xs">{c.read_times.join(" ")}<div className="text-zinc-400">近 {c.read_days} 天</div></Td>
                 <Td>{c.auto_post_on_open ? "是" : "否"}</Td>
@@ -380,10 +400,12 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
                 {accounts.map((a) => <option key={a.id} value={a.id}>{a.label}（{ACCOUNT_STATUS[a.status]}）</option>)}
               </select>
             </label>
-            <label className="text-sm">渠道（決定取貨店）
-              <select className={input} value={form.channel_id} onChange={(e) => setForm({ ...form, channel_id: Number(e.target.value) })}>
-                {channels.map((ch) => <option key={ch.id} value={ch.id}>{ch.name}（{ch.code}）</option>)}
+            <label className="text-sm">店家（選填）
+              <select className={input} value={form.store_id} onChange={(e) => setForm({ ...form, store_id: e.target.value ? Number(e.target.value) : "" })}>
+                <option value="">總部社群（所有團都發）</option>
+                {stores.map((st) => <option key={st.id} value={st.id}>{st.name}</option>)}
               </select>
+              <span className="text-xs text-zinc-500">只影響店家自開的團要不要發到這裡；取貨店跟會員走，不看這個。</span>
             </label>
             <div className="text-sm md:col-span-2">
               <div className="flex items-end gap-2">
@@ -453,7 +475,8 @@ function PostCampaignModal({ community, onClose, notify, fail, reloadPosts }: {
     const { error } = await getSupabase().rpc("rpc_line_note_queue_post", { p_community_id: community.id, p_campaign_id: campaignId });
     setBusy(false);
     if (error) return fail(error);
-    notify("已排發文，worker 跑完後到「貼文與留言」看");
+    kickWorker();
+    notify("已開始發文，幾秒後到「貼文」看");
     onClose();
     await reloadPosts();
   };
@@ -473,29 +496,40 @@ function PostCampaignModal({ community, onClose, notify, fail, reloadPosts }: {
 }
 
 // ── 貼文與留言 ───────────────────────────────────────────────────────────────
-function PostsTab({ posts, communityById, reload, notify, fail }: {
-  posts: Post[] | null; communityById: Map<number, Community>; reload: () => Promise<void>; notify: (m: string) => void; fail: (e: unknown) => void;
+type Filter = "todo" | "ordered" | "all";
+const TODO_STATUSES: Comment["status"][] = ["pending", "unmatched", "error"];
+const isTodo = (c: Comment) => TODO_STATUSES.includes(c.status) || (c.status === "no_order" && !!c.member_no_hint);
+
+// ── 留言加單：一張表，一則留言一列 ─────────────────────────────────────────
+function CommentsTab({ communityById, notify, fail }: {
+  communityById: Map<number, Community>; notify: (m: string) => void; fail: (e: unknown) => void;
 }) {
-  const [selected, setSelected] = useState<Post | null>(null);
-  const [comments, setComments] = useState<Comment[] | null>(null);
-  const [todos, setTodos] = useState<Todo[] | null>(null);
+  const [filter, setFilter] = useState<Filter>("todo");
+  const [rows, setRows] = useState<Row[] | null>(null);
+  const [orders, setOrders] = useState<Map<number, OrderInfo>>(new Map());
   const [busy, setBusy] = useState<number | null>(null);
 
-  // 待人工處理：找不到會員 / 品項對不上 / 加單失敗 / 有會員編號卻沒數量
-  const loadTodos = useCallback(async () => {
-    const { data, error } = await getSupabase().from("line_note_comments")
+  const load = useCallback(async () => {
+    const sb = getSupabase();
+    const { data, error } = await sb.from("line_note_comments")
       .select("*,line_note_posts(community_id,campaign_id,group_buy_campaigns(name,campaign_no))")
-      .or("status.in.(unmatched,error),and(status.eq.no_order,member_no_hint.not.is.null)")
-      .order("commented_at", { ascending: false }).limit(200);
-    if (error) fail(error); else setTodos((data ?? []) as Todo[]);
+      .order("commented_at", { ascending: false }).limit(300);
+    if (error) return fail(error);
+    const list = (data ?? []) as Row[];
+    setRows(list);
+    // 有加到單的 → 查訂單號與取貨店
+    const ids = [...new Set(list.map((c) => c.customer_order_id).filter((x): x is number => !!x))];
+    if (ids.length === 0) { setOrders(new Map()); return; }
+    const { data: od } = await sb.from("customer_orders")
+      .select("id,order_no,stores!customer_orders_pickup_store_id_fkey(name)").in("id", ids);
+    const m = new Map<number, OrderInfo>();
+    for (const o of (od ?? []) as { id: number; order_no: string; stores: { name: string } | { name: string }[] | null }[]) {
+      const st = Array.isArray(o.stores) ? o.stores[0] : o.stores;
+      m.set(o.id, { id: o.id, order_no: o.order_no, store_name: st?.name ?? null });
+    }
+    setOrders(m);
   }, [fail]);
-  useEffect(() => { void loadTodos(); }, [loadTodos]);
-
-  const loadComments = useCallback(async (post: Post) => {
-    const { data, error } = await getSupabase().from("line_note_comments").select("*").eq("post_id", post.id).order("commented_at", { ascending: true }).order("id");
-    if (error) fail(error); else setComments((data ?? []) as Comment[]);
-  }, [fail]);
-  useEffect(() => { if (selected) void loadComments(selected); else setComments(null); }, [selected, loadComments]);
+  useEffect(() => { void load(); }, [load]);
 
   const retry = async (c: Comment) => {
     setBusy(c.id);
@@ -503,26 +537,105 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
     setBusy(null);
     if (error) return fail(error);
     const r = (Array.isArray(data) ? data[0] : data) as { out_status?: string; out_error?: string } | null;
-    notify(r?.out_status === "ordered" ? "已加單" : `結果：${COMMENT_STATUS[(r?.out_status ?? "error") as Comment["status"]] ?? r?.out_status}${r?.out_error ? "：" + r.out_error : ""}`);
-    if (selected) await loadComments(selected);
-    await loadTodos();
+    notify(r?.out_status === "ordered" ? "已加單" : `${COMMENT_STATUS[(r?.out_status ?? "error") as Comment["status"]] ?? r?.out_status}${r?.out_error ? "：" + r.out_error : ""}`);
+    await load();
   };
   const setStatus = async (c: Comment, status: Comment["status"]) => {
     let note: string | null = null;
     if (status === "resolved") {
-      note = window.prompt("怎麼處理的？（選填，例：已用小幫手加單 / 客人說不要了）", c.resolution_note ?? "");
+      note = window.prompt("怎麼處理的？（選填）", c.resolution_note ?? "");
       if (note === null) return;
     }
     setBusy(c.id);
-    const body = status === "resolved"
-      ? { status, resolved_at: new Date().toISOString(), resolution_note: note || null }
-      : { status };
+    const body = status === "resolved" ? { status, resolved_at: new Date().toISOString(), resolution_note: note || null } : { status };
     const { error } = await getSupabase().from("line_note_comments").update(body).eq("id", c.id);
     setBusy(null);
     if (error) return fail(error);
-    if (selected) await loadComments(selected);
-    await loadTodos();
+    await load();
   };
+
+  const shown = useMemo(() => {
+    if (!rows) return null;
+    if (filter === "todo") return rows.filter(isTodo);
+    if (filter === "ordered") return rows.filter((c) => c.status === "ordered" || c.status === "duplicate");
+    return rows;
+  }, [rows, filter]);
+  const todoCount = rows?.filter(isTodo).length ?? 0;
+
+  // 結果欄：一個徽章 + 一句話
+  const result = (c: Comment) => {
+    const o = c.customer_order_id ? orders.get(c.customer_order_id) : null;
+    const orderText = o ? `${o.store_name ?? "？店"}　${o.order_no}` : c.customer_order_id ? `訂單 #${c.customer_order_id}` : "";
+    switch (c.status) {
+      case "ordered":   return <><Badge tone="green">已加單</Badge><span>{orderText}</span></>;
+      case "duplicate": return <><Badge tone="blue">已有訂單</Badge><span>{orderText}</span></>;
+      case "resolved":  return <><Badge tone="green">已解決</Badge><span className="text-zinc-500">{c.resolution_note ?? ""}</span></>;
+      case "ignored":   return <Badge tone="gray">忽略</Badge>;
+      case "pending":   return <Badge tone="amber">等 worker 處理</Badge>;
+      case "no_order":  return c.member_no_hint
+        ? <><Badge tone="red">看不懂</Badge><span className="text-red-700 dark:text-red-300">有會員編號，看不出要買什麼</span></>
+        : <Badge tone="gray">非下單</Badge>;
+      default:          return <><Badge tone="red">{COMMENT_STATUS[c.status]}</Badge><span className="text-red-700 dark:text-red-300">{c.error ?? ""}</span></>;
+    }
+  };
+  const actions = (c: Comment) => {
+    if (c.status === "ordered" || c.status === "duplicate") return null;
+    if (c.status === "ignored" || c.status === "resolved") {
+      return <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "pending")}>退回</SpinButton>;
+    }
+    return (
+      <div className="flex justify-end gap-1">
+        <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => retry(c)}>重試</SpinButton>
+        <SpinButton type="button" className={`${btn} text-emerald-700`} loading={busy === c.id} onClick={() => setStatus(c, "resolved")}>已解決</SpinButton>
+        <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "ignored")}>忽略</SpinButton>
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
+          {([["todo", `待處理 ${todoCount}`], ["ordered", "已加單"], ["all", "全部"]] as const).map(([k, l]) => (
+            <button key={k} type="button" onClick={() => setFilter(k)}
+              className={`rounded-md px-3 py-1 text-sm ${filter === k ? "bg-white shadow dark:bg-zinc-900" : "text-zinc-600 dark:text-zinc-300"}`}>
+              {l}
+            </button>
+          ))}
+        </div>
+        <button type="button" className={btn} onClick={() => void load()}>重新整理</button>
+      </div>
+
+      <Table>
+        <THead><Th>時間</Th><Th>留言者</Th><Th>留言</Th><Th>團</Th><Th>結果</Th><Th align="right"></Th></THead>
+        <TBody>
+          {shown === null ? <LoadingRow colSpan={6} /> : shown.length === 0 ? (
+            <EmptyRow colSpan={6}>{filter === "todo" ? "沒有要處理的留言 🎉" : "沒有留言"}</EmptyRow>
+          ) : shown.map((c) => (
+            <Tr key={c.id} className={isTodo(c) ? "bg-amber-50/60 dark:bg-amber-950/20" : ""}>
+              <Td className="whitespace-nowrap text-sm text-zinc-500">{fmt(c.commented_at)}</Td>
+              <Td className="whitespace-nowrap font-medium">{c.commenter_name ?? "—"}</Td>
+              <Td className="max-w-xs whitespace-pre-wrap text-base">{c.text}</Td>
+              <Td className="max-w-[12rem] text-sm">
+                <div className="truncate" title={c.line_note_posts?.group_buy_campaigns?.name ?? ""}>{c.line_note_posts?.group_buy_campaigns?.name ?? "—"}</div>
+                <div className="truncate text-xs text-zinc-500">{communityById.get(c.line_note_posts?.community_id ?? -1)?.home_name ?? ""}</div>
+              </Td>
+              <Td><div className="flex flex-wrap items-center gap-2 text-sm">{result(c)}</div></Td>
+              <Td align="right" className="whitespace-nowrap">{actions(c)}</Td>
+            </Tr>
+          ))}
+        </TBody>
+      </Table>
+    </div>
+  );
+}
+
+// ── 貼文：哪些團已經發到哪些社群 ─────────────────────────────────────────────
+function PostsTab({ posts, communityById, reload, notify, fail }: {
+  posts: Post[] | null; communityById: Map<number, Community>; reload: () => Promise<void>; notify: (m: string) => void; fail: (e: unknown) => void;
+}) {
+  const [busy, setBusy] = useState<number | null>(null);
+  const [open, setOpen] = useState<number | null>(null);
   const readNow = async (p: Post) => {
     const c = communityById.get(p.community_id);
     if (!c) return;
@@ -530,131 +643,47 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
     const { error } = await getSupabase().rpc("rpc_line_note_enqueue", { p_kind: "read", p_account_id: c.account_id, p_community_id: c.id, p_post_id: p.id });
     setBusy(null);
     if (error) return fail(error);
-    notify("已排讀取這篇");
+    kickWorker();
+    notify("已開始讀取，留言幾秒後會出現在「留言加單」");
   };
-
-  const summary = useMemo(() => {
-    if (!comments) return null;
-    const n = (s: Comment["status"]) => comments.filter((c) => c.status === s).length;
-    return { ordered: n("ordered"), pending: n("pending"), unmatched: n("unmatched"), error: n("error"), no_order: n("no_order"), ignored: n("ignored"), resolved: n("resolved"), duplicate: n("duplicate") };
-  }, [comments]);
-
-  const todoActions = (c: Comment) => (
-    <div className="flex justify-end gap-1">
-      {!["ordered", "ignored", "resolved", "duplicate"].includes(c.status) && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => retry(c)}>重試</SpinButton>}
-      {!["ordered", "ignored", "resolved", "duplicate"].includes(c.status) && <SpinButton type="button" className={`${btn} text-emerald-700`} loading={busy === c.id} onClick={() => setStatus(c, "resolved")}>已解決</SpinButton>}
-      {!["ordered", "ignored", "resolved", "duplicate"].includes(c.status) && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "ignored")}>忽略</SpinButton>}
-      {(c.status === "ignored" || c.status === "resolved") && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "pending")}>退回待處理</SpinButton>}
-    </div>
-  );
-  const commentTone = (s: Comment["status"]) =>
-    s === "ordered" || s === "resolved" ? "green" : s === "pending" ? "amber" : s === "unmatched" || s === "error" ? "red" : s === "duplicate" ? "blue" : "gray";
-
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-zinc-500">點一篇貼文看底下留言與加單結果。「找不到會員」「錯誤」可以修正後按「重試」，小幫手手動加完單按「已解決」，紀錄會留著。</p>
-        <button type="button" className={btn} onClick={() => { void reload(); void loadTodos(); }}>重新整理</button>
+        <p className="text-sm text-zinc-500">開團自動發的、和小幫手手貼後被系統認出來的貼文。</p>
+        <button type="button" className={btn} onClick={() => void reload()}>重新整理</button>
       </div>
-
-      <section className="rounded border border-amber-300 bg-amber-50/60 p-3 dark:border-amber-800 dark:bg-amber-950/30">
-        <div className="mb-2 flex items-center justify-between">
-          <h2 className="font-medium">⚠️ 待小幫手處理 {todos ? `（${todos.length}）` : ""}</h2>
-          <span className="text-xs text-zinc-500">系統拆不出來或對不到的留言。加完單後按「已解決」。</span>
-        </div>
-        <Table>
-          <THead><Th>時間</Th><Th>團</Th><Th>留言者</Th><Th>留言</Th><Th>原因</Th><Th align="right">操作</Th></THead>
-          <TBody>
-            {todos === null ? <LoadingRow colSpan={6} /> : todos.length === 0 ? <EmptyRow colSpan={6}>目前沒有要人工處理的留言 🎉</EmptyRow> : todos.map((c) => (
-              <Tr key={c.id}>
-                <Td className="whitespace-nowrap text-xs">{fmt(c.commented_at)}</Td>
-                <Td className="text-sm">
-                  <div>{c.line_note_posts?.group_buy_campaigns?.name ?? "—"}</div>
-                  <div className="text-xs text-zinc-500">{c.line_note_posts?.group_buy_campaigns?.campaign_no} · {communityById.get(c.line_note_posts?.community_id ?? -1)?.home_name ?? ""}</div>
-                </Td>
-                <Td>{c.commenter_name ?? "—"}</Td>
-                <Td className="max-w-sm whitespace-pre-wrap text-sm">{c.text}</Td>
-                <Td className="text-xs">
-                  <Badge tone={commentTone(c.status)}>{COMMENT_STATUS[c.status]}</Badge>
-                  <div className="text-red-600">{c.error ?? (c.status === "no_order" ? "有會員編號但看不出數量" : "")}</div>
-                </Td>
-                <Td align="right">{todoActions(c)}</Td>
-              </Tr>
-            ))}
-          </TBody>
-        </Table>
-      </section>
       <Table>
-        <THead><Th>團</Th><Th>社群</Th><Th>狀態</Th><Th>發文時間</Th><Th>最後讀取</Th><Th align="right">留言數</Th><Th align="right">操作</Th></THead>
+        <THead><Th>團</Th><Th>社群</Th><Th>狀態</Th><Th>發文</Th><Th>最後讀取</Th><Th align="right">留言</Th><Th align="right"></Th></THead>
         <TBody>
           {posts === null ? <LoadingRow colSpan={7} /> : posts.length === 0 ? <EmptyRow colSpan={7}>還沒有貼文</EmptyRow> : posts.map((p) => {
             const c = communityById.get(p.community_id);
+            const cs = p.group_buy_campaigns?.status;
             return (
-              <Tr key={p.id} onClick={() => setSelected(p)} className={selected?.id === p.id ? "bg-zinc-100 dark:bg-zinc-800" : ""}>
+              <Tr key={p.id}>
                 <Td>
-                  <div>{p.group_buy_campaigns?.name ?? p.campaign_id}</div>
-                  <div className="text-xs text-zinc-500">{p.group_buy_campaigns?.campaign_no}（{p.group_buy_campaigns?.status}）</div>
+                  <div className="font-medium">{p.group_buy_campaigns?.name ?? p.campaign_id}</div>
+                  <div className="mt-0.5 flex items-center gap-2 text-xs text-zinc-500">
+                    {cs && <span className={`rounded px-1.5 py-0.5 ${campaignStatusBadge(cs)}`}>{campaignStatusLabel(cs)}</span>}
+                    {p.text && <button type="button" className="underline" onClick={() => setOpen(open === p.id ? null : p.id)}>{open === p.id ? "收起內容" : "看內容"}</button>}
+                  </div>
+                  {open === p.id && p.text && <pre className="mt-2 whitespace-pre-wrap rounded bg-zinc-50 p-3 text-sm text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">{p.text}</pre>}
                 </Td>
-                <Td>{c?.home_name || c?.home_id || p.community_id}</Td>
+                <Td className="whitespace-nowrap">{c?.home_name || c?.home_id || p.community_id}</Td>
                 <Td>
                   <Badge tone={p.status === "posted" ? "green" : p.status === "queued" ? "amber" : p.status === "failed" ? "red" : "gray"}>{POST_STATUS[p.status]}</Badge>
-                  {p.last_error && <div className="max-w-xs truncate text-xs text-red-600" title={p.last_error}>{p.last_error}</div>}
+                  {p.last_error && <div className="mt-1 max-w-xs truncate text-xs text-red-600" title={p.last_error}>{p.last_error}</div>}
                 </Td>
-                <Td>{fmt(p.posted_at)}</Td>
-                <Td>{fmt(p.last_read_at)}</Td>
-                <Td align="right">{p.comment_count}</Td>
+                <Td className="whitespace-nowrap">{fmt(p.posted_at)}</Td>
+                <Td className="whitespace-nowrap">{fmt(p.last_read_at)}</Td>
+                <Td align="right" className="tabular-nums">{p.comment_count}</Td>
                 <Td align="right">
-                  {p.status === "posted" && (
-                    <SpinButton type="button" className={btn} loading={busy === p.id} onClick={(e) => { e.stopPropagation(); void readNow(p); }}>立即讀取</SpinButton>
-                  )}
+                  {p.status === "posted" && <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => readNow(p)}>立即讀取</SpinButton>}
                 </Td>
               </Tr>
             );
           })}
         </TBody>
       </Table>
-
-      {selected && (
-        <div className="space-y-2 rounded border border-zinc-200 p-3 dark:border-zinc-800">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="font-medium">留言：{selected.group_buy_campaigns?.name}</h2>
-            {summary && (
-              <div className="flex flex-wrap gap-1 text-xs">
-                <Badge tone="green">已加單 {summary.ordered}</Badge>
-                <Badge tone="amber">待處理 {summary.pending}</Badge>
-                <Badge tone="red">找不到會員 {summary.unmatched}</Badge>
-                <Badge tone="red">錯誤 {summary.error}</Badge>
-                <Badge tone="gray">非下單 {summary.no_order}</Badge>
-                <Badge tone="gray">忽略 {summary.ignored}</Badge>
-                <Badge tone="green">已解決 {summary.resolved}</Badge>
-                <Badge tone="blue">已有訂單 {summary.duplicate}</Badge>
-              </div>
-            )}
-          </div>
-          {selected.text && <details className="text-xs text-zinc-500"><summary>貼文內容</summary><pre className="whitespace-pre-wrap">{selected.text}</pre></details>}
-          <Table>
-            <THead><Th>時間</Th><Th>留言者</Th><Th>留言</Th><Th>會員編號</Th><Th>解析</Th><Th>狀態</Th><Th align="right">操作</Th></THead>
-            <TBody>
-              {comments === null ? <LoadingRow colSpan={7} /> : comments.length === 0 ? <EmptyRow colSpan={7}>還沒讀到留言</EmptyRow> : comments.map((c) => (
-                <Tr key={c.id}>
-                  <Td className="whitespace-nowrap text-xs">{fmt(c.commented_at)}</Td>
-                  <Td><div>{c.commenter_name ?? "—"}</div><div className="font-mono text-[10px] text-zinc-400">{c.commenter_id}</div></Td>
-                  <Td className="max-w-sm whitespace-pre-wrap text-sm">{c.text}</Td>
-                  <Td className="font-mono">{c.member_no_hint ?? "—"}</Td>
-                  <Td className="font-mono text-xs">{(c.parsed ?? []).map((o, i) => <div key={i}>{o.cancel ? "取消 " : ""}{o.code ?? "(單品)"} ×{o.qty}</div>)}</Td>
-                  <Td>
-                    <Badge tone={commentTone(c.status)}>{COMMENT_STATUS[c.status]}</Badge>
-                    {c.error && <div className={`max-w-xs text-xs ${c.status === "duplicate" ? "text-zinc-500" : "text-red-600"}`}>{c.error}</div>}
-                    {c.resolution_note && <div className="max-w-xs text-xs text-zinc-500">處理：{c.resolution_note}</div>}
-                    {c.customer_order_id && <div className="text-xs text-zinc-500">訂單 #{c.customer_order_id}</div>}
-                  </Td>
-                  <Td align="right">{todoActions(c)}</Td>
-                </Tr>
-              ))}
-            </TBody>
-          </Table>
-        </div>
-      )}
     </div>
   );
 }

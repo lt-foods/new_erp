@@ -36,6 +36,7 @@ export const ORDER_ITEM_SOURCES = [
   "store_internal",
   "aid_transfer",
   "walk_in",
+  "line_bot",
 ] as const;
 
 export type OrderItemSource = (typeof ORDER_ITEM_SOURCES)[number];
@@ -60,6 +61,8 @@ export const ORDER_SOURCE_META: Record<OrderItemSource, SourceMeta> = {
   store_internal:   { label: "店長叫貨", short: "店叫",   icon: "🏬", cls: "bg-teal-100 text-teal-800 dark:bg-teal-950 dark:text-teal-300" },
   aid_transfer:     { label: "互助轉手", short: "互助",   icon: "🤝", cls: "bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-300" },
   walk_in:          { label: "現場銷售", short: "現場",   icon: "🛒", cls: "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300" },
+  // LINE 記事本機器人自動加單（20260909020000）。跟小幫手分開，才看得出哪些是人加的
+  line_bot:         { label: "機器人加單", short: "機器人", icon: "🤖", cls: "bg-fuchsia-100 text-fuchsia-800 dark:bg-fuchsia-950 dark:text-fuchsia-300" },
 };
 
 // 訂單頁「下單來源」折線圖 KPI 的線 —— 只放「人是怎麼下這張單的」三個通路，
@@ -72,6 +75,7 @@ export const SOURCE_TREND_SERIES: { source: OrderItemSource; label: string; colo
   { source: "pwa",    label: "App",    color: "rgb(59 130 246)" },  // blue-500（blue-600 在深色底上太暗）
   { source: "liff",   label: "商城",   color: "rgb(5 150 105)" },   // emerald-600
   { source: "manual", label: "小幫手", color: "rgb(124 58 237)" },  // violet-600
+  { source: "line_bot", label: "機器人", color: "rgb(192 38 211)" }, // fuchsia-600
 ];
 
 const MIXED_META: SourceMeta = {

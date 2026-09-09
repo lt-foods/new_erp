@@ -452,3 +452,8 @@ verify_jwt = false
 
 [functions.piaopiao-publisher-admin]
 verify_jwt = false
+
+# line-note-worker：pg_cron 每分鐘打（x-line-note-secret），後台按「登入」也直接呼叫
+# （函式內自行驗 secret 或使用者 JWT 的管理角色），所以 verify_jwt 關掉。
+[functions.line-note-worker]
+verify_jwt = false

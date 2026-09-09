@@ -51,6 +51,10 @@ node src/cli.mjs post <homeId> --file post.txt --image 1.jpg --image 2.jpg   # �
 
 ## 接後台（worker 模式）
 
+> **2026-09-09 起後台改用 Supabase 排程**（Edge Function `line-note-worker` + pg_cron 每分鐘），
+> **不用再跑這支 worker**。這節與「部署到雲端」留著當備援：Edge 跑不動時可以改回本機／VM 常駐，
+> 兩邊撿同一個佇列，但**不要同時跑**。Edge 版沒有 sharp，發文只帶 JPEG 圖。
+
 後台「設定 → LINE 記事本」頁面負責帳號登入、社群設定、看留言結果；真的跟 LINE 講話的是這支 worker，
 跑在你自己的電腦或 VPS 上，用 service_role 輪詢 `line_note_jobs`。
 
