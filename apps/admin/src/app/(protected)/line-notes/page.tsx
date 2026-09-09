@@ -36,7 +36,8 @@ type Comment = {
   member_id: number | null; customer_order_id: number | null; error: string | null;
   resolved_at: string | null; resolution_note: string | null;
 };
-type Todo = Comment & { line_note_posts: { community_id: number; campaign_id: number; group_buy_campaigns: { name: string; campaign_no: string } | null } | null };
+type Row = Comment & { line_note_posts: { community_id: number; campaign_id: number; group_buy_campaigns: { name: string; campaign_no: string } | null } | null };
+type OrderInfo = { id: number; order_no: string; store_name: string | null };
 type Home = { kind: string; homeId: string; name: string };
 type Campaign = { id: number; campaign_no: string; name: string; status: string };
 
@@ -70,7 +71,7 @@ const btnPrimary = "rounded bg-zinc-900 px-3 py-1.5 text-sm font-medium text-whi
 const input = "w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 
 export default function LineNotesPage() {
-  const [tab, setTab] = useState<"accounts" | "communities" | "posts">("accounts");
+  const [tab, setTab] = useState<"accounts" | "communities" | "comments" | "posts">("accounts");
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [communities, setCommunities] = useState<Community[] | null>(null);
@@ -126,7 +127,7 @@ export default function LineNotesPage() {
           </p>
         </div>
         <nav className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
-          {([["accounts", "帳號"], ["communities", "社群設定"], ["posts", "貼文與留言"]] as const).map(([k, l]) => (
+          {([["accounts", "帳號"], ["communities", "社群設定"], ["comments", "留言加單"], ["posts", "貼文"]] as const).map(([k, l]) => (
             <button key={k} type="button" onClick={() => setTab(k)}
               className={`rounded-md px-3 py-1 text-sm ${tab === k ? "bg-white shadow dark:bg-zinc-900" : "text-zinc-600 dark:text-zinc-300"}`}>
               {l}
@@ -152,6 +153,9 @@ export default function LineNotesPage() {
           accountById={accountById} channelById={channelById}
           reload={loadCommunities} reloadPosts={loadPosts} notify={notify} fail={fail}
         />
+      )}
+      {tab === "comments" && (
+        <CommentsTab communityById={communityById} notify={notify} fail={fail} />
       )}
       {tab === "posts" && (
         <PostsTab posts={posts} communityById={communityById} reload={loadPosts} notify={notify} fail={fail} />
@@ -474,29 +478,40 @@ function PostCampaignModal({ community, onClose, notify, fail, reloadPosts }: {
 }
 
 // ── 貼文與留言 ───────────────────────────────────────────────────────────────
-function PostsTab({ posts, communityById, reload, notify, fail }: {
-  posts: Post[] | null; communityById: Map<number, Community>; reload: () => Promise<void>; notify: (m: string) => void; fail: (e: unknown) => void;
+type Filter = "todo" | "ordered" | "all";
+const TODO_STATUSES: Comment["status"][] = ["pending", "unmatched", "error"];
+const isTodo = (c: Comment) => TODO_STATUSES.includes(c.status) || (c.status === "no_order" && !!c.member_no_hint);
+
+// ── 留言加單：一張表，一則留言一列 ─────────────────────────────────────────
+function CommentsTab({ communityById, notify, fail }: {
+  communityById: Map<number, Community>; notify: (m: string) => void; fail: (e: unknown) => void;
 }) {
-  const [selected, setSelected] = useState<Post | null>(null);
-  const [comments, setComments] = useState<Comment[] | null>(null);
-  const [todos, setTodos] = useState<Todo[] | null>(null);
+  const [filter, setFilter] = useState<Filter>("todo");
+  const [rows, setRows] = useState<Row[] | null>(null);
+  const [orders, setOrders] = useState<Map<number, OrderInfo>>(new Map());
   const [busy, setBusy] = useState<number | null>(null);
 
-  // 待人工處理：找不到會員 / 品項對不上 / 加單失敗 / 有會員編號卻沒數量
-  const loadTodos = useCallback(async () => {
-    const { data, error } = await getSupabase().from("line_note_comments")
+  const load = useCallback(async () => {
+    const sb = getSupabase();
+    const { data, error } = await sb.from("line_note_comments")
       .select("*,line_note_posts(community_id,campaign_id,group_buy_campaigns(name,campaign_no))")
-      .or("status.in.(unmatched,error),and(status.eq.no_order,member_no_hint.not.is.null)")
-      .order("commented_at", { ascending: false }).limit(200);
-    if (error) fail(error); else setTodos((data ?? []) as Todo[]);
+      .order("commented_at", { ascending: false }).limit(300);
+    if (error) return fail(error);
+    const list = (data ?? []) as Row[];
+    setRows(list);
+    // 有加到單的 → 查訂單號與取貨店
+    const ids = [...new Set(list.map((c) => c.customer_order_id).filter((x): x is number => !!x))];
+    if (ids.length === 0) { setOrders(new Map()); return; }
+    const { data: od } = await sb.from("customer_orders")
+      .select("id,order_no,stores!customer_orders_pickup_store_id_fkey(name)").in("id", ids);
+    const m = new Map<number, OrderInfo>();
+    for (const o of (od ?? []) as { id: number; order_no: string; stores: { name: string } | { name: string }[] | null }[]) {
+      const st = Array.isArray(o.stores) ? o.stores[0] : o.stores;
+      m.set(o.id, { id: o.id, order_no: o.order_no, store_name: st?.name ?? null });
+    }
+    setOrders(m);
   }, [fail]);
-  useEffect(() => { void loadTodos(); }, [loadTodos]);
-
-  const loadComments = useCallback(async (post: Post) => {
-    const { data, error } = await getSupabase().from("line_note_comments").select("*").eq("post_id", post.id).order("commented_at", { ascending: true }).order("id");
-    if (error) fail(error); else setComments((data ?? []) as Comment[]);
-  }, [fail]);
-  useEffect(() => { if (selected) void loadComments(selected); else setComments(null); }, [selected, loadComments]);
+  useEffect(() => { void load(); }, [load]);
 
   const retry = async (c: Comment) => {
     setBusy(c.id);
@@ -504,26 +519,105 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
     setBusy(null);
     if (error) return fail(error);
     const r = (Array.isArray(data) ? data[0] : data) as { out_status?: string; out_error?: string } | null;
-    notify(r?.out_status === "ordered" ? "已加單" : `結果：${COMMENT_STATUS[(r?.out_status ?? "error") as Comment["status"]] ?? r?.out_status}${r?.out_error ? "：" + r.out_error : ""}`);
-    if (selected) await loadComments(selected);
-    await loadTodos();
+    notify(r?.out_status === "ordered" ? "已加單" : `${COMMENT_STATUS[(r?.out_status ?? "error") as Comment["status"]] ?? r?.out_status}${r?.out_error ? "：" + r.out_error : ""}`);
+    await load();
   };
   const setStatus = async (c: Comment, status: Comment["status"]) => {
     let note: string | null = null;
     if (status === "resolved") {
-      note = window.prompt("怎麼處理的？（選填，例：已用小幫手加單 / 客人說不要了）", c.resolution_note ?? "");
+      note = window.prompt("怎麼處理的？（選填）", c.resolution_note ?? "");
       if (note === null) return;
     }
     setBusy(c.id);
-    const body = status === "resolved"
-      ? { status, resolved_at: new Date().toISOString(), resolution_note: note || null }
-      : { status };
+    const body = status === "resolved" ? { status, resolved_at: new Date().toISOString(), resolution_note: note || null } : { status };
     const { error } = await getSupabase().from("line_note_comments").update(body).eq("id", c.id);
     setBusy(null);
     if (error) return fail(error);
-    if (selected) await loadComments(selected);
-    await loadTodos();
+    await load();
   };
+
+  const shown = useMemo(() => {
+    if (!rows) return null;
+    if (filter === "todo") return rows.filter(isTodo);
+    if (filter === "ordered") return rows.filter((c) => c.status === "ordered" || c.status === "duplicate");
+    return rows;
+  }, [rows, filter]);
+  const todoCount = rows?.filter(isTodo).length ?? 0;
+
+  // 結果欄：一個徽章 + 一句話
+  const result = (c: Comment) => {
+    const o = c.customer_order_id ? orders.get(c.customer_order_id) : null;
+    const orderText = o ? `${o.store_name ?? "？店"}　${o.order_no}` : c.customer_order_id ? `訂單 #${c.customer_order_id}` : "";
+    switch (c.status) {
+      case "ordered":   return <><Badge tone="green">已加單</Badge><span>{orderText}</span></>;
+      case "duplicate": return <><Badge tone="blue">已有訂單</Badge><span>{orderText}</span></>;
+      case "resolved":  return <><Badge tone="green">已解決</Badge><span className="text-zinc-500">{c.resolution_note ?? ""}</span></>;
+      case "ignored":   return <Badge tone="gray">忽略</Badge>;
+      case "pending":   return <Badge tone="amber">等 worker 處理</Badge>;
+      case "no_order":  return c.member_no_hint
+        ? <><Badge tone="red">看不懂</Badge><span className="text-red-700 dark:text-red-300">有會員編號，看不出要買什麼</span></>
+        : <Badge tone="gray">非下單</Badge>;
+      default:          return <><Badge tone="red">{COMMENT_STATUS[c.status]}</Badge><span className="text-red-700 dark:text-red-300">{c.error ?? ""}</span></>;
+    }
+  };
+  const actions = (c: Comment) => {
+    if (c.status === "ordered" || c.status === "duplicate") return null;
+    if (c.status === "ignored" || c.status === "resolved") {
+      return <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "pending")}>退回</SpinButton>;
+    }
+    return (
+      <div className="flex justify-end gap-1">
+        <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => retry(c)}>重試</SpinButton>
+        <SpinButton type="button" className={`${btn} text-emerald-700`} loading={busy === c.id} onClick={() => setStatus(c, "resolved")}>已解決</SpinButton>
+        <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "ignored")}>忽略</SpinButton>
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
+          {([["todo", `待處理 ${todoCount}`], ["ordered", "已加單"], ["all", "全部"]] as const).map(([k, l]) => (
+            <button key={k} type="button" onClick={() => setFilter(k)}
+              className={`rounded-md px-3 py-1 text-sm ${filter === k ? "bg-white shadow dark:bg-zinc-900" : "text-zinc-600 dark:text-zinc-300"}`}>
+              {l}
+            </button>
+          ))}
+        </div>
+        <button type="button" className={btn} onClick={() => void load()}>重新整理</button>
+      </div>
+
+      <Table>
+        <THead><Th>時間</Th><Th>留言者</Th><Th>留言</Th><Th>團</Th><Th>結果</Th><Th align="right"></Th></THead>
+        <TBody>
+          {shown === null ? <LoadingRow colSpan={6} /> : shown.length === 0 ? (
+            <EmptyRow colSpan={6}>{filter === "todo" ? "沒有要處理的留言 🎉" : "沒有留言"}</EmptyRow>
+          ) : shown.map((c) => (
+            <Tr key={c.id} className={isTodo(c) ? "bg-amber-50/60 dark:bg-amber-950/20" : ""}>
+              <Td className="whitespace-nowrap text-sm text-zinc-500">{fmt(c.commented_at)}</Td>
+              <Td className="whitespace-nowrap font-medium">{c.commenter_name ?? "—"}</Td>
+              <Td className="max-w-xs whitespace-pre-wrap text-base">{c.text}</Td>
+              <Td className="max-w-[12rem] text-sm">
+                <div className="truncate" title={c.line_note_posts?.group_buy_campaigns?.name ?? ""}>{c.line_note_posts?.group_buy_campaigns?.name ?? "—"}</div>
+                <div className="truncate text-xs text-zinc-500">{communityById.get(c.line_note_posts?.community_id ?? -1)?.home_name ?? ""}</div>
+              </Td>
+              <Td><div className="flex flex-wrap items-center gap-2 text-sm">{result(c)}</div></Td>
+              <Td align="right" className="whitespace-nowrap">{actions(c)}</Td>
+            </Tr>
+          ))}
+        </TBody>
+      </Table>
+    </div>
+  );
+}
+
+// ── 貼文：哪些團已經發到哪些社群 ─────────────────────────────────────────────
+function PostsTab({ posts, communityById, reload, notify, fail }: {
+  posts: Post[] | null; communityById: Map<number, Community>; reload: () => Promise<void>; notify: (m: string) => void; fail: (e: unknown) => void;
+}) {
+  const [busy, setBusy] = useState<number | null>(null);
+  const [open, setOpen] = useState<number | null>(null);
   const readNow = async (p: Post) => {
     const c = communityById.get(p.community_id);
     if (!c) return;
@@ -531,170 +625,46 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
     const { error } = await getSupabase().rpc("rpc_line_note_enqueue", { p_kind: "read", p_account_id: c.account_id, p_community_id: c.id, p_post_id: p.id });
     setBusy(null);
     if (error) return fail(error);
-    notify("已排讀取這篇");
+    notify("已排讀取，留言幾秒後會出現在「留言加單」");
   };
-
-  const summary = useMemo(() => {
-    if (!comments) return null;
-    const n = (s: Comment["status"]) => comments.filter((c) => c.status === s).length;
-    return { ordered: n("ordered"), pending: n("pending"), unmatched: n("unmatched"), error: n("error"), no_order: n("no_order"), ignored: n("ignored"), resolved: n("resolved"), duplicate: n("duplicate") };
-  }, [comments]);
-
-  const todoActions = (c: Comment) => (
-    <div className="flex justify-end gap-1">
-      {!["ordered", "ignored", "resolved", "duplicate"].includes(c.status) && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => retry(c)}>重試</SpinButton>}
-      {!["ordered", "ignored", "resolved", "duplicate"].includes(c.status) && <SpinButton type="button" className={`${btn} text-emerald-700`} loading={busy === c.id} onClick={() => setStatus(c, "resolved")}>已解決</SpinButton>}
-      {!["ordered", "ignored", "resolved", "duplicate"].includes(c.status) && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "ignored")}>忽略</SpinButton>}
-      {(c.status === "ignored" || c.status === "resolved") && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "pending")}>退回待處理</SpinButton>}
-    </div>
-  );
-  const commentTone = (s: Comment["status"]) =>
-    s === "ordered" || s === "resolved" ? "green" : s === "pending" ? "amber" : s === "unmatched" || s === "error" ? "red" : s === "duplicate" ? "blue" : "gray";
-
-  const reasonOf = (c: Comment) => c.error ?? (c.status === "no_order" ? "有會員編號，但看不出要買什麼、買幾個" : "");
-  const parsedChips = (c: Comment) => (c.parsed ?? []).map((o, i) => (
-    <span key={i} className={`inline-block rounded px-1.5 py-0.5 font-mono text-sm ${o.cancel ? "bg-red-50 text-red-700 line-through dark:bg-red-950/40 dark:text-red-300" : "bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200"}`}>
-      {o.code ?? "單品"} ×{o.qty}
-    </span>
-  ));
-
   return (
-    <div className="space-y-5">
-      {/* ── 待小幫手處理：一則一張卡，留言原文放大、原因一行 ── */}
-      <section className="space-y-2">
-        <div className="flex flex-wrap items-end justify-between gap-2">
-          <div>
-            <h2 className="text-base font-semibold">待小幫手處理{todos ? `　${todos.length} 則` : ""}</h2>
-            <p className="text-sm text-zinc-500">系統對不到人或拆不出品項的留言。手動加完單按「已解決」，紀錄會留著。</p>
-          </div>
-          <button type="button" className={btn} onClick={() => { void reload(); void loadTodos(); }}>重新整理</button>
-        </div>
-        {todos === null ? (
-          <div className="rounded-lg border border-zinc-200 p-6 text-center text-sm text-zinc-400 dark:border-zinc-800">讀取中…</div>
-        ) : todos.length === 0 ? (
-          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-6 text-center text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">目前沒有要人工處理的留言 🎉</div>
-        ) : (
-          <ul className="space-y-2">
-            {todos.map((c) => (
-              <li key={c.id} className="rounded-lg border border-amber-300 bg-amber-50/50 p-4 dark:border-amber-800 dark:bg-amber-950/20">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1 space-y-1.5">
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-zinc-500">
-                      <span className="font-medium text-zinc-800 dark:text-zinc-200">{c.line_note_posts?.group_buy_campaigns?.name ?? "—"}</span>
-                      <span>·</span>
-                      <span>{communityById.get(c.line_note_posts?.community_id ?? -1)?.home_name ?? ""}</span>
-                      <span>·</span>
-                      <span>{fmt(c.commented_at)}</span>
-                    </div>
-                    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                      <span className="text-base font-semibold">{c.commenter_name ?? "—"}</span>
-                      <span className="whitespace-pre-wrap text-lg">{c.text}</span>
-                      {c.parsed?.length > 0 && <span className="flex flex-wrap gap-1">{parsedChips(c)}</span>}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2 text-sm">
-                      <Badge tone={commentTone(c.status)}>{COMMENT_STATUS[c.status]}</Badge>
-                      <span className="text-red-700 dark:text-red-300">{reasonOf(c)}</span>
-                    </div>
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-zinc-500">開團自動發的、和小幫手手貼後被系統認出來的貼文。</p>
+        <button type="button" className={btn} onClick={() => void reload()}>重新整理</button>
+      </div>
+      <Table>
+        <THead><Th>團</Th><Th>社群</Th><Th>狀態</Th><Th>發文</Th><Th>最後讀取</Th><Th align="right">留言</Th><Th align="right"></Th></THead>
+        <TBody>
+          {posts === null ? <LoadingRow colSpan={7} /> : posts.length === 0 ? <EmptyRow colSpan={7}>還沒有貼文</EmptyRow> : posts.map((p) => {
+            const c = communityById.get(p.community_id);
+            const cs = p.group_buy_campaigns?.status;
+            return (
+              <Tr key={p.id}>
+                <Td>
+                  <div className="font-medium">{p.group_buy_campaigns?.name ?? p.campaign_id}</div>
+                  <div className="mt-0.5 flex items-center gap-2 text-xs text-zinc-500">
+                    {cs && <span className={`rounded px-1.5 py-0.5 ${campaignStatusBadge(cs)}`}>{campaignStatusLabel(cs)}</span>}
+                    {p.text && <button type="button" className="underline" onClick={() => setOpen(open === p.id ? null : p.id)}>{open === p.id ? "收起內容" : "看內容"}</button>}
                   </div>
-                  <div className="shrink-0">{todoActions(c)}</div>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      {/* ── 貼文列表 ── */}
-      <section className="space-y-2">
-        <h2 className="text-base font-semibold">貼文</h2>
-        <p className="text-sm text-zinc-500">點一篇看底下的留言與加單結果。</p>
-        <Table>
-          <THead><Th>團</Th><Th>社群</Th><Th>發文狀態</Th><Th>發文時間</Th><Th>最後讀取</Th><Th align="right">留言</Th><Th align="right"></Th></THead>
-          <TBody>
-            {posts === null ? <LoadingRow colSpan={7} /> : posts.length === 0 ? <EmptyRow colSpan={7}>還沒有貼文</EmptyRow> : posts.map((p) => {
-              const c = communityById.get(p.community_id);
-              const cs = p.group_buy_campaigns?.status;
-              return (
-                <Tr key={p.id} onClick={() => setSelected(p)} className={selected?.id === p.id ? "bg-sky-50 dark:bg-sky-950/30" : ""}>
-                  <Td>
-                    <div className="text-base font-medium">{p.group_buy_campaigns?.name ?? p.campaign_id}</div>
-                    <div className="mt-0.5 flex items-center gap-2 text-xs text-zinc-500">
-                      {cs && <span className={`rounded px-1.5 py-0.5 ${campaignStatusBadge(cs)}`}>{campaignStatusLabel(cs)}</span>}
-                      <span className="font-mono">{p.group_buy_campaigns?.campaign_no}</span>
-                    </div>
-                  </Td>
-                  <Td className="whitespace-nowrap">{c?.home_name || c?.home_id || p.community_id}</Td>
-                  <Td>
-                    <Badge tone={p.status === "posted" ? "green" : p.status === "queued" ? "amber" : p.status === "failed" ? "red" : "gray"}>{POST_STATUS[p.status]}</Badge>
-                    {p.last_error && <div className="mt-1 max-w-xs truncate text-xs text-red-600" title={p.last_error}>{p.last_error}</div>}
-                  </Td>
-                  <Td className="whitespace-nowrap">{fmt(p.posted_at)}</Td>
-                  <Td className="whitespace-nowrap">{fmt(p.last_read_at)}</Td>
-                  <Td align="right" className="tabular-nums">{p.comment_count}</Td>
-                  <Td align="right">
-                    {p.status === "posted" && (
-                      <SpinButton type="button" className={btn} loading={busy === p.id} onClick={(e) => { e.stopPropagation(); void readNow(p); }}>立即讀取</SpinButton>
-                    )}
-                  </Td>
-                </Tr>
-              );
-            })}
-          </TBody>
-        </Table>
-      </section>
-
-      {/* ── 選中貼文的留言 ── */}
-      {selected && (
-        <section className="space-y-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <h2 className="text-base font-semibold">留言：{selected.group_buy_campaigns?.name}</h2>
-              <div className="text-sm text-zinc-500">{communityById.get(selected.community_id)?.home_name ?? ""}　發文 {fmt(selected.posted_at)}　最後讀取 {fmt(selected.last_read_at)}</div>
-            </div>
-            {summary && (
-              <div className="flex flex-wrap gap-1.5">
-                {summary.ordered > 0 && <Badge tone="green">已加單 {summary.ordered}</Badge>}
-                {summary.duplicate > 0 && <Badge tone="blue">已有訂單 {summary.duplicate}</Badge>}
-                {summary.pending > 0 && <Badge tone="amber">待處理 {summary.pending}</Badge>}
-                {summary.unmatched > 0 && <Badge tone="red">找不到會員 {summary.unmatched}</Badge>}
-                {summary.error > 0 && <Badge tone="red">錯誤 {summary.error}</Badge>}
-                {summary.resolved > 0 && <Badge tone="green">已解決 {summary.resolved}</Badge>}
-                {summary.no_order > 0 && <Badge tone="gray">非下單 {summary.no_order}</Badge>}
-                {summary.ignored > 0 && <Badge tone="gray">忽略 {summary.ignored}</Badge>}
-              </div>
-            )}
-          </div>
-          {selected.text && <details className="text-sm text-zinc-500"><summary className="cursor-pointer">貼文內容</summary><pre className="mt-1 whitespace-pre-wrap rounded bg-zinc-50 p-3 text-sm text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">{selected.text}</pre></details>}
-          <Table>
-            <THead><Th>時間</Th><Th>留言者</Th><Th>留言</Th><Th>結果</Th><Th align="right"></Th></THead>
-            <TBody>
-              {comments === null ? <LoadingRow colSpan={5} /> : comments.length === 0 ? <EmptyRow colSpan={5}>還沒讀到留言</EmptyRow> : comments.map((c) => (
-                <Tr key={c.id}>
-                  <Td className="whitespace-nowrap text-sm text-zinc-500">{fmt(c.commented_at)}</Td>
-                  <Td className="whitespace-nowrap">
-                    <div className="font-medium">{c.commenter_name ?? "—"}</div>
-                    {c.member_no_hint && <div className="font-mono text-xs text-zinc-500">會員 {c.member_no_hint}</div>}
-                  </Td>
-                  <Td className="max-w-md">
-                    <div className="whitespace-pre-wrap text-base">{c.text}</div>
-                    {c.parsed?.length > 0 && <div className="mt-1 flex flex-wrap gap-1">{parsedChips(c)}</div>}
-                  </Td>
-                  <Td className="max-w-xs">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <Badge tone={commentTone(c.status)}>{COMMENT_STATUS[c.status]}</Badge>
-                      {c.customer_order_id && <span className="text-sm text-zinc-600 dark:text-zinc-300">訂單 #{c.customer_order_id}</span>}
-                    </div>
-                    {c.error && c.status !== "duplicate" && <div className="mt-1 text-sm text-red-700 dark:text-red-300">{c.error}</div>}
-                    {c.status === "no_order" && c.member_no_hint && <div className="mt-1 text-sm text-red-700 dark:text-red-300">{reasonOf(c)}</div>}
-                    {c.resolution_note && <div className="mt-1 text-sm text-zinc-500">處理：{c.resolution_note}</div>}
-                  </Td>
-                  <Td align="right">{todoActions(c)}</Td>
-                </Tr>
-              ))}
-            </TBody>
-          </Table>
-        </section>
-      )}
+                  {open === p.id && p.text && <pre className="mt-2 whitespace-pre-wrap rounded bg-zinc-50 p-3 text-sm text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">{p.text}</pre>}
+                </Td>
+                <Td className="whitespace-nowrap">{c?.home_name || c?.home_id || p.community_id}</Td>
+                <Td>
+                  <Badge tone={p.status === "posted" ? "green" : p.status === "queued" ? "amber" : p.status === "failed" ? "red" : "gray"}>{POST_STATUS[p.status]}</Badge>
+                  {p.last_error && <div className="mt-1 max-w-xs truncate text-xs text-red-600" title={p.last_error}>{p.last_error}</div>}
+                </Td>
+                <Td className="whitespace-nowrap">{fmt(p.posted_at)}</Td>
+                <Td className="whitespace-nowrap">{fmt(p.last_read_at)}</Td>
+                <Td align="right" className="tabular-nums">{p.comment_count}</Td>
+                <Td align="right">
+                  {p.status === "posted" && <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => readNow(p)}>立即讀取</SpinButton>}
+                </Td>
+              </Tr>
+            );
+          })}
+        </TBody>
+      </Table>
     </div>
   );
 }
