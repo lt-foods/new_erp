@@ -40,6 +40,7 @@ type Comment = {
 };
 type Row = Comment & { line_note_posts: { community_id: number; campaign_id: number; group_buy_campaigns: { name: string; campaign_no: string } | null } | null };
 type OrderInfo = { id: number; order_no: string; store_name: string | null };
+type PostStat = { ordered: number; duplicate: number; todo: number; total: number };
 type Home = { kind: string; homeId: string; name: string };
 type Campaign = { id: number; campaign_no: string; name: string; status: string };
 
@@ -148,7 +149,7 @@ export default function LineNotesPage() {
           <h1 className="text-xl font-semibold">LINE 記事本</h1>
           <p className="text-sm text-zinc-500">
             備用 LINE 帳號登入 → 綁社群 → 開團自動發文 → 定時讀留言，留言裡的「會員編號 6 碼 ＋ A+1」自動加單。
-            排程每分鐘自動跑（Supabase），不用另外開程式。
+            到設定的讀取時間自動跑（Supabase 排程），不用另外開程式。
           </p>
         </div>
         <nav className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
@@ -395,7 +396,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       <Table>
         <THead><Th>社群</Th><Th>帳號</Th><Th>店家</Th><Th>監聽</Th><Th>讀取時間</Th><Th>開團自動發文</Th><Th>最後讀取</Th><Th align="right">操作</Th></THead>
         <TBody>
-          {communities === null ? <LoadingRow colSpan={8} /> : communities.length === 0 ? <EmptyRow colSpan={8}>還沒有社群</EmptyRow> : communities.map((c) => {
+          {communities === null ? <LoadingRow colSpan={7} /> : communities.length === 0 ? <EmptyRow colSpan={8}>還沒有社群</EmptyRow> : communities.map((c) => {
             const a = accountById.get(c.account_id);
             return (
               <Tr key={c.id}>
@@ -411,7 +412,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
                 <Td>{c.auto_post_on_open ? "是" : "否"}</Td>
                 <Td>{fmt(c.last_read_at)}</Td>
                 <Td align="right">
-                  <div className="flex justify-end gap-1">
+                  <div className="flex justify-end gap-1 whitespace-nowrap">
                     <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => readNow(c)}>立即讀取</SpinButton>
                     <button type="button" className={btn} onClick={() => setPostFor(c)}>發文</button>
                     <button type="button" className={btn} onClick={() => openEdit(c)}>編輯</button>
@@ -674,6 +675,28 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
   const [detail, setDetail] = useState<Map<number, Comment[]>>(new Map());
   const [orderNos, setOrderNos] = useState<Map<number, string>>(new Map());
   const [loadingId, setLoadingId] = useState<number | null>(null);
+  // 每篇貼文的留言統計。收合時也要看得到，所以一次把清單上所有貼文的留言狀態撈回來自己數
+  // （只取 post_id + status + member_no_hint 三欄，比逐篇展開才查省很多）。
+  const [counts, setCounts] = useState<Map<number, PostStat>>(new Map());
+
+  const loadCounts = useCallback(async () => {
+    const ids = (posts ?? []).map((p) => p.id);
+    if (ids.length === 0) { setCounts(new Map()); return; }
+    const { data, error } = await getSupabase().from("line_note_comments")
+      .select("post_id,status,member_no_hint").in("post_id", ids);
+    if (error) return;   // 統計拿不到就不顯示，不要擋住整頁
+    const m = new Map<number, PostStat>();
+    for (const r of (data ?? []) as { post_id: number; status: Comment["status"]; member_no_hint: string | null }[]) {
+      const cur = m.get(r.post_id) ?? { ordered: 0, duplicate: 0, todo: 0, total: 0 };
+      cur.total++;
+      if (r.status === "ordered") cur.ordered++;
+      else if (r.status === "duplicate") cur.duplicate++;
+      else if (["pending", "unmatched", "error"].includes(r.status) || (r.status === "no_order" && r.member_no_hint)) cur.todo++;
+      m.set(r.post_id, cur);
+    }
+    setCounts(m);
+  }, [posts]);
+  useEffect(() => { void loadCounts(); }, [loadCounts]);
 
   const toggle = async (p: Post) => {
     if (open === p.id) { setOpen(null); return; }
@@ -707,24 +730,44 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
     kickWorker();
     setDetail((m) => { const n = new Map(m); n.delete(p.id); return n; });
     notify("已開始讀取，留言幾秒後會出現在「留言加單」");
+    setTimeout(() => { void loadCounts(); }, 6000);   // worker 跑完大概這個時間，順手把統計刷新
   };
 
-  const stat = (cs: Comment[]) => ({
-    ordered: cs.filter((c) => c.status === "ordered").length,
-    duplicate: cs.filter((c) => c.status === "duplicate").length,
-    todo: cs.filter((c) => ["pending", "unmatched", "error"].includes(c.status) || (c.status === "no_order" && c.member_no_hint)).length,
-  });
+  const removePost = async (p: Post) => {
+    const name = p.group_buy_campaigns?.name ?? `#${p.id}`;
+    if (!window.confirm(`刪除「${name}」這篇貼文的紀錄？\n\n只清掉記事本這邊的貼文與留言紀錄，已經加出來的訂單不會動（要退單請到訂單那邊）。`)) return;
+    setBusy(p.id);
+    const { error } = await getSupabase().rpc("rpc_line_note_post_delete", { p_id: p.id });
+    setBusy(null);
+    if (error) return fail(error);
+    if (open === p.id) setOpen(null);
+    notify("已刪除");
+    await reload();
+  };
+
+  // 收合時顯示的統計徽章
+  const statBadges = (st: PostStat | undefined) => {
+    if (!st || st.total === 0) return <span className="text-xs text-zinc-400">—</span>;
+    return (
+      <div className="flex flex-wrap items-center gap-1">
+        {st.ordered > 0 && <Badge tone="green">已加單 {st.ordered}</Badge>}
+        {st.duplicate > 0 && <Badge tone="blue">已有訂單 {st.duplicate}</Badge>}
+        {st.todo > 0 && <Badge tone="red">待處理 {st.todo}</Badge>}
+        {st.ordered === 0 && st.duplicate === 0 && st.todo === 0 && <span className="text-xs text-zinc-400">無下單</span>}
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-zinc-500">開團自動發的、和小幫手手貼後被系統認出來的貼文。點一列展開看加了幾單。</p>
+        <p className="text-sm text-zinc-500">開團自動發的、和小幫手手貼後被系統認出來的貼文。點一列展開看每則留言。</p>
         <button type="button" className={btn} onClick={() => void reload()}>重新整理</button>
       </div>
       <Table>
-        <THead><Th></Th><Th>團</Th><Th>社群</Th><Th>狀態</Th><Th>發文</Th><Th>最後讀取</Th><Th align="right">留言</Th><Th align="right"></Th></THead>
+        <THead><Th></Th><Th>團</Th><Th>發文</Th><Th>加單結果</Th><Th>最後讀取</Th><Th align="right">留言</Th><Th align="right"></Th></THead>
         <TBody>
-          {posts === null ? <LoadingRow colSpan={8} /> : posts.length === 0 ? <EmptyRow colSpan={8}>還沒有貼文</EmptyRow> : posts.flatMap((p) => {
+          {posts === null ? <LoadingRow colSpan={8} /> : posts.length === 0 ? <EmptyRow colSpan={7}>還沒有貼文</EmptyRow> : posts.flatMap((p) => {
             const c = communityById.get(p.community_id);
             const cs = p.group_buy_campaigns?.status;
             const expanded = open === p.id;
@@ -732,41 +775,40 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
             const rows = [
               <Tr key={p.id} onClick={() => void toggle(p)} className={expanded ? "bg-sky-50 dark:bg-sky-950/30" : ""}>
                 <Td className="w-8 text-zinc-400">{expanded ? "▾" : "▸"}</Td>
-                <Td>
+                <Td className="min-w-[16rem]">
                   <div className="font-medium">{p.group_buy_campaigns?.name ?? p.campaign_id}</div>
-                  <div className="mt-0.5 flex items-center gap-2 text-xs text-zinc-500">
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-zinc-500">
                     {cs && <span className={`rounded px-1.5 py-0.5 ${campaignStatusBadge(cs)}`}>{campaignStatusLabel(cs)}</span>}
                     <span className="font-mono">{p.group_buy_campaigns?.campaign_no}</span>
+                    <span>{c?.home_name || c?.home_id || p.community_id}</span>
                   </div>
                 </Td>
-                <Td className="whitespace-nowrap">{c?.home_name || c?.home_id || p.community_id}</Td>
-                <Td>
+                <Td className="whitespace-nowrap">
                   <Badge tone={p.status === "posted" ? "green" : p.status === "queued" ? "amber" : p.status === "failed" ? "red" : "gray"}>{POST_STATUS[p.status]}</Badge>
-                  {p.last_error && <div className="mt-1 max-w-xs truncate text-xs text-red-600" title={p.last_error}>{p.last_error}</div>}
+                  <div className="mt-0.5 text-xs text-zinc-500">{fmt(p.posted_at)}</div>
+                  {p.last_error && <div className="mt-1 max-w-[14rem] truncate text-xs text-red-600" title={p.last_error}>{p.last_error}</div>}
                 </Td>
-                <Td className="whitespace-nowrap">{fmt(p.posted_at)}</Td>
+                <Td>{statBadges(counts.get(p.id))}</Td>
                 <Td className="whitespace-nowrap">{fmt(p.last_read_at)}</Td>
-                <Td align="right" className="tabular-nums">{p.comment_count}</Td>
+                <Td align="right" className="tabular-nums">{counts.get(p.id)?.total ?? p.comment_count}</Td>
                 <Td align="right">
-                  {p.status === "posted" && (
-                    <SpinButton type="button" className={btn} loading={busy === p.id}
-                      onClick={(e) => { e.stopPropagation(); void readNow(p); }}>立即讀取</SpinButton>
-                  )}
+                  <div className="flex justify-end gap-1">
+                    {p.status === "posted" && (
+                      <SpinButton type="button" className={btn} loading={busy === p.id}
+                        onClick={(e) => { e.stopPropagation(); void readNow(p); }}>立即讀取</SpinButton>
+                    )}
+                    <SpinButton type="button" className={`${btn} text-red-600`} loading={busy === p.id}
+                      onClick={(e) => { e.stopPropagation(); void removePost(p); }}>刪除</SpinButton>
+                  </div>
                 </Td>
               </Tr>,
             ];
             if (expanded) {
               rows.push(
                 <tr key={`${p.id}-d`} className="bg-zinc-50 dark:bg-zinc-900/50">
-                  <td colSpan={8} className="px-4 py-3">
+                  <td colSpan={7} className="px-4 py-3">
                     {loadingId === p.id ? <div className="text-sm text-zinc-400">讀取中…</div> : !cmts ? null : (
                       <div className="space-y-2">
-                        <div className="flex flex-wrap items-center gap-2 text-sm">
-                          <Badge tone="green">已加單 {stat(cmts).ordered}</Badge>
-                          {stat(cmts).duplicate > 0 && <Badge tone="blue">已有訂單 {stat(cmts).duplicate}</Badge>}
-                          {stat(cmts).todo > 0 && <Badge tone="red">待處理 {stat(cmts).todo}</Badge>}
-                          <span className="text-zinc-500">共 {cmts.length} 則留言</span>
-                        </div>
                         {cmts.length === 0 ? <div className="text-sm text-zinc-400">還沒讀到留言</div> : (
                           <ul className="divide-y divide-zinc-200 rounded border border-zinc-200 bg-white dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-900">
                             {cmts.map((cm) => (
