@@ -9,6 +9,7 @@ import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import { translateRpcError } from "@/lib/rpcError";
+import { campaignStatusBadge, campaignStatusLabel } from "@/lib/campaignStatus";
 
 type Account = {
   id: number; label: string; status: "logged_out" | "pending_qr" | "active" | "error";
@@ -550,110 +551,149 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
   const commentTone = (s: Comment["status"]) =>
     s === "ordered" || s === "resolved" ? "green" : s === "pending" ? "amber" : s === "unmatched" || s === "error" ? "red" : s === "duplicate" ? "blue" : "gray";
 
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-zinc-500">點一篇貼文看底下留言與加單結果。「找不到會員」「錯誤」可以修正後按「重試」，小幫手手動加完單按「已解決」，紀錄會留著。</p>
-        <button type="button" className={btn} onClick={() => { void reload(); void loadTodos(); }}>重新整理</button>
-      </div>
+  const reasonOf = (c: Comment) => c.error ?? (c.status === "no_order" ? "有會員編號，但看不出要買什麼、買幾個" : "");
+  const parsedChips = (c: Comment) => (c.parsed ?? []).map((o, i) => (
+    <span key={i} className={`inline-block rounded px-1.5 py-0.5 font-mono text-sm ${o.cancel ? "bg-red-50 text-red-700 line-through dark:bg-red-950/40 dark:text-red-300" : "bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200"}`}>
+      {o.code ?? "單品"} ×{o.qty}
+    </span>
+  ));
 
-      <section className="rounded border border-amber-300 bg-amber-50/60 p-3 dark:border-amber-800 dark:bg-amber-950/30">
-        <div className="mb-2 flex items-center justify-between">
-          <h2 className="font-medium">⚠️ 待小幫手處理 {todos ? `（${todos.length}）` : ""}</h2>
-          <span className="text-xs text-zinc-500">系統拆不出來或對不到的留言。加完單後按「已解決」。</span>
+  return (
+    <div className="space-y-5">
+      {/* ── 待小幫手處理：一則一張卡，留言原文放大、原因一行 ── */}
+      <section className="space-y-2">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <h2 className="text-base font-semibold">待小幫手處理{todos ? `　${todos.length} 則` : ""}</h2>
+            <p className="text-sm text-zinc-500">系統對不到人或拆不出品項的留言。手動加完單按「已解決」，紀錄會留著。</p>
+          </div>
+          <button type="button" className={btn} onClick={() => { void reload(); void loadTodos(); }}>重新整理</button>
         </div>
-        <Table>
-          <THead><Th>時間</Th><Th>團</Th><Th>留言者</Th><Th>留言</Th><Th>原因</Th><Th align="right">操作</Th></THead>
-          <TBody>
-            {todos === null ? <LoadingRow colSpan={6} /> : todos.length === 0 ? <EmptyRow colSpan={6}>目前沒有要人工處理的留言 🎉</EmptyRow> : todos.map((c) => (
-              <Tr key={c.id}>
-                <Td className="whitespace-nowrap text-xs">{fmt(c.commented_at)}</Td>
-                <Td className="text-sm">
-                  <div>{c.line_note_posts?.group_buy_campaigns?.name ?? "—"}</div>
-                  <div className="text-xs text-zinc-500">{c.line_note_posts?.group_buy_campaigns?.campaign_no} · {communityById.get(c.line_note_posts?.community_id ?? -1)?.home_name ?? ""}</div>
-                </Td>
-                <Td>{c.commenter_name ?? "—"}</Td>
-                <Td className="max-w-sm whitespace-pre-wrap text-sm">{c.text}</Td>
-                <Td className="text-xs">
-                  <Badge tone={commentTone(c.status)}>{COMMENT_STATUS[c.status]}</Badge>
-                  <div className="text-red-600">{c.error ?? (c.status === "no_order" ? "有會員編號但看不出數量" : "")}</div>
-                </Td>
-                <Td align="right">{todoActions(c)}</Td>
-              </Tr>
+        {todos === null ? (
+          <div className="rounded-lg border border-zinc-200 p-6 text-center text-sm text-zinc-400 dark:border-zinc-800">讀取中…</div>
+        ) : todos.length === 0 ? (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-6 text-center text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">目前沒有要人工處理的留言 🎉</div>
+        ) : (
+          <ul className="space-y-2">
+            {todos.map((c) => (
+              <li key={c.id} className="rounded-lg border border-amber-300 bg-amber-50/50 p-4 dark:border-amber-800 dark:bg-amber-950/20">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-zinc-500">
+                      <span className="font-medium text-zinc-800 dark:text-zinc-200">{c.line_note_posts?.group_buy_campaigns?.name ?? "—"}</span>
+                      <span>·</span>
+                      <span>{communityById.get(c.line_note_posts?.community_id ?? -1)?.home_name ?? ""}</span>
+                      <span>·</span>
+                      <span>{fmt(c.commented_at)}</span>
+                    </div>
+                    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                      <span className="text-base font-semibold">{c.commenter_name ?? "—"}</span>
+                      <span className="whitespace-pre-wrap text-lg">{c.text}</span>
+                      {c.parsed?.length > 0 && <span className="flex flex-wrap gap-1">{parsedChips(c)}</span>}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                      <Badge tone={commentTone(c.status)}>{COMMENT_STATUS[c.status]}</Badge>
+                      <span className="text-red-700 dark:text-red-300">{reasonOf(c)}</span>
+                    </div>
+                  </div>
+                  <div className="shrink-0">{todoActions(c)}</div>
+                </div>
+              </li>
             ))}
+          </ul>
+        )}
+      </section>
+
+      {/* ── 貼文列表 ── */}
+      <section className="space-y-2">
+        <h2 className="text-base font-semibold">貼文</h2>
+        <p className="text-sm text-zinc-500">點一篇看底下的留言與加單結果。</p>
+        <Table>
+          <THead><Th>團</Th><Th>社群</Th><Th>發文狀態</Th><Th>發文時間</Th><Th>最後讀取</Th><Th align="right">留言</Th><Th align="right"></Th></THead>
+          <TBody>
+            {posts === null ? <LoadingRow colSpan={7} /> : posts.length === 0 ? <EmptyRow colSpan={7}>還沒有貼文</EmptyRow> : posts.map((p) => {
+              const c = communityById.get(p.community_id);
+              const cs = p.group_buy_campaigns?.status;
+              return (
+                <Tr key={p.id} onClick={() => setSelected(p)} className={selected?.id === p.id ? "bg-sky-50 dark:bg-sky-950/30" : ""}>
+                  <Td>
+                    <div className="text-base font-medium">{p.group_buy_campaigns?.name ?? p.campaign_id}</div>
+                    <div className="mt-0.5 flex items-center gap-2 text-xs text-zinc-500">
+                      {cs && <span className={`rounded px-1.5 py-0.5 ${campaignStatusBadge(cs)}`}>{campaignStatusLabel(cs)}</span>}
+                      <span className="font-mono">{p.group_buy_campaigns?.campaign_no}</span>
+                    </div>
+                  </Td>
+                  <Td className="whitespace-nowrap">{c?.home_name || c?.home_id || p.community_id}</Td>
+                  <Td>
+                    <Badge tone={p.status === "posted" ? "green" : p.status === "queued" ? "amber" : p.status === "failed" ? "red" : "gray"}>{POST_STATUS[p.status]}</Badge>
+                    {p.last_error && <div className="mt-1 max-w-xs truncate text-xs text-red-600" title={p.last_error}>{p.last_error}</div>}
+                  </Td>
+                  <Td className="whitespace-nowrap">{fmt(p.posted_at)}</Td>
+                  <Td className="whitespace-nowrap">{fmt(p.last_read_at)}</Td>
+                  <Td align="right" className="tabular-nums">{p.comment_count}</Td>
+                  <Td align="right">
+                    {p.status === "posted" && (
+                      <SpinButton type="button" className={btn} loading={busy === p.id} onClick={(e) => { e.stopPropagation(); void readNow(p); }}>立即讀取</SpinButton>
+                    )}
+                  </Td>
+                </Tr>
+              );
+            })}
           </TBody>
         </Table>
       </section>
-      <Table>
-        <THead><Th>團</Th><Th>社群</Th><Th>狀態</Th><Th>發文時間</Th><Th>最後讀取</Th><Th align="right">留言數</Th><Th align="right">操作</Th></THead>
-        <TBody>
-          {posts === null ? <LoadingRow colSpan={7} /> : posts.length === 0 ? <EmptyRow colSpan={7}>還沒有貼文</EmptyRow> : posts.map((p) => {
-            const c = communityById.get(p.community_id);
-            return (
-              <Tr key={p.id} onClick={() => setSelected(p)} className={selected?.id === p.id ? "bg-zinc-100 dark:bg-zinc-800" : ""}>
-                <Td>
-                  <div>{p.group_buy_campaigns?.name ?? p.campaign_id}</div>
-                  <div className="text-xs text-zinc-500">{p.group_buy_campaigns?.campaign_no}（{p.group_buy_campaigns?.status}）</div>
-                </Td>
-                <Td>{c?.home_name || c?.home_id || p.community_id}</Td>
-                <Td>
-                  <Badge tone={p.status === "posted" ? "green" : p.status === "queued" ? "amber" : p.status === "failed" ? "red" : "gray"}>{POST_STATUS[p.status]}</Badge>
-                  {p.last_error && <div className="max-w-xs truncate text-xs text-red-600" title={p.last_error}>{p.last_error}</div>}
-                </Td>
-                <Td>{fmt(p.posted_at)}</Td>
-                <Td>{fmt(p.last_read_at)}</Td>
-                <Td align="right">{p.comment_count}</Td>
-                <Td align="right">
-                  {p.status === "posted" && (
-                    <SpinButton type="button" className={btn} loading={busy === p.id} onClick={(e) => { e.stopPropagation(); void readNow(p); }}>立即讀取</SpinButton>
-                  )}
-                </Td>
-              </Tr>
-            );
-          })}
-        </TBody>
-      </Table>
 
+      {/* ── 選中貼文的留言 ── */}
       {selected && (
-        <div className="space-y-2 rounded border border-zinc-200 p-3 dark:border-zinc-800">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="font-medium">留言：{selected.group_buy_campaigns?.name}</h2>
+        <section className="space-y-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h2 className="text-base font-semibold">留言：{selected.group_buy_campaigns?.name}</h2>
+              <div className="text-sm text-zinc-500">{communityById.get(selected.community_id)?.home_name ?? ""}　發文 {fmt(selected.posted_at)}　最後讀取 {fmt(selected.last_read_at)}</div>
+            </div>
             {summary && (
-              <div className="flex flex-wrap gap-1 text-xs">
-                <Badge tone="green">已加單 {summary.ordered}</Badge>
-                <Badge tone="amber">待處理 {summary.pending}</Badge>
-                <Badge tone="red">找不到會員 {summary.unmatched}</Badge>
-                <Badge tone="red">錯誤 {summary.error}</Badge>
-                <Badge tone="gray">非下單 {summary.no_order}</Badge>
-                <Badge tone="gray">忽略 {summary.ignored}</Badge>
-                <Badge tone="green">已解決 {summary.resolved}</Badge>
-                <Badge tone="blue">已有訂單 {summary.duplicate}</Badge>
+              <div className="flex flex-wrap gap-1.5">
+                {summary.ordered > 0 && <Badge tone="green">已加單 {summary.ordered}</Badge>}
+                {summary.duplicate > 0 && <Badge tone="blue">已有訂單 {summary.duplicate}</Badge>}
+                {summary.pending > 0 && <Badge tone="amber">待處理 {summary.pending}</Badge>}
+                {summary.unmatched > 0 && <Badge tone="red">找不到會員 {summary.unmatched}</Badge>}
+                {summary.error > 0 && <Badge tone="red">錯誤 {summary.error}</Badge>}
+                {summary.resolved > 0 && <Badge tone="green">已解決 {summary.resolved}</Badge>}
+                {summary.no_order > 0 && <Badge tone="gray">非下單 {summary.no_order}</Badge>}
+                {summary.ignored > 0 && <Badge tone="gray">忽略 {summary.ignored}</Badge>}
               </div>
             )}
           </div>
-          {selected.text && <details className="text-xs text-zinc-500"><summary>貼文內容</summary><pre className="whitespace-pre-wrap">{selected.text}</pre></details>}
+          {selected.text && <details className="text-sm text-zinc-500"><summary className="cursor-pointer">貼文內容</summary><pre className="mt-1 whitespace-pre-wrap rounded bg-zinc-50 p-3 text-sm text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">{selected.text}</pre></details>}
           <Table>
-            <THead><Th>時間</Th><Th>留言者</Th><Th>留言</Th><Th>會員編號</Th><Th>解析</Th><Th>狀態</Th><Th align="right">操作</Th></THead>
+            <THead><Th>時間</Th><Th>留言者</Th><Th>留言</Th><Th>結果</Th><Th align="right"></Th></THead>
             <TBody>
-              {comments === null ? <LoadingRow colSpan={7} /> : comments.length === 0 ? <EmptyRow colSpan={7}>還沒讀到留言</EmptyRow> : comments.map((c) => (
+              {comments === null ? <LoadingRow colSpan={5} /> : comments.length === 0 ? <EmptyRow colSpan={5}>還沒讀到留言</EmptyRow> : comments.map((c) => (
                 <Tr key={c.id}>
-                  <Td className="whitespace-nowrap text-xs">{fmt(c.commented_at)}</Td>
-                  <Td><div>{c.commenter_name ?? "—"}</div><div className="font-mono text-[10px] text-zinc-400">{c.commenter_id}</div></Td>
-                  <Td className="max-w-sm whitespace-pre-wrap text-sm">{c.text}</Td>
-                  <Td className="font-mono">{c.member_no_hint ?? "—"}</Td>
-                  <Td className="font-mono text-xs">{(c.parsed ?? []).map((o, i) => <div key={i}>{o.cancel ? "取消 " : ""}{o.code ?? "(單品)"} ×{o.qty}</div>)}</Td>
-                  <Td>
-                    <Badge tone={commentTone(c.status)}>{COMMENT_STATUS[c.status]}</Badge>
-                    {c.error && <div className={`max-w-xs text-xs ${c.status === "duplicate" ? "text-zinc-500" : "text-red-600"}`}>{c.error}</div>}
-                    {c.resolution_note && <div className="max-w-xs text-xs text-zinc-500">處理：{c.resolution_note}</div>}
-                    {c.customer_order_id && <div className="text-xs text-zinc-500">訂單 #{c.customer_order_id}</div>}
+                  <Td className="whitespace-nowrap text-sm text-zinc-500">{fmt(c.commented_at)}</Td>
+                  <Td className="whitespace-nowrap">
+                    <div className="font-medium">{c.commenter_name ?? "—"}</div>
+                    {c.member_no_hint && <div className="font-mono text-xs text-zinc-500">會員 {c.member_no_hint}</div>}
+                  </Td>
+                  <Td className="max-w-md">
+                    <div className="whitespace-pre-wrap text-base">{c.text}</div>
+                    {c.parsed?.length > 0 && <div className="mt-1 flex flex-wrap gap-1">{parsedChips(c)}</div>}
+                  </Td>
+                  <Td className="max-w-xs">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge tone={commentTone(c.status)}>{COMMENT_STATUS[c.status]}</Badge>
+                      {c.customer_order_id && <span className="text-sm text-zinc-600 dark:text-zinc-300">訂單 #{c.customer_order_id}</span>}
+                    </div>
+                    {c.error && c.status !== "duplicate" && <div className="mt-1 text-sm text-red-700 dark:text-red-300">{c.error}</div>}
+                    {c.status === "no_order" && c.member_no_hint && <div className="mt-1 text-sm text-red-700 dark:text-red-300">{reasonOf(c)}</div>}
+                    {c.resolution_note && <div className="mt-1 text-sm text-zinc-500">處理：{c.resolution_note}</div>}
                   </Td>
                   <Td align="right">{todoActions(c)}</Td>
                 </Tr>
               ))}
             </TBody>
           </Table>
-        </div>
+        </section>
       )}
     </div>
   );
