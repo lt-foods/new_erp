@@ -17,9 +17,9 @@ type Account = {
   qr_image: string | null; qr_url: string | null; pin_code: string | null;
   last_error: string | null; last_seen_at: string | null;
 };
-type Channel = { id: number; code: string; name: string; channel_type: string; home_store_id: number };
+type Store = { id: number; code: string; name: string };
 type Community = {
-  id: number; account_id: number; channel_id: number; home_id: string; home_name: string | null;
+  id: number; account_id: number; store_id: number | null; home_id: string; home_name: string | null;
   home_kind: "group" | "square" | "square_chat"; listen_enabled: boolean; read_times: string[];
   auto_post_on_open: boolean; post_template: string | null; read_days: number; last_read_at: string | null; last_error: string | null;
 };
@@ -78,7 +78,7 @@ const input = "w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-s
 export default function LineNotesPage() {
   const [tab, setTab] = useState<"accounts" | "communities" | "comments" | "posts">("accounts");
   const [accounts, setAccounts] = useState<Account[] | null>(null);
-  const [channels, setChannels] = useState<Channel[]>([]);
+  const [stores, setStores] = useState<Store[]>([]);
   const [communities, setCommunities] = useState<Community[] | null>(null);
   const [posts, setPosts] = useState<Post[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -95,10 +95,10 @@ export default function LineNotesPage() {
     const sb = getSupabase();
     const [c, ch] = await Promise.all([
       sb.from("line_note_communities").select("*").order("id"),
-      sb.from("line_channels").select("id,code,name,channel_type,home_store_id").eq("is_active", true).order("name"),
+      sb.from("stores").select("id,code,name").eq("is_active", true).order("name"),
     ]);
     if (c.error) fail(c.error); else setCommunities((c.data ?? []) as Community[]);
-    if (!ch.error) setChannels((ch.data ?? []) as Channel[]);
+    if (!ch.error) setStores((ch.data ?? []) as Store[]);
   }, [fail]);
   const loadPosts = useCallback(async () => {
     const { data, error } = await getSupabase()
@@ -118,7 +118,7 @@ export default function LineNotesPage() {
   }, [loadAccounts]);
 
   const accountById = useMemo(() => new Map((accounts ?? []).map((a) => [a.id, a])), [accounts]);
-  const channelById = useMemo(() => new Map(channels.map((c) => [c.id, c])), [channels]);
+  const storeById = useMemo(() => new Map(stores.map((s) => [s.id, s])), [stores]);
   const communityById = useMemo(() => new Map((communities ?? []).map((c) => [c.id, c])), [communities]);
 
   return (
@@ -154,8 +154,8 @@ export default function LineNotesPage() {
       )}
       {tab === "communities" && (
         <CommunitiesTab
-          communities={communities} accounts={accounts ?? []} channels={channels}
-          accountById={accountById} channelById={channelById}
+          communities={communities} accounts={accounts ?? []} stores={stores}
+          accountById={accountById} storeById={storeById}
           reload={loadCommunities} reloadPosts={loadPosts} notify={notify} fail={fail}
         />
       )}
@@ -275,17 +275,17 @@ function AccountsTab({ accounts, reload, notify, fail }: {
 
 // ── 社群設定 ─────────────────────────────────────────────────────────────────
 type CommunityForm = {
-  id: number | null; account_id: number | ""; channel_id: number | ""; home_id: string; home_name: string;
+  id: number | null; account_id: number | ""; store_id: number | ""; home_id: string; home_name: string;
   listen_enabled: boolean; read_times: string; auto_post_on_open: boolean; post_template: string; read_days: number;
 };
 const EMPTY_FORM: CommunityForm = {
-  id: null, account_id: "", channel_id: "", home_id: "", home_name: "",
+  id: null, account_id: "", store_id: "", home_id: "", home_name: "",
   listen_enabled: true, read_times: "12:00", auto_post_on_open: true, post_template: "", read_days: 3,
 };
 
-function CommunitiesTab({ communities, accounts, channels, accountById, channelById, reload, reloadPosts, notify, fail }: {
-  communities: Community[] | null; accounts: Account[]; channels: Channel[];
-  accountById: Map<number, Account>; channelById: Map<number, Channel>;
+function CommunitiesTab({ communities, accounts, stores, accountById, storeById, reload, reloadPosts, notify, fail }: {
+  communities: Community[] | null; accounts: Account[]; stores: Store[];
+  accountById: Map<number, Account>; storeById: Map<number, Store>;
   reload: () => Promise<void>; reloadPosts: () => Promise<void>; notify: (m: string) => void; fail: (e: unknown) => void;
 }) {
   const [form, setForm] = useState<CommunityForm | null>(null);
@@ -293,10 +293,10 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
   const [homes, setHomes] = useState<Home[] | null>(null);
   const [postFor, setPostFor] = useState<Community | null>(null);
 
-  const openNew = () => { setHomes(null); setForm({ ...EMPTY_FORM, account_id: accounts[0]?.id ?? "", channel_id: channels[0]?.id ?? "" }); };
+  const openNew = () => { setHomes(null); setForm({ ...EMPTY_FORM, account_id: accounts[0]?.id ?? "" }); };
   const openEdit = (c: Community) => {
     setHomes(null);
-    setForm({ id: c.id, account_id: c.account_id, channel_id: c.channel_id, home_id: c.home_id, home_name: c.home_name ?? "",
+    setForm({ id: c.id, account_id: c.account_id, store_id: c.store_id ?? "", home_id: c.home_id, home_name: c.home_name ?? "",
       listen_enabled: c.listen_enabled, read_times: c.read_times.join(", "), auto_post_on_open: c.auto_post_on_open, post_template: c.post_template ?? "", read_days: c.read_days ?? 3 });
   };
 
@@ -322,7 +322,7 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
     if (!form) return;
     setBusy("save");
     const { error } = await getSupabase().rpc("rpc_line_note_community_upsert", {
-      p_id: form.id, p_account_id: form.account_id || null, p_channel_id: form.channel_id || null,
+      p_id: form.id, p_account_id: form.account_id || null, p_store_id: form.store_id || null,
       p_home_id: form.home_id.trim(), p_home_name: form.home_name.trim() || null, p_home_kind: kindOf(form.home_id.trim()),
       p_listen_enabled: form.listen_enabled,
       p_read_times: form.read_times.split(/[,\s，、]+/).map((s) => s.trim()).filter(Boolean),
@@ -356,12 +356,12 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <p className="text-sm text-zinc-500">
-          「取貨門市」跟開團的 LINE 渠道共用（line_channels）：開團時有勾到這個渠道，才會自動發到這個社群；加單的取貨店也用渠道的主店。
+          總部開的團會發到所有開自動發文的社群；店家自開的團只發到標了那家店的社群。加單的取貨店一律跟會員自己設定的店。
         </p>
         <button type="button" className={btnPrimary} onClick={openNew} disabled={accounts.length === 0}>＋ 新增社群</button>
       </div>
       <Table>
-        <THead><Th>社群</Th><Th>帳號</Th><Th>渠道 / 取貨店</Th><Th>監聽</Th><Th>讀取時間</Th><Th>開團自動發文</Th><Th>最後讀取</Th><Th align="right">操作</Th></THead>
+        <THead><Th>社群</Th><Th>帳號</Th><Th>店家</Th><Th>監聽</Th><Th>讀取時間</Th><Th>開團自動發文</Th><Th>最後讀取</Th><Th align="right">操作</Th></THead>
         <TBody>
           {communities === null ? <LoadingRow colSpan={8} /> : communities.length === 0 ? <EmptyRow colSpan={8}>還沒有社群</EmptyRow> : communities.map((c) => {
             const a = accountById.get(c.account_id);
@@ -373,7 +373,7 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
                   {c.last_error && <div className="text-xs text-red-600">{c.last_error}</div>}
                 </Td>
                 <Td>{a ? <>{a.label} <Badge tone={a.status === "active" ? "green" : "red"}>{ACCOUNT_STATUS[a.status]}</Badge></> : "—"}</Td>
-                <Td>{channelById.get(c.channel_id)?.name ?? c.channel_id}</Td>
+                <Td>{c.store_id ? (storeById.get(c.store_id)?.name ?? c.store_id) : <span className="text-zinc-400">總部（全部）</span>}</Td>
                 <Td><Badge tone={c.listen_enabled ? "green" : "gray"}>{c.listen_enabled ? "監聽中" : "停用"}</Badge></Td>
                 <Td className="font-mono text-xs">{c.read_times.join(" ")}<div className="text-zinc-400">近 {c.read_days} 天</div></Td>
                 <Td>{c.auto_post_on_open ? "是" : "否"}</Td>
@@ -400,10 +400,12 @@ function CommunitiesTab({ communities, accounts, channels, accountById, channelB
                 {accounts.map((a) => <option key={a.id} value={a.id}>{a.label}（{ACCOUNT_STATUS[a.status]}）</option>)}
               </select>
             </label>
-            <label className="text-sm">渠道（決定取貨店）
-              <select className={input} value={form.channel_id} onChange={(e) => setForm({ ...form, channel_id: Number(e.target.value) })}>
-                {channels.map((ch) => <option key={ch.id} value={ch.id}>{ch.name}（{ch.code}）</option>)}
+            <label className="text-sm">店家（選填）
+              <select className={input} value={form.store_id} onChange={(e) => setForm({ ...form, store_id: e.target.value ? Number(e.target.value) : "" })}>
+                <option value="">總部社群（所有團都發）</option>
+                {stores.map((st) => <option key={st.id} value={st.id}>{st.name}</option>)}
               </select>
+              <span className="text-xs text-zinc-500">只影響店家自開的團要不要發到這裡；取貨店跟會員走，不看這個。</span>
             </label>
             <div className="text-sm md:col-span-2">
               <div className="flex items-end gap-2">
