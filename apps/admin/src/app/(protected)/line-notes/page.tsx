@@ -4,12 +4,14 @@
 // 真正跟 LINE 講話的是地端 worker（tools/line-note-scraper/src/worker.mjs），
 // 這頁只做設定、丟工作（line_note_jobs）、看結果。
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import { translateRpcError } from "@/lib/rpcError";
 import { campaignStatusBadge, campaignStatusLabel } from "@/lib/campaignStatus";
+import { Modal as SharedModal } from "@/components/Modal";
+import { OrderDetail } from "@/components/OrderDetail";
 
 type Account = {
   id: number; label: string; status: "logged_out" | "pending_qr" | "active" | "error";
@@ -75,8 +77,25 @@ const btn = "rounded border border-zinc-300 px-2.5 py-1 text-sm hover:bg-zinc-10
 const btnPrimary = "rounded bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900";
 const input = "w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 
+// 點訂單號開的明細彈窗（整頁共用一個；比照 CampaignOrdersPanel / MemberDetail 的用法）
+type OrderPopup = { id: number; no: string };
+const OrderPopupContext = createContext<((o: OrderPopup) => void) | null>(null);
+function useOpenOrder() { return useContext(OrderPopupContext); }
+
+/** 訂單號連結：點了開明細彈窗 */
+function OrderLink({ id, no }: { id: number; no: string }) {
+  const open = useOpenOrder();
+  return (
+    <button type="button" className="font-mono text-sky-700 underline hover:text-sky-900 dark:text-sky-400 dark:hover:text-sky-200"
+      onClick={(e) => { e.stopPropagation(); open?.({ id, no }); }}>
+      {no}
+    </button>
+  );
+}
+
 export default function LineNotesPage() {
   const [tab, setTab] = useState<"accounts" | "communities" | "comments" | "posts">("accounts");
+  const [orderPopup, setOrderPopup] = useState<OrderPopup | null>(null);
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
   const [communities, setCommunities] = useState<Community[] | null>(null);
@@ -122,7 +141,8 @@ export default function LineNotesPage() {
   const communityById = useMemo(() => new Map((communities ?? []).map((c) => [c.id, c])), [communities]);
 
   return (
-    <div className="space-y-4">
+    <OrderPopupContext.Provider value={setOrderPopup}>
+    <div className="flex flex-1 flex-col gap-4 p-6">
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
           <h1 className="text-xl font-semibold">LINE 記事本</h1>
@@ -165,7 +185,19 @@ export default function LineNotesPage() {
       {tab === "posts" && (
         <PostsTab posts={posts} communityById={communityById} reload={loadPosts} notify={notify} fail={fail} />
       )}
+
+      <SharedModal
+        open={orderPopup !== null}
+        onClose={() => setOrderPopup(null)}
+        title={`訂單明細 ${orderPopup?.no ?? ""}`}
+        maxWidth="max-w-4xl"
+      >
+        {orderPopup && (
+          <OrderDetail orderId={orderPopup.id} onNavigate={(id, no) => setOrderPopup({ id, no })} />
+        )}
+      </SharedModal>
     </div>
+    </OrderPopupContext.Provider>
   );
 }
 
@@ -565,10 +597,12 @@ function CommentsTab({ communityById, notify, fail }: {
   // 結果欄：一個徽章 + 一句話
   const result = (c: Comment) => {
     const o = c.customer_order_id ? orders.get(c.customer_order_id) : null;
-    const orderText = o ? `${o.store_name ?? "？店"}　${o.order_no}` : c.customer_order_id ? `訂單 #${c.customer_order_id}` : "";
+    const orderCell = o
+      ? <><span className="text-zinc-600 dark:text-zinc-300">{o.store_name ?? "？店"}</span>{" "}<OrderLink id={o.id} no={o.order_no} /></>
+      : c.customer_order_id ? <span>訂單 #{c.customer_order_id}</span> : null;
     switch (c.status) {
-      case "ordered":   return <><Badge tone="green">已加單</Badge><span>{orderText}</span></>;
-      case "duplicate": return <><Badge tone="blue">已有訂單</Badge><span>{orderText}</span></>;
+      case "ordered":   return <><Badge tone="green">已加單</Badge>{orderCell}</>;
+      case "duplicate": return <><Badge tone="blue">已有訂單</Badge>{orderCell}</>;
       case "resolved":  return <><Badge tone="green">已解決</Badge><span className="text-zinc-500">{c.resolution_note ?? ""}</span></>;
       case "ignored":   return <Badge tone="gray">忽略</Badge>;
       case "pending":   return <Badge tone="amber">等 worker 處理</Badge>;
@@ -630,12 +664,39 @@ function CommentsTab({ communityById, notify, fail }: {
   );
 }
 
-// ── 貼文：哪些團已經發到哪些社群 ─────────────────────────────────────────────
+// ── 貼文：哪些團已經發到哪些社群；點一列展開看加了幾單 ─────────────────────
 function PostsTab({ posts, communityById, reload, notify, fail }: {
   posts: Post[] | null; communityById: Map<number, Community>; reload: () => Promise<void>; notify: (m: string) => void; fail: (e: unknown) => void;
 }) {
   const [busy, setBusy] = useState<number | null>(null);
   const [open, setOpen] = useState<number | null>(null);
+  // 展開過的貼文留言（快取，收合再展開不用重抓）
+  const [detail, setDetail] = useState<Map<number, Comment[]>>(new Map());
+  const [orderNos, setOrderNos] = useState<Map<number, string>>(new Map());
+  const [loadingId, setLoadingId] = useState<number | null>(null);
+
+  const toggle = async (p: Post) => {
+    if (open === p.id) { setOpen(null); return; }
+    setOpen(p.id);
+    if (detail.has(p.id)) return;
+    setLoadingId(p.id);
+    const { data, error } = await getSupabase().from("line_note_comments").select("*")
+      .eq("post_id", p.id).order("commented_at", { ascending: true }).order("id");
+    setLoadingId(null);
+    if (error) return fail(error);
+    const cs = (data ?? []) as Comment[];
+    setDetail((m) => new Map(m).set(p.id, cs));
+    // 有加到單的補查單號，才能做成連結
+    const ids = [...new Set(cs.map((c) => c.customer_order_id).filter((x): x is number => !!x))];
+    if (ids.length === 0) return;
+    const { data: od } = await getSupabase().from("customer_orders").select("id,order_no").in("id", ids);
+    setOrderNos((m) => {
+      const n = new Map(m);
+      for (const o of (od ?? []) as { id: number; order_no: string }[]) n.set(o.id, o.order_no);
+      return n;
+    });
+  };
+
   const readNow = async (p: Post) => {
     const c = communityById.get(p.community_id);
     if (!c) return;
@@ -644,29 +705,39 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
     setBusy(null);
     if (error) return fail(error);
     kickWorker();
+    setDetail((m) => { const n = new Map(m); n.delete(p.id); return n; });
     notify("已開始讀取，留言幾秒後會出現在「留言加單」");
   };
+
+  const stat = (cs: Comment[]) => ({
+    ordered: cs.filter((c) => c.status === "ordered").length,
+    duplicate: cs.filter((c) => c.status === "duplicate").length,
+    todo: cs.filter((c) => ["pending", "unmatched", "error"].includes(c.status) || (c.status === "no_order" && c.member_no_hint)).length,
+  });
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-zinc-500">開團自動發的、和小幫手手貼後被系統認出來的貼文。</p>
+        <p className="text-sm text-zinc-500">開團自動發的、和小幫手手貼後被系統認出來的貼文。點一列展開看加了幾單。</p>
         <button type="button" className={btn} onClick={() => void reload()}>重新整理</button>
       </div>
       <Table>
-        <THead><Th>團</Th><Th>社群</Th><Th>狀態</Th><Th>發文</Th><Th>最後讀取</Th><Th align="right">留言</Th><Th align="right"></Th></THead>
+        <THead><Th></Th><Th>團</Th><Th>社群</Th><Th>狀態</Th><Th>發文</Th><Th>最後讀取</Th><Th align="right">留言</Th><Th align="right"></Th></THead>
         <TBody>
-          {posts === null ? <LoadingRow colSpan={7} /> : posts.length === 0 ? <EmptyRow colSpan={7}>還沒有貼文</EmptyRow> : posts.map((p) => {
+          {posts === null ? <LoadingRow colSpan={8} /> : posts.length === 0 ? <EmptyRow colSpan={8}>還沒有貼文</EmptyRow> : posts.flatMap((p) => {
             const c = communityById.get(p.community_id);
             const cs = p.group_buy_campaigns?.status;
-            return (
-              <Tr key={p.id}>
+            const expanded = open === p.id;
+            const cmts = detail.get(p.id);
+            const rows = [
+              <Tr key={p.id} onClick={() => void toggle(p)} className={expanded ? "bg-sky-50 dark:bg-sky-950/30" : ""}>
+                <Td className="w-8 text-zinc-400">{expanded ? "▾" : "▸"}</Td>
                 <Td>
                   <div className="font-medium">{p.group_buy_campaigns?.name ?? p.campaign_id}</div>
                   <div className="mt-0.5 flex items-center gap-2 text-xs text-zinc-500">
                     {cs && <span className={`rounded px-1.5 py-0.5 ${campaignStatusBadge(cs)}`}>{campaignStatusLabel(cs)}</span>}
-                    {p.text && <button type="button" className="underline" onClick={() => setOpen(open === p.id ? null : p.id)}>{open === p.id ? "收起內容" : "看內容"}</button>}
+                    <span className="font-mono">{p.group_buy_campaigns?.campaign_no}</span>
                   </div>
-                  {open === p.id && p.text && <pre className="mt-2 whitespace-pre-wrap rounded bg-zinc-50 p-3 text-sm text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">{p.text}</pre>}
                 </Td>
                 <Td className="whitespace-nowrap">{c?.home_name || c?.home_id || p.community_id}</Td>
                 <Td>
@@ -677,10 +748,52 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
                 <Td className="whitespace-nowrap">{fmt(p.last_read_at)}</Td>
                 <Td align="right" className="tabular-nums">{p.comment_count}</Td>
                 <Td align="right">
-                  {p.status === "posted" && <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => readNow(p)}>立即讀取</SpinButton>}
+                  {p.status === "posted" && (
+                    <SpinButton type="button" className={btn} loading={busy === p.id}
+                      onClick={(e) => { e.stopPropagation(); void readNow(p); }}>立即讀取</SpinButton>
+                  )}
                 </Td>
-              </Tr>
-            );
+              </Tr>,
+            ];
+            if (expanded) {
+              rows.push(
+                <tr key={`${p.id}-d`} className="bg-zinc-50 dark:bg-zinc-900/50">
+                  <td colSpan={8} className="px-4 py-3">
+                    {loadingId === p.id ? <div className="text-sm text-zinc-400">讀取中…</div> : !cmts ? null : (
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-2 text-sm">
+                          <Badge tone="green">已加單 {stat(cmts).ordered}</Badge>
+                          {stat(cmts).duplicate > 0 && <Badge tone="blue">已有訂單 {stat(cmts).duplicate}</Badge>}
+                          {stat(cmts).todo > 0 && <Badge tone="red">待處理 {stat(cmts).todo}</Badge>}
+                          <span className="text-zinc-500">共 {cmts.length} 則留言</span>
+                        </div>
+                        {cmts.length === 0 ? <div className="text-sm text-zinc-400">還沒讀到留言</div> : (
+                          <ul className="divide-y divide-zinc-200 rounded border border-zinc-200 bg-white dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-900">
+                            {cmts.map((cm) => (
+                              <li key={cm.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
+                                <span className="w-24 shrink-0 text-xs text-zinc-500">{fmt(cm.commented_at)}</span>
+                                <span className="w-40 shrink-0 truncate font-medium">{cm.commenter_name ?? "—"}</span>
+                                <span className="min-w-0 flex-1 truncate">{cm.text}</span>
+                                {cm.customer_order_id && orderNos.has(cm.customer_order_id) && (
+                                  <OrderLink id={cm.customer_order_id} no={orderNos.get(cm.customer_order_id)!} />
+                                )}
+                                <Badge tone={cm.status === "ordered" || cm.status === "resolved" ? "green"
+                                  : cm.status === "duplicate" ? "blue"
+                                  : cm.status === "pending" ? "amber"
+                                  : cm.status === "unmatched" || cm.status === "error" ? "red" : "gray"}>
+                                  {COMMENT_STATUS[cm.status]}
+                                </Badge>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                </tr>,
+              );
+            }
+            return rows;
           })}
         </TBody>
       </Table>

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseOrderLines, postTitle, normalize, extractMemberNo, parseNoteComment } from "./parse.mjs";
+import { parseOrderLines, postTitle, normalize, extractMemberNo, parseNoteComment, matchCampaign, normalizeForMatch } from "./parse.mjs";
 
 test("extractMemberNo", () => {
   assert.deepEqual(extractMemberNo("123456 A+1"), { hint: "123456", rest: "A+1" });
@@ -123,4 +123,42 @@ test("normalize + title", () => {
   assert.equal(normalize("Ａ＋１"), "Ａ+1");
   assert.equal(postTitle("\n  🍓 草莓開團  \n價格 100"), "🍓 草莓開團");
   assert.equal(postTitle("x".repeat(70)).length, 61);
+});
+
+// ── 貼文 ↔ 團 的比對（線上抓不到全部貼文那次的實際團名） ────────────────────
+const CAMPAIGNS = [
+  { id: 1, campaign_no: "GRP-20260909-017", name: "N6090802#抽繩系帶不規則屁簾長裙" },
+  { id: 2, campaign_no: "GRP-20260907-010", name: "#B2967 親膚百搭圓領長袖上衣" },
+  { id: 3, campaign_no: "GRP-20260906-022", name: "丹波黑豆 300克/包(全素)" },
+  { id: 4, campaign_no: "GRP-20260909-014", name: "磁吸迷你拆信刀(顏色隨機)" },
+  { id: 5, campaign_no: "GRP-20260909-007", name: "台南白菜胡椒雞", campaign_items: [{ skus: { product_name: "台南白菜胡椒雞900克大份量" } }] },
+];
+const hit = (text) => matchCampaign(text, CAMPAIGNS)?.id ?? null;
+
+test("normalizeForMatch", () => {
+  assert.equal(normalizeForMatch("　全形 空白　Ａ"), "全形空白a");
+  assert.equal(normalizeForMatch(null), "");
+});
+
+test("matchCampaign", () => {
+  assert.equal(hit("N6090802# 抽繩系帶不規則屁簾長裙\n$399"), 1);   // 團名帶代碼、內文多空白
+  assert.equal(hit("【#B2967】親膚百搭圓領長袖上衣 $290"), 2);        // # 在前的代碼
+  assert.equal(hit("丹波黑豆　300克／包(全素)\n$150"), 3);            // 全形空白／斜線
+  assert.equal(hit("磁吸迷你拆信刀(顏色隨機)\n($)(1)(0)(5)"), 4);
+  assert.equal(hit("GRP-20260906-022 補貼"), 3);                       // 團號
+  assert.equal(hit("台南白菜胡椒雞900克大份量 特價"), 5);              // 只寫商品名
+  assert.equal(hit("今天公休喔～"), null);                              // 聊天不該中
+  assert.equal(hit(""), null);
+  assert.equal(matchCampaign("丹波黑豆", null), null);
+});
+
+test("matchCampaign 取最長命中、平手不猜", () => {
+  const cs = [
+    { id: 10, name: "黑豆" },
+    { id: 11, name: "丹波黑豆 300克" },
+    { id: 12, name: "丹波黑豆 500克" },
+  ];
+  assert.equal(matchCampaign("丹波黑豆 300克/包", cs)?.id, 11);        // 比 id:10 長
+  assert.equal(matchCampaign("黑豆", cs), null);                        // 2 字太短，刻意不比（會誤中）
+  assert.equal(matchCampaign("丹波黑豆 300克 丹波黑豆 500克", cs), null); // 兩個一樣長 → 不猜
 });

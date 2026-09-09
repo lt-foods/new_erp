@@ -111,6 +111,46 @@ export function parseNoteComment(text, authorName = "") {
   return { memberNo: fromName, memberNoSource: fromName ? "name" : null, orders: parseOrderLines(rest) };
 }
 
+// ── 貼文 ↔ 團 的比對 ────────────────────────────────────────────────────────
+// 兩邊都正規化（NFKC、去空白、小寫）再比 includes。團名常有前後空白、全形字、
+// "N6090802#" / "#B2967" 這種代碼；記事本內文又常只寫商品名。依序試：
+// 團號 → 團名 → 團名裡的代碼 → 該團品項的商品名（團只有 ≤3 項時才用，免得誤中）。
+// 多個團都命中取「命中字串最長」的；一樣長就不猜（回 null，留給人工）。
+export function normalizeForMatch(s) {
+  return String(s ?? "").normalize("NFKC").toLowerCase().replace(/\s+/g, "");
+}
+
+export function matchCampaign(text, campaigns) {
+  const t = normalizeForMatch(text);
+  if (!t) return null;
+  let best = null;
+  let tie = false;
+  for (const c of campaigns ?? []) {
+    const keys = [];
+    if (c.campaign_no) keys.push(c.campaign_no);
+    if (c.name) {
+      keys.push(c.name);
+      const m = String(c.name).match(/([A-Za-z]?\d{4,}[A-Za-z0-9-]*)\s*#|#\s*([A-Za-z]?\d{3,}[A-Za-z0-9-]*)/);
+      const code = m?.[1] ?? m?.[2];
+      if (code && code.length >= 4) keys.push(code);
+    }
+    const items = c.campaign_items ?? [];
+    if (items.length > 0 && items.length <= 3) {
+      for (const it of items) {
+        const pn = it?.skus?.product_name;
+        if (pn && normalizeForMatch(pn).length >= 4) keys.push(pn);
+      }
+    }
+    for (const k of keys) {
+      const nk = normalizeForMatch(k);
+      if (nk.length < 3 || !t.includes(nk)) continue;
+      if (!best || nk.length > best.len) { best = { c, len: nk.length }; tie = false; }
+      else if (nk.length === best.len && best.c.id !== c.id) tie = true;
+    }
+  }
+  return best && !tie ? best.c : null;
+}
+
 /** 貼文標題：取第一個非空白行，最多 60 字 */
 export function postTitle(text) {
   const first = String(text ?? "").split(/\r?\n/).map((s) => s.trim()).find(Boolean) ?? "";

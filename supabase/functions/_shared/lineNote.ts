@@ -287,7 +287,11 @@ export async function listPosts(client, homeId, { limit = 200, since = null, ver
     let stop = false;
     for (const p of posts) {
       if (out.some((x) => x.postId === p.postId)) { stop = true; break; }
-      if (sinceMs && p.createdAt && new Date(p.createdAt).getTime() < sinceMs) { stop = true; break; }
+      // ⚠ LINE 的列表是依 updatedTime 排序（翻頁游標就是 updatedTime），所以「早於 since 就停」
+      //   要看 updatedAt，不能看 createdAt —— 舊貼文一有新留言就會排到最前面，用 createdAt 判斷
+      //   會在第一頁就停掉，後面幾十篇全漏（2026-09-09 抓不到全部貼文就是這個）。
+      const lastTouched = p.updatedAt ?? p.createdAt;
+      if (sinceMs && lastTouched && new Date(lastTouched).getTime() < sinceMs) { stop = true; break; }
       out.push(p);
     }
     if (stop) break;

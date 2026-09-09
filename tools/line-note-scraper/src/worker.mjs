@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { loginWithAuthToken, loginWithQR } from "@evex/linejs";
 import { FileStorage } from "@evex/linejs/storage";
 import { createNotePost, listComments, listHomes, listPosts, whoami } from "./line.mjs";
-import { parseNoteComment, postTitle } from "./parse.mjs";
+import { matchCampaign, parseNoteComment, postTitle } from "./parse.mjs";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -270,13 +270,13 @@ async function discoverPosts(client, community) {
   if (notes.length === 0) return 0;
   const known = await rest(`line_note_posts?community_id=eq.${community.id}&select=id,status,line_post_id,campaign_id`);
   const knownByLineId = new Map((known ?? []).filter((p) => p.line_post_id).map((p) => [p.line_post_id, p]));
-  const campaigns = await rest(`group_buy_campaigns?tenant_id=eq.${community.tenant_id}&status=in.(open,closed)&select=id,name,campaign_no&order=id.desc&limit=200`);
+  const campaigns = await rest(`group_buy_campaigns?tenant_id=eq.${community.tenant_id}&status=in.(open,closed)&select=id,name,campaign_no,campaign_items(skus(product_name))&order=id.desc&limit=300`);
   let linked = 0;
   for (const n of notes) {
     if (!n.postId || knownByLineId.has(String(n.postId))) continue;
     const text = String(n.text ?? "");
-    const hit = (campaigns ?? []).find((c) => (c.name && text.includes(c.name)) || (c.campaign_no && text.includes(c.campaign_no)));
-    if (!hit) continue;
+    const hit = matchCampaign(text, campaigns ?? []);
+    if (!hit) { log(`認不出貼文 ${n.postId}：${postTitle(text)}`); continue; }
     const existing = (known ?? []).find((p) => p.campaign_id === hit.id);
     const row = { status: "posted", line_post_id: String(n.postId), text, posted_at: n.createdAt ?? new Date().toISOString(), last_error: null };
     if (existing) {
