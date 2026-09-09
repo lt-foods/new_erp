@@ -229,7 +229,17 @@ async function readPost(client: any, post: any) {
       method: "POST", body: rows, prefer: "resolution=ignore-duplicates,return=minimal",
     });
   }
-  const pending = await rest(`line_note_comments?post_id=eq.${post.id}&status=eq.pending&select=id&order=commented_at.asc,id.asc`);
+  // 小幫手宣布結單之後，這篇就不再自動加單、也不再讀（詳見 detectClosing）
+  const closer = await detectClosing(post);
+  const pendingAll = await rest(
+    `line_note_comments?post_id=eq.${post.id}&status=eq.pending` +
+    `&select=id,commented_at&order=commented_at.asc,id.asc`);
+  // 結單之後才進來的留言不自動加單，留在「待處理」讓小幫手自己判斷要不要補。
+  // 宣告本身也不進加單流程（「結單囉 A+1」這種寫法不該被當成訂單）。
+  const pending = closer
+    ? (pendingAll ?? []).filter((c: any) => Number(c.id) !== Number(closer.id) && beforeOrSame(c, closer))
+    : (pendingAll ?? []);
+  const late = Math.max((pendingAll?.length ?? 0) - pending.length - (closer ? 1 : 0), 0);
   let ordered = 0, other = 0;
   for (const c of pending ?? []) {
     try {
@@ -242,8 +252,57 @@ async function readPost(client: any, post: any) {
     }
   }
   const reacted = await reactToConfirmed(client, post);
-  await patch("line_note_posts", `id=eq.${post.id}`, { last_read_at: new Date().toISOString(), comment_count: comments.length, last_error: null });
-  return { comments: comments.length, pending: pending?.length ?? 0, ordered, other, reacted };
+  const upd: Record<string, unknown> = {
+    last_read_at: new Date().toISOString(), comment_count: comments.length, last_error: null,
+  };
+  if (closer) {
+    upd.status = "closed";
+    upd.closed_at = new Date().toISOString();
+    upd.closed_reason = String(closer.text ?? "").slice(0, 200);
+    upd.closed_comment_id = closer.id;
+    // 宣告本身不是訂單，別讓它一直躺在「待處理」
+    if (closer.status === "pending") {
+      await patch("line_note_comments", `id=eq.${closer.id}`,
+        { status: "ignored", resolution_note: "結單宣告，這篇貼文停止自動加單" }).catch(() => {});
+    }
+    log(`貼文 ${post.id} 讀到結單宣告，停止自動讀取：${String(closer.text ?? "").slice(0, 40)}`);
+  }
+  await patch("line_note_posts", `id=eq.${post.id}`, upd);
+  return { comments: comments.length, pending: pending?.length ?? 0, ordered, other, reacted, closed: !!closer, late };
+}
+
+// 「結單」判定。誤判的代價是整團安靜地停止爬，所以只認宣告句 ——
+// 客人問「什麼時候結單？」「還沒結單嗎」不算。
+// 判過的結果寫回 is_closing_notice（NULL=沒判過 / TRUE=是 / FALSE=後台按過恢復讀取），
+// 沒有這個三態的話，恢復讀取後下一次讀留言會立刻再撞到同一則、又關掉。
+const CLOSE_RE = /結單|收單|截單|關單|關團|封單/;
+const CLOSE_ASK_RE = /[?？]|嗎|呢|吧|何時|什麼時候|幾點|還沒|沒有|可以|要不要|是不是|準備|快要/;
+
+function isClosingText(text: string): boolean {
+  const t = String(text ?? "").replace(/\s+/g, "");
+  return CLOSE_RE.test(t) && !CLOSE_ASK_RE.test(t);
+}
+
+function beforeOrSame(a: any, b: any): boolean {
+  const ta = Date.parse(a.commented_at ?? "") || 0;
+  const tb = Date.parse(b.commented_at ?? "") || 0;
+  return ta !== tb ? ta < tb : Number(a.id) <= Number(b.id);
+}
+
+async function detectClosing(post: any): Promise<any | null> {
+  const rows = await rest(
+    `line_note_comments?post_id=eq.${post.id}&is_closing_notice=not.is.false` +
+    `&select=id,text,status,commented_at,is_closing_notice&order=commented_at.asc,id.asc`);
+  let hit: any = null;
+  for (const c of rows ?? []) {
+    if (c.is_closing_notice !== true && !isClosingText(c.text)) continue;
+    if (c.is_closing_notice !== true) {
+      await patch("line_note_comments", `id=eq.${c.id}`, { is_closing_notice: true }).catch(() => {});
+    }
+    hit = c;
+    break;                                                 // 最早那則才算，後面的不用再看
+  }
+  return hit;
 }
 
 const REACT_BATCH = 40;                                  // 每則貼文一次最多按幾則

@@ -30,6 +30,7 @@ type Post = {
   id: number; community_id: number; campaign_id: number; line_post_id: string | null; text: string | null;
   status: "queued" | "posted" | "failed" | "closed"; posted_at: string | null; last_read_at: string | null;
   comment_count: number; last_error: string | null; created_at: string;
+  closed_at: string | null; closed_reason: string | null; closed_comment_id: number | null;
   group_buy_campaigns: { id: number; campaign_no: string; name: string; status: string } | null;
 };
 type Comment = {
@@ -783,6 +784,16 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
     await reload();
   };
 
+  // 誤判結單時一鍵恢復：那則留言會被標成「不是結單」，下次讀留言不會再關掉
+  const reopenPost = async (p: Post) => {
+    setBusy(p.id);
+    const { error } = await getSupabase().rpc("rpc_line_note_post_reopen", { p_id: p.id });
+    setBusy(null);
+    if (error) return fail(error);
+    notify("已恢復讀取，那則留言不會再被當成結單");
+    await reload();
+  };
+
   // 收合時顯示的統計徽章
   const statBadges = (st: PostStat | undefined) => {
     if (!st || st.total === 0) return <span className="text-xs text-zinc-400">—</span>;
@@ -824,6 +835,11 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
                 <Td className="whitespace-nowrap">
                   <Badge tone={p.status === "posted" ? "green" : p.status === "queued" ? "amber" : p.status === "failed" ? "red" : "gray"}>{POST_STATUS[p.status]}</Badge>
                   <div className="mt-0.5 text-xs text-zinc-500">{fmt(p.posted_at)}</div>
+                  {p.closed_reason && (
+                    <div className="mt-1 max-w-[14rem] truncate text-xs text-zinc-500" title={p.closed_reason}>
+                      讀到結單留言：{p.closed_reason}
+                    </div>
+                  )}
                   {p.last_error && <div className="mt-1 max-w-[14rem] truncate text-xs text-red-600" title={p.last_error}>{p.last_error}</div>}
                 </Td>
                 <Td>{statBadges(counts.get(p.id))}</Td>
@@ -834,6 +850,10 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
                     {p.status === "posted" && (
                       <SpinButton type="button" className={btn} loading={busy === p.id}
                         onClick={(e) => { e.stopPropagation(); void readNow(p); }}>立即讀取</SpinButton>
+                    )}
+                    {p.status === "closed" && p.closed_comment_id && (
+                      <SpinButton type="button" className={btn} loading={busy === p.id}
+                        onClick={(e) => { e.stopPropagation(); void reopenPost(p); }}>恢復讀取</SpinButton>
                     )}
                     <SpinButton type="button" className={`${btn} text-red-600`} loading={busy === p.id}
                       onClick={(e) => { e.stopPropagation(); void removePost(p); }}>刪除</SpinButton>
