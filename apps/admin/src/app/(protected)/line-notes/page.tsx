@@ -579,8 +579,16 @@ function CommentsTab({ communityById, notify, fail }: {
       note = window.prompt("怎麼處理的？（選填）", c.resolution_note ?? "");
       if (note === null) return;
     }
+    // 已經加成單的退回未處理：訂單不會跟著取消，先講清楚
+    if (status === "pending" && (c.status === "ordered" || c.status === "duplicate") && c.customer_order_id) {
+      if (!window.confirm("退回未處理不會取消已經加好的訂單，只是把這則留言放回待處理清單。\n要取消訂單請到訂單那邊操作。\n\n確定退回？")) return;
+    }
     setBusy(c.id);
-    const body = status === "resolved" ? { status, resolved_at: new Date().toISOString(), resolution_note: note || null } : { status };
+    const body = status === "resolved"
+      ? { status, resolved_at: new Date().toISOString(), resolution_note: note || null }
+      : status === "pending"
+        ? { status, error: null, processed_at: null }   // 退回＝重新來過，舊的錯誤訊息清掉
+        : { status };
     const { error } = await getSupabase().from("line_note_comments").update(body).eq("id", c.id);
     setBusy(null);
     if (error) return fail(error);
@@ -616,15 +624,20 @@ function CommentsTab({ communityById, notify, fail }: {
     }
   };
   const actions = (c: Comment) => {
-    if (c.status === "ordered") return null;   // 已經加成單，重跑會變重複單
-    // 忽略／已解決／已有訂單也還能重跑（RPC 帶 p_force）：當初對不到人、或先前那張單已經取消
+    // 「退回未處理」每一種狀態都給 —— 小幫手自己判斷要不要重新處理這則。
+    // 已加單的退回不會動到訂單（setStatus 會先確認）。
+    const back = (
+      <SpinButton type="button" className={btn} loading={busy === c.id}
+        onClick={() => setStatus(c, "pending")}>退回未處理</SpinButton>
+    );
+    // 已加成單的不給「重試」：重跑只會判成重複，沒有意義；要重加請先退回未處理。
+    if (c.status === "ordered") return <div className="flex justify-end gap-1">{back}</div>;
+    // 忽略／已解決／已有訂單還能直接重跑（RPC 帶 p_force）：當初對不到人、或先前那張單已經取消
     if (c.status === "ignored" || c.status === "resolved" || c.status === "duplicate") {
       return (
         <div className="flex justify-end gap-1">
           <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => retry(c)}>重試</SpinButton>
-          {c.status !== "duplicate" && (
-            <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "pending")}>退回</SpinButton>
-          )}
+          {back}
         </div>
       );
     }
