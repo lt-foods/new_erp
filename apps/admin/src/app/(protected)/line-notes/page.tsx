@@ -239,8 +239,30 @@ function AccountsTab({ accounts, reload, notify, fail }: {
     notify("已送出登出");
     await reload();
   };
+  // 刪帳號會連底下的社群 → 貼文 → 留言一路 CASCADE 掉，所以先把數量算給他看：
+  // 「會一起刪掉」講得太輕，真的按下去是一次刪掉上千筆留言紀錄。
   const remove = async (a: Account) => {
-    if (!window.confirm(`刪除帳號「${a.label}」？底下的社群設定與貼文紀錄會一起刪掉。`)) return;
+    setBusy(a.id);
+    const sb = getSupabase();
+    const { data: cs } = await sb.from("line_note_communities").select("id").eq("account_id", a.id);
+    const ids = (cs ?? []).map((c) => c.id);
+    let posts = 0, comments = 0;
+    if (ids.length) {
+      const { count: pc } = await sb.from("line_note_posts").select("id", { count: "exact", head: true }).in("community_id", ids);
+      posts = pc ?? 0;
+      const { data: ps } = await sb.from("line_note_posts").select("id").in("community_id", ids);
+      const pids = (ps ?? []).map((x) => x.id);
+      if (pids.length) {
+        const { count: cc } = await sb.from("line_note_comments").select("id", { count: "exact", head: true }).in("post_id", pids);
+        comments = cc ?? 0;
+      }
+    }
+    setBusy(null);
+    const scale = ids.length === 0 ? "底下沒有社群設定。"
+      : `會一起刪掉：社群設定 ${ids.length} 個、貼文紀錄 ${posts} 篇、留言紀錄 ${comments} 則。`;
+    if (!window.confirm(
+      `刪除帳號「${a.label}」？\n\n${scale}\n已經加出來的訂單不會動。\n\n` +
+      `只是要換帳號的話請按「登出」，不用刪除。`)) return;
     setBusy(a.id);
     const { error } = await getSupabase().rpc("rpc_line_note_account_delete", { p_id: a.id });
     setBusy(null);
@@ -326,7 +348,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
   reload: () => Promise<void>; reloadPosts: () => Promise<void>; notify: (m: string) => void; fail: (e: unknown) => void;
 }) {
   const [form, setForm] = useState<CommunityForm | null>(null);
-  const [busy, setBusy] = useState<number | "save" | "homes" | null>(null);
+  const [busy, setBusy] = useState<number | "save" | "homes" | "sync" | null>(null);
   const [homes, setHomes] = useState<Home[] | null>(null);
   // 新增時可以一次勾好幾個社群／群組，共用同一份設定（編輯時只認一個，所以不用）
   const [picked, setPicked] = useState<Home[]>([]);
@@ -395,13 +417,38 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
     setPicked([]);
   };
   const remove = async (c: Community) => {
-    if (!window.confirm(`刪除社群「${c.home_name || c.home_id}」的設定？`)) return;
+    if (!window.confirm(`刪除社群「${c.home_name || c.home_id}」的設定？\n\n之後同步也不會再自動把它加回來（要的話用「＋ 新增社群」再選一次）。`)) return;
     setBusy(c.id);
     const { error } = await getSupabase().rpc("rpc_line_note_community_delete", { p_id: c.id });
     setBusy(null);
     if (error) return fail(error);
     await reload();
   };
+  // 跟每個登入中的帳號要一次群組清單；worker 收到後會把沒看過的社群長出來（一律停用）
+  const syncAll = async () => {
+    const live = accounts.filter((a) => a.status === "active");
+    if (live.length === 0) return fail(new Error("沒有已登入的帳號，請先到「帳號」分頁登入"));
+    setBusy("sync");
+    const sb = getSupabase();
+    try {
+      const ids: number[] = [];
+      for (const a of live) {
+        const { data, error } = await sb.rpc("rpc_line_note_enqueue", { p_kind: "list_homes", p_account_id: a.id });
+        if (error) throw error;
+        ids.push(data as number);
+      }
+      kickWorker();
+      // 等 worker 跑完再刷新，不然畫面上還是舊的清單
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        const { data } = await sb.from("line_note_jobs").select("id,status").in("id", ids);
+        if ((data ?? []).every((j) => j.status === "done" || j.status === "failed")) break;
+      }
+      await reload();
+      notify("已同步；新出現的社群都是停用的，要哪幾個自己開監聽");
+    } catch (e) { fail(e); } finally { setBusy(null); }
+  };
+
   const readNow = async (c: Community) => {
     setBusy(c.id);
     const { error } = await getSupabase().rpc("rpc_line_note_enqueue", { p_kind: "read", p_account_id: c.account_id, p_community_id: c.id });
@@ -413,11 +460,16 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-zinc-500">
+          清單跟著帳號走：帳號加入的群組／社群會自己出現在這裡，一開始都是<b>停用</b>的，要哪幾個自己開監聽。
           總部開的團會發到所有開自動發文的社群；店家自開的團只發到標了那家店的社群。加單的取貨店一律跟會員自己設定的店。
         </p>
-        <button type="button" className={btnPrimary} onClick={openNew} disabled={accounts.length === 0}>＋ 新增社群</button>
+        <div className="flex shrink-0 gap-2">
+          <SpinButton type="button" className={btn} loading={busy === "sync"} onClick={syncAll}
+            disabled={accounts.length === 0}>同步社群</SpinButton>
+          <button type="button" className={btnPrimary} onClick={openNew} disabled={accounts.length === 0}>＋ 新增社群</button>
+        </div>
       </div>
       <Table>
         <THead><Th>社群</Th><Th>帳號</Th><Th>店家</Th><Th>監聽</Th><Th>讀取時間</Th><Th>開團自動發文</Th><Th>最後讀取</Th><Th align="right">操作</Th></THead>

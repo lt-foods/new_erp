@@ -106,8 +106,12 @@ async function doLogin(accountId: number) {
       status: "active", auth_token: client.base.authToken, line_mid: me.mid, display_name: me.displayName,
       qr_image: null, qr_url: null, pin_code: null, last_error: null, last_seen_at: new Date().toISOString(),
     });
-    if (job) await patch("line_note_jobs", `id=eq.${job.id}`, { status: "done", result: me, finished_at: new Date().toISOString() });
-    return { ok: true, ...me };
+    // 登入完馬上把這個帳號的群組／社群拉進來，店家不用再自己按一次同步
+    let synced: any = null;
+    try { synced = await syncCommunities(accountId, await listHomes(client, VERBOSE)); }
+    catch (e) { log("登入後同步社群失敗（略過）:", (e as any)?.message ?? e); }
+    if (job) await patch("line_note_jobs", `id=eq.${job.id}`, { status: "done", result: { ...me, sync: synced }, finished_at: new Date().toISOString() });
+    return { ok: true, ...me, sync: synced };
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
     await patch("line_note_accounts", `id=eq.${accountId}`, { status: "error", last_error: msg.slice(0, 1000), qr_image: null, qr_url: null, pin_code: null });
@@ -131,7 +135,26 @@ async function jobLogout(job: any) {
 async function jobListHomes(job: any) {
   const account = await loadAccount(job.account_id);
   const client = await clientFor(account);
-  return { homes: await listHomes(client, VERBOSE) };
+  const homes = await listHomes(client, VERBOSE);
+  return { homes, sync: await syncCommunities(job.account_id, homes) };
+}
+
+// 社群清單跟著帳號走：帳號加入的群組／社群自己出現在後台，不用手動貼 homeId。
+// 新長出來的一律是關的（不監聽、不自動發文）—— 備用帳號身上常有私人群組。
+// 既有的只更新名字，設定一個字都不動；店家刪掉過的不會再長回來。
+async function syncCommunities(accountId: number, homes: any[]) {
+  try {
+    const r = await rpc("rpc_line_note_community_sync", {
+      p_account_id: accountId,
+      p_homes: (homes ?? []).map((h: any) => ({ homeId: h.homeId, name: h.name, kind: h.kind })),
+    });
+    const row = Array.isArray(r) ? r[0] : r;
+    log(`社群同步：新增 ${row?.out_added ?? 0}、更新 ${row?.out_updated ?? 0}、略過 ${row?.out_skipped ?? 0}`);
+    return row ?? null;
+  } catch (e) {
+    log("社群同步失敗（略過，不影響列清單）:", (e as any)?.message ?? e);
+    return null;
+  }
 }
 
 const DEFAULT_TEMPLATE = `📣 {{name}}
