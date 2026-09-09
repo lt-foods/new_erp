@@ -1,0 +1,29 @@
+# Fly.io 部署（沒有台灣機房，最近是東京 nrt；LINE 帳號從日本 IP 上線也還算常見）
+#   cd tools/line-note-scraper
+#   fly launch --no-deploy --copy-config --name lt-line-notes
+#   fly volumes create line_storage --region nrt --size 1
+#   fly secrets set SUPABASE_URL=https://xxx.supabase.co SUPABASE_SERVICE_ROLE_KEY=...
+#   fly deploy
+#   fly logs
+app = "lt-line-notes"
+primary_region = "nrt"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  TZ = "Asia/Taipei"
+  LINE_STORAGE_DIR = "/app/storage"
+
+[[mounts]]
+  source = "line_storage"
+  destination = "/app/storage"
+
+# 純背景程序，不開 HTTP port
+[processes]
+  worker = "node src/worker.mjs"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  processes = ["worker"]

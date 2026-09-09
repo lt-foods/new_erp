@@ -73,6 +73,35 @@ npm run worker
 
 worker 一次只跑一支，多個帳號各自有 `storage/account-<id>.json`。登出會清 token。
 
+## 部署到雲端（worker 常駐）
+
+worker 是一支要一直活著的 Node 程序，**Supabase / Vercel / GitHub Pages 跑不了**。
+要能跑常駐程序的機器。建議放台灣（LINE 帳號從國外 IP 上線容易被鎖）。
+
+### A. 自己一台 VM（推薦：GCP asia-east1 彰化，e2-micro 免費額度就夠）
+
+1. 開一台 Ubuntu 22.04/24.04，SSH 進去。
+2. 一鍵裝：
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/lt-foods/new_erp/main/tools/line-note-scraper/deploy/setup-vm.sh | bash
+   ```
+3. 填 `~/new_erp/tools/line-note-scraper/.env`（`SUPABASE_URL`、`SUPABASE_SERVICE_ROLE_KEY`），然後
+   ```bash
+   cd ~/new_erp/tools/line-note-scraper && docker compose up -d --build && docker compose logs -f
+   ```
+4. 後台「LINE 記事本 → 帳號 → 登入」掃 QR。token 存在 docker volume，重開機不用重掃。
+
+更新程式：`cd ~/new_erp && git pull && cd tools/line-note-scraper && docker compose up -d --build`
+
+### B. Fly.io（沒台灣機房，用東京）
+
+`fly.toml` 已備好，照檔頭的指令跑。
+
+### 環境變數
+
+跟本機一樣（`.env.example`）。雲端不用 `.env`，直接設在平台上：
+`SUPABASE_URL`、`SUPABASE_SERVICE_ROLE_KEY`，可選 `LINE_POST_MAX_IMAGES`、`VERBOSE=1`。
+
 ## 打不通的時候
 
 第一次一定加 `--verbose`：

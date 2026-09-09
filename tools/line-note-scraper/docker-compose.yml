@@ -1,0 +1,19 @@
+# 一台 VPS 上跑 worker：
+#   cp .env.example .env && 填 SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY
+#   docker compose up -d --build
+#   docker compose logs -f
+services:
+  worker:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: Asia/Taipei
+    volumes:
+      - line-storage:/app/storage   # LINE token，重啟不用重掃 QR
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+volumes:
+  line-storage:
