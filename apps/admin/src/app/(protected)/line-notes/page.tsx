@@ -529,7 +529,7 @@ function PostCampaignModal({ community, onClose, notify, fail, reloadPosts }: {
 }
 
 // ── 貼文與留言 ───────────────────────────────────────────────────────────────
-type Filter = "todo" | "ordered" | "all";
+type Filter = "todo" | "ordered" | "ignored" | "all";
 const TODO_STATUSES: Comment["status"][] = ["pending", "unmatched", "error"];
 const isTodo = (c: Comment) => TODO_STATUSES.includes(c.status) || (c.status === "no_order" && !!c.member_no_hint);
 
@@ -566,7 +566,7 @@ function CommentsTab({ communityById, notify, fail }: {
 
   const retry = async (c: Comment) => {
     setBusy(c.id);
-    const { data, error } = await getSupabase().rpc("rpc_line_note_apply_comment", { p_comment_id: c.id });
+    const { data, error } = await getSupabase().rpc("rpc_line_note_apply_comment", { p_comment_id: c.id, p_force: true });
     setBusy(null);
     if (error) return fail(error);
     const r = (Array.isArray(data) ? data[0] : data) as { out_status?: string; out_error?: string } | null;
@@ -579,8 +579,16 @@ function CommentsTab({ communityById, notify, fail }: {
       note = window.prompt("怎麼處理的？（選填）", c.resolution_note ?? "");
       if (note === null) return;
     }
+    // 已經加成單的退回未處理：訂單不會跟著取消，先講清楚
+    if (status === "pending" && (c.status === "ordered" || c.status === "duplicate") && c.customer_order_id) {
+      if (!window.confirm("退回未處理不會取消已經加好的訂單，只是把這則留言放回待處理清單。\n要取消訂單請到訂單那邊操作。\n\n確定退回？")) return;
+    }
     setBusy(c.id);
-    const body = status === "resolved" ? { status, resolved_at: new Date().toISOString(), resolution_note: note || null } : { status };
+    const body = status === "resolved"
+      ? { status, resolved_at: new Date().toISOString(), resolution_note: note || null }
+      : status === "pending"
+        ? { status, error: null, processed_at: null }   // 退回＝重新來過，舊的錯誤訊息清掉
+        : { status };
     const { error } = await getSupabase().from("line_note_comments").update(body).eq("id", c.id);
     setBusy(null);
     if (error) return fail(error);
@@ -591,9 +599,11 @@ function CommentsTab({ communityById, notify, fail }: {
     if (!rows) return null;
     if (filter === "todo") return rows.filter(isTodo);
     if (filter === "ordered") return rows.filter((c) => c.status === "ordered" || c.status === "duplicate");
+    if (filter === "ignored") return rows.filter((c) => c.status === "ignored" || c.status === "resolved");
     return rows;
   }, [rows, filter]);
   const todoCount = rows?.filter(isTodo).length ?? 0;
+  const ignoredCount = rows?.filter((c) => c.status === "ignored" || c.status === "resolved").length ?? 0;
 
   // 結果欄：一個徽章 + 一句話
   const result = (c: Comment) => {
@@ -614,9 +624,22 @@ function CommentsTab({ communityById, notify, fail }: {
     }
   };
   const actions = (c: Comment) => {
-    if (c.status === "ordered" || c.status === "duplicate") return null;
-    if (c.status === "ignored" || c.status === "resolved") {
-      return <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "pending")}>退回</SpinButton>;
+    // 「退回未處理」每一種狀態都給 —— 小幫手自己判斷要不要重新處理這則。
+    // 已加單的退回不會動到訂單（setStatus 會先確認）。
+    const back = (
+      <SpinButton type="button" className={btn} loading={busy === c.id}
+        onClick={() => setStatus(c, "pending")}>退回未處理</SpinButton>
+    );
+    // 已加成單的不給「重試」：重跑只會判成重複，沒有意義；要重加請先退回未處理。
+    if (c.status === "ordered") return <div className="flex justify-end gap-1">{back}</div>;
+    // 忽略／已解決／已有訂單還能直接重跑（RPC 帶 p_force）：當初對不到人、或先前那張單已經取消
+    if (c.status === "ignored" || c.status === "resolved" || c.status === "duplicate") {
+      return (
+        <div className="flex justify-end gap-1">
+          <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => retry(c)}>重試</SpinButton>
+          {back}
+        </div>
+      );
     }
     return (
       <div className="flex justify-end gap-1">
@@ -629,9 +652,13 @@ function CommentsTab({ communityById, notify, fail }: {
 
   return (
     <div className="space-y-3">
+      <p className="text-sm text-zinc-500">
+        「找不到會員」「錯誤」修正後按「重試」；小幫手自己加完單按「已解決」。
+        標成忽略／已解決的之後還是可以按「重試」重跑。
+      </p>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
-          {([["todo", `待處理 ${todoCount}`], ["ordered", "已加單"], ["all", "全部"]] as const).map(([k, l]) => (
+          {([["todo", `待處理 ${todoCount}`], ["ordered", "已加單"], ["ignored", `忽略 ${ignoredCount}`], ["all", "全部"]] as const).map(([k, l]) => (
             <button key={k} type="button" onClick={() => setFilter(k)}
               className={`rounded-md px-3 py-1 text-sm ${filter === k ? "bg-white shadow dark:bg-zinc-900" : "text-zinc-600 dark:text-zinc-300"}`}>
               {l}
