@@ -1,4 +1,4 @@
-import { applyDeco, decoPrice, decoStandalonePrices, htmlToText, stripLineDeco } from "./lineNoteDeco.ts";
+import { applyDeco, decoPrice, decoTextPrices, htmlToText, stripLineDeco } from "./lineNoteDeco.ts";
 
 const eq = (got: unknown, want: unknown, why: string) => {
   if (got !== want) throw new Error(`${why}\n  想要 ${JSON.stringify(want)}\n  拿到 ${JSON.stringify(got)}`);
@@ -11,9 +11,11 @@ Deno.test("標記過的金額換成 💲＋鍵帽數字，沒標記的一個字�
   eq(applyDeco("沒標記 $88"), "沒標記 $88", "沒標記就原樣");
 });
 
-Deno.test("文案裡自己獨立一行的 $數字才標起來", () => {
-  const out = applyDeco(decoStandalonePrices("好兄弟組合10包\n$109\n一盒$85\n（市價$150/盒）"));
+Deno.test("文案裡自己獨立一行的 $數字、💰 後面的數字才標起來", () => {
+  const out = applyDeco(decoTextPrices("好兄弟組合10包\n$109\n一盒$85\n（市價$150/盒）"));
   eq(out, "好兄弟組合10包\n💲1️⃣0️⃣9️⃣\n一盒$85\n（市價$150/盒）", "只動獨立一行的");
+  const bag = applyDeco(decoTextPrices("A. 原味 💰195\n💰 一盒 $275\n💰一包99元\n💰滿1000免運"));
+  eq(bag, "A. 原味 💰1️⃣9️⃣5️⃣\n💰 一盒 💲2️⃣7️⃣5️⃣\n💰一包9️⃣9️⃣元\n💰滿1️⃣0️⃣0️⃣0️⃣免運", "錢袋後面的數字");
 });
 
 Deno.test("富文字 HTML 轉純文字：段落換行、粗體拿掉、實體字元還原", () => {
@@ -25,7 +27,7 @@ Deno.test("富文字 HTML 轉純文字：段落換行、粗體拿掉、實體字
 });
 
 Deno.test("HTML 說明裡獨立一行的粗體金額，轉完會被凸顯", () => {
-  const text = applyDeco(decoStandalonePrices(htmlToText("<p>測試</p><p><strong>$100</strong></p>")));
+  const text = applyDeco(decoTextPrices(htmlToText("<p>測試</p><p><strong>$100</strong></p>")));
   eq(text, "測試\n💲1️⃣0️⃣0️⃣", "整條管線");
 });
 

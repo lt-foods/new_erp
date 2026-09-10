@@ -35,13 +35,17 @@ export function applyDeco(raw: string): string {
   return out;
 }
 
-// 文案裡「自己獨立一行的 $數字」也是價格（匯進來的團，品項與價格都寫在 description 裡），
-// 一併凸顯。行內的「（市價$150/盒）」不動 —— 那不是這團的售價。
-export function decoStandalonePrices(text: string) {
+// 文案裡自己寫的價格也一併凸顯（匯進來的團、富文字說明，品項與價格都寫在 description 裡）：
+// - 自己獨立一行的「$109」
+// - 小幫手的錢袋寫法「💰195」「💰 一盒 $275」「💰一包99元」→ 💰 後面那個數字
+// 行內的「（市價$150/盒）」不動 —— 那不是這團的售價。已經標過的行不再標。
+export function decoTextPrices(text: string) {
   return String(text ?? "").split("\n")
-    .map((line) => /^\s*\$\d+\s*$/.test(line) && !line.includes(DECO_OPEN)
-      ? line.replace(/\$\d+/, (m) => decoPrice(m))
-      : line)
+    .map((line) => {
+      if (line.includes(DECO_OPEN)) return line;
+      if (/^\s*\$\d+\s*$/.test(line)) return line.replace(/\$\d+/, (m) => decoPrice(m));
+      return line.replace(/💰([^\d\n$💰]{0,6})(\$?\d+)/g, (_, gap, price) => `💰${gap}${decoPrice(price)}`);
+    })
     .join("\n");
 }
 
