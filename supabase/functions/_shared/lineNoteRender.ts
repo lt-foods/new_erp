@@ -68,9 +68,63 @@ function fmtTaipei(iso: string | null | undefined) {
 // 貼文的金額一律用零售價（老闆 2026-09-10 交代）：unit_price 是團購價、開團後可以另外改低，
 // 社群貼文要的是現行零售價（payload 的 retail_price，20260910040000）。沒設零售價（NULL / 0）才退回團購價。
 function postPrice(it: any): number | null {
+  if (!it) return null;
   const retail = Number(it?.retail_price);
   if (Number.isFinite(retail) && retail > 0) return retail;
   return it?.unit_price == null ? null : Number(it.unit_price);
+}
+
+// 這一行已經有價格了嗎（純文字 189元／$189、已標起來的、或小幫手自己打的鍵帽數字）
+const LINE_HAS_PRICE = new RegExp(`\\d\\s*元|\\$\\s*\\d|${DECO_OPEN}|[0-9]\\uFE0F\\u20E3`);
+// 整行只有一個金額（「💰一袋189元」「$109」，已經被標起來的樣子）
+const PRICE_ONLY_LINE = new RegExp(`^\\s*(?:💰[^\\d\\n$💰]{0,6})?${DECO_OPEN}\\$?(\\d+(?:\\.\\d+)?)${DECO_CLOSE}\\s*元?\\s*$`);
+
+const ITEM_LINE = /^\s*(?:[(（]([A-Za-z])[)）]|([A-Za-z])[.．、:：])\s*(.*)$/;
+
+function injectItemPrices(desc: string, items: any[]): string {
+  const byCode = new Map<string, any>(items.map((it: any) => [String(it.code ?? "").toUpperCase(), it]));
+  const lines = desc.split("\n");
+  let injected = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(ITEM_LINE);
+    if (!m) continue;
+    const rest = m[3] ?? "";
+    if (/[(（][A-Za-z][)）]/.test(rest)) continue;          // 「(A)韭菜盒／(B)高麗菜盒」一行列兩個，不碰
+    const p = postPrice(byCode.get((m[1] ?? m[2]).toUpperCase()));
+    if (p == null || LINE_HAS_PRICE.test(lines[i])) continue;
+    // 記事本寫法：價格寫在下一行（「(A)空心菜200g／($)(3)(5)」）→ 跟零售價一樣就併進品項那一行；
+    // 不一樣就兩行都不動，預覽看得到、讓人去改團或改文案
+    let j = i + 1;
+    while (j < lines.length && !lines[j].trim()) j++;
+    const nm = j < lines.length ? lines[j].match(PRICE_ONLY_LINE) : null;
+    if (nm) {
+      if (Number(nm[1]) !== p) continue;
+      lines.splice(j, 1);
+    }
+    lines[i] = `${lines[i].trimEnd()} ${decoPrice(String(p))} 元`;
+    injected++;
+  }
+  if (!injected) return desc;
+  // 接完之後，文案裡整行只寫同一個金額的「💰一袋189元」就是多的；緊跟在品項後面的那種上面已經處理過，不碰
+  const prices = new Set(items.map((it: any) => postPrice(it)).filter((x) => x != null));
+  let prevText = "";
+  return lines.filter((line) => {
+    const m = line.match(PRICE_ONLY_LINE);
+    const drop = m && prices.has(Number(m[1])) && !ITEM_LINE.test(prevText);
+    if (line.trim()) prevText = line;
+    return !drop;
+  }).join("\n");
+}
+
+// 整行只有金額的那一行，上面沒有空行就補一行（緊跟在品項後面的那種是那一項的價格，不拆開）
+function spaceOutPriceLines(desc: string): string {
+  const out: string[] = [];
+  for (const line of desc.split("\n")) {
+    const prev = out.length ? out[out.length - 1] : "";
+    if (PRICE_ONLY_LINE.test(line) && prev.trim() && !ITEM_LINE.test(prev)) out.push("");
+    out.push(line);
+  }
+  return out.join("\n");
 }
 
 // 文案裡已經標起來的金額（記事本佔位字還原的、獨立一行的 $數字、💰 後面的數字）
@@ -106,14 +160,22 @@ export function renderTemplate(template: string | null, payload: any) {
     break;
   }
 
-  // 商品：只有一項 → 直接金額（沒有品名、沒有代碼）；多項 → (A) 品名 ＋ 下一行金額
+  // 商品（老闆 2026-09-10 的範例）：只有一項 → 「💰1️⃣0️⃣5️⃣ 元」一行，沒有品名、沒有代碼；
+  // 多項 → 「(A) 韭菜盒 1️⃣8️⃣9️⃣ 元」金額接在同一行
   const itemLines = items.map((it: any) => {
     const p = postPrice(it);
-    const price = p == null ? "" : decoPrice(`$${p}`);
-    if (single) return price;
+    const price = p == null ? "" : `${decoPrice(String(p))} 元`;
+    if (single) return price ? `💰${price}` : "";
     const label = itemLabel(it.name, it.code, c.name);
-    return `(${it.code}) ${label}${price ? `\n${price}` : ""}`;
+    return `(${it.code}) ${label}${price ? ` ${price}` : ""}`;
   }).filter(Boolean).join("\n");
+
+  // 文案自己列了 (A)(B) 品項但那一行沒寫價格（也不是像記事本那樣價格寫在下一行）→
+  // 把金額接在那一行後面，變成跟我們自己產的一樣「(A) 韭菜盒 1️⃣8️⃣9️⃣ 元」。
+  // 接完之後，文案裡只寫著同一個金額的「💰一袋189元」那種整行就是多的，拿掉。
+  desc = injectItemPrices(desc, items);
+  // 老闆 2026-09-10：金額行跟上一行之間要空一行（「💰1️⃣0️⃣5️⃣元」直接貼在文案下面太擠）
+  desc = spaceOutPriceLines(desc);
   // 文案自己就列了 (A)(B) 或 A. B. 品項 → 不重複；單品而文案已經寫了同一個金額（「一個$125」）→ 也不重複
   const descHasItems = /(^|\n)\s*(?:[(（][A-Za-z][)）]|[A-Za-z][.．、:：])/.test(desc);
   const descHasThisPrice = single && postPrice(items[0]) != null && decoPricesIn(desc).includes(postPrice(items[0]));
