@@ -10,7 +10,8 @@
 // {{title}} / {{items}} / {{deadline}} / {{howto}} 是「聰明版」：文案自己已經寫過的就不再重複一次。
 // 從記事本匯進來的團，description 常常就是整篇貼文（標題＋(A)(B)品項＋⏰結單都在裡面），
 // 照樣接上去會變成品項印兩次、結單寫兩行。
-// {{name}} 維持原樣（照印）；{{end_at}} / {{deadline}} 印的是客人看的結單時間（客人收單，沒設就是店家收單）。
+// {{name}} 維持原樣（照印）。{{deadline}} 是客人看的結單時間（客人收單，沒設就是店家收單）；
+// {{end_at}} 是店家收單（最後收單時間），老闆 2026-09-10 指定放在最後一行「⏰ 最後收單 9/15 23:59」。
 // {{tag}} 是團號章（🔖 團號 GRP-…）：爬回來的時候靠它精準認出是哪一團，不用猜團名。
 // 自訂模板沒寫 {{tag}} 也會被 withPostTag 補在文末 —— 章一定要有，不然這篇就只能靠猜。
 // ─────────────────────────────────────────────────────────────────────────────
@@ -28,6 +29,7 @@ export const DEFAULT_TEMPLATE = `{{title}}
 {{description}}
 
 {{howto}}
+⏰ 最後收單 {{end_at}}
 #開團
 {{tag}}`;
 
@@ -194,9 +196,10 @@ export function renderTemplate(template: string | null, payload: any) {
     .replaceAll("{{name}}", c.name ?? "")
     .replaceAll("{{campaign_no}}", c.campaign_no ?? "")
     .replaceAll("{{description}}", desc)
-    .replaceAll("{{end_at}}", fmtTaipei(closeAt))
+    .replaceAll("{{end_at}}", fmtTaipei(c.end_at))
     .replaceAll("{{start_at}}", fmtTaipei(c.start_at))
     .replaceAll("{{pickup_deadline}}", fmtTaipei(c.pickup_deadline))
+    .replace(/^⏰ 最後收單[ \t]*(?:\n|$)/gm, "")      // 沒有店家收單（無到期日）就整行不要
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   return withPostTag(rendered, c.campaign_no);
