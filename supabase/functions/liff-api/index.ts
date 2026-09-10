@@ -6,6 +6,17 @@ import { isMissingOwnerStoreColumn, isMissingSalesChannelColumn } from "../_shar
 import { BIND_CODE_TTL_MIN, buildBindMessage, generateBindCode } from "../_shared/lineBinding.ts";
 import webpush from "https://esm.sh/web-push@3.6.7";
 
+// 客人看到的結單時間：客人收單（customer_end_at）跟店家收單（end_at）取早的那個。
+// 客人收單沒設（NULL）= 跟店家收單同時（20260910050000）。商城清單、團詳細、分享預覽
+// 對外一律回這個當 end_at —— 客人端不需要知道店家還能補單到什麼時候。
+function customerCloseAt(c: { end_at?: string | null; customer_end_at?: string | null }): string | null {
+  const a = c?.customer_end_at ?? null;
+  const b = c?.end_at ?? null;
+  if (!a) return b;
+  if (!b) return a;
+  return new Date(a).getTime() <= new Date(b).getTime() ? a : b;
+}
+
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 function requireEnv(name: string): string {
@@ -956,14 +967,16 @@ async function listActiveCampaigns(
       .from("group_buy_campaigns")
       .select(
         withStoreScope
-          ? "id, campaign_no, name, description, cover_image_url, close_type, total_cap_qty, end_at, pickup_deadline, owner_store_id, campaign_items(unit_price, cap_qty, sort_order, sku:skus(product:products(images)))"
-          : "id, campaign_no, name, description, cover_image_url, close_type, total_cap_qty, end_at, pickup_deadline, campaign_items(unit_price, cap_qty, sort_order, sku:skus(product:products(images)))",
+          ? "id, campaign_no, name, description, cover_image_url, close_type, total_cap_qty, end_at, customer_end_at, pickup_deadline, owner_store_id, campaign_items(unit_price, cap_qty, sort_order, sku:skus(product:products(images)))"
+          : "id, campaign_no, name, description, cover_image_url, close_type, total_cap_qty, end_at, customer_end_at, pickup_deadline, campaign_items(unit_price, cap_qty, sort_order, sku:skus(product:products(images)))",
       )
       .eq("tenant_id", tenantId)
       .eq("status", "open")
       .eq("is_for_shop", true)
       .neq("campaign_no", "__INTERNAL_RESTOCK__")
-      .or(`end_at.is.null,end_at.gt.${new Date().toISOString()}`);
+      .or(`end_at.is.null,end_at.gt.${new Date().toISOString()}`)
+      // 客人收單（customer_end_at）到了商城就關；NULL = 跟店家收單同時（20260910050000）
+      .or(`customer_end_at.is.null,customer_end_at.gt.${new Date().toISOString()}`);
     // 一般商城永遠只讀 main；漂漂館走獨立 piaopiao-api。
     if (withMainChannel) q = q.eq("sales_channel", "main");
     // 店家自開團只給主辦店的會員；查不出會員所屬店（未綁定又沒有 JWT store）
@@ -1075,7 +1088,7 @@ async function listActiveCampaigns(
       order_count: countMap.get(Number(c.id)) ?? 0,
       recent_order_count: recentMap.get(Number(c.id)) ?? 0,
       view_count: viewMap.get(Number(c.id)) ?? 0,
-      end_at: c.end_at,
+      end_at: customerCloseAt(c),
       pickup_deadline: c.pickup_deadline,
       item_count: prices.length,
       min_price: prices.length > 0 ? Math.min(...prices) : 0,
@@ -1114,7 +1127,7 @@ async function listActiveCampaigns(
  * 寫入端的閘門跟這裡的讀取端閘門是同一套條件。
  */
 async function getCampaignDetail(sb: any, tenantId: string, campaignId: number, memberId: number | null, salesChannel?: string | null, jwtStoreId?: number) {
-  const cols = "id, campaign_no, name, description, cover_image_url, status, close_type, end_at, pickup_deadline, total_cap_qty, is_for_shop";
+  const cols = "id, campaign_no, name, description, cover_image_url, status, close_type, end_at, customer_end_at, pickup_deadline, total_cap_qty, is_for_shop";
   const runCampaignQuery = (withStoreScope: boolean) =>
     sb
       .from("group_buy_campaigns")
@@ -1138,7 +1151,7 @@ async function getCampaignDetail(sb: any, tenantId: string, campaignId: number, 
 
   const available = c.status === "open"
     && !!c.is_for_shop
-    && !(c.end_at && new Date(c.end_at).getTime() <= Date.now());
+    && !(customerCloseAt(c) && new Date(customerCloseAt(c)!).getTime() <= Date.now());
   if (!available) {
     if (!memberId) return json({ error: "campaign not available" }, 404);
     // 自己的訂單（含取消 / 逾期的）才放行 —— 客人要回頭看「我買的是什麼」，
@@ -1266,7 +1279,7 @@ async function getCampaignPreview(sb: any, tenantId: string, campaignId: number,
   let previewQuery = sb
     .from("group_buy_campaigns")
     .select(
-      "id, campaign_no, name, description, cover_image_url, status, is_for_shop, end_at, campaign_items(unit_price, sort_order, sku:skus(product:products(images)))",
+      "id, campaign_no, name, description, cover_image_url, status, is_for_shop, end_at, customer_end_at, campaign_items(unit_price, sort_order, sku:skus(product:products(images)))",
     )
     .eq("tenant_id", tenantId)
     .eq("id", campaignId);
@@ -1308,7 +1321,7 @@ async function getCampaignPreview(sb: any, tenantId: string, campaignId: number,
       image_url: image,
       price_from: prices.length > 0 ? Math.min(...prices) : null,
       status: c.status,
-      end_at: c.end_at,
+      end_at: customerCloseAt(c),
     },
   });
 }
