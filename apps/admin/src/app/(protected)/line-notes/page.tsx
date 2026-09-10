@@ -617,6 +617,10 @@ function PostCampaignModal({ community, onClose, notify, fail, reloadPosts }: {
   const [campaigns, setCampaigns] = useState<Campaign[] | null>(null);
   const [campaignId, setCampaignId] = useState<number | "">("");
   const [busy, setBusy] = useState(false);
+  // 貼文是發給整個社群看的，發出去才發現版型不對就來不及了（只能刪掉重發，客人已經看到）。
+  // 所以先把「等一下真的會貼出去的字」原封不動叫回來給人看 —— 渲染是 worker 那一份，不是另外寫的。
+  const [preview, setPreview] = useState<{ text: string; images: string[] } | null>(null);
+  const [previewing, setPreviewing] = useState(false);
   useEffect(() => {
     void (async () => {
       const { data, error } = await getSupabase().from("group_buy_campaigns")
@@ -624,6 +628,22 @@ function PostCampaignModal({ community, onClose, notify, fail, reloadPosts }: {
       if (error) fail(error); else { setCampaigns((data ?? []) as Campaign[]); setCampaignId((data?.[0] as Campaign | undefined)?.id ?? ""); }
     })();
   }, [fail]);
+  useEffect(() => {
+    if (campaignId === "") { setPreview(null); return; }
+    let dead = false;
+    setPreviewing(true); setPreview(null);
+    void (async () => {
+      const { data, error } = await getSupabase().functions.invoke("line-note-worker", {
+        body: { action: "preview", community_id: community.id, campaign_id: campaignId },
+      });
+      if (dead) return;
+      setPreviewing(false);
+      if (error || (data as { error?: string })?.error) return;   // 預覽拿不到就不擋發文
+      setPreview(data as { text: string; images: string[] });
+    })();
+    return () => { dead = true; };
+  }, [campaignId, community.id]);
+
   const submit = async () => {
     if (campaignId === "") return;
     setBusy(true);
@@ -642,6 +662,32 @@ function PostCampaignModal({ community, onClose, notify, fail, reloadPosts }: {
           {(campaigns ?? []).map((c) => <option key={c.id} value={c.id}>{c.campaign_no} {c.name}（{c.status}）</option>)}
         </select>
       </label>
+
+      <div className="mt-3 text-sm">
+        <div className="mb-1 flex items-center justify-between text-zinc-500">
+          <span>會貼出去的內容</span>
+          {preview && <span className="text-xs">{preview.images.length} 張圖</span>}
+        </div>
+        {previewing ? <div className="rounded border border-zinc-200 p-3 text-zinc-400 dark:border-zinc-800">產生預覽中…</div>
+          : !preview ? <div className="rounded border border-zinc-200 p-3 text-zinc-400 dark:border-zinc-800">預覽拿不到（帳號沒登入？）—— 還是可以直接發</div>
+          : (
+          <div className="space-y-2">
+            <div className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900">
+              {preview.text}
+            </div>
+            {preview.images.length > 0 && (
+              <div className="flex gap-1.5 overflow-x-auto pb-1">
+                {preview.images.map((u) => (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img key={u} src={u} alt="" className="h-16 w-16 shrink-0 rounded border border-zinc-200 object-cover dark:border-zinc-800" />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        <p className="mt-1 text-xs text-zinc-500">文案取自這個團的說明，商品和價格取自團裡的品項，圖片取自商品圖。要改內容請去改團／商品。</p>
+      </div>
+
       <div className="mt-4 flex justify-end gap-2">
         <button type="button" className={btn} onClick={onClose}>取消</button>
         <SpinButton type="button" className={btnPrimary} loading={busy} disabled={campaignId === ""} onClick={submit}>發文</SpinButton>

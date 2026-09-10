@@ -157,14 +157,46 @@ async function syncCommunities(accountId: number, homes: any[]) {
   }
 }
 
-const DEFAULT_TEMPLATE = `📣 {{name}}
+// 版型照小幫手手貼的樣子：團名開頭、商品用 (A) 品名 ＋ 下一行價格、⏰ 結單、#開團 收尾。
+// 文案本體吃 campaign.description —— 那本來就是商品那邊寫好的行銷文（線上近兩週 377/395 團有）。
+// {{title}} / {{items}} / {{deadline}} 是「聰明版」：文案自己已經寫過的就不再重複一次。
+// 從記事本匯進來的團，description 常常就是整篇貼文（標題＋(A)(B)品項＋⏰結單都在裡面），
+// 照樣接上去會變成品項印兩次、結單寫兩行。
+// {{name}} / {{end_at}} 維持原樣（照印），自訂模板的行為不變。
+const DEFAULT_TEMPLATE = `{{title}}
+
 {{description}}
 
 {{items}}
 
-⏰ 收單：{{end_at}}
-📝 下單方式：留言「會員編號 6 碼 ＋ 品項代碼＋數量」
-　例：123456 A+1 B+2`;
+{{deadline}}
+📝 留言「會員編號 6 碼 ＋ 品項代碼＋數量」，例：123456 A+1 B+2
+#開團`;
+
+// 比對標題用：去掉表情符號、空白、標點，只留文字
+function bareText(s: string) {
+  return String(s ?? "").normalize("NFKC").toLowerCase()
+    .replace(/[\s\p{P}\p{S}\p{M}\p{C}]/gu, "");   // \p{M}/\p{C} 要一起拿掉：emoji 後面的 VS16、ZWJ 都藏在那裡
+}
+
+// 從記事本抓回來的舊文會帶 LINE 裝飾表情的佔位字：($)(3)(5) = $35、(emoji) = 一個貼圖。
+// 原樣貼出去客人會看到一串「($)(3)(5)」，所以還原成看得懂的字。
+function stripLineDeco(s: string) {
+  return String(s ?? "")
+    .replace(/(?:\((?:\$|[0-9]|\/)\)){2,}/g, (m) => m.replace(/[()]/g, ""))
+    .replace(/\((?:emoji|好吃|讚|哭|笑|愛心)\)/g, "")
+    .replace(/[ \t]+\n/g, "\n");
+}
+
+// 品項名在 DB 裡是「團名 (A) 空心菜200g」，直接印會變成「(A) 團名 (A) 空心菜200g」。
+// 去掉團名前綴和重複的代碼，只留真正的品名。
+function itemLabel(name: string, code: string, campaignName: string) {
+  let t = String(name ?? "").trim();
+  const cn = String(campaignName ?? "").trim();
+  if (cn && t.startsWith(cn)) t = t.slice(cn.length).trim();
+  t = t.replace(new RegExp(`^[(（]${code}[)）]\\s*`), "").trim();
+  return t || String(name ?? "").trim();
+}
 
 function fmtTaipei(iso: string | null | undefined) {
   if (!iso) return "";
@@ -175,12 +207,28 @@ function fmtTaipei(iso: string | null | undefined) {
 
 export function renderTemplate(template: string | null, payload: any) {
   const c = payload.campaign ?? {};
-  const items = (payload.items ?? []).map((it: any) => `${it.code}. ${it.name}${it.unit_price == null ? "" : ` $${Number(it.unit_price)}`}`).join("\n");
+  const items = (payload.items ?? []).map((it: any) => {
+    const label = itemLabel(it.name, it.code, c.name);
+    const price = it.unit_price == null ? "" : `\n$${Number(it.unit_price)}`;
+    return `(${it.code}) ${label}${price}`;
+  }).join("\n");
+  const desc = stripLineDeco(c.description ?? "");
+  // 文案自己就列了 (A)(B) 品項 / 寫了結單 / 開頭就是團名 → 那三個聰明佔位符留空
+  const descHasItems = /(^|\n)\s*[(（][A-Za-z][)）]/.test(desc);
+  const descHasDeadline = /結單|收單|截單/.test(desc);
+  const firstLine = bareText(desc.split("\n").find((x) => x.trim()) ?? "");
+  const bareName = bareText(c.name ?? "");
+  const descHasTitle = !!firstLine && !!bareName && firstLine.length >= 4
+    && (bareName.includes(firstLine) || firstLine.includes(bareName));
+  const deadline = c.end_at ? `⏰ ${fmtTaipei(c.end_at)} 結單` : "";
+
   return (template || DEFAULT_TEMPLATE)
+    .replaceAll("{{title}}", descHasTitle ? "" : (c.name ?? ""))
+    .replaceAll("{{items}}", descHasItems ? "" : items)
+    .replaceAll("{{deadline}}", descHasDeadline ? "" : deadline)
     .replaceAll("{{name}}", c.name ?? "")
     .replaceAll("{{campaign_no}}", c.campaign_no ?? "")
-    .replaceAll("{{description}}", c.description ?? "")
-    .replaceAll("{{items}}", items)
+    .replaceAll("{{description}}", desc)
     .replaceAll("{{end_at}}", fmtTaipei(c.end_at))
     .replaceAll("{{start_at}}", fmtTaipei(c.start_at))
     .replaceAll("{{pickup_deadline}}", fmtTaipei(c.pickup_deadline))
@@ -195,20 +243,29 @@ function resolveImageUrl(p: unknown): string | null {
 }
 
 // 沒有 sharp：只帶原本就是 JPEG 的圖（PNG / WebP 略過並記 log）
-async function collectPostImages(payload: any): Promise<Uint8Array[]> {
-  if (Deno.env.get("LINE_POST_NO_IMAGE")) return [];
+// 要附哪些圖：團封面 + 每個品項的商品圖（同一張只算一次 —— 一個商品底下的品項常常共用圖）
+function postImageUrls(payload: any): string[] {
   const urls: string[] = [];
   const push = (u: unknown) => { const r = resolveImageUrl(u); if (r && !urls.includes(r)) urls.push(r); };
   push(payload.campaign?.cover_image_url);
   for (const it of payload.items ?? []) for (const img of it.images ?? []) push(img);
-  const out: Uint8Array[] = [];
-  for (const url of urls.slice(0, MAX_POST_IMAGES)) {
+  return urls.slice(0, MAX_POST_IMAGES);
+}
+
+async function collectPostImages(payload: any): Promise<{ bytes: Uint8Array; type: string }[]> {
+  if (Deno.env.get("LINE_POST_NO_IMAGE")) return [];
+  const out: { bytes: Uint8Array; type: string }[] = [];
+  for (const url of postImageUrls(payload)) {
     try {
       const r = await fetch(url);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const ct = r.headers.get("content-type") ?? "";
-      if (!/image\/jpe?g/i.test(ct) && !/\.jpe?g(\?|$)/i.test(url)) { log(`圖片不是 JPEG（${ct}），略過：${url}`); continue; }
-      out.push(new Uint8Array(await r.arrayBuffer()));
+      // JPEG 以外也收 PNG（線上商品圖有 496 張 PNG）。GIF / WebP LINE 記事本吃不到，跳過。
+      const ct = (r.headers.get("content-type") ?? "").toLowerCase();
+      const type = /jpe?g/.test(ct) || /\.jpe?g(\?|$)/i.test(url) ? "image/jpeg"
+                 : /png/.test(ct) || /\.png(\?|$)/i.test(url) ? "image/png"
+                 : null;
+      if (!type) { log(`圖片格式不支援（${ct}），略過：${url}`); continue; }
+      out.push({ bytes: new Uint8Array(await r.arrayBuffer()), type });
     } catch (e) {
       log(`圖片略過 ${url}：${(e as any)?.message ?? e}`);
     }
@@ -545,6 +602,15 @@ Deno.serve(async (req) => {
       const accountId = Number(body.account_id);
       if (!accountId) return json({ error: "account_id required" }, 400);
       return json(await doLogin(accountId));
+    }
+    // 發文預覽：發出去才發現版型不對就來不及了（貼文是發給整個社群看的）
+    if (action === "preview") {
+      if (caller !== "admin") return json({ error: "preview 只能從後台按" }, 403);
+      const payload = await rpc("rpc_line_note_preview_payload", {
+        p_community_id: Number(body.community_id), p_campaign_id: Number(body.campaign_id),
+      });
+      if (!payload) return json({ error: "找不到社群或團" }, 404);
+      return json({ text: renderTemplate(payload.post_template, payload), images: postImageUrls(payload) });
     }
     if (action === "tick" || action === "run") return json(await tick());
     return json({ error: `unknown action ${action}` }, 400);
