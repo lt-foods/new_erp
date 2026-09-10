@@ -25,7 +25,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 import QRCode from "npm:qrcode@1.5.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import {
-  clientFromToken, createNotePost, likeComment, listComments, listHomes, listPosts, loginByQr, whoami,
+  clientFromToken, createNotePost, deleteNotePost, likeComment, listComments, listHomes, listPosts, loginByQr, whoami,
 } from "../_shared/lineNote.ts";
 import { buildPostTag, matchCampaign, parseNoteComment, postTitle, withPostTag } from "../_shared/lineNoteParse.ts";
 import { applyDeco, DECO_OPEN, decoPrice, stripDeco } from "../_shared/lineNoteDeco.ts";
@@ -312,6 +312,38 @@ async function jobPost(job: any) {
     await patch("line_note_posts", `id=eq.${job.post_id}`, { status: "failed", text: plain, last_error: String((e as any)?.message ?? e).slice(0, 1000) });
     throw e;
   }
+}
+
+// 刪掉 LINE 上那篇貼文，成功才連後台紀錄一起清掉。
+//
+// 順序不能反：先清紀錄再刪 LINE，萬一 LINE 那邊失敗（帳號掉線最常見），
+// 貼文還躺在社群裡收留言，後台卻已經看不到它 —— 那些留言之後會被 discoverPosts
+// 當成新貼文重新認一次，變成沒人管的孤兒。
+//
+// 反過來（LINE 刪掉了、清紀錄失敗）頂多留一列指向不存在貼文的紀錄，
+// 使用者再按一次「只清後台紀錄」就好，不會有人撲空。
+async function deletePost(postId: number, callerTenant: string | null) {
+  const rows = await rest(
+    `line_note_posts?id=eq.${postId}` +
+    `&select=id,tenant_id,line_post_id,line_note_communities(home_id,account_id)`);
+  const post = rows?.[0];
+  if (!post) return { ok: false, error: "找不到這篇貼文" };
+  // service_role 沒有 RLS，跨 tenant 的檢查只能自己來
+  if (callerTenant && post.tenant_id !== callerTenant) return { ok: false, error: "這篇貼文不屬於你的帳戶" };
+  if (!post.line_post_id) return { ok: false, error: "這篇沒有發到 LINE（沒有貼文 id），直接清紀錄就好", noLinePost: true };
+
+  try {
+    const account = await loadAccount(post.line_note_communities.account_id);
+    await deleteNotePost(await clientFor(account), post.line_note_communities.home_id, post.line_post_id, { verbose: VERBOSE });
+  } catch (e) {
+    const msg = String((e as any)?.message ?? e);
+    await patch("line_note_posts", `id=eq.${postId}`, { last_error: msg.slice(0, 1000) }).catch(() => {});
+    return { ok: false, error: msg };
+  }
+  await rest(`line_note_jobs?post_id=eq.${postId}&status=in.(queued,running)`, { method: "DELETE", prefer: "return=minimal" }).catch(() => {});
+  await rest(`line_note_posts?id=eq.${postId}`, { method: "DELETE", prefer: "return=minimal" });
+  log(`🗑 貼文 ${postId}（LINE ${post.line_post_id}）已從記事本刪除，後台紀錄一併清掉`);
+  return { ok: true, linePostId: post.line_post_id };
 }
 
 async function readPost(client: any, post: any) {
@@ -603,6 +635,7 @@ Deno.serve(async (req) => {
   // 認證：cron 用 secret header；後台用使用者 JWT（要是管理層級）
   const secret = req.headers.get("x-line-note-secret");
   let caller: "cron" | "admin" | null = null;
+  let callerTenant: string | null = null;
   if (CRON_SECRET && secret === CRON_SECRET) caller = "cron";
   else {
     const auth = req.headers.get("authorization") ?? "";
@@ -611,7 +644,12 @@ Deno.serve(async (req) => {
       const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
       const { data: { user } } = await sb.auth.getUser(token);
       const role = String(user?.app_metadata?.role ?? "");
-      if (user && ["owner", "admin", "hq_manager", "assistant", ""].includes(role)) caller = "admin";
+      if (user && ["owner", "admin", "hq_manager", "assistant", ""].includes(role)) {
+        caller = "admin";
+        // 這支函式一律用 service_role 打 DB（RLS 擋不到），所以會動到資料的 action
+        // 要自己拿這個 tenant 去比對，不能只信前端傳來的 id
+        callerTenant = String(user.app_metadata?.tenant_id ?? "") || null;
+      }
     }
   }
   if (!caller) return json({ error: "unauthorized" }, 401);
@@ -636,6 +674,14 @@ Deno.serve(async (req) => {
         deco: applyDeco(rendered).sticonMetas.length,   // 有幾個字會用 LINE 數字表情貼出去
         images: postImageUrls(payload),
       });
+    }
+    // 刪掉已經貼出去的貼文：LINE 上那篇先刪掉，成功了才清後台紀錄。
+    // 走「後台直接呼叫」而不是排 job —— 這是破壞性動作，按下去要當場知道刪掉了沒。
+    if (action === "delete_post") {
+      if (caller !== "admin") return json({ error: "刪除貼文只能從後台按" }, 403);
+      const postId = Number(body.post_id);
+      if (!postId) return json({ error: "post_id required" }, 400);
+      return json(await deletePost(postId, callerTenant));
     }
     if (action === "tick" || action === "run") return json(await tick());
     return json({ error: `unknown action ${action}` }, 400);
