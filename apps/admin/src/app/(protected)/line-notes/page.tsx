@@ -12,6 +12,9 @@ import { translateRpcError } from "@/lib/rpcError";
 import { campaignStatusBadge, campaignStatusLabel } from "@/lib/campaignStatus";
 import { Modal as SharedModal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
+import {
+  COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, commentStats, fmtNoteTime, isTodoComment,
+} from "@/lib/lineNoteStatus";
 
 type Account = {
   id: number; label: string; status: "logged_out" | "pending_qr" | "active" | "error";
@@ -42,21 +45,19 @@ type Comment = {
 };
 type Row = Comment & { line_note_posts: { community_id: number; campaign_id: number; group_buy_campaigns: { name: string; campaign_no: string } | null } | null };
 type OrderInfo = { id: number; order_no: string; store_name: string | null };
-type PostStat = { ordered: number; duplicate: number; todo: number; total: number };
+type PostStat = ReturnType<typeof commentStats>;
 type Home = { kind: string; homeId: string; name: string };
 type Campaign = { id: number; campaign_no: string; name: string; status: string };
 
 const ACCOUNT_STATUS: Record<Account["status"], string> = {
   logged_out: "未登入", pending_qr: "等待掃 QR", active: "已登入", error: "錯誤",
 };
-const POST_STATUS: Record<Post["status"], string> = { queued: "排隊中", posted: "已發文", failed: "失敗", closed: "已結束", unlinked: "未認出團" };
-const COMMENT_STATUS: Record<Comment["status"], string> = {
-  pending: "待處理", ordered: "已加單", unmatched: "找不到會員", no_order: "非下單", error: "錯誤", ignored: "忽略", resolved: "已解決", duplicate: "已有訂單",
-};
-const KIND_LABEL: Record<string, string> = { group: "群組", square: "社群", square_chat: "社群聊天室" };
-
-const fmt = (iso: string | null | undefined) =>
-  iso ? new Date(iso).toLocaleString("zh-TW", { hour12: false, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
+// 狀態文字 / 留言統計 / 時間格式都在 @/lib/lineNoteStatus —— 開團的「LINE 記事本」
+// 彈窗（LineNotePostsModal）畫同一批東西，兩邊各寫一份就會出現徽章數字對不起來。
+const POST_STATUS = POST_STATUS_LABEL;
+const COMMENT_STATUS = COMMENT_STATUS_LABEL;
+const KIND_LABEL = HOME_KIND_LABEL;
+const fmt = fmtNoteTime;
 const kindOf = (homeId: string): Community["home_kind"] =>
   homeId.startsWith("c") ? "group" : homeId.startsWith("s") ? "square" : "square_chat";
 
@@ -701,8 +702,7 @@ function PostCampaignModal({ community, onClose, notify, fail, reloadPosts }: {
 
 // ── 貼文與留言 ───────────────────────────────────────────────────────────────
 type Filter = "todo" | "ordered" | "ignored" | "all";
-const TODO_STATUSES: Comment["status"][] = ["pending", "unmatched", "error"];
-const isTodo = (c: Comment) => TODO_STATUSES.includes(c.status) || (c.status === "no_order" && !!c.member_no_hint);
+const isTodo = isTodoComment;
 
 // ── 留言加單：一張表，一則留言一列 ─────────────────────────────────────────
 function CommentsTab({ communityById, notify, fail }: {
@@ -907,16 +907,12 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
     const { data, error } = await getSupabase().from("line_note_comments")
       .select("post_id,status,member_no_hint").in("post_id", ids);
     if (error) return;   // 統計拿不到就不顯示，不要擋住整頁
-    const m = new Map<number, PostStat>();
+    const byPost = new Map<number, { status: string; member_no_hint: string | null }[]>();
     for (const r of (data ?? []) as { post_id: number; status: Comment["status"]; member_no_hint: string | null }[]) {
-      const cur = m.get(r.post_id) ?? { ordered: 0, duplicate: 0, todo: 0, total: 0 };
-      cur.total++;
-      if (r.status === "ordered") cur.ordered++;
-      else if (r.status === "duplicate") cur.duplicate++;
-      else if (["pending", "unmatched", "error"].includes(r.status) || (r.status === "no_order" && r.member_no_hint)) cur.todo++;
-      m.set(r.post_id, cur);
+      const cur = byPost.get(r.post_id);
+      if (cur) cur.push(r); else byPost.set(r.post_id, [r]);
     }
-    setCounts(m);
+    setCounts(new Map([...byPost].map(([pid, rows]) => [pid, commentStats(rows)])));
   }, [posts]);
   useEffect(() => { void loadCounts(); }, [loadCounts]);
 
@@ -1000,6 +996,8 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
       <p className="text-sm text-zinc-500">
         開團自動發的、和小幫手手貼後被系統認出來的貼文。點一則展開看每則留言。
         認不出是哪一團的會標<b>「未認出團」</b>，指定團之後才會開始讀留言加單。
+        <br />要<b>補發某一團</b>的話從「開團」列表那一團的「LINE 記事本」按鈕比較快 ——
+        可以一次勾好幾個群組，也看得到那團已經爬到什麼。
       </p>
 
       {posts === null ? <div className="py-8 text-center text-sm text-zinc-400">讀取中…</div>
@@ -1034,6 +1032,10 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
                             <span className="font-mono">{p.group_buy_campaigns?.campaign_no}</span>
                           </>}
                       {p.status !== "posted" && !unlinked && <Badge tone={p.status === "failed" ? "red" : "gray"}>{POST_STATUS[p.status]}</Badge>}
+                      {/* 兩個 id 都寫出來：#id 是後台這一列，LINE 那串才是記事本上那一篇
+                          —— 跟客服對答案時只有後者認得出是哪一篇貼文 */}
+                      <span className="font-mono">#{p.id}</span>
+                      {p.line_post_id && <span className="font-mono" title="LINE 記事本的貼文 id">LINE {p.line_post_id}</span>}
                       <span className="truncate">{c?.home_name || c?.home_id || `社群 #${p.community_id}`}</span>
                       <span>發文 {fmt(p.posted_at)}</span>
                       {p.last_read_at && <span>讀取 {fmt(p.last_read_at)}</span>}

@@ -27,7 +27,7 @@ import { corsHeaders } from "../_shared/cors.ts";
 import {
   clientFromToken, createNotePost, likeComment, listComments, listHomes, listPosts, loginByQr, whoami,
 } from "../_shared/lineNote.ts";
-import { matchCampaign, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
+import { buildPostTag, matchCampaign, parseNoteComment, postTitle, withPostTag } from "../_shared/lineNoteParse.ts";
 import { applyDeco, DECO_OPEN, decoPrice, stripDeco } from "../_shared/lineNoteDeco.ts";
 
 const SUPABASE_URL = requireEnv("SUPABASE_URL");
@@ -164,6 +164,8 @@ async function syncCommunities(accountId: number, homes: any[]) {
 // 從記事本匯進來的團，description 常常就是整篇貼文（標題＋(A)(B)品項＋⏰結單都在裡面），
 // 照樣接上去會變成品項印兩次、結單寫兩行。
 // {{name}} / {{end_at}} 維持原樣（照印），自訂模板的行為不變。
+// {{tag}} 是團號章（🔖 團號 GRP-…）：爬回來的時候靠它精準認出是哪一團，不用猜團名。
+// 自訂模板沒寫 {{tag}} 也會被 withPostTag 補在文末 —— 章一定要有，不然這篇就只能靠猜。
 const DEFAULT_TEMPLATE = `{{title}}
 
 {{description}}
@@ -172,7 +174,8 @@ const DEFAULT_TEMPLATE = `{{title}}
 
 {{deadline}}
 📝 留言「會員編號 6 碼 ＋ 品項代碼＋數量」，例：123456 A+1 B+2
-#開團`;
+#開團
+{{tag}}`;
 
 // 比對標題用：去掉表情符號、空白、標點，只留文字
 function bareText(s: string) {
@@ -225,7 +228,8 @@ export function renderTemplate(template: string | null, payload: any) {
     && (bareName.includes(firstLine) || firstLine.includes(bareName));
   const deadline = c.end_at ? `⏰ ${fmtTaipei(c.end_at)} 結單` : "";
 
-  return (template || DEFAULT_TEMPLATE)
+  const rendered = (template || DEFAULT_TEMPLATE)
+    .replaceAll("{{tag}}", buildPostTag(c.campaign_no))
     .replaceAll("{{title}}", descHasTitle ? "" : (c.name ?? ""))
     .replaceAll("{{items}}", descHasItems ? "" : items)
     .replaceAll("{{deadline}}", descHasDeadline ? "" : deadline)
@@ -237,6 +241,7 @@ export function renderTemplate(template: string | null, payload: any) {
     .replaceAll("{{pickup_deadline}}", fmtTaipei(c.pickup_deadline))
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+  return withPostTag(rendered, c.campaign_no);
 }
 
 // 文案裡「自己獨立一行的 $數字」也是價格（匯進來的團，品項與價格都寫在 description 裡），
