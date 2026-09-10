@@ -24,6 +24,7 @@ import { CampaignThumb } from "@/components/CampaignThumb";
 import { campaignCoverUrl, type CampaignCoverItem } from "@/lib/campaignCover";
 import { exportLeleXls, type LeleCampaign, type LeleTruncation, type LeleSkip } from "@/lib/exportLeleXls";
 import FbPublishModal from "@/components/FbPublishModal";
+import LineNotePostsModal from "@/components/LineNotePostsModal";
 import FbBulkPublishModal from "@/components/FbBulkPublishModal";
 import { useRole, isAdmin, useMyStores } from "@/lib/role";
 import StoreCampaignCreateModal from "@/components/StoreCampaignCreateModal";
@@ -210,6 +211,8 @@ export default function CampaignsListPage() {
   const [reloadTick, setReloadTick] = useState(0);
   const [resyncTick, setResyncTick] = useState(0);
   const [fbPublishId, setFbPublishId] = useState<number | null>(null);
+  // LINE 記事本彈窗：發文到哪幾個群組 + 這團爬回來的貼文與留言（LineNotePostsModal）
+  const [lineNoteFor, setLineNoteFor] = useState<Row | null>(null);
   const [bulkFbOpen, setBulkFbOpen] = useState(false);
   const [closingId, setClosingId] = useState<number | null>(null);
   const [cloningId, setCloningId] = useState<number | null>(null);
@@ -858,6 +861,14 @@ export default function CampaignsListPage() {
           發 FB
         </SpinButton>
       )}
+      {showAdminActions && (["open", "closed", "locked", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
+        <SpinButton
+          onClick={() => setLineNoteFor(r)}
+          className="text-xs text-emerald-600 hover:underline dark:text-emerald-400"
+        >
+          LINE 記事本
+        </SpinButton>
+      )}
       {showAdminActions && (["closed", "locked", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
         <SpinButton
           onClick={() => finalizeCampaign(r.id, r.name)}
@@ -1409,7 +1420,7 @@ export default function CampaignsListPage() {
         open={!!modal}
         onClose={() => setModal(null)}
         title={modal ? `編輯開團 #${modal.values.campaign_no}｜${modal.values.name}` : ""}
-        maxWidth="max-w-4xl"
+        maxWidth="max-w-6xl"
       >
         {modal && (
           <div className="space-y-6">
@@ -1446,6 +1457,15 @@ export default function CampaignsListPage() {
         open={fbPublishId !== null}
         campaignId={fbPublishId}
         onClose={() => setFbPublishId(null)}
+      />
+
+      <LineNotePostsModal
+        open={lineNoteFor !== null}
+        campaignId={lineNoteFor?.id ?? null}
+        campaignNo={lineNoteFor?.campaign_no ?? null}
+        campaignName={lineNoteFor?.name ?? null}
+        campaignStatus={lineNoteFor?.status ?? null}
+        onClose={() => setLineNoteFor(null)}
       />
 
       <FbBulkPublishModal

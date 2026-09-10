@@ -116,6 +116,7 @@ export function parseNoteComment(text, authorName = "") {
 // "N6090802#" / "#B2967" 這種代碼；記事本內文又常只寫商品名。依序試：
 // 團號 → 團名 → 團名裡的代碼 → 該團品項的商品名（團只有 ≤3 項時才用，免得誤中）。
 // 多個團都命中取「命中字串最長」的；一樣長就不猜（回 null，留給人工）。
+// ⚠ 以上都是「猜」，只用在沒蓋團號章的貼文（小幫手手貼的）。蓋了章的走精準比對。
 export function normalizeForMatch(s) {
   return String(s ?? "").normalize("NFKC").toLowerCase().replace(/\s+/g, "");
 }
@@ -123,6 +124,14 @@ export function normalizeForMatch(s) {
 export function matchCampaign(text, campaigns) {
   const t = normalizeForMatch(text);
   if (!t) return null;
+  // 蓋過團號章的貼文只認那個章，**不退回模糊比對**：章在但那一團不在候選清單裡
+  // （已結算 / 已取消 / 超出 limit）就回 null 讓它留成 unlinked，退回去猜的話
+  // 很可能中到另一個「團名剛好是子字串」的團，那就是認錯團。
+  const tagged = extractPostTag(text);
+  if (tagged) {
+    const want = normalizeForMatch(tagged);
+    return (campaigns ?? []).find((c) => normalizeForMatch(c.campaign_no) === want) ?? null;
+  }
   let best = null;
   let tie = false;
   for (const c of campaigns ?? []) {
@@ -149,6 +158,41 @@ export function matchCampaign(text, campaigns) {
     }
   }
   return best && !tie ? best.c : null;
+}
+
+// ── 貼文編號（🔖 團號）─────────────────────────────────────────────────────
+// 系統發出去的每一篇貼文都在文末蓋一個「🔖 團號 GRP-…」的章，讓爬回來的時候
+// **一眼認得出是哪一團**，不用靠團名子字串去猜（matchCampaign 猜錯 = 把客人的
+// +1 加到別的團上，比漏認嚴重得多；20260910000000 那次松山「雲林小農🍀阿土伯」
+// 就是團名對不上而整篇認不出來）。
+//
+// 小幫手自己手貼的文沒有這個章，照樣走下面的模糊比對 —— 但只要是從後台
+// 「LINE 記事本」發的（含預覽複製去手貼的），比對就是精準的。
+export const POST_TAG_MARK = "\u{1F516}";                    // 🔖
+
+/** 貼文文末的團號章。campaign_no 空的話回空字串（不硬蓋一個假的章）。 */
+export function buildPostTag(campaignNo) {
+  const no = String(campaignNo ?? "").trim();
+  return no ? `${POST_TAG_MARK} 團號 ${no}` : "";
+}
+
+/**
+ * 從貼文內文把團號章挖出來；沒蓋章回 null。
+ * ⚠「團號」兩個字是必要的，不能只認 🔖 —— 手貼的文很可能自己就用了 🔖 當裝飾
+ * （「🔖 好物推薦」），只認符號會把它當成蓋了章，然後因為對不到團而回 null，
+ * 反而害本來模糊比對得出來的貼文變成 unlinked。
+ */
+export function extractPostTag(text) {
+  const m = String(text ?? "").match(/\u{1F516}\s*團號\s*([A-Za-z0-9][A-Za-z0-9-]{2,})/u);
+  return m ? m[1] : null;
+}
+
+/** 沒蓋章就補一個蓋在最後（自訂模板沒寫 {{tag}} 也一樣有章）。 */
+export function withPostTag(text, campaignNo) {
+  const tag = buildPostTag(campaignNo);
+  if (!tag || extractPostTag(text)) return String(text ?? "");
+  const body = String(text ?? "").trimEnd();
+  return body ? `${body}\n${tag}` : tag;
 }
 
 /** 貼文標題：取第一個非空白行，最多 60 字 */

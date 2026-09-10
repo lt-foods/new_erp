@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseOrderLines, postTitle, normalize, extractMemberNo, parseNoteComment, matchCampaign, normalizeForMatch } from "./parse.mjs";
+import { parseOrderLines, postTitle, normalize, extractMemberNo, parseNoteComment, matchCampaign, normalizeForMatch,
+  buildPostTag, extractPostTag, withPostTag } from "./parse.mjs";
 
 test("extractMemberNo", () => {
   assert.deepEqual(extractMemberNo("123456 A+1"), { hint: "123456", rest: "A+1" });
@@ -161,4 +162,29 @@ test("matchCampaign 取最長命中、平手不猜", () => {
   assert.equal(matchCampaign("丹波黑豆 300克/包", cs)?.id, 11);        // 比 id:10 長
   assert.equal(matchCampaign("黑豆", cs), null);                        // 2 字太短，刻意不比（會誤中）
   assert.equal(matchCampaign("丹波黑豆 300克 丹波黑豆 500克", cs), null); // 兩個一樣長 → 不猜
+});
+
+// ── 團號章（系統發文蓋的 🔖）────────────────────────────────────────────────
+test("buildPostTag / extractPostTag / withPostTag", () => {
+  assert.equal(buildPostTag("GRP-20260906-022"), "🔖 團號 GRP-20260906-022");
+  assert.equal(buildPostTag(null), "");                                  // 沒團號不硬蓋假的章
+  assert.equal(extractPostTag("…\n#開團\n🔖 團號 GRP-20260906-022"), "GRP-20260906-022");
+  assert.equal(extractPostTag("🔖團號GRP-20260906-022"), "GRP-20260906-022");   // 沒空白也認
+  assert.equal(extractPostTag("🔖 好物推薦 GRP-20260906-022"), null);           // 只有符號不算章
+  assert.equal(extractPostTag("丹波黑豆 300克"), null);
+  // 沒章就補一個；已經有章（自訂模板寫了 {{tag}}）不重複蓋
+  assert.equal(withPostTag("內文", "GRP-1234-001"), "內文\n🔖 團號 GRP-1234-001");
+  assert.equal(withPostTag("內文\n🔖 團號 GRP-1234-001", "GRP-1234-001"), "內文\n🔖 團號 GRP-1234-001");
+  assert.equal(withPostTag("內文", null), "內文");
+});
+
+test("matchCampaign：蓋了章就精準比對，不再猜", () => {
+  // 章指到 3，內文同時提到 1 的團名代碼 → 還是 3（章優先）
+  assert.equal(hit("N6090802# 抽繩系帶不規則屁簾長裙\n🔖 團號 GRP-20260906-022"), 3);
+  // 章在但那一團不在候選清單（已結算 / 已取消）→ 不退回模糊比對，回 null 留成 unlinked
+  assert.equal(hit("丹波黑豆 300克/包\n🔖 團號 GRP-19990101-999"), null);
+  // 兩個一樣長本來不猜；蓋了章就有答案
+  const cs = [{ id: 11, campaign_no: "GRP-2026-011", name: "丹波黑豆 300克" }, { id: 12, campaign_no: "GRP-2026-012", name: "丹波黑豆 500克" }];
+  assert.equal(matchCampaign("丹波黑豆 300克 丹波黑豆 500克", cs), null);
+  assert.equal(matchCampaign("丹波黑豆 300克 丹波黑豆 500克\n🔖 團號 GRP-2026-012", cs)?.id, 12);
 });
