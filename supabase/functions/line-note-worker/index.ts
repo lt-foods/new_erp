@@ -27,14 +27,13 @@ import { corsHeaders } from "../_shared/cors.ts";
 import {
   clientFromToken, createNotePost, deleteNotePost, likeComment, listComments, listHomes, listPosts, loginByQr, whoami,
 } from "../_shared/lineNote.ts";
-import { buildPostTag, matchCampaign, parseNoteComment, postTitle, withPostTag } from "../_shared/lineNoteParse.ts";
-import { applyDeco, DECO_OPEN, decoPrice, stripDeco } from "../_shared/lineNoteDeco.ts";
+import { matchCampaign, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
+import { renderPostText, TZ } from "../_shared/lineNoteRender.ts";
 
 const SUPABASE_URL = requireEnv("SUPABASE_URL");
 const SERVICE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
 const CRON_SECRET = Deno.env.get("LINE_NOTE_CRON_SECRET") ?? "";
 const VERBOSE = !!Deno.env.get("VERBOSE");
-const TZ = "Asia/Taipei";
 const TICK_BUDGET_MS = Number(Deno.env.get("LINE_NOTE_TICK_BUDGET_MS") || 100_000);
 const LOGIN_DEADLINE_MS = Number(Deno.env.get("LINE_NOTE_LOGIN_DEADLINE_MS") || 110_000);
 const MAX_POST_IMAGES = Number(Deno.env.get("LINE_POST_MAX_IMAGES") || 10);
@@ -158,102 +157,6 @@ async function syncCommunities(accountId: number, homes: any[]) {
   }
 }
 
-// 版型照小幫手手貼的樣子：團名開頭、商品用 (A) 品名 ＋ 下一行價格、⏰ 結單、#開團 收尾。
-// 文案本體吃 campaign.description —— 那本來就是商品那邊寫好的行銷文（線上近兩週 377/395 團有）。
-// {{title}} / {{items}} / {{deadline}} 是「聰明版」：文案自己已經寫過的就不再重複一次。
-// 從記事本匯進來的團，description 常常就是整篇貼文（標題＋(A)(B)品項＋⏰結單都在裡面），
-// 照樣接上去會變成品項印兩次、結單寫兩行。
-// {{name}} / {{end_at}} 維持原樣（照印），自訂模板的行為不變。
-// {{tag}} 是團號章（🔖 團號 GRP-…）：爬回來的時候靠它精準認出是哪一團，不用猜團名。
-// 自訂模板沒寫 {{tag}} 也會被 withPostTag 補在文末 —— 章一定要有，不然這篇就只能靠猜。
-const DEFAULT_TEMPLATE = `{{title}}
-
-{{description}}
-
-{{items}}
-
-{{deadline}}
-📝 留言「會員編號 6 碼 ＋ 品項代碼＋數量」，例：123456 A+1 B+2
-#開團
-{{tag}}`;
-
-// 比對標題用：去掉表情符號、空白、標點，只留文字
-function bareText(s: string) {
-  return String(s ?? "").normalize("NFKC").toLowerCase()
-    .replace(/[\s\p{P}\p{S}\p{M}\p{C}]/gu, "");   // \p{M}/\p{C} 要一起拿掉：emoji 後面的 VS16、ZWJ 都藏在那裡
-}
-
-// 從記事本抓回來的舊文會帶 LINE 裝飾表情的佔位字：($)(3)(5) = $35、(emoji) = 一個貼圖。
-// 原樣貼出去客人會看到一串「($)(3)(5)」，所以還原成看得懂的字。
-function stripLineDeco(s: string) {
-  return String(s ?? "")
-    .replace(/(?:\((?:\$|[0-9]|\/)\)){2,}/g, (m) => m.replace(/[()]/g, ""))
-    .replace(/\((?:emoji|好吃|讚|哭|笑|愛心)\)/g, "")
-    .replace(/[ \t]+\n/g, "\n");
-}
-
-// 品項名在 DB 裡是「團名 (A) 空心菜200g」，直接印會變成「(A) 團名 (A) 空心菜200g」。
-// 去掉團名前綴和重複的代碼，只留真正的品名。
-function itemLabel(name: string, code: string, campaignName: string) {
-  let t = String(name ?? "").trim();
-  const cn = String(campaignName ?? "").trim();
-  if (cn && t.startsWith(cn)) t = t.slice(cn.length).trim();
-  t = t.replace(new RegExp(`^[(（]${code}[)）]\\s*`), "").trim();
-  return t || String(name ?? "").trim();
-}
-
-function fmtTaipei(iso: string | null | undefined) {
-  if (!iso) return "";
-  const p = new Intl.DateTimeFormat("zh-TW", { timeZone: TZ, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(new Date(iso));
-  const g = (t: string) => p.find((x) => x.type === t)?.value ?? "";
-  return `${g("month")}/${g("day")} ${g("hour")}:${g("minute")}`;
-}
-
-export function renderTemplate(template: string | null, payload: any) {
-  const c = payload.campaign ?? {};
-  const items = (payload.items ?? []).map((it: any) => {
-    const label = itemLabel(it.name, it.code, c.name);
-    // 金額用 LINE 的數字表情（小幫手手貼都是這樣打的），只包我們自己產的這一行 ——
-    // 店家寫在文案裡的「（市價$150/盒）」不要動
-    const price = it.unit_price == null ? "" : `\n${decoPrice(`$${Number(it.unit_price)}`)}`;
-    return `(${it.code}) ${label}${price}`;
-  }).join("\n");
-  const desc = stripLineDeco(c.description ?? "");
-  // 文案自己就列了 (A)(B) 品項 / 寫了結單 / 開頭就是團名 → 那三個聰明佔位符留空
-  const descHasItems = /(^|\n)\s*[(（][A-Za-z][)）]/.test(desc);
-  const descHasDeadline = /結單|收單|截單/.test(desc);
-  const firstLine = bareText(desc.split("\n").find((x) => x.trim()) ?? "");
-  const bareName = bareText(c.name ?? "");
-  const descHasTitle = !!firstLine && !!bareName && firstLine.length >= 4
-    && (bareName.includes(firstLine) || firstLine.includes(bareName));
-  const deadline = c.end_at ? `⏰ ${fmtTaipei(c.end_at)} 結單` : "";
-
-  const rendered = (template || DEFAULT_TEMPLATE)
-    .replaceAll("{{tag}}", buildPostTag(c.campaign_no))
-    .replaceAll("{{title}}", descHasTitle ? "" : (c.name ?? ""))
-    .replaceAll("{{items}}", descHasItems ? "" : items)
-    .replaceAll("{{deadline}}", descHasDeadline ? "" : deadline)
-    .replaceAll("{{name}}", c.name ?? "")
-    .replaceAll("{{campaign_no}}", c.campaign_no ?? "")
-    .replaceAll("{{description}}", desc)
-    .replaceAll("{{end_at}}", fmtTaipei(c.end_at))
-    .replaceAll("{{start_at}}", fmtTaipei(c.start_at))
-    .replaceAll("{{pickup_deadline}}", fmtTaipei(c.pickup_deadline))
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return withPostTag(rendered, c.campaign_no);
-}
-
-// 文案裡「自己獨立一行的 $數字」也是價格（匯進來的團，品項與價格都寫在 description 裡），
-// 一併用數字表情。行內的「（市價$150/盒）」不動 —— 那不是這團的售價。
-function decoStandalonePrices(text: string) {
-  return text.split("\n")
-    .map((line) => /^\s*\$\d+\s*$/.test(line) && !line.includes(DECO_OPEN)
-      ? line.replace(/\$\d+/, (m) => decoPrice(m))
-      : line)
-    .join("\n");
-}
-
 function resolveImageUrl(p: unknown): string | null {
   if (!p || typeof p !== "string") return null;
   if (/^https?:\/\//i.test(p)) return p;
@@ -298,18 +201,16 @@ async function jobPost(job: any) {
   if (!payload) throw new Error(`post ${job.post_id} not found`);
   const account = await loadAccount(payload.account_id);
   const client = await clientFor(account);
-  const rendered = decoStandalonePrices(renderTemplate(payload.post_template, payload));
-  const { text, sticonMetas } = applyDeco(rendered);
-  const plain = stripDeco(rendered);          // 存 DB / 給人看的版本："$79" 而不是 "($)(7)(9)"
+  const text = renderPostText(payload);
   const images = await collectPostImages(payload);
   try {
-    const post = await createNotePost(client, payload.home_id, { text, sticonMetas, images, verbose: VERBOSE });
+    const post = await createNotePost(client, payload.home_id, { text, images, verbose: VERBOSE });
     await patch("line_note_posts", `id=eq.${job.post_id}`, {
-      status: "posted", line_post_id: post.postId ?? null, text: plain, posted_at: new Date().toISOString(), last_error: null,
+      status: "posted", line_post_id: post.postId ?? null, text, posted_at: new Date().toISOString(), last_error: null,
     });
-    return { postId: post.postId, title: postTitle(plain), images: images.length, deco: sticonMetas.length };
+    return { postId: post.postId, title: postTitle(text), images: images.length };
   } catch (e) {
-    await patch("line_note_posts", `id=eq.${job.post_id}`, { status: "failed", text: plain, last_error: String((e as any)?.message ?? e).slice(0, 1000) });
+    await patch("line_note_posts", `id=eq.${job.post_id}`, { status: "failed", text, last_error: String((e as any)?.message ?? e).slice(0, 1000) });
     throw e;
   }
 }
@@ -668,12 +569,7 @@ Deno.serve(async (req) => {
         p_community_id: Number(body.community_id), p_campaign_id: Number(body.campaign_id),
       });
       if (!payload) return json({ error: "找不到社群或團" }, 404);
-      const rendered = decoStandalonePrices(renderTemplate(payload.post_template, payload));
-      return json({
-        text: stripDeco(rendered),
-        deco: applyDeco(rendered).sticonMetas.length,   // 有幾個字會用 LINE 數字表情貼出去
-        images: postImageUrls(payload),
-      });
+      return json({ text: renderPostText(payload), images: postImageUrls(payload) });
     }
     // 刪掉已經貼出去的貼文：LINE 上那篇先刪掉，成功了才清後台紀錄。
     // 走「後台直接呼叫」而不是排 job —— 這是破壞性動作，按下去要當場知道刪掉了沒。

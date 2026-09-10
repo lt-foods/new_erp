@@ -385,7 +385,7 @@ export async function deleteNotePost(client, homeId, postId, { sourceType, verbo
   return res;
 }
 
-export async function createNotePost(client, homeId, { text, images = [], sticonMetas = [], sourceType, verbose = false } = {}) {
+export async function createNotePost(client, homeId, { text, images = [], sourceType, verbose = false } = {}) {
   if (!text && images.length === 0) throw new Error("貼文至少要有文字或圖片");
 
   // 圖片上傳走 obs.line-apps.com（linejs 的 uploadNoteMedia），失敗就只發文字，
@@ -425,21 +425,10 @@ export async function createNotePost(client, homeId, { text, images = [], sticon
       locations: [],
       media,
       ...(text ? { text } : {}),
-      // LINE 裝飾表情（金額那種彩色數字）：text 裡放 (x) 佔位字，這裡給每個佔位字的位移與圖號
-      ...(sticonMetas?.length ? { sticonMetas } : {}),
     },
   };
-  const params = { homeId, sourceType: sourceType ?? "TALKROOM" };
-  let res = await noteRequest(client, homeId, "/api/v57/post/create.json", { ...params }, { method: "POST", body, verbose });
-
-  // 裝飾表情是加分項，不能因為它讓整篇發不出去：被打槍就把佔位字還原成純文字重發一次
-  if ((!res || res.code !== 0) && sticonMetas?.length) {
-    log(true, `帶裝飾表情發文被退（code=${res?.code}），改用純文字重試`);
-    const plain = { ...body, contents: { ...body.contents, text: text.replace(/\((\$|[0-9])\)/g, "$1") } };
-    delete plain.contents.sticonMetas;
-    res = await noteRequest(client, homeId, "/api/v57/post/create.json", { ...params }, { method: "POST", body: plain, verbose });
-  }
-
+  const res = await noteRequest(client, homeId, "/api/v57/post/create.json",
+    { homeId, sourceType: sourceType ?? "TALKROOM" }, { method: "POST", body, verbose });
   log(verbose, "createPost →", JSON.stringify(res).slice(0, 500));
   if (!res || res.code !== 0) {
     throw new Error(`發文失敗：code=${res?.code} ${res?.message ?? ""}\n${JSON.stringify(res).slice(0, 800)}`);

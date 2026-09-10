@@ -94,7 +94,7 @@ export default function LineNotePostsModal({
   // 預覽：worker 那一份 renderTemplate 渲染出來的「等一下真的會貼出去的字」。
   // 模板是掛在社群上的，所以預覽要指定看哪個群組的。
   const [previewFor, setPreviewFor] = useState<number | null>(null);
-  const [preview, setPreview] = useState<{ text: string; images: string[]; deco?: number } | null>(null);
+  const [preview, setPreview] = useState<{ text: string; images: string[] } | null>(null);
   const [previewing, setPreviewing] = useState(false);
 
   // 爬回來的留言（點貼文展開）
@@ -144,7 +144,7 @@ export default function LineNotePostsModal({
       if (dead) return;
       setPreviewing(false);
       if (error || (data as { error?: string })?.error) return;   // 預覽拿不到不擋發文
-      setPreview(data as { text: string; images: string[]; deco?: number });
+      setPreview(data as { text: string; images: string[] });
     })();
     return () => { dead = true; };
   }, [open, campaignId, previewFor, canOperate]);
@@ -349,7 +349,6 @@ export default function LineNotePostsModal({
                 <p className="mt-1 text-xs text-zinc-500">
                   文案取自這個團的說明、商品與價格取自團裡的品項、圖片取自商品圖。要改內容請去改團／商品。
                   文末的「🔖 團號」是給系統認的章，爬回來時靠它認出是哪一團。
-                  {!!preview?.deco && <>　金額會用 LINE 的彩色數字表情貼出去（這裡先用一般數字顯示）。</>}
                 </p>
               </div>
 
