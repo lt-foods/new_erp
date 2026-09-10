@@ -28,6 +28,7 @@ import {
   clientFromToken, createNotePost, likeComment, listComments, listHomes, listPosts, loginByQr, whoami,
 } from "../_shared/lineNote.ts";
 import { buildPostTag, matchCampaign, parseNoteComment, postTitle, withPostTag } from "../_shared/lineNoteParse.ts";
+import { applyDeco, DECO_OPEN, decoPrice, stripDeco } from "../_shared/lineNoteDeco.ts";
 
 const SUPABASE_URL = requireEnv("SUPABASE_URL");
 const SERVICE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
@@ -212,7 +213,9 @@ export function renderTemplate(template: string | null, payload: any) {
   const c = payload.campaign ?? {};
   const items = (payload.items ?? []).map((it: any) => {
     const label = itemLabel(it.name, it.code, c.name);
-    const price = it.unit_price == null ? "" : `\n$${Number(it.unit_price)}`;
+    // 金額用 LINE 的數字表情（小幫手手貼都是這樣打的），只包我們自己產的這一行 ——
+    // 店家寫在文案裡的「（市價$150/盒）」不要動
+    const price = it.unit_price == null ? "" : `\n${decoPrice(`$${Number(it.unit_price)}`)}`;
     return `(${it.code}) ${label}${price}`;
   }).join("\n");
   const desc = stripLineDeco(c.description ?? "");
@@ -239,6 +242,16 @@ export function renderTemplate(template: string | null, payload: any) {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   return withPostTag(rendered, c.campaign_no);
+}
+
+// 文案裡「自己獨立一行的 $數字」也是價格（匯進來的團，品項與價格都寫在 description 裡），
+// 一併用數字表情。行內的「（市價$150/盒）」不動 —— 那不是這團的售價。
+function decoStandalonePrices(text: string) {
+  return text.split("\n")
+    .map((line) => /^\s*\$\d+\s*$/.test(line) && !line.includes(DECO_OPEN)
+      ? line.replace(/\$\d+/, (m) => decoPrice(m))
+      : line)
+    .join("\n");
 }
 
 function resolveImageUrl(p: unknown): string | null {
@@ -285,16 +298,18 @@ async function jobPost(job: any) {
   if (!payload) throw new Error(`post ${job.post_id} not found`);
   const account = await loadAccount(payload.account_id);
   const client = await clientFor(account);
-  const text = renderTemplate(payload.post_template, payload);
+  const rendered = decoStandalonePrices(renderTemplate(payload.post_template, payload));
+  const { text, sticonMetas } = applyDeco(rendered);
+  const plain = stripDeco(rendered);          // 存 DB / 給人看的版本："$79" 而不是 "($)(7)(9)"
   const images = await collectPostImages(payload);
   try {
-    const post = await createNotePost(client, payload.home_id, { text, images, verbose: VERBOSE });
+    const post = await createNotePost(client, payload.home_id, { text, sticonMetas, images, verbose: VERBOSE });
     await patch("line_note_posts", `id=eq.${job.post_id}`, {
-      status: "posted", line_post_id: post.postId ?? null, text, posted_at: new Date().toISOString(), last_error: null,
+      status: "posted", line_post_id: post.postId ?? null, text: plain, posted_at: new Date().toISOString(), last_error: null,
     });
-    return { postId: post.postId, title: postTitle(text), images: images.length };
+    return { postId: post.postId, title: postTitle(plain), images: images.length, deco: sticonMetas.length };
   } catch (e) {
-    await patch("line_note_posts", `id=eq.${job.post_id}`, { status: "failed", text, last_error: String((e as any)?.message ?? e).slice(0, 1000) });
+    await patch("line_note_posts", `id=eq.${job.post_id}`, { status: "failed", text: plain, last_error: String((e as any)?.message ?? e).slice(0, 1000) });
     throw e;
   }
 }
@@ -615,7 +630,12 @@ Deno.serve(async (req) => {
         p_community_id: Number(body.community_id), p_campaign_id: Number(body.campaign_id),
       });
       if (!payload) return json({ error: "找不到社群或團" }, 404);
-      return json({ text: renderTemplate(payload.post_template, payload), images: postImageUrls(payload) });
+      const rendered = decoStandalonePrices(renderTemplate(payload.post_template, payload));
+      return json({
+        text: stripDeco(rendered),
+        deco: applyDeco(rendered).sticonMetas.length,   // 有幾個字會用 LINE 數字表情貼出去
+        images: postImageUrls(payload),
+      });
     }
     if (action === "tick" || action === "run") return json(await tick());
     return json({ error: `unknown action ${action}` }, 400);
