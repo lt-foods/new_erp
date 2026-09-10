@@ -1,62 +1,75 @@
 -- ============================================================================
--- 一次性資料清理：刪除測試團 GRP-20260910-041
+-- 一次性資料清理：刪除測試團 GRP-20260910-041「測試」（id 5051）
 -- ============================================================================
 -- 需求（Alex 2026-09-10）：「GRP-20260910-041 這個團刪除」。
---   GRP-20260910-041「中華一番・中式職人料理 350克+-10%test」（id 5050）是 09-10 17:50
---   誤開的測試團，兩分鐘後整團取消（status='cancelled'）。底下唯一一張客人訂單已經在
---   20260910030000_move_orders_test_campaign_041_to_021（#943）搬到正式團
---   GRP-20260910-021，所以這團現在只剩一個沒有訂單的空殼。
 --
--- 做法：直接呼叫既有的 rpc_delete_campaign（20260831000080 版），不另寫一套刪除 ——
---   守衛（非 open、沒有訂單）、append-only 表暫停保護、campaign_items / channels
---   由 CASCADE 帶走、殘參照轉成 FK 錯誤整支中止，都跟後台按「刪除」是同一條路。
---   pooler / Management API 連線沒有 JWT，_current_tenant_id() 會是 NULL，
---   所以在交易內灌 admin claims（set_config(..., true) 只活在這個交易）。
+-- ⚠ 這個團號今天被用了兩次：
+--   - id 5050「中華一番・中式職人料理 350克+-10%test」—— #943
+--     （20260910030000_move_orders_test_campaign_041_to_021）搬走訂單的那團，
+--     套本檔時已經不在了（之前就被刪掉）。
+--   - id 5051「測試」—— 18:57 開的 HQ 團，團號是照當天數量補號，所以又拿到 041。
+--     本檔刪的是這一團。
+--   同號重用的原因：團號是「當天已有的團數 + 1」，刪掉一團之後下一團會拿回同一號。
 --
--- 本檔自己的守衛（任一不成立就整支 RAISE，什麼都不刪）：
---   - campaign_no + name 都要對得上、status 必須還是 cancelled
---   - 這團沒有任何 customer_orders（#943 之後應該是 0）
---   - 沒有任何訂單品項還掛在這團的 campaign_items 上（#943 已把品項改掛 021）
---   - LINE 記事本沒有這團的貼文紀錄：刪團會把 line_note_posts CASCADE 掉，
---     之後後台就刪不到 LINE 上那篇 —— 有的話先到開團的記事本彈窗刪貼文再來。
+-- 5051 的狀態（套用前對正式庫查過）：open、0 訂單、0 商品、0 頻道／稽核／候補／
+--   上傳紀錄；唯一掛著的是 LINE 記事本貼文 #290（⑦包子媽❤生鮮小舖(松山店)，
+--   status=posted，但 line_post_id 是 NULL —— 發文時 LINE 沒回貼文 id）。
+--   line-note-worker 的 delete_post 對沒有 line_post_id 的貼文一律回 noLinePost，
+--   後台本來就刪不到 LINE 上那篇，所以跟著團一起 CASCADE 掉不會少掉任何補救手段；
+--   LINE 上那篇要用發文帳號自己刪。
 --
--- 備份：刪之前把團頭 + 所有 FK 指向它的列（含 CASCADE 下一層）以 jsonb 存進
---   public._backup_20260910_deleted_campaign_041（RLS 開、anon/authenticated 無權限）。
---   確認不需要還原後可直接 DROP TABLE。
+-- 為什麼不走 rpc_delete_campaign：它擋 open 的團；先把 status 改成 cancelled 再刪
+--   會觸發 trg_line_note_on_campaign_open / trg_campaigns_lock_on_open（AFTER UPDATE
+--   OF status）。這團沒有訂單、商品、稽核、上傳、候補，RPC 其餘的清理步驟全是空轉，
+--   所以直接 DELETE 團頭；真的冒出別的參照時，FK（customer_order_sources 等沒有
+--   CASCADE）或 append-only trigger（campaign_audit_log）會讓整支中止，不會刪一半。
+--
+-- 守衛（任一不成立就整支 RAISE，什麼都不刪）：
+--   - id + campaign_no + name 三個都要對得上
+--   - 沒有訂單、沒有商品、沒有訂單品項掛在它的商品上、沒有掛在它身上的庫存異動
+--   - 記事本貼文只能是「沒有 line_post_id」的：有 id 代表後台刪得到 LINE 上那篇，
+--     要先在開團的記事本彈窗刪（連 LINE 一起刪）再刪團，否則 CASCADE 之後就刪不到了
+--
+-- 備份：刪之前把團頭 + 所有 FK 指向它的列（含 CASCADE 下一層，例如記事本留言、
+--   發文 job）以 jsonb 存進 public._backup_20260910_deleted_campaign_041
+--   （RLS 開、anon/authenticated 無權限）。確認不需要還原後可直接 DROP TABLE。
 --
 -- 冪等：團已經不存在 → NOTICE 跳過（從零重跑時也走這條，不會建備份表）。
 -- Rollback：依 src_table 從備份表 jsonb_populate_record 塞回去，順序
---   group_buy_campaigns → campaign_items / campaign_channels → 其餘。
+--   group_buy_campaigns → line_note_posts → line_note_comments；
+--   line_note_jobs 只要把 post_id 補回（FK 是 ON DELETE SET NULL）。
 -- ============================================================================
 
 DO $$
 DECLARE
-  v_tenant CONSTANT UUID := '00000000-0000-0000-0000-000000000001';
-  v_no     CONSTANT TEXT := 'GRP-20260910-041';
-  v_id     BIGINT;
-  v_status TEXT;
+  v_tenant CONSTANT UUID   := '00000000-0000-0000-0000-000000000001';
+  v_id     CONSTANT BIGINT := 5051;
+  v_no     CONSTANT TEXT   := 'GRP-20260910-041';
+  v_found  BIGINT;
   v_cnt    INT;
   r        RECORD;
   r2       RECORD;
 BEGIN
-  SELECT id, status INTO v_id, v_status
+  SELECT id INTO v_found
     FROM group_buy_campaigns
-   WHERE tenant_id = v_tenant AND campaign_no = v_no
-     AND name = '中華一番・中式職人料理 350克+-10%test'
+   WHERE id = v_id AND tenant_id = v_tenant
+     AND campaign_no = v_no AND name = '測試'
    FOR UPDATE;
 
-  IF v_id IS NULL THEN
-    RAISE NOTICE '[skip] 團 % 不存在（已刪除）', v_no;
+  IF v_found IS NULL THEN
+    RAISE NOTICE '[skip] 團 %（id %「測試」）不存在（已刪除）', v_no, v_id;
     RETURN;
-  END IF;
-  IF v_status <> 'cancelled' THEN
-    RAISE EXCEPTION '團 % 不是 cancelled（現在是 %），中止', v_no, v_status;
   END IF;
 
   -- ── 守衛 ────────────────────────────────────────────────────────────────
   SELECT COUNT(*) INTO v_cnt FROM customer_orders WHERE campaign_id = v_id;
   IF v_cnt > 0 THEN
-    RAISE EXCEPTION '團 % 還有 % 張訂單，中止', v_no, v_cnt;
+    RAISE EXCEPTION '團 % 已經有 % 張訂單，中止', v_no, v_cnt;
+  END IF;
+
+  SELECT COUNT(*) INTO v_cnt FROM campaign_items WHERE campaign_id = v_id;
+  IF v_cnt > 0 THEN
+    RAISE EXCEPTION '團 % 已經有 % 個商品，中止（套用前查過是 0）', v_no, v_cnt;
   END IF;
 
   SELECT COUNT(*) INTO v_cnt
@@ -67,9 +80,18 @@ BEGIN
     RAISE EXCEPTION '還有 % 個訂單品項掛在團 % 的商品上，中止', v_cnt, v_no;
   END IF;
 
-  SELECT COUNT(*) INTO v_cnt FROM line_note_posts WHERE campaign_id = v_id;
+  SELECT COUNT(*) INTO v_cnt
+    FROM stock_movements
+   WHERE source_doc_type = 'campaign' AND source_doc_id = v_id;
   IF v_cnt > 0 THEN
-    RAISE EXCEPTION '團 % 在 LINE 記事本還有 % 篇貼文紀錄，先到開團的記事本彈窗把貼文刪掉再刪團',
+    RAISE EXCEPTION '團 % 身上掛著 % 筆庫存異動，中止', v_no, v_cnt;
+  END IF;
+
+  SELECT COUNT(*) INTO v_cnt
+    FROM line_note_posts
+   WHERE campaign_id = v_id AND line_post_id IS NOT NULL;
+  IF v_cnt > 0 THEN
+    RAISE EXCEPTION '團 % 有 % 篇記事本貼文後台刪得到（有 LINE 貼文 id），先到開團的記事本彈窗刪貼文再刪團',
                     v_no, v_cnt;
   END IF;
 
@@ -121,21 +143,14 @@ BEGIN
     END LOOP;
   END LOOP;
 
-  -- ── 刪除：走後台「刪除」同一支 RPC ─────────────────────────────────────
-  PERFORM set_config('request.jwt.claims',
-    json_build_object(
-      'tenant_id', v_tenant,
-      'role', 'authenticated',
-      'app_metadata', json_build_object('tenant_id', v_tenant, 'role', 'admin')
-    )::text,
-    true);
-  PERFORM public.rpc_delete_campaign(v_id, NULL::UUID);
-  PERFORM set_config('request.jwt.claims', '', true);
+  -- ── 刪除 ────────────────────────────────────────────────────────────────
+  -- campaign_items / channels / 記事本貼文（→ 留言）由 FK CASCADE 帶走
+  DELETE FROM group_buy_campaigns WHERE id = v_id AND tenant_id = v_tenant;
 
   IF EXISTS (SELECT 1 FROM group_buy_campaigns WHERE id = v_id) THEN
     RAISE EXCEPTION '刪除後團 % 還在，中止', v_no;
   END IF;
 
   SELECT COUNT(*) INTO v_cnt FROM public._backup_20260910_deleted_campaign_041;
-  RAISE NOTICE '完成：已刪除 %（id %），備份 % 列', v_no, v_id, v_cnt;
+  RAISE NOTICE '完成：已刪除 %（id %「測試」），備份 % 列', v_no, v_id, v_cnt;
 END $$;
