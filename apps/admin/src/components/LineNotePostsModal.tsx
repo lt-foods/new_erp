@@ -23,6 +23,7 @@ import { OrderDetail } from "@/components/OrderDetail";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import { withBasePath } from "@/lib/basePath";
+import { deleteLineNotePost } from "@/lib/lineNoteDelete";
 import { canOperateLineNotes, useRole } from "@/lib/role";
 import {
   COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, commentStats, fmtNoteTime, isTodoComment,
@@ -217,6 +218,22 @@ export default function LineNotePostsModal({
     setComments((m) => { const n = new Map(m); n.delete(t.post_id!); return n; });
     notify("已開始讀留言，幾秒後重新整理就看得到");
     setTimeout(() => { void load(true); }, 8000);
+  };
+
+  const removePost = async (t: Target) => {
+    if (!t.post_id) return;
+    setBusy(t.community_id);
+    const r = await deleteLineNotePost({
+      id: t.post_id, line_post_id: t.line_post_id,
+      label: `${campaignName ?? ""}｜${t.home_name || t.home_id}`,
+    });
+    setBusy(null);
+    if (r.kind === "cancelled") return;
+    if (r.kind === "failed") return fail(new Error(r.error));
+    if (openPost === t.post_id) setOpenPost(null);
+    setComments((m) => { const n = new Map(m); n.delete(t.post_id!); return n; });
+    notify(r.kind === "deleted" ? "已從 LINE 記事本刪除，這個群組可以重新發一次" : "已清掉後台紀錄（LINE 上那篇還在）");
+    await load(true);   // can_post 會從「已經發過了」變回可以發
   };
 
   const title = `LINE 記事本｜${campaignNo ? `${campaignNo} ` : ""}${campaignName ?? ""}`;
@@ -424,6 +441,11 @@ export default function LineNotePostsModal({
                           <a className={`${btn} ml-auto`} href={withBasePath("/line-notes")} target="_blank" rel="noreferrer">
                             到記事本頁處理留言
                           </a>
+                          <SpinButton className={`${btn} text-red-600`} loading={busy === t.community_id}
+                            onClick={() => void removePost(t)}
+                            title={t.line_post_id ? "連 LINE 記事本上那篇一起刪掉，刪完可以重發" : "只清後台紀錄（這篇沒發到 LINE）"}>
+                            {t.line_post_id ? "刪除貼文" : "刪除紀錄"}
+                          </SpinButton>
                         </div>
                         )}
 
