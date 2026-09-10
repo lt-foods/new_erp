@@ -366,10 +366,36 @@ async function discoverPosts(client: any, community: any) {
   const campaigns = await rest(`group_buy_campaigns?tenant_id=eq.${community.tenant_id}&status=in.(open,closed)&select=id,name,campaign_no,campaign_items(skus(product_name))&order=id.desc&limit=300`);
   let linked = 0;
   for (const n of notes) {
-    if (!n.postId || knownByLineId.has(String(n.postId))) continue;
+    if (!n.postId) continue;
     const text = String(n.text ?? "");
     const hit = matchCampaign(text, campaigns ?? []);
-    if (!hit) { log(`認不出貼文 ${n.postId}：${postTitle(text)}`); continue; }
+
+    const seen = knownByLineId.get(String(n.postId));
+    if (seen) {
+      // 已經認過的不用再看；還沒認出團的每次都再試一次（團可能後來才改名／才開）
+      if (seen.campaign_id || !hit) continue;
+      // 那一團已經有別的貼文了 → 這則是重複的，維持 unlinked 讓人自己處理
+      if ((known ?? []).some((p: any) => p.campaign_id === hit.id)) continue;
+      await patch("line_note_posts", `id=eq.${seen.id}`, { campaign_id: hit.id, status: "posted" });
+      linked++;
+      log(`🔗 補認到貼文 ${n.postId} → 團 ${hit.campaign_no} ${hit.name}`);
+      continue;
+    }
+
+    // 認不出來也要留一筆：舊行為是只印一行 log 就跳過，後台完全看不到這則存在，
+    // 店家只會發現「留言沒變成訂單」卻查不出為什麼（松山「雲林小農🍀阿土伯」那則，7 則留言）。
+    if (!hit) {
+      log(`認不出貼文 ${n.postId}：${postTitle(text)}`);
+      await rest("line_note_posts", {
+        method: "POST", prefer: "return=minimal",
+        body: {
+          tenant_id: community.tenant_id, community_id: community.id, campaign_id: null,
+          status: "unlinked", line_post_id: String(n.postId), text,
+          posted_at: n.createdAt ?? new Date().toISOString(),
+        },
+      }).catch((e) => log(`存未認出貼文失敗（略過）：${(e as any)?.message ?? e}`));
+      continue;
+    }
     const existing = (known ?? []).find((p: any) => p.campaign_id === hit.id);
     const row = { status: "posted", line_post_id: String(n.postId), text, posted_at: n.createdAt ?? new Date().toISOString(), last_error: null };
     if (existing) {
