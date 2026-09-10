@@ -60,6 +60,19 @@ export function canUnmergeMember(role: Role | null): boolean {
   return UNMERGE_ROLES.includes(role);
 }
 
+// LINE 記事本能不能「操作」（發文到社群 / 立即讀留言 / 刪貼文）。
+// ⚠ 這一組角色要跟 DB 的 _line_note_require_admin() 以及
+//   rpc_line_note_campaign_targets 裡的 v_may_post **完全一樣** ——
+//   前端寬了會出現「按下去回 insufficient_role」，前端嚴了會出現
+//   「明明有權限卻找不到按鈕」。分店角色（store_manager / store_staff）
+//   一律只能看歷史，發文由總部操作。
+const LINE_NOTE_OPERATE_ROLES: Role[] = ["owner", "admin", "hq_manager", "assistant", ""];
+
+export function canOperateLineNotes(role: Role | null): boolean {
+  if (role === null) return false;   // 還沒讀到 role 時當成不能操作，不要先閃一下再收回去
+  return LINE_NOTE_OPERATE_ROLES.includes(role);
+}
+
 /**
  * 這個帳號被指派到哪幾家店（app_metadata.stores，存的是**店名**）。
  * 非分店帳號通常沒有這個欄位 → 回空陣列。
