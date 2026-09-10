@@ -59,3 +59,11 @@ Deno.test("金額一律用零售價；沒設零售價（NULL / 0）才退回團�
   const single = renderPostText(payload({ name: "高麗菜", description: "高麗菜\n半顆($)(6)(9)" }, [{ code: "A", name: "半顆", unit_price: 60, retail_price: 69 }]));
   eq(single, `高麗菜\n\n半顆💲6️⃣9️⃣\n\n${HOWTO_SINGLE}\n#開團\n${tag}`, "單品去重也是拿零售價比");
 });
+
+Deno.test("{{deadline}} / {{end_at}} 印客人收單；沒設客人收單就印店家收單", () => {
+  const tpl = "{{name}}\n{{deadline}}\n{{end_at}}";
+  const both = renderPostText(payload({ name: "測試", description: "", customer_end_at: "2026-09-12T10:00:00Z" }, [{ code: "A", name: "x", unit_price: 1 }], tpl));
+  eq(both, `測試\n⏰ 9/12 18:00 結單\n9/12 18:00\n${tag}`, "客人收單優先");
+  const only = renderPostText(payload({ name: "測試", description: "" }, [{ code: "A", name: "x", unit_price: 1 }], tpl));
+  eq(only, `測試\n⏰ 9/13 23:59 結單\n9/13 23:59\n${tag}`, "退回店家收單");
+});

@@ -10,7 +10,7 @@
 // {{title}} / {{items}} / {{deadline}} / {{howto}} 是「聰明版」：文案自己已經寫過的就不再重複一次。
 // 從記事本匯進來的團，description 常常就是整篇貼文（標題＋(A)(B)品項＋⏰結單都在裡面），
 // 照樣接上去會變成品項印兩次、結單寫兩行。
-// {{name}} / {{end_at}} 維持原樣（照印），自訂模板的行為不變。
+// {{name}} 維持原樣（照印）；{{end_at}} / {{deadline}} 印的是客人看的結單時間（客人收單，沒設就是店家收單）。
 // {{tag}} 是團號章（🔖 團號 GRP-…）：爬回來的時候靠它精準認出是哪一團，不用猜團名。
 // 自訂模板沒寫 {{tag}} 也會被 withPostTag 補在文末 —— 章一定要有，不然這篇就只能靠猜。
 // ─────────────────────────────────────────────────────────────────────────────
@@ -47,6 +47,12 @@ function itemLabel(name: string, code: string, campaignName: string) {
   if (cn && t.startsWith(cn)) t = t.slice(cn.length).trim();
   t = t.replace(new RegExp(`^(?:[(（]${code}[)）]|${code}[.．、:：])\\s*`), "").trim();
   return t || String(name ?? "").trim();
+}
+
+function earliest(a: string | null | undefined, b: string | null | undefined): string | null {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  return new Date(a).getTime() <= new Date(b).getTime() ? a : b;
 }
 
 function fmtTaipei(iso: string | null | undefined) {
@@ -109,7 +115,10 @@ export function renderTemplate(template: string | null, payload: any) {
   const descHasItems = /(^|\n)\s*(?:[(（][A-Za-z][)）]|[A-Za-z][.．、:：])/.test(desc);
   const descHasThisPrice = single && postPrice(items[0]) != null && decoPricesIn(desc).includes(postPrice(items[0]));
   const descHasDeadline = /結單|收單|截單/.test(desc);
-  const deadline = c.end_at ? `⏰ ${fmtTaipei(c.end_at)} 結單` : "";
+  // 客人看的結單時間 = 客人收單（customer_end_at，20260910050000）跟店家收單取早的那個；
+  // 客人收單沒設就是店家收單。預設版型不印，自訂模板的 {{deadline}} / {{end_at}} 才會用到。
+  const closeAt = earliest(c.customer_end_at, c.end_at);
+  const deadline = closeAt ? `⏰ ${fmtTaipei(closeAt)} 結單` : "";
 
   const rendered = (template || DEFAULT_TEMPLATE)
     .replaceAll("{{tag}}", buildPostTag(c.campaign_no))
@@ -120,7 +129,7 @@ export function renderTemplate(template: string | null, payload: any) {
     .replaceAll("{{name}}", c.name ?? "")
     .replaceAll("{{campaign_no}}", c.campaign_no ?? "")
     .replaceAll("{{description}}", desc)
-    .replaceAll("{{end_at}}", fmtTaipei(c.end_at))
+    .replaceAll("{{end_at}}", fmtTaipei(closeAt))
     .replaceAll("{{start_at}}", fmtTaipei(c.start_at))
     .replaceAll("{{pickup_deadline}}", fmtTaipei(c.pickup_deadline))
     .replace(/\n{3,}/g, "\n\n")
