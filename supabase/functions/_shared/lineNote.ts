@@ -162,14 +162,16 @@ const routeCache = new Map();
  * `https://${client.request.endpoint}/…`，而 endpoint 預設是 legy.line-apps.com
  * （LEGY 加密閘道，不吃這種純 HTTPS JSON），直接丟 `fetch failed`。
  */
-export async function noteRequest(client, homeId, path, params, { method = "GET", body, verbose = false } = {}) {
+export async function noteRequest(client, homeId, path, params, { method = "GET", lhm, body, verbose = false } = {}) {
   const qs = new URLSearchParams(Object.fromEntries(Object.entries(params ?? {}).filter(([, v]) => v !== undefined && v !== null && v !== "")));
   const tryOne = async (host, prefix, channelId) => {
     const token = await channelToken(client, channelId, verbose);
     const url = `https://${host}${prefix}${path}?${qs}`;
     const res = await client.base.fetch(url, {
       method,
-      headers: { ...baseHeaders(client, token), "x-lhm": method },
+      // x-lhm 預設跟著 HTTP method，但不是每支都一樣 —— post/delete.json 是 POST 卻要送 GET
+      // （linejs 的 deletePost/getPost 都這樣，create 才是 POST）。要不一樣就用 lhm 指定。
+      headers: { ...baseHeaders(client, token), "x-lhm": lhm ?? method },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const text = await res.text();
@@ -352,6 +354,33 @@ export async function likeComment(client, homeId, commentId, { likeType = "1003"
     });
   if (!res || res.code !== 0) {
     throw new Error(`按表情失敗：code=${res?.code} ${res?.message ?? ""}`);
+  }
+  return res;
+}
+
+/**
+ * 刪掉記事本上的一篇貼文（社群成員就看不到了）。
+ * 端點與參數比照 linejs 的 timeline.deletePost：homeId / postId 走 query string、
+ * 沒有 body、而且 **x-lhm 要送 "GET"**（跟 create.json 不一樣）。
+ * 走跟讀貼文同一套 host/prefix/channel 探測，不用 linejs 那條寫死 legy 的路。
+ */
+export async function deleteNotePost(client, homeId, postId, { sourceType, verbose = false } = {}) {
+  if (!postId) throw new Error("沒有貼文 id，無法刪除");
+
+  // 先用唯讀的 list 把路由（host/prefix/channel）探出來並記住，delete 才不會拿**破壞性**的
+  // 請求去一組一組試。萬一某組真的刪掉了卻回非 0，探測會繼續往下試、最後回報失敗，
+  // 而貼文其實已經不見了 —— 那是最難查的一種狀況。（createNotePost 也是同樣的理由。）
+  try {
+    await noteGet(client, homeId, "/api/v57/post/list.json",
+      { homeId, sourceType: sourceType ?? "TALKROOM", likeLimit: "0", commentLimit: "0" }, verbose);
+  } catch (e) {
+    log(verbose, "探路用的 list 失敗（照樣試刪除）:", e?.message ?? e);
+  }
+
+  const res = await noteRequest(client, homeId, "/api/v57/post/delete.json",
+    { homeId, postId: String(postId) }, { method: "POST", lhm: "GET", verbose });
+  if (!res || res.code !== 0) {
+    throw new Error(`刪除貼文失敗：code=${res?.code} ${res?.message ?? ""}`);
   }
   return res;
 }

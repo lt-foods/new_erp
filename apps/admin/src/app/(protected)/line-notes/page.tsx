@@ -15,6 +15,7 @@ import { OrderDetail } from "@/components/OrderDetail";
 import {
   COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, commentStats, fmtNoteTime, isTodoComment,
 } from "@/lib/lineNoteStatus";
+import { deleteLineNotePost } from "@/lib/lineNoteDelete";
 
 type Account = {
   id: number; label: string; status: "logged_out" | "pending_qr" | "active" | "error";
@@ -999,15 +1000,19 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
     setTimeout(() => { void loadCounts(); }, 6000);   // worker 跑完大概這個時間，順手把統計刷新
   };
 
+  // 預設連 LINE 上那篇一起刪（貼錯團 / 貼錯價格時才救得回來）；
+  // 刪不掉會問要不要只清後台紀錄。流程在 @/lib/lineNoteDelete，跟開團彈窗共用。
   const removePost = async (p: Post) => {
-    const name = p.group_buy_campaigns?.name ?? `#${p.id}`;
-    if (!window.confirm(`刪除「${name}」這篇貼文的紀錄？\n\n只清掉記事本這邊的貼文與留言紀錄，已經加出來的訂單不會動（要退單請到訂單那邊）。`)) return;
     setBusy(p.id);
-    const { error } = await getSupabase().rpc("rpc_line_note_post_delete", { p_id: p.id });
+    const r = await deleteLineNotePost({
+      id: p.id, line_post_id: p.line_post_id,
+      label: p.group_buy_campaigns?.name ?? postFirstLine(p.text),
+    });
     setBusy(null);
-    if (error) return fail(error);
+    if (r.kind === "cancelled") return;
+    if (r.kind === "failed") return fail(new Error(r.error));
     if (open === p.id) setOpen(null);
-    notify("已刪除");
+    notify(r.kind === "deleted" ? "已從 LINE 記事本刪除，紀錄也清掉了" : "已清掉後台紀錄（LINE 上那篇還在）");
     await reload();
   };
 
@@ -1108,7 +1113,10 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
                     <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void reopenPost(p)}>恢復讀取</SpinButton>
                   )}
                   <SpinButton type="button" className={`${btn} ml-auto text-red-600`} loading={busy === p.id}
-                    onClick={() => void removePost(p)}>刪除</SpinButton>
+                    onClick={() => void removePost(p)}
+                    title={p.line_post_id ? "連 LINE 記事本上那篇一起刪掉" : "只清後台紀錄（這篇沒發到 LINE）"}>
+                    {p.line_post_id ? "刪除貼文" : "刪除紀錄"}
+                  </SpinButton>
                 </div>
 
                 {expanded && (
