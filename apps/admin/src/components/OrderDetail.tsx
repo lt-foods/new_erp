@@ -217,6 +217,14 @@ function staffLabel(uid: string | null, names: Map<string, string>): string {
   return names.get(uid) ?? uid.slice(0, 8);
 }
 
+// 品項的「誰加的 / 誰改的」：LINE 記事本機器人用 service_role 寫入，uid 是 NULL、
+// 品項 source 標 line_bot（20260909030000）。原本這種列只會印「—」，跟小幫手手動加的
+// 分不出來 —— 客人說「我只有 +1 怎麼變兩個」時，第一個要回答的就是這是人加的還是機器人加的。
+function byLabel(uid: string | null, source: string | null | undefined, names: Map<string, string>): string {
+  if (!uid && source === "line_bot") return "🤖 機器人（LINE 留言）";
+  return staffLabel(uid, names);
+}
+
 function fmtDt(iso: string): string {
   return new Date(iso).toLocaleString("zh-TW", { hour12: false });
 }
@@ -1625,11 +1633,11 @@ export function OrderDetail({
                     </td>
                     <td className="px-3 py-2 text-zinc-500">
                       {fmtDt(it.created_at)}<br />
-                      <span className="text-[10px]">by {staffLabel(it.created_by, staffNames)}</span>
+                      <span className="text-[10px]">by {byLabel(it.created_by, it.source, staffNames)}</span>
                     </td>
                     <td className="px-3 py-2 text-zinc-500">
                       {fmtDt(it.updated_at)}<br />
-                      <span className="text-[10px]">by {staffLabel(it.updated_by, staffNames)}</span>
+                      <span className="text-[10px]">by {byLabel(it.updated_by, it.source, staffNames)}</span>
                     </td>
                     {(canEditQty || canAssignStock) && (
                       <td className="px-3 py-2 text-right">
