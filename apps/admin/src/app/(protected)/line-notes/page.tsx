@@ -27,8 +27,8 @@ type Community = {
   last_read_at: string | null; last_error: string | null;
 };
 type Post = {
-  id: number; community_id: number; campaign_id: number; line_post_id: string | null; text: string | null;
-  status: "queued" | "posted" | "failed" | "closed"; posted_at: string | null; last_read_at: string | null;
+  id: number; community_id: number; campaign_id: number | null; line_post_id: string | null; text: string | null;
+  status: "queued" | "posted" | "failed" | "closed" | "unlinked"; posted_at: string | null; last_read_at: string | null;
   comment_count: number; last_error: string | null; created_at: string;
   closed_at: string | null; closed_reason: string | null; closed_comment_id: number | null;
   group_buy_campaigns: { id: number; campaign_no: string; name: string; status: string } | null;
@@ -49,7 +49,7 @@ type Campaign = { id: number; campaign_no: string; name: string; status: string 
 const ACCOUNT_STATUS: Record<Account["status"], string> = {
   logged_out: "未登入", pending_qr: "等待掃 QR", active: "已登入", error: "錯誤",
 };
-const POST_STATUS: Record<Post["status"], string> = { queued: "排隊中", posted: "已發文", failed: "失敗", closed: "已結束" };
+const POST_STATUS: Record<Post["status"], string> = { queued: "排隊中", posted: "已發文", failed: "失敗", closed: "已結束", unlinked: "未認出團" };
 const COMMENT_STATUS: Record<Comment["status"], string> = {
   pending: "待處理", ordered: "已加單", unmatched: "找不到會員", no_order: "非下單", error: "錯誤", ignored: "忽略", resolved: "已解決", duplicate: "已有訂單",
 };
@@ -818,6 +818,12 @@ function CommentsTab({ communityById, notify, fail }: {
   );
 }
 
+// 未認出團的貼文沒有團名可以顯示，退而用內文第一行當標題
+function postFirstLine(text: string | null) {
+  const line = String(text ?? "").split("\n").map((s) => s.trim()).find(Boolean);
+  return line ? (line.length > 40 ? `${line.slice(0, 40)}…` : line) : "（沒有內文）";
+}
+
 // ── 貼文：哪些團已經發到哪些社群；點一列展開看加了幾單 ─────────────────────
 function PostsTab({ posts, communityById, reload, notify, fail }: {
   posts: Post[] | null; communityById: Map<number, Community>; reload: () => Promise<void>; notify: (m: string) => void; fail: (e: unknown) => void;
@@ -831,6 +837,20 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
   // 每篇貼文的留言統計。收合時也要看得到，所以一次把清單上所有貼文的留言狀態撈回來自己數
   // （只取 post_id + status + member_no_hint 三欄，比逐篇展開才查省很多）。
   const [counts, setCounts] = useState<Map<number, PostStat>>(new Map());
+  const [q, setQ] = useState("");
+  const [linkFor, setLinkFor] = useState<Post | null>(null);
+
+  // 搜尋：團名 / 團號 / 社群名 / 貼文內文都吃。貼文多起來之後靠捲的找不到。
+  const shown = useMemo(() => {
+    const kw = q.trim().toLowerCase();
+    if (!kw || !posts) return posts ?? [];
+    return posts.filter((p) => {
+      const c = communityById.get(p.community_id);
+      return [p.group_buy_campaigns?.name, p.group_buy_campaigns?.campaign_no,
+              c?.home_name, c?.home_id, p.text]
+        .some((v) => (v ?? "").toLowerCase().includes(kw));
+    });
+  }, [posts, q, communityById]);
 
   const loadCounts = useCallback(async () => {
     const ids = (posts ?? []).map((p) => p.id);
@@ -910,7 +930,7 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
 
   // 收合時顯示的統計徽章
   const statBadges = (st: PostStat | undefined) => {
-    if (!st || st.total === 0) return <span className="text-xs text-zinc-400">—</span>;
+    if (!st || st.total === 0) return null;   // 卡片上留空就好，不要多一條「—」
     return (
       <div className="flex flex-wrap items-center gap-1">
         {st.ordered > 0 && <Badge tone="green">已加單 {st.ordered}</Badge>}
@@ -923,95 +943,176 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-zinc-500">開團自動發的、和小幫手手貼後被系統認出來的貼文。點一列展開看每則留言。</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <input className={`${input} min-w-0 flex-1 sm:max-w-md`} value={q} onChange={(e) => setQ(e.target.value)}
+          placeholder="搜尋團名 / 團號 / 社群 / 貼文內容" />
         <button type="button" className={btn} onClick={() => void reload()}>重新整理</button>
       </div>
-      <Table>
-        <THead><Th></Th><Th>團</Th><Th>發文</Th><Th>加單結果</Th><Th>最後讀取</Th><Th align="right">留言</Th><Th align="right"></Th></THead>
-        <TBody>
-          {posts === null ? <LoadingRow colSpan={8} /> : posts.length === 0 ? <EmptyRow colSpan={7}>還沒有貼文</EmptyRow> : posts.flatMap((p) => {
+      <p className="text-sm text-zinc-500">
+        開團自動發的、和小幫手手貼後被系統認出來的貼文。點一則展開看每則留言。
+        認不出是哪一團的會標<b>「未認出團」</b>，指定團之後才會開始讀留言加單。
+      </p>
+
+      {posts === null ? <div className="py-8 text-center text-sm text-zinc-400">讀取中…</div>
+        : shown.length === 0 ? (
+          <div className="py-8 text-center text-sm text-zinc-400">{q ? "沒有符合的貼文" : "還沒有貼文"}</div>
+        ) : (
+        <ul className="space-y-2">
+          {shown.map((p) => {
             const c = communityById.get(p.community_id);
             const cs = p.group_buy_campaigns?.status;
             const expanded = open === p.id;
             const cmts = detail.get(p.id);
-            const rows = [
-              <Tr key={p.id} onClick={() => void toggle(p)} className={expanded ? "bg-sky-50 dark:bg-sky-950/30" : ""}>
-                <Td className="w-8 text-zinc-400">{expanded ? "▾" : "▸"}</Td>
-                <Td className="min-w-[16rem]">
-                  <div className="font-medium">{p.group_buy_campaigns?.name ?? p.campaign_id}</div>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-zinc-500">
-                    {cs && <span className={`rounded px-1.5 py-0.5 ${campaignStatusBadge(cs)}`}>{campaignStatusLabel(cs)}</span>}
-                    <span className="font-mono">{p.group_buy_campaigns?.campaign_no}</span>
-                    <span>{c?.home_name || c?.home_id || p.community_id}</span>
-                  </div>
-                </Td>
-                <Td className="whitespace-nowrap">
-                  <Badge tone={p.status === "posted" ? "green" : p.status === "queued" ? "amber" : p.status === "failed" ? "red" : "gray"}>{POST_STATUS[p.status]}</Badge>
-                  <div className="mt-0.5 text-xs text-zinc-500">{fmt(p.posted_at)}</div>
-                  {p.closed_reason && (
-                    <div className="mt-1 max-w-[14rem] truncate text-xs text-zinc-500" title={p.closed_reason}>
-                      讀到結單留言：{p.closed_reason}
+            const st = counts.get(p.id);
+            const unlinked = !p.campaign_id;
+            const title = p.group_buy_campaigns?.name ?? (unlinked ? postFirstLine(p.text) : `#${p.id}`);
+            return (
+              <li key={p.id} className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+                {/* 標題列：整塊可點，手機上一樣好按 */}
+                <button type="button" onClick={() => void toggle(p)}
+                  className="flex w-full items-start gap-2 p-3 text-left hover:bg-zinc-50 dark:hover:bg-zinc-800/50">
+                  <span className="mt-0.5 shrink-0 text-zinc-400">{expanded ? "▾" : "▸"}</span>
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="min-w-0 flex-1 font-medium leading-snug">{title}</span>
+                      <span className="shrink-0 text-xs tabular-nums text-zinc-500">{st?.total ?? p.comment_count} 則留言</span>
                     </div>
-                  )}
-                  {p.last_error && <div className="mt-1 max-w-[14rem] truncate text-xs text-red-600" title={p.last_error}>{p.last_error}</div>}
-                </Td>
-                <Td>{statBadges(counts.get(p.id))}</Td>
-                <Td className="whitespace-nowrap">{fmt(p.last_read_at)}</Td>
-                <Td align="right" className="tabular-nums">{counts.get(p.id)?.total ?? p.comment_count}</Td>
-                <Td align="right">
-                  <div className="flex justify-end gap-1">
-                    {p.status === "posted" && (
-                      <SpinButton type="button" className={btn} loading={busy === p.id}
-                        onClick={(e) => { e.stopPropagation(); void readNow(p); }}>立即讀取</SpinButton>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-500">
+                      {unlinked
+                        ? <Badge tone="amber">未認出團</Badge>
+                        : <>
+                            {cs && <span className={`rounded px-1.5 py-0.5 ${campaignStatusBadge(cs)}`}>{campaignStatusLabel(cs)}</span>}
+                            <span className="font-mono">{p.group_buy_campaigns?.campaign_no}</span>
+                          </>}
+                      {p.status !== "posted" && !unlinked && <Badge tone={p.status === "failed" ? "red" : "gray"}>{POST_STATUS[p.status]}</Badge>}
+                      <span className="truncate">{c?.home_name || c?.home_id || `社群 #${p.community_id}`}</span>
+                      <span>發文 {fmt(p.posted_at)}</span>
+                      {p.last_read_at && <span>讀取 {fmt(p.last_read_at)}</span>}
+                    </div>
+                    {statBadges(st)}
+                    {p.closed_reason && (
+                      <div className="text-xs text-zinc-500">讀到結單留言：{p.closed_reason}</div>
                     )}
-                    {p.status === "closed" && p.closed_comment_id && (
-                      <SpinButton type="button" className={btn} loading={busy === p.id}
-                        onClick={(e) => { e.stopPropagation(); void reopenPost(p); }}>恢復讀取</SpinButton>
-                    )}
-                    <SpinButton type="button" className={`${btn} text-red-600`} loading={busy === p.id}
-                      onClick={(e) => { e.stopPropagation(); void removePost(p); }}>刪除</SpinButton>
+                    {p.last_error && <div className="text-xs text-red-600">{p.last_error}</div>}
                   </div>
-                </Td>
-              </Tr>,
-            ];
-            if (expanded) {
-              rows.push(
-                <tr key={`${p.id}-d`} className="bg-zinc-50 dark:bg-zinc-900/50">
-                  <td colSpan={7} className="px-4 py-3">
-                    {loadingId === p.id ? <div className="text-sm text-zinc-400">讀取中…</div> : !cmts ? null : (
-                      <div className="space-y-2">
-                        {cmts.length === 0 ? <div className="text-sm text-zinc-400">還沒讀到留言</div> : (
-                          <ul className="divide-y divide-zinc-200 rounded border border-zinc-200 bg-white dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-900">
-                            {cmts.map((cm) => (
-                              <li key={cm.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
-                                <span className="w-24 shrink-0 text-xs text-zinc-500">{fmt(cm.commented_at)}</span>
-                                <span className="w-40 shrink-0 truncate font-medium">{cm.commenter_name ?? "—"}</span>
-                                <span className="min-w-0 flex-1 truncate">{cm.text}</span>
-                                {cm.customer_order_id && orderNos.has(cm.customer_order_id) && (
-                                  <OrderLink id={cm.customer_order_id} no={orderNos.get(cm.customer_order_id)!} />
-                                )}
-                                <Badge tone={cm.status === "ordered" || cm.status === "resolved" ? "green"
-                                  : cm.status === "duplicate" ? "blue"
-                                  : cm.status === "pending" ? "amber"
-                                  : cm.status === "unmatched" || cm.status === "error" ? "red" : "gray"}>
-                                  {COMMENT_STATUS[cm.status]}
-                                </Badge>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
+                </button>
+
+                {/* 動作列：手機上自己一行，按鈕才夠大 */}
+                <div className="flex flex-wrap gap-1.5 border-t border-zinc-100 px-3 py-2 dark:border-zinc-800">
+                  {unlinked && (
+                    <button type="button" className={btnPrimary} onClick={() => setLinkFor(p)}>指定團</button>
+                  )}
+                  {p.status === "posted" && (
+                    <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void readNow(p)}>立即讀取</SpinButton>
+                  )}
+                  {p.status === "closed" && p.closed_comment_id && (
+                    <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void reopenPost(p)}>恢復讀取</SpinButton>
+                  )}
+                  <SpinButton type="button" className={`${btn} ml-auto text-red-600`} loading={busy === p.id}
+                    onClick={() => void removePost(p)}>刪除</SpinButton>
+                </div>
+
+                {expanded && (
+                  <div className="border-t border-zinc-100 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/50">
+                    {loadingId === p.id ? <div className="text-sm text-zinc-400">讀取中…</div> : !cmts ? null
+                      : cmts.length === 0 ? <div className="text-sm text-zinc-400">還沒讀到留言</div> : (
+                      <ul className="divide-y divide-zinc-200 rounded border border-zinc-200 bg-white dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-900">
+                        {cmts.map((cm) => (
+                          <li key={cm.id} className="px-3 py-2 text-sm">
+                            {/* 手機：留言人 + 狀態一行，內容一行；桌機自然排成一列 */}
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                              <span className="font-medium">{cm.commenter_name ?? "—"}</span>
+                              <span className="text-xs text-zinc-500">{fmt(cm.commented_at)}</span>
+                              {cm.customer_order_id && orderNos.has(cm.customer_order_id) && (
+                                <OrderLink id={cm.customer_order_id} no={orderNos.get(cm.customer_order_id)!} />
+                              )}
+                              <Badge tone={cm.status === "ordered" || cm.status === "resolved" ? "green"
+                                : cm.status === "duplicate" ? "blue"
+                                : cm.status === "pending" ? "amber"
+                                : cm.status === "unmatched" || cm.status === "error" ? "red" : "gray"}>
+                                {COMMENT_STATUS[cm.status]}
+                              </Badge>
+                            </div>
+                            <div className="mt-0.5 whitespace-pre-wrap break-words text-zinc-700 dark:text-zinc-300">{cm.text}</div>
+                          </li>
+                        ))}
+                      </ul>
                     )}
-                  </td>
-                </tr>,
-              );
-            }
-            return rows;
+                  </div>
+                )}
+              </li>
+            );
           })}
-        </TBody>
-      </Table>
+        </ul>
+      )}
+
+      {linkFor && (
+        <LinkCampaignModal post={linkFor} onClose={() => setLinkFor(null)}
+          onDone={async () => { setLinkFor(null); notify("已指定，按「立即讀取」就會開始加單"); await reload(); }}
+          fail={fail} />
+      )}
     </div>
+  );
+}
+
+// ── 指定團：認不出來的貼文由小幫手自己選是哪一團 ────────────────────────────
+type CampaignPick = { id: number; campaign_no: string; name: string; status: string };
+
+function LinkCampaignModal({ post, onClose, onDone, fail }: {
+  post: Post; onClose: () => void; onDone: () => Promise<void>; fail: (e: unknown) => void;
+}) {
+  const [kw, setKw] = useState("");
+  const [rows, setRows] = useState<CampaignPick[] | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let dead = false;
+    const t = setTimeout(async () => {
+      const k = kw.trim();
+      let query = getSupabase().from("group_buy_campaigns")
+        .select("id,campaign_no,name,status").in("status", ["open", "closed"])
+        .order("id", { ascending: false }).limit(30);
+      if (k) query = query.or(`name.ilike.%${k}%,campaign_no.ilike.%${k}%`);
+      const { data } = await query;
+      if (!dead) setRows((data ?? []) as CampaignPick[]);
+    }, 250);
+    return () => { dead = true; clearTimeout(t); };
+  }, [kw]);
+
+  const pick = async (id: number) => {
+    setBusy(true);
+    const { error } = await getSupabase().rpc("rpc_line_note_post_link", { p_id: post.id, p_campaign_id: id });
+    setBusy(false);
+    if (error) return fail(error);
+    await onDone();
+  };
+
+  return (
+    <Modal title="這則貼文是哪一團？" onClose={onClose}>
+      <div className="space-y-3">
+        <div className="max-h-32 overflow-auto whitespace-pre-wrap rounded border border-zinc-200 bg-zinc-50 p-2 text-sm dark:border-zinc-800 dark:bg-zinc-900">
+          {post.text || "（沒有內文）"}
+        </div>
+        <input className={input} value={kw} onChange={(e) => setKw(e.target.value)} placeholder="搜尋團名或團號" autoFocus />
+        {rows === null ? <div className="text-sm text-zinc-400">讀取中…</div>
+          : rows.length === 0 ? <div className="text-sm text-zinc-400">沒有符合的團（只找開團中／已結單的）</div> : (
+          <ul className="max-h-72 divide-y divide-zinc-200 overflow-auto rounded border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+            {rows.map((r) => (
+              <li key={r.id}>
+                <button type="button" disabled={busy} onClick={() => void pick(r.id)}
+                  className="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left text-sm hover:bg-zinc-50 disabled:opacity-50 dark:hover:bg-zinc-800">
+                  <span className="font-medium">{r.name}</span>
+                  <span className="flex items-center gap-2 text-xs text-zinc-500">
+                    <span className={`rounded px-1.5 py-0.5 ${campaignStatusBadge(r.status)}`}>{campaignStatusLabel(r.status)}</span>
+                    <span className="font-mono">{r.campaign_no}</span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Modal>
   );
 }
 
