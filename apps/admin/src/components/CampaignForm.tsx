@@ -22,7 +22,10 @@ export type CampaignFormValues = {
   close_type: CloseType;
   sales_channel: SalesChannel;
   start_at: string | null;
+  /** 店家收單（最後收單時間；到了自動結團） */
   end_at: string | null;
+  /** 客人收單（商城關閉、LINE 貼文結單）；null = 跟店家收單同時 */
+  customer_end_at: string | null;
   pickup_deadline: string | null;
   pickup_days: number | null;
   total_cap_qty: number | null;
@@ -42,6 +45,7 @@ export const emptyCampaignValues: CampaignFormValues = {
   sales_channel: "main",
   start_at: null,
   end_at: null,
+  customer_end_at: null,
   pickup_deadline: null,
   pickup_days: null,
   total_cap_qty: null,
@@ -96,7 +100,10 @@ export function CampaignForm({
     try {
       // 快團一定要有 end_at,否則 PWA /shop/flash 顯示不出來
       if (v.close_type === "fast" && !v.end_at) {
-        throw new Error("快團必須設定「收單時間」(在下方欄位輸入)");
+        throw new Error("快團必須設定「店家收單時間」(在下方欄位輸入)");
+      }
+      if (v.customer_end_at && v.end_at && new Date(v.customer_end_at) > new Date(v.end_at)) {
+        throw new Error("客人收單不能晚於店家收單");
       }
 
       // 開團驗證：status='open' 時、所有關聯商品需為 'active'（不可有 draft 商品）
@@ -135,6 +142,7 @@ export function CampaignForm({
         p_close_type: v.close_type,
         p_start_at: v.start_at,
         p_end_at: v.end_at,
+        p_customer_end_at: v.customer_end_at,
         p_pickup_deadline: v.pickup_deadline,
         p_pickup_days: v.pickup_days,
         p_total_cap_qty: v.total_cap_qty,
@@ -243,11 +251,12 @@ export function CampaignForm({
           )}
         </Field>
         <Field
-          label={v.close_type === "fast" ? "開團期間（開團 → 收單，快團必填收單）" : "開團期間（開團 → 收單）"}
+          label={v.close_type === "fast" ? "開團期間（開團 → 客人收單 → 店家收單，快團必填店家收單）" : "開團期間（開團 → 客人收單 → 店家收單）"}
           className="sm:col-span-2"
         >
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
             <div className="flex flex-1 flex-col gap-1">
+              <span className="text-[11px] text-zinc-400">開團</span>
               <input
                 type="datetime-local"
                 value={toDtLocal(v.start_at)}
@@ -258,6 +267,9 @@ export function CampaignForm({
                     if (startIso && prev.end_at && new Date(prev.end_at) <= new Date(startIso)) {
                       next.end_at = null;
                     }
+                    if (startIso && prev.customer_end_at && new Date(prev.customer_end_at) <= new Date(startIso)) {
+                      next.customer_end_at = null;
+                    }
                     return next;
                   });
                 }}
@@ -266,16 +278,32 @@ export function CampaignForm({
               />
               <TimeSnapRow field="start_at" setV={setV} />
             </div>
-            <span className="text-center text-xs text-zinc-400 sm:px-1 sm:pt-2">→</span>
+            <span className="text-center text-xs text-zinc-400 sm:px-1 sm:pt-7">→</span>
             <div className="flex flex-1 flex-col gap-1">
+              {/* 客人收單：商城對客人關閉、LINE 貼文寫的結單時間。留空 = 跟店家收單同時。 */}
+              <span className="text-[11px] text-zinc-400">客人收單（商城關閉、貼文結單；留空＝同店家收單）</span>
+              <input
+                type="datetime-local"
+                value={toDtLocal(v.customer_end_at)}
+                min={toDtLocal(v.start_at) || undefined}
+                max={toDtLocal(v.end_at) || undefined}
+                onChange={(e) => update("customer_end_at", e.target.value ? new Date(e.target.value).toISOString() : null)}
+                className={inputCls}
+                aria-label="客人收單時間"
+              />
+              <TimeSnapRow field="customer_end_at" setV={setV} />
+            </div>
+            <span className="text-center text-xs text-zinc-400 sm:px-1 sm:pt-7">→</span>
+            <div className="flex flex-1 flex-col gap-1">
+              <span className="text-[11px] text-zinc-400">店家收單（最後收單，到了自動結團）</span>
               <input
                 type="datetime-local"
                 required={v.close_type === "fast"}
                 value={toDtLocal(v.end_at)}
-                min={toDtLocal(v.start_at) || undefined}
+                min={toDtLocal(v.customer_end_at) || toDtLocal(v.start_at) || undefined}
                 onChange={(e) => update("end_at", e.target.value ? new Date(e.target.value).toISOString() : null)}
                 className={inputCls}
-                aria-label="收單時間"
+                aria-label="店家收單時間"
               />
               <TimeSnapRow field="end_at" setV={setV} />
             </div>
@@ -374,7 +402,7 @@ const TIME_PRESETS: { label: string; hh: number; mm: number }[] = [
 
 function snapTime(
   setV: React.Dispatch<React.SetStateAction<CampaignFormValues>>,
-  field: "start_at" | "end_at",
+  field: "start_at" | "end_at" | "customer_end_at",
   hh: number,
   mm: number,
 ) {
@@ -386,6 +414,9 @@ function snapTime(
     if (field === "start_at" && prev.end_at && new Date(prev.end_at) <= new Date(iso)) {
       next.end_at = null;
     }
+    if (field === "start_at" && prev.customer_end_at && new Date(prev.customer_end_at) <= new Date(iso)) {
+      next.customer_end_at = null;
+    }
     return next;
   });
 }
@@ -394,7 +425,7 @@ function TimeSnapRow({
   field,
   setV,
 }: {
-  field: "start_at" | "end_at";
+  field: "start_at" | "end_at" | "customer_end_at";
   setV: React.Dispatch<React.SetStateAction<CampaignFormValues>>;
 }) {
   return (
@@ -449,7 +480,8 @@ function applyQuickRange(
     start.setHours(start.getHours() + startOffsetH);
   }
   const end = new Date(start.getTime() + durationH * 3600 * 1000);
-  setV((prev) => ({ ...prev, start_at: start.toISOString(), end_at: end.toISOString() }));
+  // 快速鍵重設整段期間；客人收單回到「同店家收單」，要分開再自己填
+  setV((prev) => ({ ...prev, start_at: start.toISOString(), end_at: end.toISOString(), customer_end_at: null }));
 }
 
 function formatDuration(startIso: string, endIso: string): string {
