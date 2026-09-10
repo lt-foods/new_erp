@@ -7,30 +7,29 @@ const HOWTO_MULTI = "📝 留言「品項代碼＋數量」，例：A+1 B+2";
 const HOWTO_SINGLE = "📝 留言「數量」，例：+1";
 const tag = "🔖 團號 GRP-1";
 const DL = "⏰ 9/13 23:59 結單";   // payload 預設 end_at = 2026-09-13T15:59Z（台北 23:59）
-const FINAL = "⏰ 最後收單 9/13 23:59";   // 預設版型最後一行：店家收單
 const payload = (campaign: Record<string, unknown>, items: Record<string, unknown>[], post_template: string | null = null) =>
   ({ post_template, campaign: { campaign_no: "GRP-1", end_at: "2026-09-13T15:59:00Z", ...campaign }, items });
 
 Deno.test("預設版型：先團名、再金額、再結單時間、再文案；單品不印品名", () => {
   const text = renderPostText(payload({ name: "梨山高麗菜", description: "包子媽朋友自己種的" }, [{ code: "A", name: "梨山高麗菜 (A) 半顆", unit_price: 69 }]));
-  eq(text, `梨山高麗菜\n\n💰6️⃣9️⃣ 元\n\n${DL}\n\n包子媽朋友自己種的\n\n${HOWTO_SINGLE}\n${FINAL}\n#開團\n${tag}`, "單品");
+  eq(text, `梨山高麗菜\n\n💰6️⃣9️⃣ 元\n\n${DL}\n\n包子媽朋友自己種的\n\n${HOWTO_SINGLE}\n#開團\n${tag}`, "單品");
 });
 
 Deno.test("多品項才列 (A) 品名 ＋ 同一行金額，教學帶代碼", () => {
   const text = renderPostText(payload({ name: "所長茶葉蛋", description: "超入味" },
     [{ code: "A", name: "所長茶葉蛋 (A) 原味", unit_price: 195 }, { code: "B", name: "所長茶葉蛋 (B) 辣味", unit_price: 205 }]));
-  eq(text, `所長茶葉蛋\n\n(A) 原味 1️⃣9️⃣5️⃣ 元\n(B) 辣味 2️⃣0️⃣5️⃣ 元\n\n${DL}\n\n超入味\n\n${HOWTO_MULTI}\n${FINAL}\n#開團\n${tag}`, "多品項");
+  eq(text, `所長茶葉蛋\n\n(A) 原味 1️⃣9️⃣5️⃣ 元\n(B) 辣味 2️⃣0️⃣5️⃣ 元\n\n${DL}\n\n超入味\n\n${HOWTO_MULTI}\n#開團\n${tag}`, "多品項");
 });
 
-Deno.test("文案第一行就是團名 → 搬到最上面當標題（留住表情符號），不印兩次", () => {
+Deno.test("文案第一行就是團名 → 拿掉那一行，標題一律印團名", () => {
   const text = renderPostText(payload({ name: "所長茶葉蛋", description: "<p>⭐️ <strong>所長茶葉蛋</strong></p><p>超入味</p>" },
     [{ code: "A", name: "原味", unit_price: 195 }]));
-  eq(text, `⭐️ 所長茶葉蛋\n\n💰1️⃣9️⃣5️⃣ 元\n\n${DL}\n\n超入味\n\n${HOWTO_SINGLE}\n${FINAL}\n#開團\n${tag}`, "標題搬上去、HTML 也轉好");
+  eq(text, `所長茶葉蛋\n\n💰1️⃣9️⃣5️⃣ 元\n\n${DL}\n\n超入味\n\n${HOWTO_SINGLE}\n#開團\n${tag}`, "標題印團名、HTML 也轉好");
 });
 
 Deno.test("記事本匯進來的單品文案已經寫了同一個金額 → 不再多印一行", () => {
   const text = renderPostText(payload({ name: "梨山高麗菜", description: "梨山高麗菜\n半顆($)(6)(9)\n(emoji)9/9到貨" }, [{ code: "A", name: "半顆", unit_price: 69 }]));
-  eq(text, `梨山高麗菜\n\n${DL}\n\n半顆💲6️⃣9️⃣\n9/9到貨\n\n${HOWTO_SINGLE}\n${FINAL}\n#開團\n${tag}`, "金額只出現一次（行內金額不另外空行）");
+  eq(text, `梨山高麗菜\n\n半顆💲6️⃣9️⃣\n\n${DL}\n\n9/9到貨\n\n${HOWTO_SINGLE}\n#開團\n${tag}`, "金額只出現一次、結單插在金額後面");
   const diff = renderPostText(payload({ name: "梨山高麗菜", description: "梨山高麗菜\n半顆($)(6)(9)" }, [{ code: "A", name: "半顆", unit_price: 75 }]));
   eq(diff.includes("💰7️⃣5️⃣ 元") && diff.includes("半顆💲6️⃣9️⃣"), true, "金額不一樣就兩個都印，讓人看得出來要改");
 });
@@ -38,7 +37,7 @@ Deno.test("記事本匯進來的單品文案已經寫了同一個金額 → 不�
 Deno.test("文案自己列了 (A)(B) 品項 → 商品段留空；記事本「價格在下一行」的寫法併成同一行", () => {
   const text = renderPostText(payload({ name: "阿土伯", description: "阿土伯\n(A)空心菜\n($)(3)(5)\n(B)小白菜\n($)(3)(5)" },
     [{ code: "A", name: "空心菜", unit_price: 35 }, { code: "B", name: "小白菜", unit_price: 35 }]));
-  eq(text, `阿土伯\n\n${DL}\n\n(A)空心菜 3️⃣5️⃣ 元\n(B)小白菜 3️⃣5️⃣ 元\n\n${HOWTO_MULTI}\n${FINAL}\n#開團\n${tag}`, "不重複列品項、併成一行");
+  eq(text, `阿土伯\n\n(A)空心菜 3️⃣5️⃣ 元\n(B)小白菜 3️⃣5️⃣ 元\n\n${DL}\n\n${HOWTO_MULTI}\n#開團\n${tag}`, "不重複列品項、併成一行、結單接在品項後面");
   const diff = renderPostText(payload({ name: "阿土伯", description: "阿土伯\n(A)空心菜\n($)(3)(0)\n(B)小白菜\n($)(3)(5)" },
     [{ code: "A", name: "空心菜", unit_price: 35 }, { code: "B", name: "小白菜", unit_price: 35 }]));
   eq(diff.includes("(A)空心菜\n💲3️⃣0️⃣\n(B)小白菜 3️⃣5️⃣ 元"), true, "小幫手寫的價格跟零售價不一樣 → 那一組兩行都不動、也不拆開");
@@ -52,7 +51,7 @@ Deno.test("自訂模板：{{deadline}} / {{end_at}} 照舊可用，沒寫 {{tag}
 Deno.test("文案用 A. B. 列品項（品名裡也帶 A.）→ 商品段留空，💰 價格照樣凸顯；口號在前、品名在第二行也認得出標題", () => {
   const text = renderPostText(payload({ name: "所長茶葉蛋", description: "<p>買一送一！</p><p>⭐️ <strong>所長茶葉蛋</strong></p><p>A. 經典原味 💰195<br>B. 麻香辣味 💰205</p>" },
     [{ code: "A", name: "A. 經典原味", unit_price: 195 }, { code: "B", name: "B. 麻香辣味", unit_price: 205 }]));
-  eq(text, `⭐️ 所長茶葉蛋\n\n${DL}\n\n買一送一！\nA. 經典原味 💰1️⃣9️⃣5️⃣\nB. 麻香辣味 💰2️⃣0️⃣5️⃣\n\n${HOWTO_MULTI}\n${FINAL}\n#開團\n${tag}`, "A. 列表");
+  eq(text, `所長茶葉蛋\n\n買一送一！\nA. 經典原味 💰1️⃣9️⃣5️⃣\nB. 麻香辣味 💰2️⃣0️⃣5️⃣\n\n${DL}\n\n${HOWTO_MULTI}\n#開團\n${tag}`, "A. 列表，結單接在後面");
   const own = renderPostText(payload({ name: "所長茶葉蛋", description: "超入味" }, [{ code: "A", name: "A. 經典原味", unit_price: 195 }, { code: "B", name: "B. 麻香辣味", unit_price: 205 }]));
   eq(own.includes("(A) 經典原味 1️⃣9️⃣5️⃣ 元\n(B) 麻香辣味 2️⃣0️⃣5️⃣ 元"), true, "品名裡的 A. 不印兩次");
 });
@@ -62,38 +61,38 @@ Deno.test("金額一律用零售價；沒設零售價（NULL / 0）才退回團�
     [{ code: "A", name: "蝦餃", unit_price: 168, retail_price: 249 }, { code: "B", name: "燒賣", unit_price: 69, retail_price: 0 }, { code: "C", name: "腸粉", unit_price: 88 }]));
   eq(text.includes("(A) 蝦餃 2️⃣4️⃣9️⃣ 元\n(B) 燒賣 6️⃣9️⃣ 元\n(C) 腸粉 8️⃣8️⃣ 元"), true, "零售價優先");
   const single = renderPostText(payload({ name: "高麗菜", description: "高麗菜\n半顆($)(6)(9)" }, [{ code: "A", name: "半顆", unit_price: 60, retail_price: 69 }]));
-  eq(single, `高麗菜\n\n${DL}\n\n半顆💲6️⃣9️⃣\n\n${HOWTO_SINGLE}\n${FINAL}\n#開團\n${tag}`, "單品去重也是拿零售價比");
+  eq(single, `高麗菜\n\n半顆💲6️⃣9️⃣\n\n${DL}\n\n${HOWTO_SINGLE}\n#開團\n${tag}`, "單品去重也是拿零售價比");
 });
 
-Deno.test("{{deadline}} 印客人收單（沒設就是店家收單）；{{end_at}} 一律店家收單", () => {
+Deno.test("{{deadline}} / {{end_at}} 印客人收單；沒設客人收單就印店家收單", () => {
   const tpl = "{{name}}\n{{deadline}}\n{{end_at}}";
   const both = renderPostText(payload({ name: "測試", description: "", customer_end_at: "2026-09-12T10:00:00Z" }, [{ code: "A", name: "x", unit_price: 1 }], tpl));
-  eq(both, `測試\n⏰ 9/12 18:00 結單\n9/13 23:59\n${tag}`, "{{deadline}} 客人收單、{{end_at}} 店家收單");
+  eq(both, `測試\n⏰ 9/12 18:00 結單\n9/12 18:00\n${tag}`, "客人收單優先");
   const only = renderPostText(payload({ name: "測試", description: "" }, [{ code: "A", name: "x", unit_price: 1 }], tpl));
   eq(only, `測試\n⏰ 9/13 23:59 結單\n9/13 23:59\n${tag}`, "退回店家收單");
 });
 
-Deno.test("預設版型的結單時間印客人收單；文案自己寫了結單就不重複", () => {
+Deno.test("預設版型的結單時間印客人收單；文案自己寫的「⏰9/12結單」換成系統的", () => {
   const cust = renderPostText(payload({ name: "測試", description: "好吃", customer_end_at: "2026-09-12T10:00:00Z" }, [{ code: "A", name: "x", unit_price: 50 }]));
-  eq(cust, `測試\n\n💰5️⃣0️⃣ 元\n\n⏰ 9/12 18:00 結單\n\n好吃\n\n${HOWTO_SINGLE}\n${FINAL}\n#開團\n${tag}`, "客人收單");
+  eq(cust, `測試\n\n💰5️⃣0️⃣ 元\n\n⏰ 9/12 18:00 結單\n\n好吃\n\n${HOWTO_SINGLE}\n#開團\n${tag}`, "客人收單");
   const own = renderPostText(payload({ name: "測試", description: "⏰9/12結單\n好吃" }, [{ code: "A", name: "x", unit_price: 50 }]));
-  eq(own, `測試\n\n💰5️⃣0️⃣ 元\n\n⏰9/12結單\n好吃\n\n${HOWTO_SINGLE}\n${FINAL}\n#開團\n${tag}`, "文案有結單就不印");
+  eq(own, `測試\n\n💰5️⃣0️⃣ 元\n\n${DL}\n\n好吃\n\n${HOWTO_SINGLE}\n#開團\n${tag}`, "小幫手寫的結單行拿掉、印系統的");
 });
 
 Deno.test("文案列了 (A)(B) 但沒寫價格 → 金額接在同一行，整行只有金額的「💰一袋189元」拿掉", () => {
   const text = renderPostText(payload({ name: "杰哥爆餡韭菜盒 675g", description: "🔥囤起來\n【杰哥爆餡盒子】\n💰一袋189元\n\n(A) 韭菜盒\n(B) 高麗菜盒（全素🌱）\n\n⏰9/14結單\n口味：(A)韭菜盒／(B)高麗菜盒" },
     [{ code: "A", name: "韭菜盒", unit_price: 189, retail_price: 189 }, { code: "B", name: "高麗菜盒", unit_price: 189, retail_price: 189 }]));
-  eq(text, `杰哥爆餡韭菜盒 675g\n\n🔥囤起來\n【杰哥爆餡盒子】\n\n(A) 韭菜盒 1️⃣8️⃣9️⃣ 元\n(B) 高麗菜盒（全素🌱） 1️⃣8️⃣9️⃣ 元\n\n⏰9/14結單\n口味：(A)韭菜盒／(B)高麗菜盒\n\n${HOWTO_MULTI}\n${FINAL}\n#開團\n${tag}`, "接價格、拿掉多的那行");
+  eq(text, `杰哥爆餡韭菜盒 675g\n\n🔥囤起來\n【杰哥爆餡盒子】\n\n(A) 韭菜盒 1️⃣8️⃣9️⃣ 元\n(B) 高麗菜盒（全素🌱） 1️⃣8️⃣9️⃣ 元\n\n${DL}\n\n口味：(A)韭菜盒／(B)高麗菜盒\n\n${HOWTO_MULTI}\n#開團\n${tag}`, "接價格、拿掉多的那行、結單換成系統的接在品項後面");
   const keep = renderPostText(payload({ name: "杰哥", description: "杰哥\n💰滿1000免運\n(A) 韭菜盒 189元\n(B) 高麗菜盒" }, [{ code: "A", name: "韭菜盒", unit_price: 189 }, { code: "B", name: "高麗菜盒", unit_price: 199 }]));
   eq(keep.includes("💰滿1️⃣0️⃣0️⃣0️⃣免運\n(A) 韭菜盒 189元\n(B) 高麗菜盒 1️⃣9️⃣9️⃣ 元"), true, "已有價格的行不動、不是純金額的 💰 行不拿");
 });
 
 Deno.test("整行只有金額的那一行，跟上一行之間空一行", () => {
   const text = renderPostText(payload({ name: "磁吸迷你拆信刀(顏色隨機)", description: "✉️網購族一定懂\n【磁吸迷你拆信刀｜顏色隨機】\n💰105元\n\n🚚15～25天貨到通知\n⏰9/14結單" }, [{ code: "A", name: "拆信刀", unit_price: 105, retail_price: 105 }]));
-  eq(text, `【磁吸迷你拆信刀｜顏色隨機】\n\n✉️網購族一定懂\n\n💰1️⃣0️⃣5️⃣元\n\n🚚15～25天貨到通知\n⏰9/14結單\n\n${HOWTO_SINGLE}\n${FINAL}\n#開團\n${tag}`, "金額行上面補空行");
+  eq(text, `磁吸迷你拆信刀(顏色隨機)\n\n✉️網購族一定懂\n\n💰1️⃣0️⃣5️⃣元\n\n${DL}\n\n🚚15～25天貨到通知\n\n${HOWTO_SINGLE}\n#開團\n${tag}`, "金額行上面補空行、結單接在金額後面、標題印團名");
 });
 
-Deno.test("預設版型最後一行「⏰ 最後收單」；沒有店家收單就整行不印", () => {
+Deno.test("沒有結單時間（無到期日）就不印結單那一行", () => {
   const none = renderPostText(payload({ name: "測試", description: "好吃", end_at: null }, [{ code: "A", name: "x", unit_price: 50 }]));
   eq(none, `測試\n\n💰5️⃣0️⃣ 元\n\n好吃\n\n${HOWTO_SINGLE}\n#開團\n${tag}`, "無到期日");
 });

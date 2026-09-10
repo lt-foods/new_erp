@@ -10,8 +10,10 @@
 // {{title}} / {{items}} / {{deadline}} / {{howto}} 是「聰明版」：文案自己已經寫過的就不再重複一次。
 // 從記事本匯進來的團，description 常常就是整篇貼文（標題＋(A)(B)品項＋⏰結單都在裡面），
 // 照樣接上去會變成品項印兩次、結單寫兩行。
-// {{name}} 維持原樣（照印）。{{deadline}} 是客人看的結單時間（客人收單，沒設就是店家收單）；
-// {{end_at}} 是店家收單（最後收單時間），老闆 2026-09-10 指定放在最後一行「⏰ 最後收單 9/15 23:59」。
+// {{name}} 維持原樣（照印）。{{deadline}} / {{end_at}} 是客人看的結單時間（客人收單，沒設就是店家收單）；
+// 店家收單是小幫手還能補單的最後期限，貼文上不印。
+// 結單那一行放在金額後面（老闆 2026-09-10 的範例）：文案自己有價格時就插進文案裡金額那一段的後面，
+// 文案自己寫的「⏰9/14結單」換成系統的時間。
 // {{tag}} 是團號章（🔖 團號 GRP-…）：爬回來的時候靠它精準認出是哪一團，不用猜團名。
 // 自訂模板沒寫 {{tag}} 也會被 withPostTag 補在文末 —— 章一定要有，不然這篇就只能靠猜。
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,7 +31,6 @@ export const DEFAULT_TEMPLATE = `{{title}}
 {{description}}
 
 {{howto}}
-⏰ 最後收單 {{end_at}}
 #開團
 {{tag}}`;
 
@@ -118,6 +119,26 @@ function injectItemPrices(desc: string, items: any[]): string {
   }).join("\n");
 }
 
+// 小幫手自己寫的結單那一行：「⏰9/14結單」「📅 9/8（二）晚上六點結單」—— 開頭最多三個字（表情符號），
+// 接著日期，結尾是結單／收單／截單。「結單後15-25天到貨」那種句子不算。
+const HELPER_DEADLINE_LINE = /^[^\d\n]{0,3}\d{1,2}[\/／月]\d{1,2}.*(?:結單|收單|截單)[^\d\n]{0,3}$/;
+
+// 把系統的結單那一行插進文案：先把小幫手自己寫的結單行拿掉（時間以系統為準），
+// 再找文案裡第一段連續的金額行（「💰95元」或「(A) 韭菜盒 1️⃣8️⃣9️⃣ 元」），插在那一段後面、前後各空一行。
+// 文案裡沒有金額行就不插（回 placed=false，走版型的 {{deadline}}）。
+function placeDeadline(desc: string, deadline: string): { desc: string; placed: boolean } {
+  if (!deadline) return { desc, placed: false };
+  const lines = desc.split("\n").filter((l) => !HELPER_DEADLINE_LINE.test(l.trim()));
+  const isPrice = (l: string) => l.includes(DECO_OPEN) || (ITEM_LINE.test(l) && LINE_HAS_PRICE.test(l));
+  const start = lines.findIndex(isPrice);
+  if (start < 0) return { desc: lines.join("\n"), placed: false };
+  let end = start;
+  while (end + 1 < lines.length && isPrice(lines[end + 1])) end++;
+  const after = lines[end + 1];
+  lines.splice(end + 1, 0, "", deadline, ...(after !== undefined && after.trim() ? [""] : []));
+  return { desc: lines.join("\n"), placed: true };
+}
+
 // 整行只有金額的那一行，上面沒有空行就補一行（緊跟在品項後面的那種是那一項的價格，不拆開）
 function spaceOutPriceLines(desc: string): string {
   const out: string[] = [];
@@ -142,10 +163,11 @@ export function renderTemplate(template: string | null, payload: any) {
   // 文案：富文字 HTML 轉純文字 → 記事本佔位字還原（金額順手標起來）→ 文案自己寫的價格也標起來
   let desc = decoTextPrices(stripLineDeco(htmlToText(c.description ?? "")));
 
-  // 文案開頭幾行裡有一行就是團名（匯進來的團幾乎都是第一行，也有先喊一句口號再寫品名的）
-  // → 那一行搬到最上面當標題，不要印兩次。用文案的那一行而不是 c.name，
-  // 小幫手打在標題上的表情符號才留得住。太短的行只認完全一樣，免得誤中。
-  let title = c.name ?? "";
+  // 標題一律印團名（老闆 2026-09-10：「商品 G02580 title 是 兒童防擠壓飲料杯托 (顏色隨機)」，
+  // 不要拿文案裡的「【兒童防擠壓飲料杯托｜顏色隨機】」當標題）。文案開頭幾行裡跟團名一樣的那一行
+  // （匯進來的團幾乎都是第一行，也有先喊一句口號再寫品名的）拿掉，不要印兩次。
+  // 太短的行只認完全一樣，免得誤中。
+  const title = c.name ?? "";
   const bareName = bareText(c.name ?? "");
   const lines = desc.split("\n");
   let seen = 0;
@@ -156,7 +178,6 @@ export function renderTemplate(template: string | null, payload: any) {
     const bare = bareText(line);
     const hit = bareName && (bare === bareName || (bare.length >= 4 && (bareName.includes(bare) || bare.includes(bareName))));
     if (!hit) continue;
-    title = line;
     lines.splice(i, 1);
     desc = lines.join("\n").replace(/^\n+/, "");
     break;
@@ -178,28 +199,28 @@ export function renderTemplate(template: string | null, payload: any) {
   desc = injectItemPrices(desc, items);
   // 老闆 2026-09-10：金額行跟上一行之間要空一行（「💰1️⃣0️⃣5️⃣元」直接貼在文案下面太擠）
   desc = spaceOutPriceLines(desc);
+  // 結單那一行：客人看的結單時間 = 客人收單（customer_end_at，20260910050000）跟店家收單取早的那個；
+  // 客人收單沒設就是店家收單。文案自己有金額時插在金額那一段後面，沒有就走版型的 {{deadline}}。
+  const closeAt = earliest(c.customer_end_at, c.end_at);
+  const deadline = closeAt ? `⏰ ${fmtTaipei(closeAt)} 結單` : "";
+  const placed = placeDeadline(desc, deadline);
+  desc = placed.desc;
   // 文案自己就列了 (A)(B) 或 A. B. 品項 → 不重複；單品而文案已經寫了同一個金額（「一個$125」）→ 也不重複
   const descHasItems = /(^|\n)\s*(?:[(（][A-Za-z][)）]|[A-Za-z][.．、:：])/.test(desc);
   const descHasThisPrice = single && postPrice(items[0]) != null && decoPricesIn(desc).includes(postPrice(items[0]));
-  const descHasDeadline = /結單|收單|截單/.test(desc);
-  // 客人看的結單時間 = 客人收單（customer_end_at，20260910050000）跟店家收單取早的那個；
-  // 客人收單沒設就是店家收單。店家收單是小幫手還能補單的最後期限，客人不用知道。
-  const closeAt = earliest(c.customer_end_at, c.end_at);
-  const deadline = closeAt ? `⏰ ${fmtTaipei(closeAt)} 結單` : "";
 
   const rendered = (template || DEFAULT_TEMPLATE)
     .replaceAll("{{tag}}", buildPostTag(c.campaign_no))
     .replaceAll("{{title}}", title)
     .replaceAll("{{items}}", descHasItems || descHasThisPrice ? "" : itemLines)
-    .replaceAll("{{deadline}}", descHasDeadline ? "" : deadline)
+    .replaceAll("{{deadline}}", placed.placed ? "" : deadline)
     .replaceAll("{{howto}}", single ? HOWTO_SINGLE : HOWTO_MULTI)
     .replaceAll("{{name}}", c.name ?? "")
     .replaceAll("{{campaign_no}}", c.campaign_no ?? "")
     .replaceAll("{{description}}", desc)
-    .replaceAll("{{end_at}}", fmtTaipei(c.end_at))
+    .replaceAll("{{end_at}}", fmtTaipei(closeAt))
     .replaceAll("{{start_at}}", fmtTaipei(c.start_at))
     .replaceAll("{{pickup_deadline}}", fmtTaipei(c.pickup_deadline))
-    .replace(/^⏰ 最後收單[ \t]*(?:\n|$)/gm, "")      // 沒有店家收單（無到期日）就整行不要
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   return withPostTag(rendered, c.campaign_no);

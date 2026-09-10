@@ -598,7 +598,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
             </label>
             <label className="text-sm md:col-span-2">發文模板（留空用預設；可用 {"{{title}} {{items}} {{deadline}} {{description}} {{howto}} {{tag}} {{name}} {{end_at}} {{pickup_deadline}}"}）
               <textarea className={`${input} h-40 font-mono text-xs`} value={form.post_template} onChange={(e) => setForm({ ...form, post_template: e.target.value })}
-                placeholder={"{{title}}\n\n{{items}}\n\n{{deadline}}\n\n{{description}}\n\n{{howto}}\n⏰ 最後收單 {{end_at}}\n#開團\n{{tag}}"} />
+                placeholder={"{{title}}\n\n{{items}}\n\n{{deadline}}\n\n{{description}}\n\n{{howto}}\n#開團\n{{tag}}"} />
             </label>
           </div>
           <div className="mt-4 flex justify-end gap-2">
