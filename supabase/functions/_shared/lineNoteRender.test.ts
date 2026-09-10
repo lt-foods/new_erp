@@ -3,8 +3,8 @@ import { renderPostText } from "./lineNoteRender.ts";
 const eq = (got: unknown, want: unknown, why: string) => {
   if (got !== want) throw new Error(`${why}\n  想要 ${JSON.stringify(want)}\n  拿到 ${JSON.stringify(got)}`);
 };
-const HOWTO_MULTI = "📝 留言「會員編號 6 碼 ＋ 品項代碼＋數量」，例：123456 A+1 B+2";
-const HOWTO_SINGLE = "📝 留言「會員編號 6 碼 ＋ 數量」，例：123456 +1";
+const HOWTO_MULTI = "📝 留言「品項代碼＋數量」，例：A+1 B+2";
+const HOWTO_SINGLE = "📝 留言「數量」，例：+1";
 const tag = "🔖 團號 GRP-1";
 const DL = "⏰ 9/13 23:59 結單";   // payload 預設 end_at = 2026-09-13T15:59Z（台北 23:59）
 const payload = (campaign: Record<string, unknown>, items: Record<string, unknown>[], post_template: string | null = null) =>

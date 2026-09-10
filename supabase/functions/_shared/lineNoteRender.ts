@@ -31,9 +31,10 @@ export const DEFAULT_TEMPLATE = `{{title}}
 #開團
 {{tag}}`;
 
-// 留言教學：單品的貼文上沒有代碼，教學就不要提代碼（+1 沒帶代碼時 RPC 會落到唯一那一項）
-const HOWTO_MULTI = "📝 留言「會員編號 6 碼 ＋ 品項代碼＋數量」，例：123456 A+1 B+2";
-const HOWTO_SINGLE = "📝 留言「會員編號 6 碼 ＋ 數量」，例：123456 +1";
+// 留言教學（老闆 2026-09-10 定稿：不提會員編號）。單品的貼文上沒有代碼，教學就不要提代碼
+// （+1 沒帶代碼時 RPC 會落到唯一那一項）。
+const HOWTO_MULTI = "📝 留言「品項代碼＋數量」，例：A+1 B+2";
+const HOWTO_SINGLE = "📝 留言「數量」，例：+1";
 
 // 比對標題用：去掉表情符號、空白、標點，只留文字
 function bareText(s: string) {
