@@ -596,9 +596,9 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.react_on_confirm} onChange={(e) => setForm({ ...form, react_on_confirm: e.target.checked })} /> 收到單後在客人留言上按 😄，讓他知道收到了
             </label>
-            <label className="text-sm md:col-span-2">發文模板（留空用預設；可用 {"{{title}} {{items}} {{description}} {{howto}} {{tag}} {{name}} {{end_at}} {{pickup_deadline}}"}）
+            <label className="text-sm md:col-span-2">發文模板（留空用預設；可用 {"{{title}} {{items}} {{deadline}} {{description}} {{howto}} {{tag}} {{name}} {{end_at}} {{pickup_deadline}}"}）
               <textarea className={`${input} h-40 font-mono text-xs`} value={form.post_template} onChange={(e) => setForm({ ...form, post_template: e.target.value })}
-                placeholder={"{{title}}\n\n{{items}}\n\n{{description}}\n\n{{howto}}\n#開團\n{{tag}}"} />
+                placeholder={"{{title}}\n\n{{items}}\n\n{{deadline}}\n\n{{description}}\n\n{{howto}}\n#開團\n{{tag}}"} />
             </label>
           </div>
           <div className="mt-4 flex justify-end gap-2">

@@ -4,7 +4,7 @@
 //
 // 版型照小幫手手貼的樣子：團名開頭、接著金額、再來才是文案，#開團 收尾。
 // 2026-09-10 老闆指定：先團名、再商品；只有一個品項就不印品名／代碼、直接金額；
-// 多品項才 (A) 品名 ＋ 下一行金額；結單時間不印。
+// 多品項才 (A) 品名 ＋ 下一行金額；結單時間印「客人收單」（customer_end_at，沒設就是店家收單）。
 //
 // 文案本體吃 campaign.description —— 那本來就是商品那邊寫好的行銷文（線上近兩週 377/395 團有）。
 // {{title}} / {{items}} / {{deadline}} / {{howto}} 是「聰明版」：文案自己已經寫過的就不再重複一次。
@@ -22,6 +22,8 @@ export const TZ = "Asia/Taipei";
 export const DEFAULT_TEMPLATE = `{{title}}
 
 {{items}}
+
+{{deadline}}
 
 {{description}}
 
@@ -116,7 +118,7 @@ export function renderTemplate(template: string | null, payload: any) {
   const descHasThisPrice = single && postPrice(items[0]) != null && decoPricesIn(desc).includes(postPrice(items[0]));
   const descHasDeadline = /結單|收單|截單/.test(desc);
   // 客人看的結單時間 = 客人收單（customer_end_at，20260910050000）跟店家收單取早的那個；
-  // 客人收單沒設就是店家收單。預設版型不印，自訂模板的 {{deadline}} / {{end_at}} 才會用到。
+  // 客人收單沒設就是店家收單。店家收單是小幫手還能補單的最後期限，客人不用知道。
   const closeAt = earliest(c.customer_end_at, c.end_at);
   const deadline = closeAt ? `⏰ ${fmtTaipei(closeAt)} 結單` : "";
 
