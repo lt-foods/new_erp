@@ -629,7 +629,7 @@ function PostCampaignModal({ community, communities, accountById, onClose, notif
   const [busy, setBusy] = useState(false);
   // 貼文是發給整個社群看的，發出去才發現版型不對就來不及了（只能刪掉重發，客人已經看到）。
   // 所以先把「等一下真的會貼出去的字」原封不動叫回來給人看 —— 渲染是 worker 那一份，不是另外寫的。
-  const [preview, setPreview] = useState<{ text: string; images: string[]; deco?: number } | null>(null);
+  const [preview, setPreview] = useState<{ text: string; images: string[] } | null>(null);
   const [previewing, setPreviewing] = useState(false);
   useEffect(() => {
     void (async () => {
@@ -650,7 +650,7 @@ function PostCampaignModal({ community, communities, accountById, onClose, notif
       if (dead) return;
       setPreviewing(false);
       if (error || (data as { error?: string })?.error) return;   // 預覽拿不到就不擋發文
-      setPreview(data as { text: string; images: string[]; deco?: number });
+      setPreview(data as { text: string; images: string[] });
     })();
     return () => { dead = true; };
   }, [campaignId, previewFor]);
@@ -732,10 +732,7 @@ function PostCampaignModal({ community, communities, accountById, onClose, notif
             )}
           </div>
         )}
-        <p className="mt-1 text-xs text-zinc-500">
-          文案取自這個團的說明，商品和價格取自團裡的品項，圖片取自商品圖。要改內容請去改團／商品。
-          {!!preview?.deco && <>　金額會用 LINE 的彩色數字表情貼出去（這裡先用一般數字顯示）。</>}
-        </p>
+        <p className="mt-1 text-xs text-zinc-500">文案取自這個團的說明，商品和價格取自團裡的品項，圖片取自商品圖。要改內容請去改團／商品。</p>
       </div>
 
       <div className="mt-4 flex justify-end gap-2">
