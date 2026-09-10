@@ -7,7 +7,12 @@
 // 一團要發三個群組就得開三次彈窗、還得自己記得哪個發過了。開團才是小幫手的工作單位。
 // /line-notes 的「貼文」分頁留著 —— 未認出團的貼文沒有團可掛，只能在那邊指定。
 //
-// 群組清單與「能不能發」一律問 rpc_line_note_campaign_targets（20260910020000），
+// 分店帳號（store_manager / store_staff）只看得到右邊的歷史，左邊那半（挑群組、預覽、
+// 發文）整塊不畫 —— 發文到社群是總部的事。真正的門在 DB：rpc_line_note_queue_posts
+// 走 _line_note_require_admin()，分店按了也是 insufficient_role；這裡只是不要給一顆
+// 按下去必定失敗的按鈕。canOperateLineNotes() 那組角色跟 DB 那支是同一份。
+//
+// 群組清單與「能不能發」一律問 rpc_line_note_campaign_targets（20260910020000／30000），
 // 不要在這裡自己接 line_note_communities 再算一次店家範圍 ——
 // 那條規則的正主是開團自動發文的 trigger，散成三份就會走鐘。
 
@@ -18,6 +23,7 @@ import { OrderDetail } from "@/components/OrderDetail";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import { withBasePath } from "@/lib/basePath";
+import { canOperateLineNotes, useRole } from "@/lib/role";
 import {
   COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, commentStats, fmtNoteTime, isTodoComment,
   type LineNoteCommentStatus, type LineNotePostStatus,
@@ -97,6 +103,10 @@ export default function LineNotePostsModal({
   const [loadingPost, setLoadingPost] = useState<number | null>(null);
   const [orderPopup, setOrderPopup] = useState<{ id: number; no: string } | null>(null);
 
+  // 分店帳號只能看歷史：發文 / 立即讀留言 / 刪貼文那幾支 RPC 都只放總部角色
+  const role = useRole();
+  const canOperate = canOperateLineNotes(role);
+
   const fail = useCallback((e: unknown) => setError(translateRpcError(e)), []);
   const notify = useCallback((m: string) => { setToast(m); setTimeout(() => setToast(null), 3000); }, []);
 
@@ -123,7 +133,7 @@ export default function LineNotePostsModal({
 
   // 預覽：換群組就重新問一次（不同群組可能有不同模板）
   useEffect(() => {
-    if (!open || !campaignId || previewFor == null) { setPreview(null); return; }
+    if (!open || !campaignId || previewFor == null || !canOperate) { setPreview(null); return; }
     let dead = false;
     setPreviewing(true); setPreview(null);
     void (async () => {
@@ -136,7 +146,7 @@ export default function LineNotePostsModal({
       setPreview(data as { text: string; images: string[]; deco?: number });
     })();
     return () => { dead = true; };
-  }, [open, campaignId, previewFor]);
+  }, [open, campaignId, previewFor, canOperate]);
 
   const postable = useMemo(() => (targets ?? []).filter((t) => t.can_post), [targets]);
   const withPost = useMemo(() => (targets ?? []).filter((t) => t.post_id != null), [targets]);
@@ -177,9 +187,10 @@ export default function LineNotePostsModal({
     setOpenPost(t.post_id);
     if (comments.has(t.post_id)) return;
     setLoadingPost(t.post_id);
-    const { data, error } = await getSupabase().from("line_note_comments")
-      .select("id,line_comment_id,commenter_name,text,commented_at,member_no_hint,status,customer_order_id,error,reacted_at,resolution_note")
-      .eq("post_id", t.post_id).order("commented_at", { ascending: true }).order("id");
+    // 走 RPC 不直接 SELECT：line_note_comments 的 RLS 只放總部角色，
+    // 分店讀回來會是**空的而且不報錯** —— 畫面變成「24 則留言」但展開什麼都沒有。
+    const { data, error } = await getSupabase()
+      .rpc("rpc_line_note_post_comments", { p_post_id: t.post_id });
     setLoadingPost(null);
     if (error) return fail(error);
     const cs = (data ?? []) as Comment[];
@@ -224,7 +235,13 @@ export default function LineNotePostsModal({
           )}
           {toast && <div className="rounded bg-emerald-600 px-3 py-2 text-sm text-white">{toast}</div>}
 
-          {targets.length === 0 && (
+          {!canOperate && (
+            <div className="rounded border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
+              發文到社群由總部操作。這裡可以看這團發到了哪些群組、客人在底下留了什麼、加成了哪幾張單。
+            </div>
+          )}
+
+          {canOperate && targets.length === 0 && (
             <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
               沒有可以發文的社群。
               <ul className="ml-4 mt-1 list-disc space-y-0.5 text-xs">
@@ -236,7 +253,7 @@ export default function LineNotePostsModal({
 
           <div className="grid gap-4 lg:grid-cols-2">
             {/* ── 左：勾群組 + 預覽 + 發文 ───────────────────────────── */}
-            {targets.length > 0 && (
+            {canOperate && targets.length > 0 && (
             <section className="space-y-3">
               <div>
                 <div className="mb-1.5 flex items-center justify-between">
@@ -350,14 +367,14 @@ export default function LineNotePostsModal({
             )}
 
             {/* ── 右：爬過的歷史紀錄 ─────────────────────────────────── */}
-            <section className={targets.length > 0 ? "" : "lg:col-span-2"}>
+            <section className={canOperate && targets.length > 0 ? "" : "lg:col-span-2"}>
               <div className="mb-1.5 flex items-center justify-between">
                 <h3 className="text-sm font-semibold">爬過的歷史紀錄（{withPost.length} 篇貼文）</h3>
                 <button type="button" className={btn} onClick={() => void load(true)}>重新整理</button>
               </div>
               {withPost.length === 0 ? (
                 <div className="rounded border border-zinc-200 py-8 text-center text-sm text-zinc-400 dark:border-zinc-800">
-                  這團還沒有貼文
+                  這團還沒有發到任何社群
                 </div>
               ) : (
                 <ul className="space-y-2">
@@ -395,17 +412,20 @@ export default function LineNotePostsModal({
                           </div>
                         </button>
 
+                        {canOperate && (
                         <div className="flex flex-wrap gap-1.5 border-t border-zinc-100 px-2.5 py-1.5 dark:border-zinc-800">
                           {t.post_status === "posted" && (
                             <SpinButton className={btn} loading={busy === t.community_id} onClick={() => void readNow(t)}>
                               立即讀留言
                             </SpinButton>
                           )}
-                          {/* 退回未處理 / 忽略 / 重試那些留言操作都在記事本頁，這裡只給入口，不再抄一份 */}
+                          {/* 退回未處理 / 忽略 / 重試那些留言操作都在記事本頁，這裡只給入口，不再抄一份。
+                              /line-notes 整頁是總部專屬（RLS 只放總部角色），分店連結過去也是空的。 */}
                           <a className={`${btn} ml-auto`} href={withBasePath("/line-notes")} target="_blank" rel="noreferrer">
                             到記事本頁處理留言
                           </a>
                         </div>
+                        )}
 
                         {expanded && (
                           <div className="border-t border-zinc-100 bg-zinc-50 p-2.5 dark:border-zinc-800 dark:bg-zinc-900/50">

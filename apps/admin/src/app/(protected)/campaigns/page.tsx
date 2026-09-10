@@ -861,7 +861,9 @@ export default function CampaignsListPage() {
           發 FB
         </SpinButton>
       )}
-      {showAdminActions && (["open", "closed", "locked", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
+      {/* 分店也給 —— 彈窗裡只有右邊的歷史，發文那半只有總部看得到（LineNotePostsModal）。
+          店家最常問的就是「我的團發到群組了沒、客人留了什麼」，這顆是唯一的入口。 */}
+      {(["open", "closed", "locked", "ordered", "receiving", "ready"] as Status[]).includes(r.status) && (
         <SpinButton
           onClick={() => setLineNoteFor(r)}
           className="text-xs text-emerald-600 hover:underline dark:text-emerald-400"
