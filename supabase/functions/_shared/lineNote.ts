@@ -364,9 +364,13 @@ export async function createNotePost(client, homeId, { text, images = [], source
   const media = [];
   for (const file of images) {
     try {
-      const { objId } = await client.base.timeline.uploadNoteMedia("image", new Blob([file], { type: "image/jpeg" }));
+      // images 可以是 Uint8Array（當 JPEG）或 { bytes, type } —— PNG 也要能上傳，
+      // 宣告錯的 MIME 會被 obs 退掉。
+      const bytes = file?.bytes ?? file;
+      const type = file?.type || "image/jpeg";
+      const { objId } = await client.base.timeline.uploadNoteMedia("image", new Blob([bytes], { type }));
       media.push({ objectId: objId, type: "PHOTO", obsFace: "[]" });
-      log(verbose, `uploaded <${file.byteLength} bytes> → ${objId}`);
+      log(verbose, `uploaded <${(file?.bytes ?? file).byteLength} bytes, ${type}> → ${objId}`);
     } catch (e) {
       log(true, `圖片上傳失敗，這張跳過：${e?.message ?? e}`);
     }
