@@ -607,14 +607,22 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
         </Modal>
       )}
 
-      {postFor && <PostCampaignModal community={postFor} onClose={() => setPostFor(null)} notify={notify} fail={fail} reloadPosts={reloadPosts} />}
+      {postFor && (
+        <PostCampaignModal community={postFor} communities={communities ?? []} accountById={accountById}
+          onClose={() => setPostFor(null)} notify={notify} fail={fail} reloadPosts={reloadPosts} />
+      )}
     </div>
   );
 }
 
-function PostCampaignModal({ community, onClose, notify, fail, reloadPosts }: {
-  community: Community; onClose: () => void; notify: (m: string) => void; fail: (e: unknown) => void; reloadPosts: () => Promise<void>;
+// 同一個機器人帳號常常同時顧好幾個社群，一團要發到哪幾個由人自己勾。
+// 預設只勾按下去的那一個 —— 預設全勾會讓人不小心把測試團發到所有客人面前。
+function PostCampaignModal({ community, communities, accountById, onClose, notify, fail, reloadPosts }: {
+  community: Community; communities: Community[]; accountById: Map<number, Account>;
+  onClose: () => void; notify: (m: string) => void; fail: (e: unknown) => void; reloadPosts: () => Promise<void>;
 }) {
+  const [targets, setTargets] = useState<number[]>([community.id]);
+  const sameAccount = communities.filter((c) => c.account_id === community.account_id);
   const [campaigns, setCampaigns] = useState<Campaign[] | null>(null);
   const [campaignId, setCampaignId] = useState<number | "">("");
   const [busy, setBusy] = useState(false);
@@ -629,13 +637,14 @@ function PostCampaignModal({ community, onClose, notify, fail, reloadPosts }: {
       if (error) fail(error); else { setCampaigns((data ?? []) as Campaign[]); setCampaignId((data?.[0] as Campaign | undefined)?.id ?? ""); }
     })();
   }, [fail]);
+  const previewFor = targets[0] ?? community.id;
   useEffect(() => {
     if (campaignId === "") { setPreview(null); return; }
     let dead = false;
     setPreviewing(true); setPreview(null);
     void (async () => {
       const { data, error } = await getSupabase().functions.invoke("line-note-worker", {
-        body: { action: "preview", community_id: community.id, campaign_id: campaignId },
+        body: { action: "preview", community_id: previewFor, campaign_id: campaignId },
       });
       if (dead) return;
       setPreviewing(false);
@@ -643,21 +652,30 @@ function PostCampaignModal({ community, onClose, notify, fail, reloadPosts }: {
       setPreview(data as { text: string; images: string[]; deco?: number });
     })();
     return () => { dead = true; };
-  }, [campaignId, community.id]);
+  }, [campaignId, previewFor]);
 
   const submit = async () => {
-    if (campaignId === "") return;
+    if (campaignId === "" || targets.length === 0) return;
     setBusy(true);
-    const { error } = await getSupabase().rpc("rpc_line_note_queue_post", { p_community_id: community.id, p_campaign_id: campaignId });
+    const sb = getSupabase();
+    const failed: string[] = [];
+    let queued = 0;
+    for (const id of targets) {
+      const c = communities.find((x) => x.id === id);
+      const { error } = await sb.rpc("rpc_line_note_queue_post", { p_community_id: id, p_campaign_id: campaignId });
+      if (error) failed.push(`${c?.home_name || c?.home_id || id}：${translateRpcError(error)}`);
+      else queued++;
+    }
     setBusy(false);
-    if (error) return fail(error);
-    kickWorker();
-    notify("已開始發文，幾秒後到「貼文」看");
-    onClose();
+    if (queued) kickWorker();
     await reloadPosts();
+    // 一個社群失敗不影響其他個，但要講清楚是哪一個 —— 不然人會以為整批都沒發
+    if (failed.length) return fail(new Error(`${queued} 個社群已排入發文，以下失敗：\n${failed.join("\n")}`));
+    notify(targets.length > 1 ? `已開始發到 ${targets.length} 個社群，幾秒後到「貼文」看` : "已開始發文，幾秒後到「貼文」看");
+    onClose();
   };
   return (
-    <Modal title={`發文到「${community.home_name || community.home_id}」`} onClose={onClose}>
+    <Modal title={`用「${accountById.get(community.account_id)?.label ?? "機器人"}」發文`} onClose={onClose} wide>
       <label className="text-sm">選擇要發的團（開團中／已收單）
         <select className={input} value={campaignId} onChange={(e) => setCampaignId(Number(e.target.value))}>
           {(campaigns ?? []).map((c) => <option key={c.id} value={c.id}>{c.campaign_no} {c.name}（{c.status}）</option>)}
@@ -666,7 +684,34 @@ function PostCampaignModal({ community, onClose, notify, fail, reloadPosts }: {
 
       <div className="mt-3 text-sm">
         <div className="mb-1 flex items-center justify-between text-zinc-500">
-          <span>會貼出去的內容</span>
+          <span>要發到哪些社群</span>
+          {sameAccount.length > 1 && (
+            <button type="button" className={btn}
+              onClick={() => setTargets(targets.length === sameAccount.length ? [community.id] : sameAccount.map((c) => c.id))}>
+              {targets.length === sameAccount.length ? "只留原本那個" : "全選"}
+            </button>
+          )}
+        </div>
+        <ul className="max-h-40 divide-y divide-zinc-200 overflow-auto rounded border border-zinc-300 dark:divide-zinc-800 dark:border-zinc-700">
+          {sameAccount.map((c) => (
+            <li key={c.id}>
+              <label className="flex cursor-pointer items-center gap-2 px-2 py-1.5 hover:bg-zinc-50 dark:hover:bg-zinc-800">
+                <input type="checkbox" checked={targets.includes(c.id)}
+                  onChange={(e) => setTargets(e.target.checked ? [...targets, c.id] : targets.filter((x) => x !== c.id))} />
+                <span className="min-w-0 flex-1 truncate">{c.home_name || c.home_id}</span>
+                {c.post_template && <Badge tone="gray">自訂模板</Badge>}
+              </label>
+            </li>
+          ))}
+        </ul>
+        {targets.length > 1 && sameAccount.filter((c) => targets.includes(c.id)).some((c) => c.post_template) && (
+          <p className="mt-1 text-xs text-amber-600">有社群設了自訂模板，實際貼出去的內容會跟下面的預覽不一樣。</p>
+        )}
+      </div>
+
+      <div className="mt-3 text-sm">
+        <div className="mb-1 flex items-center justify-between text-zinc-500">
+          <span>會貼出去的內容{targets.length > 1 && <>（以「{communities.find((c) => c.id === previewFor)?.home_name ?? ""}」為例）</>}</span>
           {preview && <span className="text-xs">{preview.images.length} 張圖</span>}
         </div>
         {previewing ? <div className="rounded border border-zinc-200 p-3 text-zinc-400 dark:border-zinc-800">產生預覽中…</div>
@@ -694,7 +739,10 @@ function PostCampaignModal({ community, onClose, notify, fail, reloadPosts }: {
 
       <div className="mt-4 flex justify-end gap-2">
         <button type="button" className={btn} onClick={onClose}>取消</button>
-        <SpinButton type="button" className={btnPrimary} loading={busy} disabled={campaignId === ""} onClick={submit}>發文</SpinButton>
+        <SpinButton type="button" className={btnPrimary} loading={busy}
+          disabled={campaignId === "" || targets.length === 0} onClick={submit}>
+          {targets.length > 1 ? `發到 ${targets.length} 個社群` : "發文"}
+        </SpinButton>
       </div>
     </Modal>
   );
