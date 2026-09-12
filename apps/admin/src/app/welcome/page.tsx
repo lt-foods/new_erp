@@ -10,8 +10,15 @@ import Link from "next/link";
 import { withBasePath } from "@/lib/basePath";
 import { GroupoWordmark } from "@/components/Brand";
 
-// 部署網域（GitHub Pages）+ basePath；OG/分享縮圖需要絕對網址。
-const SITE = "https://lt-foods.github.io" + (process.env.NEXT_PUBLIC_BASE_PATH ?? "");
+// 對外絕對網址（OG／分享縮圖一定要絕對網址，相對路徑無效）。
+// 正式值由 .github/workflows/deploy-admin.yml 的 NEXT_PUBLIC_SITE_URL 傳入 —— 刻意跟
+// NEXT_PUBLIC_BASE_PATH 放在同一個 env 區塊，換網域時連同 public/CNAME 三處一起看得到。
+// ⛔ 不在這裡寫死網域：寫死正是 2026-09-12 改用自訂網域時要修掉的病，換個地方寫死
+//    只是把同一顆地雷埋到下一次。
+// 末尾斜線一律去掉，避免拼出 https://example.com//welcome/。
+// 沒設時留空 —— 本機或未帶環境變數的 build 照樣過，只是下面整段省略 url／images，
+// 不硬湊網址：湊出來的不是過期網域就是 localhost，烤進靜態檔比沒有更糟。
+const SITE = (process.env.NEXT_PUBLIC_SITE_URL ?? "").replace(/\/+$/, "");
 const OG_TITLE = "Groupo 購寶｜社區團購的進銷存後台";
 const OG_DESC =
   "整單只是開始。採購進貨、總倉門市庫存、撿貨派貨、會員錢包、月結對帳 — 為社區團購與生鮮小舖打造的 ERP。免費試用 14 天，免信用卡。";
@@ -24,16 +31,20 @@ export const metadata = {
     type: "website",
     locale: "zh_TW",
     siteName: "Groupo 購寶",
-    url: SITE + "/welcome/",
     title: OG_TITLE,
     description: OG_DESC,
-    images: [{ url: SITE + "/og.png", width: 1200, height: 630, alt: "Groupo 購寶" }],
+    ...(SITE
+      ? {
+          url: `${SITE}/welcome/`,
+          images: [{ url: `${SITE}/og.png`, width: 1200, height: 630, alt: "Groupo 購寶" }],
+        }
+      : {}),
   },
   twitter: {
     card: "summary_large_image",
     title: OG_TITLE,
     description: OG_DESC,
-    images: [SITE + "/og.png"],
+    ...(SITE ? { images: [`${SITE}/og.png`] } : {}),
   },
 };
 

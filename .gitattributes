@@ -1,0 +1,6 @@
+# GitHub Pages 靠 apps/admin/public/CNAME 這個檔認自訂網域（erp.www161616.com）。
+# 檔案內容必須剛好是網域 + 一個換行；多一個位元組就可能認不出來。
+# 本機常見設定 core.autocrlf=true 會在 Windows checkout 時把它換成 CRLF（18 → 19 bytes），
+# 而「反正只走 CI、CI 是 Linux 所以不影響」這個前提，會在有人本機 build 或
+# 改用別的部署方式時悄悄失效。與其依賴前提，不如直接鎖死 LF。
+apps/admin/public/CNAME text eol=lf

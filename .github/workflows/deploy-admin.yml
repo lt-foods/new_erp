@@ -40,9 +40,13 @@ jobs:
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-          # 改用自訂網域 erp.www161616.com（設定檔＝apps/admin/public/CNAME），
-          # 站台掛在網域根目錄，網址不再有 /new_erp 這一截，故 basePath 留空。
+          # 下面兩個值與 apps/admin/public/CNAME 是同一個決定（2026-09-12 改用自訂網域
+          # erp.www161616.com）。換網域時這三處要一起改，只改一處會不一致。
+          # basePath：站台掛在網域根目錄，網址不再有 /new_erp 這一截，故留空。
           NEXT_PUBLIC_BASE_PATH: ""
+          # siteUrl：/welcome/ 的 OG 分享縮圖需要絕對網址。末尾不要加斜線
+          #（程式端 welcome/page.tsx 仍會去掉多餘斜線，但這裡就別寫進去）。
+          NEXT_PUBLIC_SITE_URL: https://erp.www161616.com
         run: npm run build
 
       - name: Add .nojekyll
