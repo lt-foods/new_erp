@@ -35,6 +35,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # welcome 頁的分享縮圖需要絕對網址，而程式端刻意不放寫死的 fallback 網域
+      # （寫死正是 2026-09-12 這次要根治的病）。代價是「值不見了也沒人會發現」：
+      # build 照樣成功，只是縮圖整組安靜消失。所以在這裡擋掉，讓它壞得看得見。
+      # ⚠ 只擋 CI，本機 build 完全不受影響 —— 本機沒設時 welcome 頁只是省略那幾個
+      #   OG tag，npm run build 照樣過（2026-09-12 實測 exit 0）。
+      # ⭐ 刻意排在 setup-node / npm install 前面：設定缺了就馬上 fail，
+      #    不要先花時間裝完幾百個套件才發現。這一步只用 bash，不需要 node。
+      - name: Check NEXT_PUBLIC_SITE_URL is set
+        run: |
+          if [ -z "$(printf '%s' "${NEXT_PUBLIC_SITE_URL:-}" | tr -d '[:space:]')" ]; then
+            echo "::error file=.github/workflows/deploy-admin.yml::NEXT_PUBLIC_SITE_URL 是空的：/welcome/ 的分享縮圖（og:image / og:url）會整組消失。請在本檔 job 層的 env 補上對外絕對網址，例如 https://erp.www161616.com（末尾不要加斜線）。"
+            exit 1
+          fi
+          # ⛔ 不要把值本身 echo 出來。現在它是公開網址、印了無所謂，但哪天有人把它
+          #    改成從 vars. / secrets. 讀，這一行就會把值印進誰都看得到的 build log。
+          echo "NEXT_PUBLIC_SITE_URL is set."
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -44,19 +61,6 @@ jobs:
       # workspaces (e.g. apps/member) that aren't yet in package-lock.json.
       # For admin deploy we only need deterministic install of admin itself.
       - run: npm install --no-audit --no-fund
-
-      # welcome 頁的分享縮圖需要絕對網址，而程式端刻意不放寫死的 fallback 網域
-      # （寫死正是 2026-09-12 這次要根治的病）。代價是「值不見了也沒人會發現」：
-      # build 照樣成功，只是縮圖整組安靜消失。所以在這裡擋掉，讓它壞得看得見。
-      # ⚠ 只擋 CI，本機 build 完全不受影響 —— 本機沒設時 welcome 頁只是省略那幾個
-      #   OG tag，npm run build 照樣過（2026-09-12 實測 exit 0）。
-      - name: Check NEXT_PUBLIC_SITE_URL is set
-        run: |
-          if [ -z "$(printf '%s' "${NEXT_PUBLIC_SITE_URL:-}" | tr -d '[:space:]')" ]; then
-            echo "::error file=.github/workflows/deploy-admin.yml::NEXT_PUBLIC_SITE_URL 是空的：/welcome/ 的分享縮圖（og:image / og:url）會整組消失。請在本檔 job 層的 env 補上對外絕對網址，例如 https://erp.www161616.com（末尾不要加斜線）。"
-            exit 1
-          fi
-          echo "NEXT_PUBLIC_SITE_URL = ${NEXT_PUBLIC_SITE_URL}"
 
       - name: Build admin (static export)
         working-directory: apps/admin
