@@ -22,9 +22,11 @@ const handScript = Caveat({
   weight: ["700"],
 });
 
-// Next 不會自動把 basePath 補到 metadata.icons 的字串 URL，靜態匯出 + GH Pages
-// （NEXT_PUBLIC_BASE_PATH=/new_erp）下會變成 /icons/... → 404 → 分頁退回預設黑 icon。
-// 一律手動補 prefix。
+// Next 不會自動把 basePath 補到 metadata.icons 的字串 URL。只要站台不是掛在網址根目錄
+// （NEXT_PUBLIC_BASE_PATH 有值），這裡就會變成 /icons/... → 404 → 分頁退回預設黑 icon。
+// 一律手動補 prefix，掛在根目錄或子路徑都會對。
+// （2026-09-12 起改用自訂網域 erp.www161616.com，線上 basePath 是空的；曾經是 /new_erp，
+//   這段就是那時候加的 —— 不要因為現在補的是空字串就把它拿掉。）
 const bp = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
 export const metadata: Metadata = {

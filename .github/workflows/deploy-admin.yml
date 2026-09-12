@@ -22,6 +22,16 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # 這兩個值與 apps/admin/public/CNAME 是同一個決定（2026-09-12 改用自訂網域
+    # erp.www161616.com）。換網域時這三處要一起改，只改一處就會不一致。
+    # 放在 job 層而不是塞在 build 步驟裡，是為了讓下面的檢查步驟讀得到同一份值，
+    # 不必把網址寫兩遍 —— 寫兩遍遲早有一遍忘了改。
+    env:
+      # basePath：站台掛在網域根目錄，網址不再有 /new_erp 這一截，故留空。
+      NEXT_PUBLIC_BASE_PATH: ""
+      # siteUrl：/welcome/ 推廣頁的分享縮圖（og:image / og:url）需要絕對網址。
+      # 末尾不要加斜線（程式端還是會去掉多餘的，但別靠它）。
+      NEXT_PUBLIC_SITE_URL: https://erp.www161616.com
     steps:
       - uses: actions/checkout@v4
 
@@ -35,18 +45,26 @@ jobs:
       # For admin deploy we only need deterministic install of admin itself.
       - run: npm install --no-audit --no-fund
 
+      # welcome 頁的分享縮圖需要絕對網址，而程式端刻意不放寫死的 fallback 網域
+      # （寫死正是 2026-09-12 這次要根治的病）。代價是「值不見了也沒人會發現」：
+      # build 照樣成功，只是縮圖整組安靜消失。所以在這裡擋掉，讓它壞得看得見。
+      # ⚠ 只擋 CI，本機 build 完全不受影響 —— 本機沒設時 welcome 頁只是省略那幾個
+      #   OG tag，npm run build 照樣過（2026-09-12 實測 exit 0）。
+      - name: Check NEXT_PUBLIC_SITE_URL is set
+        run: |
+          if [ -z "$(printf '%s' "${NEXT_PUBLIC_SITE_URL:-}" | tr -d '[:space:]')" ]; then
+            echo "::error file=.github/workflows/deploy-admin.yml::NEXT_PUBLIC_SITE_URL 是空的：/welcome/ 的分享縮圖（og:image / og:url）會整組消失。請在本檔 job 層的 env 補上對外絕對網址，例如 https://erp.www161616.com（末尾不要加斜線）。"
+            exit 1
+          fi
+          echo "NEXT_PUBLIC_SITE_URL = ${NEXT_PUBLIC_SITE_URL}"
+
       - name: Build admin (static export)
         working-directory: apps/admin
+        # 站台網址設定（NEXT_PUBLIC_BASE_PATH / NEXT_PUBLIC_SITE_URL）在本 job 上方的
+        # env 區塊，跟 apps/admin/public/CNAME 一起看；這裡只放兩把密鑰。
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-          # 下面兩個值與 apps/admin/public/CNAME 是同一個決定（2026-09-12 改用自訂網域
-          # erp.www161616.com）。換網域時這三處要一起改，只改一處會不一致。
-          # basePath：站台掛在網域根目錄，網址不再有 /new_erp 這一截，故留空。
-          NEXT_PUBLIC_BASE_PATH: ""
-          # siteUrl：/welcome/ 的 OG 分享縮圖需要絕對網址。末尾不要加斜線
-          #（程式端 welcome/page.tsx 仍會去掉多餘斜線，但這裡就別寫進去）。
-          NEXT_PUBLIC_SITE_URL: https://erp.www161616.com
         run: npm run build
 
       - name: Add .nojekyll
