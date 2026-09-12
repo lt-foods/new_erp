@@ -40,7 +40,9 @@ jobs:
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-          NEXT_PUBLIC_BASE_PATH: /new_erp
+          # 改用自訂網域 erp.www161616.com（設定檔＝apps/admin/public/CNAME），
+          # 站台掛在網域根目錄，網址不再有 /new_erp 這一截，故 basePath 留空。
+          NEXT_PUBLIC_BASE_PATH: ""
         run: npm run build
 
       - name: Add .nojekyll
