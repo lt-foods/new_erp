@@ -24,7 +24,7 @@ const MAX_BATCH_VARIANTS = 100;
 const MAX_IMAGES_PER_PRODUCT = 50;
 const MAX_UPLOAD_IMAGE_BYTES = 4.5 * 1024 * 1024;
 const MAX_IMAGE_SIDE = 1800;
-const SUPPLIER_OPTIONS = ["包子媽", "山瀾商行", "NO21", "精品", "599", "Diz.o", "芭斯特", "祥美", "亞諾"];
+const SUPPLIER_OPTIONS = ["漂漂館", "包子媽", "山瀾商行", "NO21", "精品", "599", "Diz.o", "芭斯特", "祥美", "亞諾"];
 
 export default function PiaopiaoPublisherPage() {
   const [token, setToken] = useState("");
