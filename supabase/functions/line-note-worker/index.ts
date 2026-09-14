@@ -262,6 +262,21 @@ async function readPost(client: any, post: any) {
       method: "POST", body: rows, prefer: "resolution=ignore-duplicates,return=minimal",
     });
   }
+  // 解析規則升級後，先前被判成「非下單」（parsed 空）的留言要有機會翻案：
+  // upsert 是 ignore-duplicates，舊留言存的 parsed 不會自己更新（例：2026-09-14 前
+  // 「加1」「打1」解析不出來）。這裡只動 parsed 還是空的 no_order 列，重解析出東西才退回
+  // pending 讓下面那段照常加單；人工標過的 ignored/resolved 不碰。
+  const stale = await rest(
+    `line_note_comments?post_id=eq.${post.id}&status=eq.no_order` +
+    `&select=id,text,commenter_name,parsed`).catch(() => []);
+  for (const c of stale ?? []) {
+    if (Array.isArray(c.parsed) && c.parsed.length) continue;
+    const p = parseNoteComment(c.text ?? "", c.commenter_name ?? "");
+    if (!p.orders.length) continue;
+    await patch("line_note_comments", `id=eq.${c.id}`, {
+      parsed: p.orders, member_no_hint: p.memberNo, status: "pending", error: null, processed_at: null,
+    }).catch(() => {});
+  }
   // 小幫手宣布結單之後，這篇就不再自動加單、也不再讀（詳見 detectClosing）
   const closer = await detectClosing(post);
   const pendingAll = await rest(

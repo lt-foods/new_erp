@@ -188,3 +188,24 @@ test("matchCampaign：蓋了章就精準比對，不再猜", () => {
   assert.equal(matchCampaign("丹波黑豆 300克 丹波黑豆 500克", cs), null);
   assert.equal(matchCampaign("丹波黑豆 300克 丹波黑豆 500克\n🔖 團號 GRP-2026-012", cs)?.id, 12);
 });
+
+test("加1 / 打1 written as words", () => {
+  assert.deepEqual(one("加1"), [{ code: null, qty: 1, cancel: false }]);
+  assert.deepEqual(one("打1"), [{ code: null, qty: 1, cancel: false }]);
+  assert.deepEqual(one("加 2"), [{ code: null, qty: 2, cancel: false }]);
+  assert.deepEqual(one("加一"), [{ code: null, qty: 1, cancel: false }]);
+  assert.deepEqual(one("打２份"), [{ code: null, qty: 2, cancel: false }]);
+  assert.deepEqual(one("A加1"), [{ code: "A", qty: 1, cancel: false }]);
+  assert.deepEqual(one("加1 B2"), [{ code: "B2", qty: 1, cancel: false }]);
+  assert.deepEqual(one("A加1 B打2"), [{ code: "A", qty: 1, cancel: false }, { code: "B", qty: 2, cancel: false }]);
+  // 不是下單：加油／打包／追加沒帶數字、加一點
+  assert.deepEqual(one("加油"), []);
+  assert.deepEqual(one("幫我打包"), []);
+  assert.deepEqual(one("加一點"), []);
+  assert.deepEqual(one("追加1"), []);
+  // 連會員編號一起寫
+  const r = parseNoteComment("615910 加1");
+  assert.equal(r.memberNo, "615910");
+  assert.deepEqual(r.orders.map((o) => [o.code, o.qty]), [[null, 1]]);
+  assert.deepEqual(parseNoteComment("加1", "翁太615910").orders.map((o) => [o.code, o.qty]), [[null, 1]]);
+});
