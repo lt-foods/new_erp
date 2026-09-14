@@ -19,6 +19,49 @@ import { logCaught } from "@/lib/clientLog";
 import { detectClientChannel } from "@/lib/clientChannel";
 import LineBindGate from "@/components/LineBindGate";
 
+/**
+ * liff-api 載入團購失敗時給客人看的文案。
+ * 後端回的是英文代碼（`campaign not available` / `campaign not found`），
+ * 直接印出來客人看不懂（2026-09-14 回報：整頁只有一行紅字英文）。
+ *
+ * - not available：團已結單 / 下架，而且這位客人沒買過（買過的後端會放行）。
+ *   多半是 LINE 群裡的舊連結被點開，給他去看其他團的路。
+ * - not found：連結錯、別店自開團、或團被刪了。
+ */
+function describeLoadError(message: string): { emoji: string; title: string; body: string; unexpected: boolean } {
+  const m = message.toLowerCase();
+  if (m.includes("campaign not available")) {
+    return {
+      emoji: "🛍️",
+      title: "這個團已經結束了",
+      body: "本團已結單或下架，目前無法下單。\n看看店長最近開的其他團吧！",
+      unexpected: false,
+    };
+  }
+  if (m.includes("campaign not found")) {
+    return {
+      emoji: "🔍",
+      title: "找不到這個團",
+      body: "連結可能已失效，或這個團不是你取貨門市開的。\n請回商城看看目前開團中的商品。",
+      unexpected: false,
+    };
+  }
+  if (m.includes("failed to fetch") || m.includes("network") || m.includes("load failed")) {
+    return {
+      emoji: "📶",
+      title: "網路連線不穩",
+      body: "剛才沒有連上伺服器，請確認網路後再試一次。",
+      unexpected: true,
+    };
+  }
+  return {
+    emoji: "😥",
+    title: "載入失敗",
+    body: `暫時讀不到這個團的內容，請稍後再試。\n（${message}）`,
+    unexpected: true,
+  };
+}
+
 /** 把 children 渲染到 document.body（保證 fixed 相對 viewport）。 */
 function Portal({ enabled, children }: { enabled: boolean; children: React.ReactNode }) {
   if (!enabled || typeof document === "undefined") return null;
@@ -190,7 +233,13 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
           setViewCount(d.campaign.view_count);
         }
       } catch (e) {
-        setErr(e instanceof Error ? e.message : String(e));
+        const message = e instanceof Error ? e.message : String(e);
+        setErr(message);
+        // 結單 / 找不到是正常的死路（舊連結），不算錯；其他的要留痕，
+        // 不然客人只會回報「打不開」，我們看不到是什麼。
+        if (describeLoadError(message).unexpected) {
+          logCaught("get_campaign_detail_failed", e, { campaign_id: id, sales_channel: salesChannel });
+        }
       }
     })();
   }, [id, router]);
@@ -353,11 +402,51 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
     >
       {/* 唯讀模式沒有常駐下單列，底部不用留它的位置 */}
       <div className={`space-y-4 px-0 ${readOnly ? "pb-10" : "pb-[160px]"}`}>
-        {err && (
-          <div className="mx-4 rounded-2xl bg-[#ff3b30]/10 p-3 text-[15px] text-[#c4271d]">
-            {err}
-          </div>
-        )}
+        {err && (() => {
+          const info = describeLoadError(err);
+          const shopHref = salesChannel === "piaopiao" ? "/piaopiao" : "/shop";
+          return (
+            <div className="mx-4 mt-3 overflow-hidden rounded-3xl bg-[var(--card-bg)] px-6 pb-6 pt-8 text-center shadow-[var(--shadow-card)]">
+              <div
+                className="mx-auto flex h-24 w-24 items-center justify-center rounded-full text-5xl"
+                style={{ background: "radial-gradient(circle at 30% 30%, var(--brand-tint) 0%, var(--brand-soft) 100%)" }}
+                aria-hidden
+              >
+                {info.emoji}
+              </div>
+              <h2 className="mt-5 text-[22px] font-bold leading-tight text-[var(--foreground)]">
+                {info.title}
+              </h2>
+              <p className="mt-2 whitespace-pre-line text-[15px] leading-7 text-[var(--secondary-label)]">
+                {info.body}
+              </p>
+              <div className="mt-6 flex flex-col gap-2.5">
+                {info.unexpected ? (
+                  <button
+                    type="button"
+                    onClick={() => window.location.reload()}
+                    className="min-h-12 rounded-full bg-[var(--brand-strong)] px-5 text-[16px] font-semibold text-white active:opacity-80"
+                  >
+                    再試一次
+                  </button>
+                ) : (
+                  <a
+                    href={shopHref}
+                    className="flex min-h-12 items-center justify-center rounded-full bg-[var(--brand-strong)] px-5 text-[16px] font-semibold text-white active:opacity-80"
+                  >
+                    {salesChannel === "piaopiao" ? "看看其他漂漂館商品 →" : "看看其他團購商品 →"}
+                  </a>
+                )}
+                <a
+                  href="/orders"
+                  className="flex min-h-12 items-center justify-center rounded-full bg-[var(--brand-soft)] px-5 text-[16px] font-semibold text-[var(--brand-strong)] active:opacity-80"
+                >
+                  查看我的訂單
+                </a>
+              </div>
+            </div>
+          );
+        })()}
 
         {!showShell && !err && (
           <div className="flex justify-center py-20">
@@ -365,7 +454,7 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
           </div>
         )}
 
-        {showShell && (
+        {showShell && !err && (
           <>
             {/* 封面 carousel — 有 hint 時先顯示列表封面, detail 回來再換成完整圖集 */}
             <div className="relative">
