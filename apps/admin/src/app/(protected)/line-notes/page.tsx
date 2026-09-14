@@ -919,33 +919,54 @@ function postFirstLine(text: string | null) {
   return line ? (line.length > 40 ? `${line.slice(0, 40)}…` : line) : "（沒有內文）";
 }
 
-// ── 貼文：哪些團已經發到哪些社群；點一列展開看加了幾單 ─────────────────────
+// ── 貼文：以「團」為軸（同一團發到幾個社群就收成一張卡），展開看各社群的加單 ──
+//
+// 為什麼不以貼文為軸：一團常常同時發到 4、5 個社群，每個社群一張卡的話同一團散成
+// 好幾張、加單數字也各自為政，小幫手要自己心算。而社群 ↔ 店不是一對一（有的群整合
+// 4-5 家店、有的群只有一家），所以每則加單要寫清楚「哪個群來的、加到哪間店」。
+// 未認出團的貼文沒有團可掛，仍然一篇一張卡。
+type PostGroup = { key: string; campaignId: number | null; campaign: Post["group_buy_campaigns"]; posts: Post[] };
+
 function PostsTab({ posts, communityById, reload, notify, fail }: {
   posts: Post[] | null; communityById: Map<number, Community>; reload: () => Promise<void>; notify: (m: string) => void; fail: (e: unknown) => void;
 }) {
   const [busy, setBusy] = useState<number | null>(null);
-  const [open, setOpen] = useState<number | null>(null);
-  // 展開過的貼文留言（快取，收合再展開不用重抓）
+  const [open, setOpen] = useState<string | null>(null);
+  // 展開過的留言（快取，依貼文 id；收合再展開不用重抓）
   const [detail, setDetail] = useState<Map<number, Comment[]>>(new Map());
-  const [orderNos, setOrderNos] = useState<Map<number, string>>(new Map());
-  const [loadingId, setLoadingId] = useState<number | null>(null);
+  const [orders, setOrders] = useState<Map<number, OrderInfo>>(new Map());
+  const [loadingKey, setLoadingKey] = useState<string | null>(null);
+  // 展開的那一團目前看哪個社群（null = 全部）
+  const [pickCommunity, setPickCommunity] = useState<number | null>(null);
   // 每篇貼文的留言統計。收合時也要看得到，所以一次把清單上所有貼文的留言狀態撈回來自己數
   // （只取 post_id + status + member_no_hint 三欄，比逐篇展開才查省很多）。
   const [counts, setCounts] = useState<Map<number, PostStat>>(new Map());
   const [q, setQ] = useState("");
   const [linkFor, setLinkFor] = useState<Post | null>(null);
 
+  // 同一團的貼文收成一組；未認出團的各自一組。順序照最新貼文（posts 已是 created_at desc）。
+  const groups = useMemo<PostGroup[]>(() => {
+    const out: PostGroup[] = [];
+    const byCampaign = new Map<number, PostGroup>();
+    for (const p of posts ?? []) {
+      if (!p.campaign_id) { out.push({ key: `u${p.id}`, campaignId: null, campaign: null, posts: [p] }); continue; }
+      let g = byCampaign.get(p.campaign_id);
+      if (!g) { g = { key: `c${p.campaign_id}`, campaignId: p.campaign_id, campaign: p.group_buy_campaigns, posts: [] }; byCampaign.set(p.campaign_id, g); out.push(g); }
+      g.posts.push(p);
+    }
+    return out;
+  }, [posts]);
+
   // 搜尋：團名 / 團號 / 社群名 / 貼文內文都吃。貼文多起來之後靠捲的找不到。
   const shown = useMemo(() => {
     const kw = q.trim().toLowerCase();
-    if (!kw || !posts) return posts ?? [];
-    return posts.filter((p) => {
+    if (!kw) return groups;
+    return groups.filter((g) => g.posts.some((p) => {
       const c = communityById.get(p.community_id);
-      return [p.group_buy_campaigns?.name, p.group_buy_campaigns?.campaign_no,
-              c?.home_name, c?.home_id, p.text]
+      return [g.campaign?.name, g.campaign?.campaign_no, c?.home_name, c?.home_id, p.text]
         .some((v) => (v ?? "").toLowerCase().includes(kw));
-    });
-  }, [posts, q, communityById]);
+    }));
+  }, [groups, q, communityById]);
 
   const loadCounts = useCallback(async () => {
     const ids = (posts ?? []).map((p) => p.id);
@@ -962,24 +983,43 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
   }, [posts]);
   useEffect(() => { void loadCounts(); }, [loadCounts]);
 
-  const toggle = async (p: Post) => {
-    if (open === p.id) { setOpen(null); return; }
-    setOpen(p.id);
-    if (detail.has(p.id)) return;
-    setLoadingId(p.id);
+  const groupStat = (g: PostGroup): PostStat => {
+    const s: PostStat = { total: 0, ordered: 0, duplicate: 0, todo: 0 };
+    for (const p of g.posts) {
+      const st = counts.get(p.id);
+      if (!st) { s.total += p.comment_count; continue; }
+      s.total += st.total; s.ordered += st.ordered; s.duplicate += st.duplicate; s.todo += st.todo;
+    }
+    return s;
+  };
+
+  const toggle = async (g: PostGroup) => {
+    if (open === g.key) { setOpen(null); return; }
+    setOpen(g.key);
+    setPickCommunity(null);
+    const need = g.posts.filter((p) => !detail.has(p.id)).map((p) => p.id);
+    if (need.length === 0) return;
+    setLoadingKey(g.key);
     const { data, error } = await getSupabase().from("line_note_comments").select("*")
-      .eq("post_id", p.id).order("commented_at", { ascending: true }).order("id");
-    setLoadingId(null);
+      .in("post_id", need).order("commented_at", { ascending: true }).order("id");
+    setLoadingKey(null);
     if (error) return fail(error);
-    const cs = (data ?? []) as Comment[];
-    setDetail((m) => new Map(m).set(p.id, cs));
-    // 有加到單的補查單號，才能做成連結
+    const cs = (data ?? []) as (Comment & { post_id: number })[];
+    setDetail((m) => {
+      const n = new Map(m);
+      for (const pid of need) n.set(pid, cs.filter((c) => c.post_id === pid));
+      return n;
+    });
+    // 有加到單的補查單號＋取貨店：社群跟店不是一對一，「加到哪間店」要看訂單才知道
     const ids = [...new Set(cs.map((c) => c.customer_order_id).filter((x): x is number => !!x))];
     if (ids.length === 0) return;
-    const { data: od } = await getSupabase().from("customer_orders").select("id,order_no").in("id", ids);
-    setOrderNos((m) => {
+    const { data: od } = await getSupabase().from("customer_orders")
+      .select("id,order_no,stores!customer_orders_pickup_store_id_fkey(name)").in("id", ids);
+    setOrders((m) => {
       const n = new Map(m);
-      for (const o of (od ?? []) as { id: number; order_no: string }[]) n.set(o.id, o.order_no);
+      for (const o of (od ?? []) as unknown as { id: number; order_no: string; stores: { name: string } | null }[]) {
+        n.set(o.id, { id: o.id, order_no: o.order_no, store_name: o.stores?.name ?? null });
+      }
       return n;
     });
   };
@@ -1008,7 +1048,7 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
     setBusy(null);
     if (r.kind === "cancelled") return;
     if (r.kind === "failed") return fail(new Error(r.error));
-    if (open === p.id) setOpen(null);
+    setDetail((m) => { const n = new Map(m); n.delete(p.id); return n; });
     notify(r.kind === "deleted" ? "已從 LINE 記事本刪除，紀錄也清掉了" : "已清掉後台紀錄（LINE 上那篇還在）");
     await reload();
   };
@@ -1023,18 +1063,24 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
     await reload();
   };
 
-  // 收合時顯示的統計徽章
-  const statBadges = (st: PostStat | undefined) => {
+  const statBadges = (st: PostStat | undefined, compact = false) => {
     if (!st || st.total === 0) return null;   // 卡片上留空就好，不要多一條「—」
     return (
-      <div className="flex flex-wrap items-center gap-1">
+      <span className="inline-flex flex-wrap items-center gap-1">
         {st.ordered > 0 && <Badge tone="green">已加單 {st.ordered}</Badge>}
         {st.duplicate > 0 && <Badge tone="blue">已有訂單 {st.duplicate}</Badge>}
         {st.todo > 0 && <Badge tone="red">待處理 {st.todo}</Badge>}
-        {st.ordered === 0 && st.duplicate === 0 && st.todo === 0 && <span className="text-xs text-zinc-400">無下單</span>}
-      </div>
+        {st.ordered === 0 && st.duplicate === 0 && st.todo === 0 && !compact && <span className="text-xs text-zinc-400">無下單</span>}
+      </span>
     );
   };
+  const communityName = (id: number) => {
+    const c = communityById.get(id);
+    return c?.home_name || c?.home_id || `社群 #${id}`;
+  };
+  const tone = (s: Comment["status"]) =>
+    s === "ordered" || s === "resolved" ? "green" : s === "duplicate" ? "blue" : s === "pending" ? "amber"
+    : s === "unmatched" || s === "error" ? "red" : "gray";
 
   return (
     <div className="space-y-3">
@@ -1044,10 +1090,10 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
         <button type="button" className={btn} onClick={() => void reload()}>重新整理</button>
       </div>
       <p className="text-sm text-zinc-500">
-        開團自動發的、和小幫手手貼後被系統認出來的貼文。點一則展開看每則留言。
+        一團一張卡：同一團發到幾個社群都收在同一張，展開看每個社群加了誰、加到哪間店
+        （社群跟店不是一對一，取貨店看的是會員自己設定的店）。
         認不出是哪一團的會標<b>「未認出團」</b>，指定團之後才會開始讀留言加單。
-        <br />要<b>補發某一團</b>的話從「開團」列表那一團的「LINE 記事本」按鈕比較快 ——
-        可以一次勾好幾個群組，也看得到那團已經爬到什麼。
+        <br />要<b>補發某一團</b>的話從「開團」列表那一團的「LINE 記事本」按鈕比較快 —— 可以一次勾好幾個群組。
       </p>
 
       {posts === null ? <div className="py-8 text-center text-sm text-zinc-400">讀取中…</div>
@@ -1055,92 +1101,155 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
           <div className="py-8 text-center text-sm text-zinc-400">{q ? "沒有符合的貼文" : "還沒有貼文"}</div>
         ) : (
         <ul className="space-y-2">
-          {shown.map((p) => {
-            const c = communityById.get(p.community_id);
-            const cs = p.group_buy_campaigns?.status;
-            const expanded = open === p.id;
-            const cmts = detail.get(p.id);
-            const st = counts.get(p.id);
-            const unlinked = !p.campaign_id;
-            const title = p.group_buy_campaigns?.name ?? (unlinked ? postFirstLine(p.text) : `#${p.id}`);
+          {shown.map((g) => {
+            const expanded = open === g.key;
+            const unlinked = !g.campaignId;
+            const first = g.posts[0];
+            const cs = g.campaign?.status;
+            const title = g.campaign?.name ?? (unlinked ? postFirstLine(first.text) : `#${first.id}`);
+            const gst = groupStat(g);
+            const multi = g.posts.length > 1;
+            const loaded = g.posts.every((p) => detail.has(p.id));
+            const allComments = loaded
+              ? g.posts.flatMap((p) => (detail.get(p.id) ?? []).map((c) => ({ ...c, post: p })))
+                  .sort((a, b) => (Date.parse(a.commented_at ?? "") || 0) - (Date.parse(b.commented_at ?? "") || 0) || a.id - b.id)
+              : null;
+            const visible = allComments?.filter((c) => pickCommunity === null || c.post.community_id === pickCommunity) ?? null;
+            // 這團加到了哪幾間店（依取貨店數已加單），一眼看得出「4 個群 → 2 家店」
+            const storeTally = new Map<string, number>();
+            for (const c of allComments ?? []) {
+              if (c.status !== "ordered" || !c.customer_order_id) continue;
+              const s = orders.get(c.customer_order_id)?.store_name ?? "（未知店）";
+              storeTally.set(s, (storeTally.get(s) ?? 0) + 1);
+            }
             return (
-              <li key={p.id} className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+              <li key={g.key} className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
                 {/* 標題列：整塊可點，手機上一樣好按 */}
-                <button type="button" onClick={() => void toggle(p)}
+                <button type="button" onClick={() => void toggle(g)}
                   className="flex w-full items-start gap-2 p-3 text-left hover:bg-zinc-50 dark:hover:bg-zinc-800/50">
                   <span className="mt-0.5 shrink-0 text-zinc-400">{expanded ? "▾" : "▸"}</span>
                   <div className="min-w-0 flex-1 space-y-1.5">
                     <div className="flex items-start justify-between gap-2">
                       <span className="min-w-0 flex-1 font-medium leading-snug">{title}</span>
-                      <span className="shrink-0 text-xs tabular-nums text-zinc-500">{st?.total ?? p.comment_count} 則留言</span>
+                      <span className="shrink-0 text-xs tabular-nums text-zinc-500">
+                        {multi && `${g.posts.length} 個社群・`}{gst.total} 則留言
+                      </span>
                     </div>
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-500">
                       {unlinked
                         ? <Badge tone="amber">未認出團</Badge>
                         : <>
                             {cs && <span className={`rounded px-1.5 py-0.5 ${campaignStatusBadge(cs)}`}>{campaignStatusLabel(cs)}</span>}
-                            <span className="font-mono">{p.group_buy_campaigns?.campaign_no}</span>
+                            <span className="font-mono">{g.campaign?.campaign_no}</span>
                           </>}
-                      {p.status !== "posted" && !unlinked && <Badge tone={p.status === "failed" ? "red" : "gray"}>{POST_STATUS[p.status]}</Badge>}
-                      {/* 兩個 id 都寫出來：#id 是後台這一列，LINE 那串才是記事本上那一篇
-                          —— 跟客服對答案時只有後者認得出是哪一篇貼文 */}
-                      <span className="font-mono">#{p.id}</span>
-                      {p.line_post_id && <span className="font-mono" title="LINE 記事本的貼文 id">LINE {p.line_post_id}</span>}
-                      <span className="truncate">{c?.home_name || c?.home_id || `社群 #${p.community_id}`}</span>
-                      <span>發文 {fmt(p.posted_at)}</span>
-                      {p.last_read_at && <span>讀取 {fmt(p.last_read_at)}</span>}
+                      {unlinked && (
+                        <>
+                          <span className="font-mono">#{first.id}</span>
+                          {first.line_post_id && <span className="font-mono" title="LINE 記事本的貼文 id">LINE {first.line_post_id}</span>}
+                          <span className="truncate">{communityName(first.community_id)}</span>
+                          <span>發文 {fmt(first.posted_at)}</span>
+                        </>
+                      )}
                     </div>
-                    {statBadges(st)}
-                    {p.closed_reason && (
-                      <div className="text-xs text-zinc-500">讀到結單留言：{p.closed_reason}</div>
+                    {statBadges(gst)}
+                    {storeTally.size > 0 && (
+                      <div className="text-xs text-zinc-500">
+                        加到：{[...storeTally].map(([s, n]) => `${s} ${n}`).join("、")}
+                      </div>
                     )}
-                    {p.last_error && <div className="text-xs text-red-600">{p.last_error}</div>}
                   </div>
                 </button>
 
-                {/* 動作列：手機上自己一行，按鈕才夠大 */}
-                <div className="flex flex-wrap gap-1.5 border-t border-zinc-100 px-3 py-2 dark:border-zinc-800">
-                  {unlinked && (
-                    <button type="button" className={btnPrimary} onClick={() => setLinkFor(p)}>指定團</button>
-                  )}
-                  {p.status === "posted" && (
-                    <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void readNow(p)}>立即讀取</SpinButton>
-                  )}
-                  {p.status === "closed" && p.closed_comment_id && (
-                    <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void reopenPost(p)}>恢復讀取</SpinButton>
-                  )}
-                  <SpinButton type="button" className={`${btn} ml-auto text-red-600`} loading={busy === p.id}
-                    onClick={() => void removePost(p)}
-                    title={p.line_post_id ? "連 LINE 記事本上那篇一起刪掉" : "只清後台紀錄（這篇沒發到 LINE）"}>
-                    {p.line_post_id ? "刪除貼文" : "刪除紀錄"}
-                  </SpinButton>
-                </div>
+                {/* 每個社群一列：發文／讀取時間、這個群的統計、動作按鈕都跟著那一篇貼文走 */}
+                <ul className="divide-y divide-zinc-100 border-t border-zinc-100 dark:divide-zinc-800 dark:border-zinc-800">
+                  {g.posts.map((p) => (
+                    <li key={p.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 text-xs text-zinc-500">
+                      <span className="min-w-0 flex-1 basis-full sm:basis-auto">
+                        {!unlinked && <span className="font-medium text-zinc-800 dark:text-zinc-200">{communityName(p.community_id)}</span>}
+                        {p.status !== "posted" && !unlinked && <Badge tone={p.status === "failed" ? "red" : "gray"}>{POST_STATUS[p.status]}</Badge>}
+                        {/* 兩個 id 都寫出來：#id 是後台這一列，LINE 那串才是記事本上那一篇
+                            —— 跟客服對答案時只有後者認得出是哪一篇貼文 */}
+                        {!unlinked && <span className="ml-2 font-mono">#{p.id}</span>}
+                        {!unlinked && p.line_post_id && <span className="ml-2 font-mono" title="LINE 記事本的貼文 id">LINE {p.line_post_id}</span>}
+                        {!unlinked && <span className="ml-2">發文 {fmt(p.posted_at)}</span>}
+                        {p.last_read_at && <span className="ml-2">讀取 {fmt(p.last_read_at)}</span>}
+                        {multi && <span className="ml-2">{statBadges(counts.get(p.id), true)}</span>}
+                        {p.closed_reason && <div className="text-zinc-500">讀到結單留言：{p.closed_reason}</div>}
+                        {p.last_error && <div className="text-red-600">{p.last_error}</div>}
+                      </span>
+                      <span className="flex flex-wrap gap-1.5">
+                        {unlinked && (
+                          <button type="button" className={btnPrimary} onClick={() => setLinkFor(p)}>指定團</button>
+                        )}
+                        {p.status === "posted" && (
+                          <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void readNow(p)}>立即讀取</SpinButton>
+                        )}
+                        {p.status === "closed" && p.closed_comment_id && (
+                          <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void reopenPost(p)}>恢復讀取</SpinButton>
+                        )}
+                        <SpinButton type="button" className={`${btn} text-red-600`} loading={busy === p.id}
+                          onClick={() => void removePost(p)}
+                          title={p.line_post_id ? "連 LINE 記事本上那篇一起刪掉" : "只清後台紀錄（這篇沒發到 LINE）"}>
+                          {p.line_post_id ? "刪除貼文" : "刪除紀錄"}
+                        </SpinButton>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
 
                 {expanded && (
                   <div className="border-t border-zinc-100 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900/50">
-                    {loadingId === p.id ? <div className="text-sm text-zinc-400">讀取中…</div> : !cmts ? null
-                      : cmts.length === 0 ? <div className="text-sm text-zinc-400">還沒讀到留言</div> : (
-                      <ul className="divide-y divide-zinc-200 rounded border border-zinc-200 bg-white dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-900">
-                        {cmts.map((cm) => (
-                          <li key={cm.id} className="px-3 py-2 text-sm">
-                            {/* 手機：留言人 + 狀態一行，內容一行；桌機自然排成一列 */}
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                              <span className="font-medium">{cm.commenter_name ?? "—"}</span>
-                              <span className="text-xs text-zinc-500">{fmt(cm.commented_at)}</span>
-                              {cm.customer_order_id && orderNos.has(cm.customer_order_id) && (
-                                <OrderLink id={cm.customer_order_id} no={orderNos.get(cm.customer_order_id)!} />
-                              )}
-                              <Badge tone={cm.status === "ordered" || cm.status === "resolved" ? "green"
-                                : cm.status === "duplicate" ? "blue"
-                                : cm.status === "pending" ? "amber"
-                                : cm.status === "unmatched" || cm.status === "error" ? "red" : "gray"}>
-                                {COMMENT_STATUS[cm.status]}
-                              </Badge>
-                            </div>
-                            <div className="mt-0.5 whitespace-pre-wrap break-words text-zinc-700 dark:text-zinc-300">{cm.text}</div>
-                          </li>
-                        ))}
-                      </ul>
+                    {loadingKey === g.key || !visible ? <div className="text-sm text-zinc-400">讀取中…</div>
+                      : (
+                      <>
+                        {/* 多個社群才出分頁：全部 / 各社群，數字是該群的留言數 */}
+                        {multi && (
+                          <div className="mb-2 flex flex-wrap gap-1">
+                            {[null, ...g.posts.map((p) => p.community_id)].map((cid) => {
+                              const n = cid === null ? allComments!.length : allComments!.filter((c) => c.post.community_id === cid).length;
+                              const on = pickCommunity === cid;
+                              return (
+                                <button key={cid ?? "all"} type="button" onClick={() => setPickCommunity(cid)}
+                                  className={`rounded-full border px-2.5 py-0.5 text-xs ${on
+                                    ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+                                    : "border-zinc-300 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"}`}>
+                                  {cid === null ? "全部" : communityName(cid)} {n}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                        {visible.length === 0 ? <div className="text-sm text-zinc-400">還沒讀到留言</div> : (
+                          <ul className="divide-y divide-zinc-200 rounded border border-zinc-200 bg-white dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-900">
+                            {visible.map((cm) => {
+                              const o = cm.customer_order_id ? orders.get(cm.customer_order_id) : undefined;
+                              return (
+                                <li key={cm.id} className="px-3 py-2 text-sm">
+                                  {/* 手機：留言人 + 狀態一行，內容一行；桌機自然排成一列 */}
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <span className="font-medium">{cm.commenter_name ?? "—"}</span>
+                                    <span className="text-xs text-zinc-500">{fmt(cm.commented_at)}</span>
+                                    {multi && pickCommunity === null && (
+                                      <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                                        {communityName(cm.post.community_id)}
+                                      </span>
+                                    )}
+                                    <Badge tone={tone(cm.status)}>{COMMENT_STATUS[cm.status]}</Badge>
+                                    {o && (
+                                      <span className="inline-flex items-center gap-1">
+                                        <OrderLink id={o.id} no={o.order_no} />
+                                        {o.store_name && <span className="text-xs text-zinc-600 dark:text-zinc-300">→ {o.store_name}</span>}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="mt-0.5 whitespace-pre-wrap break-words text-zinc-700 dark:text-zinc-300">{cm.text}</div>
+                                  {cm.error && <div className="mt-0.5 text-xs text-red-600 dark:text-red-400">{cm.error}</div>}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        )}
+                      </>
                     )}
                   </div>
                 )}
