@@ -111,7 +111,7 @@ export default function PiaopiaoPublisherPage() {
     setImageBusy(true);
     try {
       const images: File[] = [];
-      for (const file of files) images.push(await prepareUploadImage(file));
+      for (const [i, file] of files.entries()) images.push(await prepareUploadImage(file, i + 1));
       updateProduct(productIndex, { images });
     } catch (e) {
       setError(e instanceof Error ? e.message : "圖片壓縮失敗，請換一張照片再試");
@@ -162,10 +162,10 @@ export default function PiaopiaoPublisherPage() {
     setBusy(true);
     try {
       const uploaded: Array<Record<string, unknown>> = [];
-      for (const product of products) {
+      for (const [productIndex, product] of products.entries()) {
         const images: string[] = [];
-        for (const file of product.images) {
-          const uploadedImage = await api<UploadImageResponse>(token, { action: "upload_image", mime: file.type, base64: await fileToBase64(file) });
+        for (const [imageIndex, file] of product.images.entries()) {
+          const uploadedImage = await api<UploadImageResponse>(token, { action: "upload_image", mime: file.type, base64: await fileToBase64(file, `第 ${productIndex + 1} 樣商品第 ${imageIndex + 1} 張圖片`) });
           images.push(uploadedImage.path);
         }
         uploaded.push({
@@ -299,13 +299,28 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function variantNameKey(value: string) { return value.trim().replace(/\s+/g, " ").toLocaleLowerCase(); }
 function splitVariantTokens(value: string) { const seen = new Set<string>(); return value.split(/[\n,、]+/).map((item) => item.trim()).filter((item) => { const key = variantNameKey(item); if (!key || seen.has(key)) return false; seen.add(key); return true; }); }
 function validVariant(variant: Variant) { const cost = Number(variant.cost_price); const branch = Number(variant.branch_price); const retail = Number(variant.retail_price); return !!variant.name.trim() && Number.isFinite(cost) && Number.isFinite(branch) && Number.isFinite(retail) && cost >= 0 && branch > 0 && retail > 0 && cost <= branch && branch < retail; }
-async function api<T>(token: string, body: Record<string, unknown>): Promise<T> { const base = process.env.NEXT_PUBLIC_SUPABASE_URL; if (!base) throw new Error("系統尚未設定連線"); const response = await fetch(`${base}/functions/v1/piaopiao-api`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body) }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.error || `系統錯誤 ${response.status}`); return data as T; }
-async function fileToBase64(file: File) { const buffer = await file.arrayBuffer(); let binary = ""; for (const value of new Uint8Array(buffer)) binary += String.fromCharCode(value); return btoa(binary); }
+async function api<T>(token: string, body: Record<string, unknown>): Promise<T> {
+  const base = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!base) throw new Error("系統尚未設定連線");
+  const response = await fetch(`${base}/functions/v1/piaopiao-api`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+  const text = await response.text();
+  let data: unknown;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    if (response.ok) throw new Error("後端回傳格式異常，請重新整理後再試");
+    throw new Error(`後端暫時無法處理（HTTP ${response.status}），請稍後再試`);
+  }
+  if (!response.ok) throw new Error((data && typeof data === "object" && "error" in data && typeof data.error === "string") ? data.error : `系統錯誤 ${response.status}`);
+  return data as T;
+}
+async function fileToBase64(file: File, label = "圖片") { try { const buffer = await file.arrayBuffer(); let binary = ""; for (const value of new Uint8Array(buffer)) binary += String.fromCharCode(value); return btoa(binary); } catch { throw new Error(`${label}讀取失敗，請重新選圖後再建立`); } }
 async function imageFromPath(path?: string): Promise<File | undefined> { try { if (!path) return undefined; const base = process.env.NEXT_PUBLIC_SUPABASE_URL; if (!base) return undefined; const url = `${base}/storage/v1/object/public/products/${path.split("/").map(encodeURIComponent).join("/")}`; const response = await fetch(url); if (!response.ok) return undefined; const blob = await response.blob(); return new File([blob], "piaopiao-product-image", { type: blob.type || "image/jpeg" }); } catch { return undefined; } }
-async function prepareUploadImage(file: File): Promise<File> {
-  if (!new Set(["image/jpeg", "image/png", "image/webp"]).has(file.type)) throw new Error("只接受 JPG、PNG 或 WEBP 圖片");
-  if (file.size <= MAX_UPLOAD_IMAGE_BYTES) return file;
-  const { image, url } = await imageElementFromFile(file);
+async function prepareUploadImage(file: File, imageNumber: number): Promise<File> {
+  const label = `第 ${imageNumber} 張圖片`;
+  if (!new Set(["image/jpeg", "image/png", "image/webp"]).has(file.type)) throw new Error(`${label}只接受 JPG、PNG 或 WEBP 圖片`);
+  if (file.size <= MAX_UPLOAD_IMAGE_BYTES) return cloneUploadImage(file, label);
+  const { image, url } = await imageElementFromFile(file, label);
   const scale = Math.min(1, MAX_IMAGE_SIDE / Math.max(image.naturalWidth, image.naturalHeight));
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
@@ -313,7 +328,7 @@ async function prepareUploadImage(file: File): Promise<File> {
   const ctx = canvas.getContext("2d");
   if (!ctx) {
     URL.revokeObjectURL(url);
-    throw new Error("這台裝置無法處理圖片；請換一張照片再試");
+    throw new Error(`這台裝置無法處理${label}；請換一張照片再試`);
   }
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -325,20 +340,28 @@ async function prepareUploadImage(file: File): Promise<File> {
     quality -= 0.08;
     blob = await canvasToBlob(canvas, quality);
   }
-  if (blob.size > 5 * 1024 * 1024) throw new Error("這張圖片壓縮後仍太大；請先裁切或換一張照片");
+  if (blob.size > 5 * 1024 * 1024) throw new Error(`${label}壓縮後仍太大；請先裁切或換一張照片`);
   return new File([blob], file.name.replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg", lastModified: Date.now() });
+}
+async function cloneUploadImage(file: File, label: string): Promise<File> {
+  try {
+    const buffer = await file.arrayBuffer();
+    return new File([buffer], file.name, { type: file.type, lastModified: file.lastModified || Date.now() });
+  } catch {
+    throw new Error(`${label}讀取失敗，請重新選圖後再試`);
+  }
 }
 function canvasToBlob(canvas: HTMLCanvasElement, quality: number) {
   return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("圖片壓縮失敗")), "image/jpeg", quality));
 }
-function imageElementFromFile(file: File) {
+function imageElementFromFile(file: File, label: string) {
   return new Promise<{ image: HTMLImageElement; url: string }>((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const image = new Image();
     image.onload = () => resolve({ image, url });
     image.onerror = () => {
       URL.revokeObjectURL(url);
-      reject(new Error("圖片讀取失敗，請換一張照片再試"));
+      reject(new Error(`${label}讀取失敗，請確認檔案沒有損壞後重新選圖`));
     };
     image.src = url;
   });
