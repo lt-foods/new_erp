@@ -15,6 +15,7 @@ type Settlement = {
   settlement_month: string;
   store_id: number;
   payable_amount: number;
+  cost_amount: number;
   item_count: number;
   status: "sent" | "disputed" | "confirmed" | "remitted" | "settled" | "draft" | "cancelled";
   sent_at: string | null;
@@ -67,7 +68,7 @@ export default function StoreSettlementReview() {
     (async () => {
       const { data, error: e } = await getSupabase()
         .from("store_monthly_settlements")
-        .select("id, settlement_month, store_id, payable_amount, item_count, status, sent_at, remitted_at")
+        .select("id, settlement_month, store_id, payable_amount, cost_amount, item_count, status, sent_at, remitted_at")
         .eq("store_id", storeId)
         .in("status", ["sent", "disputed", "confirmed", "remitted", "settled"])
         .order("settlement_month", { ascending: false })
@@ -117,6 +118,7 @@ export default function StoreSettlementReview() {
             <tr>
               <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">月份</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">應付金額</th>
+              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">毛利</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">明細行數</th>
               <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">狀態</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">動作</th>
@@ -124,9 +126,9 @@ export default function StoreSettlementReview() {
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={5} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={6} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={5} className="p-6 text-center text-zinc-500">目前沒有待處理的對帳單。</td></tr>
+              <tr><td colSpan={6} className="p-6 text-center text-zinc-500">目前沒有待處理的對帳單。</td></tr>
             ) : rows.map((r) => (
               <tr key={r.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
                 <td className="px-3 py-2 font-mono text-xs">{r.settlement_month?.slice(0, 7)}</td>
@@ -147,6 +149,10 @@ export default function StoreSettlementReview() {
                       )}
                     </>
                   )}
+                </td>
+                <td className="px-3 py-2 text-right font-mono text-emerald-700 dark:text-emerald-400">
+                  {/* 毛利 = 應付（分店價、含調整）− 總倉成本口徑 */}
+                  ${(Number(r.payable_amount) - Number(r.cost_amount ?? 0)).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                 </td>
                 <td className="px-3 py-2 text-right font-mono">{r.item_count}</td>
                 <td className="px-3 py-2">
