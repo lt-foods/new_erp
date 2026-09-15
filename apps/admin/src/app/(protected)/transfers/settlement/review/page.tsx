@@ -6,7 +6,7 @@
 // - 有問題的行按「有問題」+ 必填原因 → 送出爭議；全部無誤 → 同意畫押。
 // - 調撥單號可點：連到內部調撥（?open= 直接開該張明細）。
 // - 送出動作用頁內確認列，不跳瀏覽器對話框。
-// 2026-09-15 起（老闆指示）分店也看得到每行毛利（分店小計 − 總倉成本小計）。
+// 2026-09-15 起（老闆指示）分店也看得到總倉成本（成本單價／小計）、每行毛利（分店小計 − 成本小計）與毛利率。
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
@@ -38,7 +38,8 @@ type Item = {
   qty_received: number;
   unit_branch_price: number;
   branch_amount: number;
-  line_amount: number | null;  // 總倉成本小計（毛利用）
+  unit_cost: number | null;    // 總倉成本單價
+  line_amount: number | null;  // 總倉成本小計
   received_at: string;
   entry_type: "hq_inbound" | "air_in" | "air_out" | "free_in" | "free_out" | "return_out";
   description: string | null;
@@ -91,6 +92,12 @@ const STATUS_COLOR: Record<string, string> = {
 
 // 逐行核對進度存 localStorage（純本機標記，不上傳）
 const checkKey = (settlementId: number) => `sms-review-checked-${settlementId}`;
+
+/** 毛利率 = 毛利 ÷ 分店價金額；分母 0 時不顯示。 */
+function fmtMargin(profit: number, branch: number): string {
+  if (!branch) return "";
+  return `${((profit / branch) * 100).toFixed(1)}%`;
+}
 
 function loadChecked(settlementId: number): Set<number> {
   try {
@@ -155,7 +162,7 @@ export default function SettlementReviewPage() {
           .maybeSingle(),
         sb
           .from("store_monthly_settlement_items")
-          .select("id, transfer_id, transfer_item_id, sku_id, qty_received, unit_branch_price, branch_amount, line_amount, received_at, entry_type, description")
+          .select("id, transfer_id, transfer_item_id, sku_id, qty_received, unit_branch_price, branch_amount, unit_cost, line_amount, received_at, entry_type, description")
           .eq("settlement_id", settlementId)
           .order("entry_type", { ascending: true })
           .order("received_at", { ascending: true }),
@@ -252,6 +259,7 @@ export default function SettlementReviewPage() {
   const total = (items ?? []).reduce((s, it) => s + Number(it.branch_amount ?? 0), 0);
   // 毛利 = 分店小計 − 總倉成本小計（自由轉貨行兩口徑同額 → 0）
   const totalProfit = (items ?? []).reduce((s, it) => s + Number(it.branch_amount ?? 0) - Number(it.line_amount ?? 0), 0);
+  const totalCost = (items ?? []).reduce((s, it) => s + Number(it.line_amount ?? 0), 0);
   const checkedCount = (items ?? []).filter((it) => checked.has(it.transfer_item_id)).length;
 
   function toggleChecked(transferItemId: number) {
@@ -374,6 +382,14 @@ export default function SettlementReviewPage() {
               ${Number(settlement.payable_amount).toLocaleString("zh-TW")}
             </span>
           </div>
+          {items && items.length > 0 && (
+            <div className="mt-1 text-xs text-zinc-500">
+              成本合計 <span className="font-mono">${totalCost.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</span>
+              <span className="mx-1">·</span>
+              毛利 <span className="font-mono text-emerald-700 dark:text-emerald-400">${totalProfit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</span>
+              <span className="ml-1 font-mono text-emerald-700 dark:text-emerald-400">{fmtMargin(totalProfit, total)}</span>
+            </div>
+          )}
         </div>
       </header>
 
@@ -420,17 +436,19 @@ export default function SettlementReviewPage() {
               <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">調撥單</th>
               <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">商品</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">數量</th>
-              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">單價</th>
-              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">小計</th>
-              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">毛利</th>
+              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">成本單價</th>
+              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">成本小計</th>
+              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">分店單價</th>
+              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">分店小計</th>
+              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">毛利／毛利率</th>
               <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">核對</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {sortedItems === null ? (
-              <tr><td colSpan={9} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={11} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : sortedItems.length === 0 ? (
-              <tr><td colSpan={9} className="p-3 text-center text-zinc-500">無明細。</td></tr>
+              <tr><td colSpan={11} className="p-3 text-center text-zinc-500">無明細。</td></tr>
             ) : sortedItems.map((it) => {
               const tx = transfers.get(it.transfer_id);
               const sku = skus.get(it.sku_id);
@@ -494,6 +512,12 @@ export default function SettlementReviewPage() {
                   </td>
                   <td className="px-3 py-2 text-right font-mono">{Number(it.qty_received).toLocaleString()}</td>
                   <td className="whitespace-nowrap px-3 py-2 text-right font-mono text-zinc-500">
+                    {isFree || it.unit_cost == null ? "—" : `$${Number(it.unit_cost).toFixed(2)}`}
+                  </td>
+                  <td className={`whitespace-nowrap px-3 py-2 text-right font-mono text-zinc-500 ${Number(it.line_amount ?? 0) < 0 ? "text-amber-600" : ""}`}>
+                    ${Number(it.line_amount ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 text-right font-mono text-zinc-500">
                     {isFree ? "—" : `$${Number(it.unit_branch_price ?? 0).toFixed(2)}`}
                   </td>
                   <td className={`whitespace-nowrap px-3 py-2 text-right font-mono ${Number(it.branch_amount ?? 0) < 0 ? "text-amber-600" : ""}`}>
@@ -501,6 +525,7 @@ export default function SettlementReviewPage() {
                   </td>
                   <td className={`whitespace-nowrap px-3 py-2 text-right font-mono ${isFree ? "text-zinc-400" : profit < 0 ? "text-amber-600" : "text-emerald-700 dark:text-emerald-400"}`}>
                     {isFree ? "—" : `$${profit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}`}
+                    {!isFree && <span className="ml-1 text-[10px] text-zinc-400">{fmtMargin(profit, Number(it.branch_amount ?? 0))}</span>}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2">
                     {isSent ? (
@@ -538,11 +563,16 @@ export default function SettlementReviewPage() {
             <tfoot className="bg-zinc-50 dark:bg-zinc-900">
               <tr>
                 <td colSpan={6} className="px-3 py-2 text-right text-xs text-zinc-500">合計</td>
+                <td className="px-3 py-2 text-right font-mono font-medium text-zinc-500">
+                  ${totalCost.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                </td>
+                <td></td>
                 <td className="px-3 py-2 text-right font-mono font-medium text-rose-600">
                   ${total.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                 </td>
                 <td className="px-3 py-2 text-right font-mono font-medium text-emerald-700 dark:text-emerald-400">
                   ${totalProfit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                  <span className="ml-1 text-[10px] text-zinc-400">{fmtMargin(totalProfit, total)}</span>
                 </td>
                 <td></td>
               </tr>

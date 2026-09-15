@@ -22,6 +22,12 @@ type Settlement = {
   remitted_at: string | null;
 };
 
+/** 毛利率 = 毛利 ÷ 分店價金額；分母 0 時不顯示。 */
+function fmtMargin(profit: number, branch: number): string {
+  if (!branch) return "";
+  return `${((profit / branch) * 100).toFixed(1)}%`;
+}
+
 const STATUS_LABEL: Record<string, string> = {
   sent: "待核對",
   disputed: "爭議處理中",
@@ -118,7 +124,7 @@ export default function StoreSettlementReview() {
             <tr>
               <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">月份</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">應付金額</th>
-              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">毛利</th>
+              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">毛利／毛利率</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">明細行數</th>
               <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">狀態</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">動作</th>
@@ -153,6 +159,9 @@ export default function StoreSettlementReview() {
                 <td className="px-3 py-2 text-right font-mono text-emerald-700 dark:text-emerald-400">
                   {/* 毛利 = 應付（分店價、含調整）− 總倉成本口徑 */}
                   ${(Number(r.payable_amount) - Number(r.cost_amount ?? 0)).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                  <span className="ml-1 text-[10px] text-zinc-400">
+                    {fmtMargin(Number(r.payable_amount) - Number(r.cost_amount ?? 0), Number(r.payable_amount))}
+                  </span>
                 </td>
                 <td className="px-3 py-2 text-right font-mono">{r.item_count}</td>
                 <td className="px-3 py-2">
