@@ -755,19 +755,23 @@ export default function HqSettlementDetailPage() {
                 <Th className="text-right">成本小計</Th>
                 <Th className="text-right">分店單價</Th>
                 <Th className="text-right">分店小計</Th>
+                <Th className="text-right">毛利</Th>
                 {canEditEst && <Th className="text-right">操作</Th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
               {items === null ? (
-                <tr><td colSpan={canEditEst ? 10 : 9} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+                <tr><td colSpan={canEditEst ? 11 : 10} className="p-3 text-center text-zinc-500">載入中…</td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={canEditEst ? 10 : 9} className="p-3 text-center text-zinc-500">無明細。</td></tr>
+                <tr><td colSpan={canEditEst ? 11 : 10} className="p-3 text-center text-zinc-500">無明細。</td></tr>
               ) : items.map((it) => {
                 const tx = transfers.get(it.transfer_id);
                 const sku = skus.get(it.sku_id);
                 const isNeg = Number(it.line_amount) < 0;
                 const isFree = it.entry_type === "free_in" || it.entry_type === "free_out";
+                // 行毛利 = 分店小計 − 成本小計（兩者正負號同向：轉出行兩邊都負、毛利也負＝退回）。
+                // 自由轉貨行兩口徑同用估價，毛利恆為 0，顯示「—」。
+                const profit = Number(it.branch_amount ?? 0) - Number(it.line_amount ?? 0);
                 return (
                   <tr key={it.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
                     <Td>
@@ -811,6 +815,9 @@ export default function HqSettlementDetailPage() {
                     <Td className={`whitespace-nowrap text-right font-mono ${Number(it.branch_amount ?? 0) < 0 ? "text-amber-600" : "text-sky-700 dark:text-sky-400"}`}>
                       ${Number(it.branch_amount ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                     </Td>
+                    <Td className={`whitespace-nowrap text-right font-mono ${isFree ? "text-zinc-400" : profit < 0 ? "text-amber-600" : "text-emerald-700 dark:text-emerald-400"}`}>
+                      {isFree ? "—" : `$${profit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}`}
+                    </Td>
                     {canEditEst && (
                       <Td className="text-right">
                         {isFree && (
@@ -842,6 +849,9 @@ export default function HqSettlementDetailPage() {
                   <td></td>
                   <td className="px-3 py-2 text-right font-mono font-medium text-sky-700 dark:text-sky-400">
                     ${items.reduce((sum, it) => sum + Number(it.branch_amount ?? 0), 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono font-medium text-emerald-700 dark:text-emerald-400">
+                    ${items.reduce((sum, it) => sum + Number(it.branch_amount ?? 0) - Number(it.line_amount ?? 0), 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                   </td>
                   {canEditEst && <td></td>}
                 </tr>
