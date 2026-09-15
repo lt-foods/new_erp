@@ -92,6 +92,12 @@ const STATUS_COLOR: Record<string, string> = {
 // 逐行核對進度存 localStorage（純本機標記，不上傳）
 const checkKey = (settlementId: number) => `sms-review-checked-${settlementId}`;
 
+/** 毛利率 = 毛利 ÷ 分店價金額；分母 0 時不顯示。 */
+function fmtMargin(profit: number, branch: number): string {
+  if (!branch) return "";
+  return `${((profit / branch) * 100).toFixed(1)}%`;
+}
+
 function loadChecked(settlementId: number): Set<number> {
   try {
     const raw = localStorage.getItem(checkKey(settlementId));
@@ -422,7 +428,7 @@ export default function SettlementReviewPage() {
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">數量</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">單價</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">小計</th>
-              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">毛利</th>
+              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">毛利／毛利率</th>
               <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">核對</th>
             </tr>
           </thead>
@@ -501,6 +507,7 @@ export default function SettlementReviewPage() {
                   </td>
                   <td className={`whitespace-nowrap px-3 py-2 text-right font-mono ${isFree ? "text-zinc-400" : profit < 0 ? "text-amber-600" : "text-emerald-700 dark:text-emerald-400"}`}>
                     {isFree ? "—" : `$${profit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}`}
+                    {!isFree && <span className="ml-1 text-[10px] text-zinc-400">{fmtMargin(profit, Number(it.branch_amount ?? 0))}</span>}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2">
                     {isSent ? (
@@ -543,6 +550,7 @@ export default function SettlementReviewPage() {
                 </td>
                 <td className="px-3 py-2 text-right font-mono font-medium text-emerald-700 dark:text-emerald-400">
                   ${totalProfit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                  <span className="ml-1 text-[10px] text-zinc-400">{fmtMargin(totalProfit, total)}</span>
                 </td>
                 <td></td>
               </tr>
