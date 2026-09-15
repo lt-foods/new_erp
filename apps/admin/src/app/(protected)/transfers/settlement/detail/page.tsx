@@ -104,6 +104,12 @@ const ENTRY_TYPE_COLOR: Record<Item["entry_type"], string> = {
   return_out: "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300",
 };
 
+/** 毛利率 = 毛利 ÷ 分店價金額；分母 0 時不顯示。 */
+function fmtMargin(profit: number, branch: number): string {
+  if (!branch) return "";
+  return `${((profit / branch) * 100).toFixed(1)}%`;
+}
+
 function fmtCost(v: unknown): string {
   if (v === null || v === undefined || v === "") return "未提供成本";
   const n = Number(v);
@@ -383,7 +389,11 @@ export default function HqSettlementDetailPage() {
       <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 lg:grid-cols-6">
         <Stat label="應付金額（含調整）" value={`$${Number(header.payable_amount).toLocaleString("zh-TW")}`} accent="negative" />
         <Stat label="成本口徑金額（參考）" value={`$${Number(header.cost_amount ?? 0).toLocaleString("zh-TW")}`} />
-        <Stat label="口徑差額（總部毛利）" value={`$${(Number(header.branch_amount ?? 0) - Number(header.cost_amount ?? 0)).toLocaleString("zh-TW")}`} accent="info" />
+        <Stat
+          label="口徑差額（總部毛利／毛利率）"
+          value={`$${(Number(header.branch_amount ?? 0) - Number(header.cost_amount ?? 0)).toLocaleString("zh-TW")} ${fmtMargin(Number(header.branch_amount ?? 0) - Number(header.cost_amount ?? 0), Number(header.branch_amount ?? 0))}`.trim()}
+          accent="info"
+        />
         {Number(header.adjustment_amount ?? 0) !== 0 && (
           <Stat
             label="人工調整合計"
@@ -755,7 +765,7 @@ export default function HqSettlementDetailPage() {
                 <Th className="text-right">成本小計</Th>
                 <Th className="text-right">分店單價</Th>
                 <Th className="text-right">分店小計</Th>
-                <Th className="text-right">毛利</Th>
+                <Th className="text-right">毛利／毛利率</Th>
                 {canEditEst && <Th className="text-right">操作</Th>}
               </tr>
             </thead>
@@ -817,6 +827,7 @@ export default function HqSettlementDetailPage() {
                     </Td>
                     <Td className={`whitespace-nowrap text-right font-mono ${isFree ? "text-zinc-400" : profit < 0 ? "text-amber-600" : "text-emerald-700 dark:text-emerald-400"}`}>
                       {isFree ? "—" : `$${profit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}`}
+                      {!isFree && <span className="ml-1 text-[10px] text-zinc-400">{fmtMargin(profit, Number(it.branch_amount ?? 0))}</span>}
                     </Td>
                     {canEditEst && (
                       <Td className="text-right">
@@ -852,6 +863,12 @@ export default function HqSettlementDetailPage() {
                   </td>
                   <td className="px-3 py-2 text-right font-mono font-medium text-emerald-700 dark:text-emerald-400">
                     ${items.reduce((sum, it) => sum + Number(it.branch_amount ?? 0) - Number(it.line_amount ?? 0), 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                    <span className="ml-1 text-[10px] text-zinc-400">
+                      {fmtMargin(
+                        items.reduce((sum, it) => sum + Number(it.branch_amount ?? 0) - Number(it.line_amount ?? 0), 0),
+                        items.reduce((sum, it) => sum + Number(it.branch_amount ?? 0), 0),
+                      )}
+                    </span>
                   </td>
                   {canEditEst && <td></td>}
                 </tr>

@@ -317,7 +317,7 @@ function HqToStoreTab() {
               <Th>分店</Th>
               <Th className="text-right">應付總倉（分店價）</Th>
               <Th className="text-right">成本口徑（參考）</Th>
-              <Th className="text-right">毛利（總倉）</Th>
+              <Th className="text-right">毛利（總倉）／毛利率</Th>
               <Th className="text-right">調撥單數</Th>
               <Th className="text-right">商品行數</Th>
               <Th>狀態</Th>
