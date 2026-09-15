@@ -1003,8 +1003,9 @@ function Body() {
         await load();
         return;
       }
-      // ⚠ 一定要用 router.push（或 <Link>）：它們會自動補上 basePath（線上是 /new_erp）。
-      //   ⛔ 不可以用 window.open —— 那個不補，線上會開成 /wms/picking 直接 404（PR #752 踩過）。
+      // ⚠ 一定要用 router.push（或 <Link>）：它們會自動補上 basePath。
+      //   ⛔ 不可以用 window.open —— 那個不補。站台若掛在網址前綴下（NEXT_PUBLIC_BASE_PATH
+      //      有值），會開成 /wms/picking 而不是 <前綴>/wms/picking，直接 404（PR #752 踩過）。
       router.push(`/wms/picking?fromDraft=${draftId}`);
     } catch (e) {
       setError(describeDraftDbError(e));
@@ -1104,11 +1105,13 @@ function Body() {
           </SpinButton>
           <SpinButton
             // ⚠ 路徑一定要包 withBasePath，不可以直接寫裸路徑：
-            //    本站是 output:"export" + basePath（next.config.ts，線上是 /new_erp）。
+            //    本站是 output:"export" + basePath（next.config.ts，值來自 NEXT_PUBLIC_BASE_PATH）。
             //    <Link> / router.push 會自動補上 basePath，但 window.open **不會** ——
-            //    裸路徑會開成 /picking/drafts/print 而不是 /new_erp/picking/drafts/print → 404。
-            //    （本機沒設 NEXT_PUBLIC_BASE_PATH 時 withBasePath 原樣回傳，開發不受影響，
-            //      所以這種錯在本機測不出來，只有線上會炸。）
+            //    站台若掛在網址前綴下，裸路徑會開成 /picking/drafts/print 而不是
+            //    <前綴>/picking/drafts/print → 404。
+            //    （basePath 為空時 withBasePath 原樣回傳，所以這種錯在「掛在根目錄」的環境
+            //      測不出來。⚠ 2026-09-12 起線上就是根目錄，更測不出來 ——
+            //      ⛔ 不要因為現在不會炸就把 withBasePath 拿掉。）
             onClick={() =>
               window.open(withBasePath(`/picking/drafts/print?id=${draftId}`), "_blank")
             }

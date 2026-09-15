@@ -22,8 +22,35 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # 這兩個值與 apps/admin/public/CNAME 是同一個決定（2026-09-12 改用自訂網域
+    # erp.www161616.com）。換網域時這三處要一起改，只改一處就會不一致。
+    # 放在 job 層而不是塞在 build 步驟裡，是為了讓下面的檢查步驟讀得到同一份值，
+    # 不必把網址寫兩遍 —— 寫兩遍遲早有一遍忘了改。
+    env:
+      # basePath：站台掛在網域根目錄，網址不再有 /new_erp 這一截，故留空。
+      NEXT_PUBLIC_BASE_PATH: ""
+      # siteUrl：/welcome/ 推廣頁的分享縮圖（og:image / og:url）需要絕對網址。
+      # 末尾不要加斜線（程式端還是會去掉多餘的，但別靠它）。
+      NEXT_PUBLIC_SITE_URL: https://erp.www161616.com
     steps:
       - uses: actions/checkout@v4
+
+      # welcome 頁的分享縮圖需要絕對網址，而程式端刻意不放寫死的 fallback 網域
+      # （寫死正是 2026-09-12 這次要根治的病）。代價是「值不見了也沒人會發現」：
+      # build 照樣成功，只是縮圖整組安靜消失。所以在這裡擋掉，讓它壞得看得見。
+      # ⚠ 只擋 CI，本機 build 完全不受影響 —— 本機沒設時 welcome 頁只是省略那幾個
+      #   OG tag，npm run build 照樣過（2026-09-12 實測 exit 0）。
+      # ⭐ 刻意排在 setup-node / npm install 前面：設定缺了就馬上 fail，
+      #    不要先花時間裝完幾百個套件才發現。這一步只用 bash，不需要 node。
+      - name: Check NEXT_PUBLIC_SITE_URL is set
+        run: |
+          if [ -z "$(printf '%s' "${NEXT_PUBLIC_SITE_URL:-}" | tr -d '[:space:]')" ]; then
+            echo "::error file=.github/workflows/deploy-admin.yml::NEXT_PUBLIC_SITE_URL 是空的：/welcome/ 的分享縮圖（og:image / og:url）會整組消失。請在本檔 job 層的 env 補上對外絕對網址，例如 https://erp.www161616.com（末尾不要加斜線）。"
+            exit 1
+          fi
+          # ⛔ 不要把值本身 echo 出來。現在它是公開網址、印了無所謂，但哪天有人把它
+          #    改成從 vars. / secrets. 讀，這一行就會把值印進誰都看得到的 build log。
+          echo "NEXT_PUBLIC_SITE_URL is set."
 
       - uses: actions/setup-node@v4
         with:
@@ -37,10 +64,11 @@ jobs:
 
       - name: Build admin (static export)
         working-directory: apps/admin
+        # 站台網址設定（NEXT_PUBLIC_BASE_PATH / NEXT_PUBLIC_SITE_URL）在本 job 上方的
+        # env 區塊，跟 apps/admin/public/CNAME 一起看；這裡只放兩把密鑰。
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-          NEXT_PUBLIC_BASE_PATH: /new_erp
         run: npm run build
 
       - name: Add .nojekyll
