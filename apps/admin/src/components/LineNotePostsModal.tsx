@@ -100,7 +100,8 @@ export default function LineNotePostsModal({
   // 爬回來的留言（點貼文展開）
   const [openPost, setOpenPost] = useState<number | null>(null);
   const [comments, setComments] = useState<Map<number, Comment[]>>(new Map());
-  const [orderNos, setOrderNos] = useState<Map<number, string>>(new Map());
+  // 單號＋取貨店：社群跟店不是一對一（有的群整合 4-5 家店），「加到哪間店」要看訂單才知道
+  const [orders, setOrders] = useState<Map<number, { no: string; store: string | null }>>(new Map());
   const [loadingPost, setLoadingPost] = useState<number | null>(null);
   const [orderPopup, setOrderPopup] = useState<{ id: number; no: string } | null>(null);
 
@@ -128,7 +129,7 @@ export default function LineNotePostsModal({
   useEffect(() => {
     if (!open || !campaignId) return;
     setTargets(null); setPicked(new Set()); setResults(null); setError(null);
-    setOpenPost(null); setComments(new Map()); setOrderNos(new Map());
+    setOpenPost(null); setComments(new Map()); setOrders(new Map());
     void load();
   }, [open, campaignId, load]);
 
@@ -198,10 +199,13 @@ export default function LineNotePostsModal({
     setComments((m) => new Map(m).set(t.post_id!, cs));
     const ids = [...new Set(cs.map((c) => c.customer_order_id).filter((x): x is number => !!x))];
     if (ids.length === 0) return;
-    const { data: od } = await getSupabase().from("customer_orders").select("id,order_no").in("id", ids);
-    setOrderNos((m) => {
+    const { data: od } = await getSupabase().from("customer_orders")
+      .select("id,order_no,stores!customer_orders_pickup_store_id_fkey(name)").in("id", ids);
+    setOrders((m) => {
       const n = new Map(m);
-      for (const o of (od ?? []) as { id: number; order_no: string }[]) n.set(o.id, o.order_no);
+      for (const o of (od ?? []) as unknown as { id: number; order_no: string; stores: { name: string } | null }[]) {
+        n.set(o.id, { no: o.order_no, store: o.stores?.name ?? null });
+      }
       return n;
     });
   };
@@ -457,6 +461,16 @@ export default function LineNotePostsModal({
                                 <div className="mb-1.5 text-xs text-zinc-500">
                                   {(() => { const s = commentStats(cs);
                                     return `共 ${s.total} 則：已加單 ${s.ordered}、已有訂單 ${s.duplicate}、待處理 ${s.todo}`; })()}
+                                  {(() => {
+                                    // 這個群的加單落到了哪幾間店（群整合多家店時才看得出來）
+                                    const tally = new Map<string, number>();
+                                    for (const cm of cs) {
+                                      if (cm.status !== "ordered" || cm.customer_order_id == null) continue;
+                                      const st = orders.get(cm.customer_order_id)?.store ?? "（未知店）";
+                                      tally.set(st, (tally.get(st) ?? 0) + 1);
+                                    }
+                                    return tally.size > 0 ? `；加到：${[...tally].map(([st, n]) => `${st} ${n}`).join("、")}` : null;
+                                  })()}
                                 </div>
                                 <ul className="divide-y divide-zinc-200 rounded border border-zinc-200 bg-white dark:divide-zinc-800 dark:border-zinc-800 dark:bg-zinc-900">
                                   {cs.map((cm) => (
@@ -470,12 +484,17 @@ export default function LineNotePostsModal({
                                           : cm.status === "unmatched" || cm.status === "error" ? "red" : "gray"}>
                                           {COMMENT_STATUS_LABEL[cm.status]}
                                         </Badge>
-                                        {cm.customer_order_id != null && orderNos.has(cm.customer_order_id) && (
-                                          <button type="button"
-                                            className="font-mono text-xs text-sky-700 underline hover:text-sky-900 dark:text-sky-400"
-                                            onClick={() => setOrderPopup({ id: cm.customer_order_id!, no: orderNos.get(cm.customer_order_id!)! })}>
-                                            {orderNos.get(cm.customer_order_id)}
-                                          </button>
+                                        {cm.customer_order_id != null && orders.has(cm.customer_order_id) && (
+                                          <span className="inline-flex items-center gap-1">
+                                            <button type="button"
+                                              className="font-mono text-xs text-sky-700 underline hover:text-sky-900 dark:text-sky-400"
+                                              onClick={() => setOrderPopup({ id: cm.customer_order_id!, no: orders.get(cm.customer_order_id!)!.no })}>
+                                              {orders.get(cm.customer_order_id)!.no}
+                                            </button>
+                                            {orders.get(cm.customer_order_id)!.store && (
+                                              <span className="text-xs text-zinc-600 dark:text-zinc-300">→ {orders.get(cm.customer_order_id)!.store}</span>
+                                            )}
+                                          </span>
                                         )}
                                         {cm.reacted_at && <span title={`已在 LINE 留言上按 😄（${fmtNoteTime(cm.reacted_at)}）`}>😄</span>}
                                       </div>
