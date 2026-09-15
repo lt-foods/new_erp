@@ -7,6 +7,7 @@
 //
 // 支援的寫法（每一行各自解析，一則留言可以有多筆）：
 //   +1            → qty 1
+//   加1 / 打1 / 加一 / A加1 / 加1 A → 同 +1（社群慣用「加1」「打1」，2026-09-14 起）
 //   ＋２ / + 3     → 全形、空白都吃
 //   A+1 / A +2    → code A, qty
 //   A1+1 / B-2+1  → code 可含數字、連字號（品項編號）
@@ -33,6 +34,13 @@ const UNIT = "(?:份|個|组|組|包|盒|箱|瓶|罐|袋|條|片|支|入|件|套
 // 品項代碼：英文字母開頭，可接數字／連字號（A、B2、C-1、AB）
 const CODE = "([A-Za-z][A-Za-z0-9-]{0,7})";
 const CANCEL_WORDS = /(取消|退|刪|删|不要了|改為0|改成0)/;
+// 「加1」「打1」「加一」→「+1」。只在後面緊接數字（或一～九）時才換，
+// 「加油」「打包」「追加」這種不動；「加一點」換成「+1點」後也對不到任何 pattern，仍是非下單。
+const CN_DIGITS = "一二三四五六七八九";
+const PLUS_WORDS = /[加打]\s*([0-9一二三四五六七八九])/g;
+function plusWordsToSign(s) {
+  return s.replace(PLUS_WORDS, (_, d) => "+" + (CN_DIGITS.includes(d) ? String(CN_DIGITS.indexOf(d) + 1) : d));
+}
 
 const MULTI_CODE_FIRST = /^\s*(?:[A-Za-z][A-Za-z0-9-]{0,7}\s*[+-]\s*\d{1,3}\s*){2,}$/;
 const MULTI_QTY_FIRST = /^\s*(?:[+-]\s*\d{1,3}\s*[A-Za-z][A-Za-z0-9-]{0,7}\s*){2,}$/;
@@ -58,7 +66,7 @@ const PATTERNS = [
  */
 export function parseOrderLines(text) {
   const out = [];
-  const norm = normalize(text);
+  const norm = plusWordsToSign(normalize(text));
   const segments = [];
   for (const rawLine of norm.split(/\r?\n|[,，;；、/]/)) {
     // 同一行寫多筆：整行都是「代碼+號+數」重複（A+1 B+5）或「號+數+代碼」重複（+1 A +2 B）才拆，
