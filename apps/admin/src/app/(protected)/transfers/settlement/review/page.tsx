@@ -6,7 +6,7 @@
 // - 有問題的行按「有問題」+ 必填原因 → 送出爭議；全部無誤 → 同意畫押。
 // - 調撥單號可點：連到內部調撥（?open= 直接開該張明細）。
 // - 送出動作用頁內確認列，不跳瀏覽器對話框。
-// 只顯示分店價口徑（單價/小計），不顯示總倉成本。
+// 2026-09-15 起（老闆指示）分店也看得到每行毛利（分店小計 − 總倉成本小計）。
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
@@ -38,6 +38,7 @@ type Item = {
   qty_received: number;
   unit_branch_price: number;
   branch_amount: number;
+  line_amount: number | null;  // 總倉成本小計（毛利用）
   received_at: string;
   entry_type: "hq_inbound" | "air_in" | "air_out" | "free_in" | "free_out" | "return_out";
   description: string | null;
@@ -154,7 +155,7 @@ export default function SettlementReviewPage() {
           .maybeSingle(),
         sb
           .from("store_monthly_settlement_items")
-          .select("id, transfer_id, transfer_item_id, sku_id, qty_received, unit_branch_price, branch_amount, received_at, entry_type, description")
+          .select("id, transfer_id, transfer_item_id, sku_id, qty_received, unit_branch_price, branch_amount, line_amount, received_at, entry_type, description")
           .eq("settlement_id", settlementId)
           .order("entry_type", { ascending: true })
           .order("received_at", { ascending: true }),
@@ -249,6 +250,8 @@ export default function SettlementReviewPage() {
   const flaggedCount = flags.size;
   const allReasonsFilled = Array.from(flags.values()).every((v) => v.trim().length > 0);
   const total = (items ?? []).reduce((s, it) => s + Number(it.branch_amount ?? 0), 0);
+  // 毛利 = 分店小計 − 總倉成本小計（自由轉貨行兩口徑同額 → 0）
+  const totalProfit = (items ?? []).reduce((s, it) => s + Number(it.branch_amount ?? 0) - Number(it.line_amount ?? 0), 0);
   const checkedCount = (items ?? []).filter((it) => checked.has(it.transfer_item_id)).length;
 
   function toggleChecked(transferItemId: number) {
@@ -419,18 +422,20 @@ export default function SettlementReviewPage() {
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">數量</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">單價</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">小計</th>
+              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">毛利</th>
               <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">核對</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {sortedItems === null ? (
-              <tr><td colSpan={8} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={9} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : sortedItems.length === 0 ? (
-              <tr><td colSpan={8} className="p-3 text-center text-zinc-500">無明細。</td></tr>
+              <tr><td colSpan={9} className="p-3 text-center text-zinc-500">無明細。</td></tr>
             ) : sortedItems.map((it) => {
               const tx = transfers.get(it.transfer_id);
               const sku = skus.get(it.sku_id);
               const isFree = it.description != null;
+              const profit = Number(it.branch_amount ?? 0) - Number(it.line_amount ?? 0);
               const d = disputeByItem.get(it.transfer_item_id);
               const flagged = flags.has(it.transfer_item_id);
               const isChecked = checked.has(it.transfer_item_id);
@@ -494,6 +499,9 @@ export default function SettlementReviewPage() {
                   <td className={`whitespace-nowrap px-3 py-2 text-right font-mono ${Number(it.branch_amount ?? 0) < 0 ? "text-amber-600" : ""}`}>
                     ${Number(it.branch_amount ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                   </td>
+                  <td className={`whitespace-nowrap px-3 py-2 text-right font-mono ${isFree ? "text-zinc-400" : profit < 0 ? "text-amber-600" : "text-emerald-700 dark:text-emerald-400"}`}>
+                    {isFree ? "—" : `$${profit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}`}
+                  </td>
                   <td className="whitespace-nowrap px-3 py-2">
                     {isSent ? (
                       <span className="flex items-center gap-1">
@@ -532,6 +540,9 @@ export default function SettlementReviewPage() {
                 <td colSpan={6} className="px-3 py-2 text-right text-xs text-zinc-500">合計</td>
                 <td className="px-3 py-2 text-right font-mono font-medium text-rose-600">
                   ${total.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                </td>
+                <td className="px-3 py-2 text-right font-mono font-medium text-emerald-700 dark:text-emerald-400">
+                  ${totalProfit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                 </td>
                 <td></td>
               </tr>
