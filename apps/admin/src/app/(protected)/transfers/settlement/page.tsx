@@ -97,6 +97,12 @@ function monthToDate(m: string): string {
   return `${m}-01`;
 }
 
+/** 毛利率 = 毛利 ÷ 應付（分店價）；應付為 0 時不顯示，避免除以零。 */
+function fmtMargin(profit: number, payable: number): string {
+  if (!payable) return "";
+  return `${((profit / payable) * 100).toFixed(1)}%`;
+}
+
 // 註：「店間互調」tab (StoreToStoreTab) 隱藏中 — 目前所有調撥都走 HQ 中轉、
 // 直接店間互調 transfer 一直為 0。component 保留以備未來啟用、schema/RPC 不動。
 export default function SettlementPage() {
@@ -140,7 +146,7 @@ export default function SettlementPage() {
             總倉對各分店：賣斷制。<span className="font-medium">2026-09-01 起，貨款算在總倉派車出貨的那一天</span>，
             數量取「派出量」與「實際收到量」之中較大的那個（店家超收照實收算、少收先照派出算，
             總倉在異常同意退回後會自動扣掉）。含空中轉調整。
-            應付金額以分店價口徑計；成本口徑另計、供總倉毛利參考。
+            應付金額以分店價口徑計；成本口徑另計，毛利＝應付 − 成本口徑（總倉賺的）。
             流程：產生 → 送店家核對 → （爭議處理）→ 雙方同意鎖定 → 店家匯款 → 收款結案。
           </p>
         </div>
@@ -240,6 +246,9 @@ function HqToStoreTab() {
 
   const totalPayable = rows?.reduce((sum, r) => sum + Number(r.payable_amount), 0) ?? 0;
   const totalCost = rows?.reduce((sum, r) => sum + Number(r.cost_amount ?? 0), 0) ?? 0;
+  // 總倉毛利 = 實際跟分店收的（應付、含手動調整）− 成本口徑。
+  // 用 payable 而不用 branch_amount：調整（貨損補貼等）真的會少收錢，毛利要跟著少。
+  const totalProfit = totalPayable - totalCost;
 
   return (
     <>
@@ -308,6 +317,7 @@ function HqToStoreTab() {
               <Th>分店</Th>
               <Th className="text-right">應付總倉（分店價）</Th>
               <Th className="text-right">成本口徑（參考）</Th>
+              <Th className="text-right">毛利（總倉）</Th>
               <Th className="text-right">調撥單數</Th>
               <Th className="text-right">商品行數</Th>
               <Th>狀態</Th>
@@ -316,12 +326,13 @@ function HqToStoreTab() {
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={8} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={9} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={8} className="p-6 text-center text-zinc-500">{loading ? "載入中…" : "尚無結算紀錄。先用上方「產生 / 重算 draft」。"}</td></tr>
+              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">{loading ? "載入中…" : "尚無結算紀錄。先用上方「產生 / 重算 draft」。"}</td></tr>
             ) : rows.map((r) => {
               const s = stores.get(r.store_id);
               const month = r.settlement_month?.slice(0, 7);
+              const profit = Number(r.payable_amount) - Number(r.cost_amount ?? 0);
               return (
                 <tr key={r.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
                   <Td className="font-mono text-xs">{month}</Td>
@@ -331,6 +342,10 @@ function HqToStoreTab() {
                   </Td>
                   <Td className="text-right font-mono text-rose-600">${Number(r.payable_amount).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</Td>
                   <Td className="text-right font-mono text-zinc-500">${Number(r.cost_amount ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</Td>
+                  <Td className={`text-right font-mono ${profit < 0 ? "text-amber-600" : "text-emerald-700 dark:text-emerald-400"}`}>
+                    ${profit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                    <span className="ml-1 text-[10px] text-zinc-400">{fmtMargin(profit, Number(r.payable_amount))}</span>
+                  </Td>
                   <Td className="text-right font-mono">{r.transfer_count}</Td>
                   <Td className="text-right font-mono">{r.item_count}</Td>
                   <Td><span className={`inline-block rounded px-2 py-0.5 text-xs ${STATUS_COLOR[r.status]}`}>{STATUS_LABEL[r.status]}</span></Td>
@@ -355,6 +370,10 @@ function HqToStoreTab() {
                 </td>
                 <td className="px-3 py-2 text-right font-mono font-medium text-zinc-500">
                   ${totalCost.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                </td>
+                <td className={`px-3 py-2 text-right font-mono font-medium ${totalProfit < 0 ? "text-amber-600" : "text-emerald-700 dark:text-emerald-400"}`}>
+                  ${totalProfit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                  <span className="ml-1 text-[10px] text-zinc-400">{fmtMargin(totalProfit, totalPayable)}</span>
                 </td>
                 <td colSpan={4}></td>
               </tr>
