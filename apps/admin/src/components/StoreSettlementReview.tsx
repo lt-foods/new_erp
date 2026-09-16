@@ -15,17 +15,18 @@ type Settlement = {
   settlement_month: string;
   store_id: number;
   payable_amount: number;
-  cost_amount: number;
   item_count: number;
   status: "sent" | "disputed" | "confirmed" | "remitted" | "settled" | "draft" | "cancelled";
   sent_at: string | null;
   remitted_at: string | null;
 };
 
-/** 毛利率 = 毛利 ÷ 分店價金額；分母 0 時不顯示。 */
-function fmtMargin(profit: number, branch: number): string {
-  if (!branch) return "";
-  return `${((profit / branch) * 100).toFixed(1)}%`;
+type RetailTotal = { settlement_id: number; branch_total: number; retail_total: number; missing_count: number };
+
+/** 毛利率 = 毛利 ÷ 售價合計；分母 0 時不顯示。 */
+function fmtMargin(profit: number, retail: number): string {
+  if (!retail) return "";
+  return `${((profit / retail) * 100).toFixed(1)}%`;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -48,6 +49,7 @@ export default function StoreSettlementReview() {
   const [stores, setStores] = useState<StoreRow[]>([]);
   const [pickedStoreId, setPickedStoreId] = useState<number | null>(null);
   const [rows, setRows] = useState<Settlement[] | null>(null);
+  const [retailTotals, setRetailTotals] = useState<Map<number, RetailTotal>>(new Map());
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -74,7 +76,7 @@ export default function StoreSettlementReview() {
     (async () => {
       const { data, error: e } = await getSupabase()
         .from("store_monthly_settlements")
-        .select("id, settlement_month, store_id, payable_amount, cost_amount, item_count, status, sent_at, remitted_at")
+        .select("id, settlement_month, store_id, payable_amount, item_count, status, sent_at, remitted_at")
         .eq("store_id", storeId)
         .in("status", ["sent", "disputed", "confirmed", "remitted", "settled"])
         .order("settlement_month", { ascending: false })
@@ -82,7 +84,16 @@ export default function StoreSettlementReview() {
       if (cancelled) return;
       if (e) { setError(e.message); setRows([]); return; }
       setError(null);
-      setRows((data ?? []) as Settlement[]);
+      const list = (data ?? []) as Settlement[];
+      setRows(list);
+      // 分店毛利 = 售價合計 − 分店價合計（rpc_settlement_retail_totals，不碰總倉成本）
+      if (list.length) {
+        const { data: rt } = await getSupabase().rpc("rpc_settlement_retail_totals", { p_settlement_ids: list.map((r) => r.id) });
+        if (cancelled) return;
+        const m = new Map<number, RetailTotal>();
+        for (const t of ((rt ?? []) as RetailTotal[])) m.set(t.settlement_id, t);
+        setRetailTotals(m);
+      }
     })();
     return () => { cancelled = true; };
   }, [storeId]);
@@ -157,11 +168,17 @@ export default function StoreSettlementReview() {
                   )}
                 </td>
                 <td className="px-3 py-2 text-right font-mono text-emerald-700 dark:text-emerald-400">
-                  {/* 毛利 = 應付（分店價、含調整）− 總倉成本口徑 */}
-                  ${(Number(r.payable_amount) - Number(r.cost_amount ?? 0)).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
-                  <span className="ml-1 text-[10px] text-zinc-400">
-                    {fmtMargin(Number(r.payable_amount) - Number(r.cost_amount ?? 0), Number(r.payable_amount))}
-                  </span>
+                  {(() => {
+                    const t = retailTotals.get(r.id);
+                    if (!t) return <span className="text-zinc-400">—</span>;
+                    const profit = Number(t.retail_total) - Number(t.branch_total);
+                    return (
+                      <>
+                        ${profit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                        <span className="ml-1 text-[10px] text-zinc-400">{fmtMargin(profit, Number(t.retail_total))}</span>
+                      </>
+                    );
+                  })()}
                 </td>
                 <td className="px-3 py-2 text-right font-mono">{r.item_count}</td>
                 <td className="px-3 py-2">
