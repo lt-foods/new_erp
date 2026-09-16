@@ -6,7 +6,11 @@
 // - 有問題的行按「有問題」+ 必填原因 → 送出爭議；全部無誤 → 同意畫押。
 // - 調撥單號可點：連到內部調撥（?open= 直接開該張明細）。
 // - 送出動作用頁內確認列，不跳瀏覽器對話框。
-// 2026-09-15 起（老闆指示）分店也看得到總倉成本（成本單價／小計）、每行毛利（分店小計 − 成本小計）與毛利率。
+// 毛利分兩種、依登入身分不同（老闆 2026-09-16 定義）：
+//   分店看「售價 − 分店價」（分店價＝分店拿貨成本、售價＝零售價），本頁就是這個；
+//   總倉看「分店價 − 進貨成本」，在 /transfers/settlement/detail。
+// ⛔ 本頁不讀 unit_cost / line_amount：總倉成本不給分店看。
+// 售價來自 rpc_settlement_retail_lines（收貨當下生效的 retail 價，20260916000000）。
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
@@ -38,11 +42,16 @@ type Item = {
   qty_received: number;
   unit_branch_price: number;
   branch_amount: number;
-  unit_cost: number | null;    // 總倉成本單價
-  line_amount: number | null;  // 總倉成本小計
   received_at: string;
   entry_type: "hq_inbound" | "air_in" | "air_out" | "free_in" | "free_out" | "return_out";
   description: string | null;
+};
+
+type RetailLine = {
+  settlement_id: number;
+  item_id: number;
+  unit_retail_price: number | null;
+  retail_amount: number | null;
 };
 
 type Dispute = {
@@ -93,10 +102,10 @@ const STATUS_COLOR: Record<string, string> = {
 // 逐行核對進度存 localStorage（純本機標記，不上傳）
 const checkKey = (settlementId: number) => `sms-review-checked-${settlementId}`;
 
-/** 毛利率 = 毛利 ÷ 分店價金額；分母 0 時不顯示。 */
-function fmtMargin(profit: number, branch: number): string {
-  if (!branch) return "";
-  return `${((profit / branch) * 100).toFixed(1)}%`;
+/** 毛利率 = 毛利 ÷ 售價金額；分母 0 時不顯示。 */
+function fmtMargin(profit: number, retail: number): string {
+  if (!retail) return "";
+  return `${((profit / retail) * 100).toFixed(1)}%`;
 }
 
 function loadChecked(settlementId: number): Set<number> {
@@ -119,6 +128,7 @@ export default function SettlementReviewPage() {
   const [settlement, setSettlement] = useState<Settlement | null>(null);
   const [store, setStore] = useState<StoreRow | null>(null);
   const [items, setItems] = useState<Item[] | null>(null);
+  const [retail, setRetail] = useState<Map<number, RetailLine>>(new Map());
   const [disputes, setDisputes] = useState<Dispute[]>([]);
   const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
   const [transfers, setTransfers] = useState<Map<number, Transfer>>(new Map());
@@ -162,7 +172,7 @@ export default function SettlementReviewPage() {
           .maybeSingle(),
         sb
           .from("store_monthly_settlement_items")
-          .select("id, transfer_id, transfer_item_id, sku_id, qty_received, unit_branch_price, branch_amount, unit_cost, line_amount, received_at, entry_type, description")
+          .select("id, transfer_id, transfer_item_id, sku_id, qty_received, unit_branch_price, branch_amount, received_at, entry_type, description")
           .eq("settlement_id", settlementId)
           .order("entry_type", { ascending: true })
           .order("received_at", { ascending: true }),
@@ -188,7 +198,7 @@ export default function SettlementReviewPage() {
         new Set(dList.flatMap((d) => [d.raised_by, d.resolved_by]).filter((x): x is string => Boolean(x))),
       );
 
-      const [{ data: storeData }, { data: tx }, { data: sk }, { data: adjData }, { data: staffData }] = await Promise.all([
+      const [{ data: storeData }, { data: tx }, { data: sk }, { data: adjData }, { data: staffData }, { data: retailData }] = await Promise.all([
         sb.from("stores").select("id, name").eq("id", sd.store_id).maybeSingle(),
         list.length
           ? sb.from("transfers").select("id, transfer_no").in("id", Array.from(new Set(list.map((it) => it.transfer_id))))
@@ -206,9 +216,17 @@ export default function SettlementReviewPage() {
         staffUids.length
           ? sb.rpc("rpc_get_staff_names", { p_uids: staffUids })
           : Promise.resolve({ data: [] as { id: string; display_name: string }[] }),
+        list.length
+          ? sb.rpc("rpc_settlement_retail_lines", { p_settlement_ids: [settlementId] })
+          : Promise.resolve({ data: [] as RetailLine[] }),
       ]);
       if (cancelled) return;
       if (storeData) setStore(storeData as StoreRow);
+      {
+        const rm = new Map<number, RetailLine>();
+        for (const r of ((retailData ?? []) as RetailLine[])) rm.set(r.item_id, r);
+        setRetail(rm);
+      }
       setAdjustments((adjData ?? []) as Adjustment[]);
       const nameMap = new Map<string, string>();
       for (const n of ((staffData ?? []) as { id: string; display_name: string }[])) nameMap.set(n.id, n.display_name);
@@ -257,9 +275,11 @@ export default function SettlementReviewPage() {
   const flaggedCount = flags.size;
   const allReasonsFilled = Array.from(flags.values()).every((v) => v.trim().length > 0);
   const total = (items ?? []).reduce((s, it) => s + Number(it.branch_amount ?? 0), 0);
-  // 毛利 = 分店小計 − 總倉成本小計（自由轉貨行兩口徑同額 → 0）
-  const totalProfit = (items ?? []).reduce((s, it) => s + Number(it.branch_amount ?? 0) - Number(it.line_amount ?? 0), 0);
-  const totalCost = (items ?? []).reduce((s, it) => s + Number(it.line_amount ?? 0), 0);
+  // 分店毛利 = 售價小計 − 分店小計。沒有售價的行（自由轉貨、未設零售價）兩邊都不計。
+  const totalRetail = (items ?? []).reduce((s, it) => s + Number(retail.get(it.id)?.retail_amount ?? 0), 0);
+  const totalBranchPriced = (items ?? []).reduce(
+    (s, it) => s + (retail.get(it.id)?.retail_amount == null ? 0 : Number(it.branch_amount ?? 0)), 0);
+  const totalProfit = totalRetail - totalBranchPriced;
   const checkedCount = (items ?? []).filter((it) => checked.has(it.transfer_item_id)).length;
 
   function toggleChecked(transferItemId: number) {
@@ -384,10 +404,10 @@ export default function SettlementReviewPage() {
           </div>
           {items && items.length > 0 && (
             <div className="mt-1 text-xs text-zinc-500">
-              成本合計 <span className="font-mono">${totalCost.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</span>
+              售價合計 <span className="font-mono">${totalRetail.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</span>
               <span className="mx-1">·</span>
-              毛利 <span className="font-mono text-emerald-700 dark:text-emerald-400">${totalProfit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</span>
-              <span className="ml-1 font-mono text-emerald-700 dark:text-emerald-400">{fmtMargin(totalProfit, total)}</span>
+              毛利（售價 − 分店價）<span className="font-mono text-emerald-700 dark:text-emerald-400">${totalProfit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</span>
+              <span className="ml-1 font-mono text-emerald-700 dark:text-emerald-400">{fmtMargin(totalProfit, totalRetail)}</span>
             </div>
           )}
         </div>
@@ -436,10 +456,10 @@ export default function SettlementReviewPage() {
               <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">調撥單</th>
               <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">商品</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">數量</th>
-              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">成本單價</th>
-              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">成本小計</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">分店單價</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">分店小計</th>
+              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">售價</th>
+              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">售價小計</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">毛利／毛利率</th>
               <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">核對</th>
             </tr>
@@ -453,7 +473,9 @@ export default function SettlementReviewPage() {
               const tx = transfers.get(it.transfer_id);
               const sku = skus.get(it.sku_id);
               const isFree = it.description != null;
-              const profit = Number(it.branch_amount ?? 0) - Number(it.line_amount ?? 0);
+              const rl = retail.get(it.id);
+              const hasRetail = !isFree && rl?.retail_amount != null;
+              const profit = hasRetail ? Number(rl!.retail_amount) - Number(it.branch_amount ?? 0) : 0;
               const d = disputeByItem.get(it.transfer_item_id);
               const flagged = flags.has(it.transfer_item_id);
               const isChecked = checked.has(it.transfer_item_id);
@@ -512,20 +534,20 @@ export default function SettlementReviewPage() {
                   </td>
                   <td className="px-3 py-2 text-right font-mono">{Number(it.qty_received).toLocaleString()}</td>
                   <td className="whitespace-nowrap px-3 py-2 text-right font-mono text-zinc-500">
-                    {isFree || it.unit_cost == null ? "—" : `$${Number(it.unit_cost).toFixed(2)}`}
-                  </td>
-                  <td className={`whitespace-nowrap px-3 py-2 text-right font-mono text-zinc-500 ${Number(it.line_amount ?? 0) < 0 ? "text-amber-600" : ""}`}>
-                    ${Number(it.line_amount ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-2 text-right font-mono text-zinc-500">
                     {isFree ? "—" : `$${Number(it.unit_branch_price ?? 0).toFixed(2)}`}
                   </td>
                   <td className={`whitespace-nowrap px-3 py-2 text-right font-mono ${Number(it.branch_amount ?? 0) < 0 ? "text-amber-600" : ""}`}>
                     ${Number(it.branch_amount ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                   </td>
-                  <td className={`whitespace-nowrap px-3 py-2 text-right font-mono ${isFree ? "text-zinc-400" : profit < 0 ? "text-amber-600" : "text-emerald-700 dark:text-emerald-400"}`}>
-                    {isFree ? "—" : `$${profit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}`}
-                    {!isFree && <span className="ml-1 text-[10px] text-zinc-400">{fmtMargin(profit, Number(it.branch_amount ?? 0))}</span>}
+                  <td className="whitespace-nowrap px-3 py-2 text-right font-mono text-zinc-500">
+                    {hasRetail ? `$${Number(rl!.unit_retail_price).toFixed(2)}` : "—"}
+                  </td>
+                  <td className={`whitespace-nowrap px-3 py-2 text-right font-mono ${hasRetail && Number(rl!.retail_amount) < 0 ? "text-amber-600" : "text-sky-700 dark:text-sky-400"}`}>
+                    {hasRetail ? `$${Number(rl!.retail_amount).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}` : "—"}
+                  </td>
+                  <td className={`whitespace-nowrap px-3 py-2 text-right font-mono ${!hasRetail ? "text-zinc-400" : profit < 0 ? "text-amber-600" : "text-emerald-700 dark:text-emerald-400"}`}>
+                    {hasRetail ? `$${profit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}` : "—"}
+                    {hasRetail && <span className="ml-1 text-[10px] text-zinc-400">{fmtMargin(profit, Number(rl!.retail_amount))}</span>}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2">
                     {isSent ? (
@@ -563,16 +585,16 @@ export default function SettlementReviewPage() {
             <tfoot className="bg-zinc-50 dark:bg-zinc-900">
               <tr>
                 <td colSpan={6} className="px-3 py-2 text-right text-xs text-zinc-500">合計</td>
-                <td className="px-3 py-2 text-right font-mono font-medium text-zinc-500">
-                  ${totalCost.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
-                </td>
-                <td></td>
                 <td className="px-3 py-2 text-right font-mono font-medium text-rose-600">
                   ${total.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                 </td>
+                <td></td>
+                <td className="px-3 py-2 text-right font-mono font-medium text-sky-700 dark:text-sky-400">
+                  ${totalRetail.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                </td>
                 <td className="px-3 py-2 text-right font-mono font-medium text-emerald-700 dark:text-emerald-400">
                   ${totalProfit.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
-                  <span className="ml-1 text-[10px] text-zinc-400">{fmtMargin(totalProfit, total)}</span>
+                  <span className="ml-1 text-[10px] text-zinc-400">{fmtMargin(totalProfit, totalRetail)}</span>
                 </td>
                 <td></td>
               </tr>
