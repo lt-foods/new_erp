@@ -798,6 +798,8 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
   const communityOptions = useMemo(() =>
     [...communityById.values()].sort((a, b) => (a.home_name ?? a.home_id).localeCompare(b.home_name ?? b.home_id, "zh-Hant")),
     [communityById]);
+  // 「指定會員」：撞號／認不出人的留言，店員選一次是誰 → DB 記住這位留言者，之後自動對上
+  const [assignFor, setAssignFor] = useState<Comment | null>(null);
 
   const load = useCallback(async () => {
     const sb = getSupabase();
@@ -893,6 +895,11 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
       <SpinButton type="button" className={btn} loading={busy === c.id}
         onClick={() => setStatus(c, "pending")}>退回未處理</SpinButton>
     );
+    // 認不出是誰（撞號 / 找不到號碼 / 沒寫號碼）→ 指定一次，之後這位留言者都會自動對上
+    const assign = (
+      <button type="button" className={`${btn} text-sky-700 dark:text-sky-300`} disabled={busy === c.id}
+        onClick={() => setAssignFor(c)}>指定會員</button>
+    );
     // 已加成單的不給「重試」：重跑只會判成重複，沒有意義；要重加請先退回未處理。
     if (c.status === "ordered") return <div className="flex justify-end gap-1">{back}</div>;
     // 忽略／已解決／已有訂單還能直接重跑（RPC 帶 p_force）：當初對不到人、或先前那張單已經取消
@@ -900,6 +907,7 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
       return (
         <div className="flex justify-end gap-1">
           <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => retry(c)}>重試</SpinButton>
+          {assign}
           {back}
         </div>
       );
@@ -907,6 +915,7 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
     return (
       <div className="flex justify-end gap-1">
         <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => retry(c)}>重試</SpinButton>
+        {assign}
         <SpinButton type="button" className={`${btn} text-emerald-700`} loading={busy === c.id} onClick={() => setStatus(c, "resolved")}>已解決</SpinButton>
         <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => setStatus(c, "ignored")}>忽略</SpinButton>
       </div>
@@ -960,6 +969,14 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
           ))}
         </TBody>
       </Table>
+      {assignFor && (
+        <AssignMemberModal
+          comment={assignFor}
+          onClose={() => setAssignFor(null)}
+          onDone={async (msg) => { setAssignFor(null); notify(msg); await load(); }}
+          fail={fail}
+        />
+      )}
     </div>
   );
 }
@@ -1322,6 +1339,69 @@ function PostsTab({ posts, communityById, reload, notify, fail, readOnly }: {
 
 // ── 指定團：認不出來的貼文由小幫手自己選是哪一團 ────────────────────────────
 type CampaignPick = { id: number; campaign_no: string; name: string; status: string };
+
+// ── 指定會員：搜會員 → rpc_line_note_assign_member（記住留言者 + 立刻重跑那則） ────────
+type MemberHit = { id: number; member_no: string; name: string; phone: string | null; home_store_name: string | null };
+
+function AssignMemberModal({ comment, onClose, onDone, fail }: {
+  comment: Comment; onClose: () => void; onDone: (msg: string) => Promise<void>; fail: (e: unknown) => void;
+}) {
+  const [term, setTerm] = useState(comment.member_no_hint ?? "");
+  const [hits, setHits] = useState<MemberHit[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [busy, setBusy] = useState<number | null>(null);
+
+  useEffect(() => {
+    const q = term.trim();
+    if (q.length < 2) { return; }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setSearching(true);
+      const { data } = await getSupabase().rpc("rpc_search_members", { p_term: q, p_limit: 10 });
+      if (!cancelled) { setHits((data as MemberHit[]) ?? []); setSearching(false); }
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [term]);
+
+  const pick = async (m: MemberHit) => {
+    if (!window.confirm(`把「${comment.commenter_name ?? "這位留言者"}」指定為 ${m.name}（${m.member_no}${m.home_store_name ? "・" + m.home_store_name : ""}）？\n之後這位留言者的留言都會直接對到這位會員，並立刻重跑這則留言。`)) return;
+    setBusy(m.id);
+    const { data, error } = await getSupabase().rpc("rpc_line_note_assign_member", { p_comment_id: comment.id, p_member_id: m.id });
+    setBusy(null);
+    if (error) return fail(error);
+    const r = (Array.isArray(data) ? data[0] : data) as { out_status?: string; out_error?: string } | null;
+    await onDone(r?.out_status === "ordered" ? "已指定並加單"
+      : `已指定，${COMMENT_STATUS[(r?.out_status ?? "error") as Comment["status"]] ?? r?.out_status}${r?.out_error ? "：" + r.out_error : ""}`);
+  };
+
+  const shown = term.trim().length >= 2 ? hits : [];
+  return (
+    <Modal title="這則留言是哪位會員？" onClose={onClose}>
+      <div className="mb-2 rounded bg-zinc-50 px-3 py-2 text-sm dark:bg-zinc-800/60">
+        <div className="font-medium">{comment.commenter_name ?? "—"}</div>
+        <div className="whitespace-pre-wrap break-words text-zinc-600 dark:text-zinc-300">{comment.text}</div>
+      </div>
+      <input className={input} autoFocus value={term} onChange={(e) => setTerm(e.target.value)}
+        placeholder="會員編號 / 姓名 / 手機（至少 2 個字）" />
+      <div className="mt-2 max-h-72 overflow-y-auto">
+        {searching && <div className="p-2 text-sm text-zinc-400">搜尋中…</div>}
+        {!searching && shown.length === 0 && term.trim().length >= 2 && <div className="p-2 text-sm text-zinc-400">找不到會員</div>}
+        <ul className="divide-y divide-zinc-200 dark:divide-zinc-800">
+          {shown.map((m) => (
+            <li key={m.id}>
+              <button type="button" disabled={busy !== null} onClick={() => void pick(m)}
+                className="flex w-full items-center justify-between gap-2 px-2 py-2 text-left text-sm hover:bg-zinc-100 disabled:opacity-50 dark:hover:bg-zinc-800">
+                <span className="truncate">{m.name}</span>
+                <span className="shrink-0 text-xs text-zinc-500">{m.member_no}{m.home_store_name ? ` · ${m.home_store_name}` : ""}{busy === m.id ? " …" : ""}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <p className="mt-2 text-xs text-zinc-500">指定一次就記住這位留言者；下次留言不管寫不寫號碼、在哪個群，都直接對到這位會員。</p>
+    </Modal>
+  );
+}
 
 function LinkCampaignModal({ post, onClose, onDone, fail }: {
   post: Post; onClose: () => void; onDone: () => Promise<void>; fail: (e: unknown) => void;
