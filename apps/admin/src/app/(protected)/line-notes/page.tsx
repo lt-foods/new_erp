@@ -111,6 +111,9 @@ export default function LineNotesPage() {
   const canOperate = role !== null && canOperateLineNotes(role);
   const hasViewPerm = useHasStaffPerm("line_notes_view");
   const readOnly = !canOperate;
+  // 留言加單的處理鈕（重試／指定會員／已解決／忽略）perm 持有者也能按 —— DB 端 20260918020000
+  // 有對應的 UPDATE policy 與 RPC gate；貼文分頁的指定團／讀取／刪除仍只有總部。
+  const canProcessComments = canOperate || hasViewPerm;
   const [tab, setTab] = useState<Tab>("accounts");
   const [orderPopup, setOrderPopup] = useState<OrderPopup | null>(null);
   const [accounts, setAccounts] = useState<Account[] | null>(null);
@@ -185,7 +188,7 @@ export default function LineNotesPage() {
           <h1 className="text-xl font-semibold">LINE 記事本</h1>
           <p className="text-sm text-zinc-500">
             {readOnly
-              ? "唯讀：可看社群貼文與留言加單狀況。發文、讀留言、處理留言由總部操作。"
+              ? "可看社群貼文與留言加單狀況，並處理留言（重試／指定會員／已解決／忽略）。發文、讀留言由總部操作。"
               : <>備用 LINE 帳號登入 → 綁社群 → 開團自動發文 → 定時讀留言，留言裡的「會員編號 6 碼 ＋ A+1」自動加單。
                 到設定的讀取時間自動跑（Supabase 排程），不用另外開程式。</>}
           </p>
@@ -219,7 +222,7 @@ export default function LineNotesPage() {
         />
       )}
       {shownTab === "comments" && (
-        <CommentsTab communityById={communityById} notify={notify} fail={fail} readOnly={readOnly} />
+        <CommentsTab communityById={communityById} notify={notify} fail={fail} readOnly={!canProcessComments} />
       )}
       {shownTab === "posts" && (
         <PostsTab posts={posts} communityById={communityById} reload={loadPosts} notify={notify} fail={fail} readOnly={readOnly} />
