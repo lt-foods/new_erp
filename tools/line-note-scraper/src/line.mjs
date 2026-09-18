@@ -301,17 +301,21 @@ export async function listPosts(client, homeId, { limit = 200, since = null, ver
     onRaw?.(body);
     const posts = extractPosts(body.result).map((p) => normalizePost(p, homeId));
     if (posts.length === 0) break;
-    let stop = false;
+    // ⚠ LINE 的列表是依 updatedTime 排序（翻頁游標就是 updatedTime），所以「早於 since」
+    //   要看 updatedAt，不能看 createdAt —— 舊貼文一有新留言就會排到最前面，用 createdAt 判斷
+    //   會在第一頁就停掉，後面幾十篇全漏（2026-09-09 抓不到全部貼文就是這個）。
+    // ⚠ 而且不能「看到一篇太舊的就整個停」：排序不是嚴格的（置頂／被動到的舊貼文會插在中間），
+    //   2026-09-18 松山 9/14、9/17 發的貼文就這樣被擋在後面，永遠列不到。
+    //   改成：太舊的、重複的都跳過，整頁沒有一篇新的才停。
+    let added = 0;
     for (const p of posts) {
-      if (out.some((x) => x.postId === p.postId)) { stop = true; break; }
-      // ⚠ LINE 的列表是依 updatedTime 排序（翻頁游標就是 updatedTime），所以「早於 since 就停」
-      //   要看 updatedAt，不能看 createdAt —— 舊貼文一有新留言就會排到最前面，用 createdAt 判斷
-      //   會在第一頁就停掉，後面幾十篇全漏（2026-09-09 抓不到全部貼文就是這個）。
+      if (!p.postId || out.some((x) => x.postId === p.postId)) continue;
       const lastTouched = p.updatedAt ?? p.createdAt;
-      if (sinceMs && lastTouched && new Date(lastTouched).getTime() < sinceMs) { stop = true; break; }
+      if (sinceMs && lastTouched && new Date(lastTouched).getTime() < sinceMs) continue;
       out.push(p);
+      added++;
     }
-    if (stop) break;
+    if (added === 0) break;
     const last = posts[posts.length - 1];
     postId = last.postId;
     updatedTime = pick(last.raw, "postInfo.updatedTime", "updatedTime");
