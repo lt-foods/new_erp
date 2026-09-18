@@ -755,15 +755,22 @@ function CommentsTab({ communityById, notify, fail }: {
   communityById: Map<number, Community>; notify: (m: string) => void; fail: (e: unknown) => void;
 }) {
   const [filter, setFilter] = useState<Filter>("todo");
+  // 社群篩選（Alex 2026-09-18：留言要能分社群看）。篩選下推到查詢（!inner + eq），
+  // 不是撈 300 則再前端過濾 —— 大社群一天就能把 300 則吃光，小社群的留言會被擠掉。
+  const [communityId, setCommunityId] = useState<number | "">("");
   const [rows, setRows] = useState<Row[] | null>(null);
   const [orders, setOrders] = useState<Map<number, OrderInfo>>(new Map());
   const [busy, setBusy] = useState<number | null>(null);
+  const communityOptions = useMemo(() =>
+    [...communityById.values()].sort((a, b) => (a.home_name ?? a.home_id).localeCompare(b.home_name ?? b.home_id, "zh-Hant")),
+    [communityById]);
 
   const load = useCallback(async () => {
     const sb = getSupabase();
-    const { data, error } = await sb.from("line_note_comments")
-      .select("*,line_note_posts(community_id,campaign_id,group_buy_campaigns(name,campaign_no))")
-      .order("commented_at", { ascending: false }).limit(300);
+    let q = sb.from("line_note_comments")
+      .select(`*,line_note_posts${communityId === "" ? "" : "!inner"}(community_id,campaign_id,group_buy_campaigns(name,campaign_no))`);
+    if (communityId !== "") q = q.eq("line_note_posts.community_id", communityId);
+    const { data, error } = await q.order("commented_at", { ascending: false }).limit(300);
     if (error) return fail(error);
     const list = (data ?? []) as Row[];
     setRows(list);
@@ -778,7 +785,7 @@ function CommentsTab({ communityById, notify, fail }: {
       m.set(o.id, { id: o.id, order_no: o.order_no, store_name: st?.name ?? null });
     }
     setOrders(m);
-  }, [fail]);
+  }, [fail, communityId]);
   useEffect(() => { void load(); }, [load]);
 
   const retry = async (c: Comment) => {
@@ -886,14 +893,23 @@ function CommentsTab({ communityById, notify, fail }: {
             </button>
           ))}
         </div>
-        <button type="button" className={btn} onClick={() => void load()}>重新整理</button>
+        <div className="flex items-center gap-2">
+          <select className={`${input} w-auto max-w-[16rem]`} value={communityId} aria-label="社群"
+            onChange={(e) => { setRows(null); setCommunityId(e.target.value ? Number(e.target.value) : ""); }}>
+            <option value="">全部社群</option>
+            {communityOptions.map((c) => (
+              <option key={c.id} value={c.id}>{c.home_name || c.home_id}</option>
+            ))}
+          </select>
+          <button type="button" className={btn} onClick={() => void load()}>重新整理</button>
+        </div>
       </div>
 
       <Table>
         <THead><Th>時間</Th><Th>留言者</Th><Th>留言</Th><Th>團</Th><Th>結果</Th><Th align="right"></Th></THead>
         <TBody>
           {shown === null ? <LoadingRow colSpan={6} /> : shown.length === 0 ? (
-            <EmptyRow colSpan={6}>{filter === "todo" ? "沒有要處理的留言 🎉" : "沒有留言"}</EmptyRow>
+            <EmptyRow colSpan={6}>{filter === "todo" ? (communityId === "" ? "沒有要處理的留言 🎉" : "這個社群沒有要處理的留言 🎉") : "沒有留言"}</EmptyRow>
           ) : shown.map((c) => (
             <Tr key={c.id} className={isTodo(c) ? "bg-amber-50/60 dark:bg-amber-950/20" : ""}>
               <Td className="whitespace-nowrap text-sm text-zinc-500">{fmt(c.commented_at)}</Td>
