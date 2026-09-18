@@ -23,6 +23,11 @@ export const ALL_STAFF_PERMS = [
     label: "訂單金額：可改單價與折扣",
     desc: "分店帳號可修改自己店訂單的單價、整單折扣、單品折扣。所有改動都會記進稽核紀錄。",
   },
+  {
+    key: "line_notes_view",
+    label: "LINE 記事本：可檢視",
+    desc: "非總部帳號可打開「LINE 記事本」頁面看貼文與留言加單狀況（唯讀）。發文、讀留言、帳號登入仍只有總部能操作；分店帳號只看得到總部社群與自己店的團。",
+  },
 ] as const;
 
 export type StaffPerm = (typeof ALL_STAFF_PERMS)[number]["key"];

@@ -11,6 +11,7 @@ import { getTenantName } from "@/lib/tenant";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import PresenceBeacon from "@/components/PresenceBeacon";
+import { parsePerms } from "@/lib/staffPerms";
 
 type NavItem = { href: string; label: string; match: RegExp };
 type NavGroup = { title?: string; items: NavItem[] };
@@ -169,13 +170,20 @@ function isBranchUser(user: { app_metadata?: Record<string, unknown> } | null | 
   return !stores.includes("總倉");
 }
 
-function filterNavForBranch(nav: NavGroup[]): NavGroup[] {
+// 功能權限（app_metadata.perms）個別加開的分店可見頁面：href → 需要的 perm key
+// （/line-notes：line_notes_view，頁面本身會進唯讀模式，發文 / 帳號仍只有總部）
+const BRANCH_PERM_HREFS: Record<string, string> = {
+  "/line-notes": "line_notes_view",
+};
+
+function filterNavForBranch(nav: NavGroup[], user: { app_metadata?: Record<string, unknown> } | null | undefined): NavGroup[] {
+  const perms = parsePerms(user?.app_metadata?.perms);
   return nav
     .filter((g) => !g.title || !BRANCH_HIDDEN_GROUPS.has(g.title))
     .map((g) => ({
       ...g,
       items: g.items
-        .filter((it) => !BRANCH_HIDDEN_HREFS.has(it.href))
+        .filter((it) => !BRANCH_HIDDEN_HREFS.has(it.href) || perms.has(BRANCH_PERM_HREFS[it.href] ?? ""))
         // 分店帳號看到的是店家核對介面，選單改叫「月結對帳」
         .map((it) => (it.href === "/transfers/settlement" ? { ...it, label: "月結對帳" } : it)),
     }))
@@ -390,7 +398,7 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
     router.replace("/login");
   }
 
-  const visibleNav = filterNavForRole(branchUser ? filterNavForBranch(NAV) : NAV, user);
+  const visibleNav = filterNavForRole(branchUser ? filterNavForBranch(NAV, user) : NAV, user);
 
   return (
     <ReleaseNotesProvider>
