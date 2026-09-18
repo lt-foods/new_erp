@@ -16,6 +16,8 @@ import {
   COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, commentStats, fmtNoteTime, isTodoComment,
 } from "@/lib/lineNoteStatus";
 import { deleteLineNotePost } from "@/lib/lineNoteDelete";
+import { canOperateLineNotes, useRole } from "@/lib/role";
+import { useHasStaffPerm } from "@/lib/staffPerms";
 
 type Account = {
   id: number; label: string; status: "logged_out" | "pending_qr" | "active" | "error";
@@ -98,8 +100,18 @@ function OrderLink({ id, no }: { id: number; no: string }) {
   );
 }
 
+type Tab = "accounts" | "communities" | "comments" | "posts";
+
 export default function LineNotesPage() {
-  const [tab, setTab] = useState<"accounts" | "communities" | "comments" | "posts">("accounts");
+  // 唯讀模式：非總部角色、但被個別授予 line_notes_view 功能權限（員工管理 → 功能權限）。
+  // 只有「留言加單」「貼文」兩個分頁、沒有任何操作按鈕；帳號 / 社群設定不給看
+  // （v_line_note_accounts 本來就只放總部角色，讀回來會是空的）。
+  // 寬嚴由 DB 決定（20260918000000 的 SELECT policy）；這裡只是不畫按下去必定失敗的按鈕。
+  const role = useRole();
+  const canOperate = role !== null && canOperateLineNotes(role);
+  const hasViewPerm = useHasStaffPerm("line_notes_view");
+  const readOnly = !canOperate;
+  const [tab, setTab] = useState<Tab>("accounts");
   const [orderPopup, setOrderPopup] = useState<OrderPopup | null>(null);
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
@@ -133,17 +145,37 @@ export default function LineNotesPage() {
     if (error) fail(error); else setPosts((data ?? []) as Post[]);
   }, [fail]);
 
-  useEffect(() => { void loadAccounts(); void loadCommunities(); void loadPosts(); }, [loadAccounts, loadCommunities, loadPosts]);
+  // 帳號清單只有總部讀得到；唯讀模式不抓、也不輪詢
+  useEffect(() => { if (canOperate) void loadAccounts(); void loadCommunities(); void loadPosts(); }, [canOperate, loadAccounts, loadCommunities, loadPosts]);
 
   // 帳號狀態每 3 秒刷新（登入中 / worker 有沒有在跑）
   useEffect(() => {
+    if (!canOperate) return;
     const t = setInterval(() => { void loadAccounts(); }, 3000);
     return () => clearInterval(t);
-  }, [loadAccounts]);
+  }, [canOperate, loadAccounts]);
+
+  // 唯讀模式沒有帳號 / 社群設定分頁：停在那兩頁就改看貼文
+  const shownTab: Tab = readOnly && (tab === "accounts" || tab === "communities") ? "posts" : tab;
 
   const accountById = useMemo(() => new Map((accounts ?? []).map((a) => [a.id, a])), [accounts]);
   const storeById = useMemo(() => new Map(stores.map((s) => [s.id, s])), [stores]);
   const communityById = useMemo(() => new Map((communities ?? []).map((c) => [c.id, c])), [communities]);
+
+  if (role === null) {
+    return <div className="p-6 text-sm text-zinc-500">讀取權限中…</div>;
+  }
+  if (readOnly && !hasViewPerm) {
+    return (
+      <div className="p-6 text-sm text-zinc-500">
+        沒有檢視 LINE 記事本的權限。請負責人 / 管理員到「員工管理 → 功能權限」勾選「LINE 記事本：可檢視」（勾完需重新登入）。
+      </div>
+    );
+  }
+
+  const tabs: ReadonlyArray<readonly [Tab, string]> = readOnly
+    ? [["comments", "留言加單"], ["posts", "貼文"]]
+    : [["accounts", "帳號"], ["communities", "社群設定"], ["comments", "留言加單"], ["posts", "貼文"]];
 
   return (
     <OrderPopupContext.Provider value={setOrderPopup}>
@@ -152,14 +184,16 @@ export default function LineNotesPage() {
         <div>
           <h1 className="text-xl font-semibold">LINE 記事本</h1>
           <p className="text-sm text-zinc-500">
-            備用 LINE 帳號登入 → 綁社群 → 開團自動發文 → 定時讀留言，留言裡的「會員編號 6 碼 ＋ A+1」自動加單。
-            到設定的讀取時間自動跑（Supabase 排程），不用另外開程式。
+            {readOnly
+              ? "唯讀：可看社群貼文與留言加單狀況。發文、讀留言、處理留言由總部操作。"
+              : <>備用 LINE 帳號登入 → 綁社群 → 開團自動發文 → 定時讀留言，留言裡的「會員編號 6 碼 ＋ A+1」自動加單。
+                到設定的讀取時間自動跑（Supabase 排程），不用另外開程式。</>}
           </p>
         </div>
         <nav className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
-          {([["accounts", "帳號"], ["communities", "社群設定"], ["comments", "留言加單"], ["posts", "貼文"]] as const).map(([k, l]) => (
+          {tabs.map(([k, l]) => (
             <button key={k} type="button" onClick={() => setTab(k)}
-              className={`rounded-md px-3 py-1 text-sm ${tab === k ? "bg-white shadow dark:bg-zinc-900" : "text-zinc-600 dark:text-zinc-300"}`}>
+              className={`rounded-md px-3 py-1 text-sm ${shownTab === k ? "bg-white shadow dark:bg-zinc-900" : "text-zinc-600 dark:text-zinc-300"}`}>
               {l}
             </button>
           ))}
@@ -174,21 +208,21 @@ export default function LineNotesPage() {
       )}
       {toast && <div className="rounded bg-emerald-600 px-3 py-2 text-sm text-white">{toast}</div>}
 
-      {tab === "accounts" && (
+      {shownTab === "accounts" && !readOnly && (
         <AccountsTab accounts={accounts} reload={loadAccounts} notify={notify} fail={fail} />
       )}
-      {tab === "communities" && (
+      {shownTab === "communities" && !readOnly && (
         <CommunitiesTab
           communities={communities} accounts={accounts ?? []} stores={stores}
           accountById={accountById} storeById={storeById}
           reload={loadCommunities} reloadPosts={loadPosts} notify={notify} fail={fail}
         />
       )}
-      {tab === "comments" && (
-        <CommentsTab communityById={communityById} notify={notify} fail={fail} />
+      {shownTab === "comments" && (
+        <CommentsTab communityById={communityById} notify={notify} fail={fail} readOnly={readOnly} />
       )}
-      {tab === "posts" && (
-        <PostsTab posts={posts} communityById={communityById} reload={loadPosts} notify={notify} fail={fail} />
+      {shownTab === "posts" && (
+        <PostsTab posts={posts} communityById={communityById} reload={loadPosts} notify={notify} fail={fail} readOnly={readOnly} />
       )}
 
       <SharedModal
@@ -751,8 +785,8 @@ type Filter = "todo" | "ordered" | "ignored" | "all";
 const isTodo = isTodoComment;
 
 // ── 留言加單：一張表，一則留言一列 ─────────────────────────────────────────
-function CommentsTab({ communityById, notify, fail }: {
-  communityById: Map<number, Community>; notify: (m: string) => void; fail: (e: unknown) => void;
+function CommentsTab({ communityById, notify, fail, readOnly }: {
+  communityById: Map<number, Community>; notify: (m: string) => void; fail: (e: unknown) => void; readOnly: boolean;
 }) {
   const [filter, setFilter] = useState<Filter>("todo");
   // 社群篩選（Alex 2026-09-18：留言要能分社群看）。篩選下推到查詢（!inner + eq），
@@ -852,6 +886,7 @@ function CommentsTab({ communityById, notify, fail }: {
     }
   };
   const actions = (c: Comment) => {
+    if (readOnly) return null;
     // 「退回未處理」每一種狀態都給 —— 小幫手自己判斷要不要重新處理這則。
     // 已加單的退回不會動到訂單（setStatus 會先確認）。
     const back = (
@@ -943,8 +978,9 @@ function postFirstLine(text: string | null) {
 // 未認出團的貼文沒有團可掛，仍然一篇一張卡。
 type PostGroup = { key: string; campaignId: number | null; campaign: Post["group_buy_campaigns"]; posts: Post[] };
 
-function PostsTab({ posts, communityById, reload, notify, fail }: {
+function PostsTab({ posts, communityById, reload, notify, fail, readOnly }: {
   posts: Post[] | null; communityById: Map<number, Community>; reload: () => Promise<void>; notify: (m: string) => void; fail: (e: unknown) => void;
+  readOnly: boolean;
 }) {
   const [busy, setBusy] = useState<number | null>(null);
   const [open, setOpen] = useState<string | null>(null);
@@ -1193,7 +1229,7 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
                         {p.closed_reason && <div className="text-zinc-500">讀到結單留言：{p.closed_reason}</div>}
                         {p.last_error && <div className="text-red-600">{p.last_error}</div>}
                       </span>
-                      <span className="flex flex-wrap gap-1.5">
+                      {!readOnly && <span className="flex flex-wrap gap-1.5">
                         {unlinked && (
                           <button type="button" className={btnPrimary} onClick={() => setLinkFor(p)}>指定團</button>
                         )}
@@ -1208,7 +1244,7 @@ function PostsTab({ posts, communityById, reload, notify, fail }: {
                           title={p.line_post_id ? "連 LINE 記事本上那篇一起刪掉" : "只清後台紀錄（這篇沒發到 LINE）"}>
                           {p.line_post_id ? "刪除貼文" : "刪除紀錄"}
                         </SpinButton>
-                      </span>
+                      </span>}
                     </li>
                   ))}
                 </ul>
