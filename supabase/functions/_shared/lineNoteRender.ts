@@ -78,7 +78,7 @@ function postPrice(it: any): number | null {
 }
 
 // 這一行已經有價格了嗎（純文字 189元／$189、已標起來的、或小幫手自己打的鍵帽數字）
-const LINE_HAS_PRICE = new RegExp(`\\d\\s*元|\\$\\s*\\d|${DECO_OPEN}|[0-9]\\uFE0F\\u20E3`);
+const LINE_HAS_PRICE = new RegExp(`[0-9０-９]\\s*元|[$＄]\\s*[0-9０-９]|${DECO_OPEN}|[0-9]\\uFE0F\\u20E3`);
 // 整行只有一個金額（「💰一袋189元」「$109」，已經被標起來的樣子）
 const PRICE_ONLY_LINE = new RegExp(`^\\s*(?:💰[^\\d\\n$💰]{0,6})?${DECO_OPEN}\\$?(\\d+(?:\\.\\d+)?)${DECO_CLOSE}\\s*元?\\s*$`);
 
@@ -124,7 +124,7 @@ function injectItemPrices(desc: string, items: any[]): string {
 const HELPER_DEADLINE_LINE = /^[^\d\n]{0,3}\d{1,2}[\/／月]\d{1,2}.*(?:結單|收單|截單)[^\d\n]{0,3}$/;
 
 // 把系統的結單那一行插進文案：先把小幫手自己寫的結單行拿掉（時間以系統為準），
-// 再找文案裡第一段連續的金額行（「💰95元」或「(A) 韭菜盒 1️⃣8️⃣9️⃣ 元」），插在那一段後面、前後各空一行。
+// 再找文案裡第一段連續的金額行（「💰95元」或「(A) 韭菜盒 １８９ 元」），插在那一段後面、前後各空一行。
 // 文案裡沒有金額行就不插（回 placed=false，走版型的 {{deadline}}）。
 function placeDeadline(desc: string, deadline: string): { desc: string; placed: boolean } {
   if (!deadline) return { desc, placed: false };
@@ -183,8 +183,8 @@ export function renderTemplate(template: string | null, payload: any) {
     break;
   }
 
-  // 商品（老闆 2026-09-10 的範例）：只有一項 → 「💰1️⃣0️⃣5️⃣ 元」一行，沒有品名、沒有代碼；
-  // 多項 → 「(A) 韭菜盒 1️⃣8️⃣9️⃣ 元」金額接在同一行
+  // 商品（老闆 2026-09-10 的範例）：只有一項 → 「💰１０５ 元」一行，沒有品名、沒有代碼；
+  // 多項 → 「(A) 韭菜盒 １８９ 元」金額接在同一行
   const itemLines = items.map((it: any) => {
     const p = postPrice(it);
     const price = p == null ? "" : `${decoPrice(String(p))} 元`;
@@ -194,10 +194,10 @@ export function renderTemplate(template: string | null, payload: any) {
   }).filter(Boolean).join("\n");
 
   // 文案自己列了 (A)(B) 品項但那一行沒寫價格（也不是像記事本那樣價格寫在下一行）→
-  // 把金額接在那一行後面，變成跟我們自己產的一樣「(A) 韭菜盒 1️⃣8️⃣9️⃣ 元」。
+  // 把金額接在那一行後面，變成跟我們自己產的一樣「(A) 韭菜盒 １８９ 元」。
   // 接完之後，文案裡只寫著同一個金額的「💰一袋189元」那種整行就是多的，拿掉。
   desc = injectItemPrices(desc, items);
-  // 老闆 2026-09-10：金額行跟上一行之間要空一行（「💰1️⃣0️⃣5️⃣元」直接貼在文案下面太擠）
+  // 老闆 2026-09-10：金額行跟上一行之間要空一行（「💰１０５元」直接貼在文案下面太擠）
   desc = spaceOutPriceLines(desc);
   // 結單那一行：客人看的結單時間 = 客人收單（customer_end_at，20260910050000）跟店家收單取早的那個；
   // 客人收單沒設就是店家收單。文案自己有金額時插在金額那一段後面，沒有就走版型的 {{deadline}}。
@@ -226,7 +226,7 @@ export function renderTemplate(template: string | null, payload: any) {
   return withPostTag(rendered, c.campaign_no);
 }
 
-// 真的會貼出去的字：版型渲染完，把標起來的金額換成 emoji。
+// 真的會貼出去的字：版型渲染完，把標起來的金額換成 💲＋全形數字。
 export function renderPostText(payload: any) {
   return applyDeco(renderTemplate(payload.post_template, payload));
 }
