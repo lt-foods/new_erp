@@ -2,18 +2,26 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // 貼文文字的整理與金額凸顯
 //
-// 金額用 emoji 數字凸顯：$120 → 💲1️⃣2️⃣0️⃣（鍵帽數字 = 數字 + U+FE0F + U+20E3）。
+// 金額凸顯：$120 → 💲１２０（$ 換成 💲、數字換成全形）。
 //
 // 原本（#938）想照小幫手手貼的樣子用 LINE 的裝飾表情（contents.sticonMetas），
 // 帶著發出去，社群裡看到的還是普通數字（2026-09-10 實測）——
 // 那是 LINE 客戶端自己的貼圖管線，從外面打 API 模擬不出來、也沒辦法驗證。
-// 所以改用哪台手機都畫得出來的 Unicode emoji；預覽跟存進 DB 的就是貼出去的那份字。
+// 之後改用鍵帽數字 emoji（9️⃣ = 數字 + U+FE0F + U+20E3），老闆 2026-09-18 說太小：
+// 鍵帽是「一個框裡面一個小數字」，數字本身只有半個 emoji 高。
+// 改成全形數字（９９）：跟中文字同高、每台手機都畫得出來，是純文字裡最大的數字寫法；
+// 預覽跟存進 DB 的就是貼出去的那份字。
 //
 // 只裝飾我們自己標記的段落（decoPrice 包起來的）；文案裡「（市價$150/盒）」那種一個字不動。
 // ─────────────────────────────────────────────────────────────────────────────
 
-const EMOJI: Record<string, string> = { "$": "💲" };
-for (const d of "0123456789") EMOJI[d] = `${d}️⃣`;
+const BIG: Record<string, string> = { "$": "💲" };
+for (const d of "0123456789") BIG[d] = String.fromCharCode(0xFF10 + Number(d));   // ０-９
+
+// 全形的 ＄／０-９ 轉回半形（文案裡老闆自己打的「＄９９」）
+function halfwidth(s: string) {
+  return s.replace(/[＄０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));
+}
 
 // 用私有區的字當標記：渲染時把要裝飾的段落包起來，最後一次換成 emoji。
 export const DECO_OPEN = "\uE000";
@@ -23,14 +31,14 @@ export function decoPrice(s: string) {
   return `${DECO_OPEN}${s}${DECO_CLOSE}`;
 }
 
-// 把標記過的段落換成 emoji；表裡沒有的字（例如小數點）原樣留著，不會消失。
+// 把標記過的段落換成 💲＋全形數字；表裡沒有的字（例如小數點）原樣留著，不會消失。
 export function applyDeco(raw: string): string {
   let out = "";
   let deco = false;
   for (const ch of String(raw ?? "")) {
     if (ch === DECO_OPEN) { deco = true; continue; }
     if (ch === DECO_CLOSE) { deco = false; continue; }
-    out += deco ? (EMOJI[ch] ?? ch) : ch;
+    out += deco ? (BIG[ch] ?? ch) : ch;
   }
   return out;
 }
@@ -38,13 +46,15 @@ export function applyDeco(raw: string): string {
 // 文案裡自己寫的價格也一併凸顯（匯進來的團、富文字說明，品項與價格都寫在 description 裡）：
 // - 自己獨立一行的「$109」
 // - 小幫手的錢袋寫法「💰195」「💰 一盒 $275」「💰一包99元」→ 💰 後面那個數字
+// 全形的「＄９９」也算（老闆自己在文案裡就是這樣打的），標起來時先轉回半形，
+// 不然單品去重（decoPricesIn）比不到、貼出去會多印一行 💰 金額。
 // 行內的「（市價$150/盒）」不動 —— 那不是這團的售價。已經標過的行不再標。
 export function decoTextPrices(text: string) {
   return String(text ?? "").split("\n")
     .map((line) => {
       if (line.includes(DECO_OPEN)) return line;
-      if (/^\s*\$\d+\s*$/.test(line)) return line.replace(/\$\d+/, (m) => decoPrice(m));
-      return line.replace(/💰([^\d\n$💰]{0,6})(\$?\d+)/g, (_, gap, price) => `💰${gap}${decoPrice(price)}`);
+      if (/^\s*[$＄][0-9０-９]+\s*$/.test(line)) return line.replace(/[$＄][0-9０-９]+/, (m) => decoPrice(halfwidth(m)));
+      return line.replace(/💰([^0-9０-９\n$＄💰]{0,6})([$＄]?[0-9０-９]+)/g, (_, gap, price) => `💰${gap}${decoPrice(halfwidth(price))}`);
     })
     .join("\n");
 }
