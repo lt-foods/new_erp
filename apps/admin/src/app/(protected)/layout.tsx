@@ -128,13 +128,30 @@ function canDisposeHqReturn(user: { app_metadata?: Record<string, unknown> } | n
   return role === "owner" || role === "admin" || role === "hq_manager";
 }
 
+// 功能權限（app_metadata.perms）個別加開的頁面：href → 需要的 perm key。
+// 非 owner/admin 帳號（不論分店或總部）只要有對應 perm，就算該項落在 ADMIN_ONLY_GROUPS /
+// BRANCH_HIDDEN_HREFS 也要留在選單裡 —— 否則「員工管理 → 功能權限」勾了等於沒勾
+//（2026-09-18 三峽 store_manager 勾了 line_notes_view 卻找不到入口）。
+// （/line-notes：line_notes_view，頁面本身會進唯讀模式，發文 / 帳號仍只有總部）
+const PERM_HREFS: Record<string, string> = {
+  "/line-notes": "line_notes_view",
+};
+
+function hasPermForHref(href: string, user: { app_metadata?: Record<string, unknown> } | null | undefined): boolean {
+  const perm = PERM_HREFS[href];
+  return !!perm && parsePerms(user?.app_metadata?.perms).has(perm);
+}
+
 function filterNavForRole(nav: NavGroup[], user: { app_metadata?: Record<string, unknown> } | null | undefined): NavGroup[] {
+  const adminOnlyHidden = (group: NavGroup) => !canManageStaff(user) && !!group.title && ADMIN_ONLY_GROUPS.has(group.title);
   return nav
-    .filter((group) => canManageStaff(user) || !group.title || !ADMIN_ONLY_GROUPS.has(group.title))
     .map((group) => ({
       ...group,
       items: group.items.filter(
-        (item) => item.href !== "/wms/return-disposition" || canDisposeHqReturn(user),
+        (item) =>
+          // 只 owner/admin 的群組：非管理員只留「功能權限個別加開」的那幾項
+          (!adminOnlyHidden(group) || hasPermForHref(item.href, user)) &&
+          (item.href !== "/wms/return-disposition" || canDisposeHqReturn(user)),
       ),
     }))
     .filter((group) => group.items.length > 0);
@@ -170,20 +187,13 @@ function isBranchUser(user: { app_metadata?: Record<string, unknown> } | null | 
   return !stores.includes("總倉");
 }
 
-// 功能權限（app_metadata.perms）個別加開的分店可見頁面：href → 需要的 perm key
-// （/line-notes：line_notes_view，頁面本身會進唯讀模式，發文 / 帳號仍只有總部）
-const BRANCH_PERM_HREFS: Record<string, string> = {
-  "/line-notes": "line_notes_view",
-};
-
 function filterNavForBranch(nav: NavGroup[], user: { app_metadata?: Record<string, unknown> } | null | undefined): NavGroup[] {
-  const perms = parsePerms(user?.app_metadata?.perms);
   return nav
     .filter((g) => !g.title || !BRANCH_HIDDEN_GROUPS.has(g.title))
     .map((g) => ({
       ...g,
       items: g.items
-        .filter((it) => !BRANCH_HIDDEN_HREFS.has(it.href) || perms.has(BRANCH_PERM_HREFS[it.href] ?? ""))
+        .filter((it) => !BRANCH_HIDDEN_HREFS.has(it.href) || hasPermForHref(it.href, user))
         // 分店帳號看到的是店家核對介面，選單改叫「月結對帳」
         .map((it) => (it.href === "/transfers/settlement" ? { ...it, label: "月結對帳" } : it)),
     }))
