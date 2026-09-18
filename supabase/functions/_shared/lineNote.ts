@@ -286,17 +286,21 @@ export async function listPosts(client, homeId, { limit = 200, since = null, ver
     onRaw?.(body);
     const posts = extractPosts(body.result).map((p) => normalizePost(p, homeId));
     if (posts.length === 0) break;
-    let stop = false;
+    // ⚠ LINE 的列表是依 updatedTime 排序（翻頁游標就是 updatedTime），所以「早於 since」
+    //   要看 updatedAt，不能看 createdAt —— 舊貼文一有新留言就會排到最前面，用 createdAt 判斷
+    //   會在第一頁就停掉，後面幾十篇全漏（2026-09-09 抓不到全部貼文就是這個）。
+    // ⚠ 而且不能「看到一篇太舊的就整個停」：排序不是嚴格的（置頂／被動到的舊貼文會插在中間），
+    //   2026-09-18 松山 9/14、9/17 發的貼文就這樣被擋在後面，永遠列不到。
+    //   改成：太舊的、重複的都跳過，整頁沒有一篇新的才停。
+    let added = 0;
     for (const p of posts) {
-      if (out.some((x) => x.postId === p.postId)) { stop = true; break; }
-      // ⚠ LINE 的列表是依 updatedTime 排序（翻頁游標就是 updatedTime），所以「早於 since 就停」
-      //   要看 updatedAt，不能看 createdAt —— 舊貼文一有新留言就會排到最前面，用 createdAt 判斷
-      //   會在第一頁就停掉，後面幾十篇全漏（2026-09-09 抓不到全部貼文就是這個）。
+      if (!p.postId || out.some((x) => x.postId === p.postId)) continue;
       const lastTouched = p.updatedAt ?? p.createdAt;
-      if (sinceMs && lastTouched && new Date(lastTouched).getTime() < sinceMs) { stop = true; break; }
+      if (sinceMs && lastTouched && new Date(lastTouched).getTime() < sinceMs) continue;
       out.push(p);
+      added++;
     }
-    if (stop) break;
+    if (added === 0) break;
     const last = posts[posts.length - 1];
     postId = last.postId;
     updatedTime = pick(last.raw, "postInfo.updatedTime", "updatedTime");
@@ -414,11 +418,13 @@ export async function createNotePost(client, homeId, { text, images = [], source
     log(verbose, "探路用的 list 失敗（照樣試發文）:", e?.message ?? e);
   }
 
+  // ⚠ 不要帶 textStyle（linejs 的 createPost 會塞 backgroundColor）：2026-09-18 起 LINE 對它回
+  //   code=118「『純文字』功能已停止提供使用。請刪除背景設定並重新發布貼文」，連帶 8 張圖的
+  //   貼文也一起被退（同一份 body 9/17 還發得出去）。只留 mediaStyle。
   const body = {
     postInfo: { readPermission: { type: "ALL", gids: [] } },
     contents: {
       contentsStyle: {
-        textStyle: { textSizeMode: "AUTO", backgroundColor: "", textAnimation: "NONE" },
         mediaStyle: { displayType: "GRID_1_A" },
       },
       stickers: [],
@@ -433,6 +439,14 @@ export async function createNotePost(client, homeId, { text, images = [], source
   if (!res || res.code !== 0) {
     throw new Error(`發文失敗：code=${res?.code} ${res?.message ?? ""}\n${JSON.stringify(res).slice(0, 800)}`);
   }
-  return normalizePost(res.result?.post ?? res.result, homeId);
+  // 回應裡貼文長在哪一層沒有 wire trace：線上發了 38 篇（2026-09-11 ～ 09-17）沒有一篇從
+  // result.post / result 撿到 id（line_post_id 全部 NULL → 讀不到留言、+1 全漏）。
+  // 多試幾個常見的包法；還是撿不到的話呼叫端要自己用 list 對回來（worker 的 jobPost）。
+  const r = res.result;
+  const post = r?.post ?? r?.feed?.post ?? r?.feeds?.[0]?.post ?? r?.posts?.[0] ?? r?.feeds?.[0] ?? r;
+  const out = normalizePost(post, homeId);
+  if (!out.postId) out.postId = pick(r, "postId", "id", "post.id", "feed.post.id") ?? undefined;
+  out.rawCreate = res;
+  return out;
 }
 

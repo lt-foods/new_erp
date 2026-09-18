@@ -37,6 +37,16 @@ function plusWordsToSign(s) {
   return s.replace(PLUS_WORDS, (_, d) => "+" + (CN_DIGITS.includes(d) ? String(CN_DIGITS.indexOf(d) + 1) : d));
 }
 
+// 手機打字常見的錯字（2026-09-15 松山那批留言實際出現，人看得懂、機器解不出來就整則漏單）：
+//   「A+I」「I+ I」→ + - 後面的大寫 I / 小寫 l / 全形｜ 當 1（後頭不接英數才換，避免動到品號）
+//   「A十｜」      → 品項代碼後面的「十」當 +（後面要接數字／一～九／｜）
+//   「A+1.」      → 行尾的句號／驚嘆號拿掉
+const TYPO_PLUS_TEN = /([A-Za-z])\s*十\s*(?=[0-9一二三四五六七八九｜|Il])/g;
+const TYPO_ONE = /([+-])\s*[｜|Il](?![A-Za-z0-9])/g;
+function fixTypos(s) {
+  return s.replace(TYPO_PLUS_TEN, "$1+").replace(TYPO_ONE, (_, sign) => sign + "1").replace(/[.。!！]+[ \t]*$/gm, "");
+}
+
 const MULTI_CODE_FIRST = /^\s*(?:[A-Za-z][A-Za-z0-9-]{0,7}\s*[+-]\s*\d{1,3}\s*){2,}$/;
 const MULTI_QTY_FIRST = /^\s*(?:[+-]\s*\d{1,3}\s*[A-Za-z][A-Za-z0-9-]{0,7}\s*){2,}$/;
 const TOKEN_CODE_FIRST = /[A-Za-z][A-Za-z0-9-]{0,7}\s*[+-]\s*\d{1,3}/g;
@@ -61,7 +71,7 @@ const PATTERNS = [
  */
 export function parseOrderLines(text) {
   const out = [];
-  const norm = plusWordsToSign(normalize(text));
+  const norm = fixTypos(plusWordsToSign(normalize(text)));
   const segments = [];
   for (const rawLine of norm.split(/\r?\n|[,，;；、/]/)) {
     // 同一行寫多筆：整行都是「代碼+號+數」重複（A+1 B+5）或「號+數+代碼」重複（+1 A +2 B）才拆，

@@ -27,7 +27,7 @@ import { corsHeaders } from "../_shared/cors.ts";
 import {
   clientFromToken, createNotePost, deleteNotePost, likeComment, listComments, listHomes, listPosts, loginByQr, whoami,
 } from "../_shared/lineNote.ts";
-import { matchCampaign, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
+import { extractPostTag, matchCampaign, normalizeForMatch, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
 import { renderPostText, TZ } from "../_shared/lineNoteRender.ts";
 
 const SUPABASE_URL = requireEnv("SUPABASE_URL");
@@ -205,14 +205,48 @@ async function jobPost(job: any) {
   const images = await collectPostImages(payload);
   try {
     const post = await createNotePost(client, payload.home_id, { text, images, verbose: VERBOSE });
+    // create.json 的回應撿不到貼文 id 時（線上 9/11 ～ 9/17 發的 38 篇全是這樣），馬上用 list 把
+    // 剛發的那篇對回來 —— 沒有 line_post_id 就讀不到留言，客人的 +1 一則都不會變成訂單。
+    let postId = post.postId ? String(post.postId) : null;
+    let resolved: string | null = null;
+    if (!postId) {
+      postId = await findPostIdByText(client, payload.home_id, text).catch((e) => { log("補對貼文 id 失敗:", (e as any)?.message ?? e); return null; });
+      resolved = postId ? "list" : null;
+    }
     await patch("line_note_posts", `id=eq.${job.post_id}`, {
-      status: "posted", line_post_id: post.postId ?? null, text, posted_at: new Date().toISOString(), last_error: null,
+      status: "posted", line_post_id: postId, text, posted_at: new Date().toISOString(),
+      // 還是沒有 id：貼文已經在 LINE 上了，先標 posted，錯誤留在畫面上；下次讀取 discoverPosts
+      // 會用 🔖 團號把 id 補回來，補到才開始讀留言。
+      last_error: postId ? null : "發文成功但沒拿到 LINE 貼文 id；下次讀取會用 🔖 團號自動補認，補到前讀不到留言",
     });
-    return { postId: post.postId, title: postTitle(text), images: images.length };
+    return {
+      postId, title: postTitle(text), images: images.length,
+      ...(resolved ? { resolved } : {}),
+      // 留一份回應的樣子，下次才對得出 id 到底長在哪一層
+      ...(post.postId ? {} : { createRaw: JSON.stringify(post.rawCreate ?? null).slice(0, 600) }),
+    };
   } catch (e) {
     await patch("line_note_posts", `id=eq.${job.post_id}`, { status: "failed", text, last_error: String((e as any)?.message ?? e).slice(0, 1000) });
     throw e;
   }
+}
+
+// 剛發出去的貼文在 list 裡長什麼樣：先認 🔖 團號章（系統發的一定有），沒章就比整篇內文。
+// 只看最近 10 分鐘內建立的，免得對到小幫手先前手貼的同一團。
+async function findPostIdByText(client: any, homeId: string, text: string): Promise<string | null> {
+  const tag = extractPostTag(text);
+  const want = normalizeForMatch(text);
+  const posts = await listPosts(client, homeId, { limit: 30, verbose: VERBOSE });
+  const cutoff = Date.now() - 10 * 60_000;
+  const hit = posts.find((p: any) => {
+    if (!p.postId) return false;
+    const created = Date.parse(p.createdAt ?? "") || 0;
+    if (created && created < cutoff) return false;
+    const pt = String(p.text ?? "");
+    return tag ? extractPostTag(pt) === tag : normalizeForMatch(pt) === want;
+  });
+  if (hit) log(`用 list 補對到剛發的貼文 id：${hit.postId}`);
+  return hit ? String(hit.postId) : null;
 }
 
 // 刪掉 LINE 上那篇貼文，成功才連後台紀錄一起清掉。
@@ -384,18 +418,48 @@ async function reactToConfirmed(client: any, post: any): Promise<number> {
 // 認貼文：小幫手手貼的團也綁進來（比對規則見 matchCampaign）
 async function discoverPosts(client: any, community: any) {
   const since = new Date(Date.now() - community.read_days * 86400_000).toISOString();
-  const notes = await listPosts(client, community.home_id, { limit: 100, since, verbose: VERBOSE });
+  // limit 要蓋得住 read_days 內的貼文量：松山一天 ~28 篇、7 天近 200 篇，
+  // 100 只看得到最近被留言碰過的那一半，前面的（9/11 ～ 9/14 那 13 篇）永遠補不到 id。
+  const notes = await listPosts(client, community.home_id, { limit: 300, since, verbose: VERBOSE });
   if (notes.length === 0) return 0;
-  const known = await rest(`line_note_posts?community_id=eq.${community.id}&select=id,status,line_post_id,campaign_id`);
+  const known = await rest(`line_note_posts?community_id=eq.${community.id}&select=id,status,line_post_id,campaign_id,group_buy_campaigns(campaign_no)`);
   const knownByLineId = new Map((known ?? []).filter((p: any) => p.line_post_id).map((p: any) => [p.line_post_id, p]));
+  // 團號 → 後台紀錄（不限團的狀態：已鎖定／已結算的團也要補得到）
+  const knownByCampaignNo = new Map(
+    (known ?? []).filter((p: any) => p.campaign_id && p.group_buy_campaigns?.campaign_no)
+      .map((p: any) => [normalizeForMatch(p.group_buy_campaigns.campaign_no), p]));
   const campaigns = await rest(`group_buy_campaigns?tenant_id=eq.${community.tenant_id}&status=in.(open,closed)&select=id,name,campaign_no,campaign_items(skus(product_name))&order=id.desc&limit=300`);
   let linked = 0;
   for (const n of notes) {
     if (!n.postId) continue;
+    const lineId = String(n.postId);
     const text = String(n.text ?? "");
-    const hit = matchCampaign(text, campaigns ?? []);
+    const seen = knownByLineId.get(lineId);
 
-    const seen = knownByLineId.get(String(n.postId));
+    // 系統自己發的文（文末有 🔖 團號章）但發文當下沒拿到貼文 id → 用章把 id 補回紀錄上。
+    // 舊行為：那一團已有 status=posted 的紀錄就 continue，永遠補不到；紀錄一直沒有
+    // line_post_id，留言就一直讀不到（2026-09-15 松山早上那批 24 篇、12 則 +1 全漏）。
+    // 團已經鎖定／結算的（不在 campaigns 候選裡）會被認成 unlinked 再存一筆重複的，
+    // 這裡順手把那筆重複的清掉。
+    const tag = extractPostTag(text);
+    const orig = tag ? knownByCampaignNo.get(normalizeForMatch(tag)) : null;
+    if (orig && !orig.line_post_id && ["posted", "closed", "failed"].includes(orig.status) && (!seen || seen.id !== orig.id)) {
+      const upd: Record<string, unknown> = { line_post_id: lineId, last_error: null };
+      if (n.createdAt) upd.posted_at = n.createdAt;
+      if (orig.status === "failed") upd.status = "posted";        // 後台記失敗，LINE 上其實有
+      await patch("line_note_posts", `id=eq.${orig.id}`, upd);
+      orig.line_post_id = lineId;
+      knownByLineId.set(lineId, orig);
+      if (seen && seen.status === "unlinked") {
+        await rest(`line_note_posts?id=eq.${seen.id}&status=eq.unlinked`, { method: "DELETE", prefer: "return=minimal" })
+          .catch((e) => log(`清重複的未認出紀錄 ${seen.id} 失敗（略過）：${(e as any)?.message ?? e}`));
+      }
+      linked++;
+      log(`🔗 補上貼文 id ${lineId} → 紀錄 ${orig.id}（團號 ${tag}）`);
+      continue;
+    }
+
+    const hit = matchCampaign(text, campaigns ?? []);
     if (seen) {
       // 已經認過的不用再看；還沒認出團的每次都再試一次（團可能後來才改名／才開）
       if (seen.campaign_id || !hit) continue;
@@ -447,11 +511,20 @@ async function jobRead(job: any) {
     }
   }
   const filter = job.post_id ? `id=eq.${job.post_id}` : `community_id=eq.${job.community_id}${sinceFilter}`;
-  const posts = await rest(`line_note_posts?${filter}&status=eq.posted&select=id,tenant_id,line_post_id,community_id,group_buy_campaigns(status),line_note_communities(home_id,account_id,react_on_confirm)`);
+  const posts = await rest(`line_note_posts?${filter}&status=eq.posted&select=id,tenant_id,line_post_id,community_id,group_buy_campaigns(status),line_note_communities(home_id,account_id,react_on_confirm)&order=id.asc`);
   const out: any[] = [];
   for (const p of posts ?? []) {
     const cst = p.group_buy_campaigns?.status;
     if (cst && !["open", "closed"].includes(cst)) { await patch("line_note_posts", `id=eq.${p.id}`, { status: "closed" }); continue; }
+    // 沒有貼文 id 讀不到留言：contentId 空的 getList 路由快取熱的時候回空陣列（看起來像 0 則留言）、
+    // 冷的時候整組報「全部打不通」—— 兩種都是假象。標清楚原因，等 discoverPosts 補到 id 再讀。
+    if (!p.line_post_id) {
+      await patch("line_note_posts", `id=eq.${p.id}`, {
+        last_error: "還沒對到 LINE 上的貼文 id（發文時沒拿到）；讀取時會用 🔖 團號自動補認，補到才讀得到留言",
+      }).catch(() => {});
+      out.push({ post_id: p.id, skipped: "no_line_post_id" });
+      continue;
+    }
     const client = await clientFor(await loadAccount(p.line_note_communities.account_id));
     try {
       out.push({ post_id: p.id, ...(await readPost(client, {
