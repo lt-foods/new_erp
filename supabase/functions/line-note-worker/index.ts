@@ -418,7 +418,9 @@ async function reactToConfirmed(client: any, post: any): Promise<number> {
 // 認貼文：小幫手手貼的團也綁進來（比對規則見 matchCampaign）
 async function discoverPosts(client: any, community: any) {
   const since = new Date(Date.now() - community.read_days * 86400_000).toISOString();
-  const notes = await listPosts(client, community.home_id, { limit: 100, since, verbose: VERBOSE });
+  // limit 要蓋得住 read_days 內的貼文量：松山一天 ~28 篇、7 天近 200 篇，
+  // 100 只看得到最近被留言碰過的那一半，前面的（9/11 ～ 9/14 那 13 篇）永遠補不到 id。
+  const notes = await listPosts(client, community.home_id, { limit: 300, since, verbose: VERBOSE });
   if (notes.length === 0) return 0;
   const known = await rest(`line_note_posts?community_id=eq.${community.id}&select=id,status,line_post_id,campaign_id,group_buy_campaigns(campaign_no)`);
   const knownByLineId = new Map((known ?? []).filter((p: any) => p.line_post_id).map((p: any) => [p.line_post_id, p]));

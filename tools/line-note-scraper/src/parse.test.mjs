@@ -209,3 +209,16 @@ test("加1 / 打1 written as words", () => {
   assert.deepEqual(r.orders.map((o) => [o.code, o.qty]), [[null, 1]]);
   assert.deepEqual(parseNoteComment("加1", "翁太615910").orders.map((o) => [o.code, o.qty]), [[null, 1]]);
 });
+
+test("typos: I / ｜ as 1, 十 as +, trailing period", () => {
+  assert.deepEqual(one("A+I E+I"), [{ code: "A", qty: 1, cancel: false }, { code: "E", qty: 1, cancel: false }]);
+  assert.deepEqual(one("F+1\nI+ I"), [{ code: "F", qty: 1, cancel: false }, { code: "I", qty: 1, cancel: false }]);
+  assert.deepEqual(one("A十｜"), [{ code: "A", qty: 1, cancel: false }]);
+  assert.deepEqual(one("A十2"), [{ code: "A", qty: 2, cancel: false }]);
+  assert.deepEqual(one("A+1."), [{ code: "A", qty: 1, cancel: false }]);
+  assert.deepEqual(one("A+1。\nB+2！"), [{ code: "A", qty: 1, cancel: false }, { code: "B", qty: 2, cancel: false }]);
+  // 品號本身有 I 的不動：+1 I1 / I1+1
+  assert.deepEqual(one("I1+1"), [{ code: "I1", qty: 1, cancel: false }]);
+  assert.deepEqual(one("+1 I1"), [{ code: "I1", qty: 1, cancel: false }]);
+  assert.deepEqual(one("十分好吃"), []);
+});
