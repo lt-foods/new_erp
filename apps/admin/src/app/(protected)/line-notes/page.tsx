@@ -112,7 +112,9 @@ export default function LineNotesPage() {
   const hasViewPerm = useHasStaffPerm("line_notes_view");
   const readOnly = !canOperate;
   // 留言加單的處理鈕（重試／指定會員／已解決／忽略）perm 持有者也能按 —— DB 端 20260918020000
-  // 有對應的 UPDATE policy 與 RPC gate；貼文分頁的指定團／讀取／刪除仍只有總部。
+  // 有對應的 UPDATE policy 與 RPC gate；貼文分頁的「指定團」也開給 perm 持有者
+  //（20260919000000，rpc_line_note_post_link 改走 _line_note_require_post_access）。
+  // 立即讀取／恢復讀取／刪除仍只有總部。
   const canProcessComments = canOperate || hasViewPerm;
   const [tab, setTab] = useState<Tab>("accounts");
   const [orderPopup, setOrderPopup] = useState<OrderPopup | null>(null);
@@ -225,7 +227,7 @@ export default function LineNotesPage() {
         <CommentsTab communityById={communityById} notify={notify} fail={fail} readOnly={!canProcessComments} />
       )}
       {shownTab === "posts" && (
-        <PostsTab posts={posts} communityById={communityById} reload={loadPosts} notify={notify} fail={fail} readOnly={readOnly} />
+        <PostsTab posts={posts} communityById={communityById} reload={loadPosts} notify={notify} fail={fail} readOnly={readOnly} canLink={canProcessComments} />
       )}
 
       <SharedModal
@@ -998,9 +1000,12 @@ function postFirstLine(text: string | null) {
 // 未認出團的貼文沒有團可掛，仍然一篇一張卡。
 type PostGroup = { key: string; campaignId: number | null; campaign: Post["group_buy_campaigns"]; posts: Post[] };
 
-function PostsTab({ posts, communityById, reload, notify, fail, readOnly }: {
+function PostsTab({ posts, communityById, reload, notify, fail, readOnly, canLink }: {
   posts: Post[] | null; communityById: Map<number, Community>; reload: () => Promise<void>; notify: (m: string) => void; fail: (e: unknown) => void;
   readOnly: boolean;
+  // 「指定團」比其他操作鈕寬：line_notes_view perm 持有者（分店店長）也能指定，
+  // 不然未認出團的貼文只能等總部來綁、留言加單那邊什麼都動不了。DB gate 見 20260919000000。
+  canLink: boolean;
 }) {
   const [busy, setBusy] = useState<number | null>(null);
   const [open, setOpen] = useState<string | null>(null);
@@ -1249,21 +1254,23 @@ function PostsTab({ posts, communityById, reload, notify, fail, readOnly }: {
                         {p.closed_reason && <div className="text-zinc-500">讀到結單留言：{p.closed_reason}</div>}
                         {p.last_error && <div className="text-red-600">{p.last_error}</div>}
                       </span>
-                      {!readOnly && <span className="flex flex-wrap gap-1.5">
-                        {unlinked && (
+                      {(!readOnly || canLink) && <span className="flex flex-wrap gap-1.5">
+                        {unlinked && canLink && (
                           <button type="button" className={btnPrimary} onClick={() => setLinkFor(p)}>指定團</button>
                         )}
-                        {p.status === "posted" && (
+                        {!readOnly && p.status === "posted" && (
                           <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void readNow(p)}>立即讀取</SpinButton>
                         )}
-                        {p.status === "closed" && p.closed_comment_id && (
+                        {!readOnly && p.status === "closed" && p.closed_comment_id && (
                           <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void reopenPost(p)}>恢復讀取</SpinButton>
                         )}
-                        <SpinButton type="button" className={`${btn} text-red-600`} loading={busy === p.id}
-                          onClick={() => void removePost(p)}
-                          title={p.line_post_id ? "連 LINE 記事本上那篇一起刪掉" : "只清後台紀錄（這篇沒發到 LINE）"}>
-                          {p.line_post_id ? "刪除貼文" : "刪除紀錄"}
-                        </SpinButton>
+                        {!readOnly && (
+                          <SpinButton type="button" className={`${btn} text-red-600`} loading={busy === p.id}
+                            onClick={() => void removePost(p)}
+                            title={p.line_post_id ? "連 LINE 記事本上那篇一起刪掉" : "只清後台紀錄（這篇沒發到 LINE）"}>
+                            {p.line_post_id ? "刪除貼文" : "刪除紀錄"}
+                          </SpinButton>
+                        )}
                       </span>}
                     </li>
                   ))}
@@ -1333,7 +1340,7 @@ function PostsTab({ posts, communityById, reload, notify, fail, readOnly }: {
 
       {linkFor && (
         <LinkCampaignModal post={linkFor} onClose={() => setLinkFor(null)}
-          onDone={async () => { setLinkFor(null); notify("已指定，按「立即讀取」就會開始加單"); await reload(); }}
+          onDone={async () => { setLinkFor(null); notify(readOnly ? "已指定，下次排程讀取就會開始加單" : "已指定，按「立即讀取」就會開始加單"); await reload(); }}
           fail={fail} />
       )}
     </div>
