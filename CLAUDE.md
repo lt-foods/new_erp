@@ -18,6 +18,11 @@
 **改完自己開 PR，base 一律選 main。** 不要只 push 分支然後叫他去開 —— 他不會去開。
 改動內容跟現有分支／已合併的東西不一樣時，就開一支新的 PR，不要往舊的上面疊。
 
+PR 範本的「敏感設定」那段：在 `supabase/functions/` 加任何 `Deno.env.get(...)`（就算有預設值、
+不是密鑰）守門（`scripts/check-sensitive-config-guard.mjs`）一律算「新增後端環境值讀取」，
+要勾**第一格**並把做了／不做／回退寫在那一段；勾「沒有碰」= guard 紅（#970 就是這樣紅著被合併的）。
+`apps/` 裡加 `process.env.` 同理。
+
 ---
 
 ## Supabase / DB
@@ -97,6 +102,15 @@ curl -sS --cacert /root/.ccr/ca-bundle.crt \
 - `verify_jwt` 要跟 `supabase/config.toml` 裡該函式的設定一致（例：`staff-create` / `trial-signup` / `tenant-purge` 都是 `false`，函式內自己驗 caller）。**config.toml 的 verify_jwt 只有部署時才會套用**，改了 config 沒重部署等於沒改。
 - 部署完務必驗證：`OPTIONS` preflight 回 200 帶 CORS、無 auth 的 `POST` 回函式自家的 401（代表函式真的在跑，不是 gateway 404）。gateway 404（`{"code":"NOT_FOUND"}`）在前端會被 supabase-js 包成 `Failed to send a request to the Edge Function` — 這句 = 函式**根本沒部署**，不是程式 bug。
 - 列出線上已部署函式：`GET https://api.supabase.com/v1/projects/$REF/functions`。repo 有 `supabase/functions/<x>/` 不代表線上有 — 新函式一定要手動部署。
+
+### Edge Function 的模組層級不要放「跟這次呼叫有關」的值
+
+模組層級的 `const` 只在 **isolate 啟動時**求值一次，而 isolate 會被後面的請求重複使用
+（pg_cron 每分鐘打一次的 worker 尤其如此）。`const REACT_DEADLINE = Date.now() + 100_000`
+這種「本次呼叫的截止時間」寫在模組層級，第二次請求進來時就已經過期 —— line-note-worker
+的按笑臉就這樣默默關掉，三峽店 9/14 起 53 則加成單的留言一個笑臉都沒有，到 9/20 才發現（#970）。
+截止時間、預算、「這次跑到哪」一律在 handler / job 裡算、用參數往下帶。
+同理，模組層級的 Map 快取（例：`clients`）會跨請求活著，別把它當成「一次 invocation 內」的東西。
 
 ### Secrets API 回的是雜湊，不是密文本體
 
