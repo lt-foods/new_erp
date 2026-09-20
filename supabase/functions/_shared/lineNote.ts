@@ -1,6 +1,8 @@
 // @ts-nocheck — JS 移植，不做型別檢查
 // ⚠ 這是 tools/line-note-scraper/src/line.mjs 的 Deno 版（Edge Function 用）。
-// 差異：linejs 走 jsr、不用檔案 storage（token 在 line_note_accounts.auth_token）、
+// 差異：linejs 走 jsr、不用檔案 storage（憑證在 line_note_accounts 的
+//       auth_token / refresh_token / token_expire —— 三個都要存，只存 access token
+//       等於每 7 天就要人重新掃一次 QR，見 20260920000000）、
 // 圖片只收 Uint8Array。REST 探測 / 解析 / 發文邏輯要跟 tools 那邊保持一致，改一邊記得改另一邊。
 //
 // 記事本不是 Thrift，是 LINE 內部的 JSON REST（myhome / square-note）：
@@ -17,6 +19,55 @@ import { MemoryStorage } from "jsr:@evex/linejs@^3.4.2/storage";
 
 export const DEFAULT_DEVICE = Deno.env.get("LINE_DEVICE") || "ANDROIDSECONDARY";
 
+/**
+ * 一整組登入憑證。**三個都要存**：
+ * - accessToken：打 API 用的，LINE 給 **7 天**就過期
+ * - refreshToken：換新 access token 用的，**一年**
+ * - expire：access token 到期的 epoch 秒（純參考，linejs 不靠它判斷）
+ *
+ * 只存 accessToken 的後果見 20260920000000 的檔頭：每 7 天整組停擺、要人重新掃 QR。
+ */
+export type LineCredential = {
+  accessToken: string;
+  refreshToken?: string | null;
+  expire?: number | null;
+};
+
+/** token 換新時回報（accessToken / refreshToken / expire 各自來，拿到哪個就存哪個） */
+export type CredentialSink = (patch: Partial<LineCredential>) => void;
+
+/**
+ * MemoryStorage + 「有人寫 refreshToken / expire 就通知我」。
+ *
+ * linejs 的 tryRefreshToken 會把輪替後的 refreshToken 寫回 storage —— Edge Function 用的是
+ * MemoryStorage，不接這條線那把新的就跟著 invocation 一起蒸發，下次拿舊的去 refresh 會被拒。
+ */
+export class PersistingStorage extends MemoryStorage {
+  onCredential: CredentialSink | null = null;
+  /** 登入時我們自己餵進去的值，回音不用再存一次 */
+  seeded: Record<string, unknown> = {};
+
+  override async set(key: string, value: any): Promise<void> {
+    await super.set(key, value);
+    if (this.seeded[key] === value) return;
+    if (key === "refreshToken" && typeof value === "string" && value) this.onCredential?.({ refreshToken: value });
+    else if (key === "expire" && typeof value === "number") this.onCredential?.({ expire: value });
+  }
+}
+
+/** 從跑起來的 client 身上把現在這組憑證撿出來（登入完、refresh 完都用這支對帳） */
+export async function readCredential(client: any): Promise<LineCredential> {
+  const st = client?.base?.storage;
+  const get = async (k: string) => { try { return st ? await st.get(k) : undefined; } catch { return undefined; } };
+  const refreshToken = await get("refreshToken");
+  const expire = await get("expire");
+  return {
+    accessToken: String(client?.base?.authToken ?? ""),
+    refreshToken: typeof refreshToken === "string" && refreshToken ? refreshToken : null,
+    expire: typeof expire === "number" ? expire : null,
+  };
+}
+
 const CHANNEL_IDS = {
   HOME: "1341209850",
   TIMELINE: "1341209950",
@@ -28,9 +79,43 @@ export function log(verbose: any, ...args: any[]) {
   if (verbose) console.log("[line-notes]", ...args);
 }
 
-/** 用存在 DB 的 token 登入（每次 Edge Function 冷啟動都會做一次，只有一趟 getProfile） */
-export async function clientFromToken(authToken: string, device = DEFAULT_DEVICE): Promise<any> {
-  return await loginWithAuthToken(authToken, { device, storage: new MemoryStorage() });
+/**
+ * 用存在 DB 的憑證登入（每次 Edge Function 冷啟動都會做一次，只有一趟 getProfile）。
+ *
+ * ⚠ 一定要把 refreshToken 一起傳進來。access token 只有 7 天，過期後 linejs 會在
+ * request 層攔下 `MUST_REFRESH_V3_TOKEN` 自動換新再重送 —— 但**只有 storage 裡有
+ * refreshToken 才會走那條路**，沒有就直接把錯誤丟出來（就是
+ * `Request internal failed, getProfile(/S4) -> {"code":"MUST_REFRESH_V3_TOKEN"…}`
+ * 那句，看起來像掉線，其實是到期沒得換）。
+ *
+ * onCredential 會在 token 換新時被呼叫（cold start 那趟 getProfile 就可能觸發，
+ * 所以 sink 必須在 loginWithAuthToken **之前**掛好）。LINE 會輪替 refreshToken，
+ * 換到新的沒寫回 DB＝下次拿舊的去換會被拒，等於又要重新掃 QR。
+ */
+export async function clientFromToken(
+  cred: string | LineCredential,
+  opts: { device?: string; onCredential?: CredentialSink } = {},
+): Promise<any> {
+  const c: LineCredential = typeof cred === "string" ? { accessToken: cred } : cred;
+  if (!c.accessToken) throw new Error("沒有登入 token");
+
+  const storage = new PersistingStorage();
+  storage.seeded = { refreshToken: c.refreshToken ?? undefined, expire: c.expire ?? undefined };
+  storage.onCredential = opts.onCredential ?? null;
+
+  const client = await loginWithAuthToken({
+    accessToken: c.accessToken,
+    ...(c.refreshToken ? { refreshToken: c.refreshToken } : {}),
+    ...(typeof c.expire === "number" ? { expire: c.expire } : {}),
+  }, { device: opts.device ?? DEFAULT_DEVICE, storage });
+
+  client.base.on("update:authtoken", (t: string) => opts.onCredential?.({ accessToken: t }));
+  // 上面那行掛得再快也趕不上 loginWithAuthToken 裡面 ready() 觸發的那次 refresh，
+  // 所以回來再對一次 —— 沒換過就是 no-op。
+  if (client.base.authToken && client.base.authToken !== c.accessToken) {
+    opts.onCredential?.({ accessToken: client.base.authToken });
+  }
+  return client;
 }
 
 /**
