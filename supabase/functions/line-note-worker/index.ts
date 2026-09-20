@@ -25,7 +25,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 import QRCode from "npm:qrcode@1.5.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import {
-  clientFromToken, createNotePost, deleteNotePost, likeComment, listComments, listHomes, listPosts, loginByQr, whoami,
+  clientFromToken, createNotePost, deleteNotePost, likeComment, type LineCredential, listComments, listHomes,
+  listPosts, loginByQr, readCredential, whoami,
 } from "../_shared/lineNote.ts";
 import { extractPostTag, matchCampaign, normalizeForMatch, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
 import { renderPostText, TZ } from "../_shared/lineNoteRender.ts";
@@ -68,12 +69,47 @@ async function loadAccount(id: number) {
   if (!rows?.[0]) throw new Error(`account ${id} not found`);
   return rows[0];
 }
+// 憑證換新就寫回 DB。access token 只有 7 天，靠 refresh token（一年）自動換 ——
+// **換到的新 refresh token 沒存回去就等於沒換**，下次拿舊的去 refresh 會被 LINE 拒，
+// 又要人重新掃 QR（2026-09-20 那次停擺就是整組憑證只存了 access token）。
+function credentialFields(c: Partial<LineCredential>): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (c.accessToken) body.auth_token = c.accessToken;
+  if (c.refreshToken) body.refresh_token = c.refreshToken;
+  if (typeof c.expire === "number") body.token_expire = c.expire;
+  return body;
+}
+
+/** 對帳一次並且**等它寫完**：Edge Function 隨時可能收工，fire-and-forget 會把新 token 丟掉 */
+async function persistCredential(account: any, client: any) {
+  const cur = await readCredential(client);
+  const body: Record<string, unknown> = {};
+  if (cur.accessToken && cur.accessToken !== account.auth_token) body.auth_token = cur.accessToken;
+  if (cur.refreshToken && cur.refreshToken !== account.refresh_token) body.refresh_token = cur.refreshToken;
+  if (typeof cur.expire === "number" && cur.expire !== account.token_expire) body.token_expire = cur.expire;
+  if (Object.keys(body).length === 0) return false;
+  await patch("line_note_accounts", `id=eq.${account.id}`, body);
+  Object.assign(account, body.auth_token ? { auth_token: body.auth_token } : {},
+    body.refresh_token ? { refresh_token: body.refresh_token } : {},
+    body.token_expire !== undefined ? { token_expire: body.token_expire } : {});
+  log(`🔑 帳號 ${account.id} 的登入憑證已更新（${Object.keys(body).join("/")}）`);
+  return true;
+}
+
 async function clientFor(account: any) {
   if (clients.has(account.id)) return clients.get(account.id);
   if (!account.auth_token) throw new Error(`帳號「${account.label}」還沒登入`);
-  const client = await clientFromToken(account.auth_token);
-  client.base.on("update:authtoken", (t: string) =>
-    patch("line_note_accounts", `id=eq.${account.id}`, { auth_token: t }).catch(() => {}));
+  const client = await clientFromToken(
+    { accessToken: account.auth_token, refreshToken: account.refresh_token, expire: account.token_expire },
+    {
+      // 一次 invocation 內再換 token 時用（cold start 那次由下面的 persistCredential 收）
+      onCredential: (c) => {
+        const body = credentialFields(c);
+        if (Object.keys(body).length) patch("line_note_accounts", `id=eq.${account.id}`, body).catch(() => {});
+      },
+    },
+  );
+  await persistCredential(account, client);
   clients.set(account.id, client);
   return client;
 }
@@ -102,10 +138,15 @@ async function doLogin(accountId: number) {
       },
     });
     const me = whoami(client);
+    // ⚠ refresh_token 一定要跟著存。只存 auth_token 的話 7 天後 access token 到期就沒得換，
+    //   帳號整組停擺、只能再叫人掃一次 QR（2026-09-20 的 MUST_REFRESH_V3_TOKEN）。
+    const cred = await readCredential(client);
     await patch("line_note_accounts", `id=eq.${accountId}`, {
-      status: "active", auth_token: client.base.authToken, line_mid: me.mid, display_name: me.displayName,
+      status: "active", line_mid: me.mid, display_name: me.displayName,
+      ...credentialFields({ ...cred, accessToken: cred.accessToken || client.base.authToken }),
       qr_image: null, qr_url: null, pin_code: null, last_error: null, last_seen_at: new Date().toISOString(),
     });
+    if (!cred.refreshToken) log(`⚠ 帳號 ${accountId} 登入成功但沒拿到 refresh token，7 天後會需要重新掃 QR`);
     // 登入完馬上把這個帳號的群組／社群拉進來，店家不用再自己按一次同步
     let synced: any = null;
     try { synced = await syncCommunities(accountId, await listHomes(client, VERBOSE)); }
@@ -127,7 +168,8 @@ async function jobLogout(job: any) {
   if (client) { try { await client.base.auth.logoutZ(); } catch { /* token 可能早就失效，略過 */ } }
   clients.delete(account.id);
   await patch("line_note_accounts", `id=eq.${account.id}`, {
-    status: "logged_out", auth_token: null, qr_image: null, qr_url: null, pin_code: null, last_error: null,
+    status: "logged_out", auth_token: null, refresh_token: null, token_expire: null,
+    qr_image: null, qr_url: null, pin_code: null, last_error: null,
   });
   return { ok: true };
 }
@@ -558,7 +600,12 @@ async function runJob(job: any) {
   try {
     const result = await HANDLERS[job.kind](job);
     await patch("line_note_jobs", `id=eq.${job.id}`, { status: "done", result, finished_at: new Date().toISOString() });
-    if (job.account_id) await patch("line_note_accounts", `id=eq.${job.account_id}`, { last_seen_at: new Date().toISOString() }).catch(() => {});
+    // 跑得起來就代表帳號是通的：之前被標 error 的（多半是 token 到期，現在會自動換）要自己回到
+    // active，否則後台一直寫「錯誤」、「登出」鈕也不見，只有重新掃 QR 才清得掉。
+    if (job.account_id) {
+      await patch("line_note_accounts", `id=eq.${job.account_id}&status=eq.error`, { status: "active", last_error: null }).catch(() => {});
+      await patch("line_note_accounts", `id=eq.${job.account_id}`, { last_seen_at: new Date().toISOString() }).catch(() => {});
+    }
     log(`✔ job#${job.id}`, JSON.stringify(result).slice(0, 300));
     return { id: job.id, kind: job.kind, ok: true };
   } catch (e) {
@@ -567,10 +614,20 @@ async function runJob(job: any) {
     await patch("line_note_jobs", `id=eq.${job.id}`, { status: "failed", error: msg.slice(0, 2000), finished_at: new Date().toISOString() });
     if (/還沒登入|NotAuthorized|token|401/i.test(msg) && job.account_id) {
       clients.delete(job.account_id);
-      await patch("line_note_accounts", `id=eq.${job.account_id}`, { status: "error", last_error: msg.slice(0, 1000) }).catch(() => {});
+      await patch("line_note_accounts", `id=eq.${job.account_id}`, { status: "error", last_error: loginErrorHint(msg).slice(0, 1000) }).catch(() => {});
     }
     return { id: job.id, kind: job.kind, ok: false, error: msg.slice(0, 200) };
   }
+}
+
+// linejs 丟出來的原句（`Request internal failed, getProfile(/S4) -> {"code":…}`）
+// 後台看了也不知道要做什麼，補一句該做的事。MUST_REFRESH_V3_TOKEN 走到這裡＝
+// 連 refresh token 都換不動了（沒存到、或已經被 LINE 作廢），只能重新掃 QR。
+function loginErrorHint(msg: string): string {
+  if (/MUST_REFRESH_V3_TOKEN/i.test(msg)) {
+    return `LINE 登入已過期，請到「LINE 記事本 → 帳號 → 登入」用小幫手手機重新掃一次 QR。\n原始訊息：${msg}`;
+  }
+  return msg;
 }
 
 // ── 排程：到 read_times 就排 read ───────────────────────────────────────────
