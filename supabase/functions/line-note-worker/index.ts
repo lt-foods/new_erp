@@ -37,6 +37,9 @@ const CRON_SECRET = Deno.env.get("LINE_NOTE_CRON_SECRET") ?? "";
 const VERBOSE = !!Deno.env.get("VERBOSE");
 const TICK_BUDGET_MS = Number(Deno.env.get("LINE_NOTE_TICK_BUDGET_MS") || 100_000);
 const LOGIN_DEADLINE_MS = Number(Deno.env.get("LINE_NOTE_LOGIN_DEADLINE_MS") || 110_000);
+// 按笑臉的截止時間：從**這一次 invocation 開始**算起（tick 的 started），不是從 isolate 啟動算起。
+// 比 TICK_BUDGET_MS 多一點，讓讀完留言之後還有時間把該按的按完。
+const REACT_BUDGET_MS = Number(Deno.env.get("LINE_NOTE_REACT_BUDGET_MS") || 120_000);
 const MAX_POST_IMAGES = Number(Deno.env.get("LINE_POST_MAX_IMAGES") || 10);
 const PRODUCTS_BUCKET = Deno.env.get("PRODUCTS_BUCKET") || "products";
 
@@ -375,7 +378,6 @@ async function readPost(client: any, post: any) {
       await patch("line_note_comments", `id=eq.${c.id}`, { status: "error", error: String((e as any)?.message ?? e).slice(0, 1000) }).catch(() => {});
     }
   }
-  const reacted = await reactToConfirmed(client, post);
   const upd: Record<string, unknown> = {
     last_read_at: new Date().toISOString(), comment_count: comments.length, last_error: null,
   };
@@ -392,7 +394,7 @@ async function readPost(client: any, post: any) {
     log(`貼文 ${post.id} 讀到結單宣告，停止自動讀取：${String(closer.text ?? "").slice(0, 40)}`);
   }
   await patch("line_note_posts", `id=eq.${post.id}`, upd);
-  return { comments: comments.length, pending: pending?.length ?? 0, ordered, other, reacted, closed: !!closer, late };
+  return { comments: comments.length, pending: pending?.length ?? 0, ordered, other, closed: !!closer, late };
 }
 
 // 「結單」判定。誤判的代價是整團安靜地停止爬，所以只認宣告句 ——
@@ -429,32 +431,53 @@ async function detectClosing(post: any): Promise<any | null> {
   return hit;
 }
 
-const REACT_BATCH = 40;                                  // 每則貼文一次最多按幾則
-const REACT_DEADLINE = Date.now() + 100_000;             // 本次呼叫按表情的總預算（idle timeout 150s）
+const REACT_BATCH = 80;                                  // 一次讀取最多按幾則（一則約 0.3 秒）
+const REACT_MAX_MISS = 5;                                // 連續幾則按不動就停手（多半是 LINE 擋次數）
 
 // 收到單的留言回按一個笑臉，讓客人知道「你的 +1 我收到了」。
 // 只按 ordered / duplicate / resolved —— unmatched、error 還沒處理完，按了會讓客人以為收到了。
 // 按過的記 reacted_at，下次讀留言不會重按。單一則失敗不影響其他則，也不影響讀留言本身。
-async function reactToConfirmed(client: any, post: any): Promise<number> {
-  if (post.react_on_confirm === false) return 0;
+//
+// 兩件事情不能改回去：
+//   1. **截止時間由呼叫端帶進來**（那一次 invocation 的預算），不可以寫成模組層級的
+//      `const REACT_DEADLINE = Date.now() + 100_000` —— 模組是 isolate 啟動時求值一次，
+//      isolate 會被下一分鐘的 tick 重複使用，於是「預算」從讀留言開始的那一刻就已經
+//      用掉大半、甚至早就過期（那時整個按表情環節等於默默關掉）。
+//   2. **一個社群挑一次、由新到舊**，不要擺在每篇貼文的讀取迴圈裡各挑各的。
+//      擺在迴圈裡的話預算一定是在前面幾篇燒光，排在後面（= 最新那幾團）的貼文永遠輪不到：
+//      2026-09-20 三峽店就是這樣，9/14 之後 53 則加單成功卻一個笑臉都沒有，最新那篇
+//      （post 693、8 張新單）連續 6 天每次都排在隊伍最後，一次都沒按到。
+//      由新到舊是因為「剛留言的那個人」才是還在等回應的人。
+//
+// LINE 對按表情有短時間內的次數上限：2026-09-20 補按積欠的笑臉時，**一輪剛好 30 則**
+// 之後全部退 `code=115 無法對此記事本送出回應`，3 分鐘後再跑又能再按 30 則。
+// 所以連續退件就停手（剩下的 reacted_at 還是 NULL，下次讀留言自然會接著按），
+// 硬打下去只是把時間花在必然失敗的請求上。
+async function reactPending(client: any, homeId: string, query: string, reactUntil: number) {
   const rows = await rest(
-    `line_note_comments?post_id=eq.${post.id}&reacted_at=is.null` +
-    `&status=in.(ordered,duplicate,resolved)&select=id,line_comment_id&limit=${REACT_BATCH}`);
-  let n = 0;
-  for (const c of rows ?? []) {
+    `line_note_comments?${query}&reacted_at=is.null&status=in.(ordered,duplicate,resolved)` +
+    `&order=commented_at.desc&limit=${REACT_BATCH}`);
+  const list: any[] = rows ?? [];
+  let reacted = 0, miss = 0;
+  for (let i = 0; i < list.length; i++) {
+    // 時間到就留給下一次讀留言接手（reacted_at 是 NULL 的還在，不會漏）
+    if (Date.now() > reactUntil) { log(`按表情時間到，剩下 ${list.length - i} 則留到下次讀留言`); break; }
+    const c = list[i];
     if (!c.line_comment_id) continue;
-    // Edge Function 有 150 秒 idle timeout，按表情一則約 1 秒。
-    // 超過預算就留給下一次讀留言接手（reacted_at 是 NULL 的還在，不會漏）。
-    if (Date.now() > REACT_DEADLINE) { log("按表情時間到，剩下的留到下次讀留言"); break; }
     try {
-      await likeComment(client, post.home_id, c.line_comment_id, { verbose: VERBOSE });
+      await likeComment(client, homeId, c.line_comment_id, { verbose: VERBOSE });
       await patch("line_note_comments", `id=eq.${c.id}`, { reacted_at: new Date().toISOString() });
-      n++;
+      reacted++;
+      miss = 0;
     } catch (e) {
       log(`留言 ${c.line_comment_id} 按表情失敗（略過）：${(e as any)?.message ?? e}`);
+      if (++miss >= REACT_MAX_MISS) {
+        log(`連續 ${miss} 則按不動（多半是 LINE 擋次數），剩下 ${list.length - i - 1} 則留到下次讀留言`);
+        break;
+      }
     }
   }
-  return n;
+  return { reacted, left: list.length - reacted };
 }
 
 // 認貼文：小幫手手貼的團也綁進來（比對規則見 matchCampaign）
@@ -541,11 +564,13 @@ async function discoverPosts(client: any, community: any) {
   return linked;
 }
 
-async function jobRead(job: any) {
+async function jobRead(job: any, reactUntil = Date.now() + REACT_BUDGET_MS) {
   let discovered = 0;
   let sinceFilter = "";
+  let community: any = null;
   if (!job.post_id && job.community_id) {
-    const c = (await rest(`line_note_communities?id=eq.${job.community_id}&select=id,tenant_id,home_id,account_id,read_days`))?.[0];
+    const c = (await rest(`line_note_communities?id=eq.${job.community_id}&select=id,tenant_id,home_id,account_id,read_days,react_on_confirm`))?.[0];
+    community = c ?? null;
     if (c) {
       const client = await clientFor(await loadAccount(c.account_id));
       try { discovered = await discoverPosts(client, c); } catch (e) { log("認貼文失敗（略過）:", (e as any)?.message ?? e); }
@@ -553,7 +578,7 @@ async function jobRead(job: any) {
     }
   }
   const filter = job.post_id ? `id=eq.${job.post_id}` : `community_id=eq.${job.community_id}${sinceFilter}`;
-  const posts = await rest(`line_note_posts?${filter}&status=eq.posted&select=id,tenant_id,line_post_id,community_id,group_buy_campaigns(status),line_note_communities(home_id,account_id,react_on_confirm)&order=id.asc`);
+  const posts = await rest(`line_note_posts?${filter}&status=eq.posted&select=id,tenant_id,line_post_id,community_id,group_buy_campaigns(status),line_note_communities(id,home_id,account_id,react_on_confirm,read_days)&order=id.asc`);
   const out: any[] = [];
   for (const p of posts ?? []) {
     const cst = p.group_buy_campaigns?.status;
@@ -569,20 +594,34 @@ async function jobRead(job: any) {
     }
     const client = await clientFor(await loadAccount(p.line_note_communities.account_id));
     try {
-      out.push({ post_id: p.id, ...(await readPost(client, {
-        ...p, home_id: p.line_note_communities.home_id,
-        react_on_confirm: p.line_note_communities.react_on_confirm,
-      })) });
+      out.push({ post_id: p.id, ...(await readPost(client, { ...p, home_id: p.line_note_communities.home_id })) });
     } catch (e) {
       await patch("line_note_posts", `id=eq.${p.id}`, { last_error: String((e as any)?.message ?? e).slice(0, 1000) });
       out.push({ post_id: p.id, error: String((e as any)?.message ?? e) });
     }
   }
   if (job.community_id) await patch("line_note_communities", `id=eq.${job.community_id}`, { last_read_at: new Date().toISOString(), last_error: null });
-  return { discovered, posts: out };
+  // 讀完才按笑臉：整個社群一次挑（含已結單的貼文 —— 那些不會再被讀，留在迴圈裡就永遠按不到），
+  // 母體限定跟讀取同一個時間窗，免得翻出兩星期前的舊留言忽然冒出表情。
+  let react = { reacted: 0, left: 0 };
+  try {
+    const c0 = community ?? posts?.[0]?.line_note_communities;
+    if (c0?.home_id && c0.react_on_confirm !== false) {
+      const scope = job.post_id
+        ? `select=id,line_comment_id&post_id=eq.${job.post_id}`
+        : `select=id,line_comment_id,line_note_posts!line_note_comments_post_id_fkey!inner(community_id)` +
+          `&line_note_posts.community_id=eq.${job.community_id}` +
+          `&or=(commented_at.gte.${new Date(Date.now() - (c0.read_days ?? 7) * 86400_000).toISOString()},commented_at.is.null)`;
+      const client = await clientFor(await loadAccount(c0.account_id));
+      react = await reactPending(client, c0.home_id, scope, reactUntil);
+    }
+  } catch (e) {
+    log("按表情整批失敗（略過，不影響讀留言）:", (e as any)?.message ?? e);
+  }
+  return { discovered, ...react, posts: out };
 }
 
-const HANDLERS: Record<string, (job: any) => Promise<unknown>> = {
+const HANDLERS: Record<string, (job: any, reactUntil: number) => Promise<unknown>> = {
   logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead,
 };
 
@@ -595,10 +634,10 @@ async function claimNextJob() {
   return claimed?.[0] ?? null;
 }
 
-async function runJob(job: any) {
+async function runJob(job: any, reactUntil: number) {
   log(`▶ job#${job.id} ${job.kind} account=${job.account_id} community=${job.community_id ?? "-"} post=${job.post_id ?? "-"}`);
   try {
-    const result = await HANDLERS[job.kind](job);
+    const result = await HANDLERS[job.kind](job, reactUntil);
     await patch("line_note_jobs", `id=eq.${job.id}`, { status: "done", result, finished_at: new Date().toISOString() });
     // 跑得起來就代表帳號是通的：之前被標 error 的（多半是 token 到期，現在會自動換）要自己回到
     // active，否則後台一直寫「錯誤」、「登出」鈕也不見，只有重新掃 QR 才清得掉。
@@ -665,7 +704,7 @@ async function tick() {
   while (Date.now() - started < TICK_BUDGET_MS) {
     const job = await claimNextJob();
     if (!job) break;
-    ran.push(await runJob(job));
+    ran.push(await runJob(job, started + REACT_BUDGET_MS));
   }
   return { scheduled, ran, ms: Date.now() - started };
 }
