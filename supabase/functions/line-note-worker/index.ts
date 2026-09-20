@@ -480,12 +480,17 @@ async function reactPending(client: any, homeId: string, query: string, reactUnt
   return { reacted, left: list.length - reacted };
 }
 
-// 認貼文：小幫手手貼的團也綁進來（比對規則見 matchCampaign）
-async function discoverPosts(client: any, community: any) {
+// 讀一次 LINE 的貼文列表（read_days 內被動過的貼文）。認貼文（discoverPosts）用它，
+// 「這篇從上次抓完之後有沒有人再留言」（unchangedSince）也用它 —— 一趟列表、兩件事。
+async function listRecentNotes(client: any, community: any) {
   const since = new Date(Date.now() - community.read_days * 86400_000).toISOString();
   // limit 要蓋得住 read_days 內的貼文量：松山一天 ~28 篇、7 天近 200 篇，
   // 100 只看得到最近被留言碰過的那一半，前面的（9/11 ～ 9/14 那 13 篇）永遠補不到 id。
-  const notes = await listPosts(client, community.home_id, { limit: 300, since, verbose: VERBOSE });
+  return await listPosts(client, community.home_id, { limit: 300, since, verbose: VERBOSE });
+}
+
+// 認貼文：小幫手手貼的團也綁進來（比對規則見 matchCampaign）
+async function discoverPosts(client: any, community: any, notes: any[]) {
   if (notes.length === 0) return 0;
   const known = await rest(`line_note_posts?community_id=eq.${community.id}&select=id,status,line_post_id,campaign_id,group_buy_campaigns(campaign_no)`);
   const knownByLineId = new Map((known ?? []).filter((p: any) => p.line_post_id).map((p: any) => [p.line_post_id, p]));
@@ -564,22 +569,52 @@ async function discoverPosts(client: any, community: any) {
   return linked;
 }
 
+// 「這篇貼文從上次抓完留言之後，還有沒有人動過」。
+//
+// LINE 的貼文列表本來就是依 updatedTime 排序 —— 舊貼文一有新留言就跳到最前面，listPosts 的翻頁
+// 靠的就是它（見 lineNote.ts）。所以「updatedTime 早於我們上次抓留言的時間」＝ 那次之後沒人留過言，
+// 這篇可以不用再向 LINE 抓一次（三峽一輪 96 篇、約 36 秒，通常三分之二的貼文都沒動過）。
+// 不能只比留言數：「刪一則、又新增一則」留言數不變，但新增那則會把 updatedTime 推前，照樣抓得到。
+// 留言數還是一起比（多一道保險：就算哪天 updatedTime 的行為變了，多一則少一則也擋得住）。
+// 留 10 分鐘餘裕給 LINE 與 DB 之間的時鐘差、以及「抓完留言」到「寫 last_read_at」之間的空檔。
+const UNCHANGED_MARGIN_MS = 10 * 60_000;
+function unchangedSince(note: any, post: any): boolean {
+  const touchedAt = Date.parse(note?.updatedAt ?? "") || 0;
+  const readAt = Date.parse(post?.last_read_at ?? "") || 0;
+  if (!touchedAt || !readAt) return false;
+  return touchedAt < readAt - UNCHANGED_MARGIN_MS && Number(note.commentCount) === Number(post.comment_count);
+}
+function taipeiDate(d: string | Date): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(d));
+}
+
 async function jobRead(job: any, reactUntil = Date.now() + REACT_BUDGET_MS) {
   let discovered = 0;
   let sinceFilter = "";
   let community: any = null;
+  const touched = new Map<string, any>();                    // line_post_id → 列表上的那篇（updatedAt / commentCount）
   if (!job.post_id && job.community_id) {
-    const c = (await rest(`line_note_communities?id=eq.${job.community_id}&select=id,tenant_id,home_id,account_id,read_days,react_on_confirm`))?.[0];
+    const c = (await rest(`line_note_communities?id=eq.${job.community_id}&select=id,tenant_id,home_id,account_id,read_days,react_on_confirm,last_read_at`))?.[0];
     community = c ?? null;
     if (c) {
       const client = await clientFor(await loadAccount(c.account_id));
-      try { discovered = await discoverPosts(client, c); } catch (e) { log("認貼文失敗（略過）:", (e as any)?.message ?? e); }
+      try {
+        const notes = await listRecentNotes(client, c);
+        for (const n of notes) if (n.postId) touched.set(String(n.postId), n);
+        discovered = await discoverPosts(client, c, notes);
+      } catch (e) { log("認貼文失敗（略過）:", (e as any)?.message ?? e); }
       sinceFilter = `&posted_at=gte.${new Date(Date.now() - c.read_days * 86400_000).toISOString()}`;
     }
   }
+  // 沒動過的貼文不重抓，但三種情況照舊全抓：
+  //   - 單篇讀取／後台手動按的（created_by 有值）：人按的就是要它現在真的去看一次
+  //   - 每天第一輪（上一輪是不同的台北日期）：全抓一次當保險，萬一列表的 updatedTime 哪次沒跟上，最多延遲一天
+  const fullRead = !!job.post_id || !!job.created_by || !community?.last_read_at ||
+    taipeiDate(community.last_read_at) !== taipeiDate(new Date());
   const filter = job.post_id ? `id=eq.${job.post_id}` : `community_id=eq.${job.community_id}${sinceFilter}`;
-  const posts = await rest(`line_note_posts?${filter}&status=eq.posted&select=id,tenant_id,line_post_id,community_id,group_buy_campaigns(status),line_note_communities(id,home_id,account_id,react_on_confirm,read_days)&order=id.asc`);
+  const posts = await rest(`line_note_posts?${filter}&status=eq.posted&select=id,tenant_id,line_post_id,community_id,last_read_at,comment_count,group_buy_campaigns(status),line_note_communities(id,home_id,account_id,react_on_confirm,read_days)&order=id.asc`);
   const out: any[] = [];
+  let skipped = 0;
   for (const p of posts ?? []) {
     const cst = p.group_buy_campaigns?.status;
     if (cst && !["open", "closed"].includes(cst)) { await patch("line_note_posts", `id=eq.${p.id}`, { status: "closed" }); continue; }
@@ -590,6 +625,11 @@ async function jobRead(job: any, reactUntil = Date.now() + REACT_BUDGET_MS) {
         last_error: "還沒對到 LINE 上的貼文 id（發文時沒拿到）；讀取時會用 🔖 團號自動補認，補到才讀得到留言",
       }).catch(() => {});
       out.push({ post_id: p.id, skipped: "no_line_post_id" });
+      continue;
+    }
+    if (!fullRead && unchangedSince(touched.get(String(p.line_post_id)), p)) {
+      skipped++;
+      out.push({ post_id: p.id, skipped: "unchanged" });
       continue;
     }
     const client = await clientFor(await loadAccount(p.line_note_communities.account_id));
@@ -618,7 +658,8 @@ async function jobRead(job: any, reactUntil = Date.now() + REACT_BUDGET_MS) {
   } catch (e) {
     log("按表情整批失敗（略過，不影響讀留言）:", (e as any)?.message ?? e);
   }
-  return { discovered, ...react, posts: out };
+  if (skipped) log(`${posts.length} 篇裡 ${skipped} 篇從上次抓完之後沒人動過，這輪沒重抓`);
+  return { discovered, full_read: fullRead, skipped, ...react, posts: out };
 }
 
 const HANDLERS: Record<string, (job: any, reactUntil: number) => Promise<unknown>> = {
