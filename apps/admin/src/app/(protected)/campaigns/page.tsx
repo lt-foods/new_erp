@@ -806,16 +806,33 @@ export default function CampaignsListPage() {
   const fromIdx = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const toIdx = Math.min(page * PAGE_SIZE, total);
 
-  // 「加單」獨立放在 checkbox 旁邊（status=open 才出現），不參與下方操作鈕群組
-  const addOrderLink = (r: Row) =>
-    r.status === "open" ? (
-      <Link
-        href={`/campaigns/order-entry?id=${r.id}`}
-        className="text-sm font-bold text-green-600 hover:underline dark:text-green-400"
-      >
-        加單
-      </Link>
-    ) : null;
+  // 加單入口獨立放在 checkbox 旁邊，不參與下方操作鈕群組。
+  // locked 之後不再給加單；closed 只給店家加單，客人加單維持 open 才能進。
+  const addOrderLinks = (r: Row) => {
+    const canAddCustomer = r.status === "open";
+    const canAddStore = r.status === "open" || r.status === "closed";
+    if (!canAddCustomer && !canAddStore) return null;
+    return (
+      <div className="flex flex-col items-start gap-1 text-sm font-bold">
+        {canAddCustomer && (
+          <Link
+            href={`/campaigns/order-entry?id=${r.id}&mode=customer`}
+            className="text-green-600 hover:underline dark:text-green-400"
+          >
+            客人加單
+          </Link>
+        )}
+        {canAddStore && (
+          <Link
+            href={`/campaigns/order-entry?id=${r.id}&mode=internal`}
+            className="text-indigo-600 hover:underline dark:text-indigo-400"
+          >
+            店家加單
+          </Link>
+        )}
+      </div>
+    );
+  };
 
   // 操作鈕（編輯 / 結單 / 發 FB / 結算 / 刪除）— 桌機表格與手機卡片共用，單一維護點
   //
@@ -1130,11 +1147,14 @@ export default function CampaignsListPage() {
                 onClick={(e) => e.stopPropagation()}
                 className="mt-1 cursor-pointer"
               />
-              {r.status === "open" && (
-                <span className="mt-0.5" onClick={(e) => e.stopPropagation()}>
-                  {addOrderLink(r)}
-                </span>
-              )}
+              {(() => {
+                const links = addOrderLinks(r);
+                return links ? (
+                  <div className="mt-0.5" onClick={(e) => e.stopPropagation()}>
+                    {links}
+                  </div>
+                ) : null;
+              })()}
               <CampaignThumb url={campaignCoverUrl(r.cover_image_url, r.campaign_items)} name={r.name} />
               <div className="min-w-0 flex-1">
                 <div className="break-words text-base font-bold text-zinc-900 dark:text-zinc-100">{r.name}</div>
@@ -1203,7 +1223,7 @@ export default function CampaignsListPage() {
               className="cursor-pointer"
             />
           </Th>
-          <Th className="w-12">{""}</Th><Th className="w-20">{""}</Th><Th className="min-w-[14rem]">名稱</Th><Th className="whitespace-nowrap">狀態</Th><Th className="whitespace-nowrap">收單</Th><Th className="whitespace-nowrap">開團/收單</Th><Th className="whitespace-nowrap">取貨截止</Th><Th align="right" className="whitespace-nowrap">商品數</Th><Th align="right" className="whitespace-nowrap">下單總數</Th><Th align="right" className="whitespace-nowrap">更新</Th><Th>{""}</Th>
+          <Th className="w-24">{""}</Th><Th className="w-20">{""}</Th><Th className="min-w-[14rem]">名稱</Th><Th className="whitespace-nowrap">狀態</Th><Th className="whitespace-nowrap">收單</Th><Th className="whitespace-nowrap">開團/收單</Th><Th className="whitespace-nowrap">取貨截止</Th><Th align="right" className="whitespace-nowrap">商品數</Th><Th align="right" className="whitespace-nowrap">下單總數</Th><Th align="right" className="whitespace-nowrap">更新</Th><Th>{""}</Th>
         </THead>
         <TBody>
           {rows === null ? (
@@ -1221,8 +1241,8 @@ export default function CampaignsListPage() {
                     className="cursor-pointer"
                   />
                 </Td>
-                <Td className="w-12 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                  {addOrderLink(r)}
+                <Td className="w-24 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                  {addOrderLinks(r)}
                 </Td>
                 <Td className="w-20">
                   <CampaignThumb url={campaignCoverUrl(r.cover_image_url, r.campaign_items)} name={r.name} />
@@ -2050,10 +2070,18 @@ function CampaignCard({
       <div className="flex flex-wrap gap-1">
         {r.status === "open" && (
           <Link
-            href={`/campaigns/order-entry?id=${r.id}`}
+            href={`/campaigns/order-entry?id=${r.id}&mode=customer`}
             className="rounded border border-green-400 bg-green-50 px-2 py-0.5 text-[11px] font-medium text-green-700 hover:bg-green-100 dark:border-green-700 dark:bg-green-950 dark:text-green-300 dark:hover:bg-green-900"
           >
-            + 加單
+            客人加單
+          </Link>
+        )}
+        {(r.status === "open" || r.status === "closed") && (
+          <Link
+            href={`/campaigns/order-entry?id=${r.id}&mode=internal`}
+            className="rounded border border-indigo-400 bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-700 dark:bg-indigo-950 dark:text-indigo-300 dark:hover:bg-indigo-900"
+          >
+            店家加單
           </Link>
         )}
         {showEdit && (

@@ -87,6 +87,15 @@ type CustomerEntry = {
 const DRAFT_PREFIX = "draft:order-entry:";
 const AUTOSAVE_MS = 30_000;
 
+function modeFromParam(value: string | null): Mode {
+  if (value === "internal" || value === "offset") return value;
+  return "customer";
+}
+
+function canAddToCampaign(status: string) {
+  return status === "open" || status === "closed";
+}
+
 function newEntry(): CustomerEntry {
   return {
     key: crypto.randomUUID(),
@@ -115,6 +124,7 @@ export default function OrderEntryPage() {
 function PageContent() {
   const searchParams = useSearchParams();
   const campaignId = Number(searchParams.get("id"));
+  const queryMode = modeFromParam(searchParams.get("mode"));
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -122,7 +132,7 @@ function PageContent() {
   const [stores, setStores] = useState<Store[]>([]);
   const [campaignSkus, setCampaignSkus] = useState<SkuOption[]>([]);
   const [entries, setEntries] = useState<CustomerEntry[]>([newEntry()]);
-  const [mode, setMode] = useState<Mode>("customer");
+  const [mode, setMode] = useState<Mode>(queryMode);
   const [internalStoreId, setInternalStoreId] = useState<number | null>(null);
   const [internalNotes, setInternalNotes] = useState("");
   const [internalItems, setInternalItems] = useState<ItemRow[]>([emptyItem()]);
@@ -145,6 +155,14 @@ function PageContent() {
   const [draftLoaded, setDraftLoaded] = useState(false);
 
   const draftKey = useMemo(() => `${DRAFT_PREFIX}${campaignId}`, [campaignId]);
+
+  useEffect(() => {
+    if (campaign?.status === "closed") {
+      setMode("internal");
+      return;
+    }
+    setMode(queryMode);
+  }, [campaign?.status, campaignId, queryMode]);
 
   // 載入活動 / channels
   useEffect(() => {
@@ -339,11 +357,16 @@ function PageContent() {
   async function handleSubmit() {
     if (submitting) return;
     setError(null);
-    if (mode === "internal") {
+    if (!campaign || !canAddToCampaign(campaign.status)) {
+      setError("此團狀態不可加單");
+      return;
+    }
+    const submitMode = campaign?.status === "closed" ? "internal" : mode;
+    if (submitMode === "internal") {
       await submitInternal();
       return;
     }
-    if (mode === "offset") {
+    if (submitMode === "offset") {
       await submitOffset();
       return;
     }
@@ -507,7 +530,7 @@ function PageContent() {
         p_notes: internalNotes.trim() || null,
       });
       if (err) { setError(err.message); return; }
-      setToast(`已建立內部訂單 #${data}`);
+      setToast(`已建立店家加單 #${data}`);
       setInternalItems([emptyItem()]);
       setInternalNotes("");
       setTimeout(() => setToast(null), 3000);
@@ -521,84 +544,122 @@ function PageContent() {
   if (!Number.isFinite(campaignId)) {
     return <div className="p-6 text-sm text-red-600">無效的活動 ID</div>;
   }
+  if (!campaign && error) {
+    return <div className="p-6 text-sm text-red-600">{error}</div>;
+  }
+  if (!campaign) {
+    return <div className="p-6 text-sm text-zinc-500">載入中…</div>;
+  }
+  if (!canAddToCampaign(campaign.status)) {
+    return (
+      <div className="flex flex-1 flex-col gap-4 p-6">
+        <header className="flex items-center gap-3">
+          <CampaignThumb
+            url={campaignCoverUrl(campaign.cover_image_url, campaign.campaign_items)}
+            name={campaign.name}
+          />
+          <div>
+            <h1 className="text-xl font-semibold">此團不可加單</h1>
+            <p className="text-sm text-zinc-500">
+              {campaign.name} ·
+              <StatusBadge s={campaign.status} />
+            </p>
+          </div>
+        </header>
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+          這個團已進入後續流程，不能再從加單頁新增客人或店家需求。請回開團列表確認狀態。
+        </div>
+        <div>
+          <Link
+            href="/campaigns"
+            className="inline-flex rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
+          >
+            返回開團列表
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  const activeMode: Mode = campaign.status === "closed" ? "internal" : mode;
+  const canUseCustomerMode = campaign.status === "open";
+  const canUseOffsetMode = campaign.status === "open";
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="flex items-center gap-3">
-          {campaign && (
-            <CampaignThumb
-              url={campaignCoverUrl(campaign.cover_image_url, campaign.campaign_items)}
-              name={campaign.name}
-            />
-          )}
+          <CampaignThumb
+            url={campaignCoverUrl(campaign.cover_image_url, campaign.campaign_items)}
+            name={campaign.name}
+          />
           <div>
             <h1 className="text-xl font-semibold">小幫手加單</h1>
-            {campaign ? (
-              <p className="text-sm text-zinc-500">
-                {campaign.name} ·
-                <StatusBadge s={campaign.status} />
-                {campaign.pickup_deadline && <> · 取貨截止 {campaign.pickup_deadline}</>}
-              </p>
-            ) : (
-              <p className="text-sm text-zinc-500">載入中…</p>
-            )}
+            <p className="text-sm text-zinc-500">
+              {campaign.name} ·
+              <StatusBadge s={campaign.status} />
+              {campaign.pickup_deadline && <> · 取貨截止 {campaign.pickup_deadline}</>}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2 text-xs text-zinc-500">
-          <kbd className="rounded border px-1">Alt+N</kbd> {mode === "internal" ? "新項目" : "新顧客"}
+          <kbd className="rounded border px-1">Alt+N</kbd> {activeMode === "internal" ? "新項目" : "新顧客"}
           <kbd className="rounded border px-1">Ctrl+S</kbd> 送出
         </div>
       </header>
 
       <div className="inline-flex w-fit overflow-hidden rounded-md border border-zinc-300 text-xs dark:border-zinc-700">
-        <SpinButton
-          type="button"
-          onClick={() => setMode("customer")}
-          className={`px-3 py-1.5 ${
-            mode === "customer"
-              ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-              : "bg-white text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
-          }`}
-        >
-          客戶下單
-        </SpinButton>
+        {canUseCustomerMode && (
+          <SpinButton
+            type="button"
+            onClick={() => setMode("customer")}
+            className={`px-3 py-1.5 ${
+              activeMode === "customer"
+                ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                : "bg-white text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            }`}
+          >
+            客人加單
+          </SpinButton>
+        )}
         <SpinButton
           type="button"
           onClick={() => setMode("internal")}
           className={`px-3 py-1.5 ${
-            mode === "internal"
+            activeMode === "internal"
               ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
               : "bg-white text-zinc-600 hover:bg-zinc-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
           }`}
-          title="店長為自己店內部叫貨（會自動掛內部會員、可改價）"
+          title="管理者代店家加單：需求掛在選定分店，不會變成管理者本人是客人"
         >
-          為分店叫貨
+          代店家加單
         </SpinButton>
-        <SpinButton
-          type="button"
-          onClick={() => setMode("offset")}
-          className={`px-3 py-1.5 border-l border-zinc-300 dark:border-zinc-700 ${
-            mode === "offset"
-              ? "bg-red-700 text-white"
-              : "bg-white text-red-700 hover:bg-red-50 dark:bg-zinc-900 dark:text-red-400 dark:hover:bg-red-950"
-          }`}
-          title="用店內現貨出貨：選客人＝配給客人（待取，取貨時才扣庫存）；不選客人＝純抵減（只讓採購少買）"
-        >
-          店內現貨 / 抵減
-        </SpinButton>
+        {canUseOffsetMode && (
+          <SpinButton
+            type="button"
+            onClick={() => setMode("offset")}
+            className={`px-3 py-1.5 border-l border-zinc-300 dark:border-zinc-700 ${
+              activeMode === "offset"
+                ? "bg-red-700 text-white"
+                : "bg-white text-red-700 hover:bg-red-50 dark:bg-zinc-900 dark:text-red-400 dark:hover:bg-red-950"
+            }`}
+            title="用店內現貨出貨：選客人＝配給客人（待取，取貨時才扣庫存）；不選客人＝純抵減（只讓採購少買）"
+          >
+            店內現貨 / 抵減
+          </SpinButton>
+        )}
       </div>
 
-      {mode === "customer" ? (
+      {activeMode === "customer" ? (
         <p className="text-xs text-zinc-500">
-          LINE 頻道：<span className="font-medium text-zinc-700 dark:text-zinc-300">
+          客人加單：LINE 頻道 <span className="font-medium text-zinc-700 dark:text-zinc-300">
             {channels.find((c) => c.id === channelId)?.name ?? "—"}
           </span>
           　·　取貨店：依顧客的「預設取貨店」自動帶出（會員資料設定）
         </p>
-      ) : mode === "internal" ? (
+      ) : activeMode === "internal" ? (
         <p className="text-xs text-zinc-500">
-          內部叫貨：客戶自動掛 <span className="font-medium text-zinc-700 dark:text-zinc-300">store_internal</span> 內部會員、訂單編號 <span className="font-mono">XXX-INT0001</span>。可改 unit_price（88 折出清）。
+          代店家加單：管理者仍用自己的帳號送出，但需求會掛在選定分店的內部會員，不會變成管理者本人是客人；派車會看得到該分店需求。
         </p>
       ) : (
         <p className="text-xs text-red-700 dark:text-red-400">
@@ -619,7 +680,7 @@ function PageContent() {
         </div>
       )}
 
-      {mode === "customer" ? (
+      {activeMode === "customer" ? (
         <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
           <div className="flex flex-col gap-3">
             {entries.map((e) => (
@@ -672,7 +733,7 @@ function PageContent() {
 
           <SummaryPanel entries={entries} />
         </div>
-      ) : mode === "internal" ? (
+      ) : activeMode === "internal" ? (
         <InternalOrderPanel
           campaignId={campaignId}
           campaignSkus={campaignSkus}
@@ -830,7 +891,7 @@ function InternalOrderPanel({
               <input
                 value={notes}
                 onChange={(e) => onNotesChange(e.target.value)}
-                placeholder={offsetMode ? "例：店內已有 3 個現貨" : "預設【店長內部叫貨】"}
+                placeholder={offsetMode ? "例：店內已有 3 個現貨" : "預設【代店家加單】"}
                 className="w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-800"
               />
             </label>
@@ -925,7 +986,7 @@ function InternalOrderPanel({
           >
             {submitting
               ? "送出中…"
-              : submitLabel ?? (offsetMode ? "送出抵減單（Ctrl+S）" : "送出內部訂單（Ctrl+S）")}
+              : submitLabel ?? (offsetMode ? "送出抵減單（Ctrl+S）" : "送出店家加單（Ctrl+S）")}
           </SpinButton>
         </div>
       </div>
