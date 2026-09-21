@@ -35,6 +35,9 @@ type Target = {
   store_id: number | null; store_name: string | null;
   account_id: number; account_label: string; account_status: string;
   auto_post_on_open: boolean; listen_enabled: boolean; sales_channels: string[] | null;
+  // in_scope（店家範圍 AND 類別範圍）刻意不畫成徽章：擋下來的理由 blocked_reason
+  // 那一行已經把話講完了（「這個社群沒有開放『漂漂館』的團」），再掛一個
+  // 「不在發送範圍」只是同一件事講兩次。欄位留著給之後要用的人。
   in_scope: boolean; can_post: boolean; blocked_reason: string | null;
   post_id: number | null; post_status: LineNotePostStatus | null; line_post_id: string | null;
   post_text: string | null; posted_at: string | null; last_read_at: string | null;
@@ -315,7 +318,6 @@ export default function LineNotePostsModal({
                                 : <Badge tone="green">已發</Badge>
                               )}
                               {t.account_status !== "active" && <Badge tone="red">帳號未登入</Badge>}
-                              {!t.in_scope && <Badge tone="gray">不在發送範圍</Badge>}
                               {(t.sales_channels ?? ["main"]).includes("piaopiao") && <Badge tone="blue">漂漂館</Badge>}
                             </span>
                             <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-zinc-500">
