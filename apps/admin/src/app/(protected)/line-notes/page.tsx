@@ -51,7 +51,7 @@ type Row = Comment & { line_note_posts: { community_id: number; campaign_id: num
 type OrderInfo = { id: number; order_no: string; store_name: string | null };
 type PostStat = ReturnType<typeof commentStats>;
 type Home = { kind: string; homeId: string; name: string };
-type Campaign = { id: number; campaign_no: string; name: string; status: string };
+type Campaign = { id: number; campaign_no: string; name: string; status: string; sales_channel: string | null };
 
 const ACCOUNT_STATUS: Record<Account["status"], string> = {
   logged_out: "未登入", pending_qr: "等待掃 QR", active: "已登入", error: "錯誤",
@@ -697,7 +697,6 @@ function PostCampaignModal({ community, communities, accountById, onClose, notif
   onClose: () => void; notify: (m: string) => void; fail: (e: unknown) => void; reloadPosts: () => Promise<void>;
 }) {
   const [targets, setTargets] = useState<number[]>([community.id]);
-  const sameAccount = communities.filter((c) => c.account_id === community.account_id);
   const [campaigns, setCampaigns] = useState<Campaign[] | null>(null);
   const [campaignId, setCampaignId] = useState<number | "">("");
   const [busy, setBusy] = useState(false);
@@ -707,12 +706,25 @@ function PostCampaignModal({ community, communities, accountById, onClose, notif
   const [previewing, setPreviewing] = useState(false);
   useEffect(() => {
     void (async () => {
+      // 只列這個社群收得了的團（一般商城／漂漂館，見 20260921020000）——
+      // 列出來卻發不了的，按下去只會拿到「這個社群沒有開放…」。
       const { data, error } = await getSupabase().from("group_buy_campaigns")
-        .select("id,campaign_no,name,status").in("status", ["open", "closed"]).order("id", { ascending: false }).limit(50);
+        .select("id,campaign_no,name,status,sales_channel")
+        .in("status", ["open", "closed"])
+        .in("sales_channel", community.sales_channels?.length ? community.sales_channels : ["main"])
+        .order("id", { ascending: false }).limit(50);
       if (error) fail(error); else { setCampaigns((data ?? []) as Campaign[]); setCampaignId((data?.[0] as Campaign | undefined)?.id ?? ""); }
     })();
-  }, [fail]);
-  const previewFor = targets[0] ?? community.id;
+  }, [fail, community.sales_channels]);
+
+  // 同帳號的其他社群也只列收得了這一團的（跟上面同一條規則，DB 那層照樣會擋）
+  const pickedCampaign = (campaigns ?? []).find((c) => c.id === campaignId);
+  const campaignChannel = pickedCampaign?.sales_channel ?? "main";
+  const sameAccount = communities.filter((c) => c.account_id === community.account_id
+    && (c.sales_channels?.length ? c.sales_channels : ["main"]).includes(campaignChannel));
+  // 換了團之後，原本勾的社群可能已經不在名單上 —— 送出前濾掉，不要送出去拿錯誤
+  const picked = targets.filter((id) => sameAccount.some((c) => c.id === id));
+  const previewFor = picked[0] ?? community.id;
   useEffect(() => {
     if (campaignId === "") { setPreview(null); return; }
     let dead = false;
@@ -730,12 +742,12 @@ function PostCampaignModal({ community, communities, accountById, onClose, notif
   }, [campaignId, previewFor]);
 
   const submit = async () => {
-    if (campaignId === "" || targets.length === 0) return;
+    if (campaignId === "" || picked.length === 0) return;
     setBusy(true);
     const sb = getSupabase();
     const failed: string[] = [];
     let queued = 0;
-    for (const id of targets) {
+    for (const id of picked) {
       const c = communities.find((x) => x.id === id);
       const { error } = await sb.rpc("rpc_line_note_queue_post", { p_community_id: id, p_campaign_id: campaignId });
       if (error) failed.push(`${c?.home_name || c?.home_id || id}：${translateRpcError(error)}`);
@@ -746,7 +758,7 @@ function PostCampaignModal({ community, communities, accountById, onClose, notif
     await reloadPosts();
     // 一個社群失敗不影響其他個，但要講清楚是哪一個 —— 不然人會以為整批都沒發
     if (failed.length) return fail(new Error(`${queued} 個社群已排入發文，以下失敗：\n${failed.join("\n")}`));
-    notify(targets.length > 1 ? `已開始發到 ${targets.length} 個社群，幾秒後到「貼文」看` : "已開始發文，幾秒後到「貼文」看");
+    notify(picked.length > 1 ? `已開始發到 ${picked.length} 個社群，幾秒後到「貼文」看` : "已開始發文，幾秒後到「貼文」看");
     onClose();
   };
   return (
@@ -756,14 +768,20 @@ function PostCampaignModal({ community, communities, accountById, onClose, notif
           {(campaigns ?? []).map((c) => <option key={c.id} value={c.id}>{c.campaign_no} {c.name}（{c.status}）</option>)}
         </select>
       </label>
+      {campaigns !== null && campaigns.length === 0 && (
+        <p className="mt-1 text-xs text-amber-600">
+          這個社群收「{(community.sales_channels?.length ? community.sales_channels : ["main"]).map((c) => c === "piaopiao" ? "漂漂館" : "一般商城").join("、")}」的團，
+          目前沒有開團中／已收單的這類團可以發。
+        </p>
+      )}
 
       <div className="mt-3 text-sm">
         <div className="mb-1 flex items-center justify-between text-zinc-500">
           <span>要發到哪些社群</span>
           {sameAccount.length > 1 && (
             <button type="button" className={btn}
-              onClick={() => setTargets(targets.length === sameAccount.length ? [community.id] : sameAccount.map((c) => c.id))}>
-              {targets.length === sameAccount.length ? "只留原本那個" : "全選"}
+              onClick={() => setTargets(picked.length === sameAccount.length ? [community.id] : sameAccount.map((c) => c.id))}>
+              {picked.length === sameAccount.length ? "只留原本那個" : "全選"}
             </button>
           )}
         </div>
@@ -779,14 +797,14 @@ function PostCampaignModal({ community, communities, accountById, onClose, notif
             </li>
           ))}
         </ul>
-        {targets.length > 1 && sameAccount.filter((c) => targets.includes(c.id)).some((c) => c.post_template) && (
+        {picked.length > 1 && sameAccount.filter((c) => picked.includes(c.id)).some((c) => c.post_template) && (
           <p className="mt-1 text-xs text-amber-600">有社群設了自訂模板，實際貼出去的內容會跟下面的預覽不一樣。</p>
         )}
       </div>
 
       <div className="mt-3 text-sm">
         <div className="mb-1 flex items-center justify-between text-zinc-500">
-          <span>會貼出去的內容{targets.length > 1 && <>（以「{communities.find((c) => c.id === previewFor)?.home_name ?? ""}」為例）</>}</span>
+          <span>會貼出去的內容{picked.length > 1 && <>（以「{communities.find((c) => c.id === previewFor)?.home_name ?? ""}」為例）</>}</span>
           {preview && <span className="text-xs">{preview.images.length} 張圖</span>}
         </div>
         {previewing ? <div className="rounded border border-zinc-200 p-3 text-zinc-400 dark:border-zinc-800">產生預覽中…</div>
@@ -812,8 +830,8 @@ function PostCampaignModal({ community, communities, accountById, onClose, notif
       <div className="mt-4 flex justify-end gap-2">
         <button type="button" className={btn} onClick={onClose}>取消</button>
         <SpinButton type="button" className={btnPrimary} loading={busy}
-          disabled={campaignId === "" || targets.length === 0} onClick={submit}>
-          {targets.length > 1 ? `發到 ${targets.length} 個社群` : "發文"}
+          disabled={campaignId === "" || picked.length === 0} onClick={submit}>
+          {picked.length > 1 ? `發到 ${picked.length} 個社群` : "發文"}
         </SpinButton>
       </div>
     </Modal>
