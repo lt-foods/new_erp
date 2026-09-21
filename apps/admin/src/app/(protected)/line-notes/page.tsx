@@ -9,7 +9,7 @@ import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import { translateRpcError } from "@/lib/rpcError";
-import { campaignStatusBadge, campaignStatusLabel } from "@/lib/campaignStatus";
+import { CAMPAIGN_STATUSES, campaignStatusBadge, campaignStatusLabel } from "@/lib/campaignStatus";
 import { Modal as SharedModal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
 import {
@@ -1169,7 +1169,8 @@ function PostsTab({ posts, communityById, reload, notify, fail, readOnly, canLin
       <p className="text-sm text-zinc-500">
         一團一張卡：同一團發到幾個社群都收在同一張，展開看每個社群加了誰、加到哪間店
         （社群跟店不是一對一，取貨店看的是會員自己設定的店）。
-        認不出是哪一團的會標<b>「未認出團」</b>，指定團之後才會開始讀留言加單。
+        認不出是哪一團的會標<b>「未認出團」</b>，指定團之後才會開始讀留言加單
+        （指到<b>已結單</b>的團只是把貼文歸檔標上團名，不會再加單）。
         <br />要<b>補發某一團</b>的話從「開團」列表那一團的「LINE 記事本」按鈕比較快 —— 可以一次勾好幾個群組。
       </p>
 
@@ -1349,6 +1350,9 @@ function PostsTab({ posts, communityById, reload, notify, fail, readOnly, canLin
 
 // ── 指定團：認不出來的貼文由小幫手自己選是哪一團 ────────────────────────────
 type CampaignPick = { id: number; campaign_no: string; name: string; status: string };
+// 草稿（還沒開）與已取消以外都能指定
+const LINKABLE_CAMPAIGN_STATUSES: string[] =
+  CAMPAIGN_STATUSES.filter((s) => s !== "draft" && s !== "cancelled");
 
 // ── 指定會員：搜會員 → rpc_line_note_assign_member（記住留言者 + 立刻重跑那則） ────────
 type MemberHit = { id: number; member_no: string; name: string; phone: string | null; home_store_name: string | null };
@@ -1424,8 +1428,12 @@ function LinkCampaignModal({ post, onClose, onDone, fail }: {
     let dead = false;
     const t = setTimeout(async () => {
       const k = kw.trim();
+      // 草稿與已取消以外都能指定 —— 只列開團中／已收單的話，**已經結單（已鎖定，
+      // 線上九成的團都在這個狀態）的貼文根本指不了**，永遠卡在「未認出團」
+      // （2026-09-21 三峽 50 則 / 松山 36 則就是這樣堆起來的）。
+      // 指到已結單的團 = 把貼文歸檔標名字，不會再讀留言加單（rpc 會直接收成「已結束」）。
       let query = getSupabase().from("group_buy_campaigns")
-        .select("id,campaign_no,name,status").in("status", ["open", "closed"])
+        .select("id,campaign_no,name,status").in("status", LINKABLE_CAMPAIGN_STATUSES)
         .order("id", { ascending: false }).limit(30);
       if (k) query = query.or(`name.ilike.%${k}%,campaign_no.ilike.%${k}%`);
       const { data } = await query;
@@ -1450,7 +1458,7 @@ function LinkCampaignModal({ post, onClose, onDone, fail }: {
         </div>
         <input className={input} value={kw} onChange={(e) => setKw(e.target.value)} placeholder="搜尋團名或團號" autoFocus />
         {rows === null ? <div className="text-sm text-zinc-400">讀取中…</div>
-          : rows.length === 0 ? <div className="text-sm text-zinc-400">沒有符合的團（只找開團中／已結單的）</div> : (
+          : rows.length === 0 ? <div className="text-sm text-zinc-400">沒有符合的團（草稿與已取消的團不列）</div> : (
           <ul className="max-h-72 divide-y divide-zinc-200 overflow-auto rounded border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
             {rows.map((r) => (
               <li key={r.id}>

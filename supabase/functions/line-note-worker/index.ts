@@ -489,16 +489,64 @@ async function listRecentNotes(client: any, community: any) {
   return await listPosts(client, community.home_id, { limit: 300, since, verbose: VERBOSE });
 }
 
+// ── 貼文 ↔ 團 的候選池 ──────────────────────────────────────────────────────
+//
+// 兩池分開、**先開團中／已收單、認不到才找已結單的**，順序不能倒過來也不能合成一池：
+// 同一個商品每隔幾週就重開一團，名字一模一樣 —— 合成一池的話新舊兩團同分（matchCampaign
+// 同分就不猜、回 null），本來認得出來的貼文反而變成「未認出團」，留言就沒人讀了。
+//
+// 為什麼要有第二池：候選原本只有 open/closed，而團一鎖定（= 結單，線上 2,757 團裡
+// 絕大多數都在這個狀態）就從候選裡消失 —— 小幫手手貼的貼文只要拖到結單後才被讀到，
+// 就永遠卡在「未認出團」，而且後台「指定團」也只列 open/closed，連手動指定都指不了。
+// 2026-09-21 三峽 50 則 / 松山 36 則未認出團裡，有 32 則是這種（例：#686「蒜味排骨酥600g/包」
+// ↔ GRP-20260910-007 已鎖定）。
+//
+// 已結單那池**不拿品項商品名當比對鍵**（只用團名 / 團號），而且限「貼文前後那一陣子開的團」：
+// 認錯一個還開著的團會把客人的 +1 加到別團上，認錯一個已結單的團只是掛錯名字，
+// 但舊團同名的機會比新團高得多，所以這池要比第一池嚴。
+const ENDED_STATUSES = "locked,ordered,receiving,ready,completed";
+const ENDED_FETCH_DAYS = 45;        // 候選池：最近 45 天開的團
+const ENDED_BEFORE_DAYS = 30;       // 每則貼文只比對「貼文前 30 天」開的團
+const ENDED_AFTER_DAYS = 7;         // 先貼文、幾天後才在系統開團的也算（實測 -0.1 天很常見）
+const RELINK_DAYS = 30;             // 重新認一次庫裡 30 天內的未認出貼文
+const RELINK_LIMIT = 200;
+
+async function loadCandidates(tenantId: string) {
+  const live = await rest(`group_buy_campaigns?tenant_id=eq.${tenantId}&status=in.(open,closed)` +
+    `&select=id,name,campaign_no,status,campaign_items(skus(product_name))&order=id.desc&limit=300`);
+  const ended = await rest(`group_buy_campaigns?tenant_id=eq.${tenantId}&status=in.(${ENDED_STATUSES})` +
+    `&created_at=gte.${new Date(Date.now() - ENDED_FETCH_DAYS * 86400_000).toISOString()}` +
+    `&select=id,name,campaign_no,status,created_at&order=id.desc&limit=2000`);
+  return { live: live ?? [], ended: ended ?? [] };
+}
+
+/** 已結單那池限「這則貼文前後那一陣子開的團」，免得去中到三個月前的同名舊團 */
+function endedNear(ended: any[], postedAt: string | null | undefined) {
+  const t = Date.parse(String(postedAt ?? "")) || Date.now();
+  return ended.filter((c: any) => {
+    const ct = Date.parse(c.created_at ?? "") || 0;
+    return ct >= t - ENDED_BEFORE_DAYS * 86400_000 && ct <= t + ENDED_AFTER_DAYS * 86400_000;
+  });
+}
+
+/** 先開團中／已收單，認不到才找已結單的（順序見上面） */
+function matchTwoPass(text: string, postedAt: string | null | undefined, cand: { live: any[]; ended: any[] }) {
+  return matchCampaign(text, cand.live) ?? matchCampaign(text, endedNear(cand.ended, postedAt));
+}
+
+/** 團已經結單的貼文不用再讀留言（加不了單），直接收成 closed —— 跟 jobRead 的判準同一套 */
+const postStatusFor = (campaign: any) => (["open", "closed"].includes(campaign?.status) ? "posted" : "closed");
+
 // 認貼文：小幫手手貼的團也綁進來（比對規則見 matchCampaign）
 async function discoverPosts(client: any, community: any, notes: any[]) {
-  if (notes.length === 0) return 0;
+  const cand = await loadCandidates(community.tenant_id);
+  if (notes.length === 0) return await relinkStored(community, cand);
   const known = await rest(`line_note_posts?community_id=eq.${community.id}&select=id,status,line_post_id,campaign_id,group_buy_campaigns(campaign_no)`);
   const knownByLineId = new Map((known ?? []).filter((p: any) => p.line_post_id).map((p: any) => [p.line_post_id, p]));
   // 團號 → 後台紀錄（不限團的狀態：已鎖定／已結算的團也要補得到）
   const knownByCampaignNo = new Map(
     (known ?? []).filter((p: any) => p.campaign_id && p.group_buy_campaigns?.campaign_no)
       .map((p: any) => [normalizeForMatch(p.group_buy_campaigns.campaign_no), p]));
-  const campaigns = await rest(`group_buy_campaigns?tenant_id=eq.${community.tenant_id}&status=in.(open,closed)&select=id,name,campaign_no,campaign_items(skus(product_name))&order=id.desc&limit=300`);
   let linked = 0;
   for (const n of notes) {
     if (!n.postId) continue;
@@ -509,7 +557,7 @@ async function discoverPosts(client: any, community: any, notes: any[]) {
     // 系統自己發的文（文末有 🔖 團號章）但發文當下沒拿到貼文 id → 用章把 id 補回紀錄上。
     // 舊行為：那一團已有 status=posted 的紀錄就 continue，永遠補不到；紀錄一直沒有
     // line_post_id，留言就一直讀不到（2026-09-15 松山早上那批 24 篇、12 則 +1 全漏）。
-    // 團已經鎖定／結算的（不在 campaigns 候選裡）會被認成 unlinked 再存一筆重複的，
+    // 團不在候選池裡（超出「已結單」那池的時間窗）會被認成 unlinked 再存一筆重複的，
     // 這裡順手把那筆重複的清掉。
     const tag = extractPostTag(text);
     const orig = tag ? knownByCampaignNo.get(normalizeForMatch(tag)) : null;
@@ -529,15 +577,16 @@ async function discoverPosts(client: any, community: any, notes: any[]) {
       continue;
     }
 
-    const hit = matchCampaign(text, campaigns ?? []);
+    const hit = matchTwoPass(text, n.createdAt, cand);
     if (seen) {
       // 已經認過的不用再看；還沒認出團的每次都再試一次（團可能後來才改名／才開）
       if (seen.campaign_id || !hit) continue;
       // 那一團已經有別的貼文了 → 這則是重複的，維持 unlinked 讓人自己處理
       if ((known ?? []).some((p: any) => p.campaign_id === hit.id)) continue;
-      await patch("line_note_posts", `id=eq.${seen.id}`, { campaign_id: hit.id, status: "posted" });
+      await patch("line_note_posts", `id=eq.${seen.id}`, { campaign_id: hit.id, status: postStatusFor(hit) });
+      seen.campaign_id = hit.id;
       linked++;
-      log(`🔗 補認到貼文 ${n.postId} → 團 ${hit.campaign_no} ${hit.name}`);
+      log(`🔗 補認到貼文 ${n.postId} → 團 ${hit.campaign_no} ${hit.name}（${hit.status}）`);
       continue;
     }
 
@@ -556,7 +605,7 @@ async function discoverPosts(client: any, community: any, notes: any[]) {
       continue;
     }
     const existing = (known ?? []).find((p: any) => p.campaign_id === hit.id);
-    const row = { status: "posted", line_post_id: String(n.postId), text, posted_at: n.createdAt ?? new Date().toISOString(), last_error: null };
+    const row = { status: postStatusFor(hit), line_post_id: String(n.postId), text, posted_at: n.createdAt ?? new Date().toISOString(), last_error: null };
     if (existing) {
       if (existing.status === "posted") continue;
       await patch("line_note_posts", `id=eq.${existing.id}`, row);
@@ -564,7 +613,35 @@ async function discoverPosts(client: any, community: any, notes: any[]) {
       await rest("line_note_posts", { method: "POST", body: { tenant_id: community.tenant_id, community_id: community.id, campaign_id: hit.id, ...row }, prefer: "return=minimal" });
     }
     linked++;
-    log(`🔗 認到貼文 ${n.postId} → 團 ${hit.campaign_no} ${hit.name}`);
+    log(`🔗 認到貼文 ${n.postId} → 團 ${hit.campaign_no} ${hit.name}（${hit.status}）`);
+  }
+  return linked + await relinkStored(community, cand);
+}
+
+// 庫裡的「未認出團」貼文重認一次。
+//
+// 上面那一輪只看得到 LINE 列表回來的貼文，而列表只回 read_days（預設 7 天）內被動過的
+// —— 所以**貼文只要放過 7 天沒人留言，就再也沒有任何路徑會重試比對**，永遠留在
+// 「未認出團」那一格。2026-09-21 三峽 / 松山那 86 則裡最舊的是 9/4，早就掉出視窗了。
+// 這一步不打 LINE，只拿庫裡存的內文重跑一次比對，順便把上面新加的「已結單」那池補上。
+async function relinkStored(community: any, cand: { live: any[]; ended: any[] }) {
+  const rows = await rest(`line_note_posts?community_id=eq.${community.id}&status=eq.unlinked&campaign_id=is.null` +
+    `&posted_at=gte.${new Date(Date.now() - RELINK_DAYS * 86400_000).toISOString()}` +
+    `&select=id,text,posted_at&order=id.desc&limit=${RELINK_LIMIT}`);
+  if (!rows?.length) return 0;
+  // 同一個社群同一團只能有一則貼文（UNIQUE (community_id, campaign_id)）—— 撞到的留著不動，
+  // 讓人自己去看是不是重複貼了
+  const taken = new Set<number>(
+    ((await rest(`line_note_posts?community_id=eq.${community.id}&campaign_id=not.is.null&select=campaign_id`)) ?? [])
+      .map((p: any) => p.campaign_id));
+  let linked = 0;
+  for (const p of rows) {
+    const hit = matchTwoPass(String(p.text ?? ""), p.posted_at, cand);
+    if (!hit || taken.has(hit.id)) continue;
+    await patch("line_note_posts", `id=eq.${p.id}`, { campaign_id: hit.id, status: postStatusFor(hit) });
+    taken.add(hit.id);
+    linked++;
+    log(`🔗 重認舊貼文 ${p.id} → 團 ${hit.campaign_no} ${hit.name}（${hit.status}）`);
   }
   return linked;
 }
