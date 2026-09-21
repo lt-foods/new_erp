@@ -13,8 +13,9 @@
 // 按下去必定失敗的按鈕。canOperateLineNotes() 那組角色跟 DB 那支是同一份。
 //
 // 群組清單與「能不能發」一律問 rpc_line_note_campaign_targets（20260910020000／30000），
-// 不要在這裡自己接 line_note_communities 再算一次店家範圍 ——
-// 那條規則的正主是開團自動發文的 trigger，散成三份就會走鐘。
+// 不要在這裡自己接 line_note_communities 再算一次店家範圍 —— 散成三份就會走鐘。
+// （店家範圍那條規則原本的正主是開團自動發文的 trigger，那支 trigger 20260921010000
+//  已移除、開團不再自動發文，規則本身還在 RPC 裡，發文改成一律從這個彈窗手動排。）
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Modal } from "@/components/Modal";

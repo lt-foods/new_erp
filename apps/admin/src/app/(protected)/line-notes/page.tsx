@@ -1,6 +1,7 @@
 "use client";
 
-// LINE 記事本：帳號（備用 LINE 帳號登入）→ 社群設定 → 開團自動發文 → 定時讀留言加單。
+// LINE 記事本：帳號（備用 LINE 帳號登入）→ 社群設定 → 發文（開團列表的「LINE 記事本」按鈕）→ 定時讀留言加單。
+// ⚠ 「開團自動發文」20260921010000 起停用（trigger 已移除），發文一律手動排；auto_post_on_open 的設定值還在，開回來就沿用。
 // 真正跟 LINE 講話的是地端 worker（tools/line-note-scraper/src/worker.mjs），
 // 這頁只做設定、丟工作（line_note_jobs）、看結果。
 
@@ -191,7 +192,7 @@ export default function LineNotesPage() {
           <p className="text-sm text-zinc-500">
             {readOnly
               ? "可看社群貼文與留言加單狀況，並處理留言（重試／指定會員／已解決／忽略）。發文、讀留言由總部操作。"
-              : <>備用 LINE 帳號登入 → 綁社群 → 開團自動發文 → 定時讀留言，留言裡的「會員編號 6 碼 ＋ A+1」自動加單。
+              : <>備用 LINE 帳號登入 → 綁社群 → 到開團列表按「LINE 記事本」發文 → 定時讀留言，留言裡的「會員編號 6 碼 ＋ A+1」自動加單。
                 到設定的讀取時間自動跑（Supabase 排程），不用另外開程式。</>}
           </p>
         </div>
@@ -504,7 +505,8 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-zinc-500">
           清單跟著帳號走：帳號加入的群組／社群會自己出現在這裡，一開始都是<b>停用</b>的，要哪幾個自己開監聽。
-          總部開的團會發到所有開自動發文的社群；店家自開的團只發到標了那家店的社群。加單的取貨店一律跟會員自己設定的店。
+          總部開的團可以發到所有社群；店家自開的團只發到標了那家店的社群。加單的取貨店一律跟會員自己設定的店。
+          <b>開團時自動發文目前停用</b>，要發文到開團列表按每一團的「LINE 記事本」。
         </p>
         <div className="flex shrink-0 gap-2">
           <SpinButton type="button" className={btn} loading={busy === "sync"} onClick={syncAll}
@@ -528,7 +530,9 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
                 <Td>{c.store_id ? (storeById.get(c.store_id)?.name ?? c.store_id) : <span className="text-zinc-400">總部（全部）</span>}</Td>
                 <Td><Badge tone={c.listen_enabled ? "green" : "gray"}>{c.listen_enabled ? "監聽中" : "停用"}</Badge></Td>
                 <Td className="font-mono text-xs">{c.read_times.join(" ")}<div className="text-zinc-400">近 {c.read_days} 天</div></Td>
-                <Td>{c.auto_post_on_open ? "是" : "否"}</Td>
+                {/* 開團自動發文的 trigger 已移除（20260921010000）——
+                    設定值還留著，所以這裡一律標「暫停中」，不要顯示成「是」騙人。 */}
+                <Td><Badge tone="gray">暫停中</Badge></Td>
                 <Td>{fmt(c.last_read_at)}</Td>
                 <Td align="right">
                   <div className="flex justify-end gap-1 whitespace-nowrap">
@@ -629,8 +633,11 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.listen_enabled} onChange={(e) => setForm({ ...form, listen_enabled: e.target.checked })} /> 啟用監聽（到時間自動讀留言加單）
             </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={form.auto_post_on_open} onChange={(e) => setForm({ ...form, auto_post_on_open: e.target.checked })} /> 開團（狀態變「開團中」）時自動發文
+            <label className="flex items-center gap-2 text-sm text-zinc-400">
+              {/* 功能停用中（trigger 已移除，20260921010000）：勾了也不會發，所以直接鎖住，
+                  不要留一個按了沒反應的開關。設定值原樣保留，開回來就沿用。 */}
+              <input type="checkbox" disabled checked={form.auto_post_on_open} readOnly /> 開團（狀態變「開團中」）時自動發文
+              <span className="text-xs">（已停用，請到開團列表按「LINE 記事本」發文）</span>
             </label>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.react_on_confirm} onChange={(e) => setForm({ ...form, react_on_confirm: e.target.checked })} /> 收到單後在客人留言上按 😄，讓他知道收到了
