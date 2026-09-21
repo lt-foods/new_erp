@@ -122,7 +122,8 @@ export default function LineNotesPage() {
   const [accounts, setAccounts] = useState<Account[] | null>(null);
   const [stores, setStores] = useState<Store[]>([]);
   const [communities, setCommunities] = useState<Community[] | null>(null);
-  const [posts, setPosts] = useState<Post[] | null>(null);
+  // 貼文清單改由 PostsTab 自己分頁抓（伺服端分頁 + 篩選），這裡只負責叫它重抓
+  const [postsTick, setPostsTick] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -142,17 +143,10 @@ export default function LineNotesPage() {
     if (c.error) fail(c.error); else setCommunities((c.data ?? []) as Community[]);
     if (!ch.error) setStores((ch.data ?? []) as Store[]);
   }, [fail]);
-  const loadPosts = useCallback(async () => {
-    const { data, error } = await getSupabase()
-      .from("line_note_posts")
-      .select("*,group_buy_campaigns(id,campaign_no,name,status)")
-      .order("created_at", { ascending: false })
-      .limit(100);
-    if (error) fail(error); else setPosts((data ?? []) as Post[]);
-  }, [fail]);
+  const reloadPosts = useCallback(async () => { setPostsTick((t) => t + 1); }, []);
 
   // 帳號清單只有總部讀得到；唯讀模式不抓、也不輪詢
-  useEffect(() => { if (canOperate) void loadAccounts(); void loadCommunities(); void loadPosts(); }, [canOperate, loadAccounts, loadCommunities, loadPosts]);
+  useEffect(() => { if (canOperate) void loadAccounts(); void loadCommunities(); }, [canOperate, loadAccounts, loadCommunities]);
 
   // 帳號狀態每 3 秒刷新（登入中 / worker 有沒有在跑）
   useEffect(() => {
@@ -221,14 +215,14 @@ export default function LineNotesPage() {
         <CommunitiesTab
           communities={communities} accounts={accounts ?? []} stores={stores}
           accountById={accountById} storeById={storeById}
-          reload={loadCommunities} reloadPosts={loadPosts} notify={notify} fail={fail}
+          reload={loadCommunities} reloadPosts={reloadPosts} notify={notify} fail={fail}
         />
       )}
       {shownTab === "comments" && (
         <CommentsTab communityById={communityById} notify={notify} fail={fail} readOnly={!canProcessComments} />
       )}
       {shownTab === "posts" && (
-        <PostsTab posts={posts} communityById={communityById} reload={loadPosts} notify={notify} fail={fail} readOnly={readOnly} canLink={canProcessComments} />
+        <PostsTab communities={communities ?? []} communityById={communityById} tick={postsTick} notify={notify} fail={fail} readOnly={readOnly} canLink={canProcessComments} />
       )}
 
       <SharedModal
@@ -1041,8 +1035,15 @@ function postFirstLine(text: string | null) {
 // 未認出團的貼文沒有團可掛，仍然一篇一張卡。
 type PostGroup = { key: string; campaignId: number | null; campaign: Post["group_buy_campaigns"]; posts: Post[] };
 
-function PostsTab({ posts, communityById, reload, notify, fail, readOnly, canLink }: {
-  posts: Post[] | null; communityById: Map<number, Community>; reload: () => Promise<void>; notify: (m: string) => void; fail: (e: unknown) => void;
+// 一頁幾張卡（一張卡 = 一團）。線上 437 組、光「開團中」就 200 出頭，
+// 一次全畫出來就是老闆說的「太多了看不了」。
+const POSTS_PAGE_SIZE = 20;
+
+function PostsTab({ communities, communityById, tick, notify, fail, readOnly, canLink }: {
+  communities: Community[]; communityById: Map<number, Community>;
+  // 別的分頁做完事要重抓時 +1（社群設定那邊發完文）
+  tick: number;
+  notify: (m: string) => void; fail: (e: unknown) => void;
   readOnly: boolean;
   // 「指定團」比其他操作鈕寬：line_notes_view perm 持有者（分店店長）也能指定，
   // 不然未認出團的貼文只能等總部來綁、留言加單那邊什麼都動不了。DB gate 見 20260919000000。
@@ -1062,6 +1063,65 @@ function PostsTab({ posts, communityById, reload, notify, fail, readOnly, canLin
   const [q, setQ] = useState("");
   const [linkFor, setLinkFor] = useState<Post | null>(null);
 
+  // ── 伺服端分頁 / 篩選 ────────────────────────────────────────────────────
+  // 分頁的單位是「組」（＝畫面上的一張卡），不是貼文列：同一團發到 3 個社群是 3 列，
+  // 對列分頁會把同一團切成兩張卡掉在不同頁。所以先跟 v_line_note_post_groups
+  // （20260921030000）要這一頁有哪幾組，再去抓那幾組的貼文本體。
+  const [posts, setPosts] = useState<Post[] | null>(null);
+  const [keyOrder, setKeyOrder] = useState<Map<string, number>>(new Map());
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [communityId, setCommunityId] = useState<number | "">("");
+  // 預設只看「開團中」的團（還在收單的才需要顧）＋未認出團的（那種要人去指定團）。
+  // 已鎖定之後的團不會再加單，不要洗版。
+  const [onlyOpen, setOnlyOpen] = useState(true);
+  const [qApplied, setQApplied] = useState("");
+  // 打字邊打邊查會太吵，停 0.4 秒才送；換關鍵字一律回第 1 頁
+  // （換條件不回第 1 頁 = 停在不存在的頁碼、畫面整片空白）
+  useEffect(() => {
+    const t = setTimeout(() => { setQApplied(q.trim()); setPage(1); }, 400);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const load = useCallback(async () => {
+    const sb = getSupabase();
+    let gq = sb.from("v_line_note_post_groups")
+      .select("group_key,campaign_id,unlinked_post_id", { count: "exact" })
+      .order("latest_at", { ascending: false })
+      .range((page - 1) * POSTS_PAGE_SIZE, page * POSTS_PAGE_SIZE - 1);
+    if (communityId !== "") gq = gq.contains("community_ids", [communityId]);
+    // campaign_status 是 NULL = 未認出團，那種一定要看得到
+    if (onlyOpen) gq = gq.or("campaign_status.eq.open,campaign_status.is.null");
+    if (qApplied) gq = gq.ilike("search_text", `%${qApplied}%`);
+    const { data: gs, error, count } = await gq;
+    if (error) return fail(error);
+    const rows = (gs ?? []) as { group_key: string; campaign_id: number | null; unlinked_post_id: number | null }[];
+    setTotal(count ?? 0);
+    setKeyOrder(new Map(rows.map((r, i) => [r.group_key, i])));
+    // 刪到這一頁空了（或條件變嚴）就退回第 1 頁，不要停在空白畫面
+    if (rows.length === 0) { setPosts([]); if (page > 1 && (count ?? 0) > 0) setPage(1); return; }
+
+    const campIds = rows.map((r) => r.campaign_id).filter((x): x is number => x != null);
+    const unIds = rows.map((r) => r.unlinked_post_id).filter((x): x is number => x != null);
+    const ors = [
+      campIds.length ? `campaign_id.in.(${campIds.join(",")})` : null,
+      unIds.length ? `id.in.(${unIds.join(",")})` : null,
+    ].filter(Boolean).join(",");
+    let pq = sb.from("line_note_posts")
+      .select("*,group_buy_campaigns(id,campaign_no,name,status)")
+      .or(ors)
+      .order("created_at", { ascending: false });
+    // 篩了社群就只畫那個社群那幾列，不然卡片裡還是會出現別的群組
+    if (communityId !== "") pq = pq.eq("community_id", communityId);
+    const { data, error: pe } = await pq;
+    if (pe) return fail(pe);
+    setPosts((data ?? []) as Post[]);
+  }, [page, communityId, onlyOpen, qApplied, fail]);
+
+  useEffect(() => { void load(); }, [load, tick]);
+  const reload = load;
+  const pageCount = Math.max(1, Math.ceil(total / POSTS_PAGE_SIZE));
+
   // 同一團的貼文收成一組；未認出團的各自一組。順序照最新貼文（posts 已是 created_at desc）。
   const groups = useMemo<PostGroup[]>(() => {
     const out: PostGroup[] = [];
@@ -1072,19 +1132,13 @@ function PostsTab({ posts, communityById, reload, notify, fail, readOnly, canLin
       if (!g) { g = { key: `c${p.campaign_id}`, campaignId: p.campaign_id, campaign: p.group_buy_campaigns, posts: [] }; byCampaign.set(p.campaign_id, g); out.push(g); }
       g.posts.push(p);
     }
+    // 順序以「這一頁的組」為準（依最新貼文時間），不要靠貼文列的順序推
+    out.sort((a, b) => (keyOrder.get(a.key) ?? 0) - (keyOrder.get(b.key) ?? 0));
     return out;
-  }, [posts]);
+  }, [posts, keyOrder]);
 
-  // 搜尋：團名 / 團號 / 社群名 / 貼文內文都吃。貼文多起來之後靠捲的找不到。
-  const shown = useMemo(() => {
-    const kw = q.trim().toLowerCase();
-    if (!kw) return groups;
-    return groups.filter((g) => g.posts.some((p) => {
-      const c = communityById.get(p.community_id);
-      return [g.campaign?.name, g.campaign?.campaign_no, c?.home_name, c?.home_id, p.text]
-        .some((v) => (v ?? "").toLowerCase().includes(kw));
-    }));
-  }, [groups, q, communityById]);
+  // 搜尋 / 篩選 / 分頁都在伺服端做（v_line_note_post_groups），這裡直接畫
+  const shown = groups;
 
   const loadCounts = useCallback(async () => {
     const ids = (posts ?? []).map((p) => p.id);
@@ -1203,21 +1257,38 @@ function PostsTab({ posts, communityById, reload, notify, fail, readOnly, canLin
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <input className={`${input} min-w-0 flex-1 sm:max-w-md`} value={q} onChange={(e) => setQ(e.target.value)}
+        <input className={`${input} min-w-0 flex-1 sm:max-w-xs`} value={q} onChange={(e) => setQ(e.target.value)}
           placeholder="搜尋團名 / 團號 / 社群 / 貼文內容" />
+        <select className={input} value={communityId}
+          onChange={(e) => { setCommunityId(e.target.value === "" ? "" : Number(e.target.value)); setPage(1); }}>
+          <option value="">全部社群</option>
+          {communities.map((c) => <option key={c.id} value={c.id}>{c.home_name || c.home_id}</option>)}
+        </select>
+        <select className={input} value={onlyOpen ? "open" : "all"} onChange={(e) => { setOnlyOpen(e.target.value === "open"); setPage(1); }}>
+          <option value="open">只看開團中</option>
+          <option value="all">全部狀態</option>
+        </select>
         <button type="button" className={btn} onClick={() => void reload()}>重新整理</button>
+        <span className="ml-auto flex items-center gap-1.5 text-sm text-zinc-500">
+          <span className="tabular-nums">{total} 團・第 {page}/{pageCount} 頁</span>
+          <button type="button" className={btn} disabled={page <= 1} onClick={() => setPage((n) => Math.max(1, n - 1))}>上一頁</button>
+          <button type="button" className={btn} disabled={page >= pageCount} onClick={() => setPage((n) => Math.min(pageCount, n + 1))}>下一頁</button>
+        </span>
       </div>
       <p className="text-sm text-zinc-500">
         一團一張卡：同一團發到幾個社群都收在同一張，展開看每個社群加了誰、加到哪間店
         （社群跟店不是一對一，取貨店看的是會員自己設定的店）。
         認不出是哪一團的會標<b>「未認出團」</b>，指定團之後才會開始讀留言加單
         （指到<b>已結單</b>的團只是把貼文歸檔標上團名，不會再加單）。
+        <br />預設<b>只列開團中的團</b>（還在收單的才要顧）與未認出團的貼文；已鎖定之後的舊團切「全部狀態」才會出現。
         <br />要<b>補發某一團</b>的話從「開團」列表那一團的「LINE 記事本」按鈕比較快 —— 可以一次勾好幾個群組。
       </p>
 
       {posts === null ? <div className="py-8 text-center text-sm text-zinc-400">讀取中…</div>
         : shown.length === 0 ? (
-          <div className="py-8 text-center text-sm text-zinc-400">{q ? "沒有符合的貼文" : "還沒有貼文"}</div>
+          <div className="py-8 text-center text-sm text-zinc-400">
+            {qApplied || communityId !== "" ? "沒有符合的貼文" : onlyOpen ? "沒有開團中的團的貼文（要看舊的請切「全部狀態」）" : "還沒有貼文"}
+          </div>
         ) : (
         <ul className="space-y-2">
           {shown.map((g) => {
@@ -1378,6 +1449,15 @@ function PostsTab({ posts, communityById, reload, notify, fail, readOnly, canLin
             );
           })}
         </ul>
+      )}
+
+      {/* 底部也放一組：一頁 20 張卡，看到最後不用再捲回去換頁 */}
+      {pageCount > 1 && (
+        <div className="flex items-center justify-center gap-1.5 pt-1 text-sm text-zinc-500">
+          <button type="button" className={btn} disabled={page <= 1} onClick={() => setPage((n) => Math.max(1, n - 1))}>上一頁</button>
+          <span className="tabular-nums">第 {page}/{pageCount} 頁</span>
+          <button type="button" className={btn} disabled={page >= pageCount} onClick={() => setPage((n) => Math.min(pageCount, n + 1))}>下一頁</button>
+        </div>
       )}
 
       {linkFor && (
