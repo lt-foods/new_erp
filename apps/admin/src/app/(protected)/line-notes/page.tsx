@@ -30,6 +30,7 @@ type Community = {
   id: number; account_id: number; store_id: number | null; home_id: string; home_name: string | null;
   home_kind: "group" | "square" | "square_chat"; listen_enabled: boolean; read_times: string[];
   auto_post_on_open: boolean; post_template: string | null; read_days: number; react_on_confirm: boolean;
+  sales_channels: string[] | null;
   last_read_at: string | null; last_error: string | null;
 };
 type Post = {
@@ -375,13 +376,22 @@ function AccountsTab({ accounts, reload, notify, fail }: {
 type CommunityForm = {
   id: number | null; account_id: number | ""; store_id: number | ""; home_id: string; home_name: string;
   listen_enabled: boolean; read_times: string; auto_post_on_open: boolean; post_template: string; read_days: number;
-  react_on_confirm: boolean;
+  react_on_confirm: boolean; sales_channels: string[];
 };
 const EMPTY_FORM: CommunityForm = {
   id: null, account_id: "", store_id: "", home_id: "", home_name: "",
   listen_enabled: true, read_times: "12:00", auto_post_on_open: true, post_template: "", read_days: 3,
-  react_on_confirm: true,
+  react_on_confirm: true, sales_channels: ["main"],
 };
+// 這個社群收哪幾類的團（group_buy_campaigns.sales_channel）。DB 那邊是
+// line_note_communities.sales_channels + _line_note_takes_channel()（20260921020000），
+// 三支發文 RPC 與開團自動發文的 trigger 都吃它，這裡只是把同一份設定畫出來。
+const CHANNEL_OPTIONS: { value: string; label: string }[] = [
+  { value: "main", label: "一般商城" },
+  { value: "piaopiao", label: "漂漂館" },
+];
+const channelLabels = (chs: string[] | null | undefined) =>
+  (chs && chs.length ? chs : ["main"]).map((c) => CHANNEL_OPTIONS.find((o) => o.value === c)?.label ?? c);
 
 function CommunitiesTab({ communities, accounts, stores, accountById, storeById, reload, reloadPosts, notify, fail }: {
   communities: Community[] | null; accounts: Account[]; stores: Store[];
@@ -402,7 +412,8 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
   const openEdit = (c: Community) => {
     setHomes(null); setPicked([]);
     setForm({ id: c.id, account_id: c.account_id, store_id: c.store_id ?? "", home_id: c.home_id, home_name: c.home_name ?? "",
-      listen_enabled: c.listen_enabled, read_times: c.read_times.join(", "), auto_post_on_open: c.auto_post_on_open, post_template: c.post_template ?? "", read_days: c.read_days ?? 3, react_on_confirm: c.react_on_confirm ?? true });
+      listen_enabled: c.listen_enabled, read_times: c.read_times.join(", "), auto_post_on_open: c.auto_post_on_open, post_template: c.post_template ?? "", read_days: c.read_days ?? 3, react_on_confirm: c.react_on_confirm ?? true,
+      sales_channels: c.sales_channels?.length ? c.sales_channels : ["main"] });
   };
 
   const loadHomes = async () => {
@@ -431,6 +442,8 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       ? picked.map((h) => ({ home_id: h.homeId, home_name: h.name }))
       : [{ home_id: form.home_id.trim(), home_name: form.home_name.trim() || null }];
     if (targets.some((t) => !t.home_id)) return fail(new Error("請選擇社群"));
+    // 一種都沒勾 = 這個社群什麼團都收不到（DB 也會擋），先在這裡講清楚
+    if (form.sales_channels.length === 0) return fail(new Error("請至少勾一種要發的團（一般商城／漂漂館）"));
 
     setBusy("save");
     const sb = getSupabase();
@@ -441,6 +454,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       p_auto_post_on_open: form.auto_post_on_open, p_post_template: form.post_template || null,
       p_read_days: Math.min(30, Math.max(1, Math.round(form.read_days || 3))),
       p_react_on_confirm: form.react_on_confirm,
+      p_sales_channels: form.sales_channels,
     };
     const failed: string[] = [];
     for (const t of targets) {
@@ -505,6 +519,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
         <p className="text-sm text-zinc-500">
           清單跟著帳號走：帳號加入的群組／社群會自己出現在這裡，一開始都是<b>停用</b>的，要哪幾個自己開監聽。
           總部開的團會發到所有開自動發文的社群；店家自開的團只發到標了那家店的社群。加單的取貨店一律跟會員自己設定的店。
+          每個社群還要選<b>收哪一類的團</b>：漂漂館的團只發得到有勾「漂漂館」的社群，一般商城的團同理。
         </p>
         <div className="flex shrink-0 gap-2">
           <SpinButton type="button" className={btn} loading={busy === "sync"} onClick={syncAll}
@@ -513,9 +528,9 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
         </div>
       </div>
       <Table>
-        <THead><Th>社群</Th><Th>帳號</Th><Th>店家</Th><Th>監聽</Th><Th>讀取時間</Th><Th>開團自動發文</Th><Th>最後讀取</Th><Th align="right">操作</Th></THead>
+        <THead><Th>社群</Th><Th>帳號</Th><Th>店家</Th><Th>收哪類團</Th><Th>監聽</Th><Th>讀取時間</Th><Th>開團自動發文</Th><Th>最後讀取</Th><Th align="right">操作</Th></THead>
         <TBody>
-          {communities === null ? <LoadingRow colSpan={7} /> : communities.length === 0 ? <EmptyRow colSpan={8}>還沒有社群</EmptyRow> : communities.map((c) => {
+          {communities === null ? <LoadingRow colSpan={9} /> : communities.length === 0 ? <EmptyRow colSpan={9}>還沒有社群</EmptyRow> : communities.map((c) => {
             const a = accountById.get(c.account_id);
             return (
               <Tr key={c.id}>
@@ -526,6 +541,13 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
                 </Td>
                 <Td>{a ? <>{a.label} <Badge tone={a.status === "active" ? "green" : "red"}>{ACCOUNT_STATUS[a.status]}</Badge></> : "—"}</Td>
                 <Td>{c.store_id ? (storeById.get(c.store_id)?.name ?? c.store_id) : <span className="text-zinc-400">總部（全部）</span>}</Td>
+                <Td>
+                  <div className="flex flex-wrap gap-1">
+                    {channelLabels(c.sales_channels).map((l) => (
+                      <Badge key={l} tone={l === "漂漂館" ? "blue" : "gray"}>{l}</Badge>
+                    ))}
+                  </div>
+                </Td>
                 <Td><Badge tone={c.listen_enabled ? "green" : "gray"}>{c.listen_enabled ? "監聽中" : "停用"}</Badge></Td>
                 <Td className="font-mono text-xs">{c.read_times.join(" ")}<div className="text-zinc-400">近 {c.read_days} 天</div></Td>
                 <Td>{c.auto_post_on_open ? "是" : "否"}</Td>
@@ -629,6 +651,25 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.listen_enabled} onChange={(e) => setForm({ ...form, listen_enabled: e.target.checked })} /> 啟用監聽（到時間自動讀留言加單）
             </label>
+            <div className="text-sm md:col-span-2">
+              收哪一類的團（漂漂館的團只發得到有勾漂漂館的社群）
+              <div className="mt-1 flex flex-wrap gap-4">
+                {CHANNEL_OPTIONS.map((o) => (
+                  <label key={o.value} className="flex items-center gap-2">
+                    <input type="checkbox" checked={form.sales_channels.includes(o.value)}
+                      onChange={(e) => setForm({
+                        ...form,
+                        sales_channels: e.target.checked
+                          ? [...form.sales_channels, o.value]
+                          : form.sales_channels.filter((c) => c !== o.value),
+                      })} /> {o.label}
+                  </label>
+                ))}
+              </div>
+              {form.sales_channels.length === 0 && (
+                <div className="mt-1 text-xs text-red-600">至少要勾一種，不然這個社群什麼團都收不到。</div>
+              )}
+            </div>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.auto_post_on_open} onChange={(e) => setForm({ ...form, auto_post_on_open: e.target.checked })} /> 開團（狀態變「開團中」）時自動發文
             </label>

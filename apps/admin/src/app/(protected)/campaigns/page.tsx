@@ -1468,6 +1468,7 @@ export default function CampaignsListPage() {
         campaignNo={lineNoteFor?.campaign_no ?? null}
         campaignName={lineNoteFor?.name ?? null}
         campaignStatus={lineNoteFor?.status ?? null}
+        campaignSalesChannel={lineNoteFor?.sales_channel ?? null}
         onClose={() => setLineNoteFor(null)}
       />
 
