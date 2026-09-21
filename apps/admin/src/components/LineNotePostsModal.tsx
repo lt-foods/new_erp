@@ -34,7 +34,7 @@ type Target = {
   community_id: number; home_id: string; home_name: string | null; home_kind: string;
   store_id: number | null; store_name: string | null;
   account_id: number; account_label: string; account_status: string;
-  auto_post_on_open: boolean; listen_enabled: boolean;
+  auto_post_on_open: boolean; listen_enabled: boolean; sales_channels: string[] | null;
   in_scope: boolean; can_post: boolean; blocked_reason: string | null;
   post_id: number | null; post_status: LineNotePostStatus | null; line_post_id: string | null;
   post_text: string | null; posted_at: string | null; last_read_at: string | null;
@@ -58,8 +58,14 @@ type Props = {
   campaignNo?: string | null;
   campaignName?: string | null;
   campaignStatus?: string | null;
+  campaignSalesChannel?: string | null;
   onClose: () => void;
 };
+
+// 團的類別（group_buy_campaigns.sales_channel）↔ 社群設定的「收哪類團」。
+// 判定的正主在 DB（_line_note_takes_channel，20260921020000）—— 這裡只負責說人話。
+const CHANNEL_LABEL: Record<string, string> = { main: "一般商城", piaopiao: "漂漂館" };
+const channelLabel = (ch: string | null | undefined) => CHANNEL_LABEL[ch ?? "main"] ?? ch ?? "一般商城";
 
 const btn = "rounded border border-zinc-300 px-2.5 py-1 text-sm hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800";
 const btnPrimary = "rounded bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900";
@@ -82,7 +88,7 @@ function kickWorker(body: Record<string, unknown> = { action: "run" }) {
 }
 
 export default function LineNotePostsModal({
-  open, campaignId, campaignNo, campaignName, campaignStatus, onClose,
+  open, campaignId, campaignNo, campaignName, campaignStatus, campaignSalesChannel, onClose,
 }: Props) {
   const [targets, setTargets] = useState<Target[] | null>(null);
   const [picked, setPicked] = useState<Set<number>>(new Set());
@@ -266,7 +272,8 @@ export default function LineNotePostsModal({
             <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
               沒有可以發文的社群。
               <ul className="ml-4 mt-1 list-disc space-y-0.5 text-xs">
-                <li>店家自開的團只發到「標了那家店」的社群 —— 到「LINE 記事本 → 社群設定」把社群的店家設成那一家。</li>
+                <li>這是「{channelLabel(campaignSalesChannel)}」的團，只發得到有勾這一類的社群 —— 到「LINE 記事本 → 社群設定」編輯該社群的「收哪一類的團」。</li>
+                <li>店家自開的團只發到「標了那家店」的社群 —— 到同一頁把社群的店家設成那一家。</li>
                 <li>總部的團會發到所有社群；一個都沒有的話請先在那頁登入帳號、同步社群。</li>
               </ul>
             </div>
@@ -278,7 +285,11 @@ export default function LineNotePostsModal({
             <section className="space-y-3">
               <div>
                 <div className="mb-1.5 flex items-center justify-between">
-                  <h3 className="text-sm font-semibold">發到哪幾個群組（{picked.size}/{postable.length}）</h3>
+                  <h3 className="text-sm font-semibold">
+                    發到哪幾個群組（{picked.size}/{postable.length}）
+                    {/* 灰掉的那幾列多半是「社群沒收這一類的團」，先講是哪一類，省得一列一列讀理由 */}
+                    <span className="ml-1.5 font-normal text-xs text-zinc-500">這是「{channelLabel(campaignSalesChannel)}」的團</span>
+                  </h3>
                   <button type="button" className={btn} disabled={postable.length === 0}
                     onClick={() => setPicked(picked.size === postable.length
                       ? new Set()
@@ -305,6 +316,7 @@ export default function LineNotePostsModal({
                               )}
                               {t.account_status !== "active" && <Badge tone="red">帳號未登入</Badge>}
                               {!t.in_scope && <Badge tone="gray">不在發送範圍</Badge>}
+                              {(t.sales_channels ?? ["main"]).includes("piaopiao") && <Badge tone="blue">漂漂館</Badge>}
                             </span>
                             <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-zinc-500">
                               <span>{t.store_name ? `${t.store_name}` : "總部（全部團）"}</span>
