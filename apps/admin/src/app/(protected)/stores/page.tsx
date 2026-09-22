@@ -7,6 +7,11 @@ import SearchSpinner from "@/components/SearchSpinner";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import { StoreLineOaField } from "@/components/StoreLineOaField";
 import { isAdmin, useRole } from "@/lib/role";
+import {
+  customerVisibilityStatus,
+  visibilityAfterKindChange,
+  type CustomerVisibilityStatus,
+} from "@/lib/storeCustomerVisibility";
 
 const PAGE_SIZE = 20;
 
@@ -34,6 +39,8 @@ type Store = {
   pickup_window_days: number;
   allowed_payment_methods: PaymentMethod[];
   store_kind: StoreKind;
+  /** 客人端「選擇取貨門市」的選單列不列這家店（20260902020000；規則見 lib/storeCustomerVisibility） */
+  is_visible_to_customers: boolean;
   is_active: boolean;
   notes: string | null;
   line_oa_basic_id: string | null;
@@ -56,6 +63,7 @@ const EMPTY: Omit<Store, "id" | "updated_at" | "deleted_at"> = {
   pickup_window_days: 5,
   allowed_payment_methods: ["cash"],
   store_kind: "branch",
+  is_visible_to_customers: true,
   is_active: true,
   notes: null,
   line_oa_basic_id: null,
@@ -109,7 +117,7 @@ export default function StoresPage() {
   async function reload() {
     let q = getSupabase()
       .from("stores")
-      .select("id, code, name, location_id, pickup_window_days, allowed_payment_methods, store_kind, is_active, notes, line_oa_basic_id, line_liff_id, address, latitude, longitude, updated_at, deleted_at")
+      .select("id, code, name, location_id, pickup_window_days, allowed_payment_methods, store_kind, is_visible_to_customers, is_active, notes, line_oa_basic_id, line_liff_id, address, latitude, longitude, updated_at, deleted_at")
       .order("updated_at", { ascending: false })
       .limit(500);
     if (query.trim()) {
@@ -136,6 +144,11 @@ export default function StoresPage() {
   const paginated = useMemo(
     () => (rows ?? []).slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
     [rows, page],
+  );
+  // 批發但客人還看得到：列表分頁後可能在第二頁，上方另外點名，老闆一眼知道要處理哪幾家
+  const wholesaleVisible = useMemo(
+    () => (rows ?? []).filter((r) => customerVisibilityStatus(r) === "wholesale_visible"),
+    [rows],
   );
 
   async function handleDelete(r: Store) {
@@ -183,6 +196,7 @@ export default function StoresPage() {
         p_notes: v.notes,
         p_line_oa_basic_id: v.line_oa_basic_id,
         p_store_kind: v.store_kind,
+        p_is_visible_to_customers: v.is_visible_to_customers,
       });
       if (err) throw err;
       // 地址／座標走另一支 RPC（rpc_upsert_store 的參數個數改過一次就撞過
@@ -228,6 +242,14 @@ export default function StoresPage() {
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
           {error}
+        </div>
+      )}
+
+      {wholesaleVisible.length > 0 && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+          ⚠ 目前列表中有 {wholesaleVisible.length} 家「批發」門市，客人在會員頁「選擇取貨門市」時還看得到：
+          {wholesaleVisible.map((r) => r.name).join("、")}。
+          要藏起來：按那一列的「編輯」，取消勾選「客人看得到」，再按「儲存」。
         </div>
       )}
 
@@ -281,20 +303,21 @@ export default function StoresPage() {
           <Th align="right">取貨窗 (天)</Th>
           <Th>付款方式</Th>
           <Th>類型</Th>
+          <Th>客人看得到</Th>
           <Th>狀態</Th>
           <Th>更新</Th>
           <Th>{""}</Th>
         </THead>
         <TBody>
           {rows === null ? (
-            <LoadingRow colSpan={10} />
+            <LoadingRow colSpan={11} />
           ) : rows.length === 0 ? (
-            <EmptyRow colSpan={10}>沒有符合條件的門市</EmptyRow>
+            <EmptyRow colSpan={11}>沒有符合條件的門市</EmptyRow>
           ) : (
             paginated.map((r) =>
               editing?.id === r.id ? (
                 <tr key={r.id}>
-                  <td colSpan={10} className="p-0">
+                  <td colSpan={11} className="p-0">
                     <StoreForm
                       initial={{ ...r, id: r.id }}
                       title="編輯"
@@ -305,7 +328,12 @@ export default function StoresPage() {
                   </td>
                 </tr>
               ) : (
-                <Tr key={r.id}>
+                <Tr
+                  key={r.id}
+                  className={
+                    customerVisibilityStatus(r) === "wholesale_visible" ? "bg-amber-50 dark:bg-amber-950/40" : ""
+                  }
+                >
                   <Td className="font-mono text-xs">
                     <div className="flex items-center gap-1.5">
                       <span>{r.code}</span>
@@ -357,6 +385,9 @@ export default function StoresPage() {
                   </Td>
                   <Td className="text-xs">
                     {STORE_KIND_LABELS[r.store_kind ?? "branch"] ?? r.store_kind ?? "包子媽分店"}
+                  </Td>
+                  <Td className="whitespace-nowrap text-xs">
+                    <CustomerVisibilityCell status={customerVisibilityStatus(r)} />
                   </Td>
                   <Td>
                     {r.deleted_at ? (
@@ -469,6 +500,28 @@ function PagerBtn({
   );
 }
 
+// 列表「客人看得到」欄。狀態怎麼判在 lib/storeCustomerVisibility（跟客人端 listStores 同兩個條件）
+function CustomerVisibilityCell({ status }: { status: CustomerVisibilityStatus }) {
+  if (status === "hidden") {
+    return (
+      <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+        藏起來
+      </span>
+    );
+  }
+  if (status === "wholesale_visible") {
+    return (
+      <span className="rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+        ⚠ 看得到（批發）
+      </span>
+    );
+  }
+  if (status === "inactive") {
+    return <span className="text-zinc-400">看得到（停用中，客人選不到）</span>;
+  }
+  return <span>看得到</span>;
+}
+
 function StoreForm({
   initial,
   title,
@@ -486,6 +539,10 @@ function StoreForm({
   function up<K extends keyof typeof v>(k: K, val: typeof v[K]) {
     setV({ ...v, [k]: val });
   }
+  // 打開表單那一刻的「客人看得到」：類型改回包子媽分店時回到這個值，不自動勾選。
+  // 用 useState 定住 —— initial 會跟著列表重新載入換成新物件，不能拿它當「打開時」。
+  const [openedVisible] = useState(initial.is_visible_to_customers);
+  const [wholesaleNote, setWholesaleNote] = useState(false);
   // 經緯度用字串暫存：綁 number 的話打「25.」會被 Number() 吃掉小數點，
   // 使用者永遠打不完一個座標
   const [latStr, setLatStr] = useState(initial.latitude == null ? "" : String(initial.latitude));
@@ -584,7 +641,12 @@ function StoreForm({
         <F label="類型">
           <select
             value={v.store_kind}
-            onChange={(e) => up("store_kind", e.target.value as StoreKind)}
+            onChange={(e) => {
+              const kind = e.target.value as StoreKind;
+              const next = visibilityAfterKindChange(kind, openedVisible);
+              setV({ ...v, store_kind: kind, is_visible_to_customers: next.isVisibleToCustomers });
+              setWholesaleNote(next.showWholesaleNote);
+            }}
             className={inputCls}
           >
             {STORE_KIND_OPTIONS.map((k) => (
@@ -604,6 +666,36 @@ function StoreForm({
             <span>{v.is_active ? "啟用中" : "停用"}</span>
           </label>
         </F>
+
+        {/* 客人看得到（stores.is_visible_to_customers）。說明每一句的出處：
+            ・選單不列：客人端門市選單只有 liff-api listStores 一個來源（apps/member/src/lib/useLineLogin.ts:141），
+              它只列 is_visible_to_customers = true 的店（supabase/functions/liff-api/index.ts:254）；
+              「選擇取貨門市」是會員頁上的字（apps/member/src/app/join/page.tsx:234）
+            ・下單取貨、收貨派貨月結不受影響：整個 repo 只有上面那一行讀這個欄位（20260902020000 之外沒有別處）
+            ・例外：現貨專區列表／詳情照樣帶出釋出店的店名（liff-api/index.ts:810、:937），
+              只看貼文的「其他分店的會員也看得到」（:718、:863；後台字樣在 inventory/mutual-aid/page.tsx:1641）
+            不用 F 包：F 是 <label>，點說明文字會把勾選框切掉。 */}
+        <div className="flex flex-col gap-1 text-sm sm:col-span-3">
+          <span className="text-xs text-zinc-500">客人看得到</span>
+          <label className="flex items-center gap-2 pt-1.5 text-sm">
+            <input
+              type="checkbox"
+              checked={v.is_visible_to_customers}
+              onChange={(e) => up("is_visible_to_customers", e.target.checked)}
+            />
+            <span>{v.is_visible_to_customers ? "看得到" : "藏起來"}</span>
+          </label>
+          {wholesaleNote && (
+            <span className="text-[11px] font-medium text-amber-700 dark:text-amber-400">
+              類型改成「批發」，已自動取消勾選：批發店預設不給客人看；要給客人看請自己勾回來。
+            </span>
+          )}
+          <span className="text-[11px] text-zinc-500">
+            取消勾選＝客人在會員頁「選擇取貨門市」時，選單裡不會出現這家店。
+            已經把這家店當取貨門市的客人，下單、取貨照常；這家店的收貨、派貨、月結完全不受影響。
+            例外：這家店上架的現貨如果勾了「其他分店的會員也看得到」，其他店的客人在「現貨專區」還是會看到店名。
+          </span>
+        </div>
 
         <F label="LINE@ ID" className="sm:col-span-2">
           <input
