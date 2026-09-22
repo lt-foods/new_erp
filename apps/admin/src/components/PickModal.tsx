@@ -8,10 +8,11 @@
 //   ②「還有修正數量，要一次把所有分店都秀出來，因為我入庫的會是原本沒叫貨的店家」
 //     → 分店欄位改撈 stores 全表；空格子可以直接填，填了就用 rpc_add_wave_item 補一列。
 //
-// ⭐ 分店欄位的規則**不是新發明的**，逐條沿用撿貨草稿頁兩天前才定案的那一套
-//   （lib/pickingDraftView.ts buildStoreColumns 的檔頭，老闆 2026-08-17 親口拍板）：
-//     啟用中                    → 一律有欄位（就算這張撿貨單一格都沒有）
-//     已停用 ＋ 本單沒有任何一列 → ⛔ 不顯示（「已停用的店家就不用出現了」）
+// ⭐ 分店欄位的規則在 lib/pickingMatrixRules.ts 的 buildPickModalColumns（檢查程式測的也是它）：
+//     包子媽分店（啟用中）      → 一律有欄位（就算這張撿貨單一格都沒有）
+//     批發（啟用中）            → 本單有列、或這次已經填了新數量才有欄位；
+//                                 其餘的要勾「顯示批發店」才出現（每次打開彈窗預設不勾）
+//     已停用 ＋ 本單沒有任何一列 → ⛔ 不顯示，勾了「顯示批發店」也一樣（「已停用的店家就不用出現了」）
 //     已停用 ＋ 本單有列         → ✅ 照樣顯示，標「已停用」
 //   排序也沿用共用的 lib/storeOrder（老闆指定的撿貨動線順序），
 //   與派貨工作台矩陣／列印撿貨單／撿貨草稿同一份 —— ⛔ 不要各自再排一套。
@@ -19,7 +20,7 @@ import { Fragment, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
 import { translateRpcError } from "@/lib/rpcError";
-import { compareStoreOrder } from "@/lib/storeOrder";
+import { buildPickModalColumns, type PickModalStore } from "@/lib/pickingMatrixRules";
 import SpinButton from "@/components/SpinButton";
 import { AddStockModal } from "@/components/AddStockModal";
 import { DatePicker } from "@/components/DatePicker";
@@ -50,7 +51,7 @@ export type PickWaveItem = {
 };
 
 /** stores 全表的一列（含停用）。`is_active === false` ＝ 已經收掉的店 */
-type Store = { id: number; code: string | null; name: string; is_active: boolean | null };
+type Store = PickModalStore;
 type Sku = {
   id: number;
   sku_code: string | null;
@@ -92,6 +93,12 @@ export function PickModal({
   const [edits, setEdits] = useState<Map<number, string>>(new Map());
   /** 原本沒有那一列、這次要新加的格子。key = cellKey(sku, store)，value = 輸入框的原始字串 */
   const [newCells, setNewCells] = useState<Map<string, string>>(new Map());
+  /**
+   * 「顯示批發店」開關（#983 審查 P1-1 甲案）。打開才列出本單沒有列的批發店，才能替它們填數字加貨。
+   * ⭐ 每次打開彈窗都從「不勾」開始、不記住：這個元件是收件匣用 `{editingWave && <PickModal/>}`
+   *   掛上去的，關掉彈窗就整個卸載，下次打開自然回到 false。
+   */
+  const [showWholesale, setShowWholesale] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [shipping, setShipping] = useState(false);
@@ -175,7 +182,7 @@ export function PickModal({
         //   撈全表 ≠ 全部都變成欄位：實際顯示哪幾欄由下面的 storeCols 決定。
         const { data: storeData, error: eStore } = await sb
           .from("stores")
-          .select("id, code, name, is_active")
+          .select("id, code, name, is_active, store_kind")
           .order("code");
         if (eStore) throw new Error(eStore.message);
         if (!cancelled) setAllStores((storeData as Store[] | null) ?? []);
@@ -241,26 +248,24 @@ export function PickModal({
   );
 
   /**
-   * 矩陣要有哪些分店欄位。
-   *
-   * 規則與撿貨草稿頁**逐條相同**（老闆 2026-08-17 拍板，見 lib/pickingDraftView.ts:149-174）：
-   *   啟用中                    → 一律有欄位
-   *   已停用 ＋ 本單一列都沒有  → ⛔ 不顯示
-   *   已停用 ＋ 本單有列        → ✅ 照樣顯示，標「已停用」
-   *
-   * ⭐ 判準是「本單有沒有那一列」而不是「數量大不大」：撿貨單的 qty 表上是
-   *   CHECK (qty > 0)（20260423120002:68），有列就一定有量 —— 這一點跟草稿不一樣
-   *   （草稿會替每家店建 qty = 0 的列，所以那邊必須看合計）。
-   * ⛔ 有列的一定要留：合計是把該商品所有 items 加總、不看畫面上有沒有那一欄，
-   *   藏掉一個有量的欄，橫的加起來就 ≠ 合計。
+   * 矩陣要有哪些分店欄位 —— 規則全在 lib/pickingMatrixRules.ts 的 buildPickModalColumns，
+   * 這裡只負責把「本單有列的店」「這次填了新數量的店」「開關」交給它。
+   * ⛔ 不要在這裡再加一層過濾：檢查程式（scripts/check-store-kind-columns.mjs）測的是那支函式，
+   *   這裡多濾一層，測試就管不到了。
+   * ⭐ 填了新數量的店一定會被列出來（開關關掉也一樣）：skuTotals 與「儲存修正」都只看 newCells，
+   *   欄位要是被藏起來，就會變成「看不到、但照樣會送出」。
    */
-  const stores = useMemo(() => {
-    const hasRow = new Set((items ?? []).map((it) => Number(it.store_id)));
-    return allStores
-      .filter((s) => s.is_active !== false || hasRow.has(Number(s.id)))
-      .map((s) => ({ ...s, id: Number(s.id) }))
-      .sort((a, b) => compareStoreOrder(a.code, a.name, b.code, b.name));
-  }, [allStores, items]);
+  const { columns: stores, optionalWholesaleCount, hiddenWholesaleCount } = useMemo(
+    () =>
+      buildPickModalColumns({
+        allStores,
+        rowStoreIds: (items ?? []).map((it) => it.store_id),
+        // key 是 cellKey(sku, store) ＝ "sku:store"，第二段才是店
+        newCellStoreIds: Array.from(newCells.keys(), (k) => Number(k.split(":")[1])),
+        showWholesale,
+      }),
+    [allStores, items, newCells, showWholesale],
+  );
 
   function setEdit(itemId: number, val: string) {
     setEdits((cur) => {
@@ -617,13 +622,32 @@ export function PickModal({
           </div>
         )}
 
-        {/* 這一行是必要的說明，不是裝飾：矩陣現在會列出**全部**分店，
+        {/* 這一段是必要的說明，不是裝飾：矩陣會列出本單以外的店（包子媽分店一律都在），
             虛線格子代表「這家店原本沒叫貨」。不講的話老闆會以為系統多跑出一堆店。 */}
         {!locked && (
           <div className="border-b border-zinc-200 bg-zinc-50 px-3 py-1.5 text-[11px] text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
-            這裡列出所有分店。<span className="font-semibold text-sky-700 dark:text-sky-300">虛線</span>
+            這裡列出所有啟用中的包子媽分店，和這張單上有東西的批發店。<span className="font-semibold text-sky-700 dark:text-sky-300">虛線</span>
             的格子代表那家店原本沒有叫貨 —— 直接填數量就會幫它新增一列，一起出貨。
             已停用而且本單沒有東西的店不會出現。
+            {/* #983 審查 P1-1 甲案：批發店不在這張單上，要能叫出來替它加貨（切片 B 的功能不能被藏掉）。
+                ⭐ 藏了幾家要直接寫在畫面上 —— iPad 沒有滑鼠移上去的提示，⛔ 不要只寫在 title。
+                沒有可以叫出來的批發店時不出現；勾著的時候一定出現（才關得掉）。 */}
+            {(optionalWholesaleCount > 0 || showWholesale) && (
+              <label className="mt-1 flex w-fit cursor-pointer flex-wrap items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={showWholesale}
+                  onChange={(e) => setShowWholesale(e.target.checked)}
+                  className="h-4 w-4"
+                />
+                <span className="font-semibold text-zinc-800 dark:text-zinc-200">顯示批發店</span>
+                <span>
+                  {showWholesale
+                    ? "（啟用中但不在這張單上的批發店也都列出來了，可以直接填數量加貨）"
+                    : `（另有 ${hiddenWholesaleCount} 家啟用中的批發店不在這張單上，沒有顯示；要加貨給它們請勾選）`}
+                </span>
+              </label>
+            )}
             {/* ⭐ 老闆 2026-08-17 裁示：不擋、只顯示。填多少都填得下去，
                 真正的限制是總倉實際有沒有貨（派貨時 rpc_outbound 會擋）。
                 所以這裡的責任是「讓他當下就看得到超了」，⛔ 不是攔住他。 */}
@@ -657,7 +681,7 @@ export function PickModal({
                           （藏起來或不標，都是拿異常狀態冒充一切正常） */}
                       {s.is_active === false && (
                         <span className="ml-1 inline-block rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium normal-case text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                          已停用
+                          {s.state === "missing" ? "已刪除" : "已停用"}
                         </span>
                       )}
                     </th>

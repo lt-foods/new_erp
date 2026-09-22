@@ -19,6 +19,12 @@ const PAYMENT_LABELS: Record<PaymentMethod, string> = {
   wallet: "儲值金",
 };
 const PAYMENT_OPTIONS: PaymentMethod[] = ["cash", "credit_card", "transfer", "line_pay", "wallet"];
+type StoreKind = "branch" | "wholesale";
+const STORE_KIND_LABELS: Record<StoreKind, string> = {
+  branch: "包子媽分店",
+  wholesale: "批發",
+};
+const STORE_KIND_OPTIONS: StoreKind[] = ["branch", "wholesale"];
 
 type Store = {
   id: number;
@@ -27,6 +33,7 @@ type Store = {
   location_id: number | null;
   pickup_window_days: number;
   allowed_payment_methods: PaymentMethod[];
+  store_kind: StoreKind;
   is_active: boolean;
   notes: string | null;
   line_oa_basic_id: string | null;
@@ -48,6 +55,7 @@ const EMPTY: Omit<Store, "id" | "updated_at" | "deleted_at"> = {
   location_id: null,
   pickup_window_days: 5,
   allowed_payment_methods: ["cash"],
+  store_kind: "branch",
   is_active: true,
   notes: null,
   line_oa_basic_id: null,
@@ -101,7 +109,7 @@ export default function StoresPage() {
   async function reload() {
     let q = getSupabase()
       .from("stores")
-      .select("id, code, name, location_id, pickup_window_days, allowed_payment_methods, is_active, notes, line_oa_basic_id, line_liff_id, address, latitude, longitude, updated_at, deleted_at")
+      .select("id, code, name, location_id, pickup_window_days, allowed_payment_methods, store_kind, is_active, notes, line_oa_basic_id, line_liff_id, address, latitude, longitude, updated_at, deleted_at")
       .order("updated_at", { ascending: false })
       .limit(500);
     if (query.trim()) {
@@ -174,6 +182,7 @@ export default function StoresPage() {
         p_is_active: v.is_active,
         p_notes: v.notes,
         p_line_oa_basic_id: v.line_oa_basic_id,
+        p_store_kind: v.store_kind,
       });
       if (err) throw err;
       // 地址／座標走另一支 RPC（rpc_upsert_store 的參數個數改過一次就撞過
@@ -271,20 +280,21 @@ export default function StoresPage() {
           <Th>對應 location</Th>
           <Th align="right">取貨窗 (天)</Th>
           <Th>付款方式</Th>
+          <Th>類型</Th>
           <Th>狀態</Th>
           <Th>更新</Th>
           <Th>{""}</Th>
         </THead>
         <TBody>
           {rows === null ? (
-            <LoadingRow colSpan={9} />
+            <LoadingRow colSpan={10} />
           ) : rows.length === 0 ? (
-            <EmptyRow colSpan={9}>沒有符合條件的門市</EmptyRow>
+            <EmptyRow colSpan={10}>沒有符合條件的門市</EmptyRow>
           ) : (
             paginated.map((r) =>
               editing?.id === r.id ? (
                 <tr key={r.id}>
-                  <td colSpan={9} className="p-0">
+                  <td colSpan={10} className="p-0">
                     <StoreForm
                       initial={{ ...r, id: r.id }}
                       title="編輯"
@@ -344,6 +354,9 @@ export default function StoresPage() {
                     {(r.allowed_payment_methods ?? []).length
                       ? r.allowed_payment_methods.map((m) => PAYMENT_LABELS[m] ?? m).join("、")
                       : "—"}
+                  </Td>
+                  <Td className="text-xs">
+                    {STORE_KIND_LABELS[r.store_kind ?? "branch"] ?? r.store_kind ?? "包子媽分店"}
                   </Td>
                   <Td>
                     {r.deleted_at ? (
@@ -567,6 +580,19 @@ function StoreForm({
               </label>
             ))}
           </div>
+        </F>
+        <F label="類型">
+          <select
+            value={v.store_kind}
+            onChange={(e) => up("store_kind", e.target.value as StoreKind)}
+            className={inputCls}
+          >
+            {STORE_KIND_OPTIONS.map((k) => (
+              <option key={k} value={k}>
+                {STORE_KIND_LABELS[k]}
+              </option>
+            ))}
+          </select>
         </F>
         <F label="啟用">
           <label className="flex items-center gap-2 pt-1.5 text-sm">
