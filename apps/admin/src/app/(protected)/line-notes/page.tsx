@@ -12,6 +12,7 @@ import { translateRpcError } from "@/lib/rpcError";
 import { CAMPAIGN_STATUSES, campaignStatusBadge, campaignStatusLabel } from "@/lib/campaignStatus";
 import { Modal as SharedModal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
+import { OrderEntryView } from "@/components/OrderEntryView";
 import {
   COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, commentStats, fmtNoteTime, isTodoComment,
 } from "@/lib/lineNoteStatus";
@@ -47,7 +48,7 @@ type Comment = {
   member_id: number | null; customer_order_id: number | null; error: string | null; reacted_at: string | null;
   resolved_at: string | null; resolution_note: string | null;
 };
-type Row = Comment & { line_note_posts: { community_id: number; campaign_id: number; group_buy_campaigns: { name: string; campaign_no: string } | null } | null };
+type Row = Comment & { line_note_posts: { community_id: number; campaign_id: number; group_buy_campaigns: { id: number; name: string; campaign_no: string } | null } | null };
 type OrderInfo = { id: number; order_no: string; store_name: string | null };
 type PostStat = ReturnType<typeof commentStats>;
 type Home = { kind: string; homeId: string; name: string };
@@ -858,11 +859,14 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
     [communityById]);
   // 「指定會員」：撞號／認不出人的留言，店員選一次是誰 → DB 記住這位留言者，之後自動對上
   const [assignFor, setAssignFor] = useState<Comment | null>(null);
+  // 點「團」欄 → 直接在這頁開加單彈窗（機器人看不懂的留言本來就得人工加，
+  // 換頁再回來會掉篩選跟捲動位置）。用的是整頁版同一個元件。
+  const [entryFor, setEntryFor] = useState<Row | null>(null);
 
   const load = useCallback(async () => {
     const sb = getSupabase();
     let q = sb.from("line_note_comments")
-      .select(`*,line_note_posts${communityId === "" ? "" : "!inner"}(community_id,campaign_id,group_buy_campaigns(name,campaign_no))`);
+      .select(`*,line_note_posts${communityId === "" ? "" : "!inner"}(community_id,campaign_id,group_buy_campaigns(id,name,campaign_no))`);
     if (communityId !== "") q = q.eq("line_note_posts.community_id", communityId);
     const { data, error } = await q.order("commented_at", { ascending: false }).limit(300);
     if (error) return fail(error);
@@ -891,15 +895,16 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
     notify(r?.out_status === "ordered" ? "已加單" : `${COMMENT_STATUS[(r?.out_status ?? "error") as Comment["status"]] ?? r?.out_status}${r?.out_error ? "：" + r.out_error : ""}`);
     await load();
   };
-  const setStatus = async (c: Comment, status: Comment["status"]) => {
+  // 回傳「有沒有真的改到」—— 加單彈窗要靠它決定關不關（取消輸入框就別把彈窗收掉）
+  const setStatus = async (c: Comment, status: Comment["status"]): Promise<boolean> => {
     let note: string | null = null;
     if (status === "resolved") {
       note = window.prompt("怎麼處理的？（選填）", c.resolution_note ?? "");
-      if (note === null) return;
+      if (note === null) return false;
     }
     // 已經加成單的退回未處理：訂單不會跟著取消，先講清楚
     if (status === "pending" && (c.status === "ordered" || c.status === "duplicate") && c.customer_order_id) {
-      if (!window.confirm("退回未處理不會取消已經加好的訂單，只是把這則留言放回待處理清單。\n要取消訂單請到訂單那邊操作。\n\n確定退回？")) return;
+      if (!window.confirm("退回未處理不會取消已經加好的訂單，只是把這則留言放回待處理清單。\n要取消訂單請到訂單那邊操作。\n\n確定退回？")) return false;
     }
     setBusy(c.id);
     const body = status === "resolved"
@@ -909,8 +914,9 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
         : { status };
     const { error } = await getSupabase().from("line_note_comments").update(body).eq("id", c.id);
     setBusy(null);
-    if (error) return fail(error);
+    if (error) { fail(error); return false; }
     await load();
+    return true;
   };
 
   const shown = useMemo(() => {
@@ -926,6 +932,19 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
   // 已經在 LINE 那則留言上按過笑臉的標一下，沒按到的看得出來
   const reacted = (c: Comment) =>
     c.reacted_at ? <span title={`已在 LINE 留言上按 😄（${fmt(c.reacted_at)}）`}>😄</span> : null;
+
+  // 團欄：認得出團就做成按鈕，點了在這頁開加單彈窗
+  const campaignCell = (c: Row) => {
+    const camp = c.line_note_posts?.group_buy_campaigns ?? null;
+    if (!camp) return <div className="truncate">—</div>;
+    if (readOnly) return <div className="truncate" title={camp.name}>{camp.name}</div>;
+    return (
+      <button type="button" title={`${camp.name}（點開加單）`} onClick={() => setEntryFor(c)}
+        className="block w-full truncate text-left text-sky-700 underline decoration-dotted underline-offset-2 hover:text-sky-900 dark:text-sky-400 dark:hover:text-sky-200">
+        {camp.name}
+      </button>
+    );
+  };
 
   // 結果欄：一個徽章 + 一句話
   const result = (c: Comment) => {
@@ -1018,7 +1037,7 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
               <Td className="whitespace-nowrap font-medium">{c.commenter_name ?? "—"}</Td>
               <Td className="max-w-xs whitespace-pre-wrap text-base">{c.text}</Td>
               <Td className="max-w-[12rem] text-sm">
-                <div className="truncate" title={c.line_note_posts?.group_buy_campaigns?.name ?? ""}>{c.line_note_posts?.group_buy_campaigns?.name ?? "—"}</div>
+                {campaignCell(c)}
                 <div className="truncate text-xs text-zinc-500">{communityById.get(c.line_note_posts?.community_id ?? -1)?.home_name ?? ""}</div>
               </Td>
               <Td><div className="flex flex-wrap items-center gap-2 text-sm">{result(c)}</div></Td>
@@ -1033,6 +1052,15 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
           onClose={() => setAssignFor(null)}
           onDone={async (msg) => { setAssignFor(null); notify(msg); await load(); }}
           fail={fail}
+        />
+      )}
+      {entryFor && (
+        <CommentOrderEntryModal
+          comment={entryFor}
+          busy={busy === entryFor.id}
+          onClose={() => setEntryFor(null)}
+          onCreated={() => void load()}
+          onResolve={async () => { if (await setStatus(entryFor, "resolved")) setEntryFor(null); }}
         />
       )}
     </div>
@@ -1484,6 +1512,45 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
           fail={fail} />
       )}
     </div>
+  );
+}
+
+// ── 點「團」開的加單彈窗 ─────────────────────────────────────────────────────
+//
+// 機器人看不懂的留言（「A,B 各1」「白+1」）本來就得人工加單。以前要另開
+// /campaigns/order-entry?id=…，回來時篩選、捲動位置全掉；改成原地彈窗，
+// 留言原文就擺在表單上面照著 key。畫面本體用整頁版同一個 OrderEntryView，
+// 不要為了彈窗再抄一份（抄了下次只會修到其中一邊）。
+function CommentOrderEntryModal({ comment, busy, onClose, onCreated, onResolve }: {
+  comment: Row; busy: boolean; onClose: () => void; onCreated: () => void; onResolve: () => void | Promise<void>;
+}) {
+  const [created, setCreated] = useState(false);
+  const camp = comment.line_note_posts?.group_buy_campaigns ?? null;
+  if (!camp) return null;
+  return (
+    <SharedModal open onClose={onClose} title={`加單 · ${camp.name}`} maxWidth="max-w-6xl">
+      <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-900 dark:bg-amber-950/40">
+        <div className="flex flex-wrap items-baseline gap-x-3 text-sm">
+          <span className="font-medium">{comment.commenter_name ?? "—"}</span>
+          <span className="text-xs text-zinc-500">{fmt(comment.commented_at)}</span>
+        </div>
+        <div className="whitespace-pre-wrap break-words text-base">{comment.text}</div>
+      </div>
+
+      <OrderEntryView
+        campaignId={camp.id}
+        embedded
+        initialMemberTerm={comment.member_no_hint ?? undefined}
+        onCreated={() => { setCreated(true); onCreated(); }}
+      />
+
+      <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+        {created && <span className="mr-auto text-sm text-emerald-700 dark:text-emerald-400">加好了就把這則留言標成已解決，它才會離開待處理。</span>}
+        <button type="button" className={btn} onClick={onClose}>關閉</button>
+        <SpinButton type="button" className={`${btn} text-emerald-700 dark:text-emerald-400`} loading={busy}
+          onClick={() => void onResolve()}>標成已解決並關閉</SpinButton>
+      </div>
+    </SharedModal>
   );
 }
 
