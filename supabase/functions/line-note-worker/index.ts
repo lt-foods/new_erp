@@ -42,8 +42,15 @@ const LOGIN_DEADLINE_MS = Number(Deno.env.get("LINE_NOTE_LOGIN_DEADLINE_MS") || 
 const REACT_BUDGET_MS = Number(Deno.env.get("LINE_NOTE_REACT_BUDGET_MS") || 120_000);
 const MAX_POST_IMAGES = Number(Deno.env.get("LINE_POST_MAX_IMAGES") || 10);
 const PRODUCTS_BUCKET = Deno.env.get("PRODUCTS_BUCKET") || "products";
+// 貼文裡的商城連結用的會員站網址。跟 line-webhook / admin-line-push 同一個 env
+// （線上早就設好了）；沒設或不是 https 時 buildShopLink 自己會把那一行收掉。
+const MEMBER_BASE = (Deno.env.get("MEMBER_FRONT_BASE_URL") ?? "").replace(/\/+$/, "");
 
 const log = (...a: any[]) => console.log(new Date().toISOString(), ...a);
+
+// 發文 / 預覽都走這一支：商城連結的 base 是 env 給的，payload RPC 不知道站台網址。
+// 少帶一次 = 那一篇貼文就沒有連結，所以不要直接呼叫 renderPostText。
+const renderPost = (payload: any) => renderPostText({ ...payload, site_url: MEMBER_BASE });
 
 // ── PostgREST（service_role，跟 worker.mjs 同一套 helper，方便對照） ────────
 async function rest(pathAndQuery: string, opts: { method?: string; body?: unknown; prefer?: string } = {}) {
@@ -246,7 +253,7 @@ async function jobPost(job: any) {
   if (!payload) throw new Error(`post ${job.post_id} not found`);
   const account = await loadAccount(payload.account_id);
   const client = await clientFor(account);
-  const text = renderPostText(payload);
+  const text = renderPost(payload);
   const images = await collectPostImages(payload);
   try {
     const post = await createNotePost(client, payload.home_id, { text, images, verbose: VERBOSE });
@@ -871,7 +878,7 @@ Deno.serve(async (req) => {
         p_community_id: Number(body.community_id), p_campaign_id: Number(body.campaign_id),
       });
       if (!payload) return json({ error: "找不到社群或團" }, 404);
-      return json({ text: renderPostText(payload), images: postImageUrls(payload) });
+      return json({ text: renderPost(payload), images: postImageUrls(payload) });
     }
     // 刪掉已經貼出去的貼文：LINE 上那篇先刪掉，成功了才清後台紀錄。
     // 走「後台直接呼叫」而不是排 job —— 這是破壞性動作，按下去要當場知道刪掉了沒。

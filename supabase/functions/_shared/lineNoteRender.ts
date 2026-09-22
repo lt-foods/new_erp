@@ -16,6 +16,8 @@
 // 文案自己寫的「⏰9/14結單」換成系統的時間。
 // {{tag}} 是團號章（🔖 團號 GRP-…）：爬回來的時候靠它精準認出是哪一團，不用猜團名。
 // 自訂模板沒寫 {{tag}} 也會被 withPostTag 補在文末 —— 章一定要有，不然這篇就只能靠猜。
+// {{link}} 是商城連結（老闆 2026-09-22）：不想留言 +1 的客人可以直接點進去自己下單。
+// 同樣不靠模板 —— 沒寫 {{link}} 的自訂模板也會被 withShopLink 補在團號章前面。
 // ─────────────────────────────────────────────────────────────────────────────
 import { buildPostTag, withPostTag } from "./lineNoteParse.ts";
 import { applyDeco, DECO_CLOSE, DECO_OPEN, decoPrice, decoTextPrices, htmlToText, stripLineDeco } from "./lineNoteDeco.ts";
@@ -31,6 +33,7 @@ export const DEFAULT_TEMPLATE = `{{title}}
 {{description}}
 
 {{howto}}
+{{link}}
 #開團
 {{tag}}`;
 
@@ -150,6 +153,39 @@ function spaceOutPriceLines(desc: string): string {
   return out.join("\n");
 }
 
+// ── 商城連結（老闆 2026-09-22：機器人的貼文要帶商城連結） ────────────────────
+// 客人不一定想在社群裡公開留言 +1，給一條自己點進去下單的路。
+// base 由 worker 從 MEMBER_FRONT_BASE_URL 帶進 payload.site_url（跟 line-webhook /
+// admin-line-push 同一個 env，也就是會員站自己的網址）——
+// ⚠ 不要改成 https://liff.line.me/…：LIFF endpoint 跨網域會讓登入回 400，
+//   見 CLAUDE.md「LIFF app 的 Endpoint URL 必須跟會員站同網域」。
+// 路徑跟著 sales_channel 走：漂漂館的團在 /piaopiao/c/<id>，其餘在 /shop/c/<id>
+// （apps/member 的路由，改路由記得回來改這裡）。
+// 沒上架商城（is_for_shop = false）就整行不印 —— 那種團客人點進去只會拿到 404。
+const SHOP_LINK_MARK = "🛒 商城下單：";
+
+export function buildShopLink(campaign: any, siteUrl: string | null | undefined): string {
+  const base = String(siteUrl ?? "").trim().replace(/\/+$/, "");
+  // localhost / 沒設：印出去是死連結，不如不印（同 admin-line-push 的 links 判斷）
+  if (!/^https:\/\//.test(base)) return "";
+  if (!campaign?.id || campaign?.is_for_shop === false) return "";
+  const section = campaign?.sales_channel === "piaopiao" ? "piaopiao" : "shop";
+  return `${SHOP_LINK_MARK}${base}/${section}/c/${campaign.id}`;
+}
+
+/** 沒寫 {{link}} 的自訂模板也要有連結（同 withPostTag 的用意）；團號章維持在最後一行。 */
+function withShopLink(text: string, link: string): string {
+  const body = String(text ?? "");
+  if (!link) return body;
+  const url = link.slice(SHOP_LINK_MARK.length);
+  if (body.includes(url)) return body;                 // 模板自己寫了（{{link}} 或手打網址）
+  const lines = body.trimEnd().split("\n");
+  const at = lines.findIndex((l) => /\u{1F516}\s*團號/u.test(l));
+  if (at >= 0) lines.splice(at, 0, link);
+  else lines.push(link);
+  return lines.join("\n");
+}
+
 // 文案裡已經標起來的金額（記事本佔位字還原的、獨立一行的 $數字、💰 後面的數字）
 function decoPricesIn(desc: string): number[] {
   return [...desc.matchAll(new RegExp(`${DECO_OPEN}\\$?(\\d+(?:\\.\\d+)?)${DECO_CLOSE}`, "g"))].map((m) => Number(m[1]));
@@ -209,21 +245,32 @@ export function renderTemplate(template: string | null, payload: any) {
   const descHasItems = /(^|\n)\s*(?:[(（][A-Za-z][)）]|[A-Za-z][.．、:：])/.test(desc);
   const descHasThisPrice = single && postPrice(items[0]) != null && decoPricesIn(desc).includes(postPrice(items[0]));
 
-  const rendered = (template || DEFAULT_TEMPLATE)
-    .replaceAll("{{tag}}", buildPostTag(c.campaign_no))
-    .replaceAll("{{title}}", title)
-    .replaceAll("{{items}}", descHasItems || descHasThisPrice ? "" : itemLines)
-    .replaceAll("{{deadline}}", placed.placed ? "" : deadline)
-    .replaceAll("{{howto}}", single ? HOWTO_SINGLE : HOWTO_MULTI)
-    .replaceAll("{{name}}", c.name ?? "")
-    .replaceAll("{{campaign_no}}", c.campaign_no ?? "")
-    .replaceAll("{{description}}", desc)
-    .replaceAll("{{end_at}}", fmtTaipei(closeAt))
-    .replaceAll("{{start_at}}", fmtTaipei(c.start_at))
-    .replaceAll("{{pickup_deadline}}", fmtTaipei(c.pickup_deadline))
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return withPostTag(rendered, c.campaign_no);
+  const link = buildShopLink(c, payload.site_url);
+
+  // 代入的順序要維持原樣（{{description}} 在時間類的前面）
+  const vars: Record<string, string> = {
+    tag: buildPostTag(c.campaign_no),
+    title,
+    items: descHasItems || descHasThisPrice ? "" : itemLines,
+    deadline: placed.placed ? "" : deadline,
+    howto: single ? HOWTO_SINGLE : HOWTO_MULTI,
+    link,
+    name: c.name ?? "",
+    campaign_no: c.campaign_no ?? "",
+    description: desc,
+    end_at: fmtTaipei(closeAt),
+    start_at: fmtTaipei(c.start_at),
+    pickup_deadline: fmtTaipei(c.pickup_deadline),
+  };
+  // 整行只有一個佔位字、而且那個佔位字是空的 → 整行收掉。
+  // 沒有這一步，沒上商城的團會在 {{howto}} 跟 #開團 中間多一行空白
+  //（{{items}} / {{deadline}} 那幾個前後本來就有空行，收不收都是同一個結果）。
+  let rendered = (template || DEFAULT_TEMPLATE).split("\n")
+    .filter((line) => { const m = line.trim().match(/^\{\{(\w+)\}\}$/); return !(m && m[1] in vars && !vars[m[1]]); })
+    .join("\n");
+  for (const [k, v] of Object.entries(vars)) rendered = rendered.replaceAll(`{{${k}}}`, v);
+  rendered = rendered.replace(/\n{3,}/g, "\n\n").trim();
+  return withPostTag(withShopLink(rendered, link), c.campaign_no);
 }
 
 // 真的會貼出去的字：版型渲染完，把標起來的金額換成 💲＋全形數字。
