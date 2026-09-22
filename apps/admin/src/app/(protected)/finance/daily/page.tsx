@@ -5,16 +5,21 @@
 // 排除內部容器單），與 /orders KPI「今日取貨金額」同一套，兩邊數字對得起來。
 // 訂單明細不預載：點「查看訂單明細」才打 rpc_daily_pickup_orders，一頁 20 筆。
 // 分店帳號鎖自己店（比照 /pickup 的 branchLocked 慣例）；HQ 可切全部分店。
+//
+// 第二個分頁「記帳本」（2026-09-22）：門市自己的現金帳（支出／非取貨收入／關帳點鈔）。
+// 只有該店店長 + 總部看得到 —— 角色判斷 canUseStoreLedger()，真正的防線在 DB 的
+// _store_ledger_can_view()（20260922030000）。store_staff 連分頁都不會出現。
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { useDefaultStoreFromUser, useUserBranchStoreId } from "@/lib/useDefaultStoreFromUser";
-import { useMyStores, useRole } from "@/lib/role";
+import { canUseStoreLedger, useMyStores, useRole } from "@/lib/role";
 import { orderStatusLabel } from "@/lib/orderStatus";
 import { DatePicker } from "@/components/DatePicker";
 import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
 import SpinButton from "@/components/SpinButton";
+import { StoreLedgerPanel } from "@/components/StoreLedgerPanel";
 
 type Store = { id: number; code: string; name: string };
 
@@ -113,6 +118,7 @@ export default function DailySettlementPage() {
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
   const [storeFilter, setStoreFilter] = useState<string>("");
+  const [tab, setTab] = useState<"report" | "ledger">("report");
 
   const [stores, setStores] = useState<Store[]>([]);
   const [report, setReport] = useState<Report | null>(null);
@@ -140,6 +146,8 @@ export default function DailySettlementPage() {
     myStores.length > 0 &&
     !myStores.includes("總倉");
   const branchStoreId = useUserBranchStoreId(stores);
+  // 記帳本分頁：只有店長層級 + 總部看得到（store_staff 連分頁都不出現）
+  const showLedger = canUseStoreLedger(role);
   useDefaultStoreFromUser(stores, storeFilter, setStoreFilter, !branchLocked);
 
   useEffect(() => {
@@ -157,6 +165,7 @@ export default function DailySettlementPage() {
   }, []);
 
   useEffect(() => {
+    if (tab !== "report") return;
     // 分店帳號要等鎖店解析完成才打，避免先閃一下全站金額
     if (branchLocked && branchStoreId == null) return;
     let cancelled = false;
@@ -180,12 +189,13 @@ export default function DailySettlementPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [storeFilter, dateFrom, dateTo, branchLocked, branchStoreId, reloadTick]);
+  }, [storeFilter, dateFrom, dateTo, branchLocked, branchStoreId, reloadTick, tab]);
 
   // 換條件 → 明細回到第 1 頁（面板開著就會自動重查）
   useEffect(() => { setOrdersPage(1); }, [storeFilter, dateFrom, dateTo]);
 
   useEffect(() => {
+    if (tab !== "report") return;
     if (!ordersOpen) return;
     if (branchLocked && branchStoreId == null) return;
     let cancelled = false;
@@ -211,7 +221,7 @@ export default function DailySettlementPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [ordersOpen, ordersPage, storeFilter, dateFrom, dateTo, branchLocked, branchStoreId, reloadTick]);
+  }, [ordersOpen, ordersPage, storeFilter, dateFrom, dateTo, branchLocked, branchStoreId, reloadTick, tab]);
 
   const totals = useMemo(() => {
     const t = {
@@ -286,13 +296,44 @@ export default function DailySettlementPage() {
   return (
     <div className="flex flex-1 flex-col gap-4 p-6">
       <header>
-        <h1 className="text-xl font-semibold">日結報表</h1>
+        <h1 className="text-xl font-semibold">{tab === "ledger" ? "記帳本" : "日結報表"}</h1>
         <p className="text-sm text-zinc-500">
-          每天實際取走的貨（已完成＋部分取貨已取走的部分）＝當天收的現金。
-          {loading ? " 載入中…" : ""}
+          {tab === "ledger"
+            ? "門市自己的現金帳：支出、取貨以外的收入，關帳時點鈔對帳。"
+            : "每天實際取走的貨（已完成＋部分取貨已取走的部分）＝當天收的現金。"}
+          {tab === "report" && loading ? " 載入中…" : ""}
         </p>
       </header>
 
+      {showLedger && (
+        <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
+          {([
+            { key: "report", label: "📊 日結報表" },
+            { key: "ledger", label: "📒 記帳本" },
+          ] as const).map((t) => (
+            <SpinButton
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`-mb-px rounded-t-md border-b-2 px-4 py-2 text-sm ${
+                tab === t.key
+                  ? "border-blue-500 font-medium text-blue-700 dark:text-blue-300"
+                  : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
+              }`}
+            >
+              {t.label}
+            </SpinButton>
+          ))}
+        </div>
+      )}
+
+      {tab === "ledger" ? (
+        <StoreLedgerPanel
+          stores={stores}
+          lockedStoreId={branchLocked ? branchStoreId : null}
+          defaultStoreId={storeFilter}
+        />
+      ) : (
+      <>
       <div className="flex flex-wrap items-center gap-2">
         {quickRanges.map((r) => {
           const active = dateFrom === r.from && dateTo === r.to;
@@ -607,6 +648,8 @@ export default function DailySettlementPage() {
           />
         )}
       </Modal>
+      </>
+      )}
     </div>
   );
 }

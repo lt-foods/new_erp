@@ -73,6 +73,19 @@ export function canOperateLineNotes(role: Role | null): boolean {
   return LINE_NOTE_OPERATE_ROLES.includes(role);
 }
 
+// 門市記帳本（/finance/daily 的「記帳本」分頁）。
+// ⚠ 這一組角色要跟 DB 的 _store_ledger_is_manager()（20260922030000）**完全一樣** ——
+//   前端寬了會出現「點進去回 ledger_perm」，前端嚴了會出現「明明有權限卻沒有分頁」。
+//   store_staff 刻意不給：需求就是「只有該店的店長看得到」。
+//   ⚠ 只看 role 判不出是「哪一家店」——店長還要再被 app_metadata.stores 收斂，
+//   那一層在 DB 的 _store_ledger_can_view() 上（前端的門市下拉也跟著鎖）。
+const STORE_LEDGER_ROLES: Role[] = ["owner", "admin", "hq_manager", "hq_accountant", "store_manager", ""];
+
+export function canUseStoreLedger(role: Role | null): boolean {
+  if (role === null) return false; // 還沒讀到 role 時不要先閃一下分頁再收回去
+  return STORE_LEDGER_ROLES.includes(role);
+}
+
 /**
  * 這個帳號被指派到哪幾家店（app_metadata.stores，存的是**店名**）。
  * 非分店帳號通常沒有這個欄位 → 回空陣列。
