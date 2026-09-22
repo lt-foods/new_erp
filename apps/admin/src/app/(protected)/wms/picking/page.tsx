@@ -15,6 +15,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
 import { compareStoreOrder } from "@/lib/storeOrder";
+import { buildDemandPoSkuStore, plannerCanTakeCell, poSkuStoreKey } from "@/lib/pickingMatrixRules";
 import SpinButton from "@/components/SpinButton";
 import { useAuth } from "@/components/AuthProvider";
 
@@ -1437,6 +1438,21 @@ function Body() {
       (sku.storeDemand.get(storeId) ?? 0) - (sku.storeWave.get(storeId) ?? 0),
     );
   }
+  // (採購單, 商品, 店) 在需求表裡有沒有列 —— 規劃器第一輪只肯倒給有列的採購單。
+  // ⭐ 規劃器（planWaveAllocations）與矩陣（哪些格子鎖成「沒訂」）共用這一份，
+  //   原本是規劃器每次自己組一份（#983 審查 P2-2：判斷要同一份，不能各寫一套）。
+  const demandPoSkuStore = useMemo(() => buildDemandPoSkuStore(demand ?? []), [demand]);
+  // 規劃器收不收得下這一格：兩輪都進不去 ＝ 這家店沒訂這樣商品，填多少都派不出去。
+  // 矩陣鎖格子、建單訊息分「沒訂／缺 N」、控制列的說明，全部問這一支（規則見 lib/pickingMatrixRules）。
+  function cellTakeable(sku: SkuRow, storeId: number): boolean {
+    return plannerCanTakeCell({
+      poIds: sku.poList.map((po) => po.po_id),
+      skuId: sku.sku_id,
+      storeId,
+      demandPoSkuStore,
+      storeDemandLeft: storeDemandLeft(sku, storeId),
+    });
+  }
   // ===== 整欄高亮：點進某一格數量時，那一欄（含表頭店名）一起亮起來 =====
   // 表頭固定之後店名一直在，但 17 間店的欄位長得都一樣，眼睛還是要在「格子」和「表頭」之間
   // 數欄位 —— 第 11 欄看成第 12 欄，貨就配給錯的店。亮起整欄是為了不用數。
@@ -1527,23 +1543,28 @@ function Body() {
   //   ⛔ 純記錄，不參與任何判斷 —— 分配結果(perPoAllocs)與 insufficient 一個字都沒動。
   //   借調量算不出「這一格天生有幾件是借的」：它是**填了數量、第一輪吃不完**才產生的，
   //   所以只能跟著規劃器走、不能從 view 的欄位讀（view 也沒有這個欄，見 20260818000030:169-196）。
+  // 【沒訂】noDemand：兩輪都進不去的格子（這家店沒訂這樣商品，cellTakeable = false）。
+  //   原本跟真的缺貨一起寫成「可分配量不足…缺 N」，實際原因不是貨不夠（#983 審查 P2-2）。
+  //   ⛔ 只是把那幾行分出來講真正原因 —— perPoAllocs、borrowed 一個字都沒動。
   function planWaveAllocations(scopeRows: SkuRow[]): {
     perPoAllocs: Map<number, Array<{ sku_id: number; store_id: number; qty: number }>>;
     insufficient: string[];
+    noDemand: string[];
     borrowed: Map<BorrowKey, { qty: number; fromPos: { po_no: string; qty: number }[] }>;
   } {
     const perPoAllocs = new Map<number, Array<{ sku_id: number; store_id: number; qty: number }>>();
     const insufficient: string[] = [];
+    const noDemand: string[] = [];
     const borrowed = new Map<BorrowKey, { qty: number; fromPos: { po_no: string; qty: number }[] }>();
-    if (!demand) return { perPoAllocs, insufficient, borrowed };
+    if (!demand) return { perPoAllocs, insufficient, noDemand, borrowed };
 
-    const demandPoSkuStore = new Set<string>();
+    // 「(採購單,商品,店) 有沒有需求列」用元件層共用的 demandPoSkuStore（畫面鎖格子也是它），
+    // 原本在這個迴圈裡自己組一份、內容一模一樣（同樣跳過 store_id 為 NULL 的列）。
     // 該 PO 該 SKU「自己的未派需求」Σ max(0, demand − wave)，口徑同 view 的 demand_left
     //（wave_qty 含借調歸屬分支，之前借出去的量不會被重複保留）。
     const ownUnmet = new Map<string, number>();
     for (const r of demand) {
       if (r.store_id === null) continue;
-      demandPoSkuStore.add(`${r.po_id}:${r.sku_id}:${r.store_id}`);
       const k = `${r.po_id}:${r.sku_id}`;
       ownUnmet.set(k, (ownUnmet.get(k) ?? 0) + Math.max(0, Number(r.demand_qty) - Number(r.wave_qty)));
     }
@@ -1564,9 +1585,10 @@ function Body() {
         if (qty <= 0) continue;
         let remaining = qty;
         // 第一輪：有需求的 PO
+        // ⚠ 改這一輪或第二輪的進場條件時，lib/pickingMatrixRules 的 plannerCanTakeCell 要一起改。
         for (const po of sk.poList) {
           if (remaining <= 0) break;
-          if (!demandPoSkuStore.has(`${po.po_id}:${sk.sku_id}:${st.store_id}`)) continue;
+          if (!demandPoSkuStore.has(poSkuStoreKey(po.po_id, sk.sku_id, st.store_id))) continue;
           const k = `${po.po_id}:${sk.sku_id}`;
           const av = perPoSkuLeft.get(k) ?? 0;
           if (av <= 0) continue;
@@ -1583,7 +1605,7 @@ function Body() {
           for (const po of sk.poList) {
             if (remaining <= 0) break;
             // 有需求的 PO 第一輪拿過了；這一輪只看「對該店沒需求、但有餘量」的 PO
-            if (demandPoSkuStore.has(`${po.po_id}:${sk.sku_id}:${st.store_id}`)) continue;
+            if (demandPoSkuStore.has(poSkuStoreKey(po.po_id, sk.sku_id, st.store_id))) continue;
             const k = `${po.po_id}:${sk.sku_id}`;
             const left = perPoSkuLeft.get(k) ?? 0;
             const reserve = Math.max(0, (ownUnmet.get(k) ?? 0) - (matchedTaken.get(k) ?? 0));
@@ -1603,11 +1625,20 @@ function Body() {
           }
         }
         if (remaining > 0) {
-          insufficient.push(`「${sk.sku_code ?? ""} ${sk.sku_label}」→ ${st.store_name} 缺 ${remaining}`);
+          // 兩輪都進不去（這家店沒訂）→ 一件都沒派出去，講真正原因，不要寫成「缺」。
+          // `remaining === qty` 是保險：萬一哪天兩輪條件改了、cellTakeable 沒跟上，
+          //   有派出一部分的格子一律退回原本的「缺 N」，不會把缺貨說成沒訂。
+          if (remaining === qty && !cellTakeable(sk, st.store_id)) {
+            noDemand.push(
+              `「${sk.sku_code ?? ""} ${sk.sku_label}」→ ${st.store_name} 沒有訂這樣商品，工作台不能派給它（${remaining} 件）`,
+            );
+          } else {
+            insufficient.push(`「${sk.sku_code ?? ""} ${sk.sku_label}」→ ${st.store_name} 缺 ${remaining}`);
+          }
         }
       }
     }
-    return { perPoAllocs, insufficient, borrowed };
+    return { perPoAllocs, insufficient, noDemand, borrowed };
   }
 
   // FIFO 提交：規劃（planWaveAllocations）後對每張 PO 各別發 RPC。
@@ -1642,14 +1673,34 @@ function Body() {
       for (const sk of scopeRows) {
         const allocSum = getSkuAllocTotal(sk);
         if (allocSum > sk.totalAvailable) {
-          overSkus.push(`「${sk.sku_code ?? ""} ${sk.sku_label}」分配 ${allocSum} 超過可分配 ${sk.totalAvailable}`);
+          // 超過的量裡有填在「沒訂」格子的，要講出來 —— 那幾格本來就派不出去，先清掉才看得出真的差多少
+          let stuck = 0;
+          for (const st of allStores) {
+            if (!cellTakeable(sk, st.store_id)) stuck += getAlloc(sk.sku_id, st.store_id);
+          }
+          overSkus.push(
+            `「${sk.sku_code ?? ""} ${sk.sku_label}」分配 ${allocSum} 超過可分配 ${sk.totalAvailable}` +
+              (stuck > 0 ? `（其中 ${stuck} 件填在沒訂的店，那幾格本來就派不出去，請先清掉）` : ""),
+          );
         }
       }
       if (overSkus.length > 0) throw new Error("超過可分配量：\n" + overSkus.join("\n"));
 
-      const { perPoAllocs, insufficient } = planWaveAllocations(scopeRows);
+      const { perPoAllocs, insufficient, noDemand } = planWaveAllocations(scopeRows);
 
-      if (insufficient.length > 0) throw new Error("可分配量不足：\n" + insufficient.join("\n"));
+      // 兩種原因分開講（#983 審查 P2-2）：店沒訂 ≠ 貨不夠，混在一起會讓人去補根本不缺的貨。
+      if (noDemand.length > 0 || insufficient.length > 0) {
+        const parts: string[] = [];
+        if (noDemand.length > 0) {
+          parts.push(
+            "這些分店沒有訂這樣商品，派貨工作台不能派給它們 —— 請把那幾格清成 0" +
+              "（要多給請走補貨申請，或建好撿貨單後到總倉收件匣「修正數量」加）：\n" +
+              noDemand.join("\n"),
+          );
+        }
+        if (insufficient.length > 0) parts.push("可分配量不足：\n" + insufficient.join("\n"));
+        throw new Error(parts.join("\n\n"));
+      }
       if (perPoAllocs.size === 0) throw new Error("沒有任何分配 — 請先填數量");
 
       // 對每個 PO 各發一次 RPC（配送日固定帶隔天，建單後可在總倉收件匣的撿貨單上調整）
@@ -1750,6 +1801,22 @@ function Body() {
     rows.sort((a, b) => b.qty - a.qty);
     return { rows, totalQty };
   }, [wavePlan, effectiveSkuRows, allStores]);
+
+  // 控制列那一行「沒訂」說明要不要出現、有幾格之前填的數字現在派不出去（#983 審查 P2-2）。
+  // 數的是畫面上看得到的格子；有數字的店一定看得到（visibleStores 會留下有擬分量的店）。
+  // 問的是跟矩陣、規劃器同一支 cellTakeable。
+  const noDemandCells = useMemo(() => {
+    let locked = 0;
+    let stale = 0;
+    for (const sk of effectiveSkuRows) {
+      for (const st of visibleStores) {
+        if (cellTakeable(sk, st.store_id)) continue;
+        locked += 1;
+        if (getAlloc(sk.sku_id, st.store_id) > 0) stale += 1;
+      }
+    }
+    return { locked, stale };
+  }, [effectiveSkuRows, visibleStores, demandPoSkuStore, allocs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 本次建單範圍內缺成本/分店價的品項數（派貨時會被 DB 守衛 _missing_dispatch_prices 擋下）
   const missingPriceCount = useMemo(() => {
@@ -2130,6 +2197,19 @@ function Body() {
 
       {/* 控制列 */}
       <div className="flex flex-wrap items-end gap-3 rounded-md border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900">
+        {/* 「沒訂」的意思直接寫在畫面上（#983 審查 P2-2）—— iPad 沒有滑鼠移上去的提示，⛔ 不要只寫在 title。
+            ⚠ 刻意放在控制列的**第一個**、佔滿一整行：建單鈕要留在控制列最下面那一行，
+            矩陣捲到底時才還按得到（見下方矩陣容器那段 7rem 的說明）。 */}
+        {viewMode === "matrix" && pickStep === "confirm" && noDemandCells.locked > 0 && (
+          <p className="basis-full text-xs text-zinc-500 dark:text-zinc-400">
+            灰色「沒訂」＝這家店沒訂這樣商品，派貨工作台不能派給它；要多給請走補貨申請，或建好撿貨單後到總倉收件匣「修正數量」加。
+            {noDemandCells.stale > 0 && (
+              <strong className="ml-1 font-semibold text-red-700 dark:text-red-400">
+                有 {noDemandCells.stale} 格之前填的數字現在派不出去（紅色「沒訂・清掉」），建單前請先清掉。
+              </strong>
+            )}
+          </p>
+        )}
         <span className="text-xs text-zinc-500" title="建單後到「總倉收件匣 → 撿貨單」點配送日即可修改">
           📅 配送日預設隔天，建單後可在總倉收件匣的撿貨單上調整
         </span>
@@ -2643,6 +2723,10 @@ function Body() {
                         const demandQty = sk.storeDemand.get(st.store_id) ?? 0;
                         const demandLeft = storeDemandLeft(sk, st.store_id);
                         const maxForCell = value + Math.max(0, sk.totalAvailable - allocSum);
+                        // 規劃器一定收不下的格子（這家店沒訂這樣商品）→ 鎖住、標「沒訂」（#983 審查 P2-2）。
+                        // ⭐ 問的是建單時同一支 cellTakeable，⛔ 不要在這裡另寫「看起來差不多」的條件。
+                        //   有訂的格子一切照舊（第一輪允許在同一張採購單有餘量時多給有訂的店）。
+                        const takeable = cellTakeable(sk, st.store_id);
                         // 【J】這一格本次要派的量裡，有幾件是從別團的採購單借來的
                         const borrow = wavePlan.borrowed.get(borrowKey(sk.sku_id, st.store_id));
                         return (
@@ -2651,6 +2735,8 @@ function Body() {
                               type="number"
                               inputMode="numeric"
                               value={value}
+                              // 沒訂的格子不給填：填了只會讓整批建單被擋
+                              disabled={!takeable}
                               onChange={(e) => setAllocCapped(sk.sku_id, st.store_id, Number(e.target.value), sk.totalAvailable)}
                               // 觸發點是 focus 不是 hover：現場用 iPad,觸控沒有 hover 這回事。
                               // 只加不改：select() 照舊(點進去整數反白、直接打字就覆蓋),onChange 一個字沒動。
@@ -2659,16 +2745,41 @@ function Body() {
                               min={0}
                               max={maxForCell}
                               step={1}
-                              title={`未派需求 ${demandLeft}（原始需求 ${demandQty}）· 此格最多可填 ${maxForCell}`}
+                              title={
+                                takeable
+                                  ? `未派需求 ${demandLeft}（原始需求 ${demandQty}）· 此格最多可填 ${maxForCell}`
+                                  : `${st.store_name}沒有訂這樣商品，派貨工作台不能派給它`
+                              }
                               className={`h-10 w-full rounded-md border px-1 text-center font-mono text-base font-semibold tabular-nums dark:bg-zinc-800 ${
-                                value === 0
-                                  ? "border-zinc-200 text-zinc-300 dark:border-zinc-700"
-                                  : "border-blue-400 text-blue-700 dark:border-blue-600 dark:text-blue-300"
+                                !takeable
+                                  ? value > 0
+                                    // 沒訂卻有數字（之前填的、或需求重撈後這家店沒需求了）：
+                                    // ⛔ 不可以默默丟掉，也不可以長得跟正常的格子一樣
+                                    ? "border-red-400 bg-red-50 text-red-700 dark:border-red-700 dark:text-red-300"
+                                    : "border-zinc-200 bg-zinc-100 text-zinc-300 dark:border-zinc-700 dark:text-zinc-600"
+                                  : value === 0
+                                    ? "border-zinc-200 text-zinc-300 dark:border-zinc-700"
+                                    : "border-blue-400 text-blue-700 dark:border-blue-600 dark:text-blue-300"
                               }`}
                             />
-                            {/* 需 = 尚未派的需求（demand − 已派，含補貨直派）；點一下直接填入(受可分配量 cap)。
+                            {/* 沒訂：灰字「沒訂」；沒訂卻有數字：紅鈕「沒訂・清掉 N」，按一下清成 0（數字寫在鈕上，
+                                輸入框鎖住時在 iPad 上可能被畫淡，不能只靠框裡那個數字）。
+                                需 = 尚未派的需求（demand − 已派，含補貨直派）；點一下直接填入(受可分配量 cap)。
                                 派完顯示 ✓，別再邀請使用者重複派 */}
-                            {demandLeft > 0 ? (
+                            {!takeable ? (
+                              value > 0 ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setAlloc(sk.sku_id, st.store_id, 0)}
+                                  title={`${st.store_name}沒有訂這樣商品，這 ${value} 件派不出去；按一下清成 0`}
+                                  className="mt-1 w-full rounded bg-red-100 px-1 py-1 text-[11px] font-semibold tabular-nums text-red-700 hover:bg-red-200 dark:bg-red-950 dark:text-red-300 dark:hover:bg-red-900"
+                                >
+                                  沒訂・清掉 {value}
+                                </button>
+                              ) : (
+                                <div className="mt-1 py-1 text-[11px] text-zinc-400 dark:text-zinc-500">沒訂</div>
+                              )
+                            ) : demandLeft > 0 ? (
                               <button
                                 type="button"
                                 onClick={() => setAllocCapped(sk.sku_id, st.store_id, demandLeft, sk.totalAvailable)}
