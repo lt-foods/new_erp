@@ -66,6 +66,24 @@ type SupplementableDate = {
   remaining_qty: number;
 };
 
+type DeltaPreviewRow = {
+  campaign_id: number;
+  campaign_name: string;
+  sku_id: number;
+  sku_label: string;
+  demand_qty: number;
+  already_qty: number;
+  delta_qty: number;
+  draft_pr_id: number | null;
+  draft_pr_no: string | null;
+  action_code: "update_draft" | "create_delta";
+  action_label: string;
+};
+
+type DeltaPreviewIntent =
+  | { kind: "supplement"; closeDate: string }
+  | { kind: "campaigns"; campaignIds: number[] };
+
 type ClosedCampaignRow = {
   id: number;
   name: string;
@@ -190,6 +208,13 @@ export default function PurchaseRequestsListPage() {
   );
   const [campaignQuery, setCampaignQuery] = useState("");
   const [creatingMulti, setCreatingMulti] = useState(false);
+  const [previewIntent, setPreviewIntent] = useState<DeltaPreviewIntent | null>(
+    null,
+  );
+  const [previewRows, setPreviewRows] = useState<DeltaPreviewRow[] | null>(
+    null,
+  );
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [data, setData] = useState<ListResp | null>(null);
 
   // 檢視模式：清單（原本）/ 樞紐（把篩選出的 PR 品項依廠商彙整）
@@ -417,7 +442,68 @@ export default function PurchaseRequestsListPage() {
     };
   }, [reloadTick]);
 
+  async function openDeltaPreview(intent: DeltaPreviewIntent) {
+    setPreviewIntent(intent);
+    setPreviewRows(null);
+    setPreviewLoading(true);
+    setError(null);
+    if (intent.kind === "supplement") {
+      setBusySuppDate(intent.closeDate);
+    } else {
+      setCreatingMulti(true);
+    }
+    try {
+      const { data, error: rpcErr } = await getSupabase().rpc(
+        "rpc_preview_pr_campaign_sku_delta",
+        {
+          p_close_date: intent.kind === "supplement" ? intent.closeDate : null,
+          p_campaign_ids: intent.kind === "campaigns" ? intent.campaignIds : null,
+        },
+      );
+      if (rpcErr) throw new Error(rpcErr.message);
+      const rows = ((data as DeltaPreviewRow[] | null) ?? []).map((r) => ({
+        ...r,
+        demand_qty: Number(r.demand_qty),
+        already_qty: Number(r.already_qty),
+        delta_qty: Number(r.delta_qty),
+      }));
+      if (rows.length === 0) throw new Error("目前沒有可補的請購差額。");
+      setPreviewRows(rows);
+    } catch (e) {
+      setPreviewIntent(null);
+      setPreviewRows(null);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPreviewLoading(false);
+      if (intent.kind === "supplement") {
+        setBusySuppDate(null);
+      } else {
+        setCreatingMulti(false);
+      }
+    }
+  }
+
+  function closeDeltaPreview() {
+    if (busySuppDate !== null || creatingMulti) return;
+    setPreviewIntent(null);
+    setPreviewRows(null);
+    setPreviewLoading(false);
+  }
+
+  async function confirmDeltaPreview() {
+    if (!previewIntent) return;
+    if (previewIntent.kind === "supplement") {
+      await executeSupplement(previewIntent.closeDate);
+    } else {
+      await executeCreateFromMultipleCampaigns(previewIntent.campaignIds);
+    }
+  }
+
   async function handleSupplement(closeDate: string) {
+    await openDeltaPreview({ kind: "supplement", closeDate });
+  }
+
+  async function executeSupplement(closeDate: string) {
     setBusySuppDate(closeDate);
     setError(null);
     try {
@@ -545,6 +631,14 @@ export default function PurchaseRequestsListPage() {
 
   async function handleCreateFromMultipleCampaigns() {
     if (selectedCampaignIds.size === 0) return;
+    await openDeltaPreview({
+      kind: "campaigns",
+      campaignIds: Array.from(selectedCampaignIds),
+    });
+  }
+
+  async function executeCreateFromMultipleCampaigns(campaignIds: number[]) {
+    if (campaignIds.length === 0) return;
     setCreatingMulti(true);
     setError(null);
     try {
@@ -553,7 +647,7 @@ export default function PurchaseRequestsListPage() {
       const { data: prId, error: rpcErr } = await supabase.rpc(
         "rpc_create_pr_from_campaigns",
         {
-          p_campaign_ids: Array.from(selectedCampaignIds),
+          p_campaign_ids: campaignIds,
           p_operator: userData.user?.id,
         },
       );
@@ -841,7 +935,7 @@ export default function PurchaseRequestsListPage() {
             🔁 結單日補單（{supplementDates.length}）
           </h2>
           <p className="mb-3 text-xs text-amber-800/80 dark:text-amber-300/70">
-            這些結單日已建過{PR_TERM_ZH}，但仍有尚未請購的數量。補單只會帶入「新增未請購量」，原單不受影響。
+            這些結單日已建過{PR_TERM_ZH}，但仍有尚未請購的數量。先預覽每個品項會更新原草稿或另開差額，再手動確認。
           </p>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {supplementDates.map((g) => (
@@ -864,7 +958,7 @@ export default function PurchaseRequestsListPage() {
                   {busySuppDate === g.close_date ? (
                     <Spinner size={16} />
                   ) : (
-                    "➕ 補單"
+                    "預覽補差額"
                   )}
                 </SpinButton>
               </div>
@@ -1305,8 +1399,8 @@ export default function PurchaseRequestsListPage() {
                     className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-40"
                   >
                     {creatingMulti
-                      ? "建立中…"
-                      : `📋 建立${PR_TERM_ZH}（${selectedCampaignIds.size}）`}
+                      ? "讀取中…"
+                      : `預覽補差額（${selectedCampaignIds.size}）`}
                   </SpinButton>
                 </div>
               </div>
@@ -1314,7 +1408,140 @@ export default function PurchaseRequestsListPage() {
           </div>
         </div>
       )}
+
+      {previewIntent && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4"
+          onClick={closeDeltaPreview}
+        >
+          <div
+            className="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-lg bg-white shadow-xl dark:bg-zinc-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+              <div>
+                <h3 className="text-base font-semibold">請購差額預覽</h3>
+                <p className="mt-0.5 text-xs text-zinc-500">
+                  {previewIntent.kind === "supplement"
+                    ? `結單日 ${previewIntent.closeDate}`
+                    : `已選 ${previewIntent.campaignIds.length} 個團`}
+                  ：按下確認後才會更新{PR_TERM_ZH}。
+                </p>
+              </div>
+              <SpinButton
+                onClick={closeDeltaPreview}
+                disabled={busySuppDate !== null || creatingMulti}
+                className="text-zinc-500 hover:text-zinc-900 disabled:opacity-40 dark:hover:text-zinc-100"
+              >
+                ✕
+              </SpinButton>
+            </div>
+            <div className="max-h-[60vh] overflow-auto p-4">
+              {error && (
+                <div className="mb-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+                  {error}
+                </div>
+              )}
+              {previewLoading || previewRows === null ? (
+                <div className="flex justify-center py-8 text-zinc-400">
+                  <Spinner size={20} />
+                </div>
+              ) : (
+                <DeltaPreviewTable rows={previewRows} />
+              )}
+            </div>
+            <div className="flex items-center justify-between gap-3 border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
+              <span className="text-xs text-zinc-500">
+                {previewRows?.length ?? 0} 個品項 · 差額合計{" "}
+                {previewRows?.reduce((s, r) => s + r.delta_qty, 0) ?? 0}
+              </span>
+              <div className="flex gap-2">
+                <SpinButton
+                  onClick={closeDeltaPreview}
+                  disabled={busySuppDate !== null || creatingMulti}
+                  className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  取消
+                </SpinButton>
+                <SpinButton
+                  onClick={confirmDeltaPreview}
+                  disabled={
+                    previewLoading ||
+                    previewRows === null ||
+                    busySuppDate !== null ||
+                    creatingMulti
+                  }
+                  className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-amber-500 disabled:opacity-40"
+                >
+                  {busySuppDate !== null || creatingMulti
+                    ? "更新中…"
+                    : "更新請購 / 補差額"}
+                </SpinButton>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+function DeltaPreviewTable({ rows }: { rows: DeltaPreviewRow[] }) {
+  const fmt = (n: number) => Number(n).toLocaleString();
+  return (
+    <table className="min-w-full text-sm">
+      <thead className="text-xs text-zinc-500">
+        <tr className="border-b border-zinc-200 dark:border-zinc-800">
+          <th className="px-3 py-2 text-left font-medium">團購</th>
+          <th className="px-3 py-2 text-left font-medium">品項</th>
+          <th className="px-3 py-2 text-right font-medium">目前客人總數</th>
+          <th className="px-3 py-2 text-right font-medium">已請購</th>
+          <th className="px-3 py-2 text-right font-medium">這次差額</th>
+          <th className="px-3 py-2 text-left font-medium">處理方式</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr
+            key={`${r.campaign_id}-${r.sku_id}`}
+            className="border-b border-zinc-100 dark:border-zinc-800/60"
+          >
+            <td className="max-w-[220px] px-3 py-2">
+              <div className="truncate">{r.campaign_name}</div>
+              <div className="font-mono text-[11px] text-zinc-400">
+                #{r.campaign_id}
+              </div>
+            </td>
+            <td className="max-w-[260px] px-3 py-2">
+              <div className="truncate">{r.sku_label}</div>
+              <div className="font-mono text-[11px] text-zinc-400">
+                SKU {r.sku_id}
+              </div>
+            </td>
+            <td className="px-3 py-2 text-right font-mono">
+              {fmt(r.demand_qty)}
+            </td>
+            <td className="px-3 py-2 text-right font-mono">
+              {fmt(r.already_qty)}
+            </td>
+            <td className="px-3 py-2 text-right font-mono font-semibold text-amber-700 dark:text-amber-300">
+              {fmt(r.delta_qty)}
+            </td>
+            <td className="px-3 py-2">
+              <div>{r.action_label}</div>
+              {r.draft_pr_no && (
+                <Link
+                  href={`/purchase/requests/edit?id=${r.draft_pr_id}`}
+                  className="font-mono text-xs text-blue-600 hover:underline dark:text-blue-400"
+                >
+                  {r.draft_pr_no}
+                </Link>
+              )}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

@@ -103,7 +103,14 @@ BEGIN
     RETURNING id INTO v_ci;
 
     INSERT INTO customer_orders (tenant_id, order_no, campaign_id, channel_id, pickup_store_id, status)
-    VALUES (v_tenant, 'ZZDELTA-ORD-' || v_campaign::TEXT, v_campaign, v_channel, v_store, 'confirmed')
+    VALUES (
+      v_tenant,
+      'ZZDELTA-ORD-' || v_campaign::TEXT,
+      v_campaign,
+      v_channel,
+      v_store,
+      CASE WHEN v_campaign = v_camp_a THEN 'pending' ELSE 'confirmed' END
+    )
     RETURNING id INTO v_order;
 
     INSERT INTO customer_order_items (tenant_id, order_id, campaign_item_id, sku_id, qty, unit_price, status)
@@ -254,6 +261,34 @@ SELECT
   ),
   'touched_pr=' || called.pr_id::TEXT
 FROM called;
+
+INSERT INTO _t_result(seq, item, pass, detail)
+SELECT
+  35,
+  '已鎖團後追加且只更新舊草稿時也要確認 pending 客單',
+  EXISTS (
+    SELECT 1
+      FROM group_buy_campaigns
+     WHERE id = (SELECT v FROM _t_ctx WHERE k = 'camp_a')
+       AND status = 'locked'
+  )
+  AND EXISTS (
+    SELECT 1
+      FROM customer_orders
+     WHERE campaign_id = (SELECT v FROM _t_ctx WHERE k = 'camp_a')
+       AND status = 'confirmed'
+  ),
+  'campaign_status=' || COALESCE((
+    SELECT status
+      FROM group_buy_campaigns
+     WHERE id = (SELECT v FROM _t_ctx WHERE k = 'camp_a')
+  ), '<missing>')
+  || ', order_status=' || COALESCE((
+    SELECT status
+      FROM customer_orders
+     WHERE campaign_id = (SELECT v FROM _t_ctx WHERE k = 'camp_a')
+     LIMIT 1
+  ), '<missing>');
 
 -- 4. 針對團購建單：B 舊 PR 已送出不可改，所以 B 差額 37 + C 全量 153
 --    另開新 PR；同 SKU 合成一列 190；
