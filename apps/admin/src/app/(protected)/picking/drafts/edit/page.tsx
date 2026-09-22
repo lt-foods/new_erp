@@ -196,7 +196,7 @@ function Body() {
         //   （停用且這張草稿數量合計為 0 的才藏起來，老闆 2026-08-17 定案）。
         //   ⛔ 不可以在查詢就 .eq("is_active", true) 先濾掉：那樣「停用但草稿裡有數量」的店
         //   會掉進 extraStores 的路徑，被標成「已刪除／無法確認」——說了一件不是事實的事。
-        sb.from("stores").select("id, code, name, is_active").order("code"),
+        sb.from("stores").select("id, code, name, is_active, store_kind").order("code"),
         // 總倉是哪一個 location —— 搜尋下拉那一列要顯示「總倉庫存」。
         // ⭐ 一頁只查這一次（總倉不會在使用中途換掉），搜尋時就不必再問一次：
         //   下拉每搜一次的額外查詢有 3 次的預算，這一次要省下來給那三個來源。

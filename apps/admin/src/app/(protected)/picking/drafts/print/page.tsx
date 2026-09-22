@@ -81,7 +81,7 @@ function Body() {
         //   （停用且這張草稿數量合計為 0 的才不印，老闆 2026-08-17 定案）。
         //   ⛔ 不可以在查詢就 .eq("is_active", true) 先濾掉：那樣「停用但草稿裡有數量」的店
         //   會掉進 extraStores 的路徑，紙上被標成「已刪除／無法確認」——那不是事實。
-        sb.from("stores").select("id, code, name, is_active").order("code"),
+        sb.from("stores").select("id, code, name, is_active, store_kind").order("code"),
       ]);
       if (headErr) throw headErr;
       if (!head) throw new Error(`找不到草稿 #${draftId}`);

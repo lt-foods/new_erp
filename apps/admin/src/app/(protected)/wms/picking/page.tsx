@@ -325,6 +325,7 @@ function Body() {
   const [fullDemand, setFullDemand] = useState<DemandRow[] | null>(null);
   const [loadingFull, setLoadingFull] = useState(false);
   const [restockDemand, setRestockDemand] = useState<RestockRow[] | null>(null);
+  const [storeMasters, setStoreMasters] = useState<StoreMasterRow[] | null>(null);
   const [suppliers, setSuppliers] = useState<Map<number, Supplier>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -438,7 +439,7 @@ function Body() {
         // 13 趟分頁 → 1 趟，解決「派貨工作台讀取不出來」。
         // 再疊 .eq("has_demand_left", true)：需求全派完（含補貨直派、門市已收貨）的
         // 列自動下架 — 補貨帶囤貨的 PO（訂 51 件、需求 1 件）不再永遠掛在工作台。
-        const [dRows, supRows, rrRows] = await Promise.all([
+        const [dRows, supRows, rrRows, storeRows] = await Promise.all([
           fetchAllRows<DemandRow>(() =>
             sb.from("v_picking_demand_by_po").select("*")
               .eq("has_stock_left", true)
@@ -452,11 +453,15 @@ function Body() {
               .order("restock_request_id", { ascending: true })
               .order("sku_id", { ascending: true }),
           ),
+          fetchAllRows<StoreMasterRow>(() =>
+            sb.from("stores").select("id, code, name, is_active, deleted_at, store_kind").order("code"),
+          ),
         ]);
         if (cancelled) return;
         setError(null);
         setDemand(dRows);
         setRestockDemand(rrRows);
+        setStoreMasters(storeRows);
         // 已挑清單失效清理在獨立的 effect（依賴 demand + pickedIds），不在這個回呼裡做：
         // 回呼只跑一次，若 demand 比 tenant 先到位，此刻 store 還是空的、
         // bind 之後才從 localStorage 灌回來的那批就永遠漏檢（靜默失效）。
@@ -771,7 +776,21 @@ function Body() {
   }
 
   // ===== 合併視角資料：每個 (sku, store) 一格，跨 PO 加總 =====
-  type StoreInfo = { store_id: number; store_code: string | null; store_name: string };
+  type StoreInfo = {
+    store_id: number;
+    store_code: string | null;
+    store_name: string;
+    store_kind?: string | null;
+    state?: "active" | "inactive" | "missing";
+  };
+  type StoreMasterRow = {
+    id: number;
+    code: string | null;
+    name: string;
+    is_active: boolean | null;
+    deleted_at: string | null;
+    store_kind?: string | null;
+  };
   type SkuRow = {
     sku_id: number;
     sku_code: string | null;
@@ -874,15 +893,42 @@ function Body() {
   }, [demand, poItemCampaigns, skuSoldCampaigns]);
 
   const allStores: StoreInfo[] = useMemo(() => {
-    if (!demand) return [];
+    if (!demand || !storeMasters) return [];
     const m = new Map<number, StoreInfo>();
+    const masterById = new Map(storeMasters.map((s) => [Number(s.id), s]));
+    for (const s of storeMasters) {
+      if ((s.store_kind ?? "branch") !== "branch") continue;
+      const active = s.is_active !== false && s.deleted_at === null;
+      if (!active) continue;
+      m.set(Number(s.id), {
+        store_id: Number(s.id),
+        store_code: s.code,
+        store_name: s.name,
+        store_kind: s.store_kind ?? "branch",
+        state: active ? "active" : "inactive",
+      });
+    }
     for (const r of demand) {
-      if (r.store_id !== null && !m.has(r.store_id)) {
-        m.set(r.store_id, {
-          store_id: r.store_id,
-          store_code: r.store_code,
-          store_name: r.store_name ?? `#${r.store_id}`,
-        });
+      if (r.store_id === null) continue;
+      if (!m.has(r.store_id)) {
+        const master = masterById.get(r.store_id);
+        if (master) {
+          const active = master.is_active !== false && master.deleted_at === null;
+          m.set(r.store_id, {
+            store_id: r.store_id,
+            store_code: master.code,
+            store_name: master.name,
+            store_kind: master.store_kind ?? "branch",
+            state: active ? "active" : "inactive",
+          });
+        } else {
+          m.set(r.store_id, {
+            store_id: r.store_id,
+            store_code: r.store_code ?? `#${r.store_id}`,
+            store_name: r.store_name ?? `分店 #${r.store_id}`,
+            state: "missing",
+          });
+        }
       }
     }
     // 分店欄位順序 = 老闆 2026-08-17 指定的那份（lib/storeOrder）；
@@ -890,7 +936,7 @@ function Body() {
     return Array.from(m.values()).sort((a, b) =>
       compareStoreOrder(a.store_code, a.store_name, b.store_code, b.store_name),
     );
-  }, [demand]);
+  }, [demand, storeMasters]);
 
   // ===== 篩選：開團 / 商品 / 時間 =====
   // 時間 = 開團結團時間（end_at，沒有就退 start_at）在最近 N 天內（含還沒結的）。
@@ -1222,11 +1268,14 @@ function Body() {
   // 注意：分配上限（getSkuAllocTotal）永遠算全部分店，隱藏欄的擬分量照樣計入。
   const visibleStores: StoreInfo[] = useMemo(() => {
     if (showAllStores) return allStores;
-    const kept = allStores.filter((st) =>
+    const hasQty = (st: StoreInfo) =>
       effectiveSkuRows.some(
         (sk) => storeDemandLeft(sk, st.store_id) > 0 || getAlloc(sk.sku_id, st.store_id) > 0,
-      ),
-    );
+      );
+    const kept = allStores.filter((st) => {
+      if (st.state === "active" && st.store_kind !== "wholesale") return true;
+      return hasQty(st);
+    });
     // 全部被濾光（例如需求都派完了）就退回顯示全部，避免空矩陣看不懂
     return kept.length > 0 ? kept : allStores;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2505,6 +2554,11 @@ function Body() {
                       {/* store-code 是給 CSS 認的鉤子：高亮那一欄時要一起把店號調深/調亮，
                           不然「為了看清楚是哪一店而高亮，高亮後店號反而最難讀」(見 globals.css)。 */}
                       <div className="store-code font-mono text-[10px] font-normal text-zinc-400">{st.store_code}</div>
+                      {st.state !== "active" && (
+                        <span className="mt-0.5 inline-block rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium normal-case text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                          {st.state === "missing" ? "已刪除" : "已停用"}
+                        </span>
+                      )}
                     </Th>
                   ))}
                 </tr>

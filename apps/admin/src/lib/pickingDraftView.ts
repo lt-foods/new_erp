@@ -13,7 +13,9 @@
 //      - 分店 missing ：stores 裡整筆查不到（被硬刪）
 //      - 分店 unknown ：分店查詢失敗 → 標「無法確認」，不武斷說被刪了
 //      - 商品 missing / unknown：skus 裡查不到、或查不出來 → 用 snapshot 的品名品號照樣印
-//   ② 正常狀態 → 只有「**本草稿有量**」才顯示：
+//   ② 正常狀態：
+//      - 包子媽分店 branch：啟用中就算沒量也顯示，因為樓下撿貨紙本要固定看得到分店欄。
+//      - 批發 wholesale：只有「**本草稿有量**」才顯示，避免批發欄把日常撿貨矩陣撐爆。
 //      - 分店 inactive：stores 裡還在，但 is_active = false ＝ 已經收掉的店，
 //        不該再出現在撿貨單上（老闆 2026-08-17：「已停用的店家就不用出現了」）。
 //        ⭐ 但有量的一定要留：rowTotal 是把該商品所有 cells 加總、不看畫面上有沒有那一欄，
@@ -90,12 +92,15 @@ export type StoreRef = { id: number; code: string; name: string };
 
 /**
  * stores 全表的一列：**含停用**。
- * `is_active === false` → 這一欄只有「本草稿有量」時才留下來，並標「已停用」；
- * 零數量的整欄不顯示（判準見 buildStoreColumns）。
+ * `store_kind === "wholesale"` → 啟用中也只有「本草稿有量」時才留下來；
+ * `is_active === false` → 只有「本草稿有量」時才留下來，並標「已停用」。
  */
-export type StoreRow = StoreRef & { is_active?: boolean | null };
+export type StoreRow = StoreRef & { is_active?: boolean | null; store_kind?: string | null };
 
-export type StoreColumn = StoreRef & { state: "active" | "inactive" | "missing" | "unknown" };
+export type StoreColumn = StoreRef & {
+  state: "active" | "inactive" | "missing" | "unknown";
+  store_kind?: string | null;
+};
 
 /**
  * ⭐ 商品的存在性是**三態**，與分店那邊 (StoreColumn.state) 語意一致：
@@ -151,12 +156,13 @@ export function storeIdsWithQty(cells: DraftCell[]): Set<number> {
 /**
  * 矩陣要有哪些分店欄位。
  *
- * 規則（老闆 2026-08-17 親口定案。原話：「已停用的店家就不用出現了」；
- *       追問「那草稿裡有數量的呢」→「還是顯示，標『已停用』」）：
- *   啟用中 active                          → 一律有欄位（就算這張草稿一格都沒填）
- *   已停用 inactive ＋本草稿數量合計 = 0   → ⛔ 不顯示這一欄
- *   已停用 inactive ＋本草稿數量合計 > 0   → ✅ 照樣顯示，標「已停用」
- *   已刪除 missing / 無法確認 unknown      → 一律顯示（維持原狀，見下）
+ * 規則：
+ *   啟用中 active ＋ branch                       → 一律有欄位（就算這張草稿一格都沒填）
+ *   啟用中 active ＋ wholesale ＋數量合計 = 0      → ⛔ 不顯示這一欄
+ *   啟用中 active ＋ wholesale ＋數量合計 > 0      → ✅ 照樣顯示
+ *   已停用 inactive ＋本草稿數量合計 = 0          → ⛔ 不顯示這一欄
+ *   已停用 inactive ＋本草稿數量合計 > 0          → ✅ 照樣顯示，標「已停用」
+ *   已刪除 missing / 無法確認 unknown             → 一律顯示（維持原狀，見下）
  *
  * ⚠ 判準是「這家店在**這張草稿**的數量合計」，**不是**「有沒有那一列」：
  *   加入商品時會替每一家分店都建一列、qty 預設 0
@@ -219,7 +225,7 @@ export function buildStoreColumns(
     return { ...fallback, state: "missing" as const };
   });
 
-  // 「停用 + 這張草稿數量合計 0」的欄位到這裡才一起濾掉。
+  // 「批發/停用 + 這張草稿數量合計 0」的欄位到這裡才一起濾掉。
   // ⭐ 刻意放在最後、對 cols 與 extras 一起做：兩邊都可能長出 inactive 欄
   //   （extras 那邊是 stores 全表沒撈到、但單查查得到的情況），
   //   只濾其中一邊就會出現「同樣是停用零數量，有的藏有的沒藏」。
@@ -234,6 +240,7 @@ export function buildStoreColumns(
   //     ⛔ 但照樣顯示 —— storeOrder 只排序、不過濾。
   return [...cols, ...extras]
     .filter((c) => c.state !== "inactive" || withQty.has(c.id))
+    .filter((c) => c.state !== "active" || c.store_kind !== "wholesale" || withQty.has(c.id))
     .sort((a, b) => compareStoreOrder(a.code, a.name, b.code, b.name));
 }
 

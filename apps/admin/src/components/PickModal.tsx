@@ -13,6 +13,7 @@
 //     啟用中                    → 一律有欄位（就算這張撿貨單一格都沒有）
 //     已停用 ＋ 本單沒有任何一列 → ⛔ 不顯示（「已停用的店家就不用出現了」）
 //     已停用 ＋ 本單有列         → ✅ 照樣顯示，標「已停用」
+//     批發                      → 本 wave 有列、或這次新填數量時才顯示
 //   排序也沿用共用的 lib/storeOrder（老闆指定的撿貨動線順序），
 //   與派貨工作台矩陣／列印撿貨單／撿貨草稿同一份 —— ⛔ 不要各自再排一套。
 import { Fragment, useEffect, useMemo, useState } from "react";
@@ -50,7 +51,14 @@ export type PickWaveItem = {
 };
 
 /** stores 全表的一列（含停用）。`is_active === false` ＝ 已經收掉的店 */
-type Store = { id: number; code: string | null; name: string; is_active: boolean | null };
+type Store = {
+  id: number;
+  code: string | null;
+  name: string;
+  is_active: boolean | null;
+  store_kind?: string | null;
+  state?: "active" | "inactive" | "missing";
+};
 type Sku = {
   id: number;
   sku_code: string | null;
@@ -175,7 +183,7 @@ export function PickModal({
         //   撈全表 ≠ 全部都變成欄位：實際顯示哪幾欄由下面的 storeCols 決定。
         const { data: storeData, error: eStore } = await sb
           .from("stores")
-          .select("id, code, name, is_active")
+          .select("id, code, name, is_active, store_kind")
           .order("code");
         if (eStore) throw new Error(eStore.message);
         if (!cancelled) setAllStores((storeData as Store[] | null) ?? []);
@@ -245,6 +253,7 @@ export function PickModal({
    *
    * 規則與撿貨草稿頁**逐條相同**（老闆 2026-08-17 拍板，見 lib/pickingDraftView.ts:149-174）：
    *   啟用中                    → 一律有欄位
+   *   批發                      → 本 wave 有列、或這次新填數量時才有欄位
    *   已停用 ＋ 本單一列都沒有  → ⛔ 不顯示
    *   已停用 ＋ 本單有列        → ✅ 照樣顯示，標「已停用」
    *
@@ -256,11 +265,27 @@ export function PickModal({
    */
   const stores = useMemo(() => {
     const hasRow = new Set((items ?? []).map((it) => Number(it.store_id)));
-    return allStores
-      .filter((s) => s.is_active !== false || hasRow.has(Number(s.id)))
-      .map((s) => ({ ...s, id: Number(s.id) }))
+    const hasNewCell = new Set(Array.from(newCells.keys(), (k) => Number(k.split(":")[1])));
+    const listed = new Set(allStores.map((s) => Number(s.id)));
+    const missingStores: Store[] = Array.from(hasRow)
+      .filter((id) => !listed.has(id))
+      .map((id) => ({
+        id,
+        code: `#${id}`,
+        name: `分店 #${id}`,
+        is_active: false,
+        state: "missing",
+      }));
+    return [...allStores, ...missingStores]
+      .map((s) => ({
+        ...s,
+        id: Number(s.id),
+        state: s.state ?? (s.is_active === false ? ("inactive" as const) : ("active" as const)),
+      }))
+      .filter((s) => s.state !== "inactive" || hasRow.has(Number(s.id)))
+      .filter((s) => s.state !== "active" || s.store_kind !== "wholesale" || hasRow.has(Number(s.id)) || hasNewCell.has(Number(s.id)))
       .sort((a, b) => compareStoreOrder(a.code, a.name, b.code, b.name));
-  }, [allStores, items]);
+  }, [allStores, items, newCells]);
 
   function setEdit(itemId: number, val: string) {
     setEdits((cur) => {
@@ -657,7 +682,7 @@ export function PickModal({
                           （藏起來或不標，都是拿異常狀態冒充一切正常） */}
                       {s.is_active === false && (
                         <span className="ml-1 inline-block rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium normal-case text-amber-800 dark:bg-amber-950 dark:text-amber-300">
-                          已停用
+                          {s.state === "missing" ? "已刪除" : "已停用"}
                         </span>
                       )}
                     </th>
