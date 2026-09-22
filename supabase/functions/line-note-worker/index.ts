@@ -465,10 +465,17 @@ async function reactPending(client: any, homeId: string, query: string, reactUnt
     `line_note_comments?${query}&reacted_at=is.null&status=in.(ordered,duplicate,resolved)` +
     `&order=commented_at.desc&limit=${REACT_BATCH}`);
   const list: any[] = rows ?? [];
+  const { reacted } = await likeEach(client, homeId, list, reactUntil);
+  return { reacted, left: list.length - reacted };
+}
+
+// 一則一則按、按到才記 reacted_at（記了下次就不會再按同一則）。
+// 讀留言的批次與後台「已解決」的補按共用這一支 —— 上面那段次數上限的教訓只想再學一次。
+async function likeEach(client: any, homeId: string, list: any[], until: number) {
   let reacted = 0, miss = 0;
   for (let i = 0; i < list.length; i++) {
-    // 時間到就留給下一次讀留言接手（reacted_at 是 NULL 的還在，不會漏）
-    if (Date.now() > reactUntil) { log(`按表情時間到，剩下 ${list.length - i} 則留到下次讀留言`); break; }
+    // 時間到就留給下一輪接手（reacted_at 是 NULL 的還在，不會漏）
+    if (Date.now() > until) { log(`按表情時間到，剩下 ${list.length - i} 則留到下一輪`); break; }
     const c = list[i];
     if (!c.line_comment_id) continue;
     try {
@@ -479,12 +486,65 @@ async function reactPending(client: any, homeId: string, query: string, reactUnt
     } catch (e) {
       log(`留言 ${c.line_comment_id} 按表情失敗（略過）：${(e as any)?.message ?? e}`);
       if (++miss >= REACT_MAX_MISS) {
-        log(`連續 ${miss} 則按不動（多半是 LINE 擋次數），剩下 ${list.length - i - 1} 則留到下次讀留言`);
+        log(`連續 ${miss} 則按不動（多半是 LINE 擋次數），剩下 ${list.length - i - 1} 則留到下一輪`);
         break;
       }
     }
   }
-  return { reacted, left: list.length - reacted };
+  return { reacted };
+}
+
+// ── 後台按「已解決」→ 補按笑臉 ─────────────────────────────────────────────
+//
+// 小幫手自己把留言處理掉（加單頁手動加、或線下處理）之後按「已解決」，客人那則留言
+// 一樣要收到笑臉 —— 對客人來說「已解決」跟機器人自己加成單沒有差別。
+//
+// 為什麼不靠讀留言那條路就好：reactPending 的母體是「這個社群、read_days 內」，
+// 而「已解決」最常見的情境正是補處理幾天前那則看不懂的留言 —— 貼文早就掉出時間窗
+// （甚至團已結單、那篇不會再被讀），reacted_at 就永遠停在 NULL，客人等於沒收到回應。
+// 所以另開一條每分鐘都會跑的補按，不依賴 read job。
+//
+// 「按過就不要再按」由 reacted_at IS NULL 擋（退回未處理再重按一次「已解決」也不會重按笑臉）。
+// 母體刻意收得很窄：只有 status='resolved'（人按的）且 resolved_at 在回溯窗內。
+// 不是把所有陳年未按的翻出來補 —— 那會讓兩星期前的舊留言忽然冒出表情。
+const SWEEP_WINDOW_MS = 24 * 3600_000;   // 回溯窗：worker 停擺一整天也接得回來
+const SWEEP_BATCH = 20;                  // 一次 tick 最多補幾則（每分鐘都會再來）
+const SWEEP_BUDGET_MS = 15_000;          // 自己的小預算，不跟讀留言搶時間
+
+async function reactResolved(until: number) {
+  const since = new Date(Date.now() - SWEEP_WINDOW_MS).toISOString();
+  const rows = await rest(
+    `line_note_comments?select=id,line_comment_id,post_id&reacted_at=is.null&status=eq.resolved` +
+    `&resolved_at=gte.${since}&line_comment_id=not.is.null&order=resolved_at.desc&limit=${SWEEP_BATCH}`);
+  const list: any[] = rows ?? [];
+  if (list.length === 0) return { resolved_reacted: 0 };
+  // 貼文 → 社群（home_id / 帳號 / 開關）一次查完，不要一則一則問 DB
+  const postIds = [...new Set(list.map((c) => c.post_id).filter(Boolean))];
+  const posts = postIds.length === 0 ? [] : await rest(
+    `line_note_posts?id=in.(${postIds.join(",")})&select=id,line_note_communities(id,home_id,account_id,react_on_confirm)`);
+  const communityOf = new Map<number, any>();
+  for (const p of posts ?? []) communityOf.set(Number(p.id), p.line_note_communities);
+  // 同社群的收成一組：LINE client 建一次就好
+  const groups = new Map<number, { community: any; items: any[] }>();
+  for (const c of list) {
+    const community = communityOf.get(Number(c.post_id));
+    if (!community?.home_id || community.react_on_confirm === false) continue;
+    let g = groups.get(community.id);
+    if (!g) { g = { community, items: [] }; groups.set(community.id, g); }
+    g.items.push(c);
+  }
+  let reacted = 0;
+  for (const g of groups.values()) {
+    if (Date.now() > until) break;
+    try {
+      const client = await clientFor(await loadAccount(g.community.account_id));
+      reacted += (await likeEach(client, g.community.home_id, g.items, until)).reacted;
+    } catch (e) {
+      log(`補按「已解決」的笑臉失敗（略過）community#${g.community.id}：${(e as any)?.message ?? e}`);
+    }
+  }
+  if (reacted) log(`😄 補按「已解決」的笑臉 ${reacted} 則`);
+  return { resolved_reacted: reacted };
 }
 
 // 讀一次 LINE 的貼文列表（read_days 內被動過的貼文）。認貼文（discoverPosts）用它，
@@ -825,13 +885,19 @@ async function tick() {
     status: "failed", error: "登入請從後台「帳號 → 登入」按（排程不跑登入）", finished_at: new Date().toISOString(),
   }).catch(() => {});
   const scheduled = await scheduleReads();
+  // 補按「已解決」的笑臉排在 read job **前面**：一次滿載的讀留言就會把整個 tick 用光，
+  // 排後面等於後台按下去之後還要再等一分鐘，而這條路的重點正是「按了馬上有回應」。
+  // 它自己只有 15 秒預算、通常是一句 SELECT 就回來（沒有待補的就什麼都不做）。
+  let sweep: { resolved_reacted: number } = { resolved_reacted: 0 };
+  try { sweep = await reactResolved(started + SWEEP_BUDGET_MS); }
+  catch (e) { log("補按「已解決」的笑臉整批失敗（略過，不影響其他工作）:", (e as any)?.message ?? e); }
   const ran: any[] = [];
   while (Date.now() - started < TICK_BUDGET_MS) {
     const job = await claimNextJob();
     if (!job) break;
     ran.push(await runJob(job, started + REACT_BUDGET_MS));
   }
-  return { scheduled, ran, ms: Date.now() - started };
+  return { scheduled, ...sweep, ran, ms: Date.now() - started };
 }
 
 // ── HTTP ────────────────────────────────────────────────────────────────────
