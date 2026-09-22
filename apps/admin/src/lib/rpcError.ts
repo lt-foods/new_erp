@@ -434,6 +434,13 @@ const RULES: Rule[] = [
       `這張訂單不屬於你的店（你的帳號是 ${m[1]}，可操作：${m[2] || "未設定"}），無法操作。`
       + `請由該店的帳號操作，或請總部處理。`,
   },
+  // ===== 門市記帳本（rpc_store_ledger_*，20260922030010） =====
+  {
+    // 訊息本體已經是中文（「三峽店 已經關帳…」），只把機器前綴脫掉。
+    // 四個前綴共用一條：perm=沒權限 / closed=當天已關帳 / input=輸入不合法 / not_found=找不到。
+    pattern: /^ledger_(?:perm|closed|input|not_found):\s*([\s\S]+)$/i,
+    render: (m) => m[1],
+  },
   // ===== 店家守衛（rpc_record_pickup / rpc_bind_store_line_follower） =====
   {
     // 訊息本體已是中文（如「此訂單的取貨店是「三峽店」…」），只把機器前綴拿掉

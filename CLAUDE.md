@@ -212,6 +212,20 @@ node scripts/check-sql-syntax.cjs supabase/migrations/<檔名>.sql
 ⚠ 每個檔案要開新的 wasm instance：同一個 instance 連續 `parsePlpgsql` 多份檔案會在
 模組內部爆掉（`Ma[...] is not a function`），那是 emscripten 的狀態問題、不是 SQL 有錯。
 
+### RLS 裡「這列的店在不在我的清單」不要寫成 `= ANY ((SELECT …))`
+
+```sql
+store_id = ANY ((SELECT public._jwt_store_ids()))    -- ❌ 套用當下就炸
+(SELECT public._jwt_store_ids()) @> ARRAY[store_id]  -- ✅ initplan，只算一次
+store_id = ANY (public._jwt_store_ids())             -- ✅ 但每列重算一次函式
+```
+
+`(SELECT …)` 包起來是為了 initplan（20260818000020 那批的教訓），但 `ANY` 後面接
+括號子查詢時 parser 走的是「ANY(**子查詢**)」那條路，於是拿整個 `bigint[]` 去跟
+`bigint` 比 → `operator does not exist: bigint = bigint[]`，migration 直接套不上去。
+回傳陣列的 helper（`_jwt_store_ids` / `_jwt_store_location_ids`）在 RLS 裡一律改用
+`@>`。2026-09-22 建 `store_ledger_*` 的 RLS 時踩到。
+
 ### 吃陣列的批次函式，不要包一層 per-row LATERAL
 
 `_sku_commitment(store, sku_ids[])`（20260816000000）刻意設計成「傳一整個 SKU
