@@ -344,6 +344,15 @@ function Body() {
     const shown = new Set(storeCols.map((c) => c.id));
     return stores.filter((s) => s.is_active === false && !shown.has(Number(s.id))).length;
   }, [stores, storeCols]);
+  // 被藏起來的批發店有幾家（#983 審查 P2-3）。理由同上一段：把某家團媽的數字改成 0 存檔，
+  //   那一欄一樣會當場消失。⭐ 只數「啟用中」的 —— 停用的批發店已經算在上面那個數字裡，
+  //   不重複算。判準直接拿 storeCols（buildStoreColumns 的結果）來比，規則改了這裡自動跟著變。
+  const hiddenWholesaleCount = useMemo(() => {
+    const shown = new Set(storeCols.map((c) => c.id));
+    return stores.filter(
+      (s) => s.is_active !== false && s.store_kind === "wholesale" && !shown.has(Number(s.id)),
+    ).length;
+  }, [stores, storeCols]);
 
   const readOnly = draft?.status === "done";
   // 送出過了沒 —— 判準**只有** dispatched_at，⛔ 刻意不看 status：
@@ -1374,6 +1383,8 @@ function Body() {
         {orphanStoreCount > 0 && `（其中 ${orphanStoreCount} 個已停用／已刪除／無法確認）`}。
         {hiddenInactiveCount > 0 &&
           `另有 ${hiddenInactiveCount} 家已停用的分店沒有顯示（這張草稿裡它們的數量都是 0，已經收掉的店不用再撿）。`}
+        {hiddenWholesaleCount > 0 &&
+          `另有 ${hiddenWholesaleCount} 家批發店沒有顯示（這張草稿裡它們的數量都是 0，批發店沒有數量就不列出來）。`}
         {/* ⚠⚠ 這一段被改過兩次，兩次都是因為**它變成了假路標**：
             第一版寫「送到派貨工作台是後續切片」；第二版寫「老闆 2026-08-17 已裁示不做」、
             「這一頁不會自動把草稿送過去」—— 老闆 2026-08-18 改了主意，那句今天起就是錯的
