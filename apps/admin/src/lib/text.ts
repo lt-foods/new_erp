@@ -68,3 +68,24 @@ export function cleanCampaignText(raw: string | null | undefined): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
+
+/** 商品描述來自 RichTextEditor，存的是 HTML；帶進純文字 textarea 前先轉乾淨。 */
+export function cleanRichTextCampaignText(raw: string | null | undefined): string {
+  if (!raw) return "";
+  return cleanCampaignText(
+    raw
+      .replace(/&lt;br\s*\/?&gt;/gi, "\n")
+      .replace(/&lt;\/(p|div|h[1-6]|li|tr|blockquote)&gt;/gi, "\n")
+      .replace(/&lt;(p|div|h[1-6]|li|tr|blockquote)(?:\s[^&]*)?&gt;/gi, "")
+      .replace(/&lt;\/?(strong|em|b|i|u|s|a|span|ul|ol|table|tbody|thead|td|th)(?:\s[^&]*)?&gt;/gi, "")
+      .replace(/<\/(p|div|h[1-6]|li|tr|blockquote)\s*>/gi, "\n")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/?(p|div|h[1-6]|li|tr|blockquote|strong|em|b|i|u|s|a|span|ul|ol|table|tbody|thead|td|th)(?:\s[^>]*)?>/gi, "")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, "\"")
+      .replace(/(&#0*39;|&apos;)/gi, "'"),
+  );
+}
