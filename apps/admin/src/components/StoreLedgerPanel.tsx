@@ -8,6 +8,7 @@ import SpinButton from "@/components/SpinButton";
 import { StoreLedgerEntryModal } from "@/components/StoreLedgerEntryModal";
 import { StoreLedgerCloseModal } from "@/components/StoreLedgerCloseModal";
 import { StoreLedgerCategoryModal } from "@/components/StoreLedgerCategoryModal";
+import { LedgerCategoryChart, LedgerDailyChart } from "@/components/StoreLedgerCharts";
 import {
   addDays,
   downloadCsv,
@@ -60,7 +61,8 @@ export function StoreLedgerPanel({
   const [catOpen, setCatOpen] = useState(false);
 
   // 期間報表
-  const [periodOpen, setPeriodOpen] = useState(false);
+  // 預設展開：圖表是這一段的重點，藏在按鈕後面等於沒做
+  const [periodOpen, setPeriodOpen] = useState(true);
   const [pFrom, setPFrom] = useState(`${today.slice(0, 8)}01`);
   const [pTo, setPTo] = useState(today);
   const [period, setPeriod] = useState<LedgerPeriod | null>(null);
@@ -523,7 +525,7 @@ export function StoreLedgerPanel({
                 onClick={() => setPeriodOpen((v) => !v)}
                 className="rounded-md border border-zinc-300 px-3 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
               >
-                {periodOpen ? "收合" : "📈 看這個月的收支"}
+                {periodOpen ? "收合" : "📈 看區間收支"}
               </SpinButton>
             </div>
 
@@ -590,6 +592,10 @@ export function StoreLedgerPanel({
                       <Tile label="期間損益" value={money(period.totals.profit)} strong tone={num(period.totals.profit) < 0 ? "rose" : undefined} />
                       <Tile label="關帳差異合計" value={money(period.totals.diff_cash)} hint={`已關帳 ${num(period.totals.closed_days)} 天`} tone={Math.abs(num(period.totals.diff_cash)) < 0.005 ? undefined : "amber"} />
                     </div>
+
+                    <LedgerDailyChart days={period.days} onPickDay={setDate} />
+
+                    <LedgerCategoryChart rows={period.by_category} />
 
                     <div className="grid gap-3 lg:grid-cols-2">
                       <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
