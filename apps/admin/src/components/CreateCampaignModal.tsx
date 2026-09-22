@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { cleanRichTextCampaignText } from "@/lib/text";
 import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
 
@@ -39,6 +40,27 @@ function toDatetimeLocal(iso: string | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function dateInputValue(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function storeEndAtFromCustomerEndAt(customerEndAt: string): string {
+  if (!customerEndAt) return "";
+  const d = new Date(customerEndAt);
+  if (Number.isNaN(d.getTime())) return "";
+  d.setDate(d.getDate() + 1);
+  d.setHours(23, 59, 0, 0);
+  return toDatetimeLocal(d.toISOString());
+}
+
+function pickupDeadlineFromEndAt(endAt: string, pickupDays: number): string {
+  const d = new Date(endAt);
+  if (Number.isNaN(d.getTime())) return "";
+  d.setDate(d.getDate() + pickupDays);
+  return dateInputValue(d);
+}
+
 export function CreateCampaignModal({
   products,
   onClose,
@@ -49,9 +71,11 @@ export function CreateCampaignModal({
   onCreated: (campaignId: number) => void;
 }) {
   const today = new Date();
-  const defaultEndAt = new Date(today);
-  defaultEndAt.setDate(today.getDate() + 3);
-  defaultEndAt.setHours(23, 59, 0, 0);
+  const defaultCustomerEndAt = new Date(today);
+  defaultCustomerEndAt.setDate(today.getDate() + 3);
+  defaultCustomerEndAt.setHours(23, 59, 0, 0);
+  const defaultCustomerEndAtValue = toDatetimeLocal(defaultCustomerEndAt.toISOString());
+  const defaultEndAtValue = storeEndAtFromCustomerEndAt(defaultCustomerEndAtValue);
 
   const storageTypes = products.map((p) => p.storage_type);
   const pickupDays = pickupDaysForStorageTypes(storageTypes);
@@ -61,12 +85,10 @@ export function CreateCampaignModal({
     : `${products[0].name} 等 ${products.length} 項商品`;
 
   const [name, setName] = useState(defaultName);
-  const [endAt, setEndAt] = useState(toDatetimeLocal(defaultEndAt.toISOString()));
-  const [pickupDeadline, setPickupDeadline] = useState(() => {
-    const d = new Date(defaultEndAt);
-    d.setDate(d.getDate() + pickupDays);
-    return d.toISOString().split("T")[0];
-  });
+  const [customerEndAt, setCustomerEndAt] = useState(defaultCustomerEndAtValue);
+  const [endAt, setEndAt] = useState(defaultEndAtValue);
+  const [endAtTouched, setEndAtTouched] = useState(false);
+  const [pickupDeadline, setPickupDeadline] = useState(() => pickupDeadlineFromEndAt(defaultEndAtValue, pickupDays));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [campaignNo, setCampaignNo] = useState<string>("（產生中…）");
@@ -91,24 +113,37 @@ export function CreateCampaignModal({
       .eq("id", pid)
       .maybeSingle()
       .then(({ data }) => {
-        if (alive && data?.description) setDescription(data.description as string);
+        if (alive && data?.description) setDescription(cleanRichTextCampaignText(data.description as string));
       });
     return () => { alive = false; };
   }, [products]);
 
-  // auto-update pickup_deadline when end_at changes
+  // 客人收單改了且店家收單還沒被手動改過，就自動帶隔天 23:59。
+  function handleCustomerEndAtChange(val: string) {
+    setCustomerEndAt(val);
+    if (endAtTouched) return;
+    const nextEndAt = storeEndAtFromCustomerEndAt(val);
+    setEndAt(nextEndAt);
+    if (nextEndAt) setPickupDeadline(pickupDeadlineFromEndAt(nextEndAt, pickupDays));
+  }
+
+  // auto-update pickup_deadline when store end_at changes
   function handleEndAtChange(val: string) {
+    setEndAtTouched(true);
     setEndAt(val);
     if (!val) return;
-    const d = new Date(val);
-    if (Number.isNaN(d.getTime())) return;
-    d.setDate(d.getDate() + pickupDays);
-    setPickupDeadline(d.toISOString().split("T")[0]);
+    const nextPickupDeadline = pickupDeadlineFromEndAt(val, pickupDays);
+    if (nextPickupDeadline) setPickupDeadline(nextPickupDeadline);
   }
 
   async function handleSave() {
     if (!name.trim()) { setError("請輸入團名稱"); return; }
-    if (!endAt) { setError("請設定收單時間"); return; }
+    if (!customerEndAt) { setError("請設定客人收單時間"); return; }
+    if (!endAt) { setError("請設定店家收單時間"); return; }
+    if (new Date(endAt).getTime() < new Date(customerEndAt).getTime()) {
+      setError("店家收單不能早於客人收單");
+      return;
+    }
     setSaving(true); setError(null);
     try {
       // 1 campaign : 1 product invariant — UI 端已限制 products.length=1
@@ -120,7 +155,8 @@ export function CreateCampaignModal({
         p_end_at: new Date(endAt).toISOString(),
         p_pickup_deadline: pickupDeadline || null,
         p_product_id: products[0].id,
-        p_description: description.trim() || null,
+        p_description: description.trim(),
+        p_customer_end_at: new Date(customerEndAt).toISOString(),
       });
       if (err) throw err;
       onCreated(Number(data));
@@ -148,13 +184,25 @@ export function CreateCampaignModal({
         </label>
 
         <label className="flex flex-col gap-1 text-sm">
-          <span className="text-zinc-600 dark:text-zinc-400">收單時間 <span className="text-red-500">*</span></span>
+          <span className="text-zinc-600 dark:text-zinc-400">客人收單 <span className="text-red-500">*</span></span>
+          <input
+            type="datetime-local"
+            value={customerEndAt}
+            onChange={(e) => handleCustomerEndAtChange(e.target.value)}
+            className={inputCls}
+          />
+        </label>
+
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="text-zinc-600 dark:text-zinc-400">店家收單 <span className="text-red-500">*</span></span>
           <input
             type="datetime-local"
             value={endAt}
+            min={customerEndAt || undefined}
             onChange={(e) => handleEndAtChange(e.target.value)}
             className={inputCls}
           />
+          <span className="text-xs text-zinc-400">預設為客人收單隔天 23:59，可手動改</span>
         </label>
 
         <label className="flex flex-col gap-1 text-sm sm:col-span-2">
