@@ -915,6 +915,11 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
     const { error } = await getSupabase().from("line_note_comments").update(body).eq("id", c.id);
     setBusy(null);
     if (error) { fail(error); return false; }
+    // 按「已解決」＝ 這則確實處理掉了，客人要收到笑臉（跟機器人自己加成單同一個待遇）。
+    // 真正去按的是 worker（只有它有 LINE session），這裡只是順手叫一下，不用等下一分鐘的排程。
+    // 已經按過的（reacted_at 有值）不叫 —— worker 那邊也會再擋一次，不會重按。
+    // 叫不動也沒關係（分店帳號打 Edge Function 會 401）：pg_cron 每分鐘的 tick 一樣會補按。
+    if (status === "resolved" && !c.reacted_at) kickWorker();
     await load();
     return true;
   };
@@ -1004,6 +1009,7 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
       <p className="text-sm text-zinc-500">
         「找不到會員」「錯誤」修正後按「重試」；小幫手自己加完單按「已解決」。
         標成忽略／已解決的之後還是可以按「重試」重跑。
+        按「已解決」會順手去客人那則留言按笑臉 😄（已經按過的不會重按）。
       </p>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
@@ -1545,7 +1551,7 @@ function CommentOrderEntryModal({ comment, busy, onClose, onCreated, onResolve }
       />
 
       <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-zinc-200 pt-3 dark:border-zinc-800">
-        {created && <span className="mr-auto text-sm text-emerald-700 dark:text-emerald-400">加好了就把這則留言標成已解決，它才會離開待處理。</span>}
+        {created && <span className="mr-auto text-sm text-emerald-700 dark:text-emerald-400">加好了就標成已解決 —— 這則才會離開待處理，客人那則留言也才會收到笑臉 😄。</span>}
         <button type="button" className={btn} onClick={onClose}>關閉</button>
         <SpinButton type="button" className={`${btn} text-emerald-700 dark:text-emerald-400`} loading={busy}
           onClick={() => void onResolve()}>標成已解決並關閉</SpinButton>
