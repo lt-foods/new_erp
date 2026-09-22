@@ -101,3 +101,34 @@ Deno.test("沒有結單時間（無到期日）就不印結單那一行", () => 
   const none = renderPostText(payload({ name: "測試", description: "好吃", end_at: null }, [{ code: "A", name: "x", unit_price: 50 }]));
   eq(none, `測試\n\n💰５０ 元\n\n好吃\n\n${HOWTO_SINGLE}\n#開團\n${tag}`, "無到期日");
 });
+
+// ── 商城連結（老闆 2026-09-22） ──────────────────────────────────────────────
+const SITE = "https://shop.example.com";
+const linked = (campaign: Record<string, unknown>, items: Record<string, unknown>[], post_template: string | null = null) =>
+  ({ ...payload(campaign, items, post_template), site_url: SITE });
+
+Deno.test("預設版型：教學下面接商城連結，團號章還是在最後一行", () => {
+  const text = renderPostText(linked({ id: 42, name: "測試", description: "好吃" }, [{ code: "A", name: "x", unit_price: 50 }]));
+  eq(text, `測試\n\n💰５０ 元\n\n${DL}\n\n好吃\n\n${HOWTO_SINGLE}\n🛒 商城下單：${SITE}/shop/c/42\n#開團\n${tag}`, "主商城");
+});
+
+Deno.test("漂漂館的團連到 /piaopiao/c/<id>", () => {
+  const text = renderPostText(linked({ id: 7, name: "測試", description: "好吃", sales_channel: "piaopiao" }, [{ code: "A", name: "x", unit_price: 50 }]));
+  eq(text.includes(`🛒 商城下單：${SITE}/piaopiao/c/7`), true, "漂漂館專區");
+});
+
+Deno.test("沒上架商城 / 沒帶站台網址 / localhost → 整行不印，版面跟以前一樣", () => {
+  const body = `測試\n\n💰５０ 元\n\n${DL}\n\n好吃\n\n${HOWTO_SINGLE}\n#開團\n${tag}`;
+  eq(renderPostText(linked({ id: 42, name: "測試", description: "好吃", is_for_shop: false }, [{ code: "A", name: "x", unit_price: 50 }])), body, "沒上架商城");
+  eq(renderPostText(payload({ id: 42, name: "測試", description: "好吃" }, [{ code: "A", name: "x", unit_price: 50 }])), body, "沒帶 site_url");
+  eq(renderPostText({ ...payload({ id: 42, name: "測試", description: "好吃" }, [{ code: "A", name: "x", unit_price: 50 }]), site_url: "http://localhost:3001" }), body, "localhost 是死連結");
+});
+
+Deno.test("自訂模板沒寫 {{link}} 也會補；寫了就不重複", () => {
+  const auto = renderPostText(linked({ id: 9, name: "測試", description: "" }, [{ code: "A", name: "x", unit_price: 1 }], "{{name}}\n{{tag}}"));
+  eq(auto, `測試\n🛒 商城下單：${SITE}/shop/c/9\n${tag}`, "補在團號章前面");
+  const noTag = renderPostText(linked({ id: 9, name: "測試", description: "" }, [{ code: "A", name: "x", unit_price: 1 }], "{{name}}"));
+  eq(noTag, `測試\n🛒 商城下單：${SITE}/shop/c/9\n${tag}`, "模板沒有團號章時兩個都補在後面");
+  const own = renderPostText(linked({ id: 9, name: "測試", description: "" }, [{ code: "A", name: "x", unit_price: 1 }], "{{name}}\n自己去 {{link}} 下單\n{{tag}}"));
+  eq(own, `測試\n自己去 🛒 商城下單：${SITE}/shop/c/9 下單\n${tag}`, "模板自己寫了就不再補一行");
+});
