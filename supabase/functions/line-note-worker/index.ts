@@ -516,22 +516,53 @@ async function reactResolved(until: number) {
   const rows = await rest(
     `line_note_comments?select=id,line_comment_id,post_id&reacted_at=is.null&status=eq.resolved` +
     `&resolved_at=gte.${since}&line_comment_id=not.is.null&order=resolved_at.desc&limit=${SWEEP_BATCH}`);
-  const list: any[] = rows ?? [];
-  if (list.length === 0) return { resolved_reacted: 0 };
-  // 貼文 → 社群（home_id / 帳號 / 開關）一次查完，不要一則一則問 DB
+  const reacted = await likeByCommunity(rows ?? [], until, SWEEP_BATCH);
+  if (reacted) log(`😄 補按「已解決」的笑臉 ${reacted} 則`);
+  return { resolved_reacted: reacted };
+}
+
+// ── 每分鐘補按「加單成功」的笑臉 ───────────────────────────────────────────
+//
+// 原本只有 read job 讀完留言才順手按（reactPending），一天只有 read_times 那幾輪，
+// 而 LINE 一輪最多讓按 30 則（見上面 reactPending 的說明）→ 一天最多 ~150 則。
+// 2026-09-23 平鎮一個社群一週就有 634 則加成單卻沒笑臉，積欠只會越滾越大，
+// 客人看到「機器人加單了卻沒按笑臉」。
+// 所以跟「已解決」一樣每分鐘補一點：每輪最多 PENDING_PER_TICK 則（五個社群共用
+// 同一個小幫手帳號，LINE 的次數上限是跟著帳號走的，10/分 ≈ 30/3 分，剛好不撞牆）。
+// 母體跟 reactPending 一樣限定 read_days（7 天）內，免得翻出陳年舊留言冒出表情。
+const PENDING_WINDOW_MS = 7 * 86400_000;
+const PENDING_PER_TICK = 10;
+
+async function reactOrdered(until: number) {
+  const since = new Date(Date.now() - PENDING_WINDOW_MS).toISOString();
+  // 多抓一些，關了笑臉的社群被濾掉之後還湊得滿一輪
+  const rows = await rest(
+    `line_note_comments?select=id,line_comment_id,post_id&reacted_at=is.null&status=in.(ordered,duplicate)` +
+    `&commented_at=gte.${since}&line_comment_id=not.is.null&order=commented_at.desc&limit=${PENDING_PER_TICK * 4}`);
+  const reacted = await likeByCommunity(rows ?? [], until, PENDING_PER_TICK);
+  if (reacted) log(`😄 補按加單成功的笑臉 ${reacted} 則`);
+  return { ordered_reacted: reacted };
+}
+
+// 留言 → 貼文 → 社群（home_id / 帳號 / 開關）一次查完，同社群收成一組按（LINE client 建一次就好）。
+// 關掉笑臉（react_on_confirm=false）或沒有 home_id 的社群跳過；最多按 cap 則。
+async function likeByCommunity(list: any[], until: number, cap: number) {
+  if (list.length === 0) return 0;
   const postIds = [...new Set(list.map((c) => c.post_id).filter(Boolean))];
   const posts = postIds.length === 0 ? [] : await rest(
     `line_note_posts?id=in.(${postIds.join(",")})&select=id,line_note_communities(id,home_id,account_id,react_on_confirm)`);
   const communityOf = new Map<number, any>();
   for (const p of posts ?? []) communityOf.set(Number(p.id), p.line_note_communities);
-  // 同社群的收成一組：LINE client 建一次就好
   const groups = new Map<number, { community: any; items: any[] }>();
+  let picked = 0;
   for (const c of list) {
+    if (picked >= cap) break;
     const community = communityOf.get(Number(c.post_id));
     if (!community?.home_id || community.react_on_confirm === false) continue;
     let g = groups.get(community.id);
     if (!g) { g = { community, items: [] }; groups.set(community.id, g); }
     g.items.push(c);
+    picked++;
   }
   let reacted = 0;
   for (const g of groups.values()) {
@@ -540,11 +571,10 @@ async function reactResolved(until: number) {
       const client = await clientFor(await loadAccount(g.community.account_id));
       reacted += (await likeEach(client, g.community.home_id, g.items, until)).reacted;
     } catch (e) {
-      log(`補按「已解決」的笑臉失敗（略過）community#${g.community.id}：${(e as any)?.message ?? e}`);
+      log(`補按笑臉失敗（略過）community#${g.community.id}：${(e as any)?.message ?? e}`);
     }
   }
-  if (reacted) log(`😄 補按「已解決」的笑臉 ${reacted} 則`);
-  return { resolved_reacted: reacted };
+  return reacted;
 }
 
 // 讀一次 LINE 的貼文列表（read_days 內被動過的貼文）。認貼文（discoverPosts）用它，
@@ -891,13 +921,17 @@ async function tick() {
   let sweep: { resolved_reacted: number } = { resolved_reacted: 0 };
   try { sweep = await reactResolved(started + SWEEP_BUDGET_MS); }
   catch (e) { log("補按「已解決」的笑臉整批失敗（略過，不影響其他工作）:", (e as any)?.message ?? e); }
+  // 加單成功的笑臉每分鐘也補一點（跟上面共用同一段 15 秒預算）
+  let sweepOrdered: { ordered_reacted: number } = { ordered_reacted: 0 };
+  try { sweepOrdered = await reactOrdered(started + SWEEP_BUDGET_MS); }
+  catch (e) { log("補按加單成功的笑臉整批失敗（略過，不影響其他工作）:", (e as any)?.message ?? e); }
   const ran: any[] = [];
   while (Date.now() - started < TICK_BUDGET_MS) {
     const job = await claimNextJob();
     if (!job) break;
     ran.push(await runJob(job, started + REACT_BUDGET_MS));
   }
-  return { scheduled, ...sweep, ran, ms: Date.now() - started };
+  return { scheduled, ...sweep, ...sweepOrdered, ran, ms: Date.now() - started };
 }
 
 // ── HTTP ────────────────────────────────────────────────────────────────────
