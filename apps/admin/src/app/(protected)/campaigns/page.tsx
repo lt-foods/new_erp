@@ -66,6 +66,11 @@ type Row = {
 };
 
 const STATUS_LABEL = CAMPAIGN_STATUS_LABEL;
+const LOCKED_ADD_ORDER_TITLE = "這個團的請購單已經建出來了，請到請購單頁處理；不能在這裡加單。";
+
+function canAddOrderFromCampaign(status: Status) {
+  return status === "open" || status === "closed";
+}
 
 const CLOSE_TYPE_LABEL: Record<CloseType, string> = {
   regular: "常規",
@@ -806,16 +811,32 @@ export default function CampaignsListPage() {
   const fromIdx = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const toIdx = Math.min(page * PAGE_SIZE, total);
 
-  // 「加單」獨立放在 checkbox 旁邊（status=open 才出現），不參與下方操作鈕群組
+  // 「加單」獨立放在 checkbox 旁邊，不參與下方操作鈕群組。
+  // closed 仍可補客單；locked 代表請購單已建出來，這裡只能提示不能再加。
   const addOrderLink = (r: Row) =>
-    r.status === "open" ? (
+    canAddOrderFromCampaign(r.status) ? (
       <Link
         href={`/campaigns/order-entry?id=${r.id}`}
         className="text-sm font-bold text-green-600 hover:underline dark:text-green-400"
       >
         加單
       </Link>
+    ) : r.status === "locked" ? (
+      <span
+        className="cursor-not-allowed text-sm font-bold text-zinc-400 dark:text-zinc-600"
+        title={LOCKED_ADD_ORDER_TITLE}
+      >
+        加單
+      </span>
     ) : null;
+  const addOrderSlot = (r: Row) => {
+    const link = addOrderLink(r);
+    return link ? (
+      <span className="mt-0.5" onClick={(e) => e.stopPropagation()}>
+        {link}
+      </span>
+    ) : null;
+  };
 
   // 操作鈕（編輯 / 結單 / 發 FB / 結算 / 刪除）— 桌機表格與手機卡片共用，單一維護點
   //
@@ -1130,11 +1151,7 @@ export default function CampaignsListPage() {
                 onClick={(e) => e.stopPropagation()}
                 className="mt-1 cursor-pointer"
               />
-              {r.status === "open" && (
-                <span className="mt-0.5" onClick={(e) => e.stopPropagation()}>
-                  {addOrderLink(r)}
-                </span>
-              )}
+              {addOrderSlot(r)}
               <CampaignThumb url={campaignCoverUrl(r.cover_image_url, r.campaign_items)} name={r.name} />
               <div className="min-w-0 flex-1">
                 <div className="break-words text-base font-bold text-zinc-900 dark:text-zinc-100">{r.name}</div>
@@ -1978,13 +1995,32 @@ function CampaignCard({
 
   if (compact) {
     return (
-      <SpinButton
-        onClick={() => onPick(r.id)}
-        className={`block w-full truncate rounded px-1.5 py-0.5 text-left text-[10px] ${compactBg[r.status]} hover:opacity-80`}
-        title={`${r.campaign_no}｜${r.name}｜${STATUS_LABEL[r.status]}｜${itemCount} 商品｜下單 ${orderCount} 件${offsetCount !== 0 ? `｜抵減 ${offsetCount} 件` : ""}`}
-      >
-        <span className="font-medium">{r.name || r.campaign_no}</span><PiaopiaoBadge salesChannel={r.sales_channel} />
-      </SpinButton>
+      <div className={`flex w-full items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${compactBg[r.status]}`}>
+        <SpinButton
+          onClick={() => onPick(r.id)}
+          className="min-w-0 flex-1 truncate text-left hover:opacity-80"
+          title={`${r.campaign_no}｜${r.name}｜${STATUS_LABEL[r.status]}｜${itemCount} 商品｜下單 ${orderCount} 件${offsetCount !== 0 ? `｜抵減 ${offsetCount} 件` : ""}`}
+        >
+          <span className="font-medium">{r.name || r.campaign_no}</span><PiaopiaoBadge salesChannel={r.sales_channel} />
+        </SpinButton>
+        {canAddOrderFromCampaign(r.status) && (
+          <Link
+            href={`/campaigns/order-entry?id=${r.id}`}
+            className="shrink-0 rounded bg-white/80 px-1 font-bold text-green-700 hover:bg-white dark:bg-zinc-950/70 dark:text-green-300"
+            title="加單"
+          >
+            加
+          </Link>
+        )}
+        {r.status === "locked" && (
+          <span
+            className="shrink-0 cursor-not-allowed rounded bg-white/60 px-1 font-bold text-zinc-400 dark:bg-zinc-950/50 dark:text-zinc-500"
+            title={LOCKED_ADD_ORDER_TITLE}
+          >
+            加
+          </span>
+        )}
+      </div>
     );
   }
 
@@ -2049,13 +2085,21 @@ function CampaignCard({
 
       {/* 動作 */}
       <div className="flex flex-wrap gap-1">
-        {r.status === "open" && (
+        {canAddOrderFromCampaign(r.status) && (
           <Link
             href={`/campaigns/order-entry?id=${r.id}`}
             className="rounded border border-green-400 bg-green-50 px-2 py-0.5 text-[11px] font-medium text-green-700 hover:bg-green-100 dark:border-green-700 dark:bg-green-950 dark:text-green-300 dark:hover:bg-green-900"
           >
             + 加單
           </Link>
+        )}
+        {r.status === "locked" && (
+          <span
+            className="cursor-not-allowed rounded border border-zinc-300 bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-500"
+            title={LOCKED_ADD_ORDER_TITLE}
+          >
+            + 加單
+          </span>
         )}
         {showEdit && (
           <SpinButton
