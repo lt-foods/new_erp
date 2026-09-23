@@ -15,6 +15,16 @@ function assert(condition, message) {
 const migration = read("supabase/migrations/20260923120000_pr_draft_store_additions.sql");
 const page = read("apps/admin/src/app/(protected)/purchase/requests/edit/page.tsx");
 const migrationWithoutComments = migration.replace(/--.*$/gm, "");
+const allowedStoreAdditionRoles = new Set(["owner", "admin", "hq_manager", "purchaser", "assistant", ""]);
+
+function canCallStoreAdditionRpc(claims) {
+  const appMetadata = claims.app_metadata;
+  const hasAppRole = Object.prototype.hasOwnProperty.call(appMetadata ?? {}, "role");
+  const role = hasAppRole ? appMetadata.role : claims.role;
+  if (role === "store_manager" || role === "store_staff") return false;
+  if (role === null || role === undefined) return false;
+  return allowedStoreAdditionRoles.has(role);
+}
 
 assert(
   migration.includes("CREATE OR REPLACE FUNCTION public.rpc_add_pr_store_demands"),
@@ -73,11 +83,17 @@ assert(
   "PR total must use line_subtotal, matching the rest of the purchase flow",
 );
 assert(
-  migration.includes("NULLIF(auth.jwt() ->> 'role', 'authenticated')") &&
-    migration.includes("IF v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant') THEN") &&
-    !migration.includes("'assistant','')"),
-  "RPC must not allow authenticated users with an empty application role",
+  migration.includes("v_has_app_role") &&
+    migration.includes("COALESCE((auth.jwt() -> 'app_metadata') ? 'role', FALSE)") &&
+    migration.includes("IF v_role IN ('store_manager','store_staff') THEN") &&
+    migration.includes("IF v_role IS NULL OR v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant','') THEN"),
+  "RPC must match purchase-module legacy admin role behavior while explicitly blocking store roles",
 );
+assert(canCallStoreAdditionRpc({ app_metadata: { role: "" }, role: "authenticated" }), "explicit legacy empty app role must be allowed");
+assert(!canCallStoreAdditionRpc({ role: "authenticated" }), "bare authenticated role must not be treated as legacy admin");
+assert(!canCallStoreAdditionRpc({ app_metadata: { role: "store_manager" }, role: "authenticated" }), "store_manager must be blocked");
+assert(!canCallStoreAdditionRpc({ app_metadata: { role: "store_staff" }, role: "authenticated" }), "store_staff must be blocked");
+assert(canCallStoreAdditionRpc({ app_metadata: { role: "purchaser" }, role: "authenticated" }), "purchaser must be allowed");
 assert(
   migration.includes("REVOKE ALL ON public.purchase_request_store_additions FROM authenticated") &&
     migration.includes("GRANT SELECT ON public.purchase_request_store_additions TO authenticated") &&
