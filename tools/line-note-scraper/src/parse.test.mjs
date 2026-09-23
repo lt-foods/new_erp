@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseOrderLines, postTitle, normalize, extractMemberNo, parseNoteComment, matchCampaign, normalizeForMatch,
+import { DEFAULT_PARSE_CONFIG, normalizeParseConfig, parseOrderLines, postTitle, normalize, extractMemberNo, parseNoteComment, matchCampaign, normalizeForMatch,
   buildPostTag, extractPostTag, withPostTag } from "./parse.mjs";
 
 test("extractMemberNo", () => {
@@ -234,4 +234,33 @@ test("code without qty (A, B+1) → whole comment is not auto-ordered", () => {
   assert.deepEqual(codes("A+1,B+1"), [["A", 1], ["B", 1]]);
   assert.deepEqual(codes("A+1 B+1"), [["A", 1], ["B", 1]]);
   assert.deepEqual(codes("A+1\nB+2"), [["A", 1], ["B", 2]]);
+});
+
+test("config: switches and word lists", () => {
+  const p = (t, c) => parseOrderLines(t, c).map((o) => [o.code, o.qty, o.cancel]);
+  // 預設跟不給設定一樣
+  assert.deepEqual(p("A+1", DEFAULT_PARSE_CONFIG), [["A", 1, false]]);
+  // 關掉「有品項沒數量整則不加」→ 只加有寫數量的
+  assert.deepEqual(p("A,B+1", { rejectBareCode: false }), [["B", 1, false]]);
+  // 關掉沒寫品項
+  assert.deepEqual(p("+1", { allowNoCode: false }), []);
+  assert.deepEqual(p("2份", { allowNoCode: false }), []);
+  assert.deepEqual(p("A+1", { allowNoCode: false }), [["A", 1, false]]);
+  // 關掉數量在前
+  assert.deepEqual(p("+1 A", { allowQtyFirst: false }), []);
+  // 關掉乘號／單位
+  assert.deepEqual(p("A x2", { allowTimes: false }), []);
+  // 關掉錯字修正
+  assert.deepEqual(p("A+I", { fixTypos: false }), []);
+  // 自訂單位、取消字、加號字
+  assert.deepEqual(p("A 2串", { units: ["串"] }), [["A", 2, false]]);
+  assert.deepEqual(p("A 2份", { units: ["串"] }), []);
+  assert.deepEqual(p("不買了 A+1", { cancelWords: ["不買了"] }), [["A", 1, true]]);
+  assert.deepEqual(p("A跟1", { plusWords: ["跟"] }), [["A", 1, false]]);
+  assert.deepEqual(p("A加1", { plusWords: [] }), []);
+  // 壞值濾掉：英數字不能當加號、非陣列回預設
+  assert.deepEqual(normalizeParseConfig({ plusWords: ["A", "加", " "] }).plusWords, ["加"]);
+  assert.deepEqual(normalizeParseConfig({ units: "份" }).units, [...DEFAULT_PARSE_CONFIG.units]);
+  // 特殊字元不會炸 regex
+  assert.deepEqual(p("A+1", { cancelWords: ["(", "*"] }), [["A", 1, false]]);
 });
