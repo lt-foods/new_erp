@@ -12,6 +12,8 @@
 //   -1 / A-1 / 取消 / 退 → cancel:true（qty 為負或標記）
 //
 // 不猜的：純數字「2」、只有品名沒數量的行、聊天內容。這些回空陣列。
+//   「A, B+1」這種有代碼沒寫數量的：整則都不加單（不猜 A 要幾個；以前會只加 B、A 靜靜漏掉）。
+//   每個品項都要自己寫數量（A+1, B+1）才自動加單。
 
 const FULLWIDTH_DIGITS = "０１２３４５６７８９";
 
@@ -51,6 +53,8 @@ const MULTI_CODE_FIRST = /^\s*(?:[A-Za-z][A-Za-z0-9-]{0,7}\s*[+-]\s*\d{1,3}\s*){
 const MULTI_QTY_FIRST = /^\s*(?:[+-]\s*\d{1,3}\s*[A-Za-z][A-Za-z0-9-]{0,7}\s*){2,}$/;
 const TOKEN_CODE_FIRST = /[A-Za-z][A-Za-z0-9-]{0,7}\s*[+-]\s*\d{1,3}/g;
 const TOKEN_QTY_FIRST = /[+-]\s*\d{1,3}\s*[A-Za-z][A-Za-z0-9-]{0,7}/g;
+
+const BARE_CODE = new RegExp(`^${CODE}$`);
 
 const PATTERNS = [
   // A+1 / A +2 / B-2+1 / 取消 A-1
@@ -92,6 +96,8 @@ export function parseOrderLines(text) {
       if (m) { hit = p.map(m); break; }
     }
     if (!hit) {
+      // 光一個代碼沒數量（「A, B+1」的 A）→ 整則放棄，別只加一半
+      if (BARE_CODE.test(body)) return [];
       // 「取消」單獨一行也算一筆取消（qty 0，讓人工看）
       if (cancelWord && body === "") out.push({ code: null, qty: 0, cancel: true, line });
       continue;
