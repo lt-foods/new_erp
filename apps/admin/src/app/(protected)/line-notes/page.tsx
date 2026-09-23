@@ -14,7 +14,7 @@ import { Modal as SharedModal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
 import { OrderEntryView } from "@/components/OrderEntryView";
 import {
-  COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, commentStats, fmtNoteTime, isTodoComment,
+  COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, commentStats, fmtNoteTime, isTodoComment, isUnreadableOrder,
 } from "@/lib/lineNoteStatus";
 import { deleteLineNotePost } from "@/lib/lineNoteDelete";
 import { canOperateLineNotes, useRole } from "@/lib/role";
@@ -843,6 +843,50 @@ function PostCampaignModal({ community, communities, accountById, onClose, notif
 type Filter = "todo" | "ordered" | "ignored" | "all";
 const isTodo = isTodoComment;
 
+// 機器人看得懂的留言寫法。規則本體在 supabase/functions/_shared/lineNoteParse.ts
+// （= tools/line-note-scraper/src/parse.mjs），改規則時這張表一起改。
+const PARSER_OK: ReadonlyArray<readonly [string, string]> = [
+  ["品項＋數量", "A+1、B +2、A1+1、A加1、A打1"],
+  ["數量＋品項", "+1 A、+2 B2"],
+  ["乘號／單位", "A x2、A*2、A 2份、C 3包"],
+  ["只有一個品項的團", "+1、加1、打一、2份"],
+  ["一則買多樣", "A+1 B+2、A+1, B+2，或分行寫"],
+  ["取消", "A-1、取消 A+1"],
+  ["常見錯字也收", "A+I、A十1、A+1."],
+];
+const PARSER_NG: ReadonlyArray<readonly [string, string]> = [
+  ["有品項沒寫數量", "A, B+1、A/B+1 → 整則都不加（不會只加 B），進待處理「看不懂」"],
+  ["只寫數字", "2"],
+  ["分不清品號還是數量", "A2"],
+  ["聊天內容", "請問還有嗎、好吃"],
+];
+function ParserFormatsHelp() {
+  const row = ([k, v]: readonly [string, string]) => (
+    <tr key={k} className="border-t border-zinc-200 dark:border-zinc-800">
+      <td className="whitespace-nowrap py-1 pr-3 text-zinc-500">{k}</td>
+      <td className="py-1 font-mono">{v}</td>
+    </tr>
+  );
+  return (
+    <details className="rounded border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800">
+      <summary className="cursor-pointer text-zinc-600 dark:text-zinc-300">機器人看得懂哪些留言寫法？</summary>
+      <div className="mt-2 grid gap-4 md:grid-cols-2">
+        <div>
+          <div className="mb-1 font-medium text-emerald-700 dark:text-emerald-400">✅ 會自動加單</div>
+          <table className="w-full"><tbody>{PARSER_OK.map(row)}</tbody></table>
+        </div>
+        <div>
+          <div className="mb-1 font-medium text-red-700 dark:text-red-400">❌ 不會自動加單（要人工）</div>
+          <table className="w-full"><tbody>{PARSER_NG.map(row)}</tbody></table>
+          <p className="mt-2 text-xs text-zinc-500">
+            會員編號（6 碼）寫在留言裡或 LINE 暱稱裡都可以。每個品項都要自己寫數量（A+1, B+1）才會自動加。
+          </p>
+        </div>
+      </div>
+    </details>
+  );
+}
+
 // ── 留言加單：一張表，一則留言一列 ─────────────────────────────────────────
 function CommentsTab({ communityById, notify, fail, readOnly }: {
   communityById: Map<number, Community>; notify: (m: string) => void; fail: (e: unknown) => void; readOnly: boolean;
@@ -963,8 +1007,8 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
       case "resolved":  return <><Badge tone="green">已解決</Badge><span className="text-zinc-500">{c.resolution_note ?? ""}</span></>;
       case "ignored":   return <Badge tone="gray">忽略</Badge>;
       case "pending":   return <Badge tone="amber">等 worker 處理</Badge>;
-      case "no_order":  return c.member_no_hint
-        ? <><Badge tone="red">看不懂</Badge><span className="text-red-700 dark:text-red-300">有會員編號，看不出要買什麼</span></>
+      case "no_order":  return isUnreadableOrder(c)
+        ? <><Badge tone="red">看不懂</Badge><span className="text-red-700 dark:text-red-300">{c.member_no_hint ? "有會員編號，看不出要買什麼" : "像是下單，但寫法機器看不懂（例：A, B+1 有品項沒寫數量）"}</span></>
         : <Badge tone="gray">非下單</Badge>;
       default:          return <><Badge tone="red">{COMMENT_STATUS[c.status]}</Badge><span className="text-red-700 dark:text-red-300">{c.error ?? ""}</span></>;
     }
@@ -1011,6 +1055,7 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
         標成忽略／已解決的之後還是可以按「重試」重跑。
         按「已解決」會順手去客人那則留言按笑臉 😄（已經按過的不會重按）。
       </p>
+      <ParserFormatsHelp />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
           {([["todo", `待處理 ${todoCount}`], ["ordered", "已加單"], ["ignored", `忽略 ${ignoredCount}`], ["all", "全部"]] as const).map(([k, l]) => (
@@ -1196,10 +1241,10 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
     const ids = (posts ?? []).map((p) => p.id);
     if (ids.length === 0) { setCounts(new Map()); return; }
     const { data, error } = await getSupabase().from("line_note_comments")
-      .select("post_id,status,member_no_hint").in("post_id", ids);
+      .select("post_id,status,member_no_hint,text").in("post_id", ids);
     if (error) return;   // 統計拿不到就不顯示，不要擋住整頁
-    const byPost = new Map<number, { status: string; member_no_hint: string | null }[]>();
-    for (const r of (data ?? []) as { post_id: number; status: Comment["status"]; member_no_hint: string | null }[]) {
+    const byPost = new Map<number, { status: string; member_no_hint: string | null; text: string | null }[]>();
+    for (const r of (data ?? []) as { post_id: number; status: Comment["status"]; member_no_hint: string | null; text: string | null }[]) {
       const cur = byPost.get(r.post_id);
       if (cur) cur.push(r); else byPost.set(r.post_id, [r]);
     }
