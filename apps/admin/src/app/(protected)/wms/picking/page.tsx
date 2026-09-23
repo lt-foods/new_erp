@@ -220,10 +220,20 @@ function refreshPickedFromStorage(key: string) {
   emitPicked();
 }
 
+function capSkuAvailable(
+  skuId: number,
+  poAvailable: number,
+  hqAvailable: Map<number, number> | null,
+): number {
+  const poLeft = Math.max(0, poAvailable);
+  const hqLeft = hqAvailable?.get(Number(skuId));
+  return hqLeft == null ? poLeft : Math.min(poLeft, Math.max(0, hqLeft));
+}
+
 // 從 demand 算出「還有可分配量」的 sku_id 集合 —— 條件與 skuRows 的
-// filter(totalAvailable > 0) 完全一致（per (po, sku) 去重後 Σgr − Σ已派）。
+// filter(totalAvailable > 0) 完全一致（per (po, sku) 去重後 Σgr − Σ已派，再用總倉可派封頂）。
 // 給「已挑清單失效清理」用，避免兩處條件飄移。
-function alivePickableSkuIds(demand: DemandRow[]): Set<number> {
+function alivePickableSkuIds(demand: DemandRow[], hqAvailable: Map<number, number> | null): Set<number> {
   const avail = new Map<number, number>();
   const poSkuSeen = new Set<string>();
   for (const r of demand) {
@@ -242,7 +252,9 @@ function alivePickableSkuIds(demand: DemandRow[]): Set<number> {
     );
   }
   const alive = new Set<number>();
-  for (const [skuId, v] of avail) if (v > 0) alive.add(skuId);
+  for (const [skuId, v] of avail) {
+    if (capSkuAvailable(skuId, v, hqAvailable) > 0) alive.add(skuId);
+  }
   return alive;
 }
 
@@ -373,6 +385,9 @@ function Body() {
   }, [pickedStorageKey]);
   // 已挑清單被自動移除時的提示（不靜默處理）
   const [prunedNotice, setPrunedNotice] = useState<string | null>(null);
+  // 總倉可派（stock_balances.on_hand - reserved - 未出倉撿貨單保留），當作派貨上限的最後封頂。
+  // null = 角色讀不到 / 撈失敗 → 畫面退回 PO 餘量；DB 端仍會擋超派。
+  const [hqAvailable, setHqAvailable] = useState<Map<number, number> | null>(null);
   // 已挑清單失效清理：把「已無可分配量」（被別人派完 / 下架）的品項移除並提示。
   // ⚠️ 比對基準是「未經任何篩選」的 alivePickableSkuIds(demand)，不是搜尋結果 ——
   //    拿目前清單去交集正是舊版「選了 30 樣、按建單只剩 1 樣」的根因。
@@ -389,7 +404,7 @@ function Body() {
     const livePicked = getPickedSkuIds();
     const liveEpoch = getPickedEpoch();
     if (livePicked.length === 0) return;
-    const aliveSkus = alivePickableSkuIds(demand);
+    const aliveSkus = alivePickableSkuIds(demand, hqAvailable);
     const stalePicks = livePicked.filter((id) => !aliveSkus.has(id));
     if (stalePicks.length === 0) return;
     // 對外部系統（module store + localStorage）收斂 + 一次性提示，
@@ -401,7 +416,7 @@ function Body() {
     setPickedSkuIds(livePicked.filter((id) => aliveSkus.has(id)), liveEpoch);
     // pickedStorageKey 也放進來：明講「這個 effect 是在某個 owner scope 下 prune」，
     // 換人／換 scope 之後要再檢一次，而不是靠 effect 的宣告順序默契。
-  }, [demand, pickedIds, pickedStorageKey]);
+  }, [demand, hqAvailable, pickedIds, pickedStorageKey]);
   // 矩陣分頁的兩步驟：select = 先挑商品；confirm = 確認數量並建單
   const [pickStep, setPickStep] = useState<"select" | "confirm">("select");
   // 缺價預警：sku_id → 現行成本/分店價是否存在。null = 未載入或此 role 看不到價格（不顯示）。
@@ -417,8 +432,6 @@ function Body() {
   // sku_id → 這個 sku 真的被賣過的團（campaign_items）。用來把上面那份過寬的團清單收斂。
   // null = 沒撈到 / 撈失敗 → narrowToSoldCampaigns 一律不過濾（維持現行行為）。
   const [skuSoldCampaigns, setSkuSoldCampaigns] = useState<Map<number, Set<number>> | null>(null);
-  // 總倉即時在庫（stock_balances.on_hand @ central_warehouse），純參考顯示。
-  const [hqOnHand, setHqOnHand] = useState<Map<number, number> | null>(null);
   const [filterCampaign, setFilterCampaign] = useState<string>("all"); // "all" | "none" | `${campaign_id}`
   // 商品搜尋（取代原本的「商品」單選下拉 —— 單選會把清單縮到 1 列，正是掉選的根因）。
   // 比對 sku_label（商品名稱）＋ sku_code（品號），模糊、不分大小寫、去頭尾空白。
@@ -641,35 +654,68 @@ function Body() {
           sold.clear();
         }
 
-        // 總倉即時在庫（有些 role 讀不到 stock_balances → 留 null 不顯示，不報錯）
-        const oh = new Map<number, number>();
+        // 總倉可派（有些 role 讀不到 stock_balances / picking_waves → 留 null，不讓整頁掛掉）
+        // 口徑對齊 rpc_create_wave_from_po：
+        //   stock_balances.on_hand - reserved - draft/picking/picked wave qty。
+        const hq = new Map<number, number>();
         try {
           const { data: loc } = await sb
             .from("locations").select("id")
             .eq("type", "central_warehouse").eq("is_active", true).limit(1);
           const hqLocId = (((loc ?? []) as { id: number }[])[0])?.id ?? null;
           if (hqLocId != null) {
+            for (const id of skuIds) hq.set(Number(id), 0);
             for (let i = 0; i < skuIds.length; i += 200) {
               const { data, error: e } = await sb
                 .from("stock_balances")
-                .select("sku_id, on_hand")
+                .select("sku_id, on_hand, reserved")
                 .eq("location_id", hqLocId)
                 .in("sku_id", skuIds.slice(i, i + 200));
               if (e) throw new Error(e.message);
-              for (const r of (data ?? []) as { sku_id: number; on_hand: number }[]) {
-                oh.set(r.sku_id, Number(r.on_hand));
+              for (const r of (data ?? []) as { sku_id: number; on_hand: number; reserved: number | null }[]) {
+                hq.set(Number(r.sku_id), Math.max(0, Number(r.on_hand) - Number(r.reserved ?? 0)));
               }
+            }
+            type OpenWaveRow = { id: number };
+            type OpenWaveItemRow = { sku_id: number; qty: number };
+            const openWaves = await fetchAllRows<OpenWaveRow>(() =>
+              sb.from("picking_waves")
+                .select("id")
+                .in("status", ["draft", "picking", "picked"])
+                .order("id", { ascending: true }),
+            );
+            const openWaveIds = openWaves.map((w) => w.id);
+            const openWaveQty = new Map<number, number>();
+            for (let i = 0; i < openWaveIds.length; i += 200) {
+              const waveChunk = openWaveIds.slice(i, i + 200);
+              for (let j = 0; j < skuIds.length; j += 200) {
+                const skuChunk = skuIds.slice(j, j + 200);
+                const rows = await fetchAllRows<OpenWaveItemRow>(() =>
+                  sb.from("picking_wave_items")
+                    .select("sku_id, qty")
+                    .in("wave_id", waveChunk)
+                    .in("sku_id", skuChunk)
+                    .order("id", { ascending: true }),
+                );
+                for (const r of rows) {
+                  const skuId = Number(r.sku_id);
+                  openWaveQty.set(skuId, (openWaveQty.get(skuId) ?? 0) + Number(r.qty));
+                }
+              }
+            }
+            for (const [skuId, qty] of openWaveQty) {
+              hq.set(skuId, Math.max(0, (hq.get(skuId) ?? 0) - qty));
             }
           }
         } catch {
-          oh.clear();
+          hq.clear();
         }
 
         if (!cancelled) {
           setPoItemCampaigns(new Map(Array.from(mapping.entries()).map(([k, v]) => [k, Array.from(v)])));
           setCampaignsById(cMap);
           setSkuSoldCampaigns(sold.size > 0 ? sold : null);
-          setHqOnHand(oh.size > 0 ? oh : null);
+          setHqAvailable(hq.size > 0 ? hq : null);
         }
       } catch {
         // 對應載入失敗 → 下拉退化成「全部」，矩陣照常可派
@@ -677,7 +723,7 @@ function Body() {
           setPoItemCampaigns(new Map());
           setCampaignsById(new Map());
           setSkuSoldCampaigns(null); // null = 不過濾團號（本來就沒團可濾）
-          setHqOnHand(null);
+          setHqAvailable(null);
         }
       }
     })();
@@ -815,7 +861,10 @@ function Body() {
     totalInTransit: number;               // 總在途(還會到)
     totalShortage: number;                // 總短少(永遠不會到)
     totalAlreadyWave: number;             // 總已撿
-    totalAvailable: number;               // 可分配 = totalGr - totalAlreadyWave
+    poAvailable: number;                  // PO 餘量 = totalGr - totalAlreadyWave
+    hqAvailable: number | null;           // 總倉可派 = on_hand - reserved - 未出倉撿貨單保留；讀不到時為 null
+    cappedByHq: boolean;                  // PO 餘量被總倉可派封頂
+    totalAvailable: number;               // 可分配 = min(PO 餘量, 總倉可派)
     campaignIds: Set<number>;             // 此 SKU 對應的開團（跨 po_item 聯集），篩選用
   };
 
@@ -841,6 +890,9 @@ function Body() {
           totalInTransit: 0,
           totalShortage: 0,
           totalAlreadyWave: 0,
+          poAvailable: 0,
+          hqAvailable: null,
+          cappedByHq: false,
           totalAvailable: 0,
           campaignIds: new Set<number>(),
         };
@@ -878,7 +930,10 @@ function Body() {
     // 計算 totals
     for (const s of grouped.values()) {
       s.totalAlreadyWave = s.poList.reduce((sum, p) => sum + p.already_wave_for_sku, 0);
-      s.totalAvailable = Math.max(0, s.totalGr - s.totalAlreadyWave);
+      s.poAvailable = Math.max(0, s.totalGr - s.totalAlreadyWave);
+      s.hqAvailable = hqAvailable?.get(Number(s.sku_id)) ?? null;
+      s.totalAvailable = capSkuAvailable(s.sku_id, s.poAvailable, hqAvailable);
+      s.cappedByHq = s.hqAvailable != null && s.hqAvailable < s.poAvailable;
       s.poList.sort((a, b) => a.po_id - b.po_id);
       // 團清單收斂成「這個商品真的有賣的團」。⚠️ 只換 campaignIds 的內容，
       // 不影響 totalAvailable，所以下面 filter(totalAvailable > 0) 的結果、
@@ -891,7 +946,7 @@ function Body() {
       // 派貨工作台是「我現在可以分配什麼」,在途的等 PO 收貨後自然會回來。
       .filter((s) => s.totalAvailable > 0)
       .sort((a, b) => (a.sku_code ?? "").localeCompare(b.sku_code ?? ""));
-  }, [demand, poItemCampaigns, skuSoldCampaigns]);
+  }, [demand, hqAvailable, poItemCampaigns, skuSoldCampaigns]);
 
   const allStores: StoreInfo[] = useMemo(() => {
     if (!demand || !storeMasters) return [];
@@ -1066,8 +1121,8 @@ function Body() {
     //   型別對不上時 pickedRows 會變成 0 → hasPicked=false → 建單範圍**退回篩選範圍內全部**。
     //   這是最壞的一種失效：畫面說匯入成功，實際上會派出整個工作台。
     //   ⛔ 刻意只在這個「skuRows ↔ 已挑清單」的接縫上正規化，**不動 skuRows 本身的 sku_id**：
-    //     skuSoldCampaigns / priceFlags / hqOnHand 三張表都是用 PostgREST 原值當 key
-    //     （分別來自 campaign_items / sku_prices / stock_balances 三支查詢），
+    //     skuSoldCampaigns / priceFlags 兩張表都是用 PostgREST 原值當 key
+    //     （分別來自 campaign_items / sku_prices 兩支查詢；hqAvailable 因為會當安全上限，已明確 Number() 正規化），
     //     只把 skuRows 那一側轉成 number，字串情境下反而會讓那三個查表全部失準。
     () => skuRows.filter((sk) => pickedSkus.has(Number(sk.sku_id))),
     [skuRows, pickedSkus],
@@ -1356,7 +1411,7 @@ function Body() {
       const next = new Map(prev);
       const agg = new Map<AllocKey, { demand: number; wave: number }>();
       // 每個 SKU 的可分配量，算式與 skuRows.totalAvailable 完全一致：
-      // per (po, sku) 去重後 max(0, Σgr_qty − Σpo_sku_already_wave)。
+      // per (po, sku) 去重後 max(0, Σgr_qty − Σpo_sku_already_wave)，再用總倉可派封頂。
       const availBySku = new Map<number, number>();
       const poSkuSeen = new Set<string>();
       for (const r of demand) {
@@ -1377,7 +1432,9 @@ function Body() {
       }
       // headroom = 可分配量 − 已經存在的分配量（使用者手動改過的、上一輪預填的都先扣掉）
       const headroom = new Map<number, number>();
-      for (const [skuId, av] of availBySku) headroom.set(skuId, Math.max(0, av));
+      for (const [skuId, av] of availBySku) {
+        headroom.set(skuId, capSkuAvailable(skuId, av, hqAvailable));
+      }
       for (const [k, val] of next) {
         const skuId = Number(k.split(":")[0]);
         const room = headroom.get(skuId);
@@ -1394,7 +1451,7 @@ function Body() {
       }
       return next;
     });
-  }, [demand]);
+  }, [demand, hqAvailable]);
 
   // ===== Allocation Helpers =====
   function setAlloc(skuId: number, storeId: number, qty: number) {
@@ -1423,6 +1480,41 @@ function Body() {
       return next;
     });
   }
+
+  // 總倉可派晚於 demand 載入時，舊的預填可能已經塞超過新上限；這裡就地收斂。
+  useEffect(() => {
+    const caps = new Map<number, number>();
+    for (const sk of skuRows) caps.set(sk.sku_id, sk.totalAvailable);
+    if (caps.size === 0) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAllocs((prev) => {
+      let changed = false;
+      const next = new Map(prev);
+      const keysBySku = new Map<number, AllocKey[]>();
+      for (const key of next.keys()) {
+        const skuId = Number(key.split(":")[0]);
+        const keys = keysBySku.get(skuId) ?? [];
+        keys.push(key);
+        keysBySku.set(skuId, keys);
+      }
+      for (const [skuId, keys] of keysBySku) {
+        const cap = caps.get(skuId);
+        if (cap == null) continue;
+        let remaining = cap;
+        for (const key of keys) {
+          const oldVal = next.get(key) ?? 0;
+          const newVal = Math.min(oldVal, Math.max(0, remaining));
+          if (newVal !== oldVal) {
+            next.set(key, newVal);
+            changed = true;
+          }
+          remaining -= newVal;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [skuRows]);
+
   function getAlloc(skuId: number, storeId: number): number {
     return allocs.get(`${skuId}:${storeId}`) ?? 0;
   }
@@ -2481,10 +2573,22 @@ function Body() {
                           <span className="text-sm font-medium">{sk.sku_label}</span>
                           <span
                             className="font-mono text-xs font-semibold tabular-nums text-emerald-700 dark:text-emerald-400"
-                            title="可分配 = 總倉已到貨 − 已派。這就是建單時實際會派出去的上限"
+                            title={
+                              sk.cappedByHq
+                                ? `可分配已按總倉可派庫存封頂（PO 餘量 ${sk.poAvailable}、總倉可派 ${sk.hqAvailable}）`
+                                : "可分配 = PO 已到貨 − 已派；有總倉庫存時會再按總倉可派封頂"
+                            }
                           >
                             可分配 {sk.totalAvailable}
                           </span>
+                          {sk.cappedByHq && (
+                            <span
+                              className="rounded bg-amber-100 px-1 py-0.5 text-[9px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                              title={`PO 餘量 ${sk.poAvailable}，總倉可派 ${sk.hqAvailable}，所以派貨上限用 ${sk.totalAvailable}`}
+                            >
+                              庫存封頂
+                            </span>
+                          )}
                           {sk.poList.some((p) => p.is_restock_sourced) && (
                             <span
                               className="rounded bg-amber-100 px-1 py-0.5 text-[9px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300"
@@ -2626,7 +2730,7 @@ function Body() {
                 <tr ref={headRowRef}>
                   {/* 勾選欄拿掉：選哪些品項改在步驟 1 決定（舊版勾選會被「目前清單」交集吃掉） */}
                   <Th className="sticky left-0 z-20 bg-zinc-50 py-2 dark:bg-zinc-900">品項 / 來源</Th>
-                  <Th className="bg-zinc-50 py-2 text-center dark:bg-zinc-900" title="可分配剩餘 = 總倉已到貨 − 已派 − 本次擬分">可分配</Th>
+                  <Th className="bg-zinc-50 py-2 text-center dark:bg-zinc-900" title="可分配剩餘 = min(PO 已到貨 − 已派, 總倉可派) − 本次擬分">可分配</Th>
                   <Th className="bg-zinc-50 py-2 text-center dark:bg-zinc-900" title="本次擬分合計(含被隱藏的分店欄)">擬分</Th>
                   {visibleStores.map((st) => (
                     <Th key={st.store_id} storeCol={st.store_id} className="bg-zinc-50 py-2 text-center dark:bg-zinc-900">
@@ -2649,7 +2753,7 @@ function Body() {
                   const allocSum = getSkuAllocTotal(sk);
                   const overAlloc = allocSum > sk.totalAvailable;
                   const remaining = sk.totalAvailable - allocSum; // 可分配剩餘
-                  const onHand = hqOnHand?.get(sk.sku_id);
+                  const hqCap = sk.hqAvailable;
                   return (
                     <tr key={sk.sku_id} className={overAlloc ? "bg-red-50 dark:bg-red-950/30" : ""}>
                       <Td className="sticky left-0 bg-white px-3 py-2.5 text-xs dark:bg-zinc-900">
@@ -2684,8 +2788,21 @@ function Body() {
                                 <span title="PO 結了但供應商少給的數量(永遠不會到)" className="text-rose-600 dark:text-rose-400">短 {sk.totalShortage}</span>
                               )}
                               <span title="已派出的數量(含撿貨單與補貨直派)">派 {sk.totalAlreadyWave}</span>
-                              {onHand !== undefined && (
-                                <span title="總倉即時在庫(stock_balances,純參考;派貨上限仍以 已到貨−已派 計)">倉 {onHand}</span>
+                              {hqCap != null && (
+                                <span
+                                  className={sk.cappedByHq ? "text-amber-600 dark:text-amber-400" : undefined}
+                                  title="總倉可派(stock_balances.on_hand − reserved − 未出倉撿貨單保留)，派貨上限會用它封頂"
+                                >
+                                  倉 {hqCap}
+                                </span>
+                              )}
+                              {sk.cappedByHq && (
+                                <span
+                                  className="text-amber-600 dark:text-amber-400"
+                                  title={`PO 餘量 ${sk.poAvailable}，總倉可派 ${sk.hqAvailable}，所以派貨上限用 ${sk.totalAvailable}`}
+                                >
+                                  封頂
+                                </span>
                               )}
                             </div>
                           </div>
