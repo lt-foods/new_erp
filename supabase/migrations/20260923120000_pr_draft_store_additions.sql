@@ -93,7 +93,11 @@ SET search_path = public
 AS $$
 DECLARE
   v_tenant                 UUID := public._current_tenant_id();
-  v_role                   TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', auth.jwt() ->> 'role', '');
+  v_role                   TEXT := COALESCE(
+                                NULLIF(auth.jwt() -> 'app_metadata' ->> 'role', ''),
+                                NULLIF(auth.jwt() ->> 'role', 'authenticated'),
+                                ''
+                              );
   v_pr                     RECORD;
   v_campaign               RECORD;
   v_campaign_item_id        BIGINT;
@@ -123,7 +127,7 @@ BEGIN
     RAISE EXCEPTION 'tenant is required';
   END IF;
 
-  IF v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant','') THEN
+  IF v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant') THEN
     RAISE EXCEPTION 'permission denied';
   END IF;
 
@@ -294,11 +298,6 @@ BEGIN
     FROM _pr_store_add_raw
    GROUP BY store_id;
 
-  DROP TABLE IF EXISTS _pr_store_add_touched_pending_orders;
-  CREATE TEMP TABLE _pr_store_add_touched_pending_orders (
-    order_id BIGINT PRIMARY KEY
-  ) ON COMMIT DROP;
-
   SELECT COUNT(*), COALESCE(SUM(qty), 0)
     INTO v_store_count, v_store_added_qty
     FROM _pr_store_add_input;
@@ -356,6 +355,11 @@ BEGIN
        AND member_id = v_member_id
        AND order_kind = 'normal'
        AND status NOT IN ('transferred_out','expired','cancelled')
+       AND aid_board_id IS NULL
+       AND order_no NOT LIKE 'SP-%'
+       AND order_no NOT LIKE 'WS-%'
+     ORDER BY id
+     LIMIT 1
      FOR UPDATE;
 
     IF v_order_id IS NULL THEN
@@ -391,12 +395,6 @@ BEGIN
       IF v_order_status NOT IN ('pending','confirmed') THEN
         RAISE EXCEPTION '此分店在原團的店內單已進入後段狀態，不能從請購單草稿追加：order_id=%, status=%',
           v_order_id, v_order_status;
-      END IF;
-
-      IF v_order_status = 'pending' THEN
-        INSERT INTO _pr_store_add_touched_pending_orders (order_id)
-        VALUES (v_order_id)
-        ON CONFLICT DO NOTHING;
       END IF;
 
     END IF;
@@ -451,7 +449,7 @@ BEGIN
 
     UPDATE public.purchase_requests pr
        SET total_amount = COALESCE((
-             SELECT SUM(pri.qty_requested * pri.unit_cost)
+             SELECT SUM(pri.line_subtotal)
                FROM public.purchase_request_items pri
               WHERE pri.pr_id = p_pr_id
            ), 0),
@@ -516,15 +514,19 @@ BEGIN
     p_operator
   FROM updated_orders;
 
-  SELECT string_agg(co.order_no, ', ' ORDER BY co.order_no)
+  SELECT string_agg(DISTINCT co.order_no, ', ' ORDER BY co.order_no)
     INTO v_pending_order_nos
-    FROM _pr_store_add_touched_pending_orders t
-    JOIN public.customer_orders co
-      ON co.id = t.order_id
-   WHERE co.status = 'pending';
+    FROM public.customer_orders co
+    JOIN public.customer_order_items coi
+      ON coi.order_id = co.id
+   WHERE co.tenant_id = v_tenant
+     AND co.campaign_id = p_campaign_id
+     AND co.status = 'pending'
+     AND coi.sku_id = v_pr.sku_id
+     AND coi.status NOT IN ('cancelled','expired');
 
   IF v_pending_order_nos IS NOT NULL THEN
-    RAISE EXCEPTION '這些店在原團已有未確認店內單，且同單其他品項還沒補進請購，不能安全加單：%',
+    RAISE EXCEPTION '原團仍有同品項的未確認店內單，且同單其他品項還沒補進請購；請先處理舊待確認店內單或對原團補請購後再加單：%',
       v_pending_order_nos;
   END IF;
 

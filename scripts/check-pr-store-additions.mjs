@@ -50,14 +50,33 @@ assert(
     migration.includes("_pr_store_add_remaining") &&
     migration.includes("safe_orders") &&
     migration.includes("coi.sku_id = v_pr.sku_id") &&
-    migration.includes("_pr_store_add_touched_pending_orders") &&
-    migration.includes("不能安全加單"),
+    migration.includes("SELECT string_agg(DISTINCT co.order_no") &&
+    migration.includes("請先處理舊待確認店內單或對原團補請購後再加單"),
   "RPC must avoid broad whole-campaign confirmation and only confirm safely covered pending orders",
 );
 assert(
   migration.includes("COALESCE(s.store_kind, 'branch') = 'branch'") &&
     page.includes('.eq("store_kind", "branch")'),
   "store additions must only allow branch stores, not wholesale stores",
+);
+assert(
+  migration.includes("AND aid_board_id IS NULL") &&
+    migration.includes("AND order_no NOT LIKE 'SP-%'") &&
+    migration.includes("AND order_no NOT LIKE 'WS-%'") &&
+    migration.includes("ORDER BY id") &&
+    migration.includes("LIMIT 1"),
+  "existing internal order lookup must match customer_orders_trio_kind_active_uniq and be deterministic",
+);
+assert(
+  migration.includes("SELECT SUM(pri.line_subtotal)") &&
+    !migration.includes("SELECT SUM(pri.qty_requested * pri.unit_cost)"),
+  "PR total must use line_subtotal, matching the rest of the purchase flow",
+);
+assert(
+  migration.includes("NULLIF(auth.jwt() ->> 'role', 'authenticated')") &&
+    migration.includes("IF v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant') THEN") &&
+    !migration.includes("'assistant','')"),
+  "RPC must not allow authenticated users with an empty application role",
 );
 assert(
   migration.includes("REVOKE ALL ON public.purchase_request_store_additions FROM authenticated") &&
