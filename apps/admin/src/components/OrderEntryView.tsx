@@ -85,6 +85,8 @@ type CustomerEntry = {
 
 const DRAFT_PREFIX = "draft:order-entry:";
 const AUTOSAVE_MS = 30_000;
+const CLOSED_CAMPAIGN_ORDER_NOTE =
+  "如果這個結單日已建過請購單，送出後請回請購單頁執行補單，否則新增數量不會被買到。";
 
 function newEntry(): CustomerEntry {
   return {
@@ -149,6 +151,9 @@ export function OrderEntryView({
   const [draftLoaded, setDraftLoaded] = useState(false);
 
   const draftKey = useMemo(() => `${DRAFT_PREFIX}${campaignId}`, [campaignId]);
+  const isClosedCampaign = campaign?.status === "closed";
+  const withClosedCampaignNote = (message: string) =>
+    isClosedCampaign ? `${message}。${CLOSED_CAMPAIGN_ORDER_NOTE}` : message;
 
   // 載入活動 / channels
   useEffect(() => {
@@ -377,7 +382,7 @@ export function OrderEntryView({
       });
       if (err) { setError(err.message); return; }
       const created = (data as { out_order_id: number; out_order_no: string; out_item_count: number }[]) ?? [];
-      setToast(`已建立/更新 ${created.length} 筆訂單`);
+      setToast(withClosedCampaignNote(`已建立/更新 ${created.length} 筆訂單`));
       setEntries([newEntry()]);
       localStorage.removeItem(draftKey);
       onCreated?.();
@@ -513,7 +518,7 @@ export function OrderEntryView({
         p_notes: internalNotes.trim() || null,
       });
       if (err) { setError(err.message); return; }
-      setToast(`已建立內部訂單 #${data}`);
+      setToast(withClosedCampaignNote(`已建立內部訂單 #${data}`));
       setInternalItems([emptyItem()]);
       onCreated?.();
       setInternalNotes("");
@@ -557,6 +562,12 @@ export function OrderEntryView({
           <kbd className="rounded border px-1">Ctrl+S</kbd> 送出
         </div>
       </header>
+
+      {isClosedCampaign && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+          {CLOSED_CAMPAIGN_ORDER_NOTE}
+        </div>
+      )}
 
       <div className="inline-flex w-fit overflow-hidden rounded-md border border-zinc-300 text-xs dark:border-zinc-700">
         <SpinButton
