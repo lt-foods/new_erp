@@ -25,19 +25,26 @@ export const HOME_KIND_LABEL: Record<string, string> = {
   group: "群組", square: "社群", square_chat: "社群聊天室",
 };
 
+// 留言裡有「+數字」「加1」「打1」＝看起來想下單。解析器不收的（「A, B+1」代碼沒寫數量、
+// 「白+1」「BE各+1」）落成 no_order，沒有這條就會被當聊天、沒人看到。DB 那支同一條 regex。
+const ORDERISH = /[+＋]\s*[0-9０-９]|[加打]\s*[0-9０-９一二三四五六七八九]/;
+
 /**
  * 這則留言還要人看嗎？
- * no_order（解析不出訂單）本來不算，但**留言裡有 6 碼會員編號**就算 ——
+ * no_order（解析不出訂單）本來不算，但**留言裡有 6 碼會員編號**或**看起來像下單**就算 ——
  * 那是「客人想下單、我們看不懂他寫什麼」，放掉就是漏單。
  */
-export function isTodoComment(c: { status: string; member_no_hint?: string | null }): boolean {
-  return ["pending", "unmatched", "error"].includes(c.status)
-    || (c.status === "no_order" && !!c.member_no_hint);
+export function isUnreadableOrder(c: { status: string; member_no_hint?: string | null; text?: string | null }): boolean {
+  return c.status === "no_order" && (!!c.member_no_hint || ORDERISH.test(c.text ?? ""));
+}
+
+export function isTodoComment(c: { status: string; member_no_hint?: string | null; text?: string | null }): boolean {
+  return ["pending", "unmatched", "error"].includes(c.status) || isUnreadableOrder(c);
 }
 
 export type CommentStat = { total: number; ordered: number; duplicate: number; todo: number };
 
-export function commentStats(rows: { status: string; member_no_hint?: string | null }[]): CommentStat {
+export function commentStats(rows: { status: string; member_no_hint?: string | null; text?: string | null }[]): CommentStat {
   const st: CommentStat = { total: 0, ordered: 0, duplicate: 0, todo: 0 };
   for (const c of rows) {
     st.total++;
