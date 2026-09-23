@@ -27,17 +27,52 @@ export function normalize(text) {
     .replace(/[：]/g, ":");
 }
 
-const UNIT = "(?:份|個|组|組|包|盒|箱|瓶|罐|袋|條|片|支|入|件|套|杯|顆|粒|斤|台|本)?";
+// ── 可調整的規則（後台「LINE 記事本 → 解析規則」分頁可以改，存在 line_note_parse_settings）──
+// 預設值＝寫死那時候的行為。沒存過設定的租戶、或設定讀不到時一律用它。
+export const DEFAULT_PARSE_CONFIG = Object.freeze({
+  // 「A 2份」「2份」認得的數量單位（「入」刻意不在裡面：A2入 是 2 入裝，不是 2 份）
+  units: ["份", "個", "组", "組", "包", "盒", "箱", "瓶", "罐", "袋", "條", "片", "支", "件", "套", "杯", "顆", "粒", "斤", "台", "本"],
+  // 出現這些字＝取消
+  cancelWords: ["取消", "退", "刪", "删", "不要了", "改為0", "改成0"],
+  // 後面緊接數字時當「+」用的字（「加1」「打1」「加一」）
+  plusWords: ["加", "打"],
+  allowNoCode: true,     // 沒寫品項也收：+1、加1、2份（只有一個品項的團）
+  allowQtyFirst: true,   // 數量寫前面：+1 A
+  allowTimes: true,      // 乘號／單位：A x2、A*2、A 2份
+  fixTypos: true,        // 常見錯字：A+I、A十1、A+1.
+  rejectBareCode: true,  // 有品項沒寫數量（A, B+1）→ 整則不加；關掉＝只加有寫數量的那幾個
+});
+
+const strList = (v, fallback) => {
+  if (!Array.isArray(v)) return fallback;
+  const out = [...new Set(v.map((x) => String(x ?? "").trim()).filter((x) => x && x.length <= 10))].slice(0, 50);
+  return out;
+};
+const bool = (v, fallback) => (typeof v === "boolean" ? v : fallback);
+
+/** 任何來源（DB jsonb / 後台草稿）的設定 → 補齊預設、濾掉壞值 */
+export function normalizeParseConfig(cfg) {
+  const c = cfg && typeof cfg === "object" ? cfg : {};
+  const d = DEFAULT_PARSE_CONFIG;
+  return {
+    units: strList(c.units, [...d.units]),
+    cancelWords: strList(c.cancelWords, [...d.cancelWords]),
+    // 「+」字只收單一個中文／符號字，不收英數（「A」當加號會把品號吃掉）
+    plusWords: strList(c.plusWords, [...d.plusWords]).filter((w) => w.length === 1 && !/[A-Za-z0-9\s]/.test(w)),
+    allowNoCode: bool(c.allowNoCode, d.allowNoCode),
+    allowQtyFirst: bool(c.allowQtyFirst, d.allowQtyFirst),
+    allowTimes: bool(c.allowTimes, d.allowTimes),
+    fixTypos: bool(c.fixTypos, d.fixTypos),
+    rejectBareCode: bool(c.rejectBareCode, d.rejectBareCode),
+  };
+}
+
+const esc = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const alt = (ws) => (ws.length ? ws.map(esc).join("|") : "(?!)");   // 空清單＝永遠不中
+
 // 品項代碼：英文字母開頭，可接數字／連字號（A、B2、C-1、AB）
 const CODE = "([A-Za-z][A-Za-z0-9-]{0,7})";
-const CANCEL_WORDS = /(取消|退|刪|删|不要了|改為0|改成0)/;
-// 「加1」「打1」「加一」→「+1」。只在後面緊接數字（或一～九）時才換，
-// 「加油」「打包」「追加」這種不動；「加一點」換成「+1點」後也對不到任何 pattern，仍是非下單。
 const CN_DIGITS = "一二三四五六七八九";
-const PLUS_WORDS = /[加打]\s*([0-9一二三四五六七八九])/g;
-function plusWordsToSign(s) {
-  return s.replace(PLUS_WORDS, (_, d) => "+" + (CN_DIGITS.includes(d) ? String(CN_DIGITS.indexOf(d) + 1) : d));
-}
 
 // 手機打字常見的錯字（2026-09-15 松山那批留言實際出現，人看得懂、機器解不出來就整則漏單）：
 //   「A+I」「I+ I」→ + - 後面的大寫 I / 小寫 l / 全形｜ 當 1（後頭不接英數才換，避免動到品號）
@@ -53,51 +88,74 @@ const MULTI_CODE_FIRST = /^\s*(?:[A-Za-z][A-Za-z0-9-]{0,7}\s*[+-]\s*\d{1,3}\s*){
 const MULTI_QTY_FIRST = /^\s*(?:[+-]\s*\d{1,3}\s*[A-Za-z][A-Za-z0-9-]{0,7}\s*){2,}$/;
 const TOKEN_CODE_FIRST = /[A-Za-z][A-Za-z0-9-]{0,7}\s*[+-]\s*\d{1,3}/g;
 const TOKEN_QTY_FIRST = /[+-]\s*\d{1,3}\s*[A-Za-z][A-Za-z0-9-]{0,7}/g;
-
 const BARE_CODE = new RegExp(`^${CODE}$`);
 
-const PATTERNS = [
-  // A+1 / A +2 / B-2+1 / 取消 A-1
-  { re: new RegExp(`^\\s*${CODE}\\s*([+-])\\s*(\\d{1,3})${UNIT}\\s*$`), map: (m) => ({ code: m[1], sign: m[2], qty: m[3] }) },
+// 設定 → 編好的 regex。純粹由設定內容決定，所以用內容當 key 快取（不是「這次呼叫」的狀態）。
+const compiled = new Map();
+function compile(cfg) {
+  const key = JSON.stringify(cfg);
+  const hit = compiled.get(key);
+  if (hit) return hit;
+  const units = alt(cfg.units);
+  const UNIT = `(?:${alt([...cfg.units, "入"])})?`;
+  const patterns = [
+    // A+1 / A +2 / B-2+1 / 取消 A-1
+    { re: new RegExp(`^\\s*${CODE}\\s*([+-])\\s*(\\d{1,3})${UNIT}\\s*$`), map: (m) => ({ code: m[1], sign: m[2], qty: m[3] }) },
+  ];
   // +1 A / +2 B2
-  { re: new RegExp(`^\\s*([+-])\\s*(\\d{1,3})${UNIT}\\s*${CODE}\\s*$`), map: (m) => ({ code: m[3], sign: m[1], qty: m[2] }) },
+  if (cfg.allowQtyFirst) patterns.push({ re: new RegExp(`^\\s*([+-])\\s*(\\d{1,3})${UNIT}\\s*${CODE}\\s*$`), map: (m) => ({ code: m[3], sign: m[1], qty: m[2] }) });
   // +1 / + 3
-  { re: new RegExp(`^\\s*([+-])\\s*(\\d{1,3})${UNIT}\\s*$`), map: (m) => ({ code: null, sign: m[1], qty: m[2] }) },
+  if (cfg.allowNoCode) patterns.push({ re: new RegExp(`^\\s*([+-])\\s*(\\d{1,3})${UNIT}\\s*$`), map: (m) => ({ code: null, sign: m[1], qty: m[2] }) });
   // A x2 / A*2 / A 2份 / A2份（要有單位或 x，避免把 A2 品號當成 A×2）
-  { re: new RegExp(`^\\s*${CODE}\\s*(?:x\\s*(\\d{1,3})${UNIT}|(\\d{1,3})(?:份|個|组|組|包|盒|箱|瓶|罐|袋|條|片|支|件|套|杯|顆|粒|斤|台|本))\\s*$`), map: (m) => ({ code: m[1], sign: "+", qty: m[2] ?? m[3] }) },
+  if (cfg.allowTimes) patterns.push({ re: new RegExp(`^\\s*${CODE}\\s*(?:x\\s*(\\d{1,3})${UNIT}|(\\d{1,3})(?:${units}))\\s*$`), map: (m) => ({ code: m[1], sign: "+", qty: m[2] ?? m[3] }) });
   // 2份 / 3組（沒 code，但有單位）
-  { re: /^\s*(\d{1,3})(?:份|個|组|組|包|盒|箱|瓶|罐|袋|條|片|支|件|套|杯|顆|粒|斤|台|本)\s*$/, map: (m) => ({ code: null, sign: "+", qty: m[1] }) },
-];
+  if (cfg.allowNoCode) patterns.push({ re: new RegExp(`^\\s*(\\d{1,3})(?:${units})\\s*$`), map: (m) => ({ code: null, sign: "+", qty: m[1] }) });
+  const out = {
+    patterns,
+    cancel: new RegExp(`(${alt(cfg.cancelWords)})`),
+    // 「加1」「打1」「加一」→「+1」。只在後面緊接數字（或一～九）時才換，
+    // 「加油」「打包」「追加」這種不動；「加一點」換成「+1點」後也對不到任何 pattern，仍是非下單。
+    plus: cfg.plusWords.length ? new RegExp(`(?:${alt(cfg.plusWords)})\\s*([0-9一二三四五六七八九])`, "g") : null,
+  };
+  if (compiled.size > 50) compiled.clear();
+  compiled.set(key, out);
+  return out;
+}
 
 /**
  * @param {string} text 留言原文
+ * @param {object} [config] 解析規則（normalizeParseConfig 的格式）；不給＝預設
  * @returns {{code:string|null, qty:number, cancel:boolean, line:string}[]}
  */
-export function parseOrderLines(text) {
+export function parseOrderLines(text, config) {
+  const cfg = normalizeParseConfig(config);
+  const rx = compile(cfg);
   const out = [];
-  const norm = fixTypos(plusWordsToSign(normalize(text)));
+  let norm = normalize(text);
+  if (rx.plus) norm = norm.replace(rx.plus, (_, d) => "+" + (CN_DIGITS.includes(d) ? String(CN_DIGITS.indexOf(d) + 1) : d));
+  if (cfg.fixTypos) norm = fixTypos(norm);
   const segments = [];
   for (const rawLine of norm.split(/\r?\n|[,，;；、/]/)) {
     // 同一行寫多筆：整行都是「代碼+號+數」重複（A+1 B+5）或「號+數+代碼」重複（+1 A +2 B）才拆，
     // 其他（B-2 +1 這種代碼帶連字號的）交給下面的單筆規則
     if (MULTI_CODE_FIRST.test(rawLine)) segments.push(...(rawLine.match(TOKEN_CODE_FIRST) ?? []));
-    else if (MULTI_QTY_FIRST.test(rawLine)) segments.push(...(rawLine.match(TOKEN_QTY_FIRST) ?? []));
+    else if (cfg.allowQtyFirst && MULTI_QTY_FIRST.test(rawLine)) segments.push(...(rawLine.match(TOKEN_QTY_FIRST) ?? []));
     else segments.push(rawLine);
   }
   for (const rawLine of segments) {
     const line = rawLine.trim();
     if (!line) continue;
-    const cancelWord = CANCEL_WORDS.test(line);
+    const cancelWord = rx.cancel.test(line);
     // 把「取消」「退」這類字先拿掉再比對數量
-    const body = line.replace(CANCEL_WORDS, " ").trim();
+    const body = line.replace(rx.cancel, " ").trim();
     let hit = null;
-    for (const p of PATTERNS) {
+    for (const p of rx.patterns) {
       const m = body.match(p.re);
       if (m) { hit = p.map(m); break; }
     }
     if (!hit) {
       // 光一個代碼沒數量（「A, B+1」的 A）→ 整則放棄，別只加一半
-      if (BARE_CODE.test(body)) return [];
+      if (cfg.rejectBareCode && BARE_CODE.test(body)) return [];
       // 「取消」單獨一行也算一筆取消（qty 0，讓人工看）
       if (cancelWord && body === "") out.push({ code: null, qty: 0, cancel: true, line });
       continue;
@@ -128,11 +186,11 @@ export function extractMemberNo(text) {
  * 6 碼先從留言內文找；沒有就看留言者的暱稱（很多社群規定暱稱要帶會員編號：
  * 「涂003886」「Sherry061016/松山」「Ting/616582松山」）。
  */
-export function parseNoteComment(text, authorName = "") {
+export function parseNoteComment(text, authorName = "", config) {
   const { hint, rest } = extractMemberNo(text);
-  if (hint) return { memberNo: hint, memberNoSource: "text", orders: parseOrderLines(rest) };
+  if (hint) return { memberNo: hint, memberNoSource: "text", orders: parseOrderLines(rest, config) };
   const fromName = extractMemberNo(authorName).hint;
-  return { memberNo: fromName, memberNoSource: fromName ? "name" : null, orders: parseOrderLines(rest) };
+  return { memberNo: fromName, memberNoSource: fromName ? "name" : null, orders: parseOrderLines(rest, config) };
 }
 
 // ── 貼文 ↔ 團 的比對 ────────────────────────────────────────────────────────

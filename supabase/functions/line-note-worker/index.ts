@@ -28,7 +28,7 @@ import {
   clientFromToken, createNotePost, deleteNotePost, likeComment, type LineCredential, listComments, listHomes,
   listPosts, loginByQr, readCredential, whoami,
 } from "../_shared/lineNote.ts";
-import { extractPostTag, matchCampaign, normalizeForMatch, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
+import { extractPostTag, matchCampaign, normalizeForMatch, normalizeParseConfig, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
 import { renderPostText, TZ } from "../_shared/lineNoteRender.ts";
 
 const SUPABASE_URL = requireEnv("SUPABASE_URL");
@@ -333,11 +333,19 @@ async function deletePost(postId: number, callerTenant: string | null) {
   return { ok: true, linePostId: post.line_post_id };
 }
 
+// 後台「解析規則」分頁存的設定。每篇讀留言時現查（不放模組層級：isolate 會跨請求重用，
+// 快取起來的話改完規則要等 isolate 換掉才生效）。查不到＝預設規則。
+async function loadParseConfig(tenantId: string) {
+  const rows = await rest(`line_note_parse_settings?tenant_id=eq.${tenantId}&select=config`).catch(() => null);
+  return normalizeParseConfig(Array.isArray(rows) ? rows[0]?.config : null);
+}
+
 async function readPost(client: any, post: any) {
   const comments = await listComments(client, post.home_id, post.line_post_id, { verbose: VERBOSE });
+  const parseCfg = await loadParseConfig(post.tenant_id);
   if (comments.length) {
     const rows = comments.map((c: any) => {
-      const parsed = parseNoteComment(c.text, c.authorName ?? "");
+      const parsed = parseNoteComment(c.text, c.authorName ?? "", parseCfg);
       return {
         tenant_id: post.tenant_id, post_id: post.id, line_comment_id: String(c.commentId ?? ""),
         commenter_id: c.authorMid ?? null, commenter_name: c.authorName ?? null, text: c.text ?? "",
@@ -357,7 +365,7 @@ async function readPost(client: any, post: any) {
     `&select=id,text,commenter_name,parsed`).catch(() => []);
   for (const c of stale ?? []) {
     if (Array.isArray(c.parsed) && c.parsed.length) continue;
-    const p = parseNoteComment(c.text ?? "", c.commenter_name ?? "");
+    const p = parseNoteComment(c.text ?? "", c.commenter_name ?? "", parseCfg);
     if (!p.orders.length) continue;
     await patch("line_note_comments", `id=eq.${c.id}`, {
       parsed: p.orders, member_no_hint: p.memberNo, status: "pending", error: null, processed_at: null,
@@ -979,6 +987,15 @@ Deno.serve(async (req) => {
       });
       if (!payload) return json({ error: "找不到社群或團" }, 404);
       return json({ text: renderPost(payload), images: postImageUrls(payload) });
+    }
+    // 解析規則試算：後台「解析規則」分頁邊改邊試（config 是還沒存的草稿），
+    // 跟 worker 真的在用的是同一支解析器，不用另外在前端抄一份
+    if (action === "parse_preview") {
+      if (caller !== "admin") return json({ error: "parse_preview 只能從後台按" }, 403);
+      const cfg = normalizeParseConfig(body.config);
+      const texts: string[] = (Array.isArray(body.texts) ? body.texts : [body.text]).slice(0, 200).map((t: unknown) => String(t ?? "").slice(0, 2000));
+      const author = String(body.author_name ?? "");
+      return json({ config: cfg, results: texts.map((t) => ({ text: t, ...parseNoteComment(t, author, cfg) })) });
     }
     // 刪掉已經貼出去的貼文：LINE 上那篇先刪掉，成功了才清後台紀錄。
     // 走「後台直接呼叫」而不是排 job —— 這是破壞性動作，按下去要當場知道刪掉了沒。

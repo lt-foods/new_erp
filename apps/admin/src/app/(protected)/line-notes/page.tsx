@@ -13,6 +13,7 @@ import { CAMPAIGN_STATUSES, campaignStatusBadge, campaignStatusLabel } from "@/l
 import { Modal as SharedModal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
 import { OrderEntryView } from "@/components/OrderEntryView";
+import { LineNoteParseRulesTab } from "@/components/LineNoteParseRulesTab";
 import {
   COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, commentStats, fmtNoteTime, isTodoComment, isUnreadableOrder,
 } from "@/lib/lineNoteStatus";
@@ -102,7 +103,7 @@ function OrderLink({ id, no }: { id: number; no: string }) {
   );
 }
 
-type Tab = "accounts" | "communities" | "comments" | "posts";
+type Tab = "accounts" | "communities" | "comments" | "posts" | "rules";
 
 export default function LineNotesPage() {
   // 唯讀模式：非總部角色、但被個別授予 line_notes_view 功能權限（員工管理 → 功能權限）。
@@ -157,7 +158,7 @@ export default function LineNotesPage() {
   }, [canOperate, loadAccounts]);
 
   // 唯讀模式沒有帳號 / 社群設定分頁：停在那兩頁就改看貼文
-  const shownTab: Tab = readOnly && (tab === "accounts" || tab === "communities") ? "posts" : tab;
+  const shownTab: Tab = readOnly && (tab === "accounts" || tab === "communities" || tab === "rules") ? "posts" : tab;
 
   const accountById = useMemo(() => new Map((accounts ?? []).map((a) => [a.id, a])), [accounts]);
   const storeById = useMemo(() => new Map(stores.map((s) => [s.id, s])), [stores]);
@@ -176,7 +177,7 @@ export default function LineNotesPage() {
 
   const tabs: ReadonlyArray<readonly [Tab, string]> = readOnly
     ? [["comments", "留言加單"], ["posts", "貼文"]]
-    : [["accounts", "帳號"], ["communities", "社群設定"], ["comments", "留言加單"], ["posts", "貼文"]];
+    : [["accounts", "帳號"], ["communities", "社群設定"], ["comments", "留言加單"], ["posts", "貼文"], ["rules", "解析規則"]];
 
   return (
     <OrderPopupContext.Provider value={setOrderPopup}>
@@ -222,6 +223,7 @@ export default function LineNotesPage() {
       {shownTab === "comments" && (
         <CommentsTab communityById={communityById} notify={notify} fail={fail} readOnly={!canProcessComments} />
       )}
+      {shownTab === "rules" && !readOnly && <LineNoteParseRulesTab notify={notify} fail={fail} />}
       {shownTab === "posts" && (
         <PostsTab communities={communities ?? []} communityById={communityById} tick={postsTick} notify={notify} fail={fail} readOnly={readOnly} canLink={canProcessComments} />
       )}
@@ -843,8 +845,8 @@ function PostCampaignModal({ community, communities, accountById, onClose, notif
 type Filter = "todo" | "ordered" | "ignored" | "all";
 const isTodo = isTodoComment;
 
-// 機器人看得懂的留言寫法。規則本體在 supabase/functions/_shared/lineNoteParse.ts
-// （= tools/line-note-scraper/src/parse.mjs），改規則時這張表一起改。
+// 機器人看得懂的留言寫法（預設規則）。規則本體在 supabase/functions/_shared/lineNoteParse.ts
+// （= tools/line-note-scraper/src/parse.mjs），改預設時這張表一起改；租戶自訂的在「解析規則」分頁。
 const PARSER_OK: ReadonlyArray<readonly [string, string]> = [
   ["品項＋數量", "A+1、B +2、A1+1、A加1、A打1"],
   ["數量＋品項", "+1 A、+2 B2"],
@@ -880,6 +882,7 @@ function ParserFormatsHelp() {
           <table className="w-full"><tbody>{PARSER_NG.map(row)}</tbody></table>
           <p className="mt-2 text-xs text-zinc-500">
             會員編號（6 碼）寫在留言裡或 LINE 暱稱裡都可以。每個品項都要自己寫數量（A+1, B+1）才會自動加。
+            <br />以上是預設規則；總部可以在「解析規則」分頁調整。
           </p>
         </div>
       </div>
