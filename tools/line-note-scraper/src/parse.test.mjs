@@ -91,7 +91,7 @@ test("multiple items on one line", () => {
     { code: "A", qty: 1, cancel: false },
     { code: "B", qty: 2, cancel: false },
   ]);
-  assert.deepEqual(one("A/B+1"), [{ code: "B", qty: 1, cancel: false }]); // 「/」當分隔：A 沒數量
+  assert.deepEqual(one("A/B+1"), []); // A 沒寫數量 → 整則不加
   assert.deepEqual(one("A-1 B+2"), [
     { code: "A", qty: 1, cancel: true },
     { code: "B", qty: 2, cancel: false },
@@ -221,4 +221,17 @@ test("typos: I / ｜ as 1, 十 as +, trailing period", () => {
   assert.deepEqual(one("I1+1"), [{ code: "I1", qty: 1, cancel: false }]);
   assert.deepEqual(one("+1 I1"), [{ code: "I1", qty: 1, cancel: false }]);
   assert.deepEqual(one("十分好吃"), []);
+});
+
+test("code without qty (A, B+1) → whole comment is not auto-ordered", () => {
+  const codes = (t) => one(t).map((o) => [o.code, o.qty]);
+  assert.deepEqual(codes("A,B+1"), []);
+  assert.deepEqual(codes("A，B+1"), []);
+  assert.deepEqual(codes("A,B,E+1"), []);
+  assert.deepEqual(codes("d,g+1"), []);
+  assert.deepEqual(codes("A\nB+1"), []);
+  // 每個都寫了數量才加
+  assert.deepEqual(codes("A+1,B+1"), [["A", 1], ["B", 1]]);
+  assert.deepEqual(codes("A+1 B+1"), [["A", 1], ["B", 1]]);
+  assert.deepEqual(codes("A+1\nB+2"), [["A", 1], ["B", 2]]);
 });
