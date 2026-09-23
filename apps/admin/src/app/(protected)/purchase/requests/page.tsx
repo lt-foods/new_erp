@@ -82,7 +82,8 @@ type DeltaPreviewRow = {
 
 type DeltaPreviewIntent =
   | { kind: "supplement"; closeDate: string }
-  | { kind: "campaigns"; campaignIds: number[] };
+  | { kind: "closeDate"; closeDate: string }
+  | { kind: "campaigns"; campaignIds: number[]; closeDate?: string };
 
 type ClosedCampaignRow = {
   id: number;
@@ -197,7 +198,6 @@ export default function PurchaseRequestsListPage() {
 
   const [reloadTick, setReloadTick] = useState(0);
   const [busyId, setBusyId] = useState<number | null>(null);
-  const [busyDate, setBusyDate] = useState<string | null>(null);
   const [creatingBlank, setCreatingBlank] = useState(false);
   const [showCampaignModal, setShowCampaignModal] = useState(false);
   const [closedCampaigns, setClosedCampaigns] = useState<
@@ -456,7 +456,10 @@ export default function PurchaseRequestsListPage() {
       const { data, error: rpcErr } = await getSupabase().rpc(
         "rpc_preview_pr_campaign_sku_delta",
         {
-          p_close_date: intent.kind === "supplement" ? intent.closeDate : null,
+          p_close_date:
+            intent.kind === "supplement" || intent.kind === "closeDate"
+              ? intent.closeDate
+              : null,
           p_campaign_ids: intent.kind === "campaigns" ? intent.campaignIds : null,
         },
       );
@@ -490,10 +493,20 @@ export default function PurchaseRequestsListPage() {
     setPreviewLoading(false);
   }
 
+  function getDeltaPreviewLabel(intent: DeltaPreviewIntent) {
+    if (intent.kind === "supplement" || intent.kind === "closeDate") {
+      return `結單日 ${intent.closeDate}`;
+    }
+    if (intent.closeDate) return `結單日 ${intent.closeDate}`;
+    return `已選 ${intent.campaignIds.length} 個團`;
+  }
+
   async function confirmDeltaPreview() {
     if (!previewIntent) return;
     if (previewIntent.kind === "supplement") {
       await executeSupplement(previewIntent.closeDate);
+    } else if (previewIntent.kind === "closeDate") {
+      await executeImport(previewIntent.closeDate);
     } else {
       await executeCreateFromMultipleCampaigns(previewIntent.campaignIds);
     }
@@ -524,8 +537,15 @@ export default function PurchaseRequestsListPage() {
     }
   }
 
-  async function handleImport(closeDate: string) {
-    setBusyDate(closeDate);
+  async function handleImport(group: CloseDateGroup) {
+    await openDeltaPreview({
+      kind: "closeDate",
+      closeDate: group.close_date,
+    });
+  }
+
+  async function executeImport(closeDate: string) {
+    setCreatingMulti(true);
     setError(null);
     try {
       const supabase = getSupabase();
@@ -541,8 +561,7 @@ export default function PurchaseRequestsListPage() {
       router.push(`/purchase/requests/edit?id=${prId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusyDate(null);
+      setCreatingMulti(false);
     }
   }
 
@@ -916,11 +935,11 @@ export default function PurchaseRequestsListPage() {
                   )}
                 </ul>
                 <SpinButton
-                  onClick={() => handleImport(g.close_date)}
-                  disabled={busyDate !== null}
+                  onClick={() => handleImport(g)}
+                  disabled={creatingMulti}
                   className="w-full rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
                 >
-                  {busyDate === g.close_date ? "建立中…" : "📋 開始建立"}
+                  {creatingMulti ? "預覽中…" : "📋 預覽差額"}
                 </SpinButton>
               </div>
             ))}
@@ -1422,9 +1441,7 @@ export default function PurchaseRequestsListPage() {
               <div>
                 <h3 className="text-base font-semibold">請購差額預覽</h3>
                 <p className="mt-0.5 text-xs text-zinc-500">
-                  {previewIntent.kind === "supplement"
-                    ? `結單日 ${previewIntent.closeDate}`
-                    : `已選 ${previewIntent.campaignIds.length} 個團`}
+                  {getDeltaPreviewLabel(previewIntent)}
                   ：按下確認後才會更新{PR_TERM_ZH}。
                 </p>
               </div>
