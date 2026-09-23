@@ -41,6 +41,27 @@ type DerivedPO = {
 };
 
 type Supplier = { id: number; name: string };
+type StoreOption = { id: number; code: string | null; name: string; store_kind?: string | null };
+type ItemCampaignOption = {
+  campaign_id: number;
+  campaign_no: string;
+  name: string;
+  qty_requested: number;
+};
+type StoreAddLine = { storeId: number | null; qty: string };
+type StoreAddModal = {
+  itemId: number;
+  label: string;
+  skuCode: string;
+  campaignId: number | null;
+  requestKey: string;
+  lines: StoreAddLine[];
+};
+type StoreAddResult = {
+  store_count?: number;
+  store_added_qty?: number | string;
+  pr_delta_qty?: number | string;
+};
 
 // rpc_create_partial_pr_from_items 的 jsonb 回傳
 type PartialSplitResult = {
@@ -113,6 +134,10 @@ function PageContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"save" | "submit" | "split" | "reopen" | "delete" | "partial" | null>(null);
+  const [stores, setStores] = useState<StoreOption[]>([]);
+  const [itemCampaignOptions, setItemCampaignOptions] = useState<Map<number, ItemCampaignOption[]>>(new Map());
+  const [storeAddModal, setStoreAddModal] = useState<StoreAddModal | null>(null);
+  const [storeAddBusy, setStoreAddBusy] = useState(false);
   const [destLocationId, setDestLocationId] = useState<number | null>(null);
   // UI 上被移除、但尚未存檔的品項 id — saveDraft 時才真正從 DB 刪除。
   // 之前只從 state filter 掉，DB 列還在 → 送審後拆 PO 被「未指派供應商」殘列擋死。
@@ -151,6 +176,8 @@ function PageContent() {
     setSelectedIds(new Set());
     setDerivedPOs([]);
     setMissingCampaigns([]);
+    setItemCampaignOptions(new Map());
+    setStoreAddModal(null);
     setTransferSummary(undefined);
     setCampaignFinalized(false);
     let cancelled = false;
@@ -162,6 +189,7 @@ function PageContent() {
           { data: prData, error: prErr },
           { data: itemRows, error: itemErr },
           { data: supRows },
+          { data: storeRows, error: storeErr },
           { data: usageRows },
           { data: locRow },
         ] = await Promise.all([
@@ -180,6 +208,13 @@ function PageContent() {
             .eq("pr_id", id)
             .order("id"),
           supabase.from("suppliers").select("id, name").eq("is_active", true).order("name"),
+          supabase
+            .from("stores")
+            .select("id, code, name, store_kind")
+            .eq("is_active", true)
+            .is("deleted_at", null)
+            .eq("store_kind", "branch")
+            .order("name"),
           supabase.from("v_supplier_usage_count").select("supplier_id, usage_count"),
           supabase.from("locations").select("id").order("id").limit(1).maybeSingle(),
         ]);
@@ -187,9 +222,11 @@ function PageContent() {
         if (cancelled) return;
         if (prErr || !prData) throw new Error(prErr?.message ?? `找不到${PR_TERM_ZH}`);
         if (itemErr) throw new Error(itemErr.message);
+        if (storeErr) throw new Error(storeErr.message);
 
         setHeader(prData as PRHeader);
         setSuppliers((supRows ?? []) as Supplier[]);
+        setStores((storeRows ?? []) as StoreOption[]);
         {
           const m = new Map<number, number>();
           for (const u of ((usageRows ?? []) as { supplier_id: number; usage_count: number }[])) {
@@ -261,6 +298,61 @@ function PageContent() {
               .filter((x): x is number => !!x),
           ]),
         );
+
+        const prItemIds = (itemRows ?? []).map((r) => r.id);
+        if (prItemIds.length) {
+          const { data: attrRows, error: attrErr } = await supabase
+            .from("purchase_request_item_campaigns")
+            .select("pr_item_id, campaign_id, qty_requested")
+            .in("pr_item_id", prItemIds);
+          if (attrErr) throw new Error(attrErr.message);
+
+          const attrCampIds = Array.from(
+            new Set(
+              ((attrRows ?? []) as { campaign_id: number }[])
+                .map((r) => r.campaign_id)
+                .filter((x): x is number => !!x),
+            ),
+          );
+          const optionCampIds = Array.from(new Set([...itemCampIds, ...attrCampIds]));
+          const optionInfo = new Map<number, { campaign_no: string; name: string }>();
+          if (optionCampIds.length) {
+            const { data: optionCamps } = await supabase
+              .from("group_buy_campaigns")
+              .select("id, campaign_no, name")
+              .in("id", optionCampIds);
+            for (const c of (optionCamps ?? []) as { id: number; campaign_no: string; name: string }[]) {
+              optionInfo.set(c.id, { campaign_no: c.campaign_no, name: c.name });
+            }
+          }
+
+          const attrByItem = new Map<number, ItemCampaignOption[]>();
+          for (const r of (attrRows ?? []) as { pr_item_id: number; campaign_id: number; qty_requested: number }[]) {
+            const info = optionInfo.get(r.campaign_id);
+            if (!info) continue;
+            const list = attrByItem.get(r.pr_item_id) ?? [];
+            list.push({
+              campaign_id: r.campaign_id,
+              campaign_no: info.campaign_no,
+              name: info.name,
+              qty_requested: Number(r.qty_requested),
+            });
+            attrByItem.set(r.pr_item_id, list);
+          }
+          for (const r of (itemRows ?? []) as { id: number; source_campaign_id: number | null; qty_requested: number }[]) {
+            if (attrByItem.has(r.id) || !r.source_campaign_id) continue;
+            const info = optionInfo.get(r.source_campaign_id);
+            if (!info) continue;
+            attrByItem.set(r.id, [{
+              campaign_id: r.source_campaign_id,
+              campaign_no: info.campaign_no,
+              name: info.name,
+              qty_requested: Number(r.qty_requested),
+            }]);
+          }
+          setItemCampaignOptions(attrByItem);
+        }
+
         if (campIds.length) {
           const { data: camps } = await supabase
             .from("group_buy_campaigns")
@@ -588,6 +680,94 @@ function PageContent() {
         return next;
       }),
     );
+  }
+
+  function openStoreAdd(item: ItemRow) {
+    const campaignOptions = itemCampaignOptions.get(item.id) ?? [];
+    setStoreAddModal({
+      itemId: item.id,
+      label: `${item.product_name}${item.variant_name ? `-${item.variant_name}` : ""}`,
+      skuCode: item.sku_code,
+      campaignId: campaignOptions.length === 1 ? campaignOptions[0].campaign_id : null,
+      requestKey: newUuid(),
+      lines: [{ storeId: null, qty: "" }],
+    });
+  }
+
+  function patchStoreAddLine(index: number, patch: Partial<StoreAddLine>) {
+    setStoreAddModal((cur) => {
+      if (!cur) return cur;
+      return {
+        ...cur,
+        lines: cur.lines.map((line, i) => (i === index ? { ...line, ...patch } : line)),
+      };
+    });
+  }
+
+  function removeStoreAddLine(index: number) {
+    setStoreAddModal((cur) => {
+      if (!cur) return cur;
+      const lines = cur.lines.filter((_, i) => i !== index);
+      return { ...cur, lines: lines.length ? lines : [{ storeId: null, qty: "" }] };
+    });
+  }
+
+  function addStoreAddLine() {
+    setStoreAddModal((cur) =>
+      cur ? { ...cur, lines: [...cur.lines, { storeId: null, qty: "" }] } : cur,
+    );
+  }
+
+  async function submitStoreAdd() {
+    if (!id || !storeAddModal) return;
+    if (!storeAddModal.campaignId) {
+      setError("請先選原團");
+      return;
+    }
+    const additions = storeAddModal.lines
+      .filter((line) => line.storeId !== null || line.qty.trim() !== "")
+      .map((line) => ({ store_id: line.storeId, qty: Number(line.qty) }));
+    if (
+      additions.length === 0 ||
+      additions.some((line) => !line.store_id || !Number.isFinite(line.qty) || line.qty <= 0)
+    ) {
+      setError("請填分店與大於 0 的數量");
+      return;
+    }
+    setStoreAddBusy(true);
+    setError(null);
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { data, error: rpcErr } = await supabase.rpc("rpc_add_pr_store_demands", {
+        p_pr_id: id,
+        p_pr_item_id: storeAddModal.itemId,
+        p_campaign_id: storeAddModal.campaignId,
+        p_additions: additions,
+        p_operator: userData.user?.id,
+        p_request_key: storeAddModal.requestKey,
+      });
+      if (rpcErr) throw new Error(rpcErr.message);
+
+      const result = (data ?? {}) as StoreAddResult;
+      const storeQty = Number(result.store_added_qty ?? 0);
+      const prQty = Number(result.pr_delta_qty ?? 0);
+      const oldGap = Math.max(0, prQty - storeQty);
+      alert(
+        [
+          `已幫 ${Number(result.store_count ?? additions.length)} 家店新增 ${formatQty(storeQty)} 件。`,
+          `請購單同步增加 ${formatQty(prQty)} 件。`,
+          oldGap > 0 ? `其中 ${formatQty(oldGap)} 件是先前已存在、但還沒補進請購單的缺口。` : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+      window.location.reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStoreAddBusy(false);
+    }
   }
 
   async function saveDraft(): Promise<boolean> {
@@ -1377,13 +1557,30 @@ function PageContent() {
                   </Td>
                   <Td>
                     {editable && (
-                      <SpinButton
-                        onClick={() => removeItem(idx)}
-                        title="刪除此品項（非暫緩）"
-                        className="text-xs text-red-600 hover:underline dark:text-red-400"
-                      >
-                        ✕
-                      </SpinButton>
+                      <div className="flex items-center justify-end gap-2">
+                        {!rowPo && (
+                          <button
+                            type="button"
+                            onClick={() => openStoreAdd(r)}
+                            disabled={(itemCampaignOptions.get(r.id)?.length ?? 0) === 0 || storeAddBusy}
+                            title={
+                              (itemCampaignOptions.get(r.id)?.length ?? 0) === 0
+                                ? "此品項沒有原團明細，不能分店加單"
+                                : "幫分店追加此品項需求"
+                            }
+                            className="whitespace-nowrap rounded-md border border-blue-300 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950"
+                          >
+                            分店加單
+                          </button>
+                        )}
+                        <SpinButton
+                          onClick={() => removeItem(idx)}
+                          title="刪除此品項（非暫緩）"
+                          className="text-xs text-red-600 hover:underline dark:text-red-400"
+                        >
+                          ✕
+                        </SpinButton>
+                      </div>
                     )}
                   </Td>
                 </tr>
@@ -1395,6 +1592,120 @@ function PageContent() {
           </div>
         </div>
       </div>
+      {storeAddModal && (() => {
+        const campaignOptions = itemCampaignOptions.get(storeAddModal.itemId) ?? [];
+        const total = storeAddModal.lines.reduce((sum, line) => {
+          const qty = Number(line.qty);
+          return Number.isFinite(qty) && qty > 0 ? sum + qty : sum;
+        }, 0);
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="w-full max-w-2xl rounded-md border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
+              <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+                <h3 className="text-base font-semibold">分店加單</h3>
+                <p className="mt-1 text-xs text-zinc-500">
+                  {storeAddModal.label} · {storeAddModal.skuCode}
+                </p>
+              </div>
+              <div className="space-y-4 p-4">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium text-zinc-500">原團</span>
+                  <select
+                    value={storeAddModal.campaignId ?? ""}
+                    onChange={(e) =>
+                      setStoreAddModal((cur) =>
+                        cur ? { ...cur, campaignId: e.target.value ? Number(e.target.value) : null } : cur,
+                      )
+                    }
+                    disabled={campaignOptions.length <= 1}
+                    className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm disabled:opacity-70 dark:border-zinc-700 dark:bg-zinc-900"
+                  >
+                    <option value="">選原團</option>
+                    {campaignOptions.map((c) => (
+                      <option key={c.campaign_id} value={c.campaign_id}>
+                        {c.campaign_no} · {c.name} · 已請購 {formatQty(c.qty_requested)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="space-y-2">
+                  <div className="grid grid-cols-[1fr_7rem_2rem] gap-2 text-xs font-medium text-zinc-500">
+                    <span>分店</span>
+                    <span className="text-right">新增數量</span>
+                    <span />
+                  </div>
+                  {storeAddModal.lines.map((line, index) => (
+                    <div key={index} className="grid grid-cols-[1fr_7rem_2rem] items-center gap-2">
+                      <select
+                        value={line.storeId ?? ""}
+                        onChange={(e) =>
+                          patchStoreAddLine(index, {
+                            storeId: e.target.value ? Number(e.target.value) : null,
+                          })
+                        }
+                        className="min-w-0 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                      >
+                        <option value="">選分店</option>
+                        {stores.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.code ? `${s.code} ` : ""}{s.name}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={line.qty}
+                        onChange={(e) => patchStoreAddLine(index, { qty: e.target.value })}
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-right text-sm dark:border-zinc-700 dark:bg-zinc-900"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeStoreAddLine(index)}
+                        className="rounded-md px-2 py-2 text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
+                        title="移除此列"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={addStoreAddLine}
+                    className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+                  >
+                    + 增加一間分店
+                  </button>
+                </div>
+
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                  本次分店新增 {formatQty(total)} 件。送出後會寫回原團的店內單，不是補貨申請；
+                  請購單實際增加量會由系統補足未請購缺口，所以可能和本次新增量不同。
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
+                <button
+                  type="button"
+                  onClick={() => setStoreAddModal(null)}
+                  disabled={storeAddBusy}
+                  className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+                >
+                  取消
+                </button>
+                <SpinButton
+                  onClick={submitStoreAdd}
+                  disabled={storeAddBusy}
+                  className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                >
+                  {storeAddBusy ? "送出中…" : "送出加單"}
+                </SpinButton>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -1411,6 +1722,21 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 function fmtTime(iso: string | null): string | null {
   if (!iso) return null;
   return new Date(iso).toLocaleString("zh-TW", { hour12: false });
+}
+function formatQty(value: number | string | null | undefined): string {
+  const n = Number(value ?? 0);
+  if (!Number.isFinite(n)) return "0";
+  return Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/\.?0+$/, "");
+}
+function newUuid(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = Math.floor(Math.random() * 16);
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 function nameOf(uid: string | null, names: Map<string, string>): string | null {
   if (!uid) return null;
@@ -1497,7 +1823,7 @@ function buildEvents(
   return evt;
 }
 
-export function computePOSummary(pos: DerivedPO[]): POSummary {
+function computePOSummary(pos: DerivedPO[]): POSummary {
   let sent = 0;
   let receivedFully = 0;
   for (const p of pos) {
