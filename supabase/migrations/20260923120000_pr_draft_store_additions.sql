@@ -93,11 +93,7 @@ SET search_path = public
 AS $$
 DECLARE
   v_tenant                 UUID := public._current_tenant_id();
-  v_has_app_role           BOOLEAN := COALESCE((auth.jwt() -> 'app_metadata') ? 'role', FALSE);
-  v_role                   TEXT := CASE
-                                WHEN v_has_app_role THEN auth.jwt() -> 'app_metadata' ->> 'role'
-                                ELSE auth.jwt() ->> 'role'
-                              END;
+  v_role                   TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
   v_pr                     RECORD;
   v_campaign               RECORD;
   v_campaign_item_id        BIGINT;
@@ -131,7 +127,7 @@ BEGIN
     RAISE EXCEPTION 'permission denied';
   END IF;
 
-  IF v_role IS NULL OR v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant','') THEN
+  IF v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant','') THEN
     RAISE EXCEPTION 'permission denied';
   END IF;
 

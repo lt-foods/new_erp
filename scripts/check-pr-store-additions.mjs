@@ -18,11 +18,8 @@ const migrationWithoutComments = migration.replace(/--.*$/gm, "");
 const allowedStoreAdditionRoles = new Set(["owner", "admin", "hq_manager", "purchaser", "assistant", ""]);
 
 function canCallStoreAdditionRpc(claims) {
-  const appMetadata = claims.app_metadata;
-  const hasAppRole = Object.prototype.hasOwnProperty.call(appMetadata ?? {}, "role");
-  const role = hasAppRole ? appMetadata.role : claims.role;
+  const role = claims.app_metadata?.role ?? "";
   if (role === "store_manager" || role === "store_staff") return false;
-  if (role === null || role === undefined) return false;
   return allowedStoreAdditionRoles.has(role);
 }
 
@@ -83,14 +80,14 @@ assert(
   "PR total must use line_subtotal, matching the rest of the purchase flow",
 );
 assert(
-  migration.includes("v_has_app_role") &&
-    migration.includes("COALESCE((auth.jwt() -> 'app_metadata') ? 'role', FALSE)") &&
+  migration.includes("v_role                   TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '')") &&
     migration.includes("IF v_role IN ('store_manager','store_staff') THEN") &&
-    migration.includes("IF v_role IS NULL OR v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant','') THEN"),
+    migration.includes("IF v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant','') THEN"),
   "RPC must match purchase-module legacy admin role behavior while explicitly blocking store roles",
 );
 assert(canCallStoreAdditionRpc({ app_metadata: { role: "" }, role: "authenticated" }), "explicit legacy empty app role must be allowed");
-assert(!canCallStoreAdditionRpc({ role: "authenticated" }), "bare authenticated role must not be treated as legacy admin");
+assert(canCallStoreAdditionRpc({ app_metadata: {}, role: "authenticated" }), "missing app role must follow purchase-module legacy admin behavior");
+assert(canCallStoreAdditionRpc({ role: "authenticated" }), "missing app_metadata must follow purchase-module legacy admin behavior");
 assert(!canCallStoreAdditionRpc({ app_metadata: { role: "store_manager" }, role: "authenticated" }), "store_manager must be blocked");
 assert(!canCallStoreAdditionRpc({ app_metadata: { role: "store_staff" }, role: "authenticated" }), "store_staff must be blocked");
 assert(canCallStoreAdditionRpc({ app_metadata: { role: "purchaser" }, role: "authenticated" }), "purchaser must be allowed");
