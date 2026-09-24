@@ -6,7 +6,7 @@
 -- 時間：group_buy_campaigns.customer_end_at（客人收單），NULL 就用 end_at（店家收單）。
 -- 流程：_line_note_tick 每分鐘跑 _line_note_enqueue_due_closes()：
 --   status='posted'、有 line_post_id、還沒留過結單留言（close_notified_at IS NULL）、
---   客人收單時間已到（且不超過 2 天，舊團不補）→ 排一個 kind='close' 的工作。
+--   客人收單時間已到（只補 10 分鐘內的；舊團不補 —— 9/24 上線時窗開 2 天，把 80 篇舊貼文全留了一次）→ 排一個 kind='close' 的工作。
 --   worker 的 jobClose：先讀最後一輪留言（截止前的 +1 都收進來）→ 留言 → 標 closed。
 -- 留言內容：line_note_communities.close_comment，留空用 worker 的預設。
 --
@@ -41,7 +41,7 @@ BEGIN
       JOIN line_note_communities c ON c.id = p.community_id
      WHERE p.status = 'posted' AND p.close_notified_at IS NULL AND p.line_post_id IS NOT NULL
        AND COALESCE(g.customer_end_at, g.end_at) <= now()
-       AND COALESCE(g.customer_end_at, g.end_at) >= now() - INTERVAL '2 days'
+       AND COALESCE(g.customer_end_at, g.end_at) >= now() - INTERVAL '10 minutes'
        AND NOT EXISTS (SELECT 1 FROM line_note_jobs j
                         WHERE j.kind = 'close' AND j.post_id = p.id AND j.status IN ('queued', 'running'))
   ), ins AS (
