@@ -213,7 +213,7 @@ function PageContent() {
             .select("id, code, name, store_kind")
             .eq("is_active", true)
             .is("deleted_at", null)
-            .eq("store_kind", "branch")
+            .in("store_kind", ["branch", "wholesale"])
             .order("name"),
           supabase.from("v_supplier_usage_count").select("supplier_id, usage_count"),
           supabase.from("locations").select("id").order("id").limit(1).maybeSingle(),
@@ -1565,12 +1565,12 @@ function PageContent() {
                             disabled={(itemCampaignOptions.get(r.id)?.length ?? 0) === 0 || storeAddBusy}
                             title={
                               (itemCampaignOptions.get(r.id)?.length ?? 0) === 0
-                                ? "此品項沒有原團明細，不能分店加單"
-                                : "幫分店追加此品項需求"
+                                ? "此品項沒有原團明細，不能加單"
+                                : "幫分店或批發追加此品項需求"
                             }
                             className="whitespace-nowrap rounded-md border border-blue-300 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950"
                           >
-                            分店加單
+                            分店／批發加單
                           </button>
                         )}
                         <SpinButton
@@ -1602,7 +1602,7 @@ function PageContent() {
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
             <div className="w-full max-w-2xl rounded-md border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-950">
               <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-                <h3 className="text-base font-semibold">分店加單</h3>
+                <h3 className="text-base font-semibold">分店／批發加單</h3>
                 <p className="mt-1 text-xs text-zinc-500">
                   {storeAddModal.label} · {storeAddModal.skuCode}
                 </p>
@@ -1631,7 +1631,7 @@ function PageContent() {
 
                 <div className="space-y-2">
                   <div className="grid grid-cols-[1fr_7rem_2rem] gap-2 text-xs font-medium text-zinc-500">
-                    <span>分店</span>
+                    <span>分店／批發</span>
                     <span className="text-right">新增數量</span>
                     <span />
                   </div>
@@ -1646,10 +1646,11 @@ function PageContent() {
                         }
                         className="min-w-0 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
                       >
-                        <option value="">選分店</option>
+                        <option value="">選分店／批發</option>
                         {stores.map((s) => (
                           <option key={s.id} value={s.id}>
                             {s.code ? `${s.code} ` : ""}{s.name}
+                            {s.store_kind === "wholesale" ? "（批發）" : ""}
                           </option>
                         ))}
                       </select>
@@ -1676,12 +1677,12 @@ function PageContent() {
                     onClick={addStoreAddLine}
                     className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
                   >
-                    + 增加一間分店
+                    + 增加一間分店／批發
                   </button>
                 </div>
 
                 <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-                  本次分店新增 {formatQty(total)} 件。送出後會寫回原團的店內單，不是補貨申請；
+                  本次分店／批發新增 {formatQty(total)} 件。送出後會寫回原團的店內單，不是補貨申請；
                   請購單實際增加量會由系統補足未請購缺口，所以可能和本次新增量不同。
                 </div>
               </div>
