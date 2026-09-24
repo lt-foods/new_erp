@@ -76,6 +76,7 @@ export function CreateCampaignModal({
   defaultCustomerEndAt.setHours(23, 59, 0, 0);
   const defaultCustomerEndAtValue = toDatetimeLocal(defaultCustomerEndAt.toISOString());
   const defaultEndAtValue = storeEndAtFromCustomerEndAt(defaultCustomerEndAtValue);
+  const defaultStartAtValue = toDatetimeLocal(today.toISOString());
 
   const storageTypes = products.map((p) => p.storage_type);
   const pickupDays = pickupDaysForStorageTypes(storageTypes);
@@ -85,6 +86,8 @@ export function CreateCampaignModal({
     : `${products[0].name} 等 ${products.length} 項商品`;
 
   const [name, setName] = useState(defaultName);
+  const [startAt, setStartAt] = useState(defaultStartAtValue);
+  const [autoOpen, setAutoOpen] = useState(false);
   const [customerEndAt, setCustomerEndAt] = useState(defaultCustomerEndAtValue);
   const [endAt, setEndAt] = useState(defaultEndAtValue);
   const [endAtTouched, setEndAtTouched] = useState(false);
@@ -138,9 +141,21 @@ export function CreateCampaignModal({
 
   async function handleSave() {
     if (!name.trim()) { setError("請輸入團名稱"); return; }
+    if (!startAt) { setError("請設定開團時間"); return; }
     if (!customerEndAt) { setError("請設定客人收單時間"); return; }
     if (!endAt) { setError("請設定店家收單時間"); return; }
-    if (new Date(endAt).getTime() < new Date(customerEndAt).getTime()) {
+    const startTime = new Date(startAt).getTime();
+    const customerEndTime = new Date(customerEndAt).getTime();
+    const endTime = new Date(endAt).getTime();
+    if ([startTime, customerEndTime, endTime].some(Number.isNaN)) {
+      setError("請確認開團與收單時間");
+      return;
+    }
+    if (startTime >= customerEndTime) {
+      setError("開團時間必須早於客人收單時間");
+      return;
+    }
+    if (endTime < customerEndTime) {
       setError("店家收單不能早於客人收單");
       return;
     }
@@ -157,6 +172,8 @@ export function CreateCampaignModal({
         p_product_id: products[0].id,
         p_description: description.trim(),
         p_customer_end_at: new Date(customerEndAt).toISOString(),
+        p_start_at: new Date(startAt).toISOString(),
+        p_auto_open: startTime > Date.now() && autoOpen,
       });
       if (err) throw err;
       onCreated(Number(data));
@@ -168,6 +185,7 @@ export function CreateCampaignModal({
   }
 
   const inputCls = "rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800";
+  const isFutureStart = new Date(startAt).getTime() > Date.now();
 
   return (
     <div className="space-y-4">
@@ -181,6 +199,21 @@ export function CreateCampaignModal({
           <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 select-all">
             {campaignNo}
           </div>
+        </label>
+
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="text-zinc-600 dark:text-zinc-400">開團時間 <span className="text-red-500">*</span></span>
+          <input
+            type="datetime-local"
+            value={startAt}
+            max={customerEndAt || undefined}
+            onChange={(e) => {
+              setStartAt(e.target.value);
+              if (new Date(e.target.value).getTime() <= Date.now()) setAutoOpen(false);
+            }}
+            className={inputCls}
+          />
+          <span className="text-xs text-zinc-400">未來時間會先建成草稿，不會提前出現在商城</span>
         </label>
 
         <label className="flex flex-col gap-1 text-sm">
@@ -204,6 +237,19 @@ export function CreateCampaignModal({
           />
           <span className="text-xs text-zinc-400">預設為客人收單隔天 23:59，可手動改</span>
         </label>
+
+        {isFutureStart && (
+          <label className="flex items-center gap-2 text-sm sm:col-span-2">
+            <input
+              type="checkbox"
+              checked={autoOpen}
+              onChange={(e) => setAutoOpen(e.target.checked)}
+              className="h-4 w-4"
+            />
+            <span>時間到自動開團</span>
+            <span className="text-xs text-zinc-400">（預設不勾；勾選後會沿用現有 LINE 發文流程）</span>
+          </label>
+        )}
 
         <label className="flex flex-col gap-1 text-sm sm:col-span-2">
           <span className="text-zinc-600 dark:text-zinc-400">團名稱 <span className="text-red-500">*</span></span>
