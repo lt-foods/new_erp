@@ -535,3 +535,55 @@ export async function createNotePost(client, homeId, { text, images = [], source
   return out;
 }
 
+
+// ── 分享到聊天 ─────────────────────────────────────────────────────────────
+
+/**
+ * 記事本貼文要分享到哪個聊天室。群組（c…）的記事本就長在那個群組上，直接用 homeId；
+ * 社群（s…）的記事本掛在整個社群上，要另外找出聊天室（m…）：
+ * 先挑社群的主聊天室（SQUARE_DEFAULT），沒有才用這個帳號在該社群唯一加入的那一間。
+ * 加入了好幾間又分不出主聊天室 → 回 null，寧可不發也不要發錯間。
+ */
+export async function resolveShareChatMid(client, homeId, verbose = false) {
+  const id = String(homeId);
+  if (id[0] === "c" || id[0] === "m") return id;
+  if (id[0] !== "s") return null;
+  const chats = [];
+  let token = "";
+  for (let i = 0; i < 10; i++) {
+    const r = await client.base.square.getJoinedSquareChats({ request: { limit: 100, continuationToken: token } });
+    chats.push(...(r?.chats ?? []).filter((c) => c?.squareMid === id));
+    token = r?.continuationToken ?? "";
+    if (!token) break;
+  }
+  const isDefault = (c) => c?.type === "SQUARE_DEFAULT" || c?.type === 4;
+  const hit = chats.find(isDefault) ?? (chats.length === 1 ? chats[0] : null);
+  log(verbose, `社群 ${id} 的聊天室：${chats.map((c) => `${c.squareChatMid}(${c.type})`).join(", ") || "（沒有）"} → ${hit?.squareChatMid ?? "無法判定"}`);
+  return hit?.squareChatMid ?? null;
+}
+
+/**
+ * 把記事本貼文用 LINE 原生的「分享貼文」卡片發到聊天室（同手機上按「分享到聊天」）。
+ * 端點比照 linejs 的 timeline.sharePost：POST …/api/v57/post/sendPostToTalk.json，
+ * body { postId, receiveMids }；路由走跟發文同一套探測。
+ */
+export async function sharePostToChat(client, homeId, postId, { chatMid, sourceType, verbose = false } = {}) {
+  if (!postId) throw new Error("沒有貼文 id，無法分享");
+  const to = chatMid ?? await resolveShareChatMid(client, homeId, verbose);
+  if (!to) throw new Error("找不到要分享的聊天室（這個帳號在該社群加入了多間聊天室，分不出主聊天室）");
+
+  // 同 createNotePost：先用唯讀 list 把路由探出來，分享才不會一組一組試、發出好幾張卡片。
+  try {
+    await noteGet(client, homeId, "/api/v57/post/list.json",
+      { homeId, sourceType: sourceType ?? "TALKROOM", likeLimit: "0", commentLimit: "0" }, verbose);
+  } catch (e) {
+    log(verbose, "探路用的 list 失敗（照樣試分享）:", e?.message ?? e);
+  }
+
+  const res = await noteRequest(client, homeId, "/api/v57/post/sendPostToTalk.json",
+    {}, { method: "POST", body: { postId: String(postId), receiveMids: [to] }, verbose });
+  if (!res || res.code !== 0) {
+    throw new Error(`分享貼文到聊天失敗：code=${res?.code} ${res?.message ?? ""}`);
+  }
+  return { chatMid: to, res };
+}
