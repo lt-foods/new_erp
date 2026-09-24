@@ -8,12 +8,12 @@
 // ⚠ isTodoComment 的判定 DB 也有一份：public._line_note_comment_is_todo
 // （20260910020000，rpc_line_note_campaign_targets 的統計用它），改這裡記得改那支。
 
-export type LineNotePostStatus = "queued" | "posted" | "failed" | "closed" | "unlinked";
+export type LineNotePostStatus = "scheduled" | "queued" | "posted" | "failed" | "closed" | "unlinked";
 export type LineNoteCommentStatus =
   | "pending" | "ordered" | "unmatched" | "no_order" | "error" | "ignored" | "resolved" | "duplicate";
 
 export const POST_STATUS_LABEL: Record<LineNotePostStatus, string> = {
-  queued: "排隊中", posted: "已發文", failed: "失敗", closed: "已結束", unlinked: "未認出團",
+  scheduled: "排程中", queued: "排隊中", posted: "已發文", failed: "失敗", closed: "已結束", unlinked: "未認出團",
 };
 
 export const COMMENT_STATUS_LABEL: Record<LineNoteCommentStatus, string> = {

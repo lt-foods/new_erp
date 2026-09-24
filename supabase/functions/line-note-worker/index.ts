@@ -349,6 +349,34 @@ async function deletePost(postId: number, callerTenant: string | null) {
   return { ok: true, linePostId: post.line_post_id };
 }
 
+// 品項 / 金額改了，把 LINE 上那篇改成現在的內容（文字重算、圖片重傳）。
+// 後台直接呼叫、當場回結果（跟 deletePost 一樣不排 job）：改錯要馬上知道。
+// 只動貼文本體，line_post_id 不變，底下的留言、已加的單都不受影響。
+async function updatePost(postId: number, callerTenant: string | null) {
+  const rows = await rest(`line_note_posts?id=eq.${postId}&select=id,tenant_id,status,line_post_id`);
+  const post = rows?.[0];
+  if (!post) return { ok: false, error: "找不到這篇貼文" };
+  if (callerTenant && post.tenant_id !== callerTenant) return { ok: false, error: "這篇貼文不屬於你的帳戶" };
+  if (!post.line_post_id) return { ok: false, error: "這篇還沒發到 LINE（沒有貼文 id），沒有東西可以更新" };
+
+  const payload = await rpc("rpc_line_note_post_payload", { p_post_id: postId });
+  if (!payload) return { ok: false, error: "讀不到這篇貼文的內容" };
+  const text = renderPost(payload);
+  try {
+    const account = await loadAccount(payload.account_id);
+    const client = await clientFor(account);
+    const images = await collectPostImages(payload);
+    await updateNotePost(client, payload.home_id, post.line_post_id, { text, images, verbose: VERBOSE });
+  } catch (e) {
+    const msg = String((e as any)?.message ?? e);
+    await patch("line_note_posts", `id=eq.${postId}`, { last_error: `更新貼文失敗：${msg}`.slice(0, 1000) }).catch(() => {});
+    return { ok: false, error: msg };
+  }
+  await patch("line_note_posts", `id=eq.${postId}`, { text, last_error: null });
+  log(`✏️ 貼文 ${postId}（LINE ${post.line_post_id}）已更新成最新內容`);
+  return { ok: true, title: postTitle(text) };
+}
+
 // 後台「解析規則」分頁存的設定。每篇讀留言時現查（不放模組層級：isolate 會跨請求重用，
 // 快取起來的話改完規則要等 isolate 換掉才生效）。查不到＝預設規則。
 async function loadParseConfig(tenantId: string) {
@@ -1020,6 +1048,13 @@ Deno.serve(async (req) => {
       const postId = Number(body.post_id);
       if (!postId) return json({ error: "post_id required" }, 400);
       return json(await deletePost(postId, callerTenant));
+    }
+    // 品項 / 金額改了 → 把 LINE 上那篇改成現在的內容
+    if (action === "update_post") {
+      if (caller !== "admin") return json({ error: "更新貼文只能從後台按" }, 403);
+      const postId = Number(body.post_id);
+      if (!postId) return json({ error: "post_id required" }, 400);
+      return json(await updatePost(postId, callerTenant));
     }
     if (action === "tick" || action === "run") return json(await tick());
     return json({ error: `unknown action ${action}` }, 400);

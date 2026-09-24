@@ -529,7 +529,7 @@ export default function CampaignsListPage() {
   async function openEdit(id: number) {
     const { data, error: err } = await getSupabase()
       .from("group_buy_campaigns")
-      .select("id, campaign_no, name, description, status, close_type, start_at, end_at, customer_end_at, pickup_deadline, pickup_days, total_cap_qty, notes, is_for_shop, sales_channel, owner_store_id")
+      .select("id, campaign_no, name, description, status, close_type, start_at, end_at, customer_end_at, pickup_deadline, pickup_days, total_cap_qty, notes, is_for_shop, sales_channel, owner_store_id, auto_open, auto_open_error")
       .eq("id", id).maybeSingle();
     if (err || !data) { setError(err?.message ?? "找不到開團"); return; }
     setModal({
@@ -551,6 +551,8 @@ export default function CampaignsListPage() {
         notes: data.notes,
         is_for_shop: data.is_for_shop ?? true,
         owner_store_id: data.owner_store_id ?? null,
+        auto_open: data.auto_open ?? false,
+        auto_open_error: data.auto_open_error ?? null,
       },
     });
   }
