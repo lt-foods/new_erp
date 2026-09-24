@@ -3,6 +3,7 @@
 // 首頁「在線狀態」卡：同時在線（最近 3 分鐘有心跳）＋ 今日活躍（DAU），
 // 店員端／會員端分開數。資料來自 rpc_online_stats（app_presence 彙總，
 // 心跳由 PresenceBeacon / 會員端 PresenceHeartbeat 每 60 秒回報）。
+// 不自動輪詢（2026-09-24 OOM 事故後拿掉）：開頁抓一次，要新的就重整。
 // QPS 不自己做 —— 右上角連去 Supabase Reports 現成的 API 流量圖。
 
 import { useEffect, useState } from "react";
@@ -18,8 +19,6 @@ type OnlineStats = {
   daily: { date: string; staff: number; members: number; guests: number }[];
 };
 
-const REFRESH_MS = 60_000;
-
 export default function OnlineStatsCard() {
   const [stats, setStats] = useState<OnlineStats | null>(null);
 
@@ -31,13 +30,7 @@ export default function OnlineStatsCard() {
       if (!cancelled && !error && data) setStats(data as OnlineStats);
     };
     void load();
-    const timer = setInterval(load, REFRESH_MS);
-    window.addEventListener("focus", load);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-      window.removeEventListener("focus", load);
-    };
+    return () => { cancelled = true; };
   }, []);
 
   const projectRef =
@@ -48,7 +41,7 @@ export default function OnlineStatsCard() {
     <section className="rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
       <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
         <h2 className="text-sm font-semibold">
-          在線狀態 <span className="ml-1 text-xs font-normal text-zinc-500">每分鐘更新</span>
+          在線狀態 <span className="ml-1 text-xs font-normal text-zinc-500">重整頁面更新</span>
         </h2>
         {projectRef && (
           <a

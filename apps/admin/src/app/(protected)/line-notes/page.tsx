@@ -150,12 +150,7 @@ export default function LineNotesPage() {
   // 帳號清單只有總部讀得到；唯讀模式不抓、也不輪詢
   useEffect(() => { if (canOperate) void loadAccounts(); void loadCommunities(); }, [canOperate, loadAccounts, loadCommunities]);
 
-  // 帳號狀態每 3 秒刷新（登入中 / worker 有沒有在跑）
-  useEffect(() => {
-    if (!canOperate) return;
-    const t = setInterval(() => { void loadAccounts(); }, 3000);
-    return () => clearInterval(t);
-  }, [canOperate, loadAccounts]);
+  // 帳號狀態不再每 3 秒輪詢（2026-09-24 OOM 事故後拿掉）：要看最新狀態重整頁面。
 
   // 唯讀模式沒有帳號 / 社群設定分頁：停在那兩頁就改看貼文
   const shownTab: Tab = readOnly && (tab === "accounts" || tab === "communities" || tab === "rules") ? "posts" : tab;
