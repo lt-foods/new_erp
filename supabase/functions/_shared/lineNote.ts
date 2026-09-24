@@ -548,51 +548,18 @@ export async function resolveShareChatMid(client, homeId, verbose = false) {
   const id = String(homeId);
   if (id[0] === "c" || id[0] === "m") return id;
   if (id[0] !== "s") return null;
-  // ⚠ 不要用 getJoinedSquareChats：LINE 已經把它下架了，回 NOT_IMPLEMENTED
-  //   （2026-09-24 第一篇分享就是這樣沒發出去）。getJoinableSquareChats 也不行 ——
-  //   它只列「還沒加入」的，已經在裡面的主聊天室永遠不會出現（實測回空）。
-  //   所以改從自己的事件流（fetchMyEvents）撿出有出現過的聊天室 mid，再逐一 getSquareChat
-  //   問它屬於哪個社群、是不是主聊天室（SQUARE_DEFAULT）。
-  const mids = new Set();
-  const walk = (v, depth = 0) => {
-    if (!v || depth > 8) return;
-    if (Array.isArray(v)) { for (const x of v) walk(x, depth + 1); return; }
-    if (typeof v === "object") {
-      for (const [k, x] of Object.entries(v)) {
-        if (k === "squareChatMid" && typeof x === "string" && x.startsWith("m")) mids.add(x);
-        else walk(x, depth + 1);
-      }
-    }
-  };
+  const chats = [];
   let token = "";
-  for (let i = 0; i < 5; i++) {
-    let r;
-    try {
-      r = await client.base.square.fetchMyEvents({ syncToken: "", continuationToken: token || undefined, limit: 100 });
-    } catch (e) {
-      log(true, `fetchMyEvents 失敗：${e?.message ?? e}`);
-      break;
-    }
-    walk(r);
+  for (let i = 0; i < 10; i++) {
+    const r = await client.base.square.getJoinedSquareChats({ request: { limit: 100, continuationToken: token } });
+    chats.push(...(r?.chats ?? []).filter((c) => c?.squareMid === id));
     token = r?.continuationToken ?? "";
     if (!token) break;
   }
-  const chats = [];
-  for (const mid of [...mids].slice(0, 60)) {
-    try {
-      const r = await client.base.square.getSquareChat({ squareChatMid: mid });
-      const c = r?.squareChat;
-      if (c?.squareMid === id) chats.push(c);
-    } catch (e) {
-      log(verbose, `getSquareChat(${mid}) 失敗：${e?.message ?? e}`);
-    }
-  }
   const isDefault = (c) => c?.type === "SQUARE_DEFAULT" || c?.type === 4;
   const hit = chats.find(isDefault) ?? (chats.length === 1 ? chats[0] : null);
-  const summary = chats.map((c) => `${c.squareChatMid}(${c.type}${c.name ? " " + c.name : ""})`).join(", ") || "（沒有）";
-  log(verbose, `社群 ${id} 的聊天室：${summary} → ${hit?.squareChatMid ?? "無法判定"}`);
-  if (!hit) throw new Error(`找不到要分享的聊天室。事件流裡看到 ${mids.size} 間聊天室，屬於社群 ${id} 的：${summary}`);
-  return hit.squareChatMid;
+  log(verbose, `社群 ${id} 的聊天室：${chats.map((c) => `${c.squareChatMid}(${c.type})`).join(", ") || "（沒有）"} → ${hit?.squareChatMid ?? "無法判定"}`);
+  return hit?.squareChatMid ?? null;
 }
 
 /**

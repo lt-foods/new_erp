@@ -272,9 +272,7 @@ async function jobPost(job: any) {
     let sharedTo: string | null = null;
     if (postId) {
       try {
-        const cm = (await rest(`line_note_communities?home_id=eq.${encodeURIComponent(payload.home_id)}&account_id=eq.${payload.account_id}&select=id,home_id,share_chat_mid&limit=1`))?.[0]
-          ?? { id: job.community_id, home_id: payload.home_id, share_chat_mid: null };
-        sharedTo = (await shareWithMemo(client, cm, postId)).chatMid;
+        sharedTo = (await sharePostToChat(client, payload.home_id, postId, { verbose: VERBOSE })).chatMid;
       } catch (e) {
         shareError = String((e as any)?.message ?? e);
         log("分享貼文到聊天失敗:", shareError);
@@ -377,50 +375,6 @@ async function updatePost(postId: number, callerTenant: string | null) {
   await patch("line_note_posts", `id=eq.${postId}`, { text, last_error: null });
   log(`✏️ 貼文 ${postId}（LINE ${post.line_post_id}）已更新成最新內容`);
   return { ok: true, title: postTitle(text) };
-}
-
-// 分享到聊天室：社群的主聊天室找一次很貴（事件流 + 逐一 getSquareChat），找到就記在社群列上。
-// 用記住的那間分享失敗（聊天室被刪／換了）→ 清掉重找一次。
-async function shareWithMemo(client: any, community: { id: number; home_id: string; share_chat_mid?: string | null }, linePostId: string) {
-  const memo = community.share_chat_mid ?? null;
-  try {
-    const r = await sharePostToChat(client, community.home_id, linePostId, { chatMid: memo ?? undefined, verbose: VERBOSE });
-    if (!memo && r.chatMid !== community.home_id) {
-      await patch("line_note_communities", `id=eq.${community.id}`, { share_chat_mid: r.chatMid }).catch(() => {});
-    }
-    return r;
-  } catch (e) {
-    if (!memo) throw e;
-    log(`用記住的聊天室 ${memo} 分享失敗，重找一次：${(e as any)?.message ?? e}`);
-    await patch("line_note_communities", `id=eq.${community.id}`, { share_chat_mid: null }).catch(() => {});
-    const r = await sharePostToChat(client, community.home_id, linePostId, { verbose: VERBOSE });
-    if (r.chatMid !== community.home_id) {
-      await patch("line_note_communities", `id=eq.${community.id}`, { share_chat_mid: r.chatMid }).catch(() => {});
-    }
-    return r;
-  }
-}
-
-// 把已經發出去的貼文（再）分享到聊天室：發文當下分享失敗時的補救入口，後台直接呼叫。
-async function sharePost(postId: number, callerTenant: string | null) {
-  const rows = await rest(`line_note_posts?id=eq.${postId}&select=id,tenant_id,line_post_id,last_error,line_note_communities(id,home_id,account_id,share_chat_mid)`);
-  const post = rows?.[0];
-  if (!post) return { ok: false, error: "找不到這篇貼文" };
-  if (callerTenant && post.tenant_id !== callerTenant) return { ok: false, error: "這篇貼文不屬於你的帳戶" };
-  if (!post.line_post_id) return { ok: false, error: "這篇還沒發到 LINE（沒有貼文 id），沒有東西可以分享" };
-  try {
-    const account = await loadAccount(post.line_note_communities.account_id);
-    const r = await shareWithMemo(await clientFor(account), post.line_note_communities, post.line_post_id);
-    if (String(post.last_error ?? "").includes("分享到聊天失敗")) {
-      await patch("line_note_posts", `id=eq.${postId}`, { last_error: null }).catch(() => {});
-    }
-    log(`📨 貼文 ${postId}（LINE ${post.line_post_id}）已分享到 ${r.chatMid}`);
-    return { ok: true, chatMid: r.chatMid };
-  } catch (e) {
-    const msg = String((e as any)?.message ?? e);
-    await patch("line_note_posts", `id=eq.${postId}`, { last_error: `分享到聊天失敗：${msg}`.slice(0, 1000) }).catch(() => {});
-    return { ok: false, error: msg };
-  }
 }
 
 // 後台「解析規則」分頁存的設定。每篇讀留言時現查（不放模組層級：isolate 會跨請求重用，
@@ -1101,13 +1055,6 @@ Deno.serve(async (req) => {
       const postId = Number(body.post_id);
       if (!postId) return json({ error: "post_id required" }, 400);
       return json(await updatePost(postId, callerTenant));
-    }
-    // 發文當下分享失敗 → 後台補按一次
-    if (action === "share_post") {
-      if (caller !== "admin") return json({ error: "分享貼文只能從後台按" }, 403);
-      const postId = Number(body.post_id);
-      if (!postId) return json({ error: "post_id required" }, 400);
-      return json(await sharePost(postId, callerTenant));
     }
     if (action === "tick" || action === "run") return json(await tick());
     return json({ error: `unknown action ${action}` }, 400);
