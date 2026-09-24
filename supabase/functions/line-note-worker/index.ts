@@ -1176,7 +1176,7 @@ Deno.serve(async (req) => {
       const postId = Number(body.post_id);
       if (!postId) return json({ error: "post_id required" }, 400);
       return json(await sharePost(postId, callerTenant));
-=======
+    }
     // 診斷用：對一篇貼文留言並回 LINE 的原始回應 + 留言後 getList 看到的內容
     if (action === "debug_comment") {
       if (caller !== "admin") return json({ error: "只能從後台按" }, 403);
