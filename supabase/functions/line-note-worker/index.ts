@@ -26,7 +26,7 @@ import QRCode from "npm:qrcode@1.5.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import {
   clientFromToken, createNotePost, deleteNotePost, likeComment, type LineCredential, listComments, listHomes,
-  listPosts, loginByQr, readCredential, whoami,
+  listPosts, loginByQr, readCredential, sharePostToChat, whoami,
 } from "../_shared/lineNote.ts";
 import { extractPostTag, matchCampaign, normalizeForMatch, normalizeParseConfig, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
 import { renderPostText, TZ } from "../_shared/lineNoteRender.ts";
@@ -265,14 +265,30 @@ async function jobPost(job: any) {
       postId = await findPostIdByText(client, payload.home_id, text).catch((e) => { log("補對貼文 id 失敗:", (e as any)?.message ?? e); return null; });
       resolved = postId ? "list" : null;
     }
+    // 發完順手用 LINE 原生的「分享貼文」卡片貼到聊天室，客人在聊天裡就點得到。
+    // 分享失敗不算發文失敗（貼文已經在記事本上了），錯誤留在畫面上就好。
+    // 已標 posted 的工作不會重跑（上面的 skipped），所以不會重複分享。
+    let shareError: string | null = null;
+    let sharedTo: string | null = null;
+    if (postId) {
+      try {
+        sharedTo = (await sharePostToChat(client, payload.home_id, postId, { verbose: VERBOSE })).chatMid;
+      } catch (e) {
+        shareError = String((e as any)?.message ?? e);
+        log("分享貼文到聊天失敗:", shareError);
+      }
+    }
     await patch("line_note_posts", `id=eq.${job.post_id}`, {
       status: "posted", line_post_id: postId, text, posted_at: new Date().toISOString(),
       // 還是沒有 id：貼文已經在 LINE 上了，先標 posted，錯誤留在畫面上；下次讀取 discoverPosts
       // 會用 🔖 團號把 id 補回來，補到才開始讀留言。
-      last_error: postId ? null : "發文成功但沒拿到 LINE 貼文 id；下次讀取會用 🔖 團號自動補認，補到前讀不到留言",
+      last_error: !postId
+        ? "發文成功但沒拿到 LINE 貼文 id；下次讀取會用 🔖 團號自動補認，補到前讀不到留言（也沒分享到聊天）"
+        : shareError ? `發文成功，但分享到聊天失敗：${shareError}`.slice(0, 1000) : null,
     });
     return {
-      postId, title: postTitle(text), images: images.length,
+      postId, title: postTitle(text), images: images.length, sharedTo,
+      ...(shareError ? { shareError: shareError.slice(0, 300) } : {}),
       ...(resolved ? { resolved } : {}),
       // 留一份回應的樣子，下次才對得出 id 到底長在哪一層
       ...(post.postId ? {} : { createRaw: JSON.stringify(post.rawCreate ?? null).slice(0, 600) }),
