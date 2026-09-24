@@ -1141,6 +1141,22 @@ Deno.serve(async (req) => {
       const postId = Number(body.post_id);
       if (!postId) return json({ error: "post_id required" }, 400);
       return json(await sharePost(postId, callerTenant));
+=======
+    // 診斷用：對一篇貼文留言並回 LINE 的原始回應 + 留言後 getList 看到的內容
+    if (action === "debug_comment") {
+      if (caller !== "admin") return json({ error: "只能從後台按" }, 403);
+      const postId = Number(body.post_id);
+      const rows = await rest(`line_note_posts?id=eq.${postId}&select=id,tenant_id,line_post_id,line_note_communities(home_id,account_id)`);
+      const post = rows?.[0];
+      if (!post || (callerTenant && post.tenant_id !== callerTenant)) return json({ error: "找不到這篇貼文" }, 404);
+      const client = await clientFor(await loadAccount(post.line_note_communities.account_id));
+      const homeId = post.line_note_communities.home_id;
+      const text = String(body.text ?? "（測試留言）");
+      let create: any = null, err: string | null = null;
+      try { create = await createNoteComment(client, homeId, post.line_post_id, text, { sourceType: body.source_type, verbose: true }); }
+      catch (e) { err = String((e as any)?.message ?? e); }
+      const after = await listComments(client, homeId, post.line_post_id, { verbose: true }).catch((e) => ({ error: String(e?.message ?? e) }));
+      return json({ create, err, after: Array.isArray(after) ? after.map((c: any) => ({ id: c.commentId, by: c.authorName, text: c.text, raw: c.raw })) : after });
     }
     if (action === "tick" || action === "run") return json(await tick());
     return json({ error: `unknown action ${action}` }, 400);
