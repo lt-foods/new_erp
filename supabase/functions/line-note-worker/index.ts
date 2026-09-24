@@ -26,7 +26,7 @@ import QRCode from "npm:qrcode@1.5.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import {
   clientFromToken, createNoteComment, createNotePost, deleteNotePost, likeComment, type LineCredential, listComments, listHomes,
-  listPosts, loginByQr, readCredential, sharePostToChat, updateNotePost, whoami,
+  listPosts, loginByQr, readCredential, resolveShareChatMid, sendChatText, sharePostToChat, updateNotePost, whoami,
 } from "../_shared/lineNote.ts";
 import { extractPostTag, matchCampaign, normalizeForMatch, normalizeParseConfig, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
 import { renderPostText, TZ } from "../_shared/lineNoteRender.ts";
@@ -921,8 +921,43 @@ async function jobClose(job: any) {
   return { closed: true, comment: text.slice(0, 60), read };
 }
 
+// 結單當天早上（_line_note_enqueue_due_reminds 排的）：把今天要結單的貼文再分享到聊天室一次。
+// 社群有設 remind_message 的話，當天第一篇分享前先發那段文字（一天只發一次）。
+async function jobRemind(job: any) {
+  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,remind_shared_at,group_buy_campaigns(name),line_note_communities(id,home_id,account_id,share_chat_mid,remind_message,remind_message_sent_on)`);
+  const p = rows?.[0];
+  if (!p) throw new Error(`post ${job.post_id} not found`);
+  if (p.remind_shared_at) return { skipped: "already reminded" };
+  if (!p.line_post_id) return { skipped: "no_line_post_id" };
+  const c = p.line_note_communities;
+  const client = await clientFor(await loadAccount(c.account_id));
+  let chatMid: string | null = c.share_chat_mid ?? null;
+  if (!chatMid) {
+    chatMid = await resolveShareChatMid(client, c.home_id, VERBOSE);
+    if (chatMid && chatMid !== c.home_id) await patch("line_note_communities", `id=eq.${c.id}`, { share_chat_mid: chatMid }).catch(() => {});
+  }
+  const today = taipeiDate(new Date());
+  let textSent = false;
+  const msg = String(c.remind_message ?? "").trim();
+  if (msg && c.remind_message_sent_on !== today) {
+    // 先佔位再發：同一分鐘好幾篇一起排進來時，只有第一篇發得出文字
+    const claimed = await patch("line_note_communities",
+      `id=eq.${c.id}&remind_message_sent_on=not.eq.${today}`, { remind_message_sent_on: today }).catch(() => null);
+    const claimed2 = claimed?.length ? claimed
+      : await patch("line_note_communities", `id=eq.${c.id}&remind_message_sent_on=is.null`, { remind_message_sent_on: today }).catch(() => null);
+    if (claimed2?.length) {
+      try { await sendChatText(client, chatMid, msg); textSent = true; }
+      catch (e) { log(`結單提醒文字發送失敗（照樣分享卡片）：${(e as any)?.message ?? e}`); }
+    }
+  }
+  const r = await sharePostToChat(client, c.home_id, p.line_post_id, { chatMid, verbose: VERBOSE });
+  await patch("line_note_posts", `id=eq.${p.id}`, { remind_shared_at: new Date().toISOString() });
+  log(`🔔 貼文 ${p.id}（${p.group_buy_campaigns?.name ?? ""}）結單提醒已分享到 ${r.chatMid}`);
+  return { reminded: true, chatMid: r.chatMid, textSent };
+}
+
 const HANDLERS: Record<string, (job: any, reactUntil: number) => Promise<unknown>> = {
-  logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead, close: jobClose,
+  logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead, close: jobClose, remind: jobRemind,
 };
 
 async function claimNextJob() {
