@@ -673,3 +673,22 @@ export async function updateNotePost(client, homeId, postId, { text, images = []
   }
   return res;
 }
+
+// ── 留言 ───────────────────────────────────────────────────────────────────
+
+/**
+ * 在貼文底下留言（結單通知用）。端點比照 linejs 的 timeline.createComment：
+ * POST …/api/v57/comment/create.json?homeId=&sourceType=，body { commentText, contentId, contentsList }。
+ * 走跟讀留言同一套 host/prefix/channel 探測。
+ */
+export async function createNoteComment(client, homeId, postId, text, { sourceType = "TIMELINE", verbose = false } = {}) {
+  if (!postId) throw new Error("沒有貼文 id，無法留言");
+  if (!text) throw new Error("留言不能是空的");
+  const res = await noteRequest(client, homeId, "/api/v57/comment/create.json",
+    { homeId, sourceType },
+    { method: "POST", body: { commentText: String(text), contentId: String(postId), contentsList: [] }, verbose });
+  if (!res || res.code !== 0) {
+    throw new Error(`留言失敗：code=${res?.code} ${res?.message ?? ""}`);
+  }
+  return res;
+}
