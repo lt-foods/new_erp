@@ -88,6 +88,7 @@ export function CreateCampaignModal({
   const [name, setName] = useState(defaultName);
   const [startAt, setStartAt] = useState(defaultStartAtValue);
   const [autoOpen, setAutoOpen] = useState(false);
+  const [openedAt] = useState(() => Date.now());
   const [customerEndAt, setCustomerEndAt] = useState(defaultCustomerEndAtValue);
   const [endAt, setEndAt] = useState(defaultEndAtValue);
   const [endAtTouched, setEndAtTouched] = useState(false);
@@ -185,7 +186,7 @@ export function CreateCampaignModal({
   }
 
   const inputCls = "rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800";
-  const isFutureStart = new Date(startAt).getTime() > Date.now();
+  const isFutureStart = new Date(startAt).getTime() > openedAt;
 
   return (
     <div className="space-y-4">
