@@ -33,11 +33,13 @@ type Community = {
   home_kind: "group" | "square" | "square_chat"; listen_enabled: boolean; read_times: string[];
   auto_post_on_open: boolean; post_template: string | null; read_days: number; react_on_confirm: boolean;
   sales_channels: string[] | null;
+  post_mode: PostMode; post_slots: PostSlot[] | null; post_every_hours: number; post_every_pct: number;
+  post_window_start: string; post_window_end: string;
   last_read_at: string | null; last_error: string | null;
 };
 type Post = {
   id: number; community_id: number; campaign_id: number | null; line_post_id: string | null; text: string | null;
-  status: "queued" | "posted" | "failed" | "closed" | "unlinked"; posted_at: string | null; last_read_at: string | null;
+  status: "scheduled" | "queued" | "posted" | "failed" | "closed" | "unlinked"; posted_at: string | null; last_read_at: string | null;
   comment_count: number; last_error: string | null; created_at: string;
   closed_at: string | null; closed_reason: string | null; closed_comment_id: number | null;
   group_buy_campaigns: { id: number; campaign_no: string; name: string; status: string } | null;
@@ -86,6 +88,8 @@ function kickWorker(body: Record<string, unknown> = { action: "run" }) {
 const btn = "rounded border border-zinc-300 px-2.5 py-1 text-sm hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800";
 const btnPrimary = "rounded bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900";
 const input = "w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+// 同 input，但寬度自己給（發文時段那幾個小欄位）
+const inputSm = input.replace("w-full ", "");
 
 // 點訂單號開的明細彈窗（整頁共用一個；比照 CampaignOrdersPanel / MemberDetail 的用法）
 type OrderPopup = { id: number; no: string };
@@ -369,12 +373,28 @@ type CommunityForm = {
   id: number | null; account_id: number | ""; store_id: number | ""; home_id: string; home_name: string;
   listen_enabled: boolean; read_times: string; auto_post_on_open: boolean; post_template: string; read_days: number;
   react_on_confirm: boolean; sales_channels: string[];
+  post_mode: PostMode; post_slots: PostSlot[]; post_every_hours: number; post_every_pct: number;
+  post_window_start: string; post_window_end: string;
 };
 const EMPTY_FORM: CommunityForm = {
   id: null, account_id: "", store_id: "", home_id: "", home_name: "",
   listen_enabled: true, read_times: "12:00", auto_post_on_open: true, post_template: "", read_days: 3,
   react_on_confirm: true, sales_channels: ["main"],
+  post_mode: "immediate", post_slots: [{ at: "10:00", pct: 50 }, { at: "15:00", pct: 100 }],
+  post_every_hours: 2, post_every_pct: 20, post_window_start: "09:00", post_window_end: "21:00",
 };
+
+// 開團自動發文的節奏（line_note_communities.post_mode，20260924040000）。
+// 開團時非「立刻」的社群只把貼文排成「排程中」，由 _line_note_tick 每分鐘依時段放行（一分鐘一篇）；
+// 比例的母數是「這個社群排程中、還沒發的」，四捨五入、至少 1 篇。
+type PostMode = "immediate" | "slots" | "interval";
+type PostSlot = { at: string; pct: number };
+function postModeSummary(c: Community): string {
+  if (!c.auto_post_on_open) return "否";
+  if (c.post_mode === "slots") return (c.post_slots ?? []).map((s) => `${s.at} ${s.pct}%`).join("、") || "定時（未設時段）";
+  if (c.post_mode === "interval") return `${c.post_window_start}–${c.post_window_end} 每 ${c.post_every_hours} 小時 ${c.post_every_pct}%`;
+  return "開團立刻全發";
+}
 // 這個社群收哪幾類的團（group_buy_campaigns.sales_channel）。DB 那邊是
 // line_note_communities.sales_channels + _line_note_takes_channel()（20260921020000），
 // 三支發文 RPC 與開團自動發文的 trigger 都吃它，這裡只是把同一份設定畫出來。
@@ -405,7 +425,11 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
     setHomes(null); setPicked([]);
     setForm({ id: c.id, account_id: c.account_id, store_id: c.store_id ?? "", home_id: c.home_id, home_name: c.home_name ?? "",
       listen_enabled: c.listen_enabled, read_times: c.read_times.join(", "), auto_post_on_open: c.auto_post_on_open, post_template: c.post_template ?? "", read_days: c.read_days ?? 3, react_on_confirm: c.react_on_confirm ?? true,
-      sales_channels: c.sales_channels?.length ? c.sales_channels : ["main"] });
+      sales_channels: c.sales_channels?.length ? c.sales_channels : ["main"],
+      post_mode: c.post_mode ?? "immediate",
+      post_slots: c.post_slots?.length ? c.post_slots : EMPTY_FORM.post_slots,
+      post_every_hours: c.post_every_hours ?? 2, post_every_pct: c.post_every_pct ?? 20,
+      post_window_start: c.post_window_start ?? "09:00", post_window_end: c.post_window_end ?? "21:00" });
   };
 
   const loadHomes = async () => {
@@ -448,13 +472,21 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       p_react_on_confirm: form.react_on_confirm,
       p_sales_channels: form.sales_channels,
     };
+    const schedule = {
+      p_post_mode: form.post_mode,
+      p_post_slots: form.post_slots.map((s) => ({ at: s.at.trim(), pct: Math.round(Number(s.pct)) })),
+      p_post_every_hours: Math.round(form.post_every_hours), p_post_every_pct: Math.round(form.post_every_pct),
+      p_post_window_start: form.post_window_start.trim(), p_post_window_end: form.post_window_end.trim(),
+    };
     const failed: string[] = [];
     for (const t of targets) {
-      const { error } = await sb.rpc("rpc_line_note_community_upsert", {
+      const { data: cid, error } = await sb.rpc("rpc_line_note_community_upsert", {
         ...shared, p_id: multi ? null : form.id,
         p_home_id: t.home_id, p_home_name: t.home_name, p_home_kind: kindOf(t.home_id),
       });
-      if (error) failed.push(`${t.home_name || t.home_id}：${translateRpcError(error)}`);
+      if (error) { failed.push(`${t.home_name || t.home_id}：${translateRpcError(error)}`); continue; }
+      const { error: e2 } = await sb.rpc("rpc_line_note_community_set_schedule", { ...schedule, p_id: Number(cid) });
+      if (e2) failed.push(`${t.home_name || t.home_id}（發文時段）：${translateRpcError(e2)}`);
     }
     setBusy(null);
     await reload();
@@ -542,7 +574,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
                 </Td>
                 <Td><Badge tone={c.listen_enabled ? "green" : "gray"}>{c.listen_enabled ? "監聽中" : "停用"}</Badge></Td>
                 <Td className="font-mono text-xs">{c.read_times.join(" ")}<div className="text-zinc-400">近 {c.read_days} 天</div></Td>
-                <Td>{c.auto_post_on_open ? "是" : "否"}</Td>
+                <Td className="text-xs">{postModeSummary(c)}</Td>
                 <Td>{fmt(c.last_read_at)}</Td>
                 <Td align="right">
                   <div className="flex justify-end gap-1 whitespace-nowrap">
@@ -662,9 +694,55 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
                 <div className="mt-1 text-xs text-red-600">至少要勾一種，不然這個社群什麼團都收不到。</div>
               )}
             </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={form.auto_post_on_open} onChange={(e) => setForm({ ...form, auto_post_on_open: e.target.checked })} /> 開團（狀態變「開團中」）時自動發文
-            </label>
+            <div className="text-sm md:col-span-2">
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={form.auto_post_on_open} onChange={(e) => setForm({ ...form, auto_post_on_open: e.target.checked })} /> 開團（狀態變「開團中」）時自動發文
+              </label>
+              {form.auto_post_on_open && (
+                <div className="mt-2 space-y-2 rounded border border-zinc-200 p-3 dark:border-zinc-700">
+                  <div className="flex flex-wrap gap-4">
+                    {([["immediate", "開團立刻全發"], ["slots", "指定時段各發 n%"], ["interval", "每 n 小時發 n%"]] as [PostMode, string][]).map(([v, l]) => (
+                      <label key={v} className="flex items-center gap-2">
+                        <input type="radio" name="post_mode" checked={form.post_mode === v} onChange={() => setForm({ ...form, post_mode: v })} /> {l}
+                      </label>
+                    ))}
+                  </div>
+                  {form.post_mode === "slots" && (
+                    <div className="space-y-1">
+                      {form.post_slots.map((s, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <input type="time" className={`${inputSm} w-32`} value={s.at}
+                            onChange={(e) => setForm({ ...form, post_slots: form.post_slots.map((x, j) => j === i ? { ...x, at: e.target.value } : x) })} />
+                          <span>發</span>
+                          <input type="number" min={1} max={100} className={`${inputSm} w-20`} value={s.pct}
+                            onChange={(e) => setForm({ ...form, post_slots: form.post_slots.map((x, j) => j === i ? { ...x, pct: Number(e.target.value) } : x) })} />
+                          <span>%</span>
+                          <button type="button" className={`${btn} text-red-600`} disabled={form.post_slots.length <= 1}
+                            onClick={() => setForm({ ...form, post_slots: form.post_slots.filter((_, j) => j !== i) })}>刪除</button>
+                        </div>
+                      ))}
+                      <button type="button" className={btn} onClick={() => setForm({ ...form, post_slots: [...form.post_slots, { at: "18:00", pct: 100 }] })}>＋ 加時段</button>
+                      <p className="text-xs text-zinc-500">例：上午 10:00 發 50%、下午 15:00 發 100%。要「一次全發」就只留一個時段設 100%。</p>
+                    </div>
+                  )}
+                  {form.post_mode === "interval" && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input type="time" className={`${inputSm} w-32`} value={form.post_window_start} onChange={(e) => setForm({ ...form, post_window_start: e.target.value })} />
+                      <span>到</span>
+                      <input type="time" className={`${inputSm} w-32`} value={form.post_window_end} onChange={(e) => setForm({ ...form, post_window_end: e.target.value })} />
+                      <span>，每</span>
+                      <input type="number" min={1} max={24} className={`${inputSm} w-20`} value={form.post_every_hours} onChange={(e) => setForm({ ...form, post_every_hours: Number(e.target.value) })} />
+                      <span>小時發</span>
+                      <input type="number" min={1} max={100} className={`${inputSm} w-20`} value={form.post_every_pct} onChange={(e) => setForm({ ...form, post_every_pct: Number(e.target.value) })} />
+                      <span>%</span>
+                    </div>
+                  )}
+                  {form.post_mode !== "immediate" && (
+                    <p className="text-xs text-zinc-500">開團後先排進「排程中」，時間到發出排程中還沒發的 n%（四捨五入、至少 1 篇），每篇間隔 1 分鐘。團結單了還沒輪到的就不發。</p>
+                  )}
+                </div>
+              )}
+            </div>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.react_on_confirm} onChange={(e) => setForm({ ...form, react_on_confirm: e.target.checked })} /> 收到單後在客人留言上按 😄，讓他知道收到了
             </label>
