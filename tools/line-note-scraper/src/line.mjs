@@ -623,3 +623,16 @@ export async function createNoteComment(client, homeId, postId, text, { sourceTy
   }
   return res;
 }
+
+// ── 發聊天訊息 ─────────────────────────────────────────────────────────────
+
+/** 對聊天室發一段文字。社群聊天室（m…）走 square.sendMessage，群組（c…）走 talk.sendMessage。 */
+export async function sendChatText(client, chatMid, text) {
+  if (!chatMid) throw new Error("沒有聊天室 mid，無法發訊息");
+  if (!text) throw new Error("訊息不能是空的");
+  const id = String(chatMid);
+  if (id[0] === "m") {
+    return await client.base.square.sendMessage({ squareChatMid: id, text: String(text) });
+  }
+  return await client.base.talk.sendMessage({ to: id, text: String(text) });
+}

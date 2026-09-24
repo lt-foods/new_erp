@@ -37,6 +37,7 @@ type Community = {
   post_mode: PostMode; post_slots: PostSlot[] | null; post_every_hours: number; post_every_pct: number;
   post_window_start: string; post_window_end: string;
   close_comment: string | null;
+  remind_enabled: boolean; remind_time: string; remind_message: string | null;
   last_read_at: string | null; last_error: string | null;
 };
 type Post = {
@@ -383,6 +384,7 @@ type CommunityForm = {
   post_mode: PostMode; post_slots: PostSlot[]; post_every_hours: number; post_every_pct: number;
   post_window_start: string; post_window_end: string;
   close_comment: string;
+  remind_enabled: boolean; remind_time: string; remind_message: string;
 };
 const EMPTY_FORM: CommunityForm = {
   id: null, account_id: "", store_id: "", home_id: "", home_name: "",
@@ -391,6 +393,7 @@ const EMPTY_FORM: CommunityForm = {
   post_mode: "immediate", post_slots: DEFAULT_SLOTS,
   post_every_hours: 2, post_every_pct: 20, post_window_start: "09:00", post_window_end: "21:00",
   close_comment: "",
+  remind_enabled: true, remind_time: "08:00", remind_message: "",
 };
 
 // 開團自動發文的節奏（line_note_communities.post_mode，20260924040000）。
@@ -438,7 +441,8 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       post_slots: c.post_slots?.length ? c.post_slots : (c.post_mode === "spread" ? DEFAULT_SPREAD : DEFAULT_SLOTS),
       post_every_hours: c.post_every_hours ?? 2, post_every_pct: c.post_every_pct ?? 20,
       post_window_start: c.post_window_start ?? "09:00", post_window_end: c.post_window_end ?? "21:00",
-      close_comment: c.close_comment ?? "" });
+      close_comment: c.close_comment ?? "",
+      remind_enabled: c.remind_enabled ?? true, remind_time: c.remind_time ?? "08:00", remind_message: c.remind_message ?? "" });
   };
 
   const loadHomes = async () => {
@@ -500,6 +504,10 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       if (e2) failed.push(`${t.home_name || t.home_id}（發文時段）：${translateRpcError(e2)}`);
       const { error: e3 } = await sb.rpc("rpc_line_note_community_set_close_comment", { p_id: Number(cid), p_text: form.close_comment });
       if (e3) failed.push(`${t.home_name || t.home_id}（結單留言）：${translateRpcError(e3)}`);
+      const { error: e4 } = await sb.rpc("rpc_line_note_community_set_remind", {
+        p_id: Number(cid), p_enabled: form.remind_enabled, p_time: form.remind_time.trim(), p_message: form.remind_message,
+      });
+      if (e4) failed.push(`${t.home_name || t.home_id}（結單提醒）：${translateRpcError(e4)}`);
     }
     setBusy(null);
     await reload();
@@ -789,6 +797,20 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.react_on_confirm} onChange={(e) => setForm({ ...form, react_on_confirm: e.target.checked })} /> 收到單後在客人留言上按 😄，讓他知道收到了
             </label>
+            <div className="text-sm md:col-span-2">
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={form.remind_enabled} onChange={(e) => setForm({ ...form, remind_enabled: e.target.checked })} />
+                結單當天再把「今天結單」的貼文分享到聊天室提醒大家，時間
+                <input type="time" className={`${inputSm} w-32`} value={form.remind_time} onChange={(e) => setForm({ ...form, remind_time: e.target.value })} />
+              </label>
+              {form.remind_enabled && (
+                <label className="mt-1 block">
+                  <span className="text-xs text-zinc-500">分享前先發這段文字（一天一次；留空只分享卡片）</span>
+                  <textarea className={`${input} h-24 text-xs`} value={form.remind_message} onChange={(e) => setForm({ ...form, remind_message: e.target.value })}
+                    placeholder={"好鄰居們早安‼️\n再看一眼今日結單商品喔～喜歡的商品記得登記下單，也可以新系統商城下單喔～"} />
+                </label>
+              )}
+            </div>
             <label className="text-sm md:col-span-2">結單留言（客人收單時間到，機器人到貼文底下留這句並停止自動加單；留空用預設）
               <textarea className={`${input} h-16 text-xs`} value={form.close_comment} onChange={(e) => setForm({ ...form, close_comment: e.target.value })}
                 placeholder="⏰ 本團已結單，感謝大家的支持！之後想加購請私訊小幫手 🙏" />
