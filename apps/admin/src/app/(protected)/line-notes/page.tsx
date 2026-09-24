@@ -369,6 +369,11 @@ function AccountsTab({ accounts, reload, notify, fail }: {
 }
 
 // ── 社群設定 ─────────────────────────────────────────────────────────────────
+type PostMode = "immediate" | "slots" | "interval" | "spread";
+// slots 用 at；spread（時間區間平均發）用 from/to，pct 是佔總量的比例（20260924050000）
+type PostSlot = { at?: string; from?: string; to?: string; pct: number };
+const DEFAULT_SLOTS: PostSlot[] = [{ at: "10:00", pct: 50 }, { at: "15:00", pct: 100 }];
+const DEFAULT_SPREAD: PostSlot[] = [{ from: "09:00", to: "15:00", pct: 50 }, { from: "15:00", to: "20:00", pct: 50 }];
 type CommunityForm = {
   id: number | null; account_id: number | ""; store_id: number | ""; home_id: string; home_name: string;
   listen_enabled: boolean; read_times: string; auto_post_on_open: boolean; post_template: string; read_days: number;
@@ -380,18 +385,17 @@ const EMPTY_FORM: CommunityForm = {
   id: null, account_id: "", store_id: "", home_id: "", home_name: "",
   listen_enabled: true, read_times: "12:00", auto_post_on_open: true, post_template: "", read_days: 3,
   react_on_confirm: true, sales_channels: ["main"],
-  post_mode: "immediate", post_slots: [{ at: "10:00", pct: 50 }, { at: "15:00", pct: 100 }],
+  post_mode: "immediate", post_slots: DEFAULT_SLOTS,
   post_every_hours: 2, post_every_pct: 20, post_window_start: "09:00", post_window_end: "21:00",
 };
 
 // 開團自動發文的節奏（line_note_communities.post_mode，20260924040000）。
 // 開團時非「立刻」的社群只把貼文排成「排程中」，由 _line_note_tick 每分鐘依時段放行（一分鐘一篇）；
 // 比例的母數是「這個社群排程中、還沒發的」，四捨五入、至少 1 篇。
-type PostMode = "immediate" | "slots" | "interval";
-type PostSlot = { at: string; pct: number };
 function postModeSummary(c: Community): string {
   if (!c.auto_post_on_open) return "否";
   if (c.post_mode === "slots") return (c.post_slots ?? []).map((s) => `${s.at} ${s.pct}%`).join("、") || "定時（未設時段）";
+  if (c.post_mode === "spread") return (c.post_slots ?? []).map((s) => `${s.from}–${s.to} ${s.pct}%`).join("、") || "平均發（未設區間）";
   if (c.post_mode === "interval") return `${c.post_window_start}–${c.post_window_end} 每 ${c.post_every_hours} 小時 ${c.post_every_pct}%`;
   return "開團立刻全發";
 }
@@ -427,7 +431,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       listen_enabled: c.listen_enabled, read_times: c.read_times.join(", "), auto_post_on_open: c.auto_post_on_open, post_template: c.post_template ?? "", read_days: c.read_days ?? 3, react_on_confirm: c.react_on_confirm ?? true,
       sales_channels: c.sales_channels?.length ? c.sales_channels : ["main"],
       post_mode: c.post_mode ?? "immediate",
-      post_slots: c.post_slots?.length ? c.post_slots : EMPTY_FORM.post_slots,
+      post_slots: c.post_slots?.length ? c.post_slots : (c.post_mode === "spread" ? DEFAULT_SPREAD : DEFAULT_SLOTS),
       post_every_hours: c.post_every_hours ?? 2, post_every_pct: c.post_every_pct ?? 20,
       post_window_start: c.post_window_start ?? "09:00", post_window_end: c.post_window_end ?? "21:00" });
   };
@@ -474,7 +478,9 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
     };
     const schedule = {
       p_post_mode: form.post_mode,
-      p_post_slots: form.post_slots.map((s) => ({ at: s.at.trim(), pct: Math.round(Number(s.pct)) })),
+      p_post_slots: form.post_slots.map((s) => form.post_mode === "spread"
+        ? { from: (s.from ?? "").trim(), to: (s.to ?? "").trim(), pct: Math.round(Number(s.pct)) }
+        : { at: (s.at ?? "").trim(), pct: Math.round(Number(s.pct)) }),
       p_post_every_hours: Math.round(form.post_every_hours), p_post_every_pct: Math.round(form.post_every_pct),
       p_post_window_start: form.post_window_start.trim(), p_post_window_end: form.post_window_end.trim(),
     };
@@ -701,17 +707,47 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
               {form.auto_post_on_open && (
                 <div className="mt-2 space-y-2 rounded border border-zinc-200 p-3 dark:border-zinc-700">
                   <div className="flex flex-wrap gap-4">
-                    {([["immediate", "開團立刻全發"], ["slots", "指定時段各發 n%"], ["interval", "每 n 小時發 n%"]] as [PostMode, string][]).map(([v, l]) => (
+                    {([["immediate", "開團立刻全發"], ["spread", "時間區間平均發"], ["slots", "指定時段各發 n%"], ["interval", "每 n 小時發 n%"]] as [PostMode, string][]).map(([v, l]) => (
                       <label key={v} className="flex items-center gap-2">
-                        <input type="radio" name="post_mode" checked={form.post_mode === v} onChange={() => setForm({ ...form, post_mode: v })} /> {l}
+                        <input type="radio" name="post_mode" checked={form.post_mode === v}
+                          onChange={() => setForm({
+                            ...form, post_mode: v,
+                            // 兩種模式的時段格式不同，切換時換成對應的預設，不要把 at 的列拿去當區間
+                            post_slots: v === "spread" && !form.post_slots.some((s) => s.from) ? DEFAULT_SPREAD
+                              : v === "slots" && !form.post_slots.some((s) => s.at) ? DEFAULT_SLOTS : form.post_slots,
+                          })} /> {l}
                       </label>
                     ))}
                   </div>
+                  {form.post_mode === "spread" && (
+                    <div className="space-y-1">
+                      {form.post_slots.map((s, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <input type="time" className={`${inputSm} w-32`} value={s.from ?? ""}
+                            onChange={(e) => setForm({ ...form, post_slots: form.post_slots.map((x, j) => j === i ? { ...x, from: e.target.value } : x) })} />
+                          <span>到</span>
+                          <input type="time" className={`${inputSm} w-32`} value={s.to ?? ""}
+                            onChange={(e) => setForm({ ...form, post_slots: form.post_slots.map((x, j) => j === i ? { ...x, to: e.target.value } : x) })} />
+                          <span>發</span>
+                          <input type="number" min={1} max={100} className={`${inputSm} w-20`} value={s.pct}
+                            onChange={(e) => setForm({ ...form, post_slots: form.post_slots.map((x, j) => j === i ? { ...x, pct: Number(e.target.value) } : x) })} />
+                          <span>%</span>
+                          <button type="button" className={`${btn} text-red-600`} disabled={form.post_slots.length <= 1}
+                            onClick={() => setForm({ ...form, post_slots: form.post_slots.filter((_, j) => j !== i) })}>刪除</button>
+                        </div>
+                      ))}
+                      <button type="button" className={btn} onClick={() => setForm({ ...form, post_slots: [...form.post_slots, { from: "20:00", to: "22:00", pct: 10 }] })}>＋ 加區間</button>
+                      <p className="text-xs text-zinc-500">
+                        例：09:00–15:00 發 50%、15:00–20:00 發 50%。這裡的 % 是佔全部的比例，加起來 100 就是全發完；
+                        每段會在區間內平均分散發（最快一分鐘一篇）。區間開始後才開的團等下一段。
+                      </p>
+                    </div>
+                  )}
                   {form.post_mode === "slots" && (
                     <div className="space-y-1">
                       {form.post_slots.map((s, i) => (
                         <div key={i} className="flex items-center gap-2">
-                          <input type="time" className={`${inputSm} w-32`} value={s.at}
+                          <input type="time" className={`${inputSm} w-32`} value={s.at ?? ""}
                             onChange={(e) => setForm({ ...form, post_slots: form.post_slots.map((x, j) => j === i ? { ...x, at: e.target.value } : x) })} />
                           <span>發</span>
                           <input type="number" min={1} max={100} className={`${inputSm} w-20`} value={s.pct}
@@ -737,7 +773,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
                       <span>%</span>
                     </div>
                   )}
-                  {form.post_mode !== "immediate" && (
+                  {(form.post_mode === "slots" || form.post_mode === "interval") && (
                     <p className="text-xs text-zinc-500">開團後先排進「排程中」，時間到發出排程中還沒發的 n%（四捨五入、至少 1 篇），每篇間隔 1 分鐘。團結單了還沒輪到的就不發。</p>
                   )}
                 </div>
