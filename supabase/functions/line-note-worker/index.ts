@@ -969,6 +969,7 @@ async function jobClose(job: any) {
 
 // 結單當天早上（_line_note_enqueue_due_reminds 排的）：把今天要結單的貼文再分享到聊天室一次。
 // 社群有設 remind_message 的話，當天第一篇分享前先發那段文字（一天只發一次）。
+const DEFAULT_REMIND_MESSAGE = "好鄰居們早安~~再看一眼，今日結單商品喔～走過路過不要錯過！喜歡的商品，好鄰居記得登記下單喔！！也可以新系統商城下單喔～\nhttps://new-erp-admin.vercel.app/shop";
 async function jobRemind(job: any) {
   const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,remind_shared_at,group_buy_campaigns(name),line_note_communities(id,home_id,account_id,share_chat_mid,remind_message,remind_message_sent_on)`);
   const p = rows?.[0];
@@ -984,8 +985,8 @@ async function jobRemind(job: any) {
   }
   const today = taipeiDate(new Date());
   let textSent = false;
-  const msg = String(c.remind_message ?? "").trim();
-  if (msg && c.remind_message_sent_on !== today) {
+  const msg = String(c.remind_message ?? "").trim() || DEFAULT_REMIND_MESSAGE;
+  if (c.remind_message_sent_on !== today) {
     // 先佔位再發：同一分鐘好幾篇一起排進來時，只有第一篇發得出文字
     const claimed = await patch("line_note_communities",
       `id=eq.${c.id}&remind_message_sent_on=not.eq.${today}`, { remind_message_sent_on: today }).catch(() => null);

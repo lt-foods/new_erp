@@ -805,9 +805,9 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
               </label>
               {form.remind_enabled && (
                 <label className="mt-1 block">
-                  <span className="text-xs text-zinc-500">分享前先發這段文字（一天一次；留空只分享卡片）</span>
+                  <span className="text-xs text-zinc-500">分享前先發這段文字（一天一次；留空用預設）</span>
                   <textarea className={`${input} h-24 text-xs`} value={form.remind_message} onChange={(e) => setForm({ ...form, remind_message: e.target.value })}
-                    placeholder={"好鄰居們早安‼️\n再看一眼今日結單商品喔～喜歡的商品記得登記下單，也可以新系統商城下單喔～"} />
+                    placeholder={"好鄰居們早安~~再看一眼，今日結單商品喔～走過路過不要錯過！喜歡的商品，好鄰居記得登記下單喔！！也可以新系統商城下單喔～\\nhttps://new-erp-admin.vercel.app/shop"} />
                 </label>
               )}
             </div>

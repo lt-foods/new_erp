@@ -20,7 +20,7 @@ ALTER TABLE line_note_communities
   ADD COLUMN IF NOT EXISTS remind_message  TEXT,
   ADD COLUMN IF NOT EXISTS remind_message_sent_on DATE;
 COMMENT ON COLUMN line_note_communities.remind_time IS '結單當天幾點把今天結單的貼文再分享到聊天室（台北 HH:MM）';
-COMMENT ON COLUMN line_note_communities.remind_message IS '分享前先發的文字（一天一次）；NULL = 不發文字、只分享卡片';
+COMMENT ON COLUMN line_note_communities.remind_message IS '分享前先發的文字（一天一次）；NULL = 用 worker 的預設文字（DEFAULT_REMIND_MESSAGE）';
 
 ALTER TABLE line_note_jobs DROP CONSTRAINT IF EXISTS line_note_jobs_kind_check;
 ALTER TABLE line_note_jobs ADD CONSTRAINT line_note_jobs_kind_check
