@@ -955,7 +955,17 @@ async function jobClose(job: any) {
   try {
     await createNoteComment(client, post.home_id, p.line_post_id, text, { verbose: VERBOSE });
   } catch (e) {
-    await patch("line_note_posts", `id=eq.${p.id}`, { last_error: `結單留言失敗：${String((e as any)?.message ?? e)}`.slice(0, 1000) }).catch(() => {});
+    const msg = String((e as any)?.message ?? e);
+    // 失敗就不再重試（close_notified_at 寫下去，tick 才不會每分鐘再排一次 —— 9/24 一篇被刪的貼文
+    // 就這樣連排了 200 次，探路時撞到的 401 還把帳號標成錯誤）。原因留在貼文列上，人看得到。
+    const deleted = /已被刪除|code=404/.test(msg);
+    await patch("line_note_posts", `id=eq.${p.id}`, {
+      close_notified_at: new Date().toISOString(),
+      last_error: (deleted ? "LINE 上的貼文已被刪除，無法留言結單" : `結單留言失敗：${msg}`).slice(0, 1000),
+      ...(deleted && p.status === "posted"
+        ? { status: "closed", closed_at: new Date().toISOString(), closed_reason: "LINE 上的貼文已被刪除" } : {}),
+    }).catch(() => {});
+    if (deleted) return { closed: false, deleted: true };
     throw e;
   }
   const now = new Date().toISOString();
@@ -1033,7 +1043,8 @@ async function runJob(job: any, reactUntil: number) {
     const msg = String((e as any)?.message ?? e);
     log(`✖ job#${job.id}`, msg.slice(0, 500));
     await patch("line_note_jobs", `id=eq.${job.id}`, { status: "failed", error: msg.slice(0, 2000), finished_at: new Date().toISOString() });
-    if (/還沒登入|NotAuthorized|token|401/i.test(msg) && job.account_id) {
+    // 「記事本 API 全部打不通」是路由探測的彙整訊息，裡面夾雜的 401 多半是 LINE 的暫時性錯誤，不是帳號掉線
+    if (/還沒登入|NotAuthorized|token|401/i.test(msg) && !/全部打不通/.test(msg) && job.account_id) {
       clients.delete(job.account_id);
       await patch("line_note_accounts", `id=eq.${job.account_id}`, { status: "error", last_error: loginErrorHint(msg).slice(0, 1000) }).catch(() => {});
     }

@@ -615,6 +615,13 @@ export async function updateNotePost(client, homeId, postId, { text, images = []
 export async function createNoteComment(client, homeId, postId, text, { sourceType = "TIMELINE", verbose = false } = {}) {
   if (!postId) throw new Error("沒有貼文 id，無法留言");
   if (!text) throw new Error("留言不能是空的");
+  // 先用唯讀 list 探路（理由同 createNotePost）：留言是會寫東西的請求，不要拿它一組一組試路由
+  try {
+    await noteGet(client, homeId, "/api/v57/post/list.json",
+      { homeId, sourceType: "TALKROOM", likeLimit: "0", commentLimit: "0" }, verbose);
+  } catch (e) {
+    log(verbose, "探路用的 list 失敗（照樣試留言）:", e?.message ?? e);
+  }
   const res = await noteRequest(client, homeId, "/api/v57/comment/create.json",
     { homeId, sourceType },
     { method: "POST", body: { commentText: String(text), contentId: String(postId), contentsList: [] }, verbose });
