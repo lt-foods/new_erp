@@ -36,6 +36,7 @@ type Community = {
   sales_channels: string[] | null;
   post_mode: PostMode; post_slots: PostSlot[] | null; post_every_hours: number; post_every_pct: number;
   post_window_start: string; post_window_end: string;
+  close_comment: string | null;
   last_read_at: string | null; last_error: string | null;
 };
 type Post = {
@@ -381,6 +382,7 @@ type CommunityForm = {
   react_on_confirm: boolean; sales_channels: string[];
   post_mode: PostMode; post_slots: PostSlot[]; post_every_hours: number; post_every_pct: number;
   post_window_start: string; post_window_end: string;
+  close_comment: string;
 };
 const EMPTY_FORM: CommunityForm = {
   id: null, account_id: "", store_id: "", home_id: "", home_name: "",
@@ -388,6 +390,7 @@ const EMPTY_FORM: CommunityForm = {
   react_on_confirm: true, sales_channels: ["main"],
   post_mode: "immediate", post_slots: DEFAULT_SLOTS,
   post_every_hours: 2, post_every_pct: 20, post_window_start: "09:00", post_window_end: "21:00",
+  close_comment: "",
 };
 
 // 開團自動發文的節奏（line_note_communities.post_mode，20260924040000）。
@@ -434,7 +437,8 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       post_mode: c.post_mode ?? "immediate",
       post_slots: c.post_slots?.length ? c.post_slots : (c.post_mode === "spread" ? DEFAULT_SPREAD : DEFAULT_SLOTS),
       post_every_hours: c.post_every_hours ?? 2, post_every_pct: c.post_every_pct ?? 20,
-      post_window_start: c.post_window_start ?? "09:00", post_window_end: c.post_window_end ?? "21:00" });
+      post_window_start: c.post_window_start ?? "09:00", post_window_end: c.post_window_end ?? "21:00",
+      close_comment: c.close_comment ?? "" });
   };
 
   const loadHomes = async () => {
@@ -494,6 +498,8 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       if (error) { failed.push(`${t.home_name || t.home_id}：${translateRpcError(error)}`); continue; }
       const { error: e2 } = await sb.rpc("rpc_line_note_community_set_schedule", { ...schedule, p_id: Number(cid) });
       if (e2) failed.push(`${t.home_name || t.home_id}（發文時段）：${translateRpcError(e2)}`);
+      const { error: e3 } = await sb.rpc("rpc_line_note_community_set_close_comment", { p_id: Number(cid), p_text: form.close_comment });
+      if (e3) failed.push(`${t.home_name || t.home_id}（結單留言）：${translateRpcError(e3)}`);
     }
     setBusy(null);
     await reload();
@@ -782,6 +788,10 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
             </div>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.react_on_confirm} onChange={(e) => setForm({ ...form, react_on_confirm: e.target.checked })} /> 收到單後在客人留言上按 😄，讓他知道收到了
+            </label>
+            <label className="text-sm md:col-span-2">結單留言（客人收單時間到，機器人到貼文底下留這句並停止自動加單；留空用預設）
+              <textarea className={`${input} h-16 text-xs`} value={form.close_comment} onChange={(e) => setForm({ ...form, close_comment: e.target.value })}
+                placeholder="⏰ 本團已結單，感謝大家的支持！之後想加購請私訊小幫手 🙏" />
             </label>
             <label className="text-sm md:col-span-2">發文模板（留空用預設；可用 {"{{title}} {{items}} {{deadline}} {{description}} {{howto}} {{link}} {{tag}} {{name}} {{end_at}} {{pickup_deadline}}"}）
               <textarea className={`${input} h-40 font-mono text-xs`} value={form.post_template} onChange={(e) => setForm({ ...form, post_template: e.target.value })}

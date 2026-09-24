@@ -25,7 +25,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 import QRCode from "npm:qrcode@1.5.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import {
-  clientFromToken, createNotePost, deleteNotePost, likeComment, type LineCredential, listComments, listHomes,
+  clientFromToken, createNoteComment, createNotePost, deleteNotePost, likeComment, type LineCredential, listComments, listHomes,
   listPosts, loginByQr, readCredential, sharePostToChat, updateNotePost, whoami,
 } from "../_shared/lineNote.ts";
 import { extractPostTag, matchCampaign, normalizeForMatch, normalizeParseConfig, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
@@ -888,8 +888,41 @@ async function jobRead(job: any, reactUntil = Date.now() + REACT_BUDGET_MS) {
   return { discovered, full_read: fullRead, skipped, ...react, posts: out };
 }
 
+// 客人收單時間到（_line_note_enqueue_due_closes 排的）：先把截止前的留言讀最後一輪，
+// 再到貼文底下留「結單」，然後把這篇標成已結束（之後不再自動加單、也不再讀）。
+// 留言失敗不標結束、close_notified_at 也不寫 → 下一分鐘會再排一次；連續失敗的話錯誤留在貼文列上。
+const DEFAULT_CLOSE_COMMENT = "⏰ 本團已結單，感謝大家的支持！之後想加購請私訊小幫手 🙏";
+async function jobClose(job: any) {
+  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,community_id,status,close_notified_at,last_read_at,comment_count,group_buy_campaigns(name),line_note_communities(id,home_id,account_id,react_on_confirm,read_days,close_comment)`);
+  const p = rows?.[0];
+  if (!p) throw new Error(`post ${job.post_id} not found`);
+  if (p.close_notified_at) return { skipped: "already notified" };
+  if (!p.line_post_id) return { skipped: "no_line_post_id" };
+  const client = await clientFor(await loadAccount(p.line_note_communities.account_id));
+  const post = { ...p, home_id: p.line_note_communities.home_id };
+  let read: any = null;
+  if (p.status === "posted") {
+    try { read = await readPost(client, post); }
+    catch (e) { log(`結單前最後一輪讀留言失敗（照樣留言）：${(e as any)?.message ?? e}`); }
+  }
+  const text = String(p.line_note_communities.close_comment ?? "").trim() || DEFAULT_CLOSE_COMMENT;
+  try {
+    await createNoteComment(client, post.home_id, p.line_post_id, text, { verbose: VERBOSE });
+  } catch (e) {
+    await patch("line_note_posts", `id=eq.${p.id}`, { last_error: `結單留言失敗：${String((e as any)?.message ?? e)}`.slice(0, 1000) }).catch(() => {});
+    throw e;
+  }
+  const now = new Date().toISOString();
+  await patch("line_note_posts", `id=eq.${p.id}`, {
+    close_notified_at: now, last_error: null,
+    ...(p.status === "posted" ? { status: "closed", closed_at: now, closed_reason: "客人收單時間到，系統已留言結單" } : {}),
+  });
+  log(`⏰ 貼文 ${p.id}（${p.group_buy_campaigns?.name ?? ""}）已留言結單`);
+  return { closed: true, comment: text.slice(0, 60), read };
+}
+
 const HANDLERS: Record<string, (job: any, reactUntil: number) => Promise<unknown>> = {
-  logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead,
+  logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead, close: jobClose,
 };
 
 async function claimNextJob() {
