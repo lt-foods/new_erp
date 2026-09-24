@@ -537,7 +537,8 @@ async function detectClosing(post: any): Promise<any | null> {
 }
 
 const REACT_BATCH = 80;                                  // 一次讀取最多按幾則（一則約 0.3 秒）
-const REACT_MAX_MISS = 5;                                // 連續幾則按不動就停手（多半是 LINE 擋次數）
+const REACT_MAX_MISS = 5;
+const REACT_GIVE_UP = 3;                                 // 同一則連按 3 輪都失敗就放棄（客人多半把留言刪了）                                // 連續幾則按不動就停手（多半是 LINE 擋次數）
 
 // 收到單的留言回按一個笑臉，讓客人知道「你的 +1 我收到了」。
 // 只按 ordered / duplicate / resolved —— unmatched、error 還沒處理完，按了會讓客人以為收到了。
@@ -560,7 +561,7 @@ const REACT_MAX_MISS = 5;                                // 連續幾則按不�
 // 硬打下去只是把時間花在必然失敗的請求上。
 async function reactPending(client: any, homeId: string, query: string, reactUntil: number) {
   const rows = await rest(
-    `line_note_comments?${query}&reacted_at=is.null&status=in.(ordered,duplicate,resolved)` +
+    `line_note_comments?${query}&reacted_at=is.null&react_failed_at=is.null&status=in.(ordered,duplicate,resolved)` +
     `&order=commented_at.desc&limit=${REACT_BATCH}`);
   const list: any[] = rows ?? [];
   const { reacted } = await likeEach(client, homeId, list, reactUntil);
@@ -583,6 +584,11 @@ async function likeEach(client: any, homeId: string, list: any[], until: number)
       miss = 0;
     } catch (e) {
       log(`留言 ${c.line_comment_id} 按表情失敗（略過）：${(e as any)?.message ?? e}`);
+      // 失敗計數：3 次就放棄（react_failed_at），tick 不再為了它每分鐘叫醒 worker（20260924090000）
+      const fails = Number(c.react_fail_count ?? 0) + 1;
+      await patch("line_note_comments", `id=eq.${c.id}`, {
+        react_fail_count: fails, ...(fails >= REACT_GIVE_UP ? { react_failed_at: new Date().toISOString() } : {}),
+      }).catch(() => {});
       if (++miss >= REACT_MAX_MISS) {
         log(`連續 ${miss} 則按不動（多半是 LINE 擋次數），剩下 ${list.length - i - 1} 則留到下一輪`);
         break;
@@ -612,7 +618,7 @@ const SWEEP_BUDGET_MS = 15_000;          // 自己的小預算，不跟讀留言
 async function reactResolved(until: number) {
   const since = new Date(Date.now() - SWEEP_WINDOW_MS).toISOString();
   const rows = await rest(
-    `line_note_comments?select=id,line_comment_id,post_id&reacted_at=is.null&status=eq.resolved` +
+    `line_note_comments?select=id,line_comment_id,post_id,react_fail_count&reacted_at=is.null&react_failed_at=is.null&status=eq.resolved` +
     `&resolved_at=gte.${since}&line_comment_id=not.is.null&order=resolved_at.desc&limit=${SWEEP_BATCH}`);
   const reacted = await likeByCommunity(rows ?? [], until, SWEEP_BATCH);
   if (reacted) log(`😄 補按「已解決」的笑臉 ${reacted} 則`);
@@ -635,7 +641,7 @@ async function reactOrdered(until: number) {
   const since = new Date(Date.now() - PENDING_WINDOW_MS).toISOString();
   // 多抓一些，關了笑臉的社群被濾掉之後還湊得滿一輪
   const rows = await rest(
-    `line_note_comments?select=id,line_comment_id,post_id&reacted_at=is.null&status=in.(ordered,duplicate)` +
+    `line_note_comments?select=id,line_comment_id,post_id,react_fail_count&reacted_at=is.null&react_failed_at=is.null&status=in.(ordered,duplicate)` +
     `&commented_at=gte.${since}&line_comment_id=not.is.null&order=commented_at.desc&limit=${PENDING_PER_TICK * 4}`);
   const reacted = await likeByCommunity(rows ?? [], until, PENDING_PER_TICK);
   if (reacted) log(`😄 補按加單成功的笑臉 ${reacted} 則`);
@@ -920,8 +926,8 @@ async function jobRead(job: any, reactUntil = Date.now() + REACT_BUDGET_MS) {
     const c0 = community ?? posts?.[0]?.line_note_communities;
     if (c0?.home_id && c0.react_on_confirm !== false) {
       const scope = job.post_id
-        ? `select=id,line_comment_id&post_id=eq.${job.post_id}`
-        : `select=id,line_comment_id,line_note_posts!line_note_comments_post_id_fkey!inner(community_id)` +
+        ? `select=id,line_comment_id,react_fail_count&post_id=eq.${job.post_id}`
+        : `select=id,line_comment_id,react_fail_count,line_note_posts!line_note_comments_post_id_fkey!inner(community_id)` +
           `&line_note_posts.community_id=eq.${job.community_id}` +
           `&or=(commented_at.gte.${new Date(Date.now() - (c0.read_days ?? 7) * 86400_000).toISOString()},commented_at.is.null)`;
       const client = await clientFor(await loadAccount(c0.account_id));
