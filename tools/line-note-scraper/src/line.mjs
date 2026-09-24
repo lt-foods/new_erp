@@ -466,3 +466,56 @@ export function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
+
+// ── 改貼文 ─────────────────────────────────────────────────────────────────
+
+/**
+ * 改掉記事本上已經發出去的那篇（品項 / 金額打錯時從系統改完再更新回去）。
+ * 端點比照 linejs 的 timeline.updatePost：POST …/api/v57/post/update.json?homeId=，
+ * postInfo 帶 postId + editableContents ["ALL"]，contents 跟發文同一套。
+ * 圖片一律重新上傳（update 的 media 是整組覆蓋，不帶就等於把原本的圖拿掉）。
+ * 同 createNotePost：不要帶 textStyle / backgroundColor（2026-09-18 起 code=118）。
+ */
+export async function updateNotePost(client, homeId, postId, { text, images = [], sourceType, verbose = false } = {}) {
+  if (!postId) throw new Error("沒有貼文 id，無法更新");
+  if (!text && images.length === 0) throw new Error("貼文至少要有文字或圖片");
+
+  const media = [];
+  for (const file of images) {
+    try {
+      const bytes = file?.bytes ?? file;
+      const type = file?.type || "image/jpeg";
+      const { objId } = await client.base.timeline.uploadNoteMedia("image", new Blob([bytes], { type }));
+      media.push({ objectId: objId, type: "PHOTO", obsFace: "[]" });
+      log(verbose, `uploaded <${(file?.bytes ?? file).byteLength} bytes, ${type}> → ${objId}`);
+    } catch (e) {
+      log(true, `圖片上傳失敗，這張跳過：${e?.message ?? e}`);
+    }
+  }
+
+  // 先用唯讀 list 探路（理由同 createNotePost / deleteNotePost）
+  try {
+    await noteGet(client, homeId, "/api/v57/post/list.json",
+      { homeId, sourceType: sourceType ?? "TALKROOM", likeLimit: "0", commentLimit: "0" }, verbose);
+  } catch (e) {
+    log(verbose, "探路用的 list 失敗（照樣試更新）:", e?.message ?? e);
+  }
+
+  const body = {
+    postInfo: { postId: String(postId), editableContents: ["ALL"], readPermission: { homeID: homeId } },
+    contents: {
+      contentsStyle: { mediaStyle: { displayType: "GRID_1_A" } },
+      stickers: [],
+      locations: [],
+      media,
+      ...(text ? { text } : {}),
+    },
+  };
+  const res = await noteRequest(client, homeId, "/api/v57/post/update.json",
+    { homeId }, { method: "POST", body, verbose });
+  log(verbose, "updatePost →", JSON.stringify(res).slice(0, 500));
+  if (!res || res.code !== 0) {
+    throw new Error(`更新貼文失敗：code=${res?.code} ${res?.message ?? ""}\n${JSON.stringify(res).slice(0, 800)}`);
+  }
+  return res;
+}

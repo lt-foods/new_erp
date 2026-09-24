@@ -18,6 +18,7 @@ import {
   COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, commentStats, fmtNoteTime, isTodoComment, isUnreadableOrder,
 } from "@/lib/lineNoteStatus";
 import { deleteLineNotePost } from "@/lib/lineNoteDelete";
+import { updateLineNotePost } from "@/lib/lineNoteUpdate";
 import { canOperateLineNotes, useRole } from "@/lib/role";
 import { useHasStaffPerm } from "@/lib/staffPerms";
 
@@ -1420,6 +1421,18 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
 
   // 預設連 LINE 上那篇一起刪（貼錯團 / 貼錯價格時才救得回來）；
   // 刪不掉會問要不要只清後台紀錄。流程在 @/lib/lineNoteDelete，跟開團彈窗共用。
+  const refreshPost = async (p: Post) => {
+    setBusy(p.id);
+    const r = await updateLineNotePost({
+      id: p.id, line_post_id: p.line_post_id,
+      label: p.group_buy_campaigns?.name ?? postFirstLine(p.text),
+    });
+    setBusy(null);
+    if (r.kind === "cancelled") return;
+    if (r.kind === "failed") return fail(new Error(r.error));
+    notify("LINE 上那篇已更新成目前的內容");
+    await reload();
+  };
   const removePost = async (p: Post) => {
     setBusy(p.id);
     const r = await deleteLineNotePost({
@@ -1582,6 +1595,10 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
                         )}
                         {!readOnly && p.status === "posted" && (
                           <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void readNow(p)}>立即讀取</SpinButton>
+                        )}
+                        {!readOnly && !unlinked && p.line_post_id && (p.status === "posted" || p.status === "closed") && (
+                          <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void refreshPost(p)}
+                            title="開團的品項 / 價格改了之後，把 LINE 上那篇改成現在的內容">更新貼文</SpinButton>
                         )}
                         {!readOnly && p.status === "closed" && p.closed_comment_id && (
                           <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void reopenPost(p)}>恢復讀取</SpinButton>

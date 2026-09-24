@@ -24,6 +24,7 @@ import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import { withBasePath } from "@/lib/basePath";
 import { deleteLineNotePost } from "@/lib/lineNoteDelete";
+import { updateLineNotePost } from "@/lib/lineNoteUpdate";
 import { canOperateLineNotes, useRole } from "@/lib/role";
 import {
   COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, commentStats, fmtNoteTime, isTodoComment,
@@ -233,6 +234,19 @@ export default function LineNotePostsModal({
     setTimeout(() => { void load(true); }, 8000);
   };
 
+  const refreshPost = async (t: Target) => {
+    if (!t.post_id) return;
+    setBusy(t.community_id);
+    const r = await updateLineNotePost({
+      id: t.post_id, line_post_id: t.line_post_id,
+      label: `${campaignName ?? ""}｜${t.home_name || t.home_id}`,
+    });
+    setBusy(null);
+    if (r.kind === "cancelled") return;
+    if (r.kind === "failed") return fail(new Error(r.error));
+    notify("LINE 上那篇已更新成目前的內容");
+    await load(true);
+  };
   const removePost = async (t: Target) => {
     if (!t.post_id) return;
     setBusy(t.community_id);
@@ -451,6 +465,12 @@ export default function LineNotePostsModal({
                           {t.post_status === "posted" && (
                             <SpinButton className={btn} loading={busy === t.community_id} onClick={() => void readNow(t)}>
                               立即讀留言
+                            </SpinButton>
+                          )}
+                          {t.line_post_id && (t.post_status === "posted" || t.post_status === "closed") && (
+                            <SpinButton className={btn} loading={busy === t.community_id} onClick={() => void refreshPost(t)}
+                              title="品項 / 價格改了之後，把 LINE 上那篇改成現在的內容（先存開團，再按這個）">
+                              更新貼文
                             </SpinButton>
                           )}
                           {/* 退回未處理 / 忽略 / 重試那些留言操作都在記事本頁，這裡只給入口，不再抄一份。
