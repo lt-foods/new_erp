@@ -26,7 +26,7 @@ import QRCode from "npm:qrcode@1.5.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import {
   clientFromToken, createNotePost, deleteNotePost, likeComment, type LineCredential, listComments, listHomes,
-  listPosts, loginByQr, readCredential, sharePostToChat, whoami,
+  listPosts, loginByQr, readCredential, sharePostToChat, updateNotePost, whoami,
 } from "../_shared/lineNote.ts";
 import { extractPostTag, matchCampaign, normalizeForMatch, normalizeParseConfig, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
 import { renderPostText, TZ } from "../_shared/lineNoteRender.ts";
