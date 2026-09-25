@@ -247,7 +247,7 @@ async function collectPostImages(payload: any): Promise<{ bytes: Uint8Array; typ
 }
 
 async function jobPost(job: any) {
-  const cur = await rest(`line_note_posts?id=eq.${job.post_id}&select=status,line_post_id`);
+  const cur = await rest(`line_note_posts?id=eq.${job.post_id}&select=status,line_post_id,share_state`);
   if (cur?.[0]?.status === "posted") return { skipped: "already posted", postId: cur[0].line_post_id };
   const payload = await rpc("rpc_line_note_post_payload", { p_post_id: job.post_id });
   if (!payload) throw new Error(`post ${job.post_id} not found`);
@@ -268,12 +268,16 @@ async function jobPost(job: any) {
     // 發完順手用 LINE 原生的「分享貼文」卡片貼到聊天室，客人在聊天裡就點得到。
     // 分享失敗不算發文失敗（貼文已經在記事本上了），錯誤留在畫面上就好。
     // 已標 posted 的工作不會重跑（上面的 skipped），所以不會重複分享。
+    // 分享到聊天室：社群節奏是「立刻」才在這裡順手分享；其他節奏由 _line_note_release_scheduled
+    // 依時段放行（share_state='scheduled' → 'sharing' + share 工作 → jobShare）。
+    // 分享失敗不算發文失敗（貼文已經在記事本上了），錯誤留在畫面上就好。
     let shareError: string | null = null;
     let sharedTo: string | null = null;
-    if (postId) {
+    const cm = (await rest(`line_note_communities?home_id=eq.${encodeURIComponent(payload.home_id)}&account_id=eq.${payload.account_id}&select=id,home_id,share_chat_mid,post_mode&limit=1`))?.[0]
+      ?? { id: job.community_id, home_id: payload.home_id, share_chat_mid: null, post_mode: "immediate" };
+    const shareNow = postId && cur?.[0]?.share_state !== "scheduled" && cm.post_mode === "immediate";
+    if (shareNow) {
       try {
-        const cm = (await rest(`line_note_communities?home_id=eq.${encodeURIComponent(payload.home_id)}&account_id=eq.${payload.account_id}&select=id,home_id,share_chat_mid&limit=1`))?.[0]
-          ?? { id: job.community_id, home_id: payload.home_id, share_chat_mid: null };
         sharedTo = (await shareWithMemo(client, cm, postId)).chatMid;
       } catch (e) {
         shareError = String((e as any)?.message ?? e);
@@ -282,6 +286,7 @@ async function jobPost(job: any) {
     }
     await patch("line_note_posts", `id=eq.${job.post_id}`, {
       status: "posted", line_post_id: postId, text, posted_at: new Date().toISOString(),
+      ...(shareNow ? (sharedTo ? { share_state: "shared", shared_at: new Date().toISOString() } : { share_state: "failed" }) : {}),
       // 還是沒有 id：貼文已經在 LINE 上了，先標 posted，錯誤留在畫面上；下次讀取 discoverPosts
       // 會用 🔖 團號把 id 補回來，補到才開始讀留言。
       last_error: !postId
@@ -411,15 +416,43 @@ async function sharePost(postId: number, callerTenant: string | null) {
   try {
     const account = await loadAccount(post.line_note_communities.account_id);
     const r = await shareWithMemo(await clientFor(account), post.line_note_communities, post.line_post_id);
-    if (String(post.last_error ?? "").includes("分享到聊天失敗")) {
-      await patch("line_note_posts", `id=eq.${postId}`, { last_error: null }).catch(() => {});
-    }
+    await patch("line_note_posts", `id=eq.${postId}`, {
+      share_state: "shared", shared_at: new Date().toISOString(),
+      ...(String(post.last_error ?? "").includes("分享到聊天失敗") ? { last_error: null } : {}),
+    }).catch(() => {});
     log(`📨 貼文 ${postId}（LINE ${post.line_post_id}）已分享到 ${r.chatMid}`);
     return { ok: true, chatMid: r.chatMid };
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
-    await patch("line_note_posts", `id=eq.${postId}`, { last_error: `分享到聊天失敗：${msg}`.slice(0, 1000) }).catch(() => {});
+    await patch("line_note_posts", `id=eq.${postId}`, { share_state: "failed", last_error: `分享到聊天失敗：${msg}`.slice(0, 1000) }).catch(() => {});
     return { ok: false, error: msg };
+  }
+}
+
+// 節奏放行的分享（_line_note_release_scheduled 排的 kind='share'）：把已經在記事本上的貼文分享到聊天室。
+async function jobShare(job: any) {
+  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,share_state,group_buy_campaigns(name,status),line_note_communities(id,home_id,account_id,share_chat_mid)`);
+  const p = rows?.[0];
+  if (!p) throw new Error(`post ${job.post_id} not found`);
+  if (p.share_state === "shared") return { skipped: "already shared" };
+  if (!p.line_post_id) {
+    await patch("line_note_posts", `id=eq.${p.id}`, { share_state: "failed", last_error: "沒有 LINE 貼文 id，無法分享到聊天" }).catch(() => {});
+    return { skipped: "no_line_post_id" };
+  }
+  if (p.group_buy_campaigns?.status !== "open") {
+    await patch("line_note_posts", `id=eq.${p.id}`, { share_state: "skipped" }).catch(() => {});
+    return { skipped: `campaign ${p.group_buy_campaigns?.status}` };
+  }
+  const client = await clientFor(await loadAccount(p.line_note_communities.account_id));
+  try {
+    const r = await shareWithMemo(client, p.line_note_communities, p.line_post_id);
+    await patch("line_note_posts", `id=eq.${p.id}`, { share_state: "shared", shared_at: new Date().toISOString(), last_error: null });
+    log(`📨 貼文 ${p.id}（${p.group_buy_campaigns?.name ?? ""}）依節奏分享到 ${r.chatMid}`);
+    return { shared: true, chatMid: r.chatMid };
+  } catch (e) {
+    const msg = String((e as any)?.message ?? e);
+    await patch("line_note_posts", `id=eq.${p.id}`, { share_state: "failed", last_error: `分享到聊天失敗：${msg}`.slice(0, 1000) }).catch(() => {});
+    throw e;
   }
 }
 
@@ -1014,13 +1047,13 @@ async function jobRemind(job: any) {
     }
   }
   const r = await sharePostToChat(client, c.home_id, p.line_post_id, { chatMid, verbose: VERBOSE });
-  await patch("line_note_posts", `id=eq.${p.id}`, { remind_shared_at: new Date().toISOString() });
+  await patch("line_note_posts", `id=eq.${p.id}`, { remind_shared_at: new Date().toISOString(), share_state: "shared", shared_at: new Date().toISOString() });
   log(`🔔 貼文 ${p.id}（${p.group_buy_campaigns?.name ?? ""}）結單提醒已分享到 ${r.chatMid}`);
   return { reminded: true, chatMid: r.chatMid, textSent };
 }
 
 const HANDLERS: Record<string, (job: any, reactUntil: number) => Promise<unknown>> = {
-  logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead, close: jobClose, remind: jobRemind,
+  logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead, close: jobClose, remind: jobRemind, share: jobShare,
 };
 
 async function claimNextJob() {

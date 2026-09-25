@@ -45,8 +45,20 @@ type Post = {
   status: "scheduled" | "queued" | "posted" | "failed" | "closed" | "unlinked"; posted_at: string | null; last_read_at: string | null;
   comment_count: number; last_error: string | null; created_at: string;
   closed_at: string | null; closed_reason: string | null; closed_comment_id: number | null;
+  share_state: "none" | "scheduled" | "sharing" | "shared" | "failed" | "skipped"; shared_at: string | null;
   group_buy_campaigns: { id: number; campaign_no: string; name: string; status: string } | null;
 };
+// 記事本（發文）跟聊天室（分享）是兩件事：開團就發到記事本，分享依社群的節奏。列上兩個都標。
+function shareBadge(p: Post) {
+  if (p.status !== "posted" && p.status !== "closed") return null;
+  switch (p.share_state) {
+    case "shared": return <Badge tone="green">已分享聊天 {fmt(p.shared_at)}</Badge>;
+    case "scheduled": case "sharing": return <Badge tone="amber">等分享（依節奏）</Badge>;
+    case "failed": return <Badge tone="red">分享失敗</Badge>;
+    case "skipped": return <Badge tone="gray">未分享（團已結束）</Badge>;
+    default: return <Badge tone="gray">未分享</Badge>;
+  }
+}
 type Comment = {
   id: number; line_comment_id: string; commenter_id: string | null; commenter_name: string | null; text: string;
   commented_at: string | null; member_no_hint: string | null; parsed: { code: string | null; qty: number; cancel: boolean }[];
@@ -1611,7 +1623,8 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
                     <li key={p.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 text-xs text-zinc-500">
                       <span className="min-w-0 flex-1 basis-full sm:basis-auto">
                         {!unlinked && <span className="font-medium text-zinc-800 dark:text-zinc-200">{communityName(p.community_id)}</span>}
-                        {p.status !== "posted" && !unlinked && <Badge tone={p.status === "failed" ? "red" : "gray"}>{POST_STATUS[p.status]}</Badge>}
+                        {!unlinked && <Badge tone={p.status === "failed" ? "red" : p.status === "posted" ? "blue" : "gray"}>{p.status === "posted" ? "已發記事本" : POST_STATUS[p.status]}</Badge>}
+                        {!unlinked && shareBadge(p)}
                         {/* 兩個 id 都寫出來：#id 是後台這一列，LINE 那串才是記事本上那一篇
                             —— 跟客服對答案時只有後者認得出是哪一篇貼文 */}
                         {!unlinked && <span className="ml-2 font-mono">#{p.id}</span>}
