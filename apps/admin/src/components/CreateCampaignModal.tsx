@@ -87,8 +87,6 @@ export function CreateCampaignModal({
 
   const [name, setName] = useState(defaultName);
   const [startAt, setStartAt] = useState(defaultStartAtValue);
-  const [autoOpen, setAutoOpen] = useState(false);
-  const [openedAt] = useState(() => Date.now());
   const [customerEndAt, setCustomerEndAt] = useState(defaultCustomerEndAtValue);
   const [endAt, setEndAt] = useState(defaultEndAtValue);
   const [endAtTouched, setEndAtTouched] = useState(false);
@@ -174,7 +172,7 @@ export function CreateCampaignModal({
         p_description: description.trim(),
         p_customer_end_at: new Date(customerEndAt).toISOString(),
         p_start_at: new Date(startAt).toISOString(),
-        p_auto_open: startTime > Date.now() && autoOpen,
+        p_auto_open: true,
       });
       if (err) throw err;
       onCreated(Number(data));
@@ -186,7 +184,6 @@ export function CreateCampaignModal({
   }
 
   const inputCls = "rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-800";
-  const isFutureStart = new Date(startAt).getTime() > openedAt;
 
   return (
     <div className="space-y-4">
@@ -208,13 +205,10 @@ export function CreateCampaignModal({
             type="datetime-local"
             value={startAt}
             max={customerEndAt || undefined}
-            onChange={(e) => {
-              setStartAt(e.target.value);
-              if (new Date(e.target.value).getTime() <= Date.now()) setAutoOpen(false);
-            }}
+            onChange={(e) => setStartAt(e.target.value)}
             className={inputCls}
           />
-          <span className="text-xs text-zinc-400">未來時間會先建成草稿，不會提前出現在商城</span>
+          <span className="text-xs text-zinc-400">未來時間會先建成草稿、不會提前出現在商城，時間到自動開團</span>
         </label>
 
         <label className="flex flex-col gap-1 text-sm">
@@ -238,19 +232,6 @@ export function CreateCampaignModal({
           />
           <span className="text-xs text-zinc-400">預設為客人收單隔天 23:59，可手動改</span>
         </label>
-
-        {isFutureStart && (
-          <label className="flex items-center gap-2 text-sm sm:col-span-2">
-            <input
-              type="checkbox"
-              checked={autoOpen}
-              onChange={(e) => setAutoOpen(e.target.checked)}
-              className="h-4 w-4"
-            />
-            <span>時間到自動開團</span>
-            <span className="text-xs text-zinc-400">（預設不勾；勾選後會沿用現有 LINE 發文流程）</span>
-          </label>
-        )}
 
         <label className="flex flex-col gap-1 text-sm sm:col-span-2">
           <span className="text-zinc-600 dark:text-zinc-400">團名稱 <span className="text-red-500">*</span></span>
