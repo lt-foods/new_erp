@@ -549,7 +549,8 @@ export async function sharePostToChat(client, homeId, postId, { chatMid, sourceT
   if (!res || res.code !== 0) {
     throw new Error(`分享貼文到聊天失敗：code=${res?.code} ${res?.message ?? ""}`);
   }
-  return { chatMid: to, res };
+  const messageId = await captureShareMessageId(client, to, postId, verbose);
+  return { chatMid: to, messageId, res };
 }
 
 // ── 改貼文 ─────────────────────────────────────────────────────────────────
@@ -642,4 +643,40 @@ export async function sendChatText(client, chatMid, text) {
     return await client.base.square.sendMessage({ squareChatMid: id, text: String(text) });
   }
   return await client.base.talk.sendMessage({ to: id, text: String(text) });
+}
+
+// ── 分享訊息的 id（刪貼文時收回用） ──────────────────────────────────────
+
+/**
+ * 分享完馬上問聊天室的最後一則訊息：是「貼文分享」（POSTNOTIFICATION）而且 postEndUrl 帶的
+ * postId 對得上，就是我們剛發的那張卡片。sendPostToTalk 的回應本身沒有訊息 id。
+ * 只支援社群聊天室（m…）；群組（c…）回 null。
+ */
+export async function captureShareMessageId(client, chatMid, linePostId, verbose = false) {
+  const id = String(chatMid ?? "");
+  if (id[0] !== "m") return null;
+  try {
+    const r = await client.base.square.getSquareChat({ squareChatMid: id });
+    const m = r?.squareChatStatus?.lastMessage?.message;
+    const url = String(m?.contentMetadata?.postEndUrl ?? m?.contentMetadata?.["push-action-uri"] ?? "");
+    const ct = String(m?.contentType ?? "");
+    if (m?.id && (ct === "POSTNOTIFICATION" || ct === "17") && url.includes(`postId=${linePostId}`)) {
+      log(verbose, `分享訊息 id：${m.id}`);
+      return String(m.id);
+    }
+    log(verbose, `最後一則不是這篇的分享（ct=${ct}）`);
+  } catch (e) {
+    log(verbose, `讀聊天室最後一則失敗：${e?.message ?? e}`);
+  }
+  return null;
+}
+
+/** 收回聊天室裡的一則訊息（社群走 square.unsendMessage、群組走 talk.unsendMessage） */
+export async function unsendChatMessage(client, chatMid, messageId) {
+  const id = String(chatMid ?? "");
+  if (!messageId) throw new Error("沒有訊息 id");
+  if (id[0] === "m") {
+    return await client.base.square.unsendMessage({ messageId: String(messageId), squareChatMid: id });
+  }
+  return await client.base.talk.unsendMessage({ messageId: String(messageId) });
 }
