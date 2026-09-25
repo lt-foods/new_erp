@@ -13,11 +13,16 @@ function missingChecks(source, checks) {
 }
 
 function modalErrors(source) {
-  return missingChecks(source, [
+  const errors = missingChecks(source, [
     [/p_start_at:\s*new Date\(startAt\)\.toISOString\(\)/, "UI 開團參數必須來自 startAt"],
-    [/p_auto_open:\s*startTime\s*>\s*Date\.now\(\)\s*&&\s*autoOpen/, "UI 自動開團必須同時檢查未來時間與勾選值"],
+    [/p_auto_open:\s*true\b/, "UI 建立開團必須固定傳 p_auto_open=true 相容舊庫"],
     [/startTime\s*>=\s*customerEndTime/, "UI 必須擋下開團時間不早於客人收單"],
+    [/未來時間[^<\r\n]*先建成草稿[^<\r\n]*時間到自動開團/, "UI 必須說明未來團先草稿、時間到自動開團"],
   ]);
+  if (/\b(?:autoOpen|setAutoOpen)\b|type\s*=\s*"checkbox"|預設不勾/.test(source)) {
+    errors.push("UI 不得保留自動開團勾選與狀態");
+  }
+  return errors;
 }
 
 function migrationErrors(source) {
@@ -50,7 +55,21 @@ assert(!importer.includes("p_start_at:") && !importer.includes("p_auto_open:"), 
 const dbAlwaysFalse = mutate(migration, "v_is_future := v_start_at > NOW();", "v_is_future := FALSE;", "DB 未來判斷恒假");
 assert(migrationErrors(dbAlwaysFalse).includes("DB 未來判斷必須來自實際開團時間"), "檢查未擋下 DB 未來判斷恒假的錯版");
 
-const uiAlwaysFalse = mutate(modal, "p_auto_open: startTime > Date.now() && autoOpen,", "p_auto_open: false,", "UI 自動開團恒假");
-assert(modalErrors(uiAlwaysFalse).includes("UI 自動開團必須同時檢查未來時間與勾選值"), "檢查未擋下 UI 自動開團恒假的錯版");
+let oldCheckboxVersion = mutate(modal, "p_auto_open: true,", "p_auto_open: false,", "UI 自動開團傳 false");
+oldCheckboxVersion = mutate(
+  oldCheckboxVersion,
+  "const [startAt, setStartAt] = useState(defaultStartAtValue);",
+  "const [startAt, setStartAt] = useState(defaultStartAtValue);\n  const [autoOpen, setAutoOpen] = useState(false);",
+  "UI 舊勾選狀態",
+);
+oldCheckboxVersion = mutate(
+  oldCheckboxVersion,
+  '<span className="text-xs text-zinc-400">未來時間會先建成草稿、不會提前出現在商城，時間到自動開團</span>',
+  '<label><input type="checkbox" checked={autoOpen} onChange={(e) => setAutoOpen(e.target.checked)} />時間到自動開團（預設不勾）</label>',
+  "UI 舊勾選畫面",
+);
+const oldCheckboxErrors = modalErrors(oldCheckboxVersion);
+assert(oldCheckboxErrors.includes("UI 建立開團必須固定傳 p_auto_open=true 相容舊庫"), "檢查未擋下 UI 傳 false 的錯版");
+assert(oldCheckboxErrors.includes("UI 不得保留自動開團勾選與狀態"), "檢查未擋下 UI 恢復舊勾選的錯版");
 
 console.log("Product campaign scheduled-open check passed, including 2 mutation counterexamples.");
