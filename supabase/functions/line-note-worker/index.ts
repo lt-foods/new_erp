@@ -349,17 +349,7 @@ async function deletePost(postId: number, callerTenant: string | null) {
   try {
     const account = await loadAccount(post.line_note_communities.account_id);
     const client = await clientFor(account);
-    // 2026-09-25 實測：LINE 對「分享貼文」卡片的 unsend 回 ILLEGAL_ARGUMENT（一般文字收得回）、
-    // destroyMessage 要社群管理員（小幫手不是 → FORBIDDEN）。先收回、不行再試刪除；都不行就留著，
-    // 卡片點進去會是「貼文已刪除」。小幫手升成社群管理員後 destroy 那條就通了。
-    for (const m of (Array.isArray(post.share_message_ids) ? post.share_message_ids : [])) {
-      try { await unsendChatMessage(client, m.chat, m.id); unsent++; continue; }
-      catch (e) { log(`收回分享訊息 ${m.id} 失敗：${(e as any)?.message ?? e}`); }
-      try {
-        if (String(m.chat)[0] === "m") { await client.base.square.destroyMessage({ squareChatMid: m.chat, messageId: String(m.id) }); unsent++; continue; }
-      } catch (e) { log(`刪除分享訊息 ${m.id} 失敗：${(e as any)?.message ?? e}`); }
-      unsendFailed++;
-    }
+    ({ unsent, unsendFailed } = await recallShares(client, post.share_message_ids));
     await deleteNotePost(client, post.line_note_communities.home_id, post.line_post_id, { verbose: VERBOSE });
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
@@ -426,6 +416,41 @@ async function shareWithMemo(client: any, community: { id: number; home_id: stri
 async function recordShare(postId: number, r: { chatMid: string; messageId?: string | null }) {
   if (!r?.messageId) return;
   await rpc("_line_note_append_share_msg", { p_post_id: postId, p_chat: r.chatMid, p_msg: r.messageId }).catch((e) => log(`記分享訊息 id 失敗：${(e as any)?.message ?? e}`));
+}
+
+// 把分享到聊天室的卡片收掉。2026-09-25 實測：LINE 對「分享貼文」卡片的 unsend 回 ILLEGAL_ARGUMENT
+// （一般文字收得回）、destroyMessage 要社群管理員（不是 → FORBIDDEN）。先收回、不行再刪除。
+async function recallShares(client: any, ids: any) {
+  let unsent = 0, unsendFailed = 0;
+  const failed: string[] = [];
+  for (const m of (Array.isArray(ids) ? ids : [])) {
+    try { await unsendChatMessage(client, m.chat, m.id); unsent++; continue; }
+    catch (e) { log(`收回分享訊息 ${m.id} 失敗：${(e as any)?.message ?? e}`); }
+    try {
+      if (String(m.chat)[0] === "m") { await client.base.square.destroyMessage({ squareChatMid: m.chat, messageId: String(m.id) }); unsent++; continue; }
+    } catch (e) { failed.push(String((e as any)?.message ?? e)); log(`刪除分享訊息 ${m.id} 失敗：${(e as any)?.message ?? e}`); }
+    unsendFailed++;
+  }
+  return { unsent, unsendFailed, failed };
+}
+
+// 後台「回收分享」：只把聊天室的卡片收掉，記事本貼文留著；狀態退回「未分享」，之後可再分享。
+async function unsharePost(postId: number, callerTenant: string | null) {
+  const rows = await rest(`line_note_posts?id=eq.${postId}&select=id,tenant_id,share_message_ids,line_note_communities(account_id)`);
+  const post = rows?.[0];
+  if (!post) return { ok: false, error: "找不到這篇貼文" };
+  if (callerTenant && post.tenant_id !== callerTenant) return { ok: false, error: "這篇貼文不屬於你的帳戶" };
+  const ids = Array.isArray(post.share_message_ids) ? post.share_message_ids : [];
+  if (ids.length === 0) return { ok: false, error: "這篇沒有記到分享訊息（分享功能上線前分享的收不回），只能到 LINE 手動刪" };
+  const client = await clientFor(await loadAccount(post.line_note_communities.account_id));
+  const r = await recallShares(client, ids);
+  if (r.unsent === 0) {
+    const why = r.failed[0] ?? "";
+    return { ok: false, error: /FORBIDDEN|権限/.test(why) ? "小幫手不是這個社群的管理員，LINE 不讓它刪分享卡片；先把小幫手設成管理員" : `收回失敗：${why || "LINE 拒絕"}` };
+  }
+  await patch("line_note_posts", `id=eq.${postId}`, { share_message_ids: [], share_state: "none", shared_at: null, last_error: null });
+  log(`↩️ 貼文 ${postId} 的分享卡片已收回 ${r.unsent} 則`);
+  return { ok: true, ...r };
 }
 
 // 把已經發出去的貼文（再）分享到聊天室：發文當下分享失敗時的補救入口，後台直接呼叫。
@@ -1245,6 +1270,13 @@ Deno.serve(async (req) => {
       const postId = Number(body.post_id);
       if (!postId) return json({ error: "post_id required" }, 400);
       return json(await updatePost(postId, callerTenant));
+    }
+    // 後台「回收分享」
+    if (action === "unshare_post") {
+      if (caller !== "admin") return json({ error: "回收分享只能從後台按" }, 403);
+      const postId = Number(body.post_id);
+      if (!postId) return json({ error: "post_id required" }, 400);
+      return json(await unsharePost(postId, callerTenant));
     }
     // 發文當下分享失敗 → 後台補按一次
     if (action === "share_post") {

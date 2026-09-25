@@ -18,7 +18,7 @@ import {
   COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, commentStats, fmtNoteTime, isTodoComment, isUnreadableOrder,
 } from "@/lib/lineNoteStatus";
 import { deleteLineNotePost } from "@/lib/lineNoteDelete";
-import { updateLineNotePost } from "@/lib/lineNoteUpdate";
+import { unshareLineNotePost, updateLineNotePost } from "@/lib/lineNoteUpdate";
 import { canOperateLineNotes, useRole } from "@/lib/role";
 import { useHasStaffPerm } from "@/lib/staffPerms";
 
@@ -1478,6 +1478,15 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
     notify("LINE 上那篇已更新成目前的內容");
     await reload();
   };
+  const unsharePost = async (p: Post) => {
+    setBusy(p.id);
+    const r = await unshareLineNotePost({ id: p.id, line_post_id: p.line_post_id, label: p.group_buy_campaigns?.name ?? postFirstLine(p.text) });
+    setBusy(null);
+    if (r.kind === "cancelled") return;
+    if (r.kind === "failed") return fail(new Error(r.error));
+    notify("聊天室的分享卡片已收回");
+    await reload();
+  };
   const removePost = async (p: Post) => {
     setBusy(p.id);
     const r = await deleteLineNotePost({
@@ -1641,6 +1650,10 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
                         )}
                         {!readOnly && p.status === "posted" && (
                           <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void readNow(p)}>立即讀取</SpinButton>
+                        )}
+                        {!readOnly && !unlinked && p.share_state === "shared" && (
+                          <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void unsharePost(p)}
+                            title="把分享到聊天室的卡片收回，記事本貼文不動">回收分享</SpinButton>
                         )}
                         {!readOnly && !unlinked && p.line_post_id && (p.status === "posted" || p.status === "closed") && (
                           <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void refreshPost(p)}

@@ -27,3 +27,13 @@ export async function updateLineNotePost(post: LineNotePostRef): Promise<UpdateO
   // supabase-js 把非 2xx 包成 FunctionsHttpError，訊息看不出原因，優先用函式自己回的
   return { kind: "failed", error: res.error ?? (error ? translateRpcError(error) : "未知錯誤") };
 }
+
+/** 回收分享：把聊天室的分享卡片收掉，記事本貼文留著 */
+export async function unshareLineNotePost(post: LineNotePostRef): Promise<UpdateOutcome> {
+  if (!window.confirm(`把「${post.label}」分享到聊天室的卡片收回？\n\n記事本上的貼文不動，只刪聊天室裡的分享卡片（小幫手要是該社群的管理員）。`)) return { kind: "cancelled" };
+  const { data, error } = await getSupabase().functions
+    .invoke("line-note-worker", { body: { action: "unshare_post", post_id: post.id } });
+  const res = (data ?? {}) as { ok?: boolean; error?: string };
+  if (!error && res.ok) return { kind: "updated" };
+  return { kind: "failed", error: res.error ?? (error ? translateRpcError(error) : "未知錯誤") };
+}
