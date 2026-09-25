@@ -143,32 +143,76 @@ export function whoami(client: any) {
 }
 
 /** 加入中的群組（c…）、社群（s…）與社群聊天室（m…）。 */
-export async function listHomes(client: any, verbose = false) {
+export async function listHomes(client: any, verbose = false, diag: Record<string, unknown> = {}) {
   const homes: { kind: string; homeId: string; name: string; squareMid?: string }[] = [];
+  // 群組被別人拉進去時只是「邀請」，要接受才算加入；client.fetchJoinedChats() 只回已加入的，
+  // 所以店家把小幫手拉進群組後清單永遠看不到（2026-09-25「加了三群但是看不到」）。
+  // 這裡順手接受邀請 —— 被拉進去就是要它進去，接受失敗的也照樣列出來。
   try {
-    const chats = await client.fetchJoinedChats();
-    for (const c of chats) {
-      const type = c.raw?.type;
-      if (type === "GROUP" || type === 0 || String(c.mid).startsWith("c")) {
-        homes.push({ kind: "group", homeId: c.mid, name: c.name ?? "" });
+    const all = await client.base.talk.getAllChatMids({
+      request: { withMemberChats: true, withInvitedChats: true },
+      syncReason: "INTERNAL",
+    });
+    const member: string[] = [...(all?.memberChatMids ?? [])];
+    diag.member_chats = member.length;
+    diag.invited_chats = (all?.invitedChatMids ?? []).length;
+    for (const mid of all?.invitedChatMids ?? []) {
+      try {
+        await client.base.talk.acceptChatInvitation({ request: { reqSeq: 0, chatMid: mid } });
+        log(true, "已接受群組邀請:", mid);
+      } catch (e) {
+        log(true, `acceptChatInvitation(${mid}) failed:`, (e as any)?.message ?? e);
+        diag.accept_error = String((e as any)?.message ?? e).slice(0, 300);
+      }
+      member.push(mid);
+    }
+    if (member.length) {
+      const { chats } = await client.base.talk.getChats({ chatMids: member });
+      for (const c of chats ?? []) {
+        const mid = String(c.chatMid ?? "");
+        if (c.type === "GROUP" || c.type === 0 || mid.startsWith("c")) {
+          homes.push({ kind: "group", homeId: mid, name: c.chatName ?? "" });
+        }
       }
     }
   } catch (e) {
-    log(true, "fetchJoinedChats failed:", (e as any)?.message ?? e);
+    log(true, "fetch chats failed:", (e as any)?.message ?? e);
+    diag.chats_error = String((e as any)?.message ?? e).slice(0, 300);
   }
   try {
     const squares = await client.fetchJoinedSquares();
     for (const s of squares) homes.push({ kind: "square", homeId: s.raw?.mid, name: s.raw?.name ?? "" });
   } catch (e) {
     log(true, "fetchJoinedSquares failed:", (e as any)?.message ?? e);
+    diag.squares_error = String((e as any)?.message ?? e).slice(0, 300);
   }
+  // 社群裡的子群（子聊天室，m…）。getJoinedSquareChats 在 /SQ1 一律回 NOT_IMPLEMENTED，
+  // 子群從來沒抓到過（2026-09-25「加了三群但是看不到」，那三群是子群）。
+  // 改從自己的事件流撈「加入了哪個聊天室」；主聊天室（SQUARE_DEFAULT）就是社群本身，
+  // 已經以 s… 列出，略過；一對一的也不是群。
   try {
-    const r = await client.base.square.getJoinedSquareChats({ request: { limit: 100, continuationToken: "" } });
-    for (const c of r?.chats ?? []) {
-      homes.push({ kind: "square_chat", homeId: c.squareChatMid, name: c.name ?? "", squareMid: c.squareMid });
+    const seen = new Set<string>();
+    const squareName = new Map(homes.filter((h) => h.kind === "square").map((h) => [h.homeId, h.name]));
+    let token = "";
+    for (let page = 0; page < 10; page++) {
+      const r = await client.base.square.fetchMyEvents({ limit: 200, ...(token ? { continuationToken: token } : {}) });
+      for (const e of r?.events ?? []) {
+        const c = e?.payload?.notifiedCreateSquareChatMember?.chat;
+        if (!c?.squareChatMid || seen.has(c.squareChatMid)) continue;
+        seen.add(c.squareChatMid);
+        if (c.type === "SQUARE_DEFAULT" || c.type === 4 || c.type === "ONE_ON_ONE" || c.type === 3) continue;
+        if (c.state !== undefined && c.state !== "ALIVE" && c.state !== 0) continue;
+        // 退出的社群不列（事件流不會告訴我們退出了子群，至少社群要還在）
+        if (!squareName.has(c.squareMid)) continue;
+        homes.push({ kind: "square_chat", homeId: c.squareChatMid, name: `${squareName.get(c.squareMid)} › ${c.name ?? ""}`, squareMid: c.squareMid });
+      }
+      token = r?.continuationToken ?? "";
+      if (!token) break;
     }
+    diag.square_chats = seen.size;
   } catch (e) {
-    log(verbose, "getJoinedSquareChats failed (可忽略，用 s… 的 id 也行):", (e as any)?.message ?? e);
+    log(true, "fetchMyEvents failed:", (e as any)?.message ?? e);
+    diag.square_chats_error = String((e as any)?.message ?? e).slice(0, 300);
   }
   return homes;
 }

@@ -187,8 +187,10 @@ async function jobLogout(job: any) {
 async function jobListHomes(job: any) {
   const account = await loadAccount(job.account_id);
   const client = await clientFor(account);
-  const homes = await listHomes(client, VERBOSE);
-  return { homes, sync: await syncCommunities(job.account_id, homes) };
+  // diag：各來源抓到幾個／哪一段失敗，清單少東西時直接看 line_note_jobs.result 就知道卡在哪
+  const diag: Record<string, unknown> = {};
+  const homes = await listHomes(client, VERBOSE, diag);
+  return { homes, diag, sync: await syncCommunities(job.account_id, homes) };
 }
 
 // 社群清單跟著帳號走：帳號加入的群組／社群自己出現在後台，不用手動貼 homeId。
@@ -337,7 +339,7 @@ async function findPostIdByText(client: any, homeId: string, text: string): Prom
 async function deletePost(postId: number, callerTenant: string | null) {
   const rows = await rest(
     `line_note_posts?id=eq.${postId}` +
-    `&select=id,tenant_id,line_post_id,share_message_ids,line_note_communities(home_id,account_id)`);
+    `&select=id,tenant_id,line_post_id,share_message_ids,line_note_communities(home_id,account_id,share_from_community_id)`);
   const post = rows?.[0];
   if (!post) return { ok: false, error: "找不到這篇貼文" };
   // service_role 沒有 RLS，跨 tenant 的檢查只能自己來
@@ -360,7 +362,10 @@ async function deletePost(postId: number, callerTenant: string | null) {
       } catch (e) { log(`刪除分享訊息 ${m.id} 失敗：${(e as any)?.message ?? e}`); }
       unsendFailed++;
     }
-    await deleteNotePost(client, post.line_note_communities.home_id, post.line_post_id, { verbose: VERBOSE });
+    // 子群列的 line_post_id 是母社群那篇：只收回分享卡片，記事本貼文留給母社群那一列管
+    if (!post.line_note_communities.share_from_community_id) {
+      await deleteNotePost(client, post.line_note_communities.home_id, post.line_post_id, { verbose: VERBOSE });
+    }
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
     await patch("line_note_posts", `id=eq.${postId}`, { last_error: msg.slice(0, 1000) }).catch(() => {});
@@ -376,11 +381,12 @@ async function deletePost(postId: number, callerTenant: string | null) {
 // 後台直接呼叫、當場回結果（跟 deletePost 一樣不排 job）：改錯要馬上知道。
 // 只動貼文本體，line_post_id 不變，底下的留言、已加的單都不受影響。
 async function updatePost(postId: number, callerTenant: string | null) {
-  const rows = await rest(`line_note_posts?id=eq.${postId}&select=id,tenant_id,status,line_post_id`);
+  const rows = await rest(`line_note_posts?id=eq.${postId}&select=id,tenant_id,status,line_post_id,line_note_communities(share_from_community_id)`);
   const post = rows?.[0];
   if (!post) return { ok: false, error: "找不到這篇貼文" };
   if (callerTenant && post.tenant_id !== callerTenant) return { ok: false, error: "這篇貼文不屬於你的帳戶" };
   if (!post.line_post_id) return { ok: false, error: "這篇還沒發到 LINE（沒有貼文 id），沒有東西可以更新" };
+  if (post.line_note_communities?.share_from_community_id) return { ok: false, error: "這是子群的分享，貼文本體在母社群那一列，請更新那一篇" };
 
   const payload = await rpc("rpc_line_note_post_payload", { p_post_id: postId });
   if (!payload) return { ok: false, error: "讀不到這篇貼文的內容" };
@@ -400,9 +406,21 @@ async function updatePost(postId: number, callerTenant: string | null) {
   return { ok: true, title: postTitle(text) };
 }
 
+// 子群（share_from_community_id 有值）：貼文在母社群的記事本上，分享的路由要走母社群的 home，
+// 收的聊天室就是子群自己的 mid（m…／c…）。回 null = 不是子群。
+type ShareCommunity = { id: number; home_id: string; share_chat_mid?: string | null; share_from_community_id?: number | null };
+async function subChatTarget(c: ShareCommunity): Promise<{ homeId: string; chatMid: string } | null> {
+  if (!c.share_from_community_id) return null;
+  const parent = (await rest(`line_note_communities?id=eq.${c.share_from_community_id}&select=home_id`))?.[0];
+  if (!parent?.home_id) throw new Error("找不到母社群，無法分享到子群");
+  return { homeId: parent.home_id, chatMid: c.home_id };
+}
+
 // 分享到聊天室：社群的主聊天室找一次很貴（事件流 + 逐一 getSquareChat），找到就記在社群列上。
 // 用記住的那間分享失敗（聊天室被刪／換了）→ 清掉重找一次。
-async function shareWithMemo(client: any, community: { id: number; home_id: string; share_chat_mid?: string | null }, linePostId: string) {
+async function shareWithMemo(client: any, community: ShareCommunity, linePostId: string) {
+  const sub = await subChatTarget(community);
+  if (sub) return await sharePostToChat(client, sub.homeId, linePostId, { chatMid: sub.chatMid, verbose: VERBOSE });
   const memo = community.share_chat_mid ?? null;
   try {
     const r = await sharePostToChat(client, community.home_id, linePostId, { chatMid: memo ?? undefined, verbose: VERBOSE });
@@ -430,7 +448,7 @@ async function recordShare(postId: number, r: { chatMid: string; messageId?: str
 
 // 把已經發出去的貼文（再）分享到聊天室：發文當下分享失敗時的補救入口，後台直接呼叫。
 async function sharePost(postId: number, callerTenant: string | null, body: any = {}) {
-  const rows = await rest(`line_note_posts?id=eq.${postId}&select=id,tenant_id,line_post_id,last_error,line_note_communities(id,home_id,account_id,share_chat_mid)`);
+  const rows = await rest(`line_note_posts?id=eq.${postId}&select=id,tenant_id,line_post_id,last_error,line_note_communities(id,home_id,account_id,share_chat_mid,share_from_community_id)`);
   const post = rows?.[0];
   if (!post) return { ok: false, error: "找不到這篇貼文" };
   if (callerTenant && post.tenant_id !== callerTenant) return { ok: false, error: "這篇貼文不屬於你的帳戶" };
@@ -454,7 +472,7 @@ async function sharePost(postId: number, callerTenant: string | null, body: any 
 
 // 節奏放行的分享（_line_note_release_scheduled 排的 kind='share'）：把已經在記事本上的貼文分享到聊天室。
 async function jobShare(job: any) {
-  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,share_state,group_buy_campaigns(name,status),line_note_communities(id,home_id,account_id,share_chat_mid)`);
+  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,share_state,group_buy_campaigns(name,status),line_note_communities(id,home_id,account_id,share_chat_mid,share_from_community_id)`);
   const p = rows?.[0];
   if (!p) throw new Error(`post ${job.post_id} not found`);
   if (p.share_state === "shared") return { skipped: "already shared" };
@@ -1046,7 +1064,7 @@ async function jobClose(job: any) {
 // 社群有設 remind_message 的話，當天第一篇分享前先發那段文字（一天只發一次）。
 const DEFAULT_REMIND_MESSAGE = "好鄰居們早安~~再看一眼，今日結單商品喔～走過路過不要錯過！喜歡的商品，好鄰居記得登記下單喔！！也可以新系統商城下單喔～\nhttps://new-erp-admin.vercel.app/shop";
 async function jobRemind(job: any) {
-  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,remind_shared_at,group_buy_campaigns(name,status),line_note_communities(id,home_id,account_id,share_chat_mid,remind_message,remind_message_sent_on)`);
+  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,remind_shared_at,group_buy_campaigns(name,status),line_note_communities(id,home_id,account_id,share_chat_mid,share_from_community_id,remind_message,remind_message_sent_on)`);
   const p = rows?.[0];
   if (!p) throw new Error(`post ${job.post_id} not found`);
   if (p.remind_shared_at) return { skipped: "already reminded" };
@@ -1055,7 +1073,10 @@ async function jobRemind(job: any) {
   if (!p.line_post_id) return { skipped: "no_line_post_id" };
   const c = p.line_note_communities;
   const client = await clientFor(await loadAccount(c.account_id));
-  let chatMid: string | null = c.share_chat_mid ?? null;
+  // 子群：貼文在母社群，路由走母社群 home、發到子群自己的聊天室
+  const sub = await subChatTarget(c);
+  const homeId: string = sub?.homeId ?? c.home_id;
+  let chatMid: string | null = sub?.chatMid ?? c.share_chat_mid ?? null;
   if (!chatMid) {
     chatMid = await resolveShareChatMid(client, c.home_id, VERBOSE);
     if (chatMid && chatMid !== c.home_id) await patch("line_note_communities", `id=eq.${c.id}`, { share_chat_mid: chatMid }).catch(() => {});
@@ -1074,7 +1095,7 @@ async function jobRemind(job: any) {
       catch (e) { log(`結單提醒文字發送失敗（照樣分享卡片）：${(e as any)?.message ?? e}`); }
     }
   }
-  const r = await sharePostToChat(client, c.home_id, p.line_post_id, { chatMid, verbose: VERBOSE });
+  const r = await sharePostToChat(client, homeId, p.line_post_id, { chatMid, verbose: VERBOSE });
   await recordShare(p.id, r);
   await patch("line_note_posts", `id=eq.${p.id}`, { remind_shared_at: new Date().toISOString(), share_state: "shared", shared_at: new Date().toISOString() });
   log(`🔔 貼文 ${p.id}（${p.group_buy_campaigns?.name ?? ""}）結單提醒已分享到 ${r.chatMid}`);
