@@ -186,14 +186,32 @@ export async function listHomes(client: any, verbose = false, diag: Record<strin
     log(true, "fetchJoinedSquares failed:", (e as any)?.message ?? e);
     diag.squares_error = String((e as any)?.message ?? e).slice(0, 300);
   }
+  // 社群裡的子群（子聊天室，m…）。getJoinedSquareChats 在 /SQ1 一律回 NOT_IMPLEMENTED，
+  // 子群從來沒抓到過（2026-09-25「加了三群但是看不到」，那三群是子群）。
+  // 改從自己的事件流撈「加入了哪個聊天室」；主聊天室（SQUARE_DEFAULT）就是社群本身，
+  // 已經以 s… 列出，略過；一對一的也不是群。
   try {
-    const r = await client.base.square.getJoinedSquareChats({ request: { limit: 100, continuationToken: "" } });
-    diag.square_chats = (r?.chats ?? []).length;
-    for (const c of r?.chats ?? []) {
-      homes.push({ kind: "square_chat", homeId: c.squareChatMid, name: c.name ?? "", squareMid: c.squareMid });
+    const seen = new Set<string>();
+    const squareName = new Map(homes.filter((h) => h.kind === "square").map((h) => [h.homeId, h.name]));
+    let token = "";
+    for (let page = 0; page < 10; page++) {
+      const r = await client.base.square.fetchMyEvents({ limit: 200, ...(token ? { continuationToken: token } : {}) });
+      for (const e of r?.events ?? []) {
+        const c = e?.payload?.notifiedCreateSquareChatMember?.chat;
+        if (!c?.squareChatMid || seen.has(c.squareChatMid)) continue;
+        seen.add(c.squareChatMid);
+        if (c.type === "SQUARE_DEFAULT" || c.type === 4 || c.type === "ONE_ON_ONE" || c.type === 3) continue;
+        if (c.state !== undefined && c.state !== "ALIVE" && c.state !== 0) continue;
+        // 退出的社群不列（事件流不會告訴我們退出了子群，至少社群要還在）
+        if (!squareName.has(c.squareMid)) continue;
+        homes.push({ kind: "square_chat", homeId: c.squareChatMid, name: `${squareName.get(c.squareMid)} › ${c.name ?? ""}`, squareMid: c.squareMid });
+      }
+      token = r?.continuationToken ?? "";
+      if (!token) break;
     }
+    diag.square_chats = seen.size;
   } catch (e) {
-    log(verbose, "getJoinedSquareChats failed (可忽略，用 s… 的 id 也行):", (e as any)?.message ?? e);
+    log(true, "fetchMyEvents failed:", (e as any)?.message ?? e);
     diag.square_chats_error = String((e as any)?.message ?? e).slice(0, 300);
   }
   return homes;
