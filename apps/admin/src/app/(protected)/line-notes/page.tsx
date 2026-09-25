@@ -34,7 +34,7 @@ type Community = {
   home_kind: "group" | "square" | "square_chat"; listen_enabled: boolean; read_times: string[];
   auto_post_on_open: boolean; post_template: string | null; read_days: number; react_on_confirm: boolean;
   sales_channels: string[] | null;
-  post_mode: PostMode; post_slots: PostSlot[] | null; post_every_hours: number; post_every_pct: number;
+  post_mode: PostMode; post_slots: PostSlot[] | null; post_every_minutes: number; post_every_pct: number;
   post_window_start: string; post_window_end: string;
   close_comment: string | null;
   remind_enabled: boolean; remind_time: string; remind_message: string | null;
@@ -381,7 +381,7 @@ type CommunityForm = {
   id: number | null; account_id: number | ""; store_id: number | ""; home_id: string; home_name: string;
   listen_enabled: boolean; read_times: string; auto_post_on_open: boolean; post_template: string; read_days: number;
   react_on_confirm: boolean; sales_channels: string[];
-  post_mode: PostMode; post_slots: PostSlot[]; post_every_hours: number; post_every_pct: number;
+  post_mode: PostMode; post_slots: PostSlot[]; post_every_minutes: number; post_every_pct: number;
   post_window_start: string; post_window_end: string;
   close_comment: string;
   remind_enabled: boolean; remind_time: string; remind_message: string;
@@ -391,7 +391,7 @@ const EMPTY_FORM: CommunityForm = {
   listen_enabled: true, read_times: "12:00", auto_post_on_open: true, post_template: "", read_days: 3,
   react_on_confirm: true, sales_channels: ["main"],
   post_mode: "immediate", post_slots: DEFAULT_SLOTS,
-  post_every_hours: 2, post_every_pct: 20, post_window_start: "09:00", post_window_end: "21:00",
+  post_every_minutes: 120, post_every_pct: 20, post_window_start: "09:00", post_window_end: "21:00",
   close_comment: "",
   remind_enabled: true, remind_time: "08:00", remind_message: "",
 };
@@ -399,11 +399,12 @@ const EMPTY_FORM: CommunityForm = {
 // 開團自動發文的節奏（line_note_communities.post_mode，20260924040000）。
 // 開團時非「立刻」的社群只把貼文排成「排程中」，由 _line_note_tick 每分鐘依時段放行（一分鐘一篇）；
 // 比例的母數是「這個社群排程中、還沒發的」，四捨五入、至少 1 篇。
+const everyLabel = (m: number) => (m % 60 === 0 ? `${m / 60} 小時` : `${m} 分鐘`);
 function postModeSummary(c: Community): string {
   if (!c.auto_post_on_open) return "否";
   if (c.post_mode === "slots") return (c.post_slots ?? []).map((s) => `${s.at} ${s.pct}%`).join("、") || "定時（未設時段）";
   if (c.post_mode === "spread") return (c.post_slots ?? []).map((s) => `${s.from}–${s.to} ${s.pct}%`).join("、") || "平均發（未設區間）";
-  if (c.post_mode === "interval") return `${c.post_window_start}–${c.post_window_end} 每 ${c.post_every_hours} 小時 ${c.post_every_pct}%`;
+  if (c.post_mode === "interval") return `${c.post_window_start}–${c.post_window_end} 每 ${everyLabel(c.post_every_minutes)} ${c.post_every_pct}%`;
   return "開團立刻全發";
 }
 // 這個社群收哪幾類的團（group_buy_campaigns.sales_channel）。DB 那邊是
@@ -439,7 +440,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       sales_channels: c.sales_channels?.length ? c.sales_channels : ["main"],
       post_mode: c.post_mode ?? "immediate",
       post_slots: c.post_slots?.length ? c.post_slots : (c.post_mode === "spread" ? DEFAULT_SPREAD : DEFAULT_SLOTS),
-      post_every_hours: c.post_every_hours ?? 2, post_every_pct: c.post_every_pct ?? 20,
+      post_every_minutes: c.post_every_minutes ?? 120, post_every_pct: c.post_every_pct ?? 20,
       post_window_start: c.post_window_start ?? "09:00", post_window_end: c.post_window_end ?? "21:00",
       close_comment: c.close_comment ?? "",
       remind_enabled: c.remind_enabled ?? true, remind_time: c.remind_time ?? "08:00", remind_message: c.remind_message ?? "" });
@@ -490,7 +491,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       p_post_slots: form.post_slots.map((s) => form.post_mode === "spread"
         ? { from: (s.from ?? "").trim(), to: (s.to ?? "").trim(), pct: Math.round(Number(s.pct)) }
         : { at: (s.at ?? "").trim(), pct: Math.round(Number(s.pct)) }),
-      p_post_every_hours: Math.round(form.post_every_hours), p_post_every_pct: Math.round(form.post_every_pct),
+      p_post_every_minutes: Math.round(form.post_every_minutes), p_post_every_pct: Math.round(form.post_every_pct),
       p_post_window_start: form.post_window_start.trim(), p_post_window_end: form.post_window_end.trim(),
     };
     const failed: string[] = [];
@@ -722,7 +723,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
               {form.auto_post_on_open && (
                 <div className="mt-2 space-y-2 rounded border border-zinc-200 p-3 dark:border-zinc-700">
                   <div className="flex flex-wrap gap-4">
-                    {([["immediate", "開團立刻全發"], ["spread", "時間區間平均發"], ["slots", "指定時段各發 n%"], ["interval", "每 n 小時發 n%"]] as [PostMode, string][]).map(([v, l]) => (
+                    {([["immediate", "開團立刻全發"], ["spread", "時間區間平均發"], ["slots", "指定時段各發 n%"], ["interval", "每 n 分鐘發 n%"]] as [PostMode, string][]).map(([v, l]) => (
                       <label key={v} className="flex items-center gap-2">
                         <input type="radio" name="post_mode" checked={form.post_mode === v}
                           onChange={() => setForm({
@@ -782,8 +783,8 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
                       <span>到</span>
                       <input type="time" className={`${inputSm} w-32`} value={form.post_window_end} onChange={(e) => setForm({ ...form, post_window_end: e.target.value })} />
                       <span>，每</span>
-                      <input type="number" min={1} max={24} className={`${inputSm} w-20`} value={form.post_every_hours} onChange={(e) => setForm({ ...form, post_every_hours: Number(e.target.value) })} />
-                      <span>小時發</span>
+                      <input type="number" min={5} max={1440} step={5} className={`${inputSm} w-24`} value={form.post_every_minutes} onChange={(e) => setForm({ ...form, post_every_minutes: Number(e.target.value) })} />
+                      <span>分鐘發</span>
                       <input type="number" min={1} max={100} className={`${inputSm} w-20`} value={form.post_every_pct} onChange={(e) => setForm({ ...form, post_every_pct: Number(e.target.value) })} />
                       <span>%</span>
                     </div>
