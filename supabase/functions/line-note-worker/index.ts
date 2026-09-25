@@ -349,9 +349,16 @@ async function deletePost(postId: number, callerTenant: string | null) {
   try {
     const account = await loadAccount(post.line_note_communities.account_id);
     const client = await clientFor(account);
+    // 2026-09-25 實測：LINE 對「分享貼文」卡片的 unsend 回 ILLEGAL_ARGUMENT（一般文字收得回）、
+    // destroyMessage 要社群管理員（小幫手不是 → FORBIDDEN）。先收回、不行再試刪除；都不行就留著，
+    // 卡片點進去會是「貼文已刪除」。小幫手升成社群管理員後 destroy 那條就通了。
     for (const m of (Array.isArray(post.share_message_ids) ? post.share_message_ids : [])) {
-      try { await unsendChatMessage(client, m.chat, m.id); unsent++; }
-      catch (e) { unsendFailed++; log(`收回分享訊息 ${m.id} 失敗：${(e as any)?.message ?? e}`); }
+      try { await unsendChatMessage(client, m.chat, m.id); unsent++; continue; }
+      catch (e) { log(`收回分享訊息 ${m.id} 失敗：${(e as any)?.message ?? e}`); }
+      try {
+        if (String(m.chat)[0] === "m") { await client.base.square.destroyMessage({ squareChatMid: m.chat, messageId: String(m.id) }); unsent++; continue; }
+      } catch (e) { log(`刪除分享訊息 ${m.id} 失敗：${(e as any)?.message ?? e}`); }
+      unsendFailed++;
     }
     await deleteNotePost(client, post.line_note_communities.home_id, post.line_post_id, { verbose: VERBOSE });
   } catch (e) {
@@ -1268,6 +1275,46 @@ Deno.serve(async (req) => {
       const client = await clientFor(account);
       const chat = String(body.chat_mid);
       const pick = (m: any) => m ? { id: m.id, to: m.to, from: m.from_, ct: m.contentType, meta: m.contentMetadata, t: m.createdTime, text: String(m.text ?? "").slice(0, 40) } : null;
+      if (body.mode === "unsend_talk") {
+        try { const r = await client.base.talk.unsendMessage({ messageId: String(body.message_id) }); return json({ ok: true, r: JSON.stringify(r).slice(0, 300) }); }
+        catch (e) { return json({ ok: false, error: String((e as any)?.message ?? e).slice(0, 800) }); }
+      }
+      if (body.mode === "destroy_own_text") {
+        const sent = await client.base.square.sendMessage({ squareChatMid: chat, text: "（測試訊息，馬上刪除）" });
+        const mid = sent?.createdSquareMessage?.message?.id;
+        try { const r = await client.base.square.destroyMessage({ squareChatMid: chat, messageId: String(mid) } as any); return json({ mid, ok: true, r: JSON.stringify(r).slice(0, 300) }); }
+        catch (e) { try { await unsendChatMessage(client, chat, String(mid)); } catch { /* ignore */ } return json({ mid, ok: false, error: String((e as any)?.message ?? e).slice(0, 800) }); }
+      }
+      if (body.mode === "sendcard") {
+        // 找一則既有的分享卡片，照抄它的 contentMetadata 用 sendMessage 自己發一張，再試收回
+        const ev = await client.base.square.fetchSquareChatEvents({ squareChatMid: chat, limit: 100, direction: "FORWARD", fetchType: "DEFAULT" } as any);
+        const card = (ev?.events ?? []).map((e: any) => e.payload?.sendMessage?.squareMessage?.message).find((m: any) => m && String(m.contentType) === "POSTNOTIFICATION");
+        if (!card) return json({ error: "no card found" });
+        let sent: any = null, err: string | null = null, un: any = null, err2: string | null = null;
+        try {
+          sent = await client.base.square.sendMessage({ squareChatMid: chat, text: card.text, contentType: "POSTNOTIFICATION", contentMetadata: card.contentMetadata } as any);
+        } catch (e) { err = String((e as any)?.message ?? e).slice(0, 800); }
+        const mid = sent?.createdSquareMessage?.message?.id;
+        if (mid && body.unsend !== false) {
+          try { un = await unsendChatMessage(client, chat, String(mid)); } catch (e) { err2 = String((e as any)?.message ?? e).slice(0, 800); }
+        }
+        return json({ mid, err, unsent: !!un, err2, ct: sent?.createdSquareMessage?.message?.contentType });
+      }
+      if (body.mode === "sendunsend") {
+        const sent = await client.base.square.sendMessage({ squareChatMid: chat, text: String(body.text ?? "（測試訊息，馬上收回）") });
+        const mid = sent?.createdSquareMessage?.message?.id;
+        let un: any = null, err: string | null = null;
+        try { un = await unsendChatMessage(client, chat, String(mid)); } catch (e) { err = String((e as any)?.message ?? e).slice(0, 800); }
+        return json({ mid, sentRaw: JSON.stringify(sent).slice(0, 600), un: JSON.stringify(un).slice(0, 300), err });
+      }
+      if (body.mode === "destroy") {
+        try { const r = await client.base.square.destroyMessage({ squareChatMid: chat, messageId: String(body.message_id) } as any); return json({ ok: true, r: JSON.stringify(r).slice(0, 500) }); }
+        catch (e) { return json({ ok: false, error: String((e as any)?.message ?? e).slice(0, 800) }); }
+      }
+      if (body.mode === "unsend") {
+        try { const r = await unsendChatMessage(client, chat, String(body.message_id)); return json({ ok: true, r: JSON.stringify(r).slice(0, 500) }); }
+        catch (e) { return json({ ok: false, error: String((e as any)?.message ?? e).slice(0, 800) }); }
+      }
       if (body.mode === "status") {
         const r = await client.base.square.getSquareChat({ squareChatMid: chat });
         const lm = r?.squareChatStatus?.lastMessage?.message;
