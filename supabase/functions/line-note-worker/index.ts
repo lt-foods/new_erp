@@ -945,10 +945,12 @@ async function jobRead(job: any, reactUntil = Date.now() + REACT_BUDGET_MS) {
 // 留言失敗不標結束、close_notified_at 也不寫 → 下一分鐘會再排一次；連續失敗的話錯誤留在貼文列上。
 const DEFAULT_CLOSE_COMMENT = "⏰ 本團已結單，感謝大家的支持！之後想加購請私訊小幫手 🙏";
 async function jobClose(job: any) {
-  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,community_id,status,close_notified_at,last_read_at,comment_count,group_buy_campaigns(name),line_note_communities(id,home_id,account_id,react_on_confirm,read_days,close_comment)`);
+  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,community_id,status,close_notified_at,last_read_at,comment_count,group_buy_campaigns(name,status),line_note_communities(id,home_id,account_id,react_on_confirm,read_days,close_comment)`);
   const p = rows?.[0];
   if (!p) throw new Error(`post ${job.post_id} not found`);
   if (p.close_notified_at) return { skipped: "already notified" };
+  // 團不是開團中（被改成草稿等）就不留言；下次再排
+  if (p.group_buy_campaigns?.status !== "open") return { skipped: `campaign ${p.group_buy_campaigns?.status}` };
   if (!p.line_post_id) return { skipped: "no_line_post_id" };
   const client = await clientFor(await loadAccount(p.line_note_communities.account_id));
   const post = { ...p, home_id: p.line_note_communities.home_id };
@@ -987,10 +989,12 @@ async function jobClose(job: any) {
 // 社群有設 remind_message 的話，當天第一篇分享前先發那段文字（一天只發一次）。
 const DEFAULT_REMIND_MESSAGE = "好鄰居們早安~~再看一眼，今日結單商品喔～走過路過不要錯過！喜歡的商品，好鄰居記得登記下單喔！！也可以新系統商城下單喔～\nhttps://new-erp-admin.vercel.app/shop";
 async function jobRemind(job: any) {
-  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,remind_shared_at,group_buy_campaigns(name),line_note_communities(id,home_id,account_id,share_chat_mid,remind_message,remind_message_sent_on)`);
+  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,remind_shared_at,group_buy_campaigns(name,status),line_note_communities(id,home_id,account_id,share_chat_mid,remind_message,remind_message_sent_on)`);
   const p = rows?.[0];
   if (!p) throw new Error(`post ${job.post_id} not found`);
   if (p.remind_shared_at) return { skipped: "already reminded" };
+  // 排進來之後團被改成草稿／結單了就不提醒（9/25 紅龍米漢堡：08:00 排進去、跑的時候已是草稿）
+  if (p.group_buy_campaigns?.status !== "open") return { skipped: `campaign ${p.group_buy_campaigns?.status}` };
   if (!p.line_post_id) return { skipped: "no_line_post_id" };
   const c = p.line_note_communities;
   const client = await clientFor(await loadAccount(c.account_id));
