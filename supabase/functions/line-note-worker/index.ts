@@ -26,7 +26,7 @@ import QRCode from "npm:qrcode@1.5.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import {
   clientFromToken, createNoteComment, createNotePost, deleteNotePost, likeComment, type LineCredential, listComments, listHomes,
-  listPosts, loginByQr, readCredential, resolveShareChatMid, sendChatText, sharePostToChat, updateNotePost, whoami,
+  listPosts, loginByQr, readCredential, resolveShareChatMid, sendChatText, sharePostToChat, unsendChatMessage, updateNotePost, whoami,
 } from "../_shared/lineNote.ts";
 import { extractPostTag, matchCampaign, normalizeForMatch, normalizeParseConfig, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
 import { renderPostText, TZ } from "../_shared/lineNoteRender.ts";
@@ -278,7 +278,9 @@ async function jobPost(job: any) {
     const shareNow = postId && cur?.[0]?.share_state !== "scheduled" && cm.post_mode === "immediate";
     if (shareNow) {
       try {
-        sharedTo = (await shareWithMemo(client, cm, postId)).chatMid;
+        const r = await shareWithMemo(client, cm, postId);
+        sharedTo = r.chatMid;
+        await recordShare(job.post_id, r);
       } catch (e) {
         shareError = String((e as any)?.message ?? e);
         log("分享貼文到聊天失敗:", shareError);
@@ -335,16 +337,23 @@ async function findPostIdByText(client: any, homeId: string, text: string): Prom
 async function deletePost(postId: number, callerTenant: string | null) {
   const rows = await rest(
     `line_note_posts?id=eq.${postId}` +
-    `&select=id,tenant_id,line_post_id,line_note_communities(home_id,account_id)`);
+    `&select=id,tenant_id,line_post_id,share_message_ids,line_note_communities(home_id,account_id)`);
   const post = rows?.[0];
   if (!post) return { ok: false, error: "找不到這篇貼文" };
   // service_role 沒有 RLS，跨 tenant 的檢查只能自己來
   if (callerTenant && post.tenant_id !== callerTenant) return { ok: false, error: "這篇貼文不屬於你的帳戶" };
   if (!post.line_post_id) return { ok: false, error: "這篇沒有發到 LINE（沒有貼文 id），直接清紀錄就好", noLinePost: true };
 
+  // 分享到聊天室的卡片先收回（記得住 id 的才收得回；收不回不擋刪貼文，卡片點進去會是「貼文已刪除」）
+  let unsent = 0, unsendFailed = 0;
   try {
     const account = await loadAccount(post.line_note_communities.account_id);
-    await deleteNotePost(await clientFor(account), post.line_note_communities.home_id, post.line_post_id, { verbose: VERBOSE });
+    const client = await clientFor(account);
+    for (const m of (Array.isArray(post.share_message_ids) ? post.share_message_ids : [])) {
+      try { await unsendChatMessage(client, m.chat, m.id); unsent++; }
+      catch (e) { unsendFailed++; log(`收回分享訊息 ${m.id} 失敗：${(e as any)?.message ?? e}`); }
+    }
+    await deleteNotePost(client, post.line_note_communities.home_id, post.line_post_id, { verbose: VERBOSE });
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
     await patch("line_note_posts", `id=eq.${postId}`, { last_error: msg.slice(0, 1000) }).catch(() => {});
@@ -352,8 +361,8 @@ async function deletePost(postId: number, callerTenant: string | null) {
   }
   await rest(`line_note_jobs?post_id=eq.${postId}&status=in.(queued,running)`, { method: "DELETE", prefer: "return=minimal" }).catch(() => {});
   await rest(`line_note_posts?id=eq.${postId}`, { method: "DELETE", prefer: "return=minimal" });
-  log(`🗑 貼文 ${postId}（LINE ${post.line_post_id}）已從記事本刪除，後台紀錄一併清掉`);
-  return { ok: true, linePostId: post.line_post_id };
+  log(`🗑 貼文 ${postId}（LINE ${post.line_post_id}）已從記事本刪除，後台紀錄一併清掉；收回分享 ${unsent} 則${unsendFailed ? `、失敗 ${unsendFailed} 則` : ""}`);
+  return { ok: true, linePostId: post.line_post_id, unsent, unsendFailed };
 }
 
 // 品項 / 金額改了，把 LINE 上那篇改成現在的內容（文字重算、圖片重傳）。
@@ -406,8 +415,14 @@ async function shareWithMemo(client: any, community: { id: number; home_id: stri
   }
 }
 
+// 分享出去的那則訊息記在貼文上，刪貼文時收回
+async function recordShare(postId: number, r: { chatMid: string; messageId?: string | null }) {
+  if (!r?.messageId) return;
+  await rpc("_line_note_append_share_msg", { p_post_id: postId, p_chat: r.chatMid, p_msg: r.messageId }).catch((e) => log(`記分享訊息 id 失敗：${(e as any)?.message ?? e}`));
+}
+
 // 把已經發出去的貼文（再）分享到聊天室：發文當下分享失敗時的補救入口，後台直接呼叫。
-async function sharePost(postId: number, callerTenant: string | null) {
+async function sharePost(postId: number, callerTenant: string | null, body: any = {}) {
   const rows = await rest(`line_note_posts?id=eq.${postId}&select=id,tenant_id,line_post_id,last_error,line_note_communities(id,home_id,account_id,share_chat_mid)`);
   const post = rows?.[0];
   if (!post) return { ok: false, error: "找不到這篇貼文" };
@@ -416,12 +431,13 @@ async function sharePost(postId: number, callerTenant: string | null) {
   try {
     const account = await loadAccount(post.line_note_communities.account_id);
     const r = await shareWithMemo(await clientFor(account), post.line_note_communities, post.line_post_id);
+    await recordShare(postId, r);
     await patch("line_note_posts", `id=eq.${postId}`, {
       share_state: "shared", shared_at: new Date().toISOString(),
       ...(String(post.last_error ?? "").includes("分享到聊天失敗") ? { last_error: null } : {}),
     }).catch(() => {});
     log(`📨 貼文 ${postId}（LINE ${post.line_post_id}）已分享到 ${r.chatMid}`);
-    return { ok: true, chatMid: r.chatMid };
+    return { ok: true, chatMid: r.chatMid, ...(body?.debug ? { raw: r.res } : {}) };
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
     await patch("line_note_posts", `id=eq.${postId}`, { share_state: "failed", last_error: `分享到聊天失敗：${msg}`.slice(0, 1000) }).catch(() => {});
@@ -446,6 +462,7 @@ async function jobShare(job: any) {
   const client = await clientFor(await loadAccount(p.line_note_communities.account_id));
   try {
     const r = await shareWithMemo(client, p.line_note_communities, p.line_post_id);
+    await recordShare(p.id, r);
     await patch("line_note_posts", `id=eq.${p.id}`, { share_state: "shared", shared_at: new Date().toISOString(), last_error: null });
     log(`📨 貼文 ${p.id}（${p.group_buy_campaigns?.name ?? ""}）依節奏分享到 ${r.chatMid}`);
     return { shared: true, chatMid: r.chatMid };
@@ -1047,6 +1064,7 @@ async function jobRemind(job: any) {
     }
   }
   const r = await sharePostToChat(client, c.home_id, p.line_post_id, { chatMid, verbose: VERBOSE });
+  await recordShare(p.id, r);
   await patch("line_note_posts", `id=eq.${p.id}`, { remind_shared_at: new Date().toISOString(), share_state: "shared", shared_at: new Date().toISOString() });
   log(`🔔 貼文 ${p.id}（${p.group_buy_campaigns?.name ?? ""}）結單提醒已分享到 ${r.chatMid}`);
   return { reminded: true, chatMid: r.chatMid, textSent };
@@ -1226,7 +1244,7 @@ Deno.serve(async (req) => {
       if (caller !== "admin") return json({ error: "分享貼文只能從後台按" }, 403);
       const postId = Number(body.post_id);
       if (!postId) return json({ error: "post_id required" }, 400);
-      return json(await sharePost(postId, callerTenant));
+      return json(await sharePost(postId, callerTenant, body));
     }
     // 診斷用：對一篇貼文留言並回 LINE 的原始回應 + 留言後 getList 看到的內容
     if (action === "debug_comment") {
@@ -1243,6 +1261,27 @@ Deno.serve(async (req) => {
       catch (e) { err = String((e as any)?.message ?? e); }
       const after = await listComments(client, homeId, post.line_post_id, { verbose: true }).catch((e) => ({ error: String(e?.message ?? e) }));
       return json({ create, err, after: Array.isArray(after) ? after.map((c: any) => ({ id: c.commentId, by: c.authorName, text: c.text, raw: c.raw })) : after });
+    }
+    if (action === "debug_chat_events") {
+      if (caller !== "admin") return json({ error: "只能從後台按" }, 403);
+      const account = await loadAccount(Number(body.account_id ?? 3));
+      const client = await clientFor(account);
+      const chat = String(body.chat_mid);
+      const pick = (m: any) => m ? { id: m.id, to: m.to, from: m.from_, ct: m.contentType, meta: m.contentMetadata, t: m.createdTime, text: String(m.text ?? "").slice(0, 40) } : null;
+      if (body.mode === "status") {
+        const r = await client.base.square.getSquareChat({ squareChatMid: chat });
+        const lm = r?.squareChatStatus?.lastMessage?.message;
+        return json({ status: r?.squareChatStatus?.otherStatus, last: pick(lm), raw: JSON.stringify(r?.squareChatStatus).slice(0, 1500) });
+      }
+      if (body.mode === "my") {
+        const r = await client.base.square.fetchMyEvents({ syncToken: "", limit: Number(body.limit ?? 100) });
+        const out = (r?.events ?? []).map((e: any) => ({ type: e.type, msg: pick(e.payload?.sendMessage?.squareMessage?.message ?? e.payload?.receiveMessage?.squareMessage?.message) }))
+          .filter((x: any) => x.msg && x.msg.to === chat);
+        return json({ n: (r?.events ?? []).length, out });
+      }
+      const r = await client.base.square.fetchSquareChatEvents({ squareChatMid: chat, limit: Number(body.limit ?? 20), direction: body.direction ?? "BACKWARD", fetchType: body.fetch_type ?? "DEFAULT", syncToken: body.sync_token } as any);
+      const out = (r?.events ?? []).map((e: any) => ({ type: e.type, msg: pick(e.payload?.sendMessage?.squareMessage?.message ?? e.payload?.receiveMessage?.squareMessage?.message) }));
+      return json({ n: (r?.events ?? []).length, syncToken: r?.syncToken, out });
     }
     if (action === "tick" || action === "run") return json(await tick());
     return json({ error: `unknown action ${action}` }, 400);
