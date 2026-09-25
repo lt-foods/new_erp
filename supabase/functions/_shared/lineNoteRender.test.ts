@@ -132,3 +132,12 @@ Deno.test("自訂模板沒寫 {{link}} 也會補；寫了就不重複", () => {
   const own = renderPostText(linked({ id: 9, name: "測試", description: "" }, [{ code: "A", name: "x", unit_price: 1 }], "{{name}}\n自己去 {{link}} 下單\n{{tag}}"));
   eq(own, `測試\n自己去 🛒 商城下單：${SITE}/shop/c/9 下單\n${tag}`, "模板自己寫了就不再補一行");
 });
+
+Deno.test("多品項、文案裡單獨一行的同一個金額（💰 $295）→ 拿掉，不要在 (A)(B)(C) 之後又印一次", () => {
+  const out = renderPostText(payload(
+    { name: "森林雪霜蛋糕捲", description: "A｜檸檬\nB｜黑森林\n💰 $295\n好吃" },
+    [{ code: "A", name: "檸檬", unit_price: 295 }, { code: "B", name: "黑森林", unit_price: 295 }],
+  ));
+  eq(out.includes("💰 💲２９５"), false, "文案裡的 💰 $295 要拿掉");
+  eq((out.match(/２９５/g) ?? []).length, 2, "金額只出現在 (A)(B) 兩行");
+});
