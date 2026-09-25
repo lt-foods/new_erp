@@ -33,7 +33,7 @@ export type CampaignFormValues = {
   is_for_shop: boolean;
   /** 店家自開團的主辦店；非 null = 這團不經總倉（唯讀，開團後不能換店）。 */
   owner_store_id?: number | null;
-  /** 草稿團：開團時間到了由系統自動開團（rpc_auto_open_scheduled_campaigns，20260924040000） */
+  /** 20260925010000 起草稿到時間一律自動開團，這欄不再使用（留著不影響） */
   auto_open?: boolean;
   /** 上次自動開團沒開成的原因（商品沒上架之類）；唯讀 */
   auto_open_error?: string | null;
@@ -159,13 +159,6 @@ export function CampaignForm({
       if (err) throw err;
       const newId = Number(data);
 
-      // 排定開團：只有草稿有意義（DB 那支也會把非草稿的強制存成 false）
-      if (v.auto_open || initial?.auto_open) {
-        const { error: aoErr } = await getSupabase().rpc("rpc_set_campaign_auto_open", {
-          p_id: newId, p_auto_open: v.status === "draft" && !!v.auto_open,
-        });
-        if (aoErr) throw aoErr;
-      }
 
       // 美食列車且 status 從非 open → open 時, 廣播推播給全 tenant 顧客
       // (失敗不阻擋儲存; 顯示警告但仍視為成功)
@@ -291,14 +284,12 @@ export function CampaignForm({
                 aria-label="開團時間"
               />
               <TimeSnapRow field="start_at" setV={setV} />
-              {v.status === "draft" && v.close_type !== "food_train" && (
-                <label className="mt-1 flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-300">
-                  <input type="checkbox" checked={!!v.auto_open} disabled={!v.start_at}
-                    onChange={(e) => update("auto_open", e.target.checked)} />
-                  時間到自動開團（LINE 記事本依各社群設定的時段發文）
-                </label>
+              {/* 草稿的開團時間到了系統會自動開團（rpc_auto_open_scheduled_campaigns，不用勾）；
+                  美食列車除外。沒開成的原因顯示在這裡。 */}
+              {v.status === "draft" && v.close_type !== "food_train" && v.start_at && (
+                <p className="text-[11px] text-zinc-400">草稿到了開團時間會自動開團（LINE 記事本依各社群設定的時段發文）</p>
               )}
-              {v.status === "draft" && v.auto_open && v.auto_open_error && (
+              {v.status === "draft" && v.auto_open_error && (
                 <p className="text-xs text-red-600">上次沒開成：{v.auto_open_error}</p>
               )}
             </div>
