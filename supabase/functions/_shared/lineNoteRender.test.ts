@@ -18,7 +18,7 @@ Deno.test("預設版型：先團名、再金額、再結單時間、再文案；
 Deno.test("多品項才列 (A) 品名 ＋ 同一行金額，教學帶代碼", () => {
   const text = renderPostText(payload({ name: "所長茶葉蛋", description: "超入味" },
     [{ code: "A", name: "所長茶葉蛋 (A) 原味", unit_price: 195 }, { code: "B", name: "所長茶葉蛋 (B) 辣味", unit_price: 205 }]));
-  eq(text, `所長茶葉蛋\n\n(A) 原味 １９５ 元\n(B) 辣味 ２０５ 元\n\n${DL}\n\n超入味\n\n${HOWTO_MULTI}\n#開團\n${tag}`, "多品項");
+  eq(text, `所長茶葉蛋\n\n(A) 原味 💰１９５ 元\n(B) 辣味 💰２０５ 元\n\n${DL}\n\n超入味\n\n${HOWTO_MULTI}\n#開團\n${tag}`, "多品項");
 });
 
 Deno.test("文案第一行就是團名 → 拿掉那一行，標題一律印團名", () => {
@@ -37,10 +37,10 @@ Deno.test("記事本匯進來的單品文案已經寫了同一個金額 → 不�
 Deno.test("文案自己列了 (A)(B) 品項 → 商品段留空；記事本「價格在下一行」的寫法併成同一行", () => {
   const text = renderPostText(payload({ name: "阿土伯", description: "阿土伯\n(A)空心菜\n($)(3)(5)\n(B)小白菜\n($)(3)(5)" },
     [{ code: "A", name: "空心菜", unit_price: 35 }, { code: "B", name: "小白菜", unit_price: 35 }]));
-  eq(text, `阿土伯\n\n(A)空心菜 ３５ 元\n(B)小白菜 ３５ 元\n\n${DL}\n\n${HOWTO_MULTI}\n#開團\n${tag}`, "不重複列品項、併成一行、結單接在品項後面");
+  eq(text, `阿土伯\n\n(A)空心菜 💰３５ 元\n(B)小白菜 💰３５ 元\n\n${DL}\n\n${HOWTO_MULTI}\n#開團\n${tag}`, "不重複列品項、併成一行、結單接在品項後面");
   const diff = renderPostText(payload({ name: "阿土伯", description: "阿土伯\n(A)空心菜\n($)(3)(0)\n(B)小白菜\n($)(3)(5)" },
     [{ code: "A", name: "空心菜", unit_price: 35 }, { code: "B", name: "小白菜", unit_price: 35 }]));
-  eq(diff.includes("(A)空心菜\n💲３０\n(B)小白菜 ３５ 元"), true, "小幫手寫的價格跟零售價不一樣 → 那一組兩行都不動、也不拆開");
+  eq(diff.includes("(A)空心菜\n💲３０\n(B)小白菜 💰３５ 元"), true, "小幫手寫的價格跟零售價不一樣 → 那一組兩行都不動、也不拆開");
 });
 
 Deno.test("自訂模板：{{deadline}} / {{end_at}} 照舊可用，沒寫 {{tag}} 也會補章", () => {
@@ -53,13 +53,13 @@ Deno.test("文案用 A. B. 列品項（品名裡也帶 A.）→ 商品段留空�
     [{ code: "A", name: "A. 經典原味", unit_price: 195 }, { code: "B", name: "B. 麻香辣味", unit_price: 205 }]));
   eq(text, `所長茶葉蛋\n\n買一送一！\nA. 經典原味 💰１９５\nB. 麻香辣味 💰２０５\n\n${DL}\n\n${HOWTO_MULTI}\n#開團\n${tag}`, "A. 列表，結單接在後面");
   const own = renderPostText(payload({ name: "所長茶葉蛋", description: "超入味" }, [{ code: "A", name: "A. 經典原味", unit_price: 195 }, { code: "B", name: "B. 麻香辣味", unit_price: 205 }]));
-  eq(own.includes("(A) 經典原味 １９５ 元\n(B) 麻香辣味 ２０５ 元"), true, "品名裡的 A. 不印兩次");
+  eq(own.includes("(A) 經典原味 💰１９５ 元\n(B) 麻香辣味 💰２０５ 元"), true, "品名裡的 A. 不印兩次");
 });
 
 Deno.test("金額一律用零售價；沒設零售價（NULL / 0）才退回團購價", () => {
   const text = renderPostText(payload({ name: "港點", description: "好吃" },
     [{ code: "A", name: "蝦餃", unit_price: 168, retail_price: 249 }, { code: "B", name: "燒賣", unit_price: 69, retail_price: 0 }, { code: "C", name: "腸粉", unit_price: 88 }]));
-  eq(text.includes("(A) 蝦餃 ２４９ 元\n(B) 燒賣 ６９ 元\n(C) 腸粉 ８８ 元"), true, "零售價優先");
+  eq(text.includes("(A) 蝦餃 💰２４９ 元\n(B) 燒賣 💰６９ 元\n(C) 腸粉 💰８８ 元"), true, "零售價優先");
   const single = renderPostText(payload({ name: "高麗菜", description: "高麗菜\n半顆($)(6)(9)" }, [{ code: "A", name: "半顆", unit_price: 60, retail_price: 69 }]));
   eq(single, `高麗菜\n\n半顆💲６９\n\n${DL}\n\n${HOWTO_SINGLE}\n#開團\n${tag}`, "單品去重也是拿零售價比");
 });
@@ -82,9 +82,9 @@ Deno.test("預設版型的結單時間印客人收單；文案自己寫的「⏰
 Deno.test("文案列了 (A)(B) 但沒寫價格 → 金額接在同一行，整行只有金額的「💰一袋189元」拿掉", () => {
   const text = renderPostText(payload({ name: "杰哥爆餡韭菜盒 675g", description: "🔥囤起來\n【杰哥爆餡盒子】\n💰一袋189元\n\n(A) 韭菜盒\n(B) 高麗菜盒（全素🌱）\n\n⏰9/14結單\n口味：(A)韭菜盒／(B)高麗菜盒" },
     [{ code: "A", name: "韭菜盒", unit_price: 189, retail_price: 189 }, { code: "B", name: "高麗菜盒", unit_price: 189, retail_price: 189 }]));
-  eq(text, `杰哥爆餡韭菜盒 675g\n\n🔥囤起來\n【杰哥爆餡盒子】\n\n(A) 韭菜盒 １８９ 元\n(B) 高麗菜盒（全素🌱） １８９ 元\n\n${DL}\n\n口味：(A)韭菜盒／(B)高麗菜盒\n\n${HOWTO_MULTI}\n#開團\n${tag}`, "接價格、拿掉多的那行、結單換成系統的接在品項後面");
+  eq(text, `杰哥爆餡韭菜盒 675g\n\n🔥囤起來\n【杰哥爆餡盒子】\n\n(A) 韭菜盒 💰１８９ 元\n(B) 高麗菜盒（全素🌱） 💰１８９ 元\n\n${DL}\n\n口味：(A)韭菜盒／(B)高麗菜盒\n\n${HOWTO_MULTI}\n#開團\n${tag}`, "接價格、拿掉多的那行、結單換成系統的接在品項後面");
   const keep = renderPostText(payload({ name: "杰哥", description: "杰哥\n💰滿1000免運\n(A) 韭菜盒 189元\n(B) 高麗菜盒" }, [{ code: "A", name: "韭菜盒", unit_price: 189 }, { code: "B", name: "高麗菜盒", unit_price: 199 }]));
-  eq(keep.includes("💰滿１０００免運\n(A) 韭菜盒 189元\n(B) 高麗菜盒 １９９ 元"), true, "已有價格的行不動、不是純金額的 💰 行不拿");
+  eq(keep.includes("💰滿１０００免運\n(A) 韭菜盒 189元\n(B) 高麗菜盒 💰１９９ 元"), true, "已有價格的行不動、不是純金額的 💰 行不拿");
 });
 
 Deno.test("整行只有金額的那一行，跟上一行之間空一行", () => {
