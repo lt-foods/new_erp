@@ -39,6 +39,7 @@ type Community = {
   post_window_start: string; post_window_end: string;
   close_comment: string | null;
   remind_enabled: boolean; remind_time: string; remind_message: string | null;
+  share_from_community_id: number | null;
   last_read_at: string | null; last_error: string | null;
 };
 type Post = {
@@ -399,6 +400,8 @@ type CommunityForm = {
   post_window_start: string; post_window_end: string;
   close_comment: string;
   remind_enabled: boolean; remind_time: string; remind_message: string;
+  // 子群：跟著哪個母社群分享（不發文、不讀留言，只依自己的節奏把母社群那篇分享到本聊天室）
+  share_from_community_id: number | "";
 };
 const EMPTY_FORM: CommunityForm = {
   id: null, account_id: "", store_id: "", home_id: "", home_name: "",
@@ -408,6 +411,7 @@ const EMPTY_FORM: CommunityForm = {
   post_every_minutes: 120, post_every_pct: 20, post_window_start: "09:00", post_window_end: "21:00",
   close_comment: "",
   remind_enabled: true, remind_time: "08:00", remind_message: "",
+  share_from_community_id: "",
 };
 
 // 開團自動發文的節奏（line_note_communities.post_mode，20260924040000）。
@@ -457,8 +461,14 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       post_every_minutes: c.post_every_minutes ?? 120, post_every_pct: c.post_every_pct ?? 20,
       post_window_start: c.post_window_start ?? "09:00", post_window_end: c.post_window_end ?? "21:00",
       close_comment: c.close_comment ?? "",
-      remind_enabled: c.remind_enabled ?? true, remind_time: c.remind_time ?? "08:00", remind_message: c.remind_message ?? "" });
+      remind_enabled: c.remind_enabled ?? true, remind_time: c.remind_time ?? "08:00", remind_message: c.remind_message ?? "",
+      share_from_community_id: c.share_from_community_id ?? "" });
   };
+  // 子群模式：只有分享節奏＋結單提醒有意義，其他欄位藏起來
+  const isSub = form !== null && form.share_from_community_id !== "";
+  // 可以當母社群的：同帳號、自己不是子群、不是自己
+  const parentOptions = (communities ?? []).filter((c) =>
+    c.share_from_community_id == null && c.id !== form?.id && (form?.account_id === "" || c.account_id === form?.account_id));
 
   const loadHomes = async () => {
     if (!form || form.account_id === "") return;
@@ -487,7 +497,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       : [{ home_id: form.home_id.trim(), home_name: form.home_name.trim() || null }];
     if (targets.some((t) => !t.home_id)) return fail(new Error("請選擇社群"));
     // 一種都沒勾 = 這個社群什麼團都收不到（DB 也會擋），先在這裡講清楚
-    if (form.sales_channels.length === 0) return fail(new Error("請至少勾一種要發的團（一般商城／漂漂館）"));
+    if (!isSub && form.sales_channels.length === 0) return fail(new Error("請至少勾一種要發的團（一般商城／漂漂館）"));
 
     setBusy("save");
     const sb = getSupabase();
@@ -498,7 +508,8 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       p_auto_post_on_open: form.auto_post_on_open, p_post_template: form.post_template || null,
       p_read_days: Math.min(30, Math.max(1, Math.round(form.read_days || 3))),
       p_react_on_confirm: form.react_on_confirm,
-      p_sales_channels: form.sales_channels,
+      p_sales_channels: isSub ? ["main", "piaopiao"] : form.sales_channels,
+      p_share_from_community_id: form.share_from_community_id === "" ? null : form.share_from_community_id,
     };
     const schedule = {
       p_post_mode: form.post_mode,
@@ -597,6 +608,11 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
                 <Td>
                   <div>{c.home_name || c.home_id}</div>
                   <div className="text-xs text-zinc-500">{KIND_LABEL[c.home_kind]} · <span className="font-mono">{c.home_id}</span></div>
+                  {c.share_from_community_id != null && (
+                    <div className="text-xs text-sky-700 dark:text-sky-400">
+                      ↳ 子群：跟著「{(communities ?? []).find((x) => x.id === c.share_from_community_id)?.home_name ?? c.share_from_community_id}」分享，不發文
+                    </div>
+                  )}
                   {c.last_error && <div className="text-xs text-red-600">{c.last_error}</div>}
                 </Td>
                 <Td>{a ? <>{a.label} <Badge tone={a.status === "active" ? "green" : "red"}>{ACCOUNT_STATUS[a.status]}</Badge></> : "—"}</Td>
@@ -608,14 +624,14 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
                     ))}
                   </div>
                 </Td>
-                <Td><Badge tone={c.listen_enabled ? "green" : "gray"}>{c.listen_enabled ? "監聽中" : "停用"}</Badge></Td>
-                <Td className="font-mono text-xs">{c.read_times.join(" ")}<div className="text-zinc-400">近 {c.read_days} 天</div></Td>
-                <Td className="text-xs">{postModeSummary(c)}</Td>
+                <Td>{c.share_from_community_id != null ? <span className="text-zinc-400">—</span> : <Badge tone={c.listen_enabled ? "green" : "gray"}>{c.listen_enabled ? "監聽中" : "停用"}</Badge>}</Td>
+                <Td className="font-mono text-xs">{c.share_from_community_id != null ? <span className="text-zinc-400">—</span> : <>{c.read_times.join(" ")}<div className="text-zinc-400">近 {c.read_days} 天</div></>}</Td>
+                <Td className="text-xs">{c.share_from_community_id != null ? `分享：${postModeSummary(c)}` : postModeSummary(c)}</Td>
                 <Td>{fmt(c.last_read_at)}</Td>
                 <Td align="right">
                   <div className="flex justify-end gap-1 whitespace-nowrap">
-                    <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => readNow(c)}>立即讀取</SpinButton>
-                    <button type="button" className={btn} onClick={() => setPostFor(c)}>發文</button>
+                    {c.share_from_community_id == null && <SpinButton type="button" className={btn} loading={busy === c.id} onClick={() => readNow(c)}>立即讀取</SpinButton>}
+                    {c.share_from_community_id == null && <button type="button" className={btn} onClick={() => setPostFor(c)}>發文</button>}
                     <button type="button" className={btn} onClick={() => openEdit(c)}>編輯</button>
                     <SpinButton type="button" className={`${btn} text-red-600`} loading={busy === c.id} onClick={() => remove(c)}>刪除</SpinButton>
                   </div>
@@ -702,16 +718,23 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
               <input className={input} disabled={multi} value={multi ? "各自沿用社群名稱" : form.home_name}
                 onChange={(e) => setForm({ ...form, home_name: e.target.value })} />
             </label>
-            <label className="text-sm">讀取範圍（最近幾天的貼文；也用來認小幫手手貼的團）
+            <label className="text-sm md:col-span-2">子群：跟著哪個社群分享（子群不發記事本、不讀留言，只把母社群那篇貼文依下面的節奏分享到這個聊天室）
+              <select className={input} value={form.share_from_community_id}
+                onChange={(e) => setForm({ ...form, share_from_community_id: e.target.value ? Number(e.target.value) : "", listen_enabled: e.target.value ? false : form.listen_enabled })}>
+                <option value="">不是子群（自己發記事本）</option>
+                {parentOptions.map((c) => <option key={c.id} value={c.id}>{c.home_name || c.home_id}</option>)}
+              </select>
+            </label>
+            {!isSub && <label className="text-sm">讀取範圍（最近幾天的貼文；也用來認小幫手手貼的團）
               <input type="number" min={1} max={30} className={input} value={form.read_days} onChange={(e) => setForm({ ...form, read_days: Number(e.target.value) })} />
-            </label>
-            <label className="text-sm">讀留言時間（台北，HH:MM，逗號分隔）
+            </label>}
+            {!isSub && <label className="text-sm">讀留言時間（台北，HH:MM，逗號分隔）
               <input className={`${input} font-mono`} value={form.read_times} onChange={(e) => setForm({ ...form, read_times: e.target.value })} placeholder="09:00, 12:00, 18:00" />
-            </label>
-            <label className="flex items-center gap-2 text-sm">
+            </label>}
+            {!isSub && <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.listen_enabled} onChange={(e) => setForm({ ...form, listen_enabled: e.target.checked })} /> 啟用監聽（到時間自動讀留言加單）
-            </label>
-            <div className="text-sm md:col-span-2">
+            </label>}
+            {!isSub && <div className="text-sm md:col-span-2">
               收哪一類的團（漂漂館的團只發得到有勾漂漂館的社群）
               <div className="mt-1 flex flex-wrap gap-4">
                 {CHANNEL_OPTIONS.map((o) => (
@@ -729,10 +752,11 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
               {form.sales_channels.length === 0 && (
                 <div className="mt-1 text-xs text-red-600">至少要勾一種，不然這個社群什麼團都收不到。</div>
               )}
-            </div>
+            </div>}
             <div className="text-sm md:col-span-2">
               <label className="flex items-center gap-2">
-                <input type="checkbox" checked={form.auto_post_on_open} onChange={(e) => setForm({ ...form, auto_post_on_open: e.target.checked })} /> 開團（狀態變「開團中」）時自動發文
+                <input type="checkbox" checked={form.auto_post_on_open} onChange={(e) => setForm({ ...form, auto_post_on_open: e.target.checked })} />
+                {isSub ? "母社群發文後自動分享到這個聊天室" : "開團（狀態變「開團中」）時自動發文"}
               </label>
               {form.auto_post_on_open && (
                 <div className="mt-2 space-y-2 rounded border border-zinc-200 p-3 dark:border-zinc-700">
@@ -809,9 +833,9 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
                 </div>
               )}
             </div>
-            <label className="flex items-center gap-2 text-sm">
+            {!isSub && <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.react_on_confirm} onChange={(e) => setForm({ ...form, react_on_confirm: e.target.checked })} /> 收到單後在客人留言上按 😄，讓他知道收到了
-            </label>
+            </label>}
             <div className="text-sm md:col-span-2">
               <label className="flex items-center gap-2">
                 <input type="checkbox" checked={form.remind_enabled} onChange={(e) => setForm({ ...form, remind_enabled: e.target.checked })} />
@@ -826,14 +850,14 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
                 </label>
               )}
             </div>
-            <label className="text-sm md:col-span-2">結單留言（客人收單時間到，機器人到貼文底下留這句並停止自動加單；留空用預設）
+            {!isSub && <label className="text-sm md:col-span-2">結單留言（客人收單時間到，機器人到貼文底下留這句並停止自動加單；留空用預設）
               <textarea className={`${input} h-16 text-xs`} value={form.close_comment} onChange={(e) => setForm({ ...form, close_comment: e.target.value })}
                 placeholder="⏰ 本團已結單，感謝大家的支持！之後想加購請私訊小幫手 🙏" />
-            </label>
-            <label className="text-sm md:col-span-2">發文模板（留空用預設；可用 {"{{title}} {{items}} {{deadline}} {{description}} {{howto}} {{link}} {{tag}} {{name}} {{end_at}} {{pickup_deadline}}"}）
+            </label>}
+            {!isSub && <label className="text-sm md:col-span-2">發文模板（留空用預設；可用 {"{{title}} {{items}} {{deadline}} {{description}} {{howto}} {{link}} {{tag}} {{name}} {{end_at}} {{pickup_deadline}}"}）
               <textarea className={`${input} h-40 font-mono text-xs`} value={form.post_template} onChange={(e) => setForm({ ...form, post_template: e.target.value })}
                 placeholder={"{{title}}\n\n{{items}}\n\n{{deadline}}\n\n{{description}}\n\n{{howto}}\n{{link}}\n#開團\n{{tag}}"} />
-            </label>
+            </label>}
           </div>
           <div className="mt-4 flex justify-end gap-2">
             <button type="button" className={btn} onClick={() => setForm(null)}>取消</button>
