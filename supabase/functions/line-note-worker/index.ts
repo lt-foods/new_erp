@@ -187,8 +187,10 @@ async function jobLogout(job: any) {
 async function jobListHomes(job: any) {
   const account = await loadAccount(job.account_id);
   const client = await clientFor(account);
-  const homes = await listHomes(client, VERBOSE);
-  return { homes, sync: await syncCommunities(job.account_id, homes) };
+  // diag：各來源抓到幾個／哪一段失敗，清單少東西時直接看 line_note_jobs.result 就知道卡在哪
+  const diag: Record<string, unknown> = {};
+  const homes = await listHomes(client, VERBOSE, diag);
+  return { homes, diag, sync: await syncCommunities(job.account_id, homes) };
 }
 
 // 社群清單跟著帳號走：帳號加入的群組／社群自己出現在後台，不用手動貼 homeId。
