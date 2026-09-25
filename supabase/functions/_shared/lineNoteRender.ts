@@ -112,9 +112,17 @@ function injectItemPrices(desc: string, items: any[]): string {
   }
   if (!injected) return desc;
   // 接完之後，文案裡整行只寫同一個金額的「💰一袋189元」就是多的；緊跟在品項後面的那種上面已經處理過，不碰
+  return dropRedundantPriceLines(lines.join("\n"), items);
+}
+
+// 文案裡整行只有一個金額、而且那個金額就是某個品項的價格 → 多的，拿掉（品項那一段已經印過了）。
+// 緊跟在 (A)(B) 品項行後面的不碰（那是「價格寫在下一行」的寫法，injectItemPrices 會處理）。
+// 老闆 2026-09-25：三口味各 295 的團，(A)(B)(C) 後面又冒出一行「💰 💲２９５」。
+function dropRedundantPriceLines(desc: string, items: any[]): string {
   const prices = new Set(items.map((it: any) => postPrice(it)).filter((x) => x != null));
+  if (prices.size === 0) return desc;
   let prevText = "";
-  return lines.filter((line) => {
+  return desc.split("\n").filter((line) => {
     const m = line.match(PRICE_ONLY_LINE);
     const drop = m && prices.has(Number(m[1])) && !ITEM_LINE.test(prevText);
     if (line.trim()) prevText = line;
@@ -233,6 +241,8 @@ export function renderTemplate(template: string | null, payload: any) {
   // 把金額接在那一行後面，變成跟我們自己產的一樣「(A) 韭菜盒 １８９ 元」。
   // 接完之後，文案裡只寫著同一個金額的「💰一袋189元」那種整行就是多的，拿掉。
   desc = injectItemPrices(desc, items);
+  // 多品項：品項段已經逐項印了金額，文案裡單獨一行的同一個金額不要再出現一次
+  if (!single) desc = dropRedundantPriceLines(desc, items);
   // 老闆 2026-09-10：金額行跟上一行之間要空一行（「💰１０５元」直接貼在文案下面太擠）
   desc = spaceOutPriceLines(desc);
   // 結單那一行：客人看的結單時間 = 客人收單（customer_end_at，20260910050000）跟店家收單取早的那個；
