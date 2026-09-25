@@ -21,6 +21,7 @@ import { deleteLineNotePost } from "@/lib/lineNoteDelete";
 import { updateLineNotePost } from "@/lib/lineNoteUpdate";
 import { canOperateLineNotes, useRole } from "@/lib/role";
 import { useHasStaffPerm } from "@/lib/staffPerms";
+import { campaignMatchScore, postTitle, WEAK_MATCH } from "@/lib/lineNoteCampaignMatch";
 
 type Account = {
   id: number; label: string; status: "logged_out" | "pending_qr" | "active" | "error";
@@ -1864,7 +1865,7 @@ function LinkCampaignModal({ post, onClose, onDone, fail }: {
   post: Post; onClose: () => void; onDone: () => Promise<void>; fail: (e: unknown) => void;
 }) {
   const [kw, setKw] = useState("");
-  const [rows, setRows] = useState<CampaignPick[] | null>(null);
+  const [rows, setRows] = useState<(CampaignPick & { score: number })[] | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -1875,19 +1876,29 @@ function LinkCampaignModal({ post, onClose, onDone, fail }: {
       // 線上九成的團都在這個狀態）的貼文根本指不了**，永遠卡在「未認出團」
       // （2026-09-21 三峽 50 則 / 松山 36 則就是這樣堆起來的）。
       // 指到已結單的團 = 把貼文歸檔標名字，不會再讀留言加單（rpc 會直接收成「已結束」）。
+      // 沒打關鍵字時多抓一些再依「像不像這則貼文」排序 —— 只列最新 30 團時，
+      // 真正的那一團常常不在清單裡，小幫手就順手點了最上面那個（2026-09-24 牙刷 → 直筒褲）
       let query = getSupabase().from("group_buy_campaigns")
         .select("id,campaign_no,name,status").in("status", LINKABLE_CAMPAIGN_STATUSES)
-        .order("id", { ascending: false }).limit(30);
+        .order("id", { ascending: false }).limit(k ? 30 : 200);
       if (k) query = query.or(`name.ilike.%${k}%,campaign_no.ilike.%${k}%`);
       const { data } = await query;
-      if (!dead) setRows((data ?? []) as CampaignPick[]);
+      const scored = ((data ?? []) as CampaignPick[])
+        .map((r) => ({ ...r, score: campaignMatchScore(post.text ?? "", r) }))
+        .sort((a, b) => b.score - a.score || b.id - a.id)
+        .slice(0, 30);
+      if (!dead) setRows(scored);
     }, 250);
     return () => { dead = true; clearTimeout(t); };
-  }, [kw]);
+  }, [kw, post.text]);
 
-  const pick = async (id: number) => {
+  const pick = async (r: CampaignPick & { score: number }) => {
+    // 指錯團 = 底下的 +1 全部加到別團去，對不上的一定要再看一眼
+    if (r.score < WEAK_MATCH && !window.confirm(
+      `這則貼文看起來不像這一團，確定要指定嗎？\n\n貼文：${postTitle(post.text ?? "")}\n團　：${r.name}（${r.campaign_no}）\n\n` +
+      "指錯的話，這則貼文底下的留言會全部加到這一團。還沒開團的話，請先開團，系統會自己認。")) return;
     setBusy(true);
-    const { error } = await getSupabase().rpc("rpc_line_note_post_link", { p_id: post.id, p_campaign_id: id });
+    const { error } = await getSupabase().rpc("rpc_line_note_post_link", { p_id: post.id, p_campaign_id: r.id });
     setBusy(false);
     if (error) return fail(error);
     await onDone();
@@ -1905,10 +1916,11 @@ function LinkCampaignModal({ post, onClose, onDone, fail }: {
           <ul className="max-h-72 divide-y divide-zinc-200 overflow-auto rounded border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
             {rows.map((r) => (
               <li key={r.id}>
-                <button type="button" disabled={busy} onClick={() => void pick(r.id)}
+                <button type="button" disabled={busy} onClick={() => void pick(r)}
                   className="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left text-sm hover:bg-zinc-50 disabled:opacity-50 dark:hover:bg-zinc-800">
                   <span className="font-medium">{r.name}</span>
                   <span className="flex items-center gap-2 text-xs text-zinc-500">
+                    {r.score >= WEAK_MATCH && <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">跟貼文相符</span>}
                     <span className={`rounded px-1.5 py-0.5 ${campaignStatusBadge(r.status)}`}>{campaignStatusLabel(r.status)}</span>
                     <span className="font-mono">{r.campaign_no}</span>
                   </span>
