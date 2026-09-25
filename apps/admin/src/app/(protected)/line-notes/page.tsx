@@ -49,11 +49,12 @@ type Post = {
   group_buy_campaigns: { id: number; campaign_no: string; name: string; status: string } | null;
 };
 // 記事本（發文）跟聊天室（分享）是兩件事：開團就發到記事本，分享依社群的節奏。列上兩個都標。
-function shareBadge(p: Post) {
+function shareBadge(p: Post, eta?: string) {
   if (p.status !== "posted" && p.status !== "closed") return null;
   switch (p.share_state) {
     case "shared": return <Badge tone="green">已分享聊天 {fmt(p.shared_at)}</Badge>;
-    case "scheduled": case "sharing": return <Badge tone="amber">等分享（依節奏）</Badge>;
+    case "scheduled": case "sharing":
+      return <Badge tone="amber">{eta ? `預計 ${fmt(eta)} 分享` : "等分享（依節奏）"}</Badge>;
     case "failed": return <Badge tone="red">分享失敗</Badge>;
     case "skipped": return <Badge tone="gray">未分享（團已結束）</Badge>;
     default: return <Badge tone="gray">未分享</Badge>;
@@ -1323,6 +1324,7 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
   // 對列分頁會把同一團切成兩張卡掉在不同頁。所以先跟 v_line_note_post_groups
   // （20260921030000）要這一頁有哪幾組，再去抓那幾組的貼文本體。
   const [posts, setPosts] = useState<Post[] | null>(null);
+  const [shareEta, setShareEta] = useState<Map<number, string>>(new Map());
   const [keyOrder, setKeyOrder] = useState<Map<string, number>>(new Map());
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -1370,7 +1372,16 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
     if (communityId !== "") pq = pq.eq("community_id", communityId);
     const { data, error: pe } = await pq;
     if (pe) return fail(pe);
-    setPosts((data ?? []) as Post[]);
+    const loaded = (data ?? []) as Post[];
+    setPosts(loaded);
+    // 等分享的：問一下依節奏預計幾點分享（rpc_line_note_share_eta，估算值）
+    const waiting = loaded.filter((p) => p.share_state === "scheduled" || p.share_state === "sharing").map((p) => p.id);
+    if (waiting.length) {
+      const { data: etas } = await sb.rpc("rpc_line_note_share_eta", { p_post_ids: waiting });
+      setShareEta(new Map(((etas ?? []) as { post_id: number; eta: string }[]).map((e) => [Number(e.post_id), e.eta])));
+    } else {
+      setShareEta(new Map());
+    }
   }, [page, communityId, onlyOpen, qApplied, fail]);
 
   useEffect(() => { void load(); }, [load, tick]);
@@ -1624,7 +1635,7 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
                       <span className="min-w-0 flex-1 basis-full sm:basis-auto">
                         {!unlinked && <span className="font-medium text-zinc-800 dark:text-zinc-200">{communityName(p.community_id)}</span>}
                         {!unlinked && <Badge tone={p.status === "failed" ? "red" : p.status === "posted" ? "blue" : "gray"}>{p.status === "posted" ? "已發記事本" : POST_STATUS[p.status]}</Badge>}
-                        {!unlinked && shareBadge(p)}
+                        {!unlinked && shareBadge(p, shareEta.get(p.id))}
                         {/* 兩個 id 都寫出來：#id 是後台這一列，LINE 那串才是記事本上那一篇
                             —— 跟客服對答案時只有後者認得出是哪一篇貼文 */}
                         {!unlinked && <span className="ml-2 font-mono">#{p.id}</span>}
