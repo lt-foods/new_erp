@@ -27,7 +27,18 @@ export const HOME_KIND_LABEL: Record<string, string> = {
 
 // 留言裡有「+數字」「加1」「打1」＝看起來想下單。解析器不收的（「A, B+1」代碼沒寫數量、
 // 「白+1」「BE各+1」）落成 no_order，沒有這條就會被當聊天、沒人看到。DB 那支同一條 regex。
-const ORDERISH = /[+＋]\s*[0-9０-９]|[加打]\s*[0-9０-９一二三四五六七八九]/;
+const ORDERISH_SOURCE = "[+＋]\\s*[0-9０-９]|[加打]\\s*[0-9０-９一二三四五六七八九]";
+const ORDERISH = new RegExp(ORDERISH_SOURCE);
+
+/**
+ * isTodoComment 的 PostgREST 版（給 `.or(...)`），跟下面的 JS 判定、DB 的
+ * `_line_note_comment_is_todo(status, hint, text)` 三份同一條規則。
+ * 留言加單分頁的「待處理」要直接向 DB 只撈待處理的 —— 先撈最新 300 則再前端過濾，
+ * 選「全部社群」時待處理的會被別的社群自動加單成功的留言擠出 300 則外（2026-09-26）。
+ * 2026-09-26 對線上驗過：這條 or 的 count 跟 DB 函式算出來的一樣（383）。
+ */
+export const TODO_COMMENT_OR_FILTER =
+  `status.in.(pending,unmatched,error),and(status.eq.no_order,or(member_no_hint.not.is.null,text.match.${ORDERISH_SOURCE}))`;
 
 /**
  * 這則留言還要人看嗎？

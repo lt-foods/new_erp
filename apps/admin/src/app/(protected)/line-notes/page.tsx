@@ -15,7 +15,7 @@ import { OrderDetail } from "@/components/OrderDetail";
 import { OrderEntryView } from "@/components/OrderEntryView";
 import { LineNoteParseRulesTab } from "@/components/LineNoteParseRulesTab";
 import {
-  COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, commentStats, fmtNoteTime, isTodoComment, isUnreadableOrder,
+  COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, TODO_COMMENT_OR_FILTER, commentStats, fmtNoteTime, isTodoComment, isUnreadableOrder,
 } from "@/lib/lineNoteStatus";
 import { deleteLineNotePost } from "@/lib/lineNoteDelete";
 import { updateLineNotePost } from "@/lib/lineNoteUpdate";
@@ -1180,6 +1180,8 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
   // 不是撈 300 則再前端過濾 —— 大社群一天就能把 300 則吃光，小社群的留言會被擠掉。
   const [communityId, setCommunityId] = useState<number | "">("");
   const [rows, setRows] = useState<Row[] | null>(null);
+  // 分頁徽章的數字：rows 只裝目前分頁的留言，數字要另外 count（不受 300 則上限）
+  const [counts, setCounts] = useState<{ todo: number; ignored: number }>({ todo: 0, ignored: 0 });
   const [orders, setOrders] = useState<Map<number, OrderInfo>>(new Map());
   const communityOptions = useMemo(() =>
     [...communityById.values()].sort((a, b) => (a.home_name ?? a.home_id).localeCompare(b.home_name ?? b.home_id, "zh-Hant")),
@@ -1192,13 +1194,30 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
 
   const load = useCallback(async () => {
     const sb = getSupabase();
-    let q = sb.from("line_note_comments")
-      .select(`*,line_note_posts${communityId === "" ? "" : "!inner"}(community_id,campaign_id,group_buy_campaigns(id,name,campaign_no))`);
-    if (communityId !== "") q = q.eq("line_note_posts.community_id", communityId);
-    const { data, error } = await q.order("commented_at", { ascending: false }).limit(300);
-    if (error) return fail(error);
-    const list = (data ?? []) as Row[];
+    // 分頁篩選也下推到查詢：每個分頁各撈自己狀態的最新 300 則。
+    // 之前是先撈最新 300 則（不分狀態）再前端分頁 —— 全站一天幾百則自動加單成功的留言，
+    // 「全部社群」時把較舊的待處理全擠到 300 則外面，畫面寫「沒有要處理的留言 🎉」其實有 25 則。
+    const statusFilter = <T extends { or: (f: string) => T; in: (c: string, v: string[]) => T }>(q: T, f: Filter): T =>
+      f === "todo" ? q.or(TODO_COMMENT_OR_FILTER)
+      : f === "ordered" ? q.in("status", ["ordered", "duplicate"])
+      : f === "ignored" ? q.in("status", ["ignored", "resolved"])
+      : q;
+    const base = (f: Filter, head: boolean) => {
+      let q = sb.from("line_note_comments")
+        .select(`*,line_note_posts${communityId === "" ? "" : "!inner"}(community_id,campaign_id,group_buy_campaigns(id,name,campaign_no))`,
+          head ? { count: "exact", head: true } : undefined);
+      if (communityId !== "") q = q.eq("line_note_posts.community_id", communityId);
+      return statusFilter(q, f);
+    };
+    const [main, todoRes, ignRes] = await Promise.all([
+      base(filter, false).order("commented_at", { ascending: false }).limit(300),
+      base("todo", true),
+      base("ignored", true),
+    ]);
+    if (main.error) return fail(main.error);
+    const list = (main.data ?? []) as Row[];
     setRows(list);
+    setCounts({ todo: todoRes.count ?? 0, ignored: ignRes.count ?? 0 });
     // 有加到單的 → 查訂單號與取貨店
     const ids = [...new Set(list.map((c) => c.customer_order_id).filter((x): x is number => !!x))];
     if (ids.length === 0) { setOrders(new Map()); return; }
@@ -1210,19 +1229,18 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
       m.set(o.id, { id: o.id, order_no: o.order_no, store_name: st?.name ?? null });
     }
     setOrders(m);
-  }, [fail, communityId]);
+  }, [fail, communityId, filter]);
   useEffect(() => { void load(); }, [load]);
   const { busy, retry, setStatus } = useCommentActions(load, notify, fail);
 
+  // 查詢已經照分頁濾過了；待處理再用 isTodo 對一次（member_no_hint 空字串那種 DB 側放行、JS 不算）
   const shown = useMemo(() => {
     if (!rows) return null;
     if (filter === "todo") return rows.filter(isTodo);
-    if (filter === "ordered") return rows.filter((c) => c.status === "ordered" || c.status === "duplicate");
-    if (filter === "ignored") return rows.filter((c) => c.status === "ignored" || c.status === "resolved");
     return rows;
   }, [rows, filter]);
-  const todoCount = rows?.filter(isTodo).length ?? 0;
-  const ignoredCount = rows?.filter((c) => c.status === "ignored" || c.status === "resolved").length ?? 0;
+  const todoCount = counts.todo;
+  const ignoredCount = counts.ignored;
 
   // 團欄：認得出團就做成按鈕，點了在這頁開加單彈窗
   const campaignCell = (c: Row) => {
@@ -1248,7 +1266,7 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
           {([["todo", `待處理 ${todoCount}`], ["ordered", "已加單"], ["ignored", `忽略 ${ignoredCount}`], ["all", "全部"]] as const).map(([k, l]) => (
-            <button key={k} type="button" onClick={() => setFilter(k)}
+            <button key={k} type="button" onClick={() => { if (k !== filter) setRows(null); setFilter(k); }}
               className={`rounded-md px-3 py-1 text-sm ${filter === k ? "bg-white shadow dark:bg-zinc-900" : "text-zinc-600 dark:text-zinc-300"}`}>
               {l}
             </button>
