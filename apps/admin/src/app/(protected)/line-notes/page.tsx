@@ -209,10 +209,10 @@ export default function LineNotesPage() {
                 到設定的讀取時間自動跑（Supabase 排程），不用另外開程式。</>}
           </p>
         </div>
-        <nav className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
+        <nav className="flex max-w-full gap-1 overflow-x-auto rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
           {tabs.map(([k, l]) => (
             <button key={k} type="button" onClick={() => setTab(k)}
-              className={`rounded-md px-3 py-1 text-sm ${shownTab === k ? "bg-white shadow dark:bg-zinc-900" : "text-zinc-600 dark:text-zinc-300"}`}>
+              className={`shrink-0 whitespace-nowrap rounded-md px-3 py-1 text-sm ${shownTab === k ? "bg-white shadow dark:bg-zinc-900" : "text-zinc-600 dark:text-zinc-300"}`}>
               {l}
             </button>
           ))}
@@ -1179,6 +1179,7 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
   }, [rows, filter]);
   const todoCount = counts.todo;
   const ignoredCount = counts.ignored;
+  const emptyText = filter === "todo" ? (communityId === "" ? "沒有要處理的留言 🎉" : "這個社群沒有要處理的留言 🎉") : "沒有留言";
 
   // 已經在 LINE 那則留言上按過笑臉的標一下，沒按到的看得出來
   const reacted = (c: Comment) =>
@@ -1262,7 +1263,7 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
         <div className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
           {([["todo", `待處理 ${todoCount}`], ["ordered", "已加單"], ["ignored", `忽略 ${ignoredCount}`], ["all", "全部"]] as const).map(([k, l]) => (
             <button key={k} type="button" onClick={() => { if (k !== filter) setRows(null); setFilter(k); }}
-              className={`rounded-md px-3 py-1 text-sm ${filter === k ? "bg-white shadow dark:bg-zinc-900" : "text-zinc-600 dark:text-zinc-300"}`}>
+              className={`whitespace-nowrap rounded-md px-3 py-1 text-sm ${filter === k ? "bg-white shadow dark:bg-zinc-900" : "text-zinc-600 dark:text-zinc-300"}`}>
               {l}
             </button>
           ))}
@@ -1275,15 +1276,40 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
               <option key={c.id} value={c.id}>{c.home_name || c.home_id}</option>
             ))}
           </select>
-          <button type="button" className={btn} onClick={() => void load()}>重新整理</button>
+          <button type="button" className={`${btn} whitespace-nowrap`} onClick={() => void load()}>重新整理</button>
         </div>
       </div>
 
+      {/* 手機：一則留言一張卡（Alex 2026-09-26：六欄表格在手機上只剩「結果」欄跟按鈕看得到，
+          留言內容、留言者全被擠出畫面）。桌機維持表格。 */}
+      <div className="space-y-2 md:hidden">
+        {shown === null ? (
+          <div className="rounded-lg border border-zinc-200 bg-white p-4 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">載入中…</div>
+        ) : shown.length === 0 ? (
+          <div className="rounded-lg border border-zinc-200 bg-white p-4 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">{emptyText}</div>
+        ) : shown.map((c) => (
+          <div key={c.id} className={`rounded-lg border p-3 ${isTodo(c) ? "border-amber-200 bg-amber-50/60 dark:border-amber-900 dark:bg-amber-950/20" : "border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900"}`}>
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="truncate font-medium">{c.commenter_name ?? "—"}</span>
+              <span className="shrink-0 text-xs text-zinc-500">{fmt(c.commented_at)}</span>
+            </div>
+            <div className="mt-1 whitespace-pre-wrap break-words text-base">{c.text}</div>
+            <div className="mt-1 text-sm">
+              {campaignCell(c)}
+              <div className="truncate text-xs text-zinc-500">{communityById.get(c.line_note_posts?.community_id ?? -1)?.home_name ?? ""}</div>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">{result(c)}</div>
+            {!readOnly && <div className="mt-2 [&>div]:flex-wrap [&>div]:justify-start">{actions(c)}</div>}
+          </div>
+        ))}
+      </div>
+
+      <div className="hidden md:block">
       <Table>
         <THead><Th>時間</Th><Th>留言者</Th><Th>留言</Th><Th>團</Th><Th>結果</Th><Th align="right"></Th></THead>
         <TBody>
           {shown === null ? <LoadingRow colSpan={6} /> : shown.length === 0 ? (
-            <EmptyRow colSpan={6}>{filter === "todo" ? (communityId === "" ? "沒有要處理的留言 🎉" : "這個社群沒有要處理的留言 🎉") : "沒有留言"}</EmptyRow>
+            <EmptyRow colSpan={6}>{emptyText}</EmptyRow>
           ) : shown.map((c) => (
             <Tr key={c.id} className={isTodo(c) ? "bg-amber-50/60 dark:bg-amber-950/20" : ""}>
               <Td className="whitespace-nowrap text-sm text-zinc-500">{fmt(c.commented_at)}</Td>
@@ -1299,6 +1325,7 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
           ))}
         </TBody>
       </Table>
+      </div>
       {assignFor && (
         <AssignMemberModal
           comment={assignFor}
