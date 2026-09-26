@@ -104,6 +104,8 @@ function kickWorker(body: Record<string, unknown> = { action: "run" }) {
 }
 
 const btn = "rounded border border-zinc-300 px-2.5 py-1 text-sm hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800";
+// 卡片內每個社群那一列的小按鈕：一列三顆，正常尺寸在手機上會撐成整排
+const btnSm = "rounded border border-zinc-300 px-2 py-0.5 text-xs hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800";
 const btnPrimary = "rounded bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900";
 const input = "w-full rounded border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900";
 // 同 input，但寬度自己給（發文時段那幾個小欄位）
@@ -1653,46 +1655,54 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
                   </div>
                 </button>
 
-                {/* 每個社群一列：發文／讀取時間、這個群的統計、動作按鈕都跟著那一篇貼文走 */}
+                {/* 每個社群一列：發文／讀取時間、這個群的統計、動作按鈕都跟著那一篇貼文走。
+                    第一行＝社群名＋狀態徽章，第二行＝時間與編號（淡字），按鈕縮小靠右；
+                    「已發記事本」是常態、不再每列重複標，只有排程／失敗／已結束才亮徽章。 */}
                 <ul className="divide-y divide-zinc-100 border-t border-zinc-100 dark:divide-zinc-800 dark:border-zinc-800">
                   {g.posts.map((p) => (
-                    <li key={p.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 text-xs text-zinc-500">
-                      <span className="min-w-0 flex-1 basis-full sm:basis-auto">
-                        {!unlinked && <span className="font-medium text-zinc-800 dark:text-zinc-200">{communityName(p.community_id)}</span>}
-                        {!unlinked && <Badge tone={p.status === "failed" ? "red" : p.status === "posted" ? "blue" : "gray"}>{p.status === "posted" ? "已發記事本" : POST_STATUS[p.status]}</Badge>}
-                        {!unlinked && shareBadge(p, shareEta.get(p.id))}
+                    <li key={p.id} className="flex flex-col gap-1.5 px-3 py-2 sm:flex-row sm:items-start sm:gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                          {!unlinked && <span className="font-medium leading-snug text-zinc-800 dark:text-zinc-200">{communityName(p.community_id)}</span>}
+                          {!unlinked && p.status !== "posted" && (
+                            <Badge tone={p.status === "failed" ? "red" : "gray"}>{POST_STATUS[p.status]}</Badge>
+                          )}
+                          {!unlinked && shareBadge(p, shareEta.get(p.id))}
+                          {multi && statBadges(counts.get(p.id), true)}
+                        </div>
                         {/* 兩個 id 都寫出來：#id 是後台這一列，LINE 那串才是記事本上那一篇
                             —— 跟客服對答案時只有後者認得出是哪一篇貼文 */}
-                        {!unlinked && <span className="ml-2 font-mono">#{p.id}</span>}
-                        {!unlinked && p.line_post_id && <span className="ml-2 font-mono" title="LINE 記事本的貼文 id">LINE {p.line_post_id}</span>}
-                        {!unlinked && <span className="ml-2">發文 {fmt(p.posted_at)}</span>}
-                        {p.last_read_at && <span className="ml-2">讀取 {fmt(p.last_read_at)}</span>}
-                        {multi && <span className="ml-2">{statBadges(counts.get(p.id), true)}</span>}
-                        {p.closed_reason && <div className="text-zinc-500">讀到結單留言：{p.closed_reason}</div>}
-                        {p.last_error && <div className="text-red-600">{p.last_error}</div>}
-                      </span>
-                      {(!readOnly || canLink) && <span className="flex flex-wrap gap-1.5">
+                        <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] tabular-nums text-zinc-400">
+                          {!unlinked && <span>發文 {fmt(p.posted_at)}</span>}
+                          {p.last_read_at && <span>讀取 {fmt(p.last_read_at)}</span>}
+                          {!unlinked && <span className="font-mono">#{p.id}</span>}
+                          {!unlinked && p.line_post_id && <span className="font-mono" title="LINE 記事本的貼文 id">LINE {p.line_post_id}</span>}
+                        </div>
+                        {p.closed_reason && <div className="mt-0.5 text-xs text-zinc-500">讀到結單留言：{p.closed_reason}</div>}
+                        {p.last_error && <div className="mt-0.5 text-xs text-red-600">{p.last_error}</div>}
+                      </div>
+                      {(!readOnly || canLink) && <div className="flex shrink-0 flex-wrap gap-1">
                         {unlinked && canLink && (
                           <button type="button" className={btnPrimary} onClick={() => setLinkFor(p)}>指定團</button>
                         )}
                         {!readOnly && p.status === "posted" && (
-                          <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void readNow(p)}>立即讀取</SpinButton>
+                          <SpinButton type="button" className={btnSm} loading={busy === p.id} onClick={() => void readNow(p)}>立即讀取</SpinButton>
                         )}
                         {!readOnly && !unlinked && p.line_post_id && (p.status === "posted" || p.status === "closed") && (
-                          <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void refreshPost(p)}
+                          <SpinButton type="button" className={btnSm} loading={busy === p.id} onClick={() => void refreshPost(p)}
                             title="開團的品項 / 價格改了之後，把 LINE 上那篇改成現在的內容">更新貼文</SpinButton>
                         )}
                         {!readOnly && p.status === "closed" && p.closed_comment_id && (
-                          <SpinButton type="button" className={btn} loading={busy === p.id} onClick={() => void reopenPost(p)}>恢復讀取</SpinButton>
+                          <SpinButton type="button" className={btnSm} loading={busy === p.id} onClick={() => void reopenPost(p)}>恢復讀取</SpinButton>
                         )}
                         {!readOnly && (
-                          <SpinButton type="button" className={`${btn} text-red-600`} loading={busy === p.id}
+                          <SpinButton type="button" className={`${btnSm} text-red-600`} loading={busy === p.id}
                             onClick={() => void removePost(p)}
                             title={p.line_post_id ? "連 LINE 記事本上那篇一起刪掉" : "只清後台紀錄（這篇沒發到 LINE）"}>
                             {p.line_post_id ? "刪除貼文" : "刪除紀錄"}
                           </SpinButton>
                         )}
-                      </span>}
+                      </div>}
                     </li>
                   ))}
                 </ul>
