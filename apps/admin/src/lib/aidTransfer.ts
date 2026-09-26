@@ -84,7 +84,7 @@ export function aidRouteLabel(isAir: boolean): string {
   return isAir ? "✈ 空中轉直送" : "🏬 經總倉";
 }
 
-// 轉出店視角的階段文字。收貨店收掉（ready）之後轉出店就沒事了，但記錄還是要看得懂。
+// 共用的轉貨階段文字。收貨完成後，各種畫面都只需知道這筆轉貨已結束。
 export function aidStageLabel(status: string, isAir: boolean): string {
   switch (status) {
     case "pending":
@@ -96,11 +96,9 @@ export function aidStageLabel(status: string, isAir: boolean): string {
     case "shipping":
       return isAir ? "已出貨・待收貨店簽收" : "總倉已派送・待收貨店簽收";
     case "ready":
-      return "收貨店已簽收";
     case "partially_completed":
-      return "收貨店已部分取貨";
     case "completed":
-      return "收貨店已取貨完成";
+      return "收貨完成・這筆轉貨已結束";
     case "cancelled":
       return "已取消";
     case "expired":

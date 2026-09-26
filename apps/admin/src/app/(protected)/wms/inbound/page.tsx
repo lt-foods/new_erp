@@ -481,6 +481,9 @@ export default function TransfersInboxPage() {
                 .in("transfer_id", transferIds)
                 .order("id"),
           );
+          const receivedTransferIds = new Set(
+            rows.filter((t) => t.status === "received").map((t) => t.id),
+          );
           const skuIds = Array.from(new Set(items.map((it) => it.sku_id)));
           const skuNameMap = new Map<number, string>();
           // 群組標題只用商品名（同商品的多個規格會被去重成一筆），規格留給展開的明細
@@ -520,8 +523,10 @@ export default function TransfersInboxPage() {
             const qty = Number(it.qty_shipped);
             const receivedQty = Number(it.qty_received);
             cur.totalQty += qty;
-            cur.receiveOverQty += Math.max(0, receivedQty - qty);
-            cur.receiveShortQty += Math.max(0, qty - receivedQty);
+            if (receivedTransferIds.has(it.transfer_id)) {
+              cur.receiveOverQty += Math.max(0, receivedQty - qty);
+              cur.receiveShortQty += Math.max(0, qty - receivedQty);
+            }
             const desc = it.description?.trim();
             const name = desc || (skuNameMap.get(it.sku_id) ?? `#${it.sku_id}`);
             cur.names.push(`${name} × ${qty}`);
@@ -2038,7 +2043,7 @@ export default function TransfersInboxPage() {
                   {g.backorderQty > 0 && <Pill tone="amber">⏳ 待補貨 {g.backorderQty} 件</Pill>}
                   {g.coveredQty > 0 && <Pill tone="violet">🏬 現貨減抵 {g.coveredQty} 件</Pill>}
                   {g.prefilledQty > 0 && (
-                    <Pill tone="violet">🔄 補回先墊 {g.prefilledQty} 件</Pill>
+                    <Pill tone="violet">🔄 {g.prefilledQty} 件補回店內庫存・不用留給客人</Pill>
                   )}
                   {g.extraQty > 0 && <Pill tone="blue">🎁 總倉多給 {g.extraQty} 件</Pill>}
                   {g.receiveOverQty > 0 && <Pill tone="blue">＋ 實收多 {g.receiveOverQty} 件</Pill>}
@@ -2328,9 +2333,12 @@ export default function TransfersInboxPage() {
                               {summary && summary.prefilledQty > 0 && (
                                 <div
                                   className="text-[10px] font-medium text-violet-600 dark:text-violet-400"
-                                  title="這幾件的客人早就用店內現貨交過了（減抵單 / 現貨直售），這批到貨是把店家先墊的貨補回架上 — 收貨後放回庫存即可，不會有人來領"
+                                  title="客人已先拿到，這批是補回店內庫存；收貨後直接放回店裡，不用再留貨。"
                                 >
-                                  🔄 補回先墊 {summary.prefilledQty}
+                                  <div>🔄 {summary.prefilledQty} 件補回店內庫存</div>
+                                  <div className="mt-0.5 max-w-56 whitespace-normal font-normal leading-tight">
+                                    客人已先拿到，收貨後直接放回店裡，不用再留貨
+                                  </div>
                                 </div>
                               )}
                               {summary && summary.coveredQty > 0 && (
