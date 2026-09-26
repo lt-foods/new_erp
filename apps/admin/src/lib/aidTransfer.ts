@@ -96,11 +96,9 @@ export function aidStageLabel(status: string, isAir: boolean): string {
     case "shipping":
       return isAir ? "已出貨・待收貨店簽收" : "總倉已派送・待收貨店簽收";
     case "ready":
-      return "收貨店已簽收";
     case "partially_completed":
-      return "收貨店已部分取貨";
     case "completed":
-      return "收貨店已取貨完成";
+      return "對方店已收貨・轉貨完成";
     case "cancelled":
       return "已取消";
     case "expired":
