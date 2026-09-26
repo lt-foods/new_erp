@@ -340,15 +340,21 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
       }
       const message = e instanceof Error ? e.message : String(e);
       const soldOut = message.includes("sold out");
-      // 售完是熱團的正常結果不記；其餘下單失敗會員只看得到 alert，一定要留 log
+      // 店家在後台把會員設為停權（members.status='blocked'），RPC 回 'member blocked'
+      const blocked = message.includes("member blocked");
+      // 售完是熱團的正常結果不記；停權是店家刻意設定也不記；其餘下單失敗會員只看得到 alert，一定要留 log
       // （2026-08-14 線上 RPC 沒部署、全 APP 下單掛掉，client_error_logs 一筆都沒有）。
-      if (!soldOut) {
+      if (!soldOut && !blocked) {
         logCaught("place_member_order_failed", e, {
           campaign_id: id,
           items: ordered.length,
         });
       }
-      const friendly = soldOut ? "已售完或數量不足，請重新整理後再選。" : message;
+      const friendly = soldOut
+        ? "已售完或數量不足，請重新整理後再選。"
+        : blocked
+          ? "您的帳號目前暫停下單，如有疑問請洽取貨門市。"
+          : message;
       alert(`下單失敗：${friendly}`);
     } finally {
       setSubmitting(false);
