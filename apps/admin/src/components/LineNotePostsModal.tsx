@@ -25,7 +25,7 @@ import { translateRpcError } from "@/lib/rpcError";
 import { withBasePath } from "@/lib/basePath";
 import { deleteLineNotePost } from "@/lib/lineNoteDelete";
 import { updateLineNotePost } from "@/lib/lineNoteUpdate";
-import { recallLineNoteShare, shareLineNotePost } from "@/lib/lineNoteShare";
+import { recallLineNotePost, recallLineNoteShare, shareLineNotePost } from "@/lib/lineNoteShare";
 import { canOperateLineNotes, useRole } from "@/lib/role";
 import {
   COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, commentStats, fmtNoteTime, isTodoComment,
@@ -270,6 +270,17 @@ export default function LineNotePostsModal({
     notify(r.message);
     await load(true);
   };
+  const recallPost = async (t: Target) => {
+    if (!t.post_id) return;
+    setBusy(t.community_id);
+    const r = await recallLineNotePost({ id: t.post_id, line_post_id: t.line_post_id, label: `${campaignName ?? ""}｜${t.home_name || t.home_id}` });
+    setBusy(null);
+    if (r.kind === "cancelled") return;
+    if (r.kind === "failed") return fail(new Error(r.error));
+    if (openPost === t.post_id) setOpenPost(null);
+    notify(r.message);
+    await load(true);
+  };
   const removePost = async (t: Target) => {
     if (!t.post_id) return;
     setBusy(t.community_id);
@@ -352,6 +363,7 @@ export default function LineNotePostsModal({
                               {t.post_id != null && (
                                 t.post_status === "failed" ? <Badge tone="red">發文失敗</Badge>
                                 : t.post_status === "queued" ? <Badge tone="amber">排隊中</Badge>
+                                : t.post_status === "recalled" ? <Badge tone="gray">已回收（可重發）</Badge>
                                 : <Badge tone="green">已發</Badge>
                               )}
                               {t.account_status !== "active" && <Badge tone="red">帳號未登入</Badge>}
@@ -515,6 +527,10 @@ export default function LineNotePostsModal({
                           <a className={`${btn} ml-auto`} href={withBasePath("/line-notes")} target="_blank" rel="noreferrer">
                             到記事本頁處理留言
                           </a>
+                          {t.line_post_id && (t.post_status === "posted" || t.post_status === "closed") && (
+                            <SpinButton className={btn} loading={busy === t.community_id} onClick={() => void recallPost(t)}
+                              title="從 LINE 記事本刪掉這篇（分享卡片一起收回），後台紀錄留著，可以重新發">回收貼文</SpinButton>
+                          )}
                           <SpinButton className={`${btn} text-red-600`} loading={busy === t.community_id}
                             onClick={() => void removePost(t)}
                             title={t.line_post_id ? "連 LINE 記事本上那篇一起刪掉，刪完可以重發" : "只清後台紀錄（這篇沒發到 LINE）"}>

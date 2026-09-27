@@ -19,7 +19,7 @@ import {
 } from "@/lib/lineNoteStatus";
 import { deleteLineNotePost } from "@/lib/lineNoteDelete";
 import { updateLineNotePost } from "@/lib/lineNoteUpdate";
-import { recallLineNoteShare, shareLineNotePost } from "@/lib/lineNoteShare";
+import { recallLineNotePost, recallLineNoteShare, shareLineNotePost } from "@/lib/lineNoteShare";
 import { canOperateLineNotes, useRole } from "@/lib/role";
 import { useHasStaffPerm } from "@/lib/staffPerms";
 import { campaignMatchScore, postTitle, WEAK_MATCH } from "@/lib/lineNoteCampaignMatch";
@@ -1628,6 +1628,15 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
     notify(r.message);
     await reload();
   };
+  const recallPost = async (p: Post) => {
+    setBusy(p.id);
+    const r = await recallLineNotePost({ id: p.id, line_post_id: p.line_post_id, label: p.group_buy_campaigns?.name ?? postFirstLine(p.text) });
+    setBusy(null);
+    if (r.kind === "cancelled") return;
+    if (r.kind === "failed") return fail(new Error(r.error));
+    notify(r.message);
+    await reload();
+  };
   const removePost = async (p: Post) => {
     setBusy(p.id);
     const r = await deleteLineNotePost({
@@ -1718,6 +1727,10 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
       )}
       {!readOnly && p.status === "closed" && p.closed_comment_id && (
         <SpinButton type="button" className={btnSm} loading={busy === p.id} onClick={() => void reopenPost(p)}>恢復讀取</SpinButton>
+      )}
+      {!readOnly && !unlinked && p.line_post_id && (p.status === "posted" || p.status === "closed") && (
+        <SpinButton type="button" className={btnSm} loading={busy === p.id} onClick={() => void recallPost(p)}
+          title="從 LINE 記事本刪掉這篇（分享卡片一起收回），後台紀錄留著，可以重新發">回收貼文</SpinButton>
       )}
       {!readOnly && (
         <SpinButton type="button" className={`${btnSm} text-red-600`} loading={busy === p.id}

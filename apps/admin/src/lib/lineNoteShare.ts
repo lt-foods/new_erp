@@ -14,7 +14,7 @@ export type ShareOutcome =
   | { kind: "done"; message: string }
   | { kind: "failed"; error: string };
 
-async function callWorker(action: "share_post" | "unshare_post", postId: number) {
+async function callWorker(action: "share_post" | "unshare_post" | "recall_post", postId: number) {
   const { data, error } = await getSupabase().functions
     .invoke("line-note-worker", { body: { action, post_id: postId } });
   const res = (data ?? {}) as { ok?: boolean; error?: string; unsent?: number; failed?: number };
@@ -41,4 +41,18 @@ export async function recallLineNoteShare(post: LineNotePostRef): Promise<ShareO
   if (!r.ok) return { kind: "failed", error: r.error };
   const n = r.res.unsent ?? 0, f = r.res.failed ?? 0;
   return { kind: "done", message: f ? `收回 ${n} 則、${f} 則收不回（LINE 不讓小幫手收回）` : `已收回分享（${n} 則）` };
+}
+
+/** 回收貼文：LINE 上那篇刪掉、分享卡片收回，後台紀錄留著（留言、已加的單都在），這個社群可以再發一次。 */
+export async function recallLineNotePost(post: LineNotePostRef): Promise<ShareOutcome> {
+  if (!post.line_post_id) return { kind: "failed", error: "這篇還沒發到 LINE，沒有東西可以回收" };
+  if (!window.confirm(
+    `回收「${post.label}」這篇貼文？\n\n` +
+    `會從 LINE 記事本把這篇**刪掉**（分享到聊天室的卡片也一起收回），社群成員就看不到了。\n` +
+    `後台的貼文、留言紀錄與已經加出來的訂單都留著；回收之後這個社群可以重新發一次。\n\n` +
+    `（要連後台紀錄一起清掉請用「刪除貼文」。）`)) return { kind: "cancelled" };
+  const r = await callWorker("recall_post", post.id);
+  if (!r.ok) return { kind: "failed", error: r.error };
+  const f = r.res.failed ?? 0;
+  return { kind: "done", message: f ? `已回收貼文；${f} 則分享卡片收不回` : "已回收貼文，這個社群可以重新發一次" };
 }

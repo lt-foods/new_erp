@@ -458,6 +458,51 @@ async function unsharePost(postId: number, callerTenant: string | null) {
   }
 }
 
+// 回收貼文：LINE 上那篇刪掉、分享卡片收回，但後台紀錄**留著**（status='recalled'、line_post_id 清空），
+// 留言與已加的單都還在，這個社群可以直接再發一次（同一列會被 rpc_line_note_queue_post(s) 覆寫成 queued）。
+// 跟「刪除貼文」的差別就是不清紀錄。老闆 9/27：「發出也要可以回收」。
+// 順序同 deletePost：LINE 先刪、成功才改紀錄。子群那幾列的 line_post_id 是母社群這篇 → 一起收回分享、標回收。
+async function recallPost(postId: number, callerTenant: string | null) {
+  const rows = await rest(
+    `line_note_posts?id=eq.${postId}` +
+    `&select=id,tenant_id,line_post_id,share_message_ids,line_note_communities(home_id,account_id,share_from_community_id)`);
+  const post = rows?.[0];
+  if (!post) return { ok: false, error: "找不到這篇貼文" };
+  if (callerTenant && post.tenant_id !== callerTenant) return { ok: false, error: "這篇貼文不屬於你的帳戶" };
+  if (!post.line_post_id) return { ok: false, error: "這篇沒有發到 LINE（沒有貼文 id），沒有東西可以回收" };
+  if (post.line_note_communities.share_from_community_id) return { ok: false, error: "這是子群的分享列，記事本貼文在母社群那一列；要收回子群的卡片請按「回收分享」" };
+
+  let unsent = 0, unsendFailed = 0, subRows = 0;
+  try {
+    const client = await clientFor(await loadAccount(post.line_note_communities.account_id));
+    const r = await recallShares(client, post.share_message_ids);
+    unsent += r.unsent; unsendFailed += r.failed;
+    // 子群列：同一篇的分享卡片一起收
+    const subs = (await rest(`line_note_posts?line_post_id=eq.${encodeURIComponent(post.line_post_id)}&id=neq.${postId}&select=id,share_message_ids`)) ?? [];
+    for (const sub of subs) {
+      const rs = await recallShares(client, sub.share_message_ids);
+      unsent += rs.unsent; unsendFailed += rs.failed;
+      await patch("line_note_posts", `id=eq.${sub.id}`, {
+        status: "recalled", line_post_id: null, share_state: "none", shared_at: null, share_message_ids: rs.remaining,
+        last_error: rs.failed ? `回收：${rs.failed} 則分享卡片收不回`.slice(0, 1000) : null,
+      }).catch(() => {});
+      subRows++;
+    }
+    await deleteNotePost(client, post.line_note_communities.home_id, post.line_post_id, { verbose: VERBOSE });
+  } catch (e) {
+    const msg = String((e as any)?.message ?? e);
+    await patch("line_note_posts", `id=eq.${postId}`, { last_error: msg.slice(0, 1000) }).catch(() => {});
+    return { ok: false, error: msg };
+  }
+  await rest(`line_note_jobs?post_id=eq.${postId}&status=in.(queued,running)`, { method: "DELETE", prefer: "return=minimal" }).catch(() => {});
+  await patch("line_note_posts", `id=eq.${postId}`, {
+    status: "recalled", line_post_id: null, share_state: "none", shared_at: null, share_message_ids: [],
+    last_error: unsendFailed ? `已回收（LINE 貼文 ${post.line_post_id} 已刪除）；${unsendFailed} 則分享卡片收不回`.slice(0, 1000) : null,
+  });
+  log(`↩ 貼文 ${postId}（LINE ${post.line_post_id}）已回收：記事本刪除、收回分享 ${unsent} 則${unsendFailed ? `、失敗 ${unsendFailed} 則` : ""}${subRows ? `、子群列 ${subRows}` : ""}`);
+  return { ok: true, linePostId: post.line_post_id, unsent, unsendFailed, subRows };
+}
+
 // 品項 / 金額改了，把 LINE 上那篇改成現在的內容（文字重算、圖片重傳）。
 // 後台直接呼叫、當場回結果（跟 deletePost 一樣不排 job）：改錯要馬上知道。
 // 只動貼文本體，line_post_id 不變，底下的留言、已加的單都不受影響。
@@ -1358,6 +1403,13 @@ Deno.serve(async (req) => {
       const postId = Number(body.post_id);
       if (!postId) return json({ error: "post_id required" }, 400);
       return json(await sharePost(postId, callerTenant, body));
+    }
+    // 回收貼文：LINE 上那篇刪掉、分享收回，後台紀錄留著（可以再發）
+    if (action === "recall_post") {
+      if (caller !== "admin") return json({ error: "回收貼文只能從後台按" }, 403);
+      const postId = Number(body.post_id);
+      if (!postId) return json({ error: "post_id required" }, 400);
+      return json(await recallPost(postId, callerTenant));
     }
     // 收回聊天室的分享卡片（記事本貼文留著）
     if (action === "unshare_post") {
