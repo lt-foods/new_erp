@@ -329,9 +329,9 @@ async function jobPost(job: any) {
 }
 
 // 記事本上有沒有「已經是這一團」的貼文（小幫手手貼的）。
-// 只看最近 14 天被動過的貼文；比對走 discoverPosts 那一套兩池規則（先開團中／已收單，
+// 只看最近 7 天被動過的貼文（老闆 9/27：7 天就好）；比對走 discoverPosts 那一套兩池規則（先開團中／已收單，
 // 再已結單），命中的團要剛好是這一列的團才算。已經認給別團／別列的貼文跳過。
-const DUP_SCAN_DAYS = 14;
+const DUP_SCAN_DAYS = 7;
 async function findExistingCampaignPost(client: any, homeId: string, row: any): Promise<any | null> {
   if (!row?.campaign_id || !row?.tenant_id) return null;
   const cand = await loadCandidates(row.tenant_id);
