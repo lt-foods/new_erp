@@ -1150,8 +1150,9 @@ async function jobClose(job: any) {
   const p = rows?.[0];
   if (!p) throw new Error(`post ${job.post_id} not found`);
   if (p.close_notified_at) return { skipped: "already notified" };
-  // 團不是開團中（被改成草稿等）就不留言；下次再排
-  if (p.group_buy_campaigns?.status !== "open") return { skipped: `campaign ${p.group_buy_campaigns?.status}` };
+  // 團被改成草稿／取消就不留言；開團中（客人收單到）、已結束（手動關團，20260927040000）都留
+  if (["draft", "cancelled"].includes(String(p.group_buy_campaigns?.status))) return { skipped: `campaign ${p.group_buy_campaigns?.status}` };
+  const manual = job?.payload?.trigger === "manual_close";
   if (!p.line_post_id) return { skipped: "no_line_post_id" };
   const client = await clientFor(await loadAccount(p.line_note_communities.account_id));
   const post = { ...p, home_id: p.line_note_communities.home_id };
@@ -1180,7 +1181,8 @@ async function jobClose(job: any) {
   const now = new Date().toISOString();
   await patch("line_note_posts", `id=eq.${p.id}`, {
     close_notified_at: now, last_error: null,
-    ...(p.status === "posted" ? { status: "closed", closed_at: now, closed_reason: "客人收單時間到，系統已留言結單" } : {}),
+    ...(p.status === "posted"
+      ? { status: "closed", closed_at: now, closed_reason: manual ? "團已手動關閉，系統已留言結單" : "客人收單時間到，系統已留言結單" } : {}),
   });
   log(`⏰ 貼文 ${p.id}（${p.group_buy_campaigns?.name ?? ""}）已留言結單`);
   return { closed: true, comment: text.slice(0, 60), read };
