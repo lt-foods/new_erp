@@ -45,7 +45,7 @@ type Community = {
 };
 type Post = {
   id: number; community_id: number; campaign_id: number | null; line_post_id: string | null; text: string | null;
-  status: "scheduled" | "queued" | "posted" | "failed" | "closed" | "unlinked"; posted_at: string | null; last_read_at: string | null;
+  status: "scheduled" | "queued" | "posted" | "failed" | "closed" | "unlinked" | "recalled"; posted_at: string | null; last_read_at: string | null;
   comment_count: number; last_error: string | null; created_at: string;
   closed_at: string | null; closed_reason: string | null; closed_comment_id: number | null;
   share_state: "none" | "scheduled" | "sharing" | "shared" | "failed" | "skipped"; shared_at: string | null;
@@ -1628,6 +1628,18 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
     notify(r.message);
     await reload();
   };
+  // 已回收的再發一次：rpc_line_note_queue_post 的 ON CONFLICT 會把同一列覆寫成 queued
+  // （留言、已加的單都留在這列上），worker 發完會填新的 line_post_id。老闆 9/27：「回收也要可以再發」。
+  const repostPost = async (p: Post) => {
+    if (!p.campaign_id) return;
+    setBusy(p.id);
+    const { error } = await getSupabase().rpc("rpc_line_note_queue_post", { p_community_id: p.community_id, p_campaign_id: p.campaign_id });
+    setBusy(null);
+    if (error) return fail(error);
+    kickWorker();
+    notify("已重新排入發文，幾秒後這一列會變成已發文");
+    await reload();
+  };
   const recallPost = async (p: Post) => {
     setBusy(p.id);
     const r = await recallLineNotePost({ id: p.id, line_post_id: p.line_post_id, label: p.group_buy_campaigns?.name ?? postFirstLine(p.text) });
@@ -1724,6 +1736,10 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
               title="只收回聊天室裡的分享卡片，記事本貼文不動">回收分享</SpinButton>
           : <SpinButton type="button" className={btnSm} loading={busy === p.id} onClick={() => void sharePost(p)}
               title="用 LINE 的「分享貼文」卡片貼到這個社群的聊天室">分享到聊天室</SpinButton>
+      )}
+      {!readOnly && !unlinked && p.status === "recalled" && p.campaign_id && (
+        <SpinButton type="button" className={btnPrimary} loading={busy === p.id} onClick={() => void repostPost(p)}
+          title="把這團重新發到這個社群的記事本（底下的留言、已加的單都留著）">重新發文</SpinButton>
       )}
       {!readOnly && p.status === "closed" && p.closed_comment_id && (
         <SpinButton type="button" className={btnSm} loading={busy === p.id} onClick={() => void reopenPost(p)}>恢復讀取</SpinButton>
