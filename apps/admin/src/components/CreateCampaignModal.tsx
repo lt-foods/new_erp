@@ -96,6 +96,8 @@ export function CreateCampaignModal({
   const [campaignNo, setCampaignNo] = useState<string>("（產生中…）");
   // 文案：預設帶入「商品文案」(products.description)，可編輯
   const [description, setDescription] = useState("");
+  // 開團那一刻要不要自動發 LINE 記事本（老闆 9/27 要的開關；預設發）
+  const [lineNote, setLineNote] = useState(true);
 
   // fetch preview campaign_no
   useEffect(() => {
@@ -173,6 +175,7 @@ export function CreateCampaignModal({
         p_customer_end_at: new Date(customerEndAt).toISOString(),
         p_start_at: new Date(startAt).toISOString(),
         p_auto_open: true,
+        p_line_note: lineNote,
       });
       if (err) throw err;
       onCreated(Number(data));
@@ -273,6 +276,22 @@ export function CreateCampaignModal({
           </div>
         </div>
       </div>
+
+      <label className="flex items-start gap-2 rounded-md border border-zinc-200 px-3 py-2.5 text-sm dark:border-zinc-700">
+        <input
+          type="checkbox"
+          checked={lineNote}
+          onChange={(e) => setLineNote(e.target.checked)}
+          className="mt-0.5 h-4 w-4"
+        />
+        <span className="flex flex-col gap-0.5">
+          <span className="font-medium text-zinc-700 dark:text-zinc-200">開團時發 LINE 記事本</span>
+          <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+            開團那一刻自動發到有勾「開團自動發文」的社群（記事本已有同一團的貼文會直接沿用、不重發）。
+            不勾＝這團不自動發，之後仍可在開團彈窗手動發。
+          </span>
+        </span>
+      </label>
 
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">

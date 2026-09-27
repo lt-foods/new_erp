@@ -37,6 +37,8 @@ export type CampaignFormValues = {
   auto_open?: boolean;
   /** 上次自動開團沒開成的原因（商品沒上架之類）；唯讀 */
   auto_open_error?: string | null;
+  /** 開團那一刻要不要自動發 LINE 記事本（20260927010000；只管開團當下，手動發文不受影響） */
+  line_note_enabled?: boolean;
 };
 
 export const emptyCampaignValues: CampaignFormValues = {
@@ -58,6 +60,7 @@ export const emptyCampaignValues: CampaignFormValues = {
   owner_store_id: null,
   auto_open: false,
   auto_open_error: null,
+  line_note_enabled: true,
 };
 
 // 使用者可手動切換的狀態僅 3 個；ordered / receiving / ready / completed / cancelled
@@ -139,6 +142,13 @@ export function CampaignForm({
       // 團名由此表單直接編輯；描述 / 取貨截止 / 取貨天數 / 備註
       // 仍從商品 / RPC 自動帶入，UI 不編輯、保留原值送回。
       const wasOpen = (initial?.status ?? null) === "open";
+      // 「開團時發 LINE 記事本」要在 upsert **之前**寫進去：這次儲存可能就是把草稿切成 open，
+      // 自動發文的 trigger 在那一刻看的就是這個欄位，後寫等於沒關。
+      const lineNoteOn = v.line_note_enabled ?? true;
+      if (v.id != null && (initial?.line_note_enabled ?? true) !== lineNoteOn) {
+        const { error: lnErr } = await getSupabase().rpc("rpc_set_campaign_line_note", { p_id: v.id, p_enabled: lineNoteOn });
+        if (lnErr) throw lnErr;
+      }
       const { data, error: err } = await getSupabase().rpc("rpc_upsert_campaign", {
         p_id: v.id,
         p_campaign_no: v.campaign_no.trim(),
@@ -158,6 +168,12 @@ export function CampaignForm({
       });
       if (err) throw err;
       const newId = Number(data);
+      // 新建的團只能在有 id 之後才寫得進去（此時若直接建成 open，trigger 已經跑過 —— 這條表單
+      // 建新團預設是草稿，主要入口 CreateCampaignModal 走 rpc_create_campaign_from_product 的參數）
+      if (v.id == null && !lineNoteOn) {
+        const { error: lnErr } = await getSupabase().rpc("rpc_set_campaign_line_note", { p_id: newId, p_enabled: false });
+        if (lnErr) console.error("rpc_set_campaign_line_note failed:", lnErr);
+      }
 
 
       // 美食列車且 status 從非 open → open 時, 廣播推播給全 tenant 顧客
@@ -382,6 +398,23 @@ export function CampaignForm({
           ariaLabel="上架個人賣場"
         />
       </div>
+
+      {/* 只在還沒開團時給改：開團那一刻 trigger 就決定了，之後改沒有意義（要補發走開團彈窗手動勾社群） */}
+      {(initial?.status ?? "draft") === "draft" && (
+        <div className="flex items-start justify-between gap-3 rounded-md border border-zinc-200 px-3 py-2.5 dark:border-zinc-700">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">開團時發 LINE 記事本</span>
+            <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+              開團那一刻自動發到有勾「開團自動發文」的社群（記事本已有同一團的貼文會直接沿用、不重發）。關掉＝這團不自動發，之後仍可在開團彈窗手動發。
+            </span>
+          </div>
+          <SwitchToggle
+            checked={v.line_note_enabled ?? true}
+            onToggle={() => update("line_note_enabled", !(v.line_note_enabled ?? true))}
+            ariaLabel="開團時發 LINE 記事本"
+          />
+        </div>
+      )}
 
       <p className="text-xs text-zinc-500 dark:text-zinc-400">
         描述、取貨截止 / 天數 在商品多選開團時設定；如需調整請至商品編輯頁。

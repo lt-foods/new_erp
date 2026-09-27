@@ -249,30 +249,48 @@ async function collectPostImages(payload: any): Promise<{ bytes: Uint8Array; typ
 }
 
 async function jobPost(job: any) {
-  const cur = await rest(`line_note_posts?id=eq.${job.post_id}&select=status,line_post_id,share_state`);
+  const cur = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,community_id,campaign_id,status,line_post_id,share_state`);
   if (cur?.[0]?.status === "posted") return { skipped: "already posted", postId: cur[0].line_post_id };
   const payload = await rpc("rpc_line_note_post_payload", { p_post_id: job.post_id });
   if (!payload) throw new Error(`post ${job.post_id} not found`);
   const account = await loadAccount(payload.account_id);
   const client = await clientFor(account);
-  const text = renderPost(payload);
+  let text = renderPost(payload);
   const images = await collectPostImages(payload);
   try {
-    const post = await createNotePost(client, payload.home_id, { text, images, verbose: VERBOSE });
-    // create.json 的回應撿不到貼文 id 時（線上 9/11 ～ 9/17 發的 38 篇全是這樣），馬上用 list 把
-    // 剛發的那篇對回來 —— 沒有 line_post_id 就讀不到留言，客人的 +1 一則都不會變成訂單。
-    let postId = post.postId ? String(post.postId) : null;
+    // 發之前先掃一次記事本：小幫手已經手貼過這團（開團前先貼、或兩邊同時動手）就不再發第二篇，
+    // 直接把那篇認進來（比對規則跟 discoverPosts 同一套）。老闆 9/27：「掃一下記事本有沒有
+    // 重覆的，有的話就不發記事本」。掃失敗照常發文 —— 漏掃頂多重複一篇，不發才是漏單。
+    const dup = cur?.[0]
+      ? await findExistingCampaignPost(client, payload.home_id, cur[0]).catch((e) => { log("掃重複貼文失敗（照常發文）:", (e as any)?.message ?? e); return null; })
+      : null;
+    let post: any = null;
+    let postId: string | null = null;
     let resolved: string | null = null;
-    if (!postId) {
-      postId = await findPostIdByText(client, payload.home_id, text).catch((e) => { log("補對貼文 id 失敗:", (e as any)?.message ?? e); return null; });
-      resolved = postId ? "list" : null;
+    let postedAt = new Date().toISOString();
+    if (dup) {
+      postId = String(dup.postId);
+      text = String(dup.text ?? text);
+      postedAt = dup.createdAt ?? postedAt;
+      resolved = "adopted";
+      log(`記事本已有這團的貼文 ${postId}，不再發、直接認進來：${postTitle(text)}`);
+      // discoverPosts 可能先把它存成「未認出團」了，那筆刪掉，免得同一篇兩列
+      await rest(`line_note_posts?community_id=eq.${cur[0].community_id}&line_post_id=eq.${postId}&status=eq.unlinked&id=neq.${job.post_id}`,
+        { method: "DELETE", prefer: "return=minimal" }).catch((e) => log(`清重複的未認出紀錄失敗（略過）：${(e as any)?.message ?? e}`));
+    } else {
+      post = await createNotePost(client, payload.home_id, { text, images, verbose: VERBOSE });
+      // create.json 的回應撿不到貼文 id 時（線上 9/11 ～ 9/17 發的 38 篇全是這樣），馬上用 list 把
+      // 剛發的那篇對回來 —— 沒有 line_post_id 就讀不到留言，客人的 +1 一則都不會變成訂單。
+      postId = post.postId ? String(post.postId) : null;
+      if (!postId) {
+        postId = await findPostIdByText(client, payload.home_id, text).catch((e) => { log("補對貼文 id 失敗:", (e as any)?.message ?? e); return null; });
+        resolved = postId ? "list" : null;
+      }
     }
-    // 發完順手用 LINE 原生的「分享貼文」卡片貼到聊天室，客人在聊天裡就點得到。
-    // 分享失敗不算發文失敗（貼文已經在記事本上了），錯誤留在畫面上就好。
-    // 已標 posted 的工作不會重跑（上面的 skipped），所以不會重複分享。
     // 分享到聊天室：社群節奏是「立刻」才在這裡順手分享；其他節奏由 _line_note_release_scheduled
     // 依時段放行（share_state='scheduled' → 'sharing' + share 工作 → jobShare）。
     // 分享失敗不算發文失敗（貼文已經在記事本上了），錯誤留在畫面上就好。
+    // 已標 posted 的工作不會重跑（上面的 skipped），所以不會重複分享。
     let shareError: string | null = null;
     let sharedTo: string | null = null;
     const cm = (await rest(`line_note_communities?home_id=eq.${encodeURIComponent(payload.home_id)}&account_id=eq.${payload.account_id}&select=id,home_id,share_chat_mid,post_mode&limit=1`))?.[0]
@@ -289,7 +307,7 @@ async function jobPost(job: any) {
       }
     }
     await patch("line_note_posts", `id=eq.${job.post_id}`, {
-      status: "posted", line_post_id: postId, text, posted_at: new Date().toISOString(),
+      status: "posted", line_post_id: postId, text, posted_at: postedAt,
       ...(shareNow ? (sharedTo ? { share_state: "shared", shared_at: new Date().toISOString() } : { share_state: "failed" }) : {}),
       // 還是沒有 id：貼文已經在 LINE 上了，先標 posted，錯誤留在畫面上；下次讀取 discoverPosts
       // 會用 🔖 團號把 id 補回來，補到才開始讀留言。
@@ -302,12 +320,32 @@ async function jobPost(job: any) {
       ...(shareError ? { shareError: shareError.slice(0, 300) } : {}),
       ...(resolved ? { resolved } : {}),
       // 留一份回應的樣子，下次才對得出 id 到底長在哪一層
-      ...(post.postId ? {} : { createRaw: JSON.stringify(post.rawCreate ?? null).slice(0, 600) }),
+      ...(dup || post?.postId ? {} : { createRaw: JSON.stringify(post?.rawCreate ?? null).slice(0, 600) }),
     };
   } catch (e) {
     await patch("line_note_posts", `id=eq.${job.post_id}`, { status: "failed", text, last_error: String((e as any)?.message ?? e).slice(0, 1000) });
     throw e;
   }
+}
+
+// 記事本上有沒有「已經是這一團」的貼文（小幫手手貼的）。
+// 只看最近 14 天被動過的貼文；比對走 discoverPosts 那一套兩池規則（先開團中／已收單，
+// 再已結單），命中的團要剛好是這一列的團才算。已經認給別團／別列的貼文跳過。
+const DUP_SCAN_DAYS = 14;
+async function findExistingCampaignPost(client: any, homeId: string, row: any): Promise<any | null> {
+  if (!row?.campaign_id || !row?.tenant_id) return null;
+  const cand = await loadCandidates(row.tenant_id);
+  const since = new Date(Date.now() - DUP_SCAN_DAYS * 86400_000).toISOString();
+  const posts = await listPosts(client, homeId, { limit: 60, since, verbose: VERBOSE });
+  const taken = new Set<string>(
+    ((await rest(`line_note_posts?community_id=eq.${row.community_id}&campaign_id=not.is.null&line_post_id=not.is.null&id=neq.${row.id}&select=line_post_id`)) ?? [])
+      .map((p: any) => String(p.line_post_id)));
+  for (const n of posts) {
+    if (!n.postId || taken.has(String(n.postId))) continue;
+    const hit = matchTwoPass(String(n.text ?? ""), n.createdAt, cand);
+    if (hit && Number(hit.id) === Number(row.campaign_id)) return n;
+  }
+  return null;
 }
 
 // 剛發出去的貼文在 list 裡長什麼樣：先認 🔖 團號章（系統發的一定有），沒章就比整篇內文。
