@@ -19,6 +19,7 @@ import {
 } from "@/lib/lineNoteStatus";
 import { deleteLineNotePost } from "@/lib/lineNoteDelete";
 import { updateLineNotePost } from "@/lib/lineNoteUpdate";
+import { recallLineNoteShare, shareLineNotePost } from "@/lib/lineNoteShare";
 import { canOperateLineNotes, useRole } from "@/lib/role";
 import { useHasStaffPerm } from "@/lib/staffPerms";
 import { campaignMatchScore, postTitle, WEAK_MATCH } from "@/lib/lineNoteCampaignMatch";
@@ -1609,6 +1610,24 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
     notify("LINE 上那篇已更新成目前的內容");
     await reload();
   };
+  const sharePost = async (p: Post) => {
+    setBusy(p.id);
+    const r = await shareLineNotePost({ id: p.id, line_post_id: p.line_post_id, label: p.group_buy_campaigns?.name ?? postFirstLine(p.text) }, p.share_state === "shared");
+    setBusy(null);
+    if (r.kind === "cancelled") return;
+    if (r.kind === "failed") return fail(new Error(r.error));
+    notify(r.message);
+    await reload();
+  };
+  const unsharePost = async (p: Post) => {
+    setBusy(p.id);
+    const r = await recallLineNoteShare({ id: p.id, line_post_id: p.line_post_id, label: p.group_buy_campaigns?.name ?? postFirstLine(p.text) });
+    setBusy(null);
+    if (r.kind === "cancelled") return;
+    if (r.kind === "failed") return fail(new Error(r.error));
+    notify(r.message);
+    await reload();
+  };
   const removePost = async (p: Post) => {
     setBusy(p.id);
     const r = await deleteLineNotePost({
@@ -1687,6 +1706,15 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
       {!readOnly && !unlinked && p.line_post_id && (p.status === "posted" || p.status === "closed") && (
         <SpinButton type="button" className={btnSm} loading={busy === p.id} onClick={() => void refreshPost(p)}
           title="開團的品項 / 價格改了之後，把 LINE 上那篇改成現在的內容">更新貼文</SpinButton>
+      )}
+      {/* 手動分享 / 回收：已分享的給「回收分享」，其他（未分享、等節奏、分享失敗）給「分享到聊天室」。
+          等節奏的按了就是插隊 —— worker 分享完會標 shared，節奏那邊看到 shared 就不會再放一次。 */}
+      {!readOnly && !unlinked && p.line_post_id && (p.status === "posted" || p.status === "closed") && (
+        p.share_state === "shared"
+          ? <SpinButton type="button" className={btnSm} loading={busy === p.id} onClick={() => void unsharePost(p)}
+              title="只收回聊天室裡的分享卡片，記事本貼文不動">回收分享</SpinButton>
+          : <SpinButton type="button" className={btnSm} loading={busy === p.id} onClick={() => void sharePost(p)}
+              title="用 LINE 的「分享貼文」卡片貼到這個社群的聊天室">分享到聊天室</SpinButton>
       )}
       {!readOnly && p.status === "closed" && p.closed_comment_id && (
         <SpinButton type="button" className={btnSm} loading={busy === p.id} onClick={() => void reopenPost(p)}>恢復讀取</SpinButton>

@@ -389,17 +389,7 @@ async function deletePost(postId: number, callerTenant: string | null) {
   try {
     const account = await loadAccount(post.line_note_communities.account_id);
     const client = await clientFor(account);
-    // 2026-09-25 實測：LINE 對「分享貼文」卡片的 unsend 回 ILLEGAL_ARGUMENT（一般文字收得回）、
-    // destroyMessage 要社群管理員（小幫手不是 → FORBIDDEN）。先收回、不行再試刪除；都不行就留著，
-    // 卡片點進去會是「貼文已刪除」。小幫手升成社群管理員後 destroy 那條就通了。
-    for (const m of (Array.isArray(post.share_message_ids) ? post.share_message_ids : [])) {
-      try { await unsendChatMessage(client, m.chat, m.id); unsent++; continue; }
-      catch (e) { log(`收回分享訊息 ${m.id} 失敗：${(e as any)?.message ?? e}`); }
-      try {
-        if (String(m.chat)[0] === "m") { await client.base.square.destroyMessage({ squareChatMid: m.chat, messageId: String(m.id) }); unsent++; continue; }
-      } catch (e) { log(`刪除分享訊息 ${m.id} 失敗：${(e as any)?.message ?? e}`); }
-      unsendFailed++;
-    }
+    ({ unsent, failed: unsendFailed } = await recallShares(client, post.share_message_ids));
     // 子群列的 line_post_id 是母社群那篇：只收回分享卡片，記事本貼文留給母社群那一列管
     if (!post.line_note_communities.share_from_community_id) {
       await deleteNotePost(client, post.line_note_communities.home_id, post.line_post_id, { verbose: VERBOSE });
@@ -413,6 +403,59 @@ async function deletePost(postId: number, callerTenant: string | null) {
   await rest(`line_note_posts?id=eq.${postId}`, { method: "DELETE", prefer: "return=minimal" });
   log(`🗑 貼文 ${postId}（LINE ${post.line_post_id}）已從記事本刪除，後台紀錄一併清掉；收回分享 ${unsent} 則${unsendFailed ? `、失敗 ${unsendFailed} 則` : ""}`);
   return { ok: true, linePostId: post.line_post_id, unsent, unsendFailed };
+}
+
+// 把分享到聊天室的卡片收回。回 unsent / failed 數與**還收不回的那幾則**（留在紀錄上，下次再試）。
+// 2026-09-25 實測：LINE 對「分享貼文」卡片的 unsend 回 ILLEGAL_ARGUMENT（一般文字收得回）、
+// destroyMessage 要社群管理員（小幫手不是 → FORBIDDEN）。先收回、不行再試刪除；都不行就留著，
+// 刪貼文的話卡片點進去會是「貼文已刪除」。小幫手升成社群管理員後 destroy 那條就通了。
+async function recallShares(client: any, ids: unknown): Promise<{ unsent: number; failed: number; remaining: any[] }> {
+  let unsent = 0, failed = 0;
+  const remaining: any[] = [];
+  for (const m of (Array.isArray(ids) ? ids : [])) {
+    try { await unsendChatMessage(client, m.chat, m.id); unsent++; continue; }
+    catch (e) { log(`收回分享訊息 ${m.id} 失敗：${(e as any)?.message ?? e}`); }
+    try {
+      if (String(m.chat)[0] === "m") { await client.base.square.destroyMessage({ squareChatMid: m.chat, messageId: String(m.id) }); unsent++; continue; }
+    } catch (e) { log(`刪除分享訊息 ${m.id} 失敗：${(e as any)?.message ?? e}`); }
+    failed++;
+    remaining.push(m);
+  }
+  return { unsent, failed, remaining };
+}
+
+// 只收回聊天室的分享卡片、記事本貼文留著（老闆 9/27：分享要能手動、也要能回收）。
+// 後台直接呼叫、當場回結果。收回後 share_state 退回 none（等於「未分享」，可以再按分享）；
+// 一則都收不回就維持 shared，錯誤寫在 last_error。
+async function unsharePost(postId: number, callerTenant: string | null) {
+  const rows = await rest(`line_note_posts?id=eq.${postId}&select=id,tenant_id,share_state,share_message_ids,line_note_communities(account_id)`);
+  const post = rows?.[0];
+  if (!post) return { ok: false, error: "找不到這篇貼文" };
+  if (callerTenant && post.tenant_id !== callerTenant) return { ok: false, error: "這篇貼文不屬於你的帳戶" };
+  const ids = Array.isArray(post.share_message_ids) ? post.share_message_ids : [];
+  if (ids.length === 0) {
+    return { ok: false, error: "後台沒有記到這篇分享出去的訊息（9/25 之前分享的、或分享時沒抓到訊息 id），收不回來，只能到 LINE 手動收回" };
+  }
+  try {
+    const client = await clientFor(await loadAccount(post.line_note_communities.account_id));
+    const r = await recallShares(client, ids);
+    if (r.unsent === 0) {
+      const msg = `收回分享失敗：${r.failed} 則都收不回（LINE 不讓小幫手收回這種卡片；升成社群管理員就可以）`;
+      await patch("line_note_posts", `id=eq.${postId}`, { last_error: msg.slice(0, 1000) }).catch(() => {});
+      return { ok: false, error: msg, ...r };
+    }
+    await patch("line_note_posts", `id=eq.${postId}`, {
+      share_message_ids: r.remaining,
+      ...(r.remaining.length === 0 ? { share_state: "none", shared_at: null } : {}),
+      last_error: r.failed ? `收回分享：${r.unsent} 則收回、${r.failed} 則收不回`.slice(0, 1000) : null,
+    });
+    log(`↩ 貼文 ${postId} 收回分享 ${r.unsent} 則${r.failed ? `、失敗 ${r.failed} 則` : ""}`);
+    return { ok: true, unsent: r.unsent, failed: r.failed };
+  } catch (e) {
+    const msg = String((e as any)?.message ?? e);
+    await patch("line_note_posts", `id=eq.${postId}`, { last_error: `收回分享失敗：${msg}`.slice(0, 1000) }).catch(() => {});
+    return { ok: false, error: msg };
+  }
 }
 
 // 品項 / 金額改了，把 LINE 上那篇改成現在的內容（文字重算、圖片重傳）。
@@ -484,7 +527,7 @@ async function recordShare(postId: number, r: { chatMid: string; messageId?: str
   await rpc("_line_note_append_share_msg", { p_post_id: postId, p_chat: r.chatMid, p_msg: r.messageId }).catch((e) => log(`記分享訊息 id 失敗：${(e as any)?.message ?? e}`));
 }
 
-// 把已經發出去的貼文（再）分享到聊天室：發文當下分享失敗時的補救入口，後台直接呼叫。
+// 把已經發出去的貼文（再）分享到聊天室：後台「分享到聊天室」鈕／發文當下分享失敗時的補救入口，後台直接呼叫。
 async function sharePost(postId: number, callerTenant: string | null, body: any = {}) {
   const rows = await rest(`line_note_posts?id=eq.${postId}&select=id,tenant_id,line_post_id,last_error,line_note_communities(id,home_id,account_id,share_chat_mid,share_from_community_id)`);
   const post = rows?.[0];
@@ -1315,6 +1358,13 @@ Deno.serve(async (req) => {
       const postId = Number(body.post_id);
       if (!postId) return json({ error: "post_id required" }, 400);
       return json(await sharePost(postId, callerTenant, body));
+    }
+    // 收回聊天室的分享卡片（記事本貼文留著）
+    if (action === "unshare_post") {
+      if (caller !== "admin") return json({ error: "收回分享只能從後台按" }, 403);
+      const postId = Number(body.post_id);
+      if (!postId) return json({ error: "post_id required" }, 400);
+      return json(await unsharePost(postId, callerTenant));
     }
     // 診斷用：對一篇貼文留言並回 LINE 的原始回應 + 留言後 getList 看到的內容
     if (action === "debug_comment") {

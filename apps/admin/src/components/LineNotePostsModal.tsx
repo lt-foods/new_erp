@@ -25,6 +25,7 @@ import { translateRpcError } from "@/lib/rpcError";
 import { withBasePath } from "@/lib/basePath";
 import { deleteLineNotePost } from "@/lib/lineNoteDelete";
 import { updateLineNotePost } from "@/lib/lineNoteUpdate";
+import { recallLineNoteShare, shareLineNotePost } from "@/lib/lineNoteShare";
 import { canOperateLineNotes, useRole } from "@/lib/role";
 import {
   COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, commentStats, fmtNoteTime, isTodoComment,
@@ -43,6 +44,8 @@ type Target = {
   post_id: number | null; post_status: LineNotePostStatus | null; line_post_id: string | null;
   post_text: string | null; posted_at: string | null; last_read_at: string | null;
   closed_reason: string | null; post_error: string | null;
+  /** 分享到聊天室的狀態（20260927020000 起 RPC 才回；舊版回 undefined 當 none） */
+  share_state?: "none" | "scheduled" | "sharing" | "shared" | "failed" | "skipped" | null; shared_at?: string | null;
   comment_total: number | null; comment_ordered: number | null;
   comment_duplicate: number | null; comment_todo: number | null;
 };
@@ -245,6 +248,26 @@ export default function LineNotePostsModal({
     if (r.kind === "cancelled") return;
     if (r.kind === "failed") return fail(new Error(r.error));
     notify("LINE 上那篇已更新成目前的內容");
+    await load(true);
+  };
+  const sharePost = async (t: Target) => {
+    if (!t.post_id) return;
+    setBusy(t.community_id);
+    const r = await shareLineNotePost({ id: t.post_id, line_post_id: t.line_post_id, label: `${campaignName ?? ""}｜${t.home_name || t.home_id}` }, t.share_state === "shared");
+    setBusy(null);
+    if (r.kind === "cancelled") return;
+    if (r.kind === "failed") return fail(new Error(r.error));
+    notify(r.message);
+    await load(true);
+  };
+  const unsharePost = async (t: Target) => {
+    if (!t.post_id) return;
+    setBusy(t.community_id);
+    const r = await recallLineNoteShare({ id: t.post_id, line_post_id: t.line_post_id, label: `${campaignName ?? ""}｜${t.home_name || t.home_id}` });
+    setBusy(null);
+    if (r.kind === "cancelled") return;
+    if (r.kind === "failed") return fail(new Error(r.error));
+    notify(r.message);
     await load(true);
   };
   const removePost = async (t: Target) => {
@@ -457,6 +480,13 @@ export default function LineNotePostsModal({
                             </div>
                             {t.closed_reason && <div className="text-xs text-zinc-500">讀到結單留言：{t.closed_reason}</div>}
                             {t.post_error && <div className="text-xs text-red-600">{t.post_error}</div>}
+                            {t.line_post_id && t.post_status === "posted" && (
+                              <div className="text-xs text-zinc-500">
+                                {t.share_state === "shared" ? `已分享聊天 ${fmtNoteTime(t.shared_at)}`
+                                  : t.share_state === "scheduled" || t.share_state === "sharing" ? "等分享（依社群節奏）"
+                                  : t.share_state === "failed" ? "分享失敗" : "未分享到聊天室"}
+                              </div>
+                            )}
                           </div>
                         </button>
 
@@ -472,6 +502,13 @@ export default function LineNotePostsModal({
                               title="品項 / 價格改了之後，把 LINE 上那篇改成現在的內容（先存開團，再按這個）">
                               更新貼文
                             </SpinButton>
+                          )}
+                          {t.line_post_id && (t.post_status === "posted" || t.post_status === "closed") && (
+                            t.share_state === "shared"
+                              ? <SpinButton className={btn} loading={busy === t.community_id} onClick={() => void unsharePost(t)}
+                                  title="只收回聊天室裡的分享卡片，記事本貼文不動">回收分享</SpinButton>
+                              : <SpinButton className={btn} loading={busy === t.community_id} onClick={() => void sharePost(t)}
+                                  title="用 LINE 的「分享貼文」卡片貼到這個社群的聊天室">分享到聊天室</SpinButton>
                           )}
                           {/* 退回未處理 / 忽略 / 重試那些留言操作都在記事本頁，這裡只給入口，不再抄一份。
                               /line-notes 整頁是總部專屬（RLS 只放總部角色），分店連結過去也是空的。 */}

@@ -1,0 +1,44 @@
+// 手動把已經在記事本上的貼文分享到聊天室，或把分享出去的卡片收回（老闆 9/27：「有手動分享貼文的功能嗎」「還有回收」）。
+// 兩個入口共用：LINE 記事本頁的「貼文」分頁、開團的「LINE 記事本」彈窗。
+//
+// 走 Edge Function 的 share_post / unshare_post（同 delete_post，後台直接呼叫、當場回結果）。
+// 分享用社群自己記住的聊天室（子群走母社群那篇）；收回只收得回後台記得住訊息 id 的那幾則
+// （9/25 之前分享的沒記 id，收不回，worker 會直接講）。記事本貼文本身兩個動作都不碰。
+
+import { getSupabase } from "@/lib/supabase";
+import { translateRpcError } from "@/lib/rpcError";
+import type { LineNotePostRef } from "@/lib/lineNoteDelete";
+
+export type ShareOutcome =
+  | { kind: "cancelled" }
+  | { kind: "done"; message: string }
+  | { kind: "failed"; error: string };
+
+async function callWorker(action: "share_post" | "unshare_post", postId: number) {
+  const { data, error } = await getSupabase().functions
+    .invoke("line-note-worker", { body: { action, post_id: postId } });
+  const res = (data ?? {}) as { ok?: boolean; error?: string; unsent?: number; failed?: number };
+  // supabase-js 把非 2xx 包成 FunctionsHttpError，訊息看不出原因，優先用函式自己回的
+  return { ok: !error && !!res.ok, res, error: res.error ?? (error ? translateRpcError(error) : "未知錯誤") };
+}
+
+export async function shareLineNotePost(post: LineNotePostRef, alreadyShared: boolean): Promise<ShareOutcome> {
+  if (!post.line_post_id) return { kind: "failed", error: "這篇還沒發到 LINE，沒有東西可以分享" };
+  if (!window.confirm(
+    `把「${post.label}」這篇貼文分享到聊天室？\n\n` +
+    (alreadyShared ? "這篇已經分享過了，會**再貼一張**分享卡片到聊天室。\n" : "") +
+    `會用 LINE 原生的「分享貼文」卡片貼到這個社群的聊天室，成員在聊天裡就點得到。`)) return { kind: "cancelled" };
+  const r = await callWorker("share_post", post.id);
+  return r.ok ? { kind: "done", message: "已分享到聊天室" } : { kind: "failed", error: r.error };
+}
+
+export async function recallLineNoteShare(post: LineNotePostRef): Promise<ShareOutcome> {
+  if (!window.confirm(
+    `收回「${post.label}」分享到聊天室的卡片？\n\n` +
+    `只收回聊天室裡的分享訊息，記事本上的貼文與留言都不動。\n` +
+    `（只收得回後台記得住的那幾則；收回之後這篇會變回「未分享」，可以再分享一次。）`)) return { kind: "cancelled" };
+  const r = await callWorker("unshare_post", post.id);
+  if (!r.ok) return { kind: "failed", error: r.error };
+  const n = r.res.unsent ?? 0, f = r.res.failed ?? 0;
+  return { kind: "done", message: f ? `收回 ${n} 則、${f} 則收不回（LINE 不讓小幫手收回）` : `已收回分享（${n} 則）` };
+}
