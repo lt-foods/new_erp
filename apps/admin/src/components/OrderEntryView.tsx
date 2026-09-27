@@ -88,6 +88,48 @@ const AUTOSAVE_MS = 30_000;
 const CLOSED_CAMPAIGN_ORDER_NOTE =
   "如果這個結單日已建過請購單，送出後請回請購單頁執行補單，否則新增數量不會被買到。";
 
+// 送出前查「這些會員在這團已經有的同品項數量」。找單條件對齊 rpc_create_customer_orders
+// （campaign + channel + member、排除 cancelled/expired/transferred_out）：命中的品項送出後是累加。
+// 回 null ＝ 沒有會被疊上去的品項。查詢失敗也回 null（不擋送出，只是少一道提醒）。
+async function findExistingQty(
+  campaignId: number,
+  channelId: number,
+  rows: { member_id: number | null; items: { campaign_item_id: number | null; qty: number }[] }[],
+  entries: CustomerEntry[],
+  campaignSkus: SkuOption[],
+): Promise<string | null> {
+  const memberIds = rows.map((r) => r.member_id).filter((x): x is number => x != null);
+  if (memberIds.length === 0) return null;
+  const { data, error } = await getSupabase()
+    .from("customer_orders")
+    .select("order_no, member_id, customer_order_items(campaign_item_id, qty, status)")
+    .eq("campaign_id", campaignId)
+    .eq("channel_id", channelId)
+    .in("member_id", memberIds)
+    .not("status", "in", "(cancelled,expired,transferred_out)");
+  if (error || !data) return null;
+  const skuName = (id: number) => {
+    const s = campaignSkus.find((x) => x.campaign_item_id === id);
+    return s ? (s.variant_name || s.product_name) : `#${id}`;
+  };
+  const lines: string[] = [];
+  for (const o of data as { order_no: string; member_id: number; customer_order_items: { campaign_item_id: number | null; qty: number; status: string }[] }[]) {
+    const row = rows.find((r) => r.member_id === o.member_id);
+    if (!row) continue;
+    const parts: string[] = [];
+    for (const it of row.items) {
+      const had = o.customer_order_items.find((x) => x.campaign_item_id === it.campaign_item_id && x.status !== "cancelled");
+      if (!had || it.campaign_item_id == null) continue;
+      const before = Number(had.qty);
+      parts.push(`${skuName(it.campaign_item_id)} 原本 ${before} → 變 ${before + it.qty}`);
+    }
+    if (parts.length === 0) continue;
+    const who = entries.find((e) => e.member_id === o.member_id)?.display_name ?? "";
+    lines.push(`${who}（${o.order_no}）\n  ${parts.join("\n  ")}`);
+  }
+  return lines.length ? lines.join("\n") : null;
+}
+
 function newEntry(): CustomerEntry {
   return {
     key: crypto.randomUUID(),
@@ -372,6 +414,11 @@ export function OrderEntryView({
       .filter((r) => r.items.length > 0);
 
     if (rows.length === 0) { setError("沒有可送出的訂單列"); return; }
+
+    // 同一位會員在這團已經有同品項的單 → rpc 會把數量「加上去」，不是覆蓋。
+    // 留言兩個小幫手各補一次就變兩倍（2026-09-27 永和 GRP-20260923-044-0015/0016），先講清楚再送。
+    const dup = await findExistingQty(campaignId, channelId, rows, entries, campaignSkus);
+    if (dup && !window.confirm(`下列會員在這團已經有單，送出會把數量「加上去」：\n\n${dup}\n\n確定要再加？（只是補登同一筆留言的話請按取消）`)) return;
 
     setSubmitting(true);
     try {
