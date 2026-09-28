@@ -430,6 +430,9 @@ export function OrderEntryView({
       if (err) { setError(err.message); return; }
       const created = (data as { out_order_id: number; out_order_no: string; out_item_count: number }[]) ?? [];
       setToast(withClosedCampaignNote(`已建立/更新 ${created.length} 筆訂單`));
+      // 這些會員在 LINE 記事本還掛著「看不懂、待處理」的留言 → 移出待處理，別人才不會再 key 一次。
+      // 失敗不影響加單（留言頁載入時會再掃一次）。
+      void getSupabase().rpc("rpc_line_note_settle_keyed_comments", { p_campaign_id: campaignId });
       setEntries([newEntry()]);
       localStorage.removeItem(draftKey);
       onCreated?.();

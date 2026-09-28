@@ -1232,6 +1232,13 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
     setOrders(m);
   }, [fail, communityId, filter]);
   useEffect(() => { void load(); }, [load]);
+  // 已經有人在別的畫面幫這位會員加過單的留言 → 移出待處理（改「已有訂單」），
+  // 不然下一個人照著待處理清單再 key 一次，數量就變兩倍（2026-09-27 二群 31 張）。
+  // 找會員要掃會員名（線上約 3 秒），不擋畫面：背景跑，有移走才重撈。
+  useEffect(() => {
+    void getSupabase().rpc("rpc_line_note_settle_keyed_comments", { p_campaign_id: null })
+      .then(({ data }) => { if (Number(data) > 0) void load(); });
+  }, [load]);
   const { busy, retry, setStatus } = useCommentActions(load, notify, fail);
 
   // 查詢已經照分頁濾過了；待處理再用 isTodo 對一次（member_no_hint 空字串那種 DB 側放行、JS 不算）
