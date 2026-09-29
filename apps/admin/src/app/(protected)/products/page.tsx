@@ -14,6 +14,7 @@ import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
 import Spinner, { LoadingBlock } from "@/components/Spinner";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow } from "@/components/DataTable";
+import { exportShopeeXlsx, type ShopeeProduct } from "@/lib/exportShopeeXlsx";
 
 type Status = "draft" | "active" | "inactive" | "discontinued";
 type SortKey = "updated_at" | "product_code" | "name" | "status";
@@ -221,6 +222,73 @@ function PageContent() {
     );
   }
 
+  // 匯出蝦皮大量上架檔：勾選商品 → 下載 xlsx，貼進蝦皮賣家中心的大量上架範本
+  async function exportShopee() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setError(null);
+    try {
+      const sb = getSupabase();
+      const [prodRes, skuRes] = await Promise.all([
+        sb.from("products").select("id, product_code, name, description, images").in("id", ids),
+        sb.from("skus")
+          .select("id, product_id, sku_code, variant_name, weight_g")
+          .in("product_id", ids)
+          .neq("status", "discontinued")
+          .order("id"),
+      ]);
+      if (prodRes.error) throw prodRes.error;
+      if (skuRes.error) throw skuRes.error;
+      const skuRows = (skuRes.data ?? []) as {
+        id: number; product_id: number; sku_code: string; variant_name: string | null; weight_g: number | null;
+      }[];
+      const priceBySku = new Map<number, number>();
+      if (skuRows.length > 0) {
+        const { data: priceRows, error: priceErr } = await sb
+          .from("prices")
+          .select("sku_id, price, effective_from")
+          .eq("scope", "retail")
+          .is("effective_to", null)
+          .in("sku_id", skuRows.map((s) => s.id))
+          .order("effective_from", { ascending: false });
+        if (priceErr) throw priceErr;
+        for (const r of (priceRows ?? []) as { sku_id: number; price: number | string }[]) {
+          if (!priceBySku.has(r.sku_id)) priceBySku.set(r.sku_id, Number(r.price));
+        }
+      }
+      const storage = sb.storage.from("products");
+      const products: ShopeeProduct[] = (
+        (prodRes.data ?? []) as {
+          id: number; product_code: string; name: string; description: string | null; images: string[] | null;
+        }[]
+      ).map((p) => ({
+        product_code: p.product_code,
+        name: p.name,
+        description: p.description,
+        image_urls: (Array.isArray(p.images) ? p.images : []).map((path) => storage.getPublicUrl(path).data.publicUrl),
+        skus: skuRows
+          .filter((s) => s.product_id === p.id)
+          .map((s) => ({
+            sku_code: s.sku_code,
+            variant_name: s.variant_name,
+            weight_g: s.weight_g === null ? null : Number(s.weight_g),
+            price: priceBySku.get(s.id) ?? null,
+          })),
+      }));
+      const d = new Date();
+      const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+      const { exported, skipped } = await exportShopeeXlsx(products, `蝦皮上架_${stamp}.xlsx`);
+      if (skipped.length > 0) {
+        window.alert(
+          `已匯出 ${exported} 項商品。\n\n以下 ${skipped.length} 項沒有匯出：\n` +
+            skipped.map((s) => `・${s.product_code} ${s.name}（${s.reason}）`).join("\n"),
+        );
+      }
+    } catch (e) {
+      setError(translateRpcError(e));
+    }
+  }
+
   // 從 URL ?id=X 自動開啟商品編輯 modal（給 CampaignItemsTable 跳轉用）
   useEffect(() => {
     if (!urlEditId) return;
@@ -398,6 +466,12 @@ function PageContent() {
             className="rounded-md bg-green-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-green-600"
           >
             開團
+          </SpinButton>
+          <SpinButton
+            onClick={exportShopee}
+            className="rounded-md bg-orange-100 px-3 py-1.5 text-sm font-medium text-orange-800 hover:bg-orange-200 dark:bg-orange-950 dark:text-orange-300 dark:hover:bg-orange-900"
+          >
+            匯出蝦皮
           </SpinButton>
           {!campaignMode && (
             <>
