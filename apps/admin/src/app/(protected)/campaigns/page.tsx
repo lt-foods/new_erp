@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
+import { withBasePath } from "@/lib/basePath";
 import { translateRpcError } from "@/lib/rpcError";
 import { PR_TERM_ZH } from "@/lib/prStatus";
 import { orderCountsInTotals, orderItemCountsInTotals } from "@/lib/orderStatus";
@@ -221,6 +222,7 @@ export default function CampaignsListPage() {
   const isInitialRunRef = useRef(campaignsCache != null);
   const [modal, setModal] = useState<{ mode: "edit"; values: CampaignFormValues } | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
+  const [copiedStatsId, setCopiedStatsId] = useState<number | null>(null);
   const [resyncTick, setResyncTick] = useState(0);
   const [fbPublishId, setFbPublishId] = useState<number | null>(null);
   // LINE 記事本彈窗：發文到哪幾個群組 + 這團爬回來的貼文與留言（LineNotePostsModal）
@@ -839,15 +841,37 @@ export default function CampaignsListPage() {
         加單
       </span>
     ) : null;
+  async function copyStatsUrl(id: number) {
+    const url = `${window.location.origin}${withBasePath("/campaigns/stats/")}?id=${id}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedStatsId(id);
+      window.setTimeout(() => setCopiedStatsId((cur) => (cur === id ? null : cur)), 2000);
+    } catch {
+      window.prompt("複製這個連結：", url);
+    }
+  }
+
   // 限量 / 美食列車：品項進度（已下單 / 正取上限）的手機快速看頁
+  // 旁邊的「複製」把完整網址放進剪貼簿，貼到 LINE 給小幫手，點開就是那一頁（要登入）
   const statsLink = (r: Row) =>
     r.close_type === "limited" || r.close_type === "food_train" ? (
-      <Link
-        href={`/campaigns/stats?id=${r.id}`}
-        className="text-sm font-bold text-blue-600 hover:underline dark:text-blue-400"
-      >
-        進度
-      </Link>
+      <span className="flex items-center gap-1 whitespace-nowrap">
+        <Link
+          href={`/campaigns/stats?id=${r.id}`}
+          className="text-sm font-bold text-blue-600 hover:underline dark:text-blue-400"
+        >
+          進度
+        </Link>
+        <button
+          type="button"
+          onClick={() => void copyStatsUrl(r.id)}
+          className="rounded border border-zinc-300 px-1 text-[11px] text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          title="複製進度頁連結"
+        >
+          {copiedStatsId === r.id ? "已複製" : "複製"}
+        </button>
+      </span>
     ) : null;
   const addOrderSlot = (r: Row) => {
     const link = addOrderLink(r);
