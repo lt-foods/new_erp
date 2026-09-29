@@ -725,8 +725,12 @@ async function detectClosing(post: any): Promise<any | null> {
   const rows = await rest(
     `line_note_comments?post_id=eq.${post.id}&is_closing_notice=not.is.false` +
     `&select=id,text,status,commented_at,is_closing_notice&order=commented_at.asc,id.asc`);
+  // 團關掉又重開（20260929030000）：重開之前的留言（含系統自己那則「本團已結單」）不算結單宣告，
+  // 否則下一次讀取就又把這篇關回去。
+  const reopened = Date.parse(post.reopened_at ?? "") || 0;
   let hit: any = null;
   for (const c of rows ?? []) {
+    if (reopened && (Date.parse(c.commented_at ?? "") || 0) <= reopened) continue;
     if (c.is_closing_notice !== true && !isClosingText(c.text)) continue;
     if (c.is_closing_notice !== true) {
       await patch("line_note_comments", `id=eq.${c.id}`, { is_closing_notice: true }).catch(() => {});
@@ -1091,7 +1095,7 @@ async function jobRead(job: any, reactUntil = Date.now() + REACT_BUDGET_MS) {
   const fullRead = !!job.post_id || !!job.created_by || !community?.last_read_at ||
     taipeiDate(community.last_read_at) !== taipeiDate(new Date());
   const filter = job.post_id ? `id=eq.${job.post_id}` : `community_id=eq.${job.community_id}${sinceFilter}`;
-  const posts = await rest(`line_note_posts?${filter}&status=eq.posted&select=id,tenant_id,line_post_id,community_id,last_read_at,comment_count,group_buy_campaigns(status),line_note_communities(id,home_id,account_id,react_on_confirm,read_days)&order=id.asc`);
+  const posts = await rest(`line_note_posts?${filter}&status=eq.posted&select=id,tenant_id,line_post_id,community_id,last_read_at,reopened_at,comment_count,group_buy_campaigns(status),line_note_communities(id,home_id,account_id,react_on_confirm,read_days)&order=id.asc`);
   const out: any[] = [];
   let skipped = 0;
   for (const p of posts ?? []) {
@@ -1146,7 +1150,7 @@ async function jobRead(job: any, reactUntil = Date.now() + REACT_BUDGET_MS) {
 // 留言失敗不標結束、close_notified_at 也不寫 → 下一分鐘會再排一次；連續失敗的話錯誤留在貼文列上。
 const DEFAULT_CLOSE_COMMENT = "⏰ 本團已結單，感謝大家的支持！之後想加購請私訊小幫手 🙏";
 async function jobClose(job: any) {
-  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,community_id,status,close_notified_at,last_read_at,comment_count,group_buy_campaigns(name,status),line_note_communities(id,home_id,account_id,react_on_confirm,read_days,close_comment)`);
+  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,community_id,status,close_notified_at,last_read_at,reopened_at,comment_count,group_buy_campaigns(name,status),line_note_communities(id,home_id,account_id,react_on_confirm,read_days,close_comment)`);
   const p = rows?.[0];
   if (!p) throw new Error(`post ${job.post_id} not found`);
   if (p.close_notified_at) return { skipped: "already notified" };
@@ -1186,6 +1190,25 @@ async function jobClose(job: any) {
   });
   log(`⏰ 貼文 ${p.id}（${p.group_buy_campaigns?.name ?? ""}）已留言結單`);
   return { closed: true, comment: text.slice(0, 60), read };
+}
+
+// 團關掉又重新開團（trg_line_note_on_campaign_reopen，20260929030000 排的）：
+// DB 已經把貼文退回 posted；這裡先把貼文內容更新成最新（關團前後常常補了照片／改了品項），
+// 再留一則「重新開放」—— LINE 上還掛著「本團已結單」，不留客人不會再 +1。
+// 更新失敗照樣留言（留言才是讓客人回來的那一步）。
+const REOPEN_COMMENT = "🔓 本團重新開放下單！想要的好鄰居請繼續留言「+數量」喔 🙏";
+async function jobReopen(job: any) {
+  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,status,group_buy_campaigns(name,status),line_note_communities(home_id,account_id)`);
+  const p = rows?.[0];
+  if (!p) throw new Error(`post ${job.post_id} not found`);
+  if (p.group_buy_campaigns?.status !== "open") return { skipped: `campaign ${p.group_buy_campaigns?.status}` };
+  if (p.status !== "posted") return { skipped: `post ${p.status}` };
+  if (!p.line_post_id) return { skipped: "no_line_post_id" };
+  const updated = await updatePost(p.id, null).catch((e) => ({ ok: false, error: String((e as any)?.message ?? e) }));
+  const client = await clientFor(await loadAccount(p.line_note_communities.account_id));
+  await createNoteComment(client, p.line_note_communities.home_id, p.line_post_id, REOPEN_COMMENT, { verbose: VERBOSE });
+  log(`🔓 貼文 ${p.id}（${p.group_buy_campaigns?.name ?? ""}）團重新開放，已更新內容並留言`);
+  return { reopened: true, updated: updated.ok, ...(updated.ok ? {} : { updateError: String((updated as any).error ?? "").slice(0, 200) }) };
 }
 
 // 結單當天早上（_line_note_enqueue_due_reminds 排的）：把今天要結單的貼文再分享到聊天室一次。
@@ -1231,7 +1254,7 @@ async function jobRemind(job: any) {
 }
 
 const HANDLERS: Record<string, (job: any, reactUntil: number) => Promise<unknown>> = {
-  logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead, close: jobClose, remind: jobRemind, share: jobShare,
+  logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead, close: jobClose, remind: jobRemind, share: jobShare, reopen: jobReopen,
 };
 
 async function claimNextJob() {
