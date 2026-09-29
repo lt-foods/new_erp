@@ -5,6 +5,7 @@ import { getSupabase } from "@/lib/supabase";
 import { cleanRichTextCampaignText } from "@/lib/text";
 import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
+import type { CloseType } from "@/components/CampaignForm";
 
 export type StorageType = "room_temp" | "refrigerated" | "frozen" | "meal_train" | null;
 
@@ -98,6 +99,8 @@ export function CreateCampaignModal({
   const [description, setDescription] = useState("");
   // 開團那一刻要不要自動發 LINE 記事本（老闆 9/27 要的開關；預設發）
   const [lineNote, setLineNote] = useState(true);
+  // 開團類別：同 CampaignForm 的「收單類型」，漂漂館 = 常規 + sales_channel='piaopiao'
+  const [campaignType, setCampaignType] = useState<CloseType | "piaopiao">("regular");
 
   // fetch preview campaign_no
   useEffect(() => {
@@ -176,6 +179,8 @@ export function CreateCampaignModal({
         p_start_at: new Date(startAt).toISOString(),
         p_auto_open: true,
         p_line_note: lineNote,
+        p_close_type: campaignType === "piaopiao" ? "regular" : campaignType,
+        p_sales_channel: campaignType === "piaopiao" ? "piaopiao" : "main",
       });
       if (err) throw err;
       onCreated(Number(data));
@@ -200,6 +205,24 @@ export function CreateCampaignModal({
           <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 select-all">
             {campaignNo}
           </div>
+        </label>
+
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="text-zinc-600 dark:text-zinc-400">開團類別</span>
+          <select
+            value={campaignType}
+            onChange={(e) => setCampaignType(e.target.value as CloseType | "piaopiao")}
+            className={inputCls}
+          >
+            <option value="regular">常規</option>
+            <option value="fast">快團</option>
+            <option value="limited">限量</option>
+            <option value="food_train">美食列車</option>
+            <option value="piaopiao">漂漂館</option>
+          </select>
+          {campaignType === "piaopiao" && (
+            <span className="text-xs text-zinc-400">只出現在漂漂館專區，不會出現在主商城</span>
+          )}
         </label>
 
         <label className="flex flex-col gap-1 text-sm">
