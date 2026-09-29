@@ -400,7 +400,8 @@ export function CampaignForm({
       </div>
 
       {/* 只在還沒開團時給改：開團那一刻 trigger 就決定了，之後改沒有意義（要補發走開團彈窗手動勾社群） */}
-      {(initial?.status ?? "draft") === "draft" && (
+      {/* 門市自開團不發記事本（DB 端 trigger / RPC 也擋，20260929000000），開關不給看 */}
+      {(initial?.status ?? "draft") === "draft" && v.owner_store_id == null && (
         <div className="flex items-start justify-between gap-3 rounded-md border border-zinc-200 px-3 py-2.5 dark:border-zinc-700">
           <div className="flex flex-col gap-0.5">
             <span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">開團時發 LINE 記事本</span>
