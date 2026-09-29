@@ -101,6 +101,8 @@ export function CreateCampaignModal({
   const [lineNote, setLineNote] = useState(true);
   // 開團類別：同 CampaignForm 的「收單類型」，漂漂館 = 常規 + sales_channel='piaopiao'
   const [campaignType, setCampaignType] = useState<CloseType | "piaopiao">("regular");
+  // 總量上限：限量必填、快團可選（同 CampaignForm）
+  const [totalCap, setTotalCap] = useState("");
 
   // fetch preview campaign_no
   useEffect(() => {
@@ -163,6 +165,15 @@ export function CreateCampaignModal({
       setError("店家收單不能早於客人收單");
       return;
     }
+    const capQty = totalCap.trim() ? Number(totalCap) : null;
+    if (capQty != null && !(capQty > 0 && Number.isInteger(capQty))) {
+      setError("總量上限要填大於 0 的整數");
+      return;
+    }
+    if (campaignType === "limited" && capQty == null) {
+      setError("限量團要填總量上限");
+      return;
+    }
     setSaving(true); setError(null);
     try {
       // 1 campaign : 1 product invariant — UI 端已限制 products.length=1
@@ -181,6 +192,7 @@ export function CreateCampaignModal({
         p_line_note: lineNote,
         p_close_type: campaignType === "piaopiao" ? "regular" : campaignType,
         p_sales_channel: campaignType === "piaopiao" ? "piaopiao" : "main",
+        p_total_cap_qty: campaignType === "limited" || campaignType === "fast" ? capQty : null,
       });
       if (err) throw err;
       onCreated(Number(data));
@@ -224,6 +236,24 @@ export function CreateCampaignModal({
             <span className="text-xs text-zinc-400">只出現在漂漂館專區，不會出現在主商城</span>
           )}
         </label>
+
+        {(campaignType === "limited" || campaignType === "fast") && (
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="text-zinc-600 dark:text-zinc-400">
+              總量上限{campaignType === "limited" ? <span className="text-red-500"> *</span> : "（可選）"}
+            </span>
+            <input
+              type="number"
+              inputMode="numeric"
+              min="1"
+              step="1"
+              value={totalCap}
+              onChange={(e) => setTotalCap(e.target.value)}
+              placeholder={campaignType === "fast" ? "留空則不限數量；填數字則達標自動關團" : "整團總量上限，例：50"}
+              className={inputCls}
+            />
+          </label>
+        )}
 
         <label className="flex flex-col gap-1 text-sm">
           <span className="text-zinc-600 dark:text-zinc-400">開團時間 <span className="text-red-500">*</span></span>
