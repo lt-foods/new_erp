@@ -68,8 +68,18 @@ type Row = {
 const STATUS_LABEL = CAMPAIGN_STATUS_LABEL;
 const LOCKED_ADD_ORDER_TITLE = "這個團的請購單已經建出來了，請到請購單頁處理；不能在這裡加單。";
 
-function canAddOrderFromCampaign(status: Status) {
-  return status === "open" || status === "closed";
+const FOOD_TRAIN_CLOSED_ADD_ORDER_TITLE = "美食列車已收單，不能再加單。";
+
+// 常規等團收單（closed）後仍可補客單（#991）；美食列車收單即截止，不開放。
+function canAddOrderFromCampaign(r: { status: Status; close_type: CloseType }) {
+  return r.status === "open" || (r.status === "closed" && r.close_type !== "food_train");
+}
+
+/** 顯示灰色「加單」的原因；null = 不顯示灰鈕。 */
+function addOrderBlockedTitle(r: { status: Status; close_type: CloseType }): string | null {
+  if (r.status === "locked") return LOCKED_ADD_ORDER_TITLE;
+  if (r.status === "closed" && r.close_type === "food_train") return FOOD_TRAIN_CLOSED_ADD_ORDER_TITLE;
+  return null;
 }
 
 const CLOSE_TYPE_LABEL: Record<CloseType, string> = {
@@ -815,19 +825,19 @@ export default function CampaignsListPage() {
   const toIdx = Math.min(page * PAGE_SIZE, total);
 
   // 「加單」獨立放在 checkbox 旁邊，不參與下方操作鈕群組。
-  // closed 仍可補客單；locked 代表請購單已建出來，這裡只能提示不能再加。
+  // closed 仍可補客單（美食列車除外）；locked 代表請購單已建出來，這裡只能提示不能再加。
   const addOrderLink = (r: Row) =>
-    canAddOrderFromCampaign(r.status) ? (
+    canAddOrderFromCampaign(r) ? (
       <Link
         href={`/campaigns/order-entry?id=${r.id}`}
         className="text-sm font-bold text-green-600 hover:underline dark:text-green-400"
       >
         加單
       </Link>
-    ) : r.status === "locked" ? (
+    ) : addOrderBlockedTitle(r) ? (
       <span
         className="cursor-not-allowed text-sm font-bold text-zinc-400 dark:text-zinc-600"
-        title={LOCKED_ADD_ORDER_TITLE}
+        title={addOrderBlockedTitle(r) ?? undefined}
       >
         加單
       </span>
@@ -2006,7 +2016,7 @@ function CampaignCard({
         >
           <span className="font-medium">{r.name || r.campaign_no}</span><PiaopiaoBadge salesChannel={r.sales_channel} />
         </SpinButton>
-        {canAddOrderFromCampaign(r.status) && (
+        {canAddOrderFromCampaign(r) && (
           <Link
             href={`/campaigns/order-entry?id=${r.id}`}
             className="shrink-0 rounded bg-white/80 px-1 font-bold text-green-700 hover:bg-white dark:bg-zinc-950/70 dark:text-green-300"
@@ -2015,10 +2025,10 @@ function CampaignCard({
             加
           </Link>
         )}
-        {r.status === "locked" && (
+        {addOrderBlockedTitle(r) && (
           <span
             className="shrink-0 cursor-not-allowed rounded bg-white/60 px-1 font-bold text-zinc-400 dark:bg-zinc-950/50 dark:text-zinc-500"
-            title={LOCKED_ADD_ORDER_TITLE}
+            title={addOrderBlockedTitle(r) ?? undefined}
           >
             加
           </span>
@@ -2088,7 +2098,7 @@ function CampaignCard({
 
       {/* 動作 */}
       <div className="flex flex-wrap gap-1">
-        {canAddOrderFromCampaign(r.status) && (
+        {canAddOrderFromCampaign(r) && (
           <Link
             href={`/campaigns/order-entry?id=${r.id}`}
             className="rounded border border-green-400 bg-green-50 px-2 py-0.5 text-[11px] font-medium text-green-700 hover:bg-green-100 dark:border-green-700 dark:bg-green-950 dark:text-green-300 dark:hover:bg-green-900"
@@ -2096,10 +2106,10 @@ function CampaignCard({
             + 加單
           </Link>
         )}
-        {r.status === "locked" && (
+        {addOrderBlockedTitle(r) && (
           <span
             className="cursor-not-allowed rounded border border-zinc-300 bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-500"
-            title={LOCKED_ADD_ORDER_TITLE}
+            title={addOrderBlockedTitle(r) ?? undefined}
           >
             + 加單
           </span>

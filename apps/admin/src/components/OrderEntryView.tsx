@@ -14,6 +14,7 @@ type Campaign = {
   campaign_no: string;
   name: string;
   status: string;
+  close_type: string | null;
   pickup_deadline: string | null;
   cover_image_url: string | null;
   campaign_items: CampaignCoverItem[] | null;
@@ -85,6 +86,7 @@ type CustomerEntry = {
 
 const DRAFT_PREFIX = "draft:order-entry:";
 const AUTOSAVE_MS = 30_000;
+const FOOD_TRAIN_CLOSED_NOTE = "美食列車已收單，不能再加單。";
 const CLOSED_CAMPAIGN_ORDER_NOTE =
   "如果這個結單日已建過請購單，送出後請回請購單頁執行補單，否則新增數量不會被買到。";
 
@@ -194,6 +196,8 @@ export function OrderEntryView({
 
   const draftKey = useMemo(() => `${DRAFT_PREFIX}${campaignId}`, [campaignId]);
   const isClosedCampaign = campaign?.status === "closed";
+  // 美食列車收單即截止，不像常規團可以收單後補客單。
+  const isFoodTrainClosed = isClosedCampaign && campaign?.close_type === "food_train";
   const withClosedCampaignNote = (message: string) =>
     isClosedCampaign ? `${message}。${CLOSED_CAMPAIGN_ORDER_NOTE}` : message;
 
@@ -205,7 +209,7 @@ export function OrderEntryView({
       const sb = getSupabase();
       const [cRes, chRes, stRes] = await Promise.all([
         sb.from("group_buy_campaigns")
-          .select("id, campaign_no, name, status, pickup_deadline, cover_image_url, campaign_items(sort_order, sku:skus(product:products(images)))")
+          .select("id, campaign_no, name, status, close_type, pickup_deadline, cover_image_url, campaign_items(sort_order, sku:skus(product:products(images)))")
           .eq("id", campaignId).maybeSingle(),
         sb.from("line_channels")
           .select("id, name, home_store_id").eq("is_active", true).order("name"),
@@ -390,6 +394,7 @@ export function OrderEntryView({
   async function handleSubmit() {
     if (submitting) return;
     setError(null);
+    if (isFoodTrainClosed) { setError(FOOD_TRAIN_CLOSED_NOTE); return; }
     if (mode === "internal") {
       await submitInternal();
       return;
@@ -613,7 +618,11 @@ export function OrderEntryView({
         </div>
       </header>
 
-      {isClosedCampaign && (
+      {isFoodTrainClosed ? (
+        <div className="rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-200">
+          {FOOD_TRAIN_CLOSED_NOTE}
+        </div>
+      ) : isClosedCampaign && (
         <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
           {CLOSED_CAMPAIGN_ORDER_NOTE}
         </div>
