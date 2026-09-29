@@ -1940,22 +1940,31 @@ function OfferModal({
     let cancelled = false;
     (async () => {
       const sb = getSupabase();
-      const { data, error: e } = await sb
-        .from("customer_orders")
-        .select(`
-          id, order_no, pickup_store_id, status,
-          member:members(name, phone),
-          items:customer_order_items(campaign_item_id, sku_id, qty, status, unit_price, sku:skus(sku_code, product_name, variant_name, product:products(description)))
-        `)
-        .eq("pickup_store_id", storeId)
-        // partially_completed 也要列：內部現貨池的單臨櫃賣掉一件就變這個狀態，
-        // 只列 ready 的話「店裡明明還有貨」卻挑不到單，店家只好改發手動現貨
-        // （轉單 RPC 本來就接受這兩個狀態，20260814000020）
-        .in("status", ["ready", "partially_completed"])
-        .order("id", { ascending: false })
-        .limit(200);
-      if (cancelled) return;
-      if (e) { setErr(e.message); return; }
+      // 分頁載完整家店：搜尋是前端過濾，只抓最新 N 張的話較舊的單怎麼搜都搜不到
+      // （2026-09-29 古華 407 張可取單、舊版 limit 200 → GRP-20260813-004-0003 「沒有符合」）。
+      // 線上最大店約 1,600 張；PostgREST 單次上限 1000 列，所以要 range 迴圈。
+      const PAGE = 1000;
+      const data: unknown[] = [];
+      for (let from = 0; ; from += PAGE) {
+        const { data: page, error: e } = await sb
+          .from("customer_orders")
+          .select(`
+            id, order_no, pickup_store_id, status,
+            member:members(name, phone),
+            items:customer_order_items(campaign_item_id, sku_id, qty, status, unit_price, sku:skus(sku_code, product_name, variant_name, product:products(description)))
+          `)
+          .eq("pickup_store_id", storeId)
+          // partially_completed 也要列：內部現貨池的單臨櫃賣掉一件就變這個狀態，
+          // 只列 ready 的話「店裡明明還有貨」卻挑不到單，店家只好改發手動現貨
+          // （轉單 RPC 本來就接受這兩個狀態，20260814000020）
+          .in("status", ["ready", "partially_completed"])
+          .order("id", { ascending: false })
+          .range(from, from + PAGE - 1);
+        if (cancelled) return;
+        if (e) { setErr(e.message); return; }
+        data.push(...(page ?? []));
+        if (!page || page.length < PAGE) break;
+      }
       type RawProduct = { description: string | null };
       type RawSku = { sku_code: string; product_name: string; variant_name: string | null; product?: RawProduct | RawProduct[] | null };
       type RawItem = { campaign_item_id: number | null; sku_id: number | null; qty: number; status: string; unit_price: number | string | null; sku: RawSku | RawSku[] | null };
