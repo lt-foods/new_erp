@@ -839,11 +839,23 @@ export default function CampaignsListPage() {
         加單
       </span>
     ) : null;
+  // 限量 / 美食列車：品項進度（已下單 / 正取上限）的手機快速看頁
+  const statsLink = (r: Row) =>
+    r.close_type === "limited" || r.close_type === "food_train" ? (
+      <Link
+        href={`/campaigns/stats?id=${r.id}`}
+        className="text-sm font-bold text-blue-600 hover:underline dark:text-blue-400"
+      >
+        進度
+      </Link>
+    ) : null;
   const addOrderSlot = (r: Row) => {
     const link = addOrderLink(r);
-    return link ? (
-      <span className="mt-0.5" onClick={(e) => e.stopPropagation()}>
+    const stats = statsLink(r);
+    return link || stats ? (
+      <span className="mt-0.5 flex gap-2" onClick={(e) => e.stopPropagation()}>
         {link}
+        {stats}
       </span>
     ) : null;
   };
@@ -1249,7 +1261,10 @@ export default function CampaignsListPage() {
                   />
                 </Td>
                 <Td className="w-12 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                  {addOrderLink(r)}
+                  <div className="flex flex-col gap-1">
+                    {addOrderLink(r)}
+                    {statsLink(r)}
+                  </div>
                 </Td>
                 <Td className="w-20">
                   <CampaignThumb url={campaignCoverUrl(r.cover_image_url, r.campaign_items)} name={r.name} />
