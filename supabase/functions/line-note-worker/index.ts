@@ -1211,6 +1211,19 @@ async function jobReopen(job: any) {
   return { reopened: true, updated: updated.ok, ...(updated.ok ? {} : { updateError: String((updated as any).error ?? "").slice(0, 200) }) };
 }
 
+// 手機團控改了結單時間（trg_line_note_on_campaign_deadline，20260929040000 排的）：
+// 把貼文改成最新內容，跟後台「更新貼文」按鈕同一支。團已經不是開團中就不動。
+async function jobRefresh(job: any) {
+  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,status,group_buy_campaigns(status)`);
+  const p = rows?.[0];
+  if (!p) throw new Error(`post ${job.post_id} not found`);
+  if (p.group_buy_campaigns?.status !== "open") return { skipped: `campaign ${p.group_buy_campaigns?.status}` };
+  if (p.status !== "posted") return { skipped: `post ${p.status}` };
+  const r = await updatePost(p.id, null);
+  if (!r.ok) throw new Error(String((r as any).error ?? "更新貼文失敗"));
+  return { refreshed: true, title: (r as any).title };
+}
+
 // 結單當天早上（_line_note_enqueue_due_reminds 排的）：把今天要結單的貼文再分享到聊天室一次。
 // 社群有設 remind_message 的話，當天第一篇分享前先發那段文字（一天只發一次）。
 const DEFAULT_REMIND_MESSAGE = "好鄰居們早安~~再看一眼，今日結單商品喔～走過路過不要錯過！喜歡的商品，好鄰居記得登記下單喔！！也可以新系統商城下單喔～\nhttps://new-erp-admin.vercel.app/shop";
@@ -1254,7 +1267,7 @@ async function jobRemind(job: any) {
 }
 
 const HANDLERS: Record<string, (job: any, reactUntil: number) => Promise<unknown>> = {
-  logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead, close: jobClose, remind: jobRemind, share: jobShare, reopen: jobReopen,
+  logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead, close: jobClose, remind: jobRemind, share: jobShare, reopen: jobReopen, refresh: jobRefresh,
 };
 
 async function claimNextJob() {
