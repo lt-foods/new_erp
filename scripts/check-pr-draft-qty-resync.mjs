@@ -45,6 +45,7 @@ function verify(sql, ui) {
 
   const storeAddWrapper = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_add_pr_store_demands", "CREATE OR REPLACE FUNCTION public._pr_apply_qty_sync");
   assert.match(storeAddWrapper, /hashtext\(p_campaign_id::TEXT\),\s+hashtext\(v_sku_id::TEXT\)/);
+  assert.ok(storeAddWrapper.indexOf("FROM public.group_buy_campaigns") < storeAddWrapper.indexOf("pg_advisory_xact_lock"));
   assert.ok(storeAddWrapper.indexOf("pg_advisory_xact_lock") < storeAddWrapper.indexOf("_rpc_add_pr_store_demands_20260930_inner("));
 
   const validation = section(sql, "CREATE OR REPLACE FUNCTION public._pr_validate_qty_current", "REVOKE ALL ON FUNCTION public._pr_validate_qty_current");
@@ -52,20 +53,46 @@ function verify(sql, ui) {
   assert.match(validation, /_pr_campaign_sku_remaining_rows\(v_campaign_ids\)/);
   assert.doesNotMatch(validation, /JOIN wanted/);
 
+  const snapshot = section(sql, "CREATE OR REPLACE FUNCTION public._pr_lock_demand_snapshot", "REVOKE ALL ON FUNCTION public._pr_lock_demand_snapshot");
+  const lockTargets = ["group_buy_campaigns", "campaign_items", "customer_orders", "customer_order_items"];
+  let lastLock = -1;
+  for (const target of lockTargets) {
+    const at = snapshot.indexOf(`public.${target}`);
+    assert.ok(at > lastLock, `demand lock order broken at ${target}`);
+    lastLock = at;
+  }
+  assert.equal((snapshot.match(/FOR UPDATE/g) ?? []).length, 4);
+  assert.match(snapshot, /ORDER BY gbc\.id[\s\S]*FOR UPDATE/);
+  assert.match(snapshot, /ORDER BY ci\.campaign_id, ci\.id[\s\S]*FOR UPDATE/);
+  assert.match(snapshot, /ORDER BY co\.campaign_id, co\.id[\s\S]*FOR UPDATE/);
+  assert.match(snapshot, /ORDER BY co\.campaign_id, co\.id, coi\.id[\s\S]*FOR UPDATE OF coi/);
+
   const submit = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_submit_pr", "-- ---------------------------------------------------------------------------\n-- \u5efa PO");
   assert.ok(submit.indexOf("_pr_apply_qty_sync") < submit.indexOf("SET status = 'submitted'"));
   assert.ok(submit.indexOf("_pr_validate_qty_current") < submit.indexOf("SET status = 'submitted'"));
   assert.ok(submit.indexOf("FOR UPDATE") === -1 || submit.indexOf("FOR UPDATE") > submit.indexOf("_pr_apply_qty_sync"));
 
   const split = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_split_pr_to_pos", "CREATE OR REPLACE FUNCTION public.rpc_merge_prs_to_po");
+  const splitSnapshotCall = "PERFORM public._pr_lock_demand_snapshot(ARRAY[p_pr_id]);";
+  assert.match(split, /v_role\s+TEXT := COALESCE/);
+  assert.match(split, /v_tenant\s+UUID := public\._current_tenant_id\(\)/);
+  assert.match(split, /v_role NOT IN \('owner','admin','hq_manager','purchaser','assistant',''\)/);
+  assert.match(split, /p_operator <> auth\.uid\(\)/);
+  assert.ok(split.indexOf(splitSnapshotCall) >= 0 && split.indexOf(splitSnapshotCall) < split.indexOf("FOR UPDATE"));
   assert.ok(split.indexOf("_pr_validate_qty_current") < split.indexOf("rpc_next_po_no"));
+  assert.ok(split.indexOf(splitSnapshotCall) < split.indexOf("_pr_validate_qty_current"));
+  assert.ok(split.indexOf("_pr_validate_qty_current") < split.indexOf("INSERT INTO public.purchase_orders"));
 
   const merge = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_merge_prs_to_po", "-- \u90e8\u5206\u8f49\u63a1\u8cfc");
-  assert.match(merge, /v_role NOT IN \('owner','admin','hq_manager',''\)/);
+  const mergeSnapshotCall = "PERFORM public._pr_lock_demand_snapshot(v_snapshot_pr_ids);";
+  assert.match(merge, /v_role NOT IN \('owner','admin','hq_manager','purchaser','assistant',''\)/);
   assert.match(merge, /p_operator <> auth\.uid\(\)/);
   assert.match(merge, /pr\.status = 'submitted'/);
   assert.match(merge, /pr\.review_status = 'approved'/);
   assert.match(merge, /v_matched <> v_want/);
+  assert.ok(merge.indexOf(mergeSnapshotCall) >= 0 && merge.indexOf(mergeSnapshotCall) < merge.indexOf("FOR UPDATE"));
+  assert.ok(merge.indexOf(mergeSnapshotCall) < merge.indexOf("_pr_validate_qty_current"));
+  assert.ok(merge.indexOf("_pr_validate_qty_current") < merge.indexOf("INSERT INTO public.purchase_orders"));
   const spendPart = section(merge, "INSERT INTO public.purchase_orders", "RETURN v_po_id");
   assert.match(spendPart, /ANY\(v_valid_ids\)/);
   assert.doesNotMatch(spendPart, /ANY\(p_pr_item_ids\)/);
@@ -103,6 +130,10 @@ const faults = [
   ["sync \u524d\u6c92\u5b58\u6a94", migration, page.replace("if (!(await saveDraft())) return;", "// save removed")],
   ["preview \u5931\u6557\u53c8\u5f04\u58de\u6574\u9801", migration, page.replace("if (qtyPreviewErr) {", "if (qtyPreviewErr) throw new Error(qtyPreviewErr.message);\n        if (false) {")],
   ["linked qty \u53c8\u53ef\u624b\u6539", migration, page.replace("editable && !itemCampaignOptions.has(r.id)", "editable")],
+  ["snapshot \u7528\u592a\u5f31\u7684 row lock", migration.replace("FOR UPDATE;\n\n  PERFORM 1\n    FROM public.campaign_items", "FOR NO KEY UPDATE;\n\n  PERFORM 1\n    FROM public.campaign_items"), page],
+  ["split \u5c11 demand snapshot", migration.replace("PERFORM public._pr_lock_demand_snapshot(ARRAY[p_pr_id]);", "-- snapshot removed"), page],
+  ["merge \u5c11 demand snapshot", migration.replace("PERFORM public._pr_lock_demand_snapshot(v_snapshot_pr_ids);", "-- snapshot removed"), page],
+  ["split \u8aa4\u653e\u5206\u5e97\u89d2\u8272", migration.replace("'purchaser','assistant','') THEN\n    RAISE EXCEPTION '\u6b0a\u9650\u4e0d\u8db3，\u7121\u6cd5\u5efa\u7acb\u63a1\u8cfc\u55ae'", "'purchaser','assistant','store_manager','') THEN\n    RAISE EXCEPTION '\u6b0a\u9650\u4e0d\u8db3，\u7121\u6cd5\u5efa\u7acb\u63a1\u8cfc\u55ae'"), page],
 ];
 
 for (const [name, brokenSql, brokenUi] of faults) {

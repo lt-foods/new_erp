@@ -107,7 +107,7 @@ BEGIN
   INSERT INTO purchase_request_items(pr_id,sku_id,qty_requested,suggested_supplier_id,unit_cost,source_campaign_id,created_by,updated_by)
   VALUES(pr,a,4,sup,10,camp_split,op,op) RETURNING id INTO item;
   INSERT INTO purchase_request_item_campaigns(tenant_id,pr_item_id,campaign_id,qty_requested) VALUES(t,item,camp_split,4);
-  INSERT INTO _t_ctx VALUES ('split_pr',pr);
+  INSERT INTO _t_ctx VALUES ('split_pr',pr),('split_order',ord);
 
   INSERT INTO group_buy_campaigns(tenant_id,campaign_no,name,status,end_at)
   VALUES(t,'ZZTEST-QTY-CMERGE','【測試】merge','locked',NOW()) RETURNING id INTO camp_merge;
@@ -234,6 +234,41 @@ BEGIN
   INSERT INTO _t_result VALUES(33,'merge 擋新 SKU',blocked,COALESCE(msg,'not blocked'));
 END $$;
 
+-- 花錢角色矩陣：總部會計與分店角色在 split/merge 兩邊都要被擋。
+DO $$
+DECLARE
+  v_role TEXT;
+  v_claim TEXT;
+  v_split_blocked BOOLEAN;
+  v_merge_blocked BOOLEAN;
+  v_all_blocked BOOLEAN := TRUE;
+BEGIN
+  FOREACH v_role IN ARRAY ARRAY['hq_accountant','store_manager','store_staff']
+  LOOP
+    v_claim := format(
+      '{"tenant_id":"face0000-0000-4000-8000-000000000030","app_metadata":{"role":"%s"},"sub":"face0000-0000-4000-8000-0000000000ff"}',
+      v_role
+    );
+    PERFORM set_config('request.jwt.claim', v_claim, TRUE);
+    PERFORM set_config('request.jwt.claims', v_claim, TRUE);
+    v_split_blocked := FALSE;
+    v_merge_blocked := FALSE;
+    BEGIN
+      PERFORM rpc_split_pr_to_pos((SELECT v FROM _t_ctx WHERE k='split_pr'),(SELECT v FROM _t_ctx WHERE k='loc'),(SELECT operator FROM _t_env));
+    EXCEPTION WHEN OTHERS THEN v_split_blocked := TRUE; END;
+    BEGIN
+      PERFORM rpc_merge_prs_to_po((SELECT tenant FROM _t_env),ARRAY[(SELECT v FROM _t_ctx WHERE k='merge_item')],
+        (SELECT v FROM _t_ctx WHERE k='supplier'),(SELECT v FROM _t_ctx WHERE k='loc'),'ZZTEST-QTY-PO-ROLE-'||v_role,(SELECT operator FROM _t_env));
+    EXCEPTION WHEN OTHERS THEN v_merge_blocked := TRUE; END;
+    v_all_blocked := v_all_blocked AND v_split_blocked AND v_merge_blocked;
+  END LOOP;
+
+  v_claim := '{"tenant_id":"face0000-0000-4000-8000-000000000030","app_metadata":{"role":"owner"},"sub":"face0000-0000-4000-8000-0000000000ff"}';
+  PERFORM set_config('request.jwt.claim', v_claim, TRUE);
+  PERFORM set_config('request.jwt.claims', v_claim, TRUE);
+  INSERT INTO _t_result VALUES(35,'split/merge 排除會計與分店角色',v_all_blocked,'3 roles checked');
+END $$;
+
 -- 混入外租戶 id 要在花錢前整筆拒絕，合法 item 也不得被回寫。
 DO $$
 DECLARE blocked BOOLEAN:=FALSE; msg TEXT; before_po BIGINT; after_po BIGINT; before_count INTEGER; after_count INTEGER;
@@ -264,6 +299,20 @@ BEGIN
   EXCEPTION WHEN OTHERS THEN blocked:=TRUE; msg:=SQLERRM; END;
   INSERT INTO _t_result VALUES(42,'merge 不存在 id 整筆拒絕',blocked,COALESCE(msg,'not blocked'));
 END $$;
+
+-- 送審核准後需求才變：split 必須在產生 PO 前擋住；還原後才跑下面正常路徑。
+UPDATE customer_order_items SET qty=5 WHERE order_id=(SELECT v FROM _t_ctx WHERE k='split_order');
+DO $$
+DECLARE blocked BOOLEAN:=FALSE; msg TEXT; before_count INTEGER; after_count INTEGER;
+BEGIN
+  SELECT COUNT(*) INTO before_count FROM purchase_orders WHERE tenant_id=(SELECT tenant FROM _t_env);
+  BEGIN
+    PERFORM rpc_split_pr_to_pos((SELECT v FROM _t_ctx WHERE k='split_pr'),(SELECT v FROM _t_ctx WHERE k='loc'),(SELECT operator FROM _t_env));
+  EXCEPTION WHEN OTHERS THEN blocked:=TRUE; msg:=SQLERRM; END;
+  SELECT COUNT(*) INTO after_count FROM purchase_orders WHERE tenant_id=(SELECT tenant FROM _t_env);
+  INSERT INTO _t_result VALUES(45,'送審後需求變更會在 PO 前被擋',blocked AND before_count=after_count,COALESCE(msg,'not blocked'));
+END $$;
+UPDATE customer_order_items SET qty=4 WHERE order_id=(SELECT v FROM _t_ctx WHERE k='split_order');
 
 -- 三條正常路徑也要真正呼叫，避免只測「會擋」。
 SELECT rpc_submit_pr((SELECT v FROM _t_ctx WHERE k='submit_pr'),(SELECT operator FROM _t_env));
@@ -309,6 +358,31 @@ SELECT 81,'#982/#995/sync 同 advisory key 且 sync 先鎖',
   AND pg_get_functiondef('public.rpc_add_pr_store_demands(bigint,bigint,bigint,jsonb,uuid,uuid)'::regprocedure)
       LIKE '%hashtext(p_campaign_id::TEXT)%hashtext(v_sku_id::TEXT)%',
   'lock definitions checked';
+
+WITH defs AS (
+  SELECT pg_get_functiondef('public._pr_lock_demand_snapshot(bigint[])'::regprocedure) AS lock_src,
+         pg_get_functiondef('public.rpc_split_pr_to_pos(bigint,bigint,uuid)'::regprocedure) AS split_src,
+         pg_get_functiondef('public.rpc_merge_prs_to_po(uuid,bigint[],bigint,bigint,text,uuid)'::regprocedure) AS merge_src
+)
+INSERT INTO _t_result
+SELECT 82,'split/merge 在 validate/PO 前持有 deterministic demand snapshot',
+  STRPOS(lock_src,'group_buy_campaigns') < STRPOS(lock_src,'campaign_items')
+  AND STRPOS(lock_src,'campaign_items') < STRPOS(lock_src,'customer_orders')
+  AND STRPOS(lock_src,'customer_orders') < STRPOS(lock_src,'customer_order_items')
+  AND (LENGTH(lock_src)-LENGTH(REPLACE(lock_src,'FOR UPDATE','')))/LENGTH('FOR UPDATE') = 4
+  AND STRPOS(split_src,'_pr_lock_demand_snapshot') < STRPOS(split_src,'_pr_validate_qty_current')
+  AND STRPOS(split_src,'_pr_validate_qty_current') < STRPOS(split_src,'INSERT INTO public.purchase_orders')
+  AND STRPOS(merge_src,'_pr_lock_demand_snapshot') < STRPOS(merge_src,'_pr_validate_qty_current')
+  AND STRPOS(merge_src,'_pr_validate_qty_current') < STRPOS(merge_src,'INSERT INTO public.purchase_orders'),
+  'campaign -> campaign_items -> orders -> order_items; split/merge lock -> validate -> PO'
+FROM defs;
+
+-- 兩 session 真實競態驗證（需本機 PostgreSQL，本次未實跑）：
+-- A: BEGIN; SELECT _pr_lock_demand_snapshot(ARRAY[<ZZTEST submitted PR id>]);
+--    保持未 COMMIT，再在同交易呼叫 _pr_validate_qty_current 與 split/merge。
+-- B: SET lock_timeout='500ms'; UPDATE customer_orders SET status='cancelled' WHERE id=<該團 ZZTEST order id>;
+--    或 INSERT customer_order_items(...) 指向該團已鎖的 order/campaign_item；預期 55P03 timeout，非業務錯誤。
+-- A: 完成 PO 後 COMMIT。B: ROLLBACK 後移除 lock_timeout 重試，預期取消/新增成功且 dirty 保留。
 
 DO $$
 DECLARE bad TEXT;

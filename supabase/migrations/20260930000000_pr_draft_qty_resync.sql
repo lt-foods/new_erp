@@ -597,6 +597,18 @@ BEGIN
     RAISE EXCEPTION '找不到這張請購單品項';
   END IF;
 
+  -- 全站順序：campaign demand source -> advisory -> PR/item。
+  -- PO snapshot 持有 campaign FOR UPDATE 時，這裡只會短暫等待，不會反向卡住 PR/item。
+  PERFORM 1
+    FROM public.group_buy_campaigns gbc
+   WHERE gbc.id = p_campaign_id
+     AND gbc.tenant_id = v_tenant
+   FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION '找不到原團 %', p_campaign_id;
+  END IF;
+
   PERFORM pg_advisory_xact_lock(
     hashtext(p_campaign_id::TEXT),
     hashtext(v_sku_id::TEXT)
@@ -880,6 +892,88 @@ $$;
 
 REVOKE ALL ON FUNCTION public._pr_validate_qty_current(BIGINT[]) FROM PUBLIC;
 
+-- 花錢前的共用 demand snapshot lock。固定順序：campaign -> campaign item
+-- -> customer order -> customer order item；全部 FOR UPDATE 持有到 PO 交易結束。
+-- FOR UPDATE 會擋住子列 INSERT 驗 FK 時需要的 KEY SHARE，所以不只鎖現有列，
+-- 也會讓新 campaign_item/order/order_item 等快照完成後才進來；取消只會等待，不會失敗。
+CREATE OR REPLACE FUNCTION public._pr_lock_demand_snapshot(
+  p_pr_ids BIGINT[]
+) RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_tenant       UUID := public._current_tenant_id();
+  v_campaign_ids BIGINT[];
+BEGIN
+  IF v_tenant IS NULL THEN
+    RAISE EXCEPTION '缺少租戶資訊，無法鎖定開團需求';
+  END IF;
+
+  SELECT ARRAY_AGG(DISTINCT x.campaign_id ORDER BY x.campaign_id)
+    INTO v_campaign_ids
+    FROM (
+      SELECT prc.campaign_id
+        FROM public.purchase_requests pr
+        JOIN public.purchase_request_campaigns prc ON prc.pr_id = pr.id
+       WHERE pr.id = ANY(COALESCE(p_pr_ids, ARRAY[]::BIGINT[]))
+         AND pr.tenant_id = v_tenant
+         AND prc.tenant_id = v_tenant
+      UNION
+      SELECT pric.campaign_id
+        FROM public.purchase_requests pr
+        JOIN public.purchase_request_items pri ON pri.pr_id = pr.id
+        JOIN public.purchase_request_item_campaigns pric ON pric.pr_item_id = pri.id
+       WHERE pr.id = ANY(COALESCE(p_pr_ids, ARRAY[]::BIGINT[]))
+         AND pr.tenant_id = v_tenant
+         AND pric.tenant_id = v_tenant
+      UNION
+      SELECT pri.source_campaign_id
+        FROM public.purchase_requests pr
+        JOIN public.purchase_request_items pri ON pri.pr_id = pr.id
+       WHERE pr.id = ANY(COALESCE(p_pr_ids, ARRAY[]::BIGINT[]))
+         AND pr.tenant_id = v_tenant
+         AND pri.source_campaign_id IS NOT NULL
+    ) x;
+
+  IF COALESCE(array_length(v_campaign_ids, 1), 0) = 0 THEN
+    RETURN;
+  END IF;
+
+  PERFORM 1
+    FROM public.group_buy_campaigns gbc
+   WHERE gbc.tenant_id = v_tenant
+     AND gbc.id = ANY(v_campaign_ids)
+   ORDER BY gbc.id
+   FOR UPDATE;
+
+  PERFORM 1
+    FROM public.campaign_items ci
+   WHERE ci.tenant_id = v_tenant
+     AND ci.campaign_id = ANY(v_campaign_ids)
+   ORDER BY ci.campaign_id, ci.id
+   FOR UPDATE;
+
+  PERFORM 1
+    FROM public.customer_orders co
+   WHERE co.tenant_id = v_tenant
+     AND co.campaign_id = ANY(v_campaign_ids)
+   ORDER BY co.campaign_id, co.id
+   FOR UPDATE;
+
+  PERFORM 1
+    FROM public.customer_order_items coi
+    JOIN public.customer_orders co ON co.id = coi.order_id
+   WHERE co.tenant_id = v_tenant
+     AND co.campaign_id = ANY(v_campaign_ids)
+   ORDER BY co.campaign_id, co.id, coi.id
+   FOR UPDATE OF coi;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public._pr_lock_demand_snapshot(BIGINT[]) FROM PUBLIC;
+
 -- ---------------------------------------------------------------------------
 -- 送審：仍是 draft 時先強制同步，再跑既有品項／供應商／門檻守衛。
 -- ---------------------------------------------------------------------------
@@ -987,7 +1081,8 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_tenant         UUID;
+  v_tenant         UUID := public._current_tenant_id();
+  v_role           TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
   v_status         TEXT;
   v_review         TEXT;
   v_unassigned     INTEGER;
@@ -997,11 +1092,41 @@ DECLARE
   v_po_no          TEXT;
   v_po_ids          BIGINT[] := ARRAY[]::BIGINT[];
 BEGIN
-  SELECT tenant_id, status, review_status
-    INTO v_tenant, v_status, v_review
+  IF v_tenant IS NULL OR v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant','') THEN
+    RAISE EXCEPTION '權限不足，無法建立採購單';
+  END IF;
+
+  IF p_operator IS NULL THEN
+    p_operator := auth.uid();
+  END IF;
+  IF p_operator IS NULL OR (auth.uid() IS NOT NULL AND p_operator <> auth.uid()) THEN
+    RAISE EXCEPTION '操作人員不符，無法建立採購單';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM public.locations l
+     WHERE l.id = p_dest_location_id AND l.tenant_id = v_tenant
+  ) THEN
+    RAISE EXCEPTION '送貨地點不屬於本租戶';
+  END IF;
+
+  PERFORM 1
     FROM public.purchase_requests
    WHERE id = p_pr_id
-     AND tenant_id = public._current_tenant_id()
+     AND tenant_id = v_tenant;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION '找不到請購單 %', p_pr_id;
+  END IF;
+
+  -- 先鎖定 demand source，再鎖 PR；與補單/#995 同為 campaign -> PR/item。
+  PERFORM public._pr_lock_demand_snapshot(ARRAY[p_pr_id]);
+
+  SELECT status, review_status
+    INTO v_status, v_review
+    FROM public.purchase_requests
+   WHERE id = p_pr_id
+     AND tenant_id = v_tenant
    FOR UPDATE;
 
   IF NOT FOUND THEN
@@ -1010,8 +1135,8 @@ BEGIN
   IF v_review <> 'approved' THEN
     RAISE EXCEPTION '請購單尚未核准（目前：%）', v_review;
   END IF;
-  IF v_status IN ('fully_ordered','partially_ordered','cancelled') THEN
-    RAISE EXCEPTION '請購單已建立過採購單或已取消（目前狀態：%）', v_status;
+  IF v_status <> 'submitted' THEN
+    RAISE EXCEPTION '請購單不是已送審待採購狀態（目前：%）', v_status;
   END IF;
 
   PERFORM public._pr_validate_qty_current(ARRAY[p_pr_id]);
@@ -1109,6 +1234,7 @@ AS $$
 DECLARE
   v_po_id     BIGINT;
   v_pr_ids    BIGINT[];
+  v_snapshot_pr_ids BIGINT[];
   v_valid_ids BIGINT[];
   v_want      INTEGER;
   v_matched   INTEGER;
@@ -1118,7 +1244,7 @@ BEGIN
     RAISE EXCEPTION '權限不足，租戶不符';
   END IF;
 
-  IF v_role NOT IN ('owner','admin','hq_manager','') THEN
+  IF v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant','') THEN
     RAISE EXCEPTION '權限不足，無法合併請購品項';
   END IF;
 
@@ -1153,7 +1279,18 @@ BEGIN
     RAISE EXCEPTION '供應商或送貨地點不屬於本租戶';
   END IF;
 
-  -- 先依固定順序鎖定「同租戶、已送審核准、未轉 PO、正數、同供應商」集合。
+  -- 先用本租戶輸入快照找涵蓋 PR，鎖 demand source 後才鎖 PR/item。
+  -- 若 item 在等鎖期間被搬到別張 PR，下面會比對集合並整筆拒絕重試。
+  SELECT ARRAY_AGG(DISTINCT pri.pr_id ORDER BY pri.pr_id)
+    INTO v_snapshot_pr_ids
+    FROM public.purchase_request_items pri
+    JOIN public.purchase_requests pr ON pr.id = pri.pr_id
+   WHERE pri.id = ANY(v_valid_ids)
+     AND pr.tenant_id = p_tenant_id;
+
+  PERFORM public._pr_lock_demand_snapshot(v_snapshot_pr_ids);
+
+  -- demand 已鎖定，再依固定順序鎖「同租戶、已送審核准、未轉 PO、正數、同供應商」集合。
   PERFORM 1
     FROM public.purchase_request_items pri
     JOIN public.purchase_requests pr ON pr.id = pri.pr_id
@@ -1184,6 +1321,10 @@ BEGIN
   IF v_matched <> v_want THEN
     RAISE EXCEPTION '請購品項有不屬本租戶、未核准、已轉採購或供應商不符；整筆未建立（傳入 % 項，合法 % 項）',
       v_want, v_matched;
+  END IF;
+
+  IF v_pr_ids IS DISTINCT FROM v_snapshot_pr_ids THEN
+    RAISE EXCEPTION '請購品項在建單前已被搬到其他請購單；整筆未建立，請重試';
   END IF;
 
   PERFORM public._pr_validate_qty_current(v_pr_ids);
