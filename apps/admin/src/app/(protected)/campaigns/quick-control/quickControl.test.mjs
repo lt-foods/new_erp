@@ -80,11 +80,16 @@ test("已售件數：排除取消／過期／轉出單、非一般單、取消�
 });
 
 test("延長／重開／加名額資格：照資料庫守衛", () => {
-  assert.equal(canQuickUpdateCampaign({ close_type: "fast", total_cap_qty: null, campaign_items: [] }), true);
-  assert.equal(canQuickUpdateCampaign({ close_type: "limited", total_cap_qty: null, campaign_items: null }), true);
-  assert.equal(canQuickUpdateCampaign({ close_type: "food_train", total_cap_qty: null, campaign_items: null }), true);
-  assert.equal(canQuickUpdateCampaign({ close_type: "regular", total_cap_qty: null, campaign_items: [{ cap_qty: null }] }), false);
-  assert.equal(canQuickUpdateCampaign({ close_type: "regular", total_cap_qty: 0, campaign_items: null }), false);
-  assert.equal(canQuickUpdateCampaign({ close_type: "regular", total_cap_qty: "10", campaign_items: null }), true);
-  assert.equal(canQuickUpdateCampaign({ close_type: "regular", total_cap_qty: null, campaign_items: [{ cap_qty: 0 }, { cap_qty: "3" }] }), true);
+  assert.equal(canQuickUpdateCampaign({ status: "open", close_type: "fast", total_cap_qty: null, campaign_items: [] }), true);
+  assert.equal(canQuickUpdateCampaign({ status: "open", close_type: "limited", total_cap_qty: null, campaign_items: null }), true);
+  assert.equal(canQuickUpdateCampaign({ status: "open", close_type: "food_train", total_cap_qty: null, campaign_items: null }), true);
+  assert.equal(canQuickUpdateCampaign({ status: "open", close_type: "regular", total_cap_qty: null, campaign_items: [{ cap_qty: null }] }), false);
+  assert.equal(canQuickUpdateCampaign({ status: "open", close_type: "regular", total_cap_qty: 0, campaign_items: null }), false);
+  assert.equal(canQuickUpdateCampaign({ status: "open", close_type: "regular", total_cap_qty: "10", campaign_items: null }), true);
+  assert.equal(canQuickUpdateCampaign({ status: "open", close_type: "regular", total_cap_qty: null, campaign_items: [{ cap_qty: 0 }, { cap_qty: "3" }] }), true);
+  // 狀態條件：已鎖定一律擋，草稿／已關團照類型判斷
+  assert.equal(canQuickUpdateCampaign({ status: "locked", close_type: "fast", total_cap_qty: 10, campaign_items: null }), false);
+  assert.equal(canQuickUpdateCampaign({ status: "draft", close_type: "fast", total_cap_qty: null, campaign_items: null }), true);
+  assert.equal(canQuickUpdateCampaign({ status: "closed", close_type: "limited", total_cap_qty: null, campaign_items: null }), true);
+  assert.equal(canQuickUpdateCampaign({ status: "closed", close_type: "regular", total_cap_qty: null, campaign_items: null }), false);
 });

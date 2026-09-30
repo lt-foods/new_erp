@@ -1355,6 +1355,7 @@ export default function QuickCampaignControlPage() {
                       <div className="divide-y divide-zinc-200 overflow-hidden rounded-md border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
                         {skus.map((sku) => (
                           <div key={sku.id} className="grid grid-cols-[auto_1fr_6rem] items-center gap-2 p-3">
+                            <label className="-my-1 flex min-h-11 min-w-11 cursor-pointer items-center justify-center">
                             <input
                               type="checkbox"
                               checked={selectedSkuIds.has(sku.id)}
@@ -1370,6 +1371,7 @@ export default function QuickCampaignControlPage() {
                               className="h-5 w-5"
                               aria-label={`選取 ${skuLabel(sku)}`}
                             />
+                            </label>
                             <div className="min-w-0">
                               <div className="break-words text-sm font-medium text-zinc-950 dark:text-zinc-50">
                                 {skuLabel(sku)}
@@ -1386,7 +1388,7 @@ export default function QuickCampaignControlPage() {
                               onChange={(e) => setItemCapDraft((cur) => ({ ...cur, [sku.id]: e.target.value }))}
                               placeholder="不填"
                               disabled={!allowed || createBusy || !selectedSkuIds.has(sku.id)}
-                              className="min-h-10 rounded-md border border-zinc-300 bg-white px-2 text-base outline-none focus:border-pink-600 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
+                              className="min-h-11 rounded-md border border-zinc-300 bg-white px-2 text-base outline-none focus:border-pink-600 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
                             />
                           </div>
                         ))}

@@ -87,6 +87,7 @@ export function soldQtyByCampaign(orders: SoldOrder[]): Map<number, number> {
 }
 
 type EligibleCampaign = {
+  status: string;
   close_type: string;
   total_cap_qty: number | string | null;
   campaign_items: { cap_qty?: number | string | null }[] | null;
@@ -95,10 +96,12 @@ type EligibleCampaign = {
 /**
  * 延長／重開／加整團名額背後的 rpc_quick_update_campaign_control 只收這幾種團
  * （20260814000010 那支的守衛，這裡照抄；資料庫沒改之前兩邊要一致）：
- * 美食列車／限時／限時限量，或有設整團上限、或任一品項有上限。
+ * 狀態只能是草稿／開團中／已關團（已鎖定一律擋），
+ * 且是美食列車／限時／限時限量，或有設整團上限、或任一品項有上限。
  * 沒設上限的一般團按下去會被資料庫擋掉，所以畫面先不給按。
  */
 export function canQuickUpdateCampaign(row: EligibleCampaign): boolean {
+  if (!["draft", "open", "closed"].includes(row.status)) return false;
   return (
     row.close_type === "food_train"
     || row.close_type === "fast"
