@@ -1245,6 +1245,7 @@ BEGIN
            updated_by = p_operator
       FROM inserted i
      WHERE pri.pr_id = p_pr_id
+       AND pri.qty_requested > 0
        AND pri.suggested_supplier_id = v_supplier_rec.supplier_id
        AND pri.sku_id = i.sku_id;
 
@@ -1417,6 +1418,10 @@ BEGIN
      OR v_locked_pr_ids IS DISTINCT FROM v_snapshot_pr_ids
      OR v_locked_campaign_ids IS DISTINCT FROM v_snapshot_campaign_ids THEN
     RAISE EXCEPTION '請購品項在建單前已被搬到其他請購單；整筆未建立，請重試';
+  END IF;
+
+  IF COALESCE(array_length(v_locked_item_ids, 1), 0) = 0 THEN
+    RAISE EXCEPTION '沒有正數量的請購品項可建立採購單';
   END IF;
 
   PERFORM public._pr_validate_qty_current(v_locked_pr_ids);

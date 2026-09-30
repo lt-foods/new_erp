@@ -120,10 +120,11 @@ function verify(sql, ui) {
   assert.match(sql, /ALTER FUNCTION public\.rpc_submit_pr\(BIGINT, UUID\)\s+RENAME TO _rpc_submit_pr_20260930_inner/);
 
   const splitInner = section(sql, "CREATE OR REPLACE FUNCTION public._rpc_split_pr_to_pos_20260930_inner", "CREATE OR REPLACE FUNCTION public.rpc_split_pr_to_pos");
-  assert.equal((splitInner.match(/qty_requested > 0/g) ?? []).length, 3);
+  assert.equal((splitInner.match(/qty_requested > 0/g) ?? []).length, 4);
   assert.match(splitInner, /FROM purchase_request_items\s+WHERE pr_id = p_pr_id\s+AND qty_requested > 0\s+AND suggested_supplier_id IS NULL/);
   assert.match(splitInner, /SELECT DISTINCT suggested_supplier_id AS supplier_id[\s\S]*WHERE pr_id = p_pr_id\s+AND qty_requested > 0/);
   assert.match(splitInner, /FROM purchase_request_items pri[\s\S]*WHERE pri\.pr_id = p_pr_id\s+AND pri\.qty_requested > 0\s+AND pri\.suggested_supplier_id/);
+  assert.match(splitInner, /UPDATE purchase_request_items pri[\s\S]*FROM inserted i\s+WHERE pri\.pr_id = p_pr_id\s+AND pri\.qty_requested > 0\s+AND pri\.suggested_supplier_id/);
 
   const split = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_split_pr_to_pos", "ALTER FUNCTION public.rpc_merge_prs_to_po");
   const splitSnapshotCall = "PERFORM public._pr_lock_demand_snapshot(ARRAY[p_pr_id]);";
@@ -153,6 +154,10 @@ function verify(sql, ui) {
   assert.match(merge, /v_locked_item_ids IS DISTINCT FROM v_snapshot_item_ids/);
   assert.match(merge, /v_locked_pr_ids IS DISTINCT FROM v_snapshot_pr_ids/);
   assert.match(merge, /v_locked_campaign_ids IS DISTINCT FROM v_snapshot_campaign_ids/);
+  const mergeEmptyGuard = merge.indexOf("COALESCE(array_length(v_locked_item_ids, 1), 0) = 0");
+  assert.ok(mergeEmptyGuard > merge.indexOf("v_locked_campaign_ids IS DISTINCT FROM v_snapshot_campaign_ids"));
+  assert.ok(mergeEmptyGuard < merge.indexOf("_pr_validate_qty_current"));
+  assert.match(merge, /沒有正數量的請購品項可建立採購單/);
   assert.ok(merge.indexOf("v_snapshot_campaign_ids := public._pr_campaign_ids") < merge.indexOf(mergeSnapshotCall));
   assert.ok(merge.indexOf("v_locked_campaign_ids := public._pr_campaign_ids") > merge.indexOf("FOR UPDATE OF pr, pri"));
   assert.match(merge, /v_po_id := public\._rpc_merge_prs_to_po_20260930_inner\([\s\S]*v_locked_item_ids/);
@@ -212,7 +217,9 @@ const faults = [
   ["submit eligibility \u53c8\u5728 PR \u9396\u524d\u5224\u65b7", migration.replace("WHERE id = p_pr_id\n   FOR UPDATE;\n\n  IF NOT FOUND OR v_status <> 'draft'", "WHERE id = p_pr_id;\n\n  IF NOT FOUND OR v_status <> 'draft'"), page],
   ["split wrapper \u53c8\u9650 submitted-only", migration.replaceAll("v_status IN ('fully_ordered','partially_ordered','cancelled')", "v_status <> 'submitted'"), page],
   ["split private inner \u53c8\u628a qty0 \u9001\u9032 PO", migration.replace("     AND qty_requested > 0\n     AND suggested_supplier_id IS NULL", "     AND suggested_supplier_id IS NULL"), page],
+  ["split po_item \u56de\u5beb\u53c8\u932f\u7d81\u540c SKU qty0", migration.replace("     WHERE pri.pr_id = p_pr_id\n       AND pri.qty_requested > 0\n       AND pri.suggested_supplier_id", "     WHERE pri.pr_id = p_pr_id\n       AND pri.suggested_supplier_id"), page],
   ["merge wrapper \u53c8\u628a qty0 ids \u4ea4\u56de inner", migration.replace("p_tenant_id, v_locked_item_ids, p_supplier_id", "p_tenant_id, p_pr_item_ids, p_supplier_id"), page],
+  ["merge 全零又交舊 inner 建空 PO", migration.replace("IF COALESCE(array_length(v_locked_item_ids, 1), 0) = 0 THEN", "IF FALSE THEN"), page],
   ["partial \u53c8\u6539 operator \u5951\u7d04", migration.replace("RAISE EXCEPTION '\u7f3a\u5c11\u64cd\u4f5c\u4eba\u54e1 id，\u7121\u6cd5\u5efa\u7acb\u65b0\u8acb\u8cfc\u55ae';", "p_operator := auth.uid();"), page],
   ["partial \u53c8先鎖 PR 後鎖 campaign", migration.replace("FOR NO KEY UPDATE;\n\n  SELECT pr.pr_no", "FOR UPDATE;\n\n  SELECT pr.pr_no"), page],
   ["sync \u9396 key \u4e0d\u540c", migration.replace("hashtext(r.campaign_id::TEXT)", "hashtext(v_tenant::TEXT || ':' || r.campaign_id::TEXT)"), page],

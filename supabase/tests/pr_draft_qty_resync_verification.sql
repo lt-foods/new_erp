@@ -17,7 +17,7 @@ DECLARE
   op UUID := (SELECT operator FROM _t_env);
   loc BIGINT; st BIGINT; ch BIGINT; sup BIGINT; prod BIGINT; a BIGINT; b BIGINT;
   camp_qty BIGINT; camp_new BIGINT; camp_submit BIGINT; camp_split BIGINT;
-  camp_merge BIGINT; camp_partial BIGINT; camp_dirty BIGINT; camp_dedupe BIGINT;
+  camp_merge BIGINT; camp_merge_zero BIGINT; camp_partial BIGINT; camp_dirty BIGINT; camp_dedupe BIGINT;
   ci BIGINT; ord BIGINT; ord2 BIGINT; pr BIGINT; item BIGINT; item2 BIGINT;
 BEGIN
   INSERT INTO locations(tenant_id,code,name,type)
@@ -104,12 +104,13 @@ BEGIN
   INSERT INTO purchase_request_items(pr_id,sku_id,qty_requested,suggested_supplier_id,unit_cost,source_campaign_id,created_by,updated_by)
   VALUES(pr,a,4,sup,10,camp_split,op,op) RETURNING id INTO item;
   INSERT INTO purchase_request_item_campaigns(tenant_id,pr_item_id,campaign_id,qty_requested) VALUES(t,item,camp_split,4);
-  INSERT INTO campaign_items(tenant_id,campaign_id,sku_id,unit_price) VALUES(t,camp_split,b,40);
   INSERT INTO purchase_request_items(pr_id,sku_id,qty_requested,suggested_supplier_id,unit_cost,source_campaign_id,created_by,updated_by)
-  VALUES(pr,b,0,sup,20,camp_split,op,op) RETURNING id INTO item2;
+  VALUES(pr,a,0,sup,10,camp_split,op,op) RETURNING id INTO item2;
   INSERT INTO purchase_request_item_campaigns(tenant_id,pr_item_id,campaign_id,qty_requested) VALUES(t,item2,camp_split,0);
   INSERT INTO purchase_request_store_additions(tenant_id,pr_id,pr_item_id,campaign_id,store_id,sku_id,qty_added,request_key,created_by)
-  VALUES(t,pr,item2,camp_split,st,b,1,'face0000-0000-4000-8000-000000000103',op);
+  VALUES(t,pr,item2,camp_split,st,a,1,'face0000-0000-4000-8000-000000000103',op);
+  INSERT INTO purchase_request_qty_sync_log(tenant_id,pr_id,pr_item_id,campaign_id,sku_id,old_qty,new_qty,changed_by)
+  VALUES(t,pr,item2,camp_split,a,1,0,op);
   INSERT INTO _t_ctx VALUES ('split_pr',pr),('split_order',ord),('split_item',item),('split_zero_item',item2);
 
   INSERT INTO group_buy_campaigns(tenant_id,campaign_no,name,status,end_at)
@@ -131,6 +132,18 @@ BEGIN
   INSERT INTO purchase_request_store_additions(tenant_id,pr_id,pr_item_id,campaign_id,store_id,sku_id,qty_added,request_key,created_by)
   VALUES(t,pr,item2,camp_merge,st,b,1,'face0000-0000-4000-8000-000000000104',op);
   INSERT INTO _t_ctx VALUES ('merge_pr',pr),('merge_item',item),('merge_zero_item',item2);
+
+  -- merge 全零 fixture：必須拒絕，不可讓舊 inner 建空 PO。
+  INSERT INTO group_buy_campaigns(tenant_id,campaign_no,name,status,end_at)
+  VALUES(t,'ZZTEST-QTY-CMERGE0','【測試】merge 全零','locked',NOW()) RETURNING id INTO camp_merge_zero;
+  INSERT INTO campaign_items(tenant_id,campaign_id,sku_id,unit_price) VALUES(t,camp_merge_zero,a,30);
+  INSERT INTO purchase_requests(tenant_id,pr_no,source_type,source_close_date,source_location_id,status,review_status,total_amount,created_by,updated_by)
+  VALUES(t,'ZZTEST-QTY-PRMERGE0','close_date',CURRENT_DATE,loc,'submitted','approved',0,op,op) RETURNING id INTO pr;
+  INSERT INTO purchase_request_campaigns VALUES(pr,camp_merge_zero,t,NOW());
+  INSERT INTO purchase_request_items(pr_id,sku_id,qty_requested,suggested_supplier_id,unit_cost,source_campaign_id,created_by,updated_by)
+  VALUES(pr,a,0,sup,10,camp_merge_zero,op,op) RETURNING id INTO item;
+  INSERT INTO purchase_request_item_campaigns(tenant_id,pr_item_id,campaign_id,qty_requested) VALUES(t,item,camp_merge_zero,0);
+  INSERT INTO _t_ctx VALUES ('merge_zero_pr',pr),('merge_all_zero_item',item);
 
   -- partial 有兩列，addition 指向會搬走的 A。
   INSERT INTO group_buy_campaigns(tenant_id,campaign_no,name,status,end_at)
@@ -256,6 +269,7 @@ SELECT 51,'split draft+approved 混合正數+0：PO 只含正數，0 列與 addi
   AND positive.po_item_id IS NOT NULL
   AND zero_item.po_item_id IS NULL AND zero_item.qty_requested=0
   AND EXISTS(SELECT 1 FROM purchase_request_store_additions psa WHERE psa.pr_item_id=zero_item.id AND psa.pr_id=pr.id)
+  AND EXISTS(SELECT 1 FROM purchase_request_qty_sync_log log WHERE log.pr_item_id=zero_item.id AND log.old_qty=1 AND log.new_qty=0)
   AND (SELECT COUNT(*)=1 FROM purchase_order_items poi WHERE poi.po_id=(SELECT po_id FROM purchase_order_items WHERE id=positive.po_item_id)),
   'status='||pr.status||', positive_po_item='||COALESCE(positive.po_item_id::TEXT,'null')||', zero_po_item='||COALESCE(zero_item.po_item_id::TEXT,'null')
   FROM purchase_requests pr
@@ -276,6 +290,20 @@ SELECT 52,'merge 混合正數+0：重複 id 去重、PO 只含正數，0 列與 
   JOIN purchase_request_items positive ON positive.id=(SELECT v FROM _t_ctx WHERE k='merge_item')
   JOIN purchase_request_items zero_item ON zero_item.id=(SELECT v FROM _t_ctx WHERE k='merge_zero_item')
  WHERE pr.id=(SELECT v FROM _t_ctx WHERE k='merge_pr');
+
+DO $$
+DECLARE blocked BOOLEAN:=FALSE; msg TEXT; before_count INTEGER; after_count INTEGER;
+BEGIN
+  SELECT COUNT(*) INTO before_count FROM purchase_orders WHERE tenant_id=(SELECT tenant FROM _t_env);
+  BEGIN
+    PERFORM rpc_merge_prs_to_po((SELECT tenant FROM _t_env),ARRAY[(SELECT v FROM _t_ctx WHERE k='merge_all_zero_item')],
+      (SELECT v FROM _t_ctx WHERE k='supplier'),(SELECT v FROM _t_ctx WHERE k='loc'),'ZZTEST-QTY-PO-MERGE0',(SELECT operator FROM _t_env));
+  EXCEPTION WHEN OTHERS THEN blocked:=TRUE; msg:=SQLERRM; END;
+  SELECT COUNT(*) INTO after_count FROM purchase_orders WHERE tenant_id=(SELECT tenant FROM _t_env);
+  INSERT INTO _t_result VALUES(53,'merge 全零必須拒絕且不建空 PO',
+    blocked AND before_count=after_count,
+    COALESCE(msg,'not blocked')||', po_before='||before_count||', po_after='||after_count);
+END $$;
 
 -- partial 只搬 draft：item id 保留，addition.pr_id 跟著新單。
 CREATE TEMP TABLE _t_partial_result ON COMMIT DROP AS
