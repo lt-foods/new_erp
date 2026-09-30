@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
@@ -11,6 +11,15 @@ import {
   type CampaignCoverItem,
 } from "@/lib/campaignCover";
 import { useRole, isAdmin, type Role } from "@/lib/role";
+import {
+  campaignSearchOrFilter,
+  canQuickUpdateCampaign,
+  customerUrlFor,
+  mergeCampaignRows,
+  pageWindow,
+  soldQtyByCampaign,
+  splitPage,
+} from "./quickControl";
 
 type QuickStatus = "draft" | "open" | "closed" | "locked";
 type CloseType = "regular" | "fast" | "limited" | "food_train";
@@ -36,6 +45,9 @@ type OrderRow = {
   order_kind: string | null;
   customer_order_items?: { qty: number | string; status: string }[];
 };
+
+type StatusFilter = "all" | QuickStatus;
+type TypeFilter = "all" | CloseType;
 
 type ProductRow = {
   id: number;
@@ -84,6 +96,24 @@ const TYPE_LABEL: Record<CloseType, string> = {
   limited: "限時限量",
   food_train: "美食列車",
 };
+
+const QUICK_STATUSES: QuickStatus[] = ["draft", "open", "closed", "locked"];
+
+const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
+  { value: "all", label: "全部狀態" },
+  { value: "open", label: STATUS_LABEL.open },
+  { value: "closed", label: `${STATUS_LABEL.closed}（已收單）` },
+  { value: "locked", label: STATUS_LABEL.locked },
+  { value: "draft", label: STATUS_LABEL.draft },
+];
+
+const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
+  { value: "all", label: "全部類型" },
+  { value: "regular", label: TYPE_LABEL.regular },
+  { value: "fast", label: TYPE_LABEL.fast },
+  { value: "limited", label: TYPE_LABEL.limited },
+  { value: "food_train", label: TYPE_LABEL.food_train },
+];
 
 const CREATE_TYPES: { value: CreateCloseType; label: string; hint: string }[] = [
   { value: "fast", label: "限時", hint: "到時間收單" },
@@ -229,6 +259,15 @@ export default function QuickCampaignControlPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [revealUrlId, setRevealUrlId] = useState<number | null>(null);
+  // 每次重新查詢就 +1；舊查詢晚回來時用它丟掉，避免蓋掉新結果
+  const loadSeq = useRef(0);
   const [endAtDraft, setEndAtDraft] = useState<Record<number, string>>({});
   const [deltaDraft, setDeltaDraft] = useState<Record<number, string>>({});
 
@@ -256,14 +295,6 @@ export default function QuickCampaignControlPage() {
   const [createBusy, setCreateBusy] = useState(false);
   const [createdUrl, setCreatedUrl] = useState<string | null>(null);
   const [createdCampaignId, setCreatedCampaignId] = useState<number | null>(null);
-
-  const visibleRows = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter((r) =>
-      `${r.campaign_no} ${r.name} ${TYPE_LABEL[r.close_type]}`.toLowerCase().includes(q),
-    );
-  }, [query, rows]);
 
   const selectedSkus = useMemo(
     () => skus.filter((sku) => selectedSkuIds.has(sku.id)),
@@ -311,59 +342,102 @@ export default function QuickCampaignControlPage() {
       ? skuLoading || missingPrice || !selectedProduct || selectedSkus.length === 0
       : !newProductName.trim() || newSkuRows.length === 0);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const sb = getSupabase();
-      const { data, error: campaignErr } = await sb
-        .from("group_buy_campaigns")
-        .select("id, campaign_no, name, status, close_type, end_at, total_cap_qty, updated_at, cover_image_url, campaign_items(cap_qty, sort_order, sku:skus(product:products(images)))")
-        .eq("sales_channel", "main")
-        .in("status", ["draft", "open", "closed", "locked"])
-        .order("updated_at", { ascending: false })
-        .limit(160);
+  // 一次撈一頁（伺服端篩選／搜尋／分頁），連同這頁每團的已售件數
+  const fetchPage = useCallback(async (loaded: number) => {
+    const sb = getSupabase();
+    const win = pageWindow(loaded);
+    let request = sb
+      .from("group_buy_campaigns")
+      .select("id, campaign_no, name, status, close_type, end_at, total_cap_qty, updated_at, cover_image_url, campaign_items(cap_qty, sort_order, sku:skus(product:products(images)))")
+      .eq("sales_channel", "main");
+    request = statusFilter === "all" ? request.in("status", QUICK_STATUSES) : request.eq("status", statusFilter);
+    if (typeFilter !== "all") request = request.eq("close_type", typeFilter);
+    const orFilter = campaignSearchOrFilter(searchTerm);
+    if (orFilter) request = request.or(orFilter);
+    const { data, error: campaignErr } = await request
+      .order("updated_at", { ascending: false })
+      .order("id", { ascending: false })
+      .range(win.from, win.to);
+    if (campaignErr) throw campaignErr;
 
-      if (campaignErr) throw campaignErr;
-      const campaigns = ((data ?? []) as unknown as CampaignRow[])
-        .filter((r) =>
-          r.close_type === "food_train"
-          || r.close_type === "fast"
-          || r.close_type === "limited"
-          || Number(r.total_cap_qty ?? 0) > 0
-          || (r.campaign_items ?? []).some((item) => Number(item.cap_qty ?? 0) > 0)
-        )
-        .slice(0, 80);
-      const ids = campaigns.map((r) => r.id);
-      const nextSold = new Map<number, number>();
-
-      if (ids.length > 0) {
+    const page = splitPage((data ?? []) as unknown as CampaignRow[], win);
+    const ids = page.rows.map((r) => r.id);
+    const orders: OrderRow[] = [];
+    if (ids.length > 0) {
+      // 一般團一團就可能上百張單，會撞到每次最多回 1000 筆的上限，要一段一段撈到撈不到為止
+      for (let from = 0; ; ) {
         const { data: orderRows, error: orderErr } = await sb
           .from("customer_orders")
           .select("campaign_id, status, order_kind, customer_order_items(qty, status)")
-          .in("campaign_id", ids);
+          .in("campaign_id", ids)
+          .order("id", { ascending: true })
+          .range(from, from + 999);
         if (orderErr) throw orderErr;
-
-        for (const order of ((orderRows ?? []) as OrderRow[])) {
-          if (["cancelled", "expired", "transferred_out"].includes(order.status)) continue;
-          if ((order.order_kind ?? "normal") !== "normal") continue;
-          const qty = (order.customer_order_items ?? [])
-            .filter((item) => !["cancelled", "expired"].includes(item.status))
-            .reduce((sum, item) => sum + Number(item.qty ?? 0), 0);
-          nextSold.set(order.campaign_id, (nextSold.get(order.campaign_id) ?? 0) + qty);
-        }
+        const chunk = (orderRows ?? []) as OrderRow[];
+        if (chunk.length === 0) break;
+        orders.push(...chunk);
+        from += chunk.length;
       }
-
-      setRows(campaigns);
-      setSoldMap(nextSold);
-      setEndAtDraft(Object.fromEntries(campaigns.map((r) => [r.id, editableEndAt(r.end_at)])));
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setLoading(false);
     }
-  }, []);
+    return { campaigns: page.rows, hasMore: page.hasMore, sold: soldQtyByCampaign(orders) };
+  }, [searchTerm, statusFilter, typeFilter]);
 
+  const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const page = await fetchPage(0);
+      if (seq !== loadSeq.current) return;
+      setRows(page.campaigns);
+      setSoldMap(page.sold);
+      setHasMore(page.hasMore);
+      setCopiedId(null);
+      setRevealUrlId(null);
+      setEndAtDraft(Object.fromEntries(page.campaigns.map((r) => [r.id, editableEndAt(r.end_at)])));
+    } catch (e) {
+      if (seq === loadSeq.current) setError(errorText(e));
+    } finally {
+      if (seq === loadSeq.current) setLoading(false);
+    }
+  }, [fetchPage]);
+
+  async function loadMore() {
+    if (loading || loadingMore || !hasMore) return;
+    const seq = loadSeq.current;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const page = await fetchPage(rows.length);
+      if (seq !== loadSeq.current) return;
+      setRows((cur) => mergeCampaignRows(cur, page.campaigns));
+      setSoldMap((cur) => {
+        const next = new Map(cur);
+        for (const [id, qty] of page.sold) {
+          if (!next.has(id)) next.set(id, qty);
+        }
+        return next;
+      });
+      // 已在畫面上的團保留員工正在改的收單時間
+      setEndAtDraft((cur) => ({
+        ...Object.fromEntries(page.campaigns.map((r) => [r.id, editableEndAt(r.end_at)])),
+        ...cur,
+      }));
+      setHasMore(page.hasMore);
+    } catch (e) {
+      if (seq === loadSeq.current) setError(errorText(e));
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  // 搜尋字停手 300ms 才打資料庫
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearchTerm(query.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  // 第一次進來、或篩選／搜尋改了，就從第一頁重查
   useEffect(() => {
     const timer = window.setTimeout(() => { void load(); }, 0);
     return () => window.clearTimeout(timer);
@@ -591,6 +665,21 @@ export default function QuickCampaignControlPage() {
     }
   }
 
+  // 清單卡片的複製：複製不了（瀏覽器不給）就把網址攤在那張卡上讓員工長按
+  async function copyRowUrl(row: CampaignRow) {
+    const url = customerUrlFor(MEMBER_APP_URL, row.id);
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedId(row.id);
+      setRevealUrlId(null);
+      setNotice(`已複製「${row.name}」客人網址`);
+    } catch {
+      setCopiedId(null);
+      setRevealUrlId(row.id);
+      setNotice("無法自動複製，請長按該團下方的網址複製");
+    }
+  }
+
   async function createCampaign() {
     if (!allowed || createBusy) return;
     const isExistingProduct = createMode === "existing";
@@ -802,7 +891,7 @@ export default function QuickCampaignControlPage() {
       });
       if (publishErr) throw publishErr;
 
-      const url = `${MEMBER_APP_URL}/shop/c/${campaignId}`;
+      const url = customerUrlFor(MEMBER_APP_URL, campaignId);
       setCreatedCampaignId(campaignId);
       setCreatedUrl(url);
       setNotice(`已建立「${campaignName}」，客人網址已產生`);
@@ -841,7 +930,7 @@ export default function QuickCampaignControlPage() {
             <div>
               <p className="text-xs font-medium text-zinc-500">手機開團 / 團控</p>
               <h1 className="text-xl font-semibold text-zinc-950 dark:text-zinc-50">
-                美食列車 / 限時 / 限時限量
+                一般 / 限時 / 限時限量 / 美食列車
               </h1>
             </div>
             <Link
@@ -871,7 +960,7 @@ export default function QuickCampaignControlPage() {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="搜尋既有團"
+              placeholder="搜尋團號或團名（所有團）"
               className="min-h-11 rounded-md border border-zinc-300 bg-white px-3 text-base outline-none focus:border-zinc-900 dark:border-zinc-700 dark:bg-zinc-950"
             />
             <SpinButton
@@ -882,6 +971,28 @@ export default function QuickCampaignControlPage() {
             >
               重新整理
             </SpinButton>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+              aria-label="狀態篩選"
+              className="min-h-11 rounded-md border border-zinc-300 bg-white px-3 text-base outline-none focus:border-zinc-900 dark:border-zinc-700 dark:bg-zinc-950"
+            >
+              {STATUS_FILTERS.map((f) => (
+                <option key={f.value} value={f.value}>{f.label}</option>
+              ))}
+            </select>
+            <select
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
+              aria-label="類型篩選"
+              className="min-h-11 rounded-md border border-zinc-300 bg-white px-3 text-base outline-none focus:border-zinc-900 dark:border-zinc-700 dark:bg-zinc-950"
+            >
+              {TYPE_FILTERS.map((f) => (
+                <option key={f.value} value={f.value}>{f.label}</option>
+              ))}
+            </select>
           </div>
         </header>
 
@@ -900,6 +1011,9 @@ export default function QuickCampaignControlPage() {
             {createdUrl && (
               <div className="mb-4 grid gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900 dark:bg-emerald-950">
                 <div className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">客人網址</div>
+                <div className="text-xs text-emerald-700 dark:text-emerald-300">
+                  之後在下面清單這一團也能再複製。
+                </div>
                 <input
                   readOnly
                   value={createdUrl}
@@ -1324,13 +1438,13 @@ export default function QuickCampaignControlPage() {
           <div className="rounded-md border border-zinc-200 bg-white p-6 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
             載入既有團...
           </div>
-        ) : visibleRows.length === 0 ? (
+        ) : rows.length === 0 ? (
           <div className="rounded-md border border-zinc-200 bg-white p-6 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
             找不到符合的團。
           </div>
         ) : (
           <div className="flex flex-col gap-3">
-            {visibleRows.map((row) => {
+            {rows.map((row) => {
               const sold = soldMap.get(row.id) ?? 0;
               const cap = row.total_cap_qty;
               const remain = cap == null ? null : Math.max(0, cap - sold);
@@ -1339,6 +1453,8 @@ export default function QuickCampaignControlPage() {
               const delta = Number(deltaDraft[row.id] ?? 0);
               const previewCap = Number.isFinite(delta) && delta > 0 ? (cap ?? sold) + delta : null;
               const itemCap = itemCapSummary(row.campaign_items);
+              const quickOk = canQuickUpdateCampaign(row);
+              const customerUrl = customerUrlFor(MEMBER_APP_URL, row.id);
 
               return (
                 <section
@@ -1370,6 +1486,41 @@ export default function QuickCampaignControlPage() {
                   </div>
 
                   <div className="mt-4 grid gap-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      <SpinButton
+                        type="button"
+                        onClick={() => copyRowUrl(row)}
+                        className="min-h-11 rounded-md bg-emerald-600 px-2 text-sm font-semibold text-white"
+                      >
+                        {copiedId === row.id ? "已複製 ✓" : "複製客人連結"}
+                      </SpinButton>
+                      <a
+                        href={customerUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex min-h-11 items-center justify-center rounded-md border border-emerald-300 px-2 text-sm font-semibold text-emerald-800 dark:border-emerald-800 dark:text-emerald-100"
+                      >
+                        打開客人頁
+                      </a>
+                    </div>
+                    {revealUrlId === row.id && (
+                      <input
+                        readOnly
+                        value={customerUrl}
+                        aria-label={`${row.name} 客人網址`}
+                        onFocus={(e) => e.currentTarget.select()}
+                        className="min-h-11 rounded-md border border-emerald-200 bg-white px-3 text-base text-emerald-900 dark:border-emerald-900 dark:bg-zinc-950 dark:text-emerald-100"
+                      />
+                    )}
+
+                    {!quickOk && !locked && (
+                      <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300">
+                        {"這是沒設正取上限的一般團：這裡可以關團、補單、拿客人連結；延長收單、重開、加名額系統目前不接受，請到"}
+                        <Link href="/campaigns" className="mx-1 underline">開團管理</Link>
+                        {"操作。"}
+                      </div>
+                    )}
+
                     {itemCap && (
                       <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
                         <div className="font-medium">品項上限摘要</div>
@@ -1388,7 +1539,7 @@ export default function QuickCampaignControlPage() {
                         type="datetime-local"
                         value={endInput}
                         onChange={(e) => setEndAtDraft((cur) => ({ ...cur, [row.id]: e.target.value }))}
-                        disabled={locked || !allowed}
+                        disabled={locked || !allowed || !quickOk}
                         className="min-h-11 rounded-md border border-zinc-300 bg-white px-3 text-base outline-none focus:border-zinc-900 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
                       />
                     </label>
@@ -1402,7 +1553,7 @@ export default function QuickCampaignControlPage() {
                         <SpinButton
                           key={String(label)}
                           type="button"
-                          disabled={locked || !allowed || busyId === row.id}
+                          disabled={locked || !allowed || !quickOk || busyId === row.id}
                           onClick={async () => {
                             const iso = setEndAt(row, Number(hours));
                             if (row.status === "closed") {
@@ -1418,7 +1569,7 @@ export default function QuickCampaignControlPage() {
                       ))}
                     </div>
 
-                    {row.status === "closed" && (
+                    {row.status === "closed" && quickOk && (
                       <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
                         已關團的團若只延長時間，不會自動恢復下單；確認時間後請按「重開」。
                       </div>
@@ -1432,12 +1583,12 @@ export default function QuickCampaignControlPage() {
                         value={deltaDraft[row.id] ?? ""}
                         onChange={(e) => setDeltaDraft((cur) => ({ ...cur, [row.id]: e.target.value }))}
                         placeholder="再增加整團正取名額"
-                        disabled={locked || !allowed}
+                        disabled={locked || !allowed || !quickOk}
                         className="min-h-11 rounded-md border border-zinc-300 bg-white px-3 text-base outline-none focus:border-zinc-900 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
                       />
                       <SpinButton
                         type="button"
-                        disabled={locked || !allowed || busyId === row.id || !Number.isFinite(delta) || delta <= 0}
+                        disabled={locked || !allowed || !quickOk || busyId === row.id || !Number.isFinite(delta) || delta <= 0}
                         onClick={() => quickUpdate(row, { delta }, `${row.name} 已加量 ${delta}`)}
                         className="min-h-11 rounded-md bg-zinc-900 px-4 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-950"
                       >
@@ -1473,7 +1624,7 @@ export default function QuickCampaignControlPage() {
                       ) : (
                         <SpinButton
                           type="button"
-                          disabled={locked || !allowed || busyId === row.id}
+                          disabled={locked || !allowed || !quickOk || busyId === row.id}
                           onClick={() => {
                             const nextEndAt = futureIsoFromLocalInput(endInput);
                             if (!nextEndAt) {
@@ -1508,6 +1659,20 @@ export default function QuickCampaignControlPage() {
                 </section>
               );
             })}
+            <div className="grid gap-2 pb-4 text-center text-sm text-zinc-500">
+              <div>已顯示 {rows.length} 團{hasMore ? "" : "，已經到底了"}</div>
+              {hasMore && (
+                <SpinButton
+                  type="button"
+                  onClick={loadMore}
+                  loading={loadingMore}
+                  disabled={loading || loadingMore}
+                  className="min-h-11 rounded-md border border-zinc-300 bg-white text-sm font-semibold text-zinc-700 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+                >
+                  載入更多
+                </SpinButton>
+              )}
+            </div>
           </div>
         )}
       </div>
