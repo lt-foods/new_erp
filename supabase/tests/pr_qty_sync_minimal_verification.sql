@@ -8,7 +8,8 @@
 --   1. 原本 10、取消 1、沒有再加單 → 同步後變 9。（這是根因，一定要留）
 --   2. 原本 10、取消 1、再加 2 → 11（並斷言不等於 12），連按第二次不重複加。
 --   3. 已送審／品項已轉採購單 → 一律跳過不偷改。
---   4. 對照組：把共用零件換回「只處理正差額」的舊版 → 第 1 條必須紅。
+--   4. 對照組：裝回「只處理正差額」那一行 → 第 1 條的情境必須紅。
+--      （本案沒有改共用 helper，所以對照組是包一層過濾，不是換回舊 body。）
 -- ⛔ 其餘情境（需求歸零、合併多團、同團落在多張草稿、#982 守衛、權限、
 --    寫入順序對照組）已按裁示刪除，不是註解掉。
 --
@@ -439,20 +440,47 @@ $t3$;
 
 
 -- ============================================================================
--- 測 4（對照組，刻意放最後）：把共用零件換回「只處理正差額」的舊版
---   → 測 1 的斷言必須紅（pass 的條件是「壞版本真的被抓出來」）。
+-- 測 4（對照組，刻意放最後）：裝回「只處理正差額」那一行 → 測 1 的情境必須紅
 --
---   ⚠️ 誠實說明壞在哪一半（施工時實際推過一遍）：
---      舊版的 LEFT JOIN **只**在需求歸零時讓整列消失。測 1 的需求是 9（>0），
---      光是 LEFT JOIN 照樣回得到 delta = -1 那一列 ——
---      真正把「純取消」擋掉的是**所有既有補單入口共有的 `WHERE delta_qty > 0`**。
---      所以這個壞版本把兩半都裝回去（LEFT JOIN ＋ 正差額過濾），
---      這才是修之前線上真正的行為。
+--   ⚠️ 壞在哪一半，講清楚（施工時實際推過一遍）：
+--      本案**完全沒有動**共用 helper `_pr_campaign_sku_remaining_rows`
+--      （現行唯一版本 20260921001000:240）。它的 LEFT JOIN 只在**需求歸零**時
+--      讓整列消失，而測 1 的需求是 9（> 0）—— 現行版本本來就回得到 delta = -1。
+--      真正把「純取消」擋掉的，是**所有既有補單入口共有的 `WHERE delta_qty > 0`**
+--      （8 個呼叫點全部都有）。所以修的是「加一個不過濾正負的新入口」，
+--      對照組要裝回去的也只有那一行。
 --
---   ⚠️ 放最後是刻意的：這樣就不需要把正確版本再抄一份回來。
---      抄回來那份會跟 migration 慢慢對不上，變成「假綠」。
---      整份包在 ROLLBACK 裡，壞版本不會留在資料庫。
+--   ⚠️ 放最後是刻意的：整份包在 ROLLBACK 裡，壞版本不會留在資料庫。
 -- ============================================================================
+-- ⛔ 不可以在這裡手抄一份 helper 的 body：它不在本案的 migration 裡
+--    （現行唯一版本在 20260921001000:240，是別人的檔），抄一份一定會慢慢對不上，
+--    變成「假綠」。所以改用 pg_get_functiondef 把**線上現行那一支**原封不動
+--    複製成 _zz_orig_remaining_rows，壞版本只是包一層 `WHERE delta_qty > 0`。
+--    ⇒ 壞版本＝現行 helper ＋ 修之前每個補單入口共有的那個過濾，一字不多。
+DO $clone$
+DECLARE
+  v_def TEXT;
+BEGIN
+  SELECT pg_get_functiondef(p.oid)
+    INTO v_def
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+   WHERE n.nspname = 'public'
+     AND p.proname = '_pr_campaign_sku_remaining_rows'
+     AND pg_get_function_identity_arguments(p.oid) = 'p_campaign_ids bigint[]';
+
+  IF v_def IS NULL THEN
+    RAISE EXCEPTION '找不到 public._pr_campaign_sku_remaining_rows(bigint[])，對照組無法建立';
+  END IF;
+
+  -- 只換名字（這支不是遞迴函式，body 裡沒有自己的名字）
+  EXECUTE replace(v_def,
+    '_pr_campaign_sku_remaining_rows',
+    '_zz_orig_remaining_rows');
+END
+$clone$;
+
+-- 壞版本：呼叫原封不動的那一支，只把負差額濾掉（＝修之前的全站行為）
 CREATE OR REPLACE FUNCTION public._pr_campaign_sku_remaining_rows(
   p_campaign_ids BIGINT[]
 ) RETURNS TABLE(
@@ -461,46 +489,26 @@ CREATE OR REPLACE FUNCTION public._pr_campaign_sku_remaining_rows(
 )
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public
 AS $broken$
-  WITH t AS (SELECT public._current_tenant_id() AS tid),
-  sel AS (SELECT DISTINCT unnest(p_campaign_ids) AS campaign_id),
-  demand AS (
-    SELECT co.campaign_id, coi.sku_id, SUM(coi.qty) AS qty
-      FROM sel
-      JOIN public.customer_orders co ON co.campaign_id = sel.campaign_id
-      JOIN public.customer_order_items coi ON coi.order_id = co.id
-      CROSS JOIN t
-     WHERE co.tenant_id = t.tid
-       AND co.status NOT IN ('cancelled','expired','transferred_out')
-       AND coi.status NOT IN ('cancelled','expired')
-     GROUP BY co.campaign_id, coi.sku_id
-  ),
-  already AS (
-    SELECT pric.campaign_id, pri.sku_id, SUM(pric.qty_requested) AS qty
-      FROM public.purchase_request_item_campaigns pric
-      JOIN public.purchase_request_items pri ON pri.id = pric.pr_item_id
-      JOIN public.purchase_requests pr ON pr.id = pri.pr_id
-      JOIN sel ON sel.campaign_id = pric.campaign_id
-      CROSS JOIN t
-     WHERE pr.tenant_id = t.tid AND pric.tenant_id = t.tid AND pr.status <> 'cancelled'
-     GROUP BY pric.campaign_id, pri.sku_id
-  )
-  -- ⬇⬇ 修之前的行為：① LEFT JOIN（需求歸零整列消失）② 只留正差額
-  SELECT d.campaign_id, d.sku_id, d.qty, COALESCE(a.qty, 0),
-         d.qty - COALESCE(a.qty, 0)
-    FROM demand d
-    LEFT JOIN already a ON a.campaign_id = d.campaign_id AND a.sku_id = d.sku_id
-   WHERE d.qty - COALESCE(a.qty, 0) > 0;
+  SELECT r.campaign_id, r.sku_id, r.demand_qty, r.already_qty, r.delta_qty
+    FROM public._zz_orig_remaining_rows(p_campaign_ids) r
+   WHERE r.delta_qty > 0;       -- ⬅⬅ 這就是修之前每個補單入口都有的那一行
 $broken$;
 
 DO $t4$
 DECLARE
   v_camp5 BIGINT := (SELECT v FROM _t_ctx WHERE k = 'camp5');
   v_pr5   BIGINT := (SELECT v FROM _t_ctx WHERE k = 'pr5');
+  v_rows_ok      INTEGER;
   v_rows_broken  INTEGER;
   v_needs_broken INTEGER;
 BEGIN
   -- camp5／pr5 = 跟測 1 完全一樣的情境（草稿 10、有效需求 9、負差額 -1），
-  -- 只是刻意沒被同步過。正確版本：回 1 列、preview 標 1 筆待同步。
+  -- 只是刻意沒被同步過。
+  -- 先證明「原封不動那一支」確實回得到那一列（＝確認我們沒有靠改 helper 過關），
+  -- 再證明加上正差額過濾之後它就消失了。
+  SELECT COUNT(*) INTO v_rows_ok
+    FROM public._zz_orig_remaining_rows(ARRAY[v_camp5]) WHERE delta_qty = -1;
+
   SELECT COUNT(*) INTO v_rows_broken
     FROM public._pr_campaign_sku_remaining_rows(ARRAY[v_camp5]);
 
@@ -509,10 +517,10 @@ BEGIN
 
   INSERT INTO _t_result VALUES (
     4,
-    '對照組：裝回「只處理正差額」的舊零件 → 測 1 那個情境（草稿 10 / 需求 9）整列消失、不會被標成待同步（確認測試真的會紅）',
-    (v_rows_broken = 0 AND v_needs_broken = 0),
-    format('壞版本回傳列數=%s（應為 0，正確版本是 1），待同步筆數=%s（應為 0，正確版本是 1）',
-           v_rows_broken, v_needs_broken)
+    '對照組：現行 helper 本來就回得到 delta=-1（我們沒改它）；加回「只處理正差額」那一行 → 測 1 的情境整列消失、不會被標成待同步（確認測試真的會紅）',
+    (v_rows_ok = 1 AND v_rows_broken = 0 AND v_needs_broken = 0),
+    format('現行 helper 的 -1 列數=%s（應為 1），壞版本回傳列數=%s（應為 0），待同步筆數=%s（應為 0，正確版本是 1）',
+           v_rows_ok, v_rows_broken, v_needs_broken)
   );
 END
 $t4$;

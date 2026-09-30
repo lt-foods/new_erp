@@ -12,15 +12,23 @@
 --   附帶：草稿改數量跳紅字（item_qty / detail_qty 不一致）也一起收乾淨。
 --
 -- 根因
---   `_pr_campaign_sku_remaining_rows` 以「需求」為母體，需求歸零時整列消失，
---   看不到負差額；而所有補單入口都 `WHERE delta_qty > 0`，負差額一律被丟掉。
+--   既有的 `_pr_campaign_sku_remaining_rows` 算得出負差額（需求 9、已請購 10 → -1），
+--   但**所有補單入口都 `WHERE delta_qty > 0`**，負差額一路被丟掉 ——
+--   全站沒有任何入口會把草稿往下修。
+--   ⇒ 所以本檔要做的只有一件事：**加一個不過濾正負的新入口**。
+--     那支共用 helper 一個字都不用改。
 --
 -- 本檔的範圍（刻意縮到最小：沒有測試庫，貼下去就是第一次真的執行）
---   只換一支既有函式 `_pr_campaign_sku_remaining_rows`（母體改成「需求 ∪ 已請購」），
---   其餘全部是新增物件。
+--   🔒 **100% 只新增，不碰任何既有物件。**
+--      6 支函式全部是新名字；0 張表、0 個索引、0 條 policy、0 個觸發器、0 個 ALTER、
+--      0 個 CREATE OR REPLACE 打在既有函式上。
 --   ⛔ 不碰 rpc_split_pr_to_pos / rpc_merge_prs_to_po / rpc_submit_pr /
 --      rpc_delete_pr / rpc_create_partial_pr_from_items / rpc_add_pr_store_demands。
 --   ⛔ 不加任何觸發器，不建待同步表，不拆 #982 防重守衛，不批次洗歷史資料。
+--   ⛔ **不改 `_pr_campaign_sku_remaining_rows`**（現行唯一版本 20260921001000:240）——
+--      只當唯讀依賴。2026-10-01 CEO 更正：計畫原本寫「唯一例外是那支共用零件」是寫錯的，
+--      歸零既然交給斷貨流程，那個 LEFT JOIN → FULL OUTER JOIN 就用不到了
+--      （需求 > 0 時舊版本來就回得到負差額）。少動它 = 少掉 8 個呼叫點的風險。
 --
 --   🪓 2026-10-01 老闆裁示「砍到最小」，以下三樣**刻意不做**（不是忘了）：
 --     ⛔ 不建追溯紀錄表（purchase_request_qty_sync_log）——
@@ -31,6 +39,7 @@
 --        詳細理由寫在 _pr_apply_qty_sync 裡「刻意不加鎖」那段。
 --     ⛔ 沒有 p_request_key 參數 —— 它原本只是寫給那張紀錄表的，表拿掉就沒有用途，
 --        留一個什麼都不做的參數比沒有更糟。
+--     ⛔ 不改共用 helper（理由見上方「本檔的範圍」最後一條）。
 --
 -- 寫入順序（反了會被 #982 守衛當場退回）
 --   來源團明細 purchase_request_item_campaigns
@@ -79,7 +88,7 @@ BEGIN
     v_missing := v_missing || 'table public.skus';
   END IF;
 
-  -- 依賴的既有函式
+  -- 依賴的既有函式（⚠️ 本檔**只讀不改**它們，這裡是確認相依在不在，不是驗版本）
   IF NOT EXISTS (
     SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
      WHERE n.nspname = 'public' AND p.proname = '_current_tenant_id'
@@ -161,139 +170,7 @@ $precheck_zero$;
 
 
 -- ----------------------------------------------------------------------------
--- 1. 唯一一支被替換的既有函式：_pr_campaign_sku_remaining_rows
---
---    改動只有一處：母體從「需求」改成「需求 ∪ 已請購」（LEFT JOIN → FULL OUTER JOIN）。
---    需求歸零、但已請購 5 的組合，現在會回一列 delta_qty = -5，不再整列消失。
---    demand / attributed / direct_legacy / already 四個 CTE 一字不動。
---
---    相容性（施工時逐一 grep 驗過，證據寫在施工回報）：
---    六個呼叫端全部都在正差額那一側，新增的負值列到不了它們的寫入路徑。
---      20260921001000:384   rpc_preview_pr_campaign_sku_delta          WHERE r.delta_qty > 0
---      20260921001000:719   rpc_create_supplementary_pr_from_close_date WHERE delta_qty > 0
---      20260921001000:1036  rpc_list_pr_close_dates(舊版)               WHERE d.delta_qty > 0
---      20260921001000:1130  rpc_create_pr_from_campaigns                WHERE delta_qty > 0
---      20260923090000:68    rpc_create_pr_from_close_date               WHERE delta_qty > 0
---      20260924000000:47    rpc_preview_pr_campaign_sku_delta(現行版)    WHERE r.delta_qty > 0
---      20260924030000:86    rpc_list_pr_close_dates(現行版)              WHERE d.delta_qty > 0
---      20260924010000:387   rpc_add_pr_store_demands 第二發              WHERE d.delta_qty > 0
---    唯一沒有 delta_qty 過濾的是 20260924010000:345（rpc_add_pr_store_demands 第一發，
---    `SELECT ... INTO` 指定 campaign_id + sku_id）。那一發跑在「已經新增至少一筆
---    店內單」之後（:210-215 擋掉 qty <= 0、:105 擋掉空陣列），所以該組合的需求
---    必然 > 0、需求列本來就存在 ⇒ 新舊版回傳完全相同。
---
---    ⭐ 另一個佐證：`customer_order_items.qty` 的正數 CHECK 在
---    20260516000000_allow_negative_order_qty.sql 就被拿掉了（抵減單要用負數），
---    所以「負的 delta_qty」在舊版本來就可能出現（抵減單剛好抵平時），
---    呼叫端的 `delta_qty > 0` 過濾一直都是在處理這件事。
--- ----------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION public._pr_campaign_sku_remaining_rows(
-  p_campaign_ids BIGINT[]
-) RETURNS TABLE(
-  campaign_id BIGINT,
-  sku_id      BIGINT,
-  demand_qty  NUMERIC,
-  already_qty NUMERIC,
-  delta_qty   NUMERIC
-)
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = public
-AS $$
-  WITH t AS (
-    SELECT public._current_tenant_id() AS tid
-  ),
-  sel AS (
-    SELECT DISTINCT unnest(p_campaign_ids) AS campaign_id
-  ),
-  demand AS (
-    SELECT
-      co.campaign_id,
-      coi.sku_id,
-      SUM(coi.qty) AS qty
-    FROM sel
-    JOIN public.customer_orders co
-      ON co.campaign_id = sel.campaign_id
-    JOIN public.customer_order_items coi
-      ON coi.order_id = co.id
-    CROSS JOIN t
-    WHERE co.tenant_id = t.tid
-      AND co.status NOT IN ('cancelled','expired','transferred_out')
-      AND coi.status NOT IN ('cancelled','expired')
-    GROUP BY co.campaign_id, coi.sku_id
-  ),
-  attributed AS (
-    SELECT
-      pric.campaign_id,
-      pri.sku_id,
-      SUM(pric.qty_requested) AS qty
-    FROM public.purchase_request_item_campaigns pric
-    JOIN public.purchase_request_items pri
-      ON pri.id = pric.pr_item_id
-    JOIN public.purchase_requests pr
-      ON pr.id = pri.pr_id
-    JOIN sel
-      ON sel.campaign_id = pric.campaign_id
-    CROSS JOIN t
-    WHERE pr.tenant_id = t.tid
-      AND pric.tenant_id = t.tid
-      AND pr.status <> 'cancelled'
-    GROUP BY pric.campaign_id, pri.sku_id
-  ),
-  direct_legacy AS (
-    SELECT
-      pri.source_campaign_id AS campaign_id,
-      pri.sku_id,
-      SUM(pri.qty_requested) AS qty
-    FROM public.purchase_requests pr
-    JOIN public.purchase_request_items pri
-      ON pri.pr_id = pr.id
-    JOIN sel
-      ON sel.campaign_id = pri.source_campaign_id
-    CROSS JOIN t
-    WHERE pr.tenant_id = t.tid
-      AND pr.status <> 'cancelled'
-      AND pri.source_campaign_id IS NOT NULL
-      AND NOT EXISTS (
-        SELECT 1
-          FROM public.purchase_request_item_campaigns pric
-         WHERE pric.pr_item_id = pri.id
-      )
-    GROUP BY pri.source_campaign_id, pri.sku_id
-  ),
-  already AS (
-    SELECT campaign_id, sku_id, SUM(qty) AS qty
-      FROM (
-        SELECT * FROM attributed
-        UNION ALL
-        SELECT * FROM direct_legacy
-      ) x
-     GROUP BY campaign_id, sku_id
-  )
-  -- ⭐ 唯一的改動：LEFT JOIN → FULL OUTER JOIN。
-  --    demand 與 already 各自都是 GROUP BY (campaign_id, sku_id) ⇒ 兩邊 key 唯一
-  --    ⇒ FULL OUTER JOIN 不會放大列數，只會多出「需求 0、已請購 > 0」那一側。
-  SELECT
-    COALESCE(d.campaign_id, a.campaign_id) AS campaign_id,
-    COALESCE(d.sku_id,      a.sku_id)      AS sku_id,
-    COALESCE(d.qty, 0)                     AS demand_qty,
-    COALESCE(a.qty, 0)                     AS already_qty,
-    COALESCE(d.qty, 0) - COALESCE(a.qty, 0) AS delta_qty
-  FROM demand d
-  FULL OUTER JOIN already a
-    ON a.campaign_id = d.campaign_id
-   AND a.sku_id = d.sku_id;
-$$;
-
-REVOKE ALL ON FUNCTION public._pr_campaign_sku_remaining_rows(BIGINT[]) FROM PUBLIC;
-
-COMMENT ON FUNCTION public._pr_campaign_sku_remaining_rows(BIGINT[]) IS
-  '內部 helper：以同團+SKU 計算目前需求、已請購量與差額；新資料看 purchase_request_item_campaigns，舊資料 fallback 看 source_campaign_id。母體＝需求 ∪ 已請購（FULL OUTER JOIN），所以需求歸零時會回 delta_qty 為負的列，不再整列消失。既有呼叫端都有 delta_qty > 0 過濾，行為不變。';
-
-
--- ----------------------------------------------------------------------------
--- 2. 新增：權限判定 helper
+-- 1. 新增：權限判定 helper
 --    對齊採購模組口徑（20260502010000_fix_purchase_rls_role_path.sql:18
 --    與 20260924010000:47-53）：角色讀 app_metadata.role、白名單一律含空字串，
 --    並且明確擋 store_manager / store_staff。
@@ -327,7 +204,7 @@ COMMENT ON FUNCTION public._pr_qty_sync_assert_perm() IS
 
 
 -- ----------------------------------------------------------------------------
--- 3. 新增：唯讀預覽（不寫任何資料）
+-- 2. 新增：唯讀預覽（不寫任何資料）
 --
 --    一列 = 這張請購單的一個 (請購品項, 來源團)。
 --    `needs_sync` 代表數字跟現在的需求不一致；`can_sync` 代表可以安全自動改。
@@ -416,6 +293,12 @@ AS $$
   joined AS (
     SELECT
       a.*,
+      -- ⭐ helper 的母體是「需求」（LEFT JOIN，20260921001000:240），所以
+      --    **需求歸零時它整列不回** —— 這裡 LEFT JOIN 就會是 NULL。
+      --    本功能不處理需求歸零（老闆 2026-10-01：歸零走斷貨流程），
+      --    所以這種情況一律**略過**：不當成 0 去算、不噴錯、不列入可同步。
+      --    `has_remaining` 就是那個閘門，下面 needs_sync 直接 AND 它。
+      (r.campaign_id IS NOT NULL)  AS has_remaining,
       COALESCE(r.demand_qty, 0)  AS demand_qty,
       COALESCE(r.already_qty, 0) AS already_qty,
       COALESCE(r.delta_qty, 0)   AS delta_qty,
@@ -487,7 +370,10 @@ AS $$
       j.new_campaign_qty,
       j.item_qty,
       i.new_item_qty,
-      (j.delta_qty <> 0) AS needs_sync,
+      -- ⛔ `has_remaining` 是必要條件：helper 沒回這一列（＝需求歸零）就是略過。
+      --    ⚠️ 不要簡化成只看 delta_qty —— 現在 delta 被 COALESCE 成 0 剛好也是 false，
+      --    但那是巧合，哪天 COALESCE 的預設值改了就會靜靜把歸零的列當成待同步。
+      (j.has_remaining AND j.delta_qty <> 0) AS needs_sync,
       CASE
         WHEN pr.status <> 'draft' THEN
           '整張請購單不是草稿（目前 ' || pr.status || '），不自動改'
@@ -547,7 +433,7 @@ COMMENT ON FUNCTION public._pr_qty_sync_preview(BIGINT) IS
 
 
 -- ----------------------------------------------------------------------------
--- 4. 新增：給畫面用的唯讀預覽
+-- 3. 新增：給畫面用的唯讀預覽
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.rpc_preview_pr_qty_sync(
   p_pr_id BIGINT
@@ -597,7 +483,7 @@ COMMENT ON FUNCTION public.rpc_preview_pr_qty_sync(BIGINT) IS
 
 
 -- ----------------------------------------------------------------------------
--- 5. 新增：真正寫入
+-- 4. 新增：真正寫入
 --
 --    既有的表只改三張，順序寫死：
 --      ① purchase_request_item_campaigns.qty_requested
@@ -784,7 +670,7 @@ COMMENT ON FUNCTION public._pr_apply_qty_sync(BIGINT, UUID) IS
 
 
 -- ----------------------------------------------------------------------------
--- 6. 新增：畫面按鈕呼叫的入口
+-- 5. 新增：畫面按鈕呼叫的入口
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.rpc_sync_pr_qty(
   p_pr_id    BIGINT,
@@ -808,12 +694,11 @@ COMMENT ON FUNCTION public.rpc_sync_pr_qty(BIGINT, UUID) IS
 
 
 -- ----------------------------------------------------------------------------
--- 7. 把內部函式從 anon 收回（rpc_* 只開給 authenticated）
+-- 6. 把內部函式從 anon 收回（rpc_* 只開給 authenticated）
 -- ----------------------------------------------------------------------------
 DO $revoke_anon$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-    REVOKE ALL ON FUNCTION public._pr_campaign_sku_remaining_rows(BIGINT[]) FROM anon;
     REVOKE ALL ON FUNCTION public._pr_qty_sync_assert_perm() FROM anon;
     REVOKE ALL ON FUNCTION public._pr_qty_sync_preview(BIGINT) FROM anon;
     REVOKE ALL ON FUNCTION public._pr_apply_qty_sync(BIGINT, UUID) FROM anon;
