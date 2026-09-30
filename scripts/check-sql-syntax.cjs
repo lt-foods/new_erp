@@ -28,7 +28,9 @@ const sliceBytes = (buf, from, len) =>
     // 多份檔案會在模組內部爆掉（`Ma[...] is not a function`），
     // 那是 emscripten 的狀態問題、不是 SQL 有錯 —— 曾經誤判過一次。
     const PgQuery = await newParser();
-    const sql = fs.readFileSync(f, 'utf8');
+    // Windows checkout + apply_patch 可能產生 CRLF/LF 混合檔；libpg_query wasm
+    // 會在這種輸入誤算 memory context 而 FATAL，先統一換行再解析。
+    const sql = fs.readFileSync(f, 'utf8').replace(/\r\n?/g, '\n');
     const buf = Buffer.from(sql, 'utf8');
     const res = PgQuery.parse(sql);
     if (res.error) {

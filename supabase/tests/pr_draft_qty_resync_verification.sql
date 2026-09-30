@@ -377,12 +377,43 @@ SELECT 82,'split/merge 在 validate/PO 前持有 deterministic demand snapshot',
   'campaign -> campaign_items -> orders -> order_items; split/merge lock -> validate -> PO'
 FROM defs;
 
+WITH defs AS (
+  SELECT pg_get_functiondef('public.rpc_delete_pr(bigint,uuid)'::regprocedure) AS delete_src,
+         pg_get_functiondef('public.rpc_add_pr_store_demands(bigint,bigint,bigint,jsonb,uuid,uuid)'::regprocedure) AS add_src
+)
+INSERT INTO _t_result
+SELECT 83,'#995/partial 與 delete/PO 不持反向第一把鎖',
+  STRPOS(add_src,'FOR NO KEY UPDATE') > 0
+  AND STRPOS(add_src,'FOR NO KEY UPDATE') < STRPOS(add_src,'pg_advisory_xact_lock')
+  AND STRPOS(delete_src,'_pr_lock_demand_snapshot') > 0
+  AND STRPOS(delete_src,'_pr_lock_demand_snapshot') < STRPOS(delete_src,'SELECT status INTO v_status'),
+  '#995 campaign NO KEY UPDATE（相容 FK KEY SHARE）；delete snapshot -> PR FOR UPDATE'
+FROM defs;
+
+WITH defs AS (
+  SELECT pg_get_functiondef('public.rpc_split_pr_to_pos(bigint,bigint,uuid)'::regprocedure) AS split_src,
+         pg_get_functiondef('public.rpc_merge_prs_to_po(uuid,bigint[],bigint,bigint,text,uuid)'::regprocedure) AS merge_src
+)
+INSERT INTO _t_result
+SELECT 84,'split/merge snapshot 前預驗、鎖後重驗',
+  split_src ~ 'IF v_review <> ''approved'' THEN(.|\n)*_pr_lock_demand_snapshot(.|\n)*IF v_review <> ''approved'' THEN'
+  AND split_src ~ 'IF v_status <> ''submitted'' THEN(.|\n)*_pr_lock_demand_snapshot(.|\n)*IF v_status <> ''submitted'' THEN'
+  AND merge_src ~ 'IF v_matched <> v_want THEN(.|\n)*_pr_lock_demand_snapshot(.|\n)*IF v_matched <> v_want THEN',
+  'eligibility read-only precheck -> snapshot -> locked recheck'
+FROM defs;
+
 -- 兩 session 真實競態驗證（需本機 PostgreSQL，本次未實跑）：
--- A: BEGIN; SELECT _pr_lock_demand_snapshot(ARRAY[<ZZTEST submitted PR id>]);
---    保持未 COMMIT，再在同交易呼叫 _pr_validate_qty_current 與 split/merge。
+-- 【反向第一把鎖：partial vs #995；可抓舊 wrapper FOR UPDATE】
+-- A: BEGIN; SELECT 1 FROM purchase_requests WHERE id=<ZZTEST partial source PR> FOR UPDATE;
+-- B: BEGIN; SELECT 1 FROM group_buy_campaigns WHERE id=<該 PR campaign> FOR NO KEY UPDATE;
+-- A: SET LOCAL lock_timeout='500ms'; SELECT 1 FROM group_buy_campaigns WHERE id=<該 campaign> FOR KEY SHARE;
+--    預期立即成功（NO KEY UPDATE 與 FK KEY SHARE 相容）。若 wrapper 退回 FOR UPDATE，這步會 timeout，
+--    而 B 後續等 A 的 PR，就是「雙方各持反向第一把鎖」。A ROLLBACK 後 B 再鎖 PR 應成功。
+-- 【PO snapshot vs 取消/新增 demand】
+-- A: BEGIN; SELECT _pr_lock_demand_snapshot(ARRAY[<ZZTEST submitted PR id>]); 保持未 COMMIT。
 -- B: SET lock_timeout='500ms'; UPDATE customer_orders SET status='cancelled' WHERE id=<該團 ZZTEST order id>;
 --    或 INSERT customer_order_items(...) 指向該團已鎖的 order/campaign_item；預期 55P03 timeout，非業務錯誤。
--- A: 完成 PO 後 COMMIT。B: ROLLBACK 後移除 lock_timeout 重試，預期取消/新增成功且 dirty 保留。
+-- A: 完成 validate/PO 後 COMMIT。B: ROLLBACK 後移除 lock_timeout 重試，預期取消/新增成功且 dirty 保留。
 
 DO $$
 DECLARE bad TEXT;
