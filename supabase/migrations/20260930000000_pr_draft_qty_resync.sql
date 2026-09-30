@@ -617,6 +617,45 @@ REVOKE ALL ON FUNCTION public.rpc_add_pr_store_demands(BIGINT, BIGINT, BIGINT, J
 REVOKE ALL ON FUNCTION public.rpc_add_pr_store_demands(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID) FROM anon;
 GRANT EXECUTE ON FUNCTION public.rpc_add_pr_store_demands(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID) TO authenticated;
 
+CREATE OR REPLACE FUNCTION public._pr_lock_qty_sync_keys(
+  p_pr_id BIGINT
+) RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_campaign_ids BIGINT[];
+  r              RECORD;
+BEGIN
+  SELECT ARRAY(
+           SELECT DISTINCT q.campaign_id
+             FROM public._pr_qty_sync_preview(p_pr_id) q
+            ORDER BY q.campaign_id
+         )
+    INTO v_campaign_ids;
+
+  PERFORM 1
+    FROM public.group_buy_campaigns gbc
+   WHERE gbc.id = ANY(v_campaign_ids)
+   ORDER BY gbc.id
+   FOR NO KEY UPDATE;
+
+  FOR r IN
+    SELECT q.campaign_id, q.sku_id
+      FROM public._pr_qty_sync_preview(p_pr_id) q
+     ORDER BY q.campaign_id, q.sku_id
+  LOOP
+    PERFORM pg_advisory_xact_lock(
+      hashtext(r.campaign_id::TEXT),
+      hashtext(r.sku_id::TEXT)
+    );
+  END LOOP;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public._pr_lock_qty_sync_keys(BIGINT) FROM PUBLIC;
+
 CREATE OR REPLACE FUNCTION public._pr_apply_qty_sync(
   p_pr_id    BIGINT,
   p_operator UUID
@@ -645,16 +684,7 @@ BEGIN
 
   -- 所有可能異動的團+SKU 先依固定順序取 #982 同一把鎖，
   -- 再鎖 PR/item。#995 的外層 wrapper 也是同一順序，避免 item↔advisory 反向。
-  FOR r IN
-    SELECT q.campaign_id, q.sku_id
-      FROM public._pr_qty_sync_preview(p_pr_id) q
-     ORDER BY q.campaign_id, q.sku_id
-  LOOP
-    PERFORM pg_advisory_xact_lock(
-      hashtext(r.campaign_id::TEXT),
-      hashtext(r.sku_id::TEXT)
-    );
-  END LOOP;
+  PERFORM public._pr_lock_qty_sync_keys(p_pr_id);
 
   SELECT pr.id, pr.pr_no, pr.status
     INTO v_pr
@@ -905,6 +935,51 @@ $$;
 
 REVOKE ALL ON FUNCTION public._pr_validate_qty_current(BIGINT[]) FROM PUBLIC;
 
+CREATE OR REPLACE FUNCTION public._pr_campaign_ids(
+  p_pr_ids BIGINT[]
+) RETURNS BIGINT[]
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+SELECT ARRAY(
+  SELECT x.campaign_id
+    FROM (
+      SELECT prc.campaign_id
+        FROM purchase_requests pr
+        JOIN purchase_request_campaigns prc ON prc.pr_id = pr.id
+       WHERE pr.id = ANY(COALESCE($1, ARRAY[]::BIGINT[]))
+         AND pr.tenant_id = public._current_tenant_id()
+         AND prc.tenant_id = public._current_tenant_id()
+      UNION
+      SELECT pric.campaign_id
+        FROM purchase_requests pr
+        JOIN purchase_request_items pri ON pri.pr_id = pr.id
+        JOIN purchase_request_item_campaigns pric ON pric.pr_item_id = pri.id
+       WHERE pr.id = ANY(COALESCE($1, ARRAY[]::BIGINT[]))
+         AND pr.tenant_id = public._current_tenant_id()
+         AND pric.tenant_id = public._current_tenant_id()
+      UNION
+      SELECT pri.source_campaign_id
+        FROM purchase_requests pr
+        JOIN purchase_request_items pri ON pri.pr_id = pr.id
+       WHERE pr.id = ANY(COALESCE($1, ARRAY[]::BIGINT[]))
+         AND pr.tenant_id = public._current_tenant_id()
+         AND pri.source_campaign_id IS NOT NULL
+      UNION
+      SELECT pr.source_campaign_id
+        FROM purchase_requests pr
+       WHERE pr.id = ANY(COALESCE($1, ARRAY[]::BIGINT[]))
+         AND pr.tenant_id = public._current_tenant_id()
+         AND pr.source_campaign_id IS NOT NULL
+    ) x
+   ORDER BY x.campaign_id
+)
+$$;
+
+REVOKE ALL ON FUNCTION public._pr_campaign_ids(BIGINT[]) FROM PUBLIC;
+
 -- PO snapshot: campaign -> campaign item -> order -> order item, all FOR UPDATE.
 CREATE OR REPLACE FUNCTION public._pr_lock_demand_snapshot(
   p_pr_ids BIGINT[]
@@ -921,31 +996,7 @@ BEGIN
     RAISE EXCEPTION '缺少租戶資訊，無法鎖定開團需求';
   END IF;
 
-  SELECT ARRAY_AGG(DISTINCT x.campaign_id ORDER BY x.campaign_id)
-    INTO v_campaign_ids
-    FROM (
-      SELECT prc.campaign_id
-        FROM public.purchase_requests pr
-        JOIN public.purchase_request_campaigns prc ON prc.pr_id = pr.id
-       WHERE pr.id = ANY(COALESCE(p_pr_ids, ARRAY[]::BIGINT[]))
-         AND pr.tenant_id = v_tenant
-         AND prc.tenant_id = v_tenant
-      UNION
-      SELECT pric.campaign_id
-        FROM public.purchase_requests pr
-        JOIN public.purchase_request_items pri ON pri.pr_id = pr.id
-        JOIN public.purchase_request_item_campaigns pric ON pric.pr_item_id = pri.id
-       WHERE pr.id = ANY(COALESCE(p_pr_ids, ARRAY[]::BIGINT[]))
-         AND pr.tenant_id = v_tenant
-         AND pric.tenant_id = v_tenant
-      UNION
-      SELECT pri.source_campaign_id
-        FROM public.purchase_requests pr
-        JOIN public.purchase_request_items pri ON pri.pr_id = pr.id
-       WHERE pr.id = ANY(COALESCE(p_pr_ids, ARRAY[]::BIGINT[]))
-         AND pr.tenant_id = v_tenant
-         AND pri.source_campaign_id IS NOT NULL
-    ) x;
+  v_campaign_ids := public._pr_campaign_ids(p_pr_ids);
 
   IF COALESCE(array_length(v_campaign_ids, 1), 0) = 0 THEN
     RETURN;
@@ -1072,17 +1123,21 @@ DECLARE
   v_status TEXT;
   v_sync   JSONB;
 BEGIN
-  -- 無效單號／非草稿直接交回原函式，保留原錯訊與原守門。
+  -- 先取與 #982 相同且固定順序的鎖，再鎖 PR 後判斷 eligibility。
+  -- 不可用鎖前 SELECT 直接 delegate，否則等鎖時變回 draft 會繞過同步。
+  PERFORM public._pr_lock_qty_sync_keys(p_pr_id);
+
   SELECT status INTO v_status
     FROM public.purchase_requests
-   WHERE id = p_pr_id;
+   WHERE id = p_pr_id
+   FOR UPDATE;
 
   IF NOT FOUND OR v_status <> 'draft' THEN
     PERFORM public._rpc_submit_pr_20260930_inner(p_pr_id, p_operator);
     RETURN;
   END IF;
 
-  -- 同步核心先取與 #982 相同 advisory，再鎖 PR/item；不在 wrapper 先鎖 header。
+  -- 同一交易已持有 advisory + PR；同步核心重取同鎖不會改變順序。
   v_sync := public._pr_apply_qty_sync(p_pr_id, p_operator);
   IF COALESCE((v_sync ->> 'blocked_count')::INTEGER, 0) > 0 THEN
     RAISE EXCEPTION '有品項無法安全同步：同團同商品有多張草稿或歸屬不明，請先人工確認';
@@ -1107,6 +1162,117 @@ REVOKE ALL ON FUNCTION public._rpc_split_pr_to_pos_20260930_inner(BIGINT, BIGINT
 REVOKE ALL ON FUNCTION public._rpc_split_pr_to_pos_20260930_inner(BIGINT, BIGINT, UUID) FROM anon;
 REVOKE ALL ON FUNCTION public._rpc_split_pr_to_pos_20260930_inner(BIGINT, BIGINT, UUID) FROM authenticated;
 
+-- 主線原函式的私有本體；僅三個掃品項處排除 qty=0，
+-- 避免保留的追溯列擊中 purchase_order_items.qty_ordered > 0。
+CREATE OR REPLACE FUNCTION public._rpc_split_pr_to_pos_20260930_inner(
+  p_pr_id            BIGINT,
+  p_dest_location_id BIGINT,
+  p_operator         UUID
+) RETURNS BIGINT[]
+LANGUAGE plpgsql SECURITY DEFINER
+AS $$
+DECLARE
+  v_tenant   UUID;
+  v_status   TEXT;
+  v_review   TEXT;
+  v_unassigned INTEGER;
+  v_supplier_rec RECORD;
+  v_po_id    BIGINT;
+  v_po_no    TEXT;
+  v_po_ids   BIGINT[] := ARRAY[]::BIGINT[];
+BEGIN
+  SELECT tenant_id, status, review_status INTO v_tenant, v_status, v_review
+    FROM purchase_requests
+   WHERE id = p_pr_id
+   FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'PR % not found', p_pr_id;
+  END IF;
+
+  IF v_review <> 'approved' THEN
+    RAISE EXCEPTION 'PR % not approved (current: %)', p_pr_id, v_review;
+  END IF;
+
+  IF v_status IN ('fully_ordered','partially_ordered','cancelled') THEN
+    RAISE EXCEPTION 'PR % already split (status: %)', p_pr_id, v_status;
+  END IF;
+
+  -- 守衛：含未指派供應商行（qty=0 為追溯列，不建 PO）
+  SELECT COUNT(*) INTO v_unassigned
+    FROM purchase_request_items
+   WHERE pr_id = p_pr_id
+     AND qty_requested > 0
+     AND suggested_supplier_id IS NULL;
+
+  IF v_unassigned > 0 THEN
+    RAISE EXCEPTION 'PR % has % unassigned supplier items', p_pr_id, v_unassigned;
+  END IF;
+
+  -- 依 supplier 拆 PO
+  FOR v_supplier_rec IN
+    SELECT DISTINCT suggested_supplier_id AS supplier_id
+      FROM purchase_request_items
+     WHERE pr_id = p_pr_id
+       AND qty_requested > 0
+  LOOP
+    v_po_no := public.rpc_next_po_no();
+
+    INSERT INTO purchase_orders (
+      tenant_id, po_no, supplier_id, dest_location_id, status,
+      created_by, updated_by
+    ) VALUES (
+      v_tenant, v_po_no, v_supplier_rec.supplier_id, p_dest_location_id, 'draft',
+      p_operator, p_operator
+    ) RETURNING id INTO v_po_id;
+
+    -- PO items 從 PR items copy
+    WITH inserted AS (
+      INSERT INTO purchase_order_items (
+        po_id, sku_id, qty_ordered, unit_cost,
+        created_by, updated_by
+      )
+      SELECT v_po_id, pri.sku_id, pri.qty_requested, pri.unit_cost,
+             p_operator, p_operator
+        FROM purchase_request_items pri
+       WHERE pri.pr_id = p_pr_id
+         AND pri.qty_requested > 0
+         AND pri.suggested_supplier_id = v_supplier_rec.supplier_id
+      RETURNING id, sku_id
+    )
+    UPDATE purchase_request_items pri
+       SET po_item_id = i.id,
+           updated_by = p_operator
+      FROM inserted i
+     WHERE pri.pr_id = p_pr_id
+       AND pri.suggested_supplier_id = v_supplier_rec.supplier_id
+       AND pri.sku_id = i.sku_id;
+
+    -- 更新 PO totals
+    UPDATE purchase_orders po
+       SET subtotal = sub.subtotal,
+           total = sub.subtotal,
+           updated_at = NOW()
+      FROM (
+        SELECT po_id, SUM(qty_ordered * unit_cost) AS subtotal
+          FROM purchase_order_items WHERE po_id = v_po_id GROUP BY po_id
+      ) sub
+     WHERE po.id = sub.po_id;
+
+    v_po_ids := v_po_ids || v_po_id;
+  END LOOP;
+
+  -- 標 PR 為 fully_ordered
+  UPDATE purchase_requests
+     SET status = 'fully_ordered',
+         updated_by = p_operator,
+         updated_at = NOW()
+   WHERE id = p_pr_id;
+
+  RETURN v_po_ids;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION public.rpc_split_pr_to_pos(
   p_pr_id            BIGINT,
   p_dest_location_id BIGINT,
@@ -1120,15 +1286,32 @@ DECLARE
   v_status     TEXT;
   v_review     TEXT;
   v_unassigned INTEGER;
+  v_campaign_ids         BIGINT[];
+  v_locked_campaign_ids  BIGINT[];
 BEGIN
-  -- 舊版 eligibility 只要 approved，且僅擋已拆／作廢；draft+approved 也是合法舊契約。
+  v_campaign_ids := public._pr_campaign_ids(ARRAY[p_pr_id]);
+  PERFORM public._pr_lock_demand_snapshot(ARRAY[p_pr_id]);
+
+  -- 固定 campaign -> PR 順序；eligibility 必須在 PR 鎖後判斷。
   SELECT status, review_status
     INTO v_status, v_review
     FROM public.purchase_requests
-   WHERE id = p_pr_id;
+   WHERE id = p_pr_id
+   FOR UPDATE;
 
-  IF NOT FOUND
-     OR v_review <> 'approved'
+  IF NOT FOUND THEN
+    RETURN public._rpc_split_pr_to_pos_20260930_inner(
+      p_pr_id, p_dest_location_id, p_operator
+    );
+  END IF;
+
+  v_locked_campaign_ids := public._pr_campaign_ids(ARRAY[p_pr_id]);
+  IF v_locked_campaign_ids IS DISTINCT FROM v_campaign_ids THEN
+    RAISE EXCEPTION '請購單的關聯團剛剛有變動，整筆未建立，請重試';
+  END IF;
+
+  -- 舊版 eligibility 只要 approved，且僅擋已拆／作廢；draft+approved 也是合法舊契約。
+  IF v_review <> 'approved'
      OR v_status IN ('fully_ordered','partially_ordered','cancelled') THEN
     RETURN public._rpc_split_pr_to_pos_20260930_inner(
       p_pr_id, p_dest_location_id, p_operator
@@ -1139,6 +1322,7 @@ BEGIN
     INTO v_unassigned
     FROM public.purchase_request_items
    WHERE pr_id = p_pr_id
+     AND qty_requested > 0
      AND suggested_supplier_id IS NULL;
 
   IF v_unassigned > 0 THEN
@@ -1147,7 +1331,6 @@ BEGIN
     );
   END IF;
 
-  PERFORM public._pr_lock_demand_snapshot(ARRAY[p_pr_id]);
   PERFORM public._pr_validate_qty_current(ARRAY[p_pr_id]);
   RETURN public._rpc_split_pr_to_pos_20260930_inner(
     p_pr_id, p_dest_location_id, p_operator
@@ -1179,17 +1362,34 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_snapshot_pr_ids BIGINT[];
-  v_locked_pr_ids   BIGINT[];
+  v_snapshot_item_ids     BIGINT[];
+  v_locked_item_ids       BIGINT[];
+  v_snapshot_pr_ids       BIGINT[];
+  v_locked_pr_ids         BIGINT[];
+  v_snapshot_campaign_ids BIGINT[];
+  v_locked_campaign_ids   BIGINT[];
+  v_po_id                 BIGINT;
 BEGIN
-  -- 僅找出舊函式本來會動到的 PR；不新增租戶、角色、狀態或供應商契約。
+  -- qty=0 是保留的追溯列，不得送入舊 inner 建 PO。
+  SELECT ARRAY(
+           SELECT DISTINCT pri.id
+             FROM public.purchase_request_items pri
+            WHERE pri.id = ANY(COALESCE(p_pr_item_ids, ARRAY[]::BIGINT[]))
+              AND pri.qty_requested > 0
+            ORDER BY pri.id
+         )
+    INTO v_snapshot_item_ids;
+
   SELECT ARRAY_AGG(DISTINCT pri.pr_id ORDER BY pri.pr_id)
     INTO v_snapshot_pr_ids
     FROM public.purchase_request_items pri
-   WHERE pri.id = ANY(COALESCE(p_pr_item_ids, ARRAY[]::BIGINT[]));
+   WHERE pri.id = ANY(v_snapshot_item_ids);
+
+  v_snapshot_campaign_ids := public._pr_campaign_ids(v_snapshot_pr_ids);
 
   PERFORM public._pr_lock_demand_snapshot(v_snapshot_pr_ids);
 
+  -- 快照後才依 PR/item 固定順序鎖定，全程不會出現 PR -> campaign。
   PERFORM 1
     FROM public.purchase_request_items pri
     JOIN public.purchase_requests pr ON pr.id = pri.pr_id
@@ -1197,19 +1397,47 @@ BEGIN
     ORDER BY pr.id, pri.id
     FOR UPDATE OF pr, pri;
 
+  SELECT ARRAY(
+           SELECT DISTINCT pri.id
+             FROM public.purchase_request_items pri
+            WHERE pri.id = ANY(COALESCE(p_pr_item_ids, ARRAY[]::BIGINT[]))
+              AND pri.qty_requested > 0
+            ORDER BY pri.id
+         )
+    INTO v_locked_item_ids;
+
   SELECT ARRAY_AGG(DISTINCT pri.pr_id ORDER BY pri.pr_id)
     INTO v_locked_pr_ids
     FROM public.purchase_request_items pri
-   WHERE pri.id = ANY(COALESCE(p_pr_item_ids, ARRAY[]::BIGINT[]));
+   WHERE pri.id = ANY(v_locked_item_ids);
 
-  IF v_locked_pr_ids IS DISTINCT FROM v_snapshot_pr_ids THEN
+  v_locked_campaign_ids := public._pr_campaign_ids(v_locked_pr_ids);
+
+  IF v_locked_item_ids IS DISTINCT FROM v_snapshot_item_ids
+     OR v_locked_pr_ids IS DISTINCT FROM v_snapshot_pr_ids
+     OR v_locked_campaign_ids IS DISTINCT FROM v_snapshot_campaign_ids THEN
     RAISE EXCEPTION '請購品項在建單前已被搬到其他請購單；整筆未建立，請重試';
   END IF;
 
   PERFORM public._pr_validate_qty_current(v_locked_pr_ids);
-  RETURN public._rpc_merge_prs_to_po_20260930_inner(
-    p_tenant_id, p_pr_item_ids, p_supplier_id, p_dest_location, p_po_no, p_operator
+  v_po_id := public._rpc_merge_prs_to_po_20260930_inner(
+    p_tenant_id, v_locked_item_ids, p_supplier_id, p_dest_location, p_po_no, p_operator
   );
+
+  -- 舊 inner 會把保留的 qty=0 列當成「未轉採購」；狀態只看真正會花錢的正數列。
+  UPDATE public.purchase_requests pr
+     SET status = CASE
+       WHEN NOT EXISTS (
+         SELECT 1
+           FROM public.purchase_request_items pri
+          WHERE pri.pr_id = pr.id
+            AND pri.qty_requested > 0
+            AND pri.po_item_id IS NULL
+       ) THEN 'fully_ordered' ELSE 'partially_ordered'
+     END
+   WHERE pr.id = ANY(v_locked_pr_ids);
+
+  RETURN v_po_id;
 END;
 $$;
 

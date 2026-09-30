@@ -104,7 +104,13 @@ BEGIN
   INSERT INTO purchase_request_items(pr_id,sku_id,qty_requested,suggested_supplier_id,unit_cost,source_campaign_id,created_by,updated_by)
   VALUES(pr,a,4,sup,10,camp_split,op,op) RETURNING id INTO item;
   INSERT INTO purchase_request_item_campaigns(tenant_id,pr_item_id,campaign_id,qty_requested) VALUES(t,item,camp_split,4);
-  INSERT INTO _t_ctx VALUES ('split_pr',pr),('split_order',ord);
+  INSERT INTO campaign_items(tenant_id,campaign_id,sku_id,unit_price) VALUES(t,camp_split,b,40);
+  INSERT INTO purchase_request_items(pr_id,sku_id,qty_requested,suggested_supplier_id,unit_cost,source_campaign_id,created_by,updated_by)
+  VALUES(pr,b,0,sup,20,camp_split,op,op) RETURNING id INTO item2;
+  INSERT INTO purchase_request_item_campaigns(tenant_id,pr_item_id,campaign_id,qty_requested) VALUES(t,item2,camp_split,0);
+  INSERT INTO purchase_request_store_additions(tenant_id,pr_id,pr_item_id,campaign_id,store_id,sku_id,qty_added,request_key,created_by)
+  VALUES(t,pr,item2,camp_split,st,b,1,'face0000-0000-4000-8000-000000000103',op);
+  INSERT INTO _t_ctx VALUES ('split_pr',pr),('split_order',ord),('split_item',item),('split_zero_item',item2);
 
   INSERT INTO group_buy_campaigns(tenant_id,campaign_no,name,status,end_at)
   VALUES(t,'ZZTEST-QTY-CMERGE','【測試】merge','locked',NOW()) RETURNING id INTO camp_merge;
@@ -118,7 +124,13 @@ BEGIN
   INSERT INTO purchase_request_items(pr_id,sku_id,qty_requested,suggested_supplier_id,unit_cost,source_campaign_id,created_by,updated_by)
   VALUES(pr,a,6,sup,10,camp_merge,op,op) RETURNING id INTO item;
   INSERT INTO purchase_request_item_campaigns(tenant_id,pr_item_id,campaign_id,qty_requested) VALUES(t,item,camp_merge,6);
-  INSERT INTO _t_ctx VALUES ('merge_pr',pr),('merge_item',item);
+  INSERT INTO campaign_items(tenant_id,campaign_id,sku_id,unit_price) VALUES(t,camp_merge,b,40);
+  INSERT INTO purchase_request_items(pr_id,sku_id,qty_requested,suggested_supplier_id,unit_cost,source_campaign_id,created_by,updated_by)
+  VALUES(pr,b,0,sup,20,camp_merge,op,op) RETURNING id INTO item2;
+  INSERT INTO purchase_request_item_campaigns(tenant_id,pr_item_id,campaign_id,qty_requested) VALUES(t,item2,camp_merge,0);
+  INSERT INTO purchase_request_store_additions(tenant_id,pr_id,pr_item_id,campaign_id,store_id,sku_id,qty_added,request_key,created_by)
+  VALUES(t,pr,item2,camp_merge,st,b,1,'face0000-0000-4000-8000-000000000104',op);
+  INSERT INTO _t_ctx VALUES ('merge_pr',pr),('merge_item',item),('merge_zero_item',item2);
 
   -- partial 有兩列，addition 指向會搬走的 A。
   INSERT INTO group_buy_campaigns(tenant_id,campaign_no,name,status,end_at)
@@ -238,11 +250,32 @@ UPDATE customer_order_items SET qty=4 WHERE order_id=(SELECT v FROM _t_ctx WHERE
 SELECT rpc_submit_pr((SELECT v FROM _t_ctx WHERE k='submit_pr'),(SELECT operator FROM _t_env));
 INSERT INTO _t_result SELECT 50,'submit 正常',status='submitted','status='||status FROM purchase_requests WHERE id=(SELECT v FROM _t_ctx WHERE k='submit_pr');
 SELECT rpc_split_pr_to_pos((SELECT v FROM _t_ctx WHERE k='split_pr'),(SELECT v FROM _t_ctx WHERE k='loc'),(SELECT operator FROM _t_env));
-INSERT INTO _t_result SELECT 51,'split 保留舊契約：draft+approved 可建 PO',status='fully_ordered','status='||status FROM purchase_requests WHERE id=(SELECT v FROM _t_ctx WHERE k='split_pr');
-SELECT rpc_merge_prs_to_po((SELECT tenant FROM _t_env),ARRAY[(SELECT v FROM _t_ctx WHERE k='merge_item'),(SELECT v FROM _t_ctx WHERE k='merge_item')],
+INSERT INTO _t_result
+SELECT 51,'split draft+approved 混合正數+0：PO 只含正數，0 列與 addition 保留',
+  pr.status='fully_ordered'
+  AND positive.po_item_id IS NOT NULL
+  AND zero_item.po_item_id IS NULL AND zero_item.qty_requested=0
+  AND EXISTS(SELECT 1 FROM purchase_request_store_additions psa WHERE psa.pr_item_id=zero_item.id AND psa.pr_id=pr.id)
+  AND (SELECT COUNT(*)=1 FROM purchase_order_items poi WHERE poi.po_id=(SELECT po_id FROM purchase_order_items WHERE id=positive.po_item_id)),
+  'status='||pr.status||', positive_po_item='||COALESCE(positive.po_item_id::TEXT,'null')||', zero_po_item='||COALESCE(zero_item.po_item_id::TEXT,'null')
+  FROM purchase_requests pr
+  JOIN purchase_request_items positive ON positive.id=(SELECT v FROM _t_ctx WHERE k='split_item')
+  JOIN purchase_request_items zero_item ON zero_item.id=(SELECT v FROM _t_ctx WHERE k='split_zero_item')
+ WHERE pr.id=(SELECT v FROM _t_ctx WHERE k='split_pr');
+SELECT rpc_merge_prs_to_po((SELECT tenant FROM _t_env),ARRAY[(SELECT v FROM _t_ctx WHERE k='merge_item'),(SELECT v FROM _t_ctx WHERE k='merge_zero_item'),(SELECT v FROM _t_ctx WHERE k='merge_item')],
   (SELECT v FROM _t_ctx WHERE k='supplier'),(SELECT v FROM _t_ctx WHERE k='loc'),'ZZTEST-QTY-PO-MERGE',(SELECT operator FROM _t_env));
-INSERT INTO _t_result SELECT 52,'merge 重複 id 先去重後正常',po_item_id IS NOT NULL,'po_item='||COALESCE(po_item_id::TEXT,'null')
-  FROM purchase_request_items WHERE id=(SELECT v FROM _t_ctx WHERE k='merge_item');
+INSERT INTO _t_result
+SELECT 52,'merge 混合正數+0：重複 id 去重、PO 只含正數，0 列與 addition 保留',
+  pr.status='fully_ordered'
+  AND positive.po_item_id IS NOT NULL
+  AND zero_item.po_item_id IS NULL AND zero_item.qty_requested=0
+  AND EXISTS(SELECT 1 FROM purchase_request_store_additions psa WHERE psa.pr_item_id=zero_item.id AND psa.pr_id=pr.id)
+  AND (SELECT COUNT(*)=1 FROM purchase_order_items poi WHERE poi.po_id=(SELECT po_id FROM purchase_order_items WHERE id=positive.po_item_id)),
+  'status='||pr.status||', positive_po_item='||COALESCE(positive.po_item_id::TEXT,'null')||', zero_po_item='||COALESCE(zero_item.po_item_id::TEXT,'null')
+  FROM purchase_requests pr
+  JOIN purchase_request_items positive ON positive.id=(SELECT v FROM _t_ctx WHERE k='merge_item')
+  JOIN purchase_request_items zero_item ON zero_item.id=(SELECT v FROM _t_ctx WHERE k='merge_zero_item')
+ WHERE pr.id=(SELECT v FROM _t_ctx WHERE k='merge_pr');
 
 -- partial 只搬 draft：item id 保留，addition.pr_id 跟著新單。
 CREATE TEMP TABLE _t_partial_result ON COMMIT DROP AS
@@ -272,8 +305,10 @@ SELECT 80,'dirty FK ON DELETE CASCADE',COUNT(*)=2 AND BOOL_AND(confdeltype='c'),
   FROM pg_constraint WHERE conrelid='public.purchase_request_qty_dirty'::regclass AND contype='f';
 INSERT INTO _t_result
 SELECT 81,'#982/#995/sync 同 advisory key 且 sync 先鎖',
-  pg_get_functiondef('public._pr_apply_qty_sync(bigint,uuid)'::regprocedure) LIKE '%hashtext(r.campaign_id::TEXT)%hashtext(r.sku_id::TEXT)%'
-  AND STRPOS(pg_get_functiondef('public._pr_apply_qty_sync(bigint,uuid)'::regprocedure),'pg_advisory_xact_lock')
+  pg_get_functiondef('public._pr_lock_qty_sync_keys(bigint)'::regprocedure) LIKE '%hashtext(r.campaign_id::TEXT)%hashtext(r.sku_id::TEXT)%'
+  AND STRPOS(pg_get_functiondef('public._pr_lock_qty_sync_keys(bigint)'::regprocedure),'FOR NO KEY UPDATE')
+      < STRPOS(pg_get_functiondef('public._pr_lock_qty_sync_keys(bigint)'::regprocedure),'pg_advisory_xact_lock')
+  AND STRPOS(pg_get_functiondef('public._pr_apply_qty_sync(bigint,uuid)'::regprocedure),'_pr_lock_qty_sync_keys')
       < STRPOS(pg_get_functiondef('public._pr_apply_qty_sync(bigint,uuid)'::regprocedure),'FOR UPDATE')
   AND pg_get_functiondef('public.rpc_add_pr_store_demands(bigint,bigint,bigint,jsonb,uuid,uuid)'::regprocedure)
       LIKE '%hashtext(p_campaign_id::TEXT)%hashtext(v_sku_id::TEXT)%',
@@ -281,6 +316,7 @@ SELECT 81,'#982/#995/sync 同 advisory key 且 sync 先鎖',
 
 WITH defs AS (
   SELECT pg_get_functiondef('public._pr_lock_demand_snapshot(bigint[])'::regprocedure) AS lock_src,
+         pg_get_functiondef('public.rpc_submit_pr(bigint,uuid)'::regprocedure) AS submit_src,
          pg_get_functiondef('public.rpc_split_pr_to_pos(bigint,bigint,uuid)'::regprocedure) AS split_src,
          pg_get_functiondef('public.rpc_merge_prs_to_po(uuid,bigint[],bigint,bigint,text,uuid)'::regprocedure) AS merge_src
 )
@@ -290,11 +326,18 @@ SELECT 82,'split/merge 在交回舊 inner 前持有 deterministic demand snapsho
   AND STRPOS(lock_src,'campaign_items') < STRPOS(lock_src,'customer_orders')
   AND STRPOS(lock_src,'customer_orders') < STRPOS(lock_src,'customer_order_items')
   AND (LENGTH(lock_src)-LENGTH(REPLACE(lock_src,'FOR UPDATE','')))/LENGTH('FOR UPDATE') = 4
-  AND STRPOS(split_src,'_pr_lock_demand_snapshot') < STRPOS(split_src,'_pr_validate_qty_current')
+  AND STRPOS(submit_src,'_pr_lock_qty_sync_keys') < STRPOS(submit_src,'FOR UPDATE')
+  AND STRPOS(submit_src,'FOR UPDATE') < STRPOS(submit_src,'IF NOT FOUND OR v_status <> ''draft''')
+  AND STRPOS(submit_src,'IF NOT FOUND OR v_status <> ''draft''') < STRPOS(submit_src,'_pr_apply_qty_sync')
+  AND STRPOS(split_src,'_pr_lock_demand_snapshot') < STRPOS(split_src,'FOR UPDATE')
+  AND STRPOS(split_src,'FOR UPDATE') < STRPOS(split_src,'v_locked_campaign_ids IS DISTINCT FROM v_campaign_ids')
+  AND STRPOS(split_src,'v_locked_campaign_ids IS DISTINCT FROM v_campaign_ids') < STRPOS(split_src,'_pr_validate_qty_current')
   AND STRPOS(split_src,'_pr_validate_qty_current') < STRPOS(split_src,'_rpc_split_pr_to_pos_20260930_inner')
-  AND STRPOS(merge_src,'_pr_lock_demand_snapshot') < STRPOS(merge_src,'_pr_validate_qty_current')
+  AND STRPOS(merge_src,'_pr_lock_demand_snapshot') < STRPOS(merge_src,'FOR UPDATE OF pr, pri')
+  AND STRPOS(merge_src,'FOR UPDATE OF pr, pri') < STRPOS(merge_src,'v_locked_campaign_ids IS DISTINCT FROM v_snapshot_campaign_ids')
+  AND STRPOS(merge_src,'v_locked_campaign_ids IS DISTINCT FROM v_snapshot_campaign_ids') < STRPOS(merge_src,'_pr_validate_qty_current')
   AND STRPOS(merge_src,'_pr_validate_qty_current') < STRPOS(merge_src,'_rpc_merge_prs_to_po_20260930_inner'),
-  'campaign -> campaign_items -> orders -> order_items; wrapper lock -> validate -> original inner'
+  'campaign -> campaign_items -> orders -> order_items -> PR/item -> campaign set recheck -> validate -> original inner'
 FROM defs;
 
 WITH defs AS (
@@ -359,6 +402,14 @@ FROM defs;
 -- 錯版 A: INSERT purchase_request_campaigns(...) 取 campaign FK KEY SHARE，與 B 形成反向死鎖。
 -- 正確 partial 不會先持有 PR；它先依 campaign id 取 FOR NO KEY UPDATE，再取 PR，
 -- 所以與 split 都是 campaign -> PR，會在 campaign 第一把鎖排隊，不會各持一把互等。
+-- 【add 新團 vs split/merge campaign 集合】
+-- A: BEGIN; 先讀 _pr_campaign_ids，再取 _pr_lock_demand_snapshot（尚未鎖 PR）。
+-- B: 對同張 draft PR 新增一個團的歸屬後 COMMIT。A 接著鎖 PR 並重讀 campaign ids。
+-- 預期 A 在任何 validate/PO INSERT 前因 IS DISTINCT FROM 拒絕重試；
+-- 錯版移除 split/merge campaign 重驗後，這組步驟會直接用舊團集合建 PO。
+-- 【eligibility 等鎖時變動】
+-- A 先鎖 PR；B 呼叫 submit/split 並等待；A 把狀態改成合法後 COMMIT。
+-- 預期 B 取得 PR 鎖後才讀狀態，合法路徑仍先 sync/validate；不可用鎖前舊狀態 delegate。
 -- 【PO snapshot vs 取消/新增 demand】
 -- A: BEGIN; SELECT _pr_lock_demand_snapshot(ARRAY[<ZZTEST submitted PR id>]); 保持未 COMMIT。
 -- B: SET lock_timeout='500ms'; UPDATE customer_orders SET status='cancelled' WHERE id=<該團 ZZTEST order id>;
