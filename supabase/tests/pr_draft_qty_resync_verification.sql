@@ -7,7 +7,6 @@ SET LOCAL request.jwt.claims = '{"tenant_id":"face0000-0000-4000-8000-0000000000
 
 CREATE TEMP TABLE _t_env ON COMMIT DROP AS
 SELECT 'face0000-0000-4000-8000-000000000030'::UUID tenant,
-       'face0000-0000-4000-8000-000000000031'::UUID other_tenant,
        'face0000-0000-4000-8000-0000000000ff'::UUID operator;
 CREATE TEMP TABLE _t_ctx(k TEXT PRIMARY KEY, v BIGINT) ON COMMIT DROP;
 CREATE TEMP TABLE _t_result(seq INT, item TEXT, pass BOOLEAN, detail TEXT) ON COMMIT DROP;
@@ -15,13 +14,11 @@ CREATE TEMP TABLE _t_result(seq INT, item TEXT, pass BOOLEAN, detail TEXT) ON CO
 DO $$
 DECLARE
   t UUID := (SELECT tenant FROM _t_env);
-  ot UUID := (SELECT other_tenant FROM _t_env);
   op UUID := (SELECT operator FROM _t_env);
   loc BIGINT; st BIGINT; ch BIGINT; sup BIGINT; prod BIGINT; a BIGINT; b BIGINT;
   camp_qty BIGINT; camp_new BIGINT; camp_submit BIGINT; camp_split BIGINT;
   camp_merge BIGINT; camp_partial BIGINT; camp_dirty BIGINT; camp_dedupe BIGINT;
   ci BIGINT; ord BIGINT; ord2 BIGINT; pr BIGINT; item BIGINT; item2 BIGINT;
-  oloc BIGINT; osup BIGINT; oprod BIGINT; osku BIGINT; opr BIGINT; oitem BIGINT;
 BEGIN
   INSERT INTO locations(tenant_id,code,name,type)
   VALUES(t,'ZZTEST-QTY-LOC','【測試】請購同步總倉','central_warehouse') RETURNING id INTO loc;
@@ -102,7 +99,7 @@ BEGIN
   VALUES(t,'ZZTEST-QTY-OSPLIT',camp_split,ch,st,'confirmed') RETURNING id INTO ord;
   INSERT INTO customer_order_items(tenant_id,order_id,campaign_item_id,sku_id,qty,unit_price,status) VALUES(t,ord,ci,a,4,30,'pending');
   INSERT INTO purchase_requests(tenant_id,pr_no,source_type,source_close_date,source_location_id,status,review_status,total_amount,created_by,updated_by)
-  VALUES(t,'ZZTEST-QTY-PRSPLIT','close_date',CURRENT_DATE,loc,'submitted','approved',40,op,op) RETURNING id INTO pr;
+  VALUES(t,'ZZTEST-QTY-PRSPLIT','close_date',CURRENT_DATE,loc,'draft','approved',40,op,op) RETURNING id INTO pr;
   INSERT INTO purchase_request_campaigns VALUES(pr,camp_split,t,NOW());
   INSERT INTO purchase_request_items(pr_id,sku_id,qty_requested,suggested_supplier_id,unit_cost,source_campaign_id,created_by,updated_by)
   VALUES(pr,a,4,sup,10,camp_split,op,op) RETURNING id INTO item;
@@ -165,17 +162,6 @@ BEGIN
   INSERT INTO customer_order_items(tenant_id,order_id,campaign_item_id,sku_id,qty,unit_price,status) VALUES(t,ord2,ci,a,1,30,'pending');
   INSERT INTO _t_ctx VALUES ('dedupe_campaign',camp_dedupe),('dedupe_order1',ord),('dedupe_order2',ord2);
 
-  -- 外租戶 item，只用來帶入 merge 輸入陣列，不會改它。
-  INSERT INTO locations(tenant_id,code,name,type) VALUES(ot,'ZZTEST-QTY-OLOC','【測試】外租戶倉','central_warehouse') RETURNING id INTO oloc;
-  INSERT INTO suppliers(tenant_id,code,name) VALUES(ot,'ZZTEST-QTY-OSUP','【測試】外租戶供應商') RETURNING id INTO osup;
-  INSERT INTO products(tenant_id,product_code,name,status) VALUES(ot,'ZZTEST-QTY-OP','【測試】外租戶品','active') RETURNING id INTO oprod;
-  INSERT INTO skus(tenant_id,product_id,sku_code,variant_name,status,product_name)
-  VALUES(ot,oprod,'ZZTEST-QTY-OSKU','X','active','【測試】外租戶品') RETURNING id INTO osku;
-  INSERT INTO purchase_requests(tenant_id,pr_no,source_type,source_location_id,status,review_status,total_amount,created_by,updated_by)
-  VALUES(ot,'ZZTEST-QTY-OPR','manual',oloc,'submitted','approved',1,op,op) RETURNING id INTO opr;
-  INSERT INTO purchase_request_items(pr_id,sku_id,qty_requested,suggested_supplier_id,unit_cost,created_by,updated_by)
-  VALUES(opr,osku,1,osup,1,op,op) RETURNING id INTO oitem;
-  INSERT INTO _t_ctx VALUES ('other_item',oitem);
 END $$;
 
 -- statement-level transition table 同一句兩列同 key，只得一列 revision=1。
@@ -234,72 +220,6 @@ BEGIN
   INSERT INTO _t_result VALUES(33,'merge 擋新 SKU',blocked,COALESCE(msg,'not blocked'));
 END $$;
 
--- 花錢角色矩陣：總部會計與分店角色在 split/merge 兩邊都要被擋。
-DO $$
-DECLARE
-  v_role TEXT;
-  v_claim TEXT;
-  v_split_blocked BOOLEAN;
-  v_merge_blocked BOOLEAN;
-  v_all_blocked BOOLEAN := TRUE;
-BEGIN
-  FOREACH v_role IN ARRAY ARRAY['hq_accountant','store_manager','store_staff']
-  LOOP
-    v_claim := format(
-      '{"tenant_id":"face0000-0000-4000-8000-000000000030","app_metadata":{"role":"%s"},"sub":"face0000-0000-4000-8000-0000000000ff"}',
-      v_role
-    );
-    PERFORM set_config('request.jwt.claim', v_claim, TRUE);
-    PERFORM set_config('request.jwt.claims', v_claim, TRUE);
-    v_split_blocked := FALSE;
-    v_merge_blocked := FALSE;
-    BEGIN
-      PERFORM rpc_split_pr_to_pos((SELECT v FROM _t_ctx WHERE k='split_pr'),(SELECT v FROM _t_ctx WHERE k='loc'),(SELECT operator FROM _t_env));
-    EXCEPTION WHEN OTHERS THEN v_split_blocked := TRUE; END;
-    BEGIN
-      PERFORM rpc_merge_prs_to_po((SELECT tenant FROM _t_env),ARRAY[(SELECT v FROM _t_ctx WHERE k='merge_item')],
-        (SELECT v FROM _t_ctx WHERE k='supplier'),(SELECT v FROM _t_ctx WHERE k='loc'),'ZZTEST-QTY-PO-ROLE-'||v_role,(SELECT operator FROM _t_env));
-    EXCEPTION WHEN OTHERS THEN v_merge_blocked := TRUE; END;
-    v_all_blocked := v_all_blocked AND v_split_blocked AND v_merge_blocked;
-  END LOOP;
-
-  v_claim := '{"tenant_id":"face0000-0000-4000-8000-000000000030","app_metadata":{"role":"owner"},"sub":"face0000-0000-4000-8000-0000000000ff"}';
-  PERFORM set_config('request.jwt.claim', v_claim, TRUE);
-  PERFORM set_config('request.jwt.claims', v_claim, TRUE);
-  INSERT INTO _t_result VALUES(35,'split/merge 排除會計與分店角色',v_all_blocked,'3 roles checked');
-END $$;
-
--- 混入外租戶 id 要在花錢前整筆拒絕，合法 item 也不得被回寫。
-DO $$
-DECLARE blocked BOOLEAN:=FALSE; msg TEXT; before_po BIGINT; after_po BIGINT; before_count INTEGER; after_count INTEGER;
-BEGIN
-  SELECT po_item_id INTO before_po FROM purchase_request_items WHERE id=(SELECT v FROM _t_ctx WHERE k='merge_item');
-  SELECT COUNT(*) INTO before_count FROM purchase_orders WHERE po_no='ZZTEST-QTY-PO-XTENANT';
-  BEGIN PERFORM rpc_merge_prs_to_po((SELECT tenant FROM _t_env),
-    ARRAY[(SELECT v FROM _t_ctx WHERE k='merge_item'),(SELECT v FROM _t_ctx WHERE k='other_item')],
-    (SELECT v FROM _t_ctx WHERE k='supplier'),(SELECT v FROM _t_ctx WHERE k='loc'),'ZZTEST-QTY-PO-XTENANT',(SELECT operator FROM _t_env));
-  EXCEPTION WHEN OTHERS THEN blocked:=TRUE; msg:=SQLERRM; END;
-  SELECT po_item_id INTO after_po FROM purchase_request_items WHERE id=(SELECT v FROM _t_ctx WHERE k='merge_item');
-  SELECT COUNT(*) INTO after_count FROM purchase_orders WHERE po_no='ZZTEST-QTY-PO-XTENANT';
-  INSERT INTO _t_result VALUES(40,'merge 外租戶整筆拒絕',
-    blocked AND before_po IS NOT DISTINCT FROM after_po AND before_count=after_count,COALESCE(msg,'not blocked'));
-END $$;
-
-DO $$
-DECLARE blocked BOOLEAN; msg TEXT;
-BEGIN
-  blocked:=FALSE;
-  BEGIN PERFORM rpc_merge_prs_to_po((SELECT tenant FROM _t_env),ARRAY[(SELECT v FROM _t_ctx WHERE k='submit_item')],
-    (SELECT v FROM _t_ctx WHERE k='supplier'),(SELECT v FROM _t_ctx WHERE k='loc'),'ZZTEST-QTY-PO-DRAFT',(SELECT operator FROM _t_env));
-  EXCEPTION WHEN OTHERS THEN blocked:=TRUE; msg:=SQLERRM; END;
-  INSERT INTO _t_result VALUES(41,'merge 草稿未核准拒絕',blocked,COALESCE(msg,'not blocked'));
-  blocked:=FALSE; msg:=NULL;
-  BEGIN PERFORM rpc_merge_prs_to_po((SELECT tenant FROM _t_env),ARRAY[(SELECT v FROM _t_ctx WHERE k='merge_item'),9223372036854770000::BIGINT],
-    (SELECT v FROM _t_ctx WHERE k='supplier'),(SELECT v FROM _t_ctx WHERE k='loc'),'ZZTEST-QTY-PO-MISSING',(SELECT operator FROM _t_env));
-  EXCEPTION WHEN OTHERS THEN blocked:=TRUE; msg:=SQLERRM; END;
-  INSERT INTO _t_result VALUES(42,'merge 不存在 id 整筆拒絕',blocked,COALESCE(msg,'not blocked'));
-END $$;
-
 -- 送審核准後需求才變：split 必須在產生 PO 前擋住；還原後才跑下面正常路徑。
 UPDATE customer_order_items SET qty=5 WHERE order_id=(SELECT v FROM _t_ctx WHERE k='split_order');
 DO $$
@@ -318,7 +238,7 @@ UPDATE customer_order_items SET qty=4 WHERE order_id=(SELECT v FROM _t_ctx WHERE
 SELECT rpc_submit_pr((SELECT v FROM _t_ctx WHERE k='submit_pr'),(SELECT operator FROM _t_env));
 INSERT INTO _t_result SELECT 50,'submit 正常',status='submitted','status='||status FROM purchase_requests WHERE id=(SELECT v FROM _t_ctx WHERE k='submit_pr');
 SELECT rpc_split_pr_to_pos((SELECT v FROM _t_ctx WHERE k='split_pr'),(SELECT v FROM _t_ctx WHERE k='loc'),(SELECT operator FROM _t_env));
-INSERT INTO _t_result SELECT 51,'split 正常',status='fully_ordered','status='||status FROM purchase_requests WHERE id=(SELECT v FROM _t_ctx WHERE k='split_pr');
+INSERT INTO _t_result SELECT 51,'split 保留舊契約：draft+approved 可建 PO',status='fully_ordered','status='||status FROM purchase_requests WHERE id=(SELECT v FROM _t_ctx WHERE k='split_pr');
 SELECT rpc_merge_prs_to_po((SELECT tenant FROM _t_env),ARRAY[(SELECT v FROM _t_ctx WHERE k='merge_item'),(SELECT v FROM _t_ctx WHERE k='merge_item')],
   (SELECT v FROM _t_ctx WHERE k='supplier'),(SELECT v FROM _t_ctx WHERE k='loc'),'ZZTEST-QTY-PO-MERGE',(SELECT operator FROM _t_env));
 INSERT INTO _t_result SELECT 52,'merge 重複 id 先去重後正常',po_item_id IS NOT NULL,'po_item='||COALESCE(po_item_id::TEXT,'null')
@@ -365,16 +285,16 @@ WITH defs AS (
          pg_get_functiondef('public.rpc_merge_prs_to_po(uuid,bigint[],bigint,bigint,text,uuid)'::regprocedure) AS merge_src
 )
 INSERT INTO _t_result
-SELECT 82,'split/merge 在 validate/PO 前持有 deterministic demand snapshot',
+SELECT 82,'split/merge 在交回舊 inner 前持有 deterministic demand snapshot',
   STRPOS(lock_src,'group_buy_campaigns') < STRPOS(lock_src,'campaign_items')
   AND STRPOS(lock_src,'campaign_items') < STRPOS(lock_src,'customer_orders')
   AND STRPOS(lock_src,'customer_orders') < STRPOS(lock_src,'customer_order_items')
   AND (LENGTH(lock_src)-LENGTH(REPLACE(lock_src,'FOR UPDATE','')))/LENGTH('FOR UPDATE') = 4
   AND STRPOS(split_src,'_pr_lock_demand_snapshot') < STRPOS(split_src,'_pr_validate_qty_current')
-  AND STRPOS(split_src,'_pr_validate_qty_current') < STRPOS(split_src,'INSERT INTO public.purchase_orders')
+  AND STRPOS(split_src,'_pr_validate_qty_current') < STRPOS(split_src,'_rpc_split_pr_to_pos_20260930_inner')
   AND STRPOS(merge_src,'_pr_lock_demand_snapshot') < STRPOS(merge_src,'_pr_validate_qty_current')
-  AND STRPOS(merge_src,'_pr_validate_qty_current') < STRPOS(merge_src,'INSERT INTO public.purchase_orders'),
-  'campaign -> campaign_items -> orders -> order_items; split/merge lock -> validate -> PO'
+  AND STRPOS(merge_src,'_pr_validate_qty_current') < STRPOS(merge_src,'_rpc_merge_prs_to_po_20260930_inner'),
+  'campaign -> campaign_items -> orders -> order_items; wrapper lock -> validate -> original inner'
 FROM defs;
 
 WITH defs AS (
@@ -388,26 +308,39 @@ SELECT 83,'#995/partial 與 delete/PO 不持反向第一把鎖',
   AND STRPOS(add_src,'FOR NO KEY UPDATE') < STRPOS(add_src,'pg_advisory_xact_lock')
   AND STRPOS(delete_src,'_pr_lock_demand_snapshot') = 0
   AND STRPOS(delete_src,'ORDER BY gbc.id') > 0
-  AND STRPOS(delete_src,'FOR NO KEY UPDATE') < STRPOS(delete_src,'SELECT status INTO v_status')
+  AND STRPOS(delete_src,'FOR NO KEY UPDATE') < STRPOS(delete_src,'FROM public.purchase_requests')
   AND (LENGTH(delete_src)-LENGTH(REPLACE(delete_src,'_pr_delete_campaign_ids(p_pr_id)','')))
       / LENGTH('_pr_delete_campaign_ids(p_pr_id)') = 2
   AND STRPOS(delete_src,'FOR UPDATE;') < STRPOS(delete_src,'v_current_campaign_ids :=')
   AND STRPOS(delete_src,'v_current_campaign_ids IS DISTINCT FROM v_campaign_ids')
-      < STRPOS(delete_src,'UPDATE group_buy_campaigns')
+      < STRPOS(delete_src,'_rpc_delete_pr_20260930_inner')
   AND ids_src LIKE '%purchase_request_campaigns%purchase_request_item_campaigns%source_campaign_id%ORDER BY campaign_id%',
-  'delete 鎖前/鎖後同 helper 重算，集合變動在 UPDATE/DELETE 前拒絕'
+  'delete 鎖前/鎖後同 helper 重算，集合變動在交回舊 inner 前拒絕'
 FROM defs;
 
 WITH defs AS (
   SELECT pg_get_functiondef('public.rpc_split_pr_to_pos(bigint,bigint,uuid)'::regprocedure) AS split_src,
-         pg_get_functiondef('public.rpc_merge_prs_to_po(uuid,bigint[],bigint,bigint,text,uuid)'::regprocedure) AS merge_src
+         pg_get_functiondef('public.rpc_merge_prs_to_po(uuid,bigint[],bigint,bigint,text,uuid)'::regprocedure) AS merge_src,
+         pg_get_functiondef('public.rpc_create_partial_pr_from_items(bigint,bigint[],uuid)'::regprocedure) AS partial_src
 )
 INSERT INTO _t_result
-SELECT 84,'split/merge snapshot 前預驗、鎖後重驗',
-  split_src ~ 'IF v_review <> ''approved'' THEN(.|\n)*_pr_lock_demand_snapshot(.|\n)*IF v_review <> ''approved'' THEN'
-  AND split_src ~ 'IF v_status <> ''submitted'' THEN(.|\n)*_pr_lock_demand_snapshot(.|\n)*IF v_status <> ''submitted'' THEN'
-  AND merge_src ~ 'IF v_matched <> v_want THEN(.|\n)*_pr_lock_demand_snapshot(.|\n)*IF v_matched <> v_want THEN',
-  'eligibility read-only precheck -> snapshot -> locked recheck'
+SELECT 84,'六支形式函式保留主線契約，僅 partial 改搬移本體',
+  to_regprocedure('public._rpc_add_pr_store_demands_20260930_inner(bigint,bigint,bigint,jsonb,uuid,uuid)') IS NOT NULL
+  AND to_regprocedure('public._rpc_delete_pr_20260930_inner(bigint,uuid)') IS NOT NULL
+  AND to_regprocedure('public._rpc_submit_pr_20260930_inner(bigint,uuid)') IS NOT NULL
+  AND to_regprocedure('public._rpc_split_pr_to_pos_20260930_inner(bigint,bigint,uuid)') IS NOT NULL
+  AND to_regprocedure('public._rpc_merge_prs_to_po_20260930_inner(uuid,bigint[],bigint,bigint,text,uuid)') IS NOT NULL
+  AND STRPOS(split_src,'v_status <> ''submitted''') = 0
+  AND STRPOS(split_src,'v_status IN (''fully_ordered'',''partially_ordered'',''cancelled'')') > 0
+  AND STRPOS(split_src,'v_role') = 0
+  AND STRPOS(merge_src,'v_role') = 0
+  AND STRPOS(merge_src,'review_status') = 0
+  AND STRPOS(partial_src,'p_operator <> auth.uid') = 0
+  AND STRPOS(partial_src,'FOR NO KEY UPDATE') > 0
+  AND STRPOS(partial_src,'FOR NO KEY UPDATE') < STRPOS(partial_src,'SELECT pr.pr_no')
+  AND STRPOS(partial_src,'UPDATE public.purchase_request_items') > 0
+  AND STRPOS(partial_src,'UPDATE public.purchase_request_store_additions') > 0,
+  'add/delete/submit/split/merge delegate original inner; draft+approved split retained; partial keeps item id'
 FROM defs;
 
 -- 兩 session 真實競態驗證（需本機 PostgreSQL，本次未實跑）：
@@ -420,6 +353,12 @@ FROM defs;
 --    FOR UPDATE，這步會 timeout，而 B 正在等 A 的 PR，就是「雙方各持反向第一把鎖」。
 -- A: ROLLBACK；B 取得 PR 後會重算同一集合；若等待中有變動，必須在 UPDATE/DELETE 前拒絕重試。
 -- B: ROLLBACK（不真刪 fixture）。
+-- 【反向第一把鎖：draft split vs partial】
+-- 錯版 A: BEGIN; SELECT 1 FROM purchase_requests WHERE id=<draft+approved PR> FOR UPDATE;
+-- B: BEGIN; SELECT rpc_split_pr_to_pos(<同 PR>,<loc>,<operator>); B 取 campaign FOR UPDATE 後等 A 的 PR。
+-- 錯版 A: INSERT purchase_request_campaigns(...) 取 campaign FK KEY SHARE，與 B 形成反向死鎖。
+-- 正確 partial 不會先持有 PR；它先依 campaign id 取 FOR NO KEY UPDATE，再取 PR，
+-- 所以與 split 都是 campaign -> PR，會在 campaign 第一把鎖排隊，不會各持一把互等。
 -- 【PO snapshot vs 取消/新增 demand】
 -- A: BEGIN; SELECT _pr_lock_demand_snapshot(ARRAY[<ZZTEST submitted PR id>]); 保持未 COMMIT。
 -- B: SET lock_timeout='500ms'; UPDATE customer_orders SET status='cancelled' WHERE id=<該團 ZZTEST order id>;

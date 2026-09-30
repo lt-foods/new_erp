@@ -49,6 +49,8 @@ function verify(sql, ui) {
   assert.doesNotMatch(storeAddWrapper, /FROM public\.group_buy_campaigns[\s\S]*FOR UPDATE/);
   assert.ok(storeAddWrapper.indexOf("FROM public.group_buy_campaigns") < storeAddWrapper.indexOf("pg_advisory_xact_lock"));
   assert.ok(storeAddWrapper.indexOf("pg_advisory_xact_lock") < storeAddWrapper.indexOf("_rpc_add_pr_store_demands_20260930_inner("));
+  assert.doesNotMatch(storeAddWrapper, /RAISE EXCEPTION|v_role|auth\.uid/);
+  assert.match(sql, /ALTER FUNCTION public\.rpc_add_pr_store_demands\([\s\S]*RENAME TO _rpc_add_pr_store_demands_20260930_inner/);
 
   const validation = section(sql, "CREATE OR REPLACE FUNCTION public._pr_validate_qty_current", "REVOKE ALL ON FUNCTION public._pr_validate_qty_current");
   assert.match(validation, /purchase_request_campaigns/);
@@ -78,72 +80,74 @@ function verify(sql, ui) {
   const deletePr = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_delete_pr", "COMMENT ON FUNCTION public.rpc_delete_pr");
   const deleteCampaignLock = "FROM public.group_buy_campaigns gbc";
   const deleteReads = [...deletePr.matchAll(/public\._pr_delete_campaign_ids\(p_pr_id\)/g)].map((m) => m.index);
-  const deletePrLock = deletePr.indexOf("FOR UPDATE;", deletePr.indexOf("SELECT status INTO v_status"));
+  const deletePrLock = deletePr.indexOf("FOR UPDATE;", deletePr.indexOf("FROM public.purchase_requests"));
   const deleteRecheck = deletePr.indexOf("v_current_campaign_ids IS DISTINCT FROM v_campaign_ids");
-  const deleteUpdate = deletePr.indexOf("UPDATE group_buy_campaigns");
+  const deleteDelegate = deletePr.lastIndexOf("_rpc_delete_pr_20260930_inner(");
   assert.doesNotMatch(deletePr, /_pr_lock_demand_snapshot/);
   assert.equal(deleteReads.length, 2);
   assert.ok(deleteReads[0] < deletePr.indexOf(deleteCampaignLock));
-  assert.ok(deletePr.indexOf(deleteCampaignLock) < deletePr.indexOf("SELECT status INTO v_status"));
+  assert.ok(deletePr.indexOf(deleteCampaignLock) < deletePr.indexOf("FROM public.purchase_requests"));
   assert.ok(deletePrLock >= 0 && deletePrLock < deleteReads[1]);
-  assert.ok(deleteReads[1] < deleteRecheck && deleteRecheck < deleteUpdate);
+  assert.ok(deleteReads[1] < deleteRecheck && deleteRecheck < deleteDelegate);
   assert.match(deletePr, /ORDER BY gbc\.id\s+FOR NO KEY UPDATE/);
   assert.match(deletePr, /v_current_campaign_ids\s+BIGINT\[\]/);
-  assert.match(deletePr, /v_role NOT IN \('owner','admin','hq_manager',''\)/);
-  assert.match(deletePr, /v_status IN \('partially_ordered','fully_ordered'\)/);
-  assert.match(deletePr, /UPDATE group_buy_campaigns[\s\S]*SET status\s+= 'closed'/);
-  assert.match(deletePr, /DELETE FROM purchase_requests/);
+  assert.match(deletePr, /PERFORM public\._rpc_delete_pr_20260930_inner\(p_pr_id, p_operator\)/);
+  assert.doesNotMatch(deletePr, /v_role|v_status|UPDATE group_buy_campaigns|DELETE FROM purchase_requests/);
+  assert.match(sql, /ALTER FUNCTION public\.rpc_delete_pr\(BIGINT, UUID\)\s+RENAME TO _rpc_delete_pr_20260930_inner/);
 
   const submit = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_submit_pr", "-- ---------------------------------------------------------------------------\n-- \u5efa PO");
-  assert.ok(submit.indexOf("_pr_apply_qty_sync") < submit.indexOf("SET status = 'submitted'"));
-  assert.ok(submit.indexOf("_pr_validate_qty_current") < submit.indexOf("SET status = 'submitted'"));
+  const submitDelegate = submit.lastIndexOf("_rpc_submit_pr_20260930_inner(");
+  assert.ok(submit.indexOf("_pr_apply_qty_sync") < submitDelegate);
+  assert.ok(submit.indexOf("_pr_validate_qty_current") < submitDelegate);
   assert.ok(submit.indexOf("FOR UPDATE") === -1 || submit.indexOf("FOR UPDATE") > submit.indexOf("_pr_apply_qty_sync"));
+  assert.match(submit, /IF NOT FOUND OR v_status <> 'draft' THEN[\s\S]*_rpc_submit_pr_20260930_inner/);
+  assert.doesNotMatch(submit, /v_role|auth\.uid|tenant_id\s*=|SET status = 'submitted'|purchase_approval_thresholds/);
+  assert.match(sql, /ALTER FUNCTION public\.rpc_submit_pr\(BIGINT, UUID\)\s+RENAME TO _rpc_submit_pr_20260930_inner/);
 
   const split = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_split_pr_to_pos", "CREATE OR REPLACE FUNCTION public.rpc_merge_prs_to_po");
   const splitSnapshotCall = "PERFORM public._pr_lock_demand_snapshot(ARRAY[p_pr_id]);";
-  assert.match(split, /v_role\s+TEXT := COALESCE/);
-  assert.match(split, /v_tenant\s+UUID := public\._current_tenant_id\(\)/);
-  assert.match(split, /v_role NOT IN \('owner','admin','hq_manager','purchaser','assistant',''\)/);
-  assert.match(split, /p_operator <> auth\.uid\(\)/);
-  assert.ok(split.indexOf(splitSnapshotCall) >= 0 && split.indexOf(splitSnapshotCall) < split.indexOf("FOR UPDATE"));
-  const splitReviewChecks = [...split.matchAll(/IF v_review <> 'approved' THEN/g)].map((m) => m.index);
-  const splitStatusChecks = [...split.matchAll(/IF v_status <> 'submitted' THEN/g)].map((m) => m.index);
-  assert.equal(splitReviewChecks.length, 2);
-  assert.equal(splitStatusChecks.length, 2);
-  assert.ok(splitReviewChecks[0] < split.indexOf(splitSnapshotCall) && splitReviewChecks[1] > split.indexOf(splitSnapshotCall));
-  assert.ok(splitStatusChecks[0] < split.indexOf(splitSnapshotCall) && splitStatusChecks[1] > split.indexOf(splitSnapshotCall));
-  assert.equal((split.match(/v_positive_count = 0/g) ?? []).length, 2);
-  assert.equal((split.match(/v_unassigned > 0/g) ?? []).length, 2);
-  assert.ok(split.indexOf("_pr_validate_qty_current") < split.indexOf("rpc_next_po_no"));
-  assert.ok(split.indexOf(splitSnapshotCall) < split.indexOf("_pr_validate_qty_current"));
-  assert.ok(split.indexOf("_pr_validate_qty_current") < split.indexOf("INSERT INTO public.purchase_orders"));
+  const splitDelegate = split.lastIndexOf("_rpc_split_pr_to_pos_20260930_inner(");
+  assert.match(split, /v_review <> 'approved'/);
+  assert.match(split, /v_status IN \('fully_ordered','partially_ordered','cancelled'\)/);
+  assert.doesNotMatch(split, /v_status <> 'submitted'|v_role|auth\.uid|v_tenant|tenant_id\s*=|INSERT INTO public\.purchase_orders|rpc_next_po_no/);
+  assert.match(split, /RETURN public\._rpc_split_pr_to_pos_20260930_inner/);
+  assert.ok(split.indexOf(splitSnapshotCall) >= 0 && split.indexOf(splitSnapshotCall) < split.indexOf("_pr_validate_qty_current"));
+  assert.ok(split.indexOf("_pr_validate_qty_current") < splitDelegate);
+  assert.match(sql, /ALTER FUNCTION public\.rpc_split_pr_to_pos\(BIGINT, BIGINT, UUID\)\s+RENAME TO _rpc_split_pr_to_pos_20260930_inner/);
 
   const merge = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_merge_prs_to_po", "-- \u90e8\u5206\u8f49\u63a1\u8cfc");
   const mergeSnapshotCall = "PERFORM public._pr_lock_demand_snapshot(v_snapshot_pr_ids);";
-  assert.match(merge, /v_role NOT IN \('owner','admin','hq_manager','purchaser','assistant',''\)/);
-  assert.match(merge, /p_operator <> auth\.uid\(\)/);
-  assert.match(merge, /pr\.status = 'submitted'/);
-  assert.match(merge, /pr\.review_status = 'approved'/);
-  const mergeEligibilityChecks = [...merge.matchAll(/IF v_matched <> v_want THEN/g)].map((m) => m.index);
-  assert.equal(mergeEligibilityChecks.length, 2);
-  assert.ok(mergeEligibilityChecks[0] < merge.indexOf(mergeSnapshotCall));
-  assert.ok(mergeEligibilityChecks[1] > merge.indexOf(mergeSnapshotCall));
-  assert.ok(merge.indexOf(mergeSnapshotCall) >= 0 && merge.indexOf(mergeSnapshotCall) < merge.indexOf("FOR UPDATE"));
+  const mergeDelegate = merge.lastIndexOf("_rpc_merge_prs_to_po_20260930_inner(");
+  assert.ok(merge.indexOf(mergeSnapshotCall) >= 0 && merge.indexOf(mergeSnapshotCall) < merge.indexOf("FOR UPDATE OF pr, pri"));
   assert.ok(merge.indexOf(mergeSnapshotCall) < merge.indexOf("_pr_validate_qty_current"));
-  assert.ok(merge.indexOf("_pr_validate_qty_current") < merge.indexOf("INSERT INTO public.purchase_orders"));
-  const spendPart = section(merge, "INSERT INTO public.purchase_orders", "RETURN v_po_id");
-  assert.match(spendPart, /ANY\(v_valid_ids\)/);
-  assert.doesNotMatch(spendPart, /ANY\(p_pr_item_ids\)/);
+  assert.ok(merge.indexOf("_pr_validate_qty_current") < mergeDelegate);
+  assert.match(merge, /v_locked_pr_ids IS DISTINCT FROM v_snapshot_pr_ids/);
+  assert.match(merge, /RETURN public\._rpc_merge_prs_to_po_20260930_inner\([\s\S]*p_pr_item_ids/);
+  assert.doesNotMatch(merge, /v_role|auth\.uid|_current_tenant_id|pr\.status|review_status|suggested_supplier_id|p_tenant_id IS DISTINCT|INSERT INTO public\.purchase_orders/);
+  assert.match(sql, /ALTER FUNCTION public\.rpc_merge_prs_to_po\(UUID, BIGINT\[\], BIGINT, BIGINT, TEXT, UUID\)\s+RENAME TO _rpc_merge_prs_to_po_20260930_inner/);
 
   const partial = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_create_partial_pr_from_items", "COMMENT ON TABLE");
   assert.match(partial, /UPDATE public\.purchase_request_items[\s\S]*SET pr_id = v_new_pr_id/);
   assert.match(partial, /UPDATE public\.purchase_request_store_additions[\s\S]*SET pr_id = v_new_pr_id/);
   assert.doesNotMatch(partial, /DELETE FROM public\.purchase_request_items/);
+  assert.match(partial, /v_role NOT IN \('owner','admin','hq_manager',''\)/);
+  assert.match(partial, /IF v_src\.status <> 'draft'/);
+  assert.match(partial, /IF p_operator IS NULL THEN\s+RAISE EXCEPTION '缺少操作人員 id，無法建立新請購單'/);
+  assert.doesNotMatch(partial, /p_operator := auth\.uid|p_operator <> auth\.uid/);
+  assert.match(partial, /來自補貨申請，請從補貨流程處理，不可部分轉採購/);
+  assert.match(partial, /已拆成採購單\(PO\)，不可搬移。請改在採購單端處理。/);
+  const partialCampaignLock = partial.indexOf("FROM public.group_buy_campaigns gbc");
+  const partialPrLock = partial.indexOf("FOR UPDATE;", partial.indexOf("SELECT pr.pr_no"));
+  const partialCampaignBlock = partial.slice(partialCampaignLock, partial.indexOf("SELECT pr.pr_no"));
+  assert.ok(partialCampaignLock >= 0 && partialCampaignLock < partialPrLock);
+  assert.match(partialCampaignBlock, /ORDER BY gbc\.id\s+FOR NO KEY UPDATE/);
+  assert.doesNotMatch(partialCampaignBlock, /FOR UPDATE/);
 
   const previewRpc = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_preview_pr_qty_sync", "REVOKE ALL ON FUNCTION public.rpc_preview_pr_qty_sync");
   assert.match(previewRpc, /'hq_accountant'/);
-  const applyRoles = section(sql, "CREATE OR REPLACE FUNCTION public._pr_apply_qty_sync", "IF p_operator IS NULL");
-  assert.doesNotMatch(applyRoles, /hq_accountant/);
+  const syncRpc = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_sync_pr_qty", "REVOKE ALL ON FUNCTION public.rpc_sync_pr_qty");
+  assert.match(syncRpc, /v_role NOT IN \('owner','admin','hq_manager','purchaser','assistant',''\)/);
+  assert.doesNotMatch(syncRpc, /hq_accountant/);
 
   const syncUi = section(ui, "async function syncLatestQty", "async function submitForReview");
   const saveAt = syncUi.indexOf("await saveDraft()");
@@ -161,28 +165,34 @@ function verify(sql, ui) {
 verify(migration, page);
 
 const deleteRecheckBlock = "  IF v_current_campaign_ids IS DISTINCT FROM v_campaign_ids THEN\n    RAISE EXCEPTION '請購單的關聯團剛剛有變動，請重試刪除';\n  END IF;\n\n";
-const deleteRecheckAfterUpdate = migration
+const deleteDelegateCall = "  PERFORM public._rpc_delete_pr_20260930_inner(p_pr_id, p_operator);\n";
+const deleteRecheckAfterDelegate = migration
   .replace(deleteRecheckBlock, "")
-  .replace("  BEGIN\n    DELETE FROM purchase_requests", `${deleteRecheckBlock}  BEGIN\n    DELETE FROM purchase_requests`);
+  .replace(deleteDelegateCall, `${deleteDelegateCall}${deleteRecheckBlock}`);
 
 const faults = [
   ["\u65b0 SKU \u53c8\u88ab\u73fe\u6709 attribution \u904e\u6ffe", migration.replace("FROM remaining r\n      LEFT JOIN current_pairs", "FROM remaining r\n      JOIN current_pairs"), page],
-  ["merge \u53c8\u7528\u672a\u9a57\u8b49\u7684\u539f\u59cb ids", migration.replaceAll("ANY(v_valid_ids)", "ANY(p_pr_item_ids)"), page],
+  ["add wrapper \u6c92\u4ea4\u56de\u4e3b\u7dda inner", migration.replace("RETURN public._rpc_add_pr_store_demands_20260930_inner(", "RETURN public.broken_add_inner("), page],
+  ["delete wrapper \u6c92\u4ea4\u56de\u4e3b\u7dda inner", migration.replaceAll("public._rpc_delete_pr_20260930_inner(p_pr_id, p_operator)", "public.broken_delete_inner(p_pr_id, p_operator)"), page],
+  ["submit wrapper \u6c92\u4ea4\u56de\u4e3b\u7dda inner", migration.replaceAll("public._rpc_submit_pr_20260930_inner(p_pr_id, p_operator)", "public.broken_submit_inner(p_pr_id, p_operator)"), page],
+  ["split wrapper \u53c8\u9650 submitted-only", migration.replace("v_status IN ('fully_ordered','partially_ordered','cancelled')", "v_status <> 'submitted'"), page],
+  ["merge wrapper \u6c92\u628a\u539f ids \u4ea4\u56de inner", migration.replace("p_tenant_id, p_pr_item_ids, p_supplier_id", "p_tenant_id, ARRAY[]::BIGINT[], p_supplier_id"), page],
+  ["partial \u53c8\u6539 operator \u5951\u7d04", migration.replace("RAISE EXCEPTION '\u7f3a\u5c11\u64cd\u4f5c\u4eba\u54e1 id，\u7121\u6cd5\u5efa\u7acb\u65b0\u8acb\u8cfc\u55ae';", "p_operator := auth.uid();"), page],
+  ["partial \u53c8先鎖 PR 後鎖 campaign", migration.replace("FOR NO KEY UPDATE;\n\n  SELECT pr.pr_no", "FOR UPDATE;\n\n  SELECT pr.pr_no"), page],
   ["sync \u9396 key \u4e0d\u540c", migration.replace("hashtext(r.campaign_id::TEXT)", "hashtext(v_tenant::TEXT || ':' || r.campaign_id::TEXT)"), page],
   ["partial \u6f0f\u642c additions", migration.replace("UPDATE public.purchase_request_store_additions", "UPDATE public.broken_store_additions"), page],
   ["sync \u524d\u6c92\u5b58\u6a94", migration, page.replace("if (!(await saveDraft())) return;", "// save removed")],
   ["preview \u5931\u6557\u53c8\u5f04\u58de\u6574\u9801", migration, page.replace("if (qtyPreviewErr) {", "if (qtyPreviewErr) throw new Error(qtyPreviewErr.message);\n        if (false) {")],
   ["linked qty \u53c8\u53ef\u624b\u6539", migration, page.replace("editable && !itemCampaignOptions.has(r.id)", "editable")],
   ["snapshot \u7528\u592a\u5f31\u7684 row lock", migration.replace("FOR UPDATE;\n\n  PERFORM 1\n    FROM public.campaign_items", "FOR NO KEY UPDATE;\n\n  PERFORM 1\n    FROM public.campaign_items"), page],
-  ["#995 wrapper \u53c8\u7528\u6703\u64cb partial FK \u7684 campaign FOR UPDATE", migration.replace("FOR NO KEY UPDATE;\n\n  IF NOT FOUND THEN", "FOR UPDATE;\n\n  IF NOT FOUND THEN"), page],
-  ["delete \u53c8\u7528\u6703\u64cb partial FK \u7684 campaign FOR UPDATE", migration.replace("ORDER BY gbc.id\n   FOR NO KEY UPDATE;\n\n  SELECT status", "ORDER BY gbc.id\n   FOR UPDATE;\n\n  SELECT status"), page],
+  ["#995 wrapper \u53c8\u7528\u6703\u64cb partial FK \u7684 campaign FOR UPDATE", migration.replace("FOR NO KEY UPDATE;\n\n    IF FOUND THEN", "FOR UPDATE;\n\n    IF FOUND THEN"), page],
+  ["delete \u53c8\u7528\u6703\u64cb partial FK \u7684 campaign FOR UPDATE", migration.replace("ORDER BY gbc.id\n   FOR NO KEY UPDATE;\n\n  PERFORM 1", "ORDER BY gbc.id\n   FOR UPDATE;\n\n  PERFORM 1"), page],
   ["delete \u6f0f\u6389 PR \u9396\u5f8c\u91cd\u7b97", migration.replace("v_current_campaign_ids := public._pr_delete_campaign_ids(p_pr_id);", "-- locked recheck removed"), page],
-  ["delete \u628a\u95dc\u806f\u5718\u6bd4\u8f03\u653e\u5230 UPDATE \u4e4b\u5f8c", deleteRecheckAfterUpdate, page],
+  ["delete \u628a\u95dc\u806f\u5718\u6bd4\u8f03\u653e\u5230 inner \u4e4b\u5f8c", deleteRecheckAfterDelegate, page],
   ["split \u5c11 demand snapshot", migration.replace("PERFORM public._pr_lock_demand_snapshot(ARRAY[p_pr_id]);", "-- snapshot removed"), page],
-  ["split \u5c11\u9396\u524d eligibility \u9810\u9a57", migration.replace("IF v_review <> 'approved' THEN", "IF FALSE THEN"), page],
+  ["split \u5c11\u9396\u524d eligibility \u9810\u9a57", migration.replace("OR v_review <> 'approved'", "OR FALSE"), page],
   ["merge \u5c11 demand snapshot", migration.replace("PERFORM public._pr_lock_demand_snapshot(v_snapshot_pr_ids);", "-- snapshot removed"), page],
-  ["merge \u5c11\u9396\u524d eligibility \u9810\u9a57", migration.replace("IF v_matched <> v_want THEN", "IF FALSE THEN"), page],
-  ["split \u8aa4\u653e\u5206\u5e97\u89d2\u8272", migration.replace("'purchaser','assistant','') THEN\n    RAISE EXCEPTION '\u6b0a\u9650\u4e0d\u8db3，\u7121\u6cd5\u5efa\u7acb\u63a1\u8cfc\u55ae'", "'purchaser','assistant','store_manager','') THEN\n    RAISE EXCEPTION '\u6b0a\u9650\u4e0d\u8db3，\u7121\u6cd5\u5efa\u7acb\u63a1\u8cfc\u55ae'"), page],
+  ["merge \u5c11\u9396\u5f8c PR \u96c6合重驗", migration.replace("v_locked_pr_ids IS DISTINCT FROM v_snapshot_pr_ids", "FALSE"), page],
 ];
 
 for (const [name, brokenSql, brokenUi] of faults) {

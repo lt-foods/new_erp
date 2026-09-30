@@ -591,25 +591,21 @@ BEGIN
      AND pri.pr_id = p_pr_id
      AND pr.tenant_id = v_tenant;
 
-  IF v_sku_id IS NULL THEN
-    RAISE EXCEPTION '找不到這張請購單品項';
+  IF v_sku_id IS NOT NULL THEN
+    -- NO KEY UPDATE is compatible with partial's FK KEY SHARE and conflicts with PO FOR UPDATE.
+    PERFORM 1
+      FROM public.group_buy_campaigns gbc
+     WHERE gbc.id = p_campaign_id
+       AND gbc.tenant_id = v_tenant
+     FOR NO KEY UPDATE;
+
+    IF FOUND THEN
+      PERFORM pg_advisory_xact_lock(
+        hashtext(p_campaign_id::TEXT),
+        hashtext(v_sku_id::TEXT)
+      );
+    END IF;
   END IF;
-
-  -- NO KEY UPDATE is compatible with partial's FK KEY SHARE and conflicts with PO FOR UPDATE.
-  PERFORM 1
-    FROM public.group_buy_campaigns gbc
-   WHERE gbc.id = p_campaign_id
-     AND gbc.tenant_id = v_tenant
-   FOR NO KEY UPDATE;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION '找不到原團 %', p_campaign_id;
-  END IF;
-
-  PERFORM pg_advisory_xact_lock(
-    hashtext(p_campaign_id::TEXT),
-    hashtext(v_sku_id::TEXT)
-  );
 
   RETURN public._rpc_add_pr_store_demands_20260930_inner(
     p_pr_id, p_pr_item_id, p_campaign_id, p_additions, p_operator, p_request_key
@@ -630,8 +626,7 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_tenant       UUID := public._current_tenant_id();
-  v_role         TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
+  v_tenant       UUID;
   v_pr            RECORD;
   v_dirty_seen    JSONB := '{}'::JSONB;
   v_synced_count  INTEGER := 0;
@@ -639,15 +634,13 @@ DECLARE
   v_error         TEXT;
   r               RECORD;
 BEGIN
-  IF v_tenant IS NULL OR v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant','') THEN
-    RAISE EXCEPTION '權限不足，無法同步請購數量';
-  END IF;
+  SELECT pr.tenant_id
+    INTO v_tenant
+    FROM public.purchase_requests pr
+   WHERE pr.id = p_pr_id;
 
-  IF p_operator IS NULL THEN
-    p_operator := auth.uid();
-  END IF;
-  IF p_operator IS NULL OR (auth.uid() IS NOT NULL AND p_operator <> auth.uid()) THEN
-    RAISE EXCEPTION '操作人員不符，無法同步請購數量';
+  IF NOT FOUND THEN
+    RAISE EXCEPTION '找不到這張請購單';
   END IF;
 
   -- 所有可能異動的團+SKU 先依固定順序取 #982 同一把鎖，
@@ -794,11 +787,34 @@ CREATE OR REPLACE FUNCTION public.rpc_sync_pr_qty(
   p_pr_id    BIGINT,
   p_operator UUID
 ) RETURNS JSONB
-LANGUAGE sql
+LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT public._pr_apply_qty_sync(p_pr_id, p_operator);
+DECLARE
+  v_tenant UUID := public._current_tenant_id();
+  v_role   TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
+BEGIN
+  IF v_tenant IS NULL OR v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant','') THEN
+    RAISE EXCEPTION '權限不足，無法同步請購數量';
+  END IF;
+
+  IF p_operator IS NULL THEN
+    p_operator := auth.uid();
+  END IF;
+  IF p_operator IS NULL OR (auth.uid() IS NOT NULL AND p_operator <> auth.uid()) THEN
+    RAISE EXCEPTION '操作人員不符，無法同步請購數量';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM public.purchase_requests
+     WHERE id = p_pr_id AND tenant_id = v_tenant
+  ) THEN
+    RAISE EXCEPTION '找不到這張請購單';
+  END IF;
+
+  RETURN public._pr_apply_qty_sync(p_pr_id, p_operator);
+END;
 $$;
 
 REVOKE ALL ON FUNCTION public.rpc_sync_pr_qty(BIGINT, UUID) FROM PUBLIC;
@@ -981,6 +997,13 @@ $$;
 
 REVOKE ALL ON FUNCTION public._pr_delete_campaign_ids(BIGINT) FROM PUBLIC;
 
+ALTER FUNCTION public.rpc_delete_pr(BIGINT, UUID)
+  RENAME TO _rpc_delete_pr_20260930_inner;
+
+REVOKE ALL ON FUNCTION public._rpc_delete_pr_20260930_inner(BIGINT, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public._rpc_delete_pr_20260930_inner(BIGINT, UUID) FROM anon;
+REVOKE ALL ON FUNCTION public._rpc_delete_pr_20260930_inner(BIGINT, UUID) FROM authenticated;
+
 CREATE OR REPLACE FUNCTION public.rpc_delete_pr(
   p_pr_id    BIGINT,
   p_operator UUID
@@ -990,17 +1013,9 @@ SET search_path = public
 AS $$
 DECLARE
   v_tenant   UUID := public._current_tenant_id();
-  v_role     TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
-  v_status   TEXT;
-  v_po_items INTEGER;
-  v_restock  INTEGER;
   v_campaign_ids BIGINT[];
   v_current_campaign_ids BIGINT[];
 BEGIN
-  IF v_role NOT IN ('owner','admin','hq_manager','') THEN
-    RAISE EXCEPTION '權限不足：角色 % 無法刪除請購單', v_role;
-  END IF;
-
   v_campaign_ids := public._pr_delete_campaign_ids(p_pr_id);
 
   PERFORM 1
@@ -1010,13 +1025,14 @@ BEGIN
    ORDER BY gbc.id
    FOR NO KEY UPDATE;
 
-  SELECT status INTO v_status
-    FROM purchase_requests
+  PERFORM 1
+    FROM public.purchase_requests
    WHERE id = p_pr_id AND tenant_id = v_tenant
    FOR UPDATE;
 
-  IF v_status IS NULL THEN
-    RAISE EXCEPTION '找不到請購單 %', p_pr_id;
+  IF NOT FOUND THEN
+    PERFORM public._rpc_delete_pr_20260930_inner(p_pr_id, p_operator);
+    RETURN;
   END IF;
 
   v_current_campaign_ids := public._pr_delete_campaign_ids(p_pr_id);
@@ -1024,46 +1040,7 @@ BEGIN
     RAISE EXCEPTION '請購單的關聯團剛剛有變動，請重試刪除';
   END IF;
 
-  IF v_status IN ('partially_ordered','fully_ordered') THEN
-    RAISE EXCEPTION '請購單 % 已拆採購單(PO)，不可刪除（狀態：%）。請改在採購單端處理。', p_pr_id, v_status;
-  END IF;
-
-  SELECT COUNT(*) INTO v_po_items
-    FROM purchase_request_items
-   WHERE pr_id = p_pr_id AND po_item_id IS NOT NULL;
-  IF v_po_items > 0 THEN
-    RAISE EXCEPTION '請購單 % 已有品項拆成採購單，不可刪除', p_pr_id;
-  END IF;
-
-  SELECT COUNT(*) INTO v_restock
-    FROM restock_requests
-   WHERE linked_pr_id = p_pr_id AND tenant_id = v_tenant;
-  IF v_restock > 0 THEN
-    RAISE EXCEPTION '請購單 % 來自補貨申請，請從補貨流程處理，不可在此刪除', p_pr_id;
-  END IF;
-
-  UPDATE group_buy_campaigns gbc
-     SET status     = 'closed',
-         updated_by = p_operator,
-         updated_at = NOW()
-   WHERE gbc.tenant_id = v_tenant
-     AND gbc.status = 'locked'
-     AND gbc.id IN (
-       SELECT prc.campaign_id
-         FROM purchase_request_campaigns prc
-        WHERE prc.pr_id = p_pr_id
-       UNION
-       SELECT pr.source_campaign_id
-         FROM purchase_requests pr
-        WHERE pr.id = p_pr_id AND pr.source_campaign_id IS NOT NULL
-     );
-
-  BEGIN
-    DELETE FROM purchase_requests
-     WHERE id = p_pr_id AND tenant_id = v_tenant;
-  EXCEPTION WHEN foreign_key_violation THEN
-    RAISE EXCEPTION '請購單 % 仍被其他紀錄參照，無法刪除', p_pr_id;
-  END;
+  PERFORM public._rpc_delete_pr_20260930_inner(p_pr_id, p_operator);
 END;
 $$;
 
@@ -1071,11 +1048,18 @@ REVOKE ALL ON FUNCTION public.rpc_delete_pr(BIGINT, UUID) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.rpc_delete_pr(BIGINT, UUID) TO authenticated;
 
 COMMENT ON FUNCTION public.rpc_delete_pr(BIGINT, UUID) IS
-  '刪除未拆 PO 的請購單；先鎖關聯團，再照原守門解鎖團與硬刪。';
+  '先依固定順序鎖關聯團，再完整委派給 2026-07-06 的原 rpc_delete_pr；原角色、狀態、錯訊與刪除語意不變。';
 
 -- ---------------------------------------------------------------------------
 -- 送審：仍是 draft 時先強制同步，再跑既有品項／供應商／門檻守衛。
 -- ---------------------------------------------------------------------------
+ALTER FUNCTION public.rpc_submit_pr(BIGINT, UUID)
+  RENAME TO _rpc_submit_pr_20260930_inner;
+
+REVOKE ALL ON FUNCTION public._rpc_submit_pr_20260930_inner(BIGINT, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public._rpc_submit_pr_20260930_inner(BIGINT, UUID) FROM anon;
+REVOKE ALL ON FUNCTION public._rpc_submit_pr_20260930_inner(BIGINT, UUID) FROM authenticated;
+
 CREATE OR REPLACE FUNCTION public.rpc_submit_pr(
   p_pr_id    BIGINT,
   p_operator UUID
@@ -1085,81 +1069,27 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_tenant         UUID;
-  v_status         TEXT;
-  v_review         TEXT;
-  v_item_count     INTEGER;
-  v_positive_count INTEGER;
-  v_unassigned     INTEGER;
-  v_total          NUMERIC(18,4);
-  v_threshold      NUMERIC(18,4);
-  v_new_review     TEXT;
-  v_sync           JSONB;
+  v_status TEXT;
+  v_sync   JSONB;
 BEGIN
-  SELECT tenant_id, status, review_status
-    INTO v_tenant, v_status, v_review
+  -- 無效單號／非草稿直接交回原函式，保留原錯訊與原守門。
+  SELECT status INTO v_status
     FROM public.purchase_requests
-   WHERE id = p_pr_id
-     AND tenant_id = public._current_tenant_id();
+   WHERE id = p_pr_id;
 
-  IF NOT FOUND THEN
-    RAISE EXCEPTION '找不到請購單 %', p_pr_id;
-  END IF;
-  IF v_status <> 'draft' THEN
-    RAISE EXCEPTION '請購單已送審（目前狀態：%）', v_status;
+  IF NOT FOUND OR v_status <> 'draft' THEN
+    PERFORM public._rpc_submit_pr_20260930_inner(p_pr_id, p_operator);
+    RETURN;
   END IF;
 
-  -- _pr_apply_qty_sync 會先取團+SKU advisory，再鎖 PR/item；這裡不可先鎖 PR header，
-  -- 否則會和已統一成 advisory -> PR/item 的 #995 反向。apply 回來時 PR 鎖仍持有。
+  -- 同步核心先取與 #982 相同 advisory，再鎖 PR/item；不在 wrapper 先鎖 header。
   v_sync := public._pr_apply_qty_sync(p_pr_id, p_operator);
   IF COALESCE((v_sync ->> 'blocked_count')::INTEGER, 0) > 0 THEN
     RAISE EXCEPTION '有品項無法安全同步：同團同商品有多張草稿或歸屬不明，請先人工確認';
   END IF;
 
   PERFORM public._pr_validate_qty_current(ARRAY[p_pr_id]);
-
-  SELECT COUNT(*),
-         COUNT(*) FILTER (WHERE qty_requested > 0),
-         COUNT(*) FILTER (WHERE qty_requested > 0 AND suggested_supplier_id IS NULL)
-    INTO v_item_count, v_positive_count, v_unassigned
-    FROM public.purchase_request_items
-   WHERE pr_id = p_pr_id;
-
-  IF v_item_count = 0 OR v_positive_count = 0 THEN
-    RAISE EXCEPTION '請購單沒有仍需採購的品項，無法送審；數量歸零的列會保留作追溯';
-  END IF;
-  IF v_unassigned > 0 THEN
-    RAISE EXCEPTION '有 % 個品項未指派供應商，無法送審；請先指派供應商', v_unassigned;
-  END IF;
-
-  SELECT COALESCE(SUM(line_subtotal), 0)
-    INTO v_total
-    FROM public.purchase_request_items
-   WHERE pr_id = p_pr_id;
-
-  SELECT MIN(threshold_amount)
-    INTO v_threshold
-    FROM public.purchase_approval_thresholds
-   WHERE tenant_id = v_tenant
-     AND active = TRUE
-     AND scope = 'global'
-     AND scope_id IS NULL;
-
-  IF v_threshold IS NOT NULL AND v_total >= v_threshold THEN
-    v_new_review := 'pending_review';
-  ELSE
-    v_new_review := 'approved';
-  END IF;
-
-  UPDATE public.purchase_requests
-     SET status = 'submitted',
-         submitted_at = NOW(),
-         total_amount = v_total,
-         review_status = v_new_review,
-         review_threshold_amount = v_threshold,
-         updated_by = p_operator,
-         updated_at = NOW()
-   WHERE id = p_pr_id;
+  PERFORM public._rpc_submit_pr_20260930_inner(p_pr_id, p_operator);
 END;
 $$;
 
@@ -1170,6 +1100,13 @@ GRANT EXECUTE ON FUNCTION public.rpc_submit_pr(BIGINT, UUID) TO authenticated;
 -- ---------------------------------------------------------------------------
 -- 建 PO 前最後守門：已送審後若需求變動，只擋、不偷改核准單。
 -- ---------------------------------------------------------------------------
+ALTER FUNCTION public.rpc_split_pr_to_pos(BIGINT, BIGINT, UUID)
+  RENAME TO _rpc_split_pr_to_pos_20260930_inner;
+
+REVOKE ALL ON FUNCTION public._rpc_split_pr_to_pos_20260930_inner(BIGINT, BIGINT, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public._rpc_split_pr_to_pos_20260930_inner(BIGINT, BIGINT, UUID) FROM anon;
+REVOKE ALL ON FUNCTION public._rpc_split_pr_to_pos_20260930_inner(BIGINT, BIGINT, UUID) FROM authenticated;
+
 CREATE OR REPLACE FUNCTION public.rpc_split_pr_to_pos(
   p_pr_id            BIGINT,
   p_dest_location_id BIGINT,
@@ -1180,162 +1117,54 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_tenant         UUID := public._current_tenant_id();
-  v_role           TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
-  v_status         TEXT;
-  v_review         TEXT;
-  v_unassigned     INTEGER;
-  v_positive_count INTEGER;
-  v_supplier_rec   RECORD;
-  v_po_id          BIGINT;
-  v_po_no          TEXT;
-  v_po_ids          BIGINT[] := ARRAY[]::BIGINT[];
+  v_status     TEXT;
+  v_review     TEXT;
+  v_unassigned INTEGER;
 BEGIN
-  IF v_tenant IS NULL OR v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant','') THEN
-    RAISE EXCEPTION '權限不足，無法建立採購單';
-  END IF;
-
-  IF p_operator IS NULL THEN
-    p_operator := auth.uid();
-  END IF;
-  IF p_operator IS NULL OR (auth.uid() IS NOT NULL AND p_operator <> auth.uid()) THEN
-    RAISE EXCEPTION '操作人員不符，無法建立採購單';
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM public.locations l
-     WHERE l.id = p_dest_location_id AND l.tenant_id = v_tenant
-  ) THEN
-    RAISE EXCEPTION '送貨地點不屬於本租戶';
-  END IF;
-
+  -- 舊版 eligibility 只要 approved，且僅擋已拆／作廢；draft+approved 也是合法舊契約。
   SELECT status, review_status
     INTO v_status, v_review
     FROM public.purchase_requests
-   WHERE id = p_pr_id
-     AND tenant_id = v_tenant;
+   WHERE id = p_pr_id;
 
-  IF NOT FOUND THEN
-    RAISE EXCEPTION '找不到請購單 %', p_pr_id;
-  END IF;
-  IF v_review <> 'approved' THEN
-    RAISE EXCEPTION '請購單尚未核准（目前：%）', v_review;
-  END IF;
-  IF v_status <> 'submitted' THEN
-    RAISE EXCEPTION '請購單不是已送審待採購狀態（目前：%）', v_status;
+  IF NOT FOUND
+     OR v_review <> 'approved'
+     OR v_status IN ('fully_ordered','partially_ordered','cancelled') THEN
+    RETURN public._rpc_split_pr_to_pos_20260930_inner(
+      p_pr_id, p_dest_location_id, p_operator
+    );
   END IF;
 
-  SELECT COUNT(*) FILTER (WHERE qty_requested > 0 AND suggested_supplier_id IS NULL),
-         COUNT(*) FILTER (WHERE qty_requested > 0)
-    INTO v_unassigned, v_positive_count
+  SELECT COUNT(*)
+    INTO v_unassigned
     FROM public.purchase_request_items
-   WHERE pr_id = p_pr_id;
+   WHERE pr_id = p_pr_id
+     AND suggested_supplier_id IS NULL;
 
-  IF v_positive_count = 0 THEN
-    RAISE EXCEPTION '這張請購單已沒有仍需採購的數量；請退回草稿確認';
-  END IF;
   IF v_unassigned > 0 THEN
-    RAISE EXCEPTION '有 % 個品項未指派供應商，無法建立採購單', v_unassigned;
+    RETURN public._rpc_split_pr_to_pos_20260930_inner(
+      p_pr_id, p_dest_location_id, p_operator
+    );
   END IF;
 
   PERFORM public._pr_lock_demand_snapshot(ARRAY[p_pr_id]);
-
-  SELECT status, review_status
-    INTO v_status, v_review
-    FROM public.purchase_requests
-   WHERE id = p_pr_id
-     AND tenant_id = v_tenant
-   FOR UPDATE;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION '找不到請購單 %', p_pr_id;
-  END IF;
-  IF v_review <> 'approved' THEN
-    RAISE EXCEPTION '請購單尚未核准（目前：%）', v_review;
-  END IF;
-  IF v_status <> 'submitted' THEN
-    RAISE EXCEPTION '請購單不是已送審待採購狀態（目前：%）', v_status;
-  END IF;
-
   PERFORM public._pr_validate_qty_current(ARRAY[p_pr_id]);
-
-  SELECT COUNT(*) FILTER (WHERE qty_requested > 0 AND suggested_supplier_id IS NULL),
-         COUNT(*) FILTER (WHERE qty_requested > 0)
-    INTO v_unassigned, v_positive_count
-    FROM public.purchase_request_items
-   WHERE pr_id = p_pr_id;
-
-  IF v_positive_count = 0 THEN
-    RAISE EXCEPTION '這張請購單已沒有仍需採購的數量；請退回草稿確認';
-  END IF;
-  IF v_unassigned > 0 THEN
-    RAISE EXCEPTION '有 % 個品項未指派供應商，無法建立採購單', v_unassigned;
-  END IF;
-
-  FOR v_supplier_rec IN
-    SELECT DISTINCT suggested_supplier_id AS supplier_id
-      FROM public.purchase_request_items
-     WHERE pr_id = p_pr_id
-       AND qty_requested > 0
-  LOOP
-    v_po_no := public.rpc_next_po_no();
-
-    INSERT INTO public.purchase_orders (
-      tenant_id, po_no, supplier_id, dest_location_id, status,
-      created_by, updated_by
-    ) VALUES (
-      v_tenant, v_po_no, v_supplier_rec.supplier_id, p_dest_location_id, 'draft',
-      p_operator, p_operator
-    ) RETURNING id INTO v_po_id;
-
-    WITH inserted AS (
-      INSERT INTO public.purchase_order_items (
-        po_id, sku_id, qty_ordered, unit_cost, created_by, updated_by
-      )
-      SELECT v_po_id, pri.sku_id, pri.qty_requested, pri.unit_cost, p_operator, p_operator
-        FROM public.purchase_request_items pri
-       WHERE pri.pr_id = p_pr_id
-         AND pri.suggested_supplier_id = v_supplier_rec.supplier_id
-         AND pri.qty_requested > 0
-      RETURNING id, sku_id
-    )
-    UPDATE public.purchase_request_items pri
-       SET po_item_id = i.id,
-           updated_by = p_operator
-      FROM inserted i
-     WHERE pri.pr_id = p_pr_id
-       AND pri.suggested_supplier_id = v_supplier_rec.supplier_id
-       AND pri.qty_requested > 0
-       AND pri.sku_id = i.sku_id;
-
-    UPDATE public.purchase_orders po
-       SET subtotal = sub.subtotal,
-           total = sub.subtotal,
-           updated_at = NOW()
-      FROM (
-        SELECT po_id, SUM(qty_ordered * unit_cost) AS subtotal
-          FROM public.purchase_order_items
-         WHERE po_id = v_po_id
-         GROUP BY po_id
-      ) sub
-     WHERE po.id = sub.po_id;
-
-    v_po_ids := v_po_ids || v_po_id;
-  END LOOP;
-
-  UPDATE public.purchase_requests
-     SET status = 'fully_ordered',
-         updated_by = p_operator,
-         updated_at = NOW()
-   WHERE id = p_pr_id;
-
-  RETURN v_po_ids;
+  RETURN public._rpc_split_pr_to_pos_20260930_inner(
+    p_pr_id, p_dest_location_id, p_operator
+  );
 END;
 $$;
 
 REVOKE ALL ON FUNCTION public.rpc_split_pr_to_pos(BIGINT, BIGINT, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.rpc_split_pr_to_pos(BIGINT, BIGINT, UUID) FROM anon;
 GRANT EXECUTE ON FUNCTION public.rpc_split_pr_to_pos(BIGINT, BIGINT, UUID) TO authenticated;
+
+ALTER FUNCTION public.rpc_merge_prs_to_po(UUID, BIGINT[], BIGINT, BIGINT, TEXT, UUID)
+  RENAME TO _rpc_merge_prs_to_po_20260930_inner;
+
+REVOKE ALL ON FUNCTION public._rpc_merge_prs_to_po_20260930_inner(UUID, BIGINT[], BIGINT, BIGINT, TEXT, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public._rpc_merge_prs_to_po_20260930_inner(UUID, BIGINT[], BIGINT, BIGINT, TEXT, UUID) FROM anon;
+REVOKE ALL ON FUNCTION public._rpc_merge_prs_to_po_20260930_inner(UUID, BIGINT[], BIGINT, BIGINT, TEXT, UUID) FROM authenticated;
 
 CREATE OR REPLACE FUNCTION public.rpc_merge_prs_to_po(
   p_tenant_id     UUID,
@@ -1350,154 +1179,37 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_po_id     BIGINT;
-  v_pr_ids    BIGINT[];
   v_snapshot_pr_ids BIGINT[];
-  v_valid_ids BIGINT[];
-  v_want      INTEGER;
-  v_matched   INTEGER;
-  v_role      TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
+  v_locked_pr_ids   BIGINT[];
 BEGIN
-  IF p_tenant_id IS DISTINCT FROM public._current_tenant_id() THEN
-    RAISE EXCEPTION '權限不足，租戶不符';
-  END IF;
-
-  IF v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant','') THEN
-    RAISE EXCEPTION '權限不足，無法合併請購品項';
-  END IF;
-
-  IF p_operator IS NULL THEN
-    p_operator := auth.uid();
-  END IF;
-  IF p_operator IS NULL OR (auth.uid() IS NOT NULL AND p_operator <> auth.uid()) THEN
-    RAISE EXCEPTION '操作人員不符，無法建立採購單';
-  END IF;
-
-  IF EXISTS (SELECT 1 FROM unnest(COALESCE(p_pr_item_ids, ARRAY[]::BIGINT[])) x WHERE x IS NULL) THEN
-    RAISE EXCEPTION '請購品項編號不可為空';
-  END IF;
-
-  v_valid_ids := ARRAY(
-    SELECT DISTINCT x
-      FROM unnest(COALESCE(p_pr_item_ids, ARRAY[]::BIGINT[])) u(x)
-     ORDER BY x
-  );
-  v_want := COALESCE(array_length(v_valid_ids, 1), 0);
-  IF v_want = 0 THEN
-    RAISE EXCEPTION '沒有可建立採購單的請購品項';
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM public.suppliers s
-     WHERE s.id = p_supplier_id AND s.tenant_id = p_tenant_id
-  ) OR NOT EXISTS (
-    SELECT 1 FROM public.locations l
-     WHERE l.id = p_dest_location AND l.tenant_id = p_tenant_id
-  ) THEN
-    RAISE EXCEPTION '供應商或送貨地點不屬於本租戶';
-  END IF;
-
-  SELECT COUNT(*),
-         ARRAY_AGG(pri.id ORDER BY pri.id),
-         ARRAY_AGG(DISTINCT pri.pr_id ORDER BY pri.pr_id)
-    INTO v_matched, v_valid_ids, v_snapshot_pr_ids
+  -- 僅找出舊函式本來會動到的 PR；不新增租戶、角色、狀態或供應商契約。
+  SELECT ARRAY_AGG(DISTINCT pri.pr_id ORDER BY pri.pr_id)
+    INTO v_snapshot_pr_ids
     FROM public.purchase_request_items pri
-    JOIN public.purchase_requests pr ON pr.id = pri.pr_id
-   WHERE pri.id = ANY(v_valid_ids)
-     AND pri.qty_requested > 0
-     AND pri.po_item_id IS NULL
-     AND pri.suggested_supplier_id = p_supplier_id
-     AND pr.tenant_id = p_tenant_id
-     AND pr.status = 'submitted'
-     AND pr.review_status = 'approved';
-
-  IF v_matched <> v_want THEN
-    RAISE EXCEPTION '請購品項有不屬本租戶、未核准、已轉採購或供應商不符；整筆未建立（傳入 % 項，合法 % 項）',
-      v_want, v_matched;
-  END IF;
+   WHERE pri.id = ANY(COALESCE(p_pr_item_ids, ARRAY[]::BIGINT[]));
 
   PERFORM public._pr_lock_demand_snapshot(v_snapshot_pr_ids);
 
   PERFORM 1
     FROM public.purchase_request_items pri
     JOIN public.purchase_requests pr ON pr.id = pri.pr_id
-   WHERE pri.id = ANY(v_valid_ids)
-      AND pri.qty_requested > 0
-      AND pri.po_item_id IS NULL
-      AND pri.suggested_supplier_id = p_supplier_id
-      AND pr.tenant_id = p_tenant_id
-      AND pr.status = 'submitted'
-      AND pr.review_status = 'approved'
-   ORDER BY pr.id, pri.id
-   FOR UPDATE OF pr, pri;
+   WHERE pri.id = ANY(COALESCE(p_pr_item_ids, ARRAY[]::BIGINT[]))
+    ORDER BY pr.id, pri.id
+    FOR UPDATE OF pr, pri;
 
-  SELECT COUNT(*),
-         ARRAY_AGG(pri.id ORDER BY pri.id),
-         ARRAY_AGG(DISTINCT pri.pr_id ORDER BY pri.pr_id)
-    INTO v_matched, v_valid_ids, v_pr_ids
+  SELECT ARRAY_AGG(DISTINCT pri.pr_id ORDER BY pri.pr_id)
+    INTO v_locked_pr_ids
     FROM public.purchase_request_items pri
-    JOIN public.purchase_requests pr ON pr.id = pri.pr_id
-   WHERE pri.id = ANY(v_valid_ids)
-     AND pri.qty_requested > 0
-     AND pri.po_item_id IS NULL
-     AND pri.suggested_supplier_id = p_supplier_id
-     AND pr.tenant_id = p_tenant_id
-     AND pr.status = 'submitted'
-     AND pr.review_status = 'approved';
+   WHERE pri.id = ANY(COALESCE(p_pr_item_ids, ARRAY[]::BIGINT[]));
 
-  IF v_matched <> v_want THEN
-    RAISE EXCEPTION '請購品項有不屬本租戶、未核准、已轉採購或供應商不符；整筆未建立（傳入 % 項，合法 % 項）',
-      v_want, v_matched;
-  END IF;
-
-  IF v_pr_ids IS DISTINCT FROM v_snapshot_pr_ids THEN
+  IF v_locked_pr_ids IS DISTINCT FROM v_snapshot_pr_ids THEN
     RAISE EXCEPTION '請購品項在建單前已被搬到其他請購單；整筆未建立，請重試';
   END IF;
 
-  PERFORM public._pr_validate_qty_current(v_pr_ids);
-
-  INSERT INTO public.purchase_orders (tenant_id, po_no, supplier_id, dest_location_id, created_by)
-  VALUES (p_tenant_id, p_po_no, p_supplier_id, p_dest_location, p_operator)
-  RETURNING id INTO v_po_id;
-
-  WITH grouped AS (
-    SELECT pri.sku_id,
-           SUM(pri.qty_requested) AS qty,
-           COALESCE(MAX(ss.default_unit_cost), 0) AS unit_cost
-      FROM public.purchase_request_items pri
-      LEFT JOIN public.supplier_skus ss
-        ON ss.tenant_id = p_tenant_id
-       AND ss.supplier_id = p_supplier_id
-       AND ss.sku_id = pri.sku_id
-     WHERE pri.id = ANY(v_valid_ids)
-       AND pri.qty_requested > 0
-       AND pri.po_item_id IS NULL
-     GROUP BY pri.sku_id
-  ), inserted AS (
-    INSERT INTO public.purchase_order_items (po_id, sku_id, qty_ordered, unit_cost)
-    SELECT v_po_id, sku_id, qty, unit_cost FROM grouped
-    RETURNING id, sku_id
-  )
-  UPDATE public.purchase_request_items pri
-     SET po_item_id = i.id
-    FROM inserted i
-   WHERE pri.id = ANY(v_valid_ids)
-     AND pri.qty_requested > 0
-     AND pri.po_item_id IS NULL
-     AND pri.sku_id = i.sku_id;
-
-  UPDATE public.purchase_requests pr
-     SET status = CASE
-       WHEN NOT EXISTS (
-         SELECT 1 FROM public.purchase_request_items pri
-          WHERE pri.pr_id = pr.id
-            AND pri.po_item_id IS NULL
-            AND pri.qty_requested > 0
-       ) THEN 'fully_ordered' ELSE 'partially_ordered'
-     END
-   WHERE pr.id = ANY(v_pr_ids);
-
-  RETURN v_po_id;
+  PERFORM public._pr_validate_qty_current(v_locked_pr_ids);
+  RETURN public._rpc_merge_prs_to_po_20260930_inner(
+    p_tenant_id, p_pr_item_ids, p_supplier_id, p_dest_location, p_po_no, p_operator
+  );
 END;
 $$;
 
@@ -1527,6 +1239,7 @@ DECLARE
   v_total      INTEGER;
   v_remaining  INTEGER;
   v_moved      INTEGER;
+  v_campaign_ids BIGINT[];
   v_src        RECORD;
   v_new_pr_id  BIGINT;
   v_new_pr_no  TEXT;
@@ -1549,11 +1262,18 @@ BEGIN
   END IF;
 
   IF p_operator IS NULL THEN
-    p_operator := auth.uid();
+    RAISE EXCEPTION '缺少操作人員 id，無法建立新請購單';
   END IF;
-  IF p_operator IS NULL OR (auth.uid() IS NOT NULL AND p_operator <> auth.uid()) THEN
-    RAISE EXCEPTION '操作人員不符，無法建立新請購單';
-  END IF;
+
+  -- draft+approved 依主線舊契約可直接 split。partial 必須也先鎖團再鎖 PR，
+  -- 避免與 split 的 campaign snapshot -> PR 形成反向第一把鎖。
+  v_campaign_ids := public._pr_delete_campaign_ids(p_source_pr_id);
+  PERFORM 1
+    FROM public.group_buy_campaigns gbc
+   WHERE gbc.tenant_id = v_tenant
+     AND gbc.id = ANY(v_campaign_ids)
+   ORDER BY gbc.id
+   FOR NO KEY UPDATE;
 
   SELECT pr.pr_no, pr.status, pr.source_type, pr.source_close_date,
          pr.source_campaign_id, pr.source_location_id, pr.notes
@@ -1574,7 +1294,7 @@ BEGIN
     FROM public.restock_requests
    WHERE linked_pr_id = p_source_pr_id AND tenant_id = v_tenant;
   IF v_restock > 0 THEN
-    RAISE EXCEPTION '請購單 % 來自補貨申請，請從補貨流程處理', v_src.pr_no;
+    RAISE EXCEPTION '請購單 % 來自補貨申請，請從補貨流程處理，不可部分轉採購', v_src.pr_no;
   END IF;
 
   FOR r IN
@@ -1596,14 +1316,16 @@ BEGIN
       v_src.pr_no, v_want, v_matched;
   END IF;
   IF v_po_linked > 0 THEN
-    RAISE EXCEPTION '勾選的品項有 % 項已拆成採購單，不可搬移', v_po_linked;
+    RAISE EXCEPTION '勾選的品項有 % 項已拆成採購單(PO)，不可搬移。請改在採購單端處理。', v_po_linked;
   END IF;
 
   SELECT COUNT(*) INTO v_total
     FROM public.purchase_request_items
    WHERE pr_id = p_source_pr_id;
-  IF v_total - v_matched <= 0 THEN
-    RAISE EXCEPTION '不可把請購單 % 的品項全部轉出；要全部採購請直接送審本單', v_src.pr_no;
+  v_remaining := v_total - v_matched;
+  IF v_remaining <= 0 THEN
+    RAISE EXCEPTION '不可把請購單 % 的品項全部轉出（會清空原單）。要全部採購請直接送出審核本單。',
+      v_src.pr_no;
   END IF;
 
   v_new_pr_no := public.rpc_next_pr_no();
