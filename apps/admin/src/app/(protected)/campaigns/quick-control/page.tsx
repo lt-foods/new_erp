@@ -1514,10 +1514,8 @@ export default function QuickCampaignControlPage() {
                     )}
 
                     {!quickOk && !locked && (
-                      <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300">
-                        {"這是沒設正取上限的一般團：這裡可以關團、補單、拿客人連結；延長收單、重開、加名額系統目前不接受，請到"}
-                        <Link href="/campaigns" className="mx-1 underline">開團管理</Link>
-                        {"操作。"}
+                      <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                        一般團的關團／重開請到電腦版開團頁（手機版之後補）
                       </div>
                     )}
 
