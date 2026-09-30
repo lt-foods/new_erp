@@ -559,9 +559,7 @@ REVOKE ALL ON FUNCTION public.rpc_preview_pr_qty_sync(BIGINT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.rpc_preview_pr_qty_sync(BIGINT) FROM anon;
 GRANT EXECUTE ON FUNCTION public.rpc_preview_pr_qty_sync(BIGINT) TO authenticated;
 
--- #995 原版是先鎖 PR/item，最後才取團+SKU advisory lock；會和 #982
--- attribution guard 的「advisory -> parent item」形成反向等待。外層先取
--- #982 完全相同的 key，內層舊鎖是同交易 re-entrant，不改 #995 業務邏輯。
+-- #995 lock order: campaign -> #982 advisory key -> PR/item.
 ALTER FUNCTION public.rpc_add_pr_store_demands(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID)
   RENAME TO _rpc_add_pr_store_demands_20260930_inner;
 
@@ -597,10 +595,7 @@ BEGIN
     RAISE EXCEPTION '找不到這張請購單品項';
   END IF;
 
-  -- 全站順序：campaign demand source -> advisory -> PR/item。
-  -- NO KEY UPDATE 與 partial INSERT FK 所取的 KEY SHARE 相容，但會和 PO
-  -- snapshot 的 FOR UPDATE 衝突。同團 wrapper 也會串行，避免內層升級
-  -- FOR UPDATE 時，同團不同 SKU 各自持有可相容鎖而互等。
+  -- NO KEY UPDATE is compatible with partial's FK KEY SHARE and conflicts with PO FOR UPDATE.
   PERFORM 1
     FROM public.group_buy_campaigns gbc
    WHERE gbc.id = p_campaign_id
@@ -894,10 +889,7 @@ $$;
 
 REVOKE ALL ON FUNCTION public._pr_validate_qty_current(BIGINT[]) FROM PUBLIC;
 
--- 花錢前的共用 demand snapshot lock。固定順序：campaign -> campaign item
--- -> customer order -> customer order item；全部 FOR UPDATE 持有到 PO 交易結束。
--- FOR UPDATE 會擋住子列 INSERT 驗 FK 時需要的 KEY SHARE，所以不只鎖現有列，
--- 也會讓新 campaign_item/order/order_item 等快照完成後才進來；取消只會等待，不會失敗。
+-- PO snapshot: campaign -> campaign item -> order -> order item, all FOR UPDATE.
 CREATE OR REPLACE FUNCTION public._pr_lock_demand_snapshot(
   p_pr_ids BIGINT[]
 ) RETURNS VOID
@@ -976,8 +968,6 @@ $$;
 
 REVOKE ALL ON FUNCTION public._pr_lock_demand_snapshot(BIGINT[]) FROM PUBLIC;
 
--- rpc_delete_pr 原語意原樣保留；只把第一把鎖統一為 demand source
--- -> PR/item。舊版支援 draft/submitted/cancelled，且會解鎖團後硬刪 PR。
 CREATE OR REPLACE FUNCTION public.rpc_delete_pr(
   p_pr_id    BIGINT,
   p_operator UUID
@@ -991,14 +981,39 @@ DECLARE
   v_status   TEXT;
   v_po_items INTEGER;
   v_restock  INTEGER;
+  v_campaign_ids BIGINT[];
 BEGIN
   IF v_role NOT IN ('owner','admin','hq_manager','') THEN
     RAISE EXCEPTION '權限不足：角色 % 無法刪除請購單', v_role;
   END IF;
 
-  -- 必須在取 PR FOR UPDATE 前鎖團的 demand source，避免與 PO/#995
-  -- 的 campaign -> PR/item 順序相反。無效 id 不會取到任何團鎖。
-  PERFORM public._pr_lock_demand_snapshot(ARRAY[p_pr_id]);
+  SELECT COALESCE(ARRAY_AGG(x.campaign_id ORDER BY x.campaign_id), ARRAY[]::BIGINT[])
+    INTO v_campaign_ids
+    FROM (
+      SELECT prc.campaign_id
+        FROM purchase_request_campaigns prc
+       WHERE prc.pr_id = p_pr_id
+      UNION
+      SELECT pric.campaign_id
+        FROM purchase_request_items pri
+        JOIN purchase_request_item_campaigns pric ON pric.pr_item_id = pri.id
+       WHERE pri.pr_id = p_pr_id
+      UNION
+      SELECT pri.source_campaign_id
+        FROM purchase_request_items pri
+       WHERE pri.pr_id = p_pr_id AND pri.source_campaign_id IS NOT NULL
+      UNION
+      SELECT pr.source_campaign_id
+        FROM purchase_requests pr
+       WHERE pr.id = p_pr_id AND pr.source_campaign_id IS NOT NULL
+    ) x;
+
+  PERFORM 1
+    FROM public.group_buy_campaigns gbc
+   WHERE gbc.tenant_id = v_tenant
+     AND gbc.id = ANY(v_campaign_ids)
+   ORDER BY gbc.id
+   FOR NO KEY UPDATE;
 
   SELECT status INTO v_status
     FROM purchase_requests
@@ -1056,9 +1071,7 @@ REVOKE ALL ON FUNCTION public.rpc_delete_pr(BIGINT, UUID) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.rpc_delete_pr(BIGINT, UUID) TO authenticated;
 
 COMMENT ON FUNCTION public.rpc_delete_pr(BIGINT, UUID) IS
-  '請購單刪除（硬刪）：限 draft/submitted/cancelled 且未拆 PO、非補貨來源；'
-  '刪前把該 PR 鎖的 locked 團還原回 closed（訂單維持 confirmed 不動）；'
-  'items/campaigns join 由 ON DELETE CASCADE 連帶刪；同 tenant；owner/admin/hq_manager。';
+  '刪除未拆 PO 的請購單；先鎖關聯團，再照原守門解鎖團與硬刪。';
 
 -- ---------------------------------------------------------------------------
 -- 送審：仍是 draft 時先強制同步，再跑既有品項／供應商／門檻守衛。
@@ -1196,7 +1209,6 @@ BEGIN
     RAISE EXCEPTION '送貨地點不屬於本租戶';
   END IF;
 
-  -- 鎖 snapshot 前先用和最終守門相同的條件預驗，非法 PR 不去占團鎖。
   SELECT status, review_status
     INTO v_status, v_review
     FROM public.purchase_requests
@@ -1226,7 +1238,6 @@ BEGIN
     RAISE EXCEPTION '有 % 個品項未指派供應商，無法建立採購單', v_unassigned;
   END IF;
 
-  -- 先鎖定 demand source，再鎖 PR；與補單/#995 同為 campaign -> PR/item。
   PERFORM public._pr_lock_demand_snapshot(ARRAY[p_pr_id]);
 
   SELECT status, review_status
@@ -1386,8 +1397,6 @@ BEGIN
     RAISE EXCEPTION '供應商或送貨地點不屬於本租戶';
   END IF;
 
-  -- 鎖 snapshot 前先以最終 eligibility 的完整條件預驗全部 id。
-  -- 草稿、未核准、已轉 PO、錯供應商與跨租戶皆整筆先拒絕，不取團鎖。
   SELECT COUNT(*),
          ARRAY_AGG(pri.id ORDER BY pri.id),
          ARRAY_AGG(DISTINCT pri.pr_id ORDER BY pri.pr_id)
@@ -1409,7 +1418,6 @@ BEGIN
 
   PERFORM public._pr_lock_demand_snapshot(v_snapshot_pr_ids);
 
-  -- demand 已鎖定，再依固定順序鎖「同租戶、已送審核准、未轉 PO、正數、同供應商」集合。
   PERFORM 1
     FROM public.purchase_request_items pri
     JOIN public.purchase_requests pr ON pr.id = pri.pr_id

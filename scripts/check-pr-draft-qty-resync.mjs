@@ -70,8 +70,11 @@ function verify(sql, ui) {
   assert.match(snapshot, /ORDER BY co\.campaign_id, co\.id, coi\.id[\s\S]*FOR UPDATE OF coi/);
 
   const deletePr = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_delete_pr", "COMMENT ON FUNCTION public.rpc_delete_pr");
-  const deleteSnapshotCall = "PERFORM public._pr_lock_demand_snapshot(ARRAY[p_pr_id]);";
-  assert.ok(deletePr.indexOf(deleteSnapshotCall) >= 0 && deletePr.indexOf(deleteSnapshotCall) < deletePr.indexOf("SELECT status INTO v_status"));
+  const deleteCampaignLock = "FROM public.group_buy_campaigns gbc";
+  assert.doesNotMatch(deletePr, /_pr_lock_demand_snapshot/);
+  assert.ok(deletePr.indexOf(deleteCampaignLock) >= 0 && deletePr.indexOf(deleteCampaignLock) < deletePr.indexOf("SELECT status INTO v_status"));
+  assert.match(deletePr, /ORDER BY gbc\.id\s+FOR NO KEY UPDATE/);
+  assert.match(deletePr, /ARRAY_AGG\(x\.campaign_id ORDER BY x\.campaign_id\)/);
   assert.match(deletePr, /v_role NOT IN \('owner','admin','hq_manager',''\)/);
   assert.match(deletePr, /v_status IN \('partially_ordered','fully_ordered'\)/);
   assert.match(deletePr, /UPDATE group_buy_campaigns[\s\S]*SET status\s+= 'closed'/);
@@ -153,7 +156,7 @@ const faults = [
   ["linked qty \u53c8\u53ef\u624b\u6539", migration, page.replace("editable && !itemCampaignOptions.has(r.id)", "editable")],
   ["snapshot \u7528\u592a\u5f31\u7684 row lock", migration.replace("FOR UPDATE;\n\n  PERFORM 1\n    FROM public.campaign_items", "FOR NO KEY UPDATE;\n\n  PERFORM 1\n    FROM public.campaign_items"), page],
   ["#995 wrapper \u53c8\u7528\u6703\u64cb partial FK \u7684 campaign FOR UPDATE", migration.replace("FOR NO KEY UPDATE;\n\n  IF NOT FOUND THEN", "FOR UPDATE;\n\n  IF NOT FOUND THEN"), page],
-  ["delete \u53c8\u5148\u9396 PR", migration.replace("PERFORM public._pr_lock_demand_snapshot(ARRAY[p_pr_id]);\n\n  SELECT status INTO v_status", "-- snapshot moved after PR lock\n\n  SELECT status INTO v_status"), page],
+  ["delete \u53c8\u7528\u6703\u64cb partial FK \u7684 campaign FOR UPDATE", migration.replace("ORDER BY gbc.id\n   FOR NO KEY UPDATE;\n\n  SELECT status", "ORDER BY gbc.id\n   FOR UPDATE;\n\n  SELECT status"), page],
   ["split \u5c11 demand snapshot", migration.replace("PERFORM public._pr_lock_demand_snapshot(ARRAY[p_pr_id]);", "-- snapshot removed"), page],
   ["split \u5c11\u9396\u524d eligibility \u9810\u9a57", migration.replace("IF v_review <> 'approved' THEN", "IF FALSE THEN"), page],
   ["merge \u5c11 demand snapshot", migration.replace("PERFORM public._pr_lock_demand_snapshot(v_snapshot_pr_ids);", "-- snapshot removed"), page],

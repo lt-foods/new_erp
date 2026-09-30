@@ -385,9 +385,10 @@ INSERT INTO _t_result
 SELECT 83,'#995/partial 與 delete/PO 不持反向第一把鎖',
   STRPOS(add_src,'FOR NO KEY UPDATE') > 0
   AND STRPOS(add_src,'FOR NO KEY UPDATE') < STRPOS(add_src,'pg_advisory_xact_lock')
-  AND STRPOS(delete_src,'_pr_lock_demand_snapshot') > 0
-  AND STRPOS(delete_src,'_pr_lock_demand_snapshot') < STRPOS(delete_src,'SELECT status INTO v_status'),
-  '#995 campaign NO KEY UPDATE（相容 FK KEY SHARE）；delete snapshot -> PR FOR UPDATE'
+  AND STRPOS(delete_src,'_pr_lock_demand_snapshot') = 0
+  AND STRPOS(delete_src,'ORDER BY gbc.id') > 0
+  AND STRPOS(delete_src,'FOR NO KEY UPDATE') < STRPOS(delete_src,'SELECT status INTO v_status'),
+  '#995/delete campaign NO KEY UPDATE（相容 FK KEY SHARE）；delete 等 PR 後照原語意重驗'
 FROM defs;
 
 WITH defs AS (
@@ -403,12 +404,14 @@ SELECT 84,'split/merge snapshot 前預驗、鎖後重驗',
 FROM defs;
 
 -- 兩 session 真實競態驗證（需本機 PostgreSQL，本次未實跑）：
--- 【反向第一把鎖：partial vs #995；可抓舊 wrapper FOR UPDATE】
+-- 【反向第一把鎖：partial vs delete；可抓 delete 誤用完整 snapshot/FOR UPDATE】
 -- A: BEGIN; SELECT 1 FROM purchase_requests WHERE id=<ZZTEST partial source PR> FOR UPDATE;
--- B: BEGIN; SELECT 1 FROM group_buy_campaigns WHERE id=<該 PR campaign> FOR NO KEY UPDATE;
+-- B: BEGIN; SELECT rpc_delete_pr(<同一張 ZZTEST partial source PR>,<operator>);
+--    B 會先取 campaign NO KEY UPDATE，然後等 A 的 PR FOR UPDATE。
 -- A: SET LOCAL lock_timeout='500ms'; SELECT 1 FROM group_buy_campaigns WHERE id=<該 campaign> FOR KEY SHARE;
---    預期立即成功（NO KEY UPDATE 與 FK KEY SHARE 相容）。若 wrapper 退回 FOR UPDATE，這步會 timeout，
---    而 B 後續等 A 的 PR，就是「雙方各持反向第一把鎖」。A ROLLBACK 後 B 再鎖 PR 應成功。
+--    預期立即成功（NO KEY UPDATE 與 partial FK KEY SHARE 相容）。若 delete 退回 campaign
+--    FOR UPDATE，這步會 timeout，而 B 正在等 A 的 PR，就是「雙方各持反向第一把鎖」。
+-- A: ROLLBACK；B 應完成。B: ROLLBACK（不真刪 fixture）。
 -- 【PO snapshot vs 取消/新增 demand】
 -- A: BEGIN; SELECT _pr_lock_demand_snapshot(ARRAY[<ZZTEST submitted PR id>]); 保持未 COMMIT。
 -- B: SET lock_timeout='500ms'; UPDATE customer_orders SET status='cancelled' WHERE id=<該團 ZZTEST order id>;
