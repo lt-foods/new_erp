@@ -370,6 +370,10 @@ export default function QuickCampaignControlPage() {
           .from("customer_orders")
           .select("campaign_id, status, order_kind, customer_order_items(qty, status)")
           .in("campaign_id", ids)
+          // 條件同 rpc_quick_update_campaign_control 的已售算法；品項條件只篩掉嵌入的品項，不會把整張單濾掉
+          .not("status", "in", "(cancelled,expired,transferred_out)")
+          .or("order_kind.is.null,order_kind.eq.normal")
+          .not("customer_order_items.status", "in", "(cancelled,expired)")
           .order("id", { ascending: true })
           .range(from, from + 999);
         if (orderErr) throw orderErr;
@@ -1018,7 +1022,7 @@ export default function QuickCampaignControlPage() {
                   readOnly
                   value={createdUrl}
                   onFocus={(e) => e.currentTarget.select()}
-                  className="min-h-11 rounded-md border border-emerald-200 bg-white px-3 text-sm text-emerald-900 dark:border-emerald-900 dark:bg-zinc-950 dark:text-emerald-100"
+                  className="min-h-11 rounded-md border border-emerald-200 bg-white px-3 text-base text-emerald-900 dark:border-emerald-900 dark:bg-zinc-950 dark:text-emerald-100"
                 />
                 <div className="grid gap-2 sm:grid-cols-3">
                   <SpinButton
