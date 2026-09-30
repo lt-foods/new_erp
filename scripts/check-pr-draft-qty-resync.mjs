@@ -69,12 +69,26 @@ function verify(sql, ui) {
   assert.match(snapshot, /ORDER BY co\.campaign_id, co\.id[\s\S]*FOR UPDATE/);
   assert.match(snapshot, /ORDER BY co\.campaign_id, co\.id, coi\.id[\s\S]*FOR UPDATE OF coi/);
 
+  const deleteCampaignIds = section(sql, "CREATE OR REPLACE FUNCTION public._pr_delete_campaign_ids", "REVOKE ALL ON FUNCTION public._pr_delete_campaign_ids");
+  for (const source of ["purchase_request_campaigns", "purchase_request_item_campaigns", "source_campaign_id"]) {
+    assert.match(deleteCampaignIds, new RegExp(source));
+  }
+  assert.match(deleteCampaignIds, /ORDER BY campaign_id/);
+
   const deletePr = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_delete_pr", "COMMENT ON FUNCTION public.rpc_delete_pr");
   const deleteCampaignLock = "FROM public.group_buy_campaigns gbc";
+  const deleteReads = [...deletePr.matchAll(/public\._pr_delete_campaign_ids\(p_pr_id\)/g)].map((m) => m.index);
+  const deletePrLock = deletePr.indexOf("FOR UPDATE;", deletePr.indexOf("SELECT status INTO v_status"));
+  const deleteRecheck = deletePr.indexOf("v_current_campaign_ids IS DISTINCT FROM v_campaign_ids");
+  const deleteUpdate = deletePr.indexOf("UPDATE group_buy_campaigns");
   assert.doesNotMatch(deletePr, /_pr_lock_demand_snapshot/);
-  assert.ok(deletePr.indexOf(deleteCampaignLock) >= 0 && deletePr.indexOf(deleteCampaignLock) < deletePr.indexOf("SELECT status INTO v_status"));
+  assert.equal(deleteReads.length, 2);
+  assert.ok(deleteReads[0] < deletePr.indexOf(deleteCampaignLock));
+  assert.ok(deletePr.indexOf(deleteCampaignLock) < deletePr.indexOf("SELECT status INTO v_status"));
+  assert.ok(deletePrLock >= 0 && deletePrLock < deleteReads[1]);
+  assert.ok(deleteReads[1] < deleteRecheck && deleteRecheck < deleteUpdate);
   assert.match(deletePr, /ORDER BY gbc\.id\s+FOR NO KEY UPDATE/);
-  assert.match(deletePr, /ARRAY_AGG\(x\.campaign_id ORDER BY x\.campaign_id\)/);
+  assert.match(deletePr, /v_current_campaign_ids\s+BIGINT\[\]/);
   assert.match(deletePr, /v_role NOT IN \('owner','admin','hq_manager',''\)/);
   assert.match(deletePr, /v_status IN \('partially_ordered','fully_ordered'\)/);
   assert.match(deletePr, /UPDATE group_buy_campaigns[\s\S]*SET status\s+= 'closed'/);
@@ -146,6 +160,11 @@ function verify(sql, ui) {
 
 verify(migration, page);
 
+const deleteRecheckBlock = "  IF v_current_campaign_ids IS DISTINCT FROM v_campaign_ids THEN\n    RAISE EXCEPTION '請購單的關聯團剛剛有變動，請重試刪除';\n  END IF;\n\n";
+const deleteRecheckAfterUpdate = migration
+  .replace(deleteRecheckBlock, "")
+  .replace("  BEGIN\n    DELETE FROM purchase_requests", `${deleteRecheckBlock}  BEGIN\n    DELETE FROM purchase_requests`);
+
 const faults = [
   ["\u65b0 SKU \u53c8\u88ab\u73fe\u6709 attribution \u904e\u6ffe", migration.replace("FROM remaining r\n      LEFT JOIN current_pairs", "FROM remaining r\n      JOIN current_pairs"), page],
   ["merge \u53c8\u7528\u672a\u9a57\u8b49\u7684\u539f\u59cb ids", migration.replaceAll("ANY(v_valid_ids)", "ANY(p_pr_item_ids)"), page],
@@ -157,6 +176,8 @@ const faults = [
   ["snapshot \u7528\u592a\u5f31\u7684 row lock", migration.replace("FOR UPDATE;\n\n  PERFORM 1\n    FROM public.campaign_items", "FOR NO KEY UPDATE;\n\n  PERFORM 1\n    FROM public.campaign_items"), page],
   ["#995 wrapper \u53c8\u7528\u6703\u64cb partial FK \u7684 campaign FOR UPDATE", migration.replace("FOR NO KEY UPDATE;\n\n  IF NOT FOUND THEN", "FOR UPDATE;\n\n  IF NOT FOUND THEN"), page],
   ["delete \u53c8\u7528\u6703\u64cb partial FK \u7684 campaign FOR UPDATE", migration.replace("ORDER BY gbc.id\n   FOR NO KEY UPDATE;\n\n  SELECT status", "ORDER BY gbc.id\n   FOR UPDATE;\n\n  SELECT status"), page],
+  ["delete \u6f0f\u6389 PR \u9396\u5f8c\u91cd\u7b97", migration.replace("v_current_campaign_ids := public._pr_delete_campaign_ids(p_pr_id);", "-- locked recheck removed"), page],
+  ["delete \u628a\u95dc\u806f\u5718\u6bd4\u8f03\u653e\u5230 UPDATE \u4e4b\u5f8c", deleteRecheckAfterUpdate, page],
   ["split \u5c11 demand snapshot", migration.replace("PERFORM public._pr_lock_demand_snapshot(ARRAY[p_pr_id]);", "-- snapshot removed"), page],
   ["split \u5c11\u9396\u524d eligibility \u9810\u9a57", migration.replace("IF v_review <> 'approved' THEN", "IF FALSE THEN"), page],
   ["merge \u5c11 demand snapshot", migration.replace("PERFORM public._pr_lock_demand_snapshot(v_snapshot_pr_ids);", "-- snapshot removed"), page],

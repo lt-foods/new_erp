@@ -968,6 +968,19 @@ $$;
 
 REVOKE ALL ON FUNCTION public._pr_lock_demand_snapshot(BIGINT[]) FROM PUBLIC;
 
+CREATE OR REPLACE FUNCTION public._pr_delete_campaign_ids(BIGINT)
+RETURNS BIGINT[] LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+SELECT ARRAY(SELECT campaign_id FROM (
+  SELECT campaign_id FROM purchase_request_campaigns WHERE pr_id = $1
+  UNION SELECT pric.campaign_id FROM purchase_request_items pri
+    JOIN purchase_request_item_campaigns pric ON pric.pr_item_id = pri.id WHERE pri.pr_id = $1
+  UNION SELECT source_campaign_id FROM purchase_request_items WHERE pr_id = $1 AND source_campaign_id IS NOT NULL
+  UNION SELECT source_campaign_id FROM purchase_requests WHERE id = $1 AND source_campaign_id IS NOT NULL
+) x ORDER BY campaign_id)
+$$;
+
+REVOKE ALL ON FUNCTION public._pr_delete_campaign_ids(BIGINT) FROM PUBLIC;
+
 CREATE OR REPLACE FUNCTION public.rpc_delete_pr(
   p_pr_id    BIGINT,
   p_operator UUID
@@ -982,31 +995,13 @@ DECLARE
   v_po_items INTEGER;
   v_restock  INTEGER;
   v_campaign_ids BIGINT[];
+  v_current_campaign_ids BIGINT[];
 BEGIN
   IF v_role NOT IN ('owner','admin','hq_manager','') THEN
     RAISE EXCEPTION '權限不足：角色 % 無法刪除請購單', v_role;
   END IF;
 
-  SELECT COALESCE(ARRAY_AGG(x.campaign_id ORDER BY x.campaign_id), ARRAY[]::BIGINT[])
-    INTO v_campaign_ids
-    FROM (
-      SELECT prc.campaign_id
-        FROM purchase_request_campaigns prc
-       WHERE prc.pr_id = p_pr_id
-      UNION
-      SELECT pric.campaign_id
-        FROM purchase_request_items pri
-        JOIN purchase_request_item_campaigns pric ON pric.pr_item_id = pri.id
-       WHERE pri.pr_id = p_pr_id
-      UNION
-      SELECT pri.source_campaign_id
-        FROM purchase_request_items pri
-       WHERE pri.pr_id = p_pr_id AND pri.source_campaign_id IS NOT NULL
-      UNION
-      SELECT pr.source_campaign_id
-        FROM purchase_requests pr
-       WHERE pr.id = p_pr_id AND pr.source_campaign_id IS NOT NULL
-    ) x;
+  v_campaign_ids := public._pr_delete_campaign_ids(p_pr_id);
 
   PERFORM 1
     FROM public.group_buy_campaigns gbc
@@ -1022,6 +1017,11 @@ BEGIN
 
   IF v_status IS NULL THEN
     RAISE EXCEPTION '找不到請購單 %', p_pr_id;
+  END IF;
+
+  v_current_campaign_ids := public._pr_delete_campaign_ids(p_pr_id);
+  IF v_current_campaign_ids IS DISTINCT FROM v_campaign_ids THEN
+    RAISE EXCEPTION '請購單的關聯團剛剛有變動，請重試刪除';
   END IF;
 
   IF v_status IN ('partially_ordered','fully_ordered') THEN

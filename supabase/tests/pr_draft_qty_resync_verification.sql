@@ -379,7 +379,8 @@ FROM defs;
 
 WITH defs AS (
   SELECT pg_get_functiondef('public.rpc_delete_pr(bigint,uuid)'::regprocedure) AS delete_src,
-         pg_get_functiondef('public.rpc_add_pr_store_demands(bigint,bigint,bigint,jsonb,uuid,uuid)'::regprocedure) AS add_src
+         pg_get_functiondef('public.rpc_add_pr_store_demands(bigint,bigint,bigint,jsonb,uuid,uuid)'::regprocedure) AS add_src,
+         pg_get_functiondef('public._pr_delete_campaign_ids(bigint)'::regprocedure) AS ids_src
 )
 INSERT INTO _t_result
 SELECT 83,'#995/partial 與 delete/PO 不持反向第一把鎖',
@@ -387,8 +388,14 @@ SELECT 83,'#995/partial 與 delete/PO 不持反向第一把鎖',
   AND STRPOS(add_src,'FOR NO KEY UPDATE') < STRPOS(add_src,'pg_advisory_xact_lock')
   AND STRPOS(delete_src,'_pr_lock_demand_snapshot') = 0
   AND STRPOS(delete_src,'ORDER BY gbc.id') > 0
-  AND STRPOS(delete_src,'FOR NO KEY UPDATE') < STRPOS(delete_src,'SELECT status INTO v_status'),
-  '#995/delete campaign NO KEY UPDATE（相容 FK KEY SHARE）；delete 等 PR 後照原語意重驗'
+  AND STRPOS(delete_src,'FOR NO KEY UPDATE') < STRPOS(delete_src,'SELECT status INTO v_status')
+  AND (LENGTH(delete_src)-LENGTH(REPLACE(delete_src,'_pr_delete_campaign_ids(p_pr_id)','')))
+      / LENGTH('_pr_delete_campaign_ids(p_pr_id)') = 2
+  AND STRPOS(delete_src,'FOR UPDATE;') < STRPOS(delete_src,'v_current_campaign_ids :=')
+  AND STRPOS(delete_src,'v_current_campaign_ids IS DISTINCT FROM v_campaign_ids')
+      < STRPOS(delete_src,'UPDATE group_buy_campaigns')
+  AND ids_src LIKE '%purchase_request_campaigns%purchase_request_item_campaigns%source_campaign_id%ORDER BY campaign_id%',
+  'delete 鎖前/鎖後同 helper 重算，集合變動在 UPDATE/DELETE 前拒絕'
 FROM defs;
 
 WITH defs AS (
@@ -411,7 +418,8 @@ FROM defs;
 -- A: SET LOCAL lock_timeout='500ms'; SELECT 1 FROM group_buy_campaigns WHERE id=<該 campaign> FOR KEY SHARE;
 --    預期立即成功（NO KEY UPDATE 與 partial FK KEY SHARE 相容）。若 delete 退回 campaign
 --    FOR UPDATE，這步會 timeout，而 B 正在等 A 的 PR，就是「雙方各持反向第一把鎖」。
--- A: ROLLBACK；B 應完成。B: ROLLBACK（不真刪 fixture）。
+-- A: ROLLBACK；B 取得 PR 後會重算同一集合；若等待中有變動，必須在 UPDATE/DELETE 前拒絕重試。
+-- B: ROLLBACK（不真刪 fixture）。
 -- 【PO snapshot vs 取消/新增 demand】
 -- A: BEGIN; SELECT _pr_lock_demand_snapshot(ARRAY[<ZZTEST submitted PR id>]); 保持未 COMMIT。
 -- B: SET lock_timeout='500ms'; UPDATE customer_orders SET status='cancelled' WHERE id=<該團 ZZTEST order id>;
