@@ -617,6 +617,9 @@ REVOKE ALL ON FUNCTION public.rpc_add_pr_store_demands(BIGINT, BIGINT, BIGINT, J
 REVOKE ALL ON FUNCTION public.rpc_add_pr_store_demands(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID) FROM anon;
 GRANT EXECUTE ON FUNCTION public.rpc_add_pr_store_demands(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID) TO authenticated;
 
+COMMENT ON FUNCTION public.rpc_add_pr_store_demands(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID) IS
+  '保留原加單行為；外層只固定 campaign → advisory → PR/item 鎖序。';
+
 CREATE OR REPLACE FUNCTION public._pr_lock_qty_sync_keys(
   p_pr_id BIGINT
 ) RETURNS VOID
@@ -1152,6 +1155,9 @@ REVOKE ALL ON FUNCTION public.rpc_submit_pr(BIGINT, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.rpc_submit_pr(BIGINT, UUID) FROM anon;
 GRANT EXECUTE ON FUNCTION public.rpc_submit_pr(BIGINT, UUID) TO authenticated;
 
+COMMENT ON FUNCTION public.rpc_submit_pr(BIGINT, UUID) IS
+  '保留原送審行為；外層只固定 campaign → advisory → PR 鎖序並同步驗證。';
+
 -- ---------------------------------------------------------------------------
 -- 建 PO 前最後守門：已送審後若需求變動，只擋、不偷改核准單。
 -- ---------------------------------------------------------------------------
@@ -1342,6 +1348,9 @@ $$;
 REVOKE ALL ON FUNCTION public.rpc_split_pr_to_pos(BIGINT, BIGINT, UUID) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.rpc_split_pr_to_pos(BIGINT, BIGINT, UUID) FROM anon;
 GRANT EXECUTE ON FUNCTION public.rpc_split_pr_to_pos(BIGINT, BIGINT, UUID) TO authenticated;
+
+COMMENT ON FUNCTION public.rpc_split_pr_to_pos(BIGINT, BIGINT, UUID) IS
+  '保留原供應商拆 PO 行為；外層只固定 demand snapshot → PR 鎖序並驗證。';
 
 ALTER FUNCTION public.rpc_merge_prs_to_po(UUID, BIGINT[], BIGINT, BIGINT, TEXT, UUID)
   RENAME TO _rpc_merge_prs_to_po_20260930_inner;
