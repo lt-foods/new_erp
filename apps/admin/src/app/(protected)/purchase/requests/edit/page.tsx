@@ -63,6 +63,28 @@ type StoreAddResult = {
   pr_delta_qty?: number | string;
 };
 
+type QtySyncPreview = {
+  campaign_id: number;
+  campaign_label: string;
+  sku_id: number;
+  sku_label: string;
+  pr_item_id: number;
+  demand_qty: number;
+  already_qty: number;
+  current_qty: number;
+  target_qty: number | null;
+  delta_qty: number;
+  candidate_count: number;
+  action_code: string;
+  action_label: string;
+  is_dirty: boolean;
+};
+
+type QtySyncResult = {
+  synced_count?: number;
+  blocked_count?: number;
+};
+
 // rpc_create_partial_pr_from_items 的 jsonb 回傳
 type PartialSplitResult = {
   new_pr_id: number;
@@ -133,12 +155,13 @@ function PageContent() {
   const [appending, setAppending] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"save" | "submit" | "split" | "reopen" | "delete" | "partial" | null>(null);
+  const [busy, setBusy] = useState<"save" | "submit" | "split" | "reopen" | "delete" | "partial" | "sync" | null>(null);
   const [stores, setStores] = useState<StoreOption[]>([]);
   const [itemCampaignOptions, setItemCampaignOptions] = useState<Map<number, ItemCampaignOption[]>>(new Map());
   const [storeAddModal, setStoreAddModal] = useState<StoreAddModal | null>(null);
   const [storeAddBusy, setStoreAddBusy] = useState(false);
   const [destLocationId, setDestLocationId] = useState<number | null>(null);
+  const [qtySyncRows, setQtySyncRows] = useState<QtySyncPreview[]>([]);
   // UI 上被移除、但尚未存檔的品項 id — saveDraft 時才真正從 DB 刪除。
   // 之前只從 state filter 掉，DB 列還在 → 送審後拆 PO 被「未指派供應商」殘列擋死。
   const [removedIds, setRemovedIds] = useState<number[]>([]);
@@ -177,6 +200,7 @@ function PageContent() {
     setDerivedPOs([]);
     setMissingCampaigns([]);
     setItemCampaignOptions(new Map());
+    setQtySyncRows([]);
     setStoreAddModal(null);
     setTransferSummary(undefined);
     setCampaignFinalized(false);
@@ -235,6 +259,24 @@ function PageContent() {
           setSupplierUsage(m);
         }
         setDestLocationId(prData.source_location_id ?? locRow?.id ?? null);
+
+        // 純預覽，不寫資料；真正同步只在使用者按按鈕後發生。
+        const { data: qtyPreview, error: qtyPreviewErr } = await supabase.rpc(
+          "rpc_preview_pr_qty_sync",
+          { p_pr_id: id },
+        );
+        if (qtyPreviewErr) throw new Error(qtyPreviewErr.message);
+        setQtySyncRows(
+          ((qtyPreview ?? []) as QtySyncPreview[]).map((r) => ({
+            ...r,
+            demand_qty: Number(r.demand_qty),
+            already_qty: Number(r.already_qty),
+            current_qty: Number(r.current_qty),
+            target_qty: r.target_qty == null ? null : Number(r.target_qty),
+            delta_qty: Number(r.delta_qty),
+            candidate_count: Number(r.candidate_count),
+          })),
+        );
 
         // 抓拆出的 PO（透過 PR items 反查）
         // poItemToPo：po_item_id → po_id，讓每一列 PR 品項知道自己被拆進哪張 PO
@@ -787,15 +829,22 @@ function PageContent() {
       }
       const dirtyRows = items.filter((r) => r.dirty);
       for (const r of dirtyRows) {
+        const changes: {
+          qty_requested?: number;
+          unit_cost: number;
+          suggested_supplier_id: number | null;
+          retail_price: number | null;
+          franchise_price: number | null;
+        } = {
+          unit_cost: r.unit_cost,
+          suggested_supplier_id: r.suggested_supplier_id,
+          retail_price: r.retail_price,
+          franchise_price: r.franchise_price,
+        };
+        if (!itemCampaignOptions.has(r.id)) changes.qty_requested = r.qty_requested;
         const { error: err } = await supabase
           .from("purchase_request_items")
-          .update({
-            qty_requested: r.qty_requested,
-            unit_cost: r.unit_cost,
-            suggested_supplier_id: r.suggested_supplier_id,
-            retail_price: r.retail_price,
-            franchise_price: r.franchise_price,
-          })
+          .update(changes)
           .eq("id", r.id);
         if (err) throw new Error(err.message);
       }
@@ -817,6 +866,35 @@ function PageContent() {
     }
   }
 
+  async function syncLatestQty() {
+    if (!id) return;
+    setBusy("sync");
+    setError(null);
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { data, error: rpcErr } = await supabase.rpc("rpc_sync_pr_qty", {
+        p_pr_id: id,
+        p_operator: userData.user?.id,
+      });
+      if (rpcErr) throw new Error(rpcErr.message);
+      const result = (data ?? {}) as QtySyncResult;
+      const synced = Number(result.synced_count ?? 0);
+      const blocked = Number(result.blocked_count ?? 0);
+      alert(
+        blocked > 0
+          ? `已同步 ${synced} 筆；另有 ${blocked} 筆不能安全自動修改，請人工確認。`
+          : synced > 0
+            ? `已同步 ${synced} 筆最新開團數量。`
+            : "已重新核對，數量已是最新。",
+      );
+      window.location.reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(null);
+    }
+  }
+
   async function submitForReview() {
     if (!id) return;
     // 送審前驗：每行必須填妥成本 / 分店價 / 售價 + 數量 + 供應商
@@ -826,7 +904,7 @@ function PageContent() {
     const priceIssues: string[] = [];
     for (const r of items) {
       const issues: string[] = [];
-      if (!r.qty_requested || r.qty_requested <= 0) issues.push("數量");
+      if (!Number.isFinite(r.qty_requested) || r.qty_requested < 0) issues.push("數量");
       if (r.unit_cost === null || r.unit_cost === undefined || Number.isNaN(r.unit_cost) || r.unit_cost < 0) issues.push("成本");
       if (r.franchise_price === null || r.franchise_price === undefined) issues.push("分店價");
       if (r.retail_price === null || r.retail_price === undefined) issues.push("售價");
@@ -1133,6 +1211,13 @@ function PageContent() {
               {editable && (
                 <>
                   <SpinButton
+                    onClick={syncLatestQty}
+                    disabled={busy !== null || qtySyncRows.length === 0}
+                    className="rounded-md border border-amber-400 px-3 py-2 text-sm font-medium text-amber-800 hover:bg-amber-50 disabled:opacity-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950"
+                  >
+                    {busy === "sync" ? "同步中…" : "同步最新開團數量"}
+                  </SpinButton>
+                  <SpinButton
                     onClick={saveDraft}
                     disabled={busy !== null}
                     className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
@@ -1206,6 +1291,39 @@ function PageContent() {
               )}
             </div>
           </section>
+
+          {qtySyncRows.length > 0 && (
+            <section className="rounded-md border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/40">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
+                開團數量核對
+              </h3>
+              <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                {qtySyncRows.filter(
+                  (r) => r.is_dirty || !["current", "locked_current"].includes(r.action_code),
+                ).length} 筆待同步／確認；開啟頁面不會改資料。
+              </p>
+              <div className="mt-3 space-y-2">
+                {qtySyncRows.map((r) => {
+                  const change = r.target_qty == null || !["sync", "current"].includes(r.action_code)
+                    ? null
+                    : r.target_qty - r.current_qty;
+                  return (
+                    <div key={`${r.campaign_id}-${r.sku_id}`} className="text-xs">
+                      <div className="font-medium text-zinc-800 dark:text-zinc-100">{r.sku_label}</div>
+                      <div className="text-zinc-600 dark:text-zinc-300">
+                        目前有效需求 {formatQty(r.demand_qty)}｜請購草稿 {formatQty(r.current_qty)}
+                        {change == null
+                          ? `｜${r.action_label}`
+                          : change === 0
+                            ? "｜數量一致"
+                            : `｜將${change > 0 ? "增加" : "減少"} ${formatQty(Math.abs(change))}`}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
 
           {/* 備註卡片 */}
           <section className="rounded-md border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
@@ -1489,7 +1607,7 @@ function PageContent() {
                     )}
                   </Td>
                   <Td className="text-right">
-                    {editable ? (
+                    {editable && !itemCampaignOptions.has(r.id) ? (
                       <input
                         type="number"
                         step="1"
@@ -1498,7 +1616,12 @@ function PageContent() {
                         className="w-24 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800"
                       />
                     ) : (
-                      r.qty_requested
+                      <>
+                        <span className="font-mono">{formatQty(r.qty_requested)}</span>
+                        {editable && itemCampaignOptions.has(r.id) && (
+                          <div className="mt-0.5 text-[10px] text-zinc-500">由原團明細同步</div>
+                        )}
+                      </>
                     )}
                   </Td>
                   <Td className="text-right">
