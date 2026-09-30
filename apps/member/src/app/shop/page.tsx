@@ -213,9 +213,14 @@ export default function ShopPage() {
   }, []);
 
   // 持續記錄捲動位置與排序，供下次返回還原。
+  // 守衛：進詳情頁時 Next 會把畫面捲到頂端，那個 scroll 事件可能在這個
+  // listener 被拆掉之前就到（passive effect cleanup 比事件晚）——沒守衛的話
+  // 離開的那一瞬間就把記錄蓋成 0，返回時等於沒還原。React 在 commit 階段
+  // 就會把已卸載節點的 ref 清成 null，拿它當「本頁還在畫面上」的判準。
+  const contentRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const onScroll = () => {
-      if (shopCache) shopCache.scrollY = window.scrollY;
+      if (shopCache && contentRef.current) shopCache.scrollY = window.scrollY;
     };
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
@@ -399,6 +404,7 @@ export default function ShopPage() {
       <PullToRefresh onRefresh={world === "piaopiao" ? fetchPiao : fetchCampaigns}>
       {/* min-h：內容很短（漂漂館空清單）時，下方空白也要吃得到左右滑 */}
       <div
+        ref={contentRef}
         className="min-h-[70dvh] space-y-5 px-4 pt-3 pb-6"
         onTouchStart={onSwipeStart}
         onTouchEnd={onSwipeEnd}

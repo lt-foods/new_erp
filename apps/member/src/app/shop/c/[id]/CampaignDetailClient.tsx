@@ -17,6 +17,7 @@ import { cleanCampaignText } from "@/lib/text";
 import { getCampaignHint } from "@/lib/campaignHints";
 import { logCaught } from "@/lib/clientLog";
 import { detectClientChannel } from "@/lib/clientChannel";
+import { backOrPush } from "@/lib/navBack";
 import LineBindGate from "@/components/LineBindGate";
 
 /**
@@ -693,8 +694,10 @@ export default function CampaignDetailClient({ salesChannel }: { salesChannel?: 
               >
                 查看訂單
               </button>
+              {/* 跟回上一頁同一套：back() 才會回到客人來的那一頁、捲動位置照舊。
+                  push(列表頁) 會被 Next 捲回頂端，買很多團的人每次都要重新往下滑。 */}
               <button
-                onClick={() => router.push(salesChannel === "piaopiao" ? "/piaopiao" : "/shop")}
+                onClick={() => backOrPush(router, salesChannel === "piaopiao" ? "/piaopiao" : "/shop")}
                 className="flex-1 rounded-xl bg-[var(--ios-blue)] py-3 text-[16px] font-semibold text-white active:opacity-80"
               >
                 繼續逛

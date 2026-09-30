@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import MemberTabBar from "./MemberTabBar";
+import { backOrPush } from "@/lib/navBack";
 
 // 底部 tab 的根頁面不顯示回上一頁 (它們是 app 的入口)
 const TOP_LEVEL_PATHS = new Set(["/shop", "/orders", "/spot", "/notifications", "/me"]);
@@ -44,13 +45,7 @@ export default function PageShell({
   }, [world]);
 
   // 點回上一頁: 有 history 就 back, 沒有 (深連結 / LINE 開新分頁) fallback 到 /shop
-  const handleBack = () => {
-    if (typeof window !== "undefined" && window.history.length > 1) {
-      router.back();
-    } else {
-      router.push(fallbackHref);
-    }
-  };
+  const handleBack = () => backOrPush(router, fallbackHref);
 
   return (
     <div
