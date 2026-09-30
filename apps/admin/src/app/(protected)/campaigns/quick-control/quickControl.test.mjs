@@ -10,6 +10,7 @@ import {
   customerUrlFor,
   mergeCampaignRows,
   pageWindow,
+  quickScopeFilter,
   sanitizeCampaignSearch,
   soldQtyByCampaign,
   splitPage,
@@ -33,6 +34,16 @@ test("搜尋條件：團號或團名，空白不送條件", () => {
   assert.equal(campaignSearchOrFilter("芒果"), "campaign_no.ilike.%芒果%,name.ilike.%芒果%");
   assert.equal(campaignSearchOrFilter("  "), null);
   assert.equal(campaignSearchOrFilter("()"), null);
+});
+
+test("清單範圍：團型／整團上限／品項上限，搜尋時用 and 併在同一個條件", () => {
+  const scope = "close_type.in.(food_train,fast,limited),total_cap_qty.gt.0,cap_items.not.is.null";
+  assert.equal(quickScopeFilter(""), scope);
+  assert.equal(quickScopeFilter("   "), scope);
+  assert.equal(
+    quickScopeFilter("芒果"),
+    `and(or(${scope}),or(campaign_no.ilike.%芒果%,name.ilike.%芒果%))`,
+  );
 });
 
 test("分頁範圍：第一頁從 0 開始，多要一筆判斷下一頁", () => {

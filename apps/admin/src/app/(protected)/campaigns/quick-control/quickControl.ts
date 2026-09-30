@@ -35,6 +35,26 @@ export function campaignSearchOrFilter(q: string): string | null {
   return `campaign_no.ilike.%${term}%,name.ilike.%${term}%`;
 }
 
+/** 手機團控管的團型（其餘團型要有整團或品項上限才算） */
+export const QUICK_CLOSE_TYPES = ["food_train", "fast", "limited"] as const;
+
+/**
+ * 清單範圍（同 canQuickUpdateCampaign 的團型／上限條件）放進查詢端：
+ * 團型是美食列車／限時／限時限量，或整團上限 > 0，或至少一個品項上限 > 0。
+ * 「品項上限」靠查詢另外嵌一份只留 cap_qty > 0 的品項（別名 cap_items），
+ * 再用 cap_items.not.is.null 判斷「有沒有這種品項」；這不是 inner join，不會讓同一團重複出現。
+ * 有搜尋字時兩組條件用 and(...) 包成同一個 or 參數送出。
+ * 回傳值給 supabase-js 的 .or() 用。
+ */
+export const CAP_ITEMS_EMBED = "cap_items:campaign_items(id)";
+export const CAP_ITEMS_FILTER_COLUMN = "cap_items.cap_qty";
+
+export function quickScopeFilter(q: string): string {
+  const scope = `close_type.in.(${QUICK_CLOSE_TYPES.join(",")}),total_cap_qty.gt.0,cap_items.not.is.null`;
+  const search = campaignSearchOrFilter(q);
+  return search ? `and(or(${scope}),or(${search}))` : scope;
+}
+
 /**
  * 這次要跟伺服端要的範圍（.range(from, to)，兩端都含）。
  * 會多要一筆，用來判斷後面還有沒有下一頁。
@@ -98,14 +118,12 @@ type EligibleCampaign = {
  * （20260814000010 那支的守衛，這裡照抄；資料庫沒改之前兩邊要一致）：
  * 狀態只能是草稿／開團中／已關團（已鎖定一律擋），
  * 且是美食列車／限時／限時限量，或有設整團上限、或任一品項有上限。
- * 沒設上限的一般團按下去會被資料庫擋掉，所以畫面先不給按。
+ * 清單範圍用的是同一組團型／上限條件（quickScopeFilter），所以不合格的一般團不會出現在清單。
  */
 export function canQuickUpdateCampaign(row: EligibleCampaign): boolean {
   if (!["draft", "open", "closed"].includes(row.status)) return false;
   return (
-    row.close_type === "food_train"
-    || row.close_type === "fast"
-    || row.close_type === "limited"
+    (QUICK_CLOSE_TYPES as readonly string[]).includes(row.close_type)
     || Number(row.total_cap_qty ?? 0) > 0
     || (row.campaign_items ?? []).some((item) => Number(item.cap_qty ?? 0) > 0)
   );

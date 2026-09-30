@@ -12,11 +12,12 @@ import {
 } from "@/lib/campaignCover";
 import { useRole, isAdmin, type Role } from "@/lib/role";
 import {
-  campaignSearchOrFilter,
-  canQuickUpdateCampaign,
+  CAP_ITEMS_EMBED,
+  CAP_ITEMS_FILTER_COLUMN,
   customerUrlFor,
   mergeCampaignRows,
   pageWindow,
+  quickScopeFilter,
   soldQtyByCampaign,
   splitPage,
 } from "./quickControl";
@@ -109,10 +110,10 @@ const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
 
 const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
   { value: "all", label: "全部類型" },
-  { value: "regular", label: TYPE_LABEL.regular },
   { value: "fast", label: TYPE_LABEL.fast },
   { value: "limited", label: TYPE_LABEL.limited },
   { value: "food_train", label: TYPE_LABEL.food_train },
+  { value: "regular", label: `${TYPE_LABEL.regular}（有上限）` },
 ];
 
 const CREATE_TYPES: { value: CreateCloseType; label: string; hint: string }[] = [
@@ -348,12 +349,13 @@ export default function QuickCampaignControlPage() {
     const win = pageWindow(loaded);
     let request = sb
       .from("group_buy_campaigns")
-      .select("id, campaign_no, name, status, close_type, end_at, total_cap_qty, updated_at, cover_image_url, campaign_items(cap_qty, sort_order, sku:skus(product:products(images)))")
-      .eq("sales_channel", "main");
+      .select(`id, campaign_no, name, status, close_type, end_at, total_cap_qty, updated_at, cover_image_url, campaign_items(cap_qty, sort_order, sku:skus(product:products(images))), ${CAP_ITEMS_EMBED}`)
+      .eq("sales_channel", "main")
+      .gt(CAP_ITEMS_FILTER_COLUMN, 0)
+      // 清單範圍（手機團控管的團）＋搜尋都在查詢端做，分頁才不會被前端過濾吃掉
+      .or(quickScopeFilter(searchTerm));
     request = statusFilter === "all" ? request.in("status", QUICK_STATUSES) : request.eq("status", statusFilter);
     if (typeFilter !== "all") request = request.eq("close_type", typeFilter);
-    const orFilter = campaignSearchOrFilter(searchTerm);
-    if (orFilter) request = request.or(orFilter);
     const { data, error: campaignErr } = await request
       .order("updated_at", { ascending: false })
       .order("id", { ascending: false })
@@ -934,7 +936,7 @@ export default function QuickCampaignControlPage() {
             <div>
               <p className="text-xs font-medium text-zinc-500">手機開團 / 團控</p>
               <h1 className="text-xl font-semibold text-zinc-950 dark:text-zinc-50">
-                一般 / 限時 / 限時限量 / 美食列車
+                美食列車 / 限時 / 限時限量
               </h1>
             </div>
             <Link
@@ -964,7 +966,7 @@ export default function QuickCampaignControlPage() {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="搜尋團號或團名（所有團）"
+              placeholder="搜尋團號或團名"
               className="min-h-11 rounded-md border border-zinc-300 bg-white px-3 text-base outline-none focus:border-zinc-900 dark:border-zinc-700 dark:bg-zinc-950"
             />
             <SpinButton
@@ -1459,7 +1461,6 @@ export default function QuickCampaignControlPage() {
               const delta = Number(deltaDraft[row.id] ?? 0);
               const previewCap = Number.isFinite(delta) && delta > 0 ? (cap ?? sold) + delta : null;
               const itemCap = itemCapSummary(row.campaign_items);
-              const quickOk = canQuickUpdateCampaign(row);
               const customerUrl = customerUrlFor(MEMBER_APP_URL, row.id);
 
               return (
@@ -1519,12 +1520,6 @@ export default function QuickCampaignControlPage() {
                       />
                     )}
 
-                    {!quickOk && !locked && (
-                      <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                        這個一般團沒設上限，延長／重開／加名額請到電腦版開團頁（手機版之後補）
-                      </div>
-                    )}
-
                     {itemCap && (
                       <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
                         <div className="font-medium">品項上限摘要</div>
@@ -1543,7 +1538,7 @@ export default function QuickCampaignControlPage() {
                         type="datetime-local"
                         value={endInput}
                         onChange={(e) => setEndAtDraft((cur) => ({ ...cur, [row.id]: e.target.value }))}
-                        disabled={locked || !allowed || !quickOk}
+                        disabled={locked || !allowed}
                         className="min-h-11 rounded-md border border-zinc-300 bg-white px-3 text-base outline-none focus:border-zinc-900 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
                       />
                     </label>
@@ -1557,7 +1552,7 @@ export default function QuickCampaignControlPage() {
                         <SpinButton
                           key={String(label)}
                           type="button"
-                          disabled={locked || !allowed || !quickOk || busyId === row.id}
+                          disabled={locked || !allowed || busyId === row.id}
                           onClick={async () => {
                             const iso = setEndAt(row, Number(hours));
                             if (row.status === "closed") {
@@ -1573,7 +1568,7 @@ export default function QuickCampaignControlPage() {
                       ))}
                     </div>
 
-                    {row.status === "closed" && quickOk && (
+                    {row.status === "closed" && (
                       <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
                         已關團的團若只延長時間，不會自動恢復下單；確認時間後請按「重開」。
                       </div>
@@ -1587,12 +1582,12 @@ export default function QuickCampaignControlPage() {
                         value={deltaDraft[row.id] ?? ""}
                         onChange={(e) => setDeltaDraft((cur) => ({ ...cur, [row.id]: e.target.value }))}
                         placeholder="再增加整團正取名額"
-                        disabled={locked || !allowed || !quickOk}
+                        disabled={locked || !allowed}
                         className="min-h-11 rounded-md border border-zinc-300 bg-white px-3 text-base outline-none focus:border-zinc-900 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
                       />
                       <SpinButton
                         type="button"
-                        disabled={locked || !allowed || !quickOk || busyId === row.id || !Number.isFinite(delta) || delta <= 0}
+                        disabled={locked || !allowed || busyId === row.id || !Number.isFinite(delta) || delta <= 0}
                         onClick={() => quickUpdate(row, { delta }, `${row.name} 已加量 ${delta}`)}
                         className="min-h-11 rounded-md bg-zinc-900 px-4 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-950"
                       >
@@ -1628,7 +1623,7 @@ export default function QuickCampaignControlPage() {
                       ) : (
                         <SpinButton
                           type="button"
-                          disabled={locked || !allowed || !quickOk || busyId === row.id}
+                          disabled={locked || !allowed || busyId === row.id}
                           onClick={() => {
                             const nextEndAt = futureIsoFromLocalInput(endInput);
                             if (!nextEndAt) {
