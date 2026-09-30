@@ -1,10 +1,14 @@
 -- 2026-09-30: 客單需求變更先記待同步；請購草稿只在人工同步／送審時重算。
 -- 不回填舊資料、不在客單 trigger 內鎖或修改請購單。
+-- 部署規則：只可由 migration runner 依版本執行一次，不可直接在 SQL Editor 重貼。
+-- runner 應以單一交易執行本檔；任一句失敗就回滾整檔，不留半套函式／trigger。
+-- rollback 順序：先下架新前端，再以「新的 append-only migration」重建舊 RPC/helper，
+-- 然後移除 dirty triggers/新函式/policy/table。若已有 qty=0 或 sync audit，先盤點，不得直接還原 >0 或刪 audit。
 
 CREATE TABLE public.purchase_request_qty_dirty (
   tenant_id      UUID NOT NULL,
-  campaign_id    BIGINT NOT NULL REFERENCES public.group_buy_campaigns(id),
-  sku_id         BIGINT NOT NULL REFERENCES public.skus(id),
+  campaign_id    BIGINT NOT NULL REFERENCES public.group_buy_campaigns(id) ON DELETE CASCADE,
+  sku_id         BIGINT NOT NULL REFERENCES public.skus(id) ON DELETE CASCADE,
   dirty_since    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   reason         TEXT NOT NULL,
@@ -21,6 +25,32 @@ CREATE POLICY purchase_request_qty_dirty_read
   USING (tenant_id = public._current_tenant_id());
 
 GRANT SELECT ON public.purchase_request_qty_dirty TO authenticated;
+
+-- 沒有現成可容納 PR 數量變更的共用 audit table；用最小 append-only 紀錄保留舊/新量。
+CREATE TABLE public.purchase_request_qty_sync_log (
+  id              BIGSERIAL PRIMARY KEY,
+  tenant_id       UUID NOT NULL,
+  pr_id           BIGINT NOT NULL,
+  pr_item_id      BIGINT NOT NULL,
+  campaign_id     BIGINT NOT NULL,
+  sku_id          BIGINT NOT NULL,
+  old_qty         NUMERIC(18,3) NOT NULL,
+  new_qty         NUMERIC(18,3) NOT NULL,
+  changed_by      UUID,
+  changed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_pr_qty_sync_log_pr
+  ON public.purchase_request_qty_sync_log (tenant_id, pr_id, changed_at DESC);
+
+ALTER TABLE public.purchase_request_qty_sync_log ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY purchase_request_qty_sync_log_read
+  ON public.purchase_request_qty_sync_log
+  FOR SELECT
+  USING (tenant_id = public._current_tenant_id());
+
+GRANT SELECT ON public.purchase_request_qty_sync_log TO authenticated;
 
 -- 數量降到 0 仍保留來源團明細與分店追加紀錄的 pr_item_id 追溯。
 ALTER TABLE public.purchase_request_item_campaigns
@@ -321,7 +351,39 @@ AS $$
   WITH t AS (
     SELECT public._current_tenant_id() AS tid
   ),
-  pairs AS (
+  pr_campaigns AS (
+    SELECT prc.campaign_id
+      FROM public.purchase_request_campaigns prc
+      JOIN public.purchase_requests pr ON pr.id = prc.pr_id
+      CROSS JOIN t
+     WHERE prc.pr_id = p_pr_id
+       AND pr.tenant_id = t.tid
+       AND prc.tenant_id = t.tid
+    UNION
+    SELECT pric.campaign_id
+      FROM public.purchase_request_items pri
+      JOIN public.purchase_request_item_campaigns pric ON pric.pr_item_id = pri.id
+      JOIN public.purchase_requests pr ON pr.id = pri.pr_id
+      CROSS JOIN t
+     WHERE pri.pr_id = p_pr_id
+       AND pr.tenant_id = t.tid
+       AND pric.tenant_id = t.tid
+    UNION
+    SELECT pri.source_campaign_id
+      FROM public.purchase_request_items pri
+      JOIN public.purchase_requests pr ON pr.id = pri.pr_id
+      CROSS JOIN t
+     WHERE pri.pr_id = p_pr_id
+       AND pr.tenant_id = t.tid
+       AND pri.source_campaign_id IS NOT NULL
+  ),
+  remaining AS (
+    SELECT r.*
+      FROM public._pr_campaign_sku_remaining_rows(
+        ARRAY(SELECT pc.campaign_id FROM pr_campaigns pc ORDER BY pc.campaign_id)
+      ) r
+  ),
+  current_pairs AS (
     SELECT pric.campaign_id,
            pri.sku_id,
            MIN(pri.id) AS pr_item_id,
@@ -333,14 +395,15 @@ AS $$
      WHERE pr.id = p_pr_id
        AND pr.tenant_id = t.tid
        AND pric.tenant_id = t.tid
-     GROUP BY pric.campaign_id, pri.sku_id
+      GROUP BY pric.campaign_id, pri.sku_id
   ),
-  remaining AS (
-    SELECT r.*
-      FROM public._pr_campaign_sku_remaining_rows(
-        ARRAY(SELECT DISTINCT p.campaign_id FROM pairs p ORDER BY p.campaign_id)
-      ) r
-      JOIN pairs p USING (campaign_id, sku_id)
+  pairs AS (
+    SELECT r.campaign_id,
+           r.sku_id,
+           cp.pr_item_id,
+           COALESCE(cp.current_qty, 0) AS current_qty
+      FROM remaining r
+      LEFT JOIN current_pairs cp USING (campaign_id, sku_id)
   ),
   candidates AS (
     SELECT pric.campaign_id,
@@ -412,18 +475,20 @@ AS $$
          plan.candidate_count,
          plan.target_pr_id,
          plan.target_pr_item_id,
-         CASE
-           WHEN plan.candidate_count > 1 THEN 'ambiguous'
-           WHEN plan.candidate_count = 0 AND plan.delta_qty <> 0 THEN 'locked_mismatch'
+          CASE
+            WHEN plan.candidate_count > 1 THEN 'ambiguous'
+            WHEN plan.pr_item_id IS NULL AND plan.delta_qty <> 0 THEN 'missing_item'
+            WHEN plan.candidate_count = 0 AND plan.delta_qty <> 0 THEN 'locked_mismatch'
            WHEN plan.candidate_count = 0 THEN 'locked_current'
            WHEN plan.target_pr_id <> p_pr_id THEN 'other_draft'
            WHEN plan.already_qty - plan.current_qty > plan.demand_qty THEN 'locked_overage'
            WHEN plan.target_qty IS DISTINCT FROM plan.current_qty THEN 'sync'
            ELSE 'current'
          END,
-         CASE
-           WHEN plan.candidate_count > 1 THEN '同團同商品有多張可改草稿，不能猜要改哪張'
-           WHEN plan.candidate_count = 0 AND plan.delta_qty <> 0 THEN '已送審或已轉採購；請先退回草稿再同步'
+          CASE
+            WHEN plan.candidate_count > 1 THEN '同團同商品有多張可改草稿，不能猜要改哪張'
+            WHEN plan.pr_item_id IS NULL AND plan.delta_qty <> 0 THEN '這個團有新需求商品，本請購單沒有對應品項；請人工補齊後再同步'
+            WHEN plan.candidate_count = 0 AND plan.delta_qty <> 0 THEN '已送審或已轉採購；請先退回草稿再同步'
            WHEN plan.candidate_count = 0 THEN '數量一致，且目前不可修改'
            WHEN plan.target_pr_id <> p_pr_id THEN '可修改的歸屬在另一張草稿，請人工確認'
            WHEN plan.already_qty - plan.current_qty > plan.demand_qty THEN '不可修改的既有請購已超過需求，請人工確認'
@@ -475,7 +540,7 @@ DECLARE
   v_tenant UUID := public._current_tenant_id();
   v_role   TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
 BEGIN
-  IF v_tenant IS NULL OR v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant','') THEN
+  IF v_tenant IS NULL OR v_role NOT IN ('owner','admin','hq_manager','hq_accountant','purchaser','assistant','') THEN
     RAISE EXCEPTION '權限不足，無法查看請購同步狀態';
   END IF;
 
@@ -493,6 +558,59 @@ $$;
 REVOKE ALL ON FUNCTION public.rpc_preview_pr_qty_sync(BIGINT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.rpc_preview_pr_qty_sync(BIGINT) FROM anon;
 GRANT EXECUTE ON FUNCTION public.rpc_preview_pr_qty_sync(BIGINT) TO authenticated;
+
+-- #995 原版是先鎖 PR/item，最後才取團+SKU advisory lock；會和 #982
+-- attribution guard 的「advisory -> parent item」形成反向等待。外層先取
+-- #982 完全相同的 key，內層舊鎖是同交易 re-entrant，不改 #995 業務邏輯。
+ALTER FUNCTION public.rpc_add_pr_store_demands(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID)
+  RENAME TO _rpc_add_pr_store_demands_20260930_inner;
+
+REVOKE ALL ON FUNCTION public._rpc_add_pr_store_demands_20260930_inner(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public._rpc_add_pr_store_demands_20260930_inner(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID) FROM anon;
+REVOKE ALL ON FUNCTION public._rpc_add_pr_store_demands_20260930_inner(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID) FROM authenticated;
+
+CREATE OR REPLACE FUNCTION public.rpc_add_pr_store_demands(
+  p_pr_id        BIGINT,
+  p_pr_item_id   BIGINT,
+  p_campaign_id  BIGINT,
+  p_additions    JSONB,
+  p_operator     UUID,
+  p_request_key  UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_tenant UUID := public._current_tenant_id();
+  v_sku_id BIGINT;
+BEGIN
+  SELECT pri.sku_id
+    INTO v_sku_id
+    FROM public.purchase_request_items pri
+    JOIN public.purchase_requests pr ON pr.id = pri.pr_id
+   WHERE pri.id = p_pr_item_id
+     AND pri.pr_id = p_pr_id
+     AND pr.tenant_id = v_tenant;
+
+  IF v_sku_id IS NULL THEN
+    RAISE EXCEPTION '找不到這張請購單品項';
+  END IF;
+
+  PERFORM pg_advisory_xact_lock(
+    hashtext(p_campaign_id::TEXT),
+    hashtext(v_sku_id::TEXT)
+  );
+
+  RETURN public._rpc_add_pr_store_demands_20260930_inner(
+    p_pr_id, p_pr_item_id, p_campaign_id, p_additions, p_operator, p_request_key
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.rpc_add_pr_store_demands(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.rpc_add_pr_store_demands(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID) FROM anon;
+GRANT EXECUTE ON FUNCTION public.rpc_add_pr_store_demands(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID) TO authenticated;
 
 CREATE OR REPLACE FUNCTION public._pr_apply_qty_sync(
   p_pr_id    BIGINT,
@@ -523,6 +641,19 @@ BEGIN
     RAISE EXCEPTION '操作人員不符，無法同步請購數量';
   END IF;
 
+  -- 所有可能異動的團+SKU 先依固定順序取 #982 同一把鎖，
+  -- 再鎖 PR/item。#995 的外層 wrapper 也是同一順序，避免 item↔advisory 反向。
+  FOR r IN
+    SELECT q.campaign_id, q.sku_id
+      FROM public._pr_qty_sync_preview(p_pr_id) q
+     ORDER BY q.campaign_id, q.sku_id
+  LOOP
+    PERFORM pg_advisory_xact_lock(
+      hashtext(r.campaign_id::TEXT),
+      hashtext(r.sku_id::TEXT)
+    );
+  END LOOP;
+
   SELECT pr.id, pr.pr_no, pr.status
     INTO v_pr
     FROM public.purchase_requests pr
@@ -536,7 +667,7 @@ BEGIN
     RAISE EXCEPTION '只有草稿請購單可以同步最新開團數量；請先退回草稿';
   END IF;
 
-  -- 沿用採購流程鎖順序：請購單頭 → 品項 → 團+SKU advisory lock。
+  -- advisory 已經取得，才鎖請購品項。
   PERFORM 1
     FROM public.purchase_request_items pri
    WHERE pri.pr_id = p_pr_id
@@ -551,33 +682,20 @@ BEGIN
     INTO v_dirty_seen
     FROM public.purchase_request_qty_dirty d
    WHERE d.tenant_id = v_tenant
-     AND EXISTS (
-       SELECT 1
-         FROM public.purchase_request_items pri
-         JOIN public.purchase_request_item_campaigns pric ON pric.pr_item_id = pri.id
-        WHERE pri.pr_id = p_pr_id
-          AND pric.campaign_id = d.campaign_id
-          AND pri.sku_id = d.sku_id
-     );
-
-  FOR r IN
-    SELECT DISTINCT pric.campaign_id, pri.sku_id
-      FROM public.purchase_request_items pri
-      JOIN public.purchase_request_item_campaigns pric ON pric.pr_item_id = pri.id
-     WHERE pri.pr_id = p_pr_id
-     ORDER BY pric.campaign_id, pri.sku_id
-  LOOP
-    PERFORM pg_advisory_xact_lock(
-      hashtext(v_tenant::TEXT || ':' || r.campaign_id::TEXT),
-      hashtext(r.sku_id::TEXT)
-    );
-  END LOOP;
+      AND EXISTS (
+        SELECT 1
+          FROM public._pr_qty_sync_preview(p_pr_id) q
+         WHERE q.campaign_id = d.campaign_id
+           AND q.sku_id = d.sku_id
+      );
 
   FOR r IN SELECT * FROM public._pr_qty_sync_preview(p_pr_id)
   LOOP
     v_error := NULL;
     IF r.candidate_count > 1 THEN
       v_error := '同團同商品有多張可改草稿，不能猜要改哪張';
+    ELSIF r.pr_item_id IS NULL AND r.delta_qty <> 0 THEN
+      v_error := '原請購單沒有這個新商品，不能自動猜要放哪一列';
     ELSIF r.candidate_count = 0 AND r.delta_qty <> 0 THEN
       v_error := '已送審或已轉採購，數量已變；請先退回草稿再同步';
     ELSIF r.candidate_count = 1 AND r.target_pr_id <> p_pr_id THEN
@@ -602,6 +720,16 @@ BEGIN
     END IF;
 
     IF r.candidate_count = 1 THEN
+      IF r.target_qty IS DISTINCT FROM r.current_qty THEN
+        INSERT INTO public.purchase_request_qty_sync_log (
+          tenant_id, pr_id, pr_item_id, campaign_id, sku_id,
+          old_qty, new_qty, changed_by
+        ) VALUES (
+          v_tenant, p_pr_id, r.target_pr_item_id, r.campaign_id, r.sku_id,
+          r.current_qty, r.target_qty, p_operator
+        );
+      END IF;
+
       UPDATE public.purchase_request_item_campaigns
          SET qty_requested = r.target_qty
        WHERE pr_item_id = r.target_pr_item_id
@@ -699,31 +827,41 @@ BEGIN
     RAISE EXCEPTION '有 % 個請購品項缺少原團明細，不能確認最新需求；請退回草稿補齊後重新送審', v_missing;
   END IF;
 
-  SELECT ARRAY_AGG(DISTINCT pric.campaign_id ORDER BY pric.campaign_id)
+  SELECT ARRAY_AGG(DISTINCT x.campaign_id ORDER BY x.campaign_id)
     INTO v_campaign_ids
-    FROM public.purchase_requests pr
-    JOIN public.purchase_request_items pri ON pri.pr_id = pr.id
-    JOIN public.purchase_request_item_campaigns pric ON pric.pr_item_id = pri.id
-   WHERE pr.id = ANY(COALESCE(p_pr_ids, ARRAY[]::BIGINT[]))
-     AND pr.tenant_id = v_tenant
-     AND pric.tenant_id = v_tenant;
+    FROM (
+      SELECT prc.campaign_id
+        FROM public.purchase_requests pr
+        JOIN public.purchase_request_campaigns prc ON prc.pr_id = pr.id
+       WHERE pr.id = ANY(COALESCE(p_pr_ids, ARRAY[]::BIGINT[]))
+         AND pr.tenant_id = v_tenant
+         AND prc.tenant_id = v_tenant
+      UNION
+      SELECT pric.campaign_id
+        FROM public.purchase_requests pr
+        JOIN public.purchase_request_items pri ON pri.pr_id = pr.id
+        JOIN public.purchase_request_item_campaigns pric ON pric.pr_item_id = pri.id
+       WHERE pr.id = ANY(COALESCE(p_pr_ids, ARRAY[]::BIGINT[]))
+         AND pr.tenant_id = v_tenant
+         AND pric.tenant_id = v_tenant
+      UNION
+      SELECT pri.source_campaign_id
+        FROM public.purchase_requests pr
+        JOIN public.purchase_request_items pri ON pri.pr_id = pr.id
+       WHERE pr.id = ANY(COALESCE(p_pr_ids, ARRAY[]::BIGINT[]))
+         AND pr.tenant_id = v_tenant
+         AND pri.source_campaign_id IS NOT NULL
+    ) x;
 
   IF COALESCE(array_length(v_campaign_ids, 1), 0) = 0 THEN
     RETURN;
   END IF;
 
-  WITH wanted AS (
-    SELECT DISTINCT pric.campaign_id, pri.sku_id
-      FROM public.purchase_requests pr
-      JOIN public.purchase_request_items pri ON pri.pr_id = pr.id
-      JOIN public.purchase_request_item_campaigns pric ON pric.pr_item_id = pri.id
-     WHERE pr.id = ANY(p_pr_ids)
-       AND pr.tenant_id = v_tenant
-       AND pric.tenant_id = v_tenant
-  ), bad AS (
+  -- 用 PR 涵蓋的全部團做邊界；helper 會同時列出「現行需求的 key」與
+  -- 「已歸屬過的 key」。不再用目標 PR 現有 attribution 過濾，否則新 SKU 會漏過。
+  WITH bad AS (
     SELECT r.*
       FROM public._pr_campaign_sku_remaining_rows(v_campaign_ids) r
-      JOIN wanted w USING (campaign_id, sku_id)
      WHERE r.delta_qty <> 0
   )
   SELECT COUNT(*),
@@ -769,8 +907,7 @@ BEGIN
     INTO v_tenant, v_status, v_review
     FROM public.purchase_requests
    WHERE id = p_pr_id
-     AND tenant_id = public._current_tenant_id()
-   FOR UPDATE;
+     AND tenant_id = public._current_tenant_id();
 
   IF NOT FOUND THEN
     RAISE EXCEPTION '找不到請購單 %', p_pr_id;
@@ -779,6 +916,8 @@ BEGIN
     RAISE EXCEPTION '請購單已送審（目前狀態：%）', v_status;
   END IF;
 
+  -- _pr_apply_qty_sync 會先取團+SKU advisory，再鎖 PR/item；這裡不可先鎖 PR header，
+  -- 否則會和已統一成 advisory -> PR/item 的 #995 反向。apply 回來時 PR 鎖仍持有。
   v_sync := public._pr_apply_qty_sync(p_pr_id, p_operator);
   IF COALESCE((v_sync ->> 'blocked_count')::INTEGER, 0) > 0 THEN
     RAISE EXCEPTION '有品項無法安全同步：同團同商品有多張草稿或歸屬不明，請先人工確認';
@@ -968,31 +1107,84 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_po_id  BIGINT;
-  v_pr_ids BIGINT[];
+  v_po_id     BIGINT;
+  v_pr_ids    BIGINT[];
+  v_valid_ids BIGINT[];
+  v_want      INTEGER;
+  v_matched   INTEGER;
+  v_role      TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
 BEGIN
   IF p_tenant_id IS DISTINCT FROM public._current_tenant_id() THEN
     RAISE EXCEPTION '權限不足，租戶不符';
   END IF;
 
-  SELECT ARRAY_AGG(DISTINCT pri.pr_id ORDER BY pri.pr_id)
-    INTO v_pr_ids
-    FROM public.purchase_request_items pri
-    JOIN public.purchase_requests pr ON pr.id = pri.pr_id
-   WHERE pri.id = ANY(COALESCE(p_pr_item_ids, ARRAY[]::BIGINT[]))
-     AND pri.qty_requested > 0
-     AND pri.po_item_id IS NULL
-     AND pr.tenant_id = p_tenant_id;
+  IF v_role NOT IN ('owner','admin','hq_manager','') THEN
+    RAISE EXCEPTION '權限不足，無法合併請購品項';
+  END IF;
 
-  IF COALESCE(array_length(v_pr_ids, 1), 0) = 0 THEN
+  IF p_operator IS NULL THEN
+    p_operator := auth.uid();
+  END IF;
+  IF p_operator IS NULL OR (auth.uid() IS NOT NULL AND p_operator <> auth.uid()) THEN
+    RAISE EXCEPTION '操作人員不符，無法建立採購單';
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM unnest(COALESCE(p_pr_item_ids, ARRAY[]::BIGINT[])) x WHERE x IS NULL) THEN
+    RAISE EXCEPTION '請購品項編號不可為空';
+  END IF;
+
+  v_valid_ids := ARRAY(
+    SELECT DISTINCT x
+      FROM unnest(COALESCE(p_pr_item_ids, ARRAY[]::BIGINT[])) u(x)
+     ORDER BY x
+  );
+  v_want := COALESCE(array_length(v_valid_ids, 1), 0);
+  IF v_want = 0 THEN
     RAISE EXCEPTION '沒有可建立採購單的請購品項';
   END IF;
 
+  IF NOT EXISTS (
+    SELECT 1 FROM public.suppliers s
+     WHERE s.id = p_supplier_id AND s.tenant_id = p_tenant_id
+  ) OR NOT EXISTS (
+    SELECT 1 FROM public.locations l
+     WHERE l.id = p_dest_location AND l.tenant_id = p_tenant_id
+  ) THEN
+    RAISE EXCEPTION '供應商或送貨地點不屬於本租戶';
+  END IF;
+
+  -- 先依固定順序鎖定「同租戶、已送審核准、未轉 PO、正數、同供應商」集合。
   PERFORM 1
-    FROM public.purchase_requests
-   WHERE id = ANY(v_pr_ids)
-   ORDER BY id
-   FOR UPDATE;
+    FROM public.purchase_request_items pri
+    JOIN public.purchase_requests pr ON pr.id = pri.pr_id
+   WHERE pri.id = ANY(v_valid_ids)
+      AND pri.qty_requested > 0
+      AND pri.po_item_id IS NULL
+      AND pri.suggested_supplier_id = p_supplier_id
+      AND pr.tenant_id = p_tenant_id
+      AND pr.status = 'submitted'
+      AND pr.review_status = 'approved'
+   ORDER BY pr.id, pri.id
+   FOR UPDATE OF pr, pri;
+
+  SELECT COUNT(*),
+         ARRAY_AGG(pri.id ORDER BY pri.id),
+         ARRAY_AGG(DISTINCT pri.pr_id ORDER BY pri.pr_id)
+    INTO v_matched, v_valid_ids, v_pr_ids
+    FROM public.purchase_request_items pri
+    JOIN public.purchase_requests pr ON pr.id = pri.pr_id
+   WHERE pri.id = ANY(v_valid_ids)
+     AND pri.qty_requested > 0
+     AND pri.po_item_id IS NULL
+     AND pri.suggested_supplier_id = p_supplier_id
+     AND pr.tenant_id = p_tenant_id
+     AND pr.status = 'submitted'
+     AND pr.review_status = 'approved';
+
+  IF v_matched <> v_want THEN
+    RAISE EXCEPTION '請購品項有不屬本租戶、未核准、已轉採購或供應商不符；整筆未建立（傳入 % 項，合法 % 項）',
+      v_want, v_matched;
+  END IF;
 
   PERFORM public._pr_validate_qty_current(v_pr_ids);
 
@@ -1009,7 +1201,7 @@ BEGIN
         ON ss.tenant_id = p_tenant_id
        AND ss.supplier_id = p_supplier_id
        AND ss.sku_id = pri.sku_id
-     WHERE pri.id = ANY(p_pr_item_ids)
+     WHERE pri.id = ANY(v_valid_ids)
        AND pri.qty_requested > 0
        AND pri.po_item_id IS NULL
      GROUP BY pri.sku_id
@@ -1021,7 +1213,7 @@ BEGIN
   UPDATE public.purchase_request_items pri
      SET po_item_id = i.id
     FROM inserted i
-   WHERE pri.id = ANY(p_pr_item_ids)
+   WHERE pri.id = ANY(v_valid_ids)
      AND pri.qty_requested > 0
      AND pri.po_item_id IS NULL
      AND pri.sku_id = i.sku_id;
@@ -1174,6 +1366,13 @@ BEGIN
      AND id = ANY(v_ids);
   GET DIAGNOSTICS v_moved = ROW_COUNT;
 
+  -- addition 同時存 pr_id/pr_item_id；item 保留原 id 搬單後，頭部 id 也必須一起移動。
+  UPDATE public.purchase_request_store_additions
+     SET pr_id = v_new_pr_id
+   WHERE tenant_id = v_tenant
+     AND pr_id = p_source_pr_id
+     AND pr_item_id = ANY(v_ids);
+
   UPDATE public.purchase_requests pr
      SET total_amount = COALESCE((
            SELECT SUM(pri.line_subtotal)
@@ -1203,5 +1402,7 @@ GRANT EXECUTE ON FUNCTION public.rpc_create_partial_pr_from_items(BIGINT, BIGINT
 
 COMMENT ON TABLE public.purchase_request_qty_dirty IS
   '客單需求已變、請購尚未同步的去重清單；客單 trigger 只寫這裡，不回寫請購。';
+COMMENT ON TABLE public.purchase_request_qty_sync_log IS
+  '請購草稿同步成功的 append-only 舊/新數量追溯。';
 COMMENT ON FUNCTION public.rpc_sync_pr_qty(BIGINT, UUID) IS
   '人工同步草稿請購：只改唯一歸屬、未綁 PO 的來源團明細，數量可降為 0 並保留追溯。';

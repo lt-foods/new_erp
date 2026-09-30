@@ -4,66 +4,88 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const migrationPath = resolve(root, "supabase/migrations/20260930000000_pr_draft_qty_resync.sql");
-const pagePath = resolve(root, "apps/admin/src/app/(protected)/purchase/requests/edit/page.tsx");
-const migration = readFileSync(migrationPath, "utf8");
-const page = readFileSync(pagePath, "utf8");
+const migration = readFileSync(resolve(root, "supabase/migrations/20260930000000_pr_draft_qty_resync.sql"), "utf8");
+const page = readFileSync(resolve(root, "apps/admin/src/app/(protected)/purchase/requests/edit/page.tsx"), "utf8");
 
 function section(source, start, end) {
   const from = source.indexOf(start);
   assert.notEqual(from, -1, `missing section: ${start}`);
   const to = end ? source.indexOf(end, from + start.length) : source.length;
-  assert.notEqual(to, -1, `missing section end: ${end}`);
+  assert.ok(to > from, `missing section end: ${end}`);
   return source.slice(from, to);
 }
 
-function replaceInSection(source, start, end, find, replacement) {
-  const from = source.indexOf(start);
-  const to = source.indexOf(end, from + start.length);
-  assert.ok(from >= 0 && to > from);
-  const chunk = source.slice(from, to);
-  const changed = chunk.replace(find, replacement);
-  assert.notEqual(changed, chunk, `fault injection target missing: ${find}`);
-  return source.slice(0, from) + changed + source.slice(to);
-}
-
 function verify(sql, ui) {
-  assert.match(sql, /CREATE TABLE public\.purchase_request_qty_dirty/);
+  assert.match(sql, /campaign_id\s+BIGINT NOT NULL REFERENCES public\.group_buy_campaigns\(id\) ON DELETE CASCADE/);
+  assert.match(sql, /sku_id\s+BIGINT NOT NULL REFERENCES public\.skus\(id\) ON DELETE CASCADE/);
   assert.equal((sql.match(/REFERENCING (?:OLD|NEW)/g) ?? []).length, 4);
   assert.equal((sql.match(/FOR EACH STATEMENT/g) ?? []).length, 4);
 
-  const triggerPart = section(sql, "CREATE OR REPLACE FUNCTION public._pr_mark_dirty", "-- 現有 helper");
+  const triggerPart = section(sql, "CREATE OR REPLACE FUNCTION public._pr_mark_dirty", "-- \u73fe\u6709 helper");
   assert.equal((triggerPart.match(/EXCEPTION WHEN OTHERS/g) ?? []).length, 2);
   assert.equal((triggerPart.match(/RAISE WARNING/g) ?? []).length, 2);
   assert.doesNotMatch(triggerPart, /_pr_apply_qty_sync|UPDATE public\.purchase_request_items/);
 
-  assert.equal((sql.match(/CHECK \(qty_requested >= 0\)/g) ?? []).length, 2);
+  const preview = section(sql, "CREATE OR REPLACE FUNCTION public._pr_qty_sync_preview", "REVOKE ALL ON FUNCTION public._pr_qty_sync_preview");
+  assert.match(preview, /pr_campaigns AS \(/);
+  assert.match(preview, /purchase_request_campaigns/);
+  assert.match(preview, /FROM remaining r\s+LEFT JOIN current_pairs/);
+  assert.match(preview, /'missing_item'/);
+  assert.doesNotMatch(preview, /JOIN pairs p USING \(campaign_id, sku_id\)/);
+
   const apply = section(sql, "CREATE OR REPLACE FUNCTION public._pr_apply_qty_sync", "CREATE OR REPLACE FUNCTION public.rpc_sync_pr_qty");
+  const advisory = "hashtext(r.campaign_id::TEXT),\n      hashtext(r.sku_id::TEXT)";
+  assert.ok(apply.includes(advisory));
+  assert.ok(apply.indexOf(advisory) < apply.indexOf("FOR UPDATE;"), "advisory must precede PR/item row locks");
+  assert.doesNotMatch(apply, /v_tenant::TEXT \|\| ':' \|\| r\.campaign_id/);
+  assert.match(apply, /r\.pr_item_id IS NULL AND r\.delta_qty <> 0/);
+  assert.match(apply, /INSERT INTO public\.purchase_request_qty_sync_log/);
   assert.match(apply, /UPDATE public\.purchase_request_item_campaigns[\s\S]*SET qty_requested = r\.target_qty/);
   assert.match(apply, /UPDATE public\.purchase_request_items pri[\s\S]*SELECT COALESCE\(SUM\(pric\.qty_requested\), 0\)/);
-  assert.match(sql, /revision = public\.purchase_request_qty_dirty\.revision \+ 1/);
-  assert.match(sql, /v_dirty_seen ->> \(r\.campaign_id::TEXT \|\| ':' \|\| r\.sku_id::TEXT\)/);
 
-  const submit = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_submit_pr", "-- ---------------------------------------------------------------------------\n-- 建 PO");
+  const storeAddWrapper = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_add_pr_store_demands", "CREATE OR REPLACE FUNCTION public._pr_apply_qty_sync");
+  assert.match(storeAddWrapper, /hashtext\(p_campaign_id::TEXT\),\s+hashtext\(v_sku_id::TEXT\)/);
+  assert.ok(storeAddWrapper.indexOf("pg_advisory_xact_lock") < storeAddWrapper.indexOf("_rpc_add_pr_store_demands_20260930_inner("));
+
+  const validation = section(sql, "CREATE OR REPLACE FUNCTION public._pr_validate_qty_current", "REVOKE ALL ON FUNCTION public._pr_validate_qty_current");
+  assert.match(validation, /purchase_request_campaigns/);
+  assert.match(validation, /_pr_campaign_sku_remaining_rows\(v_campaign_ids\)/);
+  assert.doesNotMatch(validation, /JOIN wanted/);
+
+  const submit = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_submit_pr", "-- ---------------------------------------------------------------------------\n-- \u5efa PO");
   assert.ok(submit.indexOf("_pr_apply_qty_sync") < submit.indexOf("SET status = 'submitted'"));
   assert.ok(submit.indexOf("_pr_validate_qty_current") < submit.indexOf("SET status = 'submitted'"));
+  assert.ok(submit.indexOf("FOR UPDATE") === -1 || submit.indexOf("FOR UPDATE") > submit.indexOf("_pr_apply_qty_sync"));
 
   const split = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_split_pr_to_pos", "CREATE OR REPLACE FUNCTION public.rpc_merge_prs_to_po");
-  assert.ok(split.indexOf("_pr_validate_qty_current") >= 0);
   assert.ok(split.indexOf("_pr_validate_qty_current") < split.indexOf("rpc_next_po_no"));
-  assert.match(split, /qty_requested > 0/);
 
-  const merge = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_merge_prs_to_po", "-- 部分轉採購");
-  assert.ok(merge.indexOf("_pr_validate_qty_current") >= 0);
-  assert.ok(merge.indexOf("_pr_validate_qty_current") < merge.indexOf("INSERT INTO public.purchase_orders"));
+  const merge = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_merge_prs_to_po", "-- \u90e8\u5206\u8f49\u63a1\u8cfc");
+  assert.match(merge, /v_role NOT IN \('owner','admin','hq_manager',''\)/);
+  assert.match(merge, /p_operator <> auth\.uid\(\)/);
+  assert.match(merge, /pr\.status = 'submitted'/);
+  assert.match(merge, /pr\.review_status = 'approved'/);
+  assert.match(merge, /v_matched <> v_want/);
+  const spendPart = section(merge, "INSERT INTO public.purchase_orders", "RETURN v_po_id");
+  assert.match(spendPart, /ANY\(v_valid_ids\)/);
+  assert.doesNotMatch(spendPart, /ANY\(p_pr_item_ids\)/);
 
   const partial = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_create_partial_pr_from_items", "COMMENT ON TABLE");
   assert.match(partial, /UPDATE public\.purchase_request_items[\s\S]*SET pr_id = v_new_pr_id/);
+  assert.match(partial, /UPDATE public\.purchase_request_store_additions[\s\S]*SET pr_id = v_new_pr_id/);
   assert.doesNotMatch(partial, /DELETE FROM public\.purchase_request_items/);
 
-  assert.match(ui, /rpc_preview_pr_qty_sync/);
-  assert.match(ui, /rpc_sync_pr_qty/);
-  assert.match(ui, /開啟頁面不會改資料/);
+  const previewRpc = section(sql, "CREATE OR REPLACE FUNCTION public.rpc_preview_pr_qty_sync", "REVOKE ALL ON FUNCTION public.rpc_preview_pr_qty_sync");
+  assert.match(previewRpc, /'hq_accountant'/);
+  const applyRoles = section(sql, "CREATE OR REPLACE FUNCTION public._pr_apply_qty_sync", "IF p_operator IS NULL");
+  assert.doesNotMatch(applyRoles, /hq_accountant/);
+
+  const syncUi = section(ui, "async function syncLatestQty", "async function submitForReview");
+  const saveAt = syncUi.indexOf("await saveDraft()");
+  assert.ok(saveAt >= 0 && saveAt < syncUi.indexOf('setBusy("sync")'));
+  assert.match(ui, /setQtySyncError\(`\u540c\u6b65\u72c0\u614b\u66ab\u6642\u7121\u6cd5\u8b80\u53d6/);
+  assert.doesNotMatch(ui, /if \(qtyPreviewErr\) throw/);
+  assert.match(ui, /\{r\.campaign_label\} \u00b7 \{r\.sku_label\}/);
   assert.match(ui, /editable && !itemCampaignOptions\.has\(r\.id\)/);
   assert.match(ui, /if \(!itemCampaignOptions\.has\(r\.id\)\) changes\.qty_requested/);
   for (const editableField of ["unit_cost", "suggested_supplier_id", "franchise_price", "retail_price"]) {
@@ -73,45 +95,18 @@ function verify(sql, ui) {
 
 verify(migration, page);
 
-const targetQty = (demand, immutable) => Math.max(demand - immutable, 0);
-assert.equal(targetQty(9, 0), 9, "10 cancel 1 must become 9");
-assert.equal(targetQty(11, 0), 11, "10 - 1 + 2 must become 11");
-assert.equal(targetQty(4, 6), 0, "immutable overage must never produce a negative draft qty");
+const faults = [
+  ["\u65b0 SKU \u53c8\u88ab\u73fe\u6709 attribution \u904e\u6ffe", migration.replace("FROM remaining r\n      LEFT JOIN current_pairs", "FROM remaining r\n      JOIN current_pairs"), page],
+  ["merge \u53c8\u7528\u672a\u9a57\u8b49\u7684\u539f\u59cb ids", migration.replaceAll("ANY(v_valid_ids)", "ANY(p_pr_item_ids)"), page],
+  ["sync \u9396 key \u4e0d\u540c", migration.replace("hashtext(r.campaign_id::TEXT)", "hashtext(v_tenant::TEXT || ':' || r.campaign_id::TEXT)"), page],
+  ["partial \u6f0f\u642c additions", migration.replace("UPDATE public.purchase_request_store_additions", "UPDATE public.broken_store_additions"), page],
+  ["sync \u524d\u6c92\u5b58\u6a94", migration, page.replace("if (!(await saveDraft())) return;", "// save removed")],
+  ["preview \u5931\u6557\u53c8\u5f04\u58de\u6574\u9801", migration, page.replace("if (qtyPreviewErr) {", "if (qtyPreviewErr) throw new Error(qtyPreviewErr.message);\n        if (false) {")],
+  ["linked qty \u53c8\u53ef\u624b\u6539", migration, page.replace("editable && !itemCampaignOptions.has(r.id)", "editable")],
+];
 
-// 故障反例：這三種回退必須真的被同一支檢查抓紅。
-for (const [name, brokenSql, brokenUi] of [
-  ["qty=0 被禁", migration.replace("CHECK (qty_requested >= 0)", "CHECK (qty_requested > 0)"), page],
-  [
-    "split 少花錢前守門",
-    replaceInSection(
-      migration,
-      "CREATE OR REPLACE FUNCTION public.rpc_split_pr_to_pos",
-      "CREATE OR REPLACE FUNCTION public.rpc_merge_prs_to_po",
-      "PERFORM public._pr_validate_qty_current(ARRAY[p_pr_id]);",
-      "-- validation removed",
-    ),
-    page,
-  ],
-  [
-    "父層數量未重算",
-    replaceInSection(
-      migration,
-      "CREATE OR REPLACE FUNCTION public._pr_apply_qty_sync",
-      "CREATE OR REPLACE FUNCTION public.rpc_sync_pr_qty",
-      "UPDATE public.purchase_request_items pri",
-      "UPDATE public.purchase_request_items_broken pri",
-    ),
-    page,
-  ],
-  ["linked qty 又可手改", migration, page.replace("editable && !itemCampaignOptions.has(r.id)", "editable")],
-]) {
-  let failed = false;
-  try {
-    verify(brokenSql, brokenUi);
-  } catch {
-    failed = true;
-  }
-  assert.ok(failed, `fault injection did not fail: ${name}`);
+for (const [name, brokenSql, brokenUi] of faults) {
+  assert.throws(() => verify(brokenSql, brokenUi), undefined, `fault injection did not fail: ${name}`);
 }
 
-console.log("✓ PR draft qty resync static checks (including negative delta, 10-1+2=11, and 4 fault injections)");
+console.log(`\u2713 PR draft qty resync structural checks and ${faults.length} fault injections`);

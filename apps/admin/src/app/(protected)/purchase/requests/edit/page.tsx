@@ -68,7 +68,7 @@ type QtySyncPreview = {
   campaign_label: string;
   sku_id: number;
   sku_label: string;
-  pr_item_id: number;
+  pr_item_id: number | null;
   demand_qty: number;
   already_qty: number;
   current_qty: number;
@@ -162,6 +162,7 @@ function PageContent() {
   const [storeAddBusy, setStoreAddBusy] = useState(false);
   const [destLocationId, setDestLocationId] = useState<number | null>(null);
   const [qtySyncRows, setQtySyncRows] = useState<QtySyncPreview[]>([]);
+  const [qtySyncError, setQtySyncError] = useState<string | null>(null);
   // UI 上被移除、但尚未存檔的品項 id — saveDraft 時才真正從 DB 刪除。
   // 之前只從 state filter 掉，DB 列還在 → 送審後拆 PO 被「未指派供應商」殘列擋死。
   const [removedIds, setRemovedIds] = useState<number[]>([]);
@@ -201,6 +202,7 @@ function PageContent() {
     setMissingCampaigns([]);
     setItemCampaignOptions(new Map());
     setQtySyncRows([]);
+    setQtySyncError(null);
     setStoreAddModal(null);
     setTransferSummary(undefined);
     setCampaignFinalized(false);
@@ -265,18 +267,25 @@ function PageContent() {
           "rpc_preview_pr_qty_sync",
           { p_pr_id: id },
         );
-        if (qtyPreviewErr) throw new Error(qtyPreviewErr.message);
-        setQtySyncRows(
-          ((qtyPreview ?? []) as QtySyncPreview[]).map((r) => ({
-            ...r,
-            demand_qty: Number(r.demand_qty),
-            already_qty: Number(r.already_qty),
-            current_qty: Number(r.current_qty),
-            target_qty: r.target_qty == null ? null : Number(r.target_qty),
-            delta_qty: Number(r.delta_qty),
-            candidate_count: Number(r.candidate_count),
-          })),
-        );
+        if (cancelled) return;
+        if (qtyPreviewErr) {
+          // 同步預覽是輔助資訊；失敗時仍保留請購主資料，但不允許在不知狀態下同步。
+          setQtySyncRows([]);
+          setQtySyncError(`同步狀態暫時無法讀取：${qtyPreviewErr.message}`);
+        } else {
+          setQtySyncError(null);
+          setQtySyncRows(
+            ((qtyPreview ?? []) as QtySyncPreview[]).map((r) => ({
+              ...r,
+              demand_qty: Number(r.demand_qty),
+              already_qty: Number(r.already_qty),
+              current_qty: Number(r.current_qty),
+              target_qty: r.target_qty == null ? null : Number(r.target_qty),
+              delta_qty: Number(r.delta_qty),
+              candidate_count: Number(r.candidate_count),
+            })),
+          );
+        }
 
         // 抓拆出的 PO（透過 PR items 反查）
         // poItemToPo：po_item_id → po_id，讓每一列 PR 品項知道自己被拆進哪張 PO
@@ -868,6 +877,9 @@ function PageContent() {
 
   async function syncLatestQty() {
     if (!id) return;
+    // 同步成功會 reload；先存成本、供應商、價格、備註與移除列，避免吃掉未存變更。
+    // saveDraft 自己管理 busy=save，完成後才切到 busy=sync，不重入。
+    if (!(await saveDraft())) return;
     setBusy("sync");
     setError(null);
     try {
@@ -1292,16 +1304,20 @@ function PageContent() {
             </div>
           </section>
 
-          {qtySyncRows.length > 0 && (
+          {(qtySyncRows.length > 0 || qtySyncError) && (
             <section className="rounded-md border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/40">
               <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-800 dark:text-amber-300">
                 開團數量核對
               </h3>
-              <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
-                {qtySyncRows.filter(
-                  (r) => r.is_dirty || !["current", "locked_current"].includes(r.action_code),
-                ).length} 筆待同步／確認；開啟頁面不會改資料。
-              </p>
+              {qtySyncError ? (
+                <p className="mt-1 text-xs text-red-700 dark:text-red-300">{qtySyncError}；請稍後重試。</p>
+              ) : (
+                <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                  {qtySyncRows.filter(
+                    (r) => r.is_dirty || !["current", "locked_current"].includes(r.action_code),
+                  ).length} 筆待同步／確認；開啟頁面不會改資料。
+                </p>
+              )}
               <div className="mt-3 space-y-2">
                 {qtySyncRows.map((r) => {
                   const change = r.target_qty == null || !["sync", "current"].includes(r.action_code)
@@ -1309,7 +1325,9 @@ function PageContent() {
                     : r.target_qty - r.current_qty;
                   return (
                     <div key={`${r.campaign_id}-${r.sku_id}`} className="text-xs">
-                      <div className="font-medium text-zinc-800 dark:text-zinc-100">{r.sku_label}</div>
+                      <div className="font-medium text-zinc-800 dark:text-zinc-100">
+                        {r.campaign_label} · {r.sku_label}
+                      </div>
                       <div className="text-zinc-600 dark:text-zinc-300">
                         目前有效需求 {formatQty(r.demand_qty)}｜請購草稿 {formatQty(r.current_qty)}
                         {change == null
