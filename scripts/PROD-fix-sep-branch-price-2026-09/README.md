@@ -25,10 +25,10 @@
 | 0-A | `0A_preview_readonly.sql` | 只查不改 | 每家店三個數字：九月草稿、今天照錯價重算、今天照正確價重算，並拆出「改價造成的差」和「其他異動造成的差」 | 已審 |
 | 0-B | `0B_adjustments_readonly.sql` | 只查不改 | 九月有效的人工調整逐筆列出，讓老闆判斷要不要作廢 | 已審 |
 | 0-C | `0C_august_baseline_readonly.sql` | 只查不改 | 八月逐筆基準（改前先存一份） | 已審 |
-| 0-E | `0E_other_changes_readonly.sql` | 只查不改 | 0-A「其他異動造成的差」逐行拆成 13 類 | ⏳ 第 5 輪修正後待複審 |
-| 0-F | `0F_new_dispatch_by_date_readonly.sql` | 只查不改 | 0-E 的新派車、新店轉店、新退貨按日期拆開 | ⏳ 待審 |
+| 0-E | `0E_other_changes_readonly.sql` | 只查不改 | 0-A「其他異動造成的差」逐行拆成 13 類 | 已審 |
+| 0-F | `0F_new_dispatch_by_date_readonly.sql` | 只查不改 | 0-E 的新派車、新店轉店、新退貨按日期拆開 | 已審 |
 | 1 | `1_backup_WRITES_backup_schema_only.sql` | **只新增備份**，不改原本任何一筆資料 | 在網站讀不到的專用位置（schema `ops_sep_price_fix`）存備份：57 品號全部分店價版本、九月月結表頭／明細／爭議、九月人工調整、八月逐筆基準 | 已審 |
-| 1-B | `1B_backup_permission_check_readonly.sql` | 只查不改 | 備份貼完馬上跑，確認網站帳號讀不到備份。如果查不到 API 開放清單，會顯示「⚠ 未查證」，這時要到 Supabase 畫面人工確認 | ⏳ 第 5 輪修正後待複審 |
+| 1-B | `1B_backup_permission_check_readonly.sql` | 只查不改 | 備份貼完馬上跑，確認網站帳號讀不到備份。如果查不到 API 開放清單，會顯示「⚠ 未查證」，這時要到 Supabase 畫面人工確認 | 已審 |
 | 2 | `2_fix_WRITES.sql` | **✅ 會寫入** | 改價加重產九月月結，全部在同一個交易裡；有 12 道鎖和 7 項自我驗算，任何一項不過就整筆取消 | 已審 |
 | 3 | `3_verify_readonly.sql` | 只查不改 | 事後再驗算一次 | 已審 |
 | 4 | `4_restore_WRITES.sql` | **✅ 會寫入** | 還原：把價格版本、九月月結、人工調整換回備份 | 已審 |
