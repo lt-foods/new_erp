@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const migration = readFileSync(resolve(root, "supabase/migrations/20260930000000_pr_draft_qty_resync.sql"), "utf8");
-const page = readFileSync(resolve(root, "apps/admin/src/app/(protected)/purchase/requests/edit/page.tsx"), "utf8");
+const migration = readFileSync(resolve(root, "supabase/migrations/20260930000000_pr_draft_qty_resync.sql"), "utf8").replace(/\r\n?/g, "\n");
+const page = readFileSync(resolve(root, "apps/admin/src/app/(protected)/purchase/requests/edit/page.tsx"), "utf8").replace(/\r\n?/g, "\n");
 
 function section(source, start, end) {
   const from = source.indexOf(start);
