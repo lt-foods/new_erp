@@ -2,9 +2,14 @@
 -- 請購單草稿「同步最新開團數量」（精簡版）
 --
 -- 解決的問題
---   1. 客人取消訂單後，請購單草稿還停在舊數字，沒有自動降。
---   2. 原本 10、取消 1、再加 2 → 之前只補正差額，會變 11 而不是 12。
---   3. 請購單草稿改數量跳紅字（item_qty=11, detail_qty=12）。
+--   客人取消訂單後，請購單草稿還停在舊數字，沒有任何入口讓它往下修。
+--   ⚠️ 只有「純取消不會往下修」這半是 bug。
+--      「原本 10、取消 1、再加 2 → 11」**11 才是正確答案**，那半沒有壞：
+--      需求 11、已請購 10、正差額 1 ⇒ 補 1 變 11。變 12 才是多叫一件。
+--      出處：`★主檔_NEW-ERP出貨鏈.md` 現場紀錄、
+--            `需求暨實作計畫_NEWERP取消訂單同步請購草稿數量_2026-09-30.md`:56、:203，
+--            兩邊都寫 11。
+--   附帶：草稿改數量跳紅字（item_qty / detail_qty 不一致）也一起收乾淨。
 --
 -- 根因
 --   `_pr_campaign_sku_remaining_rows` 以「需求」為母體，需求歸零時整列消失，
@@ -17,6 +22,16 @@
 --      rpc_delete_pr / rpc_create_partial_pr_from_items / rpc_add_pr_store_demands。
 --   ⛔ 不加任何觸發器，不建待同步表，不拆 #982 防重守衛，不批次洗歷史資料。
 --
+--   🪓 2026-10-01 老闆裁示「砍到最小」，以下三樣**刻意不做**（不是忘了）：
+--     ⛔ 不建追溯紀錄表（purchase_request_qty_sync_log）——
+--        這案子的起點只是一行紅字，不需要自己的帳本；誰改了什麼看
+--        purchase_request_items.updated_by / updated_at。
+--     ⛔ 不自己加 (團, 商品) 的 advisory lock —— 只有總部一個人在用，
+--        而且 #982 守衛在觸發器裡本來就有鎖並重算一次，最壞情況是跳錯誤重按一次。
+--        詳細理由寫在 _pr_apply_qty_sync 裡「刻意不加鎖」那段。
+--     ⛔ 沒有 p_request_key 參數 —— 它原本只是寫給那張紀錄表的，表拿掉就沒有用途，
+--        留一個什麼都不做的參數比沒有更糟。
+--
 -- 寫入順序（反了會被 #982 守衛當場退回）
 --   來源團明細 purchase_request_item_campaigns
 --     → 請購品項總數 purchase_request_items.qty_requested
@@ -24,16 +39,17 @@
 --   理由：`trg_pri_cross_close_date_duplicate_guard` 在品項有綁明細時，
 --   要求「品項總數 = 明細加總」完全相等（20260921001000:543-550）。
 --
--- ⚠️⚠️ 已知的規格衝突（施工時查出，需人工裁示）
---   `purchase_request_items.qty_requested` 與
---   `purchase_request_item_campaigns.qty_requested` 兩欄都有
---   `CHECK (qty_requested > 0)`（20260422120004:135、20260921001000:34），
---   而且從建表到今天沒有任何 migration 拿掉過。
---   ⇒ 「數量降到 0 保留該列為 0」在資料庫層是做不到的，要做只能 ALTER TABLE
---      DROP CONSTRAINT —— 那違反「只准新增」。
---   ⇒ 本檔的處理：**歸零的列不動它**，一律歸類為「需人工確認」並附原因，
---      不刪列、不改成 0、不偷偷跳過不講。刪列會讓 9/23 分店加單紀錄
---      `purchase_request_store_additions.pr_item_id` 追不回來，所以也不刪。
+-- 需求歸零怎麼處理（2026-10-01 老闆裁示，已定案）
+--   原話：「需求歸零跟這個功能無關，沒有需求我就用斷貨處理就好」。
+--   ⇒ **本功能不處理需求歸零**，歸零由斷貨流程處理。
+--   ⇒ 本檔的做法：歸零的列不動它，歸類為「需人工確認」並附原因，
+--      不刪列、不改成 0、不偷偷跳過不講。
+--      刪列會讓 9/23 分店加單紀錄 `purchase_request_store_additions.pr_item_id`
+--      追不回來，所以也不刪。
+--   （資料庫層本來也擋著：`purchase_request_items.qty_requested` 與
+--     `purchase_request_item_campaigns.qty_requested` 兩欄都有
+--     `CHECK (qty_requested > 0)`（20260422120004:135、20260921001000:34），
+--     從建表到今天沒有任何 migration 拿掉過。）
 -- ============================================================================
 
 
@@ -135,7 +151,7 @@ BEGIN
   ) INTO v_pric_chk;
 
   IF v_item_chk OR v_pric_chk THEN
-    RAISE NOTICE '（預期行為）請購數量有 CHECK (qty_requested > 0)：品項=%、來源團明細=%。歸零的列會被標成「需人工確認」，不會被改成 0、也不會被刪。',
+    RAISE NOTICE '（預期行為）請購數量有 CHECK (qty_requested > 0)：品項=%、來源團明細=%。歸零的列會被標成「需人工確認」，不會被改成 0、也不會被刪 —— 本功能不處理需求歸零，歸零走斷貨流程（2026-10-01 裁示）。',
       v_item_chk, v_pric_chk;
   ELSE
     RAISE NOTICE '（注意）沒有偵測到 qty_requested > 0 的 CHECK；本檔仍然不會把列改成 0，行為保持保守。';
@@ -277,45 +293,7 @@ COMMENT ON FUNCTION public._pr_campaign_sku_remaining_rows(BIGINT[]) IS
 
 
 -- ----------------------------------------------------------------------------
--- 2. 新增：同步紀錄表（追溯用，只寫不改）
--- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS public.purchase_request_qty_sync_log (
-  id             BIGSERIAL PRIMARY KEY,
-  tenant_id      UUID   NOT NULL,
-  pr_id          BIGINT NOT NULL,
-  pr_item_id     BIGINT NOT NULL,
-  campaign_id    BIGINT,
-  sku_id         BIGINT NOT NULL,
-  attribution    TEXT   NOT NULL,          -- 'detail'＝有來源團明細／'legacy'＝只有 source_campaign_id
-  demand_qty     NUMERIC(18,3) NOT NULL,   -- 同步當下的有效需求
-  already_qty    NUMERIC(18,3) NOT NULL,   -- 同步當下的全站已請購量
-  qty_before     NUMERIC(18,3) NOT NULL,   -- 這張單這個團改之前的數量
-  qty_after      NUMERIC(18,3) NOT NULL,   -- 改之後的數量
-  item_qty_before NUMERIC(18,3),           -- 請購品項總數改之前
-  item_qty_after  NUMERIC(18,3),           -- 請購品項總數改之後
-  operator       UUID,
-  request_key    UUID,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_pr_qty_sync_log_pr
-  ON public.purchase_request_qty_sync_log (pr_id, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_pr_qty_sync_log_tenant_created
-  ON public.purchase_request_qty_sync_log (tenant_id, created_at DESC);
-
-ALTER TABLE public.purchase_request_qty_sync_log ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS auth_read_pr_qty_sync_log ON public.purchase_request_qty_sync_log;
-CREATE POLICY auth_read_pr_qty_sync_log ON public.purchase_request_qty_sync_log
-  FOR SELECT USING (tenant_id = (auth.jwt() ->> 'tenant_id')::uuid);
-
-COMMENT ON TABLE public.purchase_request_qty_sync_log IS
-  '請購草稿「同步最新開團數量」的追溯紀錄：哪張單、哪個品項、哪個團、舊量、新量、誰、何時。只新增不修改。';
-
-
--- ----------------------------------------------------------------------------
--- 3. 新增：權限判定 helper
+-- 2. 新增：權限判定 helper
 --    對齊採購模組口徑（20260502010000_fix_purchase_rls_role_path.sql:18
 --    與 20260924010000:47-53）：角色讀 app_metadata.role、白名單一律含空字串，
 --    並且明確擋 store_manager / store_staff。
@@ -349,71 +327,7 @@ COMMENT ON FUNCTION public._pr_qty_sync_assert_perm() IS
 
 
 -- ----------------------------------------------------------------------------
--- 4. 新增：同團+SKU 的 advisory lock
---    #982 守衛自己會 pg_advisory_xact_lock(hashtext(campaign), hashtext(sku))
---    （20260921001000:554）。我們在動手寫之前先按「同樣的 key、固定的順序」
---    全部鎖起來，避免兩個人同時同步時互相卡死（lock order inversion）。
--- ----------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION public._pr_lock_qty_sync_keys(
-  p_pr_id BIGINT
-) RETURNS INTEGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-  v_tenant UUID := public._current_tenant_id();
-  v_count  INTEGER := 0;
-  r        RECORD;
-BEGIN
-  IF v_tenant IS NULL THEN
-    RAISE EXCEPTION 'tenant is required';
-  END IF;
-
-  FOR r IN
-    SELECT DISTINCT c.campaign_id, c.sku_id
-      FROM (
-        SELECT pric.campaign_id, pri.sku_id
-          FROM public.purchase_request_item_campaigns pric
-          JOIN public.purchase_request_items pri
-            ON pri.id = pric.pr_item_id
-          JOIN public.purchase_requests pr
-            ON pr.id = pri.pr_id
-         WHERE pr.id = p_pr_id
-           AND pr.tenant_id = v_tenant
-           AND pric.tenant_id = v_tenant
-        UNION
-        SELECT pri.source_campaign_id, pri.sku_id
-          FROM public.purchase_request_items pri
-          JOIN public.purchase_requests pr
-            ON pr.id = pri.pr_id
-         WHERE pr.id = p_pr_id
-           AND pr.tenant_id = v_tenant
-           AND pri.source_campaign_id IS NOT NULL
-      ) c
-     WHERE c.campaign_id IS NOT NULL
-     -- ⭐ 固定順序：所有人都按 (campaign_id, sku_id) 由小到大鎖
-     ORDER BY c.campaign_id, c.sku_id
-  LOOP
-    PERFORM pg_advisory_xact_lock(
-      hashtext(r.campaign_id::TEXT),
-      hashtext(r.sku_id::TEXT)
-    );
-    v_count := v_count + 1;
-  END LOOP;
-
-  RETURN v_count;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public._pr_lock_qty_sync_keys(BIGINT) FROM PUBLIC;
-
-COMMENT ON FUNCTION public._pr_lock_qty_sync_keys(BIGINT) IS
-  '把這張請購單涉及的每個 (團, 商品) 用 #982 守衛同一組 advisory lock key 鎖住，並固定按 (campaign_id, sku_id) 升冪，避免併發同步卡死。';
-
-
--- ----------------------------------------------------------------------------
--- 5. 新增：唯讀預覽（不寫任何資料）
+-- 3. 新增：唯讀預覽（不寫任何資料）
 --
 --    一列 = 這張請購單的一個 (請購品項, 來源團)。
 --    `needs_sync` 代表數字跟現在的需求不一致；`can_sync` 代表可以安全自動改。
@@ -633,7 +547,7 @@ COMMENT ON FUNCTION public._pr_qty_sync_preview(BIGINT) IS
 
 
 -- ----------------------------------------------------------------------------
--- 6. 新增：給畫面用的唯讀預覽
+-- 4. 新增：給畫面用的唯讀預覽
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.rpc_preview_pr_qty_sync(
   p_pr_id BIGINT
@@ -683,21 +597,18 @@ COMMENT ON FUNCTION public.rpc_preview_pr_qty_sync(BIGINT) IS
 
 
 -- ----------------------------------------------------------------------------
--- 7. 新增：真正寫入
+-- 5. 新增：真正寫入
 --
 --    既有的表只改三張，順序寫死：
 --      ① purchase_request_item_campaigns.qty_requested
 --      ② purchase_request_items.qty_requested（＝該品項所有明細加總）
---      ④ purchase_requests.total_amount
+--      ③ purchase_requests.total_amount
 --    順序反了會被 #982 的 trg_pri_..._guard 以
 --    「已綁定原團明細，總數不可直接改成和明細不同」擋下來。
---    ③ 是寫本檔自己新增的 purchase_request_qty_sync_log（追溯用），
---      排在 ② 之後才拿得到「真的寫進去的」品項總數。
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public._pr_apply_qty_sync(
   p_pr_id     BIGINT,
-  p_operator  UUID,
-  p_request_key UUID DEFAULT NULL
+  p_operator  UUID
 ) RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -746,10 +657,15 @@ BEGIN
     RAISE EXCEPTION '只有草稿請購單可以同步數量，目前狀態=%', v_pr.status;
   END IF;
 
-  -- 再按 #982 守衛同一組 key、固定順序鎖住每個 (團, 商品)
-  PERFORM public._pr_lock_qty_sync_keys(p_pr_id);
-
   -- 把計畫「先算好定住」，不要邊算邊改（改到一半預覽就會變）
+  -- ⭐ 這裡刻意**不**自己加 (團, 商品) 的 advisory lock，所以預覽到寫入之間
+  --    需求有可能被別人改動。這樣仍然是安全的，理由是：
+  --    ① 需求變少 → 下面的 UPDATE 會踩到 #982 守衛
+  --       （20260921001000:534-604，守衛自己在觸發器裡就 pg_advisory_xact_lock(團,商品)
+  --        並重算一次 requested > demand），整筆交易直接 RAISE、一個字都沒寫進去，
+  --       使用者看到錯誤重按一次就好 —— ⛔ 不會寫出超額請購。
+  --    ② 需求變多 → 這次同步到的數字偏小，不是壞帳，再按一次就補上。
+  --    ⇒ 正確性完全由守衛保證，不依賴本檔自己拿鎖。
   DROP TABLE IF EXISTS _pr_qty_sync_plan;
   CREATE TEMP TABLE _pr_qty_sync_plan ON COMMIT DROP AS
   SELECT * FROM public._pr_qty_sync_preview(p_pr_id) WHERE needs_sync;
@@ -778,7 +694,9 @@ BEGIN
   FOR r IN
     SELECT * FROM _pr_qty_sync_plan
      WHERE can_sync
-     ORDER BY campaign_id, sku_id            -- 與 advisory lock 相同順序
+     -- 固定順序：#982 守衛在觸發器裡會依我們寫入的先後去拿 (團,商品) 的
+     -- advisory lock，所有人都按同一個順序寫，併發時才不會互相卡死。
+     ORDER BY campaign_id, sku_id
   LOOP
     IF r.attribution = 'detail' THEN
       UPDATE public.purchase_request_item_campaigns
@@ -834,26 +752,7 @@ BEGIN
     END IF;
   END LOOP;
 
-  -- ③ 追溯紀錄
-  --    刻意排在 ② 之後：item_qty_after 要寫「真的寫進去的值」。
-  --    一個品項可能同時有「可同步」和「需人工確認」的團，這時預覽算的
-  --    new_item_qty（假設全部都同步）會跟實際值不一樣 —— 帳本不可以記那個。
-  INSERT INTO public.purchase_request_qty_sync_log (
-    tenant_id, pr_id, pr_item_id, campaign_id, sku_id, attribution,
-    demand_qty, already_qty, qty_before, qty_after,
-    item_qty_before, item_qty_after, operator, request_key
-  )
-  SELECT
-    v_tenant, p_pr_id, p.pr_item_id, p.campaign_id, p.sku_id, p.attribution,
-    p.demand_qty, p.already_qty, p.draft_qty, p.new_campaign_qty,
-    p.item_qty, pri.qty_requested, p_operator, p_request_key
-  FROM _pr_qty_sync_plan p
-  JOIN public.purchase_request_items pri
-    ON pri.id = p.pr_item_id
-  WHERE p.can_sync
-  ORDER BY p.campaign_id, p.sku_id;
-
-  -- ④ 請購單總金額（line_subtotal 是 generated column，會自己跟著數量變）
+  -- ③ 請購單總金額（line_subtotal 是 generated column，會自己跟著數量變）
   UPDATE public.purchase_requests pr
      SET total_amount = COALESCE((
            SELECT SUM(pri.line_subtotal)
@@ -878,19 +777,18 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public._pr_apply_qty_sync(BIGINT, UUID, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public._pr_apply_qty_sync(BIGINT, UUID) FROM PUBLIC;
 
-COMMENT ON FUNCTION public._pr_apply_qty_sync(BIGINT, UUID, UUID) IS
+COMMENT ON FUNCTION public._pr_apply_qty_sync(BIGINT, UUID) IS
   '把請購草稿的數量同步到目前的開團需求。只改 purchase_request_item_campaigns、purchase_request_items.qty_requested、purchase_requests.total_amount 三處，順序固定。不能安全自動改的列一律跳過並回報原因。';
 
 
 -- ----------------------------------------------------------------------------
--- 8. 新增：畫面按鈕呼叫的入口
+-- 6. 新增：畫面按鈕呼叫的入口
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.rpc_sync_pr_qty(
-  p_pr_id       BIGINT,
-  p_operator    UUID DEFAULT NULL,
-  p_request_key UUID DEFAULT NULL
+  p_pr_id    BIGINT,
+  p_operator UUID DEFAULT NULL
 ) RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -898,34 +796,32 @@ SET search_path = public
 AS $$
 BEGIN
   PERFORM public._pr_qty_sync_assert_perm();
-  RETURN public._pr_apply_qty_sync(p_pr_id, p_operator, p_request_key);
+  RETURN public._pr_apply_qty_sync(p_pr_id, p_operator);
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.rpc_sync_pr_qty(BIGINT, UUID, UUID) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.rpc_sync_pr_qty(BIGINT, UUID, UUID) TO authenticated;
+REVOKE ALL ON FUNCTION public.rpc_sync_pr_qty(BIGINT, UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.rpc_sync_pr_qty(BIGINT, UUID) TO authenticated;
 
-COMMENT ON FUNCTION public.rpc_sync_pr_qty(BIGINT, UUID, UUID) IS
+COMMENT ON FUNCTION public.rpc_sync_pr_qty(BIGINT, UUID) IS
   '請購單編輯頁「同步最新開團數量」按鈕：把草稿數量對到目前的有效需求，回報同步了幾筆、幾筆需人工確認。';
 
 
 -- ----------------------------------------------------------------------------
--- 9. 把內部函式從 anon 收回（rpc_* 只開給 authenticated）
+-- 7. 把內部函式從 anon 收回（rpc_* 只開給 authenticated）
 -- ----------------------------------------------------------------------------
 DO $revoke_anon$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
     REVOKE ALL ON FUNCTION public._pr_campaign_sku_remaining_rows(BIGINT[]) FROM anon;
     REVOKE ALL ON FUNCTION public._pr_qty_sync_assert_perm() FROM anon;
-    REVOKE ALL ON FUNCTION public._pr_lock_qty_sync_keys(BIGINT) FROM anon;
     REVOKE ALL ON FUNCTION public._pr_qty_sync_preview(BIGINT) FROM anon;
-    REVOKE ALL ON FUNCTION public._pr_apply_qty_sync(BIGINT, UUID, UUID) FROM anon;
+    REVOKE ALL ON FUNCTION public._pr_apply_qty_sync(BIGINT, UUID) FROM anon;
   END IF;
 
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
     REVOKE ALL ON FUNCTION public._pr_qty_sync_preview(BIGINT) FROM authenticated;
-    REVOKE ALL ON FUNCTION public._pr_apply_qty_sync(BIGINT, UUID, UUID) FROM authenticated;
-    REVOKE ALL ON FUNCTION public._pr_lock_qty_sync_keys(BIGINT) FROM authenticated;
+    REVOKE ALL ON FUNCTION public._pr_apply_qty_sync(BIGINT, UUID) FROM authenticated;
   END IF;
 END
 $revoke_anon$;

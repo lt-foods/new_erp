@@ -169,6 +169,10 @@ function PageContent() {
   const id = idStr ? Number(idStr) : null;
 
   const [header, setHeader] = useState<PRHeader | null>(null);
+  // 備註載入時的原值。備註沒有 dirty 旗標（saveDraft 一律無條件覆寫），
+  // 所以要自己留一份基準值，才判斷得出「改了備註但還沒存檔」。
+  // 用途只有一個：syncQty 重讀整頁前要先警告使用者打的字會不見。
+  const [loadedNotes, setLoadedNotes] = useState<string | null>(null);
   const [items, setItems] = useState<ItemRow[]>([]);
   const [derivedPOs, setDerivedPOs] = useState<DerivedPO[]>([]);
   const [campaignFinalized, setCampaignFinalized] = useState<boolean>(false);
@@ -221,6 +225,7 @@ function PageContent() {
     setLoading(true);
     setError(null);
     setHeader(null);
+    setLoadedNotes(null);
     setItems([]);
     setRemovedIds([]);
     setSelectedIds(new Set());
@@ -276,6 +281,7 @@ function PageContent() {
         if (storeErr) throw new Error(storeErr.message);
 
         setHeader(prData as PRHeader);
+        setLoadedNotes((prData as PRHeader).notes ?? null);
         setSuppliers((supRows ?? []) as Supplier[]);
         setStores((storeRows ?? []) as StoreOption[]);
         {
@@ -856,7 +862,9 @@ function PageContent() {
   }
 
   // 「同步最新開團數量」：把草稿數量對到目前的有效需求。
-  // ⚠️ 未存檔的手改會被重讀蓋掉，所以按之前先問清楚。
+  // ⚠️ 收尾是 window.location.reload()，所以「還沒存檔」的東西全部會不見：
+  //    品項列的手改、按了 ✕ 但還沒存的刪除、以及改了還沒存的備註。
+  //    三種都要在確認框裡分開講清楚。⛔ 不要自動幫他存檔（那等於替他決定要存什麼）。
   async function syncQty() {
     if (!id) return;
     const lines = syncableRows
@@ -870,7 +878,22 @@ function PageContent() {
     if (syncableRows.length > 12) {
       lines.push(`・…另外還有 ${syncableRows.length - 12} 筆`);
     }
+    // ⚠️ 「還沒存檔」有三種，而且後果不一樣，所以要分開講。
+    //   只算 items 的 dirty 是不夠的：按了 ✕ 只進 removedIds（saveDraft 才真的刪），
+    //   備註則完全沒有 dirty 旗標（saveDraft 無條件覆寫）。
+    //   漏掉這兩種的後果：改了備註沒存就按同步 ⇒ 打的字直接不見、零警告。
     const dirtyCount = items.filter((r) => r.dirty).length;
+    const removedCount = removedIds.length;
+    const notesDirty = (header?.notes ?? "") !== (loadedNotes ?? "");
+    const unsaved = [
+      dirtyCount > 0
+        ? `・${dirtyCount} 列改過的數量／廠商／價格 → 會被重讀的資料蓋掉，改的值不見。`
+        : "",
+      removedCount > 0
+        ? `・${removedCount} 列你按了 ✕ → 那幾列會原封不動回來（刪除不會生效）。`
+        : "",
+      notesDirty ? "・備註欄打的字 → 會被重讀的資料蓋掉，打的字不見。" : "",
+    ].filter(Boolean);
     const confirmText = [
       `要把這張${PR_TERM_ZH}的數量對到目前的開團需求嗎？`,
       "",
@@ -878,8 +901,14 @@ function PageContent() {
       manualSyncRows.length > 0
         ? `\n另有 ${manualSyncRows.length} 筆不能安全自動修改，會跳過並列出原因。`
         : "",
-      dirtyCount > 0
-        ? `\n⚠️ 這張單有 ${dirtyCount} 列還沒存檔的手改，同步後畫面會重讀，那些手改會不見。`
+      unsaved.length > 0
+        ? [
+            "",
+            "⚠️ 這張單有還沒存檔的修改。同步完畫面會整頁重讀，下面這些會不見：",
+            ...unsaved,
+            "",
+            "要保留的話請先按「存為草稿」，再按同步。",
+          ].join("\n")
         : "",
     ]
       .filter(Boolean)
@@ -894,7 +923,6 @@ function PageContent() {
       const { data, error: rpcErr } = await supabase.rpc("rpc_sync_pr_qty", {
         p_pr_id: id,
         p_operator: userData.user?.id,
-        p_request_key: newUuid(),
       });
       if (rpcErr) throw new Error(rpcErr.message);
 
@@ -958,6 +986,8 @@ function PageContent() {
         if (hErr) throw new Error(hErr.message);
       }
       setItems((cur) => cur.map((r) => ({ ...r, dirty: false })));
+      // 備註已經寫進 DB，基準值跟著移動，否則同步前會一直誤報「備註沒存檔」
+      setLoadedNotes(header?.notes ?? null);
       return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
