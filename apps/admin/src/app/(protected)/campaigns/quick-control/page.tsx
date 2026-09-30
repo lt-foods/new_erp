@@ -1515,7 +1515,7 @@ export default function QuickCampaignControlPage() {
 
                     {!quickOk && !locked && (
                       <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                        一般團的關團／重開請到電腦版開團頁（手機版之後補）
+                        這個一般團沒設上限，延長／重開／加名額請到電腦版開團頁（手機版之後補）
                       </div>
                     )}
 
