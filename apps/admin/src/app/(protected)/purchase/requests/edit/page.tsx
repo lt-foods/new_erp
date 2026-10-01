@@ -64,7 +64,8 @@ type StoreAddResult = {
 };
 
 // rpc_preview_pr_qty_sync 的一列 =（請購品項, 來源團）。
-// needs_sync＝數字跟現在的開團需求不一致；can_sync＝可以安全自動改。
+// needs_sync＝數字跟現在的開團需求不一致；can_sync＝通過後端七條檢查、按同步會被改。
+// attribution：'detail'＝有各團明細；'legacy'＝舊資料（只有 source_campaign_id），永遠不自動改。
 type QtySyncRow = {
   pr_item_id: number;
   sku_id: number;
@@ -72,6 +73,7 @@ type QtySyncRow = {
   campaign_id: number | null;
   campaign_no: string | null;
   campaign_name: string | null;
+  attribution: string;
   demand_qty: number;      // 目前有效需求
   draft_qty: number;       // 這張單這個團的草稿數量
   delta_qty: number;       // 會增減幾件
@@ -101,6 +103,7 @@ async function fetchQtySyncRows(prId: number): Promise<QtySyncRow[]> {
     campaign_id: r.campaign_id === null || r.campaign_id === undefined ? null : Number(r.campaign_id),
     campaign_no: (r.campaign_no as string | null) ?? null,
     campaign_name: (r.campaign_name as string | null) ?? null,
+    attribution: String(r.attribution ?? ""),
     demand_qty: Number(r.demand_qty ?? 0),
     draft_qty: Number(r.draft_qty ?? 0),
     delta_qty: Number(r.delta_qty ?? 0),
@@ -611,8 +614,12 @@ function PageContent() {
 
   // 已經綁了來源團明細的品項：數量不給直接打，要走「同步最新開團數量」。
   // ⚠️ 只鎖數量 —— 成本 / 供應商 / 分店價 / 售價照舊可編輯（手動補列時成本要能打）。
+  // 只鎖「有各團明細」的品項：#982 守衛要求這種品項的總數 = 明細加總，手改成別的數字一定被擋。
+  // ⛔ 舊資料（attribution='legacy'，沒有明細）不可以鎖：同步永遠不會改它、
+  //    畫面又叫人「人工確認」，再把輸入框鎖掉就變成誰都改不了。
+  //    舊資料手改走的是守衛的另一條檢查（請購量 ≤ 需求），跟本功能上線前一樣。
   const campaignBoundItemIds = useMemo(
-    () => new Set(qtySyncRows.map((r) => r.pr_item_id)),
+    () => new Set(qtySyncRows.filter((r) => r.attribution === "detail").map((r) => r.pr_item_id)),
     [qtySyncRows],
   );
   const pendingSyncRows = useMemo(
@@ -899,7 +906,7 @@ function PageContent() {
       "",
       ...lines,
       manualSyncRows.length > 0
-        ? `\n另有 ${manualSyncRows.length} 筆不能安全自動修改，會跳過並列出原因。`
+        ? `\n另有 ${manualSyncRows.length} 筆不能自動修改，會跳過（原因列在右側待同步清單）。`
         : "",
       unsaved.length > 0
         ? [
@@ -934,7 +941,7 @@ function PageContent() {
       alert(
         [
           `已同步 ${synced} 筆。`,
-          blocked > 0 ? `另有 ${blocked} 筆不能安全自動修改，請人工確認。` : "",
+          blocked > 0 ? `另有 ${blocked} 筆不能自動修改，請依清單上的原因人工確認。` : "",
         ]
           .filter(Boolean)
           .join("\n"),
@@ -1432,7 +1439,10 @@ function PageContent() {
               </p>
               <p className="mt-0.5 text-sky-700 dark:text-sky-400">
                 客人取消或加單之後，開團需求變了但草稿數字還是舊的。
-                {syncableRows.length > 0 && "按左側「同步最新開團數量」就會對上。"}
+                {syncableRows.length > 0 &&
+                  (manualSyncRows.length > 0
+                    ? "黑字那幾筆按左側「同步最新開團數量」就會對上；橘字的同步不會改。"
+                    : "按左側「同步最新開團數量」就會對上。")}
               </p>
               <ul className="mt-2 space-y-1">
                 {pendingSyncRows.map((r) => (
@@ -1443,9 +1453,12 @@ function PageContent() {
                     <span className="font-medium">{r.sku_label}</span>
                     {r.campaign_no && <span className="text-zinc-500">（{r.campaign_no}）</span>}
                     ：目前有效需求 {formatQty(r.demand_qty)}｜請購草稿 {formatQty(r.draft_qty)}｜
-                    {r.delta_qty < 0
-                      ? `將減少 ${formatQty(-r.delta_qty)}`
-                      : `將增加 ${formatQty(r.delta_qty)}`}
+                    {/* 被擋的列不會被改，不可以寫「將減少／將增加」—— 那是比實際更好的說法 */}
+                    {!r.can_sync
+                      ? `差 ${r.delta_qty < 0 ? "−" : "+"}${formatQty(Math.abs(r.delta_qty))}（不會自動改）`
+                      : r.delta_qty < 0
+                        ? `將減少 ${formatQty(-r.delta_qty)}`
+                        : `將增加 ${formatQty(r.delta_qty)}`}
                     {!r.can_sync && r.block_reason && (
                       <span className="block pl-4 text-[11px]">⚠️ {r.block_reason}</span>
                     )}
@@ -1720,10 +1733,10 @@ function PageContent() {
                     )}
                   </Td>
                   <Td className="text-right">
-                    {/* 綁了來源團明細的列不給直接打數量：#982 守衛要求「品項總數 = 明細加總」，
+                    {/* 綁了各團明細的列不給直接打數量：#982 守衛要求「品項總數 = 明細加總」，
                         手改一邊一定被擋（就是老闆看到的 item_qty=11, detail_qty=12 那句紅字）。
-                        改數量請按「同步最新開團數量」，或回原團用分店／批發加單。
-                        ⚠️ 只鎖數量，成本／供應商／分店價／售價照舊可編輯。 */}
+                        ⚠️ 同步不是萬用解：被標「需人工確認」的列，按同步也不會改。
+                        ⚠️ 只鎖數量，成本／供應商／分店價／售價照舊可編輯；舊資料列不鎖。 */}
                     {editable && !campaignBoundItemIds.has(r.id) ? (
                       <input
                         type="number"
@@ -1735,7 +1748,7 @@ function PageContent() {
                     ) : editable ? (
                       <span
                         className="cursor-help font-mono underline decoration-dotted decoration-zinc-400"
-                        title="這一列的數量來自開團需求，不能直接改。要調整請按左側「同步最新開團數量」，或回原團用「分店／批發加單」。"
+                        title="這一列綁了各團明細，直接改數量會被系統擋（品項總數必須等於各團加總）。數量跟開團對不上時按左側「同步最新開團數量」；被標「需人工確認」的列同步不會改，請依清單上的原因處理，或回原團用「分店／批發加單」。"
                       >
                         {formatQty(r.qty_requested)}
                       </span>
