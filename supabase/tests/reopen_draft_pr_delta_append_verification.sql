@@ -27,6 +27,9 @@
 --   8. 有品項轉成採購單 → 重開被擋，訊息中文、含請購單號
 --   9. 請購單送出（submitted）→ 重開被擋，訊息中文、含請購單號
 --  10. 已鎖定的團只延長（不重開）→ 被擋，訊息中文
+--  （第 3 步另含一張「已轉出」訂單：明確驗新口徑不算它，測 26）
+--  11. 重開守衛三種連法各自單獨覆蓋（草稿可重開／已送出被擋；含已關團未鎖定），測 27～32
+--  12. 舊資料（無明細、非本團）→ 關團回 append_failed、團停在 closed（預期會被前端提示），測 33～34
 -- ============================================================================
 
 BEGIN;
@@ -304,6 +307,7 @@ DECLARE
   v_s1  BIGINT := pg_temp._t_ctx('sku1');
   v_s2  BIGINT := pg_temp._t_ctx('sku2');
   v_order BIGINT;
+  v_xfer  BIGINT;
   v_res JSONB;
   v_old1 NUMERIC;
   v_old2 NUMERIC;
@@ -317,7 +321,16 @@ BEGIN
   VALUES (v_tenant, v_order, pg_temp._t_ctx('ciC1'), v_s1, 1, 100, 'pending'),
          (v_tenant, v_order, pg_temp._t_ctx('ciC2'), v_s2, 4, 100, 'pending');
 
-  -- 舊版「整團量」會得到的答案：原量 + C 整團量
+  -- 一張「已轉出」的訂單 sku1×10（客人的單已轉給別張單）。
+  -- 新版沿用 #982 口徑（20260921001000:271-273）不算它；舊版整團量只排除取消／過期
+  -- （20260625000000:300-303），會把這 10 件也算進去 → 測 26 明確驗這個口徑差。
+  INSERT INTO customer_orders (tenant_id, order_no, campaign_id, channel_id, pickup_store_id, status, created_by, updated_by)
+  VALUES (v_tenant, 'ZZREOPEN-ORD-C2X', v_c, pg_temp._t_ctx('channel'), pg_temp._t_ctx('store'), 'transferred_out', v_op, v_op)
+  RETURNING id INTO v_xfer;
+  INSERT INTO customer_order_items (tenant_id, order_id, campaign_item_id, sku_id, qty, unit_price, status)
+  VALUES (v_tenant, v_xfer, pg_temp._t_ctx('ciC1'), v_s1, 10, 100, 'pending');
+
+  -- 舊版「整團量」在「正常訂單口徑」（不含已轉出）下會得到的答案：原量 + C 正常訂單量
   v_old1 := pg_temp._t_item_qty(v_pr, v_s1) + 1;
   v_old2 := pg_temp._t_item_qty(v_pr, v_s2) + 4;
 
@@ -326,7 +339,13 @@ BEGIN
     v_res->>'action' = 'appended' AND (v_res->>'pr_id')::BIGINT = v_pr,
     'action=' || COALESCE(v_res->>'action', 'NULL') || '，reason=' || COALESCE(v_res->>'reason', '-'));
 
-  INSERT INTO _t_result VALUES (6, '第一次併入：結果與舊版整團量相同（sku1=9、sku2=6）',
+  INSERT INTO _t_result VALUES (26, '新口徑：已轉出（transferred_out）的訂單不算進請購量（C 那張 sku1×10 沒被加進去，sku1 仍是 9 不是 19；C 的 sku1 明細仍是 1）',
+    pg_temp._t_item_qty(v_pr, v_s1) = 9 AND pg_temp._t_attr_qty(v_pr, v_s1, v_c) = 1
+    AND (SELECT status FROM public.customer_orders WHERE id = v_xfer) = 'transferred_out',
+    'sku1 請購=' || pg_temp._t_item_qty(v_pr, v_s1) || '，C 的 sku1 明細=' || pg_temp._t_attr_qty(v_pr, v_s1, v_c)
+    || '，轉出單狀態=' || (SELECT status FROM public.customer_orders WHERE id = v_xfer));
+
+  INSERT INTO _t_result VALUES (6, '第一次併入：結果與舊版整團量相同（正常訂單口徑，不含已轉出；sku1=9、sku2=6）',
     pg_temp._t_item_qty(v_pr, v_s1) = v_old1 AND pg_temp._t_item_qty(v_pr, v_s2) = v_old2
     AND v_old1 = 9 AND v_old2 = 6,
     'sku1=' || pg_temp._t_item_qty(v_pr, v_s1) || '（舊版應為 ' || v_old1 || '），sku2='
@@ -595,6 +614,194 @@ $step9$;
 
 
 -- ----------------------------------------------------------------------------
+-- 第 11 步：重開守衛的三種連法，各自單獨覆蓋（阿審第 1 輪 P2-1）
+--   每個團只用「一種」連法連到自己的請購單，其他兩種刻意不存在（下面會自我檢查）。
+--   請購單用 source_type='manual'，與主流程那張分開、也不受 #982 結單日防重守衛影響。
+--   團  連法                               請購單   團狀態   預期
+--   L1  只有 purchase_request_campaigns     草稿     closed   可重開（已關團、未鎖定、連到草稿）
+--   L2  只有 purchase_request_item_campaigns 草稿    locked   可重開
+--   L3  只有 source_campaign_id             草稿     closed   可重開
+--   L4  只有 purchase_request_campaigns     已送出   locked   擋，中文、含請購單號
+--   L5  只有 purchase_request_item_campaigns 已送出  closed   擋，中文、含請購單號
+--   L6  只有 source_campaign_id             已送出   locked   擋，中文、含請購單號
+--   ⚠️ source_campaign_id 寫入時，既有觸發器 trg_sync_pri_to_prc（20260614000020）會自動補
+--      團↔請購單連結；要做出「只有 source_campaign_id」就得在插入後把那筆連結刪掉。
+-- ----------------------------------------------------------------------------
+DO $step11$
+DECLARE
+  v_tenant UUID := (SELECT tenant FROM _t_env);
+  v_op     UUID := (SELECT operator FROM _t_env);
+  v_end    TIMESTAMPTZ := ((SELECT close_date FROM _t_env) + 1 + TIME '12:00') AT TIME ZONE 'Asia/Taipei';
+  v_reopen TIMESTAMPTZ := ((SELECT close_date FROM _t_env) + 1 + TIME '20:00') AT TIME ZONE 'Asia/Taipei';
+  v_sku    BIGINT := pg_temp._t_ctx('sku1');
+  v_link   TEXT[] := ARRAY['prc', 'pric', 'src', 'prc', 'pric', 'src'];
+  v_prst   TEXT[] := ARRAY['draft', 'draft', 'draft', 'submitted', 'submitted', 'submitted'];
+  v_cst    TEXT[] := ARRAY['closed', 'locked', 'closed', 'locked', 'closed', 'locked'];
+  v_label  TEXT[] := ARRAY[
+    '只有團↔請購單連結（purchase_request_campaigns）',
+    '只有來源團明細（purchase_request_item_campaigns）',
+    '只有舊資料 source_campaign_id',
+    '只有團↔請購單連結（purchase_request_campaigns）',
+    '只有來源團明細（purchase_request_item_campaigns）',
+    '只有舊資料 source_campaign_id'];
+  v_camp   BIGINT;
+  v_pr     BIGINT;
+  v_pr_no  TEXT;
+  v_item   BIGINT;
+  v_has_prc  BOOLEAN;
+  v_has_pric BOOLEAN;
+  v_has_src  BOOLEAN;
+  v_links_ok BOOLEAN;
+  v_err    TEXT;
+  v_status TEXT;
+  i        INTEGER;
+BEGIN
+  FOR i IN 1..6 LOOP
+    INSERT INTO group_buy_campaigns (tenant_id, campaign_no, name, status, close_type, end_at)
+    VALUES (v_tenant, 'ZZREOPEN-L' || i::TEXT, '【測試】連法團 L' || i::TEXT, v_cst[i], 'fast', v_end)
+    RETURNING id INTO v_camp;
+
+    INSERT INTO campaign_items (tenant_id, campaign_id, sku_id, unit_price)
+    VALUES (v_tenant, v_camp, v_sku, 100);
+
+    v_pr_no := 'ZZREOPEN-L-PR-' || i::TEXT;
+    INSERT INTO purchase_requests (
+      tenant_id, pr_no, source_type, source_close_date, source_location_id,
+      status, total_amount, created_by, updated_by
+    ) VALUES (
+      v_tenant, v_pr_no, 'manual', NULL, pg_temp._t_ctx('loc'),
+      v_prst[i], 100, v_op, v_op
+    ) RETURNING id INTO v_pr;
+
+    INSERT INTO purchase_request_items (
+      pr_id, sku_id, qty_requested, suggested_supplier_id, unit_cost,
+      source_campaign_id, created_by, updated_by
+    ) VALUES (
+      v_pr, v_sku, 1, pg_temp._t_ctx('supplier'), 100,
+      CASE WHEN v_link[i] = 'src' THEN v_camp ELSE NULL END, v_op, v_op
+    ) RETURNING id INTO v_item;
+
+    IF v_link[i] = 'prc' THEN
+      INSERT INTO purchase_request_campaigns (pr_id, campaign_id, tenant_id)
+      VALUES (v_pr, v_camp, v_tenant);
+    ELSIF v_link[i] = 'pric' THEN
+      INSERT INTO purchase_request_item_campaigns (pr_item_id, campaign_id, tenant_id, qty_requested)
+      VALUES (v_item, v_camp, v_tenant, 1);
+    ELSE
+      -- 把 trg_sync_pri_to_prc 自動補的連結拿掉，只留 source_campaign_id
+      DELETE FROM purchase_request_campaigns WHERE pr_id = v_pr AND campaign_id = v_camp;
+    END IF;
+
+    -- 夾具自我檢查：只有指定的那一種連法存在
+    v_has_prc  := EXISTS (SELECT 1 FROM purchase_request_campaigns WHERE campaign_id = v_camp);
+    v_has_pric := EXISTS (SELECT 1 FROM purchase_request_item_campaigns WHERE campaign_id = v_camp);
+    v_has_src  := EXISTS (SELECT 1 FROM purchase_request_items WHERE source_campaign_id = v_camp);
+    v_links_ok := (v_has_prc  = (v_link[i] = 'prc'))
+              AND (v_has_pric = (v_link[i] = 'pric'))
+              AND (v_has_src  = (v_link[i] = 'src'));
+
+    v_err := NULL;
+    BEGIN
+      PERFORM * FROM public.rpc_quick_update_campaign_control(v_camp, 'open', v_reopen, NULL);
+    EXCEPTION WHEN OTHERS THEN
+      v_err := SQLERRM;
+    END;
+    SELECT status INTO v_status FROM group_buy_campaigns WHERE id = v_camp;
+
+    IF v_prst[i] = 'draft' THEN
+      INSERT INTO _t_result VALUES (26 + i,
+        format('連法 L%s：%s、請購單草稿、團 %s → 可重開%s', i, v_label[i], v_cst[i],
+               CASE WHEN v_cst[i] = 'closed' THEN '（已關團、未鎖定）' ELSE '' END),
+        v_links_ok AND v_err IS NULL AND v_status = 'open',
+        format('夾具連法 prc=%s／pric=%s／src=%s；%s', v_has_prc, v_has_pric, v_has_src,
+               COALESCE('錯誤：' || v_err, '狀態=' || v_status)));
+    ELSE
+      INSERT INTO _t_result VALUES (26 + i,
+        format('連法 L%s：%s、請購單已送出、團 %s → 擋，中文且含請購單號', i, v_label[i], v_cst[i]),
+        v_links_ok AND v_err IS NOT NULL AND v_err LIKE '%已送出，不能重開%'
+          AND v_err LIKE '%' || v_pr_no || '%' AND v_status = v_cst[i],
+        format('夾具連法 prc=%s／pric=%s／src=%s；%s', v_has_prc, v_has_pric, v_has_src,
+               COALESCE('訊息：' || v_err, '沒有被擋！狀態=' || v_status)));
+    END IF;
+  END LOOP;
+END
+$step11$;
+
+
+-- ----------------------------------------------------------------------------
+-- 第 12 步：舊資料擋下 → rpc_close_campaign 回 append_failed、團停在 closed
+--   （阿審第 1 輪 P1；CEO 決定由前端提示處理，本檔只把資料庫端的現況釘住）
+--   另一天（結單日 +2）放一張結單日請購草稿，上面有一列 sku1 的舊資料：
+--   沒有來源團明細、source_campaign_id 也不是本團（NULL，例：手動加的）。
+--   團 F 有 sku1×2 的訂單，關 F 時要併進這張草稿 → 新版 rpc_append_campaign_to_pr 擋下，
+--   rpc_close_campaign 接住例外回 append_failed；團停在 closed、訂單維持 pending、草稿一個字都沒改。
+-- ----------------------------------------------------------------------------
+DO $step12$
+DECLARE
+  v_tenant UUID := (SELECT tenant FROM _t_env);
+  v_op     UUID := (SELECT operator FROM _t_env);
+  v_date   DATE := (SELECT close_date FROM _t_env) + 2;
+  v_end    TIMESTAMPTZ := ((SELECT close_date FROM _t_env) + 2 + TIME '12:00') AT TIME ZONE 'Asia/Taipei';
+  v_sku    BIGINT := pg_temp._t_ctx('sku1');
+  v_camp   BIGINT;
+  v_ci     BIGINT;
+  v_order  BIGINT;
+  v_pr     BIGINT;
+  v_item   BIGINT;
+  v_res    JSONB;
+BEGIN
+  INSERT INTO group_buy_campaigns (tenant_id, campaign_no, name, status, close_type, end_at)
+  VALUES (v_tenant, 'ZZREOPEN-F', '【測試】舊資料團 F', 'open', 'fast', v_end)
+  RETURNING id INTO v_camp;
+
+  INSERT INTO campaign_items (tenant_id, campaign_id, sku_id, unit_price)
+  VALUES (v_tenant, v_camp, v_sku, 100) RETURNING id INTO v_ci;
+
+  INSERT INTO customer_orders (tenant_id, order_no, campaign_id, channel_id, pickup_store_id, status, created_by, updated_by)
+  VALUES (v_tenant, 'ZZREOPEN-ORD-F1', v_camp, pg_temp._t_ctx('channel'), pg_temp._t_ctx('store'), 'pending', v_op, v_op)
+  RETURNING id INTO v_order;
+  INSERT INTO customer_order_items (tenant_id, order_id, campaign_item_id, sku_id, qty, unit_price, status)
+  VALUES (v_tenant, v_order, v_ci, v_sku, 2, 100, 'pending');
+
+  INSERT INTO purchase_requests (
+    tenant_id, pr_no, source_type, source_close_date, source_location_id,
+    status, total_amount, created_by, updated_by
+  ) VALUES (
+    v_tenant, 'ZZREOPEN-F-PR', 'close_date', v_date, pg_temp._t_ctx('loc'),
+    'draft', 100, v_op, v_op
+  ) RETURNING id INTO v_pr;
+
+  INSERT INTO purchase_request_items (
+    pr_id, sku_id, qty_requested, suggested_supplier_id, unit_cost, created_by, updated_by
+  ) VALUES (v_pr, v_sku, 1, pg_temp._t_ctx('supplier'), 100, v_op, v_op)
+  RETURNING id INTO v_item;
+
+  v_res := public.rpc_close_campaign(v_camp, v_op);
+
+  RAISE NOTICE '（預期行為）第 12 步：團 F 併入請購草稿被擋，rpc_close_campaign 回 action=%（reason=%）。這是「預期會被前端提示」的情境：員工按關團不會看到錯誤，但團停在已關團、沒進請購單；前端提示由 CEO 另案處理（阿審第 1 輪 P1）。',
+    v_res->>'action', v_res->>'reason';
+
+  INSERT INTO _t_result VALUES (33, '舊資料（無明細、非本團）→ 關團回 append_failed，原因是中文「舊資料」說明（預期會被前端提示）',
+    v_res->>'action' = 'append_failed' AND (v_res->>'pr_id')::BIGINT = v_pr
+    AND COALESCE(v_res->>'reason', '') LIKE '%舊資料%',
+    'action=' || COALESCE(v_res->>'action', 'NULL') || '，reason=' || COALESCE(v_res->>'reason', '-'));
+
+  INSERT INTO _t_result VALUES (34, 'append_failed 後：團停在 closed、訂單維持 pending、草稿數量不變且沒有新增明細',
+    (SELECT status FROM group_buy_campaigns WHERE id = v_camp) = 'closed'
+    AND (SELECT status FROM customer_orders WHERE id = v_order) = 'pending'
+    AND pg_temp._t_item_qty(v_pr, v_sku) = 1
+    AND (SELECT COUNT(*) FROM purchase_request_items WHERE pr_id = v_pr) = 1
+    AND NOT EXISTS (SELECT 1 FROM purchase_request_item_campaigns WHERE pr_item_id = v_item),
+    '團=' || (SELECT status FROM group_buy_campaigns WHERE id = v_camp)
+    || '，訂單=' || (SELECT status FROM customer_orders WHERE id = v_order)
+    || '，草稿 sku1=' || pg_temp._t_item_qty(v_pr, v_sku)
+    || '，列數=' || (SELECT COUNT(*) FROM purchase_request_items WHERE pr_id = v_pr)
+    || '，明細筆數=' || (SELECT COUNT(*) FROM purchase_request_item_campaigns WHERE pr_item_id = v_item));
+END
+$step12$;
+
+
+-- ----------------------------------------------------------------------------
 -- 結果
 -- ----------------------------------------------------------------------------
 SELECT
@@ -606,8 +813,8 @@ FROM _t_result
 UNION ALL
 SELECT
   999,
-  CASE WHEN COUNT(*) = 25 AND bool_and(pass) THEN '✅' ELSE '❌' END,
-  '總結：25 條全部通過',
+  CASE WHEN COUNT(*) = 34 AND bool_and(pass) THEN '✅' ELSE '❌' END,
+  '總結：34 條全部通過',
   COUNT(*) FILTER (WHERE pass) || ' / ' || COUNT(*) || ' 條通過'
 FROM _t_result
 ORDER BY 1;
