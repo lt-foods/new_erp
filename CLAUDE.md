@@ -827,23 +827,29 @@ Leg-2 總倉 → 收貨店（`customer_order_id` = 轉入單）。所以**只看
 而且既有單身上那一欄還指著更早的來源單、數量也是整張單的 aid 品項總和（會重複算）。
 真的要修得靠一張 order↔order 的連結表（一張轉入單可能有多個來源），不是補寫一欄就好。
 
-### 自由轉貨（rpc_create_free_transfer）：停用過一次，2026-08-16 又打開
+### 自由轉貨（rpc_create_free_transfer）：2026-10-01 老闆再次停用，沒有老闆明確指示，不要再打開
 
-時間軸：8/14 停用（`/wms/transfers` 的「+ 建自由轉貨」與 `/transfers/free`
-表單移除、`authenticated` 的 EXECUTE 收回，20260814050000）→ 8/16 重新開放
-（20260816000040 把 GRANT 還回去、兩個前端入口接回）。既有單的檢視 / 收貨 /
-刪草稿 / 改估價從頭到尾都沒動過。
+時間軸：5/15 上線 → 8/14 停用（20260814050000）→ 8/16 重新開放（20260816000040）
+→ **10/1 老闆決定再次停用**（20261001010000）。所有帳號一起關（含總倉 / 老闆），
+沒有例外；店家之間互給東西＝店家自己處理，系統不記帳、月結不算。
+
+這次是**兩層一起關**：
+- 權限：`rpc_create_free_transfer` 的 EXECUTE 從 `authenticated` / `anon` / `PUBLIC`
+  收回（函式本體沒動、沒 DROP）。
+- 入口：`/wms/transfers` 的「+ 建自由轉貨」與進頁自動彈出的運作說明動畫（含「❓ 運作說明」鈕）
+  移除；`/transfers/free` 改成停用說明頁；`FreeTransferCreateForm` / `FreeTransferCreateModal` /
+  `FreeTransferExplainerModal` 三個元件已刪除。
+
+停用理由：建單永遠只寫虛擬 SKU `MISC-01`，真貨的庫存帳完全不動（來源店沒少、收貨店沒多，
+取貨閘門因此誤擋或誤放）；`MISC-01` 出貨端跳過、收貨端沒跳過，只增不減；月結 `free_in` /
+`free_out` 直接吃店家自填的估價；月底出貨、隔月收貨的單曾兩個月都算進去。
+
+既有單的檢視 / 出貨 / 收貨 / 刪草稿 / 改估價 / 月結**保留不動**。
 
 要點：**功能開關要兩層一起動**。只拿掉按鈕、EXECUTE 還通 = 沒停；只接回按鈕、
-EXECUTE 還被 REVOKE 著 = 使用者按下去拿到 `permission denied for function`
-（前端唯一呼叫點 `FreeTransferCreateForm` 走 authenticated 的 anon key，
-函式本體那層角色守衛擋不到這個）。
-
-分工（自由轉貨開著也一樣）：自由轉貨＝商品檔裡沒有的東西（器具 / 樣品 / 零碼，
-掛虛擬 SKU + 估價）、只給店↔店（表單濾掉總倉）；有掛顧客訂單的貨走「訂單轉給別人
-+ 勾空中轉」；店裡缺貨要總倉派走補貨申請。收貨短少彈窗的「補出貨」CTA 因此留在
-`/restock/new`（短少多半是總倉再補一次，而自由轉貨選不到總倉），別再改回
-`/transfers/free`。
+EXECUTE 還被 REVOKE 著 = 使用者按下去拿到 `permission denied for function`。
+⛔ **沒有老闆明確指示，不要把按鈕、表單或 GRANT 接回去。**
+有掛顧客訂單的貨走「訂單轉給別人 + 勾空中轉」；店裡缺貨要總倉派走補貨申請（`/restock/new`）。
 
 ### 沒有撿貨波次≠沒有單據：`rpc_get_transfer_source_kinds` 的 `air`
 

@@ -2,8 +2,9 @@
 
 // 內部調撥 (Internal Transfers) — 匯總頁
 // 涵蓋:
-//   C. 自由轉貨 (store ↔ store)
-//      (2026-08-14 曾停用建單,2026-08-16 重新開放 — 見 20260816000040_reenable_free_transfer)
+//   C. 自由轉貨 (store ↔ store) — 2026-10-01 起再次停用建單,只剩檢視/收貨/刪草稿
+//      (8/14 停用 → 8/16 重開 → 10/1 再停,見 20261001010000_disable_free_transfer_again;
+//       建單鈕與運作說明動畫一併移除,店對店有掛訂單的貨走訂單轉單勾「空中轉」)
 //   E. 退貨回總倉 (store → HQ)
 // 不含:
 //   A. 客戶訂單派貨 (走 wave) — 在 /wms/picking + /hq/inbox 撿貨單 tab
@@ -15,8 +16,6 @@ import { LoadingBlock } from "@/components/Spinner";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import SpinButton from "@/components/SpinButton";
-import FreeTransferCreateModal from "@/components/FreeTransferCreateModal";
-import FreeTransferExplainerModal, { FT_EXPLAINER_HIDE_KEY } from "@/components/FreeTransferExplainerModal";
 import OrderReturnCreateModal from "@/components/OrderReturnCreateModal";
 import TransferDetailModal from "@/components/TransferDetailModal";
 import { printViaIframe } from "@/lib/printIframe";
@@ -63,14 +62,8 @@ export default function InternalTransfersPage() {
   const [locs, setLocs] = useState<Map<number, Loc>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<"store_to_store" | "store_to_hq" | "all">("store_to_store");
-  const [showCreate, setShowCreate] = useState(false);
   const [showReturn, setShowReturn] = useState(false);
   const [detailId, setDetailId] = useState<number | null>(null);
-  // 進頁自動播放運作說明動畫（勾過「不再自動顯示」則否；header ❓ 可隨時重看）
-  const [showExplainer, setShowExplainer] = useState(false);
-  useEffect(() => {
-    if (localStorage.getItem(FT_EXPLAINER_HIDE_KEY) !== "1") setShowExplainer(true);
-  }, []);
   // 深連結：?open=<transferId> 直接開調撥單明細（月結對帳單的調撥單號連過來）
   useEffect(() => {
     const openId = new URLSearchParams(window.location.search).get("open");
@@ -250,18 +243,12 @@ export default function InternalTransfersPage() {
           <p className="text-sm text-zinc-500">
             店與店互轉、退貨回總倉。不含客戶訂單派貨(在派貨工作台)、互助訂單(在互助轉移單)。
           </p>
-          <p className="mt-0.5 text-xs text-zinc-400">
-            自由轉貨用在「商品檔裡沒有的東西」（器具、樣品、零碼）；有掛顧客訂單的貨請在該店的訂單上
-            「轉給別人」並勾「空中轉」—— 系統會自動出貨、接收店在「收貨」頁收掉即可。
+          <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-400">
+            自由轉貨（店對店）已於 2026-10-01 停用，不能再建新單。之前建的單照常可以在這頁查看、草稿可以刪除；已出貨的單請到「收貨」頁收貨。
+            有掛顧客訂單的貨，請在該店的訂單上按「轉給別人」並勾「空中轉」。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <SpinButton
-            onClick={() => setShowExplainer(true)}
-            className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-          >
-            ❓ 運作說明
-          </SpinButton>
           <SpinButton
             onClick={() => setShowReturn(true)}
             className="rounded-md bg-orange-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-orange-700"
@@ -269,27 +256,9 @@ export default function InternalTransfersPage() {
           >
             ↩ 退貨回總倉
           </SpinButton>
-          <SpinButton
-            onClick={() => setShowCreate(true)}
-            className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700"
-          >
-            + 建自由轉貨
-          </SpinButton>
         </div>
       </header>
 
-      <FreeTransferExplainerModal open={showExplainer} onClose={() => setShowExplainer(false)} />
-
-      <FreeTransferCreateModal
-        open={showCreate}
-        onClose={() => setShowCreate(false)}
-        onCreated={(transferId) => {
-          setShowCreate(false);
-          setReloadKey((k) => k + 1);
-          // 建完直接開明細,方便按「列印出貨單」交給司機
-          setDetailId(transferId);
-        }}
-      />
       <OrderReturnCreateModal
         open={showReturn}
         onClose={() => setShowReturn(false)}
