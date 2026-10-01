@@ -9,7 +9,7 @@
 -- ⚠️ 執行身分：測 13／14（對照組）會用 pg_get_functiondef 複製
 --    rpc_add_po_store_demands、拿掉一段後另存成別的名字。需要函式擁有者或超級使用者。
 --
--- 測試清單（計畫 §3 的 1～14，加 0、15～24；22～24 是第二輪審查補的）
+-- 測試清單（計畫 §3 的 1～14，加 0、15～27；22～24 是第二輪審查補的、25～27 是第三輪）
 --    0. 夾具前提＋預覽：店B 派貨 10、補單差額 0、表頭金額；預覽列出可加的團與對不出團的品項
 --    1. 30 件、未到未派，店B +1 → 採購單 31、請購單 31、派貨店B 11、補單差額 0
 --    2. 一次三家：店B +1、店A +2（店A 已有店家單→併進去）、批發A +1 → 採購單 34、紀錄 3 列
@@ -36,7 +36,11 @@
 --   22. 目標列完整、但**別張**舊請購單有一列沒有各團明細、記在這團名下（會少買）→ 擋
 --   23. 目標列完整、但**別張**舊請購單用 purchase_request_campaigns 連到這團、那一列記的是別團（會多買）→ 擋
 --   24. 廠商已確認短少（confirmed_shortfall > 0）→ 擋；（對照）confirmed_shortfall = 0 → 不擋
+--   25. 數量傳 "NaN"（直接打 RPC 才送得進來）→ 白話擋下，採購單、請購單、店家單、紀錄表都沒變
+--   26. 數量傳 "Infinity"／"-Infinity" → 同上
+--   27. 數量 0.0004（取到小數三位變 0）、同一家店兩列加總 ≤ 0（1 與 -1；兩列各 0.0004）→ 同上
 --   ⇒ 22／23 的對照組（拿掉 migration 裡的 LEGACY 段）由本機測試工具負責：兩條都必須變紅。
+--   ⇒ 25 的對照組（拿掉 migration 數量檢查裡的 NaN）由本機測試工具負責：必須變紅。
 --
 -- 「鎖完再檢查一次」「追加 vs 斷貨／調整已收量 不互卡」需要兩個連線同時跑，單一交易測不到 ——
 --   由本機測試工具的「併發測試」那一段負責（見施工回報）。
@@ -544,6 +548,9 @@ BEGIN
   PERFORM pg_temp._t_case('c23');
   PERFORM pg_temp._t_case('c24');
   PERFORM pg_temp._t_case('c24b');
+  PERFORM pg_temp._t_case('c25');
+  PERFORM pg_temp._t_case('c26');
+  PERFORM pg_temp._t_case('c27');
 END
 $cases$;
 
@@ -1394,6 +1401,103 @@ $t18$;
 
 
 -- ============================================================================
+-- 測 25～27（第三輪審查 P1／P2）：數量是 NaN／Infinity／取到小數三位變 0／同一家店加總 ≤ 0
+--   畫面上送不出這些值（前端有擋），只有直接打 RPC 才送得進來。
+--   每一條：每種輸入都要被白話擋下，而且採購單、請購單、店家單、紀錄表都沒變。
+-- ============================================================================
+
+-- 「什麼都沒寫」的快照：採購單（品項數量、表頭金額）、請購單（品項、這團明細、總額）、
+-- 這個團的訂單（張數、品項數、數量合計，含店家單）、追加紀錄表列數
+CREATE FUNCTION pg_temp._t_state(p_key TEXT) RETURNS TEXT
+LANGUAGE sql AS $f$
+  SELECT format('採購 %s 表頭 %s/%s｜請購 %s 這團明細 %s 總額 %s｜這團訂單 %s 張、品項 %s 筆、數量合計 %s｜紀錄 %s 列',
+    (SELECT qty_ordered FROM purchase_order_items WHERE id = pg_temp._t_id(p_key || '.poi')),
+    (SELECT subtotal FROM purchase_orders WHERE id = pg_temp._t_id(p_key || '.po')),
+    (SELECT total FROM purchase_orders WHERE id = pg_temp._t_id(p_key || '.po')),
+    (SELECT qty_requested FROM purchase_request_items WHERE id = pg_temp._t_id(p_key || '.pri')),
+    (SELECT qty_requested FROM purchase_request_item_campaigns
+      WHERE pr_item_id = pg_temp._t_id(p_key || '.pri') AND campaign_id = pg_temp._t_id(p_key || '.camp')),
+    (SELECT total_amount FROM purchase_requests WHERE id = pg_temp._t_id(p_key || '.pr')),
+    (SELECT COUNT(*) FROM customer_orders WHERE campaign_id = pg_temp._t_id(p_key || '.camp')),
+    (SELECT COUNT(*) FROM customer_order_items coi JOIN customer_orders co ON co.id = coi.order_id
+      WHERE co.campaign_id = pg_temp._t_id(p_key || '.camp')),
+    (SELECT SUM(coi.qty) FROM customer_order_items coi JOIN customer_orders co ON co.id = coi.order_id
+      WHERE co.campaign_id = pg_temp._t_id(p_key || '.camp')),
+    (SELECT COUNT(*) FROM purchase_request_store_additions WHERE campaign_id = pg_temp._t_id(p_key || '.camp')))
+$f$;
+
+-- 送一次（每次新的 request_key），回錯誤訊息；沒擋下來回「（沒有擋下來）」
+CREATE FUNCTION pg_temp._t_try(p_key TEXT, p_additions JSONB) RETURNS TEXT
+LANGUAGE plpgsql AS $f$
+BEGIN
+  PERFORM pg_temp._t_call('rpc_add_po_store_demands', p_key, p_additions, gen_random_uuid());
+  RETURN '（沒有擋下來）';
+EXCEPTION WHEN OTHERS THEN
+  RETURN SQLERRM;
+END $f$;
+
+-- 數量用 JSON 字串送（"NaN"、"Infinity" 只能這樣送進來）
+CREATE FUNCTION pg_temp._t_add_text(p_store TEXT, p_qty TEXT) RETURNS JSONB
+LANGUAGE sql AS $f$
+  SELECT jsonb_build_object('store_id', pg_temp._t_id(p_store), 'qty', p_qty)
+$f$;
+
+-- 測 25：NaN
+DO $t25$
+DECLARE v_s0 TEXT; v_s1 TEXT; v_e1 TEXT; v_e2 TEXT;
+BEGIN
+  v_s0 := pg_temp._t_state('c25');
+  v_e1 := pg_temp._t_try('c25', jsonb_build_array(pg_temp._t_add_text('storeB', 'NaN')));
+  -- 一列正常＋一列 NaN（小寫也是 NaN）→ 整筆擋，正常那一列也不能留下
+  v_e2 := pg_temp._t_try('c25', jsonb_build_array(pg_temp._t_add('storeB', 1), pg_temp._t_add_text('storeA', 'nan')));
+  v_s1 := pg_temp._t_state('c25');
+  INSERT INTO _t_result VALUES (
+    25, '數量傳 "NaN"（含一列正常＋一列 NaN）→ 白話擋下；採購單、請購單、店家單、紀錄表都沒變',
+    COALESCE(v_e1 LIKE '%大於 0 的數字%' AND v_e2 LIKE '%大於 0 的數字%' AND v_s1 = v_s0, FALSE),
+    format('NaN=%s｜正常+nan=%s｜之前：%s｜之後：%s', v_e1, v_e2, v_s0, v_s1));
+EXCEPTION WHEN OTHERS THEN
+  INSERT INTO _t_result VALUES (25, 'NaN', FALSE, 'EXCEPTION: ' || SQLERRM);
+END
+$t25$;
+
+-- 測 26：Infinity／-Infinity
+DO $t26$
+DECLARE v_s0 TEXT; v_s1 TEXT; v_e1 TEXT; v_e2 TEXT;
+BEGIN
+  v_s0 := pg_temp._t_state('c26');
+  v_e1 := pg_temp._t_try('c26', jsonb_build_array(pg_temp._t_add_text('storeB', 'Infinity')));
+  v_e2 := pg_temp._t_try('c26', jsonb_build_array(pg_temp._t_add_text('storeB', '-Infinity')));
+  v_s1 := pg_temp._t_state('c26');
+  INSERT INTO _t_result VALUES (
+    26, '數量傳 "Infinity"／"-Infinity" → 白話擋下；採購單、請購單、店家單、紀錄表都沒變',
+    COALESCE(v_e1 LIKE '%大於 0 的數字%' AND v_e2 LIKE '%大於 0 的數字%' AND v_s1 = v_s0, FALSE),
+    format('Infinity=%s｜-Infinity=%s｜之前：%s｜之後：%s', v_e1, v_e2, v_s0, v_s1));
+EXCEPTION WHEN OTHERS THEN
+  INSERT INTO _t_result VALUES (26, 'Infinity', FALSE, 'EXCEPTION: ' || SQLERRM);
+END
+$t26$;
+
+-- 測 27：取到小數三位變 0、同一家店兩列加總 ≤ 0
+DO $t27$
+DECLARE v_s0 TEXT; v_s1 TEXT; v_e1 TEXT; v_e2 TEXT; v_e3 TEXT;
+BEGIN
+  v_s0 := pg_temp._t_state('c27');
+  v_e1 := pg_temp._t_try('c27', jsonb_build_array(pg_temp._t_add('storeB', 0.0004)));
+  v_e2 := pg_temp._t_try('c27', jsonb_build_array(pg_temp._t_add('storeB', 1), pg_temp._t_add('storeB', -1)));
+  v_e3 := pg_temp._t_try('c27', jsonb_build_array(pg_temp._t_add('storeB', 0.0004), pg_temp._t_add('storeB', 0.0004)));
+  v_s1 := pg_temp._t_state('c27');
+  INSERT INTO _t_result VALUES (
+    27, '數量 0.0004、同一家店 1 與 -1、同一家店兩列各 0.0004 → 白話擋下；採購單、請購單、店家單、紀錄表都沒變',
+    COALESCE(v_e1 LIKE '%大於 0 的數字%' AND v_e2 LIKE '%大於 0 的數字%' AND v_e3 LIKE '%大於 0 的數字%'
+             AND v_s1 = v_s0, FALSE),
+    format('0.0004=%s｜1與-1=%s｜兩列0.0004=%s｜之前：%s｜之後：%s', v_e1, v_e2, v_e3, v_s0, v_s1));
+EXCEPTION WHEN OTHERS THEN
+  INSERT INTO _t_result VALUES (27, '極小數量／加總 ≤ 0', FALSE, 'EXCEPTION: ' || SQLERRM);
+END
+$t27$;
+
+
+-- ============================================================================
 -- 測 13／14（對照組，刻意放最後）：用**測 1 那一份檢查**去跑拿掉一段的版本，必須紅
 -- ============================================================================
 DO $t13$
@@ -1441,13 +1545,13 @@ BEGIN
     RAISE EXCEPTION 'po_store_additions_verification failed:%', E'\n' || v_bad;
   END IF;
 
-  -- 結果必須剛好 25 條（測 0～24）；少一條就算失敗，防止某條測試被跳過還顯示綠
+  -- 結果必須剛好 28 條（測 0～27）；少一條就算失敗，防止某條測試被跳過還顯示綠
   SELECT COUNT(DISTINCT seq) INTO v_n FROM _t_result;
-  IF v_n <> 25 OR (SELECT COUNT(*) FROM _t_result) <> 25 THEN
-    RAISE EXCEPTION 'po_store_additions_verification：應該有 25 條結果（測 0～24），實際 % 條', v_n;
+  IF v_n <> 28 OR (SELECT COUNT(*) FROM _t_result) <> 28 THEN
+    RAISE EXCEPTION 'po_store_additions_verification：應該有 28 條結果（測 0～27），實際 % 條', v_n;
   END IF;
 
-  RAISE NOTICE 'po_store_additions_verification: 25/25 PASS';
+  RAISE NOTICE 'po_store_additions_verification: 28/28 PASS';
 END $$;
 
 ROLLBACK;

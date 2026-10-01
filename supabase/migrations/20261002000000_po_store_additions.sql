@@ -957,7 +957,7 @@ BEGIN
     RAISE EXCEPTION '%', v_reason;
   END IF;
 
-  -- ── 輸入（照抄 #995 的解析與分店檢查）─────────────────────────────────────
+  -- ── 輸入（解析與分店檢查照抄 #995；數量檢查比 #995 嚴，見下）──────────────────
   IF p_additions IS NULL OR jsonb_typeof(p_additions) <> 'array' OR jsonb_array_length(p_additions) = 0 THEN
     RAISE EXCEPTION '請至少選一間分店或批發與數量';
   END IF;
@@ -969,15 +969,23 @@ BEGIN
     x.qty::NUMERIC AS qty
   FROM jsonb_to_recordset(p_additions) AS x(store_id BIGINT, qty NUMERIC);
 
+  -- 數量檢查（審查第三輪 P1）：每一列原始輸入、同一家店加總後，各查一次。
+  --   ・NaN／Infinity：直接打 RPC 傳字串 "NaN"、"Infinity" 會被轉成 numeric 的特殊值；
+  --     NaN 在 Postgres 裡比任何數字都大，光寫 `qty <= 0` 擋不住，會一路寫進採購單、請購單的數量與金額。
+  --   ・寫入欄位只到小數三位（NUMERIC(18,3)）：0.0004 這種取到三位後變 0 的值，
+  --     要在這裡用白話擋下，不要拖到資料表 CHECK 才報技術錯誤。
+  --   ⇒ 最終條件：不是 NaN／±Infinity，而且取到小數三位後 > 0。
+  --   （#995 rpc_add_pr_store_demands 有同樣的缺口，本檔沒動它。）
   SELECT COUNT(*)
     INTO v_bad_count
     FROM pg_temp._po_store_add_raw
    WHERE store_id IS NULL
       OR qty IS NULL
-      OR qty <= 0;
+      OR qty::TEXT IN ('NaN', 'Infinity', '-Infinity')
+      OR round(qty, 3) <= 0;
 
   IF v_bad_count > 0 THEN
-    RAISE EXCEPTION '分店／批發追加數量必須大於 0';
+    RAISE EXCEPTION '分店／批發追加數量必須是大於 0 的數字（最多三位小數）';
   END IF;
 
   DROP TABLE IF EXISTS pg_temp._po_store_add_input;
@@ -985,6 +993,18 @@ BEGIN
   SELECT store_id, SUM(qty)::NUMERIC(18,3) AS qty
     FROM pg_temp._po_store_add_raw
    GROUP BY store_id;
+
+  -- 同一家店拆成好幾列時，加總（取到小數三位）後再查一次同一個條件
+  SELECT COUNT(*)
+    INTO v_bad_count
+    FROM pg_temp._po_store_add_input
+   WHERE qty IS NULL
+      OR qty::TEXT IN ('NaN', 'Infinity', '-Infinity')
+      OR qty <= 0;
+
+  IF v_bad_count > 0 THEN
+    RAISE EXCEPTION '分店／批發追加數量必須是大於 0 的數字（最多三位小數）';
+  END IF;
 
   SELECT COUNT(*), COALESCE(SUM(qty), 0)
     INTO v_store_count, v_store_added_qty

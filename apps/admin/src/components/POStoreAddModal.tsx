@@ -210,28 +210,47 @@ export function POStoreAddModal({
       return;
     }
 
+    // 這次要送的內容（團＋每家店數量，依店排好）；跟上一次一樣就沿用同一把 request_key
+    const sig = JSON.stringify({
+      campaign: selected.campaign_id,
+      lines: lines.map((l) => [l.store.id, l.qty]).sort((x, y) => x[0] - y[0]),
+    });
+    const last = lastSentRef.current;
+    // 上一次不確定有沒有寫進去、這次又原封不動重送：如果上一次其實已經成功，後端只會回上次的結果、
+    // 不會再加，這時算出來的「採購單加 X 件：A → A+X」不一定會發生 → 確認框不寫這些數字。
+    const retryUncertain = !!last && last.mayBeWritten && last.sig === sig;
+
     const n = storeTotal;
     const x = delta == null ? null : Math.max(delta + n, 0);
     const storeText = lines.map((l) => `${l.store.name} +${formatQty(l.qty)}`).join("、");
+    const poLines: (string | null)[] = retryUncertain
+      ? [`${PO_TERM_ZH}與請購單會加幾件：以送出後的結果為準`]
+      : [
+          x == null
+            ? `${PO_TERM_ZH}會加幾件：送出後由系統計算（目前查不到這個團的叫貨差額）`
+            : `${PO_TERM_ZH}加 ${formatQty(x)} 件：訂購量 ${formatQty(a)} → ${formatQty(a + x)}`,
+          x != null && x < n
+            ? `　（這個團原本已經多叫 ${formatQty(n - x)} 件——之前有人取消——先用掉，所以${PO_TERM_ZH}只加 ${formatQty(x)} 件）`
+            : null,
+          x != null && x > n
+            ? `　（其中 ${formatQty(x - n)} 件是這個團原本就還沒叫貨的量，一起補進這張${PO_TERM_ZH}）`
+            : null,
+          x === 0
+            ? "請購單不用改（原本叫的量已經夠）。"
+            : `請購單對應那一列會跟著${PO_TERM_ZH}一起加（不用另外動）。`,
+        ];
     // null ＝ 這一行不顯示；"" ＝ 空一行
     const confirmText = [
-      "確定要追加？",
+      retryUncertain ? "確定要再送一次？" : "確定要追加？",
       "",
+      retryUncertain
+        ? "⚠ 上次送出結果不確定；如果上次其實已經成功，這次不會重複加，會顯示上次的結果。"
+        : null,
+      retryUncertain ? "" : null,
       `團：${selected.campaign_no ?? ""} ${selected.campaign_name ?? ""}`.trim(),
       `商品：${target.label}`,
       `店家加 ${formatQty(n)} 件：${storeText}（加在各店的店家內部單，不重開團）`,
-      x == null
-        ? `${PO_TERM_ZH}會加幾件：送出後由系統計算（目前查不到這個團的叫貨差額）`
-        : `${PO_TERM_ZH}加 ${formatQty(x)} 件：訂購量 ${formatQty(a)} → ${formatQty(a + x)}`,
-      x != null && x < n
-        ? `　（這個團原本已經多叫 ${formatQty(n - x)} 件——之前有人取消——先用掉，所以${PO_TERM_ZH}只加 ${formatQty(x)} 件）`
-        : null,
-      x != null && x > n
-        ? `　（其中 ${formatQty(x - n)} 件是這個團原本就還沒叫貨的量，一起補進這張${PO_TERM_ZH}）`
-        : null,
-      x === 0
-        ? "請購單不用改（原本叫的量已經夠）。"
-        : `請購單對應那一列會跟著${PO_TERM_ZH}一起加（不用另外動）。`,
+      ...poLines,
       "",
       "⚠ 系統不會通知廠商：送出後請自己打電話或傳訊息跟廠商說數量改了。",
     ]
@@ -239,12 +258,6 @@ export function POStoreAddModal({
       .join("\n");
     if (!window.confirm(confirmText)) return;
 
-    // 這次要送的內容（團＋每家店數量，依店排好）；跟上一次一樣就沿用同一把 request_key
-    const sig = JSON.stringify({
-      campaign: selected.campaign_id,
-      lines: lines.map((l) => [l.store.id, l.qty]).sort((x, y) => x[0] - y[0]),
-    });
-    const last = lastSentRef.current;
     const requestKey = last && (last.sig === sig || last.mayBeWritten) ? last.key : newUuid();
 
     setBusy(true);
