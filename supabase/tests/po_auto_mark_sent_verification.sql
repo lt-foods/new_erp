@@ -7,7 +7,9 @@
 --    （不要在測試庫／正式庫跑：夾具會建團、訂單、請購單、採購單，測 3／4／12 還會在交易裡
 --      暫時把 rpc_send_purchase_order 換成會丟錯的版本。）
 --
--- ⚠️ 執行身分：需要超級使用者（測 3／4／12 在交易裡換函式；測 15～17 會 SET ROLE anon／authenticated）。
+-- ⚠️ 執行身分：需要超級使用者（測 3／4／12 在交易裡換函式；測 15～17、22 會 SET ROLE anon／authenticated）。
+-- ⚠️ 本機臨時庫要模擬 Supabase：auth.jwt()、表的預設權限，以及 suppliers／purchase_orders 的 RLS
+--    （兩支新函式用呼叫者身分讀這兩張表；測 16／17／22 用 request.jwt.claims 帶 tenant）。
 --
 -- 測試清單（括號是 CEO 派工單的編號）
 --    0. 夾具前提：新舊函式都在
@@ -34,11 +36,20 @@
 --   16. （⑧）用 authenticated 身分實際跑「建立採購單」新程式 → 成功、已發送（SECURITY INVOKER 走得通）
 --   17. （⑧）用 authenticated 身分實際跑「回復斷貨」新程式 → 成功、已發送
 --   18. 函式屬性：SECURITY INVOKER、search_path=public、本檔記號、參數與回傳型別
---   ⇒（⑨）對照組由本機測試工具負責：拿掉「標已發送」那段 → 測 1（回復那支是測 8）必須紅。
+--   ── 第二輪（審查 P1-1：舊式「斷貨用」單不可自動標已發送）──
+--   19. 甲種斷貨單（廠商「斷貨用」、金額 0、沒有來源單）→ 新的回復 → 回復照做（客人訂單照樣還原、
+--       發通知），但停在 draft；跟「只呼叫原本 restore」逐欄比完全一樣；回傳也完全一樣（po_status=draft）
+--   20. 請購單有三家廠商（廠商A、0 元的廠商B、斷貨用）→ 新的建立採購單 → 3 張；斷貨用那張停 draft，
+--       另兩張（含 0 元那張）已發送；跟原本的拆單逐欄比，只差那兩張的 4 欄
+--   21. 乙種斷貨單但廠商也是「斷貨用」（拆自一張斷貨用單）→ 一樣停 draft（判準只看廠商名稱）
+--   22. 呼叫者看不到單（RLS：別的 tenant）→ 建立／回復照做，但不自動標已發送（跟改版前一樣）
+--   ⇒（⑨）對照組由本機測試工具負責：拿掉「標已發送」那段 → 測 1（回復那支是測 8）必須紅；
+--          拿掉「斷貨用跳過」那段 → 測 20（回復那支是測 19）必須紅。
 --
 -- 斷貨的狀態是夾具直接寫出來的（照 _stockout_po_items／_split_stockout_po_items 會寫的欄位），
 -- 不是跑真的斷貨函式。
--- 測試資料一律用「店A／店B」「廠商A／廠商B」「會員A／會員B」這種一般名稱，不用真實門市。
+-- 測試資料一律用「店A／店B」「廠商A／廠商B」「會員A／會員B」這種一般名稱，不用真實門市；
+-- 「斷貨用」是正式庫舊式斷貨單的廠商名稱（不是門市），本檔就是要測它。
 -- ============================================================================
 
 BEGIN;
@@ -215,6 +226,18 @@ LANGUAGE sql AS $f$
    WHERE p.oid = 'public.rpc_send_purchase_order(bigint,text,uuid)'::REGPROCEDURE
 $f$;
 
+-- 模擬 PostgREST 帶進來的 JWT（只在這個交易有效）。⚠️ 要在 SET ROLE 之前呼叫（authenticated 讀不到暫存表）。
+CREATE FUNCTION pg_temp._t_login(p_tenant UUID) RETURNS VOID
+LANGUAGE sql AS $f$
+  SELECT set_config('request.jwt.claims',
+           json_build_object('tenant_id', p_tenant,
+                             'app_metadata', json_build_object('tenant_id', p_tenant, 'role', 'admin'))::TEXT,
+           TRUE)
+$f$;
+
+CREATE FUNCTION pg_temp._t_logout() RETURNS VOID
+LANGUAGE sql AS $f$ SELECT set_config('request.jwt.claims', '', TRUE) $f$;
+
 
 -- ----------------------------------------------------------------------------
 -- 共用夾具：一個租戶、總倉、兩家廠商、兩家店、兩位會員、三個商品、補貨用的內部團
@@ -231,6 +254,9 @@ BEGIN
   PERFORM pg_temp._t_put('supA', v_id);
   INSERT INTO public.suppliers(tenant_id, code, name) VALUES (v_t, 'T-SB', '廠商B') RETURNING id INTO v_id;
   PERFORM pg_temp._t_put('supB', v_id);
+  -- 舊式斷貨單掛的那家「廠商」（正式庫的名稱就是這三個字）
+  INSERT INTO public.suppliers(tenant_id, code, name) VALUES (v_t, 'T-SO', '斷貨用') RETURNING id INTO v_id;
+  PERFORM pg_temp._t_put('supStockout', v_id);
   INSERT INTO public.stores(tenant_id, code, name) VALUES (v_t, 'T-A', '店A') RETURNING id INTO v_id;
   PERFORM pg_temp._t_put('storeA', v_id);
   INSERT INTO public.stores(tenant_id, code, name) VALUES (v_t, 'T-B', '店B') RETURNING id INTO v_id;
@@ -290,7 +316,13 @@ END $f$;
 --        O3（沒綁會員、S1 是舊資料：只有 stockout_at 沒有 stockout_po_id）／
 --        O4（會員A、已整單轉出 transferred_out → 回復不應該動它）
 --   補貨申請（連到這張請購單）＋ 明細 S1 ＋ RR- 內部單，都因斷貨取消
-CREATE FUNCTION pg_temp._t_make_stockout(p_key TEXT, p_received NUMERIC DEFAULT 0, p_with_gr BOOLEAN DEFAULT FALSE)
+--   p_kind（第二輪加的，預設 '乙' ＝ 第一輪的夾具一字不差）：
+--     '乙'       斷貨單沿用來源單的廠商A、金額 300、stockout_split_from_po_id = 來源單（8/12 之後的拆單機制）
+--     '甲'       斷貨單的廠商是「斷貨用」、金額 0、沒有 stockout_split_from_po_id（舊式少訂差額單）；
+--                來源單（主單）照舊是廠商A
+--     '乙斷貨用' 乙種，但來源單本身就是「斷貨用」廠商 → 拆出來的斷貨單也掛「斷貨用」、有 stockout_split_from_po_id
+CREATE FUNCTION pg_temp._t_make_stockout(p_key TEXT, p_received NUMERIC DEFAULT 0, p_with_gr BOOLEAN DEFAULT FALSE,
+                                         p_kind TEXT DEFAULT '乙')
 RETURNS BIGINT
 LANGUAGE plpgsql AS $f$
 DECLARE
@@ -303,7 +335,17 @@ DECLARE
   v_so   BIGINT; v_so1 BIGINT;
   v_o    BIGINT;
   v_rr   BIGINT;
+  v_sup_so  BIGINT;
+  v_sup_src BIGINT;
+  v_cost1   NUMERIC;
 BEGIN
+  IF p_kind NOT IN ('乙', '甲', '乙斷貨用') THEN
+    RAISE EXCEPTION '夾具不認得 p_kind=%', p_kind;
+  END IF;
+  v_sup_so  := CASE WHEN p_kind IN ('甲', '乙斷貨用') THEN pg_temp._t_id('supStockout') ELSE pg_temp._t_id('supA') END;
+  v_sup_src := CASE WHEN p_kind = '乙斷貨用' THEN pg_temp._t_id('supStockout') ELSE pg_temp._t_id('supA') END;
+  v_cost1   := CASE WHEN p_kind = '甲' THEN 0 ELSE 50 END;
+
   INSERT INTO public.group_buy_campaigns(tenant_id, campaign_no, name, status)
   VALUES (v_t, 'T-' || p_key, '測試團' || p_key, 'closed') RETURNING id INTO v_camp;
   INSERT INTO public.campaign_items(tenant_id, campaign_id, sku_id, unit_price)
@@ -312,16 +354,16 @@ BEGIN
   VALUES (v_t, v_camp, pg_temp._t_id('sku2'), 100) RETURNING id INTO v_ci2;
 
   INSERT INTO public.purchase_requests(tenant_id, pr_no, status, review_status, total_amount, submitted_at, created_by, updated_by)
-  VALUES (v_t, 'PR-T-' || p_key, 'fully_ordered', 'approved', 380, v_ts - INTERVAL '3 day', v_op, v_op) RETURNING id INTO v_pr;
+  VALUES (v_t, 'PR-T-' || p_key, 'fully_ordered', 'approved', 6 * v_cost1 + 80, v_ts - INTERVAL '3 day', v_op, v_op) RETURNING id INTO v_pr;
   INSERT INTO public.purchase_request_items(pr_id, sku_id, qty_requested, suggested_supplier_id, unit_cost, source_campaign_id, created_by, updated_by)
-  VALUES (v_pr, pg_temp._t_id('sku1'), 6, pg_temp._t_id('supA'), 50, v_camp, v_op, v_op) RETURNING id INTO v_pri1;
+  VALUES (v_pr, pg_temp._t_id('sku1'), 6, v_sup_so, v_cost1, v_camp, v_op, v_op) RETURNING id INTO v_pri1;
   INSERT INTO public.purchase_request_items(pr_id, sku_id, qty_requested, suggested_supplier_id, unit_cost, source_campaign_id, created_by, updated_by)
-  VALUES (v_pr, pg_temp._t_id('sku2'), 4, pg_temp._t_id('supA'), 20, v_camp, v_op, v_op) RETURNING id INTO v_pri2;
+  VALUES (v_pr, pg_temp._t_id('sku2'), 4, v_sup_src, 20, v_camp, v_op, v_op) RETURNING id INTO v_pri2;
   INSERT INTO public.purchase_request_campaigns(pr_id, campaign_id, tenant_id) VALUES (v_pr, v_camp, v_t);
 
   INSERT INTO public.purchase_orders(tenant_id, po_no, supplier_id, dest_location_id, status, subtotal, total,
                                      created_by, updated_by, sent_at, sent_by, sent_channel)
-  VALUES (v_t, 'PO-T-' || p_key || '-SRC', pg_temp._t_id('supA'), pg_temp._t_id('loc'), 'sent', 80, 80,
+  VALUES (v_t, 'PO-T-' || p_key || '-SRC', v_sup_src, pg_temp._t_id('loc'), 'sent', 80, 80,
           v_op, v_op, v_ts - INTERVAL '2 day', v_op, 'line') RETURNING id INTO v_src;
   INSERT INTO public.purchase_order_items(po_id, sku_id, qty_ordered, unit_cost, created_by, updated_by)
   VALUES (v_src, pg_temp._t_id('sku2'), 4, 20, v_op, v_op) RETURNING id INTO v_src2;
@@ -329,11 +371,11 @@ BEGIN
   INSERT INTO public.purchase_orders(tenant_id, po_no, supplier_id, dest_location_id, status, subtotal, total,
                                      created_by, updated_by, stockout_at, stockout_by, stockout_reason,
                                      stockout_split_from_po_id)
-  VALUES (v_t, 'PO-T-' || p_key || '-SO', pg_temp._t_id('supA'), pg_temp._t_id('loc'), 'cancelled', 300, 300,
-          v_op, v_op, v_ts, v_op, '測試斷貨', v_src) RETURNING id INTO v_so;
+  VALUES (v_t, 'PO-T-' || p_key || '-SO', v_sup_so, pg_temp._t_id('loc'), 'cancelled', 6 * v_cost1, 6 * v_cost1,
+          v_op, v_op, v_ts, v_op, '測試斷貨', CASE WHEN p_kind = '甲' THEN NULL ELSE v_src END) RETURNING id INTO v_so;
   INSERT INTO public.purchase_order_items(po_id, sku_id, qty_ordered, qty_received, unit_cost,
                                           stockout_at, stockout_by, stockout_reason, created_by, updated_by)
-  VALUES (v_so, pg_temp._t_id('sku1'), 6, p_received, 50, v_ts, v_op, '測試斷貨', v_op, v_op) RETURNING id INTO v_so1;
+  VALUES (v_so, pg_temp._t_id('sku1'), 6, p_received, v_cost1, v_ts, v_op, '測試斷貨', v_op, v_op) RETURNING id INTO v_so1;
 
   UPDATE public.purchase_request_items SET po_item_id = v_so1  WHERE id = v_pri1;
   UPDATE public.purchase_request_items SET po_item_id = v_src2 WHERE id = v_pri2;
@@ -1013,17 +1055,21 @@ $t15$;
 -- ----------------------------------------------------------------------------
 -- 測 16／17：（⑧）用 authenticated 身分實際跑新程式 → 成功（SECURITY INVOKER 走得通）
 --   ⚠️ authenticated 讀不到暫存表，id 先拿到變數裡、跑完 RESET ROLE 才寫結果
+--   第二輪：新程式會用呼叫者身分讀 purchase_orders／suppliers（RLS：同 tenant 才看得到），
+--   所以要像 PostgREST 一樣帶 JWT（同 tenant）。
 -- ----------------------------------------------------------------------------
 DO $t16$
 DECLARE
   v_pr  BIGINT := pg_temp._t_make_pr('p16', 'approved', 'submitted');
   v_loc BIGINT := pg_temp._t_id('loc');
   v_op  UUID := pg_temp._t_op();
+  v_t   UUID := (SELECT tenant FROM _t_env);
   v_ids BIGINT[];
   v_err TEXT;
   v_got TEXT;
 BEGIN
   BEGIN
+    PERFORM pg_temp._t_login(v_t);
     EXECUTE 'SET ROLE authenticated';
     v_ids := public.rpc_split_pr_to_pos_and_mark_sent(v_pr, v_loc, v_op);
     EXECUTE 'RESET ROLE';
@@ -1031,6 +1077,7 @@ BEGIN
     v_err := SQLSTATE || ' ' || SQLERRM;
   END;
   EXECUTE 'RESET ROLE';
+  PERFORM pg_temp._t_logout();
   SELECT string_agg(status || '/' || COALESCE(sent_channel, '∅'), ',' ORDER BY id) INTO v_got
     FROM public.purchase_orders WHERE id = ANY (pg_temp._t_pos_of(v_pr));
   INSERT INTO _t_result VALUES (16,
@@ -1039,6 +1086,7 @@ BEGIN
     format('錯誤=%s｜結果=%s', COALESCE(v_err, '無'), v_got));
 EXCEPTION WHEN OTHERS THEN
   EXECUTE 'RESET ROLE';
+  PERFORM pg_temp._t_logout();
   INSERT INTO _t_result VALUES (16, '（⑧）authenticated 建立採購單', FALSE, 'EXCEPTION: ' || SQLERRM);
 END
 $t16$;
@@ -1047,11 +1095,13 @@ DO $t17$
 DECLARE
   v_so  BIGINT := pg_temp._t_make_stockout('r17');
   v_op  UUID := pg_temp._t_op();
+  v_t   UUID := (SELECT tenant FROM _t_env);
   v_ret JSONB;
   v_err TEXT;
   v_got TEXT;
 BEGIN
   BEGIN
+    PERFORM pg_temp._t_login(v_t);
     EXECUTE 'SET ROLE authenticated';
     v_ret := public.rpc_restore_stockout_po_and_mark_sent(v_so, v_op);
     EXECUTE 'RESET ROLE';
@@ -1059,6 +1109,7 @@ BEGIN
     v_err := SQLSTATE || ' ' || SQLERRM;
   END;
   EXECUTE 'RESET ROLE';
+  PERFORM pg_temp._t_logout();
   SELECT status || '/' || COALESCE(sent_channel, '∅') INTO v_got FROM public.purchase_orders WHERE id = v_so;
   INSERT INTO _t_result VALUES (17,
     '（⑧）authenticated 身分實際按「回復斷貨」新程式 → 成功、已發送',
@@ -1067,6 +1118,7 @@ BEGIN
     format('錯誤=%s｜回傳 po_status=%s｜採購單=%s', COALESCE(v_err, '無'), v_ret ->> 'po_status', v_got));
 EXCEPTION WHEN OTHERS THEN
   EXECUTE 'RESET ROLE';
+  PERFORM pg_temp._t_logout();
   INSERT INTO _t_result VALUES (17, '（⑧）authenticated 回復斷貨', FALSE, 'EXCEPTION: ' || SQLERRM);
 END
 $t17$;
@@ -1099,6 +1151,264 @@ END
 $t18$;
 
 
+-- ============================================================================
+-- 第二輪：舊式「斷貨用」單不可自動標已發送（審查 P1-1）
+-- ============================================================================
+
+-- 回復之後「下游還原面」一行摘要（跟測 8 的 v_state 同一套）
+CREATE FUNCTION pg_temp._t_restore_state(p_key TEXT) RETURNS TEXT
+LANGUAGE sql AS $f$
+  SELECT concat_ws(' ',
+    'O1=' || (SELECT status FROM public.customer_orders WHERE id = pg_temp._t_id(p_key || '.o1')),
+    'O2=' || (SELECT status FROM public.customer_orders WHERE id = pg_temp._t_id(p_key || '.o2')),
+    'O3=' || (SELECT status FROM public.customer_orders WHERE id = pg_temp._t_id(p_key || '.o3')),
+    'O4=' || (SELECT status FROM public.customer_orders WHERE id = pg_temp._t_id(p_key || '.o4')),
+    'S1待取=' || (SELECT COUNT(*) FROM public.customer_order_items coi
+                    WHERE coi.order_id IN (pg_temp._t_id(p_key || '.o1'), pg_temp._t_id(p_key || '.o2'), pg_temp._t_id(p_key || '.o3'))
+                      AND coi.sku_id = pg_temp._t_id('sku1') AND coi.status = 'pending'
+                      AND coi.stockout_at IS NULL AND coi.stockout_po_id IS NULL),
+    'O4的S1=' || (SELECT string_agg(status, ',') FROM public.customer_order_items WHERE order_id = pg_temp._t_id(p_key || '.o4')),
+    'RR=' || (SELECT status FROM public.restock_requests WHERE id = pg_temp._t_id(p_key || '.rr')),
+    'RR明細取消=' || (SELECT COUNT(*) FROM public.restock_request_lines WHERE request_id = pg_temp._t_id(p_key || '.rr') AND cancelled_at IS NOT NULL),
+    'RR單=' || (SELECT status FROM public.customer_orders WHERE id = pg_temp._t_id(p_key || '.rro')),
+    'RR單品項=' || (SELECT string_agg(status, ',') FROM public.customer_order_items WHERE order_id = pg_temp._t_id(p_key || '.rro')),
+    '團商品斷貨=' || (SELECT COUNT(*) FROM public.campaign_items WHERE campaign_id = pg_temp._t_id(p_key || '.camp') AND stockout_at IS NOT NULL))
+$f$;
+
+-- 這張採購單是哪一種：廠商名稱/金額/沒有來源單/狀態
+CREATE FUNCTION pg_temp._t_po_kind(p_po BIGINT) RETURNS TEXT
+LANGUAGE sql AS $f$
+  SELECT format('%s/%s/%s/%s', s.name, po.total, po.stockout_split_from_po_id IS NULL, po.status)
+    FROM public.purchase_orders po JOIN public.suppliers s ON s.id = po.supplier_id
+   WHERE po.id = p_po
+$f$;
+
+
+-- ----------------------------------------------------------------------------
+-- 測 19／21：斷貨用單 → 新的回復 → 回復照做、但停在 draft；跟只呼叫原本 restore 完全一樣
+--   19：甲種（廠商「斷貨用」、金額 0、沒有來源單）
+--   21：乙種但廠商也是「斷貨用」（拆自一張斷貨用單；判準只看廠商名稱，不看有沒有來源單）
+-- ----------------------------------------------------------------------------
+DO $t1921$
+DECLARE
+  v_seq      INT;
+  v_kind     TEXT;
+  v_key      TEXT;
+  v_want     TEXT;
+  v_so       BIGINT;
+  v_op       UUID := pg_temp._t_op();
+  v_got_kind TEXT;
+  v_before   JSONB;
+  v_orig     JSONB;
+  v_new      JSONB;
+  v_ret_orig JSONB;
+  v_ret_new  JSONB;
+  v_back     TEXT;
+  v_n        INT;
+  v_orig_n   INT;
+  v_po       RECORD;
+  v_state    TEXT;
+  v_notif    INT;
+BEGIN
+  FOREACH v_seq IN ARRAY ARRAY[19, 21] LOOP
+    BEGIN
+      v_kind := CASE v_seq WHEN 19 THEN '甲' ELSE '乙斷貨用' END;
+      v_want := CASE v_seq WHEN 19 THEN '斷貨用/0.00/t/cancelled' ELSE '斷貨用/300.00/f/cancelled' END;
+      v_key  := 'r' || v_seq;
+      v_so   := pg_temp._t_make_stockout(v_key, 0, FALSE, v_kind);
+      v_got_kind := pg_temp._t_po_kind(v_so);
+      v_before := pg_temp._t_snapshot();
+
+      -- 先用原本的 restore 跑一次、記下全部相關表與回傳，再整段退回（變數留著）
+      BEGIN
+        v_ret_orig := public.rpc_restore_stockout_po(v_so, v_op);
+        v_orig := pg_temp._t_snapshot();
+        RAISE EXCEPTION '__probe_rollback__';
+      EXCEPTION WHEN raise_exception THEN
+        IF SQLERRM <> '__probe_rollback__' THEN RAISE; END IF;
+      END;
+      v_back := pg_temp._t_diff_txt(v_before, pg_temp._t_snapshot());
+
+      v_ret_new := public.rpc_restore_stockout_po_and_mark_sent(v_so, v_op);
+      v_new := pg_temp._t_snapshot();
+
+      SELECT COUNT(*) INTO v_n FROM pg_temp._t_diff(v_orig, v_new);
+      SELECT COUNT(*) INTO v_orig_n FROM pg_temp._t_diff(v_before, v_orig);
+      SELECT * INTO v_po FROM public.purchase_orders WHERE id = v_so;
+      v_state := pg_temp._t_restore_state(v_key);
+      SELECT COUNT(*) INTO v_notif FROM pg_temp._t_diff(v_before, v_new) d WHERE d.tbl = 'notifications' AND d.col = 'title';
+
+      INSERT INTO _t_result VALUES (v_seq,
+        CASE v_seq
+          WHEN 19 THEN '（P1-1）甲種斷貨單（廠商「斷貨用」、金額 0、沒有來源單）→ 新的回復 → 回復照做（客人訂單還原、發通知），但停在 draft、不標已發送；跟只呼叫原本 restore 逐欄比完全一樣、回傳也一樣（po_status=draft）'
+          ELSE         '（P1-1）乙種斷貨單但廠商也是「斷貨用」（有來源單）→ 一樣停在 draft、跟原本 restore 完全一樣（判準只看廠商名稱）'
+        END,
+        COALESCE(
+          v_got_kind = v_want
+          AND v_back IS NULL
+          AND v_orig_n > 0
+          AND v_n = 0
+          AND v_po.status = 'draft' AND v_po.sent_at IS NULL AND v_po.sent_by IS NULL AND v_po.sent_channel IS NULL
+          AND v_po.stockout_at IS NULL AND v_po.stockout_restored_at = NOW()
+          AND v_state = 'O1=confirmed O2=partially_completed O3=confirmed O4=transferred_out S1待取=3 O4的S1=cancelled '
+                        || 'RR=approved_pr RR明細取消=0 RR單=pending RR單品項=pending 團商品斷貨=0'
+          AND v_notif = 2
+          AND v_ret_orig ->> 'po_status' = 'draft'
+          AND v_ret_new = v_ret_orig, FALSE),
+        format('夾具=%s｜退回後跟開始時一樣=%s｜原本 restore 改了 %s 欄｜新舊差 %s 欄：%s｜採購單=%s/%s/%s｜還原面：%s｜新通知 %s 則｜原本回傳 po_status=%s｜新回傳 po_status=%s｜回傳完全一樣=%s',
+               v_got_kind, v_back IS NULL, v_orig_n, v_n, COALESCE(pg_temp._t_diff_txt(v_orig, v_new), '無'),
+               v_po.status, COALESCE(v_po.sent_channel, '∅'), COALESCE(v_po.sent_at::TEXT, '∅'),
+               v_state, v_notif, v_ret_orig ->> 'po_status', v_ret_new ->> 'po_status', v_ret_new = v_ret_orig));
+    EXCEPTION WHEN OTHERS THEN
+      INSERT INTO _t_result VALUES (v_seq, '（P1-1）斷貨用單回復 → 停在 draft', FALSE, 'EXCEPTION: ' || SQLERRM);
+    END;
+  END LOOP;
+END
+$t1921$;
+
+
+-- ----------------------------------------------------------------------------
+-- 測 20：建立採購單時有一行的廠商是「斷貨用」→ 那張停 draft，其他照標已發送
+--   請購單：S1×10＠50 → 廠商A（500）；S2×1＠0 → 斷貨用（0，少訂差額）；S3×8＠0 → 廠商B（0 元的一般廠商）
+--   0 元的廠商B 照樣標已發送 ⇒ 鎖住「判準只看廠商名稱，不看金額」
+-- ----------------------------------------------------------------------------
+DO $t20$
+DECLARE
+  v_t    UUID := (SELECT tenant FROM _t_env);
+  v_op   UUID := pg_temp._t_op();
+  v_camp BIGINT;
+  v_pr   BIGINT;
+  v_ret  BIGINT[];
+  v_pos  BIGINT[];
+  v_orig JSONB;
+  v_new  JSONB;
+  v_cols TEXT[];
+  v_n    INT;
+  v_ok   BOOLEAN;
+  v_got  TEXT;
+  v_pr_status TEXT;
+BEGIN
+  INSERT INTO public.group_buy_campaigns(tenant_id, campaign_no, name, status)
+  VALUES (v_t, 'T-p20', '測試團p20', 'closed') RETURNING id INTO v_camp;
+  INSERT INTO public.campaign_items(tenant_id, campaign_id, sku_id, unit_price)
+  SELECT v_t, v_camp, pg_temp._t_id('sku' || s), 100 FROM unnest(ARRAY['1','2','3']) s;
+  INSERT INTO public.purchase_requests(tenant_id, pr_no, status, review_status, total_amount, submitted_at, created_by, updated_by)
+  VALUES (v_t, 'PR-T-p20', 'submitted', 'approved', 500, NOW(), v_op, v_op) RETURNING id INTO v_pr;
+  INSERT INTO public.purchase_request_items(pr_id, sku_id, qty_requested, suggested_supplier_id, unit_cost, source_campaign_id, created_by, updated_by)
+  VALUES (v_pr, pg_temp._t_id('sku1'), 10, pg_temp._t_id('supA'),        50, v_camp, v_op, v_op),
+         (v_pr, pg_temp._t_id('sku2'),  1, pg_temp._t_id('supStockout'),  0, v_camp, v_op, v_op),
+         (v_pr, pg_temp._t_id('sku3'),  8, pg_temp._t_id('supB'),         0, v_camp, v_op, v_op);
+  INSERT INTO public.purchase_request_campaigns(pr_id, campaign_id, tenant_id) VALUES (v_pr, v_camp, v_t);
+
+  -- 先用原本的拆單跑一次、記下結果，再整段退回（變數留著）
+  BEGIN
+    PERFORM public.rpc_split_pr_to_pos(v_pr, pg_temp._t_id('loc'), v_op);
+    v_orig := pg_temp._t_po_norm(v_pr);
+    RAISE EXCEPTION '__probe_rollback__';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM <> '__probe_rollback__' THEN RAISE; END IF;
+  END;
+
+  v_ret := public.rpc_split_pr_to_pos_and_mark_sent(v_pr, pg_temp._t_id('loc'), v_op);
+  v_pos := pg_temp._t_pos_of(v_pr);
+  v_new := pg_temp._t_po_norm(v_pr);
+
+  SELECT string_agg(format('%s=%s/%s/%s/%s/%s', s.name, po.status, COALESCE(po.sent_channel, '∅'),
+                           CASE WHEN po.sent_at IS NULL THEN '∅' WHEN po.sent_at = NOW() THEN 'now' ELSE '其他' END,
+                           CASE WHEN po.sent_by IS NULL THEN '∅' WHEN po.sent_by = v_op THEN 'op' ELSE '其他' END,
+                           po.total), ' ' ORDER BY po.supplier_id)
+    INTO v_got
+    FROM public.purchase_orders po JOIN public.suppliers s ON s.id = po.supplier_id
+   WHERE po.id = ANY (v_pos);
+
+  SELECT array_agg(DISTINCT d.tbl || '.' || d.col ORDER BY d.tbl || '.' || d.col), COUNT(*)
+    INTO v_cols, v_n
+    FROM pg_temp._t_diff(v_orig, v_new) d;
+  SELECT bool_and(
+           d.tbl = 'po' AND d.rk <> pg_temp._t_id('supStockout')::TEXT
+           AND CASE d.col
+                 WHEN 'status'       THEN d.va = '"draft"'::JSONB AND d.vb = '"sent"'::JSONB
+                 WHEN 'sent_channel' THEN d.va = 'null'::JSONB AND d.vb = '"manual"'::JSONB
+                 WHEN 'sent_by'      THEN d.va = 'null'::JSONB AND d.vb = to_jsonb(v_op)
+                 WHEN 'sent_at'      THEN d.va = 'null'::JSONB AND d.vb IS NOT NULL AND d.vb <> 'null'::JSONB
+                 ELSE FALSE
+               END)
+    INTO v_ok
+    FROM pg_temp._t_diff(v_orig, v_new) d;
+  SELECT status INTO v_pr_status FROM public.purchase_requests WHERE id = v_pr;
+
+  INSERT INTO _t_result VALUES (20,
+    '（P1-1）建立採購單：廠商A、0 元的廠商B、斷貨用 → 3 張；斷貨用那張停 draft（不標已發送），廠商A／廠商B 照標已發送；跟原本的拆單逐欄比，只差廠商A／廠商B 兩張的 4 欄',
+    COALESCE(
+      cardinality(v_ret) = 3
+      AND (SELECT array_agg(x ORDER BY x) FROM unnest(v_ret) x) = v_pos
+      AND v_got = '廠商A=sent/manual/now/op/500.00 廠商B=sent/manual/now/op/0.00 斷貨用=draft/∅/∅/∅/0.00'
+      AND v_n = 8
+      AND v_cols = ARRAY['po.sent_at', 'po.sent_by', 'po.sent_channel', 'po.status']
+      AND v_ok
+      AND (SELECT COUNT(*) FROM jsonb_object_keys(v_orig -> 'po')) = 3
+      AND v_pr_status = 'fully_ordered'
+      AND NOT EXISTS (SELECT 1 FROM public.purchase_request_items WHERE pr_id = v_pr AND po_item_id IS NULL), FALSE),
+    format('回傳 %s 張｜各張：%s｜跟原本拆單差 %s 欄：%s｜請購單 %s',
+           cardinality(v_ret), v_got, v_n, COALESCE(pg_temp._t_diff_txt(v_orig, v_new), '無'), v_pr_status));
+EXCEPTION WHEN OTHERS THEN
+  INSERT INTO _t_result VALUES (20, '（P1-1）建立採購單遇到斷貨用廠商', FALSE, 'EXCEPTION: ' || SQLERRM);
+END
+$t20$;
+
+
+-- ----------------------------------------------------------------------------
+-- 測 22：呼叫者看不到單（RLS：JWT 是別的 tenant）→ 建立／回復照做（既有兩支是 SECURITY DEFINER），
+--        但新程式判斷不了是不是斷貨用單 → 不標已發送、停在 draft（跟改版前一樣）
+-- ----------------------------------------------------------------------------
+DO $t22$
+DECLARE
+  v_pr    BIGINT := pg_temp._t_make_pr('p22', 'approved', 'submitted');
+  v_so    BIGINT := pg_temp._t_make_stockout('r22');
+  v_loc   BIGINT := pg_temp._t_id('loc');
+  v_op    UUID := pg_temp._t_op();
+  v_other UUID := 'feed0000-0000-4000-8000-000000000099';
+  v_ids   BIGINT[];
+  v_ret   JSONB;
+  v_err   TEXT;
+  v_got1  TEXT;
+  v_got2  TEXT;
+  v_o1    TEXT;
+BEGIN
+  BEGIN
+    PERFORM pg_temp._t_login(v_other);
+    EXECUTE 'SET ROLE authenticated';
+    v_ids := public.rpc_split_pr_to_pos_and_mark_sent(v_pr, v_loc, v_op);
+    v_ret := public.rpc_restore_stockout_po_and_mark_sent(v_so, v_op);
+    EXECUTE 'RESET ROLE';
+  EXCEPTION WHEN OTHERS THEN
+    v_err := SQLSTATE || ' ' || SQLERRM;
+  END;
+  EXECUTE 'RESET ROLE';
+  PERFORM pg_temp._t_logout();
+
+  SELECT string_agg(status || '/' || COALESCE(sent_channel, '∅'), ',' ORDER BY id) INTO v_got1
+    FROM public.purchase_orders WHERE id = ANY (pg_temp._t_pos_of(v_pr));
+  SELECT status || '/' || COALESCE(sent_channel, '∅') || '/斷貨標記清掉=' || CASE WHEN stockout_at IS NULL THEN '是' ELSE '否' END INTO v_got2
+    FROM public.purchase_orders WHERE id = v_so;
+  SELECT status INTO v_o1 FROM public.customer_orders WHERE id = pg_temp._t_id('r22.o1');
+
+  INSERT INTO _t_result VALUES (22,
+    '（P1-1 補充）呼叫者看不到單（RLS：別的 tenant）→ 建立／回復照做，但不自動標已發送、停在 draft（判斷不了就照改版前）',
+    COALESCE(v_err IS NULL
+             AND cardinality(v_ids) = 2 AND v_got1 = 'draft/∅,draft/∅'
+             AND v_ret ->> 'po_status' = 'draft' AND v_got2 = 'draft/∅/斷貨標記清掉=是'
+             AND v_o1 = 'confirmed', FALSE),
+    format('錯誤=%s｜建立：%s｜回復：%s（回傳 po_status=%s）｜O1=%s',
+           COALESCE(v_err, '無'), v_got1, v_got2, v_ret ->> 'po_status', v_o1));
+EXCEPTION WHEN OTHERS THEN
+  EXECUTE 'RESET ROLE';
+  PERFORM pg_temp._t_logout();
+  INSERT INTO _t_result VALUES (22, '（P1-1 補充）看不到單 → 停 draft', FALSE, 'EXCEPTION: ' || SQLERRM);
+END
+$t22$;
+
+
 TABLE _t_result ORDER BY seq;
 
 DO $$
@@ -1115,13 +1425,13 @@ BEGIN
     RAISE EXCEPTION 'po_auto_mark_sent_verification failed:%', E'\n' || v_bad;
   END IF;
 
-  -- 結果必須剛好 19 條（測 0～18）；少一條就算失敗，防止某條測試被跳過還顯示綠
+  -- 結果必須剛好 23 條（測 0～22）；少一條就算失敗，防止某條測試被跳過還顯示綠
   SELECT COUNT(DISTINCT seq) INTO v_n FROM _t_result;
-  IF v_n <> 19 OR (SELECT COUNT(*) FROM _t_result) <> 19 THEN
-    RAISE EXCEPTION 'po_auto_mark_sent_verification：應該有 19 條結果（測 0～18），實際 % 條', v_n;
+  IF v_n <> 23 OR (SELECT COUNT(*) FROM _t_result) <> 23 THEN
+    RAISE EXCEPTION 'po_auto_mark_sent_verification：應該有 23 條結果（測 0～22），實際 % 條', v_n;
   END IF;
 
-  RAISE NOTICE 'po_auto_mark_sent_verification: 19/19 PASS';
+  RAISE NOTICE 'po_auto_mark_sent_verification: 23/23 PASS';
 END $$;
 
 ROLLBACK;

@@ -959,6 +959,12 @@ view / RPC 當供給與閘門條件，加一個 `'stockout'` 值要同時改完�
 （先前發過取消通知，不補一則客人會以為訂單自己長回來）。
 守衛：有到貨量 / 未取消的進貨單 / 撿貨波次 → 擋下，那不是純斷貨單。
 
+2026-10-01 起（20261002010000）：`rpc_restore_stockout_po` 本體**仍回 `draft`**，但後台畫面的
+「↩ 回復斷貨」改走 `rpc_restore_stockout_po_and_mark_sent`（同一交易裡回復後再
+`rpc_send_purchase_order(…, 'manual', …)`）→ 一般斷貨單回復後直接是 `sent`；
+廠商名稱是「斷貨用」的舊式少訂差額單**維持 `draft`**（自動 sent 會讓它進收貨工作台）。
+「建立採購單」同理：畫面走 `rpc_split_pr_to_pos_and_mark_sent`，斷貨用那張停 `draft`、其餘直接 `sent`。
+
 ## 補貨申請 (restock_requests)
 
 ### RR 推 received 時，ride-along 內部單一律走 _settle_restock_ride_along

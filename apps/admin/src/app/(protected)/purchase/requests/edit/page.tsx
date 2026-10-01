@@ -1199,10 +1199,11 @@ function PageContent() {
     }
     // 20261002010000：建立後每張直接是「已發送」（管道記 manual），不用再按「發送供應商」。
     // 拆單與標已發送在同一個交易裡，任何一張失敗就整筆不做。系統不會通知廠商（以前也不會）。
+    // 例外：廠商是「斷貨用」的那張（舊式少訂差額單）不自動標，停在待發送，跟以前一樣。
     if (
       !confirm(
         `確定建立${PO_TERM_ZH}？\n` +
-          `建立後會直接標成「已發送」，不用再按「發送供應商」。\n` +
+          `建立後會直接標成「已發送」，不用再按「發送供應商」（廠商是「斷貨用」的單除外，會停在待發送）。\n` +
           `（系統不會自動通知廠商。）`,
       )
     )
@@ -1218,7 +1219,27 @@ function PageContent() {
         p_operator: userData.user?.id,
       });
       if (rpcErr) throw new Error(rpcErr.message);
-      alert(`已產生 ${(poIds as number[]).length} 張${PO_TERM_ZH}（已發送）`);
+      const ids = (poIds as number[] | null) ?? [];
+      // 照建好之後的實際狀態講（斷貨用那張會停在 draft）；讀不到就講不會說錯的通則
+      const { data: created, error: readErr } = await supabase
+        .from("purchase_orders")
+        .select("po_no, status")
+        .in("id", ids);
+      const rows = (created ?? []) as { po_no: string; status: string }[];
+      const drafts = rows.filter((p) => p.status === "draft").map((p) => p.po_no);
+      if (readErr || rows.length !== ids.length) {
+        alert(
+          `已產生 ${ids.length} 張${PO_TERM_ZH}。\n` +
+            `一般廠商的單已直接標成「已發送」；廠商是「斷貨用」的單會停在待發送。`,
+        );
+      } else if (drafts.length === 0) {
+        alert(`已產生 ${ids.length} 張${PO_TERM_ZH}（已發送）`);
+      } else {
+        alert(
+          `已產生 ${ids.length} 張${PO_TERM_ZH}：${ids.length - drafts.length} 張已發送。\n` +
+            `${drafts.join("、")} 是舊式「斷貨用」單，維持待發送，需要的話到該單按 📤 發送。`,
+        );
+      }
       router.push("/purchase/orders");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

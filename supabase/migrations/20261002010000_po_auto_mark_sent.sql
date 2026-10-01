@@ -13,11 +13,29 @@
 --   rpc_split_pr_to_pos_and_mark_sent(p_pr_id, p_dest_location_id, p_operator) RETURNS BIGINT[]
 --     第 1 步 呼叫既有 rpc_split_pr_to_pos（一字不改）
 --     第 2 步 對它回傳的每一張採購單呼叫既有 rpc_send_purchase_order(採購單, 'manual', p_operator)
+--             —— 廠商是「斷貨用」的那張除外（見下面「舊式斷貨用單」）
 --   rpc_restore_stockout_po_and_mark_sent(p_po_id, p_operator) RETURNS JSONB
 --     第 1 步 呼叫既有 rpc_restore_stockout_po（一字不改）
 --     第 2 步 對同一張單呼叫既有 rpc_send_purchase_order(p_po_id, 'manual', p_operator)
---   參數、回傳型別跟被包的那支一樣。回復那支的回傳 JSON 鍵也一樣，只有 po_status
---   從 'draft' 改成 'sent'（反映第 2 步之後的實際狀態）。
+--             —— 廠商是「斷貨用」的單除外
+--   參數、回傳型別跟被包的那支一樣。回復那支的回傳 JSON 鍵也一樣，po_status 是實際狀態：
+--   有標已發送 → 'sent'；舊式斷貨用單 → 維持第 1 步回傳的 'draft'。
+--
+-- 舊式「斷貨用」單（2026-10-01 審查 P1：不可自動標已發送）
+--   正式庫有一種舊式斷貨單（下稱甲種）：廠商名稱叫「斷貨用」、金額 0、沒有
+--   stockout_split_from_po_id。它記的是「請購單少訂的差額」，不是真的跟哪家廠商下了單。
+--   自動標成已發送 → 它就進收貨工作台（白名單 sent／partially_received，
+--   20260820000200:178）、收貨頁出現「收貨」鈕 → 有人可能拿別張單的貨去收它。
+--   ⇒ 廠商名稱＝「斷貨用」的採購單：建立／回復照做，但**不**標已發送，停在 draft，
+--      跟改版前一模一樣（要的話人工按「📤 發送」）。
+--   判準只看廠商名稱，刻意不再加「stockout_split_from_po_id IS NULL」「total = 0」：
+--     加了只會讓判準變窄 → 更多斷貨用單被自動標已發送，正是要防的方向。
+--     判準寬一點的代價只是「那張單跟改版前一樣要人工按發送」。
+--   repo 裡沒有任何程式會建立「斷貨用」這家廠商（git grep 只有 CLAUDE.md 一句無關的字），
+--   它是正式庫裡的廠商資料；採購單會掛到它，是因為請購單那一行的廠商被選成「斷貨用」，
+--   再按「建立採購單」—— 所以拆單這支也要擋。
+--   看不到這張單或它的廠商（RLS：呼叫者的 tenant 跟單子不同）時也停在 draft：
+--     判斷不了就照改版前做，不往「自動標已發送」那邊猜。
 --
 -- 整筆成功或整筆不做
 --   兩步在同一個函式呼叫裡 ＝ 同一個交易。第 2 步任何一張失敗，例外往外丟，
@@ -37,6 +55,7 @@
 --   🔒 **100% 只新增，不碰任何既有物件。**
 --      新增 2 支函式（上面兩支）；0 張表、0 個索引、0 條 policy、0 個觸發器、0 個 ALTER、
 --      0 個 CREATE OR REPLACE 打在既有函式上（前置檢查會擋同名的別人的函式）。
+--      兩支新函式自己只「讀」purchase_orders、suppliers（看廠商名稱），不寫任何表。
 --   ⛔ 不改：rpc_split_pr_to_pos（唯一定義 20260428120000:316）、
 --            rpc_send_purchase_order（唯一定義 20260428120000:431）、
 --            rpc_restore_stockout_po（唯一定義 20260812000000:514）。
@@ -54,7 +73,12 @@
 --     - SECURITY INVOKER：用呼叫者自己的身分去呼叫既有那兩支 ⇒ 呼叫者本來就要有那兩支的
 --       執行權才做得成，**不會比「自己依序按兩次」多出任何權限**。
 --       （若用 SECURITY DEFINER，哪天既有那兩支對某個角色收回了，本檔反而會變成後門。）
---       本檔函式本體不直接讀寫任何表，所以 INVOKER 不會碰到 RLS。
+--       本檔函式本體只「讀」purchase_orders、suppliers（判斷是不是斷貨用單），用呼叫者身分讀
+--       ⇒ 走 RLS（auth_read_purchase_orders／auth_read_suppliers：同 tenant 才看得到）。
+--       後台畫面本來就用同一個身分讀這兩張表才列得出採購單與廠商名稱，所以按得到鈕的人一定看得到；
+--       看不到時停在 draft（見上面「舊式斷貨用單」）。
+--       ⚠️ authenticated 要有這兩張表的 SELECT 權（Supabase 預設就有）；沒有的話會報權限錯、
+--          整筆不做 → 上線驗收查詢第 13 列會看。
 --     - 只 GRANT authenticated；PUBLIC、anon 收回。
 --
 -- 上線順序：先貼本檔 SQL → 跑上線驗收查詢 → 才合併前端。
@@ -82,15 +106,18 @@ BEGIN
   -- 依賴的既有表
   FOREACH v_name IN ARRAY ARRAY[
     'purchase_orders', 'purchase_order_items',
-    'purchase_requests', 'purchase_request_items'
+    'purchase_requests', 'purchase_request_items',
+    'suppliers'
   ] LOOP
     IF to_regclass('public.' || v_name) IS NULL THEN
       v_missing := v_missing || ('table public.' || v_name);
     END IF;
   END LOOP;
 
-  -- 依賴的既有欄位（第 2 步會寫、或守衛會讀的）
+  -- 依賴的既有欄位（第 2 步會寫、或守衛會讀的、或判斷斷貨用單要讀的）
   FOREACH v_name IN ARRAY ARRAY[
+    'purchase_orders.supplier_id',
+    'suppliers.name',
     'purchase_orders.status',
     'purchase_orders.sent_at',
     'purchase_orders.sent_by',
@@ -205,8 +232,21 @@ BEGIN
 
   -- 第 2 步：拆出來的每一張，用既有的 rpc_send_purchase_order 標成已發送（管道 manual）。
   -- 任何一張失敗 → 例外往外丟 → 第 1 步建的採購單、改的請購單一起退回。
-  -- >>> MARK_SENT_SPLIT BEGIN
   FOREACH v_po_id IN ARRAY COALESCE(v_po_ids, ARRAY[]::BIGINT[]) LOOP
+    -- 廠商是「斷貨用」的單不標已發送，停在 draft（跟改版前一樣）；看不到單或廠商（RLS）也停在 draft。
+    -- >>> SKIP_STOCKOUT_SUPPLIER_SPLIT BEGIN
+    IF NOT EXISTS (
+      SELECT 1
+        FROM public.purchase_orders po
+        JOIN public.suppliers s ON s.id = po.supplier_id
+       WHERE po.id = v_po_id
+         AND s.name IS DISTINCT FROM '斷貨用'
+    ) THEN
+      CONTINUE;
+    END IF;
+    -- <<< SKIP_STOCKOUT_SUPPLIER_SPLIT END
+
+    -- >>> MARK_SENT_SPLIT BEGIN
     BEGIN
       PERFORM public.rpc_send_purchase_order(v_po_id, 'manual', p_operator);
     EXCEPTION WHEN OTHERS THEN
@@ -222,8 +262,8 @@ BEGIN
         USING ERRCODE = v_state,
               DETAIL  = 'rpc_send_purchase_order(' || v_po_id || '): ' || v_msg;
     END;
+    -- <<< MARK_SENT_SPLIT END
   END LOOP;
-  -- <<< MARK_SENT_SPLIT END
 
   RETURN v_po_ids;
 END;
@@ -233,7 +273,7 @@ REVOKE ALL ON FUNCTION public.rpc_split_pr_to_pos_and_mark_sent(BIGINT, BIGINT, 
 GRANT EXECUTE ON FUNCTION public.rpc_split_pr_to_pos_and_mark_sent(BIGINT, BIGINT, UUID) TO authenticated;
 
 COMMENT ON FUNCTION public.rpc_split_pr_to_pos_and_mark_sent(BIGINT, BIGINT, UUID) IS
-  '請購單「建立採購單」：同一個交易裡先呼叫既有 rpc_split_pr_to_pos 依廠商拆單，再對每張呼叫既有 rpc_send_purchase_order(…, ''manual'', …) 標成已發送。任何一步失敗整筆不做。不通知廠商。SECURITY INVOKER、無角色檢查（跟既有兩支一樣）。';
+  '請購單「建立採購單」：同一個交易裡先呼叫既有 rpc_split_pr_to_pos 依廠商拆單，再對每張呼叫既有 rpc_send_purchase_order(…, ''manual'', …) 標成已發送；廠商名稱是「斷貨用」的那張（或呼叫者看不到的）不標、停在 draft。任何一步失敗整筆不做。不通知廠商。SECURITY INVOKER、無角色檢查（跟既有兩支一樣）。';
 
 
 -- ----------------------------------------------------------------------------
@@ -256,6 +296,20 @@ BEGIN
   -- 第 1 步：既有的回復斷貨（一字不改）。它擋下來的情況（有到貨量、有進貨單、有撿貨單…），
   --         錯誤訊息原封不動往上丟。
   v_res := public.rpc_restore_stockout_po(p_po_id, p_operator);
+
+  -- 舊式「斷貨用」單：回復照做（上面第 1 步），但不標已發送 → 停在第 1 步回到的 draft，
+  -- 回傳也原封不動（po_status = 'draft'），跟改版前一模一樣。看不到單或廠商（RLS）也一樣。
+  -- >>> SKIP_STOCKOUT_SUPPLIER_RESTORE BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM public.purchase_orders po
+      JOIN public.suppliers s ON s.id = po.supplier_id
+     WHERE po.id = p_po_id
+       AND s.name IS DISTINCT FROM '斷貨用'
+  ) THEN
+    RETURN v_res;
+  END IF;
+  -- <<< SKIP_STOCKOUT_SUPPLIER_RESTORE END
 
   -- 第 2 步：同一張單用既有的 rpc_send_purchase_order 標成已發送（管道 manual）。
   -- 失敗 → 例外往外丟 → 第 1 步還原的客人訂單、開團商品、補貨申請、通知一起退回。
@@ -288,7 +342,7 @@ REVOKE ALL ON FUNCTION public.rpc_restore_stockout_po_and_mark_sent(BIGINT, UUID
 GRANT EXECUTE ON FUNCTION public.rpc_restore_stockout_po_and_mark_sent(BIGINT, UUID) TO authenticated;
 
 COMMENT ON FUNCTION public.rpc_restore_stockout_po_and_mark_sent(BIGINT, UUID) IS
-  '回復斷貨並直接回到「已發送」：同一個交易裡先呼叫既有 rpc_restore_stockout_po（斷貨單 → draft、還原下游），再呼叫既有 rpc_send_purchase_order(…, ''manual'', …)。任何一步失敗整筆不做。回傳同 rpc_restore_stockout_po，po_status 為 sent。SECURITY INVOKER、無角色檢查（跟既有一樣）。';
+  '回復斷貨並直接回到「已發送」：同一個交易裡先呼叫既有 rpc_restore_stockout_po（斷貨單 → draft、還原下游），再呼叫既有 rpc_send_purchase_order(…, ''manual'', …)；廠商名稱是「斷貨用」的單（或呼叫者看不到的）不標、停在 draft。任何一步失敗整筆不做。回傳同 rpc_restore_stockout_po，po_status 為實際狀態（sent／draft）。SECURITY INVOKER、無角色檢查（跟既有一樣）。';
 
 
 -- ----------------------------------------------------------------------------
