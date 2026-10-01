@@ -150,3 +150,35 @@ export function newProductExtras(input: {
     p_brand_id: brandId,
   };
 }
+
+/**
+ * 手機團控上傳圖片只收 JPEG／PNG：LINE 記事本發文（line-note-worker collectPostImages）
+ * 只帶得上這兩種，WebP／GIF 會被略過。
+ */
+export const QUICK_IMAGE_ACCEPT = "image/jpeg,image/png";
+
+/**
+ * 這個檔案能不能傳、存檔用什麼副檔名；不收就回 null。
+ * 先看檔案類型，瀏覽器沒給類型才看檔名。副檔名照 ProductImagesField 取檔名結尾，
+ * 檔名結尾不是 jpg／jpeg／png（例如 iPhone 轉檔後檔名還是 .heic）就依類型給 jpg／png。
+ */
+export function quickImageExt(file: { name: string; type: string }): string | null {
+  const nameExt = (file.name.split(".").pop() || "").toLowerCase();
+  const type = (file.type || "").toLowerCase();
+  const kind = type
+    ? type === "image/jpeg" ? "jpg" : type === "image/png" ? "png" : null
+    : ["jpg", "jpeg"].includes(nameExt) ? "jpg" : nameExt === "png" ? "png" : null;
+  if (!kind) return null;
+  if (kind === "jpg" && ["jpg", "jpeg"].includes(nameExt)) return nameExt;
+  if (kind === "png" && nameExt === "png") return nameExt;
+  return kind;
+}
+
+/** 圖片排序：把第 idx 張往前（-1）或往後（+1）換一格；超出範圍原樣回傳 */
+export function moveImage<T>(list: T[], idx: number, dir: -1 | 1): T[] {
+  const target = idx + dir;
+  if (idx < 0 || idx >= list.length || target < 0 || target >= list.length) return list;
+  const next = [...list];
+  [next[idx], next[target]] = [next[target], next[idx]];
+  return next;
+}

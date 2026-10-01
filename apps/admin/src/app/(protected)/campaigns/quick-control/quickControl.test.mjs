@@ -3,14 +3,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  QUICK_IMAGE_ACCEPT,
   QUICK_PAGE_OVERLAP,
   QUICK_PAGE_SIZE,
   campaignSearchOrFilter,
   canQuickUpdateCampaign,
   customerUrlFor,
   mergeCampaignRows,
+  moveImage,
   newProductExtras,
   pageWindow,
+  quickImageExt,
   quickScopeFilter,
   sanitizeCampaignSearch,
   soldQtyByCampaign,
@@ -125,4 +128,34 @@ test("全新商品附加資料：濾掉空路徑、不帶封面，描述去頭�
 test("全新商品附加資料：品牌不是正整數就當沒選", () => {
   assert.equal(newProductExtras({ images: [], description: "", brandId: Number.NaN }).p_brand_id, null);
   assert.equal(newProductExtras({ images: [], description: "", brandId: 0 }).p_brand_id, null);
+});
+
+test("上傳圖片格式：只收 JPEG／PNG", () => {
+  assert.equal(QUICK_IMAGE_ACCEPT, "image/jpeg,image/png");
+  assert.equal(quickImageExt({ name: "a.JPG", type: "image/jpeg" }), "jpg");
+  assert.equal(quickImageExt({ name: "a.jpeg", type: "image/jpeg" }), "jpeg");
+  assert.equal(quickImageExt({ name: "a.png", type: "image/png" }), "png");
+  assert.equal(quickImageExt({ name: "a.webp", type: "image/webp" }), null);
+  assert.equal(quickImageExt({ name: "a.gif", type: "image/gif" }), null);
+  assert.equal(quickImageExt({ name: "IMG_1.HEIC", type: "image/heic" }), null);
+});
+
+test("上傳圖片格式：類型是 JPEG 但檔名不是，副檔名依類型給", () => {
+  assert.equal(quickImageExt({ name: "IMG_1.HEIC", type: "image/jpeg" }), "jpg");
+  assert.equal(quickImageExt({ name: "noext", type: "image/png" }), "png");
+});
+
+test("上傳圖片格式：瀏覽器沒給類型就看檔名", () => {
+  assert.equal(quickImageExt({ name: "a.jpg", type: "" }), "jpg");
+  assert.equal(quickImageExt({ name: "a.png", type: "" }), "png");
+  assert.equal(quickImageExt({ name: "a.webp", type: "" }), null);
+  assert.equal(quickImageExt({ name: "noext", type: "" }), null);
+});
+
+test("圖片排序：往前往後換一格，超出範圍不動", () => {
+  assert.deepEqual(moveImage(["a", "b", "c"], 1, -1), ["b", "a", "c"]);
+  assert.deepEqual(moveImage(["a", "b", "c"], 1, 1), ["a", "c", "b"]);
+  const list = ["a", "b"];
+  assert.equal(moveImage(list, 0, -1), list);
+  assert.equal(moveImage(list, 1, 1), list);
 });

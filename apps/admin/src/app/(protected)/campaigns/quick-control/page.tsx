@@ -5,7 +5,6 @@ import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { CampaignThumb } from "@/components/CampaignThumb";
-import { ProductImagesField } from "@/components/ProductImagesField";
 import {
   campaignCoverUrl,
   publicProductUrl,
@@ -23,6 +22,7 @@ import {
   soldQtyByCampaign,
   splitPage,
 } from "./quickControl";
+import { QuickImagesField } from "./QuickImagesField";
 
 type QuickStatus = "draft" | "open" | "closed" | "locked";
 type CloseType = "regular" | "fast" | "limited" | "food_train";
@@ -290,10 +290,16 @@ export default function QuickCampaignControlPage() {
   const [newBrandId, setNewBrandId] = useState<number | null>(null);
   const [brands, setBrands] = useState<BrandRow[]>([]);
   const [brandsLoaded, setBrandsLoaded] = useState(false);
+  const [brandsError, setBrandsError] = useState(false);
   // 表單世代號：建立成功清空表單就 +1。上傳中的圖片晚到時，世代號不同就丟掉，
   // 才不會跑進下一個商品；同時當 ProductImagesField 的 key，清空時整個重新掛載
   const [imageFormGen, setImageFormGen] = useState(0);
   const imageFormGenRef = useRef(0);
+  const [imagesUploading, setImagesUploading] = useState(false);
+  // 上一輪（已清空）的上傳元件回報的上傳狀態一律不收
+  const reportImagesUploading = useCallback((uploading: boolean) => {
+    if (imageFormGen === imageFormGenRef.current) setImagesUploading(uploading);
+  }, [imageFormGen]);
   const [newSkuDrafts, setNewSkuDrafts] = useState<NewSkuDraft[]>([
     { key: newSkuKey(), name: "", price: "", cap: "" },
   ]);
@@ -357,6 +363,7 @@ export default function QuickCampaignControlPage() {
   const createSubmitDisabled =
     !allowed
     || createBusy
+    || imagesUploading
     || (createMode === "existing"
       ? skuLoading || missingPrice || !selectedProduct || selectedSkus.length === 0
       : !newProductName.trim() || newSkuRows.length === 0);
@@ -467,14 +474,19 @@ export default function QuickCampaignControlPage() {
     return () => window.clearTimeout(timer);
   }, [load]);
 
-  // 品牌清單：打開開新團才讀一次（同 ProductForm 的讀法；讀不到就只剩「不選」）
+  // 品牌清單：打開開新團才讀一次（同 ProductForm 的讀法）；讀不到就提示＋重試，仍可不選品牌開團
   useEffect(() => {
     if (!createOpen || brandsLoaded) return;
     let alive = true;
     void (async () => {
-      const { data } = await getSupabase().from("brands").select("id, name, code").order("name");
+      const { data, error: brandErr } = await getSupabase().from("brands").select("id, name, code").order("name");
       if (!alive) return;
-      if (data) setBrands(data as BrandRow[]);
+      if (brandErr || !data) {
+        setBrandsError(true);
+      } else {
+        setBrands(data as BrandRow[]);
+        setBrandsError(false);
+      }
       setBrandsLoaded(true);
     })();
     return () => {
@@ -955,6 +967,7 @@ export default function QuickCampaignControlPage() {
       setNewStorageType(DEFAULT_NEW_STORAGE_TYPE);
       imageFormGenRef.current += 1;
       setImageFormGen(imageFormGenRef.current);
+      setImagesUploading(false);
       setNewImages([]);
       setNewDescription("");
       setNewBrandId(null);
@@ -1249,12 +1262,14 @@ export default function QuickCampaignControlPage() {
                         <span className="font-medium text-zinc-700 dark:text-zinc-200">
                           商品圖片 <span className="font-normal text-zinc-500">（可不傳）</span>
                         </span>
-                        <ProductImagesField
+                        <QuickImagesField
                           key={imageFormGen}
                           value={newImages}
                           onChange={(next) => {
                             if (imageFormGen === imageFormGenRef.current) setNewImages(next);
                           }}
+                          onUploadingChange={reportImagesUploading}
+                          disabled={!allowed || createBusy}
                         />
                         <span className="text-xs text-zinc-500">選好照片後，看到縮圖出現再按「建立開團」</span>
                       </div>
@@ -1289,6 +1304,21 @@ export default function QuickCampaignControlPage() {
                           ))}
                         </select>
                       </label>
+                      {brandsError && (
+                        <div className="flex items-center gap-2 text-sm text-amber-800 dark:text-amber-200">
+                          品牌清單讀取失敗（不選品牌也能開團）
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setBrandsError(false);
+                              setBrandsLoaded(false);
+                            }}
+                            className="min-h-[44px] rounded-md border border-zinc-300 px-3 text-sm text-zinc-700 dark:border-zinc-700 dark:text-zinc-200"
+                          >
+                            重試
+                          </button>
+                        </div>
+                      )}
                     </>
                   )}
 
@@ -1500,7 +1530,7 @@ export default function QuickCampaignControlPage() {
                     disabled={createSubmitDisabled || createNeedsCap}
                     className="min-h-12 rounded-md bg-pink-600 text-base font-semibold text-white disabled:opacity-50"
                   >
-                    建立開團並產生網址
+                    {imagesUploading ? "照片上傳中…" : "建立開團並產生網址"}
                   </SpinButton>
                 </div>
               )}
