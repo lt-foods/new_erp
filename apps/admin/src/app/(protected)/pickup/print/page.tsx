@@ -61,6 +61,12 @@ function lineSub(it: Item): number {
 function hasLineDisc(it: Item): boolean {
   return Number(it.discount_amount ?? 0) > 0 || Number(it.discount_percent ?? 0) > 0;
 }
+// 一批品項的應收 — payable 四捨五入到整數 NTD（對齊 PickupDialog / v_customer_order_summary）
+function batchPayOf(order: Order, items: Item[]): number {
+  const sub = items.reduce((a, it) => a + lineSub(it), 0);
+  const pct = Number(order?.discount_percent ?? 0);
+  return Math.max(0, Math.round(sub * (1 - pct / 100) - Number(order?.discount_amount ?? 0)));
+}
 
 export default function PickupPrintPage() {
   return (
@@ -70,10 +76,62 @@ export default function PickupPrintPage() {
   );
 }
 
+// 這張收據（一次取貨事件）實際抵掉的儲值金。
+//
+// customer_orders.wallet_paid_amount 是整張單累計的；分批取貨時直接印它會把前幾批
+// 扣過的錢在每一批都再抵一次（2026-10-01 古華：第 3 批扣 $79、第 4 批 $456 的貨印成
+// 「應付 $377」）。改成依 wallet_ledger 還原「這一趟收了多少」：
+//   1. 本趟的扣款 = 掛在本單、落在（上一次取貨事件, 本次取貨事件 + 2s] 時間窗內、
+//      未被沖銷的 spend —— 前端一律「先 rpc_wallet_pay_order 再 rpc_record_pickup」，
+//      這個窗口就是這趟的收款（與 rpc_undo_pickup 的退款邏輯同一套，20260902040000）。
+//   2. 不在任何取貨窗口裡的已扣額（訂單頁「儲值金結帳」先付清再分批取）＝預付額度，
+//      依取貨順序被前面幾批用掉（每批吃 應收 − 該批自己的扣款），剩下的才抵本批。
+// 補列印舊收據也走同一套，所以補印第 1 批不會把第 3 批才扣的錢印上去。
+type LedgerRow = { id: number; source_id: number; type: string; change: number; created_at: string; reverses: number | null };
+function walletAppliedToEvent(
+  ev: PickupEvent,
+  order: Order,
+  allEvents: PickupEvent[],
+  ledger: LedgerRow[],
+  itemMap: Map<number, Item>,
+  batchPayOf: (order: Order, items: Item[]) => number,
+): number {
+  const evs = allEvents.filter((e) => e.order_id === ev.order_id).sort((a, b) => a.id - b.id);
+  const reversed = new Set(ledger.filter((l) => l.type === "reversal" && l.reverses != null).map((l) => l.reverses as number));
+  const spends = ledger.filter((l) => l.source_id === ev.order_id && l.type === "spend" && !reversed.has(l.id));
+  const windowSpend = (e: PickupEvent): number => {
+    const idx = evs.findIndex((x) => x.id === e.id);
+    const prevAt = idx > 0 ? new Date(evs[idx - 1].created_at).getTime() : null;
+    const endAt = new Date(e.created_at).getTime() + 2000;
+    return spends.reduce((s, l) => {
+      const t = new Date(l.created_at).getTime();
+      return t <= endAt && (prevAt == null || t > prevAt) ? s + Math.abs(Number(l.change)) : s;
+    }, 0);
+  };
+  const itemsOf = (e: PickupEvent): Item[] => (e.item_ids ?? []).map((id) => itemMap.get(id)).filter((x): x is Item => !!x);
+  // 品項最後一次被哪個事件取走 —— 撤銷過再重取的，舊事件就不算「前面已取」
+  const latestEventByItem = new Map<number, number>();
+  for (const e of evs) for (const id of e.item_ids ?? []) latestEventByItem.set(id, Math.max(latestEventByItem.get(id) ?? 0, e.id));
+  const effective = (e: PickupEvent): boolean =>
+    (e.item_ids ?? []).length > 0
+    && (e.item_ids ?? []).every((id) => latestEventByItem.get(id) === e.id && itemMap.get(id)?.status === "picked_up");
+
+  const batchPay = batchPayOf(order, itemsOf(ev));
+  const thisSpend = windowSpend(ev);
+  const walletPaid = Number(order.wallet_paid_amount ?? 0);
+  const inWindows = evs.reduce((s, e) => s + windowSpend(e), 0);
+  const prepaid = Math.max(0, walletPaid - inWindows);
+  const consumedBefore = evs
+    .filter((e) => e.id < ev.id && effective(e))
+    .reduce((s, e) => s + Math.max(0, batchPayOf(order, itemsOf(e)) - windowSpend(e)), 0);
+  const creditLeft = Math.max(0, prepaid - consumedBefore);
+  return Math.max(0, Math.min(batchPay, thisSpend + creditLeft));
+}
+
 function Body() {
   const eventIds = useSearchParams().get("event_ids");
   const ids = eventIds ? eventIds.split(",").map(Number).filter(Boolean) : [];
-  const [receipts, setReceipts] = useState<{ event: PickupEvent; order: Order; items: Item[] }[] | null>(null);
+  const [receipts, setReceipts] = useState<{ event: PickupEvent; order: Order; items: Item[]; walletApplied: number }[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -91,25 +149,39 @@ function Body() {
       if (events.length === 0) { setError("找不到對應取貨記錄"); return; }
 
       const orderIds = Array.from(new Set(events.map((e) => e.order_id)));
-      const allItemIds = events.flatMap((e) => e.item_ids ?? []);
-      const [{ data: ords }, { data: itms }] = await Promise.all([
+      // 品項、取貨事件、儲值金流水都抓**整張單**的 —— 這張收據抵了多少儲值金要看
+      // 前幾批取走了什麼、扣了多少（walletAppliedToEvent），不是只看本次的品項。
+      const [{ data: ords }, { data: itms }, { data: allEvts }, { data: ledg }] = await Promise.all([
         sb.from("customer_orders")
           .select("id, order_no, status, pickup_store_id, discount_amount, discount_percent, wallet_paid_amount, payment_status, notes, member:members(id, member_no, name, phone), campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date), store:stores!customer_orders_pickup_store_id_fkey(id, name, store_short_code)")
           .in("id", orderIds),
-        allItemIds.length > 0
-          ? sb.from("customer_order_items").select(`id, qty, unit_price, discount_amount, discount_percent, notes, status, ${GIFT_ITEM_SELECT}, sku:skus(sku_code, product_name, variant_name)`).in("id", allItemIds)
-          : Promise.resolve({ data: [] }),
+        sb.from("customer_order_items").select(`id, qty, unit_price, discount_amount, discount_percent, notes, status, ${GIFT_ITEM_SELECT}, sku:skus(sku_code, product_name, variant_name)`).in("order_id", orderIds),
+        sb.from("order_pickup_events")
+          .select("id, order_id, pickup_store_id, event_type, item_ids, notes, created_at")
+          .in("order_id", orderIds)
+          .in("event_type", ["picked_up", "partial_pickup"]),
+        sb.from("wallet_ledger")
+          .select("id, source_id, type, change, created_at, reverses")
+          .eq("source_type", "customer_order")
+          .in("source_id", orderIds)
+          .in("type", ["spend", "reversal"]),
       ]);
       const ordMap = new Map<number, Order>();
       for (const o of (ords ?? []) as unknown as Order[]) ordMap.set(o.id, o);
       const itemMap = new Map<number, Item>();
       for (const i of (itms ?? []) as unknown as Item[]) itemMap.set(i.id, i);
+      const allEvents = (allEvts ?? []) as unknown as PickupEvent[];
+      const ledger = (ledg ?? []) as unknown as LedgerRow[];
 
-      const result = events.map((ev) => ({
-        event: ev,
-        order: ordMap.get(ev.order_id) as Order,
-        items: (ev.item_ids ?? []).map((id) => itemMap.get(id)).filter((x): x is Item => !!x),
-      }));
+      const result = events.map((ev) => {
+        const order = ordMap.get(ev.order_id) as Order;
+        return {
+          event: ev,
+          order,
+          items: (ev.item_ids ?? []).map((id) => itemMap.get(id)).filter((x): x is Item => !!x),
+          walletApplied: order ? walletAppliedToEvent(ev, order, allEvents, ledger, itemMap, batchPayOf) : 0,
+        };
+      });
       if (!cancelled) setReceipts(result);
     })();
     return () => { cancelled = true; };
@@ -134,16 +206,12 @@ function Body() {
   const headerEvent = receipts[0]?.event;
 
   const orderSub = (r: { items: Item[] }) => r.items.reduce((a, it) => a + lineSub(it), 0);
-  // payable 四捨五入到整數 NTD
-  const orderPay = (r: { order: Order; items: Item[] }) => {
-    const sub = orderSub(r);
-    const pct = Number(r.order?.discount_percent ?? 0);
-    return Math.max(0, Math.round(sub * (1 - pct / 100) - Number(r.order?.discount_amount ?? 0)));
-  };
+  const orderPay = (r: { order: Order; items: Item[] }) => batchPayOf(r.order, r.items);
   const grandSubtotal = receipts.reduce((s, r) => s + orderSub(r), 0);
   const grandTotal = receipts.reduce((s, r) => s + orderPay(r), 0);
   const totalOrderDisc = grandSubtotal - grandTotal; // 倒推、含取整誤差
-  const grandWalletPaid = receipts.reduce((s, r) => s + Number(r.order?.wallet_paid_amount ?? 0), 0);
+  // 這幾張收據各自抵掉的儲值金（不是訂單累計的 wallet_paid_amount，見 walletAppliedToEvent）
+  const grandWalletPaid = receipts.reduce((s, r) => s + r.walletApplied, 0);
   const grandBalanceDue = Math.max(0, grandTotal - grandWalletPaid);
   const totalQty = receipts.reduce((s, r) => s + r.items.reduce((a, it) => a + Number(it.qty), 0), 0);
 

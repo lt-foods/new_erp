@@ -9,6 +9,7 @@ import { parseReturnNote } from "@/lib/returnNote";
 import { itemDisplayName } from "@/lib/skuLabel";
 import { settlementNo } from "@/lib/settlementNo";
 import { GIFT_ITEM_SELECT, isGiftLine } from "@/lib/orderGift";
+import { pickedPayable, walletCreditLeft } from "@/lib/walletCredit";
 import SpinButton from "@/components/SpinButton";
 import { CutoffText } from "@/components/CampaignCutoff";
 
@@ -182,7 +183,12 @@ function Body() {
   const grandSubtotal = orders.reduce((s, o) => s + orderSub(o), 0);
   const grandTotal = orders.reduce((s, o) => s + orderPay(o), 0);
   const totalOrderDisc = grandSubtotal - grandTotal; // 倒推、含取整誤差
-  const grandWalletPaidDb = orders.reduce((s, o) => s + Number(o.wallet_paid_amount ?? 0), 0);
+  // 已扣儲值金裡「還沒被已取品項用掉」的部分才能抵剩下這些貨（lib/walletCredit）。
+  // wallet_paid_amount 是整張單累計的，分批取貨時直接拿它抵會把前幾批已用掉的錢再抵一次。
+  const grandWalletPaidDb = orders.reduce(
+    (s, o) => s + Math.min(orderPay(o), walletCreditLeft(Number(o.wallet_paid_amount ?? 0), pickedPayable(o.items, Number(o.discount_percent ?? 0)))),
+    0,
+  );
   // preview 僅在單張訂單時套用（避免多單時不確定分到哪張）；多單時忽略
   const previewable = orders.length === 1 ? walletPreview : 0;
   // 「將扣」金額 cap 在剩餘應付，避免 preview 過大導致負數

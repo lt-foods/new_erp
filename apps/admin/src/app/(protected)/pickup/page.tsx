@@ -21,6 +21,7 @@ import { buildDoneGroups, formatVisitWhen } from "@/lib/pickupVisits";
 import { settlementNo } from "@/lib/settlementNo";
 import { itemDisplayName } from "@/lib/skuLabel";
 import { GIFT_ITEM_SELECT, giftTitle, isCampaignGiftLine, isGiftLine } from "@/lib/orderGift";
+import { pickedPayable, walletCreditLeft } from "@/lib/walletCredit";
 import { CutoffChip } from "@/components/CampaignCutoff";
 
 type Member = {
@@ -41,7 +42,8 @@ type OpenOrder = {
   pickup_store_id: number | null;
   discount_amount: number;
   discount_percent: number;
-  // 儲值金結帳用（rpc_wallet_pay_order 的可扣上限 = 應收 − 已扣；已 paid 的單它會直接擋）
+  // 整張單累計扣過的儲值金（rpc_wallet_pay_order 的可扣上限 = 整單應收 − 已扣；已 paid 的單它會直接擋）。
+  // 分批取貨時本批可抵的只有「還沒被已取品項用掉」的部分 → walletCreditOf
   wallet_paid_amount: number;
   payment_status: string | null;
   ready_at: string | null;       // 到貨時間 (shipping → ready 自動寫入)
@@ -225,13 +227,19 @@ function PickupPageContent() {
     const amt = Number(order.discount_amount ?? 0);
     return Math.max(0, Math.round(subtotal * (1 - pct / 100) - amt));
   }
-  // 這張單這次最多能扣多少儲值金 = 本次應收 − 已扣。
+  // 已扣儲值金裡還能抵這一批的部分 = 已扣 − 已取品項已付（lib/walletCredit）。
+  // wallet_paid_amount 是整張單累計的；分批取貨時前一批扣的錢已經被前一批的貨
+  // 用掉，直接整個拿去抵會每一批都再抵一次（2026-10-01 古華）。
+  function walletCreditOf(order: OpenOrder): number {
+    return walletCreditLeft(Number(order.wallet_paid_amount ?? 0), pickedPayable(order.items, Number(order.discount_percent ?? 0)));
+  }
+  // 這張單這次最多能扣多少儲值金 = 本次應收 − 已扣裡還能抵的部分。
   // rpc_wallet_pay_order 自己的上限是「整張單應收 − 已扣」（含還沒到貨的品項），
   // 只取部分品項時要用本次的應收才不會先把還沒拿到的貨也收了錢。
   // payment_status='paid' 的單它會直接 RAISE，這裡先歸零跳過。
   function walletChargeableOf(order: OpenOrder, items: OpenOrder["items"]): number {
     if (order.payment_status === "paid") return 0;
-    return Math.max(0, payableOf(order, items) - Number(order.wallet_paid_amount ?? 0));
+    return Math.max(0, payableOf(order, items) - walletCreditOf(order));
   }
   // 該品項是否為「這組到過貨但量不夠分到這一行」（總倉短收 / 貨已被別團或現貨配走）。
   // 等下一批貨收進來就會自己放行，不需要人工配貨 —— 所以不可以標成「待補貨」。
@@ -1734,9 +1742,10 @@ function PickupPageContent() {
           const totalAmount = memberOrders.reduce((s, o) => s + payableOf(o, pickableItems(o)), 0);
           const totalDiscount = Math.max(0, totalSubtotal - totalAmount);
           const plan = walletPlan(member);
-          // 已扣過儲值金的單，本次應收要扣掉已付的那部分才是真的要收的錢
+          // 已扣過儲值金的單，本次應收要扣掉「已付裡還能抵的那部分」才是真的要收的錢
+          //（前幾批已經用掉的不算，見 walletCreditOf）
           const alreadyPaid = memberOrders.reduce(
-            (s, o) => s + Math.min(Number(o.wallet_paid_amount ?? 0), payableOf(o, pickableItems(o))),
+            (s, o) => s + Math.min(walletCreditOf(o), payableOf(o, pickableItems(o))),
             0,
           );
           const dueNow = Math.max(0, totalAmount - alreadyPaid);
