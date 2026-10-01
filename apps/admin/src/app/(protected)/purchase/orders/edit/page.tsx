@@ -5,6 +5,12 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { SendPOModal } from "@/components/SendPOModal";
+import {
+  POStoreAddButton,
+  POStoreAddModal,
+  type POStoreAddPreviewRow,
+  type POStoreAddTarget,
+} from "@/components/POStoreAddModal";
 import SpinButton from "@/components/SpinButton";
 import { poStatusLabel, PO_TERM_ZH } from "@/lib/poStatus";
 
@@ -91,6 +97,10 @@ function PageContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showSend, setShowSend] = useState(false);
+  // 分店／批發追加（20261002000000）：每個品項可以加到哪些團、不能加的原因（只有已送出的單才查）
+  const [storeAddRows, setStoreAddRows] = useState<Map<number, POStoreAddPreviewRow[]>>(new Map());
+  const [storeAddPreviewErr, setStoreAddPreviewErr] = useState<string | null>(null);
+  const [storeAddTarget, setStoreAddTarget] = useState<POStoreAddTarget | null>(null);
 
   // 回傳「這次重新載入有沒有成功」。儲存流程要靠它決定能不能把編輯值清掉：
   // 這裡的 catch 只 setError 不 rethrow，所以呼叫端的 await 永遠不會炸；
@@ -208,6 +218,28 @@ function PageContent() {
         };
       });
       setItems(merged);
+
+      // 分店／批發追加的預覽：只有已送出的單才查；查不到只讓那顆按鈕反灰，不影響本頁其他功能
+      if (poData.status === "sent") {
+        const { data: addRows, error: addErr } = await supabase.rpc("rpc_preview_po_store_additions", {
+          p_po_id: id,
+        });
+        if (addErr) {
+          setStoreAddPreviewErr(addErr.message);
+          setStoreAddRows(new Map());
+        } else {
+          const m = new Map<number, POStoreAddPreviewRow[]>();
+          for (const row of (addRows as POStoreAddPreviewRow[] | null) ?? []) {
+            const k = Number(row.po_item_id);
+            m.set(k, [...(m.get(k) ?? []), row]);
+          }
+          setStoreAddPreviewErr(null);
+          setStoreAddRows(m);
+        }
+      } else {
+        setStoreAddPreviewErr(null);
+        setStoreAddRows(new Map());
+      }
       return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -236,6 +268,8 @@ function PageContent() {
   const canSend = header?.status === "draft";
   const canStockout =
     header?.status === "sent" || header?.status === "partially_received";
+  // 分店／批發追加：只有「已送出」的單有這一欄（部分到貨以後就不能加，後端也擋）
+  const canStoreAdd = header?.status === "sent";
   const canDelete =
     header?.status === "draft" ||
     header?.status === "sent" ||
@@ -509,6 +543,21 @@ function PageContent() {
       setRecvBatchResult({ ok: okIds.length, failed, reloadOk });
       setRecvBatchSaving(false);
     }
+  }
+
+  // 分店／批發追加：打開視窗（視窗只在要開的時候掛上去，每次打開都是新的 request_key）
+  function openStoreAdd(item: Item) {
+    if (!header) return;
+    setStoreAddTarget({
+      poId: header.id,
+      poNo: header.po_no,
+      poItemId: item.id,
+      label: item.product_name + (item.variant_name ? `-${item.variant_name}` : ""),
+      skuCode: item.sku_code,
+      unit: item.unit_uom ?? "件",
+      qtyOrdered: item.qty_ordered,
+      options: storeAddRows.get(item.id) ?? [],
+    });
   }
 
   async function stockoutItem(item: Item) {
@@ -1115,12 +1164,13 @@ function PageContent() {
                   <Th className="text-right">小計</Th>
                   <Th className="text-center">確定短少</Th>
                   <Th className="text-center">斷貨</Th>
+                  {canStoreAdd && <Th className="text-center">分店／批發追加</Th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
                 {items.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="p-6 text-center text-zinc-500">無品項</td>
+                    <td colSpan={canStoreAdd ? 12 : 11} className="p-6 text-center text-zinc-500">無品項</td>
                   </tr>
                 ) : (
                   items.map((r, idx) => (
@@ -1256,6 +1306,15 @@ function PageContent() {
                           <span className="text-zinc-400">—</span>
                         )}
                       </Td>
+                      {canStoreAdd && (
+                        <Td className="text-center">
+                          <POStoreAddButton
+                            options={storeAddRows.get(r.id)}
+                            previewError={storeAddPreviewErr}
+                            onOpen={() => openStoreAdd(r)}
+                          />
+                        </Td>
+                      )}
                     </tr>
                   ))
                 )}
@@ -1281,6 +1340,15 @@ function PageContent() {
         total={totals.subtotal}
         onSent={reload}
       />
+
+      {storeAddTarget && (
+        <POStoreAddModal
+          key={`${storeAddTarget.poItemId}`}
+          target={storeAddTarget}
+          onClose={() => setStoreAddTarget(null)}
+          onDone={reload}
+        />
+      )}
     </div>
   );
 }
