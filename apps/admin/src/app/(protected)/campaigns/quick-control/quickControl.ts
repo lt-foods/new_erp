@@ -114,11 +114,12 @@ type EligibleCampaign = {
 };
 
 /**
- * 延長／重開／加整團名額背後的 rpc_quick_update_campaign_control 只收這幾種團
- * （20260814000010 那支的守衛，這裡照抄；資料庫沒改之前兩邊要一致）：
- * 狀態只能是草稿／開團中／已關團（已鎖定一律擋），
- * 且是美食列車／限時／限時限量，或有設整團上限、或任一品項有上限。
- * 清單範圍用的是同一組團型／上限條件（quickScopeFilter），所以不合格的一般團不會出現在清單。
+ * 舊的快速操作資格判斷（照 20260814000010 那支 rpc_quick_update_campaign_control 的守衛抄的），
+ * 現在只當清單範圍的參考：美食列車／限時／限時限量，或有設整團上限、或任一品項有上限
+ * （清單用的是同一組條件 quickScopeFilter，所以不合格的一般團不會出現在清單）。
+ * 狀態這段仍照舊版只收草稿／開團中／已關團。
+ * 已鎖定的團能不能重開，改由資料庫 rpc_quick_update_campaign_control 判斷
+ * （請購還是草稿時可重開，20261001020000）；頁面不用本函式擋重開。
  */
 export function canQuickUpdateCampaign(row: EligibleCampaign): boolean {
   if (!["draft", "open", "closed"].includes(row.status)) return false;
