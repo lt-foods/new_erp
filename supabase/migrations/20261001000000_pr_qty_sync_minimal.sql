@@ -454,7 +454,7 @@ AS $$
           '此品項已建立採購單，不自動改'
         WHEN j.attribution = 'legacy' THEN
           '舊資料：這一列沒有各團明細（只記了第一個團），數量可能含好幾個團，不自動改。'
-          || '請人工確認；這一列可以直接手改數量'
+          || '請人工確認；可嘗試手動調整數量，若仍被擋，代表各團歸屬不完整，需要先拆清楚'
         WHEN j.item_qty <> j.attr_total THEN
           '這個品項的總數 ' || trim_scale(j.item_qty)::TEXT
           || ' 跟各團明細加總 ' || trim_scale(j.attr_total)::TEXT
