@@ -111,14 +111,13 @@ test("全新商品附加資料：都沒填就全空，不擋開團", () => {
     p_images: [],
     p_description: null,
     p_brand_id: null,
-    cover: null,
   });
 });
 
-test("全新商品附加資料：第一張圖當封面，描述去頭尾空白但保留換行", () => {
+test("全新商品附加資料：濾掉空路徑、不帶封面，描述去頭尾空白但保留換行", () => {
   const out = newProductExtras({ images: ["t/a.jpg", "", "t/b.png"], description: "  第一行\n第二行  ", brandId: 7 });
   assert.deepEqual(out.p_images, ["t/a.jpg", "t/b.png"]);
-  assert.equal(out.cover, "t/a.jpg");
+  assert.equal("cover" in out, false);
   assert.equal(out.p_description, "第一行\n第二行");
   assert.equal(out.p_brand_id, 7);
 });

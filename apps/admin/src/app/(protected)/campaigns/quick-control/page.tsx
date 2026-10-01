@@ -290,6 +290,10 @@ export default function QuickCampaignControlPage() {
   const [newBrandId, setNewBrandId] = useState<number | null>(null);
   const [brands, setBrands] = useState<BrandRow[]>([]);
   const [brandsLoaded, setBrandsLoaded] = useState(false);
+  // 表單世代號：建立成功清空表單就 +1。上傳中的圖片晚到時，世代號不同就丟掉，
+  // 才不會跑進下一個商品；同時當 ProductImagesField 的 key，清空時整個重新掛載
+  const [imageFormGen, setImageFormGen] = useState(0);
+  const imageFormGenRef = useRef(0);
   const [newSkuDrafts, setNewSkuDrafts] = useState<NewSkuDraft[]>([
     { key: newSkuKey(), name: "", price: "", cap: "" },
   ]);
@@ -759,9 +763,8 @@ export default function QuickCampaignControlPage() {
       const productStorageType = isExistingProduct ? selectedProduct?.storage_type ?? null : newStorageType;
       const pickupDays = pickupDaysForStorage(productStorageType);
       const extras = newProductExtras({ images: newImages, description: newDescription, brandId: newBrandId });
-      // 既有商品沿用商品描述當團描述；全新商品用這次寫的描述。封面只有全新商品才帶（既有商品的圖不動）
+      // 既有商品沿用商品描述當團描述；全新商品用這次寫的描述
       const campaignDescription = isExistingProduct ? selectedProduct?.description ?? null : extras.p_description;
-      const campaignCover = isExistingProduct ? null : extras.cover;
       const campaignItems: { sku_id: number; unit_price: number; cap_qty: number | null; label: string }[] = [];
       let newProductForPublish: { id: number; code: string } | null = null;
 
@@ -856,7 +859,7 @@ export default function QuickCampaignControlPage() {
         p_campaign_no: nextCampaignNo,
         p_name: campaignName,
         p_description: campaignDescription,
-        p_cover_image_url: campaignCover,
+        p_cover_image_url: null,
         p_status: "draft",
         p_close_type: createType,
         p_start_at: startIso,
@@ -916,7 +919,7 @@ export default function QuickCampaignControlPage() {
         p_campaign_no: nextCampaignNo,
         p_name: campaignName,
         p_description: campaignDescription,
-        p_cover_image_url: campaignCover,
+        p_cover_image_url: null,
         p_status: "open",
         p_close_type: createType,
         p_start_at: startIso,
@@ -950,6 +953,8 @@ export default function QuickCampaignControlPage() {
       setCreateName("");
       setNewProductName("");
       setNewStorageType(DEFAULT_NEW_STORAGE_TYPE);
+      imageFormGenRef.current += 1;
+      setImageFormGen(imageFormGenRef.current);
       setNewImages([]);
       setNewDescription("");
       setNewBrandId(null);
@@ -1242,9 +1247,16 @@ export default function QuickCampaignControlPage() {
                       </div>
                       <div className="grid gap-1 text-sm">
                         <span className="font-medium text-zinc-700 dark:text-zinc-200">
-                          商品圖片 <span className="font-normal text-zinc-500">（可不傳，第一張當開團封面）</span>
+                          商品圖片 <span className="font-normal text-zinc-500">（可不傳）</span>
                         </span>
-                        <ProductImagesField value={newImages} onChange={setNewImages} />
+                        <ProductImagesField
+                          key={imageFormGen}
+                          value={newImages}
+                          onChange={(next) => {
+                            if (imageFormGen === imageFormGenRef.current) setNewImages(next);
+                          }}
+                        />
+                        <span className="text-xs text-zinc-500">選好照片後，看到縮圖出現再按「建立開團」</span>
                       </div>
                       <label className="grid gap-1 text-sm">
                         <span className="font-medium text-zinc-700 dark:text-zinc-200">

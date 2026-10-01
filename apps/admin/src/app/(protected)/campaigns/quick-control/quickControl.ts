@@ -130,16 +130,17 @@ export function canQuickUpdateCampaign(row: EligibleCampaign): boolean {
 }
 
 /**
- * 全新商品的圖片／描述／品牌，整理成 rpc_upsert_product 要的參數，外加開團封面。
+ * 全新商品的圖片／描述／品牌，整理成 rpc_upsert_product 要的參數。
  * 建商品那次跟「發布」那次都要帶同一份，漏帶的那次會把它蓋回空的。
- * 圖片存的是 Storage products 的路徑（同 ProductImagesField），封面也存同一個路徑
- * （讀封面的地方都會把路徑轉成公開網址，見 lib/campaignCover.ts）。全都可以不填。
+ * 圖片存的是 Storage products 的路徑（同 ProductImagesField）。全都可以不填。
+ * 開團封面刻意不設：訂單頁的封面小圖不認得 Storage 路徑，
+ * 沒封面時各處會自動改用第一個品項的商品主圖（lib/campaignCover.ts）。
  */
 export function newProductExtras(input: {
   images: string[];
   description: string;
   brandId: number | null;
-}): { p_images: string[]; p_description: string | null; p_brand_id: number | null; cover: string | null } {
+}): { p_images: string[]; p_description: string | null; p_brand_id: number | null } {
   const images = input.images.filter((p) => typeof p === "string" && p.trim().length > 0);
   const description = input.description.trim();
   const brandId = Number.isFinite(input.brandId) && (input.brandId ?? 0) > 0 ? input.brandId : null;
@@ -147,6 +148,5 @@ export function newProductExtras(input: {
     p_images: images,
     p_description: description || null,
     p_brand_id: brandId,
-    cover: images[0] ?? null,
   };
 }
