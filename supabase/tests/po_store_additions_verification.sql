@@ -9,7 +9,7 @@
 -- ⚠️ 執行身分：測 13／14（對照組）會用 pg_get_functiondef 複製
 --    rpc_add_po_store_demands、拿掉一段後另存成別的名字。需要函式擁有者或超級使用者。
 --
--- 測試清單（計畫 §3 的 1～14，加 0、15～21）
+-- 測試清單（計畫 §3 的 1～14，加 0、15～24；22～24 是第二輪審查補的）
 --    0. 夾具前提＋預覽：店B 派貨 10、補單差額 0、表頭金額；預覽列出可加的團與對不出團的品項
 --    1. 30 件、未到未派，店B +1 → 採購單 31、請購單 31、派貨店B 11、補單差額 0
 --    2. 一次三家：店B +1、店A +2（店A 已有店家單→併進去）、批發A +1 → 採購單 34、紀錄 3 列
@@ -22,7 +22,8 @@
 --    9. 合併建單（一列採購對兩列請購，兩列都有這團）→ 擋
 --   10. 舊資料（請購品項沒有各團明細）→ 擋
 --   11. 店長帳號 → 擋（預覽與寫入都擋）
---   12. 同一 request_key 重送 → 不重複加、回上次結果；拿去別的品項用 → 擋
+--   12. 同一 request_key 重送：內容一樣（含順序不同、同一家店拆兩筆）→ 不重複加、回上次結果；
+--       團或各店數量不一樣 → 擋（白話）、一個字都沒寫；拿去別的品項用 → 擋
 --   13. 對照組：拿掉第 3 步（不改請購單）→ 補單差額變 1 → 測 1 的檢查必須紅
 --   14. 對照組：拿掉第 1 步（不加店家單）→ 派貨店B 還是 10 → 測 1 的檢查必須紅
 --   15. 同一請購品項有兩團 → 只改指定那團的明細
@@ -32,8 +33,12 @@
 --   19. 團不是已結單／已鎖（已完成）→ 擋
 --   20. 權限：兩支內部函式 anon／authenticated 都不能執行；兩支 rpc_* 只有 authenticated
 --   21. 請購品項總數 ≠ 各團明細加總（歸屬不完整）→ 擋（不然第 3 步改總數會被 #982 守衛擋成技術錯誤）
+--   22. 目標列完整、但**別張**舊請購單有一列沒有各團明細、記在這團名下（會少買）→ 擋
+--   23. 目標列完整、但**別張**舊請購單用 purchase_request_campaigns 連到這團、那一列記的是別團（會多買）→ 擋
+--   24. 廠商已確認短少（confirmed_shortfall > 0）→ 擋；（對照）confirmed_shortfall = 0 → 不擋
+--   ⇒ 22／23 的對照組（拿掉 migration 裡的 LEGACY 段）由本機測試工具負責：兩條都必須變紅。
 --
--- 「鎖完再檢查一次」需要兩個連線同時跑，單一交易測不到 ——
+-- 「鎖完再檢查一次」「追加 vs 斷貨／調整已收量 不互卡」需要兩個連線同時跑，單一交易測不到 ——
 --   由本機測試工具的「併發測試」那一段負責（見施工回報）。
 --
 -- 測試資料一律用「店A／店B／店C／批發A」這種一般名稱，不用真實門市。
@@ -527,6 +532,7 @@ BEGIN
   PERFORM pg_temp._t_case('c11');
   PERFORM pg_temp._t_case('c12');
   PERFORM pg_temp._t_case('c12b');
+  PERFORM pg_temp._t_case('c12c', p_two_camps => TRUE);
   PERFORM pg_temp._t_case('m13');
   PERFORM pg_temp._t_case('m14');
   PERFORM pg_temp._t_case('c15', p_two_camps => TRUE);
@@ -534,6 +540,10 @@ BEGIN
   PERFORM pg_temp._t_case('c18', p_a_internal => TRUE);
   PERFORM pg_temp._t_case('c19', p_camp_status => 'completed');
   PERFORM pg_temp._t_case('c21');
+  PERFORM pg_temp._t_case('c22');
+  PERFORM pg_temp._t_case('c23');
+  PERFORM pg_temp._t_case('c24');
+  PERFORM pg_temp._t_case('c24b');
 END
 $cases$;
 
@@ -547,6 +557,8 @@ DECLARE
   v_pr2    BIGINT;
   v_pri2   BIGINT;
   v_order  BIGINT;
+  v_other  BIGINT;
+  v_ci     BIGINT;
 BEGIN
   -- c3：店C 那 1 件被客人取消 → 需求 29、採購 30（原本多叫 1）
   UPDATE customer_order_items coi SET status = 'cancelled'
@@ -631,6 +643,69 @@ BEGIN
   -- c21：請購品項總數 30、各團明細只剩 29（歸屬不完整；#982 只在改品項時比對，改明細時不比對，所以造得出來）
   UPDATE purchase_request_item_campaigns SET qty_requested = 29
    WHERE pr_item_id = pg_temp._t_id('c21.pri');
+
+  -- c22（會少買）：目標那一列完整（有各團明細 30）；**另一張**還沒取消的舊請購單上，
+  --   有一列「沒有各團明細、source_campaign_id 記這團」5 件 → helper 把 5 件整列算成這團的
+  --   → 已請購 35／需求 30、差額 -5 → 照算的話店B +1 時採購單 +0（少買）。
+  --   照真實順序造：舊列是 #982 守衛上線前就有的。守衛只在改請購時檢查需求，
+  --   所以夾具先多 5 件訂單 → 建舊列（守衛看到需求 35 ≥ 35 放行）→ 那 5 件取消（守衛不回頭查）。
+  INSERT INTO customer_orders (tenant_id, order_no, campaign_id, channel_id, pickup_store_id, status, created_by, updated_by)
+  VALUES (v_tenant, 'ZZPOADD-c22-1-TMP', pg_temp._t_id('c22.camp'), pg_temp._t_id('ch_storeC'),
+          pg_temp._t_id('storeC'), 'confirmed', v_op, v_op)
+  RETURNING id INTO v_order;
+  INSERT INTO customer_order_items (tenant_id, order_id, campaign_item_id, sku_id, qty, unit_price, status)
+  SELECT v_tenant, v_order, ci.id, ci.sku_id, 5, 180, 'pending'
+    FROM campaign_items ci WHERE ci.campaign_id = pg_temp._t_id('c22.camp');
+  INSERT INTO purchase_requests (tenant_id, pr_no, source_type, source_close_date, source_location_id,
+                                 status, total_amount, created_by, updated_by)
+  VALUES (v_tenant, 'ZZPOADD-PR-c22-OLD', 'close_date', (SELECT close_date FROM _t_env) - 7, pg_temp._t_id('loc'),
+          'submitted', 500, v_op, v_op)
+  RETURNING id INTO v_pr2;
+  INSERT INTO purchase_request_items (pr_id, sku_id, qty_requested, suggested_supplier_id, unit_cost,
+                                      source_campaign_id, created_by, updated_by)
+  VALUES (v_pr2, pg_temp._t_id('c22.sku'), 5, pg_temp._t_id('sup'), 100, pg_temp._t_id('c22.camp'), v_op, v_op);
+  UPDATE customer_order_items SET status = 'cancelled' WHERE order_id = v_order;
+  UPDATE customer_orders SET status = 'cancelled' WHERE id = v_order;
+
+  -- c23（會多買）：目標那一列完整（有各團明細 30）；**另一張**舊請購單用 purchase_request_campaigns
+  --   連到這團和「別團」，它那一列 5 件沒有各團明細、source_campaign_id 記的是別團（只記第一個團的舊缺陷）
+  --   → helper 把 5 件算給別團，這團一件都沒算到。這團之後的 5 件訂單其實已經包在那 5 件裡，
+  --   但 helper 看到需求 35／已請購 30、差額 +5 → 照算的話店B +1 時採購單 +6（多買 5）。
+  INSERT INTO group_buy_campaigns (tenant_id, campaign_no, name, status, end_at)
+  VALUES (v_tenant, 'ZZPOADD-c23-OTHER', '【測試】追加團 c23 別團', 'locked',
+          (((SELECT close_date FROM _t_env) + TIME '12:00') AT TIME ZONE 'Asia/Taipei'))
+  RETURNING id INTO v_other;
+  INSERT INTO campaign_items (tenant_id, campaign_id, sku_id, unit_price)
+  VALUES (v_tenant, v_other, pg_temp._t_id('c23.sku'), 180)
+  RETURNING id INTO v_ci;
+  INSERT INTO customer_orders (tenant_id, order_no, campaign_id, channel_id, pickup_store_id, status, created_by, updated_by)
+  VALUES (v_tenant, 'ZZPOADD-c23-OTHER-A', v_other, pg_temp._t_id('ch_storeA'),
+          pg_temp._t_id('storeA'), 'confirmed', v_op, v_op)
+  RETURNING id INTO v_order;
+  INSERT INTO customer_order_items (tenant_id, order_id, campaign_item_id, sku_id, qty, unit_price, status)
+  VALUES (v_tenant, v_order, v_ci, pg_temp._t_id('c23.sku'), 5, 180, 'pending');
+  INSERT INTO purchase_requests (tenant_id, pr_no, source_type, source_close_date, source_location_id,
+                                 status, total_amount, created_by, updated_by)
+  VALUES (v_tenant, 'ZZPOADD-PR-c23-OLD', 'close_date', (SELECT close_date FROM _t_env) - 7, pg_temp._t_id('loc'),
+          'submitted', 500, v_op, v_op)
+  RETURNING id INTO v_pr2;
+  INSERT INTO purchase_request_items (pr_id, sku_id, qty_requested, suggested_supplier_id, unit_cost,
+                                      source_campaign_id, created_by, updated_by)
+  VALUES (v_pr2, pg_temp._t_id('c23.sku'), 5, pg_temp._t_id('sup'), 100, v_other, v_op, v_op);
+  INSERT INTO purchase_request_campaigns (pr_id, campaign_id, tenant_id)
+  VALUES (v_pr2, pg_temp._t_id('c23.camp'), v_tenant), (v_pr2, v_other, v_tenant);
+  INSERT INTO customer_orders (tenant_id, order_no, campaign_id, channel_id, pickup_store_id, status, created_by, updated_by)
+  VALUES (v_tenant, 'ZZPOADD-c23-1-C3', pg_temp._t_id('c23.camp'), pg_temp._t_id('ch_storeC'),
+          pg_temp._t_id('storeC'), 'confirmed', v_op, v_op)
+  RETURNING id INTO v_order;
+  INSERT INTO customer_order_items (tenant_id, order_id, campaign_item_id, sku_id, qty, unit_price, status)
+  SELECT v_tenant, v_order, ci.id, ci.sku_id, 5, 180, 'pending'
+    FROM campaign_items ci WHERE ci.campaign_id = pg_temp._t_id('c23.camp');
+  INSERT INTO _t_ctx(k, v) VALUES ('c23.other', v_other);
+
+  -- c24：廠商已確認短少 3 件（rpc_set_confirmed_shortfall 寫的欄位）；c24b：0（不算短少，對照用）
+  UPDATE purchase_order_items SET confirmed_shortfall = 3 WHERE id = pg_temp._t_id('c24.poi');
+  UPDATE purchase_order_items SET confirmed_shortfall = 0 WHERE id = pg_temp._t_id('c24b.poi');
 END
 $mutate$;
 
@@ -992,6 +1067,62 @@ EXCEPTION WHEN OTHERS THEN
 END
 $t19$;
 
+-- 測 22／23：目標列完整，但**別張**舊請購單（沒有各團明細）污染了這個 (團, 商品) 的已請購量
+--   前提先驗（目標列完整、差額真的被帶歪），才輪到「擋下」這個結論。
+--   對照組（拿掉 migration 的 LEGACY 段）時這兩條必須紅，紅的時候 detail 會寫出照算的結果：
+--   測 22 採購單 30→30（店家 +1、採購單 +0 ＝ 少買）、測 23 採購單 30→36（多買 5）。
+DO $t22$
+DECLARE a RECORD; v_d NUMERIC; v_item NUMERIC; v_attr NUMERIC;
+BEGIN
+  v_d := pg_temp._t_delta('c22');
+  SELECT qty_requested INTO v_item FROM purchase_request_items WHERE id = pg_temp._t_id('c22.pri');
+  SELECT SUM(qty_requested) INTO v_attr FROM purchase_request_item_campaigns WHERE pr_item_id = pg_temp._t_id('c22.pri');
+  SELECT * INTO a FROM pg_temp._t_expect_block('c22', '%舊格式%已請購量算不準%');
+  INSERT INTO _t_result VALUES (
+    22, '別張舊請購單有一列沒有各團明細、記在這團名下（照算會少買）→ 擋，一個字都沒寫',
+    COALESCE(v_item = 30 AND v_attr = 30 AND v_d = -5 AND a.o_pass, FALSE),
+    format('前提：目標列 %s／這團明細 %s、差額 %s（應為 -5：舊列 5 件被整列算成這團的）｜%s', v_item, v_attr, v_d, a.o_detail));
+EXCEPTION WHEN OTHERS THEN
+  INSERT INTO _t_result VALUES (22, '別張舊資料（少買）', FALSE, 'EXCEPTION: ' || SQLERRM);
+END
+$t22$;
+
+DO $t23$
+DECLARE a RECORD; v_d NUMERIC; v_d_other NUMERIC; v_item NUMERIC; v_attr NUMERIC;
+BEGIN
+  v_d := pg_temp._t_delta('c23');
+  SELECT COALESCE((SELECT d.delta_qty FROM public._pr_campaign_sku_remaining_rows(ARRAY[pg_temp._t_id('c23.other')]) d
+                    WHERE d.sku_id = pg_temp._t_id('c23.sku')), 0) INTO v_d_other;
+  SELECT qty_requested INTO v_item FROM purchase_request_items WHERE id = pg_temp._t_id('c23.pri');
+  SELECT SUM(qty_requested) INTO v_attr FROM purchase_request_item_campaigns WHERE pr_item_id = pg_temp._t_id('c23.pri');
+  SELECT * INTO a FROM pg_temp._t_expect_block('c23', '%舊格式%已請購量算不準%');
+  INSERT INTO _t_result VALUES (
+    23, '別張舊請購單用 purchase_request_campaigns 連到這團、那一列記別團（照算會多買）→ 擋，一個字都沒寫',
+    COALESCE(v_item = 30 AND v_attr = 30 AND v_d = 5 AND v_d_other = 0 AND a.o_pass, FALSE),
+    format('前提：目標列 %s／這團明細 %s、這團差額 %s（應為 +5：舊列 5 件被算給別團）、別團差額 %s｜%s',
+           v_item, v_attr, v_d, v_d_other, a.o_detail));
+EXCEPTION WHEN OTHERS THEN
+  INSERT INTO _t_result VALUES (23, '別張舊資料（多買）', FALSE, 'EXCEPTION: ' || SQLERRM);
+END
+$t23$;
+
+-- 測 24：確定短少（#896）
+DO $t24$
+DECLARE a RECORD; v_b_can BOOLEAN; v_b_reason TEXT;
+BEGIN
+  SELECT * INTO a FROM pg_temp._t_expect_block('c24', '%會短少 3 件%確定短少%');
+  SELECT p.can_add, p.block_reason INTO v_b_can, v_b_reason
+    FROM public.rpc_preview_po_store_additions(pg_temp._t_id('c24b.po')) p
+   WHERE p.po_item_id = pg_temp._t_id('c24b.poi') AND p.campaign_id = pg_temp._t_id('c24b.camp');
+  INSERT INTO _t_result VALUES (
+    24, '廠商已確認短少 3 件 → 擋（預覽與寫入），一個字都沒寫；（對照）確定短少 0 → 不擋',
+    COALESCE(a.o_pass AND v_b_can, FALSE),
+    format('%s ‖ 確定短少 0：can_add=%s 原因=%s', a.o_detail, v_b_can, v_b_reason));
+EXCEPTION WHEN OTHERS THEN
+  INSERT INTO _t_result VALUES (24, '確定短少', FALSE, 'EXCEPTION: ' || SQLERRM);
+END
+$t24$;
+
 
 -- ============================================================================
 -- 測 11：店長帳號 → 預覽與寫入都擋，一個字都沒寫
@@ -1045,36 +1176,74 @@ $t11$;
 
 
 -- ============================================================================
--- 測 12：同一 request_key 重送 → 不重複加、回上次結果；拿去別的品項用 → 擋
+-- 測 12：同一 request_key 重送
+--   內容一樣（順序不同、同一家店拆兩筆也算一樣：比的是「每家店加總後」的集合）→ 不重複加、回上次結果
+--   團或各店數量不一樣 → 擋下（白話），一個字都沒寫 —— 第一次可能其實已經寫進去，不能假裝改過的內容生效
+--   拿去別的品項用 → 擋
 -- ============================================================================
 DO $t12$
 DECLARE
-  v_key    UUID := gen_random_uuid();
-  v_first  JSONB;
-  v_again  JSONB;
-  v_diff   JSONB;
-  v_other  TEXT;
-  v_poi    NUMERIC;
-  v_pri    NUMERIC;
-  v_add    INTEGER;
-  v_in     BIGINT;
-  v_poi_b  NUMERIC;
+  v_key     UUID := gen_random_uuid();
+  v_key2    UUID := gen_random_uuid();
+  v_first   JSONB;
+  v_again   JSONB;
+  v_split   JSONB;
+  v_diff    TEXT;
+  v_fewer   TEXT;
+  v_camp2   TEXT;
+  v_other   TEXT;
+  v_c_first JSONB;
+  v_poi     NUMERIC;
+  v_pri     NUMERIC;
+  v_add     INTEGER;
+  v_in      BIGINT;
+  v_poi_b   NUMERIC;
+  v_poi_c   NUMERIC;
+  v_add2    INTEGER;
+  v_in_c    BIGINT;
 BEGIN
   v_first := pg_temp._t_call('rpc_add_po_store_demands', 'c12',
-               jsonb_build_array(pg_temp._t_add('storeB', 1)), v_key);
-  -- 同一把 key、同一包內容再送一次
+               jsonb_build_array(pg_temp._t_add('storeB', 1), pg_temp._t_add('storeA', 2)), v_key);
+  -- 同一把 key、同樣內容但順序不同 → 回上次結果
   v_again := pg_temp._t_call('rpc_add_po_store_demands', 'c12',
-               jsonb_build_array(pg_temp._t_add('storeB', 1)), v_key);
-  -- 同一把 key、內容被改過（例：網路斷了、畫面上又改了數字才重按）→ 仍然只認第一次
-  v_diff := pg_temp._t_call('rpc_add_po_store_demands', 'c12',
-              jsonb_build_array(pg_temp._t_add('storeB', 5)), v_key);
+               jsonb_build_array(pg_temp._t_add('storeA', 2), pg_temp._t_add('storeB', 1)), v_key);
+  -- 同一把 key、店B 拆成兩筆 0.5 + 0.5（加總後一樣）→ 回上次結果
+  v_split := pg_temp._t_call('rpc_add_po_store_demands', 'c12',
+               jsonb_build_array(pg_temp._t_add('storeB', 0.5), pg_temp._t_add('storeA', 2),
+                                 pg_temp._t_add('storeB', 0.5)), v_key);
+  -- 同一把 key、店B 改成 5（例：網路斷了、畫面上又改了數字才重按）→ 擋
+  BEGIN
+    PERFORM pg_temp._t_call('rpc_add_po_store_demands', 'c12',
+              jsonb_build_array(pg_temp._t_add('storeB', 5), pg_temp._t_add('storeA', 2)), v_key);
+    v_diff := '（沒有擋下來）';
+  EXCEPTION WHEN OTHERS THEN
+    v_diff := SQLERRM;
+  END;
+  -- 同一把 key、少了一家店 → 擋
+  BEGIN
+    PERFORM pg_temp._t_call('rpc_add_po_store_demands', 'c12',
+              jsonb_build_array(pg_temp._t_add('storeB', 1)), v_key);
+    v_fewer := '（沒有擋下來）';
+  EXCEPTION WHEN OTHERS THEN
+    v_fewer := SQLERRM;
+  END;
   -- 同一把 key 拿去別張採購單的品項 → 擋
   BEGIN
     PERFORM pg_temp._t_call('rpc_add_po_store_demands', 'c12b',
-              jsonb_build_array(pg_temp._t_add('storeB', 1)), v_key);
+              jsonb_build_array(pg_temp._t_add('storeB', 1), pg_temp._t_add('storeA', 2)), v_key);
     v_other := '（沒有擋下來）';
   EXCEPTION WHEN OTHERS THEN
     v_other := SQLERRM;
+  END;
+  -- 另一把 key：同一個品項、第一次選第 1 團，重送時改選第 2 團 → 擋
+  v_c_first := pg_temp._t_call('rpc_add_po_store_demands', 'c12c',
+                 jsonb_build_array(pg_temp._t_add('storeB', 1)), v_key2, '.camp');
+  BEGIN
+    PERFORM pg_temp._t_call('rpc_add_po_store_demands', 'c12c',
+              jsonb_build_array(pg_temp._t_add('storeB', 1)), v_key2, '.camp2');
+    v_camp2 := '（沒有擋下來）';
+  EXCEPTION WHEN OTHERS THEN
+    v_camp2 := SQLERRM;
   END;
 
   SELECT qty_ordered INTO v_poi FROM purchase_order_items WHERE id = pg_temp._t_id('c12.poi');
@@ -1082,20 +1251,30 @@ BEGIN
   SELECT COUNT(*) INTO v_add FROM purchase_request_store_additions WHERE request_key = v_key;
   v_in := pg_temp._t_internal_items('c12');
   SELECT qty_ordered INTO v_poi_b FROM purchase_order_items WHERE id = pg_temp._t_id('c12b.poi');
+  SELECT qty_ordered INTO v_poi_c FROM purchase_order_items WHERE id = pg_temp._t_id('c12c.poi');
+  SELECT COUNT(*) INTO v_add2 FROM purchase_request_store_additions WHERE request_key = v_key2;
+  v_in_c := pg_temp._t_internal_items('c12c', '.camp') + pg_temp._t_internal_items('c12c', '.camp2');
 
   INSERT INTO _t_result VALUES (
-    12, '同一 request_key 重送（含內容被改過）→ 不重複加、回上次結果（idempotent）；拿去別的品項 → 擋',
-    COALESCE(v_poi = 31 AND v_pri = 31 AND v_add = 1 AND v_in = 1 AND v_poi_b = 30
+    12, '同一 request_key 重送：內容一樣（含順序不同、同店拆兩筆）→ 回上次結果；團或各店數量不同 → 擋（白話）、沒寫；拿去別的品項 → 擋',
+    COALESCE(v_poi = 33 AND v_pri = 33 AND v_add = 2 AND v_in = 2 AND v_poi_b = 30
              AND (v_first ->> 'idempotent')::BOOLEAN = FALSE
+             AND (v_first ->> 'po_added_qty')::NUMERIC = 3
              AND (v_again ->> 'idempotent')::BOOLEAN = TRUE
-             AND (v_again ->> 'store_added_qty')::NUMERIC = 1
-             AND (v_again ->> 'po_added_qty')::NUMERIC = 1
-             AND (v_again ->> 'po_qty_after')::NUMERIC = 31
-             AND (v_diff ->> 'idempotent')::BOOLEAN = TRUE
-             AND (v_diff ->> 'store_added_qty')::NUMERIC = 1
-             AND v_other LIKE '%request key already used%', FALSE),
-    format('採購 %s 請購 %s 紀錄 %s 列 店家單品項 %s 別張採購 %s｜重送=%s｜改內容重送=%s｜別品項=%s',
-           v_poi, v_pri, v_add, v_in, v_poi_b, v_again, v_diff, v_other));
+             AND (v_again ->> 'store_added_qty')::NUMERIC = 3
+             AND (v_again ->> 'po_added_qty')::NUMERIC = 3
+             AND (v_again ->> 'po_qty_after')::NUMERIC = 33
+             AND (v_split ->> 'idempotent')::BOOLEAN = TRUE
+             AND v_diff LIKE '%之前已經送出過不同的團或數量%這次什麼都沒有改%'
+             AND v_fewer LIKE '%之前已經送出過不同的團或數量%'
+             AND v_other LIKE '%request key already used%'
+             AND (v_c_first ->> 'idempotent')::BOOLEAN = FALSE
+             AND v_camp2 LIKE '%之前已經送出過不同的團或數量%'
+             AND v_poi_c = 61 AND v_add2 = 1 AND v_in_c = 1, FALSE),
+    format('採購 %s 請購 %s 紀錄 %s 列 店家單品項 %s 別張採購 %s｜換順序重送=%s｜拆兩筆重送=%s｜改數量=%s｜少一家=%s｜別品項=%s｜'
+           '兩團那張：第一次加 %s 件、改選第 2 團=%s、採購 %s 紀錄 %s 列 店家單品項 %s',
+           v_poi, v_pri, v_add, v_in, v_poi_b, v_again, v_split, v_diff, v_fewer, v_other,
+           v_c_first ->> 'po_added_qty', v_camp2, v_poi_c, v_add2, v_in_c));
 EXCEPTION WHEN OTHERS THEN
   INSERT INTO _t_result VALUES (12, '同一 request_key 重送', FALSE, 'EXCEPTION: ' || SQLERRM);
 END
@@ -1262,13 +1441,13 @@ BEGIN
     RAISE EXCEPTION 'po_store_additions_verification failed:%', E'\n' || v_bad;
   END IF;
 
-  -- 結果必須剛好 22 條（測 0～21）；少一條就算失敗，防止某條測試被跳過還顯示綠
+  -- 結果必須剛好 25 條（測 0～24）；少一條就算失敗，防止某條測試被跳過還顯示綠
   SELECT COUNT(DISTINCT seq) INTO v_n FROM _t_result;
-  IF v_n <> 22 OR (SELECT COUNT(*) FROM _t_result) <> 22 THEN
-    RAISE EXCEPTION 'po_store_additions_verification：應該有 22 條結果（測 0～21），實際 % 條', v_n;
+  IF v_n <> 25 OR (SELECT COUNT(*) FROM _t_result) <> 25 THEN
+    RAISE EXCEPTION 'po_store_additions_verification：應該有 25 條結果（測 0～24），實際 % 條', v_n;
   END IF;
 
-  RAISE NOTICE 'po_store_additions_verification: 22/22 PASS';
+  RAISE NOTICE 'po_store_additions_verification: 25/25 PASS';
 END $$;
 
 ROLLBACK;

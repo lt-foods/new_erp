@@ -8,7 +8,7 @@
 // ⛔ 系統不會通知廠商 —— 確認框與成功訊息都要講。
 // ⛔ 這是採購單頁專用的新元件；請購單頁那個「分店／批發加單」（#995）不要改成用它。
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { getSupabase } from "@/lib/supabase";
@@ -104,8 +104,14 @@ export function POStoreAddButton({
 }
 
 /**
- * 追加視窗。由頁面在「要開的時候」才掛上去（關掉就卸下），
- * 所以每次打開都是全新的狀態，request_key 也是每次打開產生一個（比照 #995：同一個視窗重送不會重複加）。
+ * 追加視窗。由頁面在「要開的時候」才掛上去（關掉就卸下），所以每次打開都是全新的狀態。
+ *
+ * request_key（防重送）：
+ *   - 送出失敗後**內容沒改**（團、各店數量）→ 沿用同一把：萬一其實已經寫進去、只是回應沒收到，
+ *     後端會回上次結果，不會重複加。
+ *   - 後端**明確拒絕**（有錯誤碼＝整筆沒寫）之後改了內容 → 換一把新的，當成一筆新的追加。
+ *   - 上一次**不確定有沒有寫進去**（連線斷、逾時，沒有錯誤碼），或後端說「之前已經送出過不同的內容」
+ *     → 不換：改過的內容用同一把送，後端會擋下並請使用者重新整理，不會在原本那筆上又加一次。
  */
 export function POStoreAddModal({
   target,
@@ -121,7 +127,8 @@ export function POStoreAddModal({
     const addable = target.options.filter((o) => o.can_add && o.campaign_id != null);
     return addable.length === 1 ? addable[0].campaign_id : null;
   });
-  const [requestKey] = useState<string>(() => newUuid());
+  // 上一次真的送到後端的 request_key、內容，以及那一把是不是「可能已經寫進去」（見上面註解）
+  const lastSentRef = useRef<{ key: string; sig: string; mayBeWritten: boolean } | null>(null);
   const [stores, setStores] = useState<StoreRow[] | null>(null);
   const [storesErr, setStoresErr] = useState<string | null>(null);
   const [qtyByStore, setQtyByStore] = useState<Record<number, string>>({});
@@ -232,10 +239,20 @@ export function POStoreAddModal({
       .join("\n");
     if (!window.confirm(confirmText)) return;
 
+    // 這次要送的內容（團＋每家店數量，依店排好）；跟上一次一樣就沿用同一把 request_key
+    const sig = JSON.stringify({
+      campaign: selected.campaign_id,
+      lines: lines.map((l) => [l.store.id, l.qty]).sort((x, y) => x[0] - y[0]),
+    });
+    const last = lastSentRef.current;
+    const requestKey = last && (last.sig === sig || last.mayBeWritten) ? last.key : newUuid();
+
     setBusy(true);
     try {
       const supabase = getSupabase();
       const { data: userData } = await supabase.auth.getUser();
+      // 送出前先記下來：萬一這一呼叫直接丟例外，也當成「可能已經寫進去」
+      lastSentRef.current = { key: requestKey, sig, mayBeWritten: true };
       const { data, error: rpcErr } = await supabase.rpc("rpc_add_po_store_demands", {
         p_po_id: target.poId,
         p_po_item_id: target.poItemId,
@@ -244,7 +261,15 @@ export function POStoreAddModal({
         p_operator: userData.user?.id,
         p_request_key: requestKey,
       });
-      if (rpcErr) throw new Error(rpcErr.message);
+      if (rpcErr) {
+        // 有錯誤碼（Postgres／PostgREST 回的）＝後端明確拒絕、整筆沒寫；
+        // 沒有錯誤碼（連線斷了、逾時）＝不知道有沒有寫進去。
+        // 「之前已經送出過不同的內容」＝這把 key 已經寫過東西，之後也不能換掉它。
+        const rejected = typeof rpcErr.code === "string" && rpcErr.code !== "";
+        const alreadyUsed = (rpcErr.message ?? "").includes("之前已經送出過");
+        lastSentRef.current = { key: requestKey, sig, mayBeWritten: !rejected || alreadyUsed };
+        throw new Error(rpcErr.message);
+      }
 
       const r = (data ?? {}) as AddResult;
       const after = r.po_qty_after == null ? "?" : formatQty(r.po_qty_after);
@@ -265,7 +290,7 @@ export function POStoreAddModal({
       onClose();
       await onDone();
     } catch (e) {
-      // ⚠️ 不換 request_key：如果其實已經寫進去、只是回應沒收到，再按一次會拿到上次的結果，不會重複加
+      // request_key 要不要換，下一次按送出時依 lastSentRef 決定（見元件上方註解）
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);

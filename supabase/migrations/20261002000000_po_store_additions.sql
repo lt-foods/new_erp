@@ -38,10 +38,26 @@
 --   ⛔ 不通知廠商、不做減量／刪除、不碰客人單、不幫已存在的 pending 店家單推 confirmed。
 --
 -- ⚠️ 兩份同樣的邏輯（改一份要兩份一起改）
---   `_store_add_internal_order_item` 的建店家內部單邏輯，是照
---   `rpc_add_pr_store_demands`（20260924010000:244-341）那段抽出來的**第二份**。
---   #995 那份本檔沒有動。之後任何一份改了（找既有單的條件、單號規則、狀態檢查），
---   另一份要一起改。
+--   ① `_store_add_internal_order_item` 的建店家內部單邏輯，是照
+--      `rpc_add_pr_store_demands`（20260924010000:244-341）那段抽出來的**第二份**。
+--      #995 那份本檔沒有動。之後任何一份改了（找既有單的條件、單號規則、狀態檢查），
+--      另一份要一起改。
+--   ② `_po_item_store_add_block_reason` 的 ⑧「舊格式請購資料碰到這個 (團, 商品)」檢查，
+--      跟 #1049 `_pr_qty_sync_preview` 的 `legacy_touch`（20261001000000:389-422）是
+--      **同一套判斷**（#1049 寫在 CTE 裡、沒有可以直接呼叫的獨立函式，所以本檔另寫一份）。
+--      改一份要兩份一起改。
+--
+-- 什麼情況不能追加（預覽與寫入共用 _po_item_store_add_block_reason，寫入在鎖完後再查一次）
+--   ① 採購單不是「已送出」 ② 已按斷貨 ②-2 廠商已確認短少（confirmed_shortfall > 0，#896）
+--   ③ 已收過貨／有未取消的進貨單 ④ 有未取消的撿貨單 ⑤ 團不在這個品項上
+--   ⑥ 團不是已結單／已鎖、店家自開團、團沒賣這個商品
+--   ⑦ 請購品項不是「剛好一列、有這一團的各團明細」 ⑦-2 那一列總數 ≠ 各團明細加總
+--   ⑧ 這個 (團, 商品) 碰到沒有各團明細的請購品項（舊格式）→ 已請購量算不準、X 會多買或少買
+--
+-- 防重送（request_key）
+--   同一把 key 重送：品項、團、操作人、**各店數量**都跟第一次一樣 → 回上次結果、不重做；
+--   團或各店數量不一樣 → 擋下，請使用者關掉視窗重新整理（第一次可能其實已經寫進去了）。
+--   紀錄表不加欄位：各店數量就是紀錄表上每列的 store_id／qty_added。
 --
 -- 寫入順序（⚠️ 不可調動）
 --   第 1 步 每家店建店家內部單（+N）
@@ -53,10 +69,29 @@
 --   第 5 步 每家店寫一列 purchase_request_store_additions（pr_delta_qty = X）
 --
 -- 上鎖順序（固定）
---   request_key → 採購單 → 採購單品項 → 請購單與品項 → 團 → (團, 商品) advisory lock
---   （最後一把跟 #982 守衛、#995 是同一把）。**鎖完再跑一次檢查**：檢查完到上鎖之間
---   如果有人開了進貨單／撿貨單／按斷貨，那些動作會碰同一列（外鍵或 UPDATE），
---   會等我們、或我們等它；等完再查一次就看得到。
+--   request_key → 採購單（排隊等）→ 採購單品項（NOWAIT：拿不到立刻停）→ 請購單與品項 → 團
+--   → (團, 商品) advisory lock（最後一把跟 #982 守衛、#995 是同一把）。
+--   **鎖完再跑一次檢查**：檢查完到上鎖之間如果有人開了進貨單／撿貨單／按斷貨，
+--   那些動作會碰同一列（外鍵或 UPDATE），會等我們、或我們等它；等完再查一次就看得到。
+--
+--   為什麼採購單品項要 NOWAIT（審查 P0-2：死結）
+--     既有系統本身就有兩種相反的上鎖順序（逐支查過最新定義）：
+--       先採購單、後品項：rpc_arrive_and_distribute（20260820000000:322→479）、
+--                         rpc_set_confirmed_shortfall（20260902030000:252→258）、
+--                         rpc_stockout_purchase_order（20260801000000:333，品項在 _stockout_po_items 裡 UPDATE）、
+--                         rpc_create_wave_from_po（20260908000000:251，只鎖採購單）、
+--                         rpc_delete_purchase_order（20260702010000:53，品項由刪除連帶）
+--       先品項、後採購單：rpc_stockout_po_item（20260801000000:286→291）、
+--                         rpc_adjust_po_item_received（20260902000010:75→80）、
+--                         rpc_confirm_gr（20260422120004:329 UPDATE 品項 → :339 _refresh_po_status 改採購單）
+--     不管本檔排哪個順序，都會跟其中一邊相反 ⇒ 光靠排順序避免不了死結。
+--     所以：①先排隊等「採購單」（跟大多數既有寫入點同順序，排在它們後面就不會卡）；
+--           ②「採購單品項」用 NOWAIT：拿不到＝有人正在用「先品項」的順序操作同一個品項
+--             （按斷貨／調整已收量），本檔**立刻放手、整筆不寫**，讓對方做完，
+--             畫面告訴使用者「有人同時在操作，請稍後再按一次」。
+--           ⇒ 本檔握著採購單時從不「等」品項，不會跟上面任何一支形成互等，
+--             也就不會讓 Postgres 挑對方（例如斷貨）當犧牲者、丟給對方一句技術錯誤。
+--           ③保險：萬一還是被 Postgres 判死結（deadlock_detected），一樣轉成白話訊息、整筆不寫。
 --
 -- 採購單表頭金額怎麼算（照既有寫入點，不自己發明）
 --   全 repo 只有兩處寫 purchase_orders 的 subtotal／total，算法相同：
@@ -107,6 +142,7 @@ BEGIN
   -- 依賴的既有欄位（後來才 ADD COLUMN 的那些）
   FOREACH v_name IN ARRAY ARRAY[
     'purchase_order_items.stockout_at',
+    'purchase_order_items.confirmed_shortfall',
     'purchase_orders.subtotal',
     'purchase_orders.total',
     'group_buy_campaigns.owner_store_id',
@@ -238,6 +274,7 @@ DECLARE
   v_attr_total NUMERIC;
 BEGIN
   SELECT poi.id, poi.po_id, poi.sku_id, poi.qty_received, poi.stockout_at,
+         poi.confirmed_shortfall,
          po.status AS po_status
     INTO v_poi
     FROM public.purchase_order_items poi
@@ -267,6 +304,15 @@ BEGIN
   -- ② 沒有被按過斷貨
   IF v_poi.stockout_at IS NOT NULL THEN
     RETURN '這個商品已經按過斷貨';
+  END IF;
+
+  -- ②-2 沒有「確定短少」（#896：廠商已確認有幾件不會到，客人單已標待補貨；
+  --      欄位 20260902030000_confirmed_shortfall_pre_backorder.sql:130，
+  --      寫入 rpc_set_confirmed_shortfall 同檔 :414-420；清除時寫回 NULL）
+  --      再追加的話，短少標記與待補貨的客人不會跟著調整，數字對不起來。
+  IF COALESCE(v_poi.confirmed_shortfall, 0) > 0 THEN
+    RETURN '廠商已確認這個商品會短少 ' || trim_scale(v_poi.confirmed_shortfall)::TEXT
+      || ' 件（確定短少），不能再追加；要追加請先清除確定短少';
   END IF;
 
   -- ③ 還沒收過貨，而且沒有未取消的進貨單
@@ -414,6 +460,47 @@ BEGIN
       || ' 跟各團明細加總 ' || trim_scale(v_attr_total)::TEXT
       || ' 對不起來，不自動改，請人工確認';
   END IF;
+
+  -- >>> LEGACY BEGIN（⑧ 舊格式請購資料碰到這個 (團, 商品) —— 不可拿掉）
+  -- ⚠️⚠️ 這段與 #1049 `_pr_qty_sync_preview` 的 legacy_touch（20261001000000:389-422）
+  --      是**同一套判斷**，改一份要兩份一起改。（#1049 寫在 CTE 裡、沒有獨立函式可呼叫。）
+  --   X 來自 _pr_campaign_sku_remaining_rows 的差額，而它會把「沒有各團明細」的請購品項
+  --   用 source_campaign_id **整列**算進已請購量（20260921001000:294-320）。
+  --   所以只要這個 (團, 商品) 碰到這種列（不分單據狀態，只排除已取消；跟 helper 同口徑），
+  --   已請購量就算不準，X 不能信：
+  --     (i)  那一列記在這個團名下 → 這個團被多算 → X 偏小 → 少買
+  --     (ii) 那一列所在的請購單有連到這個團（purchase_request_campaigns），
+  --          但 source_campaign_id 記的是別團 → 這個團被少算 → X 偏大 → 多買
+  --          （#982 守衛用同一套算法，也擋不到這種多買）
+  --   目標那一列自己是舊資料的情況，上面 ⑦ 已經先擋了；走到這裡的一定是**別的**請購品項。
+  IF EXISTS (
+    SELECT 1
+      FROM public.purchase_request_items pri
+      JOIN public.purchase_requests pr
+        ON pr.id = pri.pr_id
+     WHERE pr.tenant_id = v_tenant
+       AND pr.status <> 'cancelled'
+       AND pri.sku_id = v_poi.sku_id
+       AND NOT EXISTS (
+         SELECT 1
+           FROM public.purchase_request_item_campaigns pric
+          WHERE pric.pr_item_id = pri.id
+       )
+       AND (
+         pri.source_campaign_id = p_campaign_id
+         OR EXISTS (
+           SELECT 1
+             FROM public.purchase_request_campaigns prc
+            WHERE prc.pr_id = pr.id
+              AND prc.campaign_id = p_campaign_id
+              AND prc.tenant_id = v_tenant
+         )
+       )
+  ) THEN
+    RETURN '這個團的這個商品，有別的請購品項是舊格式（沒有各團明細），'
+      || '已請購量算不準（照算會多買或少買），不自動改，請人工確認';
+  END IF;
+  -- <<< LEGACY END
 
   RETURN NULL;
 END;
@@ -741,6 +828,7 @@ DECLARE
   v_pr_qty_after      NUMERIC;
   v_po_qty_after      NUMERIC;
   v_stores            JSONB;
+  v_same_payload      BOOLEAN;
   r                   RECORD;
 BEGIN
   PERFORM public._pr_qty_sync_assert_perm();
@@ -807,10 +895,39 @@ BEGIN
     IF v_existing.item_cnt <> 1
        OR v_existing.camp_cnt <> 1
        OR NOT v_existing.same_operator
-       OR v_existing.campaign_id <> p_campaign_id
        OR v_existing_po_item IS DISTINCT FROM p_po_item_id
        OR v_po_qty_now IS NULL THEN
       RAISE EXCEPTION 'request key already used by another store-addition request';
+    END IF;
+
+    -- 同一個視窗重送：團、各店數量都要跟第一次**完全一樣**才回上次結果。
+    -- 不一樣＝第一次可能其實已經寫進去（例：網路斷了沒收到回應），使用者又改了內容再送；
+    -- 照舊回「上次結果」會讓畫面以為改過的內容生效了 → 擋下，請他重新整理看實際狀況。
+    -- 各店數量的算法跟第一次寫紀錄時一樣（同一家店加總、取到小數三位，見下面 _po_store_add_input），
+    -- 比對的是紀錄表上每列的 store_id／qty_added（表不加欄位）。
+    IF v_existing.campaign_id <> p_campaign_id
+       OR p_additions IS NULL
+       OR jsonb_typeof(p_additions) <> 'array' THEN
+      v_same_payload := FALSE;
+    ELSE
+      WITH sent_now AS (
+        SELECT x.store_id::BIGINT AS store_id, SUM(x.qty)::NUMERIC(18,3) AS qty
+          FROM jsonb_to_recordset(p_additions) AS x(store_id BIGINT, qty NUMERIC)
+         GROUP BY x.store_id
+      ),
+      sent_before AS (
+        SELECT a.store_id, a.qty_added AS qty
+          FROM public.purchase_request_store_additions a
+         WHERE a.tenant_id = v_tenant
+           AND a.request_key = p_request_key
+      )
+      SELECT NOT EXISTS (SELECT store_id, qty FROM sent_now EXCEPT SELECT store_id, qty FROM sent_before)
+         AND NOT EXISTS (SELECT store_id, qty FROM sent_before EXCEPT SELECT store_id, qty FROM sent_now)
+        INTO v_same_payload;
+    END IF;
+
+    IF NOT v_same_payload THEN
+      RAISE EXCEPTION '這個視窗之前已經送出過不同的團或數量（可能已經寫進去了），請關掉視窗、重新整理頁面確認後再操作；這次什麼都沒有改';
     END IF;
 
     -- 上次已經做完：照紀錄回傳，不重做。
@@ -888,236 +1005,251 @@ BEGIN
     RAISE EXCEPTION '有分店／批發不存在、停用或已刪除：%', v_missing_store_ids;
   END IF;
 
-  -- ── 上鎖（順序固定：採購單 → 採購單品項 → 請購單與品項 → 團 → (團, 商品)）──
-  SELECT po.id, po.po_no, po.status
-    INTO v_po
-    FROM public.purchase_orders po
-   WHERE po.id = p_po_id
-     AND po.tenant_id = v_tenant
-   FOR UPDATE;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION '找不到這張採購單';
-  END IF;
-
-  SELECT poi.id, poi.sku_id, poi.qty_ordered
-    INTO v_poi
-    FROM public.purchase_order_items poi
-   WHERE poi.id = p_po_item_id
-     AND poi.po_id = p_po_id
-   FOR UPDATE;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION '這個商品不在這張採購單上';
-  END IF;
-
-  PERFORM 1
-     FROM public.purchase_request_items pri
-     JOIN public.purchase_requests pr
-       ON pr.id = pri.pr_id
-    WHERE pri.po_item_id = p_po_item_id
-      AND pri.sku_id = v_poi.sku_id
-      AND pr.tenant_id = v_tenant
-    ORDER BY pri.id
-    FOR UPDATE OF pr, pri;
-
-  SELECT gbc.id, gbc.campaign_no, gbc.name, gbc.status
-    INTO v_campaign
-    FROM public.group_buy_campaigns gbc
-   WHERE gbc.id = p_campaign_id
-     AND gbc.tenant_id = v_tenant
-   FOR UPDATE;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION '找不到這個團 %', p_campaign_id;
-  END IF;
-
-  PERFORM pg_advisory_xact_lock(hashtext(p_campaign_id::TEXT), hashtext(v_poi.sku_id::TEXT));
-
-  -- >>> RECHECK BEGIN（鎖完再跑一次同一套檢查 —— 不可拿掉）
-  -- 第一次檢查到上鎖之間，可能有人開了進貨單、撿貨單、按了斷貨或改了團的狀態。
-  -- 那些動作都會碰到我們剛鎖的列（UPDATE 或外鍵），所以這時候再查一次一定看得到。
-  v_reason := public._po_item_store_add_block_reason(p_po_item_id, p_campaign_id);
-  IF v_reason IS NOT NULL THEN
-    RAISE EXCEPTION '%', v_reason;
-  END IF;
-  -- <<< RECHECK END
-
-  -- 要改的那一列請購品項（檢查已保證：剛好一列、總數 = 各團明細加總）
-  SELECT pr.id AS pr_id, pr.pr_no, pri.id AS pr_item_id, pri.qty_requested
-    INTO v_pr
-    FROM public.purchase_request_items pri
-    JOIN public.purchase_requests pr
-      ON pr.id = pri.pr_id
-    JOIN public.purchase_request_item_campaigns pric
-      ON pric.pr_item_id = pri.id
-     AND pric.campaign_id = p_campaign_id
-     AND pric.tenant_id = v_tenant
-   WHERE pri.po_item_id = p_po_item_id
-     AND pri.sku_id = v_poi.sku_id
-     AND pr.tenant_id = v_tenant
-     AND pr.status <> 'cancelled';
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION '內部錯誤：找不到要改的請購品項（po_item_id=%）', p_po_item_id;
-  END IF;
-
-  SELECT ci.id, ci.unit_price
-    INTO v_ci
-    FROM public.campaign_items ci
-   WHERE ci.tenant_id = v_tenant
-     AND ci.campaign_id = p_campaign_id
-     AND ci.sku_id = v_poi.sku_id;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION '此品項不屬於指定原團';
-  END IF;
-
-  DROP TABLE IF EXISTS pg_temp._po_store_add_done;
-  CREATE TEMP TABLE _po_store_add_done (
-    store_id      BIGINT,
-    qty           NUMERIC,
-    order_id      BIGINT,
-    order_item_id BIGINT,
-    order_created BOOLEAN
-  ) ON COMMIT DROP;
-
-  -- >>> STEP1 BEGIN（第 1 步：每家店建店家內部單 +N）
-  FOR r IN SELECT store_id, qty FROM pg_temp._po_store_add_input ORDER BY store_id
-  LOOP
-    SELECT o.o_order_id, o.o_order_item_id, o.o_order_created
-      INTO v_res
-      FROM public._store_add_internal_order_item(
-             v_tenant, p_campaign_id, v_campaign.campaign_no, v_ci.id, v_poi.sku_id,
-             v_ci.unit_price, r.store_id, r.qty, p_operator,
-             format('【採購單分店／批發追加】%s', v_po.po_no),
-             format('採購單 %s 分店／批發追加', v_po.po_no)
-           ) o;
-
-    INSERT INTO pg_temp._po_store_add_done (store_id, qty, order_id, order_item_id, order_created)
-    VALUES (r.store_id, r.qty, v_res.o_order_id, v_res.o_order_item_id, v_res.o_order_created);
-
-    IF v_res.o_order_created THEN
-      v_order_count := v_order_count + 1;
-    END IF;
-  END LOOP;
-  -- <<< STEP1 END
-
-  -- 第 2 步：差額（加完店家單之後）。X = max(差額, 0)
-  SELECT d.delta_qty, d.demand_qty, d.already_qty
-    INTO v_delta, v_demand, v_already
-    FROM public._pr_campaign_sku_remaining_rows(ARRAY[p_campaign_id]) d
-   WHERE d.campaign_id = p_campaign_id
-     AND d.sku_id = v_poi.sku_id;
-
-  v_x := GREATEST(COALESCE(v_delta, 0), 0);
-
-  -- >>> STEP3 BEGIN（第 3 步：請購單 +X，先各團明細、後總數 —— 順序反了 #982 守衛會擋）
-  IF v_x > 0 THEN
-    UPDATE public.purchase_request_item_campaigns
-       SET qty_requested = qty_requested + v_x
-     WHERE pr_item_id = v_pr.pr_item_id
-       AND campaign_id = p_campaign_id
-       AND tenant_id = v_tenant;
+  -- ── 上鎖＋寫入（包在內層區塊裡：被判死結／拿不到品項鎖時整筆不寫、改回白話訊息）────
+  -- 上鎖順序：採購單（排隊等）→ 採購單品項（NOWAIT）→ 請購單與品項 → 團 → (團, 商品)。
+  -- 為什麼這樣排、品項為什麼 NOWAIT：見檔頭「上鎖順序」。
+  BEGIN
+    SELECT po.id, po.po_no, po.status
+      INTO v_po
+      FROM public.purchase_orders po
+     WHERE po.id = p_po_id
+       AND po.tenant_id = v_tenant
+     FOR UPDATE;
 
     IF NOT FOUND THEN
-      RAISE EXCEPTION '內部錯誤：請購品項的這一團明細在途中消失了（pr_item_id=%）', v_pr.pr_item_id;
+      RAISE EXCEPTION '找不到這張採購單';
     END IF;
 
-    UPDATE public.purchase_request_items
-       SET qty_requested = qty_requested + v_x,
-           updated_by = p_operator,
-           updated_at = NOW()
-     WHERE id = v_pr.pr_item_id;
+    SELECT poi.id, poi.sku_id, poi.qty_ordered
+      INTO v_poi
+      FROM public.purchase_order_items poi
+     WHERE poi.id = p_po_item_id
+       AND poi.po_id = p_po_id
+     FOR UPDATE NOWAIT;
 
-    -- 請購單總金額：跟 #995（20260924010000:372-380）同一個算法；line_subtotal 是 generated column
-    UPDATE public.purchase_requests pr
-       SET total_amount = COALESCE((
-             SELECT SUM(pri.line_subtotal)
-               FROM public.purchase_request_items pri
-              WHERE pri.pr_id = v_pr.pr_id
-           ), 0),
-           updated_by = p_operator,
-           updated_at = NOW()
-     WHERE pr.id = v_pr.pr_id;
-  END IF;
-  -- <<< STEP3 END
+    IF NOT FOUND THEN
+      RAISE EXCEPTION '這個商品不在這張採購單上';
+    END IF;
 
-  SELECT pri.qty_requested
-    INTO v_pr_qty_after
-    FROM public.purchase_request_items pri
-   WHERE pri.id = v_pr.pr_item_id;
+    PERFORM 1
+       FROM public.purchase_request_items pri
+       JOIN public.purchase_requests pr
+         ON pr.id = pri.pr_id
+      WHERE pri.po_item_id = p_po_item_id
+        AND pri.sku_id = v_poi.sku_id
+        AND pr.tenant_id = v_tenant
+      ORDER BY pri.id
+      FOR UPDATE OF pr, pri;
 
-  -- 第 4 步：採購單 +X，再重算表頭（算法見檔頭：subtotal = SUM(qty_ordered * unit_cost)、
-  --          total = subtotal、tax 不動 —— 跟 rpc_split_pr_to_pos 20260428120000:396-405 相同）
-  IF v_x > 0 THEN
-    UPDATE public.purchase_order_items
-       SET qty_ordered = qty_ordered + v_x,
-           updated_by = p_operator,
-           updated_at = NOW()
-     WHERE id = p_po_item_id;
+    SELECT gbc.id, gbc.campaign_no, gbc.name, gbc.status
+      INTO v_campaign
+      FROM public.group_buy_campaigns gbc
+     WHERE gbc.id = p_campaign_id
+       AND gbc.tenant_id = v_tenant
+     FOR UPDATE;
 
-    UPDATE public.purchase_orders po
-       SET subtotal   = COALESCE((SELECT SUM(qty_ordered * unit_cost)
-                                    FROM public.purchase_order_items WHERE po_id = po.id), 0),
-           total      = COALESCE((SELECT SUM(qty_ordered * unit_cost)
-                                    FROM public.purchase_order_items WHERE po_id = po.id), 0),
-           updated_by = p_operator,
-           updated_at = NOW()
-     WHERE po.id = p_po_id;
-  END IF;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION '找不到這個團 %', p_campaign_id;
+    END IF;
 
-  SELECT poi.qty_ordered
-    INTO v_po_qty_after
-    FROM public.purchase_order_items poi
-   WHERE poi.id = p_po_item_id;
+    PERFORM pg_advisory_xact_lock(hashtext(p_campaign_id::TEXT), hashtext(v_poi.sku_id::TEXT));
 
-  -- 第 5 步：每家店一列追加紀錄（表不加欄位；採購單從 pr_item_id → po_item_id 查得到）
-  INSERT INTO public.purchase_request_store_additions (
-    tenant_id, pr_id, pr_item_id, campaign_id, store_id,
-    order_id, order_item_id, sku_id, qty_added, request_key, created_by,
-    pr_delta_qty, pr_qty_after
-  )
-  SELECT v_tenant, v_pr.pr_id, v_pr.pr_item_id, p_campaign_id, d.store_id,
-         d.order_id, d.order_item_id, v_poi.sku_id, d.qty, p_request_key, p_operator,
-         v_x, v_pr_qty_after
-    FROM pg_temp._po_store_add_done d
-   ORDER BY d.store_id;
+    -- >>> RECHECK BEGIN（鎖完再跑一次同一套檢查 —— 不可拿掉）
+    -- 第一次檢查到上鎖之間，可能有人開了進貨單、撿貨單、按了斷貨或改了團的狀態。
+    -- 那些動作都會碰到我們剛鎖的列（UPDATE 或外鍵），所以這時候再查一次一定看得到。
+    v_reason := public._po_item_store_add_block_reason(p_po_item_id, p_campaign_id);
+    IF v_reason IS NOT NULL THEN
+      RAISE EXCEPTION '%', v_reason;
+    END IF;
+    -- <<< RECHECK END
 
-  SELECT COALESCE(jsonb_agg(jsonb_build_object(
-           'store_id', d.store_id,
-           'qty', d.qty,
-           'order_id', d.order_id,
-           'order_item_id', d.order_item_id,
-           'order_created', d.order_created
-         ) ORDER BY d.store_id), '[]'::JSONB)
-    INTO v_stores
-    FROM pg_temp._po_store_add_done d;
+    -- 要改的那一列請購品項（檢查已保證：剛好一列、總數 = 各團明細加總）
+    SELECT pr.id AS pr_id, pr.pr_no, pri.id AS pr_item_id, pri.qty_requested
+      INTO v_pr
+      FROM public.purchase_request_items pri
+      JOIN public.purchase_requests pr
+        ON pr.id = pri.pr_id
+      JOIN public.purchase_request_item_campaigns pric
+        ON pric.pr_item_id = pri.id
+       AND pric.campaign_id = p_campaign_id
+       AND pric.tenant_id = v_tenant
+     WHERE pri.po_item_id = p_po_item_id
+       AND pri.sku_id = v_poi.sku_id
+       AND pr.tenant_id = v_tenant
+       AND pr.status <> 'cancelled';
 
-  RETURN jsonb_build_object(
-    'po_id', p_po_id,
-    'po_no', v_po.po_no,
-    'po_item_id', p_po_item_id,
-    'campaign_id', p_campaign_id,
-    'campaign_no', v_campaign.campaign_no,
-    'request_key', p_request_key,
-    'pr_id', v_pr.pr_id,
-    'pr_no', v_pr.pr_no,
-    'pr_item_id', v_pr.pr_item_id,
-    'stores', v_stores,
-    'store_count', v_store_count,
-    'store_added_qty', v_store_added_qty,
-    'po_added_qty', v_x,
-    'po_qty_before', v_poi.qty_ordered,
-    'po_qty_after', v_po_qty_after,
-    'pr_qty_before', v_pr.qty_requested,
-    'pr_qty_after', v_pr_qty_after,
-    'demand_qty', v_demand,
-    'already_qty_before_sync', v_already,
-    'delta_qty', v_delta,
-    'created_order_count', v_order_count,
-    'idempotent', FALSE
-  );
+    IF NOT FOUND THEN
+      RAISE EXCEPTION '內部錯誤：找不到要改的請購品項（po_item_id=%）', p_po_item_id;
+    END IF;
+
+    SELECT ci.id, ci.unit_price
+      INTO v_ci
+      FROM public.campaign_items ci
+     WHERE ci.tenant_id = v_tenant
+       AND ci.campaign_id = p_campaign_id
+       AND ci.sku_id = v_poi.sku_id;
+
+    IF NOT FOUND THEN
+      RAISE EXCEPTION '此品項不屬於指定原團';
+    END IF;
+
+    DROP TABLE IF EXISTS pg_temp._po_store_add_done;
+    CREATE TEMP TABLE _po_store_add_done (
+      store_id      BIGINT,
+      qty           NUMERIC,
+      order_id      BIGINT,
+      order_item_id BIGINT,
+      order_created BOOLEAN
+    ) ON COMMIT DROP;
+
+    -- >>> STEP1 BEGIN（第 1 步：每家店建店家內部單 +N）
+    FOR r IN SELECT store_id, qty FROM pg_temp._po_store_add_input ORDER BY store_id
+    LOOP
+      SELECT o.o_order_id, o.o_order_item_id, o.o_order_created
+        INTO v_res
+        FROM public._store_add_internal_order_item(
+               v_tenant, p_campaign_id, v_campaign.campaign_no, v_ci.id, v_poi.sku_id,
+               v_ci.unit_price, r.store_id, r.qty, p_operator,
+               format('【採購單分店／批發追加】%s', v_po.po_no),
+               format('採購單 %s 分店／批發追加', v_po.po_no)
+             ) o;
+
+      INSERT INTO pg_temp._po_store_add_done (store_id, qty, order_id, order_item_id, order_created)
+      VALUES (r.store_id, r.qty, v_res.o_order_id, v_res.o_order_item_id, v_res.o_order_created);
+
+      IF v_res.o_order_created THEN
+        v_order_count := v_order_count + 1;
+      END IF;
+    END LOOP;
+    -- <<< STEP1 END
+
+    -- 第 2 步：差額（加完店家單之後）。X = max(差額, 0)
+    SELECT d.delta_qty, d.demand_qty, d.already_qty
+      INTO v_delta, v_demand, v_already
+      FROM public._pr_campaign_sku_remaining_rows(ARRAY[p_campaign_id]) d
+     WHERE d.campaign_id = p_campaign_id
+       AND d.sku_id = v_poi.sku_id;
+
+    v_x := GREATEST(COALESCE(v_delta, 0), 0);
+
+    -- >>> STEP3 BEGIN（第 3 步：請購單 +X，先各團明細、後總數 —— 順序反了 #982 守衛會擋）
+    IF v_x > 0 THEN
+      UPDATE public.purchase_request_item_campaigns
+         SET qty_requested = qty_requested + v_x
+       WHERE pr_item_id = v_pr.pr_item_id
+         AND campaign_id = p_campaign_id
+         AND tenant_id = v_tenant;
+
+      IF NOT FOUND THEN
+        RAISE EXCEPTION '內部錯誤：請購品項的這一團明細在途中消失了（pr_item_id=%）', v_pr.pr_item_id;
+      END IF;
+
+      UPDATE public.purchase_request_items
+         SET qty_requested = qty_requested + v_x,
+             updated_by = p_operator,
+             updated_at = NOW()
+       WHERE id = v_pr.pr_item_id;
+
+      -- 請購單總金額：跟 #995（20260924010000:372-380）同一個算法；line_subtotal 是 generated column
+      UPDATE public.purchase_requests pr
+         SET total_amount = COALESCE((
+               SELECT SUM(pri.line_subtotal)
+                 FROM public.purchase_request_items pri
+                WHERE pri.pr_id = v_pr.pr_id
+             ), 0),
+             updated_by = p_operator,
+             updated_at = NOW()
+       WHERE pr.id = v_pr.pr_id;
+    END IF;
+    -- <<< STEP3 END
+
+    SELECT pri.qty_requested
+      INTO v_pr_qty_after
+      FROM public.purchase_request_items pri
+     WHERE pri.id = v_pr.pr_item_id;
+
+    -- 第 4 步：採購單 +X，再重算表頭（算法見檔頭：subtotal = SUM(qty_ordered * unit_cost)、
+    --          total = subtotal、tax 不動 —— 跟 rpc_split_pr_to_pos 20260428120000:396-405 相同）
+    IF v_x > 0 THEN
+      UPDATE public.purchase_order_items
+         SET qty_ordered = qty_ordered + v_x,
+             updated_by = p_operator,
+             updated_at = NOW()
+       WHERE id = p_po_item_id;
+
+      UPDATE public.purchase_orders po
+         SET subtotal   = COALESCE((SELECT SUM(qty_ordered * unit_cost)
+                                      FROM public.purchase_order_items WHERE po_id = po.id), 0),
+             total      = COALESCE((SELECT SUM(qty_ordered * unit_cost)
+                                      FROM public.purchase_order_items WHERE po_id = po.id), 0),
+             updated_by = p_operator,
+             updated_at = NOW()
+       WHERE po.id = p_po_id;
+    END IF;
+
+    SELECT poi.qty_ordered
+      INTO v_po_qty_after
+      FROM public.purchase_order_items poi
+     WHERE poi.id = p_po_item_id;
+
+    -- 第 5 步：每家店一列追加紀錄（表不加欄位；採購單從 pr_item_id → po_item_id 查得到）
+    INSERT INTO public.purchase_request_store_additions (
+      tenant_id, pr_id, pr_item_id, campaign_id, store_id,
+      order_id, order_item_id, sku_id, qty_added, request_key, created_by,
+      pr_delta_qty, pr_qty_after
+    )
+    SELECT v_tenant, v_pr.pr_id, v_pr.pr_item_id, p_campaign_id, d.store_id,
+           d.order_id, d.order_item_id, v_poi.sku_id, d.qty, p_request_key, p_operator,
+           v_x, v_pr_qty_after
+      FROM pg_temp._po_store_add_done d
+     ORDER BY d.store_id;
+
+    SELECT COALESCE(jsonb_agg(jsonb_build_object(
+             'store_id', d.store_id,
+             'qty', d.qty,
+             'order_id', d.order_id,
+             'order_item_id', d.order_item_id,
+             'order_created', d.order_created
+           ) ORDER BY d.store_id), '[]'::JSONB)
+      INTO v_stores
+      FROM pg_temp._po_store_add_done d;
+
+    RETURN jsonb_build_object(
+      'po_id', p_po_id,
+      'po_no', v_po.po_no,
+      'po_item_id', p_po_item_id,
+      'campaign_id', p_campaign_id,
+      'campaign_no', v_campaign.campaign_no,
+      'request_key', p_request_key,
+      'pr_id', v_pr.pr_id,
+      'pr_no', v_pr.pr_no,
+      'pr_item_id', v_pr.pr_item_id,
+      'stores', v_stores,
+      'store_count', v_store_count,
+      'store_added_qty', v_store_added_qty,
+      'po_added_qty', v_x,
+      'po_qty_before', v_poi.qty_ordered,
+      'po_qty_after', v_po_qty_after,
+      'pr_qty_before', v_pr.qty_requested,
+      'pr_qty_after', v_pr_qty_after,
+      'demand_qty', v_demand,
+      'already_qty_before_sync', v_already,
+      'delta_qty', v_delta,
+      'created_order_count', v_order_count,
+      'idempotent', FALSE
+    );
+  EXCEPTION
+    -- >>> LOCKMSG BEGIN
+    WHEN lock_not_available THEN
+      -- 採購單品項被別人鎖著（例：同時有人按斷貨、調整已收量 —— 它們先鎖品項再鎖採購單）。
+      -- 不等：等的話會跟對方互等（死結），Postgres 可能挑對方當犧牲者。
+      RAISE EXCEPTION '有人同時在操作這張採購單的這個商品（例如按斷貨、調整已收量），請稍後再按一次；這次什麼都沒有改'
+        USING DETAIL = 'lock_not_available: ' || SQLERRM;
+    WHEN deadlock_detected THEN
+      RAISE EXCEPTION '有人同時在操作這張採購單，請稍後再按一次；這次什麼都沒有改'
+        USING DETAIL = 'deadlock_detected: ' || SQLERRM;
+    -- <<< LOCKMSG END
+  END;
 END;
 $$;
 
@@ -1125,7 +1257,7 @@ REVOKE ALL ON FUNCTION public.rpc_add_po_store_demands(BIGINT, BIGINT, BIGINT, J
 GRANT EXECUTE ON FUNCTION public.rpc_add_po_store_demands(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID) TO authenticated;
 
 COMMENT ON FUNCTION public.rpc_add_po_store_demands(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID) IS
-  '採購單頁「分店／批發追加」：替分店／批發在原團加店家內部單（+N），再用 _pr_campaign_sku_remaining_rows 算出 X = max(差額, 0)，請購單（先各團明細後總數）與採購單各 +X。不重開團、不通知廠商。同一 request_key 重送回上次結果。';
+  '採購單頁「分店／批發追加」：替分店／批發在原團加店家內部單（+N），再用 _pr_campaign_sku_remaining_rows 算出 X = max(差額, 0)，請購單（先各團明細後總數）與採購單各 +X。不重開團、不通知廠商。同一 request_key 重送：團與各店數量都一樣才回上次結果，不一樣就擋。採購單品項被別人鎖著或被判死結時整筆不寫、回白話訊息。';
 
 
 -- ----------------------------------------------------------------------------
