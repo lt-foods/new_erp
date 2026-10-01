@@ -14,6 +14,16 @@ import { itemDisplayName } from "@/lib/skuLabel";
 import { isHqRole, useMyStores, useRole } from "@/lib/role";
 import { GIFT_ITEM_SELECT, giftTitle, isCampaignGiftLine, isGiftLine } from "@/lib/orderGift";
 import { useHasStaffPerm } from "@/lib/staffPerms";
+import { pickedPayable, walletCreditLeft } from "@/lib/walletCredit";
+
+// 已取走的品項行（算「已扣儲值金還剩多少可抵」用，見 lib/walletCredit）
+type PickedLine = {
+  qty: number;
+  unit_price: number;
+  discount_amount: number;
+  discount_percent: number;
+  status: string;
+};
 
 type PickableItem = {
   id: number;
@@ -81,7 +91,11 @@ export function PickupDialog({
   const [memberId, setMemberId] = useState<number | null>(null);
   const [campaignName, setCampaignName] = useState<string | null>(null);
   const [pickupStoreName, setPickupStoreName] = useState<string | null>(null);
+  // 整張單累計扣過的儲值金（customer_orders.wallet_paid_amount）。
+  // ⚠️ 這不是「本批可抵」的數字 —— 分批取貨時要先扣掉已取品項用掉的部分
+  //    （walletCredit），否則前一批扣的錢會在每一批都再抵一次（2026-10-01 古華）。
   const [walletPaidSoFar, setWalletPaidSoFar] = useState(0);
+  const [pickedLines, setPickedLines] = useState<PickedLine[]>([]);
   const [paymentStatus, setPaymentStatus] = useState<string | null>(null);
   const [walletBalance, setWalletBalance] = useState<number | null>(null);
   const [walletAmount, setWalletAmount] = useState("");
@@ -110,7 +124,7 @@ export function PickupDialog({
     let cancelled = false;
     (async () => {
       const sb = getSupabase();
-      const [iRes, hRes, rRes, arvRes] = await Promise.all([
+      const [iRes, hRes, rRes, arvRes, pRes] = await Promise.all([
         sb.from("customer_order_items")
           .select(`id, qty, unit_price, discount_amount, discount_percent, status, ${GIFT_ITEM_SELECT}, sku:skus(id, sku_code, product_name, variant_name)`)
           .eq("order_id", orderId)
@@ -132,10 +146,17 @@ export function PickupDialog({
         sb.from("v_order_item_pickup_ready")
           .select("item_id, pickup_ready")
           .eq("order_id", orderId),
+        // 已取走的品項 — 已扣儲值金要先扣掉這些行已付的部分，剩下才能抵本批
+        sb.from("customer_order_items")
+          .select("qty, unit_price, discount_amount, discount_percent, status")
+          .eq("order_id", orderId)
+          .eq("status", "picked_up"),
       ]);
       if (cancelled) return;
       if (iRes.error) { setErr(iRes.error.message); return; }
       const list = (iRes.data ?? []) as unknown as PickableItem[];
+      const pickedList = (pRes.data ?? []) as unknown as PickedLine[];
+      setPickedLines(pickedList);
 
       // 零元守衛的例外判定要在「預設勾選」之前算出來（$0 品項預設不勾）
       const headMember = Array.isArray(hRes.data?.member) ? hRes.data?.member[0] : hRes.data?.member;
@@ -200,7 +221,7 @@ export function PickupDialog({
         if (!cancelled) {
           const bal = Number(wb?.balance ?? 0);
           setWalletBalance(bal);
-          // 已付清 → 不再扣；否則：min(餘額, 本次應收 - 已付)
+          // 已付清 → 不再扣；否則：min(餘額, 本次應收 - 已付儲值金裡還能抵的部分)
           if (isPaid) {
             setWalletAmount("");
           } else {
@@ -208,7 +229,8 @@ export function PickupDialog({
             const dpct = Number(head?.discount_percent ?? 0);
             const damt = Number(head?.discount_amount ?? 0);
             const initialPayable = Math.max(0, Math.round(itemSubtotal * (1 - dpct / 100) - damt));
-            const remainingPayable = Math.max(0, initialPayable - alreadyPaid);
+            const credit = walletCreditLeft(alreadyPaid, pickedPayable(pickedList, dpct));
+            const remainingPayable = Math.max(0, initialPayable - credit);
             const preFill = Math.min(bal, remainingPayable);
             setWalletAmount(preFill > 0 ? String(preFill) : "");
           }
@@ -389,9 +411,12 @@ export function PickupDialog({
     Number(originalDiscount.percent) !== discountPercent ||
     Number(originalDiscount.amount) !== discount;
 
+  // 已扣儲值金裡還能抵本批的部分 = 已扣 − 已取品項已付（lib/walletCredit）。
+  // 分批取貨時前一批扣掉的錢已經被前一批的貨用掉，不能再抵這一批。
+  const walletCredit = walletCreditLeft(walletPaidSoFar, pickedPayable(pickedLines, discountPercent));
   // 折扣 / picked 變動後，若 walletAmount 超過新上限就 clamp（避免按鈕被卡 disabled）
   const isPaid = paymentStatus === "paid";
-  const remainingPayable = Math.max(0, payableAmount - walletPaidSoFar);
+  const remainingPayable = Math.max(0, payableAmount - walletCredit);
   const walletMax = isPaid ? 0 : Math.min(walletBalance ?? 0, remainingPayable);
   useEffect(() => {
     if (walletAmount === "") return;
@@ -581,14 +606,14 @@ export function PickupDialog({
                   <td className="px-3 py-2 text-right font-mono text-base font-semibold">${Math.round(payableAmount)}</td>
                   <td />
                 </tr>
-                {walletPaidSoFar > 0 && (
+                {walletCredit > 0 && (
                   <tr>
-                    <td colSpan={4} className="px-3 py-1 text-right text-xs text-zinc-500">− 已用儲值金</td>
-                    <td className="px-3 py-1 text-right font-mono text-zinc-500">−${Math.round(walletPaidSoFar)}</td>
+                    <td colSpan={4} className="px-3 py-1 text-right text-xs text-zinc-500">− 已付儲值金可抵</td>
+                    <td className="px-3 py-1 text-right font-mono text-zinc-500">−${Math.round(walletCredit)}</td>
                     <td />
                   </tr>
                 )}
-                {walletPaidSoFar > 0 && (
+                {walletCredit > 0 && (
                   <tr>
                     <td colSpan={4} className="px-3 py-2 text-right text-xs text-zinc-500">應付剩餘</td>
                     <td className={`px-3 py-2 text-right font-mono text-base font-semibold ${remainingPayable === 0 ? "text-emerald-700 dark:text-emerald-400" : ""}`}>${Math.round(remainingPayable)}</td>
@@ -608,7 +633,12 @@ export function PickupDialog({
                     : <span className={`font-mono font-semibold ${walletBalance <= 0 ? "text-zinc-400" : ""}`}>${Math.round(walletBalance)}</span>}
                 </span>
                 {walletPaidSoFar > 0 && (
-                  <span>本訂單已扣：<span className="font-mono">${Math.round(walletPaidSoFar)}</span></span>
+                  <span>
+                    本訂單已扣：<span className="font-mono">${Math.round(walletPaidSoFar)}</span>
+                    {walletCredit < walletPaidSoFar && (
+                      <span className="ml-1 text-zinc-500">（前幾批已用 ${Math.round(walletPaidSoFar - walletCredit)}，本批可抵 ${Math.round(walletCredit)}）</span>
+                    )}
+                  </span>
                 )}
                 {isPaid && (
                   <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">✅ 已付清，本次無需再扣</span>
