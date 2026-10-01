@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { CampaignThumb } from "@/components/CampaignThumb";
+import { ProductImagesField } from "@/components/ProductImagesField";
 import {
   campaignCoverUrl,
   publicProductUrl,
@@ -16,6 +17,7 @@ import {
   CAP_ITEMS_FILTER_COLUMN,
   customerUrlFor,
   mergeCampaignRows,
+  newProductExtras,
   pageWindow,
   quickScopeFilter,
   soldQtyByCampaign,
@@ -72,6 +74,12 @@ type PriceRow = {
   sku_id: number;
   price: number | string;
   effective_from: string;
+};
+
+type BrandRow = {
+  id: number;
+  name: string;
+  code: string | null;
 };
 
 type NewSkuDraft = {
@@ -276,6 +284,12 @@ export default function QuickCampaignControlPage() {
   const [createMode, setCreateMode] = useState<"new" | "existing">("new");
   const [newProductName, setNewProductName] = useState("");
   const [newStorageType, setNewStorageType] = useState<Exclude<StorageType, null>>(DEFAULT_NEW_STORAGE_TYPE);
+  // 全新商品的圖片（Storage 路徑）、描述、品牌：都可以不填
+  const [newImages, setNewImages] = useState<string[]>([]);
+  const [newDescription, setNewDescription] = useState("");
+  const [newBrandId, setNewBrandId] = useState<number | null>(null);
+  const [brands, setBrands] = useState<BrandRow[]>([]);
+  const [brandsLoaded, setBrandsLoaded] = useState(false);
   const [newSkuDrafts, setNewSkuDrafts] = useState<NewSkuDraft[]>([
     { key: newSkuKey(), name: "", price: "", cap: "" },
   ]);
@@ -448,6 +462,21 @@ export default function QuickCampaignControlPage() {
     const timer = window.setTimeout(() => { void load(); }, 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+
+  // 品牌清單：打開開新團才讀一次（同 ProductForm 的讀法；讀不到就只剩「不選」）
+  useEffect(() => {
+    if (!createOpen || brandsLoaded) return;
+    let alive = true;
+    void (async () => {
+      const { data } = await getSupabase().from("brands").select("id, name, code").order("name");
+      if (!alive) return;
+      if (data) setBrands(data as BrandRow[]);
+      setBrandsLoaded(true);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [brandsLoaded, createOpen]);
 
   useEffect(() => {
     if (!createOpen || createMode !== "existing") return;
@@ -729,7 +758,10 @@ export default function QuickCampaignControlPage() {
       const campaignTotalCap = null;
       const productStorageType = isExistingProduct ? selectedProduct?.storage_type ?? null : newStorageType;
       const pickupDays = pickupDaysForStorage(productStorageType);
-      const campaignDescription = isExistingProduct ? selectedProduct?.description ?? null : null;
+      const extras = newProductExtras({ images: newImages, description: newDescription, brandId: newBrandId });
+      // 既有商品沿用商品描述當團描述；全新商品用這次寫的描述。封面只有全新商品才帶（既有商品的圖不動）
+      const campaignDescription = isExistingProduct ? selectedProduct?.description ?? null : extras.p_description;
+      const campaignCover = isExistingProduct ? null : extras.cover;
       const campaignItems: { sku_id: number; unit_price: number; cap_qty: number | null; label: string }[] = [];
       let newProductForPublish: { id: number; code: string } | null = null;
 
@@ -758,11 +790,11 @@ export default function QuickCampaignControlPage() {
           p_product_code: productCode,
           p_name: campaignName,
           p_short_name: campaignName,
-          p_brand_id: null,
+          p_brand_id: extras.p_brand_id,
           p_category_id: null,
-          p_description: null,
+          p_description: extras.p_description,
           p_status: "draft",
-          p_images: [],
+          p_images: extras.p_images,
           p_storage_type: newStorageType,
           p_customized_id: null,
           p_customized_text: null,
@@ -824,7 +856,7 @@ export default function QuickCampaignControlPage() {
         p_campaign_no: nextCampaignNo,
         p_name: campaignName,
         p_description: campaignDescription,
-        p_cover_image_url: null,
+        p_cover_image_url: campaignCover,
         p_status: "draft",
         p_close_type: createType,
         p_start_at: startIso,
@@ -859,11 +891,11 @@ export default function QuickCampaignControlPage() {
           p_product_code: newProductForPublish.code,
           p_name: campaignName,
           p_short_name: campaignName,
-          p_brand_id: null,
+          p_brand_id: extras.p_brand_id,
           p_category_id: null,
-          p_description: null,
+          p_description: extras.p_description,
           p_status: "active",
-          p_images: [],
+          p_images: extras.p_images,
           p_storage_type: newStorageType,
           p_customized_id: null,
           p_customized_text: null,
@@ -884,7 +916,7 @@ export default function QuickCampaignControlPage() {
         p_campaign_no: nextCampaignNo,
         p_name: campaignName,
         p_description: campaignDescription,
-        p_cover_image_url: null,
+        p_cover_image_url: campaignCover,
         p_status: "open",
         p_close_type: createType,
         p_start_at: startIso,
@@ -918,6 +950,9 @@ export default function QuickCampaignControlPage() {
       setCreateName("");
       setNewProductName("");
       setNewStorageType(DEFAULT_NEW_STORAGE_TYPE);
+      setNewImages([]);
+      setNewDescription("");
+      setNewBrandId(null);
       setNewSkuDrafts([{ key: newSkuKey(), name: "", price: "", cap: "" }]);
       setItemCapDraft({});
       void load();
@@ -1205,6 +1240,43 @@ export default function QuickCampaignControlPage() {
                           </button>
                         ))}
                       </div>
+                      <div className="grid gap-1 text-sm">
+                        <span className="font-medium text-zinc-700 dark:text-zinc-200">
+                          商品圖片 <span className="font-normal text-zinc-500">（可不傳，第一張當開團封面）</span>
+                        </span>
+                        <ProductImagesField value={newImages} onChange={setNewImages} />
+                      </div>
+                      <label className="grid gap-1 text-sm">
+                        <span className="font-medium text-zinc-700 dark:text-zinc-200">
+                          商品描述 <span className="font-normal text-zinc-500">（可不寫）</span>
+                        </span>
+                        <textarea
+                          value={newDescription}
+                          onChange={(e) => setNewDescription(e.target.value)}
+                          rows={4}
+                          placeholder="例如：產地、口味、保存方式"
+                          disabled={!allowed || createBusy}
+                          className="min-h-24 rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none focus:border-pink-600 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
+                        />
+                      </label>
+                      <label className="grid gap-1 text-sm">
+                        <span className="font-medium text-zinc-700 dark:text-zinc-200">
+                          品牌 <span className="font-normal text-zinc-500">（可不選）</span>
+                        </span>
+                        <select
+                          value={newBrandId ?? ""}
+                          onChange={(e) => setNewBrandId(e.target.value ? Number(e.target.value) : null)}
+                          disabled={!allowed || createBusy}
+                          className="min-h-11 rounded-md border border-zinc-300 bg-white px-3 text-base outline-none focus:border-pink-600 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
+                        >
+                          <option value="">—（不選）</option>
+                          {brands.map((b) => (
+                            <option key={b.id} value={b.id}>
+                              {b.code ? `${b.name} (${b.code})` : b.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
                     </>
                   )}
 

@@ -9,6 +9,7 @@ import {
   canQuickUpdateCampaign,
   customerUrlFor,
   mergeCampaignRows,
+  newProductExtras,
   pageWindow,
   quickScopeFilter,
   sanitizeCampaignSearch,
@@ -103,4 +104,26 @@ test("延長／重開／加名額資格：照資料庫守衛", () => {
   assert.equal(canQuickUpdateCampaign({ status: "draft", close_type: "fast", total_cap_qty: null, campaign_items: null }), true);
   assert.equal(canQuickUpdateCampaign({ status: "closed", close_type: "limited", total_cap_qty: null, campaign_items: null }), true);
   assert.equal(canQuickUpdateCampaign({ status: "closed", close_type: "regular", total_cap_qty: null, campaign_items: null }), false);
+});
+
+test("全新商品附加資料：都沒填就全空，不擋開團", () => {
+  assert.deepEqual(newProductExtras({ images: [], description: "   ", brandId: null }), {
+    p_images: [],
+    p_description: null,
+    p_brand_id: null,
+    cover: null,
+  });
+});
+
+test("全新商品附加資料：第一張圖當封面，描述去頭尾空白但保留換行", () => {
+  const out = newProductExtras({ images: ["t/a.jpg", "", "t/b.png"], description: "  第一行\n第二行  ", brandId: 7 });
+  assert.deepEqual(out.p_images, ["t/a.jpg", "t/b.png"]);
+  assert.equal(out.cover, "t/a.jpg");
+  assert.equal(out.p_description, "第一行\n第二行");
+  assert.equal(out.p_brand_id, 7);
+});
+
+test("全新商品附加資料：品牌不是正整數就當沒選", () => {
+  assert.equal(newProductExtras({ images: [], description: "", brandId: Number.NaN }).p_brand_id, null);
+  assert.equal(newProductExtras({ images: [], description: "", brandId: 0 }).p_brand_id, null);
 });
