@@ -624,6 +624,8 @@ export default function QuickCampaignControlPage() {
   }
 
   function switchCreateMode(mode: "new" | "existing") {
+    // 照片上傳中切走會卸下上傳元件，晚到的圖片會被丟掉
+    if (imagesUploading) { setError("照片上傳中，請等縮圖出現再切換"); return; }
     setCreateMode(mode);
     setError(null);
     setNotice(null);
@@ -733,6 +735,7 @@ export default function QuickCampaignControlPage() {
 
   async function createCampaign() {
     if (!allowed || createBusy) return;
+    if (imagesUploading) { setError("照片上傳中，請等縮圖出現再按「建立開團」"); return; }
     const isExistingProduct = createMode === "existing";
     const campaignName = isExistingProduct ? createName.trim() : newProductName.trim();
     if (isExistingProduct && !selectedProduct) { setError("請先選商品"); return; }
@@ -1002,8 +1005,9 @@ export default function QuickCampaignControlPage() {
           <div className="grid gap-2 sm:grid-cols-[auto_1fr_auto]">
             <SpinButton
               type="button"
-              disabled={!allowed || !QUICK_CREATE_ENABLED}
+              disabled={!allowed || !QUICK_CREATE_ENABLED || imagesUploading}
               onClick={() => {
+                if (imagesUploading) { setError("照片上傳中，請等縮圖出現再收起"); return; }
                 if (!createOpen) {
                   setCreateMode("new");
                   clearExistingProductSelection();
@@ -1014,7 +1018,7 @@ export default function QuickCampaignControlPage() {
               }}
               className="min-h-11 rounded-md bg-pink-600 px-4 text-sm font-semibold text-white disabled:opacity-50"
             >
-              {createOpen ? "收起開新團" : "+ 開新團"}
+              {createOpen ? (imagesUploading ? "照片上傳中…" : "收起開新團") : "+ 開新團"}
             </SpinButton>
             <input
               value={query}
@@ -1118,7 +1122,7 @@ export default function QuickCampaignControlPage() {
                     type="button"
                     aria-pressed={createMode === mode}
                     onClick={() => switchCreateMode(mode as "new" | "existing")}
-                    disabled={!allowed || createBusy}
+                    disabled={!allowed || createBusy || imagesUploading}
                     className={`min-h-11 rounded-md border text-sm font-semibold disabled:opacity-50 ${
                       createMode === mode
                         ? "border-pink-600 bg-pink-600 text-white"
@@ -1129,6 +1133,11 @@ export default function QuickCampaignControlPage() {
                   </button>
                 ))}
               </div>
+              {imagesUploading && (
+                <div className="text-sm text-amber-800 dark:text-amber-200">
+                  照片上傳中，等縮圖出現後才能切換、收起或建立開團。
+                </div>
+              )}
 
               {createMode === "existing" && (
                 <>

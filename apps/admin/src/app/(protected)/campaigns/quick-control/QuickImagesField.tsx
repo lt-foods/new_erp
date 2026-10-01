@@ -5,7 +5,7 @@
 // 只收 JPEG／PNG（LINE 記事本發文只帶得上這兩種）、往前／刪除／往後常駐顯示且點擊區 ≥44px、
 // 對外回報上傳中（本頁上傳中不給按「建立開團」）。
 
-import { useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { QUICK_IMAGE_ACCEPT, moveImage, quickImageExt } from "./quickControl";
 
@@ -19,7 +19,7 @@ type Props = {
 const BUCKET = "products";
 
 const ctrlBtnCls =
-  "min-h-[44px] min-w-[44px] touch-manipulation rounded-md border border-zinc-300 px-1 text-sm text-zinc-700 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-200";
+  "min-h-[44px] min-w-[44px] touch-manipulation rounded-md border border-zinc-300 px-1 text-base text-zinc-700 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-200";
 
 export function QuickImagesField({ value, onChange, onUploadingChange, disabled }: Props) {
   const [uploading, setUploading] = useState(false);
@@ -34,6 +34,18 @@ export function QuickImagesField({ value, onChange, onUploadingChange, disabled 
   useEffect(() => {
     onUploadingChange?.(uploading);
   }, [onUploadingChange, uploading]);
+
+  // 卸下時回報「沒在上傳」，旗標才不會卡住；本頁的回報函式會用世代號擋掉上一輪的
+  const reportRef = useRef(onUploadingChange);
+  useEffect(() => {
+    reportRef.current = onUploadingChange;
+  }, [onUploadingChange]);
+  useEffect(() => {
+    const report = reportRef;
+    return () => {
+      report.current?.(false);
+    };
+  }, []);
 
   async function onFilesSelected(e: ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
@@ -137,7 +149,7 @@ export function QuickImagesField({ value, onChange, onUploadingChange, disabled 
           </div>
         ))}
         <label
-          className={`flex h-36 w-36 cursor-pointer flex-col items-center justify-center rounded-md border-2 border-dashed text-sm text-zinc-500 dark:border-zinc-700 ${locked ? "pointer-events-none opacity-50" : ""}`}
+          className={`flex h-36 w-36 cursor-pointer flex-col items-center justify-center rounded-md border-2 border-dashed text-base text-zinc-500 dark:border-zinc-700 ${locked ? "pointer-events-none opacity-50" : ""}`}
         >
           <input
             type="file"
