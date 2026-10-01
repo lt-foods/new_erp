@@ -3,13 +3,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  QUICK_IMAGE_ACCEPT,
   QUICK_PAGE_OVERLAP,
   QUICK_PAGE_SIZE,
   campaignSearchOrFilter,
   canQuickUpdateCampaign,
   customerUrlFor,
   mergeCampaignRows,
+  moveImage,
+  newProductExtras,
   pageWindow,
+  quickImageExt,
   quickScopeFilter,
   sanitizeCampaignSearch,
   soldQtyByCampaign,
@@ -103,4 +107,55 @@ test("延長／重開／加名額資格：照資料庫守衛", () => {
   assert.equal(canQuickUpdateCampaign({ status: "draft", close_type: "fast", total_cap_qty: null, campaign_items: null }), true);
   assert.equal(canQuickUpdateCampaign({ status: "closed", close_type: "limited", total_cap_qty: null, campaign_items: null }), true);
   assert.equal(canQuickUpdateCampaign({ status: "closed", close_type: "regular", total_cap_qty: null, campaign_items: null }), false);
+});
+
+test("全新商品附加資料：都沒填就全空，不擋開團", () => {
+  assert.deepEqual(newProductExtras({ images: [], description: "   ", brandId: null }), {
+    p_images: [],
+    p_description: null,
+    p_brand_id: null,
+  });
+});
+
+test("全新商品附加資料：濾掉空路徑、不帶封面，描述去頭尾空白但保留換行", () => {
+  const out = newProductExtras({ images: ["t/a.jpg", "", "t/b.png"], description: "  第一行\n第二行  ", brandId: 7 });
+  assert.deepEqual(out.p_images, ["t/a.jpg", "t/b.png"]);
+  assert.equal("cover" in out, false);
+  assert.equal(out.p_description, "第一行\n第二行");
+  assert.equal(out.p_brand_id, 7);
+});
+
+test("全新商品附加資料：品牌不是正整數就當沒選", () => {
+  assert.equal(newProductExtras({ images: [], description: "", brandId: Number.NaN }).p_brand_id, null);
+  assert.equal(newProductExtras({ images: [], description: "", brandId: 0 }).p_brand_id, null);
+});
+
+test("上傳圖片格式：只收 JPEG／PNG", () => {
+  assert.equal(QUICK_IMAGE_ACCEPT, "image/jpeg,image/png");
+  assert.equal(quickImageExt({ name: "a.JPG", type: "image/jpeg" }), "jpg");
+  assert.equal(quickImageExt({ name: "a.jpeg", type: "image/jpeg" }), "jpeg");
+  assert.equal(quickImageExt({ name: "a.png", type: "image/png" }), "png");
+  assert.equal(quickImageExt({ name: "a.webp", type: "image/webp" }), null);
+  assert.equal(quickImageExt({ name: "a.gif", type: "image/gif" }), null);
+  assert.equal(quickImageExt({ name: "IMG_1.HEIC", type: "image/heic" }), null);
+});
+
+test("上傳圖片格式：類型是 JPEG 但檔名不是，副檔名依類型給", () => {
+  assert.equal(quickImageExt({ name: "IMG_1.HEIC", type: "image/jpeg" }), "jpg");
+  assert.equal(quickImageExt({ name: "noext", type: "image/png" }), "png");
+});
+
+test("上傳圖片格式：瀏覽器沒給類型就看檔名", () => {
+  assert.equal(quickImageExt({ name: "a.jpg", type: "" }), "jpg");
+  assert.equal(quickImageExt({ name: "a.png", type: "" }), "png");
+  assert.equal(quickImageExt({ name: "a.webp", type: "" }), null);
+  assert.equal(quickImageExt({ name: "noext", type: "" }), null);
+});
+
+test("圖片排序：往前往後換一格，超出範圍不動", () => {
+  assert.deepEqual(moveImage(["a", "b", "c"], 1, -1), ["b", "a", "c"]);
+  assert.deepEqual(moveImage(["a", "b", "c"], 1, 1), ["a", "c", "b"]);
+  const list = ["a", "b"];
+  assert.equal(moveImage(list, 0, -1), list);
+  assert.equal(moveImage(list, 1, 1), list);
 });

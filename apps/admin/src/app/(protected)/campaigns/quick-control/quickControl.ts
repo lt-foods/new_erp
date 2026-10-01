@@ -128,3 +128,57 @@ export function canQuickUpdateCampaign(row: EligibleCampaign): boolean {
     || (row.campaign_items ?? []).some((item) => Number(item.cap_qty ?? 0) > 0)
   );
 }
+
+/**
+ * 全新商品的圖片／描述／品牌，整理成 rpc_upsert_product 要的參數。
+ * 建商品那次跟「發布」那次都要帶同一份，漏帶的那次會把它蓋回空的。
+ * 圖片存的是 Storage products 的路徑（同 ProductImagesField）。全都可以不填。
+ * 開團封面刻意不設：訂單頁的封面小圖不認得 Storage 路徑，
+ * 沒封面時各處會自動改用第一個品項的商品主圖（lib/campaignCover.ts）。
+ */
+export function newProductExtras(input: {
+  images: string[];
+  description: string;
+  brandId: number | null;
+}): { p_images: string[]; p_description: string | null; p_brand_id: number | null } {
+  const images = input.images.filter((p) => typeof p === "string" && p.trim().length > 0);
+  const description = input.description.trim();
+  const brandId = Number.isFinite(input.brandId) && (input.brandId ?? 0) > 0 ? input.brandId : null;
+  return {
+    p_images: images,
+    p_description: description || null,
+    p_brand_id: brandId,
+  };
+}
+
+/**
+ * 手機團控上傳圖片只收 JPEG／PNG：LINE 記事本發文（line-note-worker collectPostImages）
+ * 只帶得上這兩種，WebP／GIF 會被略過。
+ */
+export const QUICK_IMAGE_ACCEPT = "image/jpeg,image/png";
+
+/**
+ * 這個檔案能不能傳、存檔用什麼副檔名；不收就回 null。
+ * 先看檔案類型，瀏覽器沒給類型才看檔名。副檔名照 ProductImagesField 取檔名結尾，
+ * 檔名結尾不是 jpg／jpeg／png（例如 iPhone 轉檔後檔名還是 .heic）就依類型給 jpg／png。
+ */
+export function quickImageExt(file: { name: string; type: string }): string | null {
+  const nameExt = (file.name.split(".").pop() || "").toLowerCase();
+  const type = (file.type || "").toLowerCase();
+  const kind = type
+    ? type === "image/jpeg" ? "jpg" : type === "image/png" ? "png" : null
+    : ["jpg", "jpeg"].includes(nameExt) ? "jpg" : nameExt === "png" ? "png" : null;
+  if (!kind) return null;
+  if (kind === "jpg" && ["jpg", "jpeg"].includes(nameExt)) return nameExt;
+  if (kind === "png" && nameExt === "png") return nameExt;
+  return kind;
+}
+
+/** 圖片排序：把第 idx 張往前（-1）或往後（+1）換一格；超出範圍原樣回傳 */
+export function moveImage<T>(list: T[], idx: number, dir: -1 | 1): T[] {
+  const target = idx + dir;
+  if (idx < 0 || idx >= list.length || target < 0 || target >= list.length) return list;
+  const next = [...list];
+  [next[idx], next[target]] = [next[target], next[idx]];
+  return next;
+}

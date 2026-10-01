@@ -16,11 +16,13 @@ import {
   CAP_ITEMS_FILTER_COLUMN,
   customerUrlFor,
   mergeCampaignRows,
+  newProductExtras,
   pageWindow,
   quickScopeFilter,
   soldQtyByCampaign,
   splitPage,
 } from "./quickControl";
+import { QuickImagesField } from "./QuickImagesField";
 
 type QuickStatus = "draft" | "open" | "closed" | "locked";
 type CloseType = "regular" | "fast" | "limited" | "food_train";
@@ -72,6 +74,12 @@ type PriceRow = {
   sku_id: number;
   price: number | string;
   effective_from: string;
+};
+
+type BrandRow = {
+  id: number;
+  name: string;
+  code: string | null;
 };
 
 type NewSkuDraft = {
@@ -276,6 +284,22 @@ export default function QuickCampaignControlPage() {
   const [createMode, setCreateMode] = useState<"new" | "existing">("new");
   const [newProductName, setNewProductName] = useState("");
   const [newStorageType, setNewStorageType] = useState<Exclude<StorageType, null>>(DEFAULT_NEW_STORAGE_TYPE);
+  // 全新商品的圖片（Storage 路徑）、描述、品牌：都可以不填
+  const [newImages, setNewImages] = useState<string[]>([]);
+  const [newDescription, setNewDescription] = useState("");
+  const [newBrandId, setNewBrandId] = useState<number | null>(null);
+  const [brands, setBrands] = useState<BrandRow[]>([]);
+  const [brandsLoaded, setBrandsLoaded] = useState(false);
+  const [brandsError, setBrandsError] = useState(false);
+  // 表單世代號：建立成功清空表單就 +1。上傳中的圖片晚到時，世代號不同就丟掉，
+  // 才不會跑進下一個商品；同時當 ProductImagesField 的 key，清空時整個重新掛載
+  const [imageFormGen, setImageFormGen] = useState(0);
+  const imageFormGenRef = useRef(0);
+  const [imagesUploading, setImagesUploading] = useState(false);
+  // 上一輪（已清空）的上傳元件回報的上傳狀態一律不收
+  const reportImagesUploading = useCallback((uploading: boolean) => {
+    if (imageFormGen === imageFormGenRef.current) setImagesUploading(uploading);
+  }, [imageFormGen]);
   const [newSkuDrafts, setNewSkuDrafts] = useState<NewSkuDraft[]>([
     { key: newSkuKey(), name: "", price: "", cap: "" },
   ]);
@@ -339,6 +363,7 @@ export default function QuickCampaignControlPage() {
   const createSubmitDisabled =
     !allowed
     || createBusy
+    || imagesUploading
     || (createMode === "existing"
       ? skuLoading || missingPrice || !selectedProduct || selectedSkus.length === 0
       : !newProductName.trim() || newSkuRows.length === 0);
@@ -448,6 +473,26 @@ export default function QuickCampaignControlPage() {
     const timer = window.setTimeout(() => { void load(); }, 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+
+  // 品牌清單：打開開新團才讀一次（同 ProductForm 的讀法）；讀不到就提示＋重試，仍可不選品牌開團
+  useEffect(() => {
+    if (!createOpen || brandsLoaded) return;
+    let alive = true;
+    void (async () => {
+      const { data, error: brandErr } = await getSupabase().from("brands").select("id, name, code").order("name");
+      if (!alive) return;
+      if (brandErr || !data) {
+        setBrandsError(true);
+      } else {
+        setBrands(data as BrandRow[]);
+        setBrandsError(false);
+      }
+      setBrandsLoaded(true);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [brandsLoaded, createOpen]);
 
   useEffect(() => {
     if (!createOpen || createMode !== "existing") return;
@@ -579,6 +624,8 @@ export default function QuickCampaignControlPage() {
   }
 
   function switchCreateMode(mode: "new" | "existing") {
+    // 照片上傳中切走會卸下上傳元件，晚到的圖片會被丟掉
+    if (imagesUploading) { setError("照片上傳中，請等縮圖出現再切換"); return; }
     setCreateMode(mode);
     setError(null);
     setNotice(null);
@@ -688,6 +735,7 @@ export default function QuickCampaignControlPage() {
 
   async function createCampaign() {
     if (!allowed || createBusy) return;
+    if (imagesUploading) { setError("照片上傳中，請等縮圖出現再按「建立開團」"); return; }
     const isExistingProduct = createMode === "existing";
     const campaignName = isExistingProduct ? createName.trim() : newProductName.trim();
     if (isExistingProduct && !selectedProduct) { setError("請先選商品"); return; }
@@ -729,7 +777,9 @@ export default function QuickCampaignControlPage() {
       const campaignTotalCap = null;
       const productStorageType = isExistingProduct ? selectedProduct?.storage_type ?? null : newStorageType;
       const pickupDays = pickupDaysForStorage(productStorageType);
-      const campaignDescription = isExistingProduct ? selectedProduct?.description ?? null : null;
+      const extras = newProductExtras({ images: newImages, description: newDescription, brandId: newBrandId });
+      // 既有商品沿用商品描述當團描述；全新商品用這次寫的描述
+      const campaignDescription = isExistingProduct ? selectedProduct?.description ?? null : extras.p_description;
       const campaignItems: { sku_id: number; unit_price: number; cap_qty: number | null; label: string }[] = [];
       let newProductForPublish: { id: number; code: string } | null = null;
 
@@ -758,11 +808,11 @@ export default function QuickCampaignControlPage() {
           p_product_code: productCode,
           p_name: campaignName,
           p_short_name: campaignName,
-          p_brand_id: null,
+          p_brand_id: extras.p_brand_id,
           p_category_id: null,
-          p_description: null,
+          p_description: extras.p_description,
           p_status: "draft",
-          p_images: [],
+          p_images: extras.p_images,
           p_storage_type: newStorageType,
           p_customized_id: null,
           p_customized_text: null,
@@ -859,11 +909,11 @@ export default function QuickCampaignControlPage() {
           p_product_code: newProductForPublish.code,
           p_name: campaignName,
           p_short_name: campaignName,
-          p_brand_id: null,
+          p_brand_id: extras.p_brand_id,
           p_category_id: null,
-          p_description: null,
+          p_description: extras.p_description,
           p_status: "active",
-          p_images: [],
+          p_images: extras.p_images,
           p_storage_type: newStorageType,
           p_customized_id: null,
           p_customized_text: null,
@@ -918,6 +968,12 @@ export default function QuickCampaignControlPage() {
       setCreateName("");
       setNewProductName("");
       setNewStorageType(DEFAULT_NEW_STORAGE_TYPE);
+      imageFormGenRef.current += 1;
+      setImageFormGen(imageFormGenRef.current);
+      setImagesUploading(false);
+      setNewImages([]);
+      setNewDescription("");
+      setNewBrandId(null);
       setNewSkuDrafts([{ key: newSkuKey(), name: "", price: "", cap: "" }]);
       setItemCapDraft({});
       void load();
@@ -949,8 +1005,9 @@ export default function QuickCampaignControlPage() {
           <div className="grid gap-2 sm:grid-cols-[auto_1fr_auto]">
             <SpinButton
               type="button"
-              disabled={!allowed || !QUICK_CREATE_ENABLED}
+              disabled={!allowed || !QUICK_CREATE_ENABLED || imagesUploading}
               onClick={() => {
+                if (imagesUploading) { setError("照片上傳中，請等縮圖出現再收起"); return; }
                 if (!createOpen) {
                   setCreateMode("new");
                   clearExistingProductSelection();
@@ -961,7 +1018,7 @@ export default function QuickCampaignControlPage() {
               }}
               className="min-h-11 rounded-md bg-pink-600 px-4 text-sm font-semibold text-white disabled:opacity-50"
             >
-              {createOpen ? "收起開新團" : "+ 開新團"}
+              {createOpen ? (imagesUploading ? "照片上傳中…" : "收起開新團") : "+ 開新團"}
             </SpinButton>
             <input
               value={query}
@@ -1065,7 +1122,7 @@ export default function QuickCampaignControlPage() {
                     type="button"
                     aria-pressed={createMode === mode}
                     onClick={() => switchCreateMode(mode as "new" | "existing")}
-                    disabled={!allowed || createBusy}
+                    disabled={!allowed || createBusy || imagesUploading}
                     className={`min-h-11 rounded-md border text-sm font-semibold disabled:opacity-50 ${
                       createMode === mode
                         ? "border-pink-600 bg-pink-600 text-white"
@@ -1076,6 +1133,11 @@ export default function QuickCampaignControlPage() {
                   </button>
                 ))}
               </div>
+              {imagesUploading && (
+                <div className="text-sm text-amber-800 dark:text-amber-200">
+                  照片上傳中，等縮圖出現後才能切換、收起或建立開團。
+                </div>
+              )}
 
               {createMode === "existing" && (
                 <>
@@ -1205,6 +1267,67 @@ export default function QuickCampaignControlPage() {
                           </button>
                         ))}
                       </div>
+                      <div className="grid gap-1 text-sm">
+                        <span className="font-medium text-zinc-700 dark:text-zinc-200">
+                          商品圖片 <span className="font-normal text-zinc-500">（可不傳）</span>
+                        </span>
+                        <QuickImagesField
+                          key={imageFormGen}
+                          value={newImages}
+                          onChange={(next) => {
+                            if (imageFormGen === imageFormGenRef.current) setNewImages(next);
+                          }}
+                          onUploadingChange={reportImagesUploading}
+                          disabled={!allowed || createBusy}
+                        />
+                        <span className="text-xs text-zinc-500">選好照片後，看到縮圖出現再按「建立開團」</span>
+                      </div>
+                      <label className="grid gap-1 text-sm">
+                        <span className="font-medium text-zinc-700 dark:text-zinc-200">
+                          商品描述 <span className="font-normal text-zinc-500">（可不寫）</span>
+                        </span>
+                        <textarea
+                          value={newDescription}
+                          onChange={(e) => setNewDescription(e.target.value)}
+                          rows={4}
+                          placeholder="例如：產地、口味、保存方式"
+                          disabled={!allowed || createBusy}
+                          className="min-h-24 rounded-md border border-zinc-300 bg-white px-3 py-2 text-base outline-none focus:border-pink-600 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
+                        />
+                      </label>
+                      <label className="grid gap-1 text-sm">
+                        <span className="font-medium text-zinc-700 dark:text-zinc-200">
+                          品牌 <span className="font-normal text-zinc-500">（可不選）</span>
+                        </span>
+                        <select
+                          value={newBrandId ?? ""}
+                          onChange={(e) => setNewBrandId(e.target.value ? Number(e.target.value) : null)}
+                          disabled={!allowed || createBusy}
+                          className="min-h-11 rounded-md border border-zinc-300 bg-white px-3 text-base outline-none focus:border-pink-600 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
+                        >
+                          <option value="">—（不選）</option>
+                          {brands.map((b) => (
+                            <option key={b.id} value={b.id}>
+                              {b.code ? `${b.name} (${b.code})` : b.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {brandsError && (
+                        <div className="flex items-center gap-2 text-sm text-amber-800 dark:text-amber-200">
+                          品牌清單讀取失敗（不選品牌也能開團）
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setBrandsError(false);
+                              setBrandsLoaded(false);
+                            }}
+                            className="min-h-[44px] rounded-md border border-zinc-300 px-3 text-sm text-zinc-700 dark:border-zinc-700 dark:text-zinc-200"
+                          >
+                            重試
+                          </button>
+                        </div>
+                      )}
                     </>
                   )}
 
@@ -1416,7 +1539,7 @@ export default function QuickCampaignControlPage() {
                     disabled={createSubmitDisabled || createNeedsCap}
                     className="min-h-12 rounded-md bg-pink-600 text-base font-semibold text-white disabled:opacity-50"
                   >
-                    建立開團並產生網址
+                    {imagesUploading ? "照片上傳中…" : "建立開團並產生網址"}
                   </SpinButton>
                 </div>
               )}
