@@ -63,6 +63,57 @@ type StoreAddResult = {
   pr_delta_qty?: number | string;
 };
 
+// rpc_preview_pr_qty_sync 的一列 =（請購品項, 來源團）。
+// needs_sync＝數字跟現在的開團需求不一致；can_sync＝通過後端七條檢查、按同步會被改。
+// attribution：'detail'＝有各團明細；'legacy'＝舊資料（只有 source_campaign_id），永遠不自動改。
+type QtySyncRow = {
+  pr_item_id: number;
+  sku_id: number;
+  sku_label: string;
+  campaign_id: number | null;
+  campaign_no: string | null;
+  campaign_name: string | null;
+  attribution: string;
+  demand_qty: number;      // 目前有效需求
+  draft_qty: number;       // 這張單這個團的草稿數量
+  delta_qty: number;       // 會增減幾件
+  new_campaign_qty: number;
+  needs_sync: boolean;
+  can_sync: boolean;
+  block_reason: string | null;
+};
+
+// rpc_sync_pr_qty 的 jsonb 回傳
+type QtySyncResult = {
+  synced_count?: number;
+  blocked_count?: number;
+  qty_delta?: number | string;
+};
+
+// 讀「待同步」預覽。唯讀、不寫任何資料，所以打開頁面就可以現算。
+// 失敗一律回空陣列：預覽拿不到時畫面退回原本的行為（數量可手改），不要整頁擋住。
+async function fetchQtySyncRows(prId: number): Promise<QtySyncRow[]> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase.rpc("rpc_preview_pr_qty_sync", { p_pr_id: prId });
+  if (error) return [];
+  return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+    pr_item_id: Number(r.pr_item_id),
+    sku_id: Number(r.sku_id),
+    sku_label: String(r.sku_label ?? ""),
+    campaign_id: r.campaign_id === null || r.campaign_id === undefined ? null : Number(r.campaign_id),
+    campaign_no: (r.campaign_no as string | null) ?? null,
+    campaign_name: (r.campaign_name as string | null) ?? null,
+    attribution: String(r.attribution ?? ""),
+    demand_qty: Number(r.demand_qty ?? 0),
+    draft_qty: Number(r.draft_qty ?? 0),
+    delta_qty: Number(r.delta_qty ?? 0),
+    new_campaign_qty: Number(r.new_campaign_qty ?? 0),
+    needs_sync: Boolean(r.needs_sync),
+    can_sync: Boolean(r.can_sync),
+    block_reason: (r.block_reason as string | null) ?? null,
+  }));
+}
+
 // rpc_create_partial_pr_from_items 的 jsonb 回傳
 type PartialSplitResult = {
   new_pr_id: number;
@@ -121,6 +172,10 @@ function PageContent() {
   const id = idStr ? Number(idStr) : null;
 
   const [header, setHeader] = useState<PRHeader | null>(null);
+  // 備註載入時的原值。備註沒有 dirty 旗標（saveDraft 一律無條件覆寫），
+  // 所以要自己留一份基準值，才判斷得出「改了備註但還沒存檔」。
+  // 用途只有一個：syncQty 重讀整頁前要先警告使用者打的字會不見。
+  const [loadedNotes, setLoadedNotes] = useState<string | null>(null);
   const [items, setItems] = useState<ItemRow[]>([]);
   const [derivedPOs, setDerivedPOs] = useState<DerivedPO[]>([]);
   const [campaignFinalized, setCampaignFinalized] = useState<boolean>(false);
@@ -138,6 +193,8 @@ function PageContent() {
   const [itemCampaignOptions, setItemCampaignOptions] = useState<Map<number, ItemCampaignOption[]>>(new Map());
   const [storeAddModal, setStoreAddModal] = useState<StoreAddModal | null>(null);
   const [storeAddBusy, setStoreAddBusy] = useState(false);
+  const [qtySyncRows, setQtySyncRows] = useState<QtySyncRow[]>([]);
+  const [qtySyncBusy, setQtySyncBusy] = useState(false);
   const [destLocationId, setDestLocationId] = useState<number | null>(null);
   // UI 上被移除、但尚未存檔的品項 id — saveDraft 時才真正從 DB 刪除。
   // 之前只從 state filter 掉，DB 列還在 → 送審後拆 PO 被「未指派供應商」殘列擋死。
@@ -171,6 +228,7 @@ function PageContent() {
     setLoading(true);
     setError(null);
     setHeader(null);
+    setLoadedNotes(null);
     setItems([]);
     setRemovedIds([]);
     setSelectedIds(new Set());
@@ -180,6 +238,7 @@ function PageContent() {
     setStoreAddModal(null);
     setTransferSummary(undefined);
     setCampaignFinalized(false);
+    setQtySyncRows([]);
     let cancelled = false;
     (async () => {
       try {
@@ -225,6 +284,7 @@ function PageContent() {
         if (storeErr) throw new Error(storeErr.message);
 
         setHeader(prData as PRHeader);
+        setLoadedNotes((prData as PRHeader).notes ?? null);
         setSuppliers((supRows ?? []) as Supplier[]);
         setStores((storeRows ?? []) as StoreOption[]);
         {
@@ -536,7 +596,45 @@ function PageContent() {
     };
   }, [id]);
 
+  // 打開頁面就現算一次「待同步」（唯讀，不寫資料）。刻意跟上面那支主查詢分開：
+  // 預覽失敗不該讓整張單開不起來。
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    (async () => {
+      const rows = await fetchQtySyncRows(id);
+      if (!cancelled) setQtySyncRows(rows);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
   const editable = header?.status === "draft";
+
+  // 已經綁了來源團明細的品項：數量不給直接打，要走「同步最新開團數量」。
+  // ⚠️ 只鎖數量 —— 成本 / 供應商 / 分店價 / 售價照舊可編輯（手動補列時成本要能打）。
+  // 只鎖「有各團明細」的品項：#982 守衛要求這種品項的總數 = 明細加總，手改成別的數字一定被擋。
+  // ⛔ 舊資料（attribution='legacy'，沒有明細）不可以鎖：同步永遠不會改它、
+  //    畫面又叫人「人工確認」，再把輸入框鎖掉就變成誰都改不了。
+  //    舊資料手改走的是守衛的另一條檢查（請購量 ≤ 需求），跟本功能上線前一樣。
+  const campaignBoundItemIds = useMemo(
+    () => new Set(qtySyncRows.filter((r) => r.attribution === "detail").map((r) => r.pr_item_id)),
+    [qtySyncRows],
+  );
+  const pendingSyncRows = useMemo(
+    () => qtySyncRows.filter((r) => r.needs_sync),
+    [qtySyncRows],
+  );
+  const syncableRows = useMemo(
+    () => pendingSyncRows.filter((r) => r.can_sync),
+    [pendingSyncRows],
+  );
+  const manualSyncRows = useMemo(
+    () => pendingSyncRows.filter((r) => !r.can_sync),
+    [pendingSyncRows],
+  );
+
   const canSplit =
     header?.status === "submitted" && header?.review_status === "approved";
   const canReopen = header?.status === "submitted";
@@ -770,6 +868,93 @@ function PageContent() {
     }
   }
 
+  // 「同步最新開團數量」：把草稿數量對到目前的有效需求。
+  // ⚠️ 收尾是 window.location.reload()，所以「還沒存檔」的東西全部會不見：
+  //    品項列的手改、按了 ✕ 但還沒存的刪除、以及改了還沒存的備註。
+  //    三種都要在確認框裡分開講清楚。⛔ 不要自動幫他存檔（那等於替他決定要存什麼）。
+  async function syncQty() {
+    if (!id) return;
+    const lines = syncableRows
+      .slice(0, 12)
+      .map(
+        (r) =>
+          `・${r.sku_label}${r.campaign_no ? `（${r.campaign_no}）` : ""}：` +
+          `目前有效需求 ${formatQty(r.demand_qty)}｜請購草稿 ${formatQty(r.draft_qty)}｜` +
+          `${r.delta_qty < 0 ? `將減少 ${formatQty(-r.delta_qty)}` : `將增加 ${formatQty(r.delta_qty)}`}`,
+      );
+    if (syncableRows.length > 12) {
+      lines.push(`・…另外還有 ${syncableRows.length - 12} 筆`);
+    }
+    // ⚠️ 「還沒存檔」有三種，而且後果不一樣，所以要分開講。
+    //   只算 items 的 dirty 是不夠的：按了 ✕ 只進 removedIds（saveDraft 才真的刪），
+    //   備註則完全沒有 dirty 旗標（saveDraft 無條件覆寫）。
+    //   漏掉這兩種的後果：改了備註沒存就按同步 ⇒ 打的字直接不見、零警告。
+    const dirtyCount = items.filter((r) => r.dirty).length;
+    const removedCount = removedIds.length;
+    const notesDirty = (header?.notes ?? "") !== (loadedNotes ?? "");
+    const unsaved = [
+      dirtyCount > 0
+        ? `・${dirtyCount} 列改過的數量／廠商／價格 → 會被重讀的資料蓋掉，改的值不見。`
+        : "",
+      removedCount > 0
+        ? `・${removedCount} 列你按了 ✕ → 那幾列會原封不動回來（刪除不會生效）。`
+        : "",
+      notesDirty ? "・備註欄打的字 → 會被重讀的資料蓋掉，打的字不見。" : "",
+    ].filter(Boolean);
+    const confirmText = [
+      `要把這張${PR_TERM_ZH}的數量對到目前的開團需求嗎？`,
+      "",
+      ...lines,
+      manualSyncRows.length > 0
+        ? `\n另有 ${manualSyncRows.length} 筆不能自動修改，會跳過（原因列在右側待同步清單）。`
+        : "",
+      unsaved.length > 0
+        ? [
+            "",
+            "⚠️ 這張單有還沒存檔的修改。同步完畫面會整頁重讀，下面這些會不見：",
+            ...unsaved,
+            "",
+            "要保留的話請先按「存為草稿」，再按同步。",
+          ].join("\n")
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+    if (!confirm(confirmText)) return;
+
+    setQtySyncBusy(true);
+    setError(null);
+    try {
+      const supabase = getSupabase();
+      const { data: userData } = await supabase.auth.getUser();
+      const { data, error: rpcErr } = await supabase.rpc("rpc_sync_pr_qty", {
+        p_pr_id: id,
+        p_operator: userData.user?.id,
+      });
+      if (rpcErr) throw new Error(rpcErr.message);
+
+      const result = (data ?? {}) as QtySyncResult;
+      const synced = Number(result.synced_count ?? 0);
+      const blocked = Number(result.blocked_count ?? 0);
+      // 用 alert 而不是頁面上的提示條：下一行就 reload，寫進 state 的字會跟著消失
+      // （同 submitStoreAdd 的做法）。
+      alert(
+        [
+          `已同步 ${synced} 筆。`,
+          blocked > 0 ? `另有 ${blocked} 筆不能自動修改，請依清單上的原因人工確認。` : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      );
+      // 數量／總金額都變了，整頁重讀最省事也最不會有殘影
+      window.location.reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setQtySyncBusy(false);
+    }
+  }
+
   async function saveDraft(): Promise<boolean> {
     if (!id) return false;
     setBusy("save");
@@ -808,6 +993,8 @@ function PageContent() {
         if (hErr) throw new Error(hErr.message);
       }
       setItems((cur) => cur.map((r) => ({ ...r, dirty: false })));
+      // 備註已經寫進 DB，基準值跟著移動，否則同步前會一直誤報「備註沒存檔」
+      setLoadedNotes(header?.notes ?? null);
       return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1133,6 +1320,22 @@ function PageContent() {
               {editable && (
                 <>
                   <SpinButton
+                    onClick={syncQty}
+                    disabled={syncableRows.length === 0 || qtySyncBusy || busy !== null}
+                    className="rounded-md border border-sky-400 px-3 py-2 text-sm font-medium text-sky-700 hover:bg-sky-50 disabled:opacity-50 dark:border-sky-700 dark:text-sky-400 dark:hover:bg-sky-950"
+                    title={
+                      syncableRows.length === 0
+                        ? manualSyncRows.length > 0
+                          ? "有待同步的品項，但都需要人工確認（原因見右側清單）"
+                          : "數量已經是最新的開團需求"
+                        : `把 ${syncableRows.length} 筆數量對到目前的開團需求`
+                    }
+                  >
+                    {qtySyncBusy
+                      ? "同步中…"
+                      : `🔄 同步最新開團數量${syncableRows.length > 0 ? `（${syncableRows.length}）` : ""}`}
+                  </SpinButton>
+                  <SpinButton
                     onClick={saveDraft}
                     disabled={busy !== null}
                     className="rounded-md border border-zinc-300 px-3 py-2 text-sm hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
@@ -1223,6 +1426,47 @@ function PageContent() {
 
         {/* 右側採購清單 */}
         <div className="flex flex-col rounded-md border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+          {/* 待同步提示：打開頁面現算，不寫任何資料 */}
+          {pendingSyncRows.length > 0 && (
+            <div className="border-b border-sky-200 bg-sky-50 px-4 py-3 text-xs dark:border-sky-900 dark:bg-sky-950/40">
+              <p className="font-semibold text-sky-800 dark:text-sky-300">
+                🔄 {pendingSyncRows.length} 筆待同步
+                {manualSyncRows.length > 0 && (
+                  <span className="ml-1 font-normal text-amber-700 dark:text-amber-400">
+                    （其中 {manualSyncRows.length} 筆需人工確認）
+                  </span>
+                )}
+              </p>
+              <p className="mt-0.5 text-sky-700 dark:text-sky-400">
+                客人取消或加單之後，開團需求變了但草稿數字還是舊的。
+                {syncableRows.length > 0 &&
+                  (manualSyncRows.length > 0
+                    ? "黑字那幾筆按左側「同步最新開團數量」就會對上；橘字的同步不會改。"
+                    : "按左側「同步最新開團數量」就會對上。")}
+              </p>
+              <ul className="mt-2 space-y-1">
+                {pendingSyncRows.map((r) => (
+                  <li
+                    key={`${r.pr_item_id}-${r.campaign_id ?? "none"}`}
+                    className={r.can_sync ? "text-zinc-700 dark:text-zinc-300" : "text-amber-700 dark:text-amber-400"}
+                  >
+                    <span className="font-medium">{r.sku_label}</span>
+                    {r.campaign_no && <span className="text-zinc-500">（{r.campaign_no}）</span>}
+                    ：目前有效需求 {formatQty(r.demand_qty)}｜請購草稿 {formatQty(r.draft_qty)}｜
+                    {/* 被擋的列不會被改，不可以寫「將減少／將增加」—— 那是比實際更好的說法 */}
+                    {!r.can_sync
+                      ? `差 ${r.delta_qty < 0 ? "−" : "+"}${formatQty(Math.abs(r.delta_qty))}（不會自動改）`
+                      : r.delta_qty < 0
+                        ? `將減少 ${formatQty(-r.delta_qty)}`
+                        : `將增加 ${formatQty(r.delta_qty)}`}
+                    {!r.can_sync && r.block_reason && (
+                      <span className="block pl-4 text-[11px]">⚠️ {r.block_reason}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
             <h3 className="text-sm font-semibold">📋 內部採購清單</h3>
             <div className="flex items-center gap-3">
@@ -1489,7 +1733,11 @@ function PageContent() {
                     )}
                   </Td>
                   <Td className="text-right">
-                    {editable ? (
+                    {/* 綁了各團明細的列不給直接打數量：#982 守衛要求「品項總數 = 明細加總」，
+                        手改一邊一定被擋（就是老闆看到的 item_qty=11, detail_qty=12 那句紅字）。
+                        ⚠️ 同步不是萬用解：被標「需人工確認」的列，按同步也不會改。
+                        ⚠️ 只鎖數量，成本／供應商／分店價／售價照舊可編輯；舊資料列不鎖。 */}
+                    {editable && !campaignBoundItemIds.has(r.id) ? (
                       <input
                         type="number"
                         step="1"
@@ -1497,6 +1745,13 @@ function PageContent() {
                         onChange={(e) => patchItem(idx, { qty_requested: Number(e.target.value) })}
                         className="w-24 rounded-md border border-zinc-300 bg-white px-2 py-1 text-right text-sm dark:border-zinc-700 dark:bg-zinc-800"
                       />
+                    ) : editable ? (
+                      <span
+                        className="cursor-help font-mono underline decoration-dotted decoration-zinc-400"
+                        title="這一列綁了各團明細，直接改數量會被系統擋（品項總數必須等於各團加總）。數量跟開團對不上時按左側「同步最新開團數量」；被標「需人工確認」的列同步不會改，請依清單上的原因處理，或回原團用「分店／批發加單」。"
+                      >
+                        {formatQty(r.qty_requested)}
+                      </span>
                     ) : (
                       r.qty_requested
                     )}
