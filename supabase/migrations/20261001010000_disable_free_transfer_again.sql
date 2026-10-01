@@ -28,8 +28,9 @@
 -- 這裡連 RPC 的執行權一起收掉，否則「按鈕拿掉了、API 還通」——
 -- 前端唯一呼叫點就是被移除的那張表單（FreeTransferCreateForm），
 -- 沒有任何 SECURITY DEFINER 函式在內部呼叫它，收掉不會連帶壞掉別的流程。
--- 上線順序：先上前端、再套本檔；反過來的話，還沒重新整理的舊畫面按下去
--- 會拿到 permission denied for function。
+-- 上線順序：先套本檔、再合併前端（先把門關上）。先套本檔時，還沒換新畫面
+-- 或沒重新整理的舊畫面按建單會被擋下、看到 permission denied for function，
+-- 不會建出單；反過來先合併前端的話，在套本檔之前舊畫面與直接呼叫 RPC 仍建得出單。
 --
 -- 刻意保留的部分（既有自由轉貨單還要看得到、收得完）：
 --   - rpc_delete_free_transfer（草稿可刪）
@@ -38,7 +39,7 @@
 --   - 收件匣的「🔄 自由轉貨」篩選、明細、列印出貨單
 --
 -- 本檔只有 REVOKE 與 COMMENT，可重跑（REVOKE 對已收回的權限是 no-op）。
--- ⛔ 沒有老闆明確指示不要再打開。
+-- ⛔ 沒有老闆明確指示，不要再打開。
 --
 -- 需要恢復時（rollback）：
 --   GRANT EXECUTE ON FUNCTION public.rpc_create_free_transfer(BIGINT, BIGINT, JSONB, TEXT)

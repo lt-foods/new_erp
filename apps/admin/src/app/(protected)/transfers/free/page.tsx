@@ -15,7 +15,7 @@ export default function FreeTransferPage() {
       <div className="max-w-2xl rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
         <p className="font-medium">自由轉貨（店對店）已於 2026-10-01 停用，不能再建新單。</p>
         <p className="mt-2">
-          之前建的單照常可以在「內部調撥」頁查看、收貨，還是草稿的單可以刪除。
+          之前建的單照常可以在「內部調撥」頁查看，還是草稿的單可以刪除；已經出貨的單，請到「收貨」頁收貨。
         </p>
         <p className="mt-2">貨要在店之間移動，請改走下面的路：</p>
         <ul className="mt-2 list-disc space-y-1 pl-5">
