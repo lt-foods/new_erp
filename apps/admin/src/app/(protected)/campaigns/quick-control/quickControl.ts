@@ -182,3 +182,20 @@ export function moveImage<T>(list: T[], idx: number, dir: -1 | 1): T[] {
   [next[idx], next[target]] = [next[target], next[idx]];
   return next;
 }
+
+/**
+ * 關團結果要不要警告：rpc_close_campaign 併入／建請購失敗時不會丟錯，
+ * 而是照樣關團、回 { action: 'append_failed' | 'create_failed', reason }（20260831000060）。
+ * 這兩種回傳警告字（reason 原樣附上，英文也照附）；其他 action 回 null，照一般成功訊息。
+ * 有給團名就在前面加「團名」。
+ */
+export const CLOSE_WARN_ACTIONS = ["append_failed", "create_failed"] as const;
+
+export function closeCampaignWarning(data: unknown, name?: string): string | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const { action, reason } = data as { action?: unknown; reason?: unknown };
+  if (typeof action !== "string" || !(CLOSE_WARN_ACTIONS as readonly string[]).includes(action)) return null;
+  const why = typeof reason === "string" && reason.trim() ? reason.trim() : "原因不明";
+  const who = name ? `「${name}」` : "";
+  return `${who}已關團，但沒有併入請購單：${why}。請到請購單頁補請購。`;
+}

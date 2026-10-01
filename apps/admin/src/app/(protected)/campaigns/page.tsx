@@ -29,6 +29,7 @@ import LineNotePostsModal from "@/components/LineNotePostsModal";
 import FbBulkPublishModal from "@/components/FbBulkPublishModal";
 import { useRole, isAdmin, useMyStores } from "@/lib/role";
 import StoreCampaignCreateModal from "@/components/StoreCampaignCreateModal";
+import { closeCampaignWarning } from "./quick-control/quickControl";
 
 // 共用: chunked fetch — bypass PostgREST max-rows 1000 cap
 // builder: 回 fresh query builder 的 factory (因為 .range() 後不能 reuse)
@@ -436,11 +437,15 @@ export default function CampaignsListPage() {
     if (!confirm(msg)) return;
     setClosingId(id);
     try {
-      const { error: rpcErr } = await getSupabase().rpc("rpc_close_campaign", {
+      const { data, error: rpcErr } = await getSupabase().rpc("rpc_close_campaign", {
         p_campaign_id: id,
         p_operator: (await getSupabase().auth.getUser()).data.user?.id,
       });
       if (rpcErr) throw new Error(rpcErr.message);
+      // 併入／建請購失敗時資料庫照樣關團、只回 append_failed／create_failed，要讓人知道去補請購。
+      // 用 alert 不用 setError：下面重新載入清單會把 setError 清掉。
+      const warn = closeCampaignWarning(data, name);
+      if (warn) alert(warn);
       setReloadTick((t) => t + 1);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

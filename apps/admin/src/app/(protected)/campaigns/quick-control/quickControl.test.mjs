@@ -8,6 +8,7 @@ import {
   QUICK_PAGE_SIZE,
   campaignSearchOrFilter,
   canQuickUpdateCampaign,
+  closeCampaignWarning,
   customerUrlFor,
   mergeCampaignRows,
   moveImage,
@@ -158,4 +159,31 @@ test("圖片排序：往前往後換一格，超出範圍不動", () => {
   const list = ["a", "b"];
   assert.equal(moveImage(list, 0, -1), list);
   assert.equal(moveImage(list, 1, 1), list);
+});
+
+test("關團結果：併入／建請購失敗要警告，原因原樣附上", () => {
+  assert.equal(
+    closeCampaignWarning({ closed: true, action: "append_failed", reason: "請購單 PR001 的商品是舊資料" }),
+    "已關團，但沒有併入請購單：請購單 PR001 的商品是舊資料。請到請購單頁補請購。",
+  );
+  assert.equal(
+    closeCampaignWarning({ closed: true, pr_id: null, action: "create_failed", reason: "tenant mismatch" }, "芒果團"),
+    "「芒果團」已關團，但沒有併入請購單：tenant mismatch。請到請購單頁補請購。",
+  );
+  assert.equal(
+    closeCampaignWarning({ action: "append_failed", reason: "  " }),
+    "已關團，但沒有併入請購單：原因不明。請到請購單頁補請購。",
+  );
+  assert.equal(closeCampaignWarning({ action: "create_failed" }), "已關團，但沒有併入請購單：原因不明。請到請購單頁補請購。");
+});
+
+test("關團結果：其他 action 或沒有回傳都不警告", () => {
+  for (const action of ["appended", "created", "created_secondary", "deferred", "store_receiving"]) {
+    assert.equal(closeCampaignWarning({ closed: true, action, reason: "x" }), null);
+  }
+  assert.equal(closeCampaignWarning(null), null);
+  assert.equal(closeCampaignWarning(undefined), null);
+  assert.equal(closeCampaignWarning("append_failed"), null);
+  assert.equal(closeCampaignWarning([{ action: "append_failed" }]), null);
+  assert.equal(closeCampaignWarning({}), null);
 });
