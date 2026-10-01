@@ -9,7 +9,7 @@
 -- ⚠️ 執行身分：測 13／14（對照組）會用 pg_get_functiondef 複製
 --    rpc_add_po_store_demands、拿掉一段後另存成別的名字。需要函式擁有者或超級使用者。
 --
--- 測試清單（計畫 §3 的 1～14，加 0、15～20）
+-- 測試清單（計畫 §3 的 1～14，加 0、15～21）
 --    0. 夾具前提＋預覽：店B 派貨 10、補單差額 0、表頭金額；預覽列出可加的團與對不出團的品項
 --    1. 30 件、未到未派，店B +1 → 採購單 31、請購單 31、派貨店B 11、補單差額 0
 --    2. 一次三家：店B +1、店A +2（店A 已有店家單→併進去）、批發A +1 → 採購單 34、紀錄 3 列
@@ -31,6 +31,7 @@
 --   18. 輸入防呆：停用的店、數量 0、空清單、店家單已在後段狀態 → 擋，一個字都不寫
 --   19. 團不是已結單／已鎖（已完成）→ 擋
 --   20. 權限：兩支內部函式 anon／authenticated 都不能執行；兩支 rpc_* 只有 authenticated
+--   21. 請購品項總數 ≠ 各團明細加總（歸屬不完整）→ 擋（不然第 3 步改總數會被 #982 守衛擋成技術錯誤）
 --
 -- 「鎖完再檢查一次」需要兩個連線同時跑，單一交易測不到 ——
 --   由本機測試工具的「併發測試」那一段負責（見施工回報）。
@@ -532,6 +533,7 @@ BEGIN
   PERFORM pg_temp._t_case('c17');
   PERFORM pg_temp._t_case('c18', p_a_internal => TRUE);
   PERFORM pg_temp._t_case('c19', p_camp_status => 'completed');
+  PERFORM pg_temp._t_case('c21');
 END
 $cases$;
 
@@ -625,6 +627,10 @@ BEGIN
 
   -- c18：店A 的店家單已經進入後段狀態（出貨中）
   UPDATE customer_orders SET status = 'shipping' WHERE order_no = 'ZZPOADD-c18-1-AINT';
+
+  -- c21：請購品項總數 30、各團明細只剩 29（歸屬不完整；#982 只在改品項時比對，改明細時不比對，所以造得出來）
+  UPDATE purchase_request_item_campaigns SET qty_requested = 29
+   WHERE pr_item_id = pg_temp._t_id('c21.pri');
 END
 $mutate$;
 
@@ -966,6 +972,16 @@ EXCEPTION WHEN OTHERS THEN
 END
 $t10$;
 
+DO $t21$
+DECLARE a RECORD;
+BEGIN
+  SELECT * INTO a FROM pg_temp._t_expect_block('c21', '%總數 30%明細加總 29%對不起來%');
+  INSERT INTO _t_result VALUES (21, '請購品項總數 30 ≠ 各團明細加總 29 → 擋（原因寫出兩個數字），一個字都沒寫', a.o_pass, a.o_detail);
+EXCEPTION WHEN OTHERS THEN
+  INSERT INTO _t_result VALUES (21, '總數≠明細加總', FALSE, 'EXCEPTION: ' || SQLERRM);
+END
+$t21$;
+
 DO $t19$
 DECLARE a RECORD;
 BEGIN
@@ -1246,13 +1262,13 @@ BEGIN
     RAISE EXCEPTION 'po_store_additions_verification failed:%', E'\n' || v_bad;
   END IF;
 
-  -- 結果必須剛好 21 條（測 0～20）；少一條就算失敗，防止某條測試被跳過還顯示綠
+  -- 結果必須剛好 22 條（測 0～21）；少一條就算失敗，防止某條測試被跳過還顯示綠
   SELECT COUNT(DISTINCT seq) INTO v_n FROM _t_result;
-  IF v_n <> 21 OR (SELECT COUNT(*) FROM _t_result) <> 21 THEN
-    RAISE EXCEPTION 'po_store_additions_verification：應該有 21 條結果（測 0～20），實際 % 條', v_n;
+  IF v_n <> 22 OR (SELECT COUNT(*) FROM _t_result) <> 22 THEN
+    RAISE EXCEPTION 'po_store_additions_verification：應該有 22 條結果（測 0～21），實際 % 條', v_n;
   END IF;
 
-  RAISE NOTICE 'po_store_additions_verification: 21/21 PASS';
+  RAISE NOTICE 'po_store_additions_verification: 22/22 PASS';
 END $$;
 
 ROLLBACK;
