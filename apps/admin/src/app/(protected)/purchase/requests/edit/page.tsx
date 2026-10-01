@@ -1197,19 +1197,28 @@ function PageContent() {
       setError(`有 ${unassignedCount} 行未指派供應商，無法拆 PO`);
       return;
     }
-    if (!confirm(`確定建立${PO_TERM_ZH}？建立後可逐一發給各供應商。`)) return;
+    // 20261002010000：建立後每張直接是「已發送」（管道記 manual），不用再按「發送供應商」。
+    // 拆單與標已發送在同一個交易裡，任何一張失敗就整筆不做。系統不會通知廠商（以前也不會）。
+    if (
+      !confirm(
+        `確定建立${PO_TERM_ZH}？\n` +
+          `建立後會直接標成「已發送」，不用再按「發送供應商」。\n` +
+          `（系統不會自動通知廠商。）`,
+      )
+    )
+      return;
     setBusy("split");
     setError(null);
     try {
       const supabase = getSupabase();
       const { data: userData } = await supabase.auth.getUser();
-      const { data: poIds, error: rpcErr } = await supabase.rpc("rpc_split_pr_to_pos", {
+      const { data: poIds, error: rpcErr } = await supabase.rpc("rpc_split_pr_to_pos_and_mark_sent", {
         p_pr_id: id,
         p_dest_location_id: destLocationId,
         p_operator: userData.user?.id,
       });
       if (rpcErr) throw new Error(rpcErr.message);
-      alert(`已產生 ${(poIds as number[]).length} 張${PO_TERM_ZH}`);
+      alert(`已產生 ${(poIds as number[]).length} 張${PO_TERM_ZH}（已發送）`);
       router.push("/purchase/orders");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
