@@ -49,7 +49,7 @@ type PO = {
   stockout_reason: string | null;
   stockout_split_from_po_id: number | null;
   stockout_split_from_po_no: string | null;
-  /** 純斷貨單（沒到貨、沒進貨單、沒波次）→ 可一鍵回復成草稿 */
+  /** 純斷貨單（沒到貨、沒進貨單、沒波次）→ 可一鍵回復（20261002010000 起回復後直接是已發送；廠商是「斷貨用」的單仍回到草稿） */
   stockout_restorable: boolean;
   created_at: string;
   updated_at: string;
@@ -501,11 +501,14 @@ export default function PurchaseOrdersListPage() {
     }
   }
 
+  // 20261002010000：回復後直接回到「已發送」（管道記 manual），不用再按「發送」。
+  // 回復與標已發送在同一個交易裡，任何一步失敗就整筆不做。
+  // 例外：廠商是「斷貨用」的單（舊式少訂差額單）回復後停在待發送，跟以前一樣 —— 完成提示照回傳的 po_status 講。
   async function restorePO(po: PO) {
     if (
       !window.confirm(
         `確定要回復 ${po.po_no} 的斷貨？\n` +
-          `這張單會變回「草稿」（未採購），可重新發送供應商繼續走流程；\n` +
+          `一般斷貨單會直接變回「已發送」，貨到了可以照常收貨；舊式「斷貨用」單會停在待發送（跟以前一樣，需要的話再按 📤 發送）。\n` +
           `先前因斷貨被取消的開團商品、顧客訂單品項、補貨申請也會一併還原，並通知會員。`,
       )
     )
@@ -514,13 +517,20 @@ export default function PurchaseOrdersListPage() {
       const supabase = getSupabase();
       const { data: userData } = await supabase.auth.getUser();
       const { data: res, error: rpcErr } = await supabase.rpc(
-        "rpc_restore_stockout_po",
+        "rpc_restore_stockout_po_and_mark_sent",
         { p_po_id: po.id, p_operator: userData.user?.id },
       );
       if (rpcErr) throw new Error(rpcErr.message);
       const r = (res ?? {}) as Record<string, number>;
+      const poStatus = (res as { po_status?: string } | null)?.po_status;
+      const head =
+        poStatus === "sent"
+          ? `${po.po_no} 已回復為「已發送」，貨到了可以照常收貨。`
+          : poStatus === "draft"
+            ? `${po.po_no} 已回復。這張是舊式「斷貨用」單，維持待發送，需要的話按 📤 發送。`
+            : `${po.po_no} 已回復（目前狀態：${poStatus ?? "不明"}）。`;
       alert(
-        `${po.po_no} 已回復為草稿。\n` +
+        `${head}\n` +
           `還原：開團商品 ${r.campaign_items ?? 0} 項、訂單品項 ${r.order_items ?? 0} 項、` +
           `訂單 ${r.orders_restored ?? 0} 張、補貨明細 ${r.restock_lines ?? 0} 條`,
       );

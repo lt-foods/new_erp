@@ -584,7 +584,7 @@ function PageContent() {
       if (r.stockout_po_no) {
         alert(
           `已標記斷貨，並拆出斷貨單 ${String(r.stockout_po_no)}（共 ${Number(r.stockout_po_items ?? 0)} 項）。\n` +
-            `供應商補到貨時，可在該單按「回復斷貨」變回未採購狀態重跑流程。`,
+            `供應商補到貨時，可在該單按「回復斷貨」復原（一般斷貨單會直接變回「已發送」；舊式「斷貨用」單會停在待發送）。`,
         );
       }
       await reload();
@@ -804,12 +804,15 @@ function PageContent() {
     }
   }
 
+  // 20261002010000：回復後直接回到「已發送」（管道記 manual），不用再按「發送供應商」。
+  // 回復與標已發送在同一個交易裡，任何一步失敗就整筆不做。
+  // 例外：廠商是「斷貨用」的單（舊式少訂差額單）回復後停在待發送，跟以前一樣 —— 完成提示照回傳的 po_status 講。
   async function restorePO() {
     if (!header) return;
     if (
       !window.confirm(
         `確定要回復 ${header.po_no} 的斷貨？\n` +
-          `這張單會變回「草稿」（未採購），可重新發送供應商繼續走流程；\n` +
+          `一般斷貨單會直接變回「已發送」，貨到了可以照常收貨；舊式「斷貨用」單會停在待發送（跟以前一樣，需要的話再按 📤 發送）。\n` +
           `先前因斷貨被取消的開團商品、顧客訂單品項、補貨申請也會一併還原，並通知會員。`,
       )
     )
@@ -817,14 +820,21 @@ function PageContent() {
     try {
       const supabase = getSupabase();
       const { data: userData } = await supabase.auth.getUser();
-      const { data: res, error: rpcErr } = await supabase.rpc("rpc_restore_stockout_po", {
+      const { data: res, error: rpcErr } = await supabase.rpc("rpc_restore_stockout_po_and_mark_sent", {
         p_po_id: header.id,
         p_operator: userData.user?.id,
       });
       if (rpcErr) throw new Error(rpcErr.message);
       const r = (res ?? {}) as Record<string, number>;
+      const poStatus = (res as { po_status?: string } | null)?.po_status;
+      const head =
+        poStatus === "sent"
+          ? `${header.po_no} 已回復為「已發送」，貨到了可以照常收貨。`
+          : poStatus === "draft"
+            ? `${header.po_no} 已回復。這張是舊式「斷貨用」單，維持待發送，需要的話按 📤 發送。`
+            : `${header.po_no} 已回復（目前狀態：${poStatus ?? "不明"}）。`;
       alert(
-        `${header.po_no} 已回復為草稿。\n` +
+        `${head}\n` +
           `還原：開團商品 ${r.campaign_items ?? 0} 項、訂單品項 ${r.order_items ?? 0} 項、` +
           `訂單 ${r.orders_restored ?? 0} 張、補貨明細 ${r.restock_lines ?? 0} 條`,
       );
@@ -993,7 +1003,7 @@ function PageContent() {
                   onClick={restorePO}
                   className="rounded-md bg-amber-600 px-3 py-2 text-sm font-medium text-white hover:bg-amber-500"
                 >
-                  ↩ 回復斷貨（變回草稿）
+                  ↩ 回復斷貨
                 </SpinButton>
               )}
               {canDelete && (
@@ -1027,11 +1037,26 @@ function PageContent() {
                   )}
                 </div>
               )}
+              {/* 第二行依目前狀態講，每一種都要是真的：
+                  · draft：20261002010000 上線前用舊的回復鈕回復、還沒發送的舊單，或廠商是「斷貨用」的單
+                    （新的回復鈕對它也不自動標已發送）—— 只有這兩種還要按發送。
+                  · sent：新的回復鈕回復後就是這個狀態（或舊單後來按過發送）。
+                  · 其他（已到貨、已結案…）：流程已經往下走，第二行不寫。 */}
               {header.stockout_restored_at && !header.stockout_at && (
                 <div className="rounded-md border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300">
                   ↩ 斷貨已回復：{new Date(header.stockout_restored_at).toLocaleString("zh-TW")}
-                  <br />
-                  可重新發送供應商，接著走到貨 / 收貨流程。
+                  {header.status === "draft" && (
+                    <>
+                      <br />
+                      可重新發送供應商，接著走到貨 / 收貨流程。
+                    </>
+                  )}
+                  {header.status === "sent" && (
+                    <>
+                      <br />
+                      目前是「已發送」，貨到了可以照常收貨。
+                    </>
+                  )}
                 </div>
               )}
               {splitPOs.length > 0 && (
