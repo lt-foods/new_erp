@@ -75,21 +75,21 @@ checks(seq, pass, item, detail) AS (
          (SELECT COUNT(*) FROM q)::TEXT || ' 支'
   UNION ALL
   SELECT 2,
-         COALESCE((SELECT bool_and(prosrc LIKE '%已送出，不能重開%') FROM q), FALSE),
+         COALESCE((SELECT bool_and(strpos(prosrc, '已送出，不能重開') > 0) FROM q), FALSE),
          '手機團控是新版：本體含「已送出，不能重開」',
-         CASE WHEN COALESCE((SELECT bool_and(prosrc LIKE '%已送出，不能重開%') FROM q), FALSE)
+         CASE WHEN COALESCE((SELECT bool_and(strpos(prosrc, '已送出，不能重開') > 0) FROM q), FALSE)
               THEN '有' ELSE '沒有（還是舊版，或沒貼成功）' END
   UNION ALL
   SELECT 3,
-         COALESCE((SELECT bool_and(prosrc LIKE '%''draft'', ''open'', ''closed'', ''locked''%') FROM q), FALSE),
+         COALESCE((SELECT bool_and(strpos(prosrc, '''draft'', ''open'', ''closed'', ''locked''') > 0) FROM q), FALSE),
          '手機團控是新版：狀態清單含 locked（''draft'', ''open'', ''closed'', ''locked''）',
-         CASE WHEN COALESCE((SELECT bool_and(prosrc LIKE '%''draft'', ''open'', ''closed'', ''locked''%') FROM q), FALSE)
+         CASE WHEN COALESCE((SELECT bool_and(strpos(prosrc, '''draft'', ''open'', ''closed'', ''locked''') > 0) FROM q), FALSE)
               THEN '有' ELSE '沒有' END
   UNION ALL
   SELECT 4,
-         COALESCE((SELECT bool_and(prosrc NOT LIKE '%already has purchase request linkage%') FROM q), FALSE),
+         COALESCE((SELECT bool_and(strpos(prosrc, 'already has purchase request linkage') = 0) FROM q), FALSE),
          '手機團控舊版字串已不在：「already has purchase request linkage」',
-         CASE WHEN COALESCE((SELECT bool_and(prosrc NOT LIKE '%already has purchase request linkage%') FROM q), FALSE)
+         CASE WHEN COALESCE((SELECT bool_and(strpos(prosrc, 'already has purchase request linkage') = 0) FROM q), FALSE)
               THEN '已不在' ELSE '還在（舊版）' END
   UNION ALL
   SELECT 5,
@@ -110,21 +110,21 @@ checks(seq, pass, item, detail) AS (
          (SELECT COUNT(*) FROM a)::TEXT || ' 支'
   UNION ALL
   SELECT 8,
-         COALESCE((SELECT bool_and(prosrc LIKE '%_pr_campaign_sku_remaining_rows%') FROM a), FALSE),
+         COALESCE((SELECT bool_and(strpos(prosrc, '_pr_campaign_sku_remaining_rows') > 0) FROM a), FALSE),
          '併入請購是新版：本體呼叫「_pr_campaign_sku_remaining_rows」（只補差額）',
-         CASE WHEN COALESCE((SELECT bool_and(prosrc LIKE '%_pr_campaign_sku_remaining_rows%') FROM a), FALSE)
+         CASE WHEN COALESCE((SELECT bool_and(strpos(prosrc, '_pr_campaign_sku_remaining_rows') > 0) FROM a), FALSE)
               THEN '有' ELSE '沒有（還是舊版，或沒貼成功）' END
   UNION ALL
   SELECT 9,
-         COALESCE((SELECT bool_and(prosrc LIKE '%purchase_request_item_campaigns%') FROM a), FALSE),
+         COALESCE((SELECT bool_and(strpos(prosrc, 'purchase_request_item_campaigns') > 0) FROM a), FALSE),
          '併入請購是新版：本體會寫「purchase_request_item_campaigns」（來源團明細）',
-         CASE WHEN COALESCE((SELECT bool_and(prosrc LIKE '%purchase_request_item_campaigns%') FROM a), FALSE)
+         CASE WHEN COALESCE((SELECT bool_and(strpos(prosrc, 'purchase_request_item_campaigns') > 0) FROM a), FALSE)
               THEN '有' ELSE '沒有' END
   UNION ALL
   SELECT 10,
-         COALESCE((SELECT bool_and(prosrc NOT LIKE '%qty_requested + v_demand.qty_total%') FROM a), FALSE),
+         COALESCE((SELECT bool_and(strpos(prosrc, 'qty_requested + v_demand.qty_total') = 0) FROM a), FALSE),
          '併入請購舊版字串已不在：「qty_requested + v_demand.qty_total」（加整團量）',
-         CASE WHEN COALESCE((SELECT bool_and(prosrc NOT LIKE '%qty_requested + v_demand.qty_total%') FROM a), FALSE)
+         CASE WHEN COALESCE((SELECT bool_and(strpos(prosrc, 'qty_requested + v_demand.qty_total') = 0) FROM a), FALSE)
               THEN '已不在' ELSE '還在（舊版）' END
   UNION ALL
   SELECT 11,
@@ -156,7 +156,7 @@ checks(seq, pass, item, detail) AS (
   UNION ALL
   SELECT r.seq,
          (SELECT COUNT(*) FROM fn WHERE fn.proname = r.proname) = 1
-           AND COALESCE((SELECT bool_and(fn.prosrc LIKE '%' || r.marker || '%') FROM fn WHERE fn.proname = r.proname), FALSE),
+           AND COALESCE((SELECT bool_and(strpos(fn.prosrc, r.marker) > 0) FROM fn WHERE fn.proname = r.proname), FALSE),
          format('相關函式沒被改到：%s（%s 版特徵「%s」）', r.proname, r.version_note, r.marker),
          COALESCE((SELECT string_agg('md5=' || fn.def_md5, '；') FROM fn WHERE fn.proname = r.proname), '找不到函式')
     FROM related r

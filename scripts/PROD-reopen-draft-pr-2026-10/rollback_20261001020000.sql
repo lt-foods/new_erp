@@ -67,13 +67,13 @@ BEGIN
   SELECT EXISTS (
     SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
      WHERE n.nspname = 'public' AND p.proname = 'rpc_quick_update_campaign_control'
-       AND p.prosrc LIKE '%已送出，不能重開%'
+       AND strpos(p.prosrc, '已送出，不能重開') > 0
   ) INTO v_quick_new;
 
   SELECT EXISTS (
     SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
      WHERE n.nspname = 'public' AND p.proname = 'rpc_append_campaign_to_pr'
-       AND p.prosrc LIKE '%_pr_campaign_sku_remaining_rows%'
+       AND strpos(p.prosrc, '_pr_campaign_sku_remaining_rows') > 0
   ) INTO v_append_new;
 
   IF NOT v_quick_new AND NOT v_append_new THEN
