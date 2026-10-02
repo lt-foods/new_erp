@@ -22,6 +22,7 @@ import { settlementNo } from "@/lib/settlementNo";
 import { itemDisplayName } from "@/lib/skuLabel";
 import { GIFT_ITEM_SELECT, giftTitle, isCampaignGiftLine, isGiftLine } from "@/lib/orderGift";
 import { pickedPayable, walletCreditLeft } from "@/lib/walletCredit";
+import { discountedTotal, hasAnyDiscount } from "@/lib/discountDisplay";
 import { CutoffChip } from "@/components/CampaignCutoff";
 
 type Member = {
@@ -58,6 +59,11 @@ type OpenOrder = {
     qty: number;
     unit_price: number;
     status: string;
+    // 品項折扣 —— 只給卡片上「折扣 → 折後」那一行顯示用（lib/discountDisplay）。
+    // 刻意改名讀進來：不能叫 discount_percent / discount_amount，否則 walletCreditOf 裡的
+    // pickedPayable(order.items) 會開始讀到它，儲值金可抵額度就跟著變了。
+    line_discount_percent?: number | null;
+    line_discount_amount?: number | null;
     // 贈品標記（20260819000000）：品項自己標的 + 開團層級的，判定走 lib/orderGift
     is_gift: boolean | null;
     gift_reason: string | null;
@@ -352,7 +358,7 @@ function PickupPageContent() {
           `id, order_no, status, pickup_deadline, pickup_store_id, discount_amount, discount_percent, wallet_paid_amount, payment_status, ready_at, transferred_from_order_id, last_notify_pickup_at, notify_pickup_count, member_id,
            campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date),
            store:stores!customer_orders_pickup_store_id_fkey(id, name, store_short_code),
-           items:customer_order_items(id, sku_id, qty, unit_price, status, ${GIFT_ITEM_SELECT}, sku:skus(variant_name, product_name, product:products(images)))`,
+           items:customer_order_items(id, sku_id, qty, unit_price, status, line_discount_percent:discount_percent, line_discount_amount:discount_amount, ${GIFT_ITEM_SELECT}, sku:skus(variant_name, product_name, product:products(images)))`,
         )
         .in("member_id", list.map((m) => m.id))
         // OFF 抵減單（order_kind='offset'）是純帳務單：整張都是負數行、$0。
@@ -632,6 +638,7 @@ function PickupPageContent() {
                 <span className="ml-2 text-amber-600 dark:text-amber-400">⚠️ 無取貨紀錄可補印（取貨已撤銷？）</span>
               )}
             </div>
+            <DiscountNote order={o} items={items} qtyOf={(it) => Number(it.qty)} shown={amount} />
           </div>
         </div>
         <div className="flex flex-wrap gap-2 sm:shrink-0">
@@ -1521,6 +1528,7 @@ function PickupPageContent() {
                                   </span>
                                 )}
                               </div>
+                              <DiscountNote order={o} items={active} qtyOf={remainingQty} shown={totalAmt} />
                             </div>
                             </div>
                             <div className="flex flex-wrap gap-2 sm:shrink-0">
@@ -1864,5 +1872,34 @@ function OrderThumb({ order }: { order: OpenOrder }) {
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img src={firstImg} alt="" className="h-12 w-12 shrink-0 rounded-md object-cover" />
+  );
+}
+
+// 卡片原本的金額沒算品項折扣（例 20 × $259 打 5%：卡片 $5180、收據應收 $4921）。
+// 這裡只「多標一行」折後金額（與取貨收據同一式，lib/discountDisplay），卡片原本的數字不動；
+// 沒設折扣、或折後跟原本顯示的一樣，就什麼都不畫。
+// qtyOf：這次計價的數量（已取卡片＝it.qty；未取卡片＝扣掉未取退貨後的量）。
+function DiscountNote({ order, items, qtyOf, shown }: {
+  order: OpenOrder;
+  items: OpenOrder["items"];
+  qtyOf: (it: OpenOrder["items"][number]) => number;
+  shown: number;
+}) {
+  const lines = items.map((it) => ({
+    qty: it.qty,
+    unit_price: it.unit_price,
+    discount_percent: it.line_discount_percent,
+    discount_amount: it.line_discount_amount,
+    billQty: qtyOf(it),
+  }));
+  const d = discountedTotal(order, lines);
+  if (!hasAnyDiscount(order, lines) || !(d.discount > 0) || d.net === shown) return null;
+  return (
+    <div
+      className="mt-0.5 text-[10px] text-red-600 dark:text-red-400"
+      title={`小計 $${d.gross} − 折扣 $${d.discount}（品項折扣＋整單折扣，與取貨收據同算法）＝ 折後 $${d.net}`}
+    >
+      折扣 −${d.discount} → 折後 ${d.net}
+    </div>
   );
 }
