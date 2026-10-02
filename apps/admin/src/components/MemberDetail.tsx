@@ -12,6 +12,7 @@ import { Modal } from "@/components/Modal";
 import { OrderDetail } from "@/components/OrderDetail";
 import { MemberOrdersAppView, outstandingTotals, useMemberAppOrders } from "@/components/MemberOrdersAppView";
 import { orderStatusLabel, orderCountsInTotals, orderItemCountsInTotals } from "@/lib/orderStatus";
+import { discountedTotal, hasAnyDiscount } from "@/lib/discountDisplay";
 import { translateRpcError } from "@/lib/rpcError";
 import { canAdjustWallet, canUnmergeMember, isAdmin, useMyStores, useRole } from "@/lib/role";
 import { walletLedgerTypeLabel, walletPaymentMethodLabel } from "@/lib/walletLedger";
@@ -129,7 +130,10 @@ type MemberOrder = {
   pickup_store_id: number | null;
   created_at: string;
   campaign: { name: string } | { name: string }[] | null;
-  customer_order_items: { qty: number; unit_price: number; status: string | null }[];
+  // 折扣欄位只給金額欄下面那行「折扣 → 折後」顯示用（lib/discountDisplay），不進任何小計
+  discount_percent?: number | null;
+  discount_amount?: number | null;
+  customer_order_items: { qty: number; unit_price: number; status: string | null; discount_percent?: number | null; discount_amount?: number | null }[];
 };
 
 // 與 CampaignOrdersPanel 的 STATUS_BADGE 同款配色（+ partially_completed）
@@ -395,7 +399,7 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
           .is("reverted_at", null)
           .order("created_at", { ascending: false }),
         sb.from("customer_orders")
-          .select("id, order_no, status, order_kind, pickup_store_id, created_at, campaign:group_buy_campaigns(name), customer_order_items(qty, unit_price, status)")
+          .select("id, order_no, status, order_kind, pickup_store_id, created_at, discount_percent, discount_amount, campaign:group_buy_campaigns(name), customer_order_items(qty, unit_price, status, discount_percent, discount_amount)")
           .eq("member_id", memberId)
           .order("created_at", { ascending: false }),
       ]);
@@ -941,6 +945,10 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
                       const amt = items.reduce((s, i) => s + Number(i.qty || 0) * Number(i.unit_price || 0), 0);
                       const isOffset = o.order_kind === "offset";
                       const isCancelled = !orderCountsInTotals(o.status);
+                      // 金額欄只算「數量 × 單價」；有折扣的單在下面多標一行折後金額（與取貨收據同一式），
+                      // amt 本身與表尾小計都不動。抵減單（負數行）不標。
+                      const disc = discountedTotal(o, items);
+                      const showDisc = !isOffset && hasAnyDiscount(o, items) && disc.discount > 0 && disc.net !== amt;
                       return (
                         <tr
                           key={o.id}
@@ -969,6 +977,14 @@ export function MemberDetail({ memberId, onDeleted }: { memberId: number; onDele
                           </Td>
                           <Td className={`text-right font-mono tabular-nums ${isOffset ? "text-red-700 dark:text-red-300" : ""}`}>
                             {isOffset ? `−$${Math.abs(amt).toLocaleString()}` : `$${amt.toLocaleString()}`}
+                            {showDisc && (
+                              <div
+                                className="whitespace-nowrap text-[10px] text-red-600 dark:text-red-400"
+                                title={`小計 $${disc.gross.toLocaleString()} − 折扣 $${disc.discount.toLocaleString()}（品項折扣＋整單折扣，與取貨收據同算法）＝ 折後 $${disc.net.toLocaleString()}`}
+                              >
+                                折扣 −${disc.discount.toLocaleString()} → 折後 ${disc.net.toLocaleString()}
+                              </div>
+                            )}
                           </Td>
                         </tr>
                       );
