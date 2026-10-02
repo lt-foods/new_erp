@@ -1,5 +1,7 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
+import { IMMUTABLE_CACHE_CONTROL, prepareProductImage } from "@/lib/imageEncode";
 import { useMemo, useState, type ChangeEvent } from "react";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
@@ -34,11 +36,12 @@ export function ProductImagesField({ value, onChange }: Props) {
 
       const uploaded: string[] = [];
       for (const file of Array.from(files)) {
-        const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
+        // 上傳前先壓到 1600px JPEG（見 lib/imageEncode.ts）—— 原圖直傳是 2026-10-02 egress 爆量的根源之一
+        const { blob, ext, contentType } = await prepareProductImage(file);
         const path = `${tenantId}/${crypto.randomUUID()}.${ext}`;
         const { error: upErr } = await sb.storage
           .from(BUCKET)
-          .upload(path, file, { cacheControl: "3600", upsert: false });
+          .upload(path, blob, { cacheControl: IMMUTABLE_CACHE_CONTROL, contentType, upsert: false });
         if (upErr) throw upErr;
         uploaded.push(path);
       }
@@ -80,7 +83,7 @@ export function ProductImagesField({ value, onChange }: Props) {
             className="group relative h-24 w-24 overflow-hidden rounded-md border border-zinc-300 bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800"
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={url} alt="" className="h-full w-full object-cover" />
+            <img src={thumb(url, 240) ?? undefined} alt="" loading="lazy" className="h-full w-full object-cover" />
             {i === 0 && (
               <span className="absolute top-1 left-1 rounded bg-black/60 px-1 text-[10px] font-medium text-white">
                 封面

@@ -1,5 +1,6 @@
 "use client";
 
+import { encodeJpeg } from "@/lib/imageEncode";
 // 對單一會員經 LINE 官方帳號發訊息（文字 + 截圖）。
 // 後端：admin-line-push edge function（函式內驗 staff JWT）。
 //
@@ -74,28 +75,7 @@ async function callFn(body: Record<string, unknown>) {
   return { status: resp.status, result };
 }
 
-/** canvas 轉 JPEG：縮到 maxDim 內、鋪白底（透明截圖）、去 EXIF */
-async function encodeJpeg(file: File, maxDim: number, quality: number): Promise<Blob> {
-  const bmp = await createImageBitmap(file);
-  try {
-    const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
-    const w = Math.max(1, Math.round(bmp.width * scale));
-    const h = Math.max(1, Math.round(bmp.height * scale));
-    const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("無法建立 canvas");
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, w, h);
-    ctx.drawImage(bmp, 0, 0, w, h);
-    const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/jpeg", quality));
-    if (!blob) throw new Error("圖片轉檔失敗");
-    return blob;
-  } finally {
-    bmp.close();
-  }
-}
+// encodeJpeg 搬到 lib/imageEncode.ts 與商品圖上傳共用
 
 export function LineMessageModal({
   open, onClose, member, tenantId, homeStoreId = null, storeName = null,

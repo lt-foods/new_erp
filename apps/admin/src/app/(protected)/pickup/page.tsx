@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
@@ -1871,7 +1872,7 @@ function OrderThumb({ order }: { order: OpenOrder }) {
   }
   return (
     // eslint-disable-next-line @next/next/no-img-element
-    <img src={firstImg} alt="" className="h-12 w-12 shrink-0 rounded-md object-cover" />
+    <img src={thumb(firstImg, 120) ?? undefined} alt="" loading="lazy" decoding="async" className="h-12 w-12 shrink-0 rounded-md object-cover" />
   );
 }
 

@@ -1,5 +1,6 @@
 // 開團商品縮圖（列表 / 加單頁共用）。url 由 lib/campaignCover.campaignCoverUrl 解析；
 // 無圖時顯示品牌色購物袋佔位框。固定 64px（h-16 w-16）。
+import { thumb } from "@/lib/imageUrl";
 
 export function CampaignThumb({ url, name }: { url: string | null; name: string }) {
   if (!url) {
@@ -15,8 +16,9 @@ export function CampaignThumb({ url, name }: { url: string | null; name: string 
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={url}
+      src={thumb(url, 160) ?? undefined}
       alt={name}
+      decoding="async"
       loading="lazy"
       className="h-16 w-16 rounded-md border border-zinc-200 object-cover dark:border-zinc-800"
     />

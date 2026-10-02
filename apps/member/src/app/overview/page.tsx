@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { consumeFragmentToSession, getSession, loginPath } from "@/lib/session";
@@ -79,7 +80,7 @@ export default function OverviewPage() {
             {data.store.banner_url ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={data.store.banner_url}
+                src={thumb(data.store.banner_url, 1080) ?? undefined}
                 alt=""
                 className="h-44 w-full rounded-2xl object-cover"
               />

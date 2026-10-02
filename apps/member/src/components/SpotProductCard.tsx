@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 import Link from "next/link";
 import ViewCount from "./ViewCount";
 
@@ -86,8 +87,10 @@ export default function SpotProductCard({ item }: { item: SpotProduct }) {
         {item.image_url ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={item.image_url}
+            src={thumb(item.image_url, 480) ?? undefined}
             alt=""
+            loading="lazy"
+            decoding="async"
             className="absolute inset-0 h-full w-full object-cover"
           />
         ) : (

@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -217,7 +218,7 @@ export default function MePage() {
             <div className="relative flex-shrink-0">
               {avatarSrc ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={avatarSrc} alt="" className="h-16 w-16 rounded-full object-cover" />
+                <img src={thumb(avatarSrc, 160) ?? undefined} alt="" className="h-16 w-16 rounded-full object-cover" />
               ) : (
                 <div className="flex h-16 w-16 items-center justify-center rounded-full bg-[#7676801a] text-2xl text-[var(--secondary-label)]">
                   {displayName[0]}
@@ -375,7 +376,7 @@ export default function MePage() {
               {overview.store.banner_url && (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={overview.store.banner_url}
+                  src={thumb(overview.store.banner_url, 1080) ?? undefined}
                   alt=""
                   className="h-36 w-full object-cover"
                 />

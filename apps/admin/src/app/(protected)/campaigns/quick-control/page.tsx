@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
@@ -1185,7 +1186,7 @@ export default function QuickCampaignControlPage() {
                           {productImageUrl(product.images) ? (
                             // eslint-disable-next-line @next/next/no-img-element
                             <img
-                              src={productImageUrl(product.images) ?? ""}
+                              src={thumb(productImageUrl(product.images), 160) ?? ""}
                               alt={product.name}
                               className="h-14 w-14 rounded-md border border-zinc-200 object-cover dark:border-zinc-800"
                             />
@@ -1221,7 +1222,7 @@ export default function QuickCampaignControlPage() {
                       {productImageUrl(selectedProduct.images) ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
-                          src={productImageUrl(selectedProduct.images) ?? ""}
+                          src={thumb(productImageUrl(selectedProduct.images), 160) ?? ""}
                           alt={selectedProduct.name}
                           className="h-16 w-16 rounded-md border border-zinc-200 object-cover dark:border-zinc-800"
                         />

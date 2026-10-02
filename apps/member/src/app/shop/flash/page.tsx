@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { consumeFragmentToSession, getSession, loginPath } from "@/lib/session";
@@ -125,8 +126,10 @@ function FlashRow({ campaign }: { campaign: CampaignSummary }) {
         {campaign.cover_image_url ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={campaign.cover_image_url}
+            src={thumb(campaign.cover_image_url, 240) ?? undefined}
             alt=""
+            loading="lazy"
+            decoding="async"
             className="absolute inset-0 h-full w-full object-cover"
           />
         ) : (

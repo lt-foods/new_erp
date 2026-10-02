@@ -1,3 +1,4 @@
+import { thumb } from "@/lib/imageUrl";
 /**
  * 品項縮圖（商品主圖，沒有就畫購物袋 placeholder）。
  *
@@ -19,9 +20,10 @@ export default function SkuThumb({
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
-        src={url}
+        src={thumb(url, 240) ?? undefined}
         alt=""
         loading="lazy"
+        decoding="async"
         className={`${className} shrink-0 rounded-xl bg-[var(--brand-soft)]/40 object-cover ${
           muted ? "opacity-45 grayscale" : ""
         }`}

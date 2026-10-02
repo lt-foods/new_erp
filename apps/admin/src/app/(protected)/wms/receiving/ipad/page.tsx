@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 // 📦 樓下收貨（iPad 專用頁）—— 搜尋驅動 + 批次收貨
 //
 // 為什麼要有這一頁：收貨原本只能辦公室用電腦按，樓下拿 iPad 做不了
@@ -1959,7 +1960,7 @@ function ItemCard({
         {row.image_url ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={row.image_url}
+            src={thumb(row.image_url, 240) ?? undefined}
             alt={rowTitle(row)}
             loading="lazy"
             onClick={onToggle}

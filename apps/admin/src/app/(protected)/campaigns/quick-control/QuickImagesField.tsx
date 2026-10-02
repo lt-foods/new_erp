@@ -1,5 +1,7 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
+import { IMMUTABLE_CACHE_CONTROL, prepareProductImage } from "@/lib/imageEncode";
 // 手機團控專用的商品圖上傳。存法照 components/ProductImagesField.tsx（products bucket、
 // `${tenantId}/${uuid}.${ext}`、回傳 Storage 路徑陣列），差在：
 // 只收 JPEG／PNG（LINE 記事本發文只帶得上這兩種）、往前／刪除／往後常駐顯示且點擊區 ≥44px、
@@ -75,11 +77,13 @@ export function QuickImagesField({ value, onChange, onUploadingChange, disabled 
       if (!tenantId) throw new Error("JWT 缺 tenant_id claim、無法上傳");
 
       const uploaded: string[] = [];
-      for (const { file, ext } of picked) {
+      for (const { file } of picked) {
+        // 上傳前先壓到 1600px JPEG（見 lib/imageEncode.ts）—— 原圖直傳是 2026-10-02 egress 爆量的根源之一
+        const { blob, ext, contentType } = await prepareProductImage(file);
         const path = `${tenantId}/${crypto.randomUUID()}.${ext}`;
         const { error: upErr } = await sb.storage
           .from(BUCKET)
-          .upload(path, file, { cacheControl: "3600", upsert: false });
+          .upload(path, blob, { cacheControl: IMMUTABLE_CACHE_CONTROL, contentType, upsert: false });
         if (upErr) throw upErr;
         uploaded.push(path);
       }
@@ -113,7 +117,7 @@ export function QuickImagesField({ value, onChange, onUploadingChange, disabled 
           <div key={value[i]} className="w-36">
             <div className="relative h-36 w-36 overflow-hidden rounded-md border border-zinc-300 bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={url} alt="" className="h-full w-full object-cover" />
+              <img src={thumb(url, 240) ?? undefined} alt="" loading="lazy" className="h-full w-full object-cover" />
               {i === 0 && (
                 <span className="absolute top-1 left-1 rounded bg-black/60 px-1 text-[10px] font-medium text-white">
                   第一張

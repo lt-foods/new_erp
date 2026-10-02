@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 import { useEffect, useMemo, useState } from "react";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
@@ -319,7 +320,7 @@ export default function FbBulkPublishModal({ open, campaignIds, onClose, onCompl
                       {c.imageUrls.slice(0, 8).map((url) => (
                         <div key={url} className="h-12 w-12 overflow-hidden rounded border border-zinc-200 dark:border-zinc-700">
                           {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img src={url} alt="" className="h-full w-full object-cover" />
+                          <img src={thumb(url, 240) ?? undefined} alt="" loading="lazy" className="h-full w-full object-cover" />
                         </div>
                       ))}
                       {c.imageUrls.length > 8 && (

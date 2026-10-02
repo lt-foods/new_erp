@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 import Link from "next/link";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -2493,8 +2494,10 @@ function CoverThumb({ src, alt }: { src: string | null; alt: string }) {
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={src}
+      src={thumb(src, 120) ?? undefined}
       alt={alt}
+      loading="lazy"
+      decoding="async"
       className="h-10 w-10 flex-shrink-0 rounded object-cover"
       onError={(e) => {
         (e.currentTarget as HTMLImageElement).style.display = "none";
