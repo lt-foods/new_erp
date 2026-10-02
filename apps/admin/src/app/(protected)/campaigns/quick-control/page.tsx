@@ -1594,7 +1594,7 @@ export default function QuickCampaignControlPage() {
                 >
                   <div className="flex gap-3">
                     <CampaignThumb
-                      url={campaignCoverUrl(row.cover_image_url, row.campaign_items)}
+                      url={row.status === "open" ? campaignCoverUrl(row.cover_image_url, row.campaign_items) : null}
                       name={row.name}
                     />
                     <div className="min-w-0 flex-1">

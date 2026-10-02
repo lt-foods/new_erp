@@ -1198,7 +1198,7 @@ export default function CampaignsListPage() {
                 className="mt-1 cursor-pointer"
               />
               {addOrderSlot(r)}
-              <CampaignThumb url={campaignCoverUrl(r.cover_image_url, r.campaign_items)} name={r.name} />
+              <CampaignThumb url={r.status === "open" ? campaignCoverUrl(r.cover_image_url, r.campaign_items) : null} name={r.name} />
               <div className="min-w-0 flex-1">
                 <div className="break-words text-base font-bold text-zinc-900 dark:text-zinc-100">{r.name}</div>
                 <div className="mt-1 flex flex-wrap items-center gap-1.5">
@@ -1291,7 +1291,7 @@ export default function CampaignsListPage() {
                   </div>
                 </Td>
                 <Td className="w-20">
-                  <CampaignThumb url={campaignCoverUrl(r.cover_image_url, r.campaign_items)} name={r.name} />
+                  <CampaignThumb url={r.status === "open" ? campaignCoverUrl(r.cover_image_url, r.campaign_items) : null} name={r.name} />
                 </Td>
                 <Td className="min-w-[14rem]"><span>{r.name}</span> <PiaopiaoBadge salesChannel={r.sales_channel} /></Td>
                 <Td className="whitespace-nowrap"><StatusBadge s={r.status} /></Td>
