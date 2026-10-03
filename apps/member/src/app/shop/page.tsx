@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -685,8 +686,10 @@ function PiaoCard({ item }: { item: PiaoCampaign }) {
         {item.cover_image_url ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={item.cover_image_url}
+            src={thumb(item.cover_image_url, 800) ?? undefined}
             alt=""
+            loading="lazy"
+            decoding="async"
             className="absolute inset-0 h-full w-full object-cover"
           />
         ) : (
@@ -771,8 +774,9 @@ function StoreCampaignStackBanner({ campaigns }: { campaigns: CampaignSummary[] 
             // eslint-disable-next-line @next/next/no-img-element
             <img
               key={c.id}
-              src={c.cover_image_url}
+              src={thumb(c.cover_image_url, 800) ?? undefined}
               alt=""
+              decoding="async"
               className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-700 ${
                 i === safeIdx ? "opacity-55" : "opacity-0"
               }`}
@@ -841,8 +845,9 @@ function StoreCampaignItemBanner({ campaign }: { campaign: CampaignSummary }) {
         {campaign.cover_image_url && (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={campaign.cover_image_url}
+            src={thumb(campaign.cover_image_url, 800) ?? undefined}
             alt=""
+            decoding="async"
             className="absolute inset-0 h-full w-full object-cover opacity-55"
           />
         )}
@@ -904,8 +909,9 @@ function FoodTrainStackBanner({ campaigns }: { campaigns: CampaignSummary[] }) {
             // eslint-disable-next-line @next/next/no-img-element
             <img
               key={c.id}
-              src={c.cover_image_url}
+              src={thumb(c.cover_image_url, 800) ?? undefined}
               alt=""
+              decoding="async"
               className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-700 ${
                 i === safeIdx ? "opacity-55" : "opacity-0"
               }`}
@@ -974,8 +980,9 @@ function FlashGroupBanner({ hero }: { hero: CampaignSummary }) {
         {hero.cover_image_url && (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={hero.cover_image_url}
+            src={thumb(hero.cover_image_url, 800) ?? undefined}
             alt=""
+            decoding="async"
             className="absolute inset-0 h-full w-full object-cover opacity-35 mix-blend-overlay"
           />
         )}
@@ -1010,8 +1017,9 @@ function FoodTrainItemBanner({ campaign }: { campaign: CampaignSummary }) {
         {campaign.cover_image_url && (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={campaign.cover_image_url}
+            src={thumb(campaign.cover_image_url, 800) ?? undefined}
             alt=""
+            decoding="async"
             className="absolute inset-0 h-full w-full object-cover opacity-55"
           />
         )}
@@ -1056,8 +1064,9 @@ function FlashItemBanner({ campaign }: { campaign: CampaignSummary }) {
         {campaign.cover_image_url && (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={campaign.cover_image_url}
+            src={thumb(campaign.cover_image_url, 800) ?? undefined}
             alt=""
+            decoding="async"
             className="absolute inset-0 h-full w-full object-cover opacity-55"
           />
         )}

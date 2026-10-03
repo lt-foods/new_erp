@@ -629,10 +629,20 @@ async function listMyOrders(sb: any, tenantId: string, _storeId: number, memberI
   // 多一次查詢就好，不要每張單各查一次。
   const pickupsByOrder = await fetchPickupEventsByOrder(sb, rows.map((o: any) => Number(o.id)));
 
+  // 團的 status 一起帶回去：會員端訂單卡只對「上架中（open）」的團載圖、其餘給空框
+  // （老闆 2026-10-03：結單的團不用再花流量建縮圖）。一次 IN 查完，不要每張單各查。
+  const campaignIds = Array.from(new Set(rows.map((o: any) => o.campaign_id).filter((v: any) => v != null).map(Number)));
+  const campaignStatus = new Map<number, string>();
+  if (campaignIds.length > 0) {
+    const { data: cs } = await sb.from("group_buy_campaigns").select("id, status").in("id", campaignIds);
+    for (const c of cs ?? []) campaignStatus.set(Number(c.id), String(c.status ?? ""));
+  }
+
   // 把 items.image_url + campaign_cover_url 轉成 storage public URL
   const supabaseUrl = requireEnv("SUPABASE_URL");
   const orders = rows.map((o: any) => ({
     ...o,
+    campaign_status: o.campaign_id != null ? (campaignStatus.get(Number(o.campaign_id)) ?? null) : null,
     campaign_cover_url: toPublicUrl(supabaseUrl, "products", o.campaign_cover_url),
     items: (o.items ?? []).map((it: any) => ({
       ...it,

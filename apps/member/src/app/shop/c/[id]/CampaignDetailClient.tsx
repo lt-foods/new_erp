@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useParams, useRouter } from "next/navigation";
@@ -781,8 +782,9 @@ function HeroCarousel({ images }: { images: string[] }) {
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={url}
+              src={thumb(url, 1080) ?? undefined}
               alt=""
+              decoding="async"
               onClick={() => setZoomSrc(url)}
               className="absolute inset-0 h-full w-full cursor-zoom-in object-cover"
             />
@@ -819,7 +821,7 @@ function HeroCarousel({ images }: { images: string[] }) {
           {zoomSrc && (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              src={zoomSrc}
+              src={thumb(zoomSrc, 1600) ?? undefined}
               alt=""
               onClick={(e) => e.stopPropagation()}
               className="max-h-[90vh] max-w-[94vw] object-contain"

@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useParams, useRouter } from "next/navigation";
@@ -380,8 +381,9 @@ function ImageStrip({ images }: { images: string[] }) {
           // eslint-disable-next-line @next/next/no-img-element
           <img
             key={src}
-            src={src}
+            src={thumb(src, 1080) ?? undefined}
             alt=""
+            decoding="async"
             className="h-full w-full shrink-0 snap-center object-cover"
           />
         ))}

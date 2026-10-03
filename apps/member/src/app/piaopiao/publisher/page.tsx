@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 import { useEffect, useMemo, useState } from "react";
 import { campaignShareUrl, sharePage } from "@/lib/shareLink";
 import { getPiaopiaoAuth, piaopiaoLoginEmail } from "@/lib/piaopiaoAuth";
@@ -288,7 +289,7 @@ function ProductImagesField({ images, busy, onChange, onMove, onRemove }: { imag
     <p className="mt-1 text-xs text-zinc-500">{busy ? "正在壓縮圖片，請不要關閉頁面…" : `每樣商品最多 ${MAX_IMAGES_PER_PRODUCT} 張；手機原圖會先自動壓縮再上傳。`}</p>
     {images.length > 0 && <div className="mt-3 space-y-2">{previews.map((item, imageIndex) => <div key={`${item.file.name}-${imageIndex}`} className="flex items-center gap-3 rounded-2xl bg-zinc-50 p-2">
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={item.url} alt="" className="h-14 w-14 rounded-xl object-cover" />
+      <img src={thumb(item.url, 160) ?? undefined} alt="" loading="lazy" className="h-14 w-14 rounded-xl object-cover" />
       <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{imageIndex === 0 ? "封面／分享圖" : `第 ${imageIndex + 1} 張`}</p><p className="truncate text-xs text-zinc-500">{item.file.name}</p></div>
       <div className="flex flex-wrap justify-end gap-1"><button type="button" disabled={imageIndex === 0} onClick={() => onMove(imageIndex, -1)} className="min-h-10 rounded-lg border px-2 text-sm disabled:opacity-30">上移</button><button type="button" disabled={imageIndex === images.length - 1} onClick={() => onMove(imageIndex, 1)} className="min-h-10 rounded-lg border px-2 text-sm disabled:opacity-30">下移</button><button type="button" onClick={() => onRemove(imageIndex)} className="min-h-10 rounded-lg border border-red-200 px-2 text-sm font-semibold text-red-600">刪除</button></div>
     </div>)}</div>}

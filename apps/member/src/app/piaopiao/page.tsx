@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import PageShell from "@/components/PageShell";
@@ -29,7 +30,7 @@ export default function PiaopiaoShopPage() {
           {items.map((item) => (
             <Link key={item.id} href={`/piaopiao/c/${item.id}`} className="card overflow-hidden active:scale-[0.99]">
               <div className="aspect-square bg-[var(--brand-soft)]">
-                {item.cover_image_url ? <img src={item.cover_image_url} alt="" className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-4xl">🫧</div>}
+                {item.cover_image_url ? <img src={thumb(item.cover_image_url, 480) ?? undefined} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-4xl">🫧</div>}
               </div>
               <div className="space-y-1 p-3">
                 <p className="line-clamp-2 min-h-10 text-[15px] font-semibold leading-5">{item.name}</p>

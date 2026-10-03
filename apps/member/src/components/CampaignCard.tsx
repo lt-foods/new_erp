@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 import Link from "next/link";
 import Countdown from "./Countdown";
 import OrderedCount from "./OrderedCount";
@@ -123,8 +124,10 @@ export default function CampaignCard({
           {campaign.cover_image_url ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              src={campaign.cover_image_url}
+              src={thumb(campaign.cover_image_url, 800) ?? undefined}
               alt=""
+              loading="lazy"
+              decoding="async"
               className="absolute inset-0 h-full w-full object-cover"
             />
           ) : (
@@ -195,8 +198,10 @@ export default function CampaignCard({
         {campaign.cover_image_url ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={campaign.cover_image_url}
+            src={thumb(campaign.cover_image_url, 800) ?? undefined}
             alt=""
+            loading="lazy"
+            decoding="async"
             className="absolute inset-0 h-full w-full object-cover"
           />
         ) : (

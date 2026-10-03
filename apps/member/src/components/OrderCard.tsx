@@ -79,6 +79,8 @@ export type OrderRow = {
   campaign_name: string | null;
   campaign_cover_url: string | null;
   campaign_cutoff_date: string | null;
+  /** 團的 status（liff-api list_my_orders 帶回）；只有 "open" 的團才載圖 */
+  campaign_status?: string | null;
   store_name: string | null;
   settlement_no: string;
   /** 這張單的取貨紀錄（liff-api list_my_orders @2026-08-18）；舊版沒有這欄 */
@@ -326,10 +328,11 @@ export default function OrderCard({
         {order.items.map((it, idx) => {
           const row = (
             <>
-              {/* 商品沒自己的圖時退到開團封面 —— 團購品項多半只有封面，
+              {/* 只有上架中（open）的團才載圖，結單的團一律空框（老闆 2026-10-03：不花流量建縮圖）。
+                  商品沒自己的圖時退到開團封面 —— 團購品項多半只有封面，
                   不退一層的話整張單會是一排購物袋 placeholder。 */}
               <SkuThumb
-                url={it.image_url ?? order.campaign_cover_url}
+                url={order.campaign_status === "open" ? (it.image_url ?? order.campaign_cover_url) : null}
                 muted={["cancelled", "expired"].includes(it.status)}
               />
               <div className="min-w-0 flex-1">

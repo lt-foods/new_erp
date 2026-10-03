@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 import Link from "next/link";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -43,7 +44,7 @@ type Row = {
   gift_lines: number | null;
 };
 
-type Campaign = { id: number; campaign_no: string; name: string; cover_image_url: string | null; start_at: string | null };
+type Campaign = { id: number; campaign_no: string; name: string; cover_image_url: string | null; start_at: string | null; status?: string | null };
 type Store = { id: number; code: string; name: string };
 type Member = { id: number; name: string | null; phone: string | null; member_no: string; avatar_url: string | null };
 
@@ -575,7 +576,7 @@ function OrdersListContent() {
         const kw = campaignSearch.trim();
         let q = sb
           .from("group_buy_campaigns")
-          .select("id, campaign_no, name, cover_image_url, start_at")
+          .select("id, campaign_no, name, cover_image_url, start_at, status")
           .order("start_at", { ascending: false, nullsFirst: false });
         if (kw) {
           const safe = kw.replace(/[%,()]/g, " ");
@@ -606,7 +607,7 @@ function OrdersListContent() {
       const sb = getSupabase();
       const { data } = await sb
         .from("group_buy_campaigns")
-        .select("id, campaign_no, name, cover_image_url, start_at")
+        .select("id, campaign_no, name, cover_image_url, start_at, status")
         .in("id", Array.from(ids));
       mergeCampaigns((data as Campaign[]) ?? []);
     })();
@@ -1601,7 +1602,7 @@ function OrdersListContent() {
               >
                 {c ? (
                   <div className="flex items-start gap-2">
-                    <CoverThumb src={c.cover_image_url} alt={c.name} />
+                    <CoverThumb src={c.status === "open" ? c.cover_image_url : null} alt={c.name} />
                     <div className="min-w-0 flex-1 space-y-0.5">
                       <CampaignOrSource campaignNo={c.campaign_no} campaignName={c.name} orderNo={r.order_no} />
                       {(sum?.items ?? []).map((it, idx) => (
@@ -1730,7 +1731,7 @@ function OrdersListContent() {
                     >
                       {c ? (
                         <div className="flex items-start gap-2">
-                          <CoverThumb src={c.cover_image_url} alt={c.name} />
+                          <CoverThumb src={c.status === "open" ? c.cover_image_url : null} alt={c.name} />
                           <div className="min-w-0 flex-1 space-y-0.5">
                             <CampaignOrSource campaignNo={c.campaign_no} campaignName={c.name} orderNo={r.order_no} />
                             {(itemSummary.get(r.id)?.items ?? []).map((it, idx) => (
@@ -2493,8 +2494,10 @@ function CoverThumb({ src, alt }: { src: string | null; alt: string }) {
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={src}
+      src={thumb(src, 120) ?? undefined}
       alt={alt}
+      loading="lazy"
+      decoding="async"
       className="h-10 w-10 flex-shrink-0 rounded object-cover"
       onError={(e) => {
         (e.currentTarget as HTMLImageElement).style.display = "none";

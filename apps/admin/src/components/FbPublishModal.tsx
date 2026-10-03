@@ -1,5 +1,6 @@
 "use client";
 
+import { thumb } from "@/lib/imageUrl";
 import { useEffect, useMemo, useState } from "react";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
@@ -275,7 +276,7 @@ export default function FbPublishModal({ open, campaignId, onClose }: Props) {
                       }`}
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={url} alt="" className="h-full w-full object-cover" />
+                      <img src={thumb(url, 240) ?? undefined} alt="" loading="lazy" className="h-full w-full object-cover" />
                       {selected && (
                         <span className="absolute right-1 top-1 rounded-full bg-blue-500 px-1.5 py-0.5 text-[10px] font-medium text-white">
                           ✓

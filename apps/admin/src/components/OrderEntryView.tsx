@@ -595,7 +595,7 @@ export function OrderEntryView({
         <div className="flex items-center gap-3">
           {campaign && (
             <CampaignThumb
-              url={campaignCoverUrl(campaign.cover_image_url, campaign.campaign_items)}
+              url={campaign.status === "open" ? campaignCoverUrl(campaign.cover_image_url, campaign.campaign_items) : null}
               name={campaign.name}
             />
           )}
