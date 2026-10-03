@@ -210,17 +210,6 @@ function fmtDate(iso: string | null | undefined): string {
 // 品項的「還沒取」集合 = rpc_record_pickup 的 v_active_remaining 同一套
 const ACTIVE_ITEM_STATUSES = ["pending", "reserved", "ready"];
 
-/**
- * 已結束的單（完成／取消／逾期／轉出）跟已死掉的品項不再載圖 —— 老闆 2026-10-02 交代：
- * 結單的團、下架的商品不用花流量，歷史單一律給 placeholder。
- */
-const DONE_ORDER = new Set(["completed", "cancelled", "expired", "transferred_out"]);
-const DEAD_ITEM = new Set(["cancelled", "expired"]);
-function showItemImage(order: OrderRow, it: OrderItem): boolean {
-  if (order.status && DONE_ORDER.has(order.status)) return false;
-  return !DEAD_ITEM.has(it.status);
-}
-
 export default function OrderCard({
   order,
   /**
@@ -340,7 +329,7 @@ export default function OrderCard({
               {/* 商品沒自己的圖時退到開團封面 —— 團購品項多半只有封面，
                   不退一層的話整張單會是一排購物袋 placeholder。 */}
               <SkuThumb
-                url={showItemImage(order, it) ? (it.image_url ?? order.campaign_cover_url) : null}
+                url={it.image_url ?? order.campaign_cover_url}
                 muted={["cancelled", "expired"].includes(it.status)}
               />
               <div className="min-w-0 flex-1">

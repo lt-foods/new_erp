@@ -52,7 +52,7 @@ type OpenOrder = {
   transferred_from_order_id: number | null; // 互助轉入單才有；用來判斷是否走「退回原店」
   last_notify_pickup_at: string | null;
   notify_pickup_count: number;
-  campaign: { id: number; campaign_no: string; name: string; cutoff_date: string | null } | null;
+  campaign: { id: number; campaign_no: string; name: string; cutoff_date: string | null; status?: string | null } | null;
   store: { id: number; name: string; store_short_code: string | null } | null;
   items: {
     id: number;
@@ -357,7 +357,7 @@ function PickupPageContent() {
         .from("customer_orders")
         .select(
           `id, order_no, status, pickup_deadline, pickup_store_id, discount_amount, discount_percent, wallet_paid_amount, payment_status, ready_at, transferred_from_order_id, last_notify_pickup_at, notify_pickup_count, member_id,
-           campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date),
+           campaign:group_buy_campaigns(id, campaign_no, name, cutoff_date, status),
            store:stores!customer_orders_pickup_store_id_fkey(id, name, store_short_code),
            items:customer_order_items(id, sku_id, qty, unit_price, status, line_discount_percent:discount_percent, line_discount_amount:discount_amount, ${GIFT_ITEM_SELECT}, sku:skus(variant_name, product_name, product:products(images)))`,
         )
@@ -1862,7 +1862,8 @@ function OrderThumb({ order }: { order: OpenOrder }) {
     .find((u): u is string => typeof u === "string" && !!u);
   // DB 存的是 storage 物件 key，需轉成 products bucket 的 public URL（已是完整 URL 則原樣使用）。
   // 原本直接把相對路徑塞進 <img src> 導致破圖（顯示 ?）。
-  const firstImg = publicProductUrl(rawImg);
+  // 後台只對「上架中」的團建縮圖快取（老闆 2026-10-02）；結單的團給 placeholder。
+  const firstImg = order.campaign?.status === "open" ? publicProductUrl(rawImg) : null;
   if (!firstImg) {
     return (
       <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md bg-zinc-200 text-xs text-zinc-500 dark:bg-zinc-800">
