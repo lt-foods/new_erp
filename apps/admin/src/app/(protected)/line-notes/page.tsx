@@ -40,6 +40,7 @@ type Community = {
   post_window_start: string; post_window_end: string;
   close_comment: string | null;
   remind_enabled: boolean; remind_time: string; remind_message: string | null;
+  cheer_on_app_order: boolean; cheer_template: string | null;
   share_from_community_id: number | null;
   last_read_at: string | null; last_error: string | null;
 };
@@ -403,6 +404,8 @@ type CommunityForm = {
   post_window_start: string; post_window_end: string;
   close_comment: string;
   remind_enabled: boolean; remind_time: string; remind_message: string;
+  // 商城下單播報：有人在 App 商城下單，到他的群那篇貼文底下留一句（20261003000000）
+  cheer_on_app_order: boolean; cheer_template: string;
   // 子群：跟著哪個母社群分享（不發文、不讀留言，只依自己的節奏把母社群那篇分享到本聊天室）
   share_from_community_id: number | "";
 };
@@ -414,8 +417,11 @@ const EMPTY_FORM: CommunityForm = {
   post_every_minutes: 120, post_every_pct: 20, post_window_start: "09:00", post_window_end: "21:00",
   close_comment: "",
   remind_enabled: true, remind_time: "08:00", remind_message: "",
+  cheer_on_app_order: true, cheer_template: "",
   share_from_community_id: "",
 };
+// 跟 line-note-worker 的 DEFAULT_CHEER_TEMPLATE 同一句（只拿來當 placeholder）
+const DEFAULT_CHEER_TEMPLATE = "🛒 {{name}} 剛剛在商城下單 {{items}} ✨\n目前已有 {{count}} 位好鄰居跟團 🔥 想要的也快留言 +1 喔～";
 
 // 開團自動發文的節奏（line_note_communities.post_mode，20260924040000）。
 // 開團時非「立刻」的社群只把貼文排成「排程中」，由 _line_note_tick 每分鐘依時段放行（一分鐘一篇）；
@@ -465,6 +471,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       post_window_start: c.post_window_start ?? "09:00", post_window_end: c.post_window_end ?? "21:00",
       close_comment: c.close_comment ?? "",
       remind_enabled: c.remind_enabled ?? true, remind_time: c.remind_time ?? "08:00", remind_message: c.remind_message ?? "",
+      cheer_on_app_order: c.cheer_on_app_order ?? true, cheer_template: c.cheer_template ?? "",
       share_from_community_id: c.share_from_community_id ?? "" });
   };
   // 子群模式：只有分享節奏＋結單提醒有意義，其他欄位藏起來
@@ -537,6 +544,10 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
         p_id: Number(cid), p_enabled: form.remind_enabled, p_time: form.remind_time.trim(), p_message: form.remind_message,
       });
       if (e4) failed.push(`${t.home_name || t.home_id}（結單提醒）：${translateRpcError(e4)}`);
+      const { error: e5 } = await sb.rpc("rpc_line_note_community_set_cheer", {
+        p_id: Number(cid), p_enabled: form.cheer_on_app_order, p_template: form.cheer_template,
+      });
+      if (e5) failed.push(`${t.home_name || t.home_id}（商城下單播報）：${translateRpcError(e5)}`);
     }
     setBusy(null);
     await reload();
@@ -839,6 +850,22 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
             {!isSub && <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.react_on_confirm} onChange={(e) => setForm({ ...form, react_on_confirm: e.target.checked })} /> 收到單後在客人留言上按 😄，讓他知道收到了
             </label>}
+            {!isSub && <div className="text-sm md:col-span-2">
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={form.cheer_on_app_order} onChange={(e) => setForm({ ...form, cheer_on_app_order: e.target.checked })} />
+                有人在商城下單時，到他的群這團的貼文底下留言播報（熱絡氣氛）
+              </label>
+              {form.cheer_on_app_order && (
+                <label className="mt-1 block">
+                  <span className="text-xs text-zinc-500">
+                    播報文字（留空用預設；可用 {"{{name}}"} 遮一半的名字、{"{{full_name}}"} 全名、{"{{items}}"} 品項代碼×數量、{"{{items_full}}"} 含品名、{"{{count}}"} 全團跟團人數、{"{{store_count}}"} 本店跟團人數、{"{{campaign}}"} 團名）。
+                    他的群＝這位會員留過言的社群，或是社群設定的店＝他的取貨店。文末會自動加「#商城下單」。
+                  </span>
+                  <textarea className={`${input} h-20 text-xs`} value={form.cheer_template} onChange={(e) => setForm({ ...form, cheer_template: e.target.value })}
+                    placeholder={DEFAULT_CHEER_TEMPLATE} />
+                </label>
+              )}
+            </div>}
             <div className="text-sm md:col-span-2">
               <label className="flex items-center gap-2">
                 <input type="checkbox" checked={form.remind_enabled} onChange={(e) => setForm({ ...form, remind_enabled: e.target.checked })} />
