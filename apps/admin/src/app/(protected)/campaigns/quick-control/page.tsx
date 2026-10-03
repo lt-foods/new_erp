@@ -15,6 +15,7 @@ import { useRole, isAdmin, type Role } from "@/lib/role";
 import {
   CAP_ITEMS_EMBED,
   CAP_ITEMS_FILTER_COLUMN,
+  closeCampaignWarning,
   customerUrlFor,
   mergeCampaignRows,
   newProductExtras,
@@ -268,6 +269,8 @@ export default function QuickCampaignControlPage() {
   const [busyId, setBusyId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** 重開／延長／關團失敗或要警告時，同一句也貼在那一團的卡片上（頁首那格可能已捲出畫面） */
+  const [rowMsg, setRowMsg] = useState<{ id: number; text: string } | null>(null);
   const [query, setQuery] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -545,6 +548,7 @@ export default function QuickCampaignControlPage() {
     setBusyId(row.id);
     setError(null);
     setNotice(null);
+    setRowMsg(null);
     try {
       const { data, error: rpcErr } = await getSupabase().rpc("rpc_quick_update_campaign_control", {
         p_campaign_id: row.id,
@@ -573,7 +577,9 @@ export default function QuickCampaignControlPage() {
       setDeltaDraft((cur) => ({ ...cur, [row.id]: "" }));
       setNotice(successText);
     } catch (e) {
-      setError(errorText(e));
+      const text = errorText(e);
+      setError(text);
+      setRowMsg({ id: row.id, text });
     } finally {
       setBusyId(null);
     }
@@ -585,18 +591,28 @@ export default function QuickCampaignControlPage() {
     setBusyId(row.id);
     setError(null);
     setNotice(null);
+    setRowMsg(null);
     try {
       const sb = getSupabase();
       const { data: userData } = await sb.auth.getUser();
-      const { error: rpcErr } = await sb.rpc("rpc_close_campaign", {
+      const { data, error: rpcErr } = await sb.rpc("rpc_close_campaign", {
         p_campaign_id: row.id,
         p_operator: userData.user?.id ?? null,
       });
       if (rpcErr) throw rpcErr;
       setRows((cur) => cur.map((r) => (r.id === row.id ? { ...r, status: "closed" } : r)));
-      setNotice(`${row.name} 已關團`);
+      // 併入／建請購失敗時資料庫照樣關團、只回 append_failed／create_failed，不能當成功
+      const warn = closeCampaignWarning(data, row.name);
+      if (warn) {
+        setError(warn);
+        setRowMsg({ id: row.id, text: warn });
+      } else {
+        setNotice(`${row.name} 已關團`);
+      }
     } catch (e) {
-      setError(errorText(e));
+      const text = errorText(e);
+      setError(text);
+      setRowMsg({ id: row.id, text });
     } finally {
       setBusyId(null);
     }
@@ -1662,7 +1678,7 @@ export default function QuickCampaignControlPage() {
                         type="datetime-local"
                         value={endInput}
                         onChange={(e) => setEndAtDraft((cur) => ({ ...cur, [row.id]: e.target.value }))}
-                        disabled={locked || !allowed}
+                        disabled={!allowed}
                         className="min-h-11 rounded-md border border-zinc-300 bg-white px-3 text-base outline-none focus:border-zinc-900 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
                       />
                     </label>
@@ -1695,6 +1711,11 @@ export default function QuickCampaignControlPage() {
                     {row.status === "closed" && (
                       <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
                         已關團的團若只延長時間，不會自動恢復下單；確認時間後請按「重開」。
+                      </div>
+                    )}
+                    {locked && (
+                      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-base text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                        已鎖定（已進請購單）：請購單還是草稿時可以重開，請先設定未來的收單時間再按「重開收單」；延長與加名額不能用。
                       </div>
                     )}
 
@@ -1747,23 +1768,26 @@ export default function QuickCampaignControlPage() {
                       ) : (
                         <SpinButton
                           type="button"
-                          disabled={locked || !allowed || busyId === row.id}
+                          disabled={!allowed || busyId === row.id}
                           onClick={() => {
                             const nextEndAt = futureIsoFromLocalInput(endInput);
                             if (!nextEndAt) {
-                              setError("請先設定未來的收單時間，再開團或重開。");
+                              const text = "請先設定未來的收單時間，再開團或重開。";
+                              setError(text);
                               setNotice(null);
+                              setRowMsg({ id: row.id, text });
                               return;
                             }
+                            // 已鎖定的團能不能重開由資料庫判斷（請購單全是草稿才放行），擋下時顯示它回的原因
                             quickUpdate(
                               row,
                               { status: "open", endAt: nextEndAt },
-                              row.status === "closed" ? `${row.name} 已重開收單` : `${row.name} 已開團`,
+                              row.status === "draft" ? `${row.name} 已開團` : `${row.name} 已重開收單`,
                             );
                           }}
                           className="min-h-12 rounded-md bg-emerald-600 text-base font-semibold text-white disabled:opacity-50"
                         >
-                          {row.status === "closed" ? "重開收單" : "開團"}
+                          {row.status === "draft" ? "開團" : "重開收單"}
                         </SpinButton>
                       )}
                       <Link
@@ -1778,6 +1802,14 @@ export default function QuickCampaignControlPage() {
                         補單
                       </Link>
                     </div>
+                    {rowMsg?.id === row.id && error === rowMsg.text && (
+                      <div
+                        role="alert"
+                        className="whitespace-pre-wrap rounded-md border border-red-200 bg-red-50 p-3 text-base text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
+                      >
+                        {rowMsg.text}
+                      </div>
+                    )}
                   </div>
                 </section>
               );
