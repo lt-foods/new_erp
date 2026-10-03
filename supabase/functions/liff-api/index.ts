@@ -1538,6 +1538,16 @@ async function placeMemberOrder(
     return json({ error: msg || "failed to create order" }, 400);
   }
   const placed = Array.isArray(placedRows) ? placedRows[0] : placedRows;
+  // 商城下單播報（20261003000000）：到這位會員的群那篇記事本貼文底下留一句熱絡氣氛。
+  // 這裡只排工作（line_note_jobs kind='cheer'），LINE 那段由 line-note-worker 下一分鐘跑；
+  // 排不進去也不影響下單，單已經建好了。
+  if (placed?.order_id) {
+    const { error: cheerErr } = await sb.rpc("rpc_line_note_enqueue_order_cheer", {
+      p_order_id: placed.order_id,
+      p_items: rpcItems,
+    });
+    if (cheerErr) console.warn("line note cheer enqueue failed:", cheerErr.message);
+  }
   return json({ ok: true, order_id: placed?.order_id, order_no: placed?.order_no });
 }
 

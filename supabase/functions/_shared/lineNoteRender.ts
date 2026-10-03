@@ -50,7 +50,7 @@ function bareText(s: string) {
 
 // 品項名在 DB 裡是「團名 (A) 空心菜200g」，直接印會變成「(A) 團名 (A) 空心菜200g」。
 // 去掉團名前綴和重複的代碼（「(A) 」「A. 」「A、」都算），只留真正的品名。
-function itemLabel(name: string, code: string, campaignName: string) {
+export function itemLabel(name: string, code: string, campaignName: string) {
   let t = String(name ?? "").trim();
   const cn = String(campaignName ?? "").trim();
   if (cn && t.startsWith(cn)) t = t.slice(cn.length).trim();
