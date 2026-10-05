@@ -125,8 +125,24 @@ async function clientFor(account: any) {
 }
 
 // ── 登入（後台按鈕直接呼叫） ────────────────────────────────────────────────
+// ⚠ 同一個帳號可能同時有兩趟登入在跑（連點兩下、兩個分頁；2026-10-05「小幫手99號」
+//   兩趟差 14 秒）。先掃完的那趟把帳號寫成 active，後到的那趟等到 deadline 才 timeout，
+//   原本會無條件把帳號蓋成 error ——「等太久沒掃 QR」—— 其實 token 好端端的，但排程只撿
+//   status='active' 的帳號，整組社群就這樣停擺。所以：
+//   1. 已經有一趟在等 QR（running 的 login job 還沒過 deadline）就不要再開第二趟；
+//   2. QR / PIN / timeout 的寫回一律只在帳號還是 pending_qr 時才寫，別去動別人剛登成功的結果。
 async function doLogin(accountId: number) {
   const account = await loadAccount(accountId);
+  if (account.status === "pending_qr") {
+    const since = new Date(Date.now() - LOGIN_DEADLINE_MS).toISOString();
+    const running = await rest(
+      `line_note_jobs?account_id=eq.${accountId}&kind=eq.login&status=eq.running&started_at=gte.${encodeURIComponent(since)}&select=id&limit=1`,
+    );
+    if (running?.[0]) {
+      log(`[login ${account.label}] 已有 job#${running[0].id} 在等 QR，不再開第二趟`);
+      return { ok: true, pending: true, job_id: running[0].id };
+    }
+  }
   await patch("line_note_accounts", `id=eq.${accountId}`, {
     status: "pending_qr", qr_image: null, qr_url: null, pin_code: null, last_error: null,
   });
@@ -140,11 +156,11 @@ async function doLogin(accountId: number) {
       async onQr(url) {
         let qr_image: string | null = null;
         try { qr_image = await QRCode.toDataURL(url, { width: 320, margin: 1 }); } catch (e) { log("qrcode 產圖失敗:", (e as any)?.message ?? e); }
-        await patch("line_note_accounts", `id=eq.${accountId}`, { status: "pending_qr", qr_url: url, qr_image, pin_code: null });
+        await patch("line_note_accounts", `id=eq.${accountId}&status=eq.pending_qr`, { qr_url: url, qr_image, pin_code: null });
         log(`[login ${account.label}] QR 已送到後台`);
       },
       async onPin(pin) {
-        await patch("line_note_accounts", `id=eq.${accountId}`, { pin_code: pin });
+        await patch("line_note_accounts", `id=eq.${accountId}&status=eq.pending_qr`, { pin_code: pin });
       },
     });
     const me = whoami(client);
@@ -165,7 +181,8 @@ async function doLogin(accountId: number) {
     return { ok: true, ...me, sync: synced };
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
-    await patch("line_note_accounts", `id=eq.${accountId}`, { status: "error", last_error: msg.slice(0, 1000), qr_image: null, qr_url: null, pin_code: null });
+    // 只在「還在等這趟的 QR」時才標 error；另一趟已經登成功（active）就不要蓋掉它
+    await patch("line_note_accounts", `id=eq.${accountId}&status=eq.pending_qr`, { status: "error", last_error: msg.slice(0, 1000), qr_image: null, qr_url: null, pin_code: null });
     if (job) await patch("line_note_jobs", `id=eq.${job.id}`, { status: "failed", error: msg.slice(0, 2000), finished_at: new Date().toISOString() });
     return { ok: false, error: msg };
   }
