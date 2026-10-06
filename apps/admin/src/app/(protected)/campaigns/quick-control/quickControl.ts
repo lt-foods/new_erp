@@ -200,3 +200,88 @@ export function closeCampaignWarning(data: unknown, name?: string): string | nul
   const who = name ? `「${name}」` : "";
   return `${who}已關團，但沒有併入請購單：${why}。請到請購單頁補請購。`;
 }
+
+/**
+ * 開新團的「開團時間」怎麼處理（比照商品頁建立開團 CreateCampaignModal）：
+ * - 留空 → 馬上開團（跟以前一樣：開團時間 = 現在）。
+ * - 填未來時間 → 先存成草稿、開團時間寫這個時間，時間到由 rpc_auto_open_scheduled_campaigns
+ *   （20260925010000）自動開團；它只撿「建團當下就排在未來」的草稿，建團時填好就符合。
+ * - 填過去／現在的時間 → 擋下，請員工清空（＝馬上開）或改成未來時間。
+ * - 開團時間要早於客人收單時間（手機團控沒有另外的客人收單欄，客人收單＝收單時間 endIso）。
+ * startInput 是 datetime-local 的值（本地時間），endIso 是收單時間。
+ */
+export type QuickStartPlan =
+  | { ok: true; openNow: boolean; startIso: string }
+  | { ok: false; error: string };
+
+export function planQuickStart(startInput: string, endIso: string, nowMs: number): QuickStartPlan {
+  const raw = startInput.trim();
+  if (!raw) return { ok: true, openNow: true, startIso: new Date(nowMs).toISOString() };
+  const startMs = new Date(raw).getTime();
+  if (!Number.isFinite(startMs)) return { ok: false, error: "開團時間看不懂，請重選；要馬上開團就清空" };
+  if (startMs <= nowMs) return { ok: false, error: "開團時間要在未來；要馬上開團請把開團時間清空" };
+  const endMs = new Date(endIso).getTime();
+  if (Number.isFinite(endMs) && startMs >= endMs) return { ok: false, error: "開團時間必須早於客人收單時間" };
+  return { ok: true, openNow: false, startIso: new Date(startMs).toISOString() };
+}
+
+/**
+ * 「馬上開」建草稿那一次先寫的開團時間：現在往前 1 天。
+ * 自動開團（rpc_auto_open_scheduled_campaigns @ 20260925010000:23-30）只撿
+ * start_at >= created_at − 5 分鐘 的草稿；created_at 是建草稿當下，之後不會變，
+ * 所以往前 1 天的草稿**永遠**撿不到 —— 加品項、上架做到一半時不會被先開出去
+ * （以前寫「現在」會被撿到，可能只帶一部分品項就開團、發記事本）。
+ * 不用「往後 1 天」：那種草稿中途失敗留著，隔天就會被自動開出去；
+ * 而且收單時間若在 1 天內，草稿的開團時間會晚於收單時間，
+ * 跟 planQuickStart「開團時間必須早於客人收單時間」的規則（本檔 222-225 行）自相矛盾。
+ * 最後一次存檔一定寫 start_at＝現在、status＝open（rpc_upsert_campaign 更新時
+ * start_at = p_start_at 整個覆寫，20260910050000:149）。
+ * 排未來時間的團草稿就寫那個時間（等著被自動開），不受影響。
+ */
+export const QUICK_DRAFT_START_BACKDATE_MS = 24 * 60 * 60 * 1000;
+
+export function draftStartIso(plan: { openNow: boolean; startIso: string }, nowMs: number): string {
+  return plan.openNow ? new Date(nowMs - QUICK_DRAFT_START_BACKDATE_MS).toISOString() : plan.startIso;
+}
+
+/** 美食列車到開團時間不會自動開（rpc_auto_open_scheduled_campaigns @ 20260925010000:32-33） */
+export function autoOpensOnSchedule(closeType: string): boolean {
+  return closeType !== "food_train";
+}
+
+/** 排程開團的提示字（畫面上、建好後的卡片都用這一句） */
+export function scheduledOpenHint(closeType: string): string {
+  return autoOpensOnSchedule(closeType)
+    ? "時間到系統會自動開團。"
+    : "美食列車不會自動開，時間到請在手機團控清單按「開團」。";
+}
+
+/** 「10月7日 09:05」（本地時間）；看不懂的時間回空字串 */
+export function formatScheduleLabel(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/**
+ * 建團最後幾步寫什麼、照什麼順序：
+ * - 記事本關掉 → 建好草稿後**第一件事**就呼叫 rpc_set_campaign_line_note(false)，
+ *   排在加品項、改成開團之前。開團自動發文的 trigger（_line_note_on_campaign_open
+ *   @ 20260929000000:21）在團「剛變成 open」那一刻看 line_note_enabled，後寫等於沒關；
+ *   rpc_upsert_campaign（20260910050000:48）沒有記事本參數，只能另外寫。
+ *   記事本開著不用呼叫（欄位預設就是開，20260927010000:20），行為跟以前一樣。
+ * - 馬上開 → 最後一次存檔 status = open；排程 → 仍是 draft（等時間到自動開／美食列車手動開）。
+ * - 上架個人賣場照開關寫在最後一次存檔（草稿那次一律先不上架，跟以前一樣）。
+ */
+export function quickPublishPlan(input: { openNow: boolean; lineNote: boolean; isForShop: boolean }): {
+  setLineNoteOffFirst: boolean;
+  finalStatus: "open" | "draft";
+  isForShop: boolean;
+} {
+  return {
+    setLineNoteOffFirst: !input.lineNote,
+    finalStatus: input.openNow ? "open" : "draft",
+    isForShop: input.isForShop,
+  };
+}
