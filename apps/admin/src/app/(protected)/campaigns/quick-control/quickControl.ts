@@ -232,7 +232,8 @@ export function planQuickStart(startInput: string, endIso: string, nowMs: number
  * 所以往前 1 天的草稿**永遠**撿不到 —— 加品項、上架做到一半時不會被先開出去
  * （以前寫「現在」會被撿到，可能只帶一部分品項就開團、發記事本）。
  * 不用「往後 1 天」：那種草稿中途失敗留著，隔天就會被自動開出去；
- * 而且收單時間若在 1 天內會撞 end_at > start_at 的檢查（20260422120001:200）。
+ * 而且收單時間若在 1 天內，草稿的開團時間會晚於收單時間，
+ * 跟 planQuickStart「開團時間必須早於客人收單時間」的規則（本檔 222-225 行）自相矛盾。
  * 最後一次存檔一定寫 start_at＝現在、status＝open（rpc_upsert_campaign 更新時
  * start_at = p_start_at 整個覆寫，20260910050000:149）。
  * 排未來時間的團草稿就寫那個時間（等著被自動開），不受影響。

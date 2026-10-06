@@ -270,7 +270,7 @@ test("草稿那次的開團時間：馬上開往前 1 天（自動開團撿不�
   const draft = draftStartIso(now, NOW);
   assert.equal(draft, new Date(NOW - QUICK_DRAFT_START_BACKDATE_MS).toISOString());
   assert.ok(new Date(draft).getTime() < createdAt - 5 * 60 * 1000, "撿不到");
-  // 往前而不是往後：收單時間再近也不會撞 end_at > start_at
+  // 往前而不是往後：收單時間再近，草稿的開團時間也早於收單時間
   assert.ok(new Date(draft).getTime() < new Date(END).getTime());
 
   const scheduled = planQuickStart("2026-10-07T09:05", END, NOW);
