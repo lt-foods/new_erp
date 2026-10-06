@@ -8,6 +8,7 @@ import {
   QUICK_PAGE_SIZE,
   campaignSearchOrFilter,
   canQuickUpdateCampaign,
+  closeCampaignWarning,
   customerUrlFor,
   mergeCampaignRows,
   moveImage,
@@ -94,7 +95,7 @@ test("已售件數：排除取消／過期／轉出單、非一般單、取消�
   assert.equal(sold.get(2), 0);
 });
 
-test("延長／重開／加名額資格：照資料庫守衛", () => {
+test("舊的快速操作資格判斷（清單範圍用；已鎖定能不能重開改由資料庫判斷，頁面不用本函式擋）", () => {
   assert.equal(canQuickUpdateCampaign({ status: "open", close_type: "fast", total_cap_qty: null, campaign_items: [] }), true);
   assert.equal(canQuickUpdateCampaign({ status: "open", close_type: "limited", total_cap_qty: null, campaign_items: null }), true);
   assert.equal(canQuickUpdateCampaign({ status: "open", close_type: "food_train", total_cap_qty: null, campaign_items: null }), true);
@@ -102,7 +103,7 @@ test("延長／重開／加名額資格：照資料庫守衛", () => {
   assert.equal(canQuickUpdateCampaign({ status: "open", close_type: "regular", total_cap_qty: 0, campaign_items: null }), false);
   assert.equal(canQuickUpdateCampaign({ status: "open", close_type: "regular", total_cap_qty: "10", campaign_items: null }), true);
   assert.equal(canQuickUpdateCampaign({ status: "open", close_type: "regular", total_cap_qty: null, campaign_items: [{ cap_qty: 0 }, { cap_qty: "3" }] }), true);
-  // 狀態條件：已鎖定一律擋，草稿／已關團照類型判斷
+  // 狀態條件照舊版：已鎖定回 false（重開與否由資料庫判斷，頁面不用這個擋），草稿／已關團照類型判斷
   assert.equal(canQuickUpdateCampaign({ status: "locked", close_type: "fast", total_cap_qty: 10, campaign_items: null }), false);
   assert.equal(canQuickUpdateCampaign({ status: "draft", close_type: "fast", total_cap_qty: null, campaign_items: null }), true);
   assert.equal(canQuickUpdateCampaign({ status: "closed", close_type: "limited", total_cap_qty: null, campaign_items: null }), true);
@@ -158,4 +159,31 @@ test("圖片排序：往前往後換一格，超出範圍不動", () => {
   const list = ["a", "b"];
   assert.equal(moveImage(list, 0, -1), list);
   assert.equal(moveImage(list, 1, 1), list);
+});
+
+test("關團結果：併入／建請購失敗要警告，原因原樣附上", () => {
+  assert.equal(
+    closeCampaignWarning({ closed: true, action: "append_failed", reason: "請購單 PR001 的商品是舊資料" }),
+    "已關團，但沒有併入請購單：請購單 PR001 的商品是舊資料。請到請購單頁補請購。",
+  );
+  assert.equal(
+    closeCampaignWarning({ closed: true, pr_id: null, action: "create_failed", reason: "tenant mismatch" }, "芒果團"),
+    "「芒果團」已關團，但沒有併入請購單：tenant mismatch。請到請購單頁補請購。",
+  );
+  assert.equal(
+    closeCampaignWarning({ action: "append_failed", reason: "  " }),
+    "已關團，但沒有併入請購單：原因不明。請到請購單頁補請購。",
+  );
+  assert.equal(closeCampaignWarning({ action: "create_failed" }), "已關團，但沒有併入請購單：原因不明。請到請購單頁補請購。");
+});
+
+test("關團結果：其他 action 或沒有回傳都不警告", () => {
+  for (const action of ["appended", "created", "created_secondary", "deferred", "store_receiving"]) {
+    assert.equal(closeCampaignWarning({ closed: true, action, reason: "x" }), null);
+  }
+  assert.equal(closeCampaignWarning(null), null);
+  assert.equal(closeCampaignWarning(undefined), null);
+  assert.equal(closeCampaignWarning("append_failed"), null);
+  assert.equal(closeCampaignWarning([{ action: "append_failed" }]), null);
+  assert.equal(closeCampaignWarning({}), null);
 });
