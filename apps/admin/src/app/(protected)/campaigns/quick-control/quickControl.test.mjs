@@ -6,17 +6,22 @@ import {
   QUICK_IMAGE_ACCEPT,
   QUICK_PAGE_OVERLAP,
   QUICK_PAGE_SIZE,
+  autoOpensOnSchedule,
   campaignSearchOrFilter,
   canQuickUpdateCampaign,
   closeCampaignWarning,
   customerUrlFor,
+  formatScheduleLabel,
   mergeCampaignRows,
   moveImage,
   newProductExtras,
   pageWindow,
+  planQuickStart,
   quickImageExt,
+  quickPublishPlan,
   quickScopeFilter,
   sanitizeCampaignSearch,
+  scheduledOpenHint,
   soldQtyByCampaign,
   splitPage,
 } from "./quickControl.ts";
@@ -186,4 +191,71 @@ test("關團結果：其他 action 或沒有回傳都不警告", () => {
   assert.equal(closeCampaignWarning("append_failed"), null);
   assert.equal(closeCampaignWarning([{ action: "append_failed" }]), null);
   assert.equal(closeCampaignWarning({}), null);
+});
+
+// 開團時間：datetime-local 的值是本地時間，測試一律用本地時間組出來，不受機器時區影響
+const NOW = new Date(2026, 9, 6, 12, 0).getTime();
+const END = new Date(2026, 9, 9, 23, 59).toISOString();
+
+test("開團時間：留空＝馬上開，開團時間就是現在（跟以前一樣）", () => {
+  assert.deepEqual(planQuickStart("", END, NOW), { ok: true, openNow: true, startIso: new Date(NOW).toISOString() });
+  assert.deepEqual(planQuickStart("   ", END, NOW), { ok: true, openNow: true, startIso: new Date(NOW).toISOString() });
+});
+
+test("開團時間：未來時間＝排程（草稿），開團時間照填的寫", () => {
+  assert.deepEqual(planQuickStart("2026-10-07T09:05", END, NOW), {
+    ok: true,
+    openNow: false,
+    startIso: new Date(2026, 9, 7, 9, 5).toISOString(),
+  });
+});
+
+test("開團時間：現在或過去要擋，請清空或改未來", () => {
+  const pastOrNow = ["2026-10-06T12:00", "2026-10-06T11:59", "2026-01-01T00:00"];
+  for (const v of pastOrNow) {
+    const res = planQuickStart(v, END, NOW);
+    assert.equal(res.ok, false, v);
+    assert.match(res.error, /清空/);
+  }
+});
+
+test("開團時間：要早於客人收單時間（同時也擋）", () => {
+  assert.deepEqual(planQuickStart("2026-10-09T23:59", END, NOW), { ok: false, error: "開團時間必須早於客人收單時間" });
+  assert.deepEqual(planQuickStart("2026-10-10T08:00", END, NOW), { ok: false, error: "開團時間必須早於客人收單時間" });
+  assert.equal(planQuickStart("2026-10-09T23:58", END, NOW).ok, true);
+});
+
+test("開團時間：看不懂的值要擋", () => {
+  assert.equal(planQuickStart("abc", END, NOW).ok, false);
+});
+
+test("排程提示：美食列車不會自動開，其他會", () => {
+  assert.equal(autoOpensOnSchedule("food_train"), false);
+  for (const t of ["fast", "limited", "regular"]) assert.equal(autoOpensOnSchedule(t), true);
+  assert.equal(scheduledOpenHint("fast"), "時間到系統會自動開團。");
+  assert.match(scheduledOpenHint("food_train"), /美食列車不會自動開.*開團/);
+});
+
+test("排程卡片時間：○月○日 ○○:○○（本地時間）", () => {
+  assert.equal(formatScheduleLabel(new Date(2026, 9, 7, 9, 5).toISOString()), "10月7日 09:05");
+  assert.equal(formatScheduleLabel(new Date(2026, 11, 25, 23, 0).toISOString()), "12月25日 23:00");
+  assert.equal(formatScheduleLabel("not a date"), "");
+});
+
+test("建團最後幾步：記事本關掉要先寫（開團前），開著不用多呼叫", () => {
+  assert.deepEqual(quickPublishPlan({ openNow: true, lineNote: true, isForShop: true }), {
+    setLineNoteOffFirst: false,
+    finalStatus: "open",
+    isForShop: true,
+  });
+  assert.deepEqual(quickPublishPlan({ openNow: true, lineNote: false, isForShop: true }), {
+    setLineNoteOffFirst: true,
+    finalStatus: "open",
+    isForShop: true,
+  });
+  assert.deepEqual(quickPublishPlan({ openNow: false, lineNote: false, isForShop: false }), {
+    setLineNoteOffFirst: true,
+    finalStatus: "draft",
+    isForShop: false,
+  });
 });

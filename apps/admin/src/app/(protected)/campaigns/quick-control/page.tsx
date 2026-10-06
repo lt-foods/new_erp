@@ -17,10 +17,14 @@ import {
   CAP_ITEMS_FILTER_COLUMN,
   closeCampaignWarning,
   customerUrlFor,
+  formatScheduleLabel,
   mergeCampaignRows,
   newProductExtras,
   pageWindow,
+  planQuickStart,
+  quickPublishPlan,
   quickScopeFilter,
+  scheduledOpenHint,
   soldQtyByCampaign,
   splitPage,
 } from "./quickControl";
@@ -324,6 +328,13 @@ export default function QuickCampaignControlPage() {
   const [createBusy, setCreateBusy] = useState(false);
   const [createdUrl, setCreatedUrl] = useState<string | null>(null);
   const [createdCampaignId, setCreatedCampaignId] = useState<number | null>(null);
+  // 開團時間（留空＝馬上開）、開團時發 LINE 記事本、上架個人賣場（後兩個預設開，同商品頁建立開團）
+  const [createStartAt, setCreateStartAt] = useState("");
+  const [createLineNote, setCreateLineNote] = useState(true);
+  const [createIsForShop, setCreateIsForShop] = useState(true);
+  // 剛建好的團：排程開團的時間與團型（馬上開的是 null）、有沒有上架個人賣場
+  const [createdSchedule, setCreatedSchedule] = useState<{ startIso: string; closeType: CreateCloseType } | null>(null);
+  const [createdIsForShop, setCreatedIsForShop] = useState(true);
 
   const selectedSkus = useMemo(
     () => skus.filter((sku) => selectedSkuIds.has(sku.id)),
@@ -676,6 +687,7 @@ export default function QuickCampaignControlPage() {
     setItemCapDraft({});
     setCreatedUrl(null);
     setCreatedCampaignId(null);
+    setCreatedSchedule(null);
     setSkuLoading(true);
     setError(null);
     try {
@@ -762,6 +774,9 @@ export default function QuickCampaignControlPage() {
       setError("收單時間必須在未來");
       return;
     }
+    // 開團時間：留空＝馬上開；未來＝草稿等時間到；手機團控沒有客人收單欄，客人收單＝收單時間
+    const startPlan = planQuickStart(createStartAt, endIso, Date.now());
+    if (!startPlan.ok) { setError(startPlan.error); return; }
     if (isExistingProduct && selectedSkus.length === 0) { setError("請至少勾選一個規格"); return; }
     if (!isExistingProduct && newSkuRows.length === 0) { setError("請至少新增一個規格與售價"); return; }
     if (isExistingProduct && missingPrice) { setError("有規格缺少現行零售價，請先補售價"); return; }
@@ -790,7 +805,10 @@ export default function QuickCampaignControlPage() {
 
       const nextCampaignNo = String(campaignNo ?? "").trim();
       if (!nextCampaignNo) throw new Error("無法產生團號，請稍後再試");
-      const startIso = new Date().toISOString();
+      // 馬上開：開團時間＝現在（同以前）；排程：照填的時間。新規格售價一律從現在生效
+      const priceFromIso = new Date().toISOString();
+      const startIso = startPlan.openNow ? priceFromIso : startPlan.startIso;
+      const publish = quickPublishPlan({ openNow: startPlan.openNow, lineNote: createLineNote, isForShop: createIsForShop });
       const campaignTotalCap = null;
       const productStorageType = isExistingProduct ? selectedProduct?.storage_type ?? null : newStorageType;
       const pickupDays = pickupDaysForStorage(productStorageType);
@@ -877,7 +895,7 @@ export default function QuickCampaignControlPage() {
           const { error: priceErr } = await sb.rpc("rpc_set_retail_price", {
             p_sku_id: skuId,
             p_price: unitPrice,
-            p_effective_from: startIso,
+            p_effective_from: priceFromIso,
             p_reason: "mobile quick create",
           });
           if (priceErr) throw priceErr;
@@ -906,6 +924,17 @@ export default function QuickCampaignControlPage() {
 
       const campaignId = Number(campaignIdData);
       if (!Number.isFinite(campaignId)) throw new Error("建立成功但沒有拿到團 ID");
+
+      // 記事本關掉：草稿一建好就先寫，排在加品項與開團之前。
+      // 開團發文的 trigger 在團「剛變成 open」那一刻看這個欄位，後寫等於沒關；
+      // 自動開團要先有品項才會開，這裡寫完之前品項還沒加，不會被開出去。寫失敗就停在草稿、不開團。
+      if (publish.setLineNoteOffFirst) {
+        const { error: lineNoteErr } = await sb.rpc("rpc_set_campaign_line_note", {
+          p_id: campaignId,
+          p_enabled: false,
+        });
+        if (lineNoteErr) throw lineNoteErr;
+      }
 
       for (const [index, item] of campaignItems.entries()) {
         const { error: itemErr } = await sb.rpc("rpc_upsert_campaign_item", {
@@ -952,7 +981,8 @@ export default function QuickCampaignControlPage() {
         p_name: campaignName,
         p_description: campaignDescription,
         p_cover_image_url: null,
-        p_status: "open",
+        // 馬上開＝open；排程＝維持草稿，時間到自動開（美食列車要手動開）
+        p_status: publish.finalStatus,
         p_close_type: createType,
         p_start_at: startIso,
         p_end_at: endIso,
@@ -960,19 +990,24 @@ export default function QuickCampaignControlPage() {
         p_pickup_days: pickupDays,
         p_total_cap_qty: campaignTotalCap,
         p_notes: "mobile quick create",
-        p_is_for_shop: true,
+        p_is_for_shop: publish.isForShop,
       });
       if (publishErr) throw publishErr;
 
       const url = customerUrlFor(MEMBER_APP_URL, campaignId);
       setCreatedCampaignId(campaignId);
       setCreatedUrl(url);
-      setNotice(`已建立「${campaignName}」，客人網址已產生`);
+      setCreatedSchedule(startPlan.openNow ? null : { startIso, closeType: createType });
+      setCreatedIsForShop(publish.isForShop);
+      const createdText = startPlan.openNow
+        ? `已建立「${campaignName}」`
+        : `已建立「${campaignName}」，已排 ${formatScheduleLabel(startIso)} 開團`;
+      setNotice(`${createdText}，客人網址已產生`);
       try {
         await navigator.clipboard.writeText(url);
-        setNotice(`已建立「${campaignName}」，客人網址已複製`);
+        setNotice(`${createdText}，客人網址已複製`);
       } catch {
-        setNotice(`已建立「${campaignName}」，請長按網址複製`);
+        setNotice(`${createdText}，請長按網址複製`);
       }
 
       setSelectedProduct(null);
@@ -993,6 +1028,9 @@ export default function QuickCampaignControlPage() {
       setNewBrandId(null);
       setNewSkuDrafts([{ key: newSkuKey(), name: "", price: "", cap: "" }]);
       setItemCapDraft({});
+      setCreateStartAt("");
+      setCreateLineNote(true);
+      setCreateIsForShop(true);
       void load();
     } catch (e) {
       setError(errorText(e));
@@ -1090,6 +1128,17 @@ export default function QuickCampaignControlPage() {
 
             {createdUrl && (
               <div className="mb-4 grid gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900 dark:bg-emerald-950">
+                {createdSchedule ? (
+                  <div className="grid gap-1 text-base text-emerald-800 dark:text-emerald-200">
+                    <div className="font-semibold">已排 {formatScheduleLabel(createdSchedule.startIso)} 開團</div>
+                    <div>{scheduledOpenHint(createdSchedule.closeType)}客人網址可以先複製備用。</div>
+                  </div>
+                ) : null}
+                {!createdIsForShop ? (
+                  <div className="text-base text-amber-800 dark:text-amber-200">
+                    這團沒有上架個人賣場，客人點網址會看不到這團。
+                  </div>
+                ) : null}
                 <div className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">客人網址</div>
                 <div className="text-xs text-emerald-700 dark:text-emerald-300">
                   之後在下面清單這一團也能再複製。
@@ -1403,6 +1452,69 @@ export default function QuickCampaignControlPage() {
                     </label>
                   </div>
 
+                  <div className="grid gap-1">
+                    <label className="grid gap-1 text-base">
+                      <span className="font-medium text-zinc-700 dark:text-zinc-200">開團時間（可留空）</span>
+                      <input
+                        type="datetime-local"
+                        value={createStartAt}
+                        max={createEndAt || undefined}
+                        onChange={(e) => setCreateStartAt(e.target.value)}
+                        disabled={!allowed || createBusy}
+                        className="min-h-11 rounded-md border border-zinc-300 bg-white px-3 text-base outline-none focus:border-pink-600 disabled:bg-zinc-100 disabled:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-950 dark:disabled:bg-zinc-800"
+                      />
+                    </label>
+                    {createStartAt ? (
+                      <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-center">
+                        <span className={`text-base ${createType === "food_train" ? "text-amber-700 dark:text-amber-300" : "text-zinc-600 dark:text-zinc-300"}`}>
+                          會先存成草稿，不會馬上出現在賣場。{scheduledOpenHint(createType)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setCreateStartAt("")}
+                          disabled={!allowed || createBusy}
+                          className="min-h-11 rounded-md border border-zinc-300 px-3 text-base text-zinc-700 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200"
+                        >
+                          清空（改成馬上開團）
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-base text-zinc-500">留空＝按下建立就馬上開團；要排之後開團再選時間（要早於收單時間）。</span>
+                    )}
+                  </div>
+
+                  <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-md border border-zinc-200 px-3 py-2.5 dark:border-zinc-800">
+                    <input
+                      type="checkbox"
+                      checked={createLineNote}
+                      onChange={(e) => setCreateLineNote(e.target.checked)}
+                      disabled={!allowed || createBusy}
+                      className="mt-1 h-5 w-5 shrink-0"
+                    />
+                    <span className="grid gap-0.5">
+                      <span className="text-base font-medium text-zinc-700 dark:text-zinc-200">開團時發 LINE 記事本</span>
+                      <span className="text-base text-zinc-500 dark:text-zinc-400">
+                        不勾＝這團開團時不自動發，之後仍可在開團列表的記事本彈窗手動發。
+                      </span>
+                    </span>
+                  </label>
+
+                  <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-md border border-zinc-200 px-3 py-2.5 dark:border-zinc-800">
+                    <input
+                      type="checkbox"
+                      checked={createIsForShop}
+                      onChange={(e) => setCreateIsForShop(e.target.checked)}
+                      disabled={!allowed || createBusy}
+                      className="mt-1 h-5 w-5 shrink-0"
+                    />
+                    <span className="grid gap-0.5">
+                      <span className="text-base font-medium text-zinc-700 dark:text-zinc-200">上架個人賣場</span>
+                      <span className="text-base text-zinc-500 dark:text-zinc-400">
+                        不勾＝客人在賣場看不到、點網址也打不開這團。
+                      </span>
+                    </span>
+                  </label>
+
                   <div className="grid gap-2">
                     <div className="flex items-center justify-between gap-2">
                       <div className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
@@ -1556,7 +1668,7 @@ export default function QuickCampaignControlPage() {
                     disabled={createSubmitDisabled || createNeedsCap}
                     className="min-h-12 rounded-md bg-pink-600 text-base font-semibold text-white disabled:opacity-50"
                   >
-                    {imagesUploading ? "照片上傳中…" : "建立開團並產生網址"}
+                    {imagesUploading ? "照片上傳中…" : createStartAt ? "建立排程開團並產生網址" : "建立開團並產生網址"}
                   </SpinButton>
                 </div>
               )}
