@@ -9,6 +9,7 @@ import { useRole, isHqRole } from "@/lib/role";
 import StoreSettlementReview from "@/components/StoreSettlementReview";
 import {
   bulkSendBlockReason,
+  bulkSendLoadBlockReason,
   bulkSendMonthBlockReason,
   collectSendResults,
   type SendOutcome,
@@ -56,6 +57,10 @@ type HqToStoreSettlement = {
 
 const SETTLEMENT_SELECT =
   "id, settlement_month, store_id, payable_amount, cost_amount, branch_amount, transfer_count, item_count, status, confirmed_at, settled_at, generated_receivable_id, notes, updated_at, sent_at, store_agreed_at, remitted_at, remit_note";
+
+// 篩了月份時的載入上限：一個月的月結張數＝店數，正常幾十張，整個月份都載進來。
+// 伺服器端另有預設筆數上限（PostgREST max-rows）會默默截斷，所以同時要總張數比對（bulkSendLoadBlockReason）。
+const MONTH_FILTER_LIMIT = 1000;
 
 type Store = { id: number; code: string; name: string };
 
@@ -193,6 +198,16 @@ function HqToStoreTab() {
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false); // 擋連按：state 還沒更新前的第二下
   const [sendResult, setSendResult] = useState<SendOutcome | null>(null);
+  // 符合目前篩選的總張數（有篩月份才查）；跟載入的張數比，看「全選」會不會漏掉沒載入的店
+  const [monthTotal, setMonthTotal] = useState<number | null>(null);
+
+  // 「月份已結束」看現在時間：每分鐘更新一次，畫面開著跨過月底（例：11/1 00:00）不用重新整理就能送；
+  // 打開確認視窗、按「確定送出」時另外用當下時間再算一次。
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -202,21 +217,22 @@ function HqToStoreTab() {
         const sb = getSupabase();
         let q = sb
           .from("store_monthly_settlements")
-          .select(SETTLEMENT_SELECT)
+          .select(SETTLEMENT_SELECT, monthFilter ? { count: "exact" } : undefined)
           .order("settlement_month", { ascending: false })
           .order("store_id", { ascending: true })
-          .limit(200);
+          .limit(monthFilter ? MONTH_FILTER_LIMIT : 200);
         if (monthFilter) q = q.eq("settlement_month", monthToDate(monthFilter));
         if (statusFilter) q = q.eq("status", statusFilter);
 
-        const [{ data, error: e1 }, { data: storeData }] = await Promise.all([
+        const [{ data, error: e1, count }, { data: storeData }] = await Promise.all([
           q,
           sb.from("stores").select("id, code, name").order("name"),
         ]);
         if (cancelled) return;
-        if (e1) { setError(e1.message); setRows([]); return; }
+        if (e1) { setError(e1.message); setRows([]); setMonthTotal(null); return; }
         setError(null);
         setRows((data ?? []) as HqToStoreSettlement[]);
+        setMonthTotal(count ?? null);
         const sm = new Map<number, Store>();
         for (const s of (storeData ?? []) as Store[]) sm.set(s.id, s);
         setStores(sm);
@@ -230,7 +246,8 @@ function HqToStoreTab() {
   }, [monthFilter, statusFilter, reloadTick]);
 
   async function onGenerate() {
-    if (!genMonth) return;
+    // 一次送出進行中不重算：確認視窗給總部看的金額，要跟店家收到的是同一份
+    if (!genMonth || sendingRef.current) return;
     setGenerating(true);
     setGenResult(null);
     setError(null);
@@ -258,11 +275,15 @@ function HqToStoreTab() {
   }
 
   // ── 一次全選送出 ──
-  // 能勾的條件（篩了月份／草稿／9 月起／月份已結束）都在 ./bulkSend.ts，畫面只負責顯示。
-  // 按「送出」時用當下時間再算一次，畫面開著跨過月底也不會用到舊的判斷。
-  const now = new Date();
+  // 能勾的條件（篩了月份／草稿／9 月起／月份已結束／整個月份都有載入）都在 ./bulkSend.ts，畫面只負責顯示。
   const monthBlock = bulkSendMonthBlockReason(monthFilter, now);
-  const sendableRows = (rows ?? []).filter((r) => bulkSendBlockReason(r, monthFilter, now) === null);
+  // 月份可以送之後，再看這個月份是不是全部載進來了（沒有就整個批次列停用）
+  const loadBlock = monthBlock ? null : bulkSendLoadBlockReason(monthTotal, rows?.length ?? 0);
+  const batchBlock = monthBlock ?? loadBlock;
+  const barLoading = rows === null || loading;
+  const sendableRows = batchBlock
+    ? []
+    : (rows ?? []).filter((r) => bulkSendBlockReason(r, monthFilter, now) === null);
   const selectedRows = sendableRows.filter((r) => selected.has(r.id));
 
   function storeLabel(r: HqToStoreSettlement): string {
@@ -281,6 +302,8 @@ function HqToStoreTab() {
 
   function onOpenBulkConfirm() {
     const at = new Date();
+    setNow(at);
+    if (bulkSendMonthBlockReason(monthFilter, at) ?? bulkSendLoadBlockReason(monthTotal, rows?.length ?? 0)) return;
     const targets = (rows ?? []).filter(
       (r) => selected.has(r.id) && bulkSendBlockReason(r, monthFilter, at) === null,
     );
@@ -292,6 +315,20 @@ function HqToStoreTab() {
   async function onBulkSend() {
     const targets = confirmTargets;
     if (!targets || targets.length === 0 || sendingRef.current) return;
+    // 按「確定」的當下再算一次（確認視窗可能開著放很久）
+    const at = new Date();
+    setNow(at);
+    const block =
+      bulkSendMonthBlockReason(monthFilter, at) ??
+      bulkSendLoadBlockReason(monthTotal, rows?.length ?? 0) ??
+      (targets.some((r) => bulkSendBlockReason(r, monthFilter, at) !== null)
+        ? "勾選的月結已經不能送了，請重新勾選"
+        : null);
+    if (block) {
+      setConfirmTargets(null);
+      setError(block);
+      return;
+    }
     sendingRef.current = true;
     setSending(true);
     setError(null);
@@ -344,7 +381,8 @@ function HqToStoreTab() {
           </label>
           <SpinButton
             onClick={onGenerate}
-            disabled={!genMonth || generating}
+            disabled={!genMonth || generating || sending}
+            title={sending ? "正在一次送店家核對，送完才能產生／重算" : undefined}
             className="rounded-md bg-zinc-900 px-4 py-2 text-sm text-white transition hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
           >
             {generating ? "產生中…" : "產生 / 重算 draft"}
@@ -383,24 +421,30 @@ function HqToStoreTab() {
         </label>
       </div>
 
-      {/* 一次全選送出給店家核對：只送「篩選月份、草稿、9 月起、月份已結束」的店 */}
+      {/* 一次全選送出給店家核對：只送「篩選月份、草稿、9 月起、月份已結束、整個月份都有載入」的店 */}
       <div className="flex flex-wrap items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm dark:border-zinc-800 dark:bg-zinc-900">
         <span className="font-medium">一次送店家核對</span>
-        <span className="text-xs text-zinc-500">
+        <span
+          className={`text-xs ${
+            !monthBlock && !barLoading && loadBlock ? "font-medium text-red-600 dark:text-red-400" : "text-zinc-500"
+          }`}
+        >
           {monthBlock
             ? monthBlock === "先選月份" ? "先選月份：在上方「月份篩選」選一個月份" : monthBlock
-            : rows === null || loading
+            : barLoading
               ? "載入中…"
-              : sendableRows.length === 0
-                ? `${monthFilter} 沒有可送的草稿`
-                : `已勾 ${selectedRows.length} / 可送 ${sendableRows.length} 家`}
+              : loadBlock
+                ? loadBlock
+                : sendableRows.length === 0
+                  ? `${monthFilter} 沒有可送的草稿`
+                  : `已勾 ${selectedRows.length} / 可送 ${sendableRows.length} 家`}
         </span>
         <div className="ml-auto flex flex-wrap gap-2">
           <SpinButton
             type="button"
             onClick={() => setSelected(new Set(sendableRows.map((r) => r.id)))}
-            disabled={!!monthBlock || sending || sendableRows.length === 0 || selectedRows.length === sendableRows.length}
-            title={monthBlock ?? undefined}
+            disabled={!!batchBlock || sending || sendableRows.length === 0 || selectedRows.length === sendableRows.length}
+            title={batchBlock ?? undefined}
             className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
             全選（可送的）
@@ -408,8 +452,8 @@ function HqToStoreTab() {
           <SpinButton
             type="button"
             onClick={() => setSelected(new Set())}
-            disabled={!!monthBlock || sending || selectedRows.length === 0}
-            title={monthBlock ?? undefined}
+            disabled={!!batchBlock || sending || selectedRows.length === 0}
+            title={batchBlock ?? undefined}
             className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >
             清空
@@ -417,8 +461,8 @@ function HqToStoreTab() {
           <SpinButton
             type="button"
             onClick={onOpenBulkConfirm}
-            disabled={!!monthBlock || sending || selectedRows.length === 0}
-            title={monthBlock ?? undefined}
+            disabled={!!batchBlock || sending || selectedRows.length === 0}
+            title={batchBlock ?? undefined}
             className="rounded-md bg-blue-600 px-3 py-1 text-xs font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
           >
             📨 送出勾選的 {selectedRows.length} 家給店家核對
@@ -481,7 +525,7 @@ function HqToStoreTab() {
               const s = stores.get(r.store_id);
               const month = r.settlement_month?.slice(0, 7);
               const profit = Number(r.payable_amount) - Number(r.cost_amount ?? 0);
-              const blockReason = bulkSendBlockReason(r, monthFilter, now);
+              const blockReason = batchBlock ?? bulkSendBlockReason(r, monthFilter, now);
               const isSelected = blockReason === null && selected.has(r.id);
               return (
                 <tr key={r.id} className={isSelected ? "bg-blue-50 dark:bg-blue-950/30" : "hover:bg-zinc-50 dark:hover:bg-zinc-900"}>
@@ -559,7 +603,7 @@ function HqToStoreTab() {
           <div className="space-y-4 text-sm">
             <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
               <p>送出後店家在「月結對帳」看得到，可按同意或提出異議；<span className="font-medium">店家按同意後就鎖住不能改</span>。</p>
-              <p className="mt-1 text-xs">送錯可進明細頁按「撤銷送審」一張一張收回；店家已按同意的收不回。</p>
+              <p className="mt-1 text-xs">店家還沒回應前，可進明細頁按「撤銷送審」一張一張收回；店家已同意或已提出異議的，不能用撤銷收回。</p>
             </div>
             <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
               <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">

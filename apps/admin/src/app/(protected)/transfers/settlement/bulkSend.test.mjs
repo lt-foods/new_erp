@@ -6,9 +6,12 @@ import assert from "node:assert/strict";
 import {
   BULK_SEND_FIRST_MONTH,
   bulkSendBlockReason,
+  bulkSendLoadBlockReason,
   bulkSendMonthBlockReason,
   collectSendResults,
+  monthSendIssue,
   nextMonthFirstDay,
+  singleSendMonthWarning,
   taipeiMonth,
 } from "./bulkSend.ts";
 
@@ -98,4 +101,65 @@ test("送出結果彙總：成功、RPC 回錯、整個丟例外", () => {
     { label: "丙", message: "Failed to fetch" },
   ]);
   assert.deepEqual(collectSendResults([], []), { ok: 0, fails: [] });
+});
+
+test("月份判斷（列表與明細頁共用）：吃 YYYY-MM 與 YYYY-MM-DD 都一樣", () => {
+  const oct7 = tpe("2026-10-07T12:00:00");
+  assert.equal(monthSendIssue("2026-08", oct7), "before_first");
+  assert.equal(monthSendIssue("2026-08-01", oct7), "before_first");
+  assert.equal(monthSendIssue("2026-10", oct7), "not_ended");
+  assert.equal(monthSendIssue("2026-10-01", oct7), "not_ended");
+  assert.equal(monthSendIssue("2026-11-01", oct7), "not_ended");
+  assert.equal(monthSendIssue("2026-09", oct7), null);
+  assert.equal(monthSendIssue("2026-09-01", oct7), null);
+});
+
+test("明細頁單張送出：還沒結束的月份要紅字提醒（只提醒不擋）", () => {
+  const w = singleSendMonthWarning("2026-10-01", tpe("2026-10-07T12:00:00"));
+  assert.equal(
+    w,
+    "⚠️ 2026-10 還沒結束（要到 2026-11-01）。現在送出，店家按同意後就鎖住，之後重算會跳過這家，下半月的貨會收不到錢。確定要送嗎？",
+  );
+  // 台北時間邊界：10/31 23:59:59 還要提醒，11/1 00:00 就不用
+  assert.ok(singleSendMonthWarning("2026-10-01", tpe("2026-10-31T23:59:59"))?.includes("2026-10 還沒結束"));
+  assert.equal(singleSendMonthWarning("2026-10-01", tpe("2026-11-01T00:00:00")), null);
+  // 跨年
+  assert.ok(singleSendMonthWarning("2026-12-01", tpe("2026-12-15T09:00:00"))?.includes("要到 2027-01-01"));
+  // 未來月份一樣提醒
+  assert.ok(singleSendMonthWarning("2026-11-01", tpe("2026-10-07T12:00:00"))?.includes("2026-11 還沒結束"));
+});
+
+test("明細頁單張送出：8 月（含）以前提醒原則上不送", () => {
+  const after = tpe("2026-10-07T12:00:00");
+  for (const m of ["2026-08-01", "2026-07-01", "2025-12-01"]) {
+    assert.equal(singleSendMonthWarning(m, after), "⚠️ 8 月（含）以前的月結原則上不送店家核對。確定要送嗎？", m);
+  }
+});
+
+test("明細頁單張送出：已結束的月份不提醒；沒有月份也不提醒", () => {
+  assert.equal(singleSendMonthWarning("2026-09-01", tpe("2026-10-07T12:00:00")), null);
+  assert.equal(singleSendMonthWarning("2026-09-01", tpe("2026-10-01T00:00:00")), null);
+  assert.ok(singleSendMonthWarning("2026-09-01", tpe("2026-09-30T23:59:59")));
+  assert.equal(singleSendMonthWarning(null, tpe("2026-10-07T12:00:00")), null);
+  assert.equal(singleSendMonthWarning("", tpe("2026-10-07T12:00:00")), null);
+});
+
+test("明細頁提醒與列表擋法用同一套判斷：列表擋的月份，明細頁一定提醒", () => {
+  const times = ["2026-09-30T23:59:59", "2026-10-01T00:00:00", "2026-10-31T23:59:59", "2026-11-01T00:00:00"].map(tpe);
+  for (const m of ["2026-07", "2026-08", "2026-09", "2026-10", "2026-11"]) {
+    for (const t of times) {
+      const blocked = bulkSendMonthBlockReason(m, t) !== null;
+      const warned = singleSendMonthWarning(`${m}-01`, t) !== null;
+      assert.equal(warned, blocked, `${m} @ ${t.toISOString()}`);
+    }
+  }
+});
+
+test("列表沒把月份載完：實際張數 > 已載入張數就擋，不讓全選默默漏掉", () => {
+  assert.equal(bulkSendLoadBlockReason(230, 200), "這個月有 230 張、目前只載入 200 張，不能一次全選");
+  assert.equal(bulkSendLoadBlockReason(31, 30), "這個月有 31 張、目前只載入 30 張，不能一次全選");
+  assert.equal(bulkSendLoadBlockReason(30, 30), null);
+  assert.equal(bulkSendLoadBlockReason(0, 0), null);
+  // 查不到總張數：寧可擋
+  assert.ok(bulkSendLoadBlockReason(null, 30)?.includes("查不到"));
 });

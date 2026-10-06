@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { withBasePath } from "@/lib/basePath";
 import SpinButton from "@/components/SpinButton";
+import { singleSendMonthWarning } from "../bulkSend";
 
 type SettlementStatus = "draft" | "sent" | "disputed" | "confirmed" | "remitted" | "settled" | "cancelled";
 
@@ -368,6 +369,10 @@ export default function HqSettlementDetailPage() {
   const monthLabel = header.settlement_month?.slice(0, 7);
   const showActionBar =
     isDraft || header.status === "sent" || header.status === "disputed" || header.status === "remitted";
+  // 送店家核對前的月份提醒（還沒結束的月份、8 月含以前）：跟列表一次送出同一套月份判斷，
+  // 這裡只提醒、不擋（列表的一次送出才硬擋）。用打開確認列當下的時間算。
+  const sendMonthWarning =
+    pendingAction === "send" ? singleSendMonthWarning(header.settlement_month, new Date()) : null;
 
   return (
     <div className={`flex flex-1 flex-col gap-4 p-6 ${showActionBar ? "pb-28" : ""}`}>
@@ -940,6 +945,11 @@ export default function HqSettlementDetailPage() {
               </>
             ) : (
               <>
+                {sendMonthWarning && (
+                  <p className="basis-full text-right text-sm font-medium text-red-600 dark:text-red-400">
+                    {sendMonthWarning}
+                  </p>
+                )}
                 <span className="text-sm font-medium">
                   {pendingAction === "send" && (header.status === "disputed"
                     ? "爭議已處理完，重新送店家核對？"
