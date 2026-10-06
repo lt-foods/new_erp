@@ -1,12 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { useRole, isHqRole } from "@/lib/role";
 import StoreSettlementReview from "@/components/StoreSettlementReview";
+import {
+  bulkSendBlockReason,
+  bulkSendMonthBlockReason,
+  collectSendResults,
+  type SendOutcome,
+} from "./bulkSend";
 
 type SettlementStatus = "draft" | "confirmed" | "settled" | "disputed";
 type SettlementStatusExt = SettlementStatus | "cancelled" | "sent" | "remitted";
@@ -181,6 +187,13 @@ function HqToStoreTab() {
   const [monthFilter, setMonthFilter] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<string>("");
 
+  // 一次全選送出給店家核對（逐張呼叫 rpc_send_settlement_to_store，不另做批次 RPC）
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [confirmTargets, setConfirmTargets] = useState<HqToStoreSettlement[] | null>(null);
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false); // 擋連按：state 還沒更新前的第二下
+  const [sendResult, setSendResult] = useState<SendOutcome | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -244,6 +257,72 @@ function HqToStoreTab() {
     }
   }
 
+  // ── 一次全選送出 ──
+  // 能勾的條件（篩了月份／草稿／9 月起／月份已結束）都在 ./bulkSend.ts，畫面只負責顯示。
+  // 按「送出」時用當下時間再算一次，畫面開著跨過月底也不會用到舊的判斷。
+  const now = new Date();
+  const monthBlock = bulkSendMonthBlockReason(monthFilter, now);
+  const sendableRows = (rows ?? []).filter((r) => bulkSendBlockReason(r, monthFilter, now) === null);
+  const selectedRows = sendableRows.filter((r) => selected.has(r.id));
+
+  function storeLabel(r: HqToStoreSettlement): string {
+    const s = stores.get(r.store_id);
+    return s ? `${s.code} ${s.name}` : `#${r.store_id}`;
+  }
+
+  function toggleSelected(id: number) {
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function onOpenBulkConfirm() {
+    const at = new Date();
+    const targets = (rows ?? []).filter(
+      (r) => selected.has(r.id) && bulkSendBlockReason(r, monthFilter, at) === null,
+    );
+    if (targets.length === 0) return;
+    setSendResult(null);
+    setConfirmTargets(targets);
+  }
+
+  async function onBulkSend() {
+    const targets = confirmTargets;
+    if (!targets || targets.length === 0 || sendingRef.current) return;
+    sendingRef.current = true;
+    setSending(true);
+    setError(null);
+    try {
+      const sb = getSupabase();
+      const { data: sess } = await sb.auth.getSession();
+      const operator = sess.session?.user?.id;
+      if (!operator) throw new Error("尚未登入");
+      const settles = await Promise.allSettled(
+        targets.map((r) =>
+          sb.rpc("rpc_send_settlement_to_store", { p_settlement_id: r.id, p_operator: operator }),
+        ),
+      );
+      const outcome = collectSendResults(targets.map(storeLabel), settles);
+      setSendResult(outcome);
+      setSelected(new Set());
+      setConfirmTargets(null);
+      // 側欄月結小數字跟著重抓（同明細頁 refresh()）
+      if (outcome.ok > 0) window.dispatchEvent(new Event("settlement-badge-refresh"));
+      setReloadTick((t) => t + 1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setConfirmTargets(null);
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
+  }
+
+  const confirmTotal = confirmTargets?.reduce((sum, r) => sum + Number(r.payable_amount), 0) ?? 0;
+
   const totalPayable = rows?.reduce((sum, r) => sum + Number(r.payable_amount), 0) ?? 0;
   const totalCost = rows?.reduce((sum, r) => sum + Number(r.cost_amount ?? 0), 0) ?? 0;
   // 總倉毛利 = 實際跟分店收的（應付、含手動調整）− 成本口徑。
@@ -283,7 +362,8 @@ function HqToStoreTab() {
           <input
             type="month"
             value={monthFilter}
-            onChange={(e) => setMonthFilter(e.target.value)}
+            onChange={(e) => { setMonthFilter(e.target.value); setSelected(new Set()); setSendResult(null); }}
+            disabled={sending}
             className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
           />
         </label>
@@ -291,7 +371,8 @@ function HqToStoreTab() {
           <span className="mb-1 block text-xs text-zinc-500">狀態</span>
           <select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onChange={(e) => { setStatusFilter(e.target.value); setSelected(new Set()); setSendResult(null); }}
+            disabled={sending}
             className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800"
           >
             <option value="">全部狀態</option>
@@ -301,6 +382,72 @@ function HqToStoreTab() {
           </select>
         </label>
       </div>
+
+      {/* 一次全選送出給店家核對：只送「篩選月份、草稿、9 月起、月份已結束」的店 */}
+      <div className="flex flex-wrap items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <span className="font-medium">一次送店家核對</span>
+        <span className="text-xs text-zinc-500">
+          {monthBlock
+            ? monthBlock === "先選月份" ? "先選月份：在上方「月份篩選」選一個月份" : monthBlock
+            : rows === null || loading
+              ? "載入中…"
+              : sendableRows.length === 0
+                ? `${monthFilter} 沒有可送的草稿`
+                : `已勾 ${selectedRows.length} / 可送 ${sendableRows.length} 家`}
+        </span>
+        <div className="ml-auto flex flex-wrap gap-2">
+          <SpinButton
+            type="button"
+            onClick={() => setSelected(new Set(sendableRows.map((r) => r.id)))}
+            disabled={!!monthBlock || sending || sendableRows.length === 0 || selectedRows.length === sendableRows.length}
+            title={monthBlock ?? undefined}
+            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            全選（可送的）
+          </SpinButton>
+          <SpinButton
+            type="button"
+            onClick={() => setSelected(new Set())}
+            disabled={!!monthBlock || sending || selectedRows.length === 0}
+            title={monthBlock ?? undefined}
+            className="rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            清空
+          </SpinButton>
+          <SpinButton
+            type="button"
+            onClick={onOpenBulkConfirm}
+            disabled={!!monthBlock || sending || selectedRows.length === 0}
+            title={monthBlock ?? undefined}
+            className="rounded-md bg-blue-600 px-3 py-1 text-xs font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
+          >
+            📨 送出勾選的 {selectedRows.length} 家給店家核對
+          </SpinButton>
+        </div>
+      </div>
+
+      {sendResult && (
+        <div
+          className={`rounded-md border p-4 text-sm ${
+            sendResult.fails.length === 0
+              ? "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300"
+              : "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+          }`}
+        >
+          <p className="font-medium">
+            送出結果：成功 {sendResult.ok} 家／失敗 {sendResult.fails.length} 家
+          </p>
+          {sendResult.fails.length > 0 && (
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">
+              {sendResult.fails.map((f, i) => (
+                <li key={i}>
+                  <span className="font-medium">{f.label}</span>：<span className="font-mono">{f.message}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
@@ -313,6 +460,7 @@ function HqToStoreTab() {
         <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
           <thead className="bg-zinc-50 dark:bg-zinc-900">
             <tr>
+              <Th className="w-8"><span className="sr-only">勾選</span></Th>
               <Th>月份</Th>
               <Th>分店</Th>
               <Th className="text-right">應付總倉（分店價）</Th>
@@ -326,15 +474,34 @@ function HqToStoreTab() {
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {rows === null ? (
-              <tr><td colSpan={9} className="p-3 text-center text-zinc-500">載入中…</td></tr>
+              <tr><td colSpan={10} className="p-3 text-center text-zinc-500">載入中…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={9} className="p-6 text-center text-zinc-500">{loading ? "載入中…" : "尚無結算紀錄。先用上方「產生 / 重算 draft」。"}</td></tr>
+              <tr><td colSpan={10} className="p-6 text-center text-zinc-500">{loading ? "載入中…" : "尚無結算紀錄。先用上方「產生 / 重算 draft」。"}</td></tr>
             ) : rows.map((r) => {
               const s = stores.get(r.store_id);
               const month = r.settlement_month?.slice(0, 7);
               const profit = Number(r.payable_amount) - Number(r.cost_amount ?? 0);
+              const blockReason = bulkSendBlockReason(r, monthFilter, now);
+              const isSelected = blockReason === null && selected.has(r.id);
               return (
-                <tr key={r.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
+                <tr key={r.id} className={isSelected ? "bg-blue-50 dark:bg-blue-950/30" : "hover:bg-zinc-50 dark:hover:bg-zinc-900"}>
+                  <Td className="w-8">
+                    {/* 停用的勾選框有些瀏覽器不顯示自己的提示，所以提示也掛在外層 */}
+                    <label
+                      title={blockReason ?? "勾選後可一次送店家核對"}
+                      className={`inline-flex p-1 ${blockReason || sending ? "cursor-not-allowed" : "cursor-pointer"}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        disabled={blockReason !== null || sending}
+                        onChange={() => toggleSelected(r.id)}
+                        title={blockReason ?? undefined}
+                        aria-label={`勾選 ${s?.name ?? `#${r.store_id}`} ${month} 送店家核對`}
+                        className="disabled:opacity-40"
+                      />
+                    </label>
+                  </Td>
                   <Td className="font-mono text-xs">{month}</Td>
                   <Td className="text-xs">
                     <span className="font-mono text-zinc-500">{s?.code}</span>{" "}
@@ -364,7 +531,7 @@ function HqToStoreTab() {
           {rows && rows.length > 0 && (
             <tfoot className="bg-zinc-50 dark:bg-zinc-900">
               <tr>
-                <td colSpan={2} className="px-3 py-2 text-right text-xs text-zinc-500">合計</td>
+                <td colSpan={3} className="px-3 py-2 text-right text-xs text-zinc-500">合計</td>
                 <td className="px-3 py-2 text-right font-mono font-medium text-rose-600">
                   ${totalPayable.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
                 </td>
@@ -382,6 +549,65 @@ function HqToStoreTab() {
         </table>
       </div>
 
+      <Modal
+        open={confirmTargets !== null}
+        onClose={() => { if (!sending) setConfirmTargets(null); }}
+        title={`送出 ${monthFilter} 月結給店家核對`}
+        maxWidth="max-w-lg"
+      >
+        {confirmTargets && (
+          <div className="space-y-4 text-sm">
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+              <p>送出後店家在「月結對帳」看得到，可按同意或提出異議；<span className="font-medium">店家按同意後就鎖住不能改</span>。</p>
+              <p className="mt-1 text-xs">送錯可進明細頁按「撤銷送審」一張一張收回；店家已按同意的收不回。</p>
+            </div>
+            <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+              <table className="min-w-full divide-y divide-zinc-200 text-sm dark:divide-zinc-800">
+                <thead className="bg-zinc-50 dark:bg-zinc-900">
+                  <tr>
+                    <Th>分店</Th>
+                    <Th className="text-right">應收（分店價）</Th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                  {confirmTargets.map((r) => (
+                    <tr key={r.id}>
+                      <Td className="text-xs">{storeLabel(r)}</Td>
+                      <Td className="text-right font-mono">${Number(r.payable_amount).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot className="bg-zinc-50 dark:bg-zinc-900">
+                  <tr>
+                    <td className="px-3 py-2 text-xs text-zinc-500">共 {confirmTargets.length} 家</td>
+                    <td className="px-3 py-2 text-right font-mono font-medium text-rose-600">
+                      合計 ${confirmTotal.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+            <div className="flex justify-end gap-2">
+              <SpinButton
+                type="button"
+                onClick={() => setConfirmTargets(null)}
+                disabled={sending}
+                className="rounded-md border border-zinc-300 px-4 py-2 text-sm hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                取消
+              </SpinButton>
+              <SpinButton
+                type="button"
+                onClick={onBulkSend}
+                disabled={sending}
+                className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
+              >
+                {sending ? "送出中…" : `確定送出 ${confirmTargets.length} 家`}
+              </SpinButton>
+            </div>
+          </div>
+        )}
+      </Modal>
     </>
   );
 }
