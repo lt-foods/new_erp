@@ -225,6 +225,24 @@ export function planQuickStart(startInput: string, endIso: string, nowMs: number
   return { ok: true, openNow: false, startIso: new Date(startMs).toISOString() };
 }
 
+/**
+ * 「馬上開」建草稿那一次先寫的開團時間：現在往前 1 天。
+ * 自動開團（rpc_auto_open_scheduled_campaigns @ 20260925010000:23-30）只撿
+ * start_at >= created_at − 5 分鐘 的草稿；created_at 是建草稿當下，之後不會變，
+ * 所以往前 1 天的草稿**永遠**撿不到 —— 加品項、上架做到一半時不會被先開出去
+ * （以前寫「現在」會被撿到，可能只帶一部分品項就開團、發記事本）。
+ * 不用「往後 1 天」：那種草稿中途失敗留著，隔天就會被自動開出去；
+ * 而且收單時間若在 1 天內會撞 end_at > start_at 的檢查（20260422120001:200）。
+ * 最後一次存檔一定寫 start_at＝現在、status＝open（rpc_upsert_campaign 更新時
+ * start_at = p_start_at 整個覆寫，20260910050000:149）。
+ * 排未來時間的團草稿就寫那個時間（等著被自動開），不受影響。
+ */
+export const QUICK_DRAFT_START_BACKDATE_MS = 24 * 60 * 60 * 1000;
+
+export function draftStartIso(plan: { openNow: boolean; startIso: string }, nowMs: number): string {
+  return plan.openNow ? new Date(nowMs - QUICK_DRAFT_START_BACKDATE_MS).toISOString() : plan.startIso;
+}
+
 /** 美食列車到開團時間不會自動開（rpc_auto_open_scheduled_campaigns @ 20260925010000:32-33） */
 export function autoOpensOnSchedule(closeType: string): boolean {
   return closeType !== "food_train";

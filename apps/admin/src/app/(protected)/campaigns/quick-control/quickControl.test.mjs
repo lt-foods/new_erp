@@ -5,12 +5,14 @@ import assert from "node:assert/strict";
 import {
   QUICK_IMAGE_ACCEPT,
   QUICK_PAGE_OVERLAP,
+  QUICK_DRAFT_START_BACKDATE_MS,
   QUICK_PAGE_SIZE,
   autoOpensOnSchedule,
   campaignSearchOrFilter,
   canQuickUpdateCampaign,
   closeCampaignWarning,
   customerUrlFor,
+  draftStartIso,
   formatScheduleLabel,
   mergeCampaignRows,
   moveImage,
@@ -258,4 +260,20 @@ test("建團最後幾步：記事本關掉要先寫（開團前），開著不�
     finalStatus: "draft",
     isForShop: false,
   });
+});
+
+test("草稿那次的開團時間：馬上開往前 1 天（自動開團撿不到），排程照填的時間", () => {
+  // 自動開團只撿 start_at >= created_at − 5 分鐘（20260925010000:27）；created_at ≈ 現在
+  const createdAt = NOW;
+  const now = planQuickStart("", END, NOW);
+  assert.equal(now.ok, true);
+  const draft = draftStartIso(now, NOW);
+  assert.equal(draft, new Date(NOW - QUICK_DRAFT_START_BACKDATE_MS).toISOString());
+  assert.ok(new Date(draft).getTime() < createdAt - 5 * 60 * 1000, "撿不到");
+  // 往前而不是往後：收單時間再近也不會撞 end_at > start_at
+  assert.ok(new Date(draft).getTime() < new Date(END).getTime());
+
+  const scheduled = planQuickStart("2026-10-07T09:05", END, NOW);
+  assert.equal(scheduled.ok, true);
+  assert.equal(draftStartIso(scheduled, NOW), new Date(2026, 9, 7, 9, 5).toISOString());
 });

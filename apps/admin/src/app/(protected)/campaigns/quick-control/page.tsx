@@ -17,6 +17,7 @@ import {
   CAP_ITEMS_FILTER_COLUMN,
   closeCampaignWarning,
   customerUrlFor,
+  draftStartIso,
   formatScheduleLabel,
   mergeCampaignRows,
   newProductExtras,
@@ -805,9 +806,11 @@ export default function QuickCampaignControlPage() {
 
       const nextCampaignNo = String(campaignNo ?? "").trim();
       if (!nextCampaignNo) throw new Error("無法產生團號，請稍後再試");
-      // 馬上開：開團時間＝現在（同以前）；排程：照填的時間。新規格售價一律從現在生效
+      // 新規格售價一律從現在生效。
+      // 草稿那次的開團時間：馬上開＝現在往前 1 天（自動開團永遠撿不到，見 draftStartIso）；排程＝照填的時間。
+      // 最後一次存檔才寫真正的開團時間（馬上開＝那一刻的現在）。
       const priceFromIso = new Date().toISOString();
-      const startIso = startPlan.openNow ? priceFromIso : startPlan.startIso;
+      const draftStart = draftStartIso(startPlan, Date.now());
       const publish = quickPublishPlan({ openNow: startPlan.openNow, lineNote: createLineNote, isForShop: createIsForShop });
       const campaignTotalCap = null;
       const productStorageType = isExistingProduct ? selectedProduct?.storage_type ?? null : newStorageType;
@@ -912,7 +915,7 @@ export default function QuickCampaignControlPage() {
         p_cover_image_url: null,
         p_status: "draft",
         p_close_type: createType,
-        p_start_at: startIso,
+        p_start_at: draftStart,
         p_end_at: endIso,
         p_pickup_deadline: pickupDeadline || null,
         p_pickup_days: pickupDays,
@@ -927,7 +930,8 @@ export default function QuickCampaignControlPage() {
 
       // 記事本關掉：草稿一建好就先寫，排在加品項與開團之前。
       // 開團發文的 trigger 在團「剛變成 open」那一刻看這個欄位，後寫等於沒關；
-      // 自動開團要先有品項才會開，這裡寫完之前品項還沒加，不會被開出去。寫失敗就停在草稿、不開團。
+      // 自動開團要先有品項才會開，這裡寫完之前品項還沒加，不會被開出去（馬上開的草稿本來就撿不到）。
+      // 寫失敗就停在草稿、不開團。
       if (publish.setLineNoteOffFirst) {
         const { error: lineNoteErr } = await sb.rpc("rpc_set_campaign_line_note", {
           p_id: campaignId,
@@ -975,6 +979,9 @@ export default function QuickCampaignControlPage() {
         if (publishProductErr) throw publishProductErr;
       }
 
+      // 真正的開團時間：馬上開＝這一刻（品項、上架都做完了才開），排程＝照填的時間。
+      // rpc_upsert_campaign 更新時 start_at 整個覆寫成這個值，草稿那次往前 1 天的值不會留下。
+      const startIso = startPlan.openNow ? new Date().toISOString() : startPlan.startIso;
       const { error: publishErr } = await sb.rpc("rpc_upsert_campaign", {
         p_id: campaignId,
         p_campaign_no: nextCampaignNo,
@@ -1157,14 +1164,24 @@ export default function QuickCampaignControlPage() {
                   >
                     複製網址
                   </SpinButton>
-                  <a
-                    href={createdUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex min-h-11 items-center justify-center rounded-md border border-emerald-300 text-sm font-semibold text-emerald-800 dark:border-emerald-800 dark:text-emerald-100"
-                  >
-                    打開客人頁
-                  </a>
+                  {createdSchedule ? (
+                    // 排程的團還是草稿，客人頁要開團後才打得開（liff-api 只給開團中的團）
+                    <span
+                      aria-disabled="true"
+                      className="flex min-h-11 items-center justify-center rounded-md border border-zinc-200 px-2 text-center text-base text-zinc-500 dark:border-zinc-800 dark:text-zinc-400"
+                    >
+                      開團後才能打開
+                    </span>
+                  ) : (
+                    <a
+                      href={createdUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex min-h-11 items-center justify-center rounded-md border border-emerald-300 text-sm font-semibold text-emerald-800 dark:border-emerald-800 dark:text-emerald-100"
+                    >
+                      打開客人頁
+                    </a>
+                  )}
                   {createdCampaignId ? (
                     <Link
                       href={`/campaigns/order-entry?id=${createdCampaignId}`}
