@@ -1287,9 +1287,19 @@ const HANDLERS: Record<string, (job: any, reactUntil: number) => Promise<unknown
   logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead, close: jobClose, remind: jobRemind, share: jobShare, reopen: jobReopen, refresh: jobRefresh,
 };
 
-async function claimNextJob() {
+// 每個 tick（每分鐘）最多分享幾張卡片到聊天室（remind / share）。
+// 2026-10-05：結單日提醒一口氣排 596 篇、08:00 連發，舊小幫手整支被 LINE
+// 「因違反服務條款，您已被限制使用社群」；換新帳號重跑，71 張卡片在 45 秒內送出後
+// 一樣 403，30 分鐘後才解封。LINE 的上限跟著帳號走，一次灌爆＝帳號停擺，
+// 所以分享類工作每分鐘只放這麼多，其餘留在佇列給下一個 tick。
+const SHARE_PER_TICK = 8;
+const SHARE_KINDS = ["remind", "share"];
+
+async function claimNextJob(shareBudgetLeft: number) {
   // login 不在排程裡跑（要等人掃 QR，會把整個 tick 卡住 110 秒），只走後台按鈕 → action=login
-  const rows = await rest(`line_note_jobs?status=eq.queued&kind=neq.login&select=*&order=created_at.asc&limit=1`);
+  // 分享額度用完就只撿非分享類的工作，別讓一整排 remind 把 post / read 卡在後面
+  const kindFilter = shareBudgetLeft > 0 ? "kind=neq.login" : `kind=not.in.(login,${SHARE_KINDS.join(",")})`;
+  const rows = await rest(`line_note_jobs?status=eq.queued&${kindFilter}&select=*&order=created_at.asc&limit=1`);
   const job = rows?.[0];
   if (!job) return null;
   const claimed = await patch("line_note_jobs", `id=eq.${job.id}&status=eq.queued`, { status: "running", started_at: new Date().toISOString() });
@@ -1374,9 +1384,11 @@ async function tick() {
   try { sweepOrdered = await reactOrdered(started + SWEEP_BUDGET_MS); }
   catch (e) { log("補按加單成功的笑臉整批失敗（略過，不影響其他工作）:", (e as any)?.message ?? e); }
   const ran: any[] = [];
+  let shareBudget = SHARE_PER_TICK;
   while (Date.now() - started < TICK_BUDGET_MS) {
-    const job = await claimNextJob();
+    const job = await claimNextJob(shareBudget);
     if (!job) break;
+    if (SHARE_KINDS.includes(job.kind)) shareBudget--;
     ran.push(await runJob(job, started + REACT_BUDGET_MS));
   }
   return { scheduled, ...sweep, ...sweepOrdered, ran, ms: Date.now() - started };
