@@ -4,6 +4,13 @@ import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { useRole, canSeeCost } from "@/lib/role";
+import {
+  buildSettlementPrintRows,
+  fmtPrintDate,
+  fmtStatementMoney,
+  sumMoney,
+  summarizeSettlementItems,
+} from "@/lib/settlementPrintRows";
 
 type Settlement = {
   id: number;
@@ -63,6 +70,17 @@ function fmtAmount(v: unknown): string {
   if (v === null || v === undefined || v === "") return "未提供成本";
   const n = Number(v);
   return Number.isFinite(n) ? `$${n.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}` : "未提供成本";
+}
+
+// 併日那行／合計列的成本小計：有缺成本的行要看得出來，不讓 null 默默當 0 加（全缺＝整格「未提供成本」）
+function costSumCell(amount: number, missing: number, count: number) {
+  if (count > 0 && missing === count) return "未提供成本";
+  return (
+    <>
+      {fmtAmount(amount)}
+      {missing > 0 && <div className="whitespace-normal text-[10px] text-amber-700">含 {missing} 項未提供成本</div>}
+    </>
+  );
 }
 
 // 分店版（預設）：給店家的對帳單，只列分店價，不露總倉成本。
@@ -180,9 +198,12 @@ export default function PrintSettlementPage() {
   }
 
   const monthLabel = settlement.settlement_month?.slice(0, 7);
-  const totalCost = items.reduce((s, it) => s + Number(it.line_amount ?? 0), 0);
-  const totalBranch = items.reduce((s, it) => s + Number(it.branch_amount ?? 0), 0);
-  const adjTotal = adjustments.reduce((s, a) => s + Number(a.amount), 0);
+  // 金額一律用原始小數精確加總，只在顯示時取整（見 lib/settlementPrintRows.ts）
+  const totals = summarizeSettlementItems(items);
+  const totalBranch = totals.branchAmount;
+  const adjTotal = sumMoney(adjustments.map((a) => a.amount));
+  // 店到店逐筆排最前；HQ 進貨、退貨沖回各按台北日期一天一行（老闆 2026-10-07）
+  const rows = buildSettlementPrintRows(items);
   const today = new Date().toLocaleDateString("zh-TW");
   const internal = view === "internal" && costAllowed;
 
@@ -280,6 +301,14 @@ export default function PrintSettlementPage() {
             </div>
           </div>
 
+          {/* 金額總覽：貨款＋調整＝應付總倉（每張都印；應付總倉讀月結表頭，產生月結時就是 分店價合計＋有效調整） */}
+          <div className="mb-3 border border-zinc-900 px-3 py-2 text-right text-sm font-semibold">
+            貨款總金額 <span className="font-mono">{fmtStatementMoney(totalBranch)}</span>
+            <span className="mx-1">＋</span>調整 <span className="font-mono">{fmtStatementMoney(adjTotal)}</span>
+            <span className="mx-1">＝</span>應付總倉{" "}
+            <span className="font-mono text-rose-600">{fmtStatementMoney(Number(settlement.payable_amount))}</span>
+          </div>
+
           {/* 商品明細表 */}
           <table className="stmt-table w-full border-collapse text-xs">
             <thead>
@@ -302,14 +331,46 @@ export default function PrintSettlementPage() {
               </tr>
             </thead>
             <tbody>
-              {items.map((it, i) => {
+              {rows.map((row, i) => {
+                if (row.kind === "day") {
+                  // HQ 進貨／退貨沖回：一天一行（單價、商品編號不適用，顯示「—」）
+                  const txLabel =
+                    row.transferIds.length === 1
+                      ? (transfers.get(row.transferIds[0])?.transfer_no ?? `#${row.transferIds[0]}`)
+                      : `${row.transferIds.length} 張`;
+                  return (
+                    <tr key={row.key}>
+                      <td className="border border-zinc-400 px-2 py-1">{i + 1}</td>
+                      <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{fmtPrintDate(row.date)}</td>
+                      <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{ENTRY_TYPE_LABEL[row.entryType]}</td>
+                      <td className="border border-zinc-400 px-2 py-1 font-mono whitespace-nowrap">{txLabel}</td>
+                      <td className="border border-zinc-400 px-2 py-1 font-mono whitespace-nowrap">—</td>
+                      <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">共 {row.lineCount} 項</td>
+                      <td className="border border-zinc-400 px-2 py-1 text-right font-mono">{row.qty.toLocaleString()}</td>
+                      {internal && (
+                        <>
+                          <td className="border border-zinc-400 px-2 py-1 text-right font-mono whitespace-nowrap">—</td>
+                          <td className={`border border-zinc-400 px-2 py-1 text-right font-mono whitespace-nowrap ${row.costAmount < 0 ? "text-amber-600" : ""}`}>
+                            {costSumCell(row.costAmount, row.costMissingCount, row.lineCount)}
+                          </td>
+                        </>
+                      )}
+                      <td className="border border-zinc-400 px-2 py-1 text-right font-mono whitespace-nowrap">—</td>
+                      <td className={`border border-zinc-400 px-2 py-1 text-right font-mono whitespace-nowrap ${row.branchAmount < 0 ? "text-amber-600" : ""}`}>
+                        ${row.branchAmount.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                      </td>
+                    </tr>
+                  );
+                }
+                // 店到店（空中／自由轉入轉出）：照舊一筆一行
+                const it = row.item;
                 const tx = transfers.get(it.transfer_id);
                 const sku = skus.get(it.sku_id);
                 const isFree = it.description != null; // 自由轉貨行：估價入帳、無單價
                 return (
-                  <tr key={it.id}>
+                  <tr key={row.key}>
                     <td className="border border-zinc-400 px-2 py-1">{i + 1}</td>
-                    <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{new Date(it.received_at).toLocaleDateString("zh-TW")}</td>
+                    <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{fmtPrintDate(row.date)}</td>
                     <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{ENTRY_TYPE_LABEL[it.entry_type]}</td>
                     <td className="border border-zinc-400 px-2 py-1 font-mono whitespace-nowrap">{tx?.transfer_no ?? `#${it.transfer_id}`}</td>
                     <td className="border border-zinc-400 px-2 py-1 font-mono whitespace-nowrap">{sku?.sku_code ?? "—"}</td>
@@ -350,7 +411,7 @@ export default function PrintSettlementPage() {
                   <>
                     <td className="border border-zinc-400 px-2 py-1.5"></td>
                     <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono whitespace-nowrap">
-                      ${totalCost.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                      {costSumCell(totals.costAmount, totals.costMissingCount, totals.lineCount)}
                     </td>
                   </>
                 )}
@@ -394,47 +455,12 @@ export default function PrintSettlementPage() {
                   </tr>
                 </tbody>
               </table>
-              <div className="mt-2 text-right text-sm font-semibold">
-                商品合計 ${totalBranch.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
-                <span className="mx-1">＋</span>調整 {adjTotal < 0 ? "−" : "+"}${Math.abs(adjTotal).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
-                <span className="mx-1">＝</span>應付金額{" "}
-                <span className="text-rose-600">${Number(settlement.payable_amount).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}</span>
-              </div>
+              {/* 「商品合計＋調整＝應付金額」那句已搬到最上面每張都印，這裡不重複 */}
             </>
           )}
-
-          {/* 說明 */}
-          <div className="mt-3 text-[10px] text-zinc-500">
-            ※ 類型說明：HQ 進貨 = 總倉直接出貨給本店；空中轉入 = 別店空中轉來（加應付）；空中轉出 = 空中轉去別店（減應付）；
-            自由轉入／轉出 = 店間自由轉貨（轉貨時申報金額入帳）；退貨沖回 = 退貨回總倉（減應付）。
-            {adjustments.length > 0 && "金額調整 = 總部人工加減項（正=加收、負=減收），原因如上表。"}
-            {internal && (
-              <>
-                <br />
-                ※ 價格口徑：成本單價 = 出貨當下成本；分店單價 = 收貨當下生效之分店價。應付金額以分店價口徑計，成本口徑供總倉毛利參考。
-              </>
-            )}
-          </div>
-
-          {/* 簽收區 */}
-          <div className="mt-8 grid grid-cols-2 gap-8 text-sm">
-            <div>
-              <div className="text-xs text-zinc-500">付款方確認 / 日期</div>
-              <div className="mt-12 border-t border-zinc-900 pt-1 text-xs text-zinc-500">
-                簽名 ＿＿＿＿＿＿＿＿　日期 ＿＿＿＿＿＿
-              </div>
-            </div>
-            <div>
-              <div className="text-xs text-zinc-500">總部確認 / 日期</div>
-              <div className="mt-12 border-t border-zinc-900 pt-1 text-xs text-zinc-500">
-                簽名 ＿＿＿＿＿＿＿＿　日期 ＿＿＿＿＿＿
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-6 text-[10px] text-zinc-500">
-            ※ 收到請逐項點收、若數量或金額不符請於簽收前註明。
-          </div>
+          {/* ⛔ 這裡原本有「※ 類型說明」、付款方／總部簽名區、「※ 收到請逐項點收…」三段，
+              2026-10-07 老闆指示通通刪掉（精簡頁數）。三段都是純靜態版面，拿掉不影響任何一格數字。
+              ⛔ 上面的金額調整表要留著 —— 店家要看得到每筆加減的原因，不是被刪的那三段。 */}
         </div>
       </div>
     </>
