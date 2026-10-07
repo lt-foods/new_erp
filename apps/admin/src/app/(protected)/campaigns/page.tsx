@@ -70,9 +70,10 @@ type Row = {
 const STATUS_LABEL = CAMPAIGN_STATUS_LABEL;
 const LOCKED_ADD_ORDER_TITLE = "這個團的請購單已經建出來了，請到請購單頁處理；不能在這裡加單。";
 
-// 常規等團收單（closed）後仍可補客單（#991）；美食列車收單即截止，加單鈕直接不出現。
-function canAddOrderFromCampaign(r: { status: Status; close_type: CloseType }) {
-  return r.status === "open" || (r.status === "closed" && r.close_type !== "food_train");
+// 只有開團中（open）可以加單；收單（closed）後加單鈕直接不出現，避免無限加單。
+// 收單後要追加走請購單頁「分店加單」或採購單頁「分店／批發追加」。
+function canAddOrderFromCampaign(r: { status: Status }) {
+  return r.status === "open";
 }
 
 /** 顯示灰色「加單」的原因；null = 不顯示灰鈕。 */
@@ -829,7 +830,7 @@ export default function CampaignsListPage() {
   const toIdx = Math.min(page * PAGE_SIZE, total);
 
   // 「加單」獨立放在 checkbox 旁邊，不參與下方操作鈕群組。
-  // closed 仍可補客單（美食列車除外，直接不顯示）；locked 代表請購單已建出來，這裡只能提示不能再加。
+  // 只有 open 可加單；closed 直接不顯示；locked 代表請購單已建出來，這裡只能提示不能再加。
   const addOrderLink = (r: Row) =>
     canAddOrderFromCampaign(r) ? (
       <Link

@@ -87,8 +87,10 @@ type CustomerEntry = {
 const DRAFT_PREFIX = "draft:order-entry:";
 const AUTOSAVE_MS = 30_000;
 const FOOD_TRAIN_CLOSED_NOTE = "美食列車已收單，不能再加單。";
-const CLOSED_CAMPAIGN_ORDER_NOTE =
-  "如果這個結單日已建過請購單，送出後請回請購單頁執行補單，否則新增數量不會被買到。";
+const CLOSED_CAMPAIGN_NOTE =
+  "這個團已收單，不能再加單。要追加請到請購單頁「分店加單」或採購單頁「分店／批發追加」。";
+// 只給頁面上方說明用：一般團收單後仍可切到店內現貨／抵減，所以多補一句；送出被擋的錯誤訊息仍用上面那句原文。
+const CLOSED_CAMPAIGN_BANNER = `${CLOSED_CAMPAIGN_NOTE}（店內現貨／抵減不受影響）`;
 
 // 送出前查「這些會員在這團已經有的同品項數量」。找單條件對齊 rpc_create_customer_orders
 // （campaign + channel + member、排除 cancelled/expired/transferred_out）：命中的品項送出後是累加。
@@ -195,11 +197,10 @@ export function OrderEntryView({
   const [draftLoaded, setDraftLoaded] = useState(false);
 
   const draftKey = useMemo(() => `${DRAFT_PREFIX}${campaignId}`, [campaignId]);
+  // 收單（closed）後不能再加單：客戶下單、為分店叫貨都擋（店內現貨 / 抵減不在此限）。
   const isClosedCampaign = campaign?.status === "closed";
-  // 美食列車收單即截止，不像常規團可以收單後補客單。
+  // 美食列車收單即截止，連店內現貨 / 抵減也擋。
   const isFoodTrainClosed = isClosedCampaign && campaign?.close_type === "food_train";
-  const withClosedCampaignNote = (message: string) =>
-    isClosedCampaign ? `${message}。${CLOSED_CAMPAIGN_ORDER_NOTE}` : message;
 
   // 載入活動 / channels
   useEffect(() => {
@@ -389,11 +390,13 @@ export function OrderEntryView({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries, channelId, mode, internalStoreId, internalItems, internalNotes, offsetStoreId, offsetItems, offsetReason]);
+  }, [entries, channelId, mode, internalStoreId, internalItems, internalNotes, offsetStoreId, offsetItems, offsetReason, isClosedCampaign]);
 
   async function handleSubmit() {
     if (submitting) return;
     setError(null);
+    // 送出鈕已停用，這裡再擋一次（Ctrl+S 不經過按鈕）
+    if (isClosedCampaign && mode !== "offset") { setError(CLOSED_CAMPAIGN_NOTE); return; }
     if (isFoodTrainClosed) { setError(FOOD_TRAIN_CLOSED_NOTE); return; }
     if (mode === "internal") {
       await submitInternal();
@@ -434,7 +437,7 @@ export function OrderEntryView({
       });
       if (err) { setError(err.message); return; }
       const created = (data as { out_order_id: number; out_order_no: string; out_item_count: number }[]) ?? [];
-      setToast(withClosedCampaignNote(`已建立/更新 ${created.length} 筆訂單`));
+      setToast(`已建立/更新 ${created.length} 筆訂單`);
       // 這些會員在 LINE 記事本還掛著「看不懂、待處理」的留言 → 移出待處理，別人才不會再 key 一次。
       // 失敗不影響加單（留言頁載入時會再掃一次）。
       void getSupabase().rpc("rpc_line_note_settle_keyed_comments", { p_campaign_id: campaignId });
@@ -573,7 +576,7 @@ export function OrderEntryView({
         p_notes: internalNotes.trim() || null,
       });
       if (err) { setError(err.message); return; }
-      setToast(withClosedCampaignNote(`已建立內部訂單 #${data}`));
+      setToast(`已建立內部訂單 #${data}`);
       setInternalItems([emptyItem()]);
       onCreated?.();
       setInternalNotes("");
@@ -618,13 +621,9 @@ export function OrderEntryView({
         </div>
       </header>
 
-      {isFoodTrainClosed ? (
+      {isClosedCampaign && (
         <div className="rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-200">
-          {FOOD_TRAIN_CLOSED_NOTE}
-        </div>
-      ) : isClosedCampaign && (
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-          {CLOSED_CAMPAIGN_ORDER_NOTE}
+          {isFoodTrainClosed ? FOOD_TRAIN_CLOSED_NOTE : CLOSED_CAMPAIGN_BANNER}
         </div>
       )}
 
@@ -740,7 +739,7 @@ export function OrderEntryView({
               <SpinButton
                 type="button"
                 onClick={handleSubmit}
-                disabled={submitting || entries.some((e) => e.no_new_order)}
+                disabled={submitting || isClosedCampaign || entries.some((e) => e.no_new_order)}
                 className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
               >
                 {submitting ? "送出中…" : "送出訂單（Ctrl+S）"}
@@ -766,6 +765,7 @@ export function OrderEntryView({
           onAddSku={addInternalSku}
           onSubmit={handleSubmit}
           submitting={submitting}
+          submitBlocked={isClosedCampaign}
         />
       ) : (
         <InternalOrderPanel
@@ -847,7 +847,7 @@ export function OrderEntryView({
 function InternalOrderPanel({
   campaignId, campaignSkus, stores, storeId, onStoreChange,
   notes, onNotesChange, items, onItemChange, onAddItem, onRemoveItem, onAddSku,
-  onSubmit, submitting, offsetMode = false, submitLabel, headerExtra, stockHints, lockedStoreId = null,
+  onSubmit, submitting, submitBlocked = false, offsetMode = false, submitLabel, headerExtra, stockHints, lockedStoreId = null,
 }: {
   campaignId: number;
   campaignSkus: SkuOption[];
@@ -863,6 +863,8 @@ function InternalOrderPanel({
   onAddSku: (opt: SkuOption) => void;
   onSubmit: () => void;
   submitting: boolean;
+  // 團已收單：為分店叫貨不能送（抵減模式不傳）
+  submitBlocked?: boolean;
   offsetMode?: boolean;
   submitLabel?: string;
   // 抵減模式用：客人選擇器（現貨配單）
@@ -994,7 +996,7 @@ function InternalOrderPanel({
           <SpinButton
             type="button"
             onClick={onSubmit}
-            disabled={submitting || (offsetMode && (stockHints ?? []).some((h) => h.need > h.available))}
+            disabled={submitting || submitBlocked || (offsetMode && (stockHints ?? []).some((h) => h.need > h.available))}
             className={`rounded-md px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50 ${
               offsetMode
                 ? "bg-red-700 hover:bg-red-800"
