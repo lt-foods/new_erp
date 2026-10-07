@@ -124,6 +124,24 @@ async function clientFor(account: any) {
   return client;
 }
 
+// LINE 只讓**原作者**改／刪自己的貼文、只讓**原發送者**收回自己送出的訊息。社群換綁帳號之後
+// （2026-10-06 泰山／松山／三峽從「小幫手99號」改綁「小幫手」），拿社群現在的帳號去動舊貼文一律
+// 403「您沒有執行此操作的權限」—— 讀留言、按讚、留言用哪個會員帳號都行，所以只有這幾條路會中。
+// 當時 332 篇還在開的貼文是別的帳號發的。
+// 做法：從 line_note_jobs 找這篇 kind=post（改／刪）或 kind=share（收回卡片）跑成功的那支，
+// 用它的 account_id；找不到（9/9 之前的舊資料、讀留言時撿回來的貼文）或那個帳號已登出才退回社群現在的帳號。
+async function actorAccountId(postId: number, kind: "post" | "share", fallback: number): Promise<number> {
+  const rows = await rest(
+    `line_note_jobs?post_id=eq.${postId}&kind=eq.${kind}&status=eq.done&select=account_id&order=finished_at.desc&limit=1`,
+  ).catch(() => null);
+  const id = Number(rows?.[0]?.account_id);
+  if (!id || id === Number(fallback)) return fallback;
+  const acct = (await rest(`line_note_accounts?id=eq.${id}&select=id,status,auth_token`).catch(() => null))?.[0];
+  if (!acct?.auth_token || acct.status !== "active") return fallback;
+  log(`👤 貼文 ${postId} 當初是帳號 ${id} ${kind === "post" ? "發的" : "分享的"}，用它來動（社群現在綁 ${fallback}）`);
+  return id;
+}
+
 // ── 登入（後台按鈕直接呼叫） ────────────────────────────────────────────────
 // ⚠ 同一個帳號可能同時有兩趟登入在跑（連點兩下、兩個分頁；2026-10-05「小幫手99號」
 //   兩趟差 14 秒）。先掃完的那趟把帳號寫成 active，後到的那趟等到 deadline 才 timeout，
@@ -404,12 +422,13 @@ async function deletePost(postId: number, callerTenant: string | null) {
   // 分享到聊天室的卡片先收回（記得住 id 的才收得回；收不回不擋刪貼文，卡片點進去會是「貼文已刪除」）
   let unsent = 0, unsendFailed = 0;
   try {
-    const account = await loadAccount(post.line_note_communities.account_id);
-    const client = await clientFor(account);
-    ({ unsent, failed: unsendFailed } = await recallShares(client, post.share_message_ids));
+    const commAcct = post.line_note_communities.account_id;
+    const sharer = await clientFor(await loadAccount(await actorAccountId(postId, "share", commAcct)));
+    ({ unsent, failed: unsendFailed } = await recallShares(sharer, post.share_message_ids));
     // 子群列的 line_post_id 是母社群那篇：只收回分享卡片，記事本貼文留給母社群那一列管
     if (!post.line_note_communities.share_from_community_id) {
-      await deleteNotePost(client, post.line_note_communities.home_id, post.line_post_id, { verbose: VERBOSE });
+      const author = await clientFor(await loadAccount(await actorAccountId(postId, "post", commAcct)));
+      await deleteNotePost(author, post.line_note_communities.home_id, post.line_post_id, { verbose: VERBOSE });
     }
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
@@ -454,7 +473,7 @@ async function unsharePost(postId: number, callerTenant: string | null) {
     return { ok: false, error: "後台沒有記到這篇分享出去的訊息（9/25 之前分享的、或分享時沒抓到訊息 id），收不回來，只能到 LINE 手動收回" };
   }
   try {
-    const client = await clientFor(await loadAccount(post.line_note_communities.account_id));
+    const client = await clientFor(await loadAccount(await actorAccountId(postId, "share", post.line_note_communities.account_id)));
     const r = await recallShares(client, ids);
     if (r.unsent === 0) {
       const msg = `收回分享失敗：${r.failed} 則都收不回（LINE 不讓小幫手收回這種卡片；升成社群管理員就可以）`;
@@ -491,13 +510,15 @@ async function recallPost(postId: number, callerTenant: string | null) {
 
   let unsent = 0, unsendFailed = 0, subRows = 0;
   try {
-    const client = await clientFor(await loadAccount(post.line_note_communities.account_id));
+    const commAcct = post.line_note_communities.account_id;
+    const client = await clientFor(await loadAccount(await actorAccountId(postId, "share", commAcct)));
     const r = await recallShares(client, post.share_message_ids);
     unsent += r.unsent; unsendFailed += r.failed;
-    // 子群列：同一篇的分享卡片一起收
+    // 子群列：同一篇的分享卡片一起收（各列的卡片是各自那趟 share job 的帳號送的）
     const subs = (await rest(`line_note_posts?line_post_id=eq.${encodeURIComponent(post.line_post_id)}&id=neq.${postId}&select=id,share_message_ids`)) ?? [];
     for (const sub of subs) {
-      const rs = await recallShares(client, sub.share_message_ids);
+      const subClient = await clientFor(await loadAccount(await actorAccountId(sub.id, "share", commAcct)));
+      const rs = await recallShares(subClient, sub.share_message_ids);
       unsent += rs.unsent; unsendFailed += rs.failed;
       await patch("line_note_posts", `id=eq.${sub.id}`, {
         status: "recalled", line_post_id: null, share_state: "none", shared_at: null, share_message_ids: rs.remaining,
@@ -505,7 +526,8 @@ async function recallPost(postId: number, callerTenant: string | null) {
       }).catch(() => {});
       subRows++;
     }
-    await deleteNotePost(client, post.line_note_communities.home_id, post.line_post_id, { verbose: VERBOSE });
+    const author = await clientFor(await loadAccount(await actorAccountId(postId, "post", commAcct)));
+    await deleteNotePost(author, post.line_note_communities.home_id, post.line_post_id, { verbose: VERBOSE });
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
     await patch("line_note_posts", `id=eq.${postId}`, { last_error: msg.slice(0, 1000) }).catch(() => {});
@@ -535,7 +557,7 @@ async function updatePost(postId: number, callerTenant: string | null) {
   if (!payload) return { ok: false, error: "讀不到這篇貼文的內容" };
   const text = renderPost(payload);
   try {
-    const account = await loadAccount(payload.account_id);
+    const account = await loadAccount(await actorAccountId(postId, "post", payload.account_id));
     const client = await clientFor(account);
     const images = await collectPostImages(payload);
     await updateNotePost(client, payload.home_id, post.line_post_id, { text, images, verbose: VERBOSE });
