@@ -89,6 +89,8 @@ const AUTOSAVE_MS = 30_000;
 const FOOD_TRAIN_CLOSED_NOTE = "美食列車已收單，不能再加單。";
 const CLOSED_CAMPAIGN_NOTE =
   "這個團已收單，不能再加單。要追加請到請購單頁「分店加單」或採購單頁「分店／批發追加」。";
+// 只給頁面上方說明用：一般團收單後仍可切到店內現貨／抵減，所以多補一句；送出被擋的錯誤訊息仍用上面那句原文。
+const CLOSED_CAMPAIGN_BANNER = `${CLOSED_CAMPAIGN_NOTE}（店內現貨／抵減不受影響）`;
 
 // 送出前查「這些會員在這團已經有的同品項數量」。找單條件對齊 rpc_create_customer_orders
 // （campaign + channel + member、排除 cancelled/expired/transferred_out）：命中的品項送出後是累加。
@@ -621,7 +623,7 @@ export function OrderEntryView({
 
       {isClosedCampaign && (
         <div className="rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-200">
-          {CLOSED_CAMPAIGN_NOTE}
+          {isFoodTrainClosed ? FOOD_TRAIN_CLOSED_NOTE : CLOSED_CAMPAIGN_BANNER}
         </div>
       )}
 
