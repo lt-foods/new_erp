@@ -29,7 +29,7 @@ import {
   listPosts, loginByQr, readCredential, resolveShareChatMid, sendChatText, sharePostToChat, unsendChatMessage, updateNotePost, whoami,
 } from "../_shared/lineNote.ts";
 import { extractPostTag, matchCampaign, normalizeForMatch, normalizeParseConfig, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
-import { renderPostText, TZ } from "../_shared/lineNoteRender.ts";
+import { itemLabel, renderPostText, TZ } from "../_shared/lineNoteRender.ts";
 
 const SUPABASE_URL = requireEnv("SUPABASE_URL");
 const SERVICE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
@@ -653,6 +653,15 @@ async function readPost(client: any, post: any) {
   const parseCfg = await loadParseConfig(post.tenant_id);
   if (comments.length) {
     const rows = comments.map((c: any) => {
+      // 自己發的商城下單播報（jobCheer）：不解析、直接標忽略，免得「A×2」被當成客人 +1
+      if (isOwnCheer(c.text)) {
+        return {
+          tenant_id: post.tenant_id, post_id: post.id, line_comment_id: String(c.commentId ?? ""),
+          commenter_id: c.authorMid ?? null, commenter_name: c.authorName ?? null, text: c.text ?? "",
+          commented_at: c.createdAt ?? null, member_no_hint: null, parsed: [],
+          status: "ignored", resolution_note: "機器人的商城下單播報，不是客人留言",
+        };
+      }
       const parsed = parseNoteComment(c.text, c.authorName ?? "", parseCfg);
       return {
         tenant_id: post.tenant_id, post_id: post.id, line_comment_id: String(c.commentId ?? ""),
@@ -748,6 +757,8 @@ async function detectClosing(post: any): Promise<any | null> {
   let hit: any = null;
   for (const c of rows ?? []) {
     if (reopened && (Date.parse(c.commented_at ?? "") || 0) <= reopened) continue;
+    // 自己發的商城下單播報不算宣告（模板裡若寫了「結單前快 +1」這種字也不能把這篇關掉）
+    if (c.is_closing_notice !== true && isOwnCheer(c.text)) continue;
     if (c.is_closing_notice !== true && !isClosingText(c.text)) continue;
     if (c.is_closing_notice !== true) {
       await patch("line_note_comments", `id=eq.${c.id}`, { is_closing_notice: true }).catch(() => {});
@@ -1283,8 +1294,98 @@ async function jobRemind(job: any) {
   return { reminded: true, chatMid: r.chatMid, textSent };
 }
 
+// 商城下單播報（rpc_line_note_enqueue_order_cheer 排的，20261003000000）：有人在 App 商城下單，
+// 到他的群那篇開團貼文底下留一句，讓記事本看起來熱絡。payload 帶人名／品項代碼／跟團人數，
+// 文字套社群的 cheer_template。文末固定接 CHEER_TAG：讀留言時靠它認出「這是自己發的」，
+// 不會被 parseNoteComment 當成 +1、也不會被當成結單宣告（詳見 isOwnCheer）。
+const CHEER_TAG = "#商城下單";
+const DEFAULT_CHEER_TEMPLATE = "🛒 {{name}} 剛剛在商城下單 {{items}} ✨\n目前已有 {{count}} 位好鄰居跟團 🔥 想要的也快留言 +1 喔～";
+function isOwnCheer(text: unknown): boolean {
+  return String(text ?? "").trimEnd().endsWith(CHEER_TAG);
+}
+// 會員姓名在 DB 裡常常長這樣：「卓秋如 689099-古華」「小雅338508-三峽」「翁700355」——
+// 6 碼會員編號跟店名是小幫手登打時接在名字後面的，播報只要人名：切在第一個 6 碼前面。
+function cleanName(name: unknown): string {
+  return String(name ?? "").split(/\d{6}/)[0].replace(/[\s\-－_,，。]+$/g, "").trim();
+}
+// 人名遮一半（王小明 → 王○明、小美 → 小○）：客人自己留言 +1 本來就會露名字，但從商城下單的
+// 人沒選擇在群裡出面，預設只露頭尾；模板要全名就用 {{full_name}}。
+function maskName(name: unknown): string {
+  const s = cleanName(name);
+  if (!s) return "好鄰居";
+  const chars = [...s];
+  if (chars.length <= 1) return s;
+  if (chars.length === 2) return `${chars[0]}○`;
+  return `${chars[0]}${"○".repeat(chars.length - 2)}${chars[chars.length - 1]}`;
+}
+const fmtQty = (q: unknown) => { const n = Number(q); return Number.isFinite(n) ? String(n % 1 === 0 ? n : n.toFixed(1)) : String(q ?? ""); };
+function renderCheer(template: string | null | undefined, p: any): string {
+  const items: any[] = Array.isArray(p?.items) ? p.items : [];
+  const campaign = String(p?.campaign_name ?? "");
+  const vars: Record<string, string> = {
+    name: maskName(p?.name),
+    full_name: cleanName(p?.name) || "好鄰居",
+    items: items.map((it) => `${it.code}×${fmtQty(it.qty)}`).join("、"),
+    // 品名在 DB 裡是「團名 (A) 荷葉白菜」，跟貼文一樣只印真正的品名
+    items_full: items.map((it) => `(${it.code}) ${itemLabel(String(it.name ?? ""), String(it.code ?? ""), campaign)} ×${fmtQty(it.qty)}`).join("\n"),
+    count: String(p?.count ?? ""),
+    store_count: String(p?.store_count ?? ""),
+    campaign: String(p?.campaign_name ?? ""),
+    order_no: String(p?.order_no ?? ""),
+  };
+  let out = String(template ?? "").trim() || DEFAULT_CHEER_TEMPLATE;
+  for (const [k, v] of Object.entries(vars)) out = out.replaceAll(`{{${k}}}`, v);
+  out = out.replace(/\n{3,}/g, "\n\n").trim();
+  return `${out}\n${CHEER_TAG}`;
+}
+// 留完把自己這則登記進 line_note_comments（status=ignored）：之後讀留言 upsert 是 ignore-duplicates，
+// 這一列就不會再被改成 pending。LINE 的 create 回應裡留言 id 長在哪一層沒有 wire trace（同 createNotePost），
+// 撿不到就用 list 對文字找回來；還是找不到也沒關係，readPost 靠 CHEER_TAG 一樣認得出來。
+async function registerOwnComment(client: any, account: any, post: any, homeId: string, res: any, text: string) {
+  const r = res?.result;
+  let id = r?.id ?? r?.commentId ?? r?.comment?.id ?? r?.comment?.commentId ?? null;
+  if (!id) {
+    try {
+      const list = await listComments(client, homeId, post.line_post_id, { verbose: VERBOSE });
+      const mine = (list ?? []).filter((c: any) => String(c.text ?? "").trim() === text.trim())
+        .sort((a: any, b: any) => (Date.parse(b.createdAt ?? "") || 0) - (Date.parse(a.createdAt ?? "") || 0));
+      id = mine[0]?.commentId ?? null;
+    } catch (e) { log("找自己剛留的播報失敗（略過）:", (e as any)?.message ?? e); }
+  }
+  if (!id) return null;
+  await rest(`line_note_comments?on_conflict=post_id,line_comment_id`, {
+    method: "POST",
+    body: [{
+      tenant_id: post.tenant_id, post_id: post.id, line_comment_id: String(id),
+      commenter_id: account?.line_mid ?? null, commenter_name: account?.display_name ?? null,
+      text, commented_at: new Date().toISOString(), parsed: [],
+      status: "ignored", resolution_note: "機器人的商城下單播報，不是客人留言",
+    }],
+    prefer: "resolution=ignore-duplicates,return=minimal",
+  }).catch((e) => log("登記播報留言失敗（略過）:", (e as any)?.message ?? e));
+  return String(id);
+}
+async function jobCheer(job: any) {
+  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,status,group_buy_campaigns(name,status),line_note_communities(id,home_id,account_id,cheer_on_app_order,cheer_template)`);
+  const p = rows?.[0];
+  if (!p) throw new Error(`post ${job.post_id} not found`);
+  const c = p.line_note_communities;
+  if (!c?.cheer_on_app_order) return { skipped: "cheer disabled" };
+  if (p.group_buy_campaigns?.status !== "open") return { skipped: `campaign ${p.group_buy_campaigns?.status}` };
+  if (p.status !== "posted") return { skipped: `post ${p.status}` };
+  if (!p.line_post_id) return { skipped: "no_line_post_id" };
+  const account = await loadAccount(c.account_id);
+  const client = await clientFor(account);
+  const text = renderCheer(c.cheer_template, job.payload ?? {});
+  const res = await createNoteComment(client, c.home_id, p.line_post_id, text, { verbose: VERBOSE });
+  const commentId = await registerOwnComment(client, account, p, c.home_id, res, text);
+  log(`🛒 貼文 ${p.id}（${p.group_buy_campaigns?.name ?? ""}）已播報商城下單 ${job.payload?.order_no ?? ""}`);
+  return { cheered: true, order_no: job.payload?.order_no ?? null, comment_id: commentId, comment: text.slice(0, 80) };
+}
+
 const HANDLERS: Record<string, (job: any, reactUntil: number) => Promise<unknown>> = {
   logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead, close: jobClose, remind: jobRemind, share: jobShare, reopen: jobReopen, refresh: jobRefresh,
+  cheer: jobCheer,
 };
 
 async function claimNextJob() {
