@@ -3,7 +3,16 @@
 // （Node 22.18+／24 會直接吃 .ts；測試檔用 .mjs 是為了不進 admin 的型別檢查範圍）
 import test from "node:test";
 import assert from "node:assert/strict";
-import { describeDisputeLine, disputeStatusByItemId, findDisputeItem, matchDisputeItem, skuIdsToLoad } from "./disputeLine.ts";
+import {
+  describeDisputeLine,
+  disputeAmountTexts,
+  disputeStatusByItemId,
+  findDisputeItem,
+  fmtBranchAmount,
+  fmtBranchPrice,
+  matchDisputeItem,
+  skuIdsToLoad,
+} from "./disputeLine.ts";
 
 const item = (o) => ({
   id: 1,
@@ -172,4 +181,43 @@ test("商品對照表：明細＋爭議快照的 sku_id，去重去空值", () =
     ],
   );
   assert.deepEqual(ids, [1, 2, 77]);
+});
+
+// 金額格式：明細表「分店小計」「分店單價」欄原本的寫法，爭議清單共用；改了兩邊會一起變，這裡把字釘死
+test("分店小計：取整數、有千分位、負號照 $-280 寫法", () => {
+  assert.equal(fmtBranchAmount("101.0000"), "$101");
+  assert.equal(fmtBranchAmount("101.0100"), "$101");
+  assert.equal(fmtBranchAmount(100.5), "$101");
+  assert.equal(fmtBranchAmount(1234.6), "$1,235");
+  assert.equal(fmtBranchAmount("-280.4000"), "$-280");
+  assert.equal(fmtBranchAmount(-500.6), "$-501");
+  assert.equal(fmtBranchAmount(-1234.5), "$-1,235");
+  assert.equal(fmtBranchAmount(null), "$0");
+});
+
+test("分店單價：兩位小數、不加千分位", () => {
+  assert.equal(fmtBranchPrice("33.6700"), "$33.67");
+  assert.equal(fmtBranchPrice("12.5000"), "$12.50");
+  assert.equal(fmtBranchPrice("-25.0000"), "$-25.00");
+  assert.equal(fmtBranchPrice(1234.5), "$1234.50");
+  assert.equal(fmtBranchPrice(null), "$0.00");
+});
+
+test("店家提出時：取整後跟目前一樣就不顯示", () => {
+  assert.deepEqual(disputeAmountTexts({ amount: 101.01, raisedAmount: 101 }), { amountText: "$101", raisedText: null });
+  assert.deepEqual(disputeAmountTexts({ amount: 55.4, raisedAmount: 55 }), { amountText: "$55", raisedText: null });
+  assert.deepEqual(disputeAmountTexts({ amount: 101, raisedAmount: null }), { amountText: "$101", raisedText: null });
+  // 接 describeDisputeLine：快照 101、目前 101.01 → 有 raisedAmount，但取整後一樣，不另標
+  const v = describeDisputeLine(dispute(), item({ branch_amount: "101.0100" }), true);
+  assert.equal(v.raisedAmount, 101);
+  assert.deepEqual(disputeAmountTexts(v), { amountText: "$101", raisedText: null });
+});
+
+test("店家提出時：取整後不同才顯示，格式同分店小計", () => {
+  assert.deepEqual(disputeAmountTexts({ amount: -280.4, raisedAmount: -500.6 }), { amountText: "$-280", raisedText: "$-501" });
+  assert.deepEqual(disputeAmountTexts({ amount: 101, raisedAmount: 100.4 }), { amountText: "$101", raisedText: "$100" });
+  // 接 describeDisputeLine：自由轉貨改過估價
+  const it = item({ entry_type: "free_out", description: "測試估價品", unit_branch_price: 0, branch_amount: "-280" });
+  const d = dispute({ item_snapshot: { entry_type: "free_out", description: "測試估價品", sku_id: 1, qty_received: 1, branch_amount: -500 } });
+  assert.deepEqual(disputeAmountTexts(describeDisputeLine(d, it, true)), { amountText: "$-280", raisedText: "$-500" });
 });

@@ -10,7 +10,15 @@ import { getSupabase } from "@/lib/supabase";
 import { withBasePath } from "@/lib/basePath";
 import SpinButton from "@/components/SpinButton";
 import { singleSendMonthWarning } from "../bulkSend";
-import { describeDisputeLine, disputeStatusByItemId, matchDisputeItem, skuIdsToLoad } from "./disputeLine";
+import {
+  describeDisputeLine,
+  disputeAmountTexts,
+  disputeStatusByItemId,
+  fmtBranchAmount,
+  fmtBranchPrice,
+  matchDisputeItem,
+  skuIdsToLoad,
+} from "./disputeLine";
 
 type SettlementStatus = "draft" | "sent" | "disputed" | "confirmed" | "remitted" | "settled" | "cancelled";
 
@@ -122,16 +130,6 @@ function fmtAmount(v: unknown): string {
   if (v === null || v === undefined || v === "") return "未提供成本";
   const n = Number(v);
   return Number.isFinite(n) ? `$${n.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}` : "未提供成本";
-}
-
-// 明細表「分店單價」「分店小計」欄與爭議清單共用，跳到明細那一行時兩邊數字長得一樣。
-// 小計取整數、負號照 toLocaleString（例：$-280）；單價兩位小數。
-function fmtBranchAmount(v: unknown): string {
-  return `$${Number(v ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}`;
-}
-
-function fmtBranchPrice(v: unknown): string {
-  return `$${Number(v ?? 0).toFixed(2)}`;
 }
 
 const STATUS_LABEL: Record<SettlementStatus, string> = {
@@ -1060,12 +1058,12 @@ function DisputeLineText({
   const line = describeDisputeLine(dispute, match?.item ?? null, itemsLoaded, match?.ambiguous ?? false);
   const itemId = line.itemId;
   const sku = line.skuId !== null ? skus.get(line.skuId) : undefined;
-  const typeLabel =
-    ENTRY_TYPE_LABEL[(line.entryType ?? "hq_inbound") as Item["entry_type"]] ?? line.entryType;
-  // 金額、單價用明細表同一個格式；店家提出時的金額取整後跟目前一樣（差不到 1 元）就不另標，
-  // 免得出現「$101（店家提出時 $101）」
-  const amountText = fmtBranchAmount(line.amount);
-  const raisedText = line.raisedAmount !== null ? fmtBranchAmount(line.raisedAmount) : null;
+  // 舊快照沒記類型、又對不到唯一一行時不知道是哪一種，顯示「類型不明」，不要猜成 HQ 進貨
+  const typeLabel = line.entryType
+    ? ENTRY_TYPE_LABEL[line.entryType as Item["entry_type"]] ?? line.entryType
+    : "類型不明";
+  // 金額、單價用明細表同一個格式；店家提出時的金額取整後跟目前一樣就不另標（見 disputeAmountTexts）
+  const { amountText, raisedText } = disputeAmountTexts(line);
   return (
     <div className="text-xs text-zinc-500">
       {typeLabel}
@@ -1086,7 +1084,7 @@ function DisputeLineText({
       {" · "}
       {line.qty !== null && <>數量 {line.qty.toLocaleString()}{line.unitPrice !== null && <> × {fmtBranchPrice(line.unitPrice)}</>}{" ＝ "}</>}
       <span className="font-medium text-zinc-700 dark:text-zinc-300">{amountText}</span>
-      {raisedText !== null && raisedText !== amountText && <span className="ml-1">（店家提出時 {raisedText}）</span>}
+      {raisedText !== null && <span className="ml-1">（店家提出時 {raisedText}）</span>}
       {line.transferId !== null && (
         <>
           {" · "}調撥單 <span className="font-mono">{transfers.get(line.transferId)?.transfer_no ?? `#${line.transferId}`}</span>

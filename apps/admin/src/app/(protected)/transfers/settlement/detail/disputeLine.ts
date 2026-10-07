@@ -11,6 +11,7 @@
 //   快照沒記類型（舊資料）而目前明細同一個 transfer_item_id 有好幾行 → 不猜是哪一行，
 //     一樣只用快照的數字，畫面改標「無法確定是明細哪一行」（不給跳轉、明細表也不標小標）。
 // 只決定要顯示什麼，爭議流程（標記已處理、重新送單）完全不經過這裡。
+// 明細表「分店單價」「分店小計」欄的金額格式也放這裡（明細表與爭議清單共用、可單獨測試）。
 
 type Num = number | string;
 
@@ -95,6 +96,30 @@ const num = (v: Num | null | undefined): number | null => {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 };
+
+// 明細表「分店單價」「分店小計」欄與爭議清單共用，跳到明細那一行時兩邊數字長得一樣。
+// 小計取整數、負號照 toLocaleString（例：$-280）；單價兩位小數。
+export function fmtBranchAmount(v: unknown): string {
+  return `$${Number(v ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}`;
+}
+
+export function fmtBranchPrice(v: unknown): string {
+  return `$${Number(v ?? 0).toFixed(2)}`;
+}
+
+/**
+ * 爭議那一行的金額字（同明細表「分店小計」格式）。
+ * raisedText：店家提出時的金額，取整後跟目前一樣（差不到 1 元）就是 null、不另標，
+ * 免得出現「$101（店家提出時 $101）」。
+ */
+export function disputeAmountTexts(line: Pick<DisputeLineView, "amount" | "raisedAmount">): {
+  amountText: string;
+  raisedText: string | null;
+} {
+  const amountText = fmtBranchAmount(line.amount);
+  const raised = line.raisedAmount !== null ? fmtBranchAmount(line.raisedAmount) : null;
+  return { amountText, raisedText: raised !== null && raised !== amountText ? raised : null };
+}
 
 /**
  * 組出爭議那一行要顯示的內容。
