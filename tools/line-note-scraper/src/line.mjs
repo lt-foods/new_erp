@@ -129,9 +129,20 @@ function channelCandidates(homeId) {
     : [CHANNEL_IDS.HOME, CHANNEL_IDS.NOTE, CHANNEL_IDS.TIMELINE, CHANNEL_IDS.SQUARE_NOTE];
 }
 
-const tokenCache = new Map();
+// channel token 是「這個帳號 × 這個 channel」的，依 client 分開存（跟 _shared/lineNote.ts 一致；
+// 這裡一個程序只有一個帳號，但 worker 模式換帳號重登時 client 會換掉，快取要跟著走）。
+const tokenCache = new WeakMap();
+function tokensFor(client) {
+  let m = tokenCache.get(client);
+  if (!m) { m = new Map(); tokenCache.set(client, m); }
+  return m;
+}
+function forgetChannelToken(client, channelId) {
+  tokenCache.get(client)?.delete(channelId);
+}
 async function channelToken(client, channelId, verbose) {
-  if (tokenCache.has(channelId)) return tokenCache.get(channelId);
+  const cache = tokensFor(client);
+  if (cache.has(channelId)) return cache.get(channelId);
   let token;
   try {
     const r = await client.base.channel.approveChannelAndIssueChannelToken({ channelId });
@@ -144,7 +155,7 @@ async function channelToken(client, channelId, verbose) {
     token = r?.token ?? r?.channelAccessToken;
   }
   if (!token) throw new Error(`no channel token for ${channelId}`);
-  tokenCache.set(channelId, token);
+  cache.set(channelId, token);
   return token;
 }
 
@@ -199,7 +210,12 @@ export async function noteRequest(client, homeId, path, params, { method = "GET"
 
   const cached = routeCache.get(homeId);
   if (cached) {
-    const { body } = await tryOne(cached.host, cached.prefix, cached.channelId);
+    let { body } = await tryOne(cached.host, cached.prefix, cached.channelId);
+    // channel token 會過期（isolate 活得比它久）：401/403 就丟掉重 issue 再試一次
+    if (body && (body.code === 401 || body.code === 403)) {
+      forgetChannelToken(client, cached.channelId);
+      ({ body } = await tryOne(cached.host, cached.prefix, cached.channelId));
+    }
     return body;
   }
   const attempts = [];

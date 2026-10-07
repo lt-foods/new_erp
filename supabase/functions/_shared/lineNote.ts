@@ -243,9 +243,25 @@ function channelCandidates(homeId) {
     : [CHANNEL_IDS.HOME, CHANNEL_IDS.NOTE, CHANNEL_IDS.TIMELINE, CHANNEL_IDS.SQUARE_NOTE];
 }
 
-const tokenCache = new Map();
+// ⚠ channel token 是「這個帳號 × 這個 channel」的，**一定要依 client 分開存**。
+// 這份模組在 Edge Function 裡跨請求活著，而 line-note-worker 同一個 tick 會依序跑好幾個
+// 帳號的 job：之前只用 channelId 當 key，先跑的帳號把 token 放進去，後跑的帳號就拿別人的
+// channel token 配自己的 x-line-access 去打 → 記事本 API 整排回 401「發生暫時性錯誤」/
+// 「正在更新用戶認證…」（2026-10-07 小幫手三個社群的讀留言全掛，同 tick 前一支是小幫手99號）。
+// WeakMap 跟著 client 走：client 換掉（重新登入 / isolate 回收）快取自然跟著消失。
+const tokenCache = new WeakMap();
+function tokensFor(client) {
+  let m = tokenCache.get(client);
+  if (!m) { m = new Map(); tokenCache.set(client, m); }
+  return m;
+}
+/** 拿到 401/403 時丟掉這個 client 的該 channel token，下一次重新 issue */
+function forgetChannelToken(client, channelId) {
+  tokenCache.get(client)?.delete(channelId);
+}
 async function channelToken(client, channelId, verbose) {
-  if (tokenCache.has(channelId)) return tokenCache.get(channelId);
+  const cache = tokensFor(client);
+  if (cache.has(channelId)) return cache.get(channelId);
   let token;
   try {
     const r = await client.base.channel.approveChannelAndIssueChannelToken({ channelId });
@@ -258,7 +274,7 @@ async function channelToken(client, channelId, verbose) {
     token = r?.token ?? r?.channelAccessToken;
   }
   if (!token) throw new Error(`no channel token for ${channelId}`);
-  tokenCache.set(channelId, token);
+  cache.set(channelId, token);
   return token;
 }
 
@@ -313,7 +329,12 @@ export async function noteRequest(client, homeId, path, params, { method = "GET"
 
   const cached = routeCache.get(homeId);
   if (cached) {
-    const { body } = await tryOne(cached.host, cached.prefix, cached.channelId);
+    let { body } = await tryOne(cached.host, cached.prefix, cached.channelId);
+    // channel token 會過期（isolate 活得比它久）：401/403 就丟掉重 issue 再試一次
+    if (body && (body.code === 401 || body.code === 403)) {
+      forgetChannelToken(client, cached.channelId);
+      ({ body } = await tryOne(cached.host, cached.prefix, cached.channelId));
+    }
     return body;
   }
   const attempts = [];
