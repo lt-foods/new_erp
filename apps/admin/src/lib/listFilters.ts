@@ -66,6 +66,20 @@ export const isBool: FieldCheck<boolean> = (v: unknown): v is boolean => typeof 
 export const isIdOrAll: FieldCheck<number | "all"> = (v: unknown): v is number | "all" =>
   v === "all" || (typeof v === "number" && Number.isSafeInteger(v) && v > 0);
 
+// ── 分頁 ──
+
+/**
+ * 查詢回來後，頁碼該停在哪一頁：超過最後一頁就改看最後一頁，沒資料就看第 1 頁；沒超過就原樣回傳。
+ * （帶回的頁碼、離開期間單子變少、刪掉最後一頁的最後一張，都會超頁 → 停在空白頁、總筆數不到一頁時連分頁鈕都沒有）
+ * 總筆數或每頁筆數不是正常數字時不動頁碼（算不出最後一頁，寧可不改）。
+ * 回傳值只會 ≤ 原頁碼、最小 1 → 列表「頁碼不同就改頁再查一次」最多收斂到 1，不會一直重查。
+ */
+export function clampPage(page: number, total: number, pageSize: number): number {
+  if (!Number.isFinite(total) || total < 0 || !Number.isFinite(pageSize) || pageSize <= 0) return page;
+  const lastPage = Math.max(1, Math.ceil(total / pageSize));
+  return page > lastPage ? lastPage : page;
+}
+
 // ── 讀寫 ──
 
 /** 一個列表在這個分頁、這個帳號下的 key */

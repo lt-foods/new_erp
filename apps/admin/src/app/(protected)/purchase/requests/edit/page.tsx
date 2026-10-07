@@ -1240,7 +1240,8 @@ function PageContent() {
             `${drafts.join("、")} 是舊式「斷貨用」單，維持待發送，需要的話到該單按 📤 發送。`,
         );
       }
-      router.push("/purchase/orders");
+      // ?fresh=1：採購單列表看到網址帶參數，就用預設條件、第 1 頁（不帶回上次存的篩選），剛建好的單一定看得到
+      router.push("/purchase/orders?fresh=1");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -2036,6 +2037,8 @@ function buildEvents(
 ): PrStepEvents {
   const evt: PrStepEvents = {};
   const prHref = `/purchase/requests/edit?id=${header.id}`;
+  // 多張採購單時連到採購單列表；?fresh=1 讓列表用預設條件、第 1 頁，不被上次存的篩選篩掉
+  const poListHref = `/purchase/orders?fresh=1`;
   evt.create = {
     actor: nameOf(header.created_by, names),
     time: fmtTime(header.created_at),
@@ -2068,7 +2071,7 @@ function buildEvents(
       actor: nameOf(first.created_by, names),
       time: fmtTime(first.created_at),
       detail: `${pos.length} 張 PO：${pos.map((p) => p.po_no).join(", ")}`,
-      href: pos.length === 1 ? `/purchase/orders/edit?id=${pos[0].id}` : `/purchase/orders`,
+      href: pos.length === 1 ? `/purchase/orders/edit?id=${pos[0].id}` : poListHref,
     };
   }
   // S6 發送供應商
@@ -2084,7 +2087,7 @@ function buildEvents(
         actor: nameOf(earliest.sent_by, names),
         time: fmtTime(earliest.sent_at),
         detail: `${sentPOs.length}/${pos.length} 張已發送`,
-        href: pos.length === 1 ? `/purchase/orders/edit?id=${pos[0].id}` : `/purchase/orders`,
+        href: pos.length === 1 ? `/purchase/orders/edit?id=${pos[0].id}` : poListHref,
       };
     }
   }
@@ -2095,7 +2098,7 @@ function buildEvents(
   if (receivedFully.length > 0) {
     evt.receive = {
       detail: `${receivedFully.length}/${pos.length} 張全部到貨`,
-      href: pos.length === 1 ? `/purchase/orders/edit?id=${pos[0].id}` : `/purchase/orders`,
+      href: pos.length === 1 ? `/purchase/orders/edit?id=${pos[0].id}` : poListHref,
     };
   }
   // S8 派貨 / S9 分店確認 — 顯示配送日

@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import {
   LIST_FILTERS_VERSION,
   browserSessionStorage,
+  clampPage,
   isBool,
   isDateOrEmpty,
   isIdOrAll,
@@ -200,4 +201,48 @@ test("瀏覽器連讀 window.sessionStorage 這個屬性都丟錯時 → 回 nul
   } finally {
     if (!had) delete globalThis.window;
   }
+});
+
+test("頁碼夾回範圍：沒超過最後一頁就不動", () => {
+  assert.equal(clampPage(1, 90, 20), 1);
+  assert.equal(clampPage(3, 90, 20), 3);
+  assert.equal(clampPage(5, 90, 20), 5); // 90 筆、每頁 20 → 最後一頁是 5
+  assert.equal(clampPage(2, 40, 20), 2); // 剛好整除
+});
+
+test("頁碼夾回範圍：超過最後一頁 → 改看最後一頁", () => {
+  assert.equal(clampPage(6, 90, 20), 5);
+  assert.equal(clampPage(9, 30, 20), 2);
+  assert.equal(clampPage(5, 3, 20), 1); // 換條件後只剩 3 筆（不到一頁）→ 第 1 頁
+  assert.equal(clampPage(3, 40, 20), 2); // 剛好整除時最後一頁是 2，不是 3
+});
+
+test("頁碼夾回範圍：沒資料 → 第 1 頁（不會變成第 0 頁）", () => {
+  assert.equal(clampPage(4, 0, 20), 1);
+  assert.equal(clampPage(1, 0, 30), 1);
+});
+
+test("頁碼夾回範圍：總筆數或每頁筆數不正常 → 不動頁碼", () => {
+  for (const total of [NaN, -1, Infinity, undefined, null, "30"]) {
+    assert.equal(clampPage(4, total, 20), 4, String(total));
+  }
+  for (const size of [0, -20, NaN]) {
+    assert.equal(clampPage(4, 90, size), 4, String(size));
+  }
+});
+
+test("頁碼夾回範圍：反覆套用會收斂（列表「頁碼不同就改頁再查一次」不會無限重查）", () => {
+  // 同一個條件（總筆數不變）：最多改一次頁，再套一次就不動
+  for (const [page, total] of [[25, 3], [9, 30], [6, 90], [3, 0], [2, 40]]) {
+    const once = clampPage(page, total, 20);
+    assert.equal(clampPage(once, total, 20), once, `${page} 頁 / ${total} 筆`);
+  }
+  // 每次重查時單子都又變少：頁碼只往小的方向走、最小 1
+  let page = 25;
+  for (const total of [500, 120, 41, 25, 0]) {
+    const next = clampPage(page, total, 20);
+    assert.ok(next <= page && next >= 1, `${page}→${next}`);
+    page = next;
+  }
+  assert.equal(page, 1);
 });

@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
 import {
+  clampPage,
   isDateOrEmpty,
   isIdOrAll,
   isPageNo,
@@ -204,11 +206,31 @@ const PO_LIST_FILTERS: ListFilterSpec<PoListFilters> = {
   },
 };
 
+// useSearchParams 需要 Suspense 邊界（同 purchase/orders/receive/page.tsx）
 export default function PurchaseOrdersListPage() {
+  return (
+    <Suspense fallback={<div className="p-6 text-sm text-zinc-500">載入中…</div>}>
+      <PurchaseOrdersList />
+    </Suspense>
+  );
+}
+
+function PurchaseOrdersList() {
+  const searchParams = useSearchParams();
   const [data, setData] = useState<ListResp | null>(null);
   const [error, setError] = useState<string | null>(null);
   // 篩選 / 排序 / 分組的初始值＝上次離開列表時的條件（第一次查資料就用它，不會先用空條件查一次）
-  const saved = useSavedListFilters(PO_LIST_FILTERS);
+  // 例外：網址帶了參數進來（請購單建好採購單後跳過來的 ?fresh=1、請購單列表「PO n」連結的 ?pr=…）
+  //   → 這次用預設條件、第 1 頁，不帶回上次存的篩選，免得剛建好的單被舊篩選篩掉、或停在別頁，以為沒建成。
+  //   列表本身不讀任何網址參數（?pr= 原本就沒有拿來篩），所以進來後把參數從網址拿掉：
+  //   之後點進明細再按瀏覽器返回，回到的是不帶參數的列表網址 → 照常帶回存的篩選。
+  //   ⚠️ 之後若要讓列表讀網址參數，這段要一起改。
+  //   ⚠️ 要用 useSearchParams（要去的那頁的網址）判斷，不能讀 window.location：從明細頁（網址帶 ?id=）
+  //   點側欄回列表時，列表第一次渲染那一刻 window.location 還是明細頁的網址，會被誤判成「帶參數進來」。
+  const [arrivedQuery] = useState(() => searchParams.toString());
+  const arrivedWithQuery = arrivedQuery !== "";
+  const restored = useSavedListFilters(PO_LIST_FILTERS);
+  const saved = arrivedWithQuery ? PO_LIST_FILTERS.defaults : restored;
   const [tab, setTab] = useState<StatusTab>(saved.tab);
   // search 是輸入框當下的值；dSearch 是進 DB 查詢的 debounce 值（打字不會每個字一次查詢）
   // （帶回的關鍵字兩個一起給，第一次查詢就用它，不用等 debounce）
@@ -220,9 +242,10 @@ export default function PurchaseOrdersListPage() {
   const [groupBy, setGroupBy] = useState<GroupBy>(saved.groupBy);
   const [sortBy, setSortBy] = useState<SortCol>(saved.sortBy);
   const [sortDir, setSortDir] = useState<"asc" | "desc">(saved.sortDir);
+  // 頁碼：換了會改變「查到哪些單」的條件（狀態分頁、KPI 卡、供應商、關鍵字、建立日、清除篩選）一律回第 1 頁。
+  // 刻意寫在各個 handler 裡、不寫成「條件一變就 setPage(1)」的 effect：effect 第一次掛載也會跑，
+  // 會把從明細回來帶回的頁碼蓋成 1。排序、分組、清單／樞紐、樞紐狀態不改變清單查到哪些單，頁碼不動（跟原本一樣）。
   const [page, setPage] = useState(saved.page);
-  // 帶回的頁碼可能已經超過現在的總頁數（離開期間單子變少）→ 進列表後第一次載入時檢查一次
-  const restoredPageCheckRef = useRef(saved.page > 1);
   const [reloadKey, setReloadKey] = useState(0);
   const [sendBusyId, setSendBusyId] = useState<number | null>(null);
   const [sendCtx, setSendCtx] = useState<SendCtx | null>(null);
@@ -237,6 +260,14 @@ export default function PurchaseOrdersListPage() {
     tab, search, supplierFilter, dateFrom, dateTo,
     groupBy, sortBy, sortDir, page, viewMode, pivotStatus,
   });
+
+  // 帶參數進來的：把參數從網址拿掉（只換掉目前這一筆瀏覽紀錄，不新增；畫面不會重新載入）。
+  // 網址列真的是「列表＋同一組參數」才動；對不上就不動 —— 寧可參數留著，也不要改到別頁的瀏覽紀錄。
+  useEffect(() => {
+    if (!arrivedQuery) return;
+    if (new URLSearchParams(window.location.search).toString() !== arrivedQuery) return;
+    window.history.replaceState(null, "", window.location.pathname + window.location.hash);
+  }, [arrivedQuery]);
 
   // 搜尋 debounce：打字停 300ms 才進 DB
   useEffect(() => {
@@ -265,14 +296,12 @@ export default function PurchaseOrdersListPage() {
         if (cancelled) return;
         if (rpcErr) throw new Error(rpcErr.message);
         const r = resp as ListResp;
-        if (restoredPageCheckRef.current) {
-          restoredPageCheckRef.current = false;
-          // 帶回的頁碼超過總頁數 → 改查最後一頁，不要停在一片空白、連分頁鈕都沒有的畫面
-          const lastPage = Math.max(1, Math.ceil(r.total / PAGE_SIZE));
-          if (page > lastPage) {
-            setPage(lastPage);
-            return;
-          }
+        // 頁碼超過總頁數（帶回的頁碼、離開期間單子變少…）→ 改查最後一頁，
+        // 不要停在一片空白、連分頁鈕都沒有的畫面。每次查詢回來都檢查；頁碼只會往小改、最小 1，不會一直重查。
+        const fixedPage = clampPage(page, r?.total, PAGE_SIZE);
+        if (fixedPage !== page) {
+          setPage(fixedPage);
+          return;
         }
         setData(r);
         setError(null);
@@ -691,6 +720,13 @@ export default function PurchaseOrdersListPage() {
     setSupplierFilter("all");
     setDateFrom("");
     setDateTo("");
+    setPage(1);
+  }
+
+  /** 換狀態分頁（分頁列與 KPI 卡共用）：查到的單會變，頁碼回第 1 頁 */
+  function changeTab(t: StatusTab) {
+    setTab(t);
+    setPage(1);
   }
 
   return (
@@ -728,7 +764,7 @@ export default function PurchaseOrdersListPage() {
           value={stats.draft}
           accent="text-zinc-700 dark:text-zinc-200"
           active={tab === "draft"}
-          onClick={() => setTab(tab === "draft" ? "all" : "draft")}
+          onClick={() => changeTab(tab === "draft" ? "all" : "draft")}
         />
         <KpiCard
           label="待到貨"
@@ -737,7 +773,7 @@ export default function PurchaseOrdersListPage() {
           accent="text-blue-700 dark:text-blue-400"
           active={tab === "sent" || tab === "partially_received"}
           onClick={() =>
-            setTab(tab === "sent" ? "partially_received" : "sent")
+            changeTab(tab === "sent" ? "partially_received" : "sent")
           }
         />
         <KpiCard
@@ -758,7 +794,7 @@ export default function PurchaseOrdersListPage() {
           value={stats.stockout}
           accent="text-amber-700 dark:text-amber-400"
           active={tab === "stockout"}
-          onClick={() => setTab(tab === "stockout" ? "all" : "stockout")}
+          onClick={() => changeTab(tab === "stockout" ? "all" : "stockout")}
         />
       </div>
 
@@ -809,7 +845,7 @@ export default function PurchaseOrdersListPage() {
           return (
             <SpinButton
               key={s}
-              onClick={() => setTab(s)}
+              onClick={() => changeTab(s)}
               className={`-mb-px border-b-2 px-3 py-2 text-sm ${
                 active
                   ? "border-blue-600 font-semibold text-blue-700 dark:text-blue-300"
@@ -828,17 +864,21 @@ export default function PurchaseOrdersListPage() {
       <div className="flex flex-wrap items-center gap-2">
         <input
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPage(1);
+          }}
           placeholder="🔍 搜尋 單號 / 供應商 / PR / 產品"
           className="flex-1 min-w-[180px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
         />
         <select
           value={String(supplierFilter)}
-          onChange={(e) =>
+          onChange={(e) => {
             setSupplierFilter(
               e.target.value === "all" ? "all" : Number(e.target.value),
-            )
-          }
+            );
+            setPage(1);
+          }}
           className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
         >
           <option value="all">全部供應商</option>
@@ -851,7 +891,10 @@ export default function PurchaseOrdersListPage() {
         <input
           type="date"
           value={dateFrom}
-          onChange={(e) => setDateFrom(e.target.value)}
+          onChange={(e) => {
+            setDateFrom(e.target.value);
+            setPage(1);
+          }}
           className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
           title="建立起日"
         />
@@ -859,7 +902,10 @@ export default function PurchaseOrdersListPage() {
         <input
           type="date"
           value={dateTo}
-          onChange={(e) => setDateTo(e.target.value)}
+          onChange={(e) => {
+            setDateTo(e.target.value);
+            setPage(1);
+          }}
           className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
           title="建立迄日"
         />

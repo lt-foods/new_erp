@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import {
+  clampPage,
   isBool,
   isDateOrEmpty,
   isPageNo,
@@ -251,9 +252,10 @@ export default function PurchaseRequestsListPage() {
   const [groupBy, setGroupBy] = useState<GroupBy>(saved.groupBy);
   const [sortBy, setSortBy] = useState<SortCol>(saved.sortBy);
   const [sortDir, setSortDir] = useState<"asc" | "desc">(saved.sortDir);
+  // 頁碼：換了會改變「查到哪些單」的條件（狀態分頁、審核、來源、關鍵字、結單日、清除篩選）一律回第 1 頁。
+  // 刻意寫在各個 handler 裡、不寫成「條件一變就 setPage(1)」的 effect：effect 第一次掛載也會跑，
+  // 會把從明細回來帶回的頁碼蓋成 1。排序、分組、清單／樞紐不改變查到哪些單，頁碼不動（跟原本一樣）。
   const [page, setPage] = useState(saved.page);
-  // 帶回的頁碼可能已經超過現在的總頁數（離開期間單子變少）→ 進列表後第一次載入時檢查一次
-  const restoredPageCheckRef = useRef(saved.page > 1);
 
   const [reloadTick, setReloadTick] = useState(0);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -327,14 +329,12 @@ export default function PurchaseRequestsListPage() {
         if (cancelled) return;
         if (err) throw new Error(err.message);
         const r = resp as ListResp;
-        if (restoredPageCheckRef.current) {
-          restoredPageCheckRef.current = false;
-          // 帶回的頁碼超過總頁數 → 改查最後一頁，不要停在一片空白、連分頁鈕都沒有的畫面
-          const lastPage = Math.max(1, Math.ceil(r.total / PAGE_SIZE));
-          if (page > lastPage) {
-            setPage(lastPage);
-            return;
-          }
+        // 頁碼超過總頁數（帶回的頁碼、離開期間單子變少、刪掉最後一頁的最後一張…）→ 改查最後一頁，
+        // 不要停在一片空白、連分頁鈕都沒有的畫面。每次查詢回來都檢查；頁碼只會往小改、最小 1，不會一直重查。
+        const fixedPage = clampPage(page, r?.total, PAGE_SIZE);
+        if (fixedPage !== page) {
+          setPage(fixedPage);
+          return;
         }
         setData(r);
         setError(null);
@@ -902,6 +902,7 @@ export default function PurchaseRequestsListPage() {
     setSearch("");
     setDateFrom("");
     setDateTo("");
+    setPage(1);
   }
 
   return (
@@ -949,11 +950,12 @@ export default function PurchaseRequestsListPage() {
           value={stats.pending_review}
           accent="text-amber-700 dark:text-amber-400"
           active={reviewFilter === "pending_review"}
-          onClick={() =>
+          onClick={() => {
             setReviewFilter(
               reviewFilter === "pending_review" ? "" : "pending_review",
-            )
-          }
+            );
+            setPage(1);
+          }}
         />
         <KpiCard
           label="待轉單"
@@ -1104,7 +1106,10 @@ export default function PurchaseRequestsListPage() {
           return (
             <SpinButton
               key={s}
-              onClick={() => setTab(s)}
+              onClick={() => {
+                setTab(s);
+                setPage(1);
+              }}
               className={`-mb-px border-b-2 px-3 py-2 text-sm ${
                 active
                   ? "border-blue-600 font-semibold text-blue-700 dark:text-blue-300"
@@ -1122,15 +1127,19 @@ export default function PurchaseRequestsListPage() {
       <div className="flex flex-wrap items-center gap-2">
         <input
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPage(1);
+          }}
           placeholder="🔍 搜尋 單號 / 備註 / 品項 / 廠商"
           className="flex-1 min-w-[180px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
         />
         <select
           value={reviewFilter}
-          onChange={(e) =>
-            setReviewFilter(e.target.value as ReviewStatus | "")
-          }
+          onChange={(e) => {
+            setReviewFilter(e.target.value as ReviewStatus | "");
+            setPage(1);
+          }}
           className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
         >
           <option value="">全部審核</option>
@@ -1142,9 +1151,10 @@ export default function PurchaseRequestsListPage() {
         </select>
         <select
           value={sourceFilter}
-          onChange={(e) =>
-            setSourceFilter(e.target.value as SourceType | "")
-          }
+          onChange={(e) => {
+            setSourceFilter(e.target.value as SourceType | "");
+            setPage(1);
+          }}
           className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
         >
           <option value="">全部來源</option>
@@ -1157,7 +1167,10 @@ export default function PurchaseRequestsListPage() {
         <input
           type="date"
           value={dateFrom}
-          onChange={(e) => setDateFrom(e.target.value)}
+          onChange={(e) => {
+            setDateFrom(e.target.value);
+            setPage(1);
+          }}
           className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
           title="結單日 起"
         />
@@ -1165,7 +1178,10 @@ export default function PurchaseRequestsListPage() {
         <input
           type="date"
           value={dateTo}
-          onChange={(e) => setDateTo(e.target.value)}
+          onChange={(e) => {
+            setDateTo(e.target.value);
+            setPage(1);
+          }}
           className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
           title="結單日 迄"
         />
