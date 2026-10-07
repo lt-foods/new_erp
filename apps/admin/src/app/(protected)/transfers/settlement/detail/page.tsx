@@ -5,11 +5,12 @@
 // 不跳瀏覽器對話框。draft/sent/disputed 的自由轉貨行可行內「改估價」。
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { withBasePath } from "@/lib/basePath";
 import SpinButton from "@/components/SpinButton";
 import { singleSendMonthWarning } from "../bulkSend";
+import { describeDisputeLine, disputeStatusByItemId, findDisputeItem, skuIdsToLoad } from "./disputeLine";
 
 type SettlementStatus = "draft" | "sent" | "disputed" | "confirmed" | "remitted" | "settled" | "cancelled";
 
@@ -154,6 +155,8 @@ export default function HqSettlementDetailPage() {
   const [header, setHeader] = useState<Settlement | null>(null);
   const [store, setStore] = useState<Store | null>(null);
   const [items, setItems] = useState<Item[] | null>(null);
+  // 明細查詢失敗時 items 會是 []，爭議清單不能因此說「已不在明細」
+  const [itemsFailed, setItemsFailed] = useState(false);
   const [disputes, setDisputes] = useState<Dispute[]>([]);
   const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
   const [transfers, setTransfers] = useState<Map<number, Transfer>>(new Map());
@@ -181,6 +184,10 @@ export default function HqSettlementDetailPage() {
   const [adjReason, setAdjReason] = useState("");
   const [voidingAdjId, setVoidingAdjId] = useState<number | null>(null);
   const [voidReason, setVoidReason] = useState("");
+
+  // 爭議「↓ 看明細那一行」：捲到明細表那一行並短暫亮起
+  const [flashItemId, setFlashItemId] = useState<number | null>(null);
+  const flashTimer = useRef<number | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -217,9 +224,12 @@ export default function HqSettlementDetailPage() {
       setHeader(hd);
       const dList = (dData ?? []) as Dispute[];
       setDisputes(dList);
-      if (e1) { setErr(e1.message); setItems([]); return; }
+      if (e1) { setErr(e1.message); setItems([]); setItemsFailed(true); return; }
       const list = (data ?? []) as Item[];
       setItems(list);
+      setItemsFailed(false);
+      // 商品名稱：明細的商品＋爭議快照的商品（爭議那一行剛好不在明細裡時也查得到名字）
+      const skuIds = skuIdsToLoad(list, dList);
 
       // 爭議訊息的發話人（店家提出 / 總部回覆）→ 顯示名稱
       const staffUids = Array.from(
@@ -231,8 +241,8 @@ export default function HqSettlementDetailPage() {
         list.length
           ? sb.from("transfers").select("id, transfer_no, status, shipped_at").in("id", Array.from(new Set(list.map((it) => it.transfer_id))))
           : Promise.resolve({ data: [] as Transfer[] }),
-        list.length
-          ? sb.from("skus").select("id, sku_code, product_name, variant_name").in("id", Array.from(new Set(list.map((it) => it.sku_id))))
+        skuIds.length
+          ? sb.from("skus").select("id, sku_code, product_name, variant_name").in("id", skuIds)
           : Promise.resolve({ data: [] as Sku[] }),
         sb
           .from("store_settlement_adjustments")
@@ -263,6 +273,17 @@ export default function HqSettlementDetailPage() {
   function refresh() {
     setReloadTick((t) => t + 1);
     window.dispatchEvent(new Event("settlement-badge-refresh"));
+  }
+
+  // 爭議「↓ 看明細那一行」：只捲動＋亮 2.5 秒，不動任何資料
+  function jumpToItem(itemId: number) {
+    document.getElementById(`settle-item-${itemId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setFlashItemId(itemId);
+    if (flashTimer.current !== null) window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => {
+      setFlashItemId(null);
+      flashTimer.current = null;
+    }, 2500);
   }
 
   async function runRpc(fn: string, params: Record<string, unknown>) {
@@ -366,6 +387,8 @@ export default function HqSettlementDetailPage() {
   const isDraft = header.status === "draft";
   const canEditEst = ["draft", "sent", "disputed"].includes(header.status);
   const openDisputes = disputes.filter((d) => d.status === "open");
+  // 明細表每一行掛著的爭議（未處理／已處理），給類型欄旁的小標用
+  const itemDisputeStatus = items ? disputeStatusByItemId(items, disputes) : new Map<number, "open" | "resolved">();
   const monthLabel = header.settlement_month?.slice(0, 7);
   const showActionBar =
     isDraft || header.status === "sent" || header.status === "disputed" || header.status === "remitted";
@@ -461,12 +484,14 @@ export default function HqSettlementDetailPage() {
                     {d.status === "open" ? "未處理" : "已處理"}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <div className="text-xs text-zinc-500">
-                      {ENTRY_TYPE_LABEL[(d.item_snapshot?.entry_type ?? "hq_inbound") as Item["entry_type"]] ?? d.item_snapshot?.entry_type}
-                      {" · "}
-                      {d.item_snapshot?.description ?? `SKU #${d.item_snapshot?.sku_id ?? "?"}`}
-                      {" · "}${Number(d.item_snapshot?.branch_amount ?? 0).toLocaleString("zh-TW")}
-                    </div>
+                    <DisputeLineText
+                      dispute={d}
+                      items={items}
+                      itemsLoaded={items !== null && !itemsFailed}
+                      skus={skus}
+                      transfers={transfers}
+                      onJump={jumpToItem}
+                    />
                     <div className="break-words">
                       🗣 <span className="font-medium">{staffNames.get(d.raised_by) ?? "店家"}</span>
                       <span className="ml-1 text-xs text-zinc-400">{fmtShortTime(d.raised_at)}</span>
@@ -787,12 +812,27 @@ export default function HqSettlementDetailPage() {
                 // 行毛利 = 分店小計 − 成本小計（兩者正負號同向：轉出行兩邊都負、毛利也負＝退回）。
                 // 自由轉貨行兩口徑同用估價，毛利恆為 0，顯示「—」。
                 const profit = Number(it.branch_amount ?? 0) - Number(it.line_amount ?? 0);
+                const disputeStatus = itemDisputeStatus.get(it.id);
                 return (
-                  <tr key={it.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900">
+                  <tr
+                    key={it.id}
+                    id={`settle-item-${it.id}`}
+                    className={`transition-colors duration-700 ${flashItemId === it.id ? "bg-amber-200 dark:bg-amber-900/60" : "hover:bg-zinc-50 dark:hover:bg-zinc-900"}`}
+                  >
                     <Td>
                       <span className={`inline-block whitespace-nowrap rounded px-2 py-0.5 text-xs ${ENTRY_TYPE_COLOR[it.entry_type] ?? ENTRY_TYPE_COLOR.hq_inbound}`}>
                         {ENTRY_TYPE_LABEL[it.entry_type] ?? it.entry_type}
                       </span>
+                      {disputeStatus === "open" && (
+                        <span className="ml-1 inline-block whitespace-nowrap rounded bg-red-600 px-1.5 py-0.5 text-xs font-medium text-white">
+                          爭議
+                        </span>
+                      )}
+                      {disputeStatus === "resolved" && (
+                        <span className="ml-1 inline-block whitespace-nowrap rounded border border-zinc-200 px-1.5 py-0.5 text-xs text-zinc-400 dark:border-zinc-700">
+                          已處理爭議
+                        </span>
+                      )}
                     </Td>
                     <Td className="whitespace-nowrap text-xs">{new Date(it.received_at).toLocaleDateString("zh-TW")}</Td>
                     <Td className="whitespace-nowrap font-mono text-xs">
@@ -984,6 +1024,69 @@ export default function HqSettlementDetailPage() {
             )}
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+// 爭議清單每一筆的「是月結哪一行」：類型 · 日期 · 商品 · 數量 × 單價 ＝ 金額 · 調撥單。
+// 對得到目前明細就用那一行（並給「↓ 看明細那一行」），對不到用提出當下的快照並標明（見 ./disputeLine）。
+function DisputeLineText({
+  dispute,
+  items,
+  itemsLoaded,
+  skus,
+  transfers,
+  onJump,
+}: {
+  dispute: Dispute;
+  items: Item[] | null;
+  itemsLoaded: boolean;
+  skus: Map<number, Sku>;
+  transfers: Map<number, Transfer>;
+  onJump: (itemId: number) => void;
+}) {
+  const line = describeDisputeLine(dispute, items ? findDisputeItem(items, dispute) : null, itemsLoaded);
+  const itemId = line.itemId;
+  const sku = line.skuId !== null ? skus.get(line.skuId) : undefined;
+  const typeLabel =
+    ENTRY_TYPE_LABEL[(line.entryType ?? "hq_inbound") as Item["entry_type"]] ?? line.entryType;
+  const money = (n: number | null) => `$${(n ?? 0).toLocaleString("zh-TW")}`;
+  return (
+    <div className="text-xs text-zinc-500">
+      {typeLabel}
+      {line.receivedAt && <>{" · "}{new Date(line.receivedAt).toLocaleDateString("zh-TW")}</>}
+      {" · "}
+      {line.description ? (
+        // 自由轉貨：無真 SKU，跟明細表一樣顯示轉貨時填的描述
+        <span className="break-words text-zinc-700 dark:text-zinc-300">{line.description}</span>
+      ) : sku ? (
+        <>
+          <span className="font-mono">{sku.sku_code ?? "—"}</span>{" "}
+          <span className="text-zinc-700 dark:text-zinc-300">{sku.product_name ?? "—"}</span>
+          {sku.variant_name && <span className="ml-1 text-zinc-400">/ {sku.variant_name}</span>}
+        </>
+      ) : (
+        `SKU #${line.skuId ?? "?"}`
+      )}
+      {" · "}
+      {line.qty !== null && <>數量 {line.qty.toLocaleString()}{line.unitPrice !== null && <> × ${line.unitPrice.toFixed(2)}</>}{" ＝ "}</>}
+      <span className="font-medium text-zinc-700 dark:text-zinc-300">{money(line.amount)}</span>
+      {line.raisedAmount !== null && <span className="ml-1">（店家提出時 {money(line.raisedAmount)}）</span>}
+      {line.transferId !== null && (
+        <>
+          {" · "}調撥單 <span className="font-mono">{transfers.get(line.transferId)?.transfer_no ?? `#${line.transferId}`}</span>
+        </>
+      )}
+      {line.gone && <span className="ml-1 text-amber-600 dark:text-amber-400">（此筆已不在目前月結明細）</span>}
+      {itemId !== null && (
+        <button
+          type="button"
+          onClick={() => onJump(itemId)}
+          className="ml-2 whitespace-nowrap text-blue-600 hover:underline dark:text-blue-400"
+        >
+          ↓ 看明細那一行
+        </button>
       )}
     </div>
   );
