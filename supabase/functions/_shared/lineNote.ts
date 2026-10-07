@@ -92,9 +92,35 @@ export function log(verbose: any, ...args: any[]) {
  * 所以 sink 必須在 loginWithAuthToken **之前**掛好）。LINE 會輪替 refreshToken，
  * 換到新的沒寫回 DB＝下次拿舊的去換會被拒，等於又要重新掃 QR。
  */
+/**
+ * 網路瞬斷重試一次的 fetch（餵給 linejs 的 `fetch` 選項，Thrift 與記事本 REST 都走它）。
+ *
+ * line-note-worker 的 client 跨 invocation 快取在模組層級，閒置幾分鐘後 Deno 連線池裡
+ * 對 gf.line.naver.jp 的 HTTP/2 連線早被對方收掉，下一支 job 的第一個請求就直接
+ * `error sending request … client error (SendRequest): connection error: stream closed
+ * because of a broken pipe`（160ms 內失敗、job 標 failed）。2026-10-07 一天 608 支 job
+ * 有 94 支這樣死掉（分享 / 提醒 / 讀留言都有）。重打一次會開新連線，幾乎都過。
+ * 只對「送不出去」的錯誤重試；HTTP 回了什麼（4xx/5xx）、逾時中止都原樣丟回去。
+ */
+const TRANSIENT_FETCH_RE = /error sending request|stream closed|broken pipe|connection (reset|closed|error)|ECONNRESET|EPIPE/i;
+export function retryingFetch(_verbose = false) {
+  return async (info: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const req = new Request(info, init);
+    const retry = req.clone(); // body 是串流，第一趟讀掉就沒了，先留一份
+    try {
+      return await globalThis.fetch(req);
+    } catch (e) {
+      const msg = String((e as any)?.message ?? e);
+      if ((e as any)?.name === "AbortError" || !TRANSIENT_FETCH_RE.test(msg)) throw e;
+      log(true, `fetch 瞬斷，重試一次：${msg.slice(0, 160)}`);
+      return await globalThis.fetch(retry);
+    }
+  };
+}
+
 export async function clientFromToken(
   cred: string | LineCredential,
-  opts: { device?: string; onCredential?: CredentialSink } = {},
+  opts: { device?: string; onCredential?: CredentialSink; verbose?: boolean } = {},
 ): Promise<any> {
   const c: LineCredential = typeof cred === "string" ? { accessToken: cred } : cred;
   if (!c.accessToken) throw new Error("沒有登入 token");
@@ -107,7 +133,7 @@ export async function clientFromToken(
     accessToken: c.accessToken,
     ...(c.refreshToken ? { refreshToken: c.refreshToken } : {}),
     ...(typeof c.expire === "number" ? { expire: c.expire } : {}),
-  }, { device: opts.device ?? DEFAULT_DEVICE, storage });
+  }, { device: opts.device ?? DEFAULT_DEVICE, storage, fetch: retryingFetch(opts.verbose) });
 
   client.base.on("update:authtoken", (t: string) => opts.onCredential?.({ accessToken: t }));
   // 上面那行掛得再快也趕不上 loginWithAuthToken 裡面 ready() 觸發的那次 refresh，
@@ -130,7 +156,7 @@ export async function loginByQr(opts: {
 }): Promise<any> {
   const login = loginWithQR(
     { onReceiveQRUrl: opts.onQr, onPincodeRequest: opts.onPin },
-    { device: opts.device ?? DEFAULT_DEVICE, storage: new MemoryStorage() },
+    { device: opts.device ?? DEFAULT_DEVICE, storage: new MemoryStorage(), fetch: retryingFetch() },
   );
   const timeout = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error("等太久沒掃 QR，請回後台再按一次「登入」")), opts.deadlineMs));
