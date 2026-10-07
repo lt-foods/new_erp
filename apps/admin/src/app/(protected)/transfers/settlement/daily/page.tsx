@@ -7,6 +7,9 @@
 // 每日金額加總 = 該月月結的貨款金額（不含總部人工調整）。
 // 資料走 rpc_store_inbound_daily_summary / rpc_store_inbound_day_items
 // （20260803000000），分店帳號只查得到自己店。
+// 售價／毛利（20261007000000）：毛利＝售價 − 分店價（老闆 2026-09-16 定義的分店毛利，
+// 同月結核對頁），只算有售價的行；自由轉貨、未設零售價的行畫「—」、不計入毛利。
+// ⛔ 本頁不讀總倉成本。
 
 import Link from "next/link";
 import { Fragment, useEffect, useMemo, useState } from "react";
@@ -16,7 +19,17 @@ import Spinner, { LoadingBlock } from "@/components/Spinner";
 
 type StoreRow = { id: number; name: string; location_id: number | null };
 
-type DaySummary = { date: string; line_count: number; amount: number };
+type DaySummary = {
+  date: string;
+  line_count: number;
+  amount: number;
+  /** 售價小計（只含有售價的行） */
+  retail_amount: number;
+  /** 有售價那些行的分店價小計（毛利的分母側） */
+  priced_amount: number;
+  /** 毛利 = retail_amount − priced_amount */
+  profit: number;
+};
 type Summary = {
   store_id: number;
   store_name: string;
@@ -24,6 +37,8 @@ type Summary = {
   days: DaySummary[];
   month_amount: number;
   month_lines: number;
+  month_retail_amount: number;
+  month_profit: number;
 };
 
 type DayItem = {
@@ -37,12 +52,23 @@ type DayItem = {
   qty: number;
   unit_branch_price: number;
   amount: number;
+  /** 售價（零售價）；沒設售價 / 自由轉貨 → null */
+  unit_retail_price: number | null;
+  retail_amount: number | null;
   entry_type: "hq_inbound" | "air_in" | "air_out" | "free_in" | "free_out" | "return_out";
   description: string | null;
   missing_price: boolean;
   received_at: string;
 };
-type DayDetail = { store_id: number; store_name: string; date: string; items: DayItem[]; total: number };
+type DayDetail = {
+  store_id: number;
+  store_name: string;
+  date: string;
+  items: DayItem[];
+  total: number;
+  retail_total: number;
+  profit_total: number;
+};
 
 const ENTRY_TYPE_LABEL: Record<DayItem["entry_type"], string> = {
   hq_inbound: "總倉進貨",
@@ -57,6 +83,11 @@ const ENTRY_TYPE_LABEL: Record<DayItem["entry_type"], string> = {
 const money = (n: number) =>
   `${Number(n) < 0 ? "-" : ""}$${Math.abs(Number(n)).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}`;
 const qtyText = (n: number) => Number(n).toLocaleString("zh-TW", { maximumFractionDigits: 3 });
+/** 毛利率 = 毛利 ÷ 售價金額；分母 0 時不顯示（同月結核對頁）。 */
+const marginText = (profit: number, retail: number) =>
+  Number(retail) ? `${((Number(profit) / Number(retail)) * 100).toFixed(1)}%` : "";
+const profitCls = (profit: number) =>
+  Number(profit) < 0 ? "text-amber-600" : "text-emerald-700 dark:text-emerald-400";
 
 // 台北時區的今天 / 本月（伺服器與瀏覽器時區都可能不是 +08，統一換算）
 function taipeiParts(d = new Date()) {
@@ -244,6 +275,13 @@ export default function StoreDailyInboundPage() {
           <p className="mt-1 text-xs text-zinc-500">
             {isCurrentMonth ? `${todayRow?.line_count ?? 0} 個品項` : "切到本月才顯示"}
           </p>
+          {!loading && isCurrentMonth && todayRow && (
+            <p className="mt-1 text-xs text-zinc-500">
+              毛利（售價 − 分店價）
+              <span className={`ml-1 font-mono ${profitCls(todayRow.profit ?? 0)}`}>{money(todayRow.profit ?? 0)}</span>
+              <span className="ml-1 text-[10px] text-zinc-400">{marginText(todayRow.profit ?? 0, todayRow.retail_amount ?? 0)}</span>
+            </p>
+          )}
         </div>
         <div className="rounded-md border border-zinc-200 p-4 dark:border-zinc-800">
           <p className="text-xs text-zinc-500">{summary?.month ?? month} 累計貨款</p>
@@ -253,6 +291,13 @@ export default function StoreDailyInboundPage() {
           <p className="mt-1 text-xs text-zinc-500">
             {summary?.month_lines ?? 0} 個品項{isCurrentMonth ? "（本月未結，會隨收貨變動）" : ""}
           </p>
+          {!loading && summary && (
+            <p className="mt-1 text-xs text-zinc-500">
+              毛利（售價 − 分店價）
+              <span className={`ml-1 font-mono ${profitCls(summary.month_profit ?? 0)}`}>{money(summary.month_profit ?? 0)}</span>
+              <span className="ml-1 text-[10px] text-zinc-400">{marginText(summary.month_profit ?? 0, summary.month_retail_amount ?? 0)}</span>
+            </p>
+          )}
         </div>
       </div>
 
@@ -263,14 +308,15 @@ export default function StoreDailyInboundPage() {
               <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-zinc-500">日期</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">品項數</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">當日金額</th>
+              <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">當日毛利／毛利率</th>
               <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-zinc-500">明細</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
             {loading ? (
-              <tr><td colSpan={4} className="p-6"><LoadingBlock /></td></tr>
+              <tr><td colSpan={5} className="p-6"><LoadingBlock /></td></tr>
             ) : !summary || summary.days.length === 0 ? (
-              <tr><td colSpan={4} className="p-6 text-center text-zinc-500">這個月還沒有收貨紀錄。</td></tr>
+              <tr><td colSpan={5} className="p-6 text-center text-zinc-500">這個月還沒有收貨紀錄。</td></tr>
             ) : summary.days.map((d) => (
               <Fragment key={d.date}>
               <tr className={openDate === d.date ? "bg-zinc-50 dark:bg-zinc-900" : undefined}>
@@ -282,6 +328,10 @@ export default function StoreDailyInboundPage() {
                 </td>
                 <td className="px-3 py-2 text-right font-mono text-zinc-500">{d.line_count}</td>
                 <td className={`px-3 py-2 text-right font-mono ${d.amount < 0 ? "text-emerald-600" : ""}`}>{money(d.amount)}</td>
+                <td className={`px-3 py-2 text-right font-mono ${profitCls(d.profit ?? 0)}`}>
+                  {money(d.profit ?? 0)}
+                  <span className="ml-1 text-[10px] text-zinc-400">{marginText(d.profit ?? 0, d.retail_amount ?? 0)}</span>
+                </td>
                 <td className="px-3 py-2 text-right">
                   <button
                     type="button"
@@ -294,7 +344,7 @@ export default function StoreDailyInboundPage() {
               </tr>
               {openDate === d.date && (
                 <tr>
-                  <td colSpan={4} className="px-3 pb-3">
+                  <td colSpan={5} className="px-3 pb-3">
                     <div className="rounded-md border border-zinc-200 dark:border-zinc-800">
                       {detailLoading || !detail ? (
                         <div className="p-4"><LoadingBlock /></div>
@@ -308,12 +358,17 @@ export default function StoreDailyInboundPage() {
                               <th className="px-2 py-1.5 text-left font-medium text-zinc-500">類別</th>
                               <th className="px-2 py-1.5 text-right font-medium text-zinc-500">數量</th>
                               <th className="px-2 py-1.5 text-right font-medium text-zinc-500">分店價</th>
+                              <th className="px-2 py-1.5 text-right font-medium text-zinc-500">售價</th>
                               <th className="px-2 py-1.5 text-right font-medium text-zinc-500">小計</th>
+                              <th className="px-2 py-1.5 text-right font-medium text-zinc-500">毛利／毛利率</th>
                               <th className="px-2 py-1.5 text-left font-medium text-zinc-500">單號</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-                            {detail.items.map((it) => (
+                            {detail.items.map((it) => {
+                              const hasRetail = it.retail_amount != null && it.unit_retail_price != null;
+                              const profit = hasRetail ? Number(it.retail_amount) - Number(it.amount) : 0;
+                              return (
                               <tr key={`${it.entry_type}-${it.transfer_item_id}`}>
                                 <td className="px-2 py-1.5">
                                   <span className="font-medium">{it.product_name ?? `SKU #${it.sku_id}`}</span>
@@ -330,17 +385,32 @@ export default function StoreDailyInboundPage() {
                                 <td className="px-2 py-1.5 text-right font-mono">
                                   {it.entry_type === "free_in" || it.entry_type === "free_out" ? "估價" : money(it.unit_branch_price)}
                                 </td>
+                                <td className="px-2 py-1.5 text-right font-mono text-zinc-500">
+                                  {hasRetail ? money(it.unit_retail_price as number) : "—"}
+                                </td>
                                 <td className={`px-2 py-1.5 text-right font-mono ${it.amount < 0 ? "text-emerald-600" : ""}`}>
                                   {money(it.amount)}
                                 </td>
+                                <td className={`px-2 py-1.5 text-right font-mono ${hasRetail ? profitCls(profit) : "text-zinc-400"}`}>
+                                  {hasRetail ? money(profit) : "—"}
+                                  {hasRetail && (
+                                    <span className="ml-1 text-[10px] text-zinc-400">{marginText(profit, Number(it.retail_amount))}</span>
+                                  )}
+                                </td>
                                 <td className="px-2 py-1.5 font-mono text-[10px] text-zinc-500">{it.transfer_no ?? `#${it.transfer_id}`}</td>
                               </tr>
-                            ))}
+                              );
+                            })}
                           </tbody>
                           <tfoot className="bg-zinc-50 dark:bg-zinc-900">
                             <tr>
                               <td className="px-2 py-1.5 font-medium" colSpan={4}>當日合計</td>
+                              <td className="px-2 py-1.5 text-right font-mono text-zinc-500">售價 {money(detail.retail_total ?? 0)}</td>
                               <td className="px-2 py-1.5 text-right font-mono font-semibold">{money(detail.total)}</td>
+                              <td className={`px-2 py-1.5 text-right font-mono font-semibold ${profitCls(detail.profit_total ?? 0)}`}>
+                                {money(detail.profit_total ?? 0)}
+                                <span className="ml-1 text-[10px] font-normal text-zinc-400">{marginText(detail.profit_total ?? 0, detail.retail_total ?? 0)}</span>
+                              </td>
                               <td />
                             </tr>
                           </tfoot>
@@ -359,6 +429,7 @@ export default function StoreDailyInboundPage() {
       <p className="text-xs text-zinc-500">
         註：金額為分店價（總倉賣斷給分店的價格），不含總部月結時的人工調整（運費分攤、折讓等）。
         正式應付金額以每月的月結對帳單為準。
+        毛利＝售價（零售價）− 分店價，只算有售價的品項；自由轉貨或未設售價的品項顯示「—」、不計入毛利。
       </p>
     </div>
   );
