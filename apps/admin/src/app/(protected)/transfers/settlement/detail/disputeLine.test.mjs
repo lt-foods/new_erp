@@ -3,7 +3,7 @@
 // （Node 22.18+／24 會直接吃 .ts；測試檔用 .mjs 是為了不進 admin 的型別檢查範圍）
 import test from "node:test";
 import assert from "node:assert/strict";
-import { describeDisputeLine, disputeStatusByItemId, findDisputeItem, skuIdsToLoad } from "./disputeLine.ts";
+import { describeDisputeLine, disputeStatusByItemId, findDisputeItem, matchDisputeItem, skuIdsToLoad } from "./disputeLine.ts";
 
 const item = (o) => ({
   id: 1,
@@ -46,10 +46,49 @@ test("對明細：類型不同就算對不到", () => {
   assert.equal(findDisputeItem(items, dispute()), null);
 });
 
-test("對明細：快照沒記類型時只比 transfer_item_id", () => {
-  const items = [item({ id: 9, entry_type: "air_in" })];
+test("對明細：快照沒記類型時只比 transfer_item_id，剛好一行才算對上", () => {
+  const items = [item({ id: 8, transfer_item_id: 7001 }), item({ id: 9, entry_type: "air_in" })];
   assert.equal(findDisputeItem(items, dispute({ item_snapshot: { sku_id: 4263 } })).id, 9);
   assert.equal(findDisputeItem(items, dispute({ item_snapshot: null })).id, 9);
+  assert.deepEqual(matchDisputeItem(items, dispute({ item_snapshot: null })), { item: items[1], ambiguous: false });
+});
+
+test("對明細：快照沒記類型、同一個 transfer_item_id 有兩行 → 不猜，當作對不到並標無法確定", () => {
+  const items = [
+    item({ id: 8, transfer_item_id: 7000, entry_type: "hq_inbound" }),
+    item({ id: 9, transfer_item_id: 7000, entry_type: "return_out", branch_amount: "-33.67" }),
+  ];
+  for (const snap of [{ sku_id: 4263, qty_received: 3, branch_amount: 101 }, null]) {
+    const d = dispute({ item_snapshot: snap });
+    assert.equal(findDisputeItem(items, d), null);
+    assert.deepEqual(matchDisputeItem(items, d), { item: null, ambiguous: true });
+  }
+  // 快照有記類型時照舊用類型分得出來
+  assert.equal(findDisputeItem(items, dispute()).id, 8);
+  assert.deepEqual(matchDisputeItem(items, dispute()), { item: items[0], ambiguous: false });
+});
+
+test("無法確定是哪一行：用快照數字、不說已不在明細、沒有跳轉與單號", () => {
+  const v = describeDisputeLine(dispute({ item_snapshot: { sku_id: 4263, qty_received: 3, branch_amount: 101 } }), null, true, true);
+  assert.equal(v.ambiguous, true);
+  assert.equal(v.gone, false);
+  assert.equal(v.itemId, null);
+  assert.equal(v.transferId, null);
+  assert.equal(v.unitPrice, null);
+  assert.equal(v.qty, 3);
+  assert.equal(v.amount, 101);
+  assert.equal(v.skuId, 4263);
+  // 一般對不到（不是分不出來）照舊標已不在明細
+  assert.equal(describeDisputeLine(dispute(), null, true).ambiguous, false);
+});
+
+test("明細表標記：無法確定是哪一行的爭議兩行都不標", () => {
+  const items = [
+    item({ id: 8, transfer_item_id: 7000, entry_type: "hq_inbound" }),
+    item({ id: 9, transfer_item_id: 7000, entry_type: "return_out" }),
+  ];
+  const m = disputeStatusByItemId(items, [dispute({ item_snapshot: { sku_id: 4263 } })]);
+  assert.equal(m.size, 0);
 });
 
 test("對明細：id 是字串也對得到（PostgREST bigint 有時給字串）", () => {
@@ -71,6 +110,7 @@ test("對得到：數量、單價、金額、調撥單都用目前那一行", ()
     itemId: 3,
     raisedAmount: null,
     gone: false,
+    ambiguous: false,
   });
 });
 

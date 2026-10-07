@@ -7,7 +7,9 @@
 // 月結重算（draft／sent／disputed）會把明細整批刪掉重建，明細行的 id 會變、行也可能不見
 // （產生月結的函式最新版 20260907030000），所以用 transfer_item_id＋類型去對「目前」的明細：
 //   對得到 → 數量、單價、金額、調撥單都用目前那一行（跟下面明細表看到的一樣）；
-//   對不到 → 只剩快照的數字，畫面標「此筆已不在目前月結明細」。
+//   對不到 → 只剩快照的數字，畫面標「此筆已不在目前月結明細」；
+//   快照沒記類型（舊資料）而目前明細同一個 transfer_item_id 有好幾行 → 不猜是哪一行，
+//     一樣只用快照的數字，畫面改標「無法確定是明細哪一行」（不給跳轉、明細表也不標小標）。
 // 只決定要顯示什麼，爭議流程（標記已處理、重新送單）完全不經過這裡。
 
 type Num = number | string;
@@ -44,17 +46,25 @@ export type DisputeLineDispute = {
 const FREE_TYPES = new Set(["free_in", "free_out"]);
 
 /**
- * 這筆爭議對到目前明細的哪一行；對不到 → null。
- * 條件：transfer_item_id 相同、且類型相同（快照沒記類型時只比 transfer_item_id）。
- * 同一張月結裡同一組照理只有一行；萬一有多行，取第一行。
+ * 這筆爭議對到目前明細的哪一行。
+ * - 快照有記類型：transfer_item_id 與類型都相同的那一行（同一張月結裡同一組照理只有一行；萬一有多行，取第一行）。
+ * - 快照沒記類型：只比 transfer_item_id，而且要剛好一行才算對上；
+ *   有好幾行（例：同一品項既有進貨又有退回）就不猜 → item 是 null、ambiguous 是 true。
  */
-export function findDisputeItem<T extends DisputeLineItem>(items: readonly T[], d: DisputeLineDispute): T | null {
+export function matchDisputeItem<T extends DisputeLineItem>(
+  items: readonly T[],
+  d: DisputeLineDispute,
+): { item: T | null; ambiguous: boolean } {
   const snapType = d.item_snapshot?.entry_type;
-  return (
-    items.find(
-      (it) => Number(it.transfer_item_id) === Number(d.transfer_item_id) && (!snapType || it.entry_type === snapType),
-    ) ?? null
-  );
+  const sameItem = (it: T) => Number(it.transfer_item_id) === Number(d.transfer_item_id);
+  if (snapType) return { item: items.find((it) => sameItem(it) && it.entry_type === snapType) ?? null, ambiguous: false };
+  const hits = items.filter(sameItem);
+  return hits.length === 1 ? { item: hits[0], ambiguous: false } : { item: null, ambiguous: hits.length > 1 };
+}
+
+/** matchDisputeItem 的那一行；對不到或無法確定 → null */
+export function findDisputeItem<T extends DisputeLineItem>(items: readonly T[], d: DisputeLineDispute): T | null {
+  return matchDisputeItem(items, d).item;
 }
 
 /** 爭議那一行要顯示的內容（文字怎麼排由畫面決定） */
@@ -76,6 +86,8 @@ export type DisputeLineView = {
   raisedAmount: number | null;
   /** true ＝明細確定已載入、卻找不到這一行（月結重算後那行不見了） */
   gone: boolean;
+  /** true ＝快照沒記類型、目前明細同一個 transfer_item_id 有好幾行，無法確定是哪一行（用快照顯示、不跳轉） */
+  ambiguous: boolean;
 };
 
 const num = (v: Num | null | undefined): number | null => {
@@ -86,13 +98,15 @@ const num = (v: Num | null | undefined): number | null => {
 
 /**
  * 組出爭議那一行要顯示的內容。
- * matched：findDisputeItem 的結果；itemsLoaded：明細有沒有成功載入
+ * matched／ambiguous：matchDisputeItem 的 item／ambiguous；itemsLoaded：明細有沒有成功載入
  * （還沒載入或載入失敗時不能說「已不在明細」，只用快照顯示、不標記）。
+ * 無法確定是哪一行時也只用快照顯示，但不說「已不在明細」（那一行可能還在，只是分不出是哪一行）。
  */
 export function describeDisputeLine(
   d: DisputeLineDispute,
   matched: DisputeLineItem | null,
   itemsLoaded: boolean,
+  ambiguous = false,
 ): DisputeLineView {
   const snap = d.item_snapshot ?? {};
   const snapAmount = num(snap.branch_amount);
@@ -110,6 +124,7 @@ export function describeDisputeLine(
       itemId: matched.id,
       raisedAmount: snapAmount !== null && amount !== null && snapAmount !== amount ? snapAmount : null,
       gone: false,
+      ambiguous: false,
     };
   }
   return {
@@ -123,13 +138,14 @@ export function describeDisputeLine(
     transferId: null,
     itemId: null,
     raisedAmount: null,
-    gone: itemsLoaded,
+    gone: itemsLoaded && !ambiguous,
+    ambiguous,
   };
 }
 
 /**
  * 明細表每一行（明細 id）掛著的爭議狀態：有任何一筆未處理 → "open"，否則有已處理的 → "resolved"。
- * 沒有爭議的行不在 Map 裡。
+ * 沒有爭議的行不在 Map 裡；對不到或無法確定是哪一行的爭議不標任何一行。
  */
 export function disputeStatusByItemId(
   items: readonly DisputeLineItem[],
