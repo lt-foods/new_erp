@@ -1134,12 +1134,20 @@ async function jobRead(job: any, reactUntil = Date.now() + REACT_BUDGET_MS) {
   const fullRead = !!job.post_id || !!job.created_by || !community?.last_read_at ||
     taipeiDate(community.last_read_at) !== taipeiDate(new Date());
   const filter = job.post_id ? `id=eq.${job.post_id}` : `community_id=eq.${job.community_id}${sinceFilter}`;
-  const posts = await rest(`line_note_posts?${filter}&status=eq.posted&select=id,tenant_id,line_post_id,community_id,last_read_at,reopened_at,comment_count,group_buy_campaigns(status),line_note_communities(id,home_id,account_id,react_on_confirm,read_days)&order=id.asc`);
+  const posts = await rest(`line_note_posts?${filter}&status=eq.posted&select=id,tenant_id,line_post_id,community_id,last_read_at,reopened_at,comment_count,group_buy_campaigns(status),line_note_communities(id,home_id,account_id,react_on_confirm,read_days,share_from_community_id)&order=id.asc`);
   const out: any[] = [];
   let skipped = 0;
   for (const p of posts ?? []) {
     const cst = p.group_buy_campaigns?.status;
     if (cst && !["open", "closed"].includes(cst)) { await patch("line_note_posts", `id=eq.${p.id}`, { status: "closed" }); continue; }
+    // 子群的分享列：貼文本體（和留言）在母社群那一列，line_post_id 是同一篇。拿子群聊天室的 m… 當 homeId
+    // 去打 comment/getList 只會回 501/404 整組「全部打不通」（2026-10-07 ①›③ 那列按「立即讀取」就這樣紅著）。
+    // 留言由母社群那列讀，這裡直接跳過、順手把先前留下的假錯誤清掉。
+    if (p.line_note_communities?.share_from_community_id) {
+      if (fullRead) await patch("line_note_posts", `id=eq.${p.id}`, { last_error: null }).catch(() => {});
+      out.push({ post_id: p.id, skipped: "sub_chat_share" });
+      continue;
+    }
     // 沒有貼文 id 讀不到留言：contentId 空的 getList 路由快取熱的時候回空陣列（看起來像 0 則留言）、
     // 冷的時候整組報「全部打不通」—— 兩種都是假象。標清楚原因，等 discoverPosts 補到 id 再讀。
     if (!p.line_post_id) {
