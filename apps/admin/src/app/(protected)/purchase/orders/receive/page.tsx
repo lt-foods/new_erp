@@ -417,7 +417,8 @@ function PageContent() {
       // 確認進貨後直接跳回採購清單頁。維持 submitLock 上鎖（不釋放、不重載），
       // 避免導頁空檔被連點重複送出本次到貨。
       setReloading(true); // 鎖住送出按鈕，顯示處理中狀態直到導頁完成
-      router.push("/purchase/orders");
+      // ?fresh=1：採購單列表看到網址帶參數，就用預設條件、第 1 頁（不帶回上次存的篩選），剛收貨的單一定看得到
+      router.push("/purchase/orders?fresh=1");
     } catch (e) {
       setError(translateRpcError(e));
       submitLock.current = false; // 失敗：釋放鎖讓使用者修正後重試

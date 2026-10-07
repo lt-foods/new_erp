@@ -4,6 +4,16 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import {
+  clampPage,
+  isBool,
+  isDateOrEmpty,
+  isPageNo,
+  isSearchText,
+  oneOf,
+  type ListFilterSpec,
+} from "@/lib/listFilters";
+import { useSavedListFilters, useSaveListFilters } from "@/lib/useListFilters";
 import SpinButton from "@/components/SpinButton";
 import { RowAction } from "@/components/RowAction";
 import Spinner, { LoadingBlock } from "@/components/Spinner";
@@ -170,6 +180,55 @@ const REVIEW_BADGE: Record<ReviewStatus, string> = {
 };
 
 type SortCol = "updated_at" | "source_close_date" | "total_amount" | "pr_no";
+type GroupBy = "none" | "close_date" | "source" | "status";
+
+// 點進單子再回來，篩選／搜尋／排序／分組／分頁／檢視模式都還在（存在這個瀏覽器分頁，見 lib/listFilters.ts）。
+// 彈窗、勾選的團、處理中狀態都不存。
+type PrListFilters = {
+  tab: StatusTab;
+  reviewFilter: "" | ReviewStatus;
+  sourceFilter: "" | SourceType;
+  search: string;
+  dateFrom: string;
+  dateTo: string;
+  groupBy: GroupBy;
+  sortBy: SortCol;
+  sortDir: "asc" | "desc";
+  page: number;
+  viewMode: "list" | "pivot";
+  pivotOnlyUnordered: boolean;
+};
+const PR_LIST_FILTERS: ListFilterSpec<PrListFilters> = {
+  page: "purchase-requests",
+  defaults: {
+    tab: "all",
+    reviewFilter: "",
+    sourceFilter: "",
+    search: "",
+    dateFrom: "",
+    dateTo: "",
+    groupBy: "none",
+    sortBy: "updated_at",
+    sortDir: "desc",
+    page: 1,
+    viewMode: "list",
+    pivotOnlyUnordered: false,
+  },
+  fields: {
+    tab: oneOf(STATUS_TAB_ORDER),
+    reviewFilter: oneOf(["", ...(Object.keys(REVIEW_LABEL) as ReviewStatus[])]),
+    sourceFilter: oneOf(["", ...(Object.keys(SOURCE_LABEL) as SourceType[])]),
+    search: isSearchText,
+    dateFrom: isDateOrEmpty,
+    dateTo: isDateOrEmpty,
+    groupBy: oneOf<GroupBy>(["none", "close_date", "source", "status"]),
+    sortBy: oneOf<SortCol>(["updated_at", "source_close_date", "total_amount", "pr_no"]),
+    sortDir: oneOf(["asc", "desc"]),
+    page: isPageNo,
+    viewMode: oneOf(["list", "pivot"]),
+    pivotOnlyUnordered: isBool,
+  },
+};
 
 export default function PurchaseRequestsListPage() {
   const router = useRouter();
@@ -182,19 +241,21 @@ export default function PurchaseRequestsListPage() {
   const [busySuppDate, setBusySuppDate] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // 篩選 / 排序 / 分組
-  const [tab, setTab] = useState<StatusTab>("all");
-  const [reviewFilter, setReviewFilter] = useState<"" | ReviewStatus>("");
-  const [sourceFilter, setSourceFilter] = useState<"" | SourceType>("");
-  const [search, setSearch] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [groupBy, setGroupBy] = useState<
-    "none" | "close_date" | "source" | "status"
-  >("none");
-  const [sortBy, setSortBy] = useState<SortCol>("updated_at");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
-  const [page, setPage] = useState(1);
+  // 篩選 / 排序 / 分組（初始值＝上次離開列表時的條件；第一次查資料就用它，不會先用空條件查一次）
+  const saved = useSavedListFilters(PR_LIST_FILTERS);
+  const [tab, setTab] = useState<StatusTab>(saved.tab);
+  const [reviewFilter, setReviewFilter] = useState<"" | ReviewStatus>(saved.reviewFilter);
+  const [sourceFilter, setSourceFilter] = useState<"" | SourceType>(saved.sourceFilter);
+  const [search, setSearch] = useState(saved.search);
+  const [dateFrom, setDateFrom] = useState(saved.dateFrom);
+  const [dateTo, setDateTo] = useState(saved.dateTo);
+  const [groupBy, setGroupBy] = useState<GroupBy>(saved.groupBy);
+  const [sortBy, setSortBy] = useState<SortCol>(saved.sortBy);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">(saved.sortDir);
+  // 頁碼：換了會改變「查到哪些單」的條件（狀態分頁、審核、來源、關鍵字、結單日、清除篩選）一律回第 1 頁。
+  // 刻意寫在各個 handler 裡、不寫成「條件一變就 setPage(1)」的 effect：effect 第一次掛載也會跑，
+  // 會把從明細回來帶回的頁碼蓋成 1。排序、分組、清單／樞紐不改變查到哪些單，頁碼不動（跟原本一樣）。
+  const [page, setPage] = useState(saved.page);
 
   const [reloadTick, setReloadTick] = useState(0);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -218,14 +279,20 @@ export default function PurchaseRequestsListPage() {
   const [data, setData] = useState<ListResp | null>(null);
 
   // 檢視模式：清單（原本）/ 樞紐（把篩選出的 PR 品項依廠商彙整）
-  const [viewMode, setViewMode] = useState<"list" | "pivot">("list");
+  const [viewMode, setViewMode] = useState<"list" | "pivot">(saved.viewMode);
   // 樞紐子篩選：全部品項 / 只看還沒轉成 PO 的品項（＝還要去跟廠商下單的量）
-  const [pivotOnlyUnordered, setPivotOnlyUnordered] = useState(false);
+  const [pivotOnlyUnordered, setPivotOnlyUnordered] = useState(saved.pivotOnlyUnordered);
   // 樞紐資料連同抓取當下的條件指紋一起存，指紋對不上就是過期 → 重撈
   const [pivotData, setPivotData] = useState<{ tick: string; groups: PivotGroup[] } | null>(null);
 
   // search 是輸入框當下的值；dSearch 是進 DB 查詢的 debounce 值
-  const [dSearch, setDSearch] = useState("");
+  // （帶回的關鍵字兩個一起給，第一次查詢就用它，不用等 debounce）
+  const [dSearch, setDSearch] = useState(saved.search);
+
+  useSaveListFilters(PR_LIST_FILTERS, {
+    tab, reviewFilter, sourceFilter, search, dateFrom, dateTo,
+    groupBy, sortBy, sortDir, page, viewMode, pivotOnlyUnordered,
+  });
 
   // 樞紐快取鍵：任一篩選條件或資料重載都會讓既有彙總過期
   const pivotTick = JSON.stringify([
@@ -261,7 +328,15 @@ export default function PurchaseRequestsListPage() {
         });
         if (cancelled) return;
         if (err) throw new Error(err.message);
-        setData(resp as ListResp);
+        const r = resp as ListResp;
+        // 頁碼超過總頁數（帶回的頁碼、離開期間單子變少、刪掉最後一頁的最後一張…）→ 改查最後一頁，
+        // 不要停在一片空白、連分頁鈕都沒有的畫面。每次查詢回來都檢查；頁碼只會往小改、最小 1，不會一直重查。
+        const fixedPage = clampPage(page, r?.total, PAGE_SIZE);
+        if (fixedPage !== page) {
+          setPage(fixedPage);
+          return;
+        }
+        setData(r);
         setError(null);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -827,6 +902,7 @@ export default function PurchaseRequestsListPage() {
     setSearch("");
     setDateFrom("");
     setDateTo("");
+    setPage(1);
   }
 
   return (
@@ -874,11 +950,12 @@ export default function PurchaseRequestsListPage() {
           value={stats.pending_review}
           accent="text-amber-700 dark:text-amber-400"
           active={reviewFilter === "pending_review"}
-          onClick={() =>
+          onClick={() => {
             setReviewFilter(
               reviewFilter === "pending_review" ? "" : "pending_review",
-            )
-          }
+            );
+            setPage(1);
+          }}
         />
         <KpiCard
           label="待轉單"
@@ -1029,7 +1106,10 @@ export default function PurchaseRequestsListPage() {
           return (
             <SpinButton
               key={s}
-              onClick={() => setTab(s)}
+              onClick={() => {
+                setTab(s);
+                setPage(1);
+              }}
               className={`-mb-px border-b-2 px-3 py-2 text-sm ${
                 active
                   ? "border-blue-600 font-semibold text-blue-700 dark:text-blue-300"
@@ -1047,15 +1127,19 @@ export default function PurchaseRequestsListPage() {
       <div className="flex flex-wrap items-center gap-2">
         <input
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPage(1);
+          }}
           placeholder="🔍 搜尋 單號 / 備註 / 品項 / 廠商"
           className="flex-1 min-w-[180px] rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
         />
         <select
           value={reviewFilter}
-          onChange={(e) =>
-            setReviewFilter(e.target.value as ReviewStatus | "")
-          }
+          onChange={(e) => {
+            setReviewFilter(e.target.value as ReviewStatus | "");
+            setPage(1);
+          }}
           className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
         >
           <option value="">全部審核</option>
@@ -1067,9 +1151,10 @@ export default function PurchaseRequestsListPage() {
         </select>
         <select
           value={sourceFilter}
-          onChange={(e) =>
-            setSourceFilter(e.target.value as SourceType | "")
-          }
+          onChange={(e) => {
+            setSourceFilter(e.target.value as SourceType | "");
+            setPage(1);
+          }}
           className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
         >
           <option value="">全部來源</option>
@@ -1082,7 +1167,10 @@ export default function PurchaseRequestsListPage() {
         <input
           type="date"
           value={dateFrom}
-          onChange={(e) => setDateFrom(e.target.value)}
+          onChange={(e) => {
+            setDateFrom(e.target.value);
+            setPage(1);
+          }}
           className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
           title="結單日 起"
         />
@@ -1090,7 +1178,10 @@ export default function PurchaseRequestsListPage() {
         <input
           type="date"
           value={dateTo}
-          onChange={(e) => setDateTo(e.target.value)}
+          onChange={(e) => {
+            setDateTo(e.target.value);
+            setPage(1);
+          }}
           className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900"
           title="結單日 迄"
         />

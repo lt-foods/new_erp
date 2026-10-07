@@ -244,8 +244,9 @@ export default function ReceivingWorkbenchPage() {
             {counts.restock > 0 ? ` · 含 ${counts.restock} 張補貨單` : ""}
           </p>
         </div>
+        {/* ?fresh=1：採購單列表看到網址帶參數，就用預設條件、第 1 頁（不帶回上次存的篩選） */}
         <Link
-          href="/purchase/orders"
+          href="/purchase/orders?fresh=1"
           className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
         >
           {PO_TERM_ZH}列表 →
