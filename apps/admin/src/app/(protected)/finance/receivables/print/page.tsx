@@ -53,7 +53,6 @@ type Adjustment = {
 
 type Store = { id: number; code: string; name: string };
 type Sku = { id: number; sku_code: string | null; product_name: string | null; variant_name: string | null };
-type Transfer = { id: number; transfer_no: string };
 type Receivable = { id: number; receivable_no: string; due_date: string; status: string };
 
 const ENTRY_TYPE_LABEL: Record<SettlementEntryType, string> = {
@@ -111,11 +110,10 @@ export default function PrintSettlementPage() {
   const [store, setStore] = useState<Store | null>(null);
   const [items, setItems] = useState<SettlementItem[]>([]);
   const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
-  const [transfers, setTransfers] = useState<Map<number, Transfer>>(new Map());
   const [skus, setSkus] = useState<Map<number, Sku>>(new Map());
   const [tenantName, setTenantName] = useState("");
   const [receivable, setReceivable] = useState<Receivable | null>(null);
-  // 單號／品名類（調撥單號、商品編號／品名、公司名、應收單號）載入結果：null＝還在載；[]＝全部載到；有值＝哪幾樣載入失敗
+  // 單號／品名類（商品編號／品名、公司名、應收單號）載入結果：null＝還在載；[]＝全部載到；有值＝哪幾樣載入失敗
   const [namesFailed, setNamesFailed] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -176,8 +174,8 @@ export default function PrintSettlementPage() {
         const itList = itemRows;
         setItems(itList);
 
-        // 以下是單號／品名類（公司名、調撥單號、商品編號／品名、應收單號）：查失敗不影響金額，
-        // 但紙上會變 #123／—，所以不整頁擋，改成黃字提醒＋停用列印（載入完成前也不給印）。
+        // 以下是單號／品名類（公司名、商品編號／品名、應收單號）：查失敗不影響金額，
+        // 但紙上會變「—」，所以不整頁擋，改成黃字提醒＋停用列印（載入完成前也不給印）。
         const failed: string[] = [];
         if (tenantRes.error) failed.push("公司名稱");
         else {
@@ -185,18 +183,15 @@ export default function PrintSettlementPage() {
           if (t?.name) setTenantName(t.name);
         }
 
-        // transfer + sku 名稱：id 可能上百上千個，切 IN_BATCH 一批查，每一批都檢查錯誤（fetchInBatches）。
-        const txIds = Array.from(new Set(itList.map((i) => i.transfer_id)));
+        // sku 名稱：id 可能上百上千個，切 IN_BATCH 一批查，每一批都檢查錯誤（fetchInBatches）。
+        // 紙上不印調撥單號（2026-10-07 老闆指示整欄刪掉），所以不查 transfers —— 免得一個用不到的查詢失敗還擋列印。
         const skuIds = Array.from(new Set(itList.map((i) => i.sku_id)));
-        const [txRes, skRes] = await Promise.allSettled([
-          fetchInBatches<Transfer>(txIds, IN_BATCH, (ids) => sb.from("transfers").select("id, transfer_no").in("id", ids)),
+        const [skRes] = await Promise.allSettled([
           fetchInBatches<Sku>(skuIds, IN_BATCH, (ids) =>
             sb.from("skus").select("id, sku_code, product_name, variant_name").in("id", ids),
           ),
         ]);
         if (cancelled) return;
-        if (txRes.status === "fulfilled") setTransfers(new Map(txRes.value.map((x) => [x.id, x])));
-        else failed.push("調撥單號");
         if (skRes.status === "fulfilled") setSkus(new Map(skRes.value.map((x) => [x.id, x])));
         else failed.push("商品編號／品名");
 
@@ -375,41 +370,36 @@ export default function PrintSettlementPage() {
             <span className="font-mono text-rose-600">{fmtStatementMoney(paper.payable)}</span>
           </div>
 
-          {/* 商品明細表 */}
+          {/* 商品明細表（2026-10-07 老闆指示刪掉「調撥單」欄：長單號把品名擠成好幾行、表格還超出右邊；
+              表頭一律不換行，「數量」這種短欄位才不會被擠成兩行） */}
           <table className="stmt-table w-full border-collapse text-xs">
             <thead>
               <tr className="border-b-2 border-zinc-900">
-                <th className="border border-zinc-400 px-2 py-1.5 text-left">#</th>
-                <th className="border border-zinc-400 px-2 py-1.5 text-left">日期</th>
-                <th className="border border-zinc-400 px-2 py-1.5 text-left">類型</th>
-                <th className="border border-zinc-400 px-2 py-1.5 text-left">調撥單</th>
-                <th className="border border-zinc-400 px-2 py-1.5 text-left">商品編號</th>
-                <th className="border border-zinc-400 px-2 py-1.5 text-left">品名</th>
-                <th className="border border-zinc-400 px-2 py-1.5 text-right">數量</th>
+                <th className="border border-zinc-400 px-2 py-1.5 text-left whitespace-nowrap">#</th>
+                <th className="border border-zinc-400 px-2 py-1.5 text-left whitespace-nowrap">日期</th>
+                <th className="border border-zinc-400 px-2 py-1.5 text-left whitespace-nowrap">類型</th>
+                <th className="border border-zinc-400 px-2 py-1.5 text-left whitespace-nowrap">商品編號</th>
+                <th className="border border-zinc-400 px-2 py-1.5 text-left whitespace-nowrap">品名</th>
+                <th className="border border-zinc-400 px-2 py-1.5 text-right whitespace-nowrap">數量</th>
                 {internal && (
                   <>
-                    <th className="border border-zinc-400 px-2 py-1.5 text-right">成本單價</th>
-                    <th className="border border-zinc-400 px-2 py-1.5 text-right">成本小計</th>
+                    <th className="border border-zinc-400 px-2 py-1.5 text-right whitespace-nowrap">成本單價</th>
+                    <th className="border border-zinc-400 px-2 py-1.5 text-right whitespace-nowrap">成本小計</th>
                   </>
                 )}
-                <th className="border border-zinc-400 px-2 py-1.5 text-right">{internal ? "分店單價" : "單價"}</th>
-                <th className="border border-zinc-400 px-2 py-1.5 text-right">{internal ? "分店小計" : "小計"}</th>
+                <th className="border border-zinc-400 px-2 py-1.5 text-right whitespace-nowrap">{internal ? "分店單價" : "單價"}</th>
+                <th className="border border-zinc-400 px-2 py-1.5 text-right whitespace-nowrap">{internal ? "分店小計" : "小計"}</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row, i) => {
                 if (row.kind === "day") {
                   // HQ 進貨／退貨沖回：一天一行（單價、商品編號不適用，顯示「—」）
-                  const txLabel =
-                    row.transferIds.length === 1
-                      ? (transfers.get(row.transferIds[0])?.transfer_no ?? `#${row.transferIds[0]}`)
-                      : `${row.transferIds.length} 張`;
                   return (
                     <tr key={row.key}>
                       <td className="border border-zinc-400 px-2 py-1">{i + 1}</td>
                       <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{fmtPrintDate(row.date)}</td>
                       <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{entryTypeLabel(row.entryType)}</td>
-                      <td className="border border-zinc-400 px-2 py-1 font-mono whitespace-nowrap">{txLabel}</td>
                       <td className="border border-zinc-400 px-2 py-1 font-mono whitespace-nowrap">—</td>
                       <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">共 {row.lineCount} 項</td>
                       <td className="border border-zinc-400 px-2 py-1 text-right font-mono">{row.qty.toLocaleString()}</td>
@@ -430,7 +420,6 @@ export default function PrintSettlementPage() {
                 }
                 // 店到店（空中／自由轉入轉出）：照舊一筆一行
                 const it = row.item;
-                const tx = transfers.get(it.transfer_id);
                 const sku = skus.get(it.sku_id);
                 const isFree = it.description != null; // 自由轉貨行：估價入帳、無單價
                 return (
@@ -438,7 +427,6 @@ export default function PrintSettlementPage() {
                     <td className="border border-zinc-400 px-2 py-1">{i + 1}</td>
                     <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{fmtPrintDate(row.date)}</td>
                     <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{entryTypeLabel(it.entry_type)}</td>
-                    <td className="border border-zinc-400 px-2 py-1 font-mono whitespace-nowrap">{tx?.transfer_no ?? `#${it.transfer_id}`}</td>
                     <td className="border border-zinc-400 px-2 py-1 font-mono whitespace-nowrap">{sku?.sku_code ?? "—"}</td>
                     <td className="border border-zinc-400 px-2 py-1">
                       {it.description ? (
@@ -472,7 +460,7 @@ export default function PrintSettlementPage() {
               })}
               {/* 合計列 */}
               <tr className="bg-zinc-100 font-semibold">
-                <td colSpan={7} className="border border-zinc-400 px-2 py-1.5 text-right">合計</td>
+                <td colSpan={6} className="border border-zinc-400 px-2 py-1.5 text-right">合計</td>
                 {internal && (
                   <>
                     <td className="border border-zinc-400 px-2 py-1.5"></td>
