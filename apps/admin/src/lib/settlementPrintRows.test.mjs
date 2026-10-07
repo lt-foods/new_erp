@@ -7,6 +7,8 @@ import {
   buildSettlementPrintRows,
   fmtPrintDate,
   fmtStatementMoney,
+  roundYuan,
+  statementTotals,
   sumMoney,
   summarizeSettlementItems,
   taipeiDate,
@@ -213,4 +215,75 @@ test("等式金額：負數寫成 －$N、沒有調整是 $0、四捨五入後�
   assert.equal(fmtStatementMoney(0), "$0");
   assert.equal(fmtStatementMoney(-0.4), "$0");
   assert.equal(fmtStatementMoney(Number.NaN), "$0");
+});
+
+test("整頁共用金額格式：小計負數也是 －$N（不是 $-N）；單價帶兩位小數", () => {
+  assert.equal(fmtStatementMoney(-20), "－$20");
+  assert.equal(fmtStatementMoney(-19.75), "－$20");
+  assert.equal(fmtStatementMoney(12.5, 2), "$12.50");
+  assert.equal(fmtStatementMoney(-12.5, 2), "－$12.50");
+  assert.equal(fmtStatementMoney(1234.5678, 2), "$1,234.57");
+  assert.equal(fmtStatementMoney(-0.004, 2), "$0.00");
+  for (const v of [-1, -20, -1234.5, -99999.4]) {
+    assert.ok(!fmtStatementMoney(v).includes("$-"), `${v} 不能印成 $-N`);
+    assert.ok(fmtStatementMoney(v).startsWith("－$"), `${v} 要印成 －$N`);
+  }
+});
+
+test("取整到元：四捨五入、.5 遠離 0、字串也吃、跟顯示取整同一套", () => {
+  assert.equal(roundYuan(100.5), 101);
+  assert.equal(roundYuan(100.4999), 100);
+  assert.equal(roundYuan(-0.5), -1);
+  assert.equal(roundYuan(-0.4999), 0);
+  assert.ok(Object.is(roundYuan(-0.4), 0), "取整後是 0 不能是 -0");
+  assert.equal(roundYuan("2136.1"), 2136);
+  assert.equal(roundYuan(null), 0);
+  for (const v of [0.5, 1.5, 2.5, -2.5, 100.5, 1234.4999, -7.5]) {
+    assert.equal(fmtStatementMoney(roundYuan(v)), fmtStatementMoney(v), `${v}：取整後顯示要跟直接顯示一樣`);
+  }
+});
+
+test("紙上整數等式：100.50＋0.50＝101.00 → 印 $100＋$1＝$101（不能印成 $101＋$1＝$101）", () => {
+  const t = statementTotals(100.5, 0.5, 101);
+  assert.equal(t.ok, true);
+  assert.deepEqual([t.goods, t.adjustment, t.payable], [100, 1, 101]);
+  assert.equal(t.goods + t.adjustment, t.payable);
+  // 金額是字串（PostgREST numeric）也一樣
+  const s = statementTotals("100.5000", "0.5000", "101.0000");
+  assert.deepEqual([s.goods, s.adjustment, s.payable], [100, 1, 101]);
+});
+
+test("紙上整數等式：各種小數、正負調整、沒有調整，X印＋Y印＝Z印 一律成立", () => {
+  const branches = [0, 0.5, 100.5, 2135.6, 2136.1, 99.4999, -20.5, 12345.6789, 0.0001, 7.5];
+  const adjs = [0, 0.5, -0.5, 1.4999, -300.25, 2.5, -2.5, 0.0001];
+  for (const b of branches) {
+    for (const a of adjs) {
+      const payable = sumMoney([b, a]); // 產生月結時就是這兩項相加
+      const t = statementTotals(b, a, payable);
+      assert.equal(t.ok, true, `${b}＋${a}`);
+      assert.equal(t.goods + t.adjustment, t.payable, `${b}＋${a}＝${payable}：紙上 ${t.goods}＋${t.adjustment}≠${t.payable}`);
+      assert.equal(t.payable, roundYuan(payable));
+      assert.equal(t.adjustment, roundYuan(a));
+      // 貨款跟明細合計取整最多差 1 元（取整誤差，總額以系統應付為準）
+      assert.ok(Math.abs(t.goods - roundYuan(b)) <= 1, `${b}＋${a}：貨款差太多`);
+    }
+  }
+});
+
+test("自我核對：明細少讀一段（例如截在 1000 筆）→ 不通過、差額照實回報、貨款印明細合計", () => {
+  const t = statementTotals(70000, 0, 100000);
+  assert.equal(t.ok, false);
+  assert.equal(t.diff, 30000);
+  assert.equal(t.goods, 70000);
+  assert.equal(t.payable, 100000);
+  // 調整讀漏也一樣擋
+  assert.equal(statementTotals(1000, 0, 1050).ok, false);
+});
+
+test("自我核對：差 0.01 元以內算通過，超過就不通過（兩個方向都看）", () => {
+  assert.equal(statementTotals(100, 0, 100.01).ok, true);
+  assert.equal(statementTotals(100, 0, 99.99).ok, true);
+  assert.equal(statementTotals(100, 0, 100.0101).ok, false);
+  assert.equal(statementTotals(100, 0, 99.9899).ok, false);
+  assert.equal(statementTotals("0.1", "0.2", "0.3").ok, true); // 浮點陷阱不能誤判成不一致
 });

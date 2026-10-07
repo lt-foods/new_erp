@@ -7,12 +7,17 @@
 //   - 金額用原始小數加總、只在畫面顯示時取整數。欄位是 NUMERIC(18,4)／數量 NUMERIC(18,3)，
 //     先換成整數萬分位（數量千分位）再加，避免 0.1+0.2 這種浮點誤差讓 .5 的金額取整時差 1 元。
 //   - 成本是 null 的行不當 0 加：併日那行另外記「幾項未提供成本」。
+//   - 紙上的總額一律印整數元，而且等式要成立（見 statementTotals）：
+//     應付總倉 Z印＝round(payable_amount)、調整 Y印＝round(調整合計)、貨款總金額 X印＝Z印 − Y印；
+//     最上列、明細合計列、右上角應付總倉都印這三個數。每天那行仍各自四捨五入（可能跟總額差 1 元，老闆已知）。
+//   - 金額負數全頁同一種寫法：－$N（fmtStatementMoney）。
 //
 // 資料來源是月結當下凍結的 store_monthly_settlement_items（列印頁已經載入的那些列），
 // ⛔ 不要改用 rpc_store_inbound_daily_summary —— 那支是即時重算，不是月結當時的帳。
 // ⚠ received_at 欄位存的是「這筆帳成立的時間」，不一定是收貨時間：
 //   HQ 進貨＝總倉派車當下、退貨沖回＝總倉收到退貨當下（產生月結的函式最新版 20260907030000），日期照它切。
 
+/** 目前認得的類型（列印頁的中文標籤表用）；明細本身的 entry_type 放寬成 string，以後新增的類型照樣印得出來 */
 export type SettlementEntryType = "hq_inbound" | "air_in" | "air_out" | "free_in" | "free_out" | "return_out";
 
 type Num = number | string;
@@ -25,7 +30,7 @@ export type SettlementPrintItem = {
   line_amount: Num | null;
   branch_amount: Num | null;
   received_at: string;
-  entry_type: SettlementEntryType;
+  entry_type: string;
 };
 
 /** 店到店（或任何不併日的類型）：照舊一筆一行，原樣帶著那一列 */
@@ -97,11 +102,67 @@ export function fmtPrintDate(date: string): string {
   return m ? `${m[1]}/${Number(m[2])}/${Number(m[3])}` : "—";
 }
 
-/** 最上面那句等式用的金額：$1,234／－$500（負數把全形減號放在 $ 前面），只在這裡取整數 */
-export function fmtStatementMoney(v: number): string {
+/**
+ * 整頁共用的金額格式：$1,234／－$500（負數把全形減號放在 $ 前面），只在這裡取位數。
+ * fractionDigits 預設 0（小計、合計、總額）；單價類傳 2。取整後是 0 就不帶負號。
+ */
+export function fmtStatementMoney(v: number, fractionDigits = 0): string {
   const n = Number.isFinite(v) ? v : 0;
-  const s = Math.abs(n).toLocaleString("zh-TW", { maximumFractionDigits: 0 });
-  return n < 0 && s !== "0" ? `－$${s}` : `$${s}`;
+  const s = Math.abs(n).toLocaleString("zh-TW", {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  });
+  return n < 0 && /[1-9]/.test(s) ? `－$${s}` : `$${s}`;
+}
+
+/** 金額取整到元：四捨五入、.5 往遠離 0 的方向進（跟 toLocaleString 顯示取整同一套，-0.5 → -1）；用萬分位整數算，不吃浮點誤差 */
+export function roundYuan(v: Num | null | undefined): number {
+  const u = toUnits(v, MONEY_SCALE);
+  const r = Math.floor((Math.abs(u) + MONEY_SCALE / 2) / MONEY_SCALE);
+  return u < 0 && r !== 0 ? -r : r;
+}
+
+/** 自我核對容許的差：0.01 元（萬分位 100） */
+const CHECK_TOLERANCE_UNITS = 100;
+
+export type StatementTotals = {
+  /** 明細分店小計合計＋有效調整合計，跟月結表頭的應付總倉差在 0.01 元以內 */
+  ok: boolean;
+  /** 應付總倉 −（明細合計＋調整合計），原始小數；ok 為 false 時畫面要秀出來 */
+  diff: number;
+  /** 紙上「貨款總金額」X印：核對通過時＝Z印 − Y印；沒通過時退回明細合計取整（畫面照實呈現，列印另外擋） */
+  goods: number;
+  /** 紙上「調整」Y印＝round(調整合計) */
+  adjustment: number;
+  /** 紙上「應付總倉」Z印＝round(payable_amount) */
+  payable: number;
+};
+
+/**
+ * 讀完明細後的金額自我核對＋紙上要印的三個整數（最上列等式、明細合計列、右上角應付總倉共用）。
+ *   - 核對：明細分店小計合計＋有效調整合計 vs 月結表頭 payable_amount（產生月結時就是這兩項相加），
+ *     差超過 0.01 元＝明細沒讀完整或月結表頭過期 → 列印頁要擋下來，不能印出等式對不上的紙。
+ *     ⛔ 不要改用 item_count 比筆數：那是產生函式裡調撥明細的 COUNT(*)，跟明細表列數不保證一對一。
+ *   - 紙上整數：Z印＝round(應付總倉)、Y印＝round(調整)、X印＝Z印 − Y印 ⇒ 紙上 X印＋Y印＝Z印 一定成立。
+ *     （各自取整會出事：100.50＋0.50＝101.00 會印成 $101＋$1＝$101）
+ */
+export function statementTotals(
+  detailBranch: Num | null | undefined,
+  adjustmentTotal: Num | null | undefined,
+  payableAmount: Num | null | undefined,
+): StatementTotals {
+  const diffUnits =
+    toUnits(payableAmount, MONEY_SCALE) - toUnits(detailBranch, MONEY_SCALE) - toUnits(adjustmentTotal, MONEY_SCALE);
+  const ok = Math.abs(diffUnits) <= CHECK_TOLERANCE_UNITS;
+  const payable = roundYuan(payableAmount);
+  const adjustment = roundYuan(adjustmentTotal);
+  return {
+    ok,
+    diff: diffUnits / MONEY_SCALE,
+    goods: ok ? payable - adjustment : roundYuan(detailBranch),
+    adjustment,
+    payable,
+  };
 }
 
 /** 整張明細的合計（合計列與最上面「貨款總金額」用） */

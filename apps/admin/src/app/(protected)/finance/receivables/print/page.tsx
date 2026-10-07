@@ -4,12 +4,15 @@ import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
 import { useRole, canSeeCost } from "@/lib/role";
+import { fetchAllRows } from "@/lib/fetchAllRows";
 import {
   buildSettlementPrintRows,
   fmtPrintDate,
   fmtStatementMoney,
+  statementTotals,
   sumMoney,
   summarizeSettlementItems,
+  type SettlementEntryType,
 } from "@/lib/settlementPrintRows";
 
 type Settlement = {
@@ -35,7 +38,8 @@ type SettlementItem = {
   unit_branch_price: number;
   branch_amount: number;
   received_at: string;
-  entry_type: "hq_inbound" | "air_in" | "air_out" | "free_in" | "free_out" | "return_out";
+  /** 認得的見 SettlementEntryType；以後新增的類型照樣印（類型欄退回原始代號） */
+  entry_type: string;
   description: string | null;
 };
 
@@ -51,7 +55,7 @@ type Sku = { id: number; sku_code: string | null; product_name: string | null; v
 type Transfer = { id: number; transfer_no: string };
 type Receivable = { id: number; receivable_no: string; due_date: string; status: string };
 
-const ENTRY_TYPE_LABEL: Record<SettlementItem["entry_type"], string> = {
+const ENTRY_TYPE_LABEL: Record<SettlementEntryType, string> = {
   hq_inbound: "HQ 進貨",
   air_in: "空中轉入",
   air_out: "空中轉出",
@@ -60,16 +64,25 @@ const ENTRY_TYPE_LABEL: Record<SettlementItem["entry_type"], string> = {
   return_out: "退貨沖回",
 };
 
+// 不認得的類型（以後新增的）印原始代號，不留白 —— 店家至少看得出那一行是什麼帳
+function entryTypeLabel(t: string): string {
+  return ENTRY_TYPE_LABEL[t as SettlementEntryType] ?? t;
+}
+
+// .in("id", …) 一批最多幾個 id：太多會撞網址長度上限（PostgREST 走 GET）
+const IN_BATCH = 200;
+
+// 金額一律走 fmtStatementMoney（負數 －$N），全頁同一種寫法
 function fmtCost(v: unknown): string {
   if (v === null || v === undefined || v === "") return "未提供成本";
   const n = Number(v);
-  return Number.isFinite(n) ? `$${n.toFixed(2)}` : "未提供成本";
+  return Number.isFinite(n) ? fmtStatementMoney(n, 2) : "未提供成本";
 }
 
 function fmtAmount(v: unknown): string {
   if (v === null || v === undefined || v === "") return "未提供成本";
   const n = Number(v);
-  return Number.isFinite(n) ? `$${n.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}` : "未提供成本";
+  return Number.isFinite(n) ? fmtStatementMoney(n) : "未提供成本";
 }
 
 // 併日那行／合計列的成本小計：有缺成本的行要看得出來，不讓 null 默默當 0 加（全缺＝整格「未提供成本」）
@@ -129,13 +142,18 @@ export default function PrintSettlementPage() {
         const sd = s as Settlement;
         setSettlement(sd);
 
-        const [{ data: storeData }, { data: itemRows }, { data: tenantData }, { data: adjData }] = await Promise.all([
+        const [{ data: storeData }, itemRows, { data: tenantData }, { data: adjData }] = await Promise.all([
           sb.from("stores").select("id, code, name").eq("id", sd.store_id).maybeSingle(),
-          sb.from("store_monthly_settlement_items")
-            .select("id, transfer_id, sku_id, qty_received, unit_cost, line_amount, unit_branch_price, branch_amount, received_at, entry_type, description")
-            .eq("settlement_id", settlementId)
-            .order("entry_type")
-            .order("received_at"),
+          // 明細一張月結常破千列（HQ 派車每張單的每個品項一列），PostgREST 單次最多回 1000 列、
+          // 超過會靜默截斷 → 一定要走 fetchAllRows 分頁讀完。排序加 id 給分頁一個穩定的順序。
+          fetchAllRows<SettlementItem>(() =>
+            sb.from("store_monthly_settlement_items")
+              .select("id, transfer_id, sku_id, qty_received, unit_cost, line_amount, unit_branch_price, branch_amount, received_at, entry_type, description")
+              .eq("settlement_id", settlementId)
+              .order("entry_type")
+              .order("received_at")
+              .order("id"),
+          ),
           sb.from("tenants").select("name").limit(1),
           sb.from("store_settlement_adjustments")
             .select("id, amount, reason, created_at")
@@ -147,24 +165,30 @@ export default function PrintSettlementPage() {
         if (cancelled) return;
         if (storeData) setStore(storeData as Store);
         setAdjustments((adjData ?? []) as Adjustment[]);
-        const itList = (itemRows ?? []) as SettlementItem[];
+        const itList = itemRows;
         setItems(itList);
         const t = (tenantData as { name: string }[] | null)?.[0];
         if (t?.name) setTenantName(t.name);
 
-        // 載入 transfer + sku 名稱
+        // 載入 transfer + sku 名稱：id 可能上百上千個，切 IN_BATCH 一批查。
+        // 查不到的照舊退回顯示 #id／—（只影響單號、品名文字，不影響金額）。
         const txIds = Array.from(new Set(itList.map((i) => i.transfer_id)));
         const skuIds = Array.from(new Set(itList.map((i) => i.sku_id)));
-        const [{ data: tx }, { data: sk }] = await Promise.all([
-          txIds.length ? sb.from("transfers").select("id, transfer_no").in("id", txIds) : Promise.resolve({ data: [] as Transfer[] }),
-          skuIds.length ? sb.from("skus").select("id, sku_code, product_name, variant_name").in("id", skuIds) : Promise.resolve({ data: [] as Sku[] }),
+        const batches = (ids: number[]) => {
+          const out: number[][] = [];
+          for (let i = 0; i < ids.length; i += IN_BATCH) out.push(ids.slice(i, i + IN_BATCH));
+          return out;
+        };
+        const [txRes, skRes] = await Promise.all([
+          Promise.all(batches(txIds).map((ids) => sb.from("transfers").select("id, transfer_no").in("id", ids))),
+          Promise.all(batches(skuIds).map((ids) => sb.from("skus").select("id, sku_code, product_name, variant_name").in("id", ids))),
         ]);
         if (cancelled) return;
         const tm = new Map<number, Transfer>();
-        for (const x of (tx ?? []) as Transfer[]) tm.set(x.id, x);
+        for (const r of txRes) for (const x of (r.data ?? []) as Transfer[]) tm.set(x.id, x);
         setTransfers(tm);
         const skMap = new Map<number, Sku>();
-        for (const x of (sk ?? []) as Sku[]) skMap.set(x.id, x);
+        for (const r of skRes) for (const x of (r.data ?? []) as Sku[]) skMap.set(x.id, x);
         setSkus(skMap);
 
         // 如果有對應 store_receivable 也載入
@@ -202,6 +226,9 @@ export default function PrintSettlementPage() {
   const totals = summarizeSettlementItems(items);
   const totalBranch = totals.branchAmount;
   const adjTotal = sumMoney(adjustments.map((a) => a.amount));
+  // 讀完明細的自我核對＋紙上三個整數（貨款 X印＝應付 Z印 − 調整 Y印，紙上等式一定成立）。
+  // 核對沒過（明細沒讀完整、月結表頭過期）就擋下列印，不印出等式對不上的紙。
+  const paper = statementTotals(totalBranch, adjTotal, settlement.payable_amount);
   // 店到店逐筆排最前；HQ 進貨、退貨沖回各按台北日期一天一行（老闆 2026-10-07）
   const rows = buildSettlementPrintRows(items);
   const today = new Date().toLocaleDateString("zh-TW");
@@ -228,7 +255,7 @@ export default function PrintSettlementPage() {
         <div className="no-print sticky top-0 z-20 flex flex-wrap items-center gap-3 border-b border-zinc-200 bg-zinc-50 p-3">
           <h1 className="text-base font-semibold">月結對帳單列印</h1>
           <span className="text-sm text-zinc-500">
-            {store.name} / {monthLabel} / 應付總倉 ${Number(settlement.payable_amount).toLocaleString()}
+            {store.name} / {monthLabel} / 應付總倉 {fmtStatementMoney(paper.payable)}
           </span>
           {costAllowed && (
             <div className="flex overflow-hidden rounded-md border border-zinc-300 text-sm">
@@ -248,11 +275,20 @@ export default function PrintSettlementPage() {
           )}
           <SpinButton
             onClick={() => window.print()}
-            className="ml-auto rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700"
+            disabled={!paper.ok}
+            title={paper.ok ? undefined : "明細合計與系統應付總倉不一致，請先重算月結"}
+            className="ml-auto rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-zinc-400"
           >
             🖨️ 列印
           </SpinButton>
         </div>
+
+        {/* 金額自我核對沒過：紅字擋在最上面（不加 no-print —— 就算有人用瀏覽器硬印，紙上也帶著這行警告） */}
+        {!paper.ok && (
+          <div role="alert" className="mx-auto mt-3 max-w-[210mm] rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
+            明細合計與系統應付總倉不一致（差 {fmtStatementMoney(Math.abs(paper.diff), 2)}），請先到月結明細頁重算後再列印
+          </div>
+        )}
 
         {/* 對帳單內容 */}
         <div className="sheet mx-auto my-6 max-w-[210mm] border border-zinc-300 bg-white p-8 print:my-0 print:border-0 print:p-0">
@@ -287,7 +323,7 @@ export default function PrintSettlementPage() {
             <div className="text-right">
               <div className="text-xs text-zinc-500">應付總倉金額{internal && "（分店價口徑）"}</div>
               <div className="text-lg font-semibold text-rose-600">
-                ${Number(settlement.payable_amount).toLocaleString()}
+                {fmtStatementMoney(paper.payable)}
               </div>
               {internal && (
                 <div className="mt-0.5 text-xs text-zinc-600">
@@ -301,12 +337,13 @@ export default function PrintSettlementPage() {
             </div>
           </div>
 
-          {/* 金額總覽：貨款＋調整＝應付總倉（每張都印；應付總倉讀月結表頭，產生月結時就是 分店價合計＋有效調整） */}
+          {/* 金額總覽：貨款＋調整＝應付總倉（每張都印；應付總倉讀月結表頭，產生月結時就是 分店價合計＋有效調整）。
+              三個數都是整數、而且貨款＝應付−調整，紙上算式一定對得起來（見 statementTotals） */}
           <div className="mb-3 border border-zinc-900 px-3 py-2 text-right text-sm font-semibold">
-            貨款總金額 <span className="font-mono">{fmtStatementMoney(totalBranch)}</span>
-            <span className="mx-1">＋</span>調整 <span className="font-mono">{fmtStatementMoney(adjTotal)}</span>
+            貨款總金額 <span className="font-mono">{fmtStatementMoney(paper.goods)}</span>
+            <span className="mx-1">＋</span>調整 <span className="font-mono">{fmtStatementMoney(paper.adjustment)}</span>
             <span className="mx-1">＝</span>應付總倉{" "}
-            <span className="font-mono text-rose-600">{fmtStatementMoney(Number(settlement.payable_amount))}</span>
+            <span className="font-mono text-rose-600">{fmtStatementMoney(paper.payable)}</span>
           </div>
 
           {/* 商品明細表 */}
@@ -342,7 +379,7 @@ export default function PrintSettlementPage() {
                     <tr key={row.key}>
                       <td className="border border-zinc-400 px-2 py-1">{i + 1}</td>
                       <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{fmtPrintDate(row.date)}</td>
-                      <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{ENTRY_TYPE_LABEL[row.entryType]}</td>
+                      <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{entryTypeLabel(row.entryType)}</td>
                       <td className="border border-zinc-400 px-2 py-1 font-mono whitespace-nowrap">{txLabel}</td>
                       <td className="border border-zinc-400 px-2 py-1 font-mono whitespace-nowrap">—</td>
                       <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">共 {row.lineCount} 項</td>
@@ -357,7 +394,7 @@ export default function PrintSettlementPage() {
                       )}
                       <td className="border border-zinc-400 px-2 py-1 text-right font-mono whitespace-nowrap">—</td>
                       <td className={`border border-zinc-400 px-2 py-1 text-right font-mono whitespace-nowrap ${row.branchAmount < 0 ? "text-amber-600" : ""}`}>
-                        ${row.branchAmount.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                        {fmtStatementMoney(row.branchAmount)}
                       </td>
                     </tr>
                   );
@@ -371,7 +408,7 @@ export default function PrintSettlementPage() {
                   <tr key={row.key}>
                     <td className="border border-zinc-400 px-2 py-1">{i + 1}</td>
                     <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{fmtPrintDate(row.date)}</td>
-                    <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{ENTRY_TYPE_LABEL[it.entry_type]}</td>
+                    <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{entryTypeLabel(it.entry_type)}</td>
                     <td className="border border-zinc-400 px-2 py-1 font-mono whitespace-nowrap">{tx?.transfer_no ?? `#${it.transfer_id}`}</td>
                     <td className="border border-zinc-400 px-2 py-1 font-mono whitespace-nowrap">{sku?.sku_code ?? "—"}</td>
                     <td className="border border-zinc-400 px-2 py-1">
@@ -396,10 +433,10 @@ export default function PrintSettlementPage() {
                       </>
                     )}
                     <td className="border border-zinc-400 px-2 py-1 text-right font-mono whitespace-nowrap">
-                      {isFree ? "—" : `$${Number(it.unit_branch_price ?? 0).toFixed(2)}`}
+                      {isFree ? "—" : fmtStatementMoney(Number(it.unit_branch_price ?? 0), 2)}
                     </td>
                     <td className={`border border-zinc-400 px-2 py-1 text-right font-mono whitespace-nowrap ${Number(it.branch_amount ?? 0) < 0 ? "text-amber-600" : ""}`}>
-                      ${Number(it.branch_amount ?? 0).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                      {fmtStatementMoney(Number(it.branch_amount ?? 0))}
                     </td>
                   </tr>
                 );
@@ -416,8 +453,9 @@ export default function PrintSettlementPage() {
                   </>
                 )}
                 <td className="border border-zinc-400 px-2 py-1.5"></td>
+                {/* 跟最上列「貨款總金額」同一個數（X印），紙上兩處一致 */}
                 <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono whitespace-nowrap text-rose-600">
-                  ${totalBranch.toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                  {fmtStatementMoney(paper.goods)}
                 </td>
               </tr>
             </tbody>
@@ -443,14 +481,18 @@ export default function PrintSettlementPage() {
                       <td className="border border-zinc-400 px-2 py-1 whitespace-nowrap">{new Date(a.created_at).toLocaleDateString("zh-TW")}</td>
                       <td className="border border-zinc-400 px-2 py-1">{a.reason}</td>
                       <td className={`border border-zinc-400 px-2 py-1 text-right font-mono whitespace-nowrap ${Number(a.amount) < 0 ? "text-emerald-700" : ""}`}>
-                        {Number(a.amount) < 0 ? "−" : "+"}${Math.abs(Number(a.amount)).toLocaleString("zh-TW")}
+                        {/* 單筆調整照原樣：有小數就印兩位小數，不在這裡取整 */}
+                        {Number(a.amount) > 0 && "＋"}
+                        {fmtStatementMoney(Number(a.amount), Number.isInteger(Number(a.amount)) ? 0 : 2)}
                       </td>
                     </tr>
                   ))}
                   <tr className="bg-zinc-100 font-semibold">
                     <td colSpan={3} className="border border-zinc-400 px-2 py-1.5 text-right">調整合計</td>
+                    {/* 跟最上列「調整」同一個數（Y印） */}
                     <td className="border border-zinc-400 px-2 py-1.5 text-right font-mono whitespace-nowrap">
-                      {adjTotal < 0 ? "−" : "+"}${Math.abs(adjTotal).toLocaleString("zh-TW", { maximumFractionDigits: 0 })}
+                      {paper.adjustment > 0 && "＋"}
+                      {fmtStatementMoney(paper.adjustment)}
                     </td>
                   </tr>
                 </tbody>
