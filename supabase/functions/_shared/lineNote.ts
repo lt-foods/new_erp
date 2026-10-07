@@ -92,9 +92,35 @@ export function log(verbose: any, ...args: any[]) {
  * 所以 sink 必須在 loginWithAuthToken **之前**掛好）。LINE 會輪替 refreshToken，
  * 換到新的沒寫回 DB＝下次拿舊的去換會被拒，等於又要重新掃 QR。
  */
+/**
+ * 網路瞬斷重試一次的 fetch（餵給 linejs 的 `fetch` 選項，Thrift 與記事本 REST 都走它）。
+ *
+ * line-note-worker 的 client 跨 invocation 快取在模組層級，閒置幾分鐘後 Deno 連線池裡
+ * 對 gf.line.naver.jp 的 HTTP/2 連線早被對方收掉，下一支 job 的第一個請求就直接
+ * `error sending request … client error (SendRequest): connection error: stream closed
+ * because of a broken pipe`（160ms 內失敗、job 標 failed）。2026-10-07 一天 608 支 job
+ * 有 94 支這樣死掉（分享 / 提醒 / 讀留言都有）。重打一次會開新連線，幾乎都過。
+ * 只對「送不出去」的錯誤重試；HTTP 回了什麼（4xx/5xx）、逾時中止都原樣丟回去。
+ */
+const TRANSIENT_FETCH_RE = /error sending request|stream closed|broken pipe|connection (reset|closed|error)|ECONNRESET|EPIPE/i;
+export function retryingFetch(_verbose = false) {
+  return async (info: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const req = new Request(info, init);
+    const retry = req.clone(); // body 是串流，第一趟讀掉就沒了，先留一份
+    try {
+      return await globalThis.fetch(req);
+    } catch (e) {
+      const msg = String((e as any)?.message ?? e);
+      if ((e as any)?.name === "AbortError" || !TRANSIENT_FETCH_RE.test(msg)) throw e;
+      log(true, `fetch 瞬斷，重試一次：${msg.slice(0, 160)}`);
+      return await globalThis.fetch(retry);
+    }
+  };
+}
+
 export async function clientFromToken(
   cred: string | LineCredential,
-  opts: { device?: string; onCredential?: CredentialSink } = {},
+  opts: { device?: string; onCredential?: CredentialSink; verbose?: boolean } = {},
 ): Promise<any> {
   const c: LineCredential = typeof cred === "string" ? { accessToken: cred } : cred;
   if (!c.accessToken) throw new Error("沒有登入 token");
@@ -107,7 +133,7 @@ export async function clientFromToken(
     accessToken: c.accessToken,
     ...(c.refreshToken ? { refreshToken: c.refreshToken } : {}),
     ...(typeof c.expire === "number" ? { expire: c.expire } : {}),
-  }, { device: opts.device ?? DEFAULT_DEVICE, storage });
+  }, { device: opts.device ?? DEFAULT_DEVICE, storage, fetch: retryingFetch(opts.verbose) });
 
   client.base.on("update:authtoken", (t: string) => opts.onCredential?.({ accessToken: t }));
   // 上面那行掛得再快也趕不上 loginWithAuthToken 裡面 ready() 觸發的那次 refresh，
@@ -130,7 +156,7 @@ export async function loginByQr(opts: {
 }): Promise<any> {
   const login = loginWithQR(
     { onReceiveQRUrl: opts.onQr, onPincodeRequest: opts.onPin },
-    { device: opts.device ?? DEFAULT_DEVICE, storage: new MemoryStorage() },
+    { device: opts.device ?? DEFAULT_DEVICE, storage: new MemoryStorage(), fetch: retryingFetch() },
   );
   const timeout = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error("等太久沒掃 QR，請回後台再按一次「登入」")), opts.deadlineMs));
@@ -243,9 +269,25 @@ function channelCandidates(homeId) {
     : [CHANNEL_IDS.HOME, CHANNEL_IDS.NOTE, CHANNEL_IDS.TIMELINE, CHANNEL_IDS.SQUARE_NOTE];
 }
 
-const tokenCache = new Map();
+// ⚠ channel token 是「這個帳號 × 這個 channel」的，**一定要依 client 分開存**。
+// 這份模組在 Edge Function 裡跨請求活著，而 line-note-worker 同一個 tick 會依序跑好幾個
+// 帳號的 job：之前只用 channelId 當 key，先跑的帳號把 token 放進去，後跑的帳號就拿別人的
+// channel token 配自己的 x-line-access 去打 → 記事本 API 整排回 401「發生暫時性錯誤」/
+// 「正在更新用戶認證…」（2026-10-07 小幫手三個社群的讀留言全掛，同 tick 前一支是小幫手99號）。
+// WeakMap 跟著 client 走：client 換掉（重新登入 / isolate 回收）快取自然跟著消失。
+const tokenCache = new WeakMap();
+function tokensFor(client) {
+  let m = tokenCache.get(client);
+  if (!m) { m = new Map(); tokenCache.set(client, m); }
+  return m;
+}
+/** 拿到 401/403 時丟掉這個 client 的該 channel token，下一次重新 issue */
+function forgetChannelToken(client, channelId) {
+  tokenCache.get(client)?.delete(channelId);
+}
 async function channelToken(client, channelId, verbose) {
-  if (tokenCache.has(channelId)) return tokenCache.get(channelId);
+  const cache = tokensFor(client);
+  if (cache.has(channelId)) return cache.get(channelId);
   let token;
   try {
     const r = await client.base.channel.approveChannelAndIssueChannelToken({ channelId });
@@ -258,7 +300,7 @@ async function channelToken(client, channelId, verbose) {
     token = r?.token ?? r?.channelAccessToken;
   }
   if (!token) throw new Error(`no channel token for ${channelId}`);
-  tokenCache.set(channelId, token);
+  cache.set(channelId, token);
   return token;
 }
 
@@ -313,7 +355,12 @@ export async function noteRequest(client, homeId, path, params, { method = "GET"
 
   const cached = routeCache.get(homeId);
   if (cached) {
-    const { body } = await tryOne(cached.host, cached.prefix, cached.channelId);
+    let { body } = await tryOne(cached.host, cached.prefix, cached.channelId);
+    // channel token 會過期（isolate 活得比它久）：401/403 就丟掉重 issue 再試一次
+    if (body && (body.code === 401 || body.code === 403)) {
+      forgetChannelToken(client, cached.channelId);
+      ({ body } = await tryOne(cached.host, cached.prefix, cached.channelId));
+    }
     return body;
   }
   const attempts = [];
