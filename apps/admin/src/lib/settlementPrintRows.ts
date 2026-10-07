@@ -12,6 +12,8 @@
 //     最上列、明細合計列、右上角應付總倉都印這三個數。每天那行仍各自四捨五入（可能跟總額差 1 元，老闆已知）。
 //   - 金額負數全頁同一種寫法：－$N（fmtStatementMoney）。
 //
+// 另有 fetchInBatches：`.in("id", …)` 分批查＋逐批檢查錯誤。查詢本身由呼叫端傳進來，這裡一樣不碰資料庫。
+//
 // 資料來源是月結當下凍結的 store_monthly_settlement_items（列印頁已經載入的那些列），
 // ⛔ 不要改用 rpc_store_inbound_daily_summary —— 那支是即時重算，不是月結當時的帳。
 // ⚠ received_at 欄位存的是「這筆帳成立的時間」，不一定是收貨時間：
@@ -163,6 +165,30 @@ export function statementTotals(
     adjustment,
     payable,
   };
+}
+
+/** supabase-js 查詢回來的樣子（只取用得到的兩個欄位） */
+export type BatchQueryResult<T> = { data: T[] | null; error: { message: string } | null };
+
+/**
+ * `.in("id", …)` 分批查：ids 切 batchSize 一批（太多會撞網址長度上限），各批平行查，
+ * 每一批都檢查 error —— 任何一批失敗就整個丟錯，不把失敗那批默默當成「查無資料」合併進來。
+ */
+export async function fetchInBatches<T>(
+  ids: readonly number[],
+  batchSize: number,
+  query: (batch: number[]) => PromiseLike<BatchQueryResult<T>>,
+): Promise<T[]> {
+  if (!(batchSize > 0)) throw new Error(`batchSize 必須大於 0（收到 ${batchSize}）`);
+  const batches: number[][] = [];
+  for (let i = 0; i < ids.length; i += batchSize) batches.push(ids.slice(i, i + batchSize));
+  const results = await Promise.all(batches.map((b) => query(b)));
+  const out: T[] = [];
+  results.forEach((r, i) => {
+    if (r.error) throw new Error(`第 ${i + 1}／${batches.length} 批查詢失敗：${r.error.message}`);
+    out.push(...(r.data ?? []));
+  });
+  return out;
 }
 
 /** 整張明細的合計（合計列與最上面「貨款總金額」用） */

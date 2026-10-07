@@ -7,6 +7,7 @@ import { useRole, canSeeCost } from "@/lib/role";
 import { fetchAllRows } from "@/lib/fetchAllRows";
 import {
   buildSettlementPrintRows,
+  fetchInBatches,
   fmtPrintDate,
   fmtStatementMoney,
   statementTotals,
@@ -114,6 +115,8 @@ export default function PrintSettlementPage() {
   const [skus, setSkus] = useState<Map<number, Sku>>(new Map());
   const [tenantName, setTenantName] = useState("");
   const [receivable, setReceivable] = useState<Receivable | null>(null);
+  // 單號／品名類（調撥單號、商品編號／品名、公司名、應收單號）載入結果：null＝還在載；[]＝全部載到；有值＝哪幾樣載入失敗
+  const [namesFailed, setNamesFailed] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // 從 query 抓 settlement_id + view
@@ -142,7 +145,7 @@ export default function PrintSettlementPage() {
         const sd = s as Settlement;
         setSettlement(sd);
 
-        const [{ data: storeData }, itemRows, { data: tenantData }, { data: adjData }] = await Promise.all([
+        const [storeRes, itemRows, tenantRes, adjRes] = await Promise.all([
           sb.from("stores").select("id, code, name").eq("id", sd.store_id).maybeSingle(),
           // 明細一張月結常破千列（HQ 派車每張單的每個品項一列），PostgREST 單次最多回 1000 列、
           // 超過會靜默截斷 → 一定要走 fetchAllRows 分頁讀完。排序加 id 給分頁一個穩定的順序。
@@ -163,43 +166,52 @@ export default function PrintSettlementPage() {
             .order("created_at"),
         ]);
         if (cancelled) return;
-        if (storeData) setStore(storeData as Store);
-        setAdjustments((adjData ?? []) as Adjustment[]);
+        // 分店、金額調整查失敗 → 跟明細失敗一樣整頁錯誤、不給印。
+        // 調整不能當成 0：正負剛好互抵時金額核對擋不住，紙看起來正常、調整表卻整段消失。
+        if (storeRes.error) throw new Error(`分店資料載入失敗：${storeRes.error.message}`);
+        if (!storeRes.data) throw new Error("找不到此月結算的分店");
+        if (adjRes.error) throw new Error(`金額調整載入失敗：${adjRes.error.message}`);
+        setStore(storeRes.data as Store);
+        setAdjustments((adjRes.data ?? []) as Adjustment[]);
         const itList = itemRows;
         setItems(itList);
-        const t = (tenantData as { name: string }[] | null)?.[0];
-        if (t?.name) setTenantName(t.name);
 
-        // 載入 transfer + sku 名稱：id 可能上百上千個，切 IN_BATCH 一批查。
-        // 查不到的照舊退回顯示 #id／—（只影響單號、品名文字，不影響金額）。
+        // 以下是單號／品名類（公司名、調撥單號、商品編號／品名、應收單號）：查失敗不影響金額，
+        // 但紙上會變 #123／—，所以不整頁擋，改成黃字提醒＋停用列印（載入完成前也不給印）。
+        const failed: string[] = [];
+        if (tenantRes.error) failed.push("公司名稱");
+        else {
+          const t = (tenantRes.data as { name: string }[] | null)?.[0];
+          if (t?.name) setTenantName(t.name);
+        }
+
+        // transfer + sku 名稱：id 可能上百上千個，切 IN_BATCH 一批查，每一批都檢查錯誤（fetchInBatches）。
         const txIds = Array.from(new Set(itList.map((i) => i.transfer_id)));
         const skuIds = Array.from(new Set(itList.map((i) => i.sku_id)));
-        const batches = (ids: number[]) => {
-          const out: number[][] = [];
-          for (let i = 0; i < ids.length; i += IN_BATCH) out.push(ids.slice(i, i + IN_BATCH));
-          return out;
-        };
-        const [txRes, skRes] = await Promise.all([
-          Promise.all(batches(txIds).map((ids) => sb.from("transfers").select("id, transfer_no").in("id", ids))),
-          Promise.all(batches(skuIds).map((ids) => sb.from("skus").select("id, sku_code, product_name, variant_name").in("id", ids))),
+        const [txRes, skRes] = await Promise.allSettled([
+          fetchInBatches<Transfer>(txIds, IN_BATCH, (ids) => sb.from("transfers").select("id, transfer_no").in("id", ids)),
+          fetchInBatches<Sku>(skuIds, IN_BATCH, (ids) =>
+            sb.from("skus").select("id, sku_code, product_name, variant_name").in("id", ids),
+          ),
         ]);
         if (cancelled) return;
-        const tm = new Map<number, Transfer>();
-        for (const r of txRes) for (const x of (r.data ?? []) as Transfer[]) tm.set(x.id, x);
-        setTransfers(tm);
-        const skMap = new Map<number, Sku>();
-        for (const r of skRes) for (const x of (r.data ?? []) as Sku[]) skMap.set(x.id, x);
-        setSkus(skMap);
+        if (txRes.status === "fulfilled") setTransfers(new Map(txRes.value.map((x) => [x.id, x])));
+        else failed.push("調撥單號");
+        if (skRes.status === "fulfilled") setSkus(new Map(skRes.value.map((x) => [x.id, x])));
+        else failed.push("商品編號／品名");
 
         // 如果有對應 store_receivable 也載入
         if (sd.generated_receivable_id) {
-          const { data: r } = await sb
+          const { data: r, error: rErr } = await sb
             .from("store_receivables")
             .select("id, receivable_no, due_date, status")
             .eq("id", sd.generated_receivable_id)
             .maybeSingle();
-          if (!cancelled && r) setReceivable(r as Receivable);
+          if (cancelled) return;
+          if (rErr) failed.push("應收單號");
+          else if (r) setReceivable(r as Receivable);
         }
+        setNamesFailed(failed);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       }
@@ -229,6 +241,15 @@ export default function PrintSettlementPage() {
   // 讀完明細的自我核對＋紙上三個整數（貨款 X印＝應付 Z印 − 調整 Y印，紙上等式一定成立）。
   // 核對沒過（明細沒讀完整、月結表頭過期）就擋下列印，不印出等式對不上的紙。
   const paper = statementTotals(totalBranch, adjTotal, settlement.payable_amount);
+  const namesBroken = (namesFailed?.length ?? 0) > 0;
+  // 不給印的原因（依序）：金額核對沒過 → 單號／品名載入失敗 → 單號／品名還在載入
+  const printBlockedReason = !paper.ok
+    ? "明細合計與系統應付總倉不一致，請先重算月結"
+    : namesBroken
+      ? "部分單號／品名載入失敗，請重新整理後再印"
+      : namesFailed === null
+        ? "單號／品名載入中…"
+        : undefined;
   // 店到店逐筆排最前；HQ 進貨、退貨沖回各按台北日期一天一行（老闆 2026-10-07）
   const rows = buildSettlementPrintRows(items);
   const today = new Date().toLocaleDateString("zh-TW");
@@ -275,8 +296,8 @@ export default function PrintSettlementPage() {
           )}
           <SpinButton
             onClick={() => window.print()}
-            disabled={!paper.ok}
-            title={paper.ok ? undefined : "明細合計與系統應付總倉不一致，請先重算月結"}
+            disabled={printBlockedReason !== undefined}
+            title={printBlockedReason}
             className="ml-auto rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-zinc-400"
           >
             🖨️ 列印
@@ -287,6 +308,14 @@ export default function PrintSettlementPage() {
         {!paper.ok && (
           <div role="alert" className="mx-auto mt-3 max-w-[210mm] rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
             明細合計與系統應付總倉不一致（差 {fmtStatementMoney(Math.abs(paper.diff), 2)}），請先到月結明細頁重算後再列印
+          </div>
+        )}
+
+        {/* 單號／品名載入失敗：黃字提醒（同上不加 no-print —— 硬印出來的紙也帶著這行，不會被當成正常的對帳單） */}
+        {namesBroken && (
+          <div role="alert" className="mx-auto mt-3 max-w-[210mm] rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
+            部分單號／品名載入失敗，請重新整理後再印
+            <span className="ml-2 text-xs font-normal text-amber-700">（{namesFailed?.join("、")}）</span>
           </div>
         )}
 
@@ -327,8 +356,8 @@ export default function PrintSettlementPage() {
               </div>
               {internal && (
                 <div className="mt-0.5 text-xs text-zinc-600">
-                  成本口徑：<span className="font-mono font-semibold">${Number(settlement.cost_amount ?? 0).toLocaleString()}</span>
-                  <span className="ml-2">總部毛利：<span className="font-mono font-semibold">${(Number(settlement.branch_amount ?? 0) - Number(settlement.cost_amount ?? 0)).toLocaleString()}</span></span>
+                  成本口徑：<span className="font-mono font-semibold">{fmtStatementMoney(Number(settlement.cost_amount ?? 0))}</span>
+                  <span className="ml-2">總部毛利：<span className="font-mono font-semibold">{fmtStatementMoney(Number(settlement.branch_amount ?? 0) - Number(settlement.cost_amount ?? 0))}</span></span>
                 </div>
               )}
               {receivable && (

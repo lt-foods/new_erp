@@ -5,6 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildSettlementPrintRows,
+  fetchInBatches,
   fmtPrintDate,
   fmtStatementMoney,
   roundYuan,
@@ -286,4 +287,59 @@ test("自我核對：差 0.01 元以內算通過，超過就不通過（兩個�
   assert.equal(statementTotals(100, 0, 100.0101).ok, false);
   assert.equal(statementTotals(100, 0, 99.9899).ok, false);
   assert.equal(statementTotals("0.1", "0.2", "0.3").ok, true); // 浮點陷阱不能誤判成不一致
+});
+
+// 假的 .in("id", …) 查詢：記下每批收到哪些 id；failAt 指定第幾批（從 1 算）回 error
+const fakeInQuery = (failAt = 0) => {
+  const calls = [];
+  const query = async (batch) => {
+    calls.push(batch);
+    if (calls.length === failAt) return { data: null, error: { message: "boom" } };
+    return { data: batch.map((id) => ({ id, name: `n${id}` })), error: null };
+  };
+  return { calls, query };
+};
+const range = (n, from = 1) => Array.from({ length: n }, (_, i) => from + i);
+
+test("分批查詢：450 個 id、一批 200 → 查三批（200／200／50），結果全部合併、照順序", async () => {
+  const { calls, query } = fakeInQuery();
+  const rows = await fetchInBatches(range(450), 200, query);
+  assert.deepEqual(calls.map((b) => b.length), [200, 200, 50]);
+  assert.deepEqual(calls.flat(), range(450));
+  assert.deepEqual(rows.map((r) => r.id), range(450));
+});
+
+test("分批查詢：第 2 批回 error → 整個丟錯，不把其他批的結果當成完整資料回傳", async () => {
+  const { calls, query } = fakeInQuery(2);
+  await assert.rejects(fetchInBatches(range(450), 200, query), (e) => {
+    assert.match(e.message, /第 2／3 批查詢失敗：boom/);
+    return true;
+  });
+  assert.equal(calls.length, 3, "各批照樣都有送出（平行查），但結果不合併");
+});
+
+test("分批查詢：只有一批時失敗也要丟錯；最後一批失敗也一樣", async () => {
+  await assert.rejects(fetchInBatches(range(5), 200, fakeInQuery(1).query), /第 1／1 批查詢失敗/);
+  await assert.rejects(fetchInBatches(range(401), 200, fakeInQuery(3).query), /第 3／3 批查詢失敗/);
+});
+
+test("分批查詢：沒有 id 就不查、回空陣列；data 是 null 但沒有 error 當查無資料", async () => {
+  const { calls, query } = fakeInQuery();
+  assert.deepEqual(await fetchInBatches([], 200, query), []);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(await fetchInBatches([1, 2], 200, async () => ({ data: null, error: null })), []);
+});
+
+test("分批查詢：查詢本身丟例外（例如斷網）也往外丟，不吞掉", async () => {
+  await assert.rejects(
+    fetchInBatches([1], 200, async () => {
+      throw new Error("Failed to fetch");
+    }),
+    /Failed to fetch/,
+  );
+});
+
+test("分批查詢：一批幾個不合理（0、負數）直接丟錯，不會無窮迴圈", async () => {
+  await assert.rejects(fetchInBatches([1], 0, fakeInQuery().query), /batchSize/);
+  await assert.rejects(fetchInBatches([1], -1, fakeInQuery().query), /batchSize/);
 });
