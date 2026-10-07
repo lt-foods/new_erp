@@ -1,9 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
+import {
+  isDateOrEmpty,
+  isIdOrAll,
+  isPageNo,
+  isSearchText,
+  oneOf,
+  type ListFilterSpec,
+} from "@/lib/listFilters";
+import { useSavedListFilters, useSaveListFilters } from "@/lib/useListFilters";
 import { SendPOModal } from "@/components/SendPOModal";
 import SpinButton from "@/components/SpinButton";
 import Spinner, { LoadingBlock } from "@/components/Spinner";
@@ -147,29 +156,87 @@ const EMPTY_COUNTS: Record<StatusTab, number> = {
   cancelled: 0, stockout: 0,
 };
 
+type GroupBy = "none" | "pr" | "supplier";
+type PivotStatus = "both" | "sent" | "partially_received";
+
+// 點進單子再回來，篩選／搜尋／排序／分組／分頁／檢視模式都還在（存在這個瀏覽器分頁，見 lib/listFilters.ts）。
+// 發送彈窗、處理中狀態都不存。
+type PoListFilters = {
+  tab: StatusTab;
+  search: string;
+  supplierFilter: number | "all";
+  dateFrom: string;
+  dateTo: string;
+  groupBy: GroupBy;
+  sortBy: SortCol;
+  sortDir: "asc" | "desc";
+  page: number;
+  viewMode: "list" | "pivot";
+  pivotStatus: PivotStatus;
+};
+const PO_LIST_FILTERS: ListFilterSpec<PoListFilters> = {
+  page: "purchase-orders",
+  defaults: {
+    tab: "all",
+    search: "",
+    supplierFilter: "all",
+    dateFrom: "",
+    dateTo: "",
+    groupBy: "none",
+    sortBy: "updated_at",
+    sortDir: "desc",
+    page: 1,
+    viewMode: "list",
+    pivotStatus: "both",
+  },
+  fields: {
+    tab: oneOf(STATUS_TAB_ORDER),
+    search: isSearchText,
+    supplierFilter: isIdOrAll,
+    dateFrom: isDateOrEmpty,
+    dateTo: isDateOrEmpty,
+    groupBy: oneOf<GroupBy>(["none", "pr", "supplier"]),
+    sortBy: oneOf<SortCol>(["updated_at", "expected_date", "total", "po_no", "supplier"]),
+    sortDir: oneOf(["asc", "desc"]),
+    page: isPageNo,
+    viewMode: oneOf(["list", "pivot"]),
+    pivotStatus: oneOf<PivotStatus>(["both", "sent", "partially_received"]),
+  },
+};
+
 export default function PurchaseOrdersListPage() {
   const [data, setData] = useState<ListResp | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<StatusTab>("all");
+  // 篩選 / 排序 / 分組的初始值＝上次離開列表時的條件（第一次查資料就用它，不會先用空條件查一次）
+  const saved = useSavedListFilters(PO_LIST_FILTERS);
+  const [tab, setTab] = useState<StatusTab>(saved.tab);
   // search 是輸入框當下的值；dSearch 是進 DB 查詢的 debounce 值（打字不會每個字一次查詢）
-  const [search, setSearch] = useState("");
-  const [dSearch, setDSearch] = useState("");
-  const [supplierFilter, setSupplierFilter] = useState<number | "all">("all");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [groupBy, setGroupBy] = useState<"none" | "pr" | "supplier">("none");
-  const [sortBy, setSortBy] = useState<SortCol>("updated_at");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
-  const [page, setPage] = useState(1);
+  // （帶回的關鍵字兩個一起給，第一次查詢就用它，不用等 debounce）
+  const [search, setSearch] = useState(saved.search);
+  const [dSearch, setDSearch] = useState(saved.search);
+  const [supplierFilter, setSupplierFilter] = useState<number | "all">(saved.supplierFilter);
+  const [dateFrom, setDateFrom] = useState(saved.dateFrom);
+  const [dateTo, setDateTo] = useState(saved.dateTo);
+  const [groupBy, setGroupBy] = useState<GroupBy>(saved.groupBy);
+  const [sortBy, setSortBy] = useState<SortCol>(saved.sortBy);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">(saved.sortDir);
+  const [page, setPage] = useState(saved.page);
+  // 帶回的頁碼可能已經超過現在的總頁數（離開期間單子變少）→ 進列表後第一次載入時檢查一次
+  const restoredPageCheckRef = useRef(saved.page > 1);
   const [reloadKey, setReloadKey] = useState(0);
   const [sendBusyId, setSendBusyId] = useState<number | null>(null);
   const [sendCtx, setSendCtx] = useState<SendCtx | null>(null);
   // 檢視模式：清單（原本）/ 樞紐（依廠商彙整已下單＋部分到貨的品項）
-  const [viewMode, setViewMode] = useState<"list" | "pivot">("list");
+  const [viewMode, setViewMode] = useState<"list" | "pivot">(saved.viewMode);
   // 樞紐狀態子篩選：兩者 / 僅已下單 / 僅部分到貨
-  const [pivotStatus, setPivotStatus] = useState<"both" | "sent" | "partially_received">("both");
+  const [pivotStatus, setPivotStatus] = useState<PivotStatus>(saved.pivotStatus);
   const [pivotItems, setPivotItems] = useState<PivotItem[] | null>(null);
   const [pivotLoading, setPivotLoading] = useState(false);
+
+  useSaveListFilters(PO_LIST_FILTERS, {
+    tab, search, supplierFilter, dateFrom, dateTo,
+    groupBy, sortBy, sortDir, page, viewMode, pivotStatus,
+  });
 
   // 搜尋 debounce：打字停 300ms 才進 DB
   useEffect(() => {
@@ -197,7 +264,17 @@ export default function PurchaseOrdersListPage() {
         });
         if (cancelled) return;
         if (rpcErr) throw new Error(rpcErr.message);
-        setData(resp as ListResp);
+        const r = resp as ListResp;
+        if (restoredPageCheckRef.current) {
+          restoredPageCheckRef.current = false;
+          // 帶回的頁碼超過總頁數 → 改查最後一頁，不要停在一片空白、連分頁鈕都沒有的畫面
+          const lastPage = Math.max(1, Math.ceil(r.total / PAGE_SIZE));
+          if (page > lastPage) {
+            setPage(lastPage);
+            return;
+          }
+        }
+        setData(r);
         setError(null);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));

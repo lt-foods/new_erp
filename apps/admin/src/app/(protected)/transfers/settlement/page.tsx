@@ -6,6 +6,8 @@ import { getSupabase } from "@/lib/supabase";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { useRole, isHqRole } from "@/lib/role";
+import { isMonthOrEmpty, oneOf, type ListFilterSpec } from "@/lib/listFilters";
+import { useSavedListFilters, useSaveListFilters } from "@/lib/useListFilters";
 import StoreSettlementReview from "@/components/StoreSettlementReview";
 import {
   bulkSendBlockReason,
@@ -96,6 +98,17 @@ const STATUS_COLOR: Record<SettlementStatusExt, string> = {
   remitted: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300",
   settled: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
   cancelled: "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400",
+};
+
+// 總部列表點進明細再回來，月份篩選、狀態篩選還在（存在這個瀏覽器分頁，見 lib/listFilters.ts）。
+// 一次送出的勾選、送出結果、「產生月份」都不存：回來一律重新勾，不帶舊的勾選去送。
+const HQ_LIST_FILTERS: ListFilterSpec<{ monthFilter: string; statusFilter: string }> = {
+  page: "transfers-settlement-hq",
+  defaults: { monthFilter: "", statusFilter: "" },
+  fields: {
+    monthFilter: isMonthOrEmpty,
+    statusFilter: oneOf(["", ...(Object.keys(STATUS_LABEL) as SettlementStatusExt[])]),
+  },
 };
 
 function defaultMonth() {
@@ -189,8 +202,11 @@ function HqToStoreTab() {
   const [generating, setGenerating] = useState(false);
   const [genResult, setGenResult] = useState<string | null>(null);
 
-  const [monthFilter, setMonthFilter] = useState<string>("");
-  const [statusFilter, setStatusFilter] = useState<string>("");
+  // 初始值＝上次離開列表時的篩選（第一次查資料就用它，不會先用空條件查一次）
+  const savedFilters = useSavedListFilters(HQ_LIST_FILTERS);
+  const [monthFilter, setMonthFilter] = useState<string>(savedFilters.monthFilter);
+  const [statusFilter, setStatusFilter] = useState<string>(savedFilters.statusFilter);
+  useSaveListFilters(HQ_LIST_FILTERS, { monthFilter, statusFilter });
 
   // 一次全選送出給店家核對（逐張呼叫 rpc_send_settlement_to_store，不另做批次 RPC）
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -289,6 +305,14 @@ function HqToStoreTab() {
   function storeLabel(r: HqToStoreSettlement): string {
     const s = stores.get(r.store_id);
     return s ? `${s.code} ${s.name}` : `#${r.store_id}`;
+  }
+
+  // 清除篩選：跟手動改月份／狀態一樣，順手清掉勾選與上次的送出結果
+  function clearFilters() {
+    setMonthFilter("");
+    setStatusFilter("");
+    setSelected(new Set());
+    setSendResult(null);
   }
 
   function toggleSelected(id: number) {
@@ -420,6 +444,18 @@ function HqToStoreTab() {
           </select>
         </label>
       </div>
+      {(monthFilter || statusFilter) && (
+        <div className="-mt-2 flex justify-end">
+          <SpinButton
+            type="button"
+            onClick={clearFilters}
+            disabled={sending}
+            className="rounded-md border border-zinc-300 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          >
+            清除篩選
+          </SpinButton>
+        </div>
+      )}
 
       {/* 一次全選送出給店家核對：只送「篩選月份、草稿、9 月起、月份已結束、整個月份都有載入」的店 */}
       <div className="flex flex-wrap items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm dark:border-zinc-800 dark:bg-zinc-900">
