@@ -1023,7 +1023,7 @@ LINE 對短時間大量分享／發訊息的帳號會暫時封鎖社群功能，
 
 已修（20261008000000 + worker）：撞到就 `line_note_accounts.send_paused_until` 停 10 分鐘、
 那筆工作退回排隊；`code=701「請稍後再重新發布貼文」`（同帳號連發十幾篇）同理停 2 分鐘；
-remind / share 每帳號每分鐘最多 12 則。真的失敗的貼文，後台「貼文」分頁有「🔁 一鍵重發失敗」
+remind / share 每帳號每分鐘最多 6 則（12 則時同一晚還是被擋過一次：幾分鐘內 40 多則就會中）。真的失敗的貼文，後台「貼文」分頁有「🔁 一鍵重發失敗」
 （`rpc_line_note_requeue_failed`，規則沿用 `rpc_line_note_queue_posts`）。新增任何「一次分享很多則」的路徑，
 一律走 `line_note_jobs` 讓 worker 節流，不要在一支 handler 裡自己迴圈送。
 

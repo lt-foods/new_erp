@@ -55,7 +55,9 @@ const MEMBER_BASE = (Deno.env.get("MEMBER_FRONT_BASE_URL") ?? "").replace(/\/+$/
 // 同一天補發時同一個帳號連發 ~15 篇後也會回 code=701「請稍後再重新發布貼文」，一樣是叫我們慢一點：停 2 分鐘。
 const SEND_KINDS = ["post", "share", "remind", "close", "reopen", "refresh"];
 const CHAT_KINDS = ["remind", "share"];
-const CHAT_PER_MIN = 12;
+// 原本 12：10/8 晚上補分享時小幫手99號照每分鐘 12 則送了 46 則（3.5 分鐘）還是被擋（同一晚小工人 51 則沒事）。
+// 兩次被擋都是「幾分鐘內 40 多則」，所以壓到 6，四分鐘最多 24 則。
+const CHAT_PER_MIN = 6;
 const RESTRICT_GIVE_UP_MS = 6 * 3600_000;   // 排進來 6 小時還送不出去就標失敗，交給人看
 const RESTRICT_HINT = "LINE 要求暫緩（被暫時限制使用社群／請稍後再發），系統會先停這個帳號一陣子再自動重試，不用手動重發";
 /** LINE 叫我們慢一點的錯誤 → 這個帳號要停多久；其他錯誤回 null */
