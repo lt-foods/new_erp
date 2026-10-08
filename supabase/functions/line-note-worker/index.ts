@@ -46,6 +46,20 @@ const PRODUCTS_BUCKET = Deno.env.get("PRODUCTS_BUCKET") || "products";
 // （線上早就設好了）；沒設或不是 https 時 buildShopLink 自己會把那一行收掉。
 const MEMBER_BASE = (Deno.env.get("MEMBER_FRONT_BASE_URL") ?? "").replace(/\/+$/, "");
 
+// LINE 對短時間大量「分享到聊天室」的帳號會暫時封鎖社群功能：
+//   code=403「因違反服務條款，您已被限制使用社群。」（errorExtraInfo.userRestrictionInfo）
+// 2026-10-08 08:00 結單提醒一口氣分享 234 則，三個帳號各送 ~43 則（97 秒）後同時被擋，
+// 約 5 分鐘自己解除；但 worker 照樣一張一張撿，排在後面的 78 篇開團貼文全被標失敗、沒人重發。
+// 所以：撞到就整個帳號停 RESTRICT_PAUSE_MS（send_paused_until），撞到的工作退回排隊、不標失敗；
+// 分享到聊天室的工作每個帳號每分鐘最多 CHAT_PER_MIN 則（發文本身每分鐘 ~25 篇從沒被擋過，不限）。
+const SEND_KINDS = ["post", "share", "remind", "close", "reopen", "refresh"];
+const CHAT_KINDS = ["remind", "share"];
+const CHAT_PER_MIN = 12;
+const RESTRICT_PAUSE_MS = 10 * 60_000;
+const RESTRICT_GIVE_UP_MS = 6 * 3600_000;   // 排進來 6 小時還送不出去就標失敗，交給人看
+const RESTRICT_HINT = "LINE 暫時限制這個帳號使用社群（多半是短時間分享太多則），系統停 10 分鐘後會自動重試，不用手動重發";
+const isSquareRestricted = (msg: string) => /限制使用社群|userRestrictionInfo/.test(msg);
+
 const log = (...a: any[]) => console.log(new Date().toISOString(), ...a);
 
 // 發文 / 預覽都走這一支：商城連結的 base 是 env 給的，payload RPC 不知道站台網址。
@@ -323,6 +337,8 @@ async function jobPost(job: any) {
         log("分享貼文到聊天失敗:", shareError);
       }
     }
+    // 分享時被 LINE 限制：帳號先停，後面排隊的工作才不會繼續硬打
+    if (shareError && isSquareRestricted(shareError)) await pauseAccount(payload.account_id, shareError);
     await patch("line_note_posts", `id=eq.${job.post_id}`, {
       status: "posted", line_post_id: postId, text, posted_at: postedAt,
       ...(shareNow ? (sharedTo ? { share_state: "shared", shared_at: new Date().toISOString() } : { share_state: "failed" }) : {}),
@@ -340,7 +356,11 @@ async function jobPost(job: any) {
       ...(dup || post?.postId ? {} : { createRaw: JSON.stringify(post?.rawCreate ?? null).slice(0, 600) }),
     };
   } catch (e) {
-    await patch("line_note_posts", `id=eq.${job.post_id}`, { status: "failed", text, last_error: String((e as any)?.message ?? e).slice(0, 1000) });
+    const msg = String((e as any)?.message ?? e);
+    // 被 LINE 暫時限制：維持「排隊中」，runJob 會把工作退回去、等帳號解禁再發（放棄時才由 runJob 標失敗）
+    await patch("line_note_posts", `id=eq.${job.post_id}`, isSquareRestricted(msg)
+      ? { status: "queued", text, last_error: RESTRICT_HINT }
+      : { status: "failed", text, last_error: msg.slice(0, 1000) });
     throw e;
   }
 }
@@ -636,7 +656,10 @@ async function jobShare(job: any) {
     return { shared: true, chatMid: r.chatMid };
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
-    await patch("line_note_posts", `id=eq.${p.id}`, { share_state: "failed", last_error: `分享到聊天失敗：${msg}`.slice(0, 1000) }).catch(() => {});
+    // 被 LINE 暫時限制：維持 sharing，runJob 退回排隊等解禁（放棄時才由 runJob 標失敗）
+    await patch("line_note_posts", `id=eq.${p.id}`, isSquareRestricted(msg)
+      ? { last_error: `分享到聊天：${RESTRICT_HINT}` }
+      : { share_state: "failed", last_error: `分享到聊天失敗：${msg}`.slice(0, 1000) }).catch(() => {});
     throw e;
   }
 }
@@ -1187,6 +1210,8 @@ async function jobClose(job: any) {
     await createNoteComment(client, post.home_id, p.line_post_id, text, { verbose: VERBOSE });
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
+    // 被 LINE 暫時限制不算失敗：不寫 close_notified_at，runJob 會退回排隊等帳號解禁再留言
+    if (isSquareRestricted(msg)) throw e;
     // 失敗就不再重試（close_notified_at 寫下去，tick 才不會每分鐘再排一次 —— 9/24 一篇被刪的貼文
     // 就這樣連排了 200 次，探路時撞到的 401 還把帳號標成錯誤）。原因留在貼文列上，人看得到。
     const deleted = /已被刪除|code=404/.test(msg);
@@ -1287,9 +1312,38 @@ const HANDLERS: Record<string, (job: any, reactUntil: number) => Promise<unknown
   logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead, close: jobClose, remind: jobRemind, share: jobShare, reopen: jobReopen, refresh: jobRefresh,
 };
 
-async function claimNextJob() {
+// 被 LINE 限制使用社群：這個帳號的發文／分享／留言類工作先停 RESTRICT_PAUSE_MS（讀留言照跑）。
+// 寫進 DB 而不是放模組層級：下一分鐘的 tick 可能是另一個 isolate。
+async function pauseAccount(accountId: number, msg: string) {
+  const until = new Date(Date.now() + RESTRICT_PAUSE_MS).toISOString();
+  log(`⏸ 帳號 ${accountId} 被 LINE 暫時限制使用社群，發文／分享停到 ${until}：${msg.slice(0, 120)}`);
+  await patch("line_note_accounts", `id=eq.${accountId}`, { send_paused_until: until })
+    .catch((e) => log(`記錄帳號暫停失敗（略過）：${(e as any)?.message ?? e}`));
+}
+
+// 這一輪不能撿的（帳號, 工作種類）：暫停中的帳號不送任何東西；這一分鐘分享額度用完的帳號不再分享。
+// 撈不到就當作沒有限制 —— 頂多跟以前一樣硬打，不能因此整個排程停擺。
+// pausedHere：這一輪 tick 自己撞到的帳號。send_paused_until 萬一沒寫進去，也不能馬上又把剛退回的那筆撿回來重打。
+async function blockedJobFilter(pausedHere: Set<number>): Promise<string> {
+  const now = Date.now();
+  const paused = ((await rest(`line_note_accounts?send_paused_until=gt.${encodeURIComponent(new Date(now).toISOString())}&select=id`)
+    .catch(() => [])) ?? []).map((a: any) => Number(a.id));
+  for (const id of pausedHere) if (!paused.includes(id)) paused.push(id);
+  const minute = encodeURIComponent(`"${new Date(Math.floor(now / 60_000) * 60_000).toISOString()}"`);
+  const recent = (await rest(`line_note_jobs?kind=in.(${CHAT_KINDS.join(",")})&or=(status.eq.running,finished_at.gte.${minute})&select=account_id`)
+    .catch(() => [])) ?? [];
+  const sent = new Map<number, number>();
+  for (const r of recent) sent.set(Number(r.account_id), (sent.get(Number(r.account_id)) ?? 0) + 1);
+  const chatFull = [...sent].filter(([id, n]) => n >= CHAT_PER_MIN && !paused.includes(id)).map(([id]) => id);
+  const clauses: string[] = [];
+  if (paused.length) clauses.push(`not.and(account_id.in.(${paused.join(",")}),kind.in.(${SEND_KINDS.join(",")}))`);
+  if (chatFull.length) clauses.push(`not.and(account_id.in.(${chatFull.join(",")}),kind.in.(${CHAT_KINDS.join(",")}))`);
+  return clauses.length ? `&and=(${clauses.join(",")})` : "";
+}
+
+async function claimNextJob(pausedHere: Set<number>) {
   // login 不在排程裡跑（要等人掃 QR，會把整個 tick 卡住 110 秒），只走後台按鈕 → action=login
-  const rows = await rest(`line_note_jobs?status=eq.queued&kind=neq.login&select=*&order=created_at.asc&limit=1`);
+  const rows = await rest(`line_note_jobs?status=eq.queued&kind=neq.login${await blockedJobFilter(pausedHere)}&select=*&order=created_at.asc,id.asc&limit=1`);
   const job = rows?.[0];
   if (!job) return null;
   const claimed = await patch("line_note_jobs", `id=eq.${job.id}&status=eq.queued`, { status: "running", started_at: new Date().toISOString() });
@@ -1311,8 +1365,23 @@ async function runJob(job: any, reactUntil: number) {
     return { id: job.id, kind: job.kind, ok: true };
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
+    // 被 LINE 暫時限制：帳號先停、工作退回排隊（各 handler 已經把貼文列維持在排隊中／分享中），解禁後自己會跑。
+    // 排進來太久的就不等了，照一般失敗處理。
+    if (isSquareRestricted(msg) && job.account_id && SEND_KINDS.includes(job.kind)
+        && Date.now() - Date.parse(job.created_at) < RESTRICT_GIVE_UP_MS) {
+      await pauseAccount(job.account_id, msg);
+      await patch("line_note_jobs", `id=eq.${job.id}`, { status: "queued", started_at: null, error: msg.slice(0, 2000) });
+      return { id: job.id, kind: job.kind, ok: false, paused: true, error: msg.slice(0, 200) };
+    }
     log(`✖ job#${job.id}`, msg.slice(0, 500));
     await patch("line_note_jobs", `id=eq.${job.id}`, { status: "failed", error: msg.slice(0, 2000), finished_at: new Date().toISOString() });
+    // 工作死了貼文列不能還掛著「排隊中／分享中」：jobPost 在 try 之前就丟出來的錯（登入、網路）
+    // 原本會讓貼文永遠停在排隊中、也沒有工作在跑（10/7 南平、六甲各一篇）。標失敗，後台才看得到、能重發。
+    if (job.kind === "post" && job.post_id) {
+      await patch("line_note_posts", `id=eq.${job.post_id}&status=eq.queued`, { status: "failed", last_error: msg.slice(0, 1000) }).catch(() => {});
+    } else if (job.kind === "share" && job.post_id) {
+      await patch("line_note_posts", `id=eq.${job.post_id}&share_state=eq.sharing`, { share_state: "failed", last_error: `分享到聊天失敗：${msg}`.slice(0, 1000) }).catch(() => {});
+    }
     // 「記事本 API 全部打不通」是路由探測的彙整訊息，裡面夾雜的 401 多半是 LINE 的暫時性錯誤，不是帳號掉線
     if (/還沒登入|NotAuthorized|token|401/i.test(msg) && !/全部打不通/.test(msg) && job.account_id) {
       clients.delete(job.account_id);
@@ -1374,10 +1443,13 @@ async function tick() {
   try { sweepOrdered = await reactOrdered(started + SWEEP_BUDGET_MS); }
   catch (e) { log("補按加單成功的笑臉整批失敗（略過，不影響其他工作）:", (e as any)?.message ?? e); }
   const ran: any[] = [];
+  const pausedHere = new Set<number>();
   while (Date.now() - started < TICK_BUDGET_MS) {
-    const job = await claimNextJob();
+    const job = await claimNextJob(pausedHere);
     if (!job) break;
-    ran.push(await runJob(job, started + REACT_BUDGET_MS));
+    const r: any = await runJob(job, started + REACT_BUDGET_MS);
+    if (r.paused) pausedHere.add(Number(job.account_id));
+    ran.push(r);
   }
   return { scheduled, ...sweep, ...sweepOrdered, ran, ms: Date.now() - started };
 }
