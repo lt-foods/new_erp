@@ -41,27 +41,16 @@ type ResyncPreview = {
   pending_order_lines: number;
   amount_before: number;
   amount_after: number;
-  // 團文案←商品文案（20261008010000）：before / after 是 HTML 前 200 字，只給預覽看開頭。
+  // 團文案←商品文案（20261008010000）：before / after 是完整的 HTML 文案。
   // SQL 還沒套上時這三個欄位不存在 → 當作沒變。
   description_changed?: boolean;
   description_before?: string | null;
   description_after?: string | null;
 };
 
-// 文案預覽只顯示開頭幾行：後端給的是前 200 字的 HTML，可能截在標籤／&nbsp; 中間 →
-// 先去掉殘缺的尾巴再轉純文字，畫面上才不會冒出 <p、&nbs 之類的字。
-const DESC_HEAD_MAX_LINES = 4;
-function descriptionHead(html: string | null | undefined): string {
-  if (!html) return "（空白）";
-  const cut = [...html].length >= 200;
-  const safe = cut ? html.replace(/<[^>]*$/, "").replace(/&[#\w]*$/, "") : html;
-  const lines = htmlToText(safe)
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-  if (lines.length === 0) return "（空白）";
-  const more = cut || lines.length > DESC_HEAD_MAX_LINES;
-  return lines.slice(0, DESC_HEAD_MAX_LINES).join("\n") + (more ? "\n…" : "");
+// 文案預覽顯示完整內容（新加的規格行常在後段）：HTML 轉純文字、保留換行，長的在框內捲動。
+function descriptionText(html: string | null | undefined): string {
+  return htmlToText(html ?? null) || "（空白）";
 }
 
 export function CampaignItemsTable({
@@ -341,15 +330,15 @@ export function CampaignItemsTable({
                 <div className="mb-2 text-xs font-medium text-zinc-500">文案：會換成商品頁目前的文案</div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div>
-                    <div className="mb-0.5 text-[11px] text-zinc-400">改前（開頭）</div>
-                    <div className="whitespace-pre-line break-words text-xs text-zinc-400">
-                      {descriptionHead(preview.description_before)}
+                    <div className="mb-0.5 text-[11px] text-zinc-400">改前</div>
+                    <div className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-zinc-200 bg-zinc-50 p-2 text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
+                      {descriptionText(preview.description_before)}
                     </div>
                   </div>
                   <div>
-                    <div className="mb-0.5 text-[11px] text-zinc-500">改後（開頭）</div>
-                    <div className="whitespace-pre-line break-words text-xs">
-                      {descriptionHead(preview.description_after)}
+                    <div className="mb-0.5 text-[11px] text-zinc-500">改後</div>
+                    <div className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-zinc-200 bg-zinc-50 p-2 text-xs dark:border-zinc-800 dark:bg-zinc-900">
+                      {descriptionText(preview.description_after)}
                     </div>
                   </div>
                 </div>

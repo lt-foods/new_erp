@@ -12,8 +12,9 @@
 --   rpc_resync_campaign_from_product 多做一件事：
 --     - 預覽（p_dry_run = TRUE）多回三個欄位：
 --         description_changed  這團有 product_id、商品文案有字、且商品文案 IS DISTINCT FROM 團文案
---         description_before   團文案前 200 字（預覽只看開頭）
---         description_after    套用後的團文案前 200 字（有變＝商品文案；沒變＝原團文案）
+--         description_before   團文案（完整）
+--         description_after    套用後的團文案（完整；有變＝商品文案；沒變＝原團文案）
+--       完整回傳、不截字：新加的規格行常在第 5 行以後，只給開頭就正好看不到要確認的那一行。
 --     - 套用（p_dry_run = FALSE）時 description_changed 才把這一團的 description 改成完整的商品文案
 --       （另一句 UPDATE，只動 description，WHERE 跟改團名那句一樣：id = p_campaign_id AND tenant_id）。
 --   「商品文案有字」的判準：去掉 HTML 標籤、&nbsp;、空白之後還有東西。
@@ -35,11 +36,16 @@
 --
 -- 已知要注意
 --   - 員工建立開團時若在視窗裡特別改過團文案，按重新同步會被換回商品文案；
---     預覽會先列出改前／改後的開頭，看了不想換就按取消。
---   - 上線順序：先貼本檔，再合併前端。中間那段（本檔已貼、新畫面還沒上）：
---     舊畫面讀不到 description_* 不會壞，但預覽**看不到**文案那一項，
---     而按「確認同步」時文案一樣會被換掉。新畫面上線後才會在預覽裡列出來。
---     反過來前端先上、本檔沒貼：預覽不會出現文案那一項，文案也不會動。
+--     預覽會先列出改前／改後的完整文案，看了不想換就按取消。
+--   - 上線順序：先合併前端、等 GitHub Pages 部署完成（新畫面已上線），再貼本檔。
+--     理由：
+--       ・新畫面＋本檔還沒貼：新畫面把「沒有 description_* 欄位」當作文案沒變 →
+--         預覽不出現文案那一項、文案也不會動，其他同步行為跟現在一樣。這段期間是安全的。
+--       ・反過來（舊畫面＋本檔已貼）會出事：舊畫面判斷「有沒有變更」只看名稱／單價／規格／
+--         待確認訂單，預覽裡沒有文案那一項。只有文案變的團不會出現「確認同步」（看起來沒變更）；
+--         但只要同一團同時有改名、改價等其他變更，按「確認同步」就會在預覽**看不到**的情況下
+--         把團文案一起換掉。
+--     ⇒ 一定要確認新畫面已經部署上線之後才貼本檔。
 --
 -- 整份可重貼：前置檢查認得「20260819000000 那一版」（第一次貼）和「本檔建的版本」（重貼），
 --   其餘一律停下來、一行都不執行。CREATE OR REPLACE／GRANT／COMMENT 重跑結果一樣。
@@ -117,7 +123,7 @@ BEGIN
     RAISE EXCEPTION '前置檢查未通過，本檔一行都沒有執行。線上 rpc_resync_campaign_from_product 不是 20260819000000 那一版（md5=%），也不是本檔建的版本；可能有人改過，請先比對再決定',
       md5(v_src);
   END IF;
-END
+END;
 $precheck$;
 
 
@@ -327,10 +333,10 @@ BEGIN
     'name_before',         v_camp.name,
     'name_after',          COALESCE(v_prod_name, v_camp.name),
     'name_changed',        v_name_changed,
-    -- 20261008010000：文案。預覽只看開頭，各取前 200 字；套用時寫的是完整的商品文案
+    -- 20261008010000：文案。改前／改後都回完整文案（新加的規格行常在後段，只給開頭會看不到）
     'description_changed', v_desc_changed,
-    'description_before',  left(v_camp.description, 200),
-    'description_after',   left(CASE WHEN v_desc_changed THEN v_prod_desc ELSE v_camp.description END, 200),
+    'description_before',  v_camp.description,
+    'description_after',   CASE WHEN v_desc_changed THEN v_prod_desc ELSE v_camp.description END,
     'items',               COALESCE(v_items_json, '[]'::jsonb),
     'items_repriced',      v_items_repriced,
     'items_removed',       COALESCE(v_items_removed_json, '[]'::jsonb),
@@ -470,4 +476,4 @@ COMMENT ON FUNCTION public.rpc_resync_campaign_from_product(BIGINT, BOOLEAN, UUI
   'draft/open 限定、僅管理員(owner/admin) 限定、active SKU 缺有效零售價則拒跑、p_dry_run 預設只預覽。'
   '20260819000000：贈品（campaign_items.is_gift / customer_order_items.is_gift）全程跳過'
   '——不重新定價、不回填訂單、缺零售價也不擋跑。'
-  '20261008010000：團文案←商品文案（商品文案沒有字時不動團文案）；預覽回 description_changed / _before / _after（前 200 字）。';
+  '20261008010000：團文案←商品文案（商品文案沒有字時不動團文案）；預覽回 description_changed / _before / _after（完整文案）。';
