@@ -1408,6 +1408,9 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
   const [counts, setCounts] = useState<Map<number, PostStat>>(new Map());
   const [q, setQ] = useState("");
   const [linkFor, setLinkFor] = useState<Post | null>(null);
+  // 開團中／已收單的團裡「發文失敗」的貼文數（全站，不跟著篩選）：> 0 才出「一鍵重發」
+  const [failedN, setFailedN] = useState(0);
+  const [requeueing, setRequeueing] = useState(false);
 
   // ── 伺服端分頁 / 篩選 ────────────────────────────────────────────────────
   // 分頁的單位是「組」（＝畫面上的一張卡），不是貼文列：同一團發到 3 個社群是 3 列，
@@ -1432,6 +1435,10 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
 
   const load = useCallback(async () => {
     const sb = getSupabase();
+    void sb.from("line_note_posts")
+      .select("id,group_buy_campaigns!inner(status)", { count: "exact", head: true })
+      .eq("status", "failed").in("group_buy_campaigns.status", ["open", "closed"])
+      .then(({ count }) => setFailedN(count ?? 0));
     let gq = sb.from("v_line_note_post_groups")
       .select("group_key,campaign_id,unlinked_post_id", { count: "exact" })
       .order("latest_at", { ascending: false })
@@ -1647,6 +1654,22 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
     notify("已重新排入發文，幾秒後這一列會變成已發文");
     await reload();
   };
+  // 一鍵重發：LINE 暫時擋帳號時一次會壞十幾團 × 好幾個社群，一列一列按不完。
+  // 規則跟「LINE 記事本」彈窗發文同一支（rpc_line_note_queue_posts），已鎖定的團不重發。
+  const requeueFailed = async () => {
+    if (!window.confirm(`把 ${failedN} 篇「發文失敗」的貼文重新發一次？
+
+會依序排入發文，幾分鐘內陸續發出（已鎖定的團不會重發）。`)) return;
+    setRequeueing(true);
+    const { data, error } = await getSupabase().rpc("rpc_line_note_requeue_failed", { p_campaign_id: null });
+    setRequeueing(false);
+    if (error) return fail(error);
+    const r = ((data ?? []) as { out_queued: number; out_skipped: number; out_errors: string[] | null }[])[0];
+    kickWorker();
+    const skipped = r?.out_skipped ? `；${r.out_skipped} 篇沒排入：${(r.out_errors ?? []).join("、") || "已經發過"}` : "";
+    notify(`已重新排入 ${r?.out_queued ?? 0} 篇，幾分鐘內會陸續發出${skipped}`);
+    await reload();
+  };
   const recallPost = async (p: Post) => {
     setBusy(p.id);
     const r = await recallLineNotePost({ id: p.id, line_post_id: p.line_post_id, label: p.group_buy_campaigns?.name ?? postFirstLine(p.text) });
@@ -1744,7 +1767,8 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
           : <SpinButton type="button" className={btnSm} loading={busy === p.id} onClick={() => void sharePost(p)}
               title="用 LINE 的「分享貼文」卡片貼到這個社群的聊天室">分享到聊天室</SpinButton>
       )}
-      {!readOnly && !unlinked && p.status === "recalled" && p.campaign_id && (
+      {!readOnly && !unlinked && p.campaign_id && (p.status === "recalled"
+        || (p.status === "failed" && ["open", "closed"].includes(p.group_buy_campaigns?.status ?? ""))) && (
         <SpinButton type="button" className={btnPrimary} loading={busy === p.id} onClick={() => void repostPost(p)}
           title="把這團重新發到這個社群的記事本（底下的留言、已加的單都留著）">重新發文</SpinButton>
       )}
@@ -1780,6 +1804,10 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
           <option value="all">全部狀態</option>
         </select>
         <button type="button" className={btn} onClick={() => void reload()}>重新整理</button>
+        {!readOnly && failedN > 0 && (
+          <SpinButton type="button" className={btnPrimary} loading={requeueing} onClick={() => void requeueFailed()}
+            title="開團中／已收單的團裡發文失敗的貼文，全部重新排入發文">🔁 一鍵重發失敗（{failedN}）</SpinButton>
+        )}
         <span className="ml-auto flex items-center gap-1.5 text-sm text-zinc-500">
           <span className="tabular-nums">{total} 團・第 {page}/{pageCount} 頁</span>
           <button type="button" className={btn} disabled={page <= 1} onClick={() => setPage((n) => Math.max(1, n - 1))}>上一頁</button>

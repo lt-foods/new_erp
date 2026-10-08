@@ -1012,6 +1012,21 @@ HQ 要在 /wms/exceptions 用 `restock_hq`（沖回總倉庫存，20260810000010
 
 ## LINE / LIFF
 
+### LINE 社群：分享到聊天室不能爆量，被限制時不要繼續硬打
+
+LINE 對短時間大量分享／發訊息的帳號會暫時封鎖社群功能，回
+`code=403「因違反服務條款，您已被限制使用社群」`（`errorExtraInfo.userRestrictionInfo`）。
+2026-10-08 08:00 結單提醒一口氣分享 234 則，三個帳號各送 ~43 則（97 秒）後同時被擋，
+約 5 分鐘自己解除；但 line-note-worker 照樣一張一張撿，排在後面的 78 篇開團貼文全標失敗、
+沒人重發（10/1、10/5 也各中過一次，10/5 被擋後 4 分鐘內又硬打了 500 次）。
+發文本身（每帳號每分鐘 ~25 篇）從沒觸發過，觸發的都是 remind / share 爆量。
+
+已修（20261008000000 + worker）：撞到就 `line_note_accounts.send_paused_until` 停 10 分鐘、
+那筆工作退回排隊；`code=701「請稍後再重新發布貼文」`（同帳號連發十幾篇）同理停 2 分鐘；
+remind / share 每帳號每分鐘最多 12 則。真的失敗的貼文，後台「貼文」分頁有「🔁 一鍵重發失敗」
+（`rpc_line_note_requeue_failed`，規則沿用 `rpc_line_note_queue_posts`）。新增任何「一次分享很多則」的路徑，
+一律走 `line_note_jobs` 讓 worker 節流，不要在一支 handler 裡自己迴圈送。
+
 ### 在 LINE 內建瀏覽器裡，絕對不要把使用者導去 `access.line.me`
 
 LINE 官方明講「LIFF browser 內的 LINE Login 授權請求行為不保證」，實際結果是
