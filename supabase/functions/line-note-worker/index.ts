@@ -50,15 +50,21 @@ const MEMBER_BASE = (Deno.env.get("MEMBER_FRONT_BASE_URL") ?? "").replace(/\/+$/
 //   code=403「因違反服務條款，您已被限制使用社群。」（errorExtraInfo.userRestrictionInfo）
 // 2026-10-08 08:00 結單提醒一口氣分享 234 則，三個帳號各送 ~43 則（97 秒）後同時被擋，
 // 約 5 分鐘自己解除；但 worker 照樣一張一張撿，排在後面的 78 篇開團貼文全被標失敗、沒人重發。
-// 所以：撞到就整個帳號停 RESTRICT_PAUSE_MS（send_paused_until），撞到的工作退回排隊、不標失敗；
+// 所以：撞到就整個帳號停 10 分鐘（send_paused_until），撞到的工作退回排隊、不標失敗；
 // 分享到聊天室的工作每個帳號每分鐘最多 CHAT_PER_MIN 則（發文本身每分鐘 ~25 篇從沒被擋過，不限）。
+// 同一天補發時同一個帳號連發 ~15 篇後也會回 code=701「請稍後再重新發布貼文」，一樣是叫我們慢一點：停 2 分鐘。
 const SEND_KINDS = ["post", "share", "remind", "close", "reopen", "refresh"];
 const CHAT_KINDS = ["remind", "share"];
 const CHAT_PER_MIN = 12;
-const RESTRICT_PAUSE_MS = 10 * 60_000;
 const RESTRICT_GIVE_UP_MS = 6 * 3600_000;   // 排進來 6 小時還送不出去就標失敗，交給人看
-const RESTRICT_HINT = "LINE 暫時限制這個帳號使用社群（多半是短時間分享太多則），系統停 10 分鐘後會自動重試，不用手動重發";
-const isSquareRestricted = (msg: string) => /限制使用社群|userRestrictionInfo/.test(msg);
+const RESTRICT_HINT = "LINE 要求暫緩（被暫時限制使用社群／請稍後再發），系統會先停這個帳號一陣子再自動重試，不用手動重發";
+/** LINE 叫我們慢一點的錯誤 → 這個帳號要停多久；其他錯誤回 null */
+function lineBackoffMs(msg: string): number | null {
+  if (/限制使用社群|userRestrictionInfo/.test(msg)) return 10 * 60_000;
+  if (/code=701\b|請稍後再重新發布/.test(msg)) return 2 * 60_000;
+  return null;
+}
+const isLineBackoff = (msg: string) => lineBackoffMs(msg) !== null;
 
 const log = (...a: any[]) => console.log(new Date().toISOString(), ...a);
 
@@ -338,7 +344,7 @@ async function jobPost(job: any) {
       }
     }
     // 分享時被 LINE 限制：帳號先停，後面排隊的工作才不會繼續硬打
-    if (shareError && isSquareRestricted(shareError)) await pauseAccount(payload.account_id, shareError);
+    if (shareError && isLineBackoff(shareError)) await pauseAccount(payload.account_id, shareError);
     await patch("line_note_posts", `id=eq.${job.post_id}`, {
       status: "posted", line_post_id: postId, text, posted_at: postedAt,
       ...(shareNow ? (sharedTo ? { share_state: "shared", shared_at: new Date().toISOString() } : { share_state: "failed" }) : {}),
@@ -358,7 +364,7 @@ async function jobPost(job: any) {
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
     // 被 LINE 暫時限制：維持「排隊中」，runJob 會把工作退回去、等帳號解禁再發（放棄時才由 runJob 標失敗）
-    await patch("line_note_posts", `id=eq.${job.post_id}`, isSquareRestricted(msg)
+    await patch("line_note_posts", `id=eq.${job.post_id}`, isLineBackoff(msg)
       ? { status: "queued", text, last_error: RESTRICT_HINT }
       : { status: "failed", text, last_error: msg.slice(0, 1000) });
     throw e;
@@ -657,7 +663,7 @@ async function jobShare(job: any) {
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
     // 被 LINE 暫時限制：維持 sharing，runJob 退回排隊等解禁（放棄時才由 runJob 標失敗）
-    await patch("line_note_posts", `id=eq.${p.id}`, isSquareRestricted(msg)
+    await patch("line_note_posts", `id=eq.${p.id}`, isLineBackoff(msg)
       ? { last_error: `分享到聊天：${RESTRICT_HINT}` }
       : { share_state: "failed", last_error: `分享到聊天失敗：${msg}`.slice(0, 1000) }).catch(() => {});
     throw e;
@@ -1211,7 +1217,7 @@ async function jobClose(job: any) {
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
     // 被 LINE 暫時限制不算失敗：不寫 close_notified_at，runJob 會退回排隊等帳號解禁再留言
-    if (isSquareRestricted(msg)) throw e;
+    if (isLineBackoff(msg)) throw e;
     // 失敗就不再重試（close_notified_at 寫下去，tick 才不會每分鐘再排一次 —— 9/24 一篇被刪的貼文
     // 就這樣連排了 200 次，探路時撞到的 401 還把帳號標成錯誤）。原因留在貼文列上，人看得到。
     const deleted = /已被刪除|code=404/.test(msg);
@@ -1312,11 +1318,11 @@ const HANDLERS: Record<string, (job: any, reactUntil: number) => Promise<unknown
   logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead, close: jobClose, remind: jobRemind, share: jobShare, reopen: jobReopen, refresh: jobRefresh,
 };
 
-// 被 LINE 限制使用社群：這個帳號的發文／分享／留言類工作先停 RESTRICT_PAUSE_MS（讀留言照跑）。
+// LINE 叫我們慢一點：這個帳號的發文／分享／留言類工作先停 lineBackoffMs（讀留言照跑）。
 // 寫進 DB 而不是放模組層級：下一分鐘的 tick 可能是另一個 isolate。
 async function pauseAccount(accountId: number, msg: string) {
-  const until = new Date(Date.now() + RESTRICT_PAUSE_MS).toISOString();
-  log(`⏸ 帳號 ${accountId} 被 LINE 暫時限制使用社群，發文／分享停到 ${until}：${msg.slice(0, 120)}`);
+  const until = new Date(Date.now() + (lineBackoffMs(msg) ?? 10 * 60_000)).toISOString();
+  log(`⏸ 帳號 ${accountId} 被 LINE 要求暫緩，發文／分享停到 ${until}：${msg.slice(0, 120)}`);
   await patch("line_note_accounts", `id=eq.${accountId}`, { send_paused_until: until })
     .catch((e) => log(`記錄帳號暫停失敗（略過）：${(e as any)?.message ?? e}`));
 }
@@ -1367,7 +1373,7 @@ async function runJob(job: any, reactUntil: number) {
     const msg = String((e as any)?.message ?? e);
     // 被 LINE 暫時限制：帳號先停、工作退回排隊（各 handler 已經把貼文列維持在排隊中／分享中），解禁後自己會跑。
     // 排進來太久的就不等了，照一般失敗處理。
-    if (isSquareRestricted(msg) && job.account_id && SEND_KINDS.includes(job.kind)
+    if (isLineBackoff(msg) && job.account_id && SEND_KINDS.includes(job.kind)
         && Date.now() - Date.parse(job.created_at) < RESTRICT_GIVE_UP_MS) {
       await pauseAccount(job.account_id, msg);
       await patch("line_note_jobs", `id=eq.${job.id}`, { status: "queued", started_at: null, error: msg.slice(0, 2000) });
