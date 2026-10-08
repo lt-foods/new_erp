@@ -7,6 +7,7 @@ import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { translateRpcError } from "@/lib/rpcError";
 import { useRole, isAdmin } from "@/lib/role";
+import { htmlToText } from "@/lib/exportShopeeXlsx";
 
 type Row = {
   id: number;
@@ -40,7 +41,28 @@ type ResyncPreview = {
   pending_order_lines: number;
   amount_before: number;
   amount_after: number;
+  // 團文案←商品文案（20261008010000）：before / after 是 HTML 前 200 字，只給預覽看開頭。
+  // SQL 還沒套上時這三個欄位不存在 → 當作沒變。
+  description_changed?: boolean;
+  description_before?: string | null;
+  description_after?: string | null;
 };
+
+// 文案預覽只顯示開頭幾行：後端給的是前 200 字的 HTML，可能截在標籤／&nbsp; 中間 →
+// 先去掉殘缺的尾巴再轉純文字，畫面上才不會冒出 <p、&nbs 之類的字。
+const DESC_HEAD_MAX_LINES = 4;
+function descriptionHead(html: string | null | undefined): string {
+  if (!html) return "（空白）";
+  const cut = [...html].length >= 200;
+  const safe = cut ? html.replace(/<[^>]*$/, "").replace(/&[#\w]*$/, "") : html;
+  const lines = htmlToText(safe)
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return "（空白）";
+  const more = cut || lines.length > DESC_HEAD_MAX_LINES;
+  return lines.slice(0, DESC_HEAD_MAX_LINES).join("\n") + (more ? "\n…" : "");
+}
 
 export function CampaignItemsTable({
   campaignId,
@@ -162,6 +184,7 @@ export function CampaignItemsTable({
 
   const hasChanges = !!preview && (
     preview.name_changed ||
+    !!preview.description_changed ||
     preview.items_repriced > 0 ||
     preview.skus_added > 0 ||
     preview.pending_order_lines > 0
@@ -191,7 +214,7 @@ export function CampaignItemsTable({
           {canResync && (
             <SpinButton
               onClick={runPreview}
-              title="從商品現行零售價重新同步開團名稱、單價，並回填本團『待確認』訂單金額"
+              title="從商品重新同步開團名稱、文案、單價（現行零售價），並回填本團『待確認』訂單金額"
               className="rounded-md border border-blue-300 px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950"
             >
               重新同步商品/價格
@@ -310,6 +333,26 @@ export function CampaignItemsTable({
                 <div className="mb-1 text-xs font-medium text-zinc-500">開團名稱</div>
                 <div className="line-through text-zinc-400">{preview.name_before}</div>
                 <div className="font-semibold">{preview.name_after}</div>
+              </div>
+            )}
+
+            {preview.description_changed && (
+              <div className="rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
+                <div className="mb-2 text-xs font-medium text-zinc-500">文案：會換成商品頁目前的文案</div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <div className="mb-0.5 text-[11px] text-zinc-400">改前（開頭）</div>
+                    <div className="whitespace-pre-line break-words text-xs text-zinc-400">
+                      {descriptionHead(preview.description_before)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mb-0.5 text-[11px] text-zinc-500">改後（開頭）</div>
+                    <div className="whitespace-pre-line break-words text-xs">
+                      {descriptionHead(preview.description_after)}
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 

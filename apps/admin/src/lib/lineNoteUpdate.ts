@@ -17,7 +17,7 @@ export async function updateLineNotePost(post: LineNotePostRef): Promise<UpdateO
   if (!post.line_post_id) return { kind: "failed", error: "這篇還沒發到 LINE，沒有東西可以更新" };
   if (!window.confirm(
     `把「${post.label}」這篇貼文更新成現在的內容？\n\n` +
-    `會用開團目前的品項 / 價格 / 結單時間重新產生貼文，並覆蓋 LINE 記事本上那一篇（圖片也會重傳）。\n` +
+    `會用開團目前的文案 / 品項 / 價格 / 結單時間重新產生貼文，並覆蓋 LINE 記事本上那一篇（圖片也會重傳）。\n` +
     `貼文底下的留言、已經加出來的訂單都不會動。`)) return { kind: "cancelled" };
 
   const { data, error } = await getSupabase().functions
