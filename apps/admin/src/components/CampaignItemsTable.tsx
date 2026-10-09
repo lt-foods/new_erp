@@ -7,6 +7,7 @@ import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { translateRpcError } from "@/lib/rpcError";
 import { useRole, isAdmin } from "@/lib/role";
+import { htmlToText } from "@/lib/exportShopeeXlsx";
 
 type Row = {
   id: number;
@@ -40,7 +41,17 @@ type ResyncPreview = {
   pending_order_lines: number;
   amount_before: number;
   amount_after: number;
+  // 團文案←商品文案（20261008010000）：before / after 是完整的 HTML 文案。
+  // SQL 還沒套上時這三個欄位不存在 → 當作沒變。
+  description_changed?: boolean;
+  description_before?: string | null;
+  description_after?: string | null;
 };
+
+// 文案預覽顯示完整內容（新加的規格行常在後段）：HTML 轉純文字、保留換行，長的在框內捲動。
+function descriptionText(html: string | null | undefined): string {
+  return htmlToText(html ?? null) || "（空白）";
+}
 
 export function CampaignItemsTable({
   campaignId,
@@ -162,6 +173,7 @@ export function CampaignItemsTable({
 
   const hasChanges = !!preview && (
     preview.name_changed ||
+    !!preview.description_changed ||
     preview.items_repriced > 0 ||
     preview.skus_added > 0 ||
     preview.pending_order_lines > 0
@@ -191,7 +203,7 @@ export function CampaignItemsTable({
           {canResync && (
             <SpinButton
               onClick={runPreview}
-              title="從商品現行零售價重新同步開團名稱、單價，並回填本團『待確認』訂單金額"
+              title="從商品重新同步開團名稱、文案、單價（現行零售價），並回填本團『待確認』訂單金額"
               className="rounded-md border border-blue-300 px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950"
             >
               重新同步商品/價格
@@ -310,6 +322,26 @@ export function CampaignItemsTable({
                 <div className="mb-1 text-xs font-medium text-zinc-500">開團名稱</div>
                 <div className="line-through text-zinc-400">{preview.name_before}</div>
                 <div className="font-semibold">{preview.name_after}</div>
+              </div>
+            )}
+
+            {preview.description_changed && (
+              <div className="rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
+                <div className="mb-2 text-xs font-medium text-zinc-500">文案：會換成商品頁目前的文案</div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <div className="mb-0.5 text-[11px] text-zinc-400">改前</div>
+                    <div className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-zinc-200 bg-zinc-50 p-2 text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900">
+                      {descriptionText(preview.description_before)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mb-0.5 text-[11px] text-zinc-500">改後</div>
+                    <div className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-zinc-200 bg-zinc-50 p-2 text-xs dark:border-zinc-800 dark:bg-zinc-900">
+                      {descriptionText(preview.description_after)}
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 

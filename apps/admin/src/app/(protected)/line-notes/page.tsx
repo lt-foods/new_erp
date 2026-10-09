@@ -1756,7 +1756,7 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
       )}
       {!readOnly && !unlinked && p.line_post_id && (p.status === "posted" || p.status === "closed") && (
         <SpinButton type="button" className={btnSm} loading={busy === p.id} onClick={() => void refreshPost(p)}
-          title="開團的品項 / 價格改了之後，把 LINE 上那篇改成現在的內容">更新貼文</SpinButton>
+          title="開團的文案 / 品項 / 價格改了之後，把 LINE 上那篇改成現在的內容">更新貼文</SpinButton>
       )}
       {/* 手動分享 / 回收：已分享的給「回收分享」，其他（未分享、等節奏、分享失敗）給「分享到聊天室」。
           等節奏的按了就是插隊 —— worker 分享完會標 shared，節奏那邊看到 shared 就不會再放一次。 */}
