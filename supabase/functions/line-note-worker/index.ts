@@ -1372,10 +1372,11 @@ async function runJob(job: any, reactUntil: number) {
   } catch (e) {
     const msg = String((e as any)?.message ?? e);
     // 被 LINE 暫時限制：帳號先停、工作退回排隊（各 handler 已經把貼文列維持在排隊中／分享中），解禁後自己會跑。
-    // 排進來太久的就不等了，照一般失敗處理。
-    if (isLineBackoff(msg) && job.account_id && SEND_KINDS.includes(job.kind)
-        && Date.now() - Date.parse(job.created_at) < RESTRICT_GIVE_UP_MS) {
-      await pauseAccount(job.account_id, msg);
+    // 排進來太久的就不等了，照一般失敗處理 —— 但帳號**一樣要停**：2026-10-12 只有「退回排隊」那條會停，
+    // 超過 6 小時的舊工作標失敗後馬上撿下一筆，14:06～15:18 在被限制中對 LINE 連打 ~560 次，限制拖了好幾個小時。
+    const backoff = !!(isLineBackoff(msg) && job.account_id && SEND_KINDS.includes(job.kind));
+    if (backoff) await pauseAccount(job.account_id, msg);
+    if (backoff && Date.now() - Date.parse(job.created_at) < RESTRICT_GIVE_UP_MS) {
       await patch("line_note_jobs", `id=eq.${job.id}`, { status: "queued", started_at: null, error: msg.slice(0, 2000) });
       return { id: job.id, kind: job.kind, ok: false, paused: true, error: msg.slice(0, 200) };
     }
@@ -1393,7 +1394,7 @@ async function runJob(job: any, reactUntil: number) {
       clients.delete(job.account_id);
       await patch("line_note_accounts", `id=eq.${job.account_id}`, { status: "error", last_error: loginErrorHint(msg).slice(0, 1000) }).catch(() => {});
     }
-    return { id: job.id, kind: job.kind, ok: false, error: msg.slice(0, 200) };
+    return { id: job.id, kind: job.kind, ok: false, paused: backoff || undefined, error: msg.slice(0, 200) };
   }
 }
 
