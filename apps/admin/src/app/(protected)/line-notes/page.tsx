@@ -29,6 +29,8 @@ type Account = {
   line_mid: string | null; display_name: string | null;
   qr_image: string | null; qr_url: string | null; pin_code: string | null;
   last_error: string | null; last_seen_at: string | null;
+  // 分享到聊天室每分鐘最多幾則（20261012000000；LINE 對大量分享會限制使用社群）
+  chat_per_min: number | null;
 };
 type Store = { id: number; code: string; name: string };
 type Community = {
@@ -298,6 +300,19 @@ function AccountsTab({ accounts, reload, notify, fail }: {
     notify("已送出登出");
     await reload();
   };
+  // 被 LINE 限制使用社群就調小；預設 5
+  const setChatPerMin = async (a: Account) => {
+    const v = window.prompt(`「${a.label}」分享到聊天室（結單提醒等）每分鐘最多幾則？（1～30）\n被 LINE 限制使用社群就調小。`, String(a.chat_per_min ?? 5));
+    if (v == null) return;
+    const n = Number(v.trim());
+    if (!Number.isInteger(n) || n < 1 || n > 30) return fail(new Error("請輸入 1～30 的整數"));
+    setBusy(a.id);
+    const { error } = await getSupabase().rpc("rpc_line_note_account_set_chat_per_min", { p_id: a.id, p_n: n });
+    setBusy(null);
+    if (error) return fail(error);
+    notify(`已改成每分鐘 ${n} 則`);
+    await reload();
+  };
   // 刪帳號會連底下的社群 → 貼文 → 留言一路 CASCADE 掉，所以先把數量算給他看：
   // 「會一起刪掉」講得太輕，真的按下去是一次刪掉上千筆留言紀錄。
   const remove = async (a: Account) => {
@@ -337,9 +352,9 @@ function AccountsTab({ accounts, reload, notify, fail }: {
         <SpinButton type="button" className={btnPrimary} loading={busy === "new"} onClick={addAccount}>＋ 新增帳號</SpinButton>
       </div>
       <Table>
-        <THead><Th>名稱</Th><Th>狀態</Th><Th>LINE 顯示名稱</Th><Th>最後活動</Th><Th>錯誤</Th><Th align="right">操作</Th></THead>
+        <THead><Th>名稱</Th><Th>狀態</Th><Th>LINE 顯示名稱</Th><Th>分享速度</Th><Th>最後活動</Th><Th>錯誤</Th><Th align="right">操作</Th></THead>
         <TBody>
-          {accounts === null ? <LoadingRow colSpan={6} /> : accounts.length === 0 ? <EmptyRow colSpan={6}>還沒有帳號</EmptyRow> : accounts.map((a) => (
+          {accounts === null ? <LoadingRow colSpan={7} /> : accounts.length === 0 ? <EmptyRow colSpan={7}>還沒有帳號</EmptyRow> : accounts.map((a) => (
             <Tr key={a.id}>
               <Td>{a.label}</Td>
               <Td>
@@ -348,6 +363,10 @@ function AccountsTab({ accounts, reload, notify, fail }: {
                 </Badge>
               </Td>
               <Td>{a.display_name ?? "—"}</Td>
+              <Td>
+                <button type="button" className="text-sky-700 underline" title="分享到聊天室（結單提醒等）每分鐘最多幾則，點一下修改"
+                  onClick={() => setChatPerMin(a)}>每分鐘 {a.chat_per_min ?? 5} 則</button>
+              </Td>
               <Td>{fmt(a.last_seen_at)}</Td>
               <Td className="max-w-xs truncate text-xs text-red-600" title={a.last_error ?? ""}>{a.last_error ?? ""}</Td>
               <Td align="right">

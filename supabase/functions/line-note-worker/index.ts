@@ -51,11 +51,13 @@ const MEMBER_BASE = (Deno.env.get("MEMBER_FRONT_BASE_URL") ?? "").replace(/\/+$/
 // 2026-10-08 08:00 結單提醒一口氣分享 234 則，三個帳號各送 ~43 則（97 秒）後同時被擋，
 // 約 5 分鐘自己解除；但 worker 照樣一張一張撿，排在後面的 78 篇開團貼文全被標失敗、沒人重發。
 // 所以：撞到就整個帳號停 10 分鐘（send_paused_until），撞到的工作退回排隊、不標失敗；
-// 分享到聊天室的工作每個帳號每分鐘最多 CHAT_PER_MIN 則（發文本身每分鐘 ~25 篇從沒被擋過，不限）。
+// 分享到聊天室的工作每個帳號每分鐘最多 chat_per_min 則（發文本身每分鐘 ~25 篇從沒被擋過，不限）。
 // 同一天補發時同一個帳號連發 ~15 篇後也會回 code=701「請稍後再重新發布貼文」，一樣是叫我們慢一點：停 2 分鐘。
 const SEND_KINDS = ["post", "share", "remind", "close", "reopen", "refresh"];
 const CHAT_KINDS = ["remind", "share"];
-const CHAT_PER_MIN = 12;
+// 每帳號每分鐘幾則改由 line_note_accounts.chat_per_min 決定（後台可調，20261012000000）；
+// 10/12 用寫死的 12 還是被擋，預設降到 5。讀不到那欄時用這個值。
+const CHAT_PER_MIN_DEFAULT = 5;
 const RESTRICT_GIVE_UP_MS = 6 * 3600_000;   // 排進來 6 小時還送不出去就標失敗，交給人看
 const RESTRICT_HINT = "LINE 要求暫緩（被暫時限制使用社群／請稍後再發），系統會先停這個帳號一陣子再自動重試，不用手動重發";
 /** LINE 叫我們慢一點的錯誤 → 這個帳號要停多久；其他錯誤回 null */
@@ -1340,7 +1342,13 @@ async function blockedJobFilter(pausedHere: Set<number>): Promise<string> {
     .catch(() => [])) ?? [];
   const sent = new Map<number, number>();
   for (const r of recent) sent.set(Number(r.account_id), (sent.get(Number(r.account_id)) ?? 0) + 1);
-  const chatFull = [...sent].filter(([id, n]) => n >= CHAT_PER_MIN && !paused.includes(id)).map(([id]) => id);
+  const limits = new Map<number, number>();
+  if (sent.size) {
+    const rows = (await rest(`line_note_accounts?id=in.(${[...sent.keys()].join(",")})&select=id,chat_per_min`).catch(() => [])) ?? [];
+    for (const a of rows) limits.set(Number(a.id), Number(a.chat_per_min) || CHAT_PER_MIN_DEFAULT);
+  }
+  const chatFull = [...sent]
+    .filter(([id, n]) => n >= (limits.get(id) ?? CHAT_PER_MIN_DEFAULT) && !paused.includes(id)).map(([id]) => id);
   const clauses: string[] = [];
   if (paused.length) clauses.push(`not.and(account_id.in.(${paused.join(",")}),kind.in.(${SEND_KINDS.join(",")}))`);
   if (chatFull.length) clauses.push(`not.and(account_id.in.(${chatFull.join(",")}),kind.in.(${CHAT_KINDS.join(",")}))`);
