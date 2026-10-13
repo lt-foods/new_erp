@@ -13,7 +13,7 @@
 --   互助板的轉單本來就一律開新單（20260824060000），這次把同一個做法套到訂單頁。
 --
 -- 本檔內容（順序不可調動）：
---   0. 前置檢查（唯讀）：6 支要覆寫的函式比 md5、唯一索引比定義，任何一項不符就整份停下。
+--   0. 前置檢查（唯讀）：8 支要覆寫的函式比 md5、唯一索引比定義，任何一項不符就整份停下。
 --   1. customer_orders_trio_kind_active_uniq 放行轉入單：
 --      predicate 多一條 transferred_from_order_id IS NULL（其餘逐字照抄 20260901010000:67）。
 --      ⚠ 一定要排在所有函式前面：函式改成一律開新單以後，如果索引還沒放寬，
@@ -23,13 +23,18 @@
 --      一律開新單；「轉給自己」守衛保留（收件人＝原單同一位會員、同一個頻道就擋）。
 --      連結表 customer_order_transfer_links.appended 一律寫 FALSE。
 --   3. rpc_transfer_order_partial：同上；互助板 aid_board_id 照蓋（單頭與連結表）。
---   4~6. 「找這位客人在這團的單來加」的入口，一律不挑轉入單（transferred_from_order_id IS NULL）：
+--   4~6、8、9. 「找這位客人在這團的單來加」的入口，一律不挑轉入單（transferred_from_order_id IS NULL）：
 --      4. rpc_create_customer_orders（代客加單；LINE 記事本加單、抵減單也走這支）
 --      5. rpc_place_member_order_guarded（會員／LINE 下單）
 --      6. _store_add_internal_order_item（採購單頁「分店／批發追加」）
+--      8. rpc_add_pr_store_demands（請購單草稿「分店／批發加單」；跟 6 是兩份同樣的邏輯）
+--      9. rpc_create_store_internal_order（店長在代客加單畫面幫自己店叫貨）
+--      （8、9 排在檔案最後，都在第 1 段索引之後。）
 --      為什麼一定要一起改：同一人同一團可以有兩張單（自己的一般單＋別人轉來的轉入單）
 --      以後，加單如果加進轉入單，那件貨不會進總倉撿貨，客人永遠拿不到。
 --      4、5 原本沒有排序也沒有 LIMIT，一併補 ORDER BY id LIMIT 1，挑哪一張固定下來。
+--      9 只加排除轉入單這一個條件；它原本沒排除已取消的單、也沒有 ORDER BY／LIMIT，
+--      那是原本就有的問題，本檔不動。
 --   7. rpc_restore_cancelled_order 守衛 5（一會員一活動一張單）：豁免條件對齊新索引
 --      （WS-、aid_board_id、轉入單），不再被這些單誤擋。
 --
@@ -42,6 +47,9 @@
 --   rpc_place_member_order_guarded        = 20260910050000_campaign_customer_end_at.sql:174
 --   _store_add_internal_order_item        = 20261002000000_po_store_additions.sql:526
 --   rpc_restore_cancelled_order           = 20260818000000_rpc_restore_cancelled_order.sql:102
+--   rpc_add_pr_store_demands              = 20260924010000_pr_store_additions_allow_wholesale.sql:4
+--   rpc_create_store_internal_order       = 20260507000000_order_transfer_and_internal.sql:111
+--     （這支是唯一的定義；基底沒寫 public. 前綴、沒有 SET search_path，本檔照抄不補）
 --   簽名、回傳型別、SECURITY DEFINER、SET search_path 都跟基底一樣 → CREATE OR REPLACE，
 --   不需要 DROP。CREATE OR REPLACE 不改權限，所以本檔不重下 GRANT／REVOKE。
 --   基底註解裡原本寫的門市名稱，本檔一律拿掉只留日期與單號（只動註解，程式一字未改）。
@@ -59,6 +67,8 @@
 --   rpc_place_member_order_guarded   7813f92d8e8a67dbaa74b10eea7be492  0d229ee6f5b4baaa9d2fad6bff204bdb
 --   _store_add_internal_order_item   b5b1ef9c4c17a128d7bb239c5c2715d9  c0f1f3e8f4f984a0ef2b66c3297ac463
 --   rpc_restore_cancelled_order      722a1a6903503eaa38b64aa15177870d  7c9c1801252437301f2ba226b54546ad
+--   rpc_add_pr_store_demands         3ea3544904c5280747052c3abeee945a  2f13787c2c08a0471fb2c033c518e4c9
+--   rpc_create_store_internal_order  18cd791444cc4dcad299af469ab048f1  879557850032331e9475268f5a03cffd
 --   唯一索引比 pg_indexes.indexdef（去掉所有空白後逐字比），舊版與新版的完整字串寫在第 0 段。
 --
 -- 會鎖表多久（第 1 段）：
@@ -133,7 +143,7 @@ DECLARE
     'AND (order_no !~~ ''WS-%''::text) AND (aid_board_id IS NULL) '
     'AND (transferred_from_order_id IS NULL))';
 BEGIN
-  -- 6 支要覆寫的函式：用完整簽名定位，線上內文必須是「基底版」或「本檔新版」
+  -- 8 支要覆寫的函式：用完整簽名定位，線上內文必須是「基底版」或「本檔新版」
   FOR v_rec IN
     SELECT *
       FROM (VALUES
@@ -148,7 +158,11 @@ BEGIN
         ('public._store_add_internal_order_item(uuid, bigint, text, bigint, bigint, numeric, bigint, numeric, uuid, text, text)',
          '20261002000000:526', 'b5b1ef9c4c17a128d7bb239c5c2715d9', 'c0f1f3e8f4f984a0ef2b66c3297ac463'),
         ('public.rpc_restore_cancelled_order(bigint, uuid, text)',
-         '20260818000000:102', '722a1a6903503eaa38b64aa15177870d', '7c9c1801252437301f2ba226b54546ad')
+         '20260818000000:102', '722a1a6903503eaa38b64aa15177870d', '7c9c1801252437301f2ba226b54546ad'),
+        ('public.rpc_add_pr_store_demands(bigint, bigint, bigint, jsonb, uuid, uuid)',
+         '20260924010000:4',   '3ea3544904c5280747052c3abeee945a', '2f13787c2c08a0471fb2c033c518e4c9'),
+        ('public.rpc_create_store_internal_order(bigint, bigint, jsonb, uuid, text)',
+         '20260507000000:111', '18cd791444cc4dcad299af469ab048f1', '879557850032331e9475268f5a03cffd')
       ) AS t(sig, base_at, md5_base, md5_new)
   LOOP
     v_oid := to_regprocedure(v_rec.sig);
@@ -1697,5 +1711,620 @@ BEGIN
     -- 前端要提醒店家「需要的話請重開減抵單」
     'idn_coverage_restored', FALSE
   );
+END;
+$$;
+
+
+-- ----------------------------------------------------------------------------
+-- 8. rpc_add_pr_store_demands（請購單草稿「分店／批發加單」）
+--    —— 基底 20260924010000:4 逐字，只改 :271-285 找單：加 transferred_from_order_id IS NULL
+--    跟第 6 段 _store_add_internal_order_item 是「兩份同樣的邏輯」
+--    （20261002000000 檔頭 :40-44：改一份要兩份一起改），所以一起改。
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.rpc_add_pr_store_demands(
+  p_pr_id        BIGINT,
+  p_pr_item_id   BIGINT,
+  p_campaign_id  BIGINT,
+  p_additions    JSONB,
+  p_operator     UUID,
+  p_request_key  UUID
+) RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_tenant                 UUID := public._current_tenant_id();
+  v_role                   TEXT := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '');
+  v_pr                     RECORD;
+  v_campaign               RECORD;
+  v_campaign_item_id        BIGINT;
+  v_campaign_unit_price     NUMERIC;
+  v_attr_count              INTEGER := 0;
+  v_current_campaign_qty    NUMERIC := 0;
+  v_store_added_qty         NUMERIC := 0;
+  v_pr_delta_qty            NUMERIC := 0;
+  v_demand_qty              NUMERIC := 0;
+  v_already_qty             NUMERIC := 0;
+  v_store_count             INTEGER := 0;
+  v_order_count             INTEGER := 0;
+  v_bad_count               INTEGER := 0;
+  v_missing_store_ids       TEXT;
+  v_member_id               BIGINT;
+  v_channel_id              BIGINT;
+  v_order_id                BIGINT;
+  v_order_item_id           BIGINT;
+  v_order_status            TEXT;
+  v_pending_order_nos        TEXT;
+  v_seq                     INTEGER;
+  v_order_no                TEXT;
+  v_existing                RECORD;
+  r                         RECORD;
+BEGIN
+  IF v_tenant IS NULL THEN
+    RAISE EXCEPTION 'tenant is required';
+  END IF;
+
+  IF v_role IN ('store_manager','store_staff') THEN
+    RAISE EXCEPTION 'permission denied';
+  END IF;
+
+  IF v_role NOT IN ('owner','admin','hq_manager','purchaser','assistant','') THEN
+    RAISE EXCEPTION 'permission denied';
+  END IF;
+
+  IF p_operator IS NULL THEN
+    p_operator := auth.uid();
+  END IF;
+
+  IF p_operator IS NULL THEN
+    RAISE EXCEPTION 'operator is required';
+  END IF;
+
+  IF auth.uid() IS NOT NULL AND p_operator <> auth.uid() THEN
+    RAISE EXCEPTION 'operator must match current user';
+  END IF;
+
+  IF p_request_key IS NULL THEN
+    RAISE EXCEPTION 'request key is required';
+  END IF;
+
+  PERFORM pg_advisory_xact_lock(hashtext('pr_store_add:' || p_request_key::TEXT));
+
+  SELECT
+      pr_id,
+      pr_item_id,
+      campaign_id,
+      created_by,
+      COUNT(*) AS store_count,
+      COALESCE(SUM(qty_added), 0) AS store_added_qty,
+      COALESCE(MAX(pr_delta_qty), 0) AS pr_delta_qty,
+      MAX(pr_qty_after) AS pr_qty_after
+    INTO v_existing
+    FROM public.purchase_request_store_additions
+   WHERE tenant_id = v_tenant
+     AND request_key = p_request_key
+   GROUP BY pr_id, pr_item_id, campaign_id, created_by;
+
+  IF FOUND THEN
+    IF v_existing.pr_id <> p_pr_id
+       OR v_existing.pr_item_id <> p_pr_item_id
+       OR v_existing.campaign_id <> p_campaign_id
+       OR v_existing.created_by <> p_operator THEN
+      RAISE EXCEPTION 'request key already used by another store-addition request';
+    END IF;
+
+    RETURN jsonb_build_object(
+      'pr_id', p_pr_id,
+      'pr_item_id', p_pr_item_id,
+      'campaign_id', p_campaign_id,
+      'request_key', p_request_key,
+      'store_count', v_existing.store_count,
+      'store_added_qty', v_existing.store_added_qty,
+      'pr_delta_qty', v_existing.pr_delta_qty,
+      'new_pr_qty', v_existing.pr_qty_after,
+      'idempotent', TRUE
+    );
+  END IF;
+
+  IF p_additions IS NULL OR jsonb_typeof(p_additions) <> 'array' OR jsonb_array_length(p_additions) = 0 THEN
+    RAISE EXCEPTION '請至少選一間分店或批發與數量';
+  END IF;
+
+  SELECT
+      pr.id AS pr_id,
+      pr.pr_no,
+      pr.tenant_id,
+      pr.status AS pr_status,
+      pr.total_amount,
+      pri.id AS pr_item_id,
+      pri.sku_id,
+      pri.qty_requested,
+      pri.unit_cost,
+      pri.source_campaign_id,
+      pri.po_item_id
+    INTO v_pr
+    FROM public.purchase_requests pr
+    JOIN public.purchase_request_items pri
+      ON pri.pr_id = pr.id
+   WHERE pr.id = p_pr_id
+     AND pri.id = p_pr_item_id
+     AND pr.tenant_id = v_tenant
+   FOR UPDATE OF pr, pri;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION '找不到這張請購單品項';
+  END IF;
+
+  IF v_pr.pr_status <> 'draft' THEN
+    RAISE EXCEPTION '只有草稿請購單可以分店／批發加單，目前狀態=%', v_pr.pr_status;
+  END IF;
+
+  IF v_pr.po_item_id IS NOT NULL THEN
+    RAISE EXCEPTION '此品項已經建立採購單，不能在草稿頁追加分店／批發需求';
+  END IF;
+
+  SELECT id, campaign_no, name, status
+    INTO v_campaign
+    FROM public.group_buy_campaigns
+   WHERE id = p_campaign_id
+     AND tenant_id = v_tenant
+   FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION '找不到原團 %', p_campaign_id;
+  END IF;
+
+  IF v_campaign.status NOT IN ('closed','locked') THEN
+    RAISE EXCEPTION '只有已結單/已鎖定的原團可以從請購單追加，目前狀態=%', v_campaign.status;
+  END IF;
+
+  SELECT ci.id, ci.unit_price
+    INTO v_campaign_item_id, v_campaign_unit_price
+    FROM public.campaign_items ci
+   WHERE ci.tenant_id = v_tenant
+     AND ci.campaign_id = p_campaign_id
+     AND ci.sku_id = v_pr.sku_id;
+
+  IF v_campaign_item_id IS NULL THEN
+    RAISE EXCEPTION '此品項不屬於指定原團';
+  END IF;
+
+  SELECT COUNT(*)
+    INTO v_attr_count
+    FROM public.purchase_request_item_campaigns
+   WHERE pr_item_id = p_pr_item_id;
+
+  IF v_attr_count > 0 THEN
+    SELECT qty_requested
+      INTO v_current_campaign_qty
+      FROM public.purchase_request_item_campaigns
+     WHERE pr_item_id = p_pr_item_id
+       AND campaign_id = p_campaign_id
+       AND tenant_id = v_tenant;
+
+    IF v_current_campaign_qty IS NULL THEN
+      RAISE EXCEPTION '這個原團沒有綁在此請購品項上，請選正確原團';
+    END IF;
+  ELSE
+    IF v_pr.source_campaign_id IS NULL THEN
+      RAISE EXCEPTION '此品項缺少原團明細，不能用分店／批發加單';
+    END IF;
+    IF v_pr.source_campaign_id <> p_campaign_id THEN
+      RAISE EXCEPTION '此品項的原團不符，不能用分店／批發加單';
+    END IF;
+    v_current_campaign_qty := v_pr.qty_requested;
+  END IF;
+
+  DROP TABLE IF EXISTS _pr_store_add_raw;
+  CREATE TEMP TABLE _pr_store_add_raw ON COMMIT DROP AS
+  SELECT
+    x.store_id::BIGINT AS store_id,
+    x.qty::NUMERIC AS qty
+  FROM jsonb_to_recordset(p_additions) AS x(store_id BIGINT, qty NUMERIC);
+
+  SELECT COUNT(*)
+    INTO v_bad_count
+    FROM _pr_store_add_raw
+   WHERE store_id IS NULL
+      OR qty IS NULL
+      OR qty <= 0;
+
+  IF v_bad_count > 0 THEN
+    RAISE EXCEPTION '分店／批發加單數量必須大於 0';
+  END IF;
+
+  DROP TABLE IF EXISTS _pr_store_add_input;
+  CREATE TEMP TABLE _pr_store_add_input ON COMMIT DROP AS
+  SELECT store_id, SUM(qty)::NUMERIC(18,3) AS qty
+    FROM _pr_store_add_raw
+   GROUP BY store_id;
+
+  SELECT COUNT(*), COALESCE(SUM(qty), 0)
+    INTO v_store_count, v_store_added_qty
+    FROM _pr_store_add_input;
+
+  SELECT string_agg(i.store_id::TEXT, ',')
+    INTO v_missing_store_ids
+    FROM _pr_store_add_input i
+    LEFT JOIN public.stores s
+      ON s.id = i.store_id
+     AND s.tenant_id = v_tenant
+     AND s.is_active = TRUE
+     AND s.deleted_at IS NULL
+     AND COALESCE(s.store_kind, 'branch') IN ('branch', 'wholesale')
+   WHERE s.id IS NULL;
+
+  IF v_missing_store_ids IS NOT NULL THEN
+    RAISE EXCEPTION '有分店／批發不存在、停用或已刪除：%', v_missing_store_ids;
+  END IF;
+
+  PERFORM pg_advisory_xact_lock(hashtext(p_campaign_id::TEXT), hashtext(v_pr.sku_id::TEXT));
+
+  FOR r IN SELECT store_id, qty FROM _pr_store_add_input ORDER BY store_id
+  LOOP
+    v_member_id := public.rpc_get_or_create_store_member(r.store_id, p_operator);
+
+    SELECT id
+      INTO v_channel_id
+      FROM public.line_channels
+     WHERE tenant_id = v_tenant
+       AND home_store_id = r.store_id
+       AND is_active = TRUE
+     ORDER BY id
+     LIMIT 1;
+
+    IF v_channel_id IS NULL THEN
+      SELECT id
+        INTO v_channel_id
+        FROM public.line_channels
+       WHERE tenant_id = v_tenant
+         AND is_active = TRUE
+       ORDER BY id
+       LIMIT 1;
+    END IF;
+
+    IF v_channel_id IS NULL THEN
+      RAISE EXCEPTION '此公司沒有可用的 LINE 頻道，不能建立店內單';
+    END IF;
+
+    -- 20261013：索引同步放行轉入單（transferred_from_order_id IS NOT NULL，20261013000000），
+    --   這裡跟著排除 —— 店與店轉貨收進來的轉入單不能拿來追加，否則追加的貨不會進總倉撿貨。
+    SELECT id, status
+      INTO v_order_id, v_order_status
+      FROM public.customer_orders
+     WHERE tenant_id = v_tenant
+       AND campaign_id = p_campaign_id
+       AND channel_id = v_channel_id
+       AND member_id = v_member_id
+       AND order_kind = 'normal'
+       AND status NOT IN ('transferred_out','expired','cancelled')
+       AND aid_board_id IS NULL
+       AND order_no NOT LIKE 'SP-%'
+       AND order_no NOT LIKE 'WS-%'
+       AND transferred_from_order_id IS NULL
+     ORDER BY id
+     LIMIT 1
+     FOR UPDATE;
+
+    IF v_order_id IS NULL THEN
+      SELECT COUNT(*) + 1
+        INTO v_seq
+        FROM public.customer_orders
+       WHERE tenant_id = v_tenant
+         AND campaign_id = p_campaign_id;
+
+      LOOP
+        v_order_no := v_campaign.campaign_no || '-INT' || lpad(v_seq::TEXT, 4, '0');
+
+        BEGIN
+          INSERT INTO public.customer_orders (
+            tenant_id, order_no, campaign_id, channel_id, member_id,
+            pickup_store_id, status, confirmed_at, order_kind, notes,
+            created_by, updated_by
+          ) VALUES (
+            v_tenant, v_order_no, p_campaign_id, v_channel_id, v_member_id,
+            r.store_id, 'confirmed', NOW(), 'normal',
+            format('【請購單草稿分店／批發加單】%s', v_pr.pr_no),
+            p_operator, p_operator
+          )
+          RETURNING id INTO v_order_id;
+
+          v_order_count := v_order_count + 1;
+          EXIT;
+        EXCEPTION WHEN unique_violation THEN
+          v_seq := v_seq + 1;
+        END;
+      END LOOP;
+    ELSE
+      IF v_order_status NOT IN ('pending','confirmed') THEN
+        RAISE EXCEPTION '此分店／批發在原團的店內單已進入後段狀態，不能從請購單草稿追加：order_id=%, status=%',
+          v_order_id, v_order_status;
+      END IF;
+
+    END IF;
+
+    INSERT INTO public.customer_order_items (
+      tenant_id, order_id, campaign_item_id, sku_id, qty, unit_price,
+      status, source, notes, created_by, updated_by
+    ) VALUES (
+      v_tenant, v_order_id, v_campaign_item_id, v_pr.sku_id, r.qty, v_campaign_unit_price,
+      'pending', 'store_internal', format('請購單 %s 草稿分店／批發加單', v_pr.pr_no),
+      p_operator, p_operator
+    )
+    RETURNING id INTO v_order_item_id;
+
+    INSERT INTO public.purchase_request_store_additions (
+      tenant_id, pr_id, pr_item_id, campaign_id, store_id,
+      order_id, order_item_id, sku_id, qty_added, request_key, created_by
+    ) VALUES (
+      v_tenant, p_pr_id, p_pr_item_id, p_campaign_id, r.store_id,
+      v_order_id, v_order_item_id, v_pr.sku_id, r.qty, p_request_key, p_operator
+    );
+  END LOOP;
+
+  SELECT d.delta_qty, d.demand_qty, d.already_qty
+    INTO v_pr_delta_qty, v_demand_qty, v_already_qty
+    FROM public._pr_campaign_sku_remaining_rows(ARRAY[p_campaign_id]) d
+   WHERE d.campaign_id = p_campaign_id
+     AND d.sku_id = v_pr.sku_id;
+
+  v_pr_delta_qty := COALESCE(v_pr_delta_qty, 0);
+  v_demand_qty := COALESCE(v_demand_qty, 0);
+  v_already_qty := COALESCE(v_already_qty, 0);
+
+  IF v_pr_delta_qty > 0 THEN
+    INSERT INTO public.purchase_request_item_campaigns (
+      pr_item_id, campaign_id, tenant_id, qty_requested
+    ) VALUES (
+      p_pr_item_id, p_campaign_id, v_tenant, v_current_campaign_qty + v_pr_delta_qty
+    )
+    ON CONFLICT (pr_item_id, campaign_id) DO UPDATE
+       SET qty_requested = EXCLUDED.qty_requested;
+
+    UPDATE public.purchase_request_items
+       SET qty_requested = qty_requested + v_pr_delta_qty,
+           updated_by = p_operator,
+           updated_at = NOW()
+     WHERE id = p_pr_item_id;
+
+    INSERT INTO public.purchase_request_campaigns (pr_id, campaign_id, tenant_id)
+    VALUES (p_pr_id, p_campaign_id, v_tenant)
+    ON CONFLICT (pr_id, campaign_id) DO NOTHING;
+
+    UPDATE public.purchase_requests pr
+       SET total_amount = COALESCE((
+             SELECT SUM(pri.line_subtotal)
+               FROM public.purchase_request_items pri
+              WHERE pri.pr_id = p_pr_id
+           ), 0),
+           updated_by = p_operator,
+           updated_at = NOW()
+     WHERE pr.id = p_pr_id;
+
+  END IF;
+
+  DROP TABLE IF EXISTS _pr_store_add_remaining;
+  CREATE TEMP TABLE _pr_store_add_remaining ON COMMIT DROP AS
+  SELECT d.sku_id, GREATEST(d.delta_qty, 0)::NUMERIC AS delta_qty
+    FROM public._pr_campaign_sku_remaining_rows(ARRAY[p_campaign_id]) d
+   WHERE d.campaign_id = p_campaign_id
+     AND d.delta_qty > 0;
+
+  WITH candidate_orders AS (
+    SELECT DISTINCT co.id
+      FROM public.customer_orders co
+      JOIN public.customer_order_items coi
+        ON coi.order_id = co.id
+     WHERE co.tenant_id = v_tenant
+       AND co.campaign_id = p_campaign_id
+       AND co.status = 'pending'
+       AND coi.sku_id = v_pr.sku_id
+       AND coi.status NOT IN ('cancelled','expired')
+  ),
+  safe_orders AS (
+    SELECT co.id
+      FROM public.customer_orders co
+      JOIN candidate_orders cand
+        ON cand.id = co.id
+     WHERE NOT EXISTS (
+       SELECT 1
+         FROM public.customer_order_items oi
+         JOIN _pr_store_add_remaining rem
+           ON rem.sku_id = oi.sku_id
+          AND rem.delta_qty > 0
+        WHERE oi.order_id = co.id
+          AND oi.status NOT IN ('cancelled','expired')
+     )
+  ),
+  updated_orders AS (
+    UPDATE public.customer_orders co
+       SET status = 'confirmed',
+           confirmed_at = COALESCE(co.confirmed_at, NOW()),
+           updated_by = p_operator,
+           updated_at = NOW()
+      FROM safe_orders so
+     WHERE co.id = so.id
+       AND co.status = 'pending'
+    RETURNING co.id
+  )
+  INSERT INTO public.customer_order_audit_log (
+    tenant_id, order_id, entity_type, entity_id, field,
+    before_value, after_value, edit_reason, operator_id
+  )
+  SELECT
+    v_tenant, id, 'order', NULL, 'status',
+    to_jsonb('pending'::TEXT), to_jsonb('confirmed'::TEXT),
+    format('auto-confirmed by PR store addition #%s', p_pr_id),
+    p_operator
+  FROM updated_orders;
+
+  SELECT string_agg(DISTINCT co.order_no, ', ' ORDER BY co.order_no)
+    INTO v_pending_order_nos
+    FROM public.customer_orders co
+    JOIN public.customer_order_items coi
+      ON coi.order_id = co.id
+   WHERE co.tenant_id = v_tenant
+     AND co.campaign_id = p_campaign_id
+     AND co.status = 'pending'
+     AND coi.sku_id = v_pr.sku_id
+     AND coi.status NOT IN ('cancelled','expired');
+
+  IF v_pending_order_nos IS NOT NULL THEN
+    RAISE EXCEPTION '原團仍有同品項的未確認店內單，且同單其他品項還沒補進請購；請先處理舊待確認店內單或對原團補請購後再加單：%',
+      v_pending_order_nos;
+  END IF;
+
+  UPDATE public.purchase_request_store_additions
+     SET pr_delta_qty = v_pr_delta_qty,
+         pr_qty_after = v_pr.qty_requested + v_pr_delta_qty
+   WHERE tenant_id = v_tenant
+     AND request_key = p_request_key;
+
+  RETURN jsonb_build_object(
+    'pr_id', p_pr_id,
+    'pr_item_id', p_pr_item_id,
+    'campaign_id', p_campaign_id,
+    'request_key', p_request_key,
+    'store_count', v_store_count,
+    'store_added_qty', v_store_added_qty,
+    'pr_delta_qty', v_pr_delta_qty,
+    'demand_qty', v_demand_qty,
+    'already_qty_before_sync', v_already_qty,
+    'new_pr_qty', v_pr.qty_requested + v_pr_delta_qty,
+    'created_order_count', v_order_count
+  );
+END;
+$$;
+
+
+-- ----------------------------------------------------------------------------
+-- 9. rpc_create_store_internal_order（店長在代客加單畫面幫自己店叫貨）
+--    —— 基底 20260507000000:111 逐字，只改 :172-177 找單：加 transferred_from_order_id IS NULL
+--    基底沒有寫 public. 前綴、也沒有 SET search_path，照抄不補。
+--    ⚠ 這支找單原本就沒有排除已取消／已過期／已轉出的單，也沒有 ORDER BY／LIMIT。
+--      那是原本就有的問題，本檔刻意不動（動了會改到「店長叫貨加進哪一張」的既有行為）。
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION rpc_create_store_internal_order(
+  p_campaign_id  BIGINT,
+  p_store_id     BIGINT,
+  p_items        JSONB,
+  p_operator     UUID,
+  p_notes        TEXT DEFAULT NULL
+) RETURNS BIGINT
+LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_tenant_id    UUID;
+  v_campaign_no  TEXT;
+  v_campaign_st  TEXT;
+  v_member_id    BIGINT;
+  v_channel_id   BIGINT;
+  v_seq          INT;
+  v_order_no     TEXT;
+  v_order_id     BIGINT;
+  v_item         JSONB;
+  v_ci_id        BIGINT;
+  v_ci_sku       BIGINT;
+  v_ci_price     NUMERIC;
+  v_qty          NUMERIC;
+  v_unit_price   NUMERIC;
+BEGIN
+  -- campaign 驗證
+  SELECT tenant_id, campaign_no, status
+    INTO v_tenant_id, v_campaign_no, v_campaign_st
+    FROM group_buy_campaigns WHERE id = p_campaign_id;
+  IF v_tenant_id IS NULL THEN
+    RAISE EXCEPTION 'campaign % not found', p_campaign_id;
+  END IF;
+  IF v_campaign_st NOT IN ('open','closed') THEN
+    RAISE EXCEPTION 'campaign % is %; only open/closed accept internal order',
+                    p_campaign_id, v_campaign_st;
+  END IF;
+
+  -- p_items 不可空
+  IF p_items IS NULL OR jsonb_array_length(p_items) = 0 THEN
+    RAISE EXCEPTION 'p_items is empty';
+  END IF;
+
+  -- 取得 / 建立 store_internal member
+  v_member_id := rpc_get_or_create_store_member(p_store_id, p_operator);
+
+  -- 取該店任一 line_channel；無則 fallback 到第一個 channel
+  SELECT id INTO v_channel_id
+    FROM line_channels
+   WHERE tenant_id = v_tenant_id AND home_store_id = p_store_id
+   LIMIT 1;
+
+  IF v_channel_id IS NULL THEN
+    SELECT id INTO v_channel_id
+      FROM line_channels
+     WHERE tenant_id = v_tenant_id
+     LIMIT 1;
+  END IF;
+
+  IF v_channel_id IS NULL THEN
+    RAISE EXCEPTION 'no line_channel available for tenant';
+  END IF;
+
+  -- 找既有 (UNIQUE: tenant+campaign+channel+member)
+  -- 20261013：索引同步放行轉入單（transferred_from_order_id IS NOT NULL，20261013000000），
+  --   這裡跟著排除 —— 店與店轉貨收進來的轉入單不能拿來追加，否則追加的貨不會進總倉撿貨。
+  SELECT id INTO v_order_id FROM customer_orders
+   WHERE tenant_id = v_tenant_id
+     AND campaign_id = p_campaign_id
+     AND channel_id  = v_channel_id
+     AND member_id   = v_member_id
+     AND transferred_from_order_id IS NULL;
+
+  IF v_order_id IS NULL THEN
+    SELECT COUNT(*) + 1 INTO v_seq
+      FROM customer_orders
+     WHERE tenant_id = v_tenant_id AND campaign_id = p_campaign_id;
+    v_order_no := v_campaign_no || '-INT' || lpad(v_seq::text, 4, '0');
+
+    INSERT INTO customer_orders (
+      tenant_id, order_no, campaign_id, channel_id, member_id,
+      pickup_store_id, status, notes, created_by, updated_by
+    ) VALUES (
+      v_tenant_id, v_order_no, p_campaign_id, v_channel_id, v_member_id,
+      p_store_id, 'pending',
+      COALESCE(p_notes, '【店長內部叫貨】'),
+      p_operator, p_operator
+    ) RETURNING id INTO v_order_id;
+  END IF;
+
+  -- 寫 items
+  FOR v_item IN SELECT * FROM jsonb_array_elements(p_items)
+  LOOP
+    v_ci_id := (v_item ->> 'campaign_item_id')::BIGINT;
+    v_qty   := (v_item ->> 'qty')::NUMERIC;
+
+    IF v_qty IS NULL OR v_qty <= 0 THEN
+      RAISE EXCEPTION 'qty must be > 0';
+    END IF;
+
+    SELECT unit_price, sku_id INTO v_ci_price, v_ci_sku
+      FROM campaign_items
+     WHERE id = v_ci_id AND tenant_id = v_tenant_id AND campaign_id = p_campaign_id;
+    IF v_ci_price IS NULL THEN
+      RAISE EXCEPTION 'campaign_item % not in campaign %', v_ci_id, p_campaign_id;
+    END IF;
+
+    -- 自帶 unit_price 覆寫 (88 折用)；NULL 則用 list price
+    v_unit_price := COALESCE((v_item ->> 'unit_price')::NUMERIC, v_ci_price);
+    IF v_unit_price < 0 THEN
+      RAISE EXCEPTION 'unit_price cannot be negative';
+    END IF;
+
+    INSERT INTO customer_order_items (
+      tenant_id, order_id, campaign_item_id, sku_id, qty, unit_price,
+      status, source, created_by, updated_by
+    ) VALUES (
+      v_tenant_id, v_order_id, v_ci_id, v_ci_sku, v_qty, v_unit_price,
+      'pending', 'store_internal', p_operator, p_operator
+    );
+  END LOOP;
+
+  RETURN v_order_id;
 END;
 $$;
