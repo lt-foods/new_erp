@@ -1,9 +1,9 @@
-// 收貨配單「預設勾誰」＋依客人分貨單：純函式測試
+// 收貨配單「預設勾誰」＋現場分貨單：純函式測試
 //   node --test apps/admin/src/lib/receiveAllocation.test.mjs
 // （Node 22.18+／24 會直接吃 .ts；測試檔用 .mjs 是為了不進 admin 的型別檢查範圍）
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildSortSheet, greedyItemsByTime, normalizeReceivePreview } from "./receiveAllocation.ts";
+import { buildSortSheet, greedyItemsByTime, normalizeReceivePreview, toProductView } from "./receiveAllocation.ts";
 
 // ============================================================
 // 舊版：搬進 lib 之前，收貨視窗（fbe14545 的 apps/admin/src/components/ManualAllocateModal.tsx）
@@ -152,6 +152,43 @@ function assertSheetInvariants(d) {
     for (const l of c.lines) assert.ok(incomingIds.has(l.sku_id), "這車段（倉庫分袋）只能有這車的商品");
   }
   return { sheet, notInTruckCount: notInTruck.length };
+}
+
+// 依商品樣式（toProductView）只是把同一份 sheet 換方向排：
+// ① 每塊的客人數量加總 ＝ 該商品「分給客人」；② 分給客人 ＋ 分剩 ＝ 到貨；
+// ③ 三種樣式每人每商品數量一致（清單、一客一段都直接印 sheet.customers，所以拿它來比）；
+// ④ 「另 n 個由門市現貨拿」＝門市現貨段同一位客人同一商品；⑤ 只有這車的商品、照到貨清單順序；
+// ⑥ 塊內客人順序跟另外兩種樣式一樣（照名字）。
+function assertProductView(sheet) {
+  const blocks = toProductView(sheet);
+  assert.deepStrictEqual(
+    blocks.map((b) => b.sku.sku_id),
+    sheet.skus.filter((s) => s.inTruck).map((s) => s.sku_id),
+    "依商品：只有這車的商品、照到貨清單順序",
+  );
+  const byCustomer = new Map(); // 清單／一客一段：key|sku → 數量
+  for (const c of sheet.customers) for (const l of c.lines) byCustomer.set(`${c.key}|${l.sku_id}`, l.qty);
+  const byProduct = new Map(); // 依商品：key|sku → 數量
+  const storeQty = new Map();
+  for (const c of sheet.fromStore) for (const l of c.lines) storeQty.set(`${c.key}|${l.sku_id}`, l.qty);
+  const order = new Map(sheet.customers.map((c, i) => [c.key, i]));
+  for (const b of blocks) {
+    const sum = b.rows.reduce((s, r) => s + r.qty, 0);
+    assert.ok(near(sum, b.sku.toCustomers), `sku ${b.sku.sku_id}：塊內加總 ${sum} ≠ 分給客人 ${b.sku.toCustomers}`);
+    assert.ok(near(b.sku.toCustomers + b.sku.surplus, b.sku.shipped), `sku ${b.sku.sku_id}：分給客人＋分剩 ≠ 到貨`);
+    for (let i = 1; i < b.rows.length; i++) {
+      assert.ok(order.get(b.rows[i - 1].key) < order.get(b.rows[i].key), "塊內客人順序要跟另外兩種樣式一樣");
+    }
+    for (const r of b.rows) {
+      assert.ok(r.qty > 0);
+      const k = `${r.key}|${b.sku.sku_id}`;
+      assert.ok(!byProduct.has(k), "同一位客人同一商品只能一列");
+      byProduct.set(k, r.qty);
+      assert.equal(r.fromStore, storeQty.get(k) ?? 0, "另由門市現貨拿的量要跟門市現貨段一樣");
+    }
+  }
+  assert.deepStrictEqual(byProduct, byCustomer, "三種樣式每人每商品數量要一樣");
+  return blocks;
 }
 
 // ---------------- 固定案例的組裝工具 ----------------
@@ -363,6 +400,38 @@ test("客人依名字排序（zh-TW），不是照下單時間；沒名字印「
   assert.notDeepStrictEqual(names(sheet.customers), shown);
 });
 
+test("依商品：每個這車的商品一塊；跨界線的客人註明另由門市現貨拿；全部由門市現貨拿的不列在塊裡", () => {
+  const a = ord("A客", 1, [it(1, 3)]);
+  const b = ord("B客", 2, [it(1, 3), it(2, 1)]); // 商品1：累計 6 > 到貨 5 → 這車 2、門市現貨 1
+  const c = ord("C客", 3, [it(2, 2)]);
+  const d0 = ord("D客", 4, [it(1, 1)]); // 商品1 累計 7 → 全部門市現貨
+  const e = ord("E客", 5, [it(9, 1)]); // 不在這車的商品
+  const d = preview([sku(1, 5, 2), sku(2, 4)], [a, b, c, d0, e], [sku(9, 0, 3).bud]);
+  assertSameAsLegacy(d);
+  const { sheet } = assertSheetInvariants(d);
+  const blocks = assertProductView(sheet);
+  assert.deepStrictEqual(
+    blocks.map((bl) => [bl.sku.sku_id, bl.rows.map((r) => [r.customer, r.qty, r.fromStore])]),
+    [
+      [1, [["A客", 3, 0], ["B客", 2, 1]]],
+      [2, [["B客", 1, 0], ["C客", 2, 0]]],
+    ],
+  );
+  assert.deepStrictEqual(
+    blocks.map((bl) => [bl.sku.shipped, bl.sku.toCustomers, bl.sku.surplus]),
+    [
+      [5, 5, 0],
+      [4, 3, 1],
+    ],
+  );
+});
+
+test("依商品：純補貨也照樣每個商品一塊（塊內沒有客人）", () => {
+  const { sheet } = assertSheetInvariants(preview([sku(1, 6), sku(2, 4)], []));
+  const blocks = assertProductView(sheet);
+  assert.deepStrictEqual(blocks.map((bl) => [bl.sku.sku_id, bl.rows.length, bl.sku.surplus]), [[1, 0, 6], [2, 0, 4]]);
+});
+
 test("單頭資料原樣帶出", () => {
   const sheet = sheetOf(preview([sku(1, 1)], []));
   assert.deepStrictEqual(sheet.meta, { tag: "meta" });
@@ -424,7 +493,7 @@ function randomPreview(r) {
   return { store_id: 1, store_name: "測試店", incoming, budget, orders };
 }
 
-test("固定種子隨機 2000 例：新版預設勾選跟舊版完全相同，三條固定檢查都成立", () => {
+test("固定種子隨機 2000 例：新版預設勾選跟舊版完全相同，三條固定檢查都成立，依商品樣式數量一致", () => {
   const r = rng(20261013);
   let casesWithNotInTruck = 0;
   let casesWithStoreOverflow = 0;
@@ -437,6 +506,7 @@ test("固定種子隨機 2000 例：新版預設勾選跟舊版完全相同，�
     assertSameAsLegacy(d, true, cur);
     // 分貨單的三條固定檢查（客人沒有 item_id 的品項整張略過，跟視窗一樣）
     const { sheet, notInTruckCount } = assertSheetInvariants(d);
+    assertProductView(sheet);
     if (notInTruckCount > 0) casesWithNotInTruck += 1;
     if (sheet.skus.some((s) => s.inTruck && s.fromStore > 0)) casesWithStoreOverflow += 1;
   }

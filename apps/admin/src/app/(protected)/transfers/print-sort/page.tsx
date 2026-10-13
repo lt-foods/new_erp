@@ -1,11 +1,13 @@
 "use client";
 
-// 依客人分貨單（A4）：收貨前，照收貨視窗「預設勾誰」把這車的貨按客人列出來，倉庫可以先照著分袋。
-// 網址：/transfers/print-sort?transfer_ids=1,2,3&style=list|cut
+// 現場分貨單（A4）：收貨前，照收貨視窗「預設勾誰」把這車的貨分給客人列出來，倉庫可以先照著分袋。
+// 網址：/transfers/print-sort?transfer_ids=1,2,3&style=product|list|cut
 //   transfer_ids：已派出（shipped）、還沒收貨的派貨單。可以跨店（總倉在收貨頁批次勾選時）——
 //     預覽 RPC 只收同一家店，所以本頁先依目的店分組，每家店只用自己那幾張單各算一次，
 //     每家店從新的一頁開始。
-//   style：list＝清單（預設）；cut＝一客一段（虛線框，可剪下貼袋）。畫面上也能切換。
+//   style：product＝依商品（預設；一個商品一塊，下面列客人 × 數量）；list＝清單（依客人）；
+//     cut＝一客一段（虛線框，可剪下貼袋）。畫面上也能切換。三種都是同一份 buildSortSheet 結果，
+//     依商品只是用 toProductView 換方向排，不另外算。
 //
 // ⛔ 本頁只讀：只查 transfers / transfer_items / stores / picking_waves，再加上收貨視窗第一次
 //    載入時呼叫的同一支預覽 rpc_get_transfer_allocation_preview（STABLE，p_lines = null ＝
@@ -26,13 +28,24 @@ import {
   buildSortSheet,
   greedyItemsByTime,
   normalizeReceivePreview,
+  toProductView,
+  type ProductViewBlock,
   type SortSheet,
   type SortSheetCustomer,
 } from "@/lib/receiveAllocation";
 import { parseWaveId } from "@/components/TransferReceiveModal";
 import SpinButton from "@/components/SpinButton";
 
-type SortStyle = "list" | "cut";
+type SortStyle = "product" | "list" | "cut";
+
+// 工具列順序＝這個順序；沒帶 style 或帶錯就是第一個（依商品，老闆 2026-10-13：「這種模式才是最簡單的」）
+const STYLE_OPTIONS: Array<[SortStyle, string]> = [
+  ["product", "依商品"],
+  ["list", "清單"],
+  ["cut", "一客一段（可剪下）"],
+];
+const parseStyle = (v: string | null): SortStyle =>
+  STYLE_OPTIONS.find(([k]) => k === v)?.[0] ?? "product";
 
 type TransferRow = {
   id: number;
@@ -95,7 +108,7 @@ export default function PrintSortSheetPage() {
 function Body() {
   const sp = useSearchParams();
   const idsKey = parseIds(sp.get("transfer_ids") ?? "").join(",");
-  const [style, setStyle] = useState<SortStyle>(sp.get("style") === "cut" ? "cut" : "list");
+  const [style, setStyle] = useState<SortStyle>(parseStyle(sp.get("style")));
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   // 不能印的原因（不是錯誤）：有單已經收貨 / 狀態不對
   const [blocked, setBlocked] = useState<string | null>(null);
@@ -273,7 +286,7 @@ function Body() {
     if (!loaded || loaded.stores.length === 0) return;
     const nos = loaded.stores.flatMap((s) => s.sheet.meta.transfers.map((t) => t.transfer_no));
     const original = document.title;
-    document.title = `${nos.length <= 3 ? nos.join("、") : `${nos[0]}等${nos.length}張`}-依客人分貨單`;
+    document.title = `${nos.length <= 3 ? nos.join("、") : `${nos[0]}等${nos.length}張`}-現場分貨單`;
     return () => {
       document.title = original;
     };
@@ -322,26 +335,20 @@ function Body() {
       {/* 列印頁是文件不是操作介面：一律白底深字，不跟深色模式 */}
       <div className="sort-root bg-white text-zinc-900 print:bg-white">
         <div className="no-print sticky top-0 z-20 flex flex-wrap items-center gap-3 border-b border-zinc-200 bg-zinc-50 p-3">
-          <h1 className="text-base font-semibold">依客人分貨單</h1>
+          <h1 className="text-base font-semibold">現場分貨單</h1>
           <div className="flex overflow-hidden rounded-md border border-zinc-300 text-sm">
-            <SpinButton
-              type="button"
-              onClick={() => setStyle("list")}
-              className={
-                style === "list" ? "bg-zinc-900 px-3 py-1 text-white" : "bg-white px-3 py-1 text-zinc-700 hover:bg-zinc-100"
-              }
-            >
-              清單
-            </SpinButton>
-            <SpinButton
-              type="button"
-              onClick={() => setStyle("cut")}
-              className={
-                style === "cut" ? "bg-zinc-900 px-3 py-1 text-white" : "bg-white px-3 py-1 text-zinc-700 hover:bg-zinc-100"
-              }
-            >
-              一客一段（可剪下）
-            </SpinButton>
+            {STYLE_OPTIONS.map(([k, label]) => (
+              <SpinButton
+                key={k}
+                type="button"
+                onClick={() => setStyle(k)}
+                className={
+                  style === k ? "bg-zinc-900 px-3 py-1 text-white" : "bg-white px-3 py-1 text-zinc-700 hover:bg-zinc-100"
+                }
+              >
+                {label}
+              </SpinButton>
+            ))}
           </div>
           <span className={error ? "text-sm font-semibold text-red-700" : "text-sm text-zinc-500"}>
             {paramError ?? (error ? "⚠ 載入失敗（不是沒資料）" : blocked ? "不能印" : !loaded ? "載入中…" : multiStore ? `${loaded.stores.length} 家店，每家店從新的一頁開始` : "")}
@@ -453,7 +460,7 @@ function StoreSheetView({
 
   return (
     <div className="store-sheet mx-auto my-6 max-w-[210mm] border border-zinc-300 bg-white p-8 print:my-0 print:max-w-none print:border-0 print:p-0">
-      <div className="text-center text-lg font-bold">依客人分貨單</div>
+      <div className="text-center text-lg font-bold">現場分貨單</div>
 
       {/* 單頭：單號類可能很多張，一律獨佔整行（被 grid 關在半欄會爆行） */}
       <div className="mt-2 space-y-0.5 text-sm">
@@ -506,9 +513,11 @@ function StoreSheetView({
         </div>
       )}
 
-      {/* 客人段：這車要分的 */}
+      {/* 這車要分的：依商品（預設）／清單／一客一段，三種都是同一份 s.sheet */}
       <div className="mt-4">
-        {customers.length === 0 ? (
+        {style === "product" ? (
+          <ProductBlocks blocks={toProductView(s.sheet)} />
+        ) : customers.length === 0 ? (
           <div className="avoid-break">
             <h2 className="keep-with-next mb-1 text-base font-bold">{customersTitle}</h2>
             <div className="border border-zinc-400 p-3 text-sm text-zinc-600">
@@ -628,6 +637,89 @@ function StoreSheetView({
         </tbody>
       </table>
     </div>
+  );
+}
+
+// 依商品樣式：這車的每個商品一張表。塊頭（商品、編號、到貨／分給客人／分剩）放在 thead ——
+// 跨頁時每頁重複，thead 本身 break-after: avoid，不會一個人留在頁底。
+// 客人數在 SMALL_BLOCK_ROWS 以內的塊整塊不切開；更大的塊照常跨頁（硬要不切只會整塊被推到下一頁還是得切）。
+const SMALL_BLOCK_ROWS = 20;
+
+function ProductBlocks({ blocks }: { blocks: ProductViewBlock[] }) {
+  const [first, ...rest] = blocks;
+  const small = (b: ProductViewBlock) => b.rows.length <= SMALL_BLOCK_ROWS;
+  return (
+    <>
+      {/* 區塊標題跟第一塊綁在一起，不會一個人留在頁底 */}
+      <div className={first && small(first) ? "avoid-break" : ""}>
+        <h2 className="keep-with-next mb-1 text-base font-bold">商品（照這車到貨清單）· 共 {blocks.length} 樣</h2>
+        {first ? (
+          <ProductBlock b={first} />
+        ) : (
+          <div className="border border-zinc-400 p-3 text-sm text-zinc-600">這車沒有商品。</div>
+        )}
+      </div>
+      {rest.map((b) => (
+        <ProductBlock key={b.sku.sku_id} b={b} className="mt-3" />
+      ))}
+    </>
+  );
+}
+
+function ProductBlock({ b, className = "" }: { b: ProductViewBlock; className?: string }) {
+  return (
+    <table
+      className={`${className} w-full border-collapse text-sm ${b.rows.length <= SMALL_BLOCK_ROWS ? "avoid-break" : ""}`}
+    >
+      <thead>
+        <tr className="bg-zinc-100">
+          <th colSpan={3} className="border border-zinc-400 px-2 py-1 text-left">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+              <span className="min-w-0 break-words text-base font-bold">{b.sku.name}</span>
+              <span className="whitespace-nowrap font-mono text-xs font-normal text-zinc-600">{b.sku.sku_code ?? "—"}</span>
+            </div>
+            <div className="mt-0.5 flex flex-wrap gap-x-4 text-xs font-normal">
+              <span className="whitespace-nowrap">
+                這車到貨 <b className="font-mono">{b.sku.shipped}</b>
+              </span>
+              <span className="whitespace-nowrap">
+                分給客人 <b className="font-mono">{b.sku.toCustomers}</b>
+              </span>
+              <span className="whitespace-nowrap">
+                分剩 <b className="font-mono">{b.sku.surplus}</b>
+              </span>
+            </div>
+          </th>
+        </tr>
+        <tr className="bg-zinc-50">
+          <th className={TH}>客人（照名字排序）</th>
+          <th className={TH_NUM}>數量</th>
+          <th className="w-6 border border-zinc-400 px-2 py-1" />
+        </tr>
+      </thead>
+      <tbody>
+        {b.rows.length === 0 ? (
+          <tr>
+            <td colSpan={3} className={`${TD} text-zinc-600`}>
+              這車沒有客人要分這樣商品（全部列在下面「這車分剩的」）。
+            </td>
+          </tr>
+        ) : (
+          b.rows.map((r) => (
+            <tr key={r.key} className="avoid-break">
+              <td className={TD}>
+                <span className="break-words font-semibold">{r.customer}</span>
+                {r.fromStore > 0 && (
+                  <span className="ml-1 text-[11px] text-zinc-600">（另 {r.fromStore} 個由門市現貨拿）</span>
+                )}
+              </td>
+              <td className={`${TD_NUM} text-base font-bold`}>{r.qty}</td>
+              <td className={TD} />
+            </tr>
+          ))
+        )}
+      </tbody>
+    </table>
   );
 }
 

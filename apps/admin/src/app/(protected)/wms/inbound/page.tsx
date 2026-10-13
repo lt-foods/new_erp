@@ -1103,7 +1103,7 @@ export default function TransfersInboxPage() {
 
   // 批次列實際作用的集合 ＝ 看得到的待收（pendingIds：分店＋配送日）∩ 勾選。
   // selected 可能殘留看不到的單（換分店不會清勾選，是既有行為）→ 批次列的計數、停用、
-  // 批次收貨、手動收貨、依客人分貨單一律只吃這一組，不會帶走畫面上看不到的單。
+  // 批次收貨、手動收貨、現場分貨單一律只吃這一組，不會帶走畫面上看不到的單。
   const selectedPendingIds = useMemo(
     () => pendingIds.filter((id) => selected.has(id)),
     [pendingIds, selected],
@@ -1801,7 +1801,7 @@ export default function TransfersInboxPage() {
               ? `已選 ${selectedPendingIds.length} / ${pendingIds.length} 筆待收`
               : `待收 ${pendingIds.length} 筆`}
           </span>
-          {/* 配送日（老闆 2026-10-13）：選了某一天 → 清單、全選待收、收貨 (N)、依客人分貨單 (N)
+          {/* 配送日（老闆 2026-10-13）：選了某一天 → 清單、全選待收、收貨 (N)、現場分貨單 (N)
               都只算那一天（同一個勾選集合）。「全部」＝加這個選單之前的行為。 */}
           <label className="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-300">
             配送日
@@ -1875,7 +1875,7 @@ export default function TransfersInboxPage() {
                 判準沿用同一顆自動配在用的 selectedStore,沒有新增任何邏輯。 */}
             {`${selectedStore ? "收貨" : "✋ 批次配單"}${selectedPendingIds.length > 0 ? ` (${selectedPendingIds.length})` : ""}`}
           </SpinButton>
-          {/* 依客人分貨單：帶的單跟左邊那顆一模一樣 —— 同一個 selectedPendingIds（都是 shipped，
+          {/* 現場分貨單：帶的單跟左邊那顆一模一樣 —— 同一個 selectedPendingIds（都是 shipped，
               openManualReceive 內部再濾一次 shipped 也不會少）。勾到好幾家店時，列印頁會依目的店
               分開算、分開印。只印不收貨。 */}
           {selectedPendingIds.length > 0 && (
@@ -1883,9 +1883,9 @@ export default function TransfersInboxPage() {
               href={`/transfers/print-sort?transfer_ids=${selectedPendingIds.join(",")}`}
               target="_blank"
               className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-              title="照收貨視窗預設勾的客人，把勾選的待收單依客人列出來（A4），倉庫可以先照著分袋；只印，不會收貨"
+              title="照收貨視窗預設勾的客人，把勾選的待收單印成現場分貨單（A4，預設依商品，也可切換依客人），倉庫可以先照著分袋；只印，不會收貨"
             >
-              🖨 依客人分貨單 ({selectedPendingIds.length})
+              🖨 現場分貨單 ({selectedPendingIds.length})
             </Link>
           )}
         </div>

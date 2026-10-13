@@ -1,13 +1,14 @@
 // 收貨配單「預設勾誰」的計算（純函式，不碰 React、不碰資料庫），單獨測試：
 //   node --test apps/admin/src/lib/receiveAllocation.test.mjs
 //
-// ⛔ 收貨視窗（components/ManualAllocateModal 的 receive 模式）與依客人分貨單
+// ⛔ 收貨視窗（components/ManualAllocateModal 的 receive 模式）與現場分貨單
 //    （transfers/print-sort）共用，挑法只能改這裡。兩邊各寫一份的話，倉庫照分貨單
 //    分好的袋子，會跟門市按收貨時系統預設勾的客人對不上 —— 貨配給 A、通知發給 B。
 //
 // - BudgetRow / IncomingRow / CandidateOrder、greedyItemsByTime、normalizeReceivePreview：
 //   從 ManualAllocateModal 原樣搬過來（只加 export），收貨視窗的行為不變。
-// - buildSortSheet：分貨單用。把預設勾選拆成「這車分給客人」「門市現貨」「這車分剩的」。
+// - buildSortSheet：分貨單用。把預設勾選拆成「這車分給客人」「門市現貨」「這車分剩的」；
+//   toProductView 只把它的結果轉成「依商品」樣式，不另外算。
 
 export type BudgetRow = {
   sku_id: number;
@@ -97,7 +98,7 @@ export function normalizeReceivePreview(d: unknown) {
 }
 
 // ------------------------------------------------------------
-// 依客人分貨單（transfers/print-sort）
+// 現場分貨單（transfers/print-sort）
 // ------------------------------------------------------------
 
 /** 分貨單上的一行：某位客人的某個商品要幾個（同一段裡同商品合成一行） */
@@ -271,4 +272,54 @@ export function buildSortSheet<M>(
       (a, b) => Number(b.inTruck) - Number(a.inTruck) || rank(a.sku_id) - rank(b.sku_id),
     ),
   };
+}
+
+// ------------------------------------------------------------
+// 現場分貨單「依商品」樣式：只把 buildSortSheet 的結果換個方向排，⛔ 不另外算挑法
+// ------------------------------------------------------------
+
+/** 依商品樣式裡的一列：某位客人從這車拿這個商品幾個 */
+export type ProductViewRow = {
+  key: string; // 跟 SortSheetCustomer.key 同一個（同會員合併、member_id null 一張單一段）
+  member_id: number | null;
+  customer: string;
+  order_nos: string[];
+  qty: number; // 這車分給他的量（＝清單／一客一段裡同一位客人同一商品的那一行）
+  fromStore: number; // 同一商品另由門市現貨拿的量（＝門市現貨段同一位客人同一商品；沒有＝0）
+};
+
+/** 依商品樣式的一塊：這車的一個商品，加上分到它的客人（照名字排序，跟另外兩種樣式同一個順序） */
+export type ProductViewBlock = { sku: SortSheetSku; rows: ProductViewRow[] };
+
+/**
+ * 把分貨單轉成「依商品」：每個這車有的商品一塊（照到貨清單順序），塊內列出從這車分到它的客人。
+ * - 只用 sheet 已經算好的結果：rows 取自 sheet.customers（這車段），fromStore 取自 sheet.fromStore。
+ *   所以每塊的 qty 加總 ＝ 該商品 toCustomers，三種樣式每人每商品的數量必定一樣。
+ * - 不在這車的商品不出塊（倉庫不用分，照舊列在門市現貨段）。
+ * - 某位客人這個商品「全部」都由門市現貨拿（這車一個都沒分到）的，不列在塊裡，只在門市現貨段。
+ */
+export function toProductView<M>(sheet: SortSheet<M>): ProductViewBlock[] {
+  const storeQty = new Map<string, number>();
+  for (const c of sheet.fromStore) {
+    for (const l of c.lines) storeQty.set(`${c.key}|${l.sku_id}`, l.qty);
+  }
+  return sheet.skus
+    .filter((s) => s.inTruck)
+    .map((sku) => ({
+      sku,
+      rows: sheet.customers.flatMap((c) => {
+        const line = c.lines.find((l) => l.sku_id === sku.sku_id);
+        if (!line) return [];
+        return [
+          {
+            key: c.key,
+            member_id: c.member_id,
+            customer: c.customer,
+            order_nos: c.order_nos,
+            qty: line.qty,
+            fromStore: storeQty.get(`${c.key}|${sku.sku_id}`) ?? 0,
+          },
+        ];
+      }),
+    }));
 }
