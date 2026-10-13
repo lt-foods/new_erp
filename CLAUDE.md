@@ -112,6 +112,18 @@ curl -sS --cacert /root/.ccr/ca-bundle.crt \
 截止時間、預算、「這次跑到哪」一律在 handler / job 裡算、用參數往下帶。
 同理，模組層級的 Map 快取（例：`clients`）會跨請求活著，別把它當成「一次 invocation 內」的東西。
 
+### 記事本機器人自己留的言，讀留言時會被當成客人的 +1
+
+`readPost` 把貼文底下**每一則**留言都 upsert 進 `line_note_comments` 再丟給
+`parseNoteComment` → `rpc_line_note_apply_comment`，不分是誰留的；`detectClosing` 也是
+看全部留言找「結單」字樣。所以機器人只要留一句「王○明 剛剛下單 A×2」，下一輪讀留言就會
+把它解析成 A+1 去找會員（找不到 → 卡在待處理），模板裡寫到「結單」還會把整篇關掉。
+
+商城下單播報（20261003000000，`jobCheer`）的做法：文末固定接 `#商城下單`（`CHEER_TAG`），
+`readPost` 看到就直接寫 `status='ignored'`、`detectClosing` 跳過；留完也用 LINE 回的
+留言 id（撿不到就 list 對文字）先登記成 ignored。新增任何「機器人自己留言」的路徑都要
+比照：留言要帶可辨識的固定尾巴，而且兩個入口（解析、結單判定）都要擋。
+
 ### Secrets API 回的是雜湊，不是密文本體
 
 `GET /v1/projects/{ref}/secrets` 回傳的 `value` 是 SHA-256 雜湊，**不是真值** —
