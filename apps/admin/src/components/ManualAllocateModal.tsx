@@ -9,6 +9,13 @@ import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import { orderListHref } from "@/lib/orderStatus";
 import {
+  greedyItemsByTime,
+  normalizeReceivePreview,
+  type BudgetRow,
+  type CandidateOrder,
+  type IncomingRow,
+} from "@/lib/receiveAllocation";
+import {
   fanoutPickupNotifications,
   pushArrivalNotifications,
   type NotifyTarget,
@@ -48,29 +55,6 @@ type TransferItemLine = {
   description: string | null;
 };
 
-// 依下單時間由早到晚、逐「品項」勾滿為止（伺服端已排好單序）。
-// 品項層級（20260824050000）：多品項單裝不下全部時，裝得下的那幾項照給、
-// 其餘轉待到貨 —— 不再整張鎖死。回傳的是 item_id 集合。
-function greedyItemsByTime(
-  orders: CandidateOrder[],
-  caps: Map<number, number>,
-  onlyWithin?: Set<number>,
-): Set<number> {
-  const used = new Map<number, number>();
-  const next = new Set<number>();
-  for (const o of orders) {
-    for (const it of o.items) {
-      if (it.item_id == null) continue;
-      if (onlyWithin && !onlyWithin.has(it.item_id)) continue;
-      if (it.qty <= (caps.get(it.sku_id) ?? 0) - (used.get(it.sku_id) ?? 0)) {
-        next.add(it.item_id);
-        used.set(it.sku_id, (used.get(it.sku_id) ?? 0) + it.qty);
-      }
-    }
-  }
-  return next;
-}
-
 export type AllocModalMode =
   | { kind: "store"; storeId: number }
   | {
@@ -80,30 +64,6 @@ export type AllocModalMode =
       lines?: ReceiveLine[] | null;
       note?: string | null;
     };
-
-type BudgetRow = {
-  sku_id: number;
-  sku_code: string | null;
-  name: string;
-  cap: number; // 可配上限（receive 模式 = 既有可配 + 本次到貨；原始值可為負時已含在內）
-  pool: number; // 【內部】店現貨池既有未取掛帳（receive 模式伺服端回傳；store 模式 0）
-};
-
-type IncomingRow = { sku_id: number; sku_code: string | null; name: string; qty: number };
-
-type CandidateOrder = {
-  order_id: number;
-  order_no: string;
-  member_id: number | null;
-  customer: string | null;
-  campaign_name: string | null;
-  created_at: string;
-  // 單頭狀態（receive 模式伺服端回傳；store 模式候選必為 confirmed 且閘門已過）
-  status: string;
-  arrived: boolean;
-  // receive 模式逐品項（有 item_id，品項層級配貨用）；store 模式仍是 SKU 加總（無 item_id）
-  items: Array<{ item_id?: number; sku_id: number; qty: number; backordered?: boolean }>;
-};
 
 // 「客人看到」欄：判定對齊會員端 apps/member OrderCard.orderPhase ——
 // 取貨閘門放行＝待取貨；派貨中＝運送中；其餘＝待到貨。
@@ -215,40 +175,7 @@ export function ManualAllocateModal({
         p_lines: lines && lines.length > 0 ? lines : null,
       });
       if (e) throw new Error(e.message);
-      const raw = d as {
-        store_id: number | null;
-        incoming: IncomingRow[];
-        budget: Array<{
-          sku_id: number;
-          sku_code: string | null;
-          name: string;
-          available: number;
-          pool?: number;
-        }>;
-        orders: CandidateOrder[];
-      };
-      const incoming = (raw.incoming ?? []).map((r) => ({ ...r, qty: Number(r.qty) }));
-      const incMap = new Map(incoming.map((r) => [r.sku_id, r.qty]));
-      const orders = (raw.orders ?? []).map((o) => ({
-        ...o,
-        status: o.status ?? "confirmed",
-        arrived: Boolean(o.arrived),
-        items: (o.items ?? []).map((i) => ({
-          item_id: i.item_id,
-          sku_id: i.sku_id,
-          qty: Number(i.qty),
-          backordered: Boolean(i.backordered),
-        })),
-      }));
-      // 可配上限 = 既有可配（可能為負；伺服端已把畫面上的派貨中單從「已承諾」
-      // 排除）+ 本次到貨 —— 跟確認收貨後伺服端算出的預算一致
-      const budgetRows = (raw.budget ?? []).map((b) => ({
-        sku_id: b.sku_id,
-        sku_code: b.sku_code,
-        name: b.name,
-        cap: Number(b.available) + (incMap.get(b.sku_id) ?? 0),
-        pool: Number(b.pool) || 0,
-      }));
+      const { incoming, orders, budgetRows } = normalizeReceivePreview(d);
       setData({ budget: budgetRows, incoming, orders, waiting_count: 0 });
 
       const caps = new Map(budgetRows.map((b) => [b.sku_id, b.cap]));
