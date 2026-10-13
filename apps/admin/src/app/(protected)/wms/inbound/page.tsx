@@ -1883,7 +1883,7 @@ export default function TransfersInboxPage() {
               href={`/transfers/print-sort?transfer_ids=${selectedPendingIds.join(",")}`}
               target="_blank"
               className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-              title="照收貨視窗預設勾的客人，把勾選的待收單印成現場分貨單（A4，預設依商品，也可切換依客人），倉庫可以先照著分袋；只印，不會收貨"
+              title="照收貨視窗預設勾的客人，把勾選的待收單印成現場分貨單（A4，預設依商品，也可切換清單／一客一段（可剪下）），倉庫可以先照著分袋；只印，不會收貨"
             >
               🖨 現場分貨單 ({selectedPendingIds.length})
             </Link>

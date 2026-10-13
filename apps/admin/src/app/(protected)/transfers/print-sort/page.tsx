@@ -647,18 +647,20 @@ const SMALL_BLOCK_ROWS = 20;
 
 function ProductBlocks({ blocks }: { blocks: ProductViewBlock[] }) {
   const [first, ...rest] = blocks;
-  const small = (b: ProductViewBlock) => b.rows.length <= SMALL_BLOCK_ROWS;
+  const title = `商品（照這車到貨清單）· 共 ${blocks.length} 樣`;
+  if (!first) {
+    return (
+      <div className="avoid-break">
+        <h2 className="keep-with-next mb-1 text-base font-bold">{title}</h2>
+        <div className="border border-zinc-400 p-3 text-sm text-zinc-600">這車沒有商品。</div>
+      </div>
+    );
+  }
   return (
     <>
-      {/* 區塊標題跟第一塊綁在一起，不會一個人留在頁底 */}
-      <div className={first && small(first) ? "avoid-break" : ""}>
-        <h2 className="keep-with-next mb-1 text-base font-bold">商品（照這車到貨清單）· 共 {blocks.length} 樣</h2>
-        {first ? (
-          <ProductBlock b={first} />
-        ) : (
-          <div className="border border-zinc-400 p-3 text-sm text-zinc-600">這車沒有商品。</div>
-        )}
-      </div>
+      {/* 區塊標題放進第一塊的表頭最上面一列：不管第一塊多大，標題都跟塊頭、欄名一起出現，
+          結構上不會一個人留在頁底（第一塊跨頁時標題會跟著表頭重複，同清單樣式） */}
+      <ProductBlock b={first} title={title} />
       {rest.map((b) => (
         <ProductBlock key={b.sku.sku_id} b={b} className="mt-3" />
       ))}
@@ -666,12 +668,13 @@ function ProductBlocks({ blocks }: { blocks: ProductViewBlock[] }) {
   );
 }
 
-function ProductBlock({ b, className = "" }: { b: ProductViewBlock; className?: string }) {
+function ProductBlock({ b, className = "", title }: { b: ProductViewBlock; className?: string; title?: string }) {
   return (
     <table
       className={`${className} w-full border-collapse text-sm ${b.rows.length <= SMALL_BLOCK_ROWS ? "avoid-break" : ""}`}
     >
       <thead>
+        {title && <TitleRow cols={3}>{title}</TitleRow>}
         <tr className="bg-zinc-100">
           <th colSpan={3} className="border border-zinc-400 px-2 py-1 text-left">
             <div className="flex flex-wrap items-baseline justify-between gap-x-3">
