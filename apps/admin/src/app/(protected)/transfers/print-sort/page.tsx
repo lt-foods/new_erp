@@ -48,8 +48,11 @@ type SheetHead = {
   storeName: string;
   transfers: TransferRow[];
   waveCodes: string[];
-  waveDates: string[]; // 配送日（picking_waves.wave_date），由舊到新
+  waveDates: string[]; // 配送日（picking_waves.wave_date），由舊到新；有單沒有配送日時最後一項是「無配送日」
 };
+
+// 跟收貨頁配送日下拉的選項同一個用語
+const NO_WAVE_DATE_LABEL = "無配送日";
 
 type StoreSheet = {
   dest: number;
@@ -190,13 +193,21 @@ function Body() {
             .map((t) => parseWaveId(t.transfer_no))
             .map((w) => (w === null ? undefined : waveOf.get(w)))
             .filter((w): w is { wave_code: string; wave_date: string | null } => !!w);
+          // 配送日逐張看（跟收貨頁配送日下拉同一個判法）：派貨單號不是撿貨單派出的、撿貨單查不到、
+          // 或撿貨單沒有日期，都算「無配送日」。有任何一張是這樣就在日期清單最後補「無配送日」，
+          // 不然倉管會以為整批都是那幾天。
+          const groupDates = group.map((t) => {
+            const w = parseWaveId(t.transfer_no);
+            return (w === null ? undefined : waveOf.get(w)?.wave_date) || null;
+          });
           const head: SheetHead = {
             storeName: storeName.get(dest) ?? `#${dest}`,
             transfers: group,
             waveCodes: Array.from(new Set(groupWaves.map((w) => w.wave_code))),
-            waveDates: Array.from(
-              new Set(groupWaves.map((w) => w.wave_date).filter((x): x is string => !!x)),
-            ).sort(),
+            waveDates: [
+              ...Array.from(new Set(groupDates.filter((x): x is string => !!x))).sort(),
+              ...(groupDates.some((x) => !x) ? [NO_WAVE_DATE_LABEL] : []),
+            ],
           };
           stores.push({ dest, sheet: buildSortSheet(pv, greedyItemsByTime(pv.orders, caps), head), overlaps: [] });
         }
