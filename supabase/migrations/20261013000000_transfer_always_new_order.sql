@@ -28,8 +28,9 @@
 --      5. rpc_place_member_order_guarded（會員／LINE 下單）
 --      6. _store_add_internal_order_item（採購單頁「分店／批發追加」）
 --      8. rpc_add_pr_store_demands（請購單草稿「分店／批發加單」；跟 6 是兩份同樣的邏輯）
---         請購加單的自動確認與 pending 擋單也排除轉入單（經總倉轉入單一開就是 pending、
---         等總倉簽收，不能被推成 confirmed，也不該擋加單）。
+--         請購加單的自動確認與 pending 擋單也排除跨店轉入單（經總倉的一開就是 pending、
+--         等總倉簽收，不能被推成 confirmed，也不該擋加單；同店換客人的單照舊，
+--         口徑對齊撿貨需求 20260908000000:67-69）。找單那處則排除所有轉入單。
 --      9. rpc_create_store_internal_order（店長在代客加單畫面幫自己店叫貨）
 --      （8、9 排在檔案最後，都在第 1 段索引之後。）
 --      為什麼一定要一起改：同一人同一團可以有兩張單（自己的一般單＋別人轉來的轉入單）
@@ -69,7 +70,7 @@
 --   rpc_place_member_order_guarded   7813f92d8e8a67dbaa74b10eea7be492  0d229ee6f5b4baaa9d2fad6bff204bdb
 --   _store_add_internal_order_item   b5b1ef9c4c17a128d7bb239c5c2715d9  c0f1f3e8f4f984a0ef2b66c3297ac463
 --   rpc_restore_cancelled_order      722a1a6903503eaa38b64aa15177870d  7c9c1801252437301f2ba226b54546ad
---   rpc_add_pr_store_demands         3ea3544904c5280747052c3abeee945a  b35fa35cf795c1130f98cec9e0d7553c
+--   rpc_add_pr_store_demands         3ea3544904c5280747052c3abeee945a  3d102f72f05c1883cb2e2fe0da00d30b
 --   rpc_create_store_internal_order  18cd791444cc4dcad299af469ab048f1  879557850032331e9475268f5a03cffd
 --   唯一索引比 pg_indexes.indexdef（去掉所有空白後逐字比），舊版與新版的完整字串寫在第 0 段。
 --
@@ -162,7 +163,7 @@ BEGIN
         ('public.rpc_restore_cancelled_order(bigint, uuid, text)',
          '20260818000000:102', '722a1a6903503eaa38b64aa15177870d', '7c9c1801252437301f2ba226b54546ad'),
         ('public.rpc_add_pr_store_demands(bigint, bigint, bigint, jsonb, uuid, uuid)',
-         '20260924010000:4',   '3ea3544904c5280747052c3abeee945a', 'b35fa35cf795c1130f98cec9e0d7553c'),
+         '20260924010000:4',   '3ea3544904c5280747052c3abeee945a', '3d102f72f05c1883cb2e2fe0da00d30b'),
         ('public.rpc_create_store_internal_order(bigint, bigint, jsonb, uuid, text)',
          '20260507000000:111', '18cd791444cc4dcad299af469ab048f1', '879557850032331e9475268f5a03cffd')
       ) AS t(sig, base_at, md5_base, md5_new)
@@ -1719,8 +1720,10 @@ $$;
 
 -- ----------------------------------------------------------------------------
 -- 8. rpc_add_pr_store_demands（請購單草稿「分店／批發加單」）
---    —— 基底 20260924010000:4 逐字，只改三處，都是加 transferred_from_order_id IS NULL：
---    :271-285 找單；:391-401 candidate_orders（自動確認）；:439-448 v_pending_order_nos（pending 擋單）
+--    —— 基底 20260924010000:4 逐字，只改三處：
+--    :271-285 找單：加 transferred_from_order_id IS NULL（所有轉入單都不拿來加）；
+--    :391-401 candidate_orders（自動確認）、:439-448 v_pending_order_nos（pending 擋單）：
+--      只排除跨店轉入單，同店換客人的單照舊（口徑對齊撿貨需求 20260908000000:67-69）。
 --    跟第 6 段 _store_add_internal_order_item 是「兩份同樣的邏輯」
 --    （20261002000000 檔頭 :40-44：改一份要兩份一起改），所以一起改。
 -- ----------------------------------------------------------------------------
@@ -2122,8 +2125,13 @@ BEGIN
      WHERE co.tenant_id = v_tenant
        AND co.campaign_id = p_campaign_id
        AND co.status = 'pending'
-       -- 20261013：經總倉轉入單一開就是 pending、等總倉簽收，不是店內單，不能被請購加單推成 confirmed
-       AND co.transferred_from_order_id IS NULL
+       -- 20261013：只排除跨店轉入單（經總倉／空中轉）；口徑對齊撿貨需求 v_picking_demand_by_po（20260908000000:67-69）。
+       --   經總倉的一開就是 pending、等總倉簽收，不能被請購加單推成 confirmed；
+       --   同店換客人的單跟一般單一樣在請購需求裡，照舊可以被自動確認。
+       AND (co.transferred_from_order_id IS NULL
+            OR EXISTS (SELECT 1 FROM public.customer_orders src
+                        WHERE src.id = co.transferred_from_order_id
+                          AND src.pickup_store_id = co.pickup_store_id))
        AND coi.sku_id = v_pr.sku_id
        AND coi.status NOT IN ('cancelled','expired')
   ),
@@ -2172,8 +2180,13 @@ BEGIN
    WHERE co.tenant_id = v_tenant
      AND co.campaign_id = p_campaign_id
      AND co.status = 'pending'
-     -- 20261013：經總倉轉入單一開就是 pending、等總倉簽收，不是店內單，不該擋請購加單
-     AND co.transferred_from_order_id IS NULL
+     -- 20261013：只排除跨店轉入單（經總倉／空中轉）；口徑對齊撿貨需求 v_picking_demand_by_po（20260908000000:67-69）。
+     --   經總倉的一開就是 pending、等總倉簽收，不該擋請購加單；
+     --   同店換客人的單跟一般單一樣在請購需求裡，照舊列入（上面已照舊自動確認）。
+     AND (co.transferred_from_order_id IS NULL
+          OR EXISTS (SELECT 1 FROM public.customer_orders src
+                      WHERE src.id = co.transferred_from_order_id
+                        AND src.pickup_store_id = co.pickup_store_id))
      AND coi.sku_id = v_pr.sku_id
      AND coi.status NOT IN ('cancelled','expired');
 
