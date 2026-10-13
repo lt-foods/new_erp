@@ -93,7 +93,7 @@ const CLOSED_CAMPAIGN_NOTE =
 const CLOSED_CAMPAIGN_BANNER = `${CLOSED_CAMPAIGN_NOTE}（店內現貨／抵減不受影響）`;
 
 // 送出前查「這些會員在這團已經有的同品項數量」。找單條件對齊 rpc_create_customer_orders
-// （campaign + channel + member、排除 cancelled/expired/transferred_out）：命中的品項送出後是累加。
+// （campaign + channel + member、排除 cancelled/expired/transferred_out、排除轉入單）：命中的品項送出後是累加。
 // 回 null ＝ 沒有會被疊上去的品項。查詢失敗也回 null（不擋送出，只是少一道提醒）。
 async function findExistingQty(
   campaignId: number,
@@ -110,7 +110,8 @@ async function findExistingQty(
     .eq("campaign_id", campaignId)
     .eq("channel_id", channelId)
     .in("member_id", memberIds)
-    .not("status", "in", "(cancelled,expired,transferred_out)");
+    .not("status", "in", "(cancelled,expired,transferred_out)")
+    .is("transferred_from_order_id", null);
   if (error || !data) return null;
   const skuName = (id: number) => {
     const s = campaignSkus.find((x) => x.campaign_item_id === id);
