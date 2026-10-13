@@ -99,43 +99,59 @@ function assertSameAsLegacy(d, touched = false, cur = undefined) {
   assert.deepStrictEqual(sorted(b.selected), sorted(a.selected));
 }
 
-// 三條固定檢查（＋兩段加總要對得上每個客人那幾行）
+// 三條固定檢查（對「所有被勾的商品」，含不在這車的）＋兩段加總要對得上每個客人那幾行。
+// 回傳 sheet 與「被勾到但不在這車的商品有幾個」（隨機測試用來確認真的有涵蓋到）。
 function assertSheetInvariants(d) {
   const sheet = sheetOf(d);
   const { data, selected } = legacy.loadPreview(d, false);
-  // 舊版視窗的預設勾選，逐商品加總
+  // 舊版視窗的預設勾選，逐商品加總（只算 > 0 的品項；0 個的勾了也沒有貨要拿）
   const pickedBySku = new Map();
   for (const o of data.orders)
     for (const it of o.items)
-      if (it.item_id != null && selected.has(it.item_id))
+      if (it.item_id != null && selected.has(it.item_id) && it.qty > 0)
         pickedBySku.set(it.sku_id, (pickedBySku.get(it.sku_id) ?? 0) + it.qty);
   const sumLines = (section, skuId) =>
     section.reduce((s, c) => s + c.lines.filter((l) => l.sku_id === skuId).reduce((x, l) => x + l.qty, 0), 0);
   const incomingIds = new Set(data.incoming.map((r) => r.sku_id));
+  const notInTruck = [...pickedBySku.keys()].filter((id) => !incomingIds.has(id));
+  // 商品清單＝這車的（照到貨清單順序）＋ 被勾到但不在這車的
   assert.deepStrictEqual(
-    sheet.skus.map((s) => s.sku_id),
+    sheet.skus.filter((s) => s.inTruck).map((s) => s.sku_id),
     data.incoming.map((r) => r.sku_id),
-    "頁尾只列這車的商品、照到貨清單順序",
+    "這車的商品照到貨清單順序全列",
   );
-  for (const s of sheet.skus) {
-    assert.ok(s.toCustomers <= s.shipped + 1e-9, `sku ${s.sku_id}：這車 ${s.toCustomers} > 到貨 ${s.shipped}`);
-    assert.ok(near(s.toCustomers + s.surplus, s.shipped), `sku ${s.sku_id}：這車＋多出來 ≠ 到貨`);
+  assert.deepStrictEqual(
+    new Set(sheet.skus.filter((s) => !s.inTruck).map((s) => s.sku_id)),
+    new Set(notInTruck),
+    "被勾到但不在這車的商品要列出來",
+  );
+  // ① 每個被勾的商品：這車 ＋ 門市現貨 ＝ 視窗預設勾選
+  for (const [skuId, picked] of pickedBySku) {
+    const s = sheet.skus.find((x) => x.sku_id === skuId);
+    assert.ok(s, `sku ${skuId}：視窗勾了 ${picked} 個，分貨單沒有這個商品`);
     assert.ok(
-      near(s.toCustomers + s.fromStore, pickedBySku.get(s.sku_id) ?? 0),
-      `sku ${s.sku_id}：這車 ${s.toCustomers}＋門市現貨 ${s.fromStore} ≠ 視窗預設勾選 ${pickedBySku.get(s.sku_id) ?? 0}`,
+      near(s.toCustomers + s.fromStore, picked),
+      `sku ${skuId}：這車 ${s.toCustomers}＋門市現貨 ${s.fromStore} ≠ 視窗預設勾選 ${picked}`,
     );
+  }
+  for (const s of sheet.skus) {
+    // ② 這車 ≤ 到貨；③ 這車 ＋ 分剩 ＝ 到貨（不在這車的：到貨 0、這車 0、分剩 0）
+    assert.ok(s.toCustomers <= s.shipped + 1e-9, `sku ${s.sku_id}：這車 ${s.toCustomers} > 到貨 ${s.shipped}`);
+    assert.ok(near(s.toCustomers + s.surplus, s.shipped), `sku ${s.sku_id}：這車＋分剩 ≠ 到貨`);
+    if (!s.inTruck) assert.deepStrictEqual([s.shipped, s.toCustomers, s.surplus], [0, 0, 0]);
+    if (!pickedBySku.has(s.sku_id)) assert.equal(s.toCustomers + s.fromStore, 0);
     assert.ok(near(sumLines(sheet.customers, s.sku_id), s.toCustomers), `sku ${s.sku_id}：客人段加總 ≠ 這車`);
     assert.ok(near(sumLines(sheet.fromStore, s.sku_id), s.fromStore), `sku ${s.sku_id}：門市現貨段加總 ≠ 門市現貨`);
     assert.ok(s.fillDeficit >= 0 && s.fillDeficit <= s.surplus + 1e-9);
   }
   for (const c of [...sheet.customers, ...sheet.fromStore]) {
     assert.ok(c.lines.length > 0);
-    for (const l of c.lines) {
-      assert.ok(l.qty > 0, "不印 0 個的行");
-      assert.ok(incomingIds.has(l.sku_id), "不在這車的商品不印");
-    }
+    for (const l of c.lines) assert.ok(l.qty > 0, "不印 0 個的行");
   }
-  return sheet;
+  for (const c of sheet.customers) {
+    for (const l of c.lines) assert.ok(incomingIds.has(l.sku_id), "這車段（倉庫分袋）只能有這車的商品");
+  }
+  return { sheet, notInTruckCount: notInTruck.length };
 }
 
 // ---------------- 固定案例的組裝工具 ----------------
@@ -180,7 +196,7 @@ test("到 8 包、10 人訂 → 只列前 8 位（照下單時間），後 2 位
   );
   const d = preview([sku(1, 8)], orders);
   assertSameAsLegacy(d);
-  const sheet = assertSheetInvariants(d);
+  const { sheet } = assertSheetInvariants(d);
   assert.deepStrictEqual(
     new Set(sheet.customers.flatMap((c) => c.order_nos)),
     new Set(orders.slice(0, 8).map((o) => o.order_no)),
@@ -188,7 +204,7 @@ test("到 8 包、10 人訂 → 只列前 8 位（照下單時間），後 2 位
   assert.equal(sheet.customers.length, 8);
   assert.equal(sheet.fromStore.length, 0);
   assert.deepStrictEqual(sheet.skus[0], {
-    sku_id: 1, sku_code: "G00001-01", name: "商品1 / 規格",
+    sku_id: 1, sku_code: "G00001-01", name: "商品1 / 規格", inTruck: true,
     shipped: 8, toCustomers: 8, surplus: 0, fromStore: 0, fillDeficit: 0,
   });
 });
@@ -199,7 +215,7 @@ test("同一會員兩團 → 合成一段，同商品合成一行", () => {
   const b = ord("王小明 123456", 7, [it(1, 2), it(2, 1)], { campaign_name: "團B" });
   const d = preview([sku(1, 5), sku(2, 5)], [a, other, b]);
   assertSameAsLegacy(d);
-  const sheet = assertSheetInvariants(d);
+  const { sheet } = assertSheetInvariants(d);
   const wang = sheet.customers.find((c) => c.member_id === 7);
   assert.deepStrictEqual(wang.order_nos, [a.order_no, b.order_no]);
   assert.deepStrictEqual(linesOf(wang), [[1, 3], [2, 1]]);
@@ -212,7 +228,7 @@ test("多品項只分到部分：裝不下的那一項不印，裝得下的照�
   const y = ord("乙", 2, [it(1, 1), it(2, 1)]); // 商品2 只到 1 個，被甲拿走
   const d = preview([sku(1, 2), sku(2, 1)], [x, y]);
   assertSameAsLegacy(d);
-  const sheet = assertSheetInvariants(d);
+  const { sheet } = assertSheetInvariants(d);
   const byName = Object.fromEntries(sheet.customers.map((c) => [c.customer, linesOf(c)]));
   assert.deepStrictEqual(byName["甲"], [[1, 1], [2, 1]]);
   assert.deepStrictEqual(byName["乙"], [[1, 1]]);
@@ -224,7 +240,7 @@ test("cap 3、訂量 [2,2,1] → 第 1、3 位（第 2 位裝不下就跳過、�
   const o3 = ord("第三位", 3, [it(1, 1)]);
   const d = preview([sku(1, 3)], [o1, o2, o3]);
   assertSameAsLegacy(d);
-  const sheet = assertSheetInvariants(d);
+  const { sheet } = assertSheetInvariants(d);
   assert.deepStrictEqual(new Set(sheet.customers.map((c) => c.order_nos[0])), new Set([o1.order_no, o3.order_no]));
   assert.equal(sheet.skus[0].surplus, 0);
 });
@@ -235,7 +251,7 @@ test("available ＋2：超過這車的量列「門市現貨」段，跨界線的
   const c = ord("C客", 3, [it(1, 1)]); // 累計 7 → 全部門市現貨
   const d = preview([sku(1, 5, 2)], [a, b, c]);
   assertSameAsLegacy(d);
-  const sheet = assertSheetInvariants(d);
+  const { sheet } = assertSheetInvariants(d);
   const truck = Object.fromEntries(sheet.customers.map((x) => [x.customer, x.qty]));
   const store = Object.fromEntries(sheet.fromStore.map((x) => [x.customer, x.qty]));
   assert.deepStrictEqual(truck, { A客: 3, B客: 2 });
@@ -246,43 +262,67 @@ test("available ＋2：超過這車的量列「門市現貨」段，跨界線的
   );
 });
 
-test("available −2：多出來的有 2 個會先補門市帳上不足（小註）", () => {
-  // 到 10、帳上欠 2 → 可配 8；只有 5 人要 → 多出來 5，其中 2 個先補帳
+test("available −2：分剩的有 2 個會先補門市帳上不足（小註）", () => {
+  // 到 10、帳上欠 2 → 可配 8；只有 5 人要 → 分剩 5，其中 2 個先補帳
   const few = Array.from({ length: 5 }, (_, i) => ord(`少${i}`, 200 + i, [it(1, 1)]));
   const d1 = preview([sku(1, 10, -2)], few);
   assertSameAsLegacy(d1);
-  const s1 = assertSheetInvariants(d1).skus[0];
+  const s1 = assertSheetInvariants(d1).sheet.skus[0];
   assert.deepStrictEqual([s1.toCustomers, s1.surplus, s1.fillDeficit], [5, 5, 2]);
 
-  // 到 10、帳上欠 2、9 人要 → 只能勾 8 人；多出來 2 個全部拿去補帳
+  // 到 10、帳上欠 2、9 人要 → 只能勾 8 人；分剩 2 個全部拿去補帳
   const many = Array.from({ length: 9 }, (_, i) => ord(`多${i}`, 300 + i, [it(1, 1)]));
   const d2 = preview([sku(1, 10, -2)], many);
   assertSameAsLegacy(d2);
-  const sheet2 = assertSheetInvariants(d2);
+  const { sheet: sheet2 } = assertSheetInvariants(d2);
   const s2 = sheet2.skus[0];
   assert.deepStrictEqual([s2.toCustomers, s2.surplus, s2.fillDeficit], [8, 2, 2]);
   assert.equal(sheet2.customers.length, 8);
 });
 
-test("純補貨（沒有任何客人訂單）：客人段空白，全部是多出來的", () => {
+test("純補貨（沒有任何客人訂單）：客人段空白，全部是這車分剩的", () => {
   const d = preview([sku(1, 6), sku(2, 4)], []);
   assertSameAsLegacy(d);
-  const sheet = assertSheetInvariants(d);
+  const { sheet } = assertSheetInvariants(d);
   assert.equal(sheet.customers.length, 0);
   assert.equal(sheet.fromStore.length, 0);
   assert.deepStrictEqual(sheet.skus.map((s) => [s.sku_id, s.surplus]), [[1, 6], [2, 4]]);
 });
 
-test("不在這車的商品不印（視窗會勾門市現有的，分貨單不印）", () => {
+test("不在這車、但視窗預設勾了的商品：整項列在「門市現貨」段，倉庫分袋段不列", () => {
   const a = ord("甲", 1, [it(1, 1), it(9, 2)]);
-  const d = preview([sku(1, 2)], [a], [sku(9, 0, 5).bud]);
+  const b = ord("乙", 2, [it(9, 4)]); // 門市只有 5 個：甲 2 個之後剩 3，乙要 4 裝不下
+  const d = preview([sku(1, 2)], [a, b], [sku(9, 0, 5).bud]);
   assertSameAsLegacy(d);
   const { selected } = legacy.loadPreview(d, false);
-  assert.equal(selected.size, 2, "視窗兩項都勾（商品9 用門市現貨）");
-  const sheet = assertSheetInvariants(d);
-  assert.deepStrictEqual(linesOf(sheet.customers[0]), [[1, 1]]);
+  assert.equal(selected.size, 2, "視窗勾甲的兩項（商品9 用門市現貨），乙裝不下");
+  const { sheet, notInTruckCount } = assertSheetInvariants(d);
+  assert.equal(notInTruckCount, 1);
+  assert.deepStrictEqual(names(sheet.customers), ["甲"]);
+  assert.deepStrictEqual(linesOf(sheet.customers[0]), [[1, 1]], "倉庫分袋只有這車的商品");
+  assert.deepStrictEqual(names(sheet.fromStore), ["甲"]);
+  assert.deepStrictEqual(linesOf(sheet.fromStore[0]), [[9, 2]], "商品9 整項由門市現貨拿");
+  // 品名、編號取自 budget
+  assert.deepStrictEqual(
+    [sheet.fromStore[0].lines[0].name, sheet.fromStore[0].lines[0].sku_code],
+    ["商品9 / 規格", "G00009-01"],
+  );
+  assert.deepStrictEqual(
+    sheet.skus.map((s) => [s.sku_id, s.inTruck, s.shipped, s.toCustomers, s.fromStore, s.surplus]),
+    [
+      [1, true, 2, 1, 0, 1],
+      [9, false, 0, 0, 2, 0],
+    ],
+  );
+});
+
+test("不在這車的商品連 budget 都查不到：視窗勾不到（可配 0），分貨單也不會憑空列出", () => {
+  const a = ord("甲", 1, [it(1, 1), it(8, 1)]);
+  const d = preview([sku(1, 2)], [a]); // 商品8 沒有 budget 列 → cap 0
+  assertSameAsLegacy(d);
+  const { sheet, notInTruckCount } = assertSheetInvariants(d);
+  assert.equal(notInTruckCount, 0);
   assert.equal(sheet.fromStore.length, 0);
-  assert.deepStrictEqual(sheet.skus.map((s) => s.sku_id), [1]);
 });
 
 test("member_id 是 null：一張單一段，同名也不合併", () => {
@@ -290,7 +330,7 @@ test("member_id 是 null：一張單一段，同名也不合併", () => {
   const b = ord("路人", null, [it(1, 1)]);
   const d = preview([sku(1, 2)], [a, b]);
   assertSameAsLegacy(d);
-  const sheet = assertSheetInvariants(d);
+  const { sheet } = assertSheetInvariants(d);
   assert.equal(sheet.customers.length, 2);
   assert.deepStrictEqual(sheet.customers.map((c) => c.order_nos), [[a.order_no], [b.order_no]]);
 });
@@ -305,7 +345,7 @@ test("數量是字串：一律當數字算", () => {
     orders: [a, b],
   };
   assertSameAsLegacy(d);
-  const sheet = assertSheetInvariants(d);
+  const { sheet } = assertSheetInvariants(d);
   const s = sheet.skus[0];
   assert.equal(typeof s.shipped, "number");
   // 可配 = −1 + 4 = 3 → A(2) 勾、B(2) 裝不下
@@ -317,7 +357,7 @@ test("客人依名字排序（zh-TW），不是照下單時間；沒名字印「
   const list = ["王小明", "Serena 005932", "李四", "陳一", null];
   const orders = list.map((n, i) => ord(n, 400 + i, [it(1, 1)]));
   const d = preview([sku(1, 5)], orders);
-  const sheet = assertSheetInvariants(d);
+  const { sheet } = assertSheetInvariants(d);
   const shown = list.map((n) => n ?? "（無名字）");
   assert.deepStrictEqual(names(sheet.customers), [...shown].sort((a, b) => a.localeCompare(b, "zh-TW")));
   assert.notDeepStrictEqual(names(sheet.customers), shown);
@@ -386,6 +426,8 @@ function randomPreview(r) {
 
 test("固定種子隨機 2000 例：新版預設勾選跟舊版完全相同，三條固定檢查都成立", () => {
   const r = rng(20261013);
+  let casesWithNotInTruck = 0;
+  let casesWithStoreOverflow = 0;
   for (let n = 0; n < 2000; n++) {
     const d = randomPreview(r);
     assertSameAsLegacy(d);
@@ -394,6 +436,11 @@ test("固定種子隨機 2000 例：新版預設勾選跟舊版完全相同，�
     const cur = new Set(ids.filter(() => r() < 0.5));
     assertSameAsLegacy(d, true, cur);
     // 分貨單的三條固定檢查（客人沒有 item_id 的品項整張略過，跟視窗一樣）
-    assertSheetInvariants(d);
+    const { sheet, notInTruckCount } = assertSheetInvariants(d);
+    if (notInTruckCount > 0) casesWithNotInTruck += 1;
+    if (sheet.skus.some((s) => s.inTruck && s.fromStore > 0)) casesWithStoreOverflow += 1;
   }
+  // 確認隨機案例真的涵蓋到「勾到不在這車的商品」與「超過這車量由門市現貨補」兩種情況
+  assert.ok(casesWithNotInTruck >= 100, `只有 ${casesWithNotInTruck} 例勾到不在這車的商品`);
+  assert.ok(casesWithStoreOverflow >= 100, `只有 ${casesWithStoreOverflow} 例超過這車量`);
 });

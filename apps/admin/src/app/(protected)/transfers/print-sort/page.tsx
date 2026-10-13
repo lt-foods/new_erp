@@ -16,7 +16,7 @@
 // ⚠ 同店還有別張派貨單沒收、又有相同商品時，兩張分貨單會列到同一批客人
 //   （預覽挑客人不分是哪一車）→ 印紅框警告，並附「合併列印」連結。
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
@@ -48,6 +48,7 @@ type SheetHead = {
   storeName: string;
   transfers: TransferRow[];
   waveCodes: string[];
+  waveDates: string[]; // 配送日（picking_waves.wave_date），由舊到新
 };
 
 type StoreSheet = {
@@ -159,15 +160,17 @@ function Body() {
         const waveIds = Array.from(
           new Set(list.map((t) => parseWaveId(t.transfer_no)).filter((x): x is number => x !== null)),
         );
-        const waveCode = new Map<number, string>();
+        const waveOf = new Map<number, { wave_code: string; wave_date: string | null }>();
         for (let i = 0; i < waveIds.length; i += IN_BATCH) {
           const batch = waveIds.slice(i, i + IN_BATCH);
           const { data: ws, error: e3 } = await sb
             .from("picking_waves")
-            .select("id, wave_code")
+            .select("id, wave_code, wave_date")
             .in("id", batch);
           if (e3) throw new Error(`撿貨單載入失敗：${e3.message}`);
-          for (const w of (ws ?? []) as Array<{ id: number; wave_code: string }>) waveCode.set(w.id, w.wave_code);
+          for (const w of (ws ?? []) as Array<{ id: number; wave_code: string; wave_date: string | null }>) {
+            waveOf.set(w.id, { wave_code: w.wave_code, wave_date: w.wave_date });
+          }
         }
 
         // 每家店各算一次（預覽 RPC 不收跨店：「跨分店的調撥單請分開處理」）
@@ -183,17 +186,17 @@ function Body() {
           if (e4) throw new Error(e4.message);
           const pv = normalizeReceivePreview(d);
           const caps = new Map(pv.budgetRows.map((b) => [b.sku_id, b.cap]));
+          const groupWaves = group
+            .map((t) => parseWaveId(t.transfer_no))
+            .map((w) => (w === null ? undefined : waveOf.get(w)))
+            .filter((w): w is { wave_code: string; wave_date: string | null } => !!w);
           const head: SheetHead = {
             storeName: storeName.get(dest) ?? `#${dest}`,
             transfers: group,
-            waveCodes: Array.from(
-              new Set(
-                group
-                  .map((t) => parseWaveId(t.transfer_no))
-                  .map((w) => (w === null ? undefined : waveCode.get(w)))
-                  .filter((c): c is string => !!c),
-              ),
-            ),
+            waveCodes: Array.from(new Set(groupWaves.map((w) => w.wave_code))),
+            waveDates: Array.from(
+              new Set(groupWaves.map((w) => w.wave_date).filter((x): x is string => !!x)),
+            ).sort(),
           };
           stores.push({ dest, sheet: buildSortSheet(pv, greedyItemsByTime(pv.orders, caps), head), overlaps: [] });
         }
@@ -229,7 +232,8 @@ function Body() {
             );
           }
           for (const s of stores) {
-            const mine = new Set(s.sheet.skus.map((k) => k.sku_id));
+            // 只比這車真的有的商品（門市現貨那些不在這車的商品，別車有也不會重複分袋）
+            const mine = new Set(s.sheet.skus.filter((k) => k.inTruck).map((k) => k.sku_id));
             const hitIds = new Set(hits.filter((h) => mine.has(h.sku_id)).map((h) => h.transfer_id));
             s.overlaps = others
               .filter((t) => t.dest_location === s.dest && hitIds.has(t.id))
@@ -265,6 +269,7 @@ function Body() {
   }, [loaded]);
 
   const printable = !!loaded && loaded.stores.length > 0 && !error && !blocked;
+  const multiStore = !!loaded && loaded.stores.length > 1;
 
   return (
     <>
@@ -293,6 +298,14 @@ function Body() {
           break-inside: avoid;
           page-break-inside: avoid;
         }
+        /* 區塊標題不要一個人留在頁底：標題放在表頭裡（每頁重複），表頭本身也不要跟第一列拆開 */
+        .sort-root thead,
+        .sort-root .keep-with-next {
+          break-inside: avoid;
+          page-break-inside: avoid;
+          break-after: avoid;
+          page-break-after: avoid;
+        }
       `}</style>
 
       {/* 列印頁是文件不是操作介面：一律白底深字，不跟深色模式 */}
@@ -320,7 +333,7 @@ function Body() {
             </SpinButton>
           </div>
           <span className={error ? "text-sm font-semibold text-red-700" : "text-sm text-zinc-500"}>
-            {paramError ?? (error ? "⚠ 載入失敗（不是沒資料）" : blocked ? "不能印" : !loaded ? "載入中…" : loaded.stores.length > 1 ? `${loaded.stores.length} 家店，每家店從新的一頁開始` : "")}
+            {paramError ?? (error ? "⚠ 載入失敗（不是沒資料）" : blocked ? "不能印" : !loaded ? "載入中…" : multiStore ? `${loaded.stores.length} 家店，每家店從新的一頁開始` : "")}
           </span>
           <SpinButton
             onClick={() => window.print()}
@@ -329,6 +342,9 @@ function Body() {
           >
             🖨️ 列印
           </SpinButton>
+          {multiStore && !error && !blocked && (
+            <div className="w-full text-sm font-semibold text-red-700">⚠ {CROSS_STORE_NOTE}</div>
+          )}
         </div>
 
         {paramError && <div className="p-6 text-sm text-red-700">{paramError}</div>}
@@ -361,6 +377,7 @@ function Body() {
                 s={s}
                 style={style}
                 loadedAt={loaded.loadedAt}
+                multiStore={multiStore}
                 mergeHref={
                   s.overlaps.length > 0
                     ? `/transfers/print-sort?transfer_ids=${[
@@ -380,22 +397,48 @@ function Body() {
   );
 }
 
+// 總倉跨店批次收貨只能走「✓ 批次收貨·自動配」（伺服端自動配：整張單裝得下才配），
+// 跟收貨視窗的逐品項預設勾選不是同一套，所以勾到多家店時要講清楚
+const CROSS_STORE_NOTE =
+  "注意：跨店批次收貨會走自動配，結果可能與本分貨單不同；要完全一致，請逐店開收貨視窗收貨。";
+
+const TH = "border border-zinc-400 px-2 py-1 text-left text-xs font-semibold";
+const TH_NUM = "whitespace-nowrap border border-zinc-400 px-2 py-1 text-right text-xs font-semibold";
+const TD = "border border-zinc-400 px-2 py-0.5";
+const TD_NUM = "whitespace-nowrap border border-zinc-400 px-2 py-0.5 text-right font-mono";
+
+// 區塊標題放在表頭第一列：表頭每頁重複，標題就不會一個人被留在上一頁的頁底
+function TitleRow({ cols, children }: { cols: number; children: ReactNode }) {
+  return (
+    <tr>
+      <th colSpan={cols} className="px-0 pt-0 pb-1 text-left text-base font-bold">
+        {children}
+      </th>
+    </tr>
+  );
+}
+
 function StoreSheetView({
   s,
   style,
   loadedAt,
+  multiStore,
   mergeHref,
 }: {
   s: StoreSheet;
   style: SortStyle;
   loadedAt: string;
+  multiStore: boolean;
   mergeHref: string | null;
 }) {
   const { meta, customers, fromStore, skus } = s.sheet;
-  const surplusSkus = skus.filter((k) => k.surplus > 0);
+  const truckSkus = skus.filter((k) => k.inTruck);
+  const surplusSkus = truckSkus.filter((k) => k.surplus > 0);
+  const storeLinesOf = new Map(fromStore.map((c) => [c.key, c.lines]));
   const shipTimes = Array.from(
     new Set(meta.transfers.map((t) => t.shipped_at).filter((x): x is string => !!x).map(fmtTime)),
   );
+  const customersTitle = `客人（照名字排序）· 共 ${customers.length} 位`;
 
   return (
     <div className="store-sheet mx-auto my-6 max-w-[210mm] border border-zinc-300 bg-white p-8 print:my-0 print:max-w-none print:border-0 print:p-0">
@@ -406,6 +449,10 @@ function StoreSheetView({
         <div className="flex min-w-0">
           <span className="w-20 shrink-0 text-zinc-500">目的店</span>
           <span className="min-w-0 break-words text-base font-bold">{meta.storeName}</span>
+        </div>
+        <div className="flex min-w-0">
+          <span className="w-20 shrink-0 text-zinc-500">配送日</span>
+          <span className="min-w-0 break-words font-semibold">{meta.waveDates.join("、") || "—"}</span>
         </div>
         <div className="flex min-w-0">
           <span className="w-20 shrink-0 text-zinc-500">派貨單號</span>
@@ -427,6 +474,7 @@ function StoreSheetView({
       <p className="mt-2 border border-zinc-500 px-2 py-1 text-xs font-semibold">
         ※ 這是照列印當下資料算的，不是配單；門市收貨時請照袋子核對勾選。
       </p>
+      {multiStore && <p className="mt-1 text-xs font-semibold text-red-700">⚠ {CROSS_STORE_NOTE}</p>}
 
       {/* 紅框：顏色以外另有文字，沒勾「背景圖形」或黑白印也看得懂 */}
       {s.overlaps.length > 0 && (
@@ -448,103 +496,122 @@ function StoreSheetView({
       )}
 
       {/* 客人段：這車要分的 */}
-      <h2 className="mt-4 mb-1 text-base font-bold">客人（照名字排序）· 共 {customers.length} 位</h2>
-      {customers.length === 0 ? (
-        <div className="border border-zinc-400 p-3 text-sm text-zinc-600">
-          這車沒有要分給客人的貨（例如純補貨），全部列在下面「多出來的」。
-        </div>
-      ) : style === "list" ? (
-        <CustomerTable customers={customers} />
-      ) : (
-        <div className="grid grid-cols-2 gap-3">
-          {customers.map((c) => (
-            <CutCard key={c.key} c={c} storeName={meta.storeName} />
-          ))}
-        </div>
-      )}
+      <div className="mt-4">
+        {customers.length === 0 ? (
+          <div className="avoid-break">
+            <h2 className="keep-with-next mb-1 text-base font-bold">{customersTitle}</h2>
+            <div className="border border-zinc-400 p-3 text-sm text-zinc-600">
+              這車沒有要分給客人的貨（例如純補貨），全部列在下面「這車分剩的」。
+            </div>
+          </div>
+        ) : style === "list" ? (
+          <CustomerTable title={customersTitle} customers={customers} />
+        ) : (
+          <>
+            {/* 一客一段：標題跟第一排卡片綁在一起（不跨頁），後面的卡片照常排 */}
+            <div className="avoid-break">
+              <h2 className="keep-with-next mb-1 text-base font-bold">{customersTitle}</h2>
+              <div className="grid grid-cols-2 gap-3">
+                {customers.slice(0, 2).map((c) => (
+                  <CutCard key={c.key} c={c} storeName={meta.storeName} storeLines={storeLinesOf.get(c.key)} />
+                ))}
+              </div>
+            </div>
+            {customers.length > 2 && (
+              <div className="mt-3 grid grid-cols-2 gap-3">
+                {customers.slice(2).map((c) => (
+                  <CutCard key={c.key} c={c} storeName={meta.storeName} storeLines={storeLinesOf.get(c.key)} />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
 
-      {/* 門市現貨段：收貨視窗的可配上限含店裡原本多的量，超過這車的那幾位不用倉庫分 */}
+      {/* 門市現貨段：收貨視窗也會勾、但貨不由這車出 —— 超過這車量的部分（可配上限含店裡原本多的量），
+          以及這車根本沒有的商品（多品項單的其他品項）。倉庫不用分，門市交貨時從現貨拿。 */}
       {fromStore.length > 0 && (
-        <>
-          <h2 className="mt-5 mb-1 text-base font-bold">門市現貨（這幾位的貨不在這車，門市現有庫存拿，倉庫不用分）</h2>
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="bg-zinc-100">
-                <th className="border border-zinc-400 px-2 py-1 text-left text-xs font-semibold">客人</th>
-                <th className="border border-zinc-400 px-2 py-1 text-left text-xs font-semibold">商品</th>
-                <th className="whitespace-nowrap border border-zinc-400 px-2 py-1 text-right text-xs font-semibold">數量</th>
-              </tr>
-            </thead>
-            <tbody>
-              {fromStore.flatMap((c) =>
-                c.lines.map((l) => (
-                  <tr key={`${c.key}-${l.sku_id}`} className="avoid-break">
-                    <td className="border border-zinc-400 px-2 py-0.5">{c.customer}</td>
-                    <td className="border border-zinc-400 px-2 py-0.5">{l.name}</td>
-                    <td className="whitespace-nowrap border border-zinc-400 px-2 py-0.5 text-right font-mono">{l.qty}</td>
-                  </tr>
-                )),
-              )}
-            </tbody>
-          </table>
-        </>
-      )}
-
-      {/* 多出來的：這車有、但沒有客人要的量 */}
-      {surplusSkus.length > 0 && (
-        <>
-          <h2 className="mt-5 mb-1 text-base font-bold">多出來的（這車有、沒有客人要的量，倉庫另外放）</h2>
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="bg-zinc-100">
-                <th className="whitespace-nowrap border border-zinc-400 px-2 py-1 text-left text-xs font-semibold">編號</th>
-                <th className="border border-zinc-400 px-2 py-1 text-left text-xs font-semibold">商品</th>
-                <th className="whitespace-nowrap border border-zinc-400 px-2 py-1 text-right text-xs font-semibold">數量</th>
-              </tr>
-            </thead>
-            <tbody>
-              {surplusSkus.map((k) => (
-                <tr key={k.sku_id} className="avoid-break">
-                  <td className="whitespace-nowrap border border-zinc-400 px-2 py-0.5 font-mono text-xs">{k.sku_code ?? "—"}</td>
-                  <td className="border border-zinc-400 px-2 py-0.5">
-                    {k.name}
-                    {k.fillDeficit > 0 && (
-                      <div className="text-[11px] text-zinc-600">其中 {k.fillDeficit} 個會先補門市帳上不足</div>
-                    )}
-                  </td>
-                  <td className="whitespace-nowrap border border-zinc-400 px-2 py-0.5 text-right font-mono font-bold">{k.surplus}</td>
+        <table className="mt-5 w-full border-collapse text-sm">
+          <thead>
+            <TitleRow cols={3}>門市現貨（這幾位的貨不在這車，門市現有庫存拿，倉庫不用分）</TitleRow>
+            <tr className="bg-zinc-100">
+              <th className={TH}>客人</th>
+              <th className={TH}>商品</th>
+              <th className={TH_NUM}>數量</th>
+            </tr>
+          </thead>
+          <tbody>
+            {fromStore.flatMap((c) =>
+              c.lines.map((l) => (
+                <tr key={`${c.key}-${l.sku_id}`} className="avoid-break">
+                  <td className={TD}>{c.customer}</td>
+                  <td className={TD}>{l.name}</td>
+                  <td className={TD_NUM}>{l.qty}</td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
+              )),
+            )}
+          </tbody>
+        </table>
       )}
 
-      {/* 頁尾合計：倉管照這張對實際點到的數 */}
-      <h2 className="mt-5 mb-1 text-base font-bold">每個商品合計</h2>
-      <table className="w-full border-collapse text-sm">
+      {/* 這車分剩的：沒裝進任何客人袋子的量（不是「沒有客人要」—— 可能有人在等但剩的量不夠他整份） */}
+      {surplusSkus.length > 0 && (
+        <table className="mt-5 w-full border-collapse text-sm">
+          <thead>
+            <TitleRow cols={3}>
+              這車分剩的（沒裝進任何客人袋子，倉庫另外放）
+              <div className="text-[11px] font-normal text-zinc-600">
+                可能還有客人在等這樣商品，只是剩下的量不夠他整份；門市收貨時系統不會自動配給他。
+              </div>
+            </TitleRow>
+            <tr className="bg-zinc-100">
+              <th className={`whitespace-nowrap ${TH}`}>編號</th>
+              <th className={TH}>商品</th>
+              <th className={TH_NUM}>數量</th>
+            </tr>
+          </thead>
+          <tbody>
+            {surplusSkus.map((k) => (
+              <tr key={k.sku_id} className="avoid-break">
+                <td className={`whitespace-nowrap ${TD} font-mono text-xs`}>{k.sku_code ?? "—"}</td>
+                <td className={TD}>
+                  {k.name}
+                  {k.fillDeficit > 0 && (
+                    <div className="text-[11px] text-zinc-600">其中 {k.fillDeficit} 個會先補門市帳上不足</div>
+                  )}
+                </td>
+                <td className={`${TD_NUM} font-bold`}>{k.surplus}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {/* 頁尾合計：倉管照這張對實際點到的數（只列這車的商品） */}
+      <table className="mt-5 w-full border-collapse text-sm">
         <thead>
+          <TitleRow cols={5}>每個商品合計（這車）</TitleRow>
           <tr className="bg-zinc-100">
-            <th className="whitespace-nowrap border border-zinc-400 px-2 py-1 text-left text-xs font-semibold">編號</th>
-            <th className="border border-zinc-400 px-2 py-1 text-left text-xs font-semibold">商品</th>
-            <th className="whitespace-nowrap border border-zinc-400 px-2 py-1 text-right text-xs font-semibold">派出</th>
-            <th className="whitespace-nowrap border border-zinc-400 px-2 py-1 text-right text-xs font-semibold">分給客人</th>
-            <th className="whitespace-nowrap border border-zinc-400 px-2 py-1 text-right text-xs font-semibold">多出來</th>
+            <th className={`whitespace-nowrap ${TH}`}>編號</th>
+            <th className={TH}>商品</th>
+            <th className={TH_NUM}>派出</th>
+            <th className={TH_NUM}>分給客人</th>
+            <th className={TH_NUM}>分剩</th>
           </tr>
         </thead>
         <tbody>
-          {skus.map((k) => (
+          {truckSkus.map((k) => (
             <tr key={k.sku_id} className="avoid-break">
-              <td className="whitespace-nowrap border border-zinc-400 px-2 py-0.5 font-mono text-xs">{k.sku_code ?? "—"}</td>
-              <td className="border border-zinc-400 px-2 py-0.5">
+              <td className={`whitespace-nowrap ${TD} font-mono text-xs`}>{k.sku_code ?? "—"}</td>
+              <td className={TD}>
                 {k.name}
                 {k.fromStore > 0 && (
                   <div className="text-[11px] text-zinc-600">另有 {k.fromStore} 個由門市現貨拿（不在這車）</div>
                 )}
               </td>
-              <td className="whitespace-nowrap border border-zinc-400 px-2 py-0.5 text-right font-mono">{k.shipped}</td>
-              <td className="whitespace-nowrap border border-zinc-400 px-2 py-0.5 text-right font-mono">{k.toCustomers}</td>
-              <td className="whitespace-nowrap border border-zinc-400 px-2 py-0.5 text-right font-mono">{k.surplus}</td>
+              <td className={TD_NUM}>{k.shipped}</td>
+              <td className={TD_NUM}>{k.toCustomers}</td>
+              <td className={TD_NUM}>{k.surplus}</td>
             </tr>
           ))}
         </tbody>
@@ -553,16 +620,17 @@ function StoreSheetView({
   );
 }
 
-// 清單樣式：一位客人一個 tbody（不跨頁），表頭每頁重複
-function CustomerTable({ customers }: { customers: SortSheetCustomer[] }) {
+// 清單樣式：一位客人一個 tbody（不跨頁），表頭（含區塊標題）每頁重複
+function CustomerTable({ title, customers }: { title: string; customers: SortSheetCustomer[] }) {
   return (
     <table className="w-full border-collapse text-sm">
       <thead>
+        <TitleRow cols={5}>{title}</TitleRow>
         <tr className="bg-zinc-100">
-          <th className="border border-zinc-400 px-2 py-1 text-left text-xs font-semibold">客人</th>
-          <th className="whitespace-nowrap border border-zinc-400 px-2 py-1 text-left text-xs font-semibold">編號</th>
-          <th className="border border-zinc-400 px-2 py-1 text-left text-xs font-semibold">商品</th>
-          <th className="whitespace-nowrap border border-zinc-400 px-2 py-1 text-right text-xs font-semibold">數量</th>
+          <th className={TH}>客人</th>
+          <th className={`whitespace-nowrap ${TH}`}>編號</th>
+          <th className={TH}>商品</th>
+          <th className={TH_NUM}>數量</th>
           <th className="w-6 border border-zinc-400 px-2 py-1" />
         </tr>
       </thead>
@@ -577,12 +645,10 @@ function CustomerTable({ customers }: { customers: SortSheetCustomer[] }) {
                   <div className="break-all font-mono text-[10px] text-zinc-500">{c.order_nos.join("、")}</div>
                 </td>
               )}
-              <td className="whitespace-nowrap border border-zinc-400 px-2 py-0.5 font-mono text-xs">{l.sku_code ?? "—"}</td>
-              <td className="border border-zinc-400 px-2 py-0.5">{l.name}</td>
-              <td className="whitespace-nowrap border border-zinc-400 px-2 py-0.5 text-right font-mono text-base font-bold">
-                {l.qty}
-              </td>
-              <td className="border border-zinc-400 px-2 py-0.5" />
+              <td className={`whitespace-nowrap ${TD} font-mono text-xs`}>{l.sku_code ?? "—"}</td>
+              <td className={TD}>{l.name}</td>
+              <td className={`${TD_NUM} text-base font-bold`}>{l.qty}</td>
+              <td className={TD} />
             </tr>
           ))}
         </tbody>
@@ -591,13 +657,24 @@ function CustomerTable({ customers }: { customers: SortSheetCustomer[] }) {
   );
 }
 
-// 一客一段：虛線框可剪下貼袋，每段不跨頁
-function CutCard({ c, storeName }: { c: SortSheetCustomer; storeName: string }) {
+// 一客一段：虛線框可剪下貼袋，每段不跨頁。「共 N 件」只算這車（袋子裡）的；
+// 同一位客人還有門市現貨要拿的，另列一小區，門市交貨時才知道還要從現貨拿什麼
+function CutCard({
+  c,
+  storeName,
+  storeLines,
+}: {
+  c: SortSheetCustomer;
+  storeName: string;
+  storeLines: SortSheetCustomer["lines"] | undefined;
+}) {
   return (
     <div className="avoid-break border-2 border-dashed border-zinc-500 p-3">
       <div className="flex items-baseline justify-between gap-2">
         <span className="min-w-0 break-words text-lg font-bold">{c.customer}</span>
-        <span className="whitespace-nowrap text-sm">共 {c.qty} 件</span>
+        <span className="whitespace-nowrap text-sm">
+          共 {c.qty} 件<span className="text-[11px] text-zinc-600">（這車）</span>
+        </span>
       </div>
       <div className="break-words text-[11px] text-zinc-600">{storeName}</div>
       <div className="mt-1 divide-y divide-dashed divide-zinc-300 border-t border-zinc-400">
@@ -608,6 +685,17 @@ function CutCard({ c, storeName }: { c: SortSheetCustomer; storeName: string }) 
           </div>
         ))}
       </div>
+      {storeLines && storeLines.length > 0 && (
+        <div className="mt-1 border-t border-zinc-400 pt-1 text-[11px] text-zinc-700">
+          <div className="font-semibold">另有（門市現貨，不在這車）：</div>
+          {storeLines.map((l) => (
+            <div key={l.sku_id} className="flex items-baseline justify-between gap-2">
+              <span className="min-w-0 break-words">{l.name}</span>
+              <span className="whitespace-nowrap font-mono">× {l.qty}</span>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="mt-1 break-all font-mono text-[10px] text-zinc-500">{c.order_nos.join("、")}</div>
     </div>
   );
