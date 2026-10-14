@@ -176,9 +176,9 @@ WITH po_skus AS (
   GROUP BY ps.tenant_id, cd.sku_id, cd.campaign_id, gc.campaign_no
  HAVING count(DISTINCT ps.po_item_id) >= 2;
 -- ⓘ 最外層刻意用 cd.sku_id（campaign_demand 的分組欄）：前端用 sku_id = X 或
---   sku_id IN (…) 篩的時候，條件才推得進 campaign_demand，只掃那幾樣商品的訂單，
---   不會把全站訂單算一遍。ps.sku_id = cd.sku_id 是同一件事（採購單品項本來就決定了商品），
---   多寫一次是讓 sku_id = X 也能同時縮小 po_skus。
+--   sku_id IN (…) 篩的時候，條件才推得進 campaign_demand（本機 EXPLAIN 看得到），
+--   不必先把每一樣商品的需求都分組算完再丟掉。ps.sku_id = cd.sku_id 是同一件事
+--   （採購單品項本來就決定了商品），多寫一次是讓 sku_id = X 也能同時縮小 po_skus。
 -- ⓘ po_item_ids 是「採購單品項」不是「採購單」：同一張採購單裡同一樣商品出現兩列，
 --   需求一樣會被算兩次，所以用品項數判斷；po_nos 只是給人看的單號（去重、排序）。
 
