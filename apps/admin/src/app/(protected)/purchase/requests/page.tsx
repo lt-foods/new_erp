@@ -276,6 +276,9 @@ export default function PurchaseRequestsListPage() {
     null,
   );
   const [previewLoading, setPreviewLoading] = useState(false);
+  // 預覽裡有「另開差額」（create_delta）時，要先勾「我知道」才按得了確認。
+  // ⓘ 每次打開／關掉預覽都重置成沒勾（不能沿用上一次的勾選）。
+  const [deltaAck, setDeltaAck] = useState(false);
   const [data, setData] = useState<ListResp | null>(null);
 
   // 檢視模式：清單（原本）/ 樞紐（把篩選出的 PR 品項依廠商彙整）
@@ -520,6 +523,7 @@ export default function PurchaseRequestsListPage() {
   async function openDeltaPreview(intent: DeltaPreviewIntent) {
     setPreviewIntent(intent);
     setPreviewRows(null);
+    setDeltaAck(false);
     setPreviewLoading(true);
     setError(null);
     if (intent.kind === "supplement") {
@@ -566,7 +570,12 @@ export default function PurchaseRequestsListPage() {
     setPreviewIntent(null);
     setPreviewRows(null);
     setPreviewLoading(false);
+    setDeltaAck(false);
   }
+
+  // 預覽裡「另開差額」有幾列：原請購單已轉採購，按下去會多一張請購單／採購單。
+  // 同一團、同一樣商品有兩張採購單時，撿貨分貨的各店需求會被重複算（2026-10-13 派錯店的起因）。
+  const previewDeltaCount = (previewRows ?? []).filter((r) => r.action_code === "create_delta").length;
 
   function getDeltaPreviewLabel(intent: DeltaPreviewIntent) {
     if (intent.kind === "supplement" || intent.kind === "closeDate") {
@@ -578,6 +587,8 @@ export default function PurchaseRequestsListPage() {
 
   async function confirmDeltaPreview() {
     if (!previewIntent) return;
+    // 有「另開差額」卻沒勾「我知道」→ 不送（按鈕本來就是灰的，這裡是第二道）
+    if (previewDeltaCount > 0 && !deltaAck) return;
     if (previewIntent.kind === "supplement") {
       await executeSupplement(previewIntent.closeDate);
     } else if (previewIntent.kind === "closeDate") {
@@ -1555,7 +1566,26 @@ export default function PurchaseRequestsListPage() {
                   <Spinner size={20} />
                 </div>
               ) : (
-                <DeltaPreviewTable rows={previewRows} />
+                <>
+                  {previewDeltaCount > 0 && (
+                    <div className="mb-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+                      <p className="font-semibold">
+                        ⚠ 下面標紅的 {previewDeltaCount} 列，原本的請購單已經轉成採購單，這次會「另外多開一張」請購單／採購單。
+                      </p>
+                      {/* ⓘ 中文句子不要在 JSX 裡斷行：斷行會變成一個空白印在句子中間 */}
+                      <p className="mt-1">
+                        同一團、同一樣商品有兩張採購單時，系統算各店數量會重複算（變兩倍），容易派錯店：撿貨草稿會把這幾樣的各店數量留 0、請你自己填；派貨工作台會在這幾樣旁邊標紅字。
+                      </p>
+                      <p className="mt-1">
+                        店家或批發要加量，請改用：請購單還是草稿 → 請購單頁「分店／批發加單」；已發給廠商、貨還沒到 → 採購單頁「分店／批發追加」。
+                      </p>
+                      <p className="mt-1">
+                        只有客人多訂才需要按這裡；按了之後，派這幾樣時請照訂單樞紐自己改各店數量。
+                      </p>
+                    </div>
+                  )}
+                  <DeltaPreviewTable rows={previewRows} />
+                </>
               )}
             </div>
             <div className="flex items-center justify-between gap-3 border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
@@ -1564,6 +1594,17 @@ export default function PurchaseRequestsListPage() {
                 {previewRows?.reduce((s, r) => s + r.delta_qty, 0) ?? 0}
               </span>
               <div className="flex gap-2">
+                {previewDeltaCount > 0 && (
+                  <label className="flex items-center gap-1.5 text-sm font-medium text-red-800 dark:text-red-300">
+                    <input
+                      type="checkbox"
+                      checked={deltaAck}
+                      onChange={(e) => setDeltaAck(e.target.checked)}
+                      disabled={busySuppDate !== null || creatingMulti}
+                    />
+                    我知道會多一張採購單，派貨時會照訂單改
+                  </label>
+                )}
                 <SpinButton
                   onClick={closeDeltaPreview}
                   disabled={busySuppDate !== null || creatingMulti}
@@ -1577,7 +1618,8 @@ export default function PurchaseRequestsListPage() {
                     previewLoading ||
                     previewRows === null ||
                     busySuppDate !== null ||
-                    creatingMulti
+                    creatingMulti ||
+                    (previewDeltaCount > 0 && !deltaAck)
                   }
                   className="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-amber-500 disabled:opacity-40"
                 >
@@ -1612,7 +1654,12 @@ function DeltaPreviewTable({ rows }: { rows: DeltaPreviewRow[] }) {
         {rows.map((r) => (
           <tr
             key={`${r.campaign_id}-${r.sku_id}`}
-            className="border-b border-zinc-100 dark:border-zinc-800/60"
+            className={
+              // 「另開差額」整列標紅（樣式沿用本頁錯誤框的紅色）；其他列 class 與原本一字不差
+              r.action_code === "create_delta"
+                ? "border-b border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
+                : "border-b border-zinc-100 dark:border-zinc-800/60"
+            }
           >
             <td className="max-w-[220px] px-3 py-2">
               <div className="truncate">{r.campaign_name}</div>
