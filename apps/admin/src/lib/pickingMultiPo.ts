@@ -112,8 +112,8 @@ export function multiPoCheckFor(
   if (demandPoItemIds.length === 0) return MULTI_PO_CLEAR;
   // ⛔ 讀不到 ≠ 沒中招
   if (!lookup.ok) return { kind: "failed", reason: lookup.reason };
-  // ⚠ 已知限制（2026-10-15 審查 P1-1，CEO 裁定這次不做）：檢查表只看「團的訂單」那一段，
-  //   補貨申請的需求如果同一樣商品被拆到兩個採購單品項（需求表 restock_demand 會各算一次），這裡擋不到。
+  // ⚠ 已知限制（改前就有，這次不擋，另案處理）：檢查表只看「團的訂單」。補貨明細本身不重複，但連到的請購單裡
+  //   同一樣商品可能有兩列、各轉成不同採購單品項，這時需求表 restock_demand 會把補貨量重複算，這裡擋不到。
   const hits = multiPoHitsBySku(lookup.rows, demandPoItemIds).get(Number(skuId)) ?? [];
   return hits.length > 0 ? { kind: "hit", hits } : MULTI_PO_CLEAR;
 }
