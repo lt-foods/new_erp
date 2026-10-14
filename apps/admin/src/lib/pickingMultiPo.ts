@@ -165,7 +165,7 @@ export const MULTI_PO_CHECK_FAILED_TEXT = "多張採購單檢查失敗，數量�
 export function multiPoAddedMessage(productName: string, check: MultiPoCheck): string | null {
   if (check.kind === "hit") {
     return (
-      `⚠ 已加入「${productName}」，但各店數量全部留 0：這樣商品${hitsPhrase(check.hits)}，` +
+      `⚠ 已加入「${productName}」，但各店數量全部留 0：這樣商品在${hitsPhrase(check.hits)}，` +
       `系統帶出的各店數量會重複算、容易派錯店。請照訂單樞紐自己填各店數量。`
     );
   }
@@ -188,22 +188,25 @@ export function multiPoBatchMessage(
   const detail = blocked
     .map((i) =>
       i.check.kind === "hit"
-        ? `${i.name}（${hitsPhrase(i.check.hits)}）`
-        : `${i.name}（多張採購單檢查失敗${i.check.kind === "failed" ? `：${i.check.reason}` : ""}）`,
+        ? `${i.name}——${hitsPhrase(i.check.hits)}`
+        : `${i.name}——多張採購單檢查失敗${i.check.kind === "failed" ? `（${i.check.reason}）` : ""}`,
     )
-    .join("、");
-  return (
-    `⚠ 這 ${blocked.length} 樣已經${verb}，但各店數量全部留 0：${detail}。` +
-    `同一團有多張採購單時，系統帶出的各店數量會重複算、容易派錯店；檢查失敗時不知道有沒有重複。` +
-    `請照訂單樞紐自己填各店數量。`
-  );
+    .join("；");
+  // 原因只講真的發生的那一種（或兩種都講）
+  const why = [
+    blocked.some((i) => i.check.kind === "hit") ? "同一團有多張採購單時，系統帶出的各店數量會重複算、容易派錯店" : null,
+    blocked.some((i) => i.check.kind === "failed") ? "檢查失敗時不知道有沒有重複" : null,
+  ]
+    .filter((t): t is string => t !== null)
+    .join("；");
+  return `⚠ 這 ${blocked.length} 樣已經${verb}，但各店數量全部留 0：${detail}。${why}。請照訂單樞紐自己填各店數量。`;
 }
 
 /** 「⚖ 平均」遇到中招／檢查失敗：一格都不動，紅字講原因。clear 回 null。 */
 export function multiPoEvenMessage(label: string, check: MultiPoCheck): string | null {
   if (check.kind === "hit") {
     return (
-      `⚖「${label}」這次沒有改動任何數量：這樣商品${hitsPhrase(check.hits)}，` +
+      `⚖「${label}」這次沒有改動任何數量：這樣商品在${hitsPhrase(check.hits)}，` +
       `系統算的各店需求會重複算，平均分下去也會分錯。請照訂單樞紐自己填各店數量。`
     );
   }

@@ -220,9 +220,16 @@ test("提示文字：中招、檢查失敗、正常三種分得出來", () => {
     "加入",
   );
   assert.match(batch, /這 2 樣已經加入，但各店數量全部留 0/);
-  assert.match(batch, /甲（團 GRP-20260914-056 有 2 張採購單/);
-  assert.match(batch, /丙（多張採購單檢查失敗：檢查表還沒建立）/);
+  assert.match(batch, /甲——團 GRP-20260914-056 有 2 張採購單（PO2609302038、PO2609302039）；丙——多張採購單檢查失敗（檢查表還沒建立）。/);
   assert.doesNotMatch(batch, /乙/);
+  assert.match(batch, /容易派錯店；檢查失敗時不知道有沒有重複。請照訂單樞紐自己填各店數量。$/);
+  // 只有中招、沒有檢查失敗 → 不提檢查失敗
+  const onlyHit = multiPoBatchMessage([{ name: "甲", check: hit }], "傳進草稿");
+  assert.equal(
+    onlyHit,
+    "⚠ 這 1 樣已經傳進草稿，但各店數量全部留 0：甲——團 GRP-20260914-056 有 2 張採購單（PO2609302038、PO2609302039）。" +
+      "同一團有多張採購單時，系統帶出的各店數量會重複算、容易派錯店。請照訂單樞紐自己填各店數量。",
+  );
   assert.equal(multiPoBatchMessage([{ name: "乙", check: { kind: "clear" } }], "加入"), null);
 
   // 同一張採購單裡兩列：不可以講成「1 張採購單」
@@ -390,7 +397,7 @@ test("加入商品的訊息：中招那一樣講紅字，⛔ 不會被說成「�
   assert.match(many.notice, /其中 1 樣查詢正常、但目前沒有任何未派需求（各店數量請自己填）：沒需求。/);
   assert.doesNotMatch(many.notice, /：冰絲內衣。|冰絲內衣（要/);
   assert.match(many.error, /這 1 樣「沒有」加入草稿：壞掉/);
-  assert.match(many.error, /這 1 樣已經加入，但各店數量全部留 0：冰絲內衣（團 GRP-20260914-056/);
+  assert.match(many.error, /這 1 樣已經加入，但各店數量全部留 0：冰絲內衣——團 GRP-20260914-056/);
 
   // addOutcomeMessage 的新兩種跟原本四種都不一樣
   const kinds = ["failed", "none", "clamped", "ok", "multi_po", "multi_po_failed"];
@@ -486,7 +493,7 @@ test("iPad 傳到草稿：中招那一樣照樣寫進去但全部 0（⛔ capPre
   assert.match(msg.notice, /已把 2 樣傳進 〈2026-10-15 撿貨〉（這是剛開的一張新草稿），各店合計帶出 5 件/);
   // ⛔ 中招那一樣不可以被講成「被夾住」或「沒有需求」
   assert.doesNotMatch(msg.notice, /冰絲內衣（/);
-  assert.match(msg.error, /這 1 樣已經傳進草稿，但各店數量全部留 0：冰絲內衣（團 GRP-20260914-056 有 2 張採購單/);
+  assert.match(msg.error, /這 1 樣已經傳進草稿，但各店數量全部留 0：冰絲內衣——團 GRP-20260914-056 有 2 張採購單/);
   assert.doesNotMatch(msg.error, /沒有傳進草稿/);
 });
 
