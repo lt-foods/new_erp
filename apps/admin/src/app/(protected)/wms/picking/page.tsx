@@ -16,6 +16,15 @@ import { getSupabase } from "@/lib/supabase";
 import { fetchAllRows } from "@/lib/fetchAllRows";
 import { compareStoreOrder } from "@/lib/storeOrder";
 import { buildDemandPoSkuStore, plannerCanTakeCell, poSkuStoreKey } from "@/lib/pickingMatrixRules";
+import {
+  MULTI_PO_SELECT,
+  MULTI_PO_VIEW,
+  WORKBENCH_MULTI_PO_FAILED_TEXT,
+  multiPoHitsBySku,
+  workbenchMultiPoText,
+  type MultiPoCampaignRow,
+  type MultiPoHit,
+} from "@/lib/pickingMultiPo";
 import SpinButton from "@/components/SpinButton";
 import { useAuth } from "@/components/AuthProvider";
 
@@ -491,6 +500,46 @@ function Body() {
     return () => { cancelled = true; };
   }, [reloadKey]);
 
+  // ===== 同一團兩張以上採購單的紅字（20261015000000；老闆 2026-10-14：只加紅字、不改任何數字）=====
+  // ⛔ 只讀、只影響紅字：預填、autoDistribute、storeDemand、可分配量、建單一律不動。
+  // ⭐ 需求表一到就發（跟下面缺價預警、開團對應那兩支在同一個時間點發出），⛔ 不排在它們後面等；
+  //   每批最多 100 個商品、各批同時發；表格不等它，紅字晚一點補上。
+  // 中招＝檢查表的 po_item_ids 至少一個在這次需求表的列上（判斷與撿貨草稿共用 multiPoHitsBySku）。
+  // 讀不到 → 頁面上方一行紅字，其他功能照常。
+  const [multiPoBySku, setMultiPoBySku] = useState<Map<number, MultiPoHit[]> | null>(null);
+  const [multiPoFailed, setMultiPoFailed] = useState(false);
+  useEffect(() => {
+    if (!demand) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const sb = getSupabase();
+        const skuIds = Array.from(new Set(demand.map((r) => Number(r.sku_id))));
+        const chunks: number[][] = [];
+        for (let i = 0; i < skuIds.length; i += 100) chunks.push(skuIds.slice(i, i + 100));
+        const parts = await Promise.all(
+          chunks.map((chunk) =>
+            fetchAllRows<MultiPoCampaignRow>(() =>
+              sb.from(MULTI_PO_VIEW).select(MULTI_PO_SELECT)
+                .in("sku_id", chunk)
+                .order("sku_id", { ascending: true })
+                .order("campaign_id", { ascending: true }),
+            ),
+          ),
+        );
+        if (cancelled) return;
+        setMultiPoBySku(multiPoHitsBySku(parts.flat(), demand.map((r) => r.po_item_id)));
+        setMultiPoFailed(false);
+      } catch {
+        if (!cancelled) {
+          setMultiPoBySku(null);
+          setMultiPoFailed(true);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [demand]);
+
   // 依分店檢視分頁：lazy 撈完整 view（含缺貨待到的品項），只在切到該分頁時撈一次。
   // in-flight 用 ref 而不是 loadingFull state 當 effect dep：
   // 舊寫法 setLoadingFull(true) 會讓 deps 變動 → cleanup 把 cancelled 設 true →
@@ -754,6 +803,21 @@ function Body() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
+  }
+
+  // 同一團兩張以上採購單的紅字（只有字，不動任何數字）
+  function renderMultiPoWarning(skuId: number) {
+    const hits = multiPoBySku?.get(Number(skuId));
+    if (!hits || hits.length === 0) return null;
+    return (
+      <>
+        {hits.map((h) => (
+          <div key={h.campaign_no} className="mt-1 text-[11px] font-medium text-red-600 dark:text-red-400">
+            {workbenchMultiPoText(h)}
+          </div>
+        ))}
+      </>
+    );
   }
 
   // 缺價 pill（文字標籤）＋ 點擊 inline 補價
@@ -2469,6 +2533,12 @@ function Body() {
         </div>
       )}
 
+      {multiPoFailed && (
+        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+          ⚠ {WORKBENCH_MULTI_PO_FAILED_TEXT}
+        </div>
+      )}
+
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
           <pre className="whitespace-pre-wrap font-mono text-xs">{error}</pre>
@@ -2599,6 +2669,7 @@ function Body() {
                           )}
                           {renderPriceTags(sk.sku_id)}
                         </div>
+                        {renderMultiPoWarning(sk.sku_id)}
                         {/* 老闆：「第一頁應該要有詳細開團的資訊」「相同的品名容易搞錯，第一團未到、第二團到了會派錯」
                             → 攤開列出這個商品有哪幾團／哪幾張採購單、各團各到了多少。
                             ⚠️ 只是資訊，不是可選項：建單是 per 商品跑 FIFO，挑不了單一團。
@@ -2763,6 +2834,7 @@ function Body() {
                             <div className="font-mono text-[11px] text-zinc-500">{sk.sku_code ?? "—"}</div>
                             {/* 品項欄是固定寬(table-fixed),截斷改用兩行,單行 truncate 只剩 ~10 個字 */}
                             <div className="line-clamp-2 text-[13px] font-medium" title={sk.sku_label}>{sk.sku_label}</div>
+                            {renderMultiPoWarning(sk.sku_id)}
                             <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-zinc-400">
                               {sk.poList.length === 1
                                 ? <span className="font-mono" title={`${sk.poList[0].po_status ?? ""} · 訂 ${sk.poList[0].qty_ordered}/已到 ${sk.poList[0].gr_qty}/在途 ${sk.poList[0].qty_in_transit}/短少 ${sk.poList[0].qty_shortage}`}>{sk.poList[0].po_no}</span>
