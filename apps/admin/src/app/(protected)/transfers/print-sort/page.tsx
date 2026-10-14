@@ -472,15 +472,16 @@ function StoreSheetView({
           <span className="w-20 shrink-0 text-zinc-500">配送日</span>
           <span className="min-w-0 break-words font-semibold">{meta.waveDates.join("、") || "—"}</span>
         </div>
-        <div className="flex min-w-0">
+        {/* 派貨單號／撿貨單號／派出時間：螢幕照樣顯示、紙上不印（老闆 2026-10-14：一次印 20 幾張單時這三行佔掉半頁，浪費紙） */}
+        <div className="no-print flex min-w-0">
           <span className="w-20 shrink-0 text-zinc-500">派貨單號</span>
           <span className="min-w-0 break-words font-mono">{meta.transfers.map((t) => t.transfer_no).join("、")}</span>
         </div>
-        <div className="flex min-w-0">
+        <div className="no-print flex min-w-0">
           <span className="w-20 shrink-0 text-zinc-500">撿貨單號</span>
           <span className="min-w-0 break-words font-mono">{meta.waveCodes.join("、") || "—"}</span>
         </div>
-        <div className="flex min-w-0">
+        <div className="no-print flex min-w-0">
           <span className="w-20 shrink-0 text-zinc-500">派出時間</span>
           <span className="min-w-0 break-words">{shipTimes.join("、") || "—"}</span>
         </div>
