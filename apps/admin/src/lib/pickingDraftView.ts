@@ -21,10 +21,24 @@
 //        ⭐ 但有量的一定要留：rowTotal 是把該商品所有 cells 加總、不看畫面上有沒有那一欄，
 //        藏掉一個有量的欄，紙上橫的加起來就 ≠ 合計。判準與證明見 buildStoreColumns。
 
-// 唯一的 import：一份純資料 + 純函式的順序表，沒有 I/O、也不需要在測試裡 mock。
+// 兩個 import 都是純資料 + 純函式，沒有 I/O、也不需要在測試裡 mock：
+//   ./storeOrder     分店順序表
+//   ./pickingMultiPo 「同一團兩張以上採購單」的判斷與措辭（20261015000000，見 loadPrefill）
 // 這支 lib 對「有副作用的東西」（supabase / fetchAllRows）仍然一個都不 import，
 // 全部靠呼叫端注入 —— 理由見 loadPrefill 上面那段。
 import { compareStoreOrder } from "./storeOrder";
+import {
+  MULTI_PO_SELECT,
+  MULTI_PO_VIEW,
+  blockPrefill,
+  isMultiPoBlocked,
+  multiPoAddedMessage,
+  multiPoBatchMessage,
+  multiPoCheckFor,
+  multiPoExtra,
+  type MultiPoCampaignRow,
+  type MultiPoCheck,
+} from "./pickingMultiPo";
 
 /**
  * 把 DB 錯誤翻成老闆看得懂、而且知道下一步要做什麼的話。
@@ -613,6 +627,12 @@ export type PrefillResult = {
   byStore: Map<number, { demandLeft: number; give: number }>;
   closeDate: string | null;
   extra: Record<string, unknown>;
+  /**
+   * 同一團、同一樣商品掛了兩張以上採購單的檢查結果（20261015000000）。
+   * ⛔ 不是 clear 時，byStore 已經被 blockPrefill 歸零：各店數量不能自動帶，
+   *    snapshot_demand_qty 一律寫 null（那是重複算過的數字），措辭改用 multi_po 那幾句。
+   */
+  multiPo: MultiPoCheck;
 };
 
 // 這支 lib 刻意**不 import 任何有副作用／要連外的東西**（連 supabase / fetchAllRows 都不 import）：
@@ -644,14 +664,30 @@ export type PrefillDeps = { db: ReadOnlyDb; fetchAll: FetchAll };
  *   ⚠ 排序也要一樣：逐格分配是依序吃可分配量的，順序不同結果就不同。
  */
 export async function loadPrefill({ db, fetchAll }: PrefillDeps, skuId: number): Promise<PrefillResult> {
+  // 「同一團、同一樣商品掛了兩張以上採購單」的檢查表（20261015000000）。
+  // ⭐ 跟下面的需求表**同時**發出，不多排一趟往返。
+  // ⛔ 讀失敗收成 { ok: false }，⛔ 不可以當成「沒中招」照常帶數字（見 multiPoCheckFor）。
+  //   then 的兩條路在這裡就掛好：需求表那一句丟例外時，這一支也不會變成沒人接的 rejection。
+  const multiPoLookup = fetchAll<MultiPoCampaignRow>(() =>
+    db
+      .from(MULTI_PO_VIEW)
+      .select(MULTI_PO_SELECT)
+      .eq("sku_id", skuId)
+      .order("campaign_id", { ascending: true }),
+  ).then(
+    (rows) => ({ ok: true as const, rows }),
+    (e: unknown) => ({ ok: false as const, reason: describeMultiPoError(e) }),
+  );
+
   // ⛔⛔ 這裡**故意不 catch**：查詢失敗要讓呼叫端整個失敗、商品不要加進去。
   //   舊版失敗時退回「空需求」，畫面會長成 14 個 0 —— 跟「這樣商品真的沒人要」
   //   一模一樣，老闆分不出是壞掉還是真的沒有，然後把錯的清單印給樓下去撿。
   //   這正是本專案反覆踩過的靜默丟失（PR #744 的根因）。
-  const rows = await fetchAll<DemandRow & { po_id: number }>(() =>
+  // ⓘ 比原本多選一個 po_item_id，只拿來跟檢查表對（computePrefill 用不到它）。
+  const rows = await fetchAll<DemandRow & { po_id: number; po_item_id: number }>(() =>
     db
       .from("v_picking_demand_by_po")
-      .select("po_id, store_id, demand_qty, wave_qty, gr_qty, po_sku_already_wave")
+      .select("po_id, po_item_id, store_id, demand_qty, wave_qty, gr_qty, po_sku_already_wave")
       .eq("sku_id", skuId)
       .eq("has_stock_left", true)
       .eq("has_demand_left", true)
@@ -659,7 +695,16 @@ export async function loadPrefill({ db, fetchAll }: PrefillDeps, skuId: number):
       .order("store_id", { ascending: true, nullsFirst: false }),
   );
 
-  const pre = computePrefill(rows);
+  // ⛔ computePrefill 照原樣呼叫、一個字都沒改（老闆 2026-08-17、阿審 2026-09-01）。
+  //   算完之後才看檢查表：同一團掛兩張以上採購單時，它算出來的各店需求是重複加總過的，
+  //   這時（以及檢查表讀不到時）各店數量全部歸零，請人照訂單樞紐填。
+  const computed = computePrefill(rows);
+  const multiPo = multiPoCheckFor(
+    skuId,
+    await multiPoLookup,
+    rows.map((r) => r.po_item_id),
+  );
+  const pre = isMultiPoBlocked(multiPo) ? blockPrefill(computed) : computed;
 
   // 結單日：切片 C 列印老闆指定要看到。v_picking_demand_by_po 沒有這一欄，
   // 要從 v_po_demand_by_store 取（收貨頁 purchase/orders/receive 用的是同一支）。
@@ -693,7 +738,37 @@ export async function loadPrefill({ db, fetchAll }: PrefillDeps, skuId: number):
       extra.close_date_lookup = "failed";
     }
   }
-  return { ...pre, closeDate, extra };
+  // 中招／檢查失敗的記號跟著 extra 寫進每一格的 snapshot_extra（草稿表格上的 ⚠ 標記讀它）
+  Object.assign(extra, multiPoExtra(multiPo));
+  return { ...pre, closeDate, extra, multiPo };
+}
+
+/**
+ * 檢查表讀不到時的原因。
+ * ⛔ 不可以借用 describeDraftDbError：它把「表不存在」一律講成「撿貨草稿的表還沒建」，
+ *   對這支檢查表來說是錯的話。
+ */
+function describeMultiPoError(err: unknown): string {
+  const e = (err ?? {}) as { code?: unknown; message?: unknown };
+  const code = typeof e.code === "string" ? e.code : "";
+  let raw = typeof e.message === "string" && e.message ? e.message : String(err);
+  if (!raw || raw === "[object Object]") {
+    try {
+      raw = JSON.stringify(err) ?? "";
+    } catch {
+      raw = "";
+    }
+    if (!raw || raw === "{}") raw = "未知錯誤（系統沒有回傳錯誤訊息）";
+  }
+  // 42P01 = Postgres undefined_table；PGRST205 = PostgREST 在 schema cache 找不到這張表
+  if (
+    code === "42P01" ||
+    code === "PGRST205" ||
+    (/v_picking_multi_po_campaigns/i.test(raw) && /(does not exist|schema cache)/i.test(raw))
+  ) {
+    return "檢查表 v_picking_multi_po_campaigns 還沒建立（20261015000000 還沒貼到資料庫）";
+  }
+  return raw;
 }
 
 // ============================================================
@@ -709,8 +784,13 @@ export async function loadPrefill({ db, fetchAll }: PrefillDeps, skuId: number):
  *     ok      = 有需求且貨夠 → 已加入，帶出完整需求
  *   舊版把 failed 混進 none（查詢失敗就退回空需求），老闆分不出是壞了還是真的沒有，
  *   會把錯的清單印給樓下去撿。這是本專案反覆踩過的靜默丟失。
+ *
+ * 20261015 再多兩種（同一團、同一樣商品掛了兩張以上採購單，見 pickingMultiPo.ts）：
+ *     multi_po        = 中招 → 商品已加入，各店數量全部留 0，寫出團號與採購單號
+ *     multi_po_failed = 檢查表讀不到 → 商品已加入，一樣全部留 0，明講「檢查失敗」
+ *   ⛔ 這兩種都**不是** failed（商品真的進去了），也**不是** none（不是沒有需求）。
  */
-export type AddOutcome = "failed" | "none" | "clamped" | "ok";
+export type AddOutcome = "failed" | "none" | "clamped" | "ok" | "multi_po" | "multi_po_failed";
 
 export function addOutcomeMessage(o: {
   kind: AddOutcome;
@@ -719,9 +799,21 @@ export function addOutcomeMessage(o: {
   giveTotal?: number;
   available?: number;
   reason?: string;
+  /** kind 是 multi_po／multi_po_failed 時必填：loadPrefill 帶回來的 multiPo */
+  multiPo?: MultiPoCheck;
 }): string {
   const { kind, productName, demandTotal = 0, giveTotal = 0, available = 0, reason = "" } = o;
   switch (kind) {
+    case "multi_po":
+    case "multi_po_failed": {
+      // 措辭集中在 pickingMultiPo（iPad 傳送、⚖ 平均用的是同一組字）。
+      // ⓘ 萬一呼叫端漏傳（或傳成 clear），也要講成「檢查失敗、全部 0」，⛔ 不可以退回成功的那幾句。
+      const check: MultiPoCheck =
+        o.multiPo && isMultiPoBlocked(o.multiPo)
+          ? o.multiPo
+          : { kind: "failed", reason: reason || "沒有帶回檢查結果" };
+      return multiPoAddedMessage(productName, check) ?? "";
+    }
     case "failed":
       return (
         `⚠ 讀取各分店需求失敗，「${productName}」**沒有**加入草稿 —— 請再按一次重試。` +
@@ -759,8 +851,12 @@ export function classifyAddOutcome(demandTotal: number, giveTotal: number): AddO
  *   靠型別逼出來，不是靠自律（同 DraftSkuRecount 的作法）。
  */
 export type AddBatchReport = {
-  /** 真的寫進去了 */
-  added: { name: string; demandTotal: number; giveTotal: number; available: number }[];
+  /**
+   * 真的寫進去了。
+   * multiPo 不是 clear 的（同一團兩張以上採購單／檢查失敗）也在這裡 —— 商品確實進去了，
+   * 只是各店數量全部留 0；措辭另外講（⛔ 不可以混進 failed，也不可以被當成 none／clamped）。
+   */
+  added: { name: string; demandTotal: number; giveTotal: number; available: number; multiPo?: MultiPoCheck }[];
   /** 本來就在這張草稿裡 → 這次略過。不重複插入，也**不算失敗** */
   skipped: string[];
   /** 讀需求或寫入失敗 → **沒有**加進去。⛔ 一定要逐樣講得出名字 */
@@ -784,9 +880,24 @@ export type AddBatchReport = {
  *   星號會原封不動印在畫面上。要強調就用「」。
  */
 export function addBatchMessage(r: AddBatchReport): { notice: string | null; error: string | null } {
+  // 同一團兩張以上採購單／檢查失敗 → 商品進去了、各店全部 0（見 AddBatchReport.added 的註解）
+  const isBlocked = (a: AddBatchReport["added"][number]) => !!a.multiPo && isMultiPoBlocked(a.multiPo);
+
   // ---- 剛好一樣：完全沿用原本那幾句已經驗過的文案 ----
   if (r.added.length === 1 && r.skipped.length === 0 && r.failed.length === 0) {
     const a = r.added[0];
+    // ⛔ 中招／檢查失敗那一樣不可以走下面那四句：它的 demandTotal 是 0（被歸零），
+    //   會被講成「沒有任何未派需求」—— 那是錯的話。改成紅字講清楚。
+    if (isBlocked(a)) {
+      return {
+        notice: null,
+        error: addOutcomeMessage({
+          kind: a.multiPo?.kind === "hit" ? "multi_po" : "multi_po_failed",
+          productName: a.name,
+          multiPo: a.multiPo,
+        }),
+      };
+    }
     return {
       notice: addOutcomeMessage({
         kind: classifyAddOutcome(a.demandTotal, a.giveTotal),
@@ -819,13 +930,14 @@ export function addBatchMessage(r: AddBatchReport): { notice: string | null; err
     );
     // 「查詢正常但沒有需求」一定要單獨講：它在畫面上跟「讀取失敗」一樣是一排空格，
     // 不講的話老闆分不出這兩件事 —— 本專案反覆踩過的靜默偽裝。
-    const none = r.added.filter((a) => a.demandTotal === 0).map((a) => a.name);
+    // ⓘ 中招／檢查失敗那幾樣不算進這兩類（它們另外用紅字講，見最後）
+    const none = r.added.filter((a) => !isBlocked(a) && a.demandTotal === 0).map((a) => a.name);
     if (none.length > 0) {
       parts.push(
         `其中 ${none.length} 樣查詢正常、但目前沒有任何未派需求（各店數量請自己填）：${none.join("、")}。`,
       );
     }
-    const clamped = r.added.filter((a) => a.demandTotal > 0 && a.giveTotal < a.demandTotal);
+    const clamped = r.added.filter((a) => !isBlocked(a) && a.demandTotal > 0 && a.giveTotal < a.demandTotal);
     if (clamped.length > 0) {
       parts.push(
         `其中 ${clamped.length} 樣的需求超過可分配量、帶出的量已被夾住（差額要等貨到才派得出去）：` +
@@ -857,6 +969,13 @@ export function addBatchMessage(r: AddBatchReport): { notice: string | null; err
       `這是系統讀取／寫入出錯，不是這些商品沒有需求。` +
       `它們還留在上面的勾選清單裡，直接再按一次「加入選取的」就可以重試。`;
   }
+  // 同一團兩張以上採購單／檢查失敗：商品已加入、各店全部 0 → 紅字逐樣列出。
+  // ⛔ 跟上面「沒有加入」那段是兩件事，各自一段，不混在一起講。
+  const multiPoText = multiPoBatchMessage(
+    r.added.filter(isBlocked).map((a) => ({ name: a.name, check: a.multiPo as MultiPoCheck })),
+    "加入",
+  );
+  if (multiPoText) error = error ? `${error} ${multiPoText}` : multiPoText;
 
   return { notice: parts.length > 0 ? parts.join(" ") : null, error };
 }
@@ -887,7 +1006,9 @@ export function lateCellSnapshot(pre: PrefillResult | null, storeId: number, now
   Object.assign(extra, pre.extra, { snapshot_source: "cell_created_later" });
   return {
     snapshot_at: nowIso,
-    snapshot_demand_qty: pre.byStore.get(storeId)?.demandLeft ?? 0,
+    // ⛔ 同一團兩張以上採購單／檢查失敗時寫 null：那時的需求是重複算過的（或不知道有沒有重複），
+    //   不可以當成「當時的未派需求」記下來；原因已經跟著 pre.extra 寫進 snapshot_extra（multi_po…）。
+    snapshot_demand_qty: isMultiPoBlocked(pre.multiPo) ? null : pre.byStore.get(storeId)?.demandLeft ?? 0,
     snapshot_available_qty: pre.available,
     snapshot_close_date: pre.closeDate,
     snapshot_extra: extra,

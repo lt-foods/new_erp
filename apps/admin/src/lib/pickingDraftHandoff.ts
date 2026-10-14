@@ -30,6 +30,7 @@ import {
   type PrefillResult,
   type ReadOnlyDb,
 } from "./pickingDraftView";
+import { blockPrefill, isMultiPoBlocked, multiPoBatchMessage, type MultiPoCheck } from "./pickingMultiPo";
 
 // ============================================================
 // 1. 「今天」是哪一天
@@ -220,7 +221,9 @@ export function buildHandoffCells(args: {
       snapshot_store_name: st.name,
       // ⚠ 快照記的是「當下真正的」需求與可分配量，⛔ 不是夾過的那個數字。
       //   紅字缺口要拿這兩個數字比，寫成夾過的值會讓它說謊。
-      snapshot_demand_qty: p?.demandLeft ?? 0,
+      // ⛔ 同一團兩張以上採購單／檢查失敗時寫 null：那時的需求是重複算過的（或不知道有沒有重複），
+      //   原因已經跟著 pre.extra 寫進 snapshot_extra（multi_po／multi_po_check）。
+      snapshot_demand_qty: isMultiPoBlocked(pre.multiPo) ? null : p?.demandLeft ?? 0,
       snapshot_available_qty: capped.available,
       snapshot_close_date: pre.closeDate,
       snapshot_extra: {
@@ -275,6 +278,11 @@ export type HandoffAdded = {
   demandTotal: number;
   /** 當下可分配量 */
   available: number;
+  /**
+   * 同一團兩張以上採購單的檢查結果（loadPrefill 帶回來的）。不是 clear ＝ 這一樣各店全部 0，
+   * 措辭另外講：⛔ 不可以被算成「沒有需求」或「被夾住」，也⛔ 不可以混進 failed（它確實傳進去了）。
+   */
+  multiPo?: MultiPoCheck;
 };
 
 export type HandoffReport = {
@@ -329,6 +337,9 @@ export function handoffMessage(r: HandoffReport): { notice: string | null; error
     ? `〈${r.draftName}〉${r.draftCreated ? "（這是剛開的一張新草稿）" : ""}`
     : "今天的草稿";
 
+  // 同一團兩張以上採購單／檢查失敗的那幾樣：已經傳進去、各店全部 0 → 最後另外用紅字講
+  const isBlocked = (a: HandoffAdded) => !!a.multiPo && isMultiPoBlocked(a.multiPo);
+
   if (r.added.length > 0) {
     const give = r.added.reduce((s, a) => s + a.giveTotal, 0);
     parts.push(
@@ -338,7 +349,8 @@ export function handoffMessage(r: HandoffReport): { notice: string | null; error
 
     // 沒有任何分店有未派需求 → 建了列但整排都是 0。
     // ⛔ 這件事一定要單獨講：畫面上它跟「讀取失敗」長得一模一樣。
-    const none = r.added.filter((a) => a.demandTotal === 0).map((a) => a.name);
+    // ⓘ 中招／檢查失敗那幾樣不算進下面任何一類（它們的需求被歸零了，套進去會講錯話）
+    const none = r.added.filter((a) => !isBlocked(a) && a.demandTotal === 0).map((a) => a.name);
     if (none.length > 0) {
       parts.push(
         `其中 ${none.length} 樣查詢正常、但目前沒有任何分店有未派需求` +
@@ -348,7 +360,7 @@ export function handoffMessage(r: HandoffReport): { notice: string | null; error
 
     // 帶出的量 < 實收 —— 兩種原因，措辭要分開，⛔ 不可以混成一句。
     const byDemand = r.added.filter(
-      (a) => a.demandTotal > 0 && a.giveTotal < a.receivedQty && a.giveTotal >= a.demandTotal,
+      (a) => !isBlocked(a) && a.demandTotal > 0 && a.giveTotal < a.receivedQty && a.giveTotal >= a.demandTotal,
     );
     if (byDemand.length > 0) {
       parts.push(
@@ -366,7 +378,7 @@ export function handoffMessage(r: HandoffReport): { notice: string | null; error
     //     · 可分配量 < 實收 → 是**貨已經被派掉了**，跟這顆鈕的設計無關
     //   兩者的下一步完全不同（前者等下批貨、後者要去看是不是已經派過），
     //   講錯就是又一個沒查證的畫面斷言。
-    const shortAll = r.added.filter((a) => a.demandTotal > a.giveTotal);
+    const shortAll = r.added.filter((a) => !isBlocked(a) && a.demandTotal > a.giveTotal);
     const numbers = (a: HandoffAdded) =>
       `${a.name}（${L} ${a.receivedQty}、各店共缺 ${a.demandTotal}、` +
       `目前可分配 ${a.available}、帶出 ${a.giveTotal}）`;
@@ -424,6 +436,13 @@ export function handoffMessage(r: HandoffReport): { notice: string | null; error
       r.failed.map((f) => `${f.name}（${f.reason}）`).join("、") +
       "。可以再按一次「傳到撿貨草稿」重試，已經進去的不會重複加。";
   }
+  // 同一團兩張以上採購單／檢查失敗：已經傳進草稿、各店全部 0 → 紅字逐樣列出。
+  // ⛔ 跟上面「沒有傳進草稿」那段是兩件事，各自一段，不混在一起講。
+  const multiPoText = multiPoBatchMessage(
+    r.added.filter(isBlocked).map((a) => ({ name: a.name, check: a.multiPo as MultiPoCheck })),
+    "傳進草稿",
+  );
+  if (multiPoText) error = error ? `${error} ${multiPoText}` : multiPoText;
 
   return { notice: parts.length > 0 ? parts.join(" ") : null, error };
 }
@@ -705,7 +724,12 @@ export async function handoffToDraft(
       // ⛔ loadPrefill 刻意不 catch（見該函式）：讀不到需求就**這一樣不加**。
       //   退回「空需求」會建出一排 0，畫面跟「真的沒人要」一模一樣。
       const pre = await loadPrefill({ db: deps.db as ReadOnlyDb, fetchAll: deps.fetchAll }, sku.sku_id);
-      const capped = capPrefill(pre, sku.qty);
+      // ⛔ 同一團兩張以上採購單／檢查失敗：pre 已經被 blockPrefill 歸零（give、demandLeft 都是 0），
+      //   capPrefill 是從 demandLeft 重新算的，照理也只會算出 0；外面再包一層 blockPrefill，
+      //   是不靠「capPrefill 怎麼算」也保證不會把 0 蓋回兩倍的數字（capPrefill 本體一個字沒動）。
+      const capped = isMultiPoBlocked(pre.multiPo)
+        ? blockPrefill(capPrefill(pre, sku.qty))
+        : capPrefill(pre, sku.qty);
       const cells = buildHandoffCells({
         tenantId: ids.tenantId,
         uid: ids.uid,
@@ -727,6 +751,7 @@ export async function handoffToDraft(
         giveTotal: sumGive(capped),
         demandTotal: sumDemand(capped),
         available: capped.available,
+        multiPo: pre.multiPo,
       });
       // 同一次呼叫裡若同一樣商品出現兩次（理論上不會，來源已合併），第二次就會被略過
       inDraft.add(sku.sku_id);

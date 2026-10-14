@@ -53,6 +53,7 @@ import {
   type SkuRow,
   type StoreRow,
 } from "@/lib/pickingDraftView";
+import { isMultiPoBlocked, multiPoEvenMessage, multiPoRowMark, multiPoRowText } from "@/lib/pickingMultiPo";
 import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
 import { withBasePath } from "@/lib/basePath";
@@ -77,6 +78,8 @@ type DraftItem = {
   snapshot_sku_label: string | null;
   snapshot_store_code: string | null;
   snapshot_store_name: string | null;
+  /** 只拿來讀「同一團兩張以上採購單」的記號（multi_po／multi_po_check），表格上那個 ⚠ 靠它 */
+  snapshot_extra?: Record<string, unknown> | null;
 };
 
 type Store = StoreRow;
@@ -215,7 +218,7 @@ function Body() {
       const cells = await fetchAllRows<DraftItem>(() =>
         sb
           .from("picking_draft_items")
-          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name, snapshot_at, snapshot_demand_qty, snapshot_available_qty")
+          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name, snapshot_at, snapshot_demand_qty, snapshot_available_qty, snapshot_extra")
           .eq("draft_id", draftId)
           .order("id", { ascending: true }),
       );
@@ -446,7 +449,7 @@ function Body() {
             created_by: uid,
             updated_by: uid,
           })
-          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name, snapshot_at, snapshot_demand_qty, snapshot_available_qty")
+          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name, snapshot_at, snapshot_demand_qty, snapshot_available_qty, snapshot_extra")
           .single();
         if (err) throw err;
         setItems((arr) => [...arr, data as DraftItem]);
@@ -524,6 +527,14 @@ function Body() {
         `⚠ 讀取「${row.label}」各分店需求失敗，這次「沒有」改動任何數量 —— 請再按一次重試。` +
           `（這是系統讀取出錯，不是這樣商品沒有需求。原因：${describeDraftDbError(e)}）`,
       );
+      return;
+    }
+
+    // ⛔ 同一團兩張以上採購單（或檢查表讀不到）→ **不套平均、一格都不寫**，紅字講原因。
+    //   這時的各店需求是重複算過的（或不知道有沒有重複），平均分下去一樣會分錯。
+    //   ⓘ 放在「可分配量 0」之前：不管有沒有貨，都要讓人知道這樣商品得照訂單樞紐自己填。
+    if (isMultiPoBlocked(pre.multiPo)) {
+      setError(multiPoEvenMessage(row.label, pre.multiPo));
       return;
     }
 
@@ -641,7 +652,7 @@ function Body() {
               };
             }),
           )
-          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name, snapshot_at, snapshot_demand_qty, snapshot_available_qty");
+          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name, snapshot_at, snapshot_demand_qty, snapshot_available_qty, snapshot_extra");
         if (err) throw err;
         inserted.push(...((data ?? []) as DraftItem[]));
       } catch (e) {
@@ -824,7 +835,9 @@ function Body() {
                 snapshot_store_code: st.code,
                 snapshot_store_name: st.name,
                 // 快照：加入當下的「未派需求」與「可分配量」，切片 B 對照現況要用
-                snapshot_demand_qty: p?.demandLeft ?? 0,
+                // ⛔ 同一團兩張以上採購單／檢查失敗時寫 null：那時的需求是重複算過的，
+                //   不可以當成「加入時需求」記下來（原因在 snapshot_extra 的 multi_po…）
+                snapshot_demand_qty: isMultiPoBlocked(pre.multiPo) ? null : p?.demandLeft ?? 0,
                 snapshot_available_qty: pre.available,
                 snapshot_close_date: pre.closeDate,
                 // 標明這一格的快照是「加入商品那一刻」拍的。後來才補的格子會標
@@ -835,7 +848,7 @@ function Body() {
               };
             }),
           )
-          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name, snapshot_at, snapshot_demand_qty, snapshot_available_qty");
+          .select("id, sku_id, store_id, qty, snapshot_sku_code, snapshot_sku_label, snapshot_store_code, snapshot_store_name, snapshot_at, snapshot_demand_qty, snapshot_available_qty, snapshot_extra");
         if (err) throw err;
         // ⭐ 每成功一樣就立刻進畫面（functional updater，不怕批次更新交錯）——
         //   第 3 樣掛掉時，前兩樣已經看得到，不會整批一起消失。
@@ -874,6 +887,8 @@ function Body() {
           demandTotal,
           giveTotal,
           available: pre.available,
+          // 同一團兩張以上採購單／檢查失敗 → 訊息改講「全部留 0、照訂單樞紐填」（見 addBatchMessage）
+          multiPo: pre.multiPo,
         });
       } catch (e) {
         // ⛔ 這一樣沒進去就是沒進去 —— 記下名字與原因，繼續跑下一樣。
@@ -1303,6 +1318,19 @@ function Body() {
                           title="加入這樣商品那一刻的數字（快照）。之後貨可能又到了，以派貨工作台的現況為準。"
                         >
                           ⚠ 加入時：未派需求 {sf.demandLeft}／可分配 {sf.available}，缺 {sf.short}
+                        </div>
+                      ) : null;
+                    })()}
+                    {/* 20261015：同一團兩張以上採購單（或當時檢查失敗）的商品 —— 各店數量要照訂單樞紐填。
+                        讀的是各格 snapshot_extra 的記號，所以重新整理後還在。
+                        ⓘ 字直接印出來、不靠滑過才看得到：樓下用的是 iPad，沒有「滑過」這回事。 */}
+                    {(() => {
+                      const mark = multiPoRowMark(
+                        items.filter((it) => Number(it.sku_id) === row.sku_id).map((it) => it.snapshot_extra),
+                      );
+                      return mark ? (
+                        <div className="mt-0.5 text-xs font-medium text-red-600 dark:text-red-400">
+                          {multiPoRowText(mark)}
                         </div>
                       ) : null;
                     })()}
