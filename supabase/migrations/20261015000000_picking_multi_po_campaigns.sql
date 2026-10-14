@@ -32,13 +32,20 @@
 -- 安全性：
 --   - 只新增這一支 view；不動任何既有 view、函式、資料表、資料。
 --   - 權限比照需求表（20260614000010:204）只給 authenticated 讀；
---     另外先把 Supabase 預設發給 anon 的權限收回（同 20260807000030:42 的寫法）。
+--     先把 PUBLIC、anon、authenticated 的權限全部收回（含 Supabase 預設發的），
+--     再只給 authenticated 讀（同 20260907010000:884 的寫法）。
 --   - view 以擁有者身分讀表，與 v_picking_demand_by_po 相同。
 --   - 整份可以重貼：前置檢查認得本檔建的版本（view 說明裡的記號）。
 --
+-- 已知限制（2026-10-15 審查後 CEO 裁定這次不做）：
+--   只看「團的訂單」那一段（campaign_demand），不看補貨申請那一段（需求表的 restock_demand）。
+--   補貨申請的需求如果同一樣商品被拆到兩個採購單品項，需求表一樣會各算一次，這支檢查表擋不到。
+--   要發生得同一張補貨請購單裡同一樣商品有兩列、又被拆到兩個採購單品項
+--   （restock_request_lines 本身有 UNIQUE (request_id, sku_id)，20260515000001:98），屬罕見。
+--
 -- 上線順序：先貼本檔、跑確認查詢全 ✅，再合併前端。
---   反過來的話，前端讀不到這支 view ⇒ 每一樣商品都走「檢查失敗、各店全部 0」，
---   草稿還能用，但每樣都要手填。
+--   反過來的話，前端讀不到這支 view ⇒ 每一樣「有需求」的商品都走「檢查失敗、各店全部 0」，
+--   草稿還能用，但每樣都要手填。（沒有需求的商品本來就帶不出數字，不標檢查失敗。）
 --
 -- 還原：scripts/PROD-picking-multi-po-2026-10/rollback_20261015000000.sql（只拿掉這一支 view）。
 -- 確認：scripts/PROD-picking-multi-po-2026-10/postcheck_readonly.sql
@@ -188,5 +195,5 @@ COMMENT ON VIEW public.v_picking_multi_po_campaigns IS
 -- ----------------------------------------------------------------------------
 -- 2. 權限：只給登入後台的人讀（比照 v_picking_demand_by_po，20260614000010:204）
 -- ----------------------------------------------------------------------------
-REVOKE ALL ON public.v_picking_multi_po_campaigns FROM anon, authenticated;
+REVOKE ALL ON public.v_picking_multi_po_campaigns FROM PUBLIC, anon, authenticated;
 GRANT SELECT ON public.v_picking_multi_po_campaigns TO authenticated;

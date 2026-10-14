@@ -11,7 +11,7 @@
 -- 如果整句跳錯、說找不到 v_picking_multi_po_campaigns ＝ migration 那一步沒有貼成功。
 --
 -- 對正式庫的負擔（請看完再按）
---   * 第 1～5 列很輕。
+--   * 第 1～5、8 列很輕。
 --   * 第 6 列把這張檢查表全站算一次（跟需求表裡「團的訂單」那一段差不多重）。
 --   * 第 7 列會把派貨工作台那張需求表算一次（跟打開一次派貨工作台一樣重）。
 --   ⇒ 請避開大家正在派貨、收貨的尖峰時段；系統當下已經很卡就先別跑。
@@ -106,6 +106,12 @@ checks(seq, pass, item, detail) AS (
                  || CASE WHEN count(*) = 0 THEN ''
                          ELSE '：' || string_agg(h.sku_code, '、' ORDER BY h.sku_code) END
             FROM hit h)
+  UNION ALL
+  SELECT 8,
+         NOT has_table_privilege('public', 'public.v_picking_multi_po_campaigns', 'SELECT'),
+         '所有人共用的 PUBLIC 讀不到（只開給登入後台的人）',
+         CASE WHEN has_table_privilege('public', 'public.v_picking_multi_po_campaigns', 'SELECT')
+              THEN '讀得到（不應該）' ELSE '讀不到' END
 )
 SELECT c.seq AS "序",
        CASE WHEN c.pass IS NULL THEN 'ℹ️'
@@ -116,8 +122,8 @@ SELECT c.seq AS "序",
   FROM checks c
 UNION ALL
 SELECT 99,
-       CASE WHEN (SELECT bool_and(coalesce(c.pass, false)) FROM checks c WHERE c.seq <= 5)
+       CASE WHEN (SELECT bool_and(coalesce(c.pass, false)) FROM checks c WHERE c.seq IN (1, 2, 3, 4, 5, 8))
             THEN '✅' ELSE '❌' END,
-       '總結（第 1～5 列全部 ✅ 才算貼對）',
+       '總結（第 1～5、8 列全部 ✅ 才算貼對）',
        ''
  ORDER BY 1;

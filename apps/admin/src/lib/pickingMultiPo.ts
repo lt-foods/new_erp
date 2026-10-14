@@ -40,7 +40,8 @@ export type MultiPoHit = { campaign_no: string; po_nos: string[] };
 
 /**
  * 一樣商品的檢查結果。三種一定要分得開：
- *   clear  = 查過了、沒中招（或這樣商品根本沒有需求列，沒有數字要保護）
+ *   clear  = 查過了、沒中招；或這樣商品在需求表上根本沒有列（這時就算檢查表讀不到也算 clear：
+ *            本來就帶不出任何數字，沒有東西要保護，見 multiPoCheckFor）
  *   hit    = 中招 → 系統算的各店數量會重複，全部留 0
  *   failed = 檢查表讀不到 → ⛔ 不知道有沒有中招，一樣全部留 0，而且要明講是「檢查失敗」
  */
@@ -103,12 +104,16 @@ export function multiPoCheckFor(
   lookup: { ok: true; rows: MultiPoCampaignRow[] } | { ok: false; reason: string },
   demandPoItemIds: (number | string | null | undefined)[],
 ): MultiPoCheck {
-  // 需求表上一列都沒有 ⇒ 本來就帶不出任何數字，沒有東西要保護。
-  // ⓘ 這時就算檢查表讀失敗也不標 failed：不然 SQL 還沒貼的那段時間，
+  // ⭐ 刻意的行為（2026-10-15 審查 P2-1，CEO 裁定維持）：
+  //   需求表上一列都沒有 ⇒ 本來就帶不出任何數字，沒有東西要保護 ⇒ 回 clear，
+  //   **就算檢查表讀不到也不標「檢查失敗」**。不然 SQL 還沒貼的那段時間，
   //   每一樣「本來就沒需求」的商品都會多一句嚇人的紅字。
+  //   ⛔ 有需求列時讀不到，一律是 failed（下一行），不會照常帶數字。
   if (demandPoItemIds.length === 0) return MULTI_PO_CLEAR;
   // ⛔ 讀不到 ≠ 沒中招
   if (!lookup.ok) return { kind: "failed", reason: lookup.reason };
+  // ⚠ 已知限制（2026-10-15 審查 P1-1，CEO 裁定這次不做）：檢查表只看「團的訂單」那一段，
+  //   補貨申請的需求如果同一樣商品被拆到兩個採購單品項（需求表 restock_demand 會各算一次），這裡擋不到。
   const hits = multiPoHitsBySku(lookup.rows, demandPoItemIds).get(Number(skuId)) ?? [];
   return hits.length > 0 ? { kind: "hit", hits } : MULTI_PO_CLEAR;
 }
