@@ -291,6 +291,14 @@ test("說明・A8 的 R 是 \"NaN\" ⇒ 跟讀不到一樣：改前原文＋「�
   ]);
 });
 
+test("說明・兩家店加 0.1、0.2（合計帶浮點尾數）⇒ 跟預估比得齊，不會冒出「多叫 0 件」", () => {
+  const n = 0.1 + 0.2; // 畫面上各店相加的合計就是這個數
+  for (const extra of [NO_RULE(0, 0), RULE(0, 0), PO_STORE_ADD_NO_EXTRA]) {
+    assert.deepEqual(explain(0, n, extra, "preview"), []);
+    assert.deepEqual(explain(0, n, extra, "confirm"), [FOLLOW]);
+  }
+});
+
 test("說明・差額查不到 ⇒ 預估區塊不加字；確認框照改前只留請購跟著加；預估區塊店家還沒填數量也不加字", () => {
   assert.deepEqual(explain(null, 2, RULE(1, 0), "preview"), []);
   assert.deepEqual(explain(null, 2, RULE(1, 0), "confirm"), [FOLLOW]);

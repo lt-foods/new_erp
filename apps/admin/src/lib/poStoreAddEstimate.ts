@@ -108,7 +108,9 @@ export function poStoreAddExplainLines(opts: {
   style: "preview" | "confirm";
   poTerm: string;
 }): string[] {
-  const { estimate, storeTotal: n, extra, extraLoading = false, style, poTerm } = opts;
+  const { estimate, storeTotal, extra, extraLoading = false, style, poTerm } = opts;
+  // 店家件數也取到小數 3 位，才跟 estimate（已四捨五入）比得齊：0.1＋0.2 不會變成「多叫 0 件」
+  const n = round3(storeTotal);
   const confirm = style === "confirm";
   const lines: string[] = [];
 
