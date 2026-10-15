@@ -7,6 +7,7 @@ import {
   CANCEL_PO_NOTICE_FAILED_TEXT,
   CANCEL_PO_NOTICE_INACTIVE_TEXT,
   CANCEL_PO_NOTICE_TEXT,
+  CANCEL_PO_NOTICE_TIMEOUT_MS,
   cancelPoNoticeText,
   confirmCancelPoNotice,
   fetchCancelPoNotice,
@@ -129,6 +130,24 @@ test("fetchCancelPoNotice：後端回錯誤或直接丟例外 ⇒ failed（不�
     throw new Error("Failed to fetch");
   });
   assert.deepEqual(await fetchCancelPoNotice(throwSb, 1), { kind: "failed", reason: "Failed to fetch" });
+});
+
+test("fetchCancelPoNotice：後端一直不回、逾時設 20ms ⇒ failed／timeout（不卡住）；預設逾時 8 秒", async () => {
+  const hangSb = { rpc: () => new Promise(() => {}) };
+  assert.deepEqual(await fetchCancelPoNotice(hangSb, 1, null, 20), { kind: "failed", reason: "timeout" });
+  assert.equal(CANCEL_PO_NOTICE_TIMEOUT_MS, 8000);
+});
+
+test("fetchCancelPoNotice：逾時前就回 ⇒ 照常回列（逾時保護不影響正常查詢）", async () => {
+  const sb = fakeSb(() => ({ data: [row({})], error: null }));
+  assert.deepEqual(await fetchCancelPoNotice(sb, 1, null, 1000), { kind: "rows", rows: [row({})] });
+});
+
+test("confirmCancelPoNotice：查詢逾時 ⇒ 跳「無法確認」；按確定照常取消（回 true，不擋）", async () => {
+  const hangSb = { rpc: () => new Promise(() => {}) };
+  const asked = [];
+  assert.equal(await confirmCancelPoNotice(hangSb, 1, null, Q, (t) => (asked.push(t), true), 20), true);
+  assert.deepEqual(asked, [CANCEL_PO_NOTICE_FAILED_TEXT]);
 });
 
 test("confirmCancelPoNotice：沒有列 ⇒ 不跳視窗、回 true（照常進原本流程）", async () => {

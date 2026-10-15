@@ -8,6 +8,7 @@
 //   沒有列         ⇒ 不跳，直接進原本的取消流程（還沒叫貨、一團兩張、分界前的舊單…都照今天）
 //   有列           ⇒ 跳提醒；停用店另一套文字（那幾件不派，留在派貨工作台給總倉決定）
 //   查詢失敗       ⇒ 跳「無法確認是否已叫貨，仍要取消嗎？」，按確定照常取消（不擋）
+//   （8 秒沒回也算查詢失敗，免得取消鈕一直轉）
 //
 // ⛔ 只在原本的「輸入原因」視窗之前多問一次；原本的取消流程、文字一個字都不改。
 // ⓘ 一個 import 都沒有：`node --test` 直接吃 .ts 驗得到；supabase 由呼叫端傳進來。
@@ -32,6 +33,8 @@ export const CANCEL_PO_NOTICE_TEXT =
 export const CANCEL_PO_NOTICE_INACTIVE_TEXT =
   "總倉已經叫貨；這家店已停用，取消後這幾件會留在派貨工作台給總倉決定。";
 export const CANCEL_PO_NOTICE_FAILED_TEXT = "無法確認是否已叫貨，仍要取消嗎？";
+/** 問後端最多等多久（毫秒）；超過就當查詢失敗 */
+export const CANCEL_PO_NOTICE_TIMEOUT_MS = 8000;
 
 /**
  * 組提醒文字；回 null ＝不用跳提醒。
@@ -88,27 +91,43 @@ type RpcClient = {
   ) => PromiseLike<{ data: unknown; error: { message?: string } | null }>;
 };
 
-/** 問後端這張單（或這一項）現在取消會不會照派原店；任何錯誤都回 failed，不丟例外 */
+/**
+ * 問後端這張單（或這一項）現在取消會不會照派原店；任何錯誤都回 failed，不丟例外。
+ * timeoutMs（預設 8 秒）沒回 ⇒ 回 { kind: "failed", reason: "timeout" }（畫面跳「無法確認」，按確定照常取消）；
+ *   晚到的回應直接丟掉。
+ */
 export async function fetchCancelPoNotice(
   sb: RpcClient,
   orderId: number,
   itemId?: number | null,
+  timeoutMs: number = CANCEL_PO_NOTICE_TIMEOUT_MS,
 ): Promise<CancelPoNotice> {
+  const query = (async (): Promise<CancelPoNotice> => {
+    try {
+      const { data, error } = await sb.rpc("rpc_order_cancel_po_notice", {
+        p_order_id: orderId,
+        p_item_id: itemId ?? null,
+      });
+      if (error) return { kind: "failed", reason: error.message ?? "查詢失敗" };
+      return { kind: "rows", rows: Array.isArray(data) ? (data as CancelPoNoticeRow[]) : [] };
+    } catch (e) {
+      return { kind: "failed", reason: e instanceof Error ? e.message : String(e) };
+    }
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<CancelPoNotice>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: "failed", reason: "timeout" }), timeoutMs);
+  });
   try {
-    const { data, error } = await sb.rpc("rpc_order_cancel_po_notice", {
-      p_order_id: orderId,
-      p_item_id: itemId ?? null,
-    });
-    if (error) return { kind: "failed", reason: error.message ?? "查詢失敗" };
-    return { kind: "rows", rows: Array.isArray(data) ? (data as CancelPoNoticeRow[]) : [] };
-  } catch (e) {
-    return { kind: "failed", reason: e instanceof Error ? e.message : String(e) };
+    return await Promise.race([query, timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 /**
  * 取消前先問一次。回 true ＝繼續原本的取消流程；false ＝使用者按了取消，停下來。
- * 不用提醒時直接回 true（不跳任何視窗）。
+ * 不用提醒時直接回 true（不跳任何視窗）。timeoutMs 不給＝預設 8 秒（呼叫端不用傳）。
  */
 export async function confirmCancelPoNotice(
   sb: RpcClient,
@@ -116,8 +135,9 @@ export async function confirmCancelPoNotice(
   itemId: number | null,
   question: string,
   ask: (text: string) => boolean,
+  timeoutMs?: number,
 ): Promise<boolean> {
-  const text = cancelPoNoticeText(await fetchCancelPoNotice(sb, orderId, itemId), question);
+  const text = cancelPoNoticeText(await fetchCancelPoNotice(sb, orderId, itemId, timeoutMs), question);
   return text == null ? true : ask(text);
 }
 
