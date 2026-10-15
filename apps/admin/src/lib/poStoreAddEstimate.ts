@@ -79,7 +79,128 @@ export function estimatePoStoreAdd(
   return { prAdd, poAdd };
 }
 
+/**
+ * 預估數字下面的說明（為什麼採購單加的件數 ≠ 店家加的件數、請購為什麼不一樣）。
+ *   style＝"preview"：視窗裡那塊黃底預估（短句）；"confirm"：按送出後的確認框（括號句，含請購那一行）
+ *   extra＝null：R、E 還沒讀到或讀不到 ⇒ 照不套的原文，再加一行「照舊算法估的，實際以送出後為準」
+ *     （extraLoading：true＝讀取中、false＝讀不到；只影響那一行的用字）
+ *   poTerm＝「採購單」那個詞（畫面統一用 PO_TERM_ZH；這支不 import，由呼叫端傳）
+ *
+ * 不套新規則：一字不改沿用改前的原文（「多叫…之前有人取消…先用掉」「原本就還沒叫貨的量」）。
+ * 套新規則：採購單加完＝派車要送的量（有效訂單＋叫貨後才取消照派原店的件數），所以
+ *   · 多叫／還沒叫貨，是跟「派車要送的量」比，不再說是「之前有人取消」造成的
+ *     （叫貨後的取消已經算進要送的量，不會被拿來抵）；
+ *   · R＞0 另外寫一行「照派原店、不算多叫、不拿來抵」；R＜0（抵減單）寫「照叫貨時的數量算」；
+ *   · 請購跟採購單加的不一樣時，講清楚兩邊各照什麼算。
+ *   E（以前追加多加／少加的件數）是內部帳，不另外寫；它已經反映在「多叫／還沒叫貨」的件數裡。
+ */
+export function poStoreAddExplainLines(opts: {
+  estimate: PoStoreAddEstimate | null;
+  storeTotal: number;
+  extra: PoStoreAddExtra | null;
+  extraLoading?: boolean;
+  style: "preview" | "confirm";
+  poTerm: string;
+}): string[] {
+  const { estimate, storeTotal: n, extra, extraLoading = false, style, poTerm } = opts;
+  const confirm = style === "confirm";
+  const lines: string[] = [];
+
+  if (!estimate) {
+    // 差額查不到：預估區塊什麼都不加；確認框照改前那樣只留請購那一行
+    if (confirm) lines.push(`請購單對應那一列會跟著${poTerm}一起加（不用另外動）。`);
+    return lines;
+  }
+  if (!confirm && !(n > 0)) return lines;
+
+  const x = estimate.poAdd;
+  const pr = estimate.prAdd;
+  const rule = extra?.ruleApplies === true;
+
+  if (!rule) {
+    // ── 不套新規則（或 R、E 讀不到）：改前原文 ──
+    if (x < n) {
+      lines.push(
+        confirm
+          ? `　（這個團原本已經多叫 ${fmt(n - x)} 件——之前有人取消——先用掉，所以${poTerm}只加 ${fmt(x)} 件）`
+          : `這個團原本已經多叫 ${fmt(n - x)} 件（之前有人取消），會先用掉。`,
+      );
+    }
+    if (x > n) {
+      lines.push(
+        confirm
+          ? `　（其中 ${fmt(x - n)} 件是這個團原本就還沒叫貨的量，一起補進這張${poTerm}）`
+          : `其中 ${fmt(x - n)} 件是這個團原本就還沒叫貨的量，會一起補進來。`,
+      );
+    }
+    if (extra == null) {
+      lines.push(
+        confirm
+          ? "　（叫貨後取消的件數讀不到，這是照舊算法估的，實際以送出後為準）"
+          : `叫貨後取消的件數${extraLoading ? "讀取中" : "讀不到"}，這是照舊算法估的，實際以送出後為準。`,
+      );
+    }
+    if (confirm) {
+      lines.push(
+        x === 0 ? "請購單不用改（原本叫的量已經夠）。" : `請購單對應那一列會跟著${poTerm}一起加（不用另外動）。`,
+      );
+    }
+    return lines;
+  }
+
+  // ── 套新規則 ──
+  const r = extra.r;
+  if (x < n) {
+    lines.push(
+      confirm
+        ? `　（這個團原本叫的量比派車要送的多，先用掉其中 ${fmt(n - x)} 件，所以${poTerm}只加 ${fmt(x)} 件）`
+        : `這個團原本叫的量比派車要送的多，會先用掉其中 ${fmt(n - x)} 件。`,
+    );
+  }
+  if (x > n) {
+    lines.push(
+      confirm
+        ? `　（其中 ${fmt(x - n)} 件是這個團原本就還沒叫貨的量，一起補進這張${poTerm}）`
+        : `其中 ${fmt(x - n)} 件是這個團原本就還沒叫貨的量，會一起補進來。`,
+    );
+  }
+  if (r > 0) {
+    lines.push(
+      confirm
+        ? `　（叫貨後才取消的 ${fmt(r)} 件照派原店，不算多叫，不拿來抵這次追加）`
+        : `叫貨後才取消的 ${fmt(r)} 件照派原店，不算多叫，不拿來抵這次追加。`,
+    );
+  } else if (r < 0) {
+    lines.push(
+      confirm
+        ? `　（叫貨後才取消的抵減單 ${fmt(-r)} 件，派車照叫貨時的數量算，${poTerm}不用為它多加）`
+        : `叫貨後才取消的抵減單 ${fmt(-r)} 件，派車照叫貨時的數量算，${poTerm}不用為它多加。`,
+    );
+  }
+  if (pr !== x) {
+    const why = `請購單只照現在還有效的訂單算，${poTerm}照派車要送的量算，所以兩邊加的不一樣`;
+    if (confirm) {
+      lines.push(
+        pr === 0
+          ? `請購單不用改（${why}；不用另外動）。`
+          : `請購單對應那一列加 ${fmt(pr)} 件（${why}；不用另外動）。`,
+      );
+    } else {
+      lines.push(pr === 0 ? `請購單不用改（${why}）。` : `請購單加 ${fmt(pr)} 件（${why}）。`);
+    }
+  } else if (confirm) {
+    lines.push(
+      x === 0 ? "請購單不用改（原本叫的量已經夠）。" : `請購單對應那一列會跟著${poTerm}一起加（不用另外動）。`,
+    );
+  }
+  return lines;
+}
+
 function toNum(value: number | string | null | undefined): number {
   const n = Number(value ?? 0);
   return Number.isFinite(n) ? n : 0;
+}
+
+function fmt(n: number): string {
+  return Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/\.?0+$/, "");
 }

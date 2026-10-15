@@ -12,6 +12,7 @@ import {
   PO_STORE_ADD_NO_EXTRA,
   estimatePoStoreAdd,
   pickPoStoreAddExtra,
+  poStoreAddExplainLines,
 } from "./poStoreAddEstimate.ts";
 
 const RULE = (r, e) => ({ r, e, ruleApplies: true });
@@ -115,4 +116,143 @@ test("pickPoStoreAddExtra：有列但 rule_applies＝false（一鍵關掉後只�
   const extra = pickPoStoreAddExtra(rows, 11, 7);
   assert.deepEqual(extra, { r: 0, e: 1, ruleApplies: false });
   assert.deepEqual(estimatePoStoreAdd(-1, 2, extra), { prAdd: 1, poAdd: 1 });
+});
+
+// ============================================================
+// 三、說明文字（數字對、解釋也對）
+//   不套新規則：跟改前（75bab10a 的 POStoreAddModal.tsx :233-240、:404-407）原文一字不差
+//   套新規則：叫貨後的取消照派原店、不拿來抵 ⇒ 不可以再說「之前有人取消、先用掉」
+// ============================================================
+
+const PO = "採購單";
+const explain = (delta, n, extra, style, extraLoading) =>
+  poStoreAddExplainLines({
+    estimate: estimatePoStoreAdd(delta, n, extra),
+    storeTotal: n,
+    extra,
+    extraLoading,
+    style,
+    poTerm: PO,
+  });
+const WHY = `請購單只照現在還有效的訂單算，${PO}照派車要送的量算，所以兩邊加的不一樣`;
+const FOLLOW = `請購單對應那一列會跟著${PO}一起加（不用另外動）。`;
+
+/** 套新規則時，任何一行都不能把「先用掉」歸因到取消 */
+function assertNoCancelOffset(lines) {
+  for (const l of lines) {
+    assert.ok(!l.includes("之前有人取消"), `不該出現「之前有人取消」：${l}`);
+    assert.ok(!/取消.*先用掉|先用掉.*取消/.test(l), `不該說取消的件數被先用掉：${l}`);
+  }
+}
+
+test("說明・一般（沒有叫貨後取消、沒有 E）：預估區塊不加字；確認框只有請購跟著加那一行（套不套一樣）", () => {
+  for (const extra of [RULE(0, 0), NO_RULE(0, 0), PO_STORE_ADD_NO_EXTRA]) {
+    assert.deepEqual(explain(0, 2, extra, "preview"), []);
+    assert.deepEqual(explain(0, 2, extra, "confirm"), [FOLLOW]);
+  }
+});
+
+test("說明・叫貨後取消（差額 −1、追加 2、R 1）：套新規則 ⇒ 寫照派原店、不拿來抵，請購另寫；不寫「之前有人取消先用掉」", () => {
+  const preview = explain(-1, 2, RULE(1, 0), "preview");
+  assert.deepEqual(preview, [
+    "叫貨後才取消的 1 件照派原店，不算多叫，不拿來抵這次追加。",
+    `請購單加 1 件（${WHY}）。`,
+  ]);
+  assertNoCancelOffset(preview);
+  const confirm = explain(-1, 2, RULE(1, 0), "confirm");
+  assert.deepEqual(confirm, [
+    "　（叫貨後才取消的 1 件照派原店，不算多叫，不拿來抵這次追加）",
+    `請購單對應那一列加 1 件（${WHY}；不用另外動）。`,
+  ]);
+  assertNoCancelOffset(confirm);
+});
+
+test("說明・同樣數字但不套（一團兩張）⇒ 改前原文：多叫 1 件——之前有人取消——先用掉", () => {
+  assert.deepEqual(explain(-1, 2, PO_STORE_ADD_NO_EXTRA, "preview"), [
+    "這個團原本已經多叫 1 件（之前有人取消），會先用掉。",
+  ]);
+  assert.deepEqual(explain(-1, 2, PO_STORE_ADD_NO_EXTRA, "confirm"), [
+    `　（這個團原本已經多叫 1 件——之前有人取消——先用掉，所以${PO}只加 1 件）`,
+    FOLLOW,
+  ]);
+});
+
+test("說明・叫貨後取消 3、追加 1 ⇒ 採購 +1、請購不用改；不說先用掉", () => {
+  const confirm = explain(-3, 1, RULE(3, 0), "confirm");
+  assert.deepEqual(confirm, [
+    "　（叫貨後才取消的 3 件照派原店，不算多叫，不拿來抵這次追加）",
+    `請購單不用改（${WHY}；不用另外動）。`,
+  ]);
+  assertNoCancelOffset(confirm);
+});
+
+test("說明・延長加單 2 ＋ 叫貨後取消 1、追加 1 ⇒ 其中 2 件是還沒叫貨的量＋照派原店＋請購加 2", () => {
+  assert.deepEqual(explain(1, 1, RULE(1, 0), "preview"), [
+    "其中 2 件是這個團原本就還沒叫貨的量，會一起補進來。",
+    "叫貨後才取消的 1 件照派原店，不算多叫，不拿來抵這次追加。",
+    `請購單加 2 件（${WHY}）。`,
+  ]);
+});
+
+test("說明・抵減單（差額 2、追加 1、R −2）⇒ 照叫貨時的數量算、採購單不用為它多加；請購加 3 另寫", () => {
+  const preview = explain(2, 1, RULE(-2, 0), "preview");
+  assert.deepEqual(preview, [
+    `叫貨後才取消的抵減單 2 件，派車照叫貨時的數量算，${PO}不用為它多加。`,
+    `請購單加 3 件（${WHY}）。`,
+  ]);
+  assertNoCancelOffset(preview);
+  assert.deepEqual(explain(2, 1, RULE(-2, 0), "confirm"), [
+    `　（叫貨後才取消的抵減單 2 件，派車照叫貨時的數量算，${PO}不用為它多加）`,
+    `請購單對應那一列加 3 件（${WHY}；不用另外動）。`,
+  ]);
+});
+
+test("說明・R＝0、E≠0、有套（復原後再追加：差額 1、追加 1、E 1）⇒ 採購 +1＝店家件數，只寫請購加 2 為什麼不一樣", () => {
+  const preview = explain(1, 1, RULE(0, 1), "preview");
+  assert.deepEqual(preview, [`請購單加 2 件（${WHY}）。`]);
+  assertNoCancelOffset(preview);
+});
+
+test("說明・R＝0、E≠0、有套、採購比派車要送的多（差額 0、追加 1、E 1）⇒ 先用掉 1 件，不說是取消造成的", () => {
+  const confirm = explain(0, 1, RULE(0, 1), "confirm");
+  assert.deepEqual(confirm, [
+    `　（這個團原本叫的量比派車要送的多，先用掉其中 1 件，所以${PO}只加 0 件）`,
+    `請購單對應那一列加 1 件（${WHY}；不用另外動）。`,
+  ]);
+  assertNoCancelOffset(confirm);
+});
+
+test("說明・R＝0、E≠0、沒套 ⇒ 改前原文（其中 1 件是還沒叫貨的量、請購跟著一起加）", () => {
+  assert.deepEqual(explain(1, 1, NO_RULE(0, 1), "preview"), [
+    "其中 1 件是這個團原本就還沒叫貨的量，會一起補進來。",
+  ]);
+  assert.deepEqual(explain(1, 1, NO_RULE(0, 1), "confirm"), [
+    `　（其中 1 件是這個團原本就還沒叫貨的量，一起補進這張${PO}）`,
+    FOLLOW,
+  ]);
+});
+
+test("說明・採購單加 0（不套）⇒ 改前原文「請購單不用改（原本叫的量已經夠）」", () => {
+  assert.deepEqual(explain(-5, 1, NO_RULE(0, 0), "confirm"), [
+    `　（這個團原本已經多叫 1 件——之前有人取消——先用掉，所以${PO}只加 0 件）`,
+    "請購單不用改（原本叫的量已經夠）。",
+  ]);
+});
+
+test("說明・R、E 讀取中／讀不到 ⇒ 照改前原文＋一行「照舊算法估的，實際以送出後為準」", () => {
+  assert.deepEqual(explain(-1, 2, null, "preview", true), [
+    "這個團原本已經多叫 1 件（之前有人取消），會先用掉。",
+    "叫貨後取消的件數讀取中，這是照舊算法估的，實際以送出後為準。",
+  ]);
+  assert.deepEqual(explain(-1, 2, null, "preview", false)[1], "叫貨後取消的件數讀不到，這是照舊算法估的，實際以送出後為準。");
+  assert.deepEqual(explain(0, 2, null, "confirm"), [
+    "　（叫貨後取消的件數讀不到，這是照舊算法估的，實際以送出後為準）",
+    FOLLOW,
+  ]);
+});
+
+test("說明・差額查不到 ⇒ 預估區塊不加字；確認框照改前只留請購跟著加；預估區塊店家還沒填數量也不加字", () => {
+  assert.deepEqual(explain(null, 2, RULE(1, 0), "preview"), []);
+  assert.deepEqual(explain(null, 2, RULE(1, 0), "confirm"), [FOLLOW]);
+  assert.deepEqual(explain(-1, 0, RULE(1, 0), "preview"), []);
 });

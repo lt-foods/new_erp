@@ -19,6 +19,7 @@ import { PO_TERM_ZH } from "@/lib/poStatus";
 import {
   estimatePoStoreAdd,
   pickPoStoreAddExtra,
+  poStoreAddExplainLines,
   type PoStoreAddExtra,
   type PoStoreAddExtraRow,
 } from "@/lib/poStoreAddEstimate";
@@ -271,11 +272,10 @@ export function POStoreAddModal({
     const retryUncertain = !!last && last.mayBeWritten && last.sig === sig;
 
     const n = storeTotal;
-    // 20261016000000：採購單（x）、請購單（xPr）各加幾件；不套新規則時兩個一樣（＝改前的 X）
+    // 20261016000000：採購單加幾件（x）照新公式；底下的說明（含請購那一行）交給 poStoreAddExplainLines：
+    //   不套新規則時跟改前原文一字不差，套新規則時不再說「之前有人取消、先用掉」（叫貨後的取消照派原店、不拿來抵）
     const est = estimatePoStoreAdd(delta, n, freshExtra);
     const x = est ? est.poAdd : null;
-    const xPr = est ? est.prAdd : null;
-    const rule = freshExtra?.ruleApplies === true;
     const storeText = lines.map((l) => `${l.store.name} +${formatQty(l.qty)}`).join("、");
     const poLines: (string | null)[] = retryUncertain
       ? [`${PO_TERM_ZH}與請購單會加幾件：以送出後的結果為準`]
@@ -283,27 +283,13 @@ export function POStoreAddModal({
           x == null
             ? `${PO_TERM_ZH}會加幾件：送出後由系統計算（目前查不到這個團的叫貨差額）`
             : `${PO_TERM_ZH}加 ${formatQty(x)} 件：訂購量 ${formatQty(a)} → ${formatQty(a + x)}`,
-          x != null && x < n
-            ? rule
-              ? `　（這個團原本已經多叫 ${formatQty(n - x)} 件，先用掉，所以${PO_TERM_ZH}只加 ${formatQty(x)} 件）`
-              : `　（這個團原本已經多叫 ${formatQty(n - x)} 件——之前有人取消——先用掉，所以${PO_TERM_ZH}只加 ${formatQty(x)} 件）`
-            : null,
-          x != null && x > n
-            ? `　（其中 ${formatQty(x - n)} 件是這個團原本就還沒叫貨的量，一起補進這張${PO_TERM_ZH}）`
-            : null,
-          rule && freshExtra && freshExtra.r > 0
-            ? `　（叫貨後才取消的 ${formatQty(freshExtra.r)} 件會照派原店，不拿來抵這次追加）`
-            : null,
-          x != null && freshExtra == null
-            ? `　（叫貨後取消的件數讀不到，這是照舊算法估的，實際以送出後為準）`
-            : null,
-          xPr != null && xPr !== x
-            ? xPr === 0
-              ? "請購單不用改（原本叫的量已經夠）。"
-              : `請購單對應那一列加 ${formatQty(xPr)} 件（不用另外動）。`
-            : x === 0
-              ? "請購單不用改（原本叫的量已經夠）。"
-              : `請購單對應那一列會跟著${PO_TERM_ZH}一起加（不用另外動）。`,
+          ...poStoreAddExplainLines({
+            estimate: est,
+            storeTotal: n,
+            extra: freshExtra,
+            style: "confirm",
+            poTerm: PO_TERM_ZH,
+          }),
         ];
     // null ＝ 這一行不顯示；"" ＝ 空一行
     const confirmText = [
@@ -470,28 +456,17 @@ export function POStoreAddModal({
                   </>
                 )}
               </div>
-              {predictedX != null && storeTotal > 0 && predictedX < storeTotal ? (
-                extra?.ruleApplies ? (
-                  <div>這個團原本已經多叫 {formatQty(storeTotal - predictedX)} 件，會先用掉。</div>
-                ) : (
-                  <div>這個團原本已經多叫 {formatQty(storeTotal - predictedX)} 件（之前有人取消），會先用掉。</div>
-                )
-              ) : null}
-              {predictedX != null && storeTotal > 0 && predictedX > storeTotal ? (
-                <div>其中 {formatQty(predictedX - storeTotal)} 件是這個團原本就還沒叫貨的量，會一起補進來。</div>
-              ) : null}
-              {/* 20261016000000：叫貨後取消照派原店、請購跟採購單加的不一樣、R／E 讀不到 */}
-              {storeTotal > 0 && extra?.ruleApplies && extra.r > 0 ? (
-                <div>叫貨後才取消的 {formatQty(extra.r)} 件會照派原店，不拿來抵這次追加。</div>
-              ) : null}
-              {storeTotal > 0 && estimate && estimate.prAdd !== estimate.poAdd ? (
-                <div>請購單加 {formatQty(estimate.prAdd)} 件（跟{PO_TERM_ZH}不一樣）。</div>
-              ) : null}
-              {storeTotal > 0 && estimate && extraRows == null ? (
-                <div>
-                  {extraErr ? "叫貨後取消的件數讀不到" : "叫貨後取消的件數讀取中"}，這是照舊算法估的，實際以送出後為準。
-                </div>
-              ) : null}
+              {/* 20261016000000：說明交給 poStoreAddExplainLines（不套新規則＝改前原文；套新規則不再說「之前有人取消先用掉」） */}
+              {poStoreAddExplainLines({
+                estimate,
+                storeTotal,
+                extra,
+                extraLoading: extraErr == null,
+                style: "preview",
+                poTerm: PO_TERM_ZH,
+              }).map((line, i) => (
+                <div key={i}>{line}</div>
+              ))}
             </>
           )}
           <div className="mt-1 font-medium">⚠ 系統不會通知廠商，送出後請自己跟廠商說。</div>
