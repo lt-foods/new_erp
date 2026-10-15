@@ -21,7 +21,8 @@ fn AS (
   SELECT p.proname,
          string_agg(md5(replace(p.prosrc, chr(13), '')), ',' ORDER BY p.oid) AS sig,
          bool_and(position('post_po_cancel_to_store:20261016000000' IN p.prosrc) > 0) AS marked,
-         string_agg(pg_get_function_identity_arguments(p.oid), ' | ' ORDER BY p.oid) AS args
+         string_agg(pg_get_function_identity_arguments(p.oid), ' | ' ORDER BY p.oid) AS args,
+         string_agg(pg_get_function_result(p.oid), ' | ' ORDER BY p.oid) AS res
     FROM pg_proc p
     JOIN pg_namespace ns ON ns.oid = p.pronamespace
    WHERE ns.nspname = 'public'
@@ -323,10 +324,14 @@ checks(seq, status, item, detail) AS (
          (SELECT CASE WHEN v.oid IS NULL THEN '找不到' ELSE '在' END FROM vinfo v WHERE v.n = 'v_picking_post_po_cancelled')
   UNION ALL
   SELECT 4,
-         CASE WHEN (SELECT f.marked AND f.args = 'p_po_id bigint' FROM fn f
+         CASE WHEN (SELECT f.marked AND f.args = 'p_po_id bigint'
+                           AND f.res = 'TABLE(po_item_id bigint, campaign_id bigint, post_po_cancelled_qty numeric, prior_po_extra_qty numeric, rule_applies boolean)'
+                      FROM fn f
                      WHERE f.proname = 'rpc_preview_po_store_addition_extra') THEN '✅' ELSE '❌' END,
-         '新查詢 rpc_preview_po_store_addition_extra(p_po_id) 在、而且是本檔的版本',
-         COALESCE((SELECT f.args FROM fn f WHERE f.proname = 'rpc_preview_po_store_addition_extra'), '找不到')
+         '新查詢 rpc_preview_po_store_addition_extra(p_po_id) 在、而且是本檔的版本（回傳最後一欄是 rule_applies）',
+         COALESCE((SELECT f.args || CASE WHEN f.res LIKE '%, rule_applies boolean)' THEN '；有 rule_applies'
+                                         ELSE '；少了 rule_applies（舊版）' END
+                     FROM fn f WHERE f.proname = 'rpc_preview_po_store_addition_extra'), '找不到')
   UNION ALL
   SELECT 5,
          CASE WHEN (SELECT f.marked AND f.args = 'p_order_id bigint, p_item_id bigint' FROM fn f
@@ -369,10 +374,10 @@ checks(seq, status, item, detail) AS (
             FROM (SELECT (SELECT f2.sig FROM fn f2 WHERE f2.proname = 'rpc_create_wave_from_po') AS sig) f)
   UNION ALL
   SELECT 10,
-         CASE WHEN (SELECT f.sig FROM fn f WHERE f.proname = 'rpc_add_po_store_demands') = '67f16d0f79176267332aae0663ea392d'
+         CASE WHEN (SELECT f.sig FROM fn f WHERE f.proname = 'rpc_add_po_store_demands') = '99cbf151f1d46e251dca72ca28e71a6c'
               THEN '✅' ELSE '❌' END,
          '分店追加寫入 rpc_add_po_store_demands 是本檔新版',
-         (SELECT CASE WHEN f.sig = '67f16d0f79176267332aae0663ea392d' THEN '本檔新版'
+         (SELECT CASE WHEN f.sig = '99cbf151f1d46e251dca72ca28e71a6c' THEN '本檔新版'
                       WHEN f.sig = '220befc9d94d5e1c0aab37f41b627612' THEN '還是改前那一版'
                       ELSE '不認得：' || COALESCE(f.sig, '找不到') END
             FROM (SELECT (SELECT f2.sig FROM fn f2 WHERE f2.proname = 'rpc_add_po_store_demands') AS sig) f)
