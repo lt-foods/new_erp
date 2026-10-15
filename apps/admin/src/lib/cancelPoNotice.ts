@@ -36,16 +36,14 @@ export const CANCEL_PO_NOTICE_FAILED_TEXT = "無法確認是否已叫貨，仍�
 /**
  * 組提醒文字；回 null ＝不用跳提醒。
  *   question ＝最後一行要問什麼（例：「確定要取消這張訂單嗎？」）
- * 只列件數大於 0 的品項：抵減單那種負數行取消後不會多派貨，「貨到了會進本店」那句對它不成立，不跳。
+ * 同一樣商品先把正負件數加總，再只列淨件數大於 0 的：
+ *   抵減單那種負數行取消後不會多派貨，要先從同商品扣掉（+10、−2 ⇒ 提醒 8 件）；
+ *   扣完不大於 0 ⇒ 「貨到了會進本店」那句不成立，不列（整張都這樣就不跳）。
  */
 export function cancelPoNoticeText(notice: CancelPoNotice, question: string): string | null {
   if (notice.kind === "failed") return CANCEL_PO_NOTICE_FAILED_TEXT;
-  const active: CancelPoNoticeRow[] = [];
-  const inactive: CancelPoNoticeRow[] = [];
-  for (const r of notice.rows) {
-    if (!(toNum(r.qty) > 0)) continue;
-    (r.store_active === false ? inactive : active).push(r);
-  }
+  const active = sumBySku(notice.rows.filter((r) => r.store_active !== false));
+  const inactive = sumBySku(notice.rows.filter((r) => r.store_active === false));
   if (active.length === 0 && inactive.length === 0) return null;
   const lines: string[] = [];
   if (active.length > 0) {
@@ -59,16 +57,27 @@ export function cancelPoNoticeText(notice: CancelPoNotice, question: string): st
   return lines.join("\n");
 }
 
-/** 同一樣商品合併成一行（同一張單同一樣商品通常只有一項，合併只是保險） */
-function itemLines(rows: CancelPoNoticeRow[]): string[] {
-  const bySku = new Map<string, { label: string; qty: number }>();
+type SkuQty = { label: string; qty: number };
+
+/**
+ * 同一樣商品合併（正負件數一起加），只留淨件數大於 0 的。
+ * 加總後四捨五入到小數 3 位（件數是 NUMERIC(18,3)），免得 0.3−0.1−0.2 這種浮點尾數被當成「還有 0 件」。
+ */
+function sumBySku(rows: CancelPoNoticeRow[]): SkuQty[] {
+  const bySku = new Map<string, SkuQty>();
   for (const r of rows) {
     const key = String(r.sku_id);
     const cur = bySku.get(key);
     if (cur) cur.qty += toNum(r.qty);
     else bySku.set(key, { label: (r.sku_label ?? "").trim() || "（未命名商品）", qty: toNum(r.qty) });
   }
-  return Array.from(bySku.values()).map((x) => `・${x.label} × ${formatQty(x.qty)}`);
+  return Array.from(bySku.values())
+    .map((x) => ({ label: x.label, qty: Math.round(x.qty * 1000) / 1000 }))
+    .filter((x) => x.qty > 0);
+}
+
+function itemLines(items: SkuQty[]): string[] {
+  return items.map((x) => `・${x.label} × ${formatQty(x.qty)}`);
 }
 
 /** 呼叫端只要有 rpc 就能用（不 import supabase，測試可以餵假的） */
