@@ -597,7 +597,8 @@ function Body() {
         }
       }
     })();
-    return () => { cancelled = true; };
+    // 需求表換了（或離開頁面）：先清掉這一輪的件數，新結果回來前不顯示舊數字（免得派貨照舊字看錯）
+    return () => { cancelled = true; setPostPoCancelBySku(null); };
   }, [demand]);
 
   // 依分店檢視分頁：lazy 撈完整 view（含缺貨待到的品項），只在切到該分頁時撈一次。
