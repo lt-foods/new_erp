@@ -31,12 +31,14 @@ export const PO_STORE_ADD_NO_EXTRA: PoStoreAddExtra = { r: 0, e: 0, ruleApplies:
 /**
  * 從 A8 的回傳挑出這個（採購單品項, 團）。
  * 跟 A7 讀法一樣：同一組有幾列就加總 R、E，有一列套就算套（實際上一組最多一列）。
+ * 這一組的 R 或 E 讀到不是有限數字的值（例："NaN"、"abc"）⇒ 回 null＝當作讀不到 A8，
+ *   呼叫端走既有退路（照不套算＋註明以送出後為準）；不可以默默當 0 算。
  */
 export function pickPoStoreAddExtra(
   rows: PoStoreAddExtraRow[] | null | undefined,
   poItemId: number,
   campaignId: number | null,
-): PoStoreAddExtra {
+): PoStoreAddExtra | null {
   if (!rows || campaignId == null) return PO_STORE_ADD_NO_EXTRA;
   let r = 0;
   let e = 0;
@@ -44,9 +46,12 @@ export function pickPoStoreAddExtra(
   let found = false;
   for (const row of rows) {
     if (Number(row.po_item_id) !== Number(poItemId) || Number(row.campaign_id) !== Number(campaignId)) continue;
+    const rowR = readNum(row.post_po_cancelled_qty);
+    const rowE = readNum(row.prior_po_extra_qty);
+    if (rowR == null || rowE == null) return null;
     found = true;
-    r += toNum(row.post_po_cancelled_qty);
-    e += toNum(row.prior_po_extra_qty);
+    r += rowR;
+    e += rowE;
     if (row.rule_applies === true) ruleApplies = true;
   }
   return found ? { r, e, ruleApplies } : PO_STORE_ADD_NO_EXTRA;
@@ -65,6 +70,7 @@ export type PoStoreAddEstimate = {
  *   storeTotal ＝這次各店加的件數合計（N）
  *   extra      ＝A8 這一組的 R、E、套不套；讀不到 A8 時傳 null ⇒ 照不套算（呼叫端要註明「以送出後為準」）
  * delta 是 null ⇒ 回 null（算不出來，由後端在送出時算）。
+ * 結果四捨五入到小數 3 位（件數是 NUMERIC(18,3)），去掉 0.1＋0.2 這種浮點尾數；整數結果不變。
  */
 export function estimatePoStoreAdd(
   delta: number | null,
@@ -73,9 +79,9 @@ export function estimatePoStoreAdd(
 ): PoStoreAddEstimate | null {
   if (delta == null || !Number.isFinite(delta)) return null;
   const base = delta + storeTotal;
-  const prAdd = Math.max(base, 0);
+  const prAdd = round3(Math.max(base, 0));
   const ex = extra ?? PO_STORE_ADD_NO_EXTRA;
-  const poAdd = ex.ruleApplies ? Math.max(0, base + ex.r - ex.e) : prAdd;
+  const poAdd = ex.ruleApplies ? round3(Math.max(0, base + ex.r - ex.e)) : prAdd;
   return { prAdd, poAdd };
 }
 
@@ -196,9 +202,14 @@ export function poStoreAddExplainLines(opts: {
   return lines;
 }
 
-function toNum(value: number | string | null | undefined): number {
+/** 數量經 PostgREST 可能是字串；null＝0；不是有限數字（"NaN"、"abc"）⇒ null＝讀不到 */
+function readNum(value: number | string | null | undefined): number | null {
   const n = Number(value ?? 0);
-  return Number.isFinite(n) ? n : 0;
+  return Number.isFinite(n) ? n : null;
+}
+
+function round3(n: number): number {
+  return Math.round(n * 1000) / 1000;
 }
 
 function fmt(n: number): string {

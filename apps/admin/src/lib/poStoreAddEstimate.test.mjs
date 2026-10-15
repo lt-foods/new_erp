@@ -118,6 +118,29 @@ test("pickPoStoreAddExtra：有列但 rule_applies＝false（一鍵關掉後只�
   assert.deepEqual(estimatePoStoreAdd(-1, 2, extra), { prAdd: 1, poAdd: 1 });
 });
 
+test("pickPoStoreAddExtra：這一組的 R 或 E 不是數字（\"NaN\"、\"abc\"）⇒ 回 null＝讀不到，走退路照不套算＋註明以送出後為準", () => {
+  const badR = [{ po_item_id: 11, campaign_id: 7, post_po_cancelled_qty: "NaN", prior_po_extra_qty: 0, rule_applies: true }];
+  const badE = [{ po_item_id: 11, campaign_id: 7, post_po_cancelled_qty: 1, prior_po_extra_qty: "abc", rule_applies: true }];
+  assert.equal(pickPoStoreAddExtra(badR, 11, 7), null);
+  assert.equal(pickPoStoreAddExtra(badE, 11, 7), null);
+  // 走退路＝照不套 ⇒ 請購＝採購＝1（說明文字那半在「三、說明文字」驗）
+  assert.deepEqual(estimatePoStoreAdd(-1, 2, pickPoStoreAddExtra(badR, 11, 7)), { prAdd: 1, poAdd: 1 });
+  // R 有值但 E 壞掉：當 0 會算成 −1＋2＋1−0＝採購 +2；退路照不套 ⇒ 採購 +1
+  assert.deepEqual(estimatePoStoreAdd(-1, 2, pickPoStoreAddExtra(badE, 11, 7)), { prAdd: 1, poAdd: 1 });
+  // 別組的壞值不影響這一組；R、E 是 null 照舊當 0
+  const mixed = [
+    { po_item_id: 12, campaign_id: 7, post_po_cancelled_qty: "NaN", prior_po_extra_qty: "abc", rule_applies: true },
+    { po_item_id: 11, campaign_id: 7, post_po_cancelled_qty: null, prior_po_extra_qty: null, rule_applies: true },
+  ];
+  assert.deepEqual(pickPoStoreAddExtra(mixed, 11, 7), { r: 0, e: 0, ruleApplies: true });
+});
+
+test("小數：差額 0.1、追加 0.2 ⇒ 請購、採購剛好加 0.3（沒有 0.30000000000000004 這種浮點尾數）", () => {
+  assert.deepEqual(estimatePoStoreAdd(0.1, 0.2, PO_STORE_ADD_NO_EXTRA), { prAdd: 0.3, poAdd: 0.3 });
+  assert.deepEqual(estimatePoStoreAdd(0.1, 0.2, RULE(0, 0)), { prAdd: 0.3, poAdd: 0.3 });
+  assert.deepEqual(estimatePoStoreAdd(0.1, 0.2, RULE(0.1, 0)), { prAdd: 0.3, poAdd: 0.4 });
+});
+
 // ============================================================
 // 三、說明文字（數字對、解釋也對）
 //   不套新規則：跟改前（75bab10a 的 POStoreAddModal.tsx :233-240、:404-407）原文一字不差
@@ -248,6 +271,23 @@ test("說明・R、E 讀取中／讀不到 ⇒ 照改前原文＋一行「照舊
   assert.deepEqual(explain(0, 2, null, "confirm"), [
     "　（叫貨後取消的件數讀不到，這是照舊算法估的，實際以送出後為準）",
     FOLLOW,
+  ]);
+});
+
+test("說明・A8 的 R 是 \"NaN\" ⇒ 跟讀不到一樣：改前原文＋「讀不到，照舊算法估，以送出後為準」，不當成套新規則、R＝0", () => {
+  const extra = pickPoStoreAddExtra(
+    [{ po_item_id: 11, campaign_id: 7, post_po_cancelled_qty: "NaN", prior_po_extra_qty: 0, rule_applies: true }],
+    11,
+    7,
+  );
+  assert.deepEqual(explain(-1, 2, extra, "confirm"), [
+    `　（這個團原本已經多叫 1 件——之前有人取消——先用掉，所以${PO}只加 1 件）`,
+    "　（叫貨後取消的件數讀不到，這是照舊算法估的，實際以送出後為準）",
+    FOLLOW,
+  ]);
+  assert.deepEqual(explain(-1, 2, extra, "preview", false), [
+    "這個團原本已經多叫 1 件（之前有人取消），會先用掉。",
+    "叫貨後取消的件數讀不到，這是照舊算法估的，實際以送出後為準。",
   ]);
 });
 

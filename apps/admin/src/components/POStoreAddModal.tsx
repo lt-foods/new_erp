@@ -461,7 +461,7 @@ export function POStoreAddModal({
                 estimate,
                 storeTotal,
                 extra,
-                extraLoading: extraErr == null,
+                extraLoading: extraErr == null && extraRows == null,
                 style: "preview",
                 poTerm: PO_TERM_ZH,
               }).map((line, i) => (
