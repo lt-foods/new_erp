@@ -21,6 +21,9 @@
 --      訂單與品項都沒有斷貨標記（stockout_at）。
 --   5. （整張取消、取消時間晚於叫貨、品項本身沒有取消／過期）
 --      或（品項被刪、編輯歷史有一筆「狀態→取消」晚於叫貨、訂單不是轉出）。
+--   6. 這張訂單在叫貨之後沒有「復原取消」過（rpc_restore_cancelled_order 寫的編輯歷史：
+--      單頭、狀態、cancelled → 有效）。有的話照今天、不照派（保守：取消時間會被覆寫，
+--      分不出第一次取消是在叫貨前還是叫貨後，寧可少派、不多派）。
 --
 -- 本檔改了什麼（照實作計畫第五節 A1～A10）：
 --   A1  purchase_request_store_additions 加一欄 po_delta_qty（採購單實際加幾件；舊列空著）
@@ -32,7 +35,8 @@
 --   A7  重建 rpc_add_po_store_demands（採購單頁「分店／批發追加」寫入）
 --   A8  新增唯讀 rpc_preview_po_store_addition_extra(p_po_id)
 --   A9  新增唯讀 rpc_order_cancel_po_notice(p_order_id, p_item_id)
---   A10 權限
+--   A14 新增唯讀 rpc_picking_post_po_cancelled_by_sku(p_sku_ids)：派貨工作台（B1）要顯示的叫貨後取消件數
+--   A10 權限（寫在每一組裡，見「安全性」）
 --
 -- ⚠️ 三支重建都以「正式庫現在那一版」逐字為底（2026-10-15 CEO 核對查詢 31 列全 ✅），
 --    **不是**程式碼紀錄最新那一版：
@@ -60,14 +64,23 @@
 --
 -- 已知限制（丙做不到、照今天）：
 --   叫貨後新開的單、加在既有品項上的叫貨後加量、叫貨後改少數量；一團多張採購單；
---   請購草稿到轉採購之間取消的；取消路徑沒寫取消時間的。
+--   請購草稿到轉採購之間取消的；取消路徑沒寫取消時間的；
+--   叫貨後取消過又復原、之後再取消的（條件 6：照今天留總倉）。
 --
 -- 安全性：
 --   - 0 段前置檢查放在所有改動之前、只讀（只建暫存 view 比對、用完就丟），
 --     任何一項不符整份停下、一行都不改。整份可以重貼（第二次結果一樣）。
---   - 新 view 比照派貨表與 #1082：以擁有者身分讀表、不另加租戶篩選；只給登入後台的人讀。
---   - _picking_po_rule_cutover() **不收回**執行權限：view 裡呼叫的函式是用「讀 view 的人」
---     的權限執行的，收回會讓派貨工作台整個讀不出來。它只回一個時間。
+--   - 中途斷線也能重貼：每一組永久改動（建立／改欄位＋說明＋權限）各包在自己的小交易
+--     （BEGIN … COMMIT）裡。斷在一組中間＝那一組整組沒做；做完的組都帶本檔記號，
+--     前置檢查認得，整份重貼就會接著做完，結果跟一次貼完一樣。
+--   - 兩支新 view 不給任何前端角色讀（收回 PUBLIC／anon／authenticated，不另外授權）：
+--     派貨表、建撿貨單、分店追加、兩支只讀查詢都是用擁有者身分讀它們，登入後台的人讀派貨表照常。
+--     前端要顯示的資料走 A14（有 _current_tenant_id() 租戶檢查，只回自己公司的、只到「採購單品項 × 店」）。
+--   - _picking_po_rule_cutover()：收回 PUBLIC／anon，只給 authenticated 執行。
+--     ⚠️ authenticated 不能收回：view 裡呼叫的函式是用「讀 view 的人」的權限執行的，
+--     收回會讓派貨工作台整個讀不出來。它只回一個時間。
+--   - 新函式一律收回 PUBLIC／anon、只給 authenticated；建立和收回在同一個交易裡，
+--     不會有「建好了但還沒收回權限」的空檔。
 --
 -- 上線順序：先貼本檔 → 貼確認查詢全 ✅（含「舊數字不變」0 筆）→ 再合併前端。
 -- 還原：scripts/PROD-post-po-cancel-2026-10/rollback_20261016000000.sql
@@ -113,7 +126,8 @@ BEGIN
     'customer_order_items.created_at',
     'customer_order_audit_log.order_id', 'customer_order_audit_log.entity_type',
     'customer_order_audit_log.entity_id', 'customer_order_audit_log.field',
-    'customer_order_audit_log.after_value', 'customer_order_audit_log.created_at',
+    'customer_order_audit_log.before_value', 'customer_order_audit_log.after_value',
+    'customer_order_audit_log.created_at',
     'stores.id', 'stores.is_active', 'stores.deleted_at',
     'skus.id', 'skus.sku_code', 'skus.product_name', 'skus.variant_name'
   ] LOOP
@@ -658,12 +672,13 @@ WITH po_skus AS (
       FROM pg_proc p JOIN pg_namespace ns ON ns.oid = p.pronamespace
      WHERE ns.nspname = 'public'
        AND p.proname IN ('_picking_po_rule_cutover', 'rpc_preview_po_store_addition_extra',
-                         'rpc_order_cancel_po_notice')
+                         'rpc_order_cancel_po_notice', 'rpc_picking_post_po_cancelled_by_sku')
   LOOP
     IF NOT l_rec.ours OR l_rec.args IS DISTINCT FROM (CASE l_rec.proname
          WHEN '_picking_po_rule_cutover' THEN ''
          WHEN 'rpc_preview_po_store_addition_extra' THEN 'p_po_id bigint'
          WHEN 'rpc_order_cancel_po_notice' THEN 'p_order_id bigint, p_item_id bigint'
+         WHEN 'rpc_picking_post_po_cancelled_by_sku' THEN 'p_sku_ids bigint[]'
        END) THEN
       l_bad := l_bad || ('public.' || l_rec.proname || '(' || l_rec.args || ') 已經存在，但不是本檔的版本');
     END IF;
@@ -692,17 +707,25 @@ $precheck$;
 
 -- ----------------------------------------------------------------------------
 -- A1. 分店加單紀錄表加一欄：採購單實際加幾件（可空；舊列空著＝跟請購加的一樣）
+--     （改欄位＋欄位說明同一個交易：說明裡的記號是前置檢查認「本檔加的」的依據）
 -- ----------------------------------------------------------------------------
+BEGIN;
+
 ALTER TABLE public.purchase_request_store_additions
   ADD COLUMN IF NOT EXISTS po_delta_qty NUMERIC(18,3) CHECK (po_delta_qty >= 0);
 
 COMMENT ON COLUMN public.purchase_request_store_additions.po_delta_qty IS
   '採購單實際加幾件（post_po_cancel_to_store:20261016000000）。空的＝本檔上線前的紀錄或請購單草稿頁的追加，當作跟 pr_delta_qty 一樣。同一次追加（同一個 request_key）每家店一列、數字相同。';
 
+COMMIT;
+
 -- ----------------------------------------------------------------------------
 -- A2. 分界時間：這個時間（含）之後才成立的採購單品項，才套「叫貨後取消照派原店」。
 --     一鍵關掉＝把它改成回 'infinity'（scripts/PROD-post-po-cancel-2026-10/kill_switch_…）。
+--     權限：收回 PUBLIC／anon，只給 authenticated（派貨表會用到它，見檔頭「安全性」）。
 -- ----------------------------------------------------------------------------
+BEGIN;
+
 CREATE OR REPLACE FUNCTION public._picking_po_rule_cutover()
 RETURNS TIMESTAMPTZ
 LANGUAGE sql
@@ -715,11 +738,19 @@ $$;
 COMMENT ON FUNCTION public._picking_po_rule_cutover() IS
   '派車照採購單數量（post_po_cancel_to_store:20261016000000）：這個時間（含）之後成立的採購單品項，叫貨後才取消的件數照派原店。回 infinity＝關掉。';
 
+REVOKE ALL ON FUNCTION public._picking_po_rule_cutover() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public._picking_po_rule_cutover() TO authenticated;
+
+COMMIT;
+
 -- ----------------------------------------------------------------------------
 -- A3. 哪些（採購單品項, 團, 商品）套新規則
 --     po_skus／po_campaigns 兩段逐字照抄派貨表（20260818000030:62-77、:85-99），
 --     跟 #1082 檢查表（20261015000000:130-160）也是同一條連法、同一組狀態。
+--     權限：不給任何前端角色（派貨表等以擁有者身分讀它）。
 -- ----------------------------------------------------------------------------
+BEGIN;
+
 CREATE OR REPLACE VIEW public.v_picking_po_rule_items AS
 WITH po_skus AS (
          SELECT po.id AS po_id,
@@ -777,11 +808,18 @@ WITH po_skus AS (
 --   兩邊都照今天，不會打架。
 
 COMMENT ON VIEW public.v_picking_po_rule_items IS
-  '派車照採購單數量（post_po_cancel_to_store:20261016000000）：一列＝套新規則的（採購單品項, 團, 商品）。條件：這一團這樣商品剛好只連到 1 個有效採購單品項（連法同 v_picking_demand_by_po），而且那個採購單品項在分界時間 _picking_po_rule_cutover() 之後成立。ordered_at＝採購單品項建立時間（叫貨那一刻）。只讀。';
+  '派車照採購單數量（post_po_cancel_to_store:20261016000000）：一列＝套新規則的（採購單品項, 團, 商品）。條件：這一團這樣商品剛好只連到 1 個有效採購單品項（連法同 v_picking_demand_by_po），而且那個採購單品項在分界時間 _picking_po_rule_cutover() 之後成立。ordered_at＝採購單品項建立時間（叫貨那一刻）。只讀；不給前端角色直接讀。';
+
+REVOKE ALL ON public.v_picking_po_rule_items FROM PUBLIC, anon, authenticated;
+
+COMMIT;
 
 -- ----------------------------------------------------------------------------
--- A4. 叫貨後才取消的訂單品項（條件見檔頭）
+-- A4. 叫貨後才取消的訂單品項（條件見檔頭 1～6）
+--     權限：不給任何前端角色（裡面有訂單層資料、而且不分公司；前端走 A14）。
 -- ----------------------------------------------------------------------------
+BEGIN;
+
 CREATE OR REPLACE VIEW public.v_picking_post_po_cancelled AS
 -- (1) 整張取消：訂單取消時間晚於叫貨、品項本身沒有取消／過期
  SELECT r.tenant_id,
@@ -808,6 +846,15 @@ CREATE OR REPLACE VIEW public.v_picking_post_po_cancelled AS
                                   AND coi.stockout_at IS NULL
                                   AND coi.created_at <= r.ordered_at
      LEFT JOIN stores st ON st.id = co.pickup_store_id
+  WHERE NOT (EXISTS ( SELECT 1
+           FROM customer_order_audit_log ra
+          WHERE ra.order_id = co.id
+            AND ra.entity_type = 'order'::text
+            AND ra.entity_id = co.id
+            AND ra.field = 'status'::text
+            AND ra.before_value = to_jsonb('cancelled'::text)
+            AND ra.after_value <> to_jsonb('cancelled'::text)
+            AND ra.created_at > r.ordered_at))
 UNION ALL
 -- (2) 刪單一品項：品項取消、編輯歷史有一筆「狀態→取消」晚於叫貨、訂單不是轉出
  SELECT r.tenant_id,
@@ -840,7 +887,16 @@ UNION ALL
             AND l.field = 'status'::text
             AND l.after_value = to_jsonb('cancelled'::text)
             AND l.created_at > r.ordered_at) ia ON ia.cancelled_at IS NOT NULL
-     LEFT JOIN stores st ON st.id = co.pickup_store_id;
+     LEFT JOIN stores st ON st.id = co.pickup_store_id
+  WHERE NOT (EXISTS ( SELECT 1
+           FROM customer_order_audit_log ra
+          WHERE ra.order_id = co.id
+            AND ra.entity_type = 'order'::text
+            AND ra.entity_id = co.id
+            AND ra.field = 'status'::text
+            AND ra.before_value = to_jsonb('cancelled'::text)
+            AND ra.after_value <> to_jsonb('cancelled'::text)
+            AND ra.created_at > r.ordered_at));
 -- ⓘ 兩段互斥（(1) 品項沒取消、(2) 品項已取消），UNION ALL 不會重複。
 -- ⓘ 分兩段寫是為了速度：只從「已取消的訂單」「已取消的品項」找，不必掃這一團所有有效訂單
 --   （(1) 用 idx_corders_campaign (tenant_id, campaign_id, status)；(2) 用 idx_coi_sku_status
@@ -848,17 +904,29 @@ UNION ALL
 --   多寫是讓查詢用得到這兩個索引。上線幾個月後所有採購單都在分界之後，掃全部有效訂單會越來越慢。
 -- ⓘ 刪品項的編輯歷史只有 rpc_delete_order_item 會寫「→ cancelled」（20260831000090:810-815）；
 --   復原取消寫的是「cancelled →」（after_value 不是 cancelled），不會被當成取消。
+-- ⓘ 條件 6（兩段都有）：「復原取消」的編輯歷史是 rpc_restore_cancelled_order 寫的
+--   （20261013000000:1690-1703：entity_type 'order'、entity_id＝訂單、field 'status'、
+--   before_value to_jsonb('cancelled')、after_value＝復原後的狀態）。叫貨之後有這一筆 ⇒ 不算：
+--   rpc_cancel_aid_order 會覆寫 cancelled_at、復原會清掉它，看不出第一次取消是在叫貨前還是叫貨後。
+--   代價：叫貨後取消→復原→再取消的，也照今天留總倉（少派、不會多派）。
+--   用 idx_coa_entity (order_id, entity_type, entity_id) 查，只對已取消的那幾張單查。
 
 COMMENT ON VIEW public.v_picking_post_po_cancelled IS
-  '派車照採購單數量（post_po_cancel_to_store:20261016000000）：一列＝一個叫貨後才取消的訂單品項（只看 v_picking_po_rule_items 的採購單品項；叫貨前就有、不是轉入單、沒有斷貨標記；整張取消晚於叫貨或刪品項歷史晚於叫貨）。store_active＝門市啟用且沒刪除；派貨表只帶 store_active 的列，停用店留給總倉決定。只讀。';
+  '派車照採購單數量（post_po_cancel_to_store:20261016000000）：一列＝一個叫貨後才取消的訂單品項（只看 v_picking_po_rule_items 的採購單品項；叫貨前就有、不是轉入單、沒有斷貨標記；整張取消晚於叫貨或刪品項歷史晚於叫貨；叫貨後沒有復原取消過）。store_active＝門市啟用且沒刪除；派貨表只帶 store_active 的列，停用店留給總倉決定。只讀；不給前端角色直接讀（前端用 rpc_picking_post_po_cancelled_by_sku）。';
+
+REVOKE ALL ON public.v_picking_post_po_cancelled FROM PUBLIC, anon, authenticated;
+
+COMMIT;
 
 -- ----------------------------------------------------------------------------
 -- A5. 派貨工作台那張表：以 20260818000030:61-267 逐字為底，
 --     只在 store_demand 的 UNION ALL 多一段（叫貨後才取消、店沒停用的件數）。
 --     每個（採購單品項, 店）在 store_demand 仍只有一列（外面那層 GROUP BY 會加總），
 --     v_order_shortage 讀的 wave_qty／shipped_qty 不會被重複算。
---     ⛔ 沒有帶入 #917（20260908000000）那三行。
+--     ⛔ 沒有帶入 #917（20260908000000）那三行。權限：CREATE OR REPLACE 保留原本的，不動。
 -- ----------------------------------------------------------------------------
+BEGIN;
+
 CREATE OR REPLACE VIEW public.v_picking_demand_by_po AS
 WITH po_skus AS (
          SELECT po.id AS po_id,
@@ -1079,9 +1147,14 @@ COMMENT ON VIEW public.v_picking_demand_by_po IS
   'po_sku_already_wave/has_stock_left 維持跟著來源 PO。其餘語意同 20260807000000。'
   '（post_po_cancel_to_store:20261016000000）以 20260818000030 為底，store_demand 多一段：叫貨後才取消、門市沒停用的件數照派原店（v_picking_post_po_cancelled）；沒有 20260908000000（#917）。';
 
+COMMIT;
+
 -- ----------------------------------------------------------------------------
 -- A6. 建撿貨單：以「20260816000050:268 ＋ 20260923110000 總倉封頂」逐字為底，只加兩處（見檔頭）
+--     權限：CREATE OR REPLACE 保留原本的，不動。
 -- ----------------------------------------------------------------------------
+BEGIN;
+
 CREATE OR REPLACE FUNCTION public.rpc_create_wave_from_po(p_po_id bigint, p_wave_date date, p_allocations jsonb, p_operator uuid)
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -1606,6 +1679,8 @@ COMMENT ON FUNCTION public.rpc_create_wave_from_po(BIGINT, DATE, JSONB, UUID) IS
   '步驟 4.5 守衛）。新增總倉庫存封頂：本次分配 + 未出倉 wave 保留量 ≤ on_hand - reserved。'
   '（post_po_cancel_to_store:20261016000000）叫貨後才取消、照派原店的店（門市沒停用）：步驟 4.5 不算借調；步驟 6 本單開團沒有有效訂單時標那一團。以 20260816000050＋20260923110000 為底，沒有 20260908000000（#917）。';
 
+COMMIT;
+
 -- ----------------------------------------------------------------------------
 -- A8. 唯讀：分店追加視窗算「採購單會加幾件」要用的 R、E（A7 寫入也用這一支，同一份算法）
 --     一列＝這張採購單的一個（採購單品項, 團）：
@@ -1614,6 +1689,8 @@ COMMENT ON FUNCTION public.rpc_create_wave_from_po(BIGINT, DATE, JSONB, UUID) IS
 --     兩個都是 0 的（採購單品項, 團）不回。權限同預覽（_pr_qty_sync_assert_perm）。
 --     ⓘ 放在 A7 前面：A7 會呼叫它。
 -- ----------------------------------------------------------------------------
+BEGIN;
+
 CREATE OR REPLACE FUNCTION public.rpc_preview_po_store_addition_extra(
   p_po_id BIGINT
 ) RETURNS TABLE(
@@ -1687,11 +1764,19 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.rpc_preview_po_store_addition_extra(BIGINT) IS
-  '採購單頁「分店／批發追加」用（post_po_cancel_to_store:20261016000000）：每個（採購單品項, 團）叫貨後才取消的件數 R（含停用店）與以前追加已多加的件數 E。採購單會加 max(max(差額+N,0), 差額+N+R−E)。唯讀。';
+  '採購單頁「分店／批發追加」用（post_po_cancel_to_store:20261016000000）：每個（採購單品項, 團）叫貨後才取消的件數 R（含停用店）與以前追加時採購單比請購多加的件數 E。採購單會加 max(max(差額+N,0), 差額+N+R−E)。唯讀。';
+
+REVOKE ALL ON FUNCTION public.rpc_preview_po_store_addition_extra(BIGINT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.rpc_preview_po_store_addition_extra(BIGINT) TO authenticated;
+
+COMMIT;
 
 -- ----------------------------------------------------------------------------
 -- A7. 分店追加寫入：以 20261002000000:794 逐字為底（改的地方標「20261016000000」）
+--     權限：CREATE OR REPLACE 保留原本的（20261002000000 收回 PUBLIC、只給 authenticated），不動。
 -- ----------------------------------------------------------------------------
+BEGIN;
+
 CREATE OR REPLACE FUNCTION public.rpc_add_po_store_demands(
   p_po_id        BIGINT,
   p_po_item_id   BIGINT,
@@ -2201,13 +2286,16 @@ $$;
 COMMENT ON FUNCTION public.rpc_add_po_store_demands(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID) IS
   '採購單頁「分店／批發追加」：替分店／批發在原團加店家內部單（+N），再用 _pr_campaign_sku_remaining_rows 算出 X = max(差額, 0)，請購單（先各團明細後總數）+X。不重開團、不通知廠商。同一 request_key 重送：團與各店數量都一樣才回上次結果，不一樣就擋。採購單品項被別人鎖著或被判死結時整筆不寫、回白話訊息。（post_po_cancel_to_store:20261016000000）採購單 +max(X, 差額 + R − E)：R＝叫貨後才取消、照派原店的件數，E＝以前追加已多加的件數；紀錄表 po_delta_qty 記採購單實際加幾件。以 20261002000000 為底。';
 
+COMMIT;
 
 -- ----------------------------------------------------------------------------
 -- A9. 唯讀：店家按取消前問「這張單（或這一項）現在取消，會不會照派原店」
 --     回「取消後會照派原店」的品項、件數、採購單號、門市是否停用；沒有列＝不用提醒。
 --     條件跟 v_picking_post_po_cancelled 同一套（套新規則的採購單品項、叫貨前就有、
---     不是轉入單、沒有斷貨標記），再加「現在還有效」。
+--     不是轉入單、沒有斷貨標記、叫貨後沒有復原取消過），再加「現在還有效」。
 -- ----------------------------------------------------------------------------
+BEGIN;
+
 CREATE OR REPLACE FUNCTION public.rpc_order_cancel_po_notice(
   p_order_id BIGINT,
   p_item_id  BIGINT DEFAULT NULL
@@ -2270,29 +2358,98 @@ BEGIN
      AND coi.status NOT IN ('cancelled', 'expired')
      AND coi.stockout_at IS NULL
      AND coi.created_at <= r.ordered_at
+     -- 叫貨後復原取消過的單，再取消也不照派（v_picking_post_po_cancelled 條件 6）⇒ 不提醒
+     AND NOT EXISTS (
+           SELECT 1
+             FROM public.customer_order_audit_log ra
+            WHERE ra.order_id = co.id
+              AND ra.entity_type = 'order'
+              AND ra.entity_id = co.id
+              AND ra.field = 'status'
+              AND ra.before_value = to_jsonb('cancelled'::TEXT)
+              AND ra.after_value <> to_jsonb('cancelled'::TEXT)
+              AND ra.created_at > r.ordered_at)
    ORDER BY coi.id;
 END;
 $$;
 
 COMMENT ON FUNCTION public.rpc_order_cancel_po_notice(BIGINT, BIGINT) IS
-  '取消前提醒用（post_po_cancel_to_store:20261016000000）：這張單（或這一項）現在取消，哪些品項會照派原店（總倉已叫貨）。沒有列＝不用提醒。只讀、租戶檢查。';
+  '取消前提醒用（post_po_cancel_to_store:20261016000000）：這張單（或這一項）現在取消，哪些品項會照派原店（總倉已叫貨）。沒有列＝不用提醒（叫貨後復原取消過的單也不提醒：再取消照今天留總倉）。只讀、租戶檢查。';
 
--- ----------------------------------------------------------------------------
--- A10. 權限
---   新 view：比照 #1082（先收回 PUBLIC／anon／authenticated，再只給 authenticated 讀）。
---   新函式：收回 PUBLIC／anon，只給 authenticated 執行。
---   _picking_po_rule_cutover()：不收回（見檔頭「安全性」），明寫給 authenticated。
---   三支重建：CREATE OR REPLACE 會保留原本的權限，不動。
--- ----------------------------------------------------------------------------
-REVOKE ALL ON public.v_picking_po_rule_items FROM PUBLIC, anon, authenticated;
-GRANT SELECT ON public.v_picking_po_rule_items TO authenticated;
-REVOKE ALL ON public.v_picking_post_po_cancelled FROM PUBLIC, anon, authenticated;
-GRANT SELECT ON public.v_picking_post_po_cancelled TO authenticated;
-
-REVOKE ALL ON FUNCTION public.rpc_preview_po_store_addition_extra(BIGINT) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.rpc_preview_po_store_addition_extra(BIGINT) TO authenticated;
 REVOKE ALL ON FUNCTION public.rpc_order_cancel_po_notice(BIGINT, BIGINT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.rpc_order_cancel_po_notice(BIGINT, BIGINT) TO authenticated;
-GRANT EXECUTE ON FUNCTION public._picking_po_rule_cutover() TO authenticated;
 
+COMMIT;
+
+-- ----------------------------------------------------------------------------
+-- A14. 唯讀：派貨工作台（B1）要顯示的「叫貨後取消照派原店／停用店沒帶」件數
+--     輸入：一批商品 id（跟工作台讀 #1082 檢查表同一種分法：每批最多 100 個，各批同時發）。
+--     輸出：一列＝（採購單, 採購單品項, 商品, 店）：件數合計、門市是否停用。
+--       store_active＝true ：已經照派原店（派貨表裡已經算進那家店）
+--       store_active＝false：停用店，沒帶進派貨表，留給總倉決定
+--     只回自己公司的（_current_tenant_id()）；只到「採購單品項 × 店」，不回訂單、客人。
+--     不另外檢查角色：能讀派貨表的人（登入後台的）都能用，範圍比派貨表窄（派貨表不分公司）。
+-- ----------------------------------------------------------------------------
+BEGIN;
+
+CREATE OR REPLACE FUNCTION public.rpc_picking_post_po_cancelled_by_sku(
+  p_sku_ids BIGINT[]
+) RETURNS TABLE(
+  po_id        BIGINT,
+  po_item_id   BIGINT,
+  sku_id       BIGINT,
+  store_id     BIGINT,
+  qty          NUMERIC,
+  store_active BOOLEAN
+)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+-- post_po_cancel_to_store:20261016000000
+#variable_conflict use_column
+DECLARE
+  v_tenant UUID;
+BEGIN
+  v_tenant := public._current_tenant_id();
+  IF v_tenant IS NULL THEN
+    RAISE EXCEPTION 'tenant is required';
+  END IF;
+
+  IF COALESCE(cardinality(p_sku_ids), 0) > 100 THEN
+    RAISE EXCEPTION '一次最多查 100 個商品，請分批';
+  END IF;
+
+  RETURN QUERY
+  SELECT ppc.po_id,
+         ppc.po_item_id,
+         ppc.sku_id,
+         ppc.store_id,
+         SUM(ppc.qty),
+         ppc.store_active
+    FROM public.v_picking_post_po_cancelled ppc
+   WHERE ppc.tenant_id = v_tenant
+     AND ppc.sku_id = ANY (p_sku_ids)
+   GROUP BY ppc.po_id, ppc.po_item_id, ppc.sku_id, ppc.store_id, ppc.store_active
+   ORDER BY ppc.po_item_id, ppc.store_id;
+END;
+$$;
+
+COMMENT ON FUNCTION public.rpc_picking_post_po_cancelled_by_sku(BIGINT[]) IS
+  '派貨工作台用（post_po_cancel_to_store:20261016000000）：這批商品（最多 100 個）在自己公司裡，叫貨後才取消的件數，按（採購單品項, 店）加總。store_active＝true 已照派原店、false 停用店沒帶（留給總倉決定）。只讀、租戶檢查。';
+
+REVOKE ALL ON FUNCTION public.rpc_picking_post_po_cancelled_by_sku(BIGINT[]) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.rpc_picking_post_po_cancelled_by_sku(BIGINT[]) TO authenticated;
+
+COMMIT;
+
+-- ----------------------------------------------------------------------------
+-- A10. 權限：都寫在上面各組的交易裡（建立和收回同一個交易）。總整理：
+--   兩支新 view：收回 PUBLIC／anon／authenticated，不給任何前端角色。
+--   rpc_preview_po_store_addition_extra、rpc_order_cancel_po_notice、rpc_picking_post_po_cancelled_by_sku：
+--     收回 PUBLIC／anon，只給 authenticated。
+--   _picking_po_rule_cutover()：收回 PUBLIC／anon，只給 authenticated（不能再收：見檔頭「安全性」）。
+--   三支重建：CREATE OR REPLACE 會保留原本的權限，不動。
+-- ----------------------------------------------------------------------------
 NOTIFY pgrst, 'reload schema';

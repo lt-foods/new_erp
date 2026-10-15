@@ -13,7 +13,7 @@
 --   ＝ migration 那一步沒有貼成功。
 --
 -- 對正式庫的負擔（請看完再按）
---   第 13、14 列會把派貨工作台那張表「改前的算法」與「現在的算法」各算一次
+--   第 14、15 列會把派貨工作台那張表「改前的算法」與「現在的算法」各算一次
 --   （跟打開兩次派貨工作台差不多重）。請挑沒人在派貨、收貨的時候跑。
 -- ============================================================================
 WITH
@@ -26,7 +26,8 @@ fn AS (
     JOIN pg_namespace ns ON ns.oid = p.pronamespace
    WHERE ns.nspname = 'public'
      AND p.proname IN ('rpc_create_wave_from_po', 'rpc_add_po_store_demands', '_picking_po_rule_cutover',
-                       'rpc_preview_po_store_addition_extra', 'rpc_order_cancel_po_notice')
+                       'rpc_preview_po_store_addition_extra', 'rpc_order_cancel_po_notice',
+                       'rpc_picking_post_po_cancelled_by_sku')
    GROUP BY p.proname
 ),
 vinfo AS (
@@ -334,12 +335,18 @@ checks(seq, status, item, detail) AS (
          COALESCE((SELECT f.args FROM fn f WHERE f.proname = 'rpc_order_cancel_po_notice'), '找不到')
   UNION ALL
   SELECT 6,
+         CASE WHEN (SELECT f.marked AND f.args = 'p_sku_ids bigint[]' FROM fn f
+                     WHERE f.proname = 'rpc_picking_post_po_cancelled_by_sku') THEN '✅' ELSE '❌' END,
+         '新查詢 rpc_picking_post_po_cancelled_by_sku(p_sku_ids)（派貨工作台用）在、而且是本檔的版本',
+         COALESCE((SELECT f.args FROM fn f WHERE f.proname = 'rpc_picking_post_po_cancelled_by_sku'), '找不到')
+  UNION ALL
+  SELECT 7,
          CASE WHEN (SELECT c.typ = 'numeric(18,3)' AND position('post_po_cancel_to_store:20261016000000' IN c.note) > 0
                       FROM col c) THEN '✅' ELSE '❌' END,
          '分店加單紀錄表多了一欄 po_delta_qty（採購單實際加幾件）',
          COALESCE((SELECT c.typ FROM col c), '找不到這一欄')
   UNION ALL
-  SELECT 7,
+  SELECT 8,
          (SELECT CASE WHEN v.def IS NULL THEN '❌'
                       WHEN md5(regexp_replace(v.def, '\s+', '', 'g')) = '6b8fd6c1912717b8aee2a948fed275e5' THEN '✅'
                       WHEN position('v_picking_post_po_cancelled' IN v.def) > 0
@@ -352,7 +359,7 @@ checks(seq, status, item, detail) AS (
                       ELSE 'md5 去空白 ' || md5(regexp_replace(v.def, '\s+', '', 'g')) END
             FROM vinfo v WHERE v.n = 'v_picking_demand_by_po')
   UNION ALL
-  SELECT 8,
+  SELECT 9,
          CASE WHEN (SELECT f.sig FROM fn f WHERE f.proname = 'rpc_create_wave_from_po') = 'cb6be9654963d06a9a4e06ca12ca471a'
               THEN '✅' ELSE '❌' END,
          '建撿貨單 rpc_create_wave_from_po 是本檔新版',
@@ -361,7 +368,7 @@ checks(seq, status, item, detail) AS (
                       ELSE '不認得：' || COALESCE(f.sig, '找不到') END
             FROM (SELECT (SELECT f2.sig FROM fn f2 WHERE f2.proname = 'rpc_create_wave_from_po') AS sig) f)
   UNION ALL
-  SELECT 9,
+  SELECT 10,
          CASE WHEN (SELECT f.sig FROM fn f WHERE f.proname = 'rpc_add_po_store_demands') = '87dfda93e5c1a54dc5ae8c8fd05dca44'
               THEN '✅' ELSE '❌' END,
          '分店追加寫入 rpc_add_po_store_demands 是本檔新版',
@@ -370,51 +377,64 @@ checks(seq, status, item, detail) AS (
                       ELSE '不認得：' || COALESCE(f.sig, '找不到') END
             FROM (SELECT (SELECT f2.sig FROM fn f2 WHERE f2.proname = 'rpc_add_po_store_demands') AS sig) f)
   UNION ALL
-  SELECT 10,
-         CASE WHEN has_table_privilege('authenticated', 'public.v_picking_po_rule_items', 'SELECT')
-               AND has_table_privilege('authenticated', 'public.v_picking_post_po_cancelled', 'SELECT')
+  SELECT 11,
+         CASE WHEN NOT has_table_privilege('authenticated', 'public.v_picking_po_rule_items', 'SELECT')
+               AND NOT has_table_privilege('authenticated', 'public.v_picking_post_po_cancelled', 'SELECT')
                AND NOT has_table_privilege('anon', 'public.v_picking_po_rule_items', 'SELECT')
                AND NOT has_table_privilege('anon', 'public.v_picking_post_po_cancelled', 'SELECT')
                AND NOT has_table_privilege('public', 'public.v_picking_po_rule_items', 'SELECT')
                AND NOT has_table_privilege('public', 'public.v_picking_post_po_cancelled', 'SELECT')
+               AND has_table_privilege('authenticated', 'public.v_picking_demand_by_po', 'SELECT')
               THEN '✅' ELSE '❌' END,
-         '兩支新 view：只有登入後台的人讀得到（沒登入的、所有人共用的 PUBLIC 都讀不到）',
-         ''
-  UNION ALL
-  SELECT 11,
-         CASE WHEN has_function_privilege('authenticated', 'public.rpc_preview_po_store_addition_extra(bigint)', 'EXECUTE')
-               AND has_function_privilege('authenticated', 'public.rpc_order_cancel_po_notice(bigint,bigint)', 'EXECUTE')
-               AND NOT has_function_privilege('anon', 'public.rpc_preview_po_store_addition_extra(bigint)', 'EXECUTE')
-               AND NOT has_function_privilege('anon', 'public.rpc_order_cancel_po_notice(bigint,bigint)', 'EXECUTE')
-               AND NOT has_function_privilege('public', 'public.rpc_preview_po_store_addition_extra(bigint)', 'EXECUTE')
-               AND NOT has_function_privilege('public', 'public.rpc_order_cancel_po_notice(bigint,bigint)', 'EXECUTE')
-              THEN '✅' ELSE '❌' END,
-         '兩支新查詢：只有登入後台的人能用',
+         '兩支新 view：前端角色都不能直接讀（登入後台的、沒登入的、PUBLIC 都沒有）；登入後台的人讀派貨表照常',
          ''
   UNION ALL
   SELECT 12,
-         CASE WHEN has_function_privilege('authenticated', 'public._picking_po_rule_cutover()', 'EXECUTE')
+         CASE WHEN has_function_privilege('authenticated', 'public.rpc_preview_po_store_addition_extra(bigint)', 'EXECUTE')
+               AND has_function_privilege('authenticated', 'public.rpc_order_cancel_po_notice(bigint,bigint)', 'EXECUTE')
+               AND has_function_privilege('authenticated', 'public.rpc_picking_post_po_cancelled_by_sku(bigint[])', 'EXECUTE')
+               AND NOT has_function_privilege('anon', 'public.rpc_preview_po_store_addition_extra(bigint)', 'EXECUTE')
+               AND NOT has_function_privilege('anon', 'public.rpc_order_cancel_po_notice(bigint,bigint)', 'EXECUTE')
+               AND NOT has_function_privilege('anon', 'public.rpc_picking_post_po_cancelled_by_sku(bigint[])', 'EXECUTE')
+               AND NOT has_function_privilege('public', 'public.rpc_preview_po_store_addition_extra(bigint)', 'EXECUTE')
+               AND NOT has_function_privilege('public', 'public.rpc_order_cancel_po_notice(bigint,bigint)', 'EXECUTE')
+               AND NOT has_function_privilege('public', 'public.rpc_picking_post_po_cancelled_by_sku(bigint[])', 'EXECUTE')
               THEN '✅' ELSE '❌' END,
-         '登入後台的人能用分界時間（派貨表會用到它，用不了派貨工作台會整個讀不出來）',
+         '三支新查詢：只有登入後台的人能用（沒登入的、PUBLIC 都不行）',
          ''
   UNION ALL
   SELECT 13,
+         CASE WHEN has_function_privilege('authenticated', 'public._picking_po_rule_cutover()', 'EXECUTE')
+               AND NOT has_function_privilege('anon', 'public._picking_po_rule_cutover()', 'EXECUTE')
+               AND NOT has_function_privilege('public', 'public._picking_po_rule_cutover()', 'EXECUTE')
+              THEN '✅' ELSE '❌' END,
+         '分界時間：登入後台的人能用（派貨表會用到它，用不了派貨工作台會整個讀不出來）；沒登入的、PUBLIC 都不行',
+         ''
+  UNION ALL
+  SELECT 14,
          CASE WHEN (SELECT d.n_outside FROM diff_sum d) = 0 THEN '✅' ELSE '❌' END,
          '舊數字不變：派貨表跟改前的算法逐列比，差異只能出現在「套新規則」的採購單品項（貼上當天應該 0 筆）',
          (SELECT '差異 ' || d.n_all || ' 列：套新規則的採購單品項 ' || d.n_inside || ' 列、其他 ' || d.n_outside || ' 列'
             FROM diff_sum d)
   UNION ALL
-  SELECT 14,
+  SELECT 15,
          CASE WHEN (SELECT x.n FROM dup x) = 0 THEN '✅' ELSE '❌' END,
          '派貨表每個（採購單品項, 店）只有一列（不會重複算已撿／已派）',
          (SELECT x.n || ' 組重複' FROM dup x)
   UNION ALL
-  SELECT 15,
+  SELECT 16,
          NULL,
          '現在套新規則的採購單品項、叫貨後才取消的件數',
          (SELECT r.n || ' 個（採購單品項, 團）；叫貨後取消 ' || p.n_rows || ' 列，照派原店 '
                  || trim_scale(p.qty_active) || ' 件、停用店留總倉 ' || trim_scale(p.qty_inactive) || ' 件'
             FROM rule_sum r, ppc_sum p)
+  UNION ALL
+  SELECT 17,
+         NULL,
+         '沒登入的（anon）讀派貨表',
+         CASE WHEN has_table_privilege('anon', 'public.v_picking_demand_by_po', 'SELECT')
+              THEN '有讀的權限，但讀的時候會被分界時間函式擋下（讀不到）；登入後台的人不受影響'
+              ELSE '沒有讀的權限（讀不到）' END
 )
 SELECT c.seq AS "序",
        COALESCE(c.status, 'ℹ️') AS "結果",
@@ -423,8 +443,8 @@ SELECT c.seq AS "序",
   FROM checks c
 UNION ALL
 SELECT 99,
-       CASE WHEN (SELECT bool_and(c.status IN ('✅', '⚠️')) FROM checks c WHERE c.seq BETWEEN 1 AND 14)
+       CASE WHEN (SELECT bool_and(c.status IN ('✅', '⚠️')) FROM checks c WHERE c.seq BETWEEN 1 AND 15)
             THEN '✅' ELSE '❌' END,
-       '總結（第 1～14 列全部 ✅ 或 ⚠️ 才算貼對）',
+       '總結（第 1～15 列全部 ✅ 或 ⚠️ 才算貼對）',
        ''
  ORDER BY 1;

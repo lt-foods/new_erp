@@ -7,11 +7,14 @@
 --   只是想「先停用新規則」的話，用 kill_switch_20261016000000.sql 就好（只改一個時間，不用還原）。
 --
 -- 做了什麼（照順序）
---   1. 派貨表 v_picking_demand_by_po 回到 20260818000030 那一版（逐字；說明回到 20260816000050 那一句）
---   2. 建撿貨單 rpc_create_wave_from_po 回到「20260816000050 ＋ 20260923110000 總倉封頂」那一版（逐字）
---   3. 分店追加寫入 rpc_add_po_store_demands 回到 20261002000000 那一版（逐字）
---   4. 拿掉本檔新增的：rpc_order_cancel_po_notice、rpc_preview_po_store_addition_extra、
---      v_picking_post_po_cancelled、v_picking_po_rule_items、_picking_po_rule_cutover
+--   1. 派貨表 v_picking_demand_by_po 回到 20260818000030 那一版（逐字；權限照 20260816000050 再給一次
+--      authenticated 讀、說明回到 20260816000050 那一句）
+--   2. 建撿貨單 rpc_create_wave_from_po 回到「20260816000050 ＋ 20260923110000 總倉封頂」那一版（逐字；
+--      權限照 20260923110000 再給一次 authenticated 執行）
+--   3. 分店追加寫入 rpc_add_po_store_demands 回到 20261002000000 那一版（逐字；權限照原檔收回 PUBLIC、給 authenticated）
+--   4. 拿掉本檔新增的：rpc_picking_post_po_cancelled_by_sku、rpc_order_cancel_po_notice、
+--      rpc_preview_po_store_addition_extra、v_picking_post_po_cancelled、v_picking_po_rule_items、
+--      _picking_po_rule_cutover
 --   ⛔ 紀錄表新加的欄位 po_delta_qty **留著**（可空、舊程式不會讀它；拿掉會丟掉已經寫進去的紀錄）。
 --   不加 CASCADE：萬一有別的東西建在新 view 上，會直接報錯停下，不會連帶拿掉別人的東西。
 --
@@ -512,7 +515,7 @@ WITH po_skus AS (
       FROM pg_proc p JOIN pg_namespace ns ON ns.oid = p.pronamespace
      WHERE ns.nspname = 'public'
        AND p.proname IN ('_picking_po_rule_cutover', 'rpc_preview_po_store_addition_extra',
-                         'rpc_order_cancel_po_notice')
+                         'rpc_order_cancel_po_notice', 'rpc_picking_post_po_cancelled_by_sku')
   LOOP
     IF NOT l_rec.ours THEN
       l_bad := l_bad || ('public.' || l_rec.proname || '(' || l_rec.args || ') 不是 20261016000000 建的，不能拿掉');
@@ -527,6 +530,7 @@ $precheck$;
 
 -- ----------------------------------------------------------------------------
 -- 1. 派貨表回到 20260818000030:61-267（逐字）。先做這一步，才不會再依賴 v_picking_post_po_cancelled。
+--    權限與說明：20260816000050:258-263 逐字（權限再給一次，萬一中途被改掉也會補回來）
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE VIEW public.v_picking_demand_by_po AS
 WITH po_skus AS (
@@ -736,6 +740,8 @@ WITH po_skus AS (
      LEFT JOIN po_sku_demand_left dl ON dl.po_id = ps.po_id AND dl.sku_id = ps.sku_id
   WHERE COALESCE(sq.shipped_qty, 0::numeric) < GREATEST(COALESCE(g.gr_qty, 0::numeric), 1::numeric) AND (COALESCE(g.gr_qty, 0::numeric) > 0::numeric OR COALESCE(sd.demand_qty, 0::numeric) > 0::numeric);
 
+GRANT SELECT ON public.v_picking_demand_by_po TO authenticated;
+
 COMMENT ON VIEW public.v_picking_demand_by_po IS
   '撿貨工作站主視圖：PO × SKU × store 矩陣。campaign_demand 排除「跨店」衍生單、保留「同店」衍生單。'
   'wave_qty 含跨團借調歸屬分支（campaign 標記不屬於來源 PO 的 wave item，需求歸屬跟著標記走）；'
@@ -743,6 +749,7 @@ COMMENT ON VIEW public.v_picking_demand_by_po IS
 
 -- ----------------------------------------------------------------------------
 -- 2. 建撿貨單回到「20260816000050:268 ＋ 20260923110000 總倉封頂」（內文逐字，指紋 ea371af8434804c43a043334602f4205）
+--    權限與說明：20260923110000 逐字（權限再給一次）
 -- ----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.rpc_create_wave_from_po(p_po_id bigint, p_wave_date date, p_allocations jsonb, p_operator uuid)
  RETURNS jsonb
@@ -1234,6 +1241,8 @@ BEGIN
   );
 END;
 $function$;
+
+GRANT EXECUTE ON FUNCTION public.rpc_create_wave_from_po(BIGINT, DATE, JSONB, UUID) TO authenticated;
 
 COMMENT ON FUNCTION public.rpc_create_wave_from_po(BIGINT, DATE, JSONB, UUID) IS
   '由派貨工作台建撿貨單。跨團守衛：本單開團有需求 → 標該團；補貨來源 → NULL + 補貨 cap；'
@@ -1734,6 +1743,7 @@ COMMENT ON FUNCTION public.rpc_add_po_store_demands(BIGINT, BIGINT, BIGINT, JSON
 -- ----------------------------------------------------------------------------
 -- 4. 拿掉本檔新增的（函式先、view 後、分界時間最後：view 依賴它）
 -- ----------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS public.rpc_picking_post_po_cancelled_by_sku(BIGINT[]);
 DROP FUNCTION IF EXISTS public.rpc_order_cancel_po_notice(BIGINT, BIGINT);
 DROP FUNCTION IF EXISTS public.rpc_preview_po_store_addition_extra(BIGINT);
 DROP VIEW IF EXISTS public.v_picking_post_po_cancelled;
