@@ -5,6 +5,9 @@
 // 團已結單／已鎖、已轉採購、貨還沒到也還沒派時，替分店或批發加量：
 //   後端一次做三件事：原團加店家內部單（+N）、請購單 +X、採購單 +X，**不重開團**。
 //   X = max(這個團這個商品還沒叫貨的量, 0)，所以 X 可能 ≠ N（原本多叫就先用掉；原本少叫就一起補）。
+//   20261016000000（叫貨後取消照派原店）：套新規則的（採購單品項, 團），採購單改加 max(0, 差額+N+R−E)
+//   （叫貨後才取消的 R 件照派原店、不拿來抵），請購照舊 +X ⇒ 兩邊可能不一樣。
+//   畫面預估讀 rpc_preview_po_store_addition_extra（後端寫入也讀它），公式在 lib/poStoreAddEstimate。
 // ⛔ 系統不會通知廠商 —— 確認框與成功訊息都要講。
 // ⛔ 這是採購單頁專用的新元件；請購單頁那個「分店／批發加單」（#995）不要改成用它。
 
@@ -13,6 +16,12 @@ import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { getSupabase } from "@/lib/supabase";
 import { PO_TERM_ZH } from "@/lib/poStatus";
+import {
+  estimatePoStoreAdd,
+  pickPoStoreAddExtra,
+  type PoStoreAddExtra,
+  type PoStoreAddExtraRow,
+} from "@/lib/poStoreAddEstimate";
 
 /** rpc_preview_po_store_additions 的一列：一個 (採購單品項, 可選的團)。對不出團時 campaign_id 是 null。 */
 export type POStoreAddPreviewRow = {
@@ -50,6 +59,7 @@ type AddResult = {
   store_count?: number | string;
   store_added_qty?: number | string;
   po_added_qty?: number | string;
+  pr_added_qty?: number | string | null; // 20261016000000：請購加幾件（舊版後端沒有）
   po_qty_before?: number | string | null;
   po_qty_after?: number | string | null;
 };
@@ -163,6 +173,30 @@ export function POStoreAddModal({
     };
   }, []);
 
+  // 20261016000000：叫貨後才取消的件數（R）、以前追加多加的件數（E）、套不套新規則。
+  // 讀不到（SQL 還沒貼、權限）⇒ 照舊算法估，並註明實際以送出後為準；不擋送出。
+  const [extraRows, setExtraRows] = useState<PoStoreAddExtraRow[] | null>(null);
+  const [extraErr, setExtraErr] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data, error: err } = await getSupabase().rpc("rpc_preview_po_store_addition_extra", {
+        p_po_id: target.poId,
+      });
+      if (cancelled) return;
+      if (err) {
+        setExtraErr(err.message);
+        return;
+      }
+      setExtraRows((data ?? []) as PoStoreAddExtraRow[]);
+    })().catch((e: unknown) => {
+      if (!cancelled) setExtraErr(e instanceof Error ? e.message : String(e));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [target.poId]);
+
   const selected = target.options.find((o) => o.campaign_id != null && o.campaign_id === campaignId) ?? null;
 
   const lines = useMemo(
@@ -175,9 +209,14 @@ export function POStoreAddModal({
   const invalid = lines.some((l) => !Number.isFinite(l.qty) || l.qty <= 0);
   const storeTotal = lines.reduce((sum, l) => (Number.isFinite(l.qty) && l.qty > 0 ? sum + l.qty : sum), 0);
 
-  // 預估採購單加幾件（實際以送出當下後端算的為準）
-  const predictedX =
-    selected && selected.delta_qty != null ? Math.max(Number(selected.delta_qty) + storeTotal, 0) : null;
+  // 預估請購單、採購單各加幾件（實際以送出當下後端算的為準）。
+  // R、E 還沒讀到或讀不到 ⇒ extra＝null，照舊算法（請購＝採購）估，畫面另外註明。
+  const extra: PoStoreAddExtra | null =
+    selected && extraRows ? pickPoStoreAddExtra(extraRows, target.poItemId, selected.campaign_id) : null;
+  const estimate = selected
+    ? estimatePoStoreAdd(selected.delta_qty == null ? null : Number(selected.delta_qty), storeTotal, extra)
+    : null;
+  const predictedX = estimate ? estimate.poAdd : null;
 
   async function submit() {
     if (!selected || !selected.can_add) {
@@ -193,10 +232,21 @@ export function POStoreAddModal({
     // 送出前再抓一次最新的差額，確認框上的數字才不會是幾分鐘前的
     let delta: number | null = selected.delta_qty == null ? null : Number(selected.delta_qty);
     let a = target.qtyOrdered;
+    // 20261016000000：R、E、套不套跟差額同時重抓（同時發出，不排隊）；讀不到 ⇒ null，照舊算法估
+    let freshExtra: PoStoreAddExtra | null = null;
     try {
-      const { data: fresh, error: freshErr } = await getSupabase().rpc("rpc_preview_po_store_additions", {
-        p_po_id: target.poId,
-      });
+      const sb = getSupabase();
+      const [{ data: fresh, error: freshErr }, extraRes] = await Promise.all([
+        sb.rpc("rpc_preview_po_store_additions", { p_po_id: target.poId }),
+        Promise.resolve(sb.rpc("rpc_preview_po_store_addition_extra", { p_po_id: target.poId })).catch(() => null),
+      ]);
+      if (extraRes && !extraRes.error) {
+        freshExtra = pickPoStoreAddExtra(
+          (extraRes.data ?? []) as PoStoreAddExtraRow[],
+          target.poItemId,
+          selected.campaign_id,
+        );
+      }
       if (freshErr) throw new Error(freshErr.message);
       const row = ((fresh ?? []) as POStoreAddPreviewRow[]).find(
         (r) => Number(r.po_item_id) === target.poItemId && Number(r.campaign_id) === Number(selected.campaign_id),
@@ -221,7 +271,11 @@ export function POStoreAddModal({
     const retryUncertain = !!last && last.mayBeWritten && last.sig === sig;
 
     const n = storeTotal;
-    const x = delta == null ? null : Math.max(delta + n, 0);
+    // 20261016000000：採購單（x）、請購單（xPr）各加幾件；不套新規則時兩個一樣（＝改前的 X）
+    const est = estimatePoStoreAdd(delta, n, freshExtra);
+    const x = est ? est.poAdd : null;
+    const xPr = est ? est.prAdd : null;
+    const rule = freshExtra?.ruleApplies === true;
     const storeText = lines.map((l) => `${l.store.name} +${formatQty(l.qty)}`).join("、");
     const poLines: (string | null)[] = retryUncertain
       ? [`${PO_TERM_ZH}與請購單會加幾件：以送出後的結果為準`]
@@ -230,14 +284,26 @@ export function POStoreAddModal({
             ? `${PO_TERM_ZH}會加幾件：送出後由系統計算（目前查不到這個團的叫貨差額）`
             : `${PO_TERM_ZH}加 ${formatQty(x)} 件：訂購量 ${formatQty(a)} → ${formatQty(a + x)}`,
           x != null && x < n
-            ? `　（這個團原本已經多叫 ${formatQty(n - x)} 件——之前有人取消——先用掉，所以${PO_TERM_ZH}只加 ${formatQty(x)} 件）`
+            ? rule
+              ? `　（這個團原本已經多叫 ${formatQty(n - x)} 件，先用掉，所以${PO_TERM_ZH}只加 ${formatQty(x)} 件）`
+              : `　（這個團原本已經多叫 ${formatQty(n - x)} 件——之前有人取消——先用掉，所以${PO_TERM_ZH}只加 ${formatQty(x)} 件）`
             : null,
           x != null && x > n
             ? `　（其中 ${formatQty(x - n)} 件是這個團原本就還沒叫貨的量，一起補進這張${PO_TERM_ZH}）`
             : null,
-          x === 0
-            ? "請購單不用改（原本叫的量已經夠）。"
-            : `請購單對應那一列會跟著${PO_TERM_ZH}一起加（不用另外動）。`,
+          rule && freshExtra && freshExtra.r > 0
+            ? `　（叫貨後才取消的 ${formatQty(freshExtra.r)} 件會照派原店，不拿來抵這次追加）`
+            : null,
+          x != null && freshExtra == null
+            ? `　（叫貨後取消的件數讀不到，這是照舊算法估的，實際以送出後為準）`
+            : null,
+          xPr != null && xPr !== x
+            ? xPr === 0
+              ? "請購單不用改（原本叫的量已經夠）。"
+              : `請購單對應那一列加 ${formatQty(xPr)} 件（不用另外動）。`
+            : x === 0
+              ? "請購單不用改（原本叫的量已經夠）。"
+              : `請購單對應那一列會跟著${PO_TERM_ZH}一起加（不用另外動）。`,
         ];
     // null ＝ 這一行不顯示；"" ＝ 空一行
     const confirmText = [
@@ -296,6 +362,10 @@ export function POStoreAddModal({
         window.alert(
           `已完成。\n` +
             `店家加 ${formatQty(r.store_added_qty)} 件；${PO_TERM_ZH}加 ${formatQty(r.po_added_qty)} 件，改成 ${after}。\n` +
+            // 20261016000000：請購跟採購單加的不一樣時才多寫一行（舊版後端沒有 pr_added_qty）
+            (r.pr_added_qty != null && Number(r.pr_added_qty) !== Number(r.po_added_qty)
+              ? `請購單加 ${formatQty(r.pr_added_qty)} 件。\n`
+              : "") +
             `請記得通知廠商（系統不會自動通知）。`,
         );
       }
@@ -401,10 +471,26 @@ export function POStoreAddModal({
                 )}
               </div>
               {predictedX != null && storeTotal > 0 && predictedX < storeTotal ? (
-                <div>這個團原本已經多叫 {formatQty(storeTotal - predictedX)} 件（之前有人取消），會先用掉。</div>
+                extra?.ruleApplies ? (
+                  <div>這個團原本已經多叫 {formatQty(storeTotal - predictedX)} 件，會先用掉。</div>
+                ) : (
+                  <div>這個團原本已經多叫 {formatQty(storeTotal - predictedX)} 件（之前有人取消），會先用掉。</div>
+                )
               ) : null}
               {predictedX != null && storeTotal > 0 && predictedX > storeTotal ? (
                 <div>其中 {formatQty(predictedX - storeTotal)} 件是這個團原本就還沒叫貨的量，會一起補進來。</div>
+              ) : null}
+              {/* 20261016000000：叫貨後取消照派原店、請購跟採購單加的不一樣、R／E 讀不到 */}
+              {storeTotal > 0 && extra?.ruleApplies && extra.r > 0 ? (
+                <div>叫貨後才取消的 {formatQty(extra.r)} 件會照派原店，不拿來抵這次追加。</div>
+              ) : null}
+              {storeTotal > 0 && estimate && estimate.prAdd !== estimate.poAdd ? (
+                <div>請購單加 {formatQty(estimate.prAdd)} 件（跟{PO_TERM_ZH}不一樣）。</div>
+              ) : null}
+              {storeTotal > 0 && estimate && extraRows == null ? (
+                <div>
+                  {extraErr ? "叫貨後取消的件數讀不到" : "叫貨後取消的件數讀取中"}，這是照舊算法估的，實際以送出後為準。
+                </div>
               ) : null}
             </>
           )}

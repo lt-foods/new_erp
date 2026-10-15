@@ -25,6 +25,7 @@ import { GIFT_ITEM_SELECT, giftTitle, isCampaignGiftLine, isGiftLine } from "@/l
 import { pickedPayable, walletCreditLeft } from "@/lib/walletCredit";
 import { discountedTotal, hasAnyDiscount } from "@/lib/discountDisplay";
 import { CutoffChip } from "@/components/CampaignCutoff";
+import { confirmCancelPoNotice } from "@/lib/cancelPoNotice";
 
 type Member = {
   id: number;
@@ -906,6 +907,8 @@ function PickupPageContent() {
   // 波次出貨的一般訂單沒有 per-order transfer → 直接取消、不動庫存。
   // 取消後 reloadTick++ 重跑搜尋，該單因不在 ACTIVE_STATUSES 而從列表消失。
   async function cancelOrder(order: OpenOrder) {
+    // 20261016000000：總倉已經叫貨的先提醒一次（不擋；按「取消」就停在這裡，原本流程不動）
+    if (!(await confirmCancelPoNotice(getSupabase(), order.id, null, "確定要取消這張訂單嗎？", (t) => confirm(t)))) return;
     const reason = prompt(
       order.status === "shipping"
         ? `撤回派貨：${order.order_no}\n互助單會撤回派貨單並反向回收已出庫存；波次出貨的訂單不動庫存。請輸入原因：`

@@ -21,6 +21,7 @@ import { OrderSourceBadge } from "@/components/OrderSourceBadge";
 import SpinButton from "@/components/SpinButton";
 import SearchSpinner from "@/components/SearchSpinner";
 import { internalOrderSource } from "@/lib/orderTitle";
+import { confirmCancelPoNotice } from "@/lib/cancelPoNotice";
 
 type Row = {
   id: number;
@@ -808,6 +809,8 @@ function OrdersListContent() {
 
   // 批次取貨 — 抓所有勾選訂單的 pickable items, 連續呼 rpc_record_pickup,
   async function cancelOrder(orderId: number, orderNo: string, status: string) {
+    // 20261016000000：總倉已經叫貨的先提醒一次（不擋；按「取消」就停在這裡，原本流程不動）
+    if (!(await confirmCancelPoNotice(getSupabase(), orderId, null, "確定要取消這張訂單嗎？", (t) => window.confirm(t)))) return;
     const reason = prompt(
       status === "shipping"
         ? `撤回派貨：${orderNo}\n互助單會撤回派貨單並反向回收已出庫存；波次出貨的訂單不動庫存。請輸入原因：`

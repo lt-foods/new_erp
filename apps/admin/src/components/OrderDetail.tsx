@@ -30,6 +30,7 @@ import { internalOrderSource } from "@/lib/orderTitle";
 import { translateRpcError } from "@/lib/rpcError";
 import { parseReturnNote } from "@/lib/returnNote";
 import { GIFT_ITEM_SELECT, giftTitle, isCampaignGiftLine, isGiftLine } from "@/lib/orderGift";
+import { confirmCancelPoNotice } from "@/lib/cancelPoNotice";
 import {
   fetchReprintableEvents,
   pickupEventLabel,
@@ -824,6 +825,8 @@ export function OrderDetail({
     const walletNote = walletPaid > 0
       ? `\n\n⚠️ 此訂單已用儲值金 $${walletPaid}，取消後會自動退回會員餘額。`
       : "";
+    // 20261016000000：總倉已經叫貨的先提醒一次（不擋；按「取消」就停在這裡，原本流程不動）
+    if (!(await confirmCancelPoNotice(getSupabase(), head.id, null, "確定要取消這張訂單嗎？", (t) => confirm(t)))) return;
     const reason = prompt(
       (head.status === "shipping"
         ? `撤回派貨：${head.order_no}\n${isAidOrder ? "會撤回派貨單並反向回收已出庫存" : "波次出貨的訂單不動庫存，貨留在店端"}，請輸入原因：`
@@ -904,6 +907,8 @@ export function OrderDetail({
     ).length;
     const isLastPending = otherPendingCount === 0;
     const hasPicked = (items ?? []).some((x) => x.status === "picked_up");
+    // 20261016000000：總倉已經叫貨的先提醒一次（不擋；按「取消」就停在這裡，原本流程不動）
+    if (!(await confirmCancelPoNotice(getSupabase(), head.id, it.id, "確定要刪除這個品項嗎？", (t) => confirm(t)))) return;
     const reason = prompt(
       `刪除品項：${label}（${head.order_no}）` +
         (isLastPending

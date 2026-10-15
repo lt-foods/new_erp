@@ -99,6 +99,18 @@ type RestockRow = {
   wave_qty: number;      // 已撿
 };
 
+// rpc_picking_post_po_cancelled_by_sku（20261016000000）的一列：一個（採購單品項, 店）叫貨後才取消的件數。
+// store_active＝true：派貨表已經照派原店；false：停用店，沒帶進派貨表，留給總倉決定。
+// id、數量經 PostgREST 可能是字串 → 用的時候 Number()。
+type PostPoCancelRow = {
+  po_id: number | string;
+  po_item_id: number | string;
+  sku_id: number | string;
+  store_id: number | string;
+  qty: number | string | null;
+  store_active: boolean | null;
+};
+
 function defaultWaveDate() {
   const d = new Date();
   d.setDate(d.getDate() + 1); // 預設配送日 = 隔天
@@ -540,6 +552,54 @@ function Body() {
     return () => { cancelled = true; };
   }, [demand]);
 
+  // ===== 叫貨後才取消、照派原店的件數（20261016000000；只加字，不動任何數字）=====
+  // 需求表本身已經把這些件數算進原店（停用店不算），這裡只是讓總倉看得到「為什麼這家店有數字」。
+  // ⛔ 只讀、只影響提示字：預填、規劃器、鎖格、建單一律不動。
+  // ⭐ 跟上面 #1082 檢查表一樣只等需求表、同一個時間點發出，⛔ 不排在它後面等；
+  //   每批最多 100 個商品（後端上限）、各批同時發；表格不等它，字晚一點補上。
+  // 只留這次需求表上的採購單品項（已經派完、不在工作台上的不顯示）。
+  // 讀不到（SQL 還沒貼、查詢報錯）→ 頁面上方一行字，其他功能照常。
+  const [postPoCancelBySku, setPostPoCancelBySku] = useState<Map<number, PostPoCancelRow[]> | null>(null);
+  const [postPoCancelFailed, setPostPoCancelFailed] = useState(false);
+  useEffect(() => {
+    if (!demand) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const sb = getSupabase();
+        const skuIds = Array.from(new Set(demand.map((r) => Number(r.sku_id))));
+        const chunks: number[][] = [];
+        for (let i = 0; i < skuIds.length; i += 100) chunks.push(skuIds.slice(i, i + 100));
+        const parts = await Promise.all(
+          chunks.map((chunk) =>
+            fetchAllRows<PostPoCancelRow>(() =>
+              sb.rpc("rpc_picking_post_po_cancelled_by_sku", { p_sku_ids: chunk })
+                .order("po_item_id", { ascending: true })
+                .order("store_id", { ascending: true }),
+            ),
+          ),
+        );
+        if (cancelled) return;
+        const onBoard = new Set(demand.map((r) => Number(r.po_item_id)));
+        const bySku = new Map<number, PostPoCancelRow[]>();
+        for (const r of parts.flat()) {
+          if (!onBoard.has(Number(r.po_item_id))) continue;
+          const list = bySku.get(Number(r.sku_id)) ?? [];
+          list.push(r);
+          bySku.set(Number(r.sku_id), list);
+        }
+        setPostPoCancelBySku(bySku);
+        setPostPoCancelFailed(false);
+      } catch {
+        if (!cancelled) {
+          setPostPoCancelBySku(null);
+          setPostPoCancelFailed(true);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [demand]);
+
   // 依分店檢視分頁：lazy 撈完整 view（含缺貨待到的品項），只在切到該分頁時撈一次。
   // in-flight 用 ref 而不是 loadingFull state 當 effect dep：
   // 舊寫法 setLoadingFull(true) 會讓 deps 變動 → cleanup 把 cancelled 設 true →
@@ -816,6 +876,55 @@ function Body() {
             {workbenchMultiPoText(h)}
           </div>
         ))}
+      </>
+    );
+  }
+
+  // 叫貨後才取消、照派原店的件數（只有字，不動任何數字；20261016000000）
+  //   有效店：「叫貨後取消 N 件，已照派原店（店A a、店B b）」
+  //   停用店：「停用店 M 件沒帶（店C），請總倉決定」
+  // 每家店加總後件數不大於 0 的不列（抵減單那種負數行不是「多派」）。
+  function renderPostPoCancelNote(skuId: number) {
+    const rows = postPoCancelBySku?.get(Number(skuId));
+    if (!rows || rows.length === 0) return null;
+    const masterById = new Map((storeMasters ?? []).map((s) => [Number(s.id), s]));
+    const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(3).replace(/\.?0+$/, ""));
+    const byStore = (active: boolean) => {
+      const m = new Map<number, number>();
+      for (const r of rows) {
+        if ((r.store_active === true) !== active) continue;
+        const q = Number(r.qty ?? 0);
+        if (!Number.isFinite(q)) continue;
+        m.set(Number(r.store_id), (m.get(Number(r.store_id)) ?? 0) + q);
+      }
+      return Array.from(m.entries())
+        .filter(([, q]) => q > 0)
+        .map(([id, q]) => {
+          const s = masterById.get(id);
+          return { code: s?.code ?? null, name: s?.name ?? `分店 #${id}`, qty: q };
+        })
+        .sort((a, b) => compareStoreOrder(a.code, a.name, b.code, b.name));
+    };
+    const active = byStore(true);
+    const inactive = byStore(false);
+    if (active.length === 0 && inactive.length === 0) return null;
+    const total = (list: { qty: number }[]) => list.reduce((s, x) => s + x.qty, 0);
+    return (
+      <>
+        {active.length > 0 && (
+          <div className="mt-1 text-[11px] font-medium text-sky-700 dark:text-sky-400">
+            叫貨後取消 {fmt(total(active))} 件，已照派原店（{active.map((x) => `${x.name} ${fmt(x.qty)}`).join("、")}）
+          </div>
+        )}
+        {inactive.length > 0 && (
+          <div className="mt-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+            停用店 {fmt(total(inactive))} 件沒帶（
+            {inactive.length === 1
+              ? inactive[0].name
+              : inactive.map((x) => `${x.name} ${fmt(x.qty)}`).join("、")}
+            ），請總倉決定
+          </div>
+        )}
       </>
     );
   }
@@ -2539,6 +2648,12 @@ function Body() {
         </div>
       )}
 
+      {postPoCancelFailed && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+          ⚠ 讀不到「叫貨後取消、照派原店」的件數，商品旁不會顯示這段說明；派貨數字不受影響，其他功能照常。
+        </div>
+      )}
+
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
           <pre className="whitespace-pre-wrap font-mono text-xs">{error}</pre>
@@ -2670,6 +2785,7 @@ function Body() {
                           {renderPriceTags(sk.sku_id)}
                         </div>
                         {renderMultiPoWarning(sk.sku_id)}
+                        {renderPostPoCancelNote(sk.sku_id)}
                         {/* 老闆：「第一頁應該要有詳細開團的資訊」「相同的品名容易搞錯，第一團未到、第二團到了會派錯」
                             → 攤開列出這個商品有哪幾團／哪幾張採購單、各團各到了多少。
                             ⚠️ 只是資訊，不是可選項：建單是 per 商品跑 FIFO，挑不了單一團。
@@ -2835,6 +2951,7 @@ function Body() {
                             {/* 品項欄是固定寬(table-fixed),截斷改用兩行,單行 truncate 只剩 ~10 個字 */}
                             <div className="line-clamp-2 text-[13px] font-medium" title={sk.sku_label}>{sk.sku_label}</div>
                             {renderMultiPoWarning(sk.sku_id)}
+                            {renderPostPoCancelNote(sk.sku_id)}
                             <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-zinc-400">
                               {sk.poList.length === 1
                                 ? <span className="font-mono" title={`${sk.poList[0].po_status ?? ""} · 訂 ${sk.poList[0].qty_ordered}/已到 ${sk.poList[0].gr_qty}/在途 ${sk.poList[0].qty_in_transit}/短少 ${sk.poList[0].qty_shortage}`}>{sk.poList[0].po_no}</span>
