@@ -236,6 +236,27 @@ test("code without qty (A, B+1) → whole comment is not auto-ordered", () => {
   assert.deepEqual(codes("A+1\nB+2"), [["A", 1], ["B", 2]]);
 });
 
+test("trailing total (共2包) is a checksum, not an item; half-parsed comments are not auto-ordered", () => {
+  const codes = (t) => one(t).map((o) => [o.code, o.qty]);
+  // 中和 10/1 實際留言：以前只加了 B，C 靜靜漏掉
+  assert.deepEqual(codes("B+1,C+1共2包"), [["B", 1], ["C", 1]]);
+  assert.deepEqual(parseNoteComment("B+1,C+1共2包", "059656中和凱蒂").orders.map((o) => [o.code, o.qty]), [["B", 1], ["C", 1]]);
+  assert.deepEqual(codes("B+1 C+1共2包"), [["B", 1], ["C", 1]]);
+  assert.deepEqual(codes("A+2, B+1 總共3份"), [["A", 2], ["B", 1]]);
+  assert.deepEqual(codes("A+1\nB+1\n共２包"), [["A", 1], ["B", 1]]);
+  assert.deepEqual(codes("+2 共2份"), [[null, 2]]);
+  // 合計對不上（客人算錯或機器看錯）→ 整則不加，交給人工
+  assert.deepEqual(codes("B+1,C+1共3包"), []);
+  assert.deepEqual(codes("A+1 共1包 B+1 共1包"), []);
+  // 有「+數字」但解析不出來的段落 → 整則不加，不要只加一半
+  assert.deepEqual(codes("B+1,C+1共兩包"), []);
+  assert.deepEqual(codes("A+1\nB+1謝謝"), []);
+  // 關掉「整則不加」→ 照舊只加看得懂的
+  assert.deepEqual(parseOrderLines("A+1\nB+1謝謝", { rejectBareCode: false }).map((o) => [o.code, o.qty]), [["A", 1]]);
+  // 沒有「+數字」的聊天段落不影響
+  assert.deepEqual(codes("A+1, 謝謝"), [["A", 1]]);
+});
+
 test("config: switches and word lists", () => {
   const p = (t, c) => parseOrderLines(t, c).map((o) => [o.code, o.qty, o.cancel]);
   // 預設跟不給設定一樣

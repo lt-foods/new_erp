@@ -14,6 +14,8 @@
 // 不猜的：純數字「2」、只有品名沒數量的行、聊天內容。這些回空陣列。
 //   「A, B+1」這種有代碼沒寫數量的：整則都不加單（不猜 A 要幾個；以前會只加 B、A 靜靜漏掉）。
 //   每個品項都要自己寫數量（A+1, B+1）才自動加單。
+//   「B+1, C+1共2包」行尾的合計（共／總共／一共／合計 N）不是品項：拿掉後拿來對帳，
+//   加總對不上就整則不加。其他看得出在下單（有「+數字」）卻解析不出來的段落，也整則不加。
 
 const FULLWIDTH_DIGITS = "０１２３４５６７８９";
 
@@ -89,6 +91,8 @@ const MULTI_QTY_FIRST = /^\s*(?:[+-]\s*\d{1,3}\s*[A-Za-z][A-Za-z0-9-]{0,7}\s*){2
 const TOKEN_CODE_FIRST = /[A-Za-z][A-Za-z0-9-]{0,7}\s*[+-]\s*\d{1,3}/g;
 const TOKEN_QTY_FIRST = /[+-]\s*\d{1,3}\s*[A-Za-z][A-Za-z0-9-]{0,7}/g;
 const BARE_CODE = new RegExp(`^${CODE}$`);
+// 解析不出來、但明顯是在下單的段落（「C+1共兩包」「B+1謝謝」）
+const ORDERISH = /\+\s*\d/;
 
 // 設定 → 編好的 regex。純粹由設定內容決定，所以用內容當 key 快取（不是「這次呼叫」的狀態）。
 const compiled = new Map();
@@ -116,6 +120,8 @@ function compile(cfg) {
     // 「加1」「打1」「加一」→「+1」。只在後面緊接數字（或一～九）時才換，
     // 「加油」「打包」「追加」這種不動；「加一點」換成「+1點」後也對不到任何 pattern，仍是非下單。
     plus: cfg.plusWords.length ? new RegExp(`(?:${alt(cfg.plusWords)})\\s*([0-9一二三四五六七八九])`, "g") : null,
+    // 「共2包」「總共3份」「合計 4」：整則的合計，不是品項（「入」不收：共2入 是包裝，不是份數）
+    total: new RegExp(`(?:總共|一共|合計|總計|共)\\s*(\\d{1,3})\\s*(?:${units})?`, "g"),
   };
   if (compiled.size > 50) compiled.clear();
   compiled.set(key, out);
@@ -134,6 +140,8 @@ export function parseOrderLines(text, config) {
   let norm = normalize(text);
   if (rx.plus) norm = norm.replace(rx.plus, (_, d) => "+" + (CN_DIGITS.includes(d) ? String(CN_DIGITS.indexOf(d) + 1) : d));
   if (cfg.fixTypos) norm = fixTypos(norm);
+  const totals = [];
+  norm = norm.replace(rx.total, (_, n) => { totals.push(Number(n)); return " "; });
   const segments = [];
   for (const rawLine of norm.split(/\r?\n|[,，;；、/]/)) {
     // 同一行寫多筆：整行都是「代碼+號+數」重複（A+1 B+5）或「號+數+代碼」重複（+1 A +2 B）才拆，
@@ -156,6 +164,8 @@ export function parseOrderLines(text, config) {
     if (!hit) {
       // 光一個代碼沒數量（「A, B+1」的 A）→ 整則放棄，別只加一半
       if (cfg.rejectBareCode && BARE_CODE.test(body)) return [];
+      // 有「+數字」卻解析不出來（「B+1, C+1共兩包」的後段）→ 同上，整則放棄
+      if (cfg.rejectBareCode && ORDERISH.test(body)) return [];
       // 「取消」單獨一行也算一筆取消（qty 0，讓人工看）
       if (cancelWord && body === "") out.push({ code: null, qty: 0, cancel: true, line });
       continue;
@@ -164,6 +174,11 @@ export function parseOrderLines(text, config) {
     if (!Number.isFinite(qty) || qty <= 0) continue;
     const cancel = cancelWord || hit.sign === "-";
     out.push({ code: hit.code ? hit.code.toUpperCase() : null, qty, cancel, line });
+  }
+  // 寫了合計就對帳：只寫一個、且等於加單數量的總和才算數；對不上 → 整則不加、進待處理
+  if (totals.length) {
+    const sum = out.filter((o) => !o.cancel).reduce((s, o) => s + o.qty, 0);
+    if (totals.length > 1 || sum !== totals[0]) return [];
   }
   return out;
 }
