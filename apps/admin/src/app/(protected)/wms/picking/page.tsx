@@ -882,8 +882,8 @@ function Body() {
   }
 
   // 叫貨後才取消、照派原店的件數（只有字，不動任何數字；20261016000000）
-  //   有效店：「叫貨後取消 N 件，已照派原店（店A a、店B b）」
-  //   停用店：「停用店 M 件沒帶（店C），請總倉決定」
+  //   有效店：「叫貨後取消 N 件，已照派原店（店A a件、店B b件）」
+  //   停用店：「停用店 M 件沒帶（店C），請總倉決定」；兩家以上：「（店C c件、店D d件）」
   // 每家店加總後件數不大於 0 的不列（抵減單那種負數行不是「多派」）。
   function renderPostPoCancelNote(skuId: number) {
     const rows = postPoCancelBySku?.get(Number(skuId));
@@ -914,7 +914,7 @@ function Body() {
       <>
         {active.length > 0 && (
           <div className="mt-1 text-[11px] font-medium text-sky-700 dark:text-sky-400">
-            叫貨後取消 {fmt(total(active))} 件，已照派原店（{active.map((x) => `${x.name} ${fmt(x.qty)}`).join("、")}）
+            叫貨後取消 {fmt(total(active))} 件，已照派原店（{active.map((x) => `${x.name} ${fmt(x.qty)}件`).join("、")}）
           </div>
         )}
         {inactive.length > 0 && (
@@ -922,7 +922,7 @@ function Body() {
             停用店 {fmt(total(inactive))} 件沒帶（
             {inactive.length === 1
               ? inactive[0].name
-              : inactive.map((x) => `${x.name} ${fmt(x.qty)}`).join("、")}
+              : inactive.map((x) => `${x.name} ${fmt(x.qty)}件`).join("、")}
             ），請總倉決定
           </div>
         )}
