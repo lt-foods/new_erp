@@ -369,10 +369,10 @@ checks(seq, status, item, detail) AS (
             FROM (SELECT (SELECT f2.sig FROM fn f2 WHERE f2.proname = 'rpc_create_wave_from_po') AS sig) f)
   UNION ALL
   SELECT 10,
-         CASE WHEN (SELECT f.sig FROM fn f WHERE f.proname = 'rpc_add_po_store_demands') = '87dfda93e5c1a54dc5ae8c8fd05dca44'
+         CASE WHEN (SELECT f.sig FROM fn f WHERE f.proname = 'rpc_add_po_store_demands') = '67f16d0f79176267332aae0663ea392d'
               THEN '✅' ELSE '❌' END,
          '分店追加寫入 rpc_add_po_store_demands 是本檔新版',
-         (SELECT CASE WHEN f.sig = '87dfda93e5c1a54dc5ae8c8fd05dca44' THEN '本檔新版'
+         (SELECT CASE WHEN f.sig = '67f16d0f79176267332aae0663ea392d' THEN '本檔新版'
                       WHEN f.sig = '220befc9d94d5e1c0aab37f41b627612' THEN '還是改前那一版'
                       ELSE '不認得：' || COALESCE(f.sig, '找不到') END
             FROM (SELECT (SELECT f2.sig FROM fn f2 WHERE f2.proname = 'rpc_add_po_store_demands') AS sig) f)
@@ -390,23 +390,24 @@ checks(seq, status, item, detail) AS (
          ''
   UNION ALL
   SELECT 12,
-         CASE WHEN has_function_privilege('authenticated', 'public.rpc_preview_po_store_addition_extra(bigint)', 'EXECUTE')
-               AND has_function_privilege('authenticated', 'public.rpc_order_cancel_po_notice(bigint,bigint)', 'EXECUTE')
-               AND has_function_privilege('authenticated', 'public.rpc_picking_post_po_cancelled_by_sku(bigint[])', 'EXECUTE')
-               AND NOT has_function_privilege('anon', 'public.rpc_preview_po_store_addition_extra(bigint)', 'EXECUTE')
-               AND NOT has_function_privilege('anon', 'public.rpc_order_cancel_po_notice(bigint,bigint)', 'EXECUTE')
-               AND NOT has_function_privilege('anon', 'public.rpc_picking_post_po_cancelled_by_sku(bigint[])', 'EXECUTE')
-               AND NOT has_function_privilege('public', 'public.rpc_preview_po_store_addition_extra(bigint)', 'EXECUTE')
-               AND NOT has_function_privilege('public', 'public.rpc_order_cancel_po_notice(bigint,bigint)', 'EXECUTE')
-               AND NOT has_function_privilege('public', 'public.rpc_picking_post_po_cancelled_by_sku(bigint[])', 'EXECUTE')
+         -- 用 to_regprocedure 取函式：哪一支沒建成功時這一列顯示 ❌，不會整句跳錯
+         CASE WHEN has_function_privilege('authenticated', to_regprocedure('public.rpc_preview_po_store_addition_extra(bigint)'), 'EXECUTE') IS TRUE
+               AND has_function_privilege('authenticated', to_regprocedure('public.rpc_order_cancel_po_notice(bigint,bigint)'), 'EXECUTE') IS TRUE
+               AND has_function_privilege('authenticated', to_regprocedure('public.rpc_picking_post_po_cancelled_by_sku(bigint[])'), 'EXECUTE') IS TRUE
+               AND has_function_privilege('anon', to_regprocedure('public.rpc_preview_po_store_addition_extra(bigint)'), 'EXECUTE') IS FALSE
+               AND has_function_privilege('anon', to_regprocedure('public.rpc_order_cancel_po_notice(bigint,bigint)'), 'EXECUTE') IS FALSE
+               AND has_function_privilege('anon', to_regprocedure('public.rpc_picking_post_po_cancelled_by_sku(bigint[])'), 'EXECUTE') IS FALSE
+               AND has_function_privilege('public', to_regprocedure('public.rpc_preview_po_store_addition_extra(bigint)'), 'EXECUTE') IS FALSE
+               AND has_function_privilege('public', to_regprocedure('public.rpc_order_cancel_po_notice(bigint,bigint)'), 'EXECUTE') IS FALSE
+               AND has_function_privilege('public', to_regprocedure('public.rpc_picking_post_po_cancelled_by_sku(bigint[])'), 'EXECUTE') IS FALSE
               THEN '✅' ELSE '❌' END,
          '三支新查詢：只有登入後台的人能用（沒登入的、PUBLIC 都不行）',
          ''
   UNION ALL
   SELECT 13,
-         CASE WHEN has_function_privilege('authenticated', 'public._picking_po_rule_cutover()', 'EXECUTE')
-               AND NOT has_function_privilege('anon', 'public._picking_po_rule_cutover()', 'EXECUTE')
-               AND NOT has_function_privilege('public', 'public._picking_po_rule_cutover()', 'EXECUTE')
+         CASE WHEN has_function_privilege('authenticated', to_regprocedure('public._picking_po_rule_cutover()'), 'EXECUTE') IS TRUE
+               AND has_function_privilege('anon', to_regprocedure('public._picking_po_rule_cutover()'), 'EXECUTE') IS FALSE
+               AND has_function_privilege('public', to_regprocedure('public._picking_po_rule_cutover()'), 'EXECUTE') IS FALSE
               THEN '✅' ELSE '❌' END,
          '分界時間：登入後台的人能用（派貨表會用到它，用不了派貨工作台會整個讀不出來）；沒登入的、PUBLIC 都不行',
          ''

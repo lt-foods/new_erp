@@ -50,7 +50,9 @@
 --      停用店兩處都不放行 ⇒ 照樣被「不能撿到這批貨」擋下。
 --   A7 分店追加：以 20261002000000:794 逐字為底（內文指紋 220befc9d94d5e1c0aab37f41b627612）：
 --        請購 +X（X＝max(差額, 0)，跟改前一模一樣）；
---        採購單 +max(X, 差額 + R − E)（R＝叫貨後才取消的件數，E＝以前追加已多加的件數）。
+--        採購單：套新規則的採購單品項 +max(0, 差額 + R − E)（R＝叫貨後才取消的件數，
+--        E＝以前追加時採購單比請購多加的件數；⚠️ 可能比請購加得少），不套的 +X（同改前）；
+--        差額、R、E、套不套在同一句讀（同一個時間點）。
 --   ⚠️ 程式碼紀錄裡派貨表與建撿貨單最新是 20260908000000（#917「短撿只扣實撿」），
 --      但正式庫從來沒套上那一版。本檔以正式庫為底重建 ⇒ **等於在程式碼紀錄上把 #917 這兩支退回**。
 --      #917 要上請另案，而且要以本檔為底（直接重貼 20260908000000 會把本檔蓋掉）。
@@ -211,7 +213,7 @@ BEGIN
   l_sig := (SELECT string_agg(md5(replace(p.prosrc, chr(13), '')), ',' ORDER BY p.oid)
               FROM pg_proc p JOIN pg_namespace ns ON ns.oid = p.pronamespace
              WHERE ns.nspname = 'public' AND p.proname = 'rpc_add_po_store_demands');
-  IF l_sig IS NULL OR l_sig NOT IN ('220befc9d94d5e1c0aab37f41b627612', '87dfda93e5c1a54dc5ae8c8fd05dca44') THEN
+  IF l_sig IS NULL OR l_sig NOT IN ('220befc9d94d5e1c0aab37f41b627612', '67f16d0f79176267332aae0663ea392d') THEN
     l_bad := l_bad || ('分店追加 rpc_add_po_store_demands 不是改前也不是本檔新版：' || COALESCE(l_sig, '找不到'));
   END IF;
 
@@ -1685,7 +1687,7 @@ COMMIT;
 -- A8. 唯讀：分店追加視窗算「採購單會加幾件」要用的 R、E（A7 寫入也用這一支，同一份算法）
 --     一列＝這張採購單的一個（採購單品項, 團）：
 --       post_po_cancelled_qty（R）＝叫貨後才取消的件數（含停用店：那幾件留給總倉決定，不拿去抵）
---       prior_po_extra_qty（E）  ＝以前追加時採購單比請購多加的件數合計（每次追加算一次）
+--       prior_po_extra_qty（E）  ＝以前追加時採購單比請購多加的件數合計（每次追加算一次；可能是負的＝那次少加）
 --     兩個都是 0 的（採購單品項, 團）不回。權限同預覽（_pr_qty_sync_assert_perm）。
 --     ⓘ 放在 A7 前面：A7 會呼叫它。
 -- ----------------------------------------------------------------------------
@@ -1764,7 +1766,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.rpc_preview_po_store_addition_extra(BIGINT) IS
-  '採購單頁「分店／批發追加」用（post_po_cancel_to_store:20261016000000）：每個（採購單品項, 團）叫貨後才取消的件數 R（含停用店）與以前追加時採購單比請購多加的件數 E。採購單會加 max(max(差額+N,0), 差額+N+R−E)。唯讀。';
+  '採購單頁「分店／批發追加」用（post_po_cancel_to_store:20261016000000）：每個（採購單品項, 團）叫貨後才取消的件數 R（含停用店）與以前追加時採購單比請購多加的件數 E。套新規則時採購單會加 max(0, 差額+N+R−E)（N＝這次追加件數），不套時跟請購一樣 max(差額+N, 0)。唯讀。';
 
 REVOKE ALL ON FUNCTION public.rpc_preview_po_store_addition_extra(BIGINT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.rpc_preview_po_store_addition_extra(BIGINT) TO authenticated;
@@ -1814,7 +1816,8 @@ DECLARE
   v_x                 NUMERIC := 0;
   v_x_po              NUMERIC := 0;   -- 20261016000000：採購單實際加幾件（請購仍是 v_x）
   v_r                 NUMERIC := 0;   -- 20261016000000：叫貨後才取消、照派原店的件數（含停用店）
-  v_e                 NUMERIC := 0;   -- 20261016000000：以前追加時採購單已比請購多加的件數
+  v_e                 NUMERIC := 0;   -- 20261016000000：以前追加時採購單比請購多加的件數（可能是負的）
+  v_rule              BOOLEAN := FALSE;   -- 20261016000000：這個採購單品項、這一團套不套新規則
   v_pr_qty_after      NUMERIC;
   v_po_qty_after      NUMERIC;
   v_stores            JSONB;
@@ -2136,28 +2139,37 @@ BEGIN
     -- <<< STEP1 END
 
     -- 第 2 步：差額（加完店家單之後）。X = max(差額, 0)
-    SELECT d.delta_qty, d.demand_qty, d.already_qty
-      INTO v_delta, v_demand, v_already
-      FROM public._pr_campaign_sku_remaining_rows(ARRAY[p_campaign_id]) d
-     WHERE d.campaign_id = p_campaign_id
-       AND d.sku_id = v_poi.sku_id;
+    --   20261016000000（post_po_cancel_to_store）：差額、R、E、這個採購單品項這一團套不套新規則，
+    --   **同一句**讀（同一個時間點的資料；裡面呼叫的都是 STABLE 函式，跟這一句用同一份快照）。
+    --   分兩句讀的話，中間剛好有人把叫貨前就有的單取消：差額沒看到、R 看到了 ⇒ 同一件算兩次、採購單多加。
+    --     R＝這個採購單品項、這一團叫貨後才取消的件數（含停用店：留給總倉決定，不拿去抵）
+    --     E＝以前追加時採購單比請購多加的件數（可能是負的：那一次比請購少加）
+    --   R、E 用 rpc_preview_po_store_addition_extra 算（畫面預估也用它，同一份算法）。
+    SELECT d.delta_qty, d.demand_qty, d.already_qty,
+           COALESCE(re.r_qty, 0), COALESCE(re.e_qty, 0),
+           EXISTS (SELECT 1
+                     FROM public.v_picking_po_rule_items ri
+                    WHERE ri.po_item_id = p_po_item_id
+                      AND ri.campaign_id = p_campaign_id)
+      INTO v_delta, v_demand, v_already, v_r, v_e, v_rule
+      FROM (SELECT 1) one
+      LEFT JOIN public._pr_campaign_sku_remaining_rows(ARRAY[p_campaign_id]) d
+        ON d.campaign_id = p_campaign_id
+       AND d.sku_id = v_poi.sku_id
+      CROSS JOIN LATERAL (
+        SELECT SUM(x.post_po_cancelled_qty) AS r_qty, SUM(x.prior_po_extra_qty) AS e_qty
+          FROM public.rpc_preview_po_store_addition_extra(p_po_id) x
+         WHERE x.po_item_id = p_po_item_id
+           AND x.campaign_id = p_campaign_id
+      ) re;
 
     v_x := GREATEST(COALESCE(v_delta, 0), 0);
 
-    -- 20261016000000（post_po_cancel_to_store）：採購單要加幾件。
-    --   叫貨後才取消的件數照派原店（v_picking_post_po_cancelled），追加時不能再拿去抵，
-    --   否則同一件會派兩次。R、E 用 rpc_preview_po_store_addition_extra 算（畫面預估也用它，同一份算法）：
-    --     R＝這個採購單品項、這一團叫貨後才取消的件數（含停用店：留給總倉決定，不拿去抵）
-    --     E＝以前追加時採購單已經比請購多加的件數（避免同一批取消被補兩次）
-    --   請購 +v_x（跟改前一模一樣）；採購單 +v_x_po＝max(v_x, 差額 + R − E)。
-    --   不套新規則（分界前、一團兩張、一鍵關掉）時 R＝0 ⇒ v_x_po＝v_x＝改前。
-    SELECT COALESCE(SUM(x.post_po_cancelled_qty), 0), COALESCE(SUM(x.prior_po_extra_qty), 0)
-      INTO v_r, v_e
-      FROM public.rpc_preview_po_store_addition_extra(p_po_id) x
-     WHERE x.po_item_id = p_po_item_id
-       AND x.campaign_id = p_campaign_id;
-
-    v_x_po := GREATEST(v_x, COALESCE(v_delta, 0) + v_r - v_e);
+    -- 20261016000000：採購單要加幾件（請購仍是 +v_x，跟改前一模一樣）
+    --   套新規則：max(0, 差額 + R − E) ⇒ 採購單加完＝現在有效的需求＋叫貨後取消照派的件數（不會往下減）。
+    --     ⚠️ 可能比請購加得少（例：以前追加時多加過、後來那張單又復原；或叫貨後取消的是抵減單，R 是負的）。
+    --   不套（分界前、一團兩張、一鍵關掉）：跟改前一樣＝v_x。
+    v_x_po := CASE WHEN v_rule THEN GREATEST(0, COALESCE(v_delta, 0) + v_r - v_e) ELSE v_x END;
 
     -- >>> STEP3 BEGIN（第 3 步：請購單 +X，先各團明細、後總數 —— 順序反了 #982 守衛會擋）
     IF v_x > 0 THEN
@@ -2284,7 +2296,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.rpc_add_po_store_demands(BIGINT, BIGINT, BIGINT, JSONB, UUID, UUID) IS
-  '採購單頁「分店／批發追加」：替分店／批發在原團加店家內部單（+N），再用 _pr_campaign_sku_remaining_rows 算出 X = max(差額, 0)，請購單（先各團明細後總數）+X。不重開團、不通知廠商。同一 request_key 重送：團與各店數量都一樣才回上次結果，不一樣就擋。採購單品項被別人鎖著或被判死結時整筆不寫、回白話訊息。（post_po_cancel_to_store:20261016000000）採購單 +max(X, 差額 + R − E)：R＝叫貨後才取消、照派原店的件數，E＝以前追加已多加的件數；紀錄表 po_delta_qty 記採購單實際加幾件。以 20261002000000 為底。';
+  '採購單頁「分店／批發追加」：替分店／批發在原團加店家內部單（+N），再用 _pr_campaign_sku_remaining_rows 算出 X = max(差額, 0)，請購單（先各團明細後總數）+X。不重開團、不通知廠商。同一 request_key 重送：團與各店數量都一樣才回上次結果，不一樣就擋。採購單品項被別人鎖著或被判死結時整筆不寫、回白話訊息。（post_po_cancel_to_store:20261016000000）套新規則的採購單品項：採購單 +max(0, 差額 + R − E)（R＝叫貨後才取消、照派原店的件數，E＝以前追加時採購單比請購多加的件數；可能比請購加得少）；不套時採購單 +X（同改前）；差額、R、E 同一句讀。紀錄表 po_delta_qty 記採購單實際加幾件。以 20261002000000 為底。';
 
 COMMIT;
 

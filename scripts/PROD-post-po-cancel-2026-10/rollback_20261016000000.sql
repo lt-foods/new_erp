@@ -57,7 +57,7 @@ BEGIN
   l_sig := (SELECT string_agg(md5(replace(p.prosrc, chr(13), '')), ',' ORDER BY p.oid)
               FROM pg_proc p JOIN pg_namespace ns ON ns.oid = p.pronamespace
              WHERE ns.nspname = 'public' AND p.proname = 'rpc_add_po_store_demands');
-  IF l_sig IS NULL OR l_sig NOT IN ('220befc9d94d5e1c0aab37f41b627612', '87dfda93e5c1a54dc5ae8c8fd05dca44') THEN
+  IF l_sig IS NULL OR l_sig NOT IN ('220befc9d94d5e1c0aab37f41b627612', '67f16d0f79176267332aae0663ea392d') THEN
     l_bad := l_bad || ('分店追加 rpc_add_po_store_demands 不是本檔新版、也不是改前那一版：' || COALESCE(l_sig, '找不到'));
   END IF;
 
