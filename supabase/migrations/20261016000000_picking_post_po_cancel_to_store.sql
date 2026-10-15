@@ -1693,8 +1693,14 @@ COMMIT;
 --     兩個都是 0 的（採購單品項, 團）不回：沒有列＝R、E 都是 0，套不套算出來都一樣（max(差額+N, 0)），
 --     畫面和 A7 都當「不套」。權限同預覽（_pr_qty_sync_assert_perm）。
 --     ⓘ 放在 A7 前面：A7 會呼叫它。
+--     ⓘ 建立前先 DROP（同一個交易裡）：本檔較早的版本回傳 4 欄（沒有 rule_applies），CREATE OR REPLACE
+--       不能改回傳欄位 ⇒ 停在「A8 是舊版、A7 還沒換」的庫，整份重貼會在這裡報錯。前置檢查已確認同名的
+--       一定是本檔建的；DROP 用預設 RESTRICT（有別的東西依賴它就報錯、不會連帶刪掉別的）；
+--       DROP 後立刻重建、補說明、收回／授權，都在這一組交易裡，不會有「沒有權限設定」的空檔。
 -- ----------------------------------------------------------------------------
 BEGIN;
+
+DROP FUNCTION IF EXISTS public.rpc_preview_po_store_addition_extra(BIGINT);
 
 CREATE OR REPLACE FUNCTION public.rpc_preview_po_store_addition_extra(
   p_po_id BIGINT
