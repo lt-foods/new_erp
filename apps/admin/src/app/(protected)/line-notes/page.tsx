@@ -209,7 +209,7 @@ export default function LineNotesPage() {
           <h1 className="text-xl font-semibold">LINE 記事本</h1>
           <p className="text-sm text-zinc-500">
             {readOnly
-              ? "可看社群貼文與留言加單狀況，並處理留言（重試／指定會員／已解決／忽略）。發文、讀留言由總部操作。"
+              ? "可看社群貼文與留言加單狀況，並處理留言（重試／指定會員／取消綁定／已解決／忽略）。發文、讀留言由總部操作。"
               : <>備用 LINE 帳號登入 → 綁社群 → 開團自動發文 → 定時讀留言，留言裡的「會員編號 6 碼 ＋ A+1」自動加單。
                 到設定的讀取時間自動跑（Supabase 排程），不用另外開程式。</>}
           </p>
@@ -1138,7 +1138,27 @@ function useCommentActions(reload: () => Promise<void> | void, notify: (m: strin
     await reload();
     return true;
   };
-  return { busy, retry, setStatus };
+  // 取消綁定（rpc_line_note_unbind_member，20261019000000）：拿掉「留言者 → 這位會員」的記憶，
+  // 對到這位會員的留言退回待處理再「指定會員」。訂單不會自動取消 —— 單號列出來請店員自己判斷
+  //（可能已經撿貨、到店、被取走）。
+  const unbind = async (c: Comment, memberId: number, label: string): Promise<boolean> => {
+    if (!window.confirm(`取消「${c.commenter_name ?? "這位留言者"}」跟 ${label} 的綁定？\n\n這位留言者對到這位會員的留言會退回待處理，再按「指定會員」選對的人。\n已經加好的訂單不會自動取消。`)) return false;
+    setBusy(c.id);
+    const { data, error } = await getSupabase().rpc("rpc_line_note_unbind_member", { p_comment_id: c.id, p_member_id: memberId });
+    setBusy(null);
+    if (error) { fail(error); return false; }
+    const r = (data ?? {}) as { member?: string; orders?: { order_no: string; store_name: string | null }[] };
+    const orders = r.orders ?? [];
+    if (orders.length > 0) {
+      window.alert(`已取消綁定。\n\n下面這些單是對到 ${r.member ?? label} 加的，沒有自動取消，請到訂單確認後處理：\n`
+        + orders.map((o) => `・${o.order_no}（${o.store_name ?? "？店"}）`).join("\n"));
+    } else {
+      notify("已取消綁定");
+    }
+    await reload();
+    return true;
+  };
+  return { busy, retry, setStatus, unbind };
 }
 
 // 結果：一個徽章 + 一句話（已加單的帶取貨店＋單號；已經在 LINE 上按過笑臉的標 😄）
@@ -1163,9 +1183,10 @@ function commentResult(c: Comment, orders: Map<number, OrderInfo>) {
 
 // 動作鈕：哪個狀態給哪些鈕的規則只寫這一份。
 // onEntry 有給才出「加單」（貼文卡片裡機器看不懂的留言直接原地加單；留言加單分頁點「團」欄就是）。
-function CommentActionButtons({ c, busy, readOnly, retry, setStatus, onAssign, onEntry, cls = btn, className = "flex justify-end gap-1" }: {
+function CommentActionButtons({ c, busy, readOnly, retry, setStatus, unbind, onAssign, onEntry, cls = btn, className = "flex justify-end gap-1" }: {
   c: Comment; busy: number | null; readOnly: boolean;
   retry: (c: Comment) => Promise<void>; setStatus: (c: Comment, s: Comment["status"]) => Promise<boolean>;
+  unbind: (c: Comment, memberId: number, label: string) => Promise<boolean>;
   onAssign: (c: Comment) => void; onEntry?: () => void; cls?: string; className?: string;
 }) {
   if (readOnly) return null;
@@ -1176,11 +1197,17 @@ function CommentActionButtons({ c, busy, readOnly, retry, setStatus, onAssign, o
   // 認不出是誰（撞號 / 找不到號碼 / 沒寫號碼）→ 指定一次，之後這位留言者都會自動對上
   const assign = <button type="button" className={`${cls} text-sky-700 dark:text-sky-300`} disabled={b} onClick={() => onAssign(c)}>指定會員</button>;
   const retryBtn = <SpinButton type="button" className={cls} loading={b} onClick={() => retry(c)}>重試</SpinButton>;
+  // 對錯人（撞號對到別家店的會員）：取消綁定 → 退回待處理再指定。只在這則已經掛著會員＋訂單時出現；
+  // 其他狀態從「指定會員」彈窗裡的「目前綁定」取消。
+  const unbindBtn = c.member_id && (c.status === "ordered" || c.status === "duplicate")
+    ? <SpinButton type="button" className={`${cls} text-red-700 dark:text-red-400`} loading={b}
+        onClick={() => unbind(c, c.member_id!, "目前對到的會員")}>取消綁定</SpinButton>
+    : null;
   // 已加成單的不給「重試」：重跑只會判成重複，沒有意義；要重加請先退回未處理。
-  if (c.status === "ordered") return <div className={className}>{back}</div>;
+  if (c.status === "ordered") return <div className={className}>{back}{unbindBtn}</div>;
   // 忽略／已解決／已有訂單還能直接重跑（RPC 帶 p_force）：當初對不到人、或先前那張單已經取消
   if (c.status === "ignored" || c.status === "resolved" || c.status === "duplicate") {
-    return <div className={className}>{retryBtn}{assign}{back}</div>;
+    return <div className={className}>{retryBtn}{assign}{back}{unbindBtn}</div>;
   }
   return (
     <div className={className}>
@@ -1260,7 +1287,7 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
     void getSupabase().rpc("rpc_line_note_settle_keyed_comments", { p_campaign_id: null })
       .then(({ data }) => { if (Number(data) > 0) void load(); });
   }, [load]);
-  const { busy, retry, setStatus } = useCommentActions(load, notify, fail);
+  const { busy, retry, setStatus, unbind } = useCommentActions(load, notify, fail);
 
   // 查詢已經照分頁濾過了；待處理再用 isTodo 對一次（member_no_hint 空字串那種 DB 側放行、JS 不算）
   const shown = useMemo(() => {
@@ -1291,6 +1318,7 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
         「找不到會員」「錯誤」修正後按「重試」；小幫手自己加完單按「已解決」。
         標成忽略／已解決的之後還是可以按「重試」重跑。
         按「已解決」會順手去客人那則留言按笑臉 😄（已經按過的不會重按）。
+        對錯人（撞號對到別家店的會員）→ 按「取消綁定」，留言退回待處理再「指定會員」；已加好的訂單要自己到訂單取消。
       </p>
       <ParserFormatsHelp />
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1333,7 +1361,7 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
               <div className="truncate text-xs text-zinc-500">{communityById.get(c.line_note_posts?.community_id ?? -1)?.home_name ?? ""}</div>
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">{commentResult(c, orders)}</div>
-            {!readOnly && <CommentActionButtons c={c} busy={busy} readOnly={readOnly} retry={retry} setStatus={setStatus} onAssign={setAssignFor} className="mt-2 flex flex-wrap gap-1" />}
+            {!readOnly && <CommentActionButtons c={c} busy={busy} readOnly={readOnly} retry={retry} setStatus={setStatus} unbind={unbind} onAssign={setAssignFor} className="mt-2 flex flex-wrap gap-1" />}
           </div>
         ))}
       </div>
@@ -1354,7 +1382,7 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
                 <div className="truncate text-xs text-zinc-500">{communityById.get(c.line_note_posts?.community_id ?? -1)?.home_name ?? ""}</div>
               </Td>
               <Td><div className="flex flex-wrap items-center gap-2 text-sm">{commentResult(c, orders)}</div></Td>
-              <Td align="right" className="whitespace-nowrap"><CommentActionButtons c={c} busy={busy} readOnly={readOnly} retry={retry} setStatus={setStatus} onAssign={setAssignFor} /></Td>
+              <Td align="right" className="whitespace-nowrap"><CommentActionButtons c={c} busy={busy} readOnly={readOnly} retry={retry} setStatus={setStatus} unbind={unbind} onAssign={setAssignFor} /></Td>
             </Tr>
           ))}
         </TBody>
@@ -1365,6 +1393,7 @@ function CommentsTab({ communityById, notify, fail, readOnly }: {
           comment={assignFor}
           onClose={() => setAssignFor(null)}
           onDone={async (msg) => { setAssignFor(null); notify(msg); await load(); }}
+          onUnbind={async (mid, label) => { if (await unbind(assignFor, mid, label)) setAssignFor(null); }}
           fail={fail}
         />
       )}
@@ -1593,7 +1622,7 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
     await fetchComments(openGroup.posts.map((p) => p.id));
     await loadCounts();
   };
-  const { busy: cbusy, retry, setStatus } = useCommentActions(reloadOpenComments, notify, fail);
+  const { busy: cbusy, retry, setStatus, unbind } = useCommentActions(reloadOpenComments, notify, fail);
   const [assignFor, setAssignFor] = useState<CommentRow | null>(null);
   const [entryFor, setEntryFor] = useState<CommentRow | null>(null);
 
@@ -2027,7 +2056,7 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
                               <div className="mt-0.5 whitespace-pre-wrap break-words text-zinc-700 dark:text-zinc-300">{cm.text}</div>
                               <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
                                 <div className="flex flex-wrap items-center gap-2 text-sm">{commentResult(cm, orders)}</div>
-                                <CommentActionButtons c={cm} busy={cbusy} readOnly={readOnly} retry={retry} setStatus={setStatus}
+                                <CommentActionButtons c={cm} busy={cbusy} readOnly={readOnly} retry={retry} setStatus={setStatus} unbind={unbind}
                                   onAssign={() => setAssignFor(cm)}
                                   onEntry={cm.post.group_buy_campaigns ? () => setEntryFor(cm) : undefined}
                                   cls={btnSm} className="flex flex-wrap gap-1" />
@@ -2064,6 +2093,7 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
           comment={assignFor}
           onClose={() => setAssignFor(null)}
           onDone={async (msg) => { setAssignFor(null); notify(msg); await reloadOpenComments(); }}
+          onUnbind={async (mid, label) => { if (await unbind(assignFor, mid, label)) setAssignFor(null); }}
           fail={fail}
         />
       )}
@@ -2128,13 +2158,28 @@ const LINKABLE_CAMPAIGN_STATUSES: string[] =
 // ── 指定會員：搜會員 → rpc_line_note_assign_member（記住留言者 + 立刻重跑那則） ────────
 type MemberHit = { id: number; member_no: string; name: string; phone: string | null; home_store_name: string | null };
 
-function AssignMemberModal({ comment, onClose, onDone, fail }: {
-  comment: Comment; onClose: () => void; onDone: (msg: string) => Promise<void>; fail: (e: unknown) => void;
+type Binding = { member_id: number; member_name: string | null; member_no: string | null; store_name: string | null; source: "manual" | "auto" };
+
+function AssignMemberModal({ comment, onClose, onDone, onUnbind, fail }: {
+  comment: Comment; onClose: () => void; onDone: (msg: string) => Promise<void>;
+  onUnbind: (memberId: number, label: string) => Promise<void>; fail: (e: unknown) => void;
 }) {
   const [term, setTerm] = useState(comment.member_no_hint ?? "");
   const [hits, setHits] = useState<MemberHit[]>([]);
   const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState<number | null>(null);
+  // 這位留言者目前記住的會員：之前沒有任何地方看得到，對錯人時根本不知道是被綁住了
+  const [binding, setBinding] = useState<Binding | null>(null);
+  useEffect(() => {
+    let dead = false;
+    void getSupabase().rpc("rpc_line_note_commenter_binding", { p_comment_id: comment.id }).then(({ data }) => {
+      if (!dead) setBinding(((Array.isArray(data) ? data[0] : data) as Binding | undefined) ?? null);
+    });
+    return () => { dead = true; };
+  }, [comment.id]);
+  const bindingLabel = binding
+    ? `${binding.member_name ?? binding.member_no ?? "會員"}（${[binding.member_no, binding.store_name].filter(Boolean).join("・")}）`
+    : "";
 
   useEffect(() => {
     const q = term.trim();
@@ -2166,6 +2211,18 @@ function AssignMemberModal({ comment, onClose, onDone, fail }: {
         <div className="font-medium">{comment.commenter_name ?? "—"}</div>
         <div className="whitespace-pre-wrap break-words text-zinc-600 dark:text-zinc-300">{comment.text}</div>
       </div>
+      {binding && (
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded border border-sky-200 bg-sky-50 px-3 py-2 text-sm dark:border-sky-900 dark:bg-sky-950/30">
+          <span>
+            目前綁定：<b>{bindingLabel}</b>
+            <span className="ml-1 text-xs text-zinc-500">{binding.source === "manual" ? "（店員指定）" : "（系統自動記住）"}</span>
+          </span>
+          <SpinButton type="button" className={`${btn} text-red-700 dark:text-red-400`} disabled={busy !== null}
+            onClick={() => onUnbind(binding.member_id, bindingLabel)}>
+            取消綁定
+          </SpinButton>
+        </div>
+      )}
       <input className={input} autoFocus value={term} onChange={(e) => setTerm(e.target.value)}
         placeholder="會員編號 / 姓名 / 手機（至少 2 個字）" />
       <div className="mt-2 max-h-72 overflow-y-auto">
