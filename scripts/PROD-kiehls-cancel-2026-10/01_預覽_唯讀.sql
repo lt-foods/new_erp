@@ -59,7 +59,7 @@ cov AS (   -- 這幾筆身上還有效的「從店內庫存配貨」量（02 會
    GROUP BY ni.order_item_id
 ),
 ord AS (   -- 每張受影響的訂單：拿掉這幾筆之後還剩什麼（規則同 02 第 8 步＝刪除品項第 9 步）
-  SELECT co.id, co.order_no, co.status, co.payment_status, co.wallet_paid_amount, co.cancelled_at,
+  SELECT co.id, co.order_no, co.status, co.payment_status, co.wallet_paid_amount, co.cancelled_at, co.stockout_at,
          COALESCE(st.name, '?') AS store_name,
          count(*) FILTER (WHERE x.status IN ('pending', 'reserved', 'ready')
                             AND x.id NOT IN (SELECT item_id FROM tgt))                    AS open_left,
@@ -70,7 +70,7 @@ ord AS (   -- 每張受影響的訂單：拿掉這幾筆之後還剩什麼（規
     JOIN public.customer_order_items x ON x.order_id = co.id
     LEFT JOIN public.stores st ON st.id = co.pickup_store_id
    WHERE co.id IN (SELECT order_id FROM tgt)
-   GROUP BY co.id, co.order_no, co.status, co.payment_status, co.wallet_paid_amount, co.cancelled_at, st.name
+   GROUP BY co.id, co.order_no, co.status, co.payment_status, co.wallet_paid_amount, co.cancelled_at, co.stockout_at, st.name
 ),
 fate AS (
   SELECT ord.*,
@@ -186,7 +186,7 @@ FROM (
          CASE t.order_status WHEN 'pending' THEN '待確認' WHEN 'confirmed' THEN '已確認' WHEN 'shipping' THEN '出貨中'
                              WHEN 'ready' THEN '可取貨' WHEN 'partially_completed' THEN '部分取貨' ELSE '❌ ' || t.order_status END
            || '／品項等貨中',
-         CASE f.fate WHEN 'cancel' THEN '這張單只剩這一項 → 整單取消'
+         CASE f.fate WHEN 'cancel' THEN '這張單只剩這一項 → 整單取消（單頭標斷貨）'
                      WHEN 'keep'   THEN '單上還有 ' || f.open_left || ' 項待取 → 只取消這一項，單子留著'
                      WHEN 'done'   THEN '其他品項都取過了 → 訂單收尾成「已完成」'
                      ELSE '⚠ 付過錢／用過儲值金 → 只取消這一項，單子不動、不退錢，要人工處理' END
@@ -228,7 +228,7 @@ FROM (
   UNION ALL
   SELECT 3, 1, '③ 訂單收尾', '整單取消', NULL, (SELECT count(*) FROM fate WHERE fate = 'cancel'),
          'ℹ ' || (SELECT count(*) FROM fate WHERE fate = 'cancel') || ' 張',
-         '只剩這一項、一件都沒取、沒付款、沒用儲值金。照刪除品項做：單頭只改「已取消」，不蓋斷貨標記 → 客人 App「進行中」不再顯示這張'
+         '只剩這一項、一件都沒取、沒付款、沒用儲值金。單頭改「已取消」＋蓋斷貨時間（照斷貨的做法）→ 客人 App 看得到這張，寫「⛔ 供應商斷貨，本筆訂單已取消」；後台不會出現「復原取消」鈕（要救只能用 05）'
   UNION ALL
   SELECT 3, 2, '③ 訂單收尾', '收尾成已完成', NULL, (SELECT count(*) FROM fate WHERE fate = 'done'),
          'ℹ ' || (SELECT count(*) FROM fate WHERE fate = 'done') || ' 張', '其他品項都取過了'
@@ -246,6 +246,12 @@ FROM (
          CASE WHEN (SELECT count(*) FROM fate WHERE fate = 'cancel' AND cancelled_at IS NOT NULL) = 0 THEN '✅ 0 張'
               ELSE '⚠ ' || (SELECT count(*) FROM fate WHERE fate = 'cancel' AND cancelled_at IS NOT NULL) || ' 張' END,
          '以前取消過又被救回的單；不擋 02，但萬一要用 05 還原，這幾張的舊取消時間會被清成空白'
+  UNION ALL
+  SELECT 3, 7, '③ 訂單收尾', '原本就有斷貨時間的（會整單取消的那幾張）', NULL,
+         (SELECT count(*) FROM fate WHERE fate = 'cancel' AND stockout_at IS NOT NULL),
+         CASE WHEN (SELECT count(*) FROM fate WHERE fate = 'cancel' AND stockout_at IS NOT NULL) = 0 THEN '✅ 0 張'
+              ELSE '⚠ ' || (SELECT count(*) FROM fate WHERE fate = 'cancel' AND stockout_at IS NOT NULL) || ' 張' END,
+         '02 不覆蓋原本的斷貨時間（05 也不會清它）；收尾成已完成、單子留著、付過錢的單頭都不蓋'
   UNION ALL
   SELECT 3, 6, '③ 訂單收尾', '從店內庫存配過貨的品項', NULL, (SELECT count(*) FROM cov WHERE assigned > 0),
          CASE WHEN (SELECT count(*) FROM cov WHERE assigned > 0) = 0 THEN 'ℹ 0 筆' ELSE '⚠ ' || (SELECT count(*) FROM cov WHERE assigned > 0) || ' 筆' END,

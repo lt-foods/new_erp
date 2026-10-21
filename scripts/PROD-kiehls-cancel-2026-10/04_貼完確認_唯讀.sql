@@ -99,6 +99,10 @@ v AS (     -- 各項數字先算好
     (SELECT count(*) FROM public.customer_orders co
       WHERE co.id IN (SELECT order_id FROM ord_cancel)
         AND co.status = 'cancelled' AND co.cancelled_at = (SELECT at FROM t0)) AS n_cancel_ok,
+    (SELECT count(*) FROM public.customer_orders co
+      WHERE co.id IN (SELECT order_id FROM ord_cancel) AND co.stockout_at IS NOT NULL) AS n_cancel_stockout,
+    (SELECT count(*) FROM public.customer_orders co
+      WHERE co.stockout_at = (SELECT at FROM t0) AND co.id NOT IN (SELECT order_id FROM ord_cancel)) AS n_other_order_stockout,
     (SELECT count(*) FROM ord_done) AS n_done,
     (SELECT count(*) FROM public.customer_orders co
       WHERE co.id IN (SELECT order_id FROM ord_done) AND co.status = 'completed') AS n_done_ok,
@@ -155,6 +159,16 @@ FROM (
               ELSE '❌ 其中只有 ' || (SELECT n_cancel_ok FROM v) || ' 張現在是已取消' END,
          '跟 01 第③段「整單取消」比；02 之前的狀態：'
            || COALESCE((SELECT string_agg(before_status || ' ' || n, '、') FROM (SELECT before_status, count(*) AS n FROM ord_cancel GROUP BY before_status) z), '（沒有）')
+  UNION ALL
+  SELECT 8.1, '④ 整單取消', '整單取消的單頭都有斷貨標記', (SELECT n_cancel_stockout FROM v),
+         CASE WHEN (SELECT n_undo FROM v) > 0 THEN 'ℹ 已用 05 還原，這一列不適用'
+              WHEN (SELECT n_cancel_stockout FROM v) = (SELECT n_cancel FROM v) THEN '✅ ' || (SELECT n_cancel FROM v) || ' 張都有'
+              ELSE '❌ 只有 ' || (SELECT n_cancel_stockout FROM v) || ' 張有（應為 ' || (SELECT n_cancel FROM v) || ' 張）' END,
+         '客人 App 會看到「⛔ 供應商斷貨，本筆訂單已取消」；後台不出現「復原取消」鈕（要救只能用 05）'
+  UNION ALL
+  SELECT 8.2, '④ 整單取消', '其他單頭被蓋上同一個斷貨時間', (SELECT n_other_order_stockout FROM v),
+         CASE WHEN (SELECT n_other_order_stockout FROM v) = 0 THEN '✅ 0 張' ELSE '❌ 應為 0 張' END,
+         '全系統查；收尾成已完成、單子留著、付過錢的單頭都不該蓋'
   UNION ALL
   SELECT 9, '④ 整單取消', '收尾成已完成的單', (SELECT n_done FROM v),
          CASE WHEN (SELECT n_undo FROM v) > 0 THEN 'ℹ ' || (SELECT n_done FROM v) || ' 張（已用 05 還原）'

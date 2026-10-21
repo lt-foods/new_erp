@@ -22,8 +22,11 @@
 --       04 確認、05 還原、03 通知、重貼判斷，都靠這一句認出「這一次」做的事，⛔ 不要改字。
 --    ⑤ 訂單收尾，照刪除品項第 9 步（20260831000090:817-853）：
 --       ・單上已經沒有待取品項、而且取過貨 → _close_orders_all_items_settled 收尾成「已完成」
---       ・單上已經沒有待取品項、一件都沒取、沒付款、沒用儲值金 → 整單取消
+--       ・單上已經沒有待取品項、一件都沒取、沒付款、沒用儲值金 → 整單取消，單頭也蓋斷貨時間
+--         （單頭蓋斷貨照斷貨 (c) 段 20260902000010:337-363 的做法；2026-10-21 CEO 裁決：客人 App 要看到
+--          「⛔ 供應商斷貨，本筆訂單已取消」。原本就有斷貨時間的單頭不覆蓋。）
 --         （出貨中／可取貨／已確認都一樣：狀態檢查只看「沒有待取品項」，見下方開工前四問 Q1-j）
+--       ・收尾成已完成、單子留著、付過錢的單：單頭都不蓋斷貨時間
 --       ・付過錢或用過儲值金 → 單子不動、不退錢（品項照樣取消），結尾列出來給人工處理
 --       ・單上還有別的待取品項 → 單子留著，只少這一項
 --       ⇒ 整單取消、收尾完成這兩種也各寫一列編輯歷史（05 還原要用）
@@ -86,11 +89,16 @@
 --           仍可能收到一則「您的商品到貨」。這是既有行為（斷貨、刪除品項一樣），本份不改；01 第③段列出張數。
 --      l. LINE 記事本：觸發器全掛在開團表與貼文表（例：20260927000000:78-80），這份不動開團 → 不會發文、不會改文。
 --      m. 會員 App：「進行中」不顯示一般取消的單、只顯示單頭有斷貨標記的取消單（supabase/functions/liff-api/index.ts:618-624）。
---         這份照刪除品項第 9 步，單頭不蓋斷貨標記 ⇒ 整單取消的單會從客人「進行中」消失（跟店家刪除最後一項一樣）；
+--         這份整單取消時單頭蓋斷貨時間 ⇒ 客人「進行中」看得到那張單，上面寫「⛔ 供應商斷貨，本筆訂單已取消」
+--         （apps/member/src/components/OrderCard.tsx:296-308）；後台訂單頁單頭有「⛔ 斷貨」標籤（OrderDetail.tsx:1336-1343）；
 --         單子留著的，這一項顯示「斷貨」、劃線、不算錢（20261002010000:102-104、apps/member/src/components/OrderCard.tsx:340-363）。
---      n. 後台訂單頁「復原取消」鈕：單頭沒有斷貨標記 → 鈕會出現（apps/admin/src/components/OrderDetail.tsx:815-819），
---         但伺服端只還「沒有斷貨標記」的品項（rpc_restore_cancelled_order 最新 20261013000000:1587-1599），
---         這 26 筆都有 → 守衛 6 擋下「沒有任何可以復原的品項」（:1605-1608）。救不回、也不會弄壞；要救回用 05。
+--      n. 後台訂單頁「復原取消」鈕：單頭有斷貨標記 → 鈕不顯示（apps/admin/src/components/OrderDetail.tsx:815-819 要 !head.stockout_at）；
+--         直接呼叫 rpc_restore_cancelled_order（最新 20261013000000:1480）也會被守衛 2 擋下（:1516-1520，叫人去採購單按「回復斷貨」），
+--         而採購單的「回復斷貨」只認 stockout_po_id（這份不寫，見 05 檔頭）→ 兩條路都救不回、也不會弄壞；要救回只能用 05。
+--         單子留著的單：品項有斷貨標記，復原取消也不會還它（:1587-1599 只還沒有斷貨標記的品項）。
+--      o. 單頭斷貨時間還有誰在讀（全 repo 查 co.stockout_at 等寫法）：會員 App／後台的顯示、訂單摘要 view 帶出這一欄、
+--         rpc_restore_cancelled_order 守衛 2、#1084 叫貨後取消照派原店（排除有標記的，見 h）、回復斷貨（只認 stockout_po_id，
+--         20260812000000）。沒有任何會因為它改帳、改庫存、改派貨的地方。
 --  Q2 用到的每支既有程式，最新版是哪一支（查法：git grep -nE "CREATE (OR REPLACE )?FUNCTION (public\.)?<名>" origin/main -- supabase/migrations | sort）
 --    ・_release_order_item_stock_assignment：只有 1 支 20260827040000:60
 --      └ 它裡面用的 _order_item_stock_budget 只有 1 支 20260824070000:76；_restore_internal_pool 只有 1 支 20260825020000:132
@@ -316,10 +324,12 @@ BEGIN
       n_done := n_done + 1;
     ELSIF COALESCE(r.payment_status, 'unpaid') <> 'paid'
           AND COALESCE(r.wallet_paid_amount, 0) = 0 THEN
-      -- 一件都沒取過、也沒收過錢 → 整單取消（照刪除品項第 9 步：只改狀態與取消時間，單頭不蓋斷貨標記）
+      -- 一件都沒取過、也沒收過錢 → 整單取消（刪除品項第 9 步）＋單頭蓋斷貨時間（斷貨 (c) 段 20260902000010:340-346）
+      -- 原本就有斷貨時間的不覆蓋（COALESCE）；05 只清「等於 02 那一刻」的
       UPDATE public.customer_orders
          SET status       = 'cancelled',
              cancelled_at = v_now,
+             stockout_at  = COALESCE(stockout_at, v_now),
              updated_by   = p_operator,
              updated_at   = v_now
        WHERE id = r.id
@@ -377,6 +387,21 @@ BEGIN
     RAISE EXCEPTION '【停】自我驗算沒過：整單取消的單查到 % 張（應為 %）。整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt, n_cancel;
   END IF;
 
+  -- 整單取消的單頭都有斷貨時間；斷貨時間＝02 這一刻的單頭，只能是整單取消的那幾張
+  SELECT count(*) INTO v_cnt
+    FROM public.customer_orders co
+   WHERE co.id = ANY (v_orders) AND co.status = 'cancelled' AND co.cancelled_at = v_now AND co.stockout_at IS NULL;
+  IF v_cnt <> 0 THEN
+    RAISE EXCEPTION '【停】自我驗算沒過：有 % 張整單取消的單頭沒有斷貨時間。整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt;
+  END IF;
+  SELECT count(*) INTO v_cnt
+    FROM public.customer_orders co
+   WHERE co.stockout_at = v_now
+     AND NOT (co.id = ANY (v_orders) AND co.status = 'cancelled' AND co.cancelled_at = v_now);
+  IF v_cnt <> 0 THEN
+    RAISE EXCEPTION '【停】自我驗算沒過：有 % 張不是整單取消的單頭被蓋了斷貨時間。整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt;
+  END IF;
+
   -- 沒有多動到別的：這一次改到的品項只能是這 26 筆、改到的單頭只能是整單取消＋收尾完成那幾張。
   -- 例外：② 有把貨還回【內部】現貨池時，那支會改到池子的容器單（20260825020000:200-251），這兩項就不算。
   IF v_rel_pool = 0 THEN
@@ -394,7 +419,7 @@ BEGIN
     END IF;
   END IF;
 
-  RAISE NOTICE '✅ 完成：取消 % 筆（% 件）；整單取消 % 張；收尾成已完成 % 張；單上還有別的品項、單子留著 % 張；付過錢／用過儲值金、單子沒動 % 張%；從店內庫存配過貨、已還回 % 筆（% 件，其中回【內部】現貨池 % 件）。請接著貼 04 確認。',
+  RAISE NOTICE '✅ 完成：取消 % 筆（% 件）；整單取消 % 張（單頭也標斷貨）；收尾成已完成 % 張；單上還有別的品項、單子留著 % 張；付過錢／用過儲值金、單子沒動 % 張%；從店內庫存配過貨、已還回 % 筆（% 件，其中回【內部】現貨池 % 件）。請接著貼 04 確認。',
     c_expect_rows, trim_scale(c_expect_qty), n_cancel, n_done, n_keep, n_paid,
     CASE WHEN n_paid > 0 THEN '（' || v_paid_list || '，要人工處理退款）' ELSE '' END,
     v_rel_rows, trim_scale(v_rel_qty), trim_scale(v_rel_pool);

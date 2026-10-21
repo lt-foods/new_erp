@@ -3,9 +3,14 @@
 --  契爾氏化妝水（G02596-01）團 GRP-20260910-027
 --  日期：2026-10-21　阿寫寫、⛔ 阿審（Codex）審過之前不要貼；平常不用貼，老闆決定撤回 02 才貼
 -- ============================================================================
---  ★ 為什麼要有這支：後台「復原取消」救不回這批（品項有斷貨標記，rpc_restore_cancelled_order
---    只還沒有斷貨標記的品項 20261013000000:1587-1599、守衛 6 擋下 :1605-1608），
---    採購單「回復斷貨」也接不到（這批沒有斷貨單，stockout_po_id 是空的）。
+--  ★ 為什麼要有這支：⛔ 02 之後要救這批，只能用這份，不能用後台「復原取消」，也不能用採購單「回復斷貨」
+--    ・後台訂單頁「復原取消」鈕：02 整單取消的單頭蓋了斷貨時間 → 鈕根本不顯示
+--      （apps/admin/src/components/OrderDetail.tsx:815-819，要單頭沒有斷貨標記才出現）。
+--    ・就算直接呼叫 rpc_restore_cancelled_order（最新 20261013000000:1480）：守衛 2（:1516-1520）看到單頭有斷貨標記，
+--      一律擋下、叫人「到對應的採購單按『回復斷貨』」，什麼都不改。
+--      單子留著、沒整單取消的那幾張：品項有斷貨標記，它也只還沒有斷貨標記的品項（:1587-1599），守衛 6 擋下（:1605-1608）。
+--    ・採購單「回復斷貨」rpc_restore_stockout_po（20260812000000）只認 stockout_po_id；02 沒有斷貨單、不寫這一欄 → 接不到。
+--      ⇒ 守衛 2 叫人去按的那顆鈕，對這批是無效的；看到那句紅字請改貼這份。
 --  ★ 這份在做什麼（整份只有一個 DO 區塊＝同一次；任何一步不對就整筆取消、什麼都沒改）
 --    ① 找「最近一次 02」（用 02 寫進編輯歷史的那一句原因認）
 --    ② 先檢查（任何寫入之前）：那一次取消的品項現在都還是那一刻的樣子（已取消、斷貨時間＝那一刻、
@@ -13,7 +18,8 @@
 --       同一團的其他進行中訂單撞在一起。任何一項不對 → 【停】，什麼都沒改（要改人工處理）。
 --    ③ 還原（依 02 寫的編輯歷史裡「改之前」那個值）：
 --       ・品項：已取消 → 改之前的狀態（等貨中），斷貨時間清空
---       ・02 整單取消的單：已取消 → 改之前的狀態（已確認／出貨中／可取貨…），取消時間清空
+--       ・02 整單取消的單：已取消 → 改之前的狀態（已確認／出貨中／可取貨…），取消時間清空，
+--         單頭斷貨時間「等於 02 那一刻」的清空（02 之前就有的斷貨時間不動）
 --       ・02 收尾成已完成的單：已完成 → 改之前的狀態；完成時間是 02 那一刻蓋的才清空
 --       ・每一筆都再寫一列編輯歷史（原因「還原：契爾氏化妝水叫錯款式批次取消（撤回 2026-10-21 那一次）」）；
 --         02 寫的那幾列留著（編輯歷史只能新增、不能刪，20260605000001:27-28）
@@ -221,6 +227,7 @@ BEGIN
     UPDATE public.customer_orders co
        SET status       = a.before_value #>> '{}',
            cancelled_at = NULL,
+           stockout_at  = CASE WHEN co.stockout_at = v_t0 THEN NULL ELSE co.stockout_at END,  -- 只清 02 蓋的
            updated_by   = p_operator,
            updated_at   = v_now
       FROM public.customer_order_audit_log a
@@ -275,7 +282,8 @@ BEGIN
       ON a.order_id = co.id AND a.entity_type = 'order' AND a.field = 'status'
      AND a.edit_reason IN (c_tag_cancel, c_tag_done) AND a.created_at = v_t0
    WHERE co.status <> a.before_value #>> '{}'
-      OR (a.edit_reason = c_tag_cancel AND co.cancelled_at IS NOT NULL);
+      OR (a.edit_reason = c_tag_cancel AND co.cancelled_at IS NOT NULL)
+      OR co.stockout_at = v_t0;
   IF v_bad > 0 THEN
     RAISE EXCEPTION '【停】自我驗算沒過：有 % 張單頭沒有回到 02 之前的狀態。整筆取消、什麼都沒改，請截圖給 CEO。', v_bad;
   END IF;
