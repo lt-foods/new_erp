@@ -13,22 +13,29 @@
 --      ⇒ 守衛 2 叫人去按的那顆鈕，對這批是無效的；看到那句紅字請改貼這份。
 --  ★ 這份在做什麼（整份只有一個 DO 區塊＝同一次；任何一步不對就整筆取消、什麼都沒改）
 --    ① 找「最近一次 02」（用 02 寫進編輯歷史的那一句原因認）
---    ② 先檢查（任何寫入之前）：那一次取消的品項現在都還是那一刻的樣子（已取消、斷貨時間＝那一刻、
---       之後沒人改過）；02 整單取消／收尾完成的單也一樣沒人改過；還原後不會跟同一位客人在
---       同一團的其他進行中訂單撞在一起。任何一項不對 → 【停】，什麼都沒改（要改人工處理）。
+--    ② 先檢查（任何寫入之前；每一個查詢都限定這家公司＋團 GRP-20260910-027＋商品 G02596-01）：
+--       ・02 那一次的紀錄剛好 26 筆／32 件、都是等貨中→已取消；同一句原因同一刻沒有落在這一團以外
+--       ・那 26 筆現在都還是那一刻取消的樣子（已取消、斷貨時間＝那一刻、修改時間＝那一刻）
+--       ・受影響的訂單＝這 26 筆所在的「全部」訂單（含 02 沒改單頭的：單子留著、付過錢的）：
+--         單頭與單上其他品項的修改時間都不能晚於 02 那一刻（02 之後有人收貨、取貨、改單、取消 → 停）
+--       ・02 整單取消／收尾完成的單，狀態與時間還是 02 留下的樣子
+--       ・還原後不會跟同一位客人在同一團的其他進行中訂單撞在一起
+--       任何一項不對 → 【停】，什麼都沒改（要改人工處理）。
 --    ③ 還原（依 02 寫的編輯歷史裡「改之前」那個值）：
 --       ・品項：已取消 → 改之前的狀態（等貨中），斷貨時間清空
---       ・02 整單取消的單：已取消 → 改之前的狀態（已確認／出貨中／可取貨…），取消時間清空，
---         單頭斷貨時間「等於 02 那一刻」的清空（02 之前就有的斷貨時間不動）
+--       ・02 整單取消的單：已取消 → 改之前的狀態（已確認／出貨中／可取貨…）；取消時間、單頭斷貨時間
+--         只清「等於 02 那一刻」的（02 寫入前已要求這幾張的取消時間原本是空的；02 之前就有的斷貨時間不動）
 --       ・02 收尾成已完成的單：已完成 → 改之前的狀態；完成時間是 02 那一刻蓋的才清空
 --       ・每一筆都再寫一列編輯歷史（原因「還原：契爾氏化妝水叫錯款式批次取消（撤回 2026-10-21 那一次）」）；
 --         02 寫的那幾列留著（編輯歷史只能新增、不能刪，20260605000001:27-28）
---    ④ 自我驗算
+--    ④ 自我驗算（品項狀態與斷貨時間、單頭狀態／取消時間／斷貨時間／完成時間都回去了；沒有多改到別的列）
 --  ★ 只還原 02 做的：認法是 02 寫的那一句原因＋02 那一刻的時間。松山那筆（老闆 10/21 手動刪除品項、整單一併取消）
 --    的編輯歷史原因不同 → 這份不碰它，它維持已取消。
 --  ★ 還原不了的（會在結尾那行寫出來）：
 --    ・02 第 5 步還回的「從店內庫存配貨」不會自動配回去（同刪除品項的取捨，20260827040000:48-49）；
 --      01 第③段預期 0 筆。有的話要店家重新配一次。
+--    ・02 把整單取消時，觸發器 trg_release_idn_coverage 可能順便收斂同一張減抵單上其他已死訂單的覆蓋
+--      （20260813002000:100-127）；那也不會復原。結尾會列出 02 那一刻被作廢的減抵單張數。
 --    ・03 發出去的通知收不回來。
 --    ・品項／單頭的「最後修改人、修改時間」會變成這次還原的人與時間。
 --    ・02 之後如果店家已經把錯貨收進來，還原回「出貨中」的單不會自己變可取貨（貨是在 02 之後收的）。
@@ -42,27 +49,35 @@ DECLARE
   -- ╔════════ 要填的一行（CEO 在老闆確認後填）════════╗
   p_operator      uuid := NULL;   -- ⬅ 操作人：01 第⑨段列出、老闆確認過的本人 UUID；⛔ 空的會直接停
   -- ╚════════════════════════════════════════════════╝
-  c_campaign_no   CONSTANT text := 'GRP-20260910-027';
-  c_sku_code      CONSTANT text := 'G02596-01';
+  c_campaign_no   CONSTANT text    := 'GRP-20260910-027';
+  c_sku_code      CONSTANT text    := 'G02596-01';
+  c_expect_rows   CONSTANT int     := 26;      -- 跟 02 一樣（松山 1 筆老闆 10/21 已手動刪除，不在範圍）
+  c_expect_qty    CONSTANT numeric := 32;
   -- ⛔ 跟 02 逐字相同，不要改字
   c_tag_item      CONSTANT text := '契爾氏化妝水叫錯款式、廠商沒有正確款：2026-10-21 老闆核准批次取消';
   c_tag_cancel    CONSTANT text := '契爾氏化妝水叫錯款式、廠商沒有正確款：2026-10-21 老闆核准批次取消（這張單沒有其他待取品項，整單取消）';
   c_tag_done      CONSTANT text := '契爾氏化妝水叫錯款式、廠商沒有正確款：2026-10-21 老闆核准批次取消（其他品項都取過了，訂單收尾為完成）';
   c_tag_release   CONSTANT text := '契爾氏叫錯款式批次取消';
   c_tag_undo      CONSTANT text := '還原：契爾氏化妝水叫錯款式批次取消（撤回 2026-10-21 那一次）';
+  c_title         CONSTANT text := '商品斷貨通知';
   v_now           timestamptz := now();
   v_tenant        uuid;
   v_campaign      bigint;
   v_sku           bigint;
   v_t0            timestamptz;
   v_cnt           int;
+  v_qty           numeric;
   v_marked        int;
+  v_marked_qty    numeric;
   v_bad           int;
   v_items         bigint[];
+  v_orders        bigint[];
   v_ord_cancel    bigint[];
   v_ord_done      bigint[];
   v_dup           text;
+  v_body          text;
   v_rel_notes     int;
+  v_dn_void       int;
   v_notified      int;
   n_items         int := 0;
   n_cancel        int := 0;
@@ -93,12 +108,13 @@ BEGIN
     RAISE EXCEPTION '【停】操作人 % 不是這家公司的總部帳號（或根本不是登入帳號）。請用 01 第⑨段列出、老闆確認過的本人 UUID。什麼都沒改。', p_operator;
   END IF;
 
-  -- ── 2. 最近一次 02 ──
+  -- ── 2. 最近一次 02（只看這家公司、這一團、這個商品的品項留下的編輯歷史）──
   SELECT max(a.created_at) INTO v_t0
     FROM public.customer_order_audit_log a
-    JOIN public.customer_order_items i ON i.id = a.entity_id
+    JOIN public.customer_order_items i ON i.id = a.entity_id AND i.order_id = a.order_id
     JOIN public.customer_orders co ON co.id = i.order_id
    WHERE a.entity_type = 'item' AND a.field = 'status' AND a.edit_reason = c_tag_item
+     AND a.tenant_id = v_tenant AND co.tenant_id = v_tenant AND i.tenant_id = v_tenant
      AND co.campaign_id = v_campaign AND i.sku_id = v_sku;
   IF v_t0 IS NULL THEN
     RAISE EXCEPTION '【停】找不到 02 做過的紀錄，沒有東西可以還原。什麼都沒改。';
@@ -124,54 +140,102 @@ BEGIN
     RAISE EXCEPTION '【停】有人正在操作這幾張訂單，等了 15 秒還拿不到。什麼都沒改，請過幾分鐘再貼一次。';
   END;
 
-  -- ── 4. 那一次 02 取消的品項、改過的單頭 ──
-  SELECT count(*) INTO v_marked
+  -- ── 4. 那一次 02 留下的品項紀錄：一定要剛好 26 筆／32 件，而且都是「等貨中 → 已取消」──
+  SELECT count(*), COALESCE(sum(i.qty), 0),
+         count(*) FILTER (WHERE a.before_value <> to_jsonb('pending'::text) OR a.after_value <> to_jsonb('cancelled'::text))
+    INTO v_marked, v_marked_qty, v_bad
     FROM public.customer_order_audit_log a
-   WHERE a.entity_type = 'item' AND a.field = 'status' AND a.edit_reason = c_tag_item AND a.created_at = v_t0;
+    JOIN public.customer_order_items i ON i.id = a.entity_id AND i.order_id = a.order_id
+    JOIN public.customer_orders co ON co.id = i.order_id
+   WHERE a.entity_type = 'item' AND a.field = 'status' AND a.edit_reason = c_tag_item AND a.created_at = v_t0
+     AND a.tenant_id = v_tenant AND co.tenant_id = v_tenant AND i.tenant_id = v_tenant
+     AND co.campaign_id = v_campaign AND i.sku_id = v_sku;
+  IF v_marked <> c_expect_rows OR v_marked_qty <> c_expect_qty OR v_bad > 0 THEN
+    RAISE EXCEPTION '【停】02 那一次的紀錄是 % 筆、% 件（應為 26 筆、32 件，而且都是等貨中→已取消；不對的 % 筆）。不能自動還原，什麼都沒改，請截圖給 CEO。',
+      v_marked, trim_scale(v_marked_qty), v_bad;
+  END IF;
+  -- 同一句原因、同一刻，卻落在這一團這商品以外的紀錄（標記撞到別的資料）→ 停
+  SELECT count(*) INTO v_bad
+    FROM public.customer_order_audit_log a
+   WHERE a.edit_reason IN (c_tag_item, c_tag_cancel, c_tag_done) AND a.created_at = v_t0
+     AND NOT EXISTS (SELECT 1 FROM public.customer_orders co
+                      WHERE co.id = a.order_id AND co.tenant_id = v_tenant AND co.campaign_id = v_campaign
+                        AND a.tenant_id = v_tenant);
+  IF v_bad > 0 THEN
+    RAISE EXCEPTION '【停】有 % 列同一句原因、同一刻的編輯歷史不在這一團（標記撞到別的資料）。不能自動還原，什麼都沒改，請截圖給 CEO。', v_bad;
+  END IF;
 
-  SELECT array_agg(x.id ORDER BY x.id) INTO v_items
-    FROM public.customer_order_items x
-   WHERE x.status = 'cancelled' AND x.stockout_at = v_t0
+  -- 現在還是那一刻取消的樣子（已取消、斷貨時間＝那一刻）
+  SELECT array_agg(i.id ORDER BY i.id), count(*), COALESCE(sum(i.qty), 0)
+    INTO v_items, v_cnt, v_qty
+    FROM public.customer_order_items i
+    JOIN public.customer_orders co ON co.id = i.order_id
+   WHERE co.tenant_id = v_tenant AND i.tenant_id = v_tenant
+     AND co.campaign_id = v_campaign AND i.sku_id = v_sku
+     AND i.status = 'cancelled' AND i.stockout_at = v_t0
      AND EXISTS (SELECT 1 FROM public.customer_order_audit_log a
-                  WHERE a.order_id = x.order_id AND a.entity_type = 'item' AND a.entity_id = x.id
-                    AND a.field = 'status' AND a.edit_reason = c_tag_item AND a.created_at = v_t0);
-  v_cnt := COALESCE(array_length(v_items, 1), 0);
+                  WHERE a.order_id = i.order_id AND a.entity_type = 'item' AND a.entity_id = i.id
+                    AND a.field = 'status' AND a.edit_reason = c_tag_item AND a.created_at = v_t0
+                    AND a.tenant_id = v_tenant);
 
   IF v_cnt = 0 THEN
     IF EXISTS (SELECT 1 FROM public.customer_order_audit_log a
-                WHERE a.edit_reason = c_tag_undo AND a.created_at > v_t0) THEN
+                JOIN public.customer_order_items i ON i.id = a.entity_id AND i.order_id = a.order_id
+                JOIN public.customer_orders co ON co.id = i.order_id
+               WHERE a.entity_type = 'item' AND a.edit_reason = c_tag_undo AND a.created_at > v_t0
+                 AND a.tenant_id = v_tenant AND co.campaign_id = v_campaign AND i.sku_id = v_sku) THEN
       RAISE NOTICE '已經還原過了（02 那一次之後有還原紀錄），這次什麼都沒改。';
       RETURN;
     END IF;
     RAISE EXCEPTION '【停】02 取消的那 % 筆現在都不是那時候的樣子，而且沒有還原紀錄（有人用別的方式動過）。不能自動還原，什麼都沒改，請截圖給 CEO。', v_marked;
   END IF;
-  IF v_cnt <> v_marked THEN
-    RAISE EXCEPTION '【停】02 那一次取消了 % 筆，現在只剩 % 筆還是那時候的樣子（有人動過）。不能自動還原，什麼都沒改，請截圖給 CEO。', v_marked, v_cnt;
+  IF v_cnt <> c_expect_rows OR v_qty <> c_expect_qty THEN
+    RAISE EXCEPTION '【停】02 那一次取消了 % 筆，現在只剩 % 筆（% 件）還是那時候的樣子（有人動過）。不能自動還原，什麼都沒改，請截圖給 CEO。', v_marked, v_cnt, trim_scale(v_qty);
   END IF;
 
-  -- 之後沒人改過：修改時間還是 02 那一刻（任何人改過任何欄位，修改時間都會變，觸發器 20260423120000:329-332）
+  -- ── 5. 受影響的訂單＝這 26 筆所在的全部訂單（不只 02 改過單頭的那幾張）──
+  SELECT array_agg(DISTINCT x.order_id ORDER BY x.order_id) INTO v_orders
+    FROM public.customer_order_items x WHERE x.id = ANY (v_items);
+
+  -- 02 之後都沒人動過（任何人改過任何欄位，修改時間都會變，觸發器 20260423120000:329-332）：
+  --   目標品項：修改時間＝02 那一刻；同單其他品項、單頭：修改時間不晚於 02 那一刻
   SELECT count(*) INTO v_bad FROM public.customer_order_items x WHERE x.id = ANY (v_items) AND x.updated_at <> v_t0;
   IF v_bad > 0 THEN
     RAISE EXCEPTION '【停】02 取消的品項裡有 % 筆在 02 之後又被改過。不能自動還原，什麼都沒改，請截圖給 CEO。', v_bad;
   END IF;
+  SELECT count(*) INTO v_bad
+    FROM public.customer_order_items x
+   WHERE x.order_id = ANY (v_orders) AND NOT (x.id = ANY (v_items)) AND x.updated_at > v_t0;
+  IF v_bad > 0 THEN
+    RAISE EXCEPTION '【停】這幾張單上有 % 筆別的品項在 02 之後被改過（例如取貨、改數量、加品項）。不能自動還原，什麼都沒改，請截圖給 CEO。', v_bad;
+  END IF;
+  SELECT count(*) INTO v_bad
+    FROM public.customer_orders co
+   WHERE co.id = ANY (v_orders) AND co.updated_at > v_t0;
+  IF v_bad > 0 THEN
+    RAISE EXCEPTION '【停】這幾張單裡有 % 張單頭在 02 之後被改過（例如收貨、取貨、完成、取消）。不能自動還原，什麼都沒改，請截圖給 CEO。', v_bad;
+  END IF;
 
-  SELECT array_agg(a.order_id ORDER BY a.order_id) INTO v_ord_cancel
+  -- 02 改過單頭的（只從這幾張單裡找）
+  SELECT COALESCE(array_agg(a.order_id ORDER BY a.order_id), '{}') INTO v_ord_cancel
     FROM public.customer_order_audit_log a
-   WHERE a.entity_type = 'order' AND a.field = 'status' AND a.edit_reason = c_tag_cancel AND a.created_at = v_t0;
-  SELECT array_agg(a.order_id ORDER BY a.order_id) INTO v_ord_done
+   WHERE a.entity_type = 'order' AND a.field = 'status' AND a.edit_reason = c_tag_cancel AND a.created_at = v_t0
+     AND a.tenant_id = v_tenant AND a.order_id = ANY (v_orders);
+  SELECT COALESCE(array_agg(a.order_id ORDER BY a.order_id), '{}') INTO v_ord_done
     FROM public.customer_order_audit_log a
-   WHERE a.entity_type = 'order' AND a.field = 'status' AND a.edit_reason = c_tag_done AND a.created_at = v_t0;
+   WHERE a.entity_type = 'order' AND a.field = 'status' AND a.edit_reason = c_tag_done AND a.created_at = v_t0
+     AND a.tenant_id = v_tenant AND a.order_id = ANY (v_orders);
 
   SELECT count(*) INTO v_bad
     FROM public.customer_orders co
-   WHERE co.id = ANY (COALESCE(v_ord_cancel, '{}'::bigint[]))
+   WHERE co.id = ANY (v_ord_cancel)
      AND NOT (co.status = 'cancelled' AND co.cancelled_at = v_t0 AND co.updated_at = v_t0);
   IF v_bad > 0 THEN
     RAISE EXCEPTION '【停】02 整單取消的單裡有 % 張在 02 之後又被改過。不能自動還原，什麼都沒改，請截圖給 CEO。', v_bad;
   END IF;
   SELECT count(*) INTO v_bad
     FROM public.customer_orders co
-   WHERE co.id = ANY (COALESCE(v_ord_done, '{}'::bigint[]))
+   WHERE co.id = ANY (v_ord_done)
      AND NOT (co.status = 'completed' AND co.updated_at = v_t0);
   IF v_bad > 0 THEN
     RAISE EXCEPTION '【停】02 收尾成已完成的單裡有 % 張在 02 之後又被改過。不能自動還原，什麼都沒改，請截圖給 CEO。', v_bad;
@@ -189,7 +253,7 @@ BEGIN
      AND co2.order_no NOT LIKE 'SP-%' AND co2.order_no NOT LIKE 'WS-%'
      AND co2.aid_board_id IS NULL AND co2.transferred_from_order_id IS NULL
     LEFT JOIN public.stores st ON st.id = co2.pickup_store_id
-   WHERE co.id = ANY (COALESCE(v_ord_cancel, '{}'::bigint[]))
+   WHERE co.id = ANY (v_ord_cancel)
      AND co.order_kind <> 'restock'
      AND co.order_no NOT LIKE 'SP-%' AND co.order_no NOT LIKE 'WS-%'
      AND co.aid_board_id IS NULL AND co.transferred_from_order_id IS NULL;
@@ -199,7 +263,7 @@ BEGIN
 
   -- ════════ 以下開始寫入 ════════
   BEGIN
-    -- ── 5. 品項還原（改之前的狀態從 02 的編輯歷史拿）──
+    -- ── 6. 品項還原（改之前的狀態從 02 的編輯歷史拿）──
     UPDATE public.customer_order_items x
        SET status      = a.before_value #>> '{}',
            stockout_at = NULL,
@@ -208,10 +272,10 @@ BEGIN
       FROM public.customer_order_audit_log a
      WHERE x.id = ANY (v_items)
        AND a.order_id = x.order_id AND a.entity_type = 'item' AND a.entity_id = x.id
-       AND a.field = 'status' AND a.edit_reason = c_tag_item AND a.created_at = v_t0;
+       AND a.field = 'status' AND a.edit_reason = c_tag_item AND a.created_at = v_t0 AND a.tenant_id = v_tenant;
     GET DIAGNOSTICS n_items = ROW_COUNT;
-    IF n_items <> v_cnt THEN
-      RAISE EXCEPTION '【停】品項只還原到 % 筆（應為 %），整筆取消、什麼都沒改，請截圖給 CEO。', n_items, v_cnt;
+    IF n_items <> c_expect_rows THEN
+      RAISE EXCEPTION '【停】品項只還原到 % 筆（應為 26），整筆取消、什麼都沒改，請截圖給 CEO。', n_items;
     END IF;
 
     INSERT INTO public.customer_order_audit_log
@@ -221,39 +285,39 @@ BEGIN
            to_jsonb('cancelled'::text), a.before_value, c_tag_undo, p_operator
       FROM public.customer_order_audit_log a
      WHERE a.entity_type = 'item' AND a.field = 'status' AND a.edit_reason = c_tag_item AND a.created_at = v_t0
-       AND a.entity_id = ANY (v_items);
+       AND a.tenant_id = v_tenant AND a.entity_id = ANY (v_items);
 
-    -- ── 6. 02 整單取消的單還原 ──
+    -- ── 7. 02 整單取消的單還原：取消時間、單頭斷貨時間只清「等於 02 那一刻」的（02 寫入前已要求取消時間原本是空的）──
     UPDATE public.customer_orders co
        SET status       = a.before_value #>> '{}',
-           cancelled_at = NULL,
-           stockout_at  = CASE WHEN co.stockout_at = v_t0 THEN NULL ELSE co.stockout_at END,  -- 只清 02 蓋的
+           cancelled_at = CASE WHEN co.cancelled_at = v_t0 THEN NULL ELSE co.cancelled_at END,
+           stockout_at  = CASE WHEN co.stockout_at  = v_t0 THEN NULL ELSE co.stockout_at  END,
            updated_by   = p_operator,
            updated_at   = v_now
       FROM public.customer_order_audit_log a
-     WHERE co.id = ANY (COALESCE(v_ord_cancel, '{}'::bigint[]))
+     WHERE co.id = ANY (v_ord_cancel)
        AND a.order_id = co.id AND a.entity_type = 'order' AND a.field = 'status'
-       AND a.edit_reason = c_tag_cancel AND a.created_at = v_t0;
+       AND a.edit_reason = c_tag_cancel AND a.created_at = v_t0 AND a.tenant_id = v_tenant;
     GET DIAGNOSTICS n_cancel = ROW_COUNT;
 
-    -- ── 7. 02 收尾成已完成的單還原（完成時間是 02 那一刻蓋的才清空：_close_orders_all_items_settled 用 COALESCE 保留舊值 20260808000000:79）──
+    -- ── 8. 02 收尾成已完成的單還原（完成時間是 02 那一刻蓋的才清空：_close_orders_all_items_settled 用 COALESCE 保留舊值 20260808000000:79）──
     UPDATE public.customer_orders co
        SET status       = a.before_value #>> '{}',
            completed_at = CASE WHEN co.completed_at = v_t0 THEN NULL ELSE co.completed_at END,
            updated_by   = p_operator,
            updated_at   = v_now
       FROM public.customer_order_audit_log a
-     WHERE co.id = ANY (COALESCE(v_ord_done, '{}'::bigint[]))
+     WHERE co.id = ANY (v_ord_done)
        AND a.order_id = co.id AND a.entity_type = 'order' AND a.field = 'status'
-       AND a.edit_reason = c_tag_done AND a.created_at = v_t0;
+       AND a.edit_reason = c_tag_done AND a.created_at = v_t0 AND a.tenant_id = v_tenant;
     GET DIAGNOSTICS n_done = ROW_COUNT;
   EXCEPTION WHEN unique_violation THEN
     RAISE EXCEPTION '【停】還原時撞到「一位客人一團一張進行中訂單」的限制（%）。整筆取消、什麼都沒改，請截圖給 CEO。', SQLERRM;
   END;
 
-  IF n_cancel <> COALESCE(array_length(v_ord_cancel, 1), 0) OR n_done <> COALESCE(array_length(v_ord_done, 1), 0) THEN
+  IF n_cancel <> cardinality(v_ord_cancel) OR n_done <> cardinality(v_ord_done) THEN
     RAISE EXCEPTION '【停】單頭只還原到整單取消 % 張、收尾完成 % 張（應為 %、%），整筆取消、什麼都沒改，請截圖給 CEO。',
-      n_cancel, n_done, COALESCE(array_length(v_ord_cancel, 1), 0), COALESCE(array_length(v_ord_done, 1), 0);
+      n_cancel, n_done, cardinality(v_ord_cancel), cardinality(v_ord_done);
   END IF;
 
   INSERT INTO public.customer_order_audit_log
@@ -263,14 +327,16 @@ BEGIN
          a.after_value, a.before_value, c_tag_undo, p_operator
     FROM public.customer_order_audit_log a
    WHERE a.entity_type = 'order' AND a.field = 'status' AND a.created_at = v_t0
-     AND a.edit_reason IN (c_tag_cancel, c_tag_done);
+     AND a.edit_reason IN (c_tag_cancel, c_tag_done)
+     AND a.tenant_id = v_tenant
+     AND (a.order_id = ANY (v_ord_cancel) OR a.order_id = ANY (v_ord_done));
 
-  -- ── 8. 自我驗算 ──
+  -- ── 9. 自我驗算 ──
   SELECT count(*) INTO v_bad
     FROM public.customer_order_items x
     JOIN public.customer_order_audit_log a
       ON a.order_id = x.order_id AND a.entity_type = 'item' AND a.entity_id = x.id
-     AND a.field = 'status' AND a.edit_reason = c_tag_item AND a.created_at = v_t0
+     AND a.field = 'status' AND a.edit_reason = c_tag_item AND a.created_at = v_t0 AND a.tenant_id = v_tenant
    WHERE x.id = ANY (v_items)
      AND NOT (x.status = a.before_value #>> '{}' AND x.stockout_at IS NULL);
   IF v_bad > 0 THEN
@@ -280,12 +346,24 @@ BEGIN
     FROM public.customer_orders co
     JOIN public.customer_order_audit_log a
       ON a.order_id = co.id AND a.entity_type = 'order' AND a.field = 'status'
-     AND a.edit_reason IN (c_tag_cancel, c_tag_done) AND a.created_at = v_t0
-   WHERE co.status <> a.before_value #>> '{}'
-      OR (a.edit_reason = c_tag_cancel AND co.cancelled_at IS NOT NULL)
-      OR co.stockout_at = v_t0;
+     AND a.edit_reason IN (c_tag_cancel, c_tag_done) AND a.created_at = v_t0 AND a.tenant_id = v_tenant
+   WHERE (co.id = ANY (v_ord_cancel) OR co.id = ANY (v_ord_done))
+     AND (co.status <> a.before_value #>> '{}'
+          OR co.cancelled_at = v_t0
+          OR co.stockout_at = v_t0
+          OR co.completed_at = v_t0);
   IF v_bad > 0 THEN
-    RAISE EXCEPTION '【停】自我驗算沒過：有 % 張單頭沒有回到 02 之前的狀態。整筆取消、什麼都沒改，請截圖給 CEO。', v_bad;
+    RAISE EXCEPTION '【停】自我驗算沒過：有 % 張單頭沒有回到 02 之前的狀態（狀態／取消時間／斷貨時間／完成時間）。整筆取消、什麼都沒改，請截圖給 CEO。', v_bad;
+  END IF;
+  -- 這一次改到的品項、單頭只能是上面那些
+  SELECT count(*) INTO v_bad FROM public.customer_order_items x WHERE x.updated_at = v_now AND NOT (x.id = ANY (v_items));
+  IF v_bad > 0 THEN
+    RAISE EXCEPTION '【停】自我驗算沒過：多改到 % 筆別的品項。整筆取消、什麼都沒改，請截圖給 CEO。', v_bad;
+  END IF;
+  SELECT count(*) INTO v_bad FROM public.customer_orders co
+   WHERE co.updated_at = v_now AND NOT (co.id = ANY (v_ord_cancel) OR co.id = ANY (v_ord_done));
+  IF v_bad > 0 THEN
+    RAISE EXCEPTION '【停】自我驗算沒過：多改到 % 張別的單頭。整筆取消、什麼都沒改，請截圖給 CEO。', v_bad;
   END IF;
   SELECT count(*) INTO v_cnt
     FROM public.customer_order_audit_log a
@@ -294,19 +372,27 @@ BEGIN
     RAISE EXCEPTION '【停】自我驗算沒過：還原的編輯歷史有 % 列（應為 %）。整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt, n_items + n_cancel + n_done;
   END IF;
 
-  -- 還原不了的，算出來寫在結尾
-  SELECT count(*) INTO v_rel_notes
+  -- ── 10. 還原不了的，算出來寫在結尾 ──
+  -- 02 第 5 步還回的配貨（只看這 26 筆身上的減抵單）
+  SELECT count(DISTINCT nn.id) INTO v_rel_notes
     FROM public.inventory_deduction_notes nn
-   WHERE position(c_tag_release IN COALESCE(nn.reason, '')) > 0;
+    JOIN public.inventory_deduction_note_items ni ON ni.note_id = nn.id
+   WHERE ni.order_item_id = ANY (v_items)
+     AND position(c_tag_release IN COALESCE(nn.reason, '')) > 0;
+  -- 02 那一刻被作廢的減抵單（含單頭取消時觸發器「順便收斂」同張單上其他已死訂單的，20260813002000:100-127）
+  SELECT count(*) INTO v_dn_void FROM public.inventory_deduction_notes nn WHERE nn.cancelled_at = v_t0 AND nn.tenant_id = v_tenant;
+  -- 03 發出去的通知（用本批商品組出的完整內文比對）
+  SELECT '您訂購的「' || COALESCE(sk.product_name, sk.sku_code) || COALESCE('-' || sk.variant_name, '')
+         || '」因供應商斷貨無法供貨，相關品項已取消，造成不便敬請見諒。'
+    INTO v_body FROM public.skus sk WHERE sk.id = v_sku;
   SELECT count(*) INTO v_notified
     FROM public.notifications n
-   WHERE n.tenant_id = v_tenant AND n.category = 'stockout' AND n.title = '商品斷貨通知'
+   WHERE n.tenant_id = v_tenant AND n.category = 'stockout' AND n.title = c_title AND n.body = v_body
      AND n.created_at >= v_t0
-     AND n.body LIKE '%因供應商斷貨無法供貨，相關品項已取消，造成不便敬請見諒。'
      AND n.member_id IN (SELECT co.member_id FROM public.customer_order_items x
                            JOIN public.customer_orders co ON co.id = x.order_id
                           WHERE x.id = ANY (v_items) AND co.member_id IS NOT NULL);
 
-  RAISE NOTICE '✅ 還原完成：品項 % 筆回到 02 之前；整單取消的單 % 張、收尾完成的單 % 張回到 02 之前的狀態。還原不了的：02 還回的店內庫存配貨 % 張減抵單（要店家重新配）、03 發出去的通知 % 則（收不回來）。',
-    n_items, n_cancel, n_done, v_rel_notes, v_notified;
+  RAISE NOTICE '✅ 還原完成：品項 % 筆回到 02 之前；整單取消的單 % 張、收尾完成的單 % 張回到 02 之前的狀態。還原不了的：02 還回的店內庫存配貨 % 張減抵單（要店家重新配）；02 那一刻被作廢的減抵單共 % 張（含觸發器順便收斂的）；03 發出去的通知 % 則（收不回來）；這些品項、單頭的最後修改人／修改時間變成這次還原。',
+    n_items, n_cancel, n_done, v_rel_notes, v_dn_void, v_notified;
 END $kiehls_undo$;

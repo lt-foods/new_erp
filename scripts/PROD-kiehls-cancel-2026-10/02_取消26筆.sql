@@ -10,7 +10,9 @@
 --  ★ 這份在做什麼（整份只有一個 DO 區塊＝同一次；任何一步不對就整筆取消、什麼都沒改）
 --    ① 先檢查（任何寫入之前）：對象＝商品 G02596-01 ＋ 團 GRP-20260910-027 ＋ 品項「等貨中」(pending)；
 --       筆數必須 26、件數必須 32；這 26 筆不能已經有斷貨標記；這幾張單的單頭狀態只能是
---       待確認／已確認／出貨中／可取貨／部分取貨；單上不能有少見的品項狀態（例如「部分領走」）。
+--       待確認／已確認／出貨中／可取貨／部分取貨；單上不能有少見的品項狀態（例如「部分領走」）；
+--       這一團這商品的單頭與品項都要是同一家公司（租戶）；會被整單取消的單，取消時間必須是空的
+--       （05 還原時才不會弄丟舊的取消時間）。
 --       不對 → 紅字【停】，什麼都沒改。
 --    ② 每一筆：有從店內庫存配過貨的先還回（跟店家「刪除品項」同一支
 --       _release_order_item_stock_assignment，rpc_delete_order_item 第 6 步 20260831000090:797-800）。
@@ -30,7 +32,9 @@
 --       ・付過錢或用過儲值金 → 單子不動、不退錢（品項照樣取消），結尾列出來給人工處理
 --       ・單上還有別的待取品項 → 單子留著，只少這一項
 --       ⇒ 整單取消、收尾完成這兩種也各寫一列編輯歷史（05 還原要用）
---    ⑥ 自我驗算（同一個 DO 區塊裡、寫完再讀；不對就整筆取消）
+--    ⑥ 自我驗算（同一個 DO 區塊裡、寫完再讀；不對就整筆取消）。「沒有多動到別的列」一律照跑：
+--       ② 有把貨還回【內部】現貨池時，先記下那支實際改到的池子品項／容器單（只能是 store_internal 會員的單），
+--       列入允許清單；除此之外這一刻被改到的品項、單頭都算越界 → 整筆取消。
 --  ★ ⛔ 不動：派車單、庫存異動、採購單、月結、店家退回單、開團商品設定（campaign_items）、會員通知（要發另貼 03）
 --    （② 那支只動「庫存減抵單」與【內部】現貨池那兩樣，而且只在有配過貨時才動；它不寫庫存異動，
 --      見它自己的說明 20260827040000:191-196「不動 stock_balances」）
@@ -58,9 +62,13 @@
 --      b. trg_coi_backorder_source_clear（20260902030000:185-191）：只在「待補貨時間是空、來源標記還在」
 --         時清掉兩個標記欄。這份不碰待補貨欄位 → 不會觸發。
 --      c. trg_release_idn_coverage（20260813002000:173-179，函式 :83-148、:160-170，都只有一版）：
---         單頭變成已取消時，把綁在這張單上的庫存減抵單覆蓋釋放。整單取消的單會觸發它；
---         但 ② 已先把這幾筆的覆蓋還掉，它再跑是 0（只釋放 qty > released_qty 的部分 :117、:127）。
---         整單取消的單上沒有其他待取品項（條件就是這個）→ 不會誤放別人的貨。
+--         單頭變成已取消時，把綁在這張單上的庫存減抵單覆蓋釋放。整單取消的單會觸發它。
+--         ・這 26 筆自己的覆蓋 ② 已先還掉，不會再被釋放一次（只釋放 qty > released_qty 的部分 :117、:127）。
+--         ・⚠ 但它「可能順便收斂同一張減抵單上其他已取消／過期訂單的覆蓋」：它對每一張碰到的減抵單，
+--           把單上所有綁在已取消／過期訂單、還沒釋放的覆蓋一起釋放（:100-127，刻意不限 p_order_ids）。
+--           影響：只會釋放「本來就該釋放、只是殘留著」的覆蓋（綁的訂單早就死了），那張減抵單會被作廢或扣量；
+--           不動庫存、不動任何訂單；05 還原不會把它復原（釋放不可逆，05 結尾會列出張數）。
+--         ・整單取消的單上沒有其他待取品項（條件就是這個）→ 不會誤放活著的客人的貨。
 --      d. trg_no_mut_coa（20260605000001:27-28）：編輯歷史只能新增、不能改刪。本份與 05 都只新增。
 --      e. 通知表 notifications 上沒有任何觸發器（見 03 檔頭）。
 --      ⇒ 正式庫如果有人從後台另外加過觸發器，程式碼紀錄看不到；01 第⑤段會把正式庫實際掛的列出來比對。
@@ -148,6 +156,11 @@ DECLARE
   n_paid          int := 0;
   n_keep          int := 0;
   v_paid_list     text := '';
+  v_cancel_ids    bigint[] := '{}';
+  v_done_ids      bigint[] := '{}';
+  v_pool_items    bigint[] := '{}';   -- ② 還回【內部】現貨池時，那支實際改到／新增的池子品項（越界檢查的允許清單）
+  v_pool_orders   bigint[] := '{}';   -- 同上，被它開回來的池子容器單頭
+  v_dn_void       int;
   r               record;
 BEGIN
   PERFORM set_config('lock_timeout', '15s', true);
@@ -204,6 +217,7 @@ BEGIN
     FROM public.customer_order_items i
     JOIN public.customer_orders co ON co.id = i.order_id
    WHERE co.campaign_id = v_campaign
+     AND co.tenant_id = v_tenant AND i.tenant_id = v_tenant
      AND i.sku_id = v_sku
      AND i.status = 'cancelled'
      AND i.stockout_at IS NOT NULL
@@ -219,12 +233,23 @@ BEGIN
   END IF;
 
   -- ── 4. 前置檢查（任何寫入之前）──
+  -- 4-0. 租戶一致：這一團這商品的單頭、品項都要是這家公司（schema 沒有複合外鍵保證這件事）
+  SELECT count(*) INTO v_bad
+    FROM public.customer_order_items i
+    JOIN public.customer_orders co ON co.id = i.order_id
+   WHERE co.campaign_id = v_campaign AND i.sku_id = v_sku
+     AND (co.tenant_id <> v_tenant OR i.tenant_id <> v_tenant);
+  IF v_bad > 0 THEN
+    RAISE EXCEPTION '【停】這一團這個商品有 % 筆品項的公司（租戶）跟團不一致，資料不正常。什麼都沒改，請截圖給 CEO。', v_bad;
+  END IF;
+
   SELECT array_agg(i.id ORDER BY i.id), count(*), COALESCE(sum(i.qty), 0),
          count(*) FILTER (WHERE i.stockout_at IS NOT NULL)
     INTO v_items, v_cnt, v_qty, v_bad
     FROM public.customer_order_items i
     JOIN public.customer_orders co ON co.id = i.order_id
    WHERE co.campaign_id = v_campaign
+     AND co.tenant_id = v_tenant AND i.tenant_id = v_tenant
      AND i.sku_id = v_sku
      AND i.status = 'pending';
   IF v_cnt <> c_expect_rows OR v_qty <> c_expect_qty THEN
@@ -254,6 +279,22 @@ BEGIN
     RAISE EXCEPTION '【停】這幾張單上有 % 筆品項的狀態不常見（例如「部分領走」），收尾規則對不上。什麼都沒改，請截圖給 CEO。', v_bad;
   END IF;
 
+  -- 會被整單取消的單（拿掉這 26 筆後沒有待取品項、沒取過、沒付款、沒用儲值金），取消時間必須是空的；
+  -- 不是空的＝以前取消過又被救回，05 還原時會弄丟那個舊時間 → 先停（2026-10-21 審查 P1、CEO 裁決的最簡做法）
+  SELECT count(*) INTO v_bad
+    FROM public.customer_orders co
+   WHERE co.id = ANY (v_orders)
+     AND co.cancelled_at IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM public.customer_order_items x
+                      WHERE x.order_id = co.id AND x.status IN ('pending', 'reserved', 'ready')
+                        AND NOT (x.id = ANY (v_items)))
+     AND NOT EXISTS (SELECT 1 FROM public.customer_order_items x WHERE x.order_id = co.id AND x.status = 'picked_up')
+     AND COALESCE(co.payment_status, 'unpaid') <> 'paid'
+     AND COALESCE(co.wallet_paid_amount, 0) = 0;
+  IF v_bad > 0 THEN
+    RAISE EXCEPTION '【停】會被整單取消的單裡有 % 張原本就有取消時間（以前取消過又被救回），05 還原時會對不上。什麼都沒改，請截圖給 CEO。', v_bad;
+  END IF;
+
   -- ════════ 以下開始寫入 ════════
 
   -- ── 5. 有從店內庫存配過貨的先還回（刪除品項第 6 步同一支；沒配過貨的是 0、什麼都不做）──
@@ -265,6 +306,24 @@ BEGIN
       v_rel_pool := v_rel_pool + COALESCE((v_rel ->> 'to_pool')::numeric, 0);
     END IF;
   END LOOP;
+
+  -- 5-1. 記下上面那支實際改到的【內部】現貨池列（允許清單）。到這裡為止 02 自己還沒改任何品項／單頭，
+  --      所以「修改時間＝這一刻」的列只可能是那支改的（_restore_internal_pool 20260825020000:194-246：
+  --      池子品項改回待取或拆一列新的、被收尾的容器單開回來）。
+  SELECT COALESCE(array_agg(x.id), '{}') INTO v_pool_items
+    FROM public.customer_order_items x WHERE x.tenant_id = v_tenant AND x.updated_at = v_now;
+  SELECT COALESCE(array_agg(co.id), '{}') INTO v_pool_orders
+    FROM public.customer_orders co WHERE co.updated_at = v_now;
+  -- 它們只能是【內部】現貨池容器（會員類型 store_internal 的單），而且不能是這次的目標訂單
+  SELECT count(*) INTO v_bad
+    FROM public.customer_orders co
+    LEFT JOIN public.members m ON m.id = co.member_id
+   WHERE (co.id = ANY (v_pool_orders)
+          OR co.id IN (SELECT x.order_id FROM public.customer_order_items x WHERE x.id = ANY (v_pool_items)))
+     AND (COALESCE(m.member_type, '') <> 'store_internal' OR co.id = ANY (v_orders) OR co.tenant_id <> v_tenant);
+  IF v_bad > 0 OR (v_rel_pool = 0 AND (cardinality(v_pool_items) > 0 OR cardinality(v_pool_orders) > 0)) THEN
+    RAISE EXCEPTION '【停】還回店內庫存配貨時改到了不是【內部】現貨池的單（% 張），跟預期不同。整筆取消、什麼都沒改，請截圖給 CEO。', v_bad;
+  END IF;
 
   -- ── 6. 品項改已取消＋斷貨時間（欄位同斷貨 (b) 段 20260902000010:320-327）──
   UPDATE public.customer_order_items
@@ -322,6 +381,7 @@ BEGIN
         (r.tenant_id, r.id, 'order', r.id, 'status',
          to_jsonb(r.status), to_jsonb('completed'::text), c_tag_done, p_operator);
       n_done := n_done + 1;
+      v_done_ids := v_done_ids || r.id;
     ELSIF COALESCE(r.payment_status, 'unpaid') <> 'paid'
           AND COALESCE(r.wallet_paid_amount, 0) = 0 THEN
       -- 一件都沒取過、也沒收過錢 → 整單取消（刪除品項第 9 步）＋單頭蓋斷貨時間（斷貨 (c) 段 20260902000010:340-346）
@@ -345,6 +405,7 @@ BEGIN
         (r.tenant_id, r.id, 'order', r.id, 'status',
          to_jsonb(r.status), to_jsonb('cancelled'::text), c_tag_cancel, p_operator);
       n_cancel := n_cancel + 1;
+      v_cancel_ids := v_cancel_ids || r.id;
     ELSE
       -- 付過錢／用過儲值金 → 不自動取消、不動錢，列出來給人工處理
       n_paid := n_paid + 1;
@@ -402,25 +463,34 @@ BEGIN
     RAISE EXCEPTION '【停】自我驗算沒過：有 % 張不是整單取消的單頭被蓋了斷貨時間。整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt;
   END IF;
 
-  -- 沒有多動到別的：這一次改到的品項只能是這 26 筆、改到的單頭只能是整單取消＋收尾完成那幾張。
-  -- 例外：② 有把貨還回【內部】現貨池時，那支會改到池子的容器單（20260825020000:200-251），這兩項就不算。
-  IF v_rel_pool = 0 THEN
-    SELECT count(*) INTO v_cnt
-      FROM public.customer_order_items x
-     WHERE x.updated_at = v_now AND NOT (x.id = ANY (v_items));
-    IF v_cnt <> 0 THEN
-      RAISE EXCEPTION '【停】自我驗算沒過：多改到 % 筆別的品項。整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt;
-    END IF;
-    SELECT count(*) INTO v_cnt
-      FROM public.customer_orders co
-     WHERE co.updated_at = v_now;
-    IF v_cnt <> n_cancel + n_done THEN
-      RAISE EXCEPTION '【停】自我驗算沒過：這一次改到 % 張單頭（應為 %）。整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt, n_cancel + n_done;
-    END IF;
+  -- 沒有多動到別的（一律照跑，不因為有還回池子就略過）：
+  --   這一刻改到的品項只能是這 26 筆＋5-1 記下的池子品項；改到的單頭只能是整單取消＋收尾完成＋5-1 記下的池子容器單。
+  SELECT count(*) INTO v_cnt
+    FROM public.customer_order_items x
+   WHERE x.updated_at = v_now
+     AND NOT (x.id = ANY (v_items) OR x.id = ANY (v_pool_items));
+  IF v_cnt <> 0 THEN
+    RAISE EXCEPTION '【停】自我驗算沒過：多改到 % 筆別的品項。整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt;
+  END IF;
+  SELECT count(*) INTO v_cnt
+    FROM public.customer_orders co
+   WHERE co.updated_at = v_now
+     AND NOT (co.id = ANY (v_cancel_ids) OR co.id = ANY (v_done_ids) OR co.id = ANY (v_pool_orders));
+  IF v_cnt <> 0 THEN
+    RAISE EXCEPTION '【停】自我驗算沒過：多改到 % 張別的單頭。整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt;
+  END IF;
+  SELECT count(*) INTO v_cnt
+    FROM public.customer_orders co
+   WHERE co.updated_at = v_now AND (co.id = ANY (v_cancel_ids) OR co.id = ANY (v_done_ids));
+  IF v_cnt <> n_cancel + n_done THEN
+    RAISE EXCEPTION '【停】自我驗算沒過：整單取消＋收尾完成的單頭只改到 % 張（應為 %）。整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt, n_cancel + n_done;
   END IF;
 
-  RAISE NOTICE '✅ 完成：取消 % 筆（% 件）；整單取消 % 張（單頭也標斷貨）；收尾成已完成 % 張；單上還有別的品項、單子留著 % 張；付過錢／用過儲值金、單子沒動 % 張%；從店內庫存配過貨、已還回 % 筆（% 件，其中回【內部】現貨池 % 件）。請接著貼 04 確認。',
+  -- 這一刻被作廢的庫存減抵單（② 那支＋單頭取消時的觸發器，含「順便收斂」別張死單的；釋放不可逆，只回報）
+  SELECT count(*) INTO v_dn_void FROM public.inventory_deduction_notes n WHERE n.cancelled_at = v_now;
+
+  RAISE NOTICE '✅ 完成：取消 % 筆（% 件）；整單取消 % 張（單頭也標斷貨）；收尾成已完成 % 張；單上還有別的品項、單子留著 % 張；付過錢／用過儲值金、單子沒動 % 張%；從店內庫存配過貨、已還回 % 筆（% 件，其中回【內部】現貨池 % 件，池子品項 % 列／容器單 % 張）；這一刻被作廢的庫存減抵單 % 張。請接著貼 04 確認。',
     c_expect_rows, trim_scale(c_expect_qty), n_cancel, n_done, n_keep, n_paid,
     CASE WHEN n_paid > 0 THEN '（' || v_paid_list || '，要人工處理退款）' ELSE '' END,
-    v_rel_rows, trim_scale(v_rel_qty), trim_scale(v_rel_pool);
+    v_rel_rows, trim_scale(v_rel_qty), trim_scale(v_rel_pool), cardinality(v_pool_items), cardinality(v_pool_orders), v_dn_void;
 END $kiehls$;

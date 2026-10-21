@@ -17,7 +17,7 @@
 --    ⑦ 02 做過了沒
 --    ⑧ 03 通知預估：會發幾則、沒綁會員的有幾筆、通知文字
 --    ⑨ 操作人候選：這家公司的總部帳號（老闆認出自己那一列，把那串 UUID 交給 CEO 填進 02／05）
---  「結果」欄：✅ 符合預期　❌ 跟預期不同（先停，截圖給 CEO）　ℹ 參考　⚠ 要注意
+--  「結果」欄：✅ 符合預期　❌ 跟預期不同（先停，截圖給 CEO；有任何一列 ❌ 就不要貼 02／03）　ℹ 參考　⚠ 要注意
 -- ============================================================================
 WITH
 param AS (
@@ -45,11 +45,19 @@ tgt AS (   -- 02 會取消的：這一團 × 這個商品 × 品項等貨中
          COALESCE(m.member_type, '') AS member_type
     FROM public.customer_order_items i
     JOIN public.customer_orders co ON co.id = i.order_id
-    JOIN cp ON cp.id = co.campaign_id
+    JOIN cp ON cp.id = co.campaign_id AND cp.tenant_id = co.tenant_id AND cp.tenant_id = i.tenant_id
     JOIN sk ON sk.id = i.sku_id
     LEFT JOIN public.stores st ON st.id = co.pickup_store_id
     LEFT JOIN public.members m ON m.id = co.member_id
    WHERE i.status = 'pending'
+),
+tenant_bad AS ( -- 這一團這商品，單頭或品項的公司（租戶）跟團不一致的（02 會停）
+  SELECT count(*) AS n
+    FROM public.customer_order_items i
+    JOIN public.customer_orders co ON co.id = i.order_id
+    JOIN cp ON cp.id = co.campaign_id
+    JOIN public.skus s2 ON s2.id = i.sku_id JOIN param p ON p.sku_code = s2.sku_code
+   WHERE co.tenant_id <> cp.tenant_id OR i.tenant_id <> cp.tenant_id
 ),
 cov AS (   -- 這幾筆身上還有效的「從店內庫存配貨」量（02 會先還回；算法同 _order_item_stock_budget 的 mine 段）
   SELECT ni.order_item_id, SUM(GREATEST(ni.qty - COALESCE(ni.released_qty, 0), 0)) AS assigned
@@ -214,6 +222,10 @@ FROM (
          'ℹ ' || (SELECT count(DISTINCT store_name) FROM tgt) || ' 家店、' || (SELECT count(DISTINCT order_id) FROM tgt) || ' 張單',
          (SELECT string_agg(s || ' ' || n || ' 筆', '／' ORDER BY s) FROM (SELECT store_name AS s, count(*) AS n FROM tgt GROUP BY store_name) z)
   UNION ALL
+  SELECT 2, 7, '② 總計', '公司（租戶）跟團不一致的品項', NULL, (SELECT n FROM tenant_bad),
+         CASE WHEN (SELECT n FROM tenant_bad) = 0 THEN '✅ 0 筆' ELSE '❌ 應為 0（02 會停）' END,
+         '這一團這商品的單頭、品項都要跟團是同一家公司'
+  UNION ALL
   SELECT 2, 5, '② 總計', '單頭狀態不在預期裡的單', NULL,
          (SELECT count(*) FROM fate WHERE status NOT IN ('pending', 'confirmed', 'shipping', 'ready', 'partially_completed')),
          CASE WHEN (SELECT count(*) FROM fate WHERE status NOT IN ('pending', 'confirmed', 'shipping', 'ready', 'partially_completed')) = 0
@@ -244,8 +256,8 @@ FROM (
   SELECT 3, 5, '③ 訂單收尾', '原本就有取消時間的（會整單取消的那幾張）', NULL,
          (SELECT count(*) FROM fate WHERE fate = 'cancel' AND cancelled_at IS NOT NULL),
          CASE WHEN (SELECT count(*) FROM fate WHERE fate = 'cancel' AND cancelled_at IS NOT NULL) = 0 THEN '✅ 0 張'
-              ELSE '⚠ ' || (SELECT count(*) FROM fate WHERE fate = 'cancel' AND cancelled_at IS NOT NULL) || ' 張' END,
-         '以前取消過又被救回的單；不擋 02，但萬一要用 05 還原，這幾張的舊取消時間會被清成空白'
+              ELSE '❌ ' || (SELECT count(*) FROM fate WHERE fate = 'cancel' AND cancelled_at IS NOT NULL) || ' 張（02 會停）' END,
+         '以前取消過又被救回的單；02 寫入前會擋（不然 05 還原時會弄丟那個舊取消時間）'
   UNION ALL
   SELECT 3, 7, '③ 訂單收尾', '原本就有斷貨時間的（會整單取消的那幾張）', NULL,
          (SELECT count(*) FROM fate WHERE fate = 'cancel' AND stockout_at IS NOT NULL),
@@ -274,7 +286,7 @@ FROM (
          COALESCE(e.what, '函式 ' || t.proname)
     FROM trg t LEFT JOIN expect_trg e ON e.tbl = t.tbl AND e.tgname = t.tgname
   UNION ALL
-  SELECT 5, 2, '⑤ 正式系統的觸發器', e.tbl || '.' || e.tgname, NULL, NULL, 'ℹ 正式系統沒有這支', e.what
+  SELECT 5, 2, '⑤ 正式系統的觸發器', e.tbl || '.' || e.tgname, NULL, NULL, '❌ 正式系統沒有這支：貼 02 之前要停，先給 CEO 看', e.what
     FROM expect_trg e WHERE NOT EXISTS (SELECT 1 FROM trg t WHERE t.tbl = e.tbl AND t.tgname = e.tgname)
   UNION ALL
   SELECT 5, 3, '⑤ 正式系統的觸發器', 'notifications（會員通知）', NULL, (SELECT count(*) FROM trg WHERE tbl = 'notifications'),
