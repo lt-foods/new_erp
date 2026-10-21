@@ -12,7 +12,9 @@ import {
   type POStoreAddTarget,
 } from "@/components/POStoreAddModal";
 import SpinButton from "@/components/SpinButton";
+import { ForceStockoutModal, type ForceStockoutTarget } from "@/components/ForceStockoutModal";
 import { poStatusLabel, PO_TERM_ZH } from "@/lib/poStatus";
+import { showForceStockoutButton } from "@/lib/forceStockout";
 
 type Supplier = {
   id: number;
@@ -253,6 +255,23 @@ function PageContent() {
     reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  // 已到貨也能斷貨（20261022100000）：只有名單上的人看得到；查不到（SQL 還沒貼、沒登入）一律當成不能按
+  const [canForceStockout, setCanForceStockout] = useState(false);
+  const [forceStockoutTarget, setForceStockoutTarget] = useState<ForceStockoutTarget | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    Promise.resolve(getSupabase().rpc("rpc_can_force_stockout"))
+      .then(({ data, error: err }) => {
+        if (!cancelled) setCanForceStockout(!err && data === true);
+      })
+      .catch(() => {
+        if (!cancelled) setCanForceStockout(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const totals = useMemo(() => {
     const subtotal = items.reduce((s, r) => s + r.qty_ordered * r.unit_cost, 0);
@@ -1327,6 +1346,31 @@ function PageContent() {
                           >
                             ⛔ 斷貨
                           </SpinButton>
+                        ) : showForceStockoutButton({
+                            canForce: canForceStockout,
+                            poStatus: header.status,
+                            stockoutAt: r.stockout_at,
+                            qtyReceived: r.qty_received,
+                            originalStockoutShown: canStockout && r.qty_received < r.qty_ordered,
+                          }) ? (
+                          /* 已到貨也能斷貨（20261022100000）：原本的「⛔ 斷貨」出現的列不會有這顆（上一個分支先吃掉） */
+                          <SpinButton
+                            onClick={() =>
+                              setForceStockoutTarget({
+                                poItemId: r.id,
+                                poNo: header.po_no,
+                                label: r.product_name + (r.variant_name ? `-${r.variant_name}` : ""),
+                                skuCode: r.sku_code,
+                                unit: r.unit_uom ?? "件",
+                                qtyOrdered: r.qty_ordered,
+                                qtyReceived: r.qty_received,
+                              })
+                            }
+                            className="min-h-[44px] touch-manipulation rounded-md border border-rose-400 bg-rose-50 px-2 text-sm font-medium text-rose-700 hover:bg-rose-100 dark:border-rose-700 dark:bg-rose-950 dark:text-rose-300 dark:hover:bg-rose-900"
+                            title="貨已經到了才發現不能賣：取消這些團裡這個商品還沒取貨的客人（只開給指定的帳號；按了先看確認畫面）"
+                          >
+                            已到貨也能斷貨
+                          </SpinButton>
                         ) : (
                           <span className="text-zinc-400">—</span>
                         )}
@@ -1371,6 +1415,15 @@ function PageContent() {
           key={`${storeAddTarget.poItemId}`}
           target={storeAddTarget}
           onClose={() => setStoreAddTarget(null)}
+          onDone={reload}
+        />
+      )}
+
+      {forceStockoutTarget && (
+        <ForceStockoutModal
+          key={`${forceStockoutTarget.poItemId}`}
+          target={forceStockoutTarget}
+          onClose={() => setForceStockoutTarget(null)}
           onDone={reload}
         />
       )}
