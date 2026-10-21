@@ -230,18 +230,29 @@ export function paidOrderLines(list: PaidOrder[] | null | undefined): string[] {
   });
 }
 
+/**
+ * 回收貨退回總倉之後的那一步（#924「退回貨處理」10/22 已上正式庫）：
+ *   總倉按「同意收回」或「同意退」→「不補貨」之後，那批貨自動凍結、派不出去，
+ *   要到退回貨處理頁處理才解凍。選單位置＝layout.tsx 的「倉儲 (WMS)」→「退回貨處理」。
+ */
+export const RETURN_DISPOSITION_STEP =
+  "之後那批貨會凍結、派不出去，要到左選單「倉儲 (WMS) → 退回貨處理」處理才解凍";
+
 /** 回收貨待辦：一家店一行，照「收了沒」給要做的事（出處：機制索引「四之八之二」） */
 export function returnTodoLine(r: ReturnTodoRow): string {
   switch (r.stage) {
     case "received":
       return (
         `${r.store_name}：已收貨 ${fmtQty(r.qty_received)} 件（派車單 ${r.transfer_no ?? "?"}）` +
-        ` → 店家到「退貨」頁開退回單退回總倉；總倉到「總倉收件匣 → 🚚 轉貨單 → ↩ 退貨回總倉」按「同意收回」`
+        ` → 店家到「退貨」頁開退回單退回總倉；總倉到「總倉收件匣 → 🚚 轉貨單 → ↩ 退貨回總倉」按「同意收回」；` +
+        RETURN_DISPOSITION_STEP
       );
     case "in_transit":
+      // 分頁名「店家少收」＝components/ExceptionsContent.tsx 的 transfer_short（老闆 10/22 截圖對過）
       return (
         `${r.store_name}：派出 ${fmtQty(r.qty_shipped)} 件、店家還沒收（派車單 ${r.transfer_no ?? "?"}）` +
-        ` → 店家收貨時這一項實收改 0；總倉到「總倉收件匣 → ⚠️ 異常 → 收貨短少」按「同意退」→「不補貨」`
+        ` → 店家收貨時這一項實收改 0；總倉到「總倉收件匣 → ⚠️ 異常 → 店家少收」按「同意退」→「不補貨」；` +
+        RETURN_DISPOSITION_STEP
       );
     case "not_shipped":
       return `${r.store_name}：撿貨單 ${r.wave_code} 還沒派車（${fmtQty(r.qty)} 件）→ 這一項先不要派出去，請總倉在撿貨單上處理`;
@@ -258,11 +269,21 @@ export function returnTodoLines(rows: ReturnTodoRow[] | null | undefined): strin
   if (list.length === 0) {
     return ["這一項還沒有撿貨派出去：貨都還在總倉，要退廠商請走採購單退貨。"];
   }
-  return [
-    ...list.map(returnTodoLine),
-    "總倉收下店家退回的貨之後，到「退回貨處理」頁按完好／破損；要退廠商請走採購單退貨。",
-  ];
+  return [...list.map(returnTodoLine), ...RETURN_DISPOSITION_NOTES];
 }
+
+/**
+ * 「退回貨處理」頁怎麼按（照 wms/return-disposition/page.tsx 的畫面字樣：
+ *   「完好數量」＋「實物已到總倉（必勾）」、「破損數量」＋「破損原因（必填）」、
+ *   「遺失數量」＋「遺失原因（必填）」、按鈕「送出處理」；說明句「完好的貨會恢復成可重新派出的庫存；
+ *   破損與遺失會記入總倉損失」）。那一頁沒有「退廠商」選項 ⇒ 只講事實，不替人選哪一種。
+ */
+export const RETURN_DISPOSITION_NOTES = [
+  "「退回貨處理」頁：填「完好數量」（要勾「實物已到總倉」）＝恢復成可再派出的庫存；" +
+    "填「破損數量」或「遺失數量」（要填原因）＝記入總倉損失；填完按「送出處理」。",
+  "錯貨要退廠商的：退回貨處理頁沒有「退廠商」選項，先在那一頁處理完，再走採購單退貨；" +
+    "選「完好」的話那批貨會回到可派出的庫存，小心不要又派出去。",
+];
 
 /** 按完之後的結果 */
 export function resultLines(r: ForceStockoutResult): string[] {

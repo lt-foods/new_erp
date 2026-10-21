@@ -12,6 +12,8 @@ import {
   previewStopLines,
   reasonProblem,
   resultLines,
+  RETURN_DISPOSITION_NOTES,
+  RETURN_DISPOSITION_STEP,
   returnTodoLine,
   returnTodoLines,
   showForceStockoutButton,
@@ -196,18 +198,24 @@ const TODO = [
   { store_id: 4, store_name: "店D", wave_code: "WV-T-2", wave_status: "picked", qty: "2.000", transfer_no: null, transfer_status: null, qty_shipped: null, qty_received: null, received_at: null, stage: "not_shipped" },
 ];
 
-test("已收貨的店：開退回單＋總倉同意收回", () => {
+test("已收貨的店：開退回單＋總倉同意收回＋退回貨處理", () => {
   const l = returnTodoLine(TODO[0]);
   assert.match(l, /^店A：已收貨 3 件（派車單 TR-T-A）/);
   assert.match(l, /「退貨」頁開退回單/);
-  assert.match(l, /總倉收件匣 → 🚚 轉貨單 → ↩ 退貨回總倉」按「同意收回」/);
+  assert.match(l, /總倉收件匣 → 🚚 轉貨單 → ↩ 退貨回總倉」按「同意收回」；/);
+  // #924：收回後凍結，要到退回貨處理才解凍
+  assert.ok(l.endsWith(RETURN_DISPOSITION_STEP));
+  assert.match(l, /凍結、派不出去，要到左選單「倉儲 \(WMS\) → 退回貨處理」處理才解凍$/);
 });
 
-test("在途的店：收貨時改 0＋總倉同意退、不補貨", () => {
+test("在途的店：收貨時改 0＋總倉在「店家少收」同意退、不補貨＋退回貨處理", () => {
   const l = returnTodoLine(TODO[1]);
   assert.match(l, /^店B：派出 3 件、店家還沒收（派車單 TR-T-B）/);
   assert.match(l, /實收改 0/);
-  assert.match(l, /收貨短少」按「同意退」→「不補貨」/);
+  assert.match(l, /「總倉收件匣 → ⚠️ 異常 → 店家少收」按「同意退」→「不補貨」；/);
+  assert.ok(l.endsWith(RETURN_DISPOSITION_STEP));
+  // 畫面上沒有「收貨短少」這個分頁名，不能再出現
+  assert.doesNotMatch(l, /收貨短少/);
 });
 
 test("還沒派車：先不要派出去", () => {
@@ -219,10 +227,14 @@ test("派車單已取消 ⇒ 不用處理；不認得的狀態 ⇒ 請總倉確�
   assert.match(returnTodoLine({ ...TODO[0], stage: "weird" }), /請總倉確認/);
 });
 
-test("整段待辦：每家一行＋最後提醒退回貨處理；一家都沒派過 ⇒ 貨在總倉", () => {
+test("整段待辦：每家一行＋最後講退回貨處理頁怎麼按、錯貨退廠商；一家都沒派過 ⇒ 貨在總倉", () => {
   const lines = returnTodoLines(TODO);
-  assert.equal(lines.length, 4);
-  assert.match(lines[3], /「退回貨處理」頁按完好／破損/);
+  assert.equal(lines.length, 5);
+  assert.deepEqual(lines.slice(3), RETURN_DISPOSITION_NOTES);
+  assert.match(lines[3], /^「退回貨處理」頁：填「完好數量」（要勾「實物已到總倉」）＝恢復成可再派出的庫存；/);
+  assert.match(lines[3], /填「破損數量」或「遺失數量」（要填原因）＝記入總倉損失；填完按「送出處理」。$/);
+  assert.match(lines[4], /^錯貨要退廠商的：退回貨處理頁沒有「退廠商」選項，先在那一頁處理完，再走採購單退貨；/);
+  for (const l of lines) assert.doesNotMatch(l, /收貨短少/);
   assert.deepEqual(returnTodoLines([]), ["這一項還沒有撿貨派出去：貨都還在總倉，要退廠商請走採購單退貨。"]);
   assert.deepEqual(returnTodoLines(null), returnTodoLines([]));
 });

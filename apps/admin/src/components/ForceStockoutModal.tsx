@@ -139,6 +139,7 @@ export function ForceStockoutModal({
         <div className="rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-900 dark:border-rose-800 dark:bg-rose-950 dark:text-rose-200">
           <div className="font-semibold">⚠ 按下去會把下面這些團裡、這個商品、還沒取貨的客人一次取消，沒有復原鈕。</div>
           <div>・部分好貨、部分壞貨的情況不要用（會全部取消）。</div>
+          <div>・部分到貨（還沒收滿）的品項這次不支援。</div>
           <div>・{PO_TERM_ZH}那一項不會標斷貨；實體貨照退貨流程收回（下面有待辦）。</div>
         </div>
 
