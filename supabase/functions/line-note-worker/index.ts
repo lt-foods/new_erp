@@ -58,6 +58,10 @@ const CHAT_KINDS = ["remind", "share"];
 // 每帳號每分鐘幾則改由 line_note_accounts.chat_per_min 決定（後台可調，20261012000000）；
 // 10/12 用寫死的 12 還是被擋，預設降到 5。讀不到那欄時用這個值。
 const CHAT_PER_MIN_DEFAULT = 5;
+// 結單提醒另外再慢：同一個帳號每 remind_every_min 分鐘才一則（20261021000000）。
+// 10/15、10/19、10/21 都是早上結單提醒照每分鐘 5 則連打 15～20 分鐘、累積 ~70 張後被鎖，
+// 每分鐘幾則擋不住，要把整段拉長（07:00 開始，結單幾乎都是 23:59，來得及）。讀不到那欄時用這個值。
+const REMIND_EVERY_MIN_DEFAULT = 2;
 const RESTRICT_GIVE_UP_MS = 6 * 3600_000;   // 排進來 6 小時還送不出去就標失敗，交給人看
 const RESTRICT_HINT = "LINE 要求暫緩（被暫時限制使用社群／請稍後再發），系統會先停這個帳號一陣子再自動重試，不用手動重發";
 /** LINE 叫我們慢一點的錯誤 → 這個帳號要停多久；其他錯誤回 null */
@@ -1308,12 +1312,15 @@ async function jobRefresh(job: any) {
 // 社群有設 remind_message 的話，當天第一篇分享前先發那段文字（一天只發一次）。
 const DEFAULT_REMIND_MESSAGE = "好鄰居們早安~~再看一眼，今日結單商品喔～走過路過不要錯過！喜歡的商品，好鄰居記得登記下單喔！！也可以新系統商城下單喔～\nhttps://new-erp-admin.vercel.app/shop";
 async function jobRemind(job: any) {
-  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,remind_shared_at,group_buy_campaigns(name,status),line_note_communities(id,home_id,account_id,share_chat_mid,share_from_community_id,remind_message,remind_message_sent_on)`);
+  const rows = await rest(`line_note_posts?id=eq.${job.post_id}&select=id,tenant_id,line_post_id,remind_shared_at,group_buy_campaigns(name,status,customer_end_at),line_note_communities(id,home_id,account_id,share_chat_mid,share_from_community_id,remind_message,remind_message_sent_on)`);
   const p = rows?.[0];
   if (!p) throw new Error(`post ${job.post_id} not found`);
   if (p.remind_shared_at) return { skipped: "already reminded" };
   // 排進來之後團被改成草稿／結單了就不提醒（9/25 紅龍米漢堡：08:00 排進去、跑的時候已是草稿）
   if (p.group_buy_campaigns?.status !== "open") return { skipped: `campaign ${p.group_buy_campaigns?.status}` };
+  // 結單提醒慢慢發（每帳號每 N 分鐘一則），排到的時候團可能已經過了結單時間、還沒被翻成 closed
+  const endAt = Date.parse(p.group_buy_campaigns?.customer_end_at ?? "");
+  if (endAt <= Date.now()) return { skipped: "campaign ended" };
   if (!p.line_post_id) return { skipped: "no_line_post_id" };
   const c = p.line_note_communities;
   const client = await clientFor(await loadAccount(c.account_id));
@@ -1359,7 +1366,8 @@ async function pauseAccount(accountId: number, msg: string) {
     .catch((e) => log(`記錄帳號暫停失敗（略過）：${(e as any)?.message ?? e}`));
 }
 
-// 這一輪不能撿的（帳號, 工作種類）：暫停中的帳號不送任何東西；這一分鐘分享額度用完的帳號不再分享。
+// 這一輪不能撿的（帳號, 工作種類）：暫停中的帳號不送任何東西；這一分鐘分享額度用完的帳號不再分享；
+// 結單提醒還沒到下一則時間的帳號不撿提醒（其他工作照跑）。
 // 撈不到就當作沒有限制 —— 頂多跟以前一樣硬打，不能因此整個排程停擺。
 // pausedHere：這一輪 tick 自己撞到的帳號。send_paused_until 萬一沒寫進去，也不能馬上又把剛退回的那筆撿回來重打。
 async function blockedJobFilter(pausedHere: Set<number>): Promise<string> {
@@ -1372,16 +1380,36 @@ async function blockedJobFilter(pausedHere: Set<number>): Promise<string> {
     .catch(() => [])) ?? [];
   const sent = new Map<number, number>();
   for (const r of recent) sent.set(Number(r.account_id), (sent.get(Number(r.account_id)) ?? 0) + 1);
+  // 結單提醒：每個帳號最後一則真的分享出去的時間（跑到一半的算現在）。跳過的（已提醒過、團已結單）沒送東西，不算。
+  const since = encodeURIComponent(`"${new Date(now - 30 * 60_000).toISOString()}"`);
+  const reminds = (await rest(`line_note_jobs?kind=eq.remind&or=(status.eq.running,finished_at.gte.${since})&select=account_id,status,finished_at,result`)
+    .catch(() => [])) ?? [];
+  const lastRemind = new Map<number, number>();
+  for (const r of reminds) {
+    const t = r.status === "running" ? now : r.result?.reminded ? Date.parse(r.finished_at) : 0;
+    if (t > (lastRemind.get(Number(r.account_id)) ?? 0)) lastRemind.set(Number(r.account_id), t);
+  }
   const limits = new Map<number, number>();
-  if (sent.size) {
-    const rows = (await rest(`line_note_accounts?id=in.(${[...sent.keys()].join(",")})&select=id,chat_per_min`).catch(() => [])) ?? [];
-    for (const a of rows) limits.set(Number(a.id), Number(a.chat_per_min) || CHAT_PER_MIN_DEFAULT);
+  const remindEvery = new Map<number, number>();
+  const ids = [...new Set([...sent.keys(), ...lastRemind.keys()])];
+  if (ids.length) {
+    const rows = (await rest(`line_note_accounts?id=in.(${ids.join(",")})&select=id,chat_per_min,remind_every_min`).catch(() => [])) ?? [];
+    for (const a of rows) {
+      limits.set(Number(a.id), Number(a.chat_per_min) || CHAT_PER_MIN_DEFAULT);
+      remindEvery.set(Number(a.id), Number(a.remind_every_min) || REMIND_EVERY_MIN_DEFAULT);
+    }
   }
   const chatFull = [...sent]
     .filter(([id, n]) => n >= (limits.get(id) ?? CHAT_PER_MIN_DEFAULT) && !paused.includes(id)).map(([id]) => id);
+  // 對齊整分鐘（tick 每分鐘一次）：每 N 分鐘一則 = 這一分鐘和前 N-1 分鐘都沒發過才撿
+  const minuteStart = Math.floor(now / 60_000) * 60_000;
+  const remindWait = [...lastRemind]
+    .filter(([id, t]) => t >= minuteStart - ((remindEvery.get(id) ?? REMIND_EVERY_MIN_DEFAULT) - 1) * 60_000 && !paused.includes(id))
+    .map(([id]) => id);
   const clauses: string[] = [];
   if (paused.length) clauses.push(`not.and(account_id.in.(${paused.join(",")}),kind.in.(${SEND_KINDS.join(",")}))`);
   if (chatFull.length) clauses.push(`not.and(account_id.in.(${chatFull.join(",")}),kind.in.(${CHAT_KINDS.join(",")}))`);
+  if (remindWait.length) clauses.push(`not.and(account_id.in.(${remindWait.join(",")}),kind.eq.remind)`);
   return clauses.length ? `&and=(${clauses.join(",")})` : "";
 }
 

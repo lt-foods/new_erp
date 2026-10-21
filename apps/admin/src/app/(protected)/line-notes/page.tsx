@@ -31,6 +31,8 @@ type Account = {
   last_error: string | null; last_seen_at: string | null;
   // 分享到聊天室每分鐘最多幾則（20261012000000；LINE 對大量分享會限制使用社群）
   chat_per_min: number | null;
+  // 結單提醒每幾分鐘才發一則（20261021000000；早上一口氣分享幾十張會被鎖）
+  remind_every_min: number | null;
 };
 type Store = { id: number; code: string; name: string };
 type Community = {
@@ -313,6 +315,19 @@ function AccountsTab({ accounts, reload, notify, fail }: {
     notify(`已改成每分鐘 ${n} 則`);
     await reload();
   };
+  // 結單提醒早上一口氣分享幾十張會被 LINE 鎖；預設每 2 分鐘一則，被鎖就調大
+  const setRemindEvery = async (a: Account) => {
+    const v = window.prompt(`「${a.label}」結單提醒每幾分鐘發一則？（1～30）\n被 LINE 限制使用社群就調大。`, String(a.remind_every_min ?? 2));
+    if (v == null) return;
+    const n = Number(v.trim());
+    if (!Number.isInteger(n) || n < 1 || n > 30) return fail(new Error("請輸入 1～30 的整數"));
+    setBusy(a.id);
+    const { error } = await getSupabase().rpc("rpc_line_note_account_set_remind_every_min", { p_id: a.id, p_n: n });
+    setBusy(null);
+    if (error) return fail(error);
+    notify(`結單提醒已改成每 ${n} 分鐘一則`);
+    await reload();
+  };
   // 刪帳號會連底下的社群 → 貼文 → 留言一路 CASCADE 掉，所以先把數量算給他看：
   // 「會一起刪掉」講得太輕，真的按下去是一次刪掉上千筆留言紀錄。
   const remove = async (a: Account) => {
@@ -366,6 +381,8 @@ function AccountsTab({ accounts, reload, notify, fail }: {
               <Td>
                 <button type="button" className="text-sky-700 underline" title="分享到聊天室（結單提醒等）每分鐘最多幾則，點一下修改"
                   onClick={() => setChatPerMin(a)}>每分鐘 {a.chat_per_min ?? 5} 則</button>
+                <button type="button" className="block text-xs text-sky-700 underline" title="結單提醒每幾分鐘才發一則，點一下修改"
+                  onClick={() => setRemindEvery(a)}>結單提醒每 {a.remind_every_min ?? 2} 分鐘 1 則</button>
               </Td>
               <Td>{fmt(a.last_seen_at)}</Td>
               <Td className="max-w-xs truncate text-xs text-red-600" title={a.last_error ?? ""}>{a.last_error ?? ""}</Td>
@@ -432,7 +449,7 @@ const EMPTY_FORM: CommunityForm = {
   post_mode: "immediate", post_slots: DEFAULT_SLOTS,
   post_every_minutes: 120, post_every_pct: 20, post_window_start: "09:00", post_window_end: "21:00",
   close_comment: "",
-  remind_enabled: true, remind_time: "08:00", remind_message: "",
+  remind_enabled: true, remind_time: "07:00", remind_message: "",
   share_from_community_id: "",
 };
 
@@ -483,7 +500,7 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
       post_every_minutes: c.post_every_minutes ?? 120, post_every_pct: c.post_every_pct ?? 20,
       post_window_start: c.post_window_start ?? "09:00", post_window_end: c.post_window_end ?? "21:00",
       close_comment: c.close_comment ?? "",
-      remind_enabled: c.remind_enabled ?? true, remind_time: c.remind_time ?? "08:00", remind_message: c.remind_message ?? "",
+      remind_enabled: c.remind_enabled ?? true, remind_time: c.remind_time ?? "07:00", remind_message: c.remind_message ?? "",
       share_from_community_id: c.share_from_community_id ?? "" });
   };
   // 子群模式：只有分享節奏＋結單提醒有意義，其他欄位藏起來
@@ -861,9 +878,13 @@ function CommunitiesTab({ communities, accounts, stores, accountById, storeById,
             <div className="text-sm md:col-span-2">
               <label className="flex items-center gap-2">
                 <input type="checkbox" checked={form.remind_enabled} onChange={(e) => setForm({ ...form, remind_enabled: e.target.checked })} />
-                結單當天再把「今天結單」的貼文分享到聊天室提醒大家，時間
+                結單當天再把「今天結單」的貼文分享到聊天室提醒大家，從
                 <input type="time" className={`${inputSm} w-32`} value={form.remind_time} onChange={(e) => setForm({ ...form, remind_time: e.target.value })} />
+                開始
               </label>
+              {form.remind_enabled && (
+                <div className="mt-1 text-xs text-zinc-500">先結單的先發，同一個帳號每幾分鐘才發一則（帳號分頁「結單提醒每 N 分鐘 1 則」可調），一次分享太多會被 LINE 限制使用社群。</div>
+              )}
               {form.remind_enabled && (
                 <label className="mt-1 block">
                   <span className="text-xs text-zinc-500">分享前先發這段文字（一天一次；留空用預設）</span>
