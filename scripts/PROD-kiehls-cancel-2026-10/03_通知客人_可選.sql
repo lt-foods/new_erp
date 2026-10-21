@@ -7,12 +7,13 @@
 --  ★ 這份在做什麼（整份只有一個 DO 區塊＝同一次）
 --    ⓪ 先拿本批專用的鎖（pg_advisory_xact_lock）：兩個視窗同時貼，第二個會等第一個做完，再看到「已經發過」
 --    ① 先檢查（每個查詢都限定這家公司＋團 GRP-20260910-027＋商品 G02596-01）：02 那一次的紀錄剛好
---       26 筆／32 件、都是等貨中→已取消；那 26 筆現在都還是 02 取消的樣子（沒被還原、沒被別人改）；
+--       25 筆／29 件、都是等貨中→已取消；那 25 筆現在都還是 02 取消的樣子（沒被還原、沒被別人改）；
 --       不然【停】，一則都不發
 --    ② 發過了沒，三種分開：0 則 → 發；這批會員剛好各 1 則 → 「已經發過，這次什麼都沒發」；
 --       只有一部分人有、或有人不只一則 →【停】（不會補發、不會多發，截圖給 CEO）
 --    ⇒ 只發給「02 取消的品項」的會員：認法是 02 寫的那一句原因＋品項斷貨時間＝02 那一刻；
---      松山那筆是老闆 10/21 手動刪除品項取消的（原因不同、沒有斷貨時間）→ 不會發給那位客人
+--      松山那筆是老闆 10/21 手動刪除品項取消的（原因不同、沒有斷貨時間）→ 不會發給那位客人；
+--      南平 1 張（3 件）店家 10/21～22 已按「取消訂單」，單頭已取消、不動，02 沒取消它的品項（沒有那一句原因）→ 也不會發給那位客人
 --    ③ 照斷貨 (d) 段（_stockout_po_items 20260902000010:377-396）逐字同一種寫法發：
 --       類別 stockout、標題「商品斷貨通知」、
 --       內容「您訂購的「<商品名-規格>」因供應商斷貨無法供貨，相關品項已取消，造成不便敬請見諒。」、
@@ -38,8 +39,8 @@ DO $kiehls_notify$
 DECLARE
   c_campaign_no   CONSTANT text    := 'GRP-20260910-027';
   c_sku_code      CONSTANT text    := 'G02596-01';
-  c_expect_rows   CONSTANT int     := 26;      -- 跟 02 一樣（松山 1 筆老闆 10/21 已手動刪除，不在範圍）
-  c_expect_qty    CONSTANT numeric := 32;
+  c_expect_rows   CONSTANT int     := 25;      -- 跟 02 一樣（松山 1 筆老闆已手動刪除、南平 1 張店家已按取消訂單，都不在範圍）
+  c_expect_qty    CONSTANT numeric := 29;
   -- ⛔ 跟 02 逐字相同，不要改字
   c_tag_item      CONSTANT text := '契爾氏化妝水叫錯款式、廠商沒有正確款：2026-10-21 老闆核准批次取消';
   c_title         CONSTANT text := '商品斷貨通知';
@@ -94,7 +95,7 @@ BEGIN
     RAISE EXCEPTION '【停】還沒貼 02（找不到 02 留下的編輯歷史），不能發通知。一則都沒發。';
   END IF;
 
-  -- 02 那一次的紀錄：剛好 26 筆／32 件，都是「等貨中 → 已取消」
+  -- 02 那一次的紀錄：剛好 25 筆／29 件，都是「等貨中 → 已取消」
   SELECT count(*), COALESCE(sum(i.qty), 0),
          count(*) FILTER (WHERE a.before_value <> to_jsonb('pending'::text) OR a.after_value <> to_jsonb('cancelled'::text))
     INTO v_marked, v_marked_qty, v_bad
@@ -105,11 +106,11 @@ BEGIN
      AND a.tenant_id = v_tenant AND co.tenant_id = v_tenant AND i.tenant_id = v_tenant
      AND co.campaign_id = v_campaign AND i.sku_id = v_sku;
   IF v_marked <> c_expect_rows OR v_marked_qty <> c_expect_qty OR v_bad > 0 THEN
-    RAISE EXCEPTION '【停】02 那一次的紀錄是 % 筆、% 件（應為 26 筆、32 件，都是等貨中→已取消；不對的 % 筆）。一則都沒發，請截圖給 CEO。',
+    RAISE EXCEPTION '【停】02 那一次的紀錄是 % 筆、% 件（應為 25 筆、29 件，都是等貨中→已取消；不對的 % 筆）。一則都沒發，請截圖給 CEO。',
       v_marked, trim_scale(v_marked_qty), v_bad;
   END IF;
 
-  -- 那 26 筆現在還是那一次取消的樣子（已取消、斷貨時間＝那一刻）；鎖住，避免同時有人用 05 還原
+  -- 那 25 筆現在還是那一次取消的樣子（已取消、斷貨時間＝那一刻）；鎖住，避免同時有人用 05 還原
   BEGIN
     SELECT array_agg(z.id ORDER BY z.id), count(*), COALESCE(sum(z.qty), 0)
       INTO v_items, v_cnt, v_qty

@@ -9,8 +9,8 @@ WITH
 param AS (
   SELECT 'GRP-20260910-027'::text AS campaign_no,
          'G02596-01'::text        AS sku_code,
-         26                       AS expect_rows,   -- 10/21 早上 27；松山 1 筆老闆已手動刪除
-         32::numeric              AS expect_qty,    -- 10/21 早上 33；同上少 1 件
+         25                       AS expect_rows,   -- 10/21 早上 27；松山 1 筆老闆已手動刪除、南平 1 張店家已按取消訂單
+         29::numeric              AS expect_qty,    -- 10/21 早上 33；松山少 1 件、南平少 3 件
          '契爾氏化妝水叫錯款式、廠商沒有正確款：2026-10-21 老闆核准批次取消'::text AS tag_item,
          '契爾氏化妝水叫錯款式、廠商沒有正確款：2026-10-21 老闆核准批次取消（這張單沒有其他待取品項，整單取消）'::text AS tag_cancel,
          '契爾氏化妝水叫錯款式、廠商沒有正確款：2026-10-21 老闆核准批次取消（其他品項都取過了，訂單收尾為完成）'::text AS tag_done,
@@ -21,7 +21,8 @@ cp AS (SELECT c.id, c.tenant_id FROM public.group_buy_campaigns c JOIN param p O
 sk AS (SELECT s.id, COALESCE(s.product_name, s.sku_code) || COALESCE('-' || s.variant_name, '') AS label
          FROM public.skus s JOIN cp ON cp.tenant_id = s.tenant_id JOIN param p ON p.sku_code = s.sku_code),
 scope AS ( -- 這家公司、這一團、這個商品的全部品項（單頭、品項、團三者同一家公司）
-  SELECT i.id, i.order_id, i.qty, i.status, i.stockout_at, i.updated_at, co.member_id
+  SELECT i.id, i.order_id, i.qty, i.status, i.stockout_at, i.updated_at, co.member_id,
+         co.status AS order_status, co.cancelled_at AS order_cancelled_at
     FROM public.customer_order_items i
     JOIN public.customer_orders co ON co.id = i.order_id
     JOIN cp ON cp.id = co.campaign_id AND cp.tenant_id = co.tenant_id AND cp.tenant_id = i.tenant_id
@@ -79,7 +80,7 @@ notif AS ( -- 02 之後這批會員收到的「這一則」（類別、標題、
      AND n.member_id IN (SELECT member_id FROM expect_members)
    GROUP BY n.member_id
 ),
-rel AS (   -- 02 第 5 步還回的庫存減抵單：只看這 26 筆身上的、原因有本批標記、而且是 02 那一刻作廢或只扣量（沒作廢）的
+rel AS (   -- 02 第 5 步還回的庫存減抵單：只看這 25 筆身上的、原因有本批標記、而且是 02 那一刻作廢或只扣量（沒作廢）的
   SELECT count(DISTINCT nn.id) AS n,
          count(DISTINCT nn.id) FILTER (WHERE nn.pool_qty > 0) AS n_pool
     FROM public.inventory_deduction_notes nn
@@ -92,7 +93,7 @@ dn_void AS ( -- 02 那一刻被作廢的減抵單（含單頭取消時觸發器�
   SELECT count(*) AS n FROM public.inventory_deduction_notes nn
    WHERE nn.cancelled_at = (SELECT at FROM t0) AND nn.tenant_id IN (SELECT tenant_id FROM cp)
 ),
-other_items AS ( -- 02 那一刻被改到、但不是那 26 筆的品項：分成【內部】現貨池容器的、其他的
+other_items AS ( -- 02 那一刻被改到、但不是那 25 筆的品項：分成【內部】現貨池容器的、其他的
   SELECT x.id, (COALESCE(m.member_type, '') = 'store_internal') AS is_pool
     FROM public.customer_order_items x
     JOIN public.customer_orders co ON co.id = x.order_id
@@ -118,7 +119,12 @@ v AS (     -- 各項數字先算好
     (SELECT count(*) FROM scope s WHERE s.id IN (SELECT item_id FROM marked)
                                     AND s.status = 'cancelled' AND s.stockout_at = (SELECT at FROM t0)) AS n_still,
     (SELECT COALESCE(sum(s.qty), 0) FROM scope s WHERE s.id IN (SELECT item_id FROM marked)) AS q_marked,
-    (SELECT count(*) FROM scope s WHERE s.status = 'pending') AS n_pending,
+    (SELECT count(*) FROM scope s WHERE s.status = 'pending'
+      AND (s.order_status NOT IN ('cancelled', 'expired') OR s.order_cancelled_at = (SELECT at FROM t0))) AS n_pending,
+    (SELECT count(*) FROM scope s WHERE s.status = 'pending' AND s.order_status IN ('cancelled', 'expired')
+      AND s.id NOT IN (SELECT item_id FROM marked)) AS n_skip,
+    (SELECT COALESCE(sum(s.qty), 0) FROM scope s WHERE s.status = 'pending' AND s.order_status IN ('cancelled', 'expired')
+      AND s.id NOT IN (SELECT item_id FROM marked)) AS q_skip,
     (SELECT count(*) FROM public.customer_order_items x
       WHERE x.stockout_at = (SELECT at FROM t0) AND x.id NOT IN (SELECT item_id FROM marked)) AS n_other_stockout,
     (SELECT count(*) FROM other_items WHERE NOT is_pool) AS n_other_items,
@@ -152,21 +158,25 @@ FROM (
               ELSE '✅ ' || to_char((SELECT at FROM v) AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS') END AS "結果",
          '台北時間；重貼 02 的話這個時間不會變（重貼不會重做）'::text AS "說明"
   UNION ALL
-  SELECT 1, '① 26 筆都已取消', '那一次取消的品項', (SELECT n_marked FROM v),
+  SELECT 1, '① 25 筆都已取消', '那一次取消的品項', (SELECT n_marked FROM v),
          CASE WHEN (SELECT n_marked FROM v) = (SELECT expect_rows FROM param) AND (SELECT q_marked FROM v) = (SELECT expect_qty FROM param)
-              THEN '✅ 26 筆、32 件' ELSE '❌ 應為 26 筆、32 件（現在 ' || (SELECT n_marked FROM v) || ' 筆、' || trim_scale((SELECT q_marked FROM v)) || ' 件）' END,
-         '看 02 寫的編輯歷史（松山 1 筆是老闆 10/21 手動刪除的，不算在內）'
+              THEN '✅ 25 筆、29 件' ELSE '❌ 應為 25 筆、29 件（現在 ' || (SELECT n_marked FROM v) || ' 筆、' || trim_scale((SELECT q_marked FROM v)) || ' 件）' END,
+         '看 02 寫的編輯歷史（松山 1 筆老闆手動刪除、南平 1 張店家已按取消訂單，都不算在內）'
   UNION ALL
-  SELECT 2, '① 26 筆都已取消', '現在還是「已取消＋斷貨」', (SELECT n_still FROM v),
+  SELECT 2, '① 25 筆都已取消', '現在還是「已取消＋斷貨」', (SELECT n_still FROM v),
          CASE WHEN (SELECT n_undo FROM v) > 0 THEN 'ℹ 已用 05 還原（' || to_char((SELECT undo_at FROM v) AT TIME ZONE 'Asia/Taipei', 'MM-DD HH24:MI') || '），這一列不適用'
-              WHEN (SELECT n_still FROM v) = (SELECT expect_rows FROM param) THEN '✅ 26 筆'
-              ELSE '❌ 應為 26 筆' END,
+              WHEN (SELECT n_still FROM v) = (SELECT expect_rows FROM param) THEN '✅ 25 筆'
+              ELSE '❌ 應為 25 筆' END,
          '品項狀態已取消、斷貨時間＝02 那一刻'
   UNION ALL
   SELECT 3, '② 範圍', '這一團這商品還在等貨中的品項', (SELECT n_pending FROM v),
          CASE WHEN (SELECT n_undo FROM v) > 0 THEN 'ℹ 已用 05 還原，這一列不適用'
               WHEN (SELECT n_pending FROM v) = 0 THEN '✅ 0 筆' ELSE '❌ 應為 0 筆' END,
-         '02 之後新下的單也會算進來'
+         '02 之後新下的單也會算進來；單頭已取消（店家按取消訂單）的不算'
+  UNION ALL
+  SELECT 3.5, '② 範圍', '單頭已取消、品項還等貨中（不在範圍，02 不動）', (SELECT n_skip FROM v),
+         'ℹ ' || (SELECT n_skip FROM v) || ' 筆、' || trim_scale((SELECT q_skip FROM v)) || ' 件',
+         '南平 1 張（3 件）店家 10/21～22 已按「取消訂單」，單頭已取消、不動；預期 1 筆 3 件'
   UNION ALL
   SELECT 4, '③ 沒有多動', '別的品項被蓋上同一個斷貨時間', (SELECT n_other_stockout FROM v),
          CASE WHEN (SELECT n_other_stockout FROM v) = 0 THEN '✅ 0 筆' ELSE '❌ 應為 0 筆' END, '全系統查'
@@ -223,7 +233,7 @@ FROM (
               ELSE '❌ 應為 ' || (SELECT n_members FROM v) || ' 位各 1 則；現在 ' || (SELECT n_notif_members FROM v) || ' 位收到、共 ' || (SELECT n_notif FROM v) || ' 則' END,
          '類別、標題、內文跟 03 算出來的全等才算；應發 ' || (SELECT n_members FROM v) || ' 位會員（沒綁會員的發不到）'
   UNION ALL
-  SELECT 12, '⑦ 其他', '還回去的庫存減抵單（這 26 筆身上的）', (SELECT n FROM rel),
+  SELECT 12, '⑦ 其他', '還回去的庫存減抵單（這 25 筆身上的）', (SELECT n FROM rel),
          'ℹ ' || (SELECT n FROM rel) || ' 張', '品項有從店內庫存配過貨才會有；預期 0'
   UNION ALL
   SELECT 12.5, '⑦ 其他', '02 那一刻被作廢的庫存減抵單（全部）', (SELECT n FROM dn_void),

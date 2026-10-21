@@ -1,15 +1,21 @@
 -- ============================================================================
---  02 取消 26 筆（✅ 會改資料）
+--  02 取消 25 筆（✅ 會改資料）
 --  契爾氏 kiehl's 金盞花植物精華化妝水 40ml（商品 G02596-01）叫錯款式、廠商沒有正確款
---  ⇒ 團 GRP-20260910-027 裡「等貨中」的客人品項 26 筆（32 件）一次取消
---     （10/21 早上查是 27 筆 33 件；松山 1 筆已由老闆 10/21 中午在後台手動「刪除品項」（整單已一併取消），不在這次範圍）
+--  ⇒ 團 GRP-20260910-027 裡「等貨中」的客人品項 25 筆（29 件）一次取消
+--     （10/21 早上查是 27 筆 33 件；松山 1 筆已由老闆 10/21 中午在後台手動「刪除品項」（整單已一併取消）；
+--      南平 1 張（3 件）店家 10/21～22 已按「取消訂單」，單頭已取消、不動——這兩張都不在這次範圍）
 --  日期：2026-10-21　阿寫寫、⛔ 阿審（Codex）審過之前不要貼
 --  依據：公司\01_進行中\需求暨計畫_NEW-ERP契爾氏化妝水27筆客人品項批次取消_2026-10-21.md（老闆 10/21「好 做」）
 --  程式出處：工地 git origin/main 1343df73（線上 main 10/15）supabase/migrations/（行號寫在各段）
 -- ============================================================================
 --  ★ 這份在做什麼（整份只有一個 DO 區塊＝同一次；任何一步不對就整筆取消、什麼都沒改）
---    ① 先檢查（任何寫入之前）：對象＝商品 G02596-01 ＋ 團 GRP-20260910-027 ＋ 品項「等貨中」(pending)；
---       筆數必須 26、件數必須 32；這 26 筆不能已經有斷貨標記；這幾張單的單頭狀態只能是
+--    ① 先檢查（任何寫入之前）：對象＝商品 G02596-01 ＋ 團 GRP-20260910-027 ＋ 品項「等貨中」(pending)
+--       ＋ 單頭不是「已取消／已過期」；
+--       （單頭已取消、品項還等貨中的＝店家按了後台「取消訂單」rpc_cancel_aid_order，它只改單頭、不改品項
+--        〔最新 20260826000010_cancel_same_store_swap_shipping.sql:26；函式本體不改品項，它呼叫的
+--         _restore_transfer_source_items 只處理轉入單，一般訂單直接回 0（20260818000030:59-60）〕；
+--        業務上已經取消 → 02 不動、03 不發、05 不碰，01／04 列在「不在範圍」）；
+--       筆數必須 25、件數必須 29；這 25 筆不能已經有斷貨標記；這幾張單的單頭狀態只能是
 --       待確認／已確認／出貨中／可取貨／部分取貨；單上不能有少見的品項狀態（例如「部分領走」）；
 --       這一團這商品的單頭與品項都要是同一家公司（租戶）；會被整單取消的單，取消時間必須是空的
 --       （05 還原時才不會弄丟舊的取消時間）。
@@ -51,7 +57,7 @@
 -- ============================================================================
 --  開工前四問（2026-10-21 阿寫查；證據都是工地 git origin/main 1343df73 的檔:行）
 --  Q1 這件事系統有沒有現成的做法？改狀態會連動什麼？
---    ・現成做法有兩支，但都叫不動這 26 筆：
+--    ・現成做法有兩支，但都叫不動這 25 筆：
 --      斷貨 rpc_stockout_po_item 只給還沒全到貨的採購單（20260801000000:274 起）；
 --      刪除品項 rpc_delete_order_item 只准 待確認／可取貨／部分取貨（20260831000090:759-768），
 --      而且要登入者權限（:749 _check_order_edit_qty_perm），SQL Editor 叫不動。
@@ -63,7 +69,7 @@
 --         時清掉兩個標記欄。這份不碰待補貨欄位 → 不會觸發。
 --      c. trg_release_idn_coverage（20260813002000:173-179，函式 :83-148、:160-170，都只有一版）：
 --         單頭變成已取消時，把綁在這張單上的庫存減抵單覆蓋釋放。整單取消的單會觸發它。
---         ・這 26 筆自己的覆蓋 ② 已先還掉，不會再被釋放一次（只釋放 qty > released_qty 的部分 :117、:127）。
+--         ・這 25 筆自己的覆蓋 ② 已先還掉，不會再被釋放一次（只釋放 qty > released_qty 的部分 :117、:127）。
 --         ・⚠ 但它「可能順便收斂同一張減抵單上其他已取消／過期訂單的覆蓋」：它對每一張碰到的減抵單，
 --           把單上所有綁在已取消／過期訂單、還沒釋放的覆蓋一起釋放（:100-127，刻意不限 p_order_ids）。
 --           影響：只會釋放「本來就該釋放、只是殘留著」的覆蓋（綁的訂單早就死了），那張減抵單會被作廢或扣量；
@@ -77,7 +83,7 @@
 --         「0 個觸發器」），而且只改「草稿、還沒建採購單」的列（:451、:637）。這團這商品已經叫貨
 --         → 取消後不會自動改任何請購單；01 第⑥段列出還有沒有草稿列。
 --      g. 派貨需求 v_picking_demand_by_po（正式現行版＝#1084 20261016000000:932 起）：只算單頭不是
---         取消／過期／轉出、品項不是取消／過期的（:981、:984）→ 這 32 件從需求拿掉（松山那 1 件刪除時已經拿掉）。採購單這一項
+--         取消／過期／轉出、品項不是取消／過期的（:981、:984）→ 這 29 件從需求拿掉（松山那 1 件刪除時、南平那 3 件單頭取消時已經拿掉）。採購單這一項
 --         已收 33、已出 33，沒有剩貨 → 派貨工作台不會多出要派的；已派出去的 9 張派車單不動。
 --      h. #1084「叫貨後才取消、照派原店」：只收「採購單品項建立時間 ≥ 分界」的
 --         （v_picking_po_rule_items :806；分界 _picking_po_rule_cutover() :731-738 ＝ '2026-10-16 00:00:00+08'）。
@@ -88,7 +94,7 @@
 --      i. 取貨閘門 is_order_item_pickup_ready（最新 20260907000000:51）逐品項判斷，已取消的品項不會出現在可取清單。
 --      j. 店家收貨 rpc_receive_transfer（最新 20260904020010:101，邏輯 C :505-548）：還沒收貨的
 --         中和、古華、文山、永和收這批錯貨時，只把「單頭出貨中、而且單上還有這個商品待取品項」的單
---         推成可取貨（:528-529）→ 這 26 筆已取消，不會因為這批錯貨被推成可取貨；整單取消的單也不會被動。
+--         推成可取貨（:528-529）→ 這 25 筆已取消，不會因為這批錯貨被推成可取貨；整單取消的單也不會被動。
 --         ⇒ 整單取消對「已確認／出貨中／可取貨」都適用：取消那句只要求單頭還是原狀態（防同時有人改），
 --           之後所有推進狀態的地方都只認特定狀態（例：:528、:541），不會把已取消的單推回來。
 --      k. ⚠ 收貨後推播「您的商品到貨」rpc_get_members_to_notify_for_transfer（最新 20260814010000:40-82）
@@ -129,8 +135,8 @@ DECLARE
   -- ╚════════════════════════════════════════════════╝
   c_campaign_no   CONSTANT text    := 'GRP-20260910-027';
   c_sku_code      CONSTANT text    := 'G02596-01';
-  c_expect_rows   CONSTANT int     := 26;      -- 10/21 早上 27 筆；松山 1 筆老闆中午已手動刪除品項
-  c_expect_qty    CONSTANT numeric := 32;      -- 10/21 早上 33 件；同上少 1 件
+  c_expect_rows   CONSTANT int     := 25;      -- 10/21 早上 27 筆；松山 1 筆老闆已手動刪除、南平 1 張店家已按取消訂單（單頭已取消）
+  c_expect_qty    CONSTANT numeric := 29;      -- 10/21 早上 33 件；松山少 1 件、南平少 3 件
   -- ⛔ 下面四句是「這一次」的身分證，01／03／04／05 逐字相同，不要改字
   c_tag_item      CONSTANT text := '契爾氏化妝水叫錯款式、廠商沒有正確款：2026-10-21 老闆核准批次取消';
   c_tag_cancel    CONSTANT text := '契爾氏化妝水叫錯款式、廠商沒有正確款：2026-10-21 老闆核准批次取消（這張單沒有其他待取品項，整單取消）';
@@ -161,6 +167,8 @@ DECLARE
   v_pool_items    bigint[] := '{}';   -- ② 還回【內部】現貨池時，那支實際改到／新增的池子品項（越界檢查的允許清單）
   v_pool_orders   bigint[] := '{}';   -- 同上，被它開回來的池子容器單頭
   v_dn_void       int;
+  v_skip_rows     int;
+  v_skip_qty      numeric;
   r               record;
 BEGIN
   PERFORM set_config('lock_timeout', '15s', true);
@@ -228,7 +236,7 @@ BEGIN
   IF v_cnt > 0 THEN
     RAISE NOTICE '已經做過（這一團這個商品，目前有 % 筆是這份取消的），這次什麼都沒改。%', v_cnt,
       CASE WHEN v_cnt = c_expect_rows THEN '請接著貼 04 確認。'
-           ELSE '⚠ 應該是 26 筆，請截圖給 CEO。' END;
+           ELSE '⚠ 應該是 25 筆，請截圖給 CEO。' END;
     RETURN;
   END IF;
 
@@ -251,14 +259,22 @@ BEGIN
    WHERE co.campaign_id = v_campaign
      AND co.tenant_id = v_tenant AND i.tenant_id = v_tenant
      AND i.sku_id = v_sku
-     AND i.status = 'pending';
+     AND i.status = 'pending'
+     AND co.status NOT IN ('cancelled', 'expired');   -- 單頭已取消／過期的不算（店家已按取消訂單，見檔頭①）
   IF v_cnt <> c_expect_rows OR v_qty <> c_expect_qty THEN
-    RAISE EXCEPTION '【停】這一團這個商品「等貨中」的客人品項現在是 % 筆、% 件，跟預期的 26 筆、32 件對不上（10/21 早上 27 筆 33 件、松山 1 筆老闆已手動刪除；其他的可能剛好有店家取貨、刪單或改數量）。什麼都沒改，請截圖給 CEO。',
+    RAISE EXCEPTION '【停】這一團這個商品「等貨中」的客人品項現在是 % 筆、% 件，跟預期的 25 筆、29 件對不上（10/21 早上 27 筆 33 件；松山 1 筆老闆已手動刪除、南平 1 張店家已按取消訂單，都不算；其他的可能剛好有店家取貨、刪單、取消或改數量）。什麼都沒改，請截圖給 CEO。',
       v_cnt, trim_scale(v_qty);
   END IF;
   IF v_bad > 0 THEN
-    RAISE EXCEPTION '【停】這 26 筆裡有 % 筆已經帶著斷貨標記，跟預期不同。什麼都沒改，請截圖給 CEO。', v_bad;
+    RAISE EXCEPTION '【停】這 25 筆裡有 % 筆已經帶著斷貨標記，跟預期不同。什麼都沒改，請截圖給 CEO。', v_bad;
   END IF;
+
+  -- 不在範圍、只回報：單頭已取消／過期、品項還等貨中（店家按了「取消訂單」）
+  SELECT count(*), COALESCE(sum(i.qty), 0) INTO v_skip_rows, v_skip_qty
+    FROM public.customer_order_items i
+    JOIN public.customer_orders co ON co.id = i.order_id
+   WHERE co.campaign_id = v_campaign AND co.tenant_id = v_tenant AND i.tenant_id = v_tenant
+     AND i.sku_id = v_sku AND i.status = 'pending' AND co.status IN ('cancelled', 'expired');
 
   SELECT array_agg(DISTINCT x.order_id ORDER BY x.order_id) INTO v_orders
     FROM public.customer_order_items x WHERE x.id = ANY (v_items);
@@ -279,7 +295,7 @@ BEGIN
     RAISE EXCEPTION '【停】這幾張單上有 % 筆品項的狀態不常見（例如「部分領走」），收尾規則對不上。什麼都沒改，請截圖給 CEO。', v_bad;
   END IF;
 
-  -- 會被整單取消的單（拿掉這 26 筆後沒有待取品項、沒取過、沒付款、沒用儲值金），取消時間必須是空的；
+  -- 會被整單取消的單（拿掉這 25 筆後沒有待取品項、沒取過、沒付款、沒用儲值金），取消時間必須是空的；
   -- 不是空的＝以前取消過又被救回，05 還原時會弄丟那個舊時間 → 先停（2026-10-21 審查 P1、CEO 裁決的最簡做法）
   SELECT count(*) INTO v_bad
     FROM public.customer_orders co
@@ -335,7 +351,7 @@ BEGIN
      AND status = 'pending';
   GET DIAGNOSTICS v_cnt = ROW_COUNT;
   IF v_cnt <> c_expect_rows THEN
-    RAISE EXCEPTION '【停】品項只改到 % 筆（應為 26），整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt;
+    RAISE EXCEPTION '【停】品項只改到 % 筆（應為 25），整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt;
   END IF;
 
   -- ── 7. 編輯歷史：每一筆一列（格式同刪除品項第 8 步 20260831000090:809-815）──
@@ -349,7 +365,7 @@ BEGIN
    WHERE x.id = ANY (v_items);
   GET DIAGNOSTICS v_cnt = ROW_COUNT;
   IF v_cnt <> c_expect_rows THEN
-    RAISE EXCEPTION '【停】編輯歷史只寫到 % 筆（應為 26），整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt;
+    RAISE EXCEPTION '【停】編輯歷史只寫到 % 筆（應為 25），整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt;
   END IF;
 
   -- ── 8. 訂單收尾（照刪除品項第 9 步 20260831000090:817-853）──
@@ -421,13 +437,14 @@ BEGIN
    WHERE co.campaign_id = v_campaign AND i.sku_id = v_sku
      AND i.status = 'cancelled' AND i.stockout_at = v_now;
   IF v_cnt <> c_expect_rows THEN
-    RAISE EXCEPTION '【停】自我驗算沒過：這一次取消的品項查到 % 筆（應為 26）。整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt;
+    RAISE EXCEPTION '【停】自我驗算沒過：這一次取消的品項查到 % 筆（應為 25）。整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt;
   END IF;
 
   SELECT count(*) INTO v_cnt
     FROM public.customer_order_items i
     JOIN public.customer_orders co ON co.id = i.order_id
-   WHERE co.campaign_id = v_campaign AND i.sku_id = v_sku AND i.status = 'pending';
+   WHERE co.campaign_id = v_campaign AND i.sku_id = v_sku AND i.status = 'pending'
+     AND (co.status NOT IN ('cancelled', 'expired') OR co.cancelled_at = v_now);
   IF v_cnt <> 0 THEN
     RAISE EXCEPTION '【停】自我驗算沒過：這一團這個商品還有 % 筆等貨中。整筆取消、什麼都沒改，請截圖給 CEO。', v_cnt;
   END IF;
@@ -464,7 +481,7 @@ BEGIN
   END IF;
 
   -- 沒有多動到別的（一律照跑，不因為有還回池子就略過）：
-  --   這一刻改到的品項只能是這 26 筆＋5-1 記下的池子品項；改到的單頭只能是整單取消＋收尾完成＋5-1 記下的池子容器單。
+  --   這一刻改到的品項只能是這 25 筆＋5-1 記下的池子品項；改到的單頭只能是整單取消＋收尾完成＋5-1 記下的池子容器單。
   SELECT count(*) INTO v_cnt
     FROM public.customer_order_items x
    WHERE x.updated_at = v_now
@@ -489,8 +506,8 @@ BEGIN
   -- 這一刻被作廢的庫存減抵單（② 那支＋單頭取消時的觸發器，含「順便收斂」別張死單的；釋放不可逆，只回報）
   SELECT count(*) INTO v_dn_void FROM public.inventory_deduction_notes n WHERE n.cancelled_at = v_now;
 
-  RAISE NOTICE '✅ 完成：取消 % 筆（% 件）；整單取消 % 張（單頭也標斷貨）；收尾成已完成 % 張；單上還有別的品項、單子留著 % 張；付過錢／用過儲值金、單子沒動 % 張%；從店內庫存配過貨、已還回 % 筆（% 件，其中回【內部】現貨池 % 件，池子品項 % 列／容器單 % 張）；這一刻被作廢的庫存減抵單 % 張。請接著貼 04 確認。',
+  RAISE NOTICE '✅ 完成：取消 % 筆（% 件）；整單取消 % 張（單頭也標斷貨）；收尾成已完成 % 張；單上還有別的品項、單子留著 % 張；付過錢／用過儲值金、單子沒動 % 張%；從店內庫存配過貨、已還回 % 筆（% 件，其中回【內部】現貨池 % 件，池子品項 % 列／容器單 % 張）；這一刻被作廢的庫存減抵單 % 張；單頭已取消、品項還等貨中（店家已按取消訂單）% 筆（% 件）不在範圍、沒動。請接著貼 04 確認。',
     c_expect_rows, trim_scale(c_expect_qty), n_cancel, n_done, n_keep, n_paid,
     CASE WHEN n_paid > 0 THEN '（' || v_paid_list || '，要人工處理退款）' ELSE '' END,
-    v_rel_rows, trim_scale(v_rel_qty), trim_scale(v_rel_pool), cardinality(v_pool_items), cardinality(v_pool_orders), v_dn_void;
+    v_rel_rows, trim_scale(v_rel_qty), trim_scale(v_rel_pool), cardinality(v_pool_items), cardinality(v_pool_orders), v_dn_void, v_skip_rows, trim_scale(v_skip_qty);
 END $kiehls$;

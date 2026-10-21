@@ -14,9 +14,9 @@
 --  ★ 這份在做什麼（整份只有一個 DO 區塊＝同一次；任何一步不對就整筆取消、什麼都沒改）
 --    ① 找「最近一次 02」（用 02 寫進編輯歷史的那一句原因認）
 --    ② 先檢查（任何寫入之前；每一個查詢都限定這家公司＋團 GRP-20260910-027＋商品 G02596-01）：
---       ・02 那一次的紀錄剛好 26 筆／32 件、都是等貨中→已取消；同一句原因同一刻沒有落在這一團以外
---       ・那 26 筆現在都還是那一刻取消的樣子（已取消、斷貨時間＝那一刻、修改時間＝那一刻）
---       ・受影響的訂單＝這 26 筆所在的「全部」訂單（含 02 沒改單頭的：單子留著、付過錢的）：
+--       ・02 那一次的紀錄剛好 25 筆／29 件、都是等貨中→已取消；同一句原因同一刻沒有落在這一團以外
+--       ・那 25 筆現在都還是那一刻取消的樣子（已取消、斷貨時間＝那一刻、修改時間＝那一刻）
+--       ・受影響的訂單＝這 25 筆所在的「全部」訂單（含 02 沒改單頭的：單子留著、付過錢的）：
 --         單頭與單上其他品項的修改時間都不能晚於 02 那一刻（02 之後有人收貨、取貨、改單、取消 → 停）
 --       ・02 整單取消／收尾完成的單，狀態與時間還是 02 留下的樣子
 --       ・還原後不會跟同一位客人在同一團的其他進行中訂單撞在一起
@@ -31,6 +31,7 @@
 --    ④ 自我驗算（品項狀態與斷貨時間、單頭狀態／取消時間／斷貨時間／完成時間都回去了；沒有多改到別的列）
 --  ★ 只還原 02 做的：認法是 02 寫的那一句原因＋02 那一刻的時間。松山那筆（老闆 10/21 手動刪除品項、整單一併取消）
 --    的編輯歷史原因不同 → 這份不碰它，它維持已取消。
+--    南平 1 張（3 件）店家 10/21～22 已按「取消訂單」，單頭已取消、不動：02 沒動它（品項沒有 02 的那一句原因）→ 這份也不碰它，單頭維持已取消、品項維持等貨中。
 --  ★ 還原不了的（會在結尾那行寫出來）：
 --    ・02 第 5 步還回的「從店內庫存配貨」不會自動配回去（同刪除品項的取捨，20260827040000:48-49）；
 --      01 第③段預期 0 筆。有的話要店家重新配一次。
@@ -51,8 +52,8 @@ DECLARE
   -- ╚════════════════════════════════════════════════╝
   c_campaign_no   CONSTANT text    := 'GRP-20260910-027';
   c_sku_code      CONSTANT text    := 'G02596-01';
-  c_expect_rows   CONSTANT int     := 26;      -- 跟 02 一樣（松山 1 筆老闆 10/21 已手動刪除，不在範圍）
-  c_expect_qty    CONSTANT numeric := 32;
+  c_expect_rows   CONSTANT int     := 25;      -- 跟 02 一樣（松山 1 筆老闆已手動刪除、南平 1 張店家已按取消訂單，都不在範圍）
+  c_expect_qty    CONSTANT numeric := 29;
   -- ⛔ 跟 02 逐字相同，不要改字
   c_tag_item      CONSTANT text := '契爾氏化妝水叫錯款式、廠商沒有正確款：2026-10-21 老闆核准批次取消';
   c_tag_cancel    CONSTANT text := '契爾氏化妝水叫錯款式、廠商沒有正確款：2026-10-21 老闆核准批次取消（這張單沒有其他待取品項，整單取消）';
@@ -140,7 +141,7 @@ BEGIN
     RAISE EXCEPTION '【停】有人正在操作這幾張訂單，等了 15 秒還拿不到。什麼都沒改，請過幾分鐘再貼一次。';
   END;
 
-  -- ── 4. 那一次 02 留下的品項紀錄：一定要剛好 26 筆／32 件，而且都是「等貨中 → 已取消」──
+  -- ── 4. 那一次 02 留下的品項紀錄：一定要剛好 25 筆／29 件，而且都是「等貨中 → 已取消」──
   SELECT count(*), COALESCE(sum(i.qty), 0),
          count(*) FILTER (WHERE a.before_value <> to_jsonb('pending'::text) OR a.after_value <> to_jsonb('cancelled'::text))
     INTO v_marked, v_marked_qty, v_bad
@@ -151,7 +152,7 @@ BEGIN
      AND a.tenant_id = v_tenant AND co.tenant_id = v_tenant AND i.tenant_id = v_tenant
      AND co.campaign_id = v_campaign AND i.sku_id = v_sku;
   IF v_marked <> c_expect_rows OR v_marked_qty <> c_expect_qty OR v_bad > 0 THEN
-    RAISE EXCEPTION '【停】02 那一次的紀錄是 % 筆、% 件（應為 26 筆、32 件，而且都是等貨中→已取消；不對的 % 筆）。不能自動還原，什麼都沒改，請截圖給 CEO。',
+    RAISE EXCEPTION '【停】02 那一次的紀錄是 % 筆、% 件（應為 25 筆、29 件，而且都是等貨中→已取消；不對的 % 筆）。不能自動還原，什麼都沒改，請截圖給 CEO。',
       v_marked, trim_scale(v_marked_qty), v_bad;
   END IF;
   -- 同一句原因、同一刻，卻落在這一團這商品以外的紀錄（標記撞到別的資料）→ 停
@@ -193,7 +194,7 @@ BEGIN
     RAISE EXCEPTION '【停】02 那一次取消了 % 筆，現在只剩 % 筆（% 件）還是那時候的樣子（有人動過）。不能自動還原，什麼都沒改，請截圖給 CEO。', v_marked, v_cnt, trim_scale(v_qty);
   END IF;
 
-  -- ── 5. 受影響的訂單＝這 26 筆所在的全部訂單（不只 02 改過單頭的那幾張）──
+  -- ── 5. 受影響的訂單＝這 25 筆所在的全部訂單（不只 02 改過單頭的那幾張）──
   SELECT array_agg(DISTINCT x.order_id ORDER BY x.order_id) INTO v_orders
     FROM public.customer_order_items x WHERE x.id = ANY (v_items);
 
@@ -275,7 +276,7 @@ BEGIN
        AND a.field = 'status' AND a.edit_reason = c_tag_item AND a.created_at = v_t0 AND a.tenant_id = v_tenant;
     GET DIAGNOSTICS n_items = ROW_COUNT;
     IF n_items <> c_expect_rows THEN
-      RAISE EXCEPTION '【停】品項只還原到 % 筆（應為 26），整筆取消、什麼都沒改，請截圖給 CEO。', n_items;
+      RAISE EXCEPTION '【停】品項只還原到 % 筆（應為 25），整筆取消、什麼都沒改，請截圖給 CEO。', n_items;
     END IF;
 
     INSERT INTO public.customer_order_audit_log
@@ -373,7 +374,7 @@ BEGIN
   END IF;
 
   -- ── 10. 還原不了的，算出來寫在結尾 ──
-  -- 02 第 5 步還回的配貨（只看這 26 筆身上的減抵單）
+  -- 02 第 5 步還回的配貨（只看這 25 筆身上的減抵單）
   SELECT count(DISTINCT nn.id) INTO v_rel_notes
     FROM public.inventory_deduction_notes nn
     JOIN public.inventory_deduction_note_items ni ON ni.note_id = nn.id

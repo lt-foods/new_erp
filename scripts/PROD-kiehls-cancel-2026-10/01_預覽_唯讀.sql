@@ -8,8 +8,9 @@
 --  各段在看什麼
 --    ⓪ 對象：團、商品各剛好一個；這團這商品接到的採購單；叫貨後取消照派原店（#1084）的分界時間原文
 --    ① 會被 02 取消的品項，一筆一列：門市、訂單號、單頭狀態、件數、取消後這張單會怎樣
---    ② 總計：應為 26 筆、32 件，全部等貨中、沒有斷貨標記
---       （10/21 早上查是 27 筆 33 件；松山 1 筆已由老闆 10/21 中午在後台手動「刪除品項」（整單已一併取消），不在這次範圍，會出現在第④段）
+--    ② 總計：應為 25 筆、29 件，全部等貨中、沒有斷貨標記
+--       （10/21 早上查是 27 筆 33 件；松山 1 筆已由老闆 10/21 中午在後台手動「刪除品項」（整單已一併取消）；
+--        南平 1 張（3 件）店家 10/21～22 已按「取消訂單」，單頭已取消、不動；這兩張都不在範圍，會出現在第④段）
 --    ③ 訂單收尾預估：整單取消幾張、收尾成已完成幾張、單子留著幾張、付過錢／用過儲值金不動幾張
 --    ④ 同一團同一商品、不在這次範圍的品項（02 不會動）
 --    ⑤ 正式系統裡實際掛的觸發器（跟程式碼紀錄比對；多出來的要先給 CEO 看）
@@ -23,8 +24,8 @@ WITH
 param AS (
   SELECT 'GRP-20260910-027'::text AS campaign_no,
          'G02596-01'::text        AS sku_code,
-         26                       AS expect_rows,   -- 10/21 早上 27；松山 1 筆老闆已手動刪除
-         32::numeric              AS expect_qty,    -- 10/21 早上 33；同上少 1 件
+         25                       AS expect_rows,   -- 10/21 早上 27；松山 1 筆老闆已手動刪除、南平 1 張店家已按取消訂單
+         29::numeric              AS expect_qty,    -- 10/21 早上 33；松山少 1 件、南平少 3 件
          '契爾氏化妝水叫錯款式、廠商沒有正確款：2026-10-21 老闆核准批次取消'::text AS tag_item
 ),
 cp AS (
@@ -50,6 +51,16 @@ tgt AS (   -- 02 會取消的：這一團 × 這個商品 × 品項等貨中
     LEFT JOIN public.stores st ON st.id = co.pickup_store_id
     LEFT JOIN public.members m ON m.id = co.member_id
    WHERE i.status = 'pending'
+     AND co.status NOT IN ('cancelled', 'expired')   -- 單頭已取消／過期的不算（店家已按取消訂單），列在第④段
+),
+skip AS (  -- 不在範圍：單頭已取消／過期、品項還等貨中（店家按了後台「取消訂單」，它只改單頭不改品項）
+  SELECT co.order_no, COALESCE(st.name, '?') AS store_name, co.status AS order_status, co.cancelled_at, i.qty
+    FROM public.customer_order_items i
+    JOIN public.customer_orders co ON co.id = i.order_id
+    JOIN cp ON cp.id = co.campaign_id AND cp.tenant_id = co.tenant_id AND cp.tenant_id = i.tenant_id
+    JOIN sk ON sk.id = i.sku_id
+    LEFT JOIN public.stores st ON st.id = co.pickup_store_id
+   WHERE i.status = 'pending' AND co.status IN ('cancelled', 'expired')
 ),
 tenant_bad AS ( -- 這一團這商品，單頭或品項的公司（租戶）跟團不一致的（02 會停）
   SELECT count(*) AS n
@@ -207,12 +218,12 @@ FROM (
   -- ② 總計
   UNION ALL
   SELECT 2, 1, '② 總計', '等貨中的品項筆數', NULL, (SELECT count(*) FROM tgt),
-         CASE WHEN (SELECT count(*) FROM tgt) = (SELECT expect_rows FROM param) THEN '✅ 26 筆' ELSE '❌ 應為 26 筆' END,
-         '02 會先檢查這個數字，不是 26 就整份停下、什麼都不改（松山 1 筆老闆 10/21 已手動刪除，不算在內）'
+         CASE WHEN (SELECT count(*) FROM tgt) = (SELECT expect_rows FROM param) THEN '✅ 25 筆' ELSE '❌ 應為 25 筆' END,
+         '02 會先檢查這個數字，不是 25 就整份停下、什麼都不改（松山 1 筆老闆 10/21 已手動刪除、南平 1 張店家已按取消訂單，都不算在內）'
   UNION ALL
   SELECT 2, 2, '② 總計', '等貨中的件數', NULL, (SELECT COALESCE(sum(qty), 0) FROM tgt),
-         CASE WHEN (SELECT COALESCE(sum(qty), 0) FROM tgt) = (SELECT expect_qty FROM param) THEN '✅ 32 件' ELSE '❌ 應為 32 件' END,
-         '同上，不是 32 就停'
+         CASE WHEN (SELECT COALESCE(sum(qty), 0) FROM tgt) = (SELECT expect_qty FROM param) THEN '✅ 29 件' ELSE '❌ 應為 29 件' END,
+         '同上，不是 29 就停'
   UNION ALL
   SELECT 2, 3, '② 總計', '已經帶斷貨標記的', NULL, (SELECT count(*) FROM tgt WHERE stockout_at IS NOT NULL),
          CASE WHEN (SELECT count(*) FROM tgt WHERE stockout_at IS NOT NULL) = 0 THEN '✅ 0 筆' ELSE '❌ 應為 0' END,
@@ -276,6 +287,12 @@ FROM (
   UNION ALL
   SELECT 4, 2, '④ 不在範圍（02 不動）', '（沒有）', NULL, NULL, 'ℹ', '同一團同一商品沒有其他狀態的品項'
    WHERE NOT EXISTS (SELECT 1 FROM other)
+  UNION ALL
+  SELECT 4, 3, '④ 不在範圍（02 不動）', 'ℹ 單頭已取消、品項還等貨中：' || k.order_no, k.store_name, k.qty,
+         'ℹ 單頭 ' || CASE k.order_status WHEN 'cancelled' THEN '已取消' ELSE '已過期' END
+           || COALESCE('（' || to_char(k.cancelled_at AT TIME ZONE 'Asia/Taipei', 'MM-DD HH24:MI') || '）', ''),
+         '店家按了後台「取消訂單」（只改單頭、不改品項，系統原本就這樣）；業務上已經取消 → 02 不動、03 不發、05 不碰；不算錯、不擋'
+    FROM skip k
 
   -- ⑤ 觸發器
   UNION ALL
