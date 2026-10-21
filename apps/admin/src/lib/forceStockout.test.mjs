@@ -201,11 +201,11 @@ const TODO = [
 test("已收貨的店：開退回單＋總倉同意收回＋退回貨處理", () => {
   const l = returnTodoLine(TODO[0]);
   assert.match(l, /^店A：已收貨 3 件（派車單 TR-T-A）/);
-  assert.match(l, /「退貨」頁開退回單/);
+  assert.match(l, /「退貨」頁按「＋ 我要退貨」開退貨單退回總倉/);
   assert.match(l, /總倉收件匣 → 🚚 轉貨單 → ↩ 退貨回總倉」按「同意收回」；/);
   // #924：收回後凍結，要到退回貨處理才解凍
   assert.ok(l.endsWith(RETURN_DISPOSITION_STEP));
-  assert.match(l, /凍結、派不出去，要到左選單「倉儲 \(WMS\) → 退回貨處理」處理才解凍$/);
+  assert.match(l, /凍結、派不出去，要到左選單「倉儲 \(WMS\) → 退回貨處理」處理才解凍（這個選單只有老闆、管理員、總倉主管的帳號看得到）$/);
 });
 
 test("在途的店：收貨時改 0＋總倉在「店家少收」同意退、不補貨＋退回貨處理", () => {

@@ -239,7 +239,7 @@ export function paidOrderLines(list: PaidOrder[] | null | undefined): string[] {
  *   要到退回貨處理頁處理才解凍。選單位置＝layout.tsx 的「倉儲 (WMS)」→「退回貨處理」。
  */
 export const RETURN_DISPOSITION_STEP =
-  "之後那批貨會凍結、派不出去，要到左選單「倉儲 (WMS) → 退回貨處理」處理才解凍";
+  "之後那批貨會凍結、派不出去，要到左選單「倉儲 (WMS) → 退回貨處理」處理才解凍（這個選單只有老闆、管理員、總倉主管的帳號看得到）";
 
 /** 回收貨待辦：一家店一行，照「收了沒」給要做的事（出處：機制索引「四之八之二」） */
 export function returnTodoLine(r: ReturnTodoRow): string {
@@ -247,7 +247,7 @@ export function returnTodoLine(r: ReturnTodoRow): string {
     case "received":
       return (
         `${r.store_name}：已收貨 ${fmtQty(r.qty_received)} 件（派車單 ${r.transfer_no ?? "?"}）` +
-        ` → 店家到「退貨」頁開退回單退回總倉；總倉到「總倉收件匣 → 🚚 轉貨單 → ↩ 退貨回總倉」按「同意收回」；` +
+        ` → 店家到「退貨」頁按「＋ 我要退貨」開退貨單退回總倉；總倉到「總倉收件匣 → 🚚 轉貨單 → ↩ 退貨回總倉」按「同意收回」；` +
         RETURN_DISPOSITION_STEP
       );
     case "in_transit":

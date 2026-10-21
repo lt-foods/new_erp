@@ -1366,7 +1366,7 @@ function PageContent() {
                                 qtyReceived: r.qty_received,
                               })
                             }
-                            className="min-h-[44px] touch-manipulation rounded-md border border-rose-400 bg-rose-50 px-2 text-sm font-medium text-rose-700 hover:bg-rose-100 dark:border-rose-700 dark:bg-rose-950 dark:text-rose-300 dark:hover:bg-rose-900"
+                            className="min-h-[44px] touch-manipulation whitespace-nowrap rounded-md border border-rose-400 bg-rose-50 px-2 text-sm font-medium text-rose-700 hover:bg-rose-100 dark:border-rose-700 dark:bg-rose-950 dark:text-rose-300 dark:hover:bg-rose-900"
                             title="貨已經到了才發現不能賣：取消這些團裡這個商品還沒取貨的客人（只開給指定的帳號；按了先看確認畫面）"
                           >
                             已到貨也能斷貨

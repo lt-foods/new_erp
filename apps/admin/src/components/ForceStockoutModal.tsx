@@ -139,7 +139,7 @@ export function ForceStockoutModal({
         <div className="rounded-md border border-rose-300 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-900 dark:border-rose-800 dark:bg-rose-950 dark:text-rose-200">
           <div className="font-semibold">⚠ 按下去會把下面這些團裡、這個商品、還沒取貨的客人一次取消，沒有復原鈕。</div>
           <div>・部分好貨、部分壞貨的情況不要用（會全部取消）。</div>
-          <div>・部分到貨（還沒收滿）的品項這次不支援。</div>
+          <div>・採購單還在收貨中時，還沒收滿的那一列請用原本的「⛔ 斷貨」（這顆不會出現）；採購單已經全部到貨或結案，就算那一列沒收滿也會出現這顆，按了一樣取消全部還沒取貨的客人。</div>
           <div>・按之前請確認沒有人正在處理這一團的請購／採購，也避開店家正在收貨、刪改這些訂單的時間；萬一系統說有人在操作，等一下再按就好，什麼都不會改。</div>
           <div>・{PO_TERM_ZH}那一項不會標斷貨；實體貨照退貨流程收回（下面有待辦）。</div>
         </div>
@@ -183,7 +183,7 @@ export function ForceStockoutModal({
               </Section>
             ) : null}
 
-            {s && Number(s.items) > 0 ? (
+            {!result && s && Number(s.items) > 0 ? (
               <Section title="會發生什麼">
                 {summaryLines(s).map((line, i) => (
                   <div key={i}>{line}</div>
@@ -305,7 +305,10 @@ export function ForceStockoutModal({
 
         {error ? (
           <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-rose-700 dark:border-rose-900 dark:bg-rose-950 dark:text-rose-300">
-            {error}
+            <div>{error}</div>
+            <div className="mt-1 text-xs">
+              如果是連線中斷：不確定有沒有執行。請重新整理頁面、再打開這個視窗看預覽——寫「已經做過了」就代表已經取消好了。
+            </div>
           </div>
         ) : null}
 
