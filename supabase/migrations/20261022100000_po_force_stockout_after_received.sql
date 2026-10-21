@@ -57,6 +57,7 @@
 --   不在名單／不是這家公司／這一項還沒收過貨（請用原本的斷貨）／這一項已標斷貨或是斷貨拆出來的單／
 --   採購單是草稿或已取消／找不到對應的團／同一團同一商品還有別張沒取消的採購單品項（一按會連那邊的客人
 --   一起取消；已標斷貨的品項、還沒回復的斷貨拆出單不算，已回復的拆出單照算）／同一張採購單有兩列同商品／
+--   這些團這個商品還有別的、沒取消的請購品項（草稿、還沒轉採購、已轉別張採購單都算；排除規則同上）／
 --   資料不正常（公司不一致、要取消的品項已帶斷貨標記、單頭狀態或單上品項狀態不常見、
 --   會被整單取消的單原本就有取消時間）。
 --   執行時另外要：商品代碼——前後空白不算（畫面先去掉再送），其他一字不差、大小寫要一樣（後端逐字比）；
@@ -88,10 +89,13 @@
 --   - 名單表不給任何前端角色；只有 SQL 視窗（擁有者）改得到。
 --   - 整份可以重貼：前置檢查認得本檔建的版本（說明／函式內文裡的記號）。
 --
--- 上鎖順序（2026-10-22 第 1 輪審查 P0、P1 之後；固定順序，所有檢查上鎖後再跑一次完整的 plan 才寫入）
+-- 上鎖順序（2026-10-22 第 1、2 輪審查之後；固定順序，所有檢查上鎖後再跑一次完整的 plan 才寫入）
 --   ①這一項 FOR SHARE → ②相關請購單 FOR SHARE → ③相關請購單品項 FOR SHARE（這些團 × 這個商品，含還沒轉採購的）
---   → ④(團, 商品) advisory（照團的編號）→ ⑤(公司, 店, 商品) spotsale advisory（照店的編號）
+--   → ④(團, 商品) advisory（照團的編號）→ ④-1 重新列舉、再鎖一次②③（拿到 ④ 之後才提交的新列也鎖到）
+--   → ⑤受影響訂單上「全部」還沒取貨的 (公司, 店, 商品) spotsale advisory（照公司、店、商品的編號）
 --   → ⑥訂單單頭 FOR UPDATE → ⑦這些單的全部品項 FOR UPDATE → 重跑 plan → 寫入。
+--   而且 plan 本身就擋「這些團×這個商品還有別的、沒取消的請購品項」（草稿／還沒轉採購／已轉別張採購單；
+--   已取消的採購單、已標斷貨的品項、還沒回復的斷貨拆出單不算）⇒ 能執行的時候，這條線上只剩「這一項」。
 --   對照的既有鎖序（逐支讀最新定義）：
 --   ・採購單分店追加 rpc_add_po_store_demands（最新 20261016000000:1804；鎖序寫在 20261002000000:71-93）：
 --     採購單 :2049-2054 → 採購單品項 NOWAIT :2060-2065 → 請購單＋品項 :2071-2079 → 團 :2081-2086
@@ -101,18 +105,27 @@
 --     寫請購品項時也拿同一把 (團, 商品) 鎖（hashtext(團 id), hashtext(商品 id)），本檔用同一個鍵。
 --   ・轉採購單 rpc_split_pr_to_pos（唯一 20260428120000:316）：請購單 FOR UPDATE :333-336 → 改請購品項 :388。
 --     ⇒ 本檔握著請購單／品項的共用鎖時，別人要把「這些團 × 這個商品」的請購品項轉成採購單得等我們做完；
---       它先轉完，我們就等它，拿到鎖後重跑 plan 一定看得到那張新採購單 ⇒ 擋下。
---   ・配貨 rpc_assign_stock_to_order_item（最新 20260825020000:271）：spotsale advisory :335 → 改品項 :372／拆行時鎖品項 :385；
---     取消配貨 rpc_unallocate_order_item（唯一 20260827010000:68）：spotsale :149 → 品項 :156；
+--       它先轉完，我們就等它，拿到鎖後重跑 plan 一定看得到 ⇒ 擋下。
+--   ・配貨 rpc_assign_stock_to_order_item（最新 20260825020000:271）：spotsale advisory :335 → 改品項 :372／拆行時鎖品項 :385
+--     → 改單頭 :458-464；取消配貨 rpc_unallocate_order_item（唯一 20260827010000:68）：spotsale :149 → 品項 :156 → 單頭 :198-204；
 --     還回配貨 _release_order_item_stock_assignment 拿同一把 spotsale（20260827040000:93）。
---     ⇒ 本檔照配貨的方向：先拿 spotsale（⑤），再鎖品項（⑦）。
---   ⚠ 既有系統本身就有相反的順序：店家「刪除品項」rpc_delete_order_item 先鎖單頭（_check_order_edit_qty_perm
---     20260629000010:39-42）、品項（20260831000090:771-774），最後才在還回配貨時拿 spotsale（:797-800）。
---     本檔跟它同時動同一張單時可能互卡，Postgres 會挑一邊退回（不會改一半）；被退回的是本檔時回白話
---     「有人正在操作…請過幾分鐘再按一次」。這一邊排不掉，只能靠它很少同時發生。
---   ⚠ 本檔鎖不到的：上鎖之前還不存在的請購單、又在本檔做完之前就新增「連到這些團的請購單＋立刻轉成採購單」
---     而且整個過程都沒拿 (團, 商品) 鎖的路（例如對草稿請購單追加團再轉採購，追加團那一步的守衛不拿鎖：
---     20260921001000:503-504）。需要人在本檔執行的那一兩秒內同時做完兩步，實務上很難碰到。
+--     ⇒ 本檔照配貨的方向：先拿 spotsale（⑤，而且同一張單上每一樣還沒取貨的商品都拿），再鎖單頭與品項（⑥⑦）。
+--
+-- 已知殘餘（2026-10-22 第 2 輪審查 CEO 裁決：不改任何既有流程，寫清楚；出處都逐行打開確認過）
+--   ①請購／採購：plan 擋掉「別的請購品項」、④-1 重新列舉並鎖住之後，剩下的只有——
+--     另一個交易在本函式執行的這幾秒內，「從無到有」新建請購單並轉成採購單、而且在本函式重跑 plan 時還沒提交，
+--     整個過程又沒拿 (團, 商品) 鎖（新建請購品項時守衛會拿；但把既有請購單連到團那一步不拿：
+--     20260921001000:503-504 對 purchase_request_campaigns 直接放行）。⇒ 按之前請確認沒有人正在處理這一團的請購／採購。
+--   ②跟既有流程的鎖序相反、可能互卡（Postgres 會整筆退回其中一邊、不寫一半，重按即可）：
+--     ・店家收貨 rpc_receive_transfer（最新 20260904020010:101）：:436 先呼叫 _settle_arrived_backorders，
+--       它鎖待補貨的品項（20260811000050:241-259 FOR UPDATE OF coi）並改品項（:262-267），
+--       回到收貨之後才改單頭（20260904020010:492、:534-541）⇒ 品項 → 單頭。
+--     ・店家刪除品項 rpc_delete_order_item（最新 20260831000090:732）：:749 經 _check_order_edit_qty_perm 鎖單頭
+--       （20260629000010:39-42）→ 鎖品項 :771-774 → 還回配貨時才拿 spotsale :797-800 ⇒ 單頭 → 品項 → spotsale。
+--     ⇒ 這兩支既有流程彼此本來就是相反的鎖序（收貨 品項→單頭、刪除品項 單頭→品項），現在就可能互卡；
+--       本函式（spotsale → 單頭 → 品項）跟它們同時動同一張單時也一樣。被退回的是本函式時回白話
+--       「有人正在操作…請過幾分鐘再按一次」；被退回的是對方時，對方重按即可。都不會改一半。
+--       ⇒ 按之前避開店家正在收貨、刪改這些訂單的時間。
 
 -- 上線順序：先貼本檔 → 貼開權限範本（scripts/PROD-force-stockout-2026-10/）→ 跑確認查詢全 ✅ → 才合併前端。
 --   反過來的話：前端叫不到 rpc_can_force_stockout ⇒ 當成「不能按」，按鈕不出現；其他功能照常。
@@ -135,6 +148,7 @@ BEGIN
   FOREACH v_name IN ARRAY ARRAY[
     'purchase_orders.id', 'purchase_orders.tenant_id', 'purchase_orders.po_no', 'purchase_orders.status',
     'purchase_orders.stockout_split_from_po_id', 'purchase_orders.stockout_restored_at', 'purchase_requests.id',
+    'purchase_requests.pr_no', 'purchase_requests.status',
     'purchase_order_items.id', 'purchase_order_items.po_id', 'purchase_order_items.sku_id',
     'purchase_order_items.qty_ordered', 'purchase_order_items.qty_received', 'purchase_order_items.stockout_at',
     'purchase_order_items.updated_at',
@@ -279,6 +293,7 @@ DECLARE
   v_other     JSONB;
   v_restock   INTEGER;
   v_same_po   INTEGER;
+  v_other_pr  TEXT;
   v_s         JSONB;
 BEGIN
   SELECT poi.id, poi.po_id, poi.sku_id, poi.qty_ordered, poi.qty_received, poi.stockout_at,
@@ -393,6 +408,33 @@ BEGIN
                    AND poi3.id <> p_po_item_id);
   IF v_same_po > 0 THEN
     v_blocks := array_append(v_blocks, ('同一張採購單（' || v_poi.po_no || '）有兩列同商品，請人工處理'));
+  END IF;
+
+  -- 這些團 × 這個商品，還有別的（不是這一項的）、沒取消的請購品項 → 擋（2026-10-22 第 2 輪審查 P0、CEO 裁決）
+  --   草稿、送審中、還沒轉採購的一律算；已轉採購的照上面「別張採購單」的排除規則：
+  --   連到已取消的採購單、已標斷貨的品項、還沒回復的斷貨拆出單 → 不算。
+  --   連法同上（請購單連到的團 ∪ 請購品項的 source_campaign_id）。
+  --   ⇒ 本函式執行時，這些團×這個商品只剩「這一項」一條請購／採購線在動；
+  --     別人要從無到有新開一條，得新建請購品項（守衛拿同一把 (團, 商品) 鎖，見檔頭「上鎖順序」）。
+  v_other_pr := (
+    SELECT string_agg(DISTINCT COALESCE(pr.pr_no, '#' || pr.id::TEXT), '、')
+      FROM purchase_request_items pri
+      JOIN purchase_requests pr ON pr.id = pri.pr_id
+      LEFT JOIN purchase_order_items poi4 ON poi4.id = pri.po_item_id
+      LEFT JOIN purchase_orders po4 ON po4.id = poi4.po_id
+     WHERE pri.sku_id = v_poi.sku_id
+       AND pri.po_item_id IS DISTINCT FROM p_po_item_id
+       AND pr.status <> 'cancelled'
+       AND (pri.source_campaign_id = ANY (v_campaigns)
+            OR EXISTS (SELECT 1 FROM purchase_request_campaigns prc
+                        WHERE prc.pr_id = pri.pr_id AND prc.campaign_id = ANY (v_campaigns)))
+       AND NOT (pri.po_item_id IS NOT NULL
+                AND COALESCE(po4.status = 'cancelled'
+                             OR poi4.stockout_at IS NOT NULL
+                             OR (po4.stockout_split_from_po_id IS NOT NULL AND po4.stockout_restored_at IS NULL),
+                             FALSE)));
+  IF v_other_pr IS NOT NULL THEN
+    v_blocks := array_append(v_blocks, ('這一團這個商品還有別的請購單在處理中（' || v_other_pr || '），請先處理完再按'));
   END IF;
 
   -- 補貨申請（不擋、只告知：這顆鈕不處理補貨申請的店家內部單）
@@ -526,6 +568,7 @@ BEGIN
     'qty_received',    v_poi.qty_received,
     'campaigns',       v_camp_json,
     'other_po_items',  v_other,
+    'other_pr_nos',    v_other_pr,
     'restock_requests', v_restock,
     'block_reasons',   to_jsonb(v_blocks),
     'targets',         v_s -> 'targets',
@@ -804,7 +847,9 @@ BEGIN
 
   -- 4. 上鎖（順序固定，出處見檔頭「上鎖順序」；等 5 秒拿不到、或被判死結 → 整筆不寫、回白話）
   --    ①這一項（共用鎖）→ ②請購單 → ③請購單品項（共用鎖）→ ④(團, 商品) advisory（照團的編號）
-  --    → ⑤(公司, 店, 商品) spotsale advisory（照店的編號）→ ⑥訂單單頭 → ⑦這些單的全部品項
+  --    → ④-1 拿到 (團, 商品) 鎖之後重新列舉、再鎖一次請購單與請購品項
+  --    → ⑤受影響訂單上「全部」(公司, 店, 商品) 的 spotsale advisory（照公司、店、商品的編號）
+  --    → ⑥訂單單頭 → ⑦這些單的全部品項
   PERFORM set_config('lock_timeout', '5s', true);
   BEGIN
     PERFORM 1
@@ -818,7 +863,8 @@ BEGIN
     END IF;
 
     -- ②③ 這一項自己的請購品項，以及「這些團 × 這個商品」的所有請購品項（含還沒轉採購的）：
-    --     別人要把它們轉成採購單（rpc_split_pr_to_pos 改 pri.po_item_id）或改量，都要等我們做完
+    --     別人要把它們轉成採購單（rpc_split_pr_to_pos 改 pri.po_item_id）或改量，都要等我們做完。
+    --     （plan 會把「別的請購品項」一律擋下；這裡鎖住，是讓「檢查完到寫完」這段時間它們不會變。）
     v_pri_ids := ARRAY(
       SELECT pri.id
         FROM purchase_request_items pri
@@ -844,15 +890,45 @@ BEGIN
       PERFORM pg_advisory_xact_lock(hashtext(v_c::TEXT), hashtext(v_sku_id::TEXT));
     END LOOP;
 
-    -- ⑤ 跟配貨／取消配貨／還回配貨同一把 spotsale 鎖，而且照配貨那邊的順序：先拿它、再鎖品項
+    -- ④-1 拿到 (團, 商品) 鎖之後重新列舉一次（第 2 輪審查 P0）：上一次列舉到現在已經提交的新請購品項
+    --     （例如有人剛把別的請購單連到這些團），這一次一定看得到，一起鎖住；接著重跑的 plan 會把它擋下。
+    --     ⓘ 這時只會多出「已經提交」的列，拿它們的共用鎖不會跟正在等 (團, 商品) 鎖的人互等。
+    v_pri_ids := ARRAY(
+      SELECT pri.id
+        FROM purchase_request_items pri
+       WHERE pri.po_item_id = p_po_item_id
+          OR (pri.sku_id = v_sku_id
+              AND (pri.source_campaign_id = ANY (v_campaigns)
+                   OR EXISTS (SELECT 1 FROM purchase_request_campaigns prc
+                               WHERE prc.pr_id = pri.pr_id AND prc.campaign_id = ANY (v_campaigns))))
+       ORDER BY pri.id);
+    PERFORM 1
+       FROM purchase_requests pr
+      WHERE pr.id IN (SELECT pri.pr_id FROM purchase_request_items pri WHERE pri.id = ANY (v_pri_ids))
+      ORDER BY pr.id
+        FOR SHARE;
+    PERFORM 1
+       FROM purchase_request_items pri
+      WHERE pri.id = ANY (v_pri_ids)
+      ORDER BY pri.id
+        FOR SHARE;
+
+    -- ⑤ 跟配貨／取消配貨／還回配貨同一把 spotsale 鎖，而且照配貨那邊的順序：先拿它、再鎖品項。
+    --    第 2 輪審查 P1：不只這個商品——受影響訂單上「每一樣」還沒取貨的商品都拿
+    --    （同一張單別的商品正在配貨時，配貨那邊會先拿那個商品的 spotsale、鎖那一列、再改單頭；
+    --     我們先排隊等那把 spotsale，就不會先鎖單頭再等它的品項）。
+    --    固定順序：公司 → 店 → 商品（照編號）——兩個人同時按也照同一個順序拿，不會互等；
+    --    既有的配貨／取消配貨／還回配貨一次只拿一把，跟這個順序也不會互等。
     FOR r IN
-      SELECT DISTINCT co.pickup_store_id AS store_id
+      SELECT DISTINCT co.tenant_id, co.pickup_store_id AS store_id, x.sku_id
         FROM customer_orders co
+        JOIN customer_order_items x ON x.order_id = co.id
        WHERE co.campaign_id = ANY (v_campaigns)
-         AND EXISTS (SELECT 1 FROM customer_order_items x WHERE x.order_id = co.id AND x.sku_id = v_sku_id)
-       ORDER BY 1
+         AND EXISTS (SELECT 1 FROM customer_order_items y WHERE y.order_id = co.id AND y.sku_id = v_sku_id)
+         AND (x.sku_id = v_sku_id OR x.status IN ('pending', 'reserved', 'ready'))
+       ORDER BY co.tenant_id, co.pickup_store_id, x.sku_id
     LOOP
-      PERFORM pg_advisory_xact_lock(hashtext(format('spotsale:%s:%s:%s', v_tenant, r.store_id, v_sku_id)));
+      PERFORM pg_advisory_xact_lock(hashtext(format('spotsale:%s:%s:%s', r.tenant_id, r.store_id, r.sku_id)));
     END LOOP;
 
     -- ⑥⑦ 訂單單頭 → 這些單的全部品項（順序同刪除品項：先單頭後品項）
