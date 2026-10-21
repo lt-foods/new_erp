@@ -256,7 +256,7 @@ export function ForceStockoutModal({
                 <label className="block">
                   <span className="mb-1 block text-xs font-medium text-zinc-500">
                     確認：請輸入商品代碼 <span className="font-mono text-zinc-700 dark:text-zinc-300">{preview.sku_code}</span>
-                    （一字不差才按得下去）
+                    （前後空白不算，其他一字不差、大小寫要一樣，才按得下去）
                   </span>
                   <input
                     type="text"

@@ -43,7 +43,9 @@
 --      ・一件都沒取、沒付款、沒用儲值金 → 整單取消，單頭也蓋斷貨時間（照斷貨 (c) 段 20260902000010:337-363；
 --        原本就有斷貨時間的不覆蓋）⇒ 客人 App「進行中」看得到「⛔ 供應商斷貨，本筆訂單已取消」
 --        （supabase/functions/liff-api/index.ts:618-624、apps/member/src/components/OrderCard.tsx:307）
---      ・付過錢或用過儲值金 → 品項照樣取消，單子跟錢都不動，回傳清單給人工處理
+--      ・一件都沒取、付過錢或用過儲值金 → 品項照樣取消，單子跟錢都不動，回傳清單給人工處理
+--      ・付過錢又取過貨、已沒有待取品項 → 跟刪除品項一樣收尾成已完成（20260831000090:825-830 不看付款），
+--        錢一樣不動（2026-10-22 第 1 輪審查 CEO 裁決：「付過錢不動」指不取消整單、不動錢）；回傳清單照列
 --   ⑤ 勾了「通知」才寫 notifications（文字同斷貨 (d) 段 20260902000010:377-395；一位會員一則；
 --      這一項之前按過、已經發過同一則的會員不再發）。notifications 表上沒有觸發器、不推 LINE。
 --   ⑥ 寫完自我驗算：取消筆數、編輯歷史筆數、整單取消張數、斷貨時間、通知則數都要對；
@@ -54,10 +56,14 @@
 -- 擋下（任何一項成立就不能按；預覽列出原因，執行時在任何寫入之前檢查）：
 --   不在名單／不是這家公司／這一項還沒收過貨（請用原本的斷貨）／這一項已標斷貨或是斷貨拆出來的單／
 --   採購單是草稿或已取消／找不到對應的團／同一團同一商品還有別張沒取消的採購單品項（一按會連那邊的客人
---   一起取消）／資料不正常（公司不一致、要取消的品項已帶斷貨標記、單頭狀態或單上品項狀態不常見、
+--   一起取消；已標斷貨的品項、還沒回復的斷貨拆出單不算，已回復的拆出單照算）／同一張採購單有兩列同商品／
+--   資料不正常（公司不一致、要取消的品項已帶斷貨標記、單頭狀態或單上品項狀態不常見、
 --   會被整單取消的單原本就有取消時間）。
---   執行時另外要：輸入的商品代碼跟這一項的商品代碼逐字相同、原因不是空的。
+--   執行時另外要：商品代碼——前後空白不算（畫面先去掉再送），其他一字不差、大小寫要一樣（後端逐字比）；
+--   原因不是空的。檢查先跑一次、上鎖之後再跑一次完整的（見下面「上鎖順序」）。
 --   已經沒有可取消的（例：按過一次）→ 回「已經做過／沒有可取消的」，什麼都不改。
+--   「已經做過」與「通知不重發」怎麼認：原因開頭「已到貨斷貨（採購單品項 #N）」＋編輯歷史是「品項狀態 → 已取消」
+--   ＋寫的時間＝那一筆品項的斷貨時間（不能只靠原因字串：刪除品項會把使用者打的原因原樣寫進去，但不蓋斷貨時間）。
 --
 -- 開工前四問（2026-10-22 阿寫查；工地 git 3fd9bdf0，線上 main 10/21）
 --   Q1 現成機制：見上面「要解決什麼」。兩張訂單表上的觸發器（全部 migration 逐檔找 CREATE TRIGGER … ON …）：
@@ -82,6 +88,32 @@
 --   - 名單表不給任何前端角色；只有 SQL 視窗（擁有者）改得到。
 --   - 整份可以重貼：前置檢查認得本檔建的版本（說明／函式內文裡的記號）。
 --
+-- 上鎖順序（2026-10-22 第 1 輪審查 P0、P1 之後；固定順序，所有檢查上鎖後再跑一次完整的 plan 才寫入）
+--   ①這一項 FOR SHARE → ②相關請購單 FOR SHARE → ③相關請購單品項 FOR SHARE（這些團 × 這個商品，含還沒轉採購的）
+--   → ④(團, 商品) advisory（照團的編號）→ ⑤(公司, 店, 商品) spotsale advisory（照店的編號）
+--   → ⑥訂單單頭 FOR UPDATE → ⑦這些單的全部品項 FOR UPDATE → 重跑 plan → 寫入。
+--   對照的既有鎖序（逐支讀最新定義）：
+--   ・採購單分店追加 rpc_add_po_store_demands（最新 20261016000000:1804；鎖序寫在 20261002000000:71-93）：
+--     採購單 :2049-2054 → 採購單品項 NOWAIT :2060-2065 → 請購單＋品項 :2071-2079 → 團 :2081-2086
+--     → (團, 商品) advisory :2092 → 鎖完重查 :2094-2101。⇒ 本檔照「品項 → 請購單／品項 → (團, 商品)」同方向。
+--   ・請購單分店加單 rpc_add_pr_store_demands（最新 20261013000000:1730）：請購單＋品項 :1859 → 團 :1878
+--     → (團, 商品) advisory :1968。請購防重守衛 trg_guard_pr_cross_close_date_duplicate（20260921001000:556）
+--     寫請購品項時也拿同一把 (團, 商品) 鎖（hashtext(團 id), hashtext(商品 id)），本檔用同一個鍵。
+--   ・轉採購單 rpc_split_pr_to_pos（唯一 20260428120000:316）：請購單 FOR UPDATE :333-336 → 改請購品項 :388。
+--     ⇒ 本檔握著請購單／品項的共用鎖時，別人要把「這些團 × 這個商品」的請購品項轉成採購單得等我們做完；
+--       它先轉完，我們就等它，拿到鎖後重跑 plan 一定看得到那張新採購單 ⇒ 擋下。
+--   ・配貨 rpc_assign_stock_to_order_item（最新 20260825020000:271）：spotsale advisory :335 → 改品項 :372／拆行時鎖品項 :385；
+--     取消配貨 rpc_unallocate_order_item（唯一 20260827010000:68）：spotsale :149 → 品項 :156；
+--     還回配貨 _release_order_item_stock_assignment 拿同一把 spotsale（20260827040000:93）。
+--     ⇒ 本檔照配貨的方向：先拿 spotsale（⑤），再鎖品項（⑦）。
+--   ⚠ 既有系統本身就有相反的順序：店家「刪除品項」rpc_delete_order_item 先鎖單頭（_check_order_edit_qty_perm
+--     20260629000010:39-42）、品項（20260831000090:771-774），最後才在還回配貨時拿 spotsale（:797-800）。
+--     本檔跟它同時動同一張單時可能互卡，Postgres 會挑一邊退回（不會改一半）；被退回的是本檔時回白話
+--     「有人正在操作…請過幾分鐘再按一次」。這一邊排不掉，只能靠它很少同時發生。
+--   ⚠ 本檔鎖不到的：上鎖之前還不存在的請購單、又在本檔做完之前就新增「連到這些團的請購單＋立刻轉成採購單」
+--     而且整個過程都沒拿 (團, 商品) 鎖的路（例如對草稿請購單追加團再轉採購，追加團那一步的守衛不拿鎖：
+--     20260921001000:503-504）。需要人在本檔執行的那一兩秒內同時做完兩步，實務上很難碰到。
+
 -- 上線順序：先貼本檔 → 貼開權限範本（scripts/PROD-force-stockout-2026-10/）→ 跑確認查詢全 ✅ → 才合併前端。
 --   反過來的話：前端叫不到 rpc_can_force_stockout ⇒ 當成「不能按」，按鈕不出現；其他功能照常。
 -- 一鍵關掉（清空名單、按鈕消失）、還原（拿掉本檔新物件）：scripts/PROD-force-stockout-2026-10/
@@ -102,7 +134,7 @@ BEGIN
   -- 本檔讀寫到的每一個欄位
   FOREACH v_name IN ARRAY ARRAY[
     'purchase_orders.id', 'purchase_orders.tenant_id', 'purchase_orders.po_no', 'purchase_orders.status',
-    'purchase_orders.stockout_split_from_po_id',
+    'purchase_orders.stockout_split_from_po_id', 'purchase_orders.stockout_restored_at', 'purchase_requests.id',
     'purchase_order_items.id', 'purchase_order_items.po_id', 'purchase_order_items.sku_id',
     'purchase_order_items.qty_ordered', 'purchase_order_items.qty_received', 'purchase_order_items.stockout_at',
     'purchase_order_items.updated_at',
@@ -246,6 +278,7 @@ DECLARE
   v_camp_bad  INTEGER;
   v_other     JSONB;
   v_restock   INTEGER;
+  v_same_po   INTEGER;
   v_s         JSONB;
 BEGIN
   SELECT poi.id, poi.po_id, poi.sku_id, poi.qty_ordered, poi.qty_received, poi.stockout_at,
@@ -313,6 +346,12 @@ BEGIN
 
   -- ── 同一團、同一商品，還有別張沒取消的採購單品項？（連法＝派貨需求表的 po_campaigns：
   --    請購單連到的團 ∪ 請購單品項的 source_campaign_id，20261016000000:773-787）──
+  --    不算（2026-10-22 第 1 輪審查、CEO 裁決）：
+  --      ・已標斷貨的品項（stockout_at 有值：廠商給不了，不會再供貨）；
+  --      ・還沒回復的斷貨拆出單（stockout_split_from_po_id 有值、stockout_restored_at 空的；
+  --        這種單本來就是已取消，20260812000000:175-183）。
+  --        ⚠ 已經「回復斷貨」的拆出單會變回草稿再送出（同檔 :598-603），是真的會再供貨的採購單 ⇒ 照算、照擋。
+  --      ・同一張採購單的另一列：不在這裡算，下面另外擋（訊息不一樣）。
   SELECT COALESCE(jsonb_agg(jsonb_build_object('po_no', o.po_no, 'po_status', o.po_status, 'campaign_no', o.campaign_no)
                             ORDER BY o.po_no, o.campaign_no), '[]'::jsonb)
     INTO v_other
@@ -335,13 +374,25 @@ BEGIN
         LEFT JOIN group_buy_campaigns gc ON gc.id = l.campaign_id
        WHERE poi2.sku_id = v_poi.sku_id
          AND poi2.id <> p_po_item_id
+         AND poi2.po_id <> v_poi.po_id
          AND po2.status <> 'cancelled'
+         AND poi2.stockout_at IS NULL
+         AND NOT (po2.stockout_split_from_po_id IS NOT NULL AND po2.stockout_restored_at IS NULL)
     ) o;
   IF jsonb_array_length(v_other) > 0 THEN
     v_blocks := array_append(v_blocks, ('同一團、同一個商品還有別張採購單（'
       || (SELECT string_agg(x ->> 'po_no' || '／' || COALESCE(x ->> 'campaign_no', '?'), '、')
             FROM jsonb_array_elements(v_other) x)
       || '）：按下去會連那張單要供貨的客人一起取消，請找工程師人工處理'));
+  END IF;
+
+  -- 同一張採購單上還有另一列同商品：少見，照擋（CEO 10/22 裁決）
+  v_same_po := (SELECT count(*) FROM purchase_order_items poi3
+                 WHERE poi3.po_id = v_poi.po_id
+                   AND poi3.sku_id = v_poi.sku_id
+                   AND poi3.id <> p_po_item_id);
+  IF v_same_po > 0 THEN
+    v_blocks := array_append(v_blocks, ('同一張採購單（' || v_poi.po_no || '）有兩列同商品，請人工處理'));
   END IF;
 
   -- 補貨申請（不擋、只告知：這顆鈕不處理補貨申請的店家內部單）
@@ -383,6 +434,9 @@ BEGIN
                    t.payment_status, t.wallet_paid_amount
               FROM tgt t ORDER BY t.order_id) o
   ), tgt_o2 AS (
+    -- 收尾順序照刪除品項第 9 步（20260831000090:817-853）：還有待取 → 留著；取過貨 → 收尾完成
+    -- （付過錢、用過儲值金的也一樣收尾成完成，:825-830 不看付款；收尾不動錢）；
+    -- 一件都沒取、沒付款 → 整單取消；一件都沒取、付過錢 → 單子不動（2026-10-22 CEO 裁決：維持這個順序）
     SELECT o.*,
            CASE WHEN o.has_open_left THEN 'keep'
                 WHEN o.has_picked    THEN 'complete'
@@ -390,14 +444,21 @@ BEGIN
                 ELSE 'paid' END AS outcome
       FROM tgt_o o
   ), prior AS (
+    -- 「這一項之前按過、現在還是取消」：原因開頭字之外，還要
+    --   品項已取消＋有斷貨時間、那一列編輯歷史是「狀態 → 已取消」、而且寫的時間＝品項的斷貨時間。
+    --   刪除品項（rpc_delete_order_item 20260831000090:802-815）不蓋斷貨時間 ⇒ 就算原因打一樣的字也對不上；
+    --   斷貨核心（20260902000010:318-336）蓋斷貨時間但不寫編輯歷史 ⇒ 也對不上。
     SELECT s.*
       FROM scope s
      WHERE s.item_status = 'cancelled'
+       AND s.item_stockout_at IS NOT NULL
        AND EXISTS (SELECT 1 FROM customer_order_audit_log a
                     WHERE a.order_id = s.order_id
                       AND a.entity_type = 'item'
                       AND a.entity_id = s.item_id
                       AND a.field = 'status'
+                      AND a.after_value = to_jsonb('cancelled'::TEXT)
+                      AND a.created_at = s.item_stockout_at
                       AND left(a.edit_reason, length(v_prefix)) = v_prefix)
   )
   SELECT jsonb_build_object(
@@ -433,12 +494,7 @@ BEGIN
     'prior', jsonb_build_object(
         'items',   (SELECT count(*) FROM prior),
         'qty',     (SELECT COALESCE(sum(prior.qty), 0) FROM prior),
-        'last_at', (SELECT max(a.created_at)
-                      FROM customer_order_audit_log a
-                     WHERE a.order_id IN (SELECT s.order_id FROM scope s)
-                       AND a.entity_type = 'item'
-                       AND a.field = 'status'
-                       AND left(a.edit_reason, length(v_prefix)) = v_prefix))
+        'last_at', (SELECT max(prior.item_stockout_at) FROM prior))
   ) INTO v_s;
 
   IF (v_s ->> 'bad_tenant')::int > 0 THEN
@@ -679,6 +735,8 @@ DECLARE
   v_sku_id      BIGINT;
   v_campaigns   BIGINT[];
   v_plan        JSONB;
+  v_pri_ids     BIGINT[];
+  v_c           BIGINT;
   v_items       BIGINT[];
   v_old_status  TEXT[];
   v_orders      BIGINT[];
@@ -732,26 +790,72 @@ BEGIN
     RAISE EXCEPTION '沒有指定要不要通知客人';
   END IF;
 
-  -- 3. 上鎖：這一項（共用鎖，防有人同時改已收量／按斷貨）→ 範圍內有這個商品的訂單單頭 → 這些單的全部品項
-  --    順序同刪除品項（先單頭後品項）；等 5 秒拿不到就停。
+  -- 3. 先算一次（還沒上鎖）：擋下的就不用排隊拿鎖；同時拿到商品與團
+  v_plan := public._force_stockout_plan(p_po_item_id, v_tenant);
+  IF jsonb_array_length(v_plan -> 'block_reasons') > 0 THEN
+    RAISE EXCEPTION '不能執行，什麼都沒改：%',
+      (SELECT string_agg(x, '；') FROM jsonb_array_elements_text(v_plan -> 'block_reasons') x);
+  END IF;
+  IF p_sku_code_confirm IS DISTINCT FROM (v_plan ->> 'sku_code') THEN
+    RAISE EXCEPTION '輸入的商品代碼「%」跟這一項的商品代碼不一樣，什麼都沒改', p_sku_code_confirm;
+  END IF;
+  v_sku_id    := (v_plan ->> 'sku_id')::BIGINT;
+  v_campaigns := ARRAY(SELECT (c ->> 'id')::BIGINT FROM jsonb_array_elements(v_plan -> 'campaigns') c ORDER BY 1);
+
+  -- 4. 上鎖（順序固定，出處見檔頭「上鎖順序」；等 5 秒拿不到、或被判死結 → 整筆不寫、回白話）
+  --    ①這一項（共用鎖）→ ②請購單 → ③請購單品項（共用鎖）→ ④(團, 商品) advisory（照團的編號）
+  --    → ⑤(公司, 店, 商品) spotsale advisory（照店的編號）→ ⑥訂單單頭 → ⑦這些單的全部品項
   PERFORM set_config('lock_timeout', '5s', true);
   BEGIN
-    SELECT poi.sku_id INTO v_sku_id
-      FROM purchase_order_items poi
-      JOIN purchase_orders po ON po.id = poi.po_id
-     WHERE poi.id = p_po_item_id
-       AND po.tenant_id = v_tenant
-       FOR SHARE OF poi;
+    PERFORM 1
+       FROM purchase_order_items poi
+       JOIN purchase_orders po ON po.id = poi.po_id
+      WHERE poi.id = p_po_item_id
+        AND po.tenant_id = v_tenant
+        FOR SHARE OF poi;
     IF NOT FOUND THEN
       RAISE EXCEPTION '找不到這個採購單品項（或不是這家公司的）';
     END IF;
 
-    SELECT COALESCE(array_agg(DISTINCT prc.campaign_id), '{}'::BIGINT[])
-      INTO v_campaigns
-      FROM purchase_request_items pri
-      JOIN purchase_request_campaigns prc ON prc.pr_id = pri.pr_id
-     WHERE pri.po_item_id = p_po_item_id;
+    -- ②③ 這一項自己的請購品項，以及「這些團 × 這個商品」的所有請購品項（含還沒轉採購的）：
+    --     別人要把它們轉成採購單（rpc_split_pr_to_pos 改 pri.po_item_id）或改量，都要等我們做完
+    v_pri_ids := ARRAY(
+      SELECT pri.id
+        FROM purchase_request_items pri
+       WHERE pri.po_item_id = p_po_item_id
+          OR (pri.sku_id = v_sku_id
+              AND (pri.source_campaign_id = ANY (v_campaigns)
+                   OR EXISTS (SELECT 1 FROM purchase_request_campaigns prc
+                               WHERE prc.pr_id = pri.pr_id AND prc.campaign_id = ANY (v_campaigns))))
+       ORDER BY pri.id);
+    PERFORM 1
+       FROM purchase_requests pr
+      WHERE pr.id IN (SELECT pri.pr_id FROM purchase_request_items pri WHERE pri.id = ANY (v_pri_ids))
+      ORDER BY pr.id
+        FOR SHARE;
+    PERFORM 1
+       FROM purchase_request_items pri
+      WHERE pri.id = ANY (v_pri_ids)
+      ORDER BY pri.id
+        FOR SHARE;
 
+    -- ④ 跟 #982 請購防重守衛、#995 請購單分店加單、#1052 採購單分店追加同一把 (團, 商品) 鎖
+    FOREACH v_c IN ARRAY v_campaigns LOOP
+      PERFORM pg_advisory_xact_lock(hashtext(v_c::TEXT), hashtext(v_sku_id::TEXT));
+    END LOOP;
+
+    -- ⑤ 跟配貨／取消配貨／還回配貨同一把 spotsale 鎖，而且照配貨那邊的順序：先拿它、再鎖品項
+    FOR r IN
+      SELECT DISTINCT co.pickup_store_id AS store_id
+        FROM customer_orders co
+       WHERE co.campaign_id = ANY (v_campaigns)
+         AND EXISTS (SELECT 1 FROM customer_order_items x WHERE x.order_id = co.id AND x.sku_id = v_sku_id)
+       ORDER BY 1
+    LOOP
+      PERFORM pg_advisory_xact_lock(hashtext(format('spotsale:%s:%s:%s', v_tenant, r.store_id, v_sku_id)));
+    END LOOP;
+
+    -- ⑥⑦ 訂單單頭 → 這些單的全部品項（順序同刪除品項：先單頭後品項）
     PERFORM 1
        FROM customer_orders co
       WHERE co.campaign_id = ANY (v_campaigns)
@@ -768,17 +872,19 @@ BEGIN
         FOR UPDATE;
   EXCEPTION
     WHEN lock_not_available OR deadlock_detected THEN
-      RAISE EXCEPTION '有人正在操作這幾張訂單或這張採購單（例如店家正在取貨、改單、收貨），等了 5 秒還拿不到。什麼都沒改，請過幾分鐘再按一次。';
+      RAISE EXCEPTION '有人正在操作這幾張訂單或這張採購單（例如店家正在取貨、改單、收貨、配貨，或有人在轉採購單），等了 5 秒還拿不到。什麼都沒改，請過幾分鐘再按一次。';
   END;
 
-  -- 4. 算範圍與擋下原因（跟預覽同一支）
+  -- 5. 鎖完重跑完整的 plan（含所有擋下條件）——檢查完到上鎖之間別人做完的事，這時候一定看得到
   v_plan := public._force_stockout_plan(p_po_item_id, v_tenant);
   IF jsonb_array_length(v_plan -> 'block_reasons') > 0 THEN
     RAISE EXCEPTION '不能執行，什麼都沒改：%',
       (SELECT string_agg(x, '；') FROM jsonb_array_elements_text(v_plan -> 'block_reasons') x);
   END IF;
-  IF p_sku_code_confirm IS DISTINCT FROM (v_plan ->> 'sku_code') THEN
-    RAISE EXCEPTION '輸入的商品代碼「%」跟這一項的商品代碼不一樣，什麼都沒改', p_sku_code_confirm;
+  IF p_sku_code_confirm IS DISTINCT FROM (v_plan ->> 'sku_code')
+     OR (v_plan ->> 'sku_id')::BIGINT IS DISTINCT FROM v_sku_id
+     OR ARRAY(SELECT (c ->> 'id')::BIGINT FROM jsonb_array_elements(v_plan -> 'campaigns') c ORDER BY 1) IS DISTINCT FROM v_campaigns THEN
+    RAISE EXCEPTION '上鎖的這段時間，這一項的商品或對應的團被改了。什麼都沒改，請重新整理再按一次。';
   END IF;
 
   SELECT COALESCE(array_agg(t.item_id ORDER BY t.item_id), '{}'),
@@ -787,7 +893,7 @@ BEGIN
     INTO v_items, v_old_status, v_n_items, v_qty, v_n_offset
     FROM jsonb_to_recordset(v_plan -> 'targets') AS t(item_id BIGINT, item_status TEXT, qty NUMERIC);
 
-  -- 5. 已經沒有可取消的 → 不重做
+  -- 6. 已經沒有可取消的 → 不重做
   IF v_n_items = 0 THEN
     RETURN jsonb_build_object(
       'ok', TRUE,
@@ -801,14 +907,20 @@ BEGIN
     INTO v_orders
     FROM jsonb_to_recordset(v_plan -> 'targets') AS t(order_id BIGINT);
 
-  -- 之前按過（同一個採購單品項）的時間：通知不重發用
+  -- 之前按過（同一個採購單品項）的時間：通知不重發用。
+  -- 認法跟 plan 的 prior 一樣：原因開頭字＋品項→已取消＋品項斷貨時間＝那一列編輯歷史的時間；
+  -- 刪除品項（20260831000090:802-815）不蓋斷貨時間，就算原因打一樣的字也對不上。
   SELECT COALESCE(array_agg(DISTINCT a.created_at), '{}')
     INTO v_prior_times
     FROM customer_order_audit_log a
+    JOIN customer_order_items i ON i.id = a.entity_id AND i.order_id = a.order_id
    WHERE a.tenant_id = v_tenant
      AND a.order_id IN (SELECT co.id FROM customer_orders co WHERE co.campaign_id = ANY (v_campaigns))
      AND a.entity_type = 'item'
      AND a.field = 'status'
+     AND a.after_value = to_jsonb('cancelled'::TEXT)
+     AND i.status = 'cancelled'
+     AND i.stockout_at = a.created_at
      AND left(a.edit_reason, length(v_prefix)) = v_prefix;
 
   v_tag_item   := v_prefix || '：' || v_reason;
@@ -816,8 +928,11 @@ BEGIN
   v_tag_done   := v_tag_item || '（其他品項都取過了，訂單收尾為完成）';
 
   -- ════════ 以下開始寫入 ════════
+  -- （整段包在內層區塊：寫入途中才等鎖等太久、或被判死結（例如還回配貨要鎖的減抵單剛好有人在動），
+  --   一樣整筆不寫、改回白話；其他錯誤照原樣往外丟）
+  BEGIN
 
-  -- 6. 有從店內庫存配過貨的先還回（刪除品項第 6 步同一支；沒配過貨的是 0、什麼都不做）
+  -- 7. 有從店內庫存配過貨的先還回（刪除品項第 6 步同一支；沒配過貨的是 0、什麼都不做）
   FOR r IN SELECT unnest(v_items) AS id ORDER BY 1 LOOP
     v_rel := public._release_order_item_stock_assignment(r.id, NULL, v_uid, c_tag_release, v_now);
     IF COALESCE((v_rel ->> 'qty')::NUMERIC, 0) > 0 THEN
@@ -827,7 +942,7 @@ BEGIN
     END IF;
   END LOOP;
 
-  -- 6-1. 記下上面那支實際改到的【內部】現貨池列（越界檢查的允許清單）。到這裡為止，除了上面那支
+  -- 7-1. 記下上面那支實際改到的【內部】現貨池列（越界檢查的允許清單）。到這裡為止，除了上面那支
   --      還回配貨，本函式還沒改任何品項／單頭；所以「修改時間＝這一刻」的列只可能是那支改的
   --      （_restore_internal_pool 20260825020000:194-246：池子品項改回待取或拆一列新的、被收尾的容器單開回來）。
   SELECT COALESCE(array_agg(x.id), '{}') INTO v_pool_items
@@ -845,7 +960,7 @@ BEGIN
     RAISE EXCEPTION '還回店內庫存配貨時改到了不是【內部】現貨池的單（% 張），跟預期不同。整筆退回、什麼都沒改，請截圖給工程師。', v_bad;
   END IF;
 
-  -- 7. 品項改已取消＋斷貨時間（欄位同斷貨 (b) 段 20260902000010:320-327）；狀態要跟算範圍時一樣
+  -- 8. 品項改已取消＋斷貨時間（欄位同斷貨 (b) 段 20260902000010:320-327）；狀態要跟算範圍時一樣
   UPDATE customer_order_items x
      SET status      = 'cancelled',
          stockout_at = v_now,
@@ -859,7 +974,7 @@ BEGIN
     RAISE EXCEPTION '品項只改到 % 筆（應為 %），整筆退回、什麼都沒改，請重新整理再試。', v_cnt, v_n_items;
   END IF;
 
-  -- 8. 編輯歷史：每一筆一列（格式同刪除品項第 8 步 20260831000090:809-815；before 照實際狀態）
+  -- 9. 編輯歷史：每一筆一列（格式同刪除品項第 8 步 20260831000090:809-815；before 照實際狀態）
   INSERT INTO customer_order_audit_log
     (tenant_id, order_id, entity_type, entity_id, field,
      before_value, after_value, edit_reason, operator_id)
@@ -873,7 +988,7 @@ BEGIN
     RAISE EXCEPTION '編輯歷史只寫到 % 筆（應為 %），整筆退回、什麼都沒改。', v_cnt, v_n_items;
   END IF;
 
-  -- 9. 訂單收尾（照刪除品項第 9 步 20260831000090:817-853）；結果要跟算範圍時一樣
+  -- 10. 訂單收尾（照刪除品項第 9 步 20260831000090:817-853）；結果要跟算範圍時一樣
   FOR r IN
     SELECT co.id, co.tenant_id, co.order_no, co.status, co.payment_status, co.wallet_paid_amount,
            COALESCE(st.name, '?') AS store_name,
@@ -952,7 +1067,7 @@ BEGIN
     END IF;
   END LOOP;
 
-  -- 10. 通知（勾了才發）：一位會員一則；這一項之前按過、已經發過同一則的會員不再發
+  -- 11. 通知（勾了才發）：一位會員一則；這一項之前按過、已經發過同一則的會員不再發
   SELECT '您訂購的「' || COALESCE(sk.product_name, sk.sku_code) || COALESCE('-' || sk.variant_name, '')
          || '」因供應商斷貨無法供貨，相關品項已取消，造成不便敬請見諒。'
     INTO v_body
@@ -980,7 +1095,12 @@ BEGIN
     GET DIAGNOSTICS v_notified = ROW_COUNT;
   END IF;
 
-  -- ════════ 11. 自我驗算（同一個交易裡、寫完再讀；不對就整筆退回）════════
+  EXCEPTION
+    WHEN lock_not_available OR deadlock_detected THEN
+      RAISE EXCEPTION '寫入途中有人同時在操作同一批訂單或庫存（等鎖超過 5 秒或互相卡住）。整筆退回、什麼都沒改，請過幾分鐘再按一次。';
+  END;
+
+  -- ════════ 12. 自我驗算（同一個交易裡、寫完再讀；不對就整筆退回）════════
   SELECT count(*) INTO v_cnt
     FROM customer_order_items i
     JOIN customer_orders co ON co.id = i.order_id
@@ -1028,8 +1148,8 @@ BEGIN
     RAISE EXCEPTION '自我驗算沒過：有 % 張不是整單取消的單頭被蓋了斷貨時間。整筆退回、什麼都沒改。', v_cnt;
   END IF;
 
-  -- 沒有多動到別的：這一刻改到的品項只能是這一批＋6-1 的池子品項；
-  -- 改到的單頭只能是整單取消＋收尾完成＋6-1 的池子容器單
+  -- 沒有多動到別的：這一刻改到的品項只能是這一批＋7-1 的池子品項；
+  -- 改到的單頭只能是整單取消＋收尾完成＋7-1 的池子容器單
   SELECT count(*) INTO v_cnt
     FROM customer_order_items x
    WHERE x.updated_at = v_now

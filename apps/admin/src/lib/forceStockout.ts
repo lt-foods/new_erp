@@ -135,7 +135,10 @@ export function normalizeSkuInput(input: string): string {
   return (input ?? "").trim();
 }
 
-/** 輸入的商品代碼對不對：去掉前後空白後要跟這一項的商品代碼一字不差（分大小寫） */
+/**
+ * 輸入的商品代碼對不對（2026-10-22 CEO 裁定的規則）：前後空白不算（方便複製貼上），
+ * 其他一字不差、大小寫要一樣。送給後端的也是去掉前後空白之後的值，後端逐字比 ⇒ 前後端一致。
+ */
 export function skuCodeMatches(input: string, skuCode: string | null | undefined): boolean {
   if (!skuCode) return false;
   return normalizeSkuInput(input) === skuCode;
