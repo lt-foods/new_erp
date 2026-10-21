@@ -5,8 +5,8 @@
 --   貨已經到總倉、甚至已經派車到店，才發現這個商品不能賣（叫錯款式、品質有問題、廠商沒有正確款），
 --   訂了這個商品、還沒取貨的客人要一次取消。現有兩顆鈕都按不動：
 --     · 採購單「⛔ 斷貨」rpc_stockout_po_item（20260801000000_po_item_stockout.sql:274，只有這一版）
---       只准採購單「已發送／部分到貨」而且這一項還沒全到（:292-298）；就算部分到貨按得下去，
---       核心 _stockout_po_items（最新 20260902000010:232）也只有 qty_received = 0 才取消客人（:290-293）。
+--       只准採購單「已發送／部分到貨」而且這一項還沒全到（:293-302）；就算部分到貨按得下去，
+--       核心 _stockout_po_items（最新 20260902000010:232）也只有 qty_received = 0 才取消客人（:290-293 v_stockout_skus）。
 --     · 店家「刪除品項」rpc_delete_order_item（最新 20260831000090:732）擋「已確認／出貨中」（:759-768），
 --       客人大多停在這兩種狀態。
 --   ⇒ 10/21～22 契爾氏那次只能寫 SQL、審三輪（PR #1087 scripts/PROD-kiehls-cancel-2026-10/02_取消25筆.sql）。
@@ -312,7 +312,7 @@ BEGIN
   END IF;
 
   -- ── 同一團、同一商品，還有別張沒取消的採購單品項？（連法＝派貨需求表的 po_campaigns：
-  --    請購單連到的團 ∪ 請購單品項的 source_campaign_id，20261016000000:775-790）──
+  --    請購單連到的團 ∪ 請購單品項的 source_campaign_id，20261016000000:773-787）──
   SELECT COALESCE(jsonb_agg(jsonb_build_object('po_no', o.po_no, 'po_status', o.po_status, 'campaign_no', o.campaign_no)
                             ORDER BY o.po_no, o.campaign_no), '[]'::jsonb)
     INTO v_other
