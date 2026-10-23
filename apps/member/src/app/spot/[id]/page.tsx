@@ -350,6 +350,8 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 /** 商品圖橫向捲動 + 頁碼點。只有一張就當靜態圖，沒有圖就畫品牌底箱子。 */
 function ImageStrip({ images }: { images: string[] }) {
   const [idx, setIdx] = useState(0);
+  // 點圖放大：照團購商品頁 CampaignDetailClient 的同一套（黑底大圖、點旁邊或 ✕ 關閉）
+  const [zoomSrc, setZoomSrc] = useState<string | null>(null);
 
   if (images.length === 0) {
     return (
@@ -384,7 +386,8 @@ function ImageStrip({ images }: { images: string[] }) {
             src={thumb(src, 1080) ?? undefined}
             alt=""
             decoding="async"
-            className="h-full w-full shrink-0 snap-center object-cover"
+            onClick={() => setZoomSrc(src)}
+            className="h-full w-full shrink-0 cursor-zoom-in snap-center object-cover"
           />
         ))}
       </div>
@@ -401,6 +404,32 @@ function ImageStrip({ images }: { images: string[] }) {
           ))}
         </div>
       )}
+      {/* 點圖放大：照抄團購商品頁 CampaignDetailClient 的黑底大圖 */}
+      <Portal enabled={!!zoomSrc}>
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90"
+          onClick={() => setZoomSrc(null)}
+        >
+          <button
+            type="button"
+            aria-label="關閉"
+            onClick={() => setZoomSrc(null)}
+            className="absolute right-4 flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-[20px] text-white backdrop-blur"
+            style={{ top: "calc(env(safe-area-inset-top) + 12px)" }}
+          >
+            ✕
+          </button>
+          {zoomSrc && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={thumb(zoomSrc, 1600) ?? undefined}
+              alt=""
+              onClick={(e) => e.stopPropagation()}
+              className="max-h-[90vh] max-w-[94vw] object-contain"
+            />
+          )}
+        </div>
+      </Portal>
     </div>
   );
 }
