@@ -29,7 +29,7 @@ import {
   listPosts, loginByQr, readCredential, resolveShareChatMid, sendChatText, sharePostToChat, unsendChatMessage, updateNotePost, whoami,
 } from "../_shared/lineNote.ts";
 import { extractPostTag, matchCampaign, normalizeForMatch, normalizeParseConfig, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
-import { renderPostText, TZ } from "../_shared/lineNoteRender.ts";
+import { buildShopLink, renderPostText, TZ } from "../_shared/lineNoteRender.ts";
 
 const SUPABASE_URL = requireEnv("SUPABASE_URL");
 const SERVICE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
@@ -53,8 +53,10 @@ const MEMBER_BASE = (Deno.env.get("MEMBER_FRONT_BASE_URL") ?? "").replace(/\/+$/
 // 所以：撞到就整個帳號停 10 分鐘（send_paused_until），撞到的工作退回排隊、不標失敗；
 // 分享到聊天室的工作每個帳號每分鐘最多 chat_per_min 則（發文本身每分鐘 ~25 篇從沒被擋過，不限）。
 // 同一天補發時同一個帳號連發 ~15 篇後也會回 code=701「請稍後再重新發布貼文」，一樣是叫我們慢一點：停 2 分鐘。
-const SEND_KINDS = ["post", "share", "remind", "close", "reopen", "refresh"];
-const CHAT_KINDS = ["remind", "share"];
+const SEND_KINDS = ["post", "share", "remind", "close", "reopen", "refresh", "promo"];
+const CHAT_KINDS = ["remind", "share", "promo"];
+// 「每帳號每 remind_every_min 分鐘一則」那條慢速間隔：結單提醒和開團推廣文共用（兩種都是文字＋卡片）
+const SLOW_CHAT_KINDS = ["remind", "promo"];
 // 每帳號每分鐘幾則改由 line_note_accounts.chat_per_min 決定（後台可調，20261012000000）；
 // 10/12 用寫死的 12 還是被擋，預設降到 5。讀不到那欄時用這個值。
 const CHAT_PER_MIN_DEFAULT = 5;
@@ -1353,8 +1355,67 @@ async function jobRemind(job: any) {
   return { reminded: true, chatMid: r.chatMid, textSent };
 }
 
+// 開團推廣文（rpc_line_note_queue_promo 排的，一個社群一筆）：先送推廣文字，再接這團在該社群的記事本貼文卡片。
+// 動作跟結單提醒一樣，節流也共用（帳號暫停、每分鐘分享額度、每帳號每 N 分鐘一則）。
+// 文字送出去就記在工作的 payload 上：卡片那步被 LINE 要求暫緩 → runJob 退回排隊，重跑時不會再送一次文字。
+async function jobPromo(job: any) {
+  const promo = (await rest(`line_note_promos?id=eq.${job.promo_id}&select=id,campaign_id,text,with_card,with_link,group_buy_campaigns(id,name,status,customer_end_at,end_at,sales_channel,is_for_shop)`))?.[0];
+  if (!promo) return { skipped: "promo deleted" };
+  const g = promo.group_buy_campaigns;
+  // 排進來之後團被關／改草稿、或慢慢排到的時候已經過了收單時間：不推了
+  if (g?.status !== "open") return { skipped: `campaign ${g?.status}` };
+  const endAt = Date.parse(g?.customer_end_at ?? g?.end_at ?? "");
+  if (endAt && endAt <= Date.now()) return { skipped: "campaign ended" };
+  const c = (await rest(`line_note_communities?id=eq.${job.community_id}&select=id,home_id,share_chat_mid,share_from_community_id`))?.[0];
+  if (!c) return { skipped: "community deleted" };
+  const client = await clientFor(await loadAccount(job.account_id));
+  // 子群：推廣文送到子群自己的聊天室，卡片路由走母社群 home（同 jobRemind）
+  const sub = await subChatTarget(c);
+  const homeId: string = sub?.homeId ?? c.home_id;
+  let chatMid: string | null = sub?.chatMid ?? c.share_chat_mid ?? null;
+  if (!chatMid) {
+    chatMid = await resolveShareChatMid(client, c.home_id, VERBOSE);
+    if (chatMid && chatMid !== c.home_id) await patch("line_note_communities", `id=eq.${c.id}`, { share_chat_mid: chatMid }).catch(() => {});
+  }
+
+  let text = String(promo.text ?? "").trim();
+  const link = promo.with_link ? buildShopLink(g, MEMBER_BASE) : "";
+  if (link && !text.includes(link.slice(link.indexOf("https://")))) text = `${text}\n${link}`;
+  const payload = job.payload ?? {};
+  if (!payload.text_sent_at) {
+    const sent = await sendChatText(client, chatMid, text);
+    const done = { ...payload, text_sent_at: new Date().toISOString(), chat: chatMid, text_message_id: sent?.createdSquareMessage?.message?.id ?? null };
+    await patch("line_note_jobs", `id=eq.${job.id}`, { payload: done });
+    job.payload = done;
+  }
+
+  let card = false;
+  let cardError: string | null = null;
+  const post = promo.with_card
+    ? (await rest(`line_note_posts?community_id=eq.${c.id}&campaign_id=eq.${promo.campaign_id}&status=eq.posted&line_post_id=not.is.null&select=id,line_post_id&limit=1`))?.[0]
+    : null;
+  if (post) {
+    try {
+      const r = await sharePostToChat(client, homeId, post.line_post_id, { chatMid, verbose: VERBOSE });
+      await recordShare(post.id, r);
+      // 卡片已經在聊天室了：節奏分享不要再發一張（scheduled／sharing 的那幾篇會被 jobShare 跳過）
+      await patch("line_note_posts", `id=eq.${post.id}`, { share_state: "shared", shared_at: new Date().toISOString() }).catch(() => {});
+      card = true;
+    } catch (e) {
+      const msg = String((e as any)?.message ?? e);
+      if (isLineBackoff(msg)) throw e;
+      // 文字已經送出去了，卡片失敗不算整筆失敗（同 jobPost 的分享失敗）
+      cardError = msg.slice(0, 300);
+      log(`推廣文卡片分享失敗（文字已送出）：${msg}`);
+    }
+  }
+  log(`📣 推廣文 ${promo.id}（${g?.name ?? ""}）已送到 ${chatMid}${card ? "＋貼文卡片" : ""}`);
+  return { promoted: true, chatMid, card, ...(promo.with_card && !post ? { noPost: true } : {}), ...(cardError ? { cardError } : {}) };
+}
+
 const HANDLERS: Record<string, (job: any, reactUntil: number) => Promise<unknown>> = {
   logout: jobLogout, list_homes: jobListHomes, post: jobPost, read: jobRead, close: jobClose, remind: jobRemind, share: jobShare, reopen: jobReopen, refresh: jobRefresh,
+  promo: jobPromo,
 };
 
 // LINE 叫我們慢一點：這個帳號的發文／分享／留言類工作先停 lineBackoffMs（讀留言照跑）。
@@ -1380,13 +1441,13 @@ async function blockedJobFilter(pausedHere: Set<number>): Promise<string> {
     .catch(() => [])) ?? [];
   const sent = new Map<number, number>();
   for (const r of recent) sent.set(Number(r.account_id), (sent.get(Number(r.account_id)) ?? 0) + 1);
-  // 結單提醒：每個帳號最後一則真的分享出去的時間（跑到一半的算現在）。跳過的（已提醒過、團已結單）沒送東西，不算。
+  // 結單提醒／推廣文：每個帳號最後一則真的分享出去的時間（跑到一半的算現在）。跳過的（已提醒過、團已結單）沒送東西，不算。
   const since = encodeURIComponent(`"${new Date(now - 30 * 60_000).toISOString()}"`);
-  const reminds = (await rest(`line_note_jobs?kind=eq.remind&or=(status.eq.running,finished_at.gte.${since})&select=account_id,status,finished_at,result`)
+  const reminds = (await rest(`line_note_jobs?kind=in.(${SLOW_CHAT_KINDS.join(",")})&or=(status.eq.running,finished_at.gte.${since})&select=account_id,status,finished_at,result`)
     .catch(() => [])) ?? [];
   const lastRemind = new Map<number, number>();
   for (const r of reminds) {
-    const t = r.status === "running" ? now : r.result?.reminded ? Date.parse(r.finished_at) : 0;
+    const t = r.status === "running" ? now : r.result?.reminded || r.result?.promoted ? Date.parse(r.finished_at) : 0;
     if (t > (lastRemind.get(Number(r.account_id)) ?? 0)) lastRemind.set(Number(r.account_id), t);
   }
   const limits = new Map<number, number>();
@@ -1409,14 +1470,18 @@ async function blockedJobFilter(pausedHere: Set<number>): Promise<string> {
   const clauses: string[] = [];
   if (paused.length) clauses.push(`not.and(account_id.in.(${paused.join(",")}),kind.in.(${SEND_KINDS.join(",")}))`);
   if (chatFull.length) clauses.push(`not.and(account_id.in.(${chatFull.join(",")}),kind.in.(${CHAT_KINDS.join(",")}))`);
-  if (remindWait.length) clauses.push(`not.and(account_id.in.(${remindWait.join(",")}),kind.eq.remind)`);
+  if (remindWait.length) clauses.push(`not.and(account_id.in.(${remindWait.join(",")}),kind.in.(${SLOW_CHAT_KINDS.join(",")}))`);
   return clauses.length ? `&and=(${clauses.join(",")})` : "";
 }
 
 async function claimNextJob(pausedHere: Set<number>) {
+  const blocked = await blockedJobFilter(pausedHere);
+  const pick = async (kindFilter: string) =>
+    (await rest(`line_note_jobs?status=eq.queued&${kindFilter}${blocked}&select=*&order=created_at.asc,id.asc&limit=1`))?.[0];
+  // 推廣文是有人剛按下去在等的：先撿，不要排在早上幾十則結單提醒後面等一兩個小時。
+  // 節流照算（blocked 一樣套上去），只是同一條慢速間隔裡輪到它先。
   // login 不在排程裡跑（要等人掃 QR，會把整個 tick 卡住 110 秒），只走後台按鈕 → action=login
-  const rows = await rest(`line_note_jobs?status=eq.queued&kind=neq.login${await blockedJobFilter(pausedHere)}&select=*&order=created_at.asc,id.asc&limit=1`);
-  const job = rows?.[0];
+  const job = (await pick("kind=eq.promo")) ?? (await pick("kind=neq.login"));
   if (!job) return null;
   const claimed = await patch("line_note_jobs", `id=eq.${job.id}&status=eq.queued`, { status: "running", started_at: new Date().toISOString() });
   return claimed?.[0] ?? null;

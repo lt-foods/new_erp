@@ -20,6 +20,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Modal } from "@/components/Modal";
 import SpinButton from "@/components/SpinButton";
 import { OrderDetail } from "@/components/OrderDetail";
+import LineNotePromoModal from "@/components/LineNotePromoModal";
 import { getSupabase } from "@/lib/supabase";
 import { translateRpcError } from "@/lib/rpcError";
 import { withBasePath } from "@/lib/basePath";
@@ -117,6 +118,7 @@ export default function LineNotePostsModal({
   const [orders, setOrders] = useState<Map<number, { no: string; store: string | null }>>(new Map());
   const [loadingPost, setLoadingPost] = useState<number | null>(null);
   const [orderPopup, setOrderPopup] = useState<{ id: number; no: string } | null>(null);
+  const [promoOpen, setPromoOpen] = useState(false);
 
   // 分店帳號只能看歷史：發文 / 立即讀留言 / 刪貼文那幾支 RPC 都只放總部角色
   const role = useRole();
@@ -334,6 +336,14 @@ export default function LineNotePostsModal({
             {/* ── 左：勾群組 + 預覽 + 發文 ───────────────────────────── */}
             {canOperate && targets.length > 0 && (
             <section className="space-y-3">
+              {(!campaignStatus || campaignStatus === "open") && (
+                <div className="flex items-center justify-between gap-2 rounded border border-sky-200 bg-sky-50 px-3 py-2 text-sm dark:border-sky-900 dark:bg-sky-950/40">
+                  <span className="text-sky-900 dark:text-sky-200">已經發過文，想再推一次？寫一段推廣文，機器人幫你送到各社群聊天室</span>
+                  <button type="button" className={`${btn} shrink-0 bg-white dark:bg-zinc-900`} onClick={() => setPromoOpen(true)}>
+                    📣 寫推廣文
+                  </button>
+                </div>
+              )}
               <div>
                 <div className="mb-1.5 flex items-center justify-between">
                   <h3 className="text-sm font-semibold">
@@ -613,6 +623,17 @@ export default function LineNotePostsModal({
       >
         {orderPopup && <OrderDetail orderId={orderPopup.id} onNavigate={(id, no) => setOrderPopup({ id, no })} />}
       </Modal>
+
+      {promoOpen && (
+        <LineNotePromoModal
+          open
+          campaignId={campaignId}
+          campaignNo={campaignNo}
+          campaignName={campaignName}
+          targets={targets ?? []}
+          onClose={() => { setPromoOpen(false); void load(true); }}
+        />
+      )}
     </Modal>
   );
 }
