@@ -474,14 +474,22 @@ function Body() {
         // 13 趟分頁 → 1 趟，解決「派貨工作台讀取不出來」。
         // 再疊 .eq("has_demand_left", true)：需求全派完（含補貨直派、門市已收貨）的
         // 列自動下架 — 補貨帶囤貨的 PO（訂 51 件、需求 1 件）不再永遠掛在工作台。
-        const [dRows, supRows, rrRows, storeRows] = await Promise.all([
-          fetchAllRows<DemandRow>(() =>
+        // 再改走 rpc_picking_dispatchable_demand（20261027000010）一次整包拿：分頁每拿一頁 view 就整張
+        // 重算一次（~5 秒 × 4 頁）。同一組條件、同一個排序；這支還沒上線（PGRST202）就退回舊的分頁讀法。
+        const loadDispatchable = async (): Promise<DemandRow[]> => {
+          const { data, error: e } = await sb.rpc("rpc_picking_dispatchable_demand");
+          if (!e) return (data ?? []) as DemandRow[];
+          if (e.code !== "PGRST202") throw e;
+          return fetchAllRows<DemandRow>(() =>
             sb.from("v_picking_demand_by_po").select("*")
               .eq("has_stock_left", true)
               .eq("has_demand_left", true)
               .order("po_item_id", { ascending: true })
               .order("store_id", { ascending: true, nullsFirst: false }),
-          ),
+          );
+        };
+        const [dRows, supRows, rrRows, storeRows] = await Promise.all([
+          loadDispatchable(),
           fetchAllRows<Supplier>(() => sb.from("suppliers").select("id, code, name").order("id", { ascending: true })),
           fetchAllRows<RestockRow>(() =>
             sb.from("v_picking_demand_no_po").select("*")
