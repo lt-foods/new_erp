@@ -11,7 +11,8 @@
 --   分界後每多一個採購單品項就整段重算一次。10/27 有 323 個 → 單跑這支 66 秒，
 --   v_picking_post_po_cancelled 兩段各用一次 → 2 分鐘，派貨表直接逾時。
 --   10/22 資料庫重啟把 autovacuum 的異動計數歸零，統計一直沒被重算。
---   （分界後的品項只會越來越多 —— 不修的話就算重算統計，下一次統計過期又會回來。）
+--   （分界後的品項只會越來越多 —— 不修的話就算重算統計，下一次統計過期又會回來。
+--    所以本檔不做 ANALYZE：新寫法不靠統計，統計過期也不會再走進這個坑。）
 --
 -- 修法：po_skus 直接帶出 poi.created_at，window 算完在同一層用它過濾，不再回頭 JOIN。
 --   結果逐列不變（同一個 poi.id → 同一個 created_at；n_po_items 仍是對全部有效採購單品項算，
@@ -19,7 +20,6 @@
 --   依賴它的 v_picking_post_po_cancelled → v_picking_demand_by_po → v_hq_exceptions、
 --   rpc_create_wave_from_po、rpc_preview_po_store_addition_extra、rpc_order_cancel_po_notice、
 --   rpc_picking_post_po_cancelled_by_sku 都不用動。
---   另外順手 ANALYZE 這幾張表，讓其他查詢的估計也回到現況。
 --
 -- 實測（正式庫，temp view 對拍）：v_picking_post_po_cancelled 2 分鐘 → 2.3 秒，
 --   派貨工作台那句（has_stock_left/has_demand_left + 排序）逾時 → 4.6 秒。
@@ -89,6 +89,3 @@ COMMENT ON VIEW public.v_picking_po_rule_items IS
 REVOKE ALL ON public.v_picking_po_rule_items FROM PUBLIC, anon, authenticated;
 
 COMMIT;
-
-ANALYZE public.purchase_order_items, public.purchase_orders, public.purchase_request_items,
-        public.purchase_request_campaigns, public.purchase_requests;
