@@ -431,7 +431,7 @@ export function OrderEntryView({
 
     setSubmitting(true);
     try {
-      const { data, error: err } = await getSupabase().rpc("rpc_create_customer_orders", {
+      const { data, error: err } = await getSupabase().rpc("rpc_create_customer_orders_capped", {
         p_campaign_id: campaignId,
         p_channel_id: channelId,
         p_rows: rows,
