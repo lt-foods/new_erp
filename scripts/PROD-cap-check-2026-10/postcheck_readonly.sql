@@ -3,7 +3,8 @@
 --
 -- 只查不改（一句 SELECT、一個分號）。貼 migration 之前跑一次、之後再跑一次，比對「指紋」那幾列。
 --   貼之前：①②⑨「尚未建立」、③⑩「舊版」、④⑤⑪ ✅ → 可以貼
---   貼之後：①～⑪ 全部 ✅、最後一列「總結」✅
+--   貼之後：①～⑫ 全部 ✅；重建的兩支（rpc_line_note_apply_comment、rpc_line_note_campaign_targets）
+--     指紋列的權限要跟貼前一樣（CREATE OR REPLACE 不改權限）、最後一列「總結」✅
 --   還原後：①②⑨「尚未建立」、③⑩「舊版」
 -- md5 算法同 migration 檔頭：md5(replace(prosrc, CR, ''))。
 -- ============================================================================
@@ -13,7 +14,7 @@ WITH f AS (
       ('_campaign_cap_remaining',           'public._campaign_cap_remaining(bigint)',
        '17b0aa2bf45fe6096b6765d50fb0f01a', NULL),
       ('rpc_create_customer_orders_capped', 'public.rpc_create_customer_orders_capped(bigint, bigint, jsonb)',
-       'bbe136060b43564dea8b799308807311', NULL),
+       'd2db1624b9282f44effc507fa56ad0b2', NULL),
       ('rpc_line_note_apply_comment',       'public.rpc_line_note_apply_comment(bigint, boolean)',
        '1cc0ceb86e330c1cfbea9eaea17959f8', 'abb0c5f491f7c4d10427691f09a01066'),
       ('rpc_create_customer_orders',        'public.rpc_create_customer_orders(bigint, bigint, jsonb)',
@@ -31,7 +32,11 @@ WITH f AS (
     ) AS k(label, sig, md5_new, md5_old)
 ), fm AS (
   SELECT f.*, p.prosrc,
-         md5(replace(p.prosrc, E'\r', '')) AS md5_now
+         md5(replace(p.prosrc, E'\r', '')) AS md5_now,
+         -- 權限：proacl 是 NULL ＝ 預設（PUBLIC 可執行）
+         COALESCE(p.proacl, acldefault('f', p.proowner))::text AS acl_now,
+         EXISTS (SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) x
+                  WHERE x.grantee = 0 AND x.privilege_type = 'EXECUTE') AS public_exec
     FROM f LEFT JOIN pg_proc p ON p.oid = f.oid
 ), chk AS (
   SELECT 1 AS n, '① 新函式 _campaign_cap_remaining' AS item,
@@ -70,17 +75,19 @@ WITH f AS (
          COALESCE(md5_now, '找不到')
     FROM fm WHERE label = 'rpc_place_member_order_guarded'
   UNION ALL
-  SELECT 6, '⑥ 後台帳號能呼叫 rpc_create_customer_orders_capped',
+  SELECT 6, '⑥ rpc_create_customer_orders_capped：後台帳號能叫、anon／PUBLIC 不能',
          CASE WHEN oid IS NULL THEN '⚪ 尚未建立'
-              WHEN has_function_privilege('authenticated', oid, 'EXECUTE') THEN '✅' ELSE '❌ 沒開權限' END,
-         '-'
+              WHEN NOT has_function_privilege('authenticated', oid, 'EXECUTE') THEN '❌ 後台帳號沒開權限'
+              WHEN has_function_privilege('anon', oid, 'EXECUTE') OR public_exec THEN '❌ anon／PUBLIC 叫得到'
+              ELSE '✅' END,
+         COALESCE(acl_now, '-')
     FROM fm WHERE label = 'rpc_create_customer_orders_capped'
   UNION ALL
-  SELECT 7, '⑦ 前端（anon／authenticated）叫不到 _campaign_cap_remaining',
+  SELECT 7, '⑦ 前端（anon／authenticated／PUBLIC）叫不到 _campaign_cap_remaining',
          CASE WHEN oid IS NULL THEN '⚪ 尚未建立'
               WHEN NOT has_function_privilege('authenticated', oid, 'EXECUTE')
-               AND NOT has_function_privilege('anon', oid, 'EXECUTE') THEN '✅' ELSE '❌ 前端叫得到' END,
-         '-'
+               AND NOT has_function_privilege('anon', oid, 'EXECUTE') AND NOT public_exec THEN '✅' ELSE '❌ 前端叫得到' END,
+         COALESCE(acl_now, '-')
     FROM fm WHERE label = '_campaign_cap_remaining'
   UNION ALL
   SELECT 8, '⑧ 資料庫版本（要 PostgreSQL 13 以上）',
@@ -108,14 +115,21 @@ WITH f AS (
          COALESCE(md5_now, '找不到')
     FROM fm WHERE label = '_line_note_comment_is_todo'
   UNION ALL
-  SELECT 20 + row_number() OVER (ORDER BY label), '指紋 ' || label, '（貼前貼後比對用）', COALESCE(md5_now, '找不到')
+  SELECT 12, '⑫ 四參數 _line_note_comment_is_todo：anon／PUBLIC 不能叫',
+         CASE WHEN oid IS NULL THEN '⚪ 尚未建立'
+              WHEN has_function_privilege('anon', oid, 'EXECUTE') OR public_exec THEN '❌ anon／PUBLIC 叫得到'
+              ELSE '✅' END,
+         COALESCE(acl_now, '-')
+    FROM fm WHERE label = '_line_note_comment_is_todo 四參數'
+  UNION ALL
+  SELECT 20 + row_number() OVER (ORDER BY label), '指紋 ' || label, '（貼前貼後比對用：md5＋權限）', COALESCE(md5_now || '  ' || acl_now, '找不到')
     FROM fm
 )
 SELECT n AS "#", item AS "項目", result AS "結果", detail AS "指紋／說明"
   FROM chk
 UNION ALL
 SELECT 99, '總結（貼完 migration 之後看這列）',
-       CASE WHEN (SELECT count(*) FROM chk WHERE n BETWEEN 1 AND 11 AND result LIKE '✅%') = 11
+       CASE WHEN (SELECT count(*) FROM chk WHERE n BETWEEN 1 AND 12 AND result LIKE '✅%') = 12
             THEN '✅ 新版已上、原本三支沒被動到'
             ELSE '❌ 還有項目不是 ✅（貼之前跑看到這個是正常的）' END,
        '-'

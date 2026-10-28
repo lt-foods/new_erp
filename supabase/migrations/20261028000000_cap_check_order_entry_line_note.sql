@@ -19,7 +19,9 @@
 --   2. 新增 rpc_create_customer_orders_capped(p_campaign_id, p_channel_id, p_rows)：參數、回傳跟
 --      rpc_create_customer_orders 一樣；先鎖團（同商城那支 group_buy_campaigns FOR UPDATE），
 --      算本次所有客人所有品項加總，整團或任一品項會超過就丟中文錯誤（整批不送）；沒超過才
---      原封呼叫 rpc_create_customer_orders。
+--      原封呼叫 rpc_create_customer_orders。上限判斷之前，先逐字照原函式（20261013000000:971-1057）做一遍
+--      非寫入檢查（團狀態、頻道、會員／黑名單、取貨店、數量、品項），錯誤訊息跟原函式一樣。
+--      權限：先 REVOKE PUBLIC、anon，只 GRANT authenticated。
 --   3. rpc_line_note_apply_comment：基底 20260918010000_line_note_commenter_member_map.sql:226 逐字，
 --      只改「組好 v_new_items → 呼叫建單」那一段：
 --        - DECLARE 多 10 個截量用的變數；
@@ -33,7 +35,7 @@
 --      新增 _line_note_comment_is_todo(status, hint, text, resolution_note) 四參數版：前三個條件逐字照
 --      20260923120000_line_note_todo_orderish.sql:17（三參數版本身不動），多一條
 --      「status='ordered' 且 resolution_note 開頭是『限量已滿，只加部分』」。
---      小幫手按「已解決」（status → resolved）就離開待處理。
+--      小幫手按「已解決」（status → resolved）就離開待處理。權限：REVOKE PUBLIC、anon，只 GRANT authenticated。
 --      _line_note_settle_keyed_comments（20260928000000:27）只掃 unmatched／error／no_order，不會碰 ordered。
 --   5. rpc_line_note_campaign_targets：基底 20260929000000_line_note_no_bot_for_store_campaign.sql:208 逐字，
 --      只改 comment_todo 那一處呼叫：多傳 cm.resolution_note（改叫四參數版）。其餘含 GRANT 一字未改。
@@ -57,7 +59,7 @@
 --   rpc_line_note_apply_comment      abb0c5f491f7c4d10427691f09a01066  1cc0ceb86e330c1cfbea9eaea17959f8
 --   rpc_create_customer_orders       966e66281864bdd86ceb84cb01a6b81d  （不改，必須是這版）
 --   _campaign_cap_remaining          （新函式：不存在，或本檔版 17b0aa2bf45fe6096b6765d50fb0f01a）
---   rpc_create_customer_orders_capped（新函式：不存在，或本檔版 bbe136060b43564dea8b799308807311）
+--   rpc_create_customer_orders_capped（新函式：不存在，或本檔版 d2db1624b9282f44effc507fa56ad0b2）
 --   rpc_line_note_campaign_targets   ea0a31d39ed9d3dcdae8ea25e1155118  addb3242879ae4019347987153fa08fb
 --   _line_note_comment_is_todo 三參數 21b6924a437353167f805553d0db28b3  （不改，必須是這版）
 --   _line_note_comment_is_todo 四參數（新函式：不存在，或本檔版 96fafa615db9e21b49500472d15c9ca4）
@@ -103,7 +105,7 @@ BEGIN
         ('public._campaign_cap_remaining(bigint)', FALSE,
          '17b0aa2bf45fe6096b6765d50fb0f01a', '17b0aa2bf45fe6096b6765d50fb0f01a'),
         ('public.rpc_create_customer_orders_capped(bigint, bigint, jsonb)', FALSE,
-         'bbe136060b43564dea8b799308807311', 'bbe136060b43564dea8b799308807311'),
+         'd2db1624b9282f44effc507fa56ad0b2', 'd2db1624b9282f44effc507fa56ad0b2'),
         ('public.rpc_line_note_campaign_targets(bigint)', TRUE,
          'ea0a31d39ed9d3dcdae8ea25e1155118', 'addb3242879ae4019347987153fa08fb'),
         ('public._line_note_comment_is_todo(text, text, text)', TRUE,
@@ -212,19 +214,86 @@ LANGUAGE plpgsql SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  v_tenant     UUID := public._current_tenant_id();
-  v_req_total  NUMERIC;
-  v_total_rem  NUMERIC;
-  v_bad        RECORD;
+  v_tenant       UUID := public._current_tenant_id();
+  v_req_total    NUMERIC;
+  v_total_rem    NUMERIC;
+  v_bad          RECORD;
+  -- 下面這組只給「非寫入檢查」用，名稱與型別照 rpc_create_customer_orders
+  v_status       TEXT;
+  v_row          JSONB;
+  v_item         JSONB;
+  v_member_id    BIGINT;
+  v_pickup_store BIGINT;
+  v_ci_id        BIGINT;
+  v_ci_price     NUMERIC;
+  v_qty          NUMERIC;
+  v_blacklisted  BOOLEAN;
+  v_member_name  TEXT;
 BEGIN
   -- 鎖團：同商城 rpc_place_member_order_guarded（先 group_buy_campaigns FOR UPDATE，再碰訂單），
   -- 兩個人同時加同一團時排隊，不會兩筆都以為還有剩、一起超過。
-  PERFORM 1 FROM group_buy_campaigns gbc
-   WHERE gbc.tenant_id = v_tenant AND gbc.id = p_campaign_id
+  SELECT gbc.status INTO v_status
+    FROM group_buy_campaigns gbc
+   WHERE gbc.id = p_campaign_id AND gbc.tenant_id = v_tenant
      FOR UPDATE;
 
-  -- 找不到團、或 p_rows 格式不對：不在這裡擋，交給原本那支丟它原本的錯誤
-  IF FOUND AND p_rows IS NOT NULL AND jsonb_typeof(p_rows) = 'array' THEN
+  -- 非寫入檢查：先把原本那支會擋的錯誤照原樣丟出來，上限判斷排在它們後面
+  -- （團不對／頻道不對／會員或品項有問題時，看到的是原本的訊息，不是「已達限量上限」）。
+  -- ⚠ 逐字照 rpc_create_customer_orders（20261013000000_transfer_always_new_order.sql:971-1057）的檢查與順序，
+  --   只拿掉寫入（找單／建單／加品項）；那支的檢查改了，這裡要一起改。檢查通過後仍呼叫原本那支，它會再驗一次。
+  IF v_status IS NULL THEN RAISE EXCEPTION 'campaign % not in tenant', p_campaign_id; END IF;
+  IF v_status NOT IN ('open','closed') THEN
+    RAISE EXCEPTION 'campaign % is %; only open/closed campaigns accept manual entry',
+                    p_campaign_id, v_status;
+  END IF;
+
+  PERFORM 1 FROM line_channels WHERE id = p_channel_id AND tenant_id = v_tenant;
+  IF NOT FOUND THEN RAISE EXCEPTION 'channel % not in tenant', p_channel_id; END IF;
+
+  IF p_rows IS NULL OR jsonb_array_length(p_rows) = 0 THEN
+    RAISE EXCEPTION 'p_rows is empty';
+  END IF;
+
+  FOR v_row IN SELECT * FROM jsonb_array_elements(p_rows)
+  LOOP
+    v_member_id    := (v_row ->> 'member_id')::BIGINT;
+    v_pickup_store := (v_row ->> 'pickup_store_id')::BIGINT;
+
+    IF v_member_id IS NULL THEN RAISE EXCEPTION 'member_id required'; END IF;
+    IF v_pickup_store IS NULL THEN RAISE EXCEPTION 'pickup_store_id required'; END IF;
+
+    SELECT no_new_order, COALESCE(name, member_no)
+      INTO v_blacklisted, v_member_name
+      FROM members
+     WHERE id = v_member_id AND tenant_id = v_tenant;
+    IF v_blacklisted IS NULL THEN
+      RAISE EXCEPTION 'member % not in tenant', v_member_id;
+    END IF;
+    IF v_blacklisted THEN
+      RAISE EXCEPTION '會員「%」已被列入黑名單，禁止建立 / 加單', v_member_name;
+    END IF;
+
+    PERFORM 1 FROM stores WHERE id = v_pickup_store AND tenant_id = v_tenant;
+    IF NOT FOUND THEN RAISE EXCEPTION 'store % not in tenant', v_pickup_store; END IF;
+
+    FOR v_item IN SELECT * FROM jsonb_array_elements(v_row -> 'items')
+    LOOP
+      v_ci_id := (v_item ->> 'campaign_item_id')::BIGINT;
+      v_qty   := (v_item ->> 'qty')::NUMERIC;
+      IF v_qty IS NULL OR v_qty <= 0 THEN RAISE EXCEPTION 'qty must be > 0'; END IF;
+
+      v_ci_price := NULL;
+      SELECT unit_price INTO v_ci_price
+        FROM campaign_items
+       WHERE id = v_ci_id AND tenant_id = v_tenant AND campaign_id = p_campaign_id;
+      IF v_ci_price IS NULL THEN
+        RAISE EXCEPTION 'campaign_item % not in campaign %', v_ci_id, p_campaign_id;
+      END IF;
+    END LOOP;
+  END LOOP;
+
+  -- 上限判斷（檢查都過了才走到這裡）
+  BEGIN
     -- 本次所有客人、所有品項加總（Q3 A：整批一起算）
     SELECT COALESCE(SUM(req.qty), 0) INTO v_req_total
       FROM (
@@ -266,13 +335,15 @@ BEGIN
         COALESCE(NULLIF(v_bad.item_name, ''), '品項 #' || v_bad.campaign_item_id),
         trim_scale(v_bad.item_remaining), trim_scale(v_bad.qty);
     END IF;
-  END IF;
+  END;
 
   RETURN QUERY
   SELECT r.out_order_id, r.out_order_no, r.out_item_count
     FROM public.rpc_create_customer_orders(p_campaign_id, p_channel_id, p_rows) r;
 END;
 $$;
+-- 新函式預設 PUBLIC 可執行（Supabase 另外會預設給 anon）→ 先全部收回，只開給後台登入的帳號
+REVOKE ALL ON FUNCTION public.rpc_create_customer_orders_capped(BIGINT, BIGINT, JSONB) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.rpc_create_customer_orders_capped(BIGINT, BIGINT, JSONB) TO authenticated;
 COMMENT ON FUNCTION public.rpc_create_customer_orders_capped(BIGINT, BIGINT, JSONB) IS
   '後台加單／LINE 記事本留言加單：先鎖團、檢查整團與品項上限（已售算法同 rpc_place_member_order_guarded），沒超過才呼叫 rpc_create_customer_orders。超過就整批不送。';
@@ -569,6 +640,9 @@ AS $$
          OR COALESCE(p_text, '') ~ '[+＋]\s*[0-9０-９]|[加打]\s*[0-9０-９一二三四五六七八九]'))
       OR (p_status = 'ordered' AND COALESCE(p_resolution_note, '') LIKE '限量已滿，只加部分%');
 $$;
+-- 權限：三參數版沒有另外下權限（＝PUBLIC 可執行）；這支只給 SECURITY DEFINER 的函式在裡面叫，收緊成只開給登入帳號
+REVOKE ALL ON FUNCTION public._line_note_comment_is_todo(TEXT, TEXT, TEXT, TEXT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public._line_note_comment_is_todo(TEXT, TEXT, TEXT, TEXT) TO authenticated;
 
 
 -- ----------------------------------------------------------------------------

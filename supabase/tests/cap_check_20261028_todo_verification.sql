@@ -52,7 +52,9 @@ INSERT INTO line_note_comments (id, tenant_id, post_id, status, member_no_hint, 
  (7108,'00000000-0000-0000-0000-000000000001',72,'duplicate','T105','+1',NULL),
  (7109,'00000000-0000-0000-0000-000000000001',72,'resolved','T106','+1','限量已滿，只加部分：A 要 3 件只加 1 件'),
  (7110,'00000000-0000-0000-0000-000000000001',72,'ignored','T107','+1',NULL),
- (7111,'00000000-0000-0000-0000-000000000001',72,'ordered','T108','+1','備註：限量已滿，只加部分（不在開頭，不算）');
+ (7111,'00000000-0000-0000-0000-000000000001',72,'ordered','T108','+1','備註：限量已滿，只加部分（不在開頭，不算）'),
+ (7112,'00000000-0000-0000-0000-000000000001',72,'no_order','','你好',NULL),
+ (7113,'00000000-0000-0000-0000-000000000001',72,'no_order','','白+1',NULL);
 -- 社群甲：兩則真的留言，等貼完 migration 再跑 apply（上限 2：第一則 +3 只加 2、第二則 +1 加 0）
 INSERT INTO line_note_comments (id, tenant_id, post_id, parsed, member_no_hint, commenter_name, text, commented_at) VALUES
  (7201,'00000000-0000-0000-0000-000000000001',71,'[{"qty":3}]','T109','客109','T109 +3', now() - interval '1 hour'),
@@ -73,7 +75,7 @@ DO $t$ BEGIN
               WHERE public._line_note_comment_is_todo(c.status, c.member_no_hint, c.text)
                     IS DISTINCT FROM (SELECT b.todo FROM _todo3_before b WHERE b.id = c.id)) THEN
     RAISE EXCEPTION 'A 失敗：三參數版被改到'; END IF;
-  RAISE NOTICE '✅ A 舊有 11 則各狀態：四參數版＝三參數版（共 % 則待處理），三參數版沒變',
+  RAISE NOTICE '✅ A 舊有 13 則各狀態（含會員編號是空字串的 2 則）：四參數版＝三參數版（共 % 則待處理），三參數版沒變',
     (SELECT count(*) FROM _todo3_before WHERE todo);
 END $t$;
 
@@ -128,6 +130,31 @@ DO $t$ DECLARE c0 record; c1 record; n int; BEGIN
      OR c1.error IS DISTINCT FROM c0.error OR c1.processed_at IS DISTINCT FROM c0.processed_at THEN
     RAISE EXCEPTION 'E 失敗 %', row_to_json(c1); END IF;
   RAISE NOTICE '✅ E 實際跑 _line_note_settle_keyed_comments（改了 % 則）：部分加單那則 status／resolution_note／error 都沒變', n;
+END $t$;
+
+-- 前端待處理清單那條 PostgREST 條件（lineNoteStatus.ts TODO_COMMENT_OR_FILTER）翻成 SQL，逐則跟 DB 判斷比：
+--   status.in.(pending,unmatched,error)
+--   and(status.eq.no_order,or(member_no_hint.neq.,text.match.<regex>))   ← neq. ＝ <> ''（NULL 也不算）
+--   and(status.eq.ordered,resolution_note.like.限量已滿，只加部分*)       ← like 的 * ＝ %
+DO $t$ DECLARE n_new int; n_old int; n_empty int; BEGIN
+  -- 新寫法（member_no_hint.neq.）翻成 SQL
+  SELECT count(*) INTO n_new FROM line_note_comments c
+   WHERE c.id >= 7100
+     AND COALESCE(c.status IN ('pending','unmatched','error')
+               OR (c.status = 'no_order' AND (c.member_no_hint <> '' OR c.text ~ '[+＋]\s*[0-9０-９]|[加打]\s*[0-9０-９一二三四五六七八九]'))
+               OR (c.status = 'ordered' AND c.resolution_note LIKE '限量已滿，只加部分%'), FALSE)
+         IS DISTINCT FROM public._line_note_comment_is_todo(c.status, c.member_no_hint, c.text, c.resolution_note);
+  -- 舊寫法（member_no_hint.not.is.null）翻成 SQL：會把空字串算進來
+  SELECT count(*) INTO n_old FROM line_note_comments c
+   WHERE c.id >= 7100
+     AND COALESCE(c.status IN ('pending','unmatched','error')
+               OR (c.status = 'no_order' AND (c.member_no_hint IS NOT NULL OR c.text ~ '[+＋]\s*[0-9０-９]|[加打]\s*[0-9０-９一二三四五六七八九]'))
+               OR (c.status = 'ordered' AND c.resolution_note LIKE '限量已滿，只加部分%'), FALSE)
+         IS DISTINCT FROM public._line_note_comment_is_todo(c.status, c.member_no_hint, c.text, c.resolution_note);
+  SELECT count(*) INTO n_empty FROM line_note_comments c WHERE c.id >= 7100 AND c.member_no_hint = '';
+  IF n_new <> 0 THEN RAISE EXCEPTION 'G 失敗：新寫法 % 則跟 DB 不一致', n_new; END IF;
+  IF n_old <> 1 THEN RAISE EXCEPTION 'G 前提不對：舊寫法應該剛好錯 1 則（空字串＋「你好」），實際 %', n_old; END IF;
+  RAISE NOTICE '✅ G 前端清單條件翻成 SQL：新寫法逐則＝DB（會員編號空字串 % 則）；舊寫法 not.is.null 不一致 % 則', n_empty, n_old;
 END $t$;
 
 -- 給前端判斷比對用：每則留言的 DB 判斷（node 跑 lineNoteStatus.ts 逐則比）

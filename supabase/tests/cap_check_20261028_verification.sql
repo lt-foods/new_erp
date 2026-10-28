@@ -239,3 +239,49 @@ DO $t$ DECLARE r record; c record; BEGIN
     RAISE EXCEPTION '15 失敗 %', row_to_json(c); END IF;
   RAISE NOTICE '✅ 15 重複＋部分：resolution_note=%', c.resolution_note;
 END $t$;
+
+-- 16. 團已滿＋其他錯誤：錯誤訊息要跟原本那支一模一樣（不能被「已達限量上限」蓋掉）
+--     團 10：整團 5 已售 5（滿）。每一案同一份 p_rows 各丟給新舊兩支，比 SQLERRM。
+UPDATE members SET no_new_order = true WHERE id = 20;
+CREATE FUNCTION pg_temp.err_of(p_fn text, p_campaign bigint, p_channel bigint, p_rows jsonb) RETURNS text LANGUAGE plpgsql AS $f$
+BEGIN
+  EXECUTE format('SELECT count(*) FROM %s($1, $2, $3)', p_fn) USING p_campaign, p_channel, p_rows;
+  RAISE EXCEPTION 'no_error_rollback';
+EXCEPTION WHEN OTHERS THEN
+  RETURN SQLERRM;
+END $f$;
+DO $t$ DECLARE r record; v_new text; v_old text; v_n int := 0; BEGIN
+  IF (SELECT total_remaining FROM _campaign_cap_remaining(10) LIMIT 1) <> 0 THEN RAISE EXCEPTION '16 前提：團 10 要是滿的'; END IF;
+  FOR r IN SELECT * FROM (VALUES
+    ('錯的頻道',        10::bigint, 999::bigint, pg_temp.rows(1, '[{"campaign_item_id":102,"qty":1}]')),
+    ('會員不在',        10, 1, pg_temp.rows(999, '[{"campaign_item_id":102,"qty":1}]')),
+    ('黑名單會員',      10, 1, pg_temp.rows(20, '[{"campaign_item_id":102,"qty":1}]')),
+    ('品項不在這團',    10, 1, pg_temp.rows(1, '[{"campaign_item_id":201,"qty":1}]')),
+    ('數量 0',          10, 1, pg_temp.rows(1, '[{"campaign_item_id":102,"qty":0}]')),
+    ('沒有 member_id',  10, 1, '[{"pickup_store_id":1,"items":[{"campaign_item_id":102,"qty":1}]}]'::jsonb),
+    ('取貨店不在',      10, 1, '[{"member_id":1,"pickup_store_id":999,"items":[{"campaign_item_id":102,"qty":1}]}]'::jsonb),
+    ('p_rows 空',       10, 1, '[]'::jsonb),
+    ('第二位客人才錯',  10, 1, pg_temp.rows(1, '[{"campaign_item_id":102,"qty":1}]') || pg_temp.rows(999, '[{"campaign_item_id":102,"qty":1}]')),
+    ('團不在',          999, 1, pg_temp.rows(1, '[{"campaign_item_id":102,"qty":1}]'))
+  ) AS t(label, c, ch, rows)
+  LOOP
+    v_new := pg_temp.err_of('rpc_create_customer_orders_capped', r.c, r.ch, r.rows);
+    v_old := pg_temp.err_of('rpc_create_customer_orders', r.c, r.ch, r.rows);
+    IF v_new IS DISTINCT FROM v_old OR v_new LIKE '已達限量上限%' OR v_new = 'no_error_rollback' THEN
+      RAISE EXCEPTION '16 失敗（%）：新=% 舊=%', r.label, v_new, v_old; END IF;
+    RAISE NOTICE '   16 %：%', r.label, v_new;
+    v_n := v_n + 1;
+  END LOOP;
+  -- 團狀態不對（滿的團改成 draft）
+  UPDATE group_buy_campaigns SET status = 'draft' WHERE id = 10;
+  v_new := pg_temp.err_of('rpc_create_customer_orders_capped', 10, 1, pg_temp.rows(1, '[{"campaign_item_id":102,"qty":1}]'));
+  v_old := pg_temp.err_of('rpc_create_customer_orders', 10, 1, pg_temp.rows(1, '[{"campaign_item_id":102,"qty":1}]'));
+  UPDATE group_buy_campaigns SET status = 'open' WHERE id = 10;
+  IF v_new IS DISTINCT FROM v_old THEN RAISE EXCEPTION '16 失敗（團狀態）：新=% 舊=%', v_new, v_old; END IF;
+  RAISE NOTICE '   16 團狀態不對：%', v_new;
+  -- 全部都對、只是滿了 → 才是限量訊息
+  v_new := pg_temp.err_of('rpc_create_customer_orders_capped', 10, 1, pg_temp.rows(1, '[{"campaign_item_id":102,"qty":1}]'));
+  IF v_new <> '已達限量上限：整團還剩 0 件，這次要加 1 件' THEN RAISE EXCEPTION '16 失敗（只滿）：%', v_new; END IF;
+  RAISE NOTICE '✅ 16 團已滿＋% 種其他錯誤：訊息都跟原本那支一樣；都正確時才回「%」', v_n + 1, v_new;
+END $t$;
+UPDATE members SET no_new_order = false WHERE id = 20;

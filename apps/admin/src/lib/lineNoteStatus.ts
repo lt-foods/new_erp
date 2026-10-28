@@ -42,9 +42,10 @@ export const CAP_PARTIAL_NOTE_PREFIX = "限量已滿，只加部分";
  * 留言加單分頁的「待處理」要直接向 DB 只撈待處理的 —— 先撈最新 300 則再前端過濾，
  * 選「全部社群」時待處理的會被別的社群自動加單成功的留言擠出 300 則外（2026-09-26）。
  * 2026-09-26 對線上驗過：這條 or 的 count 跟 DB 函式算出來的一樣（383）。
+ * 會員編號用 `neq.`（空字串不算待處理），跟 DB 的 COALESCE(hint, '') <> ''、下面 JS 的 !!hint 一致（2026-10-28 對齊，原本 not.is.null 會把空字串算進來）。
  */
 export const TODO_COMMENT_OR_FILTER =
-  `status.in.(pending,unmatched,error),and(status.eq.no_order,or(member_no_hint.not.is.null,text.match.${ORDERISH_SOURCE})),` +
+  `status.in.(pending,unmatched,error),and(status.eq.no_order,or(member_no_hint.neq.,text.match.${ORDERISH_SOURCE})),` +
   `and(status.eq.ordered,resolution_note.like.${CAP_PARTIAL_NOTE_PREFIX}*)`;
 
 /**
