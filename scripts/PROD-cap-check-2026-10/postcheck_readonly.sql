@@ -3,7 +3,7 @@
 --
 -- 只查不改（一句 SELECT、一個分號）。貼 migration 之前跑一次、之後再跑一次，比對「指紋」那幾列。
 --   貼之前：①②「尚未建立」、③「舊版」、④⑤ ✅ → 可以貼
---   貼之後：①～⑦ 全部 ✅、最後一列「總結」✅
+--   貼之後：①～⑧ 全部 ✅、最後一列「總結」✅
 --   還原後：①②「尚未建立」、③「舊版」
 -- md5 算法同 migration 檔頭：md5(replace(prosrc, CR, ''))。
 -- ============================================================================
@@ -78,6 +78,10 @@ WITH f AS (
          '-'
     FROM fm WHERE label = '_campaign_cap_remaining'
   UNION ALL
+  SELECT 8, '⑧ 資料庫版本（要 PostgreSQL 13 以上）',
+         CASE WHEN current_setting('server_version_num')::int >= 130000 THEN '✅' ELSE '❌ 版本太舊' END,
+         current_setting('server_version')
+  UNION ALL
   SELECT 10 + row_number() OVER (ORDER BY label), '指紋 ' || label, '（貼前貼後比對用）', COALESCE(md5_now, '找不到')
     FROM fm
 )
@@ -85,7 +89,7 @@ SELECT n AS "#", item AS "項目", result AS "結果", detail AS "指紋／說�
   FROM chk
 UNION ALL
 SELECT 99, '總結（貼完 migration 之後看這列）',
-       CASE WHEN (SELECT count(*) FROM chk WHERE n BETWEEN 1 AND 7 AND result LIKE '✅%') = 7
+       CASE WHEN (SELECT count(*) FROM chk WHERE n BETWEEN 1 AND 8 AND result LIKE '✅%') = 8
             THEN '✅ 新版已上、原本兩支沒被動到'
             ELSE '❌ 還有項目不是 ✅（貼之前跑看到這個是正常的）' END,
        '-'

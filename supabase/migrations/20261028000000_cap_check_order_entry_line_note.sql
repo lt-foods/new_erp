@@ -62,6 +62,12 @@ DECLARE
   v_oid  REGPROCEDURE;
   v_md5  TEXT;
 BEGIN
+  -- 資料庫版本：錯誤訊息用的 trim_scale 要 PostgreSQL 13 以上
+  IF current_setting('server_version_num')::int < 130000 THEN
+    v_bad := v_bad || format('資料庫版本 %s 太舊（要 PostgreSQL 13 以上，trim_scale 才有）',
+                             current_setting('server_version'));
+  END IF;
+
   -- 要用到的欄位
   PERFORM 1 FROM information_schema.columns
    WHERE table_schema = 'public' AND table_name = 'group_buy_campaigns' AND column_name = 'total_cap_qty';
