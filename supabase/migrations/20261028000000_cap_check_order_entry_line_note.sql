@@ -27,9 +27,17 @@
 --          全部截成 0 就標 error「已達限量上限，未加單（…）」早退 → v_new_items 換成截過的量；
 --        - 呼叫改 rpc_create_customer_orders_capped（參數不變）；
 --        - 收尾標 ordered 那一句的 resolution_note：有截量時併入「限量已滿，只加部分：A 要 3 件只加 1 件」
---          （跟原本「已略過重複：…」同一欄，兩個都有就用「；」接起來）。
+--          （跟原本「已略過重複：…」同一欄，兩個都有就用「；」接起來，限量那句放前面）。
 --      認會員、取貨店、品項代碼、去重、記住留言者、標 line_bot 來源：一字未改。
---      ⚠ 只加到部分的留言狀態是 ordered，目前**不會**出現在「待處理」（見施工回報，等 CEO 決定）。
+--   4. 只加到部分的留言要進「待處理」（老闆 10/28 選 A）：
+--      新增 _line_note_comment_is_todo(status, hint, text, resolution_note) 四參數版：前三個條件逐字照
+--      20260923120000_line_note_todo_orderish.sql:17（三參數版本身不動），多一條
+--      「status='ordered' 且 resolution_note 開頭是『限量已滿，只加部分』」。
+--      小幫手按「已解決」（status → resolved）就離開待處理。
+--      _line_note_settle_keyed_comments（20260928000000:27）只掃 unmatched／error／no_order，不會碰 ordered。
+--   5. rpc_line_note_campaign_targets：基底 20260929000000_line_note_no_bot_for_store_campaign.sql:208 逐字，
+--      只改 comment_todo 那一處呼叫：多傳 cm.resolution_note（改叫四參數版）。其餘含 GRANT 一字未改。
+--   前端同一條件：apps/admin/src/lib/lineNoteStatus.ts（CAP_PARTIAL_NOTE_PREFIX／isTodoComment／TODO_COMMENT_OR_FILTER）。
 --
 -- 不動：rpc_create_customer_orders（20261013000000:941）、rpc_place_member_order_guarded（20261013000000:1096）、
 --   轉單（20261013000000）、互抵銷售（20260805000200／210／230）—— 它們照舊呼叫原本那支，不受上限影響。
@@ -37,19 +45,22 @@
 -- 上線順序：⚠ **先半夜貼這份 migration，再合併前端**（前端改呼叫 rpc_create_customer_orders_capped；
 --   前端先上、這支還沒貼的話，後台加單會整個失敗）。
 --
--- 可重貼：三支都是 CREATE OR REPLACE；前置檢查接受「基底版」或「本檔新版」，整份貼兩次結果一樣。
+-- 可重貼：五支都是 CREATE OR REPLACE；前置檢查接受「基底版」或「本檔新版」，整份貼兩次結果一樣。
 --   Supabase SQL Editor 整份是一個交易：前置檢查不過會整份停下、一行都不改。
 --
 -- Rollback：scripts/PROD-cap-check-2026-10/rollback_20261028000000.sql
---   （rpc_line_note_apply_comment 逐字還原成 20260918010000:226 那版 → DROP 兩支新函式；
---     前端改回呼叫 rpc_create_customer_orders）
+--   （rpc_line_note_apply_comment 逐字還原成 20260918010000:226 那版、rpc_line_note_campaign_targets
+--     逐字還原成 20260929000000:208 那版 → DROP 三支新函式；前端改回呼叫 rpc_create_customer_orders）
 --
 -- 前置檢查的 md5（算法同 20261013000000 檔頭：取 pg_proc.prosrc，CRLF→LF 後 md5）：
 --                                    基底版                            本檔新版
---   rpc_line_note_apply_comment      abb0c5f491f7c4d10427691f09a01066  21fa8bf0908b959b2ffb454e4d12d19f
+--   rpc_line_note_apply_comment      abb0c5f491f7c4d10427691f09a01066  1cc0ceb86e330c1cfbea9eaea17959f8
 --   rpc_create_customer_orders       966e66281864bdd86ceb84cb01a6b81d  （不改，必須是這版）
 --   _campaign_cap_remaining          （新函式：不存在，或本檔版 17b0aa2bf45fe6096b6765d50fb0f01a）
 --   rpc_create_customer_orders_capped（新函式：不存在，或本檔版 bbe136060b43564dea8b799308807311）
+--   rpc_line_note_campaign_targets   ea0a31d39ed9d3dcdae8ea25e1155118  addb3242879ae4019347987153fa08fb
+--   _line_note_comment_is_todo 三參數 21b6924a437353167f805553d0db28b3  （不改，必須是這版）
+--   _line_note_comment_is_todo 四參數（新函式：不存在，或本檔版 96fafa615db9e21b49500472d15c9ca4）
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -84,7 +95,7 @@ BEGIN
       FROM (VALUES
         -- 要覆寫的：線上必須是基底版或本檔新版
         ('public.rpc_line_note_apply_comment(bigint, boolean)', TRUE,
-         'abb0c5f491f7c4d10427691f09a01066', '21fa8bf0908b959b2ffb454e4d12d19f'),
+         'abb0c5f491f7c4d10427691f09a01066', '1cc0ceb86e330c1cfbea9eaea17959f8'),
         -- 要呼叫、不改的：必須是 20261013000000:941 那版
         ('public.rpc_create_customer_orders(bigint, bigint, jsonb)', TRUE,
          '966e66281864bdd86ceb84cb01a6b81d', '966e66281864bdd86ceb84cb01a6b81d'),
@@ -92,7 +103,13 @@ BEGIN
         ('public._campaign_cap_remaining(bigint)', FALSE,
          '17b0aa2bf45fe6096b6765d50fb0f01a', '17b0aa2bf45fe6096b6765d50fb0f01a'),
         ('public.rpc_create_customer_orders_capped(bigint, bigint, jsonb)', FALSE,
-         'bbe136060b43564dea8b799308807311', 'bbe136060b43564dea8b799308807311')
+         'bbe136060b43564dea8b799308807311', 'bbe136060b43564dea8b799308807311'),
+        ('public.rpc_line_note_campaign_targets(bigint)', TRUE,
+         'ea0a31d39ed9d3dcdae8ea25e1155118', 'addb3242879ae4019347987153fa08fb'),
+        ('public._line_note_comment_is_todo(text, text, text)', TRUE,
+         '21b6924a437353167f805553d0db28b3', '21b6924a437353167f805553d0db28b3'),
+        ('public._line_note_comment_is_todo(text, text, text, text)', FALSE,
+         '96fafa615db9e21b49500472d15c9ca4', '96fafa615db9e21b49500472d15c9ca4')
       ) AS t(sig, must_exist, md5_base, md5_new)
   LOOP
     v_oid := to_regprocedure(v_rec.sig);
@@ -480,6 +497,8 @@ BEGIN
     RETURN QUERY SELECT 'error'::TEXT, v_err, NULL::BIGINT; RETURN;
   END IF;
   IF array_length(v_cap_cut, 1) > 0 THEN
+    -- ⚠ 前綴「限量已滿，只加部分」是固定常數：_line_note_comment_is_todo 四參數版、
+    --   前端 lib/lineNoteStatus.ts 的 CAP_PARTIAL_NOTE_PREFIX 靠「resolution_note 開頭是它」判斷待處理，改字三邊一起改。
     v_cap_note := '限量已滿，只加部分：' || array_to_string(v_cap_cut, '、');
   END IF;
   v_new_items := v_capped;   -- 下面建單、標 line_bot 來源都用截過的量
@@ -521,9 +540,9 @@ BEGIN
          error = NULL, processed_at = NOW(),
          resolution_note = CASE WHEN array_length(v_dup_codes, 1) > 0 OR v_cap_note IS NOT NULL
                                 THEN concat_ws('；',
+                                       v_cap_note,   -- 放第一個：待處理判斷看開頭
                                        CASE WHEN array_length(v_dup_codes, 1) > 0
-                                            THEN '已略過重複：' || array_to_string(v_dup_codes, '、') END,
-                                       v_cap_note)
+                                            THEN '已略過重複：' || array_to_string(v_dup_codes, '、') END)
                                 ELSE resolution_note END
    WHERE id = p_comment_id;
   PERFORM public._line_note_remember_commenter(v_tenant, v_c.commenter_id, v_c.commenter_name, v_member_id, 'auto');
@@ -531,3 +550,125 @@ BEGIN
 END;
 $$;
 GRANT EXECUTE ON FUNCTION public.rpc_line_note_apply_comment(BIGINT, BOOLEAN) TO authenticated;
+
+
+-- ----------------------------------------------------------------------------
+-- 4. _line_note_comment_is_todo 四參數版 —— 前三個條件逐字照 20260923120000:17（三參數版不動），
+--    多一條：只加到部分的限量留言（status='ordered' 且 resolution_note 開頭是固定前綴）也算待處理。
+--    前綴跟 rpc_line_note_apply_comment 寫入的、前端 CAP_PARTIAL_NOTE_PREFIX 同一個字串。
+--    小幫手按「已解決」→ status 變 resolved → 不再符合，離開待處理。
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public._line_note_comment_is_todo(
+  p_status TEXT, p_member_no_hint TEXT, p_text TEXT, p_resolution_note TEXT
+) RETURNS BOOLEAN
+LANGUAGE sql IMMUTABLE
+AS $$
+  SELECT p_status IN ('pending','unmatched','error')
+      OR (p_status = 'no_order' AND (
+            COALESCE(p_member_no_hint, '') <> ''
+         OR COALESCE(p_text, '') ~ '[+＋]\s*[0-9０-９]|[加打]\s*[0-9０-９一二三四五六七八九]'))
+      OR (p_status = 'ordered' AND COALESCE(p_resolution_note, '') LIKE '限量已滿，只加部分%');
+$$;
+
+
+-- ----------------------------------------------------------------------------
+-- 5. rpc_line_note_campaign_targets —— 基底 20260929000000:208 逐字，只改 comment_todo 那一處呼叫
+-- ----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.rpc_line_note_campaign_targets(p_campaign_id bigint)
+ RETURNS TABLE(community_id bigint, home_id text, home_name text, home_kind text, store_id bigint, store_name text, account_id bigint, account_label text, account_status text, auto_post_on_open boolean, listen_enabled boolean, sales_channels text[], in_scope boolean, can_post boolean, blocked_reason text, post_id bigint, post_status text, line_post_id text, post_text text, posted_at timestamp with time zone, last_read_at timestamp with time zone, closed_reason text, post_error text, share_state text, shared_at timestamp with time zone, comment_total integer, comment_ordered integer, comment_duplicate integer, comment_todo integer)
+ LANGUAGE plpgsql
+ STABLE SECURITY DEFINER
+AS $function$
+DECLARE
+  v_tenant   UUID    := public._current_tenant_id();
+  -- 發文的角色集合＝rpc_line_note_queue_posts 會放行的那組，不要另外定義
+  v_may_post BOOLEAN := COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '')
+                        = ANY (ARRAY['owner','admin','hq_manager','assistant','']);
+  v_owner    BIGINT;
+  v_cstat    TEXT;
+  v_chan     TEXT;
+BEGIN
+  IF v_tenant IS NULL THEN RAISE EXCEPTION 'no tenant in token'; END IF;
+
+  SELECT g.owner_store_id, g.status, g.sales_channel INTO v_owner, v_cstat, v_chan
+    FROM group_buy_campaigns g WHERE g.id = p_campaign_id AND g.tenant_id = v_tenant;
+  IF v_cstat IS NULL THEN RAISE EXCEPTION 'campaign % not in tenant', p_campaign_id; END IF;
+
+  -- 分店只能看總部的團與自己店開的團
+  IF NOT public._line_note_branch_visible_store(v_owner) THEN
+    RAISE EXCEPTION 'wrong_store: 這不是你的店開的團';
+  END IF;
+
+  RETURN QUERY
+  WITH c AS (
+    SELECT lc.*,
+           a.label  AS a_label,
+           a.status AS a_status,
+           -- 店家範圍：總部的團發到所有社群，店家自開的團只發到那家店的
+           -- （跟 _line_note_on_campaign_open 同一條件，改一邊記得改另一邊）
+           (v_owner IS NULL OR lc.store_id = v_owner) AS scoped,
+           -- 類別範圍：漂漂館的團只發到有勾漂漂館的社群，反之亦然
+           public._line_note_takes_channel(lc.sales_channels, v_chan) AS takes_chan,
+           -- 子群：跟著母社群分享，不另外發文
+           (SELECT COALESCE(NULLIF(m.home_name, ''), m.home_id) FROM line_note_communities m
+             WHERE m.id = lc.share_from_community_id) AS parent_name
+      FROM line_note_communities lc
+      JOIN line_note_accounts a ON a.id = lc.account_id
+     WHERE lc.tenant_id = v_tenant
+       -- 分店看不到別家店綁的社群（總部社群 store_id IS NULL，大家都看得到）
+       AND public._line_note_branch_visible_store(lc.store_id)
+  ), p AS (
+    SELECT lp.*,
+           COALESCE(s.total, 0)     AS n_total,
+           COALESCE(s.ordered, 0)   AS n_ordered,
+           COALESCE(s.duplicate, 0) AS n_duplicate,
+           COALESCE(s.todo, 0)      AS n_todo
+      FROM line_note_posts lp
+      LEFT JOIN LATERAL (
+        SELECT count(*)::INT AS total,
+               count(*) FILTER (WHERE cm.status = 'ordered')::INT   AS ordered,
+               count(*) FILTER (WHERE cm.status = 'duplicate')::INT AS duplicate,
+               count(*) FILTER (WHERE public._line_note_comment_is_todo(cm.status, cm.member_no_hint, cm.text, cm.resolution_note))::INT AS todo
+          FROM line_note_comments cm WHERE cm.post_id = lp.id
+      ) s ON TRUE
+     WHERE lp.tenant_id = v_tenant AND lp.campaign_id = p_campaign_id
+  )
+  SELECT c.id, c.home_id, c.home_name, c.home_kind,
+         c.store_id, st.name,
+         c.account_id, c.a_label, c.a_status,
+         c.auto_post_on_open, c.listen_enabled,
+         c.sales_channels,
+         (c.scoped AND c.takes_chan) AS in_scope,
+         -- can_post / blocked_reason 要跟 rpc_line_note_queue_posts 擋的東西**一模一樣**。
+         -- 注意「已經發過」的判準是 posted 或 line_post_id 有值，不是「有這一列」——
+         -- status='failed'（發文失敗、LINE 上根本沒東西）必須還能再發一次。
+         (v_may_post AND v_owner IS NULL AND c.scoped AND c.takes_chan AND c.a_status = 'active'
+            AND c.share_from_community_id IS NULL
+            AND v_cstat IN ('open','closed')
+            AND NOT (p.id IS NOT NULL AND (p.status = 'posted' OR p.line_post_id IS NOT NULL))) AS can_post,
+         CASE WHEN c.share_from_community_id IS NOT NULL
+                                                    THEN '子群：跟著「' || COALESCE(c.parent_name, '?') || '」分享，不另外發文'
+              WHEN p.id IS NOT NULL AND (p.status = 'posted' OR p.line_post_id IS NOT NULL)
+                                                    THEN '已經發過了'
+              WHEN v_owner IS NOT NULL              THEN '門市自開團不發 LINE 記事本'
+              WHEN NOT v_may_post                   THEN '發文到社群只有總部能操作'
+              WHEN NOT c.scoped                     THEN '這個社群只收該店自開的團'
+              WHEN NOT c.takes_chan                 THEN '這個社群沒有開放「' || public._line_note_channel_label(v_chan) || '」的團'
+              WHEN c.a_status <> 'active'            THEN 'LINE 帳號沒有登入'
+              WHEN v_cstat NOT IN ('open','closed')  THEN '這團不是開團中／已收單'
+         END,
+         p.id, p.status, p.line_post_id, p.text,
+         p.posted_at, p.last_read_at, p.closed_reason, p.last_error,
+         p.share_state, p.shared_at,
+         p.n_total, p.n_ordered, p.n_duplicate, p.n_todo
+    FROM c
+    LEFT JOIN p ON p.community_id = c.id
+    LEFT JOIN stores st ON st.id = c.store_id
+   -- 範圍外（別家店的 / 沒開放這一類團的）不列出來 —— 清單只留真的發得到的。
+   -- 唯一例外：已經有貼文的一定要出現，設定是後來才改的，歷史不能憑空消失。
+   -- 一個都沒有時由彈窗寫出原因（「只發得到有勾這一類的社群」）。
+   WHERE (c.scoped AND c.takes_chan) OR p.id IS NOT NULL
+   ORDER BY (p.id IS NOT NULL) DESC, c.home_name NULLS LAST, c.id;
+END;
+$function$;
+GRANT EXECUTE ON FUNCTION public.rpc_line_note_campaign_targets(BIGINT) TO authenticated;

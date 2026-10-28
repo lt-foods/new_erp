@@ -31,15 +31,21 @@ export const HOME_KIND_LABEL: Record<string, string> = {
 const ORDERISH_SOURCE = "[+＋]\\s*[0-9０-９]|[加打]\\s*[0-9０-９一二三四五六七八九]";
 const ORDERISH = new RegExp(ORDERISH_SOURCE);
 
+// 限量團留言「只加到一部分」（20261028000000）：status 是 ordered，但 resolution_note 開頭是這個前綴 →
+// 還要人看（回覆客人沒買到的量）。DB 的 rpc_line_note_apply_comment 寫入、
+// `_line_note_comment_is_todo` 四參數版判斷，都是同一個字串，改字三邊一起改。
+export const CAP_PARTIAL_NOTE_PREFIX = "限量已滿，只加部分";
+
 /**
  * isTodoComment 的 PostgREST 版（給 `.or(...)`），跟下面的 JS 判定、DB 的
- * `_line_note_comment_is_todo(status, hint, text)` 三份同一條規則。
+ * `_line_note_comment_is_todo(status, hint, text, resolution_note)` 三份同一條規則。
  * 留言加單分頁的「待處理」要直接向 DB 只撈待處理的 —— 先撈最新 300 則再前端過濾，
  * 選「全部社群」時待處理的會被別的社群自動加單成功的留言擠出 300 則外（2026-09-26）。
  * 2026-09-26 對線上驗過：這條 or 的 count 跟 DB 函式算出來的一樣（383）。
  */
 export const TODO_COMMENT_OR_FILTER =
-  `status.in.(pending,unmatched,error),and(status.eq.no_order,or(member_no_hint.not.is.null,text.match.${ORDERISH_SOURCE}))`;
+  `status.in.(pending,unmatched,error),and(status.eq.no_order,or(member_no_hint.not.is.null,text.match.${ORDERISH_SOURCE})),` +
+  `and(status.eq.ordered,resolution_note.like.${CAP_PARTIAL_NOTE_PREFIX}*)`;
 
 /**
  * 這則留言還要人看嗎？
@@ -50,19 +56,25 @@ export function isUnreadableOrder(c: { status: string; member_no_hint?: string |
   return c.status === "no_order" && (!!c.member_no_hint || ORDERISH.test(c.text ?? ""));
 }
 
-export function isTodoComment(c: { status: string; member_no_hint?: string | null; text?: string | null }): boolean {
-  return ["pending", "unmatched", "error"].includes(c.status) || isUnreadableOrder(c);
+/** 限量團只加到一部分的留言（已加單，但還要人回覆客人） */
+export function isCapPartialOrder(c: { status: string; resolution_note?: string | null }): boolean {
+  return c.status === "ordered" && (c.resolution_note ?? "").startsWith(CAP_PARTIAL_NOTE_PREFIX);
+}
+
+export function isTodoComment(c: { status: string; member_no_hint?: string | null; text?: string | null; resolution_note?: string | null }): boolean {
+  return ["pending", "unmatched", "error"].includes(c.status) || isUnreadableOrder(c) || isCapPartialOrder(c);
 }
 
 export type CommentStat = { total: number; ordered: number; duplicate: number; todo: number };
 
-export function commentStats(rows: { status: string; member_no_hint?: string | null; text?: string | null }[]): CommentStat {
+export function commentStats(rows: { status: string; member_no_hint?: string | null; text?: string | null; resolution_note?: string | null }[]): CommentStat {
   const st: CommentStat = { total: 0, ordered: 0, duplicate: 0, todo: 0 };
   for (const c of rows) {
     st.total++;
     if (c.status === "ordered") st.ordered++;
     else if (c.status === "duplicate") st.duplicate++;
-    else if (isTodoComment(c)) st.todo++;
+    // 待處理另外算（跟 DB rpc_line_note_campaign_targets 一樣）：限量只加到部分的留言既是已加單、也是待處理
+    if (isTodoComment(c)) st.todo++;
   }
   return st;
 }

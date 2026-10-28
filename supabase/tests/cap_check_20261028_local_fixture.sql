@@ -59,3 +59,22 @@ RETURNS TABLE (member_id bigint, home_store_id bigint, ambiguous text) LANGUAGE 
 CREATE FUNCTION public._line_note_pick_channel(p_tenant uuid, p_store bigint) RETURNS bigint LANGUAGE sql AS $$
   SELECT id FROM line_channels WHERE tenant_id = p_tenant AND is_active ORDER BY id LIMIT 1 $$;
 CREATE FUNCTION public._line_note_remember_commenter(p_tenant uuid, p_cid text, p_name text, p_member bigint, p_src text) RETURNS void LANGUAGE sql AS $$ SELECT $$;
+
+-- ── 開團彈窗群組清單（rpc_line_note_campaign_targets）要用的欄位與 stub ──
+--   另外要逐字貼：_line_note_comment_is_todo 三參數 ← 20260923120000_line_note_todo_orderish.sql:17
+--                 rpc_line_note_campaign_targets ← 20260929000000_line_note_no_bot_for_store_campaign.sql:208
+--                 _line_note_settle_keyed_comments ← 20260928000000_line_note_settle_keyed_comments.sql:27
+ALTER TABLE stores ADD COLUMN name text;
+ALTER TABLE group_buy_campaigns ADD COLUMN sales_channel text;
+CREATE TABLE line_note_accounts (id bigserial PRIMARY KEY, label text, status text);
+ALTER TABLE line_note_communities
+  ADD COLUMN tenant_id uuid, ADD COLUMN home_id text, ADD COLUMN home_name text, ADD COLUMN home_kind text,
+  ADD COLUMN account_id bigint, ADD COLUMN auto_post_on_open boolean, ADD COLUMN listen_enabled boolean,
+  ADD COLUMN sales_channels text[], ADD COLUMN share_from_community_id bigint;
+ALTER TABLE line_note_posts
+  ADD COLUMN tenant_id uuid, ADD COLUMN status text, ADD COLUMN line_post_id text, ADD COLUMN text text,
+  ADD COLUMN posted_at timestamptz, ADD COLUMN last_read_at timestamptz, ADD COLUMN closed_reason text,
+  ADD COLUMN last_error text, ADD COLUMN share_state text, ADD COLUMN shared_at timestamptz;
+CREATE FUNCTION public._line_note_branch_visible_store(p_store bigint) RETURNS boolean LANGUAGE sql AS $$ SELECT true $$;
+CREATE FUNCTION public._line_note_takes_channel(p_channels text[], p_chan text) RETURNS boolean LANGUAGE sql AS $$ SELECT true $$;
+CREATE FUNCTION public._line_note_channel_label(p_chan text) RETURNS text LANGUAGE sql AS $$ SELECT p_chan $$;

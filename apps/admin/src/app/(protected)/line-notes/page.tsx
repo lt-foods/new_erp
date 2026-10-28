@@ -15,7 +15,7 @@ import { OrderDetail } from "@/components/OrderDetail";
 import { OrderEntryView } from "@/components/OrderEntryView";
 import { LineNoteParseRulesTab } from "@/components/LineNoteParseRulesTab";
 import {
-  COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, TODO_COMMENT_OR_FILTER, commentStats, fmtNoteTime, isTodoComment, isUnreadableOrder,
+  COMMENT_STATUS_LABEL, HOME_KIND_LABEL, POST_STATUS_LABEL, TODO_COMMENT_OR_FILTER, commentStats, fmtNoteTime, isCapPartialOrder, isTodoComment, isUnreadableOrder,
 } from "@/lib/lineNoteStatus";
 import { deleteLineNotePost } from "@/lib/lineNoteDelete";
 import { updateLineNotePost } from "@/lib/lineNoteUpdate";
@@ -1190,7 +1190,7 @@ function commentResult(c: Comment, orders: Map<number, OrderInfo>) {
     ? <><span className="text-zinc-600 dark:text-zinc-300">{o.store_name ?? "？店"}</span>{" "}<OrderLink id={o.id} no={o.order_no} /></>
     : c.customer_order_id ? <span>訂單 #{c.customer_order_id}</span> : null;
   switch (c.status) {
-    case "ordered":   return <><Badge tone="green">已加單</Badge>{orderCell}{reacted}</>;
+    case "ordered":   return <><Badge tone="green">已加單</Badge>{orderCell}{reacted}{isCapPartialOrder(c) && <span className="text-amber-700 dark:text-amber-300">{c.resolution_note}</span>}</>;
     case "duplicate": return <><Badge tone="blue">已有訂單</Badge>{orderCell}{reacted}</>;
     case "resolved":  return <><Badge tone="green">已解決</Badge><span className="text-zinc-500">{c.resolution_note ?? ""}</span></>;
     case "ignored":   return <Badge tone="gray">忽略</Badge>;
@@ -1225,7 +1225,8 @@ function CommentActionButtons({ c, busy, readOnly, retry, setStatus, unbind, onA
         onClick={() => unbind(c, c.member_id!, "目前對到的會員")}>取消綁定</SpinButton>
     : null;
   // 已加成單的不給「重試」：重跑只會判成重複，沒有意義；要重加請先退回未處理。
-  if (c.status === "ordered") return <div className={className}>{back}{unbindBtn}</div>;
+  // 限量只加到部分的：回覆客人後按「已解決」離開待處理（訂單不動）
+  if (c.status === "ordered") return <div className={className}>{isCapPartialOrder(c) && <SpinButton type="button" className={`${cls} text-emerald-700`} loading={b} onClick={() => setStatus(c, "resolved")}>已解決</SpinButton>}{back}{unbindBtn}</div>;
   // 忽略／已解決／已有訂單還能直接重跑（RPC 帶 p_force）：當初對不到人、或先前那張單已經取消
   if (c.status === "ignored" || c.status === "resolved" || c.status === "duplicate") {
     return <div className={className}>{retryBtn}{assign}{back}{unbindBtn}</div>;
@@ -1578,10 +1579,10 @@ function PostsTab({ communities, communityById, tick, notify, fail, readOnly, ca
     const ids = (posts ?? []).map((p) => p.id);
     if (ids.length === 0) { setCounts(new Map()); return; }
     const { data, error } = await getSupabase().from("line_note_comments")
-      .select("post_id,status,member_no_hint,text").in("post_id", ids);
+      .select("post_id,status,member_no_hint,text,resolution_note").in("post_id", ids);
     if (error) return;   // 統計拿不到就不顯示，不要擋住整頁
-    const byPost = new Map<number, { status: string; member_no_hint: string | null; text: string | null }[]>();
-    for (const r of (data ?? []) as { post_id: number; status: Comment["status"]; member_no_hint: string | null; text: string | null }[]) {
+    const byPost = new Map<number, { status: string; member_no_hint: string | null; text: string | null; resolution_note: string | null }[]>();
+    for (const r of (data ?? []) as { post_id: number; status: Comment["status"]; member_no_hint: string | null; text: string | null; resolution_note: string | null }[]) {
       const cur = byPost.get(r.post_id);
       if (cur) cur.push(r); else byPost.set(r.post_id, [r]);
     }

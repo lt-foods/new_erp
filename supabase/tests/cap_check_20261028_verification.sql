@@ -221,3 +221,21 @@ DO $t$ DECLARE r record; c record; BEGIN
   IF r.out_status <> 'error' OR c.error <> '已達限量上限，未加單（A 要 1 件只加 0 件）' THEN RAISE EXCEPTION '14 失敗 %', row_to_json(c); END IF;
   RAISE NOTICE '✅ 14 一項重複、另一項限量已滿 → error：%', c.error;
 END $t$;
+
+-- 15. 一項重複＋一項只加部分 → ordered，resolution_note 限量那句放最前面（待處理判斷看開頭）
+INSERT INTO group_buy_campaigns (id, tenant_id, campaign_no, status, total_cap_qty) VALUES (80,'00000000-0000-0000-0000-000000000001','GRP-80','open',3);
+INSERT INTO campaign_items (id, tenant_id, campaign_id, sku_id, unit_price, cap_qty, sort_order) VALUES
+ (801,'00000000-0000-0000-0000-000000000001',80,1,100,NULL,1),
+ (802,'00000000-0000-0000-0000-000000000001',80,2,100,NULL,2);
+INSERT INTO line_note_posts (id, campaign_id, community_id) VALUES (80,80,1);
+SELECT * FROM rpc_create_customer_orders_capped(80, 1, pg_temp.rows(1, '[{"campaign_item_id":801,"qty":1}]'));
+INSERT INTO line_note_comments (id, tenant_id, post_id, parsed, member_no_hint, commenter_name, text) VALUES
+ (8,'00000000-0000-0000-0000-000000000001',80,'[{"code":"A","qty":1},{"code":"B","qty":5}]','M1','客1','M1 A1 B5');
+DO $t$ DECLARE r record; c record; BEGIN
+  SELECT * INTO r FROM rpc_line_note_apply_comment(8);
+  SELECT * INTO c FROM line_note_comments WHERE id = 8;
+  IF r.out_status <> 'ordered' OR c.resolution_note <> '限量已滿，只加部分：B 要 5 件只加 2 件；已略過重複：A'
+     OR (SELECT qty FROM customer_order_items WHERE order_id = r.out_order_id AND campaign_item_id = 802) <> 2 THEN
+    RAISE EXCEPTION '15 失敗 %', row_to_json(c); END IF;
+  RAISE NOTICE '✅ 15 重複＋部分：resolution_note=%', c.resolution_note;
+END $t$;
