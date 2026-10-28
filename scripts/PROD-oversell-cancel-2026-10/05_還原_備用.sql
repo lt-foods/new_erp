@@ -16,6 +16,10 @@
 --    ・TF0001 是轉入單，復原取消的守衛 3 一律擋（:1522-1527）。
 --    ・只救 0040 的話，貨會回到 0040 原本的客人、原本的店，而不是 TF0001 經國店那位 → 跟 02 之前不一樣。
 --    ⇒ 這一對要撤回請人工：後台對 0040 按「復原取消」，再重新「轉給別人」到經國店。結尾那行也會寫。
+--  ★ 只認名單：02 那 73 張＋0040 的單號（跟 02 第 1 步逐字相同），而且編輯歷史是「→ 已取消」、這家公司；名單外一律不碰。
+--  ★ 還原後還要人工的（結尾那行會明列，不會寫「完成」）：
+--    ・復原取消回傳「要重新派貨」（needs_redispatch）的單（02 只取消待確認／已確認，預期 0 張）。
+--    ・互助板帶來的單：取消時量已還回互助貼文（20260826000010:85-110），復原取消不會再扣回。
 --  ★ 會停下來的情況（都是什麼都不改）：
 --    ・同一位客人在同一團已經有另一張進行中的單（守衛 5 :1535-1564）—— 例如老闆已經幫 0006 古華、0018 忠順補了 1 件
 --      （補的時候會開一張新單），那兩張就救不回來；這份會先列出撞到的單號再停。
@@ -37,6 +41,9 @@ DECLARE
   v_camp_ids      bigint[];
   v_t0            timestamptz;
   v_ids           bigint[];
+  v_allow_nos     text[];     -- 02 那 73 張＋0040 的名單（只還原名單內的）
+  v_redispatch    text := '';
+  v_aid           text;
   v_cnt           int;
   v_bad           text;
   v_ret           jsonb;
@@ -73,11 +80,21 @@ BEGIN
     RAISE EXCEPTION '【停】找不到 02 的紀錄（02 沒貼過？）。什麼都沒改。';
   END IF;
 
-  -- 02 那一次取消的單（不含 TF0001／0040）
+  -- 02 的名單（跟 02 第 1 步逐字相同）
+  v_allow_nos :=
+       ARRAY(SELECT 'GRP-20261015-024-' || lpad(n::text, 4, '0') FROM generate_series(6, 46) n)
+    || ARRAY['GRP-20261015-024-INT0047']
+    || ARRAY(SELECT 'GRP-20261016-048-' || lpad(n::text, 4, '0') FROM generate_series(27, 43) n WHERE n <> 40)
+    || ARRAY['GRP-20261016-048-TF0001', 'GRP-20261016-048-0040']
+    || ARRAY(SELECT 'GRP-20261021-018-' || lpad(n::text, 4, '0') FROM generate_series(18, 31) n);
+
+  -- 02 那一次取消的單：名單內、編輯歷史是「→ cancelled」、這家公司（不含 TF0001／0040）
   SELECT array_agg(co.id ORDER BY co.order_no) INTO v_ids
     FROM public.customer_order_audit_log a JOIN public.customer_orders co ON co.id = a.order_id
    WHERE a.edit_reason = c_tag AND a.entity_type = 'order' AND a.field = 'status' AND a.created_at = v_t0
-     AND co.campaign_id = ANY (v_camp_ids) AND co.order_no <> ALL (c_skip_nos);
+     AND a.after_value = to_jsonb('cancelled'::text) AND a.tenant_id = v_tenant AND a.entity_id = co.id
+     AND co.campaign_id = ANY (v_camp_ids) AND co.tenant_id = v_tenant
+     AND co.order_no = ANY (v_allow_nos) AND co.order_no <> ALL (c_skip_nos);
   IF v_ids IS NULL THEN
     RAISE EXCEPTION '【停】02 那一次沒有可以還原的單。什麼都沒改。';
   END IF;
@@ -127,6 +144,9 @@ BEGIN
     v_ret := public.rpc_restore_cancelled_order(r.id, p_operator, c_tag_undo);
     n_done := n_done + 1;
     v_wallet := v_wallet + COALESCE((v_ret ->> 'wallet_recharged')::numeric, 0);
+    IF COALESCE((v_ret ->> 'needs_redispatch')::boolean, FALSE) THEN
+      v_redispatch := v_redispatch || CASE WHEN v_redispatch = '' THEN '' ELSE '、' END || r.order_no;
+    END IF;
   END LOOP;
 
   PERFORM set_config('request.jwt.claims', '', true);
@@ -139,7 +159,22 @@ BEGIN
     RAISE EXCEPTION '【停】驗算不過：這幾張沒有救回來：%。整筆取消、什麼都沒改，請截圖給 CEO。', v_bad;
   END IF;
 
-  RAISE NOTICE '完成：還原 % 張。⚠ 辣椒醬 TF0001／0040 這一對沒有還原（要人工：0040 按「復原取消」後重新轉單到經國店）。用過儲值金的已重新扣回 % 元。請貼 04 看最後一段。',
-    n_done, trim_scale(v_wallet);
+  -- 互助板帶來的單：取消時量已還回互助貼文（20260826000010:85-110），復原取消不會再扣回 → 要人工
+  SELECT string_agg(DISTINCT co.order_no, '、') INTO v_aid
+    FROM public.customer_orders co
+   WHERE co.id = ANY (v_ids)
+     AND (co.aid_board_id IS NOT NULL
+          OR EXISTS (SELECT 1 FROM public.customer_order_transfer_links l WHERE l.dest_order_id = co.id AND l.aid_board_id IS NOT NULL));
+
+  IF v_redispatch <> '' OR v_aid IS NOT NULL THEN
+    RAISE NOTICE '⚠ 還原了 % 張，但「沒有完全回到 02 之前」，還有人工要做：% %（辣椒醬 TF0001／0040 這一對也沒有還原：0040 按「復原取消」後重新轉單到經國店）。用過儲值金的已重新扣回 % 元。請截圖給 CEO。',
+      n_done,
+      CASE WHEN v_redispatch <> '' THEN '【要重新派貨】' || v_redispatch || '；' ELSE '' END,
+      CASE WHEN v_aid IS NOT NULL THEN '【互助貼文的量要人工扣回】' || v_aid || '；' ELSE '' END,
+      trim_scale(v_wallet);
+  ELSE
+    RAISE NOTICE '完成：還原 % 張。⚠ 辣椒醬 TF0001／0040 這一對沒有還原（要人工：0040 按「復原取消」後重新轉單到經國店）。用過儲值金的已重新扣回 % 元。請貼 04 看最後一段。',
+      n_done, trim_scale(v_wallet);
+  END IF;
 END
 $oversell_undo$;

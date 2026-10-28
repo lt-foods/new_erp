@@ -9,8 +9,9 @@
 --  各段在看什麼
 --    ⓪ 對象：三個團各剛好一個、上限是不是 6／34／22、三團是同一家公司
 --    ① 要取消的 73 張（42＋17＋14；需求單寫 72 是加總筆誤），一張一列：團、單號、店、件數、狀態、儲值金、是不是轉入單
---       ＋ 0040（辣椒醬那張「已轉出」的原單）：02 取消 TF0001 時它會被系統復活，02 會接著取消它
---    ② 檢查：名單 73 張都找得到、件數合計、保留的單沒被列進去、名單外有沒有新冒出來的有效單、
+--       ＋ 0040（辣椒醬 TF0001 的原單）：02 取消 TF0001 時它會被系統復活，02 會接著取消它
+--       ⚠ 這份只收 待確認／已確認：有任何一張出貨中（或其他狀態）打 ❌，02 會停、改人工處理
+--    ② 檢查：名單 73 張都找得到、件數合計、保留的 48 張逐張都在且有效（張數＋件數）、名單外有沒有新冒出來的有效單、
 --       三團取消後預估剩多少件（應為 5／34／21；老闆之後各補 1 件 → 6／34／22）
 --    ③ 儲值金：會自動退幾張、多少錢；付過錢但不是儲值金的（不會自動退）
 --    ④ 轉入單 TF0001 與原單 0040：復活後會不會直接變「可取貨」（會的話 02 會停）、會不會撞「一人一團一張」
@@ -47,10 +48,10 @@ lst AS (   -- 名單（kind：cancel＝要取消的 73 張；follow＝0040 轉�
 ),
 exp AS (   -- 每團：上限、要取消幾張、保留的單應有幾件、取消後預估剩幾件
   SELECT * FROM (VALUES
-    ('GRP-20261015-024', '洗面乳', 6::numeric, 42, 5::numeric),
-    ('GRP-20261016-048', '辣椒醬', 34::numeric, 17, 34::numeric),
-    ('GRP-20261021-018', '微燻李', 22::numeric, 14, 21::numeric)
-  ) v(campaign_no, label, cap, n_cancel, after_qty)
+    ('GRP-20261015-024', '洗面乳', 6::numeric, 42, 5::numeric, 5),
+    ('GRP-20261016-048', '辣椒醬', 34::numeric, 17, 34::numeric, 26),
+    ('GRP-20261021-018', '微燻李', 22::numeric, 14, 21::numeric, 17)
+  ) v(campaign_no, label, cap, n_cancel, after_qty, n_keep)
 ),
 cp AS (
   SELECT c.id, c.tenant_id, c.campaign_no, c.status, c.total_cap_qty,
@@ -75,7 +76,7 @@ eff AS (   -- 現在算「有效」的單
 tgt AS (   -- 名單 × 實際訂單
   SELECT l.campaign_no, l.order_no, l.kind, o.id, o.status, o.store_name, o.live_qty, o.wallet, o.payment_status,
          o.member_id, o.transferred_from_order_id, o.transferred_to_order_id, o.aid_board_id,
-         m.status AS member_status, m.member_type
+         m.status AS member_status, m.member_type, m.id AS member_row, m.tenant_id AS member_tenant, o.tenant_id
     FROM lst l
     LEFT JOIN ords o ON o.order_no = l.order_no AND o.campaign_no = l.campaign_no
     LEFT JOIN public.members m ON m.id = o.member_id
@@ -150,20 +151,24 @@ FROM (
   SELECT 1, ROW_NUMBER() OVER (ORDER BY t.campaign_no, t.order_no)::int, '① 要取消的單',
          (SELECT label FROM exp WHERE exp.campaign_no = t.campaign_no), t.order_no, t.store_name, t.live_qty,
          CASE WHEN t.id IS NULL THEN '❌ 系統裡找不到這張單'
-              WHEN t.kind = 'follow' AND t.status = 'transferred_out' THEN '✅ 已轉出（轉成 TF0001）'
-              WHEN t.kind = 'follow' AND t.status IN ('pending', 'confirmed', 'shipping') THEN '⚠ ' || t.status || '（TF0001 可能已有人先取消過；02 照樣取消它）'
-              WHEN t.kind = 'follow' THEN '❌ ' || t.status || '（預期 transferred_out）'
-              WHEN t.status IN ('pending', 'confirmed', 'shipping') THEN '✅ ' || CASE t.status WHEN 'pending' THEN '待確認' WHEN 'confirmed' THEN '已確認' ELSE '出貨中' END
+              WHEN t.kind = 'follow' AND (SELECT status FROM tf) IS DISTINCT FROM 'cancelled' THEN
+                CASE WHEN t.status = 'transferred_out' THEN '✅ 已轉出（轉成 TF0001）'
+                     WHEN t.status IN ('pending', 'confirmed') THEN '✅ ' || t.status || '（部分轉出，0040 身上還有剩的品項）'
+                     ELSE '❌ ' || t.status || '（這份只處理 已轉出／待確認／已確認，02 會停）' END
+              WHEN t.kind = 'follow' AND t.status IN ('pending', 'confirmed') THEN '⚠ ' || t.status || '（TF0001 已有人先取消過；02 照樣取消它）'
+              WHEN t.kind = 'follow' AND t.status = 'cancelled' THEN '⚠ 已經是已取消（02 會跳過）'
+              WHEN t.kind = 'follow' THEN '❌ ' || t.status || '（02 會停）'
+              WHEN t.status IN ('pending', 'confirmed') THEN '✅ ' || CASE t.status WHEN 'pending' THEN '待確認' ELSE '已確認' END
               WHEN t.status = 'cancelled' THEN '⚠ 已經是已取消（02 會跳過）'
-              ELSE '❌ ' || t.status || '（取消鈕只收 待確認／已確認／出貨中，02 會停）' END,
-         CASE WHEN t.kind = 'follow' THEN '轉出單：02 取消 TF0001 時系統會把它退回「已確認」（20260826000010:249-256），02 接著把它也取消；不算在 73 張裡'
+              WHEN t.status = 'shipping' THEN '❌ 出貨中（取消會作廢調撥、把已出貨量入回來源端；這份不處理，02 會停，改人工）'
+              ELSE '❌ ' || t.status || '（這份只收 待確認／已確認，02 會停）' END,
+         CASE WHEN t.kind = 'follow' THEN '轉出原單：02 取消 TF0001 時系統會把它退回「已確認」（20260826000010:249-256），02 接著把它也取消；不算在 73 張裡'
               ELSE '' END
            || CASE WHEN t.transferred_from_order_id IS NOT NULL THEN '轉入單（從 ' || COALESCE((SELECT src_no FROM tf WHERE tf.id = t.id), '?') || ' 轉來）；' ELSE '' END
            || CASE WHEN t.order_no LIKE '%-INT%' OR t.member_type = 'store_internal' THEN '內部單；' ELSE '' END
            || CASE WHEN t.wallet > 0 THEN '用了儲值金 $' || trim_scale(t.wallet) || '，取消時自動退回；' ELSE '' END
            || CASE WHEN t.wallet = 0 AND t.payment_status = 'paid' THEN '⚠ 付過錢但不是儲值金，不會自動退；' ELSE '' END
            || CASE WHEN t.aid_board_id IS NOT NULL THEN '⚠ 互助板帶來的單，取消會把量還回互助貼文；' ELSE '' END
-           || CASE WHEN t.status = 'shipping' THEN '⚠ 出貨中：取消鈕會照它的規則處理調撥單；' ELSE '' END
     FROM tgt t WHERE t.kind IN ('cancel', 'follow')
 
   -- ② 檢查
@@ -180,15 +185,21 @@ FROM (
          CASE WHEN (SELECT count(*) FROM tgt WHERE kind = 'cancel' AND id IS NOT NULL) = 73 THEN '✅ 73 張' ELSE '❌ 應為 73 張' END,
          '「件數」欄＝這 73 張現在的有效件數合計（參考）'
   UNION ALL
-  SELECT 2, 3, '② 檢查', e.label, '保留的單（不動）', NULL,
-         (SELECT COALESCE(sum(o.live_qty), 0) FROM tgt o WHERE o.campaign_no = e.campaign_no AND o.kind = 'keep'
-             AND o.status NOT IN ('cancelled', 'expired', 'transferred_out')),
-         CASE WHEN (SELECT COALESCE(sum(o.live_qty), 0) FROM tgt o WHERE o.campaign_no = e.campaign_no AND o.kind = 'keep'
-                      AND o.status NOT IN ('cancelled', 'expired', 'transferred_out')) = e.after_qty
-              THEN '✅ ' || trim_scale(e.after_qty) || ' 件' ELSE '❌ 應為 ' || trim_scale(e.after_qty) || ' 件' END,
-         '保留 ' || (SELECT count(*) FROM tgt o WHERE o.campaign_no = e.campaign_no AND o.kind = 'keep' AND o.id IS NOT NULL) || ' 張；'
-           || COALESCE('找不到：' || (SELECT string_agg(o.order_no, '、') FROM tgt o WHERE o.campaign_no = e.campaign_no AND o.kind = 'keep' AND o.id IS NULL), '都找得到')
+  SELECT 2, 3, '② 檢查', e.label, '保留的單（不動）', NULL, k.q,
+         CASE WHEN k.n_found = e.n_keep AND k.n_live = e.n_keep AND k.q = e.after_qty
+              THEN '✅ ' || e.n_keep || ' 張都在、都有效、合計 ' || trim_scale(e.after_qty) || ' 件'
+              ELSE '❌ 應為 ' || e.n_keep || ' 張都有效、合計 ' || trim_scale(e.after_qty) || ' 件（02 會停）' END,
+         '找到 ' || k.n_found || ' 張、有效 ' || k.n_live || ' 張；'
+           || COALESCE('找不到：' || k.missing || '；', '')
+           || COALESCE('不是有效的：' || k.dead, '')
     FROM exp e
+    CROSS JOIN LATERAL (
+      SELECT count(o.id) AS n_found,
+             count(o.id) FILTER (WHERE o.status NOT IN ('cancelled', 'expired', 'transferred_out')) AS n_live,
+             COALESCE(sum(o.live_qty) FILTER (WHERE o.status NOT IN ('cancelled', 'expired', 'transferred_out')), 0) AS q,
+             string_agg(o.order_no, '、') FILTER (WHERE o.id IS NULL) AS missing,
+             string_agg(o.order_no || '＝' || o.status, '、') FILTER (WHERE o.status IN ('cancelled', 'expired', 'transferred_out')) AS dead
+        FROM tgt o WHERE o.campaign_no = e.campaign_no AND o.kind = 'keep') k
   UNION ALL
   SELECT 2, 4, '② 檢查', NULL, '名單外、現在還算有效的單', NULL, (SELECT count(*) FROM orphan),
          CASE WHEN NOT EXISTS (SELECT 1 FROM orphan) THEN '✅ 0 張' ELSE '❌ 有，02 會停' END,
@@ -214,12 +225,13 @@ FROM (
          'ℹ ' || (SELECT count(*) FROM tgt WHERE kind IN ('cancel', 'follow') AND wallet > 0) || ' 張',
          '「件數」欄這裡是金額（元）。取消鈕自己會退（rpc_wallet_refund，20260826000010:203-215）'
   UNION ALL
-  SELECT 3, 2, '③ 儲值金', NULL, '要退儲值金、但會員不是正常狀態', NULL,
-         (SELECT count(*) FROM tgt WHERE kind IN ('cancel', 'follow') AND wallet > 0 AND member_id IS NOT NULL
-             AND COALESCE(member_status, '') <> 'active'),
-         CASE WHEN (SELECT count(*) FROM tgt WHERE kind IN ('cancel', 'follow') AND wallet > 0 AND member_id IS NOT NULL
-                      AND COALESCE(member_status, '') <> 'active') = 0 THEN '✅ 0 張' ELSE '❌ 有（退款會失敗，02 會停）' END,
-         '退款函式只退給 active 的會員（20260606000000:31-37）'
+  SELECT 3, 2, '③ 儲值金', NULL, '要退儲值金、但沒有會員／會員不對／不是正常狀態', NULL,
+         (SELECT count(*) FROM tgt WHERE kind IN ('cancel', 'follow') AND wallet > 0 AND status IS DISTINCT FROM 'cancelled'
+             AND (member_id IS NULL OR member_row IS NULL OR member_tenant IS DISTINCT FROM tenant_id OR COALESCE(member_status, '') <> 'active')),
+         CASE WHEN (SELECT count(*) FROM tgt WHERE kind IN ('cancel', 'follow') AND wallet > 0 AND status IS DISTINCT FROM 'cancelled'
+                      AND (member_id IS NULL OR member_row IS NULL OR member_tenant IS DISTINCT FROM tenant_id OR COALESCE(member_status, '') <> 'active')) = 0
+              THEN '✅ 0 張' ELSE '❌ 有（退不回去，02 會停）' END,
+         '退款函式只退給 active 的會員（20260606000000:31-37）；沒有會員的話取消鈕會直接跳過退款（20260826000010:203）'
   UNION ALL
   SELECT 3, 3, '③ 儲值金', NULL, '付過錢但不是儲值金（不會自動退）', NULL,
          (SELECT count(*) FROM tgt WHERE kind IN ('cancel', 'follow') AND wallet = 0 AND payment_status = 'paid'),
@@ -255,8 +267,7 @@ FROM (
   UNION ALL
   SELECT 4, 5, '④ 轉入單', '辣椒醬', '掛在 TF0001 上、還沒作廢的調撥單', NULL, (SELECT count(*) FROM tf_xfer),
          CASE WHEN NOT EXISTS (SELECT 1 FROM tf_xfer) THEN '✅ 0 張'
-              WHEN (SELECT status FROM tf) = 'shipping' THEN 'ℹ ' || (SELECT count(*) FROM tf_xfer) || ' 張（TF0001 出貨中，取消鈕會一起作廢；已收貨的會擋）'
-              ELSE '⚠ ' || (SELECT count(*) FROM tf_xfer) || ' 張（TF0001 不是出貨中，取消鈕不會碰它，跟手按一樣）' END,
+              ELSE '⚠ ' || (SELECT count(*) FROM tf_xfer) || ' 張（取消鈕只在出貨中才作廢調撥單；這份不收出貨中 → 不會碰它，跟手按一樣）' END,
          COALESCE((SELECT string_agg(id::text || ' ' || status, '、') FROM tf_xfer), '')
 
   -- ⑤ 做過了沒

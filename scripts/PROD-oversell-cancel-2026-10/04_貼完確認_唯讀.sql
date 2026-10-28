@@ -60,12 +60,21 @@ x AS (
     LEFT JOIN marked m ON m.order_id = o.id
 ),
 eff AS (SELECT * FROM ords WHERE status NOT IN ('cancelled', 'expired', 'transferred_out')),
-refund AS ( -- 這一次取消鈕寫的儲值金退款（原因＝'order_cancelled: ' || 02 那一句，20260826000010:204-212）
-  SELECT count(*) AS n, COALESCE(sum(w.change), 0) AS amt
-    FROM public.wallet_ledger w, param p
-   WHERE w.type = 'refund' AND w.source_type = 'customer_order'
-     AND w.source_id IN (SELECT order_id FROM marked)
-     AND w.reason = 'order_cancelled: ' || p.tag
+refund_one AS ( -- 這一次 02 的每一張單：取消鈕在 02 那一刻寫的儲值金退款（原因＝'order_cancelled: ' || 02 那一句，20260826000010:204-212）
+  SELECT x.order_no, x.wallet,
+         (SELECT count(*) FROM public.wallet_ledger w, param p
+           WHERE w.type = 'refund' AND w.source_type = 'customer_order' AND w.source_id = x.id
+             AND w.reason = 'order_cancelled: ' || p.tag AND w.created_at = (SELECT at FROM t0)) AS n,
+         (SELECT COALESCE(sum(w.change), 0) FROM public.wallet_ledger w, param p
+           WHERE w.type = 'refund' AND w.source_type = 'customer_order' AND w.source_id = x.id
+             AND w.reason = 'order_cancelled: ' || p.tag AND w.created_at = (SELECT at FROM t0)) AS amt
+    FROM x WHERE x.in_batch
+),
+refund AS ( -- 用過儲值金的：剛好 1 筆、金額＝該單儲值金；沒用的：0 筆
+  SELECT count(*) FILTER (WHERE n > 0) AS n, COALESCE(sum(amt), 0) AS amt,
+         string_agg(order_no || '（應退 ' || trim_scale(wallet) || '，實際 ' || n || ' 筆 ' || trim_scale(amt) || '）', '、')
+           FILTER (WHERE NOT ((wallet > 0 AND n = 1 AND amt = wallet) OR (wallet = 0 AND n = 0))) AS bad
+    FROM refund_one
 ),
 undo AS (  -- 05 是呼叫 rpc_restore_cancelled_order，它自己寫的編輯歷史原因結尾是「；原因：<05 那一句>」（20261013000000:1695-1700）
   SELECT count(*) AS n, max(a.created_at) AS at
@@ -85,11 +94,12 @@ FROM (
   UNION ALL
   SELECT 1, ROW_NUMBER() OVER (ORDER BY x.campaign_no, x.order_no)::int, '① 要取消的單', x.order_no, x.store_name, x.live_qty,
          CASE WHEN x.id IS NULL THEN '❌ 找不到這張單'
-              WHEN x.status = 'cancelled' THEN '✅ 已取消'
-              ELSE '❌ 現在是 ' || x.status END,
+              WHEN x.status <> 'cancelled' THEN '❌ 現在是 ' || x.status
+              WHEN x.kind = 'follow' AND x.transferred_to_order_id IS NOT NULL THEN '❌ 已取消，但還掛著「轉去哪張」'
+              ELSE '✅ 已取消' END,
          CASE WHEN x.in_batch THEN '02 取消（取消前 ' || x.before_status || '）' ELSE 'ℹ 不是最近一次 02 取消的（之前就取消了，或是別次）' END
            || CASE WHEN x.kind = 'follow' THEN '；0040＝TF0001 的原單' ||
-                     CASE WHEN x.transferred_to_order_id IS NULL THEN '，轉去哪張已清空 ✅' ELSE '，⚠ 還掛著轉去哪張' END
+                     CASE WHEN x.transferred_to_order_id IS NULL THEN '，轉去哪張已清空' ELSE '，還掛著轉去哪張' END
                    ELSE '' END
            || CASE WHEN x.wallet > 0 THEN '；用過儲值金 $' || trim_scale(x.wallet) ELSE '' END
     FROM x WHERE x.kind IN ('cancel', 'follow')
@@ -136,10 +146,9 @@ FROM (
          'ℹ ' || (SELECT count(*) FROM x WHERE in_batch AND wallet > 0) || ' 張', '「件數」欄是金額（元）'
   UNION ALL
   SELECT 3, 2, '③ 儲值金', '退款紀錄（wallet_ledger）', NULL, (SELECT amt FROM refund),
-         CASE WHEN (SELECT n FROM refund) = (SELECT count(*) FROM x WHERE in_batch AND wallet > 0)
-               AND (SELECT amt FROM refund) = (SELECT COALESCE(sum(wallet), 0) FROM x WHERE in_batch AND wallet > 0)
-              THEN '✅ ' || (SELECT n FROM refund) || ' 筆，金額對得上' ELSE '❌ 跟上一列對不上' END,
-         '取消鈕自己退的（rpc_wallet_refund）'
+         CASE WHEN (SELECT bad FROM refund) IS NULL
+              THEN '✅ ' || (SELECT n FROM refund) || ' 張各 1 筆，金額逐張對得上' ELSE '❌ 逐張對不上' END,
+         COALESCE('不對的：' || (SELECT bad FROM refund), '只算 02 那一刻寫的退款；取消鈕自己退的（rpc_wallet_refund）')
 
   -- ④ 05 還原過了沒
   UNION ALL
