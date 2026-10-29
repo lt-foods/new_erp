@@ -141,6 +141,12 @@ export function StoreLedgerPanel({
     [day],
   );
 
+  // 期間內已關帳那幾天的實點現金加總（RPC 的 totals 沒有這一欄，前端自己加）
+  const periodCountedTotal = useMemo(
+    () => (period?.days ?? []).reduce((acc, d) => acc + (d.counted_cash == null ? 0 : num(d.counted_cash)), 0),
+    [period],
+  );
+
   async function voidEntry(e: LedgerEntry) {
     const reason = window.prompt(
       `作廢這筆帳？\n\n${e.category_name}　${money(e.amount)}\n\n作廢原因（選填）：`,
@@ -585,12 +591,13 @@ export function StoreLedgerPanel({
 
                 {period && (
                   <>
-                    <div className="grid grid-cols-2 divide-x divide-y divide-zinc-200 rounded-md border border-zinc-200 sm:grid-cols-3 lg:grid-cols-5 dark:divide-zinc-800 dark:border-zinc-800">
+                    <div className="grid grid-cols-2 divide-x divide-y divide-zinc-200 rounded-md border border-zinc-200 sm:grid-cols-3 lg:grid-cols-6 dark:divide-zinc-800 dark:border-zinc-800">
                       <Tile label="取貨營業額" value={money(period.totals.sales_total)} tone="emerald" />
                       <Tile label="其他收入" value={money(period.totals.income_all)} hint={`計損益 ${money(period.totals.income_profit)}`} tone="emerald" />
                       <Tile label="支出" value={money(period.totals.expense_all)} hint={`計損益 ${money(period.totals.expense_profit)}`} tone="rose" />
                       <Tile label="期間損益" value={money(period.totals.profit)} strong tone={num(period.totals.profit) < 0 ? "rose" : undefined} />
                       <Tile label="關帳差異合計" value={money(period.totals.diff_cash)} hint={`已關帳 ${num(period.totals.closed_days)} 天`} tone={Math.abs(num(period.totals.diff_cash)) < 0.005 ? undefined : "amber"} />
+                      <Tile label="現點合計" value={money(periodCountedTotal)} hint={`已關帳 ${num(period.totals.closed_days)} 天`} />
                     </div>
 
                     <LedgerDailyChart days={period.days} onPickDay={setDate} />
@@ -607,6 +614,7 @@ export function StoreLedgerPanel({
                               <Th className="text-right">收入</Th>
                               <Th className="text-right">支出</Th>
                               <Th className="text-right">損益</Th>
+                              <Th className="text-right">現點</Th>
                               <Th className="text-right">差異</Th>
                             </tr>
                           </thead>
@@ -633,6 +641,9 @@ export function StoreLedgerPanel({
                                     {money(profit)}
                                   </Td>
                                   <Td className="text-right font-mono text-xs">
+                                    {d.counted_cash == null ? "—" : money(d.counted_cash)}
+                                  </Td>
+                                  <Td className="text-right font-mono text-xs">
                                     {d.diff_cash == null ? "—" : (
                                       <span className={Math.abs(num(d.diff_cash)) < 0.005 ? "text-emerald-600" : "text-amber-600"}>
                                         {money(d.diff_cash)}
@@ -643,6 +654,21 @@ export function StoreLedgerPanel({
                               );
                             })}
                           </tbody>
+                          <tfoot className="bg-zinc-100 font-semibold dark:bg-zinc-900">
+                            <tr>
+                              <Td className="text-xs">合計</Td>
+                              <Td className="text-right font-mono text-xs">{money(period.totals.sales_total)}</Td>
+                              <Td className="text-right font-mono text-xs">{money(period.totals.income_all)}</Td>
+                              <Td className="text-right font-mono text-xs text-rose-600 dark:text-rose-400">{money(period.totals.expense_all)}</Td>
+                              <Td className={`text-right font-mono text-xs ${num(period.totals.profit) < 0 ? "text-rose-600 dark:text-rose-400" : ""}`}>
+                                {money(period.totals.profit)}
+                              </Td>
+                              <Td className="text-right font-mono text-xs">{money(periodCountedTotal)}</Td>
+                              <Td className={`text-right font-mono text-xs ${Math.abs(num(period.totals.diff_cash)) < 0.005 ? "text-emerald-600" : "text-amber-600"}`}>
+                                {money(period.totals.diff_cash)}
+                              </Td>
+                            </tr>
+                          </tfoot>
                         </table>
                       </div>
 
