@@ -1,18 +1,19 @@
 -- ============================================================================
 --  04 還原（備用，✅ 會改資料）：把 02 改到中和的 4 張單，取貨店改回萬華
---  日期：2026-10-31（10/31 第 2 版：補並行上鎖、只認備註最後一行、02 之後的改動也算）　⛔ 平常不用貼；要撤回 02 時才貼，貼前先問 CEO
+--  日期：2026-10-31（10/31 第 3 版：補並行上鎖、只認備註最後一行、中和有撿貨／派車就一律不還原）　⛔ 平常不用貼；要撤回 02 時才貼，貼前先問 CEO
 -- ============================================================================
 --  ★ 整份一個 DO 區塊＝同一次；任何一步不對就整筆退回、一張都沒改。
 --    ⓪ 先上鎖（跟 02 同一組鎖，說明見 02 檔頭「並行」），拿到鎖之後才做 ① 的所有檢查。
 --    ① 先全部檢查：4 張都找得到、屬於這位會員（或合併編號）、取貨店是中和、
 --       **備註最後一行就是 02 寫的那一行**（萬華 → 中和＋本次那句；之後有人再改過店、加過備註都不算）、
 --       狀態仍是 待確認／已確認、品項全部「等貨中」且跟 10/31 確認的一樣、
---       沒有任何沒取消的派車單綁著這張單、02 之後沒有沒取消的派車單派往中和且含這些商品、
---       02 之後總倉撿貨單上沒有中和這一團這商品那一列被新排或改過。萬華、中和店名各剛好 1 家。
---       「02 之後有沒有動過」同時看 建立時間、修改時間（四張表都有自動蓋修改時間的觸發器：
---        transfers／transfer_items 20260422120003:282-285、picking_waves／picking_wave_items 20260423120002:162-165），
---        所以 02 之前就有、02 之後才改數量、改狀態、加品項的也會擋。
---       （「02 之後」＝備註最後一行寫的時間；那一行只記到分鐘，所以從那一分鐘開頭算起，寧可多擋。）
+--       **中和這邊沒有任何這一團這商品的撿貨或派車**（不論什麼時候建、什麼時候改，一律看「現在有沒有」）：
+--         a. 總倉撿貨單（沒取消的）上沒有這一團這商品的中和那一列；
+--         b. 沒有沒取消的派車單綁著這張單，也沒有「下單之後」派往中和、含同商品的沒取消派車單
+--            （派車單沒有團別，用下單時間當界線，寧可多擋）。
+--       有任何一筆 → 【停】「中和已經有這幾團的撿貨或派車，不能自動還原，請找 CEO」。
+--       （第 2 版用「02 之後才建／才改」判斷；系統的建立／修改時間是交易開始的時間，會漏判，第 3 版拿掉。）
+--       萬華、中和店名各剛好 1 家。
 --    ② 取貨店改回萬華；備註再加一行「[改取貨店] 門市 #中和 → #萬華（時間）還原：撤回…」（不刪 02 那一行）。
 --    ③ 自我驗算：剛好 4 張、除了 取貨店／備註／修改時間 以外整列不變、品項不變、沒改到別張單。
 --  ★ 重貼：4 張都已經在萬華、備註最後一行是本次還原那句 → 顯示「已經還原過」，什麼都不改。
@@ -157,34 +158,36 @@ BEGIN
       RAISE EXCEPTION '【停】訂單 % 的品項跟 10/31 確認的不一樣。什麼都沒改。', r.order_no;
     END IF;
 
-    -- 02 那一行的時間（備註最後一行；只記到分鐘、台北時間）
+    -- 備註最後一行要讀得出 02 那一行（只當格式檢查用；第 3 版起不拿這個時間做判斷）
     v_last     := substring(coalesce(r.notes, '') FROM '[^\n]*$');
     v_moved_at := ((substring(v_last FROM v_pat02) || ':00')::timestamp AT TIME ZONE 'Asia/Taipei');
     IF v_moved_at IS NULL THEN
       RAISE EXCEPTION '【停】訂單 % 備註裡讀不到 02 那一行的時間。什麼都沒改，請截圖給 CEO。', r.order_no;
     END IF;
 
-    IF EXISTS (
-         SELECT 1 FROM public.transfers t
-          WHERE t.tenant_id = r.tenant_id AND t.status <> 'cancelled'
-            AND (t.customer_order_id = r.id
-                 OR (t.dest_location = v_new_loc
-                     AND EXISTS (SELECT 1 FROM public.transfer_items ti
-                                  JOIN public.customer_order_items x ON x.sku_id = ti.sku_id AND x.order_id = r.id
-                                 WHERE ti.transfer_id = t.id
-                                   AND (t.created_at  >= v_moved_at OR t.updated_at  >= v_moved_at
-                                     OR ti.created_at >= v_moved_at OR ti.updated_at >= v_moved_at))))) THEN
-      RAISE EXCEPTION '【停】訂單 % 在 02 之後，派往中和、含同商品的派車單有新開或改過（或有派車單綁這張單）。什麼都沒改，改人工處理。', r.order_no;
-    END IF;
+    -- 中和這邊只要已經有這一團這商品的撿貨或派車（沒取消的），不論什麼時候建、什麼時候改，一律不自動還原。
+    -- （不用時間判斷：系統的建立／修改時間是「交易開始」的時間，比真正寫進去的時間早，會漏判。）
+    --  a. 總倉撿貨單上，這一團這商品有中和那一列（撿貨單沒取消；已派車的也在這裡，撿貨列上有派車單號）
     IF EXISTS (
          SELECT 1 FROM public.picking_wave_items pwi
            JOIN public.picking_waves pw ON pw.id = pwi.wave_id AND pw.status <> 'cancelled'
            JOIN public.customer_order_items x ON x.sku_id = pwi.sku_id AND x.order_id = r.id
           WHERE pwi.tenant_id = r.tenant_id
             AND pwi.campaign_id = r.campaign_id
-            AND pwi.store_id = v_new
-            AND (pwi.created_at >= v_moved_at OR pwi.updated_at >= v_moved_at OR pw.updated_at >= v_moved_at)) THEN
-      RAISE EXCEPTION '【停】訂單 % 在 02 之後，總倉撿貨單上中和這一團這商品那一列有新排或改過（數量、撿貨量、狀態）。什麼都沒改，改人工處理。', r.order_no;
+            AND pwi.store_id = v_new) THEN
+      RAISE EXCEPTION '【停】訂單 %：中和已經有這幾團的撿貨或派車，不能自動還原，請找 CEO。什麼都沒改。', r.order_no;
+    END IF;
+    --  b. 派車單：綁著這張單的，或下單之後派往中和、含同商品的（沒取消的；派車單本身沒有「團」，以下單時間為界，寧可多擋）
+    IF EXISTS (
+         SELECT 1 FROM public.transfers t
+          WHERE t.tenant_id = r.tenant_id AND t.status <> 'cancelled'
+            AND (t.customer_order_id = r.id
+                 OR (t.dest_location = v_new_loc
+                     AND t.created_at >= r.created_at
+                     AND EXISTS (SELECT 1 FROM public.transfer_items ti
+                                  JOIN public.customer_order_items x ON x.sku_id = ti.sku_id AND x.order_id = r.id
+                                 WHERE ti.transfer_id = t.id)))) THEN
+      RAISE EXCEPTION '【停】訂單 %：中和已經有這幾團的撿貨或派車，不能自動還原，請找 CEO。什麼都沒改。', r.order_no;
     END IF;
   END LOOP;
 

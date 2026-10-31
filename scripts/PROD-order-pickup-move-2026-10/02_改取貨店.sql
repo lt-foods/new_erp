@@ -20,6 +20,8 @@
 --    （04 還原過之後再貼 02，會再改一次，備註再加一行。）
 --  ★ 並行（同時有人在建撿貨單／派車／改撿貨單）：**先上鎖，拿到鎖之後才做 ① 的所有檢查，再寫入**。
 --    鎖跟既有程式拿的是同一把（所以它們會排隊等這份做完，這份也會等它們做完）：
+--      0. 會員：照後台會員換取貨店 rpc_move_member_to_store 的鎖序（20260829000020:313-316）
+--         先 advisory 'member_store_move:<會員id>'、再鎖會員那一列；綁定店在拿到鎖之後才讀，寫入前再確認一次。
 --      a. 建撿貨單 rpc_create_wave_from_po（最新 20261016000000:1160）：先鎖採購單那一列（:1187 FOR UPDATE），
 --         再拿 advisory 'wave:po:<採購單id>'（:1201）。⇒ 這份對「這 4 團叫貨的每一張採購單」照同一順序拿這兩把。
 --      b. 派車 generate_transfer_from_wave（最新 20260717000000:126）：advisory(撿貨單id)＋撿貨單那一列 FOR UPDATE（:149-152）；
@@ -102,6 +104,10 @@ BEGIN
     RAISE EXCEPTION '【停】會員編號 % 查到 % 位（要剛好 1 位）。什麼都沒改。', c_member_no, v_cnt;
   END IF;
   v_member := (SELECT id            FROM public.members WHERE member_no = c_member_no);
+  -- 會員列上鎖：鎖序照後台會員換取貨店 rpc_move_member_to_store（20260829000020:313-316：
+  -- 先 advisory 'member_store_move:<會員id>'、再鎖會員那一列）。綁定店等鎖拿到之後才讀。
+  PERFORM pg_advisory_xact_lock(hashtext('member_store_move:' || v_member::text));
+  PERFORM 1 FROM public.members WHERE id = v_member FOR UPDATE;
   v_tenant := (SELECT tenant_id     FROM public.members WHERE id = v_member);
   v_home   := (SELECT home_store_id FROM public.members WHERE id = v_member);
 
@@ -245,6 +251,11 @@ BEGIN
                   FROM public.customer_orders co WHERE id = ANY (v_ids));
   v_items_b := (SELECT jsonb_object_agg(id, to_jsonb(x))
                   FROM public.customer_order_items x WHERE order_id = ANY (v_ids));
+
+  -- 寫入前再確認一次：會員綁定店仍是中和（會員列已鎖，正常不會變）
+  IF (SELECT home_store_id FROM public.members WHERE id = v_member) IS DISTINCT FROM v_new THEN
+    RAISE EXCEPTION '【停】這位會員的綁定店已經不是中和。什麼都沒改。';
+  END IF;
 
   -- ── 7. 改取貨店＋備註留痕（格式同 20260829000020:466-469）──
   v_line := E'\n[改取貨店] 門市 #' || v_old || ' → #' || v_new
