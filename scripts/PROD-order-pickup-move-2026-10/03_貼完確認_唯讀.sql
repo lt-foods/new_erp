@@ -1,11 +1,14 @@
 -- ============================================================================
 --  03 貼完確認（只看不改）：02 貼完之後，確認 4 張都已經改到中和取貨
---  日期：2026-10-31　阿寫寫
+--  日期：2026-10-31（第 2 版）
 --  整份貼進 Supabase SQL Editor → 執行。每一列＝一張訂單，看最右邊「判斷」要 4 列都是 ✅。
 --  「萬華_剩下需求」「中和_需求」＝派貨需求表（v_picking_demand_by_po 最新 20261016000000:976-986）
 --   同一個算法、只算這一團這商品：取貨店在哪就算哪一家（單頭不是取消／過期／轉出，品項不是取消／過期）。
 --   改好之後：這 4 張的件數算在「中和_需求」裡；「萬華_剩下需求」是萬華店其他客人還掛著的件數（預期 0）。
---  「提醒_派貨草稿萬華格」不是 0 ＝ 樓下進行中的派貨草稿上萬華那格還有數字，記得改成 0（這份不改它）。
+--  「派貨草稿_要搬的格子」不是「無」＝ 樓下進行中的派貨草稿上，這個商品萬華那格還有數字（這份不改它）：
+--   照那一欄寫的做 —— 萬華那格的數字整個搬到中和那格（萬華改 0、中和加上同樣件數）。
+--   「派貨草稿_應補到中和件數」＝那張草稿上萬華格的數字加總（就是中和那格要加的數）；
+--   「本單件數」是這張單的件數，用來對照（草稿是按商品、不分團，萬華格可能比本單多或少）。
 -- ============================================================================
 WITH want(order_no) AS (
   VALUES ('GRP-20261007-053-0030'), ('GRP-20261007-063-0034'),
@@ -48,28 +51,43 @@ dem AS (  -- 同派貨需求表 campaign_demand 的條件，只算這一團這�
                                  AND coi.sku_id = ANY (it.skus)
    GROUP BY o.id
 ),
-draft AS (
-  SELECT o.id AS order_id, count(*) AS n
+draft AS (  -- 進行中的派貨草稿：這個商品萬華那格還有數字的，列出要怎麼搬
+  SELECT o.id AS order_id,
+         sum(w.qty) AS move_qty,
+         string_agg('草稿#' || d.id || '「' || d.name || '」：萬華格 ' || w.qty::numeric(18,1) || ' 改成 0；中和格 '
+                    || COALESCE(z.qty, 0)::numeric(18,1) || ' 改成 ' || (COALESCE(z.qty, 0) + w.qty)::numeric(18,1),
+                    '；' ORDER BY d.id) AS todo
     FROM o
     JOIN it ON it.order_id = o.id
-    JOIN picking_draft_items di ON di.tenant_id = o.tenant_id AND di.store_id = (SELECT old_id FROM st)
-                               AND di.sku_id = ANY (it.skus) AND di.qty > 0
-    JOIN picking_drafts d ON d.id = di.draft_id AND d.status = 'draft'
+    JOIN picking_draft_items w ON w.tenant_id = o.tenant_id AND w.store_id = (SELECT old_id FROM st)
+                              AND w.sku_id = ANY (it.skus) AND w.qty > 0
+    JOIN picking_drafts d ON d.id = w.draft_id AND d.status = 'draft'
+    LEFT JOIN picking_draft_items z ON z.draft_id = w.draft_id AND z.sku_id = w.sku_id
+                                   AND z.store_id = (SELECT new_id FROM st)
    GROUP BY o.id
+),
+lastline AS (  -- 備註最後一行是不是 02 那一行
+  SELECT o.id AS order_id,
+         substring(COALESCE(o.notes, '') FROM '[^\n]*$')
+           ~ ('^\[改取貨店\] 門市 #' || (SELECT old_id FROM st) || ' → #' || (SELECT new_id FROM st)
+              || '（\d{4}-\d{2}-\d{2} \d{2}:\d{2}）萬華店停業，2026-10-31 老闆核准改中和取貨$') AS ok
+    FROM o WHERE o.id IS NOT NULL
 )
 SELECT o.want_no                                              AS 訂單號,
        ps.name                                                AS 現在取貨店,
        o.status                                               AS 訂單狀態,
        it.items                                               AS 品項_數量_狀態,
-       (position('萬華店停業，2026-10-31 老闆核准改中和取貨' IN coalesce(o.notes, '')) > 0) AS 備註有本次那句,
+       COALESCE(lastline.ok, FALSE)                               AS 備註最後一行是本次那行,
        o.updated_at                                           AS 最後修改時間,
        COALESCE(dem.old_qty, 0)                               AS 萬華_剩下需求,
        COALESCE(dem.new_qty, 0)                               AS 中和_需求,
-       COALESCE(draft.n, 0)                                   AS 提醒_派貨草稿萬華格,
+       (SELECT sum(x.qty) FROM customer_order_items x WHERE x.order_id = o.id) AS 本單件數,
+       COALESCE(draft.move_qty, 0)                            AS 派貨草稿_應補到中和件數,
+       COALESCE(draft.todo, '無')                             AS 派貨草稿_要搬的格子,
        CASE
          WHEN o.id IS NULL                                      THEN '❌ 找不到這張訂單'
          WHEN o.pickup_store_id IS DISTINCT FROM (SELECT new_id FROM st) THEN '❌ 取貨店不是中和'
-         WHEN position('萬華店停業，2026-10-31 老闆核准改中和取貨' IN coalesce(o.notes, '')) = 0 THEN '❌ 備註沒有本次那一句'
+         WHEN NOT COALESCE(lastline.ok, FALSE)                      THEN '❌ 備註最後一行不是 02 那一行'
          WHEN o.status NOT IN ('pending', 'confirmed')          THEN '⚠️ 已改到中和，但訂單狀態變了：' || o.status
          ELSE '✅ 已改到中和取貨'
        END                                                    AS 判斷
@@ -78,4 +96,5 @@ SELECT o.want_no                                              AS 訂單號,
   LEFT JOIN it    ON it.order_id = o.id
   LEFT JOIN dem   ON dem.order_id = o.id
   LEFT JOIN draft ON draft.order_id = o.id
+  LEFT JOIN lastline ON lastline.order_id = o.id
  ORDER BY o.want_no;

@@ -1,6 +1,6 @@
 -- ============================================================================
 --  02 改取貨店（✅ 會改資料）：客人 4 張還沒取的訂單，取貨店 萬華 → 中和
---  日期：2026-10-31　阿寫寫　⛔ 阿審（Codex）審過、問題清空之前不要貼
+--  日期：2026-10-31（10/31 第 2 版：補並行上鎖、重貼只認備註最後一行）　⛔ 審查問題清空之前不要貼
 --  程式出處：工地 origin/main 3248064c（#1093）supabase/migrations/（行號寫在下面）
 -- ============================================================================
 --  ★ 整份只有一個 DO 區塊＝同一次；任何一步不對就整筆退回、一張都沒改。
@@ -16,10 +16,24 @@
 --    ③ 自我驗算：剛好 4 張、取貨店都是中和、除了 取貨店／備註／修改時間 以外整列一字不差、
 --       品項整列一字不差、這一刻沒有改到別張單。不對 → 整筆退回。
 --  ★ 不動：品項、派車單、撿貨單、派貨草稿、庫存、採購單、請購單、月結、會員資料、LINE 綁定、頻道(channel_id)。
---  ★ 重貼：4 張都已經在中和、備註有本次那一句 → 顯示「已經做過」，什麼都不改。
+--  ★ 重貼：4 張都已經在中和、而且備註**最後一行**就是本次那一行 → 顯示「已經做過」，什麼都不改。
 --    （04 還原過之後再貼 02，會再改一次，備註再加一行。）
+--  ★ 並行（同時有人在建撿貨單／派車／改撿貨單）：**先上鎖，拿到鎖之後才做 ① 的所有檢查，再寫入**。
+--    鎖跟既有程式拿的是同一把（所以它們會排隊等這份做完，這份也會等它們做完）：
+--      a. 建撿貨單 rpc_create_wave_from_po（最新 20261016000000:1160）：先鎖採購單那一列（:1187 FOR UPDATE），
+--         再拿 advisory 'wave:po:<採購單id>'（:1201）。⇒ 這份對「這 4 團叫貨的每一張採購單」照同一順序拿這兩把。
+--      b. 派車 generate_transfer_from_wave（最新 20260717000000:126）：advisory(撿貨單id)＋撿貨單那一列 FOR UPDATE（:149-152）；
+--         撿貨單加品項 rpc_add_wave_item（最新 20260817000020:69）、改撿貨量 rpc_update_picked_qty（最新 20260502070000:5）、
+--         取消撿貨單 都鎖撿貨單那一列（20260817000020:90-110 的盤點）。
+--         ⇒ 這份把**所有還沒出貨、沒取消的撿貨單**那一列 FOR UPDATE（這份只跑幾毫秒）。
+--      c. 4 張單本身、單上品項：FOR UPDATE。
+--    ⚠ 殘餘（鎖不到的，寫明讓人知道）：
+--      ・別張採購單建撿貨單時「跨團借調」拿這幾團的需求（20260816000050 借調分支）：它拿的是那張採購單的鎖，這份鎖不到。
+--      ・不經撿貨單、直接開的派往萬華派車單（萬華停業，正常不會有）。
+--      ⇒ README 寫明：請在總倉沒在排撿貨／派車的時候貼（老闆排半夜貼）。
+--    鎖等超過 15 秒 → 紅字 lock timeout，什麼都沒改，過幾分鐘再貼。
 -- ============================================================================
---  開工前四問（2026-10-31 阿寫查；證據是工地 origin/main 3248064c 的檔:行）
+--  開工前四問（2026-10-31 查；證據是工地 origin/main 3248064c 的檔:行）
 --  Q1 改 customer_orders.pickup_store_id 會觸發什麼？
 --    ・customer_orders 上的觸發器（全部 migration 掃 CREATE TRIGGER … ON customer_orders）只有兩支：
 --      a. trg_touch_corders（20260423120000:329-330；函式最新 20260611000010:12-21）：修改時間＝這次交易時間。
@@ -74,6 +88,8 @@ DECLARE
   v_after     jsonb;
   v_items_a   jsonb;
   v_line      text;
+  v_pos       bigint[];
+  v_po        bigint;
   r           record;
 BEGIN
   PERFORM set_config('lock_timeout', '15s', true);
@@ -88,6 +104,30 @@ BEGIN
   v_member := (SELECT id            FROM public.members WHERE member_no = c_member_no);
   v_tenant := (SELECT tenant_id     FROM public.members WHERE id = v_member);
   v_home   := (SELECT home_store_id FROM public.members WHERE id = v_member);
+
+  -- ── 1b. 上鎖（說明見檔頭「並行」），之後的檢查全部在拿到鎖之後跑 ──
+  --   這 4 團叫貨的採購單：口徑同派貨需求表 po_campaigns（20261016000000:956-972）
+  v_pos := ARRAY(
+    SELECT DISTINCT poi.po_id
+      FROM public.customer_orders co
+      JOIN public.purchase_request_campaigns prc ON prc.campaign_id = co.campaign_id
+      JOIN public.purchase_request_items pri     ON pri.pr_id = prc.pr_id
+      JOIN public.purchase_order_items poi       ON poi.id = pri.po_item_id
+     WHERE co.tenant_id = v_tenant AND co.order_no = ANY (v_nos)
+    UNION
+    SELECT DISTINCT poi.po_id
+      FROM public.customer_orders co
+      JOIN public.purchase_request_items pri ON pri.source_campaign_id = co.campaign_id
+      JOIN public.purchase_order_items poi   ON poi.id = pri.po_item_id
+     WHERE co.tenant_id = v_tenant AND co.order_no = ANY (v_nos)
+     ORDER BY 1);
+  PERFORM 1 FROM public.purchase_orders WHERE id = ANY (v_pos) ORDER BY id FOR UPDATE;   -- 同建撿貨單 :1187
+  FOREACH v_po IN ARRAY v_pos LOOP
+    PERFORM pg_advisory_xact_lock(hashtext('wave:po:' || v_po::text));                   -- 同建撿貨單 :1201
+  END LOOP;
+  PERFORM 1 FROM public.picking_waves
+   WHERE tenant_id = v_tenant AND status NOT IN ('shipped', 'cancelled')
+   ORDER BY id FOR UPDATE;                                                                -- 同派車／加品項／改撿貨量
 
   -- ── 2. 萬華、中和：店名各剛好 1 家 ──
   v_cnt := (SELECT count(*) FROM public.stores WHERE tenant_id = v_tenant AND name LIKE '%萬華%');
@@ -117,12 +157,17 @@ BEGIN
   IF coalesce(array_length(v_ids, 1), 0) <> array_length(v_nos, 1) THEN
     RAISE EXCEPTION '【停】% 張訂單只找到 % 張。什麼都沒改。', array_length(v_nos, 1), coalesce(array_length(v_ids, 1), 0);
   END IF;
+  PERFORM 1 FROM public.customer_order_items WHERE order_id = ANY (v_ids) ORDER BY id FOR UPDATE;
 
   -- ── 4. 重貼判斷 ──
   v_at_old := (SELECT count(*) FROM public.customer_orders
                 WHERE id = ANY (v_ids) AND pickup_store_id = v_old);
+  -- 「已經做過」只認：取貨店是中和、而且備註最後一行就是 02 寫的那一行（萬華 → 中和＋本次那句）
   v_at_new := (SELECT count(*) FROM public.customer_orders
-                WHERE id = ANY (v_ids) AND pickup_store_id = v_new AND position(c_tag IN coalesce(notes, '')) > 0);
+                WHERE id = ANY (v_ids) AND pickup_store_id = v_new
+                  AND substring(coalesce(notes, '') FROM '[^\n]*$')
+                      ~ ('^\[改取貨店\] 門市 #' || v_old || ' → #' || v_new
+                         || '（\d{4}-\d{2}-\d{2} \d{2}:\d{2}）' || c_tag || '$'));
   IF v_at_new = array_length(v_ids, 1) THEN
     RAISE NOTICE '已經做過：% 張都已經在中和取貨，這次什麼都沒改。', v_at_new;
     RETURN;

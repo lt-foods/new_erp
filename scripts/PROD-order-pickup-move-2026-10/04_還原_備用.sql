@@ -1,13 +1,18 @@
 -- ============================================================================
 --  04 還原（備用，✅ 會改資料）：把 02 改到中和的 4 張單，取貨店改回萬華
---  日期：2026-10-31　阿寫寫　⛔ 平常不用貼；要撤回 02 時才貼，貼前先問 CEO
+--  日期：2026-10-31（10/31 第 2 版：補並行上鎖、只認備註最後一行、02 之後的改動也算）　⛔ 平常不用貼；要撤回 02 時才貼，貼前先問 CEO
 -- ============================================================================
 --  ★ 整份一個 DO 區塊＝同一次；任何一步不對就整筆退回、一張都沒改。
---    ① 先全部檢查：4 張都找得到、屬於這位會員（或合併編號）、取貨店是中和、備註有 02 那一句、
+--    ⓪ 先上鎖（跟 02 同一組鎖，說明見 02 檔頭「並行」），拿到鎖之後才做 ① 的所有檢查。
+--    ① 先全部檢查：4 張都找得到、屬於這位會員（或合併編號）、取貨店是中和、
+--       **備註最後一行就是 02 寫的那一行**（萬華 → 中和＋本次那句；之後有人再改過店、加過備註都不算）、
 --       狀態仍是 待確認／已確認、品項全部「等貨中」且跟 10/31 確認的一樣、
 --       沒有任何沒取消的派車單綁著這張單、02 之後沒有沒取消的派車單派往中和且含這些商品、
---       02 之後總倉撿貨單上沒有新排出中和這一團這商品那一列。萬華、中和店名各剛好 1 家。
---       （「02 之後」＝備註那一行寫的時間；那一行只記到分鐘，所以從那一分鐘開頭算起，寧可多擋。）
+--       02 之後總倉撿貨單上沒有中和這一團這商品那一列被新排或改過。萬華、中和店名各剛好 1 家。
+--       「02 之後有沒有動過」同時看 建立時間、修改時間（四張表都有自動蓋修改時間的觸發器：
+--        transfers／transfer_items 20260422120003:282-285、picking_waves／picking_wave_items 20260423120002:162-165），
+--        所以 02 之前就有、02 之後才改數量、改狀態、加品項的也會擋。
+--       （「02 之後」＝備註最後一行寫的時間；那一行只記到分鐘，所以從那一分鐘開頭算起，寧可多擋。）
 --    ② 取貨店改回萬華；備註再加一行「[改取貨店] 門市 #中和 → #萬華（時間）還原：撤回…」（不刪 02 那一行）。
 --    ③ 自我驗算：剛好 4 張、除了 取貨店／備註／修改時間 以外整列不變、品項不變、沒改到別張單。
 --  ★ 重貼：4 張都已經在萬華、備註最後一行是本次還原那句 → 顯示「已經還原過」，什麼都不改。
@@ -43,6 +48,10 @@ DECLARE
   v_after     jsonb;
   v_items_a   jsonb;
   v_line      text;
+  v_last      text;
+  v_pat02     text;
+  v_pos       bigint[];
+  v_po        bigint;
   r           record;
 BEGIN
   PERFORM set_config('lock_timeout', '15s', true);
@@ -55,6 +64,29 @@ BEGIN
   END IF;
   v_member := (SELECT id        FROM public.members WHERE member_no = c_member_no);
   v_tenant := (SELECT tenant_id FROM public.members WHERE id = v_member);
+
+  -- 上鎖（同 02 的 1b）
+  v_pos := ARRAY(
+    SELECT DISTINCT poi.po_id
+      FROM public.customer_orders co
+      JOIN public.purchase_request_campaigns prc ON prc.campaign_id = co.campaign_id
+      JOIN public.purchase_request_items pri     ON pri.pr_id = prc.pr_id
+      JOIN public.purchase_order_items poi       ON poi.id = pri.po_item_id
+     WHERE co.tenant_id = v_tenant AND co.order_no = ANY (v_nos)
+    UNION
+    SELECT DISTINCT poi.po_id
+      FROM public.customer_orders co
+      JOIN public.purchase_request_items pri ON pri.source_campaign_id = co.campaign_id
+      JOIN public.purchase_order_items poi   ON poi.id = pri.po_item_id
+     WHERE co.tenant_id = v_tenant AND co.order_no = ANY (v_nos)
+     ORDER BY 1);
+  PERFORM 1 FROM public.purchase_orders WHERE id = ANY (v_pos) ORDER BY id FOR UPDATE;
+  FOREACH v_po IN ARRAY v_pos LOOP
+    PERFORM pg_advisory_xact_lock(hashtext('wave:po:' || v_po::text));
+  END LOOP;
+  PERFORM 1 FROM public.picking_waves
+   WHERE tenant_id = v_tenant AND status NOT IN ('shipped', 'cancelled')
+   ORDER BY id FOR UPDATE;
 
   v_cnt := (SELECT count(*) FROM public.stores WHERE tenant_id = v_tenant AND name LIKE '%萬華%');
   IF v_cnt <> 1 THEN
@@ -76,17 +108,25 @@ BEGIN
   IF coalesce(array_length(v_ids, 1), 0) <> array_length(v_nos, 1) THEN
     RAISE EXCEPTION '【停】% 張訂單只找到 % 張。什麼都沒改。', array_length(v_nos, 1), coalesce(array_length(v_ids, 1), 0);
   END IF;
+  PERFORM 1 FROM public.customer_order_items WHERE order_id = ANY (v_ids) ORDER BY id FOR UPDATE;
+
+  -- 02 寫的那一行長這樣（備註最後一行要整行一模一樣，時間那段只比格式）
+  v_pat02 := '^\[改取貨店\] 門市 #' || v_old || ' → #' || v_new
+             || '（(\d{4}-\d{2}-\d{2} \d{2}:\d{2})）' || c_tag || '$';
 
   -- 重貼判斷
   v_at_old := (SELECT count(*) FROM public.customer_orders
                 WHERE id = ANY (v_ids) AND pickup_store_id = v_old
-                  AND right(coalesce(notes, ''), length(c_undo)) = c_undo);   -- 備註最後一行是本次還原那句
+                  AND substring(coalesce(notes, '') FROM '[^\n]*$')
+                      ~ ('^\[改取貨店\] 門市 #' || v_new || ' → #' || v_old
+                         || '（\d{4}-\d{2}-\d{2} \d{2}:\d{2}）' || c_undo || '$'));   -- 備註最後一行是本次還原那行
   IF v_at_old = array_length(v_ids, 1) THEN
     RAISE NOTICE '已經還原過：% 張都已經在萬華，這次什麼都沒改。', v_at_old;
     RETURN;
   END IF;
   v_at_new := (SELECT count(*) FROM public.customer_orders
-                WHERE id = ANY (v_ids) AND pickup_store_id = v_new AND position(c_tag IN coalesce(notes, '')) > 0);
+                WHERE id = ANY (v_ids) AND pickup_store_id = v_new
+                  AND substring(coalesce(notes, '') FROM '[^\n]*$') ~ v_pat02);
   IF v_at_new <> array_length(v_ids, 1) THEN
     RAISE EXCEPTION '【停】% 張裡只有 % 張是「02 改到中和」的狀態。什麼都沒改，請截圖給 CEO。',
       array_length(v_ids, 1), v_at_new;
@@ -117,11 +157,9 @@ BEGIN
       RAISE EXCEPTION '【停】訂單 % 的品項跟 10/31 確認的不一樣。什麼都沒改。', r.order_no;
     END IF;
 
-    -- 02 那一行的時間（最後一次出現的那一行；只記到分鐘、台北時間）
-    v_moved_at := (
-      SELECT max((m[1] || ':00')::timestamp AT TIME ZONE 'Asia/Taipei')
-        FROM regexp_matches(coalesce(r.notes, ''),
-                            '（(\d{4}-\d{2}-\d{2} \d{2}:\d{2})）' || c_tag, 'g') AS m);
+    -- 02 那一行的時間（備註最後一行；只記到分鐘、台北時間）
+    v_last     := substring(coalesce(r.notes, '') FROM '[^\n]*$');
+    v_moved_at := ((substring(v_last FROM v_pat02) || ':00')::timestamp AT TIME ZONE 'Asia/Taipei');
     IF v_moved_at IS NULL THEN
       RAISE EXCEPTION '【停】訂單 % 備註裡讀不到 02 那一行的時間。什麼都沒改，請截圖給 CEO。', r.order_no;
     END IF;
@@ -131,11 +169,12 @@ BEGIN
           WHERE t.tenant_id = r.tenant_id AND t.status <> 'cancelled'
             AND (t.customer_order_id = r.id
                  OR (t.dest_location = v_new_loc
-                     AND t.created_at >= v_moved_at
                      AND EXISTS (SELECT 1 FROM public.transfer_items ti
                                   JOIN public.customer_order_items x ON x.sku_id = ti.sku_id AND x.order_id = r.id
-                                 WHERE ti.transfer_id = t.id)))) THEN
-      RAISE EXCEPTION '【停】訂單 % 在 02 之後已經有派往中和、含同商品的派車單（或綁這張單的派車單）。什麼都沒改，改人工處理。', r.order_no;
+                                 WHERE ti.transfer_id = t.id
+                                   AND (t.created_at  >= v_moved_at OR t.updated_at  >= v_moved_at
+                                     OR ti.created_at >= v_moved_at OR ti.updated_at >= v_moved_at))))) THEN
+      RAISE EXCEPTION '【停】訂單 % 在 02 之後，派往中和、含同商品的派車單有新開或改過（或有派車單綁這張單）。什麼都沒改，改人工處理。', r.order_no;
     END IF;
     IF EXISTS (
          SELECT 1 FROM public.picking_wave_items pwi
@@ -144,8 +183,8 @@ BEGIN
           WHERE pwi.tenant_id = r.tenant_id
             AND pwi.campaign_id = r.campaign_id
             AND pwi.store_id = v_new
-            AND pwi.created_at >= v_moved_at) THEN
-      RAISE EXCEPTION '【停】訂單 % 在 02 之後，總倉撿貨單已經排了中和這一團這商品。什麼都沒改，改人工處理。', r.order_no;
+            AND (pwi.created_at >= v_moved_at OR pwi.updated_at >= v_moved_at OR pw.updated_at >= v_moved_at)) THEN
+      RAISE EXCEPTION '【停】訂單 % 在 02 之後，總倉撿貨單上中和這一團這商品那一列有新排或改過（數量、撿貨量、狀態）。什麼都沒改，改人工處理。', r.order_no;
     END IF;
   END LOOP;
 
