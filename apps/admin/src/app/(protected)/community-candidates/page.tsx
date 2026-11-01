@@ -21,7 +21,48 @@ type Candidate = {
   adopted_supplier_name: string | null;
   adopted_cost: number | null;
   adopted_sale_price: number | null;
+  /** 廠商群組記事本解析出來的（20261101000040）；其他來源是 null */
+  parsed: SupplierParsed | null;
+  similarity_score: number | null;
 };
+
+type SupplierMatch = { product_id: number; name: string; score: number; campaigns: number; buyers: number; last_start: string | null };
+type SupplierParsed = {
+  price: number | null; price_text: string | null; spec: string | null; deadline_text: string | null;
+  supplier: string | null; comment_count: number | null; matches: SupplierMatch[] | null;
+};
+
+/** 廠商報價＋「我們賣過嗎」：二字詞比對 ≥ 0.75 算賣過，0.5～0.75 只標可能相似 */
+function SupplierInfo({ p }: { p: SupplierParsed | null }) {
+  if (!p) return null;
+  const m = p.matches?.[0];
+  const sold = m && m.score >= 0.75;
+  const facts = [
+    p.price != null ? `廠商價 $${Number(p.price).toLocaleString("zh-TW")}` : null,
+    p.spec, p.deadline_text ? `截止 ${p.deadline_text}` : null,
+    p.comment_count ? `+1 ${p.comment_count}` : null,
+  ].filter(Boolean);
+  return (
+    <div className="mt-1 space-y-0.5 text-[11px] font-normal text-zinc-500 dark:text-zinc-400">
+      {facts.length > 0 && <div>{facts.join("・")}</div>}
+      <div>
+        {sold ? (
+          <>
+            <span className="mr-1 rounded bg-emerald-100 px-1 text-[10px] text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">賣過</span>
+            {m.name.slice(0, 24)}（{m.campaigns} 團・{m.buyers} 人{m.last_start ? `・最後 ${m.last_start.slice(5)}` : ""}）
+          </>
+        ) : m ? (
+          <>
+            <span className="mr-1 rounded bg-zinc-100 px-1 text-[10px] dark:bg-zinc-800">可能相似</span>
+            {m.name.slice(0, 24)}（{m.buyers} 人）
+          </>
+        ) : (
+          <span className="rounded bg-amber-100 px-1 text-[10px] text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">沒賣過</span>
+        )}
+      </div>
+    </div>
+  );
+}
 
 type Tab = "pending" | "collected" | "scheduled" | "ignored" | "adopted" | "all";
 
@@ -107,7 +148,7 @@ export default function CommunityCandidatesPage() {
     let q = getSupabase()
       .from("community_product_candidates")
       .select(
-        "id, product_name_hint, raw_text, source_user_id, source_user_name, source_channel, system_status, owner_action, scheduled_open_at, scheduled_sort_order, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price"
+        "id, product_name_hint, raw_text, source_user_id, source_user_name, source_channel, system_status, owner_action, scheduled_open_at, scheduled_sort_order, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price, parsed, similarity_score"
       )
       .order("created_at", { ascending: false })
       .limit(200);
@@ -479,9 +520,11 @@ export default function CommunityCandidatesPage() {
         <SpinButton
           onClick={() => {
             setEditingInfo(r.id);
-            setAdoptSupplier(r.adopted_supplier_name ?? "");
-            setAdoptCost(r.adopted_cost !== null ? String(r.adopted_cost) : "");
-            setAdoptSalePrice(r.adopted_sale_price !== null ? String(r.adopted_sale_price) : extractPrice(r.raw_text));
+            // 廠商群組來的：廠商名、廠商報價（＝我們的成本）直接帶；售價留給老闆填，
+            // 不要再從文案抓數字（抓到的就是廠商價，會把成本當售價）
+            setAdoptSupplier(r.adopted_supplier_name ?? r.parsed?.supplier ?? "");
+            setAdoptCost(r.adopted_cost !== null ? String(r.adopted_cost) : (r.parsed?.price != null ? String(r.parsed.price) : ""));
+            setAdoptSalePrice(r.adopted_sale_price !== null ? String(r.adopted_sale_price) : (r.parsed ? "" : extractPrice(r.raw_text)));
             setScheduling(null);
           }}
           disabled={busy}
@@ -726,6 +769,7 @@ export default function CommunityCandidatesPage() {
                       if (any) return <span className="ml-1.5 inline-flex rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">資料未完整</span>;
                       return null;
                     })()}
+                    <SupplierInfo p={r.parsed} />
                   </td>
                   <td className="max-w-xs px-3 py-3 text-zinc-600 dark:text-zinc-300">
                     <span title={r.raw_text}>
@@ -826,6 +870,7 @@ export default function CommunityCandidatesPage() {
                     </span>
                   )}
                 </div>
+                <SupplierInfo p={r.parsed} />
 
                 <p className="mt-1 whitespace-pre-line text-xs text-zinc-600 dark:text-zinc-300">
                   {r.raw_text.slice(0, 140)}
