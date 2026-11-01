@@ -572,6 +572,40 @@ export async function deleteNotePost(client, homeId, postId, { sourceType, verbo
   return res;
 }
 
+/**
+ * 下載記事本貼文的圖片（廠商群組爬取用，20261101000080）。
+ * 記事本的媒體走 myhome 的舊式 OBS（上傳是 myhome/h/upload.nhn，見 linejs uploadNoteMedia），
+ * 讀到的貼文 media 是 { objectId, obsNamespace: "post" }。下載網址 linejs 沒有現成方法，
+ * 依序試幾種、都帶登入標頭，第一個成功的記在 noteImageRoute，同一次 invocation 之後直接用。
+ */
+let noteImageRoute: number | null = null;
+export async function downloadNoteImage(client, oid: string, verbose = false): Promise<{ bytes: Uint8Array; type: string; route: string }> {
+  const headers = client.base.request.getHeader("GET");
+  const routes = [
+    `https://obs.line-apps.com/r/myhome/post/${oid}`,
+    `https://obs.line-apps.com/myhome/post/download.nhn?oid=${oid}`,
+    `https://obs.line-scdn.net/r/myhome/post/${oid}`,
+    `https://obs.line-apps.com/myhome/h/download.nhn?oid=${oid}`,
+  ];
+  const order = noteImageRoute == null ? routes.map((_, i) => i) : [noteImageRoute, ...routes.map((_, i) => i).filter((i) => i !== noteImageRoute)];
+  const errs: string[] = [];
+  for (const i of order) {
+    try {
+      const res = await client.base.fetch(routes[i], { method: "GET", headers });
+      const type = (res.headers.get("content-type") ?? "").split(";")[0].trim();
+      if (res.ok && type.startsWith("image/")) {
+        noteImageRoute = i;
+        return { bytes: new Uint8Array(await res.arrayBuffer()), type, route: routes[i].replace(oid, "{oid}") };
+      }
+      errs.push(`#${i} ${res.status} ${type || "-"}`);
+    } catch (e) {
+      errs.push(`#${i} ${(e as any)?.message ?? e}`.slice(0, 120));
+    }
+  }
+  log(verbose, `圖片下載失敗 ${oid}:`, errs.join(" | "));
+  throw new Error(`圖片下載全部失敗：${errs.join(" | ")}`);
+}
+
 export async function createNotePost(client, homeId, { text, images = [], sourceType, verbose = false } = {}) {
   if (!text && images.length === 0) throw new Error("貼文至少要有文字或圖片");
 

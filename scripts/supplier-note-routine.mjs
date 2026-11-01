@@ -22,6 +22,7 @@ const RULES = [
   "norm_name：標準繁體中文核心品名，用空白分隔 2～4 個關鍵詞；簡體轉繁體、英文翻中文、去掉品牌行銷字與規格。例：「Shine Muscat 晴王葡萄 2kg」→「麝香葡萄 晴王」、「老師傅岡山羊肉爐」→「岡山 羊肉爐」。這欄用來比對我們賣過的商品，寫準一點。",
   "price：給團購主的價格（團購價／批價／優惠價／成本價）的數字，不含 $ 和逗號；有好幾個價格取最主要那一個；看不出來給 null。price_text 放原文那一小段。",
   "spec：規格（1000克、10入、2kg/箱）。deadline_text：截止或出貨時間的原文，沒有就省略。",
+  "images 是這篇貼文的圖（公開網址）。文字裡看不出品名、價格或規格時，用 curl -sS -o /tmp/img_<post_id>_<n>.jpg <網址> 下載前 3 張，再用 Read 看圖，從圖上讀；文字已經夠清楚就不用看圖（省額度）。",
   "tags：從 tags 清單挑 code，每個商品至少 1 個「生鮮」「食品」或「非食品」群的標籤；溫層（frozen / chilled / ambient）只有貼文寫明才給；日本 / 韓國 / 禮盒看得出來就給 jp / kr / gift。",
 ];
 
@@ -60,7 +61,11 @@ try {
     console.log(JSON.stringify(r));
   } else if (cmd === "claim") {
     const n = Math.min(Math.max(Number(arg) || 20, 1), 40);
-    const posts = sql(`SELECT * FROM public.rpc_market_post_claim(${n})`);
+    const base = (process.env.SUPABASE_URL || `https://${process.env.SUPABASE_PROJECT_REF}.supabase.co`).replace(/\/+$/, "");
+    const posts = sql(`SELECT * FROM public.rpc_market_post_claim(${n})`).map((p) => ({
+      ...p,
+      images: (p.images ?? []).map((path) => `${base}/storage/v1/object/public/products/${path}`),
+    }));
     const tags = posts.length ? sql(`SELECT code, name, tag_group FROM product_tags WHERE is_active ORDER BY tag_group, sort, id`) : [];
     console.log(JSON.stringify({ rules: RULES, tags, posts }, null, 1));
   } else if (cmd === "write") {
