@@ -9,6 +9,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
+import ConfidenceChevrons from "@/components/ConfidenceChevrons";
 
 type EvalRun = {
   id: number;
@@ -334,6 +335,7 @@ export default function RecoPerformancePage() {
                       <td className="px-3 py-2 text-right">
                         {o.predicted == null ? <span className="text-zinc-400">—</span> : (
                           <>
+                            <ConfidenceChevrons level={o.confidence} className="mr-1 align-middle" />
                             <span className="font-semibold">{o.predicted}</span>
                             <span className="ml-1 text-[11px] text-zinc-400">{o.low}～{o.high}</span>
                           </>

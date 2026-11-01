@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
+import ConfidenceChevrons from "@/components/ConfidenceChevrons";
 import SearchSpinner from "@/components/SearchSpinner";
 
 type Candidate = {
@@ -51,7 +52,9 @@ function PredictInfo({ r }: { r: Candidate }) {
   }
   return (
     <div className="space-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400" title={p.reasons.join("\n")}>
-      <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">約 {p.buyers} 位</div>
+      <div className="flex items-center gap-1 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+        <ConfidenceChevrons level={p.confidence} />約 {p.buyers} 位
+      </div>
       <div>{p.low}～{p.high} 位</div>
       {p.recent_open && (
         <span className="inline-flex rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">同款還沒結束</span>
