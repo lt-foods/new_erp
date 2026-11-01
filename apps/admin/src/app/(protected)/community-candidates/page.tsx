@@ -101,8 +101,16 @@ const ACTION_COLOR: Record<string, string> = {
   ignored: "bg-zinc-200 text-zinc-500 dark:bg-zinc-700 dark:text-zinc-400",
 };
 
+// 候選池只留兩個禮拜（20261101000070 每天清掉超過 14 天沒處理／已忽略的），列表也只看 14 天；
+// 收藏、已採用全部顯示（老闆的決定紀錄），排程看排程日（建立很久但排在未來的不能藏起來）
+const PAGE_SIZE = 50;
+const KEEP_DAYS = 14;
+
 export default function CommunityCandidatesPage() {
   const [rows, setRows] = useState<Candidate[] | null>(null);
+  const [page, setPage] = useState(0);
+  const [total, setTotal] = useState(0);
+  const reqSeq = useRef(0);
   const [queryDraft, setQueryDraft] = useState("");
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
@@ -144,7 +152,10 @@ export default function CommunityCandidatesPage() {
   useEffect(() => {
     // 打字內容與已送出的 query 不同 → 有一筆 reload 待觸發，轉圈圈到 reload 結束才停
     if (queryDraft !== query) setSearching(true);
-    const t = setTimeout(() => setQuery(queryDraft), 300);
+    const t = setTimeout(() => {
+      if (queryDraft !== query) setPage(0);
+      setQuery(queryDraft);
+    }, 300);
     return () => clearTimeout(t);
   }, [queryDraft, query]);
 
@@ -155,13 +166,19 @@ export default function CommunityCandidatesPage() {
   }, [highlightId, rows]);
 
   const reload = async () => {
+    const seq = ++reqSeq.current;
+    const sinceMs = Date.now() - KEEP_DAYS * 86400_000;
     let q = getSupabase()
       .from("community_product_candidates")
       .select(
-        "id, product_name_hint, raw_text, source_user_id, source_user_name, source_channel, system_status, owner_action, scheduled_open_at, scheduled_sort_order, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price, parsed, similarity_score"
+        "id, product_name_hint, raw_text, source_user_id, source_user_name, source_channel, system_status, owner_action, scheduled_open_at, scheduled_sort_order, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price, parsed, similarity_score",
+        { count: "exact" }
       )
       .order("created_at", { ascending: false })
-      .limit(200);
+      .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+
+    if (tab === "scheduled") q = q.gte("scheduled_open_at", new Date(sinceMs).toISOString().slice(0, 10));
+    else if (tab !== "collected" && tab !== "adopted") q = q.gte("created_at", new Date(sinceMs).toISOString());
 
     if (tab === "pending") q = q.eq("owner_action", "none");
     else if (tab === "collected") q = q.eq("owner_action", "collected");
@@ -175,11 +192,13 @@ export default function CommunityCandidatesPage() {
     }
 
     try {
-      const { data, error: err } = await q;
+      const { data, error: err, count } = await q;
+      if (seq !== reqSeq.current) return; // 換頁／換分頁太快，舊的回應晚到就丟掉
       if (err) setError(err.message);
       else {
         setError(null);
         setRows((data as Candidate[]) ?? []);
+        setTotal(count ?? 0);
       }
     } finally {
       setSearching(false);
@@ -189,7 +208,7 @@ export default function CommunityCandidatesPage() {
   useEffect(() => {
     reload();
     clearSelected();
-  }, [query, tab]);
+  }, [query, tab, page]);
 
   const patch = async (id: number, updates: Record<string, unknown>) => {
     setBusy(true);
@@ -620,7 +639,7 @@ export default function CommunityCandidatesPage() {
         {TABS.map(({ key, label }) => (
           <SpinButton
             key={key}
-            onClick={() => setTab(key)}
+            onClick={() => { setTab(key); setPage(0); }}
             className={
               tab === key
                 ? "border-b-2 border-zinc-900 px-4 py-2 text-sm font-medium text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
@@ -911,7 +930,20 @@ export default function CommunityCandidatesPage() {
         </>
       )}
 
-      <div className="text-xs text-zinc-400">共 {rows?.length ?? 0} 筆（最多 200）</div>
+      <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-500">
+        <span>
+          共 {total} 筆・第 {total === 0 ? 0 : page + 1} / {Math.max(1, Math.ceil(total / PAGE_SIZE))} 頁
+          <span className="ml-2 text-zinc-400">
+            只顯示最近 {KEEP_DAYS} 天（收藏、已採用全部顯示，排程看排程日）；超過 {KEEP_DAYS} 天沒處理或已忽略的每天自動清掉
+          </span>
+        </span>
+        <span className="ml-auto flex gap-2">
+          <button type="button" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  className="rounded border border-zinc-300 px-2 py-1 disabled:opacity-40 dark:border-zinc-700">上一頁</button>
+          <button type="button" disabled={(page + 1) * PAGE_SIZE >= total} onClick={() => setPage((p) => p + 1)}
+                  className="rounded border border-zinc-300 px-2 py-1 disabled:opacity-40 dark:border-zinc-700">下一頁</button>
+        </span>
+      </div>
     </div>
   );
 }
