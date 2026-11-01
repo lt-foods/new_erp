@@ -9,7 +9,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { getSupabase } from "@/lib/supabase";
 import SpinButton from "@/components/SpinButton";
-import ConfidenceChevrons, { confidenceTextColor } from "@/components/ConfidenceChevrons";
+import ConfidenceChevrons, { confidenceTextColor, PredictRange } from "@/components/ConfidenceChevrons";
 
 type EvalRun = {
   id: number;
@@ -337,7 +337,7 @@ export default function RecoPerformancePage() {
                           <>
                             <ConfidenceChevrons level={o.confidence} className="mr-1 align-middle" />
                             <span className={`font-semibold ${confidenceTextColor(o.confidence)}`}>{o.predicted}</span>
-                            <span className="ml-1 text-[11px] text-zinc-400">⌄{o.low} ⌃{o.high}</span>
+                            <span className="ml-1.5 align-middle"><PredictRange low={o.low} high={o.high} value={o.predicted} level={o.confidence} /></span>
                           </>
                         )}
                       </td>

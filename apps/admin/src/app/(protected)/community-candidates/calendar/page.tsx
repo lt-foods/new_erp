@@ -25,7 +25,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import SpinButton from "@/components/SpinButton";
-import ConfidenceChevrons, { confidenceTextColor } from "@/components/ConfidenceChevrons";
+import ConfidenceChevrons, { confidenceTextColor, PredictRange } from "@/components/ConfidenceChevrons";
 import { useRole } from "@/lib/role";
 
 type CalendarCandidate = {
@@ -689,7 +689,7 @@ function SlateCard({
       <div className="flex flex-wrap items-center gap-1.5">
         <ConfidenceChevrons level={p?.confidence} />
         <span className={`text-[11px] font-bold ${confidenceTextColor(p?.confidence)}`} title={`預估約 ${p?.buyers ?? sl.predicted} 位買家`}>{p?.buyers ?? sl.predicted}</span>
-        {p && <span className="text-[10px] text-zinc-400" title={`最少約 ${p.low} 位、最多約 ${p.high} 位`}>⌄{p.low} ⌃{p.high}</span>}
+        {p && <PredictRange low={p.low} high={p.high} value={p.buyers} level={p.confidence} />}
       </div>
       {why && (
         <div className="line-clamp-2 text-[10px] text-zinc-500 dark:text-zinc-400">{why.replace(/^試新：/, "")}</div>

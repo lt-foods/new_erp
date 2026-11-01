@@ -19,7 +19,7 @@ import { CampaignOrdersPanel } from "@/components/CampaignOrdersPanel";
 import { CampaignItemsTable } from "@/components/CampaignItemsTable";
 import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
-import ConfidenceChevrons, { confidenceTextColor } from "@/components/ConfidenceChevrons";
+import ConfidenceChevrons, { confidenceTextColor, PredictRange } from "@/components/ConfidenceChevrons";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import Spinner, { LoadingBlock } from "@/components/Spinner";
 import { CampaignThumb } from "@/components/CampaignThumb";
@@ -184,11 +184,7 @@ function RecoChips({ reco, status }: { reco: CampaignReco | undefined; status: S
         <span className="inline-flex items-center gap-1 text-[11px] text-zinc-500" title={(reco.reasons ?? []).join("\n")}>
           <ConfidenceChevrons level={reco.confidence} />
           <span className={`font-bold ${confidenceTextColor(reco.confidence)}`} title={`預估約 ${reco.buyers} 位買家`}>{reco.buyers}</span>
-          {showRange && (
-            <span className="whitespace-nowrap" title={`最少約 ${reco.low} 位、最多約 ${reco.high} 位`}>
-              ⌄{reco.low} ⌃{reco.high}
-            </span>
-          )}
+          {showRange && <PredictRange low={reco.low} high={reco.high} value={reco.buyers} level={reco.confidence} />}
         </span>
       )}
     </>
