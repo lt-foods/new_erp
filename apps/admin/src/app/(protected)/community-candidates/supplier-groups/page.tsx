@@ -135,7 +135,7 @@ export default function SupplierGroupsPage() {
           選機器人帳號、勾要讀的廠商群組。讀到的新貼文馬上進
           <Link href="/community-candidates" className="mx-1 text-blue-600 hover:underline dark:text-blue-400">候選池</Link>
           （標「待整理」），幾分鐘內 AI（Cloudflare）看圖文拆成品項，附團購價、規格，以及我們有沒有賣過。
-          每天 01:13 自動讀最近 3 天，也可以按「立即讀取」。只讀貼文，不留言、不按讚。
+          每天 01:13 自動讀近兩個禮拜的記事本，也可以按「立即讀取」。只讀貼文，不留言、不按讚。
         </p>
       </header>
 
