@@ -13,9 +13,10 @@
 -- 排程 reco-campaign-predict 每 10 分鐘補 500 團。讀權限：同租戶的登入者（開團頁分店也會看）。
 --
 -- _reco_schedule_source 跟 20261101000240 的定義一字不差（兩支 PR 誰先套都可以）。
+-- 推薦成效頁的「人工排 vs 系統推薦」改用 rpc_reco_source_compare（近 30 天開的總倉團，依來源比實際買家）。
 -- rollback：
 --   SELECT cron.unschedule('reco-campaign-predict');
---   DROP FUNCTION public.reco_refresh_campaign_predictions(INT), public._reco_campaign_source(BIGINT),
+--   DROP FUNCTION public.rpc_reco_source_compare(INT), public.reco_refresh_campaign_predictions(INT), public._reco_campaign_source(BIGINT),
 --     public._reco_features_campaign(UUID, BIGINT, DATE, NUMERIC);
 --   DROP TABLE public.reco_campaign_predictions;
 -- ============================================================================
@@ -181,5 +182,55 @@ REVOKE ALL ON FUNCTION public.reco_refresh_campaign_predictions(INT) FROM PUBLIC
 SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'reco-campaign-predict';
 SELECT cron.schedule('reco-campaign-predict', '*/10 * * * *', $cron$ SELECT public.reco_refresh_campaign_predictions(500); $cron$);
 
--- 先算一批（剩下的排程 10 分鐘內補）
-SELECT public.reco_refresh_campaign_predictions(600);
+-- 推薦成效頁「人工排 vs 系統推薦」：近 p_days 天開的總倉團，依來源比實際買家（Alex：人工排的從今天往回推一個月算）
+--   已結束（settled）的才算買家平均 / 中位數 / 預估命中；24 小時買家只要開團滿 24 小時就算。
+CREATE OR REPLACE FUNCTION public.rpc_reco_source_compare(p_days INT DEFAULT 30)
+RETURNS TABLE (source TEXT, campaigns INT, settled INT, avg_buyers NUMERIC, median_buyers NUMERIC,
+               avg_predicted NUMERIC, beat_rate NUMERIC, avg_24h NUMERIC)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE v_tenant UUID := NULLIF(auth.jwt() ->> 'tenant_id', '')::uuid;
+BEGIN
+  IF v_tenant IS NULL
+     OR COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', '') NOT IN ('owner', 'admin', 'hq_manager', 'assistant', '') THEN
+    RAISE EXCEPTION 'insufficient_role';
+  END IF;
+  RETURN QUERY
+  WITH g AS (
+    SELECT g.id, g.start_at, cp.source, cp.buyers AS pred, rb.buyers AS actual, COALESCE(rb.settled, FALSE) AS done
+      FROM group_buy_campaigns g
+      JOIN reco_campaign_predictions cp ON cp.campaign_id = g.id
+      LEFT JOIN reco_campaign_buyers rb ON rb.campaign_id = g.id
+     WHERE g.tenant_id = v_tenant AND g.owner_store_id IS NULL AND g.status NOT IN ('cancelled', 'draft')
+       AND g.start_at >= now() - make_interval(days => GREATEST(p_days, 1)) AND g.start_at <= now()
+  ), b24 AS (
+    SELECT g.id, count(DISTINCT co.member_id) AS n
+      FROM g
+      JOIN customer_orders co ON co.campaign_id = g.id AND co.created_at < g.start_at + interval '24 hours'
+      JOIN members m ON m.id = co.member_id
+     WHERE g.start_at <= now() - interval '24 hours'
+       AND co.status NOT IN ('cancelled', 'expired', 'transferred_out')
+       AND COALESCE(m.member_type, '') <> 'store_internal'
+     GROUP BY 1
+  )
+  SELECT g.source,
+         count(*)::int,
+         count(*) FILTER (WHERE g.done)::int,
+         round(avg(g.actual) FILTER (WHERE g.done), 1),
+         round((percentile_cont(0.5) WITHIN GROUP (ORDER BY g.actual) FILTER (WHERE g.done))::numeric, 1),
+         round(avg(g.pred) FILTER (WHERE g.done), 1),
+         round(avg(CASE WHEN g.actual >= g.pred THEN 1 ELSE 0 END) FILTER (WHERE g.done AND g.pred IS NOT NULL), 3),
+         round(avg(COALESCE(b24.n, 0)) FILTER (WHERE g.start_at <= now() - interval '24 hours'), 1)
+    FROM g LEFT JOIN b24 ON b24.id = g.id
+   GROUP BY g.source
+   ORDER BY g.source;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.rpc_reco_source_compare(INT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.rpc_reco_source_compare(INT) TO authenticated;
+
+-- 先算一批（近一個月的都要有，剩下的排程 10 分鐘內補）
+SELECT public.reco_refresh_campaign_predictions(1500);
