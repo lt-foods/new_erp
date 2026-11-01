@@ -24,7 +24,28 @@ type Candidate = {
   /** 廠商群組記事本解析出來的（20261101000040）；其他來源是 null */
   parsed: SupplierParsed | null;
   similarity_score: number | null;
+  /** 廠商群組來源：{ market_post_id, ... }；用來反查貼文圖片 */
+  raw: { market_post_id?: number } | null;
 };
+
+const STORAGE_BASE = `${process.env.NEXT_PUBLIC_SUPABASE_URL ?? ""}/storage/v1/object/public/products/`;
+
+/** 廠商貼文的圖（worker 讀貼文時一起抓下來的），點了開原圖 */
+function SupplierImages({ paths }: { paths: string[] | undefined }) {
+  if (!paths?.length) return null;
+  return (
+    <div className="mt-1 flex flex-wrap gap-1">
+      {paths.slice(0, 4).map((p) => (
+        <a key={p} href={STORAGE_BASE + p} target="_blank" rel="noreferrer">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={STORAGE_BASE + p} alt="" loading="lazy"
+               className="h-12 w-12 rounded border border-zinc-200 object-cover dark:border-zinc-700" />
+        </a>
+      ))}
+      {paths.length > 4 && <span className="self-center text-[10px] text-zinc-400">+{paths.length - 4}</span>}
+    </div>
+  );
+}
 
 type SupplierMatch = { product_id: number; name: string; score: number; campaigns: number; buyers: number; last_start: string | null };
 type SupplierParsed = {
@@ -110,6 +131,7 @@ export default function CommunityCandidatesPage() {
   const [rows, setRows] = useState<Candidate[] | null>(null);
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
+  const [postImages, setPostImages] = useState<Record<number, string[]>>({});
   const reqSeq = useRef(0);
   const [queryDraft, setQueryDraft] = useState("");
   const [query, setQuery] = useState("");
@@ -171,7 +193,7 @@ export default function CommunityCandidatesPage() {
     let q = getSupabase()
       .from("community_product_candidates")
       .select(
-        "id, product_name_hint, raw_text, source_user_id, source_user_name, source_channel, system_status, owner_action, scheduled_open_at, scheduled_sort_order, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price, parsed, similarity_score",
+        "id, product_name_hint, raw_text, source_user_id, source_user_name, source_channel, system_status, owner_action, scheduled_open_at, scheduled_sort_order, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price, parsed, similarity_score, raw",
         { count: "exact" }
       )
       .order("created_at", { ascending: false })
@@ -197,8 +219,17 @@ export default function CommunityCandidatesPage() {
       if (err) setError(err.message);
       else {
         setError(null);
-        setRows((data as Candidate[]) ?? []);
+        const list = (data as Candidate[]) ?? [];
+        setRows(list);
         setTotal(count ?? 0);
+        // 廠商群組來的候選：一次把這一頁用到的貼文圖撈回來
+        const postIds = [...new Set(list.map((r) => r.raw?.market_post_id).filter((x): x is number => typeof x === "number"))];
+        if (postIds.length) {
+          const { data: imgs } = await getSupabase().from("line_note_market_posts").select("id,image_paths").in("id", postIds);
+          if (seq === reqSeq.current) {
+            setPostImages(Object.fromEntries((imgs ?? []).map((x: { id: number; image_paths: string[] | null }) => [x.id, x.image_paths ?? []])));
+          }
+        }
       }
     } finally {
       setSearching(false);
@@ -799,6 +830,7 @@ export default function CommunityCandidatesPage() {
                       return null;
                     })()}
                     <SupplierInfo p={r.parsed} />
+                    <SupplierImages paths={r.raw?.market_post_id != null ? postImages[r.raw.market_post_id] : undefined} />
                   </td>
                   <td className="max-w-xs px-3 py-3 text-zinc-600 dark:text-zinc-300">
                     <span title={r.raw_text}>
@@ -900,6 +932,7 @@ export default function CommunityCandidatesPage() {
                   )}
                 </div>
                 <SupplierInfo p={r.parsed} />
+                <SupplierImages paths={r.raw?.market_post_id != null ? postImages[r.raw.market_post_id] : undefined} />
 
                 <p className="mt-1 whitespace-pre-line text-xs text-zinc-600 dark:text-zinc-300">
                   {r.raw_text.slice(0, 140)}
