@@ -192,13 +192,20 @@ export async function listHomes(client: any, verbose = false, diag: Record<strin
       }
       member.push(mid);
     }
-    if (member.length) {
-      const { chats } = await client.base.talk.getChats({ chatMids: member });
-      for (const c of chats ?? []) {
-        const mid = String(c.chatMid ?? "");
-        if (c.type === "GROUP" || c.type === 0 || mid.startsWith("c")) {
-          homes.push({ kind: "group", homeId: mid, name: c.chatName ?? "" });
+    // getChats 一次最多 100 個（超過回 INVALID_LENGTH，parameterMap.LIMIT=100），而且整批失敗 ——
+    // 2026-11-01 高麗菜包身上 186 個聊天，群組一個都列不出來、只剩社群。分批查，單批失敗不拖累其他批。
+    for (let i = 0; i < member.length; i += 50) {
+      try {
+        const { chats } = await client.base.talk.getChats({ chatMids: member.slice(i, i + 50) });
+        for (const c of chats ?? []) {
+          const mid = String(c.chatMid ?? "");
+          if (c.type === "GROUP" || c.type === 0 || mid.startsWith("c")) {
+            homes.push({ kind: "group", homeId: mid, name: c.chatName ?? "" });
+          }
         }
+      } catch (e) {
+        log(true, `getChats(${i}~${i + 49}) failed:`, (e as any)?.message ?? e);
+        diag.chats_error = String((e as any)?.message ?? e).slice(0, 300);
       }
     }
   } catch (e) {
