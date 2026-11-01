@@ -28,7 +28,7 @@ type Candidate = {
   raw: { market_post_id?: number } | null;
 };
 
-const STORAGE_BASE = `${process.env.NEXT_PUBLIC_SUPABASE_URL ?? ""}/storage/v1/object/public/products/`;
+const imageUrl = (path: string) => getSupabase().storage.from("products").getPublicUrl(path).data.publicUrl;
 
 /** 廠商貼文的圖（worker 讀貼文時一起抓下來的），點了開原圖 */
 function SupplierImages({ paths }: { paths: string[] | undefined }) {
@@ -36,9 +36,9 @@ function SupplierImages({ paths }: { paths: string[] | undefined }) {
   return (
     <div className="mt-1 flex flex-wrap gap-1">
       {paths.slice(0, 4).map((p) => (
-        <a key={p} href={STORAGE_BASE + p} target="_blank" rel="noreferrer">
+        <a key={p} href={imageUrl(p)} target="_blank" rel="noreferrer">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={STORAGE_BASE + p} alt="" loading="lazy"
+          <img src={imageUrl(p)} alt="" loading="lazy"
                className="h-12 w-12 rounded border border-zinc-200 object-cover dark:border-zinc-700" />
         </a>
       ))}
