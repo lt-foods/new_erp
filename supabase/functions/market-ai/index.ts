@@ -6,6 +6,7 @@
 //   2. 商品向量：rpc_ai_product_embed_claim → bge-m3 → rpc_ai_product_embed_write
 //   3. 品項向量＋比對：rpc_ai_item_embed_claim → bge-m3 → rpc_ai_item_embed_write（重算「賣過嗎」、同步候選池）
 //   4. 新品貼標：rpc_product_tag_llm_claim → 文字模型 → rpc_product_tag_llm_write
+//   5. 品類（20261101000220）：rpc_ai_kind_claim → 文字模型 → rpc_ai_kind_write（廠商品項優先、再補商品）
 //
 // 呼叫：
 //   { action: "tick" }               pg_cron 'market-ai-tick' 每 5 分鐘（有工作才打）；line-note-worker 讀完
@@ -232,10 +233,40 @@ async function tagProducts(products: any[], tagList: string, groupOf: Map<string
   return m;
 }
 
+// ── 品類（20261101000220）：最通用的名詞，算「同品類開團頻率」用 ────────────────
+const KIND_SCHEMA = {
+  name: "kinds",
+  schema: {
+    type: "object",
+    properties: {
+      items: { type: "array", items: { type: "object", properties: { k: { type: "string" }, kind: { type: "string" } }, required: ["k", "kind"] } },
+    },
+    required: ["items"],
+  },
+};
+const KIND_RULES = "每個商品給一個「品類」：最通用、最短的商品名詞（2～6 個字），去掉品牌、產地、口味、做法、份量、規格、行銷字。" +
+  "同一種東西一定要用同一個詞；不同的東西不能合在一起（豬排和雞排是不同品類、豬排御用米是米）。看不出來是什麼就回空字串。\n" +
+  "例：卡哇伊鮮嫩厚豬排→豬排；日式手工厚切炸豬排→豬排；大登豬排→豬排；鮮嫩無骨雞排→雞排；日本銀座杏子日式豬排御用米→米；" +
+  "栗香地瓜→地瓜；台灣本產冷凍秋葵→秋葵；鮮蝦水晶餃→水晶餃；菇菇水晶餃→水晶餃；冰釀滷鴨翅→鴨翅；藤野洗衣機槽清潔粉→洗衣槽清潔劑；" +
+  "韓國羅紋百搭襪→襪子；MIZU益生菌潤膚乳液→乳液；起司片→起司片。";
+
+async function labelKinds(rows: { target: string; id: number; name: string }[], vocab: string[]): Promise<Map<string, string>> {
+  const system = "你是台灣團購店的商品品類員。" + KIND_RULES +
+    (vocab.length ? "\n優先用下面已經用過的品類（意思一樣就用同一個詞）：" + vocab.join("、") : "");
+  const key = (r: { target: string; id: number }) => `${r.target === "item" ? "i" : "p"}${r.id}`;
+  const user = rows.map((r) => `k=${key(r)} 品名：${clean(r.name, 120)}`).join("\n");
+  const out = await chatJson(system, user, KIND_SCHEMA, 2500);
+  const m = new Map<string, string>();
+  for (const it of out?.items ?? []) {
+    if (typeof it?.k === "string") m.set(it.k, clean(String(it.kind ?? "").replace(/\s/g, ""), 8));
+  }
+  return m;
+}
+
 // ── tick ───────────────────────────────────────────────────────────────────
 async function tick(started: number) {
   const until = (ms: number) => Date.now() - started < ms;
-  const stats: Record<string, any> = { posts: 0, items: 0, product_vectors: 0, item_vectors: 0, tagged: 0, errors: [] as string[] };
+  const stats: Record<string, any> = { posts: 0, items: 0, product_vectors: 0, item_vectors: 0, tagged: 0, kinds: 0, errors: [] as string[] };
   const err = (where: string, e: unknown) => { const m = `${where}: ${String((e as any)?.message ?? e).slice(0, 300)}`; console.error(m); stats.errors.push(m); };
   const tags = await loadTags();
   const tagList = tagText(tags);
@@ -302,6 +333,28 @@ async function tick(started: number) {
     }
   }
 
+  // 5. 品類（廠商品項優先、再補商品；用剩下的時間）
+  let vocab: string[] | null = null;
+  while (until(128_000)) {
+    const rows = await rpc("rpc_ai_kind_claim", { p_limit: 40 }) ?? [];
+    if (!rows.length) break;
+    try {
+      if (!vocab) vocab = ((await rpc("rpc_ai_kind_vocab", { p_limit: 300 })) ?? []).map((v: any) => String(v.kind));
+      const m = await labelKinds(rows, vocab);
+      const n = await rpc("rpc_ai_kind_write", {
+        p_rows: rows.map((r: any) => ({ target: r.target, id: r.id, kind: m.get(`${r.target === "item" ? "i" : "p"}${r.id}`) ?? "" })),
+      });
+      stats.kinds += Number(n) || 0;
+      for (const k of m.values()) if (k && !vocab.includes(k)) vocab.push(k);
+    } catch (e) {
+      err("kinds", e);
+      await rpc("rpc_ai_kind_write", {
+        p_rows: rows.map((r: any) => ({ target: r.target, id: r.id, kind: "", error: String((e as any)?.message ?? e).slice(0, 300) })),
+      }).catch(() => {});
+      break;
+    }
+  }
+
   stats.ms = Date.now() - started;
   return stats;
 }
@@ -333,6 +386,13 @@ Deno.serve(async (req) => {
         } catch (e) { out.push({ post_id: p.id, error: String((e as any)?.message ?? e) }); }
       }
       return json({ model: CHAT_MODEL, results: out, ms: Date.now() - started });
+    }
+    if (action === "kind_probe") {
+      // 唯讀：給幾個品名看會標成什麼品類（不寫 DB）
+      const names: string[] = Array.isArray(body.names) ? body.names.slice(0, 40) : [];
+      const vocab = ((await rpc("rpc_ai_kind_vocab", { p_limit: 300 })) ?? []).map((v: any) => String(v.kind));
+      const m = await labelKinds(names.map((n, i) => ({ target: "item", id: i, name: String(n) })), vocab);
+      return json(names.map((n, i) => ({ name: n, kind: m.get(`i${i}`) ?? null })));
     }
     if (action === "embed_probe") {
       const texts = (Array.isArray(body.texts) ? body.texts : []).map((t: unknown) => clean(t, 1000)).slice(0, 20);
