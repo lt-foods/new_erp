@@ -25,6 +25,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import SpinButton from "@/components/SpinButton";
+import { useRole } from "@/lib/role";
 
 type CalendarCandidate = {
   id: number;
@@ -36,7 +37,24 @@ type CalendarCandidate = {
   adopted_supplier_name: string | null;
   adopted_cost: number | null;
   adopted_sale_price: number | null;
+  /** manual = 人工排；reco = 從系統預選排入；reco_explore = 系統預選的新嘗試（rpc_calendar_week，20261101000240） */
+  source: "manual" | "reco" | "reco_explore";
 };
+
+/** 排程卡上的來源標籤：之後要比較「人排的」跟「系統推薦的」哪個賣得好 */
+function SourceBadge({ source }: { source: CalendarCandidate["source"] }) {
+  if (source === "manual") {
+    return <span className="inline-flex rounded px-1.5 py-0.5 text-[10px] bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">人工排</span>;
+  }
+  return (
+    <span className="inline-flex rounded px-1.5 py-0.5 text-[10px] bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300">
+      {source === "reco_explore" ? "系統推薦・新嘗試" : "系統推薦"}
+    </span>
+  );
+}
+
+/** 總部（同候選池 RLS）可以拖拉、排入；店長唯讀 */
+const EDIT_ROLES = ["owner", "admin", "hq_manager", "assistant", ""];
 
 /** 推薦系統 ⑥ 系統預選（20261101000170）：只是建議，按「排入」才真的排程 */
 type Prediction = { buyers: number; low: number; high: number; confidence: "high" | "mid" | "low"; reasons: string[] };
@@ -114,25 +132,21 @@ export default function CommunityCandidatesCalendarPage() {
     });
   }, []);
 
+  const role = useRole();
+  const editable = role !== null && EDIT_ROLES.includes(role);
+
   const reload = useCallback(async () => {
+    if (role === null) return; // 還沒讀到角色，先別決定要不要撈預選
     const startStr = formatDate(days[0]);
     const endStr = formatDate(days[6]);
-    const { data, error: err } = await getSupabase()
-      .from("community_product_candidates")
-      .select(
-        "id, product_name_hint, scheduled_open_at, scheduled_sort_order, owner_action, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price"
-      )
-      .not("scheduled_open_at", "is", null)
-      .gte("scheduled_open_at", startStr)
-      .lte("scheduled_open_at", endStr)
-      .order("scheduled_open_at", { ascending: true })
-      .order("scheduled_sort_order", { ascending: true, nullsFirst: false })
-      .order("created_at", { ascending: true });
+    // 走 RPC：店長也讀得到（候選池表的 RLS 只開給總部），成本只回給總部
+    const { data, error: err } = await getSupabase().rpc("rpc_calendar_week", { p_from: startStr, p_to: endStr });
     if (err) setError(err.message);
     else {
       setError(null);
       setRows((data as CalendarCandidate[]) ?? []);
     }
+    if (!EDIT_ROLES.includes(role)) { setSlates([]); return; }
     // 系統預選（讀不到不擋週曆本身）
     const { data: sl } = await getSupabase()
       .from("reco_slates")
@@ -145,7 +159,7 @@ export default function CommunityCandidatesCalendarPage() {
       .order("slate_date", { ascending: true })
       .order("rank", { ascending: true });
     setSlates(((sl as unknown) as Slate[]) ?? []);
-  }, [days]);
+  }, [days, role]);
 
   const slateName = (sl: Slate) => {
     const hint = (sl.candidate?.product_name_hint ?? "").trim();
@@ -391,9 +405,12 @@ export default function CommunityCandidatesCalendarPage() {
         <div>
           <h1 className="text-xl font-semibold">選品週曆</h1>
           <p className="mt-0.5 text-sm text-zinc-500">
-            未來 7 天 · 拖拉卡片排序或換日 · 虛線卡是系統預選（每天 8 個依預估買家、2 個「新嘗試」；同款還沒結束的不推），按「排入」才會排程
+            {editable
+              ? "未來 7 天 · 拖拉卡片排序或換日 · 虛線卡是系統預選（每天 8 個依預估買家、2 個「新嘗試」；同款還沒結束的不推），按「排入」才會排程"
+              : "未來 7 天總部排定要開的團（唯讀）"}
           </p>
         </div>
+        {editable && (
         <div className="flex shrink-0 gap-2">
         <SpinButton
           onClick={rebuildSlates}
@@ -409,6 +426,7 @@ export default function CommunityCandidatesCalendarPage() {
           候選池
         </Link>
         </div>
+        )}
       </header>
 
       {error && (
@@ -419,6 +437,24 @@ export default function CommunityCandidatesCalendarPage() {
 
       {rows === null ? (
         <div className="text-sm text-zinc-400">載入中…</div>
+      ) : !editable ? (
+        <div className="flex gap-2 overflow-x-auto pb-2 lg:grid lg:grid-cols-7 lg:overflow-x-visible lg:pb-0">
+          {days.map((d) => {
+            const key = formatDate(d);
+            const cards = localByDate[key] ?? [];
+            return (
+              <DayColumn key={key} dayKey={key} day={d} isToday={key === todayStr} cards={cards}>
+                {cards.length === 0 ? (
+                  <div className="rounded border border-dashed border-zinc-200 px-2 py-4 text-center text-[10px] text-zinc-400 dark:border-zinc-800">
+                    無排程
+                  </div>
+                ) : (
+                  cards.map((r, idx) => <ReadonlyCard key={r.id} card={r} idx={idx} />)
+                )}
+              </DayColumn>
+            );
+          })}
+        </div>
       ) : (
         <DndContext
           sensors={sensors}
@@ -468,7 +504,7 @@ export default function CommunityCandidatesCalendarPage() {
         </DndContext>
       )}
 
-      <div className="text-xs text-zinc-400">共 {rows?.length ?? 0} 筆排程・{slates.length} 筆系統預選</div>
+      <div className="text-xs text-zinc-400">共 {rows?.length ?? 0} 筆排程{editable ? `・${slates.length} 筆系統預選` : ""}</div>
     </div>
   );
 }
@@ -588,6 +624,7 @@ function SortableCard({
         >
           {ACTION_LABEL[r.owner_action] ?? r.owner_action}
         </span>
+        <SourceBadge source={r.source} />
         {complete && (
           <span className="inline-flex rounded-full bg-teal-100 px-1.5 py-0.5 text-[10px] font-medium text-teal-700 dark:bg-teal-900/30 dark:text-teal-300">
             已補資料
@@ -682,6 +719,21 @@ function SlateCard({
         >
           略過
         </SpinButton>
+      </div>
+    </div>
+  );
+}
+
+/** 店長看的唯讀卡：沒有拖拉、沒有移出、不連到候選池 */
+function ReadonlyCard({ card: r, idx }: { card: CalendarCandidate; idx: number }) {
+  return (
+    <div className="flex flex-col gap-1 rounded-md border border-zinc-200 bg-white p-2 text-xs shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <span className="font-mono text-[10px] font-semibold text-zinc-400 dark:text-zinc-500">{suggestedTime(idx)}</span>
+      <span className="line-clamp-2 font-medium leading-snug" title={r.product_name_hint ?? "（無商品名）"}>
+        {r.product_name_hint ?? "（無商品名）"}
+      </span>
+      <div className="flex flex-wrap gap-1">
+        <SourceBadge source={r.source} />
       </div>
     </div>
   );
