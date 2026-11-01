@@ -15,6 +15,11 @@ const TITLE: Record<Level, string> = {
   low: "把握度低：只能參考同類商品",
 };
 
+/** 預估人數的數字顏色，跟圖示同一個顏色（沒有把握度時維持一般字色） */
+export function confidenceTextColor(level: Level | null | undefined): string {
+  return level ? COLOR[level] : "text-zinc-800 dark:text-zinc-100";
+}
+
 export default function ConfidenceChevrons({ level, className = "" }: { level: Level | null | undefined; className?: string }) {
   if (!level) return null;
   const n = COUNT[level];

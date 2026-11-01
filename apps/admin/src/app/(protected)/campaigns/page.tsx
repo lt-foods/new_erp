@@ -19,7 +19,7 @@ import { CampaignOrdersPanel } from "@/components/CampaignOrdersPanel";
 import { CampaignItemsTable } from "@/components/CampaignItemsTable";
 import { DatePicker } from "@/components/DatePicker";
 import SpinButton from "@/components/SpinButton";
-import ConfidenceChevrons from "@/components/ConfidenceChevrons";
+import ConfidenceChevrons, { confidenceTextColor } from "@/components/ConfidenceChevrons";
 import { Table, THead, TBody, Tr, Th, Td, EmptyRow, LoadingRow } from "@/components/DataTable";
 import Spinner, { LoadingBlock } from "@/components/Spinner";
 import { CampaignThumb } from "@/components/CampaignThumb";
@@ -183,7 +183,7 @@ function RecoChips({ reco, status }: { reco: CampaignReco | undefined; status: S
       {reco.buyers != null && (
         <span className="inline-flex items-center gap-1 text-[11px] text-zinc-500" title={(reco.reasons ?? []).join("\n")}>
           <ConfidenceChevrons level={reco.confidence} />
-          <span className="font-bold text-zinc-800 dark:text-zinc-100">預估約 {reco.buyers} 位</span>
+          <span className="font-bold text-zinc-800 dark:text-zinc-100">預估約 <span className={confidenceTextColor(reco.confidence)}>{reco.buyers}</span> 位</span>
           {showRange && (
             <span className="whitespace-nowrap" title={`最少約 ${reco.low} 位、最多約 ${reco.high} 位`}>
               ⌄{reco.low} ⌃{reco.high}

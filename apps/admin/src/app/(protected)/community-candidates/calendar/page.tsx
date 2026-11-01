@@ -25,7 +25,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import SpinButton from "@/components/SpinButton";
-import ConfidenceChevrons from "@/components/ConfidenceChevrons";
+import ConfidenceChevrons, { confidenceTextColor } from "@/components/ConfidenceChevrons";
 import { useRole } from "@/lib/role";
 
 type CalendarCandidate = {
@@ -688,7 +688,7 @@ function SlateCard({
       </Link>
       <div className="flex flex-wrap items-center gap-1.5">
         <ConfidenceChevrons level={p?.confidence} />
-        <span className="text-[11px] font-bold text-zinc-800 dark:text-zinc-100">約 {p?.buyers ?? sl.predicted} 位</span>
+        <span className="text-[11px] font-bold text-zinc-800 dark:text-zinc-100">約 <span className={confidenceTextColor(p?.confidence)}>{p?.buyers ?? sl.predicted}</span> 位</span>
         {p && <span className="text-[10px] text-zinc-400">{p.low}～{p.high} 位</span>}
       </div>
       {why && (
