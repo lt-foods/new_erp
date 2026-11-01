@@ -25,7 +25,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.8";
 import QRCode from "npm:qrcode@1.5.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import {
-  clientFromToken, createNoteComment, createNotePost, deleteNotePost, likeComment, type LineCredential, listComments, listHomes,
+  clientFromToken, createNoteComment, createNotePost, deleteNotePost, downloadNoteImage, likeComment, type LineCredential, listComments, listHomes,
   listPosts, loginByQr, readCredential, resolveShareChatMid, sendChatText, sharePostToChat, unsendChatMessage, updateNotePost, whoami,
 } from "../_shared/lineNote.ts";
 import { extractPostTag, matchCampaign, normalizeForMatch, normalizeParseConfig, parseNoteComment, postTitle } from "../_shared/lineNoteParse.ts";
@@ -1445,7 +1445,50 @@ async function jobCrawl(job: any) {
     media: noteMedia(n.raw),
   })).filter((p: any) => p.postId);
   const r = await rpc("rpc_line_note_market_ingest", { p_community_id: c.id, p_posts: posts });
-  return { home: c.home_name, listed: notes.length, ...(Array.isArray(r) ? r[0] : r) };
+  // 圖跟著抓（20261101000080）：存進 products 儲存桶 supplier-notes/<群組>/<貼文>/<n>.<副檔名>，
+  // 候選池顯示、半夜 Claude 看圖讀品名價格、之後轉成商品都用這份。一次 job 最多抓 60 秒，
+  // 沒抓完的下一次讀取（或下一個 crawl job）接著抓。
+  const images = await fetchMarketPostImages(client, c.id, Date.now() + 60_000);
+  return { home: c.home_name, listed: notes.length, ...(Array.isArray(r) ? r[0] : r), images };
+}
+
+const MAX_IMAGES_PER_POST = 8;
+async function fetchMarketPostImages(client: any, communityId: number, until: number) {
+  const posts = await rest(`line_note_market_posts?community_id=eq.${communityId}&image_paths=is.null&select=id,media&order=posted_at.desc.nullslast&limit=40`);
+  let saved = 0, failed = 0, done = 0, route: string | null = null, lastError: string | null = null;
+  for (const p of posts ?? []) {
+    if (Date.now() > until) break;
+    const photos = (Array.isArray(p.media) ? p.media : []).filter((m: any) => m?.objectId && (m.type ?? "PHOTO") === "PHOTO").slice(0, MAX_IMAGES_PER_POST);
+    const paths: string[] = [];
+    for (let i = 0; i < photos.length; i++) {
+      if (Date.now() > until) break;
+      try {
+        const img = await downloadNoteImage(client, String(photos[i].objectId), VERBOSE);
+        route = img.route;
+        const ext = img.type === "image/png" ? "png" : img.type === "image/webp" ? "webp" : "jpg";
+        const path = `supplier-notes/${communityId}/${p.id}/${i}.${ext}`;
+        const up = await fetch(`${SUPABASE_URL}/storage/v1/object/${PRODUCTS_BUCKET}/${path}`, {
+          method: "POST",
+          headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": img.type, "x-upsert": "true" },
+          body: img.bytes,
+        });
+        if (!up.ok) throw new Error(`storage ${up.status} ${(await up.text()).slice(0, 120)}`);
+        paths.push(path);
+        saved++;
+      } catch (e) {
+        failed++;
+        lastError = String((e as any)?.message ?? e).slice(0, 300);
+      }
+    }
+    // 中途時間到、這篇沒抓完：不寫，下次整篇重抓（x-upsert 會覆蓋）
+    if (paths.length < photos.length && Date.now() > until) break;
+    await patch("line_note_market_posts", `id=eq.${p.id}`, {
+      image_paths: paths,
+      image_error: paths.length < photos.length ? (lastError ?? "部分圖片沒抓到") : null,
+    });
+    done++;
+  }
+  return { posts: done, saved, failed, route, last_error: lastError };
 }
 
 const HANDLERS: Record<string, (job: any, reactUntil: number) => Promise<unknown>> = {

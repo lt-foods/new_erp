@@ -45,6 +45,8 @@ export default function SupplierGroupsPage() {
   const loadCrawl = useCallback(async () => {
     const { data, error: err } = await getSupabase().rpc("rpc_line_note_crawl_homes");
     if (err) { setError(translateRpcError(err)); return; }
+    // 讀成功就把上一次讀取失敗的紅字收掉（不然修好之後還一直掛著）
+    setError((prev) => (prev && /rpc_line_note_crawl_homes|line_note_accounts/.test(prev) ? null : prev));
     setCrawl((data ?? []) as CrawlHome[]);
   }, []);
 
@@ -117,7 +119,7 @@ export default function SupplierGroupsPage() {
     if (err) { setError(translateRpcError(err)); return; }
     if ((data as { job_id?: number | null })?.job_id) {
       kickWorker();
-      setNotice(`「${home.name}」開始讀取，約一分鐘後會出現貼文數；商品今晚 02:53 解析後進候選池。`);
+      setNotice(`「${home.name}」讀取中，幾秒後新貼文就會出現在候選池（標「待整理」）；今晚 02:53 由 Claude 拆成品項、比對賣過沒。`);
     }
     await loadCrawl();
   }
@@ -130,9 +132,10 @@ export default function SupplierGroupsPage() {
       <header>
         <h1 className="text-xl font-semibold">廠商群組</h1>
         <p className="text-sm text-zinc-500">
-          選機器人帳號、勾要讀的廠商群組。每天 01:13 讀最近 3 天的記事本貼文，02:53 由 Claude 拆成商品後直接進
+          選機器人帳號、勾要讀的廠商群組。讀到的新貼文馬上進
           <Link href="/community-candidates" className="mx-1 text-blue-600 hover:underline dark:text-blue-400">候選池</Link>
-          ，附團購價、規格，以及我們有沒有賣過。只讀貼文，不留言、不按讚。
+          （標「待整理」），每天 02:53 由 Claude 拆成品項，附團購價、規格，以及我們有沒有賣過。
+          每天 01:13 自動讀最近 3 天，也可以按「立即讀取」。只讀貼文，不留言、不按讚。
         </p>
       </header>
 

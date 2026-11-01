@@ -24,10 +24,33 @@ type Candidate = {
   /** 廠商群組記事本解析出來的（20261101000040）；其他來源是 null */
   parsed: SupplierParsed | null;
   similarity_score: number | null;
+  /** 廠商群組來源：{ market_post_id, ... }；用來反查貼文圖片 */
+  raw: { market_post_id?: number } | null;
 };
+
+const imageUrl = (path: string) => getSupabase().storage.from("products").getPublicUrl(path).data.publicUrl;
+
+/** 廠商貼文的圖（worker 讀貼文時一起抓下來的），點了開原圖 */
+function SupplierImages({ paths }: { paths: string[] | undefined }) {
+  if (!paths?.length) return null;
+  return (
+    <div className="mt-1 flex flex-wrap gap-1">
+      {paths.slice(0, 4).map((p) => (
+        <a key={p} href={imageUrl(p)} target="_blank" rel="noreferrer">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={imageUrl(p)} alt="" loading="lazy"
+               className="h-12 w-12 rounded border border-zinc-200 object-cover dark:border-zinc-700" />
+        </a>
+      ))}
+      {paths.length > 4 && <span className="self-center text-[10px] text-zinc-400">+{paths.length - 4}</span>}
+    </div>
+  );
+}
 
 type SupplierMatch = { product_id: number; name: string; score: number; campaigns: number; buyers: number; last_start: string | null };
 type SupplierParsed = {
+  /** 剛讀到、還沒給 Claude 拆品項（整篇先進候選池）；半夜 02:53 會被正式品項取代 */
+  pending?: boolean;
   price: number | null; price_text: string | null; spec: string | null; deadline_text: string | null;
   supplier: string | null; comment_count: number | null; matches: SupplierMatch[] | null;
 };
@@ -37,6 +60,14 @@ function SupplierInfo({ p }: { p: SupplierParsed | null }) {
   if (!p) return null;
   const m = p.matches?.[0];
   const sold = m && m.score >= 0.75;
+  if (p.pending) {
+    return (
+      <div className="mt-1 text-[11px] font-normal text-zinc-500 dark:text-zinc-400">
+        <span className="mr-1 rounded bg-sky-100 px-1 text-[10px] text-sky-700 dark:bg-sky-900/40 dark:text-sky-300">待整理</span>
+        {p.price != null && `廠商價約 $${Number(p.price).toLocaleString("zh-TW")}・`}今晚 02:53 由 Claude 拆成品項、比對賣過沒
+      </div>
+    );
+  }
   const facts = [
     p.price != null ? `廠商價 $${Number(p.price).toLocaleString("zh-TW")}` : null,
     p.spec, p.deadline_text ? `截止 ${p.deadline_text}` : null,
@@ -91,8 +122,17 @@ const ACTION_COLOR: Record<string, string> = {
   ignored: "bg-zinc-200 text-zinc-500 dark:bg-zinc-700 dark:text-zinc-400",
 };
 
+// 候選池只留兩個禮拜（20261101000070 每天清掉超過 14 天沒處理／已忽略的），列表也只看 14 天；
+// 收藏、已採用全部顯示（老闆的決定紀錄），排程看排程日（建立很久但排在未來的不能藏起來）
+const PAGE_SIZE = 50;
+const KEEP_DAYS = 14;
+
 export default function CommunityCandidatesPage() {
   const [rows, setRows] = useState<Candidate[] | null>(null);
+  const [page, setPage] = useState(0);
+  const [total, setTotal] = useState(0);
+  const [postImages, setPostImages] = useState<Record<number, string[]>>({});
+  const reqSeq = useRef(0);
   const [queryDraft, setQueryDraft] = useState("");
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
@@ -134,7 +174,10 @@ export default function CommunityCandidatesPage() {
   useEffect(() => {
     // 打字內容與已送出的 query 不同 → 有一筆 reload 待觸發，轉圈圈到 reload 結束才停
     if (queryDraft !== query) setSearching(true);
-    const t = setTimeout(() => setQuery(queryDraft), 300);
+    const t = setTimeout(() => {
+      if (queryDraft !== query) setPage(0);
+      setQuery(queryDraft);
+    }, 300);
     return () => clearTimeout(t);
   }, [queryDraft, query]);
 
@@ -145,13 +188,19 @@ export default function CommunityCandidatesPage() {
   }, [highlightId, rows]);
 
   const reload = async () => {
+    const seq = ++reqSeq.current;
+    const sinceMs = Date.now() - KEEP_DAYS * 86400_000;
     let q = getSupabase()
       .from("community_product_candidates")
       .select(
-        "id, product_name_hint, raw_text, source_user_id, source_user_name, source_channel, system_status, owner_action, scheduled_open_at, scheduled_sort_order, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price, parsed, similarity_score"
+        "id, product_name_hint, raw_text, source_user_id, source_user_name, source_channel, system_status, owner_action, scheduled_open_at, scheduled_sort_order, created_at, adopted_supplier_name, adopted_cost, adopted_sale_price, parsed, similarity_score, raw",
+        { count: "exact" }
       )
       .order("created_at", { ascending: false })
-      .limit(200);
+      .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+
+    if (tab === "scheduled") q = q.gte("scheduled_open_at", new Date(sinceMs).toISOString().slice(0, 10));
+    else if (tab !== "collected" && tab !== "adopted") q = q.gte("created_at", new Date(sinceMs).toISOString());
 
     if (tab === "pending") q = q.eq("owner_action", "none");
     else if (tab === "collected") q = q.eq("owner_action", "collected");
@@ -165,11 +214,22 @@ export default function CommunityCandidatesPage() {
     }
 
     try {
-      const { data, error: err } = await q;
+      const { data, error: err, count } = await q;
+      if (seq !== reqSeq.current) return; // 換頁／換分頁太快，舊的回應晚到就丟掉
       if (err) setError(err.message);
       else {
         setError(null);
-        setRows((data as Candidate[]) ?? []);
+        const list = (data as Candidate[]) ?? [];
+        setRows(list);
+        setTotal(count ?? 0);
+        // 廠商群組來的候選：一次把這一頁用到的貼文圖撈回來
+        const postIds = [...new Set(list.map((r) => r.raw?.market_post_id).filter((x): x is number => typeof x === "number"))];
+        if (postIds.length) {
+          const { data: imgs } = await getSupabase().from("line_note_market_posts").select("id,image_paths").in("id", postIds);
+          if (seq === reqSeq.current) {
+            setPostImages(Object.fromEntries((imgs ?? []).map((x: { id: number; image_paths: string[] | null }) => [x.id, x.image_paths ?? []])));
+          }
+        }
       }
     } finally {
       setSearching(false);
@@ -179,7 +239,7 @@ export default function CommunityCandidatesPage() {
   useEffect(() => {
     reload();
     clearSelected();
-  }, [query, tab]);
+  }, [query, tab, page]);
 
   const patch = async (id: number, updates: Record<string, unknown>) => {
     setBusy(true);
@@ -523,7 +583,7 @@ export default function CommunityCandidatesPage() {
             // 廠商群組來的：廠商名、廠商報價（＝我們的成本）直接帶；售價留給老闆填，
             // 不要再從文案抓數字（抓到的就是廠商價，會把成本當售價）
             setAdoptSupplier(r.adopted_supplier_name ?? r.parsed?.supplier ?? "");
-            setAdoptCost(r.adopted_cost !== null ? String(r.adopted_cost) : (r.parsed?.price != null ? String(r.parsed.price) : ""));
+            setAdoptCost(r.adopted_cost !== null ? String(r.adopted_cost) : (r.parsed?.price != null && !r.parsed.pending ? String(r.parsed.price) : ""));
             setAdoptSalePrice(r.adopted_sale_price !== null ? String(r.adopted_sale_price) : (r.parsed ? "" : extractPrice(r.raw_text)));
             setScheduling(null);
           }}
@@ -610,7 +670,7 @@ export default function CommunityCandidatesPage() {
         {TABS.map(({ key, label }) => (
           <SpinButton
             key={key}
-            onClick={() => setTab(key)}
+            onClick={() => { setTab(key); setPage(0); }}
             className={
               tab === key
                 ? "border-b-2 border-zinc-900 px-4 py-2 text-sm font-medium text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
@@ -770,6 +830,7 @@ export default function CommunityCandidatesPage() {
                       return null;
                     })()}
                     <SupplierInfo p={r.parsed} />
+                    <SupplierImages paths={r.raw?.market_post_id != null ? postImages[r.raw.market_post_id] : undefined} />
                   </td>
                   <td className="max-w-xs px-3 py-3 text-zinc-600 dark:text-zinc-300">
                     <span title={r.raw_text}>
@@ -871,6 +932,7 @@ export default function CommunityCandidatesPage() {
                   )}
                 </div>
                 <SupplierInfo p={r.parsed} />
+                <SupplierImages paths={r.raw?.market_post_id != null ? postImages[r.raw.market_post_id] : undefined} />
 
                 <p className="mt-1 whitespace-pre-line text-xs text-zinc-600 dark:text-zinc-300">
                   {r.raw_text.slice(0, 140)}
@@ -901,7 +963,20 @@ export default function CommunityCandidatesPage() {
         </>
       )}
 
-      <div className="text-xs text-zinc-400">共 {rows?.length ?? 0} 筆（最多 200）</div>
+      <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-500">
+        <span>
+          共 {total} 筆・第 {total === 0 ? 0 : page + 1} / {Math.max(1, Math.ceil(total / PAGE_SIZE))} 頁
+          <span className="ml-2 text-zinc-400">
+            只顯示最近 {KEEP_DAYS} 天（收藏、已採用全部顯示，排程看排程日）；超過 {KEEP_DAYS} 天沒處理或已忽略的每天自動清掉
+          </span>
+        </span>
+        <span className="ml-auto flex gap-2">
+          <button type="button" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  className="rounded border border-zinc-300 px-2 py-1 disabled:opacity-40 dark:border-zinc-700">上一頁</button>
+          <button type="button" disabled={(page + 1) * PAGE_SIZE >= total} onClick={() => setPage((p) => p + 1)}
+                  className="rounded border border-zinc-300 px-2 py-1 disabled:opacity-40 dark:border-zinc-700">下一頁</button>
+        </span>
+      </div>
     </div>
   );
 }
