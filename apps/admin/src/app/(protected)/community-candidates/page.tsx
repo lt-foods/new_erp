@@ -55,11 +55,11 @@ type SupplierParsed = {
   supplier: string | null; comment_count: number | null; matches: SupplierMatch[] | null;
 };
 
-/** 廠商報價＋「我們賣過嗎」：向量相似度 ≥ 0.8 才算賣過（20261101000110），其餘對到的標「類似」 */
+/** 廠商報價＋「我們賣過嗎」：向量相似度 ≥ 0.85 才算賣過（20261101000130），其餘對到的標「類似」 */
 function SupplierInfo({ p }: { p: SupplierParsed | null }) {
   if (!p) return null;
   const m = p.matches?.[0];
-  const sold = m && m.score >= 0.8;
+  const sold = m && m.score >= 0.85;
   if (p.pending) {
     return (
       <div className="mt-1 text-[11px] font-normal text-zinc-500 dark:text-zinc-400">
